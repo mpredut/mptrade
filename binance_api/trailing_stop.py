@@ -57,8 +57,8 @@ from trailing_core import (  # noqa: E402
     load_trailing_common_env,
     parse_trailing_cli_args,
 )
-from botcore import (clean_upper_scalar, load_dotenv, log, required_bool_env, required_float_env,
-                     required_int_env, safe_float, safe_nonneg_float, safe_pos_float)  # noqa: E402
+from botcore import (_parse_bool_flag, clean_upper_scalar, load_dotenv, log, required_bool_env,
+                     required_float_env, required_int_env, safe_float, safe_nonneg_float, safe_pos_float)  # noqa: E402
 from cachepaths import resolve_venue_trailing_state_path  # noqa: E402
 
 DEFAULT_STATE = resolve_venue_trailing_state_path("binance", resolve_subdir=True)
@@ -323,7 +323,7 @@ class TrailingStop(TrailingAdapterBase):
 
         def submit_once():
             response = self.po.place(
-                pair, side, price, qty, force=True,
+                pair, side, price, qty, force=_parse_bool_flag(market, False),
                 kind=kind,
                 bypass_guards=bypass_guards, smart=False,
                 caller_owns_retry=True, wait_for_trend=(side != "SELL"),

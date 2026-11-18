@@ -654,7 +654,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                             if req_usd > zusd_f + 0.01:
                                 shortfall = min(usdc_f, max(5.0, round((req_usd - zusd_f) * 1.002, 2)))
                                 print(
-                                    f"[Kraken][LIVE] auto-converting {shortfall:.2f} USDC -> USD via zero-fee USDCUSD "
+                                    f"[Kraken][LIVE] auto-converting {shortfall:.2f} USDC -> USD via USDCUSD book "
                                     f"(ZUSD={zusd_f:.2f}, required~={req_usd:.2f}) for BUY {symbol}"
                                 )
                                 cli.add_order("USDCUSD", "sell", shortfall, None, ordertype="market", validate=False)

@@ -454,6 +454,47 @@ class BotManager:
             finally:
                 self._reloading = False
 
+    async def _fee_maintenance_loop(self):
+        """Periodically invoke idempotent venue fee & BNB reserve maintenance (4h gate in state)."""
+        script_path = os.path.join(ROOT_DIR, "orchestratorOS", "admin", "maintain_venue_fees.py")
+        log_dir = os.path.join(ROOT_DIR, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "venue_fee_maintenance.log")
+        await asyncio.sleep(45.0)
+        while self.running and not getattr(self, "_shutting_down", False):
+            if not getattr(self, "_reloading", False) and os.path.isfile(script_path):
+                child_env = botcore.clone_process_env({"MPTRADE_ORCHESTRATED": None})
+                proc = None
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        sys.executable,
+                        script_path,
+                        cwd=ROOT_DIR,
+                        env=child_env,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                    )
+                    out_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=90.0)
+                    if out_bytes:
+                        decoded = out_bytes.decode("utf-8", errors="replace")
+                        with open_append_text_file(log_path) as lf:
+                            lf.write(decoded)
+                except asyncio.TimeoutError:
+                    logging.warning("maintain_venue_fees.py timed out after 90s; terminating child.")
+                    if proc is not None and proc.returncode is None:
+                        with contextlib.suppress(ProcessLookupError):
+                            proc.kill()
+                        with contextlib.suppress(Exception):
+                            await proc.wait()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logging.warning(f"Fee maintenance subprocess check failed: {exc}")
+                finally:
+                    if proc is not None:
+                        _close_process_transport(proc)
+            await asyncio.sleep(900.0)
+
     async def supervise(self):
         try:
             organize_cachedb_subdomains(os.path.join(ROOT_DIR, "cachedb"))
@@ -466,6 +507,7 @@ class BotManager:
 
         asyncio.create_task(self._hot_reload_loop())
         asyncio.create_task(self.server.flush_queue_loop())
+        asyncio.create_task(self._fee_maintenance_loop())
 
         while self.running:
             now = time.time()

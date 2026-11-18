@@ -38,6 +38,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 from instrument_registry import casefold_get
 from providers.base import MarketDataProvider
 from providers.quantity import venue_fee_cap_quantity
+from providers.venue_fee_maintenance import read_persisted_venue_fee_spec
 
 
 def resolve_symbol_price(
@@ -93,6 +94,7 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
         locked_base_qty: Optional[float] = None,
         spread_bps: Optional[float] = None,
         gateway_max_usd: float = 2000.0,
+        cache_dir: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         v_norm = normalize_venue_name(venue)
@@ -106,6 +108,14 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
             default_tick,
             prefer_static_tick,
         ) = MarketDataProvider.resolve_venue_default_fee_and_precision(v_norm, px_f)
+
+        if cache_dir:
+            persisted_fee = read_persisted_venue_fee_spec(v_norm, symbol, cache_dir=cache_dir)
+            if persisted_fee:
+                if persisted_fee.get("fee_tier"):
+                    fee_tier = str(persisted_fee["fee_tier"]).strip()
+                maker_bps = safe_nonneg_float(persisted_fee.get("maker_fee_bps"), default=maker_bps)
+                taker_bps = safe_nonneg_float(persisted_fee.get("taker_fee_bps"), default=taker_bps)
 
         params = getattr(inst, "params", {}) if inst is not None and isinstance(getattr(inst, "params", None), dict) else {}
         if params.get("fee_tier"):
@@ -716,6 +726,7 @@ def resolve_venue_fee_and_limits(
     locked_base_qty: Optional[float] = None,
     spread_bps: Optional[float] = None,
     gateway_max_usd: float = 2000.0,
+    cache_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Resolve active venue fee tier, maker vs taker bps, live spread, and exchange/account order limits (0 ms, zero network calls)."""
     return _VENUE_FEE_AND_LIMITS_EVALUATOR.evaluate(
@@ -729,6 +740,7 @@ def resolve_venue_fee_and_limits(
         locked_base_qty=locked_base_qty,
         spread_bps=spread_bps,
         gateway_max_usd=gateway_max_usd,
+        cache_dir=cache_dir,
     )
 
 

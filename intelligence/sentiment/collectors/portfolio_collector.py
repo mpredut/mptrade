@@ -446,6 +446,7 @@ def _apply_open_orders_locked_balances(
     *,
     now_ts_oo: float,
     gateway_max_usd: float,
+    cache_dir: Optional[str] = None,
 ) -> None:
     """Aggregate locked quote/base from `open_orders_list` and enrich `venue_quote_cash` and `tradable_positions`."""
     if not open_orders_list:
@@ -552,6 +553,7 @@ def _apply_open_orders_locked_balances(
                     locked_quote_usd=lq_pos if lq_pos > 0.0 else None,
                     locked_base_qty=lb_pos if lb_pos > 0.0 else None,
                     gateway_max_usd=gateway_max_usd,
+                    cache_dir=cache_dir,
                 )
             )
             if prev_inst_limits:
@@ -1018,7 +1020,16 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 if quote_breakdown:
                     pos_entry["free_quote_breakdown"] = quote_breakdown
                 pos_entry.update(
-                    resolve_venue_fee_and_limits(venue, sym, inst, price=px_f, free_quote=quote_free, free_base=base_free, gateway_max_usd=gateway_max_usd)
+                    resolve_venue_fee_and_limits(
+                        venue,
+                        sym,
+                        inst,
+                        price=px_f,
+                        free_quote=quote_free,
+                        free_base=base_free,
+                        gateway_max_usd=gateway_max_usd,
+                        cache_dir=cache_dir,
+                    )
                 )
                 _attach_trailing_peak_to_position(
                     pos_entry, v_norm, sym, px_f, base_free, t_state.get("peak"), pending_peaks_by_vs
@@ -1202,6 +1213,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             pending_peaks_by_vs,
             now_ts_oo=now_ts_oo,
             gateway_max_usd=gateway_max_usd,
+            cache_dir=cache_dir,
         )
 
         if persist and allow_network and bcache_path and updated_bals and (

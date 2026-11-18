@@ -33,6 +33,7 @@ ORDER_RETRY_QUEUE_FILENAME = "order_retry_queue.jsonl"
 ASSETGUARDIAN_STATE_FILENAME = "assetguardian_state.json"
 RTRADE_PAIRS_STATE_FILENAME = "rtrade_pairs_state.json"
 TRAILING_STATE_FILENAME = "trailing_state.json"
+VENUE_FEE_MAINTENANCE_STATE_FILENAME = "venue_fee_maintenance_state.json"
 KINEMATIC_IMPULSE_SIGNAL_FILENAME = "kinematic_impulse_signal.json"
 
 CACHE_ORDERBOOK_DEPTH_PREFIX = "orderbook_depth_"
@@ -182,10 +183,12 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             "assetguardian_state.json", "mt_state.json", "trailing_state.json",
             "smart_stop_loss_state.json", "rtrade_pairs_state.json",
             "autonomous_trade_intents_state.json", "venue_balances_state.json",
+            "venue_fee_maintenance_state.json",
         ),
         "prefixes": (
             "assetguardian_state", "rtrade_pairs", "mt_state.", "trailing_state.",
             "smart_stop_loss_state.", "autonomous_trade_intents", "venue_balances_state",
+            "venue_fee_maintenance_state",
         ),
         "suffixes": ("_state.json",),
     },

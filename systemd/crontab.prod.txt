@@ -18,6 +18,8 @@ SHELL=/bin/bash
 
 15 4 1,15 * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh cron-update >> logs/manage_agy.log 2>&1
 
+# 4-hour venue fee hygiene & Binance BNB reserve maintenance (<100 USDC -> 200 USDC LIMIT_MAKER)
+12 */4 * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.venue_fee_maintenance.lock /usr/bin/timeout 90 ./orchestratorOS/run_python.sh orchestratorOS/admin/maintain_venue_fees.py >> logs/venue_fee_maintenance.log 2>&1
 # Nightly technical audit + verified self-heal on the permanent auto_technical_repair thread (never trades)
 35 3 * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_technical_repair.lock /usr/bin/timeout 600 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_technical_repair >> logs/auto_technical_repair.log 2>&1; ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
 # 6-min 24/7 crypto trade executor on the permanent auto_cryptotrade_executor thread (Binance, Kraken, Hyperliquid)
