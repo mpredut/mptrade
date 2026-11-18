@@ -11,7 +11,7 @@ import pricewindow as pw
 from providers import order_id_context as rc
 from providers.order_ohlc_utils import extract_remaining_qty
 extract_client_order_id = rc.extract_client_order_id
-from cachepaths import split_symbol_assets
+from cachepaths import normalize_venue_name, split_symbol_assets
 from providers.market_api import (  # Single guarded proxy (Instrument.place).
     api as mkt,
     resolve_symbol_provider_name,
@@ -217,7 +217,7 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
             symbol, order_type, price, quantity, owner
         )
         px_disp = format_price_log(px)
-        venue_slug = (clean_scalar_str(venue) or _resolve_provider_name(symbol)).lower()
+        venue_slug = (normalize_venue_name(venue, default="") or _resolve_provider_name(symbol)).lower()
         t_title, t_body = alert.format_trade_notification(
             "PLACED", side, symbol, px_disp, qty, val, quote, order_id, venue=venue_slug, owner=owner
         )

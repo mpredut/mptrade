@@ -86,7 +86,7 @@ TERMINAL_FILTER_REFUSAL_SUBSTRINGS = (
 
 def is_terminal_filter_refusal(reason) -> bool:
     """Return whether unchanged order data can never pass its venue filters."""
-    value = clean_scalar_str(reason) or ""
+    value = clean_scalar_str(str(reason) if isinstance(reason, BaseException) else reason) or ""
     low = value.lower()
     return (
         value in TERMINAL_FILTER_REFUSAL_REASONS

@@ -282,9 +282,9 @@ def venue_for_symbol(symbol: object, *, path=None, default: str = "binance") -> 
                 if enabled_only and not getattr(inst, "enabled", True):
                     continue
                 inst_sym = clean_upper_scalar(getattr(inst, "symbol", None)) or ""
-                inst_prov = clean_scalar_str(getattr(inst, "provider", None))
+                inst_prov = normalize_venue_name(getattr(inst, "provider", None), default="")
                 if inst_prov and inst_sym and (inst_sym in (canon_sym, raw_sym) or clean_symbol_key(inst_sym) == canon_sym):
-                    return normalize_venue_name(inst_prov) or inst_prov.lower()
+                    return inst_prov
     except Exception:
         pass
     if canon_sym in ("HYPEUSD", "TAOUSD", "ADAUSD", "XBTUSD", "XXBTZUSD", "XDGUSD", "XXDGZUSD"):

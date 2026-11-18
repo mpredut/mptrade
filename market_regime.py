@@ -196,6 +196,12 @@ class MarketRegimeContext:
         if isinstance(val, MarketRegimeDecision):
             return val
         if isinstance(val, Mapping):
+            raw_src = val.get("source")
+            src_clean = (
+                "none"
+                if isinstance(raw_src, str) and raw_src.strip().lower() == "none"
+                else (clean_scalar_str(raw_src) or "unknown")
+            )
             return MarketRegimeDecision(
                 regime=(clean_scalar_str(val.get("regime")) or "unknown").lower(),
                 gradient=val.get("gradient"),
@@ -206,7 +212,7 @@ class MarketRegimeContext:
                 n_samples=val.get("n_samples"),
                 window_seconds=val.get("window_seconds"),
                 horizon=clean_scalar_str(val.get("horizon")) or "unspecified",
-                source=clean_scalar_str(val.get("source")) or "unknown",
+                source=src_clean,
                 fallback_used=val.get("fallback_used", False),
             )
         if required:

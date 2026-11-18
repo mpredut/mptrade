@@ -8704,11 +8704,32 @@ def test_wave50_anchored_id_memos_and_market_regime_scalar_ssot(tmp_path, monkey
     assert ctx.decision.reason == "dict_decision"
     assert ctx.decision.horizon == "unspecified"
     assert ctx.decision.source == "unknown"
+    ctx_failed_src = mr_mod.MarketRegimeContext.from_decision(
+        {"regime": "unknown", "reason": "all_sources_failed:ohlc:1m=stale_source", "horizon": "short", "source": "none", "fresh": False},
+        evaluated_at=now_fixed,
+    )
+    assert ctx_failed_src.decision.source == "none"
     assert ctx.symbol is None and ctx.provider is None and ctx.benchmark_symbol is None
     assert ctx.is_valid_for(symbol="null", now=now_fixed) is False
     for bad_horizon in ("null", "nan", "none", True, 123):
         with pytest.raises(ValueError, match="unsupported market-regime horizon"):
             mr_mod.MarketRegimeHorizon.parse(bad_horizon)
     assert mr_mod.MarketRegimeService.horizon_sample_capacity("short") == 15
+
+    # 5. Polymorphic non-str scalar handling: provider objects, exception reasons, and int sample_ids
+    import instrument_registry as ir_mod
+    import order_retry as oq_mod
+    from providers.strategy_executor import SubmissionRefused
+
+    fake_reg = SimpleNamespace(
+        all=lambda enabled_only=False: [
+            SimpleNamespace(symbol="CUSTOMUSDC", provider=SimpleNamespace(name="Kraken"), enabled=True)
+        ]
+    )
+    with monkeypatch.context() as mp:
+        mp.setattr(ir_mod, "load_registry", lambda path=None: fake_reg)
+        assert ir_mod.venue_for_symbol("CUSTOMUSDC") == "kraken"
+    assert oq_mod.is_terminal_filter_refusal(SubmissionRefused("below_min_notional")) is True
+    assert oq_mod.is_terminal_filter_refusal(SubmissionRefused("trend_deferred")) is False
 
 

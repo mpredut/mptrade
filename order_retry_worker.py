@@ -949,7 +949,7 @@ def _alert_giveups(records, now):
                     "expiry": reason,
                 },
                 "quantity": rec.get("qty", 0.0),
-                "sample_id": clean_scalar_str(rec.get("intent_id")) or clean_scalar_str(rec.get("id")) or "unknown",
+                "sample_id": clean_order_id(rec.get("intent_id")) or clean_order_id(rec.get("id")) or "unknown",
                 "attempts": attempts_val,
                 "price": rec.get("requested_price") if rec.get("requested_price") is not None else rec.get("ref_price"),
                 "created_ts": rec.get("created_ts"),
