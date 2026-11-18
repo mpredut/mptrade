@@ -886,6 +886,19 @@ def _collect_preemptible_open_orders(
     if not isinstance(raw_open, list) or not raw_open:
         return want_side, sym_str, []
 
+    eff_owner_map = owner_map
+    if eff_owner_map is None and any(
+        isinstance(oo, dict)
+        and extract_order_side(oo) == want_side
+        and rc.resolve_priority_bot_owner(oo) == "unspecified"
+        for oo in raw_open
+    ):
+        try:
+            import order_retry as _oq
+            eff_owner_map = _oq.get_accepted_order_owner_map()
+        except Exception:
+            eff_owner_map = None
+
     candidates: list[tuple[int, str, dict[str, Any], str]] = []
     seen_ids: set[str] = set()
     for oo in raw_open:
@@ -893,14 +906,14 @@ def _collect_preemptible_open_orders(
             continue
         if extract_order_side(oo) != want_side:
             continue
-        if not rc.can_bot_preempt_order(caller_bot, oo, owner_map=owner_map):
+        if not rc.can_bot_preempt_order(caller_bot, oo, owner_map=eff_owner_map):
             continue
         oid = extract_order_id(oo, default="")
         if not oid or oid in seen_ids:
             continue
         seen_ids.add(oid)
-        target_owner = rc.resolve_priority_bot_owner(oo, owner_map=owner_map)
-        target_rank = rc.bot_priority_rank(oo, owner_map=owner_map)
+        target_owner = rc.resolve_priority_bot_owner(oo, owner_map=eff_owner_map)
+        target_rank = rc.bot_priority_rank(oo, owner_map=eff_owner_map)
         candidates.append((target_rank, oid, oo, target_owner))
     candidates.sort(key=lambda item: item[0])
     return want_side, sym_str, candidates

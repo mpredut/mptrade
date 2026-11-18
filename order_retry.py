@@ -758,10 +758,19 @@ def _active_order_keys(r: dict) -> tuple[str, ...]:
     lc = _record_lifecycle(r, default="")
     if lc != "accepted" and not (lc == "submit_pending" and r.get("order_id") is None):
         return ()
+    raw_cid = _record_client_order_id(r)
+    native_cid = None
+    if raw_cid and (prov_l := (clean_scalar_str(r.get("provider_name")) or "").lower()) in ("kraken", "hyperliquid"):
+        try:
+            native_cid = rc.derive_venue_128bit_client_order_id(prov_l, raw_cid)
+        except Exception:
+            native_cid = None
     return tuple(
-        k
-        for raw_k in (r.get("order_id"), _record_client_order_id(r))
-        if (k := clean_order_id(raw_k))
+        dict.fromkeys(
+            k
+            for raw_k in (r.get("order_id"), raw_cid, native_cid)
+            if (k := clean_order_id(raw_k))
+        )
     )
 
 
@@ -790,8 +799,17 @@ def infer_record_owner(rec: dict) -> str:
         or clean_scalar_str(placement.get("parent_owner"))
         or ""
     ).lower()
-    if _is_concrete_owner(parent_owner):
+    if _is_concrete_owner(parent_owner) and parent_owner != "monitororder":
         return parent_owner
+    if parent_cid := clean_order_id(rec.get("parent_client_order_id")) or clean_order_id(
+        placement.get("parent_client_order_id")
+    ):
+        try:
+            p_cid_owner = rc.resolve_order_owner(parent_cid)
+            if _is_concrete_owner(p_cid_owner) and p_cid_owner != "monitororder":
+                return p_cid_owner
+        except Exception:
+            pass
     owner = "unspecified"
     cid = (
         clean_order_id(rec.get("client_order_id"))
@@ -803,6 +821,19 @@ def infer_record_owner(rec: dict) -> str:
             owner = rc.resolve_order_owner(cid)
         except Exception:
             owner = "unspecified"
+    if _is_concrete_owner(owner) and owner != "monitororder":
+        return owner
+    for raw_mod in (
+        rec.get("owner"),
+        placement.get("owner"),
+        rec.get("module"),
+        placement.get("module"),
+    ):
+        mod_s = (clean_scalar_str(raw_mod) or "").lower()
+        if _is_concrete_owner(mod_s) and mod_s != "monitororder":
+            return mod_s
+    if _is_concrete_owner(parent_owner):
+        return parent_owner
     if _is_concrete_owner(owner):
         return owner
     iid = clean_order_id(rec.get("intent_id"))

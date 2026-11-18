@@ -278,7 +278,7 @@ def resolve_priority_bot_owner(order_or_cid: Any, *, owner_map: Optional[dict[st
         if owner in BOT_PRIORITY_RANKS:
             return owner
     if isinstance(owner_map, dict):
-        for k in (oid, cid):
+        for k in (oid, cid, cid.lower() if cid else ""):
             if k and k in owner_map:
                 mapped = (clean_scalar_str(owner_map.get(k)) or "").lower()
                 if mapped in BOT_PRIORITY_RANKS:
@@ -385,7 +385,7 @@ def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = Non
     if oid and exact_ids and (str(oid) in exact_ids or str(oid).lower() in lower_ids):
         return "AI"
     raw_cid = (extract_client_order_id(order, default="") or "").upper()
-    if raw_cid.startswith("AI_") or (raw_cid and lower_ids and raw_cid.lower() in lower_ids):
+    if raw_cid.startswith(("AI_", "MO_AI_")) or (raw_cid and lower_ids and raw_cid.lower() in lower_ids):
         return "AI"
     return "BOT"
 

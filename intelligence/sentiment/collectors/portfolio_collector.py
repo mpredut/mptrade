@@ -82,7 +82,7 @@ from instrument_registry import casefold_get
 import order_retry as _oq
 from providers.base import MarketDataProvider
 from providers.execution_audit import _extract_audit_fill_metrics
-from providers.order_id_context import resolve_order_origin
+from providers.order_id_context import derive_venue_128bit_client_order_id, resolve_order_origin
 from providers.order_ohlc_utils import normalize_open_order
 from providers.intent_state import collect_known_ai_order_ids, intent_venue_client_order_ids
 from providers.quantity import resolve_assets, venue_fee_cap_quantity
@@ -288,10 +288,18 @@ def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str],
             for rec in read_tail_jsonl_dicts(fpath, limit=None, max_bytes=1024 * 1024):
                 _, mod, rule = resolve_order_origin(rec)
                 if mod or rule:
+                    v_norm = normalize_venue_name(rec.get("venue"))
                     for k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
                         if kv := str(rec.get(k) or "").strip():
                             prev_mod, prev_rule = out.get(kv, (None, None))
                             out[kv] = (prev_mod or mod, prev_rule or rule)
+                            if k in ("client_order_id", "clientOrderId") and v_norm in ("kraken", "hyperliquid"):
+                                try:
+                                    if nat_kv := derive_venue_128bit_client_order_id(v_norm, kv):
+                                        p_m, p_r = out.get(nat_kv, (None, None))
+                                        out[nat_kv] = (p_m or mod, p_r or rule)
+                                except Exception:
+                                    pass
         if out:
             break
     return out

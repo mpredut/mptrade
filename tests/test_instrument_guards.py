@@ -1895,6 +1895,29 @@ class TestOrderRollback(unittest.TestCase):
         self.assertTrue(is_order_repriceable_by_monitororder("MO_OR_123", resolved_owner="tradeall"))
         self.assertFalse(is_order_repriceable_by_monitororder("", resolved_owner="rtrade"))
         self.assertFalse(is_order_repriceable_by_monitororder("MO_OR_123", resolved_owner="monitortrades"))
+        from providers.order_id_context import derive_venue_128bit_client_order_id, resolve_order_actor
+        import order_retry as oq_mod
+        self.assertEqual(resolve_order_actor({"clientOrderId": "MO_AI_OR_123"}), "AI")
+        self.assertEqual(
+            oq_mod.infer_record_owner(
+                {"client_order_id": "MO_OR_2", "place_kwargs": {"parent_owner": "monitororder", "parent_client_order_id": "MO_TA_OR_1"}}
+            ),
+            "tradeall",
+        )
+        self.assertEqual(
+            oq_mod.infer_record_owner({"order_id": "T212_99", "place_kwargs": {"module": "rtrade"}}),
+            "rtrade",
+        )
+        krk_cid = derive_venue_128bit_client_order_id("kraken", "RT_OR_krk1_0")
+        hl_cid = derive_venue_128bit_client_order_id("hyperliquid", "RT_OR_hl1_0")
+        krk_keys = oq_mod._active_order_keys(
+            {"lifecycle": "accepted", "provider_name": "kraken", "order_id": "O_KRK_1", "place_kwargs": {"client_order_id": "RT_OR_krk1_0"}}
+        )
+        hl_keys = oq_mod._active_order_keys(
+            {"lifecycle": "accepted", "provider_name": "hyperliquid", "order_id": "O_HL_1", "place_kwargs": {"client_order_id": "RT_OR_hl1_0"}}
+        )
+        self.assertIn(krk_cid, krk_keys)
+        self.assertIn(hl_cid, hl_keys)
         self.assertTrue(can_bot_preempt_order("tradeall", {"clientOrderId": "RT_100"}))
         self.assertFalse(can_bot_preempt_order("tradeall", {"clientOrderId": "AG_100"}))
         self.assertTrue(can_bot_preempt_order("assetguardian", {"clientOrderId": "TO_200"}))
