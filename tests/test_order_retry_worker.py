@@ -1714,3 +1714,98 @@ def test_incident_digest_unlinks_expired_state_and_idle_process_once_skips_reloa
             },
         )
     ]
+
+
+def test_awaiting_cancel_reconciles_native_replace_by_client_id_and_evicts_superseded_accepted(monkeypatch, tmp_path):
+    """When native replace crashed mid-flight, awaiting_cancel reconciles new_cid via order_by_client_id and evicts the old accepted tracker without re-submitting."""
+    q_path = tmp_path / "queue.jsonl"
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(q_path))
+    monkeypatch.setattr(oq, "LOCK_FILE", str(tmp_path / "queue.lock"))
+    monkeypatch.setattr(worker._AUDIT, "directory", str(tmp_path))
+
+    # 1. Seed the existing accepted tracker for the old order (orderId=101) and the crashed awaiting_cancel replacement.
+    old_id = oq.enqueue("BTCUSDC", "SELL", 2.0, {"client_order_id": "TA_OR_old_0"}, now=1000.0, created_ts=1000.0, provider_name="Binance")
+    old_claim = oq.claim([old_id], now=1000.0, lease_sec=60.0)[0]
+    assert oq.complete_claim(old_claim, "accepted", now=1000.0, order={"orderId": 101}, provider_name="Binance") is True
+
+    rep_id = oq.enqueue(
+        "BTCUSDC",
+        "SELL",
+        2.0,
+        {"kind": "monitor_order_replace", "prefix": "MO_TA_OR", "parent_owner": "tradeall"},
+        requested_price=105.0,
+        ref_price=100.0,
+        now=1000.0,
+        created_ts=1000.0,
+        provider_name="Binance",
+        kind="monitor_order_replace",
+        lifecycle="awaiting_cancel",
+        replaces_order_id=101,
+        replaces_original_qty=2.0,
+    )
+    rep_claim = oq.claim([rep_id], now=1000.0, lease_sec=60.0)[0]
+    rep_claim = oq.begin_claimed_submit(rep_claim, now=1000.0, lease_sec=60.0)
+    assert rep_claim is not None
+    new_cid = oq.record_client_order_id(rep_claim)
+
+    class _NativeReplaceRecoveryMkt(FakeMkt):
+        def order_status(self, symbol, order_id, **kwargs):
+            return OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED", orig_qty=2.0)
+
+        def order_by_client_id(self, symbol, client_order_id, **kwargs):
+            assert client_order_id == new_cid
+            return {"orderId": 202, "origQty": "2.0", "status": "NEW"}
+
+    mkt = _NativeReplaceRecoveryMkt()
+    stats = worker.process_once(mkt, now=1400.0)
+    assert stats["reconciled"] == 1
+    assert stats["succeeded"] == 1
+    assert len(mkt.calls) == 0
+
+    persisted = oq.load_all()
+    assert len(persisted) == 1
+    assert persisted[0]["id"] == rep_id
+    assert persisted[0]["lifecycle"] == "accepted"
+    assert persisted[0]["order_id"] == "202"
+
+    # 2. On Kraken (lookup_by_client_order_id=False), an expired producer_claimed awaiting_cancel record
+    # must not be quarantined; it reconciles via order_status(replaced_order_id) and activates when CANCELED.
+    oq.rewrite([])
+    kr_id = oq.enqueue(
+        "NVDAxUSD",
+        "SELL",
+        1.0,
+        {"kind": "monitor_order_replace", "prefix": "MO_TA_OR", "parent_owner": "tradeall"},
+        requested_price=120.0,
+        ref_price=119.0,
+        now=1000.0,
+        created_ts=1000.0,
+        provider_name="Kraken",
+        kind="monitor_order_replace",
+        lifecycle="awaiting_cancel",
+        replaces_order_id="OTXID-1",
+        replaces_original_qty=1.0,
+    )
+    kr_claim = oq.claim([kr_id], now=1000.0, lease_sec=60.0)[0]
+    kr_claim = oq.begin_claimed_submit(kr_claim, now=1000.0, lease_sec=60.0)
+    assert kr_claim is not None
+
+    class _KrakenCancelMkt(FakeMkt):
+        def reconciliation_capabilities(self, symbol=None, provider_name=None):
+            return OrderReconciliationCapabilities(
+                lookup_by_client_order_id=False,
+                status_by_order_id=True,
+                cancel_by_order_id=True,
+                list_open_orders=True,
+                replace_by_order_id=True,
+            )
+
+        def order_status(self, symbol, order_id, **kwargs):
+            return OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED", orig_qty=1.0)
+
+    stats_kr = worker.process_once(_KrakenCancelMkt(), now=1400.0)
+    assert stats_kr["quarantined"] == 0
+    kr_after = oq.load_all()
+    assert len(kr_after) == 1
+    assert kr_after[0]["lifecycle"] == "submit_pending"
+    assert kr_after[0]["submission_state"] == "refused"

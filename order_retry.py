@@ -1057,6 +1057,22 @@ _TERMINAL_RESET_KEYS = (
 )
 
 
+def _without_superseded_accepted(
+    items: list, replaced_symbol: str | None, replaced_order_id: str | None, *, keep_id=None
+) -> list:
+    if not (replaced_symbol and replaced_order_id):
+        return items
+    return [
+        item for item in items
+        if item.get("id") == keep_id
+        or not (
+            _record_lifecycle(item, default="") == "accepted"
+            and _canonical_queue_symbol(item.get("symbol")) == replaced_symbol
+            and (extract_order_id(item.get("order_id")) or str(item.get("order_id") or "").strip()) == replaced_order_id
+        )
+    ]
+
+
 def complete_claim(
     claimed, outcome, now=None, *, failure_reason=None,
     order=None, status=None, provider_name=None, submission_state=None,
@@ -1076,6 +1092,7 @@ def complete_claim(
         raise ValueError(f"invalid submission state: {submission_state!r}")
     now = resolve_now_ts(now)
     changed = False
+    superseded_target: tuple[str, str, object] | None = None
     claimed_client_id = _record_client_order_id(claimed)
     with _locked_queue() as existing:
         remaining = []
@@ -1110,6 +1127,9 @@ def complete_claim(
                     if isinstance(order, dict) and order.get("status") is not None:
                         rec["submit_status"] = str(order.get("status"))
                     _append_order_history(rec, observed_at=now)
+                    rep_oid = extract_order_id(rec.get("replaces_order_id")) or str(rec.get("replaces_order_id") or "").strip()
+                    if rep_oid:
+                        superseded_target = (_canonical_queue_symbol(rec.get("symbol")), rep_oid, rec.get("id"))
                 else:
                     rec["last_failure_reason"] = "response_without_order_id"
                     rec["attempts"] = max(
@@ -1194,6 +1214,10 @@ def complete_claim(
                 rec.pop(key, None)
             remaining.append(rec)
         if changed:
+            if superseded_target is not None:
+                remaining = _without_superseded_accepted(
+                    remaining, superseded_target[0], superseded_target[1], keep_id=superseded_target[2]
+                )
             _write_nolock(remaining)
     return changed
 
@@ -1250,15 +1274,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
                 result = "activated"
             break
         if result is not None:
-            if replaced_order_id and replaced_symbol:
-                existing = [
-                    item for item in existing
-                    if not (
-                        _record_lifecycle(item, default="") == "accepted"
-                        and _canonical_queue_symbol(item.get("symbol")) == replaced_symbol
-                        and (extract_order_id(item.get("order_id")) or str(item.get("order_id") or "").strip()) == replaced_order_id
-                    )
-                ]
+            existing = _without_superseded_accepted(existing, replaced_symbol, replaced_order_id)
             _write_nolock(existing)
     return result
 

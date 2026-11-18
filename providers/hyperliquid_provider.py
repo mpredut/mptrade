@@ -755,6 +755,12 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
             )
             signer = self._signer()
             sz_dec = signer.sz_decimals(self._token)
+        except SubmissionRefused:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            print(f"[HL] replace_order({symbol},{oid_i}) preflight failed: {exc}")
+            raise SubmissionRefused("replace_not_attempted") from exc
+        try:
             ok, new_oid, msg = signer.modify_spot_order(
                 oid_i,
                 pair,
@@ -769,8 +775,12 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
             raise
         except Exception as exc:  # noqa: BLE001
             print(f"[HL] replace_order({symbol},{oid_i}) failed: {exc}")
+            if any(t in str(exc).lower() for t in ("timed out", "timeout", "connection", "reset by peer", "eof")):
+                return None
             raise SubmissionRefused("replace_not_attempted") from exc
         if not ok:
+            if any(t in str(msg or "").lower() for t in ("timed out", "timeout", "connection", "reset by peer", "eof")):
+                return None
             raise SubmissionRefused("replace_not_attempted")
         clean_oid = extract_order_id(new_oid, default=None)
         if not clean_oid and client_order_id is not None:

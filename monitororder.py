@@ -628,6 +628,7 @@ def monitor_open_orders_by_type(
                 continue
 
             native_cancel_only = False
+            native_refused = False
             if _native_replace_enabled_for(symbol, provider_name):
                 refreshed_claim = order_retry.begin_claimed_submit(replacement_claim)
                 if refreshed_claim is None:
@@ -668,7 +669,11 @@ def monitor_open_orders_by_type(
                     except Exception:
                         pass
                 if native_order:
-                    eff_qty = safe_pos_float(native_outcome.get("submitted_qty"), default=quantity) or quantity
+                    eff_qty = (
+                        quantity
+                        if isinstance(native_order, dict) and native_order.get("amended_in_place")
+                        else (safe_pos_float(native_outcome.get("submitted_qty"), default=quantity) or quantity)
+                    )
                     order_retry.activate_claimed_replacement(replacement_claim, eff_qty)
                     _record_replacement_success(
                         replacement_claim,
@@ -686,6 +691,7 @@ def monitor_open_orders_by_type(
                         initial_prices=initial_prices,
                     )
                     continue
+                native_refused = native_outcome.get("state") == "refused"
                 native_cancel_only = native_outcome.get("reason") == "replace_cancel_only"
                 try:
                     cache_permit = mkt.preflight_order(
@@ -695,6 +701,7 @@ def monitor_open_orders_by_type(
                 except Exception:
                     cache_permit = None
 
+            fallback_submission_state = "refused" if native_refused else None
             if native_cancel_only:
                 cancel_confirmed = True
             else:
@@ -714,7 +721,8 @@ def monitor_open_orders_by_type(
             except Exception as exc:  # noqa: BLE001
                 order_retry.complete_claim(
                     replacement_claim, "status_error",
-                    failure_reason=str(exc))
+                    failure_reason=str(exc),
+                    submission_state=fallback_submission_state)
                 print(
                     f"The cancellation of {order_id} is ambiguous and status "
                     f"reconciliation failed: {exc}. The durable replacement "
@@ -730,7 +738,9 @@ def monitor_open_orders_by_type(
                     )
             else:
                 order_retry.complete_claim(
-                    replacement_claim, "success" if status.terminal else "release"
+                    replacement_claim,
+                    "success" if status.terminal else "release",
+                    submission_state=fallback_submission_state,
                 )
                 if status.terminal:
                     _clear_initial_order_price(initial_prices, order_id, oid_str)

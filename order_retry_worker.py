@@ -289,7 +289,10 @@ def process_once(mkt, now=None):
             expired.append(r)
             continue
         lifecycle, symbol = oq.record_lifecycle(r), r.get("symbol")
-        if (clean_scalar_str(r.get("submission_state")) or "").lower() == "producer_claimed":
+        if (
+            lifecycle != "awaiting_cancel"
+            and (clean_scalar_str(r.get("submission_state")) or "").lower() == "producer_claimed"
+        ):
             if safe_float(r.get("claim_until"), default=0.0) > now:
                 continue
             owner_state = oq.producer_claim_owner_state(r)
@@ -387,6 +390,23 @@ def process_once(mkt, now=None):
                 continue
             venue_status = str(status.venue_status or "").upper()
             if venue_status in {"CANCELED", "CANCELLED"}:
+                if (
+                    (clean_scalar_str(r.get("submission_state")) or "").lower() in {"producer_claimed", "unknown"}
+                    and (caps := _reconciliation_capabilities(mkt, symbol, provider_name)) is not None
+                    and caps.lookup_by_client_order_id
+                ):
+                    reconciliation_state, existing_order = _reconcile_client_order(
+                        mkt, symbol, oq.record_client_order_id(r), provider_name=provider_name
+                    )
+                    if reconciliation_state == _RECONCILE_FOUND:
+                        if _complete_reconciled_order(mkt, r, existing_order, now, provider_name=provider_name):
+                            succeeded, reconciled = succeeded + 1, reconciled + 1
+                        continue
+                    if reconciliation_state != _RECONCILE_NOT_FOUND:
+                        oq.complete_claim(
+                            r, "status_error", now, failure_reason="replacement_client_lookup_unavailable"
+                        )
+                        continue
                 replacement_qty = oq.compute_replacement_qty(r.get("replaces_original_qty"), status)
                 activation = oq.activate_claimed_replacement(r, replacement_qty, now)
                 if activation == "activated":

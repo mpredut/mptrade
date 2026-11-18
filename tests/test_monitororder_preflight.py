@@ -530,3 +530,30 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         persisted = monitororder.order_retry.load_all()
         self.assertEqual(persisted[0]["lifecycle"], "accepted")
         self.assertEqual(persisted[0]["order_id"], "306")
+
+        # 5. Refused native replace + fallback cancel sees order still OPEN -> resets submission_state="refused".
+        monitororder.order_retry.rewrite([])
+        orders = {101: {"price": 100.0, "quantity": 2.0}}
+        with (
+            patch.object(monitororder, "_native_replace_enabled_for", return_value=True),
+            patch.object(monitororder.api, "get_open_orders", return_value=orders),
+            patch.object(monitororder.api, "get_current_price", return_value=100.0),
+            patch.object(monitororder, "are_close", return_value=True),
+            patch.object(monitororder.mkt, "preflight_order", return_value=object()),
+            patch.object(monitororder.api, "cancel_order", return_value=False),
+            patch.object(
+                monitororder.mkt,
+                "order_status",
+                return_value=OrderStatus(
+                    status="open", filled_qty=0.0, cost=0.0, fee=0.0, venue_status="NEW"
+                ),
+            ),
+            patch.object(monitororder.mkt, "place", side_effect=_place_not_attempted),
+            patch("builtins.print"),
+        ):
+            monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
+
+        persisted_open = monitororder.order_retry.load_all()
+        self.assertEqual(len(persisted_open), 1)
+        self.assertEqual(persisted_open[0]["lifecycle"], "awaiting_cancel")
+        self.assertEqual(persisted_open[0]["submission_state"], "refused")

@@ -502,3 +502,11 @@ def test_hyperliquid_modify_spot_order_and_provider_replace_order(monkeypatch):
     with pytest.raises(SubmissionRefused) as exc_rej:
         hp.replace_order("HYPEUSDC", "88801", "SELL", 25.5, 2.0)
     assert exc_rej.value.reason == "replace_not_attempted"
+
+    # Ambiguous transport timeout returns None so caller reconciles by client_order_id before fallback.
+    signer_timeout = SimpleNamespace(
+        sz_decimals=lambda _t: 2,
+        modify_spot_order=lambda *_a, **_kw: (False, None, "HTTPSConnectionPool: Read timed out."),
+    )
+    monkeypatch.setattr(hp, "_signer", lambda: signer_timeout)
+    assert hp.replace_order("HYPEUSDC", "88801", "SELL", 25.5, 2.0) is None
