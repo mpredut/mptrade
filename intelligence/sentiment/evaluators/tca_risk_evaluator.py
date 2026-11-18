@@ -35,7 +35,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     TelemetryEvaluatorInterface,
     pct_delta,
 )
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, resolve_kraken_tokenized_pair
 from providers.base import MarketDataProvider
 from providers.quantity import venue_fee_cap_quantity
 from providers.venue_fee_maintenance import read_persisted_venue_fee_spec
@@ -252,7 +252,15 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                             span_24h = sp_cand
                         if raw_vol_1h is not None and span_24h is not None:
                             break
-            vol_1h = max(0.45, raw_vol_1h or 1.1, (span_24h * 0.20) if span_24h is not None else 0.0)
+            # BY DESIGN: Blend 1h realized vol with Parkinson 24h range estimate (span_24h / 8 ~= sigma_1h)
+            # rather than replacing raw_vol_1h with 0.20 * span_24h (which inflated 1h fill probs 3x-5x).
+            span_1h_est = (span_24h * 0.125) if span_24h is not None else 0.0
+            vol_1h = max(
+                0.35,
+                (0.5 * raw_vol_1h + 0.5 * max(raw_vol_1h, span_1h_est))
+                if raw_vol_1h is not None
+                else max(1.1, span_1h_est),
+            )
             dec = MarketDataProvider.resolve_venue_tca_price_decimals(v_norm, lim_px)
             queue_penalty = 1.0
             if isinstance(m_entry, dict) and side in ("SELL", "BUY"):
@@ -325,6 +333,8 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                         else:
                             o["wall_queue_pos"] = "FRONT_OF_BID_WALL"
             z_dist = dist_pct / vol_1h
+            # BY DESIGN: Student-t (nu=3.5) barrier kernel matching exp(-0.5*z^2) near z<=1 (>50% at 1 sigma)
+            # with fat-tail continuity at 2-4 sigma once vol_1h uses Parkinson span_24h/8 rather than 0.20*span_24h.
             touch_prob = (1.0 + (z_dist * z_dist) / 3.5) ** -1.75
             raw_prob = 100.0 * touch_prob * queue_penalty
             o["fill_prob_1h_pct"] = round(min(99.0, max(0.1, raw_prob)), 1)
@@ -539,17 +549,19 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
 
         by_base: Dict[str, Tuple[str, Dict[str, Any]]] = {}
         for sym, pinfo in sorted(prices_and_trends.items()):
+            tok_sym_cb, is_tok_cb = resolve_kraken_tokenized_pair(sym)
+            eff_sym_cb = tok_sym_cb if is_tok_cb else sym
             if (
                 isinstance(pinfo, dict)
-                and not has_equity_suffix(sym)
-                and (b_canon := canonical_base_asset(sym))
+                and not has_equity_suffix(eff_sym_cb)
+                and (b_canon := canonical_base_asset(eff_sym_cb))
             ):
                 prev = by_base.get(b_canon)
                 if prev is None or (
-                    (is_usd_compatible_pair(sym), is_usdc_pair(sym), len(pinfo))
+                    (is_usd_compatible_pair(eff_sym_cb), is_usdc_pair(eff_sym_cb), len(pinfo))
                     > (is_usd_compatible_pair(prev[0]), is_usdc_pair(prev[0]), len(prev[1]))
                 ):
-                    by_base[b_canon] = (sym, pinfo)
+                    by_base[b_canon] = (eff_sym_cb, pinfo)
 
         raw_horizon_keys = (
             "chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "chg_15m_pct", "chg_30m_pct",

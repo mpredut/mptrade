@@ -32,7 +32,7 @@ from cachepaths import (
     symbol_quote_asset,
 )
 import instrument_registry as sym_reg
-from instrument_registry import casefold_get, venue_for_symbol
+from instrument_registry import casefold_get, resolve_kraken_tokenized_pair, venue_for_symbol
 
 from .base import MarketDataProvider
 from .ohlc_utils import candle_interval, candles_to_historical_points, ProviderError
@@ -520,6 +520,10 @@ class BinanceProvider(MarketDataProvider):
 
     @classmethod
     def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        # BY DESIGN: Kraken tokenized equities (xStocks) trade exclusively on Kraken tokenized_asset books;
+        # never query Binance Spot or Binance Futures (fapi.binance.com) for xStock tickers.
+        if resolve_kraken_tokenized_pair(symbol)[1]:
+            return (), ()
         canon_sym = canonical_symbol_key(symbol)
         quote_asset = symbol_quote_asset(canon_sym)
         base_asset = normalize_cache_base_asset(canon_sym)

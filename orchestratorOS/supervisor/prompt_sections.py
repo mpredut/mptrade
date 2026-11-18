@@ -4,11 +4,13 @@ Separates prompt presentation (Sections 1, 2, 3A, 3B, 3C) and symbol price
 resolution from telemetry harvesting and order execution in
 `autonomous_ai_reconciler.py`.
 
-Intentional prompt compression invariants:
+Intentional prompt compression & cycle-boundary invariants (BY DESIGN — DO NOT REVERT):
 - Section numbering (`### 1.` -> `### 3.`): Sections `2/2B/2C` (SRE/logs/VPN) are emitted only for `can_self_heal` topics and omitted on trading topics.
 - `bottom_6h(...)` (Section 3): Conditional pattern detector emitted only when an active 6h bottom structure forms (`pos_6h <= 70%` with meaningful drawdown).
 - `open_lifo_lots` (Section 3C): Capped to the latest 4 lots (`<=14d`) for top-of-stack LIFO harvesting and omitted when `len(open_lots) <= 1` (already covered by `avg_buy_px`/`last_buy_px`).
 - `last_cycle_execution_status` (Section 3C): Emitted when recent (`<=30m`) executions/fills/rejections or newly resting orders exist; omitted when idle or when all `OPEN_RESTING`/`PARTIALLY_FILLED` orders are `>30m` old and already displayed in `open_limit_orders`.
+- `equity_bellwethers` on `scope="crypto"` (Section 3C): Micro-cap `RGNT_US_EQ` is omitted when major US tech/AI bellwethers (`NVDA_US_EQ`, `SPCX_US_EQ`) are present, and `t212_cycle` is omitted on `scope="crypto"` because `SPCX_US_EQ`'s cycle is already shown in `kraken_xstocks.t212_sibling_cycle` and `auto_cryptotrade_executor` cannot trade T212 shares (full cycles remain on `scope="equities"` and `scope="all"`).
+- `last_exit_kind` & `realized_pnl` across cycle boundaries (Section 3C): A prior cycle's exit label (e.g. `SL`) is never reclassified against a newer cycle's re-entry cost (`last_sell_ts < entry_ts`), and multi-cycle cumulative PnL (`cum_cycles`) is preserved alongside active `subcycle` PnL.
 """
 
 import math
@@ -136,9 +138,13 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
             extra_parts.append(lifo_c_tag)
     if cyc.get("realized_pnl_usd") is not None:
         rp_v = cyc.get("realized_pnl_usd")
+        rp_f = safe_float(rp_v, 0.0) or 0.0
         sub_rp = safe_float(cyc.get("subcycle_realized_pnl_usd"), None)
-        if sub_rp is not None and abs(sub_rp) < 0.01 and abs(safe_float(rp_v, 0.0) or 0.0) >= 0.01:
+        cum_rp = safe_float(cyc.get("cum_realized_pnl_usd"), None)
+        if sub_rp is not None and abs(sub_rp) < 0.01 and abs(rp_f) >= 0.01:
             extra_parts.append(f"realized_pnl=${rp_v} (subcycle=$0.00)")
+        elif cum_rp is not None and abs(rp_f) >= 0.01 and abs(cum_rp - rp_f) >= 0.01:
+            extra_parts.append(f"realized_pnl=${rp_v} (cum_cycles=${cum_rp})")
         else:
             extra_parts.append(f"realized_pnl=${rp_v}")
     for lbl, k in (("tp_sold", "tp_sold_levels"), ("resting_orders", "resting_orders")):
@@ -1391,10 +1397,15 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
     fq_str = f"${fq_val}{fq_bd_s}" if fq_val is not None else "N/A"
     if (lq_u := safe_float(eff_pos.get("locked_quote_usd"), None)) is not None and lq_u > 0.0:
         fq_str += f", locked_quote_usd=${lq_u:.2f}"
+    px_disp = (
+        "None[pre_ipo_unlisted]"
+        if (is_tok_pos and pos.get("price") is None and not safe_pos_float(pos.get("free_base"), default=0.0))
+        else pos.get("price")
+    )
     return (
         f"    - [{venue}] {disp_pos_sym}: free_{base_lbl}={fb_str}, "
         f"free_{quote_lbl}={fq_str}, "
-        f"px={pos.get('price')}{t_extra}"
+        f"px={px_disp}{t_extra}"
     )
 
 
@@ -1613,8 +1624,10 @@ def _format_portfolio_section(
                     pos_lifo_pnl_by_vs[(p_v_norm, p_sym_u)] = lp_v
     def _with_subcycle_realized_pnl(cyc_d: Dict[str, Any], venue_k: str, sym_u: str) -> Dict[str, Any]:
         lp = pos_lifo_pnl_by_vs.get((venue_k, sym_u), pos_lifo_pnl_by_vs.get(("", sym_u)))
-        if lp is not None and safe_float(cyc_d.get("realized_pnl_usd"), None) is not None:
+        orig_rp = safe_float(cyc_d.get("realized_pnl_usd"), None)
+        if lp is not None and orig_rp is not None:
             cyc_d = {**cyc_d, "subcycle_realized_pnl_usd": round(lp, 2)}
+            cyc_d.setdefault("cum_realized_pnl_usd", round(orig_rp, 2))
             if abs(lp) >= 0.01:
                 cyc_d["realized_pnl_usd"] = round(lp, 2)
         return cyc_d
@@ -1688,6 +1701,9 @@ def _format_portfolio_section(
             if cmc.get("equity_bellwethers") and scope_s != "equities":
                 eq_bw_raw = _clean_bw(cmc["equity_bellwethers"])
                 if scope_s == "crypto" and isinstance(eq_bw_raw, dict):
+                    # BY DESIGN (commit 50b1d11f): On crypto scope, exclude micro-cap RGNT_US_EQ when major
+                    # tech/AI bellwethers (NVDA_US_EQ, SPCX_US_EQ) exist, and omit t212_cycle (SPCX_US_EQ cycle
+                    # is already in kraken_xstocks.t212_sibling_cycle and crypto executor cannot trade T212).
                     _compact_eq_keys = (
                         "price",
                         "quote_source",
@@ -1699,22 +1715,12 @@ def _format_portfolio_section(
                         "chg_7d_pct",
                         "pos_24h_pct",
                     )
-                    eq_bw_fmt: Dict[str, Any] = {}
-                    for sk, sv in eq_bw_raw.items():
-                        if isinstance(sv, dict):
-                            comp_d = {k: sv[k] for k in _compact_eq_keys if k in sv and sv[k] is not None}
-                            if isinstance(tc_raw := sv.get("t212_cycle"), dict) and tc_raw:
-                                tc_comp = {
-                                    tk: tc_raw[tk]
-                                    for tk in ("qty", "avg_cost_px", "pnl_vs_avg_pct", "dd_pct")
-                                    if tc_raw.get(tk) is not None
-                                    and not (tk == "pnl_vs_avg_pct" and tc_raw.get("dd_pct") is not None)
-                                }
-                                if tc_comp:
-                                    comp_d["t212_cycle"] = tc_comp
-                            eq_bw_fmt[sk] = comp_d
-                        else:
-                            eq_bw_fmt[sk] = sv
+                    has_major_eq = any(k != "RGNT_US_EQ" for k in eq_bw_raw)
+                    eq_bw_fmt: Any = {
+                        sk: ({k: sv[k] for k in _compact_eq_keys if k in sv and sv[k] is not None} if isinstance(sv, dict) else sv)
+                        for sk, sv in eq_bw_raw.items()
+                        if not (has_major_eq and sk == "RGNT_US_EQ")
+                    }
                 else:
                     eq_bw_fmt = eq_bw_raw
                 lines.append(

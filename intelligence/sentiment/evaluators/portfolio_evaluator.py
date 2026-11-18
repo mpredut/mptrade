@@ -1262,6 +1262,8 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                 )
 
                 def _sync_exit_kind(c_dict: Dict[str, Any], sell_p: float, rem_q: float) -> None:
+                    # BY DESIGN: Never reclassify a prior cycle's exit kind (e.g. Cycle 17 SL @ $68.90)
+                    # against a subsequent cycle's lower re-entry cost (e.g. Cycle 18 ENTRY @ $68.69).
                     if sell_p <= 0.0 or (post_sell_new_cycle and str(c_dict.get("last_exit_kind") or "").strip()):
                         return
                     pre_sell_ref = (
@@ -1295,10 +1297,10 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                         if is_loss_or_scratch_sell and cur_kind in replaceable_kinds:
                             c_dict["last_exit_kind"] = "REDUCE"
                         elif sell_p >= ref_avg * 1.0005 and (
-                            not cur_kind or cur_kind in _STOP_EXIT_KINDS or (is_newer_partial_sell and cur_kind == "REDUCE")
+                            not cur_kind or (is_newer_partial_sell and cur_kind in (*_STOP_EXIT_KINDS, "REDUCE"))
                         ):
                             c_dict["last_exit_kind"] = "TP"
-                        elif not is_loss_or_scratch_sell and sell_p >= ref_avg * 0.995 and cur_kind in _STOP_EXIT_KINDS:
+                        elif is_newer_partial_sell and not is_loss_or_scratch_sell and sell_p >= ref_avg * 0.995 and cur_kind in _STOP_EXIT_KINDS:
                             c_dict["last_exit_kind"] = "REDUCE"
 
                 if already_deducted_partial:
@@ -1680,7 +1682,33 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     prev_cyc_sell = safe_pos_float(cyc.get("last_sell_price"), default=None)
                     new_cyc_sell = safe_pos_float(pos.get("last_sell_px"), default=None)
                     cyc["last_sell_price"] = pos["last_sell_px"]
-                    if new_cyc_sell is not None:
+                    # BY DESIGN: Only reclassify last_exit_kind when the sell occurred WITHIN the active cycle
+                    # (never when last_sell closed a previous cycle prior to the current cycle's entry_ts / re-entry buy).
+                    entry_ts_cyc = next(
+                        (
+                            ts_e
+                            for cand_e in (p_sym, *p_quote_variants)
+                            if (ts_e := cyc_sell_ts_map.get((f"{p_venue}:entry", str(cand_e).upper())))
+                        ),
+                        0,
+                    )
+                    ro_ls_ts = (
+                        safe_pos_int((ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}).get("ts_ms"), default=0)
+                        or 0
+                    )
+                    ro_lb_ts = (
+                        safe_pos_int((ro.get("last_buy") if isinstance(ro, dict) and isinstance(ro.get("last_buy"), dict) else {}).get("ts_ms"), default=0)
+                        or 0
+                    )
+                    sell_from_prior_cycle = (
+                        (entry_ts_cyc > 0 and 0 < ro_ls_ts < entry_ts_cyc - 5000)
+                        or (
+                            entry_ts_cyc <= 0
+                            and 0 < ro_ls_ts < ro_lb_ts - 5000
+                            and safe_nonneg_int(cyc.get("dca_buys"), default=0) == 0
+                        )
+                    )
+                    if new_cyc_sell is not None and not sell_from_prior_cycle:
                         ref_sell_avg = first_pos_float(
                             pos.get("active_avg_buy_px"),
                             cyc.get("avg_cost_px"),
@@ -1690,13 +1718,13 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                         sell_changed = prev_cyc_sell is None or abs(new_cyc_sell - prev_cyc_sell) > max(1e-5, prev_cyc_sell * 0.0002)
                         if ref_sell_avg is not None and ref_sell_avg > 0.0:
                             if new_cyc_sell >= ref_sell_avg * 1.0005 and (
-                                cur_exit_k in ("", *_STOP_EXIT_KINDS)
-                                or (sell_changed and cur_exit_k == "REDUCE")
+                                not cur_exit_k
+                                or (sell_changed and cur_exit_k in (*_STOP_EXIT_KINDS, "REDUCE"))
                             ):
                                 cyc["last_exit_kind"] = "TP"
                             elif sell_changed and new_cyc_sell < ref_sell_avg * 0.995 and cur_exit_k in ("", "TP"):
                                 cyc["last_exit_kind"] = "REDUCE"
-                            elif new_cyc_sell >= ref_sell_avg * 0.995 and cur_exit_k in _STOP_EXIT_KINDS:
+                            elif sell_changed and new_cyc_sell >= ref_sell_avg * 0.995 and cur_exit_k in _STOP_EXIT_KINDS:
                                 cyc["last_exit_kind"] = "REDUCE"
             exact_sym_sp = (prices_and_trends.get(p_sym) or {}).get("spread_bps") if isinstance(prices_and_trends.get(p_sym), dict) else None
             sym_spread = (

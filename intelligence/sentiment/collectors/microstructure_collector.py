@@ -785,12 +785,15 @@ def discover_reference_microstructure_symbols(
     for pfx in (CACHE_ORDERBOOK_DEPTH_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX, CACHE_WHALE_SNAPSHOT_PREFIX):
         for search_dir in (cache_dir, os.path.join(cache_dir, "telemetry")):
             for mpath in sorted(_glob.glob(os.path.join(search_dir, f"{pfx}*.json"))):
-                msym = os.path.basename(mpath)[len(pfx) : -len(".json")].upper()
+                raw_msym = os.path.basename(mpath)[len(pfx) : -len(".json")].upper()
+                tok_msym, is_tok_m = resolve_kraken_tokenized_pair(raw_msym)
+                msym = tok_msym if is_tok_m else raw_msym
                 if (
                     msym
-                    and msym.isalnum()
+                    and raw_msym.isalnum()
                     and not has_equity_suffix(msym)
                     and msym not in microstructure
+                    and raw_msym not in microstructure
                     and msym not in ref_micro_syms
                 ):
                     mbase = canonical_base_asset(msym)

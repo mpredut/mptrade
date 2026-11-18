@@ -57,7 +57,7 @@ from cachepaths import (
     split_symbol_assets,
     symbol_quote_asset,
 )
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, resolve_kraken_tokenized_pair
 from .base import MarketDataProvider
 from .ohlc_utils import (
     build_price_history_points,
@@ -907,6 +907,9 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
 
     @classmethod
     def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        # BY DESIGN: Kraken tokenized equities (xStocks) never list on Hyperliquid l2Book (avoids HTTP 500 spam).
+        if resolve_kraken_tokenized_pair(symbol)[1]:
+            return (), ()
         canon_sym = canonical_symbol_key(symbol)
         if symbol_quote_asset(canon_sym) == "EUR":
             return (), ()

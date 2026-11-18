@@ -368,10 +368,21 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 return krk_book
         return None
 
+    _unlisted_xstock_until: dict[str, float] = {}
+
     def _fetch_current_price(self, symbol: str) -> Optional[float]:
+        eff_sym, is_tok = resolve_kraken_tokenized_pair(symbol)
+        now_s = time.time()
+        if is_tok and now_s < self._unlisted_xstock_until.get(eff_sym, 0.0):
+            return None
         try:
-            return self._client().last_price(symbol)
+            return self._client().last_price(eff_sym if is_tok else symbol)
         except Exception as e:  # noqa: BLE001
+            err_s = str(e)
+            if is_tok and ("Invalid arguments" in err_s or "Unknown asset pair" in err_s):
+                # BY DESIGN: Pre-IPO watchlisted xStocks (e.g. ANTxUSD before listing) back off quietly for 5m.
+                self._unlisted_xstock_until[eff_sym] = now_s + 300.0
+                return None
             return self._log_provider_balance_error("Kraken", "price", symbol, e)
 
     def min_order_qty(self, symbol: str) -> float:

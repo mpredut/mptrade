@@ -10794,8 +10794,15 @@ def test_prompt_audit_15_full_telemetry_and_clarity_fixes(tmp_path, monkeypatch)
     )
     assert "book_window=+/-0.495%[level_cap]" in asym_3b_txt
 
-    # 8b. fill_prob_1h_pct separates +1.76% order (>5%) from +22.6% order (0.1%)
+    # BY DESIGN: Tokenized xStock depth URLs resolve exclusively to Kraken tokenized_asset (never Binance Spot/Futures or Hyperliquid)
+    spcx_depth_urls, spcx_hl_url = MarketDataProvider.resolve_orderbook_depth_urls("SPCXXUSD")
+    assert spcx_hl_url == ""
+    assert all("api.kraken.com" in u and "asset_class=tokenized_asset" in u for u in spcx_depth_urls)
+    assert not any("binance.com" in u or "hyperliquid.xyz" in u for u in spcx_depth_urls)
+
+    # 8b. BY DESIGN: fill_prob_1h_pct barrier-touch calibration separates near (+0.8%), multi-sigma (+1.76%), and far-OTM (+22.6%)
     lim_orders = [
+        {"venue": "binance", "symbol": "TAOUSDC", "side": "SELL", "price": 197.50, "dist_from_spot_pct": 0.80},
         {"venue": "binance", "symbol": "TAOUSDC", "side": "SELL", "price": 199.40, "dist_from_spot_pct": 1.76},
         {"venue": "hyperliquid", "symbol": "HYPEUSDC", "side": "SELL", "price": 84.45, "dist_from_spot_pct": 22.6},
     ]
@@ -10804,10 +10811,12 @@ def test_prompt_audit_15_full_telemetry_and_clarity_fixes(tmp_path, monkeypatch)
         {"TAOUSDC": {"price": 195.95, "vol_1h_pct": 0.45, "span_24h_pct": 4.2}, "HYPEUSDC": {"price": 68.88, "vol_1h_pct": 0.8, "span_24h_pct": 5.0}},
         {},
     )
-    assert lim_orders[0]["fill_prob_1h_pct"] > 5.0
-    assert lim_orders[1]["fill_prob_1h_pct"] <= 0.5
+    assert lim_orders[0]["fill_prob_1h_pct"] > 12.0
+    assert 1.0 < lim_orders[1]["fill_prob_1h_pct"] < 10.0
+    assert lim_orders[2]["fill_prob_1h_pct"] <= 0.2
 
-    # 9, 10, 11, 12. Symmetric realized_pnl, reconciled sell clears stale SL -> TP, PAPER-* state ignored, and scoped Risk Engine + US_EQ metadata
+    # 9, 10, 11, 12. BY DESIGN: Preserve prior-cycle SL across cycle boundary (last_sell_ts < entry_ts), upgrade in-cycle sell SL -> TP,
+    # preserve both zero-sell and active-subcycle cumulative PnL, ignore PAPER-* state, and keep crypto scope US_EQ bellwethers compact
     hl_dir = tmp_path / "hyperliquid"
     hl_dir.mkdir(parents=True, exist_ok=True)
     (hl_dir / ".state_HYPE_long.json").write_text(
@@ -10818,26 +10827,44 @@ def test_prompt_audit_15_full_telemetry_and_clarity_fixes(tmp_path, monkeypatch)
     assert "HYPEUSDC" not in hl_cycs_paper
 
     pos_sym = [
-        {"venue": "kraken", "symbol": "HYPEUSD", "free_base": 4.0, "price": 68.79, "last_sell_px": 68.900061, "lifo_realized_pnl_usd": 0.0},
-        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "free_base": 4.0, "price": 68.80, "lifo_realized_pnl_usd": 0.0},
+        {"venue": "kraken", "symbol": "HYPEUSD", "free_base": 26.32, "price": 67.92, "last_sell_px": 68.900061, "lifo_realized_pnl_usd": 0.0},
+        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "free_base": 4.0, "price": 68.80, "last_sell_px": 69.20, "lifo_realized_pnl_usd": 5.31},
     ]
-    krk_cycs = {"HYPEUSD": {"qty": 4.0, "cost_usd": 274.76, "avg_cost_px": 68.69, "entry_price": 68.69, "last_sell_price": 68.67, "last_exit_kind": "SL", "realized_pnl_usd": -189.93}}
-    hl_cycs = {"HYPEUSDC": {"qty": 4.0, "cost_usd": 274.0, "avg_cost_px": 68.50, "entry_price": 68.50, "realized_pnl_usd": 179.25}}
+    krk_cycs = {"HYPEUSD": {"qty": 26.32, "cost_usd": 1808.27, "avg_cost_px": 68.69, "entry_price": 68.69, "last_sell_price": 68.67, "last_exit_kind": "SL", "realized_pnl_usd": -189.93}}
+    hl_cycs = {"HYPEUSDC": {"qty": 4.0, "cost_usd": 274.0, "avg_cost_px": 68.50, "entry_price": 68.50, "last_sell_price": 68.40, "last_exit_kind": "SL", "realized_pnl_usd": 179.25}}
     enrich_positions_with_orders_and_cycles(
         pos_sym,
-        {"HYPEUSD": {"price": 68.79}, "HYPEUSDC": {"price": 68.80}},
+        {"HYPEUSD": {"price": 67.92}, "HYPEUSDC": {"price": 68.80}},
         {},
-        {"kraken": {"HYPEUSD": {"lifo_realized_pnl_usd": 0.0}}, "hyperliquid": {"HYPEUSDC": {"lifo_realized_pnl_usd": 0.0}}},
+        {
+            "kraken": {"HYPEUSD": {"lifo_realized_pnl_usd": 0.0, "last_sell": {"price": 68.900061, "ts_ms": 1_794_627_083_000}, "last_buy": {"price": 68.69, "ts_ms": 1_794_631_269_000}}},
+            "hyperliquid": {"HYPEUSDC": {"lifo_realized_pnl_usd": 5.31, "last_sell": {"price": 69.20, "ts_ms": 1_794_700_000_000}, "last_buy": {"price": 68.50, "ts_ms": 1_794_600_000_000}}},
+        },
         {},
         krk_cycs,
         hl_cycs,
         {},
-        {},
+        {("kraken:entry", "HYPEUSD"): 1_794_631_269_000, ("hyperliquid:entry", "HYPEUSDC"): 1_794_600_000_000},
     )
-    assert krk_cycs["HYPEUSD"]["last_exit_kind"] == "TP"
+    assert krk_cycs["HYPEUSD"]["last_exit_kind"] == "SL"
+    assert hl_cycs["HYPEUSDC"]["last_exit_kind"] == "TP"
     assert krk_cycs["HYPEUSD"]["realized_pnl_usd"] == pytest.approx(-189.93)
-    assert hl_cycs["HYPEUSDC"]["realized_pnl_usd"] == pytest.approx(179.25)
+    assert hl_cycs["HYPEUSDC"]["realized_pnl_usd"] == pytest.approx(5.31)
+    assert hl_cycs["HYPEUSDC"]["cum_realized_pnl_usd"] == pytest.approx(179.25)
 
+    cmc_payload = {
+        "equity_bellwethers": {
+            "NVDA_US_EQ": {
+                "price": 160.8513,
+                "quote_source": "yahoo_ext",
+                "quote_age_min": 1.8,
+                "t212_close_px": 155.15,
+                "chg_24h_pct": 3.67,
+                "t212_cycle": {"qty": 3.0, "avg_cost_px": 150.0, "pnl_vs_avg_pct": 7.23},
+            },
+            "RGNT_US_EQ": {"price": 1.48, "quote_source": "t212_rth_close", "quote_age_min": 930.0, "chg_24h_pct": -1.2},
+        }
+    }
     sec3c_out = "\n".join(
         _format_portfolio_section(
             {
@@ -10855,19 +10882,7 @@ def test_prompt_audit_15_full_telemetry_and_clarity_fixes(tmp_path, monkeypatch)
                 "tradable_positions": pos_sym,
                 "kraken_cycles": krk_cycs,
                 "hyperliquid_cycles": hl_cycs,
-                "cross_market_context": {
-                    "equity_bellwethers": {
-                        "NVDA_US_EQ": {
-                            "price": 160.8513,
-                            "quote_source": "yahoo_ext",
-                            "quote_age_min": 1.8,
-                            "t212_close_px": 155.15,
-                            "chg_24h_pct": 3.67,
-                            "t212_cycle": {"qty": 3.0, "avg_cost_px": 150.0, "pnl_vs_avg_pct": 7.23},
-                        },
-                        "RGNT_US_EQ": {"price": 1.48, "quote_source": "t212_rth_close", "quote_age_min": 930.0, "chg_24h_pct": -1.2},
-                    }
-                },
+                "cross_market_context": cmc_payload,
             },
             asset_scope="crypto",
             include_macro_benchmarks=False,
@@ -10875,12 +10890,18 @@ def test_prompt_audit_15_full_telemetry_and_clarity_fixes(tmp_path, monkeypatch)
     )
     assert "Portfolio Risk Engine (Crypto Scope: binance + kraken + hyperliquid; excl. T212 equities): crypto_nav=$16,107.24" in sec3c_out
     assert "realized_pnl=$-189.93 (subcycle=$0.00)" in sec3c_out
-    assert "realized_pnl=$179.25 (subcycle=$0.00)" in sec3c_out
-    assert "last_sell=68.900061 (TP)" in sec3c_out
+    assert "realized_pnl=$5.31 (cum_cycles=$179.25)" in sec3c_out
+    assert "last_sell=68.900061 (SL)" in sec3c_out
     assert "'quote_source': 'yahoo_ext'" in sec3c_out
     assert "'t212_close_px': 155.15" in sec3c_out
-    assert "'RGNT_US_EQ'" in sec3c_out
-    assert "'t212_cycle': {'qty': 3.0" in sec3c_out
+    assert "'RGNT_US_EQ'" not in sec3c_out
+    assert "'t212_cycle'" not in sec3c_out
+
+    sec3c_all = "\n".join(
+        _format_portfolio_section({"cross_market_context": cmc_payload}, asset_scope="all", include_macro_benchmarks=False)
+    )
+    assert "'RGNT_US_EQ'" in sec3c_all
+    assert "'t212_cycle'" in sec3c_all
 
 
 

@@ -18,7 +18,7 @@ from cachepaths import (
     canonical_symbol_key,
     resolve_binance_lookup_symbol,
 )
-from instrument_registry import venue_for_symbol
+from instrument_registry import resolve_kraken_tokenized_pair, venue_for_symbol
 from providers.base import MarketDataProvider
 
 logger = logging.getLogger("intelligence.external.orderbook_depth")
@@ -120,6 +120,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         self.depth_band_pct = safe_pos_float(depth_band_pct, default=1.5) or 1.5
         self.whale_wall_usd = safe_pos_float(whale_wall_usd, default=500_000.0) or 500_000.0
         self._preferred_url: Dict[str, str] = {}
+        self._unlisted_xstock_until: Dict[str, float] = {}
 
     def fetch(
         self,
@@ -138,6 +139,10 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         )
         if not should_fetch or symbol is None:
             return ready
+
+        tok_sym, is_tok_sym = resolve_kraken_tokenized_pair(symbol)
+        if is_tok_sym and now < self._unlisted_xstock_until.get(tok_sym, 0.0):
+            return self._fallback_stale(symbol, cached)
 
         lookup_sym = resolve_binance_lookup_symbol(symbol)
         canon_sym = canonical_symbol_key(symbol)
@@ -160,6 +165,13 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                     raw_data = self._fetch_json_dict(
                         url, "depth", lookup_sym, timeout=4, user_agent="mptrade-orderbook/1.0"
                     )
+                    if is_tok_sym and isinstance(raw_data, dict) and raw_data.get("error"):
+                        err_txt = " ".join(str(x) for x in (raw_data.get("error") or ()))
+                        if "Invalid arguments" in err_txt or "Unknown asset pair" in err_txt:
+                            # BY DESIGN: Pre-IPO watchlisted xStocks (e.g. ANTxUSD) are not yet listed on Kraken;
+                            # back off quietly for 5m instead of spamming WARNING logs every telemetry tick.
+                            self._unlisted_xstock_until[tok_sym] = now + 300.0
+                            return self._fallback_stale(symbol, cached)
                     normalized_book = MarketDataProvider.normalize_orderbook_payload(raw_data)
                     if normalized_book is None:
                         raise ValueError(f"Empty or malformed depth payload for {symbol}")
