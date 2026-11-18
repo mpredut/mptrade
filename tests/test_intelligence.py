@@ -8434,9 +8434,10 @@ def test_iter23_cycle_realized_pnl_sync_legacy_whale_refresh_and_post_rth_zero_v
             }
         )
     )
-    assert "-179.69" not in rendered_portfolio
+    assert "realized_pnl=$-179.69" not in rendered_portfolio
+    assert "'cum_realized_pnl_usd'" not in rendered_portfolio
     assert "'realized_pnl_usd': -22.62" in rendered_portfolio
-    assert "realized_pnl=$-22.62" in rendered_portfolio
+    assert "realized_pnl=$-22.62 (cum_cycles=$-179.69)" in rendered_portfolio
 
 
 def test_iter108_portfolio_collector_and_scope_filter_equity_crypto_isolation(tmp_path):

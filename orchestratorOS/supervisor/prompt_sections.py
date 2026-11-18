@@ -1622,12 +1622,15 @@ def _format_portfolio_section(
                     for cand_s in p_cands:
                         pos_lifo_pnl_by_vs.setdefault((p_v_norm, str(cand_s).strip().upper()), lp_v)
                     pos_lifo_pnl_by_vs[(p_v_norm, p_sym_u)] = lp_v
-    def _with_subcycle_realized_pnl(cyc_d: Dict[str, Any], venue_k: str, sym_u: str) -> Dict[str, Any]:
+    def _with_subcycle_realized_pnl(
+        cyc_d: Dict[str, Any], venue_k: str, sym_u: str, *, include_cum: bool = True
+    ) -> Dict[str, Any]:
         lp = pos_lifo_pnl_by_vs.get((venue_k, sym_u), pos_lifo_pnl_by_vs.get(("", sym_u)))
         orig_rp = safe_float(cyc_d.get("realized_pnl_usd"), None)
         if lp is not None and orig_rp is not None:
             cyc_d = {**cyc_d, "subcycle_realized_pnl_usd": round(lp, 2)}
-            cyc_d.setdefault("cum_realized_pnl_usd", round(orig_rp, 2))
+            if include_cum:
+                cyc_d.setdefault("cum_realized_pnl_usd", round(orig_rp, 2))
             if abs(lp) >= 0.01:
                 cyc_d["realized_pnl_usd"] = round(lp, 2)
         return cyc_d
@@ -1665,7 +1668,9 @@ def _format_portfolio_section(
                     and not (ck == "pnl_vs_avg_pct" and xs["t212_sibling_cycle"].get("dd_pct") is not None)
                 }
                 sib_sym_u = str(xs.get("t212_sibling") or "").strip().upper()
-                xs["t212_sibling_cycle"] = _with_subcycle_realized_pnl(sib_cyc_cp, "t212", sib_sym_u)
+                xs["t212_sibling_cycle"] = _with_subcycle_realized_pnl(
+                    sib_cyc_cp, "t212", sib_sym_u, include_cum=False
+                )
         else:
             xs = xs_raw
         lines.append(

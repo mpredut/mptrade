@@ -37,6 +37,7 @@ from cachepaths import (
     ensure_equity_suffix,
     get_cachedb_dir,
     has_crypto_quote_suffix,
+    has_equity_suffix,
     is_fiat_usd_pair,
     resolve_cachedb_filepath,
 )
@@ -117,7 +118,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     _RTH_VP_ANCHOR_KEYS,
     _STALE_SHORT_24H_KEYS,
 )
-from instrument_registry import casefold_get, is_equity_symbol, is_symbol_market_open
+from instrument_registry import casefold_get, is_equity_symbol, is_symbol_market_open, resolve_kraken_tokenized_pair
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
 )
@@ -126,6 +127,18 @@ read_json_cached = _default_read_json_cached
 
 DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC: float = 1800.0
 PRETRADE_SOURCE_STALE_INTERVAL_MULT: float = TELEMETRY_SOURCE_STALE_INTERVAL_MULT
+
+
+def _is_ob_live_and_newer(ob_ts: float, now_s: float, last_pt: Any = None, extra_ts_s: float = 0.0) -> bool:
+    last_ts_s = (normalize_epoch_sec(last_pt[0], default=0.0) or 0.0) if last_pt is not None else 0.0
+    best_ts_s = max(extra_ts_s, last_ts_s)
+    return ob_ts <= 0.0 or (-5.0 <= (now_s - ob_ts) <= 60.0 and (best_ts_s <= 0.0 or ob_ts >= best_ts_s - 2.0))
+
+
+def _compute_pretrade_liq_clusters(p_info: Dict[str, Any], m_info: Dict[str, Any], sym: str) -> Dict[str, Any]:
+    if has_equity_suffix(sym) or resolve_kraken_tokenized_pair(sym)[1]:
+        return {}
+    return compute_liquidation_clusters(p_info, m_info)
 
 
 def resolve_pretrade_source_intervals_sec(asset_scope: str = "CRYPTO") -> Dict[str, float]:
@@ -1074,14 +1087,8 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
             _refresh_wall_telemetry(use_sub_ten_decimals=True)
 
         ob_mid_est = safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)
-        last_alt_ts_s = (normalize_epoch_sec(last_alt_pt[0], default=0.0) or 0.0) if last_alt_pt is not None else 0.0
-        best_series_ts_s = max(safe_pos_float(ctx.cp_ts_sec, default=0.0) or 0.0, last_alt_ts_s)
-        ob_est_is_live_and_newer = (
-            ob_ts_est <= 0.0
-            or (
-                -5.0 <= (now_ts_s - ob_ts_est) <= 60.0
-                and (best_series_ts_s <= 0.0 or ob_ts_est >= best_series_ts_s - 2.0)
-            )
+        ob_est_is_live_and_newer = _is_ob_live_and_newer(
+            ob_ts_est, now_ts_s, last_alt_pt, safe_pos_float(ctx.cp_ts_sec, default=0.0) or 0.0
         )
         if (
             not is_eq_sym
@@ -1218,15 +1225,7 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
                     for _k_int_ts in ("_ob_ts", "_ob_raw_ts", "_deriv_ts", "_whale_ts"):
                         btc_m_info.pop(_k_int_ts, None)
                 btc_ob_mid = safe_pos_float((btc_m_info or {}).get("ob_mid_price"), default=None)
-                btc_now_s = _time.time()
-                btc_last_ts_s = (normalize_epoch_sec(btc_last_pt[0], default=0.0) or 0.0) if btc_last_pt is not None else 0.0
-                btc_ob_fresh = (
-                    btc_ob_ts <= 0.0
-                    or (
-                        -5.0 <= (btc_now_s - btc_ob_ts) <= 60.0
-                        and (btc_last_ts_s <= 0.0 or btc_ob_ts >= btc_last_ts_s - 2.0)
-                    )
-                )
+                btc_ob_fresh = _is_ob_live_and_newer(btc_ob_ts, _time.time(), btc_last_pt)
                 if (
                     btc_ob_mid is not None
                     and btc_ob_fresh
@@ -1812,7 +1811,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             else:
                 telemetry["Derivatives Open Interest"] = f"{oi_base}{eq_oi_tag}"
 
-        liq_c = {} if is_eq_sym else compute_liquidation_clusters(p_est, cur_m_info, symbol=symbol)
+        liq_c = {} if is_eq_sym else _compute_pretrade_liq_clusters(p_est, cur_m_info, symbol)
         cur_m_info.update(liq_c)
         if is_usd_sym:
             cur_bd = safe_pos_float(cur_m_info.get("bid_depth_usd"), default=0.0) or 0.0
@@ -1843,18 +1842,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                         if (not sib_live_px or sib_live_px <= 0.0) and cur_px_est > 0.0:
                             if sib_ob_ts > 0.0 and (_time.time() - sib_ob_ts) > 120.0:
                                 sib_live_px = cur_px_est
-                        sib_last_ts_s = (
-                            (normalize_epoch_sec(sib_last_pt[0], default=0.0) or 0.0)
-                            if sib_last_pt is not None
-                            else 0.0
-                        )
-                        sib_ob_fresh = (
-                            sib_ob_ts <= 0.0
-                            or (
-                                -5.0 <= (_time.time() - sib_ob_ts) <= 60.0
-                                and (sib_last_ts_s <= 0.0 or sib_ob_ts >= sib_last_ts_s - 2.0)
-                            )
-                        )
+                        sib_ob_fresh = _is_ob_live_and_newer(sib_ob_ts, _time.time(), sib_last_pt)
                         if _should_rescale_usd_sibling_walls(
                             cand_u,
                             sib_live_px,
@@ -1897,7 +1885,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                                 sib_p_est["price"] = sib_px
                                 recalculate_live_price_geometry(sib_p_est, sib_px)
                         enrich_microstructure_cvd(sib_m, sib_p_est)
-                        sib_m.update(compute_liquidation_clusters(sib_p_est, sib_m, symbol=cand_u))
+                        sib_m.update(_compute_pretrade_liq_clusters(sib_p_est, sib_m, cand_u))
                         micro_pair = {symbol: cur_m_info, cand_u: sib_m}
                         pt_pair = {symbol: p_est, cand_u: sib_p_est}
                         reconcile_sibling_flow_and_liq_regimes(micro_pair, pt_pair)

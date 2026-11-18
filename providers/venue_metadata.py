@@ -1,5 +1,6 @@
 """Declarative venue registry metadata, fee/precision ladders, and public orderbook helpers."""
 
+from collections import OrderedDict
 import inspect
 import logging
 import os
@@ -9,16 +10,17 @@ from typing import Any, Optional
 
 from botcore import (
     _parse_bool_flag,
-    clean_scalar_str,
-    clean_upper_scalar,
     load_env_file_defaults,
+    lru_dict_put,
     resolve_patched_attr,
     safe_nonneg_int,
     safe_pos_float,
 )
 from cachepaths import (
     canonical_symbol_key,
+    clean_scalar_str,
     clean_symbol_key,
+    clean_upper_scalar,
     normalize_venue_name,
     symbol_quote_asset,
 )
@@ -394,7 +396,7 @@ class ProviderVenueMetadataMixin:
         """Return ``(primary_urls, secondary_urls)`` public L2 orderbook endpoints for ``symbol``."""
         return ((), ())
 
-    _ORDERBOOK_PROV_ERR_TS: dict[tuple[str, str, str], float] = {}
+    _ORDERBOOK_PROV_ERR_TS: OrderedDict[tuple[str, str, str], float] = OrderedDict()
 
     @classmethod
     def _log_orderbook_provider_error(
@@ -407,7 +409,7 @@ class ProviderVenueMetadataMixin:
         now_s = time.monotonic()
         err_key = (method_label, str(venue_key), type(exc).__name__)
         if now_s - cls._ORDERBOOK_PROV_ERR_TS.get(err_key, -301.0) >= 300.0:
-            cls._ORDERBOOK_PROV_ERR_TS[err_key] = now_s
+            lru_dict_put(cls._ORDERBOOK_PROV_ERR_TS, err_key, now_s, 64)
             logging.getLogger(__name__).error(
                 "Orderbook %s failed on provider %s (%s) -- %s: %s",
                 method_label,

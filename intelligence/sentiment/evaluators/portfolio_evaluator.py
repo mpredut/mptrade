@@ -1692,14 +1692,8 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                         ),
                         0,
                     )
-                    ro_ls_ts = (
-                        safe_pos_int((ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}).get("ts_ms"), default=0)
-                        or 0
-                    )
-                    ro_lb_ts = (
-                        safe_pos_int((ro.get("last_buy") if isinstance(ro, dict) and isinstance(ro.get("last_buy"), dict) else {}).get("ts_ms"), default=0)
-                        or 0
-                    )
+                    ro_ls_ts = safe_pos_int((ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}).get("ts_ms"), default=0) or 0
+                    ro_lb_ts = safe_pos_int((ro.get("last_buy") if isinstance(ro, dict) and isinstance(ro.get("last_buy"), dict) else {}).get("ts_ms"), default=0) or 0
                     sell_from_prior_cycle = (
                         (entry_ts_cyc > 0 and 0 < ro_ls_ts < entry_ts_cyc - 5000)
                         or (
