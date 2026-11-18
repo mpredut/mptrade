@@ -10525,6 +10525,7 @@ def test_24h_price_metrics_bisect_parity_and_series_memo_shallow_copy(tmp_path, 
     res_counted = compute_24h_price_metrics(dense_series)
     assert len(extract_calls) == 1
     assert res_counted == _legacy_compute_24h_and_tpo(dense_series)
+    monkeypatch.setattr(pse_mod, "_extract_sorted_ts_px", real_extract)
 
     # 4. load_symbol_price_series memo hit returns distinct outer list without reallocating inner row lists
     from cacheprice import Cache24PriceManager
@@ -10570,6 +10571,47 @@ def test_24h_price_metrics_bisect_parity_and_series_memo_shallow_copy(tmp_path, 
             for i in range(21)
         ]
         assert compute_24h_price_metrics(s3_vol).get("vp_source") == "REAL_VOL"
+    assert len(ssot_mod._SORTED_TS_PX_MEMO) <= ssot_mod._SORTED_TS_PX_MAX_ENTRIES
+    assert len(ssot_mod._TWO_COL_TS_PX_IDS) <= ssot_mod._SORTED_TS_PX_MAX_ENTRIES
+
+    # 6. 2-col series memos anchor only endpoint rows (never pinning full outer series lists),
+    #    and _ARCH_FILE_MEMO / _OHLC_24H_DISK_MEMO overwrite in place on file mtime/size updates.
+    import intelligence.sentiment.collectors.microstructure_collector as mc_mod
+
+    transient_alt = [[live_now_ms - (20 - i) * 300_000.0, 200.0 + i] for i in range(21)]
+    transient_btc = [[live_now_ms - (20 - i) * 300_000.0, 80_000.0 + i * 10.0] for i in range(21)]
+    pse_mod.compute_24h_price_metrics(transient_alt)
+    pse_mod.compute_cross_btc_metrics(transient_alt, transient_btc)
+    alt_key = ssot_mod._series_memo_key(transient_alt)
+    assert ssot_mod._SORTED_TS_PX_ANCHORS[alt_key] == (
+        transient_alt[0],
+        transient_alt[len(transient_alt) // 2],
+        transient_alt[-1],
+    )
+    assert pse_mod._BUCKET_5M_MEMO[alt_key][0] == ssot_mod._SORTED_TS_PX_ANCHORS[alt_key]
+
+    mc_mod._ARCH_FILE_MEMO.clear()
+    arch_file = c_dir / "prices" / "cache_365_price_BTCUSDC.jsonl"
+    arch_file.parent.mkdir(parents=True, exist_ok=True)
+    arch_file.write_text(
+        "\n".join(
+            json.dumps({"s": "BTCUSDC", "i": [live_now_ms - (5 - i) * 60_000.0, 80_000.0 + i]})
+            for i in range(5)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    rows_v1 = mc_mod._read_archive_series_file(
+        str(arch_file), ["BTCUSDC"], {"BTCUSDC"}, ("BTCUSDC",), mc_mod.read_json_recovering, True
+    )
+    assert len(rows_v1) == 5 and len(mc_mod._ARCH_FILE_MEMO) == 1
+    with arch_file.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"s": "BTCUSDC", "i": [live_now_ms + 60_000.0, 80_500.0]}) + "\n")
+    rows_v2 = mc_mod._read_archive_series_file(
+        str(arch_file), ["BTCUSDC"], {"BTCUSDC"}, ("BTCUSDC",), mc_mod.read_json_recovering, True
+    )
+    assert len(rows_v2) == 6 and rows_v2[-1][1] == 80_500.0
+    assert len(mc_mod._ARCH_FILE_MEMO) == 1
 
 
 

@@ -18,6 +18,7 @@ from botcore import (
     is_live_network_backfill_enabled,
     is_offline_disk_cache_enabled,
     load_dotenv,
+    lru_dict_put,
     normalize_epoch_sec,
     obj_attr,
     resolve_now_ts,
@@ -177,7 +178,7 @@ read_json_cached = _default_read_json_cached
 _FALLBACK_PROVIDER_OHLC_FNS: Dict[str, Any] = {}
 _FALLBACK_OHLC_SERIES_CACHE: Dict[Tuple[str, Any, str, int], Tuple[float, Any, Any]] = {}
 _PRICE_SERIES_MEMO: Dict[Tuple[str, str, bool, Tuple[str, ...]], Tuple[Any, list, list, float]] = {}
-_ARCH_FILE_MEMO: Dict[Tuple[str, int, int, int, Tuple[str, ...]], list] = {}
+_ARCH_FILE_MEMO: Dict[Tuple[str, int, Tuple[str, ...]], Tuple[Tuple[int, int], list]] = {}
 _EQ_YAHOO_CHART_MEMO: Dict[str, Tuple[float, Any]] = {}
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
@@ -436,15 +437,18 @@ def _read_archive_series_file(
         if arch_path.endswith(".json"):
             aser = sort_ts_rows(_extract_cached_items_series(_rj(arch_path), cands))
             return list(aser) if len(aser) >= 2 else []
-        arch_key: Optional[Tuple[str, int, int, int, Tuple[str, ...]]] = None
+        arch_key: Optional[Tuple[str, int, Tuple[str, ...]]] = None
+        arch_sig: Optional[Tuple[int, int]] = None
         if is_default_rj:
             try:
                 ast = os.stat(arch_path)
-                arch_key = (os.path.abspath(arch_path), ast.st_mtime_ns, ast.st_size, max_b, cands_upper_tup)
-                if (hit_arch := _ARCH_FILE_MEMO.get(arch_key)) is not None:
-                    return [list(r) for r in hit_arch]
+                arch_key = (os.path.abspath(arch_path), max_b, cands_upper_tup)
+                arch_sig = (ast.st_mtime_ns, ast.st_size)
+                if (hit_arch := _ARCH_FILE_MEMO.get(arch_key)) is not None and hit_arch[0] == arch_sig:
+                    return [list(r) for r in hit_arch[1]]
             except OSError:
                 arch_key = None
+                arch_sig = None
         parsed_rows = [
             pt
             for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=max_b)
@@ -452,10 +456,8 @@ def _read_archive_series_file(
         ]
         parsed_rows = sort_ts_rows(parsed_rows)
         res_arch = parsed_rows if len(parsed_rows) >= 2 else []
-        if arch_key is not None and res_arch:
-            if len(_ARCH_FILE_MEMO) > 128:
-                _ARCH_FILE_MEMO.clear()
-            _ARCH_FILE_MEMO[arch_key] = [list(r) for r in res_arch]
+        if arch_key is not None and arch_sig is not None and res_arch:
+            lru_dict_put(_ARCH_FILE_MEMO, arch_key, (arch_sig, [list(r) for r in res_arch]), 32)
         return res_arch
     except Exception:
         return []
@@ -1283,14 +1285,17 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         vals_7d = append_newer_24h_to_7d_vals(vals_7d, series_24h, arch_7d_end_ts)
 
         if memo_key is not None:
-            if len(_PRICE_SERIES_MEMO) > 128:
-                _PRICE_SERIES_MEMO.clear()
-            _PRICE_SERIES_MEMO[memo_key] = (
-                memo_file_sig,
-                memo_cur_sig,
-                list(series_24h),
-                list(vals_7d),
-                arch_7d_span_ms,
+            lru_dict_put(
+                _PRICE_SERIES_MEMO,
+                memo_key,
+                (
+                    memo_file_sig,
+                    memo_cur_sig,
+                    list(series_24h),
+                    list(vals_7d),
+                    arch_7d_span_ms,
+                ),
+                24,
             )
         return series_24h, vals_7d
 

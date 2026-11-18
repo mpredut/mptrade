@@ -116,6 +116,7 @@ from botcore import (
     first_epoch_sec,
     is_live_network_backfill_enabled,
     load_ini_config,
+    lru_dict_put,
     normalize_epoch_sec,
     obj_attr,
     optional_env,
@@ -291,6 +292,7 @@ def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
     return ((tf * 1000.0 if tf < 1e11 else tf), pf) if (tf > 0.0 and pf > 0.0) else None
 
 
+_SORTED_TS_PX_MAX_ENTRIES = 6
 _SORTED_TS_PX_MEMO: Dict[Tuple[Any, int, Any, Any, Any], List[Tuple[float, float]]] = {}
 _SORTED_TS_PX_ANCHORS: Dict[Tuple[Any, int, Any, Any, Any], Any] = {}
 _TWO_COL_TS_PX_IDS: Dict[int, List[Tuple[float, float]]] = {}
@@ -345,6 +347,20 @@ def _series_memo_key(series: list) -> Optional[Tuple[Any, int, Any, Any, Any]]:
         return None
 
 
+def _series_memo_anchor(series: list) -> Any:
+    """Anchor only the objects whose ``id()`` participates in ``_series_memo_key``."""
+    if not series:
+        return None
+    r0, r_mid, r_last = series[0], series[len(series) // 2], series[-1]
+    if (
+        type(r0) in _SEQ_ROW_TYPES
+        and type(r_mid) in _SEQ_ROW_TYPES
+        and type(r_last) in _SEQ_ROW_TYPES
+    ):
+        return (r0, r_mid, r_last)
+    return series
+
+
 def _finalize_sorted_ts_px(
     series: list,
     pts: List[Tuple[float, float]],
@@ -359,16 +375,23 @@ def _finalize_sorted_ts_px(
         and sum(1 for a, b in zip(pts[:-2][-5:], pts[1:-1][-5:]) if 0.0 < (b[0] - a[0]) < 180000.0) < 2
     ):
         pts.pop()
-    if all_two_col:
-        if len(_TWO_COL_TS_PX_IDS) >= 64:
-            _TWO_COL_TS_PX_IDS.clear()
-        _TWO_COL_TS_PX_IDS[id(pts)] = pts
+    if not _SORTED_TS_PX_MEMO and _SORTED_TS_PX_ANCHORS:
+        _SORTED_TS_PX_ANCHORS.clear()
     if mkey is not None and series:
-        if len(_SORTED_TS_PX_MEMO) >= 32:
-            _SORTED_TS_PX_MEMO.clear()
-            _SORTED_TS_PX_ANCHORS.clear()
+        prev_pts = _SORTED_TS_PX_MEMO.pop(mkey, None)
+        _SORTED_TS_PX_ANCHORS.pop(mkey, None)
+        if prev_pts is not None and prev_pts is not pts:
+            _TWO_COL_TS_PX_IDS.pop(id(prev_pts), None)
+        while len(_SORTED_TS_PX_MEMO) >= _SORTED_TS_PX_MAX_ENTRIES:
+            ev_key = next(iter(_SORTED_TS_PX_MEMO))
+            ev_pts = _SORTED_TS_PX_MEMO.pop(ev_key, None)
+            _SORTED_TS_PX_ANCHORS.pop(ev_key, None)
+            if ev_pts is not None and ev_pts is not pts:
+                _TWO_COL_TS_PX_IDS.pop(id(ev_pts), None)
         _SORTED_TS_PX_MEMO[mkey] = pts
-        _SORTED_TS_PX_ANCHORS[mkey] = (series, series[0], series[len(series) // 2], series[-1])
+        _SORTED_TS_PX_ANCHORS[mkey] = _series_memo_anchor(series)
+    if all_two_col:
+        lru_dict_put(_TWO_COL_TS_PX_IDS, id(pts), pts, _SORTED_TS_PX_MAX_ENTRIES)
     return pts
 
 

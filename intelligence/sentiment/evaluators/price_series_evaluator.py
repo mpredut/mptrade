@@ -14,6 +14,7 @@ from botcore import (
     _prices_diverged,
     is_live_network_backfill_enabled,
     is_offline_disk_cache_enabled,
+    lru_dict_put,
     normalize_epoch_sec,
     safe_float,
     safe_int,
@@ -37,6 +38,7 @@ from intelligence.macro_sentiment_ssot import (
     _extract_sorted_ts_px,
     _finalize_sorted_ts_px,
     _parse_ts_px_row,
+    _series_memo_anchor,
     _series_memo_key,
     callable_identity_anchor,
     resolve_kalman_vel_z,
@@ -45,7 +47,7 @@ from intelligence.macro_sentiment_ssot import (
 from state_io import generation_file_lock, read_json_dict, read_json_recovering, save_json_state
 
 KalmanTrend: Any = None
-_OHLC_24H_DISK_MEMO: Dict[Tuple[str, int, int], List[List[Any]]] = {}
+_OHLC_24H_DISK_MEMO: Dict[str, Tuple[Tuple[int, int], List[List[Any]]]] = {}
 _LAST_OHLC_WRITER_ID_BY_PATH: Dict[str, Any] = {}
 _LAST_7D_SPAN_MS_BY_SYM: Dict[str, float] = {}
 
@@ -515,9 +517,7 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
             pts = _extract_sorted_ts_px(series)
             bmap = {round(pt[0] / 300000.0): pt[1] for pt in pts}
             if mkey is not None:
-                if len(_BUCKET_5M_MEMO) >= 32:
-                    _BUCKET_5M_MEMO.clear()
-                _BUCKET_5M_MEMO[mkey] = ((series, series[0], series[len(series) // 2], series[-1]), bmap)
+                lru_dict_put(_BUCKET_5M_MEMO, mkey, (_series_memo_anchor(series), bmap), 16)
             return bmap
 
         a_map, b_map = _clean_buckets(alt_series), _clean_buckets(btc_series)
@@ -1195,8 +1195,9 @@ def _load_stitched_24h_ohlc_points(
                 age_s = _time.time() - st.st_mtime
                 max_disk_age = 7200.0 if allow_offline_disk else 3600.0
                 if 0.0 <= age_s < max_disk_age:
-                    mkey = (cpath, st.st_mtime_ns, st.st_size)
-                    raw_pts = _OHLC_24H_DISK_MEMO.get(mkey)
+                    file_sig = (st.st_mtime_ns, st.st_size)
+                    cached_ohlc = _OHLC_24H_DISK_MEMO.get(cpath)
+                    raw_pts = cached_ohlc[1] if (cached_ohlc is not None and cached_ohlc[0] == file_sig) else None
                     if raw_pts is None:
                         d_obj = read_json_recovering(cpath)
                         cand_pts = d_obj.get("points") if isinstance(d_obj, dict) else d_obj
@@ -1206,9 +1207,7 @@ def _load_stitched_24h_ohlc_points(
                                 for p in cand_pts
                                 if isinstance(p, (list, tuple)) and len(p) >= 2 and (safe_pos_float(p[1], 0.0) or 0.0) > 0.0
                             ]
-                            if len(_OHLC_24H_DISK_MEMO) > 64:
-                                _OHLC_24H_DISK_MEMO.clear()
-                            _OHLC_24H_DISK_MEMO[mkey] = raw_pts
+                            lru_dict_put(_OHLC_24H_DISK_MEMO, cpath, (file_sig, raw_pts), 32)
                     if raw_pts:
                         filt = [
                             list(p)
@@ -1242,7 +1241,12 @@ def _load_stitched_24h_ohlc_points(
                 if not (is_equity_symbol(sym_u) and cur_ts is not None and -5.0 <= (now_w - cur_ts) < 240.0):
                     save_json_state(cpath, {"ts": now_w, "symbol": sym_u, "points": pts_all})
                     st_new = os.stat(cpath)
-                    _OHLC_24H_DISK_MEMO[(cpath, st_new.st_mtime_ns, st_new.st_size)] = [list(p) for p in pts_all]
+                    lru_dict_put(
+                        _OHLC_24H_DISK_MEMO,
+                        cpath,
+                        ((st_new.st_mtime_ns, st_new.st_size), [list(p) for p in pts_all]),
+                        32,
+                    )
                     if len(_LAST_OHLC_WRITER_ID_BY_PATH) >= 64:
                         _LAST_OHLC_WRITER_ID_BY_PATH.clear()
                     _LAST_OHLC_WRITER_ID_BY_PATH[cpath] = writer_anchor
