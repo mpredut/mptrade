@@ -533,3 +533,44 @@ class ProviderVenueMetadataMixin:
         bids.sort(key=lambda x: x[0], reverse=True)
         asks.sort(key=lambda x: x[0])
         return {"bids": bids, "asks": asks}
+
+    @classmethod
+    def public_spot_cvd_15m_request(
+        cls, symbol: str, now_ts: float
+    ) -> Optional[tuple[str, Optional[dict]]]:
+        """Return ``(url, post_json_body_or_none)`` for real 15m spot trade/kline CVD on this venue."""
+        _ = (symbol, now_ts)
+        return None
+
+    @classmethod
+    def extract_spot_cvd_15m_usd(
+        cls, raw_data: Any, *, since_ts: float = 0.0
+    ) -> Optional[float]:
+        """Extract real 15m spot taker net CVD in USD from ``raw_data``."""
+        _ = (raw_data, since_ts)
+        return None
+
+    @classmethod
+    def resolve_spot_cvd_15m_spec(
+        cls,
+        symbol: str,
+        *,
+        venue: str = "",
+        now_ts: float = 0.0,
+    ) -> tuple[Optional[tuple[str, Optional[dict]]], Optional[Any]]:
+        """Return venue-isolated ``(request_spec, extractor_fn)`` for real 15m spot CVD."""
+        canon_sym = canonical_symbol_key(symbol)
+        v_norm = normalize_venue_name(venue)
+        if not v_norm:
+            return None, None
+        try:
+            prov_cls = cls.resolve_venue_provider_class(v_norm)
+            if prov_cls is None or getattr(prov_cls, "_ASSET_SCOPE", "crypto") != "crypto":
+                return None, None
+            req = prov_cls.public_spot_cvd_15m_request(canon_sym, now_ts)
+            if req is None:
+                return None, None
+            return req, prov_cls.extract_spot_cvd_15m_usd
+        except Exception as exc:
+            cls._log_orderbook_provider_error("spot CVD request resolution", v_norm, canon_sym, exc)
+            return None, None

@@ -1051,6 +1051,52 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         kraken_pair = resolve_kraken_lookup_symbol(canon_sym, quote=quote) or canon_sym
         return (f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",), ()
 
+    @classmethod
+    def public_spot_cvd_15m_request(
+        cls, symbol: str, now_ts: float
+    ) -> Optional[tuple[str, Optional[dict]]]:
+        reg_sym, is_tok = resolve_kraken_tokenized_pair(symbol)
+        since_ns = max(0, math.trunc(max(0.0, now_ts - 900.0) * 1_000_000_000))
+        if is_tok:
+            return (
+                f"https://api.kraken.com/0/public/Trades?pair={reg_sym}&since={since_ns}&asset_class=tokenized_asset",
+                None,
+            )
+        canon_sym = canonical_symbol_key(symbol)
+        if symbol_quote_asset(canon_sym) == "EUR":
+            return None
+        kraken_pair = resolve_kraken_lookup_symbol(canon_sym, quote="USD") or canon_sym
+        return (f"https://api.kraken.com/0/public/Trades?pair={kraken_pair}&since={since_ns}", None)
+
+    @classmethod
+    def extract_spot_cvd_15m_usd(
+        cls, raw_data: Any, *, since_ts: float = 0.0
+    ) -> Optional[float]:
+        if not isinstance(raw_data, dict) or raw_data.get("error"):
+            return None
+        res = raw_data.get("result")
+        if not isinstance(res, dict):
+            return None
+        trades_key = next((k for k, v in res.items() if k != "last" and isinstance(v, list)), None)
+        if trades_key is None:
+            return None
+        buy_usd = 0.0
+        sell_usd = 0.0
+        for tr in res[trades_key]:
+            if not isinstance(tr, (list, tuple)) or len(tr) < 4:
+                continue
+            px = safe_pos_float(tr[0], default=None)
+            qty = safe_pos_float(tr[1], default=None)
+            t_sec = normalize_epoch_sec(tr[2], default=0.0) or 0.0
+            if px is None or qty is None or (since_ts > 0.0 and 0.0 < t_sec < since_ts):
+                continue
+            side = str(tr[3] or "").strip().lower()
+            if side == "b":
+                buy_usd += px * qty
+            elif side == "s":
+                sell_usd += px * qty
+        return round(buy_usd - sell_usd, 0)
+
     def fetch_historical_ohlc_points(
         self,
         symbol: str,

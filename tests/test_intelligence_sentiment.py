@@ -11357,6 +11357,91 @@ def test_item_2_4_us_equities_rth_no_fake_close_px_and_sec3a_quote_meta(tmp_path
     assert "Multi-Horizon Deltas & Active Cycles):" in "\n".join(_format_portfolio_section({"cross_market_context": cmc}, asset_scope="all", include_macro_benchmarks=False))
 
 
+def test_item_3_1_real_spot_cvd_across_binance_kraken_hyperliquid_and_pretrade_symmetry(tmp_path, monkeypatch):
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.evaluators.microstructure_evaluator import reconcile_sibling_flow_and_liq_regimes
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+    from providers.binance_provider import BinanceProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from state_io import atomic_write_json
+
+    now_s = 1_795_032_000.0
+    # 1. Polymorphic 3-venue real spot CVD extraction (Binance 5m klines, Kraken Trades, Hyperliquid @107 1m spot candles)
+    bn_cvd = BinanceProvider.extract_spot_cvd_15m_usd(
+        [
+            [0, "63000", "63100", "62900", "63050", "10", 0, "1000000.0", 500, "6", "620000.0", "0"],
+            [0, "63050", "63200", "63000", "63180", "12", 0, "1200000.0", 600, "8", "800000.0", "0"],
+        ]
+    )
+    assert bn_cvd == pytest.approx(640_000.0)
+
+    krk_cvd = KrakenProvider.extract_spot_cvd_15m_usd(
+        {
+            "error": [],
+            "result": {
+                "HYPEUSD": [
+                    ["67.00", "100.0", now_s - 120.0, "b", "l", "", 1],
+                    ["66.95", "40.0", now_s - 60.0, "s", "m", "", 2],
+                ],
+                "last": "1795031940000000000",
+            },
+        },
+        since_ts=now_s - 900.0,
+    )
+    assert krk_cvd == pytest.approx(4022.0)
+
+    hl_cvd = HyperliquidProvider.extract_spot_cvd_15m_usd(
+        [{"o": "66.8", "h": "67.2", "l": "66.8", "c": "67.2", "v": "500.0"}]
+    )
+    assert hl_cvd is not None and hl_cvd > 20_000.0
+
+    # 2. OrderbookDepthCollector attaches real_spot CVD per venue and preserves it across sibling reconciliation & pretrade
+    cdir = tmp_path / "cachedb"
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+    ob_col = OrderbookDepthCollector(cache_dir=str(cdir), cache_ttl_sec=0.0)
+    monkeypatch.setattr(
+        ob_col,
+        "_fetch_json_dict",
+        lambda url, label, lookup_sym, **kw: {"bids": [["67.00", "200.0"]], "asks": [["67.02", "180.0"]]},
+    )
+    monkeypatch.setattr(
+        ob_col,
+        "_fetch_spot_cvd_payload",
+        lambda url, post_body: {
+            "error": [],
+            "result": {"HYPEUSD": [["67.00", "100.0", now_s - 30.0, "b", "l", "", 1]], "last": "1"},
+        },
+    )
+    snap_krk = ob_col.fetch("HYPEUSD", allow_network=True, now=now_s)
+    assert snap_krk is not None
+    assert snap_krk.spot_cvd_source == "real_spot"
+    assert snap_krk.spot_cvd_15m_usd == pytest.approx(6700.0)
+
+    # Cross-venue sibling reconciliation must NOT overwrite real_spot CVD with synthetic est_ob_15m
+    sib_m = {
+        "HYPEUSDC": {"bid_depth_usd": 50000.0, "ask_depth_usd": 40000.0, "cvd_15m_usd": 12000.0, "spot_cvd_15m_usd": 24000.0, "spot_cvd_source": "real_spot"},
+        "HYPEUSD": {"bid_depth_usd": 30000.0, "ask_depth_usd": 35000.0, "cvd_15m_usd": 12000.0, "spot_cvd_15m_usd": 6700.0, "spot_cvd_source": "real_spot"},
+    }
+    reconcile_sibling_flow_and_liq_regimes(sib_m, {"HYPEUSDC": {"price": 67.0}, "HYPEUSD": {"price": 67.0}})
+    assert sib_m["HYPEUSDC"]["spot_cvd_15m_usd"] == pytest.approx(24000.0)
+    assert sib_m["HYPEUSD"]["spot_cvd_15m_usd"] == pytest.approx(6700.0)
+
+    # Pretrade & Supervisor 3B emit symmetric [real_spot] vs [est:ob+15m] tags
+    atomic_write_json(str(cdir / "prices" / "cache_current_price.json"), {"items": {"HYPEUSD": [[int(now_s * 1000), 67.0]]}})
+    atomic_write_json(
+        str(cdir / "telemetry" / "whale_snapshot_HYPEUSD.json"),
+        {"symbol": "HYPEUSD", "ts": now_s - 5.0, "top_traders_long_pct": 0.55, "taker_buy_sell_ratio": 1.12, "taker_buy_vol_usd": 60000.0, "taker_sell_vol_usd": 48000.0},
+    )
+    pt_hype = collect_pretrade_telemetry("HYPEUSD", cachedb_dir=str(cdir), allow_network=False, now_ts=now_s)
+    assert "spot_cvd_15m=$+6,700[real_spot]" in pt_hype.get("15m Cumulative Volume Delta (CVD)", "")
+    sec3b_real = "\n".join(_format_microstructure_section({"HYPEUSD": sib_m["HYPEUSD"]}, {"HYPEUSD": {"price": 67.0}}, now_ts=now_s))
+    assert "spot_cvd_15m=+$6.7K[real_spot]" in sec3b_real
+
+
+
 
 
 

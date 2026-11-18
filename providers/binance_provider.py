@@ -542,6 +542,51 @@ class BinanceProvider(MarketDataProvider):
         )
         return spot_urls, (f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",)
 
+    @classmethod
+    def public_spot_cvd_15m_request(
+        cls, symbol: str, now_ts: float
+    ) -> Optional[tuple[str, Optional[dict]]]:
+        _ = now_ts
+        if resolve_kraken_tokenized_pair(symbol)[1]:
+            return None
+        canon_sym = canonical_symbol_key(symbol)
+        quote_asset = symbol_quote_asset(canon_sym)
+        base_asset = normalize_cache_base_asset(canon_sym)
+        if quote_asset == "EUR":
+            return None
+        spot_sym = (
+            f"{base_asset}USDC"
+            if (base_asset and quote_asset == "USDC")
+            else resolve_binance_lookup_symbol(symbol)
+        )
+        if not spot_sym:
+            return None
+        return (f"https://api.binance.com/api/v3/klines?symbol={spot_sym}&interval=5m&limit=3", None)
+
+    @classmethod
+    def extract_spot_cvd_15m_usd(
+        cls, raw_data: Any, *, since_ts: float = 0.0
+    ) -> Optional[float]:
+        _ = since_ts
+        if not isinstance(raw_data, list) or not raw_data:
+            return None
+        tot_quote = 0.0
+        buy_quote = 0.0
+        valid_bars = 0
+        for row in raw_data[-3:]:
+            if not isinstance(row, (list, tuple)) or len(row) < 11:
+                continue
+            q_vol = safe_nonneg_float(row[7], default=None)
+            tb_q_vol = safe_nonneg_float(row[10], default=None)
+            if q_vol is None or tb_q_vol is None:
+                continue
+            tot_quote += q_vol
+            buy_quote += min(q_vol, tb_q_vol)
+            valid_bars += 1
+        if valid_bars == 0:
+            return None
+        return round(2.0 * buy_quote - tot_quote, 0)
+
     def fetch_historical_ohlc_points(
         self,
         symbol: str,

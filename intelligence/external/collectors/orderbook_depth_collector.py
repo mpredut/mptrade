@@ -12,8 +12,11 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import clean_scale, safe_pos_float
-from intelligence.macro_sentiment_ssot import fetch_public_json
+from botcore import clean_scale, fetch_json_post, safe_float, safe_pos_float
+from intelligence.macro_sentiment_ssot import (
+    fetch_public_json,
+    resolve_derived_telemetry_intervals,
+)
 from cachepaths import (
     canonical_symbol_key,
     resolve_binance_lookup_symbol,
@@ -54,6 +57,8 @@ class OrderbookSnapshot:
     depth_1pct_bid_usd: float = 0.0
     depth_1pct_ask_usd: float = 0.0
     book_span_pct: float = 0.0
+    spot_cvd_15m_usd: Optional[float] = None
+    spot_cvd_source: Optional[str] = None
 
     to_dict = asdict
 
@@ -90,6 +95,8 @@ class OrderbookSnapshot:
             depth_1pct_bid_usd=d1_bid,
             depth_1pct_ask_usd=d1_ask,
             book_span_pct=_clean_dict_float(data, "book_span_pct", 0.0, nonneg=True),
+            spot_cvd_15m_usd=safe_float(data.get("spot_cvd_15m_usd"), default=None),
+            spot_cvd_source=str(data["spot_cvd_source"]).strip() if data.get("spot_cvd_source") else None,
         )
 
 
@@ -121,6 +128,44 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         self.whale_wall_usd = safe_pos_float(whale_wall_usd, default=500_000.0) or 500_000.0
         self._preferred_url: Dict[str, str] = {}
         self._unlisted_xstock_until: Dict[str, float] = {}
+        self._spot_cvd_memo: Dict[Tuple[str, str], Tuple[float, float]] = {}
+
+    def _fetch_spot_cvd_payload(self, url: str, post_body: Optional[dict]) -> Any:
+        if post_body is not None:
+            return fetch_json_post(
+                url,
+                post_body,
+                timeout=3.5,
+                headers={"User-Agent": "mptrade-orderbook/1.0"},
+            )
+        return fetch_public_json(url, timeout=3.5, user_agent="mptrade-orderbook/1.0")
+
+    def _resolve_real_spot_cvd_15m(
+        self, symbol: str, *, venue: str, now: float
+    ) -> Optional[float]:
+        """Fetch and memoize real venue-local 15m spot taker CVD (USD) at ``whale_interval_sec`` cadence."""
+        if not venue:
+            return None
+        if "_fetch_json_dict" in self.__dict__ and "_fetch_spot_cvd_payload" not in self.__dict__:
+            return None
+        memo_key = (venue, symbol)
+        ttl_sec = safe_pos_float(resolve_derived_telemetry_intervals().get("whale_interval_sec"), 60.0) or 60.0
+        cached_cvd = self._spot_cvd_memo.get(memo_key)
+        if cached_cvd is not None and 0.0 <= (now - cached_cvd[0]) < ttl_sec:
+            return cached_cvd[1]
+        req_spec, extractor = MarketDataProvider.resolve_spot_cvd_15m_spec(symbol, venue=venue, now_ts=now)
+        if req_spec is None or not callable(extractor):
+            return None
+        url, post_body = req_spec
+        try:
+            raw_payload = self._fetch_spot_cvd_payload(url, post_body)
+            val = extractor(raw_payload, since_ts=max(0.0, now - 900.0))
+            if val is not None:
+                self._spot_cvd_memo[memo_key] = (now, float(val))
+                return float(val)
+        except Exception as exc:
+            logger.debug("Could not fetch real 15m spot CVD for %s on %s: %s", symbol, venue, exc)
+        return cached_cvd[1] if cached_cvd is not None and 0.0 <= (now - cached_cvd[0]) < ttl_sec * 3.0 else None
 
     def fetch(
         self,
@@ -269,6 +314,16 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 ask_span = max(0.0, ((asks[-1][0] - mid) / mid) * 100.0)
                 book_span_pct = round(min(bid_span, ask_span, self.depth_band_pct), 3)
 
+            eff_spot_venue = reg_venue or (
+                "kraken"
+                if "kraken.com" in str(self._preferred_url.get(symbol) or "")
+                else (
+                    "hyperliquid"
+                    if "hyperliquid.xyz" in str(self._preferred_url.get(symbol) or "")
+                    else ("binance" if "api.binance.com" in str(self._preferred_url.get(symbol) or "") else "")
+                )
+            )
+            real_spot_cvd = self._resolve_real_spot_cvd_15m(canon_sym, venue=eff_spot_venue, now=now)
             snapshot = OrderbookSnapshot(
                 symbol=symbol,
                 mid_price=mid,
@@ -286,6 +341,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 depth_1pct_bid_usd=round(depth_1pct_bid_usd, 2),
                 depth_1pct_ask_usd=round(depth_1pct_ask_usd, 2),
                 book_span_pct=book_span_pct,
+                spot_cvd_15m_usd=real_spot_cvd,
+                spot_cvd_source="real_spot" if real_spot_cvd is not None else None,
             )
             return self._commit_snapshot(symbol, now, snapshot)
         except Exception as e:

@@ -1427,13 +1427,19 @@ def reconcile_sibling_flow_and_liq_regimes(
                 cvd_usd=safe_float(prim_m.get("cvd_15m_usd"), 0.0) or 0.0,
             )
             for s_k, m_s in non_div:
+                if m_s.get("spot_cvd_source") == "real_spot":
+                    continue
                 if m_s.get("_synthetic_spot_cvd") or m_s.get("_cross_venue_spot_cvd"):
                     m_s["spot_cvd_15m_usd"] = unified_spot_cvd
                     m_s["_cross_venue_spot_cvd"] = True
+                    m_s["spot_cvd_source"] = "est_ob_15m"
                     m_s["_cross_venue_ob_imbalance"] = agg_ob_imb
                     s_p = casefold_get(pt_map, s_k)
                     enrich_microstructure_cvd(m_s, s_p if isinstance(s_p, dict) else (p_d if p_d else None))
-            prim_m["_cross_venue_spot_cvd"] = True
+            if prim_m.get("spot_cvd_source") != "real_spot":
+                prim_m["_cross_venue_spot_cvd"] = True
+                if prim_m.get("_synthetic_spot_cvd"):
+                    prim_m["spot_cvd_source"] = "est_ob_15m"
             prim_m["_cross_venue_ob_imbalance"] = agg_ob_imb
             enrich_microstructure_cvd(prim_m, p_d if p_d else None)
             if prim_m.get("liq_magnet_bias") is not None and isinstance(prim_p_dict, dict):

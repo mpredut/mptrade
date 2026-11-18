@@ -918,6 +918,70 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
             return (), ()
         return (f"https://api.hyperliquid.xyz/info?type=l2Book&coin={hl_coin}",), ()
 
+    @classmethod
+    def public_spot_cvd_15m_request(
+        cls, symbol: str, now_ts: float
+    ) -> Optional[tuple[str, Optional[dict]]]:
+        if resolve_kraken_tokenized_pair(symbol)[1]:
+            return None
+        canon_sym = canonical_symbol_key(symbol)
+        if symbol_quote_asset(canon_sym) == "EUR":
+            return None
+        hl_coin = normalize_cache_base_asset(canon_sym)
+        spot_coin = cls.KNOWN_SPOT_PAIRS.get(hl_coin.upper()) if hl_coin else None
+        if not spot_coin:
+            return None
+        end_ms = max(900_000, math.trunc(now_ts * 1000.0))
+        return (
+            "https://api.hyperliquid.xyz/info",
+            {
+                "type": "candleSnapshot",
+                "req": {
+                    "coin": spot_coin,
+                    "interval": "1m",
+                    "startTime": end_ms - 900_000,
+                    "endTime": end_ms,
+                },
+            },
+        )
+
+    @classmethod
+    def extract_spot_cvd_15m_usd(
+        cls, raw_data: Any, *, since_ts: float = 0.0
+    ) -> Optional[float]:
+        _ = since_ts
+        rows = raw_data.get("result_list") if isinstance(raw_data, dict) else raw_data
+        if not isinstance(rows, list) or not rows:
+            return None
+        buy_usd = 0.0
+        sell_usd = 0.0
+        prev_close = 0.0
+        parsed_any = False
+        for bar in rows[-15:]:
+            if not isinstance(bar, dict):
+                continue
+            o_p = safe_pos_float(bar.get("o"), default=None)
+            h_p = safe_pos_float(bar.get("h"), default=None)
+            l_p = safe_pos_float(bar.get("l"), default=None)
+            c_p = safe_pos_float(bar.get("c"), default=None)
+            vol = safe_nonneg_float(bar.get("v"), default=None)
+            if o_p is None or h_p is None or l_p is None or c_p is None or vol is None:
+                continue
+            parsed_any = True
+            if vol <= 0.0:
+                prev_close = c_p
+                continue
+            if h_p > l_p:
+                clv = 0.15 + 0.70 * ((c_p - l_p) / (h_p - l_p))
+            else:
+                ref_p = prev_close if prev_close > 0.0 else o_p
+                clv = 0.65 if c_p > ref_p else (0.35 if c_p < ref_p else 0.5)
+            turn_usd = vol * c_p
+            buy_usd += turn_usd * clv
+            sell_usd += turn_usd * (1.0 - clv)
+            prev_close = c_p
+        return round(buy_usd - sell_usd, 0) if parsed_any else None
+
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         self.validate_symbol(symbol)
         interval = require_pos_ohlc_interval(symbol, interval_min)

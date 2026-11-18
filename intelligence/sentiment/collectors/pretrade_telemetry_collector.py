@@ -1903,8 +1903,22 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                 cvd_line += f", flow_horizons({', '.join(mh_parts)})"
             sp_cvd = safe_float(cur_m_info.get("spot_cvd_15m_usd"), default=None)
             if sp_cvd is not None:
-                cvd_line += f", spot_cvd_15m=${sp_cvd:+,.0f}"
+                sp_src_pt = (
+                    "[real_spot]"
+                    if cur_m_info.get("spot_cvd_source") == "real_spot"
+                    else (
+                        "[est:ob+15m]"
+                        if (cur_m_info.get("spot_cvd_source") == "est_ob_15m" or cur_m_info.get("_synthetic_spot_cvd"))
+                        else ""
+                    )
+                )
+                cvd_line += f", spot_cvd_15m=${sp_cvd:+,.0f}{sp_src_pt}"
             telemetry["15m Cumulative Volume Delta (CVD)"] = cvd_line
+        elif (
+            (sp_only_cvd := safe_float(cur_m_info.get("spot_cvd_15m_usd"), default=None)) is not None
+            and cur_m_info.get("spot_cvd_source") == "real_spot"
+        ):
+            telemetry["15m Cumulative Volume Delta (CVD)"] = f"spot_cvd_15m=${sp_only_cvd:+,.0f}[real_spot]"
         if not no_perp_liq and liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
             deep_parts = [
                 f"deep_{s_lbl}=${liq_c[px_k]} (${safe_float(liq_c.get(usd_k), 0.0):,.0f}, {safe_float(liq_c.get(dist_k), 0.0):+.2f}%)"

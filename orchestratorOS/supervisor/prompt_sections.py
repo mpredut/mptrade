@@ -1215,7 +1215,11 @@ def _format_microstructure_section(
             include_deriv=bool(deriv_oi_sfx),
         )
         if sym_is_tok_xstock_3b and minfo.get("whale_long_pct") is None and minfo.get("taker_buy_sell_ratio") is None:
-            flow_3b_core = f"perp_derivatives=N/A[spot_tokenized_equity]{cvd_sfx}"
+            tok_sp_sfx = ""
+            if not cvd_sfx and (tok_sp := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
+                tok_sp_s = f"{'+' if tok_sp >= 0.0 else '-'}{_fmt_liq_usd(abs(tok_sp))}"
+                tok_sp_sfx = f", spot_cvd_15m={tok_sp_s}[real_spot]"
+            flow_3b_core = f"perp_derivatives=N/A[spot_tokenized_equity]{cvd_sfx}{tok_sp_sfx}"
         else:
             flow_3b_core = (
                 f"whale_long_pct={minfo.get('whale_long_pct')}, "

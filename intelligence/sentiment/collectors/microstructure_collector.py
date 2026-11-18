@@ -561,6 +561,9 @@ def load_symbol_microstructure(
             for k_px, v_px in (("ob_mid_price", ob_mid), ("best_bid", best_bid), ("best_ask", best_ask)):
                 if v_px is not None:
                     m_info[k_px] = v_px
+            if (ob_sp_cvd := safe_float(obj_attr(ob, "spot_cvd_15m_usd"), default=None)) is not None:
+                m_info["spot_cvd_15m_usd"] = round(ob_sp_cvd, 0)
+                m_info["spot_cvd_source"] = str(obj_attr(ob, "spot_cvd_source") or "real_spot").strip()
         for k_src, k_dst in (
             ("bid_depth_usd", "bid_depth_usd"), ("ask_depth_usd", "ask_depth_usd"),
             ("depth_1pct_bid_usd", "depth_1pct_bid_usd"), ("depth_1pct_ask_usd", "depth_1pct_ask_usd"),
