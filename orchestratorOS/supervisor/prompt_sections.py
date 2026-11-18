@@ -69,10 +69,11 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     round_opt_px,
 )
 from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+    compact_cycle_realized_pnl_fields,
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )
-from instrument_registry import is_equity_or_tokenized_symbol, is_equity_symbol, resolve_kraken_tokenized_pair
+from instrument_registry import casefold_get, is_equity_or_tokenized_symbol, is_equity_symbol, resolve_kraken_tokenized_pair
 from providers.order_id_context import format_actor_tag
 
 
@@ -142,15 +143,17 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
             extra_parts.append(lifo_c_tag)
     if cyc.get("realized_pnl_usd") is not None:
         rp_v = cyc.get("realized_pnl_usd")
-        rp_f = safe_float(rp_v, 0.0) or 0.0
+        rp_num = safe_float(rp_v, None)
+        rp_f = rp_num if rp_num is not None else 0.0
+        rp_s = f"{rp_num:.2f}" if rp_num is not None else str(rp_v)
         sub_rp = safe_float(cyc.get("subcycle_realized_pnl_usd"), None)
         cum_rp = safe_float(cyc.get("cum_realized_pnl_usd"), None)
         if sub_rp is not None and abs(sub_rp) < 0.01 and abs(rp_f) >= 0.01:
-            extra_parts.append(f"realized_pnl=${rp_v} (subcycle=$0.00)")
+            extra_parts.append(f"realized_pnl=${rp_s} (subcycle=$0.00)")
         elif cum_rp is not None and abs(rp_f) >= 0.01 and abs(cum_rp - rp_f) >= 0.01:
-            extra_parts.append(f"realized_pnl=${rp_v} (cum_cycles=${cum_rp})")
+            extra_parts.append(f"realized_pnl=${rp_s} (cum_cycles=${cum_rp:.2f})")
         else:
-            extra_parts.append(f"realized_pnl=${rp_v}")
+            extra_parts.append(f"realized_pnl=${rp_s}")
     for lbl, k in (("tp_sold", "tp_sold_levels"), ("resting_orders", "resting_orders")):
         if cyc.get(k):
             extra_parts.append(f"{lbl}={cyc.get(k)}")
@@ -1649,16 +1652,23 @@ def _format_portfolio_section(
             if isinstance(xs.get("holdings"), dict):
                 xs["holdings"] = {hk: hv for hk, hv in xs["holdings"].items() if safe_float(hv, 0.0) >= 1e-4}
             if isinstance(xs.get("t212_sibling_cycle"), dict):
+                sib_sym_u = str(xs.get("t212_sibling") or "").strip().upper()
+                has_t212_cyc_line = bool(
+                    sib_sym_u
+                    and isinstance(ps.get("t212_cycles"), dict)
+                    and isinstance(casefold_get(ps["t212_cycles"], sib_sym_u), dict)
+                )
                 sib_cyc_cp = {
                     ck: cv
                     for ck, cv in xs["t212_sibling_cycle"].items()
                     if cv is not None
-                    and ck not in ("cum_realized_pnl_usd",)
                     and not (ck == "pnl_vs_avg_pct" and xs["t212_sibling_cycle"].get("dd_pct") is not None)
                 }
-                sib_sym_u = str(xs.get("t212_sibling") or "").strip().upper()
-                xs["t212_sibling_cycle"] = _with_subcycle_realized_pnl(
-                    sib_cyc_cp, "t212", sib_sym_u, include_cum=False
+                xs["t212_sibling_cycle"] = compact_cycle_realized_pnl_fields(
+                    _with_subcycle_realized_pnl(
+                        sib_cyc_cp, "t212", sib_sym_u, include_cum=not has_t212_cyc_line
+                    ),
+                    include_cum=not has_t212_cyc_line,
                 )
         else:
             xs = xs_raw

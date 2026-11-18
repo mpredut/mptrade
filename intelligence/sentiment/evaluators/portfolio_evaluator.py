@@ -218,11 +218,13 @@ _FLAT_RO_KEYS = (
     "swing_subcycle_qty",
     "active_cycle_rem_qty",
     "open_lots",
+    "lifo_realized_pnl_usd",
 )
 _FLAT_POS_KEYS = (
     "active_avg_buy_px", "pnl_vs_avg_pct", "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct",
     "swing_subcycle_avg_px", "pnl_vs_swing_avg_pct", "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct",
     "open_lots", "lowest_buy_px", "pnl_vs_lowest_buy_pct", "trailing_peak", "dd_from_peak_pct",
+    "lifo_realized_pnl_usd",
 )
 
 

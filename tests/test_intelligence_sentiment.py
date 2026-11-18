@@ -11514,6 +11514,161 @@ def test_item_3_3_directional_fill_prob_depth_scaled_wall_penalty_and_4dec_front
     assert round(tao_krk[0]["recommended_front_run_px"], 2) != tao_krk[0]["recommended_front_run_px"]
 
 
+def test_item_3_4_realized_pnl_flat_cleanup_and_sibling_cum_symmetry():
+    """Verify closed/dust positions clear lifo_realized_pnl_usd and cycle dicts preserve distinct cum_realized_pnl_usd without duplicate subcycle keys."""
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        build_cross_market_context,
+        compute_enterprise_portfolio_risk_metrics,
+    )
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+
+    # 1. Flattened/dust position (Kraken ADAUSD $0.13 < $1.00 min_notional after SELL) clears lifo_realized_pnl_usd
+    # so closed historical losses do not pollute active subcycle_lifo_realized_pnl_usd in Risk Engine.
+    ro_ada = {
+        "venue": "kraken",
+        "last_action_side": "SELL",
+        "last_sell": {"price": 0.165, "qty": 1500.0, "ts_ms": 1_794_500_000_000},
+        "lifo_realized_pnl_usd": -245.93,
+    }
+    ro_btc = {
+        "venue": "binance",
+        "last_action_side": "SELL",
+        "last_sell": {"price": 63500.0, "qty": 0.01, "ts_ms": 1_795_000_000_000},
+        "lifo_realized_pnl_usd": 14.64,
+    }
+    tradable_positions = [
+        {
+            "venue": "kraken",
+            "symbol": "ADAUSD",
+            "base": "ADA",
+            "quote": "USD",
+            "price": 0.150883,
+            "free_base": 0.840208,
+            "value_usd": 0.13,
+            "free_quote": 3.38,
+            "exchange_min_notional_usd": 1.0,
+        },
+        {
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "base": "BTC",
+            "quote": "USDC",
+            "price": 62400.0,
+            "free_base": 0.031377,
+            "value_usd": 1957.92,
+            "free_quote": 1739.67,
+            "exchange_min_notional_usd": 5.0,
+        },
+    ]
+    recent_orders = {"ADAUSD": ro_ada, "BTCUSDC": ro_btc}
+    venue_ro = {"kraken": {"ADAUSD": ro_ada}, "binance": {"BTCUSDC": ro_btc}}
+    enrich_positions_with_orders_and_cycles(
+        tradable_positions,
+        {"ADAUSD": {"price": 0.150883}, "BTCUSDC": {"price": 62400.0}},
+        {},
+        venue_ro,
+        recent_orders,
+        {},
+        {},
+        {},
+        {},
+    )
+    assert "lifo_realized_pnl_usd" not in ro_ada
+    assert "lifo_realized_pnl_usd" not in tradable_positions[0]
+    risk = compute_enterprise_portfolio_risk_metrics(
+        {
+            "tradable_positions": tradable_positions,
+            "venue_quote_cash": {"binance:USDC": {"venue": "binance", "free": 1739.67}},
+            "recent_orders": recent_orders,
+        },
+        {"BTCUSDC": {"price": 62400.0, "vol_1h_pct": 0.9}},
+        {},
+    )
+    assert risk["subcycle_lifo_realized_pnl_usd"] == pytest.approx(14.64)
+
+    # 2. Crypto scope preserves cum_realized_pnl_usd (-99.53) in kraken_xstocks.t212_sibling_cycle without duplicate subcycle key;
+    # Equities/All scope omits cum_realized_pnl_usd from t212_sibling_cycle because t212_cycles renders it right above (2 decimals).
+    sib_cycle = {
+        "qty": 3.262965,
+        "avg_cost_px": 144.9872,
+        "dd_pct": -1.29,
+        "realized_pnl_usd": 5.31,
+        "subcycle_realized_pnl_usd": 5.31,
+        "cum_realized_pnl_usd": -99.53,
+    }
+    sec_crypto = "\n".join(
+        _format_portfolio_section(
+            {
+                "kraken_xstocks": {
+                    "underlying": "SPCX",
+                    "listed_pair": "SPCXxUSD",
+                    "t212_sibling": "SPCX_US_EQ",
+                    "t212_sibling_cycle": dict(sib_cycle),
+                },
+            },
+            "crypto",
+        )
+    )
+    assert "'realized_pnl_usd': 5.31" in sec_crypto
+    assert "'cum_realized_pnl_usd': -99.53" in sec_crypto
+    assert "'subcycle_realized_pnl_usd'" not in sec_crypto
+
+    sec_all = "\n".join(
+        _format_portfolio_section(
+            {
+                "t212_cycles": {
+                    "NVDA_US_EQ": {
+                        "qty": 0.41,
+                        "cost_usd": 68.55,
+                        "avg_cost_px": 167.1951,
+                        "realized_pnl_usd": 10.35,
+                        "subcycle_realized_pnl_usd": 10.35,
+                        "cum_realized_pnl_usd": 21.2,
+                    },
+                    "SPCX_US_EQ": dict(sib_cycle),
+                },
+                "kraken_xstocks": {
+                    "underlying": "SPCX",
+                    "listed_pair": "SPCXxUSD",
+                    "t212_sibling": "SPCX_US_EQ",
+                    "t212_sibling_cycle": dict(sib_cycle),
+                },
+            },
+            "all",
+        )
+    )
+    assert "realized_pnl=$10.35 (cum_cycles=$21.20)" in sec_all
+    assert "realized_pnl=$5.31 (cum_cycles=$-99.53)" in sec_all
+    assert "'cum_realized_pnl_usd'" not in sec_all
+    assert "'subcycle_realized_pnl_usd'" not in sec_all
+
+    # 3. build_cross_market_context preserves distinct cum_realized_pnl_usd / zero subcycle_realized_pnl_usd on equity_bellwethers.
+    cmc = build_cross_market_context(
+        {"SPCX_US_EQ": {"price": 143.11}, "RGNT_US_EQ": {"price": 1.15}},
+        {},
+        all_t212_cycles={
+            "SPCX_US_EQ": dict(sib_cycle),
+            "RGNT_US_EQ": {
+                "qty": 3.93,
+                "avg_cost_px": 1.4346,
+                "realized_pnl_usd": -103.41,
+                "subcycle_realized_pnl_usd": 0.0,
+                "cum_realized_pnl_usd": -103.41,
+            },
+        },
+    )
+    spcx_bw_cyc = cmc["equity_bellwethers"]["SPCX_US_EQ"]["t212_cycle"]
+    assert spcx_bw_cyc["realized_pnl_usd"] == pytest.approx(5.31)
+    assert spcx_bw_cyc["cum_realized_pnl_usd"] == pytest.approx(-99.53)
+    assert "subcycle_realized_pnl_usd" not in spcx_bw_cyc
+    rgnt_bw_cyc = cmc["equity_bellwethers"]["RGNT_US_EQ"]["t212_cycle"]
+    assert rgnt_bw_cyc["realized_pnl_usd"] == pytest.approx(-103.41)
+    assert rgnt_bw_cyc["subcycle_realized_pnl_usd"] == pytest.approx(0.0)
+    assert "cum_realized_pnl_usd" not in rgnt_bw_cyc
+
+
+
 
 
 

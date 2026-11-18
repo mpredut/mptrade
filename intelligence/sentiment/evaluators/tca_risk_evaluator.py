@@ -70,6 +70,25 @@ def resolve_symbol_price(
     return 0.0
 
 
+def compact_cycle_realized_pnl_fields(
+    cyc: Dict[str, Any],
+    *,
+    include_cum: bool = True,
+) -> Dict[str, Any]:
+    """Return a non-mutating cycle dict keeping ``subcycle_realized_pnl_usd`` and ``cum_realized_pnl_usd`` only when distinct from ``realized_pnl_usd``."""
+    out = {k: v for k, v in cyc.items() if k not in ("subcycle_realized_pnl_usd", "cum_realized_pnl_usd")}
+    rp_f = safe_float(cyc.get("realized_pnl_usd"), default=None)
+    if rp_f is None:
+        return out
+    sub_f = safe_float(cyc.get("subcycle_realized_pnl_usd"), default=None)
+    if sub_f is not None and abs(sub_f - rp_f) >= 0.01:
+        out["subcycle_realized_pnl_usd"] = round(sub_f, 2)
+    cum_f = safe_float(cyc.get("cum_realized_pnl_usd"), default=None)
+    if include_cum and cum_f is not None and abs(cum_f - rp_f) >= 0.01:
+        out["cum_realized_pnl_usd"] = round(cum_f, 2)
+    return out
+
+
 class TcaRiskEvaluatorBase(TelemetryEvaluatorInterface, ABC):
     """Abstract base contract (Level 2) for stateless limit-order TCA, fee/limit resolution, and enterprise risk evaluators."""
 
@@ -728,7 +747,7 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
                         continue
                     eq_entry[mk_eq] = eq_m_info.get(mk_eq)
             if t_cyc:
-                eq_entry["t212_cycle"] = {
+                raw_t_cyc = {
                     k: t_cyc.get(k)
                     for k in (
                         "qty",
@@ -743,9 +762,12 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
                         "pos_peak",
                         "dd_from_peak_pct",
                         "realized_pnl_usd",
+                        "subcycle_realized_pnl_usd",
+                        "cum_realized_pnl_usd",
                     )
                     if t_cyc.get(k) is not None
                 }
+                eq_entry["t212_cycle"] = compact_cycle_realized_pnl_fields(raw_t_cyc, include_cum=True)
             if len(eq_entry) > 1:
                 if active_premarket_lead is not None and eq_entry.get("chg_1h_pct") is None:
                     eq_entry["futures_lead_pct"] = active_premarket_lead
@@ -850,6 +872,7 @@ __all__ = [
     "VenueFeeAndLimitsEvaluator",
     "_VENUE_DEFAULT_FEE_SPECS",
     "build_cross_market_context",
+    "compact_cycle_realized_pnl_fields",
     "compute_enterprise_portfolio_risk_metrics",
     "enrich_open_limit_orders_tca",
     "resolve_symbol_price",
