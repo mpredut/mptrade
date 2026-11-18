@@ -229,12 +229,12 @@ def test_current_execution_policy_is_preserved(tmp_path):
         "BTCUSDC", "TAOUSDC", "ARBUSDC",
         "HYPEUSDC", "HYPEUSD",
         "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ",
-        "TAOUSD", "ADAUSD", "SPCXxUSD",
+        "TAOUSD", "ADAUSD", "SPCXxUSD", "ANTxUSD",
     ]
     assert nb_syms == [
         "HYPEUSDC", "HYPEUSD",
         "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ",
-        "TAOUSD", "ADAUSD", "SPCXxUSD",
+        "TAOUSD", "ADAUSD", "SPCXxUSD", "ANTxUSD",
     ]
     assert nb_providers == {
         "HYPEUSDC": "hyperliquid",
@@ -245,6 +245,7 @@ def test_current_execution_policy_is_preserved(tmp_path):
         "TAOUSD": "kraken",
         "ADAUSD": "kraken",
         "SPCXXUSD": "kraken",
+        "ANTXUSD": "kraken",
     }
     arch_syms, arch_nb, arch_prov = registry.tracked_price_instruments(role="archive")
     assert arch_syms == all_syms

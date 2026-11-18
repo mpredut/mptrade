@@ -7018,9 +7018,12 @@ def test_iter97_prompt_sections_btc_merge_24h_horizons_micro_wall_sync_and_pretr
     assert "arb_vs_HYPEUSD=+0.0bps" in telem["Cross-Venue Relative Value (Arbitrage)"]
     assert telem.get("Relative Strength vs BTC (24h Benchmark)", "").startswith("vs_btc(7d=")
 
-    # 4. _is_decision_in_scope rejects lowercase-x xStock symbols and TUSD in equities scope
-    assert _is_decision_in_scope({"decision": "BUY", "symbol": "SPCXx", "venue": "kraken"}, "crypto") is False
-    assert _is_decision_in_scope({"decision": "BUY", "symbol": "SPCXx/USD", "venue": "kraken"}, "crypto") is False
+    # 4. _is_decision_in_scope blocks unconfigured/.T xStocks, allows ai.tradable xStocks, and blocks TUSD in equities
+    assert _is_decision_in_scope({"decision": "BUY", "symbol": "AAPLx", "venue": "kraken"}, "crypto") is False
+    assert _is_decision_in_scope({"decision": "BUY", "symbol": "AAPLx/USD", "venue": "kraken"}, "crypto") is False
+    assert _is_decision_in_scope({"decision": "SELL", "symbol": "SPCXx.T", "venue": "kraken"}, "crypto") is False
+    assert _is_decision_in_scope({"decision": "SELL", "symbol": "SPCXxUSD", "venue": "kraken"}, "crypto") is True
+    assert _is_decision_in_scope({"decision": "SELL", "symbol": "ANTxUSD", "venue": "kraken"}, "crypto") is True
     assert _is_decision_in_scope({"decision": "BUY", "symbol": "SOLTUSD", "venue": "t212"}, "equities") is False
     assert _is_decision_in_scope({"decision": "BUY", "symbol": "NVDA_US_EQ", "venue": "t212"}, "equities") is True
 

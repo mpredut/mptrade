@@ -239,7 +239,11 @@ def sync_configured_archives(client: KrakenClient, st: dict) -> None:
             p
             for raw in (*explicit, st.get("pair"))
             if (p := clean_scalar_str(raw)) is not None
-            and (p.upper() in explicit_u or p.upper() not in cm_owned)
+            and (
+                p.upper() in explicit_u
+                or p.upper() not in cm_owned
+                or not os.path.exists(cache_path(f"cache_365_price_{p}.jsonl"))
+            )
         )
     )
     for pair in pairs:

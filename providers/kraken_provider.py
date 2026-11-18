@@ -107,8 +107,11 @@ def _kraken_balance_asset_candidates(asset: str) -> List[str]:
     asset_u = raw.upper()
     candidates: List[str] = [
         raw, asset_u, "X" + asset_u, "Z" + asset_u,
-        asset_u + ".F", asset_u + ".S", f"{asset_u}x.T", f"{asset_u}X.T", f"{asset_u}x",
+        asset_u + ".F", asset_u + ".S", f"{asset_u}.T", f"{asset_u}x.T", f"{asset_u}X.T", f"{asset_u}x",
     ]
+    if len(asset_u) >= 2 and asset_u.endswith("X"):
+        stem = asset_u[:-1]
+        candidates.extend([f"{stem}x.T", f"{stem}x"])
     if asset_u in {"BTC", "XBT", "XXBT"}:
         candidates.extend(["BTC", "XBT", "XXBT", "XBT.F", "XXBT.F"])
     elif asset_u in {"DOGE", "XDG", "XXDG"}:
@@ -969,10 +972,12 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         _ = price
         if provider is None or (sym_u := clean_upper_scalar(symbol)) is None:
             return {}
+        reg_sym = resolve_registered_symbol_case(symbol, "kraken")
         kr_cands = list(
             dict.fromkeys(
                 kc
                 for kc in (
+                    reg_sym,
                     symbol,
                     sym_u,
                     clean_symbol_key(sym_u),
@@ -982,6 +987,10 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             )
         )
         out: dict = {}
+        if is_kraken_tokenized_asset(reg_sym):
+            out["fee_tier"] = "XSTOCK_ZERO_FEE"
+            out["maker_fee_bps"] = 0.0
+            out["taker_fee_bps"] = 0.0
         minqty_map = getattr(provider, "_minqty", None)
         if isinstance(minqty_map, dict):
             mq = next((v for kc in kr_cands if (v := safe_pos_float(minqty_map.get(kc), default=None)) is not None), None)

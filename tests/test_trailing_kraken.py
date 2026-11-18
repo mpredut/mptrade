@@ -1313,20 +1313,52 @@ def test_declarative_xstock_role_gating_uppercase_resolution_and_archive_ohlc(tm
         load_registry,
         resolve_instrument_spec,
         resolve_registered_symbol_case,
+        symbols_for,
     )
     from kraken.kraken_client import _resolve_kraken_pair
     from kraken.market_data import load_archive_ohlc_candles
     from providers.price_poller import KrakenPriceStream
     from state_io import atomic_write_jsonl
 
-    # 1. Live instruments.conf has [KRAKEN_SPCX] enabled for archive/cacheManager, but role.mt=no (protected!)
+    # 1. Live instruments.conf enables SPCXxUSD & ANTxUSD for AI trading (ai.tradable=yes) while keeping role.mt=no
     assert resolve_registered_symbol_case("SPCXXUSD", "kraken") == "SPCXxUSD"
+    assert resolve_registered_symbol_case("ANTXUSD", "kraken") == "ANTxUSD"
     assert _resolve_kraken_pair("SPCXXUSD") == ("SPCXxUSD", True)
-    assert is_xstock_trading_enabled("SPCXxUSD") is False
+    assert _resolve_kraken_pair("ANTXUSD") == ("ANTxUSD", True)
+    assert is_xstock_trading_enabled("SPCXxUSD") is True
+    assert is_xstock_trading_enabled("ANTxUSD") is True
+    assert is_xstock_trading_enabled("AAPLxUSD") is False
+    assert symbols_for("kraken", "mt") == ["HYPEUSD"]
     live_reg = load_registry()
-    assert resolve_instrument_spec("SPCXxUSD", "kraken", live_reg) is None
+    assert resolve_instrument_spec("SPCXxUSD", "kraken", live_reg) is not None
+    assert resolve_instrument_spec("ANTxUSD", "kraken", live_reg) is not None
+    assert resolve_instrument_spec("AAPLxUSD", "kraken", live_reg) is None
 
-    # 2. Flipping role.mt = yes in instruments.conf declaratively unlocks both registry and AI trading scope
+    # 2. Setting ai.tradable=no and role.mt=no declaratively locks an xStock out of execution
+    locked_conf = tmp_path / "instruments_locked.conf"
+    locked_conf.write_text(
+        "[KRAKEN_SPCX]\n"
+        "provider = kraken\n"
+        "symbol = SPCXxUSD\n"
+        "base = SPCXx\n"
+        "quote = USD\n"
+        "enabled = yes\n"
+        "isolation = own_ledger\n"
+        "market_hours = 24x7\n"
+        "role.mt = no\n"
+        "role.tradeall_fire = no\n"
+        "role.kalman_primary = no\n"
+        "role.trailing = no\n"
+        "role.assetguardian = no\n"
+        "role.archive = yes\n"
+        "role.rtrade = no\n"
+        "role.force_sell = no\n",
+        encoding="utf-8",
+    )
+    assert is_xstock_trading_enabled("SPCXxUSD", path=str(locked_conf)) is False
+    assert resolve_instrument_spec("SPCXxUSD", "kraken", load_registry(str(locked_conf))) is None
+
+    # 3. Flipping role.mt = yes or ai.tradable = yes unlocks both registry and AI trading scope
     custom_conf = tmp_path / "instruments.conf"
     custom_conf.write_text(
         "[KRAKEN_SPCX]\n"

@@ -78,7 +78,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, resolve_registered_symbol_case
 import order_retry as _oq
 from providers.base import MarketDataProvider
 from providers.execution_audit import _extract_audit_fill_metrics
@@ -699,7 +699,8 @@ class VenueCyclesCollector(PortfolioCacheCollectorBase):
 
         kraken_cycles: Dict[str, Any] = {}
         for st_path in iter_venue_cycle_state_files("kraken", workspace_dir=eff_workspace):
-            pair_name = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
+            raw_pair = os.path.basename(st_path)[len(".state_") : -len(".json")]
+            pair_name = resolve_registered_symbol_case(raw_pair, "kraken") or raw_pair.upper()
             if pair_name.isalnum() and symbol_quote_asset(pair_name) in ("USD", "EUR", "USDC", "USDT"):
                 _record_cyc(kraken_cycles, st_path, pair_name, 6)
 
@@ -791,9 +792,24 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             "allocated": alloc_info,
             "listed_pair": listed_pair,
             "alloc_price": alloc_px,
+            "fee_bps": 0,
             "tp1_alert_pct": safe_pos_float(xstock_cfg.get("xstock_tp_alert_pct"), default=None),
             "tp2_alert_pct": safe_pos_float(xstock_cfg.get("xstock_tp2_alert_pct"), default=None),
             "sl_alert_pct": safe_pos_float(xstock_cfg.get("xstock_sl_alert_pct"), default=None),
+            "spcx_directive": (
+                "SPCXxUSD (15.74655 SPCXx.T, IPO alloc $141.75): HOLD untouched below $180; "
+                "only start profit harvesting / cyclic trading once price reaches the $180-$200+ zone."
+            ),
+            "antx_ipo_playbook": (
+                "ANTxUSD (Anthropic IPO tokenized equity, 0bps maker/taker fee, auto-adopted cost in .state_ANTxUSD.json): "
+                "use SPCXxUSD 2026 IPO trajectory as empirical baseline (alloc $141.75 -> Day-1 open $148.59 +4.8%, "
+                "Day-1 high $157.68 +11.2% followed by -8.1% shakeout to $130.30 -> Week-2 rally to $228.00 +60.9% -> "
+                "45d post-IPO compression to $108 -24% below alloc before stabilizing in $135-$183 range). "
+                "Do NOT assume an explosive AI-hype moonshot on ANTxUSD: evaluate live L2 bid/ask walls, ob_imbalance, "
+                "and 90s/5m kinematics to harvest strength pragmatically in LIMIT tranches (e.g. +10%..+20%+ when "
+                "upside stalls into ask walls, or ride further when bid absorption stays strong), do NOT panic-sell "
+                "opening wicks, and after full IPO exit wait for meaningful post-IPO cooldown/stabilization before re-entering."
+            ),
         }
         if live_px > 0:
             xst_summary["live_price"] = round(live_px, 4)
@@ -902,7 +918,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 inst_by_sym[f"{v_norm}:{sym}"] = inst
 
                 base_free, quote_free = _query_free_bal(inst, base), _query_free_bal(inst, quote)
-                px = prices_and_trends.get(sym, {}).get("price")
+                pt_entry_existing = casefold_get(prices_and_trends, sym)
+                px = pt_entry_existing.get("price") if isinstance(pt_entry_existing, dict) else None
                 px_f = safe_pos_float(px, default=0.0) or 0.0
                 pos_bkey_cur = f"pos:{v_norm}:{sym}"
                 prev_cached_pos = cached_bals.get(pos_bkey_cur) if isinstance(cached_bals.get(pos_bkey_cur), dict) else {}
@@ -954,7 +971,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 if px_f <= 0 and prev_pos_px > 0:
                     px = px_f = round(prev_pos_px, pos_px_dec) if is_eq_v else prev_pos_px
                     px_from_cached_pos = True
-                sym_entry = prices_and_trends.setdefault(sym, {"price": px if px_f > 0 else None, "trend": 0, "growth_coefficient": 0.0})
+                pt_key = next((k for k in prices_and_trends if str(k).upper() == sym), resolve_registered_symbol_case(sym, v_norm) or sym)
+                sym_entry = prices_and_trends.setdefault(pt_key, {"price": px if px_f > 0 else None, "trend": 0, "growth_coefficient": 0.0})
                 if px_f > 0 and ((safe_pos_float(sym_entry.get("price"), default=0.0) or 0.0) <= 0 or is_eq_v):
                     sym_entry["price"] = px
                 quote_breakdown: Optional[Dict[str, float]] = None

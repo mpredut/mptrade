@@ -530,8 +530,35 @@ def _format_sre_and_fleet_section(
     return lines
 
 
+def _coalesce_case_variants(mapping: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge case-only duplicate keys (e.g. ``SPCXXUSD`` + ``SPCXxUSD`` -> ``SPCXxUSD``) preserving all fields."""
+    if not isinstance(mapping, dict) or len(mapping) <= 1:
+        return mapping
+    by_upper: Dict[str, List[Tuple[str, Any]]] = {}
+    for k, v in mapping.items():
+        by_upper.setdefault(str(k).upper(), []).append((k, v))
+    if all(len(items) == 1 for items in by_upper.values()):
+        return mapping
+    merged_out: Dict[str, Any] = {}
+    for items in by_upper.values():
+        if len(items) == 1:
+            merged_out[items[0][0]] = items[0][1]
+            continue
+        items_sorted = sorted(items, key=lambda kv: (0 if any(ch.islower() for ch in str(kv[0])) else 1, str(kv[0])))
+        canon_k = items_sorted[0][0]
+        acc: Dict[str, Any] = {}
+        for _, d in reversed(items_sorted):
+            if isinstance(d, dict):
+                for dk, dv in d.items():
+                    if dv is not None or dk not in acc:
+                        acc[dk] = dv
+        merged_out[canon_k] = acc if acc else items_sorted[0][1]
+    return merged_out
+
+
 def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str]:
     """Format Section 3A (Live Market Prices, Multi-Horizon Trends & 24h/7d Evolution)."""
+    prices_and_trends = _coalesce_case_variants(prices_and_trends)
     lines = ["\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION (ALL COINS):"]
     btc_candidates = sorted(
         (
@@ -844,6 +871,8 @@ def _format_microstructure_section(
     now_ts: Optional[float] = None,
 ) -> List[str]:
     """Format Section 3B (Orderbook Walls, Derivatives & Whale Flow)."""
+    microstructure = _coalesce_case_variants(microstructure)
+    prices_and_trends = _coalesce_case_variants(prices_and_trends)
     lines = ["\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:"]
     derived_3b_itvs = resolve_derived_telemetry_intervals()
     seen_3b_groups: set[Tuple[str, Tuple[str, ...]]] = set()
@@ -1555,7 +1584,8 @@ def _format_portfolio_section(
         else:
             xs = xs_raw
         lines.append(
-            f"  * Kraken xStocks Pre-IPO Holdings (READ-ONLY on Kraken — NOT API-tradable; cross-venue SpaceX exposure for Trading212 {xs.get('t212_sibling') if isinstance(xs, dict) else None}): {xs}"
+            f"  * Kraken Tokenized Equities / xStocks (API-TRADABLE 24/7 on 'kraken' at 0bps maker/taker fee; "
+            f"SPCXxUSD Hold-to-$180-$200 Directive, ANTxUSD IPO Playbook & T212 {xs.get('t212_sibling') if isinstance(xs, dict) else None} context): {xs}"
         )
     if ps.get("cross_market_context"):
         cmc = ps["cross_market_context"]

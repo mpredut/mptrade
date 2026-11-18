@@ -2105,7 +2105,7 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     assert "* HYPEUSDC (HYPEUSD): ob_imbalance=0.61" in u_prompt
     assert "* ADAUSD: ob_imbalance=0.44" in u_prompt
     assert "realized_pnl=$18.45, tp_sold=[1, 2]" in u_prompt
-    assert "READ-ONLY on Kraken — NOT API-tradable" in u_prompt
+    assert "API-TRADABLE 24/7 on 'kraken' at 0bps maker/taker fee" in u_prompt
     assert "Cross-Market US Equities Telemetry (Trading212 Raw Prices, Multi-Horizon Deltas & Active Cycles)" in u_prompt
     assert "Realized 24h Cross-Asset Correlation" not in u_prompt
     assert "Hyperliquid Bot Signal Telemetry" not in u_prompt

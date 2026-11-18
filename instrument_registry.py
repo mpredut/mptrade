@@ -281,8 +281,16 @@ def resolve_registered_symbol_case(symbol: object, provider: str | None = None, 
     return raw
 
 
+def _spec_allows_xstock_trading(spec: object, role: str = "mt") -> bool:
+    has_role_fn = getattr(spec, "has_role", None)
+    if callable(has_role_fn) and has_role_fn(role):
+        return True
+    params = getattr(spec, "params", None)
+    return bool(isinstance(params, dict) and _parse_bool_flag(params.get("ai.tradable"), False))
+
+
 def is_xstock_trading_enabled(symbol: object, *, path=None, role: str = "mt") -> bool:
-    """Return True if a tokenized xStock symbol has an explicitly enabled trading role in ``instruments.conf``."""
+    """Return True if a tokenized xStock symbol has an explicitly enabled trading role or AI flag in ``instruments.conf``."""
     raw = clean_scalar_str(symbol)
     if raw is None or raw.upper().endswith(READONLY_XSTOCK_SUFFIXES):
         return False
@@ -291,7 +299,7 @@ def is_xstock_trading_enabled(symbol: object, *, path=None, role: str = "mt") ->
     try:
         reg = load_registry(path) if path is not None else load_registry()
         for spec in reg.values():
-            if not spec.enabled or not is_readonly_xstock_symbol(spec.symbol) or not spec.has_role(role):
+            if not spec.enabled or not is_readonly_xstock_symbol(spec.symbol) or not _spec_allows_xstock_trading(spec, role):
                 continue
             if (sym_key and clean_symbol_key(spec.symbol) == sym_key) or (
                 req_base and canonical_base_asset(spec.base) == req_base
@@ -635,8 +643,7 @@ def resolve_instrument_spec(
     if is_readonly_xstock_symbol(symbol) and not any(
         getattr(item, "enabled", True) is not False
         and is_readonly_xstock_symbol(getattr(item, "symbol", ""))
-        and callable(getattr(item, "has_role", None))
-        and item.has_role("mt")
+        and _spec_allows_xstock_trading(item)
         for item in instruments_map.values()
     ):
         return None
@@ -665,8 +672,7 @@ def resolve_instrument_spec(
             return False
         if not is_readonly_xstock_symbol(raw_cand_sym):
             return True
-        has_role_fn = getattr(cand, "has_role", None)
-        return bool(callable(has_role_fn) and has_role_fn("mt"))
+        return _spec_allows_xstock_trading(cand)
 
     candidates = [
         item

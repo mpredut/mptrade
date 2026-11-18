@@ -123,6 +123,8 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
                 inst, v_norm, symbol, price=px_f
             )
         if cached_meta:
+            if cached_meta.get("fee_tier"):
+                fee_tier = str(cached_meta["fee_tier"]).strip()
             maker_bps = safe_nonneg_float(cached_meta.get("maker_fee_bps"), default=maker_bps)
             taker_bps = safe_nonneg_float(cached_meta.get("taker_fee_bps"), default=taker_bps)
             min_notional = safe_pos_float(cached_meta.get("min_notional"), default=min_notional)
