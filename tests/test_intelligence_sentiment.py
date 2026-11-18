@@ -10750,20 +10750,49 @@ def test_prompt_audit_15_full_telemetry_and_clarity_fixes(tmp_path, monkeypatch)
     enrich_microstructure_cvd(real_sp, {"price": 100.0, "chg_15m_pct": -1.5})
     assert real_sp["spot_cvd_15m_usd"] == pytest.approx(19_500.0)
 
-    # 6. KrakenXstocksCollector separates SPCXx.T holding from XSTOCK_YAHOO=ANT
+    # 6. KrakenXstocksCollector separates SPCXx.T holding from XSTOCK_YAHOO=ANT (ignoring dust AAPLx.T and normalizing SPCXXUSD)
     krk_dir = tmp_path / "kraken"
     krk_dir.mkdir(parents=True, exist_ok=True)
     (krk_dir / "config.env").write_text("XSTOCK_YAHOO=ANT\nXSTOCK_ALLOC_PRICE=141.75\n", encoding="utf-8")
     (krk_dir / "xstock_state.json").write_text(
-        json.dumps({"known_assets": {"SPCXx.T": 15.74655}}), encoding="utf-8"
+        json.dumps({"known_assets": {"AAPLx.T": 2e-06, "SPCXx.T": 15.74655}}), encoding="utf-8"
     )
     xs_out = KrakenXstocksCollector().collect(
         str(cdir), kraken_dir=str(krk_dir), prices_and_trends={"SPCXxUSD": {"price": 141.97}}
     )
     assert xs_out["underlying"] == "SPCX"
     assert xs_out["t212_sibling"] == "SPCX_US_EQ"
+    assert xs_out["holdings"] == {"SPCXx.T": 15.74655}
+    assert "holdings_underlying_map" not in xs_out
     assert xs_out["watched_ipo_underlying"] == "ANT"
     assert xs_out["live_price"] == pytest.approx(141.97)
+    (krk_dir / "xstock_state.json").write_text(
+        json.dumps({"known_assets": {"SPCXx.T": 15.74655}, "pair": "SPCXXUSD"}), encoding="utf-8"
+    )
+    xs_pair_out = KrakenXstocksCollector().collect(
+        str(cdir), kraken_dir=str(krk_dir), prices_and_trends={"SPCXxUSD": {"price": 141.97}}
+    )
+    assert xs_pair_out["underlying"] == "SPCX"
+    assert xs_pair_out["listed_pair"] == "SPCXxUSD"
+
+    asym_3b_txt = "\n".join(
+        _format_microstructure_section(
+            {
+                "BTCUSDC": {
+                    "ob_imbalance": 0.62,
+                    "bid_depth_usd": 3_158_263.0,
+                    "ask_depth_usd": 1_919_767.0,
+                    "depth_1pct_bid_usd": 3_158_263.0,
+                    "depth_1pct_ask_usd": 1_917_693.0,
+                    "book_span_pct": 0.495,
+                    "est_slip_2k_bps": 0.5,
+                }
+            },
+            {"BTCUSDC": {"price": 63_885.6}},
+            now_ts=now_s,
+        )
+    )
+    assert "book_window=+/-0.495%[level_cap]" in asym_3b_txt
 
     # 8b. fill_prob_1h_pct separates +1.76% order (>5%) from +22.6% order (0.1%)
     lim_orders = [

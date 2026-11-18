@@ -78,7 +78,11 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )
-from instrument_registry import casefold_get, resolve_registered_symbol_case
+from instrument_registry import (
+    casefold_get,
+    resolve_kraken_tokenized_pair,
+    resolve_registered_symbol_case,
+)
 import order_retry as _oq
 from providers.base import MarketDataProvider
 from providers.execution_audit import _extract_audit_fill_metrics
@@ -780,7 +784,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         x_holdings: Dict[str, float] = {}
         for ak, av in known_assets.items():
             ak_str, av_f = str(ak).strip(), safe_float(av, 0.0) or 0.0
-            if av_f <= 0:
+            if av_f < 1e-4:
                 continue
             is_xstock_tok = ak_str.upper().endswith(("X.T", ".T"))
             if not is_xstock_tok:
@@ -791,16 +795,25 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             if is_xstock_tok:
                 x_holdings[ak_str] = round(av_f, 6)
         alloc_info = xst_data.get("allocated") if isinstance(xst_data.get("allocated"), dict) else None
-        listed_pair = clean_upper_scalar(xst_data.get("pair"))
+        raw_listed_pair = clean_upper_scalar(xst_data.get("pair"))
+        listed_pair = resolve_kraken_tokenized_pair(raw_listed_pair)[0] if raw_listed_pair else None
         if not (x_holdings or alloc_info or listed_pair):
             return None
 
         def _holding_underlying(token: str) -> str:
-            t_s = token.strip()
-            if symbol_quote_asset(t_s) == "USD" and len(t_s) > 4 and t_s[:-3].endswith("x"):
-                return canonical_base_asset(t_s[:-4])
-            return canonical_base_asset(t_s)
+            tok_norm, _ = resolve_kraken_tokenized_pair(token.strip())
+            return canonical_base_asset(tok_norm or token.strip())
 
+        def _holding_rank_usd(hk: str, qty: float) -> float:
+            hu = _holding_underlying(hk)
+            px = (
+                resolve_symbol_price(f"{hu}xUSD", eff_pt)
+                or resolve_symbol_price(ensure_equity_suffix(hu), eff_pt)
+                or 1.0
+            )
+            return qty * px
+
+        x_holdings = dict(sorted(x_holdings.items(), key=lambda kv: _holding_rank_usd(kv[0], kv[1]), reverse=True))
         held_underlyings: List[str] = []
         holdings_by_underlying: Dict[str, str] = {}
         for hk in x_holdings:

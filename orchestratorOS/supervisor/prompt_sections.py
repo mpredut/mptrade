@@ -1062,7 +1062,7 @@ def _format_microstructure_section(
         b_span_pct = safe_pos_float(minfo.get("book_span_pct"), default=0.0) or 0.0
         if 0.0 < b_span_pct < 0.95 and abs(d1_b - b_dep_v) < 1.0 and abs(d1_a - a_dep_v) < 1.0:
             depth_1pct_sfx = f", book_window=+/-{b_span_pct:g}%[level_cap], slip_2k={minfo.get('est_slip_2k_bps')}bps"
-        elif 0.95 <= b_span_pct < 1.45 and (d1_b > 0.0 or d1_a > 0.0):
+        elif 0.0 < b_span_pct < 1.45 and (d1_b > 0.0 or d1_a > 0.0):
             depth_1pct_sfx = (
                 f", book_window=+/-{b_span_pct:g}%[level_cap], "
                 f"depth_1pct=(bid={_fmt_liq_usd(d1_b)}/ask={_fmt_liq_usd(d1_a)}, slip_2k={minfo.get('est_slip_2k_bps')}bps)"
@@ -1374,7 +1374,13 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         lb_u_s = f" (${lb_u:.2f} USD)" if lb_u is not None and lb_u > 0.0 else ""
         fb_str += f", locked_base_qty={lb_q:g}{lb_u_s}"
     fq_val = pos.get("free_quote")
-    base_lbl = pos.get("base") or canonical_base_asset(str(pos.get("symbol") or "")) or "BASE"
+    tok_pos_sym, is_tok_pos = resolve_kraken_tokenized_pair(str(pos.get("symbol") or ""))
+    disp_pos_sym = tok_pos_sym if is_tok_pos else pos.get("symbol")
+    base_lbl = (
+        f"{canonical_base_asset(tok_pos_sym)}x"
+        if is_tok_pos
+        else (pos.get("base") or canonical_base_asset(str(disp_pos_sym or "")) or "BASE")
+    )
     quote_lbl = pos.get("quote") or "USD"
     fq_bd = pos.get("free_quote_breakdown")
     fq_bd_s = (
@@ -1386,7 +1392,7 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
     if (lq_u := safe_float(eff_pos.get("locked_quote_usd"), None)) is not None and lq_u > 0.0:
         fq_str += f", locked_quote_usd=${lq_u:.2f}"
     return (
-        f"    - [{venue}] {pos.get('symbol')}: free_{base_lbl}={fb_str}, "
+        f"    - [{venue}] {disp_pos_sym}: free_{base_lbl}={fb_str}, "
         f"free_{quote_lbl}={fq_str}, "
         f"px={pos.get('price')}{t_extra}"
     )
@@ -1394,6 +1400,9 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
 
 def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> str:
     """Format a single recent order summary line for Section 3C."""
+    tok_ro_sym, is_tok_ro = resolve_kraken_tokenized_pair(sym)
+    if is_tok_ro:
+        sym = tok_ro_sym
     open_lots_ro = oinfo.get("open_lots") if isinstance(oinfo.get("open_lots"), list) else []
 
     def _side_summary(key: str) -> str:

@@ -1910,6 +1910,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             if p_ref is not None and msym not in pt_map:
                 ob_mid_sib = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)
                 p_ref_px = safe_pos_float(p_ref.get("price"), default=0.0) or 0.0
+                ob_sib_rescaled = False
                 if is_fiat_usd_pair(msym) and ob_mid_sib is not None:
                     sib_live_px = extract_current_price_item(casefold_get(cp_map, msym))
                     if (not sib_live_px or sib_live_px <= 0.0) and cachedb_dir:
@@ -1935,10 +1936,13 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                         and not _prices_diverged(sib_live_px, ob_mid_sib)
                     ):
                         ob_mid_sib = rescale_orderbook_walls_to_price(m_info_ref, sib_live_px, ob_mid_sib)
+                        ob_sib_rescaled = True
+                ob_ref_fresh = ob_sib_rescaled or p_ref_px <= 0.0 or ob_ref_ts <= 0.0 or -5.0 <= (eff_now - ob_ref_ts) <= 60.0
                 if ob_mid_sib is not None and not _prices_diverged(ob_mid_sib, safe_float(p_ref.get("price"), 0.0)):
                     p_sib = dict(p_ref)
-                    p_sib["price"] = ob_mid_sib
-                    recalculate_live_price_geometry(p_sib, ob_mid_sib)
+                    if ob_ref_fresh:
+                        p_sib["price"] = ob_mid_sib
+                        recalculate_live_price_geometry(p_sib, ob_mid_sib)
                     if m_info_ref.get("spread_bps") is not None:
                         p_sib["spread_bps"] = m_info_ref["spread_bps"]
                     pt_map[msym] = p_sib
