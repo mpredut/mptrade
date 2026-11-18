@@ -1055,3 +1055,180 @@ def test_trailing_core_is_venue_agnostic_ast():
             assert not any(v in low for v in forbidden_venues), (
                 f"trailing_core.py line {node.lineno} contains hardcoded venue literal {node.value!r}"
             )
+
+
+def test_kraken_tokenized_asset_routing_and_spv_pair_matching(monkeypatch):
+    from cachepaths import is_kraken_tokenized_asset, kraken_pair_matches
+    from kraken.kraken_client import KrakenClient
+
+    assert is_kraken_tokenized_asset("ANTxUSD") is True
+    assert is_kraken_tokenized_asset("SPCXx/USD") is True
+    assert is_kraken_tokenized_asset("SPCXSPVUSD") is True
+    assert is_kraken_tokenized_asset("HYPEUSD") is False
+    assert is_kraken_tokenized_asset("XBTUSD") is False
+    assert is_kraken_tokenized_asset("AVAXUSD") is False
+
+    assert kraken_pair_matches("SPCXxUSD", "SPCXSPV/USD") is True
+    assert kraken_pair_matches("ANTxUSD", "ANTSPV/USD") is True
+
+    calls = []
+    cli = KrakenClient("key", "c2VjcmV0")
+    monkeypatch.setattr(
+        cli,
+        "_public",
+        lambda method, params=None, fresh=False: calls.append(("pub", method, dict(params or {})))
+        or (
+            {"ANTxUSD": {"c": ["95.25", "1.0"], "pair_decimals": 2, "lot_decimals": 8, "ordermin": "0.05", "base": "ANTx"}}
+            if method != "OHLC"
+            else {"ANTxUSD": [[1700000000, "90", "96", "89", "95", "93", "10", 5], [1700000300, "95", "96", "94", "95.5", "95", "2", 1]], "last": 1700000300}
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_private",
+        lambda method, data=None, fresh=False: calls.append(("priv", method, dict(data or {}))) or {"txid": ["OTOK-1"]},
+    )
+
+    assert cli.last_price("ANTxUSD") == pytest.approx(95.25)
+    assert calls[-1] == ("pub", "Ticker", {"pair": "ANTxUSD", "asset_class": "tokenized_asset"})
+
+    info = cli.pair_info("ANTxUSD")
+    assert info["base"] == "ANTx"
+    assert calls[-1] == ("pub", "AssetPairs", {"pair": "ANTxUSD", "aclass_base": "tokenized_asset"})
+
+    assert cli.ohlc_closes("ANTxUSD", 5) == [95.0]
+    assert calls[-1] == ("pub", "OHLC", {"pair": "ANTxUSD", "interval": 5, "asset_class": "tokenized_asset"})
+
+    cli.add_order("ANTxUSD", "sell", 2.5, price=100.0)
+    assert calls[-1][0:2] == ("priv", "AddOrder")
+    assert calls[-1][2]["pair"] == "ANTxUSD"
+    assert calls[-1][2]["asset_class"] == "tokenized_asset"
+
+    cli.add_order("HYPEUSD", "sell", 1.0, price=70.0)
+    assert "asset_class" not in calls[-1][2]
+
+
+def test_xstock_watch_ledger_alloc_price_and_regex_target_sync():
+    import re
+    cfg = parse_dotenv(os.path.join(_KRAKEN_DIR, "config.env"))
+    rx = cfg["XSTOCK_REGEX"]
+    for hit in ("ANTx.T", "ANTx", "ANTxUSD", "ANTx/USD", "ANTSPVUSD"):
+        assert re.search(rx, hit, re.I), f"expected {hit} to match {rx}"
+    for miss in ("MANTRA", "MANTRAUSD", "ANTOx", "ANTOxUSD", "ANTOSPV", "SPCXx.T"):
+        assert not re.search(rx, miss, re.I), f"expected {miss} NOT to match {rx}"
+
+    st = {
+        "known_assets": {"SPCXx.T": 15.74, "HYPE": 26.32},
+        "allocated": {"asset": "SPCXx.T", "qty": 4.2786},
+        "pair": "SPCXxUSD",
+        "alerted_pair": True,
+        "alerted_tp": True,
+        "alerted_tp2": False,
+        "alerted_sl": True,
+        "bot_pid": None,
+        "alerted_need_price": False,
+    }
+    assert xw.sync_target_regex(st, rx) is True
+    assert st["allocated"] is None
+    assert st["pair"] is None
+    assert st["alerted_tp"] is False
+    assert st["known_assets"] == {"SPCXx.T": 15.74, "HYPE": 26.32}
+
+    # Reservation-only ledger (before allocation settles) must return None
+    pre_cli = SimpleNamespace(
+        _private=lambda method, params=None: {
+            "ledger": {
+                "L1": {"type": "transfer", "subtype": "krakenlaunchallocation", "asset": "ZUSD", "amount": "2764.4600", "balance": "2764.4601", "refid": "R1", "time": 1794800000},
+                "L2": {"type": "transfer", "subtype": "krakenlaunchallocation", "asset": "ZUSD", "amount": "-2764.4600", "balance": "0.0055", "refid": "R1", "time": 1794800000},
+            }
+        }
+    )
+    assert xw.resolve_ledger_alloc_price(pre_cli, "ANTx.T", 35.0) is None
+
+    # Settled allocation ledger (reproduces exact SPCX 606.4915 / 4.2786 = 141.75)
+    settled_cli = SimpleNamespace(
+        _private=lambda method, params=None: {
+            "ledger": {
+                "L4": {"type": "transfer", "subtype": "krakenlaunchallocation", "asset": "ZUSD", "amount": "-606.4915", "balance": "0.0001", "refid": "R_DEBIT", "time": 1794901000},
+                "L3": {"type": "transfer", "subtype": "krakenlaunchallocation", "asset": "ANTx", "amount": "4.278600", "balance": "4.278600", "refid": "R_TOK", "time": 1794900500},
+                "L2": {"type": "transfer", "subtype": "krakenlaunchallocation", "asset": "ZUSD", "amount": "2157.9685", "balance": "2157.9740", "refid": "R_REFUND", "time": 1794900000},
+                "L1": {"type": "transfer", "subtype": "krakenlaunchallocation", "asset": "ZUSD", "amount": "-2157.9685", "balance": "606.4916", "refid": "R_REFUND", "time": 1794900000},
+            }
+        }
+    )
+    assert xw.resolve_ledger_alloc_price(settled_cli, "ANTx.T", 4.2786) == pytest.approx(141.75)
+
+
+def test_spot_engine_hybrid_tranche_plus_trailing_and_zero_reentry(tmp_path):
+    pair = "TSTXUSD"
+    sp = _xstock_strategy.state_path_for(pair, str(tmp_path))
+    if os.path.exists(sp):
+        os.remove(sp)
+    cfg = parse_dotenv(os.path.join(_KRAKEN_DIR, "config.env"))
+    env_merged = dict(cfg)
+    for src, dst in (
+        ("XSTOCK_BOT_ENTRY", "STRAT_ENTRY"),
+        ("XSTOCK_BOT_DCA", "STRAT_DCA"),
+        ("XSTOCK_BOT_MAX_DCA_BUYS", "STRAT_MAX_DCA_BUYS"),
+        ("XSTOCK_BOT_DCA_DROP_PCT", "STRAT_DCA_DROP_PCT"),
+        ("XSTOCK_BOT_TP_PCT", "STRAT_TAKEPROFIT_PCT"),
+        ("XSTOCK_BOT_TP_TRANCHES", "STRAT_TP_TRANCHES"),
+        ("XSTOCK_BOT_TP_TREND_HOLD", "STRAT_TP_TREND_HOLD"),
+        ("XSTOCK_BOT_TP_TRAIL_PCT", "STRAT_TP_TRAIL_PCT"),
+        ("XSTOCK_BOT_TP_TRAIL_ADAPTIVE", "STRAT_TP_TRAIL_ADAPTIVE"),
+        ("XSTOCK_BOT_TP_MDHTP_ENABLED", "STRAT_TP_MDHTP_ENABLED"),
+        ("XSTOCK_BOT_TP_DYNAMIC_FLAT", "STRAT_TP_DYNAMIC_FLAT"),
+        ("XSTOCK_BOT_SL_PCT", "STRAT_STOP_LOSS_PCT"),
+        ("XSTOCK_BOT_TREND_OVERLAY", "STRAT_TREND_OVERLAY"),
+        ("XSTOCK_BOT_MAX_BUDGET", "STRAT_MAX_BUDGET"),
+        ("XSTOCK_BOT_CHECK_MINUTES", "STRAT_CHECK_MINUTES"),
+    ):
+        env_merged[dst] = cfg[src]
+    env_merged["STRAT_ADOPT_COST"] = "80.0"
+
+    params = _xstock_strategy.StratParams.from_env(env_merged)
+    client = FakeKrakenXStock(bal={"TSTX": "30.0", "ZUSD": "500.0"})
+    strat = _xstock_strategy.Strategy(
+        client, pair, params, dry_run=True, desktop=False, state_dir=str(tmp_path)
+    )
+    strat.notify = lambda **kw: None
+
+    def _tick(px: float, ts: float) -> None:
+        strat.reconcile(px)
+        strat.step(px, timestamp=ts)
+
+    # 1. Adopts 30 TSTX @ 80 and places ONLY Tranche 0 (50% = 15 TSTX @ 100.0), holding 15 TSTX off-book
+    _tick(82.0, 1000.0)
+    assert strat.s["adopted"] is True
+    assert strat.s["qty"] == pytest.approx(30.0, abs=1e-4)
+    sells = [o for o in strat.s["orders"] if o["side"] == "sell"]
+    assert len(sells) == 1
+    assert sells[0]["vol"] == pytest.approx(15.0, abs=1e-4)
+    assert sells[0]["price"] == pytest.approx(100.0)
+
+    # 2. Opening dip to 68 (-15%) does NOT trigger stop-loss or DCA buy
+    _tick(68.0, 1015.0)
+    assert strat.s["qty"] == pytest.approx(30.0, abs=1e-4)
+    assert not any(o["side"] == "buy" for o in strat.s["orders"])
+
+    # 3. Spike to 120 (+50%) fills Tranche 0 (15 @ 100) and arms trailing on remaining 15 TSTX (no resting sell cap!)
+    _tick(120.0, 1030.0)
+    assert strat.s["qty"] == pytest.approx(15.0, abs=1e-4)
+    assert [o for o in strat.s["orders"] if o["side"] == "sell"] == []
+    assert strat.s["trail_peak"] == pytest.approx(120.0)
+
+    # 4. Rally continues to 140 (+75%) -> peak rises to 140, trail_stop = 140 * 0.965 = 135.10
+    _tick(140.0, 1045.0)
+    assert strat.s["qty"] == pytest.approx(15.0, abs=1e-4)
+    assert strat.s["trail_peak"] == pytest.approx(140.0)
+    assert strat.s["trail_stop"] == pytest.approx(135.10)
+
+    # 5. Pullback of >3.5% to 134.80 triggers trailing market exit of the remaining 15 TSTX
+    _tick(134.80, 1060.0)
+    _tick(134.50, 1075.0)
+    assert strat.s["qty"] == pytest.approx(0.0, abs=1e-6)
+
+    # 6. Post-exit drop to 70 stays 100% flat (STRAT_ENTRY=0 disables re-entry)
+    _tick(70.0, 1090.0)
+    assert strat.s["qty"] == pytest.approx(0.0, abs=1e-6)
+    assert strat.s["orders"] == []

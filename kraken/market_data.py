@@ -25,6 +25,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from cachepaths import is_kraken_tokenized_asset
 from providers.ohlc_utils import (
     extract_kraken_ohlc_rows,
     parse_ohlc_interval_minutes,
@@ -56,7 +57,10 @@ def fetch_ohlc_candles(
     to_f = safe_pos_float(timeout, default=None)
     if to_f is None:
         raise ValueError(f"invalid interval={interval!r} or timeout={timeout!r}")
-    qs = urllib.parse.urlencode({"pair": pair, "interval": interval})
+    q_params: dict[str, object] = {"pair": pair, "interval": interval}
+    if is_kraken_tokenized_asset(pair):
+        q_params["asset_class"] = "tokenized_asset"
+    qs = urllib.parse.urlencode(q_params)
     url = f"https://api.kraken.com/0/public/OHLC?{qs}"
     data = None
     for attempt in range(2):

@@ -40,6 +40,7 @@ from botcore import (
     safe_pos_float,
     single_instance,
 )
+from cachepaths import is_kraken_tokenized_asset
 from kraken.kraken_common import build_kraken_client, notify
 from kraken.kraken_client import KrakenClient, KrakenError
 from kraken.market_data import check_pair_listing, get_price
@@ -77,9 +78,13 @@ def main() -> int:
         ),
     )
     args = ap.parse_args()
+    def _norm_pair(raw: str) -> str:
+        s = raw.strip()
+        return s if is_kraken_tokenized_asset(s) else s.upper()
+
     if args.test_strategy:
-        args.test_strategy = args.test_strategy.strip().upper()
-        single_instance(f"kraken_bot_{args.test_strategy.strip()}")
+        args.test_strategy = _norm_pair(args.test_strategy)
+        single_instance(f"kraken_bot_{args.test_strategy.strip().upper()}")
     elif not any(getattr(args, a, None) for a in ("balance", "find_pair", "price")):
         # Use one instance PER PAIR so HYPE, ADA, WIF, etc. can run concurrently with
         # separate locks. The former fixed 'kraken_bot' key blocked a second pair.
@@ -90,7 +95,7 @@ def main() -> int:
     if args.find_pair:
         return _cmd_find_pair(KrakenClient(), args.find_pair)
     if args.price:
-        price_pair = (args.pair or required_env("KRAKEN_PAIR")).strip().upper()
+        price_pair = _norm_pair(args.pair or required_env("KRAKEN_PAIR"))
         p = get_price(KrakenClient(), price_pair) if price_pair else None
         log(f"[PRICE] {price_pair} = {p}")
         return 0 if p else 1
@@ -98,7 +103,7 @@ def main() -> int:
     if args.balance:
         return _cmd_balance(client)
 
-    pair        = (args.pair or required_env("KRAKEN_PAIR")).strip().upper()
+    pair        = _norm_pair(args.pair or required_env("KRAKEN_PAIR"))
     label       = required_env("SYMBOL_LABEL")
     strategy_execution = required_bool_env("STRAT_EXECUTE")
     strat_dry = KrakenProvider.strategy_dry_run(args.paper, strategy_execution)
@@ -109,7 +114,7 @@ def main() -> int:
         if not args.test_strategy:
             log("! KRAKEN_PAIR missing from .env (or --pair). Nothing to trade.")
         else:
-            test_pair = args.test_strategy.strip().upper()
+            test_pair = _norm_pair(args.test_strategy)
             log(
                 f"[TEST] strategy for {test_pair}  "
                 f"{'OBSERVE ONLY' if observe_only else ('PAPER' if strat_dry else '⚠ REAL')}")
@@ -180,7 +185,11 @@ def _wait_for_listing(client, pair, label, interval, desktop) -> bool:
 def _cmd_find_pair(client: KrakenClient, term: str) -> int:
     clean_term = "" if isinstance(term, bool) else str(term or "").strip()
     try:
-        pairs = client.asset_pairs() if clean_term else None
+        pairs = dict(client.asset_pairs() or {}) if clean_term else None
+        if isinstance(pairs, dict) and callable(getattr(client, "tokenized_asset_pairs", None)):
+            tok_pairs = client.tokenized_asset_pairs()
+            if isinstance(tok_pairs, dict):
+                pairs.update(tok_pairs)
     except KrakenError as e:
         log(f"! {e}")
         return 1

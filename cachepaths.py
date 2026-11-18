@@ -649,6 +649,23 @@ def is_readonly_xstock_symbol(symbol: object) -> bool:
     return False
 
 
+def is_kraken_tokenized_asset(symbol: object) -> bool:
+    """Return True if ``symbol`` requires Kraken ``tokenized_asset`` API routing (xStocks / SPV pairs)."""
+    if is_readonly_xstock_symbol(symbol):
+        return True
+    if isinstance(symbol, bool) or not isinstance(symbol, str):
+        return False
+    raw = symbol.strip()
+    if not raw:
+        return False
+    raw_base = next((raw.split(sep, 1)[0].strip() for sep in ("/", "-", "_") if sep in raw), raw).upper()
+    for quote in CACHE_QUOTE_SUFFIXES:
+        if not _is_false_tusd_or_busd_match(raw_base, quote) and raw_base.endswith(quote) and len(raw_base) > len(quote):
+            raw_base = raw_base[: -len(quote)]
+            break
+    return len(raw_base) >= 6 and raw_base.endswith("SPV")
+
+
 def has_equity_suffix(symbol: object, *, include_compact: bool = False) -> bool:
     """Return True if ``symbol`` is a string ending in ``_EQ`` or ``_US_EQ`` (case-insensitive)."""
     if isinstance(symbol, bool) or not isinstance(symbol, str):
@@ -728,11 +745,13 @@ def _is_false_tusd_or_busd_match(token: str, quote: str) -> bool:
 
 
 def _strip_kraken_asset_suffixes(token: str) -> str:
-    """Strip Kraken xStock/futures/staking suffixes (``x.T``, ``.T``, ``.F``, ``.S``)."""
+    """Strip Kraken xStock/SPV/futures/staking suffixes (``x.T``, ``.T``, ``.F``, ``.S``, ``SPV``)."""
     if token.endswith("X.T") and len(token) > 3:
         return token[:-3]
     if token.endswith((".T", ".F", ".S")) and len(token) > 2:
         return token[:-2]
+    if token.endswith("SPV") and len(token) >= 6:
+        return token[:-3]
     return token
 
 

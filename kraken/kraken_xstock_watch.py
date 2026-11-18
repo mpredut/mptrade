@@ -52,6 +52,7 @@ from botcore import (
     temporary_environ,
     touch_module_heartbeat,
 )
+from cachepaths import canonical_base_asset
 from providers.ohlc_utils import extract_yahoo_chart_latest_price
 from strategies.spot_engine import state_path_for
 from kraken.kraken_common import build_kraken_client, notify
@@ -122,6 +123,10 @@ def _load_state() -> dict:
             clean_alloc["qty"] = safe_nonneg_float(alloc.get("qty"), 0.0)
             if "ts" in clean_alloc:
                 clean_alloc["ts"] = safe_nonneg_float(alloc.get("ts"), 0.0)
+            if (ap := safe_pos_float(alloc.get("alloc_price"), None)) is not None:
+                clean_alloc["alloc_price"] = ap
+            else:
+                clean_alloc.pop("alloc_price", None)
             merged["allocated"] = clean_alloc
         else:
             merged["allocated"] = None
@@ -136,6 +141,117 @@ def _save_state(st: dict) -> None:
         save_json_state(_state_file(), st, indent=2)
     except OSError as e:
         log(f"  ! cannot save the state: {e}")
+
+
+def sync_target_regex(st: dict, rx: str) -> bool:
+    """Clear stale allocation/pair state from a previous IPO when XSTOCK_REGEX changes."""
+    if not isinstance(st, dict) or not rx or isinstance(rx, bool):
+        return False
+    alloc = st.get("allocated")
+    alloc_asset = alloc.get("asset") if isinstance(alloc, dict) else None
+    cur_pair = st.get("pair")
+    stale_alloc = isinstance(alloc_asset, str) and alloc_asset and not re.search(rx, alloc_asset, re.I)
+    stale_pair = isinstance(cur_pair, str) and cur_pair and not re.search(rx, cur_pair, re.I)
+    if not (stale_alloc or stale_pair):
+        return False
+    log(f"  [reset] clearing previous xStock target state (asset={alloc_asset}, pair={cur_pair}) for regex={rx}")
+    for key, val in _default_state().items():
+        if key != "known_assets":
+            st[key] = val
+    return True
+
+
+def resolve_ledger_alloc_price(client: KrakenClient, asset: str, fallback_qty: float = 0.0) -> float | None:
+    """Derive per-unit USD allocation cost from Kraken launch/IPO allocation ledger entries."""
+    priv_fn = getattr(client, "_private", None)
+    base_target = canonical_base_asset(asset)
+    if not callable(priv_fn) or not base_target:
+        return None
+    try:
+        resp = priv_fn("Ledgers", {"ofs": 0})
+    except Exception as e:  # noqa: BLE001
+        log(f"  ! ledger alloc_price lookup failed: {e}")
+        return None
+    ledger = resp.get("ledger") if isinstance(resp, dict) else None
+    if not isinstance(ledger, dict) or not ledger:
+        return None
+    alloc_rows = [
+        e for e in ledger.values()
+        if isinstance(e, dict) and "allocation" in str(e.get("subtype") or "").lower()
+    ]
+    if not alloc_rows:
+        return None
+    tok_qty = 0.0
+    ref_ts = time.time()
+    for row in alloc_rows:
+        if canonical_base_asset(row.get("asset")) == base_target:
+            amt_f = safe_pos_float(row.get("amount"), None)
+            if amt_f is not None:
+                tok_qty += amt_f
+                ref_ts = safe_pos_float(row.get("time"), ref_ts) or ref_ts
+    eff_qty = tok_qty if tok_qty > 0.0 else (safe_pos_float(fallback_qty, 0.0) or 0.0)
+    if eff_qty <= 0.0:
+        return None
+    usd_assets = {"ZUSD", "USD", "USDC", "USDG"}
+    by_ref: dict[str, list[dict]] = {}
+    max_reserved = 0.0
+    for idx, row in enumerate(alloc_rows):
+        if str(row.get("asset") or "").strip().upper() not in usd_assets:
+            continue
+        row_ts = safe_pos_float(row.get("time"), ref_ts) or ref_ts
+        if abs(row_ts - ref_ts) > 14 * 86400.0:
+            continue
+        amt = safe_float(row.get("amount"), None)
+        if amt is None or abs(amt) <= 1e-9:
+            continue
+        if amt > max_reserved:
+            max_reserved = amt
+        rk = clean_scalar_str(row.get("refid")) or f"_idx_{idx}"
+        by_ref.setdefault(rk, []).append(row)
+    for rows in by_ref.values():
+        if len(rows) == 1:
+            amt = safe_float(rows[0].get("amount"), 0.0) or 0.0
+            if amt < -0.01:
+                return round(abs(amt) / eff_qty, 4)
+    for rows in by_ref.values():
+        if len(rows) == 2:
+            neg = next((r for r in rows if (safe_float(r.get("amount"), 0.0) or 0.0) < -0.01), None)
+            if neg is not None:
+                rem_bal = safe_pos_float(neg.get("balance"), 0.0) or 0.0
+                neg_abs = abs(safe_float(neg.get("amount"), 0.0) or 0.0)
+                if rem_bal > 0.5 and max_reserved > neg_abs + 0.5:
+                    return round(rem_bal / eff_qty, 4)
+    return None
+
+
+def resolve_alloc_price(client: KrakenClient, st: dict, configured_price: float, desktop: bool) -> float:
+    """Return explicit XSTOCK_ALLOC_PRICE when > 0, else persisted/ledger-derived allocation cost."""
+    cfg_f = safe_pos_float(configured_price, 0.0) or 0.0
+    if cfg_f > 0.0:
+        return cfg_f
+    alloc = st.get("allocated")
+    if not isinstance(alloc, dict) or not alloc.get("asset"):
+        return 0.0
+    cached_ap = safe_pos_float(alloc.get("alloc_price"), 0.0) or 0.0
+    if cached_ap > 0.0:
+        return cached_ap
+    derived = resolve_ledger_alloc_price(
+        client, str(alloc["asset"]), safe_nonneg_float(alloc.get("qty"), 0.0)
+    )
+    if derived is not None and derived > 0.0:
+        alloc["alloc_price"] = derived
+        qty = safe_nonneg_float(alloc.get("qty"), 0.0)
+        log(f"  [ledger] resolved allocation price for {alloc['asset']}: {derived} USD (total ~{qty * derived:.2f} USD)")
+        notify(
+            title=f"xStock cost resolved: {alloc['asset']} @ {derived}",
+            body=f"Auto-derived from Kraken Ledger: {qty} {alloc['asset']} @ {derived} USD (~{qty * derived:.2f} USD).",
+            source="xstock-watch",
+            price=derived,
+            desktop=desktop,
+            email=True,
+        )
+        return derived
+    return 0.0
 
 
 # -- underlying price (Yahoo) until the pair appears on the API ---------------
@@ -190,14 +306,13 @@ def check_balance(client: KrakenClient, st: dict, rx: str, desktop: bool) -> Non
             log(f"  🎯 ALLOCATION DETECTED: {a} = {q}")
             notify(title=f"🎯 xStock ALLOCATION: {a} = {q}",
                    body=f"{a} appeared in the Kraken account (quantity {q}). "
-                        f"Set XSTOCK_ALLOC_PRICE in config.env for level alerts "
-                        f"and STRAT_ADOPT_COST when the pair becomes tradable.",
-                   source="xstock-watch", desktop=desktop)
+                        f"Allocation cost will be resolved automatically from Ledger (or XSTOCK_ALLOC_PRICE).",
+                   source="xstock-watch", desktop=desktop, email=True)
         else:
             log(f"  ℹ new asset in account: {a} = {q}")
             notify(title=f"ℹ New asset in Kraken account: {a} = {q}",
                    body="Check whether the xStock allocation sits under a different code than expected.",
-                   source="xstock-watch", desktop=desktop)
+                   source="xstock-watch", desktop=desktop, email=True)
     st["known_assets"].update(assets)
 
 
@@ -209,7 +324,13 @@ def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,
     one whose quote currency matches ``quote``.
     """
     try:
-        pairs = client.asset_pairs()
+        base_pairs = client.asset_pairs()
+        pairs = dict(base_pairs) if isinstance(base_pairs, dict) else base_pairs
+        tok_fn = getattr(client, "tokenized_asset_pairs", None)
+        if isinstance(pairs, dict) and callable(tok_fn):
+            tok_pairs = tok_fn()
+            if isinstance(tok_pairs, dict):
+                pairs.update(tok_pairs)
     except KrakenError as e:
         log(f"  ! asset_pairs: {e}")
         return
@@ -238,6 +359,13 @@ def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,
         ]
         if pref:
             matches = pref
+    canon_pref = [
+        (k, v)
+        for k, v in matches
+        if str(v.get("altname") or "").strip() == str(k).strip()
+    ]
+    if canon_pref:
+        matches = canon_pref
     k, v = matches[0]
     name = v.get("wsname") or k
     st["pair"] = k
@@ -250,9 +378,8 @@ def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,
             pass
         log(f"  🚀 PAIR LISTED on the API: {name} (price {px})")
         notify(title=f"🚀 {name} LISTED on Kraken API" + (f" @ {px}" if px else ""),
-               body=f"You can start the bot and adopt the allocation:\n"
-                    f"STRAT_ADOPT_COST=<alloc_price> python3 kraken_bot.py --pair {k}",
-               source="xstock-watch", price=px, desktop=desktop)
+               body=f"Pair {k} is live on Kraken API. Auto-trader will adopt the allocation as soon as cost is ready.",
+               source="xstock-watch", price=px, desktop=desktop, email=True)
 
 
 def check_levels(client: KrakenClient, st: dict, alloc_price: float,
@@ -305,7 +432,7 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
     ):
         if triggered and not _parse_bool_flag(st.get(key), False):
             st[key] = True
-            notify(title=title, body=body, source="xstock-watch", price=price, desktop=desktop)
+            notify(title=title, body=body, source="xstock-watch", price=price, desktop=desktop, email=True)
 
 
 # -- automatic bot startup ----------------------------------------------------
@@ -365,13 +492,26 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
     relaunch = st.get("bot_pid") is not None
     env = clone_process_env({"STRAT_ADOPT_COST": str(alloc_price)})
     # Volatile-IPO tuning overrides config.env only for this bot instance.
-    for src, dst in (("XSTOCK_BOT_TP_PCT", "STRAT_TAKEPROFIT_PCT"),
-                     ("XSTOCK_BOT_DCA_DROP_PCT", "STRAT_DCA_DROP_PCT"),
-                     ("XSTOCK_BOT_SL_PCT", "STRAT_STOP_LOSS_PCT"),
-                     ("XSTOCK_BOT_DCA", "STRAT_DCA"),
-                     ("XSTOCK_BOT_MAX_BUDGET", "STRAT_MAX_BUDGET"),
-                     ("XSTOCK_BOT_CHECK_MINUTES", "STRAT_CHECK_MINUTES")):
-        if (val := optional_env(src)):
+    for src, dst in (
+        ("XSTOCK_BOT_OBSERVE_ONLY", "KRAKEN_BOT_OBSERVE_ONLY"),
+        ("XSTOCK_SYMBOL_LABEL", "SYMBOL_LABEL"),
+        ("XSTOCK_BOT_ENTRY", "STRAT_ENTRY"),
+        ("XSTOCK_BOT_DCA", "STRAT_DCA"),
+        ("XSTOCK_BOT_MAX_DCA_BUYS", "STRAT_MAX_DCA_BUYS"),
+        ("XSTOCK_BOT_DCA_DROP_PCT", "STRAT_DCA_DROP_PCT"),
+        ("XSTOCK_BOT_TP_PCT", "STRAT_TAKEPROFIT_PCT"),
+        ("XSTOCK_BOT_TP_TRANCHES", "STRAT_TP_TRANCHES"),
+        ("XSTOCK_BOT_TP_TREND_HOLD", "STRAT_TP_TREND_HOLD"),
+        ("XSTOCK_BOT_TP_TRAIL_PCT", "STRAT_TP_TRAIL_PCT"),
+        ("XSTOCK_BOT_TP_TRAIL_ADAPTIVE", "STRAT_TP_TRAIL_ADAPTIVE"),
+        ("XSTOCK_BOT_TP_MDHTP_ENABLED", "STRAT_TP_MDHTP_ENABLED"),
+        ("XSTOCK_BOT_TP_DYNAMIC_FLAT", "STRAT_TP_DYNAMIC_FLAT"),
+        ("XSTOCK_BOT_SL_PCT", "STRAT_STOP_LOSS_PCT"),
+        ("XSTOCK_BOT_TREND_OVERLAY", "STRAT_TREND_OVERLAY"),
+        ("XSTOCK_BOT_MAX_BUDGET", "STRAT_MAX_BUDGET"),
+        ("XSTOCK_BOT_CHECK_MINUTES", "STRAT_CHECK_MINUTES"),
+    ):
+        if (val := optional_env(src)) is not None:
             env[dst] = val
     cmd = [sys.executable, BOT_SCRIPT, "--pair", st["pair"]]
     if required_bool_env("XSTOCK_BOT_PAPER"):
@@ -387,8 +527,8 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
     verb = "RESTARTED (was down)" if relaunch else "AUTO-STARTED"
     log(f"  🤖 BOT {verb}: pid {proc.pid}  pair {st['pair']}  adopt @ {alloc_price}  (log: {BOT_LOG})")
     notify(title=f"🤖 BOT {verb} on {st['pair']} (adopt @ {alloc_price})",
-           body=f"kraken_bot manages the allocation: TP/DCA/stop-loss. pid {proc.pid}, log {BOT_LOG}",
-           source="xstock-watch", price=alloc_price, desktop=desktop)
+           body=f"kraken_bot manages the allocation: TP/trailing exit. pid {proc.pid}, log {BOT_LOG}",
+           source="xstock-watch", price=alloc_price, desktop=desktop, email=True)
 
 
 # -- end-to-end trial ---------------------------------------------------------
@@ -514,9 +654,15 @@ def main() -> int:
     if args.trial:
         return run_trial(client, args.desktop)
     st = _load_state()
+    if sync_target_regex(st, rx) and not args.status:
+        _save_state(st)
 
     if args.status:
-        print(f"regex={rx}  alloc_price={alloc_price}  tp={tp_pct}%  sl={sl_pct}%  yahoo={yahoo_sym}")
+        eff_ap = alloc_price if alloc_price > 0 else (
+            safe_pos_float((st.get("allocated") or {}).get("alloc_price"), 0.0)
+            if isinstance(st.get("allocated"), dict) else 0.0
+        )
+        print(f"regex={rx}  alloc_price={eff_ap or 'auto-ledger'}  tp={tp_pct}%  sl={sl_pct}%  yahoo={yahoo_sym}")
         print(f"known assets: {len(st['known_assets'])} -> {', '.join(sorted(st['known_assets'])) or '-'}")
         print(f"allocation: {st['allocated'] or 'not detected'}")
         print(f"API pair: {st['pair'] or 'unlisted'}")
@@ -526,7 +672,7 @@ def main() -> int:
 
     log("=== xStock watcher started ===")
     log(f"    regex      : {rx}")
-    log(f"    allocation : {alloc_price if alloc_price > 0 else 'price unknown (detection only)'}")
+    log(f"    allocation : {alloc_price if alloc_price > 0 else 'auto-resolved from Kraken Ledger'}")
     log(f"    alerts     : +{tp_pct}% / -{sl_pct}%  (price: Kraken or Yahoo {yahoo_sym})")
     log(f"    interval   : {args.interval} min")
     beats = 0
@@ -537,8 +683,9 @@ def main() -> int:
         try:
             check_balance(client, st, rx, args.desktop)
             check_pairs(client, st, rx, args.desktop, quote)
-            check_levels(client, st, alloc_price, tp_pct, sl_pct, yahoo_sym, args.desktop)
-            maybe_start_bot(st, alloc_price, args.desktop)
+            eff_alloc_price = resolve_alloc_price(client, st, alloc_price, args.desktop)
+            check_levels(client, st, eff_alloc_price, tp_pct, sl_pct, yahoo_sym, args.desktop)
+            maybe_start_bot(st, eff_alloc_price, args.desktop)
             _save_state(st)
         except KeyboardInterrupt:
             return 0

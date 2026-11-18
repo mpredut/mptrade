@@ -777,7 +777,9 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             return None
         underlying = clean_upper_scalar(xstock_cfg.get("xstock_yahoo")) or "SPCX"
         t212_sib = ensure_equity_suffix(underlying)
-        alloc_px = safe_pos_float(xstock_cfg.get("xstock_alloc_price"), default=None)
+        alloc_px = safe_pos_float(xstock_cfg.get("xstock_alloc_price"), default=None) or (
+            safe_pos_float(alloc_info.get("alloc_price"), default=None) if isinstance(alloc_info, dict) else None
+        )
         live_px = (
             (resolve_symbol_price(listed_pair, eff_pt) if listed_pair else 0.0)
             or resolve_symbol_price(t212_sib, eff_pt)

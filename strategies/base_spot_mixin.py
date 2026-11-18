@@ -1227,6 +1227,8 @@ class BaseSpotMixin:
         cap_label: str = "cap",
     ) -> bool:
         """Evaluate flat-position re-entry gate and place initial ENTRY buy order."""
+        if entry_amt <= 0:
+            return False
         blocked_tick = getattr(self, "_reentry_blocked_tick", None)
         if tick_time is not None and blocked_tick is not None and blocked_tick[:2] == (tick_time, price):
             allowed, reason = False, blocked_tick[2]

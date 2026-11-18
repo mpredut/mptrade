@@ -41,6 +41,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from cachepaths import is_kraken_tokenized_asset
 from providers.ohlc_utils import extract_kraken_ohlc_rows, require_ohlc_symbol
 from providers.order_ohlc_utils import get_cached_pair_info as _get_cached_pair_info
 from state_io import parse_json_payload
@@ -231,10 +232,18 @@ class KrakenClient:
     def asset_pairs(self) -> dict:
         return self._public("AssetPairs")
 
+    def tokenized_asset_pairs(self) -> dict:
+        return self._public("AssetPairs", {"aclass_base": "tokenized_asset"})
+
     def _public_first_dict(self, method: str, pair: str) -> dict | None:
         if not pair or isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
             return None
-        res = self._public(method, {"pair": pair.strip().upper()})
+        p_clean = pair.strip()
+        is_tok = is_kraken_tokenized_asset(p_clean)
+        params: dict[str, str] = {"pair": p_clean if is_tok else p_clean.upper()}
+        if is_tok:
+            params["aclass_base" if method == "AssetPairs" else "asset_class"] = "tokenized_asset"
+        res = self._public(method, params)
         return next((v for v in res.values() if isinstance(v, dict)), None) if res else None
 
     pair_info = bind_attr_call("_public_first_dict", "AssetPairs")
@@ -261,8 +270,11 @@ class KrakenClient:
         if itv_int is None:
             raise ValueError("interval must be a positive integer")
         itv_sec = itv_int * 60
+        ohlc_params: dict[str, object] = {"pair": pair, "interval": itv_int}
+        if is_kraken_tokenized_asset(pair):
+            ohlc_params["asset_class"] = "tokenized_asset"
         rows = extract_kraken_ohlc_rows(
-            self._public("OHLC", {"pair": pair, "interval": itv_int}),
+            self._public("OHLC", ohlc_params),
             drop_incomplete=True,
         )
         closes: list[float] = []
@@ -352,6 +364,8 @@ class KrakenClient:
             "ordertype": ot_norm,
             "volume": (f"{vol_f:.12f}".rstrip("0").rstrip(".") or "0") if "e" in vol_s.lower() else vol_s,
         }
+        if is_kraken_tokenized_asset(pair_s):
+            data["asset_class"] = "tokenized_asset"
         if ot_norm == "limit":
             px_f = safe_pos_float(price, default=None)
             if px_f is None:

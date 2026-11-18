@@ -1690,9 +1690,19 @@ class Strategy(BaseSpotMixin):
                 base_tp_pct=self.p.takeprofit_pct,
             )
 
+        has_multi_tranches = bool(self.p.tp_tranches)
+        sold_tranches = set(self.s.get("tp_sold_levels") or ()) if has_multi_tranches else set()
+        hybrid_trail_tail = self.p.tp_trend_hold and len(self.p.tp_tranches) > 1
+        fixed_tranches_done = hybrid_trail_tail and all(
+            idx in sold_tranches for idx in range(len(self.p.tp_tranches) - 1)
+        )
+        if fixed_tranches_done:
+            eff_tp = self.p.tp_tranches[-1][0]
         trail_armed = safe_pos_float(self.s.get("trail_peak"), None) is not None
-        trend_hold_active = self.p.tp_trend_hold and not bool(self.p.tp_tranches)
+        trend_hold_active = (self.p.tp_trend_hold and not has_multi_tranches) or fixed_tranches_done
         tp_ref_price = high if high is not None else price
+        if hybrid_trail_tail and not fixed_tranches_done and tp_ref_price >= sr.tp_price(avg, self.p.tp_tranches[-1][0]):
+            self.s["trail_peak"] = max(safe_pos_float(self.s.get("trail_peak"), tp_ref_price), tp_ref_price)
         if trend_hold_active and (trail_armed or tp_ref_price >= sr.tp_price(avg, eff_tp)):
             if self.p.tp_mdhtp_enabled and self._evaluate_mdhtp_tp(
                 price, avg, held, eff_tp, high=high, regime=regime,
@@ -1723,21 +1733,26 @@ class Strategy(BaseSpotMixin):
             log(f"  [STRAT] above the TP, RIDING IT (peak {peak:.{self.price_dec}f}, trail-stop {trail_stop:.{self.price_dec}f})")
             return False
 
-        self._clear_state_slots("trail_peak", "trail_stop")
+        if not (hybrid_trail_tail and not fixed_tranches_done):
+            self._clear_state_slots("trail_peak", "trail_stop")
         if trend_hold_active:
             self._cancel_orders("sell", exclude_market=True)
             return False
 
-        has_multi_tranches = bool(self.p.tp_tranches)
         raw_tranches: list[tuple[int | None, float, float]] = (
             [(idx, pct, share) for idx, (pct, share) in enumerate(self.p.tp_tranches)]
             if has_multi_tranches
             else [(None, eff_tp, 100.0)]
         )
-        sold_tranches = set(self.s.get("tp_sold_levels") or ()) if has_multi_tranches else set()
-        unsold = [item for item in raw_tranches if item[0] is None or item[0] not in sold_tranches]
-        if not unsold:
-            unsold = [(None, raw_tranches[-1][1], 100.0)]
+        all_unsold = [item for item in raw_tranches if item[0] is None or item[0] not in sold_tranches]
+        if not all_unsold:
+            all_unsold = [(None, raw_tranches[-1][1], 100.0)]
+        holding_trail_tail = hybrid_trail_tail and not fixed_tranches_done
+        unsold = (
+            [item for item in all_unsold if item[0] != len(self.p.tp_tranches) - 1]
+            if holding_trail_tail
+            else all_unsold
+        )
 
         sells = [o for o in self.s["orders"] if o["side"] == "sell"]
         locked_by_slot: dict[int, tuple[float, float, int | None]] = {}
@@ -1764,14 +1779,15 @@ class Strategy(BaseSpotMixin):
 
         unstarted = [(slot_i, tr_idx, pct, share) for slot_i, (tr_idx, pct, share) in enumerate(unsold) if slot_i not in locked_by_slot]
         rem_pool = max(0.0, round(held - reserved_vol, self.vol_dec))
-        share_sum = sum(share for _, _, _, share in unstarted)
+        tail_hold_share = self.p.tp_tranches[-1][1] if holding_trail_tail else 0.0
+        share_sum = sum(share for _, _, _, share in unstarted) + tail_hold_share
         sized_by_slot: dict[int, tuple[float, float, int | None]] = dict(locked_by_slot)
         if unstarted and rem_pool > 0 and share_sum > 0:
             rem = rem_pool
             for u_pos, (slot_i, tr_idx, pct, share) in enumerate(unstarted):
                 q = (
                     self._dust_safe_qty(rem)
-                    if u_pos == len(unstarted) - 1
+                    if (u_pos == len(unstarted) - 1 and not holding_trail_tail)
                     else min(rem, round(rem_pool * share / share_sum, self.vol_dec))
                 )
                 rem = round(rem - q, self.vol_dec)
