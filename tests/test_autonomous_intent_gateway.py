@@ -223,7 +223,7 @@ def test_process_intent_shadow_mode_observation(temp_workspace):
     assert processed["history"][-1]["notional_usd"] == 2000.0
     mock_notify.assert_called_once()
     assert "BTCUSDC" in mock_notify.call_args[1]["symbol"]
-    assert mock_notify.call_args[1]["title"] == "SHADOW BUY BTC@80000.00 ~2000 $ ~ [binance:auto_cryptotrade_executor]"
+    assert mock_notify.call_args[1]["title"] == "SHADOW BUY BTC@80000.00 ~2000 $~ [binance:auto_cryptotrade_executor]"
 
 
 @pytest.mark.parametrize("side", ["BUY", "SELL"])
@@ -273,7 +273,7 @@ def test_process_intent_symmetric_buy_and_sell_bypass_all_profit_guards(temp_wor
     assert kwargs["client_order_id"] == f"AI_intent_sym_{side.lower()}"
     assert kwargs["bypass_guards"] == AUTONOMOUS_BYPASS_GUARDS
     assert {"all", "daily_limit", "profit_guard", "trend", "qlimit", "intelligence", "llm"} <= set(kwargs["bypass_guards"])
-    assert mock_notify.call_args[1]["title"] == f"FILLED {side} BTC@79500.00 ~1200 $ ~ [binance:auto_cryptotrade_executor]"
+    assert mock_notify.call_args[1]["title"] == f"FILLED {side} BTC@79500.00 ~1200 $~ [binance:auto_cryptotrade_executor]"
 
 
 def test_process_intent_clamps_to_available_wallet_balance_and_blocks_zero_balance(temp_workspace):

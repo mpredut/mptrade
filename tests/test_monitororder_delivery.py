@@ -234,7 +234,7 @@ class TestMonitororderNotifications(unittest.TestCase):
              patch("notify_engine.alertnotifiers.notify") as mock_notify:
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
             mock_notify.assert_called_once_with(
-                title="PLACED BUY TAO@283.92 ~142 $ ~ [binance]",
+                title="PLACED BUY TAO@283.92 ~142 $~ [binance]",
                 body="~141.96 USDC (qty: 0.5, order: 2001)",
                 source="monitororder",
                 symbol="TAOUSDC",
@@ -250,7 +250,7 @@ class TestMonitororderNotifications(unittest.TestCase):
                 "ARBUSDC", "BUY", 721818232, 0.131, 1500.0, owner="tradeall", age_str="15.1m", ttl_str="15.0m"
             )
             mock_exp_notify.assert_called_once_with(
-                title="EXPIRED BUY ARB@0.131 ~197 $ ~ [binance:tradeall]",
+                title="EXPIRED BUY ARB@0.131 ~197 $~ [binance:tradeall]",
                 body="~196.50 USDC · TTL 15.0m (active 15.1m, canceled) (qty: 1500, order: 721818232)",
                 source="monitororder",
                 symbol="ARBUSDC",

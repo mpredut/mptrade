@@ -183,7 +183,7 @@ def format_trade_notification(
     prefix: Any = None,
 ) -> tuple[str, str]:
     """Build canonical ``(title, body)`` for order/trade notifications:
-    Title: ``<STATUS> <SIDE> <BASE>@<PRICE> ~<TOTAL> $ ~ [venue:module]``
+    Title: ``<STATUS> <SIDE> <BASE>@<PRICE> ~<TOTAL> $~ [venue:module]``
     Body:  ``~<VAL> <QUOTE> [| detail] (qty: <QTY>, order: <ID>)``
     """
     st_s = str(status or "FILLED").strip().upper() or "FILLED"
@@ -220,9 +220,9 @@ def format_trade_notification(
 
     ccy_sym = "€" if q_ccy == "EUR" else "$"
     if vf >= 10.0:
-        tot_subj = f"~{math.floor(vf + 0.5)} {ccy_sym} ~"
+        tot_subj = f"~{math.floor(vf + 0.5)} {ccy_sym}~"
     elif vf > 0.0:
-        tot_subj = f"~{vf:.2f} {ccy_sym} ~"
+        tot_subj = f"~{vf:.2f} {ccy_sym}~"
     else:
         tot_subj = ""
 

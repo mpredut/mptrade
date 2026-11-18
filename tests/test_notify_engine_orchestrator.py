@@ -1623,22 +1623,22 @@ send_os_ntfy "DEV CI Regression RECOVERED" "Commit eeeeeee passed all tests" "de
         self.assertEqual(format_trade_venue_tag("t212", "ai_executor", symbol="NVDA_US_EQ"), "[t212:auto_sharetrade_executor]")
         self.assertEqual(
             format_trade_notification("FILLED", "BUY", "ARBUSDC", "0.131", 1500, 196.50, "USDC", "721818232", venue="binance", owner="tradeall"),
-            ("FILLED BUY ARB@0.131 ~197 $ ~ [binance:tradeall]", "~196.50 USDC (qty: 1500, order: 721818232)"),
+            ("FILLED BUY ARB@0.131 ~197 $~ [binance:tradeall]", "~196.50 USDC (qty: 1500, order: 721818232)"),
         )
         self.assertEqual(
             format_trade_notification("FILLED", "BUY", "TAOUSDC", "212.50", 1.7379, 370.52, "USDC", "721818232", venue="binance", owner="assetguardian"),
-            ("FILLED BUY TAO@212.50 ~371 $ ~ [binance:assetguardian]", "~370.52 USDC (qty: 1.7379, order: 721818232)"),
+            ("FILLED BUY TAO@212.50 ~371 $~ [binance:assetguardian]", "~370.52 USDC (qty: 1.7379, order: 721818232)"),
         )
         self.assertEqual(
             format_trade_notification("PLACED", "SELL", "TAOUSDC", "224.20", 7.1932, 1612.72, "USDC", "721977719", venue="binance", owner="tradeall"),
-            ("PLACED SELL TAO@224.20 ~1613 $ ~ [binance:tradeall]", "~1612.72 USDC (qty: 7.1932, order: 721977719)"),
+            ("PLACED SELL TAO@224.20 ~1613 $~ [binance:tradeall]", "~1612.72 USDC (qty: 7.1932, order: 721977719)"),
         )
         self.assertEqual(
             format_trade_notification("EXPIRED", "BUY", "ARBUSDC", "0.131", 1500, 196.50, "USDC", "721818232", venue="binance", owner="tradeall", detail="TTL 15.0m (active 15.1m, canceled)"),
-            ("EXPIRED BUY ARB@0.131 ~197 $ ~ [binance:tradeall]", "~196.50 USDC · TTL 15.0m (active 15.1m, canceled) (qty: 1500, order: 721818232)"),
+            ("EXPIRED BUY ARB@0.131 ~197 $~ [binance:tradeall]", "~196.50 USDC · TTL 15.0m (active 15.1m, canceled) (qty: 1500, order: 721818232)"),
         )
-        self.assertEqual(strip_owner_tags("FILLED BUY TAO@212.50 ~371 $ ~ [binance:assetguardian]").strip(), "FILLED BUY TAO@212.50 ~371 $ ~")
-        self.assertEqual(strip_owner_tags("FILLED SELL ARB@0.1679 ~1940 $ ~ [binance:auto_cryptotrade_executor]").strip(), "FILLED SELL ARB@0.1679 ~1940 $ ~")
+        self.assertEqual(strip_owner_tags("FILLED BUY TAO@212.50 ~371 $~ [binance:assetguardian]").strip(), "FILLED BUY TAO@212.50 ~371 $~")
+        self.assertEqual(strip_owner_tags("FILLED SELL ARB@0.1679 ~1940 $~ [binance:auto_cryptotrade_executor]").strip(), "FILLED SELL ARB@0.1679 ~1940 $~")
         with patch.object(self.server, "_send_ntfy", return_value=True) as mock_send_ntfy:
             self.server.dispatch_alerts([{
                 "type": "bot_event",
