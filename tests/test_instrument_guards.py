@@ -2636,3 +2636,106 @@ def test_native_replace_contract_defaults_and_config_gate(monkeypatch):
     assert outcomes_log.native_replace_enabled(incapable) is False
     assert outcomes_log.native_replace_enabled(SimpleNamespace(name="Kraken")) is False
     assert outcomes_log.native_replace_enabled(None) is False
+
+
+def test_instrument_place_native_replace_dispatch_and_locked_balance(monkeypatch, tmp_path):
+    """[NATIVE_REPLACE step 2] Instrument.place dispatches to replace_order when enabled, adds locked balance, strips replace kwargs, and propagates replace_not_attempted."""
+    monkeypatch.setattr(outcomes_log, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(_inst_mod._EXECUTION_AUDIT, "directory", str(tmp_path))
+
+    replaced_calls = []
+
+    class _ReplaceFakeProvider(_FakeProvider):
+        def replace_order(self, symbol, order_id, side, price, qty, **kwargs):
+            replaced_calls.append((symbol, order_id, side, price, qty, kwargs))
+            return {"orderId": order_id, "amended_in_place": True}
+
+    prov = _ReplaceFakeProvider(
+        name="Kraken",
+        free_bal=0.0,  # Entire balance is locked in the resting order being replaced.
+        reconcile_caps=OrderReconciliationCapabilities(
+            status_by_order_id=True,
+            cancel_by_order_id=True,
+            list_open_orders=True,
+            replace_by_order_id=True,
+        ),
+    )
+    api = SimpleNamespace(provider_by_name=lambda p: prov)
+    inst = Instrument(SYMBOL, SYMBOL, "Kraken", base="ZZZFAKE", quote="USD", api=api)
+
+    # 1. With venue enabled in NATIVE_ORDER_REPLACE_VENUES: dispatches to replace_order and adds locked balance.
+    monkeypatch.setattr(outcomes_log, "NATIVE_ORDER_REPLACE_VENUES", frozenset({"kraken"}))
+    out_ok = {}
+    res = inst.place(
+        "SELL",
+        105.0,
+        2.5,
+        smart=False,
+        bypass_guards={"all"},
+        caller_owns_retry=True,
+        replaces_order_id="OLD-TXID-1",
+        replaces_locked_balance=2.5,
+        _outcome_context=out_ok,
+    )
+    assert res == {"orderId": "OLD-TXID-1", "amended_in_place": True}
+    assert out_ok["accepted"] is True
+    assert len(replaced_calls) == 1
+    assert len(prov.placed) == 0
+    sym, oid, side, px, qty, kw = replaced_calls[0]
+    assert (sym, oid, side, px, qty) == (SYMBOL, "OLD-TXID-1", "SELL", 105.0, 2.5)
+    assert kw["known_balance"] == pytest.approx(2.5)
+    assert "replaces_order_id" not in kw
+    assert "replaces_locked_balance" not in kw
+
+    # 2. With venue absent from NATIVE_ORDER_REPLACE_VENUES: dispatches to place_order and strips replace kwargs.
+    monkeypatch.setattr(outcomes_log, "NATIVE_ORDER_REPLACE_VENUES", frozenset())
+    prov._free_bal = 10.0
+    res_place = inst.place(
+        "SELL",
+        105.0,
+        2.5,
+        smart=False,
+        bypass_guards={"all"},
+        caller_owns_retry=True,
+        replaces_order_id="OLD-TXID-2",
+        replaces_locked_balance=2.5,
+    )
+    assert res_place == {"orderId": 1}
+    assert len(replaced_calls) == 1
+    assert len(prov.placed) == 1
+    assert "replaces_order_id" not in prov.placed[0][4]
+    assert "replaces_locked_balance" not in prov.placed[0][4]
+
+    # 3. Base replace_order refusal propagates reason="replace_not_attempted" and state="refused".
+    base_prov = _FakeProvider(
+        name="Kraken",
+        free_bal=10.0,
+        reconcile_caps=OrderReconciliationCapabilities(replace_by_order_id=True),
+    )
+    inst_base = Instrument(
+        SYMBOL,
+        SYMBOL,
+        "Kraken",
+        base="ZZZFAKE",
+        quote="USD",
+        api=SimpleNamespace(provider_by_name=lambda p: base_prov),
+    )
+    monkeypatch.setattr(outcomes_log, "NATIVE_ORDER_REPLACE_VENUES", frozenset({"kraken"}))
+    out_refused = {}
+    assert (
+        inst_base.place(
+            "SELL",
+            105.0,
+            2.5,
+            smart=False,
+            bypass_guards={"all"},
+            caller_owns_retry=True,
+            replaces_order_id="OLD-TXID-3",
+            replaces_locked_balance=2.5,
+            _outcome_context=out_refused,
+        )
+        is None
+    )
+    assert out_refused["accepted"] is False
+    assert out_refused["state"] == "refused"
+    assert out_refused["reason"] == "replace_not_attempted"

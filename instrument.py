@@ -11,6 +11,7 @@ provider or runs the shared policy pipeline before provider mechanics.
 """
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from functools import partial
 import inspect
 import os
 import sys
@@ -154,6 +155,8 @@ class _PlaceContext:
     prequeued_client_order_id: Any = None
     prequeued_intent_id: Any = None
     permit_requested_price: Any = None
+    native_replace_oid: Optional[str] = None
+    native_replace_locked_balance: float = 0.0
     submit_attempted: bool = False
     retry_enqueued: bool = False
     order: Any = None
@@ -356,6 +359,13 @@ class Instrument:
         allow_math_reference_sell = _parse_bool_flag(
             kwargs.pop("allow_math_reference_sell", False), False
         )
+        replaces_oid_raw = clean_order_id(kwargs.pop("replaces_order_id", None))
+        replaces_locked_raw = safe_pos_float(kwargs.pop("replaces_locked_balance", None), default=0.0) or 0.0
+        native_replace_oid = (
+            replaces_oid_raw
+            if (replaces_oid_raw and order_lifecycle.native_replace_enabled(self._provider))
+            else None
+        )
         order_kind = clean_scalar_str(kwargs.get("kind")) or clean_scalar_str(kwargs.get("motivation"))
         if order_kind is not None:
             kwargs["kind"] = order_kind
@@ -391,6 +401,8 @@ class Instrument:
             caller_module=caller_module,
             allow_math_reference_sell=allow_math_reference_sell,
             order_kind=order_kind,
+            native_replace_oid=native_replace_oid,
+            native_replace_locked_balance=replaces_locked_raw if native_replace_oid else 0.0,
         )
         ctx.medium_trend_action_cfg = ctx.kwargs.get("medium_trend_action")
         ctx.medium_trend_scale_cfg = ctx.kwargs.get("medium_trend_scale")
@@ -866,6 +878,8 @@ class Instrument:
                 try:
                     kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
                     if kb_f is not None:
+                        if ctx.native_replace_oid and ctx.native_replace_locked_balance > 0:
+                            kb_f = max(0.0, kb_f) + ctx.native_replace_locked_balance
                         if kb_f <= 0:
                             if allow_priority_preempt:
                                 deferred_zero_balance = True
@@ -876,6 +890,13 @@ class Instrument:
                             ctx.known_balance = kb_f
                 except Exception:
                     ctx.known_balance = None
+            if (
+                not ctx.reason
+                and ctx.native_replace_oid
+                and ctx.native_replace_locked_balance > 0
+                and ctx.known_balance is None
+            ):
+                ctx.known_balance = ctx.native_replace_locked_balance
 
             if not ctx.reason and ctx.is_market:
                 ctx.quantity_price = safe_pos_float(self._provider.get_current_price(self.symbol), default=None)
@@ -1384,9 +1405,12 @@ class Instrument:
                 provider_kwargs["cache_permit"] = ctx.cache_permit
             if ctx.smart and ctx.defers_smart_cancel:
                 provider_kwargs["_cancel_opposite_requested_price"] = ctx.orig_price
-            response = self._provider.place_order(
-                self.symbol, ctx.side_u, ctx.price, ctx.qty, **provider_kwargs
+            dispatch = (
+                partial(self._provider.replace_order, self.symbol, ctx.native_replace_oid)
+                if ctx.native_replace_oid
+                else partial(self._provider.place_order, self.symbol)
             )
+            response = dispatch(ctx.side_u, ctx.price, ctx.qty, **provider_kwargs)
             if _accepted_order_payload(response):
                 ctx.order, ctx.reason = response, None
             else:
