@@ -1074,6 +1074,15 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
             _refresh_wall_telemetry(use_sub_ten_decimals=True)
 
         ob_mid_est = safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)
+        last_alt_ts_s = (normalize_epoch_sec(last_alt_pt[0], default=0.0) or 0.0) if last_alt_pt is not None else 0.0
+        best_series_ts_s = max(safe_pos_float(ctx.cp_ts_sec, default=0.0) or 0.0, last_alt_ts_s)
+        ob_est_is_live_and_newer = (
+            ob_ts_est <= 0.0
+            or (
+                -5.0 <= (now_ts_s - ob_ts_est) <= 60.0
+                and (best_series_ts_s <= 0.0 or ob_ts_est >= best_series_ts_s - 2.0)
+            )
+        )
         if (
             not is_eq_sym
             and is_usd_sym
@@ -1081,7 +1090,10 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
             and ob_mid_est is not None
             and (
                 cur_px_est <= 0.0
-                or abs(cur_px_est - ob_mid_est) / max(cur_px_est, ob_mid_est) <= 0.01
+                or (
+                    ob_est_is_live_and_newer
+                    and abs(cur_px_est - ob_mid_est) / max(cur_px_est, ob_mid_est) <= 0.01
+                )
                 or is_ob_mid_fresher_than_series(
                     cur_px_est, ob_mid_est, ob_ts_est, now_ts_s, last_alt_pt, is_exact_ob_sym=is_exact_ob_sym
                 )
@@ -1090,6 +1102,16 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
             cur_px_est = ob_mid_est
             if m24:
                 recalculate_live_price_geometry(m24, ob_mid_est)
+        elif (
+            not is_eq_sym
+            and is_usd_sym
+            and cur_px_est > 0.0
+            and ob_mid_est is not None
+            and not ob_est_is_live_and_newer
+            and abs(cur_px_est - ob_mid_est) / max(cur_px_est, ob_mid_est) <= 0.01
+        ):
+            rescale_orderbook_walls_to_price(cur_m_info, cur_px_est, ob_mid_est)
+            _refresh_wall_telemetry()
         if m24 and m24.get("vp_source") == "TPO":
             _upgrade_pretrade_tpo_vp_from_ohlc(
                 cachedb_dir, symbol, m24, cur_px_est, last_alt_pt, ob_ts_est, allow_network=allow_network
@@ -1191,12 +1213,23 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
                 if btc_last_pt is not None and btc_last_pt[1] > 0.0:
                     btc_live_px = btc_last_pt[1]
                 btc_m_info = load_symbol_microstructure(cachedb_dir, "BTCUSDC", _rj)
+                btc_ob_ts = safe_pos_float((btc_m_info or {}).get("_ob_ts"), default=0.0) or 0.0
                 if isinstance(btc_m_info, dict):
                     for _k_int_ts in ("_ob_ts", "_ob_raw_ts", "_deriv_ts", "_whale_ts"):
                         btc_m_info.pop(_k_int_ts, None)
                 btc_ob_mid = safe_pos_float((btc_m_info or {}).get("ob_mid_price"), default=None)
+                btc_now_s = _time.time()
+                btc_last_ts_s = (normalize_epoch_sec(btc_last_pt[0], default=0.0) or 0.0) if btc_last_pt is not None else 0.0
+                btc_ob_fresh = (
+                    btc_ob_ts <= 0.0
+                    or (
+                        -5.0 <= (btc_now_s - btc_ob_ts) <= 60.0
+                        and (btc_last_ts_s <= 0.0 or btc_ob_ts >= btc_last_ts_s - 2.0)
+                    )
+                )
                 if (
                     btc_ob_mid is not None
+                    and btc_ob_fresh
                     and btc_last_pt is not None
                     and btc_last_pt[1] > 0.0
                     and abs(btc_ob_mid - btc_last_pt[1]) / max(btc_ob_mid, btc_last_pt[1]) <= 0.01
@@ -1779,7 +1812,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             else:
                 telemetry["Derivatives Open Interest"] = f"{oi_base}{eq_oi_tag}"
 
-        liq_c = {} if is_eq_sym else compute_liquidation_clusters(p_est, cur_m_info)
+        liq_c = {} if is_eq_sym else compute_liquidation_clusters(p_est, cur_m_info, symbol=symbol)
         cur_m_info.update(liq_c)
         if is_usd_sym:
             cur_bd = safe_pos_float(cur_m_info.get("bid_depth_usd"), default=0.0) or 0.0
@@ -1810,6 +1843,18 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                         if (not sib_live_px or sib_live_px <= 0.0) and cur_px_est > 0.0:
                             if sib_ob_ts > 0.0 and (_time.time() - sib_ob_ts) > 120.0:
                                 sib_live_px = cur_px_est
+                        sib_last_ts_s = (
+                            (normalize_epoch_sec(sib_last_pt[0], default=0.0) or 0.0)
+                            if sib_last_pt is not None
+                            else 0.0
+                        )
+                        sib_ob_fresh = (
+                            sib_ob_ts <= 0.0
+                            or (
+                                -5.0 <= (_time.time() - sib_ob_ts) <= 60.0
+                                and (sib_last_ts_s <= 0.0 or sib_ob_ts >= sib_last_ts_s - 2.0)
+                            )
+                        )
                         if _should_rescale_usd_sibling_walls(
                             cand_u,
                             sib_live_px,
@@ -1817,6 +1862,12 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                             cur_px_est,
                             ob_ts=sib_ob_ts,
                             last_pt=sib_last_pt,
+                        ) or (
+                            not sib_ob_fresh
+                            and sib_live_px
+                            and sib_live_px > 0.0
+                            and sib_ob_mid is not None
+                            and abs(sib_live_px - sib_ob_mid) / max(sib_live_px, sib_ob_mid) <= 0.01
                         ):
                             rescale_orderbook_walls_to_price(sib_m, sib_live_px, sib_ob_mid)
                         sib_px = safe_pos_float(sib_m.get("ob_mid_price"), default=None) or sib_live_px or cur_px_est
@@ -1846,7 +1897,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                                 sib_p_est["price"] = sib_px
                                 recalculate_live_price_geometry(sib_p_est, sib_px)
                         enrich_microstructure_cvd(sib_m, sib_p_est)
-                        sib_m.update(compute_liquidation_clusters(sib_p_est, sib_m))
+                        sib_m.update(compute_liquidation_clusters(sib_p_est, sib_m, symbol=cand_u))
                         micro_pair = {symbol: cur_m_info, cand_u: sib_m}
                         pt_pair = {symbol: p_est, cand_u: sib_p_est}
                         reconcile_sibling_flow_and_liq_regimes(micro_pair, pt_pair)

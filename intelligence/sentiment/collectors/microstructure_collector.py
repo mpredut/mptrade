@@ -586,6 +586,18 @@ def load_symbol_microstructure(
         m_info["ask_wall_px"] = safe_pos_float(obj_attr(ob, "largest_ask_wall_price", obj_attr(ob, "ask_wall_px")), default=None) if ob_same_quote else None
         if (b_span := safe_pos_float(obj_attr(ob, "book_span_pct"), default=None)) is not None:
             m_info["book_span_pct"] = round(b_span, 3)
+        elif (
+            ob_mid
+            and ob_mid > 0.0
+            and (b_dep_m := m_info.get("bid_depth_usd") or 0.0) >= 1_000_000.0
+            and (a_dep_m := m_info.get("ask_depth_usd") or 0.0) >= 1_000_000.0
+            and abs((m_info.get("depth_1pct_bid_usd") or 0.0) - b_dep_m) < 1.0
+            and abs((m_info.get("depth_1pct_ask_usd") or 0.0) - a_dep_m) < 1.0
+            and (bw_m := m_info.get("bid_wall_px"))
+            and (aw_m := m_info.get("ask_wall_px"))
+            and 0.0 < (w_span_pct := max(abs(ob_mid - bw_m), abs(aw_m - ob_mid)) / ob_mid * 100.0) < 0.50
+        ):
+            m_info["book_span_pct"] = round(w_span_pct, 3)
     if deriv is not None:
         deriv_ts_v = normalize_epoch_sec(obj_attr(deriv, "ts", obj_attr(deriv, "timestamp", None)), default=0.0) or 0.0
         if deriv_ts_v > 0.0:
@@ -1489,7 +1501,21 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     t_rth_open = bool(is_symbol_market_open(ticker, eff_now))
                 except Exception:
                     t_rth_open = False
-                t_entry.setdefault("quote_source", "t212_live" if t_rth_open else "t212_rth_close")
+                cp_ts_s_eq = (cp_pt[0] / 1000.0) if (cp_pt is not None and cp_pt[0] > 1e11) else 0.0
+                if (
+                    not t_rth_open
+                    and cp_pt is not None
+                    and cp_pt[1] > 0.0
+                    and cached_t212_px is not None
+                    and abs(cached_t212_px - round(cp_pt[1], 4)) > 1e-4
+                    and (pos_ts_val or 0.0) > cp_ts_s_eq > 0.0
+                ):
+                    cp_close_px = round(cp_pt[1], 4)
+                    t212_cached_px[ticker] = cp_close_px
+                    t_entry.setdefault("quote_source", "yahoo_ext_cached")
+                    t_entry["t212_close_px"] = cp_close_px
+                else:
+                    t_entry.setdefault("quote_source", "t212_live" if t_rth_open else "t212_rth_close")
                 if (t_ts_v := t212_pos_ts.get(ticker, 0.0)) > 0.0 and 0.0 <= (eff_now - t_ts_v) <= 14 * 86400.0:
                     t_entry["quote_age_min"] = round(max(0.0, eff_now - t_ts_v) / 60.0, 1)
 

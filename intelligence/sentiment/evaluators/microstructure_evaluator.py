@@ -1423,7 +1423,7 @@ def reconcile_sibling_flow_and_liq_regimes(
             prim_m["_cross_venue_ob_imbalance"] = agg_ob_imb
             enrich_microstructure_cvd(prim_m, p_d if p_d else None)
             if prim_m.get("liq_magnet_bias") is not None and isinstance(prim_p_dict, dict):
-                prim_m.update(compute_liquidation_clusters(prim_p_dict, prim_m))
+                prim_m.update(compute_liquidation_clusters(prim_p_dict, prim_m, symbol=prim_sym))
         prim_mag = prim_m.get("liq_magnet_bias")
         prim_cvd_reg = prim_m.get("cvd_regime")
         if prim_cvd_reg == "spot_absorbing" and any(
