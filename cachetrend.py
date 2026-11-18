@@ -1958,7 +1958,7 @@ class KalmanStateTracker:
             try:
                 load_target = self.state_path
                 if (
-                    os.path.basename(self.state_path) in ("cache_kalman_trend.json", "kalman_state.json")
+                    os.path.basename(self.state_path) in (CACHE_KALMAN_TREND_FILENAME, "kalman_state.json")
                     and not os.path.exists(self.state_path)
                 ):
                     for legacy_name in ("kalman_state.json", "shadow_state.json"):

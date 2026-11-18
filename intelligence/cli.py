@@ -23,7 +23,7 @@ from botcore import (
     safe_nonneg_ts,
     safe_pos_float,
 )
-from cachepaths import cache_symbol_variants, clean_symbol_key
+from cachepaths import CACHE_T_TREND_FILENAME, cache_symbol_variants, clean_symbol_key
 import intelligence.daemon as _intel_daemon
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
 from intelligence.internal.state.survival import (
@@ -102,7 +102,7 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         eff_est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)
         t_est = None
         if eff_est_fn is _ORIG_ESTIMATE_T and not hasattr(eff_est_fn, "_mock_name"):
-            local_t_data = read_json_dict(os.path.join(cache_dir, "cache_T_trend.json"), default=None, recover_previous=True)
+            local_t_data = read_json_dict(os.path.join(cache_dir, CACHE_T_TREND_FILENAME), default=None, recover_previous=True)
             if isinstance(local_t_data, dict):
                 t_est = _lookup_t_cache_entry(local_t_data, symbol)
         if not isinstance(t_est, dict):

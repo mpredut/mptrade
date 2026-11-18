@@ -48,6 +48,7 @@ from botcore import (
     topic_spec,
 )
 from cachepaths import (
+    CACHE_CURRENT_PRICE_FILENAME,
     is_readonly_xstock_symbol,
     matches_asset_scope,
     normalize_venue_name,
@@ -537,16 +538,134 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
     return picked
 
 
+_SIG_SRC_LOC_RE = re.compile(r"\[(?:[A-Za-z0-9_.-]+:\d+|unknown)\]\s*", re.IGNORECASE)
+_SIG_STDIO_RE = re.compile(r"\[(?:STDERR|STDOUT)\]\s*", re.IGNORECASE)
+_SIG_HEX_RE = re.compile(r"0x[0-9a-fA-F]+")
+_SIG_NUM_RE = re.compile(r"\b\d{4,}\b")
+
+
 def normalize_error_signature(line: str) -> str:
     """Strip timestamps, PIDs, and hex addresses so recurring log errors group into one signature."""
-    s = _FULL_TS_RE.sub("", line)
-    s = _GLOG_TS_RE.sub("", s)
-    s = _CLOCK_TS_RE.sub("", s)
-    s = re.sub(r"\[(?:[A-Za-z0-9_.-]+:\d+|unknown)\]\s*", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\[(?:STDERR|STDOUT)\]\s*", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", s)
-    s = re.sub(r"\b\d{4,}\b", "NUM", s)
+    s = _CLOCK_TS_RE.sub("", _GLOG_TS_RE.sub("", _FULL_TS_RE.sub("", line)))
+    s = _SIG_NUM_RE.sub("NUM", _SIG_HEX_RE.sub("0xADDR", _SIG_STDIO_RE.sub("", _SIG_SRC_LOC_RE.sub("", s))))
     return " ".join(s.strip().split())[:180]
+
+
+_LOG_ERR_RE = re.compile(
+    r"(\bERROR\b|\bCRITICAL\b(?!_SHOCK)|Traceback|fail-closed|BUY BLOCKED|\bException\b|"
+    r"(?:^|\s)[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Interrupt|Timeout)\s*:)",
+    re.IGNORECASE,
+)
+_LOG_PY_EXC_LINE_RE = re.compile(
+    r"^(?:[A-Za-z_][A-Za-z0-9_.]*\.)?[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Interrupt|Timeout)\s*:"
+)
+_LOG_TB_BOILERPLATE_RE = re.compile(
+    r"^(?:The above exception was the direct cause of the following exception:|"
+    r"During handling of the above exception, another exception occurred:|"
+    r"File \".*\", line (?:NUM|\d+))",
+    re.IGNORECASE,
+)
+_LOG_BENIGN_WARN_RE = re.compile(r"(\[CMCPlatform\]\s+Warning|\[WARNING\])", re.IGNORECASE)
+_LOG_SERIOUS_ERR_RE = re.compile(r"(Traceback|CRITICAL(?!_SHOCK)|fail-closed|BUY BLOCKED)", re.IGNORECASE)
+_LOG_STDIO_INDENT_RE = re.compile(r"\[(?:STDERR|STDOUT)\]\s{4,}", re.IGNORECASE)
+_LOG_T212_SYM_RE = re.compile(r"\b([A-Z0-9]+_(?:US_)?EQ)\b")
+_LOG_SUPERVISOR_SUMMARY_RE = re.compile(
+    r"(Autonomous AI Supervisor cycle complete:|\[(ENFORCE|SHADOW)\]\s+auto_|"
+    r"\[SHADOW WOULD (?:EXECUTE|APPLY)\]|\[ENFORCE (?:EXECUTING|ATTEMPTING PATCH)\]|"
+    r"\"__orchestrator_intent__\"\s*:|"
+    r"mailer:\s+Email delivery skipped|Email gated by common delivery policy|"
+    r"(?:Supervisor\s+)?ntfy(?: delivery)? gated (?:by common policy|after due-batch flush)|Dispatched ntfy alert to|"
+    r"Retry queue full .* dropping oldest notification|"
+    r"<!--\s*a padding to disable MSIE|<(?:head|center)>.*500 Internal Server Error|"
+    r"Exception ignored in:.*BaseSubprocessTransport\.__del__|RuntimeError:\s+Event loop is closed|"
+    r"curl:\s*\(22\).*returned error:\s*429|deadman:\s*(?:curl ERROR after retries|ntfy rate-limited)|"
+    r"In-place /compact for topic .* failed:|"
+    r"the historical price reference was explicitly bypassed;|"
+    r"\[<stdin>:\d+\])",
+    re.IGNORECASE,
+)
+_LOG_GUARD_RE = re.compile(
+    r"(\[[^\[\]\r\n]*GUARD[^\[\]\r\n]*\]|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)", re.IGNORECASE
+)
+_LOG_GUARD_PERMIT_RE = re.compile(
+    r"(\bPermitted\.|\bprice\s+\S+\s+permitted\b|\bfrom older period bypassed\b|"
+    r"\breference is off for this venue/module\b|\bbrake=(?:BrakeAction\.)?ALLOW\b)",
+    re.IGNORECASE,
+)
+_LOG_GUARD_EURO_RE = re.compile(r"(\b(?:BUY|SELL)\s+[A-Z0-9_]*?(?:USD|USDC|USDT|_EQ)\s+)\u20ac(?=\d)")
+_LOG_GUARD_NUM_RE = re.compile(r"(?<![A-Za-z_])[-+]?\d+(?:\.\d+)?%?(?:[hsm]\b)?")
+_LOG_DATED_FNAME_RE = re.compile(r"^(.+?)_\d{4}-\d{2}-\d{2}(\.(?:log|txt))$", re.IGNORECASE)
+_LOG_TRANSIENT_IP_AUTH_RE = re.compile(r"Invalid API-key,\s*IP,\s*or permissions for action", re.IGNORECASE)
+_LOG_BOT_CYCLE_RECOVERED_RE = re.compile(
+    r"(Order \d+ .* is protected from monitororder repricing|"
+    r"For [A-Z0-9_]+ there are no open (?:BUY|SELL) orders to begin with\.|"
+    r"get_trade_orders:\s+Total found \d+ orders|"
+    r"\[[A-Z0-9]+\]\s+Existing SELL order blocks AssetGuardian tier:|"
+    r"\[[A-Z0-9_]+\]\s+price=\d+(?:\.\d+)?,\s+window_min/max=|"
+    r"\[[A-Z0-9_]+\]\s+Current price:\s+\d+(?:\.\d+)?|"
+    r"apply_weight_limit|Started\.\s+check_interval=|"
+    r"\[Cache(?:CurrentPrice|24Price|365Price|Order|Trade)Manager\]\[info\]\s+(?:New order fills:|Save cache to file|[A-Z0-9_]+:\s+Added \d+ new items)|"
+    r"\[TRAIL\]\s+[A-Z0-9]+:\s+\d+(?:\.\d+)?\s+(?:peak|warming up)|\[TRAIL-K\]\s+heartbeat|"
+    r"\[FORWARD \(from the anchor\)\]|\[STRAT\]\s+price=\d+(?:\.\d+)?|"
+    r"===\s*xStock watcher started\s*===|price \d+(?:\.\d+)? vs allocation \d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_LOG_DAEMON_RECOVERED_RE = re.compile(
+    r"(Daemon status:\s*active|Remote-control daemon started|Daemon is active and healthy|ui-sync:\s*check healthy|"
+    r"===\s*(?:STRATEGIE\s+.*?\s+PORNITA|(?:[A-Z0-9_]+\s+)?STRATEGY\s+STARTED)\s*===|===\s*TRAILING STOP(?:\s+KRAKEN)?\s+started|\[STRAT\]\s+state loaded|"
+    r"\[kraken_cache\]\s+start:|\[kraken_cache\]\[ws\]\s+subscribed ownTrades|"
+    r"\[Pricefetcher\]\s+Checking symbol support:|\[price_watcher\]|\[resources\]\s+OK\b|"
+    r"\[verify\].*is LISTED and tradable|total size is [\d,]+\s+speedup is|"
+    r"Starting GlobalTelemetryCollector|Global telemetry cycle active:|"
+    r"Starting MacroAnalyzer|Macro analyzer cycle active:|"
+    r"Starting Autonomous AI Supervisor cycle|\[INTENT GATEWAY\]|"
+    r"\[TRADEALL\]\s+[A-Z0-9_]+\s+resolved trend:|"
+    r"OK \(tun0 \+ HTTPS through the tunnel\)|PIA healthy \(tun0 \+ DNS \+ HTTPS\)|\[order_retry\]\s+(?:start|ACCEPTED\b|FILLED\b|\{'attempted':)|\.env loaded from .*hyperliquid)",
+    re.IGNORECASE,
+)
+_LOG_STARTUP_FATAL_EXC_RE = re.compile(
+    r"(?:^(?:ImportError|ModuleNotFoundError|SyntaxError|IndentationError|NameError|UnboundLocalError):|"
+    r"ValueError:\s+Unknown cache type:|TypeError:.*got an unexpected keyword argument|"
+    r"TypeError:\s+Can't instantiate abstract class\b|error:\s+the following arguments are required:|"
+    r"\bname '[^']+' is not defined\b|\bcannot access local variable '[^']+' where it is not associated with a value\b)",
+    re.IGNORECASE,
+)
+_LOG_IGNORED_TEST_PREFIXES = (".", "pytest_", "__main___", "py.test_", "c_", "app_", "inspect_")
+_ACCOUNT_CACHE_GUARD_TOKENS = (
+    "account_cache_not_fresh", "account_cache_initializing",
+    "account cache is not fresh", "account_cache_writer_not_running",
+)
+_ACCOUNT_CACHE_ERR_TOKENS = (*_ACCOUNT_CACHE_GUARD_TOKENS, "ERROR reading AssetValue cache via cacheManager")
+_RECOVERABLE_TRANSIENT_ERR_TOKENS = (
+    "Failed to recover daemon", "Error: not signed in:", "Error: failed to start service:",
+    "antigravity-cli-daemon.service failed", "ui_sync_idle_sec", "[manage_agy] ERROR:",
+    "[ws] error: ping/pong timed out", "Connection to remote host was lost", "WS error: ",
+    "Temporary failure in name resolution", "NameResolutionError", "Network is unreachable",
+    "Connection timed out", "Read timed out", "The read operation timed out", "ConnectTimeoutError",
+    "cycle failed (", "EGeneral:Internal error", "[shadow_live] error:", "rsync error:",
+    "[rsync_cachedb] ERROR:", "agy CLI with model", "authentication failed or timed out",
+    "! network error ", "network error/empty response", "T212 order history: timeout/network error",
+    "FAILURE: every rung exhausted, the VPN is still down",
+)
+
+
+def _is_log_line_recovered(line: str) -> bool:
+    return bool(_LOG_BOT_CYCLE_RECOVERED_RE.search(line) or _LOG_DAEMON_RECOVERED_RE.search(line))
+
+
+def _has_subsequent_recovery(lines: List[str], start_idx: int, *, allow_weight_limit: bool = False) -> bool:
+    return any(
+        (allow_weight_limit and "apply_weight_limit" in lines[j]) or _is_log_line_recovered(lines[j])
+        for j in range(start_idx, len(lines))
+    )
+
+
+def _upsert_capped_event(events: List[str], sig_to_idx: Dict[str, int], sig: str, text: str) -> None:
+    if sig in sig_to_idx:
+        events[sig_to_idx[sig]] = text
+    elif len(events) < 50:
+        sig_to_idx[sig] = len(events)
+        events.append(text)
 
 
 def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float) -> LogEventSummary:
@@ -555,95 +674,11 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
     critical_events: List[str] = []
     guard_interventions: List[str] = []
     persistent_errors: List[Dict[str, Any]] = []
-    error_count = 0
-    warning_count = 0
-    scanned_count = 0
-
-    err_pattern = re.compile(
-        r"(\bERROR\b|\bCRITICAL\b(?!_SHOCK)|Traceback|fail-closed|BUY BLOCKED|\bException\b|"
-        r"(?:^|\s)[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Interrupt|Timeout)\s*:)",
-        re.IGNORECASE,
-    )
-    py_exc_line_pattern = re.compile(
-        r"^(?:[A-Za-z_][A-Za-z0-9_.]*\.)?[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Interrupt|Timeout)\s*:"
-    )
-    traceback_boilerplate_pattern = re.compile(
-        r"^(?:The above exception was the direct cause of the following exception:|"
-        r"During handling of the above exception, another exception occurred:|"
-        r"File \".*\", line (?:NUM|\d+))",
-        re.IGNORECASE,
-    )
-    benign_warn_pattern = re.compile(r"(\[CMCPlatform\]\s+Warning|\[WARNING\])", re.IGNORECASE)
-    supervisor_summary_pattern = re.compile(
-        r"(Autonomous AI Supervisor cycle complete:|\[(ENFORCE|SHADOW)\]\s+auto_|"
-        r"\[SHADOW WOULD (?:EXECUTE|APPLY)\]|\[ENFORCE (?:EXECUTING|ATTEMPTING PATCH)\]|"
-        r"\"__orchestrator_intent__\"\s*:|"
-        r"mailer:\s+Email delivery skipped|Email gated by common delivery policy|"
-        r"(?:Supervisor\s+)?ntfy(?: delivery)? gated (?:by common policy|after due-batch flush)|Dispatched ntfy alert to|"
-        r"Retry queue full .* dropping oldest notification|"
-        r"<!--\s*a padding to disable MSIE|<(?:head|center)>.*500 Internal Server Error|"
-        r"Exception ignored in:.*BaseSubprocessTransport\.__del__|RuntimeError:\s+Event loop is closed|"
-        r"curl:\s*\(22\).*returned error:\s*429|deadman:\s*(?:curl ERROR after retries|ntfy rate-limited)|"
-        r"In-place /compact for topic .* failed:|"
-        r"the historical price reference was explicitly bypassed;|"
-        r"\[<stdin>:\d+\])",
-        re.IGNORECASE,
-    )
-    guard_pattern = re.compile(
-        r"(\[[^\[\]\r\n]*GUARD[^\[\]\r\n]*\]|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)",
-        re.IGNORECASE,
-    )
+    error_count = warning_count = scanned_count = 0
     crit_sig_to_idx: Dict[str, int] = {}
     guard_sig_to_idx: Dict[str, int] = {}
-    dated_log_fname_re = re.compile(r"^(.+?)_\d{4}-\d{2}-\d{2}(\.(?:log|txt))$", re.IGNORECASE)
     persistent_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
     seen_count_by_key: Dict[Tuple[str, str], int] = {}
-    transient_ip_auth_err_pattern = re.compile(
-        r"Invalid API-key,\s*IP,\s*or permissions for action",
-        re.IGNORECASE,
-    )
-    bot_cycle_recovered_pattern = re.compile(
-        r"(Order \d+ .* is protected from monitororder repricing|"
-        r"For [A-Z0-9_]+ there are no open (?:BUY|SELL) orders to begin with\.|"
-        r"get_trade_orders:\s+Total found \d+ orders|"
-        r"\[[A-Z0-9]+\]\s+Existing SELL order blocks AssetGuardian tier:|"
-        r"\[[A-Z0-9_]+\]\s+price=\d+(?:\.\d+)?,\s+window_min/max=|"
-        r"\[[A-Z0-9_]+\]\s+Current price:\s+\d+(?:\.\d+)?|"
-        r"apply_weight_limit|"
-        r"Started\.\s+check_interval=|"
-        r"\[Cache(?:CurrentPrice|24Price|365Price|Order|Trade)Manager\]\[info\]\s+(?:New order fills:|Save cache to file|[A-Z0-9_]+:\s+Added \d+ new items)|"
-        r"\[TRAIL\]\s+[A-Z0-9]+:\s+\d+(?:\.\d+)?\s+(?:peak|warming up)|"
-        r"\[TRAIL-K\]\s+heartbeat|"
-        r"\[FORWARD \(from the anchor\)\]|"
-        r"\[STRAT\]\s+price=\d+(?:\.\d+)?|"
-        r"===\s*xStock watcher started\s*===|"
-        r"price \d+(?:\.\d+)? vs allocation \d+(?:\.\d+)?)",
-        re.IGNORECASE,
-    )
-    daemon_recovered_pattern = re.compile(
-        r"(Daemon status:\s*active|Remote-control daemon started|Daemon is active and healthy|ui-sync:\s*check healthy|"
-        r"===\s*(?:STRATEGIE\s+.*?\s+PORNITA|(?:[A-Z0-9_]+\s+)?STRATEGY\s+STARTED)\s*===|===\s*TRAILING STOP(?:\s+KRAKEN)?\s+started|\[STRAT\]\s+state loaded|"
-        r"\[kraken_cache\]\s+start:|\[kraken_cache\]\[ws\]\s+subscribed ownTrades|"
-        r"\[Pricefetcher\]\s+Checking symbol support:|\[price_watcher\]|\[resources\]\s+OK\b|"
-        r"\[verify\].*is LISTED and tradable|total size is [\d,]+\s+speedup is|"
-        r"Starting GlobalTelemetryCollector|Global telemetry cycle active:|"
-        r"Starting MacroAnalyzer|Macro analyzer cycle active:|"
-        r"Starting Autonomous AI Supervisor cycle|\[INTENT GATEWAY\]|"
-        r"\[TRADEALL\]\s+[A-Z0-9_]+\s+resolved trend:|"
-        r"OK \(tun0 \+ HTTPS through the tunnel\)|PIA healthy \(tun0 \+ DNS \+ HTTPS\)|\[order_retry\]\s+(?:start|ACCEPTED\b|FILLED\b|\{'attempted':)|\.env loaded from .*hyperliquid)",
-        re.IGNORECASE,
-    )
-    startup_fatal_exc_pattern = re.compile(
-        r"(?:^(?:ImportError|ModuleNotFoundError|SyntaxError|IndentationError|NameError|UnboundLocalError):|"
-        r"ValueError:\s+Unknown cache type:|"
-        r"TypeError:.*got an unexpected keyword argument|"
-        r"TypeError:\s+Can't instantiate abstract class\b|"
-        r"error:\s+the following arguments are required:|"
-        r"\bname '[^']+' is not defined\b|"
-        r"\bcannot access local variable '[^']+' where it is not associated with a value\b)",
-        re.IGNORECASE,
-    )
-    ignored_test_prefixes = (".", "pytest_", "__main___", "py.test_", "c_", "app_", "inspect_")
 
     for l_dir in logs_dirs:
         if not os.path.isdir(l_dir):
@@ -652,7 +687,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
             for fname in os.listdir(l_dir):
                 if not (fname.endswith(".log") or fname.endswith(".txt")):
                     continue
-                if fname.lower().startswith(ignored_test_prefixes):
+                if fname.lower().startswith(_LOG_IGNORED_TEST_PREFIXES):
                     continue
                 fpath = os.path.join(l_dir, fname)
                 try:
@@ -668,22 +703,19 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                     total_lines = len(lines)
                     tail_start_idx = max(0, total_lines - min(10, max(3, total_lines // 4)))
                     last_ip_err_idx = max(
-                        (i for i, ln in enumerate(lines) if transient_ip_auth_err_pattern.search(ln)),
+                        (i for i, ln in enumerate(lines) if _LOG_TRANSIENT_IP_AUTH_RE.search(ln)),
                         default=-1,
                     )
-                    ip_auth_burst_recovered = bool(
+                    ip_auth_burst_recovered = (
                         last_ip_err_idx >= 0
                         and (total_lines - 1 - last_ip_err_idx) >= 10
-                        and any(
-                            bot_cycle_recovered_pattern.search(lines[j]) or daemon_recovered_pattern.search(lines[j])
-                            for j in range(last_ip_err_idx + 1, total_lines)
-                        )
+                        and _has_subsequent_recovery(lines, last_ip_err_idx + 1)
                     )
                     file_sig_stats: Dict[str, Dict[str, Any]] = {}
                     last_exc_sig: str = ""
                     last_exc_idx: int = -100
                     for idx, line in enumerate(lines):
-                        if supervisor_summary_pattern.search(line):
+                        if _LOG_SUPERVISOR_SUMMARY_RE.search(line):
                             continue
                         if (
                             ("Exception ignored in:" in line or "Traceback (most recent call last):" in line)
@@ -695,27 +727,19 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             )
                         ):
                             continue
-                        if err_pattern.search(line) and not (
-                            benign_warn_pattern.search(line)
-                            and not re.search(
-                                r"(Traceback|CRITICAL(?!_SHOCK)|fail-closed|BUY BLOCKED)",
-                                line,
-                                re.IGNORECASE,
-                            )
+                        if _LOG_ERR_RE.search(line) and not (
+                            _LOG_BENIGN_WARN_RE.search(line) and not _LOG_SERIOUS_ERR_RE.search(line)
                         ):
                             cleaned = line.strip()
                             norm_cleaned = normalize_error_signature(cleaned)
                             if (
                                 not cleaned
-                                or traceback_boilerplate_pattern.match(cleaned)
-                                or traceback_boilerplate_pattern.match(norm_cleaned)
+                                or _LOG_TB_BOILERPLATE_RE.match(cleaned)
+                                or _LOG_TB_BOILERPLATE_RE.match(norm_cleaned)
                             ):
                                 continue
                             if (
-                                (
-                                    line.startswith("    ")
-                                    or bool(re.search(r"\[(?:STDERR|STDOUT)\]\s{4,}", line, re.IGNORECASE))
-                                )
+                                (line.startswith("    ") or bool(_LOG_STDIO_INDENT_RE.search(line)))
                                 and idx > 0
                                 and (
                                     lines[idx - 1].lstrip().startswith('File "')
@@ -724,19 +748,19 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             ):
                                 continue
                             if norm_cleaned == "Traceback (most recent call last):" and any(
-                                py_exc_line_pattern.match(normalize_error_signature(lines[j]))
-                                or traceback_boilerplate_pattern.match(normalize_error_signature(lines[j]))
+                                _LOG_PY_EXC_LINE_RE.match(n_ln := normalize_error_signature(lines[j]))
+                                or _LOG_TB_BOILERPLATE_RE.match(n_ln)
                                 for j in range(idx + 1, min(total_lines, idx + 45))
                             ):
                                 continue
                             if not (_FULL_TS_RE.search(line) or _GLOG_TS_RE.search(line) or _CLOCK_TS_RE.search(line)):
                                 if any(
-                                    cleaned in lines[j] and err_pattern.search(lines[j])
+                                    cleaned in lines[j] and _LOG_ERR_RE.search(lines[j])
                                     for j in range(idx + 1, min(total_lines, idx + 3))
                                 ):
                                     continue
                             if "insufficient-free-for-stocks-buy" in cleaned:
-                                m_t212_sym = re.search(r"\b([A-Z0-9]+_(?:US_)?EQ)\b", cleaned)
+                                m_t212_sym = _LOG_T212_SYM_RE.search(cleaned)
                                 t212_sym_tok = m_t212_sym.group(1) if m_t212_sym else ""
                                 lookahead_end = total_lines if t212_sym_tok else min(total_lines, idx + 15)
                                 if any(
@@ -745,59 +769,17 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                     for j in range(idx + 1, lookahead_end)
                                 ):
                                     continue
-                            if ip_auth_burst_recovered and transient_ip_auth_err_pattern.search(cleaned):
+                            if ip_auth_burst_recovered and _LOG_TRANSIENT_IP_AUTH_RE.search(cleaned):
                                 continue
-                            if (
-                                "account_cache_not_fresh" in cleaned
-                                or "account_cache_initializing" in cleaned
-                                or "account cache is not fresh" in cleaned
-                                or "account_cache_writer_not_running" in cleaned
-                                or "ERROR reading AssetValue cache via cacheManager" in cleaned
-                            ) and any(
-                                "apply_weight_limit" in lines[j]
-                                or bot_cycle_recovered_pattern.search(lines[j])
-                                or daemon_recovered_pattern.search(lines[j])
-                                for j in range(idx + 1, total_lines)
+                            if any(tok in cleaned for tok in _ACCOUNT_CACHE_ERR_TOKENS) and _has_subsequent_recovery(
+                                lines, idx + 1, allow_weight_limit=True
                             ):
                                 continue
-                            if (
-                                (
-                                    "Failed to recover daemon" in cleaned
-                                    or "Error: not signed in:" in cleaned
-                                    or "Error: failed to start service:" in cleaned
-                                    or "antigravity-cli-daemon.service failed" in cleaned
-                                    or "ui_sync_idle_sec" in cleaned
-                                    or "[manage_agy] ERROR:" in cleaned
-                                    or "[ws] error: ping/pong timed out" in cleaned
-                                    or "Connection to remote host was lost" in cleaned
-                                    or "WS error: " in cleaned
-                                    or "Temporary failure in name resolution" in cleaned
-                                    or "NameResolutionError" in cleaned
-                                    or "Network is unreachable" in cleaned
-                                    or "Connection timed out" in cleaned
-                                    or "Read timed out" in cleaned
-                                    or "The read operation timed out" in cleaned
-                                    or "ConnectTimeoutError" in cleaned
-                                    or "cycle failed (" in cleaned
-                                    or "EGeneral:Internal error" in cleaned
-                                    or "[shadow_live] error:" in cleaned
-                                    or "rsync error:" in cleaned
-                                    or "[rsync_cachedb] ERROR:" in cleaned
-                                    or "agy CLI with model" in cleaned
-                                    or "authentication failed or timed out" in cleaned
-                                    or "! network error " in cleaned
-                                    or "network error/empty response" in cleaned
-                                    or "T212 order history: timeout/network error" in cleaned
-                                    or "FAILURE: every rung exhausted, the VPN is still down" in cleaned
-                                )
-                                and any(
-                                    daemon_recovered_pattern.search(lines[j])
-                                    or bot_cycle_recovered_pattern.search(lines[j])
-                                    for j in range(idx + 1, total_lines)
-                                )
+                            if any(tok in cleaned for tok in _RECOVERABLE_TRANSIENT_ERR_TOKENS) and _has_subsequent_recovery(
+                                lines, idx + 1
                             ):
                                 continue
-                            sig = normalize_error_signature(cleaned)
+                            sig = norm_cleaned
                             if (
                                 sig
                                 and sig == last_exc_sig
@@ -812,15 +794,9 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 if idx >= tail_start_idx and sig in file_sig_stats:
                                     file_sig_stats[sig]["unresolved_at_tail"] = True
                                 continue
-                            last_exc_sig = sig
-                            last_exc_idx = idx
+                            last_exc_sig, last_exc_idx = sig, idx
                             error_count += 1
-                            c_sig = sig or cleaned
-                            if c_sig in crit_sig_to_idx:
-                                critical_events[crit_sig_to_idx[c_sig]] = cleaned
-                            elif len(critical_events) < 50:
-                                crit_sig_to_idx[c_sig] = len(critical_events)
-                                critical_events.append(cleaned)
+                            _upsert_capped_event(critical_events, crit_sig_to_idx, sig or cleaned, cleaned)
                             if sig:
                                 st = file_sig_stats.setdefault(
                                     sig,
@@ -830,71 +806,43 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 st["sample"] = cleaned
                                 if idx >= tail_start_idx:
                                     st["unresolved_at_tail"] = True
-                        elif guard_pattern.search(line):
-                            if re.search(
-                                r"(\bPermitted\.|\bprice\s+\S+\s+permitted\b|\bfrom older period bypassed\b|"
-                                r"\breference is off for this venue/module\b|\bbrake=(?:BrakeAction\.)?ALLOW\b)",
-                                line,
-                                re.IGNORECASE,
-                            ):
+                        elif _LOG_GUARD_RE.search(line):
+                            if _LOG_GUARD_PERMIT_RE.search(line):
                                 continue
-                            if (
-                                "account_cache_not_fresh" in line
-                                or "account_cache_initializing" in line
-                                or "account cache is not fresh" in line
-                                or "account_cache_writer_not_running" in line
-                            ) and any(
-                                "apply_weight_limit" in lines[j]
-                                or bot_cycle_recovered_pattern.search(lines[j])
-                                or daemon_recovered_pattern.search(lines[j])
-                                for j in range(idx + 1, total_lines)
+                            if any(tok in line for tok in _ACCOUNT_CACHE_GUARD_TOKENS) and _has_subsequent_recovery(
+                                lines, idx + 1, allow_weight_limit=True
                             ):
                                 continue
                             warning_count += 1
-                            cleaned = re.sub(
-                                r"(\b(?:BUY|SELL)\s+[A-Z0-9_]*?(?:USD|USDC|USDT|_EQ)\s+)€(?=\d)",
-                                r"\1$",
-                                line.strip(),
-                            )
-                            g_sig = (
-                                re.sub(
-                                    r"(?<![A-Za-z_])[-+]?\d+(?:\.\d+)?%?(?:[hsm]\b)?",
-                                    "NUM",
-                                    normalize_error_signature(cleaned),
-                                )
-                                or cleaned
-                            )
-                            if g_sig in guard_sig_to_idx:
-                                guard_interventions[guard_sig_to_idx[g_sig]] = cleaned
-                            elif len(guard_interventions) < 50:
-                                guard_sig_to_idx[g_sig] = len(guard_interventions)
-                                guard_interventions.append(cleaned)
-                        elif daemon_recovered_pattern.search(line) or bot_cycle_recovered_pattern.search(line):
+                            cleaned = _LOG_GUARD_EURO_RE.sub(r"\1$", line.strip())
+                            g_sig = _LOG_GUARD_NUM_RE.sub("NUM", normalize_error_signature(cleaned)) or cleaned
+                            _upsert_capped_event(guard_interventions, guard_sig_to_idx, g_sig, cleaned)
+                        elif _is_log_line_recovered(line):
                             for sig_k, st_prev in list(file_sig_stats.items()):
                                 st_prev["unresolved_at_tail"] = False
                                 sample_prev = str(st_prev.get("sample") or "").strip()
-                                if startup_fatal_exc_pattern.search(sample_prev) or startup_fatal_exc_pattern.search(
+                                if _LOG_STARTUP_FATAL_EXC_RE.search(sample_prev) or _LOG_STARTUP_FATAL_EXC_RE.search(
                                     normalize_error_signature(sample_prev)
                                 ):
                                     error_count = max(0, error_count - safe_nonneg_int(st_prev.get("count"), default=0))
                                     file_sig_stats.pop(sig_k, None)
                                     if not any(k[1] == sig_k and v > 0 for k, v in seen_count_by_key.items()):
                                         c_sig_prev = sig_k or sample_prev
+                                        removed_ev = False
                                         if c_sig_prev in crit_sig_to_idx:
                                             del_idx = crit_sig_to_idx[c_sig_prev]
                                             if 0 <= del_idx < len(critical_events):
                                                 critical_events.pop(del_idx)
-                                            crit_sig_to_idx = {
-                                                (normalize_error_signature(ev) or ev): i
-                                                for i, ev in enumerate(critical_events)
-                                            }
+                                            removed_ev = True
                                         elif sample_prev in critical_events:
                                             critical_events.remove(sample_prev)
+                                            removed_ev = True
+                                        if removed_ev:
                                             crit_sig_to_idx = {
                                                 (normalize_error_signature(ev) or ev): i
                                                 for i, ev in enumerate(critical_events)
                                             }
-                    m_dated = dated_log_fname_re.match(fname)
+                    m_dated = _LOG_DATED_FNAME_RE.match(fname)
                     canon_fname = f"{m_dated.group(1)}{m_dated.group(2)}" if m_dated else fname
                     is_dated_fname = m_dated is not None
                     for sig_k, st in file_sig_stats.items():
@@ -1295,16 +1243,16 @@ def format_supervisor_ntfy_notification(
 
     spec = topic_spec(topic_key) if (topic_key in TOPIC_SPECS or topic_key in TOPIC_ALIASES) else topic_spec("auto_technical_repair")
     if is_bot_error:
-        title, target_topic, priority = f"🚨 {spec.bracket_tag} ERROR Issues: {issues_cnt} | Actions: {actions_cnt}", ntfy_topic_error or ntfy_topic or "ntfy-error-1978", "high"
+        title, target_topic, priority = f"\U0001f6a8 {spec.bracket_tag} ERROR Issues: {issues_cnt} | Actions: {actions_cnt}", ntfy_topic_error or ntfy_topic or "ntfy-error-1978", "high"
     elif is_sys_error:
-        title, target_topic, priority = f"🚨 {spec.bracket_tag} SYSTEM Issues: {issues_cnt} | Actions: {actions_cnt}", ntfy_topic_server or ntfy_topic or "ntfy-server-1978", "high"
+        title, target_topic, priority = f"\U0001f6a8 {spec.bracket_tag} SYSTEM Issues: {issues_cnt} | Actions: {actions_cnt}", ntfy_topic_server or ntfy_topic or "ntfy-server-1978", "high"
     else:
         title, target_topic, priority = f"{spec.ntfy_prefix} Issues: {issues_cnt} | Actions: {actions_cnt}", ntfy_topic_server or ntfy_topic or "ntfy-server-1978", "default"
 
     body_lines: List[str] = []
     if actions_cnt > 0 or obj_attr(report, "actions_executed", False):
         status_label = "Executed" if obj_attr(report, "actions_executed", False) else "Simulated/Observed"
-        body_lines.append(f"Mode: {mode_label} · Status: {status_label}")
+        body_lines.append(f"Mode: {mode_label} \u00b7 Status: {status_label}")
     if summary_str := str(obj_attr(report, "summary", "") or "").strip():
         body_lines.append(summary_str)
     if non_healthy_issues:
@@ -1611,7 +1559,7 @@ def summarize_fleet_sensor_status(
         sensors["fear_greed"] = safe_float(fg.get("value"), default=None)
     if mb := read_first_cached_dict(cachedb_dir, "market_breadth_files", "market_breadth_collect.json", "market_breadth_state.json", read_json_fn=_rj)[0]:
         sensors["market_breadth"] = safe_float(mb.get("advance_ratio"), default=None)
-    if cp := read_first_cached_dict(cachedb_dir, "", "cache_current_price.json", read_json_fn=_rj)[0]:
+    if cp := read_first_cached_dict(cachedb_dir, "", CACHE_CURRENT_PRICE_FILENAME, read_json_fn=_rj)[0]:
         sensors["current_price_cache"] = summarize_current_price_cache_freshness(
             cp,
             now_ts=time.time(),

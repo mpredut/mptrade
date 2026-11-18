@@ -36,7 +36,12 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import canonical_symbol_key, normalize_venue_name, resolve_cachedb_filepath
+from cachepaths import (
+    ORDER_RETRY_QUEUE_FILENAME,
+    canonical_symbol_key,
+    normalize_venue_name,
+    resolve_cachedb_filepath,
+)
 from providers import order_id_context as rc
 from providers.base import MarketDataProvider
 from providers.execution_audit import ExecutionAudit, find_order_audit_record
@@ -134,8 +139,19 @@ def is_non_failure_deferral(reason):
     return reason in NON_FAILURE_DEFERRAL_REASONS
 
 
-QUEUE_FILE = os.path.join(_ROOT, "cachedb", "order_retry_queue.jsonl")
+_DEFAULT_QUEUE_FILE = os.path.join(_ROOT, "cachedb", ORDER_RETRY_QUEUE_FILENAME)
+QUEUE_FILE = _DEFAULT_QUEUE_FILE
 LOCK_FILE = os.path.join(_ROOT, "cachedb", "order_retry_queue.lock")
+
+
+def resolve_queue_filepath(path=None) -> str:
+    """Return canonical resolved path for ``QUEUE_FILE`` (or ``path``)."""
+    return str(resolve_cachedb_filepath(QUEUE_FILE if path is None else path))
+
+
+def resolve_queue_sidecar_path(filename: str) -> str:
+    """Return absolute path for a sidecar state file next to the resolved ``QUEUE_FILE``."""
+    return os.path.join(os.path.dirname(os.path.abspath(resolve_queue_filepath())), filename)
 
 
 def _process_start_identity(pid):
@@ -189,7 +205,7 @@ class RetryQueueCorruptionError(RuntimeError):
 
 @contextmanager
 def _locked_queue(*, validate: bool = False):
-    os.makedirs(os.path.dirname(str(resolve_cachedb_filepath(QUEUE_FILE))), exist_ok=True)
+    os.makedirs(os.path.dirname(resolve_queue_filepath()), exist_ok=True)
     with FileLock(LOCK_FILE):
         yield _read_nolock(validate=validate)
 
@@ -209,7 +225,7 @@ def _remove_matching_locked(predicate, *, validate: bool = False) -> list[dict]:
 
 def _read_nolock(*, validate=False):
     """Read the complete queue or fail closed while the caller holds the lock."""
-    q_path = str(resolve_cachedb_filepath(QUEUE_FILE))
+    q_path = resolve_queue_filepath()
     if not os.path.exists(q_path):
         return []
     items = []
@@ -1443,7 +1459,7 @@ def _write_nolock(items):
 
 def rewrite(items):
     """Replace the queue with ``items`` atomically while holding the lock."""
-    os.makedirs(os.path.dirname(str(resolve_cachedb_filepath(QUEUE_FILE))), exist_ok=True)
+    os.makedirs(os.path.dirname(resolve_queue_filepath()), exist_ok=True)
     with FileLock(LOCK_FILE):
         _write_nolock(items)
 
@@ -1621,8 +1637,8 @@ def discard_superseded_symbol_records(
         return []
     include_bots_b = _parse_bool_flag(include_bot_orders, False)
     is_mock_b = _parse_bool_flag(cancel_fn_is_mock, False)
-    default_q = os.path.abspath(str(resolve_cachedb_filepath("order_retry_queue.jsonl")))
-    active_q = os.path.abspath(str(QUEUE_FILE))
+    default_q = os.path.abspath(resolve_queue_filepath(_DEFAULT_QUEUE_FILE))
+    active_q = os.path.abspath(resolve_queue_filepath())
     if active_q == default_q and is_mock_b:
         return []
     canceled_set = _clean_id_set(canceled_ids)

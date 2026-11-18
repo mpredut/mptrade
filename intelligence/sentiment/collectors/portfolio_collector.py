@@ -27,8 +27,11 @@ from botcore import (
     _prices_diverged,
 )
 from cachepaths import (
+    ASSETGUARDIAN_STATE_FILENAME,
     AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
+    MT_STATE_FILENAME,
     ORDER_RETRY_QUEUE_FILENAME,
+    SMART_STOP_LOSS_STATE_FILENAME,
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
@@ -1745,7 +1748,7 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
             if active_retries:
                 out["active_retry_queue"] = active_retries
 
-        if isinstance(mt_state := _rj(os.path.join(cache_dir, "mt_state.json")), dict):
+        if isinstance(mt_state := _rj(os.path.join(cache_dir, MT_STATE_FILENAME)), dict):
             active_mt = {
                 k: v for k in ("tp_ride_state", "sl_bounce_state", "sl_episode_state", "reentry_state", "pending_stop_exit")
                 if isinstance(v := mt_state.get(k), dict) and v
@@ -1753,7 +1756,7 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
             if active_mt:
                 out["monitortrades_active_state"] = active_mt
 
-        ag_state = _rj(os.path.join(cache_dir, "assetguardian_state.json"))
+        ag_state = _rj(os.path.join(cache_dir, ASSETGUARDIAN_STATE_FILENAME))
         if isinstance(ag_state, dict) and isinstance(ag_state.get("symbols"), dict) and ag_state["symbols"]:
             dust_binance_syms = {
                 str(pos.get("symbol") or "").upper()
@@ -1790,7 +1793,7 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
             if cleaned_ag_syms:
                 out["assetguardian_state"] = cleaned_ag_syms
 
-        if isinstance(ssl_state := _rj(os.path.join(cache_dir, "smart_stop_loss_state.json")), dict) and ssl_state:
+        if isinstance(ssl_state := _rj(os.path.join(cache_dir, SMART_STOP_LOSS_STATE_FILENAME)), dict) and ssl_state:
             out["smart_stop_loss_state"] = ssl_state
         return out
 

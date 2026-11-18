@@ -23,7 +23,7 @@ from botcore import (
     safe_pos_int,
     touch_module_heartbeat,
 )
-from cachepaths import cache_path, cache_symbol_variants
+from cachepaths import PRICE_ANALYSIS_FILENAME, cache_path, cache_symbol_variants
 import cacheManager as cm
 from intelligence.internal.state.persistence import (
     MIN_POINTS_PER_WINDOW,
@@ -363,7 +363,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
 # Persist all trend results with human-readable output.
 def write_all_trends(all_trends, filename=None):
     """Atomically write trend results and display a human-readable summary."""
-    filename = filename or cache_path("priceanalysis.json")
+    filename = filename or cache_path(PRICE_ANALYSIS_FILENAME)
     if not isinstance(all_trends, dict):
         all_trends = {}
 

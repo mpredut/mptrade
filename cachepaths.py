@@ -32,6 +32,7 @@ CACHE_T212_TRADE_FILENAME = "cache_trade_t212.json"
 ORDER_RETRY_QUEUE_FILENAME = "order_retry_queue.jsonl"
 ASSETGUARDIAN_STATE_FILENAME = "assetguardian_state.json"
 AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME = "autonomous_trade_intents_state.json"
+MT_STATE_FILENAME = "mt_state.json"
 RTRADE_PAIRS_STATE_FILENAME = "rtrade_pairs_state.json"
 SMART_STOP_LOSS_STATE_FILENAME = "smart_stop_loss_state.json"
 TRAILING_STATE_FILENAME = "trailing_state.json"
@@ -183,7 +184,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "state": {
         "exact": (
-            ASSETGUARDIAN_STATE_FILENAME, "mt_state.json", TRAILING_STATE_FILENAME,
+            ASSETGUARDIAN_STATE_FILENAME, MT_STATE_FILENAME, TRAILING_STATE_FILENAME,
             SMART_STOP_LOSS_STATE_FILENAME, RTRADE_PAIRS_STATE_FILENAME,
             AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME, VENUE_BALANCES_STATE_FILENAME,
             VENUE_FEE_MAINTENANCE_STATE_FILENAME,

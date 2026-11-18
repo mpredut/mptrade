@@ -25,7 +25,12 @@ from botcore import (
     is_live_network_backfill_enabled,
     safe_float,
 )
-from cachepaths import CACHE_BINANCE_ORDER_FILENAME, VENUE_BALANCES_STATE_FILENAME, cache_path
+from cachepaths import (
+    CACHE_BINANCE_ORDER_FILENAME,
+    CACHE_CURRENT_PRICE_FILENAME,
+    VENUE_BALANCES_STATE_FILENAME,
+    cache_path,
+)
 from providers.order_ohlc_utils import extract_orig_qty
 from state_io import encode_json_payload, parse_json_payload, read_json_file
 
@@ -145,7 +150,7 @@ def inspect_fleet(json_output: bool = False):
     breadth_data = raw_breadth if isinstance(raw_breadth, dict) else {}
     raw_health = ssh_cat(cache_path("system/fleet_health_status.json"))
     health_data = raw_health if isinstance(raw_health, dict) else {}
-    raw_prices = ssh_cat(cache_path("prices/cache_current_price.json")) or ssh_cat(cache_path("cache_current_price.json"))
+    raw_prices = ssh_cat(cache_path(f"prices/{CACHE_CURRENT_PRICE_FILENAME}")) or ssh_cat(cache_path(CACHE_CURRENT_PRICE_FILENAME))
     prices_data = raw_prices.get("items", {}) if isinstance(raw_prices, dict) and isinstance(raw_prices.get("items"), dict) else {}
 
     market_telemetry = {}

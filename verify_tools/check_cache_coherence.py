@@ -19,7 +19,13 @@ from botcore import (  # noqa: E402
     first_pos_float,
     summarize_current_price_cache_freshness,
 )
-from cachepaths import cache_symbol_variants, has_equity_suffix, is_primary_stream_venue  # noqa: E402
+from cachepaths import (  # noqa: E402
+    CACHE_CURRENT_PRICE_FILENAME,
+    CACHE_SHORT_TREND_FILENAME,
+    cache_symbol_variants,
+    has_equity_suffix,
+    is_primary_stream_venue,
+)
 from instrument_registry import casefold_get, is_symbol_market_open, select_instruments, symbols_for  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
 
@@ -56,10 +62,10 @@ def main() -> int:
         print(f"   {sym:10} IS {status}")
 
     # 1. short trend
-    raw_st = read_json_dict(os.path.join(CACHEDB, "cache_short_trend.json"), default=None, recover_previous=True) or {}
+    raw_st = read_json_dict(os.path.join(CACHEDB, CACHE_SHORT_TREND_FILENAME), default=None, recover_previous=True) or {}
     (st_d,) = coerce_dict_maps(raw_st)
     it, st_fetchtime = coerce_dict_maps(st_d.get("items", st_d), st_d.get("fetchtime"))
-    print(f"-- cache_short_trend.json: {sorted(k for k in it.keys() if k != 'fetchtime')}")
+    print(f"-- {CACHE_SHORT_TREND_FILENAME}: {sorted(k for k in it.keys() if k != 'fetchtime')}")
     for s in exp:
         e = None
         matched_st = s
@@ -97,11 +103,11 @@ def main() -> int:
         )
 
     # 2. current price
-    cp = read_json_dict(os.path.join(CACHEDB, "cache_current_price.json"), default=None, recover_previous=True) or {}
+    cp = read_json_dict(os.path.join(CACHEDB, CACHE_CURRENT_PRICE_FILENAME), default=None, recover_previous=True) or {}
     # format: {'fetchtime': {...}, 'items': {symbol: price_or_rows}} (or directly per symbol)
     (cp_d,) = coerce_dict_maps(cp)
     items, fetchtime_map = coerce_dict_maps(cp_d.get("items", cp_d), cp_d.get("fetchtime"))
-    print(f"-- cache_current_price.json: {sorted(k for k in items.keys() if k != 'fetchtime')}")
+    print(f"-- {CACHE_CURRENT_PRICE_FILENAME}: {sorted(k for k in items.keys() if k != 'fetchtime')}")
     cp_open_ages = []
     for s in exp:
         entries = None

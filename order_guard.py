@@ -986,25 +986,15 @@ def check_intelligence_guards(
         or price_history is not None
         or now is not None
     )
-    if (
-        was_cached
-        and qlimit2_inputs_changed
-        and not (GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed) and not parabolic_only_bypass and not weibull_only_bypass)
-    ):
-        q_ok, q_reason, q_scale = _qlimit_order_guard.check_qlimit2_order_guards(
-            symbol=symbol,
-            side=side,
-            price=px_clean,
-            price_history=price_history,
-            trend_duration_seconds=explicit_dur_sec,
-            regime_context=regime_context,
-            margins=m,
-            now=now,
-            bypass_guards=bypassed,
+    if was_cached and qlimit2_inputs_changed:
+        q_ok, active_reason, effective_scale = _evaluate_and_merge_qlimit2_guard(
+            effective_scale, active_reason, symbol=symbol, side=side, price=px_clean,
+            price_history=price_history, trend_duration_seconds=explicit_dur_sec,
+            regime_context=regime_context, margins=m, now=now, bypassed=bypassed,
+            parabolic_only_bypass=parabolic_only_bypass, weibull_only_bypass=weibull_only_bypass,
         )
         if not q_ok:
-            return False, q_reason, 0.0
-        effective_scale, active_reason = merge_guard_scale(effective_scale, active_reason, q_scale, q_reason)
+            return False, active_reason, 0.0
 
     # 2. Dynamic LLM Pre-Trade Guard (GLLM1) if notional crossed the threshold
     dur_sec = resolve_effective_trend_duration(symbol, explicit_dur_sec, regime_context)
@@ -1037,6 +1027,25 @@ def check_intelligence_guards(
     return final_res
 
 
+def _evaluate_and_merge_qlimit2_guard(
+    effective_scale: float, active_reason: str, *, symbol: str, side: str, price: float,
+    price_history=None, trend_duration_seconds: float = 0.0, regime_context=None,
+    margins=None, now: Optional[float] = None, bypassed: set[str],
+    parabolic_only_bypass: bool, weibull_only_bypass: bool,
+) -> tuple[bool, str, float]:
+    if GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed) and not parabolic_only_bypass and not weibull_only_bypass:
+        return True, active_reason, effective_scale
+    ok, reason, scale = _qlimit_order_guard.check_qlimit2_order_guards(
+        symbol=symbol, side=side, price=price, price_history=price_history,
+        trend_duration_seconds=trend_duration_seconds, regime_context=regime_context,
+        margins=margins, now=now, bypass_guards=bypassed,
+    )
+    if not ok:
+        return False, reason, 0.0
+    eff_s, act_r = merge_guard_scale(effective_scale, active_reason, scale, reason)
+    return True, act_r, eff_s
+
+
 def _evaluate_intelligence_guards_raw(
     provider,
     symbol: str,
@@ -1063,21 +1072,14 @@ def _evaluate_intelligence_guards_raw(
     effective_scale, active_reason = 1.0, "ok"
 
     # 1. Internal Quantitative Mathematical Guards (G_QLIMIT2: Parabolic Surge, Weibull Exhaustion)
-    if not (GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed) and not parabolic_only_bypass and not weibull_only_bypass):
-        int_ok, int_reason, int_scale = _qlimit_order_guard.check_qlimit2_order_guards(
-            symbol=symbol,
-            side=side,
-            price=price,
-            price_history=price_history,
-            trend_duration_seconds=trend_duration_seconds,
-            regime_context=regime_context,
-            margins=m,
-            now=now,
-            bypass_guards=bypassed,
-        )
-        if not int_ok:
-            return False, int_reason, 0.0
-        effective_scale, active_reason = merge_guard_scale(effective_scale, active_reason, int_scale, int_reason)
+    int_ok, active_reason, effective_scale = _evaluate_and_merge_qlimit2_guard(
+        effective_scale, active_reason, symbol=symbol, side=side, price=price,
+        price_history=price_history, trend_duration_seconds=trend_duration_seconds,
+        regime_context=regime_context, margins=m, now=now, bypassed=bypassed,
+        parabolic_only_bypass=parabolic_only_bypass, weibull_only_bypass=weibull_only_bypass,
+    )
+    if not int_ok:
+        return False, active_reason, 0.0
 
     # 2. External Microstructure & Derivatives Guards (GI_OBOOK, GI_WHALE, GI_FUNDING)
     if not is_category_bypassed("intelligence", bypassed):

@@ -1926,3 +1926,14 @@ def test_is_expired_preserves_retry_terminal_remainder_and_dedup_refreshed_ttl(t
     assert "GLLM1" not in ctx.retry_kwargs["bypass_guards"]
     assert all(tok == tok.lower() for tok in ctx.retry_kwargs["bypass_guards"])
 
+
+def test_discard_superseded_symbol_records_protects_default_queue_when_mock(monkeypatch):
+    monkeypatch.setattr(oq, "QUEUE_FILE", os.path.join(oq._ROOT, "cachedb", oq.ORDER_RETRY_QUEUE_FILENAME))
+    monkeypatch.setattr(
+        oq,
+        "load_all",
+        lambda: (_ for _ in ()).throw(AssertionError("default queue must not be read under mock cancel")),
+    )
+    assert oq.discard_superseded_symbol_records("BTCUSDC", "BUY", cancel_fn_is_mock=True) == []
+
+

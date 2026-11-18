@@ -361,7 +361,7 @@ _LAST_EXIT_KIND: Dict[str, str] = {}
 _REENTRY_DONE_SELL_TIME: Dict[str, float] = {}
 _PENDING_STOP_EXIT: Dict[str, Dict[str, Any]] = {}
 
-_DEFAULT_MT_STATE_FILE = cachepaths.cache_path("mt_state.json")
+_DEFAULT_MT_STATE_FILE = cachepaths.cache_path(cachepaths.MT_STATE_FILENAME)
 _MT_STATE_FILE = _DEFAULT_MT_STATE_FILE
 _MT_PERSISTENCE_ENABLED = not bool_env("MT_DISABLE_STATE_PERSISTENCE", default=False)
 _LAST_SAVED_MT_STATE_KEY: Optional[Tuple[str, str]] = None
@@ -370,7 +370,7 @@ _LAST_SAVED_MT_STATE_KEY: Optional[Tuple[str, str]] = None
 def _effective_mt_state_file() -> str:
     if isinstance(_MT_STATE_FILE, str) and _MT_STATE_FILE.strip() and _MT_STATE_FILE != _DEFAULT_MT_STATE_FILE:
         return _MT_STATE_FILE
-    return cachepaths.cache_path("mt_state.json")
+    return cachepaths.cache_path(cachepaths.MT_STATE_FILENAME)
 
 
 def _save_mt_state(ts: float | None = None):
