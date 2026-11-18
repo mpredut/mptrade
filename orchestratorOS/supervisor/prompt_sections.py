@@ -831,8 +831,16 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 extras.append(f"long_trend=NEUTRAL(med_d={pinfo.get('weibull_median_d')}d/p90={pinfo.get('weibull_p90_d')}d)")
             else:
                 extras.append("long_trend=NEUTRAL")
+        eq_qmeta_sfx = ""
+        if is_equity_symbol(sym) and pinfo.get("quote_source"):
+            qm_parts = [f"src={pinfo['quote_source']}"]
+            if pinfo.get("quote_age_min") is not None:
+                qm_parts.append(f"age={pinfo['quote_age_min']}m")
+            if pinfo.get("t212_close_px") is not None:
+                qm_parts.append(f"t212_close=${pinfo['t212_close_px']}")
+            eq_qmeta_sfx = f" [{', '.join(qm_parts)}]"
         extra_str = f" | {' | '.join(extras)}" if extras else ""
-        lines.append(f"  * {sym}{sib_lbl}: Price={px_str}{extra_str}")
+        lines.append(f"  * {sym}{sib_lbl}: Price={px_str}{eq_qmeta_sfx}{extra_str}")
     return lines
 
 
@@ -1727,8 +1735,9 @@ def _format_portfolio_section(
                     }
                 else:
                     eq_bw_fmt = eq_bw_raw
+                eq_hdr_cyc_sfx = "" if scope_s == "crypto" else " & Active Cycles"
                 lines.append(
-                    f"  * Cross-Market US Equities Telemetry (Live/Extended & T212 Quotes, Multi-Horizon Deltas & Active Cycles): {eq_bw_fmt}"
+                    f"  * Cross-Market US Equities Telemetry (Live/Extended & T212 Quotes, Multi-Horizon Deltas{eq_hdr_cyc_sfx}): {eq_bw_fmt}"
                 )
     mb_bench_3c = (
         _extract_macro_benchmarks_line(

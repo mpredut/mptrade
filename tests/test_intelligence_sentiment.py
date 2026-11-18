@@ -11322,6 +11322,42 @@ def test_item_2_3_kraken_xstocks_active_pairs_dynamic_directive_and_ipo_isolatio
     assert "TP +9% / Trail 3% / DCA -3%" in xs["active_swing_directive"]
 
 
+def test_item_2_4_us_equities_rth_no_fake_close_px_and_sec3a_quote_meta(tmp_path, monkeypatch):
+    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+    from orchestratorOS.supervisor.prompt_sections import _format_market_prices_section, _format_portfolio_section
+    from state_io import atomic_write_json
+
+    cdir = tmp_path / "cachedb"
+    (cdir / "state").mkdir(parents=True, exist_ok=True)
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+    # Open US RTH timestamp: Wed Nov 18 2026 16:00:00 UTC (11:00 EST) = 1795017600
+    rth_ts = 1_795_017_600.0
+    atomic_write_json(
+        str(cdir / "state" / "venue_balances_state.json"),
+        {"pos:t212:NVDA_US_EQ": {"venue": "t212", "symbol": "NVDA_US_EQ", "free_base": 3.0, "price": 152.45, "ts": rth_ts - 90.0}},
+    )
+    atomic_write_json(
+        str(cdir / "prices" / "cache_24_price_NVDA_US_EQ.json"),
+        {"items": {"NVDA_US_EQ": [[int((rth_ts - 300.0) * 1000), 152.10], [int((rth_ts - 10.0) * 1000), 152.37]]}},
+    )
+    pt_rth = {"NVDA_US_EQ": {"price": 152.45}}
+    enrich_24h_and_microstructure(str(cdir), str(tmp_path), pt_rth, {}, {}, {}, rth_ts, allow_network=False, persist=False)
+    assert pt_rth["NVDA_US_EQ"]["quote_source"] == "yahoo_rth"
+    assert "t212_close_px" not in pt_rth["NVDA_US_EQ"]
+
+    sec3a_eq = "\n".join(
+        _format_market_prices_section(
+            {"NVDA_US_EQ": {"price": 158.56, "quote_source": "yahoo_ext", "quote_age_min": 1.2, "t212_close_px": 155.15, "chg_24h_pct": 2.2}}
+        )
+    )
+    assert "Price=$158.56 [src=yahoo_ext, age=1.2m, t212_close=$155.15] | 24h=+2.20%" in sec3a_eq
+
+    cmc = {"equity_bellwethers": {"NVDA_US_EQ": {"price": 158.56, "quote_source": "yahoo_ext", "t212_cycle": {"qty": 3.0}}}}
+    assert "Multi-Horizon Deltas):" in "\n".join(_format_portfolio_section({"cross_market_context": cmc}, asset_scope="crypto", include_macro_benchmarks=False))
+    assert "Multi-Horizon Deltas & Active Cycles):" in "\n".join(_format_portfolio_section({"cross_market_context": cmc}, asset_scope="all", include_macro_benchmarks=False))
+
+
+
 
 
 

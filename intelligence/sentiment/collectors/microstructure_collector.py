@@ -1397,7 +1397,13 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             pt_map[sym_k]["quote_source"] = "yahoo_rth" if is_open else "yahoo_ext"
             if quote_ts_ms > 1e11:
                 pt_map[sym_k]["quote_age_min"] = round(max(0.0, eff_now - (quote_ts_ms / 1000.0)) / 60.0, 1)
-            if (c_t212 := t212_cached_px.get(sym_k)) is not None and abs(px_cur - c_t212) / max(px_cur, c_t212) >= 0.0005:
+            # BY DESIGN: During open US RTH, cached pos:t212:* is a slightly older intraday T212 tick, not an RTH close;
+            # only publish t212_close_px outside RTH when T212 stays frozen at 16:00 EST close while Yahoo trades pre/post-market.
+            if (
+                not is_open
+                and (c_t212 := t212_cached_px.get(sym_k)) is not None
+                and abs(px_cur - c_t212) / max(px_cur, c_t212) >= 0.0005
+            ):
                 pt_map[sym_k]["t212_close_px"] = c_t212
             else:
                 pt_map[sym_k].pop("t212_close_px", None)
