@@ -166,6 +166,65 @@ def _resolve_provider_name(symbol: str) -> str:
     return resolve_symbol_provider_name(symbol, market_api=mkt, fallback="Binance")
 
 
+def _native_replace_enabled_for(symbol: str, provider_name: str) -> bool:
+    prov_by_name = getattr(mkt, "provider_by_name", None)
+    provider = prov_by_name(provider_name) if callable(prov_by_name) else None
+    if provider is None:
+        prov_for = getattr(mkt, "_provider_for", None)
+        provider = prov_for(symbol) if callable(prov_for) else None
+    return order_lifecycle.native_replace_enabled(provider)
+
+
+def _record_replacement_success(
+    replacement_claim: dict,
+    new_order: object,
+    *,
+    provider_name: str,
+    symbol: str,
+    order_type: str,
+    order_id: object,
+    oid_str: str,
+    price: object,
+    price_f: float,
+    new_price: float,
+    quantity: float,
+    orders: dict,
+    initial_prices: dict,
+) -> None:
+    tracked = order_lifecycle.complete_accepted_claim(
+        order_retry,
+        replacement_claim,
+        order=new_order,
+        provider_name=provider_name,
+        symbol=symbol,
+        side=order_type,
+    )
+    if not tracked:
+        print(
+            f"CRITICAL: replacement order {extract_order_id(new_order)} "
+            "was accepted but its durable tracker could not be updated."
+        )
+    raw_new_id = (
+        new_order["orderId"]
+        if isinstance(new_order, dict) and clean_order_id_str(new_order.get("orderId"))
+        else extract_order_id(new_order)
+    )
+    new_oid = clean_order_id_str(raw_new_id) or str(raw_new_id)
+    _derived_replacement_order_ids.add(new_oid)
+    _notified_placed_order_ids.add(new_oid)
+    orders[raw_new_id] = {
+        "price": new_price,
+        "quantity": quantity,
+    }
+    orig_init_px = safe_pos_float(initial_prices.pop(order_id, None), default=None)
+    if orig_init_px is None:
+        orig_init_px = safe_pos_float(initial_prices.pop(oid_str, None), default=None)
+    if orig_init_px is None:
+        orig_init_px = price_f
+    lru_dict_put(initial_prices, raw_new_id, orig_init_px, MAX_TRACKED_ORDER_IDS)
+    print(f"Updated order from {price} to {new_price}. New ID: {raw_new_id} (derived replacement)")
+
+
 _ORIG_GET_TTL_MAP = order_retry.get_accepted_order_ttl_map
 _ORIG_GET_OWNER_MAP = order_retry.get_accepted_order_owner_map
 
@@ -568,14 +627,85 @@ def monitor_open_orders_by_type(
                 )
                 continue
 
-            try:
-                cancel_confirmed = api.cancel_order(symbol, order_id) is not False
-            except Exception as exc:  # noqa: BLE001
-                cancel_confirmed = False
-                print(
-                    f"The cancel request for order {order_id} raised {exc}; "
-                    "reconciling venue status before deciding on replacement."
-                )
+            native_cancel_only = False
+            if _native_replace_enabled_for(symbol, provider_name):
+                refreshed_claim = order_retry.begin_claimed_submit(replacement_claim)
+                if refreshed_claim is None:
+                    print(
+                        f"The durable replacement claim for order {order_id} changed "
+                        "before dispatch; no replacement is submitted by this process."
+                    )
+                    continue
+                replacement_claim = refreshed_claim
+                locked_balance = quantity if order_type == "SELL" else quantity * price_f
+                native_outcome = {}
+                try:
+                    native_order = mkt.place(
+                        symbol, order_type, new_price, quantity, smart=False,
+                        kind="monitor_order_replace",
+                        bypass_guards=set(replace_bypass_guards),
+                        allow_math_reference_sell=True,
+                        wait_for_trend=replace_wait_for_trend,
+                        caller_owns_retry=True,
+                        client_order_id=client_order_id,
+                        replaces_order_id=order_id,
+                        replaces_locked_balance=locked_balance,
+                        _outcome_context=native_outcome,
+                        cache_permit=cache_permit,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    native_order = None
+                    native_outcome.update(
+                        state="unknown", reason=f"replacement_exception:{exc}"
+                    )
+                if native_order is None and native_outcome.get("state") != "refused":
+                    try:
+                        found = mkt.order_by_client_id(
+                            symbol, client_order_id, provider_name=provider_name
+                        )
+                        if isinstance(found, dict) and extract_order_id(found) is not None:
+                            native_order = found
+                    except Exception:
+                        pass
+                if native_order:
+                    eff_qty = safe_pos_float(native_outcome.get("submitted_qty"), default=quantity) or quantity
+                    order_retry.activate_claimed_replacement(replacement_claim, eff_qty)
+                    _record_replacement_success(
+                        replacement_claim,
+                        native_order,
+                        provider_name=provider_name,
+                        symbol=symbol,
+                        order_type=order_type,
+                        order_id=order_id,
+                        oid_str=oid_str,
+                        price=price,
+                        price_f=price_f,
+                        new_price=new_price,
+                        quantity=eff_qty,
+                        orders=orders,
+                        initial_prices=initial_prices,
+                    )
+                    continue
+                native_cancel_only = native_outcome.get("reason") == "replace_cancel_only"
+                try:
+                    cache_permit = mkt.preflight_order(
+                        symbol, order_type, quantity, new_price,
+                        market=False, kind="monitor_order_replace",
+                    )
+                except Exception:
+                    cache_permit = None
+
+            if native_cancel_only:
+                cancel_confirmed = True
+            else:
+                try:
+                    cancel_confirmed = api.cancel_order(symbol, order_id) is not False
+                except Exception as exc:  # noqa: BLE001
+                    cancel_confirmed = False
+                    print(
+                        f"The cancel request for order {order_id} raised {exc}; "
+                        "reconciling venue status before deciding on replacement."
+                    )
             try:
                 # The cancel response cannot reveal a fill racing the request.
                 # Always reconcile the final old-order state before fixing the
@@ -658,33 +788,21 @@ def monitor_open_orders_by_type(
                     state="unknown", reason=f"replacement_exception:{exc}")
 
             if new_order:
-                tracked = order_lifecycle.complete_accepted_claim(
-                    order_retry, replacement_claim, order=new_order,
-                    provider_name=provider_name, symbol=symbol, side=order_type)
-                if not tracked:
-                    print(
-                        f"CRITICAL: replacement order {extract_order_id(new_order)} "
-                        "was accepted but its durable tracker could not be updated."
-                    )
-                raw_new_id = (
-                    new_order["orderId"]
-                    if isinstance(new_order, dict) and clean_order_id_str(new_order.get("orderId"))
-                    else extract_order_id(new_order)
+                _record_replacement_success(
+                    replacement_claim,
+                    new_order,
+                    provider_name=provider_name,
+                    symbol=symbol,
+                    order_type=order_type,
+                    order_id=order_id,
+                    oid_str=oid_str,
+                    price=price,
+                    price_f=price_f,
+                    new_price=new_price,
+                    quantity=quantity,
+                    orders=orders,
+                    initial_prices=initial_prices,
                 )
-                new_oid = clean_order_id_str(raw_new_id) or str(raw_new_id)
-                _derived_replacement_order_ids.add(new_oid)
-                _notified_placed_order_ids.add(new_oid)
-                orders[raw_new_id] = {
-                    'price': new_price,
-                    'quantity': quantity
-                }
-                orig_init_px = safe_pos_float(initial_prices.pop(order_id, None), default=None)
-                if orig_init_px is None:
-                    orig_init_px = safe_pos_float(initial_prices.pop(oid_str, None), default=None)
-                if orig_init_px is None:
-                    orig_init_px = price_f
-                lru_dict_put(initial_prices, raw_new_id, orig_init_px, MAX_TRACKED_ORDER_IDS)
-                print(f"Updated order from {price} to {new_price}. New ID: {raw_new_id} (derived replacement)")
             else:
                 failure_reason = str(
                     outcome.get("reason") or "replacement_not_accepted")

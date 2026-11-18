@@ -375,3 +375,158 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         )
         cancel_order.assert_called_once()
         place.assert_called_once()
+
+    def test_native_replace_fast_path_and_fallbacks(self):
+        """[NATIVE_REPLACE step 3] Verify native confirmed, replace_not_attempted, replace_cancel_only, and ambiguous client-ID recovery."""
+        # 1. Native confirmed -> no cancel_order or order_status call; claim accepted and initial_prices updated.
+        monitororder.order_retry.rewrite([])
+        monitororder.initial_sell_prices.clear()
+        monitororder.initial_sell_prices[101] = 95.0
+        orders = {101: {"price": 100.0, "quantity": 2.0}}
+        permit1 = object()
+        with (
+            patch.object(monitororder, "_native_replace_enabled_for", return_value=True),
+            patch.object(monitororder.api, "get_open_orders", return_value=orders),
+            patch.object(monitororder.api, "get_current_price", return_value=100.0),
+            patch.object(monitororder, "are_close", return_value=True),
+            patch.object(monitororder.mkt, "preflight_order", return_value=permit1) as preflight,
+            patch.object(monitororder.api, "cancel_order") as cancel_order,
+            patch.object(monitororder.mkt, "order_status") as order_status,
+            patch.object(monitororder.mkt, "place", return_value={"orderId": 303}) as place,
+            patch("builtins.print"),
+        ):
+            monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
+
+        cancel_order.assert_not_called()
+        order_status.assert_not_called()
+        preflight.assert_called_once()
+        place.assert_called_once()
+        self.assertEqual(place.call_args.kwargs["replaces_order_id"], 101)
+        self.assertEqual(place.call_args.kwargs["replaces_locked_balance"], 2.0)
+        persisted = monitororder.order_retry.load_all()
+        self.assertEqual(len(persisted), 1)
+        self.assertEqual(persisted[0]["lifecycle"], "accepted")
+        self.assertEqual(persisted[0]["order_id"], "303")
+        self.assertEqual(list(monitororder.initial_sell_prices.items()), [(303, 95.0)])
+
+        # 2. replace_not_attempted -> normal cancel_order + order_status + fallback place.
+        monitororder.order_retry.rewrite([])
+        monitororder.initial_sell_prices.clear()
+        orders = {101: {"price": 100.0, "quantity": 2.0}}
+        place_calls = []
+
+        def _place_not_attempted(*args, **kwargs):
+            place_calls.append((args, kwargs))
+            if kwargs.get("replaces_order_id") is not None:
+                kwargs["_outcome_context"].update(
+                    accepted=False, reason="replace_not_attempted", state="refused"
+                )
+                return None
+            return {"orderId": 304}
+
+        with (
+            patch.object(monitororder, "_native_replace_enabled_for", return_value=True),
+            patch.object(monitororder.api, "get_open_orders", return_value=orders),
+            patch.object(monitororder.api, "get_current_price", return_value=100.0),
+            patch.object(monitororder, "are_close", return_value=True),
+            patch.object(monitororder.mkt, "preflight_order", return_value=object()) as preflight,
+            patch.object(monitororder.api, "cancel_order", return_value=True) as cancel_order,
+            patch.object(
+                monitororder.mkt,
+                "order_status",
+                return_value=OrderStatus(
+                    status="canceled", filled_qty=0.0, cost=0.0, fee=0.0, venue_status="CANCELED"
+                ),
+            ) as order_status,
+            patch.object(monitororder.mkt, "place", side_effect=_place_not_attempted),
+            patch("builtins.print"),
+        ):
+            monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
+
+        self.assertEqual(preflight.call_count, 2)
+        cancel_order.assert_called_once_with("BTCUSDC", 101)
+        order_status.assert_called_once_with("BTCUSDC", "101")
+        self.assertEqual(len(place_calls), 2)
+        self.assertNotIn("replaces_order_id", place_calls[1][1])
+        persisted = monitororder.order_retry.load_all()
+        self.assertEqual(persisted[0]["lifecycle"], "accepted")
+        self.assertEqual(persisted[0]["order_id"], "304")
+
+        # 3. replace_cancel_only -> skips redundant cancel_order, reconciles CANCELED status, and places remaining qty.
+        monitororder.order_retry.rewrite([])
+        monitororder.initial_sell_prices.clear()
+        orders = {101: {"price": 100.0, "quantity": 2.0}}
+        place_calls_co = []
+
+        def _place_cancel_only(*args, **kwargs):
+            place_calls_co.append((args, kwargs))
+            if kwargs.get("replaces_order_id") is not None:
+                kwargs["_outcome_context"].update(
+                    accepted=False, reason="replace_cancel_only", state="refused"
+                )
+                return None
+            return {"orderId": 305}
+
+        with (
+            patch.object(monitororder, "_native_replace_enabled_for", return_value=True),
+            patch.object(monitororder.api, "get_open_orders", return_value=orders),
+            patch.object(monitororder.api, "get_current_price", return_value=100.0),
+            patch.object(monitororder, "are_close", return_value=True),
+            patch.object(monitororder.mkt, "preflight_order", return_value=object()),
+            patch.object(monitororder.api, "cancel_order") as cancel_order,
+            patch.object(
+                monitororder.mkt,
+                "order_status",
+                return_value=OrderStatus(
+                    status="canceled", filled_qty=0.5, cost=50.0, fee=0.0, venue_status="CANCELED"
+                ),
+            ) as order_status,
+            patch.object(monitororder.mkt, "place", side_effect=_place_cancel_only),
+            patch("builtins.print"),
+        ):
+            monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
+
+        cancel_order.assert_not_called()
+        order_status.assert_called_once_with("BTCUSDC", "101")
+        self.assertEqual(len(place_calls_co), 2)
+        self.assertEqual(place_calls_co[1][0][3], 1.5)
+        persisted = monitororder.order_retry.load_all()
+        self.assertEqual(persisted[0]["lifecycle"], "accepted")
+        self.assertEqual(persisted[0]["order_id"], "305")
+        self.assertEqual(persisted[0]["qty"], 1.5)
+
+        # 4. Ambiguous native replace + found by client_order_id -> success without double placement.
+        monitororder.order_retry.rewrite([])
+        monitororder.initial_buy_prices.clear()
+        orders = {101: {"price": 100.0, "quantity": 2.0}}
+
+        def _place_ambiguous(*args, **kwargs):
+            kwargs["_outcome_context"].update(
+                accepted=False, reason="submit_ambiguous", state="unknown"
+            )
+            return None
+
+        with (
+            patch.object(monitororder, "_native_replace_enabled_for", return_value=True),
+            patch.object(monitororder.api, "get_open_orders", return_value=orders),
+            patch.object(monitororder.api, "get_current_price", return_value=100.0),
+            patch.object(monitororder, "are_close", return_value=True),
+            patch.object(monitororder.mkt, "preflight_order", return_value=object()),
+            patch.object(monitororder.api, "cancel_order") as cancel_order,
+            patch.object(monitororder.mkt, "order_status") as order_status,
+            patch.object(monitororder.mkt, "place", side_effect=_place_ambiguous) as place,
+            patch.object(
+                monitororder.mkt, "order_by_client_id", return_value={"orderId": 306}
+            ) as order_by_cid,
+            patch("builtins.print"),
+        ):
+            monitororder.monitor_open_orders_by_type("BTCUSDC", "BUY")
+
+        place.assert_called_once()
+        self.assertEqual(place.call_args.kwargs["replaces_locked_balance"], 200.0)
+        order_by_cid.assert_called_once()
+        cancel_order.assert_not_called()
+        order_status.assert_not_called()
+        persisted = monitororder.order_retry.load_all()
+        self.assertEqual(persisted[0]["lifecycle"], "accepted")
+        self.assertEqual(persisted[0]["order_id"], "306")
