@@ -1526,6 +1526,67 @@ def is_ob_mid_fresher_than_series(
     return (ob_ts_sec * 1000.0 - last_series_pt[0]) > 60_000.0
 
 
+def select_reconciled_spot_or_ob_price(
+    cur_px: float,
+    ob_mid_px: Optional[float],
+    ob_ts_sec: float,
+    now_ts: float,
+    last_series_pt: Optional[Tuple[float, float]] = None,
+    *,
+    is_exact_ob_sym: bool = True,
+    extra_ts_sec: float = 0.0,
+    has_live_cp_point: bool = False,
+    allow_sibling_live_mid: bool = False,
+) -> Optional[float]:
+    """Return `ob_mid_px` strictly when live spot is missing (`<=0`) or `ob_mid_px` is fresh (`<=60s`) and newer than spot/series."""
+    if ob_mid_px is None or ob_mid_px <= 0.0:
+        return None
+    if cur_px <= 0.0:
+        return ob_mid_px if (is_exact_ob_sym or allow_sibling_live_mid) else None
+    ob_fresh_newer = is_ob_live_and_newer(
+        ob_ts_sec, now_ts, last_series_pt, extra_ts_sec=extra_ts_sec, has_live_cp_point=has_live_cp_point
+    )
+    if (
+        (is_exact_ob_sym or allow_sibling_live_mid)
+        and ob_fresh_newer
+        and abs(cur_px - ob_mid_px) / max(cur_px, ob_mid_px) <= 0.01
+    ):
+        return ob_mid_px
+    if is_ob_mid_fresher_than_series(
+        cur_px, ob_mid_px, ob_ts_sec, now_ts, last_series_pt, is_exact_ob_sym=is_exact_ob_sym
+    ):
+        return ob_mid_px
+    return None
+
+
+def should_rescale_usd_sibling_walls(
+    sym_u: str,
+    sib_live_px: Optional[float],
+    ob_mid: Optional[float],
+    ref_px: float,
+    *,
+    ob_ts: float = 0.0,
+    last_pt: Optional[Tuple[float, float]] = None,
+) -> bool:
+    """Return True only when an offline/stale fiat-USD sibling book drifted >1% from live spot without cross-asset divergence."""
+    if (
+        not is_fiat_usd_pair(sym_u)
+        or not sib_live_px
+        or sib_live_px <= 0.0
+        or ob_mid is None
+        or abs(sib_live_px - ob_mid) / max(sib_live_px, ob_mid) <= 0.01
+        or _prices_diverged(sib_live_px, ob_mid)
+    ):
+        return False
+    if 0.0 < ob_ts and last_pt is not None and (ob_ts * 1000.0 - last_pt[0]) > 60_000.0:
+        return False
+    return not (
+        ref_px > 0.0
+        and abs(ref_px - ob_mid) / max(ref_px, ob_mid) <= 0.005
+        and abs(sib_live_px - ref_px) / max(sib_live_px, ref_px) > 0.01
+    )
+
+
 class MicrostructureEvaluatorBase(TelemetryEvaluatorInterface, ABC):
     """Abstract base contract (Level 2) for orderbook depth, CVD flow, liquidation clusters, and cross-venue evaluators."""
 
@@ -1723,6 +1784,8 @@ __all__ = [
     "is_ob_mid_fresher_than_series",
     "reconcile_sibling_flow_and_liq_regimes",
     "rescale_orderbook_walls_to_price",
+    "select_reconciled_spot_or_ob_price",
+    "should_rescale_usd_sibling_walls",
     "sync_sibling_symbol_telemetry",
     "update_microstructure_cycle_deltas",
 ]

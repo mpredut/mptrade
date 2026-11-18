@@ -1331,18 +1331,66 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             domain_ts["prices_oldest"] = min(cp_oldest_pool)
         micro_snap = getattr(snapshot, "microstructure", None)
         if isinstance(micro_snap, dict) and micro_snap:
-            def _ob_ts_fn(_mk: str, mv: Any) -> Optional[float]:
-                if not isinstance(mv, dict):
-                    return None
-                raw_ob_t = mv.get("_ob_raw_ts") if mv.get("_ob_raw_ts") is not None else mv.get("_ob_ts")
-                ts_ob = normalize_epoch_sec(raw_ob_t, default=None)
-                return ts_ob if (ts_ob is not None and ts_ob > 0.0) else None
+            raw_tp = (snapshot.portfolio_summary or {}).get("tradable_positions") if isinstance(snapshot.portfolio_summary, dict) else None
+            tp_ob_syms = (
+                {
+                    str(p_v.get("symbol") or "").strip().upper()
+                    for p_v in raw_tp
+                    if isinstance(p_v, dict) and p_v.get("symbol") and _vb_venue_in_scope(p_v.get("venue"))
+                }
+                if isinstance(raw_tp, list)
+                else (
+                    {
+                        str(p_k).split(":", 1)[-1].strip().upper()
+                        for p_k, p_v in raw_tp.items()
+                        if isinstance(p_v, dict) and _vb_venue_in_scope(p_v.get("venue"))
+                    }
+                    if isinstance(raw_tp, dict)
+                    else set()
+                )
+            )
+            inst_ob_syms = (
+                {
+                    str(s_inst).split(":", 1)[-1].strip().upper()
+                    for s_inst, iv_inst in (inst_by_sym or {}).items()
+                    if _vb_venue_in_scope(getattr(iv_inst, "provider_name", None))
+                }
+                | tp_ob_syms
+                | (t212_sym_set if scope_norm != "crypto" else set())
+            )
 
-            ob_item_ts, _ = _collect_scoped_map_timestamps(micro_snap, None, _ob_ts_fn)
+            def _is_active_ob_sym(sym_up: str) -> bool:
+                if not inst_ob_syms:
+                    return True
+                return sym_up in inst_ob_syms or any(
+                    c.upper() in inst_ob_syms for c in cache_symbol_variants(sym_up, include_base=False)
+                )
+
+            def _collect_deduped_ob_ts(*, exclude_eq: bool = False, active_only: bool = True) -> List[float]:
+                by_sym: Dict[str, float] = {}
+                for mk, mv in micro_snap.items():
+                    k_up = str(mk or "").strip().upper()
+                    if not k_up or k_up in _meta_keys_up or (exclude_eq and _is_eq_sym(k_up)) or not _sym_in_scope(k_up):
+                        continue
+                    if active_only and not _is_active_ob_sym(k_up):
+                        continue
+                    if not isinstance(mv, dict):
+                        continue
+                    raw_ob_t = mv.get("_ob_raw_ts") if mv.get("_ob_raw_ts") is not None else mv.get("_ob_ts")
+                    ts_ob = normalize_epoch_sec(raw_ob_t, default=None)
+                    if ts_ob is not None and ts_ob > 0.0:
+                        by_sym[k_up] = max(by_sym.get(k_up, 0.0), ts_ob)
+                return list(by_sym.values())
+
+            ob_item_ts = _collect_deduped_ob_ts(active_only=True) or _collect_deduped_ob_ts(active_only=False)
             if ob_item_ts:
                 domain_ts["orderbook_newest"] = max(ob_item_ts)
                 ob_oldest_pool = (
-                    (_collect_scoped_map_timestamps(micro_snap, None, _ob_ts_fn, exclude_eq=True)[0] or ob_item_ts)
+                    (
+                        _collect_deduped_ob_ts(exclude_eq=True, active_only=True)
+                        or _collect_deduped_ob_ts(exclude_eq=True, active_only=False)
+                        or ob_item_ts
+                    )
                     if (scope_norm == "all" and not us_rth_open)
                     else ob_item_ts
                 )

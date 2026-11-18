@@ -672,6 +672,57 @@ def resolve_derived_telemetry_intervals(
 
 
 TELEMETRY_SOURCE_STALE_INTERVAL_MULT: float = 2.0
+_EQUITY_RTH_DOMAIN_AGE_KEYS: frozenset[str] = frozenset(
+    {"prices_newest", "prices_oldest", "orderbook_newest", "orderbook_oldest", "short_trends", "venue_balances"}
+)
+
+
+def resolve_telemetry_domain_stale_thresholds_sec(
+    asset_scope: str = "all",
+    *,
+    executor_interval_sec: Optional[float] = None,
+) -> Dict[str, float]:
+    """Return symmetric SSOT staleness thresholds (seconds) for every Section 0 domain key."""
+    derived = resolve_derived_telemetry_intervals(executor_interval_sec=executor_interval_sec)
+    mult = TELEMETRY_SOURCE_STALE_INTERVAL_MULT
+    is_eq = str(asset_scope or "").strip().lower() in ("equities", "equity")
+    ob_itv = derived["orderbook_interval_sec"]
+    deriv_itv = derived["derivatives_interval_sec"]
+    whale_itv = derived["whale_interval_sec"]
+    short_trend_max = safe_pos_float(getattr(_botcore, "SHORT_TREND_FRESHNESS_MAX_AGE_SEC", 300.0), 300.0) or 300.0
+    return {
+        "prices_newest": max(whale_itv * 3.0, ob_itv * 6.0) if is_eq else max(deriv_itv * mult, ob_itv * mult),
+        "prices_oldest": max(whale_itv * 3.0, ob_itv * 6.0) if is_eq else max(whale_itv * mult, deriv_itv * mult),
+        "orderbook_newest": max(whale_itv * mult, ob_itv * 6.0) if is_eq else ob_itv * mult,
+        # BY DESIGN: Sequential multi-symbol L2 polling adds ~10-15s cycle jitter; keep 60s (4x 15s) floor on crypto oldest.
+        "orderbook_oldest": max(whale_itv * mult, ob_itv * 6.0) if is_eq else max(whale_itv, ob_itv * 4.0),
+        "short_trends": short_trend_max * mult,
+        "venue_balances": (derived["share_executor_interval_sec"] if is_eq else derived["crypto_executor_interval_sec"]) * mult,
+        "fear_greed": derived["fear_greed_interval_sec"] * mult,
+        "market_breadth": derived["breadth_interval_sec"] * mult,
+        "macro_benchmarks": derived["macro_benchmarks_interval_sec"] * mult,
+        "sentiment_advisor": derived["default_sentiment_interval_sec"] * mult,
+        "geopolitical_threat": derived["default_geopolitical_interval_sec"] * mult,
+    }
+
+
+def format_telemetry_domain_age_tag(
+    domain_key: str,
+    age_sec: float,
+    *,
+    asset_scope: str = "all",
+    us_rth_open: bool = True,
+    thresholds: Optional[Mapping[str, float]] = None,
+) -> str:
+    """Return `[stale]`, `[market_closed]` (outside US RTH on equities), or empty string for a Section 0 domain age."""
+    thr_map = thresholds if thresholds is not None else resolve_telemetry_domain_stale_thresholds_sec(asset_scope)
+    thr = thr_map.get(str(domain_key or "").strip())
+    if thr is None or age_sec <= thr:
+        return ""
+    is_eq = str(asset_scope or "").strip().lower() in ("equities", "equity")
+    if is_eq and not us_rth_open and domain_key in _EQUITY_RTH_DOMAIN_AGE_KEYS:
+        return "[market_closed]"
+    return "[stale]"
 
 
 def format_interval_sec_label(itv_sec: float) -> str:

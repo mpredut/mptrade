@@ -74,7 +74,6 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     _refresh_stale_t212_cached_positions,
     _resolve_fallback_ohlc_fn,
     _resolve_live_24trend_current_price,
-    _should_rescale_usd_sibling_walls,
 )
 import intelligence.sentiment.collectors.microstructure_collector as _mc_mod
 from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
@@ -90,6 +89,8 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     is_ob_mid_fresher_than_series,
     reconcile_sibling_flow_and_liq_regimes,
     rescale_orderbook_walls_to_price,
+    select_reconciled_spot_or_ob_price,
+    should_rescale_usd_sibling_walls,
     _first_variant_dict,
     _MICRO_PRICE_ANCHOR_KEYS,
 )
@@ -128,12 +129,6 @@ read_json_cached = _default_read_json_cached
 
 DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC: float = 1800.0
 PRETRADE_SOURCE_STALE_INTERVAL_MULT: float = TELEMETRY_SOURCE_STALE_INTERVAL_MULT
-
-
-def _compute_pretrade_liq_clusters(p_info: Dict[str, Any], m_info: Dict[str, Any], sym: str) -> Dict[str, Any]:
-    if has_equity_suffix(sym) or resolve_kraken_tokenized_pair(sym)[1]:
-        return {}
-    return compute_liquidation_clusters(p_info, m_info)
 
 
 def resolve_pretrade_source_intervals_sec(asset_scope: str = "CRYPTO") -> Dict[str, float]:
@@ -1082,28 +1077,20 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
             _refresh_wall_telemetry(use_sub_ten_decimals=True)
 
         ob_mid_est = safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)
-        ob_est_is_live_and_newer = is_ob_live_and_newer(
-            ob_ts_est, now_ts_s, last_alt_pt, extra_ts_sec=safe_pos_float(ctx.cp_ts_sec, default=0.0) or 0.0
-        )
-        if (
-            not is_eq_sym
-            and is_usd_sym
-            and is_exact_ob_sym
-            and ob_mid_est is not None
-            and (
-                cur_px_est <= 0.0
-                or (
-                    ob_est_is_live_and_newer
-                    and abs(cur_px_est - ob_mid_est) / max(cur_px_est, ob_mid_est) <= 0.01
-                )
-                or is_ob_mid_fresher_than_series(
-                    cur_px_est, ob_mid_est, ob_ts_est, now_ts_s, last_alt_pt, is_exact_ob_sym=is_exact_ob_sym
-                )
+        if not is_eq_sym and is_usd_sym and is_exact_ob_sym:
+            adopted_est_px = select_reconciled_spot_or_ob_price(
+                cur_px_est,
+                ob_mid_est,
+                ob_ts_est,
+                now_ts_s,
+                last_alt_pt,
+                is_exact_ob_sym=is_exact_ob_sym,
+                extra_ts_sec=safe_pos_float(ctx.cp_ts_sec, default=0.0) or 0.0,
             )
-        ):
-            cur_px_est = ob_mid_est
-            if m24:
-                recalculate_live_price_geometry(m24, ob_mid_est)
+            if adopted_est_px is not None:
+                cur_px_est = adopted_est_px
+                if m24:
+                    recalculate_live_price_geometry(m24, adopted_est_px)
         if m24 and m24.get("vp_source") == "TPO":
             _upgrade_pretrade_tpo_vp_from_ohlc(
                 cachedb_dir, symbol, m24, cur_px_est, last_alt_pt, ob_ts_est, allow_network=allow_network
@@ -1796,7 +1783,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             else:
                 telemetry["Derivatives Open Interest"] = f"{oi_base}{eq_oi_tag}"
 
-        liq_c = {} if is_eq_sym else _compute_pretrade_liq_clusters(p_est, cur_m_info, symbol)
+        liq_c = {} if is_eq_sym else compute_liquidation_clusters(p_est, cur_m_info, symbol=symbol)
         cur_m_info.update(liq_c)
         if is_usd_sym:
             cur_bd = safe_pos_float(cur_m_info.get("bid_depth_usd"), default=0.0) or 0.0
@@ -1828,7 +1815,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                             if sib_ob_ts > 0.0 and (_time.time() - sib_ob_ts) > 120.0:
                                 sib_live_px = cur_px_est
                         sib_ob_fresh = is_ob_live_and_newer(sib_ob_ts, _time.time(), sib_last_pt)
-                        if _should_rescale_usd_sibling_walls(
+                        if should_rescale_usd_sibling_walls(
                             cand_u,
                             sib_live_px,
                             sib_ob_mid,
@@ -1869,7 +1856,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                                 sib_p_est["price"] = sib_px
                                 recalculate_live_price_geometry(sib_p_est, sib_px)
                         enrich_microstructure_cvd(sib_m, sib_p_est)
-                        sib_m.update(_compute_pretrade_liq_clusters(sib_p_est, sib_m, cand_u))
+                        sib_m.update(compute_liquidation_clusters(sib_p_est, sib_m, symbol=cand_u))
                         micro_pair = {symbol: cur_m_info, cand_u: sib_m}
                         pt_pair = {symbol: p_est, cand_u: sib_p_est}
                         reconcile_sibling_flow_and_liq_regimes(micro_pair, pt_pair)

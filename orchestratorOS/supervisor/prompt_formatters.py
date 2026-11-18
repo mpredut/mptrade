@@ -7,13 +7,14 @@ Section-level and line-level formatters live in `orchestratorOS.supervisor.promp
 """
 
 from datetime import datetime
+import time
 from typing import Any, List, Optional
 from zoneinfo import ZoneInfo
 
-from botcore import parse_symbol_list, safe_pos_float, topic_spec
+from botcore import is_us_rth_open, parse_symbol_list, safe_pos_float, topic_spec
 from intelligence.macro_sentiment_ssot import (
-    TELEMETRY_SOURCE_STALE_INTERVAL_MULT,
-    resolve_derived_telemetry_intervals,
+    format_telemetry_domain_age_tag,
+    resolve_telemetry_domain_stale_thresholds_sec,
 )
 from orchestratorOS.lib.technical_repair_ssot import (
     ALL_DIAGNOSED_CATEGORIES,
@@ -60,6 +61,7 @@ def build_supervisor_prompt(
         f"### 0. RUN TIMESTAMP & OPERATIONAL CLOCK: {now_ts_str}\n"
     ]
     domain_ages = getattr(sensors, "source_ages_sec", None)
+    eval_now_ts = safe_pos_float(getattr(sensors, "evaluated_at_ts", None), default=None)
     spec_scope_norm = str(getattr(spec, "asset_scope", "all") or "all").strip().lower()
     skip_domain_keys = (
         {"fear_greed", "market_breadth", "sentiment_advisor"}
@@ -67,7 +69,8 @@ def build_supervisor_prompt(
         else set()
     )
     if not is_pure_sre and isinstance(domain_ages, dict) and domain_ages:
-        ob_stale_thr = resolve_derived_telemetry_intervals()["orderbook_interval_sec"] * TELEMETRY_SOURCE_STALE_INTERVAL_MULT
+        stale_thrs = resolve_telemetry_domain_stale_thresholds_sec(spec_scope_norm)
+        us_rth_open = is_us_rth_open(eval_now_ts if eval_now_ts is not None else time.time())
         age_tokens: List[str] = []
         for k, v in domain_ages.items():
             if k in skip_domain_keys:
@@ -75,7 +78,13 @@ def build_supervisor_prompt(
             v_f = safe_pos_float(v, default=None)
             if v_f is None and v != 0.0:
                 continue
-            stale_tag = "[stale]" if k.startswith("orderbook_") and (v_f or 0.0) > ob_stale_thr else ""
+            stale_tag = format_telemetry_domain_age_tag(
+                k,
+                v_f or 0.0,
+                asset_scope=spec_scope_norm,
+                us_rth_open=us_rth_open,
+                thresholds=stale_thrs,
+            )
             age_tokens.append(f"{k}={v}s{stale_tag}")
         if age_tokens:
             context_items.append(f"- Snapshot Domain Ages: {', '.join(age_tokens)}")
@@ -86,7 +95,6 @@ def build_supervisor_prompt(
     prices_and_trends = getattr(sensors, "prices_and_trends", None) or {}
     microstructure = getattr(sensors, "microstructure", None) or {}
     portfolio_summary = getattr(sensors, "portfolio_summary", None) or {}
-    eval_now_ts = safe_pos_float(getattr(sensors, "evaluated_at_ts", None), default=None)
     if not is_pure_sre and prices_and_trends:
         context_items.extend(_format_market_prices_section(prices_and_trends))
     if not is_pure_sre and microstructure:

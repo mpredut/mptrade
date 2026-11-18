@@ -50,6 +50,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     clip_open_lots_to_held_qty,
+    compute_cycle_subcycle_realized_pnl_view,
     compute_open_lots_vwap,
     format_recent_fill_subcycle_parts,
     is_last_buy_lot_harvested,
@@ -1626,14 +1627,7 @@ def _format_portfolio_section(
         cyc_d: Dict[str, Any], venue_k: str, sym_u: str, *, include_cum: bool = True
     ) -> Dict[str, Any]:
         lp = pos_lifo_pnl_by_vs.get((venue_k, sym_u), pos_lifo_pnl_by_vs.get(("", sym_u)))
-        orig_rp = safe_float(cyc_d.get("realized_pnl_usd"), None)
-        if lp is not None and orig_rp is not None:
-            cyc_d = {**cyc_d, "subcycle_realized_pnl_usd": round(lp, 2)}
-            if include_cum:
-                cyc_d.setdefault("cum_realized_pnl_usd", round(orig_rp, 2))
-            if abs(lp) >= 0.01:
-                cyc_d["realized_pnl_usd"] = round(lp, 2)
-        return cyc_d
+        return compute_cycle_subcycle_realized_pnl_view(cyc_d, lp, include_cum=include_cum)
 
     for cyc_key, venue_lbl, venue_id in (
         ("kraken_cycles", "Kraken", "kraken"),

@@ -2269,7 +2269,7 @@ def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases
     monkeypatch.setattr(
         ptc,
         "compute_liquidation_clusters",
-        lambda p_est, m_info: {
+        lambda p_est, m_info, **_kw: {
             "long_liq_px": 2350.0,
             "short_liq_px": 2650.0,
             "long_liq_usd": None,

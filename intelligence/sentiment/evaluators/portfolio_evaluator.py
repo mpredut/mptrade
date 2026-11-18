@@ -1116,14 +1116,61 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
 _STOP_EXIT_KINDS: tuple[str, ...] = ("STOP", "SL", "STOP_LOSS", "SMART_SL")
 
 
-def _sync_cycle_subcycle_realized_pnl(cyc: Dict[str, Any], raw_lifo_pnl: Any) -> None:
+def compute_cycle_subcycle_realized_pnl_view(
+    cyc: Dict[str, Any],
+    raw_lifo_pnl: Any,
+    *,
+    include_cum: bool = True,
+) -> Dict[str, Any]:
+    """Return a non-mutating cycle dict view synchronizing active sub-cycle LIFO PnL and multi-cycle cumulative PnL."""
     lp_f = safe_float(raw_lifo_pnl, default=None)
     c_rpnl = safe_float(cyc.get("realized_pnl_usd"), default=None)
-    if lp_f is not None and c_rpnl is not None:
-        cyc.setdefault("cum_realized_pnl_usd", round(c_rpnl, 2))
-        cyc["subcycle_realized_pnl_usd"] = round(lp_f, 2)
-        if abs(lp_f) >= 0.01:
-            cyc["realized_pnl_usd"] = round(lp_f, 2)
+    if lp_f is None or c_rpnl is None:
+        return dict(cyc)
+    out = {**cyc, "subcycle_realized_pnl_usd": round(lp_f, 2)}
+    if include_cum:
+        out.setdefault("cum_realized_pnl_usd", round(c_rpnl, 2))
+    if abs(lp_f) >= 0.01:
+        out["realized_pnl_usd"] = round(lp_f, 2)
+    return out
+
+
+def _sync_cycle_subcycle_realized_pnl(cyc: Dict[str, Any], raw_lifo_pnl: Any) -> None:
+    if safe_float(raw_lifo_pnl, default=None) is not None and safe_float(cyc.get("realized_pnl_usd"), default=None) is not None:
+        cyc.update(compute_cycle_subcycle_realized_pnl_view(cyc, raw_lifo_pnl, include_cum=True))
+
+
+def classify_reconciled_cycle_exit_kind(
+    cur_exit_kind: Any,
+    sell_px: float,
+    ref_avg_px: Optional[float],
+    *,
+    sell_from_prior_cycle: bool = False,
+    allow_stop_upgrade: bool = False,
+    allow_loss_reclassify: bool = True,
+    lifo_pnl_usd: Optional[float] = None,
+) -> Optional[str]:
+    """Return updated `last_exit_kind` (`TP` or `REDUCE`) for an in-cycle fill, or None when unchanged/prior-cycle."""
+    # BY DESIGN: Never reclassify a prior cycle's exit kind (e.g. Cycle 17 SL @ $68.90)
+    # against a subsequent cycle's lower re-entry cost (e.g. Cycle 18 ENTRY @ $68.69).
+    cur_kind = str(cur_exit_kind or "").strip().upper()
+    if sell_px <= 0.0 or ref_avg_px is None or ref_avg_px <= 0.0 or (sell_from_prior_cycle and cur_kind):
+        return None
+    replaceable_loss_kinds = ("", "TP", *_STOP_EXIT_KINDS, "REDUCE") if allow_stop_upgrade else ("", "TP")
+    is_loss_or_scratch = sell_px < ref_avg_px * 0.995 or (
+        lifo_pnl_usd is not None
+        and sell_px < ref_avg_px - 1e-6
+        and (lifo_pnl_usd < 0.0 or (allow_stop_upgrade and lifo_pnl_usd <= 0.0))
+    )
+    if allow_loss_reclassify and is_loss_or_scratch and cur_kind in replaceable_loss_kinds:
+        return "REDUCE"
+    if sell_px >= ref_avg_px * 1.0005 and (
+        not cur_kind or (allow_stop_upgrade and cur_kind in (*_STOP_EXIT_KINDS, "REDUCE"))
+    ):
+        return "TP"
+    if allow_stop_upgrade and not is_loss_or_scratch and sell_px >= ref_avg_px * 0.995 and cur_kind in _STOP_EXIT_KINDS:
+        return "REDUCE"
+    return None
 
 
 class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
@@ -1262,8 +1309,6 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                 )
 
                 def _sync_exit_kind(c_dict: Dict[str, Any], sell_p: float, rem_q: float) -> None:
-                    # BY DESIGN: Never reclassify a prior cycle's exit kind (e.g. Cycle 17 SL @ $68.90)
-                    # against a subsequent cycle's lower re-entry cost (e.g. Cycle 18 ENTRY @ $68.69).
                     if sell_p <= 0.0 or (post_sell_new_cycle and str(c_dict.get("last_exit_kind") or "").strip()):
                         return
                     pre_sell_ref = (
@@ -1277,31 +1322,26 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                         or safe_pos_float(c_dict.get("entry_price"), default=None)
                         or safe_pos_float(c_dict.get("last_buy_price"), default=None)
                     )
-                    if ref_avg is not None and ref_avg > 0.0:
-                        cur_kind = str(c_dict.get("last_exit_kind") or "").strip().upper()
-                        is_newer_partial_sell = (
-                            not post_sell_new_cycle
-                            and rem_q > 1e-6
-                            and ls_ts_ms > 0.0
-                            and (
-                                sell_ts_f is None
-                                or sell_ts_f < ls_ts_ms - 5000.0
-                                or (already_deducted_partial and sell_ts_f <= ls_ts_ms + 60000.0)
-                            )
+                    is_newer_partial_sell = (
+                        not post_sell_new_cycle
+                        and rem_q > 1e-6
+                        and ls_ts_ms > 0.0
+                        and (
+                            sell_ts_f is None
+                            or sell_ts_f < ls_ts_ms - 5000.0
+                            or (already_deducted_partial and sell_ts_f <= ls_ts_ms + 60000.0)
                         )
-                        replaceable_kinds = ("", "TP", *_STOP_EXIT_KINDS, "REDUCE") if is_newer_partial_sell else ("", "TP")
-                        lifo_pnl_ro = safe_float(ro_c.get("lifo_realized_pnl_usd"), default=0.0) or 0.0
-                        is_loss_or_scratch_sell = sell_p < ref_avg * 0.995 or (
-                            sell_p < ref_avg - 1e-6 and (lifo_pnl_ro < 0.0 or (is_newer_partial_sell and lifo_pnl_ro <= 0.0))
-                        )
-                        if is_loss_or_scratch_sell and cur_kind in replaceable_kinds:
-                            c_dict["last_exit_kind"] = "REDUCE"
-                        elif sell_p >= ref_avg * 1.0005 and (
-                            not cur_kind or (is_newer_partial_sell and cur_kind in (*_STOP_EXIT_KINDS, "REDUCE"))
-                        ):
-                            c_dict["last_exit_kind"] = "TP"
-                        elif is_newer_partial_sell and not is_loss_or_scratch_sell and sell_p >= ref_avg * 0.995 and cur_kind in _STOP_EXIT_KINDS:
-                            c_dict["last_exit_kind"] = "REDUCE"
+                    )
+                    new_kind = classify_reconciled_cycle_exit_kind(
+                        c_dict.get("last_exit_kind"),
+                        sell_p,
+                        ref_avg,
+                        sell_from_prior_cycle=post_sell_new_cycle,
+                        allow_stop_upgrade=is_newer_partial_sell,
+                        lifo_pnl_usd=safe_float(ro_c.get("lifo_realized_pnl_usd"), default=0.0) or 0.0,
+                    )
+                    if new_kind is not None:
+                        c_dict["last_exit_kind"] = new_kind
 
                 if already_deducted_partial:
                     if ls_px > 0:
@@ -1708,18 +1748,17 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                             cyc.get("avg_cost_px"),
                             cyc.get("entry_price"),
                         )
-                        cur_exit_k = str(cyc.get("last_exit_kind") or "").strip().upper()
                         sell_changed = prev_cyc_sell is None or abs(new_cyc_sell - prev_cyc_sell) > max(1e-5, prev_cyc_sell * 0.0002)
-                        if ref_sell_avg is not None and ref_sell_avg > 0.0:
-                            if new_cyc_sell >= ref_sell_avg * 1.0005 and (
-                                not cur_exit_k
-                                or (sell_changed and cur_exit_k in (*_STOP_EXIT_KINDS, "REDUCE"))
-                            ):
-                                cyc["last_exit_kind"] = "TP"
-                            elif sell_changed and new_cyc_sell < ref_sell_avg * 0.995 and cur_exit_k in ("", "TP"):
-                                cyc["last_exit_kind"] = "REDUCE"
-                            elif sell_changed and new_cyc_sell >= ref_sell_avg * 0.995 and cur_exit_k in _STOP_EXIT_KINDS:
-                                cyc["last_exit_kind"] = "REDUCE"
+                        new_exit_k = classify_reconciled_cycle_exit_kind(
+                            cyc.get("last_exit_kind"),
+                            new_cyc_sell,
+                            ref_sell_avg,
+                            sell_from_prior_cycle=sell_from_prior_cycle,
+                            allow_stop_upgrade=sell_changed,
+                            allow_loss_reclassify=sell_changed,
+                        )
+                        if new_exit_k is not None:
+                            cyc["last_exit_kind"] = new_exit_k
             exact_sym_sp = (prices_and_trends.get(p_sym) or {}).get("spread_bps") if isinstance(prices_and_trends.get(p_sym), dict) else None
             sym_spread = (
                 exact_sym_sp
@@ -1954,6 +1993,8 @@ __all__ = [
     "_populate_cycle_fallback_recent_order",
     "_sync_cycle_wallet_qty_and_avg",
     "apply_cycle_fallback_to_recent_fills",
+    "classify_reconciled_cycle_exit_kind",
+    "compute_cycle_subcycle_realized_pnl_view",
     "enrich_positions_with_orders_and_cycles",
     "extract_symbol_recent_fills",
     "parse_venue_cycle_state",

@@ -10999,6 +10999,137 @@ def test_item_1_2_ob_freshness_ssot_and_no_sub_1pct_wall_rescaling(tmp_path):
     assert micro_map["HYPEUSD"]["ask_wall_px"] == pytest.approx(67.74)
 
 
+def test_item_1_3_and_ssot_unification_contracts(tmp_path):
+    import copy
+    from types import SimpleNamespace
+    from intelligence.macro_sentiment_ssot import (
+        TelemetrySensorSnapshot,
+        format_telemetry_domain_age_tag,
+        resolve_telemetry_domain_stale_thresholds_sec,
+    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MarketAndPortfolioSnapshotOrchestrator
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        select_reconciled_spot_or_ob_price,
+        should_rescale_usd_sibling_walls,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        classify_reconciled_cycle_exit_kind,
+        compute_cycle_subcycle_realized_pnl_view,
+    )
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+    from state_io import atomic_write_json
+
+    # 1. Item 1.3: Symmetric Section 0 [stale] + 60s crypto oldest jitter tolerance + RTH [market_closed] on equities
+    crypto_thrs = resolve_telemetry_domain_stale_thresholds_sec("crypto", executor_interval_sec=360.0)
+    eq_thrs = resolve_telemetry_domain_stale_thresholds_sec("equities", executor_interval_sec=360.0)
+    assert crypto_thrs["orderbook_newest"] == pytest.approx(30.0)
+    assert crypto_thrs["orderbook_oldest"] == pytest.approx(60.0)
+    assert eq_thrs["orderbook_oldest"] == pytest.approx(120.0)
+    assert format_telemetry_domain_age_tag("orderbook_oldest", 37.1, asset_scope="crypto", thresholds=crypto_thrs) == ""
+    assert format_telemetry_domain_age_tag("orderbook_oldest", 65.0, asset_scope="crypto", thresholds=crypto_thrs) == "[stale]"
+    assert format_telemetry_domain_age_tag("prices_oldest", 180.0, asset_scope="crypto", thresholds=crypto_thrs) == "[stale]"
+    assert format_telemetry_domain_age_tag("short_trends", 650.0, asset_scope="crypto", thresholds=crypto_thrs) == "[stale]"
+    assert format_telemetry_domain_age_tag("orderbook_oldest", 37.1, asset_scope="equities", us_rth_open=True, thresholds=eq_thrs) == ""
+    assert (
+        format_telemetry_domain_age_tag("orderbook_newest", 54000.0, asset_scope="equities", us_rth_open=False, thresholds=eq_thrs)
+        == "[market_closed]"
+    )
+    assert (
+        format_telemetry_domain_age_tag("geopolitical_threat", 40000.0, asset_scope="equities", us_rth_open=False, thresholds=eq_thrs)
+        == "[stale]"
+    )
+
+    # Sunday UTC (outside US RTH): 2026-11-15 12:00:00 UTC = 1794744000
+    sun_ts = 1_794_744_000.0
+    eq_snap = TelemetrySensorSnapshot(
+        evaluated_at_ts=sun_ts,
+        source_ages_sec={
+            "prices_newest": 54000.0,
+            "orderbook_newest": 54000.0,
+            "venue_balances": 54000.0,
+            "geopolitical_threat": 40000.0,
+        },
+    )
+    eq_prompt = build_supervisor_prompt(eq_snap, [], topic_key="auto_sharetrade_executor")
+    assert "prices_newest=54000.0s[market_closed]" in eq_prompt
+    assert "orderbook_newest=54000.0s[market_closed]" in eq_prompt
+    assert "venue_balances=54000.0s[market_closed]" in eq_prompt
+    assert "geopolitical_threat=40000.0s[stale]" in eq_prompt
+
+    # Active-fleet filtering & casefold deduplication in MarketAndPortfolioSnapshotOrchestrator
+    cdir = tmp_path / "cachedb"
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+    (cdir / "state").mkdir(parents=True, exist_ok=True)
+    now_s = 1_794_680_000.0
+    atomic_write_json(
+        str(cdir / "prices" / "cache_current_price.json"),
+        {"items": {"SPCXxUSD": [[int((now_s - 1.0) * 1000), 142.5]], "UNHELDUSDC": [[int((now_s - 2.0) * 1000), 1.2]]}},
+    )
+    atomic_write_json(
+        str(cdir / "telemetry" / "orderbook_depth_SPCXxUSD.json"),
+        {"symbol": "SPCXxUSD", "venue": "kraken", "timestamp": now_s - 8.0, "mid_price": 142.5, "best_bid": 142.4, "best_ask": 142.6},
+    )
+    atomic_write_json(
+        str(cdir / "telemetry" / "orderbook_depth_UNHELDUSDC.json"),
+        {"symbol": "UNHELDUSDC", "venue": "binance", "timestamp": now_s - 900.0, "mid_price": 1.2, "best_bid": 1.19, "best_ask": 1.21},
+    )
+    atomic_write_json(
+        str(cdir / "state" / "venue_balances_state.json"),
+        {
+            "open_orders_verified_ts:kraken": now_s - 5.0,
+            "pos:kraken:SPCXxUSD": {"venue": "kraken", "symbol": "SPCXxUSD", "free_base": 2.5, "price": 142.5, "ts": now_s - 5.0},
+        },
+    )
+    snap_pre = TelemetrySensorSnapshot(
+        microstructure={
+            "SPCXxUSD": {"ob_mid_price": 142.5, "_ob_raw_ts": now_s - 8.0},
+            "SPCXXUSD": {"ob_mid_price": 142.5, "_ob_raw_ts": now_s - 8.0},
+            "UNHELDUSDC": {"ob_mid_price": 1.2, "_ob_raw_ts": now_s - 900.0},
+        },
+    )
+    orch = MarketAndPortfolioSnapshotOrchestrator(start_sync=False)
+    # With a single active Kraken holding (SPCXxUSD, stored under 2 case keys) + stale unheld reference UNHELDUSDC:
+    # UNHELDUSDC must be excluded from orderbook_oldest, and SPCXxUSD/SPCXXUSD deduplicated to 1 active symbol.
+    res_snap = orch.collect(
+        str(cdir),
+        "*",
+        snapshot=snap_pre,
+        workspace_dir=str(tmp_path),
+        scope="crypto",
+        now_ts=now_s,
+        allow_network=False,
+        persist=False,
+    )
+    assert res_snap.source_ages_sec["orderbook_newest"] == pytest.approx(8.0)
+    assert "orderbook_oldest" not in res_snap.source_ages_sec
+
+    # 2. Unification 1 & 2: Pure SSOT compute + Single-owner non-mutating formatter contract
+    assert (
+        select_reconciled_spot_or_ob_price(
+            67.08, 67.045, now_s - 12.0, now_s, (int((now_s - 0.5) * 1000), 67.08), is_exact_ob_sym=True, has_live_cp_point=True
+        )
+        is None
+    )
+    assert should_rescale_usd_sibling_walls("HYPEUSD", 67.08, 67.045, 67.08) is False
+    assert classify_reconciled_cycle_exit_kind("SL", 68.900061, 68.69, sell_from_prior_cycle=True, allow_stop_upgrade=True) is None
+    assert classify_reconciled_cycle_exit_kind("SL", 68.900061, 68.69, sell_from_prior_cycle=False, allow_stop_upgrade=True) == "TP"
+
+    ps_in = {
+        "tradable_positions": [{"venue": "hyperliquid", "symbol": "HYPEUSDC", "price": 67.10, "lifo_realized_pnl_usd": 5.31}],
+        "hyperliquid_cycles": {"HYPEUSDC": {"qty": 10.0, "avg_cost_px": 66.0, "realized_pnl_usd": 179.25, "last_exit_kind": "TP"}},
+    }
+    ps_before = copy.deepcopy(ps_in)
+    rendered_3c = "\n".join(_format_portfolio_section(ps_in, asset_scope="crypto", include_macro_benchmarks=False))
+    assert ps_in == ps_before
+    assert "realized_pnl=$5.31 (cum_cycles=$179.25)" in rendered_3c
+    view_d = compute_cycle_subcycle_realized_pnl_view(ps_in["hyperliquid_cycles"]["HYPEUSDC"], 5.31)
+    assert view_d["realized_pnl_usd"] == pytest.approx(5.31)
+    assert view_d["cum_realized_pnl_usd"] == pytest.approx(179.25)
+
+
+
 
 
 

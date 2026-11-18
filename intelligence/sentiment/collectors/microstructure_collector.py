@@ -133,6 +133,8 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     is_ob_live_and_newer,
     is_ob_mid_fresher_than_series,
     rescale_orderbook_walls_to_price,
+    select_reconciled_spot_or_ob_price,
+    should_rescale_usd_sibling_walls,
 )
 from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
@@ -1345,33 +1347,6 @@ def _resolve_live_24trend_current_price(
     )
 
 
-def _should_rescale_usd_sibling_walls(
-    sym_u: str,
-    sib_live_px: Optional[float],
-    ob_mid: Optional[float],
-    ref_px: float,
-    *,
-    ob_ts: float = 0.0,
-    last_pt: Optional[tuple] = None,
-) -> bool:
-    if (
-        not is_fiat_usd_pair(sym_u)
-        or not sib_live_px
-        or sib_live_px <= 0.0
-        or ob_mid is None
-        or abs(sib_live_px - ob_mid) / max(sib_live_px, ob_mid) <= 0.01
-        or _prices_diverged(sib_live_px, ob_mid)
-    ):
-        return False
-    if 0.0 < ob_ts and last_pt is not None and (ob_ts * 1000.0 - last_pt[0]) > 60_000.0:
-        return False
-    return not (
-        ref_px > 0.0
-        and abs(ref_px - ob_mid) / max(ref_px, ob_mid) <= 0.005
-        and abs(sib_live_px - ref_px) / max(sib_live_px, ref_px) > 0.01
-    )
-
-
 class MicrostructureCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
     """Abstract base contract (Level 2) for orderbook, derivatives, and whale positioning cache collectors."""
 
@@ -1859,26 +1834,27 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 ob_is_live_and_newer = is_ob_live_and_newer(
                     ob_ts_m, eff_now, eff_last_series_pt, has_live_cp_point=cp_last_pt is not None
                 )
-                if (
-                    sym_px_m <= 0.0
-                    or (
-                        ob_is_live_and_newer
-                        and abs(sym_px_m - ob_mid_m) / max(sym_px_m, ob_mid_m) <= 0.01
-                    )
-                    or is_ob_mid_fresher_than_series(
-                        sym_px_m, ob_mid_m, ob_ts_m, eff_now, eff_last_series_pt, is_exact_ob_sym=is_exact_ob_sym
-                    )
-                ):
-                    pt_map[sym]["price"] = ob_mid_m
-                    sym_px_m = ob_mid_m
+                adopted_ob_px = select_reconciled_spot_or_ob_price(
+                    sym_px_m,
+                    ob_mid_m,
+                    ob_ts_m,
+                    eff_now,
+                    eff_last_series_pt,
+                    is_exact_ob_sym=is_exact_ob_sym,
+                    has_live_cp_point=cp_last_pt is not None,
+                    allow_sibling_live_mid=True,
+                )
+                if adopted_ob_px is not None:
+                    pt_map[sym]["price"] = adopted_ob_px
+                    sym_px_m = adopted_ob_px
                     if (
                         active_7d_vals
                         and len(active_7d_vals) >= 2
                         and safe_float(active_7d_vals[0], 0.0) > 0.0
-                        and not _prices_diverged(ob_mid_m, safe_float(active_7d_vals[-1], 0.0))
+                        and not _prices_diverged(adopted_ob_px, safe_float(active_7d_vals[-1], 0.0))
                     ):
-                        pt_map[sym]["chg_7d_pct"] = pct_delta(ob_mid_m, safe_float(active_7d_vals[0], 0.0))
-                    recalculate_live_price_geometry(pt_map[sym], ob_mid_m)
+                        pt_map[sym]["chg_7d_pct"] = pct_delta(adopted_ob_px, safe_float(active_7d_vals[0], 0.0))
+                    recalculate_live_price_geometry(pt_map[sym], adopted_ob_px)
                 elif (
                     # BY DESIGN: Keep real resting orderbook wall prices untouched on normal <=1% intraday moves;
                     # only recenter walls when an offline/stale USD book drifted >1% away from live spot.
@@ -1957,7 +1933,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                                 )
                             if ob_ref_ts > 0.0 and (eff_now - ob_ref_ts) > 120.0:
                                 sib_live_px = p_ref_px if p_ref_px > 0.0 else None
-                    if _should_rescale_usd_sibling_walls(msym, sib_live_px, ob_mid_sib, p_ref_px):
+                    if should_rescale_usd_sibling_walls(msym, sib_live_px, ob_mid_sib, p_ref_px):
                         ob_mid_sib = rescale_orderbook_walls_to_price(m_info_ref, sib_live_px, ob_mid_sib)
                         ob_sib_rescaled = True
                 ob_ref_fresh = ob_sib_rescaled or p_ref_px <= 0.0 or (ob_ref_ts > 0.0 and -5.0 <= (eff_now - ob_ref_ts) <= 60.0)
