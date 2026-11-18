@@ -166,13 +166,17 @@ def _resolve_provider_name(symbol: str) -> str:
     return resolve_symbol_provider_name(symbol, market_api=mkt, fallback="Binance")
 
 
-def _native_replace_enabled_for(symbol: str, provider_name: str) -> bool:
+def _resolve_provider(symbol: str, provider_name: str):
     prov_by_name = getattr(mkt, "provider_by_name", None)
     provider = prov_by_name(provider_name) if callable(prov_by_name) else None
     if provider is None:
         prov_for = getattr(mkt, "_provider_for", None)
         provider = prov_for(symbol) if callable(prov_for) else None
-    return order_lifecycle.native_replace_enabled(provider)
+    return provider
+
+
+def _native_replace_enabled_for(symbol: str, provider_name: str) -> bool:
+    return order_lifecycle.native_replace_enabled(_resolve_provider(symbol, provider_name))
 
 
 def _record_replacement_success(
@@ -601,6 +605,18 @@ def monitor_open_orders_by_type(
 
             # Issue the one-shot permit only after the durable intent exists, so
             # permit acquisition stays immediately adjacent to cancel and submit.
+            provider_obj = _resolve_provider(symbol, provider_name)
+            requires_permit = (
+                True
+                if provider_obj is None or not callable(getattr(provider_obj, "requires_cache_permit", None))
+                else bool(provider_obj.requires_cache_permit())
+            )
+            defers_qty = (
+                False
+                if provider_obj is None or not callable(getattr(provider_obj, "defers_preflight_quantity", None))
+                else bool(provider_obj.defers_preflight_quantity())
+            )
+            preflight_qty = None if defers_qty else quantity
             try:
                 filter_refusal = mkt.order_filter_refusal(
                     symbol,
@@ -614,9 +630,9 @@ def monitor_open_orders_by_type(
                 if filter_refusal:
                     raise SubmissionRefused(filter_refusal)
                 cache_permit = mkt.preflight_order(
-                    symbol, order_type, quantity, new_price,
+                    symbol, order_type, preflight_qty, new_price,
                     market=False, kind="monitor_order_replace")
-                if cache_permit is None:
+                if requires_permit and cache_permit is None:
                     raise SubmissionRefused("account_cache_not_fresh")
             except Exception as exc:  # noqa: BLE001
                 order_retry.complete_claim(replacement_claim, "success")
@@ -702,7 +718,7 @@ def monitor_open_orders_by_type(
                 native_cancel_only = native_reason == "replace_cancel_only"
                 try:
                     cache_permit = mkt.preflight_order(
-                        symbol, order_type, quantity, new_price,
+                        symbol, order_type, preflight_qty, new_price,
                         market=False, kind="monitor_order_replace",
                     )
                 except Exception:

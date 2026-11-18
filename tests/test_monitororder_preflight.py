@@ -584,3 +584,34 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         place_guard.assert_called_once()
         cancel_guard.assert_not_called()
         self.assertEqual(monitororder.order_retry.load_all(), [])
+
+        # 7. Non-Binance provider (Kraken/Hyperliquid: requires_cache_permit=False, defers_preflight_quantity=True)
+        # passes preflight_qty=None and succeeds when preflight_order returns None.
+        monitororder.order_retry.rewrite([])
+        monitororder.initial_sell_prices.clear()
+        orders_kr = {"OTXID-KR-1": {"price": 200.0, "quantity": 1.5}}
+        with (
+            patch.object(monitororder.mkt, "provider_name_for", return_value="Kraken"),
+            patch.object(monitororder, "_native_replace_enabled_for", return_value=True),
+            patch.object(monitororder.api, "get_open_orders", return_value=orders_kr),
+            patch.object(monitororder.api, "get_current_price", return_value=200.0),
+            patch.object(monitororder, "are_close", return_value=True),
+            patch.object(monitororder.mkt, "preflight_order", return_value=None) as pf_kr,
+            patch.object(monitororder.api, "cancel_order") as cancel_kr,
+            patch.object(
+                monitororder.mkt,
+                "place",
+                return_value={"orderId": "OTXID-KR-1", "amended_in_place": True},
+            ) as place_kr,
+            patch("builtins.print"),
+        ):
+            monitororder.monitor_open_orders_by_type("TAOUSD", "SELL")
+
+        pf_kr.assert_called_once()
+        self.assertIsNone(pf_kr.call_args.args[2])
+        place_kr.assert_called_once()
+        cancel_kr.assert_not_called()
+        persisted_kr = monitororder.order_retry.load_all()
+        self.assertEqual(len(persisted_kr), 1)
+        self.assertEqual(persisted_kr[0]["lifecycle"], "accepted")
+        self.assertEqual(persisted_kr[0]["order_id"], "OTXID-KR-1")
