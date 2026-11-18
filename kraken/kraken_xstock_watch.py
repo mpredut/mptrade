@@ -568,6 +568,37 @@ def _bot_alive(pid) -> bool:
         return True
 
 
+def _build_xstock_bot_env(alloc_price: float, *, symbol_label: str | None = None) -> dict[str, str]:
+    env = clone_process_env({"STRAT_ADOPT_COST": str(alloc_price)})
+    for src, dst in (
+        ("XSTOCK_BOT_OBSERVE_ONLY", "KRAKEN_BOT_OBSERVE_ONLY"),
+        ("XSTOCK_SYMBOL_LABEL", "SYMBOL_LABEL"),
+        ("XSTOCK_BOT_ENTRY", "STRAT_ENTRY"),
+        ("XSTOCK_BOT_DCA", "STRAT_DCA"),
+        ("XSTOCK_BOT_MAX_DCA_BUYS", "STRAT_MAX_DCA_BUYS"),
+        ("XSTOCK_BOT_DCA_DROP_PCT", "STRAT_DCA_DROP_PCT"),
+        ("XSTOCK_BOT_TP_PCT", "STRAT_TAKEPROFIT_PCT"),
+        ("XSTOCK_BOT_TP_TRANCHES", "STRAT_TP_TRANCHES"),
+        ("XSTOCK_BOT_TP_TREND_HOLD", "STRAT_TP_TREND_HOLD"),
+        ("XSTOCK_BOT_TP_TRAIL_PCT", "STRAT_TP_TRAIL_PCT"),
+        ("XSTOCK_BOT_TP_TRAIL_ADAPTIVE", "STRAT_TP_TRAIL_ADAPTIVE"),
+        ("XSTOCK_BOT_TP_MDHTP_ENABLED", "STRAT_TP_MDHTP_ENABLED"),
+        ("XSTOCK_BOT_TP_DYNAMIC_FLAT", "STRAT_TP_DYNAMIC_FLAT"),
+        ("XSTOCK_BOT_IPO_TP_TRANCHES", "STRAT_IPO_TP_TRANCHES"),
+        ("XSTOCK_BOT_IPO_TRAIL_PCT", "STRAT_IPO_TRAIL_PCT"),
+        ("XSTOCK_BOT_IPO_REENTRY_DROP_PCT", "STRAT_IPO_REENTRY_DROP_PCT"),
+        ("XSTOCK_BOT_SL_PCT", "STRAT_STOP_LOSS_PCT"),
+        ("XSTOCK_BOT_TREND_OVERLAY", "STRAT_TREND_OVERLAY"),
+        ("XSTOCK_BOT_MAX_BUDGET", "STRAT_MAX_BUDGET"),
+        ("XSTOCK_BOT_CHECK_MINUTES", "STRAT_CHECK_MINUTES"),
+    ):
+        if (val := optional_env(src)) is not None:
+            env[dst] = val
+    if symbol_label:
+        env["SYMBOL_LABEL"] = symbol_label
+    return env
+
+
 def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
     """Automatically start ``kraken_bot`` with allocation adoption when ready.
 
@@ -597,32 +628,7 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
     if _bot_alive(st.get("bot_pid")):
         return
     relaunch = st.get("bot_pid") is not None
-    env = clone_process_env({"STRAT_ADOPT_COST": str(alloc_price)})
-    # Volatile-IPO tuning overrides config.env only for this bot instance.
-    for src, dst in (
-        ("XSTOCK_BOT_OBSERVE_ONLY", "KRAKEN_BOT_OBSERVE_ONLY"),
-        ("XSTOCK_SYMBOL_LABEL", "SYMBOL_LABEL"),
-        ("XSTOCK_BOT_ENTRY", "STRAT_ENTRY"),
-        ("XSTOCK_BOT_DCA", "STRAT_DCA"),
-        ("XSTOCK_BOT_MAX_DCA_BUYS", "STRAT_MAX_DCA_BUYS"),
-        ("XSTOCK_BOT_DCA_DROP_PCT", "STRAT_DCA_DROP_PCT"),
-        ("XSTOCK_BOT_TP_PCT", "STRAT_TAKEPROFIT_PCT"),
-        ("XSTOCK_BOT_TP_TRANCHES", "STRAT_TP_TRANCHES"),
-        ("XSTOCK_BOT_TP_TREND_HOLD", "STRAT_TP_TREND_HOLD"),
-        ("XSTOCK_BOT_TP_TRAIL_PCT", "STRAT_TP_TRAIL_PCT"),
-        ("XSTOCK_BOT_TP_TRAIL_ADAPTIVE", "STRAT_TP_TRAIL_ADAPTIVE"),
-        ("XSTOCK_BOT_TP_MDHTP_ENABLED", "STRAT_TP_MDHTP_ENABLED"),
-        ("XSTOCK_BOT_TP_DYNAMIC_FLAT", "STRAT_TP_DYNAMIC_FLAT"),
-        ("XSTOCK_BOT_IPO_TP_TRANCHES", "STRAT_IPO_TP_TRANCHES"),
-        ("XSTOCK_BOT_IPO_TRAIL_PCT", "STRAT_IPO_TRAIL_PCT"),
-        ("XSTOCK_BOT_IPO_REENTRY_DROP_PCT", "STRAT_IPO_REENTRY_DROP_PCT"),
-        ("XSTOCK_BOT_SL_PCT", "STRAT_STOP_LOSS_PCT"),
-        ("XSTOCK_BOT_TREND_OVERLAY", "STRAT_TREND_OVERLAY"),
-        ("XSTOCK_BOT_MAX_BUDGET", "STRAT_MAX_BUDGET"),
-        ("XSTOCK_BOT_CHECK_MINUTES", "STRAT_CHECK_MINUTES"),
-    ):
-        if (val := optional_env(src)) is not None:
-            env[dst] = val
+    env = _build_xstock_bot_env(alloc_price)
     cmd = [sys.executable, BOT_SCRIPT, "--pair", st["pair"]]
     if required_bool_env("XSTOCK_BOT_PAPER"):
         cmd.append("--paper")
@@ -639,6 +645,43 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
     notify(title=f"🤖 BOT {verb} on {st['pair']} (adopt @ {alloc_price})",
            body=f"kraken_bot manages the allocation: TP/trailing exit. pid {proc.pid}, log {BOT_LOG}",
            source="xstock-watch", price=alloc_price, desktop=desktop, email=True)
+
+
+def ensure_active_xstock_bots(desktop: bool = False) -> None:
+    """Supervise configured already-listed xStock bots (``XSTOCK_ACTIVE_PAIRS=PAIR:COST,...``)."""
+    if not required_bool_env("XSTOCK_AUTOSTART"):
+        return
+    for spec in split_csv(optional_env("XSTOCK_ACTIVE_PAIRS")):
+        if ":" not in spec:
+            continue
+        raw_pair, raw_cost = spec.split(":", 1)
+        pair = clean_scalar_str(raw_pair)
+        cost_f = safe_pos_float(raw_cost, None)
+        if not pair or cost_f is None:
+            continue
+        pid_file = os.path.join(_HERE, f".xstock_bot_{pair}.pid")
+        prev_pid = _clean_pid(read_json_dict(pid_file, default={}).get("pid")) if os.path.exists(pid_file) else None
+        if _bot_alive(prev_pid):
+            continue
+        relaunch = prev_pid is not None
+        env = _build_xstock_bot_env(cost_f, symbol_label=pair)
+        cmd = [sys.executable, BOT_SCRIPT, "--pair", pair]
+        if required_bool_env("XSTOCK_BOT_PAPER"):
+            cmd.append("--paper")
+        log_path = os.path.join(_HERE, f"xstock_bot_{pair}.log")
+        try:
+            with open_append_text_file(log_path) as logf:
+                proc = subprocess.Popen(cmd, cwd=_HERE, env=env, stdout=logf,
+                                        stderr=subprocess.STDOUT, start_new_session=True)
+        except OSError as e:
+            log(f"  ! cannot start active xStock bot {pair}: {e}")
+            continue
+        save_json_state(pid_file, {"pair": pair, "pid": proc.pid, "alloc_price": cost_f})
+        verb = "RESTARTED (was down)" if relaunch else "AUTO-STARTED"
+        log(f"  🤖 BOT {verb}: pid {proc.pid}  pair {pair}  adopt @ {cost_f}  (log: {log_path})")
+        notify(title=f"🤖 BOT {verb} on {pair} (adopt @ {cost_f})",
+               body=f"kraken_bot active alongside AI executor on {pair}. pid {proc.pid}, log {log_path}",
+               source="xstock-watch", price=cost_f, desktop=desktop, email=True)
 
 
 # -- end-to-end trial ---------------------------------------------------------
@@ -797,6 +840,7 @@ def main() -> int:
             eff_alloc_price = resolve_alloc_price(client, st, alloc_price, args.desktop)
             check_levels(client, st, eff_alloc_price, tp_pct, sl_pct, yahoo_sym, args.desktop)
             maybe_start_bot(st, eff_alloc_price, args.desktop)
+            ensure_active_xstock_bots(args.desktop)
             _save_state(st)
         except KeyboardInterrupt:
             return 0

@@ -797,8 +797,10 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             "tp2_alert_pct": safe_pos_float(xstock_cfg.get("xstock_tp2_alert_pct"), default=None),
             "sl_alert_pct": safe_pos_float(xstock_cfg.get("xstock_sl_alert_pct"), default=None),
             "spcx_directive": (
-                "SPCXxUSD (15.74655 SPCXx.T, IPO alloc $141.75): HOLD untouched below $180; "
-                "only start profit harvesting / cyclic trading once price reaches the $180-$200+ zone."
+                "SPCXxUSD (15.74655 SPCXx.T, IPO alloc $141.75, 0bps maker/taker fee): LIVE ACTIVE TRADING ENABLED "
+                "for both [auto_cryptotrade_executor] (by=AI) and kraken_bot.py (by=BOT, TP +9.0% / Trail 3.0% / DCA -3.0%). "
+                "Synthesize live L2 bid/ask walls, ob_imbalance, and 90s/5m kinematics to actively trade swings or harvest "
+                "profitable tranches via 0bps LIMIT orders."
             ),
             "antx_ipo_playbook": (
                 "ANTxUSD (Anthropic IPO tokenized equity, 0bps maker/taker fee, auto-adopted cost in .state_ANTxUSD.json): "
