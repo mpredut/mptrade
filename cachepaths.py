@@ -1081,7 +1081,14 @@ def kraken_pair_matches(expected: object, actual: object) -> bool:
         return False
     b_exp, q_exp = split_kraken_pair(expected)
     b_act, q_act = split_kraken_pair(actual)
-    if not b_exp or not b_act or b_exp != b_act:
+    if not b_exp or not b_act:
+        return False
+    base_ok = (
+        b_exp == b_act
+        or (len(b_exp) >= 3 and b_exp.endswith("X") and b_exp[:-1] == b_act)
+        or (len(b_act) >= 3 and b_act.endswith("X") and b_act[:-1] == b_exp)
+    )
+    if not base_ok:
         return False
     if q_exp and q_act:
         return q_exp == q_act

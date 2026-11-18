@@ -1069,6 +1069,10 @@ def test_kraken_tokenized_asset_routing_and_spv_pair_matching(monkeypatch):
     assert is_kraken_tokenized_asset("AVAXUSD") is False
 
     assert kraken_pair_matches("SPCXxUSD", "SPCXSPV/USD") is True
+    assert kraken_pair_matches("SPCXXUSD", "SPCXSPV/USD") is True
+    assert kraken_pair_matches("SPCXXUSD", "SPCXUSD") is True
+    assert kraken_pair_matches("ANTXUSD", "ANTSPV/USD") is True
+    assert kraken_pair_matches("ANTXUSD", "ANTUSD") is True
     assert kraken_pair_matches("ANTxUSD", "ANTSPV/USD") is True
 
     calls = []
