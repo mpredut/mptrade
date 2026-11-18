@@ -43,6 +43,7 @@ from cachepaths import (
     has_equity_suffix,
     is_equity_venue,
     is_fiat_usd_pair,
+    is_shadow_or_paper_state_filename,
     legacy_filenames_for,
     normalize_venue_name,
     resolve_cache_dir_path,
@@ -821,6 +822,8 @@ def _iter_t212_state_files(workspace_dir: str) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     for st_path in sorted(_glob.glob(os.path.join(t212_dir, ".state_*.json"))):
         fname = os.path.basename(st_path)
+        if is_shadow_or_paper_state_filename(fname):
+            continue
         ticker = fname[len(".state_") : -len(".json")].upper()
         if not fname.startswith("..") and ticker.replace("_", "").isalnum():
             out.append((st_path, ticker))

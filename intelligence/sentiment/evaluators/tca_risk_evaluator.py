@@ -426,8 +426,14 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
         for v_name, p, val_u in grouped_positions:
             if val_u >= 1.0:
                 sym = str(p.get("symbol") or "").strip().upper()
-                base = canonical_base_asset(p.get("base") or sym)
+                tok_sym_p, is_tok_xstock_p = resolve_kraken_tokenized_pair(sym)
+                base = (
+                    f"{canonical_base_asset(tok_sym_p)}x"
+                    if is_tok_xstock_p
+                    else canonical_base_asset(p.get("base") or sym)
+                )
                 is_eq = is_equity_venue_or_suffix(sym, v_name)
+                is_eq_like = is_eq or is_tok_xstock_p
                 p_info = (
                     casefold_get(prices_and_trends, sym)
                     if isinstance(prices_and_trends, dict) and has_equity_suffix(sym) == is_eq
@@ -445,15 +451,15 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
                             if isinstance(v_d := casefold_get(prices_and_trends, c), dict) and v_d.get(m_key) is not None:
                                 return v_d.get(m_key)
                     return None
-                beta_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("beta_btc_24h"), default=(0.35 if is_eq else 1.15))
-                raw_corr_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("corr_btc_24h"), default=(0.30 if is_eq else 0.78))
+                beta_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("beta_btc_24h"), default=(0.35 if is_eq_like else 1.15))
+                raw_corr_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("corr_btc_24h"), default=(0.30 if is_eq_like else 0.78))
                 if 1.0 < abs(raw_corr_v) <= 100.0:
                     raw_corr_v = raw_corr_v / 100.0
                 corr_v = max(-1.0, min(1.0, raw_corr_v))
                 vol_1h_raw = safe_pos_float(_resolve_p_metric("vol_1h_pct"), default=None)
                 macro_daily_vol = (
                     vix_daily_floor
-                    if is_eq
+                    if is_eq_like
                     else (
                         (eth_iv_rv_max / math.sqrt(365.0))
                         if (base == "ETH" and eth_iv_rv_max > 0.0)
@@ -465,11 +471,11 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
                     )
                 )
                 if vol_1h_raw is not None:
-                    raw_daily_v = vol_1h_raw * math.sqrt(6.5 if is_eq else 24.0)
+                    raw_daily_v = vol_1h_raw * math.sqrt(6.5 if is_eq_like else 24.0)
                     if is_macro_vol_stress and macro_daily_vol is not None:
                         raw_daily_v = max(raw_daily_v, macro_daily_vol)
                     daily_vol_pct = min(25.0, max(0.8, raw_daily_v))
-                elif is_eq:
+                elif is_eq_like:
                     span_7d = safe_pos_float(_resolve_p_metric("span_7d_pct"), default=None)
                     daily_vol_pct = min(
                         25.0,

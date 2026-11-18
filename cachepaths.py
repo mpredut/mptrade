@@ -1187,18 +1187,33 @@ def resolve_venue_trailing_state_path(
     return raw_path
 
 
+_SHADOW_CYCLE_STATE_TOKENS: frozenset[str] = frozenset({"PAPER", "REPLAY", "SHADOW", "BACKTEST", "MOCK"})
+
+
+def is_shadow_or_paper_state_filename(path: object) -> bool:
+    """Return True if a ``.state_*.json`` filename stem denotes a paper, replay, shadow, or mock cycle state."""
+    bname = os.path.basename(str(path or "")).strip()
+    if not (bname.startswith(".state_") and bname.lower().endswith(".json")):
+        return False
+    stem = bname[len(".state_") : -len(".json")].strip().upper()
+    if not stem or stem.startswith(("PAPER-", "REPLAY-", "SHADOW-", "BACKTEST-", "MOCK-")):
+        return True
+    parts = [p for p in stem.replace("-", "_").split("_") if p]
+    return bool(parts) and (parts[0] in _SHADOW_CYCLE_STATE_TOKENS or parts[-1] in _SHADOW_CYCLE_STATE_TOKENS)
+
+
 def iter_venue_cycle_state_files(
     venue: object,
     *,
     workspace_dir: object = None,
     cache_dir: object = None,
 ) -> list[str]:
-    """Return sorted ``.state_*.json`` cycle state paths for ``venue``."""
+    """Return sorted ``.state_*.json`` cycle state paths for ``venue``, excluding paper/replay/shadow filenames."""
     v_norm = normalize_venue_name(venue, default="binance") or "binance"
     rt_dir = resolve_venue_runtime_dir(v_norm, workspace_dir=workspace_dir, cache_dir=cache_dir)
     if not os.path.isdir(rt_dir):
         return []
-    paths = glob.glob(os.path.join(rt_dir, ".state_*.json"))
+    paths = [p for p in glob.glob(os.path.join(rt_dir, ".state_*.json")) if not is_shadow_or_paper_state_filename(p)]
     return sorted(
         paths,
         key=lambda p: (

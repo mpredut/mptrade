@@ -1499,11 +1499,14 @@ def _format_portfolio_section(
             )
             if vn_s:
                 pre_parts.append(f"venues({vn_s})")
-        pre_parts.extend([
-            f"portfolio_btc_beta={pre.get('portfolio_btc_beta')}",
-            f"avg_corr_24h={pre.get('avg_corr_vs_btc_24h')}",
-            f"intraday_var_95=${safe_float(pre.get('intraday_var_95_usd'), 0.0):,.2f} ({pre.get('intraday_var_95_pct')}%)",
-        ])
+        if scope_s not in ("equities", "equity"):
+            pre_parts.extend([
+                f"portfolio_btc_beta={pre.get('portfolio_btc_beta')}",
+                f"avg_corr_24h={pre.get('avg_corr_vs_btc_24h')}",
+            ])
+        pre_parts.append(
+            f"intraday_var_95=${safe_float(pre.get('intraday_var_95_usd'), 0.0):,.2f} ({pre.get('intraday_var_95_pct')}%)"
+        )
         if pre.get("intraday_cvar_975_usd") is not None:
             pre_parts.append(
                 f"cvar_975=${safe_float(pre.get('intraday_cvar_975_usd'), 0.0):,.2f} ({pre.get('intraday_cvar_975_pct')}%)"

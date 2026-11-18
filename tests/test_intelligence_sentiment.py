@@ -11776,6 +11776,91 @@ def test_item_3_5_reconciled_lifo_tp_stop_upgrade_and_cycle_boundary():
     assert krk_cycs["HYPEUSD"]["last_exit_kind"] == "SL"
 
 
+def test_item_3_6_scoped_risk_engine_xstock_beta_and_shadow_state_exclusion(tmp_path):
+    """Verify shadow/paper/replay .state_*.json exclusion across venues, xStock equity beta/corr in Risk Engine, and BTC-free equities Risk Engine formatting."""
+    from cachepaths import is_shadow_or_paper_state_filename
+    from intelligence.sentiment.collectors.portfolio_collector import VenueCyclesCollector
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import compute_enterprise_portfolio_risk_metrics
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+    from state_io import atomic_write_json
+
+    # 1. Filename + payload shadow/paper/replay filtering across Kraken, Hyperliquid, and T212
+    assert is_shadow_or_paper_state_filename(".state_REPLAY.json") is True
+    assert is_shadow_or_paper_state_filename(".state_PAPER_HYPE.json") is True
+    assert is_shadow_or_paper_state_filename(".state_NVDA_US_EQ_PAPER.json") is True
+    assert is_shadow_or_paper_state_filename(".state_HYPEUSD.json") is False
+    assert is_shadow_or_paper_state_filename(".state_SPCXxUSD.json") is False
+    assert is_shadow_or_paper_state_filename(".state_NVDA_US_EQ.json") is False
+
+    for sub in ("kraken", "hyperliquid", "212trading", "cachedb"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    # Filename-level shadow/replay states (even with non-empty qty and empty orders) must be skipped
+    atomic_write_json(str(tmp_path / "hyperliquid" / ".state_REPLAY.json"), {"qty": 10.0, "cost": 700.0, "orders": []})
+    atomic_write_json(str(tmp_path / "212trading" / ".state_PAPER_NVDA_US_EQ.json"), {"qty": 5.0, "cost_usd": 750.0, "orders": []})
+    # Payload-level paper/shadow states (orders=[] after paper fill, or mode="paper" / last_hist_fill_id="PAPER-9") must be skipped
+    atomic_write_json(
+        str(tmp_path / "hyperliquid" / ".state_HYPE_long.json"),
+        {"qty": 0.85, "cost": 50.19, "orders": [], "last_hist_fill_id": "PAPER-9"},
+    )
+    atomic_write_json(
+        str(tmp_path / "kraken" / ".state_SOLUSD.json"),
+        {"qty": 12.0, "cost": 1800.0, "mode": "paper", "orders": []},
+    )
+    # Real live state must be preserved
+    atomic_write_json(
+        str(tmp_path / "hyperliquid" / ".state_HYPE.json"),
+        {"qty": 15.91, "cost": 1357.91, "entry_price": 92.696, "orders": []},
+    )
+    krk_c, hl_c, t212_c = VenueCyclesCollector().collect(str(tmp_path / "cachedb"), workspace_dir=str(tmp_path))
+    assert krk_c == {}
+    assert list(hl_c.keys()) == ["HYPEUSDC"]
+    assert hl_c["HYPEUSDC"]["qty"] == pytest.approx(15.91)
+    assert t212_c == {}
+
+    # 2. Tokenized xStock (SPCXXUSD / SPCXxUSD) uses equity beta/corr priors (0.35 / 0.30) rather than 1.15 / 0.78 altcoin priors
+    risk_xstock = compute_enterprise_portfolio_risk_metrics(
+        {
+            "tradable_positions": [
+                {"venue": "kraken", "symbol": "SPCXXUSD", "base": "SPCXX", "quote": "USD", "value_usd": 2000.0, "free_quote": 0.0}
+            ],
+            "venue_quote_cash": {},
+            "recent_orders": {},
+        },
+        {"SPCXXUSD": {"price": 143.0, "vol_1h_pct": 0.5}},
+        {},
+    )
+    assert risk_xstock["portfolio_btc_beta"] == pytest.approx(0.35)
+    assert risk_xstock["corr_vs_btc_24h"] == {"SPCXx": 0.3}
+
+    # 3. Equities Scope Risk Engine omits BTC beta/corr while Crypto & All scopes include them
+    sec_eq = "\n".join(
+        _format_portfolio_section(
+            {
+                "portfolio_risk_engine": {
+                    "unified_nav_usd": 1257.48,
+                    "invested_exposure_usd": 534.11,
+                    "global_free_cash_usd": 723.37,
+                    "global_free_cash_pct": 57.5,
+                    "venue_nav_breakdown_usd": {"t212": 1257.48},
+                    "portfolio_btc_beta": 0.15,
+                    "avg_corr_vs_btc_24h": 0.3,
+                    "intraday_var_95_usd": 14.68,
+                    "intraday_var_95_pct": 1.17,
+                    "subcycle_lifo_realized_pnl_usd": 22.99,
+                }
+            },
+            "equities",
+            include_macro_benchmarks=False,
+        )
+    )
+    assert "Portfolio Risk Engine (Equities Scope: t212; excl. crypto venues): equities_nav=$1,257.48" in sec_eq
+    assert "portfolio_btc_beta=" not in sec_eq
+    assert "avg_corr_24h=" not in sec_eq
+    assert "intraday_var_95=$14.68 (1.17%)" in sec_eq
+    assert "subcycle_lifo_pnl=$+22.99" in sec_eq
+
+
+
 
 
 

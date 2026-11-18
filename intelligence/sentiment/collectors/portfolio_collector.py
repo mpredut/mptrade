@@ -717,17 +717,35 @@ class VenueCyclesCollector(PortfolioCacheCollectorBase):
         eff_fb = fallback_prices or {}
         _rj = _resolve_read_json_cached(read_json_fn)
 
+        _shadow_oid_prefixes = ("PAPER-", "REPLAY-", "SHADOW-", "BACKTEST-", "MOCK-")
+
+        def _has_shadow_oid(val: Any) -> bool:
+            if isinstance(val, str):
+                return val.strip().upper().startswith(_shadow_oid_prefixes)
+            if isinstance(val, dict):
+                return any(
+                    str(val.get(k) or "").strip().upper().startswith(_shadow_oid_prefixes)
+                    for k in ("oid", "order_id", "id", "client_order_id", "clientOrderId")
+                )
+            return False
+
         def _is_paper_state(st_obj: Dict[str, Any]) -> bool:
-            if _parse_bool_flag(st_obj.get("paper"), False):
+            if any(_parse_bool_flag(st_obj.get(fk), False) for fk in ("paper", "dry_run", "shadow", "replay")):
+                return True
+            if str(st_obj.get("mode") or st_obj.get("execution_mode") or "").strip().lower() in (
+                "paper", "replay", "shadow", "dry_run", "backtest", "mock"
+            ):
+                return True
+            if any(_has_shadow_oid(st_obj.get(pk)) for pk in ("last_hist_fill_id", "pending_intent", "pending_submit", "pending_exit")):
                 return True
             raw_orders = st_obj.get("orders")
             if isinstance(raw_orders, list) and raw_orders:
                 oids = [
                     str(o.get("oid") or o.get("order_id") or "").strip().upper()
                     for o in raw_orders
-                    if isinstance(o, dict)
+                    if isinstance(o, dict) and str(o.get("oid") or o.get("order_id") or "").strip()
                 ]
-                if oids and all(oid.startswith("PAPER-") for oid in oids):
+                if oids and all(oid.startswith(_shadow_oid_prefixes) for oid in oids):
                     return True
             return False
 
