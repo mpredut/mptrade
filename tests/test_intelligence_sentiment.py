@@ -11441,6 +11441,24 @@ def test_item_3_1_real_spot_cvd_across_binance_kraken_hyperliquid_and_pretrade_s
     assert "spot_cvd_15m=+$6.7K[real_spot]" in sec3b_real
 
 
+def test_item_3_2_pretrade_liq_clusters_model_est_tag(tmp_path):
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from state_io import atomic_write_json
+
+    now_s = 1_795_032_500.0
+    cdir = tmp_path / "cachedb"
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+    atomic_write_json(str(cdir / "prices" / "cache_current_price.json"), {"items": {"BTCUSDC": [[int(now_s * 1000), 63000.0]]}})
+    atomic_write_json(
+        str(cdir / "telemetry" / "derivatives_telemetry_BTCUSDC.json"),
+        {"symbol": "BTCUSDC", "ts": now_s - 5.0, "funding_rate": 0.0001, "open_interest_usd": 5_000_000_000.0},
+    )
+    pt = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(cdir), allow_network=False, now_ts=now_s)
+    assert pt.get("Liquidation Clusters (LONG vs SHORT)", "").endswith(", src=model_est")
+
+
+
 
 
 

@@ -1929,9 +1929,11 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                 if liq_c.get(px_k) is not None
             ]
             deep_sfx = f", {', '.join(deep_parts)}" if deep_parts else ""
+            liq_src_lbl = str(liq_c.get("liq_source") or "model_est").strip()
             telemetry["Liquidation Clusters (LONG vs SHORT)"] = (
                 f"LONG liq=${liq_c['long_liq_px']} (${safe_float(liq_c.get('long_liq_usd'), 0.0):,.0f}, {safe_float(liq_c.get('long_liq_dist_pct'), 0.0):+.2f}%), "
-                f"SHORT liq=${liq_c['short_liq_px']} (${safe_float(liq_c.get('short_liq_usd'), 0.0):,.0f}, {safe_float(liq_c.get('short_liq_dist_pct'), 0.0):+.2f}%){deep_sfx}"
+                f"SHORT liq=${liq_c['short_liq_px']} (${safe_float(liq_c.get('short_liq_usd'), 0.0):,.0f}, {safe_float(liq_c.get('short_liq_dist_pct'), 0.0):+.2f}%){deep_sfx}, "
+                f"src={liq_src_lbl}"
             )
 
 
