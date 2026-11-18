@@ -53,6 +53,7 @@ from cachepaths import (
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
+from instrument_registry import is_xstock_trading_enabled
 from intelligence.macro_sentiment_ssot import (
     normalize_market_bias,
     normalize_recommended_action,
@@ -1525,7 +1526,7 @@ def _is_decision_in_scope(dec: Dict[str, Any], scope: str) -> bool:
     if str(dec.get("decision") or "HOLD").upper() not in ("BUY", "SELL"):
         return True
     sym_raw = dec.get("symbol")
-    if is_readonly_xstock_symbol(sym_raw):
+    if is_readonly_xstock_symbol(sym_raw) and not is_xstock_trading_enabled(sym_raw):
         return False
     return matches_asset_scope(sym_raw, dec.get("venue"), scope)
 

@@ -25,13 +25,15 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import is_kraken_tokenized_asset
+from cachepaths import CACHE_365_PRICE_PREFIX, cache_path, is_kraken_tokenized_asset
+from instrument_registry import resolve_registered_symbol_case
 from providers.ohlc_utils import (
     extract_kraken_ohlc_rows,
     parse_ohlc_interval_minutes,
     require_ohlc_symbol,
     validate_ohlc_candle_bar,
 )
+from state_io import iter_jsonl_dicts
 from kraken.kraken_client import KrakenClient, KrakenError
 
 
@@ -48,6 +50,9 @@ def fetch_ohlc_candles(
     reproducible historical backtests and avoid lookahead bias.
     """
     pair = require_ohlc_symbol(pair, label="pair")
+    reg_pair = resolve_registered_symbol_case(pair, "kraken")
+    if reg_pair != pair and is_kraken_tokenized_asset(reg_pair):
+        pair = reg_pair
     interval = parse_ohlc_interval_minutes(
         interval,
         str_to_min={},
@@ -86,6 +91,59 @@ def fetch_ohlc_candles(
             if bar is not None:
                 records.append(bar)
     return records
+
+
+def load_archive_ohlc_candles(
+    pair: str,
+    interval: int,
+    *,
+    drop_incomplete: bool = True,
+    archive_path: str | None = None,
+) -> list[dict]:
+    """Reconstruct completed OHLC bars offline from ``cachedb/prices/cache_365_price_<PAIR>.jsonl``."""
+    pair = require_ohlc_symbol(pair, label="pair")
+    reg_pair = resolve_registered_symbol_case(pair, "kraken")
+    if reg_pair != pair and is_kraken_tokenized_asset(reg_pair):
+        pair = reg_pair
+    interval_min = parse_ohlc_interval_minutes(
+        interval,
+        str_to_min={},
+        reject_float=True,
+        venue_label="Kraken",
+    )
+    bucket_ms = interval_min * 60 * 1000
+    path = archive_path or cache_path(f"{CACHE_365_PRICE_PREFIX}{pair}.jsonl")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"local tick archive not found: {path}")
+    buckets: dict[int, list[float]] = {}
+    for rec in iter_jsonl_dicts(path):
+        item = rec.get("i")
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        ts_ms = exact_nonneg_int(item[0], default=None)
+        px = safe_pos_float(item[1], default=None)
+        if ts_ms is None or ts_ms <= 0 or px is None:
+            continue
+        b_key = (ts_ms // bucket_ms) * bucket_ms
+        bar = buckets.get(b_key)
+        if bar is None:
+            buckets[b_key] = [px, px, px, px]
+        else:
+            if px > bar[1]:
+                bar[1] = px
+            if px < bar[2]:
+                bar[2] = px
+            bar[3] = px
+    sorted_keys = sorted(buckets)
+    if drop_incomplete and len(sorted_keys) > 1:
+        sorted_keys = sorted_keys[:-1]
+    out: list[dict] = []
+    for b_key in sorted_keys:
+        o, h, l, c = buckets[b_key]
+        vbar = validate_ohlc_candle_bar(b_key // 1000, o, h, l, c, drop_incomplete=False, ts_in_ms=False)
+        if vbar is not None:
+            out.append(vbar)
+    return out
 
 
 def get_price(client: KrakenClient, pair: str) -> float | None:

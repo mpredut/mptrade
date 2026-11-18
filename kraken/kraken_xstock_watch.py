@@ -74,7 +74,7 @@ from state_io import (
     write_meta_json,
 )
 from credentials import kraken_credentials
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, symbols_for
 from trailing_core import add_once_status_cli_args
 
 
@@ -227,12 +227,19 @@ def sync_trade_archive(client: KrakenClient, pair: str, *, max_pages: int = 3) -
 
 
 def sync_configured_archives(client: KrakenClient, st: dict) -> None:
-    """Incrementally sync configured XSTOCK_ARCHIVE_PAIRS plus any newly listed target pair."""
+    """Incrementally sync configured XSTOCK_ARCHIVE_PAIRS plus any unlisted/newly-listed target pair not owned by cacheManager."""
+    try:
+        cm_owned = {s.strip().upper() for s in symbols_for("kraken", "archive") if isinstance(s, str)}
+    except Exception:
+        cm_owned = set()
+    explicit = split_csv(optional_env("XSTOCK_ARCHIVE_PAIRS"))
+    explicit_u = {s.strip().upper() for s in explicit}
     pairs = list(
         dict.fromkeys(
             p
-            for raw in (*split_csv(optional_env("XSTOCK_ARCHIVE_PAIRS")), st.get("pair"))
+            for raw in (*explicit, st.get("pair"))
             if (p := clean_scalar_str(raw)) is not None
+            and (p.upper() in explicit_u or p.upper() not in cm_owned)
         )
     )
     for pair in pairs:

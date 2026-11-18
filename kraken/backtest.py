@@ -39,9 +39,11 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from cachepaths import is_kraken_tokenized_asset
+from instrument_registry import resolve_registered_symbol_case
 from strategies import spot_replay as rp
 from kraken.kraken_common import load_isolated_kraken_cfg
-from kraken.market_data import fetch_ohlc_candles
+from kraken.market_data import fetch_ohlc_candles, load_archive_ohlc_candles
 
 
 def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
@@ -155,11 +157,14 @@ def main() -> int:
         },
     )
     args = add_store_true_cli_args(
-        ap, ("--fast", "deprecated; faithful live engine rp.run_replay is always used")
+        ap,
+        ("--fast", "deprecated; faithful live engine rp.run_replay is always used"),
+        ("--from-archive", "reconstruct OHLC bars offline from cachedb/prices/cache_365_price_<PAIR>.jsonl"),
     ).parse_args()
 
     try:
-        pair_tok = validate_bt_cli_token(args.pair, "--pair", allow_slash=True).upper()
+        raw_tok = validate_bt_cli_token(args.pair, "--pair", allow_slash=True)
+        pair_tok = raw_tok if is_kraken_tokenized_asset(raw_tok) else resolve_registered_symbol_case(raw_tok.upper(), "kraken")
     except ValueError as exc:
         return print_bt_cli_error(exc)
     if args.interval <= 0:
@@ -186,13 +191,18 @@ def main() -> int:
     except (ValueError, KeyError, OSError) as exc:
         return print_bt_cli_error(f"config error: {exc}")
     try:
-        ohlc, timestamps = resolve_cli_ohlc_and_timestamps(
-            fetch_candles,
-            _DEFAULT_FETCH_CANDLES,
-            lambda: fetch_ohlc_candles(pair_tok, args.interval, drop_incomplete=True),
-            pair_tok,
-            args.interval,
-        )
+        if getattr(args, "from_archive", False):
+            recs = load_archive_ohlc_candles(pair_tok, args.interval, drop_incomplete=True)
+            ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in recs]
+            timestamps = [r["timestamp"] for r in recs]
+        else:
+            ohlc, timestamps = resolve_cli_ohlc_and_timestamps(
+                fetch_candles,
+                _DEFAULT_FETCH_CANDLES,
+                lambda: fetch_ohlc_candles(pair_tok, args.interval, drop_incomplete=True),
+                pair_tok,
+                args.interval,
+            )
     except Exception as e:  # noqa: BLE001
         return print_bt_cli_error(f"data error: {e}")
 

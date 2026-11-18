@@ -1280,3 +1280,73 @@ def test_xstock_watch_incremental_trade_archive_sync(tmp_path, monkeypatch):
     spcx_meta = read_json_dict(meta_file_path(str(spcx_file)))
     assert spcx_meta["kraken_trades_since_ns"] == "1794990060000000000"
     assert ("SPCXxUSD", "1794990000000000000") in seen_calls
+
+
+def test_declarative_xstock_role_gating_uppercase_resolution_and_archive_ohlc(tmp_path):
+    from instrument_registry import (
+        is_xstock_trading_enabled,
+        load_registry,
+        resolve_instrument_spec,
+        resolve_registered_symbol_case,
+    )
+    from kraken.kraken_client import _resolve_kraken_pair
+    from kraken.market_data import load_archive_ohlc_candles
+    from providers.price_poller import KrakenPriceStream
+    from state_io import atomic_write_jsonl
+
+    # 1. Live instruments.conf has [KRAKEN_SPCX] enabled for archive/cacheManager, but role.mt=no (protected!)
+    assert resolve_registered_symbol_case("SPCXXUSD", "kraken") == "SPCXxUSD"
+    assert _resolve_kraken_pair("SPCXXUSD") == ("SPCXxUSD", True)
+    assert is_xstock_trading_enabled("SPCXxUSD") is False
+    live_reg = load_registry()
+    assert resolve_instrument_spec("SPCXxUSD", "kraken", live_reg) is None
+
+    # 2. Flipping role.mt = yes in instruments.conf declaratively unlocks both registry and AI trading scope
+    custom_conf = tmp_path / "instruments.conf"
+    custom_conf.write_text(
+        "[KRAKEN_SPCX]\n"
+        "provider = kraken\n"
+        "symbol = SPCXxUSD\n"
+        "base = SPCXx\n"
+        "quote = USD\n"
+        "enabled = yes\n"
+        "isolation = own_ledger\n"
+        "market_hours = 24x7\n"
+        "role.mt = yes\n"
+        "role.tradeall_fire = no\n"
+        "role.kalman_primary = no\n"
+        "role.trailing = no\n"
+        "role.assetguardian = no\n"
+        "role.archive = yes\n"
+        "role.rtrade = no\n"
+        "role.force_sell = no\n",
+        encoding="utf-8",
+    )
+    assert is_xstock_trading_enabled("SPCXxUSD", path=str(custom_conf)) is True
+    unlocked_reg = load_registry(str(custom_conf))
+    resolved = resolve_instrument_spec("SPCXxUSD", "kraken", unlocked_reg)
+    assert resolved is not None and resolved.symbol == "SPCXxUSD"
+    # Raw .T balance tokens remain non-tradable even when pair is unlocked
+    assert is_xstock_trading_enabled("SPCXx.T", path=str(custom_conf)) is False
+    assert resolve_instrument_spec("SPCXx.T", "kraken", unlocked_reg) is None
+
+    # 3. KrakenPriceStream skips tokenized_asset pairs on v1 WS so crypto WS stays clean
+    ks = KrakenPriceStream(["HYPEUSD", "SPCXxUSD"])
+    assert ks._ws_pairs == ["HYPE/USD"]
+
+    # 4. load_archive_ohlc_candles reconstructs completed OHLC bars offline from JSONL tick archive
+    arch_file = tmp_path / "cache_365_price_SPCXxUSD.jsonl"
+    base_ms = 1_781_283_000_000
+    atomic_write_jsonl(
+        str(arch_file),
+        [
+            {"s": "SPCXxUSD", "i": [base_ms + 10_000, 140.0, 1.0]},
+            {"s": "SPCXxUSD", "i": [base_ms + 90_000, 145.5, 2.0]},
+            {"s": "SPCXxUSD", "i": [base_ms + 110_000, 139.2, 1.0]},
+            {"s": "SPCXxUSD", "i": [base_ms + 115_000, 143.0, 1.0]},
+            {"s": "SPCXxUSD", "i": [base_ms + 360_000, 144.0, 1.0]},  # incomplete tail bar dropped
+        ],
+    )
+    bars = load_archive_ohlc_candles("SPCXXUSD", 5, drop_incomplete=True, archive_path=str(arch_file))
+    assert len(bars) == 1
+    assert (bars[0]["open"], bars[0]["high"], bars[0]["low"], bars[0]["close"]) == (140.0, 145.5, 139.2, 143.0)

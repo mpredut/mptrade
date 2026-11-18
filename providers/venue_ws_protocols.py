@@ -35,11 +35,12 @@ from cachepaths import (
     _strip_kraken_asset_suffixes,
     canonical_base_asset,
     clean_symbol_key,
+    is_kraken_tokenized_asset,
     kraken_pair_key,
     kraken_pair_matches,
     split_symbol_assets,
 )
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, resolve_registered_symbol_case
 from state_io import encode_json_payload
 from .order_ohlc_utils import extract_order_fee
 
@@ -204,6 +205,8 @@ class KrakenWsLedgerMixin(VenueWsProtocolInterface):
         pair_to_symbol: dict[str, str],
     ) -> None:
         """Register Kraken v1 public WebSocket pair labels and legacy XBT/XDG aliases for ``symbol``."""
+        if is_kraken_tokenized_asset(symbol) or is_kraken_tokenized_asset(resolve_registered_symbol_case(symbol)):
+            return
         split = split_symbol_assets(symbol)
         ws_pair = f"{split[0]}/{split[1]}" if split else symbol
         if ws_pair not in ws_pairs:

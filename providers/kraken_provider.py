@@ -81,7 +81,7 @@ from cachepaths import (
     symbol_quote_asset,
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
-from instrument_registry import casefold_get, symbols_for
+from instrument_registry import casefold_get, resolve_registered_symbol_case, symbols_for
 
 _MISSING = object()
 
@@ -385,7 +385,8 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             return cached
         mn = 0.0
         try:
-            lookup_sym = symbol.strip() if isinstance(symbol, str) and is_kraken_tokenized_asset(symbol) else norm_sym
+            reg_sym = resolve_registered_symbol_case(symbol, "kraken")
+            lookup_sym = reg_sym if is_kraken_tokenized_asset(reg_sym) else norm_sym
             info = self._client().pair_info(lookup_sym) or {}
             mn = safe_pos_float(info.get("ordermin", 0), default=0.0)
         except Exception as e:  # noqa: BLE001
@@ -407,8 +408,10 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             ratio = min(lookback_f / 12.0, valid_intervals[-1] * 1.0)
             raw_interval = max(1, math.ceil(ratio))
             interval = next((v for v in valid_intervals if v >= raw_interval), valid_intervals[-1])
-            ohlc_params: dict[str, object] = {"pair": sym_clean, "interval": interval}
-            if is_kraken_tokenized_asset(sym_clean):
+            reg_sym = resolve_registered_symbol_case(sym_clean, "kraken")
+            eff_sym = reg_sym if is_kraken_tokenized_asset(reg_sym) else sym_clean
+            ohlc_params: dict[str, object] = {"pair": eff_sym, "interval": interval}
+            if is_kraken_tokenized_asset(eff_sym):
                 ohlc_params["asset_class"] = "tokenized_asset"
             res = cli._public("OHLC", ohlc_params)
             rows = extract_kraken_ohlc_rows(res, drop_incomplete=False)
@@ -1021,9 +1024,9 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
 
     @classmethod
     def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        if is_kraken_tokenized_asset(symbol):
-            raw_p = clean_scalar_str(symbol) or ""
-            return (f"https://api.kraken.com/0/public/Depth?pair={raw_p}&count=200&asset_class=tokenized_asset",), ()
+        reg_sym = resolve_registered_symbol_case(symbol, "kraken")
+        if is_kraken_tokenized_asset(reg_sym):
+            return (f"https://api.kraken.com/0/public/Depth?pair={reg_sym}&count=200&asset_class=tokenized_asset",), ()
         canon_sym = canonical_symbol_key(symbol)
         quote = "EUR" if symbol_quote_asset(canon_sym) == "EUR" else "USD"
         kraken_pair = resolve_kraken_lookup_symbol(canon_sym, quote=quote) or canon_sym
@@ -1035,8 +1038,9 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         days: int,
         interval: str = "1h",
     ) -> list[tuple[float, float]]:
-        if is_kraken_tokenized_asset(symbol):
-            return series_to_historical_points(self.ohlc_series(clean_scalar_str(symbol) or "", 60))
+        reg_sym = resolve_registered_symbol_case(symbol, "kraken")
+        if is_kraken_tokenized_asset(reg_sym):
+            return series_to_historical_points(self.ohlc_series(reg_sym, 60))
         base_u = normalize_cache_base_asset(symbol)
         krk_sym = f"{base_u}USD" if base_u else str(symbol or "").strip().upper()
         return series_to_historical_points(self.ohlc_series(krk_sym, 60))

@@ -28,6 +28,7 @@ from botcore import (
     split_csv,
 )
 from cachepaths import (
+    READONLY_XSTOCK_SUFFIXES,
     cache_symbol_variants,
     canonical_base_asset,
     clean_scalar_str,
@@ -260,6 +261,45 @@ def select_instruments(provider=None, role=None, *, path=None, only_enabled=True
 
 def symbols_for(provider=None, role=None, *, path=None):
     return [spec.symbol for spec in select_instruments(provider, role, path=path).values()]
+
+
+def resolve_registered_symbol_case(symbol: object, provider: str | None = None, *, path=None) -> str:
+    """Return the exact-case ``spec.symbol`` from ``instruments.conf`` when registered (e.g. ``SPCXXUSD`` -> ``SPCXxUSD``)."""
+    raw = clean_scalar_str(symbol)
+    if raw is None:
+        return ""
+    sym_key = clean_symbol_key(raw)
+    prov_norm = normalize_venue_name(provider) if provider is not None else None
+    if sym_key:
+        try:
+            reg = load_registry(path) if path is not None else load_registry()
+            for spec in reg.values():
+                if (prov_norm is None or spec.provider == prov_norm) and clean_symbol_key(spec.symbol) == sym_key:
+                    return spec.symbol
+        except Exception:
+            pass
+    return raw
+
+
+def is_xstock_trading_enabled(symbol: object, *, path=None, role: str = "mt") -> bool:
+    """Return True if a tokenized xStock symbol has an explicitly enabled trading role in ``instruments.conf``."""
+    raw = clean_scalar_str(symbol)
+    if raw is None or raw.upper().endswith(READONLY_XSTOCK_SUFFIXES):
+        return False
+    sym_key = clean_symbol_key(raw)
+    req_base = canonical_base_asset(raw)
+    try:
+        reg = load_registry(path) if path is not None else load_registry()
+        for spec in reg.values():
+            if not spec.enabled or not is_readonly_xstock_symbol(spec.symbol) or not spec.has_role(role):
+                continue
+            if (sym_key and clean_symbol_key(spec.symbol) == sym_key) or (
+                req_base and canonical_base_asset(spec.base) == req_base
+            ):
+                return True
+    except Exception:
+        return False
+    return False
 
 
 def venue_for_symbol(symbol: object, *, path=None, default: str = "binance") -> str:
@@ -590,7 +630,15 @@ def resolve_instrument_spec(
 
     raw_sym_u = clean_upper_scalar(symbol) or ""
     sym_norm = clean_symbol_key(symbol)
-    if not sym_norm or isinstance(venue, bool) or is_readonly_xstock_symbol(symbol):
+    if not sym_norm or isinstance(venue, bool) or raw_sym_u.endswith(READONLY_XSTOCK_SUFFIXES):
+        return None
+    if is_readonly_xstock_symbol(symbol) and not any(
+        getattr(item, "enabled", True) is not False
+        and is_readonly_xstock_symbol(getattr(item, "symbol", ""))
+        and callable(getattr(item, "has_role", None))
+        and item.has_role("mt")
+        for item in instruments_map.values()
+    ):
         return None
     venue_norm = normalize_venue_name(venue) or None
     if has_equity_suffix(raw_sym_u) and venue_norm and not is_equity_venue(venue_norm):
@@ -611,6 +659,15 @@ def resolve_instrument_spec(
         raw_variants = filter_candidates_by_asset_class(raw_variants, is_equity=req_is_eq)
     variant_norms = {clean_symbol_key(v) for v in raw_variants}
 
+    def _xstock_allowed(cand: object) -> bool:
+        raw_cand_sym = _str_attr(cand, "symbol")
+        if raw_cand_sym.upper().endswith(READONLY_XSTOCK_SUFFIXES):
+            return False
+        if not is_readonly_xstock_symbol(raw_cand_sym):
+            return True
+        has_role_fn = getattr(cand, "has_role", None)
+        return bool(callable(has_role_fn) and has_role_fn("mt"))
+
     candidates = [
         item
         for item in instruments_map.values()
@@ -620,7 +677,7 @@ def resolve_instrument_spec(
             req_is_eq is None
             or is_equity_venue_or_suffix(_candidate_symbol_u(item), _candidate_venue(item)) == req_is_eq
         )
-        and not is_readonly_xstock_symbol(_candidate_symbol_u(item))
+        and _xstock_allowed(item)
         and compatible_quote_suffixes(_candidate_symbol_u(item), _str_attr(item, "quote") or None, default_usd=_DEFAULT_USD_QUOTES) == req_quotes
     ]
 
