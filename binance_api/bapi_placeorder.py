@@ -14,6 +14,7 @@ from botcore import (
     clean_order_id,
     clean_scalar_str,
     clean_upper_scalar,
+    exact_pos_int,
     extract_order_id,
     extract_order_price,
     extract_order_side,
@@ -27,6 +28,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from state_io import parse_json_payload
 from providers import order_id_context as rc
 from providers.ssot_bridge import ProviderSsotBridgeMixin
 
@@ -330,11 +332,24 @@ def _step_binance_post_only_price(side: str, price_f: float, symbol: str, target
     )
 
 
+def _extract_cancel_replace_fields(raw) -> dict:
+    if isinstance(raw, BinanceAPIException):
+        resp_text = getattr(getattr(raw, "response", None), "text", None)
+        parsed = parse_json_payload(resp_text) if isinstance(resp_text, str) and resp_text else None
+        if not isinstance(parsed, dict):
+            parsed = getattr(raw, "data", None)
+        raw = parsed if isinstance(parsed, dict) else {}
+    if not isinstance(raw, dict):
+        return {}
+    nested = raw.get("data")
+    return nested if isinstance(nested, dict) and ("cancelResult" in nested or "newOrderResult" in nested) else raw
+
+
 def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
                           client_order_id=None, api_client=None,
                           cache_permit=None, permit_requested_price=None,
                           kind=None, cancel_opposite_requested_price=None,
-                          post_only=True):
+                          post_only=True, replaces_order_id=None):
     """Single low-level dispatch after common filter normalization."""
     market = _parse_bool_flag(market, False)
     post_only_flag = not market and _parse_bool_flag(post_only, True)
@@ -343,6 +358,13 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
     price_f = None if market else safe_pos_float(price, default=None)
     if qty_f is None or (not market and price_f is None):
         raise SubmissionRefused("invalid_order_parameters")
+    cancel_oid = None
+    if replaces_order_id is not None:
+        if market:
+            raise SubmissionRefused("replace_not_attempted")
+        cancel_oid = exact_pos_int(replaces_order_id, default=None)
+        if cancel_oid is None:
+            raise SubmissionRefused("replace_not_attempted")
     cancel_price = None
     if cancel_opposite_requested_price is not None:
         cancel_price = safe_pos_float(cancel_opposite_requested_price, default=None)
@@ -353,7 +375,14 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
 
     target_client = api_client or client
     client_order_id = clean_order_id(client_order_id) or rc.create_client_order_id()
-    if market:
+    cancel_replace_fn = None
+    if cancel_oid is not None:
+        cancel_replace_fn = getattr(target_client, "cancel_replace_order", None)
+        if not callable(cancel_replace_fn):
+            raise SubmissionRefused("replace_not_attempted")
+        method = None
+        submit_kwargs = {}
+    elif market:
         method = target_client.order_market_buy if side == "BUY" else target_client.order_market_sell
         submit_kwargs = {"symbol": symbol, "quantity": qty}
     else:
@@ -375,6 +404,51 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
         raise SubmissionRefused("trading_disabled")
     if cancel_price is not None:
         cancel_opposite_orders(side, symbol, cancel_price)
+    if cancel_oid is not None:
+        cr_kwargs = {
+            "symbol": symbol,
+            "side": side,
+            "type": "LIMIT_MAKER" if post_only_flag else "LIMIT",
+            **({} if post_only_flag else {"timeInForce": "GTC"}),
+            "quantity": qty,
+            "price": str(price),
+            "cancelReplaceMode": "STOP_ON_FAILURE",
+            "cancelRestrictions": "ONLY_NEW",
+            "cancelOrderId": cancel_oid,
+            "newClientOrderId": client_order_id,
+        }
+        try:
+            raw_cr = cancel_replace_fn(**cr_kwargs)
+        except BinanceAPIException as exc:
+            fields = _extract_cancel_replace_fields(exc)
+            cancel_res = clean_upper_scalar(fields.get("cancelResult"))
+            new_res = clean_upper_scalar(fields.get("newOrderResult"))
+            if cancel_res == "SUCCESS" and new_res == "FAILURE":
+                raise SubmissionRefused("replace_cancel_only") from exc
+            if cancel_res == "FAILURE" or getattr(exc, "code", None) == -2022:
+                raise SubmissionRefused("replace_not_attempted") from exc
+            if getattr(exc, "code", None) == -2021:
+                raise SubmissionRefused("replace_cancel_only") from exc
+            print(f"Binance {side} cancelReplace failed: {exc}")
+            return None
+        fields = _extract_cancel_replace_fields(raw_cr)
+        cancel_res = clean_upper_scalar(fields.get("cancelResult"))
+        new_res = clean_upper_scalar(fields.get("newOrderResult"))
+        if cancel_res == "FAILURE":
+            raise SubmissionRefused("replace_not_attempted")
+        if cancel_res == "SUCCESS" and new_res == "FAILURE":
+            raise SubmissionRefused("replace_cancel_only")
+        order = (
+            fields.get("newOrderResponse")
+            if isinstance(fields, dict) and "newOrderResponse" in fields
+            else raw_cr
+        )
+        if order:
+            oid_label = extract_order_id(order, default=None) or (
+                order.get("orderId") if isinstance(order, dict) else order
+            )
+            print(f"{side} order replaced successfully: {oid_label} clientId {client_order_id}")
+        return order
     try:
         order = method(**submit_kwargs, newClientOrderId=client_order_id)
     except BinanceAPIException as exc:
@@ -554,6 +628,8 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
             }
             if "post_only" in kwargs:
                 submit_kw["post_only"] = kwargs["post_only"]
+            if kwargs.get("replaces_order_id") is not None:
+                submit_kw["replaces_order_id"] = kwargs["replaces_order_id"]
             return _submit_binance_order(order_type, symbol, qty, **submit_kw)
         print(f"Invalid order type: {order_type}")
         return None

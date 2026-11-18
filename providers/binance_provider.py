@@ -125,6 +125,7 @@ class BinanceProvider(MarketDataProvider):
         cancel_by_order_id=True,
         list_open_orders=True,
         not_found_reliable_for_seconds=_BINANCE_NOT_FOUND_RELIABLE_FOR_SECONDS,
+        replace_by_order_id=True,
     )
 
     def __init__(self, live_enabled: Optional[bool] = None):
@@ -378,7 +379,14 @@ class BinanceProvider(MarketDataProvider):
         }
         if "market" in kwargs:
             mechanics_kwargs["market"] = is_market
-        for opt_k in ("client_order_id", "_balance_verified", "caller_owns_retry", "known_balance", "post_only"):
+        for opt_k in (
+            "client_order_id",
+            "_balance_verified",
+            "caller_owns_retry",
+            "known_balance",
+            "post_only",
+            "replaces_order_id",
+        ):
             if kwargs.get(opt_k) is not None:
                 mechanics_kwargs[opt_k] = kwargs[opt_k]
         if kwargs.get("_cancel_opposite_requested_price") is not None:
@@ -394,6 +402,26 @@ class BinanceProvider(MarketDataProvider):
                 }
             )
         return _po.place_order_mechanics(side, symbol, price, qty, **mechanics_kwargs)
+
+    def replace_order(
+        self,
+        symbol: str,
+        order_id: str,
+        side: str,
+        price: float,
+        qty: float,
+        **kwargs,
+    ):
+        if resolve_market_flag(**kwargs):
+            raise SubmissionRefused("replace_not_attempted")
+        return self.place_order(
+            symbol,
+            side,
+            price,
+            qty,
+            replaces_order_id=order_id,
+            **kwargs,
+        )
 
     def adjust_order_price(self, symbol: str, side: str, price: float, cancel_opposite: bool = True) -> float:
         _po = _get_placeorder()

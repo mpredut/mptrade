@@ -223,7 +223,7 @@ CONTRACT_METHODS = (
 EXPECTED_RECONCILIATION = {
     "kraken": OrderReconciliationCapabilities(False, True, True, True, replace_by_order_id=True),
     "hyperliquid": OrderReconciliationCapabilities(True, True, True, True),
-    "binance": OrderReconciliationCapabilities(True, True, True, True, 90 * 24 * 60 * 60),
+    "binance": OrderReconciliationCapabilities(True, True, True, True, 90 * 24 * 60 * 60, replace_by_order_id=True),
     "trading212": OrderReconciliationCapabilities(False, True, True, True),
 }
 
@@ -325,3 +325,111 @@ def test_exchange_and_business_minima_are_distinct_and_fail_closed():
         rules.normalize(quantity="0.5", price="100", business_min_notional="100")
     with pytest.raises(BinanceFilterError, match="PRICE_FILTER"):
         BinanceOrderRules.from_symbol_info({"baseAsset": "TAO", "quoteAsset": "USDC", "filters": []})
+
+
+def test_binance_cancel_replace_order_outcomes(monkeypatch):
+    """[NATIVE_REPLACE step 5] _submit_binance_order and BinanceProvider.replace_order map cancelReplace outcomes cleanly."""
+    from binance.exceptions import BinanceAPIException
+    from binance_api import bapi_placeorder as bpo
+    from providers.strategy_executor import SubmissionRefused
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(bpo.cfg, "is_trade_enabled", lambda: True)
+    monkeypatch.setattr(bpo, "_consume_account_cache_submit_permit", lambda *_a, **_kw: None)
+
+    cr_calls = []
+
+    def _mock_cancel_replace(**kw):
+        cr_calls.append(kw)
+        return {
+            "cancelResult": "SUCCESS",
+            "newOrderResult": "SUCCESS",
+            "newOrderResponse": {"orderId": 9001, "clientOrderId": kw["newClientOrderId"], "status": "NEW"},
+        }
+
+    fake_cli = SimpleNamespace(cancel_replace_order=_mock_cancel_replace)
+    permit = object()
+
+    # 1. Both cancel and new order succeed -> returns newOrderResponse and sends STOP_ON_FAILURE + ONLY_NEW + LIMIT_MAKER.
+    res = bpo._submit_binance_order(
+        "SELL",
+        "TAOUSDC",
+        1.5,
+        price=350.0,
+        client_order_id="MO_TA_OR_1",
+        api_client=fake_cli,
+        cache_permit=permit,
+        post_only=True,
+        replaces_order_id="12345",
+    )
+    assert res == {"orderId": 9001, "clientOrderId": "MO_TA_OR_1", "status": "NEW"}
+    assert cr_calls[-1] == {
+        "symbol": "TAOUSDC",
+        "side": "SELL",
+        "type": "LIMIT_MAKER",
+        "quantity": 1.5,
+        "price": "350.0",
+        "cancelReplaceMode": "STOP_ON_FAILURE",
+        "cancelRestrictions": "ONLY_NEW",
+        "cancelOrderId": 12345,
+        "newClientOrderId": "MO_TA_OR_1",
+    }
+
+    # post_only=False -> type="LIMIT", timeInForce="GTC".
+    bpo._submit_binance_order(
+        "BUY",
+        "TAOUSDC",
+        1.5,
+        price=340.0,
+        client_order_id="MO_TA_OR_2",
+        api_client=fake_cli,
+        cache_permit=permit,
+        post_only=False,
+        replaces_order_id=12346,
+    )
+    assert cr_calls[-1]["type"] == "LIMIT"
+    assert cr_calls[-1]["timeInForce"] == "GTC"
+
+    # 2. cancelResult=FAILURE (via BinanceAPIException JSON body) -> SubmissionRefused("replace_not_attempted").
+    def _raise_cancel_fail(**_kw):
+        body = '{"code": -2022, "msg": "Order cancel-replace failed.", "data": {"cancelResult": "FAILURE", "newOrderResult": "NOT_ATTEMPTED"}}'
+        raise BinanceAPIException(SimpleNamespace(text=body), 409, body)
+
+    with pytest.raises(SubmissionRefused) as exc_nf:
+        bpo._submit_binance_order(
+            "SELL",
+            "TAOUSDC",
+            1.5,
+            price=350.0,
+            client_order_id="MO_TA_OR_3",
+            api_client=SimpleNamespace(cancel_replace_order=_raise_cancel_fail),
+            cache_permit=permit,
+            replaces_order_id=12345,
+        )
+    assert exc_nf.value.reason == "replace_not_attempted"
+
+    # 3. cancelResult=SUCCESS + newOrderResult=FAILURE -> SubmissionRefused("replace_cancel_only").
+    def _raise_new_fail(**_kw):
+        body = '{"code": -2021, "msg": "Order cancel-replace partially failed.", "data": {"cancelResult": "SUCCESS", "newOrderResult": "FAILURE"}}'
+        raise BinanceAPIException(SimpleNamespace(text=body), 409, body)
+
+    with pytest.raises(SubmissionRefused) as exc_co:
+        bpo._submit_binance_order(
+            "SELL",
+            "TAOUSDC",
+            1.5,
+            price=350.0,
+            client_order_id="MO_TA_OR_4",
+            api_client=SimpleNamespace(cancel_replace_order=_raise_new_fail),
+            cache_permit=permit,
+            replaces_order_id=12345,
+        )
+    assert exc_co.value.reason == "replace_cancel_only"
+
+    # 4. BinanceProvider.replace_order delegates to place_order_mechanics with replaces_order_id.
+    forwarded = []
+    monkeypatch.setattr(bpo, "place_order_mechanics", lambda *a, **kw: (forwarded.append((a, kw)), {"orderId": 9002})[1])
+    bp = BinanceProvider()
+    out_bp = bp.replace_order("TAOUSDC", "12345", "SELL", 350.0, 1.5, client_order_id="MO_TA_OR_5", cache_permit=permit)
+    assert out_bp == {"orderId": 9002}
+    assert forwarded[-1][1]["replaces_order_id"] == "12345"
