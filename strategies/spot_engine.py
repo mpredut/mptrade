@@ -1559,8 +1559,11 @@ class Strategy(BaseSpotMixin):
     def _in_ipo_lifecycle(self) -> bool:
         """Return True while the adopted IPO allocation is still in Phase 1 or awaiting Phase 2 maturation."""
         return (
-            self.p.adopt_cost > 0
-            and (bool(self.p.ipo_tp_tranches) or self.p.ipo_reentry_drop_pct > 0)
+            (safe_pos_float(getattr(self.p, "adopt_cost", 0.0), 0.0) or 0.0) > 0
+            and (
+                bool(getattr(self.p, "ipo_tp_tranches", None))
+                or (safe_pos_float(getattr(self.p, "ipo_reentry_drop_pct", 0.0), 0.0) or 0.0) > 0
+            )
             and not self._state_flag("ipo_matured")
         )
 

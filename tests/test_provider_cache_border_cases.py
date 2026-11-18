@@ -6687,6 +6687,7 @@ def test_wave37_market_regime_cacheaccount_cachetrend_rtrade_store_and_monitoror
     mo.reset_monitororder_state_for_test()
     place_called = []
     complete_calls = []
+    monkeypatch.setattr(mo, "_native_replace_enabled_for", lambda *_a: False)
     monkeypatch.setattr(
         mo.api,
         "get_open_orders",

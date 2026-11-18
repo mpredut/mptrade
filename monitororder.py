@@ -708,7 +708,7 @@ def monitor_open_orders_by_type(
                 except Exception:
                     cache_permit = None
 
-            fallback_submission_state = "refused" if native_refused else None
+            fallback_submission_kw = {"submission_state": "refused"} if native_refused else {}
             if native_cancel_only:
                 cancel_confirmed = True
             else:
@@ -729,7 +729,7 @@ def monitor_open_orders_by_type(
                 order_retry.complete_claim(
                     replacement_claim, "status_error",
                     failure_reason=str(exc),
-                    submission_state=fallback_submission_state)
+                    **fallback_submission_kw)
                 print(
                     f"The cancellation of {order_id} is ambiguous and status "
                     f"reconciliation failed: {exc}. The durable replacement "
@@ -747,7 +747,7 @@ def monitor_open_orders_by_type(
                 order_retry.complete_claim(
                     replacement_claim,
                     "success" if status.terminal else "release",
-                    submission_state=fallback_submission_state,
+                    **fallback_submission_kw,
                 )
                 if status.terminal:
                     _clear_initial_order_price(initial_prices, order_id, oid_str)
