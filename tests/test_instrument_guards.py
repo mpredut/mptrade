@@ -1869,6 +1869,7 @@ class TestOrderRollback(unittest.TestCase):
         from providers.order_id_context import (
             bot_priority_rank,
             can_bot_preempt_order,
+            is_order_repriceable_by_monitororder,
             preemptible_owners_for,
             resolve_monitororder_replace_prefix,
             resolve_priority_bot_owner,
@@ -1890,6 +1891,10 @@ class TestOrderRollback(unittest.TestCase):
         self.assertEqual(resolve_priority_bot_owner("MO_MN_OR_123"), "manual")
         self.assertEqual(resolve_priority_bot_owner("MO_AG_OR_123"), "assetguardian")
         self.assertEqual(resolve_priority_bot_owner("MO_AI_OR_123"), "ai_executor")
+        self.assertTrue(is_order_repriceable_by_monitororder("", resolved_owner="unspecified"))
+        self.assertTrue(is_order_repriceable_by_monitororder("MO_OR_123", resolved_owner="tradeall"))
+        self.assertFalse(is_order_repriceable_by_monitororder("", resolved_owner="rtrade"))
+        self.assertFalse(is_order_repriceable_by_monitororder("MO_OR_123", resolved_owner="monitortrades"))
         self.assertTrue(can_bot_preempt_order("tradeall", {"clientOrderId": "RT_100"}))
         self.assertFalse(can_bot_preempt_order("tradeall", {"clientOrderId": "AG_100"}))
         self.assertTrue(can_bot_preempt_order("assetguardian", {"clientOrderId": "TO_200"}))

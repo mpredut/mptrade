@@ -228,7 +228,9 @@ def resolve_order_owner(client_order_id: Optional[str]) -> str:
     return f"alt:{cid[:4]}" if len(cid) >= 4 else "unknown"
 
 
-def is_order_repriceable_by_monitororder(client_order_id: Optional[str]) -> bool:
+def is_order_repriceable_by_monitororder(
+    client_order_id: Optional[str], *, resolved_owner: Optional[str] = None
+) -> bool:
     """Determine whether an open Binance order is eligible for monitororder repricing.
 
     Safety invariant:
@@ -240,9 +242,16 @@ def is_order_repriceable_by_monitororder(client_order_id: Optional[str]) -> bool
     - Unspecified/empty clientOrderId (e.g. legacy test mocks) is allowed for test compatibility.
     """
     owner = resolve_order_owner(client_order_id)
-    if owner == "unspecified":
+    eff_owner = (
+        resolved_owner.strip().lower()
+        if isinstance(resolved_owner, str)
+        and resolved_owner.strip()
+        and resolved_owner.strip().lower() not in ("unspecified", "unknown", "monitororder")
+        else owner
+    )
+    if eff_owner == "unspecified":
         return True
-    return owner in REPRICEABLE_BOTS
+    return eff_owner in REPRICEABLE_BOTS
 
 
 def resolve_priority_bot_owner(order_or_cid: Any, *, owner_map: Optional[dict[str, str]] = None) -> str:

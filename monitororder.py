@@ -403,7 +403,7 @@ def monitor_open_orders_by_type(
 
         # Repricing protection: only reprice orders from tradeall, monitororder, or manual.
         # Orders from rtrade, spot_dca, monitortrades, etc. are strictly protected from cancellation/repricing.
-        if not (rc.is_order_repriceable_by_monitororder(cid) or owner in rc.REPRICEABLE_BOTS):
+        if not rc.is_order_repriceable_by_monitororder(cid, resolved_owner=owner):
             print(f"Order {order_id} (owner='{owner}', cid='{cid}') is protected from monitororder repricing; skipping.")
             continue
 
