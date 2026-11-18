@@ -164,17 +164,16 @@ class MarketRegimeContext:
         # 4. Identity validation
         require_identity = _parse_bool_flag(require_identity, False)
         self_sym = clean_scalar_str(self.symbol)
-        self_prov = clean_scalar_str(self.provider)
-        if require_identity and (not self_sym or not self_prov):
+        if require_identity and (self_sym is None or clean_scalar_str(self.provider) is None):
             return False
 
         if symbol is not None:
-            if not (target_sym := clean_scalar_str(symbol)):
+            target_sym = clean_scalar_str(symbol)
+            if target_sym is None:
                 return False
-            if self_sym is not None:
-                if canonical_symbol_key(self_sym) != canonical_symbol_key(target_sym):
-                    return False
-            elif require_identity:
+            if self.symbol is not None and (
+                self_sym is None or canonical_symbol_key(self_sym) != canonical_symbol_key(target_sym)
+            ):
                 return False
 
         if provider is not None:
@@ -183,10 +182,7 @@ class MarketRegimeContext:
             target_prov = normalize_venue_name(provider, default=None)
             if target_prov is None:
                 return not require_identity
-            if self_prov is not None:
-                if normalize_venue_name(self_prov, default=None) != target_prov:
-                    return False
-            elif require_identity:
+            if self.provider is not None and normalize_venue_name(self.provider, default=None) != target_prov:
                 return False
 
         return True

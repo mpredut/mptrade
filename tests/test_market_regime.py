@@ -546,6 +546,23 @@ def test_marketregimehorizon_parse_adverse_to_and_marketregimeservice_interval_c
     assert svc.evaluate_closes([100, 101, 102], interval_min=1.5).reason == "invalid_window_metadata"
     assert svc.evaluate_closes("12345").reason == "invalid_ohlc"
 
+
+@pytest.mark.parametrize("field", ["symbol", "provider"])
+@pytest.mark.parametrize("invalid", ["", "null", True])
+def test_regime_context_distinguishes_missing_and_invalid_identity(field, invalid):
+    identity = {"symbol": "BTCUSDC", "provider": "binance"}
+    decision = MarketRegimeEvaluator().unknown()
+
+    def matches(stored):
+        ctx = MarketRegimeContext(
+            decision, "unknown", evaluated_at=1000.0, **{**identity, field: stored}
+        )
+        return ctx.is_valid_for(**identity, now=1000.0)
+
+    assert matches(None)
+    assert not matches(invalid)
+
+
 def test_market_regime_marketregimecontext_is_valid_for_compose__closed_series_iter107_s2():
     """[ITER107 #2] market_regime: MarketRegimeContext.is_valid_for, compose, _closed_series."""
     # 2. market_regime: MarketRegimeContext.is_valid_for, compose, _closed_series

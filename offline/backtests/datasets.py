@@ -181,15 +181,15 @@ def merge_with_existing_ohlc_csv(
     min_timestamp: int | None = None,
     window_seconds: int | None = None,
 ) -> list[dict]:
-    """Merge newly fetched OHLC bars with an existing CSV and trim to the target horizon."""
+    """Validate newly fetched OHLC bars, merge with the CSV, and trim to the target horizon."""
     fresh_rows = list(records)
+    if fresh_rows:
+        fresh_rows = validate_dataset(fresh_rows)
     existing = _load_existing_ohlc_records(csv_path)
     if existing and fresh_rows:
         merged = merge_datasets(existing, fresh_rows)
-    elif fresh_rows:
-        merged = validate_dataset(fresh_rows)
     else:
-        merged = existing
+        merged = fresh_rows or existing
     if not merged:
         return []
     floor_ts = exact_pos_int(min_timestamp, default=None)

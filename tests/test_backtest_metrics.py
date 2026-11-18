@@ -18,6 +18,7 @@ from offline.backtests.datasets import (
     drop_incomplete_last_bar,
     load_dataset,
     merge_datasets,
+    merge_with_existing_ohlc_csv,
     save_dataset,
     validate_dataset,
 )
@@ -519,6 +520,21 @@ class OhlcDatasetContractTest(TempDirTestCase):
 
         self.assertEqual([row["timestamp"] for row in merged], [0, 3600, 7200])
         self.assertEqual(merged[1]["close"], 12.5)
+
+    def test_csv_refresh_rejects_unordered_or_duplicate_fresh_rows(self):
+        path = self.tmp / "bars.csv"
+        older = _dataset_rows()
+        save_dataset(older, path)
+        revised = {**older[1], "close": 12.5}
+        later = {**older[1], "timestamp": 7200}
+
+        for fresh in ([older[1], revised], [later, revised]):
+            with self.subTest(fresh=fresh), self.assertRaisesRegex(ValueError, "unordered or duplicate"):
+                merge_with_existing_ohlc_csv(iter(fresh), path)
+
+        merged = merge_with_existing_ohlc_csv(iter([revised, later]), path)
+        self.assertEqual(merged, validate_dataset([older[0], revised, later]))
+        self.assertEqual(merge_with_existing_ohlc_csv(iter([]), path), validate_dataset(older))
 
     def test_rejects_gap_duplicate_and_invalid_ohlc(self):
         with self.assertRaisesRegex(ValueError, "cadence"):
