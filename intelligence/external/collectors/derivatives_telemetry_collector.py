@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
 from cachepaths import resolve_binance_lookup_symbol
-from instrument_registry import resolve_kraken_tokenized_pair, venue_for_symbol
+from instrument_registry import venue_for_symbol
 from providers.base import MarketDataProvider
 from intelligence.external.collectors.base_collector import (
     TelemetryCollectorFactory,

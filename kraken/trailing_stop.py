@@ -46,7 +46,6 @@ from botcore import (  # noqa: E402
     log,
     require_pos_float,
     required_bool_env,
-    required_env,
     required_float_env,
     safe_float,
     safe_nonneg_float,

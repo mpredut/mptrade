@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import math
 import time
 import uuid
-from typing import Any, Callable, Optional, Protocol
+from typing import Callable, Optional, Protocol
 
 from botcore import (
     _parse_bool_flag,

@@ -27,7 +27,6 @@ from typing import Any, Optional
 
 # Import your modules
 from botcore import (
-    FileLock,
     _parse_bool_flag,
     bool_env,
     clean_order_id_str,

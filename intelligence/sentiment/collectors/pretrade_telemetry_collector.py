@@ -37,7 +37,6 @@ from cachepaths import (
     ensure_equity_suffix,
     get_cachedb_dir,
     has_crypto_quote_suffix,
-    has_equity_suffix,
     is_fiat_usd_pair,
     resolve_cachedb_filepath,
 )
@@ -111,7 +110,6 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     is_unseeded_kalman_state,
     pct_delta,
     recalculate_live_price_geometry,
-    round_opt_px,
     _apply_24h_series_enrichment,
     _compute_kalman_from_series,
     _compute_short_slopes_from_series,

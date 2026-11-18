@@ -131,7 +131,6 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
     is_ob_live_and_newer,
-    is_ob_mid_fresher_than_series,
     rescale_orderbook_walls_to_price,
     select_reconciled_spot_or_ob_price,
     should_rescale_usd_sibling_walls,

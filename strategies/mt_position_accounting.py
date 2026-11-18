@@ -3,7 +3,6 @@ dust/filter checks, resting TP order management, and re-entry state helpers for 
 from __future__ import annotations
 
 import builtins
-from functools import partial
 import math
 from typing import Any, Optional, Tuple
 

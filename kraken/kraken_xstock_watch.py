@@ -97,6 +97,12 @@ def _default_state() -> dict:
     }
 
 
+def _clean_state_scalar(val: object) -> str | None:
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
+        return None
+    return clean_scalar_str(str(val))
+
+
 def _load_state() -> dict:
     path = _state_file()
     raw = load_json_state(
@@ -117,33 +123,19 @@ def _load_state() -> dict:
         merged["known_assets"] = {}
     for bkey in ("alerted_pair", "alerted_tp", "alerted_tp2", "alerted_sl", "alerted_need_price"):
         merged[bkey] = _parse_bool_flag(merged.get(bkey), False)
-    raw_pair = merged.get("pair")
-    merged["pair"] = (
-        None
-        if raw_pair is None or isinstance(raw_pair, (bool, dict, list, tuple, set, frozenset))
-        else clean_scalar_str(str(raw_pair))
-    )
+    merged["pair"] = _clean_state_scalar(merged.get("pair"))
     alloc = merged.get("allocated")
-    if isinstance(alloc, dict):
-        raw_asset = alloc.get("asset")
-        clean_asset = (
-            None
-            if raw_asset is None or isinstance(raw_asset, (bool, dict, list, tuple, set, frozenset))
-            else clean_scalar_str(str(raw_asset))
-        )
-        if clean_asset:
-            clean_alloc = dict(alloc)
-            clean_alloc["asset"] = clean_asset
-            clean_alloc["qty"] = safe_nonneg_float(alloc.get("qty"), 0.0)
-            if "ts" in clean_alloc:
-                clean_alloc["ts"] = safe_nonneg_float(alloc.get("ts"), 0.0)
-            if (ap := safe_pos_float(alloc.get("alloc_price"), None)) is not None:
-                clean_alloc["alloc_price"] = ap
-            else:
-                clean_alloc.pop("alloc_price", None)
-            merged["allocated"] = clean_alloc
+    if isinstance(alloc, dict) and (clean_asset := _clean_state_scalar(alloc.get("asset"))):
+        clean_alloc = dict(alloc)
+        clean_alloc["asset"] = clean_asset
+        clean_alloc["qty"] = safe_nonneg_float(alloc.get("qty"), 0.0)
+        if "ts" in clean_alloc:
+            clean_alloc["ts"] = safe_nonneg_float(alloc.get("ts"), 0.0)
+        if (ap := safe_pos_float(alloc.get("alloc_price"), None)) is not None:
+            clean_alloc["alloc_price"] = ap
         else:
-            merged["allocated"] = None
+            clean_alloc.pop("alloc_price", None)
+        merged["allocated"] = clean_alloc
     else:
         merged["allocated"] = None
     merged["bot_pid"] = _clean_pid(merged.get("bot_pid"))
@@ -242,7 +234,7 @@ def sync_configured_archives(client: KrakenClient, st: dict) -> None:
             and (
                 p.upper() in explicit_u
                 or p.upper() not in cm_owned
-                or not os.path.exists(cache_path(f"cache_365_price_{p}.jsonl"))
+                or not os.path.exists(cache_path(Cache365PriceManager.disk_filename_for_symbol(p)))
             )
         )
     )
@@ -599,52 +591,50 @@ def _build_xstock_bot_env(alloc_price: float, *, symbol_label: str | None = None
     return env
 
 
-def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
-    """Automatically start ``kraken_bot`` with allocation adoption when ready.
+def _spawn_xstock_bot(pair: str, alloc_price: float, log_path: str, *, relaunch: bool, desktop: bool,
+                      body_prefix: str, err_prefix: str, symbol_label: str | None = None, on_started=None) -> int | None:
+    env = _build_xstock_bot_env(alloc_price, symbol_label=symbol_label)
+    cmd = [sys.executable, BOT_SCRIPT, "--pair", pair, *(["--paper"] if required_bool_env("XSTOCK_BOT_PAPER") else [])]
+    try:
+        with open_append_text_file(log_path) as logf:
+            proc = subprocess.Popen(cmd, cwd=_HERE, env=env, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+    except OSError as e:
+        log(f"  ! {err_prefix}: {e}")
+        return None
+    if callable(on_started):
+        on_started(proc.pid)
+    verb = "RESTARTED (was down)" if relaunch else "AUTO-STARTED"
+    log(f"  \U0001f916 BOT {verb}: pid {proc.pid}  pair {pair}  adopt @ {alloc_price}  (log: {log_path})")
+    notify(title=f"\U0001f916 BOT {verb} on {pair} (adopt @ {alloc_price})",
+           body=f"{body_prefix}. pid {proc.pid}, log {log_path}",
+           source="xstock-watch", price=alloc_price, desktop=desktop, email=True)
+    return proc.pid
 
-    Startup requires an account allocation, an API-listed pair, and a known
-    allocation price. The operation is idempotent: the PID is persisted and
-    checked after restart. If the bot died, the watchdog restarts it; the
-    strategy resumes its per-pair state and therefore does not duplicate the
-    position.
-    """
+
+def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
+    """Automatically start ``kraken_bot`` with allocation adoption when ready."""
     if not required_bool_env("XSTOCK_AUTOSTART"):
         return
-    allocated = st.get("allocated")
-    pair = st.get("pair")
+    allocated, pair = st.get("allocated"), st.get("pair")
     if not (isinstance(allocated, dict) and allocated.get("asset") and pair):
         return
     alloc_f = safe_pos_float(alloc_price, 0.0)
     if alloc_f <= 0:
         if not _parse_bool_flag(st.get("alerted_need_price"), False):
             st["alerted_need_price"] = True
-            notify(title="⚠ xStock: set XSTOCK_ALLOC_PRICE",
+            notify(title="\u26a0 xStock: set XSTOCK_ALLOC_PRICE",
                    body=f"The allocation {allocated['asset']} is in the account and the pair "
                         f"{pair} is listed, but I do not know the allocation price. "
                         f"Set XSTOCK_ALLOC_PRICE in config.env so I can start the bot automatically.",
                    source="xstock-watch", desktop=desktop)
         return
-    alloc_price = alloc_f
     if _bot_alive(st.get("bot_pid")):
         return
-    relaunch = st.get("bot_pid") is not None
-    env = _build_xstock_bot_env(alloc_price)
-    cmd = [sys.executable, BOT_SCRIPT, "--pair", st["pair"]]
-    if required_bool_env("XSTOCK_BOT_PAPER"):
-        cmd.append("--paper")
-    try:
-        with open_append_text_file(BOT_LOG) as logf:
-            proc = subprocess.Popen(cmd, cwd=_HERE, env=env, stdout=logf,
-                                    stderr=subprocess.STDOUT, start_new_session=True)
-    except OSError as e:
-        log("  ! cannot start the bot: " + str(e))
-        return
-    st["bot_pid"] = proc.pid
-    verb = "RESTARTED (was down)" if relaunch else "AUTO-STARTED"
-    log(f"  🤖 BOT {verb}: pid {proc.pid}  pair {st['pair']}  adopt @ {alloc_price}  (log: {BOT_LOG})")
-    notify(title=f"🤖 BOT {verb} on {st['pair']} (adopt @ {alloc_price})",
-           body=f"kraken_bot manages the allocation: TP/trailing exit. pid {proc.pid}, log {BOT_LOG}",
-           source="xstock-watch", price=alloc_price, desktop=desktop, email=True)
+    _spawn_xstock_bot(
+        pair, alloc_f, BOT_LOG, relaunch=st.get("bot_pid") is not None, desktop=desktop,
+        body_prefix="kraken_bot manages the allocation: TP/trailing exit",
+        err_prefix="cannot start the bot", on_started=lambda pid: st.__setitem__("bot_pid", pid),
+    )
 
 
 def ensure_active_xstock_bots(desktop: bool = False) -> None:
@@ -655,33 +645,20 @@ def ensure_active_xstock_bots(desktop: bool = False) -> None:
         if ":" not in spec:
             continue
         raw_pair, raw_cost = spec.split(":", 1)
-        pair = clean_scalar_str(raw_pair)
-        cost_f = safe_pos_float(raw_cost, None)
+        pair, cost_f = clean_scalar_str(raw_pair), safe_pos_float(raw_cost, None)
         if not pair or cost_f is None:
             continue
         pid_file = os.path.join(_HERE, f".xstock_bot_{pair}.pid")
         prev_pid = _clean_pid(read_json_dict(pid_file, default={}).get("pid")) if os.path.exists(pid_file) else None
         if _bot_alive(prev_pid):
             continue
-        relaunch = prev_pid is not None
-        env = _build_xstock_bot_env(cost_f, symbol_label=pair)
-        cmd = [sys.executable, BOT_SCRIPT, "--pair", pair]
-        if required_bool_env("XSTOCK_BOT_PAPER"):
-            cmd.append("--paper")
-        log_path = os.path.join(_HERE, f"xstock_bot_{pair}.log")
-        try:
-            with open_append_text_file(log_path) as logf:
-                proc = subprocess.Popen(cmd, cwd=_HERE, env=env, stdout=logf,
-                                        stderr=subprocess.STDOUT, start_new_session=True)
-        except OSError as e:
-            log(f"  ! cannot start active xStock bot {pair}: {e}")
-            continue
-        save_json_state(pid_file, {"pair": pair, "pid": proc.pid, "alloc_price": cost_f})
-        verb = "RESTARTED (was down)" if relaunch else "AUTO-STARTED"
-        log(f"  🤖 BOT {verb}: pid {proc.pid}  pair {pair}  adopt @ {cost_f}  (log: {log_path})")
-        notify(title=f"🤖 BOT {verb} on {pair} (adopt @ {cost_f})",
-               body=f"kraken_bot active alongside AI executor on {pair}. pid {proc.pid}, log {log_path}",
-               source="xstock-watch", price=cost_f, desktop=desktop, email=True)
+        _spawn_xstock_bot(
+            pair, cost_f, os.path.join(_HERE, f"xstock_bot_{pair}.log"),
+            relaunch=prev_pid is not None, desktop=desktop, symbol_label=pair,
+            body_prefix=f"kraken_bot active alongside AI executor on {pair}",
+            err_prefix=f"cannot start active xStock bot {pair}",
+            on_started=lambda pid, pf=pid_file, p=pair, cf=cost_f: save_json_state(pf, {"pair": p, "pid": pid, "alloc_price": cf}),
+        )
 
 
 # -- end-to-end trial ---------------------------------------------------------

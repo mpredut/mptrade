@@ -28,7 +28,6 @@ from cachepaths import (
     resolve_binance_lookup_symbol,
     telemetry_cache_file_path,
 )
-from instrument_registry import resolve_kraken_tokenized_pair
 from state_io import read_json_dict
 from intelligence.external.collectors.base_collector import (
     TelemetryCollectorFactory,
