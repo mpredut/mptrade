@@ -1765,8 +1765,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         if not self.fetchtime_per_symbol:
             self._ensure_fetchtimes_initialized()
             self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
-        is_live_net = self._is_live_network_mode()
-        is_live_daemon_poll = bool(self.save_state and is_live_net)
+        is_live_daemon_poll = self._is_live_daemon_poll_mode()
+        is_live_net = is_live_daemon_poll or self._is_live_network_mode()
         min_poll_gap = max(
             0.45,
             min(safe_pos_float(self.sync_ts, default=0.8) or 0.8, 0.75),
