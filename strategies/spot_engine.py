@@ -157,6 +157,9 @@ class StratParams(SpotParamsMixin):
     sl_structural_break_enabled: bool = True
     tp_mdhtp_enabled: bool = False
     tp_stagnation_max_sec: float = 1080.0
+    ipo_tp_tranches: list = None
+    ipo_trail_pct: float = 0.0
+    ipo_reentry_drop_pct: float = 0.0
 
     def __post_init__(self):
         def finite(name: str, value) -> float:
@@ -164,6 +167,26 @@ class StratParams(SpotParamsMixin):
 
         def integer(name: str, value) -> int:
             return require_int(require_finite_float(value, name), error_msg=f"{name} must be an integer")
+
+        def _norm_tranche_list(raw_val, label: str) -> list[tuple[float, float]]:
+            if isinstance(raw_val, str):
+                return _parse_tranches(raw_val, key_name=label)
+            if raw_val is None:
+                return []
+            if isinstance(raw_val, (list, tuple)):
+                norm_t: list[tuple[float, float]] = []
+                for item in raw_val:
+                    if not isinstance(item, (list, tuple)) or len(item) != 2:
+                        raise ValueError(f"Invalid {label}: {raw_val!r}")
+                    pct_f = safe_nonneg_float(item[0], default=None)
+                    share_f = safe_pos_float(item[1], default=None)
+                    if pct_f is None or share_f is None:
+                        raise ValueError(f"Invalid {label}: {raw_val!r}")
+                    norm_t.append((pct_f, share_f))
+                if norm_t and abs(sum(s for _, s in norm_t) - 100.0) >= 1e-6:
+                    raise ValueError(f"Invalid {label}: {raw_val!r}")
+                return norm_t
+            raise ValueError(f"Invalid {label}: {raw_val!r}")
 
         self.entry_amount = finite("STRAT_ENTRY", self.entry_amount)
         self.dca_amount = finite("STRAT_DCA", self.dca_amount)
@@ -177,26 +200,15 @@ class StratParams(SpotParamsMixin):
         self.dca_drop_pct = finite("STRAT_DCA_DROP_PCT", self.dca_drop_pct)
         self.takeprofit_pct = finite("STRAT_TAKEPROFIT_PCT", self.takeprofit_pct)
         self.stop_loss_pct = finite("STRAT_STOP_LOSS_PCT", self.stop_loss_pct)
+        self.ipo_trail_pct = finite("STRAT_IPO_TRAIL_PCT", self.ipo_trail_pct)
+        self.ipo_reentry_drop_pct = finite("STRAT_IPO_REENTRY_DROP_PCT", self.ipo_reentry_drop_pct)
         super().__post_init__()
-        if isinstance(self.tp_tranches, str):
-            self.tp_tranches = _parse_tranches(self.tp_tranches)
-        elif self.tp_tranches is None:
-            self.tp_tranches = []
-        elif isinstance(self.tp_tranches, (list, tuple)):
-            norm_tranches: list[tuple[float, float]] = []
-            for item in self.tp_tranches:
-                if not isinstance(item, (list, tuple)) or len(item) != 2:
-                    raise ValueError(f"Invalid STRAT_TP_TRANCHES: {self.tp_tranches!r}")
-                pct_f = safe_nonneg_float(item[0], default=None)
-                share_f = safe_pos_float(item[1], default=None)
-                if pct_f is None or share_f is None:
-                    raise ValueError(f"Invalid STRAT_TP_TRANCHES: {self.tp_tranches!r}")
-                norm_tranches.append((pct_f, share_f))
-            if norm_tranches and abs(sum(s for _, s in norm_tranches) - 100.0) >= 1e-6:
-                raise ValueError(f"Invalid STRAT_TP_TRANCHES: {self.tp_tranches!r}")
-            self.tp_tranches = norm_tranches
-        else:
-            raise ValueError(f"Invalid STRAT_TP_TRANCHES: {self.tp_tranches!r}")
+        self.tp_tranches = _norm_tranche_list(self.tp_tranches, "STRAT_TP_TRANCHES")
+        self.ipo_tp_tranches = _norm_tranche_list(self.ipo_tp_tranches, "STRAT_IPO_TP_TRANCHES")
+        if self.ipo_trail_pct < 0:
+            raise ValueError("STRAT_IPO_TRAIL_PCT must be >= 0")
+        if not 0 <= self.ipo_reentry_drop_pct < 100:
+            raise ValueError("STRAT_IPO_REENTRY_DROP_PCT must be in [0, 100)")
 
         if self.check_minutes <= 0:
             raise ValueError("STRAT_CHECK_MINUTES must be > 0")
@@ -314,6 +326,11 @@ class StratParams(SpotParamsMixin):
             dca_vol_scale_k=f("STRAT_DCA_VOL_SCALE_K", env),
             dca_vol_ref=f("STRAT_DCA_VOL_REF", env),
             dca_vol_interval=i("STRAT_DCA_VOL_INTERVAL", env),
+            ipo_tp_tranches=_parse_tranches(
+                defined_env("STRAT_IPO_TP_TRANCHES", env), key_name="STRAT_IPO_TP_TRANCHES"
+            ),
+            ipo_trail_pct=f("STRAT_IPO_TRAIL_PCT", env),
+            ipo_reentry_drop_pct=f("STRAT_IPO_REENTRY_DROP_PCT", env),
             **load_common_mhdpa_env(env, include_spot_sl=True),
         )
 
@@ -331,6 +348,7 @@ def _new_state() -> dict:
         "placement_backoffs": {}, "ledger_reconcile_required": False,
         "surge_active": False, "surge_peak": None,
         "slow_grind_active": False, "slow_grind_peak": None, "entry_ts": None,
+        "adopted": False, "ipo_matured": False, "ipo_peak": None, "ipo_trough": None,
         "sl_bounce_state": {}, "sl_episode_state": {}, "reentry_state": {}, "tp_ride_state": {},
     }
 
@@ -414,8 +432,9 @@ class Strategy(BaseSpotMixin):
                 "entry_price", "last_buy_price", "last_sell_price", "sl_low",
                 "post_sell_peak", "post_sell_trough", "last_sell_ts", "trail_peak",
                 "trail_stop", "trend_peak", "surge_peak", "slow_grind_peak", "entry_ts",
+                "ipo_peak", "ipo_trough",
             ),
-            bool_keys=("trend_mode", "ledger_reconcile_required", "surge_active", "slow_grind_active", "adopted"),
+            bool_keys=("trend_mode", "ledger_reconcile_required", "surge_active", "slow_grind_active", "adopted", "ipo_matured"),
             dict_keys=("placement_backoffs", "sl_bounce_state", "sl_episode_state", "reentry_state", "tp_ride_state"),
             order_id_key="txid",
             lowercase_order_side=True,
@@ -931,7 +950,16 @@ class Strategy(BaseSpotMixin):
             self.s["pending_exit"] = pending
             self._save()
             return
-        self._reset_cycle_state(("realized_gross", "realized_net", "fees_total"))
+        if self._in_ipo_lifecycle():
+            self.s["ipo_peak"] = max(
+                safe_pos_float(self.s.get("ipo_peak"), 0.0) or 0.0,
+                safe_pos_float(self.s.get("trail_peak"), 0.0) or 0.0,
+                safe_pos_float(self.s.get("surge_peak"), 0.0) or 0.0,
+                price,
+            )
+        self._reset_cycle_state(
+            ("realized_gross", "realized_net", "fees_total", "adopted", "ipo_matured", "ipo_peak", "ipo_trough")
+        )
         exit_ts = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
         self._seed_post_exit_anchors(price, o.get("kind"), exit_ts)
         log(f"  [STRAT] === cycle closed; restarting (cycle {self.s['cycle']}) ===")
@@ -1394,6 +1422,13 @@ class Strategy(BaseSpotMixin):
                 prev_cost = safe_nonneg_float(self.s.get("cost")) or 0.0
                 prev_avg = (prev_cost / held) if (held > 0 and prev_cost > 0) else 0.0
                 inferred_exit_kind = "SL" if (prev_avg > 0 and price < prev_avg) else "TP"
+                if self._in_ipo_lifecycle():
+                    self.s["ipo_peak"] = max(
+                        safe_pos_float(self.s.get("ipo_peak"), 0.0) or 0.0,
+                        safe_pos_float(self.s.get("trail_peak"), 0.0) or 0.0,
+                        safe_pos_float(self.s.get("surge_peak"), 0.0) or 0.0,
+                        price,
+                    )
                 defaults = _new_state()
                 for k in (
                     "qty", "cost", "spent", "cycle_fees", "dca_buys", "entry_price",
@@ -1514,18 +1549,95 @@ class Strategy(BaseSpotMixin):
         if self._surge_replay_closes is not None:
             self._surge_replay_closes.append(price)
 
-        if self.p.adopt_cost > 0 and not self._state_flag("adopted") and held <= 1e-12:
+        if self.p.adopt_cost > 0 and not self._state_flag("adopted") and held <= 1e-12 and self.s.get("cycle", 1) == 1:
             self._maybe_adopt()
             if not self._state_flag("adopted"):
                 return None
             held = self.s["qty"]
         return price, entry_px, held, tick_time, high
 
+    def _in_ipo_lifecycle(self) -> bool:
+        """Return True while the adopted IPO allocation is still in Phase 1 or awaiting Phase 2 maturation."""
+        return (
+            self.p.adopt_cost > 0
+            and (bool(self.p.ipo_tp_tranches) or self.p.ipo_reentry_drop_pct > 0)
+            and not self._state_flag("ipo_matured")
+        )
+
+    def _evaluate_ipo_maturity_gate(
+        self, price: float, regime: MarketRegimeDecision | None, regime_closes: list | tuple
+    ) -> bool:
+        """Gate Phase-1 -> Phase-2 transition until post-IPO valuation compression, history, and stabilization."""
+        peak = max(
+            safe_pos_float(self.s.get("ipo_peak"), 0.0) or 0.0,
+            safe_pos_float(self.s.get("post_sell_peak"), 0.0) or 0.0,
+            safe_pos_float(self.s.get("last_sell_price"), 0.0) or 0.0,
+            price,
+        )
+        self.s["ipo_peak"] = peak
+        if self.p.ipo_reentry_drop_pct <= 0:
+            self.s["ipo_matured"] = True
+            self._save()
+            return True
+        target_px = peak * (1.0 - self.p.ipo_reentry_drop_pct / 100.0)
+        prev_trough = safe_pos_float(self.s.get("ipo_trough"), None)
+        if prev_trough is None:
+            if price > target_px:
+                log(
+                    f"  [STRAT] IPO Phase-1->2 gate: price {price:.{self.price_dec}f} > cooldown target "
+                    f"{target_px:.{self.price_dec}f} (-{self.p.ipo_reentry_drop_pct}% from peak {peak:.{self.price_dec}f})"
+                )
+                return False
+            trough = price
+            self.s["ipo_trough"] = trough
+        else:
+            trough = min(prev_trough, price)
+            self.s["ipo_trough"] = trough
+        if len(regime_closes) < self.p.regime_min_samples:
+            log(
+                f"  [STRAT] IPO Phase-1->2 gate: waiting for history "
+                f"({len(regime_closes)}/{self.p.regime_min_samples} {self.p.trend_interval}m bars)"
+            )
+            return False
+        bounce_req = max(0.0, self.p.reentry_bear_bounce_pct)
+        bounced = price >= trough * (1.0 + bounce_req / 100.0)
+        in_bear = self.p.dca_trend_brake and self._regime_matches(
+            regime, "bear", min_move_pct=self.p.dca_brake_min_pct, min_samples=self.p.regime_min_samples
+        )
+        if not bounced or in_bear:
+            log(
+                f"  [STRAT] IPO Phase-1->2 gate: waiting for stabilization "
+                f"(price={price:.{self.price_dec}f}, trough={trough:.{self.price_dec}f}, bear={in_bear})"
+            )
+            return False
+        self.s["ipo_matured"] = True
+        self._clear_state_slots("last_sell_price", "post_sell_peak", "post_sell_trough")
+        if self.exit_manager is not None:
+            self.exit_manager.reentry_state.pop(self.pair, None)
+        self._save()
+        log(
+            f"  [PHASE-2] [STRAT] {self.pair} IPO matured at {price:.{self.price_dec}f} "
+            f"(peak {peak:.{self.price_dec}f}, trough {trough:.{self.price_dec}f}, bars {len(regime_closes)}) "
+            "-- switching to cyclic DCA+TP"
+        )
+        self._emit(
+            title=f"[PHASE-2] {self.pair} IPO matured @ {format_price_log(price)}",
+            body=(
+                f"Post-IPO compression -{self.p.ipo_reentry_drop_pct}% from peak {format_price_log(peak)} "
+                f"and {len(regime_closes)} bars confirmed. Switching to normal cyclic DCA+TP."
+            ),
+            source=f"{self.notification_source}-bot",
+            price=price,
+            desktop=self.desktop,
+        )
+        return True
+
     def _step_evaluate_exits(
         self, price: float, held: float, *, tick_time: float
     ) -> tuple[bool, MarketRegimeDecision | None, list]:
         """Stage 2: Evaluate hard stop-loss, pending market exits, regime context, and trend overlay."""
-        if held > 1e-12 and self._check_stop_loss(price):
+        ipo_active = self._in_ipo_lifecycle()
+        if held > 1e-12 and not ipo_active and self._check_stop_loss(price):
             return True, None, []
         if self._has_pending_market_exit():
             return True, None, []
@@ -1535,7 +1647,7 @@ class Strategy(BaseSpotMixin):
 
         regime = None
         regime_closes = []
-        needs_regime = self.p.trend_overlay or self.p.reentry_hybrid_enabled or (
+        needs_regime = self.p.trend_overlay or self.p.reentry_hybrid_enabled or ipo_active or (
             held > 1e-12 and (
                 self.p.dca_trend_brake or self.p.tp_dynamic_flat
                 or self.p.surge_guard or self.p.slow_grind_guard
@@ -1558,15 +1670,22 @@ class Strategy(BaseSpotMixin):
             regime, regime_closes = self._regime_context()
 
         self._reentry_blocked_tick = None
-        if self.p.trend_overlay and self._overlay_step(price, regime, regime_closes, tick_time=tick_time):
+        if not ipo_active and self.p.trend_overlay and self._overlay_step(price, regime, regime_closes, tick_time=tick_time):
             return True, regime, regime_closes
         return False, regime, regime_closes
 
     def _step_evaluate_reentry(
-        self, price: float, entry_px: float, regime: MarketRegimeDecision | None, tick_time: float
+        self,
+        price: float,
+        entry_px: float,
+        regime: MarketRegimeDecision | None,
+        tick_time: float,
+        regime_closes: list | tuple = (),
     ) -> bool:
         """Stage 3: Evaluate flat-position re-entry gate and place initial ENTRY buy order."""
         if self._has_open("buy"):
+            return False
+        if self._in_ipo_lifecycle() and not self._evaluate_ipo_maturity_gate(price, regime, regime_closes):
             return False
         return self._execute_flat_reentry(
             price, entry_px, self.p.effective_entry_amount(), self.p.allocated_budget(),
@@ -1679,8 +1798,12 @@ class Strategy(BaseSpotMixin):
         """Manage take-profit (MDHTP, trailing stop, or classic/tranche limit sells). Return True to skip DCA."""
         if not (self.p.enable_takeprofit and avg):
             return False
+        ipo_phase1 = self._in_ipo_lifecycle()
+        tp_ref_price = high if high is not None else price
+        if ipo_phase1:
+            self.s["ipo_peak"] = max(safe_pos_float(self.s.get("ipo_peak"), 0.0) or 0.0, tp_ref_price)
         eff_tp = self.p.takeprofit_pct
-        if self.p.tp_dynamic_flat and regime and regime.fresh and regime.regime == "sideways":
+        if not ipo_phase1 and self.p.tp_dynamic_flat and regime and regime.fresh and regime.regime == "sideways":
             thresh = getattr(getattr(self, "_regime_service", None), "evaluator", None)
             eff_tp = sr.dynamic_flat_tp_pct(
                 strength=regime.strength,
@@ -1690,30 +1813,30 @@ class Strategy(BaseSpotMixin):
                 base_tp_pct=self.p.takeprofit_pct,
             )
 
-        has_multi_tranches = bool(self.p.tp_tranches)
+        active_tranches = self.p.ipo_tp_tranches if (ipo_phase1 and self.p.ipo_tp_tranches) else self.p.tp_tranches
+        has_multi_tranches = bool(active_tranches)
         sold_tranches = set(self.s.get("tp_sold_levels") or ()) if has_multi_tranches else set()
-        hybrid_trail_tail = self.p.tp_trend_hold and len(self.p.tp_tranches) > 1
+        hybrid_trail_tail = self.p.tp_trend_hold and len(active_tranches) > 1
         fixed_tranches_done = hybrid_trail_tail and all(
-            idx in sold_tranches for idx in range(len(self.p.tp_tranches) - 1)
+            idx in sold_tranches for idx in range(len(active_tranches) - 1)
         )
         if fixed_tranches_done:
-            eff_tp = self.p.tp_tranches[-1][0]
+            eff_tp = active_tranches[-1][0]
         trail_armed = safe_pos_float(self.s.get("trail_peak"), None) is not None
         trend_hold_active = (self.p.tp_trend_hold and not has_multi_tranches) or fixed_tranches_done
-        tp_ref_price = high if high is not None else price
-        if hybrid_trail_tail and not fixed_tranches_done and tp_ref_price >= sr.tp_price(avg, self.p.tp_tranches[-1][0]):
+        if hybrid_trail_tail and not fixed_tranches_done and tp_ref_price >= sr.tp_price(avg, active_tranches[-1][0]):
             self.s["trail_peak"] = max(safe_pos_float(self.s.get("trail_peak"), tp_ref_price), tp_ref_price)
         if trend_hold_active and (trail_armed or tp_ref_price >= sr.tp_price(avg, eff_tp)):
-            if self.p.tp_mdhtp_enabled and self._evaluate_mdhtp_tp(
+            if not ipo_phase1 and self.p.tp_mdhtp_enabled and self._evaluate_mdhtp_tp(
                 price, avg, held, eff_tp, high=high, regime=regime,
                 regime_closes=regime_closes, tick_time=tick_time,
             ):
                 return True
             peak = max(safe_pos_float(self.s.get("trail_peak"), tp_ref_price), tp_ref_price)
             self.s["trail_peak"] = peak
-            if self._check_advanced_profit_guards(price, avg, held, regime_closes, tick_time):
+            if not ipo_phase1 and self._check_advanced_profit_guards(price, avg, held, regime_closes, tick_time):
                 return True
-            eff_trail = self._effective_trail_pct()
+            eff_trail = self.p.ipo_trail_pct if (ipo_phase1 and self.p.ipo_trail_pct > 0) else self._effective_trail_pct()
             candidate_stop = peak * (1 - eff_trail / 100)
             previous_stop = safe_pos_float(self.s.get("trail_stop"), default=None)
             trail_stop = max(candidate_stop, previous_stop or candidate_stop)
@@ -1740,7 +1863,7 @@ class Strategy(BaseSpotMixin):
             return False
 
         raw_tranches: list[tuple[int | None, float, float]] = (
-            [(idx, pct, share) for idx, (pct, share) in enumerate(self.p.tp_tranches)]
+            [(idx, pct, share) for idx, (pct, share) in enumerate(active_tranches)]
             if has_multi_tranches
             else [(None, eff_tp, 100.0)]
         )
@@ -1749,7 +1872,7 @@ class Strategy(BaseSpotMixin):
             all_unsold = [(None, raw_tranches[-1][1], 100.0)]
         holding_trail_tail = hybrid_trail_tail and not fixed_tranches_done
         unsold = (
-            [item for item in all_unsold if item[0] != len(self.p.tp_tranches) - 1]
+            [item for item in all_unsold if item[0] != len(active_tranches) - 1]
             if holding_trail_tail
             else all_unsold
         )
@@ -1779,7 +1902,7 @@ class Strategy(BaseSpotMixin):
 
         unstarted = [(slot_i, tr_idx, pct, share) for slot_i, (tr_idx, pct, share) in enumerate(unsold) if slot_i not in locked_by_slot]
         rem_pool = max(0.0, round(held - reserved_vol, self.vol_dec))
-        tail_hold_share = self.p.tp_tranches[-1][1] if holding_trail_tail else 0.0
+        tail_hold_share = active_tranches[-1][1] if holding_trail_tail else 0.0
         share_sum = sum(share for _, _, _, share in unstarted) + tail_hold_share
         sized_by_slot: dict[int, tuple[float, float, int | None]] = dict(locked_by_slot)
         if unstarted and rem_pool > 0 and share_sum > 0:
@@ -1841,6 +1964,8 @@ class Strategy(BaseSpotMixin):
         self, price: float, entry_px: float, regime: MarketRegimeDecision | None
     ) -> None:
         """Evaluate progressive/volatility-scaled DCA dip conditions and place BUY order."""
+        if self._in_ipo_lifecycle():
+            return
         effective_dca_drop = sr.progressive_dca_drop_pct(
             self.p.dca_drop_pct, self.p.dca_spacing_growth_pct, self.s["dca_buys"]
         )
@@ -1930,7 +2055,7 @@ class Strategy(BaseSpotMixin):
             return
 
         if held <= 1e-12:
-            self._step_evaluate_reentry(price, entry_px, regime, tick_time)
+            self._step_evaluate_reentry(price, entry_px, regime, tick_time, regime_closes=regime_closes)
             return
 
         self._step_dispatch_orders(

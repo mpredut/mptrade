@@ -141,10 +141,10 @@ def adapt_ladder_rungs(
     return [remaining[idx] for idx in sorted(set(indices))]
 
 
-def _parse_tranches(spec: str) -> list:
+def _parse_tranches(spec: str, *, key_name: str = "STRAT_TP_TRANCHES") -> list:
     """Parse ``3:50,6:50`` into percentage/share pairs whose shares total 100."""
     if isinstance(spec, bool):
-        raise ValueError(f"Invalid STRAT_TP_TRANCHES: {spec!r}")
+        raise ValueError(f"Invalid {key_name}: {spec!r}")
     if spec is None or not str(spec).strip():
         return []
     spec = str(spec)
@@ -160,7 +160,7 @@ def _parse_tranches(spec: str) -> list:
         if abs(sum(share for _, share in out) - 100) >= 1e-6:
             raise ValueError("Tranche shares must total 100")
     except ValueError as exc:
-        raise ValueError(f"Invalid STRAT_TP_TRANCHES: {spec!r}") from exc
+        raise ValueError(f"Invalid {key_name}: {spec!r}") from exc
     return out
 
 

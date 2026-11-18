@@ -1178,6 +1178,9 @@ def test_spot_engine_hybrid_tranche_plus_trailing_and_zero_reentry(tmp_path):
         ("XSTOCK_BOT_TP_TRAIL_ADAPTIVE", "STRAT_TP_TRAIL_ADAPTIVE"),
         ("XSTOCK_BOT_TP_MDHTP_ENABLED", "STRAT_TP_MDHTP_ENABLED"),
         ("XSTOCK_BOT_TP_DYNAMIC_FLAT", "STRAT_TP_DYNAMIC_FLAT"),
+        ("XSTOCK_BOT_IPO_TP_TRANCHES", "STRAT_IPO_TP_TRANCHES"),
+        ("XSTOCK_BOT_IPO_TRAIL_PCT", "STRAT_IPO_TRAIL_PCT"),
+        ("XSTOCK_BOT_IPO_REENTRY_DROP_PCT", "STRAT_IPO_REENTRY_DROP_PCT"),
         ("XSTOCK_BOT_SL_PCT", "STRAT_STOP_LOSS_PCT"),
         ("XSTOCK_BOT_TREND_OVERLAY", "STRAT_TREND_OVERLAY"),
         ("XSTOCK_BOT_MAX_BUDGET", "STRAT_MAX_BUDGET"),
@@ -1187,51 +1190,73 @@ def test_spot_engine_hybrid_tranche_plus_trailing_and_zero_reentry(tmp_path):
     env_merged["STRAT_ADOPT_COST"] = "80.0"
 
     params = _xstock_strategy.StratParams.from_env(env_merged)
-    client = FakeKrakenXStock(bal={"TSTX": "30.0", "ZUSD": "500.0"})
+    client = FakeKrakenXStock(bal={"TSTX": "30.0", "ZUSD": "3000.0"})
+    client._ohlc_bars = [95.0, 96.0, 97.0]  # initially < 20 bars (young IPO!)
+    client.ohlc_closes = lambda _p, _itv: list(client._ohlc_bars)
     strat = _xstock_strategy.Strategy(
         client, pair, params, dry_run=True, desktop=False, state_dir=str(tmp_path)
     )
     strat.notify = lambda **kw: None
+    sim_clock = [1000.0]
+    strat._clock = lambda: sim_clock[0]
 
     def _tick(px: float, ts: float) -> None:
+        sim_clock[0] = ts
         strat.reconcile(px)
         strat.step(px, timestamp=ts)
 
-    # 1. Adopts 30 TSTX @ 80 and places ONLY Tranche 0 (50% = 15 TSTX @ 100.0), holding 15 TSTX off-book
+    # 1. Phase 1 adopts 30 TSTX @ 80 and places ONLY Tranche 0 (35% = 10.5 TSTX @ +18% = 94.40), holding 65% off-book
     _tick(82.0, 1000.0)
     assert strat.s["adopted"] is True
+    assert strat.s["ipo_matured"] is False
     assert strat.s["qty"] == pytest.approx(30.0, abs=1e-4)
     sells = [o for o in strat.s["orders"] if o["side"] == "sell"]
     assert len(sells) == 1
-    assert sells[0]["vol"] == pytest.approx(15.0, abs=1e-4)
-    assert sells[0]["price"] == pytest.approx(100.0)
+    assert sells[0]["vol"] == pytest.approx(10.5, abs=1e-4)
+    assert sells[0]["price"] == pytest.approx(94.40)
 
-    # 2. Opening dip to 68 (-15%) does NOT trigger stop-loss or DCA buy
+    # 2. Opening dip to 68 (-15%) does NOT trigger stop-loss or DCA buy during Phase 1
     _tick(68.0, 1015.0)
     assert strat.s["qty"] == pytest.approx(30.0, abs=1e-4)
     assert not any(o["side"] == "buy" for o in strat.s["orders"])
 
-    # 3. Spike to 120 (+50%) fills Tranche 0 (15 @ 100) and arms trailing on remaining 15 TSTX (no resting sell cap!)
-    _tick(120.0, 1030.0)
-    assert strat.s["qty"] == pytest.approx(15.0, abs=1e-4)
+    # 3. Spike to 110 (+37.5%) fills Tranche 0 (10.5 @ 94.40) and arms trailing (>= +30% = 104.0) on remaining 19.5 TSTX
+    _tick(110.0, 1030.0)
+    assert strat.s["qty"] == pytest.approx(19.5, abs=1e-4)
     assert [o for o in strat.s["orders"] if o["side"] == "sell"] == []
-    assert strat.s["trail_peak"] == pytest.approx(120.0)
+    assert strat.s["trail_peak"] == pytest.approx(110.0)
 
-    # 4. Rally continues to 140 (+75%) -> peak rises to 140, trail_stop = 140 * 0.965 = 135.10
+    # 4. Rally continues to 140 (+75%) -> peak rises to 140, IPO 4.0% trail_stop = 140 * 0.96 = 134.40
+    #    A normal -2.0% wiggle (137.20) in 5m does NOT trigger crypto Fast-Profit-Guard (1.0%) during Phase 1!
     _tick(140.0, 1045.0)
-    assert strat.s["qty"] == pytest.approx(15.0, abs=1e-4)
+    assert strat.s["qty"] == pytest.approx(19.5, abs=1e-4)
     assert strat.s["trail_peak"] == pytest.approx(140.0)
-    assert strat.s["trail_stop"] == pytest.approx(135.10)
+    assert strat.s["trail_stop"] == pytest.approx(134.40)
+    _tick(137.20, 1052.0)
+    assert strat.s["qty"] == pytest.approx(19.5, abs=1e-4)
+    assert [o for o in strat.s["orders"] if o["side"] == "sell"] == []
 
-    # 5. Pullback of >3.5% to 134.80 triggers trailing market exit of the remaining 15 TSTX
-    _tick(134.80, 1060.0)
-    _tick(134.50, 1075.0)
+    # 5. Pullback > 4.0% to 134.00 triggers trailing market exit of the remaining 19.5 TSTX
+    _tick(134.00, 1060.0)
+    _tick(133.80, 1075.0)
     assert strat.s["qty"] == pytest.approx(0.0, abs=1e-6)
+    assert strat.s["ipo_peak"] == pytest.approx(140.0)
 
-    # 6. Post-exit drop to 70 stays 100% flat (STRAT_ENTRY=0 disables re-entry)
-    _tick(70.0, 1090.0)
-    assert strat.s["qty"] == pytest.approx(0.0, abs=1e-6)
+    # 6. Post-IPO Maturation Gate blocks premature re-entry at 120 (< 25% drop from 140) and when < 20 4h bars exist
+    _tick(120.0, 1090.0)
+    assert strat.s["ipo_matured"] is False
     assert strat.s["orders"] == []
+    _tick(100.0, 1105.0)  # >= 25% drop (<= 105), but still only 3 OHLC bars (< 20)!
+    assert strat.s["ipo_matured"] is False
+    assert strat.s["orders"] == []
+
+    # 7. Once >= 20 4h bars exist AND price bounces +0.6% off trough 100.0 -> 100.60, Phase 2 unlocks automatically!
+    client._ohlc_bars = [100.0 + (i % 2) * 0.2 for i in range(25)]
+    _tick(100.60, 200_000.0)
+    assert strat.s["ipo_matured"] is True
+    buys = [o for o in strat.s["orders"] if o["side"] == "buy" and o["kind"] == "ENTRY"]
+    assert len(buys) == 1
+    assert buys[0]["amount"] == pytest.approx(500.0)
 
 
 def test_xstock_watch_incremental_trade_archive_sync(tmp_path, monkeypatch):
