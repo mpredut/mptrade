@@ -41,10 +41,10 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_bottom_structure_6h_parts,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
-    _LIQ_CLUSTER_KEYS,
     _MICRO_OB_LOCAL_KEYS,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
+    purge_liquidation_cluster_keys,
     reconcile_sibling_flow_and_liq_regimes,
     should_skip_sibling_telemetry_key,
     sibling_structure_presence,
@@ -70,7 +70,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )
-from instrument_registry import is_equity_symbol, resolve_kraken_tokenized_pair
+from instrument_registry import is_equity_or_tokenized_symbol, is_equity_symbol, resolve_kraken_tokenized_pair
 from providers.order_id_context import format_actor_tag
 
 
@@ -1025,8 +1025,7 @@ def _format_microstructure_section(
         ):
             enrich_microstructure_cvd(minfo, p_ctx)
         if sym_no_crypto_perp_3b:
-            for _lk_3b in _LIQ_CLUSTER_KEYS:
-                minfo.pop(_lk_3b, None)
+            purge_liquidation_cluster_keys(minfo)
         elif any(
             minfo.get(k) is None
             for k in ("long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px", "liq_magnet_bias")
@@ -1035,29 +1034,28 @@ def _format_microstructure_section(
             for lk, lv in liq_lazy.items():
                 if minfo.get(lk) is None:
                     minfo[lk] = lv
-        if "USD" in sym_quotes_3b and any(
-            other_s != sym
-            and isinstance(other_m, dict)
-            and has_equity_suffix(other_s) == sym_is_eq_3b
-            and canonical_base_asset(other_s) == b_canon_3b
-            and "USD" in compatible_quote_suffixes(other_s)
-            for other_s, other_m in microstructure.items()
-        ):
+        sib_cands = (
+            [
+                (other_s, other_m)
+                for other_s, other_m in microstructure.items()
+                if other_s != sym
+                and isinstance(other_m, dict)
+                and is_equity_symbol(other_s) == sym_is_eq_3b
+                and canonical_base_asset(other_s) == b_canon_3b
+                and "USD" in compatible_quote_suffixes(other_s)
+            ]
+            if "USD" in sym_quotes_3b
+            else []
+        )
+        if sib_cands:
             sib_view: Dict[str, Any] = {sym: minfo}
-            for other_s, other_m in microstructure.items():
-                if (
-                    other_s != sym
-                    and isinstance(other_m, dict)
-                    and has_equity_suffix(other_s) == sym_is_eq_3b
-                    and canonical_base_asset(other_s) == b_canon_3b
-                    and "USD" in compatible_quote_suffixes(other_s)
-                ):
-                    o_copy = dict(other_m)
-                    o_p = prices_and_trends.get(other_s) if isinstance(prices_and_trends.get(other_s), dict) else p_ctx
-                    enrich_microstructure_cvd(o_copy, o_p)
-                    if not sym_no_crypto_perp_3b and not resolve_kraken_tokenized_pair(other_s)[1] and o_copy.get("liq_magnet_bias") is None:
-                        o_copy.update(compute_liquidation_clusters(o_p, o_copy, symbol=other_s))
-                    sib_view[other_s] = o_copy
+            for other_s, other_m in sib_cands:
+                o_copy = dict(other_m)
+                o_p = prices_and_trends.get(other_s) if isinstance(prices_and_trends.get(other_s), dict) else p_ctx
+                enrich_microstructure_cvd(o_copy, o_p)
+                if not sym_no_crypto_perp_3b and not is_equity_or_tokenized_symbol(other_s) and o_copy.get("liq_magnet_bias") is None:
+                    o_copy.update(compute_liquidation_clusters(o_p, o_copy, symbol=other_s))
+                sib_view[other_s] = o_copy
             reconcile_sibling_flow_and_liq_regimes(sib_view, prices_and_trends)
         d1_b = safe_float(minfo.get("depth_1pct_bid_usd"), 0.0)
         d1_a = safe_float(minfo.get("depth_1pct_ask_usd"), 0.0)

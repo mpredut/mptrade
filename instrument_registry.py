@@ -396,6 +396,11 @@ def is_equity_symbol(symbol: object, *, path=None) -> bool:
         return False
 
 
+def is_equity_or_tokenized_symbol(symbol: object, *, path=None) -> bool:
+    """Return True when ``symbol`` is an RTH equity or a 24/7 tokenized xStock (lacks a crypto perpetual market)."""
+    return is_equity_symbol(symbol, path=path) or resolve_kraken_tokenized_pair(symbol)[1]
+
+
 def is_symbol_market_open(symbol: object, now_ts: float | None = None, *, path=None) -> bool:
     """Return True when the configured market session for ``symbol`` is open (24/7 or US RTH)."""
     return bool(is_us_rth_open(now_ts)) if is_equity_symbol(symbol, path=path) else True

@@ -836,6 +836,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
     _EQUITY_CTX_MEMO: Dict[str, Tuple[float, Optional[Dict[str, Any]]]] = {}
     _EQUITY_OPTIONS_MEMO: Dict[str, Tuple[float, Tuple[float, float, float, float]]] = {}
     _EQUITY_NO_OPTIONS_TS: Dict[str, float] = {}
+    _OPT_OCC_RE = re.compile(r"\d{6}([CP])\d{8}$")
 
     def _populate_equity_options_context(
         self,
@@ -853,13 +854,9 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             ctx_out.update(call_oi=c_oi, put_oi=p_oi, call_vol=c_vol, put_vol=p_vol, _options_loaded=True)
             return
 
-        call_oi = 0.0
-        put_oi = 0.0
-        call_vol = 0.0
-        put_vol = 0.0
+        call_oi = put_oi = call_vol = put_vol = 0.0
         no_opt_ts = self._EQUITY_NO_OPTIONS_TS.get(ticker, 0.0)
         if not (no_opt_ts > 0.0 and 0.0 <= (now - no_opt_ts) < no_options_ttl):
-            opt_rx = re.compile(r"\d{6}([CP])\d{8}$")
             cboe_paths = (
                 (f"_{ticker}.json", f"{ticker}.json")
                 if ticker in _require_feed_csv("cboe_index_tickers")
@@ -882,8 +879,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                         for opt in opts:
                             if not isinstance(opt, dict):
                                 continue
-                            opt_sym = str(opt.get("option") or "")
-                            m = opt_rx.search(opt_sym)
+                            m = self._OPT_OCC_RE.search(str(opt.get("option") or ""))
                             if not m:
                                 continue
                             oi_v = safe_nonneg_float(opt.get("open_interest"), default=0.0) or 0.0

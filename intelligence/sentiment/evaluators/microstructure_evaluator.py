@@ -48,7 +48,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     _auto_px_decimals,
     _LAST_7D_SPAN_MS_BY_SYM,
 )
-from instrument_registry import casefold_get, is_equity_symbol, resolve_kraken_tokenized_pair
+from instrument_registry import casefold_get, is_equity_or_tokenized_symbol
 from providers.market_api import api as mkt_api
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_evaluator")
@@ -373,21 +373,19 @@ def _blend_structural_liq_anchor(
 
 
 _LIQ_CLUSTER_KEYS: Tuple[str, ...] = (
-    "long_liq_px",
-    "long_liq_usd",
-    "long_liq_dist_pct",
-    "short_liq_px",
-    "short_liq_usd",
-    "short_liq_dist_pct",
-    "long_liq_deep_px",
-    "long_liq_deep_usd",
-    "long_liq_deep_dist_pct",
-    "short_liq_deep_px",
-    "short_liq_deep_usd",
-    "short_liq_deep_dist_pct",
-    "liq_magnet_bias",
-    "liq_source",
+    "long_liq_px", "long_liq_usd", "long_liq_dist_pct",
+    "short_liq_px", "short_liq_usd", "short_liq_dist_pct",
+    "long_liq_deep_px", "long_liq_deep_usd", "long_liq_deep_dist_pct",
+    "short_liq_deep_px", "short_liq_deep_usd", "short_liq_deep_dist_pct",
+    "liq_magnet_bias", "liq_source",
 )
+
+
+def purge_liquidation_cluster_keys(minfo: Optional[Dict[str, Any]]) -> None:
+    """Remove all perpetual liquidation cluster keys from ``minfo`` in place."""
+    if isinstance(minfo, dict):
+        for lk in _LIQ_CLUSTER_KEYS:
+            minfo.pop(lk, None)
 
 
 def compute_liquidation_clusters(
@@ -401,7 +399,7 @@ def compute_liquidation_clusters(
     if not isinstance(minfo, dict):
         return {}
     sym_chk = str(symbol or minfo.get("symbol") or minfo.get("_source_cand") or "").strip()
-    if sym_chk and (is_equity_symbol(sym_chk) or resolve_kraken_tokenized_pair(sym_chk)[1]):
+    if sym_chk and is_equity_or_tokenized_symbol(sym_chk):
         return {}
     p_dict = pinfo if isinstance(pinfo, dict) else {}
     cur_px = safe_pos_float(p_dict.get("price"), default=0.0) or 0.0
@@ -1348,9 +1346,8 @@ def sync_sibling_symbol_telemetry(
         enrich_microstructure_cvd(minfo, p_match)
         if liq_res := compute_liquidation_clusters(p_match, minfo, symbol=msym):
             minfo.update(liq_res)
-        elif is_equity_symbol(msym) or resolve_kraken_tokenized_pair(msym)[1]:
-            for _lk in _LIQ_CLUSTER_KEYS:
-                minfo.pop(_lk, None)
+        elif is_equity_or_tokenized_symbol(msym):
+            purge_liquidation_cluster_keys(minfo)
         if isinstance(p_match, dict) and minfo.get("spread_bps") is not None:
             p_match.setdefault("spread_bps", minfo["spread_bps"])
         compute_cross_venue_arb_metrics(msym, minfo, p_match, microstructure, prices_and_trends)
@@ -1800,6 +1797,7 @@ __all__ = [
     "evaluate_microstructure_cycle_deltas",
     "is_ob_live_and_newer",
     "is_ob_mid_fresher_than_series",
+    "purge_liquidation_cluster_keys",
     "reconcile_sibling_flow_and_liq_regimes",
     "rescale_orderbook_walls_to_price",
     "select_reconciled_spot_or_ob_price",

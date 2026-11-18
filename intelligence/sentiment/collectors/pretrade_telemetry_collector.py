@@ -87,6 +87,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     enrich_microstructure_cvd,
     is_ob_live_and_newer,
     is_ob_mid_fresher_than_series,
+    purge_liquidation_cluster_keys,
     reconcile_sibling_flow_and_liq_regimes,
     rescale_orderbook_walls_to_price,
     select_reconciled_spot_or_ob_price,
@@ -1793,8 +1794,13 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             else:
                 telemetry["Derivatives Open Interest"] = f"{oi_base}{eq_oi_tag}"
 
-        liq_c = {} if is_eq_sym else compute_liquidation_clusters(p_est, cur_m_info, symbol=symbol)
-        cur_m_info.update(liq_c)
+        no_perp_liq = is_eq_sym or is_tok_xstock_pt
+        if no_perp_liq:
+            liq_c = {}
+            purge_liquidation_cluster_keys(cur_m_info)
+        else:
+            liq_c = compute_liquidation_clusters(p_est, cur_m_info, symbol=symbol)
+            cur_m_info.update(liq_c)
         if is_usd_sym:
             cur_bd = safe_pos_float(cur_m_info.get("bid_depth_usd"), default=0.0) or 0.0
             for cand in quote_variants:
@@ -1899,7 +1905,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             if sp_cvd is not None:
                 cvd_line += f", spot_cvd_15m=${sp_cvd:+,.0f}"
             telemetry["15m Cumulative Volume Delta (CVD)"] = cvd_line
-        if not is_eq_sym and liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
+        if not no_perp_liq and liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
             deep_parts = [
                 f"deep_{s_lbl}=${liq_c[px_k]} (${safe_float(liq_c.get(usd_k), 0.0):,.0f}, {safe_float(liq_c.get(dist_k), 0.0):+.2f}%)"
                 for s_lbl, px_k, usd_k, dist_k in (

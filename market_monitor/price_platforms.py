@@ -38,7 +38,6 @@ from botcore import (
 from cachepaths import (
     CMC_LISTINGS_CACHE_FILENAME,
     cache_path,
-    canonical_base_asset,
     normalize_venue_name,
     strip_equity_suffix,
 )
@@ -597,24 +596,4 @@ def is_rth_equity_symbol(symbol: object, price_factory: Optional[object] = None)
                 other_sup = True
         if eq_sup and not other_sup:
             return True
-    try:
-        reg = sym.load_registry()
-
-        def _matches_sym(s) -> bool:
-            return (
-                s.symbol.upper() == sym_u
-                or s.base.upper() == sym_u
-                or canonical_base_asset(s.symbol).upper() == sym_u
-            )
-
-        has_eq = any(
-            (sym.is_equity_venue(s.provider) or s.market_hours == "rth") and _matches_sym(s)
-            for s in reg.values()
-        )
-        has_crypto = any(
-            not sym.is_equity_venue(s.provider) and s.market_hours != "rth" and _matches_sym(s)
-            for s in reg.values()
-        )
-        return has_eq and not has_crypto
-    except Exception:
-        return False
+    return False

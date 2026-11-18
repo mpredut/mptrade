@@ -442,30 +442,78 @@ def _coerce_cited_text(text: Any) -> str:
     return text if isinstance(text, str) else ""
 
 
+_CLAUSE_SPLIT_RE = re.compile(r"[.;,()\n]")
+_SUB_ITEM_SPLIT_RE = re.compile(r"[,;]|\s+/\s+|(?<=\d)/(?=\d)")
+_PAREN_SKIP_RE = re.compile(r"\b(?:cvd|oi|vol|volume|funding|change|chg|range|position|breadth|advancing)\b")
+_TAKER_OVERALL_HZ_RE = re.compile(r"\b(?:overall|aggregate|headline|15m|15-minute)\b", re.IGNORECASE)
+_TAKER_HZ_RE_MAP = {
+    "5m": re.compile(r"\b(?:5m|5-minute)\b", re.IGNORECASE),
+    "3m": re.compile(r"\b(?:3m|3-minute)\b", re.IGNORECASE),
+    "1m": re.compile(r"\b(?:1m|1-minute)\b", re.IGNORECASE),
+    "15m": _TAKER_OVERALL_HZ_RE,
+    "overall": _TAKER_OVERALL_HZ_RE,
+    "headline": _TAKER_OVERALL_HZ_RE,
+    "1h": re.compile(r"\b(?:1h|1-hour)\b", re.IGNORECASE),
+    "4h": re.compile(r"\b(?:4h|4-hour)\b", re.IGNORECASE),
+}
+_MULTI_HZ_CVD_RE = re.compile(
+    r"((?:\b(?:5m|15m|1h|4h|5-minute|15-minute|1-hour|4-hour)\b\s*(?:/|,|\band\b)\s*)+\b(?:5m|15m|1h|4h|5-minute|15-minute|1-hour|4-hour)\b)\s+cvd[^()\n]{0,35}\(([^()\n]{1,90})\)",
+    re.IGNORECASE,
+)
+_CVD_HZ_ITEM_RE = re.compile(r"\b(?:5m|15m|1h|4h|5-minute|15-minute|1-hour|4-hour)\b", re.IGNORECASE)
+_CVD_VAL_ITEM_RE = re.compile(r"([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\b")
+_CVD_CLAUSE_RE = re.compile(r"\bcvd\b([^;\n]{0,90})", re.IGNORECASE)
+_CVD_SPLIT_STOP_RE = re.compile(
+    r"(?<!\d)\.(?!\d)|\b(?:oi|open\s+interest|vol|volume|funding|liq|liquidations?)\b", re.IGNORECASE
+)
+_CVD_UNIT_MULT = {"k": 1e3, "m": 1e6, "b": 1e9}
+
+
+def _build_cvd_hz_bundle(hz_pat: str) -> Tuple[re.Pattern[str], re.Pattern[str], re.Pattern[str]]:
+    return (
+        re.compile(rf"^{hz_pat}$", re.IGNORECASE),
+        re.compile(
+            rf"(?:(?<![/])\b(?:{hz_pat}[\s_]+cvd|cvd[\s_]+{hz_pat})\b[^.;,\n()]{{0,35}}?\(?\s*([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\b"
+            rf"|([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\s+{hz_pat}[\s_]+cvd\b)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"(?:([+-]?)\s*\$\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\s*(?:(?:on|in|for|over)\s+)?\b{hz_pat}\b"
+            rf"|\b{hz_pat}\b[\s:=]+([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\b)",
+            re.IGNORECASE,
+        ),
+    )
+
+
+_CVD_HZ_BUNDLE_MAP = {
+    "1h": _build_cvd_hz_bundle(r"(?:1h|1-hour)"),
+    "15m": _build_cvd_hz_bundle(r"(?:15m|15-minute)"),
+    "5m": _build_cvd_hz_bundle(r"(?:5m|5-minute)"),
+    "4h": _build_cvd_hz_bundle(r"(?:4h|4-hour)"),
+}
+
+
+def _scale_signed_cvd(s1: Optional[str], s2: Optional[str], num_s: Optional[str], unit_s: Optional[str]) -> Optional[float]:
+    val = safe_pos_float(num_s, default=None)
+    if val is None:
+        return None
+    sign = -1.0 if ("-" in (s1 or "") or "-" in (s2 or "")) else 1.0
+    return sign * val * _CVD_UNIT_MULT.get((unit_s or "m").lower(), 1.0)
+
+
 def parse_cited_taker_ratio(text: Any, *, horizon: Optional[str] = None) -> Optional[float]:
     """Extract a cited BTC taker buy/sell ratio from an advisor summary string (or sequence of strings), preferring overall/15m over 1h/4h over 1m/3m/5m sub-horizons unless a specific `horizon` is requested."""
     if not (text := _coerce_cited_text(text)):
         return None
     hz_norm = str(horizon).strip().lower() if horizon else ""
-    target_hz_re = (
-        re.compile(
-            {
-                "5m": r"\b(?:5m|5-minute)\b",
-                "3m": r"\b(?:3m|3-minute)\b",
-                "1m": r"\b(?:1m|1-minute)\b",
-                "15m": r"\b(?:overall|aggregate|headline|15m|15-minute)\b",
-                "overall": r"\b(?:overall|aggregate|headline|15m|15-minute)\b",
-                "headline": r"\b(?:overall|aggregate|headline|15m|15-minute)\b",
-                "1h": r"\b(?:1h|1-hour)\b",
-                "4h": r"\b(?:4h|4-hour)\b",
-            }.get(hz_norm, rf"\b{re.escape(hz_norm)}\b"),
-            re.IGNORECASE,
-        )
-        if hz_norm
-        else None
-    )
+    target_re = _TAKER_HZ_RE_MAP.get(hz_norm) if hz_norm else None
+    target_fb = rf"\b{re.escape(hz_norm)}\b" if (hz_norm and target_re is None) else ""
     best_rank = -1
     best_val: Optional[float] = None
+
+    def _matches_target(ctx_s: str) -> bool:
+        return bool(target_re.search(ctx_s) if target_re is not None else re.search(target_fb, ctx_s, re.IGNORECASE))
+
     for m_tr in _CITED_TAKER_RATIO_RE.finditer(text):
         val = safe_pos_float(next((g for g in m_tr.groups() if g is not None), None), default=None)
         if val is None or not (0.05 <= val <= 25.0):
@@ -475,35 +523,30 @@ def parse_cited_taker_ratio(text: Any, *, horizon: Optional[str] = None) -> Opti
         raw_suffix = (
             ""
             if m_grp0.rstrip().endswith((",", ")", ";", "."))
-            else re.split(r"[.;,()\n]", text[m_tr.end() : min(len(text), m_tr.end() + 24)].lower())[0]
+            else _CLAUSE_SPLIT_RE.split(text[m_tr.end() : min(len(text), m_tr.end() + 24)].lower())[0]
         )
         local_ctx = f"{m_grp0.split('(', 1)[-1]} {raw_suffix}"
-        clause_ctx = f"{re.split(r'[.;,()\n]', raw_prefix)[-1]} {m_grp0} {raw_suffix}"
+        clause_ctx = f"{_CLAUSE_SPLIT_RE.split(raw_prefix)[-1]} {m_grp0} {raw_suffix}"
         if _HORIZON_TOKEN_RE.search(local_ctx):
             eff_ctx = local_ctx
         elif "(" in m_grp0 and len(clause_hz := _HORIZON_TOKEN_RE.findall(clause_ctx)) >= 2:
             eff_ctx = clause_hz[0]
         else:
             eff_ctx = clause_ctx
-        if target_hz_re is not None:
-            if target_hz_re.search(eff_ctx):
+        if hz_norm:
+            if _matches_target(eff_ctx):
                 return val
             continue
         rank = next((r for pat, r in _TAKER_CTX_RANKS if pat.search(eff_ctx)), 2)
         if rank > best_rank:
-            best_rank = rank
-            best_val = val
+            best_rank, best_val = rank, val
     for m_pg in _TAKER_PAREN_GROUP_RE.finditer(text):
         raw_prefix = text[max(0, m_pg.start() - 32) : m_pg.start()].lower()
-        outer_ctx = f"{re.split(r'[.;,()\n]', raw_prefix)[-1]} {m_pg.group(0).split('(', 1)[0].lower()}"
+        outer_ctx = f"{_CLAUSE_SPLIT_RE.split(raw_prefix)[-1]} {m_pg.group(0).split('(', 1)[0].lower()}"
         outer_hz_list = _HORIZON_TOKEN_RE.findall(outer_ctx)
-        sub_items = re.split(r"[,;]|\s+/\s+|(?<=\d)/(?=\d)", m_pg.group(2))
-        for idx, sub_item in enumerate(sub_items):
+        for idx, sub_item in enumerate(_SUB_ITEM_SPLIT_RE.split(m_pg.group(2))):
             sub_low = sub_item.strip().lower()
-            if not sub_low or re.search(r"\b(?:cvd|oi|vol|volume|funding|change|chg|range|position|breadth|advancing)\b", sub_low):
-                continue
-            m_sub = _PAREN_RATIO_ITEM_RE.search(sub_low)
-            if m_sub is None:
+            if not sub_low or _PAREN_SKIP_RE.search(sub_low) or (m_sub := _PAREN_RATIO_ITEM_RE.search(sub_low)) is None:
                 continue
             val = safe_pos_float(
                 m_sub.group(2) or m_sub.group(3) or m_sub.group(5) or m_sub.group(6) or m_sub.group(8),
@@ -512,14 +555,13 @@ def parse_cited_taker_ratio(text: Any, *, horizon: Optional[str] = None) -> Opti
             if val is None or not (0.05 <= val <= 25.0):
                 continue
             sub_hz = m_sub.group(1) or m_sub.group(4) or m_sub.group(7) or sub_low
-            if _HORIZON_TOKEN_RE.search(sub_hz):
-                eff_sub_ctx = sub_hz
-            elif len(outer_hz_list) >= 2 and idx < len(outer_hz_list):
-                eff_sub_ctx = outer_hz_list[idx]
-            else:
-                eff_sub_ctx = outer_ctx
-            if target_hz_re is not None:
-                if target_hz_re.search(eff_sub_ctx):
+            eff_sub_ctx = (
+                sub_hz
+                if _HORIZON_TOKEN_RE.search(sub_hz)
+                else (outer_hz_list[idx] if len(outer_hz_list) >= 2 and idx < len(outer_hz_list) else outer_ctx)
+            )
+            if hz_norm:
+                if _matches_target(eff_sub_ctx):
                     return val
                 continue
             rank = next((r for pat, r in _TAKER_CTX_RANKS if pat.search(eff_sub_ctx)), 2)
@@ -533,68 +575,23 @@ def parse_cited_cvd_usd(text: Any, horizon: str = "1h") -> Optional[float]:
     if not (text := _coerce_cited_text(text)):
         return None
     hz_norm = str(horizon or "1h").lower()
-    hz_pat = {
-        "1h": r"(?:1h|1-hour)",
-        "15m": r"(?:15m|15-minute)",
-        "5m": r"(?:5m|5-minute)",
-        "4h": r"(?:4h|4-hour)",
-    }.get(hz_norm, re.escape(hz_norm))
-    hz_tok_re = re.compile(rf"^{hz_pat}$", re.IGNORECASE)
-    for m_multi in re.finditer(
-        r"((?:\b(?:5m|15m|1h|4h|5-minute|15-minute|1-hour|4-hour)\b\s*(?:/|,|\band\b)\s*)+\b(?:5m|15m|1h|4h|5-minute|15-minute|1-hour|4-hour)\b)\s+cvd[^()\n]{0,35}\(([^()\n]{1,90})\)",
-        text,
-        re.IGNORECASE,
-    ):
-        hz_list = re.findall(r"\b(?:5m|15m|1h|4h|5-minute|15-minute|1-hour|4-hour)\b", m_multi.group(1), re.IGNORECASE)
-        val_list = re.findall(r"([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\b", m_multi.group(2))
+    hz_tok_re, pattern, sub_pat = _CVD_HZ_BUNDLE_MAP.get(hz_norm) or _build_cvd_hz_bundle(re.escape(hz_norm))
+    for m_multi in _MULTI_HZ_CVD_RE.finditer(text):
+        hz_list = _CVD_HZ_ITEM_RE.findall(m_multi.group(1))
+        val_list = _CVD_VAL_ITEM_RE.findall(m_multi.group(2))
         for idx, hz_item in enumerate(hz_list):
             if hz_tok_re.match(hz_item) and idx < len(val_list):
-                s1, s2, num_s, unit_s = val_list[idx]
-                val = safe_pos_float(num_s, default=None)
-                if val is not None:
-                    sign = -1.0 if ("-" in (s1 or "") or "-" in (s2 or "")) else 1.0
-                    mult = {"k": 1e3, "m": 1e6, "b": 1e9}.get((unit_s or "m").lower(), 1.0)
-                    return sign * val * mult
-    pattern = re.compile(
-        rf"(?:(?<![/])\b(?:{hz_pat}[\s_]+cvd|cvd[\s_]+{hz_pat})\b[^.;,\n()]{{0,35}}?\(?\s*([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\b"
-        rf"|([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\s+{hz_pat}[\s_]+cvd\b)",
-        re.IGNORECASE,
-    )
-    m = pattern.search(text)
-    if m is not None:
-        if m.group(3) is not None:
-            s1, s2, num_s, unit_s = m.group(1) or "", m.group(2) or "", m.group(3), m.group(4)
-        else:
-            s1, s2, num_s, unit_s = m.group(5) or "", m.group(6) or "", m.group(7), m.group(8)
-    else:
-        s1 = s2 = num_s = unit_s = None
-        sub_pat = re.compile(
-            rf"(?:([+-]?)\s*\$\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\s*(?:(?:on|in|for|over)\s+)?\b{hz_pat}\b"
-            rf"|\b{hz_pat}\b[\s:=]+([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\b)",
-            re.IGNORECASE,
-        )
-        for m_cvd in re.finditer(r"\bcvd\b([^;\n]{0,90})", text, re.IGNORECASE):
-            clause = re.split(
-                r"(?<!\d)\.(?!\d)|\b(?:oi|open\s+interest|vol|volume|funding|liq|liquidations?)\b",
-                m_cvd.group(1),
-                maxsplit=1,
-                flags=re.IGNORECASE,
-            )[0]
-            m_sub = sub_pat.search(clause)
-            if m_sub is not None:
-                if m_sub.group(3) is not None:
-                    s1, s2, num_s, unit_s = m_sub.group(1) or "", m_sub.group(2) or "", m_sub.group(3), m_sub.group(4)
-                else:
-                    s1, s2, num_s, unit_s = m_sub.group(5) or "", m_sub.group(6) or "", m_sub.group(7), m_sub.group(8)
-                break
-        if num_s is None:
-            return None
-    val = safe_pos_float(num_s, default=None)
-    if val is None:
-        return None
-    sign = -1.0 if ("-" in (s1 or "") or "-" in (s2 or "")) else 1.0
-    mult = {"k": 1e3, "m": 1e6, "b": 1e9}.get((unit_s or "m").lower(), 1.0)
-    return sign * val * mult
+                if (scaled := _scale_signed_cvd(*val_list[idx])) is not None:
+                    return scaled
+    if (m := pattern.search(text)) is not None:
+        g_off = 0 if m.group(3) is not None else 4
+        return _scale_signed_cvd(m.group(g_off + 1), m.group(g_off + 2), m.group(g_off + 3), m.group(g_off + 4))
+    for m_cvd in _CVD_CLAUSE_RE.finditer(text):
+        clause = _CVD_SPLIT_STOP_RE.split(m_cvd.group(1), maxsplit=1)[0]
+        if (m_sub := sub_pat.search(clause)) is not None:
+            g_off = 0 if m_sub.group(3) is not None else 4
+            return _scale_signed_cvd(m_sub.group(g_off + 1), m_sub.group(g_off + 2), m_sub.group(g_off + 3), m_sub.group(g_off + 4))
+    return None
 
 
 def compute_dynamic_sentiment_interval(
