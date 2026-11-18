@@ -450,8 +450,9 @@ def enqueue(
     base_placement = _sanitize_place_kwargs(place_kwargs)
     placement = dict(base_placement)
     owner_clean = clean_scalar_str(placement.get("owner"))
+    owner_pfx = rc.resolve_owner_cid_prefix(owner_clean) if owner_clean else None
     prefix = clean_scalar_str(placement.get("prefix")) or (
-        f"{owner_clean}_OR" if owner_clean else None
+        f"{owner_pfx or owner_clean}_OR" if owner_clean else None
     )
     eff_kind = kind_clean or clean_scalar_str(placement.get("kind"))
     if not prefix and eff_kind:
@@ -464,6 +465,8 @@ def enqueue(
             prefix = "TA_OR"
         elif eff_kind.lower().startswith("assetguardian"):
             prefix = "AG_OR"
+    if not prefix and (mod_pfx := rc.resolve_owner_cid_prefix(clean_scalar_str(placement.get("module")))):
+        prefix = f"{mod_pfx}_OR"
     prefix = prefix or "OR"
     placement.setdefault("client_order_id", _client_order_id(record_id, 0, prefix=prefix))
     raw_ttl = ttl_sec if ttl_sec is not None else (placement.get("ttl_sec") if placement else None)

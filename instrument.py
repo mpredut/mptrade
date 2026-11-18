@@ -255,7 +255,15 @@ class Instrument:
             target_kwargs["client_order_id"] = call_kwargs["client_order_id"]
         elif "prefix" not in target_kwargs:
             try:
-                pname = order_id_context.get_process_name()
+                is_mo_rep = "monitor_order_replace" in str(target_kwargs.get("kind") or "")
+                mod_pfx = (
+                    None
+                    if is_mo_rep
+                    else order_id_context.resolve_owner_cid_prefix(
+                        target_kwargs.get("module") or target_kwargs.get("owner")
+                    )
+                )
+                pname = mod_pfx or order_id_context.get_process_name()
                 if pname and pname in order_id_context.KNOWN_BOT_PROCESS_CODES:
                     target_kwargs["prefix"] = f"{pname}_OR"
             except Exception:
