@@ -1418,6 +1418,15 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         t212_seeded_from_cache: set[str] = set()
         t212_pos_ts: Dict[str, float] = {}
         t212_cached_px: Dict[str, float] = {}
+
+        def _apply_yahoo_equity_quote_meta(sym_k: str, px_cur: float, quote_ts_ms: float, is_open: bool) -> None:
+            pt_map[sym_k]["quote_source"] = "yahoo_rth" if is_open else "yahoo_ext"
+            if quote_ts_ms > 1e11:
+                pt_map[sym_k]["quote_age_min"] = round(max(0.0, eff_now - (quote_ts_ms / 1000.0)) / 60.0, 1)
+            if (c_t212 := t212_cached_px.get(sym_k)) is not None and abs(px_cur - c_t212) / max(px_cur, c_t212) >= 0.0005:
+                pt_map[sym_k]["t212_close_px"] = c_t212
+            else:
+                pt_map[sym_k].pop("t212_close_px", None)
         t212_seed_tickers = [ticker for _, ticker in _iter_t212_state_files(workspace_dir)]
         for bkey, bval in cached_bals.items():
             if isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(bval, dict):
@@ -1537,12 +1546,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                             eq_open_now = bool(is_symbol_market_open(sym, eff_now))
                         except Exception:
                             eq_open_now = False
-                        pt_map[sym]["quote_source"] = "yahoo_rth" if eq_open_now else "yahoo_ext"
-                        pt_map[sym]["quote_age_min"] = round(max(0.0, eff_now - (last_24_pt[0] / 1000.0)) / 60.0, 1)
-                        if (c_t212 := t212_cached_px.get(sym)) is not None and abs(sym_px_cur - c_t212) / max(sym_px_cur, c_t212) >= 0.0005:
-                            pt_map[sym]["t212_close_px"] = c_t212
-                        else:
-                            pt_map[sym].pop("t212_close_px", None)
+                        _apply_yahoo_equity_quote_meta(sym, sym_px_cur, last_24_pt[0], eq_open_now)
                 if _prices_diverged(sym_px_cur, last_24_px, threshold=eq_div_thr):
                     matched_series_24h = []
                 elif last_24_px > 0 and abs(sym_px_cur - last_24_px) > 1e-9:
@@ -1723,13 +1727,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                                 pt_map[sym]["price"] = chart_px
                                 sym_px_cur = chart_px
                                 if is_eq_sym:
-                                    pt_map[sym]["quote_source"] = "yahoo_rth" if eq_rth_open else "yahoo_ext"
-                                    if raw_last_5d_ts > 1e11:
-                                        pt_map[sym]["quote_age_min"] = round(max(0.0, eff_now - (raw_last_5d_ts / 1000.0)) / 60.0, 1)
-                                    if (c_t212 := t212_cached_px.get(sym)) is not None and abs(sym_px_cur - c_t212) / max(sym_px_cur, c_t212) >= 0.0005:
-                                        pt_map[sym]["t212_close_px"] = c_t212
-                                    else:
-                                        pt_map[sym].pop("t212_close_px", None)
+                                    _apply_yahoo_equity_quote_meta(sym, sym_px_cur, raw_last_5d_ts, eq_rth_open)
                             pts_24h_to_save = list(pts_24h)
                             px_diff_from_chart = bool(
                                 pts_24h

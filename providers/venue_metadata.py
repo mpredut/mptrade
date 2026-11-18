@@ -404,18 +404,6 @@ class ProviderVenueMetadataMixin:
         """Return ``(ordered_depth_urls, hl_book_url)`` across registered venue providers."""
         canon_sym = canonical_symbol_key(symbol)
         log = logging.getLogger(__name__)
-        if symbol_quote_asset(canon_sym) == "EUR":
-            eur_urls: list[str] = []
-            for v_key in cls._VENUE_PROVIDER_SPECS:
-                try:
-                    prov_cls = cls.resolve_venue_provider_class(v_key)
-                    if prov_cls is not None and getattr(prov_cls, "_ASSET_SCOPE", "crypto") == "crypto":
-                        prim, _ = prov_cls.public_orderbook_depth_urls(canon_sym)
-                        eur_urls.extend(prim)
-                except Exception as exc:
-                    log.warning("Skipping %s EUR orderbook URL resolution for %s: %s", v_key, canon_sym, exc)
-            return tuple(eur_urls), ""
-
         crypto_venues: list[str] = []
         l2_info_venues: set[str] = set()
         primary_map: dict[str, tuple[str, ...]] = {}
@@ -434,6 +422,8 @@ class ProviderVenueMetadataMixin:
                 l2_info_venues.add(v_key)
             primary_map[v_key] = prim
             secondary_map[v_key] = sec
+        if symbol_quote_asset(canon_sym) == "EUR":
+            return tuple(u for v_k in crypto_venues for u in primary_map[v_k]), ""
 
         l2_info_urls = tuple(
             u for v_k in crypto_venues if v_k in l2_info_venues for u in primary_map.get(v_k, ())

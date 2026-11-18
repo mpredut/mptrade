@@ -786,7 +786,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             ak_str, av_f = str(ak).strip(), safe_float(av, 0.0) or 0.0
             if av_f < 1e-4:
                 continue
-            is_xstock_tok = ak_str.upper().endswith(("X.T", ".T"))
+            is_xstock_tok = resolve_kraken_tokenized_pair(ak_str)[1]
             if not is_xstock_tok:
                 try:
                     is_xstock_tok = bool(re.search(x_regex, ak_str, re.IGNORECASE))

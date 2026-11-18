@@ -11,8 +11,6 @@ import botcore
 from botcore import (
     FileLock,
     _parse_bool_flag,
-    clean_scalar_str,
-    clean_upper_scalar,
     exact_pos_int,
     extract_order_id,
     extract_timestamp_s,
@@ -31,32 +29,35 @@ from botcore import (
 from cachepaths import (
     VENUE_FEE_MAINTENANCE_STATE_FILENAME,
     cache_path,
+    clean_scalar_str,
+    clean_upper_scalar,
     has_equity_suffix,
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
-from instrument_registry import casefold_get, symbols_for
+from instrument_registry import casefold_get, resolve_kraken_tokenized_pair, symbols_for
 from state_io import read_json_dict, save_json_state
 
 from .base import MarketDataProvider
 from .execution_audit import ExecutionAudit, new_intent_id
 from .hyperliquid_provider import HyperliquidProvider, _call_hl_info_read
 from .kraken_provider import KrakenProvider
+from .order_ohlc_utils import extract_remaining_qty
 from .quantity import BinanceOrderRules
 from .strategy_executor import SubmissionRefused
 
 
 VENUE_FEE_MAINTAINER_REGISTRY: Dict[str, Type["VenueFeeMaintainerBase"]] = {}
 
-_REQUIRED_CFG_SPEC: tuple[tuple[str, str], ...] = (
-    ("FEE_MAINTENANCE_ENABLED", "bool"),
-    ("FEE_MAINTENANCE_INTERVAL_SEC", "int"),
-    ("BINANCE_BNB_RESERVE_MIN_USDC", "float"),
-    ("BINANCE_BNB_RESERVE_TARGET_USDC", "float"),
-    ("BINANCE_BNB_MIN_FREE_USDC", "float"),
-    ("BINANCE_BNB_ORDER_STALE_SEC", "int"),
-    ("KRAKEN_IDLE_USDC_ALERT_MIN", "float"),
-    ("KRAKEN_IDLE_USDC_ALERT_COOLDOWN_SEC", "int"),
+_REQUIRED_CFG_KEYS: tuple[str, ...] = (
+    "FEE_MAINTENANCE_ENABLED",
+    "FEE_MAINTENANCE_INTERVAL_SEC",
+    "BINANCE_BNB_RESERVE_MIN_USDC",
+    "BINANCE_BNB_RESERVE_TARGET_USDC",
+    "BINANCE_BNB_MIN_FREE_USDC",
+    "BINANCE_BNB_ORDER_STALE_SEC",
+    "KRAKEN_IDLE_USDC_ALERT_MIN",
+    "KRAKEN_IDLE_USDC_ALERT_COOLDOWN_SEC",
 )
 
 
@@ -65,35 +66,25 @@ def load_fee_maintenance_config(cfg_map: Optional[Dict[str, Any]] = None) -> Dic
     if cfg_map is None:
         load_env_stack()
         enabled = required_bool_env("FEE_MAINTENANCE_ENABLED")
-        interval_sec = require_pos_float(required_int_env("FEE_MAINTENANCE_INTERVAL_SEC"), "FEE_MAINTENANCE_INTERVAL_SEC")
-        reserve_min = require_pos_float(required_float_env("BINANCE_BNB_RESERVE_MIN_USDC"), "BINANCE_BNB_RESERVE_MIN_USDC")
-        reserve_target = require_pos_float(required_float_env("BINANCE_BNB_RESERVE_TARGET_USDC"), "BINANCE_BNB_RESERVE_TARGET_USDC")
-        min_free_usdc = require_pos_float(required_float_env("BINANCE_BNB_MIN_FREE_USDC"), "BINANCE_BNB_MIN_FREE_USDC")
-        stale_sec = require_pos_float(required_int_env("BINANCE_BNB_ORDER_STALE_SEC"), "BINANCE_BNB_ORDER_STALE_SEC")
-        kr_idle_min = require_pos_float(required_float_env("KRAKEN_IDLE_USDC_ALERT_MIN"), "KRAKEN_IDLE_USDC_ALERT_MIN")
-        kr_cooldown_sec = require_pos_float(required_int_env("KRAKEN_IDLE_USDC_ALERT_COOLDOWN_SEC"), "KRAKEN_IDLE_USDC_ALERT_COOLDOWN_SEC")
     else:
-        for key, _kind in _REQUIRED_CFG_SPEC:
+        for key in _REQUIRED_CFG_KEYS:
             if key not in cfg_map:
                 raise KeyError(f"Missing mandatory fee maintenance setting: {key}")
         raw_enabled = cfg_map["FEE_MAINTENANCE_ENABLED"]
-        if isinstance(raw_enabled, bool):
-            enabled = raw_enabled
+        s_en = raw_enabled if isinstance(raw_enabled, bool) else (clean_scalar_str(raw_enabled) or "").lower()
+        if s_en in {True, "1", "true", "yes", "on"}:
+            enabled = True
+        elif s_en in {False, "0", "false", "no", "off"}:
+            enabled = False
         else:
-            s_en = (clean_scalar_str(raw_enabled) or "").lower()
-            if s_en in {"1", "true", "yes", "on"}:
-                enabled = True
-            elif s_en in {"0", "false", "no", "off"}:
-                enabled = False
-            else:
-                raise ValueError(f"Invalid boolean for FEE_MAINTENANCE_ENABLED: {raw_enabled!r}")
-        interval_sec = require_pos_float(cfg_map["FEE_MAINTENANCE_INTERVAL_SEC"], "FEE_MAINTENANCE_INTERVAL_SEC")
-        reserve_min = require_pos_float(cfg_map["BINANCE_BNB_RESERVE_MIN_USDC"], "BINANCE_BNB_RESERVE_MIN_USDC")
-        reserve_target = require_pos_float(cfg_map["BINANCE_BNB_RESERVE_TARGET_USDC"], "BINANCE_BNB_RESERVE_TARGET_USDC")
-        min_free_usdc = require_pos_float(cfg_map["BINANCE_BNB_MIN_FREE_USDC"], "BINANCE_BNB_MIN_FREE_USDC")
-        stale_sec = require_pos_float(cfg_map["BINANCE_BNB_ORDER_STALE_SEC"], "BINANCE_BNB_ORDER_STALE_SEC")
-        kr_idle_min = require_pos_float(cfg_map["KRAKEN_IDLE_USDC_ALERT_MIN"], "KRAKEN_IDLE_USDC_ALERT_MIN")
-        kr_cooldown_sec = require_pos_float(cfg_map["KRAKEN_IDLE_USDC_ALERT_COOLDOWN_SEC"], "KRAKEN_IDLE_USDC_ALERT_COOLDOWN_SEC")
+            raise ValueError(f"Invalid boolean for FEE_MAINTENANCE_ENABLED: {raw_enabled!r}")
+    interval_sec = require_pos_float(required_int_env("FEE_MAINTENANCE_INTERVAL_SEC", cfg_map), "FEE_MAINTENANCE_INTERVAL_SEC")
+    reserve_min = require_pos_float(required_float_env("BINANCE_BNB_RESERVE_MIN_USDC", cfg_map), "BINANCE_BNB_RESERVE_MIN_USDC")
+    reserve_target = require_pos_float(required_float_env("BINANCE_BNB_RESERVE_TARGET_USDC", cfg_map), "BINANCE_BNB_RESERVE_TARGET_USDC")
+    min_free_usdc = require_pos_float(required_float_env("BINANCE_BNB_MIN_FREE_USDC", cfg_map), "BINANCE_BNB_MIN_FREE_USDC")
+    stale_sec = require_pos_float(required_int_env("BINANCE_BNB_ORDER_STALE_SEC", cfg_map), "BINANCE_BNB_ORDER_STALE_SEC")
+    kr_idle_min = require_pos_float(required_float_env("KRAKEN_IDLE_USDC_ALERT_MIN", cfg_map), "KRAKEN_IDLE_USDC_ALERT_MIN")
+    kr_cooldown_sec = require_pos_float(required_int_env("KRAKEN_IDLE_USDC_ALERT_COOLDOWN_SEC", cfg_map), "KRAKEN_IDLE_USDC_ALERT_COOLDOWN_SEC")
 
     if reserve_min >= reserve_target:
         raise ValueError(
@@ -151,6 +142,16 @@ class VenueFeeMaintainerBase(VenueFeeMaintainerInterface, ABC):
         v_key = normalize_venue_name(getattr(cls, "venue", ""))
         if v_key and not getattr(cls, "__abstractmethods__", None):
             VENUE_FEE_MAINTAINER_REGISTRY[v_key] = cls
+
+    @classmethod
+    def _default_venue_fee_tuple(cls) -> tuple[str, float, float]:
+        tier, m_bps, t_bps, *_ = MarketDataProvider.resolve_venue_default_fee_and_precision(cls.venue, 0.0)
+        return str(tier), safe_nonneg_float(m_bps, default=0.0) or 0.0, safe_nonneg_float(t_bps, default=0.0) or 0.0
+
+    @classmethod
+    def static_symbol_fee_override(cls, symbol: str) -> Optional[Dict[str, Any]]:
+        del symbol
+        return None
 
     @staticmethod
     def build_fee_spec(fee_tier: str, maker_fee_bps: float, taker_fee_bps: float) -> Dict[str, Any]:
@@ -229,11 +230,9 @@ class BinanceFeeMaintainer(VenueFeeMaintainerBase):
             raise RuntimeError("BNBUSDC passive bid price unavailable from Binance")
         return bid_px
 
-    @staticmethod
-    def _extract_base_fee_bps(cli: Any) -> tuple[float, float]:
-        default_tier = MarketDataProvider.resolve_venue_default_fee_and_precision("binance", 0.0)
-        maker_bps = safe_nonneg_float(default_tier[1], default=10.0) or 10.0
-        taker_bps = safe_nonneg_float(default_tier[2], default=10.0) or 10.0
+    @classmethod
+    def _extract_base_fee_bps(cls, cli: Any) -> tuple[float, float]:
+        _, maker_bps, taker_bps = cls._default_venue_fee_tuple()
         tf_fn = getattr(cli, "get_trade_fee", None)
         if not callable(tf_fn):
             return maker_bps, taker_bps
@@ -317,9 +316,7 @@ class BinanceFeeMaintainer(VenueFeeMaintainerBase):
             coid = clean_scalar_str(oo.get("clientOrderId")) or ""
             if not coid.startswith(self.CLIENT_ORDER_PREFIX) or normalize_side(oo.get("side")) != "BUY":
                 continue
-            orig_q = safe_nonneg_float(oo.get("origQty"), default=0.0) or 0.0
-            exec_q = safe_nonneg_float(oo.get("executedQty"), default=0.0) or 0.0
-            rem_q = max(0.0, orig_q - exec_q)
+            rem_q = extract_remaining_qty(oo)
             if rem_q <= 0.0:
                 continue
             ord_ts = extract_timestamp_s(oo, default=None)
@@ -499,6 +496,12 @@ class KrakenFeeMaintainer(VenueFeeMaintainerBase):
     def __init__(self, *, provider: Optional[KrakenProvider] = None) -> None:
         self._provider = provider
 
+    @classmethod
+    def static_symbol_fee_override(cls, symbol: str) -> Optional[Dict[str, Any]]:
+        if symbol and resolve_kraken_tokenized_pair(symbol)[1]:
+            return cls.build_fee_spec("XSTOCK_ZERO_FEE", 0.0, 0.0)
+        return None
+
     def maintain(
         self,
         now_ts: float,
@@ -509,10 +512,7 @@ class KrakenFeeMaintainer(VenueFeeMaintainerBase):
     ) -> Dict[str, Any]:
         kp = self._provider if self._provider is not None else KrakenProvider()
         events: List[Dict[str, Any]] = []
-        default_tier = MarketDataProvider.resolve_venue_default_fee_and_precision("kraken", 0.0)
-        maker_bps = safe_nonneg_float(default_tier[1], default=16.0) or 16.0
-        taker_bps = safe_nonneg_float(default_tier[2], default=26.0) or 26.0
-        fee_tier = str(default_tier[0])
+        fee_tier, maker_bps, taker_bps = self._default_venue_fee_tuple()
         volume_30d_usd: Optional[float] = None
         by_symbol: Dict[str, Dict[str, Any]] = {}
 
@@ -520,8 +520,7 @@ class KrakenFeeMaintainer(VenueFeeMaintainerBase):
             s
             for raw_s in symbols_for("kraken")
             if (s := clean_upper_scalar(raw_s)) is not None
-            and not s.endswith("X.T")
-            and not str(raw_s).strip().endswith("x.T")
+            and not resolve_kraken_tokenized_pair(raw_s)[1]
             and not has_equity_suffix(s)
         ]
         cli = kp._client()
@@ -606,10 +605,7 @@ class HyperliquidFeeMaintainer(VenueFeeMaintainerBase):
     ) -> Dict[str, Any]:
         del prev_venue_state, cfg, dry_run
         hp = self._provider if self._provider is not None else HyperliquidProvider()
-        default_tier = MarketDataProvider.resolve_venue_default_fee_and_precision("hyperliquid", 0.0)
-        maker_bps = safe_nonneg_float(default_tier[1], default=4.0) or 4.0
-        taker_bps = safe_nonneg_float(default_tier[2], default=7.0) or 7.0
-        fee_tier = str(default_tier[0])
+        fee_tier, maker_bps, taker_bps = self._default_venue_fee_tuple()
         ref_disc = 0.0
         stake_disc = 0.0
 
@@ -653,10 +649,10 @@ class T212FeeMaintainer(VenueFeeMaintainerBase):
         dry_run: bool = False,
     ) -> Dict[str, Any]:
         del prev_venue_state, cfg, dry_run
-        default_tier = MarketDataProvider.resolve_venue_default_fee_and_precision("t212", 0.0)
+        fee_tier, maker_bps, taker_bps = self._default_venue_fee_tuple()
         return {
             "ts": round(now_ts, 3),
-            "fee_spec": self.build_fee_spec(str(default_tier[0]), default_tier[1], default_tier[2]),
+            "fee_spec": self.build_fee_spec(fee_tier, maker_bps, taker_bps),
             "events": [],
         }
 
@@ -674,6 +670,9 @@ def read_persisted_venue_fee_spec(
     v_norm = normalize_venue_name(venue)
     if not v_norm:
         return {}
+    m_cls = VENUE_FEE_MAINTAINER_REGISTRY.get(v_norm)
+    if m_cls is not None and (sym_override := m_cls.static_symbol_fee_override(symbol)):
+        return sym_override
     state_path = resolve_fee_maintenance_state_path(cache_dir)
     payload = read_json_dict(state_path, default={})
     if not isinstance(payload, dict) or not payload:

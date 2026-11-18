@@ -269,6 +269,12 @@ def test_4h_schedule_gate_and_tca_evaluator_cache_dir_override(tmp_path, monkeyp
         live_kr = resolve_venue_fee_and_limits("kraken", "HYPEUSD", None, price=40.0, cache_dir=str(tmp_path))
         assert (live_kr["fee_tier"], live_kr["maker_fee_bps"], live_kr["taker_fee_bps"]) == ("PRO_LIVE", 22.0, 38.0)
 
+        xstock_kr = resolve_venue_fee_and_limits("kraken", "SPCXxUSD", None, price=150.0, cache_dir=str(tmp_path))
+        assert (xstock_kr["fee_tier"], xstock_kr["maker_fee_bps"], xstock_kr["taker_fee_bps"]) == ("XSTOCK_ZERO_FEE", 0.0, 0.0)
+    kr_pair_arg = kr_cli._private.call_args[0][1]["pair"]
+    assert "SPCXXUSD" not in kr_pair_arg and "ANTXUSD" not in kr_pair_arg
+    assert "HYPEUSD" in kr_pair_arg
+
 
 def test_binance_trailing_stop_rebuy_uses_passive_maker_while_sell_keeps_market(tmp_path):
     calls = []
