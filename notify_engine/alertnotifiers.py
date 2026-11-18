@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import re
 import sys
@@ -9,6 +10,16 @@ sys.modules.setdefault("alertnotifiers", sys.modules[__name__])
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from cachepaths import (
+    canonical_base_asset,
+    clean_non_bool_str,
+    clean_symbol_key,
+    has_equity_suffix,
+    is_equity_venue_or_suffix,
+    normalize_venue_name,
+    split_symbol_assets,
+    venue_default_quote_asset,
+)
 from state_io import encode_json_payload, generation_file_lock, read_json_dict, save_json_state
 from typing import Any, Optional
 
@@ -17,6 +28,7 @@ from botcore import (
     FileLock,
     _parse_bool_flag,
     bool_env,
+    clean_order_id_str,
     clean_scalar_str,
     exact_pos_int,
     float_env,
@@ -75,14 +87,16 @@ _ERROR_AND_OPS_SOURCES = (
     "post_stop_guard", "verify", "deadman", "mailer", "orchestrator",
 )
 _TRADE_MARKERS = (
-    "BUY", "SELL", "FILLED", "TREND_ENTRY", "ADOPT", "EXECUTION", "OPEN ", "CLOSE ", "📝", "🎉",
+    "BUY", "SELL", "FILLED", "PLACED", "TREND_ENTRY", "ADOPT", "EXECUTION", "OPEN ", "CLOSE ", "📝", "🎉",
 )
 _FAKE_ALERT_MARKERS = (
     "ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ",
 )
 _KNOWN_OWNERS = (
     "MANUAL", "TRADEALL", "MONITORORDER", "RTRADE", "MONITORTRADES", "ORDER_RETRY",
-    "ASSETGUARDIAN", "AI_EXECUTOR", "SPOT_DCA", "TRAILING_STOP", "ORDER_MANAGER", "HL_BOT",
+    "ASSETGUARDIAN", "AI_EXECUTOR", "AUTO_CRYPTOTRADE_EXECUTOR", "AUTO_SHARETRADE_EXECUTOR",
+    "AUTO_TRADE_EXECUTOR", "SPOT_DCA", "TRAILING_STOP", "ORDER_MANAGER", "HL_BOT",
+    "KRAKEN_BOT", "T212_BOT", "XSTOCK_WATCH",
 )
 _OWNER_PAT = "|".join(_KNOWN_OWNERS)
 _VENUE_PAT = "BINANCE|KRAKEN|HYPERLIQUID|HL|T212|TRADING212"
@@ -120,7 +134,7 @@ def format_owner_tags(
     """Return ``(owner_tag, owner_body)`` as ``(' [owner]', ' (owner)')`` when valid, else ``('', '')``."""
     if owner is None or isinstance(owner, bool):
         return "", ""
-    s = str(owner).strip()
+    s = str(owner).strip().strip("[]()").strip()
     if not s or s.lower() in ignore or s.lower().startswith("alt:"):
         return "", ""
     return f" [{s}]", f" ({s})"
@@ -130,12 +144,17 @@ def format_trade_venue_tag(
     venue: Any = "binance",
     owner: Any = None,
     *,
+    symbol: Any = None,
     ignore: tuple[str, ...] = ("unspecified", "unknown", "order_retry"),
 ) -> str:
     """Return ``'[venue:owner]'`` when owner is valid, else ``'[venue]'``."""
-    v = "" if isinstance(venue, bool) or venue is None else str(venue).strip().lower()
+    raw_v = "" if isinstance(venue, bool) or venue is None else str(venue).strip()
+    v = normalize_venue_name(raw_v, default="") or raw_v.lower()
     _, owner_body = format_owner_tags(owner, ignore=ignore)
     o = owner_body.strip(" ()").lower() if owner_body else ""
+    if o in ("ai_executor", "auto_trade_executor"):
+        is_eq = is_equity_venue_or_suffix(symbol, v) or has_equity_suffix(symbol, include_compact=True)
+        o = "auto_sharetrade_executor" if is_eq else "auto_cryptotrade_executor"
     if v and o:
         return f"[{v}:{o}]"
     if v:
@@ -150,8 +169,8 @@ def format_trade_notification(
     price_str: Any,
     qty: Any,
     val: Any,
-    quote: Any,
-    order_id: Any,
+    quote: Any = None,
+    order_id: Any = None,
     *,
     venue: Any = "binance",
     owner: Any = None,
@@ -159,24 +178,91 @@ def format_trade_notification(
     cum_qty: Optional[float] = None,
     cum_val: Optional[float] = None,
     cum_fills: int = 0,
+    detail: Any = None,
+    thesis: Any = None,
+    prefix: Any = None,
 ) -> tuple[str, str]:
-    """Build canonical ``(title, body)`` for TRADES notifications:
-    Title: ``BUY/SELL <SYMBOL>@<PRICE> [venue:module]``
-    Body:  ``FILLED/PLACED ~<VAL> <QUOTE> (qty: <QTY>, order: <ID>)``
+    """Build canonical ``(title, body)`` for order/trade notifications:
+    Title: ``<STATUS> <SIDE> <BASE>@<PRICE> ~<TOTAL> $ ~ [venue:module]``
+    Body:  ``~<VAL> <QUOTE> [| detail] (qty: <QTY>, order: <ID>)``
     """
+    st_s = str(status or "FILLED").strip().upper() or "FILLED"
     side_s = str(side or "").strip().upper() or "ORDER"
-    sym_s = str(symbol or "").strip().upper()
-    vtag = format_trade_venue_tag(venue, owner)
-    title = f"{side_s} {sym_s}@{price_str} {vtag}".strip()
-    st_s = str(status or "FILLED").strip().upper()
+    raw_sym = clean_scalar_str(clean_non_bool_str(symbol)) or "TRADE"
+    sym_parts = split_symbol_assets(raw_sym)
+    if clean_symbol_key(raw_sym) == "USDCUSDT":
+        sym_short = "USDCUSDT"
+    else:
+        sym_short = canonical_base_asset(raw_sym) or (sym_parts[0] if sym_parts else raw_sym.upper())
+
+    v_norm = normalize_venue_name(venue, default="")
+    raw_quote = clean_scalar_str(clean_non_bool_str(quote))
+    if raw_quote:
+        q_ccy = raw_quote.upper()
+    elif sym_parts and sym_parts[1]:
+        q_ccy = sym_parts[1].upper()
+    else:
+        q_ccy = venue_default_quote_asset(v_norm)
+
+    if isinstance(price_str, (int, float)) and not isinstance(price_str, bool):
+        px_f_in = safe_pos_float(price_str, default=0.0) or 0.0
+        px_clean = format_notify_price(px_f_in, comma=False) if px_f_in > 0.0 else ""
+    else:
+        px_raw = (clean_scalar_str(clean_non_bool_str(price_str)) or "").lstrip("$").strip()
+        px_num_chk = safe_pos_float(px_raw.replace(",", "").lstrip("~"), default=None)
+        px_clean = "" if (not px_raw or (px_num_chk is None and px_raw in ("0", "0.0", "0.00"))) else px_raw
+
     qf = safe_pos_float(qty, default=0.0) or 0.0
-    vf = safe_pos_float(val, default=0.0) or 0.0
-    q_ccy = str(quote or "USDC").strip().upper() or "USDC"
-    fills_part = f", {fills_count} fills" if fills_count > 1 else ""
-    cum_sfx = ""
+    vf = safe_pos_float(val, default=None)
+    if vf is None:
+        px_num = safe_pos_float(px_clean.replace(",", "").lstrip("~"), default=0.0) or 0.0
+        vf = px_num * qf
+
+    ccy_sym = "€" if q_ccy == "EUR" else "$"
+    if vf >= 10.0:
+        tot_subj = f"~{math.floor(vf + 0.5)} {ccy_sym} ~"
+    elif vf > 0.0:
+        tot_subj = f"~{vf:.2f} {ccy_sym} ~"
+    else:
+        tot_subj = ""
+
+    sym_px = f"{sym_short}@{px_clean}" if px_clean else sym_short
+    vtag = format_trade_venue_tag(venue, owner, symbol=raw_sym)
+    pfx_s = (clean_scalar_str(clean_non_bool_str(prefix)) or "").strip()
+    title_parts = [p for p in (pfx_s, st_s, side_s, sym_px, tot_subj, vtag) if p]
+    title = " ".join(title_parts)
+
+    detail_s = clean_scalar_str(clean_non_bool_str(detail)) or ""
+    head_parts: list[str] = []
+    if vf > 0.0 or not detail_s:
+        head_parts.append(f"~{vf:.2f} {q_ccy}")
+    if fills_count > 1:
+        head_parts.append(f"{fills_count} fills")
+    head_line = " · ".join(head_parts)
     if cum_fills > fills_count and cum_qty is not None and cum_val is not None:
-        cum_sfx = f" [total: ~{cum_val:.2f} {q_ccy}, qty: {cum_qty:.4f}, {cum_fills} fills]"
-    body = f"{st_s} ~{vf:.2f} {q_ccy} (qty: {qf:.4f}, order: {order_id}{fills_part}){cum_sfx}"
+        head_line = f"{head_line} [total: ~{cum_val:.2f} {q_ccy}, {cum_fills} fills]".strip()
+    if detail_s:
+        head_line = f"{head_line} · {detail_s}" if head_line else detail_s
+
+    oid_clean = clean_order_id_str(order_id)
+    has_oid = bool(oid_clean and oid_clean.upper() not in ("N/A", "NONE", "UNKNOWN"))
+    tail_items: list[str] = []
+    if qf > 0.0 or (has_oid and st_s in ("PLACED", "FILLED", "EXPIRED")):
+        tail_items.append(f"qty: {format_notify_qty(qf)}")
+    if cum_fills > fills_count and cum_qty is not None:
+        tail_items.append(f"total_qty: {format_notify_qty(cum_qty)}")
+    if has_oid:
+        tail_items.append(f"order: {oid_clean}")
+    tail_str = f"({', '.join(tail_items)})" if tail_items else ""
+
+    thesis_s = clean_scalar_str(clean_non_bool_str(thesis))
+    if thesis_s:
+        lines = [head_line, f"Thesis: {thesis_s}"]
+        if tail_str:
+            lines.append(tail_str)
+        body = "\n".join(ln for ln in lines if ln)
+    else:
+        body = f"{head_line} {tail_str}".strip() if tail_str else head_line
     return title, body
 
 
@@ -284,7 +370,7 @@ _REDUNDANT_BULK_LINE_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _LAST_LOGS_RE = re.compile(r"(?is)\n*\s*last logs:.*")
-_AUTO_TOPIC_TAG_RE = re.compile(r"\[auto_[a-z0-9_]+")
+_AUTO_TOPIC_TAG_RE = re.compile(r"\[(?:[a-z0-9_]+:)?auto_[a-z0-9_]+", re.IGNORECASE)
 _BRACKET_GROUP_RE = re.compile(r"\[([^\[\]]+)\]")
 _BODY_VENUE_RE = re.compile(r"\bVenue:\s*([A-Za-z0-9_]+)", re.IGNORECASE)
 _LEADING_BRACKET_RE = re.compile(r"^\[[^\]]+\]\s*")
@@ -292,12 +378,14 @@ _SIMILARITY_SUBS = (
     (re.compile(r"^\d{4}[-/]\d{2}[-/]\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?Z?\s*"), ""),
     (re.compile(r"^\d{2}:\d{2}:\d{2}\s*"), ""),
     (re.compile(r"0x[0-9a-fA-F]+"), "<HEX>"),
-    (re.compile(r"[+-]?[\$€~]?\d+(?:,\d{3})*(?:\.\d+)?(?:%|ms|s|m|h|d|x|bps)?"), "<N>"),
+    (re.compile(r"~\d+(?:,\d{3})*(?:\.\d+)?\s*[\$€]\s*~"), "<N>"),
+    (re.compile(r"[+-]?[\$€~]?\d+(?:,\d{3})*(?:\.\d+)?(?:%|ms|s|m|h|d|x|bps|\$|€)?"), "<N>"),
     (re.compile(r"\s+"), " "),
 )
 _IDENTITY_NAME_SUBS = (
     (re.compile(r"[+-]?\d+(?:\.\d+)?%"), "<PCT>"),
     (re.compile(r"@\s*~?\$?\d+(?:\.\d+)?"), "@ <PX>"),
+    (re.compile(r"~\d+(?:\.\d+)?\s*[\$€]\s*~?"), "<VAL>"),
     (re.compile(r"\(\d+(?:\.\d+)?s\)"), "(<DUR>)"),
 )
 
@@ -1403,22 +1491,32 @@ def dispatch_order_event_notification(
         notional_f = px_f * qty_f
     side_s = str(side or "").strip().upper() or "ORDER"
     ord_type_s = str(order_type or "MARKET").strip().upper()
-    venue_s = str(venue or source or "venue").strip()
-    qty_s = format_notify_qty(qty_f)
-    px_s = format_notify_price(px_f, comma=True)
+    venue_s = str(venue or source or "binance").strip()
     tag_s = str(trade_tag).strip() if trade_tag and not isinstance(trade_tag, bool) else ""
-    if tag_s:
-        tag_prefix = f"{tag_s} "
-        owner_tag, owner_body = "", ""
+    eff_owner = tag_s or owner_norm or None
+    verb_raw = str(default_verb or "FILLED").strip().upper()
+    if verb_raw == "EXECUTED":
+        status_verb = "FILLED"
+    elif verb_raw.startswith("PLACED"):
+        status_verb = "PLACED"
     else:
-        tag_prefix = ""
-        owner_tag, owner_body = format_owner_tags(owner_norm)
-    thesis_sfx = f"\nThesis: {thesis}" if thesis is not None and not isinstance(thesis, bool) else ""
-    eff_title = title or f"{default_icon} {tag_prefix}{default_verb} {side_s} {sym_s} ${notional_f:.0f}{owner_tag}"
-    eff_body = body or (
-        f"Venue: {venue_s} · Qty: {qty_s} @ ${px_s} ({ord_type_s} · ${notional_f:,.0f})\n"
-        f"Order ID: {order_id}{owner_body}{thesis_sfx}"
+        status_verb = verb_raw or "FILLED"
+    gen_title, gen_body = format_trade_notification(
+        status_verb,
+        side_s,
+        sym_s,
+        px_f,
+        qty_f,
+        notional_f,
+        None,
+        order_id,
+        venue=venue_s,
+        owner=eff_owner,
+        detail=ord_type_s,
+        thesis=thesis if (thesis is not None and not isinstance(thesis, bool)) else None,
     )
+    eff_title = title or gen_title
+    eff_body = body or gen_body
     if callable(notify_fn):
         if include_price:
             notify_fn(title=eff_title, body=eff_body, symbol=sym_s, price=px_f)

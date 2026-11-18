@@ -83,18 +83,26 @@ def record_shadow_intent_observation(
     ord_lbl = f"{decision} LIMIT" if is_limit else decision
     qty_s = format_notify_qty(target_qty)
     px_log_s = format_notify_price(price, comma=False)
-    px_body_s = format_notify_price(price, comma=True)
     if log:
         log.info(
             "[LLM TRADER · SHADOW] Would execute %s %s (qty=%s, price=$%s, notional=$%.2f) on %s. Thesis: %s",
             ord_lbl, inst.symbol, qty_s, px_log_s, effective_usd, inst.provider_name, thesis,
         )
-    title = f"🟢 [{trade_tag.strip('[]')} · SHADOW] {ord_lbl} {inst.symbol} ${effective_usd:.0f}"
-    body = (
-        f"Venue: {inst.provider_name} · Qty: {qty_s} @ ${px_body_s} ({'LIMIT' if is_limit else 'MARKET'})\n"
-        f"Confidence: {confidence:.2f} · Notional: ${effective_usd:.2f}\n"
-        f"Operational Preflight: {'PASSED' if guard_allowed else guard_reason}\n"
-        f"Thesis: {thesis}"
+    ord_kind = "LIMIT" if is_limit else "MARKET"
+    preflight_str = "PASSED" if guard_allowed else guard_reason
+    title, body = _alertnotifiers.format_trade_notification(
+        "SHADOW",
+        decision,
+        inst.symbol,
+        px_log_s,
+        target_qty,
+        effective_usd,
+        None,
+        None,
+        venue=inst.provider_name,
+        owner=trade_tag,
+        detail=f"({ord_kind}) · conf {confidence:.2f} · Preflight: {preflight_str}",
+        thesis=thesis,
     )
     if callable(dispatch_notify_fn):
         dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)
@@ -139,18 +147,27 @@ def execute_enforce_intent_order(
     guard_allowed = _parse_bool_flag(guard_allowed, False)
     is_limit = _parse_bool_flag(is_limit, False)
     ord_lbl = f"{decision} LIMIT" if is_limit else decision
-    px_body_s = format_notify_price(price, comma=True)
+    ord_kind = "LIMIT" if is_limit else "MARKET"
+    px_log_s = format_notify_price(price, comma=False)
     if not guard_allowed:
         if log:
             log.warning(
                 "[LLM TRADER · ENFORCE] Operational guard blocked %s %s: %s",
                 ord_lbl, inst.symbol, guard_reason,
             )
-        title = f"🛡 {trade_tag} BLOCKED {ord_lbl} {inst.symbol}"
-        body = (
-            f"Venue: {inst.provider_name} · Price: ${px_body_s} · Notional: ${effective_usd:.0f}\n"
-            f"Reason: {guard_reason}\n"
-            f"Thesis: {thesis}"
+        title, body = _alertnotifiers.format_trade_notification(
+            "BLOCKED",
+            decision,
+            inst.symbol,
+            px_log_s,
+            target_qty,
+            effective_usd,
+            None,
+            None,
+            venue=inst.provider_name,
+            owner=trade_tag,
+            detail=f"{ord_kind} · Reason: {guard_reason}",
+            thesis=thesis,
         )
         if callable(dispatch_notify_fn):
             dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)
@@ -263,15 +280,23 @@ def execute_enforce_intent_order(
 
             if callable(dispatch_notify_fn):
                 try:
+                    venue_st = (
+                        str(order_res.get("status") or "").strip().upper()
+                        if isinstance(order_res, dict)
+                        else ""
+                    )
+                    is_resting = (venue_st != "FILLED") and (
+                        is_limit or venue_st in ("NEW", "OPEN", "RESTING", "ACCEPTED", "PENDING", "WORKING")
+                    )
                     _alertnotifiers.dispatch_order_event_notification(
                         inst.symbol,
                         decision,
                         order_id_str,
                         price,
                         target_qty,
-                        default_verb="PLACED LIMIT" if is_limit else "EXECUTED",
-                        default_icon="📝" if is_limit else "🎉",
-                        order_type="LIMIT" if is_limit else "MARKET",
+                        default_verb="PLACED" if is_resting else "FILLED",
+                        default_icon="📝" if is_resting else "🎉",
+                        order_type=ord_kind,
                         venue=inst.provider_name,
                         owner="ai_executor",
                         source=None,
@@ -292,11 +317,19 @@ def execute_enforce_intent_order(
                     "[LLM TRADER · ENFORCE] Order placement refused or failed for %s %s: %s",
                     decision, inst.symbol, refusal_reason,
                 )
-            title = f"⚠️ {trade_tag} REFUSED {decision} {inst.symbol}"
-            body = (
-                f"Venue: {inst.provider_name} · Price: ${px_body_s} · Notional: ${effective_usd:.0f}\n"
-                f"Reason: {refusal_reason}\n"
-                f"Thesis: {thesis}"
+            title, body = _alertnotifiers.format_trade_notification(
+                "REFUSED",
+                decision,
+                inst.symbol,
+                px_log_s,
+                target_qty,
+                effective_usd,
+                None,
+                None,
+                venue=inst.provider_name,
+                owner=trade_tag,
+                detail=f"{ord_kind} · Reason: {refusal_reason}",
+                thesis=thesis,
             )
             if callable(dispatch_notify_fn):
                 dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)

@@ -439,7 +439,11 @@ class NotificationServer:
             else:
                 full_title = cleaned_title
         else:
-            if bot_name and not cleaned_title.startswith(f"[{bot_name}]"):
+            if (
+                bot_name
+                and not cleaned_title.startswith(f"[{bot_name}]")
+                and not _TRAILING_VENUE_TAG_RE.search(cleaned_title)
+            ):
                 full_title = f"[{bot_name}] {cleaned_title}"
             else:
                 full_title = cleaned_title

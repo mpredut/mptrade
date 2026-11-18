@@ -1625,7 +1625,8 @@ class TestBatch6IntelligenceAndRoutingFixes:
         res = gw.process_intent(intent, instruments_map={"SOLUSD": fake_inst})
         assert res["status"] == "EXECUTED"
         assert len(notified) == 1
-        assert "Order ID: OQCLML-BW3P3-BUCMWZ" in notified[0][1]
+        assert notified[0][0] == "PLACED BUY SOL@100.00 ~200 $ ~ [kraken:auto_cryptotrade_executor]"
+        assert "order: OQCLML-BW3P3-BUCMWZ" in notified[0][1]
 
         # Verify Instrument.place resolves regime_context for SELL in dynamic mode and scales SELL under GT2 medium_trend_action='scale'
 

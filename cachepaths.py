@@ -606,6 +606,7 @@ _VENUE_ALIASES: dict[str, str] = {
 EQUITY_VENUES: frozenset[str] = frozenset({"t212"})
 PRIMARY_STREAM_VENUES: frozenset[str] = frozenset({"binance"})
 CYCLE_STATE_VENUES: frozenset[str] = frozenset({"kraken", "hyperliquid", "t212"})
+USDC_DEFAULT_VENUES: frozenset[str] = frozenset({"binance", "hyperliquid"})
 _USD_FAMILY_QUOTES: tuple[str, ...] = ("USDC", "USDT", "USD", "FDUSD", "TUSD", "BUSD")
 _USD_STABLECOIN_QUOTES: tuple[str, ...] = ("USDC", "USDT", "FDUSD", "TUSD", "BUSD")
 
@@ -850,6 +851,11 @@ def is_primary_stream_venue(venue: object, *, default_primary: bool = False) -> 
 def uses_cycle_state_files(venue: object) -> bool:
     """Return True if ``venue`` persists per-symbol ``.state_*.json`` DCA cycle state files."""
     return normalize_venue_name(venue) in CYCLE_STATE_VENUES
+
+
+def venue_default_quote_asset(venue: object) -> str:
+    """Return the default settlement quote asset ('USDC' or 'USD') for ``venue`` when unquoted."""
+    return "USDC" if normalize_venue_name(venue) in USDC_DEFAULT_VENUES else "USD"
 
 
 def canonical_base_asset(symbol: object) -> str:

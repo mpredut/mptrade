@@ -345,8 +345,9 @@ def test_212trading_order_manager_partial_fill_on_cancelled_or_expired_order(tmp
         }
     )
     om.poll_order_until_terminal(unfilled_cli, "exp-0", "NVDA_US_EQ")
-    assert notified[-1]["title"].startswith("✗ Order EXPIRED")
-    assert "q5" not in notified[-1]["body"]
+    assert notified[-1]["title"] == "EXPIRED BUY NVDA@150.00 ~750 $ ~ [t212:order_manager]"
+    assert "FILLED" not in notified[-1]["title"]
+    assert notified[-1]["body"] == "~750.00 USD (qty: 5, order: exp-0)"
 
     # 2. Partially filled CANCELLED order persists actual filled_qty and notifies partial fill
     marker_file = tmp_path / "marker_NVDA_US_EQ.json"
@@ -376,8 +377,8 @@ def test_212trading_order_manager_partial_fill_on_cancelled_or_expired_order(tmp
         part_cli, "NVDA_US_EQ", 5.0, 150.0, "DAY", dry_run=False, write_marker=True
     )
     assert res is False
-    assert "partial fill" in notified[-1]["title"]
-    assert "q1.25 @ 149.0" in notified[-1]["body"]
+    assert notified[-1]["title"] == "CANCELED BUY NVDA@149.00 ~186 $ ~ [t212:order_manager]"
+    assert notified[-1]["body"] == "~186.25 USD · partial fill (qty: 1.25, order: canc-part-1)"
     saved = json.loads(marker_file.read_text(encoding="utf-8"))
     assert saved["lifecycle"] == "canceled"
     assert saved["filled_qty"] == pytest.approx(1.25)
@@ -396,5 +397,5 @@ def test_212trading_order_manager_partial_fill_on_cancelled_or_expired_order(tmp
     )
     info_sell = om.poll_order_until_terminal(sell_cli, "exp-sell-part-1", "NVDA_US_EQ")
     assert isinstance(info_sell, dict)
-    assert "partial fill" in notified[-1]["title"]
-    assert "q1.5 @ 155.0" in notified[-1]["body"]
+    assert notified[-1]["title"] == "EXPIRED SELL NVDA@155.00 ~233 $ ~ [t212:order_manager]"
+    assert notified[-1]["body"] == "~232.50 USD · partial fill (qty: 1.5, order: exp-sell-part-1)"

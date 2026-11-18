@@ -25,6 +25,7 @@ from botcore import (  # noqa: E402
     clean_upper_scalar,
     ensure_local_module_priority,
     extract_order_id,
+    extract_order_side,
     first_pos_float,
     log,
     optional_env,
@@ -39,6 +40,7 @@ ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_broker_li
 
 from cachepaths import canonical_base_asset, same_canonical_base_asset as _t212_tickers_match  # noqa: E402
 from ipo_common import notify  # noqa: E402
+from notify_engine.alertnotifiers import format_trade_notification  # noqa: E402
 from market_data import get_price_usd, get_usd_ron  # noqa: E402
 from state_io import encode_json_payload, load_json_state, save_json_state  # noqa: E402
 from t212_broker_lifecycle import t212_active_order_matches, t212_portfolio_position  # noqa: E402
@@ -147,25 +149,38 @@ def poll_order_until_terminal(client: T212Client, order_id, ticker: str,
     if st not in T212_ORDER_TERMINAL:
         return info
     fq, fp = _extract_t212_terminal_fill(info, st)
+    raw_q = safe_float(
+        info.get("quantity") if info.get("quantity") is not None else info.get("orderedQuantity"),
+        default=None,
+    )
+    side_in = extract_order_side(info) or ("SELL" if (raw_q is not None and raw_q < 0) else "BUY")
     if st == "FILLED":
         log(f"  [ORDER] ✓ FILLED: {fq} @ {fp} USD")
         notify_px = safe_pos_float(fp, 0.0)
-        notify(title=f"✓ Order filled: {ticker} [order_manager]", body=f"q{fq} @ {fp}",
-               source="T212 order", price=notify_px, desktop=desktop)
+        t_title, t_body = format_trade_notification(
+            "FILLED", side_in, ticker, notify_px, fq, fq * notify_px, "USD", order_id,
+            venue="t212", owner="order_manager",
+        )
+        notify(title=t_title, body=t_body, source="T212 order", price=notify_px, desktop=desktop)
     elif fq > 0:
         log(f"  [ORDER] ◐ PARTIAL {st}: {fq} @ {fp} USD")
         notify_px = safe_pos_float(fp, 0.0)
-        notify(
-            title=f"◐ Order {st} (partial fill): {ticker} [order_manager]",
-            body=f"id={order_id} q{fq} @ {fp}",
-            source="T212 order",
-            price=notify_px,
-            desktop=desktop,
+        st_verb = "EXPIRED" if st == "EXPIRED" else "CANCELED"
+        t_title, t_body = format_trade_notification(
+            st_verb, side_in, ticker, notify_px, fq, fq * notify_px, "USD", order_id,
+            venue="t212", owner="order_manager", detail="partial fill",
         )
+        notify(title=t_title, body=t_body, source="T212 order", price=notify_px, desktop=desktop)
     else:
         log(f"  [ORDER] ✗ {st}")
-        notify(title=f"✗ Order {st}: {ticker} [order_manager]", body=f"id={order_id}",
-               source="T212 order", desktop=desktop)
+        st_verb = "CANCELED" if st == "CANCELLED" else st
+        ord_q = _pos_abs_order_float(info.get("quantity")) or _pos_abs_order_float(info.get("orderedQuantity")) or 0.0
+        px_val = safe_pos_float(fp, 0.0)
+        t_title, t_body = format_trade_notification(
+            st_verb, side_in, ticker, px_val, ord_q, ord_q * px_val, "USD", order_id,
+            venue="t212", owner="order_manager",
+        )
+        notify(title=t_title, body=t_body, source="T212 order", desktop=desktop)
     return info
 
 
@@ -506,9 +521,13 @@ def place_order_with_retry(
             if lifecycle == "submit_pending":
                 log("  ! [ORDER] order rejected; the intent stays queued for reconciliation/retry")
             return False
-        notify(title=f"T212 order accepted: {ticker} [order_manager]",
-               body=f"LIMIT {ticker} qty={qty_r} @ {price_r} USD\nid={oid}",
-               source="T212 order", price=price_r, desktop=desktop)
+        px_r_f = safe_pos_float(price_r, 0.0)
+        qty_r_f = safe_pos_float(qty_r, 0.0)
+        t_title, t_body = format_trade_notification(
+            "PLACED", record.get("side") or "BUY", ticker, px_r_f, qty_r_f, qty_r_f * px_r_f, "USD", oid,
+            venue="t212", owner="order_manager", detail="LIMIT",
+        )
+        notify(title=t_title, body=t_body, source="T212 order", price=price_r, desktop=desktop)
         return True
 
     record["submit_error"] = f"T212 HTTP {status}: {encode_json_payload(data, default=str)[:400]}"

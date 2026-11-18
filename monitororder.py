@@ -1,5 +1,4 @@
 from collections import OrderedDict
-import datetime
 import sys
 import time
 
@@ -34,8 +33,6 @@ from botcore import (
     extract_order_price,
     extract_order_qty,
     extract_timestamp_s,
-    format_notify_price,
-    format_notify_qty,
     format_price_log,
     load_dotenv,
     lru_dict_put,
@@ -116,22 +113,37 @@ def _format_order_notify_fields(symbol, order_type, price, quantity, owner=None)
     return qty, px, val, quote, side, owner_tag, owner_body
 
 
-def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=None, age_str="", ttl_str=""):
+def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=None, age_str="", ttl_str="", venue=None):
     """Notify when an expired open order is canceled by monitororder."""
     try:
-        qty, px, val, quote, side, owner_tag, owner_body = _format_order_notify_fields(
+        qty, px, val, quote, side, _, owner_body = _format_order_notify_fields(
             symbol, order_type, price, quantity, owner
         )
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        px_str = format_notify_price(px)
-        qty_str = format_notify_qty(qty)
-        print(f"[MONITORORDER] ⏰ Order expired & canceled{owner_body}: {side} {qty:.6f} {symbol} @ {px_str} (orderId={order_id})")
+        px_disp = format_price_log(px)
+        venue_slug = (normalize_venue_name(venue, default="") or _resolve_provider_name(symbol)).lower()
+        if ttl_str and age_str:
+            ttl_detail = f"TTL {ttl_str} (active {age_str}, canceled)"
+        elif ttl_str:
+            ttl_detail = f"TTL {ttl_str} (canceled)"
+        else:
+            ttl_detail = "Canceled on TTL expiry"
+        t_title, t_body = alert.format_trade_notification(
+            "EXPIRED",
+            side,
+            symbol,
+            px_disp,
+            qty,
+            val,
+            quote,
+            order_id,
+            venue=venue_slug,
+            owner=owner,
+            detail=ttl_detail,
+        )
+        print(f"[MONITORORDER] ⏰ Order expired & canceled{owner_body}: {side} {qty:.6f} {symbol} @ {px_disp} (orderId={order_id})")
         alert.notify(
-            title=f"⏰ Order Expired & Canceled: {side} {symbol}{owner_tag}",
-            body=(
-                f"Order {order_id}{owner_body} active for {age_str} exceeded TTL of {ttl_str}. Canceled on venue. "
-                f"Qty: {qty_str} {symbol} @ ${px_str} (~${val:.2f} {quote}) | Time: {now_str}"
-            ),
+            title=t_title,
+            body=t_body,
             source="monitororder",
             symbol=str(symbol),
             price=px,

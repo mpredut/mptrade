@@ -53,6 +53,7 @@ from botcore import (  # noqa: E402
 ensure_local_module_priority(_HERE, "common", "hl_client", "market_data", "signals")
 
 from common import load_hl_default_env as _hl_default_env, notify
+from notify_engine.alertnotifiers import format_trade_notification  # noqa: E402
 from strategies.base_spot_mixin import BaseSpotMixin, load_common_core_strat_env, sanitize_common_spot_state
 from strategies.state_store import safe_state_token, state_path_for as _shared_state_path_for
 from hl_client import HLClient
@@ -558,9 +559,22 @@ class Strategy(BaseSpotMixin):
             fp_s, avg_s = self._fmt_px(fp), self._fmt_px(avg)
             log(f"  [STRAT] {tag}OPEN {self.p.direction.upper()} {fq:.6f} @ {fp:.4f} "
                 f"({'DCA' if is_dca else 'ENTRY'}) qty={self.s['qty']:.6f} avg={avg:.4f}")
-            notify(title=f"{tag}{self.coin} OPEN {self.p.direction} {fq:.2f}@{fp_s} [hl_bot]",
-                   body=f"{'DCA' if is_dca else 'ENTRY'} | q{self.s['qty']:.2f} a{avg_s}",
-                   source="hyperliquid", price=fp, desktop=self.desktop)
+            open_side = "BUY" if self.sign > 0 else "SELL"
+            t_title, t_body = format_trade_notification(
+                "FILLED",
+                open_side,
+                self.coin,
+                fp_s,
+                fq,
+                fq * fp,
+                "USDC",
+                None,
+                venue="hyperliquid",
+                owner="hl_bot",
+                detail=f"OPEN {self.p.direction.upper()} ({'DCA' if is_dca else 'ENTRY'}) · tot_qty {self.s['qty']:.2f} · avg {avg_s}",
+                prefix="[PAPER]" if self.dry_run else None,
+            )
+            notify(title=t_title, body=t_body, source="hyperliquid", price=fp, desktop=self.desktop)
         self._cancel_close()   # average changed; replace the take-profit order
 
     def _apply_close(self, avg, price, sz, real_qty=None, real_avg=None):
@@ -575,9 +589,22 @@ class Strategy(BaseSpotMixin):
         if not self.replay_mode:
             px_s, avg_s = self._fmt_px(price), self._fmt_px(avg)
             log(f"  [STRAT] {tag}CLOSE {sz:.6f} @ {price:.4f}  gross={gross:+.4f} fee={fee:.4f} net={net:+.4f}")
-            notify(title=f"{tag}{self.coin} CLOSE {sz:.2f}@{px_s} N{net:+.2f} [hl_bot]",
-                   body=f"a{avg_s} | gr{gross:+.2f} fee{fee:.2f} N{net:+.2f} | Ntot{self.s['realized_net']:+.2f}",
-                   source="hyperliquid", price=price, desktop=self.desktop)
+            close_side = "SELL" if self.sign > 0 else "BUY"
+            t_title, t_body = format_trade_notification(
+                "FILLED",
+                close_side,
+                self.coin,
+                px_s,
+                sz,
+                sz * price,
+                "USDC",
+                None,
+                venue="hyperliquid",
+                owner="hl_bot",
+                detail=f"CLOSE {self.p.direction.upper()} · Net {net:+.2f}$ (avg {avg_s}, fee {fee:.2f}, Ntot {self.s['realized_net']:+.2f}$)",
+                prefix="[PAPER]" if self.dry_run else None,
+            )
+            notify(title=t_title, body=t_body, source="hyperliquid", price=price, desktop=self.desktop)
         flat_eps = 1e-12 if real_qty is not None else max(self._qty_eps, 0.5 * (10.0 ** (-self.sz_dec)))
         if real_qty is not None:
             eff_avg = safe_pos_float(real_avg, default=avg)

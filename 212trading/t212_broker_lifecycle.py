@@ -38,6 +38,7 @@ ensure_local_module_priority(_HERE, "ipo_common")
 
 from cachepaths import same_canonical_base_asset as _t212_tickers_match  # noqa: E402
 from ipo_common import notify as _default_notify  # noqa: E402
+from notify_engine.alertnotifiers import format_trade_notification  # noqa: E402
 from order_lifecycle import restore_cancelled_orders  # noqa: E402
 from providers.broker_history import extract_broker_order_ticker as _order_ticker  # noqa: E402
 from providers.execution_audit import new_intent_id  # noqa: E402
@@ -388,10 +389,26 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                 f"  [STRAT] {tag}BUY FILLED {qty} @ {price:.2f} USD ({order.get('kind')})  "
                 f"qty_total={self.s['qty']:.2f} avg={avg:.2f}"
             )
+            t_title, t_body = format_trade_notification(
+                "FILLED",
+                "BUY",
+                self.yahoo_sym,
+                f"{price:.2f}",
+                qty,
+                qty * price,
+                self.ccy,
+                order.get("id"),
+                venue="t212",
+                owner="t212_bot",
+                detail=(
+                    f"{order.get('kind')} · tot_qty {self.s['qty']:.2f} · avg {avg:.2f} · "
+                    f"dep {self.s['spent_cash']:.0f} {self.ccy} · DCA {self.s['dca_buys']}/{self.p.max_dca_buys}"
+                ),
+                prefix="[PAPER]" if self.dry_run else None,
+            )
             self._notify(
-                title=f"{tag}{self.yahoo_sym} BUY {qty}@{price:.2f}",
-                body=(f"{order.get('kind')} | q{self.s['qty']:.2f} a{avg:.2f} | "
-                      f"dep{self.s['spent_cash']:.0f}{self.ccy} DCA{self.s['dca_buys']}/{self.p.max_dca_buys}"),
+                title=t_title,
+                body=t_body,
                 source="T212", price=price, desktop=self.desktop,
             )
             self._cancel_non_market_sells()
@@ -404,10 +421,26 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                 f"  [STRAT] {tag}SELL FILLED {qty} @ {price:.2f} USD  "
                 f"gross={gross:+.2f}  fee={fee:.2f}  net={net:+.2f} USD"
             )
+            t_title, t_body = format_trade_notification(
+                "FILLED",
+                "SELL",
+                self.yahoo_sym,
+                f"{price:.2f}",
+                qty,
+                qty * price,
+                self.ccy,
+                order.get("id"),
+                venue="t212",
+                owner="t212_bot",
+                detail=(
+                    f"Net {net:+.2f}$ (avg {avg:.2f}, fee {fee:.2f}, "
+                    f"Ntot {self.s['realized_net_usd']:+.2f}$) · cycle {self.s['cycle']} closed"
+                ),
+                prefix="[PAPER]" if self.dry_run else None,
+            )
             self._notify(
-                title=f"{tag}{self.yahoo_sym} SELL {qty}@{price:.2f} N{net:+.2f}$",
-                body=(f"a{avg:.2f} · gr{gross:+.2f} fee{fee:.2f} N{net:+.2f}$ | "
-                      f"Ntot{self.s['realized_net_usd']:+.2f}$ | cycle{self.s['cycle']} closed"),
+                title=t_title,
+                body=t_body,
                 source="T212", price=price, desktop=self.desktop,
             )
             is_flat = self.s["qty"] <= 1e-9
@@ -783,10 +816,26 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
             self._log_msg(
                 f"  [STRAT] BUY EXECUTED {fq:.4f} @ {fp:.2f} USD ({kind_label})  qty={real_qty:.4f} avg={eff_real_avg:.2f}"
             )
+            buy_px_ref = eff_real_avg if is_adoption else fp
+            t_title, t_body = format_trade_notification(
+                "ADOPTED" if is_adoption else "FILLED",
+                "BUY",
+                self.yahoo_sym,
+                f"{buy_px_ref:.2f}",
+                fq,
+                fq * buy_px_ref,
+                self.ccy,
+                (source_order or {}).get("id"),
+                venue="t212",
+                owner="t212_bot",
+                detail=(
+                    f"{kind_label} · tot_qty {real_qty:.4f} · avg {eff_real_avg:.2f} · "
+                    f"dep {self.s['spent_cash']:.0f} {self.ccy} · DCA {self.s['dca_buys']}/{self.p.max_dca_buys}"
+                ),
+            )
             self._notify(
-                title=f"{self.yahoo_sym} {'ADOPTED' if is_adoption else 'BUY'} {fq:.4f}@a{eff_real_avg:.2f}",
-                body=(f"{kind_label} | q{real_qty:.4f} a{eff_real_avg:.2f} p~{fp:.2f} | "
-                      f"dep{self.s['spent_cash']:.0f}{self.ccy} DCA{self.s['dca_buys']}/{self.p.max_dca_buys}"),
+                title=t_title,
+                body=t_body,
                 source="T212", price=fp, desktop=self.desktop,
             )
             if source_order is pending_for_fill:
@@ -827,9 +876,27 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                 f"  [STRAT] SELL EXECUTED {sold:.4f} @ {approx}{sell_price:.2f} USD  "
                 f"gross={gross:+.2f}  fee={fee:.2f}  net={net:+.2f} USD"
             )
+            sell_oid = (
+                (pending_for_fill or {}).get("id")
+                if pending_for_fill and pending_for_fill.get("side") == "SELL"
+                else None
+            )
+            t_title, t_body = format_trade_notification(
+                "FILLED",
+                "SELL",
+                self.yahoo_sym,
+                f"{approx}{sell_price:.2f}",
+                sold,
+                sold * sell_price,
+                self.ccy,
+                sell_oid,
+                venue="t212",
+                owner="t212_bot",
+                detail=f"Net {net:+.2f}$ (avg {prev_avg:.2f}, fee {fee:.2f}, Ntot {self.s['realized_net_usd']:+.2f}$)",
+            )
             self._notify(
-                title=f"{self.yahoo_sym} SELL {sold:.4f}@{approx}{sell_price:.2f} N{net:+.2f}$",
-                body=f"a{prev_avg:.2f} · gr{gross:+.2f} fee{fee:.2f} N{net:+.2f}$ | Ntot{self.s['realized_net_usd']:+.2f}$",
+                title=t_title,
+                body=t_body,
                 source="T212", price=sell_price, desktop=self.desktop,
             )
             if pending_for_fill and pending_for_fill.get("side") == "SELL":

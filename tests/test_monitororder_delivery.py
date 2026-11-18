@@ -234,8 +234,8 @@ class TestMonitororderNotifications(unittest.TestCase):
              patch("notify_engine.alertnotifiers.notify") as mock_notify:
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
             mock_notify.assert_called_once_with(
-                title="BUY TAOUSDC@283.92 [binance]",
-                body="PLACED ~141.96 USDC (qty: 0.5000, order: 2001)",
+                title="PLACED BUY TAO@283.92 ~142 $ ~ [binance]",
+                body="~141.96 USDC (qty: 0.5, order: 2001)",
                 source="monitororder",
                 symbol="TAOUSDC",
                 price=283.92,
@@ -244,6 +244,18 @@ class TestMonitororderNotifications(unittest.TestCase):
             mock_notify.reset_mock()
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
             mock_notify.assert_not_called()
+
+        with patch("notify_engine.alertnotifiers.notify") as mock_exp_notify:
+            monitororder._notify_order_expired(
+                "ARBUSDC", "BUY", 721818232, 0.131, 1500.0, owner="tradeall", age_str="15.1m", ttl_str="15.0m"
+            )
+            mock_exp_notify.assert_called_once_with(
+                title="EXPIRED BUY ARB@0.131 ~197 $ ~ [binance:tradeall]",
+                body="~196.50 USDC · TTL 15.0m (active 15.1m, canceled) (qty: 1500, order: 721818232)",
+                source="monitororder",
+                symbol="ARBUSDC",
+                price=0.131,
+            )
 
     def test_derived_replacement_order_does_not_trigger_notification(self):
         with patch.object(monitororder.api, "get_open_orders", return_value={}):

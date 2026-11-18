@@ -1751,8 +1751,8 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
 
             mt.check_and_notify_executed_trades(symbols_list=["TAOUSDC"])
             mock_notify.assert_called_once_with(
-                title="BUY TAOUSDC@283.92 [binance]",
-                body="FILLED ~141.96 USDC (qty: 0.5000, order: 707115262)",
+                title="FILLED BUY TAO@283.92 ~142 $ ~ [binance]",
+                body="~141.96 USDC (qty: 0.5, order: 707115262)",
                 source="monitortrades",
                 symbol="TAOUSDC",
                 price=283.92,
@@ -1781,8 +1781,8 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
 
             mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
             mock_notify.assert_called_once_with(
-                title="SELL BTCUSDC@80060.00 [binance]",
-                body="FILLED ~80060.00 USDC (qty: 1.0000, order: 88888, 2 fills)",
+                title="FILLED SELL BTC@80060.00 ~80060 $ ~ [binance]",
+                body="~80060.00 USDC · 2 fills (qty: 1, order: 88888)",
                 source="monitortrades",
                 symbol="BTCUSDC",
                 price=80060.0,
@@ -1809,8 +1809,8 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
 
             mt.check_and_notify_executed_trades(symbols_list=["TAOUSDC"])
             mock_notify.assert_called_once_with(
-                title="SELL TAOUSDC@221.40 [binance:ai_executor]",
-                body="FILLED ~77.93 USDC (qty: 0.3520, order: 721791852)",
+                title="FILLED SELL TAO@221.40 ~78 $ ~ [binance:auto_cryptotrade_executor]",
+                body="~77.93 USDC (qty: 0.352, order: 721791852)",
                 source="monitortrades",
                 symbol="TAOUSDC",
                 price=221.40,
@@ -1819,8 +1819,8 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
             mock_notify.reset_mock()
             mt.check_and_notify_executed_trades(symbols_list=["TAOUSDC"])
             mock_notify.assert_called_once_with(
-                title="SELL TAOUSDC@221.40 [binance:ai_executor]",
-                body="FILLED ~1272.05 USDC (qty: 5.7455, order: 721791852) [total: ~1349.99 USDC, qty: 6.0975, 2 fills]",
+                title="FILLED SELL TAO@221.40 ~1272 $ ~ [binance:auto_cryptotrade_executor]",
+                body="~1272.05 USDC [total: ~1349.99 USDC, 2 fills] (qty: 5.7455, total_qty: 6.0975, order: 721791852)",
                 source="monitortrades",
                 symbol="TAOUSDC",
                 price=221.40,
@@ -1845,8 +1845,8 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
 
             mt.check_and_notify_executed_trades(symbols_list=["TAOUSDC"])
             mock_notify.assert_called_once_with(
-                title="BUY TAOUSDC@213.20 [binance:assetguardian]",
-                body="FILLED ~370.52 USDC (qty: 1.7379, order: 721818232)",
+                title="FILLED BUY TAO@213.20 ~371 $ ~ [binance:assetguardian]",
+                body="~370.52 USDC (qty: 1.7379, order: 721818232)",
                 source="monitortrades",
                 symbol="TAOUSDC",
                 price=213.20,
@@ -1883,8 +1883,8 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
 
             mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
             mock_notify.assert_called_once_with(
-                title="SELL BTCUSDC@76210.75 [binance:tradeall]",
-                body="FILLED ~53.35 USDC (qty: 0.0007, order: 10739572358)",
+                title="FILLED SELL BTC@76210.75 ~53 $ ~ [binance:tradeall]",
+                body="~53.35 USDC (qty: 0.0007, order: 10739572358)",
                 source="monitortrades",
                 symbol="BTCUSDC",
                 price=76210.75,
