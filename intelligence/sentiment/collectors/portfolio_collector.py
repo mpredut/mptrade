@@ -293,7 +293,7 @@ def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str],
                         if kv := str(rec.get(k) or "").strip():
                             prev_mod, prev_rule = out.get(kv, (None, None))
                             out[kv] = (prev_mod or mod, prev_rule or rule)
-                            if k in ("client_order_id", "clientOrderId") and v_norm in ("kraken", "hyperliquid"):
+                            if k in ("client_order_id", "clientOrderId") and v_norm:
                                 try:
                                     if nat_kv := derive_venue_128bit_client_order_id(v_norm, kv):
                                         p_m, p_r = out.get(nat_kv, (None, None))

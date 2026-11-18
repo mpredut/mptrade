@@ -760,7 +760,7 @@ def _active_order_keys(r: dict) -> tuple[str, ...]:
         return ()
     raw_cid = _record_client_order_id(r)
     native_cid = None
-    if raw_cid and (prov_l := (clean_scalar_str(r.get("provider_name")) or "").lower()) in ("kraken", "hyperliquid"):
+    if raw_cid and (prov_l := (clean_scalar_str(r.get("provider_name")) or "").lower()):
         try:
             native_cid = rc.derive_venue_128bit_client_order_id(prov_l, raw_cid)
         except Exception:
