@@ -255,6 +255,25 @@ class KrakenClient:
 
     ticker = bind_attr_call("_public_first_dict", "Ticker")
 
+    def trades_page(self, pair: str, since: str = "0") -> tuple[list, str]:
+        """Fetch one page of public Trades rows and the next nanosecond cursor."""
+        if not pair or isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
+            return [], str(since or "0")
+        p_clean = pair.strip()
+        is_tok = is_kraken_tokenized_asset(p_clean)
+        eff_since = str(since or "0").strip() or "0"
+        params: dict[str, str] = {
+            "pair": p_clean if is_tok else p_clean.upper(),
+            "since": eff_since,
+        }
+        if is_tok:
+            params["asset_class"] = "tokenized_asset"
+        res = self._public("Trades", params, fresh=True)
+        rows = res.get(params["pair"]) or next(
+            (v for k, v in res.items() if k != "last" and isinstance(v, list)), []
+        )
+        return (rows if isinstance(rows, list) else []), str(res.get("last") or eff_since)
+
     def ohlc_closes_with_timestamps(
         self, pair: str, interval: int,
     ) -> tuple[list, tuple]:

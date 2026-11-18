@@ -1232,3 +1232,51 @@ def test_spot_engine_hybrid_tranche_plus_trailing_and_zero_reentry(tmp_path):
     _tick(70.0, 1090.0)
     assert strat.s["qty"] == pytest.approx(0.0, abs=1e-6)
     assert strat.s["orders"] == []
+
+
+def test_xstock_watch_incremental_trade_archive_sync(tmp_path, monkeypatch):
+    from state_io import meta_file_path, read_json_dict, read_jsonl_dicts
+
+    monkeypatch.setenv("CACHEDB_DIR", str(tmp_path))
+    monkeypatch.setenv("XSTOCK_ARCHIVE_PAIRS", "SPCXxUSD")
+    xw_fresh = load_venue_modules("kraken", "kraken_xstock_watch")
+    monkeypatch.setattr(
+        xw_fresh,
+        "cache_path",
+        lambda fn: str(tmp_path / "prices" / os.path.basename(fn)),
+    )
+
+    seen_calls = []
+
+    def _fake_trades_page(pair, since="0"):
+        seen_calls.append((pair, since))
+        if pair == "SPCXxUSD" and since == "0":
+            return [["142.50", "1.5", 1794990000.0, "b", "l", ""]], "1794990000000000000"
+        if pair == "SPCXxUSD" and since == "1794990000000000000":
+            return [["143.10", "2.0", 1794990060.0, "b", "m", ""]], "1794990060000000000"
+        if pair == "ANTxUSD" and since == "0":
+            return [["82.00", "5.0", 1795070000.0, "b", "m", ""]], "1795070000000000000"
+        return [], since
+
+    cli = SimpleNamespace(trades_page=_fake_trades_page)
+
+    # Cycle 1 before ANTxUSD lists: syncs SPCXxUSD from 0
+    xw_fresh.sync_configured_archives(cli, {"pair": None})
+    spcx_file = tmp_path / "prices" / "cache_365_price_SPCXxUSD.jsonl"
+    assert spcx_file.exists()
+    assert len(read_jsonl_dicts(str(spcx_file))) == 1
+
+    # Cycle 2 after ANTxUSD lists: incrementally appends SPCXxUSD from cursor AND bootstraps ANTxUSD from 0
+    xw_fresh.sync_configured_archives(cli, {"pair": "ANTxUSD"})
+    ant_file = tmp_path / "prices" / "cache_365_price_ANTxUSD.jsonl"
+    assert ant_file.exists()
+    spcx_rows = read_jsonl_dicts(str(spcx_file))
+    ant_rows = read_jsonl_dicts(str(ant_file))
+    assert len(spcx_rows) == 2
+    assert spcx_rows[-1]["i"][1] == pytest.approx(143.10)
+    assert len(ant_rows) == 1
+    assert ant_rows[0]["s"] == "ANTxUSD"
+    assert ant_rows[0]["i"][1] == pytest.approx(82.00)
+    spcx_meta = read_json_dict(meta_file_path(str(spcx_file)))
+    assert spcx_meta["kraken_trades_since_ns"] == "1794990060000000000"
+    assert ("SPCXxUSD", "1794990000000000000") in seen_calls

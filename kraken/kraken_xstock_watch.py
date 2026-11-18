@@ -40,25 +40,39 @@ from botcore import (
     fetch_public_json,
     load_env_stack,
     log,
+    normalize_timestamp_ms,
     optional_env,
     parse_pos_cli_float,
     required_bool_env,
     required_env,
     required_float_env,
+    resolve_now_ms,
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
     single_instance,
+    split_csv,
     temporary_environ,
     touch_module_heartbeat,
 )
-from cachepaths import canonical_base_asset
+from cachepaths import CACHE_365_PRICE_PREFIX, cache_path, canonical_base_asset
+from cacheprice import Cache365PriceManager
 from providers.ohlc_utils import extract_yahoo_chart_latest_price
 from strategies.spot_engine import state_path_for
 from kraken.kraken_common import build_kraken_client, notify
 from kraken.kraken_client import KrakenClient, KrakenError
 from kraken.market_data import is_pair_status_tradable
-from state_io import load_json_state, open_append_text_file, read_text_lines, save_json_state
+from state_io import (
+    append_jsonl_bucket_delta,
+    load_json_state,
+    meta_file_path,
+    open_append_text_file,
+    read_json_dict,
+    read_text_lines,
+    save_json_state,
+    write_meta_json,
+)
 from credentials import kraken_credentials
 from instrument_registry import casefold_get
 from trailing_core import add_once_status_cli_args
@@ -141,6 +155,88 @@ def _save_state(st: dict) -> None:
         save_json_state(_state_file(), st, indent=2)
     except OSError as e:
         log(f"  ! cannot save the state: {e}")
+
+
+def sync_trade_archive(client: KrakenClient, pair: str, *, max_pages: int = 3) -> int:
+    """Incrementally append new Kraken tick trades into ``cachedb/prices/cache_365_price_<PAIR>.jsonl``."""
+    trades_fn = getattr(client, "trades_page", None)
+    pair_clean = clean_scalar_str(pair)
+    if not callable(trades_fn) or not pair_clean:
+        return 0
+    disk_fn = Cache365PriceManager.disk_filename_for_symbol(pair_clean)
+    target_path = cache_path(disk_fn)
+    sym_key = disk_fn.removeprefix(CACHE_365_PRICE_PREFIX).removesuffix(".jsonl")
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    meta = read_json_dict(meta_file_path(target_path), default={}) if os.path.exists(target_path) else {}
+    if not isinstance(meta, dict):
+        meta = {}
+    since = clean_scalar_str(meta.get("kraken_trades_since_ns")) or "0"
+    prev_counts = meta.get("counts") if isinstance(meta.get("counts"), dict) else {}
+    prev_rest_cursor = meta.get("rest_sync_cursor") if isinstance(meta.get("rest_sync_cursor"), dict) else {}
+    prev_count = safe_nonneg_int(prev_counts.get(sym_key), default=0) or 0
+    prev_max_ts = safe_nonneg_int(meta.get("max_ts"), default=0) or 0
+    prev_min_ts = safe_nonneg_int(prev_rest_cursor.get(sym_key), default=0) or 0
+
+    new_items: list[list] = []
+    cur_since = since
+    for page_i in range(max(1, max_pages)):
+        try:
+            rows, next_since = trades_fn(pair_clean, cur_since)
+        except KrakenError as exc:
+            log(f"  ! archive sync {pair_clean}: {exc}")
+            break
+        if not rows or next_since == cur_since:
+            cur_since = next_since or cur_since
+            break
+        for tr in rows:
+            if not isinstance(tr, (list, tuple)) or len(tr) < 3:
+                continue
+            px = safe_pos_float(tr[0], default=None)
+            vol = safe_nonneg_float(tr[1], default=0.0) or 0.0
+            ts_ms = normalize_timestamp_ms(tr[2], default=None)
+            if px is None or ts_ms is None:
+                continue
+            if since == "0" and prev_max_ts > 0 and ts_ms <= prev_max_ts:
+                continue
+            new_items.append([ts_ms, px, vol])
+        cur_since = next_since
+        if len(rows) < 1000:
+            break
+        if page_i + 1 < max_pages:
+            time.sleep(1.05)
+
+    if not new_items:
+        return 0
+    new_items.sort(key=lambda item: item[0])
+    append_jsonl_bucket_delta(target_path, {sym_key: new_items}, {sym_key: 0})
+    first_ts = prev_min_ts if prev_min_ts > 0 else new_items[0][0]
+    last_ts = max(prev_max_ts, new_items[-1][0])
+    total_count = prev_count + len(new_items)
+    write_meta_json(
+        target_path,
+        {
+            "fetchtime": {sym_key: last_ts},
+            "rest_sync_cursor": {sym_key: first_ts},
+            "counts": {sym_key: total_count},
+            "max_ts": last_ts,
+            "kraken_trades_since_ns": cur_since,
+            "saved_at": resolve_now_ms(),
+        },
+    )
+    return len(new_items)
+
+
+def sync_configured_archives(client: KrakenClient, st: dict) -> None:
+    """Incrementally sync configured XSTOCK_ARCHIVE_PAIRS plus any newly listed target pair."""
+    pairs = list(
+        dict.fromkeys(
+            p
+            for raw in (*split_csv(optional_env("XSTOCK_ARCHIVE_PAIRS")), st.get("pair"))
+            if (p := clean_scalar_str(raw)) is not None
+        )
+    )
+    for pair in pairs:
+        sync_trade_archive(client, pair)
 
 
 def sync_target_regex(st: dict, rx: str) -> bool:
@@ -683,6 +779,7 @@ def main() -> int:
         try:
             check_balance(client, st, rx, args.desktop)
             check_pairs(client, st, rx, args.desktop, quote)
+            sync_configured_archives(client, st)
             eff_alloc_price = resolve_alloc_price(client, st, alloc_price, args.desktop)
             check_levels(client, st, eff_alloc_price, tp_pct, sl_pct, yahoo_sym, args.desktop)
             maybe_start_bot(st, eff_alloc_price, args.desktop)
