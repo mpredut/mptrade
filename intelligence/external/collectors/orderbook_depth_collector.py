@@ -149,10 +149,13 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         try:
             data = None
             last_err: Optional[Exception] = None
+            # BY DESIGN: L2 orderbook walls/spread/depth are strictly venue-specific; never substitute
+            # another venue's book for a registered instrument (cross-venue discovery is only for unregistered tickers).
+            reg_venue = venue_for_symbol(canon_sym, default="")
             base_urls, hl_book_url = MarketDataProvider.resolve_orderbook_depth_urls(
                 canon_sym,
-                venue=venue_for_symbol(canon_sym),
-                multi_venue=_is_multi_venue_base(canon_sym),
+                venue=reg_venue,
+                multi_venue=bool(reg_venue) or _is_multi_venue_base(canon_sym),
             )
             pref_url = self._preferred_url.get(symbol)
             urls = (

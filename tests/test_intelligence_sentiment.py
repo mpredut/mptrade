@@ -10622,17 +10622,41 @@ def test_prompt_audit_15_full_telemetry_and_clarity_fixes(tmp_path, monkeypatch)
     from intelligence.sentiment.collectors.macro_telemetry_collector import MarketAndPortfolioSnapshotOrchestrator
     from intelligence.sentiment.collectors.portfolio_collector import KrakenXstocksCollector, VenueCyclesCollector
     from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    import logging
     from providers.base import MarketDataProvider
+    from providers.binance_provider import BinanceProvider
     from providers.kraken_provider import KrakenProvider
 
-    # 1. VenueMetadataRegistry isolates per-provider errors in resolve_orderbook_depth_urls
-    monkeypatch.setattr(
-        KrakenProvider,
-        "public_orderbook_depth_urls",
-        classmethod(lambda cls, sym: (_ for _ in ()).throw(NameError("simulated broken import"))),
-    )
-    urls_btc, _ = MarketDataProvider.resolve_orderbook_depth_urls("BTCUSDC", venue="binance")
-    assert any("api.binance.com/api/v3/depth?symbol=BTCUSDC" in u for u in urls_btc)
+    # 1. BY DESIGN: Complete per-provider L2 isolation with ERROR logging and zero cross-venue book contamination
+    MarketDataProvider._ORDERBOOK_PROV_ERR_TS.clear()
+    err_records: list[str] = []
+    vm_logger = logging.getLogger("providers.venue_metadata")
+    err_handler = logging.Handler(level=logging.ERROR)
+    err_handler.emit = lambda rec: err_records.append(rec.getMessage())  # type: ignore[method-assign]
+    vm_logger.addHandler(err_handler)
+    try:
+        monkeypatch.setattr(
+            KrakenProvider,
+            "public_orderbook_depth_urls",
+            classmethod(lambda cls, sym: (_ for _ in ()).throw(NameError("simulated broken import"))),
+        )
+        urls_btc, _ = MarketDataProvider.resolve_orderbook_depth_urls("BTCUSDC", venue="binance", multi_venue=True)
+        assert any("api.binance.com/api/v3/depth?symbol=BTCUSDC" in u for u in urls_btc)
+        assert not any("kraken.com" in u or "hyperliquid.xyz" in u for u in urls_btc)
+        assert MarketDataProvider.resolve_orderbook_depth_urls("TAOUSD", venue="kraken", multi_venue=True) == ((), "")
+        assert any("NameError: simulated broken import" in msg for msg in err_records)
+        monkeypatch.setattr(
+            BinanceProvider,
+            "extract_orderbook_sides",
+            staticmethod(lambda raw: (_ for _ in ()).throw(RuntimeError("broken extractor"))),
+            raising=False,
+        )
+        norm_krk = MarketDataProvider.normalize_orderbook_payload(
+            {"result": {"TAOUSD": {"bids": [["195.0", "2.0"]], "asks": [["195.2", "2.0"]]}}}
+        )
+        assert norm_krk is not None and norm_krk["bids"][0][0] == pytest.approx(195.0)
+    finally:
+        vm_logger.removeHandler(err_handler)
     monkeypatch.undo()
 
     # 2 & 14. Stale ob_mid (<1% away) NEVER overwrites 0.5s live price/tape_15m, and offline cache_ohlc_24h upgrades TPO -> REAL_VOL

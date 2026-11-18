@@ -3,6 +3,7 @@
 import inspect
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -393,6 +394,29 @@ class ProviderVenueMetadataMixin:
         """Return ``(primary_urls, secondary_urls)`` public L2 orderbook endpoints for ``symbol``."""
         return ((), ())
 
+    _ORDERBOOK_PROV_ERR_TS: dict[tuple[str, str, str], float] = {}
+
+    @classmethod
+    def _log_orderbook_provider_error(
+        cls,
+        method_label: str,
+        venue_key: str,
+        context: str,
+        exc: Exception,
+    ) -> None:
+        now_s = time.monotonic()
+        err_key = (method_label, str(venue_key), type(exc).__name__)
+        if now_s - cls._ORDERBOOK_PROV_ERR_TS.get(err_key, -301.0) >= 300.0:
+            cls._ORDERBOOK_PROV_ERR_TS[err_key] = now_s
+            logging.getLogger(__name__).error(
+                "Orderbook %s failed on provider %s (%s) -- %s: %s",
+                method_label,
+                venue_key,
+                context,
+                type(exc).__name__,
+                exc,
+            )
+
     @classmethod
     def resolve_orderbook_depth_urls(
         cls,
@@ -403,8 +427,8 @@ class ProviderVenueMetadataMixin:
     ) -> tuple[tuple[str, ...], str]:
         """Return ``(ordered_depth_urls, hl_book_url)`` across registered venue providers."""
         canon_sym = canonical_symbol_key(symbol)
-        log = logging.getLogger(__name__)
         crypto_venues: list[str] = []
+        failed_venues: set[str] = set()
         l2_info_venues: set[str] = set()
         primary_map: dict[str, tuple[str, ...]] = {}
         secondary_map: dict[str, tuple[str, ...]] = {}
@@ -415,14 +439,22 @@ class ProviderVenueMetadataMixin:
                     continue
                 prim, sec = prov_cls.public_orderbook_depth_urls(canon_sym)
             except Exception as exc:
-                log.warning("Skipping %s orderbook URL resolution for %s: %s", v_key, canon_sym, exc)
+                failed_venues.add(v_key)
+                cls._log_orderbook_provider_error("URL resolution", v_key, canon_sym, exc)
                 continue
             crypto_venues.append(v_key)
             if getattr(prov_cls, "_ORDERBOOK_L2_INFO_BOOK", False):
                 l2_info_venues.add(v_key)
             primary_map[v_key] = prim
             secondary_map[v_key] = sec
+        v_norm = normalize_venue_name(venue)
+        # BY DESIGN: Complete per-venue fault isolation with zero cross-venue L2 contamination.
+        # If the explicitly requested venue failed, fail closed with () rather than substituting another venue's book.
+        if v_norm and v_norm in failed_venues:
+            return (), ""
         if symbol_quote_asset(canon_sym) == "EUR":
+            if v_norm and _parse_bool_flag(multi_venue, False):
+                return primary_map.get(v_norm, ()), ""
             return tuple(u for v_k in crypto_venues for u in primary_map[v_k]), ""
 
         l2_info_urls = tuple(
@@ -433,10 +465,10 @@ class ProviderVenueMetadataMixin:
             (v_k for v_k in crypto_venues if primary_map.get(v_k)),
             crypto_venues[0] if crypto_venues else "",
         )
-        v_norm = normalize_venue_name(venue)
-        eff_venue = v_norm if (v_norm in primary_map and primary_map[v_norm]) else default_venue
         if _parse_bool_flag(multi_venue, False):
-            return primary_map.get(eff_venue, ()), hl_book_url
+            target_v = v_norm or default_venue
+            return primary_map.get(target_v, ()), (hl_book_url if target_v in l2_info_venues else "")
+        eff_venue = v_norm if (v_norm in primary_map and primary_map[v_norm]) else default_venue
 
         ordered: list[str] = list(primary_map.get(eff_venue, ()))
         for peer in crypto_venues:
@@ -459,12 +491,16 @@ class ProviderVenueMetadataMixin:
             extracted = extract_self(data) if callable(extract_self) else None
             if not isinstance(extracted, dict):
                 for venue_key in cls._VENUE_PROVIDER_SPECS:
-                    prov_cls = cls.resolve_venue_provider_class(venue_key)
-                    extract_fn = getattr(prov_cls, "extract_orderbook_sides", None) if prov_cls is not None else None
-                    if callable(extract_fn):
-                        extracted = extract_fn(data)
-                        if isinstance(extracted, dict):
-                            break
+                    try:
+                        prov_cls = cls.resolve_venue_provider_class(venue_key)
+                        extract_fn = getattr(prov_cls, "extract_orderbook_sides", None) if prov_cls is not None else None
+                        if callable(extract_fn):
+                            extracted = extract_fn(data)
+                            if isinstance(extracted, dict):
+                                break
+                    except Exception as exc:
+                        cls._log_orderbook_provider_error("payload extraction", venue_key, "normalize_orderbook_payload", exc)
+                        continue
             if not isinstance(extracted, dict):
                 return None
             data = extracted
