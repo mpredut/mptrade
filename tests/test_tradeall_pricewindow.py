@@ -1797,3 +1797,73 @@ def test_trend_coordinator_evaluate_resolves_ssot_vol_1h_pct_from_mem_and_disk(t
     assert coord.evaluate("BTCUSDC") == {"symbol": "BTCUSDC"}
     assert seen_vols[-1] == pytest.approx(2.75)
 
+
+def test_unlisted_symbol_missing_price_no_busy_spin_and_live_http_backoff(tmp_path, monkeypatch):
+    """Unlisted/missing-price symbols stamp _last_eval on early return (no 0-sleep spin) and back off live forced HTTP fetches."""
+    import cacheprice as cp_mod
+
+    monkeypatch.setattr(ta, "is_symbol_market_open", lambda _sym: True)
+    price_calls = []
+    cpm_stub = SimpleNamespace(
+        STALE_THRESHOLD_MS=3000,
+        stale_threshold_ms_for=lambda _sym: 3000,
+        get_price=lambda sym: (price_calls.append(sym) and None),
+    )
+    inst_stub = SimpleNamespace(
+        window_big_sec=900,
+        get_window=lambda *_a: None,
+        get_analyzer=lambda *_a: None,
+        update_snapshot=lambda *_a, **_kw: None,
+    )
+    coord = ta.TrendCoordinator(
+        symbols=["ANTxUSD"],
+        instant_mgr=inst_stub,
+        current_price_mgr=cpm_stub,
+        min_interval=0.05,
+        max_interval=30.0,
+    )
+    coord._kalman_state = None
+
+    th = threading.Thread(target=coord.run, daemon=True)
+    th.start()
+    try:
+        time.sleep(0.08)
+        coord.stop()
+    finally:
+        th.join(timeout=2.0)
+    assert not th.is_alive()
+    assert len(price_calls) == 1
+    assert coord._dirty["ANTxUSD"] is False
+    assert coord._last_eval["ANTxUSD"] > 0.0
+
+    # When a real tick arrives later, on_price_update marks dirty again cleanly.
+    coord.on_price_update("ANTxUSD", int(time.time() * 1000), 100.0)
+    assert coord._dirty["ANTxUSD"] is True
+
+    # Live forced HTTP fetch in CacheCurrentPriceManager backs off repeated None responses,
+    # while immediately serving any fresh tick pushed via push_price/on_items_update.
+    cpm = cm.CacheCurrentPriceManager(
+        sync_ts=0.8,
+        symbols=["ANTxUSD"],
+        filename=str(tmp_path / "cp_backoff.json"),
+        ws_manager=None,
+        provider_names={"ANTxUSD": "kraken"},
+        data_sync_mode=cm.CacheManagerInterface.MODE_LIVE_READER,
+    )
+    cpm.market_api = cp_mod._market_api.api
+    now_box = [1_795_028_500.0]
+    remote_fetches = []
+    monkeypatch.setattr(cp_mod, "_now_time", lambda: now_box[0])
+    monkeypatch.setattr(cp_mod, "is_live_network_backfill_enabled", lambda *_a, **_kw: True)
+    monkeypatch.setattr(cpm, "get_remote_items", lambda sym, _st: (remote_fetches.append(sym) and []))
+
+    assert cpm.get_price("ANTxUSD") is None
+    assert cpm.get_price("ANTxUSD") is None
+    assert cpm.query_remote_and_update_cache() is True
+    assert remote_fetches == ["ANTxUSD"]
+
+    # Fresh pushed tick bypasses empty-fetch backoff immediately.
+    cpm.push_price("ANTxUSD", 42.5, ts_ms=int(now_box[0] * 1000))
+    assert cpm.get_price("ANTxUSD") == [int(now_box[0] * 1000), 42.5]
+
+

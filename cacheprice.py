@@ -1422,6 +1422,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._delegated_poller_symbols: set[str] = set()
         self._update_timestamps: dict = defaultdict(deque)
         self._rth_empty_backoff_ts: dict = {}
+        self._empty_http_backoff_ts: dict[str, float] = {}
         self._last_http_poll_ts_per_symbol: dict[str, float] = {}
         self._fallback_pool_lock = threading.Lock()
         self._fallback_pool: Optional[_futures.ThreadPoolExecutor] = None
@@ -1573,6 +1574,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         now = _now_time()
         cutoff = now - self.FREQ_WINDOW_SEC
         with self.lock:
+            self._empty_http_backoff_ts.pop(symbol, None)
             dq = self._update_timestamps[symbol]
             dq.append(now)
             while dq and dq[0] < cutoff:
@@ -1700,14 +1702,31 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             except Exception:
                 pass
 
-    def _is_live_daemon_poll_mode(self) -> bool:
+    def _is_live_network_mode(self) -> bool:
         stop_ev = getattr(self, "_stop_event", None)
         return bool(
-            self.save_state
-            and getattr(self, "market_api", None) is _market_api.api
+            getattr(self, "market_api", None) is _market_api.api
             and is_live_network_backfill_enabled()
             and not (stop_ev is not None and stop_ev.is_set())
         )
+
+    def _is_live_daemon_poll_mode(self) -> bool:
+        return bool(self.save_state and self._is_live_network_mode())
+
+    def _is_empty_http_backed_off(self, symbol: str, now_s: float) -> bool:
+        backoff_map = getattr(self, "_empty_http_backoff_ts", None)
+        if not isinstance(backoff_map, dict):
+            return False
+        last_empty = backoff_map.get(symbol, 0.0)
+        return last_empty > 0.0 and 0.0 <= (now_s - last_empty) < self.ws_timeout_sec_for(symbol)
+
+    def _record_empty_http_result(self, symbol: str, *, ok: bool) -> None:
+        backoff_map = getattr(self, "_empty_http_backoff_ts", None)
+        if isinstance(backoff_map, dict):
+            if ok:
+                backoff_map.pop(symbol, None)
+            else:
+                backoff_map[symbol] = _now_time()
 
     def _cached_entry_ts_ms(self, symbol: str) -> Optional[int]:
         sym_u, sym_clean = _norm_symbol_keys(symbol)
@@ -1746,7 +1765,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         if not self.fetchtime_per_symbol:
             self._ensure_fetchtimes_initialized()
             self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
-        is_live_daemon_poll = self._is_live_daemon_poll_mode()
+        is_live_net = self._is_live_network_mode()
+        is_live_daemon_poll = bool(self.save_state and is_live_net)
         min_poll_gap = max(
             0.45,
             min(safe_pos_float(self.sync_ts, default=0.8) or 0.8, 0.75),
@@ -1759,6 +1779,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             if self._symbol_ws_and_cache_fresh(
                 symbol, is_live_daemon_poll=is_live_daemon_poll, now_ms=now_ms_scan
             ):
+                continue
+            if is_live_net and self._is_empty_http_backed_off(symbol, now_ms_scan / 1000.0):
                 continue
             is_rth_sym = self._is_equity_instrument(symbol)
             if is_rth_sym and is_rth_gate_enabled(
@@ -1806,6 +1828,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 if stop_ev is not None and stop_ev.is_set():
                     break
                 new_items = self._fetch_and_apply_remote_items(symbol, startTime)
+                if is_live_net:
+                    self._record_empty_http_result(symbol, ok=bool(new_items))
                 if is_rth_sym:
                     if not new_items:
                         self._rth_empty_backoff_ts[symbol] = _now_time()
@@ -1830,6 +1854,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             except Exception as exc:
                 self._log_remote_fetch_error("HTTP fetch", sym_done, exc)
                 new_items = []
+            if is_live_net:
+                self._record_empty_http_result(sym_done, ok=bool(new_items))
             if new_items:
                 self._persist_items(sym_done, new_items)
                 self._last_http_poll_ts_per_symbol[sym_done] = _now_time()
@@ -2036,11 +2062,18 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             or age_ms > stale_threshold_ms
             or age_ms < -5_000
         ):
+            live_net = self._is_live_network_mode()
+            if live_net and self._is_empty_http_backed_off(target_sym, now_ms / 1000.0):
+                return None
             age = age_ms if age_ms is not None else -1
             print(f"[{self.cls_name}] {target_sym} stale ({age}ms) - forced HTTP fetch")
             new = self.get_remote_items(target_sym, None)
             if not new or self.extract_price_and_ts(new)[0] is None:
+                if live_net:
+                    self._record_empty_http_result(target_sym, ok=False)
                 return None
+            if live_net:
+                self._record_empty_http_result(target_sym, ok=True)
             self._persist_items(target_sym, new)
             self.save_state_to_file_if_enabled()
             _, entry, _ = self._resolve_and_load_cached_entry(target_sym, now_ms)

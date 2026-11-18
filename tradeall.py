@@ -916,6 +916,13 @@ class TrendCoordinator:
                 memo[sym_key] = (now_mono, regime_ctx)
         return regime_ctx
 
+    def _mark_evaluated(self, symbol: str) -> None:
+        dirty = getattr(self, "_dirty", None)
+        last_eval = getattr(self, "_last_eval", None)
+        if isinstance(dirty, dict) and isinstance(last_eval, dict):
+            with getattr(self, "_lock", None) or contextlib.nullcontext():
+                dirty[symbol], last_eval[symbol] = False, time.time()
+
     def evaluate(self, symbol):
         stop_ev = getattr(self, "_stop", None)
         if stop_ev is not None and stop_ev.is_set():
@@ -925,147 +932,148 @@ class TrendCoordinator:
             self.trend_states[symbol] = self._new_trend_state()
         if symbol not in self.trend_states_big:
             self.trend_states_big[symbol] = self._new_trend_state()
-        if not is_symbol_market_open(symbol):
-            lock = getattr(self, "_lock", None)
-            if lock is not None:
-                with lock:
-                    self._dirty[symbol], self._last_eval[symbol] = False, time.time()
-            return None
-        get_entry = getattr(self.current_price_mgr, "get_price", None)
-        if callable(get_entry):
-            entry = get_entry(symbol)
-            if not entry or len(entry) < 2:
+        evaluated = False
+        try:
+            if not is_symbol_market_open(symbol):
                 return None
-            ts_ms, current_price = entry[0], entry[1]
-            ts_ms_f = safe_float(ts_ms, default=None)
-            stale_fn = getattr(self.current_price_mgr, "stale_threshold_ms_for", None)
-            raw_max_age_ms = (
-                stale_fn(symbol)
-                if callable(stale_fn)
-                else getattr(self.current_price_mgr, "STALE_THRESHOLD_MS", PRICE_FRESHNESS_MAX_AGE_MS)
+            get_entry = getattr(self.current_price_mgr, "get_price", None)
+            if callable(get_entry):
+                entry = get_entry(symbol)
+                if not entry or len(entry) < 2:
+                    return None
+                ts_ms, current_price = entry[0], entry[1]
+                ts_ms_f = safe_float(ts_ms, default=None)
+                stale_fn = getattr(self.current_price_mgr, "stale_threshold_ms_for", None)
+                raw_max_age_ms = (
+                    stale_fn(symbol)
+                    if callable(stale_fn)
+                    else getattr(self.current_price_mgr, "STALE_THRESHOLD_MS", PRICE_FRESHNESS_MAX_AGE_MS)
+                )
+                max_age_ms = safe_float(raw_max_age_ms, default=None)
+                if ts_ms_f is None or max_age_ms is None:
+                    return None
+                age_ms = time.time() * 1000.0 - ts_ms_f
+                # get_price() attempts an HTTP refresh, but historically returned its old
+                # cached entry when that refresh failed.  Do not trade on that stale value
+                # or on a timestamp materially in the future.
+                if age_ms > max_age_ms or age_ms < -1_000:
+                    print(f"[TrendCoordinator] stale/future price {symbol}: age_ms={age_ms:.0f}")
+                    return None
+            else:
+                current_price = self.current_price_mgr.get_price_value(symbol)
+            current_price = safe_pos_float(current_price, default=None)
+            if current_price is None or (stop_ev is not None and stop_ev.is_set()):
+                return None
+            regime_ctx = self._resolve_regime_context(symbol)
+            if stop_ev is not None and stop_ev.is_set():
+                return None
+
+            win = self.instant_mgr.get_window(symbol)
+            win_big = self.instant_mgr.get_window(symbol, self.instant_mgr.window_big_sec)
+            analyzer = self.instant_mgr.get_analyzer(symbol)
+            analyzer_big = self.instant_mgr.get_analyzer(symbol, self.instant_mgr.window_big_sec)
+            if win is None or win_big is None or analyzer is None or analyzer_big is None:
+                return None
+            kalman_fields = {}
+            prev_ktrend = None
+            new_ktrend = None
+            if self._kalman_state is not None:
+                try:
+                    st_prev = casefold_get(self._kalman_state._state, symbol)
+                    if st_prev:
+                        prev_ktrend = st_prev.get("kalman_trend")
+                    ssot_vol = None
+                    mem_dict = getattr(self.instant_mgr, "_mem", None)
+                    if isinstance(mem_dict, dict):
+                        with getattr(self.instant_mgr, "_lock", None) or contextlib.nullcontext():
+                            mem_st = casefold_get(mem_dict, symbol)
+                            if isinstance(mem_st, dict):
+                                ssot_vol = safe_pos_float(mem_st.get("vol_1h_pct"), default=None)
+                    if ssot_vol is None:
+                        inst_fname = getattr(self.instant_mgr, "filename", None)
+                        if isinstance(inst_fname, str) and inst_fname and os.path.exists(inst_fname):
+                            ssot_vol = resolve_cached_volatility_1h_pct(symbol, state_path=inst_fname)
+                        elif hasattr(self.instant_mgr, "_read_file"):
+                            try:
+                                disk_st = casefold_get(self.instant_mgr._read_file(), symbol)
+                                if isinstance(disk_st, dict):
+                                    ssot_vol = safe_pos_float(disk_st.get("vol_1h_pct"), default=None)
+                            except Exception:
+                                ssot_vol = None
+                    kalman_fields = self._kalman_state.update(
+                        symbol, time.time(), current_price,
+                        epsilon=win.get_noise_epsilon(),
+                        big_prices=win_big.prices,
+                        big_sample_rate=win_big.sample_rate_sec,
+                        precomputed_vol_1h_pct=ssot_vol,
+                    ) or {}
+                    new_ktrend = kalman_fields.get("kalman_trend")
+                except Exception as _e:  # noqa: BLE001
+                    print(f"[TrendCoordinator] kalman state error {symbol} (continuing): {_e}")
+
+            ts_small = self.trend_states[symbol]
+            ts_big = self.trend_states_big[symbol]
+            if stop_ev is not None and stop_ev.is_set():
+                return None
+            prev_attempts = (
+                getattr(ts_small, "_last_attempt_up_ts", None),
+                getattr(ts_small, "_last_attempt_down_ts", None),
+                getattr(ts_big, "_last_attempt_up_ts", None),
+                getattr(ts_big, "_last_attempt_down_ts", None),
             )
-            max_age_ms = safe_float(raw_max_age_ms, default=None)
-            if ts_ms_f is None or max_age_ms is None:
-                return None
-            age_ms = time.time() * 1000.0 - ts_ms_f
-            # get_price() attempts an HTTP refresh, but historically returned its old
-            # cached entry when that refresh failed.  Do not trade on that stale value
-            # or on a timestamp materially in the future.
-            if age_ms > max_age_ms or age_ms < -1_000:
-                print(f"[TrendCoordinator] stale/future price {symbol}: age_ms={age_ms:.0f}")
-                return None
-        else:
-            current_price = self.current_price_mgr.get_price_value(symbol)
-        current_price = safe_pos_float(current_price, default=None)
-        if current_price is None or (stop_ev is not None and stop_ev.is_set()):
-            return None
-        regime_ctx = self._resolve_regime_context(symbol)
-        if stop_ev is not None and stop_ev.is_set():
-            return None
-
-        win = self.instant_mgr.get_window(symbol)
-        win_big = self.instant_mgr.get_window(symbol, self.instant_mgr.window_big_sec)
-        analyzer = self.instant_mgr.get_analyzer(symbol)
-        analyzer_big = self.instant_mgr.get_analyzer(symbol, self.instant_mgr.window_big_sec)
-        if win is None or win_big is None or analyzer is None or analyzer_big is None:
-            return None
-        kalman_fields = {}
-        prev_ktrend = None
-        new_ktrend = None
-        if self._kalman_state is not None:
-            try:
-                st_prev = casefold_get(self._kalman_state._state, symbol)
-                if st_prev:
-                    prev_ktrend = st_prev.get("kalman_trend")
-                ssot_vol = None
-                mem_dict = getattr(self.instant_mgr, "_mem", None)
-                if isinstance(mem_dict, dict):
-                    with getattr(self.instant_mgr, "_lock", None) or contextlib.nullcontext():
-                        mem_st = casefold_get(mem_dict, symbol)
-                        if isinstance(mem_st, dict):
-                            ssot_vol = safe_pos_float(mem_st.get("vol_1h_pct"), default=None)
-                if ssot_vol is None:
-                    inst_fname = getattr(self.instant_mgr, "filename", None)
-                    if isinstance(inst_fname, str) and inst_fname and os.path.exists(inst_fname):
-                        ssot_vol = resolve_cached_volatility_1h_pct(symbol, state_path=inst_fname)
-                    elif hasattr(self.instant_mgr, "_read_file"):
-                        try:
-                            disk_st = casefold_get(self.instant_mgr._read_file(), symbol)
-                            if isinstance(disk_st, dict):
-                                ssot_vol = safe_pos_float(disk_st.get("vol_1h_pct"), default=None)
-                        except Exception:
-                            ssot_vol = None
-                kalman_fields = self._kalman_state.update(
-                    symbol, time.time(), current_price,
-                    epsilon=win.get_noise_epsilon(),
-                    big_prices=win_big.prices,
-                    big_sample_rate=win_big.sample_rate_sec,
-                    precomputed_vol_1h_pct=ssot_vol,
-                ) or {}
-                new_ktrend = kalman_fields.get("kalman_trend")
-            except Exception as _e:  # noqa: BLE001
-                print(f"[TrendCoordinator] kalman state error {symbol} (continuing): {_e}")
-
-        ts_small = self.trend_states[symbol]
-        ts_big = self.trend_states_big[symbol]
-        if stop_ev is not None and stop_ev.is_set():
-            return None
-        prev_attempts = (
-            getattr(ts_small, "_last_attempt_up_ts", None),
-            getattr(ts_small, "_last_attempt_down_ts", None),
-            getattr(ts_big, "_last_attempt_up_ts", None),
-            getattr(ts_big, "_last_attempt_down_ts", None),
-        )
-        prev_orders_snapshot = list(_symbol_order_ids.get(symbol, []))
-        snapshot = handle_symbol(
-            symbol, current_price,
-            win,
-            win_big,
-            analyzer,
-            analyzer_big,
-            ts_small, ts_big,
-            regime_ctx=regime_ctx,
-        )
-        cur_orders_snapshot = list(_symbol_order_ids.get(symbol, []))
-        cur_attempts = (
-            getattr(ts_small, "_last_attempt_up_ts", None),
-            getattr(ts_small, "_last_attempt_down_ts", None),
-            getattr(ts_big, "_last_attempt_up_ts", None),
-            getattr(ts_big, "_last_attempt_down_ts", None),
-        )
-        handle_placed_order = bool(
-            (cur_orders_snapshot and cur_orders_snapshot != prev_orders_snapshot)
-            or cur_attempts != prev_attempts
-        )
-        with self._lock:
-            self._dirty[symbol], self._last_eval[symbol] = False, time.time()
-        # Merge the complete snapshot into the cross-process store. Remove ``symbol``
-        # because it is already supplied positionally.
-        fields = {k: v for k, v in snapshot.items() if k != "symbol"}
-        if kalman_fields:
-            fields.update(kalman_fields)
-        if self._kalman_state is not None and not (stop_ev is not None and stop_ev.is_set()):
-            try:
-                # Primary Kalman starts an order on a trend transition for enabled
-                # symbols when handle_symbol did not already place one on this tick.
-                if (symbol in KALMAN_PRIMARY_SYMBOLS and prev_ktrend is not None
-                        and new_ktrend != prev_ktrend and not handle_placed_order
-                        and new_ktrend in (1, -1)):
-                    kp_dir, kp_side, kp_reason = (
-                        ("UP", "BUY", "kalman_primary_up")
-                        if new_ktrend == 1
-                        else ("DOWN", "SELL", "kalman_primary_down")
-                    )
-                    print(f"[KALMAN-PRIMARY] {symbol} ->{kp_dir}: initiating {kp_side}")
-                    track_and_place_order(
-                        kp_side, symbol, 1, current_price, current_price,
-                        reason=kp_reason,
-                        safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
-                        cancelorders=True, hours=0.3, regime_context=regime_ctx)
-            except Exception as _e:  # noqa: BLE001
-                print(f"[TrendCoordinator] kalman state error {symbol} (continuing): {_e}")
-        self.instant_mgr.update_snapshot(symbol, **fields)
-        return snapshot
+            prev_orders_snapshot = list(_symbol_order_ids.get(symbol, []))
+            snapshot = handle_symbol(
+                symbol, current_price,
+                win,
+                win_big,
+                analyzer,
+                analyzer_big,
+                ts_small, ts_big,
+                regime_ctx=regime_ctx,
+            )
+            cur_orders_snapshot = list(_symbol_order_ids.get(symbol, []))
+            cur_attempts = (
+                getattr(ts_small, "_last_attempt_up_ts", None),
+                getattr(ts_small, "_last_attempt_down_ts", None),
+                getattr(ts_big, "_last_attempt_up_ts", None),
+                getattr(ts_big, "_last_attempt_down_ts", None),
+            )
+            handle_placed_order = bool(
+                (cur_orders_snapshot and cur_orders_snapshot != prev_orders_snapshot)
+                or cur_attempts != prev_attempts
+            )
+            self._mark_evaluated(symbol)
+            evaluated = True
+            # Merge the complete snapshot into the cross-process store. Remove ``symbol``
+            # because it is already supplied positionally.
+            fields = {k: v for k, v in snapshot.items() if k != "symbol"}
+            if kalman_fields:
+                fields.update(kalman_fields)
+            if self._kalman_state is not None and not (stop_ev is not None and stop_ev.is_set()):
+                try:
+                    # Primary Kalman starts an order on a trend transition for enabled
+                    # symbols when handle_symbol did not already place one on this tick.
+                    if (symbol in KALMAN_PRIMARY_SYMBOLS and prev_ktrend is not None
+                            and new_ktrend != prev_ktrend and not handle_placed_order
+                            and new_ktrend in (1, -1)):
+                        kp_dir, kp_side, kp_reason = (
+                            ("UP", "BUY", "kalman_primary_up")
+                            if new_ktrend == 1
+                            else ("DOWN", "SELL", "kalman_primary_down")
+                        )
+                        print(f"[KALMAN-PRIMARY] {symbol} ->{kp_dir}: initiating {kp_side}")
+                        track_and_place_order(
+                            kp_side, symbol, 1, current_price, current_price,
+                            reason=kp_reason,
+                            safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
+                            cancelorders=True, hours=0.3, regime_context=regime_ctx)
+                except Exception as _e:  # noqa: BLE001
+                    print(f"[TrendCoordinator] kalman state error {symbol} (continuing): {_e}")
+            self.instant_mgr.update_snapshot(symbol, **fields)
+            return snapshot
+        finally:
+            if not evaluated and not (stop_ev is not None and stop_ev.is_set()):
+                self._mark_evaluated(symbol)
 
     # Main event-driven loop and heartbeat.
     def run(self):
