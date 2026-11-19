@@ -44,6 +44,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     _MICRO_OB_LOCAL_KEYS,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
+    format_book_window_cap_tag,
     format_flow_horizon_parts,
     format_spot_cvd_source_tag,
     purge_liquidation_cluster_keys,
@@ -1075,11 +1076,12 @@ def _format_microstructure_section(
         b_dep_v = safe_float(minfo.get("bid_depth_usd"), 0.0)
         a_dep_v = safe_float(minfo.get("ask_depth_usd"), 0.0)
         b_span_pct = safe_pos_float(minfo.get("book_span_pct"), default=0.0) or 0.0
-        if 0.0 < b_span_pct < 0.95 and abs(d1_b - b_dep_v) < 1.0 and abs(d1_a - a_dep_v) < 1.0:
-            depth_1pct_sfx = f", book_window=+/-{b_span_pct:g}%[level_cap], slip_2k={minfo.get('est_slip_2k_bps')}bps"
-        elif 0.0 < b_span_pct < 1.45 and (d1_b > 0.0 or d1_a > 0.0):
+        bw_cap_tag = format_book_window_cap_tag(b_span_pct)
+        if bw_cap_tag and b_span_pct < 0.95 and abs(d1_b - b_dep_v) < 1.0 and abs(d1_a - a_dep_v) < 1.0:
+            depth_1pct_sfx = f", {bw_cap_tag}, slip_2k={minfo.get('est_slip_2k_bps')}bps"
+        elif bw_cap_tag and (d1_b > 0.0 or d1_a > 0.0):
             depth_1pct_sfx = (
-                f", book_window=+/-{b_span_pct:g}%[level_cap], "
+                f", {bw_cap_tag}, "
                 f"depth_1pct=(bid={_fmt_liq_usd(d1_b)}/ask={_fmt_liq_usd(d1_a)}, slip_2k={minfo.get('est_slip_2k_bps')}bps)"
             )
         else:

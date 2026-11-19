@@ -585,7 +585,7 @@ def load_symbol_microstructure(
             and abs((m_info.get("depth_1pct_ask_usd") or 0.0) - a_dep_m) < 1.0
             and (bw_m := m_info.get("bid_wall_px"))
             and (aw_m := m_info.get("ask_wall_px"))
-            and 0.0 < (w_span_pct := max(abs(ob_mid - bw_m), abs(aw_m - ob_mid)) / ob_mid * 100.0) < 0.50
+            and 0.0 < (w_span_pct := max(abs(ob_mid - bw_m), abs(aw_m - ob_mid)) / ob_mid * 100.0) < 0.95
         ):
             m_info["book_span_pct"] = round(w_span_pct, 3)
     if deriv is not None:

@@ -85,6 +85,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     compute_cross_venue_arb_metrics,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
+    format_book_window_cap_tag,
     format_flow_horizon_parts,
     format_spot_cvd_source_tag,
     is_ob_live_and_newer,
@@ -740,10 +741,16 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
                         if is_eq_sym and 1.0 <= w_px < 10.0 and abs(w_px - round(w_px, 2)) >= 1e-4
                         else (f"{w_px:,.2f}" if w_px >= 1.0 else f"{w_px:.6f}".rstrip("0").rstrip("."))
                     )
+                    ob_span_pt = safe_pos_float(obj_attr(ob_snap, "book_span_pct", 0.0), 0.0) or 0.0
+                    none_wall_lbl = (
+                        f"None detected within +/-{ob_span_pt:g}%[level_cap]"
+                        if 0.0 < ob_span_pt < 1.45
+                        else "None detected within 2%"
+                    )
                     telemetry[f"Orderbook {side_lbl} Wall Ahead"] = (
                         f"${w_usd:,.0f} @ ${w_px_fmt}"
                         if w_usd >= min_wall_usd and w_px > 0.0
-                        else "None detected within 2%"
+                        else none_wall_lbl
                     )
         except Exception:
             pass
@@ -1713,8 +1720,10 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
         d1_b = safe_pos_float(cur_m_info.get("depth_1pct_bid_usd"), default=0.0) or 0.0
         d1_a = safe_pos_float(cur_m_info.get("depth_1pct_ask_usd"), default=0.0) or 0.0
         if d1_b > 0.0 or d1_a > 0.0:
+            bw_pt_tag = format_book_window_cap_tag(cur_m_info.get("book_span_pct"))
+            bw_pt_s = f", {bw_pt_tag}" if bw_pt_tag else ""
             slip_s = f", est_slip_2k={cur_m_info['est_slip_2k_bps']} bps" if cur_m_info.get("est_slip_2k_bps") is not None else ""
-            telemetry["Orderbook Depth Within 1%"] = f"bid=${d1_b:,.0f} / ask=${d1_a:,.0f}{slip_s}"
+            telemetry["Orderbook Depth Within 1%"] = f"bid=${d1_b:,.0f} / ask=${d1_a:,.0f}{bw_pt_s}{slip_s}"
         p_est: Dict[str, Any] = {k: v for k, v in t_entry.items() if v is not None and k != "price"}
         if cur_px_est and cur_px_est > 0:
             p_est["price"] = cur_px_est

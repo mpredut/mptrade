@@ -82,6 +82,12 @@ def format_spot_cvd_source_tag(minfo: Optional[Dict[str, Any]]) -> str:
     return "[est:ob+15m]" if (src == "est_ob_15m" or minfo.get("_synthetic_spot_cvd")) else ""
 
 
+def format_book_window_cap_tag(book_span_pct: Any, *, max_capped_pct: float = 1.45) -> str:
+    """Return canonical ``book_window=+/-X%[level_cap]`` tag when REST L2 depth is capped below ``max_capped_pct``."""
+    span_f = safe_pos_float(book_span_pct, default=0.0) or 0.0
+    return f"book_window=+/-{span_f:g}%[level_cap]" if 0.0 < span_f < max_capped_pct else ""
+
+
 def format_flow_horizon_parts(
     minfo: Optional[Dict[str, Any]],
     fmt_cvd_usd: Any,
@@ -1766,6 +1772,7 @@ __all__ = [
     "enrich_cross_venue_trends",
     "enrich_microstructure_cvd",
     "evaluate_microstructure_cycle_deltas",
+    "format_book_window_cap_tag",
     "format_flow_horizon_parts",
     "format_spot_cvd_source_tag",
     "is_ob_live_and_newer",

@@ -308,10 +308,17 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             imbalance = bid_depth_usd / total_depth if total_depth > 0 else 0.5
             spread_bps = round_spread_bps(best_bid=best_bid, best_ask=best_ask, mid_price=mid) or 0.0
             book_span_pct = 0.0
-            if mid > 0 and (len(bids) >= 100 or len(asks) >= 100):
-                bid_span = max(0.0, ((mid - bids[-1][0]) / mid) * 100.0)
-                ask_span = max(0.0, ((asks[-1][0] - mid) / mid) * 100.0)
-                book_span_pct = round(min(bid_span, ask_span, self.depth_band_pct), 3)
+            if mid > 0:
+                capped_spans = [
+                    max(0.0, dist_pct)
+                    for side_lvls, dist_pct in (
+                        (bids, ((mid - bids[-1][0]) / mid) * 100.0 if bids else 0.0),
+                        (asks, ((asks[-1][0] - mid) / mid) * 100.0 if asks else 0.0),
+                    )
+                    if len(side_lvls) >= 100
+                ]
+                if capped_spans:
+                    book_span_pct = round(min(*capped_spans, self.depth_band_pct), 3)
 
             eff_spot_venue = reg_venue or MarketDataProvider.resolve_venue_for_orderbook_url(
                 self._preferred_url.get(symbol)

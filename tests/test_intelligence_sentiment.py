@@ -11860,6 +11860,86 @@ def test_item_3_6_scoped_risk_engine_xstock_beta_and_shadow_state_exclusion(tmp_
     assert "subcycle_lifo_pnl=$+22.99" in sec_eq
 
 
+def test_item_3_7_book_window_level_cap_symmetry_and_thin_book_isolation(tmp_path):
+    """Verify truncated REST L2 book_window=+/-X%[level_cap] is symmetric across Section 3B and Pretrade and never triggers on <100-level thin sides."""
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+    from state_io import atomic_write_json
+
+    now_s = 1_795_061_600.0
+    cdir = tmp_path / "cachedb"
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+
+    # 1. Pretrade GLLM telemetry surfaces book_window=+/-0.07%[level_cap] symmetrically with Supervisor Section 3B
+    atomic_write_json(
+        str(cdir / "prices" / "cache_current_price.json"),
+        {"items": {"BTCUSDC": [[int((now_s - 0.5) * 1000), 63_280.0]]}},
+    )
+    atomic_write_json(
+        str(cdir / "telemetry" / "orderbook_depth_BTCUSDC.json"),
+        {
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "ts": now_s - 5.0,
+            "mid_price": 63_280.0,
+            "best_bid": 63_279.99,
+            "best_ask": 63_280.01,
+            "spread_bps": 0.003,
+            "bid_depth_usd": 3_100_000.0,
+            "ask_depth_usd": 3_000_000.0,
+            "depth_1pct_bid_usd": 3_100_000.0,
+            "depth_1pct_ask_usd": 3_000_000.0,
+            "imbalance_ratio": 0.508,
+            "largest_bid_wall_usd": 2_000.0,
+            "largest_bid_wall_price": 63_250.0,
+            "largest_ask_wall_usd": 2_000.0,
+            "largest_ask_wall_price": 63_310.0,
+            "book_span_pct": 0.07,
+        },
+    )
+    pt_res = collect_pretrade_telemetry(
+        "BTCUSDC",
+        cachedb_dir=str(cdir),
+        allow_network=False,
+    )
+    tel = pt_res.get("telemetry") if isinstance(pt_res, dict) and "telemetry" in pt_res else pt_res
+    assert "book_window=+/-0.07%[level_cap]" in tel["Orderbook Depth Within 1%"]
+    assert tel["Orderbook Ask Wall Ahead"] == "None detected within +/-0.07%[level_cap]"
+
+    sec_3b = "\n".join(
+        _format_microstructure_section(
+            {
+                "BTCUSDC": {
+                    "ob_mid_price": 63_280.0,
+                    "spread_bps": 0.003,
+                    "bid_depth_usd": 3_100_000.0,
+                    "ask_depth_usd": 3_000_000.0,
+                    "depth_1pct_bid_usd": 3_100_000.0,
+                    "depth_1pct_ask_usd": 3_000_000.0,
+                    "book_span_pct": 0.07,
+                    "est_slip_2k_bps": 0.5,
+                }
+            },
+            {"BTCUSDC": {"price": 63_280.0}},
+            now_ts=now_s,
+        )
+    )
+    assert "book_window=+/-0.07%[level_cap]" in sec_3b
+
+    # 2. Thin uncapped ask side (<100 levels at 0.60% while 120-level bid side reaches 2.0%) is NOT falsely tagged [level_cap]
+    col = OrderbookDepthCollector(cache_dir=str(cdir))
+    bids_120 = [[100.0 - i * 0.02, 1.0] for i in range(1, 121)]
+    asks_12 = [[100.0 + i * 0.05, 1.0] for i in range(1, 13)]
+    col._fetch_json_dict = lambda *_a, **_kw: {"bids": bids_120, "asks": asks_12}
+    col._resolve_real_spot_cvd_15m = lambda *_a, **_kw: None
+    snap_thin = col.fetch("TAOUSD", allow_network=True, now=now_s)
+    assert snap_thin is not None
+    assert snap_thin.book_span_pct == pytest.approx(1.5)
+
+
+
 
 
 
