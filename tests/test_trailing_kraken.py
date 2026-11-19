@@ -1607,7 +1607,7 @@ def test_antx_ipo_post_exit_dust_reconcile_zero_known_assets_and_sell_sweep(tmp_
     assert st_ant.s["ipo_peak"] == pytest.approx(99.195)
     assert st_ant.s["ledger_reconcile_required"] is False
 
-    # 2. kraken_xstock_watch.check_balance updates sold-out known_assets to 0.0 and persists across reload
+    # 2. kraken_xstock_watch.check_balance drops sold-out known_assets and persists cleanly across reload
     monkeypatch.setenv("XSTOCK_STATE_FILE", str(tmp_path / "xw_state.json"))
     fake_kr = FakeKrakenXStock(bal={"ZUSD": "100", "ANTx.T": "0.531"})
     xw_st = xw._load_state()
@@ -1615,10 +1615,10 @@ def test_antx_ipo_post_exit_dust_reconcile_zero_known_assets_and_sell_sweep(tmp_
     assert xw_st["known_assets"]["ANTx.T"] == pytest.approx(0.531)
     fake_kr.bal = {"ZUSD": "152", "ANTx.T": "0.00000000"}
     xw.check_balance(fake_kr, xw_st, r"^ANTx", False)
-    assert xw_st["known_assets"]["ANTx.T"] == 0.0
+    assert "ANTx.T" not in xw_st["known_assets"]
     xw._save_state(xw_st)
     reloaded_xw = xw._load_state()
-    assert reloaded_xw["known_assets"]["ANTx.T"] == 0.0
+    assert "ANTx.T" not in reloaded_xw["known_assets"]
 
     # 3. KrakenXstocksCollector drops <$1 priced dust while keeping pre-IPO unlisted holdings; XSTOCK_ZERO_FEE caps max_buy at 0
     krk_dir = tmp_path / "krk_cfg"
