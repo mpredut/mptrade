@@ -609,6 +609,14 @@ class ProviderVenueMetadataMixin:
         return None
 
     @classmethod
+    def extract_spot_flow_15m_usd(
+        cls, raw_data: Any, *, since_ts: float = 0.0
+    ) -> Optional[tuple[float, Optional[float]]]:
+        """Extract real 15m spot ``(cvd_usd, total_vol_usd)`` from ``raw_data``."""
+        cvd = cls.extract_spot_cvd_15m_usd(raw_data, since_ts=since_ts)
+        return (cvd, None) if cvd is not None else None
+
+    @classmethod
     def resolve_spot_cvd_15m_spec(
         cls,
         symbol: str,
@@ -631,4 +639,29 @@ class ProviderVenueMetadataMixin:
             return req, prov_cls.extract_spot_cvd_15m_usd
         except Exception as exc:
             cls._log_orderbook_provider_error("spot CVD request resolution", v_norm, canon_sym, exc)
+            return None, None
+
+    @classmethod
+    def resolve_spot_flow_15m_spec(
+        cls,
+        symbol: str,
+        *,
+        venue: str = "",
+        now_ts: float = 0.0,
+    ) -> tuple[Optional[tuple[str, Optional[dict]]], Optional[Any]]:
+        """Return venue-isolated ``(request_spec, flow_extractor_fn)`` returning ``(cvd_15m_usd, vol_15m_usd)``."""
+        canon_sym = canonical_symbol_key(symbol)
+        v_norm = normalize_venue_name(venue)
+        if not v_norm or symbol_quote_asset(canon_sym) == "EUR":
+            return None, None
+        try:
+            prov_cls = cls.resolve_venue_provider_class(v_norm)
+            if prov_cls is None or getattr(prov_cls, "_ASSET_SCOPE", "crypto") != "crypto":
+                return None, None
+            req = prov_cls.public_spot_cvd_15m_request(canon_sym, now_ts)
+            if req is None:
+                return None, None
+            return req, prov_cls.extract_spot_flow_15m_usd
+        except Exception as exc:
+            cls._log_orderbook_provider_error("spot flow request resolution", v_norm, canon_sym, exc)
             return None, None

@@ -32,12 +32,14 @@ from botcore import (
     pos_float_env,
     resolve_now_ts,
     safe_float,
+    safe_int,
     safe_nonneg_ts,
     safe_pos_float,
     safe_pos_int,
 )
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
+    CACHE_REALIZED_LIQUIDATIONS_FILENAME,
     CACHE_SHORT_TREND_FILENAME,
     KINEMATIC_IMPULSE_SIGNAL_FILENAME,
     canonical_base_asset,
@@ -48,6 +50,7 @@ from cachepaths import (
     resolve_workspace_dir_from_cachedb,
 )
 from intelligence.external.collectors.base_collector import collector_used_stale_fallback
+from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
 from intelligence.macro.daemon_ssot import (
     ExternalTelemetryMixin,
     add_external_telemetry_cli_args,
@@ -61,9 +64,17 @@ from intelligence.macro.daemon_ssot import (
     write_daemon_heartbeat,
 )
 from intelligence.macro.news_feed_collector import NewsFeedCollector
-from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
+from intelligence.macro_sentiment_ssot import (
+    resolve_derived_telemetry_intervals,
+    resolve_effective_macro_benchmarks_interval_sec,
+)
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
-from instrument_registry import canonical_display_symbol, has_workspace_instrument_sources, is_equity_symbol
+from instrument_registry import (
+    canonical_display_symbol,
+    has_workspace_instrument_sources,
+    is_equity_symbol,
+    resolve_symbol_identity,
+)
 from providers.base import MarketDataProvider
 
 load_tradable_instruments = MarketDataProvider.load_tradable_instruments
@@ -182,6 +193,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.news_interval_sec = safe_pos_float(news_interval_sec, default_news_itv)
         self.fear_greed_interval_sec = safe_pos_float(fear_greed_interval_sec, derived["fear_greed_interval_sec"])
         self.breadth_interval_sec = safe_pos_float(breadth_interval_sec, derived["breadth_interval_sec"])
+        self._explicit_macro_benchmarks_interval = macro_benchmarks_interval_sec is not None
+        self._default_macro_benchmarks_interval_sec = derived["macro_benchmarks_interval_sec"]
         self.macro_benchmarks_interval_sec = safe_pos_float(macro_benchmarks_interval_sec, derived["macro_benchmarks_interval_sec"])
         self.pretrade_caches_interval_sec = max(60.0, self.orderbook_interval_sec * 3.0)
         self.venue_balances_interval_sec = safe_pos_float(venue_balances_interval_sec, self.pretrade_caches_interval_sec)
@@ -192,6 +205,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self._auto_detected_symbols = list(self.symbols)
 
         self._init_external_collectors(logger, skip_external=skip_external)
+        self.bybit_liq_collector: Optional[BybitLiquidationCollector] = None
+        self._last_realized_liq_ts: float = 0.0
         self.news_collector = NewsFeedCollector(
             cache_ttl_sec=max(30.0, self.news_interval_sec * 0.5),
             history_file=os.path.join(self.cache_dir, "news_feed_collect.json"),
@@ -315,6 +330,60 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         except Exception as e:
             logger.warning("Failed updating market breadth: %s", e)
         return False
+
+    def _effective_macro_benchmarks_interval_sec(self, now_ts: Optional[float] = None) -> float:
+        """Use faster 45s macro-benchmark cadence during US cash open (09:25-10:15 NY) unless explicitly overridden."""
+        base = safe_pos_float(getattr(self, "macro_benchmarks_interval_sec", None), 300.0) or 300.0
+        if getattr(self, "_explicit_macro_benchmarks_interval", False):
+            return base
+        default_itv = safe_pos_float(getattr(self, "_default_macro_benchmarks_interval_sec", None), None)
+        if default_itv is not None and abs(base - default_itv) > 1e-6:
+            return base
+        return resolve_effective_macro_benchmarks_interval_sec(base, now_ts=now_ts)
+
+    def _realized_liquidation_perp_symbols(self) -> List[str]:
+        perp_syms: List[str] = []
+        seen: set[str] = set()
+        for raw_s in (*self.symbols, "BTCUSDT", "ETHUSDT", "SOLUSDT"):
+            ident = resolve_symbol_identity(raw_s)
+            if not ident.has_crypto_perpetuals:
+                continue
+            base = canonical_base_asset(ident.wire_symbol)
+            if base and base not in seen:
+                seen.add(base)
+                perp_syms.append(f"{base}USDT")
+        return perp_syms
+
+    def update_realized_liquidations(self, force: bool = False, now: Optional[float] = None) -> bool:
+        """Persist rolling 15m Bybit realized forced liquidations snapshot when WS stream is active."""
+        _ = force
+        col = getattr(self, "bybit_liq_collector", None)
+        if col is None:
+            return False
+        try:
+            eff_now = resolve_now_ts(self._resolve_step_now(now))
+            items: Dict[str, Dict[str, Any]] = {}
+            for psym in self._realized_liquidation_perp_symbols():
+                summ = col.get_summary(psym, window_sec=900.0, now=eff_now)
+                items[psym] = {
+                    "long_15m_usd": round(summ.long_liq_usd, 0),
+                    "short_15m_usd": round(summ.short_liq_usd, 0),
+                    "net_15m_usd": round(summ.net_usd, 0),
+                    "events_15m": safe_int(summ.events_count, 0),
+                    "last_event_ts": round(summ.last_event_ts, 3) if summ.last_event_ts else 0.0,
+                }
+            payload = {
+                "ts": eff_now,
+                "source": "bybit_ws",
+                "connected": bool(getattr(col, "is_running", False)),
+                "symbols": items,
+            }
+            out_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, CACHE_REALIZED_LIQUIDATIONS_FILENAME)))
+            save_json_state(out_path, payload, indent=2)
+            return True
+        except Exception as e:
+            logger.debug("Failed persisting realized liquidations snapshot: %s", e)
+            return False
 
     def update_macro_benchmarks(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch SPY, QQQ, ES=F, NQ=F, DXY, and US10Y macro benchmarks and persist to cachedb/."""
@@ -532,11 +601,13 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 current_ts, force, results, bounded=True, on_symbol_done=lambda: self.write_heartbeat(results)
             )
 
+            eff_mb_itv = self._effective_macro_benchmarks_interval_sec(current_ts)
             scheduled_tasks = (
                 (not self.skip_news, "_last_news_ts", self.news_interval_sec, self.update_news, (force,), 15.0, "news", "news_updated", lambda: self.write_heartbeat(results)),
                 (True, "_last_fear_greed_ts", self.fear_greed_interval_sec, self.update_fear_greed, (force,), 12.0, "fear_greed", "fear_greed_updated", None),
                 (True, "_last_breadth_ts", self.breadth_interval_sec, self.update_market_breadth, (force,), 15.0, "breadth", "breadth_updated", None),
-                (not self.skip_external, "_last_macro_benchmarks_ts", self.macro_benchmarks_interval_sec, self.update_macro_benchmarks, (force,), 15.0, "macro_benchmarks", "macro_benchmarks_updated", None),
+                (not self.skip_external, "_last_macro_benchmarks_ts", eff_mb_itv, self.update_macro_benchmarks, (force,), 15.0, "macro_benchmarks", "macro_benchmarks_updated", None),
+                (not self.skip_external and getattr(self, "bybit_liq_collector", None) is not None, "_last_realized_liq_ts", getattr(self, "derivatives_interval_sec", 30.0), self.update_realized_liquidations, (force,), 5.0, "realized_liquidations", "realized_liquidations_updated", None),
                 (not self.skip_external, "_last_pretrade_caches_ts", self.pretrade_caches_interval_sec, self.update_pretrade_caches, (force,), 24.0, "pretrade_caches", "pretrade_caches_updated", None),
                 (not self.skip_external, "_last_venue_balances_ts", self.venue_balances_interval_sec, self.update_venue_balances, (force,), 18.0, "venue_balances", "venue_balances_updated", None),
             )
@@ -600,19 +671,33 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
     def start(self, poll_interval_sec: float = 1.0) -> None:
         """Run the main telemetry collection loop continuously."""
         self._live_impulse_wakeup_enabled = bool_env("AI_IMPULSE_TRIGGER_ENABLED", True)
-        run_daemon_loop(
-            self,
-            poll_interval_sec=poll_interval_sec,
-            default_poll_sec=1.0,
-            daemon_name="GlobalTelemetryCollector",
-            stop_label="collector",
-            cycle_label="telemetry",
-            start_msg=f"Starting GlobalTelemetryCollector for symbols: {', '.join(self.symbols)} (PID={os.getpid()})",
-            logger_inst=logger,
-            initial_force=True,
-            initial_heartbeat={"ts": time.time(), "symbols": list(self.symbols)},
-            reraise_initial_exit=True,
-        )
+        if not self.skip_external and bool_env("BYBIT_LIQUIDATIONS_WS_ENABLED", True):
+            try:
+                perp_syms = self._realized_liquidation_perp_symbols()
+                if perp_syms and self.bybit_liq_collector is None:
+                    self.bybit_liq_collector = BybitLiquidationCollector(symbols=perp_syms, start_sync=False).start()
+            except Exception as exc:
+                logger.debug("Could not start BybitLiquidationCollector WS: %s", exc)
+        try:
+            run_daemon_loop(
+                self,
+                poll_interval_sec=poll_interval_sec,
+                default_poll_sec=1.0,
+                daemon_name="GlobalTelemetryCollector",
+                stop_label="collector",
+                cycle_label="telemetry",
+                start_msg=f"Starting GlobalTelemetryCollector for symbols: {', '.join(self.symbols)} (PID={os.getpid()})",
+                logger_inst=logger,
+                initial_force=True,
+                initial_heartbeat={"ts": time.time(), "symbols": list(self.symbols)},
+                reraise_initial_exit=True,
+            )
+        finally:
+            if self.bybit_liq_collector is not None:
+                try:
+                    self.bybit_liq_collector.stop(timeout=3.0)
+                except Exception:
+                    pass
 
 
 def main():

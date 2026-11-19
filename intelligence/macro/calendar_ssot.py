@@ -627,6 +627,12 @@ def compute_dynamic_sentiment_interval(
 
     session_ctx = resolve_global_trading_session(ts)
     if not session_ctx.is_weekend:
+        if _ssot.is_us_cash_open_volatility_window(ts):
+            us_open_interval = max(
+                60.0,
+                safe_pos_float(derived.get("sentiment_us_open_interval_sec"), 300.0) * scale,
+            )
+            return min(peak_overlap_interval, us_open_interval), f"us_cash_open_volatility_window_{session_ctx.session_key}"
         dt_eet = _primary_eet_dt(ts)
         minutes_eet = dt_eet.hour * 60 + dt_eet.minute
         if (15 * 60 + 30) <= minutes_eet <= (18 * 60 + 30):

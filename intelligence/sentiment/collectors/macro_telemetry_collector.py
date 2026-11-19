@@ -614,7 +614,12 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                     pass
             bench_cur = macro_sensors.get("macro_benchmarks")
             bench_age = safe_float(bench_cur.get("age_min") if isinstance(bench_cur, dict) else None, 999.0)
-            if bench_cur is None or bench_age is None or bench_age > stale_age_min:
+            bench_stale_min = (
+                min(stale_age_min, 1.5)
+                if _mss.is_us_cash_open_volatility_window(now_ts)
+                else stale_age_min
+            )
+            if bench_cur is None or bench_age is None or bench_age > bench_stale_min:
                 if isinstance(live_mb := collect_macro_benchmarks_snapshot(cache_dir, now_ts=now_ts, timeout_sec=2.5, persist=persist), dict) and live_mb:
                     macro_sensors["macro_benchmarks"] = _with_age_min(live_mb, os.path.join(cache_dir, "macro_benchmarks_collect.json"))
 
@@ -1182,6 +1187,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                     snapshot.portfolio_summary["open_limit_orders"],
                     snapshot.prices_and_trends,
                     snapshot.microstructure,
+                    now_ts=now_ts,
                 )
             if risk_eng := compute_enterprise_portfolio_risk_metrics(
                 snapshot.portfolio_summary, snapshot.prices_and_trends, snapshot.microstructure

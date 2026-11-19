@@ -1033,9 +1033,9 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         return (f"https://api.kraken.com/0/public/Trades?pair={kraken_pair}&since={since_ns}", None)
 
     @classmethod
-    def extract_spot_cvd_15m_usd(
+    def extract_spot_flow_15m_usd(
         cls, raw_data: Any, *, since_ts: float = 0.0
-    ) -> Optional[float]:
+    ) -> Optional[tuple[float, Optional[float]]]:
         if not isinstance(raw_data, dict) or raw_data.get("error"):
             return None
         res = raw_data.get("result")
@@ -1059,7 +1059,14 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 buy_usd += px * qty
             elif side == "s":
                 sell_usd += px * qty
-        return round(buy_usd - sell_usd, 0)
+        return round(buy_usd - sell_usd, 0), round(buy_usd + sell_usd, 0)
+
+    @classmethod
+    def extract_spot_cvd_15m_usd(
+        cls, raw_data: Any, *, since_ts: float = 0.0
+    ) -> Optional[float]:
+        flow = cls.extract_spot_flow_15m_usd(raw_data, since_ts=since_ts)
+        return flow[0] if flow is not None else None
 
     def fetch_historical_ohlc_points(
         self,

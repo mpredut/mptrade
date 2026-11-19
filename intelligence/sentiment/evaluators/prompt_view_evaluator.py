@@ -325,7 +325,7 @@ class MicrostructurePromptViewEvaluator(PromptViewEvaluatorBase):
                 or minfo.get("cvd_15m_usd") is None
                 or minfo.get("cvd_regime") is None
                 or (minfo.get("cvd_15m_base") is None and cur_px > 0.0)
-                or (isinstance(p_ctx, dict) and p_ctx.get("chg_15m_pct") is not None)
+                or (isinstance(p_ctx, dict) and (p_ctx.get("chg_15m_pct") is not None or p_ctx.get("spot_vol_24h_avg_15m_usd") is not None or p_ctx.get("rvol_1h") is not None))
             ):
                 enrich_microstructure_cvd(minfo, p_ctx)
             if sym_no_perp:

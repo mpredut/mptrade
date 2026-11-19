@@ -228,12 +228,12 @@ def test_current_execution_policy_is_preserved(tmp_path):
     assert all_syms == [
         "BTCUSDC", "TAOUSDC", "ARBUSDC",
         "HYPEUSDC", "HYPEUSD",
-        "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ",
+        "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ", "ANT_US_EQ",
         "TAOUSD", "ADAUSD", "SPCXxUSD", "ANTxUSD",
     ]
     assert nb_syms == [
         "HYPEUSDC", "HYPEUSD",
-        "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ",
+        "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ", "ANT_US_EQ",
         "TAOUSD", "ADAUSD", "SPCXxUSD", "ANTxUSD",
     ]
     assert nb_providers == {
@@ -242,6 +242,7 @@ def test_current_execution_policy_is_preserved(tmp_path):
         "SPCX_US_EQ": "t212",
         "NVDA_US_EQ": "t212",
         "RGNT_US_EQ": "t212",
+        "ANT_US_EQ": "t212",
         "TAOUSD": "kraken",
         "ADAUSD": "kraken",
         "SPCXxUSD": "kraken",

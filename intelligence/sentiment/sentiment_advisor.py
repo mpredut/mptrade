@@ -250,7 +250,7 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             '  "market_bias": "BULLISH" | "BEARISH" | "NEUTRAL" | "CAUTION",\n'
             '  "risk_level": "LOW" | "MODERATE" | "HIGH" | "EXTREME",\n'
             '  "confidence": 0.0 to 1.0,\n'
-            '  "summary": "Concise 1-2 sentence purely factual synthesis of cross-asset, derivatives, and order-flow metrics (do NOT prescribe trading actions like HOLD, ACCUMULATE, or DEFENSIVE inside the summary text)",\n'
+            '  "summary": "Ultra-dense 1-2 sentence (<=240 chars) purely factual quantitative synthesis of cross-asset, derivatives, and order-flow metrics (no prose filler; do NOT prescribe trading actions like HOLD, ACCUMULATE, or DEFENSIVE inside summary)",\n'
             '  "key_risks": ["Risk 1", "Risk 2"],\n'
             '  "recommended_action": "ACCUMULATE" | "HOLD" | "TRIM_PROFITS" | "DEFENSIVE"\n'
             "}"

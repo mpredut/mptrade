@@ -12422,3 +12422,252 @@ def test_phase4_portfolio_flat_state_transitions_and_intent_order_matching_ssot(
     assert intents_rec[0]["execution_payload"]["orderId"] == "KRK-OID-1"
 
 
+def test_telemetry_audit_7_fixes_stale_ob_kinematics_rvol_us_open_ant_realized_liq_and_prompt_compression(tmp_path, monkeypatch):
+    """End-to-end regression lock for all 7 telemetry audit fixes."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    import pricewindow as pw
+    from botcore import topic_spec
+    from instrument_registry import discover_tradable_specs, is_equity_symbol, tracked_price_instruments
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+    from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval
+    from intelligence.macro_sentiment_ssot import (
+        is_us_cash_open_volatility_window,
+        resolve_effective_macro_benchmarks_interval_sec,
+    )
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_microstructure
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        compute_24h_price_metrics,
+        compute_series_kinematics,
+        compute_volume_rvol_metrics,
+    )
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import evaluate_portfolio_prompt_view
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        build_cross_market_context,
+        enrich_open_limit_orders_tca,
+    )
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_macro_and_news_section,
+        _format_microstructure_section,
+    )
+    from providers.binance_provider import BinanceProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from state_io import atomic_write_json
+
+    now_s = 1_795_099_695.0  # 2026-11-19 16:48:15 EET (09:48:15 EST)
+
+    # 1. Stale orderbook desync: open_limit_orders anchors to live Price ($143.36, +2.18%) not stale ob_mid ($144.52, +1.36%),
+    #    flags [ob_stale] when ob_age > 30s, and skips stale wall front-run penalties.
+    stale_oo = [{"venue": "kraken", "symbol": "SPCXxUSD", "side": "SELL", "price": 146.48}]
+    enrich_open_limit_orders_tca(
+        stale_oo,
+        {"SPCXxUSD": {"price": 143.36, "vol_1h_pct": 1.2}},
+        {
+            "SPCXxUSD": {
+                "ob_mid_price": 144.52,
+                "best_bid": 144.40,
+                "best_ask": 144.64,
+                "ask_depth_usd": 50_000.0,
+                "ask_wall_px": 145.50,
+                "ask_wall_usd": 20_000.0,
+                "_ob_raw_ts": now_s - 123.7,
+            }
+        },
+        now_ts=now_s,
+    )
+    assert stale_oo[0]["dist_from_spot_pct"] == pytest.approx(2.18, abs=0.01)
+    assert stale_oo[0]["ob_flag"] == "[ob_stale]"
+    assert stale_oo[0]["ob_age_s"] == pytest.approx(123.7, abs=0.1)
+    assert "recommended_front_run_px" not in stale_oo[0]
+    assert "wall_queue_pos" not in stale_oo[0]
+
+    # When orderbook refreshes (age=5s <= 30s), [ob_stale] clears and fresh wall analysis runs
+    enrich_open_limit_orders_tca(
+        stale_oo,
+        {"SPCXxUSD": {"price": 143.36, "vol_1h_pct": 1.2}},
+        {
+            "SPCXxUSD": {
+                "ob_mid_price": 143.36,
+                "best_bid": 143.30,
+                "best_ask": 143.42,
+                "ask_depth_usd": 50_000.0,
+                "ask_wall_px": 145.50,
+                "ask_wall_usd": 20_000.0,
+                "_ob_raw_ts": now_s - 5.0,
+            }
+        },
+        now_ts=now_s,
+    )
+    assert "ob_flag" not in stale_oo[0]
+    assert "ob_age_s" not in stale_oo[0]
+    assert stale_oo[0]["wall_queue_pos"] == "BEHIND_ASK_WALL"
+
+    # 2. Quadratic boundary overshoot guard on sharp step-drops (no sign flip opposite to falling slopes)
+    now_ms = int(now_s * 1000.0)
+    knots = [(-300, 145.80), (-240, 145.55), (-180, 145.26), (-150, 145.20), (-120, 144.00), (-90, 143.84), (-60, 143.58), (-30, 143.45), (0, 143.36)]
+    mono_drop_pts = []
+    for i in range(len(knots) - 1):
+        t0, p0 = knots[i]
+        t1, p1 = knots[i + 1]
+        for s in range(t0, t1, 5):
+            mono_drop_pts.append([now_ms + s * 1000.0, p0 + ((s - t0) / (t1 - t0)) * (p1 - p0)])
+    mono_drop_pts.append([now_ms, knots[-1][1]])
+    kin_drop = compute_series_kinematics(mono_drop_pts)
+    assert kin_drop["vel_90s_pct_min"] <= 0.0
+
+    step_knots = [(-90, 145.20), (-75, 143.65), (-60, 143.58), (-30, 143.45), (0, 143.36)]
+    w_step = pw.PriceWindow("SPCXxUSD", 100, sample_rate_sec=5.0)
+    for i in range(len(step_knots) - 1):
+        t0, p0 = step_knots[i]
+        t1, p1 = step_knots[i + 1]
+        for s in range(t0, t1, 5):
+            w_step.process_price(p0 + ((s - t0) / (t1 - t0)) * (p1 - p0))
+    w_step.process_price(143.36)
+    vel_step, acc_step = w_step.calculate_acceleration(90.0)
+    assert vel_step <= 0.0
+    assert acc_step > 0.0  # Deceleration of the fall is still detected accurately
+
+    # 3. Spot total volume (15m/1h) & RVOL across providers, 24h OHLC bars, and Section 3B formatting
+    bn_cvd, bn_vol = BinanceProvider.extract_spot_flow_15m_usd(
+        [
+            [0, "100", "101", "99", "100.5", "10", 0, "100000.0", 50, "6", "60000.0", "0"],
+            [0, "100.5", "102", "100", "101.0", "12", 0, "150000.0", 60, "8", "100000.0", "0"],
+        ]
+    )
+    assert bn_cvd == pytest.approx(70_000.0)
+    assert bn_vol == pytest.approx(250_000.0)
+
+    krk_cvd, krk_vol = KrakenProvider.extract_spot_flow_15m_usd(
+        {
+            "error": [],
+            "result": {
+                "SPCXxUSD": [
+                    ["144.0", "10.0", now_s - 120.0, "b", "l", "", 1],
+                    ["143.5", "30.0", now_s - 60.0, "s", "m", "", 2],
+                ],
+                "last": "1",
+            },
+        },
+        since_ts=now_s - 900.0,
+    )
+    assert krk_cvd == pytest.approx(1440.0 - 4305.0, abs=1.0)
+    assert krk_vol == pytest.approx(1440.0 + 4305.0, abs=1.0)
+
+    hl_cvd, hl_vol = HyperliquidProvider.extract_spot_flow_15m_usd(
+        [{"o": "40.0", "h": "41.0", "l": "40.0", "c": "41.0", "v": "500.0"}]
+    )
+    assert hl_cvd > 0.0 and hl_vol > 15_000.0
+
+    # 24h 5m OHLC bars with 2x surge in the latest 15m -> rvol_15m ~ 2.0x
+    ohlc_5m_bars = []
+    for i in range(288):  # 24h of 5m bars
+        t_b = now_ms - (287 - i) * 300_000
+        vol_b = 20.0 if i >= 285 else 10.0
+        ohlc_5m_bars.append([t_b, 100.0, vol_b])
+    rvol_m = compute_volume_rvol_metrics(ohlc_5m_bars)
+    assert rvol_m["spot_vol_15m_usd"] == pytest.approx(6_000.0)
+    assert rvol_m["rvol_15m"] == pytest.approx(1.98, abs=0.05)
+    assert rvol_m["spot_vol_1h_usd"] == pytest.approx(15_000.0)
+    assert rvol_m["rvol_1h"] == pytest.approx(1.24, abs=0.05)
+    m24_with_rvol = compute_24h_price_metrics(ohlc_5m_bars)
+    assert m24_with_rvol["rvol_15m"] == pytest.approx(rvol_m["rvol_15m"])
+
+    sec3b_rvol = "\n".join(
+        _format_microstructure_section(
+            {
+                "SPCXxUSD": {
+                    "ob_imbalance": 0.45,
+                    "bid_depth_usd": 40_000.0,
+                    "ask_depth_usd": 50_000.0,
+                    "spot_cvd_15m_usd": -2600.0,
+                    "spot_cvd_source": "real_spot",
+                    "spot_vol_15m_usd": 5745.0,
+                }
+            },
+            {"SPCXxUSD": {"price": 143.36, "spot_vol_24h_avg_15m_usd": 3000.0, "spot_vol_1h_usd": 20000.0, "rvol_1h": 1.67}},
+            now_ts=now_s,
+        )
+    )
+    assert "spot_cvd_15m=-$2.6K[real_spot], spot_vol_15m=$5.7K (rvol_15m=1.92x), spot_vol_1h=$20.0K (rvol_1h=1.67x)" in sec3b_rvol
+
+    # 4. US Cash Open volatility window (09:25-10:15 NY / 16:25-17:15 EET) accelerates macro_benchmarks to 45s & sentiment to 5m
+    ts_us_open = datetime(2026, 11, 19, 14, 46, 0, tzinfo=timezone.utc).timestamp()  # 09:46 EST / 16:46 EET
+    ts_calm_eu = datetime(2026, 11, 19, 12, 0, 0, tzinfo=timezone.utc).timestamp()   # 07:00 EST / 14:00 EET
+    ts_sunday = datetime(2026, 11, 22, 14, 46, 0, tzinfo=timezone.utc).timestamp()
+    assert is_us_cash_open_volatility_window(ts_us_open) is True
+    assert is_us_cash_open_volatility_window(ts_calm_eu) is False
+    assert is_us_cash_open_volatility_window(ts_sunday) is False
+    assert resolve_effective_macro_benchmarks_interval_sec(300.0, now_ts=ts_us_open) == pytest.approx(45.0)
+    assert resolve_effective_macro_benchmarks_interval_sec(300.0, now_ts=ts_calm_eu) == pytest.approx(300.0)
+    gtc_open = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=str(tmp_path), skip_news=True, skip_external=True)
+    assert gtc_open._effective_macro_benchmarks_interval_sec(ts_us_open) == pytest.approx(45.0)
+    assert gtc_open._effective_macro_benchmarks_interval_sec(ts_calm_eu) == pytest.approx(300.0)
+    gtc_open.macro_benchmarks_interval_sec = 3600.0
+    assert gtc_open._effective_macro_benchmarks_interval_sec(ts_us_open) == pytest.approx(3600.0)
+    sent_open_itv, sent_open_reason = compute_dynamic_sentiment_interval(now_ts=ts_us_open)
+    assert sent_open_itv == pytest.approx(300.0)
+    assert "us_cash_open_volatility_window" in sent_open_reason
+
+    # 5. Official Nasdaq RTH ticker ANT_US_EQ registered as read-only bellwether & exposed in Cross-Market US Equities Telemetry
+    all_syms, _, nb_prov = tracked_price_instruments()
+    assert "ANT_US_EQ" in all_syms and nb_prov["ANT_US_EQ"] == "t212"
+    assert is_equity_symbol("ANT_US_EQ") is True
+    eq_tradable = discover_tradable_specs(asset_scope="equities", include_closed_rth=True)
+    assert "T212_ANT" not in eq_tradable  # No 212trading/config.ant.env -> read-only telemetry bellwether
+    cmc_ant = build_cross_market_context(
+        {
+            "ANT_US_EQ": {"price": 103.10, "quote_source": "yahoo_rth", "quote_age_min": 0.5, "chg_15m_pct": 0.45, "chg_24h_pct": 24.2},
+            "SPCX_US_EQ": {"price": 143.50, "quote_source": "yahoo_rth", "chg_24h_pct": -1.1},
+            "RGNT_US_EQ": {"price": 1.20, "chg_24h_pct": -0.5},
+        },
+        {},
+    )
+    view_ant = evaluate_portfolio_prompt_view({"cross_market_context": cmc_ant}, asset_scope="crypto")
+    assert "ANT_US_EQ" in view_ant["equity_bellwethers"]
+    assert view_ant["equity_bellwethers"]["ANT_US_EQ"]["quote_source"] == "yahoo_rth"
+    assert "RGNT_US_EQ" not in view_ant["equity_bellwethers"]
+
+    # 6. Realized Bybit forced liquidations persisted & rendered alongside liq_clusters(src=model_est)
+    cdir = tmp_path / "rliq_cache"
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        str(cdir / "telemetry" / "derivatives_telemetry_BTCUSDC.json"),
+        {"symbol": "BTCUSDC", "ts": now_s - 5.0, "funding_rate": 0.0001, "open_interest_usd": 5_000_000_000.0},
+    )
+    gtc_liq = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=str(cdir), skip_news=True, skip_external=True)
+    bybit_col = BybitLiquidationCollector(symbols=["BTCUSDT"], start_sync=False)
+    bybit_col.record_event("BTCUSDT", "BUY", 150_000.0, ts=now_s - 120.0)   # LONG liquidation
+    bybit_col.record_event("BTCUSDT", "SELL", 40_000.0, ts=now_s - 60.0)   # SHORT liquidation
+    gtc_liq.bybit_liq_collector = bybit_col
+    assert gtc_liq.update_realized_liquidations(now=now_s) is True
+    m_btc = load_symbol_microstructure(str(cdir), "BTCUSDC")
+    assert m_btc["realized_liq_15m_long_usd"] == pytest.approx(150_000.0)
+    assert m_btc["realized_liq_15m_short_usd"] == pytest.approx(40_000.0)
+    sec3b_liq = "\n".join(_format_microstructure_section({"BTCUSDC": m_btc}, {"BTCUSDC": {"price": 90_000.0}}, now_ts=now_s))
+    assert "src=model_est" in sec3b_liq
+    assert "realized_liq_15m(long=$150.0K, short=$40.0K, n=2)" in sec3b_liq
+
+    # 7. Compressed static prompt rules (>50% reduction vs 17.2KB/2300w baseline) & bounded sentiment_advisor summary
+    compact_prompt = build_supervisor_prompt(
+        SimpleNamespace(),
+        SimpleNamespace(total_scanned_files=0, error_count=0, warning_count=0, critical_events=[], guard_interventions=[]),
+        topic_spec("auto_cryptotrade_executor"),
+    )
+    assert len(compact_prompt) < 8500
+    assert len(compact_prompt.split()) < 1100
+    long_sa = "First factual macro sentence with BTC metrics and CB premium +4bps. " * 10
+    sec1_lines = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(sentiment_advisor={"confidence": 0.85, "age_min": 2.0, "summary": long_sa}),
+            asset_scope="crypto",
+        )
+    )
+    sa_out = next(ln for ln in sec1_lines.splitlines() if "Macro Sentiment Advisor:" in ln)
+    assert len(sa_out.split("summary=", 1)[1]) <= 360
+
+
+

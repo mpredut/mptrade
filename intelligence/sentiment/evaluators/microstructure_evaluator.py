@@ -68,6 +68,7 @@ MICRO_OB_LOCAL_KEYS: frozenset[str] = frozenset({
     "bid_depth_usd", "ask_depth_usd", "depth_1pct_bid_usd", "depth_1pct_ask_usd",
     "book_span_pct", "bid_wall_usd", "ask_wall_usd", "bid_wall_px", "ask_wall_px",
     "est_slip_2k_bps", "spot_cvd_15m_usd", "spot_cvd_source", "spot_perp_flow_regime",
+    "spot_vol_15m_usd", "spot_vol_1h_usd", "rvol_15m", "rvol_1h",
     "_ob_raw_ts", "_ob_ts",
 })
 _FLOW_HORIZON_SPECS: Tuple[Tuple[str, str, str], ...] = (
@@ -85,6 +86,27 @@ def format_spot_cvd_source_tag(minfo: Optional[Dict[str, Any]]) -> str:
     if src == "real_spot":
         return "[real_spot]"
     return "[est:ob+15m]" if (src == "est_ob_15m" or minfo.get("_synthetic_spot_cvd")) else ""
+
+
+def format_spot_volume_rvol_parts(
+    minfo: Optional[Dict[str, Any]],
+    fmt_usd: Any,
+) -> List[str]:
+    """Format compact spot total volume (15m/1h) and relative volume (`rvol_15m`, `rvol_1h`) parts."""
+    if not isinstance(minfo, dict):
+        return []
+    parts: List[str] = []
+    if (v15 := safe_pos_float(minfo.get("spot_vol_15m_usd"), default=None)) is not None:
+        r15 = safe_pos_float(minfo.get("rvol_15m"), default=None)
+        parts.append(f"spot_vol_15m={fmt_usd(v15)}" + (f" (rvol_15m={r15:.2f}x)" if r15 is not None else ""))
+    elif (r15 := safe_pos_float(minfo.get("rvol_15m"), default=None)) is not None:
+        parts.append(f"rvol_15m={r15:.2f}x")
+    if (v1h := safe_pos_float(minfo.get("spot_vol_1h_usd"), default=None)) is not None:
+        r1h = safe_pos_float(minfo.get("rvol_1h"), default=None)
+        parts.append(f"spot_vol_1h={fmt_usd(v1h)}" + (f" (rvol_1h={r1h:.2f}x)" if r1h is not None else ""))
+    elif (r1h := safe_pos_float(minfo.get("rvol_1h"), default=None)) is not None:
+        parts.append(f"rvol_1h={r1h:.2f}x")
+    return parts
 
 
 def format_book_window_cap_tag(book_span_pct: Any, *, max_capped_pct: float = 1.45) -> str:
@@ -237,6 +259,21 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
             sp_half = safe_nonneg_float(minfo.get("spread_bps"), default=2.0) * 0.5
             minfo["est_slip_2k_bps"] = round(min(250.0, max(0.5, sp_half + (2000.0 / (2.0 * eff_d1)) * 100.0)), 1)
     p_dict = pinfo if isinstance(pinfo, dict) else {}
+    # Reconcile spot 15m/1h total volume & RVOL (runs before perp-CVD early return so spot-only xStocks & equities also get it)
+    live_v15 = safe_pos_float(minfo.get("spot_vol_15m_usd"), default=None)
+    p_v15 = safe_pos_float(p_dict.get("spot_vol_15m_usd"), default=None)
+    eff_v15 = live_v15 if live_v15 is not None else p_v15
+    if eff_v15 is not None:
+        minfo["spot_vol_15m_usd"] = round(eff_v15, 0)
+    avg_15m_base = safe_pos_float(p_dict.get("spot_vol_24h_avg_15m_usd"), default=None)
+    if eff_v15 is not None and avg_15m_base is not None and avg_15m_base > 0.0:
+        minfo["rvol_15m"] = round(eff_v15 / avg_15m_base, 2)
+    elif minfo.get("rvol_15m") is None and (p_r15 := safe_pos_float(p_dict.get("rvol_15m"), default=None)) is not None:
+        minfo["rvol_15m"] = round(p_r15, 2)
+    if minfo.get("spot_vol_1h_usd") is None and (p_v1h := safe_pos_float(p_dict.get("spot_vol_1h_usd"), default=None)) is not None:
+        minfo["spot_vol_1h_usd"] = round(p_v1h, 0)
+    if minfo.get("rvol_1h") is None and (p_r1h := safe_pos_float(p_dict.get("rvol_1h"), default=None)) is not None:
+        minfo["rvol_1h"] = round(p_r1h, 2)
     m_px = safe_pos_float(p_dict.get("price"), default=None) or (ob_mid if ob_mid > 0.0 else None)
     funding_r = safe_float(minfo.get("funding_rate"), default=0.0) or 0.0
     if minfo.get("perp_spot_basis_bps") is None and m_px and m_px > 0.0:
@@ -1903,6 +1940,7 @@ __all__ = [
     "format_book_window_cap_tag",
     "format_flow_horizon_parts",
     "format_spot_cvd_source_tag",
+    "format_spot_volume_rvol_parts",
     "is_ob_live_and_newer",
     "is_ob_mid_fresher_than_series",
     "purge_liquidation_cluster_keys",

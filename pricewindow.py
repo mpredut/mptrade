@@ -1105,6 +1105,36 @@ class PriceWindow:
             acceleration = safe_float((2.0 * c2) / (dt_min * dt_min), default=None)
             if velocity is None or acceleration is None:
                 return 0.0, 0.0
+            # Guard against right-endpoint quadratic boundary ringing after sharp step drops/spikes:
+            # when velocity flips sign opposite to full-window linear trend while BOTH the recent half
+            # and recent tail continue in the original direction (or flat), clamp velocity to recent-half
+            # linear OLS and bound acceleration by physical two-half finite difference.
+            v_full = c1 / dt_min
+            if (velocity * v_full) < 0.0:
+                mid = max(1, n // 2)
+                y_pct = scale_pct * dp
+                rec_y = y_pct[mid:]
+                n_rec = len(rec_y)
+                if n_rec >= 2:
+                    u_rec = np.arange(n_rec, dtype=np.float64) - 0.5 * (n_rec - 1.0)
+                    d_rec = n_rec * (n_rec * n_rec - 1.0) / 12.0
+                    v_rec = safe_float(np.dot(u_rec, rec_y) / d_rec, 0.0) / dt_min
+                else:
+                    v_rec = safe_float(y_pct[-1] - y_pct[mid - 1], 0.0) / max((n - mid) * dt_min, 1e-9)
+                tail_idx = max(mid, n - max(2, n // 3))
+                dy_tail = safe_float(y_pct[-1] - y_pct[tail_idx], 0.0)
+                if (velocity * v_rec) <= 0.0 and (velocity * dy_tail) <= 0.0:
+                    early_y = y_pct[: mid + 1]
+                    n_e = len(early_y)
+                    if n_e >= 2:
+                        u_e = np.arange(n_e, dtype=np.float64) - 0.5 * (n_e - 1.0)
+                        d_e = n_e * (n_e * n_e - 1.0) / 12.0
+                        v_early = safe_float(np.dot(u_e, early_y) / d_e, 0.0) / dt_min
+                        span_min = max((n - 1) * dt_min, 1e-9)
+                        acc_fd = (v_rec - v_early) / (0.5 * span_min)
+                        if (acceleration * acc_fd) <= 0.0 or abs(acceleration) > abs(acc_fd):
+                            acceleration = acc_fd
+                    velocity = v_rec
             return velocity, acceleration
         except Exception:
             return 0.0, 0.0

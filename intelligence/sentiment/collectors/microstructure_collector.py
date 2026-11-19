@@ -32,6 +32,7 @@ from cachepaths import (
     CACHE_DERIVATIVES_TELEMETRY_PREFIX,
     cache_ohlc_24h_filename,
     CACHE_ORDERBOOK_DEPTH_PREFIX,
+    CACHE_REALIZED_LIQUIDATIONS_FILENAME,
     cache_symbol_variants,
     CACHE_WATCHER_ALL_PRICE_FILENAME,
     CACHE_WHALE_SNAPSHOT_PREFIX,
@@ -145,6 +146,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_24h_price_metrics,
     compute_7d_range_metrics,
     compute_volume_profile_metrics,
+    compute_volume_rvol_metrics,
     extract_archive_24h_and_7d_slices,
     pct_delta,
     prepend_older_non_diverged_points,
@@ -165,6 +167,7 @@ from instrument_registry import (
     discover_hyperliquid_spot,
     is_equity_symbol,
     is_symbol_market_open,
+    load_registry,
     resolve_symbol_identity,
 )
 from providers import t212_provider as _t212_prov_mod
@@ -565,6 +568,8 @@ def load_symbol_microstructure(
             if (ob_sp_cvd := safe_float(obj_attr(ob, "spot_cvd_15m_usd"), default=None)) is not None:
                 m_info["spot_cvd_15m_usd"] = round(ob_sp_cvd, 0)
                 m_info["spot_cvd_source"] = str(obj_attr(ob, "spot_cvd_source") or "real_spot").strip()
+            if (ob_sp_vol := safe_pos_float(obj_attr(ob, "spot_vol_15m_usd"), default=None)) is not None:
+                m_info["spot_vol_15m_usd"] = round(ob_sp_vol, 0)
         for k_src, k_dst in (
             ("bid_depth_usd", "bid_depth_usd"), ("ask_depth_usd", "ask_depth_usd"),
             ("depth_1pct_bid_usd", "depth_1pct_bid_usd"), ("depth_1pct_ask_usd", "depth_1pct_ask_usd"),
@@ -689,9 +694,32 @@ def load_symbol_microstructure(
             if cvd5_old is not None and abs(2.0 * clv_old - 1.0) > 1e-6:
                 vol_5m = abs(cvd5_old) / abs(2.0 * clv_old - 1.0)
                 m_info["cvd_5m_usd"] = round(vol_5m * (2.0 * clv_new - 1.0), 0)
+    if policy.has_crypto_perpetuals and cache_dir:
+        rliq_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, CACHE_REALIZED_LIQUIDATIONS_FILENAME)))
+        if os.path.exists(rliq_path) and isinstance(rliq_doc := read_json_fn(rliq_path), dict):
+            rliq_ts = normalize_epoch_sec(rliq_doc.get("ts"), default=0.0) or 0.0
+            ref_micro_ts = max(
+                safe_pos_float(m_info.get("_ob_raw_ts"), default=0.0) or 0.0,
+                safe_pos_float(m_info.get("_deriv_ts"), default=0.0) or 0.0,
+                safe_pos_float(m_info.get("_whale_ts"), default=0.0) or 0.0,
+            )
+            rliq_fresh = rliq_ts > 0.0 and (ref_micro_ts <= 0.0 or (ref_micro_ts - rliq_ts) <= 300.0)
+            rliq_syms = rliq_doc.get("symbols") if isinstance(rliq_doc.get("symbols"), dict) else {}
+            rliq_base = canonical_base_asset(sym)
+            if rliq_fresh and rliq_base and isinstance(rliq_syms, dict):
+                rliq_entry = casefold_get(rliq_syms, f"{rliq_base}USDT") or casefold_get(rliq_syms, sym)
+                if isinstance(rliq_entry, dict):
+                    rl_l = safe_nonneg_float(rliq_entry.get("long_15m_usd"), default=None)
+                    rl_s = safe_nonneg_float(rliq_entry.get("short_15m_usd"), default=None)
+                    rl_n = safe_pos_int(rliq_entry.get("events_15m"), default=0) or 0
+                    if rl_l is not None and rl_s is not None and (rl_n > 0 or rl_l > 0.0 or rl_s > 0.0):
+                        m_info["realized_liq_15m_long_usd"] = round(rl_l, 0)
+                        m_info["realized_liq_15m_short_usd"] = round(rl_s, 0)
+                        m_info["realized_liq_15m_events"] = rl_n
+                        m_info["_realized_liq_ts"] = rliq_ts
     if m_info.get("funding_annualized_pct") is None and (fr_v := safe_float(m_info.get("funding_rate"), default=None)) is not None:
         m_info["funding_annualized_pct"] = round(fr_v * 3.0 * 365.0 * 100.0, 2)
-    for usd_k in ("oi_usd", "taker_buy_vol_usd", "taker_sell_vol_usd", "cvd_5m_usd", "cvd_15m_usd", "spot_cvd_15m_usd", "cvd_1h_usd", "cvd_4h_usd"):
+    for usd_k in ("oi_usd", "taker_buy_vol_usd", "taker_sell_vol_usd", "cvd_5m_usd", "cvd_15m_usd", "spot_cvd_15m_usd", "spot_vol_15m_usd", "cvd_1h_usd", "cvd_4h_usd"):
         if (uv := safe_float(m_info.get(usd_k), default=None)) is not None:
             m_info[usd_k] = round(uv, 2)
     enrich_microstructure_cvd(m_info)
@@ -1047,6 +1075,9 @@ def upgrade_tpo_vp_from_ohlc(
                         for vp_clr_k in ("sec_poc_px", "hvn2_px", "lvn_px"):
                             m24.pop(vp_clr_k, None)
                         m24.update(vp_real)
+                    if vol_rvol_vp := compute_volume_rvol_metrics(pts_vp):
+                        for vr_k, vr_v in vol_rvol_vp.items():
+                            m24.setdefault(vr_k, vr_v)
     except Exception:
         pass
 
@@ -1431,6 +1462,25 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 ) or 0.0
                 if bticker and bticker not in t212_seed_tickers and (bticker in pt_map or b_free > 0.0):
                     t212_seed_tickers.append(bticker)
+        # Seed registered RTH equity bellwethers (e.g. ANT_US_EQ) when their Kraken tokenized xStock sibling (ANTxUSD)
+        # is active in pt_map/cp_map even before any Trading212 balance or .state_*.json exists.
+        ws_inst_conf = os.path.join(workspace_dir, "instruments.conf") if workspace_dir else ""
+        if ws_inst_conf and os.path.isfile(ws_inst_conf):
+            active_tok_bases = {
+                canonical_base_asset(k)
+                for k in (*pt_map.keys(), *(cp_map.keys() if isinstance(cp_map, dict) else ()))
+                if resolve_symbol_identity(k).is_tokenized_equity
+            }
+            if active_tok_bases:
+                try:
+                    for spec in load_registry(ws_inst_conf).values():
+                        if not spec.enabled or not is_equity_symbol(spec.symbol):
+                            continue
+                        eq_t = str(spec.symbol).strip().upper()
+                        if eq_t and eq_t not in t212_seed_tickers and canonical_base_asset(eq_t) in active_tok_bases:
+                            t212_seed_tickers.append(eq_t)
+                except Exception:
+                    pass
         if (
             allow_network
             and t212_seed_tickers

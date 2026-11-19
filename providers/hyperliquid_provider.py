@@ -930,9 +930,9 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
         )
 
     @classmethod
-    def extract_spot_cvd_15m_usd(
+    def extract_spot_flow_15m_usd(
         cls, raw_data: Any, *, since_ts: float = 0.0
-    ) -> Optional[float]:
+    ) -> Optional[tuple[float, Optional[float]]]:
         _ = since_ts
         rows = raw_data.get("result_list") if isinstance(raw_data, dict) else raw_data
         if not isinstance(rows, list) or not rows:
@@ -956,7 +956,14 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
             buy_usd += b_bar
             sell_usd += s_bar
             prev_close = c_p
-        return round(buy_usd - sell_usd, 0) if parsed_any else None
+        return (round(buy_usd - sell_usd, 0), round(buy_usd + sell_usd, 0)) if parsed_any else None
+
+    @classmethod
+    def extract_spot_cvd_15m_usd(
+        cls, raw_data: Any, *, since_ts: float = 0.0
+    ) -> Optional[float]:
+        flow = cls.extract_spot_flow_15m_usd(raw_data, since_ts=since_ts)
+        return flow[0] if flow is not None else None
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         self.validate_symbol(symbol)

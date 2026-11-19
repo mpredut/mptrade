@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from abc import ABC
 import math
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import (
@@ -23,6 +24,7 @@ from intelligence.external.collectors.base_collector import round_spread_bps
 from botcore import (
     coerce_dict_maps,
     first_pos_float,
+    normalize_epoch_sec,
     normalize_side,
     safe_float,
     safe_nonneg_float,
@@ -200,11 +202,17 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
         open_orders: List[Dict[str, Any]],
         prices_and_trends: Optional[Dict[str, Any]] = None,
         microstructure: Optional[Dict[str, Any]] = None,
+        *,
+        now_ts: Optional[float] = None,
+        ob_stale_sec: float = 30.0,
         **kwargs: Any,
     ) -> List[Dict[str, Any]]:
         if not isinstance(open_orders, list) or not open_orders:
             return open_orders
         prices_and_trends, microstructure = prices_and_trends or {}, microstructure or {}
+        explicit_now = safe_pos_float(now_ts, default=None)
+        ref_now = explicit_now if explicit_now is not None else time.time()
+        eff_ob_stale_sec = safe_pos_float(ob_stale_sec, default=30.0) or 30.0
         for o in open_orders:
             if not isinstance(o, dict):
                 continue
@@ -234,10 +242,13 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
 
             p_entry = _lookup_scoped_entry(prices_and_trends)
             m_entry = _lookup_scoped_entry(microstructure)
-            spot_px = (
-                first_pos_float((m_entry or {}).get("ob_mid_price"), (p_entry or {}).get("price"))
-                or resolve_symbol_price(scoped_sym, prices_and_trends)
+            # BY DESIGN: Anchor dist_from_spot_pct and fill_prob_1h_pct to live spot price first (Section 3A Price),
+            # never to a stale orderbook mid; fall back to ob_mid_price only when live spot price is absent.
+            live_px = first_pos_float(
+                (p_entry or {}).get("price"),
+                resolve_symbol_price(scoped_sym, prices_and_trends),
             )
+            spot_px = live_px or safe_pos_float((m_entry or {}).get("ob_mid_price"), default=None)
             if spot_px and spot_px > 0.0:
                 o["dist_from_spot_pct"] = pct_delta(lim_px, spot_px)
             for _stale_tca_k in (
@@ -247,8 +258,23 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                 "ask_wall_ahead_usd",
                 "bid_wall_ahead_px",
                 "bid_wall_ahead_usd",
+                "ob_flag",
+                "ob_age_s",
             ):
                 o.pop(_stale_tca_k, None)
+            ob_raw_ts = (
+                m_entry.get("_ob_raw_ts") if m_entry.get("_ob_raw_ts") is not None else m_entry.get("_ob_ts")
+            ) if isinstance(m_entry, dict) else None
+            ob_ts = normalize_epoch_sec(ob_raw_ts, default=0.0) or 0.0
+            ob_age_s = max(0.0, ref_now - ob_ts) if ob_ts > 0.0 else None
+            ob_is_stale = bool(
+                ob_age_s is not None
+                and (explicit_now is not None or (0.0 <= (ref_now - ob_ts) <= 7.0 * 86400.0))
+                and ob_age_s > eff_ob_stale_sec
+            )
+            if ob_is_stale and ob_age_s is not None:
+                o["ob_flag"] = "[ob_stale]"
+                o["ob_age_s"] = round(ob_age_s, 1)
             raw_dist_pct = safe_float(o.get("dist_from_spot_pct"), default=0.0) or 0.0
             # BY DESIGN: Directional adverse distance -- marketable/in-the-money resting limits (BUY >= spot or SELL <= spot)
             # have 0 adverse barrier distance rather than being penalized by abs(dist_from_spot_pct).
@@ -298,7 +324,7 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
             )
             dec = max(MarketDataProvider.resolve_venue_tca_price_decimals(v_norm, lim_px), obs_dec)
             queue_penalty = 1.0
-            if isinstance(m_entry, dict) and side in ("SELL", "BUY"):
+            if isinstance(m_entry, dict) and not ob_is_stale and side in ("SELL", "BUY"):
                 is_sell = side == "SELL"
                 w_pfx, w_tag = ("ask", "ASK") if is_sell else ("bid", "BID")
                 sp_bps = safe_nonneg_float(m_entry.get("spread_bps"), default=2.0)
@@ -801,12 +827,17 @@ def enrich_open_limit_orders_tca(
     open_orders: List[Dict[str, Any]],
     prices_and_trends: Dict[str, Any],
     microstructure: Dict[str, Any],
+    *,
+    now_ts: Optional[float] = None,
+    ob_stale_sec: float = 30.0,
 ) -> List[Dict[str, Any]]:
     """Enrich resting open limit orders with Orderbook Wall Queue Position, Front-Run Price, and 1h Fill Probability (Layer II.3)."""
     return _OPEN_LIMIT_ORDERS_TCA_EVALUATOR.evaluate(
         open_orders,
         prices_and_trends,
         microstructure,
+        now_ts=now_ts,
+        ob_stale_sec=ob_stale_sec,
     )
 
 

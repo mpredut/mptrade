@@ -43,6 +43,7 @@ KINEMATIC_IMPULSE_SIGNAL_FILENAME = "kinematic_impulse_signal.json"
 CACHE_ORDERBOOK_DEPTH_PREFIX = "orderbook_depth_"
 CACHE_DERIVATIVES_TELEMETRY_PREFIX = "derivatives_telemetry_"
 CACHE_WHALE_SNAPSHOT_PREFIX = "whale_snapshot_"
+CACHE_REALIZED_LIQUIDATIONS_FILENAME = "realized_liquidations.json"
 
 CACHE_SPARSE_PRICE_PREFIX = "cache_sparse_price_"
 CACHE_SPARSE_PRICE_EXT = ".jsonl"
@@ -177,8 +178,8 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         "suffixes": (".npz",),
     },
     "telemetry": {
-        "exact": ("microstructure_cycle_history.json",),
-        "prefixes": ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_", "microstructure_cycle_history."),
+        "exact": ("microstructure_cycle_history.json", "realized_liquidations.json"),
+        "prefixes": ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_", "microstructure_cycle_history.", "realized_liquidations."),
         "suffixes": (),
     },
     "macro": {

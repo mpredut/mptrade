@@ -12,7 +12,7 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import clean_scale, fetch_json_post, lru_dict_put, safe_float, safe_pos_float
+from botcore import clean_scale, fetch_json_post, lru_dict_put, safe_float, safe_nonneg_float, safe_pos_float
 from intelligence.macro_sentiment_ssot import (
     fetch_public_json,
     resolve_derived_telemetry_intervals,
@@ -59,6 +59,7 @@ class OrderbookSnapshot:
     book_span_pct: float = 0.0
     spot_cvd_15m_usd: Optional[float] = None
     spot_cvd_source: Optional[str] = None
+    spot_vol_15m_usd: Optional[float] = None
 
     to_dict = asdict
 
@@ -97,6 +98,7 @@ class OrderbookSnapshot:
             book_span_pct=_clean_dict_float(data, "book_span_pct", 0.0, nonneg=True),
             spot_cvd_15m_usd=safe_float(data.get("spot_cvd_15m_usd"), default=None),
             spot_cvd_source=str(data["spot_cvd_source"]).strip() if data.get("spot_cvd_source") else None,
+            spot_vol_15m_usd=safe_nonneg_float(data.get("spot_vol_15m_usd"), default=None),
         )
 
 
@@ -128,7 +130,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         self.whale_wall_usd = safe_pos_float(whale_wall_usd, default=500_000.0) or 500_000.0
         self._preferred_url: Dict[str, str] = {}
         self._unlisted_xstock_until: Dict[str, float] = {}
-        self._spot_cvd_memo: Dict[Tuple[str, str], Tuple[float, float]] = {}
+        self._spot_cvd_memo: Dict[Tuple[str, str], Tuple[float, float, Optional[float]]] = {}
 
     def _fetch_spot_cvd_payload(self, url: str, post_body: Optional[dict]) -> Any:
         if post_body is not None:
@@ -143,7 +145,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
     def _resolve_real_spot_cvd_15m(
         self, symbol: str, *, venue: str, now: float
     ) -> Optional[float]:
-        """Fetch and memoize real venue-local 15m spot taker CVD (USD) at ``whale_interval_sec`` cadence."""
+        """Fetch and memoize real venue-local 15m spot taker CVD & total volume (USD) at ``whale_interval_sec`` cadence."""
         if not venue:
             return None
         if "_fetch_json_dict" in self.__dict__ and "_fetch_spot_cvd_payload" not in self.__dict__:
@@ -153,15 +155,22 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         cached_cvd = self._spot_cvd_memo.get(memo_key)
         if cached_cvd is not None and 0.0 <= (now - cached_cvd[0]) < ttl_sec:
             return cached_cvd[1]
-        req_spec, extractor = MarketDataProvider.resolve_spot_cvd_15m_spec(symbol, venue=venue, now_ts=now)
+        req_spec, extractor = MarketDataProvider.resolve_spot_flow_15m_spec(symbol, venue=venue, now_ts=now)
         if req_spec is None or not callable(extractor):
             return None
         url, post_body = req_spec
         try:
             raw_payload = self._fetch_spot_cvd_payload(url, post_body)
-            if (val_f := safe_float(extractor(raw_payload, since_ts=max(0.0, now - 900.0)), default=None)) is not None:
-                lru_dict_put(self._spot_cvd_memo, memo_key, (now, val_f), 128)
-                return val_f
+            flow_res = extractor(raw_payload, since_ts=max(0.0, now - 900.0))
+            if isinstance(flow_res, (tuple, list)) and len(flow_res) >= 2:
+                cvd_f = safe_float(flow_res[0], default=None)
+                vol_f = safe_nonneg_float(flow_res[1], default=None)
+            else:
+                cvd_f = safe_float(flow_res, default=None)
+                vol_f = None
+            if cvd_f is not None:
+                lru_dict_put(self._spot_cvd_memo, memo_key, (now, cvd_f, vol_f), 128)
+                return cvd_f
         except Exception as exc:
             logger.debug("Could not fetch real 15m spot CVD for %s on %s: %s", symbol, venue, exc)
         return cached_cvd[1] if cached_cvd is not None and 0.0 <= (now - cached_cvd[0]) < ttl_sec * 3.0 else None
@@ -341,6 +350,11 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 self._preferred_url.get(symbol)
             )
             real_spot_cvd = self._resolve_real_spot_cvd_15m(canon_sym, venue=eff_spot_venue, now=now)
+            real_spot_vol: Optional[float] = None
+            if real_spot_cvd is not None and eff_spot_venue:
+                memo_flow = self._spot_cvd_memo.get((eff_spot_venue, canon_sym))
+                if isinstance(memo_flow, tuple) and len(memo_flow) >= 3:
+                    real_spot_vol = safe_nonneg_float(memo_flow[2], default=None)
             snapshot = OrderbookSnapshot(
                 symbol=symbol,
                 mid_price=round(mid, 8),
@@ -360,6 +374,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 book_span_pct=book_span_pct,
                 spot_cvd_15m_usd=real_spot_cvd,
                 spot_cvd_source="real_spot" if real_spot_cvd is not None else None,
+                spot_vol_15m_usd=real_spot_vol,
             )
             return self._commit_snapshot(symbol, now, snapshot)
         except Exception as e:

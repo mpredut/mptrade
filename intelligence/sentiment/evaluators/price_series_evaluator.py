@@ -349,6 +349,63 @@ def compute_volume_profile_metrics(
 _ORIG_COMPUTE_VP_METRICS = compute_volume_profile_metrics
 
 
+def compute_volume_rvol_metrics(series: list) -> Dict[str, float]:
+    """Compute 15m/1h spot USD turnover and relative volume (RVOL vs 24h average) from 3-col `[ts_ms, px, vol]` bars."""
+    if not isinstance(series, (list, tuple)) or len(series) < 3:
+        return {}
+    bars: List[Tuple[float, float, float]] = []
+    for row in series:
+        if not isinstance(row, (list, tuple)) or len(row) < 3:
+            continue
+        pt = parse_ts_px_row(row)
+        vol_v = safe_nonneg_float(row[2], default=None)
+        if pt is None or vol_v is None:
+            continue
+        bars.append((pt[0], pt[1], vol_v))
+    if len(bars) < 3:
+        return {}
+    bars.sort(key=lambda b: b[0])
+    pos_bars = [b for b in bars if b[2] > 0.0]
+    if len(pos_bars) < 3:
+        return {}
+    series_end_ms = bars[-1][0]
+    vol_now_ms = pos_bars[-1][0]
+    if (series_end_ms - vol_now_ms) > 3600_000.0:
+        return {}
+    cutoff_24h = vol_now_ms - 86_400_000.0
+    w24 = [(t, px * v) for t, px, v in bars if t >= cutoff_24h and v > 0.0]
+    if len(w24) < 3:
+        return {}
+    span_raw_ms = w24[-1][0] - w24[0][0]
+    if span_raw_ms < 5_400_000.0:  # Require >= 1.5h of volume history for a stable RVOL baseline
+        return {}
+    diffs = sorted(b[0] - a[0] for a, b in zip(w24, w24[1:]) if 0.0 < (b[0] - a[0]) <= 3600_000.0)
+    step_ms = diffs[len(diffs) // 2] if diffs else 300_000.0
+    eff_span_h = min(24.0, max(1.5, (span_raw_ms + step_ms) / 3_600_000.0))
+    tot_usd = sum(u for _, u in w24)
+    if tot_usd <= 0.0:
+        return {}
+    avg_1h_usd = tot_usd / eff_span_h
+    avg_15m_usd = avg_1h_usd * 0.25
+    # Include bars strictly inside (vol_now_ms - horizon, vol_now_ms]; when bar step >= horizon, use latest bar.
+    cut_15m = vol_now_ms - max(900_000.0, step_ms * 0.9)
+    vol_15m_usd = sum(u for t, u in w24 if t > cut_15m) if step_ms <= 900_000.0 else 0.0
+    cut_1h = vol_now_ms - max(3_600_000.0, step_ms * 0.9)
+    vol_1h_usd = sum(u for t, u in w24 if t > cut_1h)
+    out: Dict[str, float] = {
+        "spot_vol_24h_avg_15m_usd": round(avg_15m_usd, 0),
+    }
+    if vol_15m_usd > 0.0:
+        out["spot_vol_15m_usd"] = round(vol_15m_usd, 0)
+        if avg_15m_usd > 0.0:
+            out["rvol_15m"] = round(vol_15m_usd / avg_15m_usd, 2)
+    if vol_1h_usd > 0.0:
+        out["spot_vol_1h_usd"] = round(vol_1h_usd, 0)
+        if avg_1h_usd > 0.0:
+            out["rvol_1h"] = round(vol_1h_usd / avg_1h_usd, 2)
+    return out
+
+
 def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
     """Compute multi-horizon percentage changes (15m, 30m, 1h, 3h) and 24h range from a cache_24_price series."""
     if not isinstance(series, list) or len(series) < 2:
@@ -500,6 +557,8 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             else compute_volume_profile_metrics(series)
         )
         out.update(vp_metrics)
+        if vol_rvol := compute_volume_rvol_metrics(series):
+            out.update(vol_rvol)
         return out
     except Exception:
         return {}
@@ -981,6 +1040,58 @@ def compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
     return out
 
 
+def _linear_ols_slope(pts_tau_y: List[Tuple[float, float]]) -> Optional[float]:
+    m = len(pts_tau_y)
+    if m < 2:
+        return None
+    mt = sum(t for t, _ in pts_tau_y) / m
+    my = sum(y for _, y in pts_tau_y) / m
+    denom = sum((t - mt) ** 2 for t, _ in pts_tau_y)
+    if denom <= 1e-12:
+        return None
+    return sum((t - mt) * (y - my) for t, y in pts_tau_y) / denom
+
+
+def _guard_quadratic_kinematic_overshoot(
+    pts_tau_y: List[Tuple[float, float]],
+    vel: float,
+    acc: float,
+) -> Tuple[float, float]:
+    """Clamp right-endpoint quadratic boundary ringing when velocity flips sign without any actual tail reversal."""
+    if len(pts_tau_y) < 3:
+        return vel, acc
+    span_min = pts_tau_y[-1][0] - pts_tau_y[0][0]
+    if span_min <= 1e-6:
+        return vel, acc
+    v_full = _linear_ols_slope(pts_tau_y)
+    if v_full is None or (vel * v_full) >= 0.0:
+        return vel, acc
+    tau_mid = 0.5 * (pts_tau_y[0][0] + pts_tau_y[-1][0])
+    recent_pts = [pt for pt in pts_tau_y if pt[0] >= tau_mid - 1e-9]
+    if len(recent_pts) < 2:
+        recent_pts = pts_tau_y[len(pts_tau_y) // 2 :]
+    v_rec = _linear_ols_slope(recent_pts)
+    if v_rec is None or (vel * v_rec) > 0.0:
+        return vel, acc
+    tail_cut = pts_tau_y[-1][0] - span_min / 3.0
+    tail_pts = [pt for pt in pts_tau_y if pt[0] >= tail_cut - 1e-9]
+    if len(tail_pts) < 2:
+        tail_pts = pts_tau_y[-2:]
+    dy_tail = tail_pts[-1][1] - tail_pts[0][1]
+    if (vel * dy_tail) > 0.0:
+        return vel, acc
+    early_pts = [pt for pt in pts_tau_y if pt[0] <= tau_mid + 1e-9]
+    if len(early_pts) < 2:
+        early_pts = pts_tau_y[: max(2, len(pts_tau_y) // 2 + 1)]
+    v_early = _linear_ols_slope(early_pts)
+    eff_acc = acc
+    if v_early is not None:
+        acc_fd = (v_rec - v_early) / (0.5 * span_min)
+        if (acc * acc_fd) <= 0.0 or abs(acc) > abs(acc_fd):
+            eff_acc = acc_fd
+    return v_rec, eff_acc
+
+
 def _fit_quadratic_kinematics(
     pts_ms_px: List[Tuple[float, float]],
     *,
@@ -1026,10 +1137,12 @@ def _fit_quadratic_kinematics(
         return None
     n_f = len(dedup) * 1.0
     s1 = s2 = s3 = s4 = y0 = y1 = y2 = 0.0
+    pts_tau_y: List[Tuple[float, float]] = []
     for t_m, px_v in dedup:
         tau = (t_m - t_now) / 60000.0
         tau2 = tau * tau
         yv = ((px_v - p0) / p0) * 100.0
+        pts_tau_y.append((tau, yv))
         s1 += tau
         s2 += tau2
         s3 += tau2 * tau
@@ -1043,6 +1156,9 @@ def _fit_quadratic_kinematics(
     vel = (n_f * (y1 * s4 - s3 * y2) - y0 * (s1 * s4 - s2 * s3) + s2 * (s1 * y2 - y1 * s2)) / det
     beta2 = (n_f * (s2 * y2 - y1 * s3) - s1 * (s1 * y2 - y1 * s2) + y0 * (s1 * s3 - s2 * s2)) / det
     acc = 2.0 * beta2
+    if not (math.isfinite(vel) and math.isfinite(acc)):
+        return None
+    vel, acc = _guard_quadratic_kinematic_overshoot(pts_tau_y, vel, acc)
     if not (math.isfinite(vel) and math.isfinite(acc)):
         return None
     if abs(vel) < 1e-6 and abs(acc) < 1e-6:
@@ -1121,15 +1237,17 @@ def compute_series_kinematics(series_24h: List[Any]) -> Dict[str, float]:
         return {}
     now_ms = pts[-1][0]
     out: Dict[str, float] = {}
-    for lookback_ms, min_span_ms, v_key, a_key, fallback_only in (
-        (180000.0, 45000.0, "vel_90s_pct_min", "accel_90s_pct_min2", False),
-        (360000.0, 120000.0, "vel_5m_pct_min", "accel_5m_pct_min2", False),
-        (1080000.0, 480000.0, "vel_15m_pct_min", "accel_15m_pct_min2", True),
+    for lookbacks_ms, min_span_ms, v_key, a_key, fallback_only in (
+        ((90000.0, 180000.0), 45000.0, "vel_90s_pct_min", "accel_90s_pct_min2", False),
+        ((300000.0, 360000.0), 120000.0, "vel_5m_pct_min", "accel_5m_pct_min2", False),
+        ((1080000.0,), 480000.0, "vel_15m_pct_min", "accel_15m_pct_min2", True),
     ):
         if fallback_only and out:
             break
-        if (fit := _fit_quadratic_kinematics([pt for pt in pts if pt[0] >= now_ms - lookback_ms], min_span_ms=min_span_ms)) is not None:
-            out[v_key], out[a_key] = fit
+        for lookback_ms in lookbacks_ms:
+            if (fit := _fit_quadratic_kinematics([pt for pt in pts if pt[0] >= now_ms - lookback_ms], min_span_ms=min_span_ms)) is not None:
+                out[v_key], out[a_key] = fit
+                break
     return out
 
 

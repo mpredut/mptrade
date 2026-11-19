@@ -560,9 +560,9 @@ class BinanceProvider(MarketDataProvider):
         )
 
     @classmethod
-    def extract_spot_cvd_15m_usd(
+    def extract_spot_flow_15m_usd(
         cls, raw_data: Any, *, since_ts: float = 0.0
-    ) -> Optional[float]:
+    ) -> Optional[tuple[float, Optional[float]]]:
         _ = since_ts
         if not isinstance(raw_data, list) or not raw_data:
             return None
@@ -581,7 +581,14 @@ class BinanceProvider(MarketDataProvider):
             valid_bars += 1
         if valid_bars == 0:
             return None
-        return round(2.0 * buy_quote - tot_quote, 0)
+        return round(2.0 * buy_quote - tot_quote, 0), round(tot_quote, 0)
+
+    @classmethod
+    def extract_spot_cvd_15m_usd(
+        cls, raw_data: Any, *, since_ts: float = 0.0
+    ) -> Optional[float]:
+        flow = cls.extract_spot_flow_15m_usd(raw_data, since_ts=since_ts)
+        return flow[0] if flow is not None else None
 
     def fetch_historical_ohlc_points(
         self,

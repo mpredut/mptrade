@@ -655,6 +655,7 @@ def resolve_derived_telemetry_intervals(
         "news_interval_sec": _sec("news_interval_mult", 1.0 / 3.0),
         "breadth_interval_sec": _sec("breadth_interval_mult", 5.0 / 6.0),
         "macro_benchmarks_interval_sec": _sec("macro_benchmarks_interval_mult", 5.0 / 6.0),
+        "macro_benchmarks_us_open_interval_sec": _sec("macro_benchmarks_us_open_interval_mult", 1.0 / 8.0),
         "fear_greed_interval_sec": _sec("fear_greed_interval_mult", 5.0),
         "sensor_stale_age_min": round(
             exec_min * _cfg_ratio("intervals", "sensor_stale_age_mult", 11.0 / 12.0, config_path=config_path),
@@ -664,6 +665,7 @@ def resolve_derived_telemetry_intervals(
         "default_sentiment_interval_sec": _sec("default_sentiment_interval_mult", 30.0, "default_sentiment_interval_sec"),
         "min_dynamic_sentiment_interval_sec": _sec("min_dynamic_sentiment_interval_mult", 5.0, "min_dynamic_sentiment_interval_sec"),
         "peak_overlap_sentiment_interval_sec": _sec("peak_overlap_sentiment_interval_mult", 3.0, "peak_overlap_sentiment_interval_sec"),
+        "sentiment_us_open_interval_sec": _sec("sentiment_us_open_interval_mult", 5.0 / 6.0),
         "max_dynamic_sentiment_interval_sec": _sec("max_dynamic_sentiment_interval_mult", 45.0, "max_dynamic_sentiment_interval_sec"),
         "sentiment_checkpoint_cooldown_sec": _sec("sentiment_checkpoint_cooldown_mult", 7.5, "sentiment_checkpoint_cooldown_sec"),
         "default_geopolitical_interval_sec": _sec("default_geopolitical_interval_mult", 45.0, "default_geopolitical_interval_sec"),
@@ -686,10 +688,43 @@ _EQUITY_RTH_DOMAIN_AGE_KEYS: frozenset[str] = frozenset(
 )
 
 
+def is_us_cash_open_volatility_window(now_ts: Optional[float] = None) -> bool:
+    """Return True during Mon-Fri US NYSE/Nasdaq opening volatility window (09:25-10:15 America/New_York / 16:25-17:15 EET)."""
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+
+    ts = resolve_now_ts(now_ts)
+    tz_name = _cfg_str("sessions", "secondary_timezone", "America/New_York")
+    fb_off = _cfg_int("sessions", "secondary_fallback_offset_hours", -5)
+    try:
+        dt_ny = datetime.fromtimestamp(ts, tz=ZoneInfo(tz_name))
+    except Exception:
+        dt_ny = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=fb_off)))
+    if dt_ny.weekday() >= 5:
+        return False
+    mins = dt_ny.hour * 60 + dt_ny.minute
+    return (9 * 60 + 25) <= mins <= (10 * 60 + 15)
+
+
+def resolve_effective_macro_benchmarks_interval_sec(
+    base_interval_sec: Optional[float] = None,
+    *,
+    now_ts: Optional[float] = None,
+) -> float:
+    """Return faster 45s macro-benchmark refresh during US cash open (09:25-10:15 NY), else ``base_interval_sec``."""
+    derived = resolve_derived_telemetry_intervals()
+    base = safe_pos_float(base_interval_sec, derived["macro_benchmarks_interval_sec"]) or derived["macro_benchmarks_interval_sec"]
+    if is_us_cash_open_volatility_window(now_ts):
+        fast = safe_pos_float(derived.get("macro_benchmarks_us_open_interval_sec"), 45.0) or 45.0
+        return min(base, max(30.0, fast))
+    return base
+
+
 def resolve_telemetry_domain_stale_thresholds_sec(
     asset_scope: str = "all",
     *,
     executor_interval_sec: Optional[float] = None,
+    now_ts: Optional[float] = None,
 ) -> Dict[str, float]:
     """Return symmetric SSOT staleness thresholds (seconds) for every Section 0 domain key."""
     derived = resolve_derived_telemetry_intervals(executor_interval_sec=executor_interval_sec)
@@ -699,6 +734,11 @@ def resolve_telemetry_domain_stale_thresholds_sec(
     deriv_itv = derived["derivatives_interval_sec"]
     whale_itv = derived["whale_interval_sec"]
     short_trend_max = safe_pos_float(getattr(_botcore, "SHORT_TREND_FRESHNESS_MAX_AGE_SEC", 300.0), 300.0) or 300.0
+    mb_itv = (
+        resolve_effective_macro_benchmarks_interval_sec(derived["macro_benchmarks_interval_sec"], now_ts=now_ts)
+        if now_ts is not None
+        else derived["macro_benchmarks_interval_sec"]
+    )
     return {
         "prices_newest": max(whale_itv * 3.0, ob_itv * 6.0) if is_eq else max(deriv_itv * mult, ob_itv * mult),
         "prices_oldest": max(whale_itv * 3.0, ob_itv * 6.0) if is_eq else max(whale_itv * mult, deriv_itv * mult),
@@ -709,7 +749,7 @@ def resolve_telemetry_domain_stale_thresholds_sec(
         "venue_balances": (derived["share_executor_interval_sec"] if is_eq else derived["crypto_executor_interval_sec"]) * mult,
         "fear_greed": derived["fear_greed_interval_sec"] * mult,
         "market_breadth": derived["breadth_interval_sec"] * mult,
-        "macro_benchmarks": derived["macro_benchmarks_interval_sec"] * mult,
+        "macro_benchmarks": mb_itv * mult,
         "sentiment_advisor": derived["default_sentiment_interval_sec"] * mult,
         "geopolitical_threat": derived["default_geopolitical_interval_sec"] * mult,
     }
