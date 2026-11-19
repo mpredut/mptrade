@@ -94,6 +94,18 @@ def is_claude_model(model_name: str) -> bool:
     return low.startswith("claude-")
 
 
+def is_degraded_trading_model(model_name: Any) -> bool:
+    """Return True for low-effort, Flash, or legacy REST models unsuitable for live enforce trading."""
+    if not isinstance(model_name, str) or not model_name.strip():
+        return False
+    low = model_name.strip().lower()
+    return (
+        low.endswith("-low")
+        or is_gemini_flash_model(low)
+        or low.startswith(("gemini-2.5", "gemini-2.0", "gemini-1.5"))
+    )
+
+
 def _expand_family_variants(
     models: Iterable[str],
     suffixes: tuple[str, ...] = _EFFORT_SUFFIXES,
@@ -198,6 +210,7 @@ class GeminiQuotaRouterMixin:
     ) -> list[str]:
         """Return ordered models for in-place /compact summarization (configured LLM_COMPACT_MODEL first)."""
         idx = safe_nonneg_int(attempt_idx, default=0)
+        failed_earlier = {m for m in models_to_try[:idx] if m}
         remaining = [m for m in models_to_try[idx:] if m]
         if _parse_bool_flag(getattr(self, "_custom_fallbacks", False), False):
             return remaining
@@ -205,12 +218,13 @@ class GeminiQuotaRouterMixin:
         allowed = set(remaining)
         low_remaining = [m for m in remaining if m.endswith("-low")]
         ordered_lows = [
-            *([preferred_compact] if preferred_compact else []),
             *(m for m in low_remaining if is_gemini_flash_model(m)),
             *(m for m in low_remaining if is_gemini_paid_model(m)),
             *(m for m in low_remaining if not is_gemini_flash_model(m) and not is_gemini_paid_model(m)),
         ]
         compact_chain: list[str] = []
+        if preferred_compact and preferred_compact not in failed_earlier:
+            compact_chain.append(preferred_compact)
         for low_m in ordered_lows:
             if low_m and low_m not in compact_chain and (not allowed or low_m in allowed):
                 compact_chain.append(low_m)
@@ -406,10 +420,10 @@ class GeminiQuotaRouterMixin:
                     continue
                 rem = max(0.0, safe_float(b.get("remainingFraction"), 0.0))
                 buckets[mid] = rem
-            # Cloud Code retrieveUserQuota reports the shared Google Gemini quota pool under
-            # gemini-* backend bucket IDs (e.g. gemini-*-flash-tiered, gemini-*-pro, gemini-*-flash).
-            # Populate all config.env Gemini aliases dynamically; on free-tier without top-up credits,
-            # paid non-Flash Gemini slugs are unavailable in agy CLI so only Flash inherits the pool.
+            # Cloud Code retrieveUserQuota may report paid Gemini and Flash Gemini buckets separately
+            # or as a single shared Flash/Pro pool. Compute paid and Flash pools independently so a
+            # 100% Flash bucket never masks an exhausted paid Gemini bucket, while preserving shared
+            # pool inheritance when only legacy/tiered Flash buckets are advertised on a paid tier.
             gemini_pool_keys = [
                 k for k in buckets if k.lower().startswith("gemini-") and not k.lower().endswith("-image")
             ]
@@ -417,13 +431,34 @@ class GeminiQuotaRouterMixin:
                 (safe_float(buckets.get(k), 0.0) for k in gemini_pool_keys),
                 default=0.0,
             )
+            paid_gemini_keys = [k for k in gemini_pool_keys if is_gemini_paid_model(k)]
+            flash_gemini_keys = [k for k in gemini_pool_keys if is_gemini_flash_model(k)]
+            flash_pool_rem = (
+                max((safe_float(buckets.get(k), 0.0) for k in flash_gemini_keys), default=0.0)
+                if flash_gemini_keys
+                else gemini_pool_rem
+            )
+            paid_pool_rem = (
+                max((safe_float(buckets.get(k), 0.0) for k in paid_gemini_keys), default=0.0)
+                if paid_gemini_keys
+                else gemini_pool_rem
+            )
             is_free_tier = tier_id.lower() == "free-tier" and available_credits <= 0.0
             if gemini_pool_keys:
                 paid_gemini_models, flash_gemini_models, _ = cls._resolve_model_pools()
                 for flash_alias in flash_gemini_models:
-                    buckets.setdefault(flash_alias, gemini_pool_rem)
-                paid_rem_val = 0.0 if is_free_tier else gemini_pool_rem
+                    buckets.setdefault(flash_alias, flash_pool_rem)
                 for paid_alias in paid_gemini_models:
+                    if is_free_tier:
+                        paid_rem_val = 0.0
+                    else:
+                        alias_fam = model_family_base(paid_alias)
+                        fam_keys = [k for k in paid_gemini_keys if model_family_base(k) == alias_fam]
+                        paid_rem_val = (
+                            max((safe_float(buckets.get(k), 0.0) for k in fam_keys), default=0.0)
+                            if fam_keys
+                            else paid_pool_rem
+                        )
                     buckets.setdefault(paid_alias, paid_rem_val)
         except Exception as exc:
             logger.debug("Live LLM quota check failed (non-fatal): %s", exc)
@@ -545,16 +580,15 @@ class GeminiQuotaRouterMixin:
                 else {}
             )
             paid_gemini_models, flash_gemini_models, _ = cls._resolve_model_pools(extra_models=(cleaned,))
-            shared_gemini_pool = paid_gemini_models + flash_gemini_models
-            affected = (
-                (cleaned,)
-                if unrec
-                else (
-                    shared_gemini_pool
-                    if cleaned.lower() in shared_gemini_pool
-                    else (cleaned,)
-                )
-            )
+            cleaned_lc = cleaned.lower()
+            if unrec:
+                affected: tuple[str, ...] = (cleaned,)
+            elif cleaned_lc in paid_gemini_models:
+                affected = paid_gemini_models
+            elif cleaned_lc in flash_gemini_models:
+                affected = flash_gemini_models
+            else:
+                affected = (cleaned,)
             for m_alias in affected:
                 buckets[m_alias] = 0.0
                 runtime_exhausted[m_alias] = exp_until

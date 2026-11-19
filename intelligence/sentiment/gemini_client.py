@@ -122,7 +122,8 @@ class GeminiClient(GeminiQuotaRouterMixin):
             else required_env("AGY_PROJECT")
         )
         self._custom_runner = custom_runner
-        self._cache: Dict[str, tuple[float, str]] = {}
+        self._cache: Dict[str, tuple[Any, ...]] = {}
+        self.last_model_used: Optional[str] = None
 
     def _execute_cli(
         self,
@@ -343,6 +344,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         conversation_id: Optional[str] = None,
     ) -> Optional[str]:
         """Query Gemini with a prompt and return the text response."""
+        self.last_model_used = None
         if not isinstance(prompt, str) or not prompt.strip():
             return None
         now = time.time()
@@ -366,14 +368,17 @@ class GeminiClient(GeminiQuotaRouterMixin):
             cached = self._cache.get(prompt)
             if isinstance(cached, (tuple, list)) and len(cached) >= 2 and is_cache_fresh(cached[0], now_ts=now, ttl_sec=cache_ttl_sec):
                 if not require_json or extract_json_object(str(cached[1])) is not None:
+                    self.last_model_used = str(cached[2]) if len(cached) >= 3 and cached[2] else selected_model
                     return cached[1]
 
         # 1. Custom runner (used for unit tests)
         if self._custom_runner is not None:
             try:
                 res = self._custom_runner(prompt, selected_model, timeout_sec)
+                if res:
+                    self.last_model_used = selected_model
                 if cache_ttl_sec > 0 and res:
-                    self._cache[prompt] = (now, res)
+                    self._cache[prompt] = (now, res, selected_model)
                 return res
             except Exception as e:
                 logger.error("Custom runner failed: %s", e)
@@ -596,6 +601,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                             turn_cid = None
 
                     if output:
+                        self.last_model_used = model_candidate
                         if attempt_idx > 0 or model_candidate != selected_model:
                             logger.warning(
                                 "LLM query succeeded using fallback model '%s' (primary '%s' unavailable/failed).",
@@ -603,7 +609,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                                 selected_model,
                             )
                         if cache_ttl_sec > 0:
-                            self._cache[prompt] = (now, output)
+                            self._cache[prompt] = (now, output, model_candidate)
                         if use_topic_session:
                             def _finalize_topic_turn(release_lock: bool = False) -> None:
                                 prev_finalize_rules = getattr(self._JSON_MODE_LOCAL, "include_repo_rules", False)
@@ -728,7 +734,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                     url = f"https://generativelanguage.googleapis.com/v1beta/models/{r_model}:generateContent?key={self.api_key}"
                     body = {
                         "contents": [{"parts": [{"text": prompt}]}],
-                        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1000},
+                        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4096},
                     }
                     resp_data = fetch_json_post(url, body, timeout=timeout_sec)
                     candidates = resp_data.get("candidates") if isinstance(resp_data, dict) else None
@@ -748,8 +754,9 @@ class GeminiClient(GeminiQuotaRouterMixin):
                             r_model,
                         )
                         continue
+                    self.last_model_used = r_model
                     if cache_ttl_sec > 0:
-                        self._cache[prompt] = (now, text)
+                        self._cache[prompt] = (now, text, r_model)
                     return text
                 except Exception as e:
                     logger.warning("Gemini REST API attempt with model %s failed: %s", r_model, e)

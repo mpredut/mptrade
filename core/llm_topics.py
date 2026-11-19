@@ -78,7 +78,7 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
     "auto_technical_repair": TopicSpec(
         "\U0001f6e0 [auto_technical_repair] System Audit & Code Self-Heal (03:35)",
         can_self_heal=True,
-        default_timeout_sec=120.0,
+        default_timeout_sec=240.0,
         model_env_key="LLM_HIGH_STAKE_MODEL",
         override_env_key="LLM_TOPIC_MODEL_AUTO_TECHNICAL_REPAIR",
     ),
@@ -95,7 +95,7 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
         can_trade=True,
         asset_scope="equities",
         default_timeout_sec=120.0,
-        model_env_key="LLM_DEFAULT_MODEL",
+        model_env_key="LLM_HIGH_STAKE_MODEL",
         override_env_key="LLM_TOPIC_MODEL_AUTO_SHARETRADE_EXECUTOR",
     ),
     "macro_geopolitical": TopicSpec(
@@ -107,7 +107,7 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
     "macro_sentiment": TopicSpec(
         "\U0001f9ed [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)",
         default_timeout_sec=120.0,
-        model_env_key="LLM_DEFAULT_MODEL",
+        model_env_key="LLM_HIGH_STAKE_MODEL",
         override_env_key="LLM_TOPIC_MODEL_MACRO_SENTIMENT",
     ),
     "guard_high_stake": TopicSpec(

@@ -94,6 +94,7 @@ class SupervisorAuditReport:
     actions_executed: bool = False
     tests_passed: Optional[bool] = None
     notification_sent: bool = False
+    model_used: str = ""
 
 
 class AutonomousAIReconciler:
@@ -119,6 +120,7 @@ class AutonomousAIReconciler:
         self.logs_dirs = [os.path.join(self.workspace_dir, d) for d in (logs_dirs or ["logs", "logger"])]
         self.gemini_auditor = gemini_auditor or GeminiClient()
         self._intent_gateway = intent_gateway
+        self._last_model_used: str = ""
 
         # Parse decoupled configuration strictly from config files without fallbacks
         conf = load_key_value_conf(self.workspace_dir, _ROOT_DIR)
@@ -241,6 +243,7 @@ class AutonomousAIReconciler:
             120.0 if spec.can_self_heal else 90.0
         )
         now_ts_str = time.strftime("%Y-%m-%d %H:%M:%S %Z").strip()
+        self._last_model_used = ""
         resp = query_topic_json(
             self.gemini_auditor,
             topic_key,
@@ -248,6 +251,8 @@ class AutonomousAIReconciler:
             subtitle=f"{self.mode.upper()} [{now_ts_str}]",
             timeout_sec=call_timeout,
         )
+        raw_used = getattr(self.gemini_auditor, "last_model_used", None)
+        self._last_model_used = raw_used.strip() if isinstance(raw_used, str) and raw_used.strip() else ""
 
         if not resp or not isinstance(resp, dict):
             logger.warning("Gemini supervisor query failed. Falling back to default baseline.")
@@ -398,6 +403,7 @@ class AutonomousAIReconciler:
             if cat_path := str(cat_audit.get("catalog_path") or "").strip():
                 persist_llm_model_catalog_state(cat_path, cat_audit)
 
+        model_used = str(getattr(self, "_last_model_used", "") or "").strip()
         (
             decisions_list,
             market_decision,
@@ -412,6 +418,8 @@ class AutonomousAIReconciler:
             now_ts=now,
             intent_gateway=self.intent_gateway,
             is_rth_open_fn=is_us_rth_open,
+            model_used=model_used,
+            log=logger,
         )
         if trade_executed:
             executed = True
@@ -454,6 +462,7 @@ class AutonomousAIReconciler:
             sensor_health=build_sensor_health_summary(sensors),
             actions_executed=executed,
             tests_passed=tests_passed,
+            model_used=model_used,
         )
         # SRE/system/bot-error notifications (ntfy-server / ntfy-error) belong strictly to auto_technical_repair
         # (spec.can_self_heal); trade notifications are dispatched by AutonomousIntentGateway to ntfy-trade.

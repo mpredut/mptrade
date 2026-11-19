@@ -66,6 +66,7 @@ from intelligence.macro_sentiment_ssot import (
     normalize_threat_level,
     read_first_cached_dict,
 )
+from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
 import notify_engine.alertnotifiers as _alertnotifiers
 from providers.intent_state import decision_has_cancel_directive, normalize_trading_decisions
 from state_io import (
@@ -612,9 +613,13 @@ def compute_recommended_llm_config_updates(
     *,
     new_family_names: Iterable[str] = (),
 ) -> Dict[str, str]:
-    """Compute minimal config.env LLM_* updates when configured models vanish or newer families appear.
+    """Compute minimal config.env LLM_* updates strictly when configured models vanish from ``agy models``.
 
-    Preserves each key's chosen effort tier (-low/-medium/-high/-xhigh) and skips orchestrator/image/lite/gpt-oss.
+    Never silently migrates away from a valid configured model family merely because a new family
+    (e.g. a weaker lightweight or slower flagship tier) appeared in the catalog — new families stay
+    notify-only advisories. When a configured model is retired, preserves each key's chosen effort tier
+    (-low/-medium/-high/-xhigh), updates configured ``LLM_TOPIC_MODEL_*`` overrides, and preserves
+    the user's fallback slot composition without re-injecting removed ``-low`` or Flash models.
     """
     avail = [m.strip().lower() for m in available_models if isinstance(m, str) and m.strip()]
     if not avail:
@@ -659,73 +664,106 @@ def compute_recommended_llm_config_updates(
         for m in str(current_config.get("LLM_FALLBACK_MODELS") or "").split(",")
         if m.strip()
     ]
+    topic_override_keys = [
+        spec.override_env_key
+        for spec in TOPIC_SPECS.values()
+        if spec.override_env_key and str(current_config.get(spec.override_env_key) or "").strip()
+    ]
+    cur_overrides = {
+        k: str(current_config.get(k) or "").strip().lower()
+        for k in topic_override_keys
+    }
 
     def _fam_of(slug: str) -> str:
         suf = _extract_effort_suffix(slug)
         return slug[: -len(suf)] if suf else slug
+
+    def _is_paid_gemini(slug: str) -> bool:
+        return slug.startswith("gemini-") and "flash" not in slug
 
     cur_primary_fam = _fam_of(cur_default)
     cur_flash_fam = _fam_of(cur_compact)
     cur_claude_fams = [_fam_of(m) for m in cur_fallbacks if m.startswith("claude-")]
     cur_claude_fam = cur_claude_fams[0] if cur_claude_fams else ""
 
-    primary_missing = any(m and m not in avail_set for m in (cur_default, cur_high, cur_low))
+    primary_missing = (
+        any(m and _is_paid_gemini(m) and m not in avail_set for m in (cur_default, cur_high, cur_low))
+        or any(_is_paid_gemini(m) and m not in avail_set for m in cur_fallbacks)
+        or any(_is_paid_gemini(m) and m not in avail_set for m in cur_overrides.values())
+    )
     target_primary_fam = cur_primary_fam
-    if paid_gemini_fams:
+    if primary_missing and paid_gemini_fams:
         newest_new_primary = next((f for f in paid_gemini_fams if f in new_fams), None)
-        if newest_new_primary:
-            target_primary_fam = newest_new_primary
-        elif primary_missing or cur_primary_fam not in paid_gemini_fams:
-            target_primary_fam = paid_gemini_fams[0]
+        target_primary_fam = newest_new_primary or paid_gemini_fams[0]
 
-    flash_missing = bool(cur_compact and cur_compact not in avail_set) or any(
-        "flash" in m and m not in avail_set for m in cur_fallbacks
+    flash_missing = (
+        bool(cur_compact and cur_compact not in avail_set)
+        or bool(cur_low and "flash" in cur_low and cur_low not in avail_set)
+        or any("flash" in m and m not in avail_set for m in cur_fallbacks)
+        or any("flash" in m and m not in avail_set for m in cur_overrides.values())
     )
     target_flash_fam = cur_flash_fam
-    if flash_fams:
+    if flash_missing and flash_fams:
         newest_new_flash = next((f for f in flash_fams if f in new_fams), None)
-        if newest_new_flash:
-            target_flash_fam = newest_new_flash
-        elif flash_missing or cur_flash_fam not in flash_fams:
-            target_flash_fam = flash_fams[0]
+        target_flash_fam = newest_new_flash or flash_fams[0]
 
-    claude_missing = any(m.startswith("claude-") and m not in avail_set for m in cur_fallbacks)
+    claude_missing = (
+        any(m.startswith("claude-") and m not in avail_set for m in cur_fallbacks)
+        or any(m.startswith("claude-") and m not in avail_set for m in cur_overrides.values())
+    )
     target_claude_fam = cur_claude_fam
-    if claude_sonnet_fams and (not cur_claude_fam or cur_claude_fam.startswith("claude-sonnet-") or claude_missing):
+    if claude_missing and claude_sonnet_fams:
         newest_new_claude = next((f for f in claude_sonnet_fams if f in new_fams), None)
-        if newest_new_claude:
-            target_claude_fam = newest_new_claude
-        elif claude_missing:
-            target_claude_fam = claude_sonnet_fams[0]
+        target_claude_fam = newest_new_claude or claude_sonnet_fams[0]
+
+    def _remap_slug(slug: str, default_suf: str) -> Optional[str]:
+        if not slug:
+            return None
+        if slug in avail_set:
+            return slug
+        suf = _extract_effort_suffix(slug) or default_suf
+        if "flash" in slug and target_flash_fam:
+            return _pick_family_tier(target_flash_fam, suf, avail_set)
+        if slug.startswith("claude-") and target_claude_fam:
+            return _pick_family_tier(target_claude_fam, suf, avail_set)
+        if _is_paid_gemini(slug) and target_primary_fam:
+            return _pick_family_tier(target_primary_fam, suf, avail_set)
+        return None
 
     updates: Dict[str, str] = {}
-    if target_primary_fam:
+    if primary_missing and target_primary_fam:
         if cur_default and (new_def := _pick_family_tier(target_primary_fam, _extract_effort_suffix(cur_default) or "-medium", avail_set)):
             if new_def != cur_default:
                 updates["LLM_DEFAULT_MODEL"] = new_def
         if cur_high and (new_hi := _pick_family_tier(target_primary_fam, _extract_effort_suffix(cur_high) or "-high", avail_set)):
             if new_hi != cur_high:
                 updates["LLM_HIGH_STAKE_MODEL"] = new_hi
-        if cur_low:
-            low_fam = target_flash_fam if ("flash" in cur_low and target_flash_fam) else target_primary_fam
-            if new_lo := _pick_family_tier(low_fam, _extract_effort_suffix(cur_low) or "-low", avail_set):
+        if cur_low and not ("flash" in cur_low):
+            if new_lo := _pick_family_tier(target_primary_fam, _extract_effort_suffix(cur_low) or "-low", avail_set):
                 if new_lo != cur_low:
                     updates["LLM_LOW_STAKE_MODEL"] = new_lo
 
-    if target_flash_fam and cur_compact:
-        if new_cmp := _pick_family_tier(target_flash_fam, _extract_effort_suffix(cur_compact) or "-low", avail_set):
-            if new_cmp != cur_compact:
-                updates["LLM_COMPACT_MODEL"] = new_cmp
+    if flash_missing and target_flash_fam:
+        if cur_low and "flash" in cur_low:
+            if new_lo := _pick_family_tier(target_flash_fam, _extract_effort_suffix(cur_low) or "-low", avail_set):
+                if new_lo != cur_low:
+                    updates["LLM_LOW_STAKE_MODEL"] = new_lo
+        if cur_compact:
+            if new_cmp := _pick_family_tier(target_flash_fam, _extract_effort_suffix(cur_compact) or "-low", avail_set):
+                if new_cmp != cur_compact:
+                    updates["LLM_COMPACT_MODEL"] = new_cmp
 
-    if cur_fallbacks:
+    for ov_key, cur_ov in cur_overrides.items():
+        if cur_ov not in avail_set:
+            if (new_ov := _remap_slug(cur_ov, "-high")) and new_ov != cur_ov:
+                updates[ov_key] = new_ov
+
+    if cur_fallbacks and any(m not in avail_set for m in cur_fallbacks):
         fb_candidates: List[str] = []
-        for fam in (target_primary_fam, target_claude_fam, target_flash_fam):
-            if not fam:
-                continue
-            for suf in ("-medium", "-low"):
-                cand = f"{fam}{suf}"
-                if cand in avail_set and cand not in fb_candidates:
-                    fb_candidates.append(cand)
+        for m in cur_fallbacks:
+            remapped = _remap_slug(m, "-medium")
+            if remapped and remapped in avail_set and remapped not in fb_candidates:
+                fb_candidates.append(remapped)
         new_fb_str = ",".join(fb_candidates)
         if new_fb_str and new_fb_str != ",".join(cur_fallbacks):
             updates["LLM_FALLBACK_MODELS"] = new_fb_str
@@ -1781,16 +1819,19 @@ def persist_supervisor_audit_artifact(
             require_callable=True,
         )
         _save_json(state_file, clean_json_value(report_dict), indent=2)
+        hb_extra: Dict[str, Any] = {
+            "mode": report_dict.get("mode"),
+            "summary": report_dict.get("summary"),
+            "diagnosed_issues_count": len(report_dict.get("diagnosed_issues") or []),
+            "venue_actions_count": len(report_dict.get("venue_actions") or []),
+            "market_trading_decision": report_dict.get("market_trading_decision") or {},
+            "market_trading_decisions": report_dict.get("market_trading_decisions") or [],
+        }
+        if model_used := str(report_dict.get("model_used") or "").strip():
+            hb_extra["model_used"] = model_used
         hb = build_heartbeat_payload(
             {"ts": report_dict.get("ts")},
-            extra={
-                "mode": report_dict.get("mode"),
-                "summary": report_dict.get("summary"),
-                "diagnosed_issues_count": len(report_dict.get("diagnosed_issues") or []),
-                "venue_actions_count": len(report_dict.get("venue_actions") or []),
-                "market_trading_decision": report_dict.get("market_trading_decision") or {},
-                "market_trading_decisions": report_dict.get("market_trading_decisions") or [],
-            },
+            extra=hb_extra,
         )
         _save_json(heartbeat_file, hb, indent=2)
     except Exception as e:
@@ -1978,6 +2019,8 @@ def submit_supervisor_trading_decisions(
     now_ts: float,
     intent_gateway: Any,
     is_rth_open_fn: Any,
+    model_used: str = "",
+    log: Optional[Any] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
     """Normalize and submit LLM trading decisions to AutonomousIntentGateway."""
     if not getattr(spec, "can_trade", False):
@@ -1996,9 +2039,19 @@ def submit_supervisor_trading_decisions(
     ]
     submit_decs = actionable_decs if actionable_decs else decisions_list[:1]
     effective_max_mode = "shadow" if (scope == "equities" and not is_rth_open_fn(now_ts)) else mode
+    clean_model_used = model_used.strip() if isinstance(model_used, str) else ""
+    if effective_max_mode == "enforce" and is_degraded_trading_model(clean_model_used):
+        if log:
+            log.warning(
+                "[%s] Downgrading execution mode from enforce to shadow because degraded fallback model '%s' answered.",
+                topic_key,
+                clean_model_used,
+            )
+        effective_max_mode = "shadow"
     any_executed = False
     for dec in submit_decs:
-        if isinstance(emitted := intent_gateway.submit(dec, source=topic_key, max_mode=effective_max_mode), dict):
+        dec_payload = {**dec, "model_used": clean_model_used} if clean_model_used else dec
+        if isinstance(emitted := intent_gateway.submit(dec_payload, source=topic_key, max_mode=effective_max_mode), dict):
             intents_emitted.append(emitted)
             if effective_max_mode == "enforce" and emitted.get("status") == "EXECUTED":
                 any_executed = True

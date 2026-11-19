@@ -5665,19 +5665,22 @@ def test_per_topic_neon_high_vs_medium_vs_low_routing_and_120s_timeouts():
     cfg_med = os.environ["LLM_DEFAULT_MODEL"].strip()
     cfg_low = os.environ["LLM_LOW_STAKE_MODEL"].strip()
     cfg_compact = os.environ["LLM_COMPACT_MODEL"].strip()
+    cfg_repair = os.environ["LLM_TOPIC_MODEL_AUTO_TECHNICAL_REPAIR"].strip()
     cfg_fbs = [m.strip() for m in os.environ["LLM_FALLBACK_MODELS"].split(",") if m.strip()]
 
-    # 1. guard_high_stake (>= 700 EUR BUY) and auto_technical_repair use LLM_HIGH_STAKE_MODEL
-    for high_topic in ("guard_high_stake", "auto_technical_repair"):
+    # 1. Nightly auto_technical_repair uses xhigh override and 240s timeout; high-stake/share/macro use LLM_HIGH_STAKE_MODEL
+    repair_spec = topic_spec("auto_technical_repair")
+    assert repair_spec.preferred_model == cfg_repair
+    assert repair_spec.preferred_model.endswith("-xhigh")
+    assert repair_spec.default_timeout_sec == 240.0
+
+    for high_topic in ("guard_high_stake", "auto_sharetrade_executor", "macro_sentiment"):
         spec = topic_spec(high_topic)
         assert spec.preferred_model == cfg_high
         assert spec.default_timeout_sec == 120.0
 
-    # 2. Macro sentiment and post-stop guard use LLM_DEFAULT_MODEL and 120.0s timeout
-    for med_120_topic in (
-        "macro_sentiment",
-        "guard_post_stop",
-    ):
+    # 2. Crypto executor and post-stop guard use LLM_DEFAULT_MODEL and 120.0s timeout
+    for med_120_topic in ("auto_cryptotrade_executor", "guard_post_stop"):
         spec = topic_spec(med_120_topic)
         assert spec.preferred_model == cfg_med
         assert spec.default_timeout_sec == 120.0
@@ -5687,13 +5690,11 @@ def test_per_topic_neon_high_vs_medium_vs_low_routing_and_120s_timeouts():
     assert geo_spec.preferred_model == cfg_low
     assert geo_spec.default_timeout_sec == 120.0
 
-    # 4. Autonomous trade executors use LLM_DEFAULT_MODEL and 120.0s timeout
-    for exec_topic in ("auto_cryptotrade_executor", "auto_sharetrade_executor"):
-        spec = topic_spec(exec_topic)
-        assert spec.preferred_model == cfg_med
-        assert spec.default_timeout_sec == 120.0
+    # 4. Weak -low and Flash models are permanently excluded from LLM_FALLBACK_MODELS
+    assert cfg_fbs == [cfg_med, "claude-sonnet-5-5-medium"]
+    assert all(not m.endswith("-low") and "flash" not in m for m in cfg_fbs)
 
-    # 5. GeminiClient fallback chain deduplicates primary model, keeps weak gpt-oss excluded, and maps xhigh/high/med/low chains
+    # 5. GeminiClient fallback chain deduplicates primary model, excludes weak models, and preserves /compact on LLM_COMPACT_MODEL
     observed = {}
 
     def _runner(prompt, model, timeout):
@@ -5704,33 +5705,32 @@ def test_per_topic_neon_high_vs_medium_vs_low_routing_and_120s_timeouts():
     client = GeminiClient(custom_runner=_runner, project_id="autonommptrade")
     primary_base = cfg_med.rsplit("-", 1)[0]
     xhigh_chain = client.get_model_candidates(f"{primary_base}-xhigh")
-    assert xhigh_chain[:3] == [f"{primary_base}-xhigh", f"{primary_base}-high", f"{primary_base}-medium"]
+    assert xhigh_chain == [f"{primary_base}-xhigh", f"{primary_base}-high", f"{primary_base}-medium", "claude-sonnet-5-5-medium"]
     assert "gpt-oss-120b-medium" not in xhigh_chain
 
     high_chain = client.get_model_candidates(cfg_high)
-    assert high_chain[0] == cfg_high
+    assert high_chain == [cfg_high, *cfg_fbs]
     assert "gpt-oss-120b-medium" not in high_chain
-    for fb in cfg_fbs:
-        assert fb in high_chain
 
     med_chain = client.get_model_candidates(cfg_med)
     assert med_chain == [cfg_med, *[fb for fb in cfg_fbs if fb != cfg_med]]
 
     low_chain = client.get_model_candidates(cfg_low)
-    assert low_chain[0] == cfg_low
-    assert all(m.endswith("-low") for m in low_chain[:3])
+    assert low_chain == [cfg_low, *cfg_fbs]
 
     compact_chain = client.get_compact_model_candidates(med_chain, 0)
     assert compact_chain[0] == cfg_compact
-    assert all(m.endswith("-low") for m in compact_chain[:3])
+    assert compact_chain[1:] == med_chain
 
     client.query_json("test guard", topic_key="guard_high_stake", timeout_sec=120.0)
     assert observed["model"] == cfg_high
     assert observed["timeout"] == 120.0
+    assert client.last_model_used == cfg_high
 
-    client.query_json("test repair", topic_key="auto_technical_repair", timeout_sec=120.0)
-    assert observed["model"] == cfg_high
-    assert observed["timeout"] == 120.0
+    client.query_json("test repair", topic_key="auto_technical_repair", timeout_sec=240.0)
+    assert observed["model"] == cfg_repair
+    assert observed["timeout"] == 240.0
+    assert client.last_model_used == cfg_repair
 
     client.query_json("test geo", topic_key="macro_geopolitical", timeout_sec=120.0)
     assert observed["model"] == cfg_low
@@ -5745,7 +5745,7 @@ def test_per_topic_neon_high_vs_medium_vs_low_routing_and_120s_timeouts():
 
 
 def test_config_only_llm_model_migration_and_catalog_audit_auto_update(tmp_path, monkeypatch):
-    """Verify future model switches require only config.env edits and auto_technical_repair auto-updates config.env."""
+    """Verify future model switches require only config.env edits, new families stay notify-only, and retired models auto-repair."""
     import subprocess
     from orchestratorOS.lib.technical_repair_ssot import (
         audit_llm_model_catalog_and_binaries,
@@ -5759,18 +5759,21 @@ def test_config_only_llm_model_migration_and_catalog_audit_auto_update(tmp_path,
     from orchestratorOS.supervisor.prompt_sections import _format_sre_and_fleet_section
 
     # 1. Switching to a brand-new Gemini + Flash + Claude generation purely via env vars (0 Python edits)
+    monkeypatch.delenv("LLM_TOPIC_MODEL_AUTO_TECHNICAL_REPAIR", raising=False)
     monkeypatch.setenv("LLM_DEFAULT_MODEL", "gemini-5-aurora-medium")
     monkeypatch.setenv("LLM_HIGH_STAKE_MODEL", "gemini-5-aurora-xhigh")
     monkeypatch.setenv("LLM_LOW_STAKE_MODEL", "gemini-5-aurora-low")
     monkeypatch.setenv("LLM_COMPACT_MODEL", "gemini-4.2-flash-low")
     monkeypatch.setenv(
         "LLM_FALLBACK_MODELS",
-        "gemini-5-aurora-medium,gemini-5-aurora-low,claude-sonnet-6-medium,claude-sonnet-6-low,gemini-4.2-flash-medium,gemini-4.2-flash-low",
+        "gemini-5-aurora-medium,claude-sonnet-6-medium",
     )
     monkeypatch.setenv("LLM_TOPIC_MODEL_GUARD_POST_STOP", "gemini-5-aurora-high")
 
     assert topic_spec("auto_technical_repair").preferred_model == "gemini-5-aurora-xhigh"
     assert topic_spec("auto_cryptotrade_executor").preferred_model == "gemini-5-aurora-medium"
+    assert topic_spec("auto_sharetrade_executor").preferred_model == "gemini-5-aurora-xhigh"
+    assert topic_spec("macro_sentiment").preferred_model == "gemini-5-aurora-xhigh"
     assert topic_spec("macro_geopolitical").preferred_model == "gemini-5-aurora-low"
     assert topic_spec("guard_post_stop").preferred_model == "gemini-5-aurora-high"
 
@@ -5781,18 +5784,13 @@ def test_config_only_llm_model_migration_and_catalog_audit_auto_update(tmp_path,
         "gemini-5-aurora-xhigh",
         "gemini-5-aurora-high",
         "gemini-5-aurora-medium",
-        "gemini-5-aurora-low",
         "claude-sonnet-6-medium",
-        "claude-sonnet-6-low",
-        "gemini-4.2-flash-high",
-        "gemini-4.2-flash-medium",
-        "gemini-4.2-flash-low",
     ]
     med_cands = dyn_client.get_model_candidates("gemini-5-aurora-medium")
-    assert dyn_client.get_compact_model_candidates(med_cands, 0)[:3] == [
+    assert dyn_client.get_compact_model_candidates(med_cands, 0) == [
         "gemini-4.2-flash-low",
-        "gemini-5-aurora-low",
-        "claude-sonnet-6-low",
+        "gemini-5-aurora-medium",
+        "claude-sonnet-6-medium",
     ]
     paid_pool, flash_pool, claude_pool = GeminiClient._resolve_model_pools()
     assert "gemini-5-aurora-xhigh" in paid_pool and "gemini-5-aurora-low" in paid_pool
@@ -5816,16 +5814,17 @@ def test_config_only_llm_model_migration_and_catalog_audit_auto_update(tmp_path,
     assert parsed[0] == "gemini-5-aurora-xhigh"
     assert len(parsed) == 10
 
-    # 3. Periodic catalog & binary audit: baseline silent -> new Gemini family triggers comment-preserving config.env patch
+    # 3. Periodic catalog & binary audit: baseline silent -> new family stays notify-only while configured family is valid
     ws_dir = tmp_path / "ws"
     ws_dir.mkdir()
     cfg_file = ws_dir / "config.env"
     cfg_file.write_text(
         "LLM_DEFAULT_MODEL=gemini-5-aurora-medium # medium tier\n"
-        "LLM_HIGH_STAKE_MODEL=gemini-5-aurora-xhigh # xhigh tier\n"
+        "LLM_HIGH_STAKE_MODEL=gemini-5-aurora-high # high tier\n"
         "LLM_LOW_STAKE_MODEL=gemini-5-aurora-low # low tier\n"
         "LLM_COMPACT_MODEL=gemini-4.2-flash-low  # compact\n"
-        "LLM_FALLBACK_MODELS=gemini-5-aurora-medium,gemini-5-aurora-low,claude-sonnet-6-medium,claude-sonnet-6-low,gemini-4.2-flash-medium,gemini-4.2-flash-low # fallbacks\n",
+        "LLM_FALLBACK_MODELS=gemini-5-aurora-medium,claude-sonnet-6-medium # fallbacks\n"
+        "LLM_TOPIC_MODEL_AUTO_TECHNICAL_REPAIR=gemini-5-aurora-xhigh # repair xhigh\n",
         encoding="utf-8",
     )
     cat_path = str(tmp_path / "llm_model_catalog.json")
@@ -5855,21 +5854,43 @@ def test_config_only_llm_model_migration_and_catalog_audit_auto_update(tmp_path,
         new_family_names=["gemini-pro-orchestrator-v9", "gemini-6-image"],
     ) == {}
 
-    # New flagship Gemini 6 Xenon arrives -> recommended_config_updates preserves effort tiers (including xhigh!)
+    # Bug 5A guard: New family arrives (e.g. weaker Hydrogen or slower Carbon) while configured Aurora is STILL valid ->
+    # notify-only advisory (new_families populated), ZERO silent auto-rewrite of config.env!
     catalog_state["stdout"] = (
-        "gemini-6-xenon-xhigh    Gemini 6 Xenon (XHigh)\n"
-        "gemini-6-xenon-high     Gemini 6 Xenon (High)\n"
-        "gemini-6-xenon-medium   Gemini 6 Xenon (Medium)\n"
-        "gemini-6-xenon-low      Gemini 6 Xenon (Low)\n"
+        "gemini-4-hydrogen-high    Gemini 4 Hydrogen (High)\n"
+        "gemini-4-hydrogen-medium  Gemini 4 Hydrogen (Medium)\n"
+        "gemini-4-hydrogen-low     Gemini 4 Hydrogen (Low)\n"
+        "gemini-6-xenon-xhigh      Gemini 6 Xenon (XHigh)\n"
+        "gemini-6-xenon-high       Gemini 6 Xenon (High)\n"
+        "gemini-6-xenon-medium     Gemini 6 Xenon (Medium)\n"
+        "gemini-6-xenon-low        Gemini 6 Xenon (Low)\n"
     ) + raw_models_out
+    res_advisory = audit_llm_model_catalog_and_binaries(str(ws_dir), catalog_path=cat_path, runner=_fake_runner, force_refresh=True)
+    assert res_advisory["baseline_initialized"] is False
+    assert "gemini-6-xenon (low/medium/high/xhigh)" in res_advisory["new_families"]
+    assert res_advisory["missing_configured_models"] == []
+    assert res_advisory["recommended_config_updates"] == {}
+
+    # Configured Aurora family is actually retired/removed -> auto-update migrates cleanly, preserves xhigh override,
+    # and NEVER re-injects weak -low or Flash models into LLM_FALLBACK_MODELS!
+    catalog_state["stdout"] = (
+        "gemini-6-xenon-xhigh      Gemini 6 Xenon (XHigh)\n"
+        "gemini-6-xenon-high       Gemini 6 Xenon (High)\n"
+        "gemini-6-xenon-medium     Gemini 6 Xenon (Medium)\n"
+        "gemini-6-xenon-low        Gemini 6 Xenon (Low)\n"
+        "claude-sonnet-6-medium    Claude Sonnet 6 (Medium)\n"
+        "claude-sonnet-6-low       Claude Sonnet 6 (Low)\n"
+        "gemini-4.2-flash-medium   Gemini 4.2 Flash (Medium)\n"
+        "gemini-4.2-flash-low      Gemini 4.2 Flash (Low)\n"
+    )
     res2 = audit_llm_model_catalog_and_binaries(str(ws_dir), catalog_path=cat_path, runner=_fake_runner, force_refresh=True)
-    assert res2["baseline_initialized"] is False
-    assert res2["new_families"] == ["gemini-6-xenon (low/medium/high/xhigh)"]
+    assert "gemini-5-aurora-medium" in res2["missing_configured_models"]
     assert res2["recommended_config_updates"] == {
         "LLM_DEFAULT_MODEL": "gemini-6-xenon-medium",
-        "LLM_HIGH_STAKE_MODEL": "gemini-6-xenon-xhigh",
+        "LLM_HIGH_STAKE_MODEL": "gemini-6-xenon-high",
         "LLM_LOW_STAKE_MODEL": "gemini-6-xenon-low",
-        "LLM_FALLBACK_MODELS": "gemini-6-xenon-medium,gemini-6-xenon-low,claude-sonnet-6-medium,claude-sonnet-6-low,gemini-4.2-flash-medium,gemini-4.2-flash-low",
+        "LLM_TOPIC_MODEL_AUTO_TECHNICAL_REPAIR": "gemini-6-xenon-xhigh",
+        "LLM_FALLBACK_MODELS": "gemini-6-xenon-medium,claude-sonnet-6-medium",
     }
 
     # build_llm_config_env_remediation builds an exact, comment-preserving config.env patch
@@ -5879,10 +5900,11 @@ def test_config_only_llm_model_migration_and_catalog_audit_auto_update(tmp_path,
     assert orig_txt.count(patch_obj["search_block"]) == 1
     patched_txt = orig_txt.replace(patch_obj["search_block"], patch_obj["replace_block"], 1)
     assert "LLM_DEFAULT_MODEL=gemini-6-xenon-medium # medium tier" in patched_txt
-    assert "LLM_HIGH_STAKE_MODEL=gemini-6-xenon-xhigh # xhigh tier" in patched_txt
+    assert "LLM_HIGH_STAKE_MODEL=gemini-6-xenon-high # high tier" in patched_txt
     assert "LLM_LOW_STAKE_MODEL=gemini-6-xenon-low # low tier" in patched_txt
     assert "LLM_COMPACT_MODEL=gemini-4.2-flash-low  # compact" in patched_txt
-    assert "LLM_FALLBACK_MODELS=gemini-6-xenon-medium,gemini-6-xenon-low,claude-sonnet-6-medium,claude-sonnet-6-low,gemini-4.2-flash-medium,gemini-4.2-flash-low # fallbacks" in patched_txt
+    assert "LLM_FALLBACK_MODELS=gemini-6-xenon-medium,claude-sonnet-6-medium # fallbacks" in patched_txt
+    assert "LLM_TOPIC_MODEL_AUTO_TECHNICAL_REPAIR=gemini-6-xenon-xhigh # repair xhigh" in patched_txt
 
     # End-to-end auto_technical_repair run_cycle automatically applies patch to config.env and persists new catalog baseline
     (ws_dir / "order_guard.conf").write_text("supervisor_mode=enforce\nsupervisor_notify_enabled=false\n", encoding="utf-8")
@@ -5911,6 +5933,7 @@ def test_config_only_llm_model_migration_and_catalog_audit_auto_update(tmp_path,
     rep = sup.run_cycle(topic_key="auto_technical_repair")
     assert rep.actions_executed is True
     assert rep.tests_passed is True
+    assert rep.model_used == "gemini-5-aurora-xhigh"
     assert len(applied_patches) == 1 and applied_patches[0][0] == "config.env"
     assert "LLM_DEFAULT_MODEL=gemini-6-xenon-medium" in cfg_file.read_text(encoding="utf-8")
 
@@ -5932,13 +5955,120 @@ def test_config_only_llm_model_migration_and_catalog_audit_auto_update(tmp_path,
     assert any("MISSING_CONFIGURED_MODELS" in ln and "gemini-6-xenon-medium" in ln for ln in sre_lines)
 
     # Notification helper renders new model families cleanly on ntfy-server
-    sh_new = build_sensor_health_summary(SimpleNamespace(**{**sensors_stub.__dict__, "system_and_vpn": {"llm_catalog_audit": res2}}))
+    sh_new = build_sensor_health_summary(SimpleNamespace(**{**sensors_stub.__dict__, "system_and_vpn": {"llm_catalog_audit": res_advisory}}))
     _, body, priority, target_topic, is_err = format_supervisor_ntfy_notification(
         SupervisorAuditReport(ts=time.time(), mode="shadow", summary="System healthy.", sensor_health=sh_new),
         "auto_technical_repair", "ntfy-error", "ntfy-server", "ntfy-server",
     )
     assert is_err is False and target_topic == "ntfy-server" and priority == "default"
     assert "gemini-6-xenon (low/medium/high/xhigh)" in body
+
+
+def test_package_a_model_used_shadow_downgrade_rest_tokens_and_paid_vs_flash_quota_isolation(tmp_path, monkeypatch):
+    """Verify Package A: model_used attribution, enforce->shadow downgrade on degraded models, REST 4096 cap, and Paid vs Flash pool isolation."""
+    from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
+    from orchestratorOS.lib.technical_repair_ssot import submit_supervisor_trading_decisions
+
+    # 1. Degraded trading model classifier
+    assert is_degraded_trading_model("gemini-4-neon-medium") is False
+    assert is_degraded_trading_model("gemini-4-neon-high") is False
+    assert is_degraded_trading_model("claude-sonnet-5-5-medium") is False
+    assert is_degraded_trading_model("gemini-4-neon-low") is True
+    assert is_degraded_trading_model("claude-sonnet-5-5-low") is True
+    assert is_degraded_trading_model("gemini-3.8-flash-medium") is True
+    assert is_degraded_trading_model("gemini-3.8-flash-low") is True
+    assert is_degraded_trading_model("gemini-2.5-flash") is True
+    assert is_degraded_trading_model("") is False
+
+    # 2. Degraded fallback model auto-downgrades enforce -> shadow and preserves model_used attribution
+    submitted = []
+
+    class _StubGateway:
+        def submit(self, dec, *, source, max_mode):
+            submitted.append((dict(dec), source, max_mode))
+            return {"status": "OBSERVED_SHADOW" if max_mode == "shadow" else "EXECUTED", "model_used": dec.get("model_used")}
+
+    plan = {
+        "summary": "Buy setup",
+        "market_trading_decisions": [
+            {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "confidence": 0.92, "suggested_notional_usd": 500.0}
+        ],
+    }
+    spec_crypto = topic_spec("auto_cryptotrade_executor")
+
+    _, _, intents_deg, _, exec_deg = submit_supervisor_trading_decisions(
+        plan, spec_crypto, topic_key="auto_cryptotrade_executor", mode="enforce",
+        now_ts=time.time(), intent_gateway=_StubGateway(), is_rth_open_fn=lambda _ts: True,
+        model_used="gemini-3.8-flash-low",
+    )
+    assert exec_deg is False
+    assert submitted[-1][2] == "shadow"
+    assert submitted[-1][0]["model_used"] == "gemini-3.8-flash-low"
+    assert intents_deg[0]["model_used"] == "gemini-3.8-flash-low"
+
+    _, _, intents_ok, _, exec_ok = submit_supervisor_trading_decisions(
+        plan, spec_crypto, topic_key="auto_cryptotrade_executor", mode="enforce",
+        now_ts=time.time(), intent_gateway=_StubGateway(), is_rth_open_fn=lambda _ts: True,
+        model_used="gemini-4-neon-medium",
+    )
+    assert exec_ok is True
+    assert submitted[-1][2] == "enforce"
+    assert submitted[-1][0]["model_used"] == "gemini-4-neon-medium"
+    assert intents_ok[0]["model_used"] == "gemini-4-neon-medium"
+
+    # 3. REST fallback uses maxOutputTokens=4096 and records last_model_used
+    rest_bodies = []
+
+    def _fake_fetch_post(url, body, timeout=15.0):
+        rest_bodies.append((url, body))
+        return {"candidates": [{"content": {"parts": [{"text": '{"decision":"HOLD"}'}]}}]}
+
+    monkeypatch.setattr("intelligence.sentiment.gemini_client.fetch_json_post", _fake_fetch_post)
+    rest_client = GeminiClient(api_key="test-key", cli_path="/nonexistent/agy-bot")
+    rest_client._allow_unmocked_queries = True
+    out = rest_client.query_json("Evaluate BTC")
+    assert out == {"decision": "HOLD"}
+    assert rest_bodies and rest_bodies[0][1]["generationConfig"]["maxOutputTokens"] == 4096
+    assert rest_client.last_model_used == "gemini-2.5-flash"
+
+    # 4. Bug 5B: Paid Neon vs Flash quota pool isolation (probe & runtime exhaustion)
+    q_dir = tmp_path / "quota_iso"
+    q_dir.mkdir(parents=True, exist_ok=True)
+    (q_dir / "antigravity-oauth-token").write_text(
+        json.dumps({"token": {"access_token": "tok-iso", "expiry_timestamp": int((time.time() + 3600) * 1000)}}),
+        encoding="utf-8",
+    )
+    q_state = q_dir / "llm_quota_status.json"
+    monkeypatch.setattr(GeminiClient, "_get_quota_state_path", staticmethod(lambda: str(q_state)))
+    monkeypatch.setattr("intelligence.sentiment.llm_quota_router.resolve_bot_cli_base", lambda: str(q_dir))
+    monkeypatch.setattr("intelligence.sentiment.llm_quota_router.resolve_ui_cli_base", lambda: str(q_dir))
+    GeminiClient._QUOTA_MEM_CACHE = {}
+
+    def _mock_iso_post(url, *args, **kwargs):
+        if "loadCodeAssist" in url:
+            return {"paidTier": {"id": "g1-ultra-tier", "availableCredits": []}}
+        return {
+            "buckets": [
+                {"modelId": "gemini-4-neon", "remainingFraction": 0.0},
+                {"modelId": "gemini-3.8-flash-tiered", "remainingFraction": 1.0},
+            ]
+        }
+
+    monkeypatch.setattr("intelligence.sentiment.llm_quota_router.fetch_json_post", _mock_iso_post)
+    snap_iso = GeminiClient.probe_live_model_quota(bot_cli_base=str(q_dir), force_refresh=True)
+    assert snap_iso is not None
+    # Paid Neon bucket is 0.0 (must NOT falsely inherit 1.0 from Flash!) while Flash stays 1.0
+    assert snap_iso["buckets"]["gemini-4-neon-medium"] == 0.0
+    assert snap_iso["buckets"]["gemini-4-neon-high"] == 0.0
+    assert snap_iso["buckets"]["gemini-3.8-flash-low"] == 1.0
+
+    # Runtime exhaustion on paid Neon must NOT poison gemini-3.8-flash-low used for /compact
+    GeminiClient._record_model_quota_exhausted("gemini-4-neon-medium", ttl_sec=120.0)
+    saved_iso = json.loads(q_state.read_text(encoding="utf-8"))
+    assert saved_iso["buckets"]["gemini-4-neon-high"] == 0.0
+    assert saved_iso["runtime_exhausted"].get("gemini-4-neon-medium", 0.0) > time.time()
+    assert "gemini-3.8-flash-low" not in saved_iso["runtime_exhausted"]
+    assert saved_iso["buckets"]["gemini-3.8-flash-low"] == 1.0
 
 
 def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):

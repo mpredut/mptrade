@@ -517,6 +517,8 @@ def validate_and_build_intent_dict(
     }
     if (mm := clean_scalar_str(max_mode)) is not None:
         rec["max_mode"] = mm
+    if (mu := clean_scalar_str(decision.get("model_used"))) is not None:
+        rec["model_used"] = mu
     if cancel_bot_open:
         rec["cancel_bot_open_orders"] = True
     if cancel_oids:
