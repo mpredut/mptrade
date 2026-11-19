@@ -610,6 +610,10 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         include_none_cl_ord_id: bool = False,
         post_only: bool = True,
     ):
+        if s_norm == "BUY" and resolve_kraken_tokenized_pair(symbol)[1]:
+            raise SubmissionRefused(
+                f"{symbol}: Kraken EU tokenized xStock pairs are sell-only via Spot API (use T212 for equity BUY)"
+            )
         if s_norm == "BUY" and split_kraken_pair(symbol)[1] == "USD":
             try:
                 cli = self._client()
@@ -758,8 +762,13 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
     def preflight_order(self, symbol: str, side: str, qty: float,
                         price: Optional[float] = None, *, market: bool = False,
                         kind: Optional[str] = None) -> None:
-        """Reject an impossible SELL before creating a durable submit intent."""
-        if normalize_side(side) != "SELL" or qty is None:
+        """Reject an impossible SELL or forbidden tokenized xStock BUY before creating a durable submit intent."""
+        s_norm = normalize_side(side)
+        if s_norm == "BUY" and resolve_kraken_tokenized_pair(symbol)[1]:
+            raise SubmissionRefused(
+                f"preflight_order {symbol}: Kraken EU tokenized xStock pairs are sell-only via Spot API"
+            )
+        if s_norm != "SELL" or qty is None:
             return
         requested = safe_pos_float(qty, default=None)
         if requested is None:

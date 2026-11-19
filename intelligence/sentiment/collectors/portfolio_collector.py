@@ -988,7 +988,8 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         )
         bot_tp = safe_pos_float(xstock_cfg.get("xstock_bot_tp_pct"), default=None)
         bot_trail = safe_pos_float(xstock_cfg.get("xstock_bot_tp_trail_pct"), default=None)
-        bot_dca = safe_pos_float(xstock_cfg.get("xstock_bot_dca_drop_pct"), default=None)
+        max_dca_cfg = safe_nonneg_float(xstock_cfg.get("xstock_bot_max_dca_buys"), default=1.0) or 0.0
+        bot_dca = safe_pos_float(xstock_cfg.get("xstock_bot_dca_drop_pct"), default=None) if max_dca_cfg > 0 else None
         hold_meta_parts = [p for p in (f"{primary_hold_qty:g} {primary_hold_tok}" if primary_hold_qty > 0 else "", f"alloc ${alloc_px:g}" if alloc_px else "", "0bps maker/taker fee") if p]
         bot_rule_parts = [p for p in (f"TP +{bot_tp:g}%" if bot_tp else "", f"Trail {bot_trail:g}%" if bot_trail else "", f"DCA -{bot_dca:g}%" if bot_dca else "") if p]
         bot_rule_sfx = f" ({' / '.join(bot_rule_parts)})" if bot_rule_parts else ""

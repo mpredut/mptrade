@@ -1726,7 +1726,7 @@ class Strategy(BaseSpotMixin):
         regime_closes: list | tuple = (),
     ) -> bool:
         """Stage 3: Evaluate flat-position re-entry gate and place initial ENTRY buy order."""
-        if self._has_open("buy"):
+        if self._has_open("buy") or self.p.effective_entry_amount() <= 0:
             return False
         if self._in_ipo_lifecycle() and not self._evaluate_ipo_maturity_gate(price, regime, regime_closes):
             return False

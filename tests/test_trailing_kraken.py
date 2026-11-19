@@ -1193,6 +1193,9 @@ def test_spot_engine_hybrid_tranche_plus_trailing_and_zero_reentry(tmp_path):
         ("XSTOCK_BOT_CHECK_MINUTES", "STRAT_CHECK_MINUTES"),
     ):
         env_merged[dst] = cfg[src]
+    assert cfg["XSTOCK_BOT_ENTRY"] == "0"
+    assert cfg["XSTOCK_BOT_MAX_DCA_BUYS"] == "0"
+    env_merged["STRAT_ENTRY"] = "500"
     env_merged["STRAT_ADOPT_COST"] = "80.0"
 
     params = _xstock_strategy.StratParams.from_env(env_merged)
@@ -1735,4 +1738,43 @@ def test_antx_ipo_post_exit_dust_reconcile_zero_known_assets_and_sell_sweep(tmp_
     assert ok_sweep is True
     assert swept_usd == pytest.approx(0.2655009 * 98.48)
     assert "Swept full ANTx balance" in sweep_reason
+
+    # 5. Kraken EU sell-only xStock BUY guard (preflight + live place_order/submit_order) and entry_amount=0 gate skip
+    from providers.strategy_executor import SubmissionRefused
+
+    add_calls = []
+    kp_live = KrakenProvider(
+        client=SimpleNamespace(
+            add_order=lambda *a, **kw: add_calls.append((a, kw)) or {"txid": ["T1"]},
+            pair_info=lambda _p: {"ordermin": "0.06", "lot_decimals": 6, "pair_decimals": 2, "base": "ANTx"},
+        ),
+        live_enabled=True,
+    )
+    with pytest.raises(SubmissionRefused, match="sell-only"):
+        kp_live.preflight_order("ANTxUSD", "BUY", 1.0)
+    with pytest.raises(SubmissionRefused, match="sell-only"):
+        kp_live.place_order("SPCXxUSD", "BUY", 137.0, 1.0)
+    with pytest.raises(SubmissionRefused, match="sell-only"):
+        kp_live.submit_order("ANTxUSD", "BUY", 1.0, price=90.0)
+    assert add_calls == []
+
+    p_sell_only = StratParams(**{**p_ant.__dict__, "entry_amount": 0.0})
+    st_sell_only = Strategy(FakeDustReconcileExec(), "ANTxUSD", p_sell_only, state_dir=str(tmp_path / "ant_so"), dry_run=False)
+    st_sell_only.s.update(qty=0.0, cost=0.0, adopted=True, ipo_matured=False, ipo_peak=99.195)
+    st_sell_only.step(75.0)
+    assert st_sell_only.s["ipo_matured"] is False
+    assert st_sell_only.s["orders"] == []
+
+    (krk_dir / "config.env").write_text(
+        "XSTOCK_YAHOO=ANT\nXSTOCK_ACTIVE_PAIRS=SPCXxUSD:141.75\nXSTOCK_REGEX=^ANTx\n"
+        "XSTOCK_BOT_TP_PCT=9.0\nXSTOCK_BOT_TP_TRAIL_PCT=3.0\nXSTOCK_BOT_DCA_DROP_PCT=3.0\nXSTOCK_BOT_MAX_DCA_BUYS=0\n",
+        encoding="utf-8",
+    )
+    xs_no_dca = KrakenXstocksCollector().collect(
+        str(tmp_path),
+        kraken_dir=str(krk_dir),
+        prices_and_trends={"SPCXxUSD": {"price": 137.68}, "ANTxUSD": {"price": 98.20}},
+    )
+    assert "TP +9% / Trail 3%" in xs_no_dca["active_swing_directive"]
+    assert "DCA -" not in xs_no_dca["active_swing_directive"]
 
