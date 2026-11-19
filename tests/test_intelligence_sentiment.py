@@ -12612,12 +12612,12 @@ def test_telemetry_audit_7_fixes_stale_ob_kinematics_rvol_us_open_ant_realized_l
     assert sent_open_itv == pytest.approx(300.0)
     assert "us_cash_open_volatility_window" in sent_open_reason
 
-    # 5. Official Nasdaq RTH ticker ANT_US_EQ registered as read-only bellwether & exposed in Cross-Market US Equities Telemetry
+    # 5. Official Nasdaq RTH ticker ANT_US_EQ registered as live Trading212 equity & exposed in Cross-Market US Equities Telemetry
     all_syms, _, nb_prov = tracked_price_instruments()
     assert "ANT_US_EQ" in all_syms and nb_prov["ANT_US_EQ"] == "t212"
     assert is_equity_symbol("ANT_US_EQ") is True
     eq_tradable = discover_tradable_specs(asset_scope="equities", include_closed_rth=True)
-    assert "T212_ANT" not in eq_tradable  # No 212trading/config.ant.env -> read-only telemetry bellwether
+    assert "T212_ANT" in eq_tradable  # Active 212trading/config.ant.env -> live Trading212 equity execution enabled
     cmc_ant = build_cross_market_context(
         {
             "ANT_US_EQ": {"price": 103.10, "quote_source": "yahoo_rth", "quote_age_min": 0.5, "chg_15m_pct": 0.45, "chg_24h_pct": 24.2},

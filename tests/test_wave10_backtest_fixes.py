@@ -55,6 +55,7 @@ WAVE10_PY_FILES = (
 )
 
 WAVE10_TEXT_FILES = (
+    "212trading/config.ant.env",
     "212trading/config.nvda.env",
     "212trading/config.rgnt.env",
     "212trading/config.spcx.env",
