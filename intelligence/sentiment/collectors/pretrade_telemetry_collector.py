@@ -1703,7 +1703,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                 if (not sib_live_px or sib_live_px <= 0.0) and cur_px_est > 0.0 and sib_ob_ts > 0.0 and (_time.time() - sib_ob_ts) > 120.0:
                     sib_live_px = cur_px_est
                 sib_ob_fresh = is_ob_live_and_newer(sib_ob_ts, _time.time(), sib_last_pt)
-                if should_rescale_usd_sibling_walls(cand_u, sib_live_px, sib_ob_mid, cur_px_est, ob_ts=sib_ob_ts, last_pt=sib_last_pt):
+                if should_rescale_usd_sibling_walls(cand_u, sib_live_px, sib_ob_mid, cur_px_est, ob_ts=sib_ob_ts, last_pt=sib_last_pt, now_ts=_time.time()):
                     rescale_orderbook_walls_to_price(sib_m, sib_live_px, sib_ob_mid)
                 sib_px = (
                     (safe_pos_float(sib_m.get("ob_mid_price"), default=None) if sib_ob_fresh else None)

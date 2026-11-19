@@ -1622,6 +1622,7 @@ def should_rescale_usd_sibling_walls(
     *,
     ob_ts: float = 0.0,
     last_pt: Optional[Tuple[float, float]] = None,
+    now_ts: float = 0.0,
 ) -> bool:
     """Return True only when an offline/stale fiat-USD sibling book drifted >1% from live spot without cross-asset divergence."""
     if (
@@ -1633,6 +1634,10 @@ def should_rescale_usd_sibling_walls(
         or _prices_diverged(sib_live_px, ob_mid)
     ):
         return False
+    if ob_ts > 0.0 and now_ts > 0.0:
+        max_rescale_age = 60.0 if resolve_symbol_identity(sym_u).is_tokenized_equity else 300.0
+        if (now_ts - ob_ts) > max_rescale_age:
+            return False
     if 0.0 < ob_ts and last_pt is not None and (ob_ts * 1000.0 - last_pt[0]) > 60_000.0:
         return False
     return not (

@@ -742,9 +742,12 @@ def ensure_fresh_symbol_microstructure(
     eff_cache_dir = resolve_cache_dir_path(cache_dir)
     if not eff_cache_dir or not os.path.isdir(eff_cache_dir):
         return False
-    sym_u = str(symbol or "").strip().upper()
-    if not sym_u:
+    sym_raw = str(symbol or "").strip()
+    if not sym_raw:
         return False
+    ident = resolve_symbol_identity(sym_raw)
+    sym_u = sym_raw.upper()
+    sym_disk = ident.storage_key or sym_u
     eff_now = resolve_now_ts(now_ts)
     is_eq = is_equity_symbol(sym_u)
     if is_eq:
@@ -756,7 +759,7 @@ def ensure_fresh_symbol_microstructure(
         rth_open = True
 
     def _needs_fetch(prefix: str, max_age: Optional[float]) -> bool:
-        fpath = str(resolve_cachedb_filepath(os.path.join(eff_cache_dir, f"{prefix}{sym_u}.json")))
+        fpath = str(resolve_cachedb_filepath(os.path.join(eff_cache_dir, f"{prefix}{sym_disk}.json")))
         if not os.path.exists(fpath):
             return True
         if is_eq and not rth_open:
@@ -769,11 +772,11 @@ def ensure_fresh_symbol_microstructure(
 
     def _run_fresh_collector(col_cls: Any) -> bool:
         col = col_cls(cache_dir=eff_cache_dir, start_sync=True)
-        snap = col.fetch(sym_u, allow_network=True, now=eff_now)
-        return snap is not None and not collector_used_stale_fallback(col, sym_u)
+        snap = col.fetch(sym_disk, allow_network=True, now=eff_now)
+        return snap is not None and not collector_used_stale_fallback(col, sym_disk)
 
     refreshed_any = False
-    policy = resolve_asset_session_policy(sym_u)
+    policy = resolve_asset_session_policy(sym_disk)
     if _needs_fetch(CACHE_ORDERBOOK_DEPTH_PREFIX, max_age_ob_sec):
         try:
             if _run_fresh_collector(OrderbookDepthCollector):
@@ -1952,7 +1955,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         if is_eq_sym or is_usd_sym:
             ensure_fresh_symbol_microstructure(
                 cachedb_dir,
-                sym.upper(),
+                sym,
                 now_ts=eff_now,
                 max_age_ob_sec=180.0,
                 max_age_whale_sec=360.0,
@@ -2038,7 +2041,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             if allow_network and "USD" in compatible_quote_suffixes(msym) and _rj in (_default_read_json_cached, read_json_recovering, read_json_cached):
                 ensure_fresh_symbol_microstructure(
                     cachedb_dir,
-                    msym.upper(),
+                    msym,
                     now_ts=eff_now,
                     max_age_ob_sec=180.0,
                     max_age_whale_sec=360.0,
@@ -2065,9 +2068,10 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                         sib_live_px = resolve_live_24trend_current_price(cachedb_dir, msym, _rj)
                         if not sib_live_px or sib_live_px <= 0.0:
                             if ob_ref_ts <= 0.0:
-                                ob_ref_d = _rj(os.path.join(cachedb_dir, f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{msym.upper()}.json"))
+                                msym_disk = msym_ident.storage_key or msym.upper()
+                                ob_ref_d = _rj(os.path.join(cachedb_dir, f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{msym_disk}.json"))
                                 if not isinstance(ob_ref_d, dict):
-                                    ob_ref_d = _rj(os.path.join(cachedb_dir, "telemetry", f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{msym.upper()}.json"))
+                                    ob_ref_d = _rj(os.path.join(cachedb_dir, "telemetry", f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{msym_disk}.json"))
                                 ob_ref_ts = (
                                     normalize_epoch_sec(
                                         (ob_ref_d if isinstance(ob_ref_d, dict) else {}).get("ts"),
@@ -2077,7 +2081,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                                 )
                             if ob_ref_ts > 0.0 and (eff_now - ob_ref_ts) > 120.0:
                                 sib_live_px = p_ref_px if p_ref_px > 0.0 else None
-                    if should_rescale_usd_sibling_walls(msym, sib_live_px, ob_mid_sib, p_ref_px):
+                    if should_rescale_usd_sibling_walls(msym, sib_live_px, ob_mid_sib, p_ref_px, ob_ts=ob_ref_ts, now_ts=eff_now):
                         ob_mid_sib = rescale_orderbook_walls_to_price(m_info_ref, sib_live_px, ob_mid_sib)
                         ob_sib_rescaled = True
                 ob_ref_fresh = ob_sib_rescaled or p_ref_px <= 0.0 or (ob_ref_ts > 0.0 and -5.0 <= (eff_now - ob_ref_ts) <= 60.0)
