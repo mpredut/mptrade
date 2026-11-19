@@ -104,7 +104,7 @@ def _kraken_balance_asset_candidates(asset: str) -> List[str]:
         return []
     asset_u = raw.upper()
     candidates: List[str] = [
-        raw, asset_u, "X" + asset_u, "Z" + asset_u,
+        raw, f"{raw}.T", asset_u, "X" + asset_u, "Z" + asset_u,
         asset_u + ".F", asset_u + ".S", f"{asset_u}.T", f"{asset_u}x.T", f"{asset_u}X.T", f"{asset_u}x",
     ]
     if len(asset_u) >= 2 and asset_u.endswith("X"):
@@ -344,8 +344,8 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         except Exception as e:  # noqa: BLE001
             err_s = str(e)
             if is_tok and ("Invalid arguments" in err_s or "Unknown asset pair" in err_s):
-                # BY DESIGN: Pre-IPO watchlisted xStocks (e.g. ANTxUSD before listing) back off quietly for 5m.
-                self._unlisted_xstock_until[eff_sym] = now_s + 300.0
+                # BY DESIGN: Pre-IPO watchlisted xStocks (e.g. ANTxUSD before listing) back off quietly for 60s.
+                self._unlisted_xstock_until[eff_sym] = now_s + 60.0
                 return None
             return self._log_provider_balance_error("Kraken", "price", symbol, e)
 

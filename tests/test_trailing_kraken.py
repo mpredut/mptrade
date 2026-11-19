@@ -1070,10 +1070,12 @@ def test_kraken_tokenized_asset_routing_and_spv_pair_matching(monkeypatch):
 
     assert kraken_pair_matches("SPCXxUSD", "SPCXSPV/USD") is True
     assert kraken_pair_matches("SPCXXUSD", "SPCXSPV/USD") is True
-    assert kraken_pair_matches("SPCXXUSD", "SPCXUSD") is True
+    assert kraken_pair_matches("SPCXXUSD", "SPCXxUSD") is True
     assert kraken_pair_matches("ANTXUSD", "ANTSPV/USD") is True
-    assert kraken_pair_matches("ANTXUSD", "ANTUSD") is True
+    assert kraken_pair_matches("ANTXUSD", "ANTxUSD") is True
     assert kraken_pair_matches("ANTxUSD", "ANTSPV/USD") is True
+    assert kraken_pair_matches("AVAXUSD", "AVAUSD") is False
+    assert kraken_pair_matches("AVAUSD", "AVAXUSD") is False
 
     calls = []
     cli = KrakenClient("key", "c2VjcmV0")
@@ -1429,3 +1431,121 @@ def test_declarative_xstock_role_gating_uppercase_resolution_and_archive_ohlc(tm
     bars = load_archive_ohlc_candles("SPCXXUSD", 5, drop_incomplete=True, archive_path=str(arch_file))
     assert len(bars) == 1
     assert (bars[0]["open"], bars[0]["high"], bars[0]["low"], bars[0]["close"]) == (140.0, 145.5, 139.2, 143.0)
+
+
+def test_xstock_audit_fixes_bbo_clamp_gap_tranche_post_only_and_ipo_env_isolation(tmp_path, monkeypatch):
+    from kraken.kraken_client import KrakenClient
+    from strategies.spot_engine import Strategy, StratParams
+
+    # 1. KrakenClient.last_price clamps stale last-trade c[0] to live BBO mid and handles pre-trade BBO quotes
+    cli = KrakenClient("key", "c2VjcmV0")
+    monkeypatch.setattr(cli, "ticker", lambda _p: {"c": ["146.87", "0.3"], "b": ["147.18", "17"], "a": ["147.25", "17"]})
+    assert cli.last_price("SPCXxUSD") == pytest.approx(147.215)
+    monkeypatch.setattr(cli, "ticker", lambda _p: {"b": ["80.00", "50"], "a": ["80.20", "50"]})
+    assert cli.last_price("ANTxUSD") == pytest.approx(80.10)
+
+    # 2. _build_xstock_bot_env isolates Phase-1 IPO env vars to ipo_mode=True and clears them for matured active pairs
+    monkeypatch.setenv("XSTOCK_BOT_IPO_TP_TRANCHES", "10:50,16:50")
+    monkeypatch.setenv("XSTOCK_BOT_IPO_TRAIL_PCT", "3.5")
+    monkeypatch.setenv("XSTOCK_BOT_IPO_REENTRY_DROP_PCT", "20")
+    ipo_env = xw._build_xstock_bot_env(80.0, symbol_label="ANTx", ipo_mode=True)
+    matured_env = xw._build_xstock_bot_env(141.75, symbol_label="SPCXxUSD", ipo_mode=False)
+    assert ipo_env["STRAT_IPO_TP_TRANCHES"] == "10:50,16:50"
+    assert ipo_env["STRAT_IPO_TRAIL_PCT"] == "3.5"
+    assert ipo_env["STRAT_IPO_REENTRY_DROP_PCT"] == "20"
+    assert matured_env["STRAT_IPO_TP_TRANCHES"] == ""
+    assert matured_env["STRAT_IPO_TRAIL_PCT"] == "0"
+    assert matured_env["STRAT_IPO_REENTRY_DROP_PCT"] == "0"
+
+    # 3. Live Phase-1 IPO gap-up TP tranche disables post_only (prevents Kraken Post-Only cancel loop)
+    submitted = []
+
+    class FakeGapExecutor:
+        def pair_precision(self, _pair):
+            return SimpleNamespace(price_decimals=2, volume_decimals=6, order_min=0.01, base_asset="ANTx")
+
+        def free_balance(self, _asset):
+            return 20.0
+
+        def submit_order(self, pair, side, qty, price=None, *, market=False, kind=None, client_order_id=None, post_only=True):
+            submitted.append((pair, side, qty, price, market, post_only))
+            return f"OGAP-{len(submitted)}"
+
+        def open_orders(self, _pair):
+            return []
+
+    base_kw = dict(
+        currency="USD",
+        entry_amount=500.0,
+        entry_discount_pct=0.0,
+        dca_amount=450.0,
+        dca_drop_pct=3.0,
+        takeprofit_pct=9.0,
+        check_minutes=0.25,
+        max_budget=2750.0,
+        max_dca_buys=5,
+        enable_takeprofit=True,
+        order_ttl_min=10.0,
+        stop_loss_pct=0.0,
+        trend_overlay=False,
+        dca_trend_brake=False,
+    )
+    p_ipo = StratParams(
+        **base_kw,
+        adopt_cost=80.0,
+        tp_trend_hold=True,
+        ipo_tp_tranches=((10.0, 50.0), (16.0, 50.0)),
+        ipo_trail_pct=3.5,
+        ipo_reentry_drop_pct=20.0,
+    )
+    st_gap = Strategy(FakeGapExecutor(), "ANTxUSD", p_ipo, state_dir=str(tmp_path / "gap"), dry_run=False)
+    st_gap.step(96.0)  # Opens +20% above $80 alloc (> +10% Tranche 0 target $88)
+    assert len(submitted) == 1
+    assert submitted[0][1] == "sell"
+    assert submitted[0][3] == pytest.approx(88.0)
+    assert submitted[0][4] is False  # limit, NOT market (must not trigger full pending_exit)
+    assert submitted[0][5] is False  # post_only=False so it fills immediately against live bids
+
+    # Below target ($84 < $88), resting maker tranche keeps default post_only=True
+    submitted.clear()
+    st_rest = Strategy(FakeGapExecutor(), "ANTxUSD", p_ipo, state_dir=str(tmp_path / "rest"), dry_run=False)
+    st_rest.step(84.0)
+    assert len(submitted) == 1
+    assert submitted[0][3] == pytest.approx(88.0)
+    assert submitted[0][5] is True
+
+    # 4. resolve_ledger_alloc_price finds paged-out reservation via type="transfer" filter
+    class FakePagedLedger:
+        def _private(self, method, params=None):
+            if (params or {}).get("type") == "transfer":
+                return {
+                    "ledger": {
+                        "R1": {"amount": "2764.4600", "asset": "ZUSD", "balance": "2764.4601", "refid": "TR1", "time": 1794817263.0, "subtype": "krakenlaunchallocation"},
+                        "R2": {"amount": "-2764.4600", "asset": "ZUSD", "balance": "0.0055", "refid": "TR1", "time": 1794817263.0, "subtype": "krakenlaunchallocation"},
+                        "F1": {"amount": "1564.4600", "asset": "ZUSD", "balance": "2364.3257", "refid": "TR2", "time": 1795100000.0, "subtype": "tokenizedipoallocation"},
+                        "F2": {"amount": "-1564.4600", "asset": "ZUSD", "balance": "1200.0000", "refid": "TR2", "time": 1795100000.0, "subtype": "tokenizedipoallocation"},
+                        "T1": {"amount": "15.000000", "asset": "ANTx", "balance": "15.000000", "refid": "TR3", "time": 1795100100.0, "subtype": "tokenizedipoallocation"},
+                    }
+                }
+            return {"ledger": {f"FL{i}": {"amount": "0.0", "asset": "EURC", "subtype": "flexlineinterestcharge"} for i in range(50)}}
+
+    assert xw.resolve_ledger_alloc_price(FakePagedLedger(), "ANTx.T", 15.0) == pytest.approx(80.0)
+
+    # 5. Live (observe_only=False) flat Strategy reconciles external AI BUY when ledger_reconcile_required is set
+    class FakeFlatBuyExec(FakeGapExecutor):
+        def free_balance(self, _asset):
+            return 10.0
+
+        def get_orders(self, _pair, _side, _lookback):
+            return [{"price": 144.0, "timestamp": 1795100000000}]
+
+    st_flat = Strategy(
+        FakeFlatBuyExec(), "SPCXxUSD",
+        StratParams(**base_kw, adopt_cost=0.0),
+        state_dir=str(tmp_path / "flat"), dry_run=False,
+    )
+    st_flat.s["ledger_reconcile_required"] = True
+    st_flat.step(144.5)
+    assert st_flat.s["qty"] == pytest.approx(10.0)
+    assert st_flat.s["entry_price"] == pytest.approx(144.0)
+    assert st_flat.s["ledger_reconcile_required"] is False

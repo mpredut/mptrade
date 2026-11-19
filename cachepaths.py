@@ -1090,10 +1090,16 @@ def kraken_pair_matches(expected: object, actual: object) -> bool:
     b_act, q_act = split_kraken_pair(actual)
     if not b_exp or not b_act:
         return False
+    is_tok = is_kraken_tokenized_asset(expected) or is_kraken_tokenized_asset(actual)
     base_ok = (
         b_exp == b_act
-        or (len(b_exp) >= 3 and b_exp.endswith("X") and b_exp[:-1] == b_act)
-        or (len(b_act) >= 3 and b_act.endswith("X") and b_act[:-1] == b_exp)
+        or (
+            is_tok
+            and (
+                (len(b_exp) >= 3 and b_exp.endswith("X") and b_exp[:-1] == b_act)
+                or (len(b_act) >= 3 and b_act.endswith("X") and b_act[:-1] == b_exp)
+            )
+        )
     )
     if not base_ok:
         return False

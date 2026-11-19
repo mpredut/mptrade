@@ -31,6 +31,7 @@ if _ROOT not in sys.path:
 from botcore import (
     _parse_bool_flag,
     bind_attr_call,
+    clamp_price_to_bbo_mid,
     clean_order_id,
     clean_scalar_str,
     exact_nonneg_int,
@@ -330,12 +331,12 @@ class KrakenClient:
 
     def last_price(self, pair: str) -> float | None:
         t = self.ticker(pair)
-        try:
-            if not t:
-                return None
-            return safe_pos_float(t["c"][0], default=None)      # 'c' = latest trade [price, volume]
-        except (KeyError, IndexError, TypeError):
+        if not isinstance(t, dict) or not t:
             return None
+        def _first(key: str):
+            val = t.get(key)
+            return val[0] if isinstance(val, (list, tuple)) and val else None
+        return clamp_price_to_bbo_mid(_first("c"), _first("b"), _first("a"))
 
     # ----- PRIVATE -------------------------------------------------------------
     def balance(self) -> dict:

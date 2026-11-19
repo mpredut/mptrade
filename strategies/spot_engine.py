@@ -8,6 +8,7 @@ live and replay share one implementation of the financial rules.
 
 from __future__ import annotations
 
+import inspect
 import math
 import os
 import time  # noqa: F401 -- resolved via BaseSpotMixin._mod_global("time")
@@ -540,8 +541,17 @@ class Strategy(BaseSpotMixin):
         records.pop(self._placement_backoff_key(side, kind), None)
 
     # -- Placement & Cancellation ----------------------------------------------
+    @staticmethod
+    def _accepts_kwarg(fn, name: str) -> bool:
+        try:
+            params = inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            return False
+        return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
     def _place(self, side: str, vol: float, price: float, kind: str, amount: float = 0.0,
-               market: bool = False, tranche_idx: int | None = None) -> bool:
+               market: bool = False, tranche_idx: int | None = None,
+               post_only: bool | None = None) -> bool:
         market = _parse_bool_flag(market, False)
         clean_tranche = safe_nonneg_int(tranche_idx, default=None) if tranche_idx is not None else None
         s_norm = normalize_side(side)
@@ -606,14 +616,18 @@ class Strategy(BaseSpotMixin):
             def submit():
                 for fn in (submit_outcome, submit_with_intent):
                     if callable(fn):
+                        extra_kw = {"post_only": post_only} if (post_only is not None and self._accepts_kwarg(fn, "post_only")) else {}
                         return fn(
                             self.client, intent_id, self.pair, side, vol,
                             None if market else price, market=market, kind=kind,
                             reference_price=price if market else None, client_order_id=client_order_id,
+                            **extra_kw,
                         )
+                extra_kw = {"post_only": post_only} if (post_only is not None and self._accepts_kwarg(self.client.submit_order, "post_only")) else {}
                 return self.client.submit_order(
                     self.pair, side, vol, None if market else price,
                     market=market, kind=kind, client_order_id=client_order_id,
+                    **extra_kw,
                 )
 
             def _log_place_failure(detail: str) -> bool:
@@ -1416,7 +1430,7 @@ class Strategy(BaseSpotMixin):
             try:
                 open_rows = raw_cli.open_orders(self.pair)
             except Exception as exc:
-                if self.observe_only and ledger_qty + tolerance < held:
+                if ledger_qty + tolerance < held:
                     log(f"  ! [STRAT] ledger reconciliation deferred (open_orders query failed: {exc})")
                     return True
                 open_rows = None
@@ -1452,7 +1466,7 @@ class Strategy(BaseSpotMixin):
                     self.s[k] = defaults[k]
                 self._seed_post_exit_anchors(price, inferred_exit_kind, clean_ts if clean_ts is not None else self._now())
                 return _finish_reconcile(True)
-            return _finish_reconcile(True, save=had_persisted_reconcile)
+            return _finish_reconcile(False, save=had_persisted_reconcile)
         if ledger_qty + tolerance < held:
             log(
                 f"  ! [STRAT] LEDGER RECONCILE: state qty={held:.{self.vol_dec}f} -> "
@@ -1549,7 +1563,7 @@ class Strategy(BaseSpotMixin):
                 return None
         if (
             not self.dry_run and self._state_flag("ledger_reconcile_required")
-            and (held > 1e-12 or self.observe_only) and not self.s.get("orders")
+            and not self.s.get("orders")
         ):
             if self._reconcile_venue_ledger(price, clean_ts, had_persisted_reconcile):
                 return None
@@ -1970,7 +1984,10 @@ class Strategy(BaseSpotMixin):
                         continue
                     if self.ordermin and q_ < self.ordermin:
                         continue
-                    self._place("sell", q_, p_, kind="TP", tranche_idx=tr_idx)
+                    self._place(
+                        "sell", q_, p_, kind="TP", tranche_idx=tr_idx,
+                        post_only=False if (not self.dry_run and price >= p_) else None,
+                    )
         return False
 
     def _dispatch_dca_buy(
@@ -2098,12 +2115,15 @@ class Strategy(BaseSpotMixin):
         self._maybe_adopt()
 
         _live_ticks = 0
+        _prev_had_orders = bool(self.s.get("orders"))
 
         def _log_status(price: float) -> None:
-            nonlocal _live_ticks
+            nonlocal _live_ticks, _prev_had_orders
             _live_ticks += 1
-            if not self.dry_run and not self.s.get("orders") and _live_ticks % 4 == 0:
+            has_orders = bool(self.s.get("orders"))
+            if not self.dry_run and not has_orders and (_live_ticks % 4 == 0 or _prev_had_orders):
                 self.s["ledger_reconcile_required"] = True
+            _prev_had_orders = has_orders
             avg = self._avg()
             pos = f"qty={self.s['qty']:.8f} avg={avg:.{self.price_dec}f}" if avg else "qty=0 (waiting for an entry)"
             log(

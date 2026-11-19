@@ -566,7 +566,9 @@ def _bot_alive(pid) -> bool:
         return True
 
 
-def _build_xstock_bot_env(alloc_price: float, *, symbol_label: str | None = None) -> dict[str, str]:
+def _build_xstock_bot_env(
+    alloc_price: float, *, symbol_label: str | None = None, ipo_mode: bool = True
+) -> dict[str, str]:
     env = clone_process_env({"STRAT_ADOPT_COST": str(alloc_price)})
     for src, dst in (
         ("XSTOCK_BOT_OBSERVE_ONLY", "KRAKEN_BOT_OBSERVE_ONLY"),
@@ -582,9 +584,6 @@ def _build_xstock_bot_env(alloc_price: float, *, symbol_label: str | None = None
         ("XSTOCK_BOT_TP_TRAIL_ADAPTIVE", "STRAT_TP_TRAIL_ADAPTIVE"),
         ("XSTOCK_BOT_TP_MDHTP_ENABLED", "STRAT_TP_MDHTP_ENABLED"),
         ("XSTOCK_BOT_TP_DYNAMIC_FLAT", "STRAT_TP_DYNAMIC_FLAT"),
-        ("XSTOCK_BOT_IPO_TP_TRANCHES", "STRAT_IPO_TP_TRANCHES"),
-        ("XSTOCK_BOT_IPO_TRAIL_PCT", "STRAT_IPO_TRAIL_PCT"),
-        ("XSTOCK_BOT_IPO_REENTRY_DROP_PCT", "STRAT_IPO_REENTRY_DROP_PCT"),
         ("XSTOCK_BOT_SL_PCT", "STRAT_STOP_LOSS_PCT"),
         ("XSTOCK_BOT_TREND_OVERLAY", "STRAT_TREND_OVERLAY"),
         ("XSTOCK_BOT_MAX_BUDGET", "STRAT_MAX_BUDGET"),
@@ -592,14 +591,27 @@ def _build_xstock_bot_env(alloc_price: float, *, symbol_label: str | None = None
     ):
         if (val := optional_env(src)) is not None:
             env[dst] = val
+    if ipo_mode:
+        for src, dst in (
+            ("XSTOCK_BOT_IPO_TP_TRANCHES", "STRAT_IPO_TP_TRANCHES"),
+            ("XSTOCK_BOT_IPO_TRAIL_PCT", "STRAT_IPO_TRAIL_PCT"),
+            ("XSTOCK_BOT_IPO_REENTRY_DROP_PCT", "STRAT_IPO_REENTRY_DROP_PCT"),
+        ):
+            if (val := optional_env(src)) is not None:
+                env[dst] = val
+    else:
+        env["STRAT_IPO_TP_TRANCHES"] = ""
+        env["STRAT_IPO_TRAIL_PCT"] = "0"
+        env["STRAT_IPO_REENTRY_DROP_PCT"] = "0"
     if symbol_label:
         env["SYMBOL_LABEL"] = symbol_label
     return env
 
 
 def _spawn_xstock_bot(pair: str, alloc_price: float, log_path: str, *, relaunch: bool, desktop: bool,
-                      body_prefix: str, err_prefix: str, symbol_label: str | None = None, on_started=None) -> int | None:
-    env = _build_xstock_bot_env(alloc_price, symbol_label=symbol_label)
+                      body_prefix: str, err_prefix: str, symbol_label: str | None = None,
+                      ipo_mode: bool = True, on_started=None) -> int | None:
+    env = _build_xstock_bot_env(alloc_price, symbol_label=symbol_label, ipo_mode=ipo_mode)
     cmd = [sys.executable, BOT_SCRIPT, "--pair", pair, *(["--paper"] if required_bool_env("XSTOCK_BOT_PAPER") else [])]
     try:
         with open_append_text_file(log_path) as logf:
@@ -661,6 +673,7 @@ def ensure_active_xstock_bots(desktop: bool = False) -> None:
         _spawn_xstock_bot(
             pair, cost_f, os.path.join(_HERE, f"xstock_bot_{pair}.log"),
             relaunch=prev_pid is not None, desktop=desktop, symbol_label=pair,
+            ipo_mode=False,
             body_prefix=f"kraken_bot active alongside AI executor on {pair}",
             err_prefix=f"cannot start active xStock bot {pair}",
             on_started=lambda pid, pf=pid_file, p=pair, cf=cost_f: save_json_state(pf, {"pair": p, "pid": pid, "alloc_price": cf}),
