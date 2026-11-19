@@ -45,6 +45,7 @@ def build_supervisor_prompt(
     min_notional_usd: Optional[float] = None,
     max_notional_usd: Optional[float] = None,
     min_confidence: Optional[float] = None,
+    compact_rules: bool = False,
     **_extra: Any,
 ) -> str:
     """Build the topic-specific prompt for Gemini (auto_technical_repair or auto_*trade_executor)."""
@@ -156,7 +157,7 @@ def build_supervisor_prompt(
         ex_sym = '"NVDA_US_EQ"' if is_equities else '"BTCUSDC"'
         tasks.append(
             f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc}:\n"
-            "   - FULL ACCESS TO EVERYTHING IN `cachedb/` AS A DECISION INFORMATION SOURCE: Telemetry above is a compact dashboard; "
+            "   - FULL ACCESS TO EVERYTHING IN `cachedb/` AS A DECISION INFORMATION SOURCE: Telemetry below is a compact dashboard; "
             "you have unrestricted read access to `cachedb/`, `logger/execution_audit/`, `logs/`, and `providers.market_api` for deeper verification.\n"
             "   - ZERO PROFIT OR STRATEGY GUARDS: Maximize risk-adjusted net NAV (after venue fees). All deterministic order_guard gates "
             "(G_PROF, GO1, GT_*, G_QLIMIT*, GI_*, GLLM*) are BYPASSED symmetrically on BUY and SELL. Deterministic bots and configs "
@@ -194,6 +195,25 @@ def build_supervisor_prompt(
             f'"confidence": 0.90, "suggested_notional_usd": 1000.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
         )
 
+    if compact_rules and not spec.can_self_heal:
+        compact_prefix = (
+            "CONTINUATION TURN (ACTIVE THREAD POLICY APPLIES):\n"
+            "- Apply all quantitative trading, spot maker-LIMIT execution, active orderbook management, and "
+            "`by=BOT` vs `by=AI` supervisory rules established earlier in this thread (unrestricted read access to "
+            f"`cachedb/`, zero deterministic guards, `confidence >= {min_conf:g}`, notional {min_usd:g}-{max_usd:g} USD).\n"
+            "- Honor any user chat instructions, price targets, overrides, or questions earlier in this thread with highest priority.\n"
+            "- Format your response in TWO parts:\n"
+            "  1) A concise Markdown report in **Romanian** with the cycle timestamp header (`### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`): "
+            "on routine pure `HOLD` cycles (no BUY/SELL/cancel, no Section 4 priority symbols, no user chat message), output ONLY "
+            "2-3 ultra-compact bullets (NAV + free cash, 1-line market pulse, HOLD rationale; omit coin-by-coin tables); "
+            "when executing BUY/SELL/cancel, evaluating Section 4 priority symbols, or replying to user chat, provide the full "
+            "concise coin-by-coin Romanian breakdown.\n"
+            "  2) At the very end, a single fenced ```json ... ``` block matching this exact schema:\n"
+            "```json\n{\n" + ",\n".join(schema) + "\n}\n```\n\n"
+            "LIVE TELEMETRY SNAPSHOT:\n"
+        )
+        return compact_prefix + context_str
+
     role_intro, tool_rule, report_format_rule = (
         (
             "You are the Lead SRE and Autonomous Technical Repair Supervisor for MPTrade.\n"
@@ -202,8 +222,9 @@ def build_supervisor_prompt(
             "persistent unresolved errors in logs, and to remediate them by patching code or configurations and "
             "restarting/rebooting bots, modules, the trading fleet, VPN/DNS, or the entire Linux system.\n"
             "Do NOT analyze or report on market prices, trends/slopes, macro sentiment, portfolio balances, or active trading positions.\n\n"
-            f"{context_str}\n\n"
-            "Perform an executive technical diagnostic and self-healing audit:\n" + "\n".join(tasks) + "\n\n",
+            "Perform an executive technical diagnostic and self-healing audit based on the live telemetry snapshot below:\n"
+            + "\n".join(tasks)
+            + "\n\n",
             "- If you diagnose a reproducible code bug or configuration error and need to verify exact lines before proposing `code_remediation`, "
             "you MAY read the target file in the workspace so `search_block` matches verbatim. "
             "Do NOT edit or modify workspace files directly with tools; propose all fixes exclusively in `code_remediation`.\n",
@@ -217,17 +238,21 @@ def build_supervisor_prompt(
         )
         if spec.can_self_heal
         else (
-            "You are the Quantitative Autonomous Portfolio Manager and Trade Executor for MPTrade.\n\n"
-            f"{context_str}\n\n"
-            "Evaluate the telemetry and formulate autonomous BUY/SELL trading decisions:\n" + "\n".join(tasks) + "\n\n",
+            "You are the Quantitative Autonomous Portfolio Manager and Trade Executor for MPTrade.\n"
+            "Evaluate the telemetry snapshot below and formulate autonomous BUY/SELL trading decisions:\n"
+            + "\n".join(tasks)
+            + "\n\n",
             "- Keep this thread focused on market analysis, portfolio management, and autonomous BUY/SELL execution across venues.\n",
             "- Format your response in TWO parts:\n"
-            "  1) A concise Markdown report in **Romanian** with cycle timestamp header (`### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`), "
-            "bullet points for: Pia\u021ba Live & Pante (Toate Monedele), Portofoliu, Solduri & Pozi\u021bii Active, \u0219i Decizia AI de Tranzac\u021bionare / R\u0103spuns la interven\u021biile din chat).\n",
+            "  1) A concise Markdown report in **Romanian** with cycle timestamp header (`### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`):\n"
+            "     - On routine pure `HOLD` cycles (no BUY/SELL/cancel action, no Section 4 priority symbols, no user chat message), "
+            "keep the report ULTRA-COMPACT (2-3 short bullet lines max: NAV + free cash, 1-line market pulse, HOLD rationale; omit coin tables).\n"
+            "     - On BUY/SELL/cancel, Section 4 priority symbols, or user chat replies, include concise bullet points for: "
+            "Pia\u021ba Live & Pante (Toate Monedele), Portofoliu, Solduri & Pozi\u021bii Active, \u0219i Decizia AI de Tranzac\u021bionare / R\u0103spuns la interven\u021biile din chat).\n",
         )
     )
 
-    return (
+    static_prefix = (
         role_intro
         + "INTERACTIVE THREAD RULES:\n"
         "- If the user wrote any tactical instructions, price targets, overrides, or questions earlier in this "
@@ -235,6 +260,8 @@ def build_supervisor_prompt(
         + tool_rule
         + report_format_rule
         + "  2) At the very end, a single fenced ```json ... ``` block matching this exact schema:\n"
-        "```json\n{\n" + ",\n".join(schema) + "\n}\n```"
+        "```json\n{\n" + ",\n".join(schema) + "\n}\n```\n\n"
+        "LIVE TELEMETRY SNAPSHOT:\n"
     )
+    return static_prefix + context_str
 

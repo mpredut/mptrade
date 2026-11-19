@@ -277,6 +277,7 @@ def _rotate_topic_conversation(
             pass
     entry["conversation_id"] = new_cid
     entry["compacted_at_step"] = 0
+    entry["needs_full_prompt"] = True
     entry["rotation_count"] = safe_nonneg_int(entry.get("rotation_count"), 0) + 1
 
 
@@ -332,10 +333,119 @@ def prepare_topic_session(
                 logger.warning("Topic '%s' conversation %s no longer exists; recreating the topic thread.", resolved, cid)
                 eff_entry["conversation_id"] = None
                 eff_entry["compacted_at_step"] = 0
+                eff_entry["needs_full_prompt"] = True
             reg[resolved] = eff_entry
             save_topic_registry(reg, registry_path)
 
     return TopicSession(None, format_topic_history_prefix(resolved, registry_path), False)
+
+
+def is_topic_resume_warm(
+    topic_key: str,
+    *,
+    cli_base: Optional[str] = None,
+    registry_path: Optional[str] = None,
+    max_steps: Optional[int] = None,
+    conversation_id: Optional[str] = None,
+) -> bool:
+    """Return True when the topic's active uncompacted thread already holds the full policy prompt.
+
+    Returns False on fresh, rotated, recreated, or just-compacted threads so the next turn always
+    re-establishes the complete Static-First policy and rules before compact resume turns begin.
+    """
+    try:
+        topic_spec(topic_key)
+    except Exception:
+        return False
+    resolved = canonical_topic_key(topic_key)
+    try:
+        base = resolve_bot_cli_base(cli_base)
+    except Exception:
+        return False
+    _, _, entry = _load_topic_entry(resolved, registry_path)
+    if entry is None:
+        return False
+    raw_cid = entry.get("conversation_id")
+    cid = raw_cid.strip() if isinstance(raw_cid, str) else ""
+    if not cid:
+        return False
+    if conversation_id is not None and cid != str(conversation_id).strip():
+        return False
+    if _parse_bool_flag(entry.get("needs_full_prompt"), False):
+        return False
+    if safe_nonneg_int(entry.get("turn_count"), 0) <= 0:
+        return False
+    exists, step_count, _ = get_thread_step_count(cid, base)
+    if not exists or step_count <= 0:
+        return False
+    raw_max = max_steps if max_steps is not None else optional_env("LLM_TOPIC_MAX_STEPS", "")
+    max_steps_i = safe_nonneg_int(raw_max, 0)
+    if max_steps_i > 0 and step_count >= max_steps_i:
+        return False
+    compacted_at = safe_nonneg_int(entry.get("compacted_at_step"), 0)
+    return step_count > compacted_at
+
+
+def has_pending_ui_turn(
+    topic_key: str,
+    *,
+    cli_base: Optional[str] = None,
+    ui_cli_base: Optional[str] = None,
+    registry_path: Optional[str] = None,
+) -> bool:
+    """Read-only check whether the Web UI store has a newer user turn on this topic's thread."""
+    try:
+        topic_spec(topic_key)
+    except Exception:
+        return False
+    resolved = canonical_topic_key(topic_key)
+    _, _, entry = _load_topic_entry(resolved, registry_path)
+    if entry is None:
+        return False
+    raw_cid = entry.get("conversation_id")
+    cid = raw_cid.strip() if isinstance(raw_cid, str) else ""
+    if not cid:
+        return False
+    recorded_steps = safe_nonneg_int(entry.get("step_count"), 0)
+    try:
+        bot_base = resolve_bot_cli_base(cli_base)
+    except Exception:
+        return False
+    try:
+        ui_base = resolve_ui_cli_base(ui_cli_base)
+    except Exception:
+        ui_base = ""
+    _, bot_steps, _ = get_thread_step_count(cid, bot_base)
+    if recorded_steps > 0 and bot_steps > recorded_steps:
+        return True
+    if not ui_base or os.path.abspath(ui_base) == os.path.abspath(bot_base):
+        return False
+    ui_exists, ui_steps, ui_status = get_thread_step_count(cid, ui_base)
+    if ui_status == "CASCADE_RUN_STATUS_RUNNING":
+        return True
+    if ui_steps > max(bot_steps, recorded_steps):
+        return True
+    if ui_exists and ui_steps >= bot_steps > 0:
+        ui_db = os.path.join(ui_base, "conversations", f"{cid}.db")
+        if not os.path.exists(ui_db):
+            vis_db = os.path.join(visible_conversations_dir(ui_base), f"{cid}.db")
+            ui_db = vis_db if os.path.exists(vis_db) else ""
+        bot_db = os.path.join(bot_base, "conversations", f"{cid}.db")
+        if ui_db and os.path.exists(bot_db):
+            try:
+                ui_mtime = max(
+                    (os.stat(p).st_mtime for p in (ui_db, ui_db + "-wal") if os.path.exists(p)),
+                    default=0.0,
+                )
+                bot_mtime = max(
+                    (os.stat(p).st_mtime for p in (bot_db, bot_db + "-wal") if os.path.exists(p)),
+                    default=0.0,
+                )
+                if ui_mtime > bot_mtime + 2.0:
+                    return True
+            except OSError:
+                pass
+    return False
 
 
 _SHORT_SUMMARY_KEYS = (
@@ -427,9 +537,13 @@ def record_topic_turn(
         if active_cid:
             _, step_count, _ = get_thread_step_count(active_cid, base)
             entry["step_count"] = step_count
-            if compacted and active_cid == clean_cid:
-                entry["compacted_at_step"] = step_count
-                entry["compaction_count"] = safe_nonneg_int(entry.get("compaction_count"), 0) + 1
+            if active_cid == clean_cid:
+                if compacted:
+                    entry["compacted_at_step"] = step_count
+                    entry["compaction_count"] = safe_nonneg_int(entry.get("compaction_count"), 0) + 1
+                    entry["needs_full_prompt"] = True
+                else:
+                    entry["needs_full_prompt"] = False
         entry["topic_key"] = resolved
         entry["turn_count"] = safe_nonneg_int(entry.get("turn_count"), 0) + 1
         entry["updated_ts"] = datetime.now(timezone.utc).timestamp()

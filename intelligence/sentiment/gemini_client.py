@@ -55,6 +55,7 @@ TopicSession = _agy_topics.TopicSession
 condense_decision = _agy_topics.condense_decision
 format_topic_history_prefix = _agy_topics.format_topic_history_prefix
 format_topic_turn_header = _agy_topics.format_topic_turn_header
+is_topic_resume_warm = _agy_topics.is_topic_resume_warm
 prepare_topic_session = _agy_topics.prepare_topic_session
 record_topic_turn = _agy_topics.record_topic_turn
 
@@ -342,6 +343,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         thread_title: Optional[str] = None,
         topic_key: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        resume_prompt: Optional[str] = None,
     ) -> Optional[str]:
         """Query Gemini with a prompt and return the text response."""
         self.last_model_used = None
@@ -437,8 +439,26 @@ class GeminiClient(GeminiQuotaRouterMixin):
 
                 # The per-call title is a turn header; the thread itself keeps its permanent topic name.
                 effective_title = format_topic_turn_header(topic_key, thread_title) if topic_key else thread_title
-                body = f"{session.history_prefix}{prompt}" if session.history_prefix else prompt
-                cli_prompt = f"{effective_title}\n\n{body}" if effective_title else body
+                full_body = f"{session.history_prefix}{prompt}" if session.history_prefix else prompt
+                full_cli_prompt = f"{effective_title}\n\n{full_body}" if effective_title else full_body
+                use_warm_resume = bool(
+                    use_topic_session
+                    and topic_key
+                    and session.conversation_id
+                    and not session.history_prefix
+                    and isinstance(resume_prompt, str)
+                    and resume_prompt.strip()
+                    and is_topic_resume_warm(
+                        topic_key,
+                        cli_base=bot_cli_base,
+                        conversation_id=session.conversation_id,
+                    )
+                )
+                cli_prompt = (
+                    (f"{effective_title}\n\n{resume_prompt}" if effective_title else resume_prompt)
+                    if use_warm_resume
+                    else full_cli_prompt
+                )
 
                 run_env = clone_process_env({"AGY_BOT_HOME": os.path.dirname(os.path.dirname(bot_cli_base))})
 
@@ -556,7 +576,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                             "Resuming topic '%s' conversation %s failed with model %s; answering from a one-off thread.",
                             topic_key, session.conversation_id, model_candidate,
                         )
-                        fallback_prompt = cli_prompt
+                        fallback_prompt = full_cli_prompt
                         if use_topic_session and topic_key and not session.history_prefix:
                             try:
                                 hist_prefix = format_topic_history_prefix(topic_key)
@@ -811,6 +831,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         thread_title: Optional[str] = None,
         topic_key: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        resume_prompt: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Query Gemini and parse the response strictly as a JSON object."""
         self._JSON_MODE_LOCAL.require_json = True
@@ -823,6 +844,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                 thread_title=thread_title,
                 topic_key=topic_key,
                 conversation_id=conversation_id,
+                resume_prompt=resume_prompt,
             )
         finally:
             self._JSON_MODE_LOCAL.require_json = False
@@ -845,6 +867,8 @@ class GeminiClient(GeminiQuotaRouterMixin):
         timeout_sec: Optional[float] = None,
         cache_ttl_sec: float = 0.0,
         conversation_id: Optional[str] = None,
+        model: Optional[str] = None,
+        resume_prompt: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Query a registered topic (`TOPICS[topic_key]`) and return a validated JSON dictionary."""
         return query_topic_json(
@@ -855,6 +879,8 @@ class GeminiClient(GeminiQuotaRouterMixin):
             timeout_sec=timeout_sec,
             cache_ttl_sec=cache_ttl_sec,
             conversation_id=conversation_id,
+            model=model,
+            resume_prompt=resume_prompt,
         )
 
 
@@ -867,6 +893,8 @@ def query_topic_json(
     timeout_sec: Optional[float] = None,
     cache_ttl_sec: float = 0.0,
     conversation_id: Optional[str] = None,
+    model: Optional[str] = None,
+    resume_prompt: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Shared topic-aware JSON query dispatcher resolving title and timeout from ``topic_spec(topic_key)``."""
     if client is None:
@@ -889,5 +917,9 @@ def query_topic_json(
         call_kwargs["cache_ttl_sec"] = cache_ttl_sec
     if conversation_id is not None:
         call_kwargs["conversation_id"] = conversation_id
+    if isinstance(model, str) and model.strip():
+        call_kwargs["model"] = model.strip()
+    if isinstance(resume_prompt, str) and resume_prompt.strip():
+        call_kwargs["resume_prompt"] = resume_prompt
     resp = client.query_json(prompt, **call_kwargs)
     return resp if isinstance(resp, dict) and resp else None

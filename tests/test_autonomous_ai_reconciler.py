@@ -9377,6 +9377,411 @@ def test_supervisor_run_cycle_uses_passive_read_snapshot_without_mutating_teleme
     assert "free_BTC=0.5" in auditor.prompts[-1]
 
 
+def test_proposal3_static_first_prompt_compact_resume_and_hold_output_diet():
+    """Verify 3.1 Static-First KV-cache prefix stability, 3.2 compact resume prompt, and 3.3 HOLD output diet."""
+    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
+
+    empty_logs = LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0)
+    s1 = TelemetrySensorSnapshot(
+        prices_and_trends={"BTCUSDC": {"price": 90000.0, "chg_1h_pct": 0.1}},
+        microstructure={},
+        portfolio_summary={},
+        evaluated_at_ts=1_795_000_000.0,
+    )
+    s2 = TelemetrySensorSnapshot(
+        prices_and_trends={"BTCUSDC": {"price": 91250.0, "chg_1h_pct": 1.4}},
+        microstructure={},
+        portfolio_summary={},
+        evaluated_at_ts=1_795_000_360.0,
+    )
+
+    p1 = build_supervisor_prompt(s1, empty_logs, topic_spec("auto_cryptotrade_executor"))
+    p2 = build_supervisor_prompt(s2, empty_logs, topic_spec("auto_cryptotrade_executor"))
+
+    # 3.1 Static-First: policy, interactive rules, and JSON schema precede LIVE TELEMETRY SNAPSHOT / Section 0
+    marker = "LIVE TELEMETRY SNAPSHOT:\n"
+    assert marker in p1 and marker in p2
+    prefix1, dyn1 = p1.split(marker, 1)
+    prefix2, dyn2 = p2.split(marker, 1)
+    assert prefix1 == prefix2
+    assert "INTERACTIVE THREAD RULES:" in prefix1
+    assert '"market_trading_decisions":' in prefix1
+    assert "### 0. RUN TIMESTAMP" not in prefix1
+    assert dyn1.startswith("### 0. RUN TIMESTAMP")
+    assert "$90,000.00" in dyn1 and "$91,250.00" in dyn2
+
+    # SRE topic is also Static-First
+    p_sre = build_supervisor_prompt(s1, empty_logs, topic_spec("auto_technical_repair"))
+    sre_prefix, sre_dyn = p_sre.split(marker, 1)
+    assert '"code_remediation":' in sre_prefix
+    assert sre_dyn.startswith("### 0. RUN TIMESTAMP")
+
+    # 3.3 Output-Token Diet on routine pure HOLD turns
+    assert "ULTRA-COMPACT" in prefix1
+    assert "2-3 short bullet lines" in prefix1
+
+    # 3.2 Compact continuation prompt cuts static overhead by >65% while preserving schema & telemetry
+    p_compact = build_supervisor_prompt(
+        s1, empty_logs, topic_spec("auto_cryptotrade_executor"), compact_rules=True
+    )
+    compact_prefix, compact_dyn = p_compact.split(marker, 1)
+    assert "CONTINUATION TURN" in compact_prefix
+    assert '"market_trading_decisions":' in compact_prefix
+    assert compact_dyn.startswith("### 0. RUN TIMESTAMP")
+    assert len(compact_prefix) < len(prefix1) * 0.35
+
+    # SRE ignores compact_rules and always sends full SRE instructions
+    p_sre_compact = build_supervisor_prompt(
+        s1, empty_logs, topic_spec("auto_technical_repair"), compact_rules=True
+    )
+    assert "Lead SRE and Autonomous Technical Repair Supervisor" in p_sre_compact
+
+
+def test_proposal3_warm_resume_lifecycle_and_detached_rest_fallback_safety(tmp_path, monkeypatch):
+    """Verify 3.2 uses compact resume_prompt ONLY on active uncompacted warm turns, and full prompt otherwise."""
+    import sqlite3
+    import subprocess
+    from datetime import datetime, timezone
+    from pathlib import Path
+    from intelligence.sentiment import gemini_client as gc
+    from orchestratorOS.agy.paths import resolve_bot_cli_base, resolve_ui_cli_base
+    from orchestratorOS.agy.topics import (
+        has_pending_ui_turn,
+        is_topic_resume_warm,
+        record_topic_turn,
+    )
+    from tests.conftest import setup_isolated_agy_stores
+
+    setup_isolated_agy_stores(tmp_path, monkeypatch)
+    monkeypatch.setenv("AGY_BOT_HOME", str(tmp_path / "bot_home"))
+    bot_base = Path(resolve_bot_cli_base())
+    (bot_base / "conversations").mkdir(parents=True, exist_ok=True)
+    db_path = bot_base / "conversation_summaries.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE conversation_summaries ("
+        "conversation_id text primary key, title text, preview text, "
+        "last_modified_time datetime, project_id text, step_count integer, status text)"
+    )
+    conn.commit()
+    conn.close()
+
+    def _set_steps(cid: str, steps: int) -> None:
+        (bot_base / "conversations" / f"{cid}.db").write_text("db", encoding="utf-8")
+        c = sqlite3.connect(str(db_path))
+        c.execute(
+            "INSERT OR REPLACE INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (cid, "t", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", steps, "CASCADE_RUN_STATUS_IDLE"),
+        )
+        c.commit()
+        c.close()
+
+    fake_bin = tmp_path / "agy-bot"
+    fake_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("LLM_TOPIC_COMPACT_STEPS", "18")
+    monkeypatch.setenv("LLM_TOPIC_MAX_STEPS", "96")
+
+    topic = "auto_cryptotrade_executor"
+    cid = "cid-prop3-warm-1"
+    full_prompt = "FULL_POLICY_MARKER\nLIVE TELEMETRY SNAPSHOT:\nBTC=90000"
+    resume_prompt = "COMPACT_RESUME_MARKER\nLIVE TELEMETRY SNAPSHOT:\nBTC=90000"
+
+    # 1. Fresh topic -> NOT warm
+    assert is_topic_resume_warm(topic, cli_base=str(bot_base)) is False
+
+    # 2. Record Turn 1 (uncompacted) -> thread becomes warm
+    _set_steps(cid, 3)
+    record_topic_turn(topic, cid, '{"summary": "turn1", "market_trading_decisions": []}', compacted=False, cli_base=str(bot_base))
+    assert is_topic_resume_warm(topic, cli_base=str(bot_base), conversation_id=cid) is True
+
+    # 3. GeminiClient sends resume_prompt on warm resume turn
+    seen_cli: list[tuple[Optional[str], str]] = []
+
+    def _run_ok(cmd, **kwargs):
+        p_txt = cmd[cmd.index("-p") + 1]
+        conv = cmd[cmd.index("--conversation") + 1] if "--conversation" in cmd else None
+        seen_cli.append((conv, p_txt))
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps({"response": '{"summary": "warm", "market_trading_decisions": []}', "conversation_id": cid}),
+            stderr="",
+        )
+
+    client = gc.GeminiClient(cli_path=str(fake_bin), api_key="dummy-rest-key")
+    with patch.object(gc.subprocess, "run", side_effect=_run_ok), \
+         patch.object(gc, "prepare_topic_session", return_value=gc.TopicSession(cid, "", False)), \
+         patch.object(gc, "record_topic_turn"):
+        res = client.query_json(full_prompt, topic_key=topic, resume_prompt=resume_prompt, timeout_sec=60.0)
+    assert res and res["summary"] == "warm"
+    assert len(seen_cli) == 1
+    assert seen_cli[0][0] == cid
+    assert "COMPACT_RESUME_MARKER" in seen_cli[0][1]
+    assert "FULL_POLICY_MARKER" not in seen_cli[0][1]
+
+    # 4. If resuming warm thread fails, detached one-off fallback MUST send FULL prompt
+    seen_fallback: list[tuple[Optional[str], str]] = []
+
+    def _run_detached(cmd, **kwargs):
+        p_txt = cmd[cmd.index("-p") + 1]
+        conv = cmd[cmd.index("--conversation") + 1] if "--conversation" in cmd else None
+        seen_fallback.append((conv, p_txt))
+        if conv is not None:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="transient resume failure")
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps({"response": '{"summary": "detached", "market_trading_decisions": []}', "conversation_id": "cid-detached-2"}),
+            stderr="",
+        )
+
+    with patch.object(gc.subprocess, "run", side_effect=_run_detached), \
+         patch.object(gc, "prepare_topic_session", return_value=gc.TopicSession(cid, "", False)), \
+         patch.object(gc, "record_topic_turn"):
+        res_det = client.query_json(full_prompt, topic_key=topic, resume_prompt=resume_prompt, timeout_sec=60.0)
+    assert res_det and res_det["summary"] == "detached"
+    assert len(seen_fallback) == 2
+    assert seen_fallback[0][0] == cid and "COMPACT_RESUME_MARKER" in seen_fallback[0][1]
+    assert seen_fallback[1][0] is None and "FULL_POLICY_MARKER" in seen_fallback[1][1]
+    assert "COMPACT_RESUME_MARKER" not in seen_fallback[1][1]
+
+    # 5. REST API fallback ALWAYS receives FULL prompt
+    rest_seen: list[str] = []
+
+    def _fake_rest(url, body, timeout=15.0):
+        rest_seen.append(body["contents"][0]["parts"][0]["text"])
+        return {"candidates": [{"content": {"parts": [{"text": '{"summary": "rest_ok"}'}]}}]}
+
+    with patch.object(gc.subprocess, "run", return_value=subprocess.CompletedProcess(["agy"], 1, stdout="", stderr="cli down")), \
+         patch.object(gc, "prepare_topic_session", return_value=gc.TopicSession(cid, "", False)), \
+         patch.object(gc, "fetch_json_post", side_effect=_fake_rest):
+        res_rest = client.query_json(full_prompt, topic_key=topic, resume_prompt=resume_prompt, timeout_sec=60.0)
+    assert res_rest and res_rest["summary"] == "rest_ok"
+    assert rest_seen and "FULL_POLICY_MARKER" in rest_seen[0]
+    assert "COMPACT_RESUME_MARKER" not in rest_seen[0]
+
+    # 6. After /compact, thread is NO LONGER warm (even if a Web UI chat adds steps before the next bot turn)
+    _set_steps(cid, 20)
+    record_topic_turn(topic, cid, '{"summary": "pre_compact"}', compacted=True, cli_base=str(bot_base))
+    assert is_topic_resume_warm(topic, cli_base=str(bot_base), conversation_id=cid) is False
+    _set_steps(cid, 22)  # simulated Web UI user chat turn right after /compact
+    assert is_topic_resume_warm(topic, cli_base=str(bot_base), conversation_id=cid) is False
+
+    # 7. Next uncompacted full turn re-warms the thread
+    _set_steps(cid, 24)
+    record_topic_turn(topic, cid, '{"summary": "post_compact_full"}', compacted=False, cli_base=str(bot_base))
+    assert is_topic_resume_warm(topic, cli_base=str(bot_base), conversation_id=cid) is True
+
+    # 8. has_pending_ui_turn detects newer user steps in Web UI summary store (read-only)
+    ui_base = Path(resolve_ui_cli_base())
+    (ui_base / "conversations").mkdir(parents=True, exist_ok=True)
+    ui_db_path = ui_base / "conversation_summaries.db"
+    uconn = sqlite3.connect(str(ui_db_path))
+    uconn.execute(
+        "CREATE TABLE IF NOT EXISTS conversation_summaries ("
+        "conversation_id text primary key, title text, preview text, "
+        "last_modified_time datetime, project_id text, step_count integer, status text)"
+    )
+    uconn.execute(
+        "INSERT OR REPLACE INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (cid, "t", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", 24, "CASCADE_RUN_STATUS_IDLE"),
+    )
+    uconn.commit()
+    uconn.close()
+    assert has_pending_ui_turn(topic, cli_base=str(bot_base), ui_cli_base=str(ui_base)) is False
+    uconn2 = sqlite3.connect(str(ui_db_path))
+    uconn2.execute("UPDATE conversation_summaries SET step_count = 26 WHERE conversation_id = ?", (cid,))
+    uconn2.commit()
+    uconn2.close()
+    assert has_pending_ui_turn(topic, cli_base=str(bot_base), ui_cli_base=str(ui_base)) is True
+
+
+def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monkeypatch):
+    """Verify 3.4 Smart No-Op Delta-Gate skips quiet flat cycles (heartbeat-only) and escalates high-signal cycles."""
+    from types import SimpleNamespace
+    from state_io import read_json_dict
+    from orchestratorOS.lib.technical_repair_ssot import evaluate_crypto_executor_delta_gate
+    from orchestratorOS.supervisor import autonomous_ai_reconciler as aar_mod
+    from tests.conftest import setup_isolated_agy_stores
+
+    setup_isolated_agy_stores(tmp_path, monkeypatch)
+    monkeypatch.setenv("AGY_BOT_HOME", str(tmp_path / "bot_home"))
+    monkeypatch.setenv("AI_DELTA_GATE_ENABLED", "true")
+    monkeypatch.setenv("AI_DELTA_GATE_MAX_IDLE_MULT", "3.0")
+    monkeypatch.setenv("AI_DELTA_GATE_MIN_PRICE_MOVE_PCT", "0.35")
+    monkeypatch.setenv("AI_HIGH_EFFORT_PRICE_MOVE_PCT", "1.0")
+    monkeypatch.delenv("LLM_TOPIC_MODEL_AUTO_CRYPTOTRADE_EXECUTOR", raising=False)
+    high_model = os.environ["LLM_HIGH_STAKE_MODEL"].strip()
+
+    t0 = 1_795_000_000.0
+    base_sensors = SimpleNamespace(
+        prices_and_trends={"BTCUSDC": {"price": 90000.0}, "TAOUSDC": {"price": 300.0}},
+        portfolio_summary={"open_limit_orders": [], "recent_orders": {}},
+        sentiment_advisor={"ts": t0 - 600.0},
+        geopolitical_threat={"ts": t0 - 600.0, "threat_level": "LOW", "risk_score": 0.15},
+        source_timestamps={},
+    )
+    prev_hold = {
+        "ts": t0,
+        "mode": "shadow",
+        "model_used": "gemini-4-neon-medium",
+        "market_trading_decisions": [{"decision": "HOLD", "confidence": 0.5}],
+        "delta_gate_meta": {
+            "eval_prices": {"BTCUSDC": 90000.0, "TAOUSDC": 300.0},
+            "macro_ts": t0 - 600.0,
+            "geo_ts": t0 - 600.0,
+            "latest_fill_ts": 0.0,
+            "open_order_ids": [],
+        },
+    }
+
+    # 1. Pure unit checks on evaluate_crypto_executor_delta_gate
+    skip, rsn, hi, _ = evaluate_crypto_executor_delta_gate(base_sensors, prev_hold, now_ts=t0 + 360.0)
+    assert skip is True and "quiet_flat" in rsn and hi is False
+
+    # Empty prices never skip
+    skip_empty, rsn_empty, _, _ = evaluate_crypto_executor_delta_gate(
+        SimpleNamespace(prices_and_trends={}, portfolio_summary={}), prev_hold, now_ts=t0 + 360.0
+    )
+    assert skip_empty is False and rsn_empty == "no_price_baseline"
+
+    # Cumulative move >= 0.35% wakes up (medium effort if < 1.0%)
+    moved_med = SimpleNamespace(
+        prices_and_trends={"BTCUSDC": {"price": 90400.0}, "TAOUSDC": {"price": 300.0}},
+        portfolio_summary={"open_limit_orders": [], "recent_orders": {}},
+        sentiment_advisor={"ts": t0 - 600.0},
+        geopolitical_threat={"ts": t0 - 600.0, "threat_level": "LOW", "risk_score": 0.15},
+    )
+    skip_m, rsn_m, hi_m, _ = evaluate_crypto_executor_delta_gate(moved_med, prev_hold, now_ts=t0 + 360.0)
+    assert skip_m is False and "price_move" in rsn_m and hi_m is False
+
+    # Large move >= 1.0% wakes up AND escalates to high effort
+    moved_hi = SimpleNamespace(
+        prices_and_trends={"BTCUSDC": {"price": 91100.0}, "TAOUSDC": {"price": 300.0}},
+        portfolio_summary={"open_limit_orders": [], "recent_orders": {}},
+        sentiment_advisor={"ts": t0 - 600.0},
+        geopolitical_threat={"ts": t0 - 600.0, "threat_level": "LOW", "risk_score": 0.15},
+    )
+    skip_h, _, hi_h, _ = evaluate_crypto_executor_delta_gate(moved_hi, prev_hold, now_ts=t0 + 360.0)
+    assert skip_h is False and hi_h is True
+
+    # Max idle elapsed (>= 1080s) wakes up
+    skip_idle, rsn_idle, _, _ = evaluate_crypto_executor_delta_gate(base_sensors, prev_hold, now_ts=t0 + 1080.0)
+    assert skip_idle is False and "max_idle_elapsed" in rsn_idle
+
+    # New fill wakes up AND escalates to high effort
+    fill_sensors = SimpleNamespace(
+        prices_and_trends={"BTCUSDC": {"price": 90000.0}, "TAOUSDC": {"price": 300.0}},
+        portfolio_summary={"open_limit_orders": [], "recent_orders": {"BTCUSDC": {"last_buy": {"ts_ms": int((t0 + 120.0) * 1000)}}}},
+        sentiment_advisor={"ts": t0 - 600.0},
+        geopolitical_threat={"ts": t0 - 600.0, "threat_level": "LOW", "risk_score": 0.15},
+    )
+    skip_f, rsn_f, hi_f, _ = evaluate_crypto_executor_delta_gate(fill_sensors, prev_hold, now_ts=t0 + 360.0)
+    assert skip_f is False and rsn_f == "new_fill" and hi_f is True
+
+    # Macro update, geo shock, near-fill/stale/wall-trapped open order, UI turn, and focus_symbols all wake up
+    macro_upd = SimpleNamespace(**{**base_sensors.__dict__, "sentiment_advisor": {"ts": t0 + 100.0}})
+    assert evaluate_crypto_executor_delta_gate(macro_upd, prev_hold, now_ts=t0 + 360.0)[:2] == (False, "macro_update")
+
+    geo_upd = SimpleNamespace(**{**base_sensors.__dict__, "geopolitical_threat": {"ts": t0 + 100.0, "threat_level": "CRITICAL", "risk_score": 0.9}})
+    assert evaluate_crypto_executor_delta_gate(geo_upd, prev_hold, now_ts=t0 + 360.0)[:3] == (False, "geo_update", True)
+
+    prev_with_order = {**prev_hold, "delta_gate_meta": {**prev_hold["delta_gate_meta"], "open_order_ids": ["ord-1"]}}
+    near_fill_s = SimpleNamespace(
+        **{
+            **base_sensors.__dict__,
+            "portfolio_summary": {
+                "open_limit_orders": [{"order_id": "ord-1", "dist_from_spot_pct": 0.25, "fill_prob_1h_pct": 65.0}],
+                "recent_orders": {},
+            },
+        }
+    )
+    assert evaluate_crypto_executor_delta_gate(near_fill_s, prev_with_order, now_ts=t0 + 360.0)[:2] == (False, "open_order_near_fill")
+
+    wall_trapped_s = SimpleNamespace(
+        **{
+            **base_sensors.__dict__,
+            "portfolio_summary": {
+                "open_limit_orders": [{"order_id": "ord-1", "dist_from_spot_pct": 1.8, "fill_prob_1h_pct": 25.0, "recommended_front_run_px": 91500.0}],
+                "recent_orders": {},
+            },
+        }
+    )
+    assert evaluate_crypto_executor_delta_gate(wall_trapped_s, prev_with_order, now_ts=t0 + 360.0)[:2] == (False, "open_order_wall_trapped")
+
+    assert evaluate_crypto_executor_delta_gate(base_sensors, prev_hold, now_ts=t0 + 360.0, ui_turn_pending=True)[:2] == (False, "ui_turn_pending")
+    skip_foc, rsn_foc, hi_foc, _ = evaluate_crypto_executor_delta_gate(
+        base_sensors, prev_hold, now_ts=t0 + 360.0, focus_symbols=["BTCUSDC"]
+    )
+    assert skip_foc is False and "focus_symbols" in rsn_foc and hi_foc is True
+
+    # 2. End-to-end AutonomousAIReconciler.run_cycle verification (heartbeat-only skip + effort escalation)
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+    mock_gw = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
+    mock_gw.submit.return_value = None
+    auditor = DummyGeminiClient({"summary": "HOLD quiet", "market_trading_decisions": [{"decision": "HOLD", "symbol": "BTCUSDC", "confidence": 0.9}]})
+    reconciler = _reconciler(tmp_path, mode="shadow", notify_enabled=False, gemini_auditor=auditor, intent_gateway=mock_gw)
+
+    cycle_clock = [t0]
+    cycle_sensors = [base_sensors]
+    ui_pending = [False]
+    monkeypatch.setattr(aar_mod.time, "time", lambda: cycle_clock[0])
+    monkeypatch.setattr(reconciler, "harvest_sensors_telemetry", lambda **_kw: cycle_sensors[0])
+    monkeypatch.setattr(aar_mod, "has_pending_ui_turn", lambda _tk: ui_pending[0])
+
+    # Cycle 1: No prev eval -> runs LLM, writes eval + heartbeat, records delta_gate_meta
+    rep1 = reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
+    assert auditor.call_count == 1
+    assert "model" not in auditor.calls[-1][1]
+    assert "resume_prompt" in auditor.calls[-1][1]
+    assert rep1.delta_gate_meta["eval_prices"]["BTCUSDC"] == 90000.0
+    eval_path = cache_dir / "auto_cryptotrade_executor_eval.json"
+    hb_path = cache_dir / "auto_cryptotrade_executor.heartbeat"
+    eval_before_bytes = eval_path.read_bytes()
+    eval_before_mtime = eval_path.stat().st_mtime
+
+    # Cycle 2: Quiet flat (+0.10%, 6m later) -> SKIPS LLM, refreshes ONLY heartbeat (eval untouched!)
+    cycle_clock[0] = t0 + 360.0
+    cycle_sensors[0] = SimpleNamespace(
+        **{**base_sensors.__dict__, "prices_and_trends": {"BTCUSDC": {"price": 90090.0}, "TAOUSDC": {"price": 300.2}}}
+    )
+    rep2 = reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
+    assert auditor.call_count == 1
+    assert rep2.model_used == "delta_gate_skip"
+    assert eval_path.read_bytes() == eval_before_bytes
+    assert eval_path.stat().st_mtime == eval_before_mtime
+    hb2 = read_json_dict(str(hb_path))
+    assert hb2["ts"] == pytest.approx(t0 + 360.0)
+    assert hb2["delta_gate_skipped"] is True
+
+    # Cycle 3: Pending Web UI user chat turn wakes up even on flat prices
+    ui_pending[0] = True
+    cycle_clock[0] = t0 + 500.0
+    reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
+    assert auditor.call_count == 2
+    assert "model" not in auditor.calls[-1][1]
+    ui_pending[0] = False
+
+    # Cycle 4: Large price move (+1.3%) wakes up AND escalates to LLM_HIGH_STAKE_MODEL
+    cycle_clock[0] = t0 + 620.0
+    cycle_sensors[0] = SimpleNamespace(
+        **{**base_sensors.__dict__, "prices_and_trends": {"BTCUSDC": {"price": 91300.0}, "TAOUSDC": {"price": 300.2}}}
+    )
+    reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
+    assert auditor.call_count == 3
+    assert auditor.calls[-1][1].get("model") == high_model
+
+    # Cycle 5: Explicit LLM_TOPIC_MODEL_AUTO_CRYPTOTRADE_EXECUTOR override disables auto-escalation
+    monkeypatch.setenv("LLM_TOPIC_MODEL_AUTO_CRYPTOTRADE_EXECUTOR", "gemini-4-neon-medium")
+    cycle_clock[0] = t0 + 700.0
+    reconciler.run_cycle(topic_key="auto_cryptotrade_executor", focus_symbols=["BTCUSDC"])
+    assert auditor.call_count == 4
+    assert "model" not in auditor.calls[-1][1]
+
+
+
 
 
 

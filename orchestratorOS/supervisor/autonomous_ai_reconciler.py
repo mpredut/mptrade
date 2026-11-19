@@ -28,10 +28,12 @@ from botcore import (
     TOPIC_SPECS,
     _parse_bool_flag,
     bool_env,
+    canonical_topic_key,
     disable_auto_start_websockets_default,
     is_us_rth_open,
     load_dotenv,
     load_key_value_conf,
+    optional_env,
     parse_pos_cli_float,
     parse_symbol_list,
     safe_nonneg_float,
@@ -40,11 +42,15 @@ from botcore import (
 )
 
 disable_auto_start_websockets_default()
-from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
+from intelligence.macro_sentiment_ssot import (
+    TelemetrySensorSnapshot,
+    resolve_derived_telemetry_intervals,
+)
 from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     MarketAndPortfolioSnapshotOrchestrator,
 )
+from orchestratorOS.agy.topics import has_pending_ui_turn
 from state_io import read_json_recovering
 from orchestratorOS.lib.technical_repair_ssot import (
     apply_code_patch_safely,
@@ -52,6 +58,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
     build_llm_config_env_remediation,
     build_sensor_health_summary,
     default_supervisor_fallback_plan,
+    evaluate_crypto_executor_delta_gate,
     execute_venue_or_fleet_repair_action,
     format_supervisor_ntfy_notification,
     harvest_heartbeats_and_state_files,
@@ -95,6 +102,7 @@ class SupervisorAuditReport:
     tests_passed: Optional[bool] = None
     notification_sent: bool = False
     model_used: str = ""
+    delta_gate_meta: Dict[str, Any] = field(default_factory=dict)
 
 
 class AutonomousAIReconciler:
@@ -121,6 +129,7 @@ class AutonomousAIReconciler:
         self.gemini_auditor = gemini_auditor or GeminiClient()
         self._intent_gateway = intent_gateway
         self._last_model_used: str = ""
+        self._last_query_succeeded: bool = False
 
         # Parse decoupled configuration strictly from config files without fallbacks
         conf = load_key_value_conf(self.workspace_dir, _ROOT_DIR)
@@ -218,9 +227,11 @@ class AutonomousAIReconciler:
         *,
         focus_symbols: Optional[List[str]] = None,
         topic_key: str,
+        escalate_high_effort: bool = False,
     ) -> Dict[str, Any]:
         """Feeds topic-appropriate telemetry to Gemini; the topic spec bounds both prompt scope and side effects."""
         spec = topic_spec(topic_key)
+        resolved_topic = canonical_topic_key(topic_key)
         min_usd, max_usd, min_conf = 10.0, 2000.0, 0.85
         if spec.can_trade:
             gw = self.intent_gateway
@@ -237,19 +248,60 @@ class AutonomousAIReconciler:
             min_usd=min_usd,
             max_usd=max_usd,
             min_conf=min_conf,
+            compact_rules=False,
         )
+        resume_prompt: Optional[str] = None
+        if spec.can_trade and not spec.can_self_heal:
+            resume_prompt = build_supervisor_prompt(
+                sensors,
+                logs,
+                spec,
+                self.lookback_hours,
+                focus_symbols=focus_symbols,
+                min_usd=min_usd,
+                max_usd=max_usd,
+                min_conf=min_conf,
+                compact_rules=True,
+            )
+
+        model_override: Optional[str] = None
+        effective_escalate = _parse_bool_flag(escalate_high_effort, False) or bool(
+            focus_symbols and parse_symbol_list(focus_symbols)
+        )
+        if (
+            resolved_topic == "auto_cryptotrade_executor"
+            and effective_escalate
+            and not (optional_env("LLM_TOPIC_MODEL_AUTO_CRYPTOTRADE_EXECUTOR", "") or "").strip()
+            and not getattr(self.gemini_auditor, "_explicit_model", False)
+        ):
+            high_model = (optional_env("LLM_HIGH_STAKE_MODEL", "") or "").strip()
+            if high_model:
+                model_override = high_model
+                logger.info(
+                    "[%s] Escalating reasoning effort to %s for high-signal cycle.",
+                    resolved_topic,
+                    high_model,
+                )
 
         call_timeout = safe_pos_float(getattr(spec, "default_timeout_sec", None), default=None) or (
             120.0 if spec.can_self_heal else 90.0
         )
         now_ts_str = time.strftime("%Y-%m-%d %H:%M:%S %Z").strip()
         self._last_model_used = ""
+        self._last_query_succeeded = False
+        query_kwargs: Dict[str, Any] = {
+            "subtitle": f"{self.mode.upper()} [{now_ts_str}]",
+            "timeout_sec": call_timeout,
+        }
+        if model_override:
+            query_kwargs["model"] = model_override
+        if resume_prompt:
+            query_kwargs["resume_prompt"] = resume_prompt
         resp = query_topic_json(
             self.gemini_auditor,
             topic_key,
             prompt,
-            subtitle=f"{self.mode.upper()} [{now_ts_str}]",
-            timeout_sec=call_timeout,
+            **query_kwargs,
         )
         raw_used = getattr(self.gemini_auditor, "last_model_used", None)
         self._last_model_used = raw_used.strip() if isinstance(raw_used, str) and raw_used.strip() else ""
@@ -258,6 +310,7 @@ class AutonomousAIReconciler:
             logger.warning("Gemini supervisor query failed. Falling back to default baseline.")
             return default_supervisor_fallback_plan(spec, logs)
 
+        self._last_query_succeeded = True
         return resp
 
     def apply_reconciliation(
@@ -327,7 +380,12 @@ class AutonomousAIReconciler:
             log=logger,
         )
 
-    def write_audit_artifact(self, report: SupervisorAuditReport) -> SupervisorAuditReport:
+    def write_audit_artifact(
+        self,
+        report: SupervisorAuditReport,
+        *,
+        persist_eval: bool = True,
+    ) -> SupervisorAuditReport:
         """Persists the full audit report and heartbeat to disk in cachedb/."""
         persist_supervisor_audit_artifact(
             asdict(report),
@@ -335,6 +393,7 @@ class AutonomousAIReconciler:
             self.state_file,
             self.heartbeat_file,
             log=logger,
+            persist_eval=persist_eval,
         )
         return report
 
@@ -379,7 +438,62 @@ class AutonomousAIReconciler:
             if spec.can_self_heal
             else LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0)
         )
-        plan = self.synthesize_and_diagnose(sensors, logs, focus_symbols=focus_symbols, topic_key=topic_key)
+        resolved_topic = canonical_topic_key(topic_key)
+        escalate_high_effort = False
+        delta_gate_meta: Dict[str, Any] = {}
+        if resolved_topic == "auto_cryptotrade_executor":
+            delta_gate_enabled = bool_env("AI_DELTA_GATE_ENABLED", True)
+            derived_itvs = resolve_derived_telemetry_intervals()
+            exec_interval_sec = safe_pos_float(derived_itvs.get("crypto_executor_interval_sec"), default=360.0) or 360.0
+            max_idle_mult = safe_pos_float(optional_env("AI_DELTA_GATE_MAX_IDLE_MULT", ""), default=3.0) or 3.0
+            max_idle_sec = exec_interval_sec * max_idle_mult
+            min_move_pct = safe_pos_float(optional_env("AI_DELTA_GATE_MIN_PRICE_MOVE_PCT", ""), default=0.35) or 0.35
+            high_effort_move_pct = safe_pos_float(optional_env("AI_HIGH_EFFORT_PRICE_MOVE_PCT", ""), default=1.0) or 1.0
+            _read_json = _resolve_repair_json_reader(read_json_recovering)
+            prev_eval_raw = _read_json(self.state_file, default={}) if os.path.exists(self.state_file) else {}
+            prev_eval = prev_eval_raw if isinstance(prev_eval_raw, dict) else {}
+            ui_turn_pending = False
+            if delta_gate_enabled:
+                try:
+                    ui_turn_pending = has_pending_ui_turn(topic_key)
+                except Exception:
+                    ui_turn_pending = False
+            should_skip_llm, gate_reason, escalate_high_effort, delta_gate_meta = evaluate_crypto_executor_delta_gate(
+                sensors,
+                prev_eval,
+                now_ts=now,
+                focus_symbols=focus_symbols,
+                min_price_move_pct=min_move_pct,
+                max_idle_sec=max_idle_sec,
+                high_effort_price_move_pct=high_effort_move_pct,
+                ui_turn_pending=ui_turn_pending,
+            )
+            if delta_gate_enabled and should_skip_llm:
+                prev_meta = prev_eval.get("delta_gate_meta") if isinstance(prev_eval.get("delta_gate_meta"), dict) else {}
+                skip_summary = f"Delta-Gate HOLD carry-forward ({gate_reason}); redundant LLM call skipped."
+                logger.info("[DELTA GATE] %s", skip_summary)
+                skip_report = SupervisorAuditReport(
+                    ts=now,
+                    mode=self.mode,
+                    summary=skip_summary,
+                    market_trading_decision={"decision": "HOLD", "confidence": 0.0, "thesis": gate_reason},
+                    market_trading_decisions=[{"decision": "HOLD", "confidence": 0.0, "thesis": gate_reason}],
+                    sensor_health=build_sensor_health_summary(sensors),
+                    actions_executed=False,
+                    tests_passed=None,
+                    notification_sent=False,
+                    model_used="delta_gate_skip",
+                    delta_gate_meta=dict(prev_meta),
+                )
+                return self.write_audit_artifact(skip_report, persist_eval=False)
+
+        plan = self.synthesize_and_diagnose(
+            sensors,
+            logs,
+            focus_symbols=focus_symbols,
+            topic_key=topic_key,
+            escalate_high_effort=escalate_high_effort,
+        )
         cat_audit = (
             sensors.system_and_vpn.get("llm_catalog_audit")
             if spec.can_self_heal and isinstance(getattr(sensors, "system_and_vpn", None), dict)
@@ -463,6 +577,7 @@ class AutonomousAIReconciler:
             actions_executed=executed,
             tests_passed=tests_passed,
             model_used=model_used,
+            delta_gate_meta=delta_gate_meta if self._last_query_succeeded else {},
         )
         # SRE/system/bot-error notifications (ntfy-server / ntfy-error) belong strictly to auto_technical_repair
         # (spec.can_self_heal); trade notifications are dispatched by AutonomousIntentGateway to ntfy-trade.
