@@ -129,6 +129,8 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
             default_tick,
             prefer_static_tick,
         ) = MarketDataProvider.resolve_venue_default_fee_and_precision(v_norm, px_f)
+        if symbol and resolve_symbol_identity(symbol).is_tokenized_equity:
+            fee_tier, maker_bps, taker_bps = "XSTOCK_ZERO_FEE", 0.0, 0.0
 
         min_qty, step_size, tick_size = default_step, default_step, default_tick
 

@@ -1653,6 +1653,14 @@ def test_antx_ipo_post_exit_dust_reconcile_zero_known_assets_and_sell_sweep(tmp_
     assert fee_limits["effective_max_buy_usd"] == 0.0
     assert "replace_max_buy_usd" not in fee_limits
     assert fee_limits["effective_max_sell_usd"] == pytest.approx(round(0.2655 * 98.20, 2))
+    fee_limits_no_inst = resolve_venue_fee_and_limits(
+        "kraken", "SPCXxUSD", None, price=137.50, free_quote=3368.0, locked_quote_usd=450.0, free_base=0.50
+    )
+    assert (fee_limits_no_inst["fee_tier"], fee_limits_no_inst["maker_fee_bps"], fee_limits_no_inst["taker_fee_bps"]) == (
+        "XSTOCK_ZERO_FEE", 0.0, 0.0
+    )
+    assert fee_limits_no_inst["effective_max_buy_usd"] == 0.0
+    assert "replace_max_buy_usd" not in fee_limits_no_inst
 
     # 4. clamp_notional_to_wallet_balance sweeps near-full SELL LIMIT notional up to avail_usd to prevent <$10 dust
     ant_inst = SimpleNamespace(

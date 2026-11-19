@@ -2233,6 +2233,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     locked_base_qty=safe_pos_float(pos.get("locked_base_qty"), default=None),
                     spread_bps=safe_nonneg_float(sym_spread, default=None),
                     gateway_max_usd=gateway_max_usd,
+                    cache_dir=cache_dir,
                 )
             )
             if prev_inst_limits:
