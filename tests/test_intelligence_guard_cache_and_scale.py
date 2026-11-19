@@ -201,7 +201,7 @@ class TestIntelligenceGuardDynamicEvaluation:
         monkeypatch.setattr(
             "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard",
             lambda **kw: SimpleNamespace(
-                check=lambda symbol, side, price, qty, notional_eur=None: (
+                check=lambda symbol, side, price, qty, notional_eur=None, **_kw: (
                     gemini_called.append((symbol, side, price, qty, notional_eur))
                     or GuardDecision.veto("HighStakeGuard", "gemini_risk_block")
                 )
@@ -1232,7 +1232,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
 
         monkeypatch.setattr(
             "intelligence.macro.geopolitical_analyzer.GeopoliticalThreatAnalyzer",
-            lambda: SimpleNamespace(
+            lambda **_kw: SimpleNamespace(
                 _cached_assessment=GeopoliticalThreatAssessment(
                     threat_level="ELEVATED",
                     risk_score=0.65,
@@ -1584,7 +1584,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         monkeypatch.setattr(
             OrderbookWallGuard,
             "check",
-            lambda self, sym, side, snapshot=None: GuardDecision.downscale(
+            lambda self, sym, side, snapshot=None, **_kw: GuardDecision.downscale(
                 "OrderbookWallGuard", scale=0.4, reason="orderbook_wall_downscale_test"
             ),
         )

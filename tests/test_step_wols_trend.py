@@ -299,7 +299,7 @@ class TestStepWolsGeneralization(unittest.TestCase):
                 return {"growth_coefficient": -0.05, "epsilon": 0.01}
             return None
 
-        def fake_should_wait(side, symbol, window_seconds=None, use_noise_gate=False):
+        def fake_should_wait(side, symbol, window_seconds=None, use_noise_gate=False, **_kw):
             queried.append((side, symbol, window_seconds, use_noise_gate))
             return False
 
