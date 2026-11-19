@@ -89,6 +89,12 @@ def _partition_intents_for_audit_reconciliation(
     for item in intents:
         if not isinstance(item, dict):
             continue
+        raw_sym = item.get("symbol")
+        if isinstance(raw_sym, str) and raw_sym.strip():
+            norm_sym = _clean_intent_symbol(raw_sym)
+            if norm_sym and norm_sym != raw_sym:
+                item["symbol"] = norm_sym
+                updated = True
         clean_id = _extract_intent_id(item)
         if not clean_id:
             continue
@@ -435,7 +441,6 @@ __all__ = [
     "_attach_intent_age_fields",
     "_classify_audit_fill_state",
     "_filter_intents_by_scope",
-    "_is_cancel_or_expire_status",
     "_is_open_resting_detail",
     "_is_terminal_fill_record",
     "_resolve_executed_open_resting_detail",

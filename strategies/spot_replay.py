@@ -32,8 +32,11 @@ from strategies.replay_execution import (
     FeeModel,
     build_warmup_shadow_prices,
     choose_intrabar_scenario,
+    clamp_sell_fill_to_held,
+    iter_eligible_orders_in_side_order,
     normalize_replay_timestamps,
     require_optional_pos_float,
+    resolve_order_fill_price,
     select_eligible_intrabar_orders,
     split_order_fill,
     unpack_ohlc_bar,
@@ -457,6 +460,91 @@ def _run_once(
                     strategy.s["realized_net"], cycle_net_start, trade_pnls, wins
                 )
 
+        def _cap_spot_buy_fill_to_cash(
+            order: dict,
+            fill_order: dict,
+            volume: float,
+            price: float,
+            *,
+            market: bool,
+            complete: bool,
+        ) -> tuple[float, bool] | None:
+            nonlocal cash_refusals
+            if cash is None:
+                return volume, complete
+            fee_mult = 1.0 + fee_model.rate_pct(market=market) / 100.0
+            needed = volume * price * fee_mult
+            if needed <= cash + 1e-8:
+                return volume, complete
+            max_vol = max(0.0, cash / (price * fee_mult)) if price * fee_mult > 0 else 0.0
+            if max_vol <= 1e-12:
+                strategy._remove(order)
+                cash_refusals += 1
+                return None
+            orig_vol = volume
+            volume = min(volume, max_vol)
+            fill_order["vol"] = volume
+            orig_amt = safe_nonneg_float(fill_order.get("amount"), default=None)
+            fill_order["amount"] = (
+                orig_amt * (volume / orig_vol)
+                if orig_amt is not None and orig_vol > 0.0
+                else volume * price
+            )
+            order["vol"] = 0.0
+            if "amount" in order:
+                order["amount"] = 0.0
+            return volume, True
+
+        def _settle_spot_intrabar_orders(open_: float, high: float, low: float, close: float) -> None:
+            nonlocal ambiguous_bars
+            orders = strategy.s["orders"]
+            if not orders:
+                return
+            eligible_orders, is_ambiguous = select_eligible_intrabar_orders(
+                orders, execution, high=high, low=low, limit_key="price",
+            )
+            if eligible_orders:
+                ambiguous_bars += 1 if is_ambiguous else 0
+                for side, order in iter_eligible_orders_in_side_order(
+                    eligible_orders, strategy.s["orders"], side_order
+                ):
+                    market, price = resolve_order_fill_price(
+                        order, side, open_, execution, limit_key="price"
+                    )
+                    fill_order, volume, complete = split_order_fill(
+                        order,
+                        quantity_key="vol",
+                        amount_key="amount" if side == "buy" else None,
+                        ratio=execution.partial_fill_ratio,
+                        force_full=market,
+                    )
+                    if side == "sell":
+                        volume, complete = clamp_sell_fill_to_held(volume, strategy.s["qty"], complete)
+                        if volume <= 0.0:
+                            strategy._remove(order)
+                            continue
+                        fill_order["vol"] = volume
+                    elif side == "buy":
+                        capped = _cap_spot_buy_fill_to_cash(
+                            order, fill_order, volume, price, market=market, complete=complete
+                        )
+                        if capped is None:
+                            continue
+                        volume, complete = capped
+                    _settle_order_fill(
+                        order if complete else None,
+                        fill_order,
+                        side,
+                        volume,
+                        price,
+                        market=market,
+                        final=complete,
+                    )
+            if check_ttl and strategy.s["orders"]:
+                for order in list(strategy.s["orders"]):
+                    if order["side"] == "buy" and not is_market_order(order) and close > order["price"] * 1.003:
+                        strategy._remove(order)
+
         for bar_index, row in enumerate(ohlc):
             open_, high, low, close = unpack_ohlc_bar(row)
             current_bar = bar_index
@@ -474,76 +562,7 @@ def _run_once(
                     if bar_index < len(reentry_series)
                     else default_reentry_drop
                 )
-
-            orders = strategy.s["orders"]
-            if orders:
-                eligible_orders, is_ambiguous = select_eligible_intrabar_orders(
-                    orders, execution, high=high, low=low, limit_key="price",
-                )
-                if eligible_orders:
-                    ambiguous_bars += 1 if is_ambiguous else 0
-                    for side in side_order:
-                        for order in eligible_orders:
-                            if order not in strategy.s["orders"] or order["side"] != side:
-                                continue
-                            market = is_market_order(order)
-                            fill_order, volume, complete = split_order_fill(
-                                order,
-                                quantity_key="vol",
-                                amount_key="amount" if side == "buy" else None,
-                                ratio=execution.partial_fill_ratio,
-                                force_full=market,
-                            )
-                            price = (
-                                execution.market_price(side, open_)
-                                if market
-                                else require_pos_float(order["price"], "order_price")
-                            )
-                            if side == "sell":
-                                held_qty = strategy.s["qty"]
-                                if volume >= held_qty - 1e-12:
-                                    volume = held_qty
-                                    complete = True
-                                if volume <= 1e-12:
-                                    strategy._remove(order)
-                                    continue
-                                fill_order["vol"] = volume
-                            elif cash is not None and side == "buy":
-                                fee_mult = 1.0 + fee_model.rate_pct(market=market) / 100.0
-                                needed = volume * price * fee_mult
-                                if needed > cash + 1e-8:
-                                    max_vol = max(0.0, cash / (price * fee_mult)) if price * fee_mult > 0 else 0.0
-                                    if max_vol <= 1e-12:
-                                        strategy._remove(order)
-                                        cash_refusals += 1
-                                        continue
-                                    orig_vol = volume
-                                    volume = min(volume, max_vol)
-                                    fill_order["vol"] = volume
-                                    orig_amt = safe_nonneg_float(fill_order.get("amount"), default=None)
-                                    fill_order["amount"] = (
-                                        orig_amt * (volume / orig_vol)
-                                        if orig_amt is not None and orig_vol > 0.0
-                                        else volume * price
-                                    )
-                                    order["vol"] = 0.0
-                                    if "amount" in order:
-                                        order["amount"] = 0.0
-                                    complete = True
-                            _settle_order_fill(
-                                order if complete else None,
-                                fill_order,
-                                side,
-                                volume,
-                                price,
-                                market=market,
-                                final=complete,
-                            )
-
-                if check_ttl and strategy.s["orders"]:
-                    for order in list(strategy.s["orders"]):
-                        if order["side"] == "buy" and not is_market_order(order) and close > order["price"] * 1.003:
-                            strategy._remove(order)
+            _settle_spot_intrabar_orders(open_, high, low, close)
             strategy.step(close, timestamp=replay_time, high=high if intrabar_high else None)
             q = strategy.s["qty"]
             upnl = (close - strategy.s["cost"] / q) * q if q > 1e-12 else 0.0

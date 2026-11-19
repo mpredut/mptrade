@@ -51,13 +51,23 @@ def conversation_db(cli_base: str, cid: str) -> str:
     return os.path.join(cli_base, "conversations", f"{cid}.db")
 
 
+def connect_sqlite_db(path: str, *, timeout: float = 20.0) -> sqlite3.Connection:
+    """Open a SQLite connection with an explicit busy timeout to prevent transient lock failures."""
+    conn = sqlite3.connect(path, timeout=timeout)
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {max(1000, round(timeout * 1000))}")
+    except sqlite3.Error:
+        pass
+    return conn
+
+
 def checkpoint_db(path: str) -> bool:
     """Flush SQLite WAL into the main database file. Returns False if it could not be done safely."""
     wal = path + "-wal"
     try:
         if not os.path.exists(wal) or os.path.getsize(wal) == 0:
             return True
-        conn = sqlite3.connect(path, timeout=15)
+        conn = connect_sqlite_db(path, timeout=15.0)
         try:
             row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
             return bool(row) and row[0] == 0
@@ -197,7 +207,7 @@ def upsert_summary_row_dict(cli_base: str, row_dict: dict, *, sync_pb: bool = Fa
     """Insert or replace a conversation_summaries row matching the table's existing columns."""
     if not isinstance(row_dict, dict):
         return
-    conn = sqlite3.connect(summaries_db(cli_base))
+    conn = connect_sqlite_db(summaries_db(cli_base))
     try:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(conversation_summaries)")]
         common = [c for c in cols if c in row_dict]
@@ -236,12 +246,16 @@ def read_summary_row(cli_base: str, cid: str) -> Optional[dict]:
     db = summaries_db(cli_base)
     if not os.path.exists(db):
         return None
-    conn = sqlite3.connect(db)
-    conn.row_factory = sqlite3.Row
     try:
-        row = conn.execute("SELECT * FROM conversation_summaries WHERE conversation_id=?", (cid,)).fetchone()
-    finally:
-        conn.close()
+        conn = connect_sqlite_db(db)
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute("SELECT * FROM conversation_summaries WHERE conversation_id=?", (cid,)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.warning("read_summary_row failed for %s (%s): %s", db, cid, exc)
+        return None
     return dict(row) if row else None
 
 
@@ -270,7 +284,7 @@ def snapshot_conversation_state(cli_base: str, cid: str) -> Optional[dict]:
         return None
     tables_state: dict[str, dict[str, Any]] = {}
     try:
-        conn = sqlite3.connect(db_path, timeout=10)
+        conn = connect_sqlite_db(db_path, timeout=15.0)
         try:
             for tbl, cols, _ in iter_sqlite_user_table_columns(conn):
                 if "idx" in cols:
@@ -315,7 +329,7 @@ def restore_conversation_state(cli_base: str, cid: str, snapshot: Optional[dict]
     if not isinstance(tables_state, dict) or not tables_state:
         return False
     try:
-        conn = sqlite3.connect(db_path, timeout=10)
+        conn = connect_sqlite_db(db_path, timeout=15.0)
         try:
             for tbl, tstate in tables_state.items():
                 if not isinstance(tstate, dict):
@@ -419,7 +433,7 @@ def _drop_summaries(
     db = summaries_db(cli_base)
     if os.path.exists(db):
         try:
-            conn = sqlite3.connect(db, timeout=5)
+            conn = connect_sqlite_db(db, timeout=10.0)
             try:
                 conn.execute(
                     f"DELETE FROM conversation_summaries WHERE conversation_id IN ({','.join('?' for _ in clean_cids)})",
@@ -516,11 +530,15 @@ def clean_orphan_summaries(cli_base: str, dry_run: bool = False) -> int:
     db = summaries_db(cli_base)
     if not os.path.exists(db):
         return 0
-    conn = sqlite3.connect(db)
     try:
-        rows = conn.execute("SELECT conversation_id, title FROM conversation_summaries").fetchall()
-    finally:
-        conn.close()
+        conn = connect_sqlite_db(db)
+        try:
+            rows = conn.execute("SELECT conversation_id, title FROM conversation_summaries").fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.warning("clean_orphan_summaries failed for %s: %s", db, exc)
+        return 0
     vis_dir = _visible_dir_if_cli_store(cli_base)
     active = optional_env("CURRENT_CONVERSATION_ID", "")
     orphans = {

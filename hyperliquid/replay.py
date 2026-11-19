@@ -42,6 +42,7 @@ from strategy import Strategy, StratParams, HL_FEE_PCT  # noqa: E402
 from providers.ohlc_utils import validate_ohlc_bars
 from strategies.replay_execution import (
     choose_intrabar_scenario,
+    clamp_sell_fill_to_held,
     ExecutionModel,
     split_order_fill,
     unpack_ohlc_bar,
@@ -335,79 +336,54 @@ def _run_once(
         equity_curve.append(0.0)
         exposure.append(False)
 
-    for i in range(len(ohlc)):
-        o, h, l, c = unpack_ohlc_bar(ohlc[i])
-        t_ms = ts[i] if ts is not None and i < len(ts) else None
+    def _compute_bar_funding_rate(t_ms: int | None) -> float:
+        t_val = _to_funding_ms(t_ms)
+        if t_val is None:
+            return 0.0
+        if eff_bar_minutes <= 60.0 or t_val < 0:
+            return _lookup_sorted_funding_ms(f_ts, f_rates, t_val) * (eff_bar_minutes / 60.0)
+        rem_hours = eff_bar_minutes / 60.0
+        bar_f_rate = 0.0
+        hour_idx = 0
+        while rem_hours > 1e-9:
+            weight = min(1.0, rem_hours)
+            bar_f_rate += _lookup_sorted_funding_ms(f_ts, f_rates, t_val + hour_idx * 3_600_000.0) * weight
+            rem_hours -= weight
+            hour_idx += 1
+        return bar_f_rate
 
-        if liquidated:
-            equity_curve.append(0.0)
-            exposure.append(False)
-            continue
+    def _evaluate_hl_open_order_eligible(open_order: dict | None, o: float, h: float, l: float) -> bool:
+        if not open_order or not exec_model.limit_touched(open_side, high=h, low=l, limit=open_order["px"]):
+            return False
+        if strategy.s["qty"] <= dust_eps:
+            return True
+        liq_open_bar = _bankruptcy_price_if_breached(o)
+        liq_pre = _bankruptcy_price_if_breached(l if strategy.sign > 0 else h)
+        if liq_open_bar is not None or (
+            liq_pre is not None and strategy.sign * (liq_pre - open_order["px"]) >= 0
+        ):
+            return False
+        if strategy.p.stop_loss_pct > 0 and (avg_now := strategy._avg()):
+            sl_level_pre = avg_now * (1.0 - strategy.sign * strategy.p.stop_loss_pct / 100.0)
+            open_loss_pct = -strategy.sign * (o - avg_now) / avg_now * 100.0
+            worst_px_pre = l if strategy.sign > 0 else h
+            loss_pre = -strategy.sign * (worst_px_pre - avg_now) / avg_now * 100.0
+            if open_loss_pct >= strategy.p.stop_loss_pct - 1e-9 or (
+                loss_pre >= strategy.p.stop_loss_pct - 1e-9
+                and strategy.sign * (sl_level_pre - open_order["px"]) >= 0
+            ):
+                return False
+        return True
 
-        held_at_bar_open = strategy.s["qty"] > dust_eps
-
-        # 1. Funding on held perpetuals at bar open notional: shorts receive funding; longs pay it.
-        qty = strategy.s["qty"]
-        if qty > dust_eps and f_ts:
-            t_val = _to_funding_ms(t_ms)
-            if t_val is None:
-                bar_f_rate = 0.0
-            elif eff_bar_minutes <= 60.0 or t_val < 0:
-                bar_f_rate = _lookup_sorted_funding_ms(f_ts, f_rates, t_val) * (eff_bar_minutes / 60.0)
-            else:
-                rem_hours = eff_bar_minutes / 60.0
-                bar_f_rate = 0.0
-                hour_idx = 0
-                while rem_hours > 1e-9:
-                    weight = min(1.0, rem_hours)
-                    bar_f_rate += _lookup_sorted_funding_ms(f_ts, f_rates, t_val + hour_idx * 3_600_000.0) * weight
-                    rem_hours -= weight
-                    hour_idx += 1
-            f = bar_f_rate * qty * o
-            funding += (f if strategy.sign < 0 else -f)
-            liq_open = _bankruptcy_price_if_breached(o)
-            if liq_open is not None:
-                _execute_liquidation(liq_open)
-                continue
-
-        # 2. Check active limit orders against the bar range
-        open_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "open"), None)
-        open_eligible = False
-        if open_order:
-            open_eligible = exec_model.limit_touched(
-                open_side, high=h, low=l, limit=open_order["px"]
-            )
-            # If a held position breaches stop-loss or bankruptcy before reaching a deeper DCA limit, abort DCA.
-            if open_eligible and strategy.s["qty"] > dust_eps:
-                liq_open_bar = _bankruptcy_price_if_breached(o)
-                liq_pre = _bankruptcy_price_if_breached(l if strategy.sign > 0 else h)
-                if liq_open_bar is not None or (
-                    liq_pre is not None and strategy.sign * (liq_pre - open_order["px"]) >= 0
-                ):
-                    open_eligible = False
-                elif strategy.p.stop_loss_pct > 0:
-                    avg_now = strategy._avg()
-                    if avg_now:
-                        sl_level_pre = avg_now * (1.0 - strategy.sign * strategy.p.stop_loss_pct / 100.0)
-                        open_loss_pct = -strategy.sign * (o - avg_now) / avg_now * 100.0
-                        worst_px_pre = l if strategy.sign > 0 else h
-                        loss_pre = -strategy.sign * (worst_px_pre - avg_now) / avg_now * 100.0
-                        if open_loss_pct >= strategy.p.stop_loss_pct - 1e-9 or (
-                            loss_pre >= strategy.p.stop_loss_pct - 1e-9
-                            and strategy.sign * (sl_level_pre - open_order["px"]) >= 0
-                        ):
-                            open_eligible = False
-
-        close_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "close"), None)
-        close_eligible = False
-        if close_order and strategy.s["qty"] > dust_eps:
-            close_eligible = exec_model.limit_touched(
-                close_side, high=h, low=l, limit=close_order["px"]
-            )
-
-        if open_eligible and close_eligible:
-            ambiguous_bars += 1
-
+    def _settle_hl_intrabar_limit_fills(
+        open_order: dict | None,
+        close_order: dict | None,
+        *,
+        open_eligible: bool,
+        close_eligible: bool,
+        o: float,
+    ) -> None:
+        nonlocal turnover_notional, fills
         for side in exec_model.side_order():
             if side == open_side and open_eligible and open_order in strategy.s["orders"]:
                 px = min(open_order["px"], o) if strategy.sign > 0 else max(open_order["px"], o)
@@ -429,12 +405,9 @@ def _run_once(
 
             if side == close_side and close_eligible and close_order in strategy.s["orders"] and strategy.s["qty"] > dust_eps:
                 px = max(close_order["px"], o) if strategy.sign > 0 else min(close_order["px"], o)
-                fill_order, sz, complete = _quantize_partial_fill(close_order, is_open=False)
-                held_now = strategy.s["qty"]
-                if sz >= held_now - dust_eps:
-                    sz = held_now
-                    complete = True
-                if sz <= dust_eps:
+                _, sz, complete = _quantize_partial_fill(close_order, is_open=False)
+                sz, complete = clamp_sell_fill_to_held(sz, strategy.s["qty"], complete, eps=dust_eps)
+                if sz <= 0.0:
                     strategy._remove(close_order)
                     continue
                 if complete:
@@ -444,34 +417,71 @@ def _run_once(
                 strategy._apply_close(avg, px, sz)
                 _record_fill_and_closed_cycle(sz, px, cycle_before)
 
-        # 3. Intrabar Stop-Loss & Margin Wipeout Check (if held after limit fills)
+    def _check_hl_intrabar_stop_and_liquidation(o: float, h: float, l: float, *, held_at_bar_open: bool) -> bool:
+        """Return True when the account liquidated inside the bar."""
+        if strategy.s["qty"] <= dust_eps:
+            return False
+        worst_px = l if strategy.sign > 0 else h
+        if strategy.p.stop_loss_pct > 0 and (avg := strategy._avg()):
+            loss_pct = -strategy.sign * (worst_px - avg) / avg * 100.0
+            if loss_pct >= strategy.p.stop_loss_pct - 1e-9:
+                sl_level = avg * (1.0 - strategy.sign * strategy.p.stop_loss_pct / 100.0)
+                raw_exec_px = (min(o, sl_level) if strategy.sign > 0 else max(o, sl_level)) if held_at_bar_open else sl_level
+                exec_px = exec_model.market_price(close_side, raw_exec_px)
+                liq_sl = _bankruptcy_price_if_breached(exec_px)
+                if liq_sl is not None:
+                    _execute_liquidation(liq_sl)
+                    return True
+                held_qty = strategy.s["qty"]
+                cycle_before = strategy.s.get("cycles_completed", 0)
+                if strategy._check_stop_loss(exec_px):
+                    _record_fill_and_closed_cycle(held_qty, exec_px, cycle_before)
         if strategy.s["qty"] > dust_eps:
-            worst_px = l if strategy.sign > 0 else h
-            if strategy.p.stop_loss_pct > 0:
-                avg = strategy._avg()
-                if avg:
-                    loss_pct = -strategy.sign * (worst_px - avg) / avg * 100.0
-                    if loss_pct >= strategy.p.stop_loss_pct - 1e-9:
-                        sl_level = avg * (1.0 - strategy.sign * strategy.p.stop_loss_pct / 100.0)
-                        if held_at_bar_open:
-                            raw_exec_px = min(o, sl_level) if strategy.sign > 0 else max(o, sl_level)
-                        else:
-                            raw_exec_px = sl_level
-                        exec_px = exec_model.market_price(close_side, raw_exec_px)
-                        liq_sl = _bankruptcy_price_if_breached(exec_px)
-                        if liq_sl is not None:
-                            _execute_liquidation(liq_sl)
-                            continue
-                        held_qty = strategy.s["qty"]
-                        cycle_before = strategy.s.get("cycles_completed", 0)
-                        if strategy._check_stop_loss(exec_px):
-                            _record_fill_and_closed_cycle(held_qty, exec_px, cycle_before)
+            liq_intrabar = _bankruptcy_price_if_breached(worst_px)
+            if liq_intrabar is not None:
+                _execute_liquidation(liq_intrabar)
+                return True
+        return False
 
-            if strategy.s["qty"] > dust_eps:
-                liq_intrabar = _bankruptcy_price_if_breached(worst_px)
-                if liq_intrabar is not None:
-                    _execute_liquidation(liq_intrabar)
-                    continue
+    for i in range(len(ohlc)):
+        o, h, l, c = unpack_ohlc_bar(ohlc[i])
+        t_ms = ts[i] if ts is not None and i < len(ts) else None
+
+        if liquidated:
+            equity_curve.append(0.0)
+            exposure.append(False)
+            continue
+
+        held_at_bar_open = strategy.s["qty"] > dust_eps
+
+        # 1. Funding on held perpetuals at bar open notional: shorts receive funding; longs pay it.
+        qty = strategy.s["qty"]
+        if qty > dust_eps and f_ts:
+            f = _compute_bar_funding_rate(t_ms) * qty * o
+            funding += (f if strategy.sign < 0 else -f)
+            liq_open = _bankruptcy_price_if_breached(o)
+            if liq_open is not None:
+                _execute_liquidation(liq_open)
+                continue
+
+        # 2. Check active limit orders against the bar range
+        open_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "open"), None)
+        open_eligible = _evaluate_hl_open_order_eligible(open_order, o, h, l)
+        close_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "close"), None)
+        close_eligible = bool(
+            close_order
+            and strategy.s["qty"] > dust_eps
+            and exec_model.limit_touched(close_side, high=h, low=l, limit=close_order["px"])
+        )
+        if open_eligible and close_eligible:
+            ambiguous_bars += 1
+        _settle_hl_intrabar_limit_fills(
+            open_order, close_order, open_eligible=open_eligible, close_eligible=close_eligible, o=o
+        )
+
+        # 3. Intrabar Stop-Loss & Margin Wipeout Check (if held after limit fills)
+        if _check_hl_intrabar_stop_and_liquidation(o, h, l, held_at_bar_open=held_at_bar_open):
+            continue
 
         # 4. TTL / Runaway price cancellation
         open_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "open"), None)

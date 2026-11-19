@@ -24,6 +24,7 @@ from botcore import (
     first_pos_float,
     normalize_side,
     optional_env,
+    resolve_now_ts,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -42,6 +43,7 @@ from cachepaths import (
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
+from instrument_registry import resolve_symbol_identity
 from providers.execution_audit import iter_audit_jsonl_paths
 from providers.intent_state import (
     _extract_intent_id,
@@ -116,6 +118,16 @@ def _first(row: dict, *names):
     return None
 
 
+def _canonical_symbol(raw_sym: Any) -> str | None:
+    if raw_sym is None:
+        return None
+    s = str(raw_sym).strip()
+    if not s:
+        return None
+    ident = resolve_symbol_identity(s)
+    return ident.storage_key if ident.is_tokenized_equity and ident.storage_key else s
+
+
 def _autonomous_ai_intent_row(
     row: dict,
     *,
@@ -176,11 +188,12 @@ def _autonomous_ai_intent_row(
         if (st_up == "EXECUTED" and ep_st and ep_st in OPEN_WORKING_OR_EMPTY_VENUE_STATUSES)
         else (st_up.lower() or "pending")
     )
-    return {
+    _, created_ts_s = extract_intent_timestamp_s(row)
+    out_row = {
         "intent_id": str(intent_id),
         "owner": "autonomous_ai",
         "venue": str(normalize_venue_name(str(raw_venue)) or raw_venue),
-        "symbol": None if raw_sym is None else str(raw_sym),
+        "symbol": _canonical_symbol(raw_sym),
         "side": side_str,
         "kind": order_type.lower(),
         "status": eff_status,
@@ -192,6 +205,9 @@ def _autonomous_ai_intent_row(
         "source": source,
         "location": location,
     }
+    if created_ts_s is not None and created_ts_s > 0.0 and not include_terminal:
+        out_row["_created_ts_s"] = created_ts_s
+    return out_row
 
 
 def _intent_row(
@@ -240,7 +256,7 @@ def _intent_row(
         return None
     raw_sym = _first(row, "symbol", "ticker", "pair") or _first(inherited, "symbol", "ticker", "pair")
     raw_venue = _first(row, "provider_name", "venue") or _first(inherited, "venue") or owner.split("_", 1)[0]
-    symbol, venue = (None if raw_sym is None else str(raw_sym)), str(normalize_venue_name(str(raw_venue)) or raw_venue)
+    symbol, venue = _canonical_symbol(raw_sym), str(normalize_venue_name(str(raw_venue)) or raw_venue)
     return {
         "intent_id": str(intent_id),
         "owner": owner,
@@ -342,10 +358,23 @@ def _build_summary(intents: list[dict], exposures: list[dict]) -> dict:
     notional_by_sym: dict[str, dict[str, float]] = {}
     total_buy = 0.0
     total_sell = 0.0
+    seen_order_keys: set[tuple[str, str]] = set()
+    seen_intent_ids: set[str] = set()
     for it in intents or ():
         if not isinstance(it, dict):
             continue
-        raw_sym = it.get("symbol")
+        venue_k = str(it.get("venue") or "").strip().lower()
+        oid_k = clean_order_id(it.get("order_id"))
+        iid_k = clean_order_id(it.get("intent_id"))
+        if oid_k and (venue_k, oid_k) in seen_order_keys:
+            continue
+        if iid_k and iid_k in seen_intent_ids and it.get("owner") == "global_outbox":
+            continue
+        if oid_k:
+            seen_order_keys.add((venue_k, oid_k))
+        if iid_k:
+            seen_intent_ids.add(iid_k)
+        raw_sym = _canonical_symbol(it.get("symbol"))
         sym = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else "UNKNOWN"
         side = normalize_side(it.get("side"))
         req_qty = safe_nonneg_float(it.get("requested_qty"), default=0.0) or 0.0
@@ -506,6 +535,7 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
                         exposures.append(exp)
             except (OSError, ValueError, TypeError) as exc:
                 errors.append({"source": relative, "error": f"{type(exc).__name__}: {exc}"})
+    intents = _prune_and_deduplicate_active_intents(intents, root)
     intents.sort(key=lambda row: (
         row["owner"], row.get("symbol") or "", row["side"], row["intent_id"],
         row["source"], row["location"],
@@ -524,12 +554,35 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
     }
 
 
-def _load_cached_open_orders(root: str) -> list[dict[str, Any]]:
-    """Collect read-only resting open orders across all venue order caches and venue_balances_state."""
+def _load_cached_open_orders_and_covered_venues(root: str) -> tuple[list[dict[str, Any]], set[str]]:
+    """Collect read-only resting open orders and the set of venues with an on-disk open-order snapshot."""
     out: list[dict[str, Any]] = []
     seen_keys: set[tuple[str, str]] = set()
+    covered_venues: set[str] = set()
+
+    vb_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(VENUE_BALANCES_STATE_FILENAME))))
+    if os.path.isfile(vb_path):
+        vb_data = read_json_dict_recovering(vb_path)
+        if isinstance(vb_data, dict):
+            for k, v in vb_data.items():
+                if isinstance(k, str) and k.startswith("open_orders:") and isinstance(v, list):
+                    parts = k.split(":")
+                    raw_v = parts[1] if len(parts) > 1 else ""
+                    venue_k = normalize_venue_name(raw_v) or raw_v
+                    if venue_k:
+                        covered_venues.add(venue_k)
+                    for oo in v:
+                        if isinstance(oo, dict):
+                            oid = clean_order_id(extract_order_id(oo, default=None)) or ""
+                            key_t = (venue_k, oid)
+                            if not oid or key_t not in seen_keys:
+                                if oid:
+                                    seen_keys.add(key_t)
+                                out.append({"venue": venue_k, **oo})
 
     for venue_key, order_fname in CacheOrderManager.VENUE_FILENAMES.items():
+        if venue_key in covered_venues:
+            continue
         oc_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(order_fname))))
         if not os.path.isfile(oc_path):
             continue
@@ -537,6 +590,7 @@ def _load_cached_open_orders(root: str) -> list[dict[str, Any]]:
         items = oc_data.get("items") if isinstance(oc_data, dict) else None
         if not isinstance(items, dict):
             continue
+        covered_venues.add(venue_key)
         for k_sym, sym_orders in items.items():
             if isinstance(sym_orders, dict):
                 if extract_order_id(sym_orders, default=None) is not None:
@@ -547,35 +601,84 @@ def _load_cached_open_orders(root: str) -> list[dict[str, Any]]:
                 iterable = sym_orders
             else:
                 continue
+            latest_by_oid: dict[str, dict[str, Any]] = {}
             for oo in iterable:
                 if isinstance(oo, dict):
-                    oo_st = oo.get("status")
-                    if not (
-                        is_open_working_status(oo_st, allow_empty=True)
-                        or clean_upper_scalar(oo_st) == "PARTIALLY_FILLED"
-                    ):
-                        continue
                     oid = clean_order_id(extract_order_id(oo, default=None)) or ""
-                    if oid and (venue_key, oid) not in seen_keys:
-                        seen_keys.add((venue_key, oid))
-                        out.append({"venue": venue_key, "symbol": str(oo.get("symbol") or k_sym), **oo})
+                    if oid:
+                        latest_by_oid[oid] = oo
+            for oid, oo in latest_by_oid.items():
+                oo_st = oo.get("status")
+                if not (
+                    is_open_working_status(oo_st, allow_empty=True)
+                    or clean_upper_scalar(oo_st) == "PARTIALLY_FILLED"
+                ):
+                    continue
+                if (venue_key, oid) not in seen_keys:
+                    seen_keys.add((venue_key, oid))
+                    out.append({"venue": venue_key, "symbol": str(oo.get("symbol") or k_sym), **oo})
+    return out, covered_venues
 
-    vb_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(VENUE_BALANCES_STATE_FILENAME))))
-    if os.path.isfile(vb_path):
-        vb_data = read_json_dict_recovering(vb_path)
-        if isinstance(vb_data, dict):
-            for k, v in vb_data.items():
-                if isinstance(k, str) and k.startswith("open_orders:") and isinstance(v, list):
-                    venue_k = normalize_venue_name(k.split(":", 1)[1]) or k.split(":", 1)[1]
-                    for oo in v:
-                        if isinstance(oo, dict):
-                            oid = clean_order_id(extract_order_id(oo, default=None)) or ""
-                            key_t = (venue_k, oid)
-                            if not oid or key_t not in seen_keys:
-                                if oid:
-                                    seen_keys.add(key_t)
-                                out.append({"venue": venue_k, **oo})
-    return out
+
+def _load_cached_open_orders(root: str) -> list[dict[str, Any]]:
+    """Collect read-only resting open orders across all venue order caches and venue_balances_state."""
+    return _load_cached_open_orders_and_covered_venues(root)[0]
+
+
+def _prune_and_deduplicate_active_intents(intents: list[dict[str, Any]], root: str) -> list[dict[str, Any]]:
+    """Drop stale unconfirmed/closed historical AI intents and deduplicate global_outbox mirrors."""
+    if not intents:
+        return []
+    now_s = resolve_now_ts(None)
+    open_orders, covered_venues = _load_cached_open_orders_and_covered_venues(root)
+    live_open_oids: dict[str, set[str]] = {}
+    for oo in open_orders:
+        v_oo = str(oo.get("venue") or "").strip().lower()
+        if oid_oo := clean_order_id(extract_order_id(oo, default=None)):
+            live_open_oids.setdefault(v_oo, set()).add(oid_oo)
+
+    outbox_rows = [r for r in intents if r.get("owner") == "global_outbox"]
+    primary_rows = [r for r in intents if r.get("owner") != "global_outbox"]
+    outbox_iids = {r["intent_id"] for r in outbox_rows if r.get("intent_id")}
+    outbox_oids = {
+        (str(r.get("venue") or "").strip().lower(), oid_r)
+        for r in outbox_rows
+        if (oid_r := clean_order_id(r.get("order_id")))
+    }
+
+    kept_primary: list[dict[str, Any]] = []
+    for row in primary_rows:
+        created_ts_s = safe_pos_float(row.pop("_created_ts_s", None), default=None)
+        if row.get("owner") == "autonomous_ai" and created_ts_s is not None:
+            age_s = max(0.0, now_s - created_ts_s)
+            v_k = str(row.get("venue") or "").strip().lower()
+            oid_k = clean_order_id(row.get("order_id"))
+            v_open_set = live_open_oids.get(v_k, set())
+            st_lc = str(row.get("status") or "").strip().lower()
+            if st_lc in {"pending", "pending_execution", "submit_unknown"} and age_s > 3600.0:
+                if row["intent_id"] not in outbox_iids and (not oid_k or oid_k not in v_open_set):
+                    continue
+            elif age_s > 300.0 and oid_k and v_k in covered_venues:
+                if oid_k not in v_open_set and (v_k, oid_k) not in outbox_oids:
+                    continue
+        kept_primary.append(row)
+
+    primary_iids = {r["intent_id"] for r in kept_primary if r.get("intent_id")}
+    primary_oids = {
+        (str(r.get("venue") or "").strip().lower(), oid_p)
+        for r in kept_primary
+        if (oid_p := clean_order_id(r.get("order_id")))
+    }
+    kept_outbox = [
+        r
+        for r in outbox_rows
+        if r.get("intent_id") not in primary_iids
+        and not (
+            (oid_o := clean_order_id(r.get("order_id")))
+            and (str(r.get("venue") or "").strip().lower(), oid_o) in primary_oids
+        )
+    ]
+    return kept_primary + kept_outbox
 
 
 def trace_order_or_intent(

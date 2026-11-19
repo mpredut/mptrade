@@ -28,6 +28,7 @@ from orchestratorOS.agy.paths import (
 from orchestratorOS.agy.summary_store import (
     _clean_cid_set,
     checkpoint_db,
+    connect_sqlite_db,
     conversation_db,
     daemon_loaded_titles,
     delete_threads,
@@ -162,7 +163,7 @@ def mirror_topic_thread_to_ui(
             shutil.copy2(src_db, dst_db + ".tmp")
             drop_wal_sidecars(dst_db, force=True)
             durable_replace_file(dst_db + ".tmp", dst_db)
-            conn = sqlite3.connect(dst_db)
+            conn = connect_sqlite_db(dst_db)
             try:
                 conn.execute("UPDATE trajectory_meta SET source = ?", (UI_TRAJECTORY_SOURCE,))
                 conn.commit()
@@ -187,7 +188,7 @@ def mirror_topic_thread_to_ui(
             clean_title = (title or "").strip()
             if clean_title:
                 try:
-                    sconn = sqlite3.connect(summaries_db(dst_base))
+                    sconn = connect_sqlite_db(summaries_db(dst_base))
                     try:
                         dup_cids = {
                             r[0].strip()
@@ -221,7 +222,7 @@ def mirror_topic_thread_to_ui(
                             if os.path.exists(ghost_db):
                                 checkpoint_db(ghost_db)
                             shutil.copy2(dst_db, tmp_db)
-                            gconn = sqlite3.connect(tmp_db)
+                            gconn = connect_sqlite_db(tmp_db)
                             try:
                                 for tbl, cols, col_sql in iter_sqlite_user_table_columns(gconn):
                                     rows = gconn.execute(f"SELECT rowid, {col_sql} FROM `{tbl}`").fetchall()

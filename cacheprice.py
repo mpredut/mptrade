@@ -1423,6 +1423,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._update_timestamps: dict = defaultdict(deque)
         self._rth_empty_backoff_ts: dict = {}
         self._empty_http_backoff_ts: dict[str, float] = {}
+        self._empty_http_streaks: dict[str, int] = {}
         self._last_http_poll_ts_per_symbol: dict[str, float] = {}
         self._fallback_pool_lock = threading.Lock()
         self._fallback_pool: Optional[_futures.ThreadPoolExecutor] = None
@@ -1575,6 +1576,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         cutoff = now - self.FREQ_WINDOW_SEC
         with self.lock:
             self._empty_http_backoff_ts.pop(symbol, None)
+            self._empty_http_streaks.pop(symbol, None)
             dq = self._update_timestamps[symbol]
             dq.append(now)
             while dq and dq[0] < cutoff:
@@ -1718,15 +1720,30 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         if not isinstance(backoff_map, dict):
             return False
         last_empty = backoff_map.get(symbol, 0.0)
-        return last_empty > 0.0 and 0.0 <= (now_s - last_empty) < self.ws_timeout_sec_for(symbol)
+        if last_empty <= 0.0:
+            return False
+        streaks = getattr(self, "_empty_http_streaks", None)
+        streak = streaks.get(symbol, 1) if isinstance(streaks, dict) else 1
+        base_ttl = self.ws_timeout_sec_for(symbol)
+        ttl_s = (
+            min(300.0, base_ttl * (2.0 ** min(streak - 1, 5)))
+            if streak >= 2 and self._cached_entry_ts_ms(symbol) is None
+            else base_ttl
+        )
+        return 0.0 <= (now_s - last_empty) < ttl_s
 
     def _record_empty_http_result(self, symbol: str, *, ok: bool) -> None:
         backoff_map = getattr(self, "_empty_http_backoff_ts", None)
+        streaks = getattr(self, "_empty_http_streaks", None)
         if isinstance(backoff_map, dict):
             if ok:
                 backoff_map.pop(symbol, None)
+                if isinstance(streaks, dict):
+                    streaks.pop(symbol, None)
             else:
                 backoff_map[symbol] = _now_time()
+                if isinstance(streaks, dict):
+                    streaks[symbol] = streaks.get(symbol, 0) + 1
 
     def _cached_entry_ts_ms(self, symbol: str) -> Optional[int]:
         sym_u, sym_clean = _norm_symbol_keys(symbol)
@@ -2066,7 +2083,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             if live_net and self._is_empty_http_backed_off(target_sym, now_ms / 1000.0):
                 return None
             age = age_ms if age_ms is not None else -1
-            print(f"[{self.cls_name}] {target_sym} stale ({age}ms) - forced HTTP fetch")
+            streaks = getattr(self, "_empty_http_streaks", None)
+            if age_ms is not None or not (isinstance(streaks, dict) and streaks.get(target_sym, 0) >= 1):
+                print(f"[{self.cls_name}] {target_sym} stale ({age}ms) - forced HTTP fetch")
             new = self.get_remote_items(target_sym, None)
             if not new or self.extract_price_and_ts(new)[0] is None:
                 if live_net:

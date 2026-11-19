@@ -895,3 +895,141 @@ def test_evaluate_tradable_position_prompt_view_parity():
     assert pv["older_core_qty"] == 0.01
     assert _format_tradable_position_line(pv, max_usd=2000.0) == _format_tradable_position_line(raw_pos, max_usd=2000.0)
 
+
+def test_post_phase4_bugfixes_intent_dedup_symbol_case_sqlite_stderr_and_replay(tmp_path, monkeypatch):
+    """Verify log-audit bugfixes: tokenized intent symbol case, zombie/mirror dedup, SQLite busy_timeout, stderr line buffering, and shared replay primitives."""
+    import sqlite3
+    import time as _time
+    import log as _log_mod
+    from active_intents import build_active_intent_index
+    from orchestratorOS.agy.summary_store import connect_sqlite_db, read_summary_row
+    from providers.intent_reconciliation import reconcile_intents_from_execution_audit
+    from providers.intent_state import _clean_intent_symbol
+    from state_io import atomic_write_json
+    from strategies.replay_execution import (
+        ExecutionModel,
+        clamp_sell_fill_to_held,
+        iter_eligible_orders_in_side_order,
+        resolve_order_fill_price,
+    )
+
+    # 1. _clean_intent_symbol preserves canonical mixed-case xStock storage keys & reconciler heals SPCXXUSD
+    assert _clean_intent_symbol("SPCXXUSD") == "SPCXxUSD"
+    assert _clean_intent_symbol("spcxxusd") == "SPCXxUSD"
+    assert _clean_intent_symbol("ANTXUSD") == "ANTxUSD"
+    assert _clean_intent_symbol("btcusdc") == "BTCUSDC"
+    intents_doc = [{"intent_id": "i-tok", "symbol": "SPCXXUSD", "status": "IGNORED_HOLD"}]
+    assert reconcile_intents_from_execution_audit(intents_doc, str(tmp_path / "missing_audit")) is True
+    assert intents_doc[0]["symbol"] == "SPCXxUSD"
+
+    # 2. active_intents prunes zombie SUBMIT_UNKNOWN / closed historical EXECUTED intents, parses 3-segment open_orders:kraken:SPCXxUSD, and deduplicates global_outbox mirrors
+    now_s = _time.time()
+    state_dir = tmp_path / "cachedb" / "state"
+    orders_dir = tmp_path / "cachedb" / "orders"
+    state_dir.mkdir(parents=True)
+    orders_dir.mkdir(parents=True)
+    atomic_write_json(
+        str(state_dir / "venue_balances_state.json"),
+        {
+            "open_orders:kraken:SPCXxUSD": [
+                {"orderId": "OMGUV7-LIVE", "symbol": "SPCXxUSD", "side": "SELL", "status": "NEW", "price": 140.88, "origQty": 5.0}
+            ]
+        },
+    )
+    atomic_write_json(
+        str(state_dir / "autonomous_trade_intents_state.json"),
+        [
+            {
+                "intent_id": "intent_live_spcx",
+                "venue": "kraken",
+                "symbol": "SPCXXUSD",
+                "side": "SELL",
+                "order_type": "LIMIT",
+                "requested_qty": 5.0,
+                "requested_price": 140.88,
+                "timestamp": now_s - 600.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "OMGUV7-LIVE", "status": "NEW"},
+            },
+            {
+                "intent_id": "intent_zombie_closed",
+                "venue": "kraken",
+                "symbol": "HYPEUSD",
+                "side": "BUY",
+                "order_type": "LIMIT",
+                "requested_qty": 10.0,
+                "requested_price": 80.0,
+                "timestamp": now_s - 86400.0 * 10,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "OLD-CLOSED-OID", "status": "NEW"},
+            },
+            {
+                "intent_id": "intent_zombie_unknown",
+                "venue": "kraken",
+                "symbol": "HYPEUSD",
+                "side": "BUY",
+                "requested_qty": 8.0,
+                "requested_price": 82.0,
+                "timestamp": now_s - 86400.0 * 5,
+                "status": "SUBMIT_UNKNOWN",
+            },
+        ],
+    )
+    (orders_dir / "order_retry_queue.jsonl").write_text(
+        json.dumps(
+            {
+                "intent_id": "intent_live_spcx",
+                "provider_name": "kraken",
+                "symbol": "SPCXxUSD",
+                "side": "SELL",
+                "qty": 5.0,
+                "requested_price": 140.88,
+                "order_id": "OMGUV7-LIVE",
+                "lifecycle": "accepted",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    idx = build_active_intent_index(str(tmp_path))
+    assert len(idx["intents"]) == 1
+    assert idx["intents"][0]["intent_id"] == "intent_live_spcx"
+    assert idx["intents"][0]["symbol"] == "SPCXxUSD"
+    assert idx["summary"]["pending_notional"]["total_sell"] == pytest.approx(704.40)
+
+    # 3. connect_sqlite_db sets busy_timeout and read_summary_row handles sqlite3.Error gracefully
+    db_file = tmp_path / "conversation_summaries.db"
+    conn = connect_sqlite_db(str(db_file), timeout=7.5)
+    try:
+        bt = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert bt == 7500
+    finally:
+        conn.close()
+    assert read_summary_row(str(tmp_path), "missing-cid") is None
+    monkeypatch.setattr(
+        "orchestratorOS.agy.summary_store.connect_sqlite_db",
+        lambda *_a, **_kw: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
+    )
+    assert read_summary_row(str(tmp_path), "locked-cid") is None
+
+    # 4. log._patched_stderr_write buffers partial caret chunks until newline
+    logged_lines: list[str] = []
+    monkeypatch.setattr(_log_mod, "_original_stderr_write", lambda s: len(s))
+    monkeypatch.setattr(_log_mod._file_logger, "info", lambda msg: logged_lines.append(msg))
+    _log_mod._stderr_line_buf.buf = ""
+    for ch in ("    ", "^", "^", "^", "\n"):
+        _log_mod._patched_stderr_write(ch)
+    assert len(logged_lines) == 1
+    assert logged_lines[0].endswith("[STDERR]     ^^^")
+
+    # 5. Shared replay_execution intrabar helpers
+    em = ExecutionModel(spread_bps=0.0, market_slippage_bps=10.0, intrabar_policy="sell_first")
+    assert clamp_sell_fill_to_held(5.0, 4.9999999999995, False) == (4.9999999999995, True)
+    assert clamp_sell_fill_to_held(1e-15, 0.0, False) == (0.0, True)
+    b_ord = {"side": "BUY", "price": 99.0}
+    s_ord = {"side": "SELL", "price": 105.0}
+    dispatched = list(iter_eligible_orders_in_side_order([b_ord, s_ord], [b_ord, s_ord], em.side_order()))
+    assert dispatched == [("sell", s_ord), ("buy", b_ord)]
+    assert resolve_order_fill_price(s_ord, "sell", 100.0, em, limit_key="price") == (False, 105.0)
+
+

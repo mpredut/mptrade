@@ -40,8 +40,10 @@ from strategies.replay_execution import (
     ExecutionModel,
     build_warmup_shadow_prices,
     choose_intrabar_scenario,
+    iter_eligible_orders_in_side_order,
     normalize_replay_timestamps,
     require_optional_pos_float,
+    resolve_order_fill_price,
     select_eligible_intrabar_orders,
     split_order_fill,
     unpack_ohlc_bar,
@@ -280,6 +282,88 @@ def _run_once(
             fills += 1
             turnover_account += sell_notional_account
 
+        def _cap_t212_buy_order_to_cash(order: dict, cand_price: float, rate: float, *, market: bool) -> bool:
+            nonlocal cash_refusals
+            if cash is None:
+                return True
+            rem_qty = require_pos_float(order["qty"], "order_qty")
+            orig_qty = safe_pos_float(order.get("_replay_original_qty"), default=None) or rem_qty
+            cand_qty = rem_qty if market else min(rem_qty, orig_qty * execution.partial_fill_ratio)
+            fee_mult = 1.0 + params.fx_fee_pct / 100.0
+            cand_cost = (cand_qty * cand_price / rate) * fee_mult
+            if cand_cost <= cash + 1e-9:
+                return True
+            unit_cost = (cand_price / rate) * fee_mult
+            max_qty = round((cash / unit_cost) - 0.004999, 2) if unit_cost > 0 else 0.0
+            if max_qty < 0.01:
+                engine._remove(order)
+                cash_refusals += 1
+                return False
+            order["qty"] = min(rem_qty, max_qty)
+            order["_replay_original_qty"] = order["qty"]
+            return True
+
+        def _settle_t212_intrabar_orders(open_: float, high: float, low: float, close: float, rate: float) -> None:
+            nonlocal ambiguous_bars, open_cost_account, open_buy_fee_account, cash, min_cash, fills, turnover_account
+            orders = engine.s["orders"]
+            if not orders:
+                return
+            eligible_orders, is_ambiguous = select_eligible_intrabar_orders(
+                orders, execution, high=high, low=low, limit_key="limit",
+            )
+            if eligible_orders:
+                ambiguous_bars += 1 if is_ambiguous else 0
+                for side, order in iter_eligible_orders_in_side_order(
+                    eligible_orders, engine.s["orders"], side_order
+                ):
+                    market, cand_price = resolve_order_fill_price(
+                        order, side, open_, execution, limit_key="limit"
+                    )
+                    if side == "buy" and not _cap_t212_buy_order_to_cash(order, cand_price, rate, market=market):
+                        continue
+                    fill_order, quantity, complete = split_order_fill(
+                        order,
+                        quantity_key="qty",
+                        amount_key="amount" if side == "buy" else None,
+                        ratio=execution.partial_fill_ratio,
+                        force_full=market,
+                    )
+                    if complete:
+                        engine._remove(order)
+                    price = cand_price
+                    if side == "buy":
+                        buy_notional_account = quantity * price / rate
+                        buy_fee_account = (params.fx_fee_pct / 100.0) * buy_notional_account
+                        fill_order["amount"] = buy_notional_account
+                        open_cost_account += buy_notional_account
+                        open_buy_fee_account += buy_fee_account
+                        if cash is not None:
+                            cash = max(0.0, cash - (buy_notional_account + buy_fee_account))
+                            min_cash = min(min_cash, cash)
+                        engine._apply_fill(fill_order, quantity, price)
+                        fills += 1
+                        turnover_account += buy_notional_account
+                    else:
+                        held_before = engine.s["qty"]
+                        quantity = min(quantity, held_before)
+                        if quantity <= 1e-12:
+                            engine._remove(order)
+                        else:
+                            _execute_sell_fill(
+                                order,
+                                fill_order,
+                                quantity,
+                                price,
+                                rate,
+                                held_before=held_before,
+                                mark_tp_level=complete,
+                                remove_before_apply=False,
+                            )
+            if engine.s["orders"]:
+                for order in list(engine.s["orders"]):
+                    if engine._buy_is_stale(order, close):
+                        engine._remove(order)
+
         for bar_index, row in enumerate(ohlc):
             open_, high, low, close = unpack_ohlc_bar(row)
             rate = fx_rates[bar_index]
@@ -289,82 +373,7 @@ def _run_once(
                 else bar_index * bar_minutes * 60.0 if bar_minutes
                 else bar_index * 1.0
             )
-
-            orders = engine.s["orders"]
-            if orders:
-                eligible_orders, is_ambiguous = select_eligible_intrabar_orders(
-                    orders, execution, high=high, low=low, limit_key="limit",
-                )
-                if eligible_orders:
-                    ambiguous_bars += 1 if is_ambiguous else 0
-                    for side in side_order:
-                        for order in eligible_orders:
-                            if order not in engine.s["orders"] or order["side"].lower() != side:
-                                continue
-                            market = is_market_order(order)
-                            cand_price = (
-                                execution.market_price(side, open_)
-                                if market
-                                else require_pos_float(order["limit"], "order_limit")
-                            )
-                            if side == "buy" and cash is not None:
-                                rem_qty = require_pos_float(order["qty"], "order_qty")
-                                orig_qty = safe_pos_float(order.get("_replay_original_qty"), default=None) or rem_qty
-                                cand_qty = rem_qty if market else min(rem_qty, orig_qty * execution.partial_fill_ratio)
-                                fee_mult = 1.0 + params.fx_fee_pct / 100.0
-                                cand_cost = (cand_qty * cand_price / rate) * fee_mult
-                                if cand_cost > cash + 1e-9:
-                                    unit_cost = (cand_price / rate) * fee_mult
-                                    max_qty = round((cash / unit_cost) - 0.004999, 2) if unit_cost > 0 else 0.0
-                                    if max_qty < 0.01:
-                                        engine._remove(order)
-                                        cash_refusals += 1
-                                        continue
-                                    order["qty"] = min(rem_qty, max_qty)
-                                    order["_replay_original_qty"] = order["qty"]
-                            fill_order, quantity, complete = split_order_fill(
-                                order,
-                                quantity_key="qty",
-                                amount_key="amount" if side == "buy" else None,
-                                ratio=execution.partial_fill_ratio,
-                                force_full=market,
-                            )
-                            if complete:
-                                engine._remove(order)
-                            price = cand_price
-                            if side == "buy":
-                                buy_notional_account = quantity * price / rate
-                                buy_fee_account = (params.fx_fee_pct / 100.0) * buy_notional_account
-                                fill_order["amount"] = buy_notional_account
-                                open_cost_account += buy_notional_account
-                                open_buy_fee_account += buy_fee_account
-                                if cash is not None:
-                                    cash = max(0.0, cash - (buy_notional_account + buy_fee_account))
-                                    min_cash = min(min_cash, cash)
-                                engine._apply_fill(fill_order, quantity, price)
-                                fills += 1
-                                turnover_account += buy_notional_account
-                            else:
-                                held_before = engine.s["qty"]
-                                quantity = min(quantity, held_before)
-                                if quantity <= 1e-12:
-                                    engine._remove(order)
-                                else:
-                                    _execute_sell_fill(
-                                        order,
-                                        fill_order,
-                                        quantity,
-                                        price,
-                                        rate,
-                                        held_before=held_before,
-                                        mark_tp_level=complete,
-                                        remove_before_apply=False,
-                                    )
-
-                if engine.s["orders"]:
-                    for order in list(engine.s["orders"]):
-                        if engine._buy_is_stale(order, close):
-                            engine._remove(order)
+            _settle_t212_intrabar_orders(open_, high, low, close, rate)
             trend_closes.append(close)
             engine.step(close)
 

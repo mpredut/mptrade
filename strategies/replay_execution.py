@@ -165,6 +165,52 @@ def select_eligible_intrabar_orders(
     return eligible, ambiguous
 
 
+def iter_eligible_orders_in_side_order(
+    eligible_orders: list[dict],
+    active_orders: list[dict],
+    side_order: tuple[str, str],
+):
+    """Yield ``(side, order)`` in ``side_order`` sequence for orders still resting in ``active_orders``."""
+    for side in side_order:
+        for order in eligible_orders:
+            if order in active_orders and normalize_side(order.get("side")).lower() == side:
+                yield side, order
+
+
+def resolve_order_fill_price(
+    order: dict,
+    side: str,
+    open_price: float,
+    execution: ExecutionModel,
+    *,
+    limit_key: str = "price",
+) -> tuple[bool, float]:
+    """Return ``(is_market, fill_price)`` for an intrabar eligible order."""
+    market = is_market_order(order)
+    price = (
+        execution.market_price(side, open_price)
+        if market
+        else require_pos_float(order.get(limit_key), f"order_{limit_key}")
+    )
+    return market, price
+
+
+def clamp_sell_fill_to_held(
+    volume: float,
+    held_qty: float,
+    complete: bool,
+    *,
+    eps: float = 1e-12,
+) -> tuple[float, bool]:
+    """Clamp a sell/close fill tranche to ``held_qty``; returns ``(0.0, True)`` when dust/empty."""
+    if volume >= held_qty - eps:
+        volume = held_qty
+        complete = True
+    if volume <= eps:
+        return 0.0, True
+    return volume, complete
+
+
 def split_order_fill(
     order: dict,
     *,
@@ -312,9 +358,12 @@ __all__ = [
     "FeeModel",
     "build_warmup_shadow_prices",
     "choose_intrabar_scenario",
+    "clamp_sell_fill_to_held",
     "is_market_order",
+    "iter_eligible_orders_in_side_order",
     "normalize_replay_timestamps",
     "require_optional_pos_float",
+    "resolve_order_fill_price",
     "select_eligible_intrabar_orders",
     "split_order_fill",
     "unpack_ohlc_bar",

@@ -38,6 +38,7 @@ from cachepaths import (
     same_canonical_base_asset,
     symbol_quote_asset,
 )
+from instrument_registry import resolve_symbol_identity
 from state_io import generation_lock_path, load_json_state, save_json_state
 from .order_id_context import (
     all_venue_native_client_order_ids,
@@ -64,7 +65,10 @@ _INTENTS_LOCK_LOCAL = threading.local()
 def _clean_intent_symbol(raw_sym: Any) -> str:
     if raw_sym is None or isinstance(raw_sym, (bool, dict, list, tuple, set, frozenset)):
         return ""
-    return clean_upper_scalar(str(raw_sym)) or ""
+    s = clean_scalar_str(str(raw_sym))
+    if s is None:
+        return ""
+    return resolve_symbol_identity(s).storage_key or s.upper()
 
 
 def _extract_intent_id(record: Any, default: str = "") -> str:

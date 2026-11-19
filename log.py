@@ -47,6 +47,8 @@ _CALLER_PREFIXES += tuple(prefix.lower() for prefix in _CALLER_PREFIXES)
 
 _original_print        = builtins.print
 _original_stderr_write = sys.stderr.write
+_original_stderr_flush = sys.stderr.flush
+_stderr_line_buf       = threading.local()
 
 _FILENAME_CACHE_MAX = 512
 _filename_cache: dict[str, tuple[str, str]] = {}
@@ -360,21 +362,50 @@ def enable_print() -> None:
     builtins.print = _patched_print
 
 
+def _emit_stderr_line(raw_line: str) -> None:
+    if not raw_line.strip():
+        return
+    if _bump_counter():
+        _cleanup_event.set()
+    clean = (_ANSI_RE.sub("", raw_line) if "\x1b" in raw_line else raw_line).rstrip("\r\n")
+    if clean.strip():
+        _file_logger.info(f"{_get_caller_info()} [STDERR] {clean}")
+
+
 def _patched_stderr_write(message: str) -> int:
-    """Mirror stderr writes to the log file, stripping ANSI codes."""
+    """Mirror stderr writes to the log file line-by-line, stripping ANSI codes."""
     if not isinstance(message, str):
         message = str(message)
     written = _original_stderr_write(message)
     ret = written if isinstance(written, int) else len(message)
-    if not message.strip():
+    if not message:
         return ret
-    if _bump_counter():
-        _cleanup_event.set()
-    clean = (_ANSI_RE.sub("", message) if "\x1b" in message else message).rstrip("\n")
-    if not clean.strip():
-        return ret
-    _file_logger.info(f"{_get_caller_info()} [STDERR] {clean}")
+    buf = getattr(_stderr_line_buf, "buf", "") + message
+    if "\n" in buf:
+        *lines, rem = buf.split("\n")
+        _stderr_line_buf.buf = rem
+        for ln in lines:
+            _emit_stderr_line(ln)
+    elif len(buf) > 4096:
+        _stderr_line_buf.buf = ""
+        _emit_stderr_line(buf)
+    else:
+        _stderr_line_buf.buf = buf
     return ret
+
+
+def _patched_stderr_flush() -> None:
+    rem = getattr(_stderr_line_buf, "buf", "")
+    if rem:
+        _stderr_line_buf.buf = ""
+        _emit_stderr_line(rem)
+    try:
+        _original_stderr_flush()
+    except ValueError:
+        pass
+
+
+atexit.register(_patched_stderr_flush)
 
 
 # -- One-time patch (double-import safe) ---------------------------------------
@@ -385,5 +416,6 @@ with _patch_lock:
     if not getattr(builtins, "_logger_patched", False):
         builtins.print            = _patched_print              # type: ignore[attr-defined]
         sys.stderr.write          = _patched_stderr_write       # type: ignore[method-assign]
+        sys.stderr.flush          = _patched_stderr_flush       # type: ignore[method-assign]
         sys.stderr.writelines     = lambda lines: [_patched_stderr_write(line) for line in lines]  # type: ignore[method-assign]
         builtins._logger_patched  = True                        # type: ignore[attr-defined]

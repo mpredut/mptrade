@@ -617,7 +617,7 @@ def compute_recommended_llm_config_updates(
     """Compute minimal config.env LLM_* updates strictly when configured models vanish from ``agy models``.
 
     Never silently migrates away from a valid configured model family merely because a new family
-    (e.g. a weaker lightweight or slower flagship tier) appeared in the catalog — new families stay
+    (e.g. a weaker lightweight or slower flagship tier) appeared in the catalog -- new families stay
     notify-only advisories. When a configured model is retired, preserves each key's chosen effort tier
     (-low/-medium/-high/-xhigh), updates configured ``LLM_TOPIC_MODEL_*`` overrides, and preserves
     the user's fallback slot composition without re-injecting removed ``-low`` or Flash models.
