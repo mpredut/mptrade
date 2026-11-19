@@ -168,15 +168,15 @@ def build_supervisor_prompt(
             "symmetrically on both BUY and SELL as binding constraints. Deterministic bots (`tradeall.py`, `monitortrades.py`, `assetguardian.py`, "
             "`rtrade.py`, `kraken/bot.py`, `hyperliquid/bot.py`, `212trading/bot.py`) and rigid code filters/configs "
             "(`order_guard.py`, `order_guard.conf`, `instruments.conf`, `intelligence/`) continue working in parallel in the "
-            "system and can be consulted by you on demand as advisory indicators and reference guidance—you have full quantitative authority "
+            "system and can be consulted by you on demand as advisory indicators and reference guidance\u2014you have full quantitative authority "
             "to validate, adapt, or override them according to live market structure, with ZERO obligation to consult or follow them.\n"
             "   - SUPERVISORY AUTHORITY TO AUDIT & REPAIR / REVERSE UNWANTED BOT OR FLEET TRADES (`by=BOT` vs `by=AI`): "
             "Section 3C explicitly tags every recent fill (`Last Action`, `Last BUY`, `Last SELL`) and every resting order in "
             "`open_limit_orders` with `by=BOT` / `\"actor\": \"BOT\"` (executed by deterministic fleet bots) vs `by=AI` / `\"actor\": \"AI\"` "
             "(executed by you). Actively audit any interim `by=BOT` transaction or resting order executed between your cycles, exercising "
             "independent quantitative judgment: know on your own NOT to impulsively sell or reverse a newly filled `by=BOT` trade in the "
-            "first few minutes (`age < 15–30m`) at the same price just to burn round-trip venue fees when the entry is at reasonable support "
-            "or normal noise—instead, proactively cancel unwanted unfilled bot resting orders (`\"cancel_bot_open_orders\": true`) BEFORE they "
+            "first few minutes (`age < 15\u201330m`) at the same price just to burn round-trip venue fees when the entry is at reasonable support "
+            "or normal noise\u2014instead, proactively cancel unwanted unfilled bot resting orders (`\"cancel_bot_open_orders\": true`) BEFORE they "
             "fill, and only reverse an already-filled `by=BOT` trade when genuine multi-horizon/microstructure breakdown or thesis invalidation "
             "outweighs the round-trip fee cost. When a bot or fleet process made a trade that truly requires repair or reversal, always execute "
             "using spot `LIMIT` orders (`\"order_type\": \"LIMIT\"`) priced as close as possible to the current live market price (`price` / BBO) "
@@ -197,18 +197,18 @@ def build_supervisor_prompt(
             "order(s) are canceled (without `cancel_order_ids`, `cancel_bot_open_orders: true` only cancels same-side open orders and never "
             "cancels opposite-side protective SELL/BUY orders; if venue cancellation fails, replacement is aborted).\n"
             "   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: No rigid trading rules, fixed percentage thresholds, "
-            "or directional biases are imposed on you—judge 100% freely on your own WHEN, WHAT, HOW MUCH, on WHICH platform "
+            "or directional biases are imposed on you\u2014judge 100% freely on your own WHEN, WHAT, HOW MUCH, on WHICH platform "
             "(`binance`, `kraken`, `hyperliquid`, `t212`), and WHY to `BUY`, `SELL`, or `HOLD`. Historical cost basis (`avg_buy_px`, "
             "`lifo_rem_avg_px`, `open_lifo_lots`) is informational accounting, NEVER a directional constraint on either `SELL` or `BUY`: "
             "when a position or its recent LIFO tranche (`open_lifo_lots`) is in profit (e.g. above `last_buy_px` / `tactical_avg_px` / "
             "`active_avg_buy_px` or after a strong upward swing), you are completely free to harvest the profitable tranche or sell a large "
-            "quantity / the entire position (`50%–100%` of `value_usd`, up to "
+            "quantity / the entire position (`50%\u2013100%` of `value_usd`, up to "
             f"{max_usd:g} USD) at once without being anchored by older cycle averages; symmetrically, if live price velocity and acceleration "
             "(`kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)`), derivatives/spot order flow (`cvd_5m`, `cvd_15m`, `spot_cvd_15m` -- note: "
             "`[real_spot]` is observed spot taker flow whereas `[est:ob+15m]` is an orderbook+15m-delta proxy and must not be double-counted as independent spot tape volume alongside `ob_imbalance`, "
             "`CB_Premium`), or market structure convince you that a deeper breakdown is unfolding, you are equally free to proactively trim "
             "or exit spot holdings via a near-market spot `LIMIT` order (`\"order_type\": \"LIMIT\"` priced right at spot/BBO, even at breakeven or below cost basis) to protect NAV and raise quote liquidity to "
-            "reload lower—or to hold through noise when data shows genuine absorption.\n"
+            "reload lower\u2014or to hold through noise when data shows genuine absorption.\n"
             "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN) & SYMMETRIC KINEMATIC / BREAKDOWN EVALUATION (`bottom_6h`, `kinematics`): Elevated "
             "macro/geopolitical risk scores, extreme fear, or compressed breadth (`advance_ratio < 0.20`) signal "
             "high-volatility conditions that can produce either high-EV mean-reversion capitulation wicks OR multi-leg structural breakdowns. "
@@ -219,7 +219,7 @@ def build_supervisor_prompt(
             "absorption confirm a sweep reclaim or higher low with dry powder available, you may scale in via a spot `BUY LIMIT` order; "
             "conversely, when downward velocity and negative acceleration (`vel < 0`, `acc < 0`) align with unabsorbed spot/perp selling "
             "through key levels, you may proactively de-risk (`SELL LIMIT` right at spot/BBO) or stand aside until deceleration confirms.\n"
-            "   - DUAL EXECUTION MODE — IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK (`open_limit_orders` & `last_cycle_execution_status`): "
+            "   - DUAL EXECUTION MODE \u2014 IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK (`open_limit_orders` & `last_cycle_execution_status`): "
             "Always place spot `LIMIT` orders (`\"order_type\": \"LIMIT\"`, `\"limit_price\": <float>`, `\"replace_open_orders\": true`) in the exchange "
             "orderbook so every execution pays low maker fees instead of expensive taker `MARKET` fees: for normal range/swing tranches, rest a passive `BUY LIMIT` at a major `bid_wall` / support level below spot "
             "or a passive `SELL LIMIT` at an `ask_wall` / take-profit target above spot; when executing a reversal, repair, or urgent entry/exit that must fill immediately, "
@@ -230,13 +230,13 @@ def build_supervisor_prompt(
             "(optionally narrowed to specific `\"cancel_order_ids\": [\"<order_id>\"]` from `open_limit_orders`) "
             "cancels only the targeted (or prior unfilled same-side AI) open order before placing the updated order, and aborts replacement if cancellation fails; "
             "returning `'HOLD'` leaves existing resting open orders untouched in the book. "
-            "ACTIVE ORDERBOOK & RESTING LIMIT ORDER MANAGEMENT (`replace_open_orders: true`): Actively audit every resting order in `open_limit_orders` each cycle—if "
+            "ACTIVE ORDERBOOK & RESTING LIMIT ORDER MANAGEMENT (`replace_open_orders: true`): Actively audit every resting order in `open_limit_orders` each cycle\u2014if "
             "a resting `SELL LIMIT` or `BUY LIMIT` is stale/far from spot (`fill_prob_1h_pct <= 5.0%` or `abs(dist_from_spot_pct) > 4.0%`) while the market is ranging "
             "or a profitable LIFO tranche (`profitable_lifo_usd`) can already be harvested near current resistance (`ask_wall` / `LVN` / `VAH` / `POC`), OR if your order "
             "is trapped behind a large `ask_wall_ahead_px` / `bid_wall_ahead_px` (`recommended_front_run_px`), proactively re-anchor it by submitting an updated `LIMIT` "
             "order with `\"replace_open_orders\": true` (e.g. front-running the wall at `recommended_front_run_px`, tightening a far-OTM target, or setting `\"limit_price\"` right at spot/BBO when an immediate reversal/exit is required).\n"
             "   - VOLUME PROFILE (`vol_profile` IN SECTION 3A), LIQUIDATION CLUSTERS (`liq_clusters` IN SECTION 3B) & VENUE FEE/LIMITS "
-            "(`venue_fee_per_leg`, `maker`/`taker`, `spread`, `limits` IN SECTION 3C): Reason directly from the raw quantitative numbers without relying on pre-baked labels—use Session Volume Profile "
+            "(`venue_fee_per_leg`, `maker`/`taker`, `spread`, `limits` IN SECTION 3C): Reason directly from the raw quantitative numbers without relying on pre-baked labels\u2014use Session Volume Profile "
             "(`POC`, `sec_POC`, `LVN`, 70% Value Area `[VAL, VAH]`, `%` distances, `va_pos`, and `vp_source`: `REAL_VOL` from 24h OHLC traded volume vs `TPO` motion-weighted time-at-price fallback) "
             "to distinguish genuine breakouts/breakdowns from value-area retests or mean-reversion rotations toward `POC`/`VAL`/`VAH`; "
             "evaluate symmetric `LONG` (`long_liq`/`deep_long`) and `SHORT` (`short_liq`/`deep_short`) liquidation bands (`src=model_est`: heuristic OI/volatility model estimates, not live exchange liquidation books, and omitted on unleveraged spot equities/xStocks; note `book_window=+/-X%[level_cap]` when REST orderbook depth is capped below `1%` around mid) "
@@ -276,11 +276,11 @@ def build_supervisor_prompt(
             "Do NOT edit or modify workspace files directly with tools; propose all fixes exclusively in `code_remediation`.\n",
             "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
             "  1) A concise, well-structured Markdown report in **Romanian** strictly covering technical & SRE health "
-            "with the cycle timestamp in the main header (e.g. `### 🛠️ Raport Audit Sistem [HH:MM:SS EET]`) "
-            "(bullet points for: Starea Flotei, Boților, Sistemului Linux & VPN (wgpia0) & Loguri, "
-            "Conectivitate Internet & Audit Configurații, Erori Persistente Nerezolvate, și "
-            "Acțiuni de Remediere Cod/Config & Reboot Boți/Module/Flotă/Sistem). "
-            "NU analiza și NU menționa prețuri de piață, pante, portofoliu, solduri sau poziții active!\n",
+            "with the cycle timestamp in the main header (e.g. `### \U0001f6e0\ufe0f Raport Audit Sistem [HH:MM:SS EET]`) "
+            "(bullet points for: Starea Flotei, Bo\u021bilor, Sistemului Linux & VPN (wgpia0) & Loguri, "
+            "Conectivitate Internet & Audit Configura\u021bii, Erori Persistente Nerezolvate, \u0219i "
+            "Ac\u021biuni de Remediere Cod/Config & Reboot Bo\u021bi/Module/Flot\u0103/Sistem). "
+            "NU analiza \u0219i NU men\u021biona pre\u021buri de pia\u021b\u0103, pante, portofoliu, solduri sau pozi\u021bii active!\n",
         )
         if spec.can_self_heal
         else (
@@ -299,8 +299,8 @@ def build_supervisor_prompt(
             "- Keep this thread focused on market analysis, portfolio management, and autonomous BUY/SELL execution across venues.\n",
             "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
             "  1) A concise, well-structured Markdown report in **Romanian** with the cycle timestamp in the main header "
-            "(e.g. `### ⏱️ Raport Execuție [HH:MM:SS EET]`), bullet points for: "
-            "Piața Live & Pante (Toate Monedele), Portofoliu, Solduri & Poziții Active, și Decizia AI de Tranzacționare / Răspuns la intervențiile din chat).\n",
+            "(e.g. `### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`), bullet points for: "
+            "Pia\u021ba Live & Pante (Toate Monedele), Portofoliu, Solduri & Pozi\u021bii Active, \u0219i Decizia AI de Tranzac\u021bionare / R\u0103spuns la interven\u021biile din chat).\n",
         )
     )
 

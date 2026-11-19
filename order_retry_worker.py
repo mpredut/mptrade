@@ -1,6 +1,6 @@
 from __future__ import annotations
 #!/usr/bin/env python3
-"""order_retry_worker.py — the SINGLE READER of the order_retry.py replacement outbox.
+"""order_retry_worker.py -- the SINGLE READER of the order_retry.py replacement outbox.
 
 Model B uses multiple writers (Instrument.place -> durable pre-submit outbox) and
 ONE reader: this process. It scans the queue and advances each DUE order by at most
@@ -464,7 +464,7 @@ def process_once(mkt, now=None):
                 )
                 _send_quarantine_alert(
                     _ALERTED_TERMINALS, terminal_key, r,
-                    "🛑 order terminal",
+                    "\U0001f6d1 order terminal",
                     (
                         f"Order {r.get('order_id')} became "
                         f"{status.venue_status or status.status}; filled={status.filled_qty}, "
@@ -567,7 +567,7 @@ def process_once(mkt, now=None):
                 )
             order = mkt.place(symbol, r.get("side"), price, r.get("qty"), **kwargs)
         except Exception as e:
-            print(f"[order_retry] retry {r.get('side')} {symbol} raised ({e}) — treating it as a failure")
+            print(f"[order_retry] retry {r.get('side')} {symbol} raised ({e}) \u2014 treating it as a failure")
             order = None
         sq = safe_pos_float(outcome_context.get("submitted_qty"), default=None)
         if sq is not None:
@@ -710,9 +710,9 @@ def _format_record_context(rec, *, include_lease=False):
     place_kw = raw_place_kw if isinstance(raw_place_kw, dict) else {}
     client_order_id = place_kw.get("client_order_id") or rec.get("order_id") or rec.get("id") or "N/A"
     owner = _concrete_record_owner(rec)
-    owner_part = f" · {owner}" if owner else ""
+    owner_part = f" \u00b7 {owner}" if owner else ""
     return (
-        f"Order: {side} {format_notify_qty(qty_val)} {base_asset} ({symbol} · {provider}{owner_part}) {price_str} | Value: {value_str}\n"
+        f"Order: {side} {format_notify_qty(qty_val)} {base_asset} ({symbol} \u00b7 {provider}{owner_part}) {price_str} | Value: {value_str}\n"
         f"Time: {time_line}\n"
         f"ID: {client_order_id}"
     )
@@ -725,7 +725,7 @@ def _alert_queue_corruption(exc):
         return False
     _ALERTED_QUEUE_CORRUPTIONS.add(fingerprint)
     try:
-        alert.notify(title="🛑 order-retry queue corruption", body=str(exc), source="order_retry")
+        alert.notify(title="\U0001f6d1 order-retry queue corruption", body=str(exc), source="order_retry")
     except Exception as alert_exc:
         print(f"[order_retry] queue-corruption alert failed (ignored): {alert_exc}")
     return True
@@ -782,7 +782,7 @@ def _alert_producer_quarantine(rec, *, reason="lookup_unavailable"):
     )
     return _send_quarantine_alert(
         _ALERTED_PRODUCER_QUARANTINES, fingerprint, rec,
-        "🛑 order producer claim quarantined", detail_msg,
+        "\U0001f6d1 order producer claim quarantined", detail_msg,
         label="producer-quarantine", include_lease=True,
     )
 
@@ -819,7 +819,7 @@ def _alert_reconciliation_quarantine(rec, *, reason="lookup_unavailable"):
     detail_msg = _RECONCILIATION_QUARANTINE_MESSAGES.get(reason, _DEFAULT_RECONCILIATION_QUARANTINE_MSG)
     return _send_quarantine_alert(
         _ALERTED_RECONCILIATION_QUARANTINES, fingerprint, rec,
-        "🛑 order submission quarantined", detail_msg,
+        "\U0001f6d1 order submission quarantined", detail_msg,
         label="reconciliation-quarantine",
     )
 
@@ -995,7 +995,7 @@ def _alert_giveups(records, now):
             kind_str = f" [{kind}]" if kind and kind != "unspecified" else ""
             owner = str(labels.get("owner") or "")
             owner_sfx, _ = alert.format_owner_tags(owner)
-            owner_body_sfx = f" · {owner}" if owner_sfx else ""
+            owner_body_sfx = f" \u00b7 {owner}" if owner_sfx else ""
 
             px_f = safe_pos_float(report.get("last_price"), default=None)
             tot_notional = safe_nonneg_float(report.get("notional"), default=0.0) or 0.0
@@ -1028,7 +1028,7 @@ def _alert_giveups(records, now):
             expiry_detail = f"{expiry} (TTL: {ttl_str})" if expiry == "active_ttl" else expiry
             try:
                 alert.notify(
-                    title=f"🛑 order-retry GIVE UP{suffix} {side} {sym}{owner_sfx}",
+                    title=f"\U0001f6d1 order-retry GIVE UP{suffix} {side} {sym}{owner_sfx}",
                     body=(
                         f"{side} {sym} ({prov}{owner_body_sfx}){kind_str}: {cnt} intent(s) expired "
                         f"(size ~{format_notify_qty(unit_qty)} {base_asset}{price_part}{value_part}{attempts_str}). "
@@ -1061,7 +1061,7 @@ def main():
 
     if args.once:
         if not oq.RETRY_ENABLED:
-            print("[order_retry] RETRY_ENABLED=false — nothing to do (--once).")
+            print("[order_retry] RETRY_ENABLED=false \u2014 nothing to do (--once).")
             return 0
         try:
             print(f"[order_retry] single pass: {process_once(mkt)}")
@@ -1073,7 +1073,7 @@ def main():
     single_instance("order_retry_worker")
 
     if not oq.RETRY_ENABLED:
-        print("[order_retry] RETRY_ENABLED=false — worker ALIVE but inactive (idle).")
+        print("[order_retry] RETRY_ENABLED=false \u2014 worker ALIVE but inactive (idle).")
         _touch_worker_hb({"retry_enabled": False}, poll=60.0, force=True)
         while True:
             _touch_worker_hb({"retry_enabled": False}, poll=60.0)

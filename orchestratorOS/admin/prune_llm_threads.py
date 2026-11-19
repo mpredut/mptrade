@@ -88,7 +88,7 @@ AUTONOMOUS_PROMPT_PATTERNS = [
     "diagnostic audit",
     "acknowledge confirmation request",
     "acknowledge instruction test",
-    "analiză risc tranzacție",
+    "analiz\u0103 risc tranzac\u021bie",
     "analiza risc tranzactie",
     "evaluated by gemini",
     "automated reasoning",

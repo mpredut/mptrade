@@ -60,12 +60,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # -- it would be routed to the routine topic and skip the email, with no error anywhere.
 # An extra tuple entry costs nothing; a missed liquidation alert costs money.
 _URGENT_MARKERS = (
-    "🛑", "🛡", "LIQUID", "STOP-LOSS", "STOP_LOSS", "TRAILING", "FAILED",
+    "\U0001f6d1", "\U0001f6e1", "LIQUID", "STOP-LOSS", "STOP_LOSS", "TRAILING", "FAILED",
     "MANUAL", "ERROR", "CATASTROPH", "CRASH", "GONE", "IMBALANC",
     "LICHID", "ESUAT", "ERORI", "DISPARUT", "DEZECHILIBR", "CATASTROF",
 )
 _GUARD_ALERT_TITLE_MARKERS = (
-    "🛡", "🛑", "GUARD", "VETO", "SHADOW", "BLOCKED", "REFUSED",
+    "\U0001f6e1", "\U0001f6d1", "GUARD", "VETO", "SHADOW", "BLOCKED", "REFUSED",
     "SMART-SL", "POST-STOP", "STOP-LOSS", "STOP_LOSS",
     "TRAILING", "QUARANTINE", "GIVE UP",
 )
@@ -80,14 +80,14 @@ _ERROR_AND_OPS_TITLE_MARKERS = (
     "EXPIRED", "CANCELED", "CANCELLED", "REJECTED", "MISMATCH", "NEPOTRIVIT",
     "TIMEOUT", "DEFER", "ZOMBIE", "OUTAGE", "UNREACHABLE", "SUSTAINED",
     "RESOURCE USAGE", "SERVER DOWN", "VPN DOWN", "ISP DOWN",
-    "⚠", "✗", "⏰", "📉",
+    "\u26a0", "\u2717", "\u23f0", "\U0001f4c9",
 )
 _ERROR_AND_OPS_SOURCES = (
     "watchdog", "order_retry", "order-persistence", "smart_stop_loss",
     "post_stop_guard", "verify", "deadman", "mailer", "orchestrator",
 )
 _TRADE_MARKERS = (
-    "BUY", "SELL", "FILLED", "PLACED", "TREND_ENTRY", "ADOPT", "EXECUTION", "OPEN ", "CLOSE ", "📝", "🎉",
+    "BUY", "SELL", "FILLED", "PLACED", "TREND_ENTRY", "ADOPT", "EXECUTION", "OPEN ", "CLOSE ", "\U0001f4dd", "\U0001f389",
 )
 _FAKE_ALERT_MARKERS = (
     "ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ",
@@ -394,9 +394,9 @@ def _is_error_or_ops_alert(alerts: list[Any]) -> bool:
 
 
 _REDUNDANT_BULK_LINE_RE = re.compile(
-    r"^(?:Mode:\s*\S+\s*·\s*Status:\s*Simulated/Observed"
-    r"|Action:\s*[^·]+·\s*Bias:\s*[^(]+\(([^)]+)\)"
-    r"|Brake:\s*[^·]+·\s*Threat:\s*[^(]+\(([^)]+)\)"
+    r"^(?:Mode:\s*\S+\s*" "\u00b7" r"\s*Status:\s*Simulated/Observed"
+    r"|Action:\s*[^" "\u00b7" r"]+" "\u00b7" r"\s*Bias:\s*[^(]+\(([^)]+)\)"
+    r"|Brake:\s*[^" "\u00b7" r"]+" "\u00b7" r"\s*Threat:\s*[^(]+\(([^)]+)\)"
     r"|Risk:\s*(.+))$",
     flags=re.IGNORECASE,
 )
@@ -409,14 +409,14 @@ _SIMILARITY_SUBS = (
     (re.compile(r"^\d{4}[-/]\d{2}[-/]\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?Z?\s*"), ""),
     (re.compile(r"^\d{2}:\d{2}:\d{2}\s*"), ""),
     (re.compile(r"0x[0-9a-fA-F]+"), "<HEX>"),
-    (re.compile(r"~\d+(?:,\d{3})*(?:\.\d+)?\s*[\$€]\s*~"), "<N>"),
-    (re.compile(r"[+-]?[\$€~]?\d+(?:,\d{3})*(?:\.\d+)?(?:%|ms|s|m|h|d|x|bps|\$|€)?"), "<N>"),
+    (re.compile(r"~\d+(?:,\d{3})*(?:\.\d+)?\s*[\$" "\u20ac" r"]\s*~"), "<N>"),
+    (re.compile(r"[+-]?[\$" "\u20ac" r"~]?\d+(?:,\d{3})*(?:\.\d+)?(?:%|ms|s|m|h|d|x|bps|\$|" "\u20ac" r")?"), "<N>"),
     (re.compile(r"\s+"), " "),
 )
 _IDENTITY_NAME_SUBS = (
     (re.compile(r"[+-]?\d+(?:\.\d+)?%"), "<PCT>"),
     (re.compile(r"@\s*~?\$?\d+(?:\.\d+)?"), "@ <PX>"),
-    (re.compile(r"~\d+(?:\.\d+)?\s*[\$€]\s*~?"), "<VAL>"),
+    (re.compile(r"~\d+(?:\.\d+)?\s*[\$" "\u20ac" r"]\s*~?"), "<VAL>"),
     (re.compile(r"\(\d+(?:\.\d+)?s\)"), "(<DUR>)"),
 )
 
@@ -547,7 +547,7 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
         it = items[0]
         cnt = exact_pos_int(it.get("count", 1), 1)
         raw_title = str(it.get("title") or "Alert")
-        out_title = f"{raw_title} (×{cnt})" if cnt > 1 else raw_title
+        out_title = f"{raw_title} (\u00d7{cnt})" if cnt > 1 else raw_title
         out_body = str(it.get("body") or "")
         return (out_title, out_body, best_priority, best_topic)
 
@@ -555,7 +555,7 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
     for idx, it in enumerate(items, 1):
         cnt = exact_pos_int(it.get("count", 1), 1)
         t = str(it.get("title") or "Alert").strip()
-        repeat_tag = f" (×{cnt})" if cnt > 1 else ""
+        repeat_tag = f" (\u00d7{cnt})" if cnt > 1 else ""
         cleaned = _LAST_LOGS_RE.sub("", str(it.get("body") or "")).strip()
         raw_lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
         if not raw_lines:
@@ -688,7 +688,7 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
 
     raw_summary = f"{core_label} {bracket_str}" if (bracket_str and core_label) else (bracket_str or core_label)
     summary_subject = (raw_summary or "").strip() or _topic_category_label(best_topic) or "Alerts"
-    bulk_title = f"📦 Bulk ({len(items)}): {summary_subject}"
+    bulk_title = f"\U0001f4e6 Bulk ({len(items)}): {summary_subject}"
     bulk_body = "\n\n".join(body_lines)
     return (bulk_title, bulk_body, best_priority, best_topic)
 
@@ -1110,7 +1110,7 @@ class AlertNotifier:
         else:
             price_str = "Price: N/A"
         lines = [
-            f"🆕: {alert.get('symbol', 'N/A')} - {alert.get('name', alert.get('symbol', 'N/A'))}",
+            f"\U0001f195: {alert.get('symbol', 'N/A')} - {alert.get('name', alert.get('symbol', 'N/A'))}",
             f"Source: {alert.get('source', 'unknown')}",
             f"Added: {AlertNotifier.format_human_readable_time(alert.get('added_at'))}",
             price_str,
@@ -1135,7 +1135,7 @@ class AlertNotifier:
             formatted = AlertNotifier.format_human_readable_time(ts, fmt="%m-%d %H:%M")
             if formatted != str(ts):
                 parts.append(formatted)
-        return " · ".join(parts)
+        return " \u00b7 ".join(parts)
 
     @staticmethod
     def format_batch_message(alerts) -> str:
@@ -1221,7 +1221,7 @@ class AlertNotifier:
                 if sym not in symbols:
                     symbols.append(sym)
                 atype = obj_attr(a, "alert_type", "")
-                dir_str = "▲" if atype == "up" else ("▼" if atype == "down" else "")
+                dir_str = "\u25b2" if atype == "up" else ("\u25bc" if atype == "down" else "")
                 items.append(f"{sym} {dir_str}".strip())
         return symbols, items
 
@@ -1333,12 +1333,12 @@ def _external_notifications_disabled() -> bool:
 
 
 _GUARD_MARKERS = (
-    "🛑", "🛡", "STOP-LOSS", "STOP_LOSS", "SMART-SL", "POST-STOP", "TRAILING", "LIQUID", "CATASTROPH", "CRASH",
+    "\U0001f6d1", "\U0001f6e1", "STOP-LOSS", "STOP_LOSS", "SMART-SL", "POST-STOP", "TRAILING", "LIQUID", "CATASTROPH", "CRASH",
     "LICHID", "CATASTROF", "IMBALANCE", "DEZECHILIBR", "QUARANTINE", "SL ", " SL",
     "REFUSED", "BLOCKED", "SKIPPED",
 )
 _PRIMARY_ERROR_MARKERS = (
-    "ERROR", "FAILED", "EXCEPTION", "CRITICAL", "GIVE UP", "CORRUPTION", "REJECTED", "✗", "UNRECOGNIZED",
+    "ERROR", "FAILED", "EXCEPTION", "CRITICAL", "GIVE UP", "CORRUPTION", "REJECTED", "\u2717", "UNRECOGNIZED",
 )
 _BILINGUAL_ERROR_MARKERS = ("ESUAT", "ERORI", "DISPARUT", "GONE")
 _OPS_MARKERS = (*_PRIMARY_ERROR_MARKERS, *_BILINGUAL_ERROR_MARKERS, "MANUAL")
@@ -1416,7 +1416,7 @@ def _category_for_title_and_source(title: str, source: str) -> str:
         "alert" in s or "price" in s or "prag" in t.lower() or "threshold" in t.lower()
         or "listed on" in t.lower() or "coin" in t.lower()
         or any(src in s for src in _PRICE_ALERT_SOURCES)
-        or any(m in t for m in ("▲", "▼", "📈", "📉", "RISE", "DROP"))
+        or any(m in t for m in ("\u25b2", "\u25bc", "\U0001f4c8", "\U0001f4c9", "RISE", "DROP"))
     ):
         return "PRICE"
     return "TRADES"

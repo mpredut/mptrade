@@ -4,7 +4,7 @@ Separates prompt presentation (Sections 1, 2, 3A, 3B, 3C) and symbol price
 resolution from telemetry harvesting and order execution in
 `autonomous_ai_reconciler.py`.
 
-Intentional prompt compression & cycle-boundary invariants (BY DESIGN — DO NOT REVERT):
+Intentional prompt compression & cycle-boundary invariants (BY DESIGN -- DO NOT REVERT):
 - Section numbering (`### 1.` -> `### 3.`): Sections `2/2B/2C` (SRE/logs/VPN) are emitted only for `can_self_heal` topics and omitted on trading topics.
 - `bottom_6h(...)` (Section 3): Conditional pattern detector emitted only when an active 6h bottom structure forms (`pos_6h <= 70%` with meaningful drawdown).
 - `open_lifo_lots` (Section 3C): Capped to the latest 4 lots (`<=14d`) for top-of-stack LIFO harvesting and omitted when `len(open_lots) <= 1` (already covered by `avg_buy_px`/`last_buy_px`).
@@ -1599,11 +1599,11 @@ def _format_portfolio_section(
             for o in open_lim
         ]
         lines.append(
-            f"  * Active Open Orders on Exchange (Locking Liquidity) — open_limit_orders: {clean_open_lim}"
+            f"  * Active Open Orders on Exchange (Locking Liquidity) \u2014 open_limit_orders: {clean_open_lim}"
         )
     else:
         lines.append(
-            "  * Active Open Limit Orders on Exchange — open_limit_orders: [] (none resting)"
+            "  * Active Open Limit Orders on Exchange \u2014 open_limit_orders: [] (none resting)"
         )
     pos_lifo_pnl_by_vs: Dict[Tuple[str, str], float] = {}
     pos_px_by_vs: Dict[Tuple[str, str], float] = {}
@@ -1819,7 +1819,7 @@ def _format_portfolio_section(
             clean_lces = raw_lces
         if clean_lces:
             lines.append(
-                f"  * Last Cycle Execution Status — last_cycle_execution_status: {clean_lces}"
+                f"  * Last Cycle Execution Status \u2014 last_cycle_execution_status: {clean_lces}"
             )
     for st_key, st_label in (
         ("active_retry_queue", "Active Queued Retry Orders (order_retry_queue.jsonl)"),

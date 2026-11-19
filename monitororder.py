@@ -431,7 +431,7 @@ def monitor_open_orders_by_type(
                 age_str = f"{age_sec / 3600:.1f}h" if age_sec >= 3600 else f"{age_sec / 60:.1f}m"
                 ttl_str = f"{effective_ttl / 3600:.1f}h" if effective_ttl >= 3600 else f"{effective_ttl / 60:.1f}m"
                 print(
-                    f"[MONITORORDER] ⏰ Order {order_id} ({owner}, cid='{cid}') EXPIRED: "
+                    f"[MONITORORDER] \u23f0 Order {order_id} ({owner}, cid='{cid}') EXPIRED: "
                     f"age {age_str} >= TTL {ttl_str}. Canceling on venue..."
                 )
                 try:
@@ -443,7 +443,7 @@ def monitor_open_orders_by_type(
                         order_retry.resolve_accepted_order(symbol, oid_str)
                     except Exception:
                         pass
-                    print(f"[MONITORORDER] 🛑 Successfully canceled expired order {order_id}")
+                    print(f"[MONITORORDER] \U0001f6d1 Successfully canceled expired order {order_id}")
                     if oid_str not in _notified_expired_order_ids:
                         _notified_expired_order_ids.add(oid_str)
                         _notify_order_expired(symbol, order_type, order_id, price, extract_order_qty(order), owner, age_str, ttl_str)

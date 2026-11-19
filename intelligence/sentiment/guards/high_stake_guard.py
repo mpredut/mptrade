@@ -396,7 +396,7 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
         if not resolved_snapshot.is_available:
             unavail_reason = str(resolved_snapshot.unavailable_reason or "telemetry_unavailable").strip()
             (logger_inst or logger).warning(
-                "Pre-trade telemetry unavailable for %s €%.2f (%s). Fallback: %s",
+                "Pre-trade telemetry unavailable for %s \u20ac%.2f (%s). Fallback: %s",
                 symbol,
                 notional,
                 unavail_reason,
@@ -462,7 +462,7 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
         )
         if valid_resp is None:
             (logger_inst or logger).warning(
-                "LLM %s query failed or timed out for %s €%.2f. Fallback: %s",
+                "LLM %s query failed or timed out for %s \u20ac%.2f. Fallback: %s",
                 timeout_log_label,
                 symbol,
                 notional,
@@ -528,11 +528,11 @@ class HighStakeGuard(PreTradeLLMGuardBase):
 
     def _resolve_currency_display(self, symbol: str) -> tuple[str, str]:
         if is_eur_pair(symbol):
-            return "€", "EUR"
+            return "\u20ac", "EUR"
         if has_equity_suffix(symbol, include_compact=True):
             return "$", "USD"
         if self._legacy_eur_unit:
-            return "€", "EUR"
+            return "\u20ac", "EUR"
         if is_usdc_pair(symbol):
             return "$", "USDC"
         return "$", "USD"
@@ -544,7 +544,7 @@ class HighStakeGuard(PreTradeLLMGuardBase):
         context_str: str,
         *,
         symbol: str = "",
-        ccy_sym: str = "€",
+        ccy_sym: str = "\u20ac",
         ccy_code: str = "EUR",
     ) -> str:
         is_eq = has_equity_suffix(symbol, include_compact=True)
@@ -558,7 +558,7 @@ class HighStakeGuard(PreTradeLLMGuardBase):
                 "CORE RISK POLICIES & PRIORITY RULES:\n"
                 "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions (% Top Traders Long) and Orderbook Bid Depth. Static long holdings can be trapped or liquidated (note: on US cash equities *_US_EQ without perpetual futures, Open Interest reflects Cboe options chain OI rather than leveraged perp positions). If Whale Taker Flow is below 0.85 (net sell aggression), you must NEVER issue an unrestricted APPROVED. If Whale Taker Flow is below 0.80 in a FLAT or BEAR market, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural support).\n"
                 "2. ORDERBOOK SUPPORT LIMITATION: Bid walls and orderbook depth are passive and can be pulled or absorbed by aggressive market selling. Do NOT use orderbook depth alone to override persistent taker selling.\n"
-                "3. MACRO, GEOPOLITICAL & CONTRARIAN BOTTOM ACCUMULATION: If Macro Sentiment recommends CAUTION or Geopolitical threat is elevated, do not fight negative taker flow. However, when 6h Intraday Bottom Structure confirms 'HIGHER_LOW_DOUBLE_BOTTOM' or 'LIQUIDITY_SWEEP_RECLAIM' (especially with 'smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE') AND Whale Taker Flow is >= 1.0 (or 15m CVD is positive/spot_absorbing), issue APPROVED — do NOT veto or downscale a verified contrarian bottom entry merely because lagging 24h breadth or residual geopolitical headlines remain elevated.\n"
+                "3. MACRO, GEOPOLITICAL & CONTRARIAN BOTTOM ACCUMULATION: If Macro Sentiment recommends CAUTION or Geopolitical threat is elevated, do not fight negative taker flow. However, when 6h Intraday Bottom Structure confirms 'HIGHER_LOW_DOUBLE_BOTTOM' or 'LIQUIDITY_SWEEP_RECLAIM' (especially with 'smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE') AND Whale Taker Flow is >= 1.0 (or 15m CVD is positive/spot_absorbing), issue APPROVED \u2014 do NOT veto or downscale a verified contrarian bottom entry merely because lagging 24h breadth or residual geopolitical headlines remain elevated.\n"
                 "4. CROSS-ASSET MACRO, VIX & INSTITUTIONAL FLOW SYMMETRY (Equities <-> Crypto): Synthesize 'Equity & Macro Regime' across both Stocks and Crypto: weigh SPY/QQQ/VIX/DXY/US10Y and Futures_Lead (FUTURES_PREMARKET_GAP_UP | FUTURES_PREMARKET_GAP_DOWN) alongside IBIT (US ETF flow), CB_Premium (Coinbase vs Binance institutional spot basis bps), BTC_DVOL/ETH_DVOL, Options_Surface & ETH_Options(VRP, PC_OI, Skew_25d), and Cross_Asset (COUPLED_RISK_ON | COUPLED_RISK_OFF | CRYPTO_BULLISH_DECOUPLING | EQUITY_BULLISH_DECOUPLING). When Cross_Asset is COUPLED_RISK_OFF with surging VIX, deeply negative CB_Premium (<= -8 bps), or negative Skew_25d (put-buying fear), require strict Taker/CVD absorption before approving large BUY entries; conversely, when Cross_Asset is CRYPTO_BULLISH_DECOUPLING or COUPLED_RISK_ON with positive CB_Premium / IBIT inflow or FUTURES_PREMARKET_GAP_UP, do NOT veto a crypto BUY solely due to soft prior-day equity indices."
             )
         else:

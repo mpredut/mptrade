@@ -1142,11 +1142,11 @@ class TradingBot:
                         side, aborted=bool(is_term_refusal and not is_opp_filled())
                     )
                     if refusal_reason in _TERMINAL_QTY_OR_LIMIT_REFUSALS or is_terminal_filter_refusal(refusal_reason):
-                        return _complete_followup(msg=f"24h limit reached ({side}: {refusal_reason}) — exiting without retry")
+                        return _complete_followup(msg=f"24h limit reached ({side}: {refusal_reason}) \u2014 exiting without retry")
                     if refusal_reason == "profit_guard" and (is_buy or not is_opp_filled()):
-                        return _complete_followup(msg=f"Blocked by profit guard ({side}: {refusal_reason}) — exiting without retry")
+                        return _complete_followup(msg=f"Blocked by profit guard ({side}: {refusal_reason}) \u2014 exiting without retry")
                     if refusal_reason in {"trend_deferred", "medium_trend_deferred"} and not is_opp_filled():
-                        return _complete_followup(msg=f"Deferred by trend ({side}: {refusal_reason}) — exiting without retry")
+                        return _complete_followup(msg=f"Deferred by trend ({side}: {refusal_reason}) \u2014 exiting without retry")
                     if (refusal_reason == "aborted_by_caller" or getattr(self, "_round_aborted", False)) and not is_opp_filled():
                         return _complete_followup(msg=f"Aborting {side} loop because {opp_side} worker exited without fill.")
                     print(f"[{self.symbol}] Order {side} failed, retried {failure_count} times. Retrying again ...")

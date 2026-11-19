@@ -552,9 +552,9 @@ class GeminiQuotaRouterMixin:
                 return
 
             title = (
-                "🛑 ERROR: AI LLM Quota Near Zero"
+                "\U0001f6d1 ERROR: AI LLM Quota Near Zero"
                 if argon_rem > 0.0
-                else "🛑 ERROR: AI LLM Paid Argon Quota Exhausted (0%)"
+                else "\U0001f6d1 ERROR: AI LLM Paid Argon Quota Exhausted (0%)"
             )
             msg = (
                 f"Available credits: {available_credits:.0f} | "

@@ -117,7 +117,7 @@ def main() -> int:
             test_pair = _norm_pair(args.test_strategy)
             log(
                 f"[TEST] strategy for {test_pair}  "
-                f"{'OBSERVE ONLY' if observe_only else ('PAPER' if strat_dry else '⚠ REAL')}")
+                f"{'OBSERVE ONLY' if observe_only else ('PAPER' if strat_dry else '\u26a0 REAL')}")
             Strategy(AuditedStrategyExecutor(KrakenProvider(client=client), venue="Kraken"), test_pair, StratParams.from_env(),
                      dry_run=strat_dry, desktop=args.desktop, observe_only=observe_only).run()
         return 0 if args.test_strategy else 1
@@ -149,13 +149,13 @@ def _wait_for_listing(client, pair, label, interval, desktop) -> bool:
     # Preflight: start immediately if the pair is already listed.
     info, confirmed_unlisted = check_pair_listing(client, pair)
     if info:
-        log(f"  [verify] {pair} is LISTED and tradable — starting.")
+        log(f"  [verify] {pair} is LISTED and tradable \u2014 starting.")
         return True
     saw_unlisted = confirmed_unlisted
     if saw_unlisted:
-        log(f"    {pair} not listed on Kraken yet — waiting for it... (Ctrl+C to stop)")
+        log(f"    {pair} not listed on Kraken yet \u2014 waiting for it... (Ctrl+C to stop)")
     else:
-        log(f"    {pair} verification deferred (transient API/network error) — retrying in {interval}s...")
+        log(f"    {pair} verification deferred (transient API/network error) \u2014 retrying in {interval}s...")
     try:
         while True:
             time.sleep(interval)
@@ -164,14 +164,14 @@ def _wait_for_listing(client, pair, label, interval, desktop) -> bool:
                 saw_unlisted = True
             if info:
                 if not saw_unlisted:
-                    log("  [verify] " + f"{pair} is LISTED and tradable after API recovery — starting.")
+                    log("  [verify] " + f"{pair} is LISTED and tradable after API recovery \u2014 starting.")
                     return True
                 p = get_price(client, pair)
                 clean_lbl = label.strip() if isinstance(label, str) else ""
                 display_label = pair if clean_lbl.lower() in ("", "kraken") else f"{clean_lbl} ({pair})"
                 body = f"{display_label} is available on Kraken, price {p}"
                 log("############################################")
-                log(f">>> {display_label} LISTED ON KRAKEN — STARTING <<<")
+                log(f">>> {display_label} LISTED ON KRAKEN \u2014 STARTING <<<")
                 log("############################################")
                 notify(title=f"{display_label} listed on Kraken!", body=body,
                        source="kraken", price=p, desktop=desktop)
@@ -199,7 +199,7 @@ def _cmd_find_pair(client: KrakenClient, term: str) -> int:
     t = clean_term.upper()
     hits = [(k, v) for k, v in pairs.items()
             if isinstance(v, dict) and t in (k + str(v.get("altname")) + str(v.get("wsname")) + str(v.get("base"))).upper()]
-    log(f"[FIND] '{term}' — {len(hits)} results:")
+    log(f"[FIND] '{term}' \u2014 {len(hits)} results:")
     for k, v in hits[:20]:
         log(f"  altname={v.get('altname'):<12} wsname={v.get('wsname'):<14} "
             f"base={v.get('base')} quote={v.get('quote')} status={v.get('status')}")

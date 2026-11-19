@@ -105,7 +105,7 @@ def record_shadow_intent_observation(
     px_log_s = format_notify_price(price, comma=False)
     if log:
         log.info(
-            "[LLM TRADER · SHADOW] Would execute %s %s (qty=%s, price=$%s, notional=$%.2f) on %s. Thesis: %s",
+            "[LLM TRADER \u00b7 SHADOW] Would execute %s %s (qty=%s, price=$%s, notional=$%.2f) on %s. Thesis: %s",
             ord_lbl, inst.symbol, qty_s, px_log_s, effective_usd, inst.provider_name, thesis,
         )
     ord_kind = "LIMIT" if is_limit else "MARKET"
@@ -256,7 +256,7 @@ def execute_enforce_intent_order(
             _cleanup_refused_retry_records()
             if log:
                 log.info(
-                    "[LLM TRADER · ENFORCE] Successfully placed %s %s: %s",
+                    "[LLM TRADER \u00b7 ENFORCE] Successfully placed %s %s: %s",
                     ord_lbl, inst.symbol, order_res,
                 )
             order_id_str = extract_order_id(order_res, default="N/A")
@@ -292,7 +292,7 @@ def execute_enforce_intent_order(
                         price,
                         target_qty,
                         default_verb="PLACED" if is_resting else "FILLED",
-                        default_icon="📝" if is_resting else "🎉",
+                        default_icon="\U0001f4dd" if is_resting else "\U0001f389",
                         order_type=ord_kind,
                         venue=inst.provider_name,
                         owner="ai_executor",
@@ -311,7 +311,7 @@ def execute_enforce_intent_order(
             refusal_cat = clean_scalar_str(outcome_ctx.get("category")) or ""
             if log:
                 log.warning(
-                    "[LLM TRADER · ENFORCE] Order placement refused or failed for %s %s: %s",
+                    "[LLM TRADER \u00b7 ENFORCE] Order placement refused or failed for %s %s: %s",
                     decision, inst.symbol, refusal_reason,
                 )
             _emit_intent_alert(
@@ -328,8 +328,8 @@ def execute_enforce_intent_order(
                 _cleanup_refused_retry_records()
     except Exception as e:
         if log:
-            log.error("[LLM TRADER · ENFORCE] Exception executing %s %s: %s", decision, inst.symbol, e)
-        title = f"🚨 {trade_tag} ERROR {decision} {inst.symbol}"
+            log.error("[LLM TRADER \u00b7 ENFORCE] Exception executing %s %s: %s", decision, inst.symbol, e)
+        title = f"\U0001f6a8 {trade_tag} ERROR {decision} {inst.symbol}"
         body = f"Execution exception: {e}\nThesis: {thesis}"
         if callable(dispatch_notify_fn):
             dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)

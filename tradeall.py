@@ -279,7 +279,7 @@ def _fire_order(symbol, action, price, reason, **kwargs):
             logger_fn(symbol, action, price, None,
                       "refused", f"kalman_gate_{mode}(trend={trend})", reason)
         except Exception as _e:  # noqa: BLE001
-            print(f"[KALMAN-GATE] journal error ({_e}) — block remains")
+            print(f"[KALMAN-GATE] journal error ({_e}) \u2014 block remains")
         return None
     return mkt.place(
         symbol,

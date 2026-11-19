@@ -671,7 +671,7 @@ def complete_accepted_claim(
         _ALERTED_PERSISTENCE_FAILURES, dedup_key, time.monotonic(), _PERSISTENCE_ALERT_COOLDOWN_SEC, 1000
     ):
         alert.notify(
-            title=f"🛑 CRITICAL accepted order tracking persistence failure{owner_tag}",
+            title=f"\U0001f6d1 CRITICAL accepted order tracking persistence failure{owner_tag}",
             body=detail,
             source="order-persistence",
             symbol=str(symbol),

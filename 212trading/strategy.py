@@ -257,7 +257,7 @@ class Strategy(T212BrokerLifecycleMixin):
         )
         if was_sl and self.p.sl_rebuy_enabled:
             self.s["sl_rebuy"] = {"low": exit_px, "sell_price": exit_px}
-            log(f"  🟢 [STRAT] pullback re-buy ARMED after the stop-loss "
+            log(f"  \U0001f7e2 [STRAT] pullback re-buy ARMED after the stop-loss "
                 f"(expecting +{self.p.sl_rebuy_bounce_pct}% from the low)")
         log(f"  [STRAT] === cycle closed, restarting (cycle {nxt}) ===")
 
@@ -307,16 +307,16 @@ class Strategy(T212BrokerLifecycleMixin):
             target = rb["low"] * (1 + self.p.sl_rebuy_bounce_pct / 100.0)
             if price >= target or are_close(price, target, self.p.reentry_tolerance_pct):
                 if self.s["spent_cash"] + self.p.entry_amount > self.p.max_budget:
-                    log(f"  [STRAT] re-buy SL cancelled — budget cap {self.p.max_budget:.0f} {self.ccy} reached")
+                    log(f"  [STRAT] re-buy SL cancelled \u2014 budget cap {self.p.max_budget:.0f} {self.ccy} reached")
                 elif self._place_buy(self.p.entry_amount, price * (1 - self.p.entry_discount_pct / 100), kind="ENTRY"):
                     self.s.pop("sl_rebuy", None)
                     self.s["last_exit_kind"] = "TP"
                     if self.exit_manager is not None:
                         self.exit_manager.reentry_state.pop(self.ticker, None)
-                    log(f"  🟢 [STRAT] RE-BUY after the SL: a +{self.p.sl_rebuy_bounce_pct}% pullback from the low {rb['low']:.2f} — re-entering ENTRY")
+                    log(f"  \U0001f7e2 [STRAT] RE-BUY after the SL: a +{self.p.sl_rebuy_bounce_pct}% pullback from the low {rb['low']:.2f} \u2014 re-entering ENTRY")
                     notify(
-                        title=f"🟢 {self.yahoo_sym} RE-BUY after the stop-loss",
-                        body=(f"pullback +{self.p.sl_rebuy_bounce_pct}% from low {rb['low']:.2f} — "
+                        title=f"\U0001f7e2 {self.yahoo_sym} RE-BUY after the stop-loss",
+                        body=(f"pullback +{self.p.sl_rebuy_bounce_pct}% from low {rb['low']:.2f} \u2014 "
                               f"re-entering with {self.p.entry_amount:.0f}{self.ccy}"),
                         source="T212", price=price, desktop=self.desktop,
                     )
@@ -458,7 +458,7 @@ class Strategy(T212BrokerLifecycleMixin):
             if not self._place_sell(target_qty, round(price, 2), kind=kind, market=True):
                 if not self.s.get("pending_submit"):
                     self.s[fail_key] = self._now() + 1800
-                    log(f"  ! [STRAT] {label} sell failed or refused — backoff 30 min (retaining TP ladder)")
+                    log(f"  ! [STRAT] {label} sell failed or refused \u2014 backoff 30 min (retaining TP ladder)")
                     self._restore_cancelled_orders(cancelled_orders, reason=f"{label.lower()} sell failed")
                 return False
             self.s["sl_pending"] = True
@@ -491,7 +491,7 @@ class Strategy(T212BrokerLifecycleMixin):
             self.s["tr_armed"] = True
             self.s["pos_peak"] = peak = price
             log(
-                f"  [STRAT] trailing ARMED: price {price:.2f} >= avg{(avg or 0):.2f}+{minp}% — "
+                f"  [STRAT] trailing ARMED: price {price:.2f} >= avg{(avg or 0):.2f}+{minp}% \u2014 "
                 f"protecting from now on (-{self.p.trail_pct}% from the peak)"
             )
 
@@ -501,10 +501,10 @@ class Strategy(T212BrokerLifecycleMixin):
         if self._execute_protective_exit("TR", price, "TRAILING", "tr_fail_until"):
             if not self._state_flag("tr_alerted"):
                 self.s["tr_alerted"] = True
-                log(f"  📉 [STRAT] TRAILING: -{drop_pct:.2f}% from peak {peak:.2f} >= {self.p.trail_pct}% — SELLING ALL")
+                log(f"  \U0001f4c9 [STRAT] TRAILING: -{drop_pct:.2f}% from peak {peak:.2f} >= {self.p.trail_pct}% \u2014 SELLING ALL")
                 notify(
-                    title=f"📉 TRAILING {self.yahoo_sym} -{drop_pct:.1f}%",
-                    body=f"from peak {peak:.2f} ≥{self.p.trail_pct}% — selling all",
+                    title=f"\U0001f4c9 TRAILING {self.yahoo_sym} -{drop_pct:.1f}%",
+                    body=f"from peak {peak:.2f} \u2265{self.p.trail_pct}% \u2014 selling all",
                     source="T212", price=price, desktop=self.desktop,
                 )
         return True
@@ -516,12 +516,12 @@ class Strategy(T212BrokerLifecycleMixin):
         reason_sfx = f" ({exit_reason})" if exit_reason else ""
         label_pfx = "MHDSL " if exit_reason else ""
         log(
-            f"  🛑 [STRAT] {label_pfx}STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}%{reason_sfx} "
-            "— SELLING EVERYTHING (cutting the loss)"
+            f"  \U0001f6d1 [STRAT] {label_pfx}STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}%{reason_sfx} "
+            "\u2014 SELLING EVERYTHING (cutting the loss)"
         )
         notify(
-            title=f"🛑 SL {self.yahoo_sym} -{loss_pct:.1f}%",
-            body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}%{reason_sfx} — selling everything",
+            title=f"\U0001f6d1 SL {self.yahoo_sym} -{loss_pct:.1f}%",
+            body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}%{reason_sfx} \u2014 selling everything",
             source="T212", price=price, desktop=self.desktop,
         )
 
@@ -591,9 +591,9 @@ class Strategy(T212BrokerLifecycleMixin):
             loss_pct = (avg - price) / avg * 100
             band = math.floor(loss_pct / step) if loss_pct > 0 else 0
             if band > self.s.get("loss_band", 0):
-                log(f"  📉 [STRAT] {self.yahoo_sym} loss -{loss_pct:.1f}% (threshold {band*step:.0f}%)")
+                log(f"  \U0001f4c9 [STRAT] {self.yahoo_sym} loss -{loss_pct:.1f}% (threshold {band*step:.0f}%)")
                 notify(
-                    title=f"📉 {self.yahoo_sym} -{loss_pct:.1f}%",
+                    title=f"\U0001f4c9 {self.yahoo_sym} -{loss_pct:.1f}%",
                     body=f"loss -{loss_pct:.1f}% (over {band*step:.0f}%) | q{self.s['qty']:.2f} a{avg:.2f} p{price:.2f}",
                     source="T212", price=price, desktop=self.desktop,
                 )
@@ -660,7 +660,7 @@ class Strategy(T212BrokerLifecycleMixin):
                         "time": tick_time,
                     }
                     self.s["tp_pending_exit"] = pending_exit
-                    log(f"  [STRAT] MDHTP EXIT TRIGGERED ({decision.reason}) — initiating cancellation & exit sequence")
+                    log(f"  [STRAT] MDHTP EXIT TRIGGERED ({decision.reason}) \u2014 initiating cancellation & exit sequence")
 
         if pending_exit:
             def _is_market_exit(o: dict) -> bool:
@@ -678,10 +678,10 @@ class Strategy(T212BrokerLifecycleMixin):
                 for o in [o for o in list(self.s["orders"]) if not _is_market_exit(o)]:
                     self._cancel_order(o)
                 if self.s["qty"] <= 1e-6:
-                    return _clear_exit_intent("  [STRAT] MDHTP exit: position closed — clearing exit intent")
+                    return _clear_exit_intent("  [STRAT] MDHTP exit: position closed \u2014 clearing exit intent")
                 log(
                     f"  [STRAT] MDHTP exit: existing market exit order {existing_exit.get('id')} "
-                    "in progress — awaiting fill reconciliation"
+                    "in progress \u2014 awaiting fill reconciliation"
                 )
                 return True
 
@@ -694,7 +694,7 @@ class Strategy(T212BrokerLifecycleMixin):
             target_qty = fresh_held * sell_fraction if sell_fraction < 1.0 else fresh_held
             sell_qty = self._sellable_qty(target_qty, price)
             if sell_qty <= 0 or self._is_dust(sell_qty, price):
-                return _clear_exit_intent("  [STRAT] MDHTP exit: no sellable quantity remaining — clearing exit intent")
+                return _clear_exit_intent("  [STRAT] MDHTP exit: no sellable quantity remaining \u2014 clearing exit intent")
 
             exit_px = round(price * 0.999, 2)
             if self._place_sell(sell_qty, exit_px, kind="TP", market=True):
@@ -703,7 +703,7 @@ class Strategy(T212BrokerLifecycleMixin):
                 return _clear_exit_intent(
                     f"  [STRAT] MDHTP EXIT ({pending_exit.get('reason')}) -> reference {exit_px} ({sell_qty} shares)"
                 )
-            log(f"  ! [STRAT] MDHTP EXIT order refused/failed ({pending_exit.get('reason')}) — intent retained for retry")
+            log(f"  ! [STRAT] MDHTP EXIT order refused/failed ({pending_exit.get('reason')}) \u2014 intent retained for retry")
             return True
 
         if decision is not None and (decision.reason == "not_in_tp_territory" or decision.action == ExitAction.HOLD):
@@ -778,10 +778,10 @@ class Strategy(T212BrokerLifecycleMixin):
                 self._dca_gate_until = self._now() + 300
                 log(
                     f"  [STRAT] DCA BLOCKED by trend: slope {slope_f:+.3f}%/bar "
-                    f"< -{self.p.dca_trend_gate_pct}% (downtrend) — re-checking in 5 min"
+                    f"< -{self.p.dca_trend_gate_pct}% (downtrend) \u2014 re-checking in 5 min"
                 )
                 return
-        log(f"  [STRAT] dip: {price:.2f} <= {self.s['last_buy_price']:.2f}×(1-{self.p.dca_drop_pct}%) — DCA")
+        log(f"  [STRAT] dip: {price:.2f} <= {self.s['last_buy_price']:.2f}\u00d7(1-{self.p.dca_drop_pct}%) \u2014 DCA")
         self._place_buy(self.p.dca_amount, price * disc, kind="DCA")
 
     def _step_dispatch_orders(
@@ -811,8 +811,8 @@ class Strategy(T212BrokerLifecycleMixin):
     # -- Main Loop -------------------------------------------------------------
     def run(self, stop: threading.Event | None = None) -> None:
         mode, exec_banner = self._resolve_run_mode_and_banner(
-            real_banner="⚠ REAL — REAL MONEY",
-            ai_banner="[OBSERVE ONLY — AI MANAGED]",
+            real_banner="\u26a0 REAL \u2014 REAL MONEY",
+            ai_banner="[OBSERVE ONLY \u2014 AI MANAGED]",
         )
         log("  === STRATEGY STARTED ===")
         log(f"      instrument : {self.ticker}  (price through {self.yahoo_sym})")

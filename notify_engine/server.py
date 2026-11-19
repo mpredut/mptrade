@@ -380,7 +380,7 @@ class NotificationServer:
                     else:
                         atype = obj_attr(first, "alert_type", "alert")
                         pchg = safe_float(obj_attr(first, "percent_change", 0.0), 0.0)
-                        dir_str = "▲" if atype == "up" else "▼"
+                        dir_str = "\u25b2" if atype == "up" else "\u25bc"
                         title = f"{sym} {dir_str} {pchg:+.2f}%"
                 elif is_new_coin:
                     title = AlertNotifier._format_new_coins_batch_title(alerts)
@@ -422,7 +422,7 @@ class NotificationServer:
             or cat == "PRICE"
             or bot_name.lower() in _PRICE_WATCHER_BOTS
             or source.lower() in ("price_alert", *_PRICE_ALERT_SOURCES)
-            or any(m in cleaned_title for m in ("▲", "▼"))
+            or any(m in cleaned_title for m in ("\u25b2", "\u25bc"))
         )
 
         if is_price or is_macro_bot or has_auto_topic_tag:

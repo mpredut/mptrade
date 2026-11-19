@@ -214,7 +214,7 @@ class TrailingStop(TrailingAdapterBase):
             price = _finite(self.api.get_current_price(symbol), name="re-buy price", minimum=0)
             return price > 0 and price > sma
         except Exception as e:  # noqa: BLE001
-            self.log(f"  [TRAIL] long-trend({symbol}) unavailable ({e}) — auto rebuy OFF")
+            self.log(f"  [TRAIL] long-trend({symbol}) unavailable ({e}) \u2014 auto rebuy OFF")
             return False
 
     @staticmethod
@@ -252,7 +252,7 @@ class TrailingStop(TrailingAdapterBase):
             return self.po.position_cost_basis(
                 pair_norm or pair, free + locked, COST_BASIS_LOOKBACK_S, provider_name="binance")
         except Exception as e:  # noqa: BLE001
-            return self._log_cost_basis_unavailable(pair, e, "—")
+            return self._log_cost_basis_unavailable(pair, e, "\u2014")
 
     # == TrailingCore ADAPTER contract ========================================
     def assets(self):
@@ -268,12 +268,12 @@ class TrailingStop(TrailingAdapterBase):
             # empty account identically is safe because there is nothing to protect.
             if not isinstance(balances, list) or not balances:
                 self._balances = []
-                self.log("  ! [TRAIL] empty or invalid balance snapshot — skipping the tick")
+                self.log("  ! [TRAIL] empty or invalid balance snapshot \u2014 skipping the tick")
                 return False
             self._balances = balances
             return True
         except Exception as e:  # noqa: BLE001
-            self.log(f"  ! [TRAIL] balances unavailable ({e}) — skipping the tick")
+            self.log(f"  ! [TRAIL] balances unavailable ({e}) \u2014 skipping the tick")
             return False
 
     def free_qty(self, asset: str) -> float:
@@ -334,11 +334,11 @@ class TrailingStop(TrailingAdapterBase):
         return self._submit_and_clear_if_refused(intent, persist, submit_once)
 
     def run(self):
-        mode = "⚠ ACTIVE (it really sells)" if self.enabled else "DRY RUN (it only logs)"
+        mode = "\u26a0 ACTIVE (it really sells)" if self.enabled else "DRY RUN (it only logs)"
         self._run_trailing_loop(
             CHECK_SECONDS,
             [
-                f"=== TRAILING STOP started — {mode} ===",
+                f"=== TRAILING STOP started \u2014 {mode} ===",
                 "    coins/thresholds: "
                 + ", ".join(f"{symbol}={trail}%" for symbol, _asset, _pair, trail in self.assets()),
             ],

@@ -155,7 +155,7 @@ def main() -> int:
                        body=f"LIMIT qty=0.5 @ 99 USD\n{ts}", source="trade", desktop=args.desktop)
             log("[TEST] Done.")
         else:
-            log(f"[TEST STRATEGY] {args.test_strategy}  {'PAPER' if strat_dry else '⚠ REAL'}")
+            log(f"[TEST STRATEGY] {args.test_strategy}  {'PAPER' if strat_dry else '\u26a0 REAL'}")
             Strategy(client, args.test_strategy, StratParams.from_env(),
                      dry_run=strat_dry, desktop=args.desktop).run()
         return 0
@@ -197,7 +197,7 @@ def main() -> int:
     log(f"    instrument   : {label}  ({t212_ticker}, price through {yahoo_symbol})")
     log(f"    T212 env     : {t212_env.upper()}")
     log(f"    mode         : {'STRATEGY (DCA+TP)' if strat_enabled else 'a single order'}")
-    log(f"    execution    : {'PAPER (no money)' if (strat_dry if strat_enabled else order_dry) else '⚠ REAL — REAL MONEY'}")
+    log(f"    execution    : {'PAPER (no money)' if (strat_dry if strat_enabled else order_dry) else '\u26a0 REAL \u2014 REAL MONEY'}")
     log(f"    launch       : checking until {label} is launched (already listed: immediately; IPO: at the open)")
     log(f"    ntfy/email   : {optional_env('NTFY_TOPIC_TRADES', '-')} / {optional_env('ALERT_TO_EMAIL', '-')}")
 
@@ -237,16 +237,16 @@ def main() -> int:
 
     try:
         if strat_enabled:
-            log(f"  Starting STRATEGY on {t212_ticker} ({'PAPER' if strat_dry else '⚠ REAL'})")
+            log(f"  Starting STRATEGY on {t212_ticker} ({'PAPER' if strat_dry else '\u26a0 REAL'})")
             Strategy(client, t212_ticker, StratParams.from_env(),
                      dry_run=strat_dry, desktop=args.desktop).run()
             return 0
         px_f = safe_pos_float(order_price, default=None)
         if px_f is not None:
             return _submit_resolved_order(
-                t212_ticker, px_f, "  ! invalid qty/budget — the order was NOT SENT"
+                t212_ticker, px_f, "  ! invalid qty/budget \u2014 the order was NOT SENT"
             )
-        exit_msg, exit_code = "  ! neither STRAT_ENABLED nor ORDER_PRICE — nothing to trade.", 1
+        exit_msg, exit_code = "  ! neither STRAT_ENABLED nor ORDER_PRICE \u2014 nothing to trade.", 1
     except KeyboardInterrupt:
         exit_msg, exit_code = "Stopped manually.", 130
     log(exit_msg)

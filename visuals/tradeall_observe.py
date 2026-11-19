@@ -544,7 +544,7 @@ def render_chart(symbol, window_label, window_start, window_end,
         ax.axvline(t, color=color, ls="--", lw=1, alpha=0.6, zorder=3)
         ax.scatter(t, e["price"], marker="o", color=color, s=40, zorder=6,
                    edgecolors="white", linewidths=0.8)
-        label = f"{e['old_state']}→{e['state']}"
+        label = f"{e['old_state']}\u2192{e['state']}"
         if e.get("prev_confirm_count"):
             label += f" ({e['prev_confirm_count']})"
         step = 15 * level
@@ -614,7 +614,7 @@ def render_chart(symbol, window_label, window_start, window_end,
     if window_end <= window_start:
         window_end = window_start + 60.0
     ax.set_xlim(datetime.fromtimestamp(window_start), datetime.fromtimestamp(window_end))
-    ax.set_title(f"{symbol} — {window_label}  (updated {datetime.now().strftime('%H:%M:%S')})")
+    ax.set_title(f"{symbol} \u2014 {window_label}  (updated {datetime.now().strftime('%H:%M:%S')})")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
     # autofmt_xdate plus tight_layout measured text on every render; profiling
     # attributed ~96 ms of ~360 ms per call to tight_layout. The structure is
@@ -663,12 +663,12 @@ def format_state_text(entry, header, pending=None, exposure=None):
     # Add shadow rows only when their keys exist in the snapshot.
     if entry.get("kalman_trend") is not None:
         text += (f"\nkalman:    {_t_label(entry.get('kalman_trend'))} "
-                 f"(v={safe_float(entry.get('kalman_vel')):+.3f}%/min ±{safe_float(entry.get('kalman_vel_std')):.3f})")
+                 f"(v={safe_float(entry.get('kalman_vel')):+.3f}%/min \u00b1{safe_float(entry.get('kalman_vel_std')):.3f})")
     v1h_f = safe_float(entry.get("vol_1h_pct"), default=None)
     if v1h_f is not None:
         text += f"\nvol 1h:    {v1h_f:.2f}%"
         if entry.get("adapt_reentry_pct") is not None or entry.get("adapt_dca_pct") is not None:
-            text += (f" → re:{entry.get('adapt_reentry_pct', '?')}% "
+            text += (f" \u2192 re:{entry.get('adapt_reentry_pct', '?')}% "
                      f"dca:{entry.get('adapt_dca_pct', '?')}%")
     if pending:
         text += f"\npending:   {pending}"
@@ -779,7 +779,7 @@ def write_html(symbols, live_minutes=60, active_summary=None):
 </div>'''
 
     html = f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>tradeall — live monitor</title>
+<html><head><meta charset="utf-8"><title>tradeall \u2014 live monitor</title>
 <style>
 {_BASE_CHART_CSS}
 button {{ margin: 4px 6px 14px 0; padding: 6px 16px; border-radius: 4px; border: 1px solid #444;
@@ -790,7 +790,7 @@ button.active {{ background:#1f6feb; border-color:#1f6feb; }}
 .summary-bar span strong {{ color: #58a6ff; }}
 </style></head>
 <body>
-<h2>tradeall — live monitor</h2>
+<h2>tradeall \u2014 live monitor</h2>
 {summary_html}
 <button id="btn-live" class="active" onclick="show('live')">Live ({live_minutes:.0f} min)</button>
 <button id="btn-day" onclick="show('day')">Day</button>
@@ -827,14 +827,14 @@ def main():
             "--live-minutes",
             60.0,
             "the Live tab's window, in minutes (default 60; TAO moves rarely "
-            "— at 30 min the window shows more emptiness than signal)",
+            "\u2014 at 30 min the window shows more emptiness than signal)",
         ),
         ("--day-refresh", 30.0, "how often, in seconds, the DAY chart is redrawn (default 30)"),
         ("--week-refresh", 300.0, "how often, in seconds, the WEEK chart is redrawn (default 300)"),
     ):
         parser.add_argument(flag, type=parse_cli_float, default=default_val, help=help_text)
     parser.add_argument("--backtest-dir", default=None,
-                         help="if given: BACKTEST mode — it renders the folder of an "
+                         help="if given: BACKTEST mode \u2014 it renders the folder of an "
                               "offline/backtests/tradeall.py run instead of running live")
     for flag, help_text in (
         (
@@ -846,7 +846,7 @@ def main():
         (
             "--window-hours",
             "with --backtest-dir (without --frame-hours): a SLIDING window of N hours, "
-            "anchored to the current simulated clock — it runs in a loop (like live), "
+            "anchored to the current simulated clock \u2014 it runs in a loop (like live), "
             "sliding as offline/backtests/tradeall.py writes new data in parallel; "
             "the events appear on the frame exactly when the backtester reaches them)",
         ),
@@ -901,7 +901,7 @@ def main():
                         start_label = str(math.trunc(c_start))
                         end_label = str(math.trunc(c_end))
                         start_tag = str(math.trunc(c_start))
-                    label = f"{start_label} → {end_label}  (frame {i+1}/{n_chunks})"
+                    label = f"{start_label} \u2192 {end_label}  (frame {i+1}/{n_chunks})"
                     path = os.path.join(directory, f"tradeall_live_{symbol}_frame{i+1:03d}_{start_tag}.png")
                     render_chart(symbol, label, c_start, c_end, price_ts, price_vals, trend_events, order_events, path)
                     paths.append(path)
@@ -918,12 +918,12 @@ def main():
             f'<img class="state-overlay" src="tradeall_live_{s}_state.png" alt="{s} state">'
             f'</div></div>' for s in symbols)
         bt_html = f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>tradeall — backtest</title>
+<html><head><meta charset="utf-8"><title>tradeall \u2014 backtest</title>
 <style>
 {_BASE_CHART_CSS}
 </style></head>
 <body>
-<h2>tradeall — backtest ({os.path.basename(directory)})</h2>
+<h2>tradeall \u2014 backtest ({os.path.basename(directory)})</h2>
 {blocks}
 <script>
 setInterval(function() {{

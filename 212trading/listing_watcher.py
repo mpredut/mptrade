@@ -44,7 +44,7 @@ def verify_instrument_isin(
     instruments = client.list_instruments()
     if not instruments or not isinstance(instruments, list):
         if verbose:
-            log("  ! cannot verify the ISIN (metadata unavailable) — continuing on the explicit ticker")
+            log("  ! cannot verify the ISIN (metadata unavailable) \u2014 continuing on the explicit ticker")
         return True
     match = next(
         (i for i in instruments if isinstance(i, dict) and _t212_tickers_match(i.get("ticker"), ticker)),
@@ -52,17 +52,17 @@ def verify_instrument_isin(
     )
     if not match:
         if verbose:
-            log(f"  ! {ticker} does not appear in the T212 metadata yet — continuing (it may be a delay)")
+            log(f"  ! {ticker} does not appear in the T212 metadata yet \u2014 continuing (it may be a delay)")
         return True
     found_isin = str(match.get("isin") or "").strip()
     if not found_isin:
         return True
     expected_clean = str(expected_isin).strip()
     if found_isin.upper() != expected_clean.upper():
-        log(f"  ! [{ticker}] ISIN {found_isin} != the expected {expected_clean} — NOT trading")
+        log(f"  ! [{ticker}] ISIN {found_isin} != the expected {expected_clean} \u2014 NOT trading")
         if callable(notify_fn):
             notify_fn(
-                title=f"⚠ {ticker}: ISIN mismatch",
+                title=f"\u26a0 {ticker}: ISIN mismatch",
                 body=f"Found {found_isin}, expected {expected_clean}. Not trading.",
                 source=notify_source,
                 symbol=ticker,
@@ -114,9 +114,9 @@ def wait_for_launch(yahoo_symbol: str, label: str, interval: int = 60, *,
                     log(f"    ! [{label}] on_launch failed: {e}")
             return True
         if m:
-            log(f"    [{label}] ping — waiting for the launch | price={m.get('price')} "
+            log(f"    [{label}] ping \u2014 waiting for the launch | price={m.get('price')} "
                 f"vol={m.get('volume')} state={m.get('state')} age={m.get('age_min')}min")
         else:
-            log(f"    [{label}] ping — symbol unavailable on feed")
+            log(f"    [{label}] ping \u2014 symbol unavailable on feed")
         _wait(stop, eff_interval)
     return False

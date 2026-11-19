@@ -866,7 +866,7 @@ def query_topic_json(
     spec = topic_spec(topic_key)
     base_title = str(getattr(spec, "title", "") or topic_key).strip()
     sub = str(subtitle or "").strip()
-    thread_title = f"{base_title} — {sub}" if sub else base_title
+    thread_title = f"{base_title} \u2014 {sub}" if sub else base_title
     default_timeout = safe_pos_float(
         getattr(spec, "default_timeout_sec", None),
         120.0 if getattr(spec, "can_self_heal", False) else 90.0,

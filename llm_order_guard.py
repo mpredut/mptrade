@@ -216,11 +216,11 @@ def evaluate_high_stake_order_guard(
                 hs_tag = topic_spec("guard_high_stake").bracket_tag
                 scale_pct = round(g_scale * 100)
                 if not g_allowed_bool:
-                    g_title = f"🛡 {hs_tag} BLOCK {side} {symbol}"
+                    g_title = f"\U0001f6e1 {hs_tag} BLOCK {side} {symbol}"
                 elif g_brake == BrakeAction.DOWNSCALE_QTY:
-                    g_title = f"🛡 {hs_tag} SCALE {scale_pct}% {side} {symbol}"
+                    g_title = f"\U0001f6e1 {hs_tag} SCALE {scale_pct}% {side} {symbol}"
                 else:
-                    g_title = f"🧭 {hs_tag} ACCEPT {side} {symbol}"
+                    g_title = f"\U0001f9ed {hs_tag} ACCEPT {side} {symbol}"
 
                 meta_reason = clean_scalar_str(g_meta.get("gemini_reason"))
                 clean_reason = (meta_reason or re.sub(
@@ -234,7 +234,7 @@ def evaluate_high_stake_order_guard(
                 price_str = f"{ccy_sym}{format_notify_price(px_clean)}" if px_clean > 0.0 else ""
                 qty_str = f"{qty_clean:g} " if qty_clean > 0.0 else ""
                 order_header = f"Order: {side} {qty_str}{symbol}" + (f" @ {price_str}" if price_str else "")
-                order_header += f" · {ccy_sym}{computed_notional:,.0f} (Scale: {scale_pct}%)"
+                order_header += f" \u00b7 {ccy_sym}{computed_notional:,.0f} (Scale: {scale_pct}%)"
                 _alertnotifiers.notify(title=g_title, body=f"{order_header}\n{clean_reason}", source="order_guard", symbol=symbol)
             except Exception:
                 pass
@@ -364,9 +364,9 @@ def check_geopolitical_order_guards(
                         geo_tag = topic_spec("macro_geopolitical").bracket_tag
                         scale_pct = round(geo_scale * 100)
                         geo_title = (
-                            f"🛑 {geo_tag} BLOCK {order_side} {symbol}"
+                            f"\U0001f6d1 {geo_tag} BLOCK {order_side} {symbol}"
                             if not geo_allowed or geo_scale <= 0.0
-                            else f"🛡 {geo_tag} SCALE {scale_pct}% {order_side} {symbol}"
+                            else f"\U0001f6e1 {geo_tag} SCALE {scale_pct}% {order_side} {symbol}"
                         )
                         clean_summary = obj_attr(cached_geo, "summary") or geo_reason
                         if "(" in geo_reason and geo_reason.endswith(")"):

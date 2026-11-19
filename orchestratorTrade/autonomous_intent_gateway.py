@@ -266,7 +266,7 @@ class AutonomousIntentGateway:
         else:
             reason = f"open_orders_scan_failed:{scan_errors[0] if scan_errors else 'unknown'}"
         logger.warning(
-            "[LLM TRADER · ENFORCE] Aborting replacement %s %s: %s",
+            "[LLM TRADER \u00b7 ENFORCE] Aborting replacement %s %s: %s",
             decision, sym_lbl, reason,
         )
         intent["status"] = "FAILED"
@@ -444,7 +444,7 @@ class AutonomousIntentGateway:
                 return intent
         if dup_oid:
             logger.info(
-                "[LLM TRADER · ENFORCE] Skipping duplicate %s LIMIT %s @ $%.4f ($%.2f); identical AI order %s is already open.",
+                "[LLM TRADER \u00b7 ENFORCE] Skipping duplicate %s LIMIT %s @ $%.4f ($%.2f); identical AI order %s is already open.",
                 decision, inst.symbol, price, effective_usd, dup_oid,
             )
             intent["status"] = "SKIPPED_DUPLICATE_OPEN_ORDER"
@@ -525,7 +525,7 @@ class AutonomousIntentGateway:
 
         # Gate: only "enforce" mode is permitted to execute live orders
         if mode != "enforce":
-            logger.info("[LLM TRADER] Gateway mode is %r — skipping execution for intent %s", mode, intent_id)
+            logger.info("[LLM TRADER] Gateway mode is %r \u2014 skipping execution for intent %s", mode, intent_id)
             intent["status"] = "REJECTED_GATEWAY_DISABLED"
             append_intent_history(intent, {
                 "ts": now,

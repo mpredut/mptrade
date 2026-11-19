@@ -71,7 +71,7 @@ def resolve_quantity(order_price: float,
         if price is None or rate is None:
             return None
         qty = budget / (price * rate)
-        log(f"  [ORDER] {order_budget_ron} RON / ({order_price} USD × {rate:.2f}) = {qty:.4f} shares")
+        log(f"  [ORDER] {order_budget_ron} RON / ({order_price} USD \u00d7 {rate:.2f}) = {qty:.4f} shares")
         if qty < 1:
             log(f"  ! [ORDER] budget < the price of one share (~{price*rate:.0f} RON) "
                 f"-> a FRACTIONAL order ({qty:.4f}). T212 may refuse fractional orders on a new instrument.")
@@ -276,7 +276,7 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
                 record["lifecycle"] = "canceled"
                 record["venue_status"] = "ABSENT"
                 _persist_marker(record, marker_path)
-                log(f"  [ORDER] ✗ accepted order {order_id} definitively absent without portfolio growth")
+                log(f"  [ORDER] \u2717 accepted order {order_id} definitively absent without portfolio growth")
                 return "terminal_failed"
             _persist_marker(record, marker_path)
             return "waiting"
@@ -322,7 +322,7 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
         log(f"  [ORDER] lost response recovered: id={record['order_id']}")
         return "waiting"
     if len(matches) > 1:
-        log("  ! [ORDER] " + "several T212 orders match the intent — keeping it pending")
+        log("  ! [ORDER] " + "several T212 orders match the intent \u2014 keeping it pending")
         return "waiting"
 
     pf_outcome = _confirm_fill_from_portfolio(
@@ -404,7 +404,7 @@ def place_order_with_retry(
 
     if dry_run:
         log(f"  [ORDER] [DRY-RUN] LIMIT BUY {ticker}  qty={qty_r}  @ {price_r} USD  validity={validity}")
-        log("  [ORDER] " + "Dry run — the order was NOT SENT. Set ORDER_EXECUTE=true in .env.")
+        log("  [ORDER] " + "Dry run \u2014 the order was NOT SENT. Set ORDER_EXECUTE=true in .env.")
         return True
 
     marker_path = _marker_path(ticker, test=not write_marker)
@@ -412,7 +412,7 @@ def place_order_with_retry(
     try:
         record = load_json_state(marker_path, default_factory=lambda: None, fail_closed=True, label="T212 marker")
     except RuntimeError as exc:
-        log(f"  ! [ORDER] unreadable T212 marker {marker_path}: {exc} — NOT sending without verifiable durable state")
+        log(f"  ! [ORDER] unreadable T212 marker {marker_path}: {exc} \u2014 NOT sending without verifiable durable state")
         return False
     if record:
         # Legacy accepted markers stay blocking rather than silently creating a
@@ -425,7 +425,7 @@ def place_order_with_retry(
                 info = poll_order_until_terminal(client, legacy_id, ticker, desktop)
                 record["last_status"] = info.get("status") if isinstance(info, dict) else None
                 _persist_marker(record, marker_path)
-            log(f"  [ORDER] an existing legacy marker (v{ver_i}) — not duplicating the order")
+            log(f"  [ORDER] an existing legacy marker (v{ver_i}) \u2014 not duplicating the order")
             return True
         rec_qty_f = safe_pos_float(record.get("qty"), -1.0)
         rec_lim_f = safe_pos_float(record.get("limit_price"), -1.0)
@@ -439,7 +439,7 @@ def place_order_with_retry(
         lifecycle = (clean_scalar_str(record.get("lifecycle")) or "").lower()
         if not same_intent or lifecycle in {"canceled", "cancelled", "expired"}:
             log(
-                "  ! [ORDER] another intent already exists in the marker — NOT overwriting"
+                "  ! [ORDER] another intent already exists in the marker \u2014 NOT overwriting"
                 if not same_intent
                 else f"  [ORDER] the intent is terminal ({lifecycle}); not resending it"
             )
@@ -461,7 +461,7 @@ def place_order_with_retry(
     else:
         before_qty = _portfolio_qty(client, ticker)
         if before_qty is None:
-            log("  ! [ORDER] " + "the T212 portfolio is unavailable — NOT sending")
+            log("  ! [ORDER] " + "the T212 portfolio is unavailable \u2014 NOT sending")
             return False
         record = {
             "version": 2,
@@ -481,7 +481,7 @@ def place_order_with_retry(
         active_matches = _matching_active_orders(client, record)
         if active_matches is None or active_matches:
             log(
-                "  ! [ORDER] the active T212 orders are unavailable — NOT sending"
+                "  ! [ORDER] the active T212 orders are unavailable \u2014 NOT sending"
                 if active_matches is None
                 else "  ! [ORDER] an active order with the same ticker/side/qty/price already exists; "
                 "not claiming it and NOT sending another"
@@ -502,7 +502,7 @@ def place_order_with_retry(
     except Exception as exc:  # response may have been lost after venue acceptance
         record["submit_error"] = f"{exc.__class__.__name__}: {exc}"
         _persist_marker(record, marker_path)
-        log(f"  ! [ORDER] ambiguous submit response ({exc}) — intent stays pending")
+        log(f"  ! [ORDER] ambiguous submit response ({exc}) \u2014 intent stays pending")
         return False
 
     oid = extract_order_id(data) if isinstance(data, dict) else None
@@ -532,5 +532,5 @@ def place_order_with_retry(
 
     record["submit_error"] = f"T212 HTTP {status}: {encode_json_payload(data, default=str)[:400]}"
     _persist_marker(record, marker_path)
-    log(f"  ! [ORDER] {record['submit_error']} — non-blocking retry on the next cycle")
+    log(f"  ! [ORDER] {record['submit_error']} \u2014 non-blocking retry on the next cycle")
     return False

@@ -786,7 +786,7 @@ def get_weight_for_cash_permission_at_quant_time(
             T_quanta = est["T"]
         except Exception as e:
             T_quanta = 14
-            print(f"[{symbol}] T estimation failed ({e}) — using the prior T=14")
+            print(f"[{symbol}] T estimation failed ({e}) \u2014 using the prior T=14")
 
     dur_sec = safe_pos_float(trend.get("duration_seconds"), default=None)
     t_quanta_f = safe_pos_float(T_quanta, default=None)

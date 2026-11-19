@@ -338,7 +338,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
     print(f"[{symbol}] Hurst={h:.2f} ({res['regime']})" if h else f"[{symbol}] Hurst: series too short")
 
     direction = res['direction']
-    emoji = "📈" if direction == 'up' else "📉"
+    emoji = "\U0001f4c8" if direction == 'up' else "\U0001f4c9"
     dur = res['duration_seconds']
     print(f"\n{'='*60}")
     print(f"[{symbol}] Trend {emoji} {direction.upper()} | slope/h={res['current_slope_h']:.4f}")
@@ -373,11 +373,11 @@ def write_all_trends(all_trends, filename=None):
     
     for symbol, trend_data in all_trends.items():
         if not isinstance(trend_data, dict):
-            print(f"\n{symbol}:", "❌ Not enough data")
+            print(f"\n{symbol}:", "\u274c Not enough data")
             continue
             
         direction = str(trend_data.get('direction') or 'down').strip().lower()
-        emoji = "📈" if direction == 'up' else "📉"
+        emoji = "\U0001f4c8" if direction == 'up' else "\U0001f4c9"
         
         start_str = format_timestamp(trend_data.get('start_timestamp', 0))
         dur_sec = safe_pos_float(trend_data.get('duration_seconds', 0), 0.0)

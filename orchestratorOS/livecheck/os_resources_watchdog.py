@@ -226,15 +226,15 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
             action = ("automatic restart requested" if restarted is True else
                       "automatic restart failed" if restarted is False else
                       "alert only (unmanaged process or restart safety limit)")
-            lines.append(f"PID {proc.get('pid', '?')} — {', '.join(reasons)} for at least "
-                         f"{checks * CHECK_INTERVAL_MIN:.0f} min — {action} — {proc.get('command', '?')}")
+            lines.append(f"PID {proc.get('pid', '?')} \u2014 {', '.join(reasons)} for at least "
+                         f"{checks * CHECK_INTERVAL_MIN:.0f} min \u2014 {action} \u2014 {proc.get('command', '?')}")
         wc.save_state(STATE_FILE, state)
         wc.send_ntfy("High sustained process resource usage", "\n".join(lines))
     if recovered:
-        lines = [f"PID {proc.get('pid', '?')} — {proc.get('command', '?')}" for proc in recovered]
+        lines = [f"PID {proc.get('pid', '?')} \u2014 {proc.get('command', '?')}" for proc in recovered]
         wc.send_ntfy("Process resource usage recovered", "\n".join(lines))
     if not offenders and not recovered:
-        print(f"[resources] OK — sampled {len(processes)} processes")
+        print(f"[resources] OK \u2014 sampled {len(processes)} processes")
     return bool(offenders or recovered)
 
 

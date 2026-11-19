@@ -217,7 +217,7 @@ def format_topic_turn_header(topic_key: Optional[str], thread_title: Optional[st
     if not raw or raw == canonical or raw.startswith(canonical):
         return raw or canonical
     cleaned = re.sub(r"^ntfy-(?:guard|macro):\s*", "", raw)
-    return f"{canonical} — {cleaned}" if cleaned else canonical
+    return f"{canonical} \u2014 {cleaned}" if cleaned else canonical
 
 
 
@@ -251,7 +251,7 @@ def format_topic_history_prefix(
     history = [h for h in entry.get("rolling_history") or [] if isinstance(h, dict)]
     if not history:
         return ""
-    lines = ["[TOPIC MEMORY — PRIOR DECISIONS IN THIS TOPIC]:"]
+    lines = ["[TOPIC MEMORY \u2014 PRIOR DECISIONS IN THIS TOPIC]:"]
     lines += [f"- [{h.get('utc', '')}] {h.get('summary', '')}" for h in history]
     return "\n".join(lines) + "\n\n"
 

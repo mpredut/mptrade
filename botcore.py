@@ -106,7 +106,7 @@ def single_instance(name: str, lockdir: str = "/tmp") -> None:
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        print(f"[{name}] already running (lock held: {path}) — exiting.", flush=True)
+        print(f"[{name}] already running (lock held: {path}) \u2014 exiting.", flush=True)
         sys.exit(0)
     fd.write(str(os.getpid()))
     fd.flush()
@@ -3692,14 +3692,14 @@ class TopicSpec:
 
 TOPIC_SPECS: dict[str, TopicSpec] = {
     "auto_technical_repair": TopicSpec(
-        "🛠 [auto_technical_repair] System Audit & Code Self-Heal (03:35)",
+        "\U0001f6e0 [auto_technical_repair] System Audit & Code Self-Heal (03:35)",
         can_self_heal=True,
         default_preferred_model="gemini-4-argon-medium",
         default_timeout_sec=120.0,
         model_env_key="LLM_DEFAULT_MODEL",
     ),
     "auto_cryptotrade_executor": TopicSpec(
-        "🎯 [auto_cryptotrade_executor] Autonomous Crypto Trade Decisions (Binance/Kraken/HL 6m)",
+        "\U0001f3af [auto_cryptotrade_executor] Autonomous Crypto Trade Decisions (Binance/Kraken/HL 6m)",
         can_trade=True,
         asset_scope="crypto",
         default_preferred_model="gemini-4-argon-medium",
@@ -3707,7 +3707,7 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
         model_env_key="LLM_DEFAULT_MODEL",
     ),
     "auto_sharetrade_executor": TopicSpec(
-        "📈 [auto_sharetrade_executor] Autonomous Share Trade Decisions (Trading212 RTH 30m)",
+        "\U0001f4c8 [auto_sharetrade_executor] Autonomous Share Trade Decisions (Trading212 RTH 30m)",
         can_trade=True,
         asset_scope="equities",
         default_preferred_model="gemini-4-argon-medium",
@@ -3715,25 +3715,25 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
         model_env_key="LLM_DEFAULT_MODEL",
     ),
     "macro_geopolitical": TopicSpec(
-        "🌍 [auto_macro_geopolitical] Geopolitical Crisis & Breaking News Brake",
+        "\U0001f30d [auto_macro_geopolitical] Geopolitical Crisis & Breaking News Brake",
         default_preferred_model="gemini-3.8-flash-low",
         default_timeout_sec=120.0,
         model_env_key="LLM_LOW_STAKE_MODEL",
     ),
     "macro_sentiment": TopicSpec(
-        "🧭 [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)",
+        "\U0001f9ed [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)",
         default_preferred_model="gemini-4-argon-medium",
         default_timeout_sec=120.0,
         model_env_key="LLM_DEFAULT_MODEL",
     ),
     "guard_high_stake": TopicSpec(
-        "🛡 [auto_guard_large_order] Pre-Trade Veto for Large Orders (>=700 EUR)",
+        "\U0001f6e1 [auto_guard_large_order] Pre-Trade Veto for Large Orders (>=700 EUR)",
         default_preferred_model="gemini-4-argon-high",
         default_timeout_sec=120.0,
         model_env_key="LLM_HIGH_STAKE_MODEL",
     ),
     "guard_post_stop": TopicSpec(
-        "🛡 [auto_guard_post_stop] Pre-Trade Veto for Post-Stop Re-Buy Bounce",
+        "\U0001f6e1 [auto_guard_post_stop] Pre-Trade Veto for Post-Stop Re-Buy Bounce",
         default_preferred_model="gemini-4-argon-medium",
         default_timeout_sec=120.0,
         model_env_key="LLM_DEFAULT_MODEL",

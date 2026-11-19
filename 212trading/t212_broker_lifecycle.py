@@ -301,7 +301,7 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
             self._log_msg(f"  [STRAT] T212 submit recovered from the active orders: {order['id']}")
             return "adopted"
         if len(matches) > 1:
-            self._log_msg("  ! [STRAT] ambiguous T212 submit: several active orders match — keeping it pending")
+            self._log_msg("  ! [STRAT] ambiguous T212 submit: several active orders match \u2014 keeping it pending")
             return "waiting"
 
         before = safe_float(pending.get("before_qty"), 0.0)
@@ -317,7 +317,7 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
         if misses >= 2:
             self._log_msg(
                 f"  [STRAT] T212 submit absent in 2 snapshots and no portfolio delta "
-                f"({side} {self.ticker}) — releasing it for re-evaluation/retry"
+                f"({side} {self.ticker}) \u2014 releasing it for re-evaluation/retry"
             )
         self._persist_pending_submit(pending if misses < 2 else None)
         return "waiting" if misses < 2 else "retryable"
@@ -446,7 +446,7 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
         qty = round(raw_qty, 2) if raw_qty is not None else 0.0
         if invalid_buy or qty <= 0:
             self._log_msg(
-                "  ! [STRAT] invalid BUY amount/limit — skipping" if invalid_buy else "  ! [STRAT] qty 0 — skipping"
+                "  ! [STRAT] invalid BUY amount/limit \u2014 skipping" if invalid_buy else "  ! [STRAT] qty 0 \u2014 skipping"
             )
             return False
         limit, amount = lim_f, amt_f
@@ -458,7 +458,7 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
             })
             return True
         if self.s.get("pending_submit"):
-            self._log_msg(f"  [STRAT] BUY {kind} deferred — a T212 submit is already pending")
+            self._log_msg(f"  [STRAT] BUY {kind} deferred \u2014 a T212 submit is already pending")
             return False
         pending = self._new_pending_submit(
             side="BUY", qty=qty, limit=limit, amount=amount, kind=kind, level=None, market=False
@@ -472,7 +472,7 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                 self._log_msg(f"  ! [STRAT] BUY {kind} outcome unknown: {outcome.reason}; keeping pending")
             if "insufficient" in outcome.reason.lower():
                 self.s["buy_backoff_until"] = self._now() + 1800
-                self._log_msg("  [STRAT] insufficient funds — pausing buys for 30 minutes")
+                self._log_msg("  [STRAT] insufficient funds \u2014 pausing buys for 30 minutes")
             return not definitive
         self._log_msg(f"  [STRAT] BUY {kind} placed id={outcome.order_id} {qty} @ {limit:.2f}")
         return True
@@ -488,9 +488,9 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
             self._log_msg(
                 "  ! [STRAT] "
                 + (
-                    "invalid SELL qty/limit — sending no order"
+                    "invalid SELL qty/limit \u2014 sending no order"
                     if invalid_sell
-                    else "SELL qty 0 after rounding — keeping the dust, sending no order"
+                    else "SELL qty 0 after rounding \u2014 keeping the dust, sending no order"
                 )
             )
             return False
@@ -506,7 +506,7 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
             })
             return True
         if self.s.get("pending_submit"):
-            self._log_msg(f"  [STRAT] SELL {kind}{tag} deferred — a T212 submit is already pending")
+            self._log_msg(f"  [STRAT] SELL {kind}{tag} deferred \u2014 a T212 submit is already pending")
             return False
         pending = self._new_pending_submit(
             side="SELL", qty=qty, limit=limit, amount=None, kind=kind, level=level, market=market
@@ -524,17 +524,17 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
             _m = re.search(r'owned["\']?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)', message)
             _owned = safe_nonneg_float(_m.group(1), default=None) if _m is not None else None
             if _m is None:
-                self._log_msg("  ! [STRAT] selling-not-owned without the owned quantity — NOT resetting the position")
+                self._log_msg("  ! [STRAT] selling-not-owned without the owned quantity \u2014 NOT resetting the position")
             elif _owned is not None:
                 if _owned <= 1e-6:
-                    self._log_msg("  ! [STRAT] T212 confirms owned=0 — resetting the state (position closed/sold)")
+                    self._log_msg("  ! [STRAT] T212 confirms owned=0 \u2014 resetting the state (position closed/sold)")
                     exit_px = safe_pos_float(self.s.get("last_sell_price")) or limit
                     self._close_cycle(exit_px, exit_kind=kind)
                     self.s["locked_zero_until"] = self._now() + 300
                     self._save()
                 else:
                     self._log_msg(
-                        f"  ! [STRAT] selling-not-owned but owned={_owned} (free<order) — NOT resetting the position"
+                        f"  ! [STRAT] selling-not-owned but owned={_owned} (free<order) \u2014 NOT resetting the position"
                     )
             return False
         order_type = "MARKET" if market else f"@ {limit:.2f}"
@@ -646,7 +646,7 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
             cache[key] = "not_found"
             return "not_found"
         except ProviderError as exc:
-            self._log_msg(f"  ! [STRAT] T212 status {key} unavailable: {exc} — keeping the order")
+            self._log_msg(f"  ! [STRAT] T212 status {key} unavailable: {exc} \u2014 keeping the order")
             cache[key] = None
             return None
         cache[key] = status
@@ -670,7 +670,7 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
             if cq is None or cc is None or cf is None or aq is None or ac is None or af is None:
                 continue
             if cq + 1e-9 < aq or cc + 1e-9 < ac:
-                self._log_msg(f"  ! [STRAT] T212 fill {order.get('id')} regressed cumulatively — ignoring")
+                self._log_msg(f"  ! [STRAT] T212 fill {order.get('id')} regressed cumulatively \u2014 ignoring")
                 continue
             delta_qty = max(0.0, cq - aq)
             delta_cost = max(0.0, cc - ac)
@@ -754,7 +754,7 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
         status_cache: dict[str, object] = {}
 
         if real_qty > prev_qty + 1e-6 and self._now() < safe_nonneg_float(self.s.get("locked_zero_until"), 0.0):
-            self._log_msg("  [STRAT] adoption ignored — stale portfolio (recent not-owned, lock active)")
+            self._log_msg("  [STRAT] adoption ignored \u2014 stale portfolio (recent not-owned, lock active)")
             return False
         if real_qty > prev_qty + 1e-6:
             fq = real_qty - prev_qty
@@ -777,7 +777,7 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                 if now - getattr(self, "_dust_logged", 0) > 600:
                     self._log_msg(
                         f"  [STRAT] portfolio dust ({real_qty:.4f} shares, ~{real_qty*eff_real_avg:.2f} USD) "
-                        "ignored — staying flat for new cycle"
+                        "ignored \u2014 staying flat for new cycle"
                     )
                     self._dust_logged = now
                 return True
@@ -878,7 +878,7 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                     o["lookup_misses"] = misses
                     if misses >= (2 if _parse_bool_flag(o.get("cancel_requested"), False) else 3):
                         self._log_msg(
-                            f"  [STRAT] order {o.get('side', '?')} {o['id']} confirmed absent ({misses} misses) — removing from tracking"
+                            f"  [STRAT] order {o.get('side', '?')} {o['id']} confirmed absent ({misses} misses) \u2014 removing from tracking"
                         )
                         if (
                             o.get("side") == "SELL" and o.get("level") is not None
@@ -889,7 +889,7 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                 continue
             o.pop("lookup_misses", None)
             if self._buy_is_stale(o, price):
-                self._log_and_cancel_stale_buy(o, "id", "BUY", "—")
+                self._log_and_cancel_stale_buy(o, "id", "BUY", "\u2014")
 
         is_flat = real_qty <= 1e-9
         is_dust = self._is_dust(real_qty, real_avg or price)

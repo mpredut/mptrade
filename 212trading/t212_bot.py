@@ -80,12 +80,12 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
         raise ValueError("POLL_SECONDS must be a finite number between 30 and 86400")
 
     if not strat_enabled:
-        log(f"  ! [{name}] STRAT_ENABLED!=true — skipping (t212_bot only runs strategies)"); return
+        log(f"  ! [{name}] STRAT_ENABLED!=true \u2014 skipping (t212_bot only runs strategies)"); return
 
     exec_mode_str = format_strategy_execution_mode(
-        observe_only, strat_dry, paper_label="PAPER", real_label="⚠ REAL — MONEY"
+        observe_only, strat_dry, paper_label="PAPER", real_label="\u26a0 REAL \u2014 MONEY"
     )
-    log(f"  ▶ [{label}] {ticker} | price through {yahoo} | {exec_mode_str} | poll {interval}s")
+    log(f"  \u25b6 [{label}] {ticker} | price through {yahoo} | {exec_mode_str} | poll {interval}s")
     while not STOP.is_set():
         try:
             if not verify_instrument_isin(
@@ -106,9 +106,9 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
             Strategy(client, ticker, StratParams.from_env(cfg), dry_run=strat_dry, observe_only=observe_only).run(stop=STOP)
             return
         except Exception as e:  # noqa: BLE001 -- resilience: one asset cannot terminate the process
-            log(f"  ! [{label}] cycle error ({e.__class__.__name__}: {e}) — retrying in 60s")
+            log(f"  ! [{label}] cycle error ({e.__class__.__name__}: {e}) \u2014 retrying in 60s")
             STOP.wait(60)
-    log(f"  ⏹ [{label}] stopped")
+    log(f"  \u23f9 [{label}] stopped")
 
 
 def main() -> int:
@@ -141,7 +141,7 @@ def main() -> int:
             real = bool_env("STRAT_EXECUTE", False, env=c) and not args.paper
             on = bool_env("STRAT_ENABLED", False, env=c)
             log(f"  {n:<8} {optional_env('T212_TICKER', '?', env=c):<14} "
-                f"{'STRAT' if on else 'OFF':<6} {'⚠ REAL' if real else 'PAPER'}")
+                f"{'STRAT' if on else 'OFF':<6} {'\u26a0 REAL' if real else 'PAPER'}")
         return 0
 
     client = build_t212_client_from_env(

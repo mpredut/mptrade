@@ -391,7 +391,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             f"{headline_list}\n\n"
             "Assess whether these events represent an acute systemic shock (sudden escalation, oil/gas supply cut, "
             "tariff/sanction shock, or risk-off flight to USD) that could trigger a sharp market selloff in the next 24-48 hours.\n"
-            "CRITICAL CALIBRATION — FRESH UNPRICED SHOCK VS ONGOING / PRICED-IN HEADLINES:\n"
+            "CRITICAL CALIBRATION \u2014 FRESH UNPRICED SHOCK VS ONGOING / PRICED-IN HEADLINES:\n"
             "- Reserve 'CRITICAL_SHOCK' ('HARD_VETO_NEW_BUYS') strictly for a brand-new, sudden, unpriced kinetic or systemic escalation breaking right now (e.g., surprise military strike, sudden strait closure, emergency sanctions/tariff shock) that markets have not yet absorbed.\n"
             "- Each headline includes its publication timestamp (YYYY-MM-DD HH:MM UTC) and age in minutes (age=Xm). Older headlines (age > 90m) are retained in the 6-hour rolling window as historical narrative context; only fresh genuine geopolitical/systemic headlines (age <= 90m) justify active escalation. If the only fresh headline is a false alarm, error, or local non-systemic incident and older headlines (age > 90m) are already reflected in the market, classify as 'NORMAL' ('NONE').\n"
             "- If the headlines represent ongoing rhetoric, follow-up commentary, diplomatic statements, or recycled coverage of an already-known conflict that markets have already digested or sold off on over the prior hours, classify as 'ELEVATED' ('DOWNSCALE_50') or 'NORMAL' ('NONE') so post-flush contrarian bottom accumulation is not perpetually vetoed.\n"

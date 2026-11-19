@@ -408,14 +408,14 @@ def check_balance(client: KrakenClient, st: dict, rx: str, desktop: bool) -> Non
             continue
         if re.search(rx, a, re.I):
             st["allocated"] = {"asset": a, "qty": q, "ts": time.time()}
-            log(f"  🎯 ALLOCATION DETECTED: {a} = {q}")
-            notify(title=f"🎯 xStock ALLOCATION: {a} = {q}",
+            log(f"  \U0001f3af ALLOCATION DETECTED: {a} = {q}")
+            notify(title=f"\U0001f3af xStock ALLOCATION: {a} = {q}",
                    body=f"{a} appeared in the Kraken account (quantity {q}). "
                         f"Allocation cost will be resolved automatically from Ledger (or XSTOCK_ALLOC_PRICE).",
                    source="xstock-watch", desktop=desktop, email=True)
         else:
-            log(f"  ℹ new asset in account: {a} = {q}")
-            notify(title=f"ℹ New asset in Kraken account: {a} = {q}",
+            log(f"  \u2139 new asset in account: {a} = {q}")
+            notify(title=f"\u2139 New asset in Kraken account: {a} = {q}",
                    body="Check whether the xStock allocation sits under a different code than expected.",
                    source="xstock-watch", desktop=desktop, email=True)
     st["known_assets"].update(assets)
@@ -481,8 +481,8 @@ def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,
             px = client.last_price(k)
         except KrakenError:
             pass
-        log(f"  🚀 PAIR LISTED on the API: {name} (price {px})")
-        notify(title=f"🚀 {name} LISTED on Kraken API" + (f" @ {px}" if px else ""),
+        log(f"  \U0001f680 PAIR LISTED on the API: {name} (price {px})")
+        notify(title=f"\U0001f680 {name} LISTED on Kraken API" + (f" @ {px}" if px else ""),
                body=f"Pair {k} is live on Kraken API. Auto-trader will adopt the allocation as soon as cost is ready.",
                source="xstock-watch", price=px, desktop=desktop, email=True)
 
@@ -517,20 +517,20 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
         (
             "alerted_tp",
             tp_pct > 0 and chg >= tp_pct,
-            f"📈 xStock {chg:+.1f}% above the allocation ({price})",
+            f"\U0001f4c8 xStock {chg:+.1f}% above the allocation ({price})",
             f"Estimated value: {val_s} (allocated at {alloc_price}). "
             "Consider a partial sale or starting the bot with adoption.",
         ),
         (
             "alerted_tp2",
             tp2 > tp_pct and chg >= tp2,
-            f"📈📈 TRANCHE 2: xStock {chg:+.1f}% ({price})",
-            f"The second target is reached — sell the rest. Value: {val_s}.",
+            f"\U0001f4c8\U0001f4c8 TRANCHE 2: xStock {chg:+.1f}% ({price})",
+            f"The second target is reached \u2014 sell the rest. Value: {val_s}.",
         ),
         (
             "alerted_sl",
             sl_pct > 0 and chg <= -sl_pct,
-            f"📉 xStock {chg:+.1f}% below allocation ({price})",
+            f"\U0001f4c9 xStock {chg:+.1f}% below allocation ({price})",
             f"Estimated value: {val_s} (allocated at {alloc_price}). "
             "Decide: hold (DCA) or cut the loss.",
         ),
@@ -756,8 +756,8 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
     ok = all(verdict.values()) and len(verdict) == 5
     log("=== TRIAL VERDICT ===")
     for k, v in verdict.items():
-        log(f"    {'✅' if v else '❌'} {k}")
-    log(f"=== DRILL {'PASSED — the whole chain works' if ok else 'FAILED — see above'} ===")
+        log(f"    {'\u2705' if v else '\u274c'} {k}")
+    log(f"=== DRILL {'PASSED \u2014 the whole chain works' if ok else 'FAILED \u2014 see above'} ===")
     return 0 if ok else 1
 
 
@@ -828,7 +828,7 @@ def main() -> int:
         except KeyboardInterrupt:
             return 0
         except Exception as e:  # noqa: BLE001 -- resilience: retry network/DNS failures
-            log(f"  ! cycle failed ({e.__class__.__name__}: {e}) — retrying on the next one")
+            log(f"  ! cycle failed ({e.__class__.__name__}: {e}) \u2014 retrying on the next one")
         if args.once:
             return 0
         beats += 1                       # keep-alive pulse: one tail-visible dot per cycle

@@ -202,89 +202,89 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
     raw_gp = report.get("guard_preview")
     gp = raw_gp if isinstance(raw_gp, dict) else {}
 
-    print(f"\n{'=' * 76}\n  🔍 MARKET INTELLIGENCE AUDIT — {symbol}\n{'=' * 76}")
+    print(f"\n{'=' * 76}\n  \U0001f50d MARKET INTELLIGENCE AUDIT \u2014 {symbol}\n{'=' * 76}")
 
     # Pillar 1
-    print("\n📊 [PILLAR 1: INTERNAL QUANTITATIVE & SURVIVAL]")
+    print("\n\U0001f4ca [PILLAR 1: INTERNAL QUANTITATIVE & SURVIVAL]")
     raw_surv = p1.get("trend_survival")
     surv = raw_surv if isinstance(raw_surv, dict) else None
     if surv and surv.get("P90_days") is not None:
-        print(f"  • Trend Survival: T_emp={surv.get('T_emp')}d | Median={surv.get('median_duration_days')}d | P90={surv.get('P90_days')}d")
-        print(f"  • Calibration:    {surv.get('samples', 0)} empirical trend cycles")
+        print(f"  \u2022 Trend Survival: T_emp={surv.get('T_emp')}d | Median={surv.get('median_duration_days')}d | P90={surv.get('P90_days')}d")
+        print(f"  \u2022 Calibration:    {surv.get('samples', 0)} empirical trend cycles")
     elif surv:
-        print(f"  • Trend Survival: Prior default T={surv.get('T', 14)}d (samples: {surv.get('samples', 0)})")
+        print(f"  \u2022 Trend Survival: Prior default T={surv.get('T', 14)}d (samples: {surv.get('samples', 0)})")
     else:
-        print("  • Trend Survival: None")
+        print("  \u2022 Trend Survival: None")
 
     # Pillar 2
-    print("\n🌊 [PILLAR 2: EXTERNAL MICROSTRUCTURE & DERIVATIVES FLOW]")
+    print("\n\U0001f30a [PILLAR 2: EXTERNAL MICROSTRUCTURE & DERIVATIVES FLOW]")
     ob = p2.get("orderbook")
     if isinstance(ob, dict) and ob:
         imbalance = clean_scale(ob.get("imbalance_ratio", ob.get("ob_imbalance")), 0.5, allow_percent=True)
-        imb_bar = "🟢 BIDS" if imbalance > 0.55 else ("🔴 ASKS" if imbalance < 0.45 else "⚪ BALANCED")
-        print(f"  • Spot Depth:     Mid=${safe_float(ob.get('mid_price'), 0.0):,.2f} | Bids=${safe_float(ob.get('bid_depth_usd'), 0.0):,.0f} | Asks=${safe_float(ob.get('ask_depth_usd'), 0.0):,.0f}")
-        print(f"  • Imbalance:      {imbalance:.2f} ({imb_bar}) [snapshot: {ob.get('age_formatted', 'unknown')}]")
-        print(f"  • Max Bid Wall:   ${safe_float(ob.get('largest_bid_wall_usd'), 0.0):,.0f} at ${safe_float(ob.get('largest_bid_wall_price'), 0.0):,.2f}")
-        print(f"  • Max Ask Wall:   ${safe_float(ob.get('largest_ask_wall_usd'), 0.0):,.0f} at ${safe_float(ob.get('largest_ask_wall_price'), 0.0):,.2f}")
+        imb_bar = "\U0001f7e2 BIDS" if imbalance > 0.55 else ("\U0001f534 ASKS" if imbalance < 0.45 else "\u26aa BALANCED")
+        print(f"  \u2022 Spot Depth:     Mid=${safe_float(ob.get('mid_price'), 0.0):,.2f} | Bids=${safe_float(ob.get('bid_depth_usd'), 0.0):,.0f} | Asks=${safe_float(ob.get('ask_depth_usd'), 0.0):,.0f}")
+        print(f"  \u2022 Imbalance:      {imbalance:.2f} ({imb_bar}) [snapshot: {ob.get('age_formatted', 'unknown')}]")
+        print(f"  \u2022 Max Bid Wall:   ${safe_float(ob.get('largest_bid_wall_usd'), 0.0):,.0f} at ${safe_float(ob.get('largest_bid_wall_price'), 0.0):,.2f}")
+        print(f"  \u2022 Max Ask Wall:   ${safe_float(ob.get('largest_ask_wall_usd'), 0.0):,.0f} at ${safe_float(ob.get('largest_ask_wall_price'), 0.0):,.2f}")
     else:
-        print("  • Spot Depth:     [No snapshot in cachedb]")
+        print("  \u2022 Spot Depth:     [No snapshot in cachedb]")
 
     deriv = p2.get("derivatives")
     if isinstance(deriv, dict) and deriv:
         funding = safe_float(deriv.get("funding_rate"), 0.0)
-        crowding = "⚠️ CROWDED LONG" if funding > 0.0005 else ("🔥 NEGATIVE/SQUEEZE" if funding < -0.0002 else "NORMAL")
-        print(f"  • Funding Rate:   {funding:+.6f} ({funding*100:+.4f}% / 8h) [{crowding}]")
-        print(f"  • Open Interest:  ${safe_float(deriv.get('open_interest_usd'), 0.0):,.0f} contracts [snapshot: {deriv.get('age_formatted', 'unknown')}]")
+        crowding = "\u26a0\ufe0f CROWDED LONG" if funding > 0.0005 else ("\U0001f525 NEGATIVE/SQUEEZE" if funding < -0.0002 else "NORMAL")
+        print(f"  \u2022 Funding Rate:   {funding:+.6f} ({funding*100:+.4f}% / 8h) [{crowding}]")
+        print(f"  \u2022 Open Interest:  ${safe_float(deriv.get('open_interest_usd'), 0.0):,.0f} contracts [snapshot: {deriv.get('age_formatted', 'unknown')}]")
     else:
-        print("  • Derivatives:    [No snapshot in cachedb]")
+        print("  \u2022 Derivatives:    [No snapshot in cachedb]")
 
     whale = p2.get("whale")
     if isinstance(whale, dict) and whale:
         regime = str(whale.get("divergence_regime") or whale.get("div_regime") or "neutral").upper()
         w_lp = clean_scale(whale.get("top_traders_long_pct", whale.get("whale_long_pct")), 0.5, allow_percent=True)
-        print(f"  • Whale L/S:      {safe_float(whale.get('top_traders_long_ratio'), 1.0):.2f} ({w_lp*100:.1f}% longs)")
-        print(f"  • Taker Vol Buy:  ${safe_float(whale.get('taker_buy_vol_usd'), 0.0):,.0f} vs Sell: ${safe_float(whale.get('taker_sell_vol_usd'), 0.0):,.0f} (Ratio: {safe_float(whale.get('taker_buy_sell_ratio'), 1.0):.2f})")
-        print(f"  • OI Divergence:  Regime={regime} | OI 1h Delta={safe_float(whale.get('open_interest_1h_change_pct'), 0.0):+.2f}% [snapshot: {whale.get('age_formatted', 'unknown')}]")
+        print(f"  \u2022 Whale L/S:      {safe_float(whale.get('top_traders_long_ratio'), 1.0):.2f} ({w_lp*100:.1f}% longs)")
+        print(f"  \u2022 Taker Vol Buy:  ${safe_float(whale.get('taker_buy_vol_usd'), 0.0):,.0f} vs Sell: ${safe_float(whale.get('taker_sell_vol_usd'), 0.0):,.0f} (Ratio: {safe_float(whale.get('taker_buy_sell_ratio'), 1.0):.2f})")
+        print(f"  \u2022 OI Divergence:  Regime={regime} | OI 1h Delta={safe_float(whale.get('open_interest_1h_change_pct'), 0.0):+.2f}% [snapshot: {whale.get('age_formatted', 'unknown')}]")
     else:
-        print("  • Whale Flow:     [No snapshot in cachedb]")
+        print("  \u2022 Whale Flow:     [No snapshot in cachedb]")
 
     # Pillar 3
-    print("\n🧠 [PILLAR 3: SENTIMENT & GEMINI LLM REASONING]")
+    print("\n\U0001f9e0 [PILLAR 3: SENTIMENT & GEMINI LLM REASONING]")
     fg = p3.get("fear_greed")
     if isinstance(fg, dict) and fg:
         fg_label = fg.get("sentiment") or fg.get("classification") or "Neutral"
-        print(f"  • Fear & Greed:   {safe_int(fg.get('value'), 50)}/100 ({fg_label}) [snapshot: {fg.get('age_formatted', 'unknown')}]")
+        print(f"  \u2022 Fear & Greed:   {safe_int(fg.get('value'), 50)}/100 ({fg_label}) [snapshot: {fg.get('age_formatted', 'unknown')}]")
     else:
-        print("  • Fear & Greed:   [No snapshot in cachedb]")
+        print("  \u2022 Fear & Greed:   [No snapshot in cachedb]")
 
     gem = p3.get("gemini_macro")
     if isinstance(gem, dict) and gem:
-        print(f"  • Gemini Advisor: {gem.get('summary', 'No summary')} [snapshot: {gem.get('age_formatted', 'unknown')}]")
+        print(f"  \u2022 Gemini Advisor: {gem.get('summary', 'No summary')} [snapshot: {gem.get('age_formatted', 'unknown')}]")
     else:
-        print("  • Gemini Advisor: [No snapshot in cachedb]")
+        print("  \u2022 Gemini Advisor: [No snapshot in cachedb]")
 
     # Pillar 4
-    print("\n🛡️ [PILLAR 4: MACRO GEOPOLITICAL & ENERGY SHOCK SHIELD]")
+    print("\n\U0001f6e1\ufe0f [PILLAR 4: MACRO GEOPOLITICAL & ENERGY SHOCK SHIELD]")
     if isinstance(p4, dict) and p4:
         level = str(p4.get("threat_level") or "NORMAL")
-        icon = "🟢" if level == "NORMAL" else ("🟡" if level == "ELEVATED" else "🔴")
-        print(f"  • Threat Level:   {icon} {level} (Risk Score: {clean_scale(p4.get('risk_score'), 0.0, allow_percent=True):.2f}) [snapshot: {p4.get('age_formatted', 'unknown')}]")
-        print(f"  • Brake Action:   {p4.get('recommended_brake', 'NONE')}")
-        print(f"  • Analysis:       {p4.get('summary', '')}")
+        icon = "\U0001f7e2" if level == "NORMAL" else ("\U0001f7e1" if level == "ELEVATED" else "\U0001f534")
+        print(f"  \u2022 Threat Level:   {icon} {level} (Risk Score: {clean_scale(p4.get('risk_score'), 0.0, allow_percent=True):.2f}) [snapshot: {p4.get('age_formatted', 'unknown')}]")
+        print(f"  \u2022 Brake Action:   {p4.get('recommended_brake', 'NONE')}")
+        print(f"  \u2022 Analysis:       {p4.get('summary', '')}")
     else:
-        print("  • Macro Threat:   [No threat assessment in cachedb]")
+        print("  \u2022 Macro Threat:   [No threat assessment in cachedb]")
 
     # Order Guard Preview
-    print("\n🚦 [ORDER GUARD EXECUTION PREVIEW (order_guard.py)]")
+    print("\n\U0001f6a6 [ORDER GUARD EXECUTION PREVIEW (order_guard.py)]")
     for key, label in (
         ("buy_standard", "Standard BUY (250 EUR):  "),
         ("buy_high_stake", "High-Stake BUY (1500 EUR):"),
     ):
         entry = gp.get(key)
         if isinstance(entry, dict) and entry:
-            status_lbl = "✅ ALLOWED" if _parse_bool_flag(entry.get("allowed")) else "⛔ BLOCKED"
+            status_lbl = "\u2705 ALLOWED" if _parse_bool_flag(entry.get("allowed")) else "\u26d4 BLOCKED"
             scale_pct = clean_scale(entry.get("suggested_scale"), 1.0, allow_percent=True) * 100
-            print(f"  • {label} {status_lbl} | Scale: {scale_pct:.0f}% | Reason: {entry.get('reason', '')}")
+            print(f"  \u2022 {label} {status_lbl} | Scale: {scale_pct:.0f}% | Reason: {entry.get('reason', '')}")
 
     print("=" * 76 + "\n")
 
@@ -328,12 +328,12 @@ def main():
             print(encode_json_payload(status, indent=2))
         else:
             print("\n" + "=" * 60)
-            print("  📡 MARKET INTELLIGENCE TELEMETRY DAEMON STATUS")
+            print("  \U0001f4e1 MARKET INTELLIGENCE TELEMETRY DAEMON STATUS")
             print("=" * 60)
-            print(f"  • State:       {status.get('status', 'unknown').upper()}")
-            print(f"  • PID:         {status.get('pid', 'none')}")
-            print(f"  • Heartbeat:   {status.get('age_formatted', 'never')} ({status.get('age_seconds', 0)}s)")
-            print(f"  • Symbols:     {', '.join(status.get('symbols', []))}")
+            print(f"  \u2022 State:       {status.get('status', 'unknown').upper()}")
+            print(f"  \u2022 PID:         {status.get('pid', 'none')}")
+            print(f"  \u2022 Heartbeat:   {status.get('age_formatted', 'never')} ({status.get('age_seconds', 0)}s)")
+            print(f"  \u2022 Symbols:     {', '.join(status.get('symbols', []))}")
             print("=" * 60 + "\n")
         return
 
@@ -369,11 +369,11 @@ def main():
             print(encode_json_payload(guard_res, indent=2))
         else:
             print("\n" + "=" * 60)
-            print(f"  🛡️ TEST GUARD SIMULATION — {args.side} {symbol}")
+            print(f"  \U0001f6e1\ufe0f TEST GUARD SIMULATION \u2014 {args.side} {symbol}")
             print("=" * 60)
-            print(f"  • Allowed:          {'YES' if allowed else 'NO'}")
-            print(f"  • Suggested Scale:  {scale * 100:.0f}%")
-            print(f"  • Reason:           {reason}")
+            print(f"  \u2022 Allowed:          {'YES' if allowed else 'NO'}")
+            print(f"  \u2022 Suggested Scale:  {scale * 100:.0f}%")
+            print(f"  \u2022 Reason:           {reason}")
             print("=" * 60 + "\n")
         return
 

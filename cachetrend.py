@@ -555,7 +555,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 print(f"[ShortTrend][{s}] " + " ".join(parts))
             except Exception as _e:
                 builtins.print(
-                    f"[ShortTrend][{s}] setup failed ({_e}) — skipping; "
+                    f"[ShortTrend][{s}] setup failed ({_e}) \u2014 skipping; "
                     "Binance is unaffected"
                 )
         self._computing = True

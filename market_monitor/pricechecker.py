@@ -67,7 +67,7 @@ class PriceAlert:
                  url: Optional[str] = None, reference_time: Optional[str] = None):
         self.symbol = "N/A" if isinstance(symbol, bool) or symbol is None else (str(symbol).strip() or "N/A")
         raw_atype = "down" if isinstance(alert_type, bool) or alert_type is None else (str(alert_type).strip().lower() or "down")
-        self.alert_type = "up" if raw_atype in ("up", "rise", "▲") else ("down" if raw_atype in ("down", "drop", "▼") else raw_atype)
+        self.alert_type = "up" if raw_atype in ("up", "rise", "\u25b2") else ("down" if raw_atype in ("down", "drop", "\u25bc") else raw_atype)
         self.current_price = safe_float(current_price, default=0.0)
         self.reference_price = safe_float(reference_price, default=0.0)
         self.percent_change = safe_float(percent_change, default=0.0)
@@ -77,8 +77,8 @@ class PriceAlert:
         self.reference_time = None if isinstance(reference_time, bool) else reference_time
 
     def __str__(self) -> str:
-        direction = "🚀 RISE" if self.alert_type == "up" else "📉 DROP"
-        emoji = "🟢" if self.alert_type == "up" else "🔴"
+        direction = "\U0001f680 RISE" if self.alert_type == "up" else "\U0001f4c9 DROP"
+        emoji = "\U0001f7e2" if self.alert_type == "up" else "\U0001f534"
         reference_time = self.reference_time
         if not reference_time:
             reference_time = str(self.timestamp)
@@ -87,14 +87,14 @@ class PriceAlert:
                     reference_time = datetime.fromtimestamp(ts_f).strftime("%Y-%m-%d %H:%M:%S")
                 except (OSError, OverflowError, ValueError):
                     pass
-        url_line = f"🔗 CoinMarketCap: {self.url}\n" if self.url else ""
+        url_line = f"\U0001f517 CoinMarketCap: {self.url}\n" if self.url else ""
         return (
             f"\n{emoji} {direction} {emoji}\n"
-            f"📊 Coin: {self.symbol}\n"
-            f"💰 Current price: ${self.current_price:.4f}\n"
-            f"📈 Reference: ${self.reference_price:.4f} ({'24h low' if self.alert_type == 'up' else '24h high'}, at {reference_time})\n"
+            f"\U0001f4ca Coin: {self.symbol}\n"
+            f"\U0001f4b0 Current price: ${self.current_price:.4f}\n"
+            f"\U0001f4c8 Reference: ${self.reference_price:.4f} ({'24h low' if self.alert_type == 'up' else '24h high'}, at {reference_time})\n"
             f"{url_line}"
-            f"📊 Change: {self.percent_change:+.2f}% (threshold: {self.threshold}%)"
+            f"\U0001f4ca Change: {self.percent_change:+.2f}% (threshold: {self.threshold}%)"
         )
 
     def to_dict(self) -> dict:
@@ -339,8 +339,8 @@ class PriceChecker:
 
         print(
             f"[Checker][{symbol}] Price: ${current_price:.4f} | "
-            f"↑ {up_percent:+.2f}% (threshold +{up_threshold}%) | "
-            f"↓ {down_percent:+.2f}% (threshold -{down_threshold}%) | "
+            f"\u2191 {up_percent:+.2f}% (threshold +{up_threshold}%) | "
+            f"\u2193 {down_percent:+.2f}% (threshold -{down_threshold}%) | "
             f"Min: ${stats['min_price']:.4f} | Max: ${stats['max_price']:.4f}"
         )
 
@@ -437,8 +437,8 @@ class PriceChecker:
         def run():
             print(f"[Checker] price checker started - checking every {interval_seconds}s")
             print(
-                f"[Checker] Thresholds: default ↑ +{self.config['default']['up_percent']}% | ↓ -{self.config['default']['down_percent']}% | "
-                f"dynamic ↑ +{self.config['dynamic']['up_percent']}% | ↓ -{self.config['dynamic']['down_percent']}%"
+                f"[Checker] Thresholds: default \u2191 +{self.config['default']['up_percent']}% | \u2193 -{self.config['default']['down_percent']}% | "
+                f"dynamic \u2191 +{self.config['dynamic']['up_percent']}% | \u2193 -{self.config['dynamic']['down_percent']}%"
             )
 
             while self._running:

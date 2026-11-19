@@ -526,7 +526,7 @@ def format_strategy_execution_mode(
     dry_run: bool,
     *,
     paper_label: str = "PAPER (no money)",
-    real_label: str = "⚠ REAL — REAL MONEY",
+    real_label: str = "\u26a0 REAL \u2014 REAL MONEY",
 ) -> str:
     """Format the standard operator banner string for bot execution mode."""
     if _parse_bool_flag(observe_only, False):

@@ -246,7 +246,7 @@ def _dispatch_recovery_alerts(events: list[Dict[str, Any]]) -> None:
         prov = e.get("provider", "")
         prov_tag = f" ({prov})" if prov else ""
         # Remove 'SAVED' from title as requested
-        title = f"🎉 [P2 · SMART-SL] {sym}{prov_tag}"
+        title = f"\U0001f389 [P2 \u00b7 SMART-SL] {sym}{prov_tag}"
         price_part = _format_price_part(e.get("current_price"), e.get("buy_price"))
 
         body_lines = [
@@ -262,9 +262,9 @@ def _dispatch_recovery_alerts(events: list[Dict[str, Any]]) -> None:
         symbols = [e["symbol"] for e in events]
         if len(symbols) <= 3:
             syms_str = ", ".join(symbols)
-            title = f"🎉 [P2 · SMART-SL] {syms_str}{prov_tag}"
+            title = f"\U0001f389 [P2 \u00b7 SMART-SL] {syms_str}{prov_tag}"
         else:
-            title = f"🎉 [P2 · SMART-SL] {len(events)} positions{prov_tag}"
+            title = f"\U0001f389 [P2 \u00b7 SMART-SL] {len(events)} positions{prov_tag}"
 
         body_lines = []
         for e in events:
@@ -272,7 +272,7 @@ def _dispatch_recovery_alerts(events: list[Dict[str, Any]]) -> None:
             p_tag = f" ({e['provider']})" if e.get("provider") else ""
             price_str = _format_price_part(e.get("current_price"), e.get("buy_price"))
             line = (
-                f"• {sym}{p_tag}: bounce in {e['elapsed']:.0f}s | "
+                f"\u2022 {sym}{p_tag}: bounce in {e['elapsed']:.0f}s | "
                 f"dip {e['price_decrease_pct']:.2f}% <= {e['lost_threshold_pct']:.2f}% (was {e['init_loss_pct']:.2f}%){price_str}"
             )
             body_lines.append(line)
@@ -367,7 +367,7 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
             # Terminate grace immediately if active
             _clear_grace_entry(sym_key, is_sim=is_sim, now_ts=now_ts)
             reason = f"hard_disaster_floor_breached (loss {price_decrease*100:.2f}% >= {disaster_floor*100:.2f}%)"
-            print(f"🛑 [P2 · SMART-SL] EMERGENCY EXIT {sym_key}: {reason}")
+            print(f"\U0001f6d1 [P2 \u00b7 SMART-SL] EMERGENCY EXIT {sym_key}: {reason}")
             return True, reason, meta
 
         # 3. Microstructure Telemetry Retrieval (0 ms cache lookup; skipped in replay unless explicitly injected)
@@ -404,7 +404,7 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
         if taker_ratio < 0.70 and divergence_regime == "aggressive_shorting":
             _clear_grace_entry(sym_key, is_sim=is_sim, now_ts=now_ts)
             reason = f"active_crash_cascade (taker_ratio={taker_ratio:.2f}, regime={divergence_regime})"
-            print(f"🛑 [P2 · SMART-SL] {sym_key}: {reason} -> executing stop-loss without delay")
+            print(f"\U0001f6d1 [P2 \u00b7 SMART-SL] {sym_key}: {reason} -> executing stop-loss without delay")
             return True, reason, meta
 
         # 5. Whale Absorption & Suspected Stop-Hunt Wick Detection
@@ -444,7 +444,7 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
                     f"loss={price_decrease*100:.2f}%) -> grace granted for {self.grace_seconds:.0f}s"
                 )
                 _, prov_tag = _prov_tag(provider)
-                print(f"🛡 {prefix} DEFER {sym_key}{prov_tag}: {reason}")
+                print(f"\U0001f6e1 {prefix} DEFER {sym_key}{prov_tag}: {reason}")
 
                 if not is_sim and check_cooldown_gate(_LAST_DEFER_ALERT_TS, sym_key, now_ts, cooldown_sec=_RECOVERY_COOLDOWN_SEC):
                     body_lines = [
@@ -453,7 +453,7 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
                         f"Whales: {top_long_pct*100:.1f}% Long, Taker B/S: {taker_ratio:.2f}.",
                         f"Suspected wick hunt: granting {self.grace_seconds:.0f}s grace window.",
                     ]
-                    _send_ntfy_alert(title=f"🛡 [P2 · SMART-SL] DEFER {sym_key}{prov_tag}", body="\n".join(body_lines), symbol=sym_key)
+                    _send_ntfy_alert(title=f"\U0001f6e1 [P2 \u00b7 SMART-SL] DEFER {sym_key}{prov_tag}", body="\n".join(body_lines), symbol=sym_key)
                 return (True, f"shadow_defer: {reason}", meta) if self.mode == "shadow" else (False, reason, meta)
 
             if cp_clean > 0.0:
@@ -466,7 +466,7 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
 
             if elapsed < self.grace_seconds:
                 reason = f"grace_active ({elapsed:.0f}s / {self.grace_seconds:.0f}s elapsed, loss={price_decrease*100:.2f}%)"
-                print(f"🛡 {prefix} DEFER {sym_key}{prov_tag}: {reason}")
+                print(f"\U0001f6e1 {prefix} DEFER {sym_key}{prov_tag}: {reason}")
                 return (True, f"shadow_defer: {reason}", meta) if self.mode == "shadow" else (False, reason, meta)
 
             # Grace period expired without bounce -> Execute Stop-Loss
@@ -479,7 +479,7 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
             if not is_sim:
                 _save_grace_state(remove=(sym_key,), now_ts=now_ts)
             reason = f"grace_period_expired ({self.grace_seconds:.0f}s elapsed without bounce)"
-            print(f"🛑 [P2 · SMART-SL] TIMEOUT {sym_key}{saved_prov_tag}: {reason} -> executing stop-loss")
+            print(f"\U0001f6d1 [P2 \u00b7 SMART-SL] TIMEOUT {sym_key}{saved_prov_tag}: {reason} -> executing stop-loss")
 
             if not is_sim and check_cooldown_gate(_LAST_TIMEOUT_ALERT_TS, sym_key, now_ts, cooldown_sec=_RECOVERY_COOLDOWN_SEC):
                 body_lines = [
@@ -488,7 +488,7 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
                     f"Dip: {price_decrease*100:.2f}% (SL: {threshold_pct:.2f}%).",
                     "Executing stop-loss now.",
                 ]
-                _send_ntfy_alert(title=f"🛑 [P2 · SMART-SL] TIMEOUT {sym_key}{saved_prov_tag}", body="\n".join(body_lines), symbol=sym_key)
+                _send_ntfy_alert(title=f"\U0001f6d1 [P2 \u00b7 SMART-SL] TIMEOUT {sym_key}{saved_prov_tag}", body="\n".join(body_lines), symbol=sym_key)
             return True, reason, meta
 
         # Microstructure not supportive of wick bounce
@@ -535,7 +535,7 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
         b_p = buy_price if buy_price is not None else grace_info.get("buy_price")
 
         print(
-            f"🎉 [P2 · SMART-SL] RECOVERED! {sym_key}{prov_tag} bounced back above threshold in {elapsed:.0f}s! "
+            f"\U0001f389 [P2 \u00b7 SMART-SL] RECOVERED! {sym_key}{prov_tag} bounced back above threshold in {elapsed:.0f}s! "
             f"Dip dropped to {price_decrease*100:.2f}% <= {lost_threshold*100:.2f}% (was {init_loss:.2f}%). "
             f"Position successfully saved from wick hunt!"
         )

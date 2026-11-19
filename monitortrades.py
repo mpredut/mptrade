@@ -228,7 +228,7 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                     cum_fills=len(all_group),
                 )
                 print(
-                    f"[MONITORTRADES] 🎉 New executed order{owner_body}: {side} {total_qty:.6f} "
+                    f"[MONITORTRADES] \U0001f389 New executed order{owner_body}: {side} {total_qty:.6f} "
                     f"{sym_name} @ {avg_px_str} (orderId={oid}{fill_suffix})"
                 )
                 alert.notify(
@@ -257,7 +257,7 @@ def is_trend_up(symbol, window_seconds=None, now=None):
         snap = mgr.get_fresh_snapshot(symbol) if now is None else mgr.get_fresh_snapshot(symbol, now=now)
         return cm.CacheShortTrendManager._eval_upward_formula(snap)
     except Exception as e:
-        print(f"is_trend_up: snapshot direct failed ({e}) — treating it as neutral")
+        print(f"is_trend_up: snapshot direct failed ({e}) \u2014 treating it as neutral")
     return False
 
 
@@ -754,7 +754,7 @@ def _is_pending_exit_active(
                 if st in ("NEW", "OPEN", "PARTIALLY_FILLED", "PENDING", "WORKING", "RESTING"):
                     active_sell_exists = True
                 elif st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED"):
-                    print(f"[{symbol}] Pending exit {p_cid} terminal on venue ({st}) — clearing stale intent for fresh retry.")
+                    print(f"[{symbol}] Pending exit {p_cid} terminal on venue ({st}) \u2014 clearing stale intent for fresh retry.")
                     _restore_pending_exit_state(symbol, pending_stop, clear_pending=True)
                     return False
         except Exception:
@@ -780,11 +780,11 @@ def _is_pending_exit_active(
     if active_sell_exists or elapsed < 60:
         print(
             f"[{symbol}] Pending Stop-Loss in flight (elapsed={elapsed}s, active_sell={active_sell_exists}) "
-            "— deferring duplicate submission pending reconciliation."
+            "\u2014 deferring duplicate submission pending reconciliation."
         )
         return True
 
-    print(f"[{symbol}] Pending Stop-Loss reconciliation timeout ({elapsed}s >= 60s) with no active sell order — allowing retry with original intent.")
+    print(f"[{symbol}] Pending Stop-Loss reconciliation timeout ({elapsed}s >= 60s) with no active sell order \u2014 allowing retry with original intent.")
     _restore_pending_exit_state(symbol, pending_stop)
     return False
 
@@ -887,7 +887,7 @@ def _execute_take_profit(
         if sellable_qty <= 0:
             print(f"No can sell (sellable_qty={sellable_qty})")
         else:
-            print(f"[{symbol}] Take-Profit placement would be deferred by trend gate (trend up) — keeping ride state intact!")
+            print(f"[{symbol}] Take-Profit placement would be deferred by trend gate (trend up) \u2014 keeping ride state intact!")
         if prev_tp_state:
             _TP_RIDE_STATE[symbol] = prev_tp_state
             _save_mt_state()
@@ -917,7 +917,7 @@ def _execute_take_profit(
         return _resolve_exit(symbol, inst, kind="TP")
     if tp_outcome_ctx.get("state") == "unknown":
         _TP_RIDE_STATE.pop(symbol, None)
-        print(f"[{symbol}] Take-Profit submit outcome unknown/in-flight ({tp_outcome_ctx.get('reason')}) — deferring duplicate submission")
+        print(f"[{symbol}] Take-Profit submit outcome unknown/in-flight ({tp_outcome_ctx.get('reason')}) \u2014 deferring duplicate submission")
         _record_pending_exit(
             symbol, inst, "TP", current_time_s, sell_qty, current_price,
             tp_outcome_ctx, default_intent_id=tp_intent_id, client_order_id=tp_cid,
@@ -969,7 +969,7 @@ def _execute_stop_loss(
     )
 
     if sl_decision.forced and sl_decision.metadata.get("priority") == 1:
-        print(f"🛑 [{symbol}] MHDSL DISASTER CIRCUIT BREAKER: {sl_reason} — bypassing bounce deferral!")
+        print(f"\U0001f6d1 [{symbol}] MHDSL DISASTER CIRCUIT BREAKER: {sl_reason} \u2014 bypassing bounce deferral!")
     print(f"Price decreased with {snapshot.loss_pct}% by more than {lost_threshold * 100}% versus buy price! (decision={sl_reason})")
 
     if not _state_matches_buy_price(prev_sl_state, snapshot.avg_buy_price):
@@ -984,7 +984,7 @@ def _execute_stop_loss(
     if prev_sl_state and bounce_started_f is not None and prev_sl_state.get("started_at") != bounce_started_f:
         prev_sl_state = {**prev_sl_state, "started_at": bounce_started_f}
     if _is_trend_gate_deferred(symbol, inst):
-        print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
+        print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) \u2014 keeping resting TP orders intact!")
         _SL_BOUNCE_STATE[symbol] = prev_sl_state or _build_sl_bounce_state(snapshot, bounce_started_f)
         _save_mt_state()
         return False
@@ -1018,7 +1018,7 @@ def _execute_stop_loss(
 
     sl_state = outcome_ctx.get("state")
     if sl_state == "unknown":
-        print(f"[{symbol}] Stop-Loss submit outcome unknown/in-flight ({outcome_ctx.get('reason')}) — TP restoration deferred pending stop reconciliation")
+        print(f"[{symbol}] Stop-Loss submit outcome unknown/in-flight ({outcome_ctx.get('reason')}) \u2014 TP restoration deferred pending stop reconciliation")
         _SL_BOUNCE_STATE.pop(symbol, None)
         _record_pending_exit(
             symbol, inst, "STOP", current_time_s, sellable_qty, current_price,
@@ -1047,7 +1047,7 @@ def _handle_position_recovery(inst, snapshot: PositionSnapshot, lost_threshold: 
         bounce_state = _SL_BOUNCE_STATE.pop(symbol, None) or {}
         if _state_matches_buy_price(bounce_state, snapshot.avg_buy_price):
             print(
-                f"[{symbol}] 🎉 Stop-Loss bounce successfully recovered! Position saved from dip "
+                f"[{symbol}] \U0001f389 Stop-Loss bounce successfully recovered! Position saved from dip "
                 f"({snapshot.loss_pct:.2f}% <= {lost_threshold*100:.2f}%)."
             )
     _SL_EPISODE_STATE.pop(symbol, None)
@@ -1358,10 +1358,10 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     if current_price is None or avail_qty is None:
         if _verbose:
             if current_price is None:
-                print(f"No current price for {symbol} (market closed / unavailable) — skip")
+                print(f"No current price for {symbol} (market closed / unavailable) \u2014 skip")
             else:
                 print(f"Current price for {symbol}: {current_price}")
-                print(f"No available balance snapshot for {symbol} — skip")
+                print(f"No available balance snapshot for {symbol} \u2014 skip")
         return
     if _verbose:
         print(f"Current price for {symbol}: {current_price}")
@@ -1431,7 +1431,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             exit_mgr.reset_sl_episode(symbol)
             _save_mt_state()
         if not sl_price_territory and symbol in _SL_BOUNCE_STATE:
-            print(f"[{symbol}] Price recovered above stop-loss threshold ({snapshot.loss_pct:.2f}% < {lost_threshold*100:.2f}%) — clearing bounce watch")
+            print(f"[{symbol}] Price recovered above stop-loss threshold ({snapshot.loss_pct:.2f}% < {lost_threshold*100:.2f}%) \u2014 clearing bounce watch")
             _SL_BOUNCE_STATE.pop(symbol, None)
             _save_mt_state()
 
@@ -1493,7 +1493,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             and _REENTRY_DONE_SELL_TIME.get(symbol) == safe_float(sell_time, 0.0)
         ):
             if _verbose:
-                print(f"[{symbol}] Re-entry already submitted for sell at {sell_time} — skipping duplicate")
+                print(f"[{symbol}] Re-entry already submitted for sell at {sell_time} \u2014 skipping duplicate")
             return
         if exit_mgr is None:
             exit_mgr = get_exit_manager()
@@ -1539,7 +1539,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         _initial_projected_value = _pos_value + (_initial_buy_qty * current_price)
         if max_budget and _initial_projected_value > max_budget:
             _restore_reentry_state(symbol, prev_reentry_state)
-            print(f"[{symbol}] budget cap exceeded post-trade ({_initial_projected_value:.0f} > {max_budget} USD) — not buying")
+            print(f"[{symbol}] budget cap exceeded post-trade ({_initial_projected_value:.0f} > {max_budget} USD) \u2014 not buying")
             return
 
         _reentry_applied_scale = 1.0
@@ -1563,7 +1563,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         _projected_value = _pos_value + (_buy_qty * current_price)
         if max_budget and _projected_value > max_budget:
             _restore_reentry_state(symbol, prev_reentry_state, save=False)
-            print(f"[{symbol}] budget cap exceeded post-trade ({_projected_value:.0f} > {max_budget} USD) — not buying")
+            print(f"[{symbol}] budget cap exceeded post-trade ({_projected_value:.0f} > {max_budget} USD) \u2014 not buying")
         else:
             _execute_reentry_buy(
                 inst, symbol, current_price, _buy_qty, min_qty, sbs,

@@ -82,7 +82,7 @@ def main() -> int:
     )
     price = None if err_msg is not None else safe_pos_float(get_price_usd(args.symbol), default=None)
     if err_msg is not None or price is None:
-        log(err_msg or f"  [{args.symbol}] price unavailable — skipping")
+        log(err_msg or f"  [{args.symbol}] price unavailable \u2014 skipping")
         return 1 if err_msg is not None else 0
 
     safe_sym = safe_state_token(args.symbol, "unknown", allow_equals=True)
@@ -107,7 +107,7 @@ def main() -> int:
         px_s = format_price_log(price)
         zone_note = "Manual buying zone." if hit_below else "Price target reached."
         title = f"{args.symbol} at {px_s} ({cond})"
-        body = f"{args.symbol} = {px_s} USD — threshold {cond} reached. {zone_note}"
+        body = f"{args.symbol} = {px_s} USD \u2014 threshold {cond} reached. {zone_note}"
         log(f"  [{args.symbol}] ALERT: {px_s} {cond}")
         if push(topic, title, body):
             armed = False

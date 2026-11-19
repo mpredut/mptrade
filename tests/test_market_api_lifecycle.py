@@ -1105,9 +1105,16 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
     pkg_init_mods = {_rel_to_mod(r) for r, _ in prod_files if r.endswith("/__init__.py")}
     parsed_prod_trees: dict[str, ast.Module] = {}
     reexport_defs_by_mod: dict[str, set[str]] = {}
+    non_ascii_violations: list[str] = []
     for rel_s, path_obj in prod_files:
         mod_name = _rel_to_mod(rel_s)
-        tree = ast.parse(path_obj.read_text(encoding="utf-8"), filename=rel_s)
+        src_text = path_obj.read_text(encoding="utf-8")
+        if not src_text.isascii():
+            bad_ln = next((i + 1 for i, ln in enumerate(src_text.splitlines()) if not ln.isascii()), 1)
+            non_ascii_violations.append(
+                f"{rel_s}:{bad_ln}: non-ASCII source character (use \\uXXXX/\\UXXXXXXXX escapes in runtime strings)"
+            )
+        tree = ast.parse(src_text, filename=rel_s)
         parsed_prod_trees[rel_s] = tree
         def_set: set[str] = set()
         imp_set: set[str] = set()
@@ -1140,7 +1147,7 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
         "start_nonbinance_trend_poller",
     }
     venue_leaf_dirs = ("binance_api/", "kraken/", "hyperliquid/", "212trading/", "market_monitor/")
-    ssot_violations: list[str] = []
+    ssot_violations: list[str] = list(non_ascii_violations)
 
     def _check_reexport_imports(rel_s: str, node: ast.ImportFrom) -> None:
         lineno = getattr(node, "lineno", 0)

@@ -201,7 +201,7 @@ class MacroAnalyzer:
                     assessment.threat_level, assessment.risk_score, assessment.headlines_analyzed,
                 )
                 threat_str = (assessment.threat_level or "NORMAL").upper()
-                icon = "🛑" if "CRITICAL" in threat_str else ("🛡" if "ELEVATED" in threat_str else "🌍")
+                icon = "\U0001f6d1" if "CRITICAL" in threat_str else ("\U0001f6e1" if "ELEVATED" in threat_str else "\U0001f30d")
                 self._maybe_notify_assessment(
                     ts_attr="_last_notified_geo_ts",
                     assessment_ts=assessment.ts,
@@ -213,7 +213,7 @@ class MacroAnalyzer:
                     icon=icon,
                     headline_suffix=f"{assessment.recommended_brake} ({assessment.threat_level})",
                     body=(
-                        f"Risk: {assessment.risk_score:.2f} · Headlines: {assessment.headlines_analyzed}\n"
+                        f"Risk: {assessment.risk_score:.2f} \u00b7 Headlines: {assessment.headlines_analyzed}\n"
                         f"{assessment.summary}"
                     ),
                     skip_notify=_parse_bool_flag(getattr(assessment, "is_fallback", False), False),
@@ -268,7 +268,7 @@ class MacroAnalyzer:
                     assessment.market_bias, assessment.risk_level, assessment.recommended_action, assessment.ts,
                 )
                 bias_str = (assessment.market_bias or "NEUTRAL").upper()
-                icon = "🟢" if "BULL" in bias_str else ("🔴" if "BEAR" in bias_str else "🧭")
+                icon = "\U0001f7e2" if "BULL" in bias_str else ("\U0001f534" if "BEAR" in bias_str else "\U0001f9ed")
                 self._maybe_notify_assessment(
                     ts_attr="_last_notified_advisor_ts",
                     assessment_ts=assessment.ts,

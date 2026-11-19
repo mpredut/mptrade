@@ -136,7 +136,7 @@ def check_external_order_guards(
                             price_str = f" @ ${format_notify_price(price_f)}" if price_f > 0.0 else ""
                             scale_str = f" (Scale: {scale_pct}%)" if scale_pct is not None else ""
                             _alertnotifiers.notify(
-                                title=f"🛡 [{guard_id}] {action_str} {order_side} {symbol}",
+                                title=f"\U0001f6e1 [{guard_id}] {action_str} {order_side} {symbol}",
                                 body=f"Order: {order_side} {symbol}{price_str}{scale_str}\n{d_reason}",
                                 source="order_guard",
                                 symbol=symbol,
