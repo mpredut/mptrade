@@ -1004,7 +1004,9 @@ def upgrade_tpo_vp_from_ohlc(
             )
             for c_vp in vp_cands:
                 found_vp = False
-                for fn_vp in dict.fromkeys((cache_ohlc_24h_filename(c_vp), f"cache_ohlc_24h_{c_vp}.json")):
+                for fn_vp in dict.fromkeys(
+                    (cache_ohlc_24h_filename(c_vp), cache_ohlc_24h_filename(c_vp, preserve_case=True))
+                ):
                     p_vp = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn_vp)))
                     if os.path.exists(p_vp) and isinstance(d_vp := read_json_recovering(p_vp), dict) and isinstance(d_vp.get("points"), list):
                         cand_vp = [

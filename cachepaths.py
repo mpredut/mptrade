@@ -85,10 +85,11 @@ def clean_upper_scalar(val: object) -> str | None:
     return s.upper() if (s := clean_scalar_str(val)) is not None else None
 
 
-def _clean_cache_symbol(symbol: object) -> str:
+def _clean_cache_symbol(symbol: object, *, preserve_case: bool = False) -> str:
     if symbol is None or isinstance(symbol, (bool, bytes, bytearray, dict, list, tuple, set, frozenset)):
         return ""
-    return clean_upper_scalar(symbol if isinstance(symbol, str) else str(symbol)) or ""
+    raw = symbol if isinstance(symbol, str) else str(symbol)
+    return (clean_scalar_str(raw) if preserve_case else clean_upper_scalar(raw)) or ""
 
 
 def cache_sparse_price_filename(symbol: object) -> str:
@@ -107,9 +108,9 @@ def cache_365_price_filename(symbol: object, *, ext: str = CACHE_365_PRICE_EXT) 
     return f"{CACHE_365_PRICE_PREFIX}{_clean_cache_symbol(symbol)}{eff_ext}"
 
 
-def cache_ohlc_24h_filename(symbol: object) -> str:
+def cache_ohlc_24h_filename(symbol: object, *, preserve_case: bool = False) -> str:
     """Return canonical on-disk filename for a 24h 5m OHLCV series (`cache_ohlc_24h_<SYM>.json`)."""
-    return f"{CACHE_OHLC_24H_PREFIX}{_clean_cache_symbol(symbol)}{CACHE_OHLC_24H_EXT}"
+    return f"{CACHE_OHLC_24H_PREFIX}{_clean_cache_symbol(symbol, preserve_case=preserve_case)}{CACHE_OHLC_24H_EXT}"
 
 
 EXACT_LEGACY_FILENAMES = {

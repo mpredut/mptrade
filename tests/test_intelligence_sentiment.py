@@ -12008,6 +12008,82 @@ def test_item_3_8_offline_real_vol_upgrade_xstock_case_and_last_cycle_exec_align
     assert "recent `<=60m` fill/rejection or `<=30m` resting order" in sup_prompt
 
 
+def test_burnin_antxusd_empty_book_backoff_and_equities_xstock_readonly_framing(tmp_path, caplog):
+    """Verify pre-IPO Kraken empty-book backoff (0 WARNING spam, no 0.25x spin) and read-only xStock sibling framing on equities scope."""
+    from cachepaths import cache_ohlc_24h_filename
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+
+    assert cache_ohlc_24h_filename("SPCXxUSD") == "cache_ohlc_24h_SPCXXUSD.json"
+    assert cache_ohlc_24h_filename("SPCXxUSD", preserve_case=True) == "cache_ohlc_24h_SPCXxUSD.json"
+
+    now_s = 1_776_500_000.0
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path), start_sync=True)
+    calls = []
+
+    def _fake_fetch_empty_book(url, *_args, **_kwargs):
+        calls.append(url)
+        return {"error": [], "result": {"ANTxUSD": {"asks": [], "bids": []}}}
+
+    ob_col._fetch_json_dict = _fake_fetch_empty_book
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="intelligence.external.orderbook_depth"):
+        res1 = ob_col.fetch("ANTXUSD", allow_network=True, now=now_s)
+        res2 = ob_col.fetch("ANTXUSD", allow_network=True, now=now_s + 7.5)
+
+    assert res1 is None and res2 is None
+    assert len(calls) == 1
+    assert ob_col.is_unlisted_xstock_backoff_active("ANTXUSD", now_s + 60.0) is True
+    assert ob_col.is_unlisted_xstock_backoff_active("ANTXUSD", now_s + 301.0) is False
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+    # Active xStock with an existing cached orderbook must still warn & fall back to cached on unexpected empty book
+    seeded_snap = OrderbookSnapshot(
+        symbol="SPCXXUSD",
+        mid_price=146.5,
+        bid_depth_usd=12000.0,
+        ask_depth_usd=11000.0,
+        imbalance_ratio=0.522,
+        largest_bid_wall_usd=3500.0,
+        largest_bid_wall_price=146.0,
+        largest_ask_wall_usd=3200.0,
+        largest_ask_wall_price=147.0,
+        ts=now_s - 120.0,
+        best_bid=146.4,
+        best_ask=146.6,
+        spread_bps=13.66,
+    )
+    ob_col._commit_snapshot("SPCXXUSD", now_s - 120.0, seeded_snap)
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="intelligence.external.orderbook_depth"):
+        fallback_snap = ob_col.fetch("SPCXXUSD", allow_network=True, now=now_s)
+    assert fallback_snap is not None and fallback_snap.mid_price == 146.5
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+    # GlobalTelemetryCollector advances _last_orderbook_ts to current_ts (no 0.25x retry spin) during pre-IPO backoff
+    daemon = GlobalTelemetryCollector(symbols=["ANTXUSD"], cache_dir=str(tmp_path), skip_external=False)
+    daemon.orderbook_collector = ob_col
+    results = daemon._new_external_cycle_results(now_s + 10.0)
+    daemon._step_external_symbols(now_s + 10.0, False, results, bounded=True)
+    assert daemon._last_orderbook_ts["ANTXUSD"] == now_s + 10.0
+
+    xs_payload = {
+        "underlying": "SPCX",
+        "listed_pair": "SPCXxUSD",
+        "live_price": 146.84,
+        "t212_sibling": "SPCX_US_EQ",
+        "watched_ipo_underlying": "ANT",
+        "watched_ipo_alerts": [{"title": "Anthropic IPO rumor"}],
+    }
+    eq_lines = "\n".join(_format_portfolio_section({"kraken_xstocks": xs_payload}, "equities", include_macro_benchmarks=False))
+    cr_lines = "\n".join(_format_portfolio_section({"kraken_xstocks": xs_payload}, "crypto", include_macro_benchmarks=False))
+    assert "Cross-Venue Kraken Tokenized Sibling Reference (READ-ONLY in Equities Scope;" in eq_lines
+    assert "API-TRADABLE 24/7 on 'kraken'" not in eq_lines
+    assert "watched_ipo_alerts" not in eq_lines
+    assert "API-TRADABLE 24/7 on 'kraken' at 0bps maker/taker fee" in cr_lines
+    assert "ANTxUSD IPO Playbook" in cr_lines
+
+
 
 
 

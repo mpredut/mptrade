@@ -1656,6 +1656,9 @@ def _format_portfolio_section(
             xs: Any = {k: v for k, v in xs_raw.items() if v is not None}
             if isinstance(xs.get("holdings"), dict):
                 xs["holdings"] = {hk: hv for hk, hv in xs["holdings"].items() if safe_float(hv, 0.0) >= 1e-4}
+            if scope_s in ("equities", "equity"):
+                for eq_irr_k in ("watched_ipo_underlying", "watched_ipo_alerts"):
+                    xs.pop(eq_irr_k, None)
             if isinstance(xs.get("t212_sibling_cycle"), dict):
                 sib_sym_u = str(xs.get("t212_sibling") or "").strip().upper()
                 has_t212_cyc_line = bool(
@@ -1687,10 +1690,16 @@ def _format_portfolio_section(
             if isinstance(xs, dict) and xs.get("watched_ipo_underlying")
             else ""
         )
-        lines.append(
-            f"  * Kraken Tokenized Equities / xStocks (API-TRADABLE 24/7 on 'kraken' at 0bps maker/taker fee; "
-            f"{xs_pair_lbl} Active Swing Directive{xs_ipo_lbl} & T212 {xs.get('t212_sibling') if isinstance(xs, dict) else None} context): {xs}"
-        )
+        if scope_s in ("equities", "equity"):
+            lines.append(
+                f"  * Cross-Venue Kraken Tokenized Sibling Reference (READ-ONLY in Equities Scope; "
+                f"24/7 {xs_pair_lbl} quote/inventory context for T212 {xs.get('t212_sibling') if isinstance(xs, dict) else None}): {xs}"
+            )
+        else:
+            lines.append(
+                f"  * Kraken Tokenized Equities / xStocks (API-TRADABLE 24/7 on 'kraken' at 0bps maker/taker fee; "
+                f"{xs_pair_lbl} Active Swing Directive{xs_ipo_lbl} & T212 {xs.get('t212_sibling') if isinstance(xs, dict) else None} context): {xs}"
+            )
     if ps.get("cross_market_context"):
         cmc = ps["cross_market_context"]
         if isinstance(cmc, dict):

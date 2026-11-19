@@ -166,6 +166,11 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             logger.debug("Could not fetch real 15m spot CVD for %s on %s: %s", symbol, venue, exc)
         return cached_cvd[1] if cached_cvd is not None and 0.0 <= (now - cached_cvd[0]) < ttl_sec * 3.0 else None
 
+    def is_unlisted_xstock_backoff_active(self, symbol: str, now: float) -> bool:
+        """Return True when ``symbol`` is a pre-IPO/empty Kraken tokenized pair within its quiet backoff window."""
+        tok_sym, is_tok_sym = resolve_kraken_tokenized_pair(symbol)
+        return bool(is_tok_sym and now < self._unlisted_xstock_until.get(tok_sym, 0.0))
+
     def fetch(
         self,
         symbol: str,
@@ -221,6 +226,17 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                             return self._fallback_stale(symbol, cached)
                     normalized_book = MarketDataProvider.normalize_orderbook_payload(raw_data)
                     if normalized_book is None:
+                        if (
+                            is_tok_sym
+                            and cached is None
+                            and isinstance(raw_data, dict)
+                            and not raw_data.get("error")
+                            and isinstance(raw_data.get("result"), dict)
+                        ):
+                            # BY DESIGN: Pre-IPO Kraken tokenized pairs (e.g. ANTxUSD) return an empty result book
+                            # ({'asks': [], 'bids': []}) before trading opens; back off 5m without WARNING spam.
+                            self._unlisted_xstock_until[tok_sym] = now + 300.0
+                            return self._fallback_stale(symbol, cached)
                         raise ValueError(f"Empty or malformed depth payload for {symbol}")
                     data = normalized_book
                     self._preferred_url[symbol] = url

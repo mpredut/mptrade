@@ -687,7 +687,18 @@ class ExternalTelemetryMixin:
                         results[res_key] += 1
                         ts_map[sym] = current_ts
                     elif bounded:
-                        ts_map[sym] = compute_step_retry_ts(ts_map.get(sym, 0.0), current_ts, interval_sec)
+                        if (
+                            lbl_prefix == "ob"
+                            and is_tok_xstock
+                            and getattr(
+                                self.orderbook_collector,
+                                "is_unlisted_xstock_backoff_active",
+                                lambda _s, _n: False,
+                            )(sym, current_ts)
+                        ):
+                            ts_map[sym] = current_ts
+                        else:
+                            ts_map[sym] = compute_step_retry_ts(ts_map.get(sym, 0.0), current_ts, interval_sec)
             if on_symbol_done is not None:
                 on_symbol_done()
 
