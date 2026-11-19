@@ -116,6 +116,7 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
         spread_bps: Optional[float] = None,
         gateway_max_usd: float = 2000.0,
         cache_dir: Optional[str] = None,
+        fallback_limits: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         v_norm = normalize_venue_name(venue)
@@ -129,7 +130,8 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
             default_tick,
             prefer_static_tick,
         ) = MarketDataProvider.resolve_venue_default_fee_and_precision(v_norm, px_f)
-        if symbol and resolve_symbol_identity(symbol).is_tokenized_equity:
+        is_tok_sym = bool(symbol and resolve_symbol_identity(symbol).is_tokenized_equity)
+        if is_tok_sym:
             fee_tier, maker_bps, taker_bps = "XSTOCK_ZERO_FEE", 0.0, 0.0
 
         min_qty, step_size, tick_size = default_step, default_step, default_tick
@@ -138,17 +140,25 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
             nonlocal fee_tier, maker_bps, taker_bps, min_notional, min_qty, step_size, tick_size
             if not meta:
                 return
-            if meta.get("fee_tier"):
-                fee_tier = str(meta["fee_tier"]).strip()
-            maker_bps = safe_nonneg_float(meta.get("maker_fee_bps"), default=maker_bps)
-            taker_bps = safe_nonneg_float(meta.get("taker_fee_bps"), default=taker_bps)
+            if not is_tok_sym:
+                if meta.get("fee_tier"):
+                    fee_tier = str(meta["fee_tier"]).strip()
+                maker_bps = safe_nonneg_float(meta.get("maker_fee_bps"), default=maker_bps)
+                taker_bps = safe_nonneg_float(meta.get("taker_fee_bps"), default=taker_bps)
             if include_limits:
-                min_notional = safe_pos_float(meta.get("min_notional"), default=min_notional)
+                raw_min_not = (
+                    meta.get("min_notional")
+                    if meta.get("min_notional") is not None
+                    else meta.get("exchange_min_notional_usd")
+                )
+                min_notional = safe_pos_float(raw_min_not, default=min_notional)
                 min_qty = safe_pos_float(meta.get("min_qty"), default=min_qty)
                 step_size = safe_pos_float(meta.get("step_size"), default=step_size)
                 if allow_tick:
                     tick_size = safe_pos_float(meta.get("tick_size"), default=tick_size)
 
+        if inst is None and isinstance(fallback_limits, dict):
+            _apply_fee_meta(fallback_limits)
         if cache_dir:
             _apply_fee_meta(read_persisted_venue_fee_spec(v_norm, symbol, cache_dir=cache_dir), include_limits=False)
         params = getattr(inst, "params", {}) if inst is not None and isinstance(getattr(inst, "params", None), dict) else {}
@@ -178,20 +188,37 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
         lq_f = safe_pos_float(locked_quote_usd, default=0.0) or 0.0
         lb_f = safe_pos_float(locked_base_qty, default=0.0) or 0.0
         is_sell_only_xstock = fee_tier == "XSTOCK_ZERO_FEE"
+        min_q_f = safe_pos_float(min_qty, default=0.0) or 0.0
         if fq_f is not None:
-            out["effective_max_buy_usd"] = 0.0 if is_sell_only_xstock else round(min(gw_max, fq_f * 0.995), 2)
+            raw_buy = 0.0 if is_sell_only_xstock else min(gw_max, fq_f * 0.995)
+            out["effective_max_buy_usd"] = (
+                0.0
+                if (raw_buy < min_notional or (px_f > 0.0 and min_q_f > 0.0 and raw_buy / px_f < min_q_f))
+                else round(raw_buy, 2)
+            )
         if lq_f > 0.0:
             out["locked_quote_usd"] = round(lq_f, 2)
             if fq_f is not None and not is_sell_only_xstock:
-                out["replace_max_buy_usd"] = round(min(gw_max, (fq_f + lq_f) * 0.995), 2)
+                raw_rep_buy = min(gw_max, (fq_f + lq_f) * 0.995)
+                if raw_rep_buy >= min_notional and not (px_f > 0.0 and min_q_f > 0.0 and raw_rep_buy / px_f < min_q_f):
+                    out["replace_max_buy_usd"] = round(raw_rep_buy, 2)
         if fb_f is not None and px_f > 0.0:
-            out["effective_max_sell_usd"] = round(min(gw_max, venue_fee_cap_quantity(v_norm, "SELL", px_f, fb_f) * px_f), 2)
+            sell_cap_q = venue_fee_cap_quantity(v_norm, "SELL", px_f, fb_f)
+            raw_sell = min(gw_max, sell_cap_q * px_f)
+            out["effective_max_sell_usd"] = (
+                0.0
+                if (raw_sell < min_notional or (min_q_f > 0.0 and sell_cap_q < min_q_f))
+                else round(raw_sell, 2)
+            )
         if lb_f > 0.0:
             out["locked_base_qty"] = round(lb_f, 6)
             if px_f > 0.0:
                 out["locked_base_usd"] = round(lb_f * px_f, 2)
                 if fb_f is not None:
-                    out["replace_max_sell_usd"] = round(min(gw_max, venue_fee_cap_quantity(v_norm, "SELL", px_f, fb_f + lb_f) * px_f), 2)
+                    rep_sell_q = venue_fee_cap_quantity(v_norm, "SELL", px_f, fb_f + lb_f)
+                    raw_rep_sell = min(gw_max, rep_sell_q * px_f)
+                    if raw_rep_sell >= min_notional and not (min_q_f > 0.0 and rep_sell_q < min_q_f):
+                        out["replace_max_sell_usd"] = round(raw_rep_sell, 2)
         return out
 
 
@@ -809,6 +836,7 @@ def resolve_venue_fee_and_limits(
     spread_bps: Optional[float] = None,
     gateway_max_usd: float = 2000.0,
     cache_dir: Optional[str] = None,
+    fallback_limits: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Resolve active venue fee tier, maker vs taker bps, live spread, and exchange/account order limits (0 ms, zero network calls)."""
     return _VENUE_FEE_AND_LIMITS_EVALUATOR.evaluate(
@@ -823,6 +851,7 @@ def resolve_venue_fee_and_limits(
         spread_bps=spread_bps,
         gateway_max_usd=gateway_max_usd,
         cache_dir=cache_dir,
+        fallback_limits=fallback_limits,
     )
 
 

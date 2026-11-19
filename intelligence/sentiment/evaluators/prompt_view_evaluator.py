@@ -600,6 +600,7 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
             locked_base_qty=p_map.get("locked_base_qty"),
             spread_bps=p_map.get("spread_bps"),
             gateway_max_usd=max_usd,
+            fallback_limits=p_map,
         )
         eff_pos = {**fb_fees, **{k: v for k, v in p_map.items() if v is not None}}
         for cap_k in ("effective_max_buy_usd", "effective_max_sell_usd", "replace_max_buy_usd", "replace_max_sell_usd"):

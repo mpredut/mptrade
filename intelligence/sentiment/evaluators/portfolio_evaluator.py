@@ -2234,6 +2234,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     spread_bps=safe_nonneg_float(sym_spread, default=None),
                     gateway_max_usd=gateway_max_usd,
                     cache_dir=cache_dir,
+                    fallback_limits=prev_inst_limits,
                 )
             )
             if prev_inst_limits:

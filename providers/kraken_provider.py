@@ -991,11 +991,12 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             if isinstance(cache_dict, dict):
                 p_meta = get_cached_pair_info(kr_cands, cache_dict)
         if isinstance(p_meta, dict):
-            for fee_key, out_key in (("fees_maker", "maker_fee_bps"), ("fees", "taker_fee_bps")):
-                tbl = p_meta.get(fee_key)
-                if isinstance(tbl, list) and tbl and isinstance(tbl[0], (list, tuple)) and len(tbl[0]) >= 2:
-                    if (fv := safe_nonneg_float(tbl[0][1], default=None)) is not None:
-                        out[out_key] = round(fv * 100.0, 2)
+            if not is_tok:
+                for fee_key, out_key in (("fees_maker", "maker_fee_bps"), ("fees", "taker_fee_bps")):
+                    tbl = p_meta.get(fee_key)
+                    if isinstance(tbl, list) and tbl and isinstance(tbl[0], (list, tuple)) and len(tbl[0]) >= 2:
+                        if (fv := safe_nonneg_float(tbl[0][1], default=None)) is not None:
+                            out[out_key] = round(fv * 100.0, 2)
             if (ord_min := safe_pos_float(p_meta.get("ordermin"), default=None)) is not None:
                 out["min_qty"] = ord_min
             if (cost_min := safe_pos_float(p_meta.get("costmin"), default=None)) is not None:

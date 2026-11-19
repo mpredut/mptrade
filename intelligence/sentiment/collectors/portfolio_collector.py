@@ -591,6 +591,7 @@ def _apply_open_orders_locked_balances(
                     locked_base_qty=lb_pos if lb_pos > 0.0 else None,
                     gateway_max_usd=gateway_max_usd,
                     cache_dir=cache_dir,
+                    fallback_limits=prev_inst_limits,
                 )
             )
             if prev_inst_limits:
@@ -782,14 +783,28 @@ class VenueCyclesCollector(PortfolioCacheCollectorBase):
             if isinstance(alloc_doc, dict):
                 a_qty = safe_pos_float(alloc_doc.get("qty"), default=0.0) or 0.0
                 a_px = safe_pos_float(alloc_doc.get("alloc_price"), default=0.0) or 0.0
-                a_base = canonical_base_asset(alloc_doc.get("asset"))
+                a_asset = str(alloc_doc.get("asset") or "").strip()
+                a_base = canonical_base_asset(a_asset)
                 a_pair = resolve_registered_symbol_case(f"{a_base}xUSD", "kraken") if a_base else None
-                if a_pair and a_qty > 0.0 and a_px > 0.0 and a_pair not in kraken_cycles:
+                known_a = xst_st.get("known_assets") if isinstance(xst_st.get("known_assets"), dict) else None
+                live_a_qty = (
+                    safe_nonneg_float(casefold_get(known_a, a_asset), default=0.0) or 0.0
+                    if (known_a and a_asset)
+                    else a_qty
+                )
+                a_live_px = resolve_symbol_price(a_pair, eff_pt, eff_fb) if a_pair else 0.0
+                if (
+                    a_pair
+                    and live_a_qty > 1e-4
+                    and a_px > 0.0
+                    and not (a_live_px > 0.0 and live_a_qty * a_live_px < 1.0)
+                    and a_pair not in kraken_cycles
+                ):
                     kraken_cycles[a_pair] = parse_venue_cycle_state(
                         {
                             "cycle": 1,
-                            "qty": a_qty,
-                            "cost": a_qty * a_px,
+                            "qty": live_a_qty,
+                            "cost": live_a_qty * a_px,
                             "entry_price": a_px,
                             "last_buy_price": a_px,
                             "adopted": True,
@@ -911,6 +926,13 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
                 holdings_by_underlying[hk] = hu
                 if hu not in held_underlyings:
                     held_underlyings.append(hu)
+        if isinstance(alloc_info, dict) and known_assets:
+            alloc_asset = str(alloc_info.get("asset") or "").strip()
+            alloc_u = _holding_underlying(alloc_asset) if alloc_asset else ""
+            if alloc_u and _holding_unit_px(alloc_asset) > 0.0 and alloc_u not in held_underlyings:
+                alloc_info = None
+                if not (x_holdings or state_listed_pair or active_pair_by_underlying):
+                    return None
         cfg_underlying = clean_upper_scalar(xstock_cfg.get("xstock_yahoo")) or ""
         pair_underlying = _holding_underlying(state_listed_pair) if state_listed_pair else ""
         # BY DESIGN: Primary underlying/t212_sibling always tracks the largest held xStock by USD notional
@@ -1348,8 +1370,14 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                             rec_pos["price"] = round_opt_px(px_rec, 6)
                             if fb_val is not None:
                                 rec_pos["value_usd"] = round(fb_val * px_rec, 2)
-                                rec_pos["effective_max_sell_usd"] = round(
-                                    min(gw_max_rec, venue_fee_cap_quantity(v_rec_norm, "SELL", px_rec, fb_val) * px_rec), 2
+                                sell_cap_rec = venue_fee_cap_quantity(v_rec_norm, "SELL", px_rec, fb_val)
+                                raw_sell_rec = min(gw_max_rec, sell_cap_rec * px_rec)
+                                rec_min_not = safe_pos_float(rec_pos.get("exchange_min_notional_usd"), default=1.0) or 1.0
+                                rec_min_qty = safe_pos_float(rec_pos.get("min_qty"), default=0.0) or 0.0
+                                rec_pos["effective_max_sell_usd"] = (
+                                    0.0
+                                    if (raw_sell_rec < rec_min_not or (rec_min_qty > 0.0 and sell_cap_rec < rec_min_qty))
+                                    else round(raw_sell_rec, 2)
                                 )
                             pt_key_rec = next((pk for pk in prices_and_trends if str(pk).upper() == p_sym_u), p_sym)
                             prices_and_trends.setdefault(pt_key_rec, {"price": px_rec, "trend": 0, "growth_coefficient": 0.0})

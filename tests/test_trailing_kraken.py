@@ -1628,7 +1628,13 @@ def test_antx_ipo_post_exit_dust_reconcile_zero_known_assets_and_sell_sweep(tmp_
         encoding="utf-8",
     )
     (krk_dir / "xstock_state.json").write_text(
-        json.dumps({"known_assets": {"SPCXx.T": 10.22512, "ANTx.T": 0.001387}, "pair": "ANTxUSD"}),
+        json.dumps(
+            {
+                "known_assets": {"SPCXx.T": 10.22512, "ANTx.T": 0.001387},
+                "allocated": {"asset": "ANTx.T", "qty": 0.531, "ts": 1795105777.9, "alloc_price": 87.1499},
+                "pair": "ANTxUSD",
+            }
+        ),
         encoding="utf-8",
     )
     xs_dust = KrakenXstocksCollector().collect(
@@ -1637,6 +1643,7 @@ def test_antx_ipo_post_exit_dust_reconcile_zero_known_assets_and_sell_sweep(tmp_
         prices_and_trends={"SPCXxUSD": {"price": 137.68}, "ANTxUSD": {"price": 98.20}},
     )
     assert xs_dust["holdings"] == {"SPCXx.T": 10.22512}
+    assert xs_dust["allocated"] is None
     assert "holdings_underlying_map" not in xs_dust
 
     xs_pre_ipo = KrakenXstocksCollector().collect(
@@ -1645,6 +1652,19 @@ def test_antx_ipo_post_exit_dust_reconcile_zero_known_assets_and_sell_sweep(tmp_
         prices_and_trends={"SPCXxUSD": {"price": 137.68}},
     )
     assert xs_pre_ipo["holdings"]["ANTx.T"] == pytest.approx(0.001387)
+    assert xs_pre_ipo["allocated"]["qty"] == pytest.approx(0.531)
+
+    ws_cyc = tmp_path / "ws_cyc"
+    (ws_cyc / "kraken").mkdir(parents=True, exist_ok=True)
+    (ws_cyc / "kraken" / "xstock_state.json").write_text((krk_dir / "xstock_state.json").read_text(encoding="utf-8"), encoding="utf-8")
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_venue_cycles
+    krk_cycs, _, _ = harvest_venue_cycles(
+        str(ws_cyc),
+        {"ANTxUSD": {"price": 98.20}},
+        {},
+        read_json_fn=lambda p: json.loads(open(p, encoding="utf-8").read()),
+    )
+    assert "ANTxUSD" not in krk_cycs
 
     fake_xstock_inst = SimpleNamespace(params={"fee_tier": "XSTOCK_ZERO_FEE", "maker_fee_bps": 0.0, "taker_fee_bps": 0.0})
     fee_limits = resolve_venue_fee_and_limits(
@@ -1661,6 +1681,45 @@ def test_antx_ipo_post_exit_dust_reconcile_zero_known_assets_and_sell_sweep(tmp_
     )
     assert fee_limits_no_inst["effective_max_buy_usd"] == 0.0
     assert "replace_max_buy_usd" not in fee_limits_no_inst
+
+    # Sub-min_notional and sub-min_qty dust clamps symmetrically to 0.0 on BUY and SELL
+    ant_dust_limits = resolve_venue_fee_and_limits(
+        "kraken", "ANTxUSD", None, price=95.72, free_quote=3368.0, free_base=0.001387
+    )
+    assert ant_dust_limits["effective_max_buy_usd"] == 0.0
+    assert ant_dust_limits["effective_max_sell_usd"] == 0.0
+    hl_dust_buy = resolve_venue_fee_and_limits(
+        "hyperliquid", "HYPEUSDC", None, price=67.0, free_quote=1.53, free_base=11.0
+    )
+    assert hl_dust_buy["effective_max_buy_usd"] == 0.0
+    assert hl_dust_buy["effective_max_sell_usd"] == pytest.approx(737.0)
+    fb_lim_sell = resolve_venue_fee_and_limits(
+        "kraken",
+        "HYPEUSD",
+        None,
+        price=67.0,
+        free_quote=500.0,
+        free_base=0.05,
+        fallback_limits={"exchange_min_notional_usd": 10.0, "min_qty": 0.08},
+    )
+    assert fb_lim_sell["effective_max_sell_usd"] == 0.0
+
+    from providers.kraken_provider import KrakenProvider
+
+    class _FakeKpCli:
+        def cached_pair_info(self, _cands):
+            return {
+                "fees_maker": [[0, 0.16]],
+                "fees": [[0, 0.26]],
+                "ordermin": "0.06",
+                "costmin": "1.0",
+                "lot_decimals": 6,
+                "pair_decimals": 2,
+            }
+
+    tok_meta = KrakenProvider.extract_cached_fee_and_limits(SimpleNamespace(_cli=_FakeKpCli()), "ANTxUSD")
+    assert (tok_meta["fee_tier"], tok_meta["maker_fee_bps"], tok_meta["taker_fee_bps"]) == ("XSTOCK_ZERO_FEE", 0.0, 0.0)
+    assert tok_meta["min_qty"] == pytest.approx(0.06)
 
     # 4. clamp_notional_to_wallet_balance sweeps near-full SELL LIMIT notional up to avail_usd to prevent <$10 dust
     ant_inst = SimpleNamespace(
