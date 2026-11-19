@@ -59,7 +59,7 @@ from cachepaths import (
 )
 from core.config import parse_dotenv
 from core.llm_topics import resolve_configured_llm_models
-from instrument_registry import is_xstock_trading_enabled
+from instrument_registry import canonical_display_symbol, is_xstock_trading_enabled
 from intelligence.macro_sentiment_ssot import (
     normalize_market_bias,
     normalize_recommended_action,
@@ -2167,19 +2167,21 @@ def evaluate_crypto_executor_delta_gate(
         for sym, pinfo in prices_and_trends.items():
             if not isinstance(pinfo, Mapping):
                 continue
-            sym_u = str(sym or "").strip().upper()
+            sym_raw = str(sym or "").strip()
+            sym_k = canonical_display_symbol(sym_raw) or sym_raw.upper()
             px = safe_pos_float(pinfo.get("price"), default=None)
-            if sym_u and px is not None:
-                eval_prices[sym_u] = round(px, 8)
+            if sym_k and px is not None:
+                eval_prices[sym_k] = round(px, 8)
     raw_positions = ps_map.get("tradable_positions")
     if isinstance(raw_positions, list):
         for pos in raw_positions:
             if not isinstance(pos, Mapping):
                 continue
-            sym_u = str(pos.get("symbol") or "").strip().upper()
+            sym_raw = str(pos.get("symbol") or "").strip()
+            sym_k = canonical_display_symbol(sym_raw, venue=pos.get("venue")) or sym_raw.upper()
             px = safe_pos_float(pos.get("price"), default=None)
-            if sym_u and px is not None and sym_u not in eval_prices:
-                eval_prices[sym_u] = round(px, 8)
+            if sym_k and px is not None and sym_k not in eval_prices:
+                eval_prices[sym_k] = round(px, 8)
 
     sa = getattr(sensors, "sentiment_advisor", None)
     gt = getattr(sensors, "geopolitical_threat", None)
@@ -2256,10 +2258,11 @@ def evaluate_crypto_executor_delta_gate(
     prev_prices: Dict[str, float] = {}
     if isinstance(prev_prices_raw, Mapping):
         for k, v in prev_prices_raw.items():
-            sym_u = str(k or "").strip().upper()
+            k_raw = str(k or "").strip()
+            sym_k = canonical_display_symbol(k_raw) or k_raw.upper()
             px = safe_pos_float(v, default=None)
-            if sym_u and px is not None:
-                prev_prices[sym_u] = px
+            if sym_k and px is not None:
+                prev_prices[sym_k] = px
 
     max_move_pct = 0.0
     max_move_sym = ""

@@ -2292,13 +2292,33 @@ def test_xstock_canonical_case_coalescing_adopted_ipo_pnl_and_ob_mid_rounding(tm
     (ws_dir / "kraken").mkdir(parents=True, exist_ok=True)
 
     now_s = 1_795_060_000.0
+    from providers.base import MarketDataProvider
+
+    assert MarketDataProvider.resolve_orderbook_depth_urls("SPCXxUSD", venue="kraken", multi_venue=True)[0] == (
+        "https://api.kraken.com/0/public/Depth?pair=SPCXxUSD&count=200&asset_class=tokenized_asset",
+    )
+    assert MarketDataProvider.resolve_orderbook_depth_urls("ANTxUSD", venue="kraken", multi_venue=True)[0] == (
+        "https://api.kraken.com/0/public/Depth?pair=ANTxUSD&count=200&asset_class=tokenized_asset",
+    )
+    flow_req, _ = MarketDataProvider.resolve_spot_flow_15m_spec("SPCXxUSD", venue="kraken", now_ts=now_s)
+    assert flow_req is not None and "pair=SPCXxUSD" in flow_req[0] and "asset_class=tokenized_asset" in flow_req[0]
+
+    seen_ob_urls = []
     ob_col = OrderbookDepthCollector(cache_dir=str(c_dir), start_sync=True)
-    ob_col._fetch_json_dict = lambda *_a, **_kw: {
-        "error": [],
-        "result": {"SPCXxUSD": {"bids": [["145.30", "20.0", 1]], "asks": [["145.41", "20.0", 1]]}},
-    }
+    ob_col._fetch_json_dict = lambda url, *_a, **_kw: (
+        seen_ob_urls.append(url)
+        or {"error": [], "result": {"SPCXxUSD": {"bids": [["145.30", "20.0", 1]], "asks": [["145.41", "20.0", 1]]}}}
+    )
+    ob_col._fetch_spot_cvd_payload = lambda url, _body: (
+        seen_ob_urls.append(url)
+        or {"error": [], "result": {"SPCXxUSD": [[145.35, 10.0, now_s - 30.0, "b", "l", ""]], "last": "1"}}
+    )
     ob_snap = ob_col.fetch("SPCXxUSD", allow_network=True, now=now_s)
+    assert any("Depth?pair=SPCXxUSD" in u and "asset_class=tokenized_asset" in u for u in seen_ob_urls)
+    assert any("Trades?pair=SPCXxUSD" in u and "asset_class=tokenized_asset" in u for u in seen_ob_urls)
+    assert not any("binance.com" in u for u in seen_ob_urls)
     assert ob_snap is not None
+    assert ob_snap.spot_cvd_15m_usd == pytest.approx(1454.0)
     assert ob_snap.symbol == "SPCXxUSD"
     assert ob_snap.mid_price == 145.355
     assert "0000000" not in repr(ob_snap.mid_price)
