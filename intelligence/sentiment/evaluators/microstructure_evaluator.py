@@ -1635,7 +1635,7 @@ def should_rescale_usd_sibling_walls(
     ):
         return False
     if ob_ts > 0.0 and now_ts > 0.0:
-        max_rescale_age = 60.0 if resolve_symbol_identity(sym_u).is_tokenized_equity else 300.0
+        max_rescale_age = 60.0 if resolve_symbol_identity(sym_u).is_tokenized_equity else 600.0
         if (now_ts - ob_ts) > max_rescale_age:
             return False
     if 0.0 < ob_ts and last_pt is not None and (ob_ts * 1000.0 - last_pt[0]) > 60_000.0:

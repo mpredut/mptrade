@@ -12836,11 +12836,11 @@ def test_mixed_case_xstock_routing_frozen_ob_suppression_bnb_reserve_and_limit_p
     assert st_tao is not None and st_tao["limit_px"] == pytest.approx(190.8)
 
     # 5. Reanalysis polish: ensure_fresh_symbol_microstructure recognizes mixed-case orderbook_depth_SPCXxUSD.json without redundant refetch,
-    # and should_rescale_usd_sibling_walls refuses rescaling severely stale books (>60s xStock, >300s fiat USD)
+    # and should_rescale_usd_sibling_walls refuses rescaling severely stale books (>60s xStock, >600s STALE_FROZEN fiat USD)
     from intelligence.sentiment.collectors.microstructure_collector import ensure_fresh_symbol_microstructure
     from intelligence.sentiment.evaluators.microstructure_evaluator import should_rescale_usd_sibling_walls
 
-    assert should_rescale_usd_sibling_walls("TAOUSD", 196.0, 200.0, 196.0, ob_ts=now_s - 400.0, now_ts=now_s) is False
+    assert should_rescale_usd_sibling_walls("TAOUSD", 196.0, 200.0, 196.0, ob_ts=now_s - 700.0, now_ts=now_s) is False
     assert should_rescale_usd_sibling_walls("TAOUSD", 196.0, 200.0, 196.0, ob_ts=now_s - 120.0, now_ts=now_s) is True
     assert should_rescale_usd_sibling_walls("SPCXxUSD", 139.97, 144.52, 139.97, ob_ts=now_s - 90.0, now_ts=now_s) is False
     fresh_ob_path = cdir / "telemetry" / "orderbook_depth_SPCXxUSD.json"
