@@ -79,7 +79,7 @@ from cachepaths import (
     symbol_quote_asset,
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
-from instrument_registry import casefold_get, resolve_kraken_tokenized_pair
+from instrument_registry import canonical_display_symbol, casefold_get, resolve_kraken_tokenized_pair
 
 _MISSING = object()
 
@@ -193,8 +193,8 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
 
     @classmethod
     def format_strategy_heartbeat_name(cls, symbol: str = "") -> str:
-        sym = clean_upper_scalar(symbol) or ""
-        return "Kraken-HYPE" if ("HYPE" in sym or not sym) else f"Kraken-{sym}"
+        sym = canonical_display_symbol(symbol, venue="kraken") or clean_upper_scalar(symbol) or ""
+        return "Kraken-HYPE" if ("HYPE" in sym.upper() or not sym) else f"Kraken-{sym}"
 
     def supports_symbol(self, symbol: str) -> bool:
         # Explicit-only: claim no pattern and remain reachable only through Instrument.

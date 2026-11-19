@@ -45,6 +45,7 @@ from cachepaths import (
 )
 from instrument_registry import (
     binance_symbols,
+    canonical_display_symbol,
     discover_hyperliquid_spot,
     is_equity_symbol,
     resolve_symbol_identity,
@@ -108,8 +109,9 @@ def detect_active_binance_symbols(
     seen_bases: Set[str] = set()
 
     def _add_sym(raw_s: Any, *, skip_eq: bool = False, unique_base: bool = False) -> None:
-        s_clean = str(raw_s or "").strip().strip("'\"").upper()
-        if not s_clean or (skip_eq and is_equity_symbol(s_clean)) or s_clean in out:
+        s_raw = str(raw_s or "").strip().strip("'\"")
+        s_clean = canonical_display_symbol(s_raw) or s_raw.upper()
+        if not s_clean or (skip_eq and is_equity_symbol(s_clean)) or any(x.upper() == s_clean.upper() for x in out):
             return
         base = canonical_base_asset(s_clean)
         if unique_base and (not base or base in seen_bases):

@@ -1168,38 +1168,55 @@ def _load_stitched_24h_ohlc_points(
 ) -> List[List[Any]]:
     """Load 5m OHLC points since `cutoff_24h` and prepend older 15m OHLC points when span < 18h."""
     allow_offline_disk = is_offline_disk_cache_enabled()
-    sym_u = "" if isinstance(sym, bool) else str(sym or "").strip().upper()
+    sym_raw_s = "" if isinstance(sym, bool) else str(sym or "").strip()
+    sym_u = sym_raw_s.upper()
+    ident_sym = resolve_symbol_identity(sym_raw_s) if sym_raw_s else None
+    sym_canon = (
+        ident_sym.display_symbol
+        if (ident_sym is not None and ident_sym.is_tokenized_equity and ident_sym.display_symbol)
+        else sym_u
+    )
     cutoff_ms = (normalize_epoch_sec(cutoff_24h, default=0.0, allow_zero=True) or 0.0) * 1000.0
     cpath = ""
     disk_fallback_pts: List[List[Any]] = []
     _, writer_anchor = callable_identity_anchor(ohlc_fn) if callable(ohlc_fn) else (None, None)
-    if sym_u and sym_u.replace("_", "").isalnum():
+    if sym_canon and sym_canon.replace("_", "").isalnum():
         try:
-            fname = cache_ohlc_24h_filename(sym_u)
+            fname = cache_ohlc_24h_filename(sym_canon)
             cpath = (
                 str(resolve_cachedb_filepath(os.path.join(cache_dir, fname)))
                 if cache_dir
                 else str(cache_path(fname))
             )
+            read_cpath = cpath
+            if not os.path.exists(read_cpath) and sym_canon != sym_u:
+                alt_fname = cache_ohlc_24h_filename(sym_u)
+                alt_cpath = (
+                    str(resolve_cachedb_filepath(os.path.join(cache_dir, alt_fname)))
+                    if cache_dir
+                    else str(cache_path(alt_fname))
+                )
+                if os.path.exists(alt_cpath):
+                    read_cpath = alt_cpath
             can_read_disk = (
                 not callable(ohlc_fn)
                 or allow_offline_disk
                 or is_live_network_backfill_enabled()
                 or (
-                    (prev_writer := _LAST_OHLC_WRITER_ID_BY_PATH.get(cpath)) is not None
+                    (prev_writer := _LAST_OHLC_WRITER_ID_BY_PATH.get(read_cpath)) is not None
                     and same_callable_anchor(prev_writer, writer_anchor)
                 )
             )
             if can_read_disk:
-                st = os.stat(cpath)
+                st = os.stat(read_cpath)
                 age_s = _time.time() - st.st_mtime
                 max_disk_age = 7200.0 if allow_offline_disk else 3600.0
                 if 0.0 <= age_s < max_disk_age:
                     file_sig = (st.st_mtime_ns, st.st_size)
-                    cached_ohlc = _OHLC_24H_DISK_MEMO.get(cpath)
+                    cached_ohlc = _OHLC_24H_DISK_MEMO.get(read_cpath)
                     raw_pts = cached_ohlc[1] if (cached_ohlc is not None and cached_ohlc[0] == file_sig) else None
                     if raw_pts is None:
-                        d_obj = read_json_recovering(cpath)
+                        d_obj = read_json_recovering(read_cpath)
                         cand_pts = d_obj.get("points") if isinstance(d_obj, dict) else d_obj
                         if isinstance(cand_pts, list):
                             raw_pts = [
@@ -1207,7 +1224,7 @@ def _load_stitched_24h_ohlc_points(
                                 for p in cand_pts
                                 if isinstance(p, (list, tuple)) and len(p) >= 2 and (safe_pos_float(p[1], 0.0) or 0.0) > 0.0
                             ]
-                            lru_dict_put(_OHLC_24H_DISK_MEMO, cpath, (file_sig, raw_pts), 64)
+                            lru_dict_put(_OHLC_24H_DISK_MEMO, read_cpath, (file_sig, raw_pts), 64)
                     if raw_pts:
                         filt = [
                             list(p)
@@ -1239,7 +1256,7 @@ def _load_stitched_24h_ohlc_points(
                 cur_disk = read_json_dict(cpath, default=None, repair_files=True)
                 cur_ts = normalize_epoch_sec(cur_disk.get("ts") if isinstance(cur_disk, dict) else None, default=None)
                 if not (is_equity_symbol(sym_u) and cur_ts is not None and -5.0 <= (now_w - cur_ts) < 240.0):
-                    save_json_state(cpath, {"ts": now_w, "symbol": sym_u, "points": pts_all})
+                    save_json_state(cpath, {"ts": now_w, "symbol": sym_canon, "points": pts_all})
                     st_new = os.stat(cpath)
                     lru_dict_put(
                         _OHLC_24H_DISK_MEMO,

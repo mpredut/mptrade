@@ -63,7 +63,7 @@ from intelligence.macro.daemon_ssot import (
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
-from instrument_registry import has_workspace_instrument_sources, is_equity_symbol
+from instrument_registry import canonical_display_symbol, has_workspace_instrument_sources, is_equity_symbol
 from providers.base import MarketDataProvider
 
 load_tradable_instruments = MarketDataProvider.load_tradable_instruments
@@ -186,7 +186,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.pretrade_caches_interval_sec = max(60.0, self.orderbook_interval_sec * 3.0)
         self.venue_balances_interval_sec = safe_pos_float(venue_balances_interval_sec, self.pretrade_caches_interval_sec)
         self.skip_news = _parse_bool_flag(skip_news, False)
-        parsed_syms = parse_symbol_list(symbols)
+        parsed_syms = list(dict.fromkeys(canonical_display_symbol(s) or s for s in parse_symbol_list(symbols)))
         self._explicit_symbols = bool(parsed_syms)
         self.symbols = parsed_syms or detect_active_binance_symbols(self.cache_dir, include_kraken_cache=True)
         self._auto_detected_symbols = list(self.symbols)

@@ -11217,18 +11217,18 @@ def test_item_2_1_tokenized_xstock_base_isolation_no_retry_spin_and_pretrade_tag
     assert "Whale Positioning" not in pt_tok
 
     # GlobalTelemetryCollector._step_external_symbols skips deriv/whale on tokenized xStocks instead of 0.25x retry spinning.
-    gtc = GlobalTelemetryCollector(symbols=["SPCXXUSD"], cache_dir=str(cdir), skip_news=True)
+    gtc = GlobalTelemetryCollector(symbols=["SPCXxUSD"], cache_dir=str(cdir), skip_news=True)
     deriv_calls, whale_calls, ob_calls = [], [], []
     gtc.update_orderbook = lambda sym: (ob_calls.append(sym) or True)
     gtc.update_derivatives = lambda sym: (deriv_calls.append(sym) or False)
     gtc.update_whale = lambda sym: (whale_calls.append(sym) or False)
     res_step = gtc._new_external_cycle_results(now_s)
     gtc._step_external_symbols(now_s, False, res_step, bounded=True)
-    assert ob_calls == ["SPCXXUSD"]
+    assert ob_calls == ["SPCXxUSD"]
     assert deriv_calls == []
     assert whale_calls == []
-    assert "SPCXXUSD" not in gtc._last_derivatives_ts
-    assert "SPCXXUSD" not in gtc._last_whale_ts
+    assert "SPCXxUSD" not in gtc._last_derivatives_ts
+    assert "SPCXxUSD" not in gtc._last_whale_ts
 
 
 def test_item_2_2_no_synthetic_oi_mult_12_and_compact_equity_liq_isolation():
@@ -12033,7 +12033,7 @@ def test_burnin_antxusd_empty_book_backoff_and_equities_xstock_readonly_framing(
     from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
     from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
 
-    assert cache_ohlc_24h_filename("SPCXxUSD") == "cache_ohlc_24h_SPCXXUSD.json"
+    assert cache_ohlc_24h_filename("SPCXxUSD") == "cache_ohlc_24h_SPCXxUSD.json"
     assert cache_ohlc_24h_filename("SPCXxUSD", preserve_case=True) == "cache_ohlc_24h_SPCXxUSD.json"
 
     now_s = 1_776_500_000.0
@@ -12047,18 +12047,18 @@ def test_burnin_antxusd_empty_book_backoff_and_equities_xstock_readonly_framing(
     ob_col._fetch_json_dict = _fake_fetch_empty_book
     caplog.clear()
     with caplog.at_level("WARNING", logger="intelligence.external.orderbook_depth"):
-        res1 = ob_col.fetch("ANTXUSD", allow_network=True, now=now_s)
-        res2 = ob_col.fetch("ANTXUSD", allow_network=True, now=now_s + 7.5)
+        res1 = ob_col.fetch("ANTxUSD", allow_network=True, now=now_s)
+        res2 = ob_col.fetch("ANTxUSD", allow_network=True, now=now_s + 7.5)
 
     assert res1 is None and res2 is None
     assert len(calls) == 1
-    assert ob_col.is_unlisted_xstock_backoff_active("ANTXUSD", now_s + 60.0) is True
-    assert ob_col.is_unlisted_xstock_backoff_active("ANTXUSD", now_s + 301.0) is False
+    assert ob_col.is_unlisted_xstock_backoff_active("ANTxUSD", now_s + 60.0) is True
+    assert ob_col.is_unlisted_xstock_backoff_active("ANTxUSD", now_s + 301.0) is False
     assert [r for r in caplog.records if r.levelname == "WARNING"] == []
 
     # Active xStock with an existing cached orderbook must still warn & fall back to cached on unexpected empty book
     seeded_snap = OrderbookSnapshot(
-        symbol="SPCXXUSD",
+        symbol="SPCXxUSD",
         mid_price=146.5,
         bid_depth_usd=12000.0,
         ask_depth_usd=11000.0,
@@ -12072,19 +12072,19 @@ def test_burnin_antxusd_empty_book_backoff_and_equities_xstock_readonly_framing(
         best_ask=146.6,
         spread_bps=13.66,
     )
-    ob_col._commit_snapshot("SPCXXUSD", now_s - 120.0, seeded_snap)
+    ob_col._commit_snapshot("SPCXxUSD", now_s - 120.0, seeded_snap)
     caplog.clear()
     with caplog.at_level("WARNING", logger="intelligence.external.orderbook_depth"):
-        fallback_snap = ob_col.fetch("SPCXXUSD", allow_network=True, now=now_s)
+        fallback_snap = ob_col.fetch("SPCXxUSD", allow_network=True, now=now_s)
     assert fallback_snap is not None and fallback_snap.mid_price == 146.5
     assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
 
     # GlobalTelemetryCollector advances _last_orderbook_ts to current_ts (no 0.25x retry spin) during pre-IPO backoff
-    daemon = GlobalTelemetryCollector(symbols=["ANTXUSD"], cache_dir=str(tmp_path), skip_external=False)
+    daemon = GlobalTelemetryCollector(symbols=["ANTxUSD"], cache_dir=str(tmp_path), skip_external=False)
     daemon.orderbook_collector = ob_col
     results = daemon._new_external_cycle_results(now_s + 10.0)
     daemon._step_external_symbols(now_s + 10.0, False, results, bounded=True)
-    assert daemon._last_orderbook_ts["ANTXUSD"] == now_s + 10.0
+    assert daemon._last_orderbook_ts["ANTxUSD"] == now_s + 10.0
 
     xs_payload = {
         "underlying": "SPCX",
@@ -12126,22 +12126,16 @@ def test_phase1_symbol_identity_3tier_asset_policy_and_spot_ob_reconciler_ssot()
     id_btc = resolve_symbol_identity("BTCUSDC")
     assert id_btc.asset_class == "crypto" and id_btc.is_crypto and id_btc.has_crypto_perpetuals and not id_btc.uses_equity_risk_priors
 
-    id_xstock = resolve_symbol_identity("SPCXXUSD")
+    id_xstock = resolve_symbol_identity("SPCXxUSD")
     assert id_xstock.asset_class == "tokenized_equity"
-    assert id_xstock.storage_key == "SPCXXUSD"
+    assert id_xstock.storage_key == "SPCXxUSD"
     assert id_xstock.wire_symbol == "SPCXxUSD"
     assert id_xstock.display_symbol == "SPCXxUSD"
     assert not id_xstock.has_crypto_perpetuals and not id_xstock.has_liquidation_clusters and id_xstock.uses_equity_risk_priors
     xstock_cands = id_xstock.candidate_cache_symbols()
-    assert "SPCXxUSD" in xstock_cands and "SPCXXUSD" in xstock_cands
-    assert price_cache_filename_variants("SPCXxUSD", cache_ohlc_24h_filename) == (
-        "cache_ohlc_24h_SPCXXUSD.json",
-        "cache_ohlc_24h_SPCXxUSD.json",
-    )
-    assert price_cache_filename_variants("SPCXxUSD", cache_24_price_filename) == (
-        "cache_24_price_SPCXXUSD.json",
-        "cache_24_price_SPCXxUSD.json",
-    )
+    assert "SPCXxUSD" in xstock_cands
+    assert price_cache_filename_variants("SPCXxUSD", cache_ohlc_24h_filename)[0] == "cache_ohlc_24h_SPCXxUSD.json"
+    assert price_cache_filename_variants("SPCXxUSD", cache_24_price_filename)[0] == "cache_24_price_SPCXxUSD.json"
 
     id_eq = resolve_symbol_identity("NVDA_US_EQ")
     assert id_eq.asset_class == "rth_equity" and id_eq.is_rth_equity and not id_eq.has_crypto_perpetuals and id_eq.uses_equity_risk_priors

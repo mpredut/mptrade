@@ -11,6 +11,7 @@ from typing import Any, Callable, Optional, Tuple
 from botcore import (
     _parse_bool_flag,
     clean_order_id_str,
+    clean_scalar_str,
     clean_upper_scalar,
     extract_order_price,
     extract_order_qty,
@@ -25,7 +26,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import _LEGACY_KRAKEN_X_BASES, has_equity_suffix, normalize_venue_name
+from cachepaths import _LEGACY_KRAKEN_X_BASES, has_equity_suffix, is_kraken_tokenized_asset, normalize_venue_name
 from .order_id_context import resolve_venue_provider_class
 from .order_ohlc_utils import extract_order_fee
 
@@ -184,32 +185,38 @@ def _clean_asset_arg(val: Any) -> Optional[str]:
         return None
     if isinstance(val, float) and not math.isfinite(val):
         return None
-    return clean_upper_scalar(str(val))
+    s = clean_scalar_str(str(val))
+    if s is None:
+        return None
+    return s if is_kraken_tokenized_asset(s) else s.upper()
 
 
 def resolve_assets(
     symbol: str, base: Optional[str] = None, quote: Optional[str] = None
 ) -> tuple[str, Optional[str]]:
-    symbol_u = _clean_asset_arg(symbol) or ""
-    base_u = _clean_asset_arg(base)
-    quote_u = _clean_asset_arg(quote)
-    if base_u and quote_u:
-        return base_u, quote_u
-    if base_u and symbol_u.startswith(base_u) and symbol_u != base_u:
-        rem = symbol_u[len(base_u):].lstrip("/-_")
-        return base_u, quote_u or (rem or None)
+    symbol_c = _clean_asset_arg(symbol) or ""
+    symbol_u = symbol_c.upper()
+    base_c = _clean_asset_arg(base)
+    quote_c = _clean_asset_arg(quote)
+    quote_u = quote_c.upper() if quote_c else None
+    if base_c and quote_u:
+        return base_c, quote_u
+    if base_c and symbol_u.startswith(base_c.upper()) and symbol_u != base_c.upper():
+        rem = symbol_u[len(base_c):].lstrip("/-_")
+        return base_c, quote_u or (rem or None)
     for suffix in QUOTE_SUFFIXES:
-        if symbol_u.endswith(suffix) and len(symbol_u) > len(suffix):
-            stem = symbol_u[:-len(suffix)].rstrip("/-_")
-            if len(stem) == 5 and stem.startswith("X") and stem.endswith("Z") and stem[:-1] in _LEGACY_KRAKEN_X_BASES:
-                stem = stem[:-1]
+        if symbol_u.endswith(suffix) and len(symbol_c) > len(suffix):
+            stem = symbol_c[:-len(suffix)].rstrip("/-_")
+            stem_u = stem.upper()
+            if len(stem_u) == 5 and stem_u.startswith("X") and stem_u.endswith("Z") and stem_u[:-1] in _LEGACY_KRAKEN_X_BASES:
+                stem = stem_u[:-1]
             if stem:
-                return base_u or stem, quote_u or suffix
+                return base_c or stem, quote_u or suffix
     if has_equity_suffix(symbol_u) or symbol_u.endswith("X.T"):
         raw_sym = "" if isinstance(symbol, bool) else str(symbol or "").strip()
-        eff_base = base_u or (raw_sym if raw_sym.endswith("x.T") else symbol_u)
+        eff_base = base_c or (raw_sym if raw_sym.endswith("x.T") else symbol_u)
         return eff_base, quote_u or "USD"
-    return base_u or symbol_u, quote_u
+    return base_c or symbol_c, quote_u
 
 
 def resolve_base_asset(symbol: str) -> str:

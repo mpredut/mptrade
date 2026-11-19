@@ -89,7 +89,10 @@ def _clean_cache_symbol(symbol: object, *, preserve_case: bool = False) -> str:
     if symbol is None or isinstance(symbol, (bool, bytes, bytearray, dict, list, tuple, set, frozenset)):
         return ""
     raw = symbol if isinstance(symbol, str) else str(symbol)
-    return (clean_scalar_str(raw) if preserve_case else clean_upper_scalar(raw)) or ""
+    s = clean_scalar_str(raw)
+    if s is None:
+        return ""
+    return s if (preserve_case or is_kraken_tokenized_asset(s)) else s.upper()
 
 
 def cache_sparse_price_filename(symbol: object, *, preserve_case: bool = False) -> str:
@@ -114,15 +117,17 @@ def cache_ohlc_24h_filename(symbol: object, *, preserve_case: bool = False) -> s
 
 
 def price_cache_filename_variants(symbol: object, builder_fn, *extra_symbols: object) -> tuple[str, ...]:
-    """Return deduplicated uppercase and case-preserved cache filenames for ``symbol`` and ``extra_symbols``."""
+    """Return deduplicated canonical and legacy uppercase cache filenames for ``symbol`` and ``extra_symbols``."""
     out: list[str] = []
     for sym in (symbol, *extra_symbols):
-        if not _clean_cache_symbol(sym, preserve_case=True):
+        s_clean = _clean_cache_symbol(sym, preserve_case=True)
+        if not s_clean:
             continue
-        for preserve in (False, True):
-            fn = builder_fn(sym, preserve_case=preserve)
-            if fn and fn not in out:
-                out.append(fn)
+        for cand in (s_clean, s_clean.upper()):
+            for preserve in (True, False):
+                fn = builder_fn(cand, preserve_case=preserve)
+                if fn and fn not in out:
+                    out.append(fn)
     return tuple(out)
 
 
@@ -1156,7 +1161,12 @@ def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) ->
     if not eff_dir or raw_sym is None or clean_pfx is None:
         return None
     raw_u = raw_sym.upper()
-    safe_sym = raw_u if (has_equity_suffix(raw_u) and raw_u.replace("_", "").isalnum()) else clean_symbol_key(raw_sym)
+    if is_kraken_tokenized_asset(raw_sym) and raw_sym.replace("_", "").isalnum():
+        safe_sym = raw_sym
+    elif has_equity_suffix(raw_u) and raw_u.replace("_", "").isalnum():
+        safe_sym = raw_u
+    else:
+        safe_sym = clean_symbol_key(raw_sym)
     if not safe_sym:
         return None
     return str(resolve_cachedb_filepath(os.path.join(eff_dir, f"{clean_pfx}_{safe_sym}.json")))

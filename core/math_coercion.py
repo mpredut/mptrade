@@ -9,9 +9,11 @@ import re
 from cachepaths import (
     INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
+    clean_scalar_str,
     clean_upper_scalar,
     exact_int,
     exact_pos_int,
+    is_kraken_tokenized_asset,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -562,13 +564,20 @@ def split_csv(raw: str | None, *, lower: bool = False, upper: bool = False) -> t
     return tuple(seen)
 
 
+def _norm_symbol_list_token(raw_val: object) -> str | None:
+    s = clean_scalar_str(raw_val)
+    if s is None:
+        return None
+    return s if is_kraken_tokenized_asset(s) else s.upper()
+
+
 def parse_symbol_list(symbols: object) -> list[str]:
-    """Normalize comma-separated string or iterable of symbols into uppercase list."""
+    """Normalize comma-separated string or iterable of symbols into canonical symbol list."""
     if isinstance(symbols, str):
-        return [tok for raw_tok in split_csv(symbols, upper=True) if (tok := clean_upper_scalar(raw_tok)) is not None]
+        return [tok for raw_tok in split_csv(symbols, upper=False) if (tok := _norm_symbol_list_token(raw_tok)) is not None]
     if symbols is None or isinstance(symbols, (bool, bytes, bytearray, dict)) or not hasattr(symbols, "__iter__"):
         return []
-    return list(dict.fromkeys(tok for s in symbols if (tok := clean_upper_scalar(s)) is not None))
+    return list(dict.fromkeys(tok for s in symbols if (tok := _norm_symbol_list_token(s)) is not None))
 
 
 def diff_percent(value1: float, value2: float) -> float:

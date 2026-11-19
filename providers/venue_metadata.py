@@ -300,8 +300,8 @@ class ProviderVenueMetadataMixin:
         poll_k, b_init_k, b_max_k = f"{env_prefix}_POLL_S", f"{env_prefix}_BACKOFF_INIT_S", f"{env_prefix}_BACKOFF_MAX_S"
         values = env_values_map(env_dir, (symbols_env_key, poll_k, b_init_k, b_max_k, *extra_keys))
         syms = list(dict.fromkeys(
-            s for raw in [*_default_ir.symbols_for(venue_key), *split_csv(values.get(symbols_env_key), upper=True)]
-            if (s := clean_upper_scalar(raw)) is not None
+            s for raw in [*_default_ir.symbols_for(venue_key), *split_csv(values.get(symbols_env_key), upper=False)]
+            if (s := _default_ir.canonical_display_symbol(raw, venue=venue_key) or clean_upper_scalar(raw)) is not None
         ))
         if not syms:
             raise RuntimeError(f"No {venue_label} cache {symbols_out_key} configured in instruments.conf or {symbols_env_key}")

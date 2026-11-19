@@ -10,7 +10,7 @@
     Output consists of lines ready for market_alerts.conf. Review them manually; they
     are provisional because a new coin has sparse history and improves as data accumulates.
 
-  python3 verify_tools/gen_alert_thresholds.py SPCXX TAO BTC
+  python3 verify_tools/gen_alert_thresholds.py SPCXx TAO BTC
 """
 from __future__ import annotations
 

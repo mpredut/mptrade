@@ -1,13 +1,13 @@
 #!/bin/bash
 # Launch the SPCX bot (xStock, NO allocation -- a direct buy at listing time).
 # Run it when the listing alert arrives (it carries the exact pair key):
-#   ./spcx_launch.sh SPCXXUSD
+#   ./spcx_launch.sh SPCXxUSD
 set -euo pipefail
 
 # Approved amounts (12 Jun 2026): entry $800, DCA $500 at -4%, cap $5,000,
 # A TP of +12%, a stop-loss of 18%, and a re-entry only 3% below the price sold at.
 # Theoretical maximum loss per cycle ~ $900 (18% of the $5,000 deployed).
-PAIR="${1:?Missing pair. Example: ./spcx_launch.sh SPCXXUSD (the key comes in the listing alert)}"
+PAIR="${1:?Missing pair. Example: ./spcx_launch.sh SPCXxUSD (the key comes in the listing alert)}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
 

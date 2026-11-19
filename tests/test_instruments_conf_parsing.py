@@ -244,8 +244,8 @@ def test_current_execution_policy_is_preserved(tmp_path):
         "RGNT_US_EQ": "t212",
         "TAOUSD": "kraken",
         "ADAUSD": "kraken",
-        "SPCXXUSD": "kraken",
-        "ANTXUSD": "kraken",
+        "SPCXxUSD": "kraken",
+        "ANTxUSD": "kraken",
     }
     arch_syms, arch_nb, arch_prov = registry.tracked_price_instruments(role="archive")
     assert arch_syms == all_syms

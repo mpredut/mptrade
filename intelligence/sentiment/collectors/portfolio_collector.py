@@ -45,6 +45,7 @@ from cachepaths import (
     has_equity_suffix,
     is_equity_venue,
     is_equity_venue_or_suffix,
+    is_kraken_tokenized_asset,
     is_primary_stream_venue,
     iter_venue_cycle_state_files,
     normalize_venue_name,
@@ -1065,6 +1066,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 return None
             raw_v = str(getattr(inst_obj, "provider_name", "") or "").strip().lower()
             v_name = normalize_venue_name(raw_v) or raw_v
+            eff_asset = asset if is_kraken_tokenized_asset(asset) else asset.upper()
             key = (v_name, asset.upper())
             if key in balance_memo:
                 return balance_memo[key]
@@ -1072,15 +1074,18 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             val_f: Optional[float] = None
             if callable(free_fn):
                 try:
-                    val_f = safe_nonneg_float(free_fn(asset), default=None)
+                    val_f = safe_nonneg_float(free_fn(eff_asset), default=None)
                 except Exception:
                     val_f = None
-            bkey = f"{v_name}:{asset.upper()}"
+            bkey = f"{v_name}:{eff_asset}"
+            bkey_u = f"{v_name}:{asset.upper()}"
             raw_bkey = f"{raw_v}:{asset.upper()}"
             if val_f is not None:
                 updated_bals[bkey] = round(val_f, 8)
             elif bkey in cached_bals:
                 val_f = safe_nonneg_float(cached_bals.get(bkey), default=None)
+            elif bkey_u in cached_bals:
+                val_f = safe_nonneg_float(cached_bals.get(bkey_u), default=None)
             elif raw_bkey in cached_bals:
                 val_f = safe_nonneg_float(cached_bals.get(raw_bkey), default=None)
             balance_memo[key] = val_f

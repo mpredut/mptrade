@@ -477,8 +477,7 @@ def resolve_symbol_identity(symbol: object, *, venue: object = None, path=None) 
     tok_pair, is_tok = resolve_kraken_tokenized_pair(raw, path=path)
     if is_tok or is_readonly_xstock_symbol(raw):
         wire = tok_pair or raw
-        storage = clean_symbol_key(raw) or raw.upper()
-        return SymbolIdentity(raw, storage, wire, wire, "tokenized_equity")
+        return SymbolIdentity(raw, wire, wire, wire, "tokenized_equity")
     if (v_norm and is_equity_venue(v_norm)) or is_equity_symbol(raw, path=path):
         up = raw.upper()
         wire = resolve_registered_symbol_case(raw, "t212", path=path) or up
@@ -585,10 +584,11 @@ def tracked_price_instruments(role=None, *, path=None):
         key = symbol.upper()
         if key in binance_keys:
             raise RuntimeError(f"ambiguous current-price cache symbol {symbol}: Binance and {provider_name}")
-        previous = nb_providers.get(key)
+        previous = casefold_get(nb_providers, key)
         if previous is not None and previous.lower() != provider_name.lower():
             raise RuntimeError(f"conflicting providers for {symbol}: {previous} and {provider_name}")
-        nb_providers[key] = provider_name
+        if casefold_get(nb_providers, key) is None:
+            nb_providers[symbol] = provider_name
         if symbol not in nb_syms:
             nb_syms.append(symbol)
 

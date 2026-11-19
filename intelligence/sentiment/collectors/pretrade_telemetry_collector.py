@@ -2214,16 +2214,21 @@ def refresh_pretrade_telemetry_caches(
             and _rj is _default_read_json_cached
             and ensure_fresh_symbol_microstructure is _ORIG_ENSURE_FRESH_SYMBOL_MICROSTRUCTURE
         ):
-            sym_u = clean_symbol_key(sym_raw) or sym_raw.upper()
-            ohlc_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, cache_ohlc_24h_filename(sym_u))))
+            ident_pt = resolve_symbol_identity(sym_raw)
+            sym_canon = (
+                ident_pt.display_symbol
+                if (ident_pt.is_tokenized_equity and ident_pt.display_symbol)
+                else (clean_symbol_key(sym_raw) or sym_raw.upper())
+            )
+            ohlc_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, cache_ohlc_24h_filename(sym_canon))))
             if os.path.exists(ohlc_path) or os.path.exists(
-                str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{sym_u}.json")))
+                str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{sym_canon}.json")))
             ):
                 try:
                     prev_mtime = os.path.getmtime(ohlc_path) if os.path.exists(ohlc_path) else 0.0
                     _load_stitched_24h_ohlc_points(
-                        _resolve_fallback_ohlc_fn(sym_u),
-                        sym_u,
+                        _resolve_fallback_ohlc_fn(sym_canon),
+                        sym_canon,
                         eff_now - 86400.0,
                         require_positive_volume=True,
                         cache_dir=cachedb_dir,

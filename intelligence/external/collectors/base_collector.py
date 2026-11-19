@@ -45,6 +45,7 @@ from cachepaths import (
 )
 import instrument_registry as _ir
 from instrument_registry import (
+    canonical_display_symbol,
     is_equity_symbol,
     is_symbol_market_open,
     resolve_symbol_identity,
@@ -145,7 +146,10 @@ def _clean_dict_float(
 
 def _clean_snapshot_symbol(data: Dict[str, Any], fallback: str = "") -> str:
     raw = (data.get("symbol") if isinstance(data, dict) else None) or fallback
-    return raw.strip() if isinstance(raw, str) else ""
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    s = raw.strip()
+    return canonical_display_symbol(s) or s
 
 
 def _clean_snapshot_ts(data: Dict[str, Any], default: float = 0.0) -> float:
@@ -460,21 +464,24 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         return resolve_cache_dir_path(self.cache_dir)
 
     def _resolve_lookup_candidates(self, symbol: str, *, exact_only: bool = False) -> Tuple[str, List[Any]]:
-        sym_clean = symbol.strip().upper()
+        sym_clean = canonical_display_symbol(symbol) or symbol.strip().upper()
         if exact_only:
-            return sym_clean, [sym_clean]
+            cands_ex = list(dict.fromkeys([sym_clean, sym_clean.upper()]))
+            return sym_clean, cands_ex
         quotes = compatible_quote_suffixes(symbol, default_usd=("USDC", "USDT", "USD", "FDUSD")) if self._QUOTE_ISOLATED else None
-        return sym_clean, (cache_symbol_variants(symbol, quotes=quotes) if quotes is not None else cache_symbol_variants(symbol))
+        raw_vars = cache_symbol_variants(symbol, quotes=quotes) if quotes is not None else cache_symbol_variants(symbol)
+        return sym_clean, list(dict.fromkeys([sym_clean, *raw_vars]))
 
     def _lookup_cached(self, symbol: str, now: float, *, exact_only: bool = False) -> Tuple[Any, Any]:
         sym_clean, cands = self._resolve_lookup_candidates(symbol, exact_only=exact_only)
+        sym_clean_u = sym_clean.upper()
         first_cached = None
         for c in cands:
             if c not in self._cache:
                 continue
             entry = self._cache[c]
             snap_obj = entry[1] if isinstance(entry, tuple) and len(entry) >= 2 else entry
-            if exact_only and str(getattr(snap_obj, "symbol", "") or "").strip().upper() != sym_clean:
+            if exact_only and str(getattr(snap_obj, "symbol", "") or "").strip().upper() != sym_clean_u:
                 continue
             if first_cached is None:
                 first_cached = entry
@@ -494,6 +501,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         ignore_ttl_b = _parse_bool_flag(ignore_ttl, default=False)
         max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
         sym_clean, cands = self._resolve_lookup_candidates(symbol, exact_only=exact_only)
+        sym_clean_u = sym_clean.upper()
         for cand in cands:
             p = telemetry_cache_file_path(self.cache_dir, self._DISK_FILE_PREFIX, cand)
             if not p:
@@ -503,8 +511,8 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 if not isinstance(data, dict):
                     continue
                 snapshot = self._SNAPSHOT_CLS.from_dict(data, cand)
-                snap_sym = str(getattr(snapshot, "symbol", "") or cand).strip().upper()
-                if exact_only and snap_sym != sym_clean:
+                snap_sym = canonical_display_symbol(getattr(snapshot, "symbol", "") or cand) or str(getattr(snapshot, "symbol", "") or cand).strip().upper()
+                if exact_only and snap_sym.upper() != sym_clean_u:
                     continue
                 if is_cache_fresh(snapshot.ts, now, max_age):
                     if (
@@ -516,7 +524,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                         continue
                     if snap_sym:
                         self._cache[snap_sym] = (snapshot.ts, snapshot)
-                    if not exact_only or snap_sym == sym_clean:
+                    if not exact_only or snap_sym.upper() == sym_clean_u:
                         self._cache[sym_clean] = (snapshot.ts, snapshot)
                     return snapshot
                 if ignore_ttl_b:
@@ -545,7 +553,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         )
 
     def _fallback_stale(self, symbol: str, cached: Any) -> Optional[Any]:
-        sym_clean = symbol.strip().upper() if isinstance(symbol, str) else ""
+        sym_clean = (canonical_display_symbol(symbol) or symbol.strip().upper()) if isinstance(symbol, str) else ""
         res: Optional[Any] = None
         if isinstance(cached, tuple) and len(cached) >= 2:
             res = cached[1]
@@ -612,7 +620,8 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         if item is None or not isinstance(getattr(item, "symbol", None), str) or not item.symbol.strip():
             return
         ts_val = safe_pos_float(getattr(item, "ts", None), default=None) or time.time()
-        self._cache[item.symbol.strip().upper()] = (ts_val, item)
+        cache_k = canonical_display_symbol(item.symbol) or item.symbol.strip().upper()
+        self._cache[cache_k] = (ts_val, item)
         if _parse_bool_flag(save_to_disk, default=False):
             self._save_to_disk(item)
 
@@ -639,7 +648,10 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         allow_network: Any,
         now: Optional[float],
     ) -> Tuple[Optional[str], float, Any, Optional[Any], bool]:
-        if not isinstance(symbol, str) or not (sym_clean := symbol.strip().upper()):
+        if not isinstance(symbol, str) or not symbol.strip():
+            return None, 0.0, None, None, False
+        sym_clean = canonical_display_symbol(symbol) or symbol.strip().upper()
+        if not sym_clean:
             return None, 0.0, None, None, False
         # BY DESIGN: Kraken spot tokenized equities (SPCXxUSD, ANTxUSD) have no perpetual futures or whale L/S;
         # short-circuit before memory/disk/base-variant lookup so stale/foreign snapshots never leak in.

@@ -2299,8 +2299,25 @@ def test_xstock_canonical_case_coalescing_adopted_ipo_pnl_and_ob_mid_rounding(tm
     }
     ob_snap = ob_col.fetch("SPCXxUSD", allow_network=True, now=now_s)
     assert ob_snap is not None
+    assert ob_snap.symbol == "SPCXxUSD"
     assert ob_snap.mid_price == 145.355
     assert "0000000" not in repr(ob_snap.mid_price)
+    assert (c_dir / "telemetry" / "orderbook_depth_SPCXxUSD.json").exists()
+    assert not (c_dir / "telemetry" / "orderbook_depth_SPCXXUSD.json").exists()
+
+    from cacheaccount import CacheTradeManager
+    from cachepaths import cache_ohlc_24h_filename, telemetry_cache_file_path
+    from providers.kraken_provider import KrakenProvider
+    from providers.quantity import resolve_assets
+
+    assert cache_ohlc_24h_filename("SPCXxUSD") == "cache_ohlc_24h_SPCXxUSD.json"
+    assert telemetry_cache_file_path(str(c_dir), "orderbook_depth", "SPCXxUSD").endswith("orderbook_depth_SPCXxUSD.json")
+    assert KrakenProvider.format_strategy_heartbeat_name("SPCXxUSD") == "Kraken-SPCXxUSD"
+    assert resolve_assets("SPCXxUSD") == ("SPCXx", "USD")
+    tr_doc = {"items": {"SPCXXUSD": [{"id": "T1", "symbol": "SPCXXUSD", "time": 1000, "price": 144.89, "qty": 5.5}]}, "fetchtime": {"SPCXXUSD": 1000}}
+    CacheTradeManager.merge_venue_fills_into_dict(tr_doc, {"SPCXxUSD": []}, now_ms=2000)
+    assert "SPCXxUSD" in tr_doc["items"] and "SPCXXUSD" not in tr_doc["items"]
+    assert "SPCXxUSD" in tr_doc["fetchtime"] and "SPCXXUSD" not in tr_doc["fetchtime"]
 
     m_loaded = load_symbol_microstructure(str(c_dir), "SPCXxUSD")
     assert m_loaded is not None and m_loaded["ob_mid_price"] == 145.355

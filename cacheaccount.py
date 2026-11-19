@@ -627,12 +627,22 @@ class CacheTradeManager(CacheAccountManagerBase):
                             row_copy["isBuyer"] = False
                     valid_rows.append(row_copy)
                 valid_rows.sort(key=lambda t: t["time"])
-                clean_items[str(k)] = valid_rows
+                k_canon = sym.canonical_display_symbol(k, venue=venue) or str(k)
+                for rc in valid_rows:
+                    if isinstance(rc.get("symbol"), str) and rc["symbol"].upper() == k_canon.upper():
+                        rc["symbol"] = k_canon
+                if k_canon in clean_items:
+                    merged_v = clean_items[k_canon] + valid_rows
+                    merged_v.sort(key=lambda t: t["time"])
+                    clean_items[k_canon] = merged_v
+                else:
+                    clean_items[k_canon] = valid_rows
             clean_fetchtime = {}
             for k, v in loaded["fetchtime"].items():
                 v_f = safe_nonneg_float(v, default=None)
-                if v_f is not None and (not clean_items or str(k) in clean_items):
-                    clean_fetchtime[str(k)] = v_f
+                k_canon_ft = sym.canonical_display_symbol(k, venue=venue) or str(k)
+                if v_f is not None and (not clean_items or k_canon_ft in clean_items):
+                    clean_fetchtime[k_canon_ft] = max(clean_fetchtime.get(k_canon_ft, 0.0), v_f)
             return {
                 "items": clean_items,
                 "fetchtime": clean_fetchtime,
@@ -787,9 +797,27 @@ class CacheTradeManager(CacheAccountManagerBase):
         for sym_raw, new_rows in (fills_by_symbol or {}).items():
             if not isinstance(sym_raw, str) or not isinstance(new_rows, list):
                 continue
-            sym_key = sym_raw.strip().upper()
+            sym_key = sym.canonical_display_symbol(sym_raw) or sym_raw.strip().upper()
             if not sym_key:
                 continue
+            for alt_k in [ik for ik in list(items) if ik != sym_key and str(ik).upper() == sym_key.upper()]:
+                alt_rows = items.pop(alt_k, None)
+                if isinstance(alt_rows, list) and sym_key not in items:
+                    items[sym_key] = alt_rows
+                changed = True
+            for alt_fk in [fk for fk in list(ft) if fk != sym_key and str(fk).upper() == sym_key.upper()]:
+                alt_ft = ft.pop(alt_fk, None)
+                if alt_ft is not None and sym_key not in ft:
+                    ft[sym_key] = alt_ft
+                changed = True
+            norm_new_rows = []
+            for r in new_rows:
+                if isinstance(r, dict):
+                    rc = dict(r)
+                    if isinstance(rc.get("symbol"), str) and rc["symbol"].upper() == sym_key.upper():
+                        rc["symbol"] = sym_key
+                    norm_new_rows.append(rc)
+            new_rows = norm_new_rows
             if is_snapshot_b:
                 clean_rows = [dict(r) for r in new_rows if isinstance(r, dict)]
                 if items.get(sym_key) != clean_rows or ft.get(sym_key) != eff_now_ms:
