@@ -2154,6 +2154,7 @@ class TelemetryEvaluatorFactory(OrderGuardEvaluatorFactory):
         "intelligence.sentiment.evaluators.portfolio_evaluator",
         "intelligence.sentiment.evaluators.tca_risk_evaluator",
         "intelligence.sentiment.evaluators.macro_telemetry_evaluator",
+        "intelligence.sentiment.evaluators.prompt_view_evaluator",
     )
 
 

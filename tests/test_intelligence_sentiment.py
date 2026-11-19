@@ -12160,24 +12160,139 @@ def test_phase1_symbol_identity_3tier_asset_policy_and_spot_ob_reconciler_ssot()
     assert m_fiat["ob_mid_price"] == 196.0 and m_fiat["ask_wall_px"] < 200.0
 
 
+def test_phase3_prompt_view_evaluators_3tier_and_section_parity() -> None:
+    """Verify 3-tier PromptViewEvaluatorBase hierarchy and pure Section 3A/3B/3C view models."""
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        TelemetryEvaluatorFactory,
+        TelemetryEvaluatorInterface,
+    )
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import (
+        MarketPricesPromptViewEvaluator,
+        MicrostructurePromptViewEvaluator,
+        PortfolioPromptViewEvaluator,
+        PromptViewEvaluatorBase,
+        coalesce_case_variants,
+        evaluate_market_prices_prompt_view,
+        evaluate_microstructure_prompt_view,
+        evaluate_portfolio_prompt_view,
+    )
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_market_prices_section,
+        _format_microstructure_section,
+        _format_portfolio_section,
+    )
 
+    with pytest.raises(TypeError):
+        PromptViewEvaluatorBase()
 
+    ev_3a = TelemetryEvaluatorFactory.create("prompt_market_prices_view")
+    ev_3b = TelemetryEvaluatorFactory.create("prompt_microstructure_view")
+    ev_3c = TelemetryEvaluatorFactory.create("prompt_portfolio_view")
+    assert isinstance(ev_3a, MarketPricesPromptViewEvaluator) and isinstance(ev_3a, TelemetryEvaluatorInterface)
+    assert isinstance(ev_3b, MicrostructurePromptViewEvaluator)
+    assert isinstance(ev_3c, PortfolioPromptViewEvaluator)
 
+    merged_case = coalesce_case_variants({
+        "SPCXXUSD": {"price": 122.0, "low_24h": 115.0},
+        "SPCXxUSD": {"price": 122.5, "high_24h": 126.0},
+    })
+    assert list(merged_case.keys()) == ["SPCXxUSD"]
+    assert merged_case["SPCXxUSD"]["price"] == 122.5
+    assert merged_case["SPCXxUSD"]["low_24h"] == 115.0
+    assert merged_case["SPCXxUSD"]["high_24h"] == 126.0
 
+    pt_3a = {
+        "BTCUSDC": {"price": 75000.0, "chg_24h_pct": 1.5},
+        "BTCUSD": {"price": 74990.0, "chg_24h_pct": 1.4, "poc_px": 74800.0, "val_px": 74200.0, "vah_px": 75400.0},
+    }
+    view_3a = evaluate_market_prices_prompt_view(pt_3a)
+    assert view_3a["btc_entry"]["price"] == 75000.0
+    assert view_3a["btc_entry"]["poc_px"] == 74800.0
+    assert len(view_3a["rows"]) == 1
+    sym_0, pinfo_0, sibs_0 = view_3a["rows"][0]
+    assert sym_0 == "BTCUSDC" and pinfo_0["poc_px"] == 74800.0 and len(sibs_0) == 1
+    assert "sibling venue: BTCUSD=" in "\n".join(_format_market_prices_section(pt_3a))
 
+    micro_3b = {
+        "SPCXXUSD": {
+            "ob_mid_price": 122.5,
+            "best_bid": 122.4,
+            "best_ask": 122.6,
+            "bid_depth_usd": 25000.0,
+            "ask_depth_usd": 30000.0,
+            "long_liq_px": 110.0,
+            "liq_magnet_bias": "LONG_LIQ_BELOW",
+        }
+    }
+    rows_3b = evaluate_microstructure_prompt_view(micro_3b, {"SPCXxUSD": {"price": 122.5, "chg_15m_pct": 0.4}})
+    assert len(rows_3b) == 1
+    assert rows_3b[0]["sym_is_tok"] is True and rows_3b[0]["sym_no_perp"] is True
+    assert "long_liq_px" not in rows_3b[0]["minfo"]
+    assert "liq_clusters(" not in "\n".join(
+        _format_microstructure_section(micro_3b, {"SPCXxUSD": {"price": 122.5}})
+    )
 
+    ps_3c = {
+        "open_limit_orders": [
+            {
+                "symbol": "SPCXxUSD",
+                "side": "BUY",
+                "qty": 2.0,
+                "orig_qty": 2.0,
+                "remaining_qty": 2.0,
+                "filled_qty": 0.0,
+                "order_id": "OID-1",
+                "orderId": "OID-1",
+            }
+        ],
+        "tradable_positions": [
+            {"venue": "kraken", "symbol": "SPCXxUSD", "price": 122.5, "lifo_realized_pnl_usd": 14.5}
+        ],
+        "kraken_cycles": {
+            "SPCXxUSD": {"open_qty": 1.0, "avg_buy": 120.0, "cycle_realized_pnl_usd": 4.25}
+        },
+        "kraken_xstocks": {
+            "listed_pair": "SPCXxUSD",
+            "watched_ipo_underlying": "ANT",
+            "holdings": {"SPCXx": 1.0, "DUSTx": 0.0},
+            "t212_sibling": "SPCX_US_EQ",
+            "t212_sibling_cycle": {"open_qty": 2.0, "avg_buy": 121.0, "dd_pct": -1.2, "pnl_vs_avg_pct": -1.2},
+        },
+        "cross_market_context": {
+            "equity_bellwethers": {
+                "NVDA_US_EQ": {"price": 185.0, "chg_24h_pct": 1.1, "va_regime": "INSIDE_VALUE", "extra_noise": 99},
+                "RGNT_US_EQ": {"price": 1.18, "chg_24h_pct": -0.5},
+            }
+        },
+        "last_cycle_execution_status": [
+            {"symbol": "SPCXXUSD", "status": "OPEN_RESTING", "age_min": 45.0, "order_id": "OID-1"},
+            {"symbol": "SPCXXUSD", "status": "FILLED", "age_min": 5.0, "order_id": "OID-2"},
+        ],
+        "assetguardian_state": {
+            "BTCUSDC": {
+                "tier_1": {"active": False, "pending": False, "completed_tiers": [1]},
+                "tier_2": {"active": True, "target_px": 72000.0, "terminal_orders": ["old"]},
+            }
+        },
+        "recent_ai_intents": [
+            {"symbol": "SPCXXUSD", "side": "HOLD", "status": "SKIPPED"},
+            {"symbol": "SPCXXUSD", "side": "BUY", "status": "EXECUTED", "venue_status": "OPEN", "order_id": "OID-9", "age_h": 0.2},
+        ],
+    }
+    view_3c_crypto = evaluate_portfolio_prompt_view(ps_3c, "crypto")
+    assert "orderId" not in view_3c_crypto["clean_open_limit_orders"][0]
+    assert "orig_qty" not in view_3c_crypto["clean_open_limit_orders"][0]
+    assert "RGNT_US_EQ" not in view_3c_crypto["equity_bellwethers"]
+    assert "extra_noise" not in view_3c_crypto["equity_bellwethers"]["NVDA_US_EQ"]
+    assert view_3c_crypto["clean_last_cycle_execution_status"]["symbol"] == "SPCXxUSD"
+    rt_map = dict((k, v) for k, _lbl, v in view_3c_crypto["runtime_states"])
+    assert "tier_1" not in rt_map["assetguardian_state"]["BTCUSDC"]
+    assert "terminal_orders" not in rt_map["assetguardian_state"]["BTCUSDC"]["tier_2"]
+    assert rt_map["recent_ai_intents"][0]["status"] == "RESTING_IN_BOOK"
+    assert rt_map["recent_ai_intents"][0]["symbol"] == "SPCXxUSD"
 
-
-
-
-
-
-
-
-
-
-
-
-
-
+    view_3c_eq = evaluate_portfolio_prompt_view(ps_3c, "equities")
+    assert "watched_ipo_underlying" not in view_3c_eq["kraken_xstocks"]["payload"]
+    sec_3c_eq = "\n".join(_format_portfolio_section(ps_3c, "equities"))
+    assert "READ-ONLY in Equities Scope" in sec_3c_eq
 
