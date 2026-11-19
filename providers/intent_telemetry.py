@@ -5,7 +5,6 @@ from typing import Any, Callable, Optional
 
 from botcore import (
     _parse_bool_flag,
-    _parse_epoch_or_iso_s,
     _ts_ms_to_s,
     clean_order_id,
     clean_scalar_str,
@@ -25,7 +24,6 @@ from cachepaths import (
     is_equity_venue_or_suffix,
     matches_asset_scope,
     normalize_venue_name,
-    same_canonical_base_asset,
 )
 from instrument_registry import casefold_get
 from .base import MarketDataProvider
@@ -34,12 +32,13 @@ from .intent_state import (
     _clean_intent_symbol,
     _intent_venue_symbol_side_key,
     extract_intent_order_type,
+    extract_intent_primary_order_id,
     extract_intent_side,
+    extract_intent_timestamp_s,
     intent_venue_client_order_ids,
-)
-from .order_id_context import (
-    extract_client_order_id,
-    resolve_order_actor,
+    order_matches_intent_client_id,
+    parse_pos_epoch_s,
+    symbols_match_intent_scope_and_quote,
 )
 from .order_ohlc_utils import (
     _UNFILLED_ORDER_STATUSES,
@@ -50,8 +49,7 @@ from .order_ohlc_utils import (
 
 def _parse_pos_epoch_s(raw: Any) -> Optional[float]:
     """Parse an epoch-seconds, epoch-ms, or ISO-8601 timestamp into positive UTC seconds."""
-    parsed = _parse_epoch_or_iso_s(raw)
-    return _ts_ms_to_s(parsed) if (parsed is not None and parsed > 0.0) else None
+    return parse_pos_epoch_s(raw)
 
 
 def _filter_intents_by_scope(intents_data: Any, scope: str) -> list[dict[str, Any]]:
@@ -65,6 +63,252 @@ def _filter_intents_by_scope(intents_data: Any, scope: str) -> list[dict[str, An
         for i in intents_data
         if isinstance(i, dict) and matches_asset_scope(i.get("symbol"), i.get("venue"), scope)
     ]
+
+
+def _match_intent_open_order(
+    intent: dict[str, Any],
+    *,
+    raw_intent_st: str,
+    venue: Optional[str],
+    symbol: str,
+    side: str,
+    order_type: str,
+    order_id: Optional[str],
+    open_orders: Optional[list[dict[str, Any]]],
+) -> Optional[dict[str, Any]]:
+    """Find a matching venue open order for an intent by order ID or venue-native client ID."""
+    if not isinstance(open_orders, list) or raw_intent_st not in (
+        "EXECUTED",
+        "FAILED",
+        "PENDING",
+        "PENDING_EXECUTION",
+        "SUBMIT_UNKNOWN",
+    ):
+        return None
+    expected_cids: Optional[set[str]] = None
+    for oo in open_orders:
+        if not isinstance(oo, dict):
+            continue
+        oo_venue = normalize_venue_name(clean_scalar_str(oo.get("venue")) or "")
+        oo_sym = _clean_intent_symbol(oo.get("symbol"))
+        if not symbols_match_intent_scope_and_quote(
+            oo_sym, symbol, venue_a=oo_venue, venue_b=venue, allow_missing_symbol=True
+        ):
+            continue
+        oo_oid = extract_order_id(oo, default=None)
+        if order_id is not None and oo_oid is not None and str(oo_oid) == str(order_id):
+            return oo
+        if (
+            order_id is None
+            and order_type == "LIMIT"
+            and oo_venue == venue
+            and oo_sym
+            and (extract_order_side(oo) or str(oo.get("side") or "").strip().upper()) == side
+        ):
+            if expected_cids is None:
+                expected_cids = intent_venue_client_order_ids(intent)
+            if order_matches_intent_client_id(
+                oo, intent, expected_cids=expected_cids, allow_untagged_ai_actor=True
+            ):
+                return oo
+    return None
+
+
+def _match_intent_recent_fill(
+    *,
+    venue: Optional[str],
+    symbol: str,
+    side: str,
+    order_type: str,
+    order_id: Optional[str],
+    ts_val: float,
+    is_eq_intent: bool,
+    venue_st: str,
+    fill_px: Optional[float],
+    filled_qty: float,
+    recent_orders: dict[str, Any],
+) -> tuple[Optional[float], float, int]:
+    """Match an executed intent against symbol ``recent_orders`` fill history."""
+    raw_cands = cache_symbol_variants(symbol, quotes=compatible_quote_suffixes(symbol))
+    sym_cands = filter_candidates_by_asset_class(raw_cands, is_equity=is_eq_intent)
+    ro_entry = next(
+        (
+            val
+            for key_cand in (*(f"{venue}:{cand}" for cand in sym_cands), *sym_cands)
+            if isinstance((val := casefold_get(recent_orders, key_cand)), dict)
+            and (
+                ":" in key_cand
+                or not venue
+                or not val.get("venue")
+                or normalize_venue_name(val.get("venue")) == venue
+            )
+        ),
+        None,
+    )
+    if not isinstance(ro_entry, dict):
+        return fill_px, filled_qty, 0
+    side_key = "buy" if side == "BUY" else ("sell" if side == "SELL" else "")
+    fill_cands: list[dict[str, Any]] = []
+    if side_key:
+        last_c = ro_entry.get(f"last_{side_key}")
+        recent_c = ro_entry.get(f"recent_{side_key}s")
+        for cand_f in ([last_c] if isinstance(last_c, dict) else []) + (
+            list(reversed(recent_c)) if isinstance(recent_c, list) else []
+        ):
+            if isinstance(cand_f, dict) and cand_f not in fill_cands:
+                fill_cands.append(cand_f)
+    min_fill_ts_ms = ts_val * 1000.0 if order_type == "LIMIT" else (ts_val - 120.0) * 1000.0
+    last_fill = None
+    for cand_f in fill_cands:
+        f_oid = clean_order_id(cand_f.get("order_id"))
+        if order_id is not None and f_oid:
+            if f_oid == str(order_id):
+                last_fill = cand_f
+                break
+            continue
+        f_ts_ms = normalize_timestamp_ms(cand_f.get("ts_ms"), default=0) or 0
+        f_actor = str(cand_f.get("actor") or "").strip().upper()
+        if f_actor != "BOT" and (ts_val <= 0 or f_ts_ms <= 0 or f_ts_ms >= min_fill_ts_ms):
+            last_fill = cand_f
+            break
+    if not isinstance(last_fill, dict):
+        return fill_px, filled_qty, 0
+    if fill_px is None or (venue_st in _UNFILLED_ORDER_STATUSES and filled_qty <= 0):
+        fill_px = safe_pos_float(last_fill.get("price"), default=fill_px)
+    if filled_qty <= 0:
+        filled_qty = safe_pos_float(last_fill.get("qty"), default=0.0) or 0.0
+    matched_fill_ts_ms = normalize_timestamp_ms(last_fill.get("ts_ms"), default=0) or 0
+    return fill_px, filled_qty, matched_fill_ts_ms
+
+
+def _classify_intent_exec_status_and_slippage(
+    intent: dict[str, Any],
+    *,
+    last_hist: dict[str, Any],
+    raw_intent_st: str,
+    side: str,
+    venue_st: str,
+    matched_open: Optional[dict[str, Any]],
+    is_unfilled_resting_limit: bool,
+    is_unfilled_accepted_market: bool,
+    fill_px: Optional[float],
+    filled_qty: float,
+) -> tuple[str, str, Optional[float], Optional[float], Optional[float]]:
+    """Compute canonical ``(exec_status, venue_st, fill_px, ref_px, slippage_bps)``."""
+    if (
+        fill_px is None
+        and raw_intent_st in ("EXECUTED", "OBSERVED_SHADOW")
+        and not is_unfilled_resting_limit
+        and not is_unfilled_accepted_market
+    ):
+        fill_px = first_pos_float(
+            last_hist.get("price"),
+            intent.get("requested_price"),
+            intent.get("limit_price"),
+            intent.get("reference_price"),
+        )
+
+    if matched_open is not None:
+        exec_status = "PARTIALLY_FILLED" if filled_qty > 0 else "OPEN_RESTING"
+        if exec_status == "PARTIALLY_FILLED" and venue_st in _UNFILLED_ORDER_STATUSES:
+            venue_st = "PARTIALLY_FILLED"
+    elif raw_intent_st == "EXECUTED":
+        if venue_st in _TERMINAL_CANCEL_STATUSES:
+            exec_status = venue_st
+        elif is_unfilled_resting_limit:
+            exec_status = "OPEN_RESTING"
+        elif is_unfilled_accepted_market:
+            exec_status = "ACCEPTED"
+        elif venue_st == "PARTIALLY_FILLED":
+            exec_status = "PARTIALLY_FILLED"
+        else:
+            exec_status = "FILLED"
+            if venue_st in _UNFILLED_ORDER_STATUSES:
+                venue_st = "FILLED"
+    elif raw_intent_st == "OBSERVED_SHADOW":
+        exec_status = "SHADOW_SIMULATED"
+    else:
+        exec_status = raw_intent_st or "UNKNOWN"
+
+    ref_px = first_pos_float(
+        intent.get("reference_price"),
+        intent.get("limit_price"),
+        intent.get("requested_price"),
+        last_hist.get("price"),
+        fill_px,
+    )
+    if exec_status in ("OPEN_RESTING", "ACCEPTED", *_TERMINAL_CANCEL_STATUSES) and filled_qty <= 0:
+        fill_px = None
+    slippage_bps: Optional[float] = None
+    if (
+        exec_status in ("FILLED", "PARTIALLY_FILLED", "SHADOW_SIMULATED")
+        and fill_px is not None
+        and fill_px > 0
+        and ref_px is not None
+        and ref_px > 0
+    ):
+        raw_slip = (
+            ((fill_px - ref_px) / ref_px) * 10_000.0
+            if side == "BUY"
+            else ((ref_px - fill_px) / ref_px) * 10_000.0
+        )
+        slippage_bps = round(raw_slip, 2)
+    elif exec_status in ("FILLED", "SHADOW_SIMULATED") and fill_px is not None:
+        slippage_bps = 0.0
+    return exec_status, venue_st, fill_px, ref_px, slippage_bps
+
+
+def _resolve_intent_fill_ts_and_reason(
+    intent: dict[str, Any],
+    *,
+    exec_pay: dict[str, Any],
+    last_hist: dict[str, Any],
+    exec_status: str,
+    eff_qty: Optional[float],
+    ts_val: float,
+    matched_fill_ts_ms: int,
+) -> tuple[float, Optional[str]]:
+    """Resolve effective fill timestamp and sanitized failure reason for an intent."""
+    fill_ts_val = ts_val
+    is_fill_exec = exec_status in ("FILLED", "PARTIALLY_FILLED", "SHADOW_SIMULATED") or (
+        eff_qty is not None and eff_qty > 0
+    )
+    if is_fill_exec and isinstance(exec_pay, dict):
+        for _ftk in ("filled_at", "filled_ts", "terminal_ts", "updated_ts", "updateTime", "workingTime", "transactTime"):
+            if (_f_s := _parse_pos_epoch_s(exec_pay.get(_ftk))) is not None and _f_s >= ts_val:
+                fill_ts_val = max(fill_ts_val, _f_s)
+                break
+    if is_fill_exec and matched_fill_ts_ms > 0:
+        _mf_s = _ts_ms_to_s(safe_pos_float(matched_fill_ts_ms, default=0.0) or 0.0)
+        if _mf_s > fill_ts_val:
+            fill_ts_val = _mf_s
+    if is_fill_exec and fill_ts_val <= ts_val and str(last_hist.get("action") or "") in (
+        "RECONCILED_EXECUTED",
+        "RECONCILED_PARTIAL",
+    ):
+        if (_lh_s := _parse_pos_epoch_s(last_hist.get("ts"))) is not None and _lh_s > fill_ts_val:
+            fill_ts_val = _lh_s
+    fail_reason: Optional[str] = None
+    if exec_status not in ("FILLED", "PARTIALLY_FILLED", "OPEN_RESTING", "ACCEPTED", "SHADOW_SIMULATED"):
+        raw_fail_reason = next(
+            (
+                s
+                for cand in (
+                    last_hist.get("reason"),
+                    last_hist.get("guard_reason"),
+                    last_hist.get("error"),
+                    intent.get("guard_reason"),
+                    intent.get("error"),
+                    exec_pay.get("reason") if isinstance(exec_pay, dict) else None,
+                    exec_pay.get("error") if isinstance(exec_pay, dict) else None,
+                )
+                if (s := clean_scalar_str(cand)) is not None
+            ),
+            None,
+        )
+        if raw_fail_reason:
+            fail_reason = " ".join(raw_fail_reason.split())[:200] or None
+    return fill_ts_val, fail_reason
 
 
 def _resolve_intent_execution_details(
@@ -95,68 +339,21 @@ def _resolve_intent_execution_details(
         extract_notional_fn(i, default=None),
     )
     eff_notional = exec_quote_notional or intent_order_notional
-    ts_raw: Any = None
-    ts_val = 0.0
-    for _tk in ("timestamp", "executed_at", "executed_ts", "created_at", "ts"):
-        _cand_raw = i.get(_tk)
-        if _cand_raw is None:
-            continue
-        if ts_raw is None:
-            ts_raw = _cand_raw
-        if (_parsed_s := _parse_pos_epoch_s(_cand_raw)) is not None:
-            ts_raw = _cand_raw
-            ts_val = _parsed_s
-            break
-    order_id = extract_order_id(exec_pay, default=None) or extract_order_id(
-        last_hist.get("order_id") or last_hist.get("payload"), default=None
-    )
-
+    ts_raw, ts_val = extract_intent_timestamp_s(i)
+    order_id = extract_intent_primary_order_id(i, default=None)
     raw_intent_st = clean_upper_scalar(i.get("status")) or ""
     is_eq_intent = is_equity_venue_or_suffix(symbol, venue)
-    matched_open = None
-    expected_cids: Optional[set[str]] = None
-    if isinstance(open_orders, list) and raw_intent_st in (
-        "EXECUTED",
-        "FAILED",
-        "PENDING",
-        "PENDING_EXECUTION",
-        "SUBMIT_UNKNOWN",
-    ):
-        for oo in open_orders:
-            if not isinstance(oo, dict):
-                continue
-            oo_venue = normalize_venue_name(clean_scalar_str(oo.get("venue")) or "")
-            if oo_venue and venue and oo_venue != venue:
-                continue
-            oo_sym = _clean_intent_symbol(oo.get("symbol"))
-            oo_is_eq = is_equity_venue_or_suffix(oo_sym, oo_venue)
-            if (oo_venue or oo_sym) and (venue or symbol) and oo_is_eq != is_eq_intent:
-                continue
-            if oo_sym and symbol and (
-                not same_canonical_base_asset(oo_sym, symbol)
-                or compatible_quote_suffixes(oo_sym) != compatible_quote_suffixes(symbol)
-            ):
-                continue
-            oo_oid = extract_order_id(oo, default=None)
-            if order_id is not None and oo_oid is not None and str(oo_oid) == str(order_id):
-                matched_open = oo
-                break
-            if (
-                order_id is None
-                and order_type == "LIMIT"
-                and oo_venue == venue
-                and oo_sym
-                and (extract_order_side(oo) or str(oo.get("side") or "").strip().upper()) == side
-            ):
-                # Response-lost intent: adopt only the order carrying this intent's own client ID
-                # (venue-native form), never a BOT / monitororder-repriced order or another AI intent's order.
-                if expected_cids is None:
-                    expected_cids = intent_venue_client_order_ids(i)
-                oo_cid = (extract_client_order_id(oo, default="") or "").lower()
-                if (oo_cid in expected_cids) if oo_cid else (resolve_order_actor(oo) == "AI"):
-                    matched_open = oo
-                    break
 
+    matched_open = _match_intent_open_order(
+        i,
+        raw_intent_st=raw_intent_st,
+        venue=venue,
+        symbol=symbol,
+        side=side,
+        order_type=order_type,
+        order_id=order_id,
+        open_orders=open_orders,
+    )
     fill_px = extract_order_price(exec_pay, default=None)
     filled_qty = extract_executed_qty(exec_pay, default=0.0)
     orig_qty = extract_orig_qty(exec_pay, default=None) or safe_pos_float(last_hist.get("qty"), default=None)
@@ -183,6 +380,8 @@ def _resolve_intent_execution_details(
     )
     if matched_open is not None and not venue_st:
         venue_st = clean_upper_scalar(matched_open.get("status")) or "OPEN"
+
+    matched_fill_ts_ms = 0
     if (
         matched_open is None
         and raw_intent_st == "EXECUTED"
@@ -190,61 +389,20 @@ def _resolve_intent_execution_details(
         and isinstance(recent_orders, dict)
         and symbol
     ):
-        raw_cands = cache_symbol_variants(symbol, quotes=compatible_quote_suffixes(symbol))
-        sym_cands = filter_candidates_by_asset_class(raw_cands, is_equity=is_eq_intent)
-        ro_entry = next(
-            (
-                val
-                for key_cand in (*(f"{venue}:{cand}" for cand in sym_cands), *sym_cands)
-                if isinstance((val := casefold_get(recent_orders, key_cand)), dict)
-                and (
-                    ":" in key_cand
-                    or not venue
-                    or not val.get("venue")
-                    or normalize_venue_name(val.get("venue")) == venue
-                )
-            ),
-            None,
+        fill_px, filled_qty, matched_fill_ts_ms = _match_intent_recent_fill(
+            venue=venue,
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            order_id=order_id,
+            ts_val=ts_val,
+            is_eq_intent=is_eq_intent,
+            venue_st=venue_st,
+            fill_px=fill_px,
+            filled_qty=filled_qty,
+            recent_orders=recent_orders,
         )
-        if isinstance(ro_entry, dict):
-            side_key = "buy" if side == "BUY" else ("sell" if side == "SELL" else "")
-            # Scan newest-first across last_<side> and recent_<side>s: a later BOT fill on the same side
-            # (e.g. a monitororder-repriced tradeall order) must not hide this intent's own AI fill.
-            fill_cands: list[dict[str, Any]] = []
-            if side_key:
-                last_c = ro_entry.get(f"last_{side_key}")
-                recent_c = ro_entry.get(f"recent_{side_key}s")
-                for cand_f in ([last_c] if isinstance(last_c, dict) else []) + (
-                    list(reversed(recent_c)) if isinstance(recent_c, list) else []
-                ):
-                    if isinstance(cand_f, dict) and cand_f not in fill_cands:
-                        fill_cands.append(cand_f)
-            min_fill_ts_ms = ts_val * 1000.0 if order_type == "LIMIT" else (ts_val - 120.0) * 1000.0
-            last_fill = None
-            for cand_f in fill_cands:
-                f_oid = clean_order_id(cand_f.get("order_id"))
-                if order_id is not None and f_oid:
-                    if f_oid == str(order_id):
-                        last_fill = cand_f
-                        break
-                    continue
-                f_ts_ms = normalize_timestamp_ms(cand_f.get("ts_ms"), default=0) or 0
-                f_actor = str(cand_f.get("actor") or "").strip().upper()
-                if f_actor != "BOT" and (ts_val <= 0 or f_ts_ms <= 0 or f_ts_ms >= min_fill_ts_ms):
-                    last_fill = cand_f
-                    break
-            if isinstance(last_fill, dict):
-                if fill_px is None or (venue_st in _UNFILLED_ORDER_STATUSES and filled_qty <= 0):
-                    fill_px = safe_pos_float(last_fill.get("price"), default=fill_px)
-                if filled_qty <= 0:
-                    filled_qty = safe_pos_float(last_fill.get("qty"), default=0.0) or 0.0
-                matched_fill_ts_ms = normalize_timestamp_ms(last_fill.get("ts_ms"), default=0) or 0
-            else:
-                matched_fill_ts_ms = 0
-        else:
-            matched_fill_ts_ms = 0
-    else:
-        matched_fill_ts_ms = 0
+
     is_unfilled_resting_limit = (
         order_type == "LIMIT"
         and (venue_st in _UNFILLED_ORDER_STATUSES or not venue_st)
@@ -270,71 +428,22 @@ def _resolve_intent_execution_details(
         and isinstance(open_orders, list)
         and venue_open_verified
         and ts_val > 0
+        and (resolve_now_ts(now_ts) - ts_val) > MarketDataProvider.resolve_unfilled_order_cancel_grace_sec()
     ):
-        cancel_grace_sec = MarketDataProvider.resolve_unfilled_order_cancel_grace_sec()
-        if (resolve_now_ts(now_ts) - ts_val) > cancel_grace_sec:
-            venue_st = "CANCELED_OR_EXPIRED"
-    if (
-        fill_px is None
-        and raw_intent_st in ("EXECUTED", "OBSERVED_SHADOW")
-        and not is_unfilled_resting_limit
-        and not is_unfilled_accepted_market
-    ):
-        fill_px = first_pos_float(
-            last_hist.get("price"),
-            i.get("requested_price"),
-            i.get("limit_price"),
-            i.get("reference_price"),
-        )
+        venue_st = "CANCELED_OR_EXPIRED"
 
-    if matched_open is not None:
-        exec_status = "PARTIALLY_FILLED" if filled_qty > 0 else "OPEN_RESTING"
-        if exec_status == "PARTIALLY_FILLED" and venue_st in _UNFILLED_ORDER_STATUSES:
-            venue_st = "PARTIALLY_FILLED"
-    elif raw_intent_st == "EXECUTED":
-        if venue_st in _TERMINAL_CANCEL_STATUSES:
-            exec_status = venue_st
-        elif is_unfilled_resting_limit:
-            exec_status = "OPEN_RESTING"
-        elif is_unfilled_accepted_market:
-            exec_status = "ACCEPTED"
-        elif venue_st == "PARTIALLY_FILLED":
-            exec_status = "PARTIALLY_FILLED"
-        else:
-            exec_status = "FILLED"
-            if venue_st in _UNFILLED_ORDER_STATUSES:
-                venue_st = "FILLED"
-    elif raw_intent_st == "OBSERVED_SHADOW":
-        exec_status = "SHADOW_SIMULATED"
-    else:
-        exec_status = raw_intent_st or "UNKNOWN"
-
-    ref_px = first_pos_float(
-        i.get("reference_price"),
-        i.get("limit_price"),
-        i.get("requested_price"),
-        last_hist.get("price"),
-        fill_px,
+    exec_status, venue_st, fill_px, ref_px, slippage_bps = _classify_intent_exec_status_and_slippage(
+        i,
+        last_hist=last_hist,
+        raw_intent_st=raw_intent_st,
+        side=side,
+        venue_st=venue_st,
+        matched_open=matched_open,
+        is_unfilled_resting_limit=is_unfilled_resting_limit,
+        is_unfilled_accepted_market=is_unfilled_accepted_market,
+        fill_px=fill_px,
+        filled_qty=filled_qty,
     )
-    if exec_status in ("OPEN_RESTING", "ACCEPTED", *_TERMINAL_CANCEL_STATUSES) and filled_qty <= 0:
-        fill_px = None
-    slippage_bps: Optional[float] = None
-    if (
-        exec_status in ("FILLED", "PARTIALLY_FILLED", "SHADOW_SIMULATED")
-        and fill_px is not None
-        and fill_px > 0
-        and ref_px is not None
-        and ref_px > 0
-    ):
-        raw_slip = (
-            ((fill_px - ref_px) / ref_px) * 10_000.0
-            if side == "BUY"
-            else ((ref_px - fill_px) / ref_px) * 10_000.0
-        )
-        slippage_bps = round(raw_slip, 2)
-    elif exec_status in ("FILLED", "SHADOW_SIMULATED") and fill_px is not None:
-        slippage_bps = 0.0
-
     eff_qty = (
         filled_qty
         if filled_qty > 0
@@ -348,45 +457,15 @@ def _resolve_intent_execution_details(
         if order_type == "LIMIT"
         else None
     )
-    fill_ts_val = ts_val
-    is_fill_exec = exec_status in ("FILLED", "PARTIALLY_FILLED", "SHADOW_SIMULATED") or (
-        eff_qty is not None and eff_qty > 0
+    fill_ts_val, fail_reason = _resolve_intent_fill_ts_and_reason(
+        i,
+        exec_pay=exec_pay,
+        last_hist=last_hist,
+        exec_status=exec_status,
+        eff_qty=eff_qty,
+        ts_val=ts_val,
+        matched_fill_ts_ms=matched_fill_ts_ms,
     )
-    if is_fill_exec and isinstance(exec_pay, dict):
-        for _ftk in ("filled_at", "filled_ts", "terminal_ts", "updated_ts", "updateTime", "workingTime", "transactTime"):
-            if (_f_s := _parse_pos_epoch_s(exec_pay.get(_ftk))) is not None and _f_s >= ts_val:
-                fill_ts_val = max(fill_ts_val, _f_s)
-                break
-    if is_fill_exec and matched_fill_ts_ms > 0:
-        _mf_s = _ts_ms_to_s(safe_pos_float(matched_fill_ts_ms, default=0.0) or 0.0)
-        if _mf_s > fill_ts_val:
-            fill_ts_val = _mf_s
-    if is_fill_exec and fill_ts_val <= ts_val and str(last_hist.get("action") or "") in (
-        "RECONCILED_EXECUTED",
-        "RECONCILED_PARTIAL",
-    ):
-        if (_lh_s := _parse_pos_epoch_s(last_hist.get("ts"))) is not None and _lh_s > fill_ts_val:
-            fill_ts_val = _lh_s
-    fail_reason: Optional[str] = None
-    if exec_status not in ("FILLED", "PARTIALLY_FILLED", "OPEN_RESTING", "ACCEPTED", "SHADOW_SIMULATED"):
-        raw_fail_reason = next(
-            (
-                s
-                for cand in (
-                    last_hist.get("reason"),
-                    last_hist.get("guard_reason"),
-                    last_hist.get("error"),
-                    i.get("guard_reason"),
-                    i.get("error"),
-                    exec_pay.get("reason") if isinstance(exec_pay, dict) else None,
-                    exec_pay.get("error") if isinstance(exec_pay, dict) else None,
-                )
-                if (s := clean_scalar_str(cand)) is not None
-            ),
-            None,
-        )
-        if raw_fail_reason:
-            fail_reason = " ".join(raw_fail_reason.split())[:200] or None
     filled_notional_usd: Optional[float] = None
     if exec_status == "PARTIALLY_FILLED":
         raw_filled_notional = exec_quote_notional or (

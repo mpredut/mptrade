@@ -12296,3 +12296,116 @@ def test_phase3_prompt_view_evaluators_3tier_and_section_parity() -> None:
     sec_3c_eq = "\n".join(_format_portfolio_section(ps_3c, "equities"))
     assert "READ-ONLY in Equities Scope" in sec_3c_eq
 
+
+def test_phase4_portfolio_flat_state_transitions_and_intent_order_matching_ssot(tmp_path) -> None:
+    """Verify canonical flat cycle/position state transitions and unified SSOT intent-order matching."""
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        extract_symbol_recent_fills,
+        reset_flat_cycle_state,
+        reset_flat_position_and_recent_order_state,
+    )
+    from providers.intent_reconciliation import reconcile_intents_from_execution_audit
+    from providers.intent_state import (
+        ai_intent_client_order_id,
+        extract_intent_notional,
+        extract_intent_primary_order_id,
+        extract_intent_timestamp_s,
+        order_matches_intent_client_id,
+        symbols_match_intent_scope_and_quote,
+    )
+    from providers.intent_telemetry import _resolve_intent_execution_details
+
+    cyc_d = {"qty": 1.5, "cost_usd": 180.0, "avg_cost_px": 120.0, "dd_pct": -1.5, "pnl_vs_avg_pct": -1.5, "pos_peak": 125.0, "dd_from_peak_pct": -5.2}
+    reset_flat_cycle_state(cyc_d, qty=0.0, clear_peak=True)
+    assert cyc_d["qty"] == 0.0 and cyc_d["cost_usd"] == 0.0 and cyc_d["avg_cost_px"] is None
+    assert "pos_peak" not in cyc_d and "dd_from_peak_pct" not in cyc_d
+
+    ro_d = {"active_avg_buy_px": 120.0, "open_lots": [{"lot_id": "L1"}], "lifo_realized_pnl_usd": 8.5, "last_sell": {"price": 124.0}}
+    pos_d = {"active_avg_buy_px": 120.0, "pnl_vs_avg_pct": 2.0, "open_lots": [{"lot_id": "L1"}], "trailing_peak": 125.0, "dd_from_peak_pct": -1.0, "lifo_realized_pnl_usd": 8.5}
+    reset_flat_position_and_recent_order_state(ro_d, pos_d, full_pos_clear=True)
+    assert "active_avg_buy_px" not in ro_d and "open_lots" not in ro_d and ro_d["last_sell"]["price"] == 124.0
+    assert "active_avg_buy_px" not in pos_d and "trailing_peak" not in pos_d and "lifo_realized_pnl_usd" not in pos_d
+
+    # Legacy intent dict with 'id' (intent_id) must never mistake 'id' for a venue order ID
+    legacy_intent = {
+        "id": "intent_1700000000_buy_btcusdc",
+        "executed_at": 1_700_000_050_000,
+        "symbol": "BTCUSDC",
+        "venue": "binance",
+        "decision": "BUY",
+        "order_type": "LIMIT",
+        "limit_price": 74000.0,
+        "status": "EXECUTED",
+        "history": [{"action": "EXECUTED", "order_id": "VENUE-OID-77"}],
+    }
+    raw_ts, ts_sec = extract_intent_timestamp_s(legacy_intent)
+    assert raw_ts == 1_700_000_050_000 and ts_sec == 1_700_000_050.0
+    assert extract_intent_primary_order_id(legacy_intent, include_top_level=True) == "VENUE-OID-77"
+    assert extract_intent_primary_order_id({"id": "intent_only"}, default=None, include_top_level=True) is None
+
+    assert symbols_match_intent_scope_and_quote("BTCUSDC", "BTCUSD", venue_a="binance", venue_b="binance") is True
+    assert symbols_match_intent_scope_and_quote("NVDA_US_EQ", "NVDAUSDC", venue_a="t212", venue_b="binance") is False
+
+    cid_native = ai_intent_client_order_id("intent_1700000000_buy_btcusdc")
+    assert order_matches_intent_client_id({"clientOrderId": cid_native}, {"intent_id": "intent_1700000000_buy_btcusdc"}) is True
+    assert order_matches_intent_client_id({"clientOrderId": "TA_MainThread_123"}, {"intent_id": "intent_1700000000_buy_btcusdc"}) is False
+
+    det = _resolve_intent_execution_details(
+        {
+            "intent_id": "intent_1700000000_buy_btcusdc",
+            "timestamp": 1_700_000_000.0,
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "decision": "BUY",
+            "order_type": "LIMIT",
+            "limit_price": 74000.0,
+            "suggested_notional_usd": 150.0,
+            "status": "PENDING",
+        },
+        1_700_000_030.0,
+        extract_intent_notional,
+        open_orders=[{"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "price": 74000.0, "clientOrderId": cid_native}],
+    )
+    assert det["exec_status"] == "OPEN_RESTING" and det["is_open_in_venue"] is True
+
+    fills_out = extract_symbol_recent_fills(
+        [
+            {"symbol": "SPCXxUSD", "orderId": "K-1", "side": "BUY", "price": 120.0, "executedQty": 2.0, "timestamp": 1_700_000_000_000},
+            {"symbol": "SPCXxUSD", "orderId": "K-2", "side": "BUY", "price": 116.0, "executedQty": 1.0, "timestamp": 1_700_000_600_000},
+            {"symbol": "SPCXxUSD", "orderId": "K-3", "side": "SELL", "price": 119.0, "executedQty": 1.0, "timestamp": 1_700_001_200_000},
+        ],
+        known_ai_order_ids={"K-2"},
+        symbol="SPCXxUSD",
+    )
+    assert fills_out is not None
+    assert fills_out["lifo_realized_pnl_usd"] == 3.0
+    assert len(fills_out["open_lots"]) == 1 and fills_out["open_lots"][0]["qty"] == 2.0
+
+    audit_dir = tmp_path / "audit"
+    audit_dir.mkdir()
+    (audit_dir / "execution_audit_2023-11-14.jsonl").write_text(
+        json.dumps(
+            {
+                "ts": 1_700_000_010.0,
+                "event": "order_terminal",
+                "intent_id": "intent_rec_1",
+                "venue": "kraken",
+                "symbol": "SPCXxUSD",
+                "side": "buy",
+                "order_id": "KRK-OID-1",
+                "status": "closed",
+                "venue_status": "FILLED",
+                "filled_qty": 1.5,
+                "cost": 183.0,
+                "qty": 1.5,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    intents_rec = [{"intent_id": "intent_rec_1", "timestamp": 1_700_000_005.0, "symbol": "SPCXxUSD", "venue": "kraken", "decision": "BUY", "status": "FAILED"}]
+    assert reconcile_intents_from_execution_audit(intents_rec, str(audit_dir)) is True
+    assert intents_rec[0]["status"] == "EXECUTED"
+    assert intents_rec[0]["execution_payload"]["orderId"] == "KRK-OID-1"
+
+

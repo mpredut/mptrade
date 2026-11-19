@@ -36,6 +36,7 @@ from .intent_state import (
     intent_venue_client_order_ids,
     is_non_fiat_btc_quote_instrument,
     normalize_intent_fields,
+    order_matches_intent_client_id,
 )
 from .order_id_context import (
     extract_client_order_id,
@@ -858,10 +859,8 @@ def reconcile_open_intent_by_client_id(
             raw_open = None
         if isinstance(raw_open, list):
             for oo in raw_open:
-                if not isinstance(oo, dict):
-                    continue
-                cid = (extract_client_order_id(oo, default="") or "").strip().lower()
-                if cid and cid in expected_cids:
+                if order_matches_intent_client_id(oo, intent, expected_cids=expected_cids):
+                    cid = (extract_client_order_id(oo, default="") or "").strip().lower()
                     return _adopt(oo, cid)
 
     base_cid = ai_intent_client_order_id(_extract_intent_id(intent))

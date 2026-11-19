@@ -11,6 +11,8 @@ from typing import Any, Callable, Optional
 from botcore import (
     FileLock,
     _parse_bool_flag,
+    _parse_epoch_or_iso_s,
+    _ts_ms_to_s,
     clean_json_value,
     clean_order_id,
     clean_scalar_str,
@@ -28,16 +30,24 @@ from botcore import (
 from cachepaths import (
     canonical_base_asset,
     compatible_quote_suffixes,
+    has_equity_suffix,
     is_equity_venue,
     is_equity_venue_or_suffix,
     normalize_venue_name,
     resolve_cachedb_filepath,
+    same_canonical_base_asset,
     symbol_quote_asset,
 )
 from state_io import generation_lock_path, load_json_state, save_json_state
-from .order_id_context import all_venue_native_client_order_ids
+from .order_id_context import (
+    all_venue_native_client_order_ids,
+    extract_client_order_id,
+    resolve_order_actor,
+)
 
 _CURRENCY_STRIP_RE = re.compile(r"[\$,\s]|(?:USD[CT]?)\b", re.IGNORECASE)
+_EXPLICIT_INTENT_OID_KEYS: tuple[str, ...] = ("orderId", "order_id", "ordertxid", "txid", "oid")
+_INTENT_TIMESTAMP_KEYS: tuple[str, ...] = ("timestamp", "executed_at", "executed_ts", "created_at", "ts")
 _NOTIONAL_KEYS: tuple[str, ...] = (
     "suggested_notional_usd",
     "notional_usd",
@@ -646,6 +656,102 @@ def upsert_durable_intent(
         return save_durable_intents_state(intents_file, intents, log=log)
 
 
+def parse_pos_epoch_s(raw: Any) -> Optional[float]:
+    """Parse an epoch-seconds, epoch-ms, or ISO-8601 timestamp into positive UTC seconds."""
+    parsed = _parse_epoch_or_iso_s(raw)
+    return _ts_ms_to_s(parsed) if (parsed is not None and parsed > 0.0) else None
+
+
+def extract_intent_timestamp_s(
+    intent: Any,
+    *,
+    keys: tuple[str, ...] = _INTENT_TIMESTAMP_KEYS,
+) -> tuple[Any, float]:
+    """Extract ``(raw_ts, epoch_sec)`` from an intent record across canonical timestamp fields."""
+    if not isinstance(intent, dict):
+        return None, 0.0
+    ts_raw: Any = None
+    for tk in keys:
+        cand = intent.get(tk)
+        if cand is None:
+            continue
+        if ts_raw is None:
+            ts_raw = cand
+        if (parsed_s := parse_pos_epoch_s(cand)) is not None:
+            return cand, parsed_s
+    return ts_raw, 0.0
+
+
+def extract_intent_primary_order_id(
+    intent: Any,
+    default: Any = None,
+    *,
+    include_top_level: bool = False,
+) -> Any:
+    """Extract the primary venue order ID from ``execution_payload``, explicit top-level keys, or ``history[-1]``."""
+    if not isinstance(intent, dict):
+        return default
+    exec_pay = intent.get("execution_payload") if isinstance(intent.get("execution_payload"), dict) else {}
+    oid = extract_order_id(exec_pay, default=None)
+    if oid is not None:
+        return oid
+    if include_top_level:
+        for k in _EXPLICIT_INTENT_OID_KEYS:
+            if (cand := extract_order_id(intent.get(k), default=None)) is not None:
+                return cand
+    if isinstance(hist := intent.get("history"), list) and hist and isinstance(hist[-1], dict):
+        last_h = hist[-1]
+        oid = extract_order_id(last_h.get("order_id") or last_h.get("payload"), default=None)
+        if oid is not None:
+            return oid
+    return default
+
+
+def symbols_match_intent_scope_and_quote(
+    sym_a: Any,
+    sym_b: Any,
+    *,
+    venue_a: Any = None,
+    venue_b: Any = None,
+    allow_missing_symbol: bool = False,
+) -> bool:
+    """Return True when two symbols/venues share the same asset class and compatible quote currency."""
+    sa = _clean_intent_symbol(sym_a)
+    sb = _clean_intent_symbol(sym_b)
+    va = normalize_venue_name(clean_scalar_str(venue_a) or "") if venue_a else ""
+    vb = normalize_venue_name(clean_scalar_str(venue_b) or "") if venue_b else ""
+    if va and vb and va != vb:
+        return False
+    if (va or sa) and (vb or sb):
+        eq_a = is_equity_venue_or_suffix(sa, va) if (va or vb) else has_equity_suffix(sa)
+        eq_b = is_equity_venue_or_suffix(sb, vb) if (va or vb) else has_equity_suffix(sb)
+        if eq_a != eq_b:
+            return False
+    if not sa or not sb:
+        return bool(allow_missing_symbol)
+    return sa == sb or (
+        same_canonical_base_asset(sa, sb)
+        and compatible_quote_suffixes(sa) == compatible_quote_suffixes(sb)
+    )
+
+
+def order_matches_intent_client_id(
+    order: Any,
+    intent: dict[str, Any],
+    *,
+    expected_cids: Optional[set[str]] = None,
+    allow_untagged_ai_actor: bool = False,
+) -> bool:
+    """Return True when ``order`` carries a venue-native client ID belonging to ``intent``."""
+    if not isinstance(order, dict):
+        return False
+    cids = expected_cids if expected_cids is not None else intent_venue_client_order_ids(intent)
+    oo_cid = (extract_client_order_id(order, default="") or "").strip().lower()
+    if oo_cid:
+        return bool(cids and oo_cid in cids)
+    return bool(allow_untagged_ai_actor and resolve_order_actor(order) == "AI")
+
+
 __all__ = [
     "_clean_intent_symbol",
     "_extract_intent_id",
@@ -662,16 +768,21 @@ __all__ = [
     "extract_intent_limit_price",
     "extract_intent_notional",
     "extract_intent_order_type",
+    "extract_intent_primary_order_id",
     "extract_intent_side",
+    "extract_intent_timestamp_s",
     "generate_unique_intent_id",
     "intent_venue_client_order_ids",
     "is_non_fiat_btc_quote_instrument",
     "load_durable_intents_state",
     "normalize_intent_fields",
     "normalize_trading_decisions",
+    "order_matches_intent_client_id",
     "parse_intent_gateway_config",
+    "parse_pos_epoch_s",
     "resolve_hold_cancel_target",
     "save_durable_intents_state",
+    "symbols_match_intent_scope_and_quote",
     "upsert_durable_intent",
     "validate_and_build_intent_dict",
 ]

@@ -9,11 +9,9 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from cachepaths import (
     cache_symbol_variants,
-    canonical_base_asset,
     compatible_quote_suffixes,
     ensure_equity_suffix,
     filter_asset_class_variants,
-    has_equity_suffix,
     is_equity_venue,
     is_equity_venue_or_suffix,
     normalize_venue_name,
@@ -36,9 +34,7 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
-    _parse_epoch_or_iso_s,
     _prices_diverged,
-    _ts_ms_to_s,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     pct_delta,
@@ -64,7 +60,18 @@ from providers.order_ohlc_utils import (
     extract_executed_qty,
     extract_orig_qty,
 )
-from providers.intent_state import extract_intent_order_type, extract_intent_side
+from providers.intent_state import (
+    extract_intent_order_type,
+    extract_intent_primary_order_id,
+    extract_intent_side,
+    extract_intent_timestamp_s,
+    symbols_match_intent_scope_and_quote,
+)
+
+
+def _clear_pos_pair(d: Dict[str, Any], k1: str = "pos_peak", k2: str = "dd_from_peak_pct") -> None:
+    for k in (k1, k2):
+        d.pop(k, None)
 
 
 def set_pos_anchor(
@@ -81,6 +88,24 @@ def set_pos_anchor(
         pos[pct_key] = pct_delta(cur_px, a_f)
 
 
+def reset_flat_cycle_state(
+    cyc: Dict[str, Any],
+    *,
+    qty: float = 0.0,
+    clear_peak: bool = True,
+) -> None:
+    """Transition a venue DCA cycle dict to canonical flat state."""
+    cyc.update({
+        "qty": round(max(0.0, qty), 6),
+        "cost_usd": 0.0,
+        "avg_cost_px": None,
+        "dd_pct": None,
+        "pnl_vs_avg_pct": None,
+    })
+    if clear_peak:
+        _clear_pos_pair(cyc)
+
+
 def _sync_cycle_wallet_qty_and_avg(
     cyc: Dict[str, Any],
     *,
@@ -92,7 +117,7 @@ def _sync_cycle_wallet_qty_and_avg(
 ) -> None:
     """Update a venue cycle dict's `qty`, `cost_usd`, `avg_cost_px`, and `dd_pct`/`pnl_vs_avg_pct` in-place."""
     if qty <= 0.0:
-        cyc.update({"qty": 0.0, "cost_usd": 0.0, "avg_cost_px": None, "dd_pct": None, "pnl_vs_avg_pct": None})
+        reset_flat_cycle_state(cyc, qty=0.0, clear_peak=False)
         return
     avg_r = round(avg_px, avg_dec) if avg_px and avg_px > 0 else None
     dir_sign = -1.0 if str(cyc.get("direction") or "").strip().upper() == "SHORT" else 1.0
@@ -228,12 +253,22 @@ _FLAT_POS_KEYS = (
 )
 
 
-def _clear_flat_ro_and_pos_anchors(ro: Optional[Dict[str, Any]], pos: Dict[str, Any], *, full_pos_clear: bool = False) -> None:
+def reset_flat_position_and_recent_order_state(
+    ro: Optional[Dict[str, Any]],
+    pos: Dict[str, Any],
+    *,
+    full_pos_clear: bool = False,
+) -> None:
+    """Purge active sub-cycle cost, lot, peak, and LIFO PnL anchors on flat position/recent-order views."""
     if isinstance(ro, dict):
         for k_ro in _FLAT_RO_KEYS:
             ro.pop(k_ro, None)
     for k_p in (_FLAT_POS_KEYS if full_pos_clear else ("trailing_peak", "dd_from_peak_pct")):
         pos.pop(k_p, None)
+
+
+def _clear_flat_ro_and_pos_anchors(ro: Optional[Dict[str, Any]], pos: Dict[str, Any], *, full_pos_clear: bool = False) -> None:
+    reset_flat_position_and_recent_order_state(ro, pos, full_pos_clear=full_pos_clear)
 
 
 def select_fresh_open_lots(
@@ -691,21 +726,14 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
 
     cls_name = "SymbolRecentFillsEvaluator"
 
-    def evaluate(
-        self,
-        orders_list: list,
-        *,
-        known_ai_order_ids: Optional[set[str]] = None,
-        audit_origin_map: Optional[Dict[str, tuple[Optional[str], Optional[str]]]] = None,
-        ai_intents: Optional[List[Dict[str, Any]]] = None,
-        symbol: Optional[str] = None,
-        **kwargs: Any,
-    ) -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def _filter_valid_fill_orders(
+        orders_list: Any,
+        symbol: Optional[str],
+    ) -> tuple[List[Dict[str, Any]], str]:
         if not isinstance(orders_list, list):
             orders_list = []
-        if not orders_list and not ai_intents:
-            return None
-        _explicit_exec_keys = (*_EXEC_QTY_KEYS, "filled", "origSz", "resting", "msg")
+        explicit_exec_keys = (*_EXEC_QTY_KEYS, "filled", "origSz", "resting", "msg")
         valid = [
             o for o in orders_list
             if isinstance(o, dict) and (
@@ -713,7 +741,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                 or (
                     str(o.get("status") or "").strip().upper() not in _NON_FILL_ORDER_STATUSES
                     and str(o.get("submission_state") or "").strip().lower() not in _NON_FILL_SUBMISSION_STATES
-                    and not any(k in o for k in _explicit_exec_keys)
+                    and not any(k in o for k in explicit_exec_keys)
                 )
             )
         ]
@@ -723,44 +751,51 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                 if s_cand := str(o_item.get("symbol") or o_item.get("pair") or "").strip().upper():
                     fallback_sym = s_cand
                     break
-        if not valid and not (fallback_sym and ai_intents):
-            return None
+        return valid, fallback_sym
+
+    @staticmethod
+    def _reconcile_ai_intents_and_order_origins(
+        valid: List[Dict[str, Any]],
+        fallback_sym: str,
+        known_ai_order_ids: Optional[set[str]],
+        audit_origin_map: Optional[Dict[str, tuple[Optional[str], Optional[str]]]],
+        ai_intents: Optional[List[Dict[str, Any]]],
+    ) -> tuple[
+        List[Dict[str, Any]],
+        set[str],
+        Dict[str, tuple[str, Optional[str], Optional[str]]],
+        Dict[tuple[str, Any], tuple[str, Optional[str], Optional[str]]],
+    ]:
         ai_oids: set[str] = set(known_ai_order_ids or ())
         valid_oids: set[str] = {str(oid_x) for x in valid if (oid_x := extract_order_id(x, default=""))}
         max_valid_ts_s = max(((extract_timestamp_ms(x, default=0) or 0) / 1000.0 for x in valid), default=0.0)
         parsed_ai_intents: List[tuple[str, str, float, float, str]] = []
 
-        def _same_asset_scope_and_quote(s1: str, s2: str) -> bool:
-            u1, u2 = str(s1 or "").strip().upper(), str(s2 or "").strip().upper()
-            if not u1 or not u2 or has_equity_suffix(u1) != has_equity_suffix(u2):
-                return False
-            return u1 == u2 or (
-                canonical_base_asset(u1) == canonical_base_asset(u2)
-                and compatible_quote_suffixes(u1) == compatible_quote_suffixes(u2)
-            )
-
         for it in ai_intents or ():
-            if not isinstance(it, dict) or str(it.get("status") or "").strip().upper() not in ("EXECUTED", "FILLED", "PARTIALLY_FILLED", "CLOSED"):
+            if not isinstance(it, dict) or str(it.get("status") or "").strip().upper() not in (
+                "EXECUTED", "FILLED", "PARTIALLY_FILLED", "CLOSED"
+            ):
                 continue
             exec_pay = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}
-            it_oid = extract_order_id(exec_pay, default="") or extract_order_id(it, default="")
+            it_oid = str(extract_intent_primary_order_id(it, default="", include_top_level=True) or "")
             if it_oid:
-                ai_oids.add(str(it_oid))
-                if str(it_oid) in valid_oids:
+                ai_oids.add(it_oid)
+                if it_oid in valid_oids:
                     continue
             i_side = extract_intent_side(it) or str(it.get("decision") or "").strip().upper()
-            i_ts_s = 0.0
-            for _tk in ("timestamp", "executed_ts", "executed_at", "created_at", "ts"):
-                if (_parsed_ts := _parse_epoch_or_iso_s(it.get(_tk))) is not None and _parsed_ts > 0.0:
-                    i_ts_s = _ts_ms_to_s(_parsed_ts)
-                    break
+            _, i_ts_s = extract_intent_timestamp_s(it)
             if i_side not in ("BUY", "SELL") or i_ts_s <= 0.0:
                 continue
             i_sym = str(it.get("symbol") or exec_pay.get("symbol") or exec_pay.get("ticker") or "").strip().upper()
             hist = it.get("history") if isinstance(it.get("history"), list) else []
             last_h = hist[-1] if hist and isinstance(hist[-1], dict) else {}
             exec_q = extract_executed_qty(exec_pay, default=0.0) or extract_executed_qty(it, default=0.0) or 0.0
-            exec_p = extract_order_price(exec_pay, default=0.0) or extract_order_price(it, default=0.0) or safe_pos_float(it.get("executed_avg_price"), default=0.0) or 0.0
+            exec_p = (
+                extract_order_price(exec_pay, default=0.0)
+                or extract_order_price(it, default=0.0)
+                or safe_pos_float(it.get("executed_avg_price"), default=0.0)
+                or 0.0
+            )
             exec_st = str(exec_pay.get("status") or it.get("exchange_status") or "").strip().upper()
             has_explicit_exec_q = (
                 any(k in exec_pay or k in it for k in (*_EXEC_QTY_KEYS, "filled"))
@@ -769,9 +804,8 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
             is_confirmed_fill = exec_st in ("FILLED", "PARTIALLY_FILLED", "CLOSED") or (
                 has_explicit_exec_q and exec_st not in _NON_FILL_ORDER_STATUSES
             )
-            sym_matches_target = _same_asset_scope_and_quote(i_sym, fallback_sym)
             if (
-                sym_matches_target
+                symbols_match_intent_scope_and_quote(i_sym, fallback_sym)
                 and is_confirmed_fill
                 and exec_q > 0.0
                 and exec_p > 0.0
@@ -806,8 +840,9 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                 or 0.0
             )
             parsed_ai_intents.append((i_sym, i_side, i_ts_s, i_qty, extract_intent_order_type(it)))
+
         if not valid:
-            return None
+            return valid, ai_oids, {}, {}
 
         def _matches_ai_intent(o_dict: Dict[str, Any]) -> bool:
             o_side = extract_order_side(o_dict)
@@ -817,11 +852,19 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
             for i_sym, i_side, i_ts_s, i_qty, i_otype in parsed_ai_intents:
                 if i_side != o_side or o_ts_s <= 0.0 or o_ts_s < i_ts_s - 5.0:
                     continue
-                if i_sym and o_sym and not _same_asset_scope_and_quote(i_sym, o_sym):
+                if i_sym and o_sym and not symbols_match_intent_scope_and_quote(i_sym, o_sym):
                     continue
-                if (i_qty > 0.0 and o_qty > 0.0 and abs(o_qty - i_qty) <= max(1e-5, i_qty * 0.01) and o_ts_s <= i_ts_s + 86400.0) or (i_otype == "MARKET" and o_ts_s <= i_ts_s + 120.0):
+                if (
+                    i_qty > 0.0
+                    and o_qty > 0.0
+                    and abs(o_qty - i_qty) <= max(1e-5, i_qty * 0.01)
+                    and o_ts_s <= i_ts_s + 86400.0
+                ) or (i_otype == "MARKET" and o_ts_s <= i_ts_s + 120.0):
                     return True
             return False
+
+        origin_by_oid: Dict[str, tuple[str, Optional[str], Optional[str]]] = {}
+        origin_by_side_ts: Dict[tuple[str, Any], tuple[str, Optional[str], Optional[str]]] = {}
 
         def _mark_ai_origin(o_dict: Dict[str, Any]) -> None:
             if oid_m := extract_order_id(o_dict, default=""):
@@ -834,8 +877,6 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                 prev_m = origin_by_side_ts.get(side_ts_m)
                 origin_by_side_ts[side_ts_m] = ("AI", prev_m[1] if prev_m else None, prev_m[2] if prev_m else None)
 
-        origin_by_oid: Dict[str, tuple[str, Optional[str], Optional[str]]] = {}
-        origin_by_side_ts: Dict[tuple[str, Any], tuple[str, Optional[str], Optional[str]]] = {}
         for o in valid:
             act_v, mod_v, rule_v = resolve_order_origin(o, ai_oids, audit_origin_map)
             if act_v == "BOT" and not (mod_v or rule_v or o.get("clientOrderId") or o.get("client_order_id")) and parsed_ai_intents:
@@ -858,14 +899,11 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
         if any(o.get(k) is not None for o in valid for k in ("orderId", "order_id", "ordertxid", "oid")):
             valid = aggregate_fills_by_order_id(valid) or valid
 
-        def _lookup_cached_origin(o: Dict[str, Any]) -> Optional[tuple[str, Optional[str], Optional[str]]]:
-            oid_k = str(extract_order_id(o, default="") or "")
-            side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
-            return origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k)
-
         if parsed_ai_intents:
             for o in valid:
-                cur_act, cur_mod, cur_rule = _lookup_cached_origin(o) or ("BOT", None, None)
+                oid_k = str(extract_order_id(o, default="") or "")
+                side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
+                cur_act, cur_mod, cur_rule = origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k) or ("BOT", None, None)
                 if cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")) and _matches_ai_intent(o):
                     _mark_ai_origin(o)
             for i_sym, i_side, i_ts_s, i_qty, _ in parsed_ai_intents:
@@ -879,25 +917,25 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                     if o_ts_s <= 0.0 or o_ts_s < i_ts_s - 5.0 or o_ts_s > i_ts_s + 86400.0:
                         continue
                     o_sym = str(o.get("symbol") or o.get("pair") or fallback_sym).strip().upper()
-                    if i_sym and o_sym and not _same_asset_scope_and_quote(i_sym, o_sym):
+                    if i_sym and o_sym and not symbols_match_intent_scope_and_quote(i_sym, o_sym):
                         continue
-                    cur_act, cur_mod, cur_rule = _lookup_cached_origin(o) or ("BOT", None, None)
+                    oid_k = str(extract_order_id(o, default="") or "")
+                    side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
+                    cur_act, cur_mod, cur_rule = origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k) or ("BOT", None, None)
                     if cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")):
                         if (o_q := extract_executed_qty(o, default=0.0) or 0.0) > 0.0:
                             cands.append((o, o_q))
                 if len(cands) > 1 and abs(sum(q for _, q in cands) - i_qty) <= max(1e-5, i_qty * 0.01):
                     for o_cand, _ in cands:
                         _mark_ai_origin(o_cand)
+        return valid, ai_oids, origin_by_oid, origin_by_side_ts
 
-        def _fill_origin(o: Optional[Dict[str, Any]]) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
-            if not isinstance(o, dict):
-                return None, None, None, None
-            act, mod, rule = _lookup_cached_origin(o) or resolve_order_origin(o, ai_oids, audit_origin_map)
-            return ("AI", None, None, "AI") if act == "AI" else ("BOT", mod, rule, format_actor_tag("BOT", mod, rule))
-
-        chron = [o for _, o in sorted(enumerate(valid), key=lambda item: (extract_timestamp_ms(item[1], default=0) or 0, item[0]))]
-        last_any = chron[-1]
-        latest_fill_ts_ms = max((extract_timestamp_ms(x, default=0) or 0) for x in chron) if chron else 0
+    @staticmethod
+    def _replay_chronological_lifo_lots(
+        chron: List[Dict[str, Any]],
+        latest_fill_ts_ms: int,
+        fill_origin_fn: Any,
+    ) -> Dict[str, Any]:
         cost_qty, active_avg = 0.0, 0.0
         tactical_qty, tactical_avg = 0.0, 0.0
         buys_fmt: list[Dict[str, Any]] = []
@@ -911,8 +949,10 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
         last_exit_oversold = False
         for o in chron:
             side_o = extract_order_side(o)
-            p_f, q_f, ts_raw = round_opt_px(extract_order_price(o, default=None), 6), extract_executed_qty(o, default=None), extract_timestamp_ms(o, default=None)
-            act_o, mod_o, rule_o, tag_o = _fill_origin(o)
+            p_f = round_opt_px(extract_order_price(o, default=None), 6)
+            q_f = extract_executed_qty(o, default=None)
+            ts_raw = extract_timestamp_ms(o, default=None)
+            act_o, mod_o, rule_o, tag_o = fill_origin_fn(o)
             item_d: Dict[str, Any] = {"price": p_f, "qty": q_f, "ts_ms": ts_raw, "actor": act_o}
             if oid_item := extract_order_id(o, default=""):
                 item_d["order_id"] = str(oid_item)
@@ -1022,9 +1062,26 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                             top_lot["qty"] = round(lot_q - matched_q, 6)
                     if is_full_exit:
                         open_lots.clear()
+        return {
+            "cost_qty": cost_qty,
+            "active_avg": active_avg,
+            "tactical_avg": tactical_avg,
+            "buys_fmt": buys_fmt,
+            "cycle_buys_fmt": cycle_buys_fmt,
+            "sells_fmt": sells_fmt,
+            "cycle_sells_fmt": cycle_sells_fmt,
+            "open_lots": open_lots,
+            "lifo_realized_pnl_usd": lifo_realized_pnl_usd,
+            "last_sell_ts_ms": last_sell_ts_ms,
+        }
 
-        swing_subcycle_avg_px: Optional[float] = None
-        swing_subcycle_qty = 0.0
+    @staticmethod
+    def _compute_swing_subcycle_vwap(
+        open_lots: List[Dict[str, Any]],
+        buys_fmt: List[Dict[str, Any]],
+        last_sell_ts_ms: int,
+        latest_fill_ts_ms: int,
+    ) -> tuple[Optional[float], float]:
         cand_swing_lots = open_lots[-4:] if open_lots else []
         if cand_swing_lots:
             newest_lot = cand_swing_lots[-1]
@@ -1036,7 +1093,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                 and latest_fill_ts_ms > 0
                 and (latest_fill_ts_ms - newest_ts) > 72 * 3600 * 1000
             )
-            active_swing_lots = []
+            active_swing_lots: List[Dict[str, Any]] = []
             if not top_lot_stale_after_sell:
                 for lt in reversed(cand_swing_lots):
                     lt_px = safe_pos_float(lt.get("entry_px"), default=0.0) or 0.0
@@ -1068,12 +1125,62 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
             )
             sw_qty = sum(safe_pos_float(x.get("qty"), default=0.0) or 0.0 for x in sw_lots)
             if sw_qty > 1e-12 and sw_cost > 0.0:
-                swing_subcycle_avg_px = round(sw_cost / sw_qty, 6)
-                swing_subcycle_qty = round(sw_qty, 6)
+                return round(sw_cost / sw_qty, 6), round(sw_qty, 6)
+        return None, 0.0
+
+    def evaluate(
+        self,
+        orders_list: list,
+        *,
+        known_ai_order_ids: Optional[set[str]] = None,
+        audit_origin_map: Optional[Dict[str, tuple[Optional[str], Optional[str]]]] = None,
+        ai_intents: Optional[List[Dict[str, Any]]] = None,
+        symbol: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Optional[Dict[str, Any]]:
+        if not orders_list and not ai_intents:
+            return None
+        valid, fallback_sym = self._filter_valid_fill_orders(orders_list, symbol)
+        if not valid and not (fallback_sym and ai_intents):
+            return None
+        valid, ai_oids, origin_by_oid, origin_by_side_ts = self._reconcile_ai_intents_and_order_origins(
+            valid, fallback_sym, known_ai_order_ids, audit_origin_map, ai_intents
+        )
+        if not valid:
+            return None
+
+        def _fill_origin(o: Optional[Dict[str, Any]]) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+            if not isinstance(o, dict):
+                return None, None, None, None
+            oid_k = str(extract_order_id(o, default="") or "")
+            side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
+            act, mod, rule = (
+                origin_by_oid.get(oid_k)
+                or origin_by_side_ts.get(side_ts_k)
+                or resolve_order_origin(o, ai_oids, audit_origin_map)
+            )
+            return ("AI", None, None, "AI") if act == "AI" else ("BOT", mod, rule, format_actor_tag("BOT", mod, rule))
+
+        chron = [
+            o for _, o in sorted(enumerate(valid), key=lambda item: (extract_timestamp_ms(item[1], default=0) or 0, item[0]))
+        ]
+        last_any = chron[-1]
+        latest_fill_ts_ms = max((extract_timestamp_ms(x, default=0) or 0) for x in chron) if chron else 0
+        lot_state = self._replay_chronological_lifo_lots(chron, latest_fill_ts_ms, _fill_origin)
+        cost_qty = lot_state["cost_qty"]
+        open_lots = lot_state["open_lots"]
+        buys_fmt = lot_state["buys_fmt"]
+        cycle_buys_fmt = lot_state["cycle_buys_fmt"]
+        sells_fmt = lot_state["sells_fmt"]
+        cycle_sells_fmt = lot_state["cycle_sells_fmt"]
+        lifo_realized_pnl_usd = lot_state["lifo_realized_pnl_usd"]
+        swing_subcycle_avg_px, swing_subcycle_qty = self._compute_swing_subcycle_vwap(
+            open_lots, buys_fmt, lot_state["last_sell_ts_ms"], latest_fill_ts_ms
+        )
 
         last_act, last_mod, last_rule, last_tag = _fill_origin(last_any)
-        active_avg_r = round(active_avg, 6) if active_avg > 0 else None
-        tactical_avg_r = round(tactical_avg, 6) if tactical_avg > 0 else None
+        active_avg_r = round(lot_state["active_avg"], 6) if lot_state["active_avg"] > 0 else None
+        tactical_avg_r = round(lot_state["tactical_avg"], 6) if lot_state["tactical_avg"] > 0 else None
         out_fills: Dict[str, Any] = {
             "last_action_side": extract_order_side(last_any) or last_any.get("side"),
             "last_action_actor": last_act,
@@ -1197,6 +1304,283 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
 
     cls_name = "VenueCycleReconciliationEvaluator"
 
+    @staticmethod
+    def _reconcile_full_exit_or_external_buy(
+        cyc: Dict[str, Any],
+        ro_c: Dict[str, Any],
+        *,
+        c_sym: str,
+        c_is_eq: bool,
+        avg_dec: int,
+        buys_after: List[Dict[str, Any]],
+        buys_after_qty: float,
+        live_held: Optional[float],
+        rem_q_ro: float,
+        ls_px: float,
+        prices_and_trends: Dict[str, Any],
+        reset_ro_fn: Any,
+        sync_exit_fn: Any,
+    ) -> None:
+        px_c = resolve_symbol_price(ensure_equity_suffix(c_sym, is_equity=c_is_eq), prices_and_trends)
+        eff_rem_wallet = (
+            live_held
+            if (live_held is not None and live_held > 1e-6)
+            else (rem_q_ro if (live_held is None and rem_q_ro > 1e-6) else 0.0)
+        )
+        has_non_dust_wallet = eff_rem_wallet > 1e-6 and (px_c <= 0.0 or eff_rem_wallet * px_c >= 5.0)
+        if buys_after:
+            new_qty = buys_after_qty
+            new_cost = sum(
+                (safe_pos_float(b.get("qty"), default=0.0) or 0.0)
+                * (safe_pos_float(b.get("price"), default=0.0) or 0.0)
+                for b in buys_after
+            )
+            first_buy_px = safe_pos_float(buys_after[0].get("price"), default=0.0) or 0.0
+            last_buy_px = safe_pos_float(buys_after[-1].get("price"), default=0.0) or 0.0
+            _sync_cycle_wallet_qty_and_avg(
+                cyc,
+                qty=new_qty,
+                avg_px=new_cost / new_qty,
+                spot_px=px_c,
+                avg_dec=avg_dec,
+                extra_fields={
+                    "cost_usd": round(new_cost, 2),
+                    "entry_price": round(first_buy_px, avg_dec),
+                    "last_buy_price": round(last_buy_px, avg_dec),
+                    "dca_buys": max(0, len(buys_after) - 1),
+                },
+            )
+            if eff_rem_wallet <= 1e-6 or abs(new_qty - eff_rem_wallet) <= max(1e-4, eff_rem_wallet * 0.02):
+                reset_ro_fn()
+        elif has_non_dust_wallet:
+            eff_avg_w = (
+                safe_pos_float(ro_c.get("active_avg_buy_px"), default=None)
+                or safe_pos_float(cyc.get("avg_cost_px"), default=None)
+                or safe_pos_float(cyc.get("entry_price"), default=None)
+                or safe_pos_float(cyc.get("last_buy_price"), default=None)
+            )
+            _sync_cycle_wallet_qty_and_avg(cyc, qty=eff_rem_wallet, avg_px=eff_avg_w, spot_px=px_c, avg_dec=avg_dec)
+            if (
+                safe_pos_float(cyc.get("avg_cost_px"), default=None) is not None
+                and safe_pos_float(cyc.get("entry_price"), default=None) is None
+            ):
+                cyc["entry_price"] = cyc["avg_cost_px"]
+        else:
+            reset_flat_cycle_state(cyc, qty=0.0, clear_peak=False)
+        if ls_px > 0:
+            cyc["last_sell_price"] = round(ls_px, avg_dec)
+            sync_exit_fn(cyc, ls_px, safe_nonneg_float(cyc.get("qty"), default=0.0) or 0.0)
+        if not has_non_dust_wallet and not buys_after:
+            _clear_pos_pair(cyc)
+
+    def _reconcile_single_venue_cycle(
+        self,
+        c_venue: str,
+        c_sym: str,
+        cyc: Dict[str, Any],
+        avg_dec: int,
+        v_ro_c: Dict[str, Any],
+        live_held_by_venue_sym: Dict[tuple[str, str], float],
+        prices_and_trends: Dict[str, Any],
+        cyc_sell_ts_map: Dict[tuple[str, str], int],
+    ) -> None:
+        entry_ts_ms, sell_ts_ms = cyc.pop("_entry_ts_ms", None), cyc.pop("_last_sell_ts_ms", None)
+        c_quotes = compatible_quote_suffixes(c_sym)
+        c_is_eq = is_equity_venue_or_suffix(c_sym, c_venue)
+        c_cands = filter_asset_class_variants(
+            c_sym,
+            (c_sym, *cache_symbol_variants(c_sym, include_base="USD" in c_quotes, quotes=c_quotes)),
+            is_equity=c_is_eq,
+        )
+        if (entry_ts_i := safe_pos_int(entry_ts_ms, default=0) or 0) > 0:
+            for cand in c_cands:
+                cyc_sell_ts_map.setdefault((f"{c_venue}:entry", str(cand).upper()), entry_ts_i)
+            cyc_sell_ts_map[(f"{c_venue}:entry", str(c_sym).upper())] = entry_ts_i
+        if (sell_ts_i := safe_pos_int(sell_ts_ms, default=0) or 0) > 0:
+            for cand in c_cands:
+                cyc_sell_ts_map.setdefault((c_venue, str(cand).upper()), sell_ts_i)
+            cyc_sell_ts_map[(c_venue, str(c_sym).upper())] = sell_ts_i
+        ro_c = next((val for cand in c_cands if isinstance((val := casefold_get(v_ro_c, cand)), dict)), None)
+        cyc_qty_cur = safe_nonneg_float(cyc.get("qty"), default=0.0) or 0.0
+        if isinstance(ro_c, dict) and is_equity_venue(c_venue) and cyc_qty_cur > 1e-8:
+            lb_ro, ls_ro = coerce_dict_maps(ro_c.get("last_buy"), ro_c.get("last_sell"))
+            if ro_c.get("recent_buys") and (lb_px_ro := safe_pos_float(lb_ro.get("price"), default=None)) is not None:
+                cyc["last_buy_price"] = round(lb_px_ro, avg_dec)
+            if ro_c.get("recent_sells") and (ls_px_ro := safe_pos_float(ls_ro.get("price"), default=None)) is not None:
+                cyc["last_sell_price"] = round(ls_px_ro, avg_dec)
+        if not isinstance(ro_c, dict):
+            return
+        ls_c = ro_c.get("last_sell") if isinstance(ro_c.get("last_sell"), dict) else {}
+        ls_ts_ms = safe_pos_float(ls_c.get("ts_ms"), default=0.0) or 0.0
+        ls_qty = safe_pos_float(ls_c.get("qty"), default=0.0) or 0.0
+        ls_px = safe_pos_float(ls_c.get("price"), default=0.0) or 0.0
+        r_buys_c = ro_c.get("recent_buys") if isinstance(ro_c.get("recent_buys"), list) else []
+        entry_ts_f = safe_pos_float(entry_ts_ms, default=None)
+        sell_ts_f = safe_pos_float(sell_ts_ms, default=None)
+        buys_after = [
+            b for b in r_buys_c
+            if isinstance(b, dict)
+            and (safe_pos_float(b.get("ts_ms"), default=0.0) or 0.0) > ls_ts_ms
+            and (safe_pos_float(b.get("qty"), default=0.0) or 0.0) > 0.0
+            and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
+        ]
+        buys_after_qty = sum(safe_pos_float(b.get("qty"), default=0.0) or 0.0 for b in buys_after)
+        post_sell_new_cycle = bool(
+            entry_ts_f is not None
+            and ls_ts_ms > 0.0
+            and entry_ts_f > ls_ts_ms + 5000.0
+            and buys_after
+            and cyc_qty_cur <= buys_after_qty * 1.05
+        )
+        buys_before = (
+            []
+            if post_sell_new_cycle
+            else [
+                b for b in r_buys_c
+                if isinstance(b, dict)
+                and 0.0 < (safe_pos_float(b.get("ts_ms"), default=0.0) or 0.0) <= ls_ts_ms
+                and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
+            ]
+        )
+        reconciled_external_buy = bool(
+            entry_ts_f is not None
+            and not cyc.get("resting_orders")
+            and buys_after
+            and cyc_qty_cur > 1e-8
+            and entry_ts_f > (safe_pos_float(buys_after[-1].get("ts_ms"), default=0.0) or 0.0) + 5000.0
+            and abs(buys_after_qty - cyc_qty_cur) <= max(1e-4, cyc_qty_cur * 0.02)
+        )
+        rem_q_ro = safe_pos_float(ro_c.get("active_cycle_rem_qty"), default=0.0) or 0.0
+        live_held = live_held_by_venue_sym.get((c_venue, str(c_sym).upper()))
+
+        def _reset_post_sell_ro_cycle() -> None:
+            ro_c["lifo_realized_pnl_usd"] = 0.0
+            ro_c["recent_buys"] = buys_after[-4:]
+            if isinstance(ro_c.get("open_lots"), list):
+                ro_c["open_lots"] = [
+                    lt for lt in ro_c["open_lots"]
+                    if isinstance(lt, dict) and (safe_pos_float(lt.get("ts_ms"), default=0.0) or 0.0) > ls_ts_ms
+                ]
+
+        if post_sell_new_cycle and (
+            live_held is None
+            or live_held <= 1e-6
+            or abs(buys_after_qty - live_held) <= max(1e-4, live_held * 0.02)
+        ):
+            _reset_post_sell_ro_cycle()
+        has_pre_sell_rem = (
+            buys_after_qty > 0.0
+            and (cyc_qty_cur - buys_after_qty) > 1e-6
+            and rem_q_ro > 1e-8
+            and abs(rem_q_ro - cyc_qty_cur) <= max(1e-4, max(rem_q_ro, cyc_qty_cur) * 0.05)
+        )
+        already_deducted_partial = bool(
+            not reconciled_external_buy
+            and (not buys_after or ls_qty < cyc_qty_cur * 0.95 or has_pre_sell_rem)
+            and cyc_qty_cur > 1e-8
+            and (
+                (sell_ts_f is not None and sell_ts_f >= ls_ts_ms - 5000.0 and (live_held is None or live_held > 1e-6))
+                or (live_held is None and rem_q_ro > 1e-8 and abs(rem_q_ro - cyc_qty_cur) <= max(1e-4, max(rem_q_ro, cyc_qty_cur) * 0.05))
+                or (live_held is not None and live_held > 1e-8 and abs(live_held - cyc_qty_cur) <= max(1e-4, max(live_held, cyc_qty_cur) * 0.05))
+            )
+        )
+
+        def _sync_exit_kind(c_dict: Dict[str, Any], sell_p: float, rem_q: float) -> None:
+            if sell_p <= 0.0 or (post_sell_new_cycle and str(c_dict.get("last_exit_kind") or "").strip()):
+                return
+            pre_sell_buy_px = safe_pos_float(buys_before[-1].get("price"), default=None) if buys_before else None
+            pre_sell_ref = (pre_sell_buy_px or safe_pos_float(c_dict.get("entry_price"), default=None)) if buys_after else None
+            ref_avg = (
+                pre_sell_ref
+                or safe_pos_float(ro_c.get("active_avg_buy_px"), default=None)
+                or safe_pos_float(c_dict.get("avg_cost_px"), default=None)
+                or safe_pos_float(c_dict.get("entry_price"), default=None)
+                or safe_pos_float(c_dict.get("last_buy_price"), default=None)
+            )
+            is_newer_partial_sell = (
+                not post_sell_new_cycle
+                and rem_q > 1e-6
+                and ls_ts_ms > 0.0
+                and (
+                    sell_ts_f is None
+                    or sell_ts_f < ls_ts_ms - 5000.0
+                    or (already_deducted_partial and sell_ts_f <= ls_ts_ms + 60000.0)
+                )
+            )
+            new_kind = classify_reconciled_cycle_exit_kind(
+                c_dict.get("last_exit_kind"),
+                sell_p,
+                ref_avg,
+                sell_from_prior_cycle=post_sell_new_cycle,
+                allow_stop_upgrade=is_newer_partial_sell,
+                lifo_pnl_usd=safe_float(ro_c.get("lifo_realized_pnl_usd"), default=None),
+                pre_sell_buy_px=pre_sell_buy_px,
+            )
+            if new_kind is not None:
+                c_dict["last_exit_kind"] = new_kind
+
+        if already_deducted_partial:
+            if ls_px > 0:
+                cyc["last_sell_price"] = round(ls_px, avg_dec)
+                _sync_exit_kind(cyc, ls_px, cyc_qty_cur)
+            if buys_after and buys_before:
+                cyc["dca_buys"] = max(safe_nonneg_int(cyc.get("dca_buys"), default=0), len(buys_after))
+            elif len(buys_after) >= 2 and not cyc.get("dca_buys"):
+                cyc["dca_buys"] = len(buys_after) - 1
+            return
+        if entry_ts_f is None or cyc.get("resting_orders"):
+            return
+        if (
+            not buys_after
+            and ls_ts_ms > entry_ts_f
+            and cyc_qty_cur > 1e-8
+            and 0.0 < ls_qty < cyc_qty_cur - 1e-8
+            and (sell_ts_f is None or sell_ts_f < ls_ts_ms - 5000.0)
+            and (
+                (live_held is not None and abs(live_held - (cyc_qty_cur - ls_qty)) <= max(1e-4, max(live_held, cyc_qty_cur - ls_qty) * 0.05))
+                or (live_held is None and rem_q_ro > 1e-8 and abs(rem_q_ro - (cyc_qty_cur - ls_qty)) <= max(1e-4, max(rem_q_ro, cyc_qty_cur - ls_qty) * 0.05))
+            )
+        ):
+            rem_after_sell = cyc_qty_cur - ls_qty
+            avg_c = safe_pos_float(cyc.get("avg_cost_px"), default=None) or (
+                (safe_pos_float(cyc.get("cost_usd"), default=0.0) or 0.0) / cyc_qty_cur
+            )
+            cyc["qty"] = round(rem_after_sell, 6)
+            if avg_c and avg_c > 0:
+                cyc["cost_usd"] = round(rem_after_sell * avg_c, 2)
+            if ls_px > 0:
+                cyc["last_sell_price"] = round(ls_px, avg_dec)
+                _sync_exit_kind(cyc, ls_px, rem_after_sell)
+        elif (ls_ts_ms > entry_ts_f and cyc_qty_cur > 1e-8 and ls_qty >= cyc_qty_cur * 0.95) or reconciled_external_buy:
+            self._reconcile_full_exit_or_external_buy(
+                cyc,
+                ro_c,
+                c_sym=c_sym,
+                c_is_eq=c_is_eq,
+                avg_dec=avg_dec,
+                buys_after=buys_after,
+                buys_after_qty=buys_after_qty,
+                live_held=live_held,
+                rem_q_ro=rem_q_ro,
+                ls_px=ls_px,
+                prices_and_trends=prices_and_trends,
+                reset_ro_fn=_reset_post_sell_ro_cycle,
+                sync_exit_fn=_sync_exit_kind,
+            )
+        elif (
+            buys_after
+            and cyc_qty_cur > 1e-8
+            and ls_ts_ms > 0.0
+            and (sell_ts_ms is None or safe_float(sell_ts_ms, 0.0) < ls_ts_ms - 5000.0)
+        ):
+            if ls_px > 0:
+                cyc["last_sell_price"] = round(ls_px, avg_dec)
+                _sync_exit_kind(cyc, ls_px, max(cyc_qty_cur, live_held or 0.0, rem_q_ro))
+            if buys_before:
+                cyc["dca_buys"] = max(safe_nonneg_int(cyc.get("dca_buys"), default=0), len(buys_after))
+            elif len(buys_after) >= 2 and not cyc.get("dca_buys"):
+                cyc["dca_buys"] = len(buys_after) - 1
+
     def evaluate(
         self,
         kraken_cycles: Dict[str, Dict[str, Any]],
@@ -1218,258 +1602,11 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                 continue
             v_ro_c = venue_recent_orders.get(c_venue, {})
             for c_sym, cyc in cyc_map.items():
-                if not isinstance(cyc, dict):
-                    continue
-                entry_ts_ms, sell_ts_ms = cyc.pop("_entry_ts_ms", None), cyc.pop("_last_sell_ts_ms", None)
-                c_quotes = compatible_quote_suffixes(c_sym)
-                c_is_eq = is_equity_venue_or_suffix(c_sym, c_venue)
-                c_cands = filter_asset_class_variants(
-                    c_sym,
-                    (c_sym, *cache_symbol_variants(c_sym, include_base="USD" in c_quotes, quotes=c_quotes)),
-                    is_equity=c_is_eq,
-                )
-                if (entry_ts_i := safe_pos_int(entry_ts_ms, default=0) or 0) > 0:
-                    for cand in c_cands:
-                        cyc_sell_ts_map.setdefault((f"{c_venue}:entry", str(cand).upper()), entry_ts_i)
-                    cyc_sell_ts_map[(f"{c_venue}:entry", str(c_sym).upper())] = entry_ts_i
-                if (sell_ts_i := safe_pos_int(sell_ts_ms, default=0) or 0) > 0:
-                    for cand in c_cands:
-                        cyc_sell_ts_map.setdefault((c_venue, str(cand).upper()), sell_ts_i)
-                    cyc_sell_ts_map[(c_venue, str(c_sym).upper())] = sell_ts_i
-                ro_c = next(
-                    (
-                        val
-                        for cand in c_cands
-                        if isinstance((val := casefold_get(v_ro_c, cand)), dict)
-                    ),
-                    None,
-                )
-                cyc_qty_cur = safe_nonneg_float(cyc.get("qty"), default=0.0) or 0.0
-                if isinstance(ro_c, dict) and is_equity_venue(c_venue) and cyc_qty_cur > 1e-8:
-                    lb_ro, ls_ro = coerce_dict_maps(ro_c.get("last_buy"), ro_c.get("last_sell"))
-                    if ro_c.get("recent_buys") and (lb_px_ro := safe_pos_float(lb_ro.get("price"), default=None)) is not None:
-                        cyc["last_buy_price"] = round(lb_px_ro, avg_dec)
-                    if ro_c.get("recent_sells") and (ls_px_ro := safe_pos_float(ls_ro.get("price"), default=None)) is not None:
-                        cyc["last_sell_price"] = round(ls_px_ro, avg_dec)
-                if not isinstance(ro_c, dict):
-                    continue
-                ls_c = ro_c.get("last_sell") if isinstance(ro_c.get("last_sell"), dict) else {}
-                ls_ts_ms = safe_pos_float(ls_c.get("ts_ms"), default=0.0) or 0.0
-                ls_qty = safe_pos_float(ls_c.get("qty"), default=0.0) or 0.0
-                ls_px = safe_pos_float(ls_c.get("price"), default=0.0) or 0.0
-                r_buys_c = ro_c.get("recent_buys") if isinstance(ro_c.get("recent_buys"), list) else []
-                entry_ts_f = safe_pos_float(entry_ts_ms, default=None)
-                sell_ts_f = safe_pos_float(sell_ts_ms, default=None)
-                buys_after = [
-                    b for b in r_buys_c
-                    if isinstance(b, dict)
-                    and (safe_pos_float(b.get("ts_ms"), default=0.0) or 0.0) > ls_ts_ms
-                    and (safe_pos_float(b.get("qty"), default=0.0) or 0.0) > 0.0
-                    and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
-                ]
-                buys_after_qty = sum(safe_pos_float(b.get("qty"), default=0.0) or 0.0 for b in buys_after)
-                post_sell_new_cycle = bool(
-                    entry_ts_f is not None
-                    and ls_ts_ms > 0.0
-                    and entry_ts_f > ls_ts_ms + 5000.0
-                    and buys_after
-                    and cyc_qty_cur <= buys_after_qty * 1.05
-                )
-                buys_before = (
-                    []
-                    if post_sell_new_cycle
-                    else [
-                        b for b in r_buys_c
-                        if isinstance(b, dict)
-                        and 0.0 < (safe_pos_float(b.get("ts_ms"), default=0.0) or 0.0) <= ls_ts_ms
-                        and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
-                    ]
-                )
-                reconciled_external_buy = bool(
-                    entry_ts_f is not None
-                    and not cyc.get("resting_orders")
-                    and buys_after
-                    and cyc_qty_cur > 1e-8
-                    and entry_ts_f > (safe_pos_float(buys_after[-1].get("ts_ms"), default=0.0) or 0.0) + 5000.0
-                    and abs(buys_after_qty - cyc_qty_cur) <= max(1e-4, cyc_qty_cur * 0.02)
-                )
-                rem_q_ro = safe_pos_float(ro_c.get("active_cycle_rem_qty"), default=0.0) or 0.0
-                live_held = live_held_by_venue_sym.get((c_venue, str(c_sym).upper()))
-                def _reset_post_sell_ro_cycle() -> None:
-                    ro_c["lifo_realized_pnl_usd"] = 0.0
-                    ro_c["recent_buys"] = buys_after[-4:]
-                    if isinstance(ro_c.get("open_lots"), list):
-                        ro_c["open_lots"] = [
-                            lt for lt in ro_c["open_lots"]
-                            if isinstance(lt, dict) and (safe_pos_float(lt.get("ts_ms"), default=0.0) or 0.0) > ls_ts_ms
-                        ]
-
-                if post_sell_new_cycle and (
-                    live_held is None
-                    or live_held <= 1e-6
-                    or abs(buys_after_qty - live_held) <= max(1e-4, live_held * 0.02)
-                ):
-                    _reset_post_sell_ro_cycle()
-                has_pre_sell_rem = (
-                    buys_after_qty > 0.0
-                    and (cyc_qty_cur - buys_after_qty) > 1e-6
-                    and rem_q_ro > 1e-8
-                    and abs(rem_q_ro - cyc_qty_cur) <= max(1e-4, max(rem_q_ro, cyc_qty_cur) * 0.05)
-                )
-                already_deducted_partial = bool(
-                    not reconciled_external_buy
-                    and (not buys_after or ls_qty < cyc_qty_cur * 0.95 or has_pre_sell_rem)
-                    and cyc_qty_cur > 1e-8
-                    and (
-                        (sell_ts_f is not None and sell_ts_f >= ls_ts_ms - 5000.0 and (live_held is None or live_held > 1e-6))
-                        or (live_held is None and rem_q_ro > 1e-8 and abs(rem_q_ro - cyc_qty_cur) <= max(1e-4, max(rem_q_ro, cyc_qty_cur) * 0.05))
-                        or (live_held is not None and live_held > 1e-8 and abs(live_held - cyc_qty_cur) <= max(1e-4, max(live_held, cyc_qty_cur) * 0.05))
+                if isinstance(cyc, dict):
+                    self._reconcile_single_venue_cycle(
+                        c_venue, c_sym, cyc, avg_dec, v_ro_c, live_held_by_venue_sym, prices_and_trends, cyc_sell_ts_map
                     )
-                )
-
-                def _sync_exit_kind(c_dict: Dict[str, Any], sell_p: float, rem_q: float) -> None:
-                    if sell_p <= 0.0 or (post_sell_new_cycle and str(c_dict.get("last_exit_kind") or "").strip()):
-                        return
-                    pre_sell_buy_px = safe_pos_float(buys_before[-1].get("price"), default=None) if buys_before else None
-                    pre_sell_ref = (
-                        pre_sell_buy_px
-                        or safe_pos_float(c_dict.get("entry_price"), default=None)
-                    ) if buys_after else None
-                    ref_avg = (
-                        pre_sell_ref
-                        or safe_pos_float(ro_c.get("active_avg_buy_px"), default=None)
-                        or safe_pos_float(c_dict.get("avg_cost_px"), default=None)
-                        or safe_pos_float(c_dict.get("entry_price"), default=None)
-                        or safe_pos_float(c_dict.get("last_buy_price"), default=None)
-                    )
-                    is_newer_partial_sell = (
-                        not post_sell_new_cycle
-                        and rem_q > 1e-6
-                        and ls_ts_ms > 0.0
-                        and (
-                            sell_ts_f is None
-                            or sell_ts_f < ls_ts_ms - 5000.0
-                            or (already_deducted_partial and sell_ts_f <= ls_ts_ms + 60000.0)
-                        )
-                    )
-                    new_kind = classify_reconciled_cycle_exit_kind(
-                        c_dict.get("last_exit_kind"),
-                        sell_p,
-                        ref_avg,
-                        sell_from_prior_cycle=post_sell_new_cycle,
-                        allow_stop_upgrade=is_newer_partial_sell,
-                        lifo_pnl_usd=safe_float(ro_c.get("lifo_realized_pnl_usd"), default=None),
-                        pre_sell_buy_px=pre_sell_buy_px,
-                    )
-                    if new_kind is not None:
-                        c_dict["last_exit_kind"] = new_kind
-
-                if already_deducted_partial:
-                    if ls_px > 0:
-                        cyc["last_sell_price"] = round(ls_px, avg_dec)
-                        _sync_exit_kind(cyc, ls_px, cyc_qty_cur)
-                    if buys_after and buys_before:
-                        cyc["dca_buys"] = max(safe_nonneg_int(cyc.get("dca_buys"), default=0), len(buys_after))
-                    elif len(buys_after) >= 2 and not cyc.get("dca_buys"):
-                        cyc["dca_buys"] = len(buys_after) - 1
-                    continue
-                if entry_ts_f is None or cyc.get("resting_orders"):
-                    continue
-                if (
-                    not buys_after
-                    and ls_ts_ms > entry_ts_f
-                    and cyc_qty_cur > 1e-8
-                    and 0.0 < ls_qty < cyc_qty_cur - 1e-8
-                    and (sell_ts_f is None or sell_ts_f < ls_ts_ms - 5000.0)
-                    and (
-                        (live_held is not None and abs(live_held - (cyc_qty_cur - ls_qty)) <= max(1e-4, max(live_held, cyc_qty_cur - ls_qty) * 0.05))
-                        or (live_held is None and rem_q_ro > 1e-8 and abs(rem_q_ro - (cyc_qty_cur - ls_qty)) <= max(1e-4, max(rem_q_ro, cyc_qty_cur - ls_qty) * 0.05))
-                    )
-                ):
-                    rem_after_sell = cyc_qty_cur - ls_qty
-                    avg_c = safe_pos_float(cyc.get("avg_cost_px"), default=None) or (
-                        (safe_pos_float(cyc.get("cost_usd"), default=0.0) or 0.0) / cyc_qty_cur
-                    )
-                    cyc["qty"] = round(rem_after_sell, 6)
-                    if avg_c and avg_c > 0:
-                        cyc["cost_usd"] = round(rem_after_sell * avg_c, 2)
-                    if ls_px > 0:
-                        cyc["last_sell_price"] = round(ls_px, avg_dec)
-                        _sync_exit_kind(cyc, ls_px, rem_after_sell)
-                elif (ls_ts_ms > entry_ts_f and cyc_qty_cur > 1e-8 and ls_qty >= cyc_qty_cur * 0.95) or reconciled_external_buy:
-                    px_c = resolve_symbol_price(
-                        ensure_equity_suffix(c_sym, is_equity=c_is_eq),
-                        prices_and_trends,
-                    )
-                    eff_rem_wallet = (
-                        live_held
-                        if (live_held is not None and live_held > 1e-6)
-                        else (rem_q_ro if (live_held is None and rem_q_ro > 1e-6) else 0.0)
-                    )
-                    has_non_dust_wallet = eff_rem_wallet > 1e-6 and (px_c <= 0.0 or eff_rem_wallet * px_c >= 5.0)
-                    if buys_after:
-                        new_qty = buys_after_qty
-                        new_cost = sum(
-                            (safe_pos_float(b.get("qty"), default=0.0) or 0.0)
-                            * (safe_pos_float(b.get("price"), default=0.0) or 0.0)
-                            for b in buys_after
-                        )
-                        first_buy_px = safe_pos_float(buys_after[0].get("price"), default=0.0) or 0.0
-                        last_buy_px = safe_pos_float(buys_after[-1].get("price"), default=0.0) or 0.0
-                        _sync_cycle_wallet_qty_and_avg(
-                            cyc,
-                            qty=new_qty,
-                            avg_px=new_cost / new_qty,
-                            spot_px=px_c,
-                            avg_dec=avg_dec,
-                            extra_fields={
-                                "cost_usd": round(new_cost, 2),
-                                "entry_price": round(first_buy_px, avg_dec),
-                                "last_buy_price": round(last_buy_px, avg_dec),
-                                "dca_buys": max(0, len(buys_after) - 1),
-                            },
-                        )
-                        if eff_rem_wallet <= 1e-6 or abs(new_qty - eff_rem_wallet) <= max(1e-4, eff_rem_wallet * 0.02):
-                            _reset_post_sell_ro_cycle()
-                    elif has_non_dust_wallet:
-                        eff_avg_w = (
-                            safe_pos_float(ro_c.get("active_avg_buy_px"), default=None)
-                            or safe_pos_float(cyc.get("avg_cost_px"), default=None)
-                            or safe_pos_float(cyc.get("entry_price"), default=None)
-                            or safe_pos_float(cyc.get("last_buy_price"), default=None)
-                        )
-                        _sync_cycle_wallet_qty_and_avg(cyc, qty=eff_rem_wallet, avg_px=eff_avg_w, spot_px=px_c, avg_dec=avg_dec)
-                        if (
-                            safe_pos_float(cyc.get("avg_cost_px"), default=None) is not None
-                            and safe_pos_float(cyc.get("entry_price"), default=None) is None
-                        ):
-                            cyc["entry_price"] = cyc["avg_cost_px"]
-                    else:
-                        _sync_cycle_wallet_qty_and_avg(cyc, qty=0.0, avg_px=None, spot_px=px_c, avg_dec=avg_dec)
-                    if ls_px > 0:
-                        cyc["last_sell_price"] = round(ls_px, avg_dec)
-                        _sync_exit_kind(cyc, ls_px, safe_nonneg_float(cyc.get("qty"), default=0.0) or 0.0)
-                    if not has_non_dust_wallet and not buys_after:
-                        _clear_pos_pair(cyc)
-                elif (
-                    buys_after
-                    and cyc_qty_cur > 1e-8
-                    and ls_ts_ms > 0.0
-                    and (sell_ts_ms is None or safe_float(sell_ts_ms, 0.0) < ls_ts_ms - 5000.0)
-                ):
-                    if ls_px > 0:
-                        cyc["last_sell_price"] = round(ls_px, avg_dec)
-                        _sync_exit_kind(cyc, ls_px, max(cyc_qty_cur, live_held or 0.0, rem_q_ro))
-                    if buys_before:
-                        cyc["dca_buys"] = max(safe_nonneg_int(cyc.get("dca_buys"), default=0), len(buys_after))
-                    elif len(buys_after) >= 2 and not cyc.get("dca_buys"):
-                        cyc["dca_buys"] = len(buys_after) - 1
         return cyc_sell_ts_map
-
-
-def _clear_pos_pair(d: Dict[str, Any], k1: str = "pos_peak", k2: str = "dd_from_peak_pct") -> None:
-    for k in (k1, k2):
-        d.pop(k, None)
 
 
 class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
@@ -1477,379 +1614,344 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
 
     cls_name = "PositionCostBasisEnrichmentEvaluator"
 
-    def evaluate(
-        self,
-        tradable_positions: List[Dict[str, Any]],
-        prices_and_trends: Optional[Dict[str, Any]] = None,
-        inst_by_sym: Optional[Dict[str, Any]] = None,
-        venue_recent_orders: Optional[Dict[str, Dict[str, Any]]] = None,
-        recent_orders: Optional[Dict[str, Any]] = None,
-        kraken_cycles: Optional[Dict[str, Dict[str, Any]]] = None,
-        hyperliquid_cycles: Optional[Dict[str, Dict[str, Any]]] = None,
-        t212_cycles: Optional[Dict[str, Dict[str, Any]]] = None,
-        cyc_sell_ts_map: Optional[Dict[tuple[str, str], int]] = None,
+    @staticmethod
+    def _refresh_position_spot_price(
+        pos: Dict[str, Any],
+        p_venue: str,
+        p_sym: str,
+        p_is_eq: bool,
+        prices_and_trends: Dict[str, Any],
+    ) -> float:
+        pos_px_f = safe_float(pos.get("price"), 0.0)
+        p_lookup_sym = ensure_equity_suffix(p_sym, is_equity=p_is_eq)
+        cand_px = resolve_symbol_price(p_lookup_sym, prices_and_trends, explicit_quote=pos.get("quote"))
+        if cand_px > 0 and (
+            pos_px_f <= 0
+            or (abs(pos_px_f - cand_px) > 1e-9 and not _prices_diverged(pos_px_f, cand_px, threshold=0.35 if p_is_eq else 0.10))
+        ):
+            pos_px_f = round(cand_px, MarketDataProvider.resolve_venue_position_price_decimals(p_venue))
+            pos["price"] = pos_px_f
+            if (fb_val := safe_float(pos.get("free_base"), -1.0)) >= 0:
+                pos["value_usd"] = round(fb_val * cand_px, 2)
+            if (lb_val := safe_pos_float(pos.get("locked_base_qty"), default=0.0) or 0.0) > 0:
+                pos["locked_base_usd"] = round(lb_val * cand_px, 2)
+            if (pk_val := safe_float(pos.get("trailing_peak"), 0.0)) > 0:
+                if pk_val < cand_px:
+                    pk_val = cand_px
+                    pos["trailing_peak"] = round(pk_val, 6)
+                pos["dd_from_peak_pct"] = pct_delta(cand_px, pk_val)
+        return pos_px_f
+
+    @staticmethod
+    def _enrich_position_from_recent_orders(
+        pos: Dict[str, Any],
+        ro: Dict[str, Any],
         *,
-        gateway_max_usd: float = 2000.0,
-        cache_dir: str = "",
-        **kwargs: Any,
-    ) -> List[Dict[str, Any]]:
-        prices_and_trends = prices_and_trends or {}
-        inst_by_sym = inst_by_sym or {}
-        venue_recent_orders, recent_orders, kraken_cycles, hyperliquid_cycles, t212_cycles, cyc_sell_ts_map = coerce_dict_maps(
-            venue_recent_orders, recent_orders, kraken_cycles, hyperliquid_cycles, t212_cycles, cyc_sell_ts_map
+        p_sym: str,
+        p_quote_variants: tuple[str, ...] | list[str],
+        pos_px_f: float,
+        held_cur: float,
+        is_flat_balance: bool,
+        is_flat_after_exit: bool,
+        prices_and_trends: Dict[str, Any],
+        cache_dir: str,
+        cycle_high_memo: Dict[tuple[str, int], float],
+    ) -> None:
+        lb, ls = ro.get("last_buy"), ro.get("last_sell")
+        if ro.get("last_action_side"):
+            pos["last_action_side"] = str(ro.get("last_action_side")).upper()
+        if is_flat_after_exit:
+            reset_flat_position_and_recent_order_state(ro, pos, full_pos_clear=True)
+        else:
+            set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", ro.get("active_avg_buy_px"), pos_px_f)
+            set_pos_anchor(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct", ro.get("tactical_avg_buy_px"), pos_px_f)
+            sw_avg = safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)
+            act_avg = safe_pos_float(ro.get("active_avg_buy_px"), default=None)
+            if sw_avg is not None and (act_avg is None or abs(sw_avg - act_avg) / max(act_avg, 1e-9) >= 0.002):
+                set_pos_anchor(pos, "swing_subcycle_avg_px", "pnl_vs_swing_avg_pct", sw_avg, pos_px_f)
+            if isinstance(ro.get("open_lots"), list) and ro["open_lots"]:
+                pos["open_lots"] = ro["open_lots"][-4:]
+            if (lifo_pnl := safe_float(ro.get("lifo_realized_pnl_usd"), default=None)) is not None and abs(lifo_pnl) >= 0.01:
+                pos["lifo_realized_pnl_usd"] = round(lifo_pnl, 2)
+        lb_px = safe_pos_float(lb.get("price") if isinstance(lb, dict) else None, default=None)
+        set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", lb_px, pos_px_f)
+        set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", ls.get("price") if isinstance(ls, dict) else None, pos_px_f)
+        r_buys = ro.get("recent_buys") if isinstance(ro.get("recent_buys"), list) else []
+        open_lots = ro.get("open_lots") if isinstance(ro.get("open_lots"), list) else []
+        fresh_lots, newest_lot_ts = select_fresh_open_lots(
+            open_lots,
+            held_qty=held_cur,
+            fallback_newest_ts_ms=(safe_pos_int(lb.get("ts_ms"), default=0) or 0) if isinstance(lb, dict) else 0,
         )
-        seen_venue_syms: set[tuple[str, str]] = set()
-        _cycle_high_memo: Dict[tuple[str, int], float] = {}
-        for pos in tradable_positions:
-            if not isinstance(pos, dict):
-                continue
-            p_sym = str(pos.get("symbol") or "").upper()
-            p_venue = normalize_venue_name(pos.get("venue"))
-            p_is_eq = is_equity_venue_or_suffix(p_sym, p_venue)
-            p_quotes = compatible_quote_suffixes(p_sym, pos.get("quote"))
-            p_quote_variants = filter_asset_class_variants(
-                p_sym,
-                cache_symbol_variants(p_sym, include_base="USD" in p_quotes, quotes=p_quotes),
-                is_equity=p_is_eq,
+        if not is_flat_after_exit and held_cur > 1e-8:
+            ro["held_qty"] = round(held_cur, 6)
+        if not is_flat_after_exit and "open_lots" in pos:
+            if fresh_lots:
+                clipped_fresh = clip_open_lots_to_held_qty(fresh_lots, held_cur)
+                pos["open_lots"] = clipped_fresh
+                fresh_vwap, fresh_q = reconcile_fresh_lots_vwap(ro, open_lots, fresh_lots, held_cur)
+                if held_cur > 1e-8 and fresh_q >= held_cur * 0.98:
+                    ro["open_lots"] = clipped_fresh
+                    open_lots = clipped_fresh
+                if fresh_vwap is not None:
+                    set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", fresh_vwap, pos_px_f, overwrite=True)
+                    if "tactical_avg_buy_px" not in ro:
+                        _clear_pos_pair(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct")
+                    if (sw_cur := safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)) is not None and abs(
+                        sw_cur - fresh_vwap
+                    ) / max(fresh_vwap, 1e-9) < 0.002:
+                        _clear_pos_pair(pos, "swing_subcycle_avg_px", "pnl_vs_swing_avg_pct")
+            else:
+                pos.pop("open_lots", None)
+        low_buy_px = (
+            min((safe_float(lot.get("entry_px"), 0.0) for lot in fresh_lots), default=0.0)
+            if fresh_lots
+            else min((safe_float(b.get("price"), 0.0) for b in r_buys if isinstance(b, dict) and safe_float(b.get("price"), 0.0) > 0), default=0.0)
+        )
+        if lb_px is not None and lb_px > 0:
+            low_buy_px = min(low_buy_px, lb_px) if low_buy_px > 0 else lb_px
+        if low_buy_px > 0 and not is_flat_after_exit:
+            set_pos_anchor(pos, "lowest_buy_px", "pnl_vs_lowest_buy_pct", low_buy_px, pos_px_f)
+        if held_cur > 1e-8 and not is_flat_balance and not is_flat_after_exit and pos_px_f > 0.0:
+            open_lot_ts_vals = [
+                t for x in open_lots
+                if isinstance(x, dict) and (t := safe_pos_int(x.get("ts_ms"), default=0) or 0) > 0
+            ]
+            oldest_pos_ts = min(open_lot_ts_vals) if open_lot_ts_vals else newest_lot_ts
+            pos_age_ms = (math.trunc(_time.time() * 1000) - oldest_pos_ts) if oldest_pos_ts > 0 else 0
+            cur_pk = safe_pos_float(pos.get("trailing_peak"), default=None)
+            act_avg_pk = safe_pos_float(pos.get("active_avg_buy_px"), default=None)
+            pk_is_missing_or_unwarmed = cur_pk is None or (
+                act_avg_pk is not None and abs(cur_pk - act_avg_pk) <= max(1e-6, max(cur_pk, act_avg_pk) * 1e-5)
             )
-            if p_venue and p_sym:
-                for cand_vs in (p_sym, *p_quote_variants):
-                    seen_venue_syms.add((p_venue, str(cand_vs).upper()))
-            p_variants = (*p_quote_variants, *filter_asset_class_variants(p_sym, cache_symbol_variants(p_sym), is_equity=p_is_eq))
-            pos_px_f = safe_float(pos.get("price"), 0.0)
-            p_lookup_sym = ensure_equity_suffix(p_sym, is_equity=p_is_eq)
-            cand_px = resolve_symbol_price(p_lookup_sym, prices_and_trends, explicit_quote=pos.get("quote"))
-            if cand_px > 0 and (pos_px_f <= 0 or (abs(pos_px_f - cand_px) > 1e-9 and not _prices_diverged(pos_px_f, cand_px, threshold=0.35 if p_is_eq else 0.10))):
-                pos_px_f = round(cand_px, MarketDataProvider.resolve_venue_position_price_decimals(p_venue))
-                pos["price"] = pos_px_f
-                if (fb_val := safe_float(pos.get("free_base"), -1.0)) >= 0:
-                    pos["value_usd"] = round(fb_val * cand_px, 2)
-                if (lb_val := safe_pos_float(pos.get("locked_base_qty"), default=0.0) or 0.0) > 0:
-                    pos["locked_base_usd"] = round(lb_val * cand_px, 2)
-                if (pk_val := safe_float(pos.get("trailing_peak"), 0.0)) > 0:
-                    if pk_val < cand_px:
-                        pk_val = cand_px
-                        pos["trailing_peak"] = round(pk_val, 6)
-                    pos["dd_from_peak_pct"] = pct_delta(cand_px, pk_val)
-            v_ro_map = venue_recent_orders.get(p_venue, {})
-            ro = next((val for cand in p_quote_variants if isinstance((val := casefold_get(v_ro_map, cand)), dict)), None)
-            fb_cur = safe_float(pos.get("free_base"), -1.0)
-            lb_cur = safe_pos_float(pos.get("locked_base_qty"), default=0.0) or 0.0
-            held_cur = (fb_cur + lb_cur) if fb_cur >= 0.0 else (lb_cur if lb_cur > 0.0 else -1.0)
-            min_notional_f = max(1.0, first_pos_float(pos.get("exchange_min_notional_usd"), pos.get("min_notional_usd"), default=1.0) or 1.0)
-            is_flat_balance = held_cur >= 0.0 and (held_cur <= 1e-8 or (pos_px_f > 0.0 and held_cur * pos_px_f < min_notional_f))
-            if is_flat_balance:
-                _clear_pos_pair(pos, "trailing_peak")
-            last_side_ro = str(ro.get("last_action_side") or "").upper() if isinstance(ro, dict) else ""
-            is_flat_after_exit = is_flat_balance and last_side_ro == "SELL"
-            if isinstance(ro, dict):
-                lb, ls = ro.get("last_buy"), ro.get("last_sell")
-                if ro.get("last_action_side"):
-                    pos["last_action_side"] = str(ro.get("last_action_side")).upper()
-                if is_flat_after_exit:
-                    _clear_flat_ro_and_pos_anchors(ro, pos, full_pos_clear=True)
-                else:
-                    set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", ro.get("active_avg_buy_px"), pos_px_f)
-                    set_pos_anchor(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct", ro.get("tactical_avg_buy_px"), pos_px_f)
-                    sw_avg = safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)
-                    act_avg = safe_pos_float(ro.get("active_avg_buy_px"), default=None)
-                    if sw_avg is not None and (act_avg is None or abs(sw_avg - act_avg) / max(act_avg, 1e-9) >= 0.002):
-                        set_pos_anchor(pos, "swing_subcycle_avg_px", "pnl_vs_swing_avg_pct", sw_avg, pos_px_f)
-                    if isinstance(ro.get("open_lots"), list) and ro["open_lots"]:
-                        pos["open_lots"] = ro["open_lots"][-4:]
-                    if (lifo_pnl := safe_float(ro.get("lifo_realized_pnl_usd"), default=None)) is not None and abs(lifo_pnl) >= 0.01:
-                        pos["lifo_realized_pnl_usd"] = round(lifo_pnl, 2)
-                lb_px = safe_pos_float(lb.get("price") if isinstance(lb, dict) else None, default=None)
-                set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", lb_px, pos_px_f)
-                set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", ls.get("price") if isinstance(ls, dict) else None, pos_px_f)
-                r_buys = ro.get("recent_buys") if isinstance(ro.get("recent_buys"), list) else []
-                open_lots = ro.get("open_lots") if isinstance(ro.get("open_lots"), list) else []
-                fresh_lots, newest_lot_ts = select_fresh_open_lots(
-                    open_lots,
-                    held_qty=held_cur,
-                    fallback_newest_ts_ms=(safe_pos_int(lb.get("ts_ms"), default=0) or 0) if isinstance(lb, dict) else 0,
+            if pk_is_missing_or_unwarmed and 12 * 3600 * 1000 <= pos_age_ms <= 90 * 86400 * 1000:
+                hi_24h = _resolve_cycle_high_since(
+                    p_sym, p_quote_variants, oldest_pos_ts, prices_and_trends, cache_dir=cache_dir, memo=cycle_high_memo
                 )
-                if not is_flat_after_exit and held_cur > 1e-8:
-                    ro["held_qty"] = round(held_cur, 6)
-                if not is_flat_after_exit and "open_lots" in pos:
-                    if fresh_lots:
-                        clipped_fresh = clip_open_lots_to_held_qty(fresh_lots, held_cur)
-                        pos["open_lots"] = clipped_fresh
-                        fresh_vwap, fresh_q = reconcile_fresh_lots_vwap(ro, open_lots, fresh_lots, held_cur)
-                        if held_cur > 1e-8 and fresh_q >= held_cur * 0.98:
-                            ro["open_lots"] = clipped_fresh
-                            open_lots = clipped_fresh
-                        if fresh_vwap is not None:
-                            set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", fresh_vwap, pos_px_f, overwrite=True)
-                            if "tactical_avg_buy_px" not in ro:
-                                _clear_pos_pair(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct")
-                            if (sw_cur := safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)) is not None and abs(
-                                sw_cur - fresh_vwap
-                            ) / max(fresh_vwap, 1e-9) < 0.002:
-                                _clear_pos_pair(pos, "swing_subcycle_avg_px", "pnl_vs_swing_avg_pct")
-                    else:
-                        pos.pop("open_lots", None)
-                low_buy_px = (
-                    min((safe_float(lot.get("entry_px"), 0.0) for lot in fresh_lots), default=0.0)
-                    if fresh_lots
-                    else min((safe_float(b.get("price"), 0.0) for b in r_buys if isinstance(b, dict) and safe_float(b.get("price"), 0.0) > 0), default=0.0)
+                ls_ts_ms = (safe_pos_int(ls.get("ts_ms"), default=0) or 0) if isinstance(ls, dict) else 0
+                ls_px_pk = (safe_pos_float(pos.get("last_sell_px"), default=0.0) or 0.0) if ls_ts_ms >= oldest_pos_ts else 0.0
+                ref_pk_anchor = max(pos_px_f, act_avg_pk or 0.0, ls_px_pk)
+                if hi_24h > 0.0 and not _prices_diverged(ref_pk_anchor, hi_24h, threshold=0.35):
+                    seed_pk = max(hi_24h, ls_px_pk, pos_px_f, cur_pk or 0.0, act_avg_pk or 0.0)
+                    set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", seed_pk, pos_px_f, overwrite=True)
+
+    @staticmethod
+    def _reconcile_position_with_venue_cycle(
+        pos: Dict[str, Any],
+        cyc: Dict[str, Any],
+        *,
+        p_venue: str,
+        p_sym: str,
+        p_quote_variants: tuple[str, ...] | list[str],
+        pos_px_f: float,
+        fb_cur: float,
+        lb_cur: float,
+        held_cur: float,
+        min_notional_f: float,
+        is_flat_balance: bool,
+        is_flat_after_exit: bool,
+        last_side_ro: str,
+        ro: Optional[Dict[str, Any]],
+        recent_orders: Dict[str, Any],
+        v_ro_map: Dict[str, Any],
+        cyc_sell_ts_map: Dict[tuple[str, str], int],
+        prices_and_trends: Dict[str, Any],
+        cache_dir: str,
+        cycle_high_memo: Dict[tuple[str, int], float],
+    ) -> tuple[float, float, bool, bool, Optional[Dict[str, Any]]]:
+        cyc_qty = safe_nonneg_float(cyc.get("qty"), default=None)
+        c_pk_orig = safe_pos_float(cyc.get("pos_peak"), default=0.0) or 0.0
+        p_pk_orig = safe_pos_float(pos.get("trailing_peak"), default=0.0) or 0.0
+        raw_pk_orig = max(c_pk_orig, p_pk_orig) if max(c_pk_orig, p_pk_orig) > 0.0 else None
+        if (
+            held_cur > 1e-8
+            and not is_flat_balance
+            and ((cyc_qty is not None and cyc_qty > 1e-8) or pos.get("active_avg_buy_px") is not None)
+        ):
+            if cyc_qty is None or abs(cyc_qty - held_cur) > 1e-6:
+                cyc_qty = round(held_cur, 6)
+                cyc["qty"] = cyc_qty
+            eff_avg_cost = (
+                (
+                    safe_pos_float(cyc.get("avg_cost_px"), default=None)
+                    or safe_pos_float(pos.get("active_avg_buy_px"), default=None)
                 )
-                if lb_px is not None and lb_px > 0:
-                    low_buy_px = min(low_buy_px, lb_px) if low_buy_px > 0 else lb_px
-                if low_buy_px > 0 and not is_flat_after_exit:
-                    set_pos_anchor(pos, "lowest_buy_px", "pnl_vs_lowest_buy_pct", low_buy_px, pos_px_f)
-                if held_cur > 1e-8 and not is_flat_balance and not is_flat_after_exit and pos_px_f > 0.0:
-                    open_lot_ts_vals = [
-                        t for x in open_lots
-                        if isinstance(x, dict) and (t := safe_pos_int(x.get("ts_ms"), default=0) or 0) > 0
-                    ]
-                    oldest_pos_ts = min(open_lot_ts_vals) if open_lot_ts_vals else newest_lot_ts
-                    pos_age_ms = (math.trunc(_time.time() * 1000) - oldest_pos_ts) if oldest_pos_ts > 0 else 0
-                    cur_pk = safe_pos_float(pos.get("trailing_peak"), default=None)
-                    act_avg_pk = safe_pos_float(pos.get("active_avg_buy_px"), default=None)
-                    pk_is_missing_or_unwarmed = cur_pk is None or (
-                        act_avg_pk is not None and abs(cur_pk - act_avg_pk) <= max(1e-6, max(cur_pk, act_avg_pk) * 1e-5)
-                    )
-                    if pk_is_missing_or_unwarmed and 12 * 3600 * 1000 <= pos_age_ms <= 90 * 86400 * 1000:
-                        hi_24h = _resolve_cycle_high_since(
-                            p_sym, p_quote_variants, oldest_pos_ts, prices_and_trends, cache_dir=cache_dir, memo=_cycle_high_memo
-                        )
-                        ls_ts_ms = (safe_pos_int(ls.get("ts_ms"), default=0) or 0) if isinstance(ls, dict) else 0
-                        ls_px_pk = (safe_pos_float(pos.get("last_sell_px"), default=0.0) or 0.0) if ls_ts_ms >= oldest_pos_ts else 0.0
-                        ref_pk_anchor = max(pos_px_f, act_avg_pk or 0.0, ls_px_pk)
-                        if hi_24h > 0.0 and not _prices_diverged(ref_pk_anchor, hi_24h, threshold=0.35):
-                            seed_pk = max(hi_24h, ls_px_pk, pos_px_f, cur_pk or 0.0, act_avg_pk or 0.0)
-                            set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", seed_pk, pos_px_f, overwrite=True)
-            for cyc_map in {"hyperliquid": (hyperliquid_cycles,), "t212": (t212_cycles,), "kraken": (kraken_cycles,)}.get(p_venue, ()):
-                cyc = next((val for cand in (p_sym, *p_quote_variants) if isinstance((val := casefold_get(cyc_map, cand)), dict)), None)
-                if not isinstance(cyc, dict):
-                    continue
-                cyc_qty = safe_nonneg_float(cyc.get("qty"), default=None)
-                c_pk_orig = safe_pos_float(cyc.get("pos_peak"), default=0.0) or 0.0
-                p_pk_orig = safe_pos_float(pos.get("trailing_peak"), default=0.0) or 0.0
-                raw_pk_orig = max(c_pk_orig, p_pk_orig) if max(c_pk_orig, p_pk_orig) > 0.0 else None
-                if (
-                    held_cur > 1e-8
-                    and not is_flat_balance
-                    and ((cyc_qty is not None and cyc_qty > 1e-8) or pos.get("active_avg_buy_px") is not None)
-                ):
-                    if cyc_qty is None or abs(cyc_qty - held_cur) > 1e-6:
-                        cyc_qty = round(held_cur, 6)
-                        cyc["qty"] = cyc_qty
-                    eff_avg_cost = (
-                        (
-                            safe_pos_float(cyc.get("avg_cost_px"), default=None)
-                            or safe_pos_float(pos.get("active_avg_buy_px"), default=None)
-                        )
-                        if is_equity_venue(p_venue)
-                        else (
-                            safe_pos_float(pos.get("active_avg_buy_px"), default=None)
-                            or safe_pos_float(cyc.get("avg_cost_px"), default=None)
-                            or safe_pos_float(cyc.get("entry_price"), default=None)
-                        )
-                    )
-                    if eff_avg_cost is not None and eff_avg_cost > 0.0:
-                        cyc["avg_cost_px"] = round(eff_avg_cost, 6)
-                        cyc["cost_usd"] = round(cyc_qty * eff_avg_cost, 2)
-                        if pos_px_f > 0.0:
-                            cyc["pnl_vs_avg_pct"] = pct_delta(pos_px_f, eff_avg_cost)
-                            cyc["dd_pct"] = cyc["pnl_vs_avg_pct"]
-                    c_pk_val = safe_pos_float(cyc.get("pos_peak"), default=0.0) or 0.0
-                    p_pk_val = safe_pos_float(pos.get("trailing_peak"), default=0.0) or 0.0
-                    if pos_px_f > 0.0 and max(c_pk_val, p_pk_val) > 0.0:
-                        eff_peak = max(c_pk_val, p_pk_val, pos_px_f)
-                        cyc["pos_peak"] = round(eff_peak, 6)
-                        cyc["dd_from_peak_pct"] = pct_delta(pos_px_f, eff_peak)
-                if pos.get("free_base") is None and cyc_qty is not None:
-                    pos["free_base"] = round(cyc_qty, 6)
-                    fb_cur = cyc_qty
-                    held_cur = fb_cur + lb_cur
-                    is_flat_balance = held_cur <= 1e-8 or (pos_px_f > 0.0 and held_cur * pos_px_f < min_notional_f)
-                    is_flat_after_exit = is_flat_balance and last_side_ro == "SELL"
-                    if is_flat_balance:
-                        _clear_pos_pair(pos, "trailing_peak")
-                    if pos_px_f > 0:
-                        pos["value_usd"] = round(cyc_qty * pos_px_f, 2)
-                cyc_has_open_qty = (cyc_qty > 1e-8) if cyc_qty is not None else (not is_flat_balance)
-                cyc_flat = is_flat_balance and not cyc_has_open_qty
-                if (is_flat_after_exit or cyc_flat) and not cyc.get("resting_orders"):
-                    cyc.update({"qty": round(max(0.0, fb_cur), 6), "cost_usd": 0.0, "avg_cost_px": None, "dd_pct": None, "pnl_vs_avg_pct": None})
-                    _clear_pos_pair(cyc)
-                    _clear_flat_ro_and_pos_anchors(ro, pos, full_pos_clear=True)
-                    if is_flat_after_exit and pos.get("last_sell_px") is not None:
-                        cyc["last_sell_price"] = pos["last_sell_px"]
-                elif cyc_flat:
-                    _clear_pos_pair(pos, "trailing_peak")
-                    _clear_pos_pair(cyc)
-                elif not is_flat_after_exit and cyc_has_open_qty:
-                    cyc_avg = first_pos_float(cyc.get("avg_cost_px"), cyc.get("entry_price"), cyc.get("last_buy_price"))
-                    set_pos_anchor(
-                        pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc_avg, pos_px_f,
-                        overwrite=(is_equity_venue(p_venue) and cyc.get("avg_cost_px") is not None),
-                    )
-                    ro = _populate_cycle_fallback_recent_order(
-                        p_venue, p_sym, cyc, cyc_has_open_qty, ro, recent_orders, v_ro_map, cyc_sell_ts_map
-                    )
-                    _sync_cycle_subcycle_realized_pnl(
-                        cyc,
-                        pos.get("lifo_realized_pnl_usd")
-                        if pos.get("lifo_realized_pnl_usd") is not None
-                        else (ro.get("lifo_realized_pnl_usd") if isinstance(ro, dict) else None),
-                    )
-                    if isinstance(ro, dict) and (tac_avg_c := safe_pos_float(ro.get("tactical_avg_buy_px"), default=None)) is not None:
-                        set_pos_anchor(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct", tac_avg_c, pos_px_f, overwrite=False)
-                    if isinstance(ro, dict) and (sw_avg_c := safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)) is not None:
-                        eff_act_avg = safe_pos_float(pos.get("active_avg_buy_px"), default=None)
-                        if eff_act_avg is None or abs(sw_avg_c - eff_act_avg) / max(eff_act_avg, 1e-9) >= 0.002:
-                            set_pos_anchor(pos, "swing_subcycle_avg_px", "pnl_vs_swing_avg_pct", sw_avg_c, pos_px_f)
-                    set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
-                    c_pk_sync = safe_pos_float(cyc.get("pos_peak"), default=0.0) or 0.0
-                    p_pk_sync = safe_pos_float(pos.get("trailing_peak"), default=0.0) or 0.0
-                    if c_pk_sync > 0.0:
-                        set_pos_anchor(
-                            pos, "trailing_peak", "dd_from_peak_pct", max(c_pk_sync, p_pk_sync), pos_px_f, overwrite=(c_pk_sync > p_pk_sync)
-                        )
-                    if pos_px_f > 0.0:
-                        cur_pk_c = safe_pos_float(pos.get("trailing_peak"), default=None)
-                        act_avg_c = first_pos_float(pos.get("active_avg_buy_px"), cyc.get("avg_cost_px"), cyc.get("entry_price"))
-                        c_entry_c = safe_pos_float(cyc.get("entry_price"), default=None)
-                        if (
-                            raw_pk_orig is None
-                            or (act_avg_c is not None and abs(raw_pk_orig - act_avg_c) <= max(1e-6, max(raw_pk_orig, act_avg_c) * 1e-5))
-                            or (c_entry_c is not None and abs(raw_pk_orig - c_entry_c) <= max(1e-6, max(raw_pk_orig, c_entry_c) * 1e-5))
-                        ):
-                            oldest_c_ts_p = _extract_oldest_cycle_lot_ts_ms(
-                                ro, fallback_ts_ms=cyc_sell_ts_map.get((f"{p_venue}:entry", p_sym)) or 0
-                            )
-                            c_age_ms_p = (math.trunc(_time.time() * 1000) - oldest_c_ts_p) if oldest_c_ts_p > 0 else 0
-                            if 12 * 3600 * 1000 <= c_age_ms_p <= 90 * 86400 * 1000:
-                                hi_24h_p = _resolve_cycle_high_since(
-                                    p_sym, p_quote_variants, oldest_c_ts_p, prices_and_trends, cache_dir=cache_dir, memo=_cycle_high_memo
-                                )
-                                ref_pk_anchor_p = max(pos_px_f, act_avg_c or 0.0, c_entry_c or 0.0, c_pk_sync)
-                                if hi_24h_p > 0.0 and not _prices_diverged(ref_pk_anchor_p, hi_24h_p, threshold=0.35):
-                                    seed_pk_p = max(hi_24h_p, pos_px_f, cur_pk_c or 0.0, act_avg_c or 0.0, c_pk_sync)
-                                    set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", seed_pk_p, pos_px_f, overwrite=True)
-                                    cyc["pos_peak"] = round(seed_pk_p, 6)
-                                    cyc["dd_from_peak_pct"] = pct_delta(pos_px_f, seed_pk_p)
-                set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
-                set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
-                has_ro_buys = isinstance(ro, dict) and bool(ro.get("recent_buys"))
-                has_ro_sells = isinstance(ro, dict) and bool(ro.get("recent_sells"))
-                is_crypto_cyc_venue = uses_cycle_state_files(p_venue) and not is_equity_venue(p_venue)
-                if pos.get("last_buy_px") is not None and (cyc.get("last_buy_price") is None or is_crypto_cyc_venue or has_ro_buys):
-                    cyc["last_buy_price"] = pos["last_buy_px"]
-                if pos.get("last_sell_px") is not None and (cyc.get("last_sell_price") is None or is_crypto_cyc_venue or has_ro_sells):
-                    prev_cyc_sell = safe_pos_float(cyc.get("last_sell_price"), default=None)
-                    new_cyc_sell = safe_pos_float(pos.get("last_sell_px"), default=None)
-                    cyc["last_sell_price"] = pos["last_sell_px"]
-                    # BY DESIGN: Only reclassify last_exit_kind when the sell occurred WITHIN the active cycle
-                    # (never when last_sell closed a previous cycle prior to the current cycle's entry_ts / re-entry buy).
-                    entry_ts_cyc = next(
-                        (
-                            ts_e
-                            for cand_e in (p_sym, *p_quote_variants)
-                            if (ts_e := cyc_sell_ts_map.get((f"{p_venue}:entry", str(cand_e).upper())))
-                        ),
-                        0,
-                    )
-                    ro_ls_ts = safe_pos_int((ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}).get("ts_ms"), default=0) or 0
-                    ro_lb_ts = safe_pos_int((ro.get("last_buy") if isinstance(ro, dict) and isinstance(ro.get("last_buy"), dict) else {}).get("ts_ms"), default=0) or 0
-                    sell_from_prior_cycle = (
-                        (entry_ts_cyc > 0 and 0 < ro_ls_ts < entry_ts_cyc - 5000)
-                        or (
-                            entry_ts_cyc <= 0
-                            and 0 < ro_ls_ts < ro_lb_ts - 5000
-                            and safe_nonneg_int(cyc.get("dca_buys"), default=0) == 0
-                        )
-                    )
-                    if new_cyc_sell is not None and not sell_from_prior_cycle:
-                        ref_sell_avg = first_pos_float(
-                            pos.get("active_avg_buy_px"),
-                            cyc.get("avg_cost_px"),
-                            cyc.get("entry_price"),
-                        )
-                        sell_changed = prev_cyc_sell is None or abs(new_cyc_sell - prev_cyc_sell) > max(1e-5, prev_cyc_sell * 0.0002)
-                        in_cycle_sell_verified = (
-                            (entry_ts_cyc > 0 and ro_ls_ts >= entry_ts_cyc - 5000)
-                            or (entry_ts_cyc <= 0 and 0 < ro_lb_ts <= ro_ls_ts)
-                        )
-                        pre_sell_buy_px_p: Optional[float] = None
-                        if isinstance(ro, dict):
-                            r_buys_p = [
-                                b for b in (ro.get("recent_buys") or ())
-                                if isinstance(b, dict)
-                                and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
-                                and (ro_ls_ts <= 0 or (safe_pos_int(b.get("ts_ms"), default=0) or 0) <= ro_ls_ts)
-                            ]
-                            if r_buys_p:
-                                pre_sell_buy_px_p = safe_pos_float(r_buys_p[-1].get("price"), default=None)
-                            elif 0 < ro_lb_ts <= ro_ls_ts and isinstance(ro.get("last_buy"), dict):
-                                pre_sell_buy_px_p = safe_pos_float(ro["last_buy"].get("price"), default=None)
-                        lifo_pnl_p = safe_float(
-                            pos.get("lifo_realized_pnl_usd")
-                            if pos.get("lifo_realized_pnl_usd") is not None
-                            else (ro.get("lifo_realized_pnl_usd") if isinstance(ro, dict) else None),
-                            default=None,
-                        )
-                        new_exit_k = classify_reconciled_cycle_exit_kind(
-                            cyc.get("last_exit_kind"),
-                            new_cyc_sell,
-                            ref_sell_avg,
-                            sell_from_prior_cycle=sell_from_prior_cycle,
-                            allow_stop_upgrade=sell_changed or in_cycle_sell_verified,
-                            allow_scratch_stop_reclassify=sell_changed,
-                            allow_loss_reclassify=sell_changed,
-                            lifo_pnl_usd=lifo_pnl_p,
-                            pre_sell_buy_px=pre_sell_buy_px_p,
-                        )
-                        if new_exit_k is not None:
-                            cyc["last_exit_kind"] = new_exit_k
-            exact_sym_sp = (prices_and_trends.get(p_sym) or {}).get("spread_bps") if isinstance(prices_and_trends.get(p_sym), dict) else None
-            sym_spread = (
-                exact_sym_sp
-                if exact_sym_sp is not None
+                if is_equity_venue(p_venue)
                 else (
-                    pos.get("spread_bps")
-                    if pos.get("spread_bps") is not None
-                    else next(
-                        (val.get("spread_bps") for c in p_variants if isinstance((val := casefold_get(prices_and_trends, c)), dict) and val.get("spread_bps") is not None),
-                        None,
-                    )
+                    safe_pos_float(pos.get("active_avg_buy_px"), default=None)
+                    or safe_pos_float(cyc.get("avg_cost_px"), default=None)
+                    or safe_pos_float(cyc.get("entry_price"), default=None)
                 )
             )
-            inst_obj = inst_by_sym.get(f"{p_venue}:{p_sym}") or inst_by_sym.get(p_sym)
-            prev_inst_limits = (
-                {
-                    k: pos[k]
-                    for k in (
-                        "fee_tier",
-                        "maker_fee_bps",
-                        "taker_fee_bps",
-                        "maker_rebate_edge_bps",
-                        "exchange_min_notional_usd",
-                        "min_qty",
-                        "step_size",
-                        "tick_size",
-                    )
-                    if pos.get(k) is not None
-                }
-                if inst_obj is None
-                else {}
+            if eff_avg_cost is not None and eff_avg_cost > 0.0:
+                cyc["avg_cost_px"] = round(eff_avg_cost, 6)
+                cyc["cost_usd"] = round(cyc_qty * eff_avg_cost, 2)
+                if pos_px_f > 0.0:
+                    cyc["pnl_vs_avg_pct"] = pct_delta(pos_px_f, eff_avg_cost)
+                    cyc["dd_pct"] = cyc["pnl_vs_avg_pct"]
+            c_pk_val = safe_pos_float(cyc.get("pos_peak"), default=0.0) or 0.0
+            p_pk_val = safe_pos_float(pos.get("trailing_peak"), default=0.0) or 0.0
+            if pos_px_f > 0.0 and max(c_pk_val, p_pk_val) > 0.0:
+                eff_peak = max(c_pk_val, p_pk_val, pos_px_f)
+                cyc["pos_peak"] = round(eff_peak, 6)
+                cyc["dd_from_peak_pct"] = pct_delta(pos_px_f, eff_peak)
+        if pos.get("free_base") is None and cyc_qty is not None:
+            pos["free_base"] = round(cyc_qty, 6)
+            fb_cur = cyc_qty
+            held_cur = fb_cur + lb_cur
+            is_flat_balance = held_cur <= 1e-8 or (pos_px_f > 0.0 and held_cur * pos_px_f < min_notional_f)
+            is_flat_after_exit = is_flat_balance and last_side_ro == "SELL"
+            if is_flat_balance:
+                reset_flat_position_and_recent_order_state(None, pos, full_pos_clear=False)
+            if pos_px_f > 0:
+                pos["value_usd"] = round(cyc_qty * pos_px_f, 2)
+        cyc_has_open_qty = (cyc_qty > 1e-8) if cyc_qty is not None else (not is_flat_balance)
+        cyc_flat = is_flat_balance and not cyc_has_open_qty
+        if (is_flat_after_exit or cyc_flat) and not cyc.get("resting_orders"):
+            reset_flat_cycle_state(cyc, qty=fb_cur, clear_peak=True)
+            reset_flat_position_and_recent_order_state(ro, pos, full_pos_clear=True)
+            if is_flat_after_exit and pos.get("last_sell_px") is not None:
+                cyc["last_sell_price"] = pos["last_sell_px"]
+        elif cyc_flat:
+            reset_flat_position_and_recent_order_state(None, pos, full_pos_clear=False)
+            _clear_pos_pair(cyc)
+        elif not is_flat_after_exit and cyc_has_open_qty:
+            cyc_avg = first_pos_float(cyc.get("avg_cost_px"), cyc.get("entry_price"), cyc.get("last_buy_price"))
+            set_pos_anchor(
+                pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc_avg, pos_px_f,
+                overwrite=(is_equity_venue(p_venue) and cyc.get("avg_cost_px") is not None),
             )
-            pos.update(
-                resolve_venue_fee_and_limits(
-                    p_venue, p_sym, inst_obj, price=pos_px_f,
-                    free_quote=safe_nonneg_float(pos.get("free_quote"), default=None),
-                    free_base=safe_nonneg_float(pos.get("free_base"), default=None),
-                    locked_quote_usd=safe_pos_float(pos.get("locked_quote_usd"), default=None),
-                    locked_base_qty=safe_pos_float(pos.get("locked_base_qty"), default=None),
-                    spread_bps=safe_nonneg_float(sym_spread, default=None),
-                    gateway_max_usd=gateway_max_usd,
+            ro = _populate_cycle_fallback_recent_order(
+                p_venue, p_sym, cyc, cyc_has_open_qty, ro, recent_orders, v_ro_map, cyc_sell_ts_map
+            )
+            _sync_cycle_subcycle_realized_pnl(
+                cyc,
+                pos.get("lifo_realized_pnl_usd")
+                if pos.get("lifo_realized_pnl_usd") is not None
+                else (ro.get("lifo_realized_pnl_usd") if isinstance(ro, dict) else None),
+            )
+            if isinstance(ro, dict) and (tac_avg_c := safe_pos_float(ro.get("tactical_avg_buy_px"), default=None)) is not None:
+                set_pos_anchor(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct", tac_avg_c, pos_px_f, overwrite=False)
+            if isinstance(ro, dict) and (sw_avg_c := safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)) is not None:
+                eff_act_avg = safe_pos_float(pos.get("active_avg_buy_px"), default=None)
+                if eff_act_avg is None or abs(sw_avg_c - eff_act_avg) / max(eff_act_avg, 1e-9) >= 0.002:
+                    set_pos_anchor(pos, "swing_subcycle_avg_px", "pnl_vs_swing_avg_pct", sw_avg_c, pos_px_f)
+            set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
+            c_pk_sync = safe_pos_float(cyc.get("pos_peak"), default=0.0) or 0.0
+            p_pk_sync = safe_pos_float(pos.get("trailing_peak"), default=0.0) or 0.0
+            if c_pk_sync > 0.0:
+                set_pos_anchor(
+                    pos, "trailing_peak", "dd_from_peak_pct", max(c_pk_sync, p_pk_sync), pos_px_f, overwrite=(c_pk_sync > p_pk_sync)
+                )
+            if pos_px_f > 0.0:
+                cur_pk_c = safe_pos_float(pos.get("trailing_peak"), default=None)
+                act_avg_c = first_pos_float(pos.get("active_avg_buy_px"), cyc.get("avg_cost_px"), cyc.get("entry_price"))
+                c_entry_c = safe_pos_float(cyc.get("entry_price"), default=None)
+                if (
+                    raw_pk_orig is None
+                    or (act_avg_c is not None and abs(raw_pk_orig - act_avg_c) <= max(1e-6, max(raw_pk_orig, act_avg_c) * 1e-5))
+                    or (c_entry_c is not None and abs(raw_pk_orig - c_entry_c) <= max(1e-6, max(raw_pk_orig, c_entry_c) * 1e-5))
+                ):
+                    oldest_c_ts_p = _extract_oldest_cycle_lot_ts_ms(
+                        ro, fallback_ts_ms=cyc_sell_ts_map.get((f"{p_venue}:entry", p_sym)) or 0
+                    )
+                    c_age_ms_p = (math.trunc(_time.time() * 1000) - oldest_c_ts_p) if oldest_c_ts_p > 0 else 0
+                    if 12 * 3600 * 1000 <= c_age_ms_p <= 90 * 86400 * 1000:
+                        hi_24h_p = _resolve_cycle_high_since(
+                            p_sym, p_quote_variants, oldest_c_ts_p, prices_and_trends, cache_dir=cache_dir, memo=cycle_high_memo
+                        )
+                        ref_pk_anchor_p = max(pos_px_f, act_avg_c or 0.0, c_entry_c or 0.0, c_pk_sync)
+                        if hi_24h_p > 0.0 and not _prices_diverged(ref_pk_anchor_p, hi_24h_p, threshold=0.35):
+                            seed_pk_p = max(hi_24h_p, pos_px_f, cur_pk_c or 0.0, act_avg_c or 0.0, c_pk_sync)
+                            set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", seed_pk_p, pos_px_f, overwrite=True)
+                            cyc["pos_peak"] = round(seed_pk_p, 6)
+                            cyc["dd_from_peak_pct"] = pct_delta(pos_px_f, seed_pk_p)
+        set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
+        set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
+        has_ro_buys = isinstance(ro, dict) and bool(ro.get("recent_buys"))
+        has_ro_sells = isinstance(ro, dict) and bool(ro.get("recent_sells"))
+        is_crypto_cyc_venue = uses_cycle_state_files(p_venue) and not is_equity_venue(p_venue)
+        if pos.get("last_buy_px") is not None and (cyc.get("last_buy_price") is None or is_crypto_cyc_venue or has_ro_buys):
+            cyc["last_buy_price"] = pos["last_buy_px"]
+        if pos.get("last_sell_px") is not None and (cyc.get("last_sell_price") is None or is_crypto_cyc_venue or has_ro_sells):
+            prev_cyc_sell = safe_pos_float(cyc.get("last_sell_price"), default=None)
+            new_cyc_sell = safe_pos_float(pos.get("last_sell_px"), default=None)
+            cyc["last_sell_price"] = pos["last_sell_px"]
+            entry_ts_cyc = next(
+                (
+                    ts_e
+                    for cand_e in (p_sym, *p_quote_variants)
+                    if (ts_e := cyc_sell_ts_map.get((f"{p_venue}:entry", str(cand_e).upper())))
+                ),
+                0,
+            )
+            ro_ls_ts = safe_pos_int((ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}).get("ts_ms"), default=0) or 0
+            ro_lb_ts = safe_pos_int((ro.get("last_buy") if isinstance(ro, dict) and isinstance(ro.get("last_buy"), dict) else {}).get("ts_ms"), default=0) or 0
+            sell_from_prior_cycle = (
+                (entry_ts_cyc > 0 and 0 < ro_ls_ts < entry_ts_cyc - 5000)
+                or (
+                    entry_ts_cyc <= 0
+                    and 0 < ro_ls_ts < ro_lb_ts - 5000
+                    and safe_nonneg_int(cyc.get("dca_buys"), default=0) == 0
                 )
             )
-            if prev_inst_limits:
-                pos.update(prev_inst_limits)
+            if new_cyc_sell is not None and not sell_from_prior_cycle:
+                ref_sell_avg = first_pos_float(
+                    pos.get("active_avg_buy_px"),
+                    cyc.get("avg_cost_px"),
+                    cyc.get("entry_price"),
+                )
+                sell_changed = prev_cyc_sell is None or abs(new_cyc_sell - prev_cyc_sell) > max(1e-5, prev_cyc_sell * 0.0002)
+                in_cycle_sell_verified = (
+                    (entry_ts_cyc > 0 and ro_ls_ts >= entry_ts_cyc - 5000)
+                    or (entry_ts_cyc <= 0 and 0 < ro_lb_ts <= ro_ls_ts)
+                )
+                pre_sell_buy_px_p: Optional[float] = None
+                if isinstance(ro, dict):
+                    r_buys_p = [
+                        b for b in (ro.get("recent_buys") or ())
+                        if isinstance(b, dict)
+                        and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
+                        and (ro_ls_ts <= 0 or (safe_pos_int(b.get("ts_ms"), default=0) or 0) <= ro_ls_ts)
+                    ]
+                    if r_buys_p:
+                        pre_sell_buy_px_p = safe_pos_float(r_buys_p[-1].get("price"), default=None)
+                    elif 0 < ro_lb_ts <= ro_ls_ts and isinstance(ro.get("last_buy"), dict):
+                        pre_sell_buy_px_p = safe_pos_float(ro["last_buy"].get("price"), default=None)
+                lifo_pnl_p = safe_float(
+                    pos.get("lifo_realized_pnl_usd")
+                    if pos.get("lifo_realized_pnl_usd") is not None
+                    else (ro.get("lifo_realized_pnl_usd") if isinstance(ro, dict) else None),
+                    default=None,
+                )
+                new_exit_k = classify_reconciled_cycle_exit_kind(
+                    cyc.get("last_exit_kind"),
+                    new_cyc_sell,
+                    ref_sell_avg,
+                    sell_from_prior_cycle=sell_from_prior_cycle,
+                    allow_stop_upgrade=sell_changed or in_cycle_sell_verified,
+                    allow_scratch_stop_reclassify=sell_changed,
+                    allow_loss_reclassify=sell_changed,
+                    lifo_pnl_usd=lifo_pnl_p,
+                    pre_sell_buy_px=pre_sell_buy_px_p,
+                )
+                if new_exit_k is not None:
+                    cyc["last_exit_kind"] = new_exit_k
+        return fb_cur, held_cur, is_flat_balance, is_flat_after_exit, ro
+
+    @staticmethod
+    def _enrich_unmatched_venue_cycles(
+        venue_recent_orders: Dict[str, Dict[str, Any]],
+        recent_orders: Dict[str, Any],
+        kraken_cycles: Dict[str, Dict[str, Any]],
+        hyperliquid_cycles: Dict[str, Dict[str, Any]],
+        t212_cycles: Dict[str, Dict[str, Any]],
+        seen_venue_syms: set[tuple[str, str]],
+        cyc_sell_ts_map: Dict[tuple[str, str], int],
+        prices_and_trends: Dict[str, Any],
+        cache_dir: str,
+        cycle_high_memo: Dict[tuple[str, int], float],
+    ) -> None:
         for c_venue, cyc_map in (("t212", t212_cycles), ("kraken", kraken_cycles), ("hyperliquid", hyperliquid_cycles)):
             if not isinstance(cyc_map, dict):
                 continue
@@ -1905,7 +2007,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                         c_age_ms = (math.trunc(_time.time() * 1000) - oldest_c_ts) if oldest_c_ts > 0 else 0
                         if 12 * 3600 * 1000 <= c_age_ms <= 90 * 86400 * 1000:
                             hi_24h_c = _resolve_cycle_high_since(
-                                c_sym_u, c_quote_variants, oldest_c_ts, prices_and_trends, cache_dir=cache_dir, memo=_cycle_high_memo
+                                c_sym_u, c_quote_variants, oldest_c_ts, prices_and_trends, cache_dir=cache_dir, memo=cycle_high_memo
                             )
                             ls_c_d = ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}
                             ls_c_ts = safe_pos_int(ls_c_d.get("ts_ms"), default=0) or 0
@@ -1924,6 +2026,154 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                         eff_c_pk = max(c_pk, c_px)
                         cyc["pos_peak"] = round(eff_c_pk, 6)
                         cyc["dd_from_peak_pct"] = pct_delta(c_px, eff_c_pk)
+
+    def evaluate(
+        self,
+        tradable_positions: List[Dict[str, Any]],
+        prices_and_trends: Optional[Dict[str, Any]] = None,
+        inst_by_sym: Optional[Dict[str, Any]] = None,
+        venue_recent_orders: Optional[Dict[str, Dict[str, Any]]] = None,
+        recent_orders: Optional[Dict[str, Any]] = None,
+        kraken_cycles: Optional[Dict[str, Dict[str, Any]]] = None,
+        hyperliquid_cycles: Optional[Dict[str, Dict[str, Any]]] = None,
+        t212_cycles: Optional[Dict[str, Dict[str, Any]]] = None,
+        cyc_sell_ts_map: Optional[Dict[tuple[str, str], int]] = None,
+        *,
+        gateway_max_usd: float = 2000.0,
+        cache_dir: str = "",
+        **kwargs: Any,
+    ) -> List[Dict[str, Any]]:
+        prices_and_trends = prices_and_trends or {}
+        inst_by_sym = inst_by_sym or {}
+        venue_recent_orders, recent_orders, kraken_cycles, hyperliquid_cycles, t212_cycles, cyc_sell_ts_map = coerce_dict_maps(
+            venue_recent_orders, recent_orders, kraken_cycles, hyperliquid_cycles, t212_cycles, cyc_sell_ts_map
+        )
+        seen_venue_syms: set[tuple[str, str]] = set()
+        cycle_high_memo: Dict[tuple[str, int], float] = {}
+        for pos in tradable_positions:
+            if not isinstance(pos, dict):
+                continue
+            p_sym = str(pos.get("symbol") or "").upper()
+            p_venue = normalize_venue_name(pos.get("venue"))
+            p_is_eq = is_equity_venue_or_suffix(p_sym, p_venue)
+            p_quotes = compatible_quote_suffixes(p_sym, pos.get("quote"))
+            p_quote_variants = filter_asset_class_variants(
+                p_sym,
+                cache_symbol_variants(p_sym, include_base="USD" in p_quotes, quotes=p_quotes),
+                is_equity=p_is_eq,
+            )
+            if p_venue and p_sym:
+                for cand_vs in (p_sym, *p_quote_variants):
+                    seen_venue_syms.add((p_venue, str(cand_vs).upper()))
+            p_variants = (*p_quote_variants, *filter_asset_class_variants(p_sym, cache_symbol_variants(p_sym), is_equity=p_is_eq))
+            pos_px_f = self._refresh_position_spot_price(pos, p_venue, p_sym, p_is_eq, prices_and_trends)
+            v_ro_map = venue_recent_orders.get(p_venue, {})
+            ro = next((val for cand in p_quote_variants if isinstance((val := casefold_get(v_ro_map, cand)), dict)), None)
+            fb_cur = safe_float(pos.get("free_base"), -1.0)
+            lb_cur = safe_pos_float(pos.get("locked_base_qty"), default=0.0) or 0.0
+            held_cur = (fb_cur + lb_cur) if fb_cur >= 0.0 else (lb_cur if lb_cur > 0.0 else -1.0)
+            min_notional_f = max(1.0, first_pos_float(pos.get("exchange_min_notional_usd"), pos.get("min_notional_usd"), default=1.0) or 1.0)
+            is_flat_balance = held_cur >= 0.0 and (held_cur <= 1e-8 or (pos_px_f > 0.0 and held_cur * pos_px_f < min_notional_f))
+            if is_flat_balance:
+                reset_flat_position_and_recent_order_state(None, pos, full_pos_clear=False)
+            last_side_ro = str(ro.get("last_action_side") or "").upper() if isinstance(ro, dict) else ""
+            is_flat_after_exit = is_flat_balance and last_side_ro == "SELL"
+            if isinstance(ro, dict):
+                self._enrich_position_from_recent_orders(
+                    pos,
+                    ro,
+                    p_sym=p_sym,
+                    p_quote_variants=p_quote_variants,
+                    pos_px_f=pos_px_f,
+                    held_cur=held_cur,
+                    is_flat_balance=is_flat_balance,
+                    is_flat_after_exit=is_flat_after_exit,
+                    prices_and_trends=prices_and_trends,
+                    cache_dir=cache_dir,
+                    cycle_high_memo=cycle_high_memo,
+                )
+            for cyc_map in {"hyperliquid": (hyperliquid_cycles,), "t212": (t212_cycles,), "kraken": (kraken_cycles,)}.get(p_venue, ()):
+                cyc = next((val for cand in (p_sym, *p_quote_variants) if isinstance((val := casefold_get(cyc_map, cand)), dict)), None)
+                if isinstance(cyc, dict):
+                    fb_cur, held_cur, is_flat_balance, is_flat_after_exit, ro = self._reconcile_position_with_venue_cycle(
+                        pos,
+                        cyc,
+                        p_venue=p_venue,
+                        p_sym=p_sym,
+                        p_quote_variants=p_quote_variants,
+                        pos_px_f=pos_px_f,
+                        fb_cur=fb_cur,
+                        lb_cur=lb_cur,
+                        held_cur=held_cur,
+                        min_notional_f=min_notional_f,
+                        is_flat_balance=is_flat_balance,
+                        is_flat_after_exit=is_flat_after_exit,
+                        last_side_ro=last_side_ro,
+                        ro=ro,
+                        recent_orders=recent_orders,
+                        v_ro_map=v_ro_map,
+                        cyc_sell_ts_map=cyc_sell_ts_map,
+                        prices_and_trends=prices_and_trends,
+                        cache_dir=cache_dir,
+                        cycle_high_memo=cycle_high_memo,
+                    )
+            exact_sym_sp = (prices_and_trends.get(p_sym) or {}).get("spread_bps") if isinstance(prices_and_trends.get(p_sym), dict) else None
+            sym_spread = (
+                exact_sym_sp
+                if exact_sym_sp is not None
+                else (
+                    pos.get("spread_bps")
+                    if pos.get("spread_bps") is not None
+                    else next(
+                        (val.get("spread_bps") for c in p_variants if isinstance((val := casefold_get(prices_and_trends, c)), dict) and val.get("spread_bps") is not None),
+                        None,
+                    )
+                )
+            )
+            inst_obj = inst_by_sym.get(f"{p_venue}:{p_sym}") or inst_by_sym.get(p_sym)
+            prev_inst_limits = (
+                {
+                    k: pos[k]
+                    for k in (
+                        "fee_tier",
+                        "maker_fee_bps",
+                        "taker_fee_bps",
+                        "maker_rebate_edge_bps",
+                        "exchange_min_notional_usd",
+                        "min_qty",
+                        "step_size",
+                        "tick_size",
+                    )
+                    if pos.get(k) is not None
+                }
+                if inst_obj is None
+                else {}
+            )
+            pos.update(
+                resolve_venue_fee_and_limits(
+                    p_venue, p_sym, inst_obj, price=pos_px_f,
+                    free_quote=safe_nonneg_float(pos.get("free_quote"), default=None),
+                    free_base=safe_nonneg_float(pos.get("free_base"), default=None),
+                    locked_quote_usd=safe_pos_float(pos.get("locked_quote_usd"), default=None),
+                    locked_base_qty=safe_pos_float(pos.get("locked_base_qty"), default=None),
+                    spread_bps=safe_nonneg_float(sym_spread, default=None),
+                    gateway_max_usd=gateway_max_usd,
+                )
+            )
+            if prev_inst_limits:
+                pos.update(prev_inst_limits)
+        self._enrich_unmatched_venue_cycles(
+            venue_recent_orders,
+            recent_orders,
+            kraken_cycles,
+            hyperliquid_cycles,
+            t212_cycles,
+            seen_venue_syms,
+            cyc_sell_ts_map,
+            prices_and_trends,
+            cache_dir,
+            cycle_high_memo,
+        )
         return tradable_positions
 
 
@@ -2045,5 +2295,7 @@ __all__ = [
     "extract_symbol_recent_fills",
     "parse_venue_cycle_state",
     "reconcile_venue_cycles_with_recent_orders",
+    "reset_flat_cycle_state",
+    "reset_flat_position_and_recent_order_state",
     "set_pos_anchor",
 ]
