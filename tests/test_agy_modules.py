@@ -877,3 +877,106 @@ def test_prune_llm_threads__parse_bool_flag_and_missing_db_path_with_string_flag
     assert _parse_bool_flag("0", True) is False
     assert _parse_bool_flag("true", False) is True
     assert prune_old_cli_threads(cli_base=str(tmp_path), dry_run="false", all_threads_in_project="false", exclude_cids="cid1, cid2") == (0, 0)
+
+
+def test_gemini_client_escalated_high_timeout_steps_down_and_bounds_detached_budget(tmp_path, monkeypatch):
+    cli_base = str(tmp_path / "cli")
+    os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
+    db_path = os.path.join(cli_base, "conversation_summaries.db")
+    cid1 = "cid-escalated-111"
+    _make_summary_db(
+        db_path,
+        [(cid1, "x", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", 6, "CASCADE_RUN_STATUS_IDLE")],
+        schema="topic",
+    )
+    with open(os.path.join(cli_base, "conversations", f"{cid1}.db"), "w", encoding="utf-8") as f:
+        f.write("db1")
+
+    fake_bin = tmp_path / "agy-bot"
+    fake_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    reg_path = str(tmp_path / "topics_reg.json")
+    monkeypatch.setenv("LLM_TOPIC_REGISTRY_PATH", reg_path)
+    monkeypatch.setenv("AGY_BOT_HOME", str(tmp_path))
+    monkeypatch.setenv("LLM_TOPIC_COMPACT_STEPS", "18")
+    monkeypatch.setenv("LLM_TOPIC_HISTORY_MAX_ENTRIES", "5")
+    monkeypatch.setenv("LLM_DEFAULT_MODEL", "gemini-4-neon-medium")
+    monkeypatch.setenv("LLM_HIGH_STAKE_MODEL", "gemini-4-neon-high")
+    monkeypatch.setenv("LLM_FALLBACK_MODELS", "gemini-4-neon-medium,claude-sonnet-5-5-medium")
+
+    record_topic_turn(
+        "auto_cryptotrade_executor",
+        cid1,
+        '{"decision": "SELL", "symbol": "ANTxUSD", "confidence": 0.92}',
+        cli_base=cli_base,
+    )
+
+    # 1. Escalated -high resume timeout steps down immediately to -medium on detached thread (timeout capped to 75s)
+    calls_stepdown = []
+
+    def fake_stepdown_run(cmd, **kwargs):
+        calls_stepdown.append((cmd, kwargs))
+        if "--conversation" in cmd:
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout", 120.0))
+        return _cli_ok(cmd, '{"decision": "HOLD"}', "detached-stepdown")
+
+    with patch("subprocess.run", side_effect=fake_stepdown_run), \
+         patch("intelligence.sentiment.gemini_client.resolve_bot_cli_base", return_value=cli_base), \
+         patch("intelligence.sentiment.gemini_client.prepare_topic_session", wraps=prepare_topic_session):
+        client = GeminiClient(cli_path=str(fake_bin), project_id="mptrade")
+        out = client.query_text(
+            "Evaluate current spot portfolio.",
+            model="gemini-4-neon-high",
+            topic_key="auto_cryptotrade_executor",
+            timeout_sec=120.0,
+        )
+
+    assert out == '{"decision": "HOLD"}'
+    assert client.last_model_used == "gemini-4-neon-medium"
+    assert len(calls_stepdown) == 2
+    assert "gemini-4-neon-high" in calls_stepdown[0][0]
+    assert "--conversation" not in calls_stepdown[1][0]
+    assert "gemini-4-neon-medium" in calls_stepdown[1][0]
+    assert calls_stepdown[1][1]["timeout"] == pytest.approx(75.0)
+    assert load_topic_registry()["auto_cryptotrade_executor"]["conversation_id"] == "detached-stepdown"
+
+    # 2. If both -high resume and -medium detached time out, -medium is not retried and 3rd model runs detached at <=45s
+    if os.path.exists(db_path):
+        os.remove(db_path)
+    _make_summary_db(
+        db_path,
+        [("detached-stepdown", "x", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", 2, "CASCADE_RUN_STATUS_IDLE")],
+        schema="topic",
+    )
+    with open(os.path.join(cli_base, "conversations", "detached-stepdown.db"), "w", encoding="utf-8") as f:
+        f.write("db2")
+
+    calls_cascade = []
+
+    def fake_cascade_run(cmd, **kwargs):
+        calls_cascade.append((cmd, kwargs))
+        if "claude-sonnet-5-5-medium" not in cmd:
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout", 120.0))
+        return _cli_ok(cmd, '{"decision": "HOLD"}', "detached-claude")
+
+    with patch("subprocess.run", side_effect=fake_cascade_run), \
+         patch("intelligence.sentiment.gemini_client.resolve_bot_cli_base", return_value=cli_base), \
+         patch("intelligence.sentiment.gemini_client.prepare_topic_session", wraps=prepare_topic_session):
+        client2 = GeminiClient(cli_path=str(fake_bin), project_id="mptrade")
+        out2 = client2.query_text(
+            "Evaluate current spot portfolio.",
+            model="gemini-4-neon-high",
+            topic_key="auto_cryptotrade_executor",
+            timeout_sec=120.0,
+        )
+
+    assert out2 == '{"decision": "HOLD"}'
+    assert client2.last_model_used == "claude-sonnet-5-5-medium"
+    assert len(calls_cascade) == 3
+    assert "--conversation" in calls_cascade[0][0]
+    assert "--conversation" not in calls_cascade[1][0]
+    assert "--conversation" not in calls_cascade[2][0]
+    assert calls_cascade[2][1]["timeout"] == pytest.approx(45.0)
+    total_budget_s = sum(c[1]["timeout"] for c in calls_cascade)
+    assert total_budget_s <= 240.0
+    assert load_topic_registry()["auto_cryptotrade_executor"]["conversation_id"] == "detached-claude"
+

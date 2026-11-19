@@ -481,8 +481,30 @@ class GeminiClient(GeminiQuotaRouterMixin):
                     if (session.conversation_id and not is_mocked)
                     else None
                 )
+                detached_topic_prompt: Optional[str] = None
+
+                def _resolve_detached_topic_prompt() -> str:
+                    nonlocal detached_topic_prompt
+                    if detached_topic_prompt is not None:
+                        return detached_topic_prompt
+                    fp = full_cli_prompt
+                    if use_topic_session and topic_key and not session.history_prefix:
+                        try:
+                            hist_prefix = format_topic_history_prefix(topic_key)
+                            if hist_prefix:
+                                fb_body = f"{hist_prefix}{prompt}"
+                                fp = f"{effective_title}\n\n{fb_body}" if effective_title else fb_body
+                        except Exception:
+                            pass
+                    detached_topic_prompt = fp
+                    return fp
+
+                resume_abandoned = False
+                tried_detached_models: set[str] = set()
 
                 for attempt_idx, model_candidate in enumerate(models_to_try):
+                    if resume_abandoned and model_candidate in tried_detached_models:
+                        continue
                     if attempt_idx > 0 and enable_pre_quota:
                         rt_ex = (
                             self._QUOTA_MEM_CACHE.get("runtime_exhausted")
@@ -497,41 +519,56 @@ class GeminiClient(GeminiQuotaRouterMixin):
                         ):
                             continue
                     output, turn_cid = None, None
+                    effective_model_used = model_candidate
                     replaced_conversation = False
+                    resume_timed_out = False
                     proc = None
+                    eff_conv_id = None if resume_abandoned else session.conversation_id
+                    eff_prompt = _resolve_detached_topic_prompt() if resume_abandoned else cli_prompt
+                    eff_timeout = (
+                        min(timeout_sec, 45.0)
+                        if (resume_abandoned and timeout_sec > 45.0)
+                        else timeout_sec
+                    )
                     pre_attempt_cids = (
                         self._list_conversation_cids(bot_cli_base)
-                        if (not session.conversation_id and not is_mocked)
+                        if (not eff_conv_id and not is_mocked)
                         else set()
                     )
+                    if eff_conv_id is None:
+                        tried_detached_models.add(model_candidate)
                     try:
                         proc = self._execute_cli(
-                            session.conversation_id, cli_prompt, timeout_sec, model_candidate,
+                            eff_conv_id, eff_prompt, eff_timeout, model_candidate,
                             bot_cli_base, run_env, is_mocked
                         )
                         output, turn_cid = self._parse_cli_payload(proc)
+                        if resume_abandoned and output and use_topic_session and turn_cid:
+                            replaced_conversation = turn_cid != session.conversation_id
                     except subprocess.TimeoutExpired:
                         self._rollback_cli_attempt(
-                            bot_cli_base, session.conversation_id, conv_snapshot, pre_attempt_cids, is_mocked
+                            bot_cli_base, eff_conv_id, conv_snapshot if eff_conv_id else None, pre_attempt_cids, is_mocked
                         )
-                        if not (session.conversation_id and not conversation_id):
+                        if not (eff_conv_id and not conversation_id):
                             if attempt_idx == len(models_to_try) - 1:
                                 raise
                             logger.warning(
                                 "Model candidate %s timed out after %ss; trying fallback.",
                                 model_candidate,
-                                timeout_sec,
+                                eff_timeout,
                             )
                             continue
+                        resume_timed_out = True
+                        resume_abandoned = True
                         logger.warning(
                             "Resuming topic '%s' conversation %s timed out after %ss; falling back to one-off thread.",
                             topic_key,
                             session.conversation_id,
-                            timeout_sec,
+                            eff_timeout,
                         )
                     except Exception as exc:
                         self._rollback_cli_attempt(
-                            bot_cli_base, session.conversation_id, conv_snapshot, pre_attempt_cids, is_mocked
+                            bot_cli_base, eff_conv_id, conv_snapshot if eff_conv_id else None, pre_attempt_cids, is_mocked
                         )
                         logger.warning(
                             "Model candidate %s failed with exception: %s; trying fallback.",
@@ -547,7 +584,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                             output.strip()[:160],
                         )
                         self._rollback_cli_attempt(
-                            bot_cli_base, session.conversation_id, conv_snapshot, pre_attempt_cids, is_mocked
+                            bot_cli_base, eff_conv_id, conv_snapshot if eff_conv_id else None, pre_attempt_cids, is_mocked
                         )
                         output = None
                         turn_cid = None
@@ -555,7 +592,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
 
                     if output is None:
                         self._rollback_cli_attempt(
-                            bot_cli_base, session.conversation_id, conv_snapshot, pre_attempt_cids, is_mocked
+                            bot_cli_base, eff_conv_id, conv_snapshot if eff_conv_id else None, pre_attempt_cids, is_mocked
                         )
                         if self._is_cli_interrupted(proc):
                             logger.info(
@@ -567,36 +604,44 @@ class GeminiClient(GeminiQuotaRouterMixin):
 
                     if (
                         output is None
-                        and session.conversation_id
+                        and eff_conv_id
                         and not conversation_id
                         and not self._is_quota_or_credit_error(proc)
                     ):
+                        resume_abandoned = True
+                        one_off_model = (
+                            models_to_try[attempt_idx + 1]
+                            if (
+                                resume_timed_out
+                                and any(tag in model_candidate for tag in ("-high", "-xhigh"))
+                                and attempt_idx + 1 < len(models_to_try)
+                            )
+                            else model_candidate
+                        )
+                        one_off_timeout = (
+                            min(timeout_sec, 75.0)
+                            if (resume_timed_out and timeout_sec > 75.0)
+                            else timeout_sec
+                        )
+                        tried_detached_models.add(one_off_model)
                         # Runtime resilience: answer this call from a detached one-off thread.
                         logger.info(
-                            "Resuming topic '%s' conversation %s failed with model %s; answering from a one-off thread.",
-                            topic_key, session.conversation_id, model_candidate,
+                            "Resuming topic '%s' conversation %s failed with model %s; answering from a one-off thread (model=%s, timeout=%ss).",
+                            topic_key, session.conversation_id, model_candidate, one_off_model, one_off_timeout,
                         )
-                        fallback_prompt = full_cli_prompt
-                        if use_topic_session and topic_key and not session.history_prefix:
-                            try:
-                                hist_prefix = format_topic_history_prefix(topic_key)
-                                if hist_prefix:
-                                    fallback_body = f"{hist_prefix}{prompt}"
-                                    fallback_prompt = f"{effective_title}\n\n{fallback_body}" if effective_title else fallback_body
-                            except Exception:
-                                pass
+                        fallback_prompt = _resolve_detached_topic_prompt()
                         pre_cids = self._list_conversation_cids(bot_cli_base) if not is_mocked else set()
                         detached_cid = None
                         try:
                             proc = self._execute_cli(
-                                None, fallback_prompt, timeout_sec, model_candidate,
+                                None, fallback_prompt, one_off_timeout, one_off_model,
                                 bot_cli_base, run_env, is_mocked
                             )
                             output, detached_cid = self._parse_cli_payload(proc)
                             if require_json and isinstance(output, str) and extract_json_object(output) is None:
                                 logger.warning(
                                     "agy CLI one-off thread with model '%s' returned non-JSON output (%s); trying fallback.",
-                                    model_candidate,
+                                    one_off_model,
                                     output.strip()[:160],
                                 )
                                 output = None
@@ -608,12 +653,14 @@ class GeminiClient(GeminiQuotaRouterMixin):
                             ):
                                 self._remove_detached_thread(bot_cli_base, detached_cid)
                         except Exception as exc:
-                            logger.warning("One-off thread attempt failed for model %s: %s", model_candidate, exc)
+                            logger.warning("One-off thread attempt failed for model %s: %s", one_off_model, exc)
                         finally:
                             if not is_mocked and not detached_cid:
                                 self._cleanup_orphan_threads(
                                     bot_cli_base, pre_cids, keep_cid=session.conversation_id
                                 )
+                        if output:
+                            effective_model_used = one_off_model
                         if output and use_topic_session and detached_cid:
                             turn_cid = detached_cid
                             replaced_conversation = detached_cid != session.conversation_id
@@ -621,15 +668,15 @@ class GeminiClient(GeminiQuotaRouterMixin):
                             turn_cid = None
 
                     if output:
-                        self.last_model_used = model_candidate
-                        if attempt_idx > 0 or model_candidate != selected_model:
+                        self.last_model_used = effective_model_used
+                        if attempt_idx > 0 or effective_model_used != selected_model:
                             logger.warning(
                                 "LLM query succeeded using fallback model '%s' (primary '%s' unavailable/failed).",
-                                model_candidate,
+                                effective_model_used,
                                 selected_model,
                             )
                         if cache_ttl_sec > 0:
-                            self._cache[prompt] = (now, output, model_candidate)
+                            self._cache[prompt] = (now, output, effective_model_used)
                         if use_topic_session:
                             def _finalize_topic_turn(release_lock: bool = False) -> None:
                                 prev_finalize_rules = getattr(self._JSON_MODE_LOCAL, "include_repo_rules", False)

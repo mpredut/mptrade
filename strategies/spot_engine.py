@@ -964,7 +964,12 @@ class Strategy(BaseSpotMixin):
     def _finalize_cycle_if_flat(self, o: dict, price: float) -> None:
         """Close a cycle once, only after terminal exit status."""
         dust = 2 * 10.0 ** -(max(self.vol_dec - 1, 1))
-        if abs(self.s["qty"]) < dust:
+        if abs(self.s["qty"]) < dust or (
+            self.ordermin > 0
+            and 0.0 < self.s["qty"] < self.ordermin
+            and price > 0
+            and self.s["qty"] * price < 1.0
+        ):
             self._zero_position_exposure()
         if self.s["qty"] > 1e-12:
             return
@@ -1442,9 +1447,20 @@ class Strategy(BaseSpotMixin):
                 )
                 if open_sell_qty > 0.0:
                     ledger_qty += open_sell_qty
-        if ledger_qty <= tolerance:
+        is_untradable_dust = (
+            self.ordermin > 0
+            and ledger_qty < self.ordermin
+            and price > 0
+            and ledger_qty * price < 1.0
+        )
+        if ledger_qty <= tolerance or is_untradable_dust:
             if held > 1e-12:
-                log(f"  [STRAT] LEDGER RECONCILE: position closed on venue ({base}=0); resetting cycle")
+                closed_lbl = (
+                    f"{base}=0"
+                    if ledger_qty <= tolerance
+                    else f"{base}={ledger_qty:.{self.vol_dec}f} < min {self.ordermin} dust"
+                )
+                log(f"  [STRAT] LEDGER RECONCILE: position closed on venue ({closed_lbl}); resetting cycle")
                 prev_cost = safe_nonneg_float(self.s.get("cost")) or 0.0
                 prev_avg = (prev_cost / held) if (held > 0 and prev_cost > 0) else 0.0
                 inferred_exit_kind = "SL" if (prev_avg > 0 and price < prev_avg) else "TP"

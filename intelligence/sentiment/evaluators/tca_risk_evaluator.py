@@ -175,11 +175,12 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
         fb_f = safe_nonneg_float(free_base, default=None)
         lq_f = safe_pos_float(locked_quote_usd, default=0.0) or 0.0
         lb_f = safe_pos_float(locked_base_qty, default=0.0) or 0.0
+        is_sell_only_xstock = fee_tier == "XSTOCK_ZERO_FEE"
         if fq_f is not None:
-            out["effective_max_buy_usd"] = round(min(gw_max, fq_f * 0.995), 2)
+            out["effective_max_buy_usd"] = 0.0 if is_sell_only_xstock else round(min(gw_max, fq_f * 0.995), 2)
         if lq_f > 0.0:
             out["locked_quote_usd"] = round(lq_f, 2)
-            if fq_f is not None:
+            if fq_f is not None and not is_sell_only_xstock:
                 out["replace_max_buy_usd"] = round(min(gw_max, (fq_f + lq_f) * 0.995), 2)
         if fb_f is not None and px_f > 0.0:
             out["effective_max_sell_usd"] = round(min(gw_max, venue_fee_cap_quantity(v_norm, "SELL", px_f, fb_f) * px_f), 2)

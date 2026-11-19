@@ -477,6 +477,17 @@ def clamp_notional_to_wallet_balance(
                 avail_usd,
                 f"Adjusted {venue_tag} SELL notional from ${desired_usd:.2f} to ${avail_usd:.2f} to avoid <${rem_tag} dust",
             )
+        if (
+            side_u == "SELL"
+            and dust_spec is None
+            and desired_usd >= avail_usd * 0.95
+            and 0.0 < (avail_usd - desired_usd) < min_usd
+        ):
+            return (
+                True,
+                avail_usd,
+                f"Swept full {target_asset} balance (${desired_usd:.2f} -> ${avail_usd:.2f}) to avoid <${min_usd:g} dust",
+            )
     return True, desired_usd, "Sufficient wallet balance"
 
 

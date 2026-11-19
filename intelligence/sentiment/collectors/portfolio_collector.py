@@ -856,6 +856,18 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         xstock_cfg = load_key_value_conf(eff_k_dir, root_dir=eff_k_dir)
         known_assets = xst_data.get("known_assets") if isinstance(xst_data.get("known_assets"), dict) else {}
         x_regex = (xstock_cfg.get("xstock_regex") or "").strip()
+        def _holding_underlying(token: str) -> str:
+            tok_norm, _ = resolve_kraken_tokenized_pair(token.strip())
+            return canonical_base_asset(tok_norm or token.strip())
+
+        def _holding_unit_px(hk: str) -> float:
+            hu = _holding_underlying(hk)
+            return (
+                resolve_symbol_price(f"{hu}xUSD", eff_pt)
+                or resolve_symbol_price(ensure_equity_suffix(hu), eff_pt)
+                or 0.0
+            )
+
         x_holdings: Dict[str, float] = {}
         for ak, av in known_assets.items():
             ak_str, av_f = str(ak).strip(), safe_float(av, 0.0) or 0.0
@@ -868,11 +880,10 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
                 except re.error:
                     is_xstock_tok = False
             if is_xstock_tok:
+                unit_px = _holding_unit_px(ak_str)
+                if unit_px > 0.0 and av_f * unit_px < 1.0:
+                    continue
                 x_holdings[ak_str] = round(av_f, 6)
-
-        def _holding_underlying(token: str) -> str:
-            tok_norm, _ = resolve_kraken_tokenized_pair(token.strip())
-            return canonical_base_asset(tok_norm or token.strip())
 
         active_pair_by_underlying: Dict[str, Tuple[str, Optional[float]]] = {}
         for raw_spec in split_csv(xstock_cfg.get("xstock_active_pairs") or ""):
@@ -889,13 +900,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             return None
 
         def _holding_rank_usd(hk: str, qty: float) -> float:
-            hu = _holding_underlying(hk)
-            px = (
-                resolve_symbol_price(f"{hu}xUSD", eff_pt)
-                or resolve_symbol_price(ensure_equity_suffix(hu), eff_pt)
-                or 1.0
-            )
-            return qty * px
+            return qty * (_holding_unit_px(hk) or 1.0)
 
         x_holdings = dict(sorted(x_holdings.items(), key=lambda kv: _holding_rank_usd(kv[0], kv[1]), reverse=True))
         held_underlyings: List[str] = []

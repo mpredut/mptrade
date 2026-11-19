@@ -117,7 +117,7 @@ def _load_state() -> dict:
         merged["known_assets"] = {
             str(k): vf
             for k, v in merged["known_assets"].items()
-            if k and not isinstance(k, bool) and (vf := safe_pos_float(v, None)) is not None
+            if k and not isinstance(k, bool) and (vf := safe_nonneg_float(v, None)) is not None
         }
     else:
         merged["known_assets"] = {}
@@ -419,6 +419,10 @@ def check_balance(client: KrakenClient, st: dict, rx: str, desktop: bool) -> Non
                    body="Check whether the xStock allocation sits under a different code than expected.",
                    source="xstock-watch", desktop=desktop, email=True)
     st["known_assets"].update(assets)
+    for prev_a in list(st["known_assets"]):
+        if prev_a in bal and prev_a not in assets:
+            if (zero_f := safe_nonneg_float(bal.get(prev_a), None)) is not None:
+                st["known_assets"][prev_a] = zero_f
 
 
 def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,

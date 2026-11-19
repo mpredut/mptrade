@@ -1549,3 +1549,123 @@ def test_xstock_audit_fixes_bbo_clamp_gap_tranche_post_only_and_ipo_env_isolatio
     assert st_flat.s["qty"] == pytest.approx(10.0)
     assert st_flat.s["entry_price"] == pytest.approx(144.0)
     assert st_flat.s["ledger_reconcile_required"] is False
+
+
+def test_antx_ipo_post_exit_dust_reconcile_zero_known_assets_and_sell_sweep(tmp_path, monkeypatch):
+    from intelligence.sentiment.collectors.portfolio_collector import KrakenXstocksCollector
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import resolve_venue_fee_and_limits
+    from providers.quantity import clamp_notional_to_wallet_balance
+    from strategies.spot_engine import Strategy, StratParams
+
+    # 1. Sub-ordermin + sub-$1 untradable dust after external AI exit closes IPO Cycle 1 cleanly
+    class FakeDustReconcileExec:
+        def pair_precision(self, _pair):
+            return SimpleNamespace(price_decimals=2, volume_decimals=8, order_min=0.06, base_asset="ANTx")
+
+        def free_balance(self, asset):
+            return 0.001387 if asset == "ANTx" else 1000.0
+
+        def open_orders(self, _pair):
+            return []
+
+        def ohlc_closes_with_timestamps(self, _pair, _itv):
+            return [97.0, 98.2], (1795110000.0, 1795113600.0)
+
+    p_ant = StratParams(
+        currency="USD",
+        entry_amount=500.0,
+        entry_discount_pct=0.8,
+        dca_amount=450.0,
+        dca_drop_pct=3.0,
+        check_minutes=0.25,
+        takeprofit_pct=9.0,
+        max_budget=2750.0,
+        max_dca_buys=0,
+        enable_takeprofit=True,
+        order_ttl_min=10.0,
+        adopt_cost=87.1499,
+        ipo_tp_tranches=((10.0, 50.0), (16.0, 50.0)),
+        ipo_trail_pct=3.5,
+        ipo_reentry_drop_pct=20.0,
+    )
+    st_ant = Strategy(FakeDustReconcileExec(), "ANTxUSD", p_ant, state_dir=str(tmp_path / "ant"), dry_run=False)
+    st_ant.s.update(
+        qty=0.2655009,
+        cost=0.2655009 * 87.1499,
+        entry_price=87.1499,
+        last_buy_price=87.1499,
+        adopted=True,
+        ipo_matured=False,
+        ipo_peak=99.195,
+        ledger_reconcile_required=True,
+    )
+    st_ant.step(98.205)
+    assert st_ant.s["qty"] == 0.0
+    assert st_ant.s["cost"] == 0.0
+    assert st_ant.s["adopted"] is True
+    assert st_ant.s["ipo_matured"] is False
+    assert st_ant.s["ipo_peak"] == pytest.approx(99.195)
+    assert st_ant.s["ledger_reconcile_required"] is False
+
+    # 2. kraken_xstock_watch.check_balance updates sold-out known_assets to 0.0 and persists across reload
+    monkeypatch.setenv("XSTOCK_STATE_FILE", str(tmp_path / "xw_state.json"))
+    fake_kr = FakeKrakenXStock(bal={"ZUSD": "100", "ANTx.T": "0.531"})
+    xw_st = xw._load_state()
+    xw.check_balance(fake_kr, xw_st, r"^ANTx", False)
+    assert xw_st["known_assets"]["ANTx.T"] == pytest.approx(0.531)
+    fake_kr.bal = {"ZUSD": "152", "ANTx.T": "0.00000000"}
+    xw.check_balance(fake_kr, xw_st, r"^ANTx", False)
+    assert xw_st["known_assets"]["ANTx.T"] == 0.0
+    xw._save_state(xw_st)
+    reloaded_xw = xw._load_state()
+    assert reloaded_xw["known_assets"]["ANTx.T"] == 0.0
+
+    # 3. KrakenXstocksCollector drops <$1 priced dust while keeping pre-IPO unlisted holdings; XSTOCK_ZERO_FEE caps max_buy at 0
+    krk_dir = tmp_path / "krk_cfg"
+    krk_dir.mkdir(parents=True, exist_ok=True)
+    (krk_dir / "config.env").write_text(
+        "XSTOCK_YAHOO=ANT\nXSTOCK_ACTIVE_PAIRS=SPCXxUSD:141.75\nXSTOCK_REGEX=^ANTx\n",
+        encoding="utf-8",
+    )
+    (krk_dir / "xstock_state.json").write_text(
+        json.dumps({"known_assets": {"SPCXx.T": 10.22512, "ANTx.T": 0.001387}, "pair": "ANTxUSD"}),
+        encoding="utf-8",
+    )
+    xs_dust = KrakenXstocksCollector().collect(
+        str(tmp_path),
+        kraken_dir=str(krk_dir),
+        prices_and_trends={"SPCXxUSD": {"price": 137.68}, "ANTxUSD": {"price": 98.20}},
+    )
+    assert xs_dust["holdings"] == {"SPCXx.T": 10.22512}
+    assert "holdings_underlying_map" not in xs_dust
+
+    xs_pre_ipo = KrakenXstocksCollector().collect(
+        str(tmp_path),
+        kraken_dir=str(krk_dir),
+        prices_and_trends={"SPCXxUSD": {"price": 137.68}},
+    )
+    assert xs_pre_ipo["holdings"]["ANTx.T"] == pytest.approx(0.001387)
+
+    fake_xstock_inst = SimpleNamespace(params={"fee_tier": "XSTOCK_ZERO_FEE", "maker_fee_bps": 0.0, "taker_fee_bps": 0.0})
+    fee_limits = resolve_venue_fee_and_limits(
+        "kraken", "ANTxUSD", fake_xstock_inst, price=98.20, free_quote=3800.0, locked_quote_usd=500.0, free_base=0.2655
+    )
+    assert fee_limits["effective_max_buy_usd"] == 0.0
+    assert "replace_max_buy_usd" not in fee_limits
+    assert fee_limits["effective_max_sell_usd"] == pytest.approx(round(0.2655 * 98.20, 2))
+
+    # 4. clamp_notional_to_wallet_balance sweeps near-full SELL LIMIT notional up to avail_usd to prevent <$10 dust
+    ant_inst = SimpleNamespace(
+        symbol="ANTxUSD",
+        base="ANTx",
+        quote="USD",
+        provider_name="kraken",
+        _provider=SimpleNamespace(name="Kraken", free_balance=lambda _a: 0.2655009),
+    )
+    ok_sweep, swept_usd, sweep_reason = clamp_notional_to_wallet_balance(
+        ant_inst, "SELL", 98.48, 26.01, min_notional_usd=10.0
+    )
+    assert ok_sweep is True
+    assert swept_usd == pytest.approx(0.2655009 * 98.48)
+    assert "Swept full ANTx balance" in sweep_reason
+
