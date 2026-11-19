@@ -1,1 +1,44 @@
-[]
+[
+  {
+    "ts": "2026-11-19T00:41:54+00:00",
+    "full_key": "BINANCE_TAO.mt.gain",
+    "section": "BINANCE_TAO",
+    "key": "mt.gain",
+    "symbol": "TAOUSDC",
+    "current_on_dev": 11.3,
+    "winner_value": 9.2,
+    "margin_vs_current": {
+      "half1": 126.55,
+      "half2": 32.2
+    },
+    "dev_commit": "cd6c3283"
+  },
+  {
+    "ts": "2026-11-19T00:41:54+00:00",
+    "full_key": "BINANCE_TAO.mt.lost",
+    "section": "BINANCE_TAO",
+    "key": "mt.lost",
+    "symbol": "TAOUSDC",
+    "current_on_dev": 5.0687,
+    "winner_value": 4.8,
+    "margin_vs_current": {
+      "half1": 328.88,
+      "half2": 8.79
+    },
+    "dev_commit": "cd6c3283"
+  },
+  {
+    "ts": "2026-11-19T00:41:54+00:00",
+    "full_key": "BINANCE_ARB.mt.lost",
+    "section": "BINANCE_ARB",
+    "key": "mt.lost",
+    "symbol": "ARBUSDC",
+    "current_on_dev": 4.1797,
+    "winner_value": 3.5,
+    "margin_vs_current": {
+      "half1": 7.37,
+      "half2": 49.4
+    },
+    "dev_commit": "cd6c3283"
+  }
+]
