@@ -1868,8 +1868,12 @@ def test_macroanalyzer_globaltelemetrycollector_and_intelligencetelemetrydaemon_
     # 2. MacroAnalyzer, GlobalTelemetryCollector, and IntelligenceTelemetryDaemon sanitize symbols lists
     ma = MacroAnalyzer(cache_dir=str(tmp_path), symbols=["  btcusdc  ", "", True, None])
     assert ma.symbols == ["BTCUSDC"]
+    from cachepaths import is_kraken_tokenized_asset
     gtc = GlobalTelemetryCollector(cache_dir=str(tmp_path), symbols=["   ", False])
-    assert len(gtc.symbols) >= 1 and all(isinstance(s, str) and s.strip() == s and s.isupper() for s in gtc.symbols)
+    assert len(gtc.symbols) >= 1 and all(
+        isinstance(s, str) and s.strip() == s and (s.isupper() or is_kraken_tokenized_asset(s))
+        for s in gtc.symbols
+    )
     itd = IntelligenceTelemetryDaemon(cache_dir=str(tmp_path), symbols=[" taousdc ", ""])
     assert itd.symbols == ["TAOUSDC"]
 
