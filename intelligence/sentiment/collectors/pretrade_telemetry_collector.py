@@ -53,7 +53,7 @@ from intelligence.macro_sentiment_ssot import (
     resolve_kalman_vel_z,
     resolve_read_json_cached,
     SHORT_KINEMATIC_METRIC_KEYS,
-    _parse_ts_px_row,
+    parse_ts_px_row,
 )
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
@@ -68,12 +68,12 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     load_symbol_price_series,
     resolve_cached_btc_24h_change_pct,
     upgrade_tpo_vp_from_ohlc,
-    _ensure_cacheprice_classes_bound,
-    _EQ_YAHOO_CHART_MEMO,
-    _load_stitched_7d_ohlc_closes,
-    _refresh_stale_t212_cached_positions,
-    _resolve_fallback_ohlc_fn,
-    _resolve_live_24trend_current_price,
+    ensure_cacheprice_classes_bound,
+    EQ_YAHOO_CHART_MEMO,
+    load_stitched_7d_ohlc_closes,
+    refresh_stale_t212_cached_positions,
+    resolve_fallback_ohlc_fn,
+    resolve_live_24trend_current_price,
 )
 import intelligence.sentiment.collectors.microstructure_collector as _mc_mod
 from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
@@ -93,7 +93,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     reconcile_spot_and_orderbook_microstructure,
     rescale_orderbook_walls_to_price,
     should_rescale_usd_sibling_walls,
-    _first_variant_dict,
+    first_variant_dict,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     format_recent_fill_subcycle_parts,
@@ -113,12 +113,12 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     pct_delta,
     recalculate_live_price_geometry,
     resolve_asset_session_policy,
-    _apply_24h_series_enrichment,
-    _compute_kalman_from_series,
-    _compute_short_slopes_from_series,
-    _LAST_7D_SPAN_MS_BY_SYM,
-    _load_stitched_24h_ohlc_points,
-    _STALE_SHORT_24H_KEYS,
+    apply_24h_series_enrichment,
+    compute_kalman_from_series,
+    compute_short_slopes_from_series,
+    LAST_7D_SPAN_MS_BY_SYM,
+    load_stitched_24h_ohlc_points,
+    STALE_SHORT_24H_KEYS,
 )
 from instrument_registry import casefold_get, is_equity_symbol, is_symbol_market_open, resolve_symbol_identity
 from state_io import (
@@ -799,7 +799,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
     cls_name = "PretradePriceSeries24hStage"
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
-        _ensure_cacheprice_classes_bound()
+        ensure_cacheprice_classes_bound()
         eff_allow_net = bool(ctx.allow_network)
         cachedb_dir = ctx.cachedb_dir
         symbol = ctx.symbol
@@ -817,7 +817,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
             raw_cp = casefold_get(cur_p_items, cand)
             if (px_v := extract_current_price_item(raw_cp)) is not None and px_v > 0.0:
                 live_cur_px = px_v
-                if isinstance(raw_cp, list) and raw_cp and (cp_pt := _parse_ts_px_row(raw_cp[-1])) is not None:
+                if isinstance(raw_cp, list) and raw_cp and (cp_pt := parse_ts_px_row(raw_cp[-1])) is not None:
                     cp_ts_sec = normalize_epoch_sec(cp_pt[0], default=0.0) or 0.0
                 break
         vb_pos_ts = 0.0
@@ -828,7 +828,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
         )
         if vb_path and vb_d:
             if eff_allow_net and is_eq_sym and ctx.rj is _default_read_json_cached:
-                _refresh_stale_t212_cached_positions(vb_d, vb_path, _time.time())
+                refresh_stale_t212_cached_positions(vb_d, vb_path, _time.time())
             for vb_k, vb_v in vb_d.items():
                 if isinstance(vb_k, str) and vb_k.startswith("pos:") and isinstance(vb_v, dict):
                     if clean_symbol_key(vb_v.get("symbol") or vb_k.split(":", 2)[-1]) == clean_symbol_key(symbol):
@@ -855,7 +855,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
             cachedb_dir, symbol, current_price_items=cur_p_items, include_7d=True
         )
         m24 = compute_24h_price_metrics(alt_series_24h) if alt_series_24h else {}
-        last_alt_pt = _parse_ts_px_row(alt_series_24h[-1]) if alt_series_24h else None
+        last_alt_pt = parse_ts_px_row(alt_series_24h[-1]) if alt_series_24h else None
         cur_px_est = last_alt_pt[1] if last_alt_pt is not None else 0.0
         if not cur_px_est or cur_px_est <= 0.0:
             cur_px_est = live_cur_px
@@ -865,7 +865,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
         eq_chart_refreshed = False
         sym_u_eq = str(symbol).strip().upper()
         memo_chart_eq = (
-            _EQ_YAHOO_CHART_MEMO.get(sym_u_eq)
+            EQ_YAHOO_CHART_MEMO.get(sym_u_eq)
             if (eff_allow_net and is_eq_sym and is_live_network_backfill_enabled())
             else None
         )
@@ -905,7 +905,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                     arch_vals_7d = [pt[1] for pt in pts_5d_eq]
                     eq_chart_refreshed = len(alt_series_24h) >= 5
                     m24 = compute_24h_price_metrics(alt_series_24h) or {}
-                    last_alt_pt = _parse_ts_px_row(alt_series_24h[-1]) if alt_series_24h else None
+                    last_alt_pt = parse_ts_px_row(alt_series_24h[-1]) if alt_series_24h else None
                     if last_alt_pt is not None:
                         cur_px_est = last_alt_pt[1]
             except Exception:
@@ -934,7 +934,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
             ):
                 live_cur_px = round(last_alt_pt[1], 4)
             if not rth_fresh_eq and m24:
-                for k_stale_eq in _STALE_SHORT_24H_KEYS:
+                for k_stale_eq in STALE_SHORT_24H_KEYS:
                     m24.pop(k_stale_eq, None)
             if live_cur_px > 0.0 and not _prices_diverged(live_cur_px, last_alt_pt[1], threshold=0.35) and abs(round(live_cur_px, 4) - round(last_alt_pt[1], 4)) > 1e-4:
                 cur_px_est = round(live_cur_px, 4)
@@ -1146,7 +1146,7 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
             btc_m24 = compute_24h_price_metrics(btc_series_24h) if btc_series_24h else {}
             btc_live_px = extract_current_price_item(casefold_get(cur_p_items, "BTCUSDC")) or 0.0
             if btc_m24 and btc_series_24h:
-                btc_last_pt = _parse_ts_px_row(btc_series_24h[-1])
+                btc_last_pt = parse_ts_px_row(btc_series_24h[-1])
                 if btc_last_pt is not None and btc_last_pt[1] > 0.0:
                     btc_live_px = btc_last_pt[1]
                 btc_m_info = load_symbol_microstructure(cachedb_dir, "BTCUSDC", _rj)
@@ -1273,9 +1273,9 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
                     compatible_quote_suffixes(ck) != sym_quotes_7d or (cur_px_est > 0.0 and _prices_diverged(cur_px_est, vals_7d[-1], threshold=eq_div_thr))
                 ):
                     continue
-                w0, w1 = _parse_ts_px_row(w_ser[0]), _parse_ts_px_row(w_ser[-1])
+                w0, w1 = parse_ts_px_row(w_ser[0]), parse_ts_px_row(w_ser[-1])
                 w_span_7d = (w1[0] - w0[0]) if (w0 is not None and w1 is not None) else -1.0
-                arch_span_7d_pt = _LAST_7D_SPAN_MS_BY_SYM.get(str(symbol).strip().upper(), 0.0)
+                arch_span_7d_pt = LAST_7D_SPAN_MS_BY_SYM.get(str(symbol).strip().upper(), 0.0)
                 if m7d and (is_eq or arch_span_7d_pt >= 5 * 86400 * 1000 or (0.0 <= w_span_7d < 5 * 86400 * 1000)):
                     continue
                 if cur_px_est > 0.0 and not _prices_diverged(cur_px_est, vals_7d[-1], threshold=eq_div_thr) and abs(cur_px_est - vals_7d[-1]) > 1e-9:
@@ -1288,7 +1288,7 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
             allow_network
             and not is_eq
             and is_live_network_backfill_enabled()
-            and (not m7d or partial_w_7d_span or 0.0 < _LAST_7D_SPAN_MS_BY_SYM.get(str(symbol).strip().upper(), 0.0) < 5 * 86400 * 1000)
+            and (not m7d or partial_w_7d_span or 0.0 < LAST_7D_SPAN_MS_BY_SYM.get(str(symbol).strip().upper(), 0.0) < 5 * 86400 * 1000)
         ):
             try:
                 now_s_7d = _time.time()
@@ -1298,9 +1298,9 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
                     or (ob_ts_est > 0.0 and abs(now_s_7d - ob_ts_est) <= 30 * 60.0)
                 ):
                     sym_u_7d = clean_symbol_key(symbol) or str(symbol).strip().upper()
-                    ohlc_fn_7d = _resolve_fallback_ohlc_fn(sym_u_7d)
+                    ohlc_fn_7d = resolve_fallback_ohlc_fn(sym_u_7d)
                     if callable(ohlc_fn_7d):
-                        vals_7d_ohlc = _load_stitched_7d_ohlc_closes(ohlc_fn_7d, sym_u_7d, now_s_7d, m24, cur_px_est)
+                        vals_7d_ohlc = load_stitched_7d_ohlc_closes(ohlc_fn_7d, sym_u_7d, now_s_7d, m24, cur_px_est)
                         if len(vals_7d_ohlc) >= 2 and (not m7d or len(vals_7d_ohlc) >= 24):
                             if m7d_ohlc := compute_7d_range_metrics(vals_7d_ohlc, decimals=6):
                                 m7d = m7d_ohlc
@@ -1331,7 +1331,7 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
                     if btc_live_px <= 0.0:
                         btc_live_px = extract_current_price_item(casefold_get(cur_p_items, "BTCUSDC")) or 0.0
                 eff_btc_vals_7d = list(btc_vals_7d)
-                btc_arch_span_7d = _LAST_7D_SPAN_MS_BY_SYM.get("BTCUSDC", 0.0)
+                btc_arch_span_7d = LAST_7D_SPAN_MS_BY_SYM.get("BTCUSDC", 0.0)
                 if (
                     (len(eff_btc_vals_7d) < 2 or btc_arch_span_7d < 5 * 86400 * 1000)
                     and isinstance(w_data, dict)
@@ -1339,7 +1339,7 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
                 ):
                     w_btc = casefold_get(w_items_b, "BTCUSDC")
                     if isinstance(w_btc, (list, tuple)) and len(w_btc) >= 2:
-                        wb0, wb1 = _parse_ts_px_row(w_btc[0]), _parse_ts_px_row(w_btc[-1])
+                        wb0, wb1 = parse_ts_px_row(w_btc[0]), parse_ts_px_row(w_btc[-1])
                         if wb0 is not None and wb1 is not None and (wb1[0] - wb0[0]) >= 5 * 86400 * 1000:
                             w_b_vals = [
                                 px_b
@@ -1451,7 +1451,7 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
         k_items_map: Dict[str, Any] = {}
         st_ts_t: Optional[float] = None
         try:
-            _ensure_cacheprice_classes_bound()
+            ensure_cacheprice_classes_bound()
             if isinstance(st_data := _rj(os.path.join(cachedb_dir, _mc_mod.CacheShortTrendManager.DEFAULT_FILENAME)), dict):
                 st_items = st_data.get("items") if isinstance(st_data.get("items"), dict) else st_data
                 if isinstance(st_items, dict):
@@ -1504,7 +1504,7 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                 k_items = k_data.get("items") if isinstance(k_data.get("items"), dict) else k_data
                 if isinstance(k_items, dict):
                     k_items_map = k_items
-                if isinstance(k_sym := _first_variant_dict(k_items, sym_variants), dict):
+                if isinstance(k_sym := first_variant_dict(k_items, sym_variants), dict):
                     if not is_unseeded_kalman_state(k_sym) or t_entry.get("kalman_vel") is None:
                         for k_kal in ("kalman_vel", "kalman_vel_std", "kalman_trend"):
                             t_entry[k_kal] = k_sym.get(k_kal)
@@ -1540,17 +1540,17 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                     "vol_1h_pct",
                 ):
                     t_entry.pop(k_ov, None)
-                t_entry.update(_compute_short_slopes_from_series(alt_series_24h))
+                t_entry.update(compute_short_slopes_from_series(alt_series_24h))
                 if last_alt_pt is not None:
                     st_ts_t = normalize_epoch_sec(last_alt_pt[0], default=st_ts_t)
-                if (eq_px_diverged_05pct or eq_chart_refreshed or eq_ohlc_flat_short) and isinstance(k_recomp := _compute_kalman_from_series(alt_series_24h), dict):
+                if (eq_px_diverged_05pct or eq_chart_refreshed or eq_ohlc_flat_short) and isinstance(k_recomp := compute_kalman_from_series(alt_series_24h), dict):
                     t_entry.update(k_recomp)
             elif alt_series_24h and (
                 t_entry.get("slope_3_7m") is None
                 or all(t_entry.get(k) is None for k in ("slope_3_7m", "slope_15m", "slope_2_5h"))
                 or (s15_val is not None and s25_val is not None and s15_val != 0.0 and s15_val == s25_val)
             ):
-                for sk, sv in _compute_short_slopes_from_series(alt_series_24h).items():
+                for sk, sv in compute_short_slopes_from_series(alt_series_24h).items():
                     if t_entry.get(sk) is None or (s15_val == s25_val and sk in ("slope_3_7m", "slope_15m", "slope_2_5h")):
                         t_entry[sk] = sv
                 if st_ts_t is None and last_alt_pt is not None:
@@ -1694,10 +1694,10 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                 ) or 0.0
                 sib_ob_mid = safe_pos_float(sib_m.get("ob_mid_price"), default=None)
                 sib_s24, _ = load_symbol_price_series(cachedb_dir, cand_u, current_price_items=ctx.cur_p_items)
-                sib_last_pt = _parse_ts_px_row(sib_s24[-1]) if sib_s24 else None
+                sib_last_pt = parse_ts_px_row(sib_s24[-1]) if sib_s24 else None
                 sib_live_px = extract_current_price_item(casefold_get(ctx.cur_p_items, cand_u))
                 if not sib_live_px or sib_live_px <= 0.0:
-                    sib_live_px = _resolve_live_24trend_current_price(cachedb_dir, cand_u, _rj)
+                    sib_live_px = resolve_live_24trend_current_price(cachedb_dir, cand_u, _rj)
                 if (not sib_live_px or sib_live_px <= 0.0) and cur_px_est > 0.0 and sib_ob_ts > 0.0 and (_time.time() - sib_ob_ts) > 120.0:
                     sib_live_px = cur_px_est
                 sib_ob_fresh = is_ob_live_and_newer(sib_ob_ts, _time.time(), sib_last_pt)
@@ -1712,7 +1712,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                 sib_p_est = {**p_est, "price": sib_px} if sib_px and sib_px > 0 else dict(p_est)
                 if isinstance(sib_tinfo := casefold_get(ctx.st_items_map, cand_u), dict):
                     apply_short_trend_item(sib_p_est, sib_tinfo)
-                _ensure_cacheprice_classes_bound()
+                ensure_cacheprice_classes_bound()
                 if isinstance(l24_sib_d := _rj(os.path.join(cachedb_dir, _mc_mod.CacheShortTrendManager.live_window_relpath_for_symbol(cand_u))), dict) and (
                     l24_sib_d.get("windows") or any(wk in l24_sib_d for wk in ("90", "222", "900", "9000"))
                 ):
@@ -1730,7 +1730,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                     _upgrade_pretrade_tpo_vp_from_ohlc(
                         cachedb_dir, cand_u, sib_m24, sib_px or 0.0, sib_last_pt, sib_ob_ts, allow_network=allow_network
                     )
-                    _apply_24h_series_enrichment(cand_u, sib_p_est, sib_m24, sib_s24, None)
+                    apply_24h_series_enrichment(cand_u, sib_p_est, sib_m24, sib_s24, None)
                     if sib_px and sib_px > 0:
                         sib_p_est["price"] = sib_px
                         recalculate_live_price_geometry(sib_p_est, sib_px)
@@ -1770,7 +1770,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
         if m7d and not ctx.is_sub24h_dup_7d:
             p_est.update(m7d)
         if m24:
-            _apply_24h_series_enrichment(symbol, p_est, m24, alt_series_24h, None)
+            apply_24h_series_enrichment(symbol, p_est, m24, alt_series_24h, None)
             ctx.session_policy.prune_stale_short_metrics(
                 p_est,
                 m24,
@@ -2226,8 +2226,8 @@ def refresh_pretrade_telemetry_caches(
             ):
                 try:
                     prev_mtime = os.path.getmtime(ohlc_path) if os.path.exists(ohlc_path) else 0.0
-                    _load_stitched_24h_ohlc_points(
-                        _resolve_fallback_ohlc_fn(sym_canon),
+                    load_stitched_24h_ohlc_points(
+                        resolve_fallback_ohlc_fn(sym_canon),
                         sym_canon,
                         eff_now - 86400.0,
                         require_positive_volume=True,
@@ -2243,7 +2243,7 @@ def refresh_pretrade_telemetry_caches(
             vb_path, vb_d, _ = load_venue_balances_state(cachedb_dir, _rj)
             if vb_path and vb_d:
                 status["t212_positions_refreshed"] = bool(
-                    _refresh_stale_t212_cached_positions(vb_d, vb_path, eff_now)
+                    refresh_stale_t212_cached_positions(vb_d, vb_path, eff_now)
                 )
         except Exception:
             pass

@@ -40,15 +40,14 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     format_spot_cvd_source_tag,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
-    clip_open_lots_to_held_qty,
     compute_open_lots_vwap,
     format_recent_fill_subcycle_parts,
     is_last_buy_lot_harvested,
     same_anchor_px as _same_anchor_px,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
-    _build_vp_position_dict,
-    _compute_horizon_range_dict,
+    build_vp_position_dict,
+    compute_horizon_range_dict,
     format_kinematic_parts,
     format_multi_window_slopes_core,
     format_slope_val as _fmt_slope_val,
@@ -58,9 +57,7 @@ from intelligence.sentiment.evaluators.prompt_view_evaluator import (
     evaluate_market_prices_prompt_view,
     evaluate_microstructure_prompt_view,
     evaluate_portfolio_prompt_view,
-)
-from intelligence.sentiment.evaluators.tca_risk_evaluator import (
-    resolve_venue_fee_and_limits,
+    evaluate_tradable_position_prompt_view,
 )
 from instrument_registry import is_equity_symbol, resolve_symbol_identity
 from providers.order_id_context import format_actor_tag
@@ -191,7 +188,7 @@ def _format_horizon_range(pinfo: Dict[str, Any], px_f: float, horizon: str) -> s
     lo_f, hi_f = safe_float(lo, 0.0), safe_float(hi, 0.0)
     pos_sfx = ""
     if px_f > 0 and lo_f > 0 and hi_f > lo_f:
-        fb_rng = _compute_horizon_range_dict(px_f, lo_f, hi_f, horizon)
+        fb_rng = compute_horizon_range_dict(px_f, lo_f, hi_f, horizon)
         pos_v, dd_v, bnc_v, spn_v = (
             pinfo[k] if pinfo.get(k) is not None else fb_rng.get(k)
             for k in (f"pos_{horizon}_pct", f"dd_{horizon}_high_pct", f"bounce_{horizon}_low_pct", f"span_{horizon}_pct")
@@ -603,7 +600,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                     tape_str += f" 15m_range=[{pinfo['low_15m']}, {pinfo['high_15m']}]{pos15_sfx}"
                 extras.append(tape_str)
         if all(pinfo.get(k) is not None for k in ("poc_px", "val_px", "vah_px")):
-            fb_vp = _build_vp_position_dict(
+            fb_vp = build_vp_position_dict(
                 px_f,
                 safe_float(pinfo.get("poc_px"), 0.0),
                 safe_float(pinfo.get("val_px"), 0.0),
@@ -991,183 +988,76 @@ def _format_microstructure_section(
 
 
 def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0) -> str:
-    """Format a single tradable position line for Section 3C."""
-    t_extra = ""
-    px_f = safe_float(pos.get("price"), 0.0)
-    avg_buy_f = safe_float(pos.get("active_avg_buy_px"), None)
-    base_lbl = pos.get("base") or canonical_base_asset(str(pos.get("symbol") or "")) or "BASE"
-    for px_k, lbl, pct_lbl, pct_k, dedup_keys in (
-        ("active_avg_buy_px", "avg_buy_px", "pnl_vs_avg", "pnl_vs_avg_pct", ()),
-        ("tactical_avg_buy_px", "tactical_avg_px", "pnl_vs_tactical", "pnl_vs_tactical_avg_pct", ("active_avg_buy_px", "last_buy_px")),
-        ("swing_subcycle_avg_px", "swing_avg_px", "pnl_vs_swing", "pnl_vs_swing_avg_pct", ("active_avg_buy_px", "tactical_avg_buy_px", "last_buy_px")),
-        ("cycle_avg_cost_px", "cycle_avg_cost", "pnl_vs_cycle_cost", "pnl_vs_cycle_cost_pct", ("active_avg_buy_px",)),
-        ("last_buy_px", "last_buy_px", "pnl_vs_last_buy", "pnl_vs_last_buy_pct", ()),
-        ("lowest_buy_px", "lowest_buy_px", "pnl_vs_lowest_buy", "pnl_vs_lowest_buy_pct", ("active_avg_buy_px", "tactical_avg_buy_px", "last_buy_px")),
-        ("last_sell_px", "last_sell_px", "chg_vs_last_sell", "chg_vs_last_sell_pct", ()),
-        ("trailing_peak", "trail_peak", "dd_from_peak", "dd_from_peak_pct", ("active_avg_buy_px",)),
-    ):
-        if pos.get(px_k) is not None and not any(_same_anchor_px(pos.get(px_k), pos.get(dk)) for dk in dedup_keys):
-            if (
-                px_k in ("tactical_avg_buy_px", "swing_subcycle_avg_px")
-                and avg_buy_f is not None
-                and avg_buy_f > 0.0
-                and (safe_float(pos.get(px_k), 0.0) or 0.0) >= avg_buy_f
-            ):
-                continue
-            pct_val = pos.get(pct_k)
-            if pct_val is None and px_f > 0.0:
-                anchor_f = safe_float(pos.get(px_k), 0.0)
-                if anchor_f > 0.0:
-                    if px_k == "trailing_peak" and anchor_f < px_f:
-                        anchor_f = px_f
-                    pct_val = round(((px_f - anchor_f) / anchor_f) * 100.0, 2) + 0.0
-            elif isinstance(pct_val, float):
-                pct_val = pct_val + 0.0
-            pct_sfx = f" ({pct_lbl}={pct_val}%)" if pct_val is not None else ""
-            if (
-                px_k == "last_buy_px"
-                and pct_val is not None
-                and isinstance(open_lots_chk := pos.get("open_lots"), list)
-                and len(open_lots_chk) > 0
-                and not any(
-                    isinstance(lt, dict) and _same_anchor_px(pos.get("last_buy_px"), lt.get("entry_px"))
-                    for lt in open_lots_chk
-                )
-            ):
-                pct_sfx = f" (chg_vs_last_buy={pct_val}%, lot_harvested)"
-            t_extra += f", {lbl}={pos.get(px_k)}{pct_sfx}"
-    venue = pos.get("venue")
-    fb_fees = resolve_venue_fee_and_limits(
-        str(venue or "t212"),
-        str(pos.get("symbol") or ""),
-        price=safe_float(pos.get("price"), 0.0),
-        free_quote=pos.get("free_quote"),
-        free_base=pos.get("free_base"),
-        locked_quote_usd=pos.get("locked_quote_usd"),
-        locked_base_qty=pos.get("locked_base_qty"),
-        spread_bps=pos.get("spread_bps"),
-        gateway_max_usd=max_usd,
+    """Format a single tradable position line for Section 3C from its evaluated view model."""
+    pv = (
+        pos
+        if isinstance(pos, dict) and pos.get("_is_tradable_pos_view") is True
+        else evaluate_tradable_position_prompt_view(pos, max_usd=max_usd)
     )
-    eff_pos = {**fb_fees, **{k: v for k, v in pos.items() if v is not None}}
-    for cap_k in ("effective_max_buy_usd", "effective_max_sell_usd", "replace_max_buy_usd", "replace_max_sell_usd"):
-        cap_v = safe_float(eff_pos.get(cap_k), None)
-        if cap_v is not None and max_usd > 0 and cap_v > max_usd:
-            eff_pos[cap_k] = round(max_usd * 1.0, 2)
-    taker_bps = safe_float(eff_pos.get("taker_fee_bps"), 15.0)
-    maker_bps = safe_float(eff_pos.get("maker_fee_bps"), 15.0)
-    if isinstance(open_lots := pos.get("open_lots"), list) and len(open_lots) >= 1:
-        held_pos_q = (safe_float(pos.get("free_base"), 0.0) or 0.0) + (
-            safe_float(pos.get("locked_base_qty"), 0.0) or 0.0
-        )
-        eff_lots = clip_open_lots_to_held_qty(open_lots[-4:], held_pos_q)
-        lot_parts: List[str] = []
-        valid_lots: List[Tuple[float, float, float]] = []
-        min_net_pct = max(0.20, (taker_bps or 10.0) * 2.0 / 100.0)
-        for lt in eff_lots:
-            if not isinstance(lt, dict):
-                continue
-            l_q = safe_float(lt.get("qty"), None)
-            l_px = round_opt_px(lt.get("entry_px"), 6)
-            if l_q is not None and l_px is not None and l_q > 0.0 and l_px > 0.0 and l_q * l_px >= 1.0:
-                l_pnl_pct = ((px_f - l_px) / l_px) * 100.0 if px_f > 0.0 else 0.0
-                l_pnl_s = f"({safe_float(l_pnl_pct, 0.0):+.2f}%)" if px_f > 0.0 else ""
-                lot_parts.append(f"{l_q:g}@{l_px}{l_pnl_s}")
-                valid_lots.append((l_q, l_px, l_pnl_pct))
-        if len(lot_parts) > 1 or (
-            len(lot_parts) == 1
-            and pos.get("active_avg_buy_px") is not None
-            and not _same_anchor_px(valid_lots[0][1], pos.get("active_avg_buy_px"))
-        ):
-            t_extra += f", open_lifo_lots=[{', '.join(lot_parts)}]"
-            prof_q = 0.0
-            prof_usd = 0.0
-            prof_cost = 0.0
-            for l_q, l_px, l_pnl_pct in reversed(valid_lots):
-                if px_f > 0.0 and l_pnl_pct > min_net_pct:
-                    prof_q += l_q
-                    prof_usd += l_q * px_f
-                    prof_cost += l_q * l_px
-                else:
-                    break
-            if prof_usd >= 10.0 and prof_cost > 0.0:
-                prof_avg_pct = ((prof_usd - prof_cost) / prof_cost) * 100.0
-                t_extra += f", profitable_lifo_usd=${prof_usd:.2f}({prof_q:g}_{base_lbl}@{prof_avg_pct:+.2f}%)"
-            shown_lots_q = sum(l_q for l_q, _, _ in valid_lots)
-            if (
-                held_pos_q > 0.0
-                and (rem_core_q := held_pos_q - shown_lots_q) > max(1e-6, held_pos_q * 0.02)
-                and (px_f <= 0.0 or rem_core_q * px_f >= 5.0)
-            ):
-                t_extra += f", older_core_qty={round(rem_core_q, 6):g}_{base_lbl}"
-        if lifo_pos_tag := _format_lifo_rem_avg_tag(
-            open_lots,
-            held_pos_q,
-            avg_buy_f,
-            px_f if px_f > 0.0 else None,
-        ):
-            t_extra += f", {lifo_pos_tag}"
-    if (lifo_p := safe_float(pos.get("lifo_realized_pnl_usd"), None)) is not None and abs(lifo_p) >= 0.01:
+    t_extra = ""
+    lot_base_lbl = pv["lot_base_lbl"]
+    for anc in pv["anchors"]:
+        pct_val = anc["pct_val"]
+        if anc["lot_harvested"]:
+            pct_sfx = f" (chg_vs_last_buy={pct_val}%, lot_harvested)"
+        else:
+            pct_sfx = f" ({anc['pct_lbl']}={pct_val}%)" if pct_val is not None else ""
+        t_extra += f", {anc['lbl']}={anc['px']}{pct_sfx}"
+    if shown_lots := pv["shown_lifo_lots"]:
+        lot_parts = [
+            f"{l_q:g}@{l_px}" + (f"({l_pnl:+.2f}%)" if l_pnl is not None else "")
+            for l_q, l_px, l_pnl in shown_lots
+        ]
+        t_extra += f", open_lifo_lots=[{', '.join(lot_parts)}]"
+        if (prof := pv["profitable_lifo"]) is not None:
+            prof_usd, prof_q, prof_avg_pct = prof
+            t_extra += f", profitable_lifo_usd=${prof_usd:.2f}({prof_q:g}_{lot_base_lbl}@{prof_avg_pct:+.2f}%)"
+        if (older_q := pv["older_core_qty"]) is not None:
+            t_extra += f", older_core_qty={older_q:g}_{lot_base_lbl}"
+    if (lifo_vwap := pv["lifo_rem_vwap"]) is not None:
+        vwap, vwap_pnl = lifo_vwap
+        vwap_sfx = f" (pnl_vs_lifo={vwap_pnl:+.2f}%)" if vwap_pnl is not None else ""
+        t_extra += f", lifo_rem_avg_px={vwap}{vwap_sfx}"
+    if (lifo_p := pv["lifo_realized_pnl_usd"]) is not None:
         t_extra += f", lifo_realized_pnl=${lifo_p:+.2f}"
-    fee_tier = eff_pos.get("fee_tier") or "STANDARD"
-    sp_part = f", spread={eff_pos.get('spread_bps')}bps" if eff_pos.get("spread_bps") is not None else ""
+    taker_bps = pv["taker_bps"]
+    maker_bps = pv["maker_bps"]
+    sp_part = f", spread={pv['spread_bps']}bps" if pv["spread_bps"] is not None else ""
     t_extra += (
         f", venue_fee_per_leg={taker_bps:g}bps "
-        f"(tier={fee_tier}, maker={maker_bps:g}bps/taker={taker_bps:g}bps{sp_part})"
+        f"(tier={pv['fee_tier']}, maker={maker_bps:g}bps/taker={taker_bps:g}bps{sp_part})"
     )
     lim_parts: List[str] = []
-    if eff_pos.get("exchange_min_notional_usd") is not None:
-        lim_parts.append(f"min_notional=${safe_float(eff_pos.get('exchange_min_notional_usd'), 0.0):g}")
-    for lim_pfx, lim_k in (
-        ("min_qty=", "min_qty"),
-        ("step=", "step_size"),
-        ("tick=", "tick_size"),
-        ("max_buy=$", "effective_max_buy_usd"),
-        ("replace_max_buy=$", "replace_max_buy_usd"),
-        ("max_sell=$", "effective_max_sell_usd"),
-        ("replace_max_sell=$", "replace_max_sell_usd"),
-    ):
-        if eff_pos.get(lim_k) is not None:
-            lim_parts.append(f"{lim_pfx}{eff_pos[lim_k]}")
+    if pv["min_notional_usd"] is not None:
+        lim_parts.append(f"min_notional=${pv['min_notional_usd']:g}")
+    for lim_pfx, lim_val in pv["limit_items"]:
+        lim_parts.append(f"{lim_pfx}{lim_val}")
     if lim_parts:
         t_extra += f", limits({', '.join(lim_parts)})"
-    fb_val, val_usd = pos.get("free_base"), pos.get("value_usd")
+    fb_val, val_usd = pv["free_base"], pv["value_usd"]
     fb_str = (
         f"{fb_val} (${val_usd} USD)"
         if fb_val is not None and val_usd is not None
         else (f"{fb_val}" if fb_val is not None else "N/A")
     )
-    if (lb_q := safe_float(eff_pos.get("locked_base_qty"), None)) is not None and lb_q > 0.0:
-        lb_u = safe_float(eff_pos.get("locked_base_usd"), None)
-        lb_u_s = f" (${lb_u:.2f} USD)" if lb_u is not None and lb_u > 0.0 else ""
+    if (lb_q := pv["locked_base_qty"]) is not None:
+        lb_u = pv["locked_base_usd"]
+        lb_u_s = f" (${lb_u:.2f} USD)" if lb_u is not None else ""
         fb_str += f", locked_base_qty={lb_q:g}{lb_u_s}"
-    fq_val = pos.get("free_quote")
-    pos_ident = resolve_symbol_identity(pos.get("symbol"))
-    is_tok_pos = pos_ident.is_tokenized_equity
-    disp_pos_sym = pos_ident.display_symbol if is_tok_pos else pos.get("symbol")
-    base_lbl = (
-        f"{canonical_base_asset(pos_ident.wire_symbol)}x"
-        if is_tok_pos
-        else (pos.get("base") or canonical_base_asset(str(disp_pos_sym or "")) or "BASE")
-    )
-    quote_lbl = pos.get("quote") or "USD"
-    fq_bd = pos.get("free_quote_breakdown")
+    fq_val = pv["free_quote"]
+    fq_bd_items = pv["free_quote_breakdown_items"]
     fq_bd_s = (
-        f" ({', '.join(f'{bk}=${safe_float(bv, 0.0):,.2f}' for bk, bv in fq_bd.items())})"
-        if isinstance(fq_bd, dict) and (len(fq_bd) > 1 or any(k != quote_lbl for k in fq_bd))
+        f" ({', '.join(f'{bk}=${bv:,.2f}' for bk, bv in fq_bd_items)})"
+        if fq_bd_items
         else ""
     )
     fq_str = f"${fq_val}{fq_bd_s}" if fq_val is not None else "N/A"
-    if (lq_u := safe_float(eff_pos.get("locked_quote_usd"), None)) is not None and lq_u > 0.0:
+    if (lq_u := pv["locked_quote_usd"]) is not None:
         fq_str += f", locked_quote_usd=${lq_u:.2f}"
-    px_disp = (
-        "None[pre_ipo_unlisted]"
-        if (is_tok_pos and pos.get("price") is None and not safe_pos_float(pos.get("free_base"), default=0.0))
-        else pos.get("price")
-    )
     return (
-        f"    - [{venue}] {disp_pos_sym}: free_{base_lbl}={fb_str}, "
-        f"free_{quote_lbl}={fq_str}, "
-        f"px={px_disp}{t_extra}"
+        f"    - [{pv['venue']}] {pv['disp_symbol']}: free_{pv['disp_base_lbl']}={fb_str}, "
+        f"free_{pv['quote_lbl']}={fq_str}, "
+        f"px={pv['px_disp']}{t_extra}"
     )
 
 
@@ -1324,11 +1214,11 @@ def _format_portfolio_section(
             cash_parts.append(part)
         if cash_parts:
             lines.append(f"  * Available Free Quote Cash per Venue: {', '.join(cash_parts)}")
-    view = evaluate_portfolio_prompt_view(ps, asset_scope=asset_scope)
-    if ps.get("tradable_positions"):
+    view = evaluate_portfolio_prompt_view(ps, asset_scope=asset_scope, max_usd=max_usd)
+    if view["tradable_positions"]:
         lines.append("  * Live Tradable Spot Instruments (Eligible for Autonomous BUY / SELL):")
-        for pos in ps["tradable_positions"]:
-            lines.append(_format_tradable_position_line(pos, max_usd=max_usd))
+        for pos_view in view["tradable_positions"]:
+            lines.append(_format_tradable_position_line(pos_view, max_usd=max_usd))
     if view["has_open_orders"]:
         lines.append(
             f"  * Active Open Orders on Exchange (Locking Liquidity) \u2014 open_limit_orders: {view['clean_open_limit_orders']}"

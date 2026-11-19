@@ -46,6 +46,7 @@ from .order_ohlc_utils import (
     extract_executed_qty,
     extract_orig_qty,
 )
+from .order_status_ssot import is_active_or_filled_status
 from .quantity import _floor_qty_decimals, round_provider_qty
 
 
@@ -364,11 +365,6 @@ def _is_unconfigured_mock_callable(fn: Any) -> bool:
     )
 
 
-_ACTIVE_OR_FILLED_ORDER_STATUSES = frozenset(
-    {"closed", "filled", "open", "new", "partially_filled", "pending", "working", "resting"}
-)
-
-
 def _call_inst_or_provider_order_lookup(inst: Any, method_name: str, order_ref: str) -> Any:
     sym = clean_scalar_str(getattr(inst, "symbol", None)) or ""
     inst_fn = getattr(inst, method_name, None)
@@ -403,8 +399,7 @@ def _missing_target_order_blocks_replacement(
     if not st_lc:
         return False
     raw_fq = st.get("filled_qty") if isinstance(st, dict) else getattr(st, "filled_qty", 0.0)
-    filled_q = safe_pos_float(raw_fq, default=0.0) or 0.0
-    return st_lc in _ACTIVE_OR_FILLED_ORDER_STATUSES or filled_q > 0.0
+    return is_active_or_filled_status(st_lc, raw_fq)
 
 
 def cancel_existing_ai_open_orders(
@@ -875,8 +870,7 @@ def reconcile_open_intent_by_client_id(
     st_lc = (clean_scalar_str(found.get("status")) or "").lower()
     filled_q = extract_executed_qty(found) or (safe_pos_float(found.get("filled_qty"), default=0.0) or 0.0)
     if (
-        st_lc in _ACTIVE_OR_FILLED_ORDER_STATUSES
-        or filled_q > 0.0
+        is_active_or_filled_status(st_lc, filled_q)
         or (st_lc in {"canceled", "cancelled", "expired"} and _missing_target_order_blocks_replacement(inst, oid_str))
     ):
         matched_cid = (clean_scalar_str(extract_client_order_id(found, default="")) or base_cid).lower()

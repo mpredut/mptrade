@@ -95,8 +95,8 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
 from intelligence.sentiment.evaluators.price_series_evaluator import (
-    _compute_kalman_from_series,
-    _compute_short_slopes_from_series,
+    compute_kalman_from_series,
+    compute_short_slopes_from_series,
     compute_24h_price_metrics,
     compute_cross_btc_metrics,
     compute_swing_wave_metrics,
@@ -4308,7 +4308,7 @@ def test_iteration22_diverged_fiat_series_overlay_and_micro_strip(tmp_path):
     assert "ob_mid_price" not in micro["BTCEUR"]
     assert micro["BTCEUR"]["long_liq_px"] < 74000.0 < micro["BTCEUR"]["short_liq_px"]
 
-    # 2. build_cross_market_context resolves T212 cycles keyed by base ticker via _first_variant_dict
+    # 2. build_cross_market_context resolves T212 cycles keyed by base ticker via first_variant_dict
     ctx = build_cross_market_context(
         {"NVDA_US_EQ": {"price": 138.5, "chg_1h_pct": 1.2}},
         {},
@@ -6462,9 +6462,9 @@ def test_iteration40_kraken_bot_fallback_unfilled_limit_status_dust_peak_and_ret
     assert _fmt_slope_val(-1.22e-8) == "+0.00000"
     assert _fmt_slope_val(2.72e-7) == "+2.72e-07"
 
-    # 9. _compute_kalman_from_series derives kalman_vel for non-Binance symbols from 24h series
+    # 9. compute_kalman_from_series derives kalman_vel for non-Binance symbols from 24h series
     synth_series = [[(1793375000 + i * 60) * 1000, 90.0 + i * 0.05] for i in range(30)]
-    k_res = _compute_kalman_from_series(synth_series)
+    k_res = compute_kalman_from_series(synth_series)
     assert isinstance(k_res, dict)
     assert k_res["kalman_vel"] > 0
 
@@ -8247,7 +8247,7 @@ def test_audit_remediations_a_through_g_and_crypto_completeness(tmp_path, monkey
 def test_production_deep_audit_cross_btc_alignment_sell_tranches_and_slopes(tmp_path):
     """Verify deep production audit fixes (Bugs H-O):
     - compute_cross_btc_metrics aligns 5m OHLC candle close timestamps (k*300s) with 1s tick timestamps (k*300s - 1s)
-    - _compute_short_slopes_from_series derives multi-horizon slopes & growth coefficients from 24h series
+    - compute_short_slopes_from_series derives multi-horizon slopes & growth coefficients from 24h series
     - _format_recent_order_line formats Recent SELL Tranches alongside Recent BUY Tranches
     - harvest_kraken_xstocks discovers .xstock_state.json (dotfile) as well as xstock_state.json
     """
@@ -8267,7 +8267,7 @@ def test_production_deep_audit_cross_btc_alignment_sell_tranches_and_slopes(tmp_
     assert cross.get("corr_btc_24h", 0.0) > 0.5
 
     # 2. Fallback multi-horizon slopes from 24h series
-    slopes = _compute_short_slopes_from_series(alt_5m)
+    slopes = compute_short_slopes_from_series(alt_5m)
     assert "slope_3_7m" in slopes and "slope_15m" in slopes and "slope_2_5h" in slopes
     assert "growth_15m" in slopes
 
@@ -8917,11 +8917,11 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations(tmp_path):
     assert m_btc_ext.get("prior_6h_low_px") == 75605.27
     assert m_btc_ext.get("recent_1h_low_px") == 75525.01
 
-    # 9. _compute_kalman_from_series backward-anchored subsampling avoids 15s tail-step velocity discontinuity
+    # 9. compute_kalman_from_series backward-anchored subsampling avoids 15s tail-step velocity discontinuity
 
     base_10s = [[(1_793_860_000 + i * 10) * 1000, 100.0 - i * 0.01] for i in range(180)]
-    k_14s = _compute_kalman_from_series(base_10s + [[(1_793_860_000 + 180 * 10 + 4) * 1000, 98.20]])
-    k_16s = _compute_kalman_from_series(base_10s + [[(1_793_860_000 + 180 * 10 + 6) * 1000, 98.20]])
+    k_14s = compute_kalman_from_series(base_10s + [[(1_793_860_000 + 180 * 10 + 4) * 1000, 98.20]])
+    k_16s = compute_kalman_from_series(base_10s + [[(1_793_860_000 + 180 * 10 + 6) * 1000, 98.20]])
     assert k_14s is not None and k_16s is not None
     assert k_14s["kalman_vel"] < 0.0 and k_16s["kalman_vel"] < 0.0
     assert abs(k_14s["kalman_vel"] - k_16s["kalman_vel"]) < 0.005

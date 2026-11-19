@@ -54,11 +54,13 @@ from providers.order_id_context import (
 )
 from providers.order_ohlc_utils import (
     _EXEC_QTY_KEYS,
-    _NON_FILL_ORDER_STATUSES,
-    _NON_FILL_SUBMISSION_STATES,
     aggregate_fills_by_order_id,
     extract_executed_qty,
     extract_orig_qty,
+)
+from providers.order_status_ssot import (
+    NON_FILL_ORDER_STATUSES,
+    is_non_fill_order_status,
 )
 from providers.intent_state import (
     extract_intent_order_type,
@@ -739,8 +741,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
             if isinstance(o, dict) and (
                 extract_executed_qty(o, default=0.0) > 0.0
                 or (
-                    str(o.get("status") or "").strip().upper() not in _NON_FILL_ORDER_STATUSES
-                    and str(o.get("submission_state") or "").strip().lower() not in _NON_FILL_SUBMISSION_STATES
+                    not is_non_fill_order_status(o.get("status"), o.get("submission_state"))
                     and not any(k in o for k in explicit_exec_keys)
                 )
             )
@@ -802,7 +803,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                 or str(exec_pay.get("msg") or "").strip().lower().startswith("filled ")
             )
             is_confirmed_fill = exec_st in ("FILLED", "PARTIALLY_FILLED", "CLOSED") or (
-                has_explicit_exec_q and exec_st not in _NON_FILL_ORDER_STATUSES
+                has_explicit_exec_q and exec_st not in NON_FILL_ORDER_STATUSES
             )
             if (
                 symbols_match_intent_scope_and_quote(i_sym, fallback_sym)

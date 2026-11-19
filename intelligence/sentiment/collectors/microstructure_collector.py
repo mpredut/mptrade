@@ -63,7 +63,7 @@ CacheAssetValueManager: Any = None
 CacheAccountManagerBase: Any = None
 
 
-def _ensure_cacheprice_classes_bound() -> None:
+def ensure_cacheprice_classes_bound() -> None:
     global Cache24PriceManager, Cache365PriceManager, CacheCurrentPriceManager, CachePriceManagerBase, CacheSparsePriceManager
     global CacheShortTrendManager, CacheLongTrendManager, CacheOrderManager, CacheTradeManager, CacheAssetValueManager
     global CacheAccountManagerBase
@@ -125,10 +125,10 @@ from intelligence.macro_sentiment_ssot import (
     resolve_read_json_cached,
     same_callable_anchor,
     save_microstructure_cycle_history,
-    _parse_ts_px_row,
+    parse_ts_px_row,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
-    _first_variant_dict,
+    first_variant_dict,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
     reconcile_spot_and_orderbook_microstructure,
@@ -152,12 +152,12 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     resolve_asset_session_policy,
     round_opt_px,
     sort_ts_rows,
-    _apply_24h_series_enrichment,
-    _LAST_7D_SPAN_MS_BY_SYM,
-    _load_stitched_24h_ohlc_points,
+    apply_24h_series_enrichment,
+    LAST_7D_SPAN_MS_BY_SYM,
+    load_stitched_24h_ohlc_points,
     _RTH_VP_ANCHOR_KEYS,
     _SHORT_SLOPE_OVERRIDE_KEYS,
-    _STALE_SHORT_24H_KEYS,
+    STALE_SHORT_24H_KEYS,
 )
 from instrument_registry import (
     casefold_get,
@@ -184,7 +184,7 @@ _FALLBACK_PROVIDER_OHLC_FNS: Dict[str, Any] = {}
 _FALLBACK_OHLC_SERIES_CACHE: Dict[Tuple[str, Any, str, int], Tuple[float, Any, Any]] = {}
 _PRICE_SERIES_MEMO: Dict[Tuple[str, str, bool, Tuple[str, ...]], Tuple[Any, list, list, float]] = {}
 _ARCH_FILE_MEMO: Dict[Tuple[str, int, Tuple[str, ...]], Tuple[Tuple[int, int], list]] = {}
-_EQ_YAHOO_CHART_MEMO: Dict[str, Tuple[float, Any]] = {}
+EQ_YAHOO_CHART_MEMO: Dict[str, Tuple[float, Any]] = {}
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
 
@@ -249,7 +249,7 @@ def _wrap_cached_ohlc_fn(
     return _cached_ohlc
 
 
-def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = None) -> Optional[Any]:
+def resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = None) -> Optional[Any]:
     sym_u = str(sym or "").strip().upper()
     sym_clean = clean_symbol_key(sym_u)
     inst_map = inst_by_sym or {}
@@ -278,7 +278,7 @@ def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = 
     return None
 
 
-def _load_stitched_7d_ohlc_closes(
+def load_stitched_7d_ohlc_closes(
     ohlc_fn: Any,
     sym: str,
     now_ts: float,
@@ -417,7 +417,7 @@ def _read_archive_series_file(
 ) -> list:
     if not os.path.exists(arch_path):
         return []
-    _ensure_cacheprice_classes_bound()
+    ensure_cacheprice_classes_bound()
     try:
         if arch_path.endswith(".json"):
             aser = sort_ts_rows(_extract_cached_items_series(_rj(arch_path), cands))
@@ -474,7 +474,7 @@ def resolve_cached_btc_24h_change_pct(
     """Return BTC 24h percentage change from cached 24h BTCUSDC/BTCUSDT price series if available."""
     if not cache_dir:
         return None
-    _ensure_cacheprice_classes_bound()
+    ensure_cacheprice_classes_bound()
     btc_24h_files = dict.fromkeys(
         fn
         for s in ("BTCUSDC", "BTCUSDT")
@@ -833,7 +833,7 @@ _LAST_T212_PORTFOLIO_POLL_TS: float = 0.0
 _ORIG_IS_SYMBOL_MARKET_OPEN = is_symbol_market_open
 
 
-def _refresh_stale_t212_cached_positions(
+def refresh_stale_t212_cached_positions(
     cached_bals: Dict[str, Any],
     bcache_path: Optional[str],
     now_ts: float,
@@ -989,7 +989,7 @@ def upgrade_tpo_vp_from_ohlc(
     if not s24_is_live_clock:
         return
     if ohlc_fn is None and eff_allow_net:
-        ohlc_fn = _resolve_fallback_ohlc_fn(sym, inst_by_sym)
+        ohlc_fn = resolve_fallback_ohlc_fn(sym, inst_by_sym)
     has_local_ohlc_cache = bool(cache_dir and os.path.isdir(cache_dir))
     if not (
         callable(ohlc_fn)
@@ -999,7 +999,7 @@ def upgrade_tpo_vp_from_ohlc(
     ):
         return
     try:
-        pts_vp = _load_stitched_24h_ohlc_points(
+        pts_vp = load_stitched_24h_ohlc_points(
             ohlc_fn if eff_allow_net else None,
             sym,
             now_ts - 86400.0,
@@ -1055,7 +1055,7 @@ class PriceSeriesCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
     """Abstract base contract (Level 2) for price-series cache collectors (24h, 365d, sparse, watcher, live, Yahoo 5d)."""
 
     cls_name = "PriceSeriesCacheCollectorBase"
-    _on_collector_init = staticmethod(_ensure_cacheprice_classes_bound)
+    _on_collector_init = staticmethod(ensure_cacheprice_classes_bound)
 
 
 class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
@@ -1092,7 +1092,7 @@ class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
                 interval="5m",
             )
             if is_live_network_backfill_enabled():
-                lru_dict_put(_EQ_YAHOO_CHART_MEMO, symbol, (eff_now, chart_res), 16)
+                lru_dict_put(EQ_YAHOO_CHART_MEMO, symbol, (eff_now, chart_res), 16)
         return normalize_yahoo_5d_chart_bars(chart_res, raw_s24, eff_now, eq_rth_open=eq_rth_open)
 
 
@@ -1127,7 +1127,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         is_eq_sym = is_eq_sym_load or ident.is_rth_equity
         eff_quotes = quotes if quotes is not None else compatible_quote_suffixes(symbol)
         cands = list(ident.candidate_cache_symbols(include_base="USD" in eff_quotes, quotes=eff_quotes))
-        _ensure_cacheprice_classes_bound()
+        ensure_cacheprice_classes_bound()
         _rj_cand = _resolve_read_json_cached()
         is_default_rj = _rj_cand is _default_read_json_cached
         _rj = read_json_recovering if is_default_rj else _rj_cand
@@ -1158,7 +1158,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                 memo_file_sig, memo_cur_sig = tuple(stat_list), tuple(cur_list)
                 cached_entry = _PRICE_SERIES_MEMO.get(memo_key)
                 if cached_entry is not None and cached_entry[0] == memo_file_sig and cached_entry[1] == memo_cur_sig:
-                    _LAST_7D_SPAN_MS_BY_SYM[sym_u] = cached_entry[4]
+                    LAST_7D_SPAN_MS_BY_SYM[sym_u] = cached_entry[4]
                     return list(cached_entry[2]), list(cached_entry[3])
             except Exception:
                 memo_key = None
@@ -1186,7 +1186,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                 ser = session_policy.clean_raw_24h_series(raw_ser, symbol)
                 if len(ser) >= 2:
                     series_24h = list(ser) if not series_24h else prepend_older_non_diverged_points(series_24h, ser)
-                    p0, p1 = _parse_ts_px_row(series_24h[0]), _parse_ts_px_row(series_24h[-1])
+                    p0, p1 = parse_ts_px_row(series_24h[0]), parse_ts_px_row(series_24h[-1])
                     span_24h_ms = max(0.0, p1[0] - p0[0]) if (p0 and p1) else 0.0
                     break
             if series_24h and span_24h_ms >= 3600000.0 * 18:
@@ -1212,7 +1212,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                     break
             if cand_arch:
                 archive_pts = cand_arch if not archive_pts else prepend_older_non_diverged_points(archive_pts, cand_arch)
-                a0, a1 = _parse_ts_px_row(archive_pts[0]), _parse_ts_px_row(archive_pts[-1])
+                a0, a1 = parse_ts_px_row(archive_pts[0]), parse_ts_px_row(archive_pts[-1])
                 arch_span_ms = (a1[0] - a0[0]) if (a0 and a1) else 0.0
                 if include_7d and arch_span_ms < 5.0 * 86400.0 * 1000.0 and not sparse_7d_pts:
                     for sp_path in _candidate_cache_paths(
@@ -1224,7 +1224,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                         if sp_rows := _read_archive_series_file(
                             sp_path, cands, cands_upper, cands_upper_tup, _rj, is_default_rj, max_b=512 * 1024
                         ):
-                            sp0, sp1 = _parse_ts_px_row(sp_rows[0]), _parse_ts_px_row(sp_rows[-1])
+                            sp0, sp1 = parse_ts_px_row(sp_rows[0]), parse_ts_px_row(sp_rows[-1])
                             if (
                                 sp0
                                 and sp1
@@ -1260,18 +1260,18 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         series_24h, vals_7d, arch_7d_end_ts, arch_7d_span_ms = extract_archive_24h_and_7d_slices(
             archive_pts, sparse_7d_pts, watcher_7d_pts, series_24h, symbol, need_24h_supplement, watcher_cutoff_24h
         )
-        _LAST_7D_SPAN_MS_BY_SYM[sym_u] = arch_7d_span_ms
+        LAST_7D_SPAN_MS_BY_SYM[sym_u] = arch_7d_span_ms
         if isinstance(current_price_items, dict) and current_price_items:
-            last_24_pt = _parse_ts_px_row(series_24h[-1]) if series_24h else None
+            last_24_pt = parse_ts_px_row(series_24h[-1]) if series_24h else None
             for cand in cands:
                 cur_item = casefold_get(current_price_items, cand)
                 if isinstance(cur_item, list) and cur_item:
                     cand_pts = [
                         [pt[0], pt[1]]
                         for pt in cur_item
-                        if isinstance(pt, (list, tuple)) and len(pt) >= 2 and _parse_ts_px_row(pt) is not None
+                        if isinstance(pt, (list, tuple)) and len(pt) >= 2 and parse_ts_px_row(pt) is not None
                     ]
-                    cand_last = _parse_ts_px_row(cand_pts[-1]) if cand_pts else None
+                    cand_last = parse_ts_px_row(cand_pts[-1]) if cand_pts else None
                     if cand_pts and cand_last is not None:
                         if last_24_pt is not None and _prices_diverged(last_24_pt[1], cand_last[1]):
                             continue
@@ -1323,12 +1323,12 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         return series_24h, vals_7d
 
 
-def _resolve_live_24trend_current_price(
+def resolve_live_24trend_current_price(
     cachedb_dir: str, sym_u: str, rj_fn
 ) -> Optional[float]:
     if not cachedb_dir:
         return None
-    _ensure_cacheprice_classes_bound()
+    ensure_cacheprice_classes_bound()
     l24_s = rj_fn(
         os.path.join(
             cachedb_dir,
@@ -1437,7 +1437,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             and not any(t in inst_map for t in t212_seed_tickers)
             and _rj in (_default_read_json_cached, read_json_recovering, read_json_cached)
         ):
-            _refresh_stale_t212_cached_positions(cached_bals, bcache_path, eff_now)
+            refresh_stale_t212_cached_positions(cached_bals, bcache_path, eff_now)
         for ticker in t212_seed_tickers:
             cached_pos = cached_bals.get(f"pos:t212:{ticker}")
             cached_t212_px = safe_pos_float(cached_pos.get("price") if isinstance(cached_pos, dict) else None, default=None)
@@ -1446,7 +1446,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 t212_cached_px[ticker] = cached_t212_px
             pos_ts_val = safe_pos_float(cached_pos.get("ts") if isinstance(cached_pos, dict) else None, default=None)
             cp_raw = cp_map.get(ticker) if isinstance(cp_map, dict) else None
-            cp_pt = _parse_ts_px_row(cp_raw[-1]) if isinstance(cp_raw, list) and cp_raw else None
+            cp_pt = parse_ts_px_row(cp_raw[-1]) if isinstance(cp_raw, list) and cp_raw else None
             if (
                 pos_ts_val is not None
                 and cached_t212_px is not None
@@ -1556,13 +1556,13 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         eff_now: float,
     ) -> Tuple[list, Dict[str, Any], float, List[float], Optional[float], bool]:
         is_t212_inst = sym in inst_map and is_equity_venue(getattr(inst_map[sym], "provider_name", ""))
-        _ensure_cacheprice_classes_bound()
+        ensure_cacheprice_classes_bound()
         p24_eq_path = (
             str(resolve_cachedb_filepath(os.path.join(cachedb_dir, Cache24PriceManager.disk_filename_for_symbol(sym))))
             if cachedb_dir and is_eq_sym
             else ""
         )
-        memo_chart = _EQ_YAHOO_CHART_MEMO.get(sym) if (is_eq_sym and is_live_network_backfill_enabled()) else None
+        memo_chart = EQ_YAHOO_CHART_MEMO.get(sym) if (is_eq_sym and is_live_network_backfill_enabled()) else None
         memo_ttl_s = 240.0
         eq_rth_open = False
         if is_eq_sym:
@@ -1661,7 +1661,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     matched_series_24h = pts_24h
                     post_rth_px_override = None
                     if not rth_bar_fresh or px_diverged_05pct:
-                        for k_stale in _STALE_SHORT_24H_KEYS:
+                        for k_stale in STALE_SHORT_24H_KEYS:
                             m24.pop(k_stale, None)
                         if px_diff_from_chart:
                             post_rth_px_override = round(sym_px_cur, 4)
@@ -1707,10 +1707,10 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         else:
             matched_series_24h, arch_vals_7d = load_symbol_price_series(cachedb_dir, sym, current_price_items=cp_map)
         raw_matched_series_24h = list(matched_series_24h)
-        raw_s24_last_pt = _parse_ts_px_row(matched_series_24h[-1]) if matched_series_24h else None
+        raw_s24_last_pt = parse_ts_px_row(matched_series_24h[-1]) if matched_series_24h else None
         raw_s24_last_ts_ms = raw_s24_last_pt[0] if raw_s24_last_pt is not None else 0.0
         if sym_px_cur > 0 and matched_series_24h:
-            last_24_pt = _parse_ts_px_row(matched_series_24h[-1])
+            last_24_pt = parse_ts_px_row(matched_series_24h[-1])
             last_24_px = last_24_pt[1] if last_24_pt is not None else safe_float(matched_series_24h[-1][1], 0.0)
             eff_t212_ts = t212_pos_ts.get(sym, 0.0)
             if (
@@ -1765,8 +1765,8 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 pt_map[sym]["price"] = matched_series_24h[-1][1]
             elif arch_vals_7d:
                 pt_map[sym]["price"] = arch_vals_7d[-1]
-        s24_p0 = _parse_ts_px_row(matched_series_24h[0]) if len(matched_series_24h) >= 2 else None
-        s24_p1 = _parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
+        s24_p0 = parse_ts_px_row(matched_series_24h[0]) if len(matched_series_24h) >= 2 else None
+        s24_p1 = parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
         span_24h_ms = max(0.0, s24_p1[0] - s24_p0[0]) if (s24_p0 and s24_p1) else 0.0
         m24: Dict[str, Any] = compute_24h_price_metrics(matched_series_24h) or {} if matched_series_24h else {}
         matched_series_24h, m24, post_rth_px_override, post_rth_series_replaced = session_policy.evaluate_post_rth_override(
@@ -1776,7 +1776,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             eff_now,
             entry=pt_map[sym],
         )
-        arch_span_7d_ms = _LAST_7D_SPAN_MS_BY_SYM.get(sym.upper(), 0.0)
+        arch_span_7d_ms = LAST_7D_SPAN_MS_BY_SYM.get(sym.upper(), 0.0)
         active_7d_vals: List[float] = []
         if arch_vals_7d and len(arch_vals_7d) >= 2 and (
             is_eq_sym
@@ -1795,7 +1795,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 pt_map[sym]["_partial_7d_span_ms"] = arch_span_7d_ms
             else:
                 pt_map[sym].pop("_partial_7d_span_ms", None)
-        ohlc_fn = _resolve_fallback_ohlc_fn(sym, inst_map) if allow_network else None
+        ohlc_fn = resolve_fallback_ohlc_fn(sym, inst_map) if allow_network else None
         s24_is_live_clock = (
             raw_s24_last_ts_ms <= 0.0
             or abs(eff_now * 1000.0 - raw_s24_last_ts_ms) <= 30 * 60 * 1000.0
@@ -1804,7 +1804,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         if allow_network and callable(ohlc_fn) and s24_is_live_clock:
             if not m24 or (0.0 < span_24h_ms < 18 * 3600 * 1000):
                 try:
-                    pts_24h = _load_stitched_24h_ohlc_points(ohlc_fn, sym, eff_now - 86400.0)
+                    pts_24h = load_stitched_24h_ohlc_points(ohlc_fn, sym, eff_now - 86400.0)
                     if not m24:
                         if m24 := (compute_24h_price_metrics(pts_24h) or {}):
                             matched_series_24h = pts_24h
@@ -1823,7 +1823,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 or pt_map[sym].get("_partial_7d_span_ms") is not None
             ):
                 try:
-                    vals_7d = _load_stitched_7d_ohlc_closes(ohlc_fn, sym, eff_now, m24, sym_px_cur)
+                    vals_7d = load_stitched_7d_ohlc_closes(ohlc_fn, sym, eff_now, m24, sym_px_cur)
                     if len(vals_7d) >= 2 and ("chg_7d_pct" not in pt_map[sym] or len(vals_7d) >= 24):
                         for k_7d_opt in ("major_swing_low_px", "rally_from_major_low_pct", "recent_swings_7d", "avg_swing_amp_7d_pct"):
                             pt_map[sym].pop(k_7d_opt, None)
@@ -1870,7 +1870,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             if is_eq_sym and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")):
                 for k_stale_15m in ("recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
                     m24.pop(k_stale_15m, None)
-            _apply_24h_series_enrichment(sym, pt_map[sym], m24, matched_series_24h, btc_series_24h)
+            apply_24h_series_enrichment(sym, pt_map[sym], m24, matched_series_24h, btc_series_24h)
             session_policy.prune_stale_short_metrics(
                 pt_map[sym],
                 m24,
@@ -1917,7 +1917,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         is_exact_ob_sym = clean_symbol_key(src_cand_u) == clean_symbol_key(sym)
         cross_venue_collision = (not is_exact_ob_sym) and (src_cand_u in inst_map) and (sym in inst_map)
         cp_raw_sym = casefold_get(cp_map, sym)
-        cp_last_pt = _parse_ts_px_row(cp_raw_sym[-1]) if isinstance(cp_raw_sym, list) and cp_raw_sym else None
+        cp_last_pt = parse_ts_px_row(cp_raw_sym[-1]) if isinstance(cp_raw_sym, list) and cp_raw_sym else None
         eff_last_series_pt = (
             cp_last_pt
             if (cp_last_pt is not None and (raw_s24_last_pt is None or cp_last_pt[0] >= raw_s24_last_pt[0]))
@@ -2000,7 +2000,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             ob_ref_ts = safe_pos_float(m_info_ref.pop("_ob_ts", None), default=0.0) or 0.0
             msym_quotes = compatible_quote_suffixes(msym)
             msym_ident = resolve_symbol_identity(msym)
-            p_ref = _first_variant_dict(
+            p_ref = first_variant_dict(
                 pt_map,
                 list(msym_ident.candidate_cache_symbols(include_base="USD" in msym_quotes, quotes=msym_quotes)),
             )
@@ -2012,7 +2012,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 if is_fiat_usd_pair(msym) and ob_mid_sib is not None:
                     sib_live_px = extract_current_price_item(casefold_get(cp_map, msym))
                     if (not sib_live_px or sib_live_px <= 0.0) and cachedb_dir:
-                        sib_live_px = _resolve_live_24trend_current_price(cachedb_dir, msym, _rj)
+                        sib_live_px = resolve_live_24trend_current_price(cachedb_dir, msym, _rj)
                         if not sib_live_px or sib_live_px <= 0.0:
                             if ob_ref_ts <= 0.0:
                                 ob_ref_d = _rj(os.path.join(cachedb_dir, f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{msym.upper()}.json"))
@@ -2048,9 +2048,9 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 ser_24h, vals_7d = load_symbol_price_series(cachedb_dir, msym, current_price_items=cp_map)
                 if not ser_24h and allow_network and is_fiat_usd_pair(msym) and is_live_network_backfill_enabled():
                     try:
-                        krk_ohlc_fn = _resolve_fallback_ohlc_fn(msym, inst_map)
+                        krk_ohlc_fn = resolve_fallback_ohlc_fn(msym, inst_map)
                         if callable(krk_ohlc_fn):
-                            ser_24h = _load_stitched_24h_ohlc_points(krk_ohlc_fn, msym, eff_now - 86400.0)
+                            ser_24h = load_stitched_24h_ohlc_points(krk_ohlc_fn, msym, eff_now - 86400.0)
                             last_ser_px = safe_pos_float(ser_24h[-1][1], default=None) if ser_24h else None
                             if (
                                 ref_px is not None
@@ -2060,7 +2060,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                             ):
                                 ser_24h.append([math.trunc(eff_now * 1000), ref_px])
                             if len(vals_7d) < 2:
-                                vals_7d = _load_stitched_7d_ohlc_closes(krk_ohlc_fn, msym, eff_now, None, ref_px or 0.0)
+                                vals_7d = load_stitched_7d_ohlc_closes(krk_ohlc_fn, msym, eff_now, None, ref_px or 0.0)
                     except Exception:
                         pass
                 if ref_px is None and ser_24h:
@@ -2070,7 +2070,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     if m_info_ref.get("spread_bps") is not None:
                         p_ref["spread_bps"] = m_info_ref["spread_bps"]
                     if ser_24h and (m24_ref := compute_24h_price_metrics(ser_24h)):
-                        _apply_24h_series_enrichment(msym, p_ref, m24_ref, ser_24h, btc_series_24h)
+                        apply_24h_series_enrichment(msym, p_ref, m24_ref, ser_24h, btc_series_24h)
                     if vals_7d and len(vals_7d) >= 2:
                         if not _prices_diverged(ref_px, safe_float(vals_7d[-1], 0.0)) and abs(ref_px - safe_float(vals_7d[-1], 0.0)) > 1e-9:
                             vals_7d = list(vals_7d) + [ref_px]
@@ -2189,19 +2189,25 @@ def enrich_24h_and_microstructure(
 
 __all__ = [
     "CompositeSymbolPriceSeriesLoader",
+    "EQ_YAHOO_CHART_MEMO",
     "EquityYahoo5dChartCollector",
     "Fleet24hAndMicrostructureEnricher",
     "MicrostructureCacheCollectorBase",
     "PriceSeriesCacheCollectorBase",
     "SymbolMicrostructureSnapshotCollector",
     "_iter_t212_state_files",
-    "_refresh_stale_t212_cached_positions",
     "discover_reference_microstructure_symbols",
     "enrich_24h_and_microstructure",
+    "ensure_cacheprice_classes_bound",
     "ensure_fresh_symbol_microstructure",
     "load_microstructure_cycle_history",
+    "load_stitched_7d_ohlc_closes",
     "load_symbol_microstructure",
     "load_symbol_price_series",
+    "refresh_stale_t212_cached_positions",
     "resolve_cached_btc_24h_change_pct",
+    "resolve_fallback_ohlc_fn",
+    "resolve_live_24trend_current_price",
     "save_microstructure_cycle_history",
+    "upgrade_tpo_vp_from_ohlc",
 ]

@@ -175,7 +175,7 @@ def _harvest_initial_prices_and_trends_impl(
     for sym, px in price_map.items():
         prices_and_trends.setdefault(sym, {"price": px, "trend": 0, "growth_coefficient": 0.0})
 
-    _mc._ensure_cacheprice_classes_bound()
+    _mc.ensure_cacheprice_classes_bound()
     st_cls = _mc.CacheShortTrendManager
     lw_subdir = st_cls.LIVE_TREND_SUBDIR
     lw_prefix = st_cls.LIVE_FILE_PREFIX
@@ -886,7 +886,7 @@ class PortfolioAndVenueCyclesCollector(MacroTelemetryCollectorBase):
             portfolio_summary, prices_and_trends, microstructure, inst_by_sym
         )
         _rj = read_json_fn or read_json_cached
-        _mc._ensure_cacheprice_classes_bound()
+        _mc.ensure_cacheprice_classes_bound()
         av_cls = _mc.CacheAssetValueManager
         last_av = read_last_jsonl_dict(os.path.join(cachedb_dir, av_cls.DEFAULT_FILENAME), tail_bytes=2048)
         if av_summary := av_cls.extract_asset_value_summary(last_av, now_ts=now_ts):
@@ -968,7 +968,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             snapshot.market_breadth = None
             snapshot.sentiment_advisor = None
 
-        _mc._ensure_cacheprice_classes_bound()
+        _mc.ensure_cacheprice_classes_bound()
         prices_data = _rj(os.path.join(cache_dir, _mc.CacheCurrentPriceManager.DEFAULT_FILENAME))
         trends_data = _rj(os.path.join(cache_dir, _mc.CacheShortTrendManager.DEFAULT_FILENAME))
         long_trends_data = _rj(os.path.join(cache_dir, _mc.CacheLongTrendManager.DEFAULT_FILENAME))

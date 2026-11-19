@@ -532,6 +532,9 @@ def all_venue_native_client_order_ids(client_order_id: Any) -> set[str]:
     return out
 
 
+_UUID_HEX_SUFFIX_RE = re.compile(r"([0-9a-fA-F]{32})$")
+
+
 def format_venue_intent_client_order_id(venue: Any, token: str) -> Optional[str]:
     """Format a 32-hex intent token into the venue's clientOrderId format (or ``None`` when unsupported)."""
     if isinstance(token, bool) or not isinstance(token, str) or not token.strip():
@@ -539,3 +542,47 @@ def format_venue_intent_client_order_id(venue: Any, token: str) -> Optional[str]
     prov_cls = resolve_venue_provider_class(venue)
     fmt = getattr(prov_cls, "_INTENT_CLIENT_ID_FORMAT", None) if prov_cls is not None else None
     return fmt.format(token=token.strip()) if isinstance(fmt, str) and fmt else None
+
+
+def derive_ai_intent_client_order_id(intent_id: Any) -> Optional[str]:
+    """Durable ``AI_`` client ID of an autonomous intent (<= 36 chars, Binance newClientOrderId compatible)."""
+    raw = clean_order_id(intent_id) or ""
+    if not raw:
+        return None
+    cid_body = (
+        f"{raw[:18]}_{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:6]}_{raw[-7:]}"
+        if len(raw) > 33
+        else raw
+    )
+    return f"AI_{cid_body}"
+
+
+def derive_executor_intent_client_order_id(venue: Any, intent_id: Any) -> Optional[str]:
+    """Encode a strategy-executor intent ID into the venue's deterministic 128-bit clientOrderId format."""
+    if isinstance(intent_id, (bool, list, tuple, dict, set, frozenset)):
+        return None
+    raw = clean_order_id(intent_id)
+    if not raw:
+        return None
+    match = _UUID_HEX_SUFFIX_RE.search(raw)
+    token = (
+        match.group(1).lower()
+        if match
+        else hashlib.blake2s(raw.encode("utf-8"), digest_size=16).hexdigest()
+    )
+    v_slug = sanitize_identifier(venue, sep="-", allow_dots_hyphens=True, strip_chars="-").lower()
+    return format_venue_intent_client_order_id(normalize_venue_name(v_slug) or v_slug, token)
+
+
+def all_correlatable_client_order_ids(identifier: Any) -> set[str]:
+    """Return all lowercase clientOrderId forms (raw, AI_, executor 128-bit, venue-native) for ``identifier``."""
+    raw = clean_order_id(identifier)
+    if not raw:
+        return set()
+    out = set(all_venue_native_client_order_ids(raw))
+    if ai_cid := derive_ai_intent_client_order_id(raw):
+        out.update(all_venue_native_client_order_ids(ai_cid))
+    for venue_key in VENUE_PROVIDER_SPECS:
+        if exec_cid := derive_executor_intent_client_order_id(venue_key, raw):
+            out.add(exec_cid.lower())
+    return out

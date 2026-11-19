@@ -16,8 +16,6 @@ from botcore import (
     safe_pos_float,
 )
 from .execution_audit import (
-    _OPEN_WORKING_STATUSES,
-    _TERMINAL_CANCEL_STATUSES,
     _extract_audit_fill_metrics,
     _read_audit_intent_records,
     iter_audit_jsonl_paths,
@@ -38,15 +36,14 @@ from .intent_telemetry import (  # noqa: F401
     summarize_recent_ai_intents,
 )
 from .order_ohlc_utils import extract_executed_qty
-
-_CANCEL_OR_EXPIRE_VENUE_STATUSES = frozenset({"CANCELED", "CANCELLED", "EXPIRED", "REJECTED"})
-_CANCEL_OR_EXPIRE_LOCAL_STATUSES = frozenset({"canceled", "cancelled", "expired", "rejected"})
-_ACCEPTED_WORKING_VENUE_STATUSES = frozenset({"NEW", "OPEN", "RESTING", "PENDING", "WORKING"})
-
-
-def _is_cancel_or_expire_status(v_stat: str, l_stat: str) -> bool:
-    """Return True when either venue or local status represents a terminal cancel/expire/reject."""
-    return v_stat in _CANCEL_OR_EXPIRE_VENUE_STATUSES or l_stat in _CANCEL_OR_EXPIRE_LOCAL_STATUSES
+from .order_status_ssot import (
+    ACCEPTED_WORKING_VENUE_STATUSES,
+    CANCEL_OR_EXPIRE_VENUE_STATUSES,
+    OPEN_WORKING_OR_EMPTY_VENUE_STATUSES,
+    RECONCILABLE_AI_INTENT_STATUSES,
+    TERMINAL_CANCEL_VENUE_STATUSES,
+    is_cancel_or_expire_status,
+)
 
 
 def _classify_audit_fill_state(
@@ -56,7 +53,7 @@ def _classify_audit_fill_state(
 ) -> tuple[str, bool]:
     """Return ``(norm_venue_status, is_terminal)`` for an audit record where ``is_fill`` is True."""
     is_full_fill = v_stat in ("FILLED", "CLOSED") or l_stat in ("closed", "filled")
-    is_cancel_or_expire = _is_cancel_or_expire_status(v_stat, l_stat)
+    is_cancel_or_expire = is_cancel_or_expire_status(v_stat, l_stat)
     is_partial = (
         v_stat == "PARTIALLY_FILLED"
         or l_stat == "partially_filled"
@@ -96,7 +93,7 @@ def _partition_intents_for_audit_reconciliation(
         if not clean_id:
             continue
         st_up = clean_upper_scalar(item.get("status")) or ""
-        if st_up in ("FAILED", "PENDING", "PENDING_EXECUTION", "SUBMIT_UNKNOWN"):
+        if st_up in RECONCILABLE_AI_INTENT_STATUSES:
             failed_by_id[clean_id] = item
         elif st_up == "EXECUTED":
             exec_pay = item.get("execution_payload") if isinstance(item.get("execution_payload"), dict) else {}
@@ -121,7 +118,7 @@ def _partition_intents_for_audit_reconciliation(
                     and (
                         (
                             not needs_ts_backfill
-                            and cur_v_st in _OPEN_WORKING_STATUSES
+                            and cur_v_st in OPEN_WORKING_OR_EMPTY_VENUE_STATUSES
                             and extract_executed_qty(exec_pay, default=0.0) <= 0.0
                         )
                         or (needs_ts_backfill and cur_v_st in ("CANCELED", "CANCELLED"))
@@ -138,7 +135,7 @@ def _partition_intents_for_audit_reconciliation(
                     item["execution_payload"] = exec_pay
                     updated = True
                     continue
-                if not needs_ts_backfill and cur_v_st in _TERMINAL_CANCEL_STATUSES:
+                if not needs_ts_backfill and cur_v_st in TERMINAL_CANCEL_VENUE_STATUSES:
                     continue
                 if not needs_ts_backfill and has_fill_metrics and not is_resting_msg and cur_v_st in ("", "FILLED", "CLOSED"):
                     continue
@@ -198,7 +195,7 @@ def _scan_matching_audit_records(
                     if is_fill:
                         if prev is None or not _is_terminal_fill_record(prev) or _is_terminal_fill_record(rec):
                             matched_records[iid] = rec
-                    elif not prev_is_fill and _is_cancel_or_expire_status(v_stat, l_stat):
+                    elif not prev_is_fill and is_cancel_or_expire_status(v_stat, l_stat):
                         prev_oid = clean_order_id(prev.get("order_id")) if prev is not None else None
                         cur_oid = clean_order_id(rec.get("order_id"))
                         if not prev_oid or not cur_oid or prev_oid == cur_oid:
@@ -226,7 +223,7 @@ def _scan_matching_audit_records(
                     elif (
                         ev in ("order_terminal", "order_terminal_retry")
                         and not prev_exec_is_fill
-                        and _is_cancel_or_expire_status(v_stat, l_stat)
+                        and is_cancel_or_expire_status(v_stat, l_stat)
                     ):
                         matched_exec_records[iid] = rec
     return matched_records, matched_exec_records, submitted_qty_by_id
@@ -287,12 +284,12 @@ def _apply_failed_intent_audit_record(
     is_cancel_terminal = (
         not is_fill
         and ev in ("order_terminal", "order_terminal_retry")
-        and _is_cancel_or_expire_status(v_stat, l_stat)
+        and is_cancel_or_expire_status(v_stat, l_stat)
     )
     if is_cancel_terminal:
         if st_up == "FAILED":
             return False
-        raw_v_status = v_stat if v_stat in _CANCEL_OR_EXPIRE_VENUE_STATUSES else l_stat.upper()
+        raw_v_status = v_stat if v_stat in CANCEL_OR_EXPIRE_VENUE_STATUSES else l_stat.upper()
         target_state, action_lbl, reason_val = "FAILED", "RECONCILED_TERMINAL", raw_v_status
         is_term = ev == "order_terminal"
         exec_qty_s, quote_qty_s = "0", ""
@@ -303,7 +300,7 @@ def _apply_failed_intent_audit_record(
         exec_qty_s = str(filled_qty) if filled_qty is not None else ""
         quote_qty_s = str(raw_cost) if raw_cost is not None else ""
     else:
-        raw_v_status = v_stat if v_stat in _ACCEPTED_WORKING_VENUE_STATUSES else "NEW"
+        raw_v_status = v_stat if v_stat in ACCEPTED_WORKING_VENUE_STATUSES else "NEW"
         target_state, action_lbl, reason_val = "EXECUTED", "RECONCILED_ACCEPTED", None
         is_term = False
         exec_qty_s = quote_qty_s = ""
@@ -376,17 +373,17 @@ def _apply_executed_intent_audit_record(
     elif ev in ("submit_accepted", "order_recovered"):
         if clean_rec_oid is not None:
             exec_pay["orderId"] = clean_rec_oid
-        exec_pay["status"] = v_stat if v_stat in _ACCEPTED_WORKING_VENUE_STATUSES else "NEW"
+        exec_pay["status"] = v_stat if v_stat in ACCEPTED_WORKING_VENUE_STATUSES else "NEW"
         if rec_ts is not None:
             exec_pay["accepted_at"] = rec_ts
         exec_pay.pop("terminal_ts", None)
         exec_pay.pop("reconciled_terminal", None)
-    elif cur_st in _OPEN_WORKING_STATUSES or (
+    elif cur_st in OPEN_WORKING_OR_EMPTY_VENUE_STATUSES or (
         _parse_bool_flag(exec_pay.get("reconciled_terminal"), False)
         and "terminal_ts" not in exec_pay
         and rec_ts is not None
     ):
-        norm_cancel = v_stat if v_stat in _CANCEL_OR_EXPIRE_VENUE_STATUSES else "CANCELED"
+        norm_cancel = v_stat if v_stat in CANCEL_OR_EXPIRE_VENUE_STATUSES else "CANCELED"
         exec_pay["status"] = norm_cancel
         if ev == "order_terminal":
             if rec_ts is not None:

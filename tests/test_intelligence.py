@@ -180,7 +180,7 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector, MarketBreadthSnapshot
 from intelligence.sentiment.collectors.microstructure_collector import (
     _filter_ohlc_closes_since,
-    _load_stitched_7d_ohlc_closes,
+    load_stitched_7d_ohlc_closes,
     discover_reference_microstructure_symbols,
     enrich_24h_and_microstructure,
     load_symbol_microstructure,
@@ -231,8 +231,8 @@ from intelligence.sentiment.evaluators.portfolio_evaluator import (
     reconcile_venue_cycles_with_recent_orders,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
-    _apply_24h_series_enrichment,
-    _compute_short_slopes_from_series,
+    apply_24h_series_enrichment,
+    compute_short_slopes_from_series,
     _extract_ohlc_series_points,
     _extract_sorted_ts_px,
     apply_live_24trend_windows,
@@ -2482,7 +2482,7 @@ def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision
 
 def test_iter58_5m_series_vol_breadth_greed_percent_scales_and_tca_variants(tmp_path, monkeypatch):
 
-    # 1. _apply_24h_series_enrichment computes vol_1h_pct on 5-minute OHLC series (12-13 pts in last 1h, >=20 pts total)
+    # 1. apply_24h_series_enrichment computes vol_1h_pct on 5-minute OHLC series (12-13 pts in last 1h, >=20 pts total)
     t0_ms = 1_710_000_000_000
     series_5m = [
         [t0_ms + i * 300_000, 100.0 + ((-1) ** i) * (0.4 + (i % 3) * 0.1)]
@@ -2490,7 +2490,7 @@ def test_iter58_5m_series_vol_breadth_greed_percent_scales_and_tca_variants(tmp_
     ]
     m24 = compute_24h_price_metrics(series_5m)
     entry_5m = {"price": series_5m[-1][1]}
-    _apply_24h_series_enrichment("TAOUSD", entry_5m, m24, series_5m, None)
+    apply_24h_series_enrichment("TAOUSD", entry_5m, m24, series_5m, None)
     assert entry_5m.get("vol_1h_pct") is not None and entry_5m["vol_1h_pct"] > 0.0
     assert entry_5m.get("adapt_reentry_pct") is not None and entry_5m["adapt_reentry_pct"] > 0.0
 
@@ -2747,7 +2747,7 @@ def test_iter61_whale_spread_flow_sentiment_advisor_and_price_series_ordering(mo
     sw = compute_swing_wave_metrics([[2000.0, 110.0], [1000.0, 100.0], [1500.0, 95.0]])
     assert sw["rally_from_swing_low_pct"] == pytest.approx(((110.0 / 95.0) - 1.0) * 100.0, abs=0.05)
 
-    slopes = _compute_short_slopes_from_series([[1700000180000.0, 103.0], [1700000000000.0, 100.0], [1700000090000.0, 101.5]])
+    slopes = compute_short_slopes_from_series([[1700000180000.0, 103.0], [1700000000000.0, 100.0], [1700000090000.0, 101.5]])
     assert slopes.get("slope_90s", 0.0) > 0.0
 
     ohlc_ms = SimpleNamespace(timestamps=[1700000120000.0, 1700000000000.0, 1700000060000.0], closes=[102.0, 100.0, 101.0], volumes=[10.0, 10.0, 10.0])
@@ -5476,10 +5476,10 @@ def test_iter88_cachetrend_adapt_thresholds_compact_repo_rules_whale_delta_4dec_
     assert cd["oi_delta_pct"] == pytest.approx(5.0)
     assert cd["prev_oi_usd"] == pytest.approx(1_200_000_000.0)
 
-    # 4. _apply_24h_series_enrichment backfills missing kalman_vel_std without clobbering seeded kalman_vel
+    # 4. apply_24h_series_enrichment backfills missing kalman_vel_std without clobbering seeded kalman_vel
     entry_k = {"price": 105.0, "kalman_vel": 0.123, "kalman_trend": 1}
     ser_24 = [[1_700_000_000_000 + i * 60_000, 100.0 + i * 0.2] for i in range(30)]
-    _apply_24h_series_enrichment("SOLUSDC", entry_k, {"chg_1h_pct": 1.0}, ser_24, None)
+    apply_24h_series_enrichment("SOLUSDC", entry_k, {"chg_1h_pct": 1.0}, ser_24, None)
     assert entry_k["kalman_vel"] == pytest.approx(0.123)
     assert entry_k.get("kalman_vel_std") is not None and entry_k["kalman_vel_std"] < 5.99
 
@@ -6481,7 +6481,7 @@ def test_iter18_pretrade_btc_7d_archive_precedence_and_post_rth_vp_invariance(tm
     """Iter 18:
     1. collect_pretrade_telemetry preserves >=5d BTC 7d archive series (btc_vals_7d) over a shorter 6.5d
        cache_watcher_all_price.json entry when computing vs_btc(..., 7d=...), and accepts positional cachedb_dir.
-    2. _load_stitched_7d_ohlc_closes stitches 240m bars when 60m bars span 5.0d..6.75d (e.g. 6.25d).
+    2. load_stitched_7d_ohlc_closes stitches 240m bars when 60m bars span 5.0d..6.75d (e.g. 6.25d).
     3. Post-RTH equity overrides preserve RTH Session Volume Profile anchors (poc_px, val_px, vah_px)
        instead of shifting closing-bar volume to the overnight price.
     """
@@ -6525,7 +6525,7 @@ def test_iter18_pretrade_btc_7d_archive_precedence_and_post_rth_vp_invariance(tm
     # TAO 7d = +5.00%, BTC 7d (from 7.0d archive) = +2.00% -> vs_btc 7d = +3.00% (not +4.50% from 6.5d watcher)
     assert "7d=+3.00%" in pre_tao["Relative Strength vs BTC (24h Benchmark)"]
 
-    # 2. _load_stitched_7d_ohlc_closes stitches 240m bars when 60m bars span 6.25d (<6.75d)
+    # 2. load_stitched_7d_ohlc_closes stitches 240m bars when 60m bars span 6.25d (<6.75d)
     def _mock_ohlc(sym: str, interval: int):
         if interval == 60:
             ts_60 = [now_s - i * 3600.0 for i in range(150, -1, -1)]  # 6.25d span, starts at 90.0
@@ -6535,7 +6535,7 @@ def test_iter18_pretrade_btc_7d_archive_precedence_and_post_rth_vp_invariance(tm
         cl_240 = [78.0, 82.0]
         return SimpleNamespace(timestamps=ts_240, closes=cl_240)
 
-    stitched = _load_stitched_7d_ohlc_closes(_mock_ohlc, "HYPEUSDC", now_s)
+    stitched = load_stitched_7d_ohlc_closes(_mock_ohlc, "HYPEUSDC", now_s)
     assert stitched[0] == pytest.approx(78.0)
 
     # 3. Post-RTH equity override (>0.5% divergence) preserves RTH POC/VAL/VAH anchors
@@ -6775,7 +6775,7 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
     assert micro_out["HYPEUSD"]["ob_mid_price"] == pytest.approx(42.0)
     assert p_trends["HYPEUSD"]["price"] == pytest.approx(42.0)
 
-    # 7. _refresh_stale_t212_cached_positions updates stale pos:t212:* prices and collect_pretrade_telemetry refreshes microstructure
+    # 7. refresh_stale_t212_cached_positions updates stale pos:t212:* prices and collect_pretrade_telemetry refreshes microstructure
 
     vb_file = ms_dir / "venue_balances_state.json"
     vb_data = {
@@ -6796,7 +6796,7 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
             _client=lambda: SimpleNamespace(get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "currentPrice": 199.06}])
         ),
     )
-    refreshed = mc._refresh_stale_t212_cached_positions(vb_data, str(vb_file), now_s)
+    refreshed = mc.refresh_stale_t212_cached_positions(vb_data, str(vb_file), now_s)
     assert refreshed is True
     assert vb_data["pos:t212:NVDA_US_EQ"]["price"] == pytest.approx(199.06)
     assert vb_data["pos:t212:NVDA_US_EQ"]["value_usd"] == pytest.approx(597.18)
@@ -7052,10 +7052,10 @@ def test_iter20_price_series_memo_and_fallback_ohlc_provider_cache(tmp_path, mon
     s24_c, _ = mc.load_symbol_price_series(str(cdir), "BTCUSDC")
     assert len(s24_c) == 3 and s24_c[-1][1] == 76200.0
 
-    # _resolve_fallback_ohlc_fn caches provider OHLC callable across calls and _wrap_cached_ohlc_fn caches OHLC responses
+    # resolve_fallback_ohlc_fn caches provider OHLC callable across calls and _wrap_cached_ohlc_fn caches OHLC responses
     monkeypatch.setenv("MPTRADE_ALLOW_LIVE_BACKFILL", "1")
-    fn1 = mc._resolve_fallback_ohlc_fn("HYPEUSDC")
-    fn2 = mc._resolve_fallback_ohlc_fn("HYPEUSDC")
+    fn1 = mc.resolve_fallback_ohlc_fn("HYPEUSDC")
+    fn2 = mc.resolve_fallback_ohlc_fn("HYPEUSDC")
     monkeypatch.delenv("MPTRADE_ALLOW_LIVE_BACKFILL", raising=False)
     assert callable(fn1) and fn1 is fn2
     calls = []
@@ -7069,7 +7069,7 @@ def test_iter20_price_series_memo_and_fallback_ohlc_provider_cache(tmp_path, mon
 
 def test_iter21_ohlc_24h_disk_cache_news_macro_relevance_and_dated_log_dedup(tmp_path, monkeypatch):
 
-    # 1. Discrepancy BR: _load_stitched_24h_ohlc_points persists and serves a 240s on-disk 24h OHLC cache
+    # 1. Discrepancy BR: load_stitched_24h_ohlc_points persists and serves a 240s on-disk 24h OHLC cache
     cdir_ohlc = tmp_path / "ohlc_cache_dir"
     cdir_ohlc.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(pse, "cache_path", lambda name: cdir_ohlc / name)
@@ -7085,12 +7085,12 @@ def test_iter21_ohlc_24h_disk_cache_news_macro_relevance_and_dated_log_dedup(tmp
             volumes=[15.0 + i for i in range(41)],
         )
 
-    pts1 = pse._load_stitched_24h_ohlc_points(_mock_ohlc_fn, "TAOUSD", now_s - 86400.0, require_positive_volume=True)
+    pts1 = pse.load_stitched_24h_ohlc_points(_mock_ohlc_fn, "TAOUSD", now_s - 86400.0, require_positive_volume=True)
     assert len(pts1) == 41 and len(ohlc_calls) == 1
     assert (cdir_ohlc / "cache_ohlc_24h_TAOUSD.json").exists()
     # Second call (even with a non-callable ohlc_fn or in a fresh process) hits the disk cache without calling ohlc_fn
     pse._OHLC_24H_DISK_MEMO.clear()
-    pts2 = pse._load_stitched_24h_ohlc_points(None, "TAOUSD", now_s - 86400.0, require_positive_volume=True)
+    pts2 = pse.load_stitched_24h_ohlc_points(None, "TAOUSD", now_s - 86400.0, require_positive_volume=True)
     assert len(pts2) == 41 and len(ohlc_calls) == 1
 
     # 2. Discrepancy BS: Breaking News Feed ranks financial/macro/geopolitical context above non-macro/tabloid filler
@@ -7877,7 +7877,7 @@ def test_iter104_portfolio_flat_ro_pos_clear_equity_scope_and_7d_swing_sync(tmp_
     )
     assert load_symbol_best_recent_fills(str(cdir), "COIN_US_EQ", ("COIN_US_EQ", "COIN")) is None
 
-    # 3. _apply_24h_series_enrichment syncs swing_low_px, swing_high_px, and chg_7d_pct when 24h range widens 7d range
+    # 3. apply_24h_series_enrichment syncs swing_low_px, swing_high_px, and chg_7d_pct when 24h range widens 7d range
     p_entry = {
         "price": 105.0,
         "low_7d": 100.0,
@@ -7889,7 +7889,7 @@ def test_iter104_portfolio_flat_ro_pos_clear_equity_scope_and_7d_swing_sync(tmp_
         "pullback_from_swing_high_pct": -4.55,
     }
     m24 = {"low_24h": 98.1234, "high_24h": 112.5678, "chg_1h_pct": 0.5}
-    _apply_24h_series_enrichment("SOLUSDC", p_entry, m24, [[1_710_000_000_000, 100.0], [1_710_003_600_000, 105.0]], None)
+    apply_24h_series_enrichment("SOLUSDC", p_entry, m24, [[1_710_000_000_000, 100.0], [1_710_003_600_000, 105.0]], None)
     assert p_entry["low_7d"] == pytest.approx(98.1234)
     assert p_entry["high_7d"] == pytest.approx(112.5678)
     assert p_entry["swing_low_px"] == pytest.approx(98.1234)

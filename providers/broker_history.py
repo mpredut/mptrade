@@ -16,6 +16,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from .order_status_ssot import TERMINAL_BROKER_HISTORY_STATUSES
 
 
 def extract_broker_order_ticker(raw: Any) -> str:
@@ -134,21 +135,11 @@ def aggregate_broker_history_fills(matches: list[tuple[dict, Optional[dict]]]) -
     return result
 
 
-_TERMINAL_BROKER_HISTORY_STATUSES = frozenset({
-    "FILLED",
-    "CANCELLED",
-    "CANCELED",
-    "REPLACED",
-    "REJECTED",
-    "EXPIRED",
-})
-
-
 def normalize_broker_history_items(items: Any) -> dict[str, list[dict]]:
     """Group terminal broker order-history items with executed quantity by ticker and orderId."""
     grouped: dict[str, list[tuple[dict, Optional[dict]]]] = {}
     for oid, order, fill in iter_broker_history_order_fills(items):
-        if (clean_upper_scalar(order.get("status")) or "") in _TERMINAL_BROKER_HISTORY_STATUSES:
+        if (clean_upper_scalar(order.get("status")) or "") in TERMINAL_BROKER_HISTORY_STATUSES:
             grouped.setdefault(oid, []).append((order, fill if isinstance(fill, dict) else None))
     by_symbol: dict[str, list[dict]] = {}
     for oid, matches in grouped.items():

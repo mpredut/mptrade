@@ -27,7 +27,6 @@ from cachepaths import (
 )
 from instrument_registry import casefold_get
 from .base import MarketDataProvider
-from .execution_audit import _TERMINAL_CANCEL_STATUSES
 from .intent_state import (
     _clean_intent_symbol,
     _intent_venue_symbol_side_key,
@@ -41,9 +40,14 @@ from .intent_state import (
     symbols_match_intent_scope_and_quote,
 )
 from .order_ohlc_utils import (
-    _UNFILLED_ORDER_STATUSES,
     extract_executed_qty,
     extract_orig_qty,
+)
+from .order_status_ssot import (
+    RECONCILABLE_AI_INTENT_STATUSES,
+    TERMINAL_CANCEL_VENUE_STATUSES,
+    UNFILLED_ORDER_STATUSES,
+    format_prompt_intent_status,
 )
 
 
@@ -77,12 +81,8 @@ def _match_intent_open_order(
     open_orders: Optional[list[dict[str, Any]]],
 ) -> Optional[dict[str, Any]]:
     """Find a matching venue open order for an intent by order ID or venue-native client ID."""
-    if not isinstance(open_orders, list) or raw_intent_st not in (
-        "EXECUTED",
-        "FAILED",
-        "PENDING",
-        "PENDING_EXECUTION",
-        "SUBMIT_UNKNOWN",
+    if not isinstance(open_orders, list) or (
+        raw_intent_st != "EXECUTED" and raw_intent_st not in RECONCILABLE_AI_INTENT_STATUSES
     ):
         return None
     expected_cids: Optional[set[str]] = None
@@ -173,7 +173,7 @@ def _match_intent_recent_fill(
             break
     if not isinstance(last_fill, dict):
         return fill_px, filled_qty, 0
-    if fill_px is None or (venue_st in _UNFILLED_ORDER_STATUSES and filled_qty <= 0):
+    if fill_px is None or (venue_st in UNFILLED_ORDER_STATUSES and filled_qty <= 0):
         fill_px = safe_pos_float(last_fill.get("price"), default=fill_px)
     if filled_qty <= 0:
         filled_qty = safe_pos_float(last_fill.get("qty"), default=0.0) or 0.0
@@ -208,27 +208,20 @@ def _classify_intent_exec_status_and_slippage(
             intent.get("reference_price"),
         )
 
+    exec_status = format_prompt_intent_status(
+        raw_intent_st,
+        venue_st,
+        in_open_book=matched_open is not None,
+        filled_qty=filled_qty,
+        is_unfilled_resting_limit=is_unfilled_resting_limit,
+        is_unfilled_accepted_market=is_unfilled_accepted_market,
+        section="last_cycle_execution_status",
+    )
     if matched_open is not None:
-        exec_status = "PARTIALLY_FILLED" if filled_qty > 0 else "OPEN_RESTING"
-        if exec_status == "PARTIALLY_FILLED" and venue_st in _UNFILLED_ORDER_STATUSES:
+        if exec_status == "PARTIALLY_FILLED" and venue_st in UNFILLED_ORDER_STATUSES:
             venue_st = "PARTIALLY_FILLED"
-    elif raw_intent_st == "EXECUTED":
-        if venue_st in _TERMINAL_CANCEL_STATUSES:
-            exec_status = venue_st
-        elif is_unfilled_resting_limit:
-            exec_status = "OPEN_RESTING"
-        elif is_unfilled_accepted_market:
-            exec_status = "ACCEPTED"
-        elif venue_st == "PARTIALLY_FILLED":
-            exec_status = "PARTIALLY_FILLED"
-        else:
-            exec_status = "FILLED"
-            if venue_st in _UNFILLED_ORDER_STATUSES:
-                venue_st = "FILLED"
-    elif raw_intent_st == "OBSERVED_SHADOW":
-        exec_status = "SHADOW_SIMULATED"
-    else:
-        exec_status = raw_intent_st or "UNKNOWN"
+    elif exec_status == "FILLED" and raw_intent_st == "EXECUTED" and venue_st in UNFILLED_ORDER_STATUSES:
+        venue_st = "FILLED"
 
     ref_px = first_pos_float(
         intent.get("reference_price"),
@@ -237,7 +230,7 @@ def _classify_intent_exec_status_and_slippage(
         last_hist.get("price"),
         fill_px,
     )
-    if exec_status in ("OPEN_RESTING", "ACCEPTED", *_TERMINAL_CANCEL_STATUSES) and filled_qty <= 0:
+    if exec_status in ("OPEN_RESTING", "ACCEPTED", *TERMINAL_CANCEL_VENUE_STATUSES) and filled_qty <= 0:
         fill_px = None
     slippage_bps: Optional[float] = None
     if (
@@ -385,7 +378,7 @@ def _resolve_intent_execution_details(
     if (
         matched_open is None
         and raw_intent_st == "EXECUTED"
-        and venue_st not in _TERMINAL_CANCEL_STATUSES
+        and venue_st not in TERMINAL_CANCEL_VENUE_STATUSES
         and isinstance(recent_orders, dict)
         and symbol
     ):
@@ -405,13 +398,13 @@ def _resolve_intent_execution_details(
 
     is_unfilled_resting_limit = (
         order_type == "LIMIT"
-        and (venue_st in _UNFILLED_ORDER_STATUSES or not venue_st)
+        and (venue_st in UNFILLED_ORDER_STATUSES or not venue_st)
         and filled_qty <= 0
     )
     is_unfilled_accepted_market = (
         order_type != "LIMIT"
         and _parse_bool_flag(exec_pay.get("reconciled_from_audit"), False)
-        and (venue_st in _UNFILLED_ORDER_STATUSES or not venue_st)
+        and (venue_st in UNFILLED_ORDER_STATUSES or not venue_st)
         and filled_qty <= 0
     )
     venue_open_verified = (
@@ -678,7 +671,7 @@ def build_last_cycle_execution_status(
                 or ep.get("filled_at") is not None
                 or ep.get("filled_ts") is not None
             )
-            if has_fill and ep_st not in _TERMINAL_CANCEL_STATUSES:
+            if has_fill and ep_st not in TERMINAL_CANCEL_VENUE_STATUSES:
                 for k in ("filled_at", "filled_ts", "terminal_ts", "updated_ts"):
                     if (ft := _parse_pos_epoch_s(ep.get(k))) is not None:
                         base_t = max(base_t, ft)

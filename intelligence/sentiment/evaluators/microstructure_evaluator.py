@@ -35,7 +35,7 @@ from intelligence.macro_sentiment_ssot import (
     load_microstructure_cycle_history,
     save_microstructure_cycle_history,
     scan_latest_long_trend_value,
-    _parse_ts_px_row,
+    parse_ts_px_row,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     apply_short_trend_item,
@@ -46,7 +46,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     TelemetryEvaluatorFactory,
     TelemetryEvaluatorInterface,
     _auto_px_decimals,
-    _LAST_7D_SPAN_MS_BY_SYM,
+    LAST_7D_SPAN_MS_BY_SYM,
 )
 from instrument_registry import (
     canonical_display_symbol,
@@ -63,7 +63,7 @@ _MICRO_PRICE_ANCHOR_KEYS: frozenset[str] = frozenset({
     "long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px",
     "long_liq_dist_pct", "short_liq_dist_pct", "long_liq_deep_dist_pct", "short_liq_deep_dist_pct",
 })
-_MICRO_OB_LOCAL_KEYS: frozenset[str] = frozenset({
+MICRO_OB_LOCAL_KEYS: frozenset[str] = frozenset({
     "ob_mid_price", "best_bid", "best_ask", "ob_imbalance", "spread_bps",
     "bid_depth_usd", "ask_depth_usd", "depth_1pct_bid_usd", "depth_1pct_ask_usd",
     "book_span_pct", "bid_wall_usd", "ask_wall_usd", "bid_wall_px", "ask_wall_px",
@@ -111,7 +111,7 @@ def format_flow_horizon_parts(
     ]
 
 
-def _first_variant_dict(mapping: Any, variants: Any, default: Any = None) -> Any:
+def first_variant_dict(mapping: Any, variants: Any, default: Any = None) -> Any:
     """Return the first dict entry in `mapping` matching any candidate key in `variants` (case-insensitive)."""
     if not isinstance(mapping, dict):
         return default
@@ -1093,7 +1093,7 @@ def enrich_cross_venue_trends(
                     if safe_pos_float(entry.get("vol_1h_pct"), default=None) is not None:
                         break
 
-        if isinstance(kalman_data, dict) and isinstance(k_sym := _first_variant_dict(kalman_data, cand_keys), dict):
+        if isinstance(kalman_data, dict) and isinstance(k_sym := first_variant_dict(kalman_data, cand_keys), dict):
             is_unseeded_cold_kalman = is_unseeded_kalman_state(k_sym)
             cur_is_unseeded = is_unseeded_kalman_state(entry, treat_none_as_unseeded=True)
             if cur_is_unseeded and (not is_unseeded_cold_kalman or safe_float(entry.get("kalman_vel"), default=None) is None):
@@ -1146,7 +1146,7 @@ def enrich_cross_venue_trends(
             if pa_neutral or lt_neutral or (any_neutral_regime and not has_equity_suffix(sym)):
                 entry["long_trend_neutral"] = True
         tt_p_cont: Optional[Dict[str, Any]] = None
-        if isinstance(t_trend_map, dict) and isinstance(tt := _first_variant_dict(t_trend_map, cand_keys), dict):
+        if isinstance(t_trend_map, dict) and isinstance(tt := first_variant_dict(t_trend_map, cand_keys), dict):
             entry["weibull_median_d"], entry["weibull_p90_d"] = tt.get("median_d"), tt.get("p90_d")
             tt_p_cont = tt.get("p_cont") if isinstance(tt.get("p_cont"), dict) else None
         elif (
@@ -1186,7 +1186,7 @@ def enrich_cross_venue_trends(
                 last_m_px = safe_float(cand_ser[-1][1], 0.0) if isinstance(cand_ser[-1], (list, tuple)) and len(cand_ser[-1]) > 1 else 0.0
                 if ck != sym and (compatible_quote_suffixes(ck) != sym_quotes or _prices_diverged(sym_px_cur, last_m_px)):
                     continue
-                w0, w1 = _parse_ts_px_row(cand_ser[0]), _parse_ts_px_row(cand_ser[-1])
+                w0, w1 = parse_ts_px_row(cand_ser[0]), parse_ts_px_row(cand_ser[-1])
                 w_span_ms = (w1[0] - w0[0]) if (w0 is not None and w1 is not None) else -1.0
                 is_eq_w7 = has_equity_suffix(sym)
                 vals = [safe_float(pt[1], 0.0) for pt in cand_ser if isinstance(pt, (list, tuple)) and len(pt) > 1 and safe_float(pt[1], 0.0) > 0]
@@ -1209,7 +1209,7 @@ def enrich_cross_venue_trends(
                     if (
                         not is_eq_w7
                         and w_span_ms >= 5 * 86400 * 1000
-                        and _LAST_7D_SPAN_MS_BY_SYM.get(sym.upper(), 0.0) < 5 * 86400 * 1000
+                        and LAST_7D_SPAN_MS_BY_SYM.get(sym.upper(), 0.0) < 5 * 86400 * 1000
                         and sym_px_cur > 0.0
                         and len(vals) >= 2
                         and vals[0] > 0.0
@@ -1312,7 +1312,7 @@ def sync_sibling_symbol_telemetry(
                     )
                     synced_any_micro = False
                     for mk, mv in sib_micro.items():
-                        if sym_has_own_ob and mk in _MICRO_OB_LOCAL_KEYS:
+                        if sym_has_own_ob and mk in MICRO_OB_LOCAL_KEYS:
                             continue
                         if not (micro_px_diverged and mk in _MICRO_PRICE_ANCHOR_KEYS) and mv is not None:
                             if microstructure[sym].get(mk) is None or (
@@ -1330,7 +1330,7 @@ def sync_sibling_symbol_telemetry(
         if not isinstance(minfo, dict):
             continue
         msym_quotes = compatible_quote_suffixes(msym)
-        p_match = _first_variant_dict(
+        p_match = first_variant_dict(
             prices_and_trends,
             filter_asset_class_variants(
                 msym,
@@ -1888,10 +1888,10 @@ __all__ = [
     "SiblingSymbolTelemetrySyncEvaluator",
     "SpotOrderbookPriceReconcilerEvaluator",
     "_LIQ_CLUSTER_KEYS",
-    "_MICRO_OB_LOCAL_KEYS",
+    "MICRO_OB_LOCAL_KEYS",
     "_MICRO_PRICE_ANCHOR_KEYS",
     "_blend_structural_liq_anchor",
-    "_first_variant_dict",
+    "first_variant_dict",
     "_infer_symbol_venue_and_fees_bps",
     "_resolve_non_static_prev_metric",
     "align_equity_orderbook_to_spot",

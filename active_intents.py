@@ -1,4 +1,4 @@
-"""Read-only index of active financial intents across strategy-owned state files.
+"""Read-only index and end-to-end causal tracer of financial intents and orders across AI and bot state files.
 
 The index normalizes visibility only. It never writes state, submits orders, cancels
 orders, or decides retry. Each strategy remains the authority for its campaign and
@@ -7,34 +7,75 @@ financial policy.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import glob
 import os
-from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
 
 from botcore import (
     _parse_bool_flag,
     add_store_true_cli_args,
     clean_order_id,
     clean_scalar_str,
+    clean_upper_scalar,
     coerce_dict_maps,
+    extract_order_id,
+    extract_order_price,
+    first_pos_float,
     normalize_side,
+    optional_env,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
+from cacheaccount import CacheOrderManager
 from cachepaths import (
     ASSETGUARDIAN_STATE_FILENAME,
+    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
     ORDER_RETRY_QUEUE_FILENAME,
     RTRADE_PAIRS_STATE_FILENAME,
     TRAILING_STATE_FILENAME,
+    VENUE_BALANCES_STATE_FILENAME,
     cache_relpath,
     is_cachedb_relpath,
     legacy_filenames_for,
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
-from state_io import encode_json_payload, read_json_file, read_jsonl_records, read_recovering_previous
+from providers.execution_audit import iter_audit_jsonl_paths
+from providers.intent_state import (
+    _extract_intent_id,
+    _intent_order_ids,
+    ai_intent_client_order_id,
+    extract_intent_limit_price,
+    extract_intent_notional,
+    extract_intent_order_type,
+    extract_intent_primary_order_id,
+    extract_intent_side,
+    extract_intent_timestamp_s,
+)
+from providers.order_id_context import (
+    all_correlatable_client_order_ids,
+    extract_client_order_id,
+    resolve_order_actor,
+)
+from providers.order_ohlc_utils import extract_executed_qty, extract_orig_qty
+from providers.order_status_ssot import (
+    OPEN_WORKING_OR_EMPTY_VENUE_STATUSES,
+    TERMINAL_ACTIVE_INTENT_STATUSES,
+    TERMINAL_AUDIT_VENUE_STATUSES,
+    TERMINAL_CANCEL_VENUE_STATUSES,
+    classify_order_lifecycle_state,
+    is_open_working_status,
+)
+from state_io import (
+    encode_json_payload,
+    read_json_dict_recovering,
+    read_json_file,
+    read_jsonl_dicts,
+    read_jsonl_records,
+    read_recovering_previous,
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +87,7 @@ class StateSource:
 
 DEFAULT_SOURCES = (
     StateSource("global_outbox", cache_relpath(ORDER_RETRY_QUEUE_FILENAME), True),
+    StateSource("autonomous_ai", cache_relpath(AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME)),
     StateSource("assetguardian", cache_relpath(ASSETGUARDIAN_STATE_FILENAME)),
     StateSource("rtrade", cache_relpath(RTRADE_PAIRS_STATE_FILENAME)),
     StateSource("binance_trailing", cache_relpath(TRAILING_STATE_FILENAME)),
@@ -56,10 +98,7 @@ DEFAULT_SOURCES = (
     StateSource("hyperliquid", "hyperliquid/.state_*.json"),
 )
 
-_TERMINAL = frozenset({
-    "closed", "filled", "canceled", "cancelled", "expired",
-    "rejected", "refused", "refused_before_submit",
-})
+_TERMINAL = TERMINAL_ACTIVE_INTENT_STATUSES
 _STATUS_FIELDS = ("last_status", "status", "lifecycle", "submission_outcome", "submit_status")
 
 
@@ -77,8 +116,98 @@ def _first(row: dict, *names):
     return None
 
 
-def _intent_row(row: dict, *, owner: str, source: str, location: str, inherited: dict) -> dict | None:
-    if _parse_bool_flag(row.get("active"), True) is False:
+def _autonomous_ai_intent_row(
+    row: dict,
+    *,
+    source: str,
+    location: str,
+    include_terminal: bool = False,
+) -> dict | None:
+    intent_id = _extract_intent_id(row)
+    side_str = extract_intent_side(row)
+    if not intent_id or side_str not in {"BUY", "SELL"}:
+        return None
+    st_up = clean_upper_scalar(row.get("status")) or ""
+    ep = row.get("execution_payload") if isinstance(row.get("execution_payload"), dict) else {}
+    ep_st = clean_upper_scalar(ep.get("status")) or ""
+    reconciled_term = _parse_bool_flag(row.get("reconciled_terminal"), False) or _parse_bool_flag(
+        ep.get("reconciled_terminal"), False
+    )
+    order_type = extract_intent_order_type(row)
+    exec_qty = extract_executed_qty(ep, default=0.0)
+    is_active = False
+    if st_up in {"PENDING", "PENDING_EXECUTION", "SUBMIT_UNKNOWN"}:
+        is_active = True
+    elif st_up == "EXECUTED" and not reconciled_term:
+        if ep_st not in (TERMINAL_AUDIT_VENUE_STATUSES | TERMINAL_CANCEL_VENUE_STATUSES):
+            if not (order_type == "MARKET" and not ep_st and exec_qty > 0.0):
+                is_active = True
+    if not is_active and not include_terminal:
+        return None
+
+    req_price = first_pos_float(
+        extract_intent_limit_price(row, default=None),
+        extract_order_price(ep, default=None),
+        row.get("requested_price"),
+        row.get("reference_price"),
+    )
+    orig_qty = (
+        first_pos_float(
+            extract_orig_qty(ep, default=None),
+            row.get("requested_qty"),
+            row.get("qty"),
+            row.get("quantity"),
+        )
+        or 0.0
+    )
+    if orig_qty <= 0.0:
+        notional = extract_intent_notional(row, default=None)
+        if notional is not None and req_price is not None and req_price > 0.0:
+            orig_qty = round(notional / req_price, 8)
+    if orig_qty <= 0.0 and not include_terminal:
+        return None
+
+    order_id = clean_order_id(extract_intent_primary_order_id(row, default=None, include_top_level=True))
+    client_order_id = clean_order_id(extract_client_order_id(ep, default=None)) or ai_intent_client_order_id(intent_id)
+    raw_sym = _first(row, "symbol") or _first(ep, "symbol", "ticker", "pair")
+    raw_venue = _first(row, "venue") or "autonomous_ai"
+    eff_status = (
+        ep_st.lower()
+        if (st_up == "EXECUTED" and ep_st and ep_st in OPEN_WORKING_OR_EMPTY_VENUE_STATUSES)
+        else (st_up.lower() or "pending")
+    )
+    return {
+        "intent_id": str(intent_id),
+        "owner": "autonomous_ai",
+        "venue": str(normalize_venue_name(str(raw_venue)) or raw_venue),
+        "symbol": None if raw_sym is None else str(raw_sym),
+        "side": side_str,
+        "kind": order_type.lower(),
+        "status": eff_status,
+        "order_id": order_id,
+        "client_order_id": client_order_id,
+        "requested_qty": orig_qty if orig_qty > 0.0 else None,
+        "executed_qty": exec_qty if exec_qty > 0.0 else None,
+        "requested_price": req_price,
+        "source": source,
+        "location": location,
+    }
+
+
+def _intent_row(
+    row: dict,
+    *,
+    owner: str,
+    source: str,
+    location: str,
+    inherited: dict,
+    include_terminal: bool = False,
+) -> dict | None:
+    if owner == "autonomous_ai":
+        return _autonomous_ai_intent_row(
+            row, source=source, location=location, include_terminal=include_terminal
+        )
+    if not include_terminal and _parse_bool_flag(row.get("active"), True) is False:
         return None
     place_kwargs = row.get("place_kwargs")
     nested_kwargs = place_kwargs if isinstance(place_kwargs, dict) else {}
@@ -97,7 +226,7 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str, inherited:
         field_val = _first(row, status_field)
         if field_val is not None:
             norm_st = str(field_val).strip().lower()
-            if norm_st in _TERMINAL:
+            if not include_terminal and norm_st in _TERMINAL:
                 return None
             if first_status is None:
                 first_status = norm_st
@@ -107,7 +236,7 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str, inherited:
         status = str(_first(terminal_payload, "status") or status).strip().lower()
     elif isinstance(terminal_payload, str) and (ts_val := _first(row, "terminal_status")):
         status = str(ts_val).strip().lower()
-    if status in _TERMINAL:
+    if not include_terminal and status in _TERMINAL:
         return None
     raw_sym = _first(row, "symbol", "ticker", "pair") or _first(inherited, "symbol", "ticker", "pair")
     raw_venue = _first(row, "provider_name", "venue") or _first(inherited, "venue") or owner.split("_", 1)[0]
@@ -131,24 +260,55 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str, inherited:
 
 
 def _walk(
-    value, *, owner: str, source: str, location: str = "$", inherited: dict | None = None
+    value,
+    *,
+    owner: str,
+    source: str,
+    location: str = "$",
+    inherited: dict | None = None,
+    include_terminal: bool = False,
 ) -> Iterable[dict]:
     inherited = dict(inherited or {})
     if isinstance(value, dict):
-        if _parse_bool_flag(value.get("terminal"), False) is True:
+        if not include_terminal and _parse_bool_flag(value.get("terminal"), False) is True:
             return
         next_context = dict(inherited)
         for key in ("symbol", "ticker", "pair", "venue", "provider_name"):
             if (val_k := _first(value, key)) is not None:
                 next_context["venue" if key == "provider_name" else key] = val_k
-        if (row := _intent_row(value, owner=owner, source=source, location=location, inherited=next_context)) is not None:
+        if (
+            row := _intent_row(
+                value,
+                owner=owner,
+                source=source,
+                location=location,
+                inherited=next_context,
+                include_terminal=include_terminal,
+            )
+        ) is not None:
             yield row
+        if owner == "autonomous_ai":
+            return
         for key, child in value.items():
             if isinstance(child, (dict, list)):
-                yield from _walk(child, owner=owner, source=source, location=f"{location}.{key}", inherited=next_context)
+                yield from _walk(
+                    child,
+                    owner=owner,
+                    source=source,
+                    location=f"{location}.{key}",
+                    inherited=next_context,
+                    include_terminal=include_terminal,
+                )
     elif isinstance(value, list):
         for index, child in enumerate(value):
-            yield from _walk(child, owner=owner, source=source, location=f"{location}[{index}]", inherited=inherited)
+            yield from _walk(
+                child,
+                owner=owner,
+                source=source,
+                location=f"{location}[{index}]",
+                inherited=inherited,
+                include_terminal=include_terminal,
+            )
 
 
 def _read(path: str, *, json_lines: bool):
@@ -297,6 +457,23 @@ def format_summary(result: dict) -> str:
     return "\n".join(lines)
 
 
+def _iter_resolved_source_paths(root: str, spec: StateSource) -> list[str]:
+    matched_paths = sorted(glob.glob(os.path.join(glob.escape(root), spec.pattern)))
+    if not matched_paths and is_cachedb_relpath(spec.pattern):
+        resolved_pat = str(resolve_cachedb_filepath(os.path.join(root, spec.pattern)))
+        matched_paths = sorted(glob.glob(resolved_pat))
+        if not matched_paths:
+            for leg_p in legacy_filenames_for(resolved_pat):
+                matched_paths = sorted(glob.glob(leg_p))
+                if matched_paths:
+                    break
+    return [
+        p
+        for p in matched_paths
+        if not any(token in os.path.basename(p) for token in (".pre_", ".bak", ".backup", ".tmp"))
+    ]
+
+
 def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
     """Return normalized active intents and read errors without mutating sources."""
     root = os.path.abspath(root)
@@ -305,19 +482,8 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
     errors = []
     files = []
     for spec in sources:
-        matched_paths = sorted(glob.glob(os.path.join(glob.escape(root), spec.pattern)))
-        if not matched_paths and is_cachedb_relpath(spec.pattern):
-            resolved_pat = str(resolve_cachedb_filepath(os.path.join(root, spec.pattern)))
-            matched_paths = sorted(glob.glob(resolved_pat))
-            if not matched_paths:
-                for leg_p in legacy_filenames_for(resolved_pat):
-                    matched_paths = sorted(glob.glob(leg_p))
-                    if matched_paths:
-                        break
-        for path in matched_paths:
+        for path in _iter_resolved_source_paths(root, spec):
             name = os.path.basename(path)
-            if any(token in name for token in (".pre_", ".bak", ".backup", ".tmp")):
-                continue
             relative = os.path.relpath(path, root).replace(os.sep, "/")
             files.append(relative)
             try:
@@ -358,19 +524,291 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
     }
 
 
+def _load_cached_open_orders(root: str) -> list[dict[str, Any]]:
+    """Collect read-only resting open orders across all venue order caches and venue_balances_state."""
+    out: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str]] = set()
+
+    for venue_key, order_fname in CacheOrderManager.VENUE_FILENAMES.items():
+        oc_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(order_fname))))
+        if not os.path.isfile(oc_path):
+            continue
+        oc_data = read_json_dict_recovering(oc_path)
+        items = oc_data.get("items") if isinstance(oc_data, dict) else None
+        if not isinstance(items, dict):
+            continue
+        for k_sym, sym_orders in items.items():
+            if isinstance(sym_orders, dict):
+                if extract_order_id(sym_orders, default=None) is not None:
+                    iterable: Iterable[Any] = (sym_orders,)
+                else:
+                    iterable = sym_orders.values()
+            elif isinstance(sym_orders, list):
+                iterable = sym_orders
+            else:
+                continue
+            for oo in iterable:
+                if isinstance(oo, dict):
+                    oo_st = oo.get("status")
+                    if not (
+                        is_open_working_status(oo_st, allow_empty=True)
+                        or clean_upper_scalar(oo_st) == "PARTIALLY_FILLED"
+                    ):
+                        continue
+                    oid = clean_order_id(extract_order_id(oo, default=None)) or ""
+                    if oid and (venue_key, oid) not in seen_keys:
+                        seen_keys.add((venue_key, oid))
+                        out.append({"venue": venue_key, "symbol": str(oo.get("symbol") or k_sym), **oo})
+
+    vb_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(VENUE_BALANCES_STATE_FILENAME))))
+    if os.path.isfile(vb_path):
+        vb_data = read_json_dict_recovering(vb_path)
+        if isinstance(vb_data, dict):
+            for k, v in vb_data.items():
+                if isinstance(k, str) and k.startswith("open_orders:") and isinstance(v, list):
+                    venue_k = normalize_venue_name(k.split(":", 1)[1]) or k.split(":", 1)[1]
+                    for oo in v:
+                        if isinstance(oo, dict):
+                            oid = clean_order_id(extract_order_id(oo, default=None)) or ""
+                            key_t = (venue_k, oid)
+                            if not oid or key_t not in seen_keys:
+                                if oid:
+                                    seen_keys.add(key_t)
+                                out.append({"venue": venue_k, **oo})
+    return out
+
+
+def trace_order_or_intent(
+    query_id: Any,
+    root: str = ".",
+    *,
+    sources=DEFAULT_SOURCES,
+    audit_dir: str | None = None,
+    max_audit_days: int = 14,
+) -> dict[str, Any]:
+    """Build a single read-only SSOT causal trace across AI intents, bot states, outbox, open orders, and audit JSONL."""
+    clean_q = clean_order_id(query_id)
+    abs_root = os.path.abspath(root)
+    if not clean_q:
+        return {
+            "query_id": "" if query_id is None or isinstance(query_id, bool) else str(query_id),
+            "found": False,
+            "canonical_state": None,
+            "actor": None,
+            "correlated_ids": [],
+            "ai_intents": [],
+            "state_records": [],
+            "outbox_records": [],
+            "open_orders": [],
+            "audit_events": [],
+        }
+
+    correlated_lc: set[str] = {clean_q.lower()} | all_correlatable_client_order_ids(clean_q)
+
+    def _expand_ids(*candidates: Any) -> None:
+        for cand in candidates:
+            if c_str := clean_order_id(cand):
+                correlated_lc.add(c_str.lower())
+                correlated_lc.update(all_correlatable_client_order_ids(c_str))
+
+    ai_matches: list[dict[str, Any]] = []
+    state_matches: list[dict[str, Any]] = []
+    outbox_matches: list[dict[str, Any]] = []
+
+    for spec in sources:
+        for path in _iter_resolved_source_paths(abs_root, spec):
+            name = os.path.basename(path)
+            relative = os.path.relpath(path, abs_root).replace(os.sep, "/")
+            try:
+                payload = _read(path, json_lines=spec.json_lines)
+            except (OSError, ValueError, TypeError):
+                continue
+
+            if spec.owner == "autonomous_ai" and isinstance(payload, list):
+                for item in payload:
+                    if not isinstance(item, dict):
+                        continue
+                    item_ids = {s.lower() for s in _intent_order_ids(item) if s}
+                    iid = _extract_intent_id(item)
+                    if iid:
+                        item_ids.add(iid.lower())
+                        item_ids.update(all_correlatable_client_order_ids(iid))
+                    for c_oid in (item.get("canceled_prior_open_orders") if isinstance(item.get("canceled_prior_open_orders"), list) else ()):
+                        if c_clean := clean_order_id(c_oid):
+                            item_ids.add(c_clean.lower())
+                    if item_ids & correlated_lc:
+                        ai_matches.append(item)
+                        for s_id in item_ids:
+                            _expand_ids(s_id)
+                continue
+
+            if spec.owner == "global_outbox" and isinstance(payload, list):
+                for rec in payload:
+                    if not isinstance(rec, dict):
+                        continue
+                    pkw = rec.get("place_kwargs") if isinstance(rec.get("place_kwargs"), dict) else {}
+                    rec_cands = [
+                        rec.get("id"),
+                        rec.get("intent_id"),
+                        rec.get("order_id"),
+                        rec.get("replaces_order_id"),
+                        rec.get("client_order_id"),
+                        pkw.get("client_order_id"),
+                        pkw.get("parent_client_order_id"),
+                    ]
+                    rec_lc = {c.lower() for r_c in rec_cands if (c := clean_order_id(r_c))}
+                    if rec_lc & correlated_lc:
+                        outbox_matches.append(rec)
+                        _expand_ids(*rec_cands)
+                continue
+
+            inherited = (
+                {"symbol": name[len(".state_"):-len(".json")]}
+                if name.startswith(".state_") and name.endswith(".json")
+                else {}
+            )
+            for row in _walk(
+                payload,
+                owner=spec.owner,
+                source=relative,
+                inherited=inherited,
+                include_terminal=True,
+            ):
+                row_cands = [row.get("intent_id"), row.get("order_id"), row.get("client_order_id")]
+                row_lc = set()
+                for rc_val in row_cands:
+                    if clean_rc := clean_order_id(rc_val):
+                        row_lc.add(clean_rc.lower())
+                        row_lc.update(all_correlatable_client_order_ids(clean_rc))
+                if row_lc & correlated_lc:
+                    state_matches.append(row)
+                    _expand_ids(*row_cands)
+
+    open_matches: list[dict[str, Any]] = []
+    for oo in _load_cached_open_orders(abs_root):
+        oo_oid = clean_order_id(extract_order_id(oo, default=None))
+        oo_cid = clean_order_id(extract_client_order_id(oo, default=None))
+        oo_lc = {x.lower() for x in (oo_oid, oo_cid) if x}
+        if oo_lc & correlated_lc:
+            open_matches.append(oo)
+            _expand_ids(oo_oid, oo_cid)
+
+    eff_audit_dir = (
+        clean_scalar_str(audit_dir)
+        or clean_scalar_str(optional_env("EXECUTION_AUDIT_DIR"))
+        or os.path.join(abs_root, "logger", "execution_audit")
+    )
+    audit_events: list[dict[str, Any]] = []
+    if os.path.isdir(eff_audit_dir):
+        for audit_path in iter_audit_jsonl_paths(eff_audit_dir, unbounded_limit=max_audit_days):
+            for rec in read_jsonl_dicts(audit_path):
+                rec_cands = (rec.get("intent_id"), rec.get("order_id"), rec.get("client_order_id"))
+                rec_lc = {c.lower() for r_c in rec_cands if (c := clean_order_id(r_c))}
+                if rec_lc & correlated_lc:
+                    audit_events.append(rec)
+                    _expand_ids(*rec_cands)
+    audit_events.sort(key=lambda r: safe_float(r.get("ts"), default=0.0) or 0.0)
+
+    venue_st: Any = None
+    local_st: Any = None
+    sub_st: Any = None
+    filled_q: float = 0.0
+    orig_q: float | None = None
+    actor: str | None = None
+
+    if ai_matches:
+        actor = "AI"
+        latest_ai = ai_matches[-1]
+        ep = latest_ai.get("execution_payload") if isinstance(latest_ai.get("execution_payload"), dict) else {}
+        venue_st = ep.get("status") or latest_ai.get("status")
+        sub_st = ep.get("submission_state")
+        filled_q = max(filled_q, extract_executed_qty(ep, default=0.0))
+        if (oq_ai := extract_orig_qty(ep, default=0.0)) > 0.0:
+            orig_q = oq_ai
+        _, _ = extract_intent_timestamp_s(latest_ai)
+    if state_matches:
+        st_last = state_matches[-1]
+        local_st = local_st or st_last.get("status")
+        filled_q = max(filled_q, safe_pos_float(st_last.get("executed_qty"), default=0.0) or 0.0)
+        orig_q = orig_q or safe_pos_float(st_last.get("requested_qty"), default=None)
+        if actor is None:
+            actor = resolve_order_actor({"clientOrderId": st_last.get("client_order_id")}) if st_last.get("client_order_id") else st_last.get("owner")
+    if outbox_matches:
+        ob_last = outbox_matches[-1]
+        local_st = local_st or ob_last.get("lifecycle")
+        sub_st = sub_st or ob_last.get("submission_state")
+        orig_q = orig_q or safe_pos_float(ob_last.get("qty"), default=None)
+        if actor is None:
+            pkw = ob_last.get("place_kwargs") if isinstance(ob_last.get("place_kwargs"), dict) else {}
+            actor = resolve_order_actor({"clientOrderId": pkw.get("client_order_id")})
+    if audit_events:
+        au_last = audit_events[-1]
+        venue_st = au_last.get("venue_status") or venue_st
+        local_st = au_last.get("status") or local_st
+        sub_st = au_last.get("submission_state") or sub_st
+        filled_q = max(filled_q, safe_pos_float(au_last.get("filled_qty"), default=0.0) or 0.0)
+        orig_q = orig_q or safe_pos_float(au_last.get("qty"), default=None)
+        if actor is None and au_last.get("client_order_id"):
+            actor = resolve_order_actor({"clientOrderId": au_last.get("client_order_id")})
+    if open_matches:
+        oo_last = open_matches[-1]
+        venue_st = oo_last.get("status") or venue_st or "OPEN"
+        filled_q = max(filled_q, extract_executed_qty(oo_last, default=0.0))
+        if (oq_oo := extract_orig_qty(oo_last, default=0.0)) > 0.0:
+            orig_q = orig_q or oq_oo
+        if actor is None:
+            actor = resolve_order_actor(oo_last)
+
+    found = bool(ai_matches or state_matches or outbox_matches or open_matches or audit_events)
+    canonical_state = (
+        str(
+            classify_order_lifecycle_state(
+                venue_st,
+                local_st,
+                submission_state=sub_st,
+                filled_qty=filled_q,
+                orig_qty=orig_q,
+                is_resting_in_book=bool(open_matches),
+            )
+        )
+        if found
+        else None
+    )
+    return {
+        "query_id": clean_q,
+        "found": found,
+        "canonical_state": canonical_state,
+        "actor": actor,
+        "is_resting_in_book": bool(open_matches),
+        "filled_qty": round(filled_q, 8),
+        "orig_qty": orig_q,
+        "correlated_ids": sorted(correlated_lc),
+        "ai_intents": ai_matches,
+        "state_records": state_matches,
+        "outbox_records": outbox_matches,
+        "open_orders": open_matches,
+        "audit_events": audit_events,
+    }
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build the read-only active-intent index.")
+    parser = argparse.ArgumentParser(description="Build the read-only active-intent index or trace an order/intent ID.")
     parser.add_argument("--root", default=os.path.dirname(os.path.abspath(__file__)))
+    parser.add_argument("--trace", default=None, help="Trace an intent_id, client_order_id, or venue order_id across all sources.")
     add_store_true_cli_args(parser, "--compact", ("--summary", "Print human-readable text summary."))
     args = parser.parse_args()
+    indent = None if _parse_bool_flag(args.compact, False) else 2
+    if clean_scalar_str(args.trace):
+        trace_res = trace_order_or_intent(args.trace, args.root)
+        print(encode_json_payload(trace_res, indent=indent, sort_keys=True))
+        return 0 if trace_res["found"] else 1
     result = build_active_intent_index(args.root)
     if _parse_bool_flag(args.summary, False):
         print(format_summary(result))
     else:
-        print(encode_json_payload(result, indent=None if _parse_bool_flag(args.compact, False) else 2, sort_keys=True))
+        print(encode_json_payload(result, indent=indent, sort_keys=True))
     return 1 if result["errors"] else 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

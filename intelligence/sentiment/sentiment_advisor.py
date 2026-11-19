@@ -170,7 +170,7 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             )
             btc_chg_24h_live: Optional[float] = None
             struct_lines: List[str] = []
-            _mc._ensure_cacheprice_classes_bound()
+            _mc.ensure_cacheprice_classes_bound()
             for ccy in get_deribit_options_currencies():
                 if not any(
                     os.path.exists(str(resolve_cachedb_filepath(os.path.join(cache_dir, fn))))

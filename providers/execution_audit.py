@@ -45,7 +45,7 @@ from state_io import append_jsonl_record, read_jsonl_dicts
 from .base import MarketDataProvider
 from .intent_state import _extract_intent_id
 from .ohlc_utils import ProviderError, require_pos_ohlc_interval
-from .order_id_context import format_venue_intent_client_order_id
+from .order_id_context import derive_executor_intent_client_order_id
 from .strategy_executor import (
     capture_submission,
     OrderStatus,
@@ -56,9 +56,6 @@ from .strategy_executor import (
 
 
 _WRITE_LOCK = threading.Lock()
-_UUID_HEX_SUFFIX = re.compile(r"([0-9a-fA-F]{32})$")
-_TERMINAL_CANCEL_STATUSES = ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED")
-_OPEN_WORKING_STATUSES = ("", "NEW", "OPEN", "RESTING", "PENDING", "WORKING")
 
 
 def _parse_cache_max() -> int:
@@ -96,21 +93,8 @@ def new_intent_id(venue: str, symbol: str, kind: Optional[str] = None) -> str:
 
 
 def intent_client_order_id(venue: str, intent_id: str) -> Optional[str]:
-    """Encode an intent in the venue's client-ID format without additional state.
-
-    Preserve the complete 128-bit UUID. Legacy/nonstandard intents use a
-    deterministic hash so the same intent produces the same identifier after restart.
-    """
-    if isinstance(intent_id, (bool, list, tuple, dict, set, frozenset)):
-        return None
-    raw = clean_order_id(intent_id)
-    if not raw:
-        return None
-    match = _UUID_HEX_SUFFIX.search(raw)
-    token = (match.group(1).lower() if match else
-             hashlib.blake2s(raw.encode("utf-8"), digest_size=16).hexdigest())
-    v_slug = _slug(venue).lower()
-    return format_venue_intent_client_order_id(normalize_venue_name(v_slug) or v_slug, token)
+    """Encode an intent in the venue's client-ID format without additional state."""
+    return derive_executor_intent_client_order_id(venue, intent_id)
 
 
 _DEFAULT_AUDIT_DIR = os.path.join(

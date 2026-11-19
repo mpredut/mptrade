@@ -41,6 +41,7 @@ from cachepaths import (
 from state_io import generation_lock_path, load_json_state, save_json_state
 from .order_id_context import (
     all_venue_native_client_order_ids,
+    derive_ai_intent_client_order_id,
     extract_client_order_id,
     resolve_order_actor,
 )
@@ -101,15 +102,7 @@ def _record_intent_state(
 
 def ai_intent_client_order_id(intent_id: Any) -> Optional[str]:
     """Durable ``AI_`` client ID of an autonomous intent (<= 36 chars, Binance newClientOrderId compatible)."""
-    raw = clean_order_id(intent_id) or ""
-    if not raw:
-        return None
-    cid_body = (
-        f"{raw[:18]}_{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:6]}_{raw[-7:]}"
-        if len(raw) > 33
-        else raw
-    )
-    return f"AI_{cid_body}"
+    return derive_ai_intent_client_order_id(intent_id)
 
 
 def intent_venue_client_order_ids(intent: Any) -> set[str]:

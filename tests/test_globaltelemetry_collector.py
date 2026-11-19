@@ -160,7 +160,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     TelemetryEvaluatorFactory,
     TelemetryEvaluatorInterface,
     VolumeProfileEvaluator,
-    _apply_24h_series_enrichment,
+    apply_24h_series_enrichment,
     recalculate_live_price_geometry,
     resolve_asset_session_policy,
 )
@@ -586,7 +586,7 @@ def test_pretrade_telemetry_read_write_separation_and_explicit_snapshot_contract
     )
     monkeypatch.setattr(
         ptc_mod,
-        "_refresh_stale_t212_cached_positions",
+        "refresh_stale_t212_cached_positions",
         lambda *a, **kw: network_calls.append("t212_refresh") or True,
     )
     monkeypatch.setattr(
@@ -1361,7 +1361,7 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
         "rally_from_major_low_pct": 29.31,
         "recent_swings_7d": ["+37.9%", "-20.6%", "+18.1%"],
     }
-    _apply_24h_series_enrichment(
+    apply_24h_series_enrichment(
         "RGNT_US_EQ",
         rgnt_entry,
         {"low_24h": 1.15, "high_24h": 1.55},
@@ -1387,7 +1387,7 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
         "rally_from_major_low_pct": 29.31,
         "recent_swings_7d": ["+37.9%", "-20.6%", "+18.1%"],
     }
-    _apply_24h_series_enrichment(
+    apply_24h_series_enrichment(
         "RGNT_US_EQ",
         rgnt_breakdown,
         {"low_24h": 1.15, "high_24h": 1.55},
@@ -1639,7 +1639,7 @@ def test_update_pretrade_caches_checks_t212_portfolio_once_and_reports_effective
     )
     monkeypatch.setattr(
         ptc_mod,
-        "_refresh_stale_t212_cached_positions",
+        "refresh_stale_t212_cached_positions",
         lambda vb_d, vb_path, ts: t212_calls.append(ts) or publish_t212,
     )
 
@@ -2137,7 +2137,7 @@ def test_reverify_pass2_stale_microstructure_news_fallback_and_cross_quote_ages(
     assert "macro_calendar" not in sensor_only_snap.source_ages_sec
     assert sensor_only_snap.age_sec == pytest.approx(3600.0)
 
-    # 6. _refresh_stale_t212_cached_positions skips polling outside US RTH and advances stale ts during RTH even when price is unchanged
+    # 6. refresh_stale_t212_cached_positions skips polling outside US RTH and advances stale ts during RTH even when price is unchanged
     import intelligence.sentiment.collectors.microstructure_collector as mc_mod
 
     vb_rth_path = os.path.join(eq_dir, "venue_balances_state.json")
@@ -2165,12 +2165,12 @@ def test_reverify_pass2_stale_microstructure_news_fallback_and_cross_quote_ages(
     monkeypatch.setattr(mc_mod._t212_prov_mod, "T212Provider", _StubT212Provider)
     monkeypatch.setattr(mc_mod, "_LAST_T212_PORTFOLIO_POLL_TS", 0.0)
     monkeypatch.setattr(mc_mod, "is_symbol_market_open", lambda sym, ts=None: False)
-    assert mc_mod._refresh_stale_t212_cached_positions(vb_rth_doc, vb_rth_path, now_s, max_age_sec=180.0) is False
+    assert mc_mod.refresh_stale_t212_cached_positions(vb_rth_doc, vb_rth_path, now_s, max_age_sec=180.0) is False
     assert t212_poll_count == 0
     assert vb_rth_doc["pos:t212:RGNT_US_EQ"]["ts"] == pytest.approx(now_s - 3600.0)
 
     monkeypatch.setattr(mc_mod, "is_symbol_market_open", lambda sym, ts=None: True)
-    assert mc_mod._refresh_stale_t212_cached_positions(vb_rth_doc, vb_rth_path, now_s, max_age_sec=180.0) is True
+    assert mc_mod.refresh_stale_t212_cached_positions(vb_rth_doc, vb_rth_path, now_s, max_age_sec=180.0) is True
     assert t212_poll_count == 1
     assert vb_rth_doc["pos:t212:RGNT_US_EQ"]["ts"] == pytest.approx(now_s)
 

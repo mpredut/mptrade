@@ -78,6 +78,10 @@ from .order_id_context import (  # noqa: F401
     resolve_order_origin,
     resolve_venue_provider_class,
 )
+from .order_status_ssot import (
+    UNFILLED_ORDER_STATUSES,
+    is_non_fill_order_status,
+)
 
 
 _ORIG_QTY_KEYS = (
@@ -85,14 +89,6 @@ _ORIG_QTY_KEYS = (
     "order_qty", "qty", "amount", "quantity", "sz", "amount_shares", "q",
 )
 _EXEC_QTY_KEYS = ("executedQty", "executed_qty", "filledQuantity", "filledQty", "vol_exec", "filled_qty", "z")
-_UNFILLED_ORDER_STATUSES = frozenset({
-    "NEW", "OPEN", "RESTING", "WORKING", "PENDING",
-    "CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "UNFILLED",
-})
-_NON_FILL_ORDER_STATUSES = _UNFILLED_ORDER_STATUSES | frozenset({
-    "UNKNOWN", "SUBMIT_UNKNOWN", "FAILED", "ERROR", "REFUSED",
-})
-_NON_FILL_SUBMISSION_STATES = frozenset({"unknown", "refused", "failed"})
 _FEE_KEYS = ("commission", "fee", "filled_fee", "n")
 _FEE_ASSET_KEYS = ("commissionAsset", "feeToken", "fee_asset", "feeAsset", "N")
 
@@ -209,11 +205,8 @@ def extract_executed_qty(order: Any, default: float = 0.0) -> float:
     if msg_str.lower().startswith("filled "):
         if (msg_qty := safe_pos_float(msg_str[7:].split("@", 1)[0].strip(), default=None)) is not None:
             return msg_qty
-    raw_st = str(order.get("status") or "").strip().upper()
-    sub_st = str(order.get("submission_state") or "").strip().lower()
     if (
-        raw_st in _NON_FILL_ORDER_STATUSES
-        or sub_st in _NON_FILL_SUBMISSION_STATES
+        is_non_fill_order_status(order.get("status"), order.get("submission_state"))
         or (isinstance(order.get("resting"), dict) and not filled_sub)
     ):
         return 0.0
@@ -475,7 +468,7 @@ def aggregate_fills_by_order_id(
             }
             if st_item := item.get("status"):
                 entry["status"] = st_item
-                if item["qty"] > 0 and st_item in _UNFILLED_ORDER_STATUSES:
+                if item["qty"] > 0 and st_item in UNFILLED_ORDER_STATUSES:
                     entry["executedQty"] = item["qty"]
             if item.get("clientOrderId"):
                 entry["clientOrderId"] = item["clientOrderId"]

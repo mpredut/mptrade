@@ -4636,7 +4636,7 @@ def test_wave27_price_poller_deadlines_canonical_imports_and_border_cases(tmp_pa
     ohlc_file = ohlc_dir / "cache_ohlc_24h_BTCUSDC.json"
     pts_zero = [[i * 3 * 3600 * 1000, 100.0 + i, 10.0] for i in range(9)]
     state_io.save_json_state(str(ohlc_file), {"points": pts_zero})
-    loaded_pts = pse_mod._load_stitched_24h_ohlc_points(
+    loaded_pts = pse_mod.load_stitched_24h_ohlc_points(
         None,
         "BTCUSDC",
         cutoff_24h=0.0,
@@ -5152,7 +5152,7 @@ def test_wave29_ssot_price_candidates_t212_peek_lexicon_and_border_cases(tmp_pat
     ohlc_fut_dir.mkdir()
     ohlc_fut_file = cachepaths.resolve_cachedb_filepath(str(ohlc_fut_dir / "cache_ohlc_24h_NVDA_US_EQ.json"))
     state_io.save_json_state(str(ohlc_fut_file), {"ts": real_now + 86400.0, "symbol": "NVDA_US_EQ", "points": []})
-    stitched = pse_mod._load_stitched_24h_ohlc_points(
+    stitched = pse_mod.load_stitched_24h_ohlc_points(
         lambda _s, _iv: SimpleNamespace(
             timestamps=[real_now - (20 - i) * 3600.0 for i in range(21)],
             closes=[120.0 + i * 0.5 for i in range(21)],
@@ -5179,7 +5179,7 @@ def test_wave29_ssot_price_candidates_t212_peek_lexicon_and_border_cases(tmp_pat
         is False
     )
 
-    # microstructure_collector._refresh_stale_t212_cached_positions recovers corrupted future/ms position ts
+    # microstructure_collector.refresh_stale_t212_cached_positions recovers corrupted future/ms position ts
     bcache_file = tmp_path / "venue_balances_state.json"
     bals_doc = {
         "pos:t212:NVDA_US_EQ": {
@@ -5201,7 +5201,7 @@ def test_wave29_ssot_price_candidates_t212_peek_lexicon_and_border_cases(tmp_pat
                 )
             ),
         )
-        assert mc_mod._refresh_stale_t212_cached_positions(
+        assert mc_mod.refresh_stale_t212_cached_positions(
             bals_doc,
             str(bcache_file),
             now_ts=real_now,
@@ -5623,7 +5623,7 @@ def test_wave31_kinematic_ssot_and_impulse_border_cases(tmp_path, monkeypatch):
     assert mss.resolve_kalman_vel_z(stale_k_entry, populate=True) == 3.0
     assert stale_k_entry["kalman_vel_z"] == 3.0
 
-    # 4. _fit_quadratic_kinematics sanitizes unsorted/bool/NaN tuples and _apply_24h_series_enrichment drops stale 15m kinematics.
+    # 4. _fit_quadratic_kinematics sanitizes unsorted/bool/NaN tuples and apply_24h_series_enrichment drops stale 15m kinematics.
     assert pse_mod._fit_quadratic_kinematics(True, min_span_ms=30000.0) is None
     raw_unsorted = [
         (1060000.0, 101.2),
@@ -5642,7 +5642,7 @@ def test_wave31_kinematic_ssot_and_impulse_border_cases(tmp_path, monkeypatch):
         "accel_15m_pct_min2": 0.44,
     }
     short_s24 = [[2000000, 100.0], [2060000, 101.0], [2120000, 102.0]]
-    pse_mod._apply_24h_series_enrichment("TAOUSDC", stale_entry, {}, short_s24, None)
+    pse_mod.apply_24h_series_enrichment("TAOUSDC", stale_entry, {}, short_s24, None)
     assert "vel_15m_pct_min" not in stale_entry
     assert "accel_15m_pct_min2" not in stale_entry
 
@@ -8576,7 +8576,7 @@ def test_wave49_callable_anchor_id_memos_and_equity_suffix_ssot(tmp_path, monkey
     assert mc_mod._wrap_cached_ohlc_fn("kraken", getattr(prov_bm, "ohlc_series"), ttl_sec=60.0)("BTCUSD", 5).closes == [303.0]
     assert len(bm_calls) == 1
 
-    # 3. _load_stitched_24h_ohlc_points anchors writer callable in _LAST_OHLC_WRITER_ID_BY_PATH so new transient lambdas never read stale disk points.
+    # 3. load_stitched_24h_ohlc_points anchors writer callable in _LAST_OHLC_WRITER_ID_BY_PATH so new transient lambdas never read stale disk points.
     monkeypatch.setattr(pse_mod, "is_offline_disk_cache_enabled", lambda: False)
     monkeypatch.setattr(pse_mod, "is_live_network_backfill_enabled", lambda: False)
     pse_mod._OHLC_24H_DISK_MEMO.clear()
@@ -8586,7 +8586,7 @@ def test_wave49_callable_anchor_id_memos_and_equity_suffix_ssot(tmp_path, monkey
 
     def _run_transient_stitch(px: float):
         fn = lambda _sym, _iv: SimpleNamespace(timestamps=ts_list, closes=[px] * len(ts_list), volumes=[10.0] * len(ts_list))
-        return pse_mod._load_stitched_24h_ohlc_points(fn, "BTCUSDC", t0 - 86400.0, cache_dir=str(tmp_path))
+        return pse_mod.load_stitched_24h_ohlc_points(fn, "BTCUSDC", t0 - 86400.0, cache_dir=str(tmp_path))
 
     pts_first = _run_transient_stitch(50_000.0)
     pts_second = _run_transient_stitch(60_000.0)

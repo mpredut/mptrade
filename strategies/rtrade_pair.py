@@ -27,12 +27,14 @@ from botcore import (
 )
 
 
+from providers.order_status_ssot import TERMINAL_SNAPSHOT_ORDER_STATUSES as _TERMINAL_ORDER_STATUSES
+
+
 _MAX_LIMIT_REVISION = 1_000_000
 _TERMINAL_PHASES = {"complete", "expired", "failed", "hard_stop"}
 _VALID_PHASES = _TERMINAL_PHASES | {
     "idle", "startup_recovery", "quoting", "exposed", "closing", "stopping", "hard_stop_recovery",
 }
-_TERMINAL_ORDER_STATUSES = {"closed", "canceled", "expired"}
 
 
 def _parse_nonneg_int(

@@ -17,6 +17,7 @@ from botcore import (
     safe_nonneg_int,
 )
 from cachepaths import canonical_symbol_key, resolve_cachedb_filepath
+from providers.order_status_ssot import VALID_SNAPSHOT_ORDER_STATUSES as _VALID_SNAPSHOT_STATUSES
 from state_io import atomic_write_json, encode_json_payload, parse_json_payload, read_json_file
 
 
@@ -34,7 +35,6 @@ _REQUIRED_PAIR_KEYS = {
     "terminal", "intents", "state", "created_ts", "updated_ts",
 }
 _REQUIRED_ACTIVE_STATE_KEYS = {"pair_id", "qty", "start_side", "phase", "tickets"}
-_VALID_SNAPSHOT_STATUSES = {"open", "closed", "canceled", "expired"}
 
 
 class RTradePairStore:

@@ -324,6 +324,489 @@ def _evaluate_reprice_trend_state(symbol: str, order_type: str) -> tuple[bool, b
         return False, False
 
 
+def _expire_open_order_if_ttl_exceeded(
+    *,
+    symbol: str,
+    order_type: str,
+    order_id,
+    oid_str: str,
+    cid: str,
+    owner: str,
+    order: dict,
+    price: float,
+    order_ts: float,
+    custom_ttl_map: dict,
+    initial_prices: dict,
+) -> tuple[bool, float, float]:
+    """Check order TTL expiration and cancel on venue when expired; return ``(expired_handled, age_sec, effective_ttl)``."""
+    age_sec = 0.0
+    effective_ttl = resolve_effective_order_ttl(
+        oid_str, cid, owner=owner, custom_ttl_map=custom_ttl_map
+    )
+    if order_ts > 0:
+        age_sec = max(0.0, time.time() - order_ts)
+        if age_sec >= MAX_GLOBAL_ORDER_TTL_SEC or age_sec >= effective_ttl:
+            age_str = f"{age_sec / 3600:.1f}h" if age_sec >= 3600 else f"{age_sec / 60:.1f}m"
+            ttl_str = f"{effective_ttl / 3600:.1f}h" if effective_ttl >= 3600 else f"{effective_ttl / 60:.1f}m"
+            print(
+                f"[MONITORORDER] \u23f0 Order {order_id} ({owner}, cid='{cid}') EXPIRED: "
+                f"age {age_str} >= TTL {ttl_str}. Canceling on venue..."
+            )
+            try:
+                if mkt.cancel_order(symbol, oid_str) is False:
+                    print(f"[MONITORORDER] Cancel returned False for expired order {order_id};", "will retry next cycle.")
+                    return True, age_sec, effective_ttl
+                _clear_initial_order_price(initial_prices, order_id, oid_str)
+                try:
+                    order_retry.resolve_accepted_order(symbol, oid_str)
+                except Exception:
+                    pass
+                print(f"[MONITORORDER] \U0001f6d1 Successfully canceled expired order {order_id}")
+                if oid_str not in _notified_expired_order_ids:
+                    _notified_expired_order_ids.add(oid_str)
+                    _notify_order_expired(symbol, order_type, order_id, price, extract_order_qty(order), owner, age_str, ttl_str)
+            except Exception as exc:
+                print(f"[MONITORORDER] Failed to cancel expired order {order_id}: {exc}")
+            return True, age_sec, effective_ttl
+    return False, age_sec, effective_ttl
+
+
+def _compute_reprice_target_price(
+    *,
+    symbol: str,
+    order_type: str,
+    order_id,
+    oid_str: str,
+    cid: str,
+    price,
+    price_f: float,
+    current_price: float,
+    eff_max_proc: float,
+    eff_mid_proc: float,
+    eff_initial_max_proc: float,
+    eff_pushback_offset: float,
+    eff_reprice_offset: float,
+    initial_prices: dict,
+) -> float | None:
+    """Evaluate price proximity and short-trend state; return target ``new_price`` or ``None`` to keep resting."""
+    init_px_f = safe_pos_float(initial_prices.get(order_id), default=None)
+    if init_px_f is None:
+        cid_base = cid.rsplit("_", 1)[0] if cid and "_" in cid else None
+        for alt_k in (oid_str, exact_nonneg_int(oid_str, default=None), cid or None, cid_base):
+            if alt_k is not None and alt_k in initial_prices:
+                init_px_f = safe_pos_float(initial_prices.pop(alt_k, None), default=None)
+                if init_px_f is not None:
+                    break
+    if init_px_f is not None:
+        initial_prices[order_id] = init_px_f
+    else:
+        lru_dict_put(initial_prices, order_id, price_f, MAX_TRACKED_ORDER_IDS)
+
+    difference_percent = diff_percent(current_price, price)
+    print(f"{order_type.capitalize()} price {price}, current price {current_price} difference: {difference_percent:.2f}%, Order ID {order_id}")
+
+    if not are_close(current_price, price, eff_max_proc):
+        return None
+
+    print(f"Current price {current_price} and {order_type} price {price} are close!")
+    order_diff_percent = difference_percent
+    short_favorable, super_short_favorable = _evaluate_reprice_trend_state(symbol, order_type)
+
+    if short_favorable and super_short_favorable and order_diff_percent <= eff_mid_proc:
+        if order_type == "SELL":
+            new_price = max(price_f, current_price * (1.0 + eff_pushback_offset))
+        else:
+            new_price = min(price_f, current_price * (1.0 - eff_pushback_offset))
+        print(
+            f"[MONITORORDER] Favorable short+super-short trend for {order_type} "
+            f"order {order_id} near market ({order_diff_percent:.2f}% <= {eff_mid_proc:.2f}%); "
+            f"pushing order in favor of profit to {format_price_log(new_price)}"
+        )
+    elif short_favorable:
+        print(
+            f"[MONITORORDER] Short trend is favorable for {order_type} order {order_id} "
+            f"at {price} (diff {order_diff_percent:.2f}%); keeping live order on book."
+        )
+        return None
+    else:
+        difference_percent = diff_percent(current_price, initial_prices[order_id])
+        if not are_close(current_price, initial_prices[order_id], eff_initial_max_proc):
+            print(f"However the price moved too much ({difference_percent}%) compared with the initial price ({initial_prices[order_id]}). The order is no longer modified.")
+            return None
+        print(f"Current price {current_price} and initial {order_type} price {initial_prices[order_id]} are close!")
+        if order_type == "SELL":
+            new_price = current_price * (1.0 + eff_reprice_offset)
+        else:
+            new_price = current_price * (1.0 - eff_reprice_offset)
+
+    effective_new_price = new_price
+    round_px = getattr(mkt, "round_price", None)
+    if callable(round_px) and not hasattr(round_px, "_mock_name"):
+        effective_new_price = safe_pos_float(round_px(symbol, new_price), default=new_price)
+    if abs(effective_new_price - price_f) <= 1e-12 or abs(new_price - price_f) <= 1e-12:
+        print(
+            f"Order {order_id} is already at target replacement price "
+            f"{price}; skipping redundant cancel/replace."
+        )
+        return None
+    return new_price
+
+
+def _lease_replacement_and_preflight(
+    *,
+    symbol: str,
+    order_type: str,
+    order_id,
+    oid_str: str,
+    cid: str,
+    owner: str,
+    quantity: float,
+    original_quantity: float,
+    new_price: float,
+    current_price: float,
+    provider_name: str,
+    order_ts: float,
+    custom_ttl_map: dict,
+    effective_ttl: float,
+    age_sec: float,
+    replace_bypass_guards: list[str],
+    replace_wait_for_trend: bool,
+):
+    """Persist ``awaiting_cancel`` replacement intent, acquire lease, and verify preflight/permit before canceling."""
+    replace_pfx = rc.resolve_monitororder_replace_prefix(owner)
+    has_explicit_ttl = (
+        order_ts > 0
+        or oid_str in custom_ttl_map
+        or (cid and cid in custom_ttl_map)
+    )
+    replacement_ttl = max(60.0, effective_ttl - age_sec) if has_explicit_ttl else None
+    replacement_id = order_retry.enqueue(
+        symbol, order_type, quantity,
+        {
+            "smart": False,
+            "kind": "monitor_order_replace",
+            "bypass_guards": list(replace_bypass_guards),
+            "allow_math_reference_sell": True,
+            "wait_for_trend": replace_wait_for_trend,
+            "prefix": replace_pfx,
+            "parent_client_order_id": cid,
+            "parent_owner": owner,
+        },
+        requested_price=new_price, ref_price=current_price,
+        failure_reason="submit_pending",
+        provider_name=provider_name, kind="monitor_order_replace",
+        lifecycle="awaiting_cancel", replaces_order_id=order_id,
+        replaces_original_qty=original_quantity,
+        ttl_sec=replacement_ttl)
+    claimed = (
+        order_retry.claim(
+            [replacement_id],
+            lease_sec=order_retry.RETRY_CLAIM_LEASE_SEC)
+        if replacement_id else []
+    )
+    if not claimed:
+        print(
+            f"The {order_type} replacement could not be persisted and "
+            "leased; the existing order remains active."
+        )
+        return None
+    replacement_claim = claimed[0]
+    raw_place_kw = (
+        replacement_claim.get("place_kwargs")
+        if isinstance(replacement_claim, dict)
+        else None
+    )
+    place_kw = raw_place_kw if isinstance(raw_place_kw, dict) else {}
+    client_order_id = clean_order_id_str(place_kw.get("client_order_id")) or None
+    if not client_order_id:
+        order_retry.complete_claim(replacement_claim, "success")
+        print(
+            f"The {order_type} replacement has no durable client ID;",
+            "the existing order remains active.",
+        )
+        return None
+
+    provider_obj = _resolve_provider(symbol, provider_name)
+    requires_permit = (
+        True
+        if provider_obj is None or not callable(getattr(provider_obj, "requires_cache_permit", None))
+        else bool(provider_obj.requires_cache_permit())
+    )
+    defers_qty = (
+        False
+        if provider_obj is None or not callable(getattr(provider_obj, "defers_preflight_quantity", None))
+        else bool(provider_obj.defers_preflight_quantity())
+    )
+    preflight_qty = None if defers_qty else quantity
+    try:
+        filter_refusal = mkt.order_filter_refusal(
+            symbol,
+            order_type,
+            new_price,
+            quantity,
+            market=False,
+            enforce_business_minimum=True,
+            provider_name=provider_name,
+        )
+        if filter_refusal:
+            raise SubmissionRefused(filter_refusal)
+        cache_permit = mkt.preflight_order(
+            symbol, order_type, preflight_qty, new_price,
+            market=False, kind="monitor_order_replace")
+        if requires_permit and cache_permit is None:
+            raise SubmissionRefused("account_cache_not_fresh")
+    except Exception as exc:  # noqa: BLE001
+        order_retry.complete_claim(replacement_claim, "success")
+        refusal_reason = getattr(exc, "reason", str(exc))
+        print(
+            f"The {order_type} replacement was refused before cancellation: "
+            f"{refusal_reason}. The existing order remains active."
+        )
+        return None
+    return replacement_claim, client_order_id, cache_permit, preflight_qty
+
+
+def _dispatch_native_or_cancel_replace(
+    *,
+    symbol: str,
+    order_type: str,
+    order_id,
+    oid_str: str,
+    price,
+    price_f: float,
+    new_price: float,
+    quantity: float,
+    original_quantity: float,
+    provider_name: str,
+    replacement_claim: dict,
+    client_order_id: str,
+    cache_permit,
+    preflight_qty,
+    replace_bypass_guards: list[str],
+    replace_wait_for_trend: bool,
+    orders: dict,
+    initial_prices: dict,
+) -> None:
+    """Execute atomic native replace when supported, else cancel + reconcile status + submit replacement."""
+    native_cancel_only = False
+    native_refused = False
+    if _native_replace_enabled_for(symbol, provider_name):
+        refreshed_claim = order_retry.begin_claimed_submit(replacement_claim)
+        if refreshed_claim is None:
+            print(
+                f"The durable replacement claim for order {order_id} changed "
+                "before dispatch; no replacement is submitted by this process."
+            )
+            return
+        replacement_claim = refreshed_claim
+        locked_balance = quantity if order_type == "SELL" else quantity * price_f
+        native_outcome = {}
+        try:
+            native_order = mkt.place(
+                symbol, order_type, new_price, quantity, smart=False,
+                kind="monitor_order_replace",
+                bypass_guards=set(replace_bypass_guards),
+                allow_math_reference_sell=True,
+                wait_for_trend=replace_wait_for_trend,
+                caller_owns_retry=True,
+                client_order_id=client_order_id,
+                replaces_order_id=order_id,
+                replaces_locked_balance=locked_balance,
+                _outcome_context=native_outcome,
+                cache_permit=cache_permit,
+            )
+        except Exception as exc:  # noqa: BLE001
+            native_order = None
+            native_outcome.update(state="unknown", reason=f"replacement_exception:{exc}")
+        if native_order is None and native_outcome.get("state") != "refused":
+            try:
+                found = mkt.order_by_client_id(
+                    symbol, client_order_id, provider_name=provider_name
+                )
+                if isinstance(found, dict) and extract_order_id(found) is not None:
+                    native_order = found
+            except Exception:
+                pass
+        if native_order:
+            eff_qty = (
+                quantity
+                if isinstance(native_order, dict) and native_order.get("amended_in_place")
+                else (safe_pos_float(native_outcome.get("submitted_qty"), default=quantity) or quantity)
+            )
+            _record_replacement_success(
+                {**replacement_claim, "qty": eff_qty},
+                native_order,
+                provider_name=provider_name,
+                symbol=symbol,
+                order_type=order_type,
+                order_id=order_id,
+                oid_str=oid_str,
+                price=price,
+                price_f=price_f,
+                new_price=new_price,
+                quantity=eff_qty,
+                orders=orders,
+                initial_prices=initial_prices,
+            )
+            return
+        native_reason = clean_scalar_str(native_outcome.get("reason")) or ""
+        native_refused = native_outcome.get("state") == "refused"
+        if native_refused and native_reason not in {"replace_not_attempted", "replace_cancel_only"}:
+            order_retry.complete_claim(replacement_claim, "success")
+            print(
+                f"The {order_type} replacement was refused before cancellation: "
+                f"{native_reason or 'refused'}. The existing order remains active."
+            )
+            return
+        native_cancel_only = native_reason == "replace_cancel_only"
+        try:
+            cache_permit = mkt.preflight_order(
+                symbol, order_type, preflight_qty, new_price,
+                market=False, kind="monitor_order_replace",
+            )
+        except Exception:
+            cache_permit = None
+
+    fallback_submission_kw = {"submission_state": "refused"} if native_refused else {}
+    if native_cancel_only:
+        cancel_confirmed = True
+    else:
+        try:
+            cancel_confirmed = api.cancel_order(symbol, order_id) is not False
+        except Exception as exc:  # noqa: BLE001
+            cancel_confirmed = False
+            print(
+                f"The cancel request for order {order_id} raised {exc}; "
+                "reconciling venue status before deciding on replacement."
+            )
+    try:
+        status = mkt.order_status(symbol, str(order_id))
+    except Exception as exc:  # noqa: BLE001
+        order_retry.complete_claim(
+            replacement_claim, "status_error",
+            failure_reason=str(exc),
+            **fallback_submission_kw)
+        print(
+            f"The cancellation of {order_id} is ambiguous and status "
+            f"reconciliation failed: {exc}. The durable replacement "
+            "remains non-submittable and is deferred."
+        )
+        return
+    venue_status = str(status.venue_status or "").upper()
+    if venue_status in {"CANCELED", "CANCELLED"}:
+        if not cancel_confirmed:
+            print(
+                f"Order {order_id} is confirmed canceled after the cancel "
+                "response was lost; continuing with its replacement."
+            )
+    else:
+        order_retry.complete_claim(
+            replacement_claim,
+            "success" if status.terminal else "release",
+            **fallback_submission_kw,
+        )
+        if status.terminal:
+            _clear_initial_order_price(initial_prices, order_id, oid_str)
+        print(
+            f"Order {order_id} reconciled as {venue_status or 'UNKNOWN'}; "
+            "no replacement is submitted."
+        )
+        return
+
+    quantity_rem = order_retry.compute_replacement_qty(original_quantity, status)
+    activation = (
+        order_retry.activate_claimed_replacement(replacement_claim, quantity_rem)
+        if quantity_rem is not None
+        else None
+    )
+    if activation == "resolved":
+        _clear_initial_order_price(initial_prices, order_id, oid_str)
+        return
+    if activation != "activated":
+        order_retry.complete_claim(
+            replacement_claim, "status_error", failure_reason="cancel_activation_failed"
+        )
+        refreshed_claim = None
+        skip_msg = (
+            f"The durable replacement for order {order_id} could not be "
+            "activated after cancellation; no replacement is submitted."
+        )
+    else:
+        refreshed_claim = order_retry.begin_claimed_submit(replacement_claim)
+        skip_msg = (
+            f"The durable replacement claim for order {order_id} changed "
+            "before dispatch; no replacement is submitted by this process."
+        )
+    if refreshed_claim is None:
+        print(skip_msg)
+        return
+    replacement_claim = refreshed_claim
+
+    outcome = {}
+    try:
+        new_order = mkt.place(
+            symbol, order_type, new_price, quantity_rem, smart=False,
+            kind="monitor_order_replace",
+            bypass_guards=set(replace_bypass_guards),
+            allow_math_reference_sell=True,
+            wait_for_trend=replace_wait_for_trend,
+            caller_owns_retry=True,
+            client_order_id=client_order_id,
+            _outcome_context=outcome,
+            cache_permit=cache_permit)
+    except Exception as exc:  # noqa: BLE001
+        new_order = None
+        outcome.update(state="unknown", reason=f"replacement_exception:{exc}")
+
+    if new_order:
+        _record_replacement_success(
+            replacement_claim,
+            new_order,
+            provider_name=provider_name,
+            symbol=symbol,
+            order_type=order_type,
+            order_id=order_id,
+            oid_str=oid_str,
+            price=price,
+            price_f=price_f,
+            new_price=new_price,
+            quantity=quantity_rem,
+            orders=orders,
+            initial_prices=initial_prices,
+        )
+    else:
+        failure_reason = str(outcome.get("reason") or "replacement_not_accepted")
+        submission_state = "refused" if outcome.get("state") == "refused" else "unknown"
+        terminal_pre_submit_refusal = (
+            submission_state == "refused"
+            and (
+                failure_reason in {"execution_disabled", "trading_disabled"}
+                or order_retry.is_terminal_filter_refusal(failure_reason)
+            )
+        )
+        claim_outcome = (
+            "success" if terminal_pre_submit_refusal else
+            "deferred"
+            if order_retry.is_non_failure_deferral(failure_reason)
+            else "failure"
+        )
+        order_retry.complete_claim(
+            replacement_claim, claim_outcome,
+            failure_reason=failure_reason,
+            submission_state=submission_state)
+        if terminal_pre_submit_refusal:
+            _clear_initial_order_price(initial_prices, order_id, oid_str)
+            print(
+                f"The {order_type} replacement was refused before submit "
+                f"after old order {order_id} was canceled; the stale "
+                f"replacement intent was removed ({failure_reason}).")
+        else:
+            print(
+                f"The {order_type} replacement was not accepted immediately; "
+                "the persisted intent stays in the shared outbox for a retry."
+            )
+
+
 def monitor_open_orders_by_type(
     symbol,
     order_type,
@@ -357,7 +840,7 @@ def monitor_open_orders_by_type(
             else "Could not obtain the current price."
         )
         return
-    
+
     print(f"The current price : {format_price_log(current_price)}")
     eff_min_proc, eff_mid_proc, eff_max_proc, eff_initial_max_proc = order_lifecycle.resolve_dynamic_reprice_bounds(
         symbol,
@@ -371,7 +854,7 @@ def monitor_open_orders_by_type(
     )
     eff_reprice_offset = eff_min_proc / 100.0
     eff_pushback_offset = eff_mid_proc / 100.0
-    
+
     initial_prices = initial_sell_prices if order_type == "SELL" else initial_buy_prices
     provider_name = _resolve_provider_name(symbol)
     if isinstance(_cycle_maps, list) and custom_ttl_map is None and accepted_owner_map is None:
@@ -383,13 +866,15 @@ def monitor_open_orders_by_type(
             custom_ttl_map, accepted_owner_map
         )
 
+    replace_bypass_guards = ["G_PROF", "GT_S", "GLLM1"]
+    replace_wait_for_trend = False
+
     for order_id in list(orders.keys()):
         order = orders[order_id]
         if not isinstance(order, dict):
             continue
         price = extract_order_price(order, default=0.0)
-
-        if not price or price <= 0:          # Guard against division by zero for invalid prices.
+        if not price or price <= 0:
             print(f"Invalid price ({price}) for order {order_id}, skipping.")
             continue
 
@@ -421,444 +906,99 @@ def monitor_open_orders_by_type(
                 symbol, order_type, order_id, price, extract_order_qty(order), owner=owner, venue=provider_name
             )
 
-        # Check order age and Market TTL expiration (hard cap of 3 days or effective TTL).
-        age_sec = 0.0
-        effective_ttl = resolve_effective_order_ttl(
-            oid_str, cid, owner=owner, custom_ttl_map=custom_ttl_map)
-        if order_ts > 0:
-            age_sec = max(0.0, time.time() - order_ts)
-            if age_sec >= MAX_GLOBAL_ORDER_TTL_SEC or age_sec >= effective_ttl:
-                age_str = f"{age_sec / 3600:.1f}h" if age_sec >= 3600 else f"{age_sec / 60:.1f}m"
-                ttl_str = f"{effective_ttl / 3600:.1f}h" if effective_ttl >= 3600 else f"{effective_ttl / 60:.1f}m"
-                print(
-                    f"[MONITORORDER] \u23f0 Order {order_id} ({owner}, cid='{cid}') EXPIRED: "
-                    f"age {age_str} >= TTL {ttl_str}. Canceling on venue..."
-                )
-                try:
-                    if mkt.cancel_order(symbol, oid_str) is False:
-                        print(f"[MONITORORDER] Cancel returned False for expired order {order_id};", "will retry next cycle.")
-                        continue
-                    _clear_initial_order_price(initial_prices, order_id, oid_str)
-                    try:
-                        order_retry.resolve_accepted_order(symbol, oid_str)
-                    except Exception:
-                        pass
-                    print(f"[MONITORORDER] \U0001f6d1 Successfully canceled expired order {order_id}")
-                    if oid_str not in _notified_expired_order_ids:
-                        _notified_expired_order_ids.add(oid_str)
-                        _notify_order_expired(symbol, order_type, order_id, price, extract_order_qty(order), owner, age_str, ttl_str)
-                except Exception as exc:
-                    print(f"[MONITORORDER] Failed to cancel expired order {order_id}: {exc}")
-                continue
+        expired_handled, age_sec, effective_ttl = _expire_open_order_if_ttl_exceeded(
+            symbol=symbol,
+            order_type=order_type,
+            order_id=order_id,
+            oid_str=oid_str,
+            cid=cid,
+            owner=owner,
+            order=order,
+            price=price,
+            order_ts=order_ts,
+            custom_ttl_map=custom_ttl_map,
+            initial_prices=initial_prices,
+        )
+        if expired_handled:
+            continue
 
-        # Repricing protection: only reprice orders from tradeall, monitororder, or manual.
-        # Orders from rtrade, spot_dca, monitortrades, etc. are strictly protected from cancellation/repricing.
         if not rc.is_order_repriceable_by_monitororder(cid, resolved_owner=owner):
             print(f"Order {order_id} (owner='{owner}', cid='{cid}') is protected from monitororder repricing; skipping.")
             continue
 
         price_f = safe_pos_float(price, default=0.0) or 0.0
-        init_px_f = safe_pos_float(initial_prices.get(order_id), default=None)
-        if init_px_f is None:
-            cid_base = cid.rsplit("_", 1)[0] if cid and "_" in cid else None
-            for alt_k in (oid_str, exact_nonneg_int(oid_str, default=None), cid or None, cid_base):
-                if alt_k is not None and alt_k in initial_prices:
-                    init_px_f = safe_pos_float(initial_prices.pop(alt_k, None), default=None)
-                    if init_px_f is not None:
-                        break
-        if init_px_f is not None:
-            initial_prices[order_id] = init_px_f
-        else:
-            lru_dict_put(initial_prices, order_id, price_f, MAX_TRACKED_ORDER_IDS)
+        new_price = _compute_reprice_target_price(
+            symbol=symbol,
+            order_type=order_type,
+            order_id=order_id,
+            oid_str=oid_str,
+            cid=cid,
+            price=price,
+            price_f=price_f,
+            current_price=current_price,
+            eff_max_proc=eff_max_proc,
+            eff_mid_proc=eff_mid_proc,
+            eff_initial_max_proc=eff_initial_max_proc,
+            eff_pushback_offset=eff_pushback_offset,
+            eff_reprice_offset=eff_reprice_offset,
+            initial_prices=initial_prices,
+        )
+        if new_price is None:
+            continue
 
-        difference_percent = diff_percent(current_price, price)
-        print(f"{order_type.capitalize()} price {price}, current price {current_price} difference: {difference_percent:.2f}%, Order ID {order_id}")
-        
-        if are_close(current_price, price, eff_max_proc):
-            print(f"Current price {current_price} and {order_type} price {price} are close!")
-            order_diff_percent = difference_percent
-            short_favorable, super_short_favorable = _evaluate_reprice_trend_state(symbol, order_type)
-
-            if short_favorable and super_short_favorable and order_diff_percent <= eff_mid_proc:
-                if order_type == "SELL":
-                    new_price = max(price_f, current_price * (1.0 + eff_pushback_offset))
-                else:
-                    new_price = min(price_f, current_price * (1.0 - eff_pushback_offset))
-                print(
-                    f"[MONITORORDER] Favorable short+super-short trend for {order_type} "
-                    f"order {order_id} near market ({order_diff_percent:.2f}% <= {eff_mid_proc:.2f}%); "
-                    f"pushing order in favor of profit to {format_price_log(new_price)}"
-                )
-            elif short_favorable:
-                print(
-                    f"[MONITORORDER] Short trend is favorable for {order_type} order {order_id} "
-                    f"at {price} (diff {order_diff_percent:.2f}%); keeping live order on book."
-                )
-                continue
-            else:
-                difference_percent = diff_percent(current_price, initial_prices[order_id])
-                if not are_close(current_price, initial_prices[order_id], eff_initial_max_proc):
-                    print(f"However the price moved too much ({difference_percent}%) compared with the initial price ({initial_prices[order_id]}). The order is no longer modified.")
-                    continue
-                print(f"Current price {current_price} and initial {order_type} price {initial_prices[order_id]} are close!")
-                if order_type == "SELL":
-                    new_price = current_price * (1.0 + eff_reprice_offset)
-                else:
-                    new_price = current_price * (1.0 - eff_reprice_offset)
-            # Short trend and high-stake sizing were already evaluated on initial
-            # placement; once we cancel the live order on the exchange, do not
-            # re-defer via GT_S or block for 30-60s on GLLM1 while permit expires.
-            replace_bypass_guards = ["G_PROF", "GT_S", "GLLM1"]
-            replace_wait_for_trend = False
-            effective_new_price = new_price
-            round_px = getattr(mkt, "round_price", None)
-            if callable(round_px) and not hasattr(round_px, "_mock_name"):
-                effective_new_price = safe_pos_float(round_px(symbol, new_price), default=new_price)
-            if (
-                abs(effective_new_price - price_f) <= 1e-12
-                or abs(new_price - price_f) <= 1e-12
-            ):
-                print(
-                    f"Order {order_id} is already at target replacement price "
-                    f"{price}; skipping redundant cancel/replace."
-                )
-                continue
-            original_quantity = extract_order_qty(order, default=None)
-            quantity = extract_remaining_qty(order, default=original_quantity)
-            if not original_quantity or not quantity:
-                print(
-                    f"Order {order_id} has an invalid or unfilled remaining quantity; "
-                    "it is not canceled or replaced."
-                )
-                continue
-
-            # Persist and lease the exact replacement before canceling the live
-            # order. Response loss and transient refusals therefore leave a
-            # durable intent for the shared worker; deterministic venue filters
-            # are checked while the existing order is still active.
-            replace_pfx = rc.resolve_monitororder_replace_prefix(owner)
-            has_explicit_ttl = (
-                order_ts > 0
-                or oid_str in custom_ttl_map
-                or (cid and cid in custom_ttl_map)
+        original_quantity = extract_order_qty(order, default=None)
+        quantity = extract_remaining_qty(order, default=original_quantity)
+        if not original_quantity or not quantity:
+            print(
+                f"Order {order_id} has an invalid or unfilled remaining quantity; "
+                "it is not canceled or replaced."
             )
-            replacement_ttl = max(60.0, effective_ttl - age_sec) if has_explicit_ttl else None
-            replacement_id = order_retry.enqueue(
-                symbol, order_type, quantity,
-                {
-                    "smart": False,
-                    "kind": "monitor_order_replace",
-                    "bypass_guards": list(replace_bypass_guards),
-                    "allow_math_reference_sell": True,
-                    "wait_for_trend": replace_wait_for_trend,
-                    "prefix": replace_pfx,
-                    "parent_client_order_id": cid,
-                    "parent_owner": owner,
-                },
-                requested_price=new_price, ref_price=current_price,
-                failure_reason="submit_pending",
-                provider_name=provider_name, kind="monitor_order_replace",
-                lifecycle="awaiting_cancel", replaces_order_id=order_id,
-                replaces_original_qty=original_quantity,
-                ttl_sec=replacement_ttl)
-            claimed = (
-                order_retry.claim(
-                    [replacement_id],
-                    lease_sec=order_retry.RETRY_CLAIM_LEASE_SEC)
-                if replacement_id else []
-            )
-            if not claimed:
-                print(
-                    f"The {order_type} replacement could not be persisted and "
-                    "leased; the existing order remains active."
-                )
-                continue
-            replacement_claim = claimed[0]
-            raw_place_kw = (
-                replacement_claim.get("place_kwargs")
-                if isinstance(replacement_claim, dict)
-                else None
-            )
-            place_kw = raw_place_kw if isinstance(raw_place_kw, dict) else {}
-            client_order_id = clean_order_id_str(place_kw.get("client_order_id")) or None
-            if not client_order_id:
-                order_retry.complete_claim(
-                    replacement_claim, "success")
-                print(
-                    f"The {order_type} replacement has no durable client ID;",
-                    "the existing order remains active.",
-                )
-                continue
+            continue
 
-            # Issue the one-shot permit only after the durable intent exists, so
-            # permit acquisition stays immediately adjacent to cancel and submit.
-            provider_obj = _resolve_provider(symbol, provider_name)
-            requires_permit = (
-                True
-                if provider_obj is None or not callable(getattr(provider_obj, "requires_cache_permit", None))
-                else bool(provider_obj.requires_cache_permit())
-            )
-            defers_qty = (
-                False
-                if provider_obj is None or not callable(getattr(provider_obj, "defers_preflight_quantity", None))
-                else bool(provider_obj.defers_preflight_quantity())
-            )
-            preflight_qty = None if defers_qty else quantity
-            try:
-                filter_refusal = mkt.order_filter_refusal(
-                    symbol,
-                    order_type,
-                    new_price,
-                    quantity,
-                    market=False,
-                    enforce_business_minimum=True,
-                    provider_name=provider_name,
-                )
-                if filter_refusal:
-                    raise SubmissionRefused(filter_refusal)
-                cache_permit = mkt.preflight_order(
-                    symbol, order_type, preflight_qty, new_price,
-                    market=False, kind="monitor_order_replace")
-                if requires_permit and cache_permit is None:
-                    raise SubmissionRefused("account_cache_not_fresh")
-            except Exception as exc:  # noqa: BLE001
-                order_retry.complete_claim(replacement_claim, "success")
-                refusal_reason = getattr(exc, "reason", str(exc))
-                print(
-                    f"The {order_type} replacement was refused before cancellation: "
-                    f"{refusal_reason}. The existing order remains active."
-                )
-                continue
+        leased = _lease_replacement_and_preflight(
+            symbol=symbol,
+            order_type=order_type,
+            order_id=order_id,
+            oid_str=oid_str,
+            cid=cid,
+            owner=owner,
+            quantity=quantity,
+            original_quantity=original_quantity,
+            new_price=new_price,
+            current_price=current_price,
+            provider_name=provider_name,
+            order_ts=order_ts,
+            custom_ttl_map=custom_ttl_map,
+            effective_ttl=effective_ttl,
+            age_sec=age_sec,
+            replace_bypass_guards=replace_bypass_guards,
+            replace_wait_for_trend=replace_wait_for_trend,
+        )
+        if leased is None:
+            continue
+        replacement_claim, client_order_id, cache_permit, preflight_qty = leased
 
-            native_cancel_only = False
-            native_refused = False
-            if _native_replace_enabled_for(symbol, provider_name):
-                refreshed_claim = order_retry.begin_claimed_submit(replacement_claim)
-                if refreshed_claim is None:
-                    print(
-                        f"The durable replacement claim for order {order_id} changed "
-                        "before dispatch; no replacement is submitted by this process."
-                    )
-                    continue
-                replacement_claim = refreshed_claim
-                locked_balance = quantity if order_type == "SELL" else quantity * price_f
-                native_outcome = {}
-                try:
-                    native_order = mkt.place(
-                        symbol, order_type, new_price, quantity, smart=False,
-                        kind="monitor_order_replace",
-                        bypass_guards=set(replace_bypass_guards),
-                        allow_math_reference_sell=True,
-                        wait_for_trend=replace_wait_for_trend,
-                        caller_owns_retry=True,
-                        client_order_id=client_order_id,
-                        replaces_order_id=order_id,
-                        replaces_locked_balance=locked_balance,
-                        _outcome_context=native_outcome,
-                        cache_permit=cache_permit,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    native_order = None
-                    native_outcome.update(
-                        state="unknown", reason=f"replacement_exception:{exc}"
-                    )
-                if native_order is None and native_outcome.get("state") != "refused":
-                    try:
-                        found = mkt.order_by_client_id(
-                            symbol, client_order_id, provider_name=provider_name
-                        )
-                        if isinstance(found, dict) and extract_order_id(found) is not None:
-                            native_order = found
-                    except Exception:
-                        pass
-                if native_order:
-                    eff_qty = (
-                        quantity
-                        if isinstance(native_order, dict) and native_order.get("amended_in_place")
-                        else (safe_pos_float(native_outcome.get("submitted_qty"), default=quantity) or quantity)
-                    )
-                    _record_replacement_success(
-                        {**replacement_claim, "qty": eff_qty},
-                        native_order,
-                        provider_name=provider_name,
-                        symbol=symbol,
-                        order_type=order_type,
-                        order_id=order_id,
-                        oid_str=oid_str,
-                        price=price,
-                        price_f=price_f,
-                        new_price=new_price,
-                        quantity=eff_qty,
-                        orders=orders,
-                        initial_prices=initial_prices,
-                    )
-                    continue
-                native_reason = clean_scalar_str(native_outcome.get("reason")) or ""
-                native_refused = native_outcome.get("state") == "refused"
-                if native_refused and native_reason not in {"replace_not_attempted", "replace_cancel_only"}:
-                    order_retry.complete_claim(replacement_claim, "success")
-                    print(
-                        f"The {order_type} replacement was refused before cancellation: "
-                        f"{native_reason or 'refused'}. The existing order remains active."
-                    )
-                    continue
-                native_cancel_only = native_reason == "replace_cancel_only"
-                try:
-                    cache_permit = mkt.preflight_order(
-                        symbol, order_type, preflight_qty, new_price,
-                        market=False, kind="monitor_order_replace",
-                    )
-                except Exception:
-                    cache_permit = None
+        _dispatch_native_or_cancel_replace(
+            symbol=symbol,
+            order_type=order_type,
+            order_id=order_id,
+            oid_str=oid_str,
+            price=price,
+            price_f=price_f,
+            new_price=new_price,
+            quantity=quantity,
+            original_quantity=original_quantity,
+            provider_name=provider_name,
+            replacement_claim=replacement_claim,
+            client_order_id=client_order_id,
+            cache_permit=cache_permit,
+            preflight_qty=preflight_qty,
+            replace_bypass_guards=replace_bypass_guards,
+            replace_wait_for_trend=replace_wait_for_trend,
+            orders=orders,
+            initial_prices=initial_prices,
+        )
 
-            fallback_submission_kw = {"submission_state": "refused"} if native_refused else {}
-            if native_cancel_only:
-                cancel_confirmed = True
-            else:
-                try:
-                    cancel_confirmed = api.cancel_order(symbol, order_id) is not False
-                except Exception as exc:  # noqa: BLE001
-                    cancel_confirmed = False
-                    print(
-                        f"The cancel request for order {order_id} raised {exc}; "
-                        "reconciling venue status before deciding on replacement."
-                    )
-            try:
-                # The cancel response cannot reveal a fill racing the request.
-                # Always reconcile the final old-order state before fixing the
-                # replacement quantity and making it submittable.
-                status = mkt.order_status(symbol, str(order_id))
-            except Exception as exc:  # noqa: BLE001
-                order_retry.complete_claim(
-                    replacement_claim, "status_error",
-                    failure_reason=str(exc),
-                    **fallback_submission_kw)
-                print(
-                    f"The cancellation of {order_id} is ambiguous and status "
-                    f"reconciliation failed: {exc}. The durable replacement "
-                    "remains non-submittable and is deferred."
-                )
-                continue
-            venue_status = str(status.venue_status or "").upper()
-            if venue_status in {"CANCELED", "CANCELLED"}:
-                if not cancel_confirmed:
-                    print(
-                        f"Order {order_id} is confirmed canceled after the cancel "
-                        "response was lost; continuing with its replacement."
-                    )
-            else:
-                order_retry.complete_claim(
-                    replacement_claim,
-                    "success" if status.terminal else "release",
-                    **fallback_submission_kw,
-                )
-                if status.terminal:
-                    _clear_initial_order_price(initial_prices, order_id, oid_str)
-                print(
-                    f"Order {order_id} reconciled as {venue_status or 'UNKNOWN'}; "
-                    "no replacement is submitted."
-                )
-                continue
-
-            quantity = order_retry.compute_replacement_qty(original_quantity, status)
-            activation = (
-                order_retry.activate_claimed_replacement(replacement_claim, quantity)
-                if quantity is not None
-                else None
-            )
-            if activation == "resolved":
-                _clear_initial_order_price(initial_prices, order_id, oid_str)
-                continue
-            if activation != "activated":
-                order_retry.complete_claim(
-                    replacement_claim, "status_error", failure_reason="cancel_activation_failed"
-                )
-                refreshed_claim = None
-                skip_msg = (
-                    f"The durable replacement for order {order_id} could not be "
-                    "activated after cancellation; no replacement is submitted."
-                )
-            else:
-                refreshed_claim = order_retry.begin_claimed_submit(replacement_claim)
-                skip_msg = (
-                    f"The durable replacement claim for order {order_id} changed "
-                    "before dispatch; no replacement is submitted by this process."
-                )
-            if refreshed_claim is None:
-                print(skip_msg)
-                continue
-            replacement_claim = refreshed_claim
-
-            # Attempt placement through the single guarded proxy.
-            outcome = {}
-            try:
-                new_order = mkt.place(
-                    symbol, order_type, new_price, quantity, smart=False,
-                    kind="monitor_order_replace",
-                    bypass_guards=set(replace_bypass_guards),
-                    allow_math_reference_sell=True,
-                    wait_for_trend=replace_wait_for_trend,
-                    caller_owns_retry=True,
-                    client_order_id=client_order_id,
-                    _outcome_context=outcome,
-                    cache_permit=cache_permit)
-            except Exception as exc:  # noqa: BLE001
-                new_order = None
-                outcome.update(
-                    state="unknown", reason=f"replacement_exception:{exc}")
-
-            if new_order:
-                _record_replacement_success(
-                    replacement_claim,
-                    new_order,
-                    provider_name=provider_name,
-                    symbol=symbol,
-                    order_type=order_type,
-                    order_id=order_id,
-                    oid_str=oid_str,
-                    price=price,
-                    price_f=price_f,
-                    new_price=new_price,
-                    quantity=quantity,
-                    orders=orders,
-                    initial_prices=initial_prices,
-                )
-            else:
-                failure_reason = str(
-                    outcome.get("reason") or "replacement_not_accepted")
-                submission_state = (
-                    "refused" if outcome.get("state") == "refused"
-                    else "unknown"
-                )
-                terminal_pre_submit_refusal = (
-                    submission_state == "refused"
-                    and (failure_reason in {
-                        "execution_disabled", "trading_disabled"}
-                        or order_retry.is_terminal_filter_refusal(
-                            failure_reason)))
-                claim_outcome = (
-                    "success" if terminal_pre_submit_refusal else
-                    "deferred"
-                    if order_retry.is_non_failure_deferral(failure_reason)
-                    else "failure"
-                )
-                order_retry.complete_claim(
-                    replacement_claim, claim_outcome,
-                    failure_reason=failure_reason,
-                    submission_state=submission_state)
-                if terminal_pre_submit_refusal:
-                    _clear_initial_order_price(initial_prices, order_id, oid_str)
-                    print(
-                        f"The {order_type} replacement was refused before submit "
-                        f"after old order {order_id} was canceled; the stale "
-                        f"replacement intent was removed ({failure_reason}).")
-                else:
-                    print(
-                        f"The {order_type} replacement was not accepted immediately; "
-                        "the persisted intent stays in the shared outbox for a retry."
-                    )
-
-    # Keep tracking set sizes bounded over long continuous execution
     for tracked_set in (_notified_placed_order_ids, _notified_expired_order_ids, _derived_replacement_order_ids):
         if len(tracked_set) > MAX_TRACKED_ORDER_IDS:
             tracked_set.trim(5000)

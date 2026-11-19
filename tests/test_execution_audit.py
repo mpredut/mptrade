@@ -633,3 +633,265 @@ def test_audited_strategy_executor_forwards_get_orders_keyword_flags(tmp_path):
         audit=ExecutionAudit(directory=str(tmp_path)),
     )
     assert legacy_aud.get_orders("BTCUSDC", "SELL", 60.0) == [("BTCUSDC", "SELL", 60.0)]
+
+
+def test_order_status_ssot_lifecycle_predicates_and_prompt_mapping():
+    """Verify CanonicalOrderState classification, status predicates, and prompt display mapping."""
+    from providers.order_status_ssot import (
+        CanonicalOrderState,
+        classify_order_lifecycle_state,
+        format_prompt_intent_status,
+        is_active_or_filled_status,
+        is_cancel_or_expire_status,
+        is_non_fill_order_status,
+        is_open_working_status,
+        is_terminal_audit_status,
+    )
+
+    assert classify_order_lifecycle_state("NEW", None, is_resting_in_book=True) == CanonicalOrderState.OPEN_WORKING
+    assert (
+        classify_order_lifecycle_state("NEW", None, filled_qty=0.4, orig_qty=1.0, is_resting_in_book=True)
+        == CanonicalOrderState.PARTIALLY_FILLED
+    )
+    assert classify_order_lifecycle_state("FILLED", None, filled_qty=1.0, orig_qty=1.0) == CanonicalOrderState.FILLED
+    assert (
+        classify_order_lifecycle_state("CANCELED", None, filled_qty=0.25, orig_qty=1.0)
+        == CanonicalOrderState.PARTIALLY_FILLED
+    )
+    assert classify_order_lifecycle_state("CANCELED", None) == CanonicalOrderState.CANCELED
+    assert classify_order_lifecycle_state("EXPIRED", None) == CanonicalOrderState.EXPIRED
+    assert classify_order_lifecycle_state("REJECTED", None) == CanonicalOrderState.REJECTED
+    assert classify_order_lifecycle_state("REPLACED", None) == CanonicalOrderState.REPLACED
+    assert (
+        classify_order_lifecycle_state(None, "refused_before_submit", submission_state="refused")
+        == CanonicalOrderState.REFUSED_PRE_SUBMIT
+    )
+    assert classify_order_lifecycle_state("SUBMIT_UNKNOWN", None) == CanonicalOrderState.SUBMIT_UNKNOWN
+
+    assert is_open_working_status("NEW") is True
+    assert is_open_working_status("resting") is True
+    assert is_open_working_status("", allow_empty=False) is False
+    assert is_open_working_status("", allow_empty=True) is True
+    assert is_open_working_status(True, allow_empty=True) is False
+
+    assert is_cancel_or_expire_status("CANCELED_OR_EXPIRED", include_composite=False) is False
+    assert is_cancel_or_expire_status("CANCELED_OR_EXPIRED", include_composite=True) is True
+    assert is_cancel_or_expire_status(None, "expired") is True
+
+    assert is_non_fill_order_status("SUBMIT_UNKNOWN") is True
+    assert is_non_fill_order_status("FILLED", "refused") is True
+    assert is_non_fill_order_status("FILLED", "submitted") is False
+
+    assert is_active_or_filled_status("open", 0.0) is True
+    assert is_active_or_filled_status("canceled", 0.5) is True
+    assert is_active_or_filled_status("canceled", 0.0) is False
+
+    assert is_terminal_audit_status("CLOSED", None) is True
+    assert is_terminal_audit_status("NEW", "open") is False
+
+    assert (
+        format_prompt_intent_status("EXECUTED", "NEW", in_open_book=True, section="ai_trade_intents")
+        == "RESTING_IN_BOOK"
+    )
+    assert (
+        format_prompt_intent_status("EXECUTED", "PARTIALLY_FILLED", in_open_book=True, section="ai_trade_intents")
+        == "PARTIALLY_FILLED_IN_BOOK"
+    )
+    assert (
+        format_prompt_intent_status("EXECUTED", "PARTIALLY_FILLED", in_open_book=False, section="ai_trade_intents")
+        == "EXECUTED"
+    )
+    assert (
+        format_prompt_intent_status("EXECUTED", "NEW", in_open_book=True, filled_qty=0.0, section="last_cycle_execution_status")
+        == "OPEN_RESTING"
+    )
+    assert (
+        format_prompt_intent_status("EXECUTED", "NEW", in_open_book=True, filled_qty=0.5, section="last_cycle_execution_status")
+        == "PARTIALLY_FILLED"
+    )
+    assert (
+        format_prompt_intent_status("OBSERVED_SHADOW", "", section="last_cycle_execution_status")
+        == "SHADOW_SIMULATED"
+    )
+
+
+def test_active_intents_autonomous_ai_indexing_and_unified_trace(tmp_path):
+    """Verify autonomous_ai active intent filtering and end-to-end trace_order_or_intent correlation."""
+    from active_intents import build_active_intent_index, trace_order_or_intent
+    from providers.order_id_context import (
+        all_correlatable_client_order_ids,
+        derive_ai_intent_client_order_id,
+        derive_executor_intent_client_order_id,
+    )
+    from state_io import atomic_write_json
+
+    intent_id = "intent_1795099235_sell_hypeusd"
+    ai_cid = derive_ai_intent_client_order_id(intent_id)
+    krk_cid = derive_executor_intent_client_order_id("kraken", intent_id)
+    bn_cid = derive_executor_intent_client_order_id("binance", intent_id)
+    hl_cid = derive_executor_intent_client_order_id("hyperliquid", intent_id)
+    assert ai_cid is not None and ai_cid.startswith("AI_") and len(ai_cid) <= 36
+    assert krk_cid is not None and len(krk_cid) == 32
+    assert bn_cid is not None and bn_cid.startswith("SD_") and len(bn_cid) == 35
+    assert hl_cid is not None and hl_cid.startswith("0x") and len(hl_cid) == 34
+    assert derive_executor_intent_client_order_id("t212", intent_id) is None
+
+    corr_cids = all_correlatable_client_order_ids(intent_id)
+    assert {ai_cid.lower(), krk_cid.lower(), bn_cid.lower(), hl_cid.lower()}.issubset(corr_cids)
+
+    state_dir = tmp_path / "cachedb" / "state"
+    orders_dir = tmp_path / "cachedb" / "orders"
+    audit_dir = tmp_path / "cachedb" / "audit"
+    state_dir.mkdir(parents=True)
+    orders_dir.mkdir(parents=True)
+    audit_dir.mkdir(parents=True)
+
+    ai_intents_payload = [
+        {
+            "intent_id": intent_id,
+            "venue": "kraken",
+            "symbol": "HYPEUSD",
+            "side": "SELL",
+            "order_type": "LIMIT",
+            "requested_qty": 9.35,
+            "requested_price": 69.49,
+            "status": "EXECUTED",
+            "created_by": "auto_cryptotrade_executor",
+            "execution_payload": {
+                "orderId": "O7KKV6-45DBY-G5QHOT",
+                "clientOrderId": krk_cid,
+                "status": "NEW",
+                "executedQty": 0.0,
+            },
+        },
+        {
+            "intent_id": "intent_terminal_filled",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "111", "status": "FILLED", "executedQty": 0.01},
+        },
+        {
+            "intent_id": "intent_terminal_market",
+            "venue": "kraken",
+            "symbol": "TAOUSD",
+            "side": "SELL",
+            "order_type": "MARKET",
+            "status": "EXECUTED",
+            "execution_payload": {"txid": ["OTX-MKT-1"], "executedQty": 1.25},
+        },
+        {
+            "intent_id": "intent_reconciled_cancel",
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "side": "SELL",
+            "status": "CANCELED_OR_EXPIRED",
+            "reconciled_terminal": True,
+        },
+    ]
+    atomic_write_json(str(state_dir / "autonomous_trade_intents_state.json"), ai_intents_payload)
+    atomic_write_json(
+        str(state_dir / "venue_balances_state.json"),
+        {
+            "open_orders:kraken": [
+                {
+                    "orderId": "O7KKV6-45DBY-G5QHOT",
+                    "clientOrderId": krk_cid,
+                    "symbol": "HYPEUSD",
+                    "side": "SELL",
+                    "status": "NEW",
+                    "price": 69.49,
+                    "origQty": 9.35,
+                    "executedQty": 0.0,
+                }
+            ]
+        },
+    )
+    atomic_write_json(
+        str(orders_dir / "cache_order_binance.json"),
+        {
+            "items": {
+                "BTCUSDC": {
+                    "111": {
+                        "orderId": "111",
+                        "symbol": "BTCUSDC",
+                        "side": "BUY",
+                        "status": "FILLED",
+                        "origQty": 0.01,
+                        "executedQty": 0.01,
+                    }
+                }
+            }
+        },
+    )
+    audit = ExecutionAudit(directory=str(audit_dir), clock=lambda: 1795099237.0)
+    audit.record(
+        "submit_accepted",
+        intent_id=intent_id,
+        order_id="O7KKV6-45DBY-G5QHOT",
+        client_order_id=krk_cid,
+        venue="kraken",
+        symbol="HYPEUSD",
+        side="sell",
+        qty=9.35,
+        price=69.49,
+    )
+
+    idx = build_active_intent_index(str(tmp_path))
+    ai_active = [r for r in idx["intents"] if r.get("owner") == "autonomous_ai"]
+    assert len(ai_active) == 1
+    assert ai_active[0]["intent_id"] == intent_id
+    assert ai_active[0]["order_id"] == "O7KKV6-45DBY-G5QHOT"
+
+    for query in (intent_id, "O7KKV6-45DBY-G5QHOT", krk_cid):
+        tr = trace_order_or_intent(query, root=str(tmp_path), audit_dir=str(audit_dir))
+        assert tr["found"] is True
+        assert tr["canonical_state"] == "OPEN_WORKING"
+        assert tr["is_resting_in_book"] is True
+        assert intent_id.lower() in tr["correlated_ids"]
+        assert "o7kkv6-45dby-g5qhot" in tr["correlated_ids"]
+        assert len(tr["ai_intents"]) == 1
+        assert len(tr["open_orders"]) == 1
+        assert len(tr["audit_events"]) == 1
+
+    tr_filled = trace_order_or_intent("intent_terminal_filled", root=str(tmp_path), audit_dir=str(audit_dir))
+    assert tr_filled["found"] is True
+    assert tr_filled["canonical_state"] == "FILLED"
+    assert tr_filled["is_resting_in_book"] is False
+
+
+def test_evaluate_tradable_position_prompt_view_parity():
+    """Verify evaluate_tradable_position_prompt_view separates math from _format_tradable_position_line."""
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import evaluate_tradable_position_prompt_view
+    from orchestratorOS.supervisor.prompt_sections import _format_tradable_position_line
+
+    raw_pos = {
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "base": "BTC",
+        "quote": "USDC",
+        "price": 65000.0,
+        "free_base": 0.05,
+        "value_usd": 3250.0,
+        "free_quote": 2500.0,
+        "fee_tier": "VIP0_BNB",
+        "maker_fee_bps": 7.5,
+        "taker_fee_bps": 7.12,
+        "effective_max_buy_usd": 2500.0,
+        "effective_max_sell_usd": 3250.0,
+        "active_avg_buy_px": 64000.0,
+        "open_lots": [
+            {"lot_id": "L1", "qty": 0.03, "entry_px": 64500.0},
+            {"lot_id": "L2", "qty": 0.01, "entry_px": 62000.0},
+        ],
+    }
+    pv = evaluate_tradable_position_prompt_view(raw_pos, max_usd=2000.0)
+    assert pv["_is_tradable_pos_view"] is True
+    assert ("max_buy=$", 2000.0) in pv["limit_items"]
+    assert ("max_sell=$", 2000.0) in pv["limit_items"]
+    assert pv["profitable_lifo"] is not None
+    assert pv["older_core_qty"] == 0.01
+    assert _format_tradable_position_line(pv, max_usd=2000.0) == _format_tradable_position_line(raw_pos, max_usd=2000.0)
+

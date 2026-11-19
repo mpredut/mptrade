@@ -21,7 +21,7 @@ from cachepaths import (
 )
 from intelligence.macro_sentiment_ssot import SHORT_KINEMATIC_METRIC_KEYS
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
-    _MICRO_OB_LOCAL_KEYS,
+    MICRO_OB_LOCAL_KEYS,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
     purge_liquidation_cluster_keys,
@@ -30,16 +30,21 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     sibling_structure_presence,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
+    clip_open_lots_to_held_qty,
     compute_cycle_subcycle_realized_pnl_view,
+    compute_open_lots_vwap,
+    same_anchor_px,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     TelemetryEvaluatorFactory,
     TelemetryEvaluatorInterface,
     recalculate_live_price_geometry,
+    round_opt_px,
 )
 from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     compact_cycle_realized_pnl_fields,
     resolve_symbol_price,
+    resolve_venue_fee_and_limits,
 )
 from instrument_registry import (
     casefold_get,
@@ -47,6 +52,10 @@ from instrument_registry import (
     is_equity_or_tokenized_symbol,
     is_equity_symbol,
     resolve_symbol_identity,
+)
+from providers.order_status_ssot import (
+    TERMINAL_CANCEL_VENUE_STATUSES,
+    format_prompt_intent_status,
 )
 
 _GEOM_ANCHOR_KEYS: frozenset[str] = frozenset({
@@ -257,7 +266,7 @@ class MicrostructurePromptViewEvaluator(PromptViewEvaluatorBase):
                     continue
                 same_q = compatible_quote_suffixes(other_s) == sym_quotes
                 for mk, mv in other_m.items():
-                    if has_own_ob and mk in _MICRO_OB_LOCAL_KEYS:
+                    if has_own_ob and mk in MICRO_OB_LOCAL_KEYS:
                         continue
                     if mv is not None and (same_q or mk not in _PX_LOCAL_3B_KEYS):
                         if minfo.get(mk) is None or (
@@ -491,7 +500,8 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                     it_st = str(it.get("status") or "").upper()
                     age_h = safe_float(it.get("age_h"), 0.0)
                     if (
-                        v_st in ("CANCELED_OR_EXPIRED", "CANCELED", "CANCELLED", "EXPIRED", "UNKNOWN")
+                        v_st in TERMINAL_CANCEL_VENUE_STATUSES
+                        or v_st == "UNKNOWN"
                         or it_st in (
                             "CANCELED", "CANCELLED", "EXPIRED", "FAILED", "REJECTED",
                             "BLOCKED_BY_GUARD", "SUBMIT_UNKNOWN", "SKIPPED_DUPLICATE_OPEN_ORDER",
@@ -508,14 +518,13 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                     it_ident = resolve_symbol_identity(it_copy.get("symbol"))
                     if it_ident.is_tokenized_equity and it_ident.display_symbol:
                         it_copy["symbol"] = it_ident.display_symbol
-                    if it_copy.get("status") == "EXECUTED" and v_st in ("OPEN", "NEW", "RESTING"):
-                        it_copy["status"] = "RESTING_IN_BOOK"
-                    elif (
-                        it_copy.get("status") == "EXECUTED"
-                        and v_st == "PARTIALLY_FILLED"
-                        and bool(it_oids & shown_open_oids)
-                    ):
-                        it_copy["status"] = "PARTIALLY_FILLED_IN_BOOK"
+                    if "status" in it_copy:
+                        it_copy["status"] = format_prompt_intent_status(
+                            it_copy.get("status"),
+                            v_st,
+                            in_open_book=bool(it_oids & shown_open_oids),
+                            section="ai_trade_intents",
+                        )
                     last_norm_intent = it_copy
                     if v_st == "FILLED" and age_h > 4.0:
                         continue
@@ -528,9 +537,232 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
             out.append((st_key, st_label, st_val))
         return out
 
-    def evaluate(self, portfolio_summary: Any, *, asset_scope: Any = "all", **kwargs: Any) -> Dict[str, Any]:
+    def evaluate_tradable_position(self, pos: Any, *, max_usd: float = 2000.0) -> Dict[str, Any]:
+        """Compute pure financial, LIFO lot, fee, and limit view model for a Section 3C tradable position."""
+        p_map = pos if isinstance(pos, dict) else {}
+        px_f = safe_float(p_map.get("price"), 0.0)
+        avg_buy_f = safe_float(p_map.get("active_avg_buy_px"), None)
+        lot_base_lbl = p_map.get("base") or canonical_base_asset(str(p_map.get("symbol") or "")) or "BASE"
+        anchors: List[Dict[str, Any]] = []
+        for px_k, lbl, pct_lbl, pct_k, dedup_keys in (
+            ("active_avg_buy_px", "avg_buy_px", "pnl_vs_avg", "pnl_vs_avg_pct", ()),
+            ("tactical_avg_buy_px", "tactical_avg_px", "pnl_vs_tactical", "pnl_vs_tactical_avg_pct", ("active_avg_buy_px", "last_buy_px")),
+            ("swing_subcycle_avg_px", "swing_avg_px", "pnl_vs_swing", "pnl_vs_swing_avg_pct", ("active_avg_buy_px", "tactical_avg_buy_px", "last_buy_px")),
+            ("cycle_avg_cost_px", "cycle_avg_cost", "pnl_vs_cycle_cost", "pnl_vs_cycle_cost_pct", ("active_avg_buy_px",)),
+            ("last_buy_px", "last_buy_px", "pnl_vs_last_buy", "pnl_vs_last_buy_pct", ()),
+            ("lowest_buy_px", "lowest_buy_px", "pnl_vs_lowest_buy", "pnl_vs_lowest_buy_pct", ("active_avg_buy_px", "tactical_avg_buy_px", "last_buy_px")),
+            ("last_sell_px", "last_sell_px", "chg_vs_last_sell", "chg_vs_last_sell_pct", ()),
+            ("trailing_peak", "trail_peak", "dd_from_peak", "dd_from_peak_pct", ("active_avg_buy_px",)),
+        ):
+            if p_map.get(px_k) is not None and not any(same_anchor_px(p_map.get(px_k), p_map.get(dk)) for dk in dedup_keys):
+                if (
+                    px_k in ("tactical_avg_buy_px", "swing_subcycle_avg_px")
+                    and avg_buy_f is not None
+                    and avg_buy_f > 0.0
+                    and (safe_float(p_map.get(px_k), 0.0) or 0.0) >= avg_buy_f
+                ):
+                    continue
+                pct_val = p_map.get(pct_k)
+                if pct_val is None and px_f > 0.0:
+                    anchor_f = safe_float(p_map.get(px_k), 0.0)
+                    if anchor_f > 0.0:
+                        if px_k == "trailing_peak" and anchor_f < px_f:
+                            anchor_f = px_f
+                        pct_val = round(((px_f - anchor_f) / anchor_f) * 100.0, 2) + 0.0
+                elif isinstance(pct_val, float):
+                    pct_val = pct_val + 0.0
+                lot_harvested = bool(
+                    px_k == "last_buy_px"
+                    and pct_val is not None
+                    and isinstance(open_lots_chk := p_map.get("open_lots"), list)
+                    and len(open_lots_chk) > 0
+                    and not any(
+                        isinstance(lt, dict) and same_anchor_px(p_map.get("last_buy_px"), lt.get("entry_px"))
+                        for lt in open_lots_chk
+                    )
+                )
+                anchors.append({
+                    "lbl": lbl,
+                    "px": p_map.get(px_k),
+                    "pct_lbl": pct_lbl,
+                    "pct_val": pct_val,
+                    "lot_harvested": lot_harvested,
+                })
+
+        venue = p_map.get("venue")
+        fb_fees = resolve_venue_fee_and_limits(
+            str(venue or "t212"),
+            str(p_map.get("symbol") or ""),
+            price=px_f,
+            free_quote=p_map.get("free_quote"),
+            free_base=p_map.get("free_base"),
+            locked_quote_usd=p_map.get("locked_quote_usd"),
+            locked_base_qty=p_map.get("locked_base_qty"),
+            spread_bps=p_map.get("spread_bps"),
+            gateway_max_usd=max_usd,
+        )
+        eff_pos = {**fb_fees, **{k: v for k, v in p_map.items() if v is not None}}
+        for cap_k in ("effective_max_buy_usd", "effective_max_sell_usd", "replace_max_buy_usd", "replace_max_sell_usd"):
+            cap_v = safe_float(eff_pos.get(cap_k), None)
+            if cap_v is not None and max_usd > 0 and cap_v > max_usd:
+                eff_pos[cap_k] = round(max_usd * 1.0, 2)
+        taker_bps = safe_float(eff_pos.get("taker_fee_bps"), 15.0)
+        maker_bps = safe_float(eff_pos.get("maker_fee_bps"), 15.0)
+
+        shown_lifo_lots: List[Tuple[float, float, Optional[float]]] = []
+        profitable_lifo: Optional[Tuple[float, float, float]] = None
+        older_core_qty: Optional[float] = None
+        lifo_rem_vwap: Optional[Tuple[float, Optional[float]]] = None
+        if isinstance(open_lots := p_map.get("open_lots"), list) and len(open_lots) >= 1:
+            held_pos_q = (safe_float(p_map.get("free_base"), 0.0) or 0.0) + (
+                safe_float(p_map.get("locked_base_qty"), 0.0) or 0.0
+            )
+            eff_lots = clip_open_lots_to_held_qty(open_lots[-4:], held_pos_q)
+            valid_lots: List[Tuple[float, float, float]] = []
+            min_net_pct = max(0.20, (taker_bps or 10.0) * 2.0 / 100.0)
+            for lt in eff_lots:
+                if not isinstance(lt, dict):
+                    continue
+                l_q = safe_float(lt.get("qty"), None)
+                l_px = round_opt_px(lt.get("entry_px"), 6)
+                if l_q is not None and l_px is not None and l_q > 0.0 and l_px > 0.0 and l_q * l_px >= 1.0:
+                    l_pnl_pct = ((px_f - l_px) / l_px) * 100.0 if px_f > 0.0 else 0.0
+                    valid_lots.append((l_q, l_px, l_pnl_pct))
+            if len(valid_lots) > 1 or (
+                len(valid_lots) == 1
+                and p_map.get("active_avg_buy_px") is not None
+                and not same_anchor_px(valid_lots[0][1], p_map.get("active_avg_buy_px"))
+            ):
+                shown_lifo_lots = [
+                    (l_q, l_px, safe_float(l_pnl_pct, 0.0) if px_f > 0.0 else None)
+                    for l_q, l_px, l_pnl_pct in valid_lots
+                ]
+                prof_q = 0.0
+                prof_usd = 0.0
+                prof_cost = 0.0
+                for l_q, l_px, l_pnl_pct in reversed(valid_lots):
+                    if px_f > 0.0 and l_pnl_pct > min_net_pct:
+                        prof_q += l_q
+                        prof_usd += l_q * px_f
+                        prof_cost += l_q * l_px
+                    else:
+                        break
+                if prof_usd >= 10.0 and prof_cost > 0.0:
+                    profitable_lifo = (prof_usd, prof_q, ((prof_usd - prof_cost) / prof_cost) * 100.0)
+                shown_lots_q = sum(l_q for l_q, _, _ in valid_lots)
+                if (
+                    held_pos_q > 0.0
+                    and (rem_core_q := held_pos_q - shown_lots_q) > max(1e-6, held_pos_q * 0.02)
+                    and (px_f <= 0.0 or rem_core_q * px_f >= 5.0)
+                ):
+                    older_core_qty = round(rem_core_q, 6)
+            vwap, _, _ = compute_open_lots_vwap(
+                open_lots,
+                held_qty=held_pos_q,
+                clip_to_held=True,
+                min_lot_notional=1.0,
+                ref_avg_px=avg_buy_f,
+                min_rel_diff=0.0025,
+                min_coverage_ratio=0.95,
+            )
+            if vwap is not None:
+                vwap_pnl = (
+                    round(((px_f - vwap) / vwap) * 100.0, 2) + 0.0
+                    if px_f > 0.0 and vwap > 0.0
+                    else None
+                )
+                lifo_rem_vwap = (vwap, vwap_pnl)
+
+        lifo_p = safe_float(p_map.get("lifo_realized_pnl_usd"), None)
+        lifo_realized_pnl_usd = lifo_p if lifo_p is not None and abs(lifo_p) >= 0.01 else None
+
+        min_notional_usd = (
+            safe_float(eff_pos.get("exchange_min_notional_usd"), 0.0)
+            if eff_pos.get("exchange_min_notional_usd") is not None
+            else None
+        )
+        limit_items: List[Tuple[str, Any]] = [
+            (lim_pfx, eff_pos[lim_k])
+            for lim_pfx, lim_k in (
+                ("min_qty=", "min_qty"),
+                ("step=", "step_size"),
+                ("tick=", "tick_size"),
+                ("max_buy=$", "effective_max_buy_usd"),
+                ("replace_max_buy=$", "replace_max_buy_usd"),
+                ("max_sell=$", "effective_max_sell_usd"),
+                ("replace_max_sell=$", "replace_max_sell_usd"),
+            )
+            if eff_pos.get(lim_k) is not None
+        ]
+
+        lb_q = safe_float(eff_pos.get("locked_base_qty"), None)
+        locked_base_qty = lb_q if lb_q is not None and lb_q > 0.0 else None
+        lb_u = safe_float(eff_pos.get("locked_base_usd"), None) if locked_base_qty is not None else None
+        locked_base_usd = lb_u if lb_u is not None and lb_u > 0.0 else None
+
+        pos_ident = resolve_symbol_identity(p_map.get("symbol"))
+        is_tok_pos = pos_ident.is_tokenized_equity
+        disp_pos_sym = pos_ident.display_symbol if is_tok_pos else p_map.get("symbol")
+        disp_base_lbl = (
+            f"{canonical_base_asset(pos_ident.wire_symbol)}x"
+            if is_tok_pos
+            else (p_map.get("base") or canonical_base_asset(str(disp_pos_sym or "")) or "BASE")
+        )
+        quote_lbl = p_map.get("quote") or "USD"
+        fq_bd = p_map.get("free_quote_breakdown")
+        fq_bd_items = (
+            [(bk, safe_float(bv, 0.0)) for bk, bv in fq_bd.items()]
+            if isinstance(fq_bd, dict) and (len(fq_bd) > 1 or any(k != quote_lbl for k in fq_bd))
+            else []
+        )
+        lq_u = safe_float(eff_pos.get("locked_quote_usd"), None)
+        locked_quote_usd = lq_u if lq_u is not None and lq_u > 0.0 else None
+        px_disp = (
+            "None[pre_ipo_unlisted]"
+            if (is_tok_pos and p_map.get("price") is None and not safe_pos_float(p_map.get("free_base"), default=0.0))
+            else p_map.get("price")
+        )
+        return {
+            "_is_tradable_pos_view": True,
+            "venue": venue,
+            "disp_symbol": disp_pos_sym,
+            "lot_base_lbl": lot_base_lbl,
+            "disp_base_lbl": disp_base_lbl,
+            "quote_lbl": quote_lbl,
+            "free_base": p_map.get("free_base"),
+            "value_usd": p_map.get("value_usd"),
+            "locked_base_qty": locked_base_qty,
+            "locked_base_usd": locked_base_usd,
+            "free_quote": p_map.get("free_quote"),
+            "free_quote_breakdown_items": fq_bd_items,
+            "locked_quote_usd": locked_quote_usd,
+            "px_disp": px_disp,
+            "anchors": anchors,
+            "shown_lifo_lots": shown_lifo_lots,
+            "profitable_lifo": profitable_lifo,
+            "older_core_qty": older_core_qty,
+            "lifo_rem_vwap": lifo_rem_vwap,
+            "lifo_realized_pnl_usd": lifo_realized_pnl_usd,
+            "fee_tier": eff_pos.get("fee_tier") or "STANDARD",
+            "maker_bps": maker_bps,
+            "taker_bps": taker_bps,
+            "spread_bps": eff_pos.get("spread_bps"),
+            "min_notional_usd": min_notional_usd,
+            "limit_items": limit_items,
+        }
+
+    def evaluate(
+        self,
+        portfolio_summary: Any,
+        *,
+        asset_scope: Any = "all",
+        max_usd: float = 2000.0,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
         ps = portfolio_summary if isinstance(portfolio_summary, dict) else {}
         scope_s = str(asset_scope or "all").strip().lower() if isinstance(asset_scope, str) else "all"
+        raw_t_pos = ps.get("tradable_positions") if isinstance(ps.get("tradable_positions"), list) else []
+        tradable_positions_view = [self.evaluate_tradable_position(p, max_usd=max_usd) for p in raw_t_pos]
         open_lim = (
             ps.get("open_limit_orders")
             if isinstance(ps.get("open_limit_orders"), list)
@@ -672,6 +904,7 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
 
         return {
             "scope_s": scope_s,
+            "tradable_positions": tradable_positions_view,
             "has_open_orders": bool(open_lim),
             "clean_open_limit_orders": clean_open_lim,
             "venue_cycles": venue_cycles,
@@ -705,6 +938,20 @@ def evaluate_microstructure_prompt_view(microstructure: Any, prices_and_trends: 
     return _MICROSTRUCTURE_PROMPT_VIEW_EVALUATOR.evaluate(microstructure, prices_and_trends=prices_and_trends)
 
 
-def evaluate_portfolio_prompt_view(portfolio_summary: Any, asset_scope: Any = "all") -> Dict[str, Any]:
+def evaluate_tradable_position_prompt_view(pos: Any, *, max_usd: float = 2000.0) -> Dict[str, Any]:
+    """Build normalized Section 3C view model for a single tradable spot position."""
+    return _PORTFOLIO_PROMPT_VIEW_EVALUATOR.evaluate_tradable_position(pos, max_usd=max_usd)
+
+
+def evaluate_portfolio_prompt_view(
+    portfolio_summary: Any,
+    asset_scope: Any = "all",
+    *,
+    max_usd: float = 2000.0,
+) -> Dict[str, Any]:
     """Build normalized Section 3C portfolio, cycle, execution, and runtime-state view model."""
-    return _PORTFOLIO_PROMPT_VIEW_EVALUATOR.evaluate(portfolio_summary, asset_scope=asset_scope)
+    return _PORTFOLIO_PROMPT_VIEW_EVALUATOR.evaluate(
+        portfolio_summary,
+        asset_scope=asset_scope,
+        max_usd=max_usd,
+    )

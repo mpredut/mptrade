@@ -85,8 +85,8 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
 )
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector, MarketBreadthSnapshot
 from intelligence.sentiment.collectors.microstructure_collector import (
-    _load_stitched_7d_ohlc_closes,
-    _resolve_fallback_ohlc_fn,
+    load_stitched_7d_ohlc_closes,
+    resolve_fallback_ohlc_fn,
     enrich_24h_and_microstructure,
     load_symbol_microstructure,
     load_symbol_price_series,
@@ -124,9 +124,9 @@ from intelligence.sentiment.evaluators.portfolio_evaluator import (
     reconcile_venue_cycles_with_recent_orders,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
-    _apply_24h_series_enrichment,
-    _build_vp_position_dict,
-    _compute_short_slopes_from_series,
+    apply_24h_series_enrichment,
+    build_vp_position_dict,
+    compute_short_slopes_from_series,
     _extract_sorted_ts_px,
     apply_live_24trend_windows,
     apply_short_trend_item,
@@ -2427,7 +2427,7 @@ def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
     assert isinstance(taker_bps, float) and taker_bps == 26.0
     assert half_sp == 2.0
 
-    vp_pos = _build_vp_position_dict(85.8225, 85.839, 83.7566, 86.9859)
+    vp_pos = build_vp_position_dict(85.8225, 85.839, 83.7566, 86.9859)
     assert vp_pos["va_pos_pct"] == 64.0
     assert vp_pos["va_regime"] == "INSIDE_VA_UPPER"
 
@@ -2457,7 +2457,7 @@ def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
 
     cold_entry = {"price": 77800.0, "kalman_vel": 0.0, "kalman_vel_std": 6.0, "kalman_trend": "FLAT"}
     dense_ser = [[(1700000000 + i * 30) * 1000, 77000.0 + i * 8.0] for i in range(100)]
-    _apply_24h_series_enrichment("BTCUSDC", cold_entry, {}, dense_ser, None)
+    apply_24h_series_enrichment("BTCUSDC", cold_entry, {}, dense_ser, None)
     assert cold_entry["kalman_vel"] != 0.0
 
     selloff_m = {
@@ -2561,7 +2561,7 @@ def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
 
     inflated_vol_entry = {"price": 227.2, "vol_1h_pct": 1.3634, "adapt_reentry_pct": 2.727, "adapt_dca_pct": 1.363, "slope_3_7m": 0.001, "slope_15m": 0.001, "slope_2_5h": -0.0001}
     one_hour_bars = [[(1700000000 + i * 60) * 1000, 227.0 + (i % 4) * 0.08] for i in range(60)]
-    _apply_24h_series_enrichment("TAOUSDC", inflated_vol_entry, {}, one_hour_bars, None)
+    apply_24h_series_enrichment("TAOUSDC", inflated_vol_entry, {}, one_hour_bars, None)
     assert inflated_vol_entry["vol_1h_pct"] < 0.8
 
     weak_tao_m = {
@@ -3031,7 +3031,7 @@ def test_post_rth_equities_series_enrichment_short_slopes_scale_and_daemon_log_r
     """Verify:
     - enrich_24h_and_microstructure seeds pos:t212:* positions (e.g. SPCX_US_EQ) from venue_balances_state.json even without a .state_*.json file
     - post-RTH US equity series (>20m since RTH close) do not append a multi-hour gap that collapses 15m/30m/1h/3h and resets kalman_vel, while recalculating live range/24h/7d geometry
-    - _compute_short_slopes_from_series keeps growth_* on the same scale as slope_* instead of inflating by 150,000x
+    - compute_short_slopes_from_series keeps growth_* on the same scale as slope_* instead of inflating by 150,000x
     - harvest_log_anomalies_from_dirs deduplicates unstamped command stdout echoed in ERROR lines and clears resolved daemon errors after 'Daemon status: active'
     """
 
@@ -3074,8 +3074,8 @@ def test_post_rth_equities_series_enrichment_short_slopes_scale_and_daemon_log_r
     assert abs(spcx["kalman_vel"]) > 0.0
     assert "recent_tape_15m" not in spcx
 
-    # 2. _compute_short_slopes_from_series keeps growth_2_5h on the same scale as slope_2_5h
-    slopes = _compute_short_slopes_from_series(rth_bars)
+    # 2. compute_short_slopes_from_series keeps growth_2_5h on the same scale as slope_2_5h
+    slopes = compute_short_slopes_from_series(rth_bars)
     assert "slope_2_5h" in slopes and "growth_2_5h" in slopes
     assert abs(slopes["growth_2_5h"]) < 0.05
 
@@ -4210,7 +4210,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert pos_w3[0]["lowest_buy_px"] == 220.0
     assert pos_w3[1]["lowest_buy_px"] == 77352.51
 
-    vp_gap = _build_vp_position_dict(134.45, 141.18, 140.36, 142.47)
+    vp_gap = build_vp_position_dict(134.45, 141.18, 140.36, 142.47)
     assert vp_gap["va_pos_pct"] == -100.0
 
     # Sparse overnight gap between -3h and -13h in a >=25 point series: 6h and 12h would hit the same bar at -13h
@@ -4223,7 +4223,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     # Bugs 13, 14, 15 & 16:
     # - harvest_log_anomalies_from_dirs skips __orchestrator_intent__ IPC lines, deduplicates chained tracebacks, and clears pre-startup ImportError after clean strategy startup
     # - enrich_sentiment_advisor_live_flow_divergence does not trigger LIVE_BUY_REVERSAL on NEUTRAL/HOLD when live_tr < 1.25 (e.g. 1.16)
-    # - _apply_24h_series_enrichment computes fallback slopes/vol_1h for equities; collect_pretrade_telemetry syncs live equity price and strips post-RTH short tape
+    # - apply_24h_series_enrichment computes fallback slopes/vol_1h for equities; collect_pretrade_telemetry syncs live equity price and strips post-RTH short tape
     ipc_log_dir = tmp_path / "ipc_and_krk_logs"
     ipc_log_dir.mkdir(parents=True, exist_ok=True)
     clk_now = time.strftime("%H:%M:%S", time.localtime(time.time() - 20))
@@ -4271,7 +4271,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
 
     spcx_eq_entry: dict = {"price": 134.54}
     spcx_eq_pts = [[now_ms_w3 - (30 - i) * 300_000, 132.0 + i * 0.08] for i in range(31)]
-    _apply_24h_series_enrichment("SPCX_US_EQ", spcx_eq_entry, compute_24h_price_metrics(spcx_eq_pts), spcx_eq_pts, None)
+    apply_24h_series_enrichment("SPCX_US_EQ", spcx_eq_entry, compute_24h_price_metrics(spcx_eq_pts), spcx_eq_pts, None)
     assert spcx_eq_entry.get("slope_15m") is not None and spcx_eq_entry.get("vol_1h_pct") is not None
 
     # Bugs 61 & 62:
@@ -4356,7 +4356,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
         "-3m:202.41",
         "now:202.44",
     ]
-    slopes_eq_live = _compute_short_slopes_from_series(eq_5m_live)
+    slopes_eq_live = compute_short_slopes_from_series(eq_5m_live)
     assert "slope_90s" not in slopes_eq_live
     assert "slope_3_7m" in slopes_eq_live and "growth_3_7m" not in slopes_eq_live
     assert "slope_15m" in slopes_eq_live and "growth_15m" in slopes_eq_live
@@ -4532,7 +4532,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
         [now_ms_w3, 200.99],
     ]
     nvda_m24 = compute_24h_price_metrics(nvda_5m_series)
-    nvda_slopes = _compute_short_slopes_from_series(nvda_5m_series)
+    nvda_slopes = compute_short_slopes_from_series(nvda_5m_series)
     assert nvda_m24["chg_15m_pct"] < 0.0
     assert nvda_slopes["slope_15m"] < 0.0
     assert (nvda_slopes.get("growth_15m") or 0.0) <= 0.0
@@ -4627,7 +4627,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
         [now_ms_w3 - 600_000, 1.36],
         [now_ms_w3, 1.32],
     ]
-    rgnt_flat_slopes = _compute_short_slopes_from_series(rgnt_flat_15m)
+    rgnt_flat_slopes = compute_short_slopes_from_series(rgnt_flat_15m)
     assert rgnt_flat_slopes["slope_15m"] == 0.0
     assert "growth_15m" not in rgnt_flat_slopes
 
@@ -4846,7 +4846,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     eq_series_79[-1][1] = 135.05
     # Append trailing partial sub-5m duplicate quote 260s after last 5-minute bar
     eq_series_79.append([eq_series_79[-1][0] + 260_000, 135.05, 0.0])
-    slopes_79 = _compute_short_slopes_from_series(eq_series_79)
+    slopes_79 = compute_short_slopes_from_series(eq_series_79)
     assert slopes_79["slope_3_7m"] > 0.0
     m24_79 = compute_24h_price_metrics(eq_series_79)
     assert "chg_3m_pct" not in m24_79
@@ -5026,7 +5026,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
 
 def test_active_7d_vals_ohlc_override_pretrade_sibling_90s_and_stdin_log_filtering(tmp_path):
     """Verify:
-    - Bug 17: enrich_24h_and_microstructure tracks active_7d_vals from _load_stitched_7d_ohlc_closes so ob_mid_m price adjustment does not overwrite chg_7d_pct with partial 1-day arch_vals_7d[0]
+    - Bug 17: enrich_24h_and_microstructure tracks active_7d_vals from load_stitched_7d_ohlc_closes so ob_mid_m price adjustment does not overwrite chg_7d_pct with partial 1-day arch_vals_7d[0]
     - Bug 18: collect_pretrade_telemetry backfills zero slope_90s/growth_90s/trend_90s from non-diverged sibling live_<SYM>.json (e.g. ADAUSDC for ADAUSD)
     - Bug 20: harvest_log_anomalies_from_dirs ignores interactive [<stdin>:NN] lines and clears manage_agy errors after 'ui-sync: check healthy'
     """
@@ -5122,7 +5122,7 @@ def test_bugs_21_to_26_tape5m_geodeescalation_advisor_lows_whale_str_and_taousdc
     - Bug 23: SentimentAdvisor computes fallback prior_6h_low and 1h_low from BTC 24h series when bottom_structure_6h is NONE
     - Bug 24: load_cached_whale_telemetry accepts string symbol 'BTCUSDC' without iterating char-by-char
     - Bug 25: harvest_log_anomalies_from_dirs suppresses recovered [kraken_cache][ws] error: ping/pong timed out when followed by subscribed ownTrades
-    - Bug 26: _resolve_fallback_ohlc_fn prefers binance:<SYM> over hyperliquid:<SYM> for multi-venue USDC pairs like TAOUSDC
+    - Bug 26: resolve_fallback_ohlc_fn prefers binance:<SYM> over hyperliquid:<SYM> for multi-venue USDC pairs like TAOUSDC
     """
 
     # Bug 21: 5m bars + -3m/-1m/now at +4.68m after last 5m bar
@@ -5228,7 +5228,7 @@ def test_bugs_21_to_26_tape5m_geodeescalation_advisor_lows_whale_str_and_taousdc
     assert anom_25.error_count == 0
     assert anom_25.persistent_errors == []
 
-    # Bug 26: _resolve_fallback_ohlc_fn prefers binance:TAOUSDC over hyperliquid:TAOUSDC
+    # Bug 26: resolve_fallback_ohlc_fn prefers binance:TAOUSDC over hyperliquid:TAOUSDC
     bin_fn = lambda s, i: "binance_ohlc"  # noqa: E731
     hl_fn = lambda s, i: "hl_ohlc"  # noqa: E731
     inst_map = {
@@ -5236,7 +5236,7 @@ def test_bugs_21_to_26_tape5m_geodeescalation_advisor_lows_whale_str_and_taousdc
         "binance:TAOUSDC": SimpleNamespace(_provider=SimpleNamespace(ohlc_series=bin_fn)),
         "hyperliquid:TAOUSDC": SimpleNamespace(_provider=SimpleNamespace(ohlc_series=hl_fn)),
     }
-    assert _resolve_fallback_ohlc_fn("TAOUSDC", inst_map) is bin_fn
+    assert resolve_fallback_ohlc_fn("TAOUSDC", inst_map) is bin_fn
 
     # Bug 29: parse_cited_taker_ratio handles parenthetical '(ratio 0.60, 1h CVD -$25.46M)' and ranks 1h above 5m
 
@@ -5962,7 +5962,7 @@ def test_bugs_99_to_102_breadth_exclusions_btc_vol_share_neg_zero_benchmarks_and
     t0_ms = 1_776_000_000_000
     pts_5m = [[t0_ms + i * 300_000, 100.0] for i in range(12)]
     pts_5m[-2][1] = pts_5m[-3][1] = 100.5  # intermediate bar higher than both -15m (100.0) and now (100.0)
-    slopes_5m = _compute_short_slopes_from_series(pts_5m)
+    slopes_5m = compute_short_slopes_from_series(pts_5m)
     assert slopes_5m["slope_15m"] == 0.0
     assert "growth_15m" not in slopes_5m
     assert slopes_5m["trend_15m"] == 0
@@ -7619,7 +7619,7 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert rec_sum.persistent_errors == []
 
     # 7. load_symbol_price_series strips off-RTH flat 2-element poller ticks after 3-element OHLC bars
-    #    and _apply_24h_series_enrichment heals vol_1h_pct == 0.0 from RTH bars
+    #    and apply_24h_series_enrichment heals vol_1h_pct == 0.0 from RTH bars
 
     cdir_rgnt = tmp_path / "cachedb_rgnt"
     (cdir_rgnt / "prices").mkdir(parents=True, exist_ok=True)
@@ -7665,7 +7665,7 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
         "growth_15m": 0.0,
         "growth_2_5h": 0.0,
     }
-    _apply_24h_series_enrichment("RGNT_US_EQ", entry_rgnt, m24_rgnt, s24_rgnt, None)
+    apply_24h_series_enrichment("RGNT_US_EQ", entry_rgnt, m24_rgnt, s24_rgnt, None)
     assert entry_rgnt["vol_1h_pct"] > 0.0
     assert entry_rgnt["adapt_reentry_pct"] > 0.0
     assert entry_rgnt["adapt_dca_pct"] > 0.0
@@ -7856,7 +7856,7 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert isinstance(failed_rec, dict)
     assert failed_rec.get("reason") == "OrderGuard blocked binance MARKET SELL ARBUSDC: account_cache_not_fresh"
 
-    # 10j. apply_short_trend_item & _apply_24h_series_enrichment replace stale (>10m behind 24h series) or 1-sample short trends with fresh series slopes.
+    # 10j. apply_short_trend_item & apply_24h_series_enrichment replace stale (>10m behind 24h series) or 1-sample short trends with fresh series slopes.
 
     nvda_entry_st: dict = {}
     stale_tinfo = {
@@ -7877,7 +7877,7 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     apply_short_trend_item(nvda_entry_st, stale_tinfo, fallback_price=196.70)
     assert nvda_entry_st.get("slope_3_7m") is None
     fresh_s24 = [[int((now_s_rec - (40 - i) * 300.0) * 1000), round(195.0 + i * 0.05, 4)] for i in range(41)]
-    _apply_24h_series_enrichment("NVDA_US_EQ", nvda_entry_st, compute_24h_price_metrics(fresh_s24), fresh_s24, None)
+    apply_24h_series_enrichment("NVDA_US_EQ", nvda_entry_st, compute_24h_price_metrics(fresh_s24), fresh_s24, None)
     assert nvda_entry_st.get("slope_3_7m") is not None and nvda_entry_st["slope_3_7m"] > 0.0
     assert nvda_entry_st.get("growth_3_7m") is None
     assert nvda_entry_st.get("slope_15m") is not None and nvda_entry_st["slope_15m"] > 0.0
@@ -7898,7 +7898,7 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert "15m=-0.10833" not in str(pt_nvda_stale.get("Dynamic Multi-Window Slopes"))
     assert "15m=+" in str(pt_nvda_stale.get("Dynamic Multi-Window Slopes"))
 
-    # 10k. _extract_sorted_ts_px strips multi-tick zero-volume plateaus & _apply_24h_series_enrichment replaces inflated vol_1h_pct on sparse 1h series.
+    # 10k. _extract_sorted_ts_px strips multi-tick zero-volume plateaus & apply_24h_series_enrichment replaces inflated vol_1h_pct on sparse 1h series.
 
     rgnt_s24 = [
         [int((now_s_rec - 86400 + i * 1800) * 1000), round(1.38 - (i % 3) * 0.01, 4), 400.0]
@@ -7929,7 +7929,7 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
         "adapt_dca_pct": 16.435,
         "_short_trend_ts": now_s_rec,
     }
-    _apply_24h_series_enrichment("RGNT_US_EQ", rgnt_entry, compute_24h_price_metrics(rgnt_s24), rgnt_s24, None)
+    apply_24h_series_enrichment("RGNT_US_EQ", rgnt_entry, compute_24h_price_metrics(rgnt_s24), rgnt_s24, None)
     assert 0.1 < rgnt_entry["vol_1h_pct"] < 4.0
     assert rgnt_entry["adapt_reentry_pct"] < 8.0
     assert rgnt_entry["adapt_dca_pct"] < 4.0
@@ -7948,7 +7948,7 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
         "adapt_dca_pct": 6.615,
         "_short_trend_ts": now_s_rec,
     }
-    _apply_24h_series_enrichment("RGNT_US_EQ", rgnt_entry_2, compute_24h_price_metrics(rgnt_s24_2ticks), rgnt_s24_2ticks, None)
+    apply_24h_series_enrichment("RGNT_US_EQ", rgnt_entry_2, compute_24h_price_metrics(rgnt_s24_2ticks), rgnt_s24_2ticks, None)
     assert 0.1 < rgnt_entry_2["vol_1h_pct"] < 4.0
 
 
@@ -8587,13 +8587,13 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert sw_bounce["rally_from_swing_low_pct"] == 4.27
     assert sw_bounce["pullback_from_swing_high_pct"] == -10.29
 
-    # _load_stitched_7d_ohlc_closes anchors 24h peak/trough at their chronological tail extrema and recalculate_live_price_geometry promotes major_swing_low_px when p_cur == swing_low_px
+    # load_stitched_7d_ohlc_closes anchors 24h peak/trough at their chronological tail extrema and recalculate_live_price_geometry promotes major_swing_low_px when p_cur == swing_low_px
 
     fake_ohlc = lambda _s, _tf: SimpleNamespace(
         timestamps=[now_cd - (10 - i) * 3600 for i in range(10)],
         closes=[0.195, 0.198, 0.191, 0.186, 0.1783, 0.181, 0.1852, 0.1845, 0.1841, 0.18398],
     )
-    stitched_7d = _load_stitched_7d_ohlc_closes(
+    stitched_7d = load_stitched_7d_ohlc_closes(
         fake_ohlc, "ADAUSD", now_cd, {"low_24h": 0.177602, "high_24h": 0.199354}, 0.183943
     )
     assert stitched_7d.index(0.199354) < stitched_7d.index(0.177602)
@@ -10364,7 +10364,7 @@ def test_24h_price_metrics_bisect_parity_and_series_memo_shallow_copy(tmp_path, 
             return {}
         now_ms, cur_px = clean_series[-1]
         span_ms = now_ms - clean_series[0][0]
-        out = pse_mod._compute_horizon_range_dict(
+        out = pse_mod.compute_horizon_range_dict(
             cur_px,
             round(min(x[1] for x in clean_series), 6),
             round(max(x[1] for x in clean_series), 6),

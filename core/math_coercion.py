@@ -572,12 +572,20 @@ def _norm_symbol_list_token(raw_val: object) -> str | None:
 
 
 def parse_symbol_list(symbols: object) -> list[str]:
-    """Normalize comma-separated string or iterable of symbols into canonical symbol list."""
+    """Normalize comma-separated string or iterable of symbols into deduplicated canonical symbol list."""
     if isinstance(symbols, str):
-        return [tok for raw_tok in split_csv(symbols, upper=False) if (tok := _norm_symbol_list_token(raw_tok)) is not None]
-    if symbols is None or isinstance(symbols, (bool, bytes, bytearray, dict)) or not hasattr(symbols, "__iter__"):
+        raw_items: object = split_csv(symbols, upper=False)
+    elif symbols is None or isinstance(symbols, (bool, bytes, bytearray, dict)) or not hasattr(symbols, "__iter__"):
         return []
-    return list(dict.fromkeys(tok for s in symbols if (tok := _norm_symbol_list_token(s)) is not None))
+    else:
+        raw_items = symbols
+    seen: dict[str, str] = {}
+    for s in raw_items:
+        if (tok := _norm_symbol_list_token(s)) is not None:
+            key_u = tok.upper()
+            if key_u not in seen or is_kraken_tokenized_asset(tok):
+                seen[key_u] = tok
+    return list(seen.values())
 
 
 def diff_percent(value1: float, value2: float) -> float:

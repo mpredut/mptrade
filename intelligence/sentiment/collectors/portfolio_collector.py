@@ -66,13 +66,14 @@ from intelligence.external.collectors.base_collector import (
 )
 import intelligence.sentiment.collectors.microstructure_collector as _mc
 from intelligence.sentiment.collectors.microstructure_collector import (
-    _ensure_cacheprice_classes_bound,
+    ensure_cacheprice_classes_bound,
     _iter_t212_state_files,
     _resolve_now_and_read_json,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
-    _first_variant_dict,
+    first_variant_dict,
 )
+from providers.order_status_ssot import is_terminal_audit_status
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     apply_cycle_fallback_to_recent_fills,
     clip_open_lots_to_held_qty,
@@ -120,7 +121,7 @@ _resolve_read_json_cached = resolve_read_json_cached
 
 
 def _resolve_order_cache_files() -> Tuple[Tuple[str, str], ...]:
-    _ensure_cacheprice_classes_bound()
+    ensure_cacheprice_classes_bound()
     contracts_fn = getattr(_mc.CacheAccountManagerBase, "venue_order_and_trade_cache_contracts", None)
     if callable(contracts_fn):
         return tuple(contracts_fn())
@@ -346,14 +347,6 @@ def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str],
     return out
 
 
-_TERMINAL_AUDIT_VENUE_STATUSES = frozenset(
-    {"FILLED", "CLOSED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "REPLACED"}
-)
-_TERMINAL_AUDIT_LOCAL_STATUSES = frozenset(
-    {"closed", "filled", "canceled", "cancelled", "expired", "rejected", "replaced"}
-)
-
-
 def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Dict[str, Any]]]:
     """Synthesize deduplicated per-symbol filled order lists from execution_audit_*.jsonl for venues lacking a disk order cache."""
     by_sym: Dict[str, List[Dict[str, Any]]] = {}
@@ -387,10 +380,7 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
                     v_stat, l_stat, _, f_q_opt, _, cost_opt, fallback_px, is_fill = _extract_audit_fill_metrics(
                         rec, fallback_ref_price=True
                     )
-                    if ev_name == "order_status" and (
-                        v_stat not in _TERMINAL_AUDIT_VENUE_STATUSES
-                        and l_stat not in _TERMINAL_AUDIT_LOCAL_STATUSES
-                    ):
+                    if ev_name == "order_status" and not is_terminal_audit_status(v_stat, l_stat):
                         continue
                     f_q = safe_pos_float(f_q_opt, default=0.0) or 0.0
                     if not is_fill or f_q <= 0.0:
@@ -667,7 +657,7 @@ class PortfolioCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
     """
 
     cls_name = "PortfolioCacheCollectorBase"
-    _on_collector_init = staticmethod(_ensure_cacheprice_classes_bound)
+    _on_collector_init = staticmethod(ensure_cacheprice_classes_bound)
 
 
 class VenueTrailingMapsCollector(PortfolioCacheCollectorBase):
@@ -1012,7 +1002,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             xst_summary["live_price"] = round(live_px, 4)
             if alloc_px is not None:
                 xst_summary["pnl_vs_alloc_pct"] = round(((live_px - alloc_px) / alloc_px) * 100.0, 2)
-        if isinstance((sib_cyc := _first_variant_dict(eff_t212, (t212_sib, underlying))), dict):
+        if isinstance((sib_cyc := first_variant_dict(eff_t212, (t212_sib, underlying))), dict):
             xst_summary["t212_sibling_cycle"] = {k: v for k, v in sib_cyc.items() if not str(k).startswith("_")}
         return xst_summary
 
@@ -1208,7 +1198,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     getattr(inst, "params", {}) if isinstance(getattr(inst, "params", None), dict) else {}
                 )
                 sym_quotes = compatible_quote_suffixes(sym, quote)
-                t_state = _first_variant_dict(
+                t_state = first_variant_dict(
                     trailing_by_venue.get(v_norm, {}),
                     cache_symbol_variants(sym, include_original=True, include_base="USD" in sym_quotes, quotes=sym_quotes),
                     default={},
@@ -1363,8 +1353,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     if p_sym:
                         v_trail_map = trailing_by_venue.get(v_rec_norm, {}) if isinstance(trailing_by_venue, dict) else {}
                         t_cands = cache_symbol_variants(p_sym, include_original=True, include_base=True, quotes=compatible_quote_suffixes(p_sym))
-                        t_dict = _first_variant_dict(v_trail_map, t_cands) or (
-                            _first_variant_dict(trailing_map, t_cands) if MarketDataProvider.uses_shared_trailing_map(v_rec_norm) else None
+                        t_dict = first_variant_dict(v_trail_map, t_cands) or (
+                            first_variant_dict(trailing_map, t_cands) if MarketDataProvider.uses_shared_trailing_map(v_rec_norm) else None
                         )
                         if isinstance(t_dict, dict) and ("peak" in t_dict or rec_peak is None):
                             rec_peak = safe_pos_float(t_dict.get("peak"), default=None)
@@ -1719,7 +1709,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                     or not v_inst
                     or not MarketDataProvider.uses_bare_base_order_symbols(v_inst)
                     or (v_inst, sym) in seen_live_order_vs
-                    or _first_variant_dict(venue_recent_orders.get(v_inst, {}), cache_symbol_variants(sym, include_base=True)) is not None
+                    or first_variant_dict(venue_recent_orders.get(v_inst, {}), cache_symbol_variants(sym, include_base=True)) is not None
                 ):
                     continue
                 seen_live_order_vs.add((v_inst, sym))
@@ -1747,7 +1737,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 if isinstance(it, dict) and str(it.get("symbol") or "").strip()
             }
             for sym_fb in sorted(set(audit_by_sym.keys()) | intent_syms):
-                if _first_variant_dict(venue_recent_orders[fallback_venue], cache_symbol_variants(sym_fb, include_base=True)) is not None:
+                if first_variant_dict(venue_recent_orders[fallback_venue], cache_symbol_variants(sym_fb, include_base=True)) is not None:
                     continue
                 o_list = audit_by_sym.get(sym_fb, [])
                 if fills := extract_symbol_recent_fills(o_list, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=fb_ai_intents, symbol=sym_fb):

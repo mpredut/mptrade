@@ -289,7 +289,7 @@ _NUMERIC_ROW_TYPES = (int, float)
 _SEQ_ROW_TYPES = (list, tuple)
 
 
-def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
+def parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
     if not isinstance(row, (list, tuple)) or len(row) < 2:
         return None
     t, p = row[0], row[1]
@@ -427,7 +427,7 @@ def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
                 continue
         if not isinstance(row, (list, tuple)) or len(row) != 2:
             all_two_col = False
-        if (pt := _parse_ts_px_row(row)) is not None:
+        if (pt := parse_ts_px_row(row)) is not None:
             if pt[0] < prev_t:
                 is_sorted = False
             prev_t = pt[0]

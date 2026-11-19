@@ -839,7 +839,7 @@ def test_secondary_writers_and_t212_ssot_market_data(tmp_path, monkeypatch):
     assert "BTCUSDC" in saved_t and "ETHUSDC" in saved_t
     assert saved_t["BTCUSDC"]["n"] > 0 and saved_t["ETHUSDC"]["n"] > 0
 
-    # 2. _refresh_stale_t212_cached_positions merges touched T212 keys without clobbering concurrent crypto balances.
+    # 2. refresh_stale_t212_cached_positions merges touched T212 keys without clobbering concurrent crypto balances.
     bals_file = tmp_path / "venue_balances_state.json"
     now_s = time.time()
     initial_bals = {
@@ -864,14 +864,14 @@ def test_secondary_writers_and_t212_ssot_market_data(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mc._t212_prov_mod, "T212Provider", _FakeT212Provider)
     monkeypatch.setattr(mc, "_LAST_T212_PORTFOLIO_POLL_TS", 0.0)
-    assert mc._refresh_stale_t212_cached_positions(stale_ram_copy, str(bals_file), now_s, max_age_sec=180.0) is True
+    assert mc.refresh_stale_t212_cached_positions(stale_ram_copy, str(bals_file), now_s, max_age_sec=180.0) is True
     merged_bals = json.loads(bals_file.read_text(encoding="utf-8"))
     assert merged_bals["pos:t212:NVDA_US_EQ"]["price"] == 135.25
     assert merged_bals["pos:t212:NVDA_US_EQ"]["value_usd"] == 270.5
     assert merged_bals["cash:binance:USDC"]["free"] == 1250.0
     assert merged_bals["pos:kraken:TAOUSD"]["free"] == 1.5
 
-    # 3. _load_stitched_24h_ohlc_points resolves prices/ subdir and never overwrites fresh Cache24PriceManager equity OHLCV.
+    # 3. load_stitched_24h_ohlc_points resolves prices/ subdir and never overwrites fresh Cache24PriceManager equity OHLCV.
     cdir_eq = tmp_path / "cachedb_eq"
     (cdir_eq / "prices").mkdir(parents=True, exist_ok=True)
     eq_ohlc_path = cdir_eq / "prices" / "cache_ohlc_24h_NVDA_US_EQ.json"
@@ -879,7 +879,7 @@ def test_secondary_writers_and_t212_ssot_market_data(tmp_path, monkeypatch):
     save_json_state(str(eq_ohlc_path), {"ts": now_s - 30.0, "symbol": "NVDA_US_EQ", "points": cm_pts})
     pse._OHLC_24H_DISK_MEMO.clear()
     # Even if forced to fetch (e.g. cold reader memo bypassed), writer check preserves fresh (<240s) equity OHLCV.
-    loaded_eq = pse._load_stitched_24h_ohlc_points(
+    loaded_eq = pse.load_stitched_24h_ohlc_points(
         None, "NVDA_US_EQ", now_s - 86400.0, cache_dir=str(cdir_eq)
     )
     assert len(loaded_eq) == len(cm_pts)
@@ -892,7 +892,7 @@ def test_secondary_writers_and_t212_ssot_market_data(tmp_path, monkeypatch):
         save_json_state(str(race_path), {"ts": time.time(), "symbol": "NVDA_US_EQ", "points": cm_pts})
         return [[int((now_s - (24 - i) * 3600) * 1000), 999.0, 500.0] for i in range(25)]
 
-    pse._load_stitched_24h_ohlc_points(_racing_ohlc_fn, "NVDA_US_EQ", now_s - 86400.0, cache_dir=str(stale_check_cdir))
+    pse.load_stitched_24h_ohlc_points(_racing_ohlc_fn, "NVDA_US_EQ", now_s - 86400.0, cache_dir=str(stale_check_cdir))
     saved_race = json.loads(race_path.read_text(encoding="utf-8"))
     assert saved_race["points"][0][1] == 130.0
 
