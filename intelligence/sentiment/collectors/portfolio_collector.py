@@ -776,6 +776,30 @@ class VenueCyclesCollector(PortfolioCacheCollectorBase):
             pair_name = resolve_registered_symbol_case(raw_pair, "kraken") or raw_pair.upper()
             if pair_name.isalnum() and symbol_quote_asset(pair_name) in ("USD", "EUR", "USDC", "USDT"):
                 _record_cyc(kraken_cycles, st_path, pair_name, 6)
+        xst_alloc_path = os.path.join(eff_workspace, "kraken", "xstock_state.json")
+        if os.path.exists(xst_alloc_path) and isinstance((xst_st := _rj(xst_alloc_path)), dict):
+            alloc_doc = xst_st.get("allocated")
+            if isinstance(alloc_doc, dict):
+                a_qty = safe_pos_float(alloc_doc.get("qty"), default=0.0) or 0.0
+                a_px = safe_pos_float(alloc_doc.get("alloc_price"), default=0.0) or 0.0
+                a_base = canonical_base_asset(alloc_doc.get("asset"))
+                a_pair = resolve_registered_symbol_case(f"{a_base}xUSD", "kraken") if a_base else None
+                if a_pair and a_qty > 0.0 and a_px > 0.0 and a_pair not in kraken_cycles:
+                    kraken_cycles[a_pair] = parse_venue_cycle_state(
+                        {
+                            "cycle": 1,
+                            "qty": a_qty,
+                            "cost": a_qty * a_px,
+                            "entry_price": a_px,
+                            "last_buy_price": a_px,
+                            "adopted": True,
+                        },
+                        a_pair,
+                        eff_pt,
+                        avg_decimals=6,
+                        fallback_prices=eff_fb,
+                        include_meta=True,
+                    )
 
         hyperliquid_cycles: Dict[str, Any] = {}
         for st_path in iter_venue_cycle_state_files("hyperliquid", workspace_dir=eff_workspace):

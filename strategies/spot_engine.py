@@ -1411,24 +1411,23 @@ class Strategy(BaseSpotMixin):
         tolerance = max(2 * 10.0 ** -max(self.vol_dec, 1), 1e-12)
         free_ledger_qty = ledger_qty
         open_sell_qty = 0.0
-        if self.observe_only:
-            raw_cli = getattr(self.client, "_executor", getattr(self.client, "_inner", self.client))
-            if hasattr(raw_cli, "open_orders"):
-                try:
-                    open_rows = raw_cli.open_orders(self.pair)
-                except Exception as exc:
-                    if ledger_qty + tolerance < held:
-                        log(f"  ! [STRAT] ledger reconciliation deferred (open_orders query failed: {exc})")
-                        return True
-                    open_rows = None
-                if isinstance(open_rows, list):
-                    open_sell_qty = sum(
-                        extract_remaining_qty(r, default=0.0)
-                        for r in open_rows
-                        if isinstance(r, dict) and extract_order_side(r) == "SELL"
-                    )
-                    if open_sell_qty > 0.0:
-                        ledger_qty += open_sell_qty
+        raw_cli = getattr(self.client, "_executor", getattr(self.client, "_inner", self.client))
+        if hasattr(raw_cli, "open_orders"):
+            try:
+                open_rows = raw_cli.open_orders(self.pair)
+            except Exception as exc:
+                if self.observe_only and ledger_qty + tolerance < held:
+                    log(f"  ! [STRAT] ledger reconciliation deferred (open_orders query failed: {exc})")
+                    return True
+                open_rows = None
+            if isinstance(open_rows, list):
+                open_sell_qty = sum(
+                    extract_remaining_qty(r, default=0.0)
+                    for r in open_rows
+                    if isinstance(r, dict) and extract_order_side(r) == "SELL"
+                )
+                if open_sell_qty > 0.0:
+                    ledger_qty += open_sell_qty
         if ledger_qty <= tolerance:
             if held > 1e-12:
                 log(f"  [STRAT] LEDGER RECONCILE: position closed on venue ({base}=0); resetting cycle")
@@ -1465,8 +1464,7 @@ class Strategy(BaseSpotMixin):
             self.s["spent"] = (safe_nonneg_float(self.s.get("spent"), default=0.0) or 0.0) * ratio
             return _finish_reconcile(True)
         if (
-            self.observe_only
-            and open_sell_qty > 0.0
+            open_sell_qty > 0.0
             and held > tolerance
             and abs(free_ledger_qty - held) <= tolerance
         ):
@@ -1476,7 +1474,7 @@ class Strategy(BaseSpotMixin):
                 self.s["cost"] = ledger_qty * avg_existing
                 self.s["spent"] = ledger_qty * avg_existing
                 return _finish_reconcile(True)
-        if self.observe_only and ledger_qty > held + tolerance and (ledger_qty - held) * price >= 5.0:
+        if ledger_qty > held + tolerance and (ledger_qty - held) * price >= 5.0:
             log(
                 f"  ! [STRAT] LEDGER RECONCILE: external BUY on venue ({base}: "
                 f"{held:.{self.vol_dec}f} -> {ledger_qty:.{self.vol_dec}f}); synchronizing state"
@@ -2099,7 +2097,13 @@ class Strategy(BaseSpotMixin):
             log(f"      ! {self.fee_note}; TP={self.p.takeprofit_pct}%")
         self._maybe_adopt()
 
+        _live_ticks = 0
+
         def _log_status(price: float) -> None:
+            nonlocal _live_ticks
+            _live_ticks += 1
+            if not self.dry_run and not self.s.get("orders") and _live_ticks % 4 == 0:
+                self.s["ledger_reconcile_required"] = True
             avg = self._avg()
             pos = f"qty={self.s['qty']:.8f} avg={avg:.{self.price_dec}f}" if avg else "qty=0 (waiting for an entry)"
             log(

@@ -266,13 +266,19 @@ def resolve_ledger_alloc_price(client: KrakenClient, asset: str, fallback_qty: f
     base_target = canonical_base_asset(asset)
     if not callable(priv_fn) or not base_target:
         return None
-    try:
-        resp = priv_fn("Ledgers", {"ofs": 0})
-    except Exception as e:  # noqa: BLE001
-        log(f"  ! ledger alloc_price lookup failed: {e}")
-        return None
-    ledger = resp.get("ledger") if isinstance(resp, dict) else None
-    if not isinstance(ledger, dict) or not ledger:
+    ledger: dict = {}
+    for params in ({"type": "transfer", "ofs": 0}, {"ofs": 0}):
+        try:
+            resp = priv_fn("Ledgers", params)
+        except Exception as e:  # noqa: BLE001
+            if not ledger and params == {"ofs": 0}:
+                log(f"  ! ledger alloc_price lookup failed: {e}")
+                return None
+            continue
+        part = resp.get("ledger") if isinstance(resp, dict) else None
+        if isinstance(part, dict) and part:
+            ledger.update(part)
+    if not ledger:
         return None
     alloc_rows = [
         e for e in ledger.values()
