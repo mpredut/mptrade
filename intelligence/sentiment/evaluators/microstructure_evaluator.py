@@ -48,7 +48,12 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     _auto_px_decimals,
     _LAST_7D_SPAN_MS_BY_SYM,
 )
-from instrument_registry import casefold_get, is_equity_or_tokenized_symbol
+from instrument_registry import (
+    canonical_display_symbol,
+    casefold_get,
+    coalesce_symbol_case_variants,
+    is_equity_or_tokenized_symbol,
+)
 from providers.market_api import api as mkt_api
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_evaluator")
@@ -731,6 +736,7 @@ def evaluate_microstructure_cycle_deltas(
     if not isinstance(microstructure, dict) or not microstructure:
         return microstructure if isinstance(microstructure, dict) else {}, mhist, False
     eff_now = resolve_now_ts(now_ts)
+    coalesce_symbol_case_variants(microstructure, in_place=True)
     orig_mhist: Dict[str, Any] = dict(mhist)
     mhist_dirty = False
 
@@ -741,15 +747,25 @@ def evaluate_microstructure_cycle_deltas(
         if not isinstance(raw_seq, list):
             return []
         items: List[Dict[str, Any]] = []
+        seen_ts: set[float] = set()
         for x in raw_seq:
             if not isinstance(x, dict):
                 continue
             ts_s = normalize_epoch_sec(x.get("ts"))
-            if ts_s is None:
+            if ts_s is None or ts_s in seen_ts:
                 continue
+            seen_ts.add(ts_s)
             items.append({**x, "ts": ts_s} if ts_s != x.get("ts") else x)
         items.sort(key=_snap_ts)
         return items
+
+    def _casefold_hist_list(sym_k: str) -> List[Dict[str, Any]]:
+        sym_u = str(sym_k).upper()
+        combined: List[Any] = []
+        for hk, hv in orig_mhist.items():
+            if str(hk).upper() == sym_u and isinstance(hv, list):
+                combined.extend(hv)
+        return _clean_hist_list(combined)
 
     def _latest_snap_in_age_window(
         seq: List[Dict[str, Any]],
@@ -775,15 +791,16 @@ def evaluate_microstructure_cycle_deltas(
         cur_tr = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=None)
         if all(v is None for v in (cur_ob, cur_cvd, cur_wl, cur_oi, cur_tr)):
             continue
-        own_h_list = _clean_hist_list(casefold_get(orig_mhist, msym))
+        canon_msym = canonical_display_symbol(msym) or msym
+        own_h_list = _casefold_hist_list(canon_msym)
         h_list = own_h_list
         used_variant_hist = False
         if not h_list:
-            msym_is_eq_h = has_equity_suffix(msym)
-            for ck in cache_symbol_variants(msym, include_base=True):
+            msym_is_eq_h = has_equity_suffix(canon_msym)
+            for ck in cache_symbol_variants(canon_msym, include_base=True):
                 if has_equity_suffix(ck) != msym_is_eq_h:
                     continue
-                if h_list := _clean_hist_list(casefold_get(orig_mhist, ck)):
+                if h_list := _casefold_hist_list(ck):
                     used_variant_hist = True
                     break
         ref_snap: Optional[Dict[str, Any]] = (
@@ -856,6 +873,10 @@ def evaluate_microstructure_cycle_deltas(
                 delta_d["prev_taker_ratio"] = round(p_tr, 4)
             if len(delta_d) > 1:
                 minfo["cycle_delta"] = delta_d
+        stale_case_keys = [hk for hk in list(mhist) if hk != canon_msym and str(hk).upper() == canon_msym.upper()]
+        for sk in stale_case_keys:
+            mhist.pop(sk, None)
+            mhist_dirty = True
         if not own_h_list or (eff_now - _snap_ts(own_h_list[-1])) >= 60.0:
             new_rec: Dict[str, Any] = {"ts": round(eff_now, 2)}
             cur_l1_oi = safe_pos_float(minfo.get("native_l1_oi_usd"), default=None)
@@ -869,7 +890,10 @@ def evaluate_microstructure_cycle_deltas(
             ):
                 if v_rec is not None:
                     new_rec[k_rec] = round(v_rec, dec_r)
-            mhist[msym] = [x for x in own_h_list if eff_now - _snap_ts(x) <= 14400.0][-11:] + [new_rec]
+            mhist[canon_msym] = [x for x in own_h_list if eff_now - _snap_ts(x) <= 14400.0][-11:] + [new_rec]
+            mhist_dirty = True
+        elif stale_case_keys and canon_msym not in mhist and own_h_list:
+            mhist[canon_msym] = [x for x in own_h_list if eff_now - _snap_ts(x) <= 14400.0][-12:]
             mhist_dirty = True
     usd_delta_groups: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
     for msym, minfo in microstructure.items():

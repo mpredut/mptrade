@@ -2255,4 +2255,139 @@ def test_scope_all_off_rth_domain_ages_and_multilot_lifo_reconciliation(temp_cac
     )
 
 
+def test_xstock_canonical_case_coalescing_adopted_ipo_pnl_and_ob_mid_rounding(tmp_path):
+    """Verify single canonical SPCXxUSD key across caches, adopted IPO partial-sell PnL (+$17.34), and IEEE-754 ob_mid_price rounding."""
+    from cachetrend import KalmanStateTracker
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MarketAndPortfolioSnapshotOrchestrator
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_microstructure
+    from intelligence.sentiment.evaluators.microstructure_evaluator import evaluate_microstructure_cycle_deltas
+    from instrument_registry import canonical_display_symbol, coalesce_symbol_case_variants
+    from state_io import atomic_write_json
+
+    assert canonical_display_symbol("SPCXXUSD") == "SPCXxUSD"
+    assert canonical_display_symbol("ANTXUSD") == "ANTxUSD"
+    assert canonical_display_symbol("btcusdc") == "BTCUSDC"
+
+    merged_d = coalesce_symbol_case_variants(
+        {
+            "SPCXXUSD": {"price": 144.0, "low_24h": 140.0},
+            "SPCXxUSD": {"price": 145.355, "high_24h": 148.0},
+        }
+    )
+    assert list(merged_d.keys()) == ["SPCXxUSD"]
+    assert merged_d["SPCXxUSD"] == {"price": 145.355, "low_24h": 140.0, "high_24h": 148.0}
+
+    # KalmanStateTracker preserves SPCXxUSD case and migrates legacy uppercase SPCXXUSD
+    kst = KalmanStateTracker(state_path=None, compute_vol=False)
+    kst._state["SPCXXUSD"] = {"kalman_trend": 1, "ts": 1_795_000_000.0}
+    kst.update("SPCXxUSD", 1_795_000_060.0, 145.0, 0.05, [144.5, 145.0], 1.0)
+    assert "SPCXxUSD" in kst._state and "SPCXXUSD" not in kst._state
+
+    # IEEE-754 (145.30 + 145.41) / 2.0 == 145.35500000000002 -> cleanly rounded to 145.355
+    ws_dir = tmp_path / "ws"
+    c_dir = ws_dir / "cachedb"
+    for sub in ("prices", "trends", "orders", "state", "telemetry"):
+        (c_dir / sub).mkdir(parents=True, exist_ok=True)
+    (ws_dir / "kraken").mkdir(parents=True, exist_ok=True)
+
+    now_s = 1_795_060_000.0
+    ob_col = OrderbookDepthCollector(cache_dir=str(c_dir), start_sync=True)
+    ob_col._fetch_json_dict = lambda *_a, **_kw: {
+        "error": [],
+        "result": {"SPCXxUSD": {"bids": [["145.30", "20.0", 1]], "asks": [["145.41", "20.0", 1]]}},
+    }
+    ob_snap = ob_col.fetch("SPCXxUSD", allow_network=True, now=now_s)
+    assert ob_snap is not None
+    assert ob_snap.mid_price == 145.355
+    assert "0000000" not in repr(ob_snap.mid_price)
+
+    m_loaded = load_symbol_microstructure(str(c_dir), "SPCXxUSD")
+    assert m_loaded is not None and m_loaded["ob_mid_price"] == 145.355
+    assert "0000000" not in repr(m_loaded["ob_mid_price"])
+
+    # Microstructure cycle history migrates legacy SPCXXUSD -> SPCXxUSD
+    m_in = {"SPCXXUSD": {"ob_imbalance": 0.54, "cvd_15m_usd": 1200.0}}
+    h_in = {"SPCXXUSD": [{"ts": now_s - 420.0, "ob_imbalance": 0.48, "cvd_15m_usd": 400.0}]}
+    m_out, h_out, dirty = evaluate_microstructure_cycle_deltas(m_in, h_in, now_ts=now_s)
+    assert dirty is True
+    assert list(m_out.keys()) == ["SPCXxUSD"]
+    assert list(h_out.keys()) == ["SPCXxUSD"]
+    assert m_out["SPCXxUSD"]["cycle_delta"]["ob_imbalance_delta"] == pytest.approx(0.06)
+
+    # Full snapshot orchestrator: legacy pos:kraken:SPCXXUSD + adopted IPO cycle + partial AI SELL -> single SPCXxUSD + $17.34 realized PnL
+    entry_ts_s = 1_795_003_935.8948
+    sell_ts_ms = 1_795_054_452_963
+    atomic_write_json(
+        str(c_dir / "prices" / "cache_current_price.json"),
+        {"items": {"SPCXxUSD": 145.355}, "fetchtime": {"SPCXxUSD": now_s - 2.0}},
+    )
+    atomic_write_json(
+        str(c_dir / "prices" / "cache_24_price_SPCXxUSD.json"),
+        {"items": {"SPCXxUSD": [[int((now_s - 600) * 1000), 144.0], [int((now_s - 2) * 1000), 145.355]]}},
+    )
+    atomic_write_json(
+        str(c_dir / "state" / "venue_balances_state.json"),
+        {
+            "pos:kraken:SPCXXUSD": {
+                "venue": "kraken",
+                "symbol": "SPCXXUSD",
+                "base": "SPCXx",
+                "quote": "USD",
+                "free_base": 10.22512,
+                "free_quote": 500.0,
+                "price": 145.355,
+                "ts": now_s - 5.0,
+            }
+        },
+    )
+    atomic_write_json(
+        str(c_dir / "orders" / "cache_trade_kraken.json"),
+        {
+            "items": {
+                "SPCXXUSD": [
+                    {
+                        "orderId": "OXT5HX-TJHEI-JU7VJR",
+                        "symbol": "SPCXXUSD",
+                        "side": "SELL",
+                        "status": "FILLED",
+                        "executedQty": 5.52143,
+                        "price": 144.89,
+                        "timestamp": sell_ts_ms,
+                    }
+                ]
+            }
+        },
+    )
+    atomic_write_json(
+        str(ws_dir / "kraken" / ".state_SPCXxUSD.json"),
+        {
+            "cycle": 1,
+            "qty": 10.22512,
+            "cost": 1449.41076,
+            "dca_buys": 0,
+            "entry_price": 141.75,
+            "last_buy_price": 141.75,
+            "realized_net": 0.0,
+            "entry_ts": entry_ts_s,
+            "adopted": True,
+        },
+    )
+
+    orch = MarketAndPortfolioSnapshotOrchestrator(start_sync=False)
+    snap = orch.read_snapshot(str(c_dir), scope="crypto", now_ts=now_s)
+    assert "SPCXxUSD" in snap.prices_and_trends and "SPCXXUSD" not in snap.prices_and_trends
+    assert "SPCXxUSD" in snap.microstructure and "SPCXXUSD" not in snap.microstructure
+    assert snap.microstructure["SPCXxUSD"]["ob_mid_price"] == 145.355
+    pos_syms = [p["symbol"] for p in snap.portfolio_summary["tradable_positions"]]
+    assert pos_syms == ["SPCXxUSD"]
+    ro_map = snap.portfolio_summary["recent_orders"]
+    assert "SPCXxUSD" in ro_map and "SPCXXUSD" not in ro_map
+    assert ro_map["SPCXxUSD"]["lifo_realized_pnl_usd"] == pytest.approx(17.34)
+    k_cyc = snap.portfolio_summary["kraken_cycles"]["SPCXxUSD"]
+    assert k_cyc["realized_pnl_usd"] == pytest.approx(17.34)
+    assert k_cyc["subcycle_realized_pnl_usd"] == pytest.approx(17.34)
+
+
+
 

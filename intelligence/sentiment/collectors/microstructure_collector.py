@@ -150,6 +150,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     prepend_older_non_diverged_points,
     recalculate_live_price_geometry,
     resolve_asset_session_policy,
+    round_opt_px,
     sort_ts_rows,
     _apply_24h_series_enrichment,
     _LAST_7D_SPAN_MS_BY_SYM,
@@ -160,6 +161,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 )
 from instrument_registry import (
     casefold_get,
+    coalesce_symbol_case_variants,
     discover_hyperliquid_spot,
     is_equity_symbol,
     is_symbol_market_open,
@@ -546,9 +548,9 @@ def load_symbol_microstructure(
         ob_same_quote = (not ob_cand) or (compatible_quote_suffixes(ob_cand) == compatible_quote_suffixes(sym))
         raw_ob_imb = obj_attr(ob, "imbalance_ratio", obj_attr(ob, "ob_imbalance"))
         m_info["ob_imbalance"] = clean_scale(raw_ob_imb, default=None, allow_percent=True) if raw_ob_imb is not None else None
-        ob_mid = safe_pos_float(obj_attr(ob, "mid_price", obj_attr(ob, "ob_mid_price")), default=None)
-        best_bid = safe_pos_float(obj_attr(ob, "best_bid"), default=None)
-        best_ask = safe_pos_float(obj_attr(ob, "best_ask"), default=None)
+        ob_mid = round_opt_px(obj_attr(ob, "mid_price", obj_attr(ob, "ob_mid_price")), 8)
+        best_bid = round_opt_px(obj_attr(ob, "best_bid"), 8)
+        best_ask = round_opt_px(obj_attr(ob, "best_ask"), 8)
         if (spread_bps := round_spread_bps(obj_attr(ob, "spread_bps"), best_bid=best_bid, best_ask=best_ask, mid_price=ob_mid)) is not None:
             m_info["spread_bps"] = spread_bps
         ob_raw_ts = normalize_epoch_sec(obj_attr(ob, "ts", obj_attr(ob, "timestamp", None)), default=0.0) or 0.0
@@ -570,8 +572,8 @@ def load_symbol_microstructure(
         ):
             val = safe_nonneg_float(obj_attr(ob, k_src, obj_attr(ob, k_dst) if k_src != k_dst else None), default=None)
             m_info[k_dst] = round(val, 0) if val is not None else None
-        m_info["bid_wall_px"] = safe_pos_float(obj_attr(ob, "largest_bid_wall_price", obj_attr(ob, "bid_wall_px")), default=None) if ob_same_quote else None
-        m_info["ask_wall_px"] = safe_pos_float(obj_attr(ob, "largest_ask_wall_price", obj_attr(ob, "ask_wall_px")), default=None) if ob_same_quote else None
+        m_info["bid_wall_px"] = round_opt_px(obj_attr(ob, "largest_bid_wall_price", obj_attr(ob, "bid_wall_px")), 8) if ob_same_quote else None
+        m_info["ask_wall_px"] = round_opt_px(obj_attr(ob, "largest_ask_wall_price", obj_attr(ob, "ask_wall_px")), 8) if ob_same_quote else None
         if (b_span := safe_pos_float(obj_attr(ob, "book_span_pct"), default=None)) is not None:
             m_info["book_span_pct"] = round(b_span, 3)
         elif (
@@ -2097,6 +2099,8 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         pt_map, m_map, cp_map, inst_map = coerce_dict_maps(
             prices_and_trends, microstructure, cur_p_items, inst_by_sym
         )
+        coalesce_symbol_case_variants(pt_map, in_place=True)
+        coalesce_symbol_case_variants(m_map, in_place=True)
         eff_now, _rj = _resolve_now_and_read_json(now_ts, read_json_fn)
         btc_series_24h, btc_vals_7d = load_symbol_price_series(
             cachedb_dir, symbol or "BTCUSDC", current_price_items=cp_map, include_7d=True
@@ -2140,6 +2144,8 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         self._enrich_reference_microstructure_symbols(
             cachedb_dir, pt_map, m_map, cp_map, inst_map, btc_series_24h, eff_now, _rj, allow_network
         )
+        coalesce_symbol_case_variants(pt_map, in_place=True)
+        coalesce_symbol_case_variants(m_map, in_place=True)
         return pt_map, m_map
 
 

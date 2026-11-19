@@ -488,6 +488,74 @@ def resolve_symbol_identity(symbol: object, *, venue: object = None, path=None) 
     return SymbolIdentity(raw, storage, wire, storage, "crypto")
 
 
+def canonical_display_symbol(symbol: object, *, venue: object = None, path=None) -> str:
+    """Return the canonical in-memory/cache dict symbol key (e.g. ``SPCXXUSD`` -> ``SPCXxUSD``, ``btcusdc`` -> ``BTCUSDC``)."""
+    ident = resolve_symbol_identity(symbol, venue=venue, path=path)
+    if ident.is_tokenized_equity and ident.display_symbol:
+        return ident.display_symbol
+    return ident.storage_key or ident.display_symbol
+
+
+def coalesce_symbol_case_variants(
+    mapping: dict, *, in_place: bool = False, path=None
+) -> dict:
+    """Normalize tokenized xStock symbol keys and merge case-only duplicate entries (e.g. ``SPCXXUSD`` + ``SPCXxUSD`` -> ``SPCXxUSD``)."""
+    if not isinstance(mapping, dict) or not mapping:
+        return mapping
+
+    def _canon_key(raw_k: object) -> str:
+        ks = str(raw_k)
+        if not ks or ks.startswith("_"):
+            return ks
+        if ":" in ks:
+            pfx, rest = ks.split(":", 1)
+            ident_p = resolve_symbol_identity(rest, venue=pfx, path=path)
+            return f"{pfx}:{ident_p.display_symbol}" if ident_p.is_tokenized_equity and ident_p.display_symbol else ks
+        ident_k = resolve_symbol_identity(ks, path=path)
+        return ident_k.display_symbol if ident_k.is_tokenized_equity and ident_k.display_symbol else ks
+
+    by_upper: dict[str, list[tuple[object, object, str]]] = {}
+    needs_rewrite = False
+    for k, v in mapping.items():
+        ck = _canon_key(k)
+        if ck != k:
+            needs_rewrite = True
+        bucket = by_upper.setdefault(str(k).upper(), [])
+        bucket.append((k, v, ck))
+        if len(bucket) > 1:
+            needs_rewrite = True
+    if not needs_rewrite:
+        return mapping
+
+    merged_out: dict = {}
+    for items in by_upper.values():
+        if len(items) == 1:
+            _, val_0, ck_0 = items[0]
+            merged_out[ck_0] = val_0
+            continue
+        tok_cks = [ck for _, _, ck in items if any(ch.islower() for ch in ck)]
+        canon_k = tok_cks[0] if tok_cks else str(items[0][2]).upper()
+        items_sorted = sorted(
+            items,
+            key=lambda row: (
+                0 if str(row[0]) == canon_k else (1 if any(ch.islower() for ch in str(row[0])) else 2),
+                str(row[0]),
+            ),
+        )
+        acc: dict = {}
+        for _, d, _ in reversed(items_sorted):
+            if isinstance(d, dict):
+                for dk, dv in d.items():
+                    if dv is not None or dk not in acc:
+                        acc[dk] = dv
+        merged_out[canon_k] = acc if acc else items_sorted[0][1]
+    if in_place:
+        mapping.clear()
+        mapping.update(merged_out)
+        return mapping
+    return merged_out
+
+
 def is_equity_or_tokenized_symbol(symbol: object, *, path=None) -> bool:
     """Return True when ``symbol`` is an RTH equity or a 24/7 tokenized xStock (lacks a crypto perpetual market)."""
     ident = resolve_symbol_identity(symbol, path=path)

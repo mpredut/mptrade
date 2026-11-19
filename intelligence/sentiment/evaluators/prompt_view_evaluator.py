@@ -43,6 +43,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
 )
 from instrument_registry import (
     casefold_get,
+    coalesce_symbol_case_variants,
     is_equity_or_tokenized_symbol,
     is_equity_symbol,
     resolve_symbol_identity,
@@ -85,28 +86,7 @@ _AG_HISTORICAL_KEYS: frozenset[str] = frozenset({
 
 def coalesce_case_variants(mapping: Dict[str, Any]) -> Dict[str, Any]:
     """Merge case-only duplicate keys (e.g. ``SPCXXUSD`` + ``SPCXxUSD`` -> ``SPCXxUSD``) preserving all fields."""
-    if not isinstance(mapping, dict) or len(mapping) <= 1:
-        return mapping
-    by_upper: Dict[str, List[Tuple[str, Any]]] = {}
-    for k, v in mapping.items():
-        by_upper.setdefault(str(k).upper(), []).append((k, v))
-    if all(len(items) == 1 for items in by_upper.values()):
-        return mapping
-    merged_out: Dict[str, Any] = {}
-    for items in by_upper.values():
-        if len(items) == 1:
-            merged_out[items[0][0]] = items[0][1]
-            continue
-        items_sorted = sorted(items, key=lambda kv: (0 if any(ch.islower() for ch in str(kv[0])) else 1, str(kv[0])))
-        canon_k = items_sorted[0][0]
-        acc: Dict[str, Any] = {}
-        for _, d in reversed(items_sorted):
-            if isinstance(d, dict):
-                for dk, dv in d.items():
-                    if dv is not None or dk not in acc:
-                        acc[dk] = dv
-        merged_out[canon_k] = acc if acc else items_sorted[0][1]
-    return merged_out
+    return coalesce_symbol_case_variants(mapping, in_place=False)
 
 
 class PromptViewEvaluatorBase(TelemetryEvaluatorInterface, ABC):
@@ -292,9 +272,12 @@ class MicrostructurePromptViewEvaluator(PromptViewEvaluatorBase):
             aw_px_f = safe_float(minfo.get("ask_wall_px"), 0.0)
             b_bid = safe_float(minfo.get("best_bid"), 0.0)
             b_ask = safe_float(minfo.get("best_ask"), 0.0)
-            ob_mid = safe_pos_float(minfo.get("ob_mid_price"), 0.0) or (
-                (b_bid + b_ask) / 2.0 if b_bid > 0 and b_ask > 0 else 0.0
+            raw_ob_mid = safe_pos_float(minfo.get("ob_mid_price"), 0.0)
+            ob_mid = round(raw_ob_mid, 8) if raw_ob_mid > 0 else (
+                round((b_bid + b_ask) / 2.0, 8) if b_bid > 0 and b_ask > 0 else 0.0
             )
+            if "ob_mid_price" in minfo and raw_ob_mid > 0:
+                minfo["ob_mid_price"] = ob_mid
             if ob_mid > 0 and (
                 cur_px <= 0 or (bw_px_f > 0 and cur_px < bw_px_f) or (aw_px_f > 0 and cur_px > aw_px_f)
             ):

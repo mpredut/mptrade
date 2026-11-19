@@ -252,10 +252,10 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             if not bids or not asks:
                 return None
 
-            best_bid, best_ask = bids[0][0], asks[0][0]
+            best_bid, best_ask = round(bids[0][0], 8), round(asks[0][0], 8)
             if best_bid <= 0 or best_ask <= 0 or best_bid > best_ask:
                 return None
-            mid = safe_pos_float((best_bid + best_ask) / 2.0, default=None)
+            mid = safe_pos_float(round((best_bid + best_ask) / 2.0, 8), default=None)
             if mid is None:
                 return None
 
@@ -343,17 +343,17 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             real_spot_cvd = self._resolve_real_spot_cvd_15m(canon_sym, venue=eff_spot_venue, now=now)
             snapshot = OrderbookSnapshot(
                 symbol=symbol,
-                mid_price=mid,
+                mid_price=round(mid, 8),
                 bid_depth_usd=bid_depth_usd,
                 ask_depth_usd=ask_depth_usd,
                 imbalance_ratio=round(imbalance, 3),
                 largest_bid_wall_usd=round(max_bid_usd, 2),
-                largest_bid_wall_price=max_bid_px,
+                largest_bid_wall_price=round(max_bid_px, 8),
                 largest_ask_wall_usd=round(max_ask_usd, 2),
-                largest_ask_wall_price=max_ask_px,
+                largest_ask_wall_price=round(max_ask_px, 8),
                 ts=now,
-                best_bid=best_bid,
-                best_ask=best_ask,
+                best_bid=round(best_bid, 8),
+                best_ask=round(best_ask, 8),
                 spread_bps=spread_bps,
                 depth_1pct_bid_usd=round(depth_1pct_bid_usd, 2),
                 depth_1pct_ask_usd=round(depth_1pct_ask_usd, 2),

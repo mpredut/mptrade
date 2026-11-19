@@ -1225,6 +1225,56 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
 _STOP_EXIT_KINDS: tuple[str, ...] = ("STOP", "SL", "STOP_LOSS", "SMART_SL")
 
 
+def compute_adopted_cycle_sell_realized_pnl(
+    cyc: Dict[str, Any],
+    ro: Optional[Dict[str, Any]],
+    *,
+    entry_ts_ms: int = 0,
+) -> Optional[float]:
+    """Compute realized PnL for partial sells on adopted/IPO cycles lacking spot BUY fills."""
+    if not isinstance(cyc, dict) or not isinstance(ro, dict):
+        return None
+    if abs(safe_float(ro.get("lifo_realized_pnl_usd"), 0.0) or 0.0) >= 0.01:
+        return None
+    if ro.get("open_lots") or ro.get("recent_buys"):
+        return None
+    ref_cost = first_pos_float(cyc.get("avg_cost_px"), cyc.get("entry_price"))
+    if ref_cost is None or ref_cost <= 0.0:
+        return None
+    sells = [
+        s
+        for s in (ro.get("recent_sells") or ())
+        if isinstance(s, dict)
+        and (safe_pos_float(s.get("qty"), default=0.0) or 0.0) > 0.0
+        and (safe_pos_float(s.get("price"), default=0.0) or 0.0) > 0.0
+        and (
+            entry_ts_ms <= 0
+            or (safe_pos_int(s.get("ts_ms"), default=0) or 0) <= 0
+            or (safe_pos_int(s.get("ts_ms"), default=0) or 0) >= entry_ts_ms - 5000
+        )
+    ]
+    if not sells:
+        return None
+    latest_ts = max((safe_pos_int(s.get("ts_ms"), default=0) or 0 for s in sells), default=0)
+    if latest_ts > 0:
+        sells = [
+            s
+            for s in sells
+            if (s_ts := safe_pos_int(s.get("ts_ms"), default=0) or 0) <= 0 or (latest_ts - s_ts) <= 72 * 3600 * 1000
+        ]
+    dir_sign = -1.0 if str(cyc.get("direction") or "").strip().upper() == "SHORT" else 1.0
+    pnl = round(
+        sum(
+            dir_sign
+            * (safe_pos_float(s.get("qty"), default=0.0) or 0.0)
+            * ((safe_pos_float(s.get("price"), default=0.0) or 0.0) - ref_cost)
+            for s in sells
+        ),
+        2,
+    )
+    return pnl if abs(pnl) >= 0.01 else None
+
+
 def compute_cycle_subcycle_realized_pnl_view(
     cyc: Dict[str, Any],
     raw_lifo_pnl: Any,
@@ -1233,11 +1283,13 @@ def compute_cycle_subcycle_realized_pnl_view(
 ) -> Dict[str, Any]:
     """Return a non-mutating cycle dict view synchronizing active sub-cycle LIFO PnL and multi-cycle cumulative PnL."""
     lp_f = safe_float(raw_lifo_pnl, default=None)
+    if lp_f is None:
+        return dict(cyc)
     c_rpnl = safe_float(cyc.get("realized_pnl_usd"), default=None)
-    if lp_f is None or c_rpnl is None:
+    if c_rpnl is None and abs(lp_f) < 0.01:
         return dict(cyc)
     out = {**cyc, "subcycle_realized_pnl_usd": round(lp_f, 2)}
-    if include_cum:
+    if include_cum and c_rpnl is not None:
         out.setdefault("cum_realized_pnl_usd", round(c_rpnl, 2))
     if abs(lp_f) >= 0.01:
         out["realized_pnl_usd"] = round(lp_f, 2)
@@ -1245,8 +1297,9 @@ def compute_cycle_subcycle_realized_pnl_view(
 
 
 def _sync_cycle_subcycle_realized_pnl(cyc: Dict[str, Any], raw_lifo_pnl: Any) -> None:
-    if safe_float(raw_lifo_pnl, default=None) is not None and safe_float(cyc.get("realized_pnl_usd"), default=None) is not None:
-        cyc.update(compute_cycle_subcycle_realized_pnl_view(cyc, raw_lifo_pnl, include_cum=True))
+    lp_f = safe_float(raw_lifo_pnl, default=None)
+    if lp_f is not None and (safe_float(cyc.get("realized_pnl_usd"), default=None) is not None or abs(lp_f) >= 0.01):
+        cyc.update(compute_cycle_subcycle_realized_pnl_view(cyc, lp_f, include_cum=True))
 
 
 def classify_reconciled_cycle_exit_kind(
@@ -1410,6 +1463,8 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                 cyc["last_sell_price"] = round(ls_px_ro, avg_dec)
         if not isinstance(ro_c, dict):
             return
+        if (adopted_pnl := compute_adopted_cycle_sell_realized_pnl(cyc, ro_c, entry_ts_ms=entry_ts_i)) is not None:
+            ro_c["lifo_realized_pnl_usd"] = adopted_pnl
         ls_c = ro_c.get("last_sell") if isinstance(ro_c.get("last_sell"), dict) else {}
         ls_ts_ms = safe_pos_float(ls_c.get("ts_ms"), default=0.0) or 0.0
         ls_qty = safe_pos_float(ls_c.get("qty"), default=0.0) or 0.0
@@ -1824,6 +1879,19 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
             ro = _populate_cycle_fallback_recent_order(
                 p_venue, p_sym, cyc, cyc_has_open_qty, ro, recent_orders, v_ro_map, cyc_sell_ts_map
             )
+            entry_ts_adopt = next(
+                (
+                    ts_e
+                    for cand_e in (p_sym, *p_quote_variants)
+                    if (ts_e := cyc_sell_ts_map.get((f"{p_venue}:entry", str(cand_e).upper())))
+                ),
+                0,
+            )
+            if isinstance(ro, dict) and (
+                adopted_pnl_pos := compute_adopted_cycle_sell_realized_pnl(cyc, ro, entry_ts_ms=entry_ts_adopt)
+            ) is not None:
+                ro["lifo_realized_pnl_usd"] = adopted_pnl_pos
+                pos["lifo_realized_pnl_usd"] = adopted_pnl_pos
             _sync_cycle_subcycle_realized_pnl(
                 cyc,
                 pos.get("lifo_realized_pnl_usd")
@@ -1985,6 +2053,12 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 ro = _populate_cycle_fallback_recent_order(
                     c_venue, c_sym_u, cyc, True, ro, recent_orders, v_ro_map, cyc_sell_ts_map
                 )
+                if isinstance(ro, dict) and (
+                    adopted_pnl_u := compute_adopted_cycle_sell_realized_pnl(
+                        cyc, ro, entry_ts_ms=cyc_sell_ts_map.get((f"{c_venue}:entry", c_sym_u)) or 0
+                    )
+                ) is not None:
+                    ro["lifo_realized_pnl_usd"] = adopted_pnl_u
                 _sync_cycle_subcycle_realized_pnl(cyc, ro.get("lifo_realized_pnl_usd") if isinstance(ro, dict) else None)
                 c_is_eq = is_equity_venue_or_suffix(c_sym_u, c_venue)
                 c_px = resolve_symbol_price(

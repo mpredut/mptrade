@@ -63,6 +63,7 @@ from cachepaths import (
     cache_symbol_variants,
     cachedb_root_for_file,
     clean_scalar_str,
+    is_kraken_tokenized_asset,
     migrate_legacy_filename_if_needed,
     resolve_cachedb_filepath,
 )
@@ -2014,9 +2015,10 @@ class KalmanStateTracker:
                             for k, v in unwrapped.items():
                                 if not isinstance(v, dict):
                                     continue
-                                cur_v = merged.get(k)
+                                eff_k = next((mk for mk in merged if str(mk).upper() == str(k).upper()), k)
+                                cur_v = merged.get(eff_k)
                                 if cur_v is None:
-                                    merged[k] = v
+                                    merged[eff_k] = v
                                     continue
                                 cur_ts = safe_nonneg_ts(cur_v.get("ts"), 0.0)
                                 disk_ts = safe_nonneg_ts(v.get("ts"), 0.0)
@@ -2027,11 +2029,11 @@ class KalmanStateTracker:
                                 disk_seeded = safe_nonneg_float(v.get("kalman_vel_std"), 6.0) < 5.99
                                 if disk_ts > cur_ts:
                                     if disk_seeded or cur_unseeded:
-                                        merged[k] = v
+                                        merged[eff_k] = v
                                     else:
-                                        merged[k] = {**v, **{fk: cur_v[fk] for fk in _KALMAN_KEYS if fk in cur_v}}
+                                        merged[eff_k] = {**v, **{fk: cur_v[fk] for fk in _KALMAN_KEYS if fk in cur_v}}
                                 elif cur_unseeded and disk_seeded:
-                                    merged[k] = {**cur_v, **{fk: v[fk] for fk in _KALMAN_KEYS if fk in v}}
+                                    merged[eff_k] = {**cur_v, **{fk: v[fk] for fk in _KALMAN_KEYS if fk in v}}
                             self._state = merged
                     save_json_state(self.state_path, merged)
                     self._last_state_write = now
@@ -2091,11 +2093,13 @@ class KalmanStateTracker:
         # Feed only at KALMAN_SAMPLE_SEC and reuse fields between feeds so the
         # snapshot remains populated.
         with self._lock:
-            norm_sym = symbol.strip().upper() if isinstance(symbol, str) else ""
-            if norm_sym and symbol != norm_sym and symbol in self._state:
-                val_sym = self._state.pop(symbol, None)
-                if norm_sym not in self._state and val_sym is not None:
-                    self._state[norm_sym] = val_sym
+            s_strip = symbol.strip() if isinstance(symbol, str) else ""
+            norm_sym = s_strip if (s_strip and is_kraken_tokenized_asset(s_strip)) else s_strip.upper()
+            if norm_sym:
+                for alt_k in [k for k in list(self._state) if k != norm_sym and str(k).upper() == norm_sym.upper()]:
+                    val_sym = self._state.pop(alt_k, None)
+                    if norm_sym not in self._state and val_sym is not None:
+                        self._state[norm_sym] = val_sym
             symbol = norm_sym
             if (
                 not symbol
