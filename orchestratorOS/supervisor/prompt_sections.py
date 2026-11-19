@@ -827,6 +827,16 @@ def _format_microstructure_section(
         shared_perp_sym = row["shared_perp_sym"]
 
         sym_3b_lbl = f"{sym} ({', '.join(sib_3b)})" if sib_3b else sym
+        ref_now_3b = safe_pos_float(now_ts, default=None) or time.time()
+        raw_ob_t_3b = minfo.get("_ob_raw_ts") if minfo.get("_ob_raw_ts") is not None else minfo.get("_ob_ts")
+        ob_t_3b = normalize_epoch_sec(raw_ob_t_3b, default=0.0) or 0.0
+        ob_age_3b = (ref_now_3b - ob_t_3b) if ob_t_3b > 0.0 else None
+        ob_is_frozen = bool(
+            not sym_is_eq_3b
+            and ob_age_3b is not None
+            and ob_age_3b > 600.0
+            and (now_ts is not None or ob_age_3b <= 7.0 * 86400.0)
+        )
         bw_px = minfo.get("bid_wall_px")
         aw_px = minfo.get("ask_wall_px")
         bw_px_f = safe_float(bw_px, 0.0)
@@ -834,7 +844,7 @@ def _format_microstructure_section(
         bw_dist = f", dist={(bw_px_f - ob_ref_px) / ob_ref_px * 100.0:+.2f}%" if ob_ref_px > 0 and bw_px_f > 0 else ""
         aw_dist = f", dist={(aw_px_f - ob_ref_px) / ob_ref_px * 100.0:+.2f}%" if ob_ref_px > 0 and aw_px_f > 0 else ""
         spread_sfx = ""
-        if minfo.get("spread_bps") is not None:
+        if not ob_is_frozen and minfo.get("spread_bps") is not None:
             ba_lbl = f" (bid={b_bid}/ask={b_ask})" if b_bid > 0 and b_ask > 0 else ""
             ob_mid_lbl = f", ob_mid={round(ob_mid, 6)}" if ob_mid > 0 else ""
             spread_sfx = f", spread={minfo.get('spread_bps')}bps{ba_lbl}{ob_mid_lbl}"
@@ -876,7 +886,7 @@ def _format_microstructure_section(
                 minfo, lambda v: f"{'+' if v >= 0.0 else '-'}{_fmt_liq_usd(abs(v))}"
             ):
                 cvd_sfx += f", flow_horizons({', '.join(mh_parts)})"
-            if (sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None:
+            if not ob_is_frozen and (sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None:
                 sp_s = f"{'+' if sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sp_cvd))}"
                 cvd_sfx += f", spot_cvd_15m={sp_s}{format_spot_cvd_source_tag(minfo)}"
             if sp_vol_parts := format_spot_volume_rvol_parts(minfo, _fmt_liq_usd):
@@ -951,21 +961,28 @@ def _format_microstructure_section(
             arb_only_parts = [p for p in basis_parts if p.startswith(("arb_vs_", "net_buy_edge="))]
             arb_sfx = f", {', '.join(arb_only_parts)}" if arb_only_parts else ""
             sib_sp_parts: List[str] = []
-            if (sib_sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
+            if not ob_is_frozen and (sib_sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
                 sib_sp_s = f"{'+' if sib_sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sib_sp_cvd))}"
                 sib_sp_parts.append(f"spot_cvd_15m={sib_sp_s}[real_spot]")
-            sib_sp_parts.extend(format_spot_volume_rvol_parts(minfo, _fmt_liq_usd))
+            if not ob_is_frozen:
+                sib_sp_parts.extend(format_spot_volume_rvol_parts(minfo, _fmt_liq_usd))
             sib_sp_sfx = f", {', '.join(sib_sp_parts)}" if sib_sp_parts else ""
             ob_age_sfx = _format_3b_source_ages_suffix(
                 minfo, now_ts=now_ts, intervals=derived_3b_itvs, ob_only=True
             )
-            lines.append(
-                f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
-                f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
-                f"bid_wall={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
-                f"ask_wall={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist})"
-                f"{sib_sp_sfx}{arb_sfx}{spread_sfx}{cd_sfx}{ob_age_sfx}, perp_whale_flow=shared_with_{shared_perp_sym}"
-            )
+            if ob_is_frozen:
+                lines.append(
+                    f"  * {sym_3b_lbl}: orderbook=STALE_FROZEN({ob_age_3b:.0f}s; walls/imbalance/spot_cvd_15m suppressed)"
+                    f"{arb_sfx}{cd_sfx}{ob_age_sfx}, perp_whale_flow=shared_with_{shared_perp_sym}"
+                )
+            else:
+                lines.append(
+                    f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
+                    f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
+                    f"bid_wall={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
+                    f"ask_wall={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist})"
+                    f"{sib_sp_sfx}{arb_sfx}{spread_sfx}{cd_sfx}{ob_age_sfx}, perp_whale_flow=shared_with_{shared_perp_sym}"
+                )
             continue
         eq_zero_fund_3b = sym_is_eq_3b
         deriv_oi_sfx = (
@@ -989,10 +1006,10 @@ def _format_microstructure_section(
         )
         if sym_is_tok_xstock_3b and minfo.get("whale_long_pct") is None and minfo.get("taker_buy_sell_ratio") is None:
             tok_sp_parts: List[str] = []
-            if not cvd_sfx and (tok_sp := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
+            if not cvd_sfx and not ob_is_frozen and (tok_sp := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
                 tok_sp_s = f"{'+' if tok_sp >= 0.0 else '-'}{_fmt_liq_usd(abs(tok_sp))}"
                 tok_sp_parts.append(f"spot_cvd_15m={tok_sp_s}[real_spot]")
-            if not cvd_sfx:
+            if not cvd_sfx and not ob_is_frozen:
                 tok_sp_parts.extend(format_spot_volume_rvol_parts(minfo, _fmt_liq_usd))
             tok_sp_sfx = f", {', '.join(tok_sp_parts)}" if tok_sp_parts else ""
             flow_3b_core = f"perp_derivatives=N/A[spot_tokenized_equity]{cvd_sfx}{tok_sp_sfx}"
@@ -1002,14 +1019,21 @@ def _format_microstructure_section(
                 f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
                 f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}){cvd_sfx}"
             )
-        lines.append(
-            f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
-            f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
-            f"bid_wall={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
-            f"ask_wall={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist}), "
-            f"{flow_3b_core}"
-            f"{deriv_oi_sfx}{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}{src_age_sfx}"
-        )
+        if ob_is_frozen:
+            lines.append(
+                f"  * {sym_3b_lbl}: orderbook=STALE_FROZEN({ob_age_3b:.0f}s; walls/imbalance/spot_cvd_15m suppressed), "
+                f"{flow_3b_core}"
+                f"{deriv_oi_sfx}{basis_sfx}{liq_sfx}{cd_sfx}{src_age_sfx}"
+            )
+        else:
+            lines.append(
+                f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
+                f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
+                f"bid_wall={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
+                f"ask_wall={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist}), "
+                f"{flow_3b_core}"
+                f"{deriv_oi_sfx}{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}{src_age_sfx}"
+            )
     return lines
 
 
@@ -1220,7 +1244,9 @@ def _format_portfolio_section(
         if ps.get("total_value_usdc_age_min") is not None:
             tv_extras.append(f"snapshot_age={ps['total_value_usdc_age_min']}m")
         if (live_bn := safe_float(ps.get("live_binance_equity_usdc"), None)) is not None and live_bn > 0.0:
-            tv_extras.append(f"live_reconciled=${live_bn:,.2f} USDC")
+            bnb_res = safe_pos_float(ps.get("binance_bnb_fee_reserve_usdc"), default=None)
+            bnb_sfx = f" [excl. ~${bnb_res:,.2f} BNB fee reserve]" if bnb_res is not None else ""
+            tv_extras.append(f"live_reconciled=${live_bn:,.2f} USDC{bnb_sfx}")
         tv_sfx = f" ({', '.join(tv_extras)})" if tv_extras else ""
         lines.append(f"  * Total Binance Portfolio Value: ${safe_float(ps.get('total_value_usdc'), 0.0):,.2f} USDC{tv_sfx}")
     if ps.get("venue_quote_cash"):

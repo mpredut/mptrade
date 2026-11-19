@@ -205,16 +205,19 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
 
         lookup_sym = resolve_binance_lookup_symbol(symbol)
         canon_sym = canonical_symbol_key(symbol)
+        query_sym = tok_sym if is_tok_sym else canon_sym
         try:
             data = None
             last_err: Optional[Exception] = None
             # BY DESIGN: L2 orderbook walls/spread/depth are strictly venue-specific; never substitute
             # another venue's book for a registered instrument (cross-venue discovery is only for unregistered tickers).
-            reg_venue = venue_for_symbol(canon_sym, default="")
+            # Preserve mixed-case tokenized xStock wire symbols (e.g. SPCXxUSD, ANTxUSD) because
+            # canonical_symbol_key strips the lowercase 'x' (SPCXUSD/ANTUSD), which loses Kraken tokenized routing.
+            reg_venue = venue_for_symbol(symbol, default="") or venue_for_symbol(query_sym, default="")
             base_urls, hl_book_url = MarketDataProvider.resolve_orderbook_depth_urls(
-                canon_sym,
+                query_sym,
                 venue=reg_venue,
-                multi_venue=bool(reg_venue) or _is_multi_venue_base(canon_sym),
+                multi_venue=bool(reg_venue) or _is_multi_venue_base(query_sym),
             )
             pref_url = self._preferred_url.get(symbol)
             urls = (
@@ -236,9 +239,17 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                             return self._fallback_stale(symbol, cached)
                     normalized_book = MarketDataProvider.normalize_orderbook_payload(raw_data)
                     if normalized_book is None:
+                        cached_ts = (
+                            safe_nonneg_float(
+                                cached[0] if isinstance(cached, tuple) and cached else getattr(cached, "ts", 0.0),
+                                0.0,
+                            )
+                            if cached is not None
+                            else 0.0
+                        )
                         if (
                             is_tok_sym
-                            and cached is None
+                            and (cached is None or (cached_ts > 0.0 and (now - cached_ts) > 600.0))
                             and isinstance(raw_data, dict)
                             and not raw_data.get("error")
                             and isinstance(raw_data.get("result"), dict)
@@ -349,10 +360,10 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             eff_spot_venue = reg_venue or MarketDataProvider.resolve_venue_for_orderbook_url(
                 self._preferred_url.get(symbol)
             )
-            real_spot_cvd = self._resolve_real_spot_cvd_15m(canon_sym, venue=eff_spot_venue, now=now)
+            real_spot_cvd = self._resolve_real_spot_cvd_15m(query_sym, venue=eff_spot_venue, now=now)
             real_spot_vol: Optional[float] = None
             if real_spot_cvd is not None and eff_spot_venue:
-                memo_flow = self._spot_cvd_memo.get((eff_spot_venue, canon_sym))
+                memo_flow = self._spot_cvd_memo.get((eff_spot_venue, query_sym))
                 if isinstance(memo_flow, tuple) and len(memo_flow) >= 3:
                     real_spot_vol = safe_nonneg_float(memo_flow[2], default=None)
             snapshot = OrderbookSnapshot(

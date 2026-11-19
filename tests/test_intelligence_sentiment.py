@@ -12670,4 +12670,171 @@ def test_telemetry_audit_7_fixes_stale_ob_kinematics_rvol_us_open_ant_realized_l
     assert len(sa_out.split("summary=", 1)[1]) <= 360
 
 
+def test_mixed_case_xstock_routing_frozen_ob_suppression_bnb_reserve_and_limit_px_sync(tmp_path):
+    """Verify:
+    1. Mixed-case tokenized xStocks (SPCXxUSD, ANTxUSD) route Depth, Spot Flow, and Historical OHLC exclusively to Kraken tokenized_asset (zero Binance Futures ANTUSDT leak or SPCXUSD 92m freeze).
+    2. Severely stale/frozen orderbooks (>60s xStock, >300s fiat USD) never rescale synthetic ghost walls or adopt stale OB mid when live spot is missing, and Section 3B suppresses frozen walls/imbalance/spot_cvd_15m.
+    3. Total Binance Portfolio Value explicitly labels the persisted BNB fee reserve on live_reconciled (and strips it in equities scope).
+    4. last_cycle_execution_status prefers exchange-confirmed resting limit price over unrounded requested limit_price.
+    """
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import apply_asset_scope_filter
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        reconcile_spot_and_orderbook_microstructure,
+        select_reconciled_spot_or_ob_price,
+    )
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_microstructure_section,
+        _format_portfolio_section,
+    )
+    from providers.base import MarketDataProvider
+    from providers.market_api import MarketApi
+
+    now_s = 1_795_107_000.0
+
+    # 1. Mixed-case xStock Depth & Spot Flow URLs isolate exclusively to Kraken tokenized_asset
+    for sym in ("SPCXxUSD", "ANTxUSD"):
+        urls, hl_url = MarketDataProvider.resolve_orderbook_depth_urls(sym)
+        assert hl_url == ""
+        assert urls == (f"https://api.kraken.com/0/public/Depth?pair={sym}&count=200&asset_class=tokenized_asset",)
+        flow_spec, _ = MarketDataProvider.resolve_spot_flow_15m_spec(sym, venue="kraken", now_ts=now_s)
+        assert flow_spec is not None and f"pair={sym}" in flow_spec[0] and "asset_class=tokenized_asset" in flow_spec[0]
+
+    # OrderbookDepthCollector preserves mixed-case wire symbol for both Depth and Spot Trades and backs off empty pre-IPO book even with stale cache
+    cdir = tmp_path / "cachedb"
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+    (cdir / "state").mkdir(parents=True, exist_ok=True)
+    col = OrderbookDepthCollector(cache_dir=str(cdir), start_sync=True)
+    fetched_urls: list[str] = []
+
+    def _fake_depth(url, kind, sym, **kw):
+        fetched_urls.append(url)
+        if "pair=SPCXxUSD" in url:
+            return {
+                "error": [],
+                "result": {
+                    "SPCXxUSD": {
+                        "bids": [["139.95", "100.0", 1], ["138.50", "500.0", 1]],
+                        "asks": [["139.99", "100.0", 1], ["141.50", "600.0", 1]],
+                    }
+                },
+            }
+        return {"error": [], "result": {"ANTxUSD": {"asks": [], "bids": []}}}
+
+    col._fetch_json_dict = _fake_depth
+    col._fetch_spot_cvd_payload = lambda url, post_body: {
+        "error": [],
+        "result": {"SPCXxUSD": [["139.97", "20.0", now_s - 60.0, "b", "m", ""]], "last": "1"},
+    }
+    snap_spcx = col.fetch("SPCXxUSD", allow_network=True, now=now_s)
+    assert snap_spcx is not None and snap_spcx.mid_price == pytest.approx(139.97)
+    assert snap_spcx.spot_cvd_15m_usd == pytest.approx(2799.0)
+    assert snap_spcx.spot_vol_15m_usd == pytest.approx(2799.0)
+    assert all("api.kraken.com" in u and "pair=SPCXxUSD" in u and "asset_class=tokenized_asset" in u for u in fetched_urls)
+
+    # Pre-IPO empty ANTxUSD book triggers quiet backoff even if an older (>600s) stale cache exists
+    col._commit_snapshot(
+        "ANTxUSD",
+        now_s - 700.0,
+        OrderbookSnapshot(
+            symbol="ANTxUSD", mid_price=107.125, bid_depth_usd=1000.0, ask_depth_usd=1000.0,
+            imbalance_ratio=0.5, largest_bid_wall_usd=500.0, largest_bid_wall_price=106.0,
+            largest_ask_wall_usd=500.0, largest_ask_wall_price=108.0, ts=now_s - 700.0,
+        ),
+    )
+    fetched_urls.clear()
+    col.fetch("ANTxUSD", allow_network=True, now=now_s)
+    assert fetched_urls == ["https://api.kraken.com/0/public/Depth?pair=ANTxUSD&count=200&asset_class=tokenized_asset"]
+    assert col.is_unlisted_xstock_backoff_active("ANTxUSD", now_s) is True
+
+    # MarketApi.fetch_historical_ohlc_points routes tokenized xStocks exclusively to Kraken (never Binance)
+    ohlc_calls: list[tuple[str, str]] = []
+
+    class _FakeBinance:
+        name = "Binance"
+        _ASSET_SCOPE = "crypto"
+        _HISTORICAL_OHLC_PRIORITY = 1
+        _SUPPORTS_TOKENIZED_ASSETS = False
+
+        def fetch_historical_ohlc_points(self, sym, days, interval="1h"):
+            ohlc_calls.append(("binance", sym))
+            raise AssertionError("Binance must not be queried for Kraken tokenized xStocks")
+
+    class _FakeKraken:
+        name = "Kraken"
+        _ASSET_SCOPE = "crypto"
+        _HISTORICAL_OHLC_PRIORITY = 2
+        _SUPPORTS_TOKENIZED_ASSETS = True
+
+        def fetch_historical_ohlc_points(self, sym, days, interval="1h"):
+            ohlc_calls.append(("kraken", sym))
+            return [(now_s - 3600.0, 140.0), (now_s, 139.97)] if sym == "SPCXxUSD" else []
+
+    fake_api = MarketApi(providers=[_FakeBinance(), _FakeKraken()])
+    assert len(fake_api.fetch_historical_ohlc_points("SPCXxUSD", 7, "1h")) == 2
+    assert fake_api.fetch_historical_ohlc_points("ANTxUSD", 7, "1h") == []
+    assert ohlc_calls == [("kraken", "SPCXxUSD"), ("kraken", "ANTxUSD")]
+
+    # 2. Frozen orderbook (>60s xStock, >300s fiat USD) blocks wall rescaling, blocks stale adoption, and suppresses Section 3B walls/imbalance/CVD
+    m_spcx_stale = {
+        "ob_mid_price": 144.52, "best_bid": 144.50, "best_ask": 144.54,
+        "bid_wall_px": 143.01, "bid_wall_usd": 12000.0,
+        "ask_wall_px": 146.50, "ask_wall_usd": 15000.0,
+        "ob_imbalance": 0.468, "bid_depth_usd": 50000.0, "ask_depth_usd": 56000.0,
+        "spot_cvd_15m_usd": -2600.0, "spot_cvd_source": "real_spot",
+        "_ob_raw_ts": now_s - 5500.0,
+    }
+    _, _, act_stale = reconcile_spot_and_orderbook_microstructure(
+        "SPCXxUSD", 139.97, m_spcx_stale,
+        is_usd_sym=True, is_eq_sym=False, is_exact_ob_sym=True,
+        ob_ts_sec=now_s - 5500.0, now_ts=now_s,
+        last_series_pt=((now_s - 5.0) * 1000.0, 139.97),
+    )
+    assert act_stale == "none"
+    assert m_spcx_stale["bid_wall_px"] == 143.01 and m_spcx_stale["ask_wall_px"] == 146.50
+    assert select_reconciled_spot_or_ob_price(0.0, 107.125, now_s - 600.0, now_s, is_exact_ob_sym=True) is None
+    sec3b_frozen = "\n".join(
+        _format_microstructure_section({"SPCXxUSD": m_spcx_stale}, {"SPCXxUSD": {"price": 139.97}}, now_ts=now_s)
+    )
+    assert "orderbook=STALE_FROZEN(5500s; walls/imbalance/spot_cvd_15m suppressed)" in sec3b_frozen
+    assert "bid_wall=" not in sec3b_frozen and "ask_wall=" not in sec3b_frozen and "spot_cvd_15m=" not in sec3b_frozen
+
+    # 3. Total Binance Portfolio Value explicitly labels persisted BNB fee reserve on live_reconciled & strips in equities scope
+    ps_bnb = {
+        "total_value_usdc": 10032.06,
+        "total_value_usdc_age_min": 1.2,
+        "live_binance_equity_usdc": 9838.06,
+        "binance_bnb_fee_reserve_usdc": 194.0,
+    }
+    sec3c_bnb = "\n".join(_format_portfolio_section(ps_bnb, asset_scope="crypto", include_macro_benchmarks=False))
+    assert "live_reconciled=$9,838.06 USDC [excl. ~$194.00 BNB fee reserve]" in sec3c_bnb
+    eq_ps = dict(ps_bnb)
+    apply_asset_scope_filter({}, {}, eq_ps, "equities", {}, {})
+    assert "binance_bnb_fee_reserve_usdc" not in eq_ps
+
+    # 4. last_cycle_execution_status prefers exchange-confirmed resting price (190.8) over unrounded requested limit_price (190.85)
+    st_tao = build_last_cycle_execution_status(
+        [
+            {
+                "timestamp": now_s - 30.0,
+                "decision": "BUY",
+                "symbol": "TAOUSDC",
+                "venue": "binance",
+                "order_type": "LIMIT",
+                "limit_price": 190.85,
+                "reference_price": 191.2,
+                "suggested_notional_usd": 500.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "726658530", "status": "NEW", "price": "190.80000000"},
+            }
+        ],
+        "crypto",
+        now_s,
+        extract_intent_notional,
+        open_orders=[{"venue": "binance", "symbol": "TAOUSDC", "side": "BUY", "order_id": "726658530", "price": 190.8}],
+    )
+    assert st_tao is not None and st_tao["limit_px"] == pytest.approx(190.8)
+
+
+
 

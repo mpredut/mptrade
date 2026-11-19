@@ -64,7 +64,7 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 import cachetrend as ct
-from instrument_registry import is_equity_symbol
+from instrument_registry import is_equity_symbol, resolve_kraken_tokenized_pair
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_latest_long_trend_value
 import providers.market_api as _market_api_mod
 from state_io import generation_file_lock, read_json_dict, read_json_dict_cached, save_json_state
@@ -378,10 +378,11 @@ def estimate_T(
 
     sym_u = symbol.upper().strip()
     is_eq = is_equity_symbol(sym_u)
-    clean_sym_u = sym_u if is_eq else canonical_symbol_key(sym_u)
+    tok_sym, is_tok = (("", False) if is_eq else resolve_kraken_tokenized_pair(symbol))
+    clean_sym_u = sym_u if is_eq else (tok_sym if is_tok else canonical_symbol_key(sym_u))
     base = normalize_cache_base_asset(sym_u)
     candidates = [clean_sym_u] if clean_sym_u else ([sym_u] if sym_u else [symbol])
-    if not is_eq and base and clean_sym_u != "USDCUSDT":
+    if not is_eq and not is_tok and base and clean_sym_u != "USDCUSDT":
         for suffix in ("USDC", "USDT"):
             cand = f"{base}{suffix}"
             if cand not in candidates:

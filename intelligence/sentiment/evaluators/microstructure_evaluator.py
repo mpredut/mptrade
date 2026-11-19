@@ -53,6 +53,7 @@ from instrument_registry import (
     casefold_get,
     coalesce_symbol_case_variants,
     is_equity_or_tokenized_symbol,
+    resolve_symbol_identity,
 )
 from providers.market_api import api as mkt_api
 
@@ -1594,6 +1595,8 @@ def select_reconciled_spot_or_ob_price(
     if ob_mid_px is None or ob_mid_px <= 0.0:
         return None
     if cur_px <= 0.0:
+        if ob_ts_sec > 0.0 and now_ts > 0.0 and (now_ts - ob_ts_sec) > 300.0:
+            return None
         return ob_mid_px if (is_exact_ob_sym or allow_sibling_live_mid) else None
     ob_fresh_newer = is_ob_live_and_newer(
         ob_ts_sec, now_ts, last_series_pt, extra_ts_sec=extra_ts_sec, has_live_cp_point=has_live_cp_point
@@ -1693,8 +1696,11 @@ class SpotOrderbookPriceReconcilerEvaluator(MicrostructureEvaluatorBase):
                 )
                 if adopted_ob_px is not None:
                     return adopted_ob_px, adopted_ob_px, "adopted_ob_mid"
+            ob_age_s = (now_ts - ob_ts_sec) if (ob_ts_sec > 0.0 and now_ts > 0.0) else None
+            max_rescale_age = 60.0 if resolve_symbol_identity(symbol).is_tokenized_equity else 300.0
             if (
                 can_rescale_fiat_usd_walls
+                and (ob_age_s is None or ob_age_s <= max_rescale_age)
                 and cur_px > 0.0
                 and abs(cur_px - ob_mid_m) / max(cur_px, ob_mid_m) > 0.01
                 and not _prices_diverged(cur_px, ob_mid_m)

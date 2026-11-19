@@ -570,7 +570,7 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
         }
         if want_t212:
             for crypto_key in (
-                "total_value_usdc", "total_value_usdc_age_min", "live_binance_equity_usdc", "live_hl_spot_equity_usd",
+                "total_value_usdc", "total_value_usdc_age_min", "live_binance_equity_usdc", "binance_bnb_fee_reserve_usdc", "live_hl_spot_equity_usd",
                 "kraken_cycles", "hyperliquid_cycles", "hyperliquid_signal", "hyperliquid_readonly",
                 "monitortrades_active_state", "assetguardian_state", "smart_stop_loss_state", "trailing_peaks",
             ):

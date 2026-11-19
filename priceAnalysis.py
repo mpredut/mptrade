@@ -47,7 +47,7 @@ from intelligence.internal.state.survival import (
     last_timestamp,
     last_w,
 )
-from instrument_registry import casefold_get, is_equity_symbol, tracked_price_instruments
+from instrument_registry import casefold_get, is_equity_symbol, resolve_kraken_tokenized_pair, tracked_price_instruments
 from state_io import atomic_write_json, save_json_state
 
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -214,10 +214,15 @@ def _backfill_ohlc_series(symbol: str, lookback_days: float = 30.0) -> List[Tupl
             return cached[1]
     days_int = max(30, round(safe_pos_float(lookback_days, 30.0) or 30.0) + 3)
     is_eq = is_equity_symbol(sym_u)
+    tok_sym, is_tok = (("", False) if is_eq else resolve_kraken_tokenized_pair(symbol))
     cands = (
         [sym_u]
         if is_eq
-        else cache_symbol_variants(sym_u, include_original=True, include_base=False, quotes=("USDC", "USDT", "USD"))
+        else (
+            [tok_sym]
+            if is_tok
+            else cache_symbol_variants(sym_u, include_original=True, include_base=False, quotes=("USDC", "USDT", "USD"))
+        )
     )
     raw_pts: List[Tuple[float, float]] = []
     for cand in cands:
@@ -262,12 +267,13 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
     ]
     norm_data.sort(key=lambda x: x[0])
     is_eq = is_equity_symbol(symbol)
+    _, is_tok = (("", False) if is_eq else resolve_kraken_tokenized_pair(symbol))
     min_req_span_s = min((safe_pos_float(lookback_days, 30.0) or 30.0) * 0.5, 7.0) * 86400.0
     cur_span_s = (norm_data[-1][0] - norm_data[0][0]) if len(norm_data) >= 2 else 0.0
     if cur_span_s < min_req_span_s and priceLstFor is _ORIG_PRICE_LST_FOR and price_cache_manager is not None:
         oldest_ts = norm_data[0][0] if norm_data else math.inf
         anchor_px = norm_data[0][1] if norm_data else None
-        if not is_eq:
+        if not is_eq and not is_tok:
             for sib in cache_symbol_variants(symbol, include_original=False, include_base=False, quotes=("USDC", "USDT", "USD")):
                 sib_raw = priceLstFor(sib)
                 if len(sib_raw) >= 2:

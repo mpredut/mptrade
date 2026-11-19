@@ -444,8 +444,9 @@ def _resolve_intent_execution_details(
     )
     limit_px = (
         first_pos_float(
-            i.get("limit_price"),
             matched_open.get("price") if isinstance(matched_open, dict) else None,
+            exec_pay.get("price") if isinstance(exec_pay, dict) else None,
+            i.get("limit_price"),
         )
         if order_type == "LIMIT"
         else None

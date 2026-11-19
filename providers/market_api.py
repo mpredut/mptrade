@@ -42,7 +42,7 @@ from cachepaths import (
     is_usd_stablecoin_pair,
     normalize_venue_name,
 )
-from instrument_registry import is_equity_symbol, venue_for_symbol
+from instrument_registry import is_equity_symbol, resolve_kraken_tokenized_pair, venue_for_symbol
 import pricewindow as pw
 from . import order_id_context as rc
 from .base import MarketDataProvider
@@ -283,21 +283,28 @@ class MarketApi:
         if not sym_u or days_i is None:
             return []
         is_eq = is_equity_symbol(sym_u)
+        tok_sym, is_tok = (("", False) if is_eq else resolve_kraken_tokenized_pair(symbol))
         target_scope = "equities" if is_eq else "crypto"
-        query_sym = sym_u if is_eq else symbol
+        query_sym = sym_u if is_eq else (tok_sym if is_tok else symbol)
+        tok_venue = venue_for_symbol(query_sym, default="") if is_tok else ""
         candidates = sorted(
             (
                 prov
                 for prov in self._providers
                 if getattr(prov, "_ASSET_SCOPE", "crypto") == target_scope
                 and getattr(prov, "_HISTORICAL_OHLC_PRIORITY", None) is not None
+                and (
+                    not is_tok
+                    or bool(getattr(prov, "_SUPPORTS_TOKENIZED_ASSETS", False))
+                    or (bool(tok_venue) and normalize_venue_name(prov) == tok_venue)
+                )
             ),
             key=lambda prov: safe_int(getattr(prov, "_HISTORICAL_OHLC_PRIORITY", 999), default=999),
         )
         if not candidates:
             return []
         pts = candidates[0].fetch_historical_ohlc_points(query_sym, days_i, interval=interval)
-        if not is_eq and len(pts) < 50 and len(candidates) > 1 and botcore.is_live_network_backfill_enabled():
+        if not is_eq and not is_tok and len(pts) < 50 and len(candidates) > 1 and botcore.is_live_network_backfill_enabled():
             for fallback_prov in candidates[1:]:
                 try:
                     fb_pts = fallback_prov.fetch_historical_ohlc_points(query_sym, days_i, interval=interval)

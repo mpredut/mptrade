@@ -66,6 +66,7 @@ class ProviderVenueMetadataMixin:
     _EXACT_TELEMETRY_CACHE_SYMBOL: bool = False
     _QUOTE_ISOLATED_TELEMETRY_VENUE: bool = True
     _HAS_NATIVE_L1_DERIVATIVES: bool = False
+    _SUPPORTS_TOKENIZED_ASSETS: bool = False
     _MERGES_AUDIT_TERMINAL_ORDERS: bool = False
     _USES_BARE_BASE_ORDER_SYMBOLS: bool = False
     _USES_SHARED_TRAILING_MAP: bool = False
@@ -460,7 +461,8 @@ class ProviderVenueMetadataMixin:
         multi_venue: bool = False,
     ) -> tuple[tuple[str, ...], str]:
         """Return ``(ordered_depth_urls, hl_book_url)`` across registered venue providers."""
-        canon_sym = canonical_symbol_key(symbol)
+        tok_sym, is_tok = _default_ir.resolve_kraken_tokenized_pair(symbol)
+        query_sym = tok_sym if is_tok else canonical_symbol_key(symbol)
         crypto_venues: list[str] = []
         failed_venues: set[str] = set()
         l2_info_venues: set[str] = set()
@@ -471,10 +473,10 @@ class ProviderVenueMetadataMixin:
                 prov_cls = cls.resolve_venue_provider_class(v_key)
                 if prov_cls is None or getattr(prov_cls, "_ASSET_SCOPE", "crypto") != "crypto":
                     continue
-                prim, sec = prov_cls.public_orderbook_depth_urls(canon_sym)
+                prim, sec = prov_cls.public_orderbook_depth_urls(query_sym)
             except Exception as exc:
                 failed_venues.add(v_key)
-                cls._log_orderbook_provider_error("URL resolution", v_key, canon_sym, exc)
+                cls._log_orderbook_provider_error("URL resolution", v_key, query_sym, exc)
                 continue
             crypto_venues.append(v_key)
             if getattr(prov_cls, "_ORDERBOOK_L2_INFO_BOOK", False):
@@ -486,7 +488,7 @@ class ProviderVenueMetadataMixin:
         # If the explicitly requested venue failed, fail closed with () rather than substituting another venue's book.
         if v_norm and v_norm in failed_venues:
             return (), ""
-        if symbol_quote_asset(canon_sym) == "EUR":
+        if symbol_quote_asset(query_sym) == "EUR":
             if v_norm and _parse_bool_flag(multi_venue, False):
                 return primary_map.get(v_norm, ()), ""
             return tuple(u for v_k in crypto_venues for u in primary_map[v_k]), ""
@@ -625,20 +627,21 @@ class ProviderVenueMetadataMixin:
         now_ts: float = 0.0,
     ) -> tuple[Optional[tuple[str, Optional[dict]]], Optional[Any]]:
         """Return venue-isolated ``(request_spec, extractor_fn)`` for real 15m spot CVD."""
-        canon_sym = canonical_symbol_key(symbol)
+        tok_sym, is_tok = _default_ir.resolve_kraken_tokenized_pair(symbol)
+        query_sym = tok_sym if is_tok else canonical_symbol_key(symbol)
         v_norm = normalize_venue_name(venue)
-        if not v_norm or symbol_quote_asset(canon_sym) == "EUR":
+        if not v_norm or symbol_quote_asset(query_sym) == "EUR":
             return None, None
         try:
             prov_cls = cls.resolve_venue_provider_class(v_norm)
             if prov_cls is None or getattr(prov_cls, "_ASSET_SCOPE", "crypto") != "crypto":
                 return None, None
-            req = prov_cls.public_spot_cvd_15m_request(canon_sym, now_ts)
+            req = prov_cls.public_spot_cvd_15m_request(query_sym, now_ts)
             if req is None:
                 return None, None
             return req, prov_cls.extract_spot_cvd_15m_usd
         except Exception as exc:
-            cls._log_orderbook_provider_error("spot CVD request resolution", v_norm, canon_sym, exc)
+            cls._log_orderbook_provider_error("spot CVD request resolution", v_norm, query_sym, exc)
             return None, None
 
     @classmethod
@@ -650,18 +653,19 @@ class ProviderVenueMetadataMixin:
         now_ts: float = 0.0,
     ) -> tuple[Optional[tuple[str, Optional[dict]]], Optional[Any]]:
         """Return venue-isolated ``(request_spec, flow_extractor_fn)`` returning ``(cvd_15m_usd, vol_15m_usd)``."""
-        canon_sym = canonical_symbol_key(symbol)
+        tok_sym, is_tok = _default_ir.resolve_kraken_tokenized_pair(symbol)
+        query_sym = tok_sym if is_tok else canonical_symbol_key(symbol)
         v_norm = normalize_venue_name(venue)
-        if not v_norm or symbol_quote_asset(canon_sym) == "EUR":
+        if not v_norm or symbol_quote_asset(query_sym) == "EUR":
             return None, None
         try:
             prov_cls = cls.resolve_venue_provider_class(v_norm)
             if prov_cls is None or getattr(prov_cls, "_ASSET_SCOPE", "crypto") != "crypto":
                 return None, None
-            req = prov_cls.public_spot_cvd_15m_request(canon_sym, now_ts)
+            req = prov_cls.public_spot_cvd_15m_request(query_sym, now_ts)
             if req is None:
                 return None, None
             return req, prov_cls.extract_spot_flow_15m_usd
         except Exception as exc:
-            cls._log_orderbook_provider_error("spot flow request resolution", v_norm, canon_sym, exc)
+            cls._log_orderbook_provider_error("spot flow request resolution", v_norm, query_sym, exc)
             return None, None
