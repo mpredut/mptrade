@@ -995,21 +995,33 @@ def upgrade_tpo_vp_from_ohlc(
             cache_dir=cache_dir,
         )
         if (len(pts_vp) < 8 or (pts_vp[-1][0] - pts_vp[0][0]) < 18 * 3600 * 1000) and cache_dir and os.path.isdir(cache_dir):
-            for c_vp in cache_symbol_variants(sym, include_original=True, include_base=False, quotes=compatible_quote_suffixes(sym)):
-                p_vp = str(resolve_cachedb_filepath(os.path.join(cache_dir, cache_ohlc_24h_filename(c_vp))))
-                if os.path.exists(p_vp) and isinstance(d_vp := read_json_recovering(p_vp), dict) and isinstance(d_vp.get("points"), list):
-                    cand_vp = [
-                        [ts_i, px_f, vol_f]
-                        for r in d_vp["points"]
-                        if isinstance(r, (list, tuple))
-                        and len(r) >= 3
-                        and (ts_i := safe_pos_int(r[0], default=None)) is not None
-                        and (px_f := safe_pos_float(r[1], default=None)) is not None
-                        and (vol_f := safe_pos_float(r[2], default=None)) is not None
-                    ]
-                    if len(cand_vp) >= 8 and (cand_vp[-1][0] - cand_vp[0][0]) >= 18 * 3600 * 1000:
-                        pts_vp = cand_vp
-                        break
+            tok_vp, is_tok_vp = resolve_kraken_tokenized_pair(sym)
+            vp_cands = list(
+                dict.fromkeys([
+                    *([tok_vp] if is_tok_vp and tok_vp else []),
+                    *cache_symbol_variants(sym, include_original=True, include_base=False, quotes=compatible_quote_suffixes(sym)),
+                ])
+            )
+            for c_vp in vp_cands:
+                found_vp = False
+                for fn_vp in dict.fromkeys((cache_ohlc_24h_filename(c_vp), f"cache_ohlc_24h_{c_vp}.json")):
+                    p_vp = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn_vp)))
+                    if os.path.exists(p_vp) and isinstance(d_vp := read_json_recovering(p_vp), dict) and isinstance(d_vp.get("points"), list):
+                        cand_vp = [
+                            [ts_i, px_f, vol_f]
+                            for r in d_vp["points"]
+                            if isinstance(r, (list, tuple))
+                            and len(r) >= 3
+                            and (ts_i := safe_pos_int(r[0], default=None)) is not None
+                            and (px_f := safe_pos_float(r[1], default=None)) is not None
+                            and (vol_f := safe_pos_float(r[2], default=None)) is not None
+                        ]
+                        if len(cand_vp) >= 8 and (cand_vp[-1][0] - cand_vp[0][0]) >= 18 * 3600 * 1000:
+                            pts_vp = cand_vp
+                            found_vp = True
+                            break
+                if found_vp:
+                    break
         if len(pts_vp) >= 8 and (pts_vp[-1][0] - pts_vp[0][0]) >= 18 * 3600 * 1000:
             vp_last_px = safe_pos_float(pts_vp[-1][1], default=0.0) or 0.0
             if cur_px <= 0.0 or (vp_last_px > 0.0 and abs(cur_px - vp_last_px) / max(cur_px, vp_last_px) <= 0.015):
@@ -1110,12 +1122,23 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         is_eq_sym_load = session_policy.is_equity
         is_eq_sym = is_eq_sym_load or is_equity_symbol(sym_u)
         eff_quotes = quotes if quotes is not None else compatible_quote_suffixes(symbol)
+        tok_canon_ser, is_tok_ser = resolve_kraken_tokenized_pair(symbol)
+        raw_ser_cands = list(
+            dict.fromkeys([
+                *([tok_canon_ser] if is_tok_ser and tok_canon_ser else []),
+                *cache_symbol_variants(symbol, include_original=True, include_base="USD" in eff_quotes, quotes=eff_quotes),
+            ])
+        )
         cands = [
             c
-            for c in cache_symbol_variants(symbol, include_original=True, include_base="USD" in eff_quotes, quotes=eff_quotes)
+            for c in raw_ser_cands
             if isinstance(c, str)
             and "/" not in c
-            and (not has_crypto_quote_suffix(c) if is_eq_sym else not is_equity_symbol(c))
+            and (
+                not has_crypto_quote_suffix(c)
+                if is_eq_sym
+                else ((is_tok_ser and c == tok_canon_ser) or not is_equity_symbol(c))
+            )
         ]
         _ensure_cacheprice_classes_bound()
         _rj_cand = _resolve_read_json_cached()

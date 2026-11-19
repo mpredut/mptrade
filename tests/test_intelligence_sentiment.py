@@ -11939,6 +11939,76 @@ def test_item_3_7_book_window_level_cap_symmetry_and_thin_book_isolation(tmp_pat
     assert snap_thin.book_span_pct == pytest.approx(1.5)
 
 
+def test_item_3_8_offline_real_vol_upgrade_xstock_case_and_last_cycle_exec_alignment(tmp_path):
+    """Verify offline TPO->REAL_VOL upgrade across case-sensitive Kraken xStocks (SPCXXUSD vs SPCXxUSD) and US equities, plus last_cycle_execution_status <=60m fill / >30m resting dedup alignment."""
+    import time as _time
+    from types import SimpleNamespace
+    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+    from state_io import atomic_write_json
+
+    now_s = _time.time()
+    cdir = tmp_path / "cachedb"
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+
+    # 1. Case-sensitive Linux files: cache_24_price_SPCXxUSD.json (tick-only TPO) + cache_ohlc_24h_SPCXXUSD.json (REAL_VOL)
+    #    queried via Kraken gateway symbol "SPCXXUSD" with allow_network=False must resolve series AND upgrade TPO -> REAL_VOL.
+    t0_ms = int((now_s - 22 * 3600.0) * 1000)
+    tick_rows = [[t0_ms + i * 3600_000, 142.0 + (i % 4) * 0.6] for i in range(23)]
+    ohlc_rows = [[t0_ms + i * 3600_000, 142.0 + (i % 4) * 0.6, 150.0 + i * 10.0] for i in range(23)]
+    atomic_write_json(str(cdir / "prices" / "cache_24_price_SPCXxUSD.json"), {"items": {"SPCXxUSD": tick_rows}})
+    atomic_write_json(str(cdir / "prices" / "cache_ohlc_24h_SPCXXUSD.json"), {"points": ohlc_rows})
+
+    spcx_pt = collect_pretrade_telemetry("SPCXXUSD", cachedb_dir=str(cdir), allow_network=False)
+    spcx_tel = spcx_pt.get("telemetry") if isinstance(spcx_pt, dict) and "telemetry" in spcx_pt else spcx_pt
+    assert "vp_source=REAL_VOL" in str(spcx_tel.get("24h Volume Profile (POC / Value Area)", ""))
+
+    # 2. Offline US equity tick-only 24h series upgrades TPO -> REAL_VOL from local cache_ohlc_24h_NVDA_US_EQ.json with zero network I/O.
+    eq_ticks = [[t0_ms + i * 3600_000, 151.0 + (i % 3) * 0.8] for i in range(22)]
+    eq_ohlc = [[t0_ms + i * 3600_000, 151.0 + (i % 3) * 0.8, 2500.0 + i * 50.0] for i in range(22)]
+    atomic_write_json(str(cdir / "prices" / "cache_24_price_NVDA_US_EQ.json"), {"items": {"NVDA_US_EQ": eq_ticks}})
+    atomic_write_json(str(cdir / "prices" / "cache_ohlc_24h_NVDA_US_EQ.json"), {"points": eq_ohlc})
+
+    nvda_pt = collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(cdir), allow_network=False)
+    nvda_tel = nvda_pt.get("telemetry") if isinstance(nvda_pt, dict) and "telemetry" in nvda_pt else nvda_pt
+    assert "vp_source=REAL_VOL" in str(nvda_tel.get("24h Volume Profile (POC / Value Area)", ""))
+
+    # 3. last_cycle_execution_status keeps <=60m fill (normalizing SPCXXUSD -> SPCXxUSD and unwrapping 1-element list)
+    #    while deduplicating >30m OPEN_RESTING orders already shown in open_limit_orders; prompt instructions state <=60m / <=30m.
+    sec3c = "\n".join(
+        _format_portfolio_section(
+            {
+                "open_limit_orders": [
+                    {"venue": "kraken", "symbol": "TAOUSD", "side": "SELL", "price": 236.8, "qty": 3.37, "order_id": "OID-REST-1", "age": "319.5h"}
+                ],
+                "last_cycle_execution_status": [
+                    {"venue": "kraken", "symbol": "TAOUSD", "side": "SELL", "status": "OPEN_RESTING", "order_id": "OID-REST-1", "age_min": 19170.0},
+                    {"venue": "kraken", "symbol": "SPCXXUSD", "side": "SELL", "status": "FILLED", "fill_px": 144.89, "filled_qty": 5.52, "slippage_bps": -63.2, "order_id": "OID-FILL-2", "age_min": 42.0},
+                ],
+                "recent_ai_intents": [
+                    {"decision": "SELL", "symbol": "SPCXXUSD", "venue": "kraken", "order_type": "LIMIT", "status": "EXECUTED", "venue_status": "FILLED", "order_id": "OID-FILL-2", "age_h": 0.7}
+                ],
+            },
+            "crypto",
+            include_macro_benchmarks=False,
+        )
+    )
+    assert "last_cycle_execution_status: {'venue': 'kraken', 'symbol': 'SPCXxUSD'" in sec3c
+    assert "OID-REST-1" not in sec3c.split("last_cycle_execution_status:")[1].splitlines()[0]
+    assert "'symbol': 'SPCXxUSD'" in sec3c
+
+    sup_prompt = build_supervisor_prompt(
+        TelemetrySensorSnapshot(evaluated_at_ts=now_s),
+        SimpleNamespace(total_scanned_files=0, error_count=0, warning_count=0, critical_events=[], guard_interventions=[]),
+        topic_key="auto_cryptotrade_executor",
+    )
+    assert "recent `<=60m` fill/rejection or `<=30m` resting order" in sup_prompt
+
+
+
 
 
 

@@ -558,22 +558,24 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
     allow_network: bool = False,
 ) -> None:
     sym_u_pt = clean_symbol_key(sym_v) or str(sym_v or "").strip().upper()
+    is_eq_vp = is_equity_symbol(sym_u_pt)
+    eff_net_vp = bool(allow_network and not is_eq_vp)
     has_local_ohlc = bool(cachedb_dir and os.path.isdir(cachedb_dir))
     if (
         not m24_d
         or m24_d.get("vp_source") != "TPO"
-        or is_equity_symbol(sym_u_pt)
         or (
-            not (allow_network and is_live_network_backfill_enabled())
+            not (eff_net_vp and is_live_network_backfill_enabled())
             and not is_offline_disk_cache_enabled()
             and not has_local_ohlc
         )
     ):
         return
     now_s_pt = _time.time()
+    max_clock_skew_ms = (72 * 3600 * 1000.0) if is_eq_vp else (30 * 60 * 1000.0)
     is_live_clock = (
         last_pt_v is None
-        or abs(now_s_pt * 1000.0 - last_pt_v[0]) <= 30 * 60 * 1000.0
+        or abs(now_s_pt * 1000.0 - last_pt_v[0]) <= max_clock_skew_ms
         or (ob_ts_v > 0.0 and abs(now_s_pt - ob_ts_v) <= 30 * 60.0)
     )
     upgrade_tpo_vp_from_ohlc(
@@ -583,7 +585,7 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
         now_s_pt,
         s24_is_live_clock=is_live_clock,
         cache_dir=cachedb_dir,
-        allow_network=allow_network,
+        allow_network=eff_net_vp,
     )
 
 

@@ -8,7 +8,7 @@ Intentional prompt compression & cycle-boundary invariants (BY DESIGN — DO NOT
 - Section numbering (`### 1.` -> `### 3.`): Sections `2/2B/2C` (SRE/logs/VPN) are emitted only for `can_self_heal` topics and omitted on trading topics.
 - `bottom_6h(...)` (Section 3): Conditional pattern detector emitted only when an active 6h bottom structure forms (`pos_6h <= 70%` with meaningful drawdown).
 - `open_lifo_lots` (Section 3C): Capped to the latest 4 lots (`<=14d`) for top-of-stack LIFO harvesting and omitted when `len(open_lots) <= 1` (already covered by `avg_buy_px`/`last_buy_px`).
-- `last_cycle_execution_status` (Section 3C): Emitted when recent (`<=30m`) executions/fills/rejections or newly resting orders exist; omitted when idle or when all `OPEN_RESTING`/`PARTIALLY_FILLED` orders are `>30m` old and already displayed in `open_limit_orders`.
+- `last_cycle_execution_status` (Section 3C): Emitted when recent (`<=60m`) executions/fills/rejections or newly resting (`<=30m`) orders exist; omitted when idle or when all `OPEN_RESTING`/`PARTIALLY_FILLED` orders are `>30m` old and already displayed in `open_limit_orders`.
 - `equity_bellwethers` on `scope="crypto"` (Section 3C): Micro-cap `RGNT_US_EQ` is omitted when major US tech/AI bellwethers (`NVDA_US_EQ`, `SPCX_US_EQ`) are present, and `t212_cycle` is omitted on `scope="crypto"` because `SPCX_US_EQ`'s cycle is already shown in `kraken_xstocks.t212_sibling_cycle` and `auto_cryptotrade_executor` cannot trade T212 shares (full cycles remain on `scope="equities"` and `scope="all"`).
 - `last_exit_kind` & `realized_pnl` across cycle boundaries (Section 3C): A prior cycle's exit label (e.g. `SL`) is never reclassified against a newer cycle's re-entry cost (`last_sell_ts < entry_ts`), and multi-cycle cumulative PnL (`cum_cycles`) is preserved alongside active `subcycle` PnL.
 """
@@ -1790,14 +1790,21 @@ def _format_portfolio_section(
                 )
             )
 
+        def _clean_lces_item(item: Any) -> Any:
+            if not isinstance(item, dict):
+                return item
+            cleaned = {k: v for k, v in item.items() if v is not None}
+            tok_lces_sym, is_tok_lces = resolve_kraken_tokenized_pair(str(cleaned.get("symbol") or ""))
+            if is_tok_lces and tok_lces_sym:
+                cleaned["symbol"] = tok_lces_sym
+            return cleaned
+
         if isinstance(raw_lces, list):
-            cleaned_list = [
-                {k: v for k, v in item.items() if v is not None} if isinstance(item, dict) else item
-                for item in raw_lces
-            ]
-            clean_lces: Any = [item for item in cleaned_list if not _is_stale_dup_resting(item)]
+            cleaned_list = [_clean_lces_item(item) for item in raw_lces]
+            filt_lces = [item for item in cleaned_list if not _is_stale_dup_resting(item)]
+            clean_lces: Any = filt_lces[0] if len(filt_lces) == 1 else filt_lces
         elif isinstance(raw_lces, dict):
-            cleaned_dict = {k: v for k, v in raw_lces.items() if v is not None}
+            cleaned_dict = _clean_lces_item(raw_lces)
             clean_lces = None if _is_stale_dup_resting(cleaned_dict) else cleaned_dict
         else:
             clean_lces = raw_lces
@@ -1888,6 +1895,9 @@ def _format_portfolio_section(
                         if oid
                     }
                     it_copy = dict(it)
+                    tok_it_sym, is_tok_it = resolve_kraken_tokenized_pair(str(it_copy.get("symbol") or ""))
+                    if is_tok_it and tok_it_sym:
+                        it_copy["symbol"] = tok_it_sym
                     if it_copy.get("status") == "EXECUTED" and v_st in ("OPEN", "NEW", "RESTING"):
                         it_copy["status"] = "RESTING_IN_BOOK"
                     elif (
