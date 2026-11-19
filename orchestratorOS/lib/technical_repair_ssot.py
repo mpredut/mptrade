@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from botcore import (
     PRICE_FRESHNESS_MAX_AGE_SEC,
@@ -31,6 +31,7 @@ from botcore import (
     extract_order_id,
     first_epoch_sec,
     http_post_status,
+    is_unmocked_llm_query_allowed,
     load_ini_config,
     normalize_epoch_sec,
     obj_attr,
@@ -49,11 +50,14 @@ from botcore import (
 )
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
+    cache_path,
     is_readonly_xstock_symbol,
     matches_asset_scope,
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
+from core.config import parse_dotenv
+from core.llm_topics import resolve_configured_llm_models
 from instrument_registry import is_xstock_trading_enabled
 from intelligence.macro_sentiment_ssot import (
     normalize_market_bias,
@@ -66,6 +70,8 @@ import notify_engine.alertnotifiers as _alertnotifiers
 from providers.intent_state import decision_has_cancel_directive, normalize_trading_decisions
 from state_io import (
     atomic_write_text,
+    generation_file_lock,
+    read_json_dict,
     read_json_recovering,
     read_text_file,
     read_text_lines,
@@ -340,6 +346,472 @@ def audit_workspace_configs(workspace_dir: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 5B. Periodic LLM Model Catalog & Standalone Binary Version Audit (Notify-Only)
+# ---------------------------------------------------------------------------
+
+_MODEL_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,64}$")
+_EFFORT_ORDER: Tuple[str, ...] = ("low", "medium", "high", "xhigh")
+
+
+def parse_agy_models_output(raw_stdout: str) -> List[str]:
+    """Extract ordered, deduplicated model slugs from ``agy models`` stdout (handling spinner CR frames)."""
+    if not isinstance(raw_stdout, str) or not raw_stdout.strip():
+        return []
+    out: List[str] = []
+    seen: Set[str] = set()
+    for raw_line in raw_stdout.splitlines():
+        seg = raw_line.split("\r")[-1].strip()
+        if not seg or seg.startswith(("Usage:", "Flags:", "Fetching", "-", "=")):
+            continue
+        tok = seg.split()[0].strip().lower()
+        if "-" in tok and _MODEL_SLUG_RE.fullmatch(tok) and tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+    return out
+
+
+def group_model_families(slugs: Iterable[str]) -> Dict[str, List[str]]:
+    """Group model slugs by family base (stripping -xhigh/-high/-medium/-low), preserving discovery order."""
+    families: Dict[str, List[str]] = {}
+    for raw in slugs:
+        slug = raw.strip().lower() if isinstance(raw, str) else ""
+        if not slug:
+            continue
+        base = slug
+        for suf in ("-xhigh", "-high", "-medium", "-low"):
+            if slug.endswith(suf):
+                base = slug[: -len(suf)]
+                break
+        families.setdefault(base, []).append(slug)
+    return families
+
+
+def format_model_family_summary(family: str, slugs: Iterable[str]) -> str:
+    """Format a model family and its effort tiers compactly (e.g. ``gemini-5-nova (low/medium/high/xhigh)``)."""
+    tiers: List[str] = []
+    for raw in slugs:
+        slug = raw.strip().lower() if isinstance(raw, str) else ""
+        if slug.startswith(f"{family}-"):
+            tier = slug[len(family) + 1 :]
+            if tier in _EFFORT_ORDER and tier not in tiers:
+                tiers.append(tier)
+    if tiers:
+        tiers.sort(key=lambda t: _EFFORT_ORDER.index(t))
+        return f"{family} ({'/'.join(tiers)})"
+    return family
+
+
+def _probe_binary_version(cmd: List[str], *, runner: Any, timeout_sec: float = 3.0) -> str:
+    try:
+        proc = runner(cmd, capture_output=True, text=True, timeout=timeout_sec, check=False)
+        if getattr(proc, "returncode", 1) != 0:
+            return ""
+        raw = (getattr(proc, "stdout", "") or getattr(proc, "stderr", "") or "").strip()
+        first = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
+        return first[:64]
+    except Exception:
+        return ""
+
+
+def audit_llm_model_catalog_and_binaries(
+    workspace_dir: str,
+    *,
+    catalog_path: Optional[str] = None,
+    runner: Optional[Any] = None,
+    allow_subprocess: Optional[bool] = None,
+    min_interval_sec: float = 43200.0,
+    force_refresh: bool = False,
+    persist: bool = True,
+) -> Dict[str, Any]:
+    """Read-only periodic check of ``agy models`` (vs config.env & baseline) and key binary versions.
+
+    Notify-only by design: detects missing/removed configured models (critical CONFIG_ERROR) and newly
+    available model families (one-time advisory) without mutating config.env or binaries.
+    """
+    can_run = (
+        runner is not None
+        or allow_subprocess is True
+        or (allow_subprocess is None and is_unmocked_llm_query_allowed())
+    )
+    if not can_run:
+        return {}
+
+    cfg_path = os.path.join(workspace_dir, "config.env")
+    configured_models = list(
+        resolve_configured_llm_models(config_path=cfg_path if os.path.isfile(cfg_path) else None)
+    )
+    state_path = catalog_path or cache_path("llm_model_catalog.json")
+    now = time.time()
+    prev = read_json_dict(state_path, default={}) if state_path else {}
+    if not isinstance(prev, dict):
+        prev = {}
+    prev_known = [
+        str(m).strip().lower()
+        for m in (prev.get("known_models") or [])
+        if isinstance(m, str) and m.strip()
+    ]
+    prev_ts = normalize_epoch_sec(prev.get("checked_ts"), default=0.0) or 0.0
+    if (
+        not force_refresh
+        and prev_known
+        and prev_ts > 0.0
+        and 0.0 <= (now - prev_ts) < max(60.0, safe_pos_float(min_interval_sec, 43200.0))
+    ):
+        avail_set = set(prev_known)
+        return {
+            "checked_ts": prev_ts,
+            "agy_models_ok": True,
+            "cached": True,
+            "baseline_initialized": False,
+            "binary_versions": dict(prev.get("binary_versions") or {}),
+            "available_count": len(prev_known),
+            "configured_models": configured_models,
+            "missing_configured_models": [m for m in configured_models if m.lower() not in avail_set],
+            "new_models": [],
+            "new_families": [],
+            "removed_models": [],
+        }
+
+    run_fn = runner or subprocess.run
+    agy_bin = shutil.which("agy") or os.path.expanduser("~/.local/bin/agy")
+    rclone_home = os.path.expanduser("~/bin/rclone")
+    rclone_bin = rclone_home if os.path.isfile(rclone_home) and os.access(rclone_home, os.X_OK) else shutil.which("rclone")
+    piactl_bin = shutil.which("piactl")
+
+    binary_versions: Dict[str, str] = {}
+    if runner is not None or (agy_bin and os.path.isfile(agy_bin) and os.access(agy_bin, os.X_OK)):
+        if v := _probe_binary_version([agy_bin, "--version"], runner=run_fn):
+            binary_versions["agy"] = v
+    if runner is not None or rclone_bin:
+        if v := _probe_binary_version([rclone_bin or "rclone", "--version"], runner=run_fn):
+            binary_versions["rclone"] = v
+    if runner is not None or piactl_bin:
+        if v := _probe_binary_version([piactl_bin or "piactl", "--version"], runner=run_fn):
+            binary_versions["piactl"] = v
+
+    available_models: List[str] = []
+    err_msg = ""
+    if runner is not None or (agy_bin and os.path.isfile(agy_bin) and os.access(agy_bin, os.X_OK)):
+        try:
+            proc = run_fn([agy_bin, "models"], capture_output=True, text=True, timeout=15.0, check=False)
+            if getattr(proc, "returncode", 1) == 0:
+                available_models = parse_agy_models_output(getattr(proc, "stdout", "") or "")
+            else:
+                err_msg = (getattr(proc, "stderr", "") or f"rc={getattr(proc, 'returncode', 'err')}").strip()[:120]
+        except Exception as exc:
+            err_msg = str(exc)[:120]
+    else:
+        err_msg = "agy binary not found"
+
+    if not available_models:
+        return {
+            "checked_ts": now,
+            "agy_models_ok": False,
+            "cached": False,
+            "baseline_initialized": False,
+            "binary_versions": binary_versions,
+            "available_count": 0,
+            "configured_models": configured_models,
+            "missing_configured_models": [],
+            "new_models": [],
+            "new_families": [],
+            "removed_models": [],
+            "error": err_msg or "empty agy models output",
+        }
+
+    avail_set = set(available_models)
+    missing_configured = [m for m in configured_models if m.lower() not in avail_set]
+    curr_families = group_model_families(available_models)
+    baseline_initialized = not prev_known
+    new_family_bases: List[str] = []
+    if baseline_initialized:
+        new_models: List[str] = []
+        new_families: List[str] = []
+        removed_models: List[str] = []
+    else:
+        prev_set = set(prev_known)
+        prev_families = set(group_model_families(prev_known).keys())
+        new_models = [m for m in available_models if m not in prev_set]
+        new_family_bases = [fam for fam in curr_families if fam not in prev_families]
+        new_families = [
+            format_model_family_summary(fam, curr_families[fam])
+            for fam in new_family_bases
+        ]
+        removed_models = [m for m in prev_known if m not in avail_set]
+
+    current_cfg_kv = parse_dotenv(cfg_path) if os.path.isfile(cfg_path) else {}
+    recommended_updates = compute_recommended_llm_config_updates(
+        available_models,
+        current_cfg_kv,
+        new_family_names=new_family_bases,
+    )
+
+    result: Dict[str, Any] = {
+        "checked_ts": now,
+        "agy_models_ok": True,
+        "cached": False,
+        "baseline_initialized": baseline_initialized,
+        "binary_versions": binary_versions,
+        "available_count": len(available_models),
+        "available_models": available_models,
+        "configured_models": configured_models,
+        "missing_configured_models": missing_configured,
+        "new_models": new_models,
+        "new_families": new_families,
+        "new_family_bases": new_family_bases,
+        "removed_models": removed_models,
+        "recommended_config_updates": recommended_updates,
+        "catalog_path": state_path,
+    }
+    if persist and state_path and not recommended_updates:
+        persist_llm_model_catalog_state(state_path, result)
+    return result
+
+
+_EXCLUDED_AUTO_MODEL_TOKENS: Tuple[str, ...] = ("orchestrator", "image", "lite", "gpt-oss", "tab_")
+
+
+def _extract_effort_suffix(model_name: str) -> str:
+    low = model_name.strip().lower() if isinstance(model_name, str) else ""
+    for suf in ("-xhigh", "-high", "-medium", "-low"):
+        if low.endswith(suf):
+            return suf
+    return ""
+
+
+def _pick_family_tier(family: str, preferred_suffix: str, available_set: Set[str]) -> Optional[str]:
+    order = (
+        (preferred_suffix, "-high", "-medium", "-low")
+        if preferred_suffix == "-xhigh"
+        else (preferred_suffix, "-medium", "-high", "-low")
+        if preferred_suffix
+        else ("-medium", "-high", "-low")
+    )
+    for suf in order:
+        cand = f"{family}{suf}"
+        if cand in available_set:
+            return cand
+    return None
+
+
+def compute_recommended_llm_config_updates(
+    available_models: Sequence[str],
+    current_config: Mapping[str, str],
+    *,
+    new_family_names: Iterable[str] = (),
+) -> Dict[str, str]:
+    """Compute minimal config.env LLM_* updates when configured models vanish or newer families appear.
+
+    Preserves each key's chosen effort tier (-low/-medium/-high/-xhigh) and skips orchestrator/image/lite/gpt-oss.
+    """
+    avail = [m.strip().lower() for m in available_models if isinstance(m, str) and m.strip()]
+    if not avail:
+        return {}
+    avail_set = set(avail)
+    families = group_model_families(avail)
+    new_fams = {str(f).strip().lower() for f in new_family_names if isinstance(f, str) and f.strip()}
+
+    def _eligible(fam: str) -> bool:
+        return not any(tok in fam for tok in _EXCLUDED_AUTO_MODEL_TOKENS)
+
+    paid_gemini_fams = [
+        fam
+        for fam, slugs in families.items()
+        if fam.startswith("gemini-")
+        and "flash" not in fam
+        and _eligible(fam)
+        and {f"{fam}-low", f"{fam}-medium", f"{fam}-high"}.issubset(set(slugs))
+    ]
+    flash_fams = [
+        fam
+        for fam, slugs in families.items()
+        if fam.startswith("gemini-")
+        and "flash" in fam
+        and _eligible(fam)
+        and {f"{fam}-low", f"{fam}-medium"}.issubset(set(slugs))
+    ]
+    claude_sonnet_fams = [
+        fam
+        for fam, slugs in families.items()
+        if fam.startswith("claude-sonnet-")
+        and _eligible(fam)
+        and {f"{fam}-low", f"{fam}-medium"}.issubset(set(slugs))
+    ]
+
+    cur_default = str(current_config.get("LLM_DEFAULT_MODEL") or "").strip().lower()
+    cur_high = str(current_config.get("LLM_HIGH_STAKE_MODEL") or "").strip().lower()
+    cur_low = str(current_config.get("LLM_LOW_STAKE_MODEL") or "").strip().lower()
+    cur_compact = str(current_config.get("LLM_COMPACT_MODEL") or "").strip().lower()
+    cur_fallbacks = [
+        m.strip().lower()
+        for m in str(current_config.get("LLM_FALLBACK_MODELS") or "").split(",")
+        if m.strip()
+    ]
+
+    def _fam_of(slug: str) -> str:
+        suf = _extract_effort_suffix(slug)
+        return slug[: -len(suf)] if suf else slug
+
+    cur_primary_fam = _fam_of(cur_default)
+    cur_flash_fam = _fam_of(cur_compact)
+    cur_claude_fams = [_fam_of(m) for m in cur_fallbacks if m.startswith("claude-")]
+    cur_claude_fam = cur_claude_fams[0] if cur_claude_fams else ""
+
+    primary_missing = any(m and m not in avail_set for m in (cur_default, cur_high, cur_low))
+    target_primary_fam = cur_primary_fam
+    if paid_gemini_fams:
+        newest_new_primary = next((f for f in paid_gemini_fams if f in new_fams), None)
+        if newest_new_primary:
+            target_primary_fam = newest_new_primary
+        elif primary_missing or cur_primary_fam not in paid_gemini_fams:
+            target_primary_fam = paid_gemini_fams[0]
+
+    flash_missing = bool(cur_compact and cur_compact not in avail_set) or any(
+        "flash" in m and m not in avail_set for m in cur_fallbacks
+    )
+    target_flash_fam = cur_flash_fam
+    if flash_fams:
+        newest_new_flash = next((f for f in flash_fams if f in new_fams), None)
+        if newest_new_flash:
+            target_flash_fam = newest_new_flash
+        elif flash_missing or cur_flash_fam not in flash_fams:
+            target_flash_fam = flash_fams[0]
+
+    claude_missing = any(m.startswith("claude-") and m not in avail_set for m in cur_fallbacks)
+    target_claude_fam = cur_claude_fam
+    if claude_sonnet_fams:
+        newest_new_claude = next((f for f in claude_sonnet_fams if f in new_fams), None)
+        if newest_new_claude:
+            target_claude_fam = newest_new_claude
+        elif claude_missing:
+            target_claude_fam = claude_sonnet_fams[0]
+
+    updates: Dict[str, str] = {}
+    if target_primary_fam:
+        if cur_default and (new_def := _pick_family_tier(target_primary_fam, _extract_effort_suffix(cur_default) or "-medium", avail_set)):
+            if new_def != cur_default:
+                updates["LLM_DEFAULT_MODEL"] = new_def
+        if cur_high and (new_hi := _pick_family_tier(target_primary_fam, _extract_effort_suffix(cur_high) or "-high", avail_set)):
+            if new_hi != cur_high:
+                updates["LLM_HIGH_STAKE_MODEL"] = new_hi
+        if cur_low:
+            low_fam = target_flash_fam if ("flash" in cur_low and target_flash_fam) else target_primary_fam
+            if new_lo := _pick_family_tier(low_fam, _extract_effort_suffix(cur_low) or "-low", avail_set):
+                if new_lo != cur_low:
+                    updates["LLM_LOW_STAKE_MODEL"] = new_lo
+
+    if target_flash_fam and cur_compact:
+        if new_cmp := _pick_family_tier(target_flash_fam, _extract_effort_suffix(cur_compact) or "-low", avail_set):
+            if new_cmp != cur_compact:
+                updates["LLM_COMPACT_MODEL"] = new_cmp
+
+    if cur_fallbacks:
+        fb_candidates: List[str] = []
+        for fam in (target_primary_fam, target_claude_fam, target_flash_fam):
+            if not fam:
+                continue
+            for suf in ("-medium", "-low"):
+                cand = f"{fam}{suf}"
+                if cand in avail_set and cand not in fb_candidates:
+                    fb_candidates.append(cand)
+        new_fb_str = ",".join(fb_candidates)
+        if new_fb_str and new_fb_str != ",".join(cur_fallbacks):
+            updates["LLM_FALLBACK_MODELS"] = new_fb_str
+
+    return updates
+
+
+def build_llm_config_env_remediation(
+    workspace_dir: str,
+    updates: Mapping[str, str],
+) -> Optional[Dict[str, Any]]:
+    """Build a unique, comment-preserving ``code_remediation`` patch for ``config.env`` LLM model keys."""
+    if not isinstance(updates, Mapping) or not updates:
+        return None
+    cfg_path = os.path.join(workspace_dir, "config.env")
+    if not os.path.isfile(cfg_path):
+        return None
+    raw_lines = read_text_file(cfg_path, errors="replace").splitlines(keepends=True)
+    matched_indices: List[int] = []
+    updated_lines = list(raw_lines)
+    applied_keys: List[str] = []
+    for idx, line in enumerate(raw_lines):
+        parsed = parse_dotenv_line(line)
+        if parsed is None:
+            continue
+        key, _ = parsed
+        if key not in updates:
+            continue
+        new_val = str(updates[key]).strip()
+        if not new_val:
+            continue
+        eol = "\r\n" if line.endswith("\r\n") else ("\n" if line.endswith("\n") else "")
+        body = line[: -len(eol)] if eol else line
+        eq_pos = body.find("=")
+        if eq_pos < 0:
+            continue
+        prefix = body[: eq_pos + 1]
+        rhs = body[eq_pos + 1 :]
+        comment_idx = rhs.find("#")
+        if comment_idx >= 0:
+            val_part = rhs[:comment_idx]
+            pad_len = len(val_part) - len(val_part.rstrip(" \t"))
+            sep = val_part[-pad_len:] if pad_len > 0 else " "
+            comment_suffix = f"{sep}{rhs[comment_idx:]}"
+        else:
+            comment_suffix = ""
+        new_line = f"{prefix}{new_val}{comment_suffix}{eol}"
+        if new_line != line:
+            updated_lines[idx] = new_line
+            matched_indices.append(idx)
+            applied_keys.append(f"{key}={new_val}")
+    if not matched_indices:
+        return None
+    lo, hi = min(matched_indices), max(matched_indices)
+    search_block = "".join(raw_lines[lo : hi + 1])
+    replace_block = "".join(updated_lines[lo : hi + 1])
+    if not search_block or search_block == replace_block:
+        return None
+    return {
+        "has_fix": True,
+        "target_file": "config.env",
+        "rationale": f"Auto-update config.env LLM models from agy catalog ({', '.join(applied_keys[:4])})",
+        "search_block": search_block,
+        "replace_block": replace_block,
+    }
+
+
+def persist_llm_model_catalog_state(state_path: str, catalog_audit: Mapping[str, Any]) -> None:
+    """Atomically save the latest known ``agy models`` baseline snapshot to ``cachedb/system/``."""
+    if not state_path or not isinstance(catalog_audit, Mapping):
+        return
+    available_models = [
+        str(m).strip().lower()
+        for m in (catalog_audit.get("available_models") or [])
+        if isinstance(m, str) and m.strip()
+    ]
+    if not available_models:
+        return
+    try:
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        with generation_file_lock(state_path):
+            save_json_state(
+                state_path,
+                {
+                    "checked_ts": safe_float(catalog_audit.get("checked_ts"), time.time()),
+                    "binary_versions": dict(catalog_audit.get("binary_versions") or {}),
+                    "known_models": available_models,
+                    "known_families": list(group_model_families(available_models).keys()),
+                    "configured_models": list(catalog_audit.get("configured_models") or []),
+                    "missing_configured_models": list(catalog_audit.get("missing_configured_models") or []),
+                },
+                indent=2,
+            )
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # 6. Unified Linux OS, Memory, Disk, Internet, DNS & VPN Telemetry Collector
 # ---------------------------------------------------------------------------
 
@@ -443,6 +915,8 @@ def gather_system_and_vpn_telemetry(
             sys_vpn["resource_watchdog_offenders"] = offenders
 
     sys_vpn["config_audit"] = audit_workspace_configs(workspace_dir)
+    if llm_cat := audit_llm_model_catalog_and_binaries(workspace_dir):
+        sys_vpn["llm_catalog_audit"] = llm_cat
     return sys_vpn
 
 
@@ -1260,6 +1734,10 @@ def format_supervisor_ntfy_notification(
         body_lines.append(f"Primary Issue: [{top_issue.get('severity', 'INFO')}] {top_issue.get('description', '')}")
     if has_fix and isinstance(code_rem, dict):
         body_lines.append(f"Code Patch Proposed: {code_rem.get('target_file', 'unknown')} (tests={obj_attr(report, 'tests_passed')})")
+    sensor_health = obj_attr(report, "sensor_health")
+    if isinstance(sensor_health, dict):
+        if new_fams := [str(x).strip() for x in (sensor_health.get("new_llm_model_families") or []) if str(x).strip()]:
+            body_lines.append(f"New agy CLI models detected: {', '.join(new_fams)}")
 
     decisions_to_show = obj_attr(report, "market_trading_decisions") or ([m_single] if (m_single := obj_attr(report, "market_trading_decision")) else [])
     for m_dec in decisions_to_show:
@@ -1517,10 +1995,20 @@ def submit_supervisor_trading_decisions(
 
 def build_sensor_health_summary(sensors: Any) -> Dict[str, Any]:
     """Build sensor_health dictionary for SupervisorAuditReport."""
-    return {
+    summary: Dict[str, Any] = {
         **{f"{k}_present": getattr(sensors, k, None) is not None for k in ("fear_greed", "market_breadth", "sentiment_advisor", "geopolitical_threat", "macro_benchmarks")},
         **{f"{k}_count": len(getattr(sensors, k, None) or {}) for k in ("prices_and_trends", "microstructure", "active_heartbeats")},
     }
+    sys_vpn = getattr(sensors, "system_and_vpn", None)
+    cat = sys_vpn.get("llm_catalog_audit") if isinstance(sys_vpn, dict) else None
+    if isinstance(cat, dict) and cat:
+        if cat.get("missing_configured_models"):
+            summary["missing_llm_models"] = list(cat["missing_configured_models"])
+        if cat.get("new_families"):
+            summary["new_llm_model_families"] = list(cat["new_families"])
+        if cat.get("binary_versions"):
+            summary["binary_versions"] = dict(cat["binary_versions"])
+    return summary
 
 
 def summarize_fleet_sensor_status(

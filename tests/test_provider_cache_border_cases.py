@@ -5073,10 +5073,10 @@ def test_wave29_ssot_price_candidates_t212_peek_lexicon_and_border_cases(tmp_pat
 
     # 6. GeminiQuotaRouterMixin string _custom_fallbacks, model_unrecognized="false", bool model_name rejection, and non-clobbering alert merge
     router = lqr_mod.GeminiQuotaRouterMixin()
-    router.model = "gemini-4-argon-high"
-    router.fallback_models = ("gemini-4-argon-medium", "gemini-3.8-flash-medium", "gemini-3.8-flash-low")
+    router.model = "gemini-4-neon-high"
+    router.fallback_models = ("gemini-4-neon-medium", "gemini-3.8-flash-medium", "gemini-3.8-flash-low")
     router._custom_fallbacks = "false"  # type: ignore[assignment]
-    cands_hi = router.get_model_candidates("gemini-4-argon-high")
+    cands_hi = router.get_model_candidates("gemini-4-neon-high")
     assert "gemini-3.8-flash-high" in cands_hi
     assert router.get_compact_model_candidates(cands_hi, attempt_idx=None)[0] == "gemini-3.8-flash-low"  # type: ignore[arg-type]
 
@@ -5087,14 +5087,14 @@ def test_wave29_ssot_price_candidates_t212_peek_lexicon_and_border_cases(tmp_pat
         lqr_mod.GeminiQuotaRouterMixin._record_model_quota_exhausted(True)  # type: ignore[arg-type]
         assert not q_path.exists()
         lqr_mod.GeminiQuotaRouterMixin._record_model_quota_exhausted(
-            "gemini-4-argon-medium",
+            "gemini-4-neon-medium",
             ttl_sec=60.0,
             model_unrecognized="false",  # type: ignore[arg-type]
         )
         saved_q = state_io.read_json_dict(str(q_path), default={})
-        assert saved_q["buckets"].get("gemini-4-argon-low") == 0.0
+        assert saved_q["buckets"].get("gemini-4-neon-low") == 0.0
         # Recovery alert reset preserves concurrent runtime_exhausted keys written to disk
-        saved_q["last_alert_tier"] = "argon_low"
+        saved_q["last_alert_tier"] = "primary_low"
         saved_q["runtime_exhausted"]["claude-sonnet-5-5-medium"] = real_now + 300.0
         state_io.save_json_state(str(q_path), saved_q)
     with monkeypatch.context() as mp:
@@ -5102,8 +5102,8 @@ def test_wave29_ssot_price_candidates_t212_peek_lexicon_and_border_cases(tmp_pat
         lqr_mod.GeminiQuotaRouterMixin._maybe_notify_low_quota(
             {
                 "available_credits": 10.0,
-                "buckets": {"gemini-4-argon-medium": 1.0},
-                "last_alert_tier": "argon_low",
+                "buckets": {"gemini-4-neon-medium": 1.0},
+                "last_alert_tier": "primary_low",
                 "runtime_exhausted": {},
             }
         )

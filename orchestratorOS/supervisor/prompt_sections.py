@@ -536,6 +536,22 @@ def _format_sre_and_fleet_section(
                 else ""
             )
         )
+        cat = sv.get("llm_catalog_audit") if isinstance(sv.get("llm_catalog_audit"), dict) else None
+        if cat:
+            bin_ver = cat.get("binary_versions") if isinstance(cat.get("binary_versions"), dict) else {}
+            bin_str = ", ".join(f"{k}={v}" for k, v in bin_ver.items()) or "N/A"
+            missing_m = cat.get("missing_configured_models") or []
+            new_fams = cat.get("new_families") or []
+            if not _parse_bool_flag(cat.get("agy_models_ok"), False):
+                cat_status = f"PROBE_FAILED ({cat.get('error', 'unknown')})"
+            elif missing_m:
+                cat_status = f"MISSING_CONFIGURED_MODELS: {missing_m}"
+            else:
+                cat_status = f"OK ({len(cat.get('configured_models') or [])} configured in {cat.get('available_count', 0)} agy models)"
+            new_str = f" | NEW_MODEL_FAMILIES: {new_fams}" if new_fams else ""
+            rec_upd = cat.get("recommended_config_updates") if isinstance(cat.get("recommended_config_updates"), dict) else {}
+            upd_str = f" | AUTO_CONFIG_UPDATES: {rec_upd}" if rec_upd else ""
+            lines.append(f"- LLM Model Catalog & Standalone Binaries: [{bin_str}] | configured_models={cat_status}{new_str}{upd_str}")
     return lines
 
 

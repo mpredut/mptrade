@@ -99,14 +99,15 @@ class GeminiClient(GeminiQuotaRouterMixin):
     ) -> None:
         cleaned_model = model.strip() if isinstance(model, str) and model.strip() else ""
         self._explicit_model = bool(cleaned_model)
-        self.model = cleaned_model or DEFAULT_MODEL
+        self.model = cleaned_model or (optional_env("LLM_DEFAULT_MODEL", "") or "").strip() or DEFAULT_MODEL
         self._custom_fallbacks = fallback_models is not None
         if fallback_models is not None:
             self.fallback_models = tuple(
                 m.strip() for m in fallback_models if isinstance(m, str) and m.strip()
             )
         else:
-            self.fallback_models = DEFAULT_FALLBACK_MODELS
+            env_fb = split_csv(optional_env("LLM_FALLBACK_MODELS", ""))
+            self.fallback_models = env_fb if env_fb else DEFAULT_FALLBACK_MODELS
         raw_key = (
             api_key
             if isinstance(api_key, str) and api_key.strip()

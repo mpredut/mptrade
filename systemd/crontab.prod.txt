@@ -16,7 +16,8 @@ SHELL=/bin/bash
 # Idle-gated UI daemon sync (12m = 2x auto_cryptotrade_executor SSOT cadence): surfaces mirrored topic turns into the Web UI daemon when idle
 5-53/12 * * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
 
-15 4 1,15 * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh cron-update >> logs/manage_agy.log 2>&1
+# Weekly agy CLI auto-update (Sunday 04:15; daemon restart is deferred automatically while interactive chats are active)
+15 4 * * 0 cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh cron-update >> logs/manage_agy.log 2>&1
 
 # 4-hour venue fee hygiene & Binance BNB reserve maintenance (<100 USDC -> 200 USDC LIMIT_MAKER)
 12 */4 * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.venue_fee_maintenance.lock /usr/bin/timeout 90 ./orchestratorOS/run_python.sh orchestratorOS/admin/maintain_venue_fees.py >> logs/venue_fee_maintenance.log 2>&1

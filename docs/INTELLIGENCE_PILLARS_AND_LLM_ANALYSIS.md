@@ -82,7 +82,7 @@ flowchart TD
 
 ## 3. Where and How the LLM Is Used (Google Gemini via `agy CLI`)
 
-The LLM (`gemini-3.8-flash-low` via the local `agy` CLI) is invoked in the system **strictly in the following components**:
+The LLM (tiered Gemini 4 Neon via the isolated `agy-bot` CLI: `gemini-4-neon-high` for `guard_high_stake` and `auto_technical_repair`, `gemini-4-neon-medium` for autonomous trade executors, `macro_sentiment`, and `guard_post_stop`, `gemini-4-neon-low` for `macro_geopolitical`, with `/compact` on `gemini-3.8-flash-low` and automatic quota-aware fallback to Claude Sonnet 5.5 and Gemini 3.8 Flash) is invoked in the system **strictly in the following components**:
 
 ### A. Periodic Market Sentiment Advisor (`SentimentAdvisor`) - Pillar 3
 - **Source file**: `intelligence/sentiment/sentiment_advisor.py`

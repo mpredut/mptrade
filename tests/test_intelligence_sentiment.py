@@ -1025,18 +1025,18 @@ class TestEnrichedPretradeTelemetry:
                 ("gemini-3.8-flash-low", True),
             ]
 
-            # 5. Unrecognized model error on gemini-4-argon-medium does not poison gemini-3.8-flash-* in runtime_exhausted
+            # 5. Unrecognized model error on gemini-4-neon-medium does not poison gemini-3.8-flash-* in runtime_exhausted
             unrec_invocations = []
             def mock_subproc_unrecognized(cmd, **kwargs):
                 m_idx = cmd.index("--model") + 1
                 used_m = cmd[m_idx]
                 unrec_invocations.append(used_m)
-                if used_m == "gemini-4-argon-medium":
+                if used_m == "gemini-4-neon-medium":
                     return subprocess.CompletedProcess(
                         cmd,
                         returncode=1,
                         stdout="",
-                        stderr='error: invalid model selection: model "gemini-4-argon-medium" is not recognized as a known model.',
+                        stderr='error: invalid model selection: model "gemini-4-neon-medium" is not recognized as a known model.',
                     )
                 return subprocess.CompletedProcess(
                     cmd,
@@ -1046,7 +1046,7 @@ class TestEnrichedPretradeTelemetry:
 
             subprocess.run = MagicMock(side_effect=mock_subproc_unrecognized)
             tier_client = GeminiClient(
-                model="gemini-4-argon-medium",
+                model="gemini-4-neon-medium",
                 fallback_models=["gemini-3.8-flash-medium", "gemini-3.8-flash-low"],
                 cli_path=__file__,
                 api_key=None,
@@ -1057,7 +1057,7 @@ class TestEnrichedPretradeTelemetry:
                  patch.object(GeminiClient, "probe_live_model_quota", return_value=None):
                 res4 = tier_client.query_text("sample prompt 4")
             assert res4 == "success from gemini-3.8-flash-medium"
-            assert unrec_invocations == ["gemini-4-argon-medium", "gemini-3.8-flash-medium"]
+            assert unrec_invocations == ["gemini-4-neon-medium", "gemini-3.8-flash-medium"]
         finally:
             subprocess.run = orig_run
 
@@ -1227,7 +1227,7 @@ def test_gemini_client_pre_call_quota_filter_and_dynamic_topup_restoration(tmp_p
     monkeypatch.setattr(GeminiClient, "_get_quota_state_path", staticmethod(lambda: str(quota_state_file)))
     GeminiClient._QUOTA_MEM_CACHE = {}
 
-    # Phase 1: Argon models exhausted (absent from buckets, 0 availableCredits), Claude has 100% quota
+    # Phase 1: Neon models exhausted (absent from buckets, 0 availableCredits), Claude has 100% quota
     api_state = {
         "buckets": [
             {"modelId": "claude-sonnet-5-5-medium", "remainingFraction": 1.0},
@@ -1258,6 +1258,14 @@ def test_gemini_client_pre_call_quota_filter_and_dynamic_topup_restoration(tmp_p
             return MockHttpResponse(payload)
         raise AssertionError(f"Unexpected URL: {url}")
 
+    monkeypatch.setenv("LLM_DEFAULT_MODEL", "gemini-4-neon-medium")
+    monkeypatch.setenv("LLM_HIGH_STAKE_MODEL", "gemini-4-neon-high")
+    monkeypatch.setenv("LLM_LOW_STAKE_MODEL", "gemini-4-neon-low")
+    monkeypatch.setenv("LLM_COMPACT_MODEL", "gemini-3.8-flash-low")
+    monkeypatch.setenv(
+        "LLM_FALLBACK_MODELS",
+        "gemini-4-neon-medium,gemini-4-neon-low,claude-sonnet-5-5-medium,claude-sonnet-5-5-low,gemini-3.8-flash-medium,gemini-3.8-flash-low",
+    )
     monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
 
     snap1 = GeminiClient.probe_live_model_quota(bot_cli_base=str(bot_cli_base), force_refresh=True)
@@ -1265,25 +1273,25 @@ def test_gemini_client_pre_call_quota_filter_and_dynamic_topup_restoration(tmp_p
     assert snap1["available_credits"] == 0.0
 
     client = GeminiClient(cli_path=str(cli_bin))
-    med_candidates = client.get_model_candidates("gemini-4-argon-medium")
+    med_candidates = client.get_model_candidates("gemini-4-neon-medium")
     filtered_med = GeminiClient.filter_models_with_confirmed_credits(med_candidates, snap1)
-    # Argon models (0% quota) are skipped immediately; paid claude-sonnet-5-5-medium is first!
+    # Neon models (0% quota) are skipped immediately; paid claude-sonnet-5-5-medium is first!
     assert filtered_med == [
         "claude-sonnet-5-5-medium",
         "claude-sonnet-5-5-low",
     ]
 
-    low_candidates = client.get_model_candidates("gemini-4-argon-low")
+    low_candidates = client.get_model_candidates("gemini-4-neon-low")
     filtered_low = GeminiClient.filter_models_with_confirmed_credits(low_candidates, snap1)
     assert filtered_low[0] == "claude-sonnet-5-5-low"
 
-    # Phase 2: User tops up paid credits (or 5h window resets) -> Argon dynamically restored on next probe!
+    # Phase 2: User tops up paid credits (or 5h window resets) -> Neon dynamically restored on next probe!
     api_state["availableCredits"] = [{"creditAmount": 25.0}]
     snap2 = GeminiClient.probe_live_model_quota(bot_cli_base=str(bot_cli_base), force_refresh=True)
     assert snap2 is not None
     assert snap2["available_credits"] == 25.0
     restored_med = GeminiClient.filter_models_with_confirmed_credits(med_candidates, snap2)
-    assert restored_med[0] == "gemini-4-argon-medium"
+    assert restored_med[0] == "gemini-4-neon-medium"
 
     # Phase 3: Consumer free-tier passes cloudaicompanionProject to retrieveUserQuota and routes directly to gemini-3.8-flash-*
     api_state["tier"] = "free-tier"
@@ -1296,15 +1304,22 @@ def test_gemini_client_pre_call_quota_filter_and_dynamic_topup_restoration(tmp_p
     snap3 = GeminiClient.probe_live_model_quota(bot_cli_base=str(bot_cli_base), force_refresh=True)
     assert snap3 is not None
     assert quota_req_bodies == [{"project": "aicode-consumers"}]
-    assert snap3["buckets"]["gemini-4-argon-medium"] == 0.0
+    assert snap3["buckets"]["gemini-4-neon-medium"] == 0.0
+    assert snap3["buckets"]["gemini-4-neon-xhigh"] == 0.0
     assert snap3["buckets"]["gemini-3.8-flash-medium"] == 0.83
     assert snap3["buckets"]["gemini-3.8-flash-high"] == 0.83
     assert GeminiClient.filter_models_with_confirmed_credits(med_candidates, snap3) == [
         "gemini-3.8-flash-medium",
         "gemini-3.8-flash-low",
     ]
-    high_candidates = client.get_model_candidates("gemini-4-argon-high")
+    high_candidates = client.get_model_candidates("gemini-4-neon-high")
     assert GeminiClient.filter_models_with_confirmed_credits(high_candidates, snap3) == [
+        "gemini-3.8-flash-high",
+        "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-low",
+    ]
+    xhigh_candidates = client.get_model_candidates("gemini-4-neon-xhigh")
+    assert GeminiClient.filter_models_with_confirmed_credits(xhigh_candidates, snap3) == [
         "gemini-3.8-flash-high",
         "gemini-3.8-flash-medium",
         "gemini-3.8-flash-low",
@@ -1312,7 +1327,7 @@ def test_gemini_client_pre_call_quota_filter_and_dynamic_topup_restoration(tmp_p
 
 
 def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeypatch):
-    """Verify NTFY_TOPIC_ERROR alert fires when Argon quota is near zero (<=10%) and resets on top-up."""
+    """Verify NTFY_TOPIC_ERROR alert fires when Neon quota is near zero (<=10%) and resets on top-up."""
 
     quota_state_file = tmp_path / "llm_quota_alert.json"
     monkeypatch.setattr(GeminiClient, "_get_quota_state_path", staticmethod(lambda: str(quota_state_file)))
@@ -1333,7 +1348,7 @@ def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeyp
     monkeypatch.setenv("LLM_QUOTA_LOW_WARN_FRACTION", "0.10")
     monkeypatch.setenv("LLM_QUOTA_ALERT_COOLDOWN_SEC", "14400")
 
-    # 1. Argon at 0%, Claude at 100% -> triggers argon_low alert on ntfy-error-1978
+    # 1. Primary Gemini family at 0%, Claude at 100% -> triggers primary_low alert on ntfy-error-1978
     snap_low = {
         "checked_ts": time.time(),
         "available_credits": 0.0,
@@ -1347,7 +1362,7 @@ def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeyp
     GeminiClient._maybe_notify_low_quota(snap_low)
     assert len(alerts) == 1
     assert "0%" in alerts[0]["title"]
-    assert snap_low["last_alert_tier"] == "argon_low"
+    assert snap_low["last_alert_tier"] == "primary_low"
 
     # 2. Repeated check within 4h cooldown at same severity does NOT spam
     GeminiClient._maybe_notify_low_quota(snap_low)
@@ -1371,16 +1386,17 @@ def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeyp
     }
     assert GeminiClient._extract_available_credits(dup_tier_payload) == 25.0
 
-    # 6. Runtime credit exhaustion on gemini-4-argon-medium clears shared Gemini/Argon pool buckets & available_credits,
+    # 6. Runtime credit exhaustion on gemini-4-neon-medium clears shared Gemini/Neon pool buckets & available_credits,
     # whereas an unrecognized model slug marks only that single model without poisoning Flash or available_credits.
     quota_state_file.write_text(
         json.dumps({
             "checked_ts": time.time(),
             "available_credits": 10.0,
             "buckets": {
-                "gemini-4-argon-high": 0.8,
-                "gemini-4-argon-medium": 0.8,
-                "gemini-4-argon-low": 0.8,
+                "gemini-4-neon-xhigh": 0.8,
+                "gemini-4-neon-high": 0.8,
+                "gemini-4-neon-medium": 0.8,
+                "gemini-4-neon-low": 0.8,
                 "gemini-3.8-flash-medium": 0.8,
                 "gemini-3.8-flash-low": 0.8,
                 "claude-sonnet-5-5-medium": 1.0,
@@ -1391,18 +1407,19 @@ def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeyp
         encoding="utf-8",
     )
     alerts.clear()
-    GeminiClient._record_model_quota_exhausted("gemini-4-argon-medium", model_unrecognized=True)
+    GeminiClient._record_model_quota_exhausted("gemini-4-neon-medium", model_unrecognized=True)
     assert len(alerts) == 0
     assert GeminiClient._QUOTA_MEM_CACHE["available_credits"] == 10.0
-    assert GeminiClient._QUOTA_MEM_CACHE["buckets"]["gemini-4-argon-medium"] == 0.0
+    assert GeminiClient._QUOTA_MEM_CACHE["buckets"]["gemini-4-neon-medium"] == 0.0
     assert GeminiClient._QUOTA_MEM_CACHE["buckets"]["gemini-3.8-flash-medium"] == 0.8
     assert "gemini-3.8-flash-medium" not in GeminiClient._QUOTA_MEM_CACHE["runtime_exhausted"]
 
-    GeminiClient._record_model_quota_exhausted("gemini-4-argon-medium")
+    GeminiClient._record_model_quota_exhausted("gemini-4-neon-medium")
     assert len(alerts) == 1
     assert GeminiClient._QUOTA_MEM_CACHE["available_credits"] == 0.0
-    assert GeminiClient._QUOTA_MEM_CACHE["buckets"]["gemini-4-argon-low"] == 0.0
-    assert GeminiClient._QUOTA_MEM_CACHE["buckets"]["gemini-4-argon-high"] == 0.0
+    assert GeminiClient._QUOTA_MEM_CACHE["buckets"]["gemini-4-neon-low"] == 0.0
+    assert GeminiClient._QUOTA_MEM_CACHE["buckets"]["gemini-4-neon-high"] == 0.0
+    assert GeminiClient._QUOTA_MEM_CACHE["buckets"]["gemini-4-neon-xhigh"] == 0.0
 
     # 7. filter_models_with_confirmed_credits never returns an empty list if all buckets report 0.0
     all_zero_snap = {
@@ -1619,25 +1636,25 @@ def test_compact_model_candidates_skips_failed_attempts_and_runtime_exhausted(mo
 
     client = GeminiClient()
     models_to_try = [
-        "gemini-4-argon-medium",
-        "gemini-4-argon-low",
+        "gemini-4-neon-medium",
+        "gemini-4-neon-low",
         "claude-sonnet-5-5-low",
         "gemini-3.8-flash-low",
     ]
-    # Suppose attempt_idx=2 (gemini-4-argon-medium failed at idx 0, gemini-4-argon-low quota-exhausted at idx 1)
+    # Suppose attempt_idx=2 (gemini-4-neon-medium failed at idx 0, gemini-4-neon-low quota-exhausted at idx 1)
     monkeypatch.setattr(
         GeminiClient,
         "_QUOTA_MEM_CACHE",
         {
             "runtime_exhausted": {
-                "gemini-4-argon-low": 9999999999.0,
+                "gemini-4-neon-low": 9999999999.0,
                 "gemini-3.8-flash-low": 9999999999.0,
             }
         },
     )
     cands = client.get_compact_model_candidates(models_to_try, attempt_idx=2)
-    assert "gemini-4-argon-medium" not in cands
-    assert "gemini-4-argon-low" not in cands
+    assert "gemini-4-neon-medium" not in cands
+    assert "gemini-4-neon-low" not in cands
     assert "gemini-3.8-flash-low" not in cands
     assert cands == ["claude-sonnet-5-5-low"]
 
@@ -10032,7 +10049,7 @@ def test_ai_data_coherence_and_quota_fingerprint_fixes(tmp_path, monkeypatch):
     monkeypatch.setattr("intelligence.sentiment.llm_quota_router.fetch_json_post", _mock_post)
     s_a = GeminiClient.probe_live_model_quota(bot_cli_base=str(q_dir), force_refresh=True)
     assert s_a is not None and s_a["tier_id"] == "free-tier"
-    GeminiClient._record_model_quota_exhausted("gemini-4-argon-medium", ttl_sec=120.0)
+    GeminiClient._record_model_quota_exhausted("gemini-4-neon-medium", ttl_sec=120.0)
 
     # Switch OAuth token WITHOUT force_refresh -> must bypass 30s cache in 0ms and clear old runtime_exhausted!
     tok_file.write_text(
@@ -10044,7 +10061,9 @@ def test_ai_data_coherence_and_quota_fingerprint_fixes(tmp_path, monkeypatch):
     s_b = GeminiClient.probe_live_model_quota(bot_cli_base=str(q_dir), force_refresh=False)
     assert s_b is not None
     assert s_b["tier_id"] == "g1-ultra-tier"
-    assert s_b["buckets"]["gemini-4-argon-medium"] == 1.0
+    cfg_def = os.environ["LLM_DEFAULT_MODEL"].strip()
+    assert s_b["buckets"][cfg_def] == 1.0
+    assert s_b["buckets"][f"{cfg_def.rsplit('-', 1)[0]}-xhigh"] == 1.0
     assert s_b["runtime_exhausted"] == {}
     assert acct_tier["seen_tokens"][-1] == "Bearer acct-B-ultra-tok"
 

@@ -1609,7 +1609,9 @@ def test_iter49_lazy_sentiment_subpackages_gemini_quota_monkeypatch_and_evaluato
     snap = gc_mod.GeminiClient.probe_live_model_quota(bot_cli_base=str(cli_dir), force_refresh=True)
     assert isinstance(snap, dict)
     assert snap["available_credits"] == 42.0
-    assert snap["buckets"].get("gemini-4-argon-medium") == 0.75
+    cfg_def = os.environ["LLM_DEFAULT_MODEL"].strip()
+    assert snap["buckets"].get(cfg_def) == 0.75
+    assert snap["buckets"].get(f"{cfg_def.rsplit('-', 1)[0]}-xhigh") == 0.75
     assert saved_payloads and saved_payloads[-1][0] == str(state_file)
 
     client = gc_mod.GeminiClient(api_key="test-rest-key", cli_path="/nonexistent/agy")

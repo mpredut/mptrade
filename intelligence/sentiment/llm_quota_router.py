@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from botcore import (
     _parse_bool_flag,
@@ -27,6 +27,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import cache_path
+from core.llm_topics import resolve_configured_llm_models
 from state_io import generation_file_lock, read_json_dict, save_json_state
 
 _agy_paths = importlib.import_module("orchestratorOS.agy.paths")
@@ -62,37 +63,104 @@ def _gc_attr(attr_name: str, current_val: Any) -> Any:
     )
 
 
+_EFFORT_SUFFIXES: tuple[str, ...] = ("-xhigh", "-high", "-medium", "-low")
+_FLASH_EFFORT_SUFFIXES: tuple[str, ...] = ("-high", "-medium", "-low")
+
+
+def model_family_base(model_name: str) -> str:
+    """Strip standard effort suffixes (-xhigh/-high/-medium/-low) to obtain the canonical model family."""
+    cleaned = model_name.strip().lower() if isinstance(model_name, str) else ""
+    for suffix in _EFFORT_SUFFIXES:
+        if cleaned.endswith(suffix):
+            return cleaned[: -len(suffix)]
+    return cleaned
+
+
+def is_gemini_flash_model(model_name: str) -> bool:
+    """Return True for Gemini Flash family slugs (eligible on both paid and free-tier pools)."""
+    low = model_name.strip().lower() if isinstance(model_name, str) else ""
+    return low.startswith("gemini-") and "flash" in low
+
+
+def is_gemini_paid_model(model_name: str) -> bool:
+    """Return True for non-Flash paid Gemini family slugs (e.g. Neon, Carbon, Pro, future series)."""
+    low = model_name.strip().lower() if isinstance(model_name, str) else ""
+    return low.startswith("gemini-") and not is_gemini_flash_model(low)
+
+
+def is_claude_model(model_name: str) -> bool:
+    """Return True for Anthropic Claude model slugs."""
+    low = model_name.strip().lower() if isinstance(model_name, str) else ""
+    return low.startswith("claude-")
+
+
+def _expand_family_variants(
+    models: Iterable[str],
+    suffixes: tuple[str, ...] = _EFFORT_SUFFIXES,
+) -> tuple[str, ...]:
+    """Expand configured model slugs into their full family effort-tier set, preserving order."""
+    out: list[str] = []
+    seen: set[str] = set()
+    bases: list[str] = []
+    for raw in models:
+        m = raw.strip().lower() if isinstance(raw, str) else ""
+        if not m:
+            continue
+        if m not in seen:
+            seen.add(m)
+            out.append(m)
+        base = model_family_base(m)
+        if base and base not in bases:
+            bases.append(base)
+    for base in bases:
+        for suf in suffixes:
+            cand = f"{base}{suf}"
+            if cand not in seen:
+                seen.add(cand)
+                out.append(cand)
+    return tuple(out)
+
+
 def canonical_rest_model(model_name: str) -> str:
-    """Map arbitrary LLM model names (Gemini, Argon, Claude) to a canonical Google AI Studio REST model."""
+    """Map arbitrary LLM model names (Gemini, Claude, etc.) to a canonical Google AI Studio REST model."""
     if not isinstance(model_name, str) or not model_name.strip():
         return "gemini-2.5-flash"
-    cleaned = model_name.strip().lower()
-    base = cleaned.replace("-low", "").replace("-medium", "").replace("-high", "")
+    base = model_family_base(model_name)
     if base.startswith(("gemini-2.5", "gemini-2.0", "gemini-1.5")):
         return base
     return "gemini-2.5-flash"
 
 
 class GeminiQuotaRouterMixin:
-    """Mixin providing Cloud Code quota/credit probing, alert dispatch, and model candidate routing."""
+    """Mixin providing Cloud Code quota/credit probing, alert dispatch, and config-driven model routing."""
 
     _QUOTA_LOCK = threading.Lock()
     _QUOTA_MEM_CACHE: Dict[str, Any] = {}
-    _ARGON_POOL_MODELS = (
-        "gemini-4-argon-high",
-        "gemini-4-argon-medium",
-        "gemini-4-argon-low",
-    )
-    _FLASH_POOL_MODELS = (
-        "gemini-3.8-flash-high",
-        "gemini-3.8-flash-medium",
-        "gemini-3.8-flash-low",
-    )
-    _SHARED_GEMINI_POOL_MODELS = _ARGON_POOL_MODELS + _FLASH_POOL_MODELS
 
     model: str
     fallback_models: tuple[str, ...]
     _custom_fallbacks: bool
+
+    @classmethod
+    def _resolve_model_pools(
+        cls,
+        extra_models: Iterable[str] = (),
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        """Derive (paid_gemini_pool, flash_gemini_pool, claude_pool) dynamically from config.env."""
+        configured = list(resolve_configured_llm_models())
+        for raw in extra_models:
+            if isinstance(raw, str) and raw.strip() and raw.strip() not in configured:
+                configured.append(raw.strip())
+        paid_gemini = _expand_family_variants(
+            (m for m in configured if is_gemini_paid_model(m)),
+            _EFFORT_SUFFIXES,
+        )
+        flash_gemini = _expand_family_variants(
+            (m for m in configured if is_gemini_flash_model(m)),
+            _FLASH_EFFORT_SUFFIXES,
+        )
+        claude_models = tuple(m.strip().lower() for m in configured if is_claude_model(m))
+        return paid_gemini, flash_gemini, claude_models
 
     def get_model_candidates(self, primary_model: Optional[str] = None) -> list[str]:
         """Return an ordered, deduplicated sequence of models to attempt (primary -> fallbacks)."""
@@ -103,12 +171,22 @@ class GeminiQuotaRouterMixin:
             for fb in self.fallback_models:
                 if fb and fb not in candidates and fb.endswith("-low"):
                     candidates.append(fb)
+        if selected.endswith("-xhigh") and not custom_fb:
+            high_step = f"{selected[:-6]}-high"
+            if high_step not in candidates:
+                candidates.append(high_step)
         for fb in self.fallback_models:
             if not fb or fb in candidates:
                 continue
-            if selected.endswith("-high") and not custom_fb and fb == "gemini-3.8-flash-medium":
-                if "gemini-3.8-flash-high" not in candidates:
-                    candidates.append("gemini-3.8-flash-high")
+            if (
+                selected.endswith(("-high", "-xhigh"))
+                and not custom_fb
+                and is_gemini_flash_model(fb)
+                and fb.endswith("-medium")
+            ):
+                flash_high = f"{fb[:-7]}-high"
+                if flash_high not in candidates:
+                    candidates.append(flash_high)
             candidates.append(fb)
         return candidates
 
@@ -118,20 +196,22 @@ class GeminiQuotaRouterMixin:
         attempt_idx: int = 0,
         quota_snapshot: Optional[Dict[str, Any]] = None,
     ) -> list[str]:
-        """Return ordered models for in-place /compact summarization (fast low-cost Gemini Flash model first)."""
+        """Return ordered models for in-place /compact summarization (configured LLM_COMPACT_MODEL first)."""
         idx = safe_nonneg_int(attempt_idx, default=0)
         remaining = [m for m in models_to_try[idx:] if m]
         if _parse_bool_flag(getattr(self, "_custom_fallbacks", False), False):
             return remaining
-        preferred_compact = optional_env("LLM_COMPACT_MODEL", "gemini-3.8-flash-low")
+        preferred_compact = (optional_env("LLM_COMPACT_MODEL", "") or "").strip()
         allowed = set(remaining)
+        low_remaining = [m for m in remaining if m.endswith("-low")]
+        ordered_lows = [
+            *([preferred_compact] if preferred_compact else []),
+            *(m for m in low_remaining if is_gemini_flash_model(m)),
+            *(m for m in low_remaining if is_gemini_paid_model(m)),
+            *(m for m in low_remaining if not is_gemini_flash_model(m) and not is_gemini_paid_model(m)),
+        ]
         compact_chain: list[str] = []
-        for low_m in (
-            preferred_compact,
-            "gemini-3.8-flash-low",
-            "gemini-4-argon-low",
-            "claude-sonnet-5-5-low",
-        ):
+        for low_m in ordered_lows:
             if low_m and low_m not in compact_chain and (not allowed or low_m in allowed):
                 compact_chain.append(low_m)
         for rem_m in remaining:
@@ -326,22 +406,25 @@ class GeminiQuotaRouterMixin:
                     continue
                 rem = max(0.0, safe_float(b.get("remainingFraction"), 0.0))
                 buckets[mid] = rem
-            # Cloud Code retrieveUserQuota reports the shared Google Gemini/Argon quota pool
-            # under gemini-3.8-flash-tiered / gemini-2.5-pro / gemini-3-flash.
-            # On free-tier without top-up credits, Argon slugs are unavailable in agy CLI,
-            # so only Flash aliases inherit the free-tier Gemini pool fraction.
-            gemini_pool_keys = ("gemini-3.8-flash-tiered", "gemini-2.5-pro", "gemini-3-flash")
+            # Cloud Code retrieveUserQuota reports the shared Google Gemini quota pool under
+            # gemini-* backend bucket IDs (e.g. gemini-*-flash-tiered, gemini-*-pro, gemini-*-flash).
+            # Populate all config.env Gemini aliases dynamically; on free-tier without top-up credits,
+            # paid non-Flash Gemini slugs are unavailable in agy CLI so only Flash inherits the pool.
+            gemini_pool_keys = [
+                k for k in buckets if k.lower().startswith("gemini-") and not k.lower().endswith("-image")
+            ]
             gemini_pool_rem = max(
                 (safe_float(buckets.get(k), 0.0) for k in gemini_pool_keys),
                 default=0.0,
             )
             is_free_tier = tier_id.lower() == "free-tier" and available_credits <= 0.0
-            if gemini_pool_rem > 0.0 or any(k in buckets for k in gemini_pool_keys):
-                for flash_alias in cls._FLASH_POOL_MODELS:
+            if gemini_pool_keys:
+                paid_gemini_models, flash_gemini_models, _ = cls._resolve_model_pools()
+                for flash_alias in flash_gemini_models:
                     buckets.setdefault(flash_alias, gemini_pool_rem)
-                argon_rem_val = 0.0 if is_free_tier else gemini_pool_rem
-                for argon_alias in cls._ARGON_POOL_MODELS:
-                    buckets.setdefault(argon_alias, argon_rem_val)
+                paid_rem_val = 0.0 if is_free_tier else gemini_pool_rem
+                for paid_alias in paid_gemini_models:
+                    buckets.setdefault(paid_alias, paid_rem_val)
         except Exception as exc:
             logger.debug("Live LLM quota check failed (non-fatal): %s", exc)
             return None
@@ -461,12 +544,14 @@ class GeminiQuotaRouterMixin:
                 if isinstance(data.get("runtime_exhausted"), dict)
                 else {}
             )
+            paid_gemini_models, flash_gemini_models, _ = cls._resolve_model_pools(extra_models=(cleaned,))
+            shared_gemini_pool = paid_gemini_models + flash_gemini_models
             affected = (
                 (cleaned,)
                 if unrec
                 else (
-                    cls._SHARED_GEMINI_POOL_MODELS
-                    if cleaned in cls._SHARED_GEMINI_POOL_MODELS
+                    shared_gemini_pool
+                    if cleaned.lower() in shared_gemini_pool
                     else (cleaned,)
                 )
             )
@@ -501,21 +586,24 @@ class GeminiQuotaRouterMixin:
             300.0, safe_float(float_env("LLM_QUOTA_ALERT_COOLDOWN_SEC", default=14400.0), 14400.0)
         )
 
-        argon_rem = max(
-            (safe_float(buckets.get(m), 0.0) for m in cls._ARGON_POOL_MODELS),
+        paid_gemini_models, flash_gemini_models, claude_models = cls._resolve_model_pools()
+        primary_rem = max(
+            (safe_float(buckets.get(m), 0.0) for m in paid_gemini_models),
             default=0.0,
         )
+        claude_keys = set(claude_models) | {k for k in buckets if is_claude_model(k)}
         claude_rem = max(
-            safe_float(buckets.get("claude-sonnet-5-5-medium"), 0.0),
-            safe_float(buckets.get("claude-sonnet-5-5-low"), 0.0),
+            (safe_float(buckets.get(m), 0.0) for m in claude_keys),
+            default=0.0,
         )
+        flash_keys = set(flash_gemini_models) | {k for k in buckets if is_gemini_flash_model(k)}
         flash_rem = max(
-            (safe_float(buckets.get(m), 0.0) for m in (*cls._FLASH_POOL_MODELS, "gemini-3.8-flash-tiered")),
+            (safe_float(buckets.get(m), 0.0) for m in flash_keys),
             default=0.0,
         )
 
         alert_updates: Dict[str, Any] = {}
-        if available_credits > 0.0 or argon_rem > warn_threshold:
+        if available_credits > 0.0 or primary_rem > warn_threshold:
             if snapshot.get("last_alert_tier") not in (None, "", "ok"):
                 alert_updates = {"last_alert_tier": "ok"}
         else:
@@ -524,9 +612,14 @@ class GeminiQuotaRouterMixin:
             elif claude_rem <= warn_threshold:
                 alert_tier, severity_rank = "all_paid_low", 2
             else:
-                alert_tier, severity_rank = "argon_low", 1
+                alert_tier, severity_rank = "primary_low", 1
 
-            rank_map = {"ok": 0, "argon_low": 1, "all_paid_low": 2, "all_exhausted": 3}
+            rank_map = {
+                "ok": 0,
+                "primary_low": 1,
+                "all_paid_low": 2,
+                "all_exhausted": 3,
+            }
             prev_tier = str(snapshot.get("last_alert_tier") or "ok")
             prev_rank = rank_map.get(prev_tier, 0)
             now = time.time()
@@ -551,18 +644,21 @@ class GeminiQuotaRouterMixin:
             ):
                 return
 
+            primary_family = model_family_base(paid_gemini_models[0]) if paid_gemini_models else "gemini-primary"
+            claude_family = model_family_base(claude_models[0]) if claude_models else "claude"
+            flash_family = model_family_base(flash_gemini_models[0]) if flash_gemini_models else "gemini-flash"
             title = (
                 "\U0001f6d1 ERROR: AI LLM Quota Near Zero"
-                if argon_rem > 0.0
-                else "\U0001f6d1 ERROR: AI LLM Paid Argon Quota Exhausted (0%)"
+                if primary_rem > 0.0
+                else f"\U0001f6d1 ERROR: AI LLM Paid {primary_family} Quota Exhausted (0%)"
             )
             msg = (
                 f"Available credits: {available_credits:.0f} | "
-                f"gemini-4-argon (med/low/high): {argon_rem * 100:.0f}% | "
-                f"claude-sonnet-5-5 (paid fallback): {claude_rem * 100:.0f}% | "
-                f"gemini-3.8-flash (fallback): {flash_rem * 100:.0f}%. "
+                f"{primary_family} (primary): {primary_rem * 100:.0f}% | "
+                f"{claude_family} (paid fallback): {claude_rem * 100:.0f}% | "
+                f"{flash_family} (fallback): {flash_rem * 100:.0f}%. "
                 f"Automatic routing activated on first model with confirmed quota; "
-                f"immediate dynamic recovery to Argon upon top-up/reset."
+                f"immediate dynamic recovery to {primary_family} upon top-up/reset."
             )
             try:
                 watchdog_common.send_ntfy(title, msg)

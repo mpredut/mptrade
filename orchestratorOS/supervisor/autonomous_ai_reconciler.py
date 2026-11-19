@@ -49,6 +49,7 @@ from state_io import read_json_recovering
 from orchestratorOS.lib.technical_repair_ssot import (
     apply_code_patch_safely,
     apply_reconciliation_plan,
+    build_llm_config_env_remediation,
     build_sensor_health_summary,
     default_supervisor_fallback_plan,
     execute_venue_or_fleet_repair_action,
@@ -59,6 +60,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
     is_system_os_error_report,
     LogEventSummary,
     parse_supervisor_config,
+    persist_llm_model_catalog_state,
     persist_supervisor_audit_artifact,
     send_supervisor_ntfy_http,
     submit_supervisor_trading_decisions,
@@ -373,11 +375,28 @@ class AutonomousAIReconciler:
             else LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0)
         )
         plan = self.synthesize_and_diagnose(sensors, logs, focus_symbols=focus_symbols, topic_key=topic_key)
+        cat_audit = (
+            sensors.system_and_vpn.get("llm_catalog_audit")
+            if spec.can_self_heal and isinstance(getattr(sensors, "system_and_vpn", None), dict)
+            else None
+        )
+        auto_llm_patch_attached = False
+        if spec.can_self_heal and isinstance(cat_audit, dict):
+            rec_updates = cat_audit.get("recommended_config_updates")
+            cur_fix = plan.get("code_remediation")
+            has_existing_fix = isinstance(cur_fix, dict) and _parse_bool_flag(cur_fix.get("has_fix"), False)
+            if isinstance(rec_updates, dict) and rec_updates and not has_existing_fix:
+                if llm_patch := build_llm_config_env_remediation(self.workspace_dir, rec_updates):
+                    plan["code_remediation"] = llm_patch
+                    auto_llm_patch_attached = True
         executed, tests_passed = (
             self.apply_reconciliation(plan, allow_code_remediation=True)
             if spec.can_self_heal
             else (False, None)
         )
+        if auto_llm_patch_attached and executed and tests_passed is True and isinstance(cat_audit, dict):
+            if cat_path := str(cat_audit.get("catalog_path") or "").strip():
+                persist_llm_model_catalog_state(cat_path, cat_audit)
 
         (
             decisions_list,
@@ -397,14 +416,35 @@ class AutonomousAIReconciler:
         if trade_executed:
             executed = True
 
-        raw_issues = plan.get("diagnosed_issues") if spec.can_self_heal else []
+        raw_issues = list(plan.get("diagnosed_issues") or []) if (spec.can_self_heal and isinstance(plan.get("diagnosed_issues"), list)) else []
+        if spec.can_self_heal:
+            missing_llms = (
+                [str(m).strip() for m in (cat_audit.get("missing_configured_models") or []) if str(m).strip()]
+                if isinstance(cat_audit, dict)
+                else []
+            )
+            if missing_llms and not any(
+                isinstance(it, dict)
+                and str(it.get("category") or "").strip().upper() == "CONFIG_ERROR"
+                and any(m in str(it.get("description") or "") for m in missing_llms)
+                for it in raw_issues
+            ):
+                raw_issues.insert(
+                    0,
+                    {
+                        "severity": "HIGH",
+                        "category": "CONFIG_ERROR",
+                        "description": f"Configured LLM model(s) missing from agy models: {', '.join(missing_llms)}",
+                        "root_cause": "Model slug configured in config.env is not advertised by local agy CLI; update LLM_*_MODEL / LLM_FALLBACK_MODELS in config.env.",
+                    },
+                )
         raw_actions = plan.get("venue_actions") if spec.can_self_heal else []
         raw_fix = plan.get("code_remediation") if spec.can_self_heal else None
         report = SupervisorAuditReport(
             ts=now,
             mode=self.mode,
             summary=str(plan.get("summary") or "Audit complete."),
-            diagnosed_issues=raw_issues if isinstance(raw_issues, list) else [],
+            diagnosed_issues=raw_issues,
             venue_actions=raw_actions if isinstance(raw_actions, list) else [],
             code_remediation=raw_fix if isinstance(raw_fix, dict) else {},
             market_trading_decision=market_decision,

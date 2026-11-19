@@ -25,6 +25,7 @@ from botcore import (
     exact_pos_int,
     load_dotenv,
     optional_env,
+    required_env,
     required_int_env,
     safe_int,
     safe_nonneg_int,
@@ -55,9 +56,9 @@ from state_io import extract_json_object, generation_file_lock, read_json_dict, 
 
 logger = logging.getLogger("orchestratorOS.agy.topics")
 
-HIGH_STAKE_MODEL = optional_env("LLM_HIGH_STAKE_MODEL", "gemini-4-argon-high")
-EXECUTOR_MODEL = optional_env("LLM_DEFAULT_MODEL", "gemini-4-argon-medium")
-LOW_STAKE_MODEL = optional_env("LLM_LOW_STAKE_MODEL", "gemini-3.8-flash-low")
+HIGH_STAKE_MODEL = required_env("LLM_HIGH_STAKE_MODEL")
+EXECUTOR_MODEL = required_env("LLM_DEFAULT_MODEL")
+LOW_STAKE_MODEL = required_env("LLM_LOW_STAKE_MODEL")
 
 
 def get_topic_registry_path(registry_path: Optional[str] = None) -> str:
