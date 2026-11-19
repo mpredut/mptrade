@@ -691,6 +691,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         "invalid size",
         "invalid order",
         "invalid arguments",
+        "permission denied",
         "positions limit exceeded",
         "tick size",
         "could not immediately match",

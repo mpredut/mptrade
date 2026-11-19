@@ -107,6 +107,7 @@ _DEFINITIVE_REFUSAL_TOKENS = (
     "cost minimum not met",
     "invalid price",
     "invalid arguments",
+    "permission denied",
     "positions limit exceeded",
     "tick size check failed",
     *POST_ONLY_CROSS_TOKENS,

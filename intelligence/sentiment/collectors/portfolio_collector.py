@@ -966,10 +966,11 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         bot_rule_parts = [p for p in (f"TP +{bot_tp:g}%" if bot_tp else "", f"Trail {bot_trail:g}%" if bot_trail else "", f"DCA -{bot_dca:g}%" if bot_dca else "") if p]
         bot_rule_sfx = f" ({' / '.join(bot_rule_parts)})" if bot_rule_parts else ""
         active_directive = (
-            f"{primary_xpair} ({', '.join(hold_meta_parts)}): LIVE ACTIVE TRADING ENABLED for both "
+            f"{primary_xpair} ({', '.join(hold_meta_parts)}): LIVE SELL-ONLY EXIT TRADING ENABLED on Kraken EU "
+            f"(Spot API BUY on tokenized xStocks returns EGeneral:Permission denied; SELL works at 0bps fee) for both "
             f"[auto_cryptotrade_executor] (by=AI) and kraken_bot.py (by=BOT{bot_rule_sfx}). "
-            "Synthesize live L2 bid/ask walls, ob_imbalance, and 90s/5m kinematics to actively trade swings or harvest "
-            "profitable tranches via 0bps LIMIT orders."
+            "Synthesize live L2 bid/ask walls, ob_imbalance, and 90s/5m kinematics to harvest profitable SELL tranches "
+            "via 0bps LIMIT orders; do NOT submit Kraken xStock BUY orders (use T212 SPCX_US_EQ for US equity buys)."
         )
         ipo_sym_lbl = f"{cfg_underlying}xUSD" if cfg_underlying else ""
         xst_summary: Dict[str, Any] = {
