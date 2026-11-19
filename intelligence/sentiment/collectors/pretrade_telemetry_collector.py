@@ -81,7 +81,6 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_bottom_structure_6h_parts,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
-    align_equity_orderbook_to_spot,
     compute_cross_venue_arb_metrics,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
@@ -89,14 +88,12 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     format_flow_horizon_parts,
     format_spot_cvd_source_tag,
     is_ob_live_and_newer,
-    is_ob_mid_fresher_than_series,
     purge_liquidation_cluster_keys,
     reconcile_sibling_flow_and_liq_regimes,
+    reconcile_spot_and_orderbook_microstructure,
     rescale_orderbook_walls_to_price,
-    select_reconciled_spot_or_ob_price,
     should_rescale_usd_sibling_walls,
     _first_variant_dict,
-    _MICRO_PRICE_ANCHOR_KEYS,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     format_recent_fill_subcycle_parts,
@@ -115,15 +112,15 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     is_unseeded_kalman_state,
     pct_delta,
     recalculate_live_price_geometry,
+    resolve_asset_session_policy,
     _apply_24h_series_enrichment,
     _compute_kalman_from_series,
     _compute_short_slopes_from_series,
     _LAST_7D_SPAN_MS_BY_SYM,
     _load_stitched_24h_ohlc_points,
-    _RTH_VP_ANCHOR_KEYS,
     _STALE_SHORT_24H_KEYS,
 )
-from instrument_registry import casefold_get, is_equity_symbol, is_symbol_market_open, resolve_kraken_tokenized_pair
+from instrument_registry import casefold_get, is_equity_symbol, is_symbol_market_open, resolve_symbol_identity
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
 )
@@ -424,16 +421,11 @@ def _scope_symbol_variants(
     is_usd_sym: bool,
     sym_quotes: tuple[str, ...],
 ) -> Tuple[List[str], List[str]]:
-    def _scope_ok_variant(cand: Any) -> bool:
-        c_u = str(cand or "").strip().upper()
-        if not c_u:
-            return False
-        if not is_eq_sym:
-            return not is_equity_symbol(c_u)
-        return not has_crypto_quote_suffix(c_u)
-
-    sym_variants = [c for c in cache_symbol_variants(symbol, include_base=True) if _scope_ok_variant(c)]
-    quote_variants = [c for c in cache_symbol_variants(symbol, include_base=is_usd_sym, quotes=sym_quotes) if _scope_ok_variant(c)]
+    eff_sym = ensure_equity_suffix(symbol) if is_eq_sym else symbol
+    ident = resolve_symbol_identity(eff_sym)
+    all_quotes = ("USDC", "USDT", "USD", "FDUSD", "BUSD", "TUSD", "EUR", "BTC", "ETH")
+    sym_variants = list(ident.candidate_cache_symbols(include_base=True, quotes=all_quotes))
+    quote_variants = list(ident.candidate_cache_symbols(include_base=is_usd_sym, quotes=sym_quotes))
     return sym_variants, quote_variants
 
 
@@ -495,7 +487,7 @@ def _fetch_pillar2_snapshot(
     quote_variants: List[str],
     _rj: Callable[[str], Any],
 ) -> Any:
-    if prefix in (CACHE_WHALE_SNAPSHOT_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX) and resolve_kraken_tokenized_pair(symbol)[1]:
+    if prefix in (CACHE_WHALE_SNAPSHOT_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX) and resolve_asset_session_policy(symbol).is_tokenized_equity:
         return None
     snap = None
     try:
@@ -558,34 +550,16 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
     allow_network: bool = False,
 ) -> None:
     sym_u_pt = clean_symbol_key(sym_v) or str(sym_v or "").strip().upper()
-    is_eq_vp = is_equity_symbol(sym_u_pt)
-    eff_net_vp = bool(allow_network and not is_eq_vp)
-    has_local_ohlc = bool(cachedb_dir and os.path.isdir(cachedb_dir))
-    if (
-        not m24_d
-        or m24_d.get("vp_source") != "TPO"
-        or (
-            not (eff_net_vp and is_live_network_backfill_enabled())
-            and not is_offline_disk_cache_enabled()
-            and not has_local_ohlc
-        )
-    ):
-        return
-    now_s_pt = _time.time()
-    max_clock_skew_ms = (72 * 3600 * 1000.0) if is_eq_vp else (30 * 60 * 1000.0)
-    is_live_clock = (
-        last_pt_v is None
-        or abs(now_s_pt * 1000.0 - last_pt_v[0]) <= max_clock_skew_ms
-        or (ob_ts_v > 0.0 and abs(now_s_pt - ob_ts_v) <= 30 * 60.0)
-    )
     upgrade_tpo_vp_from_ohlc(
         sym_u_pt,
         m24_d,
         px_v,
-        now_s_pt,
-        s24_is_live_clock=is_live_clock,
+        _time.time(),
+        last_series_pt=last_pt_v,
+        ob_ts_sec=ob_ts_v,
+        respect_policy_network_gate=True,
         cache_dir=cachedb_dir,
-        allow_network=eff_net_vp,
+        allow_network=allow_network,
     )
 
 
@@ -976,28 +950,10 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                     alt_series_24h = list(alt_series_24h) + [[eq_pt_ts_ms, cur_px_est]]
                     m24 = compute_24h_price_metrics(alt_series_24h) or m24
                 elif m24:
-                    if len(alt_series_24h) >= 2:
-                        rth_vp_anchors_eq = {k_vp: m24[k_vp] for k_vp in _RTH_VP_ANCHOR_KEYS if k_vp in m24}
-                        last_alt_tail = (
-                            list(alt_series_24h[-1][2:])
-                            if isinstance(alt_series_24h[-1], (list, tuple)) and len(alt_series_24h[-1]) >= 3
-                            else []
-                        )
-                        override_alt_series_24h = list(alt_series_24h[:-1]) + [[last_alt_pt[0], cur_px_est, *last_alt_tail]]
-                        m24 = compute_24h_price_metrics(override_alt_series_24h) or m24
-                        if rth_vp_anchors_eq:
-                            for k_vp_clr in _RTH_VP_ANCHOR_KEYS:
-                                m24.pop(k_vp_clr, None)
-                            m24.update(rth_vp_anchors_eq)
-                        if abs(live_cur_px - last_alt_pt[1]) / max(live_cur_px, last_alt_pt[1]) > 0.005:
-                            eq_px_diverged_05pct = True
-                            alt_series_24h = override_alt_series_24h
-                        for k_stale_eq in _STALE_SHORT_24H_KEYS:
-                            m24.pop(k_stale_eq, None)
+                    alt_series_24h, m24, eq_px_diverged_05pct = ctx.session_policy.apply_post_rth_price_override(
+                        alt_series_24h, m24, live_cur_px
+                    )
                     recalculate_live_price_geometry(m24, cur_px_est)
-                    first_alt_pt = _parse_ts_px_row(alt_series_24h[0]) if alt_series_24h else None
-                    if "chg_24h_pct" in m24 and first_alt_pt is not None and first_alt_pt[1] > 0:
-                        m24["chg_24h_pct"] = pct_delta(cur_px_est, first_alt_pt[1])
             if rth_fresh_eq and m24 and cur_px_est > 0.0:
                 recalculate_live_price_geometry(m24, cur_px_est)
             if m24 and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")):
@@ -1072,42 +1028,27 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
                     telemetry[f"Orderbook {side_lbl} Wall Ahead"] = f"${w_usd_rc:,.0f} @ ${w_px_fmt}"
 
         is_exact_ob_sym = clean_symbol_key(cur_m_info.get("_source_cand") or symbol) == clean_symbol_key(symbol)
-        if not is_usd_sym and (not cur_px_est or cur_px_est <= 0.0 or _prices_diverged(cur_px_est, cur_m_info.get("ob_mid_price"))):
-            for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
-                cur_m_info.pop(k_strip, None)
-        elif (
-            is_usd_sym
-            and is_fiat_usd_pair(symbol)
-            and cur_px_est > 0.0
-            and (ob_mid_m := safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)) is not None
-            and abs(cur_px_est - ob_mid_m) / max(cur_px_est, ob_mid_m) > 0.01
-            and not _prices_diverged(cur_px_est, ob_mid_m)
-            and not is_ob_mid_fresher_than_series(
-                cur_px_est, ob_mid_m, ob_ts_est, now_ts_s, last_alt_pt, is_exact_ob_sym=is_exact_ob_sym
-            )
-        ):
-            cur_px_est = rescale_orderbook_walls_to_price(cur_m_info, cur_px_est, ob_mid_m)
+        cur_px_est, adopted_est_px, rec_action = reconcile_spot_and_orderbook_microstructure(
+            symbol,
+            cur_px_est,
+            cur_m_info,
+            is_usd_sym=is_usd_sym,
+            is_eq_sym=is_eq_sym,
+            is_exact_ob_sym=is_exact_ob_sym,
+            ob_ts_sec=ob_ts_est,
+            now_ts=now_ts_s,
+            last_series_pt=last_alt_pt,
+            extra_ts_sec=safe_pos_float(ctx.cp_ts_sec, default=0.0) or 0.0,
+        )
+        if rec_action == "adopted_ob_mid" and adopted_est_px is not None:
+            if m24:
+                recalculate_live_price_geometry(m24, adopted_est_px)
+        elif rec_action == "rescaled_fiat_walls":
             if m24:
                 recalculate_live_price_geometry(m24, cur_px_est)
             _refresh_wall_telemetry()
-        elif is_eq_sym and align_equity_orderbook_to_spot(cur_m_info, cur_px_est):
+        elif rec_action == "aligned_equity_ob":
             _refresh_wall_telemetry(use_sub_ten_decimals=True)
-
-        ob_mid_est = safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)
-        if not is_eq_sym and is_usd_sym and is_exact_ob_sym:
-            adopted_est_px = select_reconciled_spot_or_ob_price(
-                cur_px_est,
-                ob_mid_est,
-                ob_ts_est,
-                now_ts_s,
-                last_alt_pt,
-                is_exact_ob_sym=is_exact_ob_sym,
-                extra_ts_sec=safe_pos_float(ctx.cp_ts_sec, default=0.0) or 0.0,
-            )
-            if adopted_est_px is not None:
-                cur_px_est = adopted_est_px
-                if m24:
-                    recalculate_live_price_geometry(m24, adopted_est_px)
         if m24 and m24.get("vp_source") == "TPO":
             _upgrade_pretrade_tpo_vp_from_ohlc(
                 cachedb_dir, symbol, m24, cur_px_est, last_alt_pt, ob_ts_est, allow_network=allow_network
@@ -1614,22 +1555,16 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                         t_entry[sk] = sv
                 if st_ts_t is None and last_alt_pt is not None:
                     st_ts_t = normalize_epoch_sec(last_alt_pt[0], default=None)
-            if is_eq_sym and not eq_px_diverged_05pct and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct")):
-                for k_stale_90 in ("slope_90s", "growth_90s", "trend_90s", "vel_90s_pct_min", "accel_90s_pct_min2"):
-                    t_entry.pop(k_stale_90, None)
-            if (
-                is_eq_sym
-                and last_alt_pt is not None
-                and not eq_px_diverged_05pct
-                and (not rth_fresh_eq or not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")))
-            ):
-                for k_stale_s in (
-                    "slope_90s", "growth_90s", "trend_90s",
-                    "slope_3_7m", "growth_3_7m", "trend_3_7m",
-                    "gradient_recent_fast",
-                    *SHORT_KINEMATIC_METRIC_KEYS,
-                ):
-                    t_entry.pop(k_stale_s, None)
+            ctx.session_policy.prune_stale_short_metrics(
+                t_entry,
+                m24,
+                alt_series_24h,
+                _time.time(),
+                post_rth_series_replaced=eq_px_diverged_05pct,
+                rth_fresh_override=rth_fresh_eq,
+                include_kinematics=True,
+                has_series_tail=(last_alt_pt is not None),
+            )
             resolve_kalman_vel_z(t_entry, populate=True)
             if alt_series_24h and len(alt_series_24h) >= 3:
                 allow_90_kin = not is_eq_sym or eq_px_diverged_05pct or any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct"))
@@ -1669,89 +1604,13 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
 
     cls_name = "PretradeOrderbookCvdAndLiqStage"
 
-    def evaluate(self, ctx: PretradeEvaluationContext) -> None:
-        (
-            cachedb_dir,
-            symbol,
-            telemetry,
-            cur_m_info,
-            t_entry,
-            m24,
-            m7d,
-            is_sub24h_dup_7d,
-            alt_series_24h,
-            cur_px_est,
-            last_alt_pt,
-            is_usd_sym,
-            is_eq_sym,
-            rth_fresh_eq,
-            eq_px_diverged_05pct,
-            quote_variants,
-            cur_p_items,
-            st_items_map,
-            k_items_map,
-            _rj,
-            allow_network,
-        ) = (
-            ctx.cachedb_dir,
-            ctx.symbol,
-            ctx.telemetry,
-            ctx.cur_m_info,
-            ctx.t_entry,
-            ctx.m24,
-            ctx.m7d,
-            ctx.is_sub24h_dup_7d,
-            ctx.alt_series_24h,
-            ctx.cur_px_est,
-            ctx.last_alt_pt,
-            ctx.is_usd_sym,
-            ctx.is_eq_sym,
-            ctx.rth_fresh_eq,
-            ctx.eq_px_diverged_05pct,
-            ctx.quote_variants,
-            ctx.cur_p_items,
-            ctx.st_items_map,
-            ctx.k_items_map,
-            ctx.rj,
-            bool(ctx.allow_network),
-        )
-        if not cur_m_info:
-            return
-        if cur_m_info.get("spread_bps") is not None:
-            telemetry["Orderbook Bid-Ask Spread"] = f"{cur_m_info['spread_bps']} bps"
-        d1_b = safe_pos_float(cur_m_info.get("depth_1pct_bid_usd"), default=0.0) or 0.0
-        d1_a = safe_pos_float(cur_m_info.get("depth_1pct_ask_usd"), default=0.0) or 0.0
-        if d1_b > 0.0 or d1_a > 0.0:
-            bw_pt_tag = format_book_window_cap_tag(cur_m_info.get("book_span_pct"))
-            bw_pt_s = f", {bw_pt_tag}" if bw_pt_tag else ""
-            slip_s = f", est_slip_2k={cur_m_info['est_slip_2k_bps']} bps" if cur_m_info.get("est_slip_2k_bps") is not None else ""
-            telemetry["Orderbook Depth Within 1%"] = f"bid=${d1_b:,.0f} / ask=${d1_a:,.0f}{bw_pt_s}{slip_s}"
-        p_est: Dict[str, Any] = {k: v for k, v in t_entry.items() if v is not None and k != "price"}
-        if cur_px_est and cur_px_est > 0:
-            p_est["price"] = cur_px_est
-        if m7d and not is_sub24h_dup_7d:
-            p_est.update(m7d)
-        if m24:
-            _apply_24h_series_enrichment(symbol, p_est, m24, alt_series_24h, None)
-            if is_eq_sym and not eq_px_diverged_05pct and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct")):
-                for k_stale_90 in ("slope_90s", "growth_90s", "trend_90s"):
-                    p_est.pop(k_stale_90, None)
-            if (
-                is_eq_sym
-                and last_alt_pt is not None
-                and not eq_px_diverged_05pct
-                and (not rth_fresh_eq or not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")))
-            ):
-                for k_stale_s in (
-                    "slope_90s", "growth_90s", "trend_90s",
-                    "slope_3_7m", "growth_3_7m", "trend_3_7m",
-                    "gradient_recent_fast",
-                ):
-                    p_est.pop(k_stale_s, None)
-        if cur_px_est and cur_px_est > 0:
-            p_est["price"] = cur_px_est
-            recalculate_live_price_geometry(p_est, cur_px_est)
-        enrich_microstructure_cvd(cur_m_info, p_est)
+    @staticmethod
+    def _format_derivatives_and_whale_lines(
+        telemetry: Dict[str, Any],
+        cur_m_info: Dict[str, Any],
+        is_eq_sym: bool,
+        is_tok_xstock_pt: bool,
+    ) -> None:
         eq_no_oi_pt = is_eq_sym and (safe_pos_float(cur_m_info.get("oi_usd"), default=0.0) or 0.0) <= 0.0
         if (
             (wl_p := clean_scale(cur_m_info.get("whale_long_pct"), default=None, allow_percent=True)) is not None
@@ -1761,9 +1620,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                 or str(telemetry.get("Whale Positioning") or "").startswith(("0.0% ", "100.0% "))
             )
         ):
-            wl_r = safe_pos_float(cur_m_info.get("whale_long_ratio"), default=None)
-            if wl_r is None:
-                wl_r = wl_p / (1.0 - wl_p)
+            wl_r = safe_pos_float(cur_m_info.get("whale_long_ratio"), default=None) or (wl_p / (1.0 - wl_p))
             telemetry["Whale Positioning"] = f"{wl_p * 100.0:.1f}% Top Traders Long (L/S ratio: {wl_r:.2f})"
         if (
             (tr_m := safe_pos_float(cur_m_info.get("taker_buy_sell_ratio"), default=None)) is not None
@@ -1793,7 +1650,6 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                 if x and x.split("=", 1)[0] not in fr_base
             ]
             telemetry["Perpetual Funding Rate"] = f"{fr_base} ({', '.join(fr_extras)})" if fr_extras else fr_base
-        is_tok_xstock_pt = resolve_kraken_tokenized_pair(symbol)[1]
         if is_tok_xstock_pt:
             for _tok_pop_k in ("Whale Positioning", "Whale Taker Flow", "Perpetual Funding Rate", "Derivatives Open Interest"):
                 telemetry.pop(_tok_pop_k, None)
@@ -1807,98 +1663,137 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             else:
                 telemetry["Derivatives Open Interest"] = f"{oi_base}{eq_oi_tag}"
 
-        no_perp_liq = is_eq_sym or is_tok_xstock_pt
+    @staticmethod
+    def _reconcile_sibling_arbitrage(
+        ctx: PretradeEvaluationContext,
+        p_est: Dict[str, Any],
+        liq_c: Dict[str, Any],
+    ) -> None:
+        cachedb_dir, symbol, telemetry, cur_m_info, cur_px_est = (
+            ctx.cachedb_dir, ctx.symbol, ctx.telemetry, ctx.cur_m_info, ctx.cur_px_est
+        )
+        _rj, allow_network = ctx.rj, bool(ctx.allow_network)
+        cur_bd = safe_pos_float(cur_m_info.get("bid_depth_usd"), default=0.0) or 0.0
+        for cand in ctx.quote_variants:
+            cand_u = str(cand or "").strip().upper()
+            if not cand_u or clean_symbol_key(cand_u) == clean_symbol_key(symbol):
+                continue
+            sib_ob_d = _rj(os.path.join(cachedb_dir, f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{cand_u}.json"))
+            if not isinstance(sib_ob_d, dict):
+                sib_ob_d = _rj(os.path.join(cachedb_dir, "telemetry", f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{cand_u}.json"))
+            if not isinstance(sib_ob_d, dict):
+                continue
+            sib_bd = safe_pos_float(sib_ob_d.get("bid_depth_usd"), default=0.0) or 0.0
+            if not (sib_bd > 0.0 and abs(sib_bd - cur_bd) > 1.0):
+                continue
+            if sib_m := load_symbol_microstructure(cachedb_dir, cand_u, _rj, ob=sib_ob_d):
+                for _k_sib_ts in ("_ob_raw_ts", "_deriv_ts", "_whale_ts"):
+                    sib_m.pop(_k_sib_ts, None)
+                sib_ob_ts = safe_pos_float(sib_m.pop("_ob_ts", None), default=0.0) or normalize_epoch_sec(
+                    sib_ob_d.get("ts"), default=0.0
+                ) or 0.0
+                sib_ob_mid = safe_pos_float(sib_m.get("ob_mid_price"), default=None)
+                sib_s24, _ = load_symbol_price_series(cachedb_dir, cand_u, current_price_items=ctx.cur_p_items)
+                sib_last_pt = _parse_ts_px_row(sib_s24[-1]) if sib_s24 else None
+                sib_live_px = extract_current_price_item(casefold_get(ctx.cur_p_items, cand_u))
+                if not sib_live_px or sib_live_px <= 0.0:
+                    sib_live_px = _resolve_live_24trend_current_price(cachedb_dir, cand_u, _rj)
+                if (not sib_live_px or sib_live_px <= 0.0) and cur_px_est > 0.0 and sib_ob_ts > 0.0 and (_time.time() - sib_ob_ts) > 120.0:
+                    sib_live_px = cur_px_est
+                sib_ob_fresh = is_ob_live_and_newer(sib_ob_ts, _time.time(), sib_last_pt)
+                if should_rescale_usd_sibling_walls(cand_u, sib_live_px, sib_ob_mid, cur_px_est, ob_ts=sib_ob_ts, last_pt=sib_last_pt):
+                    rescale_orderbook_walls_to_price(sib_m, sib_live_px, sib_ob_mid)
+                sib_px = (
+                    (safe_pos_float(sib_m.get("ob_mid_price"), default=None) if sib_ob_fresh else None)
+                    or sib_live_px
+                    or safe_pos_float(sib_m.get("ob_mid_price"), default=None)
+                    or cur_px_est
+                )
+                sib_p_est = {**p_est, "price": sib_px} if sib_px and sib_px > 0 else dict(p_est)
+                if isinstance(sib_tinfo := casefold_get(ctx.st_items_map, cand_u), dict):
+                    apply_short_trend_item(sib_p_est, sib_tinfo)
+                _ensure_cacheprice_classes_bound()
+                if isinstance(l24_sib_d := _rj(os.path.join(cachedb_dir, _mc_mod.CacheShortTrendManager.live_window_relpath_for_symbol(cand_u))), dict) and (
+                    l24_sib_d.get("windows") or any(wk in l24_sib_d for wk in ("90", "222", "900", "9000"))
+                ):
+                    apply_live_24trend_windows(sib_p_est, l24_sib_d)
+                if isinstance(sib_k := casefold_get(ctx.k_items_map, cand_u), dict):
+                    if not is_unseeded_kalman_state(sib_k) or sib_p_est.get("kalman_vel") is None:
+                        for k_kal in ("kalman_vel", "kalman_vel_std", "kalman_trend"):
+                            sib_p_est[k_kal] = sib_k.get(k_kal)
+                    if (sib_k_vol := safe_pos_float(sib_k.get("vol_1h_pct"), default=None)) is not None:
+                        sib_p_est["vol_1h_pct"] = sib_k_vol
+                if sib_s24 and (sib_m24 := compute_24h_price_metrics(sib_s24)):
+                    if not ctx.k_items_map and not isinstance(casefold_get(ctx.st_items_map, cand_u), dict):
+                        for k_kal in ("kalman_vel", "kalman_vel_std", "kalman_trend"):
+                            sib_p_est.pop(k_kal, None)
+                    _upgrade_pretrade_tpo_vp_from_ohlc(
+                        cachedb_dir, cand_u, sib_m24, sib_px or 0.0, sib_last_pt, sib_ob_ts, allow_network=allow_network
+                    )
+                    _apply_24h_series_enrichment(cand_u, sib_p_est, sib_m24, sib_s24, None)
+                    if sib_px and sib_px > 0:
+                        sib_p_est["price"] = sib_px
+                        recalculate_live_price_geometry(sib_p_est, sib_px)
+                enrich_microstructure_cvd(sib_m, sib_p_est)
+                sib_m.update(compute_liquidation_clusters(sib_p_est, sib_m, symbol=cand_u))
+                micro_pair, pt_pair = {symbol: cur_m_info, cand_u: sib_m}, {symbol: p_est, cand_u: sib_p_est}
+                reconcile_sibling_flow_and_liq_regimes(micro_pair, pt_pair)
+                compute_cross_venue_arb_metrics(symbol, cur_m_info, p_est, micro_pair, pt_pair)
+                liq_c["liq_magnet_bias"] = cur_m_info.get("liq_magnet_bias")
+                if (arb_bps := safe_float(cur_m_info.get("cross_venue_arb_bps"), default=None)) is not None and cur_m_info.get("cross_venue_peer"):
+                    net_b = safe_float(cur_m_info.get("net_buy_edge_vs_peer_bps"), default=None)
+                    best_b = cur_m_info.get("best_buy_venue")
+                    arb_s = f"arb_vs_{cur_m_info['cross_venue_peer']}={arb_bps:+.1f}bps"
+                    if net_b is not None and best_b:
+                        arb_s += f", net_buy_edge={net_b:+.1f}bps (best_buy={best_b})"
+                    telemetry["Cross-Venue Relative Value (Arbitrage)"] = arb_s
+            break
+
+    def evaluate(self, ctx: PretradeEvaluationContext) -> None:
+        symbol, telemetry, cur_m_info, m24, m7d, alt_series_24h, cur_px_est = (
+            ctx.symbol, ctx.telemetry, ctx.cur_m_info, ctx.m24, ctx.m7d, ctx.alt_series_24h, ctx.cur_px_est
+        )
+        if not cur_m_info:
+            return
+        if cur_m_info.get("spread_bps") is not None:
+            telemetry["Orderbook Bid-Ask Spread"] = f"{cur_m_info['spread_bps']} bps"
+        d1_b = safe_pos_float(cur_m_info.get("depth_1pct_bid_usd"), default=0.0) or 0.0
+        d1_a = safe_pos_float(cur_m_info.get("depth_1pct_ask_usd"), default=0.0) or 0.0
+        if d1_b > 0.0 or d1_a > 0.0:
+            bw_pt_tag = format_book_window_cap_tag(cur_m_info.get("book_span_pct"))
+            bw_pt_s = f", {bw_pt_tag}" if bw_pt_tag else ""
+            slip_s = f", est_slip_2k={cur_m_info['est_slip_2k_bps']} bps" if cur_m_info.get("est_slip_2k_bps") is not None else ""
+            telemetry["Orderbook Depth Within 1%"] = f"bid=${d1_b:,.0f} / ask=${d1_a:,.0f}{bw_pt_s}{slip_s}"
+        p_est: Dict[str, Any] = {k: v for k, v in ctx.t_entry.items() if v is not None and k != "price"}
+        if cur_px_est and cur_px_est > 0:
+            p_est["price"] = cur_px_est
+        if m7d and not ctx.is_sub24h_dup_7d:
+            p_est.update(m7d)
+        if m24:
+            _apply_24h_series_enrichment(symbol, p_est, m24, alt_series_24h, None)
+            ctx.session_policy.prune_stale_short_metrics(
+                p_est,
+                m24,
+                alt_series_24h,
+                _time.time(),
+                post_rth_series_replaced=ctx.eq_px_diverged_05pct,
+                rth_fresh_override=(ctx.rth_fresh_eq if ctx.last_alt_pt is not None else True),
+            )
+        if cur_px_est and cur_px_est > 0:
+            p_est["price"] = cur_px_est
+            recalculate_live_price_geometry(p_est, cur_px_est)
+        enrich_microstructure_cvd(cur_m_info, p_est)
+        is_tok_xstock_pt = ctx.session_policy.is_tokenized_equity
+        self._format_derivatives_and_whale_lines(telemetry, cur_m_info, ctx.is_eq_sym, is_tok_xstock_pt)
+        no_perp_liq = not ctx.session_policy.has_liquidation_clusters
         if no_perp_liq:
-            liq_c = {}
+            liq_c: Dict[str, Any] = {}
             purge_liquidation_cluster_keys(cur_m_info)
         else:
             liq_c = compute_liquidation_clusters(p_est, cur_m_info, symbol=symbol)
             cur_m_info.update(liq_c)
-        if is_usd_sym:
-            cur_bd = safe_pos_float(cur_m_info.get("bid_depth_usd"), default=0.0) or 0.0
-            for cand in quote_variants:
-                cand_u = str(cand or "").strip().upper()
-                if not cand_u or clean_symbol_key(cand_u) == clean_symbol_key(symbol):
-                    continue
-                sib_ob_d = _rj(os.path.join(cachedb_dir, f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{cand_u}.json"))
-                if not isinstance(sib_ob_d, dict):
-                    sib_ob_d = _rj(os.path.join(cachedb_dir, "telemetry", f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{cand_u}.json"))
-                if not isinstance(sib_ob_d, dict):
-                    continue
-                sib_bd = safe_pos_float(sib_ob_d.get("bid_depth_usd"), default=0.0) or 0.0
-                if sib_bd > 0.0 and abs(sib_bd - cur_bd) > 1.0:
-                    if sib_m := load_symbol_microstructure(cachedb_dir, cand_u, _rj, ob=sib_ob_d):
-                        for _k_sib_ts in ("_ob_raw_ts", "_deriv_ts", "_whale_ts"):
-                            sib_m.pop(_k_sib_ts, None)
-                        sib_ob_ts = safe_pos_float(sib_m.pop("_ob_ts", None), default=0.0) or normalize_epoch_sec(
-                            sib_ob_d.get("ts"),
-                            default=0.0,
-                        ) or 0.0
-                        sib_ob_mid = safe_pos_float(sib_m.get("ob_mid_price"), default=None)
-                        sib_s24, _ = load_symbol_price_series(cachedb_dir, cand_u, current_price_items=cur_p_items)
-                        sib_last_pt = _parse_ts_px_row(sib_s24[-1]) if sib_s24 else None
-                        sib_live_px = extract_current_price_item(casefold_get(cur_p_items, cand_u))
-                        if not sib_live_px or sib_live_px <= 0.0:
-                            sib_live_px = _resolve_live_24trend_current_price(cachedb_dir, cand_u, _rj)
-                        if (not sib_live_px or sib_live_px <= 0.0) and cur_px_est > 0.0:
-                            if sib_ob_ts > 0.0 and (_time.time() - sib_ob_ts) > 120.0:
-                                sib_live_px = cur_px_est
-                        sib_ob_fresh = is_ob_live_and_newer(sib_ob_ts, _time.time(), sib_last_pt)
-                        if should_rescale_usd_sibling_walls(
-                            cand_u,
-                            sib_live_px,
-                            sib_ob_mid,
-                            cur_px_est,
-                            ob_ts=sib_ob_ts,
-                            last_pt=sib_last_pt,
-                        ):
-                            rescale_orderbook_walls_to_price(sib_m, sib_live_px, sib_ob_mid)
-                        sib_px = (
-                            (safe_pos_float(sib_m.get("ob_mid_price"), default=None) if sib_ob_fresh else None)
-                            or sib_live_px
-                            or safe_pos_float(sib_m.get("ob_mid_price"), default=None)
-                            or cur_px_est
-                        )
-                        sib_p_est = {**p_est, "price": sib_px} if sib_px and sib_px > 0 else dict(p_est)
-                        if isinstance(sib_tinfo := casefold_get(st_items_map, cand_u), dict):
-                            apply_short_trend_item(sib_p_est, sib_tinfo)
-                        _ensure_cacheprice_classes_bound()
-                        if isinstance(l24_sib_d := _rj(os.path.join(cachedb_dir, _mc_mod.CacheShortTrendManager.live_window_relpath_for_symbol(cand_u))), dict) and (
-                            l24_sib_d.get("windows") or any(wk in l24_sib_d for wk in ("90", "222", "900", "9000"))
-                        ):
-                            apply_live_24trend_windows(sib_p_est, l24_sib_d)
-                        if isinstance(sib_k := casefold_get(k_items_map, cand_u), dict):
-                            if not is_unseeded_kalman_state(sib_k) or sib_p_est.get("kalman_vel") is None:
-                                for k_kal in ("kalman_vel", "kalman_vel_std", "kalman_trend"):
-                                    sib_p_est[k_kal] = sib_k.get(k_kal)
-                            if (sib_k_vol := safe_pos_float(sib_k.get("vol_1h_pct"), default=None)) is not None:
-                                sib_p_est["vol_1h_pct"] = sib_k_vol
-                        if sib_s24 and (sib_m24 := compute_24h_price_metrics(sib_s24)):
-                            if not k_items_map and not isinstance(casefold_get(st_items_map, cand_u), dict):
-                                for k_kal in ("kalman_vel", "kalman_vel_std", "kalman_trend"):
-                                    sib_p_est.pop(k_kal, None)
-                            _upgrade_pretrade_tpo_vp_from_ohlc(
-                                cachedb_dir, cand_u, sib_m24, sib_px or 0.0, sib_last_pt, sib_ob_ts, allow_network=allow_network
-                            )
-                            _apply_24h_series_enrichment(cand_u, sib_p_est, sib_m24, sib_s24, None)
-                            if sib_px and sib_px > 0:
-                                sib_p_est["price"] = sib_px
-                                recalculate_live_price_geometry(sib_p_est, sib_px)
-                        enrich_microstructure_cvd(sib_m, sib_p_est)
-                        sib_m.update(compute_liquidation_clusters(sib_p_est, sib_m, symbol=cand_u))
-                        micro_pair = {symbol: cur_m_info, cand_u: sib_m}
-                        pt_pair = {symbol: p_est, cand_u: sib_p_est}
-                        reconcile_sibling_flow_and_liq_regimes(micro_pair, pt_pair)
-                        compute_cross_venue_arb_metrics(symbol, cur_m_info, p_est, micro_pair, pt_pair)
-                        liq_c["liq_magnet_bias"] = cur_m_info.get("liq_magnet_bias")
-                        if (arb_bps := safe_float(cur_m_info.get("cross_venue_arb_bps"), default=None)) is not None and cur_m_info.get("cross_venue_peer"):
-                            net_b = safe_float(cur_m_info.get("net_buy_edge_vs_peer_bps"), default=None)
-                            best_b = cur_m_info.get("best_buy_venue")
-                            arb_s = f"arb_vs_{cur_m_info['cross_venue_peer']}={arb_bps:+.1f}bps"
-                            if net_b is not None and best_b:
-                                arb_s += f", net_buy_edge={net_b:+.1f}bps (best_buy={best_b})"
-                            telemetry["Cross-Venue Relative Value (Arbitrage)"] = arb_s
-                    break
+        if ctx.is_usd_sym:
+            self._reconcile_sibling_arbitrage(ctx, p_est, liq_c)
         if cur_m_info.get("cvd_15m_usd") is not None:
             cvd_u = safe_float(cur_m_info.get("cvd_15m_usd"), 0.0)
             cvd_line = f"${cvd_u:+,.0f}"

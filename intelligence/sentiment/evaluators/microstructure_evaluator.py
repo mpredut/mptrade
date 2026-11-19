@@ -1584,6 +1584,108 @@ class MicrostructureEvaluatorBase(TelemetryEvaluatorInterface, ABC):
     cls_name = "MicrostructureEvaluatorBase"
 
 
+class SpotOrderbookPriceReconcilerEvaluator(MicrostructureEvaluatorBase):
+    """Concrete evaluator (Level 3) reconciling spot price vs L2 orderbook mid/walls across crypto, tokenized xStocks, and RTH equities."""
+
+    cls_name = "SpotOrderbookPriceReconcilerEvaluator"
+
+    def evaluate(
+        self,
+        data: Any,
+        *,
+        symbol: str = "",
+        cur_px: float = 0.0,
+        is_usd_sym: bool = True,
+        is_eq_sym: bool = False,
+        is_exact_ob_sym: bool = True,
+        ob_ts_sec: float = 0.0,
+        now_ts: float = 0.0,
+        last_series_pt: Optional[Tuple[float, float]] = None,
+        extra_ts_sec: float = 0.0,
+        has_live_cp_point: bool = False,
+        allow_sibling_live_mid: bool = False,
+        cross_venue_collision: bool = False,
+        can_rescale_fiat_usd_walls: bool = True,
+        **kwargs: Any,
+    ) -> Tuple[float, Optional[float], str]:
+        m_info = data if isinstance(data, dict) else {}
+        ob_mid_m = safe_pos_float(m_info.get("ob_mid_price"), default=None)
+        if not is_usd_sym and (not cur_px or cur_px <= 0.0 or _prices_diverged(cur_px, ob_mid_m)):
+            for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
+                m_info.pop(k_strip, None)
+            return cur_px, None, "stripped_non_usd_anchors"
+        if is_eq_sym:
+            changed = align_equity_orderbook_to_spot(m_info, cur_px)
+            return cur_px, None, ("aligned_equity_ob" if changed else "none")
+        if is_usd_sym and ob_mid_m is not None and not cross_venue_collision:
+            if is_exact_ob_sym or allow_sibling_live_mid:
+                adopted_ob_px = select_reconciled_spot_or_ob_price(
+                    cur_px,
+                    ob_mid_m,
+                    ob_ts_sec,
+                    now_ts,
+                    last_series_pt,
+                    is_exact_ob_sym=is_exact_ob_sym,
+                    extra_ts_sec=extra_ts_sec,
+                    has_live_cp_point=has_live_cp_point,
+                    allow_sibling_live_mid=allow_sibling_live_mid,
+                )
+                if adopted_ob_px is not None:
+                    return adopted_ob_px, adopted_ob_px, "adopted_ob_mid"
+            if (
+                can_rescale_fiat_usd_walls
+                and cur_px > 0.0
+                and abs(cur_px - ob_mid_m) / max(cur_px, ob_mid_m) > 0.01
+                and not _prices_diverged(cur_px, ob_mid_m)
+                and is_fiat_usd_pair(symbol)
+                and not is_ob_mid_fresher_than_series(
+                    cur_px, ob_mid_m, ob_ts_sec, now_ts, last_series_pt, is_exact_ob_sym=is_exact_ob_sym
+                )
+            ):
+                new_px = rescale_orderbook_walls_to_price(m_info, cur_px, ob_mid_m)
+                return new_px, None, "rescaled_fiat_walls"
+        return cur_px, None, "none"
+
+
+_SPOT_OB_PRICE_RECONCILER = SpotOrderbookPriceReconcilerEvaluator()
+
+
+def reconcile_spot_and_orderbook_microstructure(
+    symbol: str,
+    cur_px: float,
+    m_info: Dict[str, Any],
+    *,
+    is_usd_sym: bool,
+    is_eq_sym: bool,
+    is_exact_ob_sym: bool,
+    ob_ts_sec: float,
+    now_ts: float,
+    last_series_pt: Optional[Tuple[float, float]] = None,
+    extra_ts_sec: float = 0.0,
+    has_live_cp_point: bool = False,
+    allow_sibling_live_mid: bool = False,
+    cross_venue_collision: bool = False,
+    can_rescale_fiat_usd_walls: bool = True,
+) -> Tuple[float, Optional[float], str]:
+    """Pure SSOT reconciliation between live spot/series price and L2 orderbook mid/walls."""
+    return _SPOT_OB_PRICE_RECONCILER.evaluate(
+        m_info,
+        symbol=symbol,
+        cur_px=cur_px,
+        is_usd_sym=is_usd_sym,
+        is_eq_sym=is_eq_sym,
+        is_exact_ob_sym=is_exact_ob_sym,
+        ob_ts_sec=ob_ts_sec,
+        now_ts=now_ts,
+        last_series_pt=last_series_pt,
+        extra_ts_sec=extra_ts_sec,
+        has_live_cp_point=has_live_cp_point,
+        allow_sibling_live_mid=allow_sibling_live_mid,
+        cross_venue_collision=cross_venue_collision,
+        can_rescale_fiat_usd_walls=can_rescale_fiat_usd_walls,
+    )
+
+
 class OrderbookCvdFlowEvaluator(MicrostructureEvaluatorBase):
     """Concrete evaluator (Level 3) for multi-horizon taker flow, synthetic spot CVD, and spot-vs-perp flow regime."""
 
@@ -1747,6 +1849,7 @@ for _ms_eval_id, _ms_eval_cls in (
     ("micro_cycle_delta", MicrostructureCycleDeltaEvaluator),
     ("micro_cross_venue_trends", CrossVenueTrendsEnricherEvaluator),
     ("micro_sibling_symbol_sync", SiblingSymbolTelemetrySyncEvaluator),
+    ("micro_spot_ob_reconciler", SpotOrderbookPriceReconcilerEvaluator),
 ):
     TelemetryEvaluatorFactory.register(_ms_eval_id, _ms_eval_cls)
 
@@ -1759,6 +1862,7 @@ __all__ = [
     "MicrostructureEvaluatorBase",
     "OrderbookCvdFlowEvaluator",
     "SiblingSymbolTelemetrySyncEvaluator",
+    "SpotOrderbookPriceReconcilerEvaluator",
     "_LIQ_CLUSTER_KEYS",
     "_MICRO_OB_LOCAL_KEYS",
     "_MICRO_PRICE_ANCHOR_KEYS",
@@ -1779,6 +1883,7 @@ __all__ = [
     "is_ob_mid_fresher_than_series",
     "purge_liquidation_cluster_keys",
     "reconcile_sibling_flow_and_liq_regimes",
+    "reconcile_spot_and_orderbook_microstructure",
     "rescale_orderbook_walls_to_price",
     "select_reconciled_spot_or_ob_price",
     "should_rescale_usd_sibling_walls",

@@ -47,7 +47,7 @@ import instrument_registry as _ir
 from instrument_registry import (
     is_equity_symbol,
     is_symbol_market_open,
-    resolve_kraken_tokenized_pair,
+    resolve_symbol_identity,
     venue_for_symbol,
 )
 from intelligence.macro_sentiment_ssot import (
@@ -655,7 +655,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             return None, 0.0, None, None, False
         # BY DESIGN: Kraken spot tokenized equities (SPCXxUSD, ANTxUSD) have no perpetual futures or whale L/S;
         # short-circuit before memory/disk/base-variant lookup so stale/foreign snapshots never leak in.
-        if self._SKIP_TOKENIZED_XSTOCKS and resolve_kraken_tokenized_pair(sym_clean)[1]:
+        if self._SKIP_TOKENIZED_XSTOCKS and resolve_symbol_identity(sym_clean).is_tokenized_equity:
             return None, 0.0, None, None, False
         stale_set = getattr(self, "_stale_fallback_symbols", None)
         if isinstance(stale_set, set):

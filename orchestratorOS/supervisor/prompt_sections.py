@@ -74,7 +74,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )
-from instrument_registry import casefold_get, is_equity_or_tokenized_symbol, is_equity_symbol, resolve_kraken_tokenized_pair
+from instrument_registry import casefold_get, is_equity_or_tokenized_symbol, is_equity_symbol, resolve_symbol_identity
 from providers.order_id_context import format_actor_tag
 
 
@@ -1004,9 +1004,10 @@ def _format_microstructure_section(
             ob_mid_lbl = f", ob_mid={round(ob_mid, 6)}" if ob_mid > 0 else ""
             spread_sfx = f", spread={minfo.get('spread_bps')}bps{ba_lbl}{ob_mid_lbl}"
 
-        sym_is_eq_3b = is_equity_symbol(sym)
-        sym_is_tok_xstock_3b = resolve_kraken_tokenized_pair(sym)[1]
-        sym_no_crypto_perp_3b = sym_is_eq_3b or sym_is_tok_xstock_3b
+        sym_ident_3b = resolve_symbol_identity(sym)
+        sym_is_eq_3b = sym_ident_3b.is_rth_equity
+        sym_is_tok_xstock_3b = sym_ident_3b.is_tokenized_equity
+        sym_no_crypto_perp_3b = not sym_ident_3b.has_crypto_perpetuals
         raw_p = (
             prices_and_trends.get(sym)
             if isinstance(prices_and_trends.get(sym), dict)
@@ -1381,10 +1382,11 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         lb_u_s = f" (${lb_u:.2f} USD)" if lb_u is not None and lb_u > 0.0 else ""
         fb_str += f", locked_base_qty={lb_q:g}{lb_u_s}"
     fq_val = pos.get("free_quote")
-    tok_pos_sym, is_tok_pos = resolve_kraken_tokenized_pair(str(pos.get("symbol") or ""))
-    disp_pos_sym = tok_pos_sym if is_tok_pos else pos.get("symbol")
+    pos_ident = resolve_symbol_identity(pos.get("symbol"))
+    is_tok_pos = pos_ident.is_tokenized_equity
+    disp_pos_sym = pos_ident.display_symbol if is_tok_pos else pos.get("symbol")
     base_lbl = (
-        f"{canonical_base_asset(tok_pos_sym)}x"
+        f"{canonical_base_asset(pos_ident.wire_symbol)}x"
         if is_tok_pos
         else (pos.get("base") or canonical_base_asset(str(disp_pos_sym or "")) or "BASE")
     )
@@ -1412,9 +1414,9 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
 
 def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> str:
     """Format a single recent order summary line for Section 3C."""
-    tok_ro_sym, is_tok_ro = resolve_kraken_tokenized_pair(sym)
-    if is_tok_ro:
-        sym = tok_ro_sym
+    ro_ident = resolve_symbol_identity(sym)
+    if ro_ident.is_tokenized_equity and ro_ident.display_symbol:
+        sym = ro_ident.display_symbol
     open_lots_ro = oinfo.get("open_lots") if isinstance(oinfo.get("open_lots"), list) else []
 
     def _side_summary(key: str) -> str:
@@ -1803,9 +1805,9 @@ def _format_portfolio_section(
             if not isinstance(item, dict):
                 return item
             cleaned = {k: v for k, v in item.items() if v is not None}
-            tok_lces_sym, is_tok_lces = resolve_kraken_tokenized_pair(str(cleaned.get("symbol") or ""))
-            if is_tok_lces and tok_lces_sym:
-                cleaned["symbol"] = tok_lces_sym
+            lces_ident = resolve_symbol_identity(cleaned.get("symbol"))
+            if lces_ident.is_tokenized_equity and lces_ident.display_symbol:
+                cleaned["symbol"] = lces_ident.display_symbol
             return cleaned
 
         if isinstance(raw_lces, list):
@@ -1904,9 +1906,9 @@ def _format_portfolio_section(
                         if oid
                     }
                     it_copy = dict(it)
-                    tok_it_sym, is_tok_it = resolve_kraken_tokenized_pair(str(it_copy.get("symbol") or ""))
-                    if is_tok_it and tok_it_sym:
-                        it_copy["symbol"] = tok_it_sym
+                    it_ident = resolve_symbol_identity(it_copy.get("symbol"))
+                    if it_ident.is_tokenized_equity and it_ident.display_symbol:
+                        it_copy["symbol"] = it_ident.display_symbol
                     if it_copy.get("status") == "EXECUTED" and v_st in ("OPEN", "NEW", "RESTING"):
                         it_copy["status"] = "RESTING_IN_BOOK"
                     elif (

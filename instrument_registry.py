@@ -36,6 +36,7 @@ from cachepaths import (
     clean_upper_scalar,
     compatible_quote_suffixes,
     filter_candidates_by_asset_class,
+    has_crypto_quote_suffix,
     has_equity_suffix,
     is_equity_venue,
     is_equity_venue_or_suffix,
@@ -396,9 +397,101 @@ def is_equity_symbol(symbol: object, *, path=None) -> bool:
         return False
 
 
+@dataclass(frozen=True)
+class SymbolIdentity:
+    """Canonical cross-layer symbol identity (storage key, wire/registry case, display symbol, and asset class)."""
+
+    raw: str
+    storage_key: str
+    wire_symbol: str
+    display_symbol: str
+    asset_class: str  # "crypto" | "tokenized_equity" | "rth_equity"
+
+    @property
+    def is_crypto(self) -> bool:
+        return self.asset_class == "crypto"
+
+    @property
+    def is_tokenized_equity(self) -> bool:
+        return self.asset_class == "tokenized_equity"
+
+    @property
+    def is_rth_equity(self) -> bool:
+        return self.asset_class == "rth_equity"
+
+    @property
+    def has_crypto_perpetuals(self) -> bool:
+        return self.asset_class == "crypto"
+
+    @property
+    def has_liquidation_clusters(self) -> bool:
+        return self.asset_class == "crypto"
+
+    @property
+    def uses_equity_risk_priors(self) -> bool:
+        return self.asset_class in ("rth_equity", "tokenized_equity")
+
+    def candidate_cache_symbols(
+        self,
+        *,
+        include_original: bool = True,
+        include_base: bool = False,
+        quotes: Optional[tuple[str, ...]] = None,
+        path=None,
+    ) -> tuple[str, ...]:
+        """Return deduplicated asset-class-isolated symbol variants, prioritizing exact wire case on tokenized assets."""
+        anchor = self.wire_symbol or self.storage_key or self.raw
+        if not anchor:
+            return ()
+        eff_quotes = quotes if quotes is not None else compatible_quote_suffixes(anchor)
+        raw_cands = list(
+            dict.fromkeys([
+                *([self.wire_symbol] if self.is_tokenized_equity and self.wire_symbol else []),
+                *cache_symbol_variants(
+                    self.raw or self.storage_key,
+                    include_original=include_original,
+                    include_base=include_base,
+                    quotes=eff_quotes,
+                ),
+            ])
+        )
+        return tuple(
+            c
+            for c in raw_cands
+            if isinstance(c, str)
+            and "/" not in c
+            and (
+                not has_crypto_quote_suffix(c)
+                if self.is_rth_equity
+                else ((self.is_tokenized_equity and c == self.wire_symbol) or not is_equity_symbol(c, path=path))
+            )
+        )
+
+
+def resolve_symbol_identity(symbol: object, *, venue: object = None, path=None) -> SymbolIdentity:
+    """Resolve any raw symbol into its canonical ``SymbolIdentity`` across crypto, tokenized xStocks, and RTH equities."""
+    raw = clean_scalar_str(symbol) or ""
+    if not raw:
+        return SymbolIdentity("", "", "", "", "crypto")
+    v_norm = normalize_venue_name(venue) if venue is not None else ""
+    tok_pair, is_tok = resolve_kraken_tokenized_pair(raw, path=path)
+    if is_tok or is_readonly_xstock_symbol(raw):
+        wire = tok_pair or raw
+        storage = clean_symbol_key(raw) or raw.upper()
+        return SymbolIdentity(raw, storage, wire, wire, "tokenized_equity")
+    if (v_norm and is_equity_venue(v_norm)) or is_equity_symbol(raw, path=path):
+        up = raw.upper()
+        wire = resolve_registered_symbol_case(raw, "t212", path=path) or up
+        return SymbolIdentity(raw, up, wire, up, "rth_equity")
+    storage = clean_symbol_key(raw) or raw.upper()
+    wire = resolve_registered_symbol_case(raw, v_norm or None, path=path) or storage
+    return SymbolIdentity(raw, storage, wire, storage, "crypto")
+
+
 def is_equity_or_tokenized_symbol(symbol: object, *, path=None) -> bool:
     """Return True when ``symbol`` is an RTH equity or a 24/7 tokenized xStock (lacks a crypto perpetual market)."""
-    return is_equity_symbol(symbol, path=path) or resolve_kraken_tokenized_pair(symbol)[1]
+    ident = resolve_symbol_identity(symbol, path=path)
+    return bool(ident.raw) and not ident.has_crypto_perpetuals
 
 
 def is_symbol_market_open(symbol: object, now_ts: float | None = None, *, path=None) -> bool:

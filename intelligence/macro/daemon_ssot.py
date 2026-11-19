@@ -47,7 +47,7 @@ from instrument_registry import (
     binance_symbols,
     discover_hyperliquid_spot,
     is_equity_symbol,
-    resolve_kraken_tokenized_pair,
+    resolve_symbol_identity,
     tracked_price_instruments,
 )
 from intelligence.external.collectors.base_collector import (
@@ -671,10 +671,10 @@ class ExternalTelemetryMixin:
             ("whale_updated", "_last_whale_ts", self.whale_interval_sec, self.update_whale, 18.0, "whale"),
         )
         for sym in getattr(self, "symbols", ()):
-            is_tok_xstock = resolve_kraken_tokenized_pair(sym)[1]
+            ident = resolve_symbol_identity(sym)
             for res_key, ts_attr, interval_sec, fn, timeout_s, lbl_prefix in steps:
-                # BY DESIGN: Spot tokenized equities have no perpetual derivatives/whale L/S; skip instead of 0.25x retry spinning.
-                if is_tok_xstock and lbl_prefix in ("deriv", "whale"):
+                # BY DESIGN: Spot tokenized equities have no crypto perpetual derivatives/whale L/S; skip instead of 0.25x retry spinning.
+                if ident.is_tokenized_equity and lbl_prefix in ("deriv", "whale"):
                     continue
                 ts_map: Dict[str, float] = getattr(self, ts_attr)
                 if is_interval_due(current_ts, ts_map.get(sym, 0.0), interval_sec, force=force):
@@ -689,7 +689,7 @@ class ExternalTelemetryMixin:
                     elif bounded:
                         if (
                             lbl_prefix == "ob"
-                            and is_tok_xstock
+                            and ident.is_tokenized_equity
                             and getattr(
                                 self.orderbook_collector,
                                 "is_unlisted_xstock_backoff_active",

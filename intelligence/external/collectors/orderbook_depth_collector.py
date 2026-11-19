@@ -21,7 +21,7 @@ from cachepaths import (
     canonical_symbol_key,
     resolve_binance_lookup_symbol,
 )
-from instrument_registry import resolve_kraken_tokenized_pair, venue_for_symbol
+from instrument_registry import resolve_symbol_identity, venue_for_symbol
 from providers.base import MarketDataProvider
 
 logger = logging.getLogger("intelligence.external.orderbook_depth")
@@ -168,8 +168,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
 
     def is_unlisted_xstock_backoff_active(self, symbol: str, now: float) -> bool:
         """Return True when ``symbol`` is a pre-IPO/empty Kraken tokenized pair within its quiet backoff window."""
-        tok_sym, is_tok_sym = resolve_kraken_tokenized_pair(symbol)
-        return bool(is_tok_sym and now < self._unlisted_xstock_until.get(tok_sym, 0.0))
+        ident = resolve_symbol_identity(symbol)
+        return bool(ident.is_tokenized_equity and now < self._unlisted_xstock_until.get(ident.wire_symbol, 0.0))
 
     def fetch(
         self,
@@ -189,7 +189,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         if not should_fetch or symbol is None:
             return ready
 
-        tok_sym, is_tok_sym = resolve_kraken_tokenized_pair(symbol)
+        ident = resolve_symbol_identity(symbol)
+        tok_sym, is_tok_sym = ident.wire_symbol, ident.is_tokenized_equity
         if is_tok_sym and now < self._unlisted_xstock_until.get(tok_sym, 0.0):
             return self._fallback_stale(symbol, cached)
 

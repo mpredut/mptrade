@@ -12084,6 +12084,83 @@ def test_burnin_antxusd_empty_book_backoff_and_equities_xstock_readonly_framing(
     assert "ANTxUSD IPO Playbook" in cr_lines
 
 
+def test_phase1_symbol_identity_3tier_asset_policy_and_spot_ob_reconciler_ssot():
+    """Verify SymbolIdentity, 3-tier AssetSessionPolicy hierarchy (Crypto/TokenizedEquity/RthEquity), and unified SpotOrderbookPriceReconcilerEvaluator."""
+    from cachepaths import cache_24_price_filename, cache_ohlc_24h_filename, price_cache_filename_variants
+    from instrument_registry import resolve_symbol_identity
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        SpotOrderbookPriceReconcilerEvaluator,
+        reconcile_spot_and_orderbook_microstructure,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        AssetClassPolicyInterface,
+        AssetClassPolicyRegistry,
+        AssetSessionPolicy,
+        Continuous24x7SessionPolicy,
+        Crypto24x7SessionPolicy,
+        EquityRthSessionPolicy,
+        TelemetryEvaluatorFactory,
+        TokenizedEquity24x7SessionPolicy,
+        resolve_asset_session_policy,
+    )
+
+    id_btc = resolve_symbol_identity("BTCUSDC")
+    assert id_btc.asset_class == "crypto" and id_btc.is_crypto and id_btc.has_crypto_perpetuals and not id_btc.uses_equity_risk_priors
+
+    id_xstock = resolve_symbol_identity("SPCXXUSD")
+    assert id_xstock.asset_class == "tokenized_equity"
+    assert id_xstock.storage_key == "SPCXXUSD"
+    assert id_xstock.wire_symbol == "SPCXxUSD"
+    assert id_xstock.display_symbol == "SPCXxUSD"
+    assert not id_xstock.has_crypto_perpetuals and not id_xstock.has_liquidation_clusters and id_xstock.uses_equity_risk_priors
+    xstock_cands = id_xstock.candidate_cache_symbols()
+    assert "SPCXxUSD" in xstock_cands and "SPCXXUSD" in xstock_cands
+    assert price_cache_filename_variants("SPCXxUSD", cache_ohlc_24h_filename) == (
+        "cache_ohlc_24h_SPCXXUSD.json",
+        "cache_ohlc_24h_SPCXxUSD.json",
+    )
+    assert price_cache_filename_variants("SPCXxUSD", cache_24_price_filename) == (
+        "cache_24_price_SPCXXUSD.json",
+        "cache_24_price_SPCXxUSD.json",
+    )
+
+    id_eq = resolve_symbol_identity("NVDA_US_EQ")
+    assert id_eq.asset_class == "rth_equity" and id_eq.is_rth_equity and not id_eq.has_crypto_perpetuals and id_eq.uses_equity_risk_priors
+
+    with pytest.raises(TypeError):
+        AssetSessionPolicy()
+    with pytest.raises(TypeError):
+        Continuous24x7SessionPolicy()
+
+    p_crypto = resolve_asset_session_policy("HYPEUSDC")
+    p_tok = resolve_asset_session_policy("SPCXXUSD")
+    p_eq = resolve_asset_session_policy("SPCX_US_EQ")
+    assert isinstance(p_crypto, Crypto24x7SessionPolicy) and isinstance(p_crypto, Continuous24x7SessionPolicy) and isinstance(p_crypto, AssetClassPolicyInterface)
+    assert isinstance(p_tok, TokenizedEquity24x7SessionPolicy) and isinstance(p_tok, Continuous24x7SessionPolicy)
+    assert isinstance(p_eq, EquityRthSessionPolicy) and AssetClassPolicyRegistry.get("tokenized_equity") is p_tok
+    assert p_crypto.has_crypto_perpetuals is True and p_tok.has_crypto_perpetuals is False and p_eq.has_crypto_perpetuals is False
+    assert p_tok.allow_live_vp_ohlc_network is True and p_eq.allow_live_vp_ohlc_network is False
+    assert p_eq.ohlc_vp_live_clock_skew_ms > p_tok.ohlc_vp_live_clock_skew_ms
+
+    reconciler = TelemetryEvaluatorFactory.create("micro_spot_ob_reconciler")
+    assert isinstance(reconciler, SpotOrderbookPriceReconcilerEvaluator)
+    m_fiat = {"ob_mid_price": 200.0, "best_bid": 199.9, "best_ask": 200.1, "bid_wall_px": 198.0, "ask_wall_px": 202.0}
+    new_px, adopted_px, act = reconcile_spot_and_orderbook_microstructure(
+        "TAOUSD",
+        196.0,
+        m_fiat,
+        is_usd_sym=True,
+        is_eq_sym=False,
+        is_exact_ob_sym=True,
+        ob_ts_sec=1000.0,
+        now_ts=1200.0,
+        last_series_pt=(1_190_000.0, 196.0),
+    )
+    assert act == "rescaled_fiat_walls" and adopted_px is None and new_px == 196.0
+    assert m_fiat["ob_mid_price"] == 196.0 and m_fiat["ask_wall_px"] < 200.0
+
+
+
 
 
 

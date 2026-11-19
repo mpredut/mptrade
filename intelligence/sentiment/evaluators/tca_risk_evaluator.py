@@ -35,7 +35,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     TelemetryEvaluatorInterface,
     pct_delta,
 )
-from instrument_registry import casefold_get, resolve_kraken_tokenized_pair
+from instrument_registry import casefold_get, resolve_symbol_identity
 from providers.base import MarketDataProvider
 from providers.quantity import venue_fee_cap_quantity
 from providers.venue_fee_maintenance import read_persisted_venue_fee_spec
@@ -426,14 +426,14 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
         for v_name, p, val_u in grouped_positions:
             if val_u >= 1.0:
                 sym = str(p.get("symbol") or "").strip().upper()
-                tok_sym_p, is_tok_xstock_p = resolve_kraken_tokenized_pair(sym)
+                ident = resolve_symbol_identity(sym, venue=v_name)
                 base = (
-                    f"{canonical_base_asset(tok_sym_p)}x"
-                    if is_tok_xstock_p
+                    f"{canonical_base_asset(ident.wire_symbol)}x"
+                    if ident.is_tokenized_equity
                     else canonical_base_asset(p.get("base") or sym)
                 )
-                is_eq = is_equity_venue_or_suffix(sym, v_name)
-                is_eq_like = is_eq or is_tok_xstock_p
+                is_eq = ident.is_rth_equity
+                is_eq_like = ident.uses_equity_risk_priors
                 p_info = (
                     casefold_get(prices_and_trends, sym)
                     if isinstance(prices_and_trends, dict) and has_equity_suffix(sym) == is_eq
@@ -580,8 +580,8 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
 
         by_base: Dict[str, Tuple[str, Dict[str, Any]]] = {}
         for sym, pinfo in sorted(prices_and_trends.items()):
-            tok_sym_cb, is_tok_cb = resolve_kraken_tokenized_pair(sym)
-            eff_sym_cb = tok_sym_cb if is_tok_cb else sym
+            cb_ident = resolve_symbol_identity(sym)
+            eff_sym_cb = cb_ident.display_symbol if cb_ident.is_tokenized_equity else sym
             if (
                 isinstance(pinfo, dict)
                 and not has_equity_suffix(eff_sym_cb)

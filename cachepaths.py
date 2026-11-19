@@ -92,25 +92,38 @@ def _clean_cache_symbol(symbol: object, *, preserve_case: bool = False) -> str:
     return (clean_scalar_str(raw) if preserve_case else clean_upper_scalar(raw)) or ""
 
 
-def cache_sparse_price_filename(symbol: object) -> str:
+def cache_sparse_price_filename(symbol: object, *, preserve_case: bool = False) -> str:
     """Return canonical on-disk filename for a sparse long-horizon price archive (`cache_sparse_price_<SYM>.jsonl`)."""
-    return f"{CACHE_SPARSE_PRICE_PREFIX}{_clean_cache_symbol(symbol)}{CACHE_SPARSE_PRICE_EXT}"
+    return f"{CACHE_SPARSE_PRICE_PREFIX}{_clean_cache_symbol(symbol, preserve_case=preserve_case)}{CACHE_SPARSE_PRICE_EXT}"
 
 
-def cache_24_price_filename(symbol: object) -> str:
+def cache_24_price_filename(symbol: object, *, preserve_case: bool = False) -> str:
     """Return canonical on-disk filename for a 24h dense price series (`cache_24_price_<SYM>.json`)."""
-    return f"{CACHE_24_PRICE_PREFIX}{_clean_cache_symbol(symbol)}{CACHE_24_PRICE_EXT}"
+    return f"{CACHE_24_PRICE_PREFIX}{_clean_cache_symbol(symbol, preserve_case=preserve_case)}{CACHE_24_PRICE_EXT}"
 
 
-def cache_365_price_filename(symbol: object, *, ext: str = CACHE_365_PRICE_EXT) -> str:
+def cache_365_price_filename(symbol: object, *, ext: str = CACHE_365_PRICE_EXT, preserve_case: bool = False) -> str:
     """Return canonical on-disk filename for a 365d dense price archive (`cache_365_price_<SYM>.jsonl`)."""
     eff_ext = clean_scalar_str(ext) or CACHE_365_PRICE_EXT
-    return f"{CACHE_365_PRICE_PREFIX}{_clean_cache_symbol(symbol)}{eff_ext}"
+    return f"{CACHE_365_PRICE_PREFIX}{_clean_cache_symbol(symbol, preserve_case=preserve_case)}{eff_ext}"
 
 
 def cache_ohlc_24h_filename(symbol: object, *, preserve_case: bool = False) -> str:
     """Return canonical on-disk filename for a 24h 5m OHLCV series (`cache_ohlc_24h_<SYM>.json`)."""
     return f"{CACHE_OHLC_24H_PREFIX}{_clean_cache_symbol(symbol, preserve_case=preserve_case)}{CACHE_OHLC_24H_EXT}"
+
+
+def price_cache_filename_variants(symbol: object, builder_fn, *extra_symbols: object) -> tuple[str, ...]:
+    """Return deduplicated uppercase and case-preserved cache filenames for ``symbol`` and ``extra_symbols``."""
+    out: list[str] = []
+    for sym in (symbol, *extra_symbols):
+        if not _clean_cache_symbol(sym, preserve_case=True):
+            continue
+        for preserve in (False, True):
+            fn = builder_fn(sym, preserve_case=preserve)
+            if fn and fn not in out:
+                out.append(fn)
+    return tuple(out)
 
 
 EXACT_LEGACY_FILENAMES = {
