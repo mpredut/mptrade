@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from typing import Callable, Dict, Optional, Set
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
@@ -229,13 +230,10 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
         self._subscribers = []
         if isinstance(symbols, str):
             raw_syms = [symbols]
-        elif symbols is None or isinstance(symbols, (bool, bytes, dict)):
+        elif symbols is None or isinstance(symbols, (bool, bytes, dict)) or not isinstance(symbols, Iterable):
             raw_syms = []
         else:
-            try:
-                raw_syms = list(symbols)
-            except TypeError:
-                raw_syms = []
+            raw_syms = list(symbols)
         norm_list = []
         for s in raw_syms:
             norm_s = self._norm_ws_symbol(s)

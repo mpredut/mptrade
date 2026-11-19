@@ -706,13 +706,11 @@ class ExternalTelemetryMixin:
         log = getattr(self, "_telemetry_logger", logger)
         try:
             cycle_now = getattr(self, "_active_cycle_ts", None)
-            if cycle_now is not None:
-                try:
-                    snap = collector.fetch(symbol, allow_network=True, now=cycle_now)
-                except TypeError:
-                    snap = collector.fetch(symbol, allow_network=True)
-            else:
-                snap = collector.fetch(symbol, allow_network=True)
+            snap = (
+                collector.fetch(symbol, allow_network=True, now=cycle_now)
+                if cycle_now is not None
+                else collector.fetch(symbol, allow_network=True)
+            )
             if snap:
                 if collector_used_stale_fallback(collector, symbol):
                     return False

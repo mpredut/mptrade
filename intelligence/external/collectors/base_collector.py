@@ -336,12 +336,7 @@ class TelemetryCollectorFactory(LazyPluginRegistryFactory):
         collector_cls = cls._resolve_registered_class(collector_id)
         if kwargs:
             sync_flag = _parse_bool_flag(start_sync, default=False)
-            try:
-                return collector_cls(start_sync=sync_flag, **kwargs)
-            except TypeError:
-                inst = collector_cls(**kwargs)
-                inst.start_sync = sync_flag
-                return inst
+            return collector_cls(start_sync=sync_flag, **kwargs)
         return cls.get_collector(collector_cls, start_sync=start_sync)
 
     @classmethod
@@ -355,11 +350,7 @@ class TelemetryCollectorFactory(LazyPluginRegistryFactory):
         key = f"{collector_cls.__name__}:producer" if sync_flag else collector_cls.__name__
         inst = cls._instances.get(key)
         if inst is None:
-            try:
-                inst = collector_cls(start_sync=sync_flag)
-            except TypeError:
-                inst = collector_cls()
-                inst.start_sync = sync_flag
+            inst = collector_cls(start_sync=sync_flag)
             cls._instances[key] = inst
         return inst
 
@@ -511,10 +502,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 data = self._read_disk_json(p)
                 if not isinstance(data, dict):
                     continue
-                try:
-                    snapshot = self._SNAPSHOT_CLS.from_dict(data, cand)
-                except TypeError:
-                    snapshot = self._SNAPSHOT_CLS.from_dict(data)
+                snapshot = self._SNAPSHOT_CLS.from_dict(data, cand)
                 snap_sym = str(getattr(snapshot, "symbol", "") or cand).strip().upper()
                 if exact_only and snap_sym != sym_clean:
                     continue
@@ -1111,10 +1099,7 @@ def _resolve_readonly_collector(
             return cur
 
     cls_obj = getattr(importlib.import_module(module_path), cls_name)
-    try:
-        cur = cls_obj(start_sync=False)
-    except TypeError:
-        cur = cls_obj()
+    cur = cls_obj(start_sync=False)
     _READONLY_COLLECTOR_SINGLETONS[attr_name] = cur
     if eog_mod is not None:
         setattr(eog_mod, attr_name, cur)

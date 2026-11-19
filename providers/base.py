@@ -161,10 +161,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
             return list(api_client.fetch_remote_trades(symbol, start_time_ms) or [])
         prov_cls = cls.resolve_venue_provider_class(venue)
         if prov_cls is not None and callable(getattr(prov_cls, "fetch_remote_trades_with_client", None)):
-            try:
-                res = prov_cls.fetch_remote_trades_with_client(symbol, start_time_ms, api_client, **kwargs)
-            except TypeError:
-                res = prov_cls.fetch_remote_trades_with_client(symbol, start_time_ms, api_client)
+            res = prov_cls.fetch_remote_trades_with_client(symbol, start_time_ms, api_client, **kwargs)
             if res is not None:
                 return list(res)
         fetch_fn = getattr(api_client, "fetch_remote_trades", None)
@@ -238,7 +235,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
 
     @classmethod
     def fetch_remote_trades_with_client(
-        cls, symbol: str, start_time_ms: int = 0, client=None
+        cls, symbol: str, start_time_ms: int = 0, client=None, **_kwargs: Any
     ) -> Optional[List[dict]]:
         """Fetch normalized remote fills for ``symbol`` using an injected ``client`` when compatible."""
         req_attr = getattr(cls, "_REMOTE_TRADES_CLIENT_ATTR", None)
@@ -313,17 +310,6 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         publish_cache: bool = False,
     ) -> List[dict]:
         auth, pub = _parse_bool_flag(authoritative, False), _parse_bool_flag(publish_cache, False)
-        if not auth and not pub:
-            try:
-                return self.get_orders(
-                    symbol,
-                    None,
-                    since_s,
-                    authoritative=False,
-                    publish_cache=False,
-                )
-            except TypeError:
-                return self.get_orders(symbol, None, since_s)
         return self.get_orders(
             symbol,
             None,

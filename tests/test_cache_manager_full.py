@@ -37,10 +37,10 @@ import tradeall
 import unittest
 from binance_api import bapi_ws, bapi_ws_bridge, bapi_ws_normalize
 from cachepaths import (
-    compute_venue_nav_breakdown,
     migrate_legacy_filename_if_needed,
     normalize_cache_base_asset,
 )
+from providers.portfolio_valuation import compute_venue_nav_breakdown
 from cachetrend import CacheShortTrendManager, _short_trend_symbol_variants
 from market_monitor import pricefetcher
 from market_monitor.pricefetcher import CacheAllPriceFetcherManager

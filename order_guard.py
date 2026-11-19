@@ -14,6 +14,7 @@ Returns True when placement is allowed and False when blocked.
 
 The profit threshold is configured per venue in versioned, non-sensitive
 `order_guard.conf`. A missing file or required key aborts startup immediately."""
+from collections.abc import Iterable
 from functools import partial
 import math
 import statistics
@@ -135,12 +136,9 @@ def profit_diff_pct(order_type: str, price: float, ref_price: float) -> float:
 def select_extreme_reference(prices, order_type: str, *, strict: bool = True):
     """Select the directional extreme reference symmetrically for BUY and SELL."""
     side = require_buy_sell_side(order_type, name="order_type")
-    if prices is None or isinstance(prices, (bool, str, bytes)):
+    if prices is None or isinstance(prices, (bool, str, bytes)) or not isinstance(prices, Iterable):
         return None
-    try:
-        clean_prices = [pf for p in prices if (pf := safe_pos_float(p, default=None)) is not None]
-    except TypeError:
-        return None
+    clean_prices = [pf for p in prices if (pf := safe_pos_float(p, default=None)) is not None]
     if not clean_prices:
         return None
     if _parse_bool_flag(strict, True):

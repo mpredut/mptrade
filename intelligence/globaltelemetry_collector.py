@@ -320,10 +320,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         """Fetch SPY, QQQ, ES=F, NQ=F, DXY, and US10Y macro benchmarks and persist to cachedb/."""
         try:
             eff_now = self._resolve_step_now(now)
-            try:
-                snap = collect_macro_benchmarks_snapshot(self.cache_dir, timeout_sec=3.5, persist=True, now_ts=eff_now)
-            except TypeError:
-                snap = collect_macro_benchmarks_snapshot(self.cache_dir, timeout_sec=3.5, persist=True)
+            snap = collect_macro_benchmarks_snapshot(self.cache_dir, timeout_sec=3.5, persist=True, now_ts=eff_now)
             if isinstance(snap, dict) and snap.get("items"):
                 logger.debug("Macro benchmarks updated: %s", snap.get("summary_line", ""))
                 return True

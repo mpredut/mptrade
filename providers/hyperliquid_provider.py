@@ -459,7 +459,7 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
 
     @classmethod
     def fetch_remote_trades_with_client(
-        cls, symbol: str, start_time_ms: int = 0, client=None
+        cls, symbol: str, start_time_ms: int = 0, client=None, **_kwargs: Any
     ) -> Optional[List[dict]]:
         """Fetch Hyperliquid spot fills for ``symbol`` using an injected ``client`` when compatible."""
         if client is None or getattr(client, "info", None) is None or (sym_u := clean_upper_scalar(symbol)) is None:
@@ -822,12 +822,7 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
             call_kwargs["is_market"] = is_market
         if "tif" in sig.parameters or has_var_kwargs:
             call_kwargs["tif"] = tif
-        try:
-            return signer.spot_order(pair, is_buy, qty, px, **call_kwargs)
-        except TypeError:
-            call_kwargs.pop("is_market", None)
-            call_kwargs.pop("tif", None)
-            return signer.spot_order(pair, is_buy, qty, px, **call_kwargs)
+        return signer.spot_order(pair, is_buy, qty, px, **call_kwargs)
 
     # -- StrategyExecutor contract using the real Hyperliquid API. -------------
     # get_current_price and free_balance already satisfy the contract.

@@ -74,15 +74,6 @@ load_dotenv()
 logger = logging.getLogger("intelligence.macro_analyzer")
 
 
-def _call_with_optional_kwarg(fn: Any, *args: Any, opt_key: str, opt_val: Any, include_opt: bool = True, **kwargs: Any) -> Any:
-    if include_opt:
-        try:
-            return fn(*args, **{opt_key: opt_val}, **kwargs)
-        except TypeError:
-            pass
-    return fn(*args, **kwargs)
-
-
 class MacroAnalyzer:
     """Orchestrates periodic macro and sentiment LLM synthesis and publishes assessments."""
 
@@ -186,14 +177,11 @@ class MacroAnalyzer:
             eval_now = resolve_now_ts(now)
             cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "news_feed_collect.json")))
             nc = _news_collector.NewsFeedCollector(history_file=cand_path, start_sync=False)
-            news_snap = _call_with_optional_kwarg(nc.get_pool_snapshot, opt_key="now_ts", opt_val=eval_now, include_opt=now is not None)
-            assessment = _call_with_optional_kwarg(
-                self.geopolitical_analyzer.assess,
+            news_snap = nc.get_pool_snapshot(now_ts=eval_now) if now is not None else nc.get_pool_snapshot()
+            assessment = self.geopolitical_analyzer.assess(
                 news_snap,
-                opt_key="now_ts",
-                opt_val=eval_now,
-                include_opt=now is not None,
                 force_refresh=force,
+                **({"now_ts": eval_now} if now is not None else {}),
             )
             if assessment:
                 logger.info(
@@ -233,15 +221,12 @@ class MacroAnalyzer:
             whale_data = load_cached_whale_telemetry(self.cache_dir, symbols=self.symbols)
 
             prev_cached = getattr(self.gemini_advisor, "_cached_assessment", None)
-            assessment = _call_with_optional_kwarg(
-                self.gemini_advisor.review,
-                opt_key="now_ts",
-                opt_val=eval_now,
-                include_opt=now is not None,
+            assessment = self.gemini_advisor.review(
                 fear_greed=fg_snap,
                 breadth=mb_snap,
                 whale_telemetry=whale_data,
                 force_refresh=force,
+                **({"now_ts": eval_now} if now is not None else {}),
             )
             if assessment:
                 assess_ts = safe_nonneg_ts(obj_attr(assessment, "ts"), 0.0)
@@ -311,7 +296,7 @@ class MacroAnalyzer:
         cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "news_feed_collect.json")))
         if os.path.exists(cand_path) or os.path.exists(f"{cand_path}.previous"):
             nc = _news_collector.NewsFeedCollector(history_file=cand_path, start_sync=False)
-            news_snap = _call_with_optional_kwarg(nc.get_pool_snapshot, opt_key="now_ts", opt_val=current_ts, include_opt=now is not None)
+            news_snap = nc.get_pool_snapshot(now_ts=current_ts) if now is not None else nc.get_pool_snapshot()
 
         headlines_changed = False
         last_digest = str(getattr(self.geopolitical_analyzer, "_last_headlines_digest", "") or "")
@@ -319,10 +304,7 @@ class MacroAnalyzer:
             _, digest = extract_high_severity_headlines_and_digest(news_snap)
             headlines_changed = bool(digest != last_digest and (digest or last_digest))
 
-        geo_interval, geo_reason = _call_with_optional_kwarg(
-            compute_dynamic_geopolitical_interval,
-            opt_key="cache_dir",
-            opt_val=self.cache_dir,
+        geo_interval, geo_reason = compute_dynamic_geopolitical_interval(
             base_interval_sec=self.macro_llm_interval_sec,
             last_eval_ts=self._last_macro_llm_ts,
             now_ts=current_ts,
@@ -331,6 +313,7 @@ class MacroAnalyzer:
             headlines_changed=headlines_changed,
             fallback_retry_ttl_sec=retry_ttl,
             last_headlines_digest=last_digest,
+            cache_dir=self.cache_dir,
         )
         self._effective_geo_interval_sec = geo_interval
         self._effective_geo_reason = geo_reason
@@ -339,10 +322,7 @@ class MacroAnalyzer:
         results["geo_interval_reason"] = geo_reason
 
         if is_interval_due(current_ts, self._last_macro_llm_ts, geo_interval, force=force):
-            try:
-                geo_ok = self.assess_geopolitical_threat(force=force, now=current_ts)
-            except TypeError:
-                geo_ok = self.assess_geopolitical_threat(force=force)
+            geo_ok = self.assess_geopolitical_threat(force=force, now=current_ts)
             if geo_ok:
                 results["geopolitical_updated"] = True
                 self._last_macro_llm_ts = current_ts
@@ -365,11 +345,7 @@ class MacroAnalyzer:
         latest_geo = getattr(self.geopolitical_analyzer, "_cached_assessment", cached_geo)
         geo_threat_str = str(obj_attr(latest_geo, "threat_level") or "NORMAL")
 
-        adv_interval, adv_reason = _call_with_optional_kwarg(
-            compute_dynamic_sentiment_interval,
-            opt_key="macro_benchmarks",
-            opt_val=macro_bench,
-            include_opt=bool(macro_bench),
+        adv_interval, adv_reason = compute_dynamic_sentiment_interval(
             base_interval_sec=self.advisor_interval_sec,
             last_eval_ts=self._last_advisor_ts,
             now_ts=current_ts,
@@ -381,6 +357,7 @@ class MacroAnalyzer:
             geopolitical_threat_level=geo_threat_str,
             btc_taker_ratio=cur_btc_tr,
             prev_btc_taker_ratio=getattr(self, "_last_btc_taker_ratio", None),
+            macro_benchmarks=macro_bench if macro_bench else None,
         )
         self._effective_advisor_interval_sec = adv_interval
         self._effective_advisor_reason = adv_reason
@@ -389,10 +366,7 @@ class MacroAnalyzer:
         results["advisor_interval_reason"] = adv_reason
 
         if is_interval_due(current_ts, self._last_advisor_ts, adv_interval, force=force):
-            try:
-                adv_ok = self.assess_market_advisor(force=force, now=current_ts)
-            except TypeError:
-                adv_ok = self.assess_market_advisor(force=force)
+            adv_ok = self.assess_market_advisor(force=force, now=current_ts)
             adv_last_eval = safe_nonneg_ts(getattr(self.sentiment_advisor, "_last_eval_ts", None), 0.0)
             adv_cached_ts = safe_nonneg_ts(
                 obj_attr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts"), 0.0

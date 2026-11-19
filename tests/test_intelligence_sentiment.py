@@ -831,7 +831,7 @@ class TestOrderGuardWithGemini:
 
         monkeypatch.setattr(
             "intelligence.macro.geopolitical_analyzer.GeopoliticalThreatAnalyzer",
-            lambda: SimpleNamespace(_cached_assessment=shock_geo),
+            lambda **_kw: SimpleNamespace(_cached_assessment=shock_geo),
         )
 
         dispatched_alerts = []

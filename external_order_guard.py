@@ -112,10 +112,7 @@ def check_external_order_guards(
         try:
             snap = fetch_guard_snapshot(collector_fn(), symbol, now=now_ts, allow_network=False)
             guard = build_guard()
-            try:
-                dec = guard.check(symbol, order_side, **{kw_name: snap}, now=now_ts)
-            except TypeError:
-                dec = guard.check(symbol, order_side, **{kw_name: snap})
+            dec = guard.check(symbol, order_side, **{kw_name: snap}, now=now_ts)
             d_allowed, d_brake, d_scale, d_reason = unpack_guard_decision(
                 dec, default_reason=f"{notify_key}_guard"
             )

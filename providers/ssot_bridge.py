@@ -213,12 +213,7 @@ class ProviderSsotBridgeMixin:
             raise RuntimeError("SSOT cache manager getter is not bound")
         if not args and not kwargs:
             return fn(cache_name)
-        try:
-            return fn(cache_name, *args, **kwargs)
-        except TypeError:
-            if "symbols" in kwargs and not args:
-                return fn(cache_name, kwargs["symbols"])
-            raise
+        return fn(cache_name, *args, **kwargs)
 
     @classmethod
     def get_ssot_short_trend_manager(cls) -> Any:
@@ -478,10 +473,7 @@ class ProviderSsotBridgeMixin:
     ) -> Optional[float]:
         """Read fresh SSOT current price without instantiating a provider or triggering network I/O."""
         if callable(patched := cls._patched_mdp_attr("read_passive_ssot_current_price")):
-            try:
-                return patched(symbol, max_age_sec)
-            except TypeError:
-                return patched(symbol)
+            return patched(symbol, max_age_sec)
         in_live_fn = resolve_patched_attr(
             "is_in_live_price_fetch",
             is_in_live_price_fetch,

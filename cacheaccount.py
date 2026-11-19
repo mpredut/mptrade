@@ -30,7 +30,6 @@ from botcore import (
     _parse_bool_flag,
     _ts_ms_to_s,
     clean_order_id,
-    compute_venue_nav_breakdown,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
@@ -82,6 +81,7 @@ from cachepaths import (
 import instrument_registry as sym
 from instrument_registry import casefold_get
 from providers.base import MarketDataProvider
+from providers.portfolio_valuation import compute_venue_nav_breakdown
 from state_io import (
     atomic_snapshot_file,
     atomic_text_writer,

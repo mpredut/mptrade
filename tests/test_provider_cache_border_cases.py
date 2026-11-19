@@ -2979,6 +2979,7 @@ def test_wave17_kalman_reset_string_price_short_trend_nan_bool_and_repo_zero_raw
     root_primitives = {
         "botcore.py",
         "cachepaths.py",
+        "core/lock.py",
         "state_io.py",
         "log.py",
         "orchestratorOS/agy/protobuf.py",
@@ -4426,7 +4427,9 @@ def test_wave26_post_only_ssot_tick_fanout_and_border_cases(monkeypatch, tmp_pat
         "BUY", 0.004, tick_size=0.0, round_price_fn=lambda p: round(p, 2)
     ) == pytest.approx(0.004)
 
-    monkeypatch.setattr(MarketDataProvider, "read_passive_ssot_current_price", classmethod(lambda cls, _sym: 99.50))
+    monkeypatch.setattr(
+        MarketDataProvider, "read_passive_ssot_current_price", classmethod(lambda cls, _sym, _max_age=None: 99.50)
+    )
     dummy_bapi_cli = SimpleNamespace(
         get_symbol_info=lambda _sym: {
             "filters": [
@@ -4452,7 +4455,9 @@ def test_wave26_post_only_ssot_tick_fanout_and_border_cases(monkeypatch, tmp_pat
             ),
         )[1]
     )
-    monkeypatch.setattr(MarketDataProvider, "read_passive_ssot_current_price", classmethod(lambda cls, _sym: 24.50))
+    monkeypatch.setattr(
+        MarketDataProvider, "read_passive_ssot_current_price", classmethod(lambda cls, _sym, _max_age=None: 24.50)
+    )
     ok_hl, oid_hl, _ = hl_inst.place_limit("HYPE", True, 1.0, 25.0, post_only=True)
     assert ok_hl is True and oid_hl == 4242 and len(hl_calls) == 2
     assert hl_calls[1][3] < 24.50

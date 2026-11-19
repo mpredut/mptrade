@@ -191,6 +191,7 @@ class BinanceProvider(MarketDataProvider):
         *,
         allorders_mod: Any = None,
         strict: bool = True,
+        **_kwargs: Any,
     ) -> List[dict]:
         """Paginate raw Binance fills from ``client`` via ``bapi_allorders.paginate_my_trades``."""
         ao = allorders_mod if allorders_mod is not None else _get_allorders()

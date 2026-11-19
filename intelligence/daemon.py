@@ -99,10 +99,7 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
             news_snap = self._call_collector_fetch(
                 self.news_collector, force_refresh=force, now_ts=now
             )
-            try:
-                assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force, now_ts=now)
-            except TypeError:
-                assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force)
+            assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force, now_ts=now)
             if not assessment:
                 return False
             logger.info(

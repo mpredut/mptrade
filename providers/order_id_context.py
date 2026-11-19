@@ -339,16 +339,15 @@ def _normalize_allowed_owners(allowed_owners: Union[str, Iterable[str], None]) -
     if isinstance(allowed_owners, str):
         clean_owner = clean_scalar_str(allowed_owners)
         return {clean_owner.lower()} if clean_owner else set()
-    try:
-        return {
-            s.lower()
-            for o in allowed_owners
-            if o is not None
-            and not isinstance(o, (bool, dict, list, tuple, set, frozenset))
-            and (s := clean_scalar_str(str(o))) is not None
-        }
-    except TypeError:
+    if not isinstance(allowed_owners, Iterable):
         return set()
+    return {
+        s.lower()
+        for o in allowed_owners
+        if o is not None
+        and not isinstance(o, (bool, dict, list, tuple, set, frozenset))
+        and (s := clean_scalar_str(str(o))) is not None
+    }
 
 
 def order_matches_owner(client_order_id: Optional[str], allowed_owners: Union[str, Iterable[str], None]) -> bool:

@@ -166,7 +166,7 @@ class PipelineProvider(MarketDataProvider):
     def free_balance(self, asset):
         return self._free
 
-    def get_orders(self, symbol, side, since_s):
+    def get_orders(self, symbol, side, since_s, *, authoritative=False, publish_cache=False):
         cutoff = (time.time() - since_s) * 1000
         return [dict(fill) for fill in self._fills
                 if fill["timestamp"] >= cutoff

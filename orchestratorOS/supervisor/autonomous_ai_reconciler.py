@@ -362,17 +362,11 @@ class AutonomousAIReconciler:
             logger.info("[SHARE EXECUTOR] %s", msg)
             return self.write_audit_artifact(SupervisorAuditReport(ts=now, mode=self.mode, summary=msg))
 
-        try:
-            sensors = self.harvest_sensors_telemetry(
-                include_fleet=spec.can_self_heal,
-                include_market_portfolio=spec.can_trade,
-                asset_scope=scope,
-            )
-        except TypeError:
-            try:
-                sensors = self.harvest_sensors_telemetry(include_fleet=spec.can_self_heal, asset_scope=scope)
-            except TypeError:
-                sensors = self.harvest_sensors_telemetry(include_fleet=spec.can_self_heal)
+        sensors = self.harvest_sensors_telemetry(
+            include_fleet=spec.can_self_heal,
+            include_market_portfolio=spec.can_trade,
+            asset_scope=scope,
+        )
         logs = (
             self.harvest_log_anomalies()
             if spec.can_self_heal

@@ -177,7 +177,7 @@ class _FakeProvider(MarketDataProvider):
             return self._window_ref
         return super().profit_guard_window_ref(symbol, side, safeback_sec, **kwargs)
 
-    def get_orders(self, symbol, side, since_s):
+    def get_orders(self, symbol, side, since_s, *, authoritative=False, publish_cache=False):
         cutoff_ms = time.time() * 1000 - since_s * 1000
         out = [o for o in self._orders
               if o["symbol"] == symbol and o["timestamp"] >= cutoff_ms]
@@ -780,7 +780,7 @@ class InstrumentGuardsTestCase(TempDirTestCase):
 
     def test_trend_deferral_behaviors(self):
         deferred = SimpleNamespace(
-            should_wait=lambda _side, _symbol: True,
+            should_wait=lambda _side, _symbol, **_kw: True,
             wait_for_favorable_entry=lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 AssertionError("Instrument.place must not enter a wait loop")
             ),

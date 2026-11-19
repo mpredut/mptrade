@@ -11,6 +11,7 @@ Estimates trend longevity distributions (Weibull / Kaplan-Meier) and calibrated 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 from datetime import datetime
 import math
 import os
@@ -105,12 +106,16 @@ def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarr
 
 
 def _coerce_xy_pairs(xs: Any, ys: Any, parser_x: Any, parser_y: Any) -> tuple[list[float], list[float]]:
-    if xs is None or ys is None or isinstance(xs, (bool, str, bytes)) or isinstance(ys, (bool, str, bytes)):
+    if (
+        xs is None
+        or ys is None
+        or isinstance(xs, (bool, str, bytes))
+        or isinstance(ys, (bool, str, bytes))
+        or not isinstance(xs, Iterable)
+        or not isinstance(ys, Iterable)
+    ):
         return [], []
-    try:
-        raw_x, raw_y = list(xs), list(ys)
-    except TypeError:
-        return [], []
+    raw_x, raw_y = list(xs), list(ys)
     n_common = min(len(raw_x), len(raw_y))
     clean_x, clean_y = [], []
     for xv, yv in zip(raw_x[:n_common], raw_y[:n_common]):
@@ -209,24 +214,20 @@ def survival_report(durs_h: list[float], label: str, t_grid_days, horizon_h=24.0
         or t_grid_days is None
         or isinstance(durs_h, (bool, str, bytes))
         or isinstance(t_grid_days, (bool, str, bytes))
+        or not isinstance(durs_h, Iterable)
+        or not isinstance(t_grid_days, Iterable)
     ):
         return None
-    try:
-        clean_d = [
-            f for x in durs_h
-            if (f := safe_nonneg_float(x, default=None)) is not None
-        ]
-    except TypeError:
-        return None
+    clean_d = [
+        f for x in durs_h
+        if (f := safe_nonneg_float(x, default=None)) is not None
+    ]
     d = np.array(clean_d, dtype=float)
     if len(d) < 15:
         return None
     hz = safe_pos_float(horizon_h, default=24.0)
     cont = {}
-    try:
-        grid_iter = list(t_grid_days)
-    except TypeError:
-        return None
+    grid_iter = list(t_grid_days)
     for t_days in grid_iter:
         t_days_f = safe_nonneg_float(t_days, default=None)
         if t_days_f is None:
@@ -295,14 +296,11 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
             vals = [vf / 24.0 for v in dur_hours.ravel() if (vf := safe_pos_float(v, default=None)) is not None]
             d = np.asarray(vals, dtype=float)
     else:
-        vals = []
-        try:
-            for v in dur_hours:
-                vf = safe_pos_float(v, default=None)
-                if vf is not None:
-                    vals.append(vf / 24.0)
-        except TypeError:
-            pass
+        vals = (
+            [vf / 24.0 for v in dur_hours if (vf := safe_pos_float(v, default=None)) is not None]
+            if isinstance(dur_hours, Iterable)
+            else []
+        )
         d = np.asarray(vals, dtype=float)
     n = len(d)
     if n == 0:

@@ -218,12 +218,14 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     "system": {
         "exact": (
             "fleet_health_status.json", "dev_regression_status.json",
-            "llm_topic_threads.json", "llm_quota_status.json", "notify_queue.json",
+            "llm_topic_threads.json", "llm_quota_status.json", "llm_model_catalog.json",
+            "notify_queue.json",
             KINEMATIC_IMPULSE_SIGNAL_FILENAME,
         ),
         "prefixes": (
             "auto_", "fleet_health_status.", "dev_regression_status.",
-            "llm_topic_threads.", "llm_quota_status.", "notify_queue.",
+            "llm_topic_threads.", "llm_quota_status.", "llm_model_catalog.",
+            "notify_queue.",
             "kinematic_impulse_signal.",
         ),
         "suffixes": ("_eval.json",),
@@ -1424,13 +1426,6 @@ def _parse_bool_flag(val, default: bool | None = False):
     return fb
 
 
-def __getattr__(name: str):
-    if name == "compute_venue_nav_breakdown":
-        bc = sys.modules.get("botcore") or getattr(builtins, "__import__")("botcore")
-        return getattr(bc, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 def sync_module_reexports(
     source_globals: dict[str, object],
     target_module_names: tuple[str, ...],
@@ -1455,7 +1450,17 @@ def _sync_cachepaths_reexports() -> None:
     """Keep loaded re-export modules bound to active ``cachepaths`` callables across reload."""
     sync_module_reexports(
         globals(),
-        ("botcore", "utils", "state_io", "intelligence.macro_sentiment_ssot"),
+        (
+            "botcore",
+            "core.math_coercion",
+            "core.config",
+            "core.http",
+            "core.time_market",
+            "core.heartbeat_runtime",
+            "utils",
+            "state_io",
+            "intelligence.macro_sentiment_ssot",
+        ),
         (__name__,),
     )
 

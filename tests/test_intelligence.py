@@ -2711,18 +2711,18 @@ def test_iter60_kalman_ms_timestamps_bybit_lookup_and_whale_percent_scales(tmp_p
 
 def test_iter61_whale_spread_flow_sentiment_advisor_and_price_series_ordering(monkeypatch, tmp_path):
 
-    # 1. evaluate_whale_spread_flow & resolve_whale_spread_adjustment support side aliases, dict snapshots, and no-kwarg collectors
+    # 1. evaluate_whale_spread_flow & resolve_whale_spread_adjustment support side aliases and dict snapshots
     monkeypatch.setattr(
         eog,
         "get_whale_collector",
         lambda: SimpleNamespace(
-            fetch=lambda symbol: {"taker_buy_sell_ratio": 0.95, "oi_1h_chg_pct": 2.4, "div_regime": "aggressive_shorting"}
+            fetch=lambda symbol, **_kw: {"taker_buy_sell_ratio": 0.95, "oi_1h_chg_pct": 2.4, "div_regime": "aggressive_shorting"}
         ),
     )
     blocked, reason = eog.evaluate_whale_spread_flow("BTCUSDC", "bid", enforced=True)
     assert blocked is True and "aggressive_shorting_divergence (OI=+2.4%)" in reason
 
-    monkeypatch.setattr(eog, "get_whale_collector", lambda: SimpleNamespace(fetch=lambda symbol: {"taker_buy_sell_ratio": 0.85}))
+    monkeypatch.setattr(eog, "get_whale_collector", lambda: SimpleNamespace(fetch=lambda symbol, **_kw: {"taker_buy_sell_ratio": 0.85}))
     assert eog.resolve_whale_spread_adjustment("BTCUSDC", "0.002", enforced=True) == pytest.approx(0.003)
 
     # 2. SentimentAdvisor & GeopoliticalThreatAnalyzer percent string confidence/risk_score and breadth advance_ratio
@@ -2822,19 +2822,19 @@ def test_iter62_tca_risk_pretrade_and_macro_telemetry_normalization(monkeypatch,
     apply_asset_scope_filter({}, {}, ps_scope, "equities", {}, {})
     assert list(ps_scope["venue_quote_cash"].keys()) == ["t212:USD"]
 
-    # 3. collect_pretrade_telemetry handles collectors without allow_network kwarg and percent/alias snapshot dicts
+    # 3. collect_pretrade_telemetry handles percent/alias snapshot dicts via canonical collector signature
     monkeypatch.setattr(
         eog,
         "get_orderbook_collector",
         lambda: SimpleNamespace(
-            fetch=lambda symbol: {"symbol": symbol, "ob_imbalance": "64%", "largest_ask_wall_usd": 200000.0, "largest_ask_wall_price": 105.0}
+            fetch=lambda symbol, **_kw: {"symbol": symbol, "ob_imbalance": "64%", "largest_ask_wall_usd": 200000.0, "largest_ask_wall_price": 105.0}
         ),
     )
     monkeypatch.setattr(
         eog,
         "get_whale_collector",
         lambda: SimpleNamespace(
-            fetch=lambda symbol: {"symbol": symbol, "whale_long_pct": "60%", "taker_buy_sell_ratio": 1.35, "div_regime": "bullish_divergence"}
+            fetch=lambda symbol, **_kw: {"symbol": symbol, "whale_long_pct": "60%", "taker_buy_sell_ratio": 1.35, "div_regime": "bullish_divergence"}
         ),
     )
     telem = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(tmp_path))

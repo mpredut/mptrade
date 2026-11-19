@@ -57,7 +57,7 @@ class FakeProvider(MarketDataProvider):
     def free_balance(self, asset):
         return 1_000_000.0
 
-    def get_orders(self, symbol, side, since_s):
+    def get_orders(self, symbol, side, since_s, *, authoritative=False, publish_cache=False):
         cutoff_ms = time.time() * 1000 - since_s * 1000
         out = [o for o in self._orders
                if o.get("symbol") == symbol and o.get("timestamp", 0) >= cutoff_ms]

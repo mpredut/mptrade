@@ -125,10 +125,7 @@ def check_qlimit2_order_guards(
                 modules=("order_guard", "intelligence.internal.state.survival"),
                 require_callable=True,
             )
-            try:
-                history = read_hist_fn(symbol, window_seconds=7200.0, now=now)
-            except TypeError:
-                history = read_hist_fn(symbol, window_seconds=7200.0)
+            history = read_hist_fn(symbol, window_seconds=7200.0, now=now)
         except Exception:
             pass
 

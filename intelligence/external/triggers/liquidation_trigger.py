@@ -53,14 +53,11 @@ class LiquidationCapitulationTrigger:
 
         t_now = resolve_now_ts(now)
         if summary is None and self.collector is not None:
-            try:
-                summary = (
-                    self.collector.get_summary(symbol, window_sec=self.window_sec, now=t_now)
-                    if now is not None
-                    else self.collector.get_summary(symbol, window_sec=self.window_sec)
-                )
-            except TypeError:
-                summary = self.collector.get_summary(symbol, window_sec=self.window_sec)
+            summary = (
+                self.collector.get_summary(symbol, window_sec=self.window_sec, now=t_now)
+                if now is not None
+                else self.collector.get_summary(symbol, window_sec=self.window_sec)
+            )
 
         if summary is None:
             return None

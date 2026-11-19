@@ -45,6 +45,7 @@ from botcore import (
 from cachepaths import normalize_venue_name
 from notify_engine import alertnotifiers as alert
 from providers import order_id_context as rc
+from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import (
     POST_ONLY_CROSS_TOKENS,
     extract_orig_qty,
@@ -896,10 +897,7 @@ def _collect_preemptible_open_orders(
     if not callable(open_fn):
         return want_side, sym_str, []
     try:
-        try:
-            raw_open = open_fn()
-        except TypeError:
-            raw_open = open_fn(sym_str)
+        raw_open = open_fn(sym_str) if isinstance(inst_or_provider, MarketDataProvider) else open_fn()
     except Exception:
         return want_side, sym_str, []
     if not isinstance(raw_open, list) or not raw_open:
@@ -977,11 +975,10 @@ def preempt_lower_priority_open_orders(
         if not callable(raw_cancel):
             return []
 
+        is_provider = isinstance(inst_or_provider, MarketDataProvider)
+
         def _default_cancel(oid_s: str) -> Any:
-            try:
-                return raw_cancel(oid_s)
-            except TypeError:
-                return raw_cancel(sym_str, oid_s)
+            return raw_cancel(sym_str, oid_s) if is_provider else raw_cancel(oid_s)
 
         cancel_fn = _default_cancel
 

@@ -149,32 +149,19 @@ def evaluate_high_stake_order_guard(
             )
         timeout_sec = safe_pos_float(margins.get("llm_timeout_sec"), 120.0)
         fallback = (clean_scalar_str(margins.get("llm_fallback")) or "allow").lower()
-        try:
-            llm_guard = _high_stake_guard.HighStakeGuard(
-                min_notional_eur=min_notional,
-                min_notional_usd=min_notional,
-                timeout_sec=timeout_sec,
-                fallback_action=fallback,
-            )
-        except TypeError:
-            llm_guard = _high_stake_guard.HighStakeGuard(
-                min_notional_eur=min_notional,
-                timeout_sec=timeout_sec,
-                fallback_action=fallback,
-            )
-        try:
-            g_dec = llm_guard.check(
-                symbol, side, price, qty if qty is not None else 1.0,
-                notional_eur=computed_notional,
-                regime_context=regime_context if ctx_usable else None,
-                dur_sec=dur_sec,
-                now=now,
-            )
-        except TypeError:
-            g_dec = llm_guard.check(
-                symbol, side, price, qty if qty is not None else 1.0,
-                notional_eur=computed_notional,
-            )
+        llm_guard = _high_stake_guard.HighStakeGuard(
+            min_notional_eur=min_notional,
+            min_notional_usd=min_notional,
+            timeout_sec=timeout_sec,
+            fallback_action=fallback,
+        )
+        g_dec = llm_guard.check(
+            symbol, side, price, qty if qty is not None else 1.0,
+            notional_eur=computed_notional,
+            regime_context=regime_context if ctx_usable else None,
+            dur_sec=dur_sec,
+            now=now,
+        )
         g_allowed_bool, g_brake, g_scale, g_reason_str = unpack_guard_decision(
             g_dec, default_reason="high_stake_guard"
         )
@@ -294,10 +281,7 @@ def check_geopolitical_order_guards(
     shadow_notify = _parse_bool_flag(m.get("shadow_notify"), False)
 
     try:
-        try:
-            analyzer = _geo_analyzer.GeopoliticalThreatAnalyzer(start_sync=False)
-        except TypeError:
-            analyzer = _geo_analyzer.GeopoliticalThreatAnalyzer()
+        analyzer = _geo_analyzer.GeopoliticalThreatAnalyzer(start_sync=False)
         cached_geo = getattr(analyzer, "_cached_assessment", None)
         if cached_geo is not None:
             now_ts = resolve_now_ts(now)

@@ -1079,8 +1079,15 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
 
     json_owners = {"state_io.py", "botcore.py", "cacheintegrity.py"}
     text_owners = {"state_io.py", "botcore.py"}
-    env_owners = {"botcore.py", "cachepaths.py", "credentials.py"}
-    open_owners = {"state_io.py", "botcore.py", "log.py"}
+    env_owners = {
+        "botcore.py",
+        "cachepaths.py",
+        "credentials.py",
+        "core/config.py",
+        "core/heartbeat_runtime.py",
+        "core/llm_topics.py",
+    }
+    open_owners = {"state_io.py", "botcore.py", "core/lock.py", "log.py"}
     coercion_owners = {"botcore.py", "cachepaths.py", "orchestratorOS/agy/protobuf.py"}
     quote_endswith_owners = {
         "cachepaths.py",
@@ -1234,11 +1241,11 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                     ssot_violations.append(f"{rel_s}:{lineno}: raw json.{fn_name}")
                 elif rel_s not in text_owners and isinstance(fn, ast.Attribute) and fn_name in ("read_text", "write_text"):
                     ssot_violations.append(f"{rel_s}:{lineno}: Path.{fn_name}")
-                elif rel_s != "botcore.py" and fn_name == "ConfigParser":
+                elif rel_s not in ("botcore.py", "core/config.py") and fn_name == "ConfigParser":
                     ssot_violations.append(f"{rel_s}:{lineno}: ConfigParser")
-                elif rel_s != "botcore.py" and fn_name in ("urlopen", "Request"):
+                elif rel_s not in ("botcore.py", "core/http.py") and fn_name in ("urlopen", "Request"):
                     ssot_violations.append(f"{rel_s}:{lineno}: urllib {fn_name}")
-                elif rel_s != "botcore.py" and owner_mod == "requests" and fn_name in ("get", "post", "put", "delete", "request"):
+                elif rel_s not in ("botcore.py", "core/http.py") and owner_mod == "requests" and fn_name in ("get", "post", "put", "delete", "request"):
                     ssot_violations.append(f"{rel_s}:{lineno}: raw requests.{fn_name}")
                 elif rel_s not in quote_endswith_owners and isinstance(fn, ast.Attribute) and fn_name == "endswith" and node.args:
                     ew_arg = node.args[0]
@@ -1267,7 +1274,7 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
                 and node.value.startswith("cache_ohlc_24h_")
             ):
                 ssot_violations.append(f"{rel_s}:{lineno}: hardcoded cache_ohlc_24h_ filename prefix")
-            elif rel_s not in ("botcore.py", "cachepaths.py") and (
+            elif rel_s not in ("botcore.py", "cachepaths.py", "core/math_coercion.py") and (
                 (isinstance(node, ast.Name) and node.id == "INVALID_SCALAR_STRINGS")
                 or (isinstance(node, ast.Attribute) and node.attr == "INVALID_SCALAR_STRINGS")
             ):

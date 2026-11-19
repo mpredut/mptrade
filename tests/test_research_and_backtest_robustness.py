@@ -4204,7 +4204,7 @@ def test_batch33_market_monitor_kraken_reconciler_and_notifier_hardening(tmp_pat
     reconciler.log_dir = str(tmp_path)
     reconciler.logs_dirs = [str(tmp_path)]
     reconciler.cache_dir = str(cache_dir)
-    reconciler._intent_gateway = SimpleNamespace(load_tradable_instruments=lambda: [])
+    reconciler._intent_gateway = SimpleNamespace(load_tradable_instruments=lambda **_kw: [])
     snap = reconciler.harvest_sensors_telemetry(include_fleet=False)
     assert "BTCUSDC" in snap.prices_and_trends
     assert "items" not in snap.prices_and_trends

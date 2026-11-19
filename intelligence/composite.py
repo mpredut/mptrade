@@ -225,10 +225,7 @@ class CompositeMarketIntelligence(OrderGuardEvaluatorBase):
             (liquidation_summary is not None or getattr(self.cascade_guard, "collector", None) is not None)
             and not _is_bypassed(None, "cascade_guard", "liquidationcascadeguard")
         ):
-            try:
-                casc_dec = self.cascade_guard.check(symbol, side, summary=liquidation_summary, now=now)
-            except TypeError:
-                casc_dec = self.cascade_guard.check(symbol, side, summary=liquidation_summary)
+            casc_dec = self.cascade_guard.check(symbol, side, summary=liquidation_summary, now=now)
             if (veto := _apply_guard_dec(casc_dec)) is not None:
                 return veto
 
@@ -237,10 +234,7 @@ class CompositeMarketIntelligence(OrderGuardEvaluatorBase):
             (derivatives_telemetry is not None or getattr(self.funding_guard, "collector", None) is not None)
             and not _is_bypassed("GI_FUNDING", "funding_guard", "fundingcrowdingguard")
         ):
-            try:
-                fund_dec = self.funding_guard.check(symbol, side, telemetry=derivatives_telemetry, now=now)
-            except TypeError:
-                fund_dec = self.funding_guard.check(symbol, side, telemetry=derivatives_telemetry)
+            fund_dec = self.funding_guard.check(symbol, side, telemetry=derivatives_telemetry, now=now)
             if (veto := _apply_guard_dec(fund_dec)) is not None:
                 return veto
 
@@ -281,20 +275,13 @@ class CompositeMarketIntelligence(OrderGuardEvaluatorBase):
             )
             eff_price = price_finite if price_finite is not None else price
             eff_qty = qty_finite if qty_finite is not None else 1.0
-            try:
-                gemini_dec = self.gemini_guard.check(
-                    symbol, side, eff_price, eff_qty,
-                    notional_eur=computed_notional,
-                    telemetry=telemetry_ctx,
-                    dur_sec=dur_sec if dur_sec > 0 else None,
-                    now=now,
-                )
-            except TypeError:
-                gemini_dec = self.gemini_guard.check(
-                    symbol, side, eff_price, eff_qty,
-                    notional_eur=computed_notional,
-                    telemetry=telemetry_ctx,
-                )
+            gemini_dec = self.gemini_guard.check(
+                symbol, side, eff_price, eff_qty,
+                notional_eur=computed_notional,
+                telemetry=telemetry_ctx,
+                dur_sec=dur_sec if dur_sec > 0 else None,
+                now=now,
+            )
             if (veto := _apply_guard_dec(gemini_dec)) is not None:
                 return veto
 
@@ -342,10 +329,7 @@ class CompositeMarketIntelligence(OrderGuardEvaluatorBase):
                 triggered_events.append(g_event)
 
         if liquidation_summary is not None or getattr(self.liquidation_trigger, "collector", None) is not None:
-            try:
-                l_res = self.liquidation_trigger.evaluate(symbol, price, liquidation_summary, now=now_ts)
-            except TypeError:
-                l_res = self.liquidation_trigger.evaluate(symbol, price, liquidation_summary)
+            l_res = self.liquidation_trigger.evaluate(symbol, price, liquidation_summary, now=now_ts)
             l_event = l_res[1] if isinstance(l_res, tuple) else l_res
             if l_event:
                 triggered_events.append(l_event)

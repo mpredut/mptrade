@@ -75,14 +75,7 @@ def fetch_guard_snapshot(
         kwargs["allow_network"] = allow_network
     if now is not None:
         kwargs["now"] = now
-    try:
-        return collector.fetch(symbol, **kwargs)
-    except TypeError:
-        kwargs.pop("now", None)
-        try:
-            return collector.fetch(symbol, **kwargs)
-        except TypeError:
-            return collector.fetch(symbol)
+    return collector.fetch(symbol, **kwargs)
 
 
 class BrakeAction(StringEnum):
@@ -298,10 +291,7 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
             if snap is None and col is not None:
                 if hasattr(self, "active_window_sec") and hasattr(col, "get_summary"):
                     win_sec = getattr(self, "active_window_sec")
-                    try:
-                        snap = col.get_summary(symbol, window_sec=win_sec, now=now)
-                    except TypeError:
-                        snap = col.get_summary(symbol, window_sec=win_sec)
+                    snap = col.get_summary(symbol, window_sec=win_sec, now=now)
                 else:
                     snap = fetch_guard_snapshot(col, symbol, now=now)
             if snap is None:

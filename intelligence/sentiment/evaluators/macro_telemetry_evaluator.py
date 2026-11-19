@@ -19,13 +19,13 @@ from intelligence.macro.calendar_ssot import (
 )
 from botcore import (
     coerce_dict_maps,
-    compute_venue_nav_breakdown,
     first_pos_float,
     normalize_epoch_sec,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
+from providers.portfolio_valuation import compute_venue_nav_breakdown
 from intelligence.macro_sentiment_ssot import (
     compute_cross_asset_regime as _ssot_compute_cross_asset_regime,
     compute_equity_macro_regime as _ssot_compute_equity_macro_regime,

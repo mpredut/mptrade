@@ -17,6 +17,7 @@ import math
 import os
 import threading
 from collections import deque
+from collections.abc import Iterable, Sized
 from bisect import bisect_left
 
 from typing import Optional, Sequence, Tuple
@@ -286,26 +287,16 @@ def should_wait_short_trend(short_tm, side: str, symbol: str, *, short_trend_cls
         and callable(getattr(short_tm, "get_short_trend_for_window", None))
         and isinstance(fast_snap := short_tm.get_short_trend_for_window(symbol, fast_w), dict)
     ):
-        try:
-            return bool(
-                short_tm.should_wait(
-                    side,
-                    symbol,
-                    window_seconds=fast_w,
-                    use_noise_gate=False,
-                    preloaded_snap=fast_snap,
-                )
+        return bool(
+            short_tm.should_wait(
+                side,
+                symbol,
+                window_seconds=fast_w,
+                use_noise_gate=False,
+                preloaded_snap=fast_snap,
             )
-        except TypeError:
-            return bool(
-                short_tm.should_wait(
-                    side, symbol, window_seconds=fast_w, use_noise_gate=False
-                )
-            )
-    try:
-        return bool(short_tm.should_wait(side, symbol, use_noise_gate=False))
-    except TypeError:
-        return bool(short_tm.should_wait(side, symbol))
+        )
+    return bool(short_tm.should_wait(side, symbol, use_noise_gate=False))
 
 
 def step_wols_power_for_symbol(symbol: str | None = None) -> float:
@@ -386,14 +377,11 @@ def _telescoped_mean_gradient(p, a: int, b: int, r: int) -> tuple[float, float]:
 class PriceTrendAnalyzer:
     def __init__(self, prices):
         clean = []
-        if prices is not None and not isinstance(prices, (bool, str, bytes)):
-            try:
-                for p in prices:
-                    pf = safe_float(p, default=None)
-                    if pf is not None:
-                        clean.append(pf)
-            except TypeError:
-                pass
+        if prices is not None and not isinstance(prices, (bool, str, bytes)) and isinstance(prices, Iterable):
+            for p in prices:
+                pf = safe_float(p, default=None)
+                if pf is not None:
+                    clean.append(pf)
         self.prices = clean
 
     def linear_regression_trend(self):
@@ -855,18 +843,15 @@ class PriceWindow:
     @staticmethod
     def _sample_rate_from_entries(entries) -> float:
         """Return the median sampling gap in seconds for [ts_ms, price] entries."""
-        if not entries or isinstance(entries, (bool, str, bytes)):
+        if not entries or isinstance(entries, (bool, str, bytes)) or not isinstance(entries, Iterable):
             return DEFAULT_SAMPLE_RATE_SEC
         timestamps_sec = []
-        try:
-            for e in entries:
-                if not isinstance(e, (list, tuple)) or len(e) < 1:
-                    continue
-                ts_f = safe_float(e[0], default=None)
-                if ts_f is not None:
-                    timestamps_sec.append(ts_f if 1e9 <= ts_f <= 1e11 else ts_f / 1000.0)
-        except TypeError:
-            return DEFAULT_SAMPLE_RATE_SEC
+        for e in entries:
+            if not isinstance(e, (list, tuple)) or len(e) < 1:
+                continue
+            ts_f = safe_float(e[0], default=None)
+            if ts_f is not None:
+                timestamps_sec.append(ts_f if 1e9 <= ts_f <= 1e11 else ts_f / 1000.0)
         if len(timestamps_sec) < 2:
             return DEFAULT_SAMPLE_RATE_SEC
         gaps = [timestamps_sec[i+1] - timestamps_sec[i]
@@ -1253,51 +1238,47 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60
                 prices = extract_sorted_2d_price_column(prices)
             except (TypeError, ValueError):
                 return None
+    elif not isinstance(prices, (Iterable, Sized)) or not ( isinstance(prices, Iterable) and isinstance(prices, Sized) ):
+        return None
     else:
-        try:
-            first_item = next((x for x in prices if x is not None), None) if len(prices) > 0 else None
-            if isinstance(first_item, (list, tuple)):
-                pts_with_ts = []
-                pts_only = []
-                all_have_ts = True
-                for item in prices:
-                    if isinstance(item, (list, tuple)) and len(item) >= 2:
-                        tf = safe_pos_float(item[0], default=None)
-                        pf = safe_pos_float(item[1], default=None)
-                        if pf is not None:
-                            pts_only.append(pf)
-                            if tf is not None:
-                                pts_with_ts.append((tf / 1000.0 if tf > 1e11 else tf, pf))
-                            else:
-                                all_have_ts = False
-                    elif isinstance(item, (list, tuple)) and len(item) == 1:
-                        all_have_ts = False
-                        pf = safe_pos_float(item[0], default=None)
-                        if pf is not None:
-                            pts_only.append(pf)
-                    else:
-                        all_have_ts = False
-                        pf = safe_pos_float(item, default=None)
-                        if pf is not None:
-                            pts_only.append(pf)
-                if len(pts_with_ts) > 1 and (all_have_ts or len(pts_with_ts) >= 20):
-                    if any(pts_with_ts[i][0] > pts_with_ts[i + 1][0] for i in range(len(pts_with_ts) - 1)):
-                        pts_with_ts.sort(key=lambda x: x[0])
-                    if all_have_ts or len(pts_with_ts) == len(pts_only):
-                        prices = [p for _, p in pts_with_ts]
-                    else:
-                        prices = pts_only
+        first_item = next((x for x in prices if x is not None), None) if len(prices) > 0 else None
+        if isinstance(first_item, (list, tuple)):
+            pts_with_ts = []
+            pts_only = []
+            all_have_ts = True
+            for item in prices:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    tf = safe_pos_float(item[0], default=None)
+                    pf = safe_pos_float(item[1], default=None)
+                    if pf is not None:
+                        pts_only.append(pf)
+                        if tf is not None:
+                            pts_with_ts.append((tf / 1000.0 if tf > 1e11 else tf, pf))
+                        else:
+                            all_have_ts = False
+                elif isinstance(item, (list, tuple)) and len(item) == 1:
+                    all_have_ts = False
+                    pf = safe_pos_float(item[0], default=None)
+                    if pf is not None:
+                        pts_only.append(pf)
+                else:
+                    all_have_ts = False
+                    pf = safe_pos_float(item, default=None)
+                    if pf is not None:
+                        pts_only.append(pf)
+            if len(pts_with_ts) > 1 and (all_have_ts or len(pts_with_ts) >= 20):
+                if any(pts_with_ts[i][0] > pts_with_ts[i + 1][0] for i in range(len(pts_with_ts) - 1)):
+                    pts_with_ts.sort(key=lambda x: x[0])
+                if all_have_ts or len(pts_with_ts) == len(pts_only):
+                    prices = [p for _, p in pts_with_ts]
                 else:
                     prices = pts_only
-        except TypeError:
-            return None
+            else:
+                prices = pts_only
     sr_f = safe_pos_float(sample_rate_sec, default=None)
-    if sr_f is None:
+    if sr_f is None or not isinstance(prices, Sized):
         return None
-    try:
-        n = len(prices)
-    except TypeError:
-        return None
+    n = len(prices)
     if n < 20:
         return None
     sample_rate_sec = sr_f

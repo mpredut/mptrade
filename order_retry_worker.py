@@ -528,10 +528,7 @@ def process_once(mkt, now=None):
         price = None
         try:
             if provider_name is not None and hasattr(mkt, "get_current_price"):
-                try:
-                    price = mkt.get_current_price(symbol, provider_name=provider_name)
-                except TypeError:
-                    price = mkt.get_current_price(symbol)
+                price = mkt.get_current_price(symbol, provider_name=provider_name)
             else:
                 price = mkt.get_current_price(symbol)
         except Exception as exc:

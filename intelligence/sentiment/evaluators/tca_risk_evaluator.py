@@ -22,13 +22,13 @@ from cachepaths import (
 from intelligence.external.collectors.base_collector import round_spread_bps
 from botcore import (
     coerce_dict_maps,
-    compute_venue_nav_breakdown,
     first_pos_float,
     normalize_side,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
+from providers.portfolio_valuation import compute_venue_nav_breakdown
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import compute_futures_premarket_lead
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     TelemetryEvaluatorFactory,
