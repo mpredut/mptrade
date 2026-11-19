@@ -458,6 +458,15 @@ def audit_llm_model_catalog_and_binaries(
         and 0.0 <= (now - prev_ts) < max(60.0, safe_pos_float(min_interval_sec, 43200.0))
     ):
         avail_set = set(prev_known)
+        missing_cached = [m for m in configured_models if m.lower() not in avail_set]
+        rec_cached = (
+            compute_recommended_llm_config_updates(
+                prev_known,
+                parse_dotenv(cfg_path) if os.path.isfile(cfg_path) else {},
+            )
+            if missing_cached
+            else {}
+        )
         return {
             "checked_ts": prev_ts,
             "agy_models_ok": True,
@@ -465,11 +474,14 @@ def audit_llm_model_catalog_and_binaries(
             "baseline_initialized": False,
             "binary_versions": dict(prev.get("binary_versions") or {}),
             "available_count": len(prev_known),
+            "available_models": prev_known,
             "configured_models": configured_models,
-            "missing_configured_models": [m for m in configured_models if m.lower() not in avail_set],
+            "missing_configured_models": missing_cached,
             "new_models": [],
             "new_families": [],
             "removed_models": [],
+            "recommended_config_updates": rec_cached,
+            "catalog_path": state_path,
         }
 
     run_fn = runner or subprocess.run
@@ -679,7 +691,7 @@ def compute_recommended_llm_config_updates(
 
     claude_missing = any(m.startswith("claude-") and m not in avail_set for m in cur_fallbacks)
     target_claude_fam = cur_claude_fam
-    if claude_sonnet_fams:
+    if claude_sonnet_fams and (not cur_claude_fam or cur_claude_fam.startswith("claude-sonnet-") or claude_missing):
         newest_new_claude = next((f for f in claude_sonnet_fams if f in new_fams), None)
         if newest_new_claude:
             target_claude_fam = newest_new_claude
