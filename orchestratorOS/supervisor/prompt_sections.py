@@ -35,8 +35,10 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_macro_benchmarks_summary_line,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
+    format_agg_spot_cvd_part,
     format_book_window_cap_tag,
     format_flow_horizon_parts,
+    format_realized_liq_sources_tag,
     format_spot_cvd_source_tag,
     format_spot_volume_rvol_parts,
 )
@@ -947,12 +949,14 @@ def _format_microstructure_section(
         ):
             sp_s = f"{'+' if sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sp_cvd))}"
             cvd_sfx += f", spot_cvd_15m={sp_s}{format_spot_cvd_source_tag(minfo)}"
-        if not ob_is_frozen and (agg_sp_cvd := safe_float(minfo.get("agg_spot_cvd_15m_usd"), None)) is not None:
-            agg_s = f"{'+' if agg_sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(agg_sp_cvd))}"
-            agg_src = str(minfo.get("agg_spot_cvd_source") or "usdc+usdt").strip()
-            agg_vol = safe_pos_float(minfo.get("agg_spot_vol_15m_usd"), default=None)
-            agg_vol_s = f", vol={_fmt_liq_usd(agg_vol)}" if agg_vol is not None else ""
-            cvd_sfx += f", agg_spot_cvd_15m={agg_s}[{agg_src}{agg_vol_s}]"
+        if not ob_is_frozen and (
+            agg_sp_part := format_agg_spot_cvd_part(
+                minfo,
+                lambda v: f"{'+' if v >= 0.0 else '-'}{_fmt_liq_usd(abs(v))}",
+                _fmt_liq_usd,
+            )
+        ):
+            cvd_sfx += f", {agg_sp_part}"
         if sp_vol_parts := format_spot_volume_rvol_parts(minfo, _fmt_liq_usd):
             cvd_sfx += f", {', '.join(sp_vol_parts)}"
 
@@ -1003,12 +1007,8 @@ def _format_microstructure_section(
         ):
             rl_n = safe_int(minfo.get("realized_liq_15m_events"), 0) or 0
             rl_n_sfx = f", n={rl_n}" if rl_n > 0 else ""
-            rl_srcs = minfo.get("realized_liq_sources")
-            rl_src_sfx = (
-                f", src={'+'.join(str(s).replace('_futures_ws', '').replace('_ws', '') for s in rl_srcs)}"
-                if isinstance(rl_srcs, list) and len(rl_srcs) > 1
-                else ""
-            )
+            rl_src_tag = format_realized_liq_sources_tag(minfo, multi_only=True)
+            rl_src_sfx = f", src={rl_src_tag}" if rl_src_tag else ""
             liq_sfx += f", realized_liq_15m(long={_fmt_liq_usd(rl_l)}, short={_fmt_liq_usd(rl_s)}{rl_n_sfx}{rl_src_sfx})"
         cd_sfx = ""
         if isinstance(cd_map := minfo.get("cycle_delta"), dict):
@@ -1039,12 +1039,14 @@ def _format_microstructure_section(
             if not ob_is_frozen and (sib_sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
                 sib_sp_s = f"{'+' if sib_sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sib_sp_cvd))}"
                 sib_sp_parts.append(f"spot_cvd_15m={sib_sp_s}[real_spot]")
-            if not ob_is_frozen and (sib_agg_cvd := safe_float(minfo.get("agg_spot_cvd_15m_usd"), None)) is not None:
-                sib_agg_s = f"{'+' if sib_agg_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sib_agg_cvd))}"
-                sib_agg_src = str(minfo.get("agg_spot_cvd_source") or "usdc+usdt").strip()
-                sib_agg_vol = safe_pos_float(minfo.get("agg_spot_vol_15m_usd"), default=None)
-                sib_agg_vol_s = f", vol={_fmt_liq_usd(sib_agg_vol)}" if sib_agg_vol is not None else ""
-                sib_sp_parts.append(f"agg_spot_cvd_15m={sib_agg_s}[{sib_agg_src}{sib_agg_vol_s}]")
+            if not ob_is_frozen and (
+                sib_agg_part := format_agg_spot_cvd_part(
+                    minfo,
+                    lambda v: f"{'+' if v >= 0.0 else '-'}{_fmt_liq_usd(abs(v))}",
+                    _fmt_liq_usd,
+                )
+            ):
+                sib_sp_parts.append(sib_agg_part)
             if not ob_is_frozen:
                 sib_sp_parts.extend(format_spot_volume_rvol_parts(minfo, _fmt_liq_usd))
             sib_sp_sfx = f", {', '.join(sib_sp_parts)}" if sib_sp_parts else ""

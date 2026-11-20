@@ -978,6 +978,9 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
                 lambda item: item.get("c") if isinstance(item, dict) else None,
                 lambda item: item.get("T") if isinstance(item, dict) else None,
                 lambda item: item.get("v") if isinstance(item, dict) else None,
+                high_getter=lambda item: item.get("h") if isinstance(item, dict) else None,
+                low_getter=lambda item: item.get("l") if isinstance(item, dict) else None,
+                open_getter=lambda item: item.get("o") if isinstance(item, dict) else None,
             )
         except Exception as exc:
             raise ProviderError(f"ohlc_series({symbol}): {exc}") from exc

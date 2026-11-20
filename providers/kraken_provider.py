@@ -1110,17 +1110,28 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                     observed_at = None
                 timestamps = ()
             vols_map = getattr(client, "_last_ohlc_volumes", None)
-            if isinstance(vols_map, dict):
-                sym_strip = str(symbol).strip() if isinstance(symbol, str) else symbol
-                vols = vols_map.get((symbol, interval_i)) or vols_map.get((sym_strip, interval_i)) or ()
-            else:
-                vols = ()
+            hlo_map = getattr(client, "_last_ohlc_hlo", None)
+            sym_strip = str(symbol).strip() if isinstance(symbol, str) else symbol
+            vols = (
+                vols_map.get((symbol, interval_i)) or vols_map.get((sym_strip, interval_i)) or ()
+                if isinstance(vols_map, dict)
+                else ()
+            )
+            hlo = (
+                hlo_map.get((symbol, interval_i)) or hlo_map.get((sym_strip, interval_i)) or ((), (), ())
+                if isinstance(hlo_map, dict)
+                else ((), (), ())
+            )
+            highs, lows, opens = hlo if isinstance(hlo, tuple) and len(hlo) == 3 else ((), (), ())
             return ClosedPriceSeries(
                 tuple(closes) if closes is not None else (),
                 interval_i,
                 observed_at,
                 timestamps,
                 tuple(vols) if vols else (),
+                tuple(highs) if highs else (),
+                tuple(lows) if lows else (),
+                tuple(opens) if opens else (),
             )
         except ProviderError:
             raise

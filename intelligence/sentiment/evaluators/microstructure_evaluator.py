@@ -119,6 +119,44 @@ def format_book_window_cap_tag(book_span_pct: Any, *, max_capped_pct: float = 1.
     return f"book_window=+/-{span_f:g}%[level_cap]" if 0.0 < span_f < max_capped_pct else ""
 
 
+def format_agg_spot_cvd_part(
+    minfo: Optional[Dict[str, Any]],
+    fmt_signed_usd: Any,
+    fmt_vol_usd: Any,
+) -> str:
+    """Format ``agg_spot_cvd_15m=<signed>[<src>(, vol=<vol>)]`` when cross-venue spot CVD is present."""
+    if not isinstance(minfo, dict):
+        return ""
+    agg_cvd = safe_float(minfo.get("agg_spot_cvd_15m_usd"), default=None)
+    if agg_cvd is None:
+        return ""
+    agg_src = str(minfo.get("agg_spot_cvd_source") or "usdc+usdt").strip()
+    agg_vol = safe_pos_float(minfo.get("agg_spot_vol_15m_usd"), default=None)
+    agg_vol_s = f", vol={fmt_vol_usd(agg_vol)}" if agg_vol is not None else ""
+    return f"agg_spot_cvd_15m={fmt_signed_usd(agg_cvd)}[{agg_src}{agg_vol_s}]"
+
+
+def format_realized_liq_sources_tag(
+    minfo: Optional[Dict[str, Any]],
+    *,
+    multi_only: bool = True,
+) -> str:
+    """Return canonical ``bybit+binance+okx`` provenance string from ``realized_liq_sources``."""
+    if not isinstance(minfo, dict):
+        return ""
+    rl_srcs = minfo.get("realized_liq_sources")
+    if not isinstance(rl_srcs, (list, tuple)):
+        return ""
+    cleaned = [
+        s_clean
+        for s in rl_srcs
+        if (s_clean := str(s or "").strip().replace("_futures_ws", "").replace("_ws", ""))
+    ]
+    if not cleaned or (multi_only and len(cleaned) <= 1):
+        return ""
+    return "+".join(cleaned)
+
+
 def format_flow_horizon_parts(
     minfo: Optional[Dict[str, Any]],
     fmt_cvd_usd: Any,
@@ -2082,8 +2120,10 @@ __all__ = [
     "enrich_cross_venue_trends",
     "enrich_microstructure_cvd",
     "evaluate_microstructure_cycle_deltas",
+    "format_agg_spot_cvd_part",
     "format_book_window_cap_tag",
     "format_flow_horizon_parts",
+    "format_realized_liq_sources_tag",
     "format_spot_cvd_source_tag",
     "format_spot_volume_rvol_parts",
     "is_ob_live_and_newer",

@@ -88,8 +88,10 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     compute_cross_venue_arb_metrics,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
+    format_agg_spot_cvd_part,
     format_book_window_cap_tag,
     format_flow_horizon_parts,
+    format_realized_liq_sources_tag,
     format_spot_cvd_source_tag,
     format_spot_volume_rvol_parts,
     is_ob_live_and_newer,
@@ -1873,6 +1875,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
         if ctx.is_usd_sym:
             self._reconcile_sibling_arbitrage(ctx, p_est, liq_c)
         sp_vol_parts = format_spot_volume_rvol_parts(cur_m_info, lambda v: f"${v:,.0f}")
+        agg_sp_part = format_agg_spot_cvd_part(cur_m_info, lambda v: f"${v:+,.0f}", lambda v: f"${v:,.0f}")
         if cur_m_info.get("cvd_15m_usd") is not None:
             cvd_u = safe_float(cur_m_info.get("cvd_15m_usd"), 0.0)
             cvd_line = f"${cvd_u:+,.0f}"
@@ -1882,6 +1885,8 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                 cvd_line += f", flow_horizons({', '.join(mh_parts)})"
             if (sp_cvd := safe_float(cur_m_info.get("spot_cvd_15m_usd"), default=None)) is not None:
                 cvd_line += f", spot_cvd_15m=${sp_cvd:+,.0f}{format_spot_cvd_source_tag(cur_m_info)}"
+            if agg_sp_part:
+                cvd_line += f", {agg_sp_part}"
             if sp_vol_parts:
                 cvd_line += f", {', '.join(sp_vol_parts)}"
             telemetry["15m Cumulative Volume Delta (CVD)"] = cvd_line
@@ -1889,10 +1894,11 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             (sp_only_cvd := safe_float(cur_m_info.get("spot_cvd_15m_usd"), default=None)) is not None
             and cur_m_info.get("spot_cvd_source") == "real_spot"
         ):
-            vol_sfx = f", {', '.join(sp_vol_parts)}" if sp_vol_parts else ""
-            telemetry["15m Cumulative Volume Delta (CVD)"] = f"spot_cvd_15m=${sp_only_cvd:+,.0f}[real_spot]{vol_sfx}"
-        elif sp_vol_parts:
-            telemetry["15m Cumulative Volume Delta (CVD)"] = ", ".join(sp_vol_parts)
+            spot_tail = [p for p in (agg_sp_part, *sp_vol_parts) if p]
+            tail_sfx = f", {', '.join(spot_tail)}" if spot_tail else ""
+            telemetry["15m Cumulative Volume Delta (CVD)"] = f"spot_cvd_15m=${sp_only_cvd:+,.0f}[real_spot]{tail_sfx}"
+        elif agg_sp_part or sp_vol_parts:
+            telemetry["15m Cumulative Volume Delta (CVD)"] = ", ".join(p for p in (agg_sp_part, *sp_vol_parts) if p)
         if not no_perp_liq and liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
             deep_parts = [
                 f"deep_{s_lbl}=${liq_c[px_k]} (${safe_float(liq_c.get(usd_k), 0.0):,.0f}, {safe_float(liq_c.get(dist_k), 0.0):+.2f}%)"
@@ -1915,7 +1921,12 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             and (rl_l > 0.0 or rl_s > 0.0)
         ):
             rl_n = safe_int(cur_m_info.get("realized_liq_15m_events"), default=0) or 0
-            telemetry["Realized Liquidations (15m Bybit)"] = f"long=${rl_l:,.0f}, short=${rl_s:,.0f}" + (f", events={rl_n}" if rl_n > 0 else "")
+            rl_src_tag = format_realized_liq_sources_tag(cur_m_info, multi_only=False)
+            telemetry["Realized Liquidations (15m)"] = (
+                f"long=${rl_l:,.0f}, short=${rl_s:,.0f}"
+                + (f", events={rl_n}" if rl_n > 0 else "")
+                + (f", src={rl_src_tag}" if rl_src_tag else "")
+            )
 
 
 class PretradeDynamicSlopesFormatStage(PretradePillarCollectorBase):

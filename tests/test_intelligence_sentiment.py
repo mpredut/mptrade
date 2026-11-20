@@ -14152,6 +14152,186 @@ def test_faza2_prep_seams_zero_behavior_change(tmp_path):
     assert cal_line is not None and 'next_routine_session_window="US Wall Street Cash Open at 16:30 EET in 10m"' in cal_line
 
 
+def test_provider_ohlc_hlo_preservation_and_pretrade_multi_venue_parity(tmp_path, monkeypatch):
+    """Verify Binance/HL/Kraken/Yahoo OHLC H/L/O propagation and Pre-Trade agg_spot_cvd_15m + multi-venue liq parity."""
+    from types import SimpleNamespace
+    from botcore import ClosedPriceSeries
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        format_agg_spot_cvd_part,
+        format_realized_liq_sources_tag,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import _extract_ohlc_series_points
+    from providers.binance_provider import BinanceProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.ohlc_utils import extract_yahoo_intraday_chart_bars
+    from state_io import save_json_state
+    import providers.binance_provider as bn_mod
+    from kraken.kraken_client import KrakenClient
+
+    # 1. ClosedPriceSeries.from_raw_candles + BinanceProvider + HyperliquidProvider preserve H/L/O
+    raw_bn = [
+        [1700000000000, "100.0", "103.5", "98.5", "101.0", "25.0", 1700000300000],
+        [1700000300000, "101.0", "104.0", "99.0", "102.0", "30.0", 1700000600000],
+        [1700000600000, "102.0", "105.0", "101.0", "103.0", "10.0", 1700000900000],
+    ]
+    monkeypatch.setattr(bn_mod, "_get_bapi", lambda: SimpleNamespace(client=SimpleNamespace(get_klines=lambda **_kw: raw_bn)))
+    bn_ser = BinanceProvider().ohlc_series("BTCUSDC", 5)
+    assert bn_ser.closes == (101.0, 102.0)
+    assert bn_ser.highs == (103.5, 104.0)
+    assert bn_ser.lows == (98.5, 99.0)
+    assert bn_ser.opens == (100.0, 101.0)
+    pts_bn = _extract_ohlc_series_points(bn_ser, min_ts=1699999000.0)
+    assert pts_bn[0] == [1700000300000, 101.0, 25.0, 103.5, 98.5, 100.0]
+
+    hl_candles = [
+        {"o": "64.0", "h": "66.5", "l": "63.2", "c": "65.1", "v": "1200.0", "T": 1700000300000},
+        {"o": "65.1", "h": "67.0", "l": "64.8", "c": "66.0", "v": "900.0", "T": 1700000600000},
+    ]
+    hl_prov = HyperliquidProvider()
+    monkeypatch.setattr(
+        hl_prov,
+        "_require_hl_client_and_pair",
+        lambda _caller: (SimpleNamespace(candles=lambda _p, _iv, _lh: hl_candles), "HYPE/USDC", None),
+    )
+    hl_ser = hl_prov.ohlc_series("HYPEUSDC", 5)
+    assert hl_ser.closes == (65.1,)
+    assert hl_ser.highs == (66.5,)
+    assert hl_ser.lows == (63.2,)
+    assert hl_ser.opens == (64.0,)
+
+    # 2. KrakenClient + KrakenProvider preserve H/L/O without altering ohlc_closes_with_timestamps return shape
+    kc = KrakenClient.__new__(KrakenClient)
+    kc._public = lambda _ep, _params: {
+        "ADAUSD": [
+            [1700000000, "0.148", "0.153", "0.146", "0.150", "0.149", "50000.0", 42],
+            [1700000300, "0.150", "0.155", "0.149", "0.151", "0.150", "10000.0", 12],
+        ],
+        "last": 1700000300,
+    }
+    kp = KrakenProvider()
+    monkeypatch.setattr(kp, "_client", lambda: kc)
+    kr_ser = kp.ohlc_series("ADAUSD", 5)
+    assert kr_ser.closes == (0.15,)
+    assert kr_ser.highs == (0.153,)
+    assert kr_ser.lows == (0.146,)
+    assert kr_ser.opens == (0.148,)
+    assert kr_ser.volumes == (50000.0,)
+
+    # 3. Yahoo extract_yahoo_intraday_chart_bars preserves 6-tuple H/L/O and 212trading.market_data handles it cleanly
+    now_s = math.trunc(time.time())
+    y_payload = {
+        "chart": {
+            "result": [
+                {
+                    "meta": {"regularMarketPrice": 153.0, "regularMarketTime": now_s, "marketState": "REGULAR"},
+                    "timestamp": [now_s - 1200, now_s - 900, now_s - 600, now_s - 300, now_s],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [149.0, 149.5, 150.0, 150.5, 151.0],
+                                "high": [150.2, 150.8, 151.2, 151.8, 153.6],
+                                "low": [148.4, 149.1, 149.4, 150.1, 150.7],
+                                "close": [149.5, 150.0, 150.5, 151.0, 153.0],
+                                "volume": [900, 1100, 1000, 1200, 1500],
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+    _meta, y_bars = extract_yahoo_intraday_chart_bars(y_payload)
+    assert len(y_bars) == 5
+    assert y_bars[0] == (now_s - 1200, 149.5, 900.0, 150.2, 148.4, 149.0)
+    md_mod = load_venue_modules("212trading", "market_data")
+    monkeypatch.setattr(md_mod, "_can_use_ssot_equity_cache", lambda _sym: None)
+    monkeypatch.setattr(md_mod, "_chart", lambda _sym, **_kw: (_meta, y_bars))
+    assert md_mod.trend_slope_pct("NVDA", bars=5) > 0.0
+    chk = md_mod.check_market("NVDA")
+    assert chk is not None and chk["trading"] is True and chk["volume"] == 5700.0
+
+    # 4. SSOT formatters + Pre-Trade telemetry surface agg_spot_cvd_15m and multi-venue realized liquidations cleanly
+    assert format_agg_spot_cvd_part(
+        {"agg_spot_cvd_15m_usd": 59800.0, "agg_spot_vol_15m_usd": 155700.0, "agg_spot_cvd_source": "usdc+usdt"},
+        lambda v: f"${v:+,.0f}",
+        lambda v: f"${v:,.0f}",
+    ) == "agg_spot_cvd_15m=$+59,800[usdc+usdt, vol=$155,700]"
+    assert format_realized_liq_sources_tag({"realized_liq_sources": ["bybit_ws", "binance_futures_ws", "okx_ws"]}) == "bybit+binance+okx"
+    assert format_realized_liq_sources_tag({"realized_liq_sources": ["bybit_ws"]}, multi_only=True) == ""
+    assert format_realized_liq_sources_tag({"realized_liq_sources": ["bybit_ws"]}, multi_only=False) == "bybit"
+
+    now_pt = time.time()
+    cdir = tmp_path / "cachedb"
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+    save_json_state(
+        str(cdir / "telemetry" / "orderbook_depth_BTCUSDC.json"),
+        {
+            "symbol": "BTCUSDC",
+            "mid_price": 62000.0,
+            "best_bid": 61999.5,
+            "best_ask": 62000.5,
+            "spread_bps": 0.16,
+            "bid_depth_usd": 6_000_000.0,
+            "ask_depth_usd": 5_000_000.0,
+            "depth_1pct_bid_usd": 5_500_000.0,
+            "depth_1pct_ask_usd": 4_500_000.0,
+            "imbalance_ratio": 0.545,
+            "largest_bid_wall_usd": 1_000_000.0,
+            "largest_bid_wall_price": 61500.0,
+            "largest_ask_wall_usd": 800_000.0,
+            "largest_ask_wall_price": 62500.0,
+            "book_span_pct": 1.3,
+            "spot_cvd_15m_usd": 450_000.0,
+            "spot_cvd_source": "real_spot",
+            "spot_vol_15m_usd": 2_000_000.0,
+            "agg_spot_cvd_15m_usd": -125_000.0,
+            "agg_spot_vol_15m_usd": 9_500_000.0,
+            "agg_spot_cvd_source": "usdc+usdt",
+            "ts": now_pt,
+        },
+    )
+    save_json_state(
+        str(cdir / "telemetry" / "whale_snapshot_BTCUSDC.json"),
+        {
+            "symbol": "BTCUSDC",
+            "top_traders_long_pct": 0.65,
+            "top_traders_long_ratio": 1.86,
+            "taker_buy_sell_ratio": 0.62,
+            "taker_buy_vol_usd": 45_000_000.0,
+            "taker_sell_vol_usd": 72_000_000.0,
+            "open_interest_usd": 5_900_000_000.0,
+            "open_interest_1h_change_pct": -0.45,
+            "open_interest_15m_change_pct": -0.35,
+            "ts": now_pt,
+        },
+    )
+    save_json_state(
+        str(cdir / "telemetry" / "realized_liquidations.json"),
+        {
+            "ts": now_pt,
+            "source": "multi_venue_ws",
+            "sources": ["bybit_ws", "binance_futures_ws", "okx_ws"],
+            "connected_sources": ["bybit_ws", "binance_futures_ws", "okx_ws"],
+            "connected": True,
+            "symbols": {
+                "BTCUSDT": {
+                    "long_15m_usd": 114_711.0,
+                    "short_15m_usd": 0.0,
+                    "net_15m_usd": -114_711.0,
+                    "events_15m": 27,
+                }
+            },
+        },
+    )
+    pt_tel = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(cdir), allow_network=False, now_ts=now_pt)
+    assert "agg_spot_cvd_15m=$-125,000[usdc+usdt, vol=$9,500,000]" in pt_tel["15m Cumulative Volume Delta (CVD)"]
+    assert "Realized Liquidations (15m Bybit)" not in pt_tel
+    assert pt_tel["Realized Liquidations (15m)"] == "long=$114,711, short=$0, events=27, src=bybit+binance+okx"
+
+
+
 def test_faza2_proactive_macro_calendar_earnings_and_pretrade_catalyst(tmp_path, monkeypatch):
     """Verify Faza 2 end-to-end: ForexFactory + Nasdaq collector, partial-failure resilience, static BLS/BEA/FOMC
     dedup & DST accuracy, pre_event_risk_window, Section 1 rendering, Pre-Trade catalyst, and GTC daemon step."""

@@ -455,13 +455,16 @@ def resolve_sustained_sample_rate(
 
 @dataclass(frozen=True)
 class ClosedPriceSeries:
-    """Completed closes with the timestamp of the newest completed candle."""
+    """Completed closes with optional timestamps, volumes, and intrabar H/L/O arrays."""
 
     closes: tuple
     interval_min: int
     last_closed_at: float | None = None
     timestamps: tuple = ()
     volumes: tuple = ()
+    highs: tuple = ()
+    lows: tuple = ()
+    opens: tuple = ()
 
     @classmethod
     def from_raw_candles(
@@ -471,6 +474,10 @@ class ClosedPriceSeries:
         close_getter: object,
         ts_ms_getter: object,
         vol_getter: object = None,
+        *,
+        high_getter: object = None,
+        low_getter: object = None,
+        open_getter: object = None,
     ) -> "ClosedPriceSeries":
         completed = list(raw_candles or ())[:-1]  # type: ignore[arg-type]
         valid = [
@@ -493,10 +500,20 @@ class ClosedPriceSeries:
             if callable(vol_getter) and valid
             else ()
         )
+
+        def _opt_pos_series(getter: object) -> tuple:
+            if not (callable(getter) and valid):
+                return ()
+            vals = tuple(safe_pos_float(getter(item), default=None) for item, _ in valid)
+            return vals if any(v is not None for v in vals) else ()
+
         return cls(
             closes,
             safe_pos_int(interval_min, 1),
             timestamps[-1] if timestamps else None,
             timestamps,
             volumes,
+            _opt_pos_series(high_getter),
+            _opt_pos_series(low_getter),
+            _opt_pos_series(open_getter),
         )

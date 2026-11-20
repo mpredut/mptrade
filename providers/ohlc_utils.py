@@ -682,23 +682,38 @@ def extract_yahoo_chart_latest_price(payload: Any, *, decimals: Optional[int] = 
 
 def extract_yahoo_intraday_chart_bars(
     payload: Any,
-) -> tuple[Optional[dict], list[tuple[Any, float, Optional[float]]]]:
-    """Extract ``(meta, bars)`` from a Yahoo chart payload, pruning off-RTH zero-volume outlier spikes."""
+) -> tuple[Optional[dict], list[tuple]]:
+    """Extract ``(meta, bars)`` from a Yahoo chart payload, preserving H/L/O and pruning off-RTH zero-vol spikes."""
     result, _, ts, q = extract_yahoo_chart_result_and_quote(payload)
     if result is None:
         return None, []
     meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
     closes = q.get("close") if isinstance(q.get("close"), list) else []
     vols = q.get("volume") if isinstance(q.get("volume"), list) else []
-    bars: list[tuple[Any, float, Optional[float]]] = []
+    highs = q.get("high") if isinstance(q.get("high"), list) else []
+    lows = q.get("low") if isinstance(q.get("low"), list) else []
+    opens = q.get("open") if isinstance(q.get("open"), list) else []
+    bars: list[tuple] = []
     for i, (t, c) in enumerate(zip(ts, closes)):
         t_f = safe_pos_float(t, default=None)
         c_f = safe_pos_float(c, default=None)
         if t_f is None or c_f is None:
             continue
+        t_clean = math.trunc(t_f) if t_f.is_integer() else t_f
         raw_v = vols[i] if i < len(vols) else None
         v_clean = safe_nonneg_float(raw_v, default=None)
-        bars.append((math.trunc(t_f) if t_f.is_integer() else t_f, c_f, v_clean))
+        hi_f = safe_pos_float(highs[i], default=None) if i < len(highs) else None
+        lo_f = safe_pos_float(lows[i], default=None) if i < len(lows) else None
+        if hi_f is not None and lo_f is not None and hi_f >= lo_f > 0.0:
+            hi_c = max(c_f, hi_f)
+            lo_c = min(c_f, lo_f)
+            op_f = safe_pos_float(opens[i], default=None) if i < len(opens) else None
+            if op_f is not None:
+                bars.append((t_clean, c_f, v_clean, hi_c, lo_c, min(hi_c, max(lo_c, op_f))))
+            else:
+                bars.append((t_clean, c_f, v_clean, hi_c, lo_c))
+        else:
+            bars.append((t_clean, c_f, v_clean))
     reg_period = (
         ((meta.get("currentTradingPeriod") or {}).get("regular") or {})
         if isinstance(meta.get("currentTradingPeriod"), dict)

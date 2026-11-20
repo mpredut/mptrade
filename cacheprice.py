@@ -489,7 +489,7 @@ class Cache24PriceManager(CachePriceManagerBase):
                 existing = by_ts.get(ts_r)
                 if existing is None or (
                     is_ohlc_r
-                    and (not isinstance(existing, (list, tuple)) or len(existing) < 3)
+                    and (not isinstance(existing, (list, tuple)) or len(existing) < (5 if len(r) >= 5 else 3))
                 ):
                     by_ts[ts_r] = list(r) if isinstance(r, tuple) else r
         merged_pts = [by_ts[k] for k in sorted(by_ts)]

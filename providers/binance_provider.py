@@ -625,6 +625,9 @@ class BinanceProvider(MarketDataProvider):
             lambda item: item[4] if isinstance(item, (list, tuple)) and len(item) >= 5 else None,
             lambda item: item[6] if isinstance(item, (list, tuple)) and len(item) > 6 else None,
             lambda item: item[5] if isinstance(item, (list, tuple)) and len(item) > 5 else None,
+            high_getter=lambda item: item[2] if isinstance(item, (list, tuple)) and len(item) > 2 else None,
+            low_getter=lambda item: item[3] if isinstance(item, (list, tuple)) and len(item) > 3 else None,
+            open_getter=lambda item: item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else None,
         )
 
     def submit_order(

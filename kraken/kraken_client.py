@@ -304,6 +304,9 @@ class KrakenClient:
         closes: list[float] = []
         timestamps: list[float] = []
         volumes: list[float] = []
+        highs: list[float | None] = []
+        lows: list[float | None] = []
+        opens: list[float | None] = []
         for row in rows:
             if not isinstance(row, (list, tuple)) or len(row) < 5:
                 continue
@@ -314,9 +317,19 @@ class KrakenClient:
             closes.append(c_val)
             timestamps.append(ts_val + itv_sec)
             volumes.append(safe_nonneg_float(row[6], default=0.0) or 0.0 if len(row) > 6 else 0.0)
+            opens.append(safe_pos_float(row[1], default=None))
+            highs.append(safe_pos_float(row[2], default=None))
+            lows.append(safe_pos_float(row[3], default=None))
         if not isinstance(getattr(self, "_last_ohlc_volumes", None), dict):
             self._last_ohlc_volumes = {}
         self._last_ohlc_volumes[(pair, itv_int)] = tuple(volumes)
+        if not isinstance(getattr(self, "_last_ohlc_hlo", None), dict):
+            self._last_ohlc_hlo = {}
+        self._last_ohlc_hlo[(pair, itv_int)] = (
+            tuple(highs) if any(v is not None for v in highs) else (),
+            tuple(lows) if any(v is not None for v in lows) else (),
+            tuple(opens) if any(v is not None for v in opens) else (),
+        )
         return closes, tuple(timestamps)
 
     def ohlc_closes_with_timestamp(

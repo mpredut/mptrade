@@ -244,7 +244,7 @@ def trend_slope_pct(sym: str, bars: int = 12) -> float | None:
         if (ssot_slope := compute_ols_slope_pct(_ssot_equity_ohlc_closes(sym_u), bars=bars)) is not None:
             return ssot_slope
     _, bars_rows = _chart(sym)
-    return compute_ols_slope_pct([c for (_, c, _) in bars_rows], bars=bars)
+    return compute_ols_slope_pct([b[1] for b in bars_rows], bars=bars)
 
 
 def _fx_rate(pair: str, label: str, min_rate: float, fallback: float) -> float:
@@ -287,8 +287,8 @@ def check_market(sym: str) -> dict | None:
         last_bar_ts = normalize_epoch_sec(bars[-1][0], default=None)
         series_age = (now_ts - last_bar_ts) if last_bar_ts is not None else None
         series_price = safe_pos_float(bars[-1][1], default=None)
-        series_vol = sum(safe_nonneg_float(v, default=0.0) for _, _, v in recent)
-        cs = [c_f for _, c, _ in recent if (c_f := safe_pos_float(c, default=None)) is not None]
+        series_vol = sum(safe_nonneg_float(b[2], default=0.0) for b in recent)
+        cs = [c_f for b in recent if (c_f := safe_pos_float(b[1], default=None)) is not None]
         series_moved = len(cs) >= 2 and (max(cs) - min(cs)) > 0
 
     fresh_meta = age_sec is not None and -60.0 <= age_sec < 15 * 60
