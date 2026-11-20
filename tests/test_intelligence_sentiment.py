@@ -14555,6 +14555,49 @@ def test_faza2_proactive_macro_calendar_earnings_and_pretrade_catalyst(tmp_path,
     assert gtc.update_macro_calendar(force=True, now=now_cpi_pre) is True
     assert (gtc_dir / "macro" / "macro_calendar_collect.json").exists()
 
+    # 7. Restart 429 guard (skip_if_fresh_sec) skips network when complete cache is fresh, heals partial failures,
+    #    and live mode stamps post-fetch completion wall-clock ts (no pre-fetch backdating).
+    fetch_calls = []
+
+    def _counting_fetch(url, **_kw):
+        fetch_calls.append(url)
+        return _fake_fetch(url)
+
+    fresh_skip = collect_macro_calendar_snapshot(
+        str(gtc_dir),
+        now_ts=now_cpi_pre + 300.0,
+        persist=True,
+        fetch_fn=_counting_fetch,
+        tracked_equity_tickers=["NVDA"],
+        skip_if_fresh_sec=1800.0,
+    )
+    assert fresh_skip is not None and fetch_calls == []
+
+    # Partial-failure cache on disk (earnings_ok=False) bypasses skip_if_fresh_sec so it self-heals
+    heal_snap = collect_macro_calendar_snapshot(
+        str(cdir),
+        now_ts=now_cpi_pre + 900.0,
+        persist=True,
+        fetch_fn=_counting_fetch,
+        tracked_equity_tickers=["NVDA"],
+        skip_if_fresh_sec=1800.0,
+    )
+    assert heal_snap is not None and heal_snap["earnings_ok"] is True and len(fetch_calls) == 3
+
+    # Post-fetch completion wall-clock ts when now_ts=None (no pre-fetch backdating)
+    import intelligence.sentiment.collectors.macro_telemetry_collector as mtc_mod
+
+    clock_vals = iter([now_cpi_pre, now_cpi_pre + 4.5])
+    monkeypatch.setattr(mtc_mod, "resolve_now_ts", lambda v=None: v if v is not None else next(clock_vals))
+    live_ts_snap = collect_macro_calendar_snapshot(
+        str(tmp_path / "live_ts_dir"),
+        now_ts=None,
+        persist=False,
+        fetch_fn=_fake_fetch,
+        tracked_equity_tickers=["NVDA"],
+    )
+    assert live_ts_snap is not None and live_ts_snap["ts"] == pytest.approx(now_cpi_pre + 4.5)
+
 
 
 

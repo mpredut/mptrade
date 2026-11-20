@@ -450,7 +450,14 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         """Fetch weekly USD macro releases and tracked/bellwether corporate earnings and persist to cachedb/."""
         try:
             eff_now = self._resolve_step_now(now)
-            snap = collect_macro_calendar_snapshot(self.cache_dir, timeout_sec=5.0, persist=True, now_ts=eff_now)
+            fresh_guard = min(1800.0, safe_pos_float(getattr(self, "macro_calendar_interval_sec", None), 21600.0) * 0.25)
+            snap = collect_macro_calendar_snapshot(
+                self.cache_dir,
+                timeout_sec=3.0,
+                persist=True,
+                now_ts=eff_now,
+                skip_if_fresh_sec=fresh_guard,
+            )
             if isinstance(snap, dict) and (snap.get("events_ok") or snap.get("earnings_ok")):
                 logger.debug(
                     "Macro calendar updated: %d events, %d earnings",

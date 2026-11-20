@@ -479,12 +479,13 @@ class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
         symbol: str = "*",
         *,
         now_ts: Optional[float] = None,
-        timeout_sec: float = 5.0,
+        timeout_sec: float = 3.0,
         allow_network: bool = True,
         persist: bool = True,
         fetch_fn: Optional[Callable[..., Any]] = None,
         read_json_fn: Any = None,
         tracked_equity_tickers: Optional[List[str]] = None,
+        skip_if_fresh_sec: float = 0.0,
         **kwargs: Any,
     ) -> Optional[Dict[str, Any]]:
         prev_snap, _ = self._read_cached_dict(
@@ -496,6 +497,16 @@ class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
         if not allow_network and fetch_fn is None:
             return prev_snap
         eff_now = resolve_now_ts(now_ts)
+        fresh_guard_sec = safe_nonneg_float(skip_if_fresh_sec, 0.0) or 0.0
+        if (
+            fresh_guard_sec > 0.0
+            and isinstance(prev_snap, dict)
+            and _parse_bool_flag(prev_snap.get("events_ok"), False)
+            and _parse_bool_flag(prev_snap.get("earnings_ok"), False)
+        ):
+            prev_ts_chk = normalize_epoch_sec(prev_snap.get("ts"), default=0.0) or 0.0
+            if prev_ts_chk > 0.0 and 0.0 <= (eff_now - prev_ts_chk) < fresh_guard_sec:
+                return prev_snap
         _fetch = self._resolve_fetch_fn(fetch_fn)
         dt_ny = _mss.resolve_secondary_ny_datetime(eff_now)
         tz_ny = dt_ny.tzinfo or timezone.utc
@@ -639,10 +650,11 @@ class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
 
         if not events_ok and not earnings_ok:
             return None
+        done_now = resolve_now_ts(now_ts)
         prev_fresh = (
             isinstance(prev_snap, dict)
             and (prev_ts := normalize_epoch_sec(prev_snap.get("ts"), default=0.0) or 0.0) > 0.0
-            and 0.0 <= (eff_now - prev_ts) <= 86400.0
+            and 0.0 <= (done_now - prev_ts) <= 86400.0
         )
         if prev_fresh and isinstance(prev_snap, dict):
             if not events_ok and isinstance(prev_snap.get("events"), list):
@@ -651,7 +663,7 @@ class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
                 earnings = list(prev_snap["earnings"])
 
         payload: Dict[str, Any] = {
-            "ts": round(eff_now, 3),
+            "ts": round(done_now, 3),
             "source": "forexfactory+nasdaq",
             "events_ok": events_ok,
             "earnings_ok": earnings_ok,
@@ -1172,7 +1184,11 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
             if not cal_snap or cal_ts <= 0.0 or (now_ts - cal_ts) > cal_itv_sec:
                 if isinstance(
                     live_cal := collect_macro_calendar_snapshot(
-                        cache_dir, now_ts=now_ts, timeout_sec=3.0, persist=persist
+                        cache_dir,
+                        now_ts=now_ts,
+                        timeout_sec=3.0,
+                        persist=persist,
+                        skip_if_fresh_sec=min(1800.0, cal_itv_sec * 0.25),
                     ),
                     dict,
                 ) and live_cal:
@@ -1970,10 +1986,11 @@ def collect_macro_calendar_snapshot(
     cache_dir: str = "cachedb",
     *,
     now_ts: Optional[float] = None,
-    timeout_sec: float = 5.0,
+    timeout_sec: float = 3.0,
     persist: bool = True,
     fetch_fn: Optional[Callable[..., Any]] = None,
     tracked_equity_tickers: Optional[List[str]] = None,
+    skip_if_fresh_sec: float = 0.0,
 ) -> Optional[Dict[str, Any]]:
     """Fetch weekly USD macro releases (ForexFactory) and tracked/bellwether corporate earnings (Nasdaq) and persist to cachedb."""
     return TelemetryCollectorFactory.create("macro_economic_calendar", start_sync=True).collect(
@@ -1984,6 +2001,7 @@ def collect_macro_calendar_snapshot(
         persist=persist,
         fetch_fn=fetch_fn,
         tracked_equity_tickers=tracked_equity_tickers,
+        skip_if_fresh_sec=skip_if_fresh_sec,
     )
 
 
