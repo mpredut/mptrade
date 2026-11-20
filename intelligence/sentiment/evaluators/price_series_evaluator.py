@@ -362,7 +362,11 @@ def compute_volume_profile_metrics(
 _ORIG_COMPUTE_VP_METRICS = compute_volume_profile_metrics
 
 
-def compute_volume_rvol_metrics(series: list) -> Dict[str, float]:
+def compute_volume_rvol_metrics(
+    series: list,
+    *,
+    now_ts: Optional[float] = None,
+) -> Dict[str, float]:
     """Compute 15m/1h spot USD turnover and relative volume (RVOL vs 24h average) from 3-col `[ts_ms, px, vol]` bars."""
     if not isinstance(series, (list, tuple)) or len(series) < 3:
         return {}
@@ -383,7 +387,12 @@ def compute_volume_rvol_metrics(series: list) -> Dict[str, float]:
         return {}
     series_end_ms = bars[-1][0]
     vol_now_ms = pos_bars[-1][0]
-    if (series_end_ms - vol_now_ms) > 3600_000.0:
+    ref_end_ms = series_end_ms
+    if now_ts is not None and now_ts > 0.0:
+        now_ms_v = now_ts * 1000.0
+        if 0.0 <= (now_ms_v - series_end_ms) <= 7.0 * _MS_1D:
+            ref_end_ms = now_ms_v
+    if (ref_end_ms - vol_now_ms) > 3600_000.0:
         return {}
     cutoff_24h = vol_now_ms - 86_400_000.0
     w24 = [(t, px * v) for t, px, v in bars if t >= cutoff_24h and v > 0.0]
@@ -394,7 +403,16 @@ def compute_volume_rvol_metrics(series: list) -> Dict[str, float]:
         return {}
     diffs = sorted(b[0] - a[0] for a, b in zip(w24, w24[1:]) if 0.0 < (b[0] - a[0]) <= 3600_000.0)
     step_ms = diffs[len(diffs) // 2] if diffs else 300_000.0
-    eff_span_h = min(24.0, max(1.5, (span_raw_ms + step_ms) / 3_600_000.0))
+    # Sum active-session bar spans, excluding >1h market-closed gaps (e.g. 17.5h US equity overnight closure)
+    active_span_ms = (
+        sum(
+            (gap if gap <= 3_600_000.0 else step_ms)
+            for a, b in zip(w24, w24[1:])
+            if (gap := b[0] - a[0]) > 0.0
+        )
+        + step_ms
+    )
+    eff_span_h = min(24.0, max(1.5, active_span_ms / 3_600_000.0))
     tot_usd = sum(u for _, u in w24)
     if tot_usd <= 0.0:
         return {}
@@ -689,6 +707,7 @@ def compute_session_vwap_metrics(
     is_equity: bool = False,
     cur_px: Optional[float] = None,
     decimals: Optional[int] = None,
+    now_ts: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Compute volume-weighted Session VWAP anchored to 00:00 UTC (crypto) or 09:30 NY RTH (US equities)."""
     if not isinstance(series_with_vol, (list, tuple)) or len(series_with_vol) < 2:
@@ -723,6 +742,12 @@ def compute_session_vwap_metrics(
     pos_bars.sort(key=itemgetter(0))
 
     if is_equity:
+        ref_ms_eq = max_any_ts
+        if now_ts is not None and now_ts > 0.0:
+            now_ms_v = now_ts * 1000.0
+            if 0.0 <= (now_ms_v - max_any_ts) <= 7.0 * _MS_1D:
+                ref_ms_eq = now_ms_v
+        ref_ny_date = datetime.fromtimestamp(ref_ms_eq / 1000.0, tz=timezone.utc).astimezone(_NY_TZ).date()
         latest_ny_dt = datetime.fromtimestamp(pos_bars[-1][0] / 1000.0, tz=timezone.utc).astimezone(_NY_TZ)
         latest_date = latest_ny_dt.date()
         rth_by_date: Dict[Any, List[Tuple[float, float, float]]] = {}
@@ -737,8 +762,9 @@ def compute_session_vwap_metrics(
                 rth_by_date.setdefault(bar_date, []).append((ts_ms, tp_px, vol_v))
         valid_rth_dates = sorted(d for d, d_bars in rth_by_date.items() if len(d_bars) >= 2)
         if valid_rth_dates:
-            sess_bars = rth_by_date[valid_rth_dates[-1]]
-            anchor_lbl = "rth"
+            picked_date = valid_rth_dates[-1]
+            sess_bars = rth_by_date[picked_date]
+            anchor_lbl = "rth" if picked_date >= ref_ny_date else "prev_rth"
         else:
             sess_bars = same_day_bars
             anchor_lbl = "session"
@@ -769,9 +795,11 @@ def compute_session_vwap_metrics(
         "dist_vs_session_vwap_pct": pct_delta(eff_px, vwap),
         "session_vwap_anchor": anchor_lbl,
     }
+    sum_w2 = sum(b[2] * b[2] for b in sess_bars)
+    n_eff = ((tot_vol * tot_vol) / sum_w2) if sum_w2 > 0.0 else 0.0
     var_w = sum(b[2] * ((b[1] - vwap) ** 2) for b in sess_bars) / tot_vol
     sigma = math.sqrt(max(0.0, var_w))
-    if sigma >= vwap * 1e-4 and math.isfinite(sigma):
+    if n_eff >= 2.0 and sigma >= vwap * 1e-4 and math.isfinite(sigma):
         out["session_vwap_sigma_pct"] = round((sigma / vwap) * 100.0, 2) + 0.0
         out["session_vwap_z"] = round((eff_px - vwap) / sigma, 2) + 0.0
     return out
@@ -908,6 +936,7 @@ def compute_24h_price_metrics(
     *,
     is_equity: bool = False,
     series_7d_ts_px: Optional[list] = None,
+    now_ts: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Compute multi-horizon percentage changes (15m, 30m, 1h, 3h), 24h range, ATR, Session VWAP, and session extremes."""
     if not isinstance(series, list) or len(series) < 2:
@@ -1059,7 +1088,7 @@ def compute_24h_price_metrics(
             else compute_volume_profile_metrics(series)
         )
         out.update(vp_metrics)
-        if vol_rvol := compute_volume_rvol_metrics(series):
+        if vol_rvol := compute_volume_rvol_metrics(series, now_ts=now_ts):
             out.update(vol_rvol)
         bars_15m = _resample_ohlc_bars(series, _MS_15M, precleaned_ts_px=clean_series)
         if atr_m := compute_atr_multi_horizon(
@@ -1071,7 +1100,7 @@ def compute_24h_price_metrics(
             precomputed_bars_15m=bars_15m,
         ):
             out.update(atr_m)
-        if vwap_m := compute_session_vwap_metrics(series, is_equity=is_equity, cur_px=cur_px):
+        if vwap_m := compute_session_vwap_metrics(series, is_equity=is_equity, cur_px=cur_px, now_ts=now_ts):
             out.update(vwap_m)
         if sess_m := compute_intraday_session_extremes(
             series,

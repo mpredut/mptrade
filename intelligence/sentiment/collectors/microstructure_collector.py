@@ -199,9 +199,15 @@ def _call_compute_24h(
     *,
     is_equity: bool = False,
     series_7d_ts_px: Optional[list] = None,
+    now_ts: Optional[float] = None,
 ) -> Dict[str, Any]:
     if compute_24h_price_metrics is _ORIG_COMPUTE_24H_METRICS:
-        return compute_24h_price_metrics(series, is_equity=is_equity, series_7d_ts_px=series_7d_ts_px) or {}
+        return compute_24h_price_metrics(
+            series,
+            is_equity=is_equity,
+            series_7d_ts_px=series_7d_ts_px,
+            now_ts=now_ts,
+        ) or {}
     return compute_24h_price_metrics(series) or {}
 
 read_json_cached = _default_read_json_cached
@@ -1169,10 +1175,10 @@ def upgrade_tpo_vp_from_ohlc(
                         for vp_clr_k in ("sec_poc_px", "hvn2_px", "lvn_px"):
                             m24.pop(vp_clr_k, None)
                         m24.update(vp_real)
-                    if vol_rvol_vp := compute_volume_rvol_metrics(pts_vp):
+                    if vol_rvol_vp := compute_volume_rvol_metrics(pts_vp, now_ts=now_ts):
                         for vr_k, vr_v in vol_rvol_vp.items():
                             m24.setdefault(vr_k, vr_v)
-                    if vwap_vp := compute_session_vwap_metrics(pts_vp, is_equity=policy.is_equity, cur_px=cur_px):
+                    if vwap_vp := compute_session_vwap_metrics(pts_vp, is_equity=policy.is_equity, cur_px=cur_px, now_ts=now_ts):
                         m24.update(vwap_vp)
     except Exception:
         pass
@@ -1854,13 +1860,13 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 pts_24h_for_m24 = pts_24h
                 if px_diff_from_chart and not rth_bar_fresh and not px_diverged_05pct and len(pts_24h) >= 2:
                     pts_24h_for_m24 = override_series_tail_close(pts_24h, round(sym_px_cur, 4))
-                if m24_new := _call_compute_24h(pts_24h_for_m24, is_equity=True, series_7d_ts_px=pts_5d):
+                if m24_new := _call_compute_24h(pts_24h_for_m24, is_equity=True, series_7d_ts_px=pts_5d, now_ts=eff_now):
                     m24 = m24_new
                     if not rth_bar_fresh and px_diff_from_chart:
                         restore_rth_metric_anchors(
                             m24,
                             vp_src=compute_volume_profile_metrics(pts_24h_to_save),
-                            vwap_src=compute_session_vwap_metrics(pts_24h_to_save, is_equity=True, cur_px=sym_px_cur),
+                            vwap_src=compute_session_vwap_metrics(pts_24h_to_save, is_equity=True, cur_px=sym_px_cur, now_ts=eff_now),
                             atr_src=compute_atr_multi_horizon(
                                 pts_24h_to_save, series_7d_ts_px=pts_5d, is_equity=True
                             ),
@@ -1978,7 +1984,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         span_24h_ms = max(0.0, s24_p1[0] - s24_p0[0]) if (s24_p0 and s24_p1) else 0.0
         bars_4h_sym = LAST_7D_4H_BARS_BY_SYM.get(sym.upper()) if arch_vals_7d else None
         m24: Dict[str, Any] = (
-            _call_compute_24h(matched_series_24h, is_equity=is_eq_sym, series_7d_ts_px=bars_4h_sym)
+            _call_compute_24h(matched_series_24h, is_equity=is_eq_sym, series_7d_ts_px=bars_4h_sym, now_ts=eff_now)
             if matched_series_24h
             else {}
         )
@@ -2019,13 +2025,13 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 try:
                     pts_24h = load_stitched_24h_ohlc_points(ohlc_fn, sym, eff_now - 86400.0)
                     if not m24:
-                        if m24 := _call_compute_24h(pts_24h, is_equity=is_eq_sym, series_7d_ts_px=bars_4h_sym):
+                        if m24 := _call_compute_24h(pts_24h, is_equity=is_eq_sym, series_7d_ts_px=bars_4h_sym, now_ts=eff_now):
                             matched_series_24h = pts_24h
                     elif len(pts_24h) >= 8 and (pts_24h[-1][0] - pts_24h[0][0]) >= 18 * 3600 * 1000 and s24_p0 is not None:
                         older_ohlc = [pt for pt in pts_24h if pt[0] < s24_p0[0]]
                         if older_ohlc:
                             matched_series_24h = older_ohlc + list(matched_series_24h)
-                            if m24_full := _call_compute_24h(matched_series_24h, is_equity=is_eq_sym, series_7d_ts_px=bars_4h_sym):
+                            if m24_full := _call_compute_24h(matched_series_24h, is_equity=is_eq_sym, series_7d_ts_px=bars_4h_sym, now_ts=eff_now):
                                 m24 = m24_full
                 except Exception:
                     pass

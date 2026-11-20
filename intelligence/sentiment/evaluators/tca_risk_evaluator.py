@@ -666,7 +666,7 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
         )
         _round_slope_keys = {"slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel"}
         _bellwether_micro_keys = (
-            "ob_imbalance", "spread_bps", "whale_long_pct", "funding_rate", "oi_1h_chg_pct",
+            "ob_imbalance", "spread_bps", "whale_long_pct", "funding_rate", "funding_annualized_pct", "oi_1h_chg_pct",
             "cvd_15m_usd", "cvd_regime", "spot_cvd_15m_usd", "spot_perp_flow_regime", "perp_spot_basis_bps",
             "depth_1pct_bid_usd", "depth_1pct_ask_usd",
         )

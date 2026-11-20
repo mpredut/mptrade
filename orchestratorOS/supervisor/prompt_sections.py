@@ -1106,10 +1106,8 @@ def _format_microstructure_section(
             and safe_float(minfo.get("taker_buy_vol_usd"), 0.0) <= 0.0
             and safe_float(minfo.get("taker_sell_vol_usd"), 0.0) <= 0.0
         ):
-            flow_3b_core = (
-                f"whale_long_pct={minfo.get('whale_long_pct')}, "
-                f"intraday_rth_flow=N/A[no_fresh_vol_bars]{cvd_sfx}"
-            )
+            wl_prefix = "" if eq_no_oi_3b else f"whale_long_pct={minfo.get('whale_long_pct')}, "
+            flow_3b_core = f"{wl_prefix}intraday_rth_flow=N/A[no_fresh_vol_bars]{cvd_sfx}"
         else:
             flow_3b_core = (
                 f"whale_long_pct={minfo.get('whale_long_pct')}, "

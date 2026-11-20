@@ -14025,7 +14025,7 @@ def test_stabilize_faza1_and_audit_bugfixes(tmp_path, monkeypatch):
         [d2_pre0 + 300_000.0, 185.5, 900.0],
     ]
     eq_vwap_pre = compute_session_vwap_metrics(eq_pre_bars, is_equity=True, cur_px=185.5)
-    assert eq_vwap_pre["session_vwap_anchor"] == "rth"
+    assert eq_vwap_pre["session_vwap_anchor"] == "prev_rth"
     assert eq_vwap_pre["session_vwap_px"] == pytest.approx(180.0)
 
     utc_mid_ms = datetime(2026, 11, 20, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000.0
@@ -16098,4 +16098,87 @@ def test_phases_2_to_3b_code_review_edge_case_fixes(tmp_path, monkeypatch):
         skip_if_fresh_sec=1800.0,
     )
     assert res_retry is not None and res_retry["eth_ok"] is True and calls_etf["n"] == 2
+
+
+def test_post_us_open_vwap_rvol_equity_placeholder_and_bellwether_funding():
+    """Verify post-US-open telemetry fixes: prev_rth anchor & Kish n_eff guard, active-session RVOL span & freshness, no synthetic whale_long_pct, and annualized bellwether funding."""
+    from datetime import datetime, timezone
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        compute_session_vwap_metrics,
+        compute_volume_rvol_metrics,
+    )
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import evaluate_portfolio_prompt_view
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+
+    # 1. Session VWAP tags yesterday's RTH as 'prev_rth' at RTH open (<2 today bars) or when now_ts is next day,
+    #    and suppresses degenerate z-score when opening-bell bar dominates >80% of volume (Kish n_eff < 2.0).
+    d1_rth0 = datetime(2026, 11, 19, 14, 30, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+    d2_rth0 = datetime(2026, 11, 20, 14, 30, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+    d1_bars = [[d1_rth0 + i * 300_000.0, 150.0 + (0.2 if i % 2 == 0 else -0.2), 1_000_000.0] for i in range(10)]
+    open_1bar = d1_bars + [[d2_rth0, 141.0, 40_000_000.0], [d2_rth0 + 180_000.0, 141.5, 0.0]]
+    v_open = compute_session_vwap_metrics(open_1bar, is_equity=True, cur_px=141.5)
+    assert v_open["session_vwap_anchor"] == "prev_rth"
+    assert v_open["session_vwap_px"] == pytest.approx(150.0, abs=0.05)
+
+    # Yesterday-only bars evaluated at today's RTH open via now_ts -> 'prev_rth' (e.g. RGNT_US_EQ with 0 bars today)
+    v_rgnt = compute_session_vwap_metrics(d1_bars, is_equity=True, cur_px=0.89, now_ts=(d2_rth0 + 600_000.0) / 1000.0)
+    assert v_rgnt["session_vwap_anchor"] == "prev_rth"
+
+    # Opening-bell volume skew (bar 1 = 85% of session volume -> n_eff ~ 1.37 < 2.0) suppresses bogus z-score
+    skewed_open = [
+        [d2_rth0, 130.63, 17_200_000.0],
+        [d2_rth0 + 300_000.0, 130.76, 3_100_000.0],
+        [d2_rth0 + 600_000.0, 130.66, 620_000.0],
+    ]
+    v_skew = compute_session_vwap_metrics(skewed_open, is_equity=True, cur_px=131.0)
+    assert v_skew["session_vwap_anchor"] == "rth"
+    assert v_skew["session_vwap_px"] == pytest.approx(130.65, abs=0.05)
+    assert "session_vwap_z" not in v_skew and "session_vwap_sigma_pct" not in v_skew
+
+    # 2. Active-session RVOL excludes 17.5h overnight market closure (no 3.7x US equity inflation)
+    #    and returns {} when latest volume bar is >1h older than now_ts.
+    eq_rvol_bars = (
+        [[d1_rth0 + i * 300_000.0, 100.0, 100.0] for i in range(78)]  # 6.5h Day 1 RTH at $10k/5m
+        + [[d2_rth0 + i * 300_000.0, 100.0, 200.0] for i in range(3)]  # 15m Day 2 open at $20k/5m (2x baseline)
+    )
+    rvol_eq = compute_volume_rvol_metrics(eq_rvol_bars, now_ts=(d2_rth0 + 700_000.0) / 1000.0)
+    assert rvol_eq["spot_vol_15m_usd"] == pytest.approx(60_000.0)
+    # Active span is ~6.75h (NOT 24h), so 2x opening surge reads ~1.9x instead of ~7x
+    assert 1.7 <= rvol_eq["rvol_15m"] <= 2.2
+    # Stale yesterday bars (17.5h old vs today's now_ts) must NOT leak yesterday closing volume as live spot_vol_15m
+    assert compute_volume_rvol_metrics(d1_bars, now_ts=(d2_rth0 + 600_000.0) / 1000.0) == {}
+
+    # 3. Equity Section 3B with no fresh volume bars and no options OI omits synthetic whale_long_pct=0.5
+    sec3b_eq = "\n".join(
+        _format_microstructure_section(
+            {
+                "RGNT_US_EQ": {
+                    "ob_imbalance": 0.315,
+                    "bid_depth_usd": 3.0,
+                    "ask_depth_usd": 7.0,
+                    "whale_long_pct": 0.5,
+                    "taker_buy_vol_usd": 0.0,
+                    "taker_sell_vol_usd": 0.0,
+                    "oi_usd": 0.0,
+                }
+            },
+            {"RGNT_US_EQ": {"price": 0.89}},
+            now_ts=(d2_rth0 + 600_000.0) / 1000.0,
+        )
+    )
+    assert "intraday_rth_flow=N/A[no_fresh_vol_bars]" in sec3b_eq
+    assert "whale_long_pct=0.5" not in sec3b_eq
+
+    # 4. Crypto bellwethers carry funding_annualized_pct and prompt view drops raw sci-notation funding_rate
+    cmc = build_cross_market_context(
+        {"BTCUSDC": {"price": 62000.0, "chg_24h_pct": -3.0}},
+        {"BTCUSDC": {"ob_imbalance": 0.55, "funding_rate": 6.666e-5, "funding_annualized_pct": 7.3}},
+        {},
+    )
+    assert cmc["crypto_bellwethers"]["BTC"]["funding_annualized_pct"] == pytest.approx(7.3)
+    pv_eq = evaluate_portfolio_prompt_view({"cross_market_context": cmc}, asset_scope="equities")
+    btc_bw = pv_eq["crypto_bellwethers"]["BTC"]
+    assert btc_bw["funding_annualized_pct"] == pytest.approx(7.3)
+    assert "funding_rate" not in btc_bw
 

@@ -851,7 +851,16 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
             def _clean_bw(bw_map: Any) -> Any:
                 return (
                     {
-                        sk: ({k: v for k, v in sv.items() if k not in _CMC_LABEL_KEYS} if isinstance(sv, dict) else sv)
+                        sk: (
+                            {
+                                k: v
+                                for k, v in sv.items()
+                                if k not in _CMC_LABEL_KEYS
+                                and not (k == "funding_rate" and sv.get("funding_annualized_pct") is not None)
+                            }
+                            if isinstance(sv, dict)
+                            else sv
+                        )
                         for sk, sv in bw_map.items()
                     }
                     if isinstance(bw_map, dict)
