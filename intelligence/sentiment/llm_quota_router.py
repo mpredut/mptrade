@@ -97,6 +97,8 @@ def is_degraded_trading_model(model_name: Any) -> bool:
     if not isinstance(model_name, str) or not model_name.strip():
         return False
     low = model_name.strip().lower()
+    if low.startswith("openai_compat:"):
+        low = low[len("openai_compat:") :].strip()
     return (
         low.endswith("-low")
         or is_gemini_flash_model(low)

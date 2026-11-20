@@ -139,7 +139,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
 from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
 )
-from providers.ohlc_utils import normalize_yahoo_5d_chart_bars
+from providers.ohlc_utils import normalize_ohlc_row, normalize_yahoo_5d_chart_bars
 from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     append_newer_24h_to_7d_vals,
@@ -147,20 +147,22 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     collapse_watcher_equity_series,
     compute_24h_price_metrics,
     compute_7d_range_metrics,
+    compute_atr_multi_horizon,
     compute_session_vwap_metrics,
     compute_volume_profile_metrics,
     compute_volume_rvol_metrics,
     extract_archive_24h_and_7d_slices,
+    override_series_tail_close,
     pct_delta,
     prepend_older_non_diverged_points,
     recalculate_live_price_geometry,
+    restore_rth_metric_anchors,
     round_opt_px,
     sort_ts_rows,
     apply_24h_series_enrichment,
     LAST_7D_4H_BARS_BY_SYM,
     LAST_7D_SPAN_MS_BY_SYM,
     load_stitched_24h_ohlc_points,
-    _RTH_VP_ANCHOR_KEYS,
     _SHORT_SLOPE_OVERRIDE_KEYS,
     STALE_SHORT_24H_KEYS,
 )
@@ -1073,27 +1075,11 @@ def upgrade_tpo_vp_from_ohlc(
             ):
                 p_vp = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn_vp)))
                 if os.path.exists(p_vp) and isinstance(d_vp := read_json_recovering(p_vp), dict) and isinstance(d_vp.get("points"), list):
-                    cand_vp: List[List[Any]] = []
-                    for r in d_vp["points"]:
-                        if (
-                            not isinstance(r, (list, tuple))
-                            or len(r) < 3
-                            or (ts_i := safe_pos_int(r[0], default=None)) is None
-                            or (px_f := safe_pos_float(r[1], default=None)) is None
-                            or (vol_f := safe_pos_float(r[2], default=None)) is None
-                        ):
-                            continue
-                        row_vp: List[Any] = [ts_i, px_f, vol_f]
-                        if (
-                            len(r) >= 5
-                            and (hi_f := safe_pos_float(r[3], default=None)) is not None
-                            and (lo_f := safe_pos_float(r[4], default=None)) is not None
-                            and hi_f >= lo_f > 0.0
-                        ):
-                            row_vp.extend((hi_f, lo_f))
-                            if len(r) >= 6 and (op_f := safe_pos_float(r[5], default=None)) is not None:
-                                row_vp.append(op_f)
-                        cand_vp.append(row_vp)
+                    cand_vp = [
+                        row_vp
+                        for r in d_vp["points"]
+                        if (row_vp := normalize_ohlc_row(r, require_positive_vol=True)) is not None
+                    ]
                     if len(cand_vp) >= 8 and (cand_vp[-1][0] - cand_vp[0][0]) >= 18 * 3600 * 1000:
                         pts_vp = cand_vp
                         break
@@ -1109,16 +1095,11 @@ def upgrade_tpo_vp_from_ohlc(
                     or (vp_pxs and min(vp_pxs) >= l24_b * 0.985 and max(vp_pxs) <= h24_b * 1.015)
                 ):
                     if l24_b is not None and h24_b is not None:
-                        clamped_vp: List[List[Any]] = []
-                        for p in pts_vp:
-                            c_px = min(h24_b, max(l24_b, safe_pos_float(p[1], default=l24_b) or l24_b))
-                            if len(p) >= 5 and (hi_v := safe_pos_float(p[3], default=None)) is not None and (lo_v := safe_pos_float(p[4], default=None)) is not None and hi_v >= lo_v > 0.0:
-                                hi_c = max(c_px, min(h24_b, max(l24_b, hi_v)))
-                                lo_c = min(c_px, min(h24_b, max(l24_b, lo_v)))
-                                clamped_vp.append([p[0], c_px, p[2], hi_c, lo_c, *p[5:]])
-                            else:
-                                clamped_vp.append([p[0], c_px, *p[2:]])
-                        pts_vp = clamped_vp
+                        pts_vp = [
+                            clamped_r
+                            for p in pts_vp
+                            if (clamped_r := normalize_ohlc_row(p, clamp_bounds=(l24_b, h24_b))) is not None
+                        ]
                     if cur_px > 0:
                         pts_vp.append([math.trunc(now_ts * 1000), cur_px, 0.0])
                     if (vp_real := compute_volume_profile_metrics(pts_vp)) and vp_real.get("vp_source") == "REAL_VOL":
@@ -1745,8 +1726,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     post_rth_series_replaced = False
                 elif px_diff_from_chart and px_diverged_05pct and len(pts_24h) >= 2:
                     post_rth_series_replaced = True
-                    last_bar_tail = list(pts_24h[-1][2:]) if isinstance(pts_24h[-1], (list, tuple)) and len(pts_24h[-1]) >= 3 else []
-                    pts_24h = list(pts_24h[:-1]) + [[pts_24h[-1][0], round(sym_px_cur, 4), *last_bar_tail]]
+                    pts_24h = override_series_tail_close(pts_24h, round(sym_px_cur, 4))
                 else:
                     post_rth_series_replaced = False
                 if post_rth_series_replaced or (eq_cache_stale and len(pts_24h) >= 5):
@@ -1754,19 +1734,19 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                         pt_map[sym].pop(k_ov, None)
                 pts_24h_for_m24 = pts_24h
                 if px_diff_from_chart and not rth_bar_fresh and not px_diverged_05pct and len(pts_24h) >= 2:
-                    last_bar_tail = list(pts_24h[-1][2:]) if isinstance(pts_24h[-1], (list, tuple)) and len(pts_24h[-1]) >= 3 else []
-                    pts_24h_for_m24 = list(pts_24h[:-1]) + [[pts_24h[-1][0], round(sym_px_cur, 4), *last_bar_tail]]
+                    pts_24h_for_m24 = override_series_tail_close(pts_24h, round(sym_px_cur, 4))
                 if m24_new := _call_compute_24h(pts_24h_for_m24, is_equity=True, series_7d_ts_px=pts_5d):
                     m24 = m24_new
                     if not rth_bar_fresh and px_diff_from_chart:
-                        if rth_vp_chart := compute_volume_profile_metrics(pts_24h_to_save):
-                            for k_vp_clr in _RTH_VP_ANCHOR_KEYS:
-                                m24.pop(k_vp_clr, None)
-                            for k_vp in _RTH_VP_ANCHOR_KEYS:
-                                if k_vp in rth_vp_chart:
-                                    m24[k_vp] = rth_vp_chart[k_vp]
-                        if rth_vwap_chart := compute_session_vwap_metrics(pts_24h_to_save, is_equity=True, cur_px=sym_px_cur):
-                            m24.update(rth_vwap_chart)
+                        restore_rth_metric_anchors(
+                            m24,
+                            vp_src=compute_volume_profile_metrics(pts_24h_to_save),
+                            vwap_src=compute_session_vwap_metrics(pts_24h_to_save, is_equity=True, cur_px=sym_px_cur),
+                            atr_src=compute_atr_multi_horizon(
+                                pts_24h_to_save, series_7d_ts_px=pts_5d, is_equity=True
+                            ),
+                            live_px=sym_px_cur,
+                        )
                     matched_series_24h = pts_24h
                     post_rth_px_override = None
                     if not rth_bar_fresh or px_diverged_05pct:

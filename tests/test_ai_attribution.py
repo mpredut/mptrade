@@ -322,3 +322,50 @@ def test_ai_attribution_workspace_loader_and_cli(tmp_path, capsys):
     assert loaded_bnb["execution_quality"]["avg_arrival_shortfall_bps"] == pytest.approx(-49.75, abs=0.5)
     assert "Execution Quality: LIMIT(" in format_ai_attribution_report(loaded_bnb)
 
+
+def test_execution_audit_monotonic_merge_never_downgrades_fill_on_out_of_order_records():
+    """Verify out-of-order submit_accepted record linked by intent_id cannot overwrite an already-merged fill record."""
+    now_s = 1_795_000_000.0
+    audit_recs = [
+        # Pre-oid record created first under intent:i1 (not filled)
+        {
+            "ts": now_s - 120.0,
+            "event": "order_submitted",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "intent_id": "i1",
+            "side": "BUY",
+            "client_order_id": "AI_i1",
+        },
+        # Filled record arrives under real order_id without intent_id
+        {
+            "ts": now_s - 60.0,
+            "event": "order_filled",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "order_id": "ord_999",
+            "side": "BUY",
+            "filled_qty": 0.01,
+            "price": 70000.0,
+            "cost": 700.0,
+            "client_order_id": "AI_i1",
+        },
+        # Late non-fill status update linking intent_id + order_id must NOT overwrite is_fill / filled_qty / cost
+        {
+            "ts": now_s - 30.0,
+            "event": "status_checked",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "order_id": "ord_999",
+            "intent_id": "i1",
+            "side": "BUY",
+            "client_order_id": "AI_i1",
+        },
+    ]
+    rep = evaluate_ai_attribution([], now_ts=now_s, lookback_days=7.0, audit_records=audit_recs)
+    ai_actor = rep["execution_audit_ai_vs_bot"]["by_actor"].get("AI")
+    assert ai_actor is not None
+    assert ai_actor["filled_orders"] == 1
+    assert ai_actor["buy_notional_usd"] == pytest.approx(700.0)
+
+

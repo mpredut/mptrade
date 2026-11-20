@@ -142,6 +142,27 @@ def _classify_intent_lifecycle(it: dict[str, Any], canceled_oids: set[str]) -> s
     return "FAILED_OR_OTHER"
 
 
+def _merge_audit_order_entry(dst: dict[str, Any], src: dict[str, Any]) -> None:
+    """Monotonically merge two audit order entries without downgrading fill state, qty, cost, fee, or price."""
+    if not dst:
+        dst.update(src)
+        return
+    for str_k in ("venue", "symbol", "order_id", "intent_id", "client_order_id", "side"):
+        if not dst.get(str_k) and src.get(str_k):
+            dst[str_k] = src[str_k]
+    if src.get("order_type") == "MARKET":
+        dst["order_type"] = "MARKET"
+    if src.get("ts", 0.0) > dst.get("ts", 0.0):
+        dst["ts"] = src["ts"]
+    if src.get("is_fill"):
+        dst["is_fill"] = True
+    for num_k in ("filled_qty", "cost_usd", "fee_usd"):
+        if src.get(num_k, 0.0) > dst.get(num_k, 0.0):
+            dst[num_k] = src[num_k]
+    if src.get("price", 0.0) > 0.0 and (dst.get("price", 0.0) <= 0.0 or (src.get("is_fill") and not dst.get("is_fill"))):
+        dst["price"] = src["price"]
+
+
 def _evaluate_execution_audit_actors(
     audit_records: list[dict[str, Any]],
     *,
@@ -179,7 +200,7 @@ def _evaluate_execution_audit_actors(
                 prev_key = intent_to_key.get(iid)
                 if prev_key is not None and prev_key != key and prev_key in orders:
                     merged = orders.pop(prev_key)
-                    orders.setdefault(key, {}).update(merged)
+                    _merge_audit_order_entry(orders.setdefault(key, {}), merged)
                 intent_to_key[iid] = key
         elif iid:
             key = intent_to_key.get(iid) or (ven, f"intent:{iid}")

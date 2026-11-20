@@ -13810,6 +13810,62 @@ def test_openai_compat_rest_adapter_resilience_and_direct_ab_routing(monkeypatch
     assert "generativelanguage.googleapis.com" in posted_calls[0][0]
 
 
+def test_root_cause_normalizations_ohlc_rth_anchors_and_model_cache_isolation():
+    """Verify SSOT normalizations: build/normalize_ohlc_row invariants, override_series_tail_close, restore_rth_metric_anchors, model-scoped GeminiClient._cache, and degraded model prefix strip."""
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        override_series_tail_close,
+        restore_rth_metric_anchors,
+    )
+    from providers.ohlc_utils import build_ohlc_row, normalize_ohlc_row
+
+    # 1. Canonical OHLC row builder/normalizer enforces low <= close <= high and [lo, hi] bounds
+    row_inv = build_ohlc_row(1_795_000_000.0, 105.0, 10.0, 102.0, 99.0, 106.0)
+    assert row_inv == [1_795_000_000_000, 105.0, 10.0, 105.0, 99.0, 105.0]
+    row_clamped = normalize_ohlc_row([1_795_000_000_000, 105.0, 10.0, 112.0, 95.0, 101.0], clamp_bounds=(98.0, 108.0))
+    assert row_clamped == [1_795_000_000_000, 105.0, 10.0, 108.0, 98.0, 101.0]
+
+    # 2. override_series_tail_close drops stale H/L/O to avoid close > high OHLC violation
+    ov = override_series_tail_close(
+        [[1_795_000_000_000, 100.0, 50.0, 101.0, 99.0, 100.0], [1_795_000_300_000, 101.0, 60.0, 102.0, 100.0, 101.0]],
+        107.0,
+    )
+    assert ov[-1] == [1_795_000_300_000, 107.0, 60.0]
+
+    # 3. restore_rth_metric_anchors restores VP/VWAP/ATR atomically and realigns distances & z-score to live_px
+    m24_mut = {"poc_px": 107.0, "val_px": 106.0, "vah_px": 108.0, "session_vwap_px": 106.5, "atr_15m_pct": 2.9}
+    restore_rth_metric_anchors(
+        m24_mut,
+        vp_src={"poc_px": 100.0, "val_px": 99.0, "vah_px": 101.0, "vp_source": "REAL_VOL"},
+        vwap_src={"session_vwap_px": 100.0, "session_vwap_sigma_pct": 1.0, "session_vwap_anchor": "rth"},
+        atr_src={"atr_15m_pct": 0.45, "atr_1h_pct": 0.85, "atr_4h_pct": 1.75},
+        live_px=103.0,
+    )
+    assert m24_mut["poc_px"] == 100.0 and m24_mut["poc_dist_pct"] == pytest.approx(3.0)
+    assert m24_mut["session_vwap_px"] == 100.0 and m24_mut["dist_vs_session_vwap_pct"] == pytest.approx(3.0)
+    assert m24_mut["session_vwap_z"] == pytest.approx(3.0)
+    assert m24_mut["atr_15m_pct"] == 0.45 and m24_mut["atr_4h_pct"] == 1.75
+
+    # 4. GeminiClient._cache isolates distinct models for the same prompt (A/B safe) & degraded classifier strips openai_compat:
+    runner_calls = []
+    gc = GeminiClient(
+        model="gemini-4-neon-medium",
+        custom_runner=lambda p, m, t: (runner_calls.append(m) or f'{{"model":"{m}"}}'),
+    )
+    r1 = gc.query_json("same prompt", model="gemini-4-neon-medium", cache_ttl_sec=60.0)
+    r2 = gc.query_json("same prompt", model="openai_compat:glm-5.3", cache_ttl_sec=60.0)
+    r3 = gc.query_json("same prompt", model="openai_compat:glm-5.3", cache_ttl_sec=60.0)
+    assert r1 == {"model": "gemini-4-neon-medium"}
+    assert r2 == {"model": "openai_compat:glm-5.3"}
+    assert r3 == {"model": "openai_compat:glm-5.3"}
+    assert runner_calls == ["gemini-4-neon-medium", "openai_compat:glm-5.3"]
+    assert is_degraded_trading_model("openai_compat:glm-5.3") is False
+    assert is_degraded_trading_model("openai_compat:gemini-2.5-flash") is True
+    assert is_degraded_trading_model("openai_compat:qwen-low") is True
+
+
+
 
 
 

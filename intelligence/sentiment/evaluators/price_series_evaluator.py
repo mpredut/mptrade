@@ -30,6 +30,7 @@ from pricewindow import (
 )
 from cachepaths import cache_ohlc_24h_filename, cache_path, canonical_base_asset, resolve_cachedb_filepath
 from instrument_registry import is_equity_symbol, is_symbol_market_open, resolve_symbol_identity
+from providers.ohlc_utils import build_ohlc_row
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
 from intelligence.macro_sentiment_ssot import (
     ALL_KINEMATIC_METRIC_KEYS,
@@ -1744,16 +1745,17 @@ def _extract_ohlc_series_points(
             if require_positive_volume and v_f <= 0.0:
                 continue
             ts_ms_i = round(ts_s * 1000.0)
-            hi_f = safe_pos_float(highs[idx], default=None) if (has_hl and idx < len(highs)) else None
-            lo_f = safe_pos_float(lows[idx], default=None) if (has_hl and idx < len(lows)) else None
-            if hi_f is not None and lo_f is not None and hi_f >= lo_f > 0.0:
-                row: List[Any] = [ts_ms_i, px_f, v_f, hi_f, lo_f]
-                op_f = safe_pos_float(opens[idx], default=None) if (has_opens and idx < len(opens)) else None
-                if op_f is not None and op_f > 0.0:
-                    row.append(op_f)
-                pts.append(row)
-            else:
-                pts.append([ts_ms_i, px_f, v_f] if v_f > 0.0 else [ts_ms_i, px_f])
+            pts.append(
+                build_ohlc_row(
+                    ts_ms_i,
+                    px_f,
+                    v_f,
+                    highs[idx] if (has_hl and idx < len(highs)) else None,
+                    lows[idx] if (has_hl and idx < len(lows)) else None,
+                    opens[idx] if (has_opens and idx < len(opens)) else None,
+                    include_vol=v_f > 0.0,
+                )
+            )
     pts.sort(key=lambda x: x[0])
     return pts
 
@@ -1902,8 +1904,8 @@ def _reconcile_major_swing_low(
         target_dict.pop(k, None)
 
 
-def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None:
-    """Recalculate VP position, 24h/7d/15m range bounds, swing waves, and 6h bottom structure for live price `p_cur`."""
+def recalculate_anchor_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None:
+    """Align Volume Profile and Session VWAP relative distances and z-score to live price ``p_cur``."""
     if not isinstance(pinfo, dict) or p_cur <= 0.0:
         return
     poc_v, val_v, vah_v = (safe_pos_float(pinfo.get(k), default=0.0) or 0.0 for k in ("poc_px", "val_px", "vah_px"))
@@ -1915,6 +1917,59 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
             sig_px_v = vwap_v * (sig_pct_v / 100.0)
             if sig_px_v > 0.0:
                 pinfo["session_vwap_z"] = round((p_cur - vwap_v) / sig_px_v, 2) + 0.0
+                return
+        pinfo.pop("session_vwap_z", None)
+
+
+def override_series_tail_close(series: list, override_px: float) -> list:
+    """Copy ``series`` with the last bar's close set to ``override_px``, dropping stale H/L/O to preserve OHLC invariants."""
+    if not isinstance(series, list) or not series:
+        return list(series or ())
+    last_row = series[-1]
+    pt = parse_ts_px_row(last_row)
+    if pt is None:
+        return list(series)
+    ts_val = last_row[0] if isinstance(last_row, (list, tuple)) and len(last_row) >= 2 else pt[0]
+    new_last: List[Any] = (
+        [ts_val, override_px, last_row[2]]
+        if isinstance(last_row, (list, tuple)) and len(last_row) >= 3
+        else [ts_val, override_px]
+    )
+    return list(series[:-1]) + [new_last]
+
+
+def restore_rth_metric_anchors(
+    m24: Dict[str, Any],
+    *,
+    vp_src: Optional[Dict[str, Any]] = None,
+    vwap_src: Optional[Dict[str, Any]] = None,
+    atr_src: Optional[Dict[str, Any]] = None,
+    live_px: Optional[float] = None,
+) -> None:
+    """Restore RTH Volume Profile, Session VWAP, and ATR anchors into ``m24`` and align live anchor geometry."""
+    if not isinstance(m24, dict):
+        return
+    for src, keys in (
+        (vp_src, _RTH_VP_ANCHOR_KEYS),
+        (vwap_src, _RTH_VWAP_ANCHOR_KEYS),
+        (atr_src, _RTH_ATR_ANCHOR_KEYS),
+    ):
+        if isinstance(src, dict) and src:
+            present = {k: src[k] for k in keys if k in src}
+            if present:
+                for k_clr in keys:
+                    m24.pop(k_clr, None)
+                m24.update(present)
+    eff_px = safe_pos_float(live_px, default=None)
+    if eff_px is not None:
+        recalculate_anchor_price_geometry(m24, eff_px)
+
+
+def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None:
+    """Recalculate VP position, Session VWAP geometry, 24h/7d/15m range bounds, swing waves, and 6h bottom structure for live price `p_cur`."""
+    if not isinstance(pinfo, dict) or p_cur <= 0.0:
+        return
+    recalculate_anchor_price_geometry(pinfo, p_cur)
     l24 = safe_pos_float(pinfo.get("low_24h"), default=None)
     h24 = safe_pos_float(pinfo.get("high_24h"), default=None)
     if l24 is not None and h24 is not None:

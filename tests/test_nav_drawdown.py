@@ -328,3 +328,24 @@ def test_nav_drawdown_small_venue_outage_below_cashflow_threshold():
     assert m_out["daily_nav_drawdown_pct"] == pytest.approx(0.0)
     assert m_out["external_cashflow_events"] == 1
 
+
+def test_nav_drawdown_resets_daily_dd_after_utc_midnight_when_history_is_from_prior_day():
+    """Verify yesterday's -6% daily drawdown resets to 0.0% on the new UTC day before today's first sample while preserving rolling 24h DD."""
+    day0_utc = datetime(2026, 11, 19, 0, 0, 0, tzinfo=timezone.utc).timestamp()
+    day1_00_05_utc = datetime(2026, 11, 20, 0, 5, 0, tzinfo=timezone.utc).timestamp()
+    hist: list[dict] = []
+    hist, _ = append_nav_history_point(
+        hist,
+        {"ts": day0_utc + 12 * 3600.0, "nav_usd": 20000.0, "invested_usd": 15000.0, "free_cash_usd": 5000.0, "venues_usd": {"binance": 20000.0}},
+    )
+    hist, _ = append_nav_history_point(
+        hist,
+        {"ts": day0_utc + 23 * 3600.0, "nav_usd": 18800.0, "invested_usd": 13800.0, "free_cash_usd": 5000.0, "venues_usd": {"binance": 18800.0}},
+    )
+    m_next_day = evaluate_nav_drawdown_metrics(hist, now_ts=day1_00_05_utc)
+    assert m_next_day["utc_day"] == "2026-11-20"
+    assert m_next_day["daily_nav_drawdown_pct"] == pytest.approx(0.0)
+    assert m_next_day["daily_nav_return_pct"] == pytest.approx(0.0)
+    assert m_next_day["rolling_24h_drawdown_pct"] == pytest.approx(-6.0, abs=0.05)
+
+

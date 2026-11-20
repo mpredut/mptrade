@@ -135,8 +135,46 @@ class GeminiClient(GeminiQuotaRouterMixin):
         self._openai_compat_url = openai_compat_url
         self._openai_compat_api_key = openai_compat_api_key
         self._openai_compat_models = openai_compat_models
-        self._cache: Dict[str, tuple[Any, ...]] = {}
+        self._cache: Dict[Any, tuple[Any, ...]] = {}
         self.last_model_used: Optional[str] = None
+
+    def _cache_get(
+        self,
+        selected_model: str,
+        prompt: str,
+        *,
+        now: float,
+        cache_ttl_sec: float,
+        require_json: bool,
+        allow_legacy_key: bool = True,
+    ) -> Optional[str]:
+        if cache_ttl_sec <= 0:
+            return None
+        cached = self._cache.get((selected_model, prompt))
+        if cached is None and allow_legacy_key:
+            cached = self._cache.get(prompt)
+        if (
+            isinstance(cached, (tuple, list))
+            and len(cached) >= 2
+            and is_cache_fresh(cached[0], now_ts=now, ttl_sec=cache_ttl_sec)
+        ):
+            if not require_json or extract_json_object(str(cached[1])) is not None:
+                self.last_model_used = str(cached[2]) if len(cached) >= 3 and cached[2] else selected_model
+                return cached[1]
+        return None
+
+    def _cache_put(
+        self,
+        selected_model: str,
+        prompt: str,
+        *,
+        now: float,
+        text: str,
+        model_used: Optional[str],
+        cache_ttl_sec: float,
+    ) -> None:
+        if cache_ttl_sec > 0 and text:
+            self._cache[(selected_model, prompt)] = (now, text, model_used or selected_model)
 
     def _execute_cli(
         self,
@@ -769,8 +807,14 @@ class GeminiClient(GeminiQuotaRouterMixin):
                             effective_model_used,
                             selected_model,
                         )
-                    if cache_ttl_sec > 0:
-                        self._cache[prompt] = (now, output, effective_model_used)
+                    self._cache_put(
+                        selected_model,
+                        prompt,
+                        now=now,
+                        text=output,
+                        model_used=effective_model_used,
+                        cache_ttl_sec=cache_ttl_sec,
+                    )
                     if use_topic_session:
                         finalize_kwargs = dict(
                             topic_key=topic_key,
@@ -825,6 +869,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         self,
         prompt: str,
         *,
+        selected_model: str = "",
         explicit_model: str = "",
         timeout_sec: float,
         cache_ttl_sec: float,
@@ -850,8 +895,14 @@ class GeminiClient(GeminiQuotaRouterMixin):
         if not text:
             return None
         self.last_model_used = model_id
-        if cache_ttl_sec > 0:
-            self._cache[prompt] = (now, text, model_id)
+        self._cache_put(
+            selected_model or model_id or "",
+            prompt,
+            now=now,
+            text=text,
+            model_used=model_id,
+            cache_ttl_sec=cache_ttl_sec,
+        )
         return text
 
     def _query_rest_fallback(
@@ -900,8 +951,14 @@ class GeminiClient(GeminiQuotaRouterMixin):
                     )
                     continue
                 self.last_model_used = r_model
-                if cache_ttl_sec > 0:
-                    self._cache[prompt] = (now, text, r_model)
+                self._cache_put(
+                    selected_model,
+                    prompt,
+                    now=now,
+                    text=text,
+                    model_used=r_model,
+                    cache_ttl_sec=cache_ttl_sec,
+                )
                 return text
             except Exception as e:
                 logger.warning("Gemini REST API attempt with model %s failed: %s", r_model, e)
@@ -940,12 +997,17 @@ class GeminiClient(GeminiQuotaRouterMixin):
         cache_ttl_sec = safe_pos_float(cache_ttl_sec, 0.0)
         require_json = bool(getattr(self._JSON_MODE_LOCAL, "require_json", False))
 
-        if cache_ttl_sec > 0:
-            cached = self._cache.get(prompt)
-            if isinstance(cached, (tuple, list)) and len(cached) >= 2 and is_cache_fresh(cached[0], now_ts=now, ttl_sec=cache_ttl_sec):
-                if not require_json or extract_json_object(str(cached[1])) is not None:
-                    self.last_model_used = str(cached[2]) if len(cached) >= 3 and cached[2] else selected_model
-                    return cached[1]
+        if (
+            cached_txt := self._cache_get(
+                selected_model,
+                prompt,
+                now=now,
+                cache_ttl_sec=cache_ttl_sec,
+                require_json=require_json,
+                allow_legacy_key=not bool(explicit_call_model),
+            )
+        ) is not None:
+            return cached_txt
 
         # 1. Custom runner (used for unit tests)
         if self._custom_runner is not None:
@@ -953,8 +1015,14 @@ class GeminiClient(GeminiQuotaRouterMixin):
                 res = self._custom_runner(prompt, selected_model, timeout_sec)
                 if res:
                     self.last_model_used = selected_model
-                if cache_ttl_sec > 0 and res:
-                    self._cache[prompt] = (now, res, selected_model)
+                self._cache_put(
+                    selected_model,
+                    prompt,
+                    now=now,
+                    text=res,
+                    model_used=selected_model,
+                    cache_ttl_sec=cache_ttl_sec,
+                )
                 return res
             except Exception as e:
                 logger.error("Custom runner failed: %s", e)
@@ -989,6 +1057,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
             if allow_unmocked or rest_mocked:
                 return self._query_openai_compat_fallback(
                     prompt,
+                    selected_model=selected_model,
                     explicit_model=explicit_openai_slug,
                     timeout_sec=timeout_sec,
                     cache_ttl_sec=cache_ttl_sec,
@@ -1020,6 +1089,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         if allow_unmocked or rest_mocked:
             if openai_out := self._query_openai_compat_fallback(
                 prompt,
+                selected_model=selected_model,
                 timeout_sec=timeout_sec,
                 cache_ttl_sec=cache_ttl_sec,
                 now=now,

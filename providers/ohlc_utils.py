@@ -36,6 +36,7 @@ __all__ = [
     "REQUIRED_FIELDS",
     "_CANDLE_INTERVALS",
     "align_previous_values",
+    "build_ohlc_row",
     "build_price_history_points",
     "candle_interval",
     "candles_to_historical_points",
@@ -46,6 +47,7 @@ __all__ = [
     "extract_yahoo_chart_latest_price",
     "extract_yahoo_chart_result_and_quote",
     "extract_yahoo_intraday_chart_bars",
+    "normalize_ohlc_row",
     "normalize_record",
     "normalize_yahoo_5d_chart_bars",
     "parse_ohlc_interval",
@@ -760,6 +762,76 @@ def extract_yahoo_intraday_chart_bars(
     return meta, bars
 
 
+def build_ohlc_row(
+    ts_val: float,
+    close_px: float,
+    vol: Any = None,
+    high_px: Any = None,
+    low_px: Any = None,
+    open_px: Any = None,
+    *,
+    include_vol: bool = True,
+    decimals: Optional[int] = None,
+) -> list[Any]:
+    """Build a canonical compact OHLC row ``[ts_ms, close, (vol), (high, low, (open))]`` preserving ``low <= close <= high``."""
+    ts_ms = math.trunc(ts_val if ts_val > 1e11 else ts_val * 1000.0)
+    c_v = round(close_px, decimals) if decimals is not None else close_px
+    hi_v = safe_pos_float(high_px, default=None)
+    lo_v = safe_pos_float(low_px, default=None)
+    has_valid_hl = hi_v is not None and lo_v is not None and hi_v >= lo_v > 0.0
+    if not include_vol and not has_valid_hl:
+        return [ts_ms, c_v]
+    vol_v = safe_nonneg_float(vol, 0.0) or 0.0
+    row: list[Any] = [ts_ms, c_v, vol_v]
+    if has_valid_hl:
+        hi_c = max(c_v, round(hi_v, decimals) if decimals is not None else hi_v)
+        lo_c = min(c_v, round(lo_v, decimals) if decimals is not None else lo_v)
+        row.extend((hi_c, lo_c))
+        op_v = safe_pos_float(open_px, default=None)
+        if op_v is not None:
+            op_r = round(op_v, decimals) if decimals is not None else op_v
+            row.append(min(hi_c, max(lo_c, op_r)))
+    return row
+
+
+def normalize_ohlc_row(
+    raw_row: Any,
+    *,
+    require_positive_vol: bool = False,
+    clamp_bounds: Optional[tuple[float, float]] = None,
+) -> Optional[list[Any]]:
+    """Parse and normalize a raw ``[ts, close, ...]`` row preserving validated H/L/O and optional ``[lo, hi]`` clamping."""
+    if not isinstance(raw_row, (list, tuple)) or len(raw_row) < 2:
+        return None
+    ts_v = safe_pos_float(raw_row[0], default=None)
+    c_v = safe_pos_float(raw_row[1], default=None)
+    if ts_v is None or c_v is None:
+        return None
+    vol_v = safe_nonneg_float(raw_row[2], default=None) if len(raw_row) >= 3 else None
+    if require_positive_vol and (vol_v is None or vol_v <= 0.0):
+        return None
+    hi_v = safe_pos_float(raw_row[3], default=None) if len(raw_row) >= 5 else None
+    lo_v = safe_pos_float(raw_row[4], default=None) if len(raw_row) >= 5 else None
+    op_v = safe_pos_float(raw_row[5], default=None) if len(raw_row) >= 6 else None
+    if clamp_bounds is not None:
+        lo_b, hi_b = clamp_bounds
+        c_v = min(hi_b, max(lo_b, c_v))
+        if hi_v is not None and lo_v is not None and hi_v >= lo_v > 0.0:
+            hi_v = max(c_v, min(hi_b, max(lo_b, hi_v)))
+            lo_v = min(c_v, min(hi_b, max(lo_b, lo_v)))
+            if op_v is not None:
+                op_v = min(hi_v, max(lo_v, op_v))
+    return build_ohlc_row(
+        ts_v,
+        c_v,
+        vol_v,
+        hi_v,
+        lo_v,
+        op_v,
+        include_vol=vol_v is not None and (require_positive_vol or vol_v > 0.0 or len(raw_row) >= 3),
+    )
+
+
 def normalize_yahoo_5d_chart_bars(
     chart_res: Any,
     raw_series_24h: list,
@@ -769,38 +841,19 @@ def normalize_yahoo_5d_chart_bars(
 ) -> tuple[list[list[Any]], list[list[Any]], list[list[Any]], bool, bool, float, int]:
     """Parse Yahoo 5d/5m chart payload, prune off-RTH zero-vol tail gaps, slice 24h window, and stitch sub-5m ticks."""
     pts_5d: list[list[Any]] = []
-    def _build_ohlc_row(
-        ts_v: float,
-        c_v: float,
-        vol_v: Optional[float],
-        hi_v: Optional[float] = None,
-        lo_v: Optional[float] = None,
-        op_v: Optional[float] = None,
-        *,
-        include_vol: bool = True,
-    ) -> list[Any]:
-        ts_i = math.trunc(ts_v if ts_v > 1e11 else ts_v * 1000)
-        c_r = round(c_v, 4)
-        if not include_vol and (hi_v is None or lo_v is None or hi_v < lo_v or lo_v <= 0.0):
-            return [ts_i, c_r]
-        row: list[Any] = [ts_i, c_r, safe_nonneg_float(vol_v, 0.0) or 0.0]
-        if hi_v is not None and lo_v is not None and hi_v >= lo_v > 0.0:
-            row.extend((round(hi_v, 4), round(lo_v, 4)))
-            if op_v is not None and op_v > 0.0:
-                row.append(round(op_v, 4))
-        return row
 
     if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
         pts_5d = sorted(
             (
-                _build_ohlc_row(
+                build_ohlc_row(
                     ts_f,
                     px_f,
                     bar[2] if len(bar) >= 3 else None,
-                    safe_pos_float(bar[3], default=None) if len(bar) >= 5 else None,
-                    safe_pos_float(bar[4], default=None) if len(bar) >= 5 else None,
-                    safe_pos_float(bar[5], default=None) if len(bar) >= 6 else None,
+                    bar[3] if len(bar) >= 5 else None,
+                    bar[4] if len(bar) >= 5 else None,
+                    bar[5] if len(bar) >= 6 else None,
                     include_vol=len(bar) >= 3,
+                    decimals=4,
                 )
                 for bar in chart_res[1]
                 if isinstance(bar, (list, tuple))
@@ -826,14 +879,15 @@ def normalize_yahoo_5d_chart_bars(
         cl_seq = q_obj.get("close")
         pts_5d = sorted(
             (
-                _build_ohlc_row(
+                build_ohlc_row(
                     ts_f,
                     c_f,
                     vols[idx] if idx < len(vols) else 0.0,
-                    safe_pos_float(highs[idx], default=None) if idx < len(highs) else None,
-                    safe_pos_float(lows[idx], default=None) if idx < len(lows) else None,
-                    safe_pos_float(opens[idx], default=None) if idx < len(opens) else None,
+                    highs[idx] if idx < len(highs) else None,
+                    lows[idx] if idx < len(lows) else None,
+                    opens[idx] if idx < len(opens) else None,
                     include_vol=True,
+                    decimals=4,
                 )
                 for idx, (ts, c) in enumerate(
                     zip(

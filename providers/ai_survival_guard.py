@@ -403,11 +403,11 @@ def evaluate_ai_ping_pong_guard(
         ):
             bot_opp_ts, bot_opp_px = b_ts, b_px
 
-    # 1. Pre-committed AI trade plan check (only for an active, unclosed opposite AI fill not superseded by a newer BOT fill)
+    # 1. Pre-committed AI trade plan check (only for an active, unclosed opposite AI fill not superseded by a newer same-side or BOT fill)
+    opp_ai_is_latest_side = bool(latest_opp_ai is not None and latest_opp_ai[0] > latest_same_ai_ts)
     plan_status = "ACTIVE"
     if (
-        latest_opp_ai is not None
-        and latest_opp_ai[0] > latest_same_ai_ts
+        opp_ai_is_latest_side
         and latest_opp_ai[0] >= bot_opp_ts
         and eff_spot > 0.0
     ):
@@ -436,13 +436,13 @@ def evaluate_ai_ping_pong_guard(
         "effective_flip_min_edge_pct": min_edge,
     }
 
-    # Resolve the most recent opposite-side fill within cooldown (AI fill or fresh BOT fill <= 30m)
+    # Resolve the most recent unclosed opposite-side fill within cooldown (AI fill or fresh BOT fill <= 30m)
     ref_opp_ts = 0.0
     ref_opp_px = 0.0
     ref_opp_actor = ""
-    if cd_sec > 0.0 and latest_opp_ai is not None and (eff_now - latest_opp_ai[0]) <= cd_sec:
+    if cd_sec > 0.0 and opp_ai_is_latest_side and (eff_now - latest_opp_ai[0]) <= cd_sec:
         ref_opp_ts, ref_opp_px, ref_opp_actor = latest_opp_ai[0], latest_opp_ai[1], "AI"
-    if bot_opp_ts > ref_opp_ts:
+    if bot_opp_ts > ref_opp_ts and bot_opp_ts > latest_same_ai_ts:
         ref_opp_ts, ref_opp_px, ref_opp_actor = bot_opp_ts, bot_opp_px, "BOT"
 
     fav_pct: Optional[float] = None

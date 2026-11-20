@@ -4542,5 +4542,46 @@ def test_etapa0_gateway_survival_guards_use_persisted_live_venue_fees(tmp_path):
     tao_inst.place.assert_called_once()
 
 
+def test_ping_pong_guard_allows_same_side_continuation_after_already_completed_flip():
+    """Verify BUY(t=0) -> SELL(t=10m, valid flip) -> second same-side SELL(t=20m) is NOT falsely blocked as BUY->SELL flip."""
+    from providers.ai_survival_guard import evaluate_ai_ping_pong_guard
+
+    now_s = 1_795_000_000.0
+    prior_intents = [
+        {
+            "intent_id": "b1",
+            "timestamp": now_s - 1200.0,  # 20m ago
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "limit_price": 70000.0,
+            "execution_payload": {"orderId": "o_b1", "status": "FILLED", "executedQty": "0.01", "avg_fill_price": 70000.0},
+        },
+        {
+            "intent_id": "s1",
+            "timestamp": now_s - 600.0,  # 10m ago (valid profit-take flip)
+            "decision": "SELL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "limit_price": 71000.0,
+            "execution_payload": {"orderId": "o_s1", "status": "FILLED", "executedQty": "0.005", "avg_fill_price": 71000.0},
+        },
+    ]
+    # Second same-side SELL at $70,200 (fav vs older BUY is only +0.29% < +0.60%, but latest side is already SELL!)
+    allowed, reason, _ = evaluate_ai_ping_pong_guard(
+        {"intent_id": "s2", "decision": "SELL", "symbol": "BTCUSDC", "venue": "binance", "limit_price": 70200.0},
+        prior_intents,
+        decision="SELL",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=70200.0,
+        now_ts=now_s,
+    )
+    assert allowed is True, f"Same-side continuation SELL was falsely blocked: {reason}"
+
+
+
 
 

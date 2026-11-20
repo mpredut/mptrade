@@ -870,8 +870,9 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
             cachedb_dir, symbol, current_price_items=cur_p_items, include_7d=True
         )
         bars_4h_pt = LAST_7D_4H_BARS_BY_SYM.get(str(symbol).strip().upper())
+        eq_7d_series = bars_4h_pt
         m24 = (
-            _call_compute_24h(alt_series_24h, is_equity=is_eq_sym, series_7d_ts_px=bars_4h_pt)
+            _call_compute_24h(alt_series_24h, is_equity=is_eq_sym, series_7d_ts_px=eq_7d_series)
             if alt_series_24h
             else {}
         )
@@ -923,8 +924,9 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                 if pts_5d_eq:
                     alt_series_24h = list(pts_24_eq)
                     arch_vals_7d = [pt[1] for pt in pts_5d_eq]
+                    eq_7d_series = pts_5d_eq
                     eq_chart_refreshed = len(alt_series_24h) >= 5
-                    m24 = _call_compute_24h(alt_series_24h, is_equity=True, series_7d_ts_px=pts_5d_eq)
+                    m24 = _call_compute_24h(alt_series_24h, is_equity=True, series_7d_ts_px=eq_7d_series)
                     last_alt_pt = parse_ts_px_row(alt_series_24h[-1]) if alt_series_24h else None
                     if last_alt_pt is not None:
                         cur_px_est = last_alt_pt[1]
@@ -968,7 +970,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                     if (eq_pt_ts_ms - last_alt_pt[0]) > 300 * 1000:
                         eq_pt_ts_ms = math.trunc(last_alt_pt[0] + 1000)
                     alt_series_24h = list(alt_series_24h) + [[eq_pt_ts_ms, cur_px_est]]
-                    m24 = _call_compute_24h(alt_series_24h, is_equity=True, series_7d_ts_px=bars_4h_pt) or m24
+                    m24 = _call_compute_24h(alt_series_24h, is_equity=True, series_7d_ts_px=eq_7d_series) or m24
                 elif m24:
                     alt_series_24h, m24, eq_px_diverged_05pct = ctx.session_policy.apply_post_rth_price_override(
                         alt_series_24h, m24, live_cur_px

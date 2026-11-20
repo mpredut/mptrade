@@ -260,26 +260,30 @@ def evaluate_nav_drawdown_metrics(
 
     latest_ts, latest_day, latest_idx, latest_pt = adj_series[-1]
     ref_now = max(eff_now, latest_ts)
+    active_utc_day = _utc_day_str(ref_now)
 
-    # UTC day baseline: prefer the closing point immediately before today's UTC midnight, else today's first point
-    day_open_idx = latest_idx
-    day_peak_idx = latest_idx
-    found_today = False
-    for _, p_day, p_idx, _ in adj_series:
-        if p_day < latest_day:
-            day_open_idx = p_idx
-        elif p_day == latest_day:
-            if not found_today:
-                if day_open_idx == latest_idx and adj_series[0][1] == latest_day:
-                    day_open_idx = p_idx
-                day_peak_idx = max(day_open_idx, p_idx)
-                found_today = True
-            else:
-                if p_idx > day_peak_idx:
+    # UTC day baseline: if all points precede active_utc_day (e.g. post-midnight before first new sample),
+    # today's UTC return & drawdown reset cleanly to 0.0% while rolling 24h/7d/30d windows remain intact.
+    if latest_day < active_utc_day:
+        daily_ret_pct = 0.0
+        daily_dd_pct = 0.0
+    else:
+        day_open_idx = latest_idx
+        day_peak_idx = latest_idx
+        found_today = False
+        for _, p_day, p_idx, _ in adj_series:
+            if p_day < active_utc_day:
+                day_open_idx = p_idx
+            elif p_day == active_utc_day:
+                if not found_today:
+                    if day_open_idx == latest_idx and adj_series[0][1] == active_utc_day:
+                        day_open_idx = p_idx
+                    day_peak_idx = max(day_open_idx, p_idx)
+                    found_today = True
+                elif p_idx > day_peak_idx:
                     day_peak_idx = p_idx
-
-    daily_ret_pct = ((latest_idx - day_open_idx) / day_open_idx) * 100.0 if day_open_idx > 0.0 else 0.0
-    daily_dd_pct = ((latest_idx - day_peak_idx) / day_peak_idx) * 100.0 if day_peak_idx > 0.0 else 0.0
+        daily_ret_pct = ((latest_idx - day_open_idx) / day_open_idx) * 100.0 if day_open_idx > 0.0 else 0.0
+        daily_dd_pct = ((latest_idx - day_peak_idx) / day_peak_idx) * 100.0 if day_peak_idx > 0.0 else 0.0
 
     cutoff_24h = ref_now - 86400.0
     peak_24h = max((p_idx for p_ts, _, p_idx, _ in adj_series if p_ts >= cutoff_24h), default=latest_idx)
@@ -323,7 +327,7 @@ def evaluate_nav_drawdown_metrics(
     span_days = max(0.0, (latest_ts - adj_series[0][0]) / 86400.0)
     return {
         "current_nav_usd": round(latest_pt["nav_usd"], 2),
-        "utc_day": latest_day,
+        "utc_day": active_utc_day,
         "sample_count": len(adj_series),
         "days_covered": round(span_days, 2),
         "daily_nav_return_pct": round(daily_ret_pct, 2),

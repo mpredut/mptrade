@@ -21,14 +21,13 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     CLOSED_EQUITY_INTRADAY_KEYS,
     CLOSED_EQUITY_QUOTE_AGE_MIN,
     STALE_SHORT_24H_KEYS,
-    _RTH_ATR_ANCHOR_KEYS,
-    _RTH_VP_ANCHOR_KEYS,
-    _RTH_VWAP_ANCHOR_KEYS,
     _SHORT_SLOPE_OVERRIDE_KEYS,
     compute_24h_price_metrics,
     normalize_and_dedup_24h_series,
+    override_series_tail_close,
     pct_delta,
     prepend_older_non_diverged_points,
+    restore_rth_metric_anchors,
     sort_ts_rows,
     strip_off_rth_flat_poller_tail,
 )
@@ -323,40 +322,20 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
         replaced = False
         override_px = round(cur_px, 4)
         if s24_p1 is not None and len(matched_series_24h) >= 2:
-            rth_vp_anchors = {k_vp: m24[k_vp] for k_vp in _RTH_VP_ANCHOR_KEYS if k_vp in m24}
-            rth_vwap_anchors = {k_vw: m24[k_vw] for k_vw in _RTH_VWAP_ANCHOR_KEYS if k_vw in m24}
-            rth_atr_anchors = {k_at: m24[k_at] for k_at in _RTH_ATR_ANCHOR_KEYS if k_at in m24}
-            last_bar_tail = (
-                list(matched_series_24h[-1][2:])
-                if isinstance(matched_series_24h[-1], (list, tuple)) and len(matched_series_24h[-1]) >= 3
-                else []
-            )
-            override_series_24h = list(matched_series_24h[:-1]) + [[s24_p1[0], override_px, *last_bar_tail]]
+            prev_m24 = dict(m24)
+            override_series_24h = override_series_tail_close(matched_series_24h, override_px)
             m24 = (
                 eff_compute_24h(override_series_24h, is_equity=True)
                 if eff_compute_24h is compute_24h_price_metrics
                 else eff_compute_24h(override_series_24h)
             ) or m24
-            if rth_vp_anchors:
-                for k_vp_clr in _RTH_VP_ANCHOR_KEYS:
-                    m24.pop(k_vp_clr, None)
-                m24.update(rth_vp_anchors)
-            if rth_vwap_anchors:
-                for k_vw_clr in _RTH_VWAP_ANCHOR_KEYS:
-                    m24.pop(k_vw_clr, None)
-                m24.update(rth_vwap_anchors)
-                if (vwap_px := safe_pos_float(m24.get("session_vwap_px"), default=None)) is not None:
-                    m24["dist_vs_session_vwap_pct"] = pct_delta(override_px, vwap_px)
-                    if (sig_pct := safe_pos_float(m24.get("session_vwap_sigma_pct"), default=None)) is not None:
-                        sig_px = vwap_px * (sig_pct / 100.0)
-                        if sig_px > 0.0:
-                            m24["session_vwap_z"] = round((override_px - vwap_px) / sig_px, 2) + 0.0
-                    else:
-                        m24.pop("session_vwap_z", None)
-            if rth_atr_anchors:
-                for k_at_clr in _RTH_ATR_ANCHOR_KEYS:
-                    m24.pop(k_at_clr, None)
-                m24.update(rth_atr_anchors)
+            restore_rth_metric_anchors(
+                m24,
+                vp_src=prev_m24,
+                vwap_src=prev_m24,
+                atr_src=prev_m24,
+                live_px=override_px,
+            )
             if abs(cur_px - s24_p1[1]) / max(cur_px, s24_p1[1]) > 0.005:
                 replaced = True
                 matched_series_24h = override_series_24h
