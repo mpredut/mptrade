@@ -275,13 +275,9 @@ def _prepare_retry_placement_kwargs(r: dict, kwargs: dict, provider_name, now: f
     return side_u, age_sec, age_progress, retry_stage
 
 
-def process_once(mkt, now=None):
-    """Advance each due outbox record by at most one non-blocking lifecycle step."""
-    now = resolve_now_ts(now)
-    snapshot = oq.load_validated()
-
+def _classify_outbox_records(mkt, snapshot, now):
+    """Partition outbox records into retry, observe, cancel-reconcile, live-producer, and expired buckets."""
     to_retry, to_observe, to_reconcile_cancel, live_producer_reconciliation, expired = [], [], [], [], []
-    skipped_price = 0
     quarantined = 0
     for r in snapshot:
         if oq.is_expired(r, now):
@@ -322,16 +318,12 @@ def process_once(mkt, now=None):
             to_reconcile_cancel.append(r)
         else:
             to_retry.append(r)
+    return to_retry, to_observe, to_reconcile_cancel, live_producer_reconciliation, expired, quarantined
 
-    expired = oq.discard_expired(expired, now)
-    claimed = oq.claim(
-        [r["id"] for r in to_retry] + [r["id"] for r in to_observe] + [r["id"] for r in to_reconcile_cancel],
-        now,
-    )
-    _alert_giveups(expired, now)
 
-    succeeded = reconciled = attempted = observed = filled = terminal_failed = terminal_retried = 0
-    for r in live_producer_reconciliation:
+def _reconcile_live_producer_records(mkt, records, now, stats):
+    """Reconcile client order IDs for claims still owned by a live producer process."""
+    for r in records:
         symbol = r.get("symbol")
         provider_name = _provider_name(mkt, r)
         reconciliation_state, existing_order = _reconcile_client_order(
@@ -341,309 +333,358 @@ def process_once(mkt, now=None):
             if _complete_reconciled_order(
                 mkt, r, existing_order, now, provider_name=provider_name, live_producer=True
             ):
-                succeeded, reconciled = succeeded + 1, reconciled + 1
+                stats["succeeded"] += 1
+                stats["reconciled"] += 1
             continue
         quarantine_reason = (
             "live_owner_not_found"
             if reconciliation_state == _RECONCILE_NOT_FOUND
             else "live_owner_lookup_unavailable"
         )
-        quarantined += 1
+        stats["quarantined"] += 1
         if _alert_producer_quarantine(r, reason=quarantine_reason):
             _audit_event(
                 r, "producer_reconciliation_deferred",
                 reconciliation_state=reconciliation_state, quarantine_reason=quarantine_reason,
             )
 
-    def _fetch_claimed_order_status(
-        r: dict, target_oid: str, provider_name, *, log_prefix: str, audit_event_name: str, **audit_extra
+
+def _fetch_claimed_order_status(
+    mkt, r: dict, target_oid: str, provider_name, now, *, log_prefix: str, audit_event_name: str, **audit_extra
+):
+    symbol = r.get("symbol")
+    try:
+        return mkt.order_status(symbol, target_oid, provider_name=provider_name)
+    except Exception as exc:
+        err_str = str(exc)
+        prev_err = str(r.get("status_error") or "")
+        print(f"[order_retry] {log_prefix} {symbol}/{target_oid}: {exc}")
+        oq.complete_claim(r, "status_error", now, failure_reason=err_str)
+        if prev_err != err_str:
+            _audit_event(
+                r, audit_event_name, error_type=exc.__class__.__name__, error=err_str, **audit_extra
+            )
+        return None
+
+
+def _process_awaiting_cancel_claim(mkt, r, symbol, provider_name, now, stats):
+    """Advance an ``awaiting_cancel`` replacement claim once the replaced order cancels or terminates."""
+    if (
+        (clean_scalar_str(r.get("submission_state")) or "").lower() in {"producer_claimed", "unknown"}
+        and (caps := _reconciliation_capabilities(mkt, symbol, provider_name)) is not None
+        and caps.lookup_by_client_order_id
     ):
-        symbol = r.get("symbol")
-        try:
-            return mkt.order_status(symbol, target_oid, provider_name=provider_name)
-        except Exception as exc:
-            err_str = str(exc)
-            prev_err = str(r.get("status_error") or "")
-            print(f"[order_retry] {log_prefix} {symbol}/{target_oid}: {exc}")
-            oq.complete_claim(r, "status_error", now, failure_reason=err_str)
-            if prev_err != err_str:
+        reconciliation_state, existing_order = _reconcile_client_order(
+            mkt, symbol, oq.record_client_order_id(r), provider_name=provider_name
+        )
+        if reconciliation_state == _RECONCILE_FOUND:
+            if _complete_reconciled_order(mkt, r, existing_order, now, provider_name=provider_name):
+                stats["succeeded"] += 1
+                stats["reconciled"] += 1
+            return
+        if reconciliation_state != _RECONCILE_NOT_FOUND:
+            oq.complete_claim(
+                r, "status_error", now, failure_reason="replacement_client_lookup_unavailable"
+            )
+            return
+    replaced_order_id = clean_order_id(r.get("replaces_order_id")) or ""
+    status = _fetch_claimed_order_status(
+        mkt,
+        r,
+        replaced_order_id,
+        provider_name,
+        now,
+        log_prefix="replaced-order status unavailable",
+        audit_event_name="replacement_cancel_status_error",
+        replaced_order_id=replaced_order_id,
+    )
+    if status is None:
+        return
+    venue_status = str(status.venue_status or "").upper()
+    if venue_status in {"CANCELED", "CANCELLED"}:
+        replacement_qty = oq.compute_replacement_qty(r.get("replaces_original_qty"), status)
+        activation = oq.activate_claimed_replacement(r, replacement_qty, now)
+        if activation == "activated":
+            oq.complete_claim(r, "release", now)
+            _audit_event(
+                r, "replacement_cancel_confirmed",
+                replaced_order_id=replaced_order_id, replacement_qty=replacement_qty,
+            )
+        elif activation == "resolved":
+            _audit_event(
+                r, "replacement_not_required",
+                replaced_order_id=replaced_order_id,
+                status=status.status, venue_status=venue_status, filled_qty=status.filled_qty,
+            )
+        else:
+            oq.complete_claim(r, "status_error", now, failure_reason="cancel_activation_failed")
+    elif status.terminal:
+        oq.complete_claim(r, "success", now)
+        _audit_event(
+            r, "replacement_not_required",
+            replaced_order_id=replaced_order_id,
+            status=status.status, venue_status=venue_status, filled_qty=status.filled_qty,
+        )
+    else:
+        oq.complete_claim(r, "release", now)
+
+
+def _process_accepted_claim(mkt, r, symbol, provider_name, now, stats):
+    """Observe venue order status for an accepted claim and transition fills or terminal cancellations."""
+    stats["observed"] += 1
+    status = _fetch_claimed_order_status(
+        mkt,
+        r,
+        clean_order_id(r.get("order_id")) or "",
+        provider_name,
+        now,
+        log_prefix="status unavailable",
+        audit_event_name="status_error",
+    )
+    if status is None:
+        return
+    transition = oq.advance_claimed_status(r, status, now)
+    if transition.action == "observed":
+        if transition.status_changed:
+            _audit_status_event(r, "order_status", status)
+    elif transition.action == "filled":
+        _audit_status_event(r, "order_terminal", status)
+        print(f"[order_retry] FILLED {r.get('side')} {symbol} orderId={r.get('order_id')} qty={status.filled_qty}")
+        stats["filled"] += 1
+    elif transition.action == "retry_terminal":
+        _audit_status_event(r, "order_terminal_retry", status, remaining_qty=transition.remaining_qty)
+        print(
+            f"[order_retry] {status.venue_status or status.status} {symbol} "
+            f"orderId={r.get('order_id')} filled={status.filled_qty} remainder={transition.remaining_qty}"
+        )
+        stats["terminal_retried"] += 1
+    elif transition.status_changed:
+        _audit_status_event(r, "order_terminal", status, retry=False)
+        terminal_key = (
+            str(r.get("id") or ""), safe_int(r.get("revision"), 0),
+            str(r.get("order_id") or ""), str(status.venue_status or status.status or ""),
+        )
+        _send_quarantine_alert(
+            _ALERTED_TERMINALS, terminal_key, r,
+            "\U0001f6d1 order terminal",
+            (
+                f"Order {r.get('order_id')} became "
+                f"{status.venue_status or status.status}; filled={status.filled_qty}, "
+                "the rest is NOT resent automatically after a cancel."
+            ),
+            label="the terminal",
+        )
+        stats["terminal_failed"] += 1
+
+
+def _is_not_found_absence_reliable(mkt, r, symbol, provider_name, now):
+    """Verify whether a client-order-id NOT_FOUND response falls inside the reliable absence horizon."""
+    capabilities = _reconciliation_capabilities(mkt, symbol, provider_name)
+    if capabilities is None or not capabilities.lookup_by_client_order_id:
+        return False, "lookup_unavailable"
+    venue_horizon = safe_pos_float(getattr(capabilities, "not_found_reliable_for_seconds", None), default=None)
+    configured_horizon = safe_pos_float(oq.RETRY_NOT_FOUND_MAX_AGE_SEC, default=None)
+    observed_at = safe_pos_float(now, default=None)
+    created_at = oq.opt_nonneg_ts(r, "created_ts")
+    last_attempt_at = oq.opt_nonneg_ts(r, "last_attempt_ts")
+    if venue_horizon is None or configured_horizon is None:
+        return False, "missing_reconciliation_horizon"
+    if observed_at is None or created_at is None or last_attempt_at is None or max(created_at, last_attempt_at) <= 0:
+        return False, "invalid_reference_timestamp"
+    age = observed_at - max(created_at, last_attempt_at)
+    if age < 0:
+        return False, "future_reference_timestamp"
+    if age > min(venue_horizon, configured_horizon):
+        return False, "not_found_outside_reliable_horizon"
+    return True, None
+
+
+def _process_retry_claim(mkt, r, symbol, provider_name, now, stats):
+    """Reconcile prior unknown submissions if needed, validate price gate, and submit one retry attempt."""
+    raw_pk = r.get("place_kwargs")
+    kwargs = dict(raw_pk) if isinstance(raw_pk, dict) else {}
+    client_order_id = oq.record_client_order_id(r)
+    if oq.submission_requires_reconciliation(r):
+        reconciliation_state, existing_order = _reconcile_client_order(
+            mkt, symbol, client_order_id, provider_name=provider_name
+        )
+        if reconciliation_state == _RECONCILE_FOUND:
+            stats["succeeded"] += 1
+            stats["reconciled"] += 1
+            _complete_reconciled_order(mkt, r, existing_order, now, provider_name=provider_name)
+            return
+        if reconciliation_state == _RECONCILE_NOT_FOUND:
+            absence_reliable, not_found_reason = _is_not_found_absence_reliable(mkt, r, symbol, provider_name, now)
+        else:
+            absence_reliable, not_found_reason = False, "lookup_unavailable"
+        if not absence_reliable:
+            quarantine_reason = not_found_reason or "lookup_unavailable"
+            stats["quarantined"] += 1
+            newly_quarantined = _alert_reconciliation_quarantine(r, reason=quarantine_reason)
+            oq.complete_claim(r, "release", now)
+            if newly_quarantined:
                 _audit_event(
-                    r, audit_event_name, error_type=exc.__class__.__name__, error=err_str, **audit_extra
+                    r, "reconciliation_deferred",
+                    failure_reason=r.get("last_failure_reason"),
+                    reconciliation_state=reconciliation_state,
+                    quarantine_reason=quarantine_reason,
                 )
-            return None
+            return
+
+    price = None
+    try:
+        if provider_name is not None and hasattr(mkt, "get_current_price"):
+            price = mkt.get_current_price(symbol, provider_name=provider_name)
+        else:
+            price = mkt.get_current_price(symbol)
+    except Exception as exc:
+        print(f"[order_retry] price unavailable {symbol} ({exc}); skipping, it stays queued")
+    if (price_f := safe_pos_float(price, default=None)) is None:
+        oq.complete_claim(r, "release", now)
+        return
+    if not oq.price_gate_ok(r, price_f):
+        oq.complete_claim(r, "release", now)
+        stats["skipped_price"] += 1
+        return
+
+    prev_failure_reason = clean_scalar_str(r.get("last_failure_reason")) or ""
+    prev_submission_state = (clean_scalar_str(r.get("submission_state")) or "").lower()
+    side_u, age_sec, age_progress, retry_stage = _prepare_retry_placement_kwargs(r, kwargs, provider_name, now)
+    outcome_context = {}
+    kwargs["_outcome_context"] = outcome_context
+    dispatch_claim = oq.begin_claimed_submit(r, now=now)
+    if dispatch_claim is None:
+        stats["quarantined"] += 1
+        _audit_event(r, "submit_claim_lost", failure_reason="exact_dispatch_claim_unavailable")
+        return
+    r = dispatch_claim
+    kwargs["_retry_claim"] = dispatch_claim
+    stats["attempted"] += 1
+    next_attempt_num = safe_int(r.get("attempts"), 0) + 1
+    req_qty_before_place = r.get("qty")
+    submit_px = (
+        safe_pos_float(r.get("requested_price"), default=price_f)
+        if oq.is_fixed_limit_record(r)
+        else price
+    )
+    try:
+        if retry_stage != "standard":
+            print(
+                f"[order_retry] {side_u} {symbol} retrying under Stage {retry_stage.upper()} "
+                f"(age={age_sec / 3600:.1f}h, progress={age_progress * 100:.1f}%)"
+            )
+        order = mkt.place(symbol, r.get("side"), submit_px, r.get("qty"), **kwargs)
+    except Exception as e:
+        print(f"[order_retry] retry {r.get('side')} {symbol} raised ({e}) \u2014 treating it as a failure")
+        order = None
+    sq = safe_pos_float(outcome_context.get("submitted_qty"), default=None)
+    if sq is not None:
+        oq._set_record_qty(r, sq)
+    accepted = oq.extract_order_id(order) is not None
+    if not accepted and outcome_context.get("state") != "refused":
+        reconciliation_state, recovered = _reconcile_client_order(
+            mkt, symbol, client_order_id, provider_name=provider_name
+        )
+        if reconciliation_state == _RECONCILE_FOUND:
+            order = _hydrate_missing_order_orig_qty(mkt, symbol, recovered, provider_name=provider_name)
+            accepted = True
+            stats["reconciled"] += 1
+    req_audit_kw = {
+        "qty": req_qty_before_place, "price": submit_px, "attempt": next_attempt_num,
+        "retry_stage": retry_stage, "age_progress": round(age_progress, 3),
+    }
+    if accepted:
+        stats["succeeded"] += 1
+        oq.complete_claim(r, "accepted", now, order=order, provider_name=provider_name)
+        _audit_event(r, "submit_requested", **req_audit_kw)
+        _audit_event(
+            r, "submit_accepted",
+            order_id=oq.extract_order_id(order), qty=r.get("qty"), price=submit_px,
+        )
+        print(f"[order_retry] ACCEPTED {r.get('side')} {symbol} @ {submit_px} orderId={oq.extract_order_id(order)}")
+        return
+
+    submission_state = outcome_context.get("state") or "unknown"
+    refusal_reason = outcome_context.get("reason") or (
+        "pre_submit_refused" if submission_state == "refused" else "submit_ambiguous"
+    )
+    if (
+        (
+            refusal_reason in {"execution_disabled", "trading_disabled", "aborted_by_caller", "invalid_price"}
+            or oq.is_terminal_filter_refusal(refusal_reason)
+        )
+        and submission_state == "refused"
+    ):
+        oq.complete_claim(r, "success", now)
+        stats["terminal_failed"] += 1
+    elif oq.is_non_failure_deferral(refusal_reason):
+        oq.complete_claim(
+            r, "deferred", now, failure_reason=refusal_reason, submission_state=submission_state
+        )
+    else:
+        oq.complete_claim(
+            r, "failure", now, failure_reason=refusal_reason, submission_state=submission_state
+        )
+    repeat_pre_submit_refusal = (
+        submission_state == "refused"
+        and prev_submission_state == "refused"
+        and str(refusal_reason) == prev_failure_reason
+    )
+    if not repeat_pre_submit_refusal:
+        _audit_event(r, "submit_requested", **req_audit_kw)
+        _audit_event(
+            r, "submit_refused" if submission_state == "refused" else "submit_unknown",
+            qty=r.get("qty"), price=submit_px,
+            submission_state=submission_state, failure_reason=refusal_reason,
+        )
+
+
+def process_once(mkt, now=None):
+    """Advance each due outbox record by at most one non-blocking lifecycle step."""
+    now = resolve_now_ts(now)
+    snapshot = oq.load_validated()
+    (
+        to_retry,
+        to_observe,
+        to_reconcile_cancel,
+        live_producer_reconciliation,
+        expired,
+        quarantined_init,
+    ) = _classify_outbox_records(mkt, snapshot, now)
+
+    expired = oq.discard_expired(expired, now)
+    claimed = oq.claim(
+        [r["id"] for r in to_retry] + [r["id"] for r in to_observe] + [r["id"] for r in to_reconcile_cancel],
+        now,
+    )
+    _alert_giveups(expired, now)
+
+    stats = {
+        "attempted": 0,
+        "succeeded": 0,
+        "reconciled": 0,
+        "observed": 0,
+        "filled": 0,
+        "terminal_failed": 0,
+        "terminal_retried": 0,
+        "skipped_price": 0,
+        "quarantined": quarantined_init,
+    }
+    _reconcile_live_producer_records(mkt, live_producer_reconciliation, now, stats)
 
     for r in claimed:
         lifecycle, symbol = oq.record_lifecycle(r), r.get("symbol")
         provider_name = _provider_name(mkt, r)
         if lifecycle == "awaiting_cancel":
-            if (
-                (clean_scalar_str(r.get("submission_state")) or "").lower() in {"producer_claimed", "unknown"}
-                and (caps := _reconciliation_capabilities(mkt, symbol, provider_name)) is not None
-                and caps.lookup_by_client_order_id
-            ):
-                reconciliation_state, existing_order = _reconcile_client_order(
-                    mkt, symbol, oq.record_client_order_id(r), provider_name=provider_name
-                )
-                if reconciliation_state == _RECONCILE_FOUND:
-                    if _complete_reconciled_order(mkt, r, existing_order, now, provider_name=provider_name):
-                        succeeded, reconciled = succeeded + 1, reconciled + 1
-                    continue
-                if reconciliation_state != _RECONCILE_NOT_FOUND:
-                    oq.complete_claim(
-                        r, "status_error", now, failure_reason="replacement_client_lookup_unavailable"
-                    )
-                    continue
-            replaced_order_id = clean_order_id(r.get("replaces_order_id")) or ""
-            status = _fetch_claimed_order_status(
-                r,
-                replaced_order_id,
-                provider_name,
-                log_prefix="replaced-order status unavailable",
-                audit_event_name="replacement_cancel_status_error",
-                replaced_order_id=replaced_order_id,
-            )
-            if status is None:
-                continue
-            venue_status = str(status.venue_status or "").upper()
-            if venue_status in {"CANCELED", "CANCELLED"}:
-                replacement_qty = oq.compute_replacement_qty(r.get("replaces_original_qty"), status)
-                activation = oq.activate_claimed_replacement(r, replacement_qty, now)
-                if activation == "activated":
-                    oq.complete_claim(r, "release", now)
-                    _audit_event(
-                        r, "replacement_cancel_confirmed",
-                        replaced_order_id=replaced_order_id, replacement_qty=replacement_qty,
-                    )
-                elif activation == "resolved":
-                    _audit_event(
-                        r, "replacement_not_required",
-                        replaced_order_id=replaced_order_id,
-                        status=status.status, venue_status=venue_status, filled_qty=status.filled_qty,
-                    )
-                else:
-                    oq.complete_claim(r, "status_error", now, failure_reason="cancel_activation_failed")
-            elif status.terminal:
-                oq.complete_claim(r, "success", now)
-                _audit_event(
-                    r, "replacement_not_required",
-                    replaced_order_id=replaced_order_id,
-                    status=status.status, venue_status=venue_status, filled_qty=status.filled_qty,
-                )
-            else:
-                oq.complete_claim(r, "release", now)
-            continue
-        if lifecycle == "accepted":
-            observed += 1
-            status = _fetch_claimed_order_status(
-                r,
-                clean_order_id(r.get("order_id")) or "",
-                provider_name,
-                log_prefix="status unavailable",
-                audit_event_name="status_error",
-            )
-            if status is None:
-                continue
-            transition = oq.advance_claimed_status(r, status, now)
-            if transition.action == "observed":
-                if transition.status_changed:
-                    _audit_status_event(r, "order_status", status)
-            elif transition.action == "filled":
-                _audit_status_event(r, "order_terminal", status)
-                print(f"[order_retry] FILLED {r.get('side')} {symbol} orderId={r.get('order_id')} qty={status.filled_qty}")
-                filled += 1
-            elif transition.action == "retry_terminal":
-                _audit_status_event(r, "order_terminal_retry", status, remaining_qty=transition.remaining_qty)
-                print(
-                    f"[order_retry] {status.venue_status or status.status} {symbol} "
-                    f"orderId={r.get('order_id')} filled={status.filled_qty} remainder={transition.remaining_qty}"
-                )
-                terminal_retried += 1
-            elif transition.status_changed:
-                _audit_status_event(r, "order_terminal", status, retry=False)
-                terminal_key = (
-                    str(r.get("id") or ""), safe_int(r.get("revision"), 0),
-                    str(r.get("order_id") or ""), str(status.venue_status or status.status or ""),
-                )
-                _send_quarantine_alert(
-                    _ALERTED_TERMINALS, terminal_key, r,
-                    "\U0001f6d1 order terminal",
-                    (
-                        f"Order {r.get('order_id')} became "
-                        f"{status.venue_status or status.status}; filled={status.filled_qty}, "
-                        "the rest is NOT resent automatically after a cancel."
-                    ),
-                    label="the terminal",
-                )
-                terminal_failed += 1
-            continue
-
-        raw_pk = r.get("place_kwargs")
-        kwargs = dict(raw_pk) if isinstance(raw_pk, dict) else {}
-        client_order_id = oq.record_client_order_id(r)
-        if oq.submission_requires_reconciliation(r):
-            reconciliation_state, existing_order = _reconcile_client_order(
-                mkt, symbol, client_order_id, provider_name=provider_name
-            )
-            if reconciliation_state == _RECONCILE_FOUND:
-                succeeded += 1
-                reconciled += 1
-                _complete_reconciled_order(mkt, r, existing_order, now, provider_name=provider_name)
-                continue
-            if reconciliation_state == _RECONCILE_NOT_FOUND:
-                capabilities = _reconciliation_capabilities(mkt, symbol, provider_name)
-                if capabilities is None or not capabilities.lookup_by_client_order_id:
-                    absence_reliable, not_found_reason = False, "lookup_unavailable"
-                else:
-                    venue_horizon = safe_pos_float(getattr(capabilities, "not_found_reliable_for_seconds", None), default=None)
-                    configured_horizon = safe_pos_float(oq.RETRY_NOT_FOUND_MAX_AGE_SEC, default=None)
-                    observed_at = safe_pos_float(now, default=None)
-                    created_at = oq.opt_nonneg_ts(r, "created_ts")
-                    last_attempt_at = oq.opt_nonneg_ts(r, "last_attempt_ts")
-                    if venue_horizon is None or configured_horizon is None:
-                        absence_reliable, not_found_reason = False, "missing_reconciliation_horizon"
-                    elif observed_at is None or created_at is None or last_attempt_at is None or max(created_at, last_attempt_at) <= 0:
-                        absence_reliable, not_found_reason = False, "invalid_reference_timestamp"
-                    else:
-                        age = observed_at - max(created_at, last_attempt_at)
-                        if age < 0:
-                            absence_reliable, not_found_reason = False, "future_reference_timestamp"
-                        elif age > min(venue_horizon, configured_horizon):
-                            absence_reliable, not_found_reason = False, "not_found_outside_reliable_horizon"
-                        else:
-                            absence_reliable, not_found_reason = True, None
-            else:
-                absence_reliable, not_found_reason = False, "lookup_unavailable"
-            if not absence_reliable:
-                quarantine_reason = not_found_reason or "lookup_unavailable"
-                quarantined += 1
-                newly_quarantined = _alert_reconciliation_quarantine(r, reason=quarantine_reason)
-                oq.complete_claim(r, "release", now)
-                if newly_quarantined:
-                    _audit_event(
-                        r, "reconciliation_deferred",
-                        failure_reason=r.get("last_failure_reason"),
-                        reconciliation_state=reconciliation_state,
-                        quarantine_reason=quarantine_reason,
-                    )
-                continue
-
-        price = None
-        try:
-            if provider_name is not None and hasattr(mkt, "get_current_price"):
-                price = mkt.get_current_price(symbol, provider_name=provider_name)
-            else:
-                price = mkt.get_current_price(symbol)
-        except Exception as exc:
-            print(f"[order_retry] price unavailable {symbol} ({exc}); skipping, it stays queued")
-        if (price_f := safe_pos_float(price, default=None)) is None:
-            oq.complete_claim(r, "release", now)
-            continue
-        if not oq.price_gate_ok(r, price_f):
-            oq.complete_claim(r, "release", now)
-            skipped_price += 1
-            continue
-
-        prev_failure_reason = clean_scalar_str(r.get("last_failure_reason")) or ""
-        prev_submission_state = (clean_scalar_str(r.get("submission_state")) or "").lower()
-        side_u, age_sec, age_progress, retry_stage = _prepare_retry_placement_kwargs(r, kwargs, provider_name, now)
-        outcome_context = {}
-        kwargs["_outcome_context"] = outcome_context
-        dispatch_claim = oq.begin_claimed_submit(r, now=now)
-        if dispatch_claim is None:
-            quarantined += 1
-            _audit_event(r, "submit_claim_lost", failure_reason="exact_dispatch_claim_unavailable")
-            continue
-        r = dispatch_claim
-        kwargs["_retry_claim"] = dispatch_claim
-        attempted += 1
-        next_attempt_num = safe_int(r.get("attempts"), 0) + 1
-        req_qty_before_place = r.get("qty")
-        submit_px = (
-            safe_pos_float(r.get("requested_price"), default=price_f)
-            if oq.is_fixed_limit_record(r)
-            else price
-        )
-        try:
-            if retry_stage != "standard":
-                print(
-                    f"[order_retry] {side_u} {symbol} retrying under Stage {retry_stage.upper()} "
-                    f"(age={age_sec / 3600:.1f}h, progress={age_progress * 100:.1f}%)"
-                )
-            order = mkt.place(symbol, r.get("side"), submit_px, r.get("qty"), **kwargs)
-        except Exception as e:
-            print(f"[order_retry] retry {r.get('side')} {symbol} raised ({e}) \u2014 treating it as a failure")
-            order = None
-        sq = safe_pos_float(outcome_context.get("submitted_qty"), default=None)
-        if sq is not None:
-            oq._set_record_qty(r, sq)
-        accepted = oq.extract_order_id(order) is not None
-        if not accepted and outcome_context.get("state") != "refused":
-            reconciliation_state, recovered = _reconcile_client_order(
-                mkt, symbol, client_order_id, provider_name=provider_name
-            )
-            if reconciliation_state == _RECONCILE_FOUND:
-                order = _hydrate_missing_order_orig_qty(mkt, symbol, recovered, provider_name=provider_name)
-                accepted = True
-                reconciled += 1
-        req_audit_kw = {
-            "qty": req_qty_before_place, "price": submit_px, "attempt": next_attempt_num,
-            "retry_stage": retry_stage, "age_progress": round(age_progress, 3),
-        }
-        if accepted:
-            succeeded += 1
-            oq.complete_claim(r, "accepted", now, order=order, provider_name=provider_name)
-            _audit_event(r, "submit_requested", **req_audit_kw)
-            _audit_event(
-                r, "submit_accepted",
-                order_id=oq.extract_order_id(order), qty=r.get("qty"), price=submit_px,
-            )
-            print(f"[order_retry] ACCEPTED {r.get('side')} {symbol} @ {submit_px} orderId={oq.extract_order_id(order)}")
+            _process_awaiting_cancel_claim(mkt, r, symbol, provider_name, now, stats)
+        elif lifecycle == "accepted":
+            _process_accepted_claim(mkt, r, symbol, provider_name, now, stats)
         else:
-            submission_state = outcome_context.get("state") or "unknown"
-            refusal_reason = outcome_context.get("reason") or (
-                "pre_submit_refused" if submission_state == "refused" else "submit_ambiguous"
-            )
-            if (
-                (
-                    refusal_reason in {"execution_disabled", "trading_disabled", "aborted_by_caller", "invalid_price"}
-                    or oq.is_terminal_filter_refusal(refusal_reason)
-                )
-                and submission_state == "refused"
-            ):
-                oq.complete_claim(r, "success", now)
-                terminal_failed += 1
-            elif oq.is_non_failure_deferral(refusal_reason):
-                oq.complete_claim(
-                    r, "deferred", now, failure_reason=refusal_reason, submission_state=submission_state
-                )
-            else:
-                oq.complete_claim(
-                    r, "failure", now, failure_reason=refusal_reason, submission_state=submission_state
-                )
-            repeat_pre_submit_refusal = (
-                submission_state == "refused"
-                and prev_submission_state == "refused"
-                and str(refusal_reason) == prev_failure_reason
-            )
-            if not repeat_pre_submit_refusal:
-                _audit_event(r, "submit_requested", **req_audit_kw)
-                _audit_event(
-                    r, "submit_refused" if submission_state == "refused" else "submit_unknown",
-                    qty=r.get("qty"), price=submit_px,
-                    submission_state=submission_state, failure_reason=refusal_reason,
-                )
+            _process_retry_claim(mkt, r, symbol, provider_name, now, stats)
 
     return {
-        "attempted": attempted,
-        "succeeded": succeeded,
-        "reconciled": reconciled,
-        "observed": observed,
-        "filled": filled,
-        "terminal_failed": terminal_failed,
-        "terminal_retried": terminal_retried,
+        **stats,
         "expired": len(expired),
-        "skipped_price": skipped_price,
-        "quarantined": quarantined,
         "remaining": (
             len(snapshot)
             if not (expired or claimed or live_producer_reconciliation)

@@ -1042,6 +1042,439 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
     cls_name = "TradablePositionsAndOrdersCollector"
     COLLECTOR_ID = "portfolio_tradable_positions"
 
+    @staticmethod
+    def _dedup_open_orders(open_orders_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if len(open_orders_list) <= 1:
+            return open_orders_list
+        deduped_open: List[Dict[str, Any]] = []
+        seen_open_keys: set[tuple[str, str, str]] = set()
+        for oo_item in open_orders_list:
+            if not isinstance(oo_item, dict):
+                deduped_open.append(oo_item)
+                continue
+            oo_oid = extract_order_id(oo_item, default="") or ""
+            if oo_oid:
+                oo_k = (
+                    normalize_venue_name(oo_item.get("venue")),
+                    str(oo_item.get("symbol") or "").strip().upper(),
+                    oo_oid,
+                )
+                if oo_k in seen_open_keys:
+                    continue
+                seen_open_keys.add(oo_k)
+            deduped_open.append(oo_item)
+        return deduped_open
+
+    @staticmethod
+    def _persist_venue_balances_locked(
+        bcache_path: str,
+        cached_bals: Dict[str, Any],
+        updated_bals: Dict[str, Any],
+        failed_open_venues: set[str],
+        *,
+        rj_bals: Any,
+    ) -> None:
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
+            with generation_file_lock(bcache_path):
+                disk_bals = (
+                    read_json_dict(bcache_path, default=None, repair_files=True)
+                    if os.path.exists(bcache_path)
+                    and rj_bals in (_default_read_json_cached, read_json_recovering, read_json_cached)
+                    else None
+                )
+                src_bals = disk_bals if isinstance(disk_bals, dict) else cached_bals
+                updated_upper_keys = {str(uk).upper() for uk in updated_bals}
+                base_bals = {
+                    k: v
+                    for k, v in src_bals.items()
+                    if not (k.startswith("open_orders_verified_ts:") and k.split(":", 1)[1] in failed_open_venues)
+                    and (k in updated_bals or str(k).upper() not in updated_upper_keys)
+                }
+                merged_bals = {**base_bals, **updated_bals}
+                if merged_bals != src_bals:
+                    resolve_save_json_state(local_fn=save_json_state)(bcache_path, merged_bals, indent=2)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _recover_from_cached_balances(
+        cached_bals: Dict[str, Any],
+        prices_and_trends: Dict[str, Any],
+        trailing_map: Dict[str, Dict[str, Any]],
+        trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]],
+        *,
+        known_ai_order_ids: set[str],
+        audit_origin_map: Dict[str, Any],
+        order_ts_map: Dict[str, Any],
+        now_ts_oo: float,
+        gateway_max_usd: float,
+        tradable_positions: List[Dict[str, Any]],
+        open_orders_list: List[Dict[str, Any]],
+        venue_quote_cash: Dict[str, Dict[str, Any]],
+        pending_peaks_by_vs: Dict[tuple[str, str], tuple[float, Optional[float]]],
+    ) -> None:
+        gw_max_rec = safe_pos_float(gateway_max_usd, default=2000.0) or 2000.0
+        seen_rec_vs: set[tuple[str, str]] = set()
+        for k, v in cached_bals.items():
+            if k.startswith("pos:") and isinstance(v, dict):
+                rec_pos = dict(v)
+                for stale_k in ("locked_quote_usd", "replace_max_buy_usd", "locked_base_qty", "locked_base_usd", "replace_max_sell_usd", "ts"):
+                    rec_pos.pop(stale_k, None)
+                v_rec_norm = normalize_venue_name(rec_pos.get("venue"))
+                p_sym_raw = str(rec_pos.get("symbol") or "").strip()
+                p_sym = canonical_display_symbol(p_sym_raw, venue=v_rec_norm) or p_sym_raw.upper()
+                p_sym_u = p_sym.upper()
+                if p_sym_u and (v_rec_norm, p_sym_u) in seen_rec_vs:
+                    continue
+                if p_sym_u:
+                    seen_rec_vs.add((v_rec_norm, p_sym_u))
+                if p_sym:
+                    rec_pos["symbol"] = p_sym
+                p_quote = str(rec_pos.get("quote") or "USD").strip().upper()
+                is_eq_rec = is_equity_venue(v_rec_norm)
+                fb_val = safe_nonneg_float(rec_pos.get("free_base"), default=None)
+                px_rec = 0.0
+                if p_sym:
+                    exact_pt_px = safe_pos_float((casefold_get(prices_and_trends, p_sym) or {}).get("price"), default=0.0) or 0.0
+                    cached_pos_px = safe_pos_float(rec_pos.get("price"), default=0.0) or 0.0
+                    p_lookup_rec = ensure_equity_suffix(p_sym, is_equity=is_eq_rec)
+                    sib_pt_px = (
+                        resolve_symbol_price(p_lookup_rec, prices_and_trends, explicit_quote=None if is_eq_rec else p_quote)
+                        if exact_pt_px <= 0.0
+                        else exact_pt_px
+                    )
+                    if exact_pt_px > 0.0:
+                        px_rec = exact_pt_px
+                    elif cached_pos_px > 0.0 and (sib_pt_px <= 0.0 or not _prices_diverged(cached_pos_px, sib_pt_px, threshold=0.35 if is_eq_rec else 0.10)):
+                        px_rec = cached_pos_px
+                    else:
+                        px_rec = sib_pt_px
+                    if px_rec > 0:
+                        rec_pos["price"] = round_opt_px(px_rec, 6)
+                        if fb_val is not None:
+                            rec_pos["value_usd"] = round(fb_val * px_rec, 2)
+                            sell_cap_rec = venue_fee_cap_quantity(v_rec_norm, "SELL", px_rec, fb_val)
+                            raw_sell_rec = min(gw_max_rec, sell_cap_rec * px_rec)
+                            rec_min_not = safe_pos_float(rec_pos.get("exchange_min_notional_usd"), default=1.0) or 1.0
+                            rec_min_qty = safe_pos_float(rec_pos.get("min_qty"), default=0.0) or 0.0
+                            rec_pos["effective_max_sell_usd"] = (
+                                0.0
+                                if (raw_sell_rec < rec_min_not or (rec_min_qty > 0.0 and sell_cap_rec < rec_min_qty))
+                                else round(raw_sell_rec, 2)
+                            )
+                        pt_key_rec = next((pk for pk in prices_and_trends if str(pk).upper() == p_sym_u), p_sym)
+                        prices_and_trends.setdefault(pt_key_rec, {"price": px_rec, "trend": 0, "growth_coefficient": 0.0})
+                    else:
+                        px_rec = cached_pos_px
+                rec_peak = safe_pos_float(rec_pos.get("trailing_peak"), default=None)
+                if p_sym:
+                    v_trail_map = trailing_by_venue.get(v_rec_norm, {}) if isinstance(trailing_by_venue, dict) else {}
+                    t_cands = cache_symbol_variants(p_sym, include_original=True, include_base=True, quotes=compatible_quote_suffixes(p_sym))
+                    t_dict = first_variant_dict(v_trail_map, t_cands) or (
+                        first_variant_dict(trailing_map, t_cands) if MarketDataProvider.uses_shared_trailing_map(v_rec_norm) else None
+                    )
+                    if isinstance(t_dict, dict) and ("peak" in t_dict or rec_peak is None):
+                        rec_peak = safe_pos_float(t_dict.get("peak"), default=None)
+                _attach_trailing_peak_to_position(
+                    rec_pos, v_rec_norm, p_sym, px_rec, fb_val, rec_peak, pending_peaks_by_vs,
+                    fallback_dd=rec_pos.get("dd_from_peak_pct"),
+                )
+                tradable_positions.append(rec_pos)
+            elif k.startswith("cash:") and isinstance(v, dict):
+                c_venue, c_asset = str(v.get("venue") or "").strip().lower(), str(v.get("asset") or "").strip().upper()
+                if c_venue and c_asset:
+                    rec_cash = dict(v)
+                    rec_cash.pop("locked_quote_usd", None)
+                    venue_quote_cash[f"{c_venue}:{c_asset}"] = rec_cash
+            elif k.startswith("open_orders:") and isinstance(v, list):
+                parts = k.split(":", 2)
+                open_orders_list.extend(
+                    _normalize_open_orders_list(
+                        v,
+                        parts[1] if len(parts) > 1 else "",
+                        parts[2] if len(parts) > 2 else "",
+                        known_ai_order_ids,
+                        audit_origin_map=audit_origin_map,
+                        now_ts=now_ts_oo,
+                        order_ts_map=order_ts_map,
+                    )
+                )
+
+    @staticmethod
+    def _collect_from_instruments(
+        inst_map: Dict[str, Any],
+        prices_and_trends: Dict[str, Any],
+        trailing_map: Dict[str, Dict[str, Any]],
+        trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]],
+        *,
+        cached_bals: Dict[str, Any],
+        updated_bals: Dict[str, Any],
+        balance_memo: Dict[tuple[str, str], Optional[float]],
+        known_ai_order_ids: set[str],
+        audit_origin_map: Dict[str, Any],
+        order_ts_map: Dict[str, Any],
+        now_ts_oo: float,
+        gateway_max_usd: float,
+        cache_dir: Optional[str],
+        allow_network: bool,
+        force_persist: bool,
+        tradable_positions: List[Dict[str, Any]],
+        open_orders_list: List[Dict[str, Any]],
+        venue_quote_cash: Dict[str, Dict[str, Any]],
+        inst_by_sym: Dict[str, Any],
+        pending_peaks_by_vs: Dict[tuple[str, str], tuple[float, Optional[float]]],
+        live_open_ok_venues: set[str],
+        failed_open_venues: set[str],
+    ) -> None:
+        def _query_free_bal(inst_obj: Any, asset: str) -> Optional[float]:
+            if not asset:
+                return None
+            raw_v = str(getattr(inst_obj, "provider_name", "") or "").strip().lower()
+            v_name = normalize_venue_name(raw_v) or raw_v
+            eff_asset = asset if is_kraken_tokenized_asset(asset) else asset.upper()
+            key = (v_name, asset.upper())
+            if key in balance_memo:
+                return balance_memo[key]
+            free_fn = getattr(getattr(inst_obj, "_provider", None), "free_balance", None) if allow_network else None
+            val_f: Optional[float] = None
+            if callable(free_fn):
+                try:
+                    val_f = safe_nonneg_float(free_fn(eff_asset), default=None)
+                except Exception:
+                    val_f = None
+            bkey = f"{v_name}:{eff_asset}"
+            bkey_u = f"{v_name}:{asset.upper()}"
+            raw_bkey = f"{raw_v}:{asset.upper()}"
+            if val_f is not None:
+                updated_bals[bkey] = round(val_f, 8)
+            elif bkey in cached_bals:
+                val_f = safe_nonneg_float(cached_bals.get(bkey), default=None)
+            elif bkey_u in cached_bals:
+                val_f = safe_nonneg_float(cached_bals.get(bkey_u), default=None)
+            elif raw_bkey in cached_bals:
+                val_f = safe_nonneg_float(cached_bals.get(raw_bkey), default=None)
+            balance_memo[key] = val_f
+            return val_f
+
+        merged_params_by_vs: Dict[tuple[str, str], Dict[str, Any]] = {}
+        for _inst_cand in inst_map.values():
+            _c_sym = str(getattr(_inst_cand, "symbol", "") or "").strip().upper()
+            _c_ven = normalize_venue_name(str(getattr(_inst_cand, "provider_name", "") or "").strip().lower())
+            if _c_sym and _c_ven and isinstance(_c_p := getattr(_inst_cand, "params", None), dict) and _c_p:
+                merged_params_by_vs.setdefault((_c_ven, _c_sym), {}).update(_c_p)
+        seen_vs: set[tuple[str, str]] = set()
+        for inst in inst_map.values():
+            raw_sym = str(getattr(inst, "symbol", "") or "").strip()
+            venue = str(getattr(inst, "provider_name", "") or "").strip().lower()
+            if not raw_sym or not venue:
+                continue
+            v_norm = normalize_venue_name(venue)
+            sym = canonical_display_symbol(raw_sym, venue=v_norm) or raw_sym.upper()
+            sym_u = sym.upper()
+            if (v_norm, sym_u) in seen_vs:
+                continue
+            seen_vs.add((v_norm, sym_u))
+            is_eq_v = is_equity_venue(v_norm)
+            pos_px_dec = MarketDataProvider.resolve_venue_position_price_decimals(v_norm)
+            res_b, res_q = resolve_assets(sym, getattr(inst, "base", None), getattr(inst, "quote", None))
+            base, quote = res_b or sym, res_q or "USD"
+            if sym not in inst_by_sym or not MarketDataProvider.uses_bare_base_order_symbols(v_norm):
+                inst_by_sym[sym] = inst
+            inst_by_sym[f"{v_norm}:{sym}"] = inst
+            if sym_u != sym:
+                inst_by_sym.setdefault(sym_u, inst)
+                inst_by_sym[f"{v_norm}:{sym_u}"] = inst
+
+            base_free, quote_free = _query_free_bal(inst, base), _query_free_bal(inst, quote)
+            pt_entry_existing = casefold_get(prices_and_trends, sym)
+            px = pt_entry_existing.get("price") if isinstance(pt_entry_existing, dict) else None
+            px_f = safe_pos_float(px, default=0.0) or 0.0
+            pos_bkey_cur = f"pos:{v_norm}:{sym}"
+            raw_prev_pos = cached_bals.get(pos_bkey_cur)
+            if not isinstance(raw_prev_pos, dict) and sym_u != sym:
+                raw_prev_pos = cached_bals.get(f"pos:{v_norm}:{sym_u}")
+            prev_cached_pos = raw_prev_pos if isinstance(raw_prev_pos, dict) else {}
+            if not allow_network:
+                if base_free is None and prev_cached_pos:
+                    base_free = safe_nonneg_float(
+                        prev_cached_pos.get("free_base")
+                        if prev_cached_pos.get("free_base") is not None
+                        else prev_cached_pos.get("free"),
+                        default=None,
+                    )
+                if quote_free is None:
+                    if prev_cached_pos and prev_cached_pos.get("free_quote") is not None:
+                        quote_free = safe_nonneg_float(prev_cached_pos.get("free_quote"), default=None)
+                    elif isinstance(c_cash := cached_bals.get(f"cash:{v_norm}:{quote.upper()}"), dict):
+                        quote_free = safe_nonneg_float(c_cash.get("free"), default=None)
+            prev_pos_px = safe_pos_float(prev_cached_pos.get("price"), default=0.0) or 0.0
+            prev_pos_ts = safe_pos_float(prev_cached_pos.get("ts"), default=None)
+            px_from_cached_pos = False
+            if allow_network and (
+                px_f <= 0
+                or (
+                    is_eq_v
+                    and (
+                        _parse_bool_flag(force_persist, False)
+                        or ((base_free or 0.0) > 0 and is_live_network_backfill_enabled())
+                    )
+                )
+            ):
+                try:
+                    get_px_fn = getattr(inst._provider, "get_current_price", None)
+                    if callable(get_px_fn) and (live_px := safe_pos_float(get_px_fn(sym), default=0.0) or 0.0) > 0:
+                        px = px_f = round(live_px, pos_px_dec) if is_eq_v else live_px
+                except Exception:
+                    if px_f <= 0:
+                        px, px_f = None, 0.0
+            elif (
+                not allow_network
+                and is_eq_v
+                and prev_pos_px > 0
+                and prev_pos_ts is not None
+                and 0.0 <= (now_ts_oo - prev_pos_ts) <= 300.0
+            ):
+                px = px_f = round(prev_pos_px, pos_px_dec)
+                px_from_cached_pos = True
+            lookup_sym_p = ensure_equity_suffix(sym, is_equity=is_eq_v)
+            if px_f <= 0 and (px_f := resolve_symbol_price(lookup_sym_p, prices_and_trends, explicit_quote=None if is_eq_v else quote)) > 0:
+                px = px_f
+            if px_f <= 0 and prev_pos_px > 0:
+                px = px_f = round(prev_pos_px, pos_px_dec) if is_eq_v else prev_pos_px
+                px_from_cached_pos = True
+            pt_key = next((k for k in prices_and_trends if str(k).upper() == sym_u), sym)
+            sym_entry = prices_and_trends.setdefault(pt_key, {"price": px if px_f > 0 else None, "trend": 0, "growth_coefficient": 0.0})
+            if px_f > 0 and ((safe_pos_float(sym_entry.get("price"), default=0.0) or 0.0) <= 0 or is_eq_v):
+                sym_entry["price"] = px
+            quote_breakdown: Optional[Dict[str, float]] = None
+            bd_key = f"breakdown:{v_norm}:{quote.upper()}"
+            if allow_network and quote.upper() == "USD" and callable(bd_fn := getattr(inst._provider, "usd_cash_breakdown", None)):
+                try:
+                    if isinstance(raw_bd := bd_fn(), dict) and raw_bd:
+                        quote_breakdown = {str(k): round(vf, 2) for k, v in raw_bd.items() if (vf := safe_pos_float(v, default=None)) is not None} or None
+                        if quote_breakdown:
+                            updated_bals[bd_key] = quote_breakdown
+                except Exception:
+                    quote_breakdown = None
+            if quote_breakdown is None and isinstance(cached_bd := cached_bals.get(bd_key), dict) and cached_bd:
+                quote_breakdown = {str(k): round(vf, 2) for k, v in cached_bd.items() if (vf := safe_pos_float(v, default=None)) is not None} or None
+            if quote_free is not None:
+                cash_entry: Dict[str, Any] = {"venue": venue, "asset": quote, "free": round(quote_free, 2)}
+                if quote_breakdown:
+                    cash_entry["breakdown"] = quote_breakdown
+                venue_quote_cash[f"{venue}:{quote}"] = cash_entry
+                updated_bals[f"cash:{v_norm}:{quote.upper()}"] = dict(cash_entry)
+
+            pos_val_usd = round(base_free * px_f, 2) if base_free is not None and px_f > 0 else None
+            params = merged_params_by_vs.get((v_norm, sym_u)) or (
+                getattr(inst, "params", {}) if isinstance(getattr(inst, "params", None), dict) else {}
+            )
+            sym_quotes = compatible_quote_suffixes(sym, quote)
+            t_state = first_variant_dict(
+                trailing_by_venue.get(v_norm, {}),
+                cache_symbol_variants(sym, include_original=True, include_base="USD" in sym_quotes, quotes=sym_quotes),
+                default={},
+            )
+            if not t_state and is_primary_stream_venue(v_norm) and isinstance((val_b := casefold_get(trailing_map, sym)), dict):
+                t_state = val_b
+            pos_entry: Dict[str, Any] = {
+                "venue": venue, "symbol": sym, "base": base, "quote": quote,
+                "price": round_opt_px(px, 6) if px is not None else None,
+                "free_base": round(base_free, 6) if base_free is not None else None,
+                "value_usd": pos_val_usd,
+                "free_quote": round(quote_free, 2) if quote_free is not None else None,
+            }
+            if quote_breakdown:
+                pos_entry["free_quote_breakdown"] = quote_breakdown
+            pos_entry.update(
+                resolve_venue_fee_and_limits(
+                    venue,
+                    sym,
+                    inst,
+                    price=px_f,
+                    free_quote=quote_free,
+                    free_base=base_free,
+                    gateway_max_usd=gateway_max_usd,
+                    cache_dir=cache_dir,
+                )
+            )
+            _attach_trailing_peak_to_position(
+                pos_entry, v_norm, sym, px_f, base_free, t_state.get("peak"), pending_peaks_by_vs
+            )
+            if params.get("trailing.pct"):
+                pos_entry["trailing_pct_cfg"] = params.get("trailing.pct")
+            if params.get("mt.gain") or params.get("mt.lost"):
+                pos_entry["mt_gain_pct"], pos_entry["mt_lost_pct"] = params.get("mt.gain"), params.get("mt.lost")
+            tradable_positions.append(pos_entry)
+            eff_pos_ts = (
+                prev_pos_ts or round(now_ts_oo, 3)
+                if (
+                    px_from_cached_pos
+                    or (
+                        is_eq_v
+                        and prev_pos_ts is not None
+                        and prev_pos_px > 0.0
+                        and px_f > 0.0
+                        and abs(round(px_f, pos_px_dec) - round(prev_pos_px, pos_px_dec)) < 1e-4
+                    )
+                )
+                else round(now_ts_oo, 3)
+            )
+            updated_bals[pos_bkey_cur] = {**pos_entry, "ts": eff_pos_ts}
+
+            oo_key = f"open_orders:{v_norm}:{sym}"
+            oo_key_alt = f"open_orders:{v_norm}:{sym_u}"
+            cached_oo_list = cached_bals.get(oo_key) if oo_key in cached_bals else cached_bals.get(oo_key_alt)
+            if allow_network and callable(open_fn := getattr(inst, "open_orders", None)):
+                sym_open_ok = False
+                try:
+                    if isinstance(raw_open := open_fn(), list):
+                        sym_open_ok = True
+                        sym_norm_orders = _normalize_open_orders_list(
+                            raw_open,
+                            venue,
+                            sym,
+                            known_ai_order_ids,
+                            audit_origin_map=audit_origin_map,
+                            now_ts=now_ts_oo,
+                            order_ts_map=order_ts_map,
+                        )
+                        open_orders_list.extend(sym_norm_orders)
+                        updated_bals[oo_key] = sym_norm_orders
+                except Exception:
+                    sym_open_ok = False
+                if sym_open_ok:
+                    live_open_ok_venues.add(v_norm)
+                else:
+                    failed_open_venues.add(v_norm)
+                    open_orders_list.extend(
+                        _normalize_open_orders_list(
+                            cached_oo_list,
+                            venue,
+                            sym,
+                            known_ai_order_ids,
+                            audit_origin_map=audit_origin_map,
+                            now_ts=now_ts_oo,
+                            order_ts_map=order_ts_map,
+                        )
+                    )
+            elif oo_key in cached_bals or oo_key_alt in cached_bals:
+                open_orders_list.extend(
+                    _normalize_open_orders_list(
+                        cached_oo_list,
+                        venue,
+                        sym,
+                        known_ai_order_ids,
+                        audit_origin_map=audit_origin_map,
+                        now_ts=now_ts_oo,
+                        order_ts_map=order_ts_map,
+                    )
+                )
+                ver_ts = safe_pos_float(cached_bals.get(f"open_orders_verified_ts:{v_norm}"), default=0.0) or 0.0
+                if ver_ts > 0.0 and 0.0 <= (now_ts_oo - ver_ts) <= 300.0:
+                    live_open_ok_venues.add(v_norm)
+
     def collect(
         self,
         cachedb_dir: str,
@@ -1079,344 +1512,49 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         _, known_ai_order_ids = _resolve_ai_intents_and_known_order_ids(
             cache_dir, known_ai_order_ids=known_ai_order_ids, read_json_fn=_rj_bals
         )
-
-        def _query_free_bal(inst_obj: Any, asset: str) -> Optional[float]:
-            if not asset:
-                return None
-            raw_v = str(getattr(inst_obj, "provider_name", "") or "").strip().lower()
-            v_name = normalize_venue_name(raw_v) or raw_v
-            eff_asset = asset if is_kraken_tokenized_asset(asset) else asset.upper()
-            key = (v_name, asset.upper())
-            if key in balance_memo:
-                return balance_memo[key]
-            free_fn = getattr(getattr(inst_obj, "_provider", None), "free_balance", None) if allow_network else None
-            val_f: Optional[float] = None
-            if callable(free_fn):
-                try:
-                    val_f = safe_nonneg_float(free_fn(eff_asset), default=None)
-                except Exception:
-                    val_f = None
-            bkey = f"{v_name}:{eff_asset}"
-            bkey_u = f"{v_name}:{asset.upper()}"
-            raw_bkey = f"{raw_v}:{asset.upper()}"
-            if val_f is not None:
-                updated_bals[bkey] = round(val_f, 8)
-            elif bkey in cached_bals:
-                val_f = safe_nonneg_float(cached_bals.get(bkey), default=None)
-            elif bkey_u in cached_bals:
-                val_f = safe_nonneg_float(cached_bals.get(bkey_u), default=None)
-            elif raw_bkey in cached_bals:
-                val_f = safe_nonneg_float(cached_bals.get(raw_bkey), default=None)
-            balance_memo[key] = val_f
-            return val_f
-
         pending_peaks_by_vs: Dict[tuple[str, str], tuple[float, Optional[float]]] = {}
 
         if isinstance(inst_map, dict) and inst_map:
-            merged_params_by_vs: Dict[tuple[str, str], Dict[str, Any]] = {}
-            for _inst_cand in inst_map.values():
-                _c_sym = str(getattr(_inst_cand, "symbol", "") or "").strip().upper()
-                _c_ven = normalize_venue_name(str(getattr(_inst_cand, "provider_name", "") or "").strip().lower())
-                if _c_sym and _c_ven and isinstance(_c_p := getattr(_inst_cand, "params", None), dict) and _c_p:
-                    merged_params_by_vs.setdefault((_c_ven, _c_sym), {}).update(_c_p)
-            seen_vs: set[tuple[str, str]] = set()
-            for inst in inst_map.values():
-                raw_sym = str(getattr(inst, "symbol", "") or "").strip()
-                venue = str(getattr(inst, "provider_name", "") or "").strip().lower()
-                if not raw_sym or not venue:
-                    continue
-                v_norm = normalize_venue_name(venue)
-                sym = canonical_display_symbol(raw_sym, venue=v_norm) or raw_sym.upper()
-                sym_u = sym.upper()
-                if (v_norm, sym_u) in seen_vs:
-                    continue
-                seen_vs.add((v_norm, sym_u))
-                is_eq_v = is_equity_venue(v_norm)
-                pos_px_dec = MarketDataProvider.resolve_venue_position_price_decimals(v_norm)
-                res_b, res_q = resolve_assets(sym, getattr(inst, "base", None), getattr(inst, "quote", None))
-                base, quote = res_b or sym, res_q or "USD"
-                if sym not in inst_by_sym or not MarketDataProvider.uses_bare_base_order_symbols(v_norm):
-                    inst_by_sym[sym] = inst
-                inst_by_sym[f"{v_norm}:{sym}"] = inst
-                if sym_u != sym:
-                    inst_by_sym.setdefault(sym_u, inst)
-                    inst_by_sym[f"{v_norm}:{sym_u}"] = inst
-
-                base_free, quote_free = _query_free_bal(inst, base), _query_free_bal(inst, quote)
-                pt_entry_existing = casefold_get(prices_and_trends, sym)
-                px = pt_entry_existing.get("price") if isinstance(pt_entry_existing, dict) else None
-                px_f = safe_pos_float(px, default=0.0) or 0.0
-                pos_bkey_cur = f"pos:{v_norm}:{sym}"
-                raw_prev_pos = cached_bals.get(pos_bkey_cur)
-                if not isinstance(raw_prev_pos, dict) and sym_u != sym:
-                    raw_prev_pos = cached_bals.get(f"pos:{v_norm}:{sym_u}")
-                prev_cached_pos = raw_prev_pos if isinstance(raw_prev_pos, dict) else {}
-                if not allow_network:
-                    if base_free is None and prev_cached_pos:
-                        base_free = safe_nonneg_float(
-                            prev_cached_pos.get("free_base")
-                            if prev_cached_pos.get("free_base") is not None
-                            else prev_cached_pos.get("free"),
-                            default=None,
-                        )
-                    if quote_free is None:
-                        if prev_cached_pos and prev_cached_pos.get("free_quote") is not None:
-                            quote_free = safe_nonneg_float(prev_cached_pos.get("free_quote"), default=None)
-                        elif isinstance(c_cash := cached_bals.get(f"cash:{v_norm}:{quote.upper()}"), dict):
-                            quote_free = safe_nonneg_float(c_cash.get("free"), default=None)
-                prev_pos_px = safe_pos_float(prev_cached_pos.get("price"), default=0.0) or 0.0
-                prev_pos_ts = safe_pos_float(prev_cached_pos.get("ts"), default=None)
-                px_from_cached_pos = False
-                if allow_network and (
-                    px_f <= 0
-                    or (
-                        is_eq_v
-                        and (
-                            _parse_bool_flag(force_persist, False)
-                            or ((base_free or 0.0) > 0 and is_live_network_backfill_enabled())
-                        )
-                    )
-                ):
-                    try:
-                        get_px_fn = getattr(inst._provider, "get_current_price", None)
-                        if callable(get_px_fn) and (live_px := safe_pos_float(get_px_fn(sym), default=0.0) or 0.0) > 0:
-                            px = px_f = round(live_px, pos_px_dec) if is_eq_v else live_px
-                    except Exception:
-                        if px_f <= 0:
-                            px, px_f = None, 0.0
-                elif (
-                    not allow_network
-                    and is_eq_v
-                    and prev_pos_px > 0
-                    and prev_pos_ts is not None
-                    and 0.0 <= (now_ts_oo - prev_pos_ts) <= 300.0
-                ):
-                    px = px_f = round(prev_pos_px, pos_px_dec)
-                    px_from_cached_pos = True
-                lookup_sym_p = ensure_equity_suffix(sym, is_equity=is_eq_v)
-                if px_f <= 0 and (px_f := resolve_symbol_price(lookup_sym_p, prices_and_trends, explicit_quote=None if is_eq_v else quote)) > 0:
-                    px = px_f
-                if px_f <= 0 and prev_pos_px > 0:
-                    px = px_f = round(prev_pos_px, pos_px_dec) if is_eq_v else prev_pos_px
-                    px_from_cached_pos = True
-                pt_key = next((k for k in prices_and_trends if str(k).upper() == sym_u), sym)
-                sym_entry = prices_and_trends.setdefault(pt_key, {"price": px if px_f > 0 else None, "trend": 0, "growth_coefficient": 0.0})
-                if px_f > 0 and ((safe_pos_float(sym_entry.get("price"), default=0.0) or 0.0) <= 0 or is_eq_v):
-                    sym_entry["price"] = px
-                quote_breakdown: Optional[Dict[str, float]] = None
-                bd_key = f"breakdown:{v_norm}:{quote.upper()}"
-                if allow_network and quote.upper() == "USD" and callable(bd_fn := getattr(inst._provider, "usd_cash_breakdown", None)):
-                    try:
-                        if isinstance(raw_bd := bd_fn(), dict) and raw_bd:
-                            quote_breakdown = {str(k): round(vf, 2) for k, v in raw_bd.items() if (vf := safe_pos_float(v, default=None)) is not None} or None
-                            if quote_breakdown:
-                                updated_bals[bd_key] = quote_breakdown
-                    except Exception:
-                        quote_breakdown = None
-                if quote_breakdown is None and isinstance(cached_bd := cached_bals.get(bd_key), dict) and cached_bd:
-                    quote_breakdown = {str(k): round(vf, 2) for k, v in cached_bd.items() if (vf := safe_pos_float(v, default=None)) is not None} or None
-                if quote_free is not None:
-                    cash_entry: Dict[str, Any] = {"venue": venue, "asset": quote, "free": round(quote_free, 2)}
-                    if quote_breakdown:
-                        cash_entry["breakdown"] = quote_breakdown
-                    venue_quote_cash[f"{venue}:{quote}"] = cash_entry
-                    updated_bals[f"cash:{v_norm}:{quote.upper()}"] = dict(cash_entry)
-
-                pos_val_usd = round(base_free * px_f, 2) if base_free is not None and px_f > 0 else None
-                params = merged_params_by_vs.get((v_norm, sym_u)) or (
-                    getattr(inst, "params", {}) if isinstance(getattr(inst, "params", None), dict) else {}
-                )
-                sym_quotes = compatible_quote_suffixes(sym, quote)
-                t_state = first_variant_dict(
-                    trailing_by_venue.get(v_norm, {}),
-                    cache_symbol_variants(sym, include_original=True, include_base="USD" in sym_quotes, quotes=sym_quotes),
-                    default={},
-                )
-                if not t_state and is_primary_stream_venue(v_norm) and isinstance((val_b := casefold_get(trailing_map, sym)), dict):
-                    t_state = val_b
-                pos_entry: Dict[str, Any] = {
-                    "venue": venue, "symbol": sym, "base": base, "quote": quote,
-                    "price": round_opt_px(px, 6) if px is not None else None,
-                    "free_base": round(base_free, 6) if base_free is not None else None,
-                    "value_usd": pos_val_usd,
-                    "free_quote": round(quote_free, 2) if quote_free is not None else None,
-                }
-                if quote_breakdown:
-                    pos_entry["free_quote_breakdown"] = quote_breakdown
-                pos_entry.update(
-                    resolve_venue_fee_and_limits(
-                        venue,
-                        sym,
-                        inst,
-                        price=px_f,
-                        free_quote=quote_free,
-                        free_base=base_free,
-                        gateway_max_usd=gateway_max_usd,
-                        cache_dir=cache_dir,
-                    )
-                )
-                _attach_trailing_peak_to_position(
-                    pos_entry, v_norm, sym, px_f, base_free, t_state.get("peak"), pending_peaks_by_vs
-                )
-                if params.get("trailing.pct"):
-                    pos_entry["trailing_pct_cfg"] = params.get("trailing.pct")
-                if params.get("mt.gain") or params.get("mt.lost"):
-                    pos_entry["mt_gain_pct"], pos_entry["mt_lost_pct"] = params.get("mt.gain"), params.get("mt.lost")
-                tradable_positions.append(pos_entry)
-                eff_pos_ts = (
-                    prev_pos_ts or round(now_ts_oo, 3)
-                    if (
-                        px_from_cached_pos
-                        or (
-                            is_eq_v
-                            and prev_pos_ts is not None
-                            and prev_pos_px > 0.0
-                            and px_f > 0.0
-                            and abs(round(px_f, pos_px_dec) - round(prev_pos_px, pos_px_dec)) < 1e-4
-                        )
-                    )
-                    else round(now_ts_oo, 3)
-                )
-                updated_bals[pos_bkey_cur] = {**pos_entry, "ts": eff_pos_ts}
-
-                oo_key = f"open_orders:{v_norm}:{sym}"
-                oo_key_alt = f"open_orders:{v_norm}:{sym_u}"
-                cached_oo_list = cached_bals.get(oo_key) if oo_key in cached_bals else cached_bals.get(oo_key_alt)
-                if allow_network and callable(open_fn := getattr(inst, "open_orders", None)):
-                    sym_open_ok = False
-                    try:
-                        if isinstance(raw_open := open_fn(), list):
-                            sym_open_ok = True
-                            sym_norm_orders = _normalize_open_orders_list(
-                                raw_open,
-                                venue,
-                                sym,
-                                known_ai_order_ids,
-                                audit_origin_map=audit_origin_map,
-                                now_ts=now_ts_oo,
-                                order_ts_map=order_ts_map,
-                            )
-                            open_orders_list.extend(sym_norm_orders)
-                            updated_bals[oo_key] = sym_norm_orders
-                    except Exception:
-                        sym_open_ok = False
-                    if sym_open_ok:
-                        live_open_ok_venues.add(v_norm)
-                    else:
-                        failed_open_venues.add(v_norm)
-                        open_orders_list.extend(
-                            _normalize_open_orders_list(
-                                cached_oo_list,
-                                venue,
-                                sym,
-                                known_ai_order_ids,
-                                audit_origin_map=audit_origin_map,
-                                now_ts=now_ts_oo,
-                                order_ts_map=order_ts_map,
-                            )
-                        )
-                elif oo_key in cached_bals or oo_key_alt in cached_bals:
-                    open_orders_list.extend(
-                        _normalize_open_orders_list(
-                            cached_oo_list,
-                            venue,
-                            sym,
-                            known_ai_order_ids,
-                            audit_origin_map=audit_origin_map,
-                            now_ts=now_ts_oo,
-                            order_ts_map=order_ts_map,
-                        )
-                    )
-                    ver_ts = safe_pos_float(cached_bals.get(f"open_orders_verified_ts:{v_norm}"), default=0.0) or 0.0
-                    if ver_ts > 0.0 and 0.0 <= (now_ts_oo - ver_ts) <= 300.0:
-                        live_open_ok_venues.add(v_norm)
+            self._collect_from_instruments(
+                inst_map,
+                prices_and_trends,
+                trailing_map,
+                trailing_by_venue,
+                cached_bals=cached_bals,
+                updated_bals=updated_bals,
+                balance_memo=balance_memo,
+                known_ai_order_ids=known_ai_order_ids,
+                audit_origin_map=audit_origin_map,
+                order_ts_map=order_ts_map,
+                now_ts_oo=now_ts_oo,
+                gateway_max_usd=gateway_max_usd,
+                cache_dir=cache_dir,
+                allow_network=allow_network,
+                force_persist=force_persist,
+                tradable_positions=tradable_positions,
+                open_orders_list=open_orders_list,
+                venue_quote_cash=venue_quote_cash,
+                inst_by_sym=inst_by_sym,
+                pending_peaks_by_vs=pending_peaks_by_vs,
+                live_open_ok_venues=live_open_ok_venues,
+                failed_open_venues=failed_open_venues,
+            )
         elif (allow_empty_inst_recovery or not allow_network) and cached_bals:
-            gw_max_rec = safe_pos_float(gateway_max_usd, default=2000.0) or 2000.0
-            seen_rec_vs: set[tuple[str, str]] = set()
-            for k, v in cached_bals.items():
-                if k.startswith("pos:") and isinstance(v, dict):
-                    rec_pos = dict(v)
-                    for stale_k in ("locked_quote_usd", "replace_max_buy_usd", "locked_base_qty", "locked_base_usd", "replace_max_sell_usd", "ts"):
-                        rec_pos.pop(stale_k, None)
-                    v_rec_norm = normalize_venue_name(rec_pos.get("venue"))
-                    p_sym_raw = str(rec_pos.get("symbol") or "").strip()
-                    p_sym = canonical_display_symbol(p_sym_raw, venue=v_rec_norm) or p_sym_raw.upper()
-                    p_sym_u = p_sym.upper()
-                    if p_sym_u and (v_rec_norm, p_sym_u) in seen_rec_vs:
-                        continue
-                    if p_sym_u:
-                        seen_rec_vs.add((v_rec_norm, p_sym_u))
-                    if p_sym:
-                        rec_pos["symbol"] = p_sym
-                    p_quote = str(rec_pos.get("quote") or "USD").strip().upper()
-                    is_eq_rec = is_equity_venue(v_rec_norm)
-                    fb_val = safe_nonneg_float(rec_pos.get("free_base"), default=None)
-                    px_rec = 0.0
-                    if p_sym:
-                        exact_pt_px = safe_pos_float((casefold_get(prices_and_trends, p_sym) or {}).get("price"), default=0.0) or 0.0
-                        cached_pos_px = safe_pos_float(rec_pos.get("price"), default=0.0) or 0.0
-                        p_lookup_rec = ensure_equity_suffix(p_sym, is_equity=is_eq_rec)
-                        sib_pt_px = (
-                            resolve_symbol_price(p_lookup_rec, prices_and_trends, explicit_quote=None if is_eq_rec else p_quote)
-                            if exact_pt_px <= 0.0
-                            else exact_pt_px
-                        )
-                        if exact_pt_px > 0.0:
-                            px_rec = exact_pt_px
-                        elif cached_pos_px > 0.0 and (sib_pt_px <= 0.0 or not _prices_diverged(cached_pos_px, sib_pt_px, threshold=0.35 if is_eq_rec else 0.10)):
-                            px_rec = cached_pos_px
-                        else:
-                            px_rec = sib_pt_px
-                        if px_rec > 0:
-                            rec_pos["price"] = round_opt_px(px_rec, 6)
-                            if fb_val is not None:
-                                rec_pos["value_usd"] = round(fb_val * px_rec, 2)
-                                sell_cap_rec = venue_fee_cap_quantity(v_rec_norm, "SELL", px_rec, fb_val)
-                                raw_sell_rec = min(gw_max_rec, sell_cap_rec * px_rec)
-                                rec_min_not = safe_pos_float(rec_pos.get("exchange_min_notional_usd"), default=1.0) or 1.0
-                                rec_min_qty = safe_pos_float(rec_pos.get("min_qty"), default=0.0) or 0.0
-                                rec_pos["effective_max_sell_usd"] = (
-                                    0.0
-                                    if (raw_sell_rec < rec_min_not or (rec_min_qty > 0.0 and sell_cap_rec < rec_min_qty))
-                                    else round(raw_sell_rec, 2)
-                                )
-                            pt_key_rec = next((pk for pk in prices_and_trends if str(pk).upper() == p_sym_u), p_sym)
-                            prices_and_trends.setdefault(pt_key_rec, {"price": px_rec, "trend": 0, "growth_coefficient": 0.0})
-                        else:
-                            px_rec = cached_pos_px
-                    rec_peak = safe_pos_float(rec_pos.get("trailing_peak"), default=None)
-                    if p_sym:
-                        v_trail_map = trailing_by_venue.get(v_rec_norm, {}) if isinstance(trailing_by_venue, dict) else {}
-                        t_cands = cache_symbol_variants(p_sym, include_original=True, include_base=True, quotes=compatible_quote_suffixes(p_sym))
-                        t_dict = first_variant_dict(v_trail_map, t_cands) or (
-                            first_variant_dict(trailing_map, t_cands) if MarketDataProvider.uses_shared_trailing_map(v_rec_norm) else None
-                        )
-                        if isinstance(t_dict, dict) and ("peak" in t_dict or rec_peak is None):
-                            rec_peak = safe_pos_float(t_dict.get("peak"), default=None)
-                    _attach_trailing_peak_to_position(
-                        rec_pos, v_rec_norm, p_sym, px_rec, fb_val, rec_peak, pending_peaks_by_vs,
-                        fallback_dd=rec_pos.get("dd_from_peak_pct"),
-                    )
-                    tradable_positions.append(rec_pos)
-                elif k.startswith("cash:") and isinstance(v, dict):
-                    c_venue, c_asset = str(v.get("venue") or "").strip().lower(), str(v.get("asset") or "").strip().upper()
-                    if c_venue and c_asset:
-                        rec_cash = dict(v)
-                        rec_cash.pop("locked_quote_usd", None)
-                        venue_quote_cash[f"{c_venue}:{c_asset}"] = rec_cash
-                elif k.startswith("open_orders:") and isinstance(v, list):
-                    parts = k.split(":", 2)
-                    open_orders_list.extend(
-                        _normalize_open_orders_list(
-                            v,
-                            parts[1] if len(parts) > 1 else "",
-                            parts[2] if len(parts) > 2 else "",
-                            known_ai_order_ids,
-                            audit_origin_map=audit_origin_map,
-                            now_ts=now_ts_oo,
-                            order_ts_map=order_ts_map,
-                        )
-                    )
+            self._recover_from_cached_balances(
+                cached_bals,
+                prices_and_trends,
+                trailing_map,
+                trailing_by_venue,
+                known_ai_order_ids=known_ai_order_ids,
+                audit_origin_map=audit_origin_map,
+                order_ts_map=order_ts_map,
+                now_ts_oo=now_ts_oo,
+                gateway_max_usd=gateway_max_usd,
+                tradable_positions=tradable_positions,
+                open_orders_list=open_orders_list,
+                venue_quote_cash=venue_quote_cash,
+                pending_peaks_by_vs=pending_peaks_by_vs,
+            )
 
         verified_now = live_open_ok_venues - failed_open_venues
         if isinstance(verified_open_venues, set):
@@ -1425,26 +1563,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             for v_ok in verified_now:
                 updated_bals[f"open_orders_verified_ts:{v_ok}"] = round(now_ts_oo, 3)
 
-        if len(open_orders_list) > 1:
-            deduped_open: List[Dict[str, Any]] = []
-            seen_open_keys: set[tuple[str, str, str]] = set()
-            for oo_item in open_orders_list:
-                if not isinstance(oo_item, dict):
-                    deduped_open.append(oo_item)
-                    continue
-                oo_oid = extract_order_id(oo_item, default="") or ""
-                if oo_oid:
-                    oo_k = (
-                        normalize_venue_name(oo_item.get("venue")),
-                        str(oo_item.get("symbol") or "").strip().upper(),
-                        oo_oid,
-                    )
-                    if oo_k in seen_open_keys:
-                        continue
-                    seen_open_keys.add(oo_k)
-                deduped_open.append(oo_item)
-            open_orders_list = deduped_open
-
+        open_orders_list = self._dedup_open_orders(open_orders_list)
         _apply_open_orders_locked_balances(
             open_orders_list,
             tradable_positions,
@@ -1461,28 +1580,9 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         if persist and allow_network and bcache_path and updated_bals and (
             _parse_bool_flag(force_persist, False) or is_live_network_backfill_enabled() or os.path.exists(bcache_path)
         ):
-            try:
-                os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
-                with generation_file_lock(bcache_path):
-                    disk_bals = (
-                        read_json_dict(bcache_path, default=None, repair_files=True)
-                        if os.path.exists(bcache_path)
-                        and _rj_bals in (_default_read_json_cached, read_json_recovering, read_json_cached)
-                        else None
-                    )
-                    src_bals = disk_bals if isinstance(disk_bals, dict) else cached_bals
-                    updated_upper_keys = {str(uk).upper() for uk in updated_bals}
-                    base_bals = {
-                        k: v
-                        for k, v in src_bals.items()
-                        if not (k.startswith("open_orders_verified_ts:") and k.split(":", 1)[1] in failed_open_venues)
-                        and (k in updated_bals or str(k).upper() not in updated_upper_keys)
-                    }
-                    merged_bals = {**base_bals, **updated_bals}
-                    if merged_bals != src_bals:
-                        resolve_save_json_state(local_fn=save_json_state)(bcache_path, merged_bals, indent=2)
-            except Exception:
-                pass
+            self._persist_venue_balances_locked(
+                bcache_path, cached_bals, updated_bals, failed_open_venues, rj_bals=_rj_bals
+            )
 
         return tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym
 

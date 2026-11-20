@@ -335,6 +335,518 @@ class GeminiClient(GeminiQuotaRouterMixin):
         except OSError:
             return set()
 
+    def _attempt_detached_one_off_thread(
+        self,
+        *,
+        topic_key: Optional[str],
+        session: TopicSession,
+        model_candidate: str,
+        models_to_try: list[str],
+        attempt_idx: int,
+        resume_timed_out: bool,
+        timeout_sec: float,
+        fallback_prompt: str,
+        bot_cli_base: str,
+        run_env: dict[str, str],
+        is_mocked: bool,
+        require_json: bool,
+        use_topic_session: bool,
+        tried_detached_models: set[str],
+    ) -> tuple[Optional[str], Optional[str], str, bool]:
+        """Fallback to a detached one-off thread when resuming a topic conversation fails."""
+        one_off_model = (
+            models_to_try[attempt_idx + 1]
+            if (
+                resume_timed_out
+                and any(tag in model_candidate for tag in ("-high", "-xhigh"))
+                and attempt_idx + 1 < len(models_to_try)
+            )
+            else model_candidate
+        )
+        one_off_timeout = (
+            min(timeout_sec, 75.0)
+            if (resume_timed_out and timeout_sec > 75.0)
+            else timeout_sec
+        )
+        tried_detached_models.add(one_off_model)
+        logger.info(
+            "Resuming topic '%s' conversation %s failed with model %s; answering from a one-off thread (model=%s, timeout=%ss).",
+            topic_key, session.conversation_id, model_candidate, one_off_model, one_off_timeout,
+        )
+        pre_cids = self._list_conversation_cids(bot_cli_base) if not is_mocked else set()
+        output, detached_cid = None, None
+        try:
+            proc = self._execute_cli(
+                None, fallback_prompt, one_off_timeout, one_off_model,
+                bot_cli_base, run_env, is_mocked
+            )
+            output, detached_cid = self._parse_cli_payload(proc)
+            if require_json and isinstance(output, str) and extract_json_object(output) is None:
+                logger.warning(
+                    "agy CLI one-off thread with model '%s' returned non-JSON output (%s); trying fallback.",
+                    one_off_model,
+                    output.strip()[:160],
+                )
+                output = None
+            if (
+                detached_cid
+                and detached_cid != session.conversation_id
+                and not is_mocked
+                and not (output and use_topic_session)
+            ):
+                self._remove_detached_thread(bot_cli_base, detached_cid)
+        except Exception as exc:
+            logger.warning("One-off thread attempt failed for model %s: %s", one_off_model, exc)
+        finally:
+            if not is_mocked and not detached_cid:
+                self._cleanup_orphan_threads(
+                    bot_cli_base, pre_cids, keep_cid=session.conversation_id
+                )
+        effective_model_used = one_off_model if output else model_candidate
+        if output and use_topic_session and detached_cid:
+            return output, detached_cid, effective_model_used, (detached_cid != session.conversation_id)
+        return output, None, effective_model_used, False
+
+    def _finalize_topic_turn(
+        self,
+        *,
+        topic_key: Optional[str],
+        session: TopicSession,
+        turn_cid: Optional[str],
+        output: str,
+        replaced_conversation: bool,
+        timeout_sec: float,
+        models_to_try: list[str],
+        attempt_idx: int,
+        enable_pre_quota: bool,
+        bot_cli_base: str,
+        run_env: dict[str, str],
+        is_mocked: bool,
+        include_repo_rules: bool,
+        topic_lock: Optional[threading.Lock],
+        release_lock: bool = False,
+    ) -> None:
+        """Optionally run in-place /compact on a completed topic turn and record turn metadata."""
+        prev_finalize_rules = getattr(self._JSON_MODE_LOCAL, "include_repo_rules", False)
+        self._JSON_MODE_LOCAL.include_repo_rules = include_repo_rules
+        try:
+            compacted_ok = False
+            if session.compact and turn_cid and not replaced_conversation:
+                compact_timeout = max(timeout_sec, 120.0)
+                compact_snap = (
+                    snapshot_conversation_state(bot_cli_base, turn_cid)
+                    if not is_mocked
+                    else None
+                )
+                latest_turn_summary = condense_decision(output, max_len=360)
+                compact_prompt = (
+                    f"/compact Context checkpoint after completed turn ({latest_turn_summary}). "
+                    "All prior trading turns (including single-entry HOLD JSON responses) are ALREADY COMPLETED and finalized; "
+                    "this NEW /compact request has NOT been answered yet, so in the checkpoint 'Next Steps' section write ONLY: "
+                    "'Reply ONLY with COMPACT_OK and wait for the next user prompt.' "
+                    "In your immediate post-compaction response, reply ONLY with the single token COMPACT_OK "
+                    "(do NOT output any market analysis, markdown report, JSON blocks, position calculations, "
+                    "stop-loss/risk rules, or tool calls)."
+                )
+                for compact_model in self.get_compact_model_candidates(
+                    models_to_try,
+                    attempt_idx,
+                    quota_snapshot=self._QUOTA_MEM_CACHE if enable_pre_quota else None,
+                ):
+                    try:
+                        c_proc = self._execute_cli(
+                            turn_cid,
+                            compact_prompt,
+                            compact_timeout,
+                            compact_model,
+                            bot_cli_base,
+                            run_env,
+                            is_mocked,
+                        )
+                        c_out, c_cid = self._parse_cli_payload(c_proc)
+                        compacted_ok = bool(c_out or c_cid)
+                        if compacted_ok:
+                            break
+                        if enable_pre_quota and self._is_quota_or_credit_error(c_proc):
+                            self._record_model_quota_exhausted(
+                                compact_model,
+                                model_unrecognized=self._is_unrecognized_model_error(c_proc),
+                            )
+                        if not is_mocked and compact_snap is not None:
+                            restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
+                        if self._is_cli_interrupted(c_proc):
+                            break
+                    except Exception as exc:
+                        if not is_mocked and compact_snap is not None:
+                            restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
+                        logger.warning(
+                            "In-place /compact for topic '%s' conversation %s with model %s failed: %s",
+                            topic_key,
+                            turn_cid,
+                            compact_model,
+                            exc,
+                        )
+                        break
+            try:
+                record_kwargs: Dict[str, Any] = {
+                    "topic_key": topic_key,
+                    "conversation_id": turn_cid,
+                    "response_text": output,
+                    "compacted": compacted_ok,
+                    "cli_base": bot_cli_base,
+                }
+                if replaced_conversation:
+                    record_kwargs["replace_conversation"] = True
+                record_topic_turn(**record_kwargs)
+            except Exception as e:
+                logger.debug("Failed recording topic turn for %s: %s", topic_key, e)
+        finally:
+            self._JSON_MODE_LOCAL.include_repo_rules = prev_finalize_rules
+            if release_lock and topic_lock is not None:
+                topic_lock.release()
+
+    def _query_cli_runner(
+        self,
+        prompt: str,
+        *,
+        selected_model: str,
+        timeout_sec: float,
+        cache_ttl_sec: float,
+        now: float,
+        thread_title: Optional[str],
+        topic_key: Optional[str],
+        conversation_id: Optional[str],
+        resume_prompt: Optional[str],
+        include_repo_rules: bool,
+        require_json: bool,
+        cli_mocked: bool,
+    ) -> tuple[bool, Optional[str]]:
+        """Invoke the authenticated local agy CLI runner; return (handled_terminal, response_text)."""
+        topic_lock: Optional[threading.Lock] = None
+        topic_lock_transferred = False
+        prev_repo_rules = getattr(self._JSON_MODE_LOCAL, "include_repo_rules", False)
+        self._JSON_MODE_LOCAL.include_repo_rules = include_repo_rules
+        try:
+            bot_cli_base = resolve_bot_cli_base()
+            is_mocked = cli_mocked
+            use_topic_session = bool(
+                topic_key
+                and (
+                    not is_mocked
+                    or hasattr(prepare_topic_session, "_mock_name")
+                    or prepare_topic_session is not _ORIG_PREPARE_TOPIC_SESSION
+                )
+            )
+            if use_topic_session and topic_key:
+                t_key = str(topic_key).strip()
+                with self._TOPIC_LOCKS_GUARD:
+                    topic_lock = self._TOPIC_LOCKS.get(t_key)
+                    if topic_lock is None:
+                        topic_lock = threading.Lock()
+                        self._TOPIC_LOCKS[t_key] = topic_lock
+                topic_lock.acquire()
+            session = TopicSession(conversation_id, "", False)
+            if use_topic_session and not conversation_id:
+                session = prepare_topic_session(topic_key, cli_base=bot_cli_base)
+
+            effective_title = format_topic_turn_header(topic_key, thread_title) if topic_key else thread_title
+            full_body = f"{session.history_prefix}{prompt}" if session.history_prefix else prompt
+            full_cli_prompt = f"{effective_title}\n\n{full_body}" if effective_title else full_body
+            use_warm_resume = bool(
+                use_topic_session
+                and topic_key
+                and session.conversation_id
+                and not session.history_prefix
+                and isinstance(resume_prompt, str)
+                and resume_prompt.strip()
+                and is_topic_resume_warm(
+                    topic_key,
+                    cli_base=bot_cli_base,
+                    conversation_id=session.conversation_id,
+                )
+            )
+            cli_prompt = (
+                (f"{effective_title}\n\n{resume_prompt}" if effective_title else resume_prompt)
+                if use_warm_resume
+                else full_cli_prompt
+            )
+            run_env = clone_process_env({"AGY_BOT_HOME": os.path.dirname(os.path.dirname(bot_cli_base))})
+
+            raw_candidates = self.get_model_candidates(selected_model)
+            pre_quota_fn = getattr(self.probe_live_model_quota, "__func__", self.probe_live_model_quota)
+            pre_quota_mocked = (
+                hasattr(self.probe_live_model_quota, "_mock_name")
+                or "probe_live_model_quota" in self.__dict__
+                or pre_quota_fn is not _ORIG_PROBE_LIVE_MODEL_QUOTA_FUNC
+            )
+            enable_pre_quota = not is_mocked or pre_quota_mocked
+            if enable_pre_quota:
+                quota_snapshot = self.probe_live_model_quota(bot_cli_base=bot_cli_base)
+                models_to_try = self.filter_models_with_confirmed_credits(raw_candidates, quota_snapshot)
+            else:
+                models_to_try = raw_candidates
+            conv_snapshot = (
+                snapshot_conversation_state(bot_cli_base, session.conversation_id)
+                if (session.conversation_id and not is_mocked)
+                else None
+            )
+            detached_topic_prompt: Optional[str] = None
+
+            def _resolve_detached_topic_prompt() -> str:
+                nonlocal detached_topic_prompt
+                if detached_topic_prompt is not None:
+                    return detached_topic_prompt
+                fp = full_cli_prompt
+                if use_topic_session and topic_key and not session.history_prefix:
+                    try:
+                        hist_prefix = format_topic_history_prefix(topic_key)
+                        if hist_prefix:
+                            fb_body = f"{hist_prefix}{prompt}"
+                            fp = f"{effective_title}\n\n{fb_body}" if effective_title else fb_body
+                    except Exception:
+                        pass
+                detached_topic_prompt = fp
+                return fp
+
+            resume_abandoned = False
+            tried_detached_models: set[str] = set()
+
+            for attempt_idx, model_candidate in enumerate(models_to_try):
+                if resume_abandoned and model_candidate in tried_detached_models:
+                    continue
+                if attempt_idx > 0 and enable_pre_quota:
+                    rt_ex = (
+                        self._QUOTA_MEM_CACHE.get("runtime_exhausted")
+                        if isinstance(self._QUOTA_MEM_CACHE, dict)
+                        and isinstance(self._QUOTA_MEM_CACHE.get("runtime_exhausted"), dict)
+                        else {}
+                    )
+                    now_iter = time.time()
+                    if safe_float(rt_ex.get(model_candidate), 0.0) > now_iter and any(
+                        safe_float(rt_ex.get(rem_m), 0.0) <= now_iter
+                        for rem_m in models_to_try[attempt_idx + 1:]
+                    ):
+                        continue
+                output, turn_cid = None, None
+                effective_model_used = model_candidate
+                replaced_conversation = False
+                resume_timed_out = False
+                proc = None
+                eff_conv_id = None if resume_abandoned else session.conversation_id
+                eff_prompt = _resolve_detached_topic_prompt() if resume_abandoned else cli_prompt
+                eff_timeout = (
+                    min(timeout_sec, 45.0)
+                    if (resume_abandoned and timeout_sec > 45.0)
+                    else timeout_sec
+                )
+                pre_attempt_cids = (
+                    self._list_conversation_cids(bot_cli_base)
+                    if (not eff_conv_id and not is_mocked)
+                    else set()
+                )
+                if eff_conv_id is None:
+                    tried_detached_models.add(model_candidate)
+                try:
+                    proc = self._execute_cli(
+                        eff_conv_id, eff_prompt, eff_timeout, model_candidate,
+                        bot_cli_base, run_env, is_mocked
+                    )
+                    output, turn_cid = self._parse_cli_payload(proc)
+                    if resume_abandoned and output and use_topic_session and turn_cid:
+                        replaced_conversation = turn_cid != session.conversation_id
+                except subprocess.TimeoutExpired:
+                    self._rollback_cli_attempt(
+                        bot_cli_base, eff_conv_id, conv_snapshot if eff_conv_id else None, pre_attempt_cids, is_mocked
+                    )
+                    if not (eff_conv_id and not conversation_id):
+                        if attempt_idx == len(models_to_try) - 1:
+                            raise
+                        logger.warning(
+                            "Model candidate %s timed out after %ss; trying fallback.",
+                            model_candidate,
+                            eff_timeout,
+                        )
+                        continue
+                    resume_timed_out = True
+                    resume_abandoned = True
+                    logger.warning(
+                        "Resuming topic '%s' conversation %s timed out after %ss; falling back to one-off thread.",
+                        topic_key,
+                        session.conversation_id,
+                        eff_timeout,
+                    )
+                except Exception as exc:
+                    self._rollback_cli_attempt(
+                        bot_cli_base, eff_conv_id, conv_snapshot if eff_conv_id else None, pre_attempt_cids, is_mocked
+                    )
+                    logger.warning(
+                        "Model candidate %s failed with exception: %s; trying fallback.",
+                        model_candidate,
+                        exc,
+                    )
+                    continue
+
+                if require_json and isinstance(output, str) and extract_json_object(output) is None:
+                    logger.warning(
+                        "agy CLI with model '%s' returned non-JSON output (%s); rolling back and trying fallback.",
+                        model_candidate,
+                        output.strip()[:160],
+                    )
+                    self._rollback_cli_attempt(
+                        bot_cli_base, eff_conv_id, conv_snapshot if eff_conv_id else None, pre_attempt_cids, is_mocked
+                    )
+                    output, turn_cid = None, None
+                    continue
+
+                if output is None:
+                    self._rollback_cli_attempt(
+                        bot_cli_base, eff_conv_id, conv_snapshot if eff_conv_id else None, pre_attempt_cids, is_mocked
+                    )
+                    if self._is_cli_interrupted(proc):
+                        logger.info(
+                            "agy CLI with model '%s' was interrupted (code %s); aborting LLM query without fallback.",
+                            model_candidate,
+                            proc.returncode if proc is not None else "unknown",
+                        )
+                        return True, None
+
+                if (
+                    output is None
+                    and eff_conv_id
+                    and not conversation_id
+                    and not self._is_quota_or_credit_error(proc)
+                ):
+                    resume_abandoned = True
+                    output, turn_cid, effective_model_used, replaced_conversation = self._attempt_detached_one_off_thread(
+                        topic_key=topic_key,
+                        session=session,
+                        model_candidate=model_candidate,
+                        models_to_try=models_to_try,
+                        attempt_idx=attempt_idx,
+                        resume_timed_out=resume_timed_out,
+                        timeout_sec=timeout_sec,
+                        fallback_prompt=_resolve_detached_topic_prompt(),
+                        bot_cli_base=bot_cli_base,
+                        run_env=run_env,
+                        is_mocked=is_mocked,
+                        require_json=require_json,
+                        use_topic_session=use_topic_session,
+                        tried_detached_models=tried_detached_models,
+                    )
+
+                if output:
+                    self.last_model_used = effective_model_used
+                    if attempt_idx > 0 or effective_model_used != selected_model:
+                        logger.warning(
+                            "LLM query succeeded using fallback model '%s' (primary '%s' unavailable/failed).",
+                            effective_model_used,
+                            selected_model,
+                        )
+                    if cache_ttl_sec > 0:
+                        self._cache[prompt] = (now, output, effective_model_used)
+                    if use_topic_session:
+                        finalize_kwargs = dict(
+                            topic_key=topic_key,
+                            session=session,
+                            turn_cid=turn_cid,
+                            output=output,
+                            replaced_conversation=replaced_conversation,
+                            timeout_sec=timeout_sec,
+                            models_to_try=models_to_try,
+                            attempt_idx=attempt_idx,
+                            enable_pre_quota=enable_pre_quota,
+                            bot_cli_base=bot_cli_base,
+                            run_env=run_env,
+                            is_mocked=is_mocked,
+                            include_repo_rules=include_repo_rules,
+                            topic_lock=topic_lock,
+                        )
+                        if session.compact and turn_cid and not is_mocked:
+                            topic_lock_transferred = True
+                            threading.Thread(
+                                target=self._finalize_topic_turn,
+                                kwargs={**finalize_kwargs, "release_lock": True},
+                                daemon=False,
+                            ).start()
+                        else:
+                            self._finalize_topic_turn(**finalize_kwargs, release_lock=False)
+                    return True, output
+
+                if enable_pre_quota and self._is_quota_or_credit_error(proc):
+                    self._record_model_quota_exhausted(
+                        model_candidate,
+                        model_unrecognized=self._is_unrecognized_model_error(proc),
+                    )
+                logger.warning(
+                    "agy CLI with model '%s' failed (code %s): %s",
+                    model_candidate,
+                    proc.returncode if proc is not None else "timeout",
+                    (proc.stderr or "").strip()[:200] if proc is not None else "",
+                )
+        except subprocess.TimeoutExpired:
+            logger.warning("Gemini query timed out after %s seconds", timeout_sec)
+            return True, None
+        except Exception as e:
+            logger.warning("Failed to invoke agy CLI: %s", e)
+        finally:
+            self._JSON_MODE_LOCAL.include_repo_rules = prev_repo_rules
+            if topic_lock is not None and not topic_lock_transferred:
+                topic_lock.release()
+        return False, None
+
+    def _query_rest_fallback(
+        self,
+        prompt: str,
+        *,
+        selected_model: str,
+        timeout_sec: float,
+        cache_ttl_sec: float,
+        now: float,
+        require_json: bool,
+    ) -> Optional[str]:
+        """Query Gemini directly over REST API when an API key is configured and CLI failed."""
+        rest_candidates: list[str] = []
+        for mc in self.get_model_candidates(selected_model):
+            rc = canonical_rest_model(mc)
+            if rc not in rest_candidates:
+                rest_candidates.append(rc)
+        for r_default in ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"):
+            if r_default not in rest_candidates:
+                rest_candidates.append(r_default)
+
+        for r_model in rest_candidates:
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{r_model}:generateContent?key={self.api_key}"
+                body = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4096},
+                }
+                resp_data = fetch_json_post(url, body, timeout=timeout_sec)
+                candidates = resp_data.get("candidates") if isinstance(resp_data, dict) else None
+                if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+                    continue
+                content_obj = candidates[0].get("content")
+                parts = content_obj.get("parts") if isinstance(content_obj, dict) else None
+                if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
+                    continue
+                raw_text = parts[0].get("text")
+                text = raw_text.strip() if isinstance(raw_text, str) else ""
+                if not text:
+                    continue
+                if require_json and extract_json_object(text) is None:
+                    logger.warning(
+                        "Gemini REST API with model %s returned non-JSON output; trying next.",
+                        r_model,
+                    )
+                    continue
+                self.last_model_used = r_model
+                if cache_ttl_sec > 0:
+                    self._cache[prompt] = (now, text, r_model)
+                return text
+            except Exception as e:
+                logger.warning("Gemini REST API attempt with model %s failed: %s", r_model, e)
+        return None
+
     def query_text(
         self,
         prompt: str,
@@ -412,423 +924,33 @@ class GeminiClient(GeminiQuotaRouterMixin):
 
         # 2. Local authenticated CLI runner (subscription mode)
         if self.cli_path and os.path.exists(self.cli_path) and (allow_unmocked or cli_mocked):
-            topic_lock: Optional[threading.Lock] = None
-            topic_lock_transferred = False
-            prev_repo_rules = getattr(self._JSON_MODE_LOCAL, "include_repo_rules", False)
-            self._JSON_MODE_LOCAL.include_repo_rules = include_repo_rules
-            try:
-                bot_cli_base = resolve_bot_cli_base()
-                is_mocked = cli_mocked
-                use_topic_session = bool(
-                    topic_key
-                    and (
-                        not is_mocked
-                        or hasattr(prepare_topic_session, "_mock_name")
-                        or prepare_topic_session is not _ORIG_PREPARE_TOPIC_SESSION
-                    )
-                )
-                if use_topic_session and topic_key:
-                    t_key = str(topic_key).strip()
-                    with self._TOPIC_LOCKS_GUARD:
-                        topic_lock = self._TOPIC_LOCKS.get(t_key)
-                        if topic_lock is None:
-                            topic_lock = threading.Lock()
-                            self._TOPIC_LOCKS[t_key] = topic_lock
-                    topic_lock.acquire()
-                session = TopicSession(conversation_id, "", False)
-                if use_topic_session and not conversation_id:
-                    session = prepare_topic_session(topic_key, cli_base=bot_cli_base)
-
-                # The per-call title is a turn header; the thread itself keeps its permanent topic name.
-                effective_title = format_topic_turn_header(topic_key, thread_title) if topic_key else thread_title
-                full_body = f"{session.history_prefix}{prompt}" if session.history_prefix else prompt
-                full_cli_prompt = f"{effective_title}\n\n{full_body}" if effective_title else full_body
-                use_warm_resume = bool(
-                    use_topic_session
-                    and topic_key
-                    and session.conversation_id
-                    and not session.history_prefix
-                    and isinstance(resume_prompt, str)
-                    and resume_prompt.strip()
-                    and is_topic_resume_warm(
-                        topic_key,
-                        cli_base=bot_cli_base,
-                        conversation_id=session.conversation_id,
-                    )
-                )
-                cli_prompt = (
-                    (f"{effective_title}\n\n{resume_prompt}" if effective_title else resume_prompt)
-                    if use_warm_resume
-                    else full_cli_prompt
-                )
-
-                run_env = clone_process_env({"AGY_BOT_HOME": os.path.dirname(os.path.dirname(bot_cli_base))})
-
-                # Attempt primary model followed by fallback models if CLI call fails
-                raw_candidates = self.get_model_candidates(selected_model)
-                pre_quota_fn = getattr(self.probe_live_model_quota, "__func__", self.probe_live_model_quota)
-                pre_quota_mocked = (
-                    hasattr(self.probe_live_model_quota, "_mock_name")
-                    or "probe_live_model_quota" in self.__dict__
-                    or pre_quota_fn is not _ORIG_PROBE_LIVE_MODEL_QUOTA_FUNC
-                )
-                enable_pre_quota = not is_mocked or pre_quota_mocked
-                if enable_pre_quota:
-                    quota_snapshot = self.probe_live_model_quota(bot_cli_base=bot_cli_base)
-                    models_to_try = self.filter_models_with_confirmed_credits(raw_candidates, quota_snapshot)
-                else:
-                    models_to_try = raw_candidates
-                conv_snapshot = (
-                    snapshot_conversation_state(bot_cli_base, session.conversation_id)
-                    if (session.conversation_id and not is_mocked)
-                    else None
-                )
-                detached_topic_prompt: Optional[str] = None
-
-                def _resolve_detached_topic_prompt() -> str:
-                    nonlocal detached_topic_prompt
-                    if detached_topic_prompt is not None:
-                        return detached_topic_prompt
-                    fp = full_cli_prompt
-                    if use_topic_session and topic_key and not session.history_prefix:
-                        try:
-                            hist_prefix = format_topic_history_prefix(topic_key)
-                            if hist_prefix:
-                                fb_body = f"{hist_prefix}{prompt}"
-                                fp = f"{effective_title}\n\n{fb_body}" if effective_title else fb_body
-                        except Exception:
-                            pass
-                    detached_topic_prompt = fp
-                    return fp
-
-                resume_abandoned = False
-                tried_detached_models: set[str] = set()
-
-                for attempt_idx, model_candidate in enumerate(models_to_try):
-                    if resume_abandoned and model_candidate in tried_detached_models:
-                        continue
-                    if attempt_idx > 0 and enable_pre_quota:
-                        rt_ex = (
-                            self._QUOTA_MEM_CACHE.get("runtime_exhausted")
-                            if isinstance(self._QUOTA_MEM_CACHE, dict)
-                            and isinstance(self._QUOTA_MEM_CACHE.get("runtime_exhausted"), dict)
-                            else {}
-                        )
-                        now_iter = time.time()
-                        if safe_float(rt_ex.get(model_candidate), 0.0) > now_iter and any(
-                            safe_float(rt_ex.get(rem_m), 0.0) <= now_iter
-                            for rem_m in models_to_try[attempt_idx + 1:]
-                        ):
-                            continue
-                    output, turn_cid = None, None
-                    effective_model_used = model_candidate
-                    replaced_conversation = False
-                    resume_timed_out = False
-                    proc = None
-                    eff_conv_id = None if resume_abandoned else session.conversation_id
-                    eff_prompt = _resolve_detached_topic_prompt() if resume_abandoned else cli_prompt
-                    eff_timeout = (
-                        min(timeout_sec, 45.0)
-                        if (resume_abandoned and timeout_sec > 45.0)
-                        else timeout_sec
-                    )
-                    pre_attempt_cids = (
-                        self._list_conversation_cids(bot_cli_base)
-                        if (not eff_conv_id and not is_mocked)
-                        else set()
-                    )
-                    if eff_conv_id is None:
-                        tried_detached_models.add(model_candidate)
-                    try:
-                        proc = self._execute_cli(
-                            eff_conv_id, eff_prompt, eff_timeout, model_candidate,
-                            bot_cli_base, run_env, is_mocked
-                        )
-                        output, turn_cid = self._parse_cli_payload(proc)
-                        if resume_abandoned and output and use_topic_session and turn_cid:
-                            replaced_conversation = turn_cid != session.conversation_id
-                    except subprocess.TimeoutExpired:
-                        self._rollback_cli_attempt(
-                            bot_cli_base, eff_conv_id, conv_snapshot if eff_conv_id else None, pre_attempt_cids, is_mocked
-                        )
-                        if not (eff_conv_id and not conversation_id):
-                            if attempt_idx == len(models_to_try) - 1:
-                                raise
-                            logger.warning(
-                                "Model candidate %s timed out after %ss; trying fallback.",
-                                model_candidate,
-                                eff_timeout,
-                            )
-                            continue
-                        resume_timed_out = True
-                        resume_abandoned = True
-                        logger.warning(
-                            "Resuming topic '%s' conversation %s timed out after %ss; falling back to one-off thread.",
-                            topic_key,
-                            session.conversation_id,
-                            eff_timeout,
-                        )
-                    except Exception as exc:
-                        self._rollback_cli_attempt(
-                            bot_cli_base, eff_conv_id, conv_snapshot if eff_conv_id else None, pre_attempt_cids, is_mocked
-                        )
-                        logger.warning(
-                            "Model candidate %s failed with exception: %s; trying fallback.",
-                            model_candidate,
-                            exc,
-                        )
-                        continue
-
-                    if require_json and isinstance(output, str) and extract_json_object(output) is None:
-                        logger.warning(
-                            "agy CLI with model '%s' returned non-JSON output (%s); rolling back and trying fallback.",
-                            model_candidate,
-                            output.strip()[:160],
-                        )
-                        self._rollback_cli_attempt(
-                            bot_cli_base, eff_conv_id, conv_snapshot if eff_conv_id else None, pre_attempt_cids, is_mocked
-                        )
-                        output = None
-                        turn_cid = None
-                        continue
-
-                    if output is None:
-                        self._rollback_cli_attempt(
-                            bot_cli_base, eff_conv_id, conv_snapshot if eff_conv_id else None, pre_attempt_cids, is_mocked
-                        )
-                        if self._is_cli_interrupted(proc):
-                            logger.info(
-                                "agy CLI with model '%s' was interrupted (code %s); aborting LLM query without fallback.",
-                                model_candidate,
-                                proc.returncode if proc is not None else "unknown",
-                            )
-                            return None
-
-                    if (
-                        output is None
-                        and eff_conv_id
-                        and not conversation_id
-                        and not self._is_quota_or_credit_error(proc)
-                    ):
-                        resume_abandoned = True
-                        one_off_model = (
-                            models_to_try[attempt_idx + 1]
-                            if (
-                                resume_timed_out
-                                and any(tag in model_candidate for tag in ("-high", "-xhigh"))
-                                and attempt_idx + 1 < len(models_to_try)
-                            )
-                            else model_candidate
-                        )
-                        one_off_timeout = (
-                            min(timeout_sec, 75.0)
-                            if (resume_timed_out and timeout_sec > 75.0)
-                            else timeout_sec
-                        )
-                        tried_detached_models.add(one_off_model)
-                        # Runtime resilience: answer this call from a detached one-off thread.
-                        logger.info(
-                            "Resuming topic '%s' conversation %s failed with model %s; answering from a one-off thread (model=%s, timeout=%ss).",
-                            topic_key, session.conversation_id, model_candidate, one_off_model, one_off_timeout,
-                        )
-                        fallback_prompt = _resolve_detached_topic_prompt()
-                        pre_cids = self._list_conversation_cids(bot_cli_base) if not is_mocked else set()
-                        detached_cid = None
-                        try:
-                            proc = self._execute_cli(
-                                None, fallback_prompt, one_off_timeout, one_off_model,
-                                bot_cli_base, run_env, is_mocked
-                            )
-                            output, detached_cid = self._parse_cli_payload(proc)
-                            if require_json and isinstance(output, str) and extract_json_object(output) is None:
-                                logger.warning(
-                                    "agy CLI one-off thread with model '%s' returned non-JSON output (%s); trying fallback.",
-                                    one_off_model,
-                                    output.strip()[:160],
-                                )
-                                output = None
-                            if (
-                                detached_cid
-                                and detached_cid != session.conversation_id
-                                and not is_mocked
-                                and not (output and use_topic_session)
-                            ):
-                                self._remove_detached_thread(bot_cli_base, detached_cid)
-                        except Exception as exc:
-                            logger.warning("One-off thread attempt failed for model %s: %s", one_off_model, exc)
-                        finally:
-                            if not is_mocked and not detached_cid:
-                                self._cleanup_orphan_threads(
-                                    bot_cli_base, pre_cids, keep_cid=session.conversation_id
-                                )
-                        if output:
-                            effective_model_used = one_off_model
-                        if output and use_topic_session and detached_cid:
-                            turn_cid = detached_cid
-                            replaced_conversation = detached_cid != session.conversation_id
-                        else:
-                            turn_cid = None
-
-                    if output:
-                        self.last_model_used = effective_model_used
-                        if attempt_idx > 0 or effective_model_used != selected_model:
-                            logger.warning(
-                                "LLM query succeeded using fallback model '%s' (primary '%s' unavailable/failed).",
-                                effective_model_used,
-                                selected_model,
-                            )
-                        if cache_ttl_sec > 0:
-                            self._cache[prompt] = (now, output, effective_model_used)
-                        if use_topic_session:
-                            def _finalize_topic_turn(release_lock: bool = False) -> None:
-                                prev_finalize_rules = getattr(self._JSON_MODE_LOCAL, "include_repo_rules", False)
-                                self._JSON_MODE_LOCAL.include_repo_rules = include_repo_rules
-                                try:
-                                    compacted_ok = False
-                                    if session.compact and turn_cid and not replaced_conversation:
-                                        compact_timeout = max(timeout_sec, 120.0)
-                                        compact_snap = (
-                                            snapshot_conversation_state(bot_cli_base, turn_cid)
-                                            if not is_mocked
-                                            else None
-                                        )
-                                        latest_turn_summary = condense_decision(output, max_len=360)
-                                        compact_prompt = (
-                                            f"/compact Context checkpoint after completed turn ({latest_turn_summary}). "
-                                            "All prior trading turns (including single-entry HOLD JSON responses) are ALREADY COMPLETED and finalized; "
-                                            "this NEW /compact request has NOT been answered yet, so in the checkpoint 'Next Steps' section write ONLY: "
-                                            "'Reply ONLY with COMPACT_OK and wait for the next user prompt.' "
-                                            "In your immediate post-compaction response, reply ONLY with the single token COMPACT_OK "
-                                            "(do NOT output any market analysis, markdown report, JSON blocks, position calculations, "
-                                            "stop-loss/risk rules, or tool calls)."
-                                        )
-                                        for compact_model in self.get_compact_model_candidates(
-                                            models_to_try,
-                                            attempt_idx,
-                                            quota_snapshot=self._QUOTA_MEM_CACHE if enable_pre_quota else None,
-                                        ):
-                                            try:
-                                                c_proc = self._execute_cli(
-                                                    turn_cid,
-                                                    compact_prompt,
-                                                    compact_timeout,
-                                                    compact_model,
-                                                    bot_cli_base,
-                                                    run_env,
-                                                    is_mocked,
-                                                )
-                                                c_out, c_cid = self._parse_cli_payload(c_proc)
-                                                compacted_ok = bool(c_out or c_cid)
-                                                if compacted_ok:
-                                                    break
-                                                if enable_pre_quota and self._is_quota_or_credit_error(c_proc):
-                                                    self._record_model_quota_exhausted(
-                                                        compact_model,
-                                                        model_unrecognized=self._is_unrecognized_model_error(c_proc),
-                                                    )
-                                                if not is_mocked and compact_snap is not None:
-                                                    restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
-                                                if self._is_cli_interrupted(c_proc):
-                                                    break
-                                            except Exception as exc:
-                                                if not is_mocked and compact_snap is not None:
-                                                    restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
-                                                logger.warning(
-                                                    "In-place /compact for topic '%s' conversation %s with model %s failed: %s",
-                                                    topic_key,
-                                                    turn_cid,
-                                                    compact_model,
-                                                    exc,
-                                                )
-                                                break
-                                    try:
-                                        record_kwargs: Dict[str, Any] = {
-                                            "topic_key": topic_key,
-                                            "conversation_id": turn_cid,
-                                            "response_text": output,
-                                            "compacted": compacted_ok,
-                                            "cli_base": bot_cli_base,
-                                        }
-                                        if replaced_conversation:
-                                            record_kwargs["replace_conversation"] = True
-                                        record_topic_turn(**record_kwargs)
-                                    except Exception as e:
-                                        logger.debug("Failed recording topic turn for %s: %s", topic_key, e)
-                                finally:
-                                    self._JSON_MODE_LOCAL.include_repo_rules = prev_finalize_rules
-                                    if release_lock and topic_lock is not None:
-                                        topic_lock.release()
-
-                            if session.compact and turn_cid and not is_mocked:
-                                topic_lock_transferred = True
-                                threading.Thread(target=_finalize_topic_turn, args=(True,), daemon=False).start()
-                            else:
-                                _finalize_topic_turn(False)
-                        return output
-                    else:
-                        if enable_pre_quota and self._is_quota_or_credit_error(proc):
-                            self._record_model_quota_exhausted(
-                                model_candidate,
-                                model_unrecognized=self._is_unrecognized_model_error(proc),
-                            )
-                        logger.warning(
-                            "agy CLI with model '%s' failed (code %s): %s",
-                            model_candidate,
-                            proc.returncode if proc is not None else "timeout",
-                            (proc.stderr or "").strip()[:200] if proc is not None else "",
-                        )
-            except subprocess.TimeoutExpired:
-                logger.warning("Gemini query timed out after %s seconds", timeout_sec)
-                return None
-            except Exception as e:
-                logger.warning("Failed to invoke agy CLI: %s", e)
-            finally:
-                self._JSON_MODE_LOCAL.include_repo_rules = prev_repo_rules
-                if topic_lock is not None and not topic_lock_transferred:
-                    topic_lock.release()
+            handled, cli_out = self._query_cli_runner(
+                prompt,
+                selected_model=selected_model,
+                timeout_sec=timeout_sec,
+                cache_ttl_sec=cache_ttl_sec,
+                now=now,
+                thread_title=thread_title,
+                topic_key=topic_key,
+                conversation_id=conversation_id,
+                resume_prompt=resume_prompt,
+                include_repo_rules=include_repo_rules,
+                require_json=require_json,
+                cli_mocked=cli_mocked,
+            )
+            if handled:
+                return cli_out
 
         # 3. Direct REST API fallback if API key is provided
         if self.api_key:
-            rest_candidates: list[str] = []
-            for mc in self.get_model_candidates(selected_model):
-                rc = canonical_rest_model(mc)
-                if rc not in rest_candidates:
-                    rest_candidates.append(rc)
-            for r_default in ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"):
-                if r_default not in rest_candidates:
-                    rest_candidates.append(r_default)
-
-            for r_model in rest_candidates:
-                try:
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{r_model}:generateContent?key={self.api_key}"
-                    body = {
-                        "contents": [{"parts": [{"text": prompt}]}],
-                        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4096},
-                    }
-                    resp_data = fetch_json_post(url, body, timeout=timeout_sec)
-                    candidates = resp_data.get("candidates") if isinstance(resp_data, dict) else None
-                    if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
-                        continue
-                    content_obj = candidates[0].get("content")
-                    parts = content_obj.get("parts") if isinstance(content_obj, dict) else None
-                    if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
-                        continue
-                    raw_text = parts[0].get("text")
-                    text = raw_text.strip() if isinstance(raw_text, str) else ""
-                    if not text:
-                        continue
-                    if require_json and extract_json_object(text) is None:
-                        logger.warning(
-                            "Gemini REST API with model %s returned non-JSON output; trying next.",
-                            r_model,
-                        )
-                        continue
-                    self.last_model_used = r_model
-                    if cache_ttl_sec > 0:
-                        self._cache[prompt] = (now, text, r_model)
-                    return text
-                except Exception as e:
-                    logger.warning("Gemini REST API attempt with model %s failed: %s", r_model, e)
+            return self._query_rest_fallback(
+                prompt,
+                selected_model=selected_model,
+                timeout_sec=timeout_sec,
+                cache_ttl_sec=cache_ttl_sec,
+                now=now,
+                require_json=require_json,
+            )
 
         return None
 

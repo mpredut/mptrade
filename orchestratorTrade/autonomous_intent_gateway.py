@@ -450,6 +450,309 @@ class AutonomousIntentGateway:
             return False, canceled_ids
         return True, canceled_ids
 
+    @staticmethod
+    def _record_duplicate_open_order_skip(
+        inst: Any,
+        intent: Dict[str, Any],
+        *,
+        decision: str,
+        price: float,
+        effective_usd: float,
+        dup_oid: str,
+        now_ts: float,
+    ) -> Dict[str, Any]:
+        logger.info(
+            "[LLM TRADER \u00b7 ENFORCE] Skipping duplicate %s LIMIT %s @ $%.4f ($%.2f); identical AI order %s is already open.",
+            decision, inst.symbol, price, effective_usd, dup_oid,
+        )
+        intent["status"] = "SKIPPED_DUPLICATE_OPEN_ORDER"
+        intent["duplicate_of_order_id"] = dup_oid
+        append_intent_history(intent, {
+            "ts": now_ts,
+            "action": "SKIPPED_DUPLICATE_OPEN_ORDER",
+            "duplicate_of_order_id": dup_oid,
+            "price": price,
+            "notional_usd": effective_usd,
+        })
+        return intent
+
+    def _block_by_circuit_breaker(
+        self,
+        inst: Any,
+        intent: Dict[str, Any],
+        *,
+        mode: str,
+        decision: str,
+        price: float,
+        effective_usd: float,
+        confidence: float,
+        thesis: str,
+        trade_tag: str,
+        now_ts: float,
+        is_limit: bool,
+        reason_str: str,
+        metrics_dict: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        cb_qty = effective_usd / price if (effective_usd > 0.0 and price > 0.0) else 0.0
+        if mode == "shadow":
+            return record_shadow_intent_observation(
+                inst,
+                intent,
+                decision=decision,
+                target_qty=cb_qty,
+                price=price,
+                effective_usd=effective_usd,
+                confidence=confidence,
+                guard_allowed=False,
+                guard_reason=reason_str,
+                thesis=thesis,
+                trade_tag=trade_tag,
+                now_ts=now_ts,
+                is_limit=is_limit,
+                dispatch_notify_fn=self._dispatch_notify,
+                log=logger,
+            )
+        logger.warning(
+            "[LLM TRADER \u00b7 ENFORCE] AI circuit-breaker blocked %s %s: %s",
+            decision, inst.symbol, reason_str,
+        )
+        _alertnotifiers.emit_trade_notification(
+            self._dispatch_notify,
+            "BLOCKED",
+            decision,
+            inst.symbol,
+            format_notify_price(price, comma=False),
+            cb_qty,
+            effective_usd,
+            venue=inst.provider_name,
+            owner=trade_tag,
+            detail=("LIMIT" if is_limit else "MARKET", f"Reason: {reason_str}"),
+            thesis=thesis,
+            notify_kwargs={"symbol": inst.symbol},
+        )
+        intent["status"] = "REJECTED_AI_CIRCUIT_BREAKER"
+        intent["circuit_breaker_reason"] = reason_str
+        intent["circuit_breaker_metrics"] = metrics_dict
+        append_intent_history(intent, {
+            "ts": now_ts,
+            "action": "REJECTED_AI_CIRCUIT_BREAKER",
+            "reason": reason_str,
+            **metrics_dict,
+        })
+        return intent
+
+    def _evaluate_ai_circuit_breakers_and_survival(
+        self,
+        inst: Any,
+        intent: Dict[str, Any],
+        all_intents: List[Dict[str, Any]],
+        *,
+        mode: str,
+        decision: str,
+        symbol: str,
+        venue: str,
+        price: float,
+        effective_usd: float,
+        confidence: float,
+        thesis: str,
+        trade_tag: str,
+        now_ts: float,
+        is_limit: bool,
+    ) -> Tuple[Optional[Dict[str, Any]], float]:
+        """Run AI circuit-breaker, anti-ping-pong guard, and 48h scorecard; return (short_circuit_intent, updated_usd)."""
+        cb_allowed, cb_usd, cb_reason, cb_metrics = evaluate_ai_intent_circuit_breaker(
+            intent,
+            all_intents,
+            decision=decision,
+            symbol=symbol,
+            venue=venue,
+            price=price,
+            effective_usd=effective_usd,
+            min_notional_usd=self.min_notional_usd,
+            now_ts=now_ts,
+            max_daily_buys_per_symbol=getattr(self, "max_daily_buys_per_symbol", 6),
+            max_hourly_replaces_per_symbol=getattr(self, "max_hourly_replaces_per_symbol", 3),
+            replace_min_price_delta_pct=getattr(self, "replace_min_price_delta_pct", 0.50),
+            max_daily_buy_notional_usd=getattr(self, "max_daily_buy_notional_usd", 6000.0),
+        )
+        if cb_allowed and cb_reason and cb_usd < effective_usd:
+            logger.info(
+                "[LLM TRADER] Clamped %s %s notional from $%.2f to $%.2f (%s).",
+                decision, inst.symbol, effective_usd, cb_usd, cb_reason,
+            )
+            effective_usd = cb_usd
+            intent["circuit_breaker_clamped"] = cb_reason
+        elif not cb_allowed:
+            return (
+                self._block_by_circuit_breaker(
+                    inst, intent, mode=mode, decision=decision, price=price, effective_usd=effective_usd,
+                    confidence=confidence, thesis=thesis, trade_tag=trade_tag, now_ts=now_ts,
+                    is_limit=is_limit, reason_str=cb_reason, metrics_dict=cb_metrics,
+                ),
+                effective_usd,
+            )
+
+        live_spot_px = price
+        if is_limit:
+            try:
+                fetched_spot = safe_pos_float(self._get_live_price(inst), default=None)
+                if fetched_spot is not None:
+                    live_spot_px = fetched_spot
+            except Exception:
+                pass
+
+        recent_bot_fill = self._resolve_recent_bot_opposite_fill(inst, decision, now_ts, all_intents)
+        pp_allowed, pp_reason, pp_metrics = evaluate_ai_ping_pong_guard(
+            intent,
+            all_intents,
+            decision=decision,
+            symbol=symbol,
+            venue=venue,
+            price=price,
+            now_ts=now_ts,
+            flip_cooldown_min=getattr(self, "flip_cooldown_min", 45.0),
+            flip_min_edge_pct=getattr(self, "flip_min_edge_pct", 0.90),
+            max_flips_6h=getattr(self, "max_flips_6h", 2),
+            spot_price=live_spot_px,
+            recent_bot_fill=recent_bot_fill,
+        )
+        if not pp_allowed:
+            return (
+                self._block_by_circuit_breaker(
+                    inst, intent, mode=mode, decision=decision, price=price, effective_usd=effective_usd,
+                    confidence=confidence, thesis=thesis, trade_tag=trade_tag, now_ts=now_ts,
+                    is_limit=is_limit, reason_str=pp_reason, metrics_dict=pp_metrics,
+                ),
+                effective_usd,
+            )
+
+        sc_win = getattr(self, "scorecard_window_trades", 5)
+        sc_streak = getattr(self, "scorecard_max_loss_streak", 3)
+        sc_cd_h = getattr(self, "scorecard_cooldown_hours", 4.0)
+        if decision == "BUY" and sc_win > 0 and sc_streak > 0 and sc_cd_h > 0.0:
+            sc_prices = self._load_live_prices_for_scorecard(symbol, venue, live_spot_px)
+            scorecard = evaluate_ai_decision_scorecard(
+                all_intents,
+                now_ts=now_ts,
+                live_prices=sc_prices,
+                window_trades=sc_win,
+                max_loss_streak=sc_streak,
+                cooldown_hours=sc_cd_h,
+            )
+            if scorecard.get("buy_shadow_active"):
+                sc_reason = str(scorecard.get("reason") or "ai_scorecard_buy_shadow_cooldown")
+                intent["scorecard_downgraded_to_shadow"] = sc_reason
+                intent["ai_decision_scorecard"] = scorecard
+                sc_qty = effective_usd / price if (effective_usd > 0.0 and price > 0.0) else 0.0
+                logger.warning(
+                    "[LLM TRADER] Downgrading BUY %s to shadow via AI decision scorecard: %s",
+                    inst.symbol, sc_reason,
+                )
+                return (
+                    record_shadow_intent_observation(
+                        inst,
+                        intent,
+                        decision=decision,
+                        target_qty=sc_qty,
+                        price=price,
+                        effective_usd=effective_usd,
+                        confidence=confidence,
+                        guard_allowed=False,
+                        guard_reason=sc_reason,
+                        thesis=thesis,
+                        trade_tag=trade_tag,
+                        now_ts=now_ts,
+                        is_limit=is_limit,
+                        dispatch_notify_fn=self._dispatch_notify,
+                        log=logger,
+                    ),
+                    effective_usd,
+                )
+        return None, effective_usd
+
+    def _unlock_and_clamp_wallet_notional(
+        self,
+        inst: Any,
+        intent: Dict[str, Any],
+        all_intents: List[Dict[str, Any]],
+        *,
+        mode: str,
+        intent_id: str,
+        decision: str,
+        price: float,
+        effective_usd: float,
+        now_ts: float,
+        replace_open: bool,
+        cancel_bot_open: bool,
+        target_oids: List[str],
+        thesis_cancels_bot_order: bool,
+        canceled_order_snapshots: List[Dict[str, Any]],
+    ) -> Tuple[bool, bool, float, str]:
+        """Clamp notional to live wallet balance, canceling bot-owned locking orders on enforce when needed."""
+        requested_effective_usd = effective_usd
+        guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
+            inst, decision, price, requested_effective_usd
+        )
+        is_balance_constrained = (
+            (not guard_allowed and "insufficient free" in str(guard_reason or "").lower())
+            or (guard_allowed and effective_usd < requested_effective_usd * 0.95)
+        )
+        # Only same-side resting orders lock the asset this intent spends (quote for BUY, base for SELL);
+        # opposite-side orders (trailing stops, take-profits, SL) free nothing and must stay active.
+        if (
+            mode == "enforce"
+            and replace_open
+            and not (cancel_bot_open or target_oids or thesis_cancels_bot_order)
+            and is_balance_constrained
+        ):
+            ok_unlock, unlocked_ids = self._cancel_prior_orders_or_abort(
+                inst,
+                intent,
+                intent_id=intent_id,
+                decision=decision,
+                now_ts=now_ts,
+                canceled_order_snapshots=canceled_order_snapshots,
+                rollback_reason="unlock_cancel_failed",
+                include_bot_orders=True,
+                only_bot_orders=True,
+                extra_intent_key="canceled_bot_open_orders",
+                intents=all_intents,
+            )
+            if not ok_unlock:
+                return False, guard_allowed, effective_usd, guard_reason
+            if unlocked_ids:
+                guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
+                    inst, decision, price, requested_effective_usd
+                )
+        return True, guard_allowed, effective_usd, guard_reason
+
+    def _record_advisory_guard_overrides(
+        self,
+        intent: Dict[str, Any],
+        *,
+        symbol: str,
+        decision: str,
+        price: float,
+        venue: str,
+        now_ts: float,
+    ) -> None:
+        try:
+            use_disk = os.path.abspath(self.workspace_dir) == os.path.abspath(ROOT_DIR)
+            probe_res = probe_deterministic_guards(
+                symbol,
+                decision,
+                price,
+                venue=venue,
+                now_ts=now_ts,
+                allow_disk_cache=use_disk,
+            )
+            if probe_flags := probe_res.get("flags"):
+                intent["advisory_guards_overridden"] = [
+                    f"{f['guard']}:{f['action']}({f['reason']})" for f in probe_flags
+                ]
+        except Exception:
+            pass
+
     def process_intent(
         self,
         intent: Dict[str, Any],
@@ -518,20 +821,9 @@ class AutonomousIntentGateway:
                 require_notional_match=replace_open,
             )
         if dup_oid and not (replace_open or cancel_bot_open or bool(target_oids)):
-            logger.info(
-                "[LLM TRADER \u00b7 ENFORCE] Skipping duplicate %s LIMIT %s @ $%.4f ($%.2f); identical AI order %s is already open.",
-                decision, inst.symbol, price, effective_usd, dup_oid,
+            return self._record_duplicate_open_order_skip(
+                inst, intent, decision=decision, price=price, effective_usd=effective_usd, dup_oid=dup_oid, now_ts=now
             )
-            intent["status"] = "SKIPPED_DUPLICATE_OPEN_ORDER"
-            intent["duplicate_of_order_id"] = dup_oid
-            append_intent_history(intent, {
-                "ts": now,
-                "action": "SKIPPED_DUPLICATE_OPEN_ORDER",
-                "duplicate_of_order_id": dup_oid,
-                "price": price,
-                "notional_usd": effective_usd,
-            })
-            return intent
 
         raw_thesis = intent.get("thesis")
         thesis = (
@@ -541,147 +833,25 @@ class AutonomousIntentGateway:
         )
         trade_tag = resolve_intent_topic_tag(intent, venue)
 
-        def _block_by_circuit_breaker(reason_str: str, metrics_dict: Dict[str, Any]) -> Dict[str, Any]:
-            cb_qty = effective_usd / price if (effective_usd > 0.0 and price > 0.0) else 0.0
-            if mode == "shadow":
-                return record_shadow_intent_observation(
-                    inst,
-                    intent,
-                    decision=decision,
-                    target_qty=cb_qty,
-                    price=price,
-                    effective_usd=effective_usd,
-                    confidence=confidence,
-                    guard_allowed=False,
-                    guard_reason=reason_str,
-                    thesis=thesis,
-                    trade_tag=trade_tag,
-                    now_ts=now,
-                    is_limit=is_limit,
-                    dispatch_notify_fn=self._dispatch_notify,
-                    log=logger,
-                )
-            logger.warning(
-                "[LLM TRADER \u00b7 ENFORCE] AI circuit-breaker blocked %s %s: %s",
-                decision, inst.symbol, reason_str,
-            )
-            _alertnotifiers.emit_trade_notification(
-                self._dispatch_notify,
-                "BLOCKED",
-                decision,
-                inst.symbol,
-                format_notify_price(price, comma=False),
-                cb_qty,
-                effective_usd,
-                venue=inst.provider_name,
-                owner=trade_tag,
-                detail=("LIMIT" if is_limit else "MARKET", f"Reason: {reason_str}"),
-                thesis=thesis,
-                notify_kwargs={"symbol": inst.symbol},
-            )
-            intent["status"] = "REJECTED_AI_CIRCUIT_BREAKER"
-            intent["circuit_breaker_reason"] = reason_str
-            intent["circuit_breaker_metrics"] = metrics_dict
-            append_intent_history(intent, {
-                "ts": now,
-                "action": "REJECTED_AI_CIRCUIT_BREAKER",
-                "reason": reason_str,
-                **metrics_dict,
-            })
-            return intent
-
-        live_spot_px = price
         if not dup_oid and mode in ("enforce", "shadow"):
-            cb_allowed, cb_usd, cb_reason, cb_metrics = evaluate_ai_intent_circuit_breaker(
+            short_circuit, effective_usd = self._evaluate_ai_circuit_breakers_and_survival(
+                inst,
                 intent,
                 all_intents,
+                mode=mode,
                 decision=decision,
                 symbol=symbol,
                 venue=venue,
                 price=price,
                 effective_usd=effective_usd,
-                min_notional_usd=self.min_notional_usd,
+                confidence=confidence,
+                thesis=thesis,
+                trade_tag=trade_tag,
                 now_ts=now,
-                max_daily_buys_per_symbol=getattr(self, "max_daily_buys_per_symbol", 6),
-                max_hourly_replaces_per_symbol=getattr(self, "max_hourly_replaces_per_symbol", 3),
-                replace_min_price_delta_pct=getattr(self, "replace_min_price_delta_pct", 0.50),
-                max_daily_buy_notional_usd=getattr(self, "max_daily_buy_notional_usd", 6000.0),
+                is_limit=is_limit,
             )
-            if cb_allowed and cb_reason and cb_usd < effective_usd:
-                logger.info(
-                    "[LLM TRADER] Clamped %s %s notional from $%.2f to $%.2f (%s).",
-                    decision, inst.symbol, effective_usd, cb_usd, cb_reason,
-                )
-                effective_usd = cb_usd
-                intent["circuit_breaker_clamped"] = cb_reason
-            elif not cb_allowed:
-                return _block_by_circuit_breaker(cb_reason, cb_metrics)
-
-            if is_limit:
-                try:
-                    fetched_spot = safe_pos_float(self._get_live_price(inst), default=None)
-                    if fetched_spot is not None:
-                        live_spot_px = fetched_spot
-                except Exception:
-                    pass
-
-            recent_bot_fill = self._resolve_recent_bot_opposite_fill(inst, decision, now, all_intents)
-            pp_allowed, pp_reason, pp_metrics = evaluate_ai_ping_pong_guard(
-                intent,
-                all_intents,
-                decision=decision,
-                symbol=symbol,
-                venue=venue,
-                price=price,
-                now_ts=now,
-                flip_cooldown_min=getattr(self, "flip_cooldown_min", 45.0),
-                flip_min_edge_pct=getattr(self, "flip_min_edge_pct", 0.90),
-                max_flips_6h=getattr(self, "max_flips_6h", 2),
-                spot_price=live_spot_px,
-                recent_bot_fill=recent_bot_fill,
-            )
-            if not pp_allowed:
-                return _block_by_circuit_breaker(pp_reason, pp_metrics)
-
-            sc_win = getattr(self, "scorecard_window_trades", 5)
-            sc_streak = getattr(self, "scorecard_max_loss_streak", 3)
-            sc_cd_h = getattr(self, "scorecard_cooldown_hours", 4.0)
-            if decision == "BUY" and sc_win > 0 and sc_streak > 0 and sc_cd_h > 0.0:
-                sc_prices = self._load_live_prices_for_scorecard(symbol, venue, live_spot_px)
-                scorecard = evaluate_ai_decision_scorecard(
-                    all_intents,
-                    now_ts=now,
-                    live_prices=sc_prices,
-                    window_trades=sc_win,
-                    max_loss_streak=sc_streak,
-                    cooldown_hours=sc_cd_h,
-                )
-                if scorecard.get("buy_shadow_active"):
-                    sc_reason = str(scorecard.get("reason") or "ai_scorecard_buy_shadow_cooldown")
-                    intent["scorecard_downgraded_to_shadow"] = sc_reason
-                    intent["ai_decision_scorecard"] = scorecard
-                    sc_qty = effective_usd / price if (effective_usd > 0.0 and price > 0.0) else 0.0
-                    logger.warning(
-                        "[LLM TRADER] Downgrading BUY %s to shadow via AI decision scorecard: %s",
-                        inst.symbol, sc_reason,
-                    )
-                    return record_shadow_intent_observation(
-                        inst,
-                        intent,
-                        decision=decision,
-                        target_qty=sc_qty,
-                        price=price,
-                        effective_usd=effective_usd,
-                        confidence=confidence,
-                        guard_allowed=False,
-                        guard_reason=sc_reason,
-                        thesis=thesis,
-                        trade_tag=trade_tag,
-                        now_ts=now,
-                        is_limit=is_limit,
-                        dispatch_notify_fn=self._dispatch_notify,
-                        log=logger,
-                    )
+            if short_circuit is not None:
+                return short_circuit
 
         canceled_order_snapshots: list[dict[str, Any]] = []
         if mode == "enforce" and (replace_open or cancel_bot_open or bool(target_oids)):
@@ -704,60 +874,32 @@ class AutonomousIntentGateway:
             if not ok_cancel:
                 return intent
         if dup_oid:
-            logger.info(
-                "[LLM TRADER \u00b7 ENFORCE] Skipping duplicate %s LIMIT %s @ $%.4f ($%.2f); identical AI order %s is already open.",
-                decision, inst.symbol, price, effective_usd, dup_oid,
+            return self._record_duplicate_open_order_skip(
+                inst, intent, decision=decision, price=price, effective_usd=effective_usd, dup_oid=dup_oid, now_ts=now
             )
-            intent["status"] = "SKIPPED_DUPLICATE_OPEN_ORDER"
-            intent["duplicate_of_order_id"] = dup_oid
-            append_intent_history(intent, {
-                "ts": now,
-                "action": "SKIPPED_DUPLICATE_OPEN_ORDER",
-                "duplicate_of_order_id": dup_oid,
-                "price": price,
-                "notional_usd": effective_usd,
-            })
+
+        ok_wallet, guard_allowed, effective_usd, guard_reason = self._unlock_and_clamp_wallet_notional(
+            inst,
+            intent,
+            all_intents,
+            mode=mode,
+            intent_id=intent_id,
+            decision=decision,
+            price=price,
+            effective_usd=effective_usd,
+            now_ts=now,
+            replace_open=replace_open,
+            cancel_bot_open=cancel_bot_open,
+            target_oids=target_oids,
+            thesis_cancels_bot_order=thesis_cancels_bot_order,
+            canceled_order_snapshots=canceled_order_snapshots,
+        )
+        if not ok_wallet:
             return intent
-        requested_effective_usd = effective_usd
-        guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
-            inst, decision, price, requested_effective_usd
-        )
-        is_balance_constrained = (
-            (not guard_allowed and "insufficient free" in str(guard_reason or "").lower())
-            or (guard_allowed and effective_usd < requested_effective_usd * 0.95)
-        )
-        # Only same-side resting orders lock the asset this intent spends (quote for BUY, base for SELL);
-        # opposite-side orders (trailing stops, take-profits, SL) free nothing and must stay active.
-        if (
-            mode == "enforce"
-            and replace_open
-            and not (cancel_bot_open or target_oids or thesis_cancels_bot_order)
-            and is_balance_constrained
-        ):
-            ok_unlock, unlocked_ids = self._cancel_prior_orders_or_abort(
-                inst,
-                intent,
-                intent_id=intent_id,
-                decision=decision,
-                now_ts=now,
-                canceled_order_snapshots=canceled_order_snapshots,
-                rollback_reason="unlock_cancel_failed",
-                include_bot_orders=True,
-                only_bot_orders=True,
-                extra_intent_key="canceled_bot_open_orders",
-                intents=all_intents,
-            )
-            if not ok_unlock:
-                return intent
-            if unlocked_ids:
-                guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
-                    inst, decision, price, requested_effective_usd
-                )
         if guard_allowed and effective_usd > 0:
             intent["clamped_notional_usd"] = round(effective_usd, 2)
         target_qty = effective_usd / price if effective_usd > 0 else 0.0
 
-        # Execution or Observation Branch
         if mode == "shadow":
             return record_shadow_intent_observation(
                 inst,
@@ -777,7 +919,6 @@ class AutonomousIntentGateway:
                 log=logger,
             )
 
-        # Gate: only "enforce" mode is permitted to execute live orders
         if mode != "enforce":
             logger.info("[LLM TRADER] Gateway mode is %r \u2014 skipping execution for intent %s", mode, intent_id)
             intent["status"] = "REJECTED_GATEWAY_DISABLED"
@@ -789,22 +930,9 @@ class AutonomousIntentGateway:
             return intent
 
         if guard_allowed:
-            try:
-                use_disk = os.path.abspath(self.workspace_dir) == os.path.abspath(ROOT_DIR)
-                probe_res = probe_deterministic_guards(
-                    symbol,
-                    decision,
-                    price,
-                    venue=venue,
-                    now_ts=now,
-                    allow_disk_cache=use_disk,
-                )
-                if probe_flags := probe_res.get("flags"):
-                    intent["advisory_guards_overridden"] = [
-                        f"{f['guard']}:{f['action']}({f['reason']})" for f in probe_flags
-                    ]
-            except Exception:
-                pass
+            self._record_advisory_guard_overrides(
+                intent, symbol=symbol, decision=decision, price=price, venue=venue, now_ts=now
+            )
 
         res_intent = execute_enforce_intent_order(
             inst,
