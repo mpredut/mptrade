@@ -1135,6 +1135,24 @@ class PriceWindow:
                         if (acceleration * acc_fd) <= 0.0 or abs(acceleration) > abs(acc_fd):
                             acceleration = acc_fd
                     velocity = v_rec
+                else:
+                    def _ols_vel(seg: np.ndarray) -> float:
+                        m = len(seg)
+                        if m < 2:
+                            return 0.0
+                        u_s = np.arange(m, dtype=np.float64) - 0.5 * (m - 1.0)
+                        d_s = m * (m * m - 1.0) / 12.0
+                        return (safe_float(np.dot(u_s, seg) / d_s, 0.0) or 0.0) / dt_min
+
+                    v_tail = _ols_vel(y_pct[tail_idx:])
+                    end_idx = max(tail_idx, n - max(3, n // 6))
+                    v_end_raw = _ols_vel(y_pct[end_idx:])
+                    v_end = v_end_raw if (velocity * v_end_raw) > 0.0 else 0.0
+                    max_rev_vel = max(abs(v_rec), abs(v_tail), 1.5 * abs(v_end))
+                    if max_rev_vel > 0.0 and abs(velocity) > max_rev_vel:
+                        scale = max_rev_vel / abs(velocity)
+                        velocity = math.copysign(max_rev_vel, velocity)
+                        acceleration *= scale
             return velocity, acceleration
         except Exception:
             return 0.0, 0.0

@@ -1602,7 +1602,15 @@ def _guard_quadratic_kinematic_overshoot(
     tail_span = max(tail_pts[-1][0] - tail_pts[0][0], 1e-6)
     v_tail = dy_tail / tail_span
     if (vel * v_rec) > 0.0 or (vel * dy_tail) > 0.0:
-        max_rev_vel = 2.0 * max(abs(v_rec), abs(v_tail))
+        v_tail_ols = _linear_ols_slope(tail_pts)
+        eff_v_tail = v_tail_ols if v_tail_ols is not None else v_tail
+        end_cut = pts_tau_y[-1][0] - span_min / 6.0
+        end_pts = [pt for pt in pts_tau_y if pt[0] >= end_cut - 1e-9]
+        if len(end_pts) < 3:
+            end_pts = pts_tau_y[-min(3, len(pts_tau_y)) :]
+        v_end_ols = _linear_ols_slope(end_pts)
+        v_end = v_end_ols if (v_end_ols is not None and (vel * v_end_ols) > 0.0) else 0.0
+        max_rev_vel = max(abs(v_rec), abs(eff_v_tail), 1.5 * abs(v_end))
         if max_rev_vel > 0.0 and abs(vel) > max_rev_vel:
             scale = max_rev_vel / abs(vel)
             return math.copysign(max_rev_vel, vel), acc * scale
@@ -2266,18 +2274,38 @@ def apply_24h_series_enrichment(
             and abs(safe_float(entry.get("growth_2_5h"), 0.0) - safe_float(entry.get("growth_15m"), 0.0)) < 1e-9
         )
         v90_cur = safe_float(entry.get("vel_90s_pct_min"), default=None)
+        v5m_cur = safe_float(entry.get("vel_5m_pct_min"), default=None)
         c1m_cur = safe_float(entry.get("chg_1m_pct"), default=None)
+        c5m_cur = safe_float(entry.get("chg_5m_pct"), default=None)
         s90_cur = safe_float(entry.get("slope_90s"), default=None)
         gf_cur = safe_float(entry.get("gradient_recent_fast"), default=None)
         kin_contradicts_short = bool(
-            v90_cur is not None
-            and abs(v90_cur) >= 0.02
-            and c1m_cur is not None
-            and abs(c1m_cur) >= 0.05
-            and (v90_cur * c1m_cur) < 0.0
-            and (
-                (s90_cur is not None and (v90_cur * s90_cur) < 0.0)
-                or (gf_cur is not None and (v90_cur * gf_cur) < 0.0)
+            (
+                v90_cur is not None
+                and abs(v90_cur) >= 0.02
+                and c1m_cur is not None
+                and abs(c1m_cur) >= 0.05
+                and (v90_cur * c1m_cur) < 0.0
+                and (
+                    (s90_cur is not None and (v90_cur * s90_cur) < 0.0)
+                    or (gf_cur is not None and (v90_cur * gf_cur) < 0.0)
+                )
+            )
+            or (
+                v5m_cur is not None
+                and abs(v5m_cur) >= 0.05
+                and c5m_cur is not None
+                and c1m_cur is not None
+                and abs(c5m_cur) >= 0.05
+                and abs(c1m_cur) >= 0.05
+                and (v5m_cur * c5m_cur) < 0.0
+                and (v5m_cur * c1m_cur) < 0.0
+            )
+            or (
+                v90_cur is not None
+                and abs(v90_cur) >= 0.20
+                and c1m_cur is not None
+                and abs(c1m_cur) <= 0.15
             )
         )
         if (
@@ -2289,12 +2317,19 @@ def apply_24h_series_enrichment(
             for kk_s, kv_s in compute_series_kinematics(series_24h).items():
                 if entry.get(kk_s) is None or stale_short_cache or stale_kin_ts or kin_contradicts_short:
                     entry[kk_s] = kv_s
-        if (entry.get("slope_3_7m") is None or stale_short_cache or stale_kin_ts) and (s_fb := compute_short_slopes_from_series(series_24h)):
+        if (entry.get("slope_3_7m") is None or stale_short_cache or stale_kin_ts or kin_contradicts_short) and (s_fb := compute_short_slopes_from_series(series_24h)):
+            v90_post = safe_float(entry.get("vel_90s_pct_min"), default=None)
+            s90_flipped = bool(
+                kin_contradicts_short
+                and v90_post is not None
+                and s90_cur is not None
+                and (v90_post * s90_cur) < 0.0
+            )
             for sk, sv in s_fb.items():
                 if sv is None:
                     continue
                 if entry.get(sk) is None or (
-                    stale_kin_ts and sk in ("slope_90s", "growth_90s", "trend_90s", "gradient_recent_fast")
+                    (stale_kin_ts or s90_flipped) and sk in ("slope_90s", "growth_90s", "trend_90s", "gradient_recent_fast")
                 ) or (
                     stale_short_cache
                     and (

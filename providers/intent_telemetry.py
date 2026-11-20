@@ -469,6 +469,7 @@ def _resolve_intent_execution_details(
     limit_px = (
         first_pos_float(
             matched_open.get("price") if isinstance(matched_open, dict) else None,
+            i.get("limit_price") if exec_status == "FILLED" else None,
             exec_pay.get("price") if isinstance(exec_pay, dict) else None,
             i.get("limit_price"),
         )

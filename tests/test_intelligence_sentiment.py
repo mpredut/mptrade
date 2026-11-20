@@ -15178,3 +15178,84 @@ def test_faza3a_extended_hours_equities_live_pricing_and_xstock_basis(tmp_path, 
     assert xst_res["underlying_live_price"] == pytest.approx(150.0)
     assert xst_res["underlying_session"] == "PRE"
     assert xst_res["xstock_vs_underlying_pct"] == pytest.approx(2.0)
+
+
+def test_kinematic_reversal_overshoot_parity_and_filled_limit_px_precision():
+    """Verify PriceWindow & series kinematics clamp partial-tail reversal ringing to physical speed, refresh contradictory 5m kinematics, and preserve clean submitted limit_px on FILLED Kraken orders."""
+    import pricewindow as pw
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        apply_24h_series_enrichment,
+        compute_series_kinematics,
+    )
+    from providers.intent_telemetry import build_last_cycle_execution_status
+    from providers.intent_state import extract_intent_notional
+
+    # 1. Step-drop (-0.25% early) + tiny +0.11% late bounce + flat tail: must NOT explode to >+0.40%/m
+    t0_ms = 1_795_180_000_000
+    step_prices = (
+        [0.14611] * 20
+        + [0.14575] * 40
+        + [0.14580] * 10
+        + [0.14585] * 8
+        + [0.14594] * 13
+    )
+    win = pw.PriceWindow("ADAUSD", 91, sample_rate_sec=1.0, window_seconds=90.0)
+    for px in step_prices:
+        win.process_price(px)
+    v90_pw, a90_pw = win.calculate_acceleration(window_sec=90.0)
+    assert 0.0 < v90_pw <= 0.33
+    assert a90_pw > 0.0
+
+    series_90 = [[t0_ms + i * 1000, px] for i, px in enumerate(step_prices)]
+    kin_s = compute_series_kinematics(series_90)
+    assert 0.0 < kin_s["vel_90s_pct_min"] <= 0.33
+    assert abs(v90_pw - kin_s["vel_90s_pct_min"]) < 0.06
+
+    # 2. Stale positive vel_5m contradicting negative 5m & 1m tape triggers live series_24h kinematics refresh
+    s_5m = [[t0_ms + i * 1000, 63.20 - 0.0002 * i] for i in range(301)]
+    ent = {
+        "price": s_5m[-1][1],
+        "chg_1m_pct": -0.13,
+        "chg_5m_pct": -0.09,
+        "slope_90s": 0.00034,
+        "vel_90s_pct_min": -0.2642,
+        "accel_90s_pct_min2": -0.2798,
+        "vel_5m_pct_min": 0.1183,
+        "accel_5m_pct_min2": 0.0352,
+    }
+    apply_24h_series_enrichment("HYPEUSDC", ent, {"chg_1m_pct": -0.13, "chg_5m_pct": -0.09}, s_5m, None)
+    assert ent["vel_5m_pct_min"] < 0.0
+    assert ent["vel_90s_pct_min"] < 0.0
+    assert ent["slope_90s"] < 0.0
+
+    # 3. FILLED Kraken LIMIT order keeps exact submitted limit_price (130.07) instead of cost/vol float dust (130.070001)
+    now_s = t0_ms / 1000.0 + 300.0
+    st_filled = build_last_cycle_execution_status(
+        [
+            {
+                "timestamp": now_s - 600.0,
+                "decision": "SELL",
+                "symbol": "SPCXxUSD",
+                "venue": "kraken",
+                "order_type": "LIMIT",
+                "limit_price": 130.07,
+                "reference_price": 130.07,
+                "suggested_notional_usd": 646.31,
+                "status": "EXECUTED",
+                "execution_payload": {
+                    "orderId": "OLZEGS-C2J2M-OTMPY2",
+                    "status": "FILLED",
+                    "price": 130.070001,
+                    "filled_qty": 4.968943,
+                    "fill_ts": now_s - 300.0,
+                },
+            }
+        ],
+        "crypto",
+        now_s,
+        extract_intent_notional,
+        open_orders=[],
+    )
+    assert st_filled is not None
+    assert st_filled["limit_px"] == pytest.approx(130.07)
+    assert st_filled["fill_px"] == pytest.approx(130.070001)
