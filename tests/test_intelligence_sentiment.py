@@ -15932,4 +15932,170 @@ def test_iter4_slope_unit_scaling_resting_plan_target_hit_and_post_sell_lifo_res
     assert ro_arb["lifo_realized_pnl_usd"] == 0.0
 
 
+def test_phases_2_to_3b_code_review_edge_case_fixes(tmp_path, monkeypatch):
+    """Regression coverage for hidden edge cases found in Phases 2/3A/3B review: inverted PRE quote metadata, PRE equity memo throttle, frozen xStock sibling session, MEDIUM-before-HIGH catalyst shadowing, and Faza 3B partial-failure/Total=0.0/tokenized-equity guards."""
+    from datetime import datetime
+    from botcore import ET
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.macro.calendar_ssot import format_pretrade_macro_catalyst_line
+    from intelligence.sentiment.collectors.macro_telemetry_collector import collect_spot_etf_flows_snapshot
+    from intelligence.sentiment.collectors.microstructure_collector import Fleet24hAndMicrostructureEnricher
+    from intelligence.sentiment.collectors.portfolio_collector import KrakenXstocksCollector
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        format_pretrade_etf_flows_line,
+        parse_farside_etf_flows_html,
+    )
+    from state_io import save_json_state
+
+    ts_pre = datetime(2026, 11, 18, 8, 15, tzinfo=ET).timestamp()
+
+    # 1. Active PRE cache_current_price must NOT be inverted into t212_close_px when pos:t212 has newer ts;
+    #    and matching extended vs close price clears stale close/ext_vs_rth metadata
+    pt_inv = {"NVDA_US_EQ": {"price": 141.05, "trend": 0, "growth_coefficient": 0.0}}
+    cp_inv = {"NVDA_US_EQ": [[int((ts_pre - 35.0) * 1000), 141.05]]}
+    bals_inv = {"pos:t212:NVDA_US_EQ": {"symbol": "NVDA_US_EQ", "free": 2.0, "price": 145.98, "ts": ts_pre - 5.0}}
+    Fleet24hAndMicrostructureEnricher._seed_t212_positions(
+        "", pt_inv, cp_inv, {}, bals_inv, "", 0.0, ts_pre, lambda _p: None, False
+    )
+    assert pt_inv["NVDA_US_EQ"].get("quote_source") != "yahoo_ext_cached"
+    assert pt_inv["NVDA_US_EQ"].get("t212_close_px") != pytest.approx(141.05)
+
+    pt_eq = {
+        "NVDA_US_EQ": {
+            "price": 145.98,
+            "t212_close_px": 140.0,
+            "ext_vs_rth_pct": 4.27,
+            "trend": 0,
+            "growth_coefficient": 0.0,
+        }
+    }
+    cp_eq = {"NVDA_US_EQ": [[int((ts_pre - 10.0) * 1000), 145.98]]}
+    bals_eq = {"pos:t212:NVDA_US_EQ": {"symbol": "NVDA_US_EQ", "free": 2.0, "price": 145.98, "ts": ts_pre - 36000.0}}
+    Fleet24hAndMicrostructureEnricher._seed_t212_positions(
+        "", pt_eq, cp_eq, {}, bals_eq, "", 0.0, ts_pre, lambda _p: None, False
+    )
+    assert "t212_close_px" not in pt_eq["NVDA_US_EQ"]
+    assert "ext_vs_rth_pct" not in pt_eq["NVDA_US_EQ"]
+
+    # 2. Equity context memo throttles to >=120s during PRE/POST (cutting Nasdaq/Yahoo polling 4x outside RTH)
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path / "ob_pre"), cache_ttl_sec=0.0, disk_ttl_sec=0.0, start_sync=True)
+    ob_col._EQUITY_CTX_MEMO.clear()
+    fetch_cnt = {"n": 0}
+
+    def _fake_eq_fetch(_url, label, _sym, **_kw):
+        fetch_cnt["n"] += 1
+        if label == "nasdaq_quote":
+            return {"data": {"primaryData": {"lastSalePrice": "$145.98"}}}
+        return {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {"marketState": "PRE", "regularMarketPrice": 145.98, "preMarketPrice": 144.0},
+                        "timestamp": [int(ts_pre - 300)],
+                        "indicators": {"quote": [{"open": [144.0], "high": [144.2], "low": [143.9], "close": [144.0], "volume": [100]}]},
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(ob_col, "_fetch_json_dict", _fake_eq_fetch)
+    assert ob_col._fetch_equity_market_context("NVDA_US_EQ", ts_pre, include_options=False) is not None
+    calls_first = fetch_cnt["n"]
+    # 60s later during PRE must still hit memo (zero additional HTTP calls under >=120s extended TTL)
+    assert ob_col._fetch_equity_market_context("NVDA_US_EQ", ts_pre + 60.0, include_options=False) is not None
+    assert fetch_cnt["n"] == calls_first
+
+    # 3. KrakenXstocksCollector marks frozen t212_rth_close sibling as RTH_CLOSE instead of current wall-clock session
+    k_dir = tmp_path / "kraken_rth_close"
+    k_dir.mkdir()
+    save_json_state(str(k_dir / "xstock_state.json"), {"known_assets": {"SPCXx": 10.0}, "pair": "SPCXxUSD"})
+    xst = KrakenXstocksCollector(start_sync=False).collect(
+        str(k_dir),
+        kraken_dir=str(k_dir),
+        prices_and_trends={
+            "SPCXxUSD": {"price": 152.0},
+            "SPCX_US_EQ": {"price": 150.0, "quote_source": "t212_rth_close"},
+        },
+        all_t212_cycles={},
+    )
+    assert xst is not None and xst["underlying_session"] == "RTH_CLOSE"
+
+    # 4. Earlier MEDIUM macro event does NOT shadow a HIGH-impact release within <=240m in Pre-Trade catalyst line
+    cal_mixed = {
+        "pre_event_risk_window": False,
+        "next_confirmed_event": {
+            "title": "Unemployment Claims",
+            "impact": "MEDIUM",
+            "minutes_until": 15.0,
+            "summary": "Unemployment Claims [MEDIUM] at 15:30 EET",
+        },
+        "confirmed_events_today": [
+            {
+                "title": "Unemployment Claims",
+                "impact": "MEDIUM",
+                "minutes_until": 15.0,
+                "summary": "Unemployment Claims [MEDIUM] at 15:30 EET",
+            },
+            {
+                "title": "Core PCE Price Index m/m",
+                "impact": "HIGH",
+                "minutes_until": 105.0,
+                "summary": "Core PCE Price Index m/m [HIGH] at 17:00 EET",
+            },
+        ],
+    }
+    cat_line = format_pretrade_macro_catalyst_line(cal_mixed, symbol="BTCUSDC")
+    assert cat_line is not None and "Core PCE Price Index" in cat_line
+
+    # 5a. Partial Farside row where Total lags at 0.0 uses sum(issuers_map), handles colspan, and ignores tokenized equities
+    partial_lag_html = """
+    <table>
+      <tr><th colspan="4"></th><th>Total</th></tr>
+      <tr><th></th><th>IBIT</th><th>FBTC</th><th>GBTC</th><th></th></tr>
+      <tr><td>19 Nov 2026</td><td>180.5</td><td>-</td><td>(20.5)</td><td>0.0</td></tr>
+      <tr><td>20 Nov 2026</td><td>-</td><td>-</td><td>-</td><td>0.0</td></tr>
+    </table>
+    """
+    parsed_partial = parse_farside_etf_flows_html(partial_lag_html, asset="BTC")
+    assert parsed_partial is not None
+    assert parsed_partial["latest_net_flow_musd"] == pytest.approx(160.0)
+    assert parsed_partial["is_partial"] is True
+    assert parsed_partial["pending_date"] == "2026-11-20"
+    assert format_pretrade_etf_flows_line({"assets": {"BTC": parsed_partial}}, symbol="SPCXxUSD") == ""
+    assert format_pretrade_etf_flows_line({"assets": {"BTC": parsed_partial}}, symbol="ANTxUSD") == ""
+    assert format_pretrade_etf_flows_line({"assets": {"BTC": parsed_partial}}, symbol="BTCUSDC") != ""
+
+    # 5b. SpotEtfFlowsCollector retries degraded cache (eth_ok=False) even inside skip_if_fresh_sec
+    cdir_etf = tmp_path / "cachedb"
+    cdir_etf.mkdir()
+    eth_ok_html = """
+    <table>
+      <tr><th></th><th>ETHA</th><th>Total</th></tr>
+      <tr><td>19 Nov 2026</td><td>(50.0)</td><td>(50.0)</td></tr>
+    </table>
+    """
+    calls_etf = {"n": 0}
+
+    def _both_ok(url, **_kw):
+        calls_etf["n"] += 1
+        return partial_lag_html if "/btc/" in url else eth_ok_html
+
+    # Seed degraded snapshot (btc_ok=True, eth_ok=False)
+    save_json_state(
+        str(cdir_etf / "etf_flows_collect.json"),
+        {
+            "ts": ts_pre,
+            "btc_ok": True,
+            "eth_ok": False,
+            "assets": {"BTC": parsed_partial, "ETH": {"latest_date": "2026-11-18", "latest_net_flow_musd": -10.0}},
+        },
+    )
+    res_retry = collect_spot_etf_flows_snapshot(
+        str(cdir_etf),
+        now_ts=ts_pre + 60.0,
+        persist=True,
+        fetch_text_fn=_both_ok,
+        skip_if_fresh_sec=1800.0,
+    )
+    assert res_retry is not None and res_retry["eth_ok"] is True and calls_etf["n"] == 2
 

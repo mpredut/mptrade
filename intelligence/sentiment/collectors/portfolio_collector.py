@@ -1040,7 +1040,12 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             sib_mstate = str(sib_entry.get("market_state") or "").strip().upper() if isinstance(sib_entry, dict) else ""
             sib_qsrc = str(sib_entry.get("quote_source") or "").strip().lower() if isinstance(sib_entry, dict) else ""
             if not sib_mstate:
-                sib_mstate = "REGULAR" if sib_qsrc in ("yahoo_rth", "t212_live") else resolve_symbol_market_session(t212_sib)
+                if sib_qsrc in ("yahoo_rth", "t212_live"):
+                    sib_mstate = "REGULAR"
+                elif sib_qsrc == "t212_rth_close":
+                    sib_mstate = "RTH_CLOSE"
+                else:
+                    sib_mstate = resolve_symbol_market_session(t212_sib)
             xst_summary["underlying_live_price"] = round(sib_px, 4)
             if sib_mstate:
                 xst_summary["underlying_session"] = sib_mstate

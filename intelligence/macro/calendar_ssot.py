@@ -703,11 +703,21 @@ def format_pretrade_macro_catalyst_line(cal: Any, *, symbol: str = "") -> Option
                 parts.append(f"Upcoming Earnings: {up_match.get('date_iso')} {up_match.get('summary')}")
 
     if not pre_risk:
-        next_ev = cal.get("next_confirmed_event")
-        if isinstance(next_ev, Mapping) and str(next_ev.get("impact") or "").upper() == "HIGH":
-            m_until = safe_float(next_ev.get("minutes_until"), None)
-            if m_until is not None and 0.0 <= m_until <= 240.0 and next_ev.get("summary"):
-                parts.append(f"Next Macro: {next_ev['summary']} in {_format_calendar_countdown(m_until)}")
+        cand_events: List[Mapping[str, Any]] = []
+        if isinstance(next_ev := cal.get("next_confirmed_event"), Mapping):
+            cand_events.append(next_ev)
+        if isinstance(today_evs := cal.get("confirmed_events_today"), (list, tuple)):
+            cand_events.extend(ev for ev in today_evs if isinstance(ev, Mapping))
+        best_high: Optional[Tuple[float, Mapping[str, Any]]] = None
+        for ev in cand_events:
+            if str(ev.get("impact") or "").upper() != "HIGH" or not ev.get("summary"):
+                continue
+            m_until = safe_float(ev.get("minutes_until"), None)
+            if m_until is not None and 0.0 <= m_until <= 240.0:
+                if best_high is None or m_until < best_high[0]:
+                    best_high = (m_until, ev)
+        if best_high is not None:
+            parts.append(f"Next Macro: {best_high[1]['summary']} in {_format_calendar_countdown(best_high[0])}")
     return " | ".join(parts) if parts else None
 
 

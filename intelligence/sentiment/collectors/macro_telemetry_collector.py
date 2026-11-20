@@ -783,7 +783,10 @@ class SpotEtfFlowsCollector(MacroTelemetryCollectorBase):
             read_json_fn=read_json_fn,
             is_healthy_fn=lambda d: isinstance(d.get("assets"), dict)
             and bool(d["assets"])
-            and all(a in d["assets"] for a in expected_assets),
+            and all(
+                a in d["assets"] and _parse_bool_flag(d.get(f"{a.lower()}_ok"), False)
+                for a in expected_assets
+            ),
         )
         if not allow_network and fetch_text_fn is None:
             return prev_snap

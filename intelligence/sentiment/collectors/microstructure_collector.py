@@ -1644,15 +1644,18 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     eq_sess = resolve_symbol_market_session(ticker, eff_now)
                 except Exception:
                     t_rth_open = False
-            cp_is_fresher_ext = bool(
+            cp_in_active_ext_sess = bool(
                 has_equity_suffix(ticker)
                 and not t_rth_open
                 and eq_sess in ("PRE", "POST")
                 and cp_pt is not None
                 and cp_pt[1] > 0.0
-                and cp_ts_s_eq > (pos_ts_val or 0.0) + 1.0
                 and 0.0 <= (eff_now - cp_ts_s_eq) <= 20.0 * 60.0
                 and resolve_symbol_market_session(ticker, cp_ts_s_eq) == eq_sess
+            )
+            cp_is_fresher_ext = bool(
+                cp_in_active_ext_sess
+                and cp_ts_s_eq > (pos_ts_val or 0.0) + 1.0
             )
             if cp_is_fresher_ext and cp_pt is not None:
                 ext_live_px = round(cp_pt[1], 4)
@@ -1663,6 +1666,9 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 if cached_t212_px is not None and abs(ext_live_px - cached_t212_px) / max(ext_live_px, cached_t212_px) >= 0.0005:
                     t_entry["t212_close_px"] = cached_t212_px
                     t_entry["ext_vs_rth_pct"] = round(((ext_live_px - cached_t212_px) / cached_t212_px) * 100.0, 2)
+                else:
+                    t_entry.pop("t212_close_px", None)
+                    t_entry.pop("ext_vs_rth_pct", None)
                 continue
             if cached_t212_px is not None and (
                 ticker not in inst_map
@@ -1679,6 +1685,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             if has_equity_suffix(ticker) and safe_pos_float(t_entry.get("price"), default=0.0):
                 if (
                     not t_rth_open
+                    and not cp_in_active_ext_sess
                     and cp_pt is not None
                     and cp_pt[1] > 0.0
                     and cached_t212_px is not None

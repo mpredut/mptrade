@@ -28,7 +28,6 @@ from botcore import (
     is_cache_fresh,
     is_env_defined,
     is_rth_gate_enabled,
-    is_us_extended_hours_open,
     lru_dict_put,
     normalize_epoch_sec,
     resolve_now_ts,
@@ -50,6 +49,7 @@ from instrument_registry import (
     is_equity_symbol,
     is_symbol_market_open,
     resolve_symbol_identity,
+    resolve_symbol_market_session,
     venue_for_symbol,
 )
 from intelligence.macro_sentiment_ssot import (
@@ -698,7 +698,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 and is_rth_gate_enabled(getattr(self, "_enforce_rth_gate", None))
             ):
                 try:
-                    if not is_symbol_market_open(sym_clean, now_f) and not is_us_extended_hours_open(now_f):
+                    if resolve_symbol_market_session(sym_clean, now_f) not in ("REGULAR", "PRE", "POST"):
                         stale_disk = self._load_from_disk(sym_clean, now_f, ignore_ttl=True, exact_only=True)
                         stale_ts = safe_pos_float(getattr(stale_disk, "ts", None), default=0.0) or 0.0
                         stale_sp = safe_pos_float(getattr(stale_disk, "spread_bps", None), default=0.0) or 0.0
@@ -932,6 +932,8 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             return None
         derived_intervals = resolve_derived_telemetry_intervals()
         pos_memo_ttl = derived_intervals.get("derivatives_interval_sec", 30.0)
+        if resolve_symbol_market_session(symbol, now) in ("PRE", "POST"):
+            pos_memo_ttl = max(pos_memo_ttl * 4.0, 120.0)
         neg_memo_ttl = derived_intervals.get("whale_interval_sec", 60.0)
         no_options_ttl = derived_intervals.get("share_executor_interval_sec", 1800.0)
         cached_ctx = self._EQUITY_CTX_MEMO.get(ticker)

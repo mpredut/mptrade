@@ -17,7 +17,7 @@ from cachepaths import (
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
-from instrument_registry import canonical_display_symbol, casefold_get
+from instrument_registry import canonical_display_symbol, casefold_get, resolve_symbol_identity
 from intelligence.macro.calendar_ssot import (
     parse_cited_cvd_usd,
     parse_cited_taker_ratio,
@@ -1258,9 +1258,9 @@ class _HtmlTableExtractor(HTMLParser):
         self._table_stack: List[List[List[str]]] = []
         self._cur_row: Optional[List[str]] = None
         self._cur_cell: Optional[List[str]] = None
+        self._cur_colspan: int = 1
 
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
-        _ = attrs
         t = tag.lower()
         if t == "table":
             self._table_stack.append([])
@@ -1268,13 +1268,23 @@ class _HtmlTableExtractor(HTMLParser):
             self._cur_row = []
         elif self._cur_row is not None and t in ("td", "th"):
             self._cur_cell = []
+            span = 1
+            for ak, av in attrs:
+                if str(ak or "").lower() == "colspan":
+                    span = max(1, min(32, safe_int(av, 1)))
+                    break
+            self._cur_colspan = span
 
     def handle_endtag(self, tag: str) -> None:
         t = tag.lower()
         if t in ("td", "th") and self._cur_cell is not None:
             if self._cur_row is not None:
-                self._cur_row.append(" ".join("".join(self._cur_cell).split()))
+                txt = " ".join("".join(self._cur_cell).split())
+                self._cur_row.append(txt)
+                if self._cur_colspan > 1:
+                    self._cur_row.extend([""] * (self._cur_colspan - 1))
             self._cur_cell = None
+            self._cur_colspan = 1
         elif t == "tr" and self._cur_row is not None:
             if self._cur_row and self._table_stack:
                 self._table_stack[-1].append(self._cur_row)
@@ -1421,15 +1431,22 @@ def parse_farside_etf_flows_html(
                     issuers_map[ticker] = v_m
         reported_issuers = len(issuers_map)
         if total_issuers > 0 and reported_issuers == 0:
-            pending_date_iso = date_iso
+            pending_date_iso = max(pending_date_iso, date_iso) if pending_date_iso else date_iso
             continue
+        is_partial_row = bool(total_issuers > 0 and reported_issuers < total_issuers)
+        sum_issuers = round(sum(issuers_map.values()), 2) + 0.0 if reported_issuers > 0 else None
         tot_m: Optional[float] = None
         if total_col_idx is not None and total_col_idx < len(row):
             tot_m = _parse_farside_millions(row[total_col_idx])
-        if tot_m is None:
-            if reported_issuers <= 0:
+        if tot_m is None or (
+            is_partial_row
+            and sum_issuers is not None
+            and abs(tot_m) < 0.05
+            and abs(sum_issuers) >= 0.05
+        ):
+            if sum_issuers is None:
                 continue
-            tot_m = round(sum(issuers_map.values()), 2) + 0.0
+            tot_m = sum_issuers
         top_issuers = dict(
             sorted(
                 ((k, v) for k, v in issuers_map.items() if abs(v) >= 0.05),
@@ -1443,7 +1460,7 @@ def parse_farside_etf_flows_html(
             "net_usd": round(tot_m * 1_000_000.0, 2) + 0.0,
             "reported_issuers": reported_issuers,
             "total_issuers": total_issuers,
-            "is_partial": bool(total_issuers > 0 and reported_issuers < total_issuers),
+            "is_partial": is_partial_row,
             "top_issuers_musd": top_issuers,
         }
 
@@ -1560,8 +1577,11 @@ def format_pretrade_etf_flows_line(data: Any, *, symbol: str = "") -> str:
         return ""
     sym_s = str(symbol or "").strip()
     base = canonical_base_asset(sym_s).upper() if sym_s else ""
-    if sym_s and has_equity_suffix(sym_s) and base not in _CRYPTO_ETF_EQUITY_BASES:
-        return ""
+    if sym_s:
+        if has_equity_suffix(sym_s) and base not in _CRYPTO_ETF_EQUITY_BASES:
+            return ""
+        if resolve_symbol_identity(sym_s).is_tokenized_equity:
+            return ""
     order = ("ETH", "BTC") if base in ("ETH", "ETHA", "FETH", "ETHE", "ETHW") else ("BTC", "ETH")
     return format_etf_flows_summary_line(data, asset_order=order)
 
