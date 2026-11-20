@@ -232,7 +232,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                     if (local_vol is not None or sib_vol is not None)
                     else None
                 )
-                src_lbl = "usdc+usdt" if venue == "binance" else f"{venue}+bn_usdt"
+                agg_venue = MarketDataProvider.resolve_venue_for_orderbook_url(agg_url)
+                src_lbl = "usdc+usdt" if agg_venue == venue else f"{venue}+bn_usdt"
                 lru_dict_put(self._agg_spot_cvd_memo, memo_key, (now, tot_cvd, tot_vol, src_lbl), 128)
                 return tot_cvd, tot_vol, src_lbl
             lru_dict_put(self._agg_spot_cvd_memo, memo_key, (now, None, None, ""), 128)

@@ -702,10 +702,12 @@ class ProviderVenueMetadataMixin:
             req = prov_cls.public_primary_quote_spot_cvd_15m_request(query_sym, now_ts)
             if req is not None:
                 return req, prov_cls.extract_spot_flow_15m_usd
-            if v_norm != "binance" and (bn_cls := cls.resolve_venue_provider_class("binance")) is not None:
-                bn_req = bn_cls.public_primary_quote_spot_cvd_15m_request(query_sym, now_ts)
-                if bn_req is not None:
-                    return bn_req, bn_cls.extract_spot_flow_15m_usd
+            for v_key in cls._VENUE_PROVIDER_SPECS:
+                if v_key == v_norm or (alt_cls := cls.resolve_venue_provider_class(v_key)) is None:
+                    continue
+                alt_req = alt_cls.public_primary_quote_spot_cvd_15m_request(query_sym, now_ts)
+                if alt_req is not None:
+                    return alt_req, alt_cls.extract_spot_flow_15m_usd
             return None, None
         except Exception as exc:
             cls._log_orderbook_provider_error("aggregated spot flow request resolution", v_norm, query_sym, exc)
