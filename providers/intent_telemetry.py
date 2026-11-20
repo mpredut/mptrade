@@ -926,8 +926,6 @@ def summarize_active_ai_trade_plans(
             if inst_key in seen_inst_keys:
                 continue
             seen_inst_keys.add(inst_key)
-        else:
-            seen_inst_keys.add(inst_key)
 
         eff_ts = safe_pos_float(det.get("fill_ts_val"), default=None) or safe_pos_float(det.get("ts_val"), default=0.0) or 0.0
         if max_age_sec > 0.0 and eff_ts > 0.0 and (eff_now - eff_ts) > max_age_sec:
@@ -964,9 +962,21 @@ def summarize_active_ai_trade_plans(
 
         spot_px = _resolve_spot_px(venue, sym, pos_hit)
         status = evaluate_trade_plan_status(side, spot_px, inv_px, tgt_px, is_resting=is_resting)
+        if (
+            side == "SELL"
+            and not is_resting
+            and status in ("TARGET_HIT", "INVALIDATED")
+            and eff_ts > 0.0
+            and (eff_now - eff_ts) > 86400.0
+        ):
+            continue
         ident = resolve_symbol_identity(sym)
         disp_sym = ident.display_symbol if (ident.is_tokenized_equity and ident.display_symbol) else sym
-        dist_anchor = spot_px if (spot_px is not None and spot_px > 0.0) else entry_px
+        dist_anchor = (
+            entry_px
+            if (is_resting and entry_px is not None and entry_px > 0.0)
+            else (spot_px if (spot_px is not None and spot_px > 0.0) else entry_px)
+        )
 
         plan_rec: dict[str, Any] = {
             "venue": venue,

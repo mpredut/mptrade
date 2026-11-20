@@ -893,3 +893,219 @@ def test_planned_reentry_exit_row_plans_are_evaluated_consistently():
     assert plans["planned_filled"] == 2
     assert plans["status_counts"] == {"TARGET_HIT": 1, "INVALIDATED": 1, "ACTIVE": 0, "CLOSED_EARLY": 0}
 
+
+def test_crypto_executor_prompt_coherence_active_plans_calibration_xstocks_and_deribit_budget(monkeypatch, tmp_path):
+    """Verify cross-section prompt coherence fixes for active trade plans, calibration, xStock T212 siblings, and Deribit budget."""
+    import intelligence.sentiment.collectors.macro_telemetry_collector as mtc_mod
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import PortfolioPromptViewEvaluator
+    from providers.ai_survival_guard import evaluate_ai_calibration_feedback
+    from providers.intent_state import extract_intent_notional
+    from providers.intent_telemetry import summarize_active_ai_trade_plans
+
+    now_s = 1_795_220_000.0
+
+    # 1. Active AI Trade Plans:
+    #    - Resting SELL LIMIT on BTCUSDC must NOT suppress the held FILLED BUY position's plan
+    #    - Resting plan distances anchor to entry_px (limit price), while FILLED plans anchor to spot_px
+    #    - Resolved flat FILLED SELL plans expire after 24h without resurrecting closed prior BUY plans
+    plan_intents = [
+        {
+            "intent_id": "old_closed_buy",
+            "timestamp": now_s - 40 * 3600.0,
+            "decision": "BUY",
+            "venue": "kraken",
+            "symbol": "TAOUSD",
+            "order_type": "LIMIT",
+            "limit_price": 180.0,
+            "target_px": 192.0,
+            "invalidation_px": 174.0,
+            "status": "EXECUTED",
+            "execution_payload": {"order_id": "K-OLD-BUY", "status": "FILLED", "price": 180.0, "filled_qty": 1.0},
+        },
+        {
+            "intent_id": "stale_resolved_sell",
+            "timestamp": now_s - 30 * 3600.0,
+            "decision": "SELL",
+            "venue": "kraken",
+            "symbol": "TAOUSD",
+            "order_type": "LIMIT",
+            "limit_price": 187.4,
+            "target_px": 184.2,
+            "invalidation_px": 192.5,
+            "status": "EXECUTED",
+            "execution_payload": {"order_id": "K-STALE-SELL", "status": "FILLED", "price": 187.4, "filled_qty": 1.0},
+        },
+        {
+            "intent_id": "btc_filled_buy",
+            "timestamp": now_s - 7200.0,
+            "decision": "BUY",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "order_type": "LIMIT",
+            "limit_price": 70000.0,
+            "target_px": 72100.0,
+            "invalidation_px": 68600.0,
+            "status": "EXECUTED",
+            "execution_payload": {"order_id": "B-BTC-BUY", "status": "FILLED", "price": 70000.0, "filled_qty": 0.04},
+        },
+        {
+            "intent_id": "btc_resting_tp_sell",
+            "timestamp": now_s - 1800.0,
+            "decision": "SELL",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "order_type": "LIMIT",
+            "limit_price": 71500.0,
+            "target_px": 69355.0,
+            "invalidation_px": 72930.0,
+            "status": "EXECUTED",
+            "execution_payload": {"order_id": "B-BTC-REST", "status": "NEW", "price": 71500.0, "executedQty": "0.0"},
+        },
+    ]
+    positions = [
+        {"venue": "binance", "symbol": "BTCUSDC", "price": 69500.0, "value_usd": 2780.0, "effective_max_buy_usd": 2000.0, "effective_max_sell_usd": 2000.0},
+        {"venue": "kraken", "symbol": "TAOUSD", "price": 175.0, "value_usd": 0.0, "effective_max_buy_usd": 2000.0, "effective_max_sell_usd": 0.0},
+    ]
+    open_orders = [
+        {"venue": "binance", "symbol": "BTCUSDC", "side": "SELL", "order_id": "B-BTC-REST", "price": 71500.0, "status": "NEW"}
+    ]
+    active_plans = summarize_active_ai_trade_plans(
+        plan_intents,
+        "crypto",
+        now_s,
+        extract_intent_notional,
+        tradable_positions=positions,
+        open_orders=open_orders,
+        prices_and_trends={"BTCUSDC": {"price": 69500.0}, "TAOUSD": {"price": 175.0}},
+    )
+    assert all(p["symbol"] != "TAOUSD" for p in active_plans)
+    btc_by_state = {p["order_state"]: p for p in active_plans if p["symbol"] == "BTCUSDC"}
+    assert set(btc_by_state) == {"FILLED", "RESTING"}
+    assert btc_by_state["FILLED"]["side"] == "BUY"
+    assert btc_by_state["FILLED"]["target_dist_pct"] == pytest.approx(((72100.0 - 69500.0) / 69500.0) * 100.0, abs=0.02)
+    assert btc_by_state["RESTING"]["side"] == "SELL"
+    assert btc_by_state["RESTING"]["target_dist_pct"] == pytest.approx(((69355.0 - 71500.0) / 71500.0) * 100.0, abs=0.02)
+    assert btc_by_state["RESTING"]["invalidation_dist_pct"] == pytest.approx(((72930.0 - 71500.0) / 71500.0) * 100.0, abs=0.02)
+
+    # 2. Calibration & Attribution:
+    #    - Sell-only Kraken xStock (SPCXxUSD) FILLED SELL exits do not inflate directional SELL plan hit-rate
+    #    - Chronological intermediate same-side fill breaching invalidation_px resolves INVALIDATED even if spot later reverses
+    cal_intents = [
+        {
+            "intent_id": "xs_sell_1",
+            "timestamp": now_s - 10800.0,
+            "decision": "SELL",
+            "venue": "kraken",
+            "symbol": "SPCXxUSD",
+            "order_type": "LIMIT",
+            "limit_price": 130.0,
+            "target_px": 128.0,
+            "invalidation_px": 132.0,
+            "status": "EXECUTED",
+            "execution_payload": {"order_id": "XS-1", "status": "FILLED", "price": 130.0, "filled_qty": 2.0},
+        },
+        {
+            "intent_id": "tao_s1",
+            "timestamp": now_s - 7200.0,
+            "decision": "SELL",
+            "venue": "binance",
+            "symbol": "TAOUSDC",
+            "order_type": "LIMIT",
+            "limit_price": 180.0,
+            "target_px": 174.0,
+            "invalidation_px": 184.0,
+            "status": "EXECUTED",
+            "execution_payload": {"order_id": "T-S1", "status": "FILLED", "avg_fill_price": 180.0, "executedQty": "2.0"},
+        },
+        {
+            "intent_id": "tao_s2_breach",
+            "timestamp": now_s - 3600.0,
+            "decision": "SELL",
+            "venue": "binance",
+            "symbol": "TAOUSDC",
+            "order_type": "LIMIT",
+            "limit_price": 186.0,
+            "status": "EXECUTED",
+            "execution_payload": {"order_id": "T-S2", "status": "FILLED", "avg_fill_price": 186.0, "executedQty": "1.0"},
+        },
+    ]
+    cal_res = evaluate_ai_calibration_feedback(
+        cal_intents, now_ts=now_s, live_prices={"SPCXxUSD": 126.0, "TAOUSDC": 172.0}, lookback_days=7.0, scope="crypto"
+    )
+    assert cal_res["filled_total"] == 3
+    assert cal_res["planned_filled"] == 1
+    assert cal_res["by_side"]["SELL"]["INVALIDATED"] == 1
+    assert cal_res["by_side"]["SELL"]["TARGET_HIT"] == 0
+    assert cal_res["venue_tca"]["kraken"]["limit_filled"] == 1
+    attr_res = evaluate_ai_attribution(
+        cal_intents, now_ts=now_s, live_prices={"SPCXxUSD": 126.0, "TAOUSDC": 172.0}, lookback_days=7.0, scope="crypto"
+    )
+    assert attr_res["trade_plan_calibration"]["planned_filled"] == 1
+    assert attr_res["trade_plan_calibration"]["status_counts"]["INVALIDATED"] == 1
+
+    # 3. PortfolioPromptViewEvaluator surfaces funded non-primary T212 sibling cycles (SPCX_US_EQ) on scope="crypto"
+    view = PortfolioPromptViewEvaluator().evaluate(
+        {
+            "tradable_positions": [
+                {"venue": "kraken", "symbol": "SPCXxUSD", "price": 127.8, "free_base": 0.0, "value_usd": 0.0},
+                {"venue": "kraken", "symbol": "ANTxUSD", "price": 87.5, "free_base": 0.0, "value_usd": 0.0},
+            ],
+            "kraken_xstocks": {
+                "underlying": "ANT",
+                "t212_sibling": "ANT_US_EQ",
+                "t212_sibling_cycle": {"qty": 0.0, "cost_usd": 0.0},
+            },
+            "cross_market_context": {
+                "equity_bellwethers": {
+                    "SPCX_US_EQ": {
+                        "price": 127.8,
+                        "chg_24h_pct": -1.5,
+                        "t212_cycle": {"qty": 4.442965, "cost_usd": 635.94, "avg_cost_px": 143.1341, "dd_pct": -10.8},
+                    }
+                }
+            },
+        },
+        asset_scope="crypto",
+    )
+    xs_payload = view["kraken_xstocks"]["payload"]
+    assert "other_t212_sibling_cycles" in xs_payload
+    assert xs_payload["other_t212_sibling_cycles"]["SPCX_US_EQ"]["cost_usd"] == pytest.approx(635.94)
+
+    # 4. MacroBenchmarksSnapshotCollector reserves post-Yahoo wall-clock budget so slow Yahoo responses cannot starve Deribit
+    import time
+
+    fake_clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: fake_clock[0])
+
+    def _slow_yahoo_fast_deribit(url, timeout=3.5, headers=None):
+        if "yahoo" in url:
+            fake_clock[0] += 3.0
+            return {
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {"regularMarketPrice": 580.0, "previousClose": 575.0, "marketState": "REGULAR"},
+                            "timestamp": [int(now_s - 3600), int(now_s - 60)],
+                            "indicators": {"quote": [{"open": [575.0, 579.0], "high": [576.0, 581.0], "low": [574.0, 578.0], "close": [575.5, 580.0], "volume": [1000, 1200]}]},
+                        }
+                    ]
+                }
+            }
+        if "coinbase" in url:
+            return {"price": "70050.0"}
+        if "get_volatility_index_data" in url:
+            return {"result": {"data": [[int(now_s * 1000), 51.0, 52.0, 50.5, 51.4]]}}
+        if "get_historical_volatility" in url:
+            return {"result": [[int(now_s * 1000), 46.2]]}
+        if "get_book_summary_by_currency" in url:
+            return {"result": []}
+        return {}
+
+    monkeypatch.setattr(mtc_mod, "fetch_public_json", _slow_yahoo_fast_deribit)
+    snap = mtc_mod.MacroBenchmarksSnapshotCollector().collect(
+        cachedb_dir=str(tmp_path), now_ts=now_s, allow_network=True, persist=False
+    )
+    assert snap is not None
+    assert snap.get("btc_dvol") == pytest.approx(51.4)
+
+

@@ -14,6 +14,7 @@ from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
     compatible_quote_suffixes,
+    ensure_equity_suffix,
     has_equity_suffix,
     is_usd_compatible_pair,
     is_usdc_pair,
@@ -809,23 +810,63 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                 if scope_s in ("equities", "equity"):
                     for eq_irr_k in ("watched_ipo_underlying", "watched_ipo_alerts"):
                         xs.pop(eq_irr_k, None)
-                if isinstance(xs.get("t212_sibling_cycle"), dict):
-                    sib_sym_u = str(xs.get("t212_sibling") or "").strip().upper()
-                    has_t212_cyc_line = bool(
-                        sib_sym_u
-                        and isinstance(ps.get("t212_cycles"), dict)
-                        and isinstance(casefold_get(ps["t212_cycles"], sib_sym_u), dict)
-                    )
-                    sib_cyc_cp = {
+                t212_cycs_map = ps.get("t212_cycles") if isinstance(ps.get("t212_cycles"), dict) else {}
+
+                def _norm_t212_sib_cycle(raw_c: Dict[str, Any], eq_sym_u: str) -> Dict[str, Any]:
+                    has_t212_cyc_line = bool(eq_sym_u and isinstance(casefold_get(t212_cycs_map, eq_sym_u), dict))
+                    cyc_cp = {
                         ck: cv
-                        for ck, cv in xs["t212_sibling_cycle"].items()
+                        for ck, cv in raw_c.items()
                         if cv is not None
-                        and not (ck == "pnl_vs_avg_pct" and xs["t212_sibling_cycle"].get("dd_pct") is not None)
+                        and not str(ck).startswith("_")
+                        and not (ck == "pnl_vs_avg_pct" and raw_c.get("dd_pct") is not None)
                     }
-                    xs["t212_sibling_cycle"] = compact_cycle_realized_pnl_fields(
-                        _with_subcycle_pnl(sib_cyc_cp, "t212", sib_sym_u, include_cum=not has_t212_cyc_line),
+                    return compact_cycle_realized_pnl_fields(
+                        _with_subcycle_pnl(cyc_cp, "t212", eq_sym_u, include_cum=not has_t212_cyc_line),
                         include_cum=not has_t212_cyc_line,
                     )
+
+                sib_sym_u = str(xs.get("t212_sibling") or "").strip().upper()
+                if isinstance(xs.get("t212_sibling_cycle"), dict):
+                    xs["t212_sibling_cycle"] = _norm_t212_sib_cycle(xs["t212_sibling_cycle"], sib_sym_u)
+                if scope_s == "crypto":
+                    eq_bw_src = (
+                        ps["cross_market_context"].get("equity_bellwethers")
+                        if isinstance(ps.get("cross_market_context"), dict)
+                        and isinstance(ps["cross_market_context"].get("equity_bellwethers"), dict)
+                        else {}
+                    )
+                    cand_underlyings: List[str] = []
+                    for raw_p in raw_t_pos:
+                        if isinstance(raw_p, dict):
+                            p_id = resolve_symbol_identity(raw_p.get("symbol"))
+                            u_p = canonical_base_asset(p_id.display_symbol or p_id.raw) if p_id.is_tokenized_equity else ""
+                            if u_p and u_p not in cand_underlyings:
+                                cand_underlyings.append(u_p)
+                    for hk_x in (xs.get("holdings") if isinstance(xs.get("holdings"), dict) else ()):
+                        hk_id = resolve_symbol_identity(hk_x)
+                        u_hk = canonical_base_asset(hk_id.display_symbol or str(hk_x))
+                        if u_hk and u_hk not in cand_underlyings:
+                            cand_underlyings.append(u_hk)
+                    if (w_ipo := str(xs.get("watched_ipo_underlying") or "").strip().upper()) and w_ipo not in cand_underlyings:
+                        cand_underlyings.append(w_ipo)
+                    other_sib_cycles: Dict[str, Dict[str, Any]] = {}
+                    for cand_u in cand_underlyings:
+                        eq_cand = ensure_equity_suffix(cand_u).upper()
+                        if not eq_cand or eq_cand == sib_sym_u:
+                            continue
+                        cand_cyc = casefold_get(t212_cycs_map, eq_cand)
+                        if not isinstance(cand_cyc, dict):
+                            bw_entry = casefold_get(eq_bw_src, eq_cand)
+                            cand_cyc = bw_entry.get("t212_cycle") if isinstance(bw_entry, dict) else None
+                        if isinstance(cand_cyc, dict) and (
+                            (safe_pos_float(cand_cyc.get("qty"), default=0.0) or 0.0) > 0.0
+                            or (safe_pos_float(cand_cyc.get("cost_usd"), default=0.0) or 0.0) > 0.0
+                            or cand_cyc.get("resting_orders")
+                        ):
+                            other_sib_cycles[eq_cand] = _norm_t212_sib_cycle(cand_cyc, eq_cand)
+                    if other_sib_cycles:
+                        xs["other_t212_sibling_cycles"] = other_sib_cycles
             else:
                 xs = xs_raw
             xs_pair_lbl = (

@@ -967,6 +967,25 @@ def summarize_execution_quality_by_venue_and_order_type(
     return by_venue, by_vot
 
 
+def _is_actionable_filled_trade_plan(
+    venue: str,
+    symbol: str,
+    side: str,
+    inv_px: Optional[float],
+    tgt_px: Optional[float],
+) -> bool:
+    """Return True when a filled intent carries a directional plan on a two-way tradable instrument."""
+    if inv_px is None and tgt_px is None:
+        return False
+    if (
+        side == "SELL"
+        and ProviderVenueMetadataMixin.supports_tokenized_assets(venue)
+        and resolve_symbol_identity(symbol).is_tokenized_equity
+    ):
+        return False
+    return True
+
+
 def evaluate_filled_trade_plans(
     filled_rows: Sequence[Mapping[str, Any]],
     live_prices: Optional[Mapping[str, Any]] = None,
@@ -989,16 +1008,18 @@ def evaluate_filled_trade_plans(
             if side_k not in ("BUY", "SELL"):
                 continue
             planned_n += 1
-            next_opp = next(
-                (nxt for nxt in inst_rows[idx + 1:] if normalize_side(nxt.get("side")) != side_k),
-                None,
-            )
-            if next_opp is not None:
-                st = evaluate_trade_plan_status(
-                    side_k, next_opp["px"], row.get("invalidation_px"), row.get("target_px")
+            final_st: Optional[str] = None
+            for nxt in inst_rows[idx + 1:]:
+                st_nxt = evaluate_trade_plan_status(
+                    side_k, nxt.get("px"), row.get("invalidation_px"), row.get("target_px")
                 )
-                final_st = st if st in ("TARGET_HIT", "INVALIDATED") else "CLOSED_EARLY"
-            else:
+                if st_nxt in ("TARGET_HIT", "INVALIDATED"):
+                    final_st = st_nxt
+                    break
+                if normalize_side(nxt.get("side")) != side_k:
+                    final_st = "CLOSED_EARLY"
+                    break
+            if final_st is None:
                 spot_px = _resolve_live_price_for_symbol(
                     prices_map, str(row.get("venue") or ""), str(row.get("symbol") or "")
                 )
@@ -1091,7 +1112,7 @@ def evaluate_ai_calibration_feedback(
             "usd": _extract_intent_notional_usd(it),
             "invalidation_px": inv_px,
             "target_px": tgt_px,
-            "has_plan": inv_px is not None or tgt_px is not None,
+            "has_plan": _is_actionable_filled_trade_plan(ven, sym, side, inv_px, tgt_px),
             "limit_slip_bps": lim_slip,
             "arrival_sf_bps": arr_sf,
             "market_slip_bps": mkt_slip,

@@ -335,6 +335,7 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
     COLLECTOR_ID = "macro_benchmarks_snapshot"
     # Shared wall-clock budget strictly below GlobalTelemetryCollector's 15.0s macro_benchmarks step timeout.
     _FETCH_DEADLINE_SEC = 12.5
+    _POST_YAHOO_RESERVED_SEC = 4.0
     _DERIBIT_CARRYOVER_MAX_AGE_SEC = 3600.0
     _COINBASE_CARRYOVER_MAX_AGE_SEC = 300.0
     _DERIBIT_METRIC_SUFFIXES = ("dvol", "rv_pct", "vrp_pct", "pc_oi_ratio", "skew_25d_pct")
@@ -364,9 +365,14 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
         eff_now = resolve_now_ts(now_ts)
         _fetch = self._resolve_fetch_fn(fetch_fn)
         deadline_mono = self._build_fetch_deadline(fetch_fn)
+        yahoo_deadline_mono = (
+            (deadline_mono - self._POST_YAHOO_RESERVED_SEC)
+            if (fetch_fn is None and deadline_mono is not None)
+            else deadline_mono
+        )
         items: Dict[str, Dict[str, Any]] = {}
         for label, yahoo_sym, unit_kind in MACRO_BENCHMARK_SPECS:
-            req_to = resolve_remaining_timeout_sec(deadline_mono, timeout_sec, min_timeout=0.8)
+            req_to = resolve_remaining_timeout_sec(yahoo_deadline_mono, timeout_sec, min_timeout=0.8)
             if req_to is None:
                 break
             try:
