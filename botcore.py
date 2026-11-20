@@ -124,6 +124,7 @@ from core.math_coercion import (  # noqa: E402
     opposite_side,
     parse_ratio_or_pct,
     parse_symbol_list,
+    profit_diff_pct,
     require_buy_sell_side,
     require_finite_float,
     require_int,

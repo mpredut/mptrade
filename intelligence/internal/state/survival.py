@@ -341,6 +341,24 @@ def get_cached_t_entry(symbol: str) -> Optional[dict]:
     return None
 
 
+def resolve_cached_gaussian_horizon(
+    symbol: str, exceed_percent: float = 0.4
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """Read cached (p90_days, median_days, gaussian_horizon_days=T*(1+exceed_percent)) in 0 ms without network I/O."""
+    try:
+        ent = get_cached_t_entry(symbol)
+        if isinstance(ent, dict):
+            p90_d = safe_pos_float(ent.get("p90_d"), None)
+            med_d = safe_pos_float(ent.get("median_d"), None)
+            t_val = safe_pos_float(ent.get("T"), None)
+            ex_pct = safe_nonneg_float(exceed_percent, default=0.4)
+            gauss_h = round(t_val * (1.0 + ex_pct), 4) if t_val is not None else None
+            return p90_d, med_d, gauss_h
+    except Exception:
+        pass
+    return None, None, None
+
+
 def estimate_T(
     symbol: str,
     days: int = 540,

@@ -15,6 +15,7 @@ from botcore import (
     clean_scale,
     normalize_side,
     opposite_side,
+    profit_diff_pct,
     resolve_now_ts,
     safe_float,
     safe_pos_float,
@@ -46,10 +47,9 @@ from intelligence.internal.state.survival import (
     _read_cached_price_history,
     _resolve_trend_direction,
     _resolve_trend_duration,
+    resolve_cached_gaussian_horizon,
 )
 from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
-from order_guard import profit_diff_pct
-from qlimit_order_guard import resolve_cached_gaussian_horizon
 from state_io import read_json_dict
 
 

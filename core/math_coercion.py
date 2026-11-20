@@ -622,6 +622,12 @@ def value_diff_to_percent(value1, value2) -> float:
     return safe_float(((v1 - v2) / v1) * 100.0, default=0.0)
 
 
+def profit_diff_pct(order_type: str, price: float, ref_price: float) -> float:
+    """Compute signed favorable profit percentage of ``price`` relative to ``ref_price`` symmetrically."""
+    side = require_buy_sell_side(order_type, name="order_type")
+    return value_diff_to_percent(ref_price, price) if side == "BUY" else value_diff_to_percent(price, ref_price)
+
+
 def slope(val1, idx1, val2, idx2) -> float:
     v1 = safe_float(val1, default=None)
     i1 = safe_float(idx1, default=None)

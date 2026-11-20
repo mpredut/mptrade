@@ -31,6 +31,7 @@ from botcore import (
     normalize_side,
     obj_attr,
     opposite_side,
+    profit_diff_pct,
     require_buy_sell_side,
     require_int,
     require_nonneg_float,
@@ -125,12 +126,6 @@ def resolve_caller_module(
         return _PROCESS_TO_MODULE.get(_order_id_ctx.get_process_name())
     except Exception:
         return None
-
-
-def profit_diff_pct(order_type: str, price: float, ref_price: float) -> float:
-    """Compute signed favorable profit percentage of `price` relative to `ref_price` symmetrically."""
-    side = require_buy_sell_side(order_type, name="order_type")
-    return value_diff_to_percent(ref_price, price) if side == "BUY" else value_diff_to_percent(price, ref_price)
 
 
 def select_extreme_reference(prices, order_type: str, *, strict: bool = True):

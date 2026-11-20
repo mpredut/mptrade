@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Optional
 
 from botcore import (
+    _parse_bool_flag,
     clean_order_id,
     clean_scalar_str,
     clean_upper_scalar,
@@ -31,6 +32,7 @@ from .intent_state import (
     _extract_intent_id,
     _intent_venue_symbol_side_key,
     extract_intent_notional,
+    extract_intent_order_type,
     extract_intent_primary_order_id,
     extract_intent_side,
     extract_intent_timestamp_s,
@@ -40,8 +42,9 @@ from .intent_state import (
 )
 from .intent_telemetry import evaluate_trade_plan_status
 from .order_ohlc_utils import extract_executed_qty
-from .order_status_ssot import CANCEL_OR_EXPIRE_VENUE_STATUSES, UNFILLED_ORDER_STATUSES
+from .order_status_ssot import NON_FILL_ORDER_STATUSES
 
+_FILLED_VENUE_STATUSES: frozenset[str] = frozenset({"FILLED", "CLOSED", "PARTIALLY_FILLED"})
 _WIN_EDGE_PCT = 0.20
 _LOSS_EDGE_PCT = -0.35
 _EMERGENCY_SELL_EDGE_MULT = 2.5
@@ -60,21 +63,35 @@ def _collect_canceled_order_ids(items: list[dict[str, Any]], exclude_iid: str = 
     return canceled
 
 
+def _has_explicit_fill_marker(it: dict[str, Any], ep: dict[str, Any], ep_st: str, ep_msg: str) -> bool:
+    if ep_st in _FILLED_VENUE_STATUSES or ep_msg.startswith("filled"):
+        return True
+    for key in ("filled_at", "filled_ts", "avg_fill_price", "avgPrice", "fill_price"):
+        if ep.get(key) is not None:
+            return True
+    return it.get("filled_ts") is not None or it.get("fill_px") is not None
+
+
 def _is_filled_ai_intent(it: dict[str, Any], canceled_oids: set[str]) -> bool:
     """Return True when an executed AI intent actually filled (excludes canceled/expired/unfilled resting orders)."""
     if (clean_upper_scalar(it.get("status")) or "") != "EXECUTED":
         return False
-    ep = it.get("execution_payload")
-    filled_q = extract_executed_qty(ep, default=0.0) if isinstance(ep, dict) else 0.0
+    ep = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}
+    filled_q = extract_executed_qty(ep, default=0.0) if ep else 0.0
     if filled_q <= 0.0:
         filled_q = safe_nonneg_float(it.get("filled_qty"), default=0.0)
-    ep_st = (clean_upper_scalar(ep.get("status")) if isinstance(ep, dict) else "") or ""
-    if ep_st in CANCEL_OR_EXPIRE_VENUE_STATUSES and filled_q <= 0.0:
-        return False
-    if ep_st in UNFILLED_ORDER_STATUSES and filled_q <= 0.0:
+    if filled_q > 0.0:
+        return True
+    ep_st = (clean_upper_scalar(ep.get("status")) if ep else "") or ""
+    ep_msg = (clean_scalar_str(ep.get("msg")) or "").lower() if ep else ""
+    if ep_st in NON_FILL_ORDER_STATUSES or ep_msg == "resting":
         return False
     prim_oid = extract_intent_primary_order_id(it, default="", include_top_level=True)
-    if prim_oid and str(prim_oid) in canceled_oids and filled_q <= 0.0:
+    if prim_oid and str(prim_oid) in canceled_oids:
+        return False
+    if extract_intent_order_type(it) == "LIMIT":
+        return _has_explicit_fill_marker(it, ep, ep_st, ep_msg)
+    if _parse_bool_flag(ep.get("reconciled_from_audit"), False) and ep_st not in _FILLED_VENUE_STATUSES:
         return False
     return True
 
@@ -98,11 +115,16 @@ def _extract_intent_exec_price(it: dict[str, Any]) -> float:
 
 
 def _extract_intent_exec_ts(it: dict[str, Any]) -> float:
-    for key in ("filled_ts", "executed_at", "executed_ts"):
+    _, base_ts = extract_intent_timestamp_s(it)
+    for key in ("filled_ts", "filled_at", "executed_at", "executed_ts"):
         if (ts_v := parse_pos_epoch_s(it.get(key))) is not None:
-            return ts_v
-    _, ts_s = extract_intent_timestamp_s(it)
-    return ts_s
+            return max(base_ts, ts_v)
+    ep = it.get("execution_payload")
+    if isinstance(ep, dict):
+        for key in ("filled_at", "filled_ts", "terminal_ts"):
+            if (ts_v := parse_pos_epoch_s(ep.get(key))) is not None:
+                return max(base_ts, ts_v)
+    return base_ts
 
 
 def _extract_intent_notional_usd(it: dict[str, Any]) -> float:

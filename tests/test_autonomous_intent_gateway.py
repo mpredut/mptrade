@@ -3374,12 +3374,47 @@ def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
     )
     assert ok_inv is True and m_inv.get("plan_triggered") == "INVALIDATED"
 
-    # Unfilled resting LIMIT order does NOT trigger flip cooldown
+    # Unfilled resting LIMIT order does NOT trigger flip cooldown (including status-less Binance/Kraken/HL ACKs)
     unfilled_buy = [
         {
             **recent_buy_fill[0],
             "execution_payload": {"orderId": "o_rest", "status": "NEW", "executedQty": "0.0"},
-        }
+        },
+        {
+            "intent_id": "ai_b_ack",
+            "timestamp": now_s - 300.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 70000.0,
+            "status": "EXECUTED",
+            "execution_payload": {"symbol": "BTCUSDC", "orderId": 567222023, "transactTime": 1795099700000},
+        },
+        {
+            "intent_id": "ai_kr_ack",
+            "timestamp": now_s - 5000.0,
+            "decision": "BUY",
+            "symbol": "SPCXxUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 10.0,
+            "clamped_notional_usd": 500.0,
+            "status": "EXECUTED",
+            "execution_payload": {"txid": ["OCKOPE-6YBJP-3IKD27"], "descr": {"order": "buy 50 SPCXxUSD @ limit 10.0"}},
+        },
+        {
+            "intent_id": "ai_hl_rest",
+            "timestamp": now_s - 4000.0,
+            "decision": "BUY",
+            "symbol": "HYPEUSDC",
+            "venue": "hyperliquid",
+            "order_type": "LIMIT",
+            "limit_price": 65.0,
+            "clamped_notional_usd": 500.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": 611083964170, "ok": True, "msg": "resting"},
+        },
     ]
     ok_rest, _, _ = evaluate_ai_ping_pong_guard(
         {"intent_id": "cur_s5", "decision": "SELL", "urgency": "NORMAL"},
@@ -3391,6 +3426,45 @@ def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
         now_ts=now_s,
     )
     assert ok_rest is True
+    sc_unfilled = evaluate_ai_decision_scorecard(
+        unfilled_buy,
+        now_ts=now_s,
+        live_prices={"BTCUSDC": 65000.0, "SPCXxUSD": 8.0, "HYPEUSDC": 50.0},
+    )
+    assert sc_unfilled["count"] == 0 and sc_unfilled["buy_shadow_active"] is False
+
+    # Reconciled passive LIMIT order placed 3h ago that filled 5m ago enforces cooldown from filled_at
+    late_fill_buy = [
+        {
+            "intent_id": "ai_late_fill",
+            "timestamp": now_s - 10800.0,  # staged 3h ago
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 70000.0,
+            "status": "EXECUTED",
+            "execution_payload": {
+                "orderId": "o_late",
+                "status": "FILLED",
+                "executedQty": "0.01",
+                "price": 70000.0,
+                "filled_at": now_s - 300.0,  # filled 5m ago
+                "reconciled_terminal": True,
+            },
+        }
+    ]
+    ok_late, rsn_late, m_late = evaluate_ai_ping_pong_guard(
+        {"intent_id": "cur_s_late", "decision": "SELL", "urgency": "NORMAL"},
+        late_fill_buy,
+        decision="SELL",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=70050.0,
+        now_ts=now_s,
+    )
+    assert ok_late is False and "ai_ping_pong_flip_cooldown" in rsn_late
+    assert m_late["flip_elapsed_min"] == pytest.approx(5.0)
 
     # Fresh by=BOT fill within 30m also blocks unprofitable reversal
     ok_bot, rsn_bot, m_bot = evaluate_ai_ping_pong_guard(
