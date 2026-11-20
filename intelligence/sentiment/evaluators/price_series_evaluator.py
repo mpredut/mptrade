@@ -2251,6 +2251,11 @@ _RTH_VWAP_ANCHOR_KEYS: Tuple[str, ...] = (
     "session_vwap_sigma_pct",
     "session_vwap_anchor",
 )
+_RTH_ATR_ANCHOR_KEYS: Tuple[str, ...] = (
+    "atr_15m_pct",
+    "atr_1h_pct",
+    "atr_4h_pct",
+)
 STALE_SHORT_24H_KEYS: Tuple[str, ...] = (
     "chg_1m_pct",
     "chg_3m_pct",

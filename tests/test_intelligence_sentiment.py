@@ -13648,6 +13648,169 @@ def test_faza1_ohlc_hlo_preservation_mixed_stitched_atr_and_typical_vwap():
     assert vwap_hlc["dist_vs_session_vwap_pct"] == pytest.approx(0.0)
 
 
+def test_audit_fixes_equity_post_rth_vwap_atr_and_ohlc_hlo_disk_fallback(tmp_path):
+    """Verify audit fixes: post-RTH VWAP dist/z recalculation + RTH ATR preservation, and 6-col H/L/O preservation in upgrade_tpo_vp_from_ohlc."""
+    import json
+    from intelligence.sentiment.collectors.microstructure_collector import upgrade_tpo_vp_from_ohlc
+    from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
+
+    # 1. Equity series ending on final high-volume RTH bar (no zero-vol AH bar) + 5d history for atr_4h_pct
+    d2_rth0 = datetime(2026, 11, 19, 14, 30, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+    eq_rth_only = [
+        [d2_rth0 + i * 300_000.0, round(165.0 + (0.40 if i % 2 == 0 else -0.40), 4), 2_000_000.0]
+        for i in range(78)
+    ]
+    hist_5d = []
+    for day_off in range(5, 0, -1):
+        base_d = d2_rth0 - day_off * 86_400_000.0
+        for i in range(78):
+            hist_5d.append([base_d + i * 300_000.0, round(160.0 + day_off + (0.40 if i % 2 == 0 else -0.40), 4), 1_000_000.0])
+
+    m24_rth = compute_24h_price_metrics(eq_rth_only, is_equity=True, series_7d_ts_px=hist_5d)
+    assert m24_rth.get("atr_4h_pct", 0.0) > 0.0
+    assert m24_rth["session_vwap_px"] == pytest.approx(165.0, abs=0.05)
+
+    # Extended-hours override +3% to $170.0 must preserve RTH VWAP & ATR (including atr_4h_pct) and recompute dist/z vs restored RTH VWAP
+    eq_policy = resolve_asset_session_policy("NVDA_US_EQ")
+    _, m24_ov, _ = eq_policy.apply_post_rth_price_override(eq_rth_only, dict(m24_rth), 170.0)
+    vwap_px = m24_rth["session_vwap_px"]
+    sig_pct = m24_rth["session_vwap_sigma_pct"]
+    expected_dist = round(((170.0 - vwap_px) / vwap_px) * 100.0, 2)
+    expected_z = round((170.0 - vwap_px) / (vwap_px * (sig_pct / 100.0)), 2)
+    assert m24_ov["session_vwap_px"] == pytest.approx(vwap_px)
+    assert m24_ov["dist_vs_session_vwap_pct"] == pytest.approx(expected_dist, abs=0.02)
+    assert m24_ov["session_vwap_z"] == pytest.approx(expected_z, abs=0.05)
+    assert m24_ov["atr_4h_pct"] == pytest.approx(m24_rth["atr_4h_pct"])
+    assert m24_ov["atr_15m_pct"] == pytest.approx(m24_rth["atr_15m_pct"])
+
+    # 2. upgrade_tpo_vp_from_ohlc disk fallback preserves 6-col [ts, close, vol, high, low, open] for HLC/3 Session VWAP
+    now_s = datetime(2026, 11, 20, 6, 0, 0, tzinfo=timezone.utc).timestamp()
+    day_utc_00_ms = datetime(2026, 11, 20, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+    ohlc_pts = []
+    # 18h yesterday (non-flat closes [99.5, 106.5] for REAL_VOL VP) + 6h today (close=100, high=106, low=100 -> TP=102.0)
+    start_ms = day_utc_00_ms - 18 * 3_600_000.0
+    for idx in range(96):
+        ts_b = int(start_ms + idx * 900_000.0)
+        if ts_b < day_utc_00_ms:
+            c_b = 99.5 if idx % 2 == 0 else 106.5
+            ohlc_pts.append([ts_b, c_b, 50.0, max(c_b, 106.5), min(c_b, 99.5), c_b])
+        else:
+            ohlc_pts.append([ts_b, 100.0, 50.0, 106.0, 100.0, 100.0])
+    ohlc_file = tmp_path / "cache_ohlc_24h_BTCUSDC.json"
+    ohlc_file.write_text(json.dumps({"ts": now_s, "symbol": "BTCUSDC", "points": ohlc_pts}), encoding="utf-8")
+    # Age mtime > 3600s so load_stitched_24h_ohlc_points returns [] and forces the cand_vp disk fallback path
+    stale_mtime = time.time() - 5000.0
+    os.utime(ohlc_file, (stale_mtime, stale_mtime))
+
+    m24_crypto = {"vp_source": "TPO", "low_24h": 99.0, "high_24h": 107.0}
+    upgrade_tpo_vp_from_ohlc(
+        "BTCUSDC",
+        m24_crypto,
+        cur_px=100.0,
+        now_ts=now_s,
+        s24_is_live_clock=True,
+        cache_dir=str(tmp_path),
+        allow_network=False,
+    )
+    assert m24_crypto.get("vp_source") == "REAL_VOL"
+    # Close-only VWAP would be 100.0; preserved H/L/O typical price VWAP is exactly (106+100+100)/3 = 102.0
+    assert m24_crypto["session_vwap_px"] == pytest.approx(102.0, abs=0.05)
+
+
+def test_openai_compat_rest_adapter_resilience_and_direct_ab_routing(monkeypatch):
+    """Verify decoupled OpenAI-compatible REST adapter: URL/prefix normalization, reasoning strip, resilience fallback, and direct A/B routing."""
+    from types import SimpleNamespace
+    import intelligence.sentiment.gemini_client as gc_mod
+    from intelligence.sentiment.openai_compat_rest import (
+        extract_openai_compat_text,
+        format_openai_compat_model_id,
+        normalize_openai_compat_url,
+        strip_openai_compat_prefix,
+    )
+
+    # 1. Pure helpers
+    assert normalize_openai_compat_url("https://openrouter.ai/api/v1/") == "https://openrouter.ai/api/v1/chat/completions"
+    assert normalize_openai_compat_url("https://api.z.ai/api/paas/v4/chat/completions") == "https://api.z.ai/api/paas/v4/chat/completions"
+    assert normalize_openai_compat_url("ftp://bad.example.com") == ""
+    assert strip_openai_compat_prefix("openai_compat:Qwen/Qwen3-Max") == (True, "Qwen/Qwen3-Max")
+    assert strip_openai_compat_prefix("gemini-4-neon-high") == (False, "gemini-4-neon-high")
+    assert format_openai_compat_model_id("glm-5.3") == "openai_compat:glm-5.3"
+
+    # 2. Content extraction (string, multimodal text list, <think> reasoning block)
+    assert extract_openai_compat_text(
+        {"choices": [{"message": {"content": "<think>internal chain</think>\n{\"decision\":\"HOLD\"}"}}]}
+    ) == '{"decision":"HOLD"}'
+    assert extract_openai_compat_text(
+        {"choices": [{"message": {"content": [{"type": "text", "text": "{\"decision\":\"BUY\"}"}]}}]}
+    ) == '{"decision":"BUY"}'
+
+    # 3. Direct A/B routing via openai_compat:<slug> bypasses agy CLI completely and tags last_model_used
+    posted_calls = []
+
+    def _fake_post(url, payload, *, timeout=5.0, headers=None):
+        posted_calls.append((url, payload, timeout, headers))
+        mdl = payload.get("model")
+        if mdl == "bad-non-json":
+            return {"choices": [{"message": {"content": "not json at all"}}]}
+        return {
+            "choices": [
+                {"message": {"content": f"<think>reasoning</think>\n{{\"decision\":\"HOLD\",\"via\":\"{mdl}\"}}"}}
+            ]
+        }
+
+    monkeypatch.setattr(gc_mod, "fetch_json_post", _fake_post)
+    monkeypatch.setenv("OPENAI_COMPAT_FALLBACK_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENAI_COMPAT_FALLBACK_API_KEY", "sk-test-secret")
+    monkeypatch.setenv("OPENAI_COMPAT_FALLBACK_MODEL", "bad-non-json,qwen3-max")
+
+    cli_invocations = []
+
+    def _fail_cli(self, *args, **kwargs):
+        cli_invocations.append((args, kwargs))
+        return SimpleNamespace(returncode=1, stdout="", stderr="quota exhausted")
+
+    client = gc_mod.GeminiClient(
+        model="gemini-4-neon-medium",
+        api_key="google-rest-key",
+        cli_path="/bin/sh",
+        project_id="mptrade",
+    )
+    monkeypatch.setattr(client, "_execute_cli", _fail_cli.__get__(client, gc_mod.GeminiClient))
+
+    direct_res = client.query_json("Analyze BTC", model="openai_compat:glm-5.3", timeout_sec=20.0)
+    assert direct_res == {"decision": "HOLD", "via": "glm-5.3"}
+    assert client.last_model_used == "openai_compat:glm-5.3"
+    assert len(cli_invocations) == 0
+    assert posted_calls[-1][0] == "https://openrouter.ai/api/v1/chat/completions"
+    assert posted_calls[-1][3]["Authorization"] == "Bearer sk-test-secret"
+
+    # 4. Resilience fallback when agy CLI fails: tries bad-non-json (skipped on require_json), succeeds on qwen3-max
+    posted_calls.clear()
+    monkeypatch.setattr(client, "get_model_candidates", lambda m: [m])
+    monkeypatch.setattr(client, "_is_quota_or_credit_error", lambda _p: False)
+    fb_res = client.query_json("Analyze ETH", timeout_sec=25.0)
+    assert fb_res == {"decision": "HOLD", "via": "qwen3-max"}
+    assert client.last_model_used == "openai_compat:qwen3-max"
+    assert len(cli_invocations) == 1
+    assert [c[1]["model"] for c in posted_calls] == ["bad-non-json", "qwen3-max"]
+
+    # 5. Falls through cleanly to Google REST when OpenAI-compatible URL is not configured
+    posted_calls.clear()
+    monkeypatch.delenv("OPENAI_COMPAT_FALLBACK_URL", raising=False)
+    monkeypatch.delenv("OPENAI_COMPAT_FALLBACK_MODEL", raising=False)
+
+    def _google_only_post(url, payload, *, timeout=5.0, headers=None):
+        posted_calls.append((url, payload))
+        return {"candidates": [{"content": {"parts": [{"text": '{"decision":"HOLD","src":"google_rest"}'}]}}]}
+
+    monkeypatch.setattr(gc_mod, "fetch_json_post", _google_only_post)
+    g_res = client.query_json("Analyze SOL", timeout_sec=20.0)
+    assert g_res == {"decision": "HOLD", "src": "google_rest"}
+    assert "generativelanguage.googleapis.com" in posted_calls[0][0]
+
+
+
 
 
 

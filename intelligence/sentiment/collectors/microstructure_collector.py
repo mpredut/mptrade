@@ -1073,15 +1073,27 @@ def upgrade_tpo_vp_from_ohlc(
             ):
                 p_vp = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn_vp)))
                 if os.path.exists(p_vp) and isinstance(d_vp := read_json_recovering(p_vp), dict) and isinstance(d_vp.get("points"), list):
-                    cand_vp = [
-                        [ts_i, px_f, vol_f]
-                        for r in d_vp["points"]
-                        if isinstance(r, (list, tuple))
-                        and len(r) >= 3
-                        and (ts_i := safe_pos_int(r[0], default=None)) is not None
-                        and (px_f := safe_pos_float(r[1], default=None)) is not None
-                        and (vol_f := safe_pos_float(r[2], default=None)) is not None
-                    ]
+                    cand_vp: List[List[Any]] = []
+                    for r in d_vp["points"]:
+                        if (
+                            not isinstance(r, (list, tuple))
+                            or len(r) < 3
+                            or (ts_i := safe_pos_int(r[0], default=None)) is None
+                            or (px_f := safe_pos_float(r[1], default=None)) is None
+                            or (vol_f := safe_pos_float(r[2], default=None)) is None
+                        ):
+                            continue
+                        row_vp: List[Any] = [ts_i, px_f, vol_f]
+                        if (
+                            len(r) >= 5
+                            and (hi_f := safe_pos_float(r[3], default=None)) is not None
+                            and (lo_f := safe_pos_float(r[4], default=None)) is not None
+                            and hi_f >= lo_f > 0.0
+                        ):
+                            row_vp.extend((hi_f, lo_f))
+                            if len(r) >= 6 and (op_f := safe_pos_float(r[5], default=None)) is not None:
+                                row_vp.append(op_f)
+                        cand_vp.append(row_vp)
                     if len(cand_vp) >= 8 and (cand_vp[-1][0] - cand_vp[0][0]) >= 18 * 3600 * 1000:
                         pts_vp = cand_vp
                         break
@@ -1097,10 +1109,16 @@ def upgrade_tpo_vp_from_ohlc(
                     or (vp_pxs and min(vp_pxs) >= l24_b * 0.985 and max(vp_pxs) <= h24_b * 1.015)
                 ):
                     if l24_b is not None and h24_b is not None:
-                        pts_vp = [
-                            [p[0], min(h24_b, max(l24_b, safe_pos_float(p[1], default=l24_b) or l24_b)), *p[2:]]
-                            for p in pts_vp
-                        ]
+                        clamped_vp: List[List[Any]] = []
+                        for p in pts_vp:
+                            c_px = min(h24_b, max(l24_b, safe_pos_float(p[1], default=l24_b) or l24_b))
+                            if len(p) >= 5 and (hi_v := safe_pos_float(p[3], default=None)) is not None and (lo_v := safe_pos_float(p[4], default=None)) is not None and hi_v >= lo_v > 0.0:
+                                hi_c = max(c_px, min(h24_b, max(l24_b, hi_v)))
+                                lo_c = min(c_px, min(h24_b, max(l24_b, lo_v)))
+                                clamped_vp.append([p[0], c_px, p[2], hi_c, lo_c, *p[5:]])
+                            else:
+                                clamped_vp.append([p[0], c_px, *p[2:]])
+                        pts_vp = clamped_vp
                     if cur_px > 0:
                         pts_vp.append([math.trunc(now_ts * 1000), cur_px, 0.0])
                     if (vp_real := compute_volume_profile_metrics(pts_vp)) and vp_real.get("vp_source") == "REAL_VOL":

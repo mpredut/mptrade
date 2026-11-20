@@ -32,10 +32,20 @@ do_run() {
 }
 
 do_sync() {
-    local rpath
+    local rpath prod_host prod_alias prod_path local_host
     rpath="$(dev_remote_path_expr)"
+    prod_host="${PROD_HOSTNAME:-trading}"
+    prod_alias="${PROD_SSH_ALIAS:-mptrade-prod}"
+    prod_path="${PROD_PATH:-/home/predut/mptrade}"
+    local_host="$(hostname -s 2>/dev/null || true)"
     echo "[dev_obs $(date '+%F %T')] Mirroring PROD cachedb/ + execution_audit + reconciler logs -> DEV..."
-    "$RUNNER_DIR/sync_cache_to.sh" dev
+    if [ "$local_host" = "$prod_host" ]; then
+        "$RUNNER_DIR/sync_cache_to.sh" dev
+    else
+        echo "[dev_obs $(date '+%F %T')] Dispatching PROD->DEV sync remotely via SSH ($prod_alias) to avoid overwriting DEV with local '$local_host' cache..."
+        ssh -o BatchMode=yes -o ConnectTimeout=10 "$prod_alias" \
+            "cd \"$prod_path\" && ./offline/runners/sync_cache_to.sh dev" 2>&1 | sed 's/^/  [prod] /'
+    fi
     echo "[dev_obs $(date '+%F %T')] Triggering DEV observability refresh on $DEV_HOST:$DEV_PORT..."
     dev_ssh "cd \"$rpath\" && ./offline/runners/run_dev_observability.sh run" 2>&1 | sed 's/^/  [dev] /'
 }

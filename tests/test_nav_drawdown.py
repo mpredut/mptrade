@@ -296,3 +296,35 @@ def test_nav_drawdown_gateway_shadow_vs_enforce_attribution_and_section3c(tmp_pa
         )
     )
     assert "nav_dd_day=-6.00%" in sec3c
+
+
+def test_nav_drawdown_small_venue_outage_below_cashflow_threshold():
+    """Verify temporary outage of a small venue (<4% of NAV) is flagged as venue_set_changed and never pollutes daily DD."""
+    day0_utc = datetime(2026, 11, 20, 0, 0, 0, tzinfo=timezone.utc).timestamp()
+    hist: list[dict] = []
+    hist, _ = append_nav_history_point(
+        hist,
+        {
+            "ts": day0_utc + 3600.0,
+            "nav_usd": 20000.0,
+            "invested_usd": 14000.0,
+            "free_cash_usd": 6000.0,
+            "venues_usd": {"binance": 14000.0, "kraken": 5500.0, "hyperliquid": 500.0},
+        },
+    )
+    # Hyperliquid ($500 = 2.5% < 4.0% cashflow jump threshold) temporarily disappears from balances snapshot
+    hist, _ = append_nav_history_point(
+        hist,
+        {
+            "ts": day0_utc + 7200.0,
+            "nav_usd": 19500.0,
+            "invested_usd": 13500.0,
+            "free_cash_usd": 6000.0,
+            "venues_usd": {"binance": 14000.0, "kraken": 5500.0},
+        },
+    )
+    assert hist[-1].get("venue_set_changed") is True
+    m_out = evaluate_nav_drawdown_metrics(hist, now_ts=day0_utc + 7200.0)
+    assert m_out["daily_nav_drawdown_pct"] == pytest.approx(0.0)
+    assert m_out["external_cashflow_events"] == 1
+

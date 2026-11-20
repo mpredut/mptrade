@@ -35,6 +35,11 @@ from intelligence.sentiment.llm_quota_router import (
     GeminiQuotaRouterMixin,
     canonical_rest_model,
 )
+from intelligence.sentiment.openai_compat_rest import (
+    query_openai_compat_chat,
+    resolve_openai_compat_config,
+    strip_openai_compat_prefix,
+)
 from state_io import (
     extract_json_object,
     parse_json_payload,
@@ -98,6 +103,9 @@ class GeminiClient(GeminiQuotaRouterMixin):
         custom_runner: Optional[Callable[[str, str, float], str]] = None,
         project_id: Optional[str] = None,
         fallback_models: Optional[tuple[str, ...] | list[str]] = None,
+        openai_compat_url: Optional[str] = None,
+        openai_compat_api_key: Optional[str] = None,
+        openai_compat_models: Optional[tuple[str, ...] | list[str]] = None,
     ) -> None:
         cleaned_model = model.strip() if isinstance(model, str) and model.strip() else ""
         self._explicit_model = bool(cleaned_model)
@@ -124,6 +132,9 @@ class GeminiClient(GeminiQuotaRouterMixin):
             else required_env("AGY_PROJECT")
         )
         self._custom_runner = custom_runner
+        self._openai_compat_url = openai_compat_url
+        self._openai_compat_api_key = openai_compat_api_key
+        self._openai_compat_models = openai_compat_models
         self._cache: Dict[str, tuple[Any, ...]] = {}
         self.last_model_used: Optional[str] = None
 
@@ -810,6 +821,39 @@ class GeminiClient(GeminiQuotaRouterMixin):
                 topic_lock.release()
         return False, None
 
+    def _query_openai_compat_fallback(
+        self,
+        prompt: str,
+        *,
+        explicit_model: str = "",
+        timeout_sec: float,
+        cache_ttl_sec: float,
+        now: float,
+        require_json: bool,
+    ) -> Optional[str]:
+        """Query an optional OpenAI-compatible Chat Completions endpoint for resilience or A/B benchmarking."""
+        cfg = resolve_openai_compat_config(
+            url=self._openai_compat_url,
+            api_key=self._openai_compat_api_key,
+            models=self._openai_compat_models,
+        )
+        if cfg is None:
+            return None
+        text, model_id = query_openai_compat_chat(
+            prompt,
+            cfg,
+            explicit_model=explicit_model,
+            timeout_sec=timeout_sec,
+            require_json=require_json,
+            post_fn=fetch_json_post,
+        )
+        if not text:
+            return None
+        self.last_model_used = model_id
+        if cache_ttl_sec > 0:
+            self._cache[prompt] = (now, text, model_id)
+        return text
+
     def _query_rest_fallback(
         self,
         prompt: str,
@@ -933,9 +977,24 @@ class GeminiClient(GeminiQuotaRouterMixin):
             or urllib.request.urlopen is not _ORIG_URLOPEN
             or hasattr(fetch_json_post, "_mock_name")
             or fetch_json_post is not _ORIG_FETCH_JSON_POST
+            or hasattr(query_openai_compat_chat, "_mock_name")
         )
         if not allow_unmocked and not cli_mocked and not rest_mocked:
             logger.debug("%s", "Gemini LLM external query suppressed by runtime policy.")
+            return None
+
+        # 1b. Direct OpenAI-compatible REST routing when explicitly targeted (e.g. "openai_compat:glm-5.3")
+        is_explicit_openai, explicit_openai_slug = strip_openai_compat_prefix(selected_model)
+        if is_explicit_openai:
+            if allow_unmocked or rest_mocked:
+                return self._query_openai_compat_fallback(
+                    prompt,
+                    explicit_model=explicit_openai_slug,
+                    timeout_sec=timeout_sec,
+                    cache_ttl_sec=cache_ttl_sec,
+                    now=now,
+                    require_json=require_json,
+                )
             return None
 
         # 2. Local authenticated CLI runner (subscription mode)
@@ -957,7 +1016,18 @@ class GeminiClient(GeminiQuotaRouterMixin):
             if handled:
                 return cli_out
 
-        # 3. Direct REST API fallback if API key is provided
+        # 3a. Optional OpenAI-compatible REST resilience fallback (configured via OPENAI_COMPAT_FALLBACK_*)
+        if allow_unmocked or rest_mocked:
+            if openai_out := self._query_openai_compat_fallback(
+                prompt,
+                timeout_sec=timeout_sec,
+                cache_ttl_sec=cache_ttl_sec,
+                now=now,
+                require_json=require_json,
+            ):
+                return openai_out
+
+        # 3b. Direct Google AI Studio REST API fallback if API key is provided
         if self.api_key:
             return self._query_rest_fallback(
                 prompt,

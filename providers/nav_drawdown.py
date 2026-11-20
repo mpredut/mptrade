@@ -113,15 +113,15 @@ def _detect_non_market_step(
     if prev_nav <= 0.0 or cur_nav <= 0.0:
         return False, False, 0.0
     delta_nav = cur_nav - prev_nav
-    jump_pct = (abs(delta_nav) / prev_nav) * 100.0
-    thresh = safe_pos_float(cashflow_jump_pct, default=DEFAULT_CASHFLOW_JUMP_PCT) or DEFAULT_CASHFLOW_JUMP_PCT
-    if jump_pct < thresh:
-        return False, False, delta_nav
-
     prev_v = set((prev.get("venues_usd") or {}).keys()) if isinstance(prev.get("venues_usd"), Mapping) else set()
     cur_v = set((cur.get("venues_usd") or {}).keys()) if isinstance(cur.get("venues_usd"), Mapping) else set()
     if prev_v and cur_v and prev_v != cur_v:
         return False, True, delta_nav
+
+    jump_pct = (abs(delta_nav) / prev_nav) * 100.0
+    thresh = safe_pos_float(cashflow_jump_pct, default=DEFAULT_CASHFLOW_JUMP_PCT) or DEFAULT_CASHFLOW_JUMP_PCT
+    if jump_pct < thresh:
+        return False, False, delta_nav
 
     delta_cash = _extract_point_cash_usd(cur) - _extract_point_cash_usd(prev)
     if (delta_cash * delta_nav) > 0.0 and abs(delta_cash) >= _CASHFLOW_CASH_SHARE_MIN * abs(delta_nav):

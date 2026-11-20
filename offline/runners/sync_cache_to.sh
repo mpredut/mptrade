@@ -35,7 +35,10 @@ sync_to_dev() {
 
     echo "[sync_cache_to:dev $(date '+%F %T')] data: rsync cachedb/ prod -> dev"
     rsync_cachedb "$ROOT/cachedb/" "$DEV_USER@$DEV_HOST:$DEV_PATH/cachedb/" \
-        --exclude 'dev_regression_status.json' -e "ssh -o BatchMode=yes -p $DEV_PORT" | sed 's/^/  /'
+        --exclude 'dev_regression_status.json' \
+        --exclude 'ai_attribution_status.json' \
+        --exclude 'ai_attribution_30d.json' \
+        -e "ssh -o BatchMode=yes -p $DEV_PORT" | sed 's/^/  /'
     local sub
     for sub in shadow_live hyperliquid_shadow; do
         if [ -d "$ROOT/logs/$sub" ]; then
