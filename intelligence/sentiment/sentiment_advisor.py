@@ -26,6 +26,7 @@ from intelligence.macro_sentiment_ssot import (
     get_cache_filenames,
     get_deribit_options_currencies,
     load_cached_derivatives_telemetry,
+    load_cached_etf_flows_snapshot,
     load_cached_geopolitical_eval,
     MarketBreadthSnapshot,
     normalize_market_bias,
@@ -37,6 +38,7 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     enrich_macro_benchmarks_live_state,
     format_compact_usd,
     format_equity_macro_regime_line,
+    format_etf_flows_summary_line,
     load_cached_macro_benchmarks,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
@@ -506,6 +508,9 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                 eq_macro_line = format_equity_macro_regime_line(eff_mb)
                 if eq_macro_line and eq_macro_line != "NEUTRAL":
                     prompt_context.append(f"- Cross-Asset Macro & Options Surface: {eq_macro_line}")
+            if isinstance(eff_etf := load_cached_etf_flows_snapshot(cache_dir), dict) and eff_etf:
+                if etf_line := format_etf_flows_summary_line(eff_etf):
+                    prompt_context.append(f"- US Spot Crypto ETF Net Flows (Farside Daily): {etf_line}")
             prompt_context.extend(struct_lines)
         except Exception:
             pass

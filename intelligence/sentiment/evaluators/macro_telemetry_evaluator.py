@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from abc import ABC
+from datetime import datetime
+from html.parser import HTMLParser
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -21,10 +23,12 @@ from intelligence.macro.calendar_ssot import (
     parse_cited_taker_ratio,
 )
 from botcore import (
+    _parse_bool_flag,
     coerce_dict_maps,
     first_pos_float,
     normalize_epoch_sec,
     safe_float,
+    safe_int,
     safe_nonneg_float,
     safe_pos_float,
 )
@@ -1237,6 +1241,334 @@ def load_cached_macro_benchmarks(cache_dir: str) -> Optional[Dict[str, Any]]:
     return enrich_macro_benchmarks_live_state(data, cache_dir=cache_dir)
 
 
+_FARSIDE_EMPTY_TOKENS: frozenset[str] = frozenset(
+    {"", "-", "--", "\u2013", "\u2014", "n/a", "na", "none", "null", "tbd"}
+)
+_CRYPTO_ETF_EQUITY_BASES: frozenset[str] = frozenset(
+    {"IBIT", "FBTC", "BITB", "ARKB", "GBTC", "ETHA", "FETH", "ETHE", "ETHW"}
+)
+
+
+class _HtmlTableExtractor(HTMLParser):
+    """Lightweight stdlib HTML table parser extracting clean text cells per ``<table>``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tables: List[List[List[str]]] = []
+        self._table_stack: List[List[List[str]]] = []
+        self._cur_row: Optional[List[str]] = None
+        self._cur_cell: Optional[List[str]] = None
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        _ = attrs
+        t = tag.lower()
+        if t == "table":
+            self._table_stack.append([])
+        elif self._table_stack and t == "tr":
+            self._cur_row = []
+        elif self._cur_row is not None and t in ("td", "th"):
+            self._cur_cell = []
+
+    def handle_endtag(self, tag: str) -> None:
+        t = tag.lower()
+        if t in ("td", "th") and self._cur_cell is not None:
+            if self._cur_row is not None:
+                self._cur_row.append(" ".join("".join(self._cur_cell).split()))
+            self._cur_cell = None
+        elif t == "tr" and self._cur_row is not None:
+            if self._cur_row and self._table_stack:
+                self._table_stack[-1].append(self._cur_row)
+            self._cur_row = None
+        elif t == "table" and self._table_stack:
+            tbl = self._table_stack.pop()
+            if tbl:
+                self.tables.append(tbl)
+
+    def handle_data(self, data: str) -> None:
+        if self._cur_cell is not None:
+            self._cur_cell.append(data)
+
+
+def _parse_farside_date_iso(raw: Any) -> Optional[str]:
+    s = str(raw or "").strip()
+    if not s or len(s) < 8:
+        return None
+    for fmt in ("%d %b %Y", "%d %B %Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_farside_millions(raw: Any) -> Optional[float]:
+    s = str(raw or "").replace("\xa0", " ").strip()
+    if s.lower() in _FARSIDE_EMPTY_TOKENS:
+        return None
+    neg = False
+    if s.startswith("(") and s.endswith(")"):
+        neg = True
+        s = s[1:-1].strip()
+    s = s.replace("$", "").replace(",", "").strip()
+    if s.lower() in _FARSIDE_EMPTY_TOKENS:
+        return None
+    val = safe_float(s, default=None)
+    if val is None:
+        return None
+    return round((-abs(val) if neg else val), 2) + 0.0
+
+
+def classify_etf_flow_regime(
+    asset: str,
+    latest_net_musd: float,
+    *,
+    sum_5d_musd: Optional[float] = None,
+) -> str:
+    """Classify institutional Spot ETF daily/5-day flow momentum into a deterministic regime label."""
+    asset_u = str(asset or "BTC").strip().upper()
+    if asset_u == "BTC":
+        strong_1d, strong_5d, mod_1d, mod_5d = 250.0, 750.0, 50.0, 150.0
+    else:
+        strong_1d, strong_5d, mod_1d, mod_5d = 75.0, 200.0, 15.0, 50.0
+    s5 = safe_float(sum_5d_musd, default=None)
+    if latest_net_musd >= strong_1d or (s5 is not None and s5 >= strong_5d and latest_net_musd >= 0.0):
+        return "STRONG_INFLOW"
+    if latest_net_musd <= -strong_1d or (s5 is not None and s5 <= -strong_5d and latest_net_musd <= 0.0):
+        return "STRONG_OUTFLOW"
+    if latest_net_musd >= mod_1d or (s5 is not None and s5 >= mod_5d and latest_net_musd >= 0.0):
+        return "INFLOW"
+    if latest_net_musd <= -mod_1d or (s5 is not None and s5 <= -mod_5d and latest_net_musd <= 0.0):
+        return "OUTFLOW"
+    return "NEUTRAL"
+
+
+def parse_farside_etf_flows_html(
+    html_text: Any,
+    *,
+    asset: str = "BTC",
+    max_days: int = 10,
+) -> Optional[Dict[str, Any]]:
+    """Parse Farside Investors Spot Crypto ETF daily net flows HTML table (US$m) into structured metrics.
+
+    Skips unreported placeholder days (where all issuer columns are '-') and marks partially reported
+    post-close sessions with ``is_partial=True``.
+    """
+    if not isinstance(html_text, str) or not html_text.strip():
+        return None
+    extractor = _HtmlTableExtractor()
+    try:
+        extractor.feed(html_text)
+        extractor.close()
+    except Exception:
+        return None
+
+    best_rows: Optional[List[List[str]]] = None
+    best_date_count = 0
+    for tbl in extractor.tables:
+        d_cnt = sum(1 for row in tbl if row and _parse_farside_date_iso(row[0]) is not None)
+        if d_cnt > best_date_count:
+            best_date_count = d_cnt
+            best_rows = tbl
+    if not best_rows or best_date_count <= 0:
+        return None
+
+    # Merge multi-row header cells before the first metadata ('Fee'/'Staking fee') or date row
+    header_rows: List[List[str]] = []
+    for row in best_rows:
+        c0 = (row[0] if row else "").strip()
+        c0_low = c0.lower()
+        if _parse_farside_date_iso(c0) is not None or c0_low.startswith(("fee", "staking")):
+            break
+        header_rows.append(row)
+    max_cols = max((len(r) for r in best_rows), default=0)
+    col_headers: List[str] = [""] * max_cols
+    for h_row in header_rows:
+        for idx, tok in enumerate(h_row):
+            if idx < max_cols and tok.strip():
+                col_headers[idx] = tok.strip()
+
+    total_col_idx: Optional[int] = None
+    for idx, hdr in enumerate(col_headers):
+        if hdr.strip().lower() == "total":
+            total_col_idx = idx
+            break
+    if total_col_idx is None and max_cols >= 2:
+        total_col_idx = max_cols - 1
+
+    issuer_cols: List[Tuple[int, str]] = [
+        (idx, hdr.upper())
+        for idx, hdr in enumerate(col_headers)
+        if idx > 0
+        and idx != total_col_idx
+        and hdr
+        and hdr.lower() not in ("date", "total", "fee", "staking fee")
+    ]
+
+    by_date: Dict[str, Dict[str, Any]] = {}
+    pending_date_iso: Optional[str] = None
+    total_issuers = len(issuer_cols)
+    for row in best_rows:
+        if not row:
+            continue
+        date_iso = _parse_farside_date_iso(row[0])
+        if date_iso is None:
+            continue
+        issuers_map: Dict[str, float] = {}
+        for c_idx, ticker in issuer_cols:
+            if c_idx < len(row):
+                v_m = _parse_farside_millions(row[c_idx])
+                if v_m is not None:
+                    issuers_map[ticker] = v_m
+        reported_issuers = len(issuers_map)
+        if total_issuers > 0 and reported_issuers == 0:
+            pending_date_iso = date_iso
+            continue
+        tot_m: Optional[float] = None
+        if total_col_idx is not None and total_col_idx < len(row):
+            tot_m = _parse_farside_millions(row[total_col_idx])
+        if tot_m is None:
+            if reported_issuers <= 0:
+                continue
+            tot_m = round(sum(issuers_map.values()), 2) + 0.0
+        top_issuers = dict(
+            sorted(
+                ((k, v) for k, v in issuers_map.items() if abs(v) >= 0.05),
+                key=lambda kv: abs(kv[1]),
+                reverse=True,
+            )[:3]
+        )
+        by_date[date_iso] = {
+            "date": date_iso,
+            "net_musd": tot_m,
+            "net_usd": round(tot_m * 1_000_000.0, 2) + 0.0,
+            "reported_issuers": reported_issuers,
+            "total_issuers": total_issuers,
+            "is_partial": bool(total_issuers > 0 and reported_issuers < total_issuers),
+            "top_issuers_musd": top_issuers,
+        }
+
+    if not by_date:
+        return None
+    cap_days = max(1, safe_int(max_days, 10))
+    daily_flows = [by_date[d] for d in sorted(by_date)[-cap_days:]]
+    latest = daily_flows[-1]
+    latest_m = safe_float(latest.get("net_musd"), 0.0) or 0.0
+    sum_3d_m = round(sum(safe_float(r.get("net_musd"), 0.0) or 0.0 for r in daily_flows[-3:]), 2) + 0.0
+    sum_5d_m = round(sum(safe_float(r.get("net_musd"), 0.0) or 0.0 for r in daily_flows[-5:]), 2) + 0.0
+
+    streak = 0
+    if abs(latest_m) >= 1.0:
+        sgn = 1 if latest_m > 0.0 else -1
+        cnt = 0
+        for row_d in reversed(daily_flows):
+            v_d = safe_float(row_d.get("net_musd"), 0.0) or 0.0
+            if (sgn > 0 and v_d >= 1.0) or (sgn < 0 and v_d <= -1.0):
+                cnt += 1
+            else:
+                break
+        streak = sgn * cnt
+
+    asset_u = str(asset or "BTC").strip().upper()
+    out: Dict[str, Any] = {
+        "asset": asset_u,
+        "latest_date": latest["date"],
+        "latest_net_flow_musd": latest_m,
+        "latest_net_flow_usd": latest["net_usd"],
+        "is_partial": bool(latest["is_partial"]),
+        "reported_issuers": latest["reported_issuers"],
+        "total_issuers": latest["total_issuers"],
+        "top_issuers_musd": dict(latest["top_issuers_musd"]),
+        "sum_3d_musd": sum_3d_m,
+        "sum_3d_usd": round(sum_3d_m * 1_000_000.0, 2) + 0.0,
+        "sum_5d_musd": sum_5d_m,
+        "sum_5d_usd": round(sum_5d_m * 1_000_000.0, 2) + 0.0,
+        "streak_days": streak,
+        "days_sampled": len(daily_flows),
+        "flow_regime": classify_etf_flow_regime(asset_u, latest_m, sum_5d_musd=sum_5d_m),
+        "daily_flows": daily_flows,
+    }
+    if pending_date_iso and pending_date_iso > latest["date"]:
+        out["pending_date"] = pending_date_iso
+    return out
+
+
+def _format_single_asset_etf_flow(asset_u: str, entry: Dict[str, Any]) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    net_usd = safe_float(entry.get("latest_net_flow_usd"), default=None)
+    if net_usd is None:
+        net_m = safe_float(entry.get("latest_net_flow_musd"), default=None)
+        net_usd = (net_m * 1_000_000.0) if net_m is not None else None
+    if net_usd is None:
+        return ""
+    d_str = str(entry.get("latest_date") or "").strip()
+    hdr = f"{asset_u}_ETF({d_str})" if d_str else f"{asset_u}_ETF"
+    issuers = entry.get("top_issuers_musd")
+    issuer_sfx = ""
+    if isinstance(issuers, dict) and issuers:
+        iss_parts = [
+            f"{k} {format_compact_usd(v_m * 1_000_000.0, signed=True)}"
+            for k, raw_v in list(issuers.items())[:3]
+            if (v_m := safe_float(raw_v, default=None)) is not None and abs(v_m) >= 0.05
+        ]
+        if iss_parts:
+            issuer_sfx = f" [{', '.join(iss_parts)}]"
+    meta_parts: List[str] = []
+    if (s5_usd := safe_float(entry.get("sum_5d_usd"), default=None)) is not None:
+        meta_parts.append(f"5d={format_compact_usd(s5_usd, signed=True)}")
+    elif (s5_m := safe_float(entry.get("sum_5d_musd"), default=None)) is not None:
+        meta_parts.append(f"5d={format_compact_usd(s5_m * 1_000_000.0, signed=True)}")
+    streak_i = safe_int(entry.get("streak_days"), 0)
+    if streak_i != 0:
+        meta_parts.append(f"streak={streak_i:+d}d")
+    if _parse_bool_flag(entry.get("is_partial"), False):
+        rep = safe_int(entry.get("reported_issuers"), 0)
+        tot = safe_int(entry.get("total_issuers"), 0)
+        if tot > 0:
+            meta_parts.append(f"partial={rep}/{tot}")
+    regime = str(entry.get("flow_regime") or "").strip().upper()
+    if regime:
+        meta_parts.append(regime)
+    meta_sfx = f" ({', '.join(meta_parts)})" if meta_parts else ""
+    return f"{hdr}: {format_compact_usd(net_usd, signed=True)}{issuer_sfx}{meta_sfx}"
+
+
+def format_etf_flows_summary_line(
+    data: Any,
+    *,
+    asset_order: Optional[Tuple[str, ...]] = None,
+) -> str:
+    """Format a compact 1-line summary of daily US Spot BTC/ETH ETF institutional net flows."""
+    if not isinstance(data, dict) or not data:
+        return ""
+    assets_map = data.get("assets") if isinstance(data.get("assets"), dict) else data
+    if not isinstance(assets_map, dict) or not assets_map:
+        return ""
+    pref = asset_order or ("BTC", "ETH")
+    ordered_keys = [k for k in pref if k in assets_map] + [
+        k for k in assets_map if k not in pref and isinstance(assets_map.get(k), dict)
+    ]
+    parts = [
+        part
+        for k in ordered_keys
+        if isinstance(assets_map.get(k), dict)
+        and (part := _format_single_asset_etf_flow(str(k).strip().upper(), assets_map[k]))
+    ]
+    return " | ".join(parts)
+
+
+def format_pretrade_etf_flows_line(data: Any, *, symbol: str = "") -> str:
+    """Format conditional Pre-Trade ETF Net Flows line (crypto pairs and crypto-ETF equity tickers only)."""
+    if not isinstance(data, dict) or not data:
+        return ""
+    sym_s = str(symbol or "").strip()
+    base = canonical_base_asset(sym_s).upper() if sym_s else ""
+    if sym_s and has_equity_suffix(sym_s) and base not in _CRYPTO_ETF_EQUITY_BASES:
+        return ""
+    order = ("ETH", "BTC") if base in ("ETH", "ETHA", "FETH", "ETHE", "ETHW") else ("BTC", "ETH")
+    return format_etf_flows_summary_line(data, asset_order=order)
+
+
 __all__ = [
     "AssetScopeFilterEvaluator",
     "CrossAssetRegimeEvaluator",
@@ -1249,6 +1581,7 @@ __all__ = [
     "MacroTelemetryEvaluatorBase",
     "apply_asset_scope_filter",
     "build_cycle_fallback_prices",
+    "classify_etf_flow_regime",
     "compute_cross_asset_regime",
     "compute_deribit_options_surface",
     "compute_equity_macro_regime",
@@ -1259,7 +1592,10 @@ __all__ = [
     "format_bottom_structure_6h_parts",
     "format_compact_usd",
     "format_equity_macro_regime_line",
+    "format_etf_flows_summary_line",
     "format_macro_benchmarks_summary_line",
+    "format_pretrade_etf_flows_line",
     "load_cached_macro_benchmarks",
+    "parse_farside_etf_flows_html",
     "reconcile_live_venue_equity_summary",
 ]

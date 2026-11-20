@@ -15349,11 +15349,11 @@ def test_faza3b_prep_ssot_seams_zero_behavior_change(tmp_path, monkeypatch):
     ):
         assert fname in macro_exact
     assert MacroAndNewsSensorsCollector._MACRO_SENSOR_CACHE_SPECS == mss.MACRO_SENSOR_CACHE_SPECS
-    assert mss.MACRO_SENSOR_HEALTH_KEYS == ("fear_greed", "market_breadth", "sentiment_advisor", "geopolitical_threat", "macro_benchmarks")
-    assert mss.CRYPTO_ONLY_MACRO_SENSOR_KEYS == frozenset({"fear_greed", "market_breadth", "sentiment_advisor"})
+    assert mss.MACRO_SENSOR_HEALTH_KEYS == ("fear_greed", "market_breadth", "sentiment_advisor", "geopolitical_threat", "macro_benchmarks", "etf_flows")
+    assert mss.CRYPTO_ONLY_MACRO_SENSOR_KEYS == frozenset({"fear_greed", "market_breadth", "sentiment_advisor", "etf_flows"})
     assert "macro_calendar" in mss.SYNTHETIC_MACRO_SENSOR_KEYS
     sh = build_sensor_health_summary(SimpleNamespace(fear_greed={"value": 50}, macro_benchmarks={"items": {}}))
-    assert sh["fear_greed_present"] is True and sh["macro_benchmarks_present"] is True and sh["market_breadth_present"] is False
+    assert sh["fear_greed_present"] is True and sh["macro_benchmarks_present"] is True and sh["market_breadth_present"] is False and sh["etf_flows_present"] is False
 
     # 3. Unified MarketBreadthSnapshot serialization + fresh guard + cached macro snapshot loader
     t_now = 1_795_200_000.0
@@ -15616,5 +15616,202 @@ def test_iter3_premarket_lead_rollover_kinematics_impulse_capacity_and_limit_dus
         max_idle_sec=1080.0,
         min_move_pct=0.35,
     ) == ["ADAUSD"]
+
+
+def test_faza3b_spot_etf_flows_collector_parser_pretrade_and_prompt(tmp_path, monkeypatch):
+    """End-to-end verification of Faza 3B: Farside BTC/ETH HTML parser, SpotEtfFlowsCollector, daemon update, Section 0/1 prompt, Pre-Trade pillar, and SentimentAdvisor."""
+    import cachepaths
+    import intelligence.macro_sentiment_ssot as mss
+    from intelligence.external.collectors.base_collector import TelemetryCollectorFactory
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+    from intelligence.sentiment.collectors.macro_telemetry_collector import (
+        MarketAndPortfolioSnapshotOrchestrator,
+        SpotEtfFlowsCollector,
+        collect_spot_etf_flows_snapshot,
+    )
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import (
+        MacroPillarsStage,
+        read_pretrade_telemetry_snapshot,
+        resolve_pretrade_source_intervals_sec,
+    )
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        format_etf_flows_summary_line,
+        format_pretrade_etf_flows_line,
+        parse_farside_etf_flows_html,
+    )
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+
+    btc_html = """
+    <html><body><table>
+      <tr><th></th><th></th><th></th><th></th><th></th><th>Total</th></tr>
+      <tr><th></th><th>IBIT</th><th>FBTC</th><th>ARKB</th><th>GBTC</th><th></th></tr>
+      <tr><td>Fee</td><td>0.25%</td><td>0.25%</td><td>0.21%</td><td>1.50%</td><td></td></tr>
+      <tr><td>16 Nov 2026</td><td>120.5</td><td>30.0</td><td>0.0</td><td>(10.5)</td><td>140.0</td></tr>
+      <tr><td>17 Nov 2026</td><td>(110.0)</td><td>(20.0)</td><td>0.0</td><td>(5.0)</td><td>(135.0)</td></tr>
+      <tr><td>18 Nov 2026</td><td>(200.0)</td><td>(50.0)</td><td>(10.0)</td><td>(20.0)</td><td>(280.0)</td></tr>
+      <tr><td>19 Nov 2026</td><td>(541.1)</td><td>(45.9)</td><td>(31.3)</td><td>(13.9)</td><td>(632.2)</td></tr>
+      <tr><td>20 Nov 2026</td><td>-</td><td>-</td><td>-</td><td>-</td><td>0.0</td></tr>
+      <tr><td>Total</td><td>63,370</td><td>10,037</td><td>854</td><td>(28,235)</td><td>53,580</td></tr>
+      <tr><td>Average</td><td>88.3</td><td>14.0</td><td>1.2</td><td>(39.3)</td><td>74.6</td></tr>
+    </table></body></html>
+    """
+    eth_html = """
+    <html><body><table>
+      <tr><th></th><th></th><th></th><th></th><th>Total</th></tr>
+      <tr><th></th><th>ETHA</th><th>FETH</th><th>ETHE</th><th></th></tr>
+      <tr><td>Fee</td><td>0.25%</td><td>0.25%</td><td>2.50%</td><td></td></tr>
+      <tr><td>Staking fee</td><td>N/A</td><td>N/A</td><td>23%</td><td></td></tr>
+      <tr><td>18 Nov 2026</td><td>(40.0)</td><td>(5.0)</td><td>(15.0)</td><td>(60.0)</td></tr>
+      <tr><td>19 Nov 2026</td><td>(124.2)</td><td>-</td><td>(5.2)</td><td>(129.4)</td></tr>
+      <tr><td>20 Nov 2026</td><td>-</td><td>-</td><td>-</td><td>0.0</td></tr>
+      <tr><td>Total</td><td>11,043</td><td>2,436</td><td>(5,542)</td><td>11,344</td></tr>
+    </table></body></html>
+    """
+
+    # 1. Pure Farside HTML parser skips unreported placeholder day (20 Nov), detects partial reporting, streaks, and regimes
+    btc_parsed = parse_farside_etf_flows_html(btc_html, asset="BTC")
+    assert btc_parsed is not None
+    assert btc_parsed["latest_date"] == "2026-11-19"
+    assert btc_parsed["pending_date"] == "2026-11-20"
+    assert btc_parsed["latest_net_flow_musd"] == pytest.approx(-632.2)
+    assert btc_parsed["latest_net_flow_usd"] == pytest.approx(-632_200_000.0)
+    assert btc_parsed["is_partial"] is False
+    assert btc_parsed["reported_issuers"] == 4 and btc_parsed["total_issuers"] == 4
+    assert btc_parsed["streak_days"] == -3
+    assert btc_parsed["sum_3d_musd"] == pytest.approx(-1047.2)
+    assert btc_parsed["sum_5d_musd"] == pytest.approx(-907.2)
+    assert btc_parsed["flow_regime"] == "STRONG_OUTFLOW"
+    assert list(btc_parsed["top_issuers_musd"].keys()) == ["IBIT", "FBTC", "ARKB"]
+
+    eth_parsed = parse_farside_etf_flows_html(eth_html, asset="ETH")
+    assert eth_parsed is not None
+    assert eth_parsed["latest_date"] == "2026-11-19"
+    assert eth_parsed["is_partial"] is True
+    assert eth_parsed["reported_issuers"] == 2 and eth_parsed["total_issuers"] == 3
+    assert eth_parsed["streak_days"] == -2
+    assert eth_parsed["flow_regime"] == "STRONG_OUTFLOW"
+
+    # 2. SpotEtfFlowsCollector fetches, persists atomically, honors skip_if_fresh_sec, preserves partial fallback, and supports read_snapshot
+    t_now = 1_795_200_000.0
+    cdir = tmp_path / "cachedb"
+    cdir.mkdir()
+    fetch_calls = []
+
+    def _fake_fetch_text(url, **_kw):
+        fetch_calls.append(url)
+        if "/btc/" in url:
+            return btc_html
+        if "/eth/" in url:
+            return eth_html
+        raise RuntimeError(f"Unexpected URL: {url}")
+
+    snap = collect_spot_etf_flows_snapshot(
+        str(cdir),
+        now_ts=t_now,
+        persist=True,
+        fetch_text_fn=_fake_fetch_text,
+    )
+    assert snap is not None and snap["btc_ok"] is True and snap["eth_ok"] is True
+    assert len(fetch_calls) == 2
+    assert "BTC_ETF(2026-11-19): -$632.20M [IBIT -$541.10M, FBTC -$45.90M, ARKB -$31.30M]" in snap["summary_line"]
+    assert "streak=-3d, STRONG_OUTFLOW" in snap["summary_line"]
+    assert "ETH_ETF(2026-11-19): -$129.40M [ETHA -$124.20M, ETHE -$5.20M]" in snap["summary_line"]
+    assert "partial=2/3" in snap["summary_line"]
+
+    # Fresh guard avoids redundant network calls
+    snap_cached = collect_spot_etf_flows_snapshot(
+        str(cdir),
+        now_ts=t_now + 60.0,
+        persist=True,
+        fetch_text_fn=_fake_fetch_text,
+        skip_if_fresh_sec=1800.0,
+    )
+    assert snap_cached is not None and len(fetch_calls) == 2
+
+    # Partial failure (ETH fails, BTC succeeds) retains recent cached ETH asset
+    def _btc_only_fetch(url, **_kw):
+        if "/btc/" in url:
+            return btc_html
+        raise RuntimeError("eth timeout")
+
+    snap_partial = collect_spot_etf_flows_snapshot(
+        str(cdir),
+        now_ts=t_now + 3600.0,
+        persist=True,
+        fetch_text_fn=_btc_only_fetch,
+    )
+    assert snap_partial is not None and snap_partial["btc_ok"] is True and snap_partial["eth_ok"] is False
+    assert "BTC" in snap_partial["assets"] and "ETH" in snap_partial["assets"]
+
+    # Consumer read_snapshot does zero network I/O
+    ro_col = TelemetryCollectorFactory.create("spot_etf_flows", start_sync=False)
+    assert isinstance(ro_col, SpotEtfFlowsCollector)
+    ro_snap = ro_col.read_snapshot(str(cdir))
+    assert isinstance(ro_snap, dict) and ro_snap["assets"]["BTC"]["latest_date"] == "2026-11-19"
+    assert mss.load_cached_etf_flows_snapshot(str(cdir)) is not None
+
+    # 3. GlobalTelemetryCollector update_etf_flows + heartbeat interval wiring
+    monkeypatch.setattr(mss, "fetch_public_text", _fake_fetch_text, raising=False)
+    gtc = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=str(cdir), skip_external=True, skip_news=True)
+    assert gtc.etf_flows_interval_sec == pytest.approx(mss.resolve_derived_telemetry_intervals()["etf_flows_interval_sec"])
+    assert gtc.update_etf_flows(force=True, now=t_now + 7200.0) is True
+    assert "etf_flows" in resolve_pretrade_source_intervals_sec("CRYPTO")
+
+    # 4. Snapshot orchestrator + Section 0/1 prompt: visible on crypto scope, stripped on equities scope
+    orch = MarketAndPortfolioSnapshotOrchestrator(start_sync=False)
+    crypto_snap = orch.read_snapshot(str(cdir), scope="crypto", now_ts=t_now + 7260.0)
+    assert isinstance(crypto_snap.etf_flows, dict) and "etf_flows" in crypto_snap.source_ages_sec
+    crypto_prompt = build_supervisor_prompt(crypto_snap, SimpleNamespace(), topic_key="auto_cryptotrade_executor")
+    assert "- US Spot Crypto ETF Net Flows (Farside Daily):" in crypto_prompt
+    assert "BTC_ETF(2026-11-19): -$632.20M" in crypto_prompt
+    assert "etf_flows=" in crypto_prompt
+
+    eq_snap = orch.read_snapshot(str(cdir), scope="equities", now_ts=t_now + 7260.0)
+    assert eq_snap.etf_flows is None
+    eq_prompt = build_supervisor_prompt(eq_snap, SimpleNamespace(), topic_key="auto_sharetrade_executor")
+    assert "US Spot Crypto ETF Net Flows" not in eq_prompt
+    assert "etf_flows=" not in eq_prompt
+
+    # 5. Pre-Trade MacroPillarsStage conditional injection (crypto leads with ETH for ETHUSDC, BTC for BTCUSDC; omitted on NVDA_US_EQ)
+    assert format_pretrade_etf_flows_line(snap, symbol="NVDA_US_EQ") == ""
+    assert format_pretrade_etf_flows_line(snap, symbol="ETHUSDC").startswith("ETH_ETF(")
+    assert format_pretrade_etf_flows_line(snap, symbol="BTCUSDC").startswith("BTC_ETF(")
+    for sym_pt, expect_present in (("ETHUSDC", True), ("NVDA_US_EQ", False)):
+        pt_snap = read_pretrade_telemetry_snapshot(
+            sym_pt,
+            cachedb_dir=str(cdir),
+            stages=(MacroPillarsStage(),),
+            now_ts=t_now + 7260.0,
+        )
+        if expect_present:
+            assert "US Spot ETF Net Flows" in pt_snap.data
+            assert pt_snap.data["US Spot ETF Net Flows"].startswith("ETH_ETF(")
+            assert "etf_flows" in pt_snap.pillar_timestamps
+        else:
+            assert "US Spot ETF Net Flows" not in pt_snap.data
+
+    # 6. SentimentAdvisor includes cached Spot ETF Net Flows in its LLM prompt context
+    captured_prompts = []
+
+    class _FakeGemini:
+        def query_json(self, prompt_txt, **_kw):
+            captured_prompts.append(prompt_txt)
+            return {
+                "market_bias": "CAUTION",
+                "risk_level": "HIGH",
+                "confidence": 0.8,
+                "summary": "Heavy institutional ETF outflows.",
+                "key_risks": ["BTC ETF outflows"],
+                "recommended_action": "HOLD",
+            }
+
+    adv = SentimentAdvisor(
+        gemini_client=_FakeGemini(),
+        cache_file=str(cdir / cachepaths.CACHE_SENTIMENT_EVAL_FILENAME),
+    )
+    adv.review(force_refresh=True, now_ts=t_now + 7260.0, allow_llm=True)
+    assert captured_prompts and "- US Spot Crypto ETF Net Flows (Farside Daily):" in captured_prompts[0]
+    assert format_etf_flows_summary_line(snap) in captured_prompts[0]
 
 

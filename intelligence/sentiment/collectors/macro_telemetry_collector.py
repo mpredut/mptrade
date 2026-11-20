@@ -32,6 +32,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
+    CACHE_ETF_FLOWS_FILENAME,
     CACHE_MACRO_BENCHMARKS_FILENAME,
     CACHE_MACRO_CALENDAR_FILENAME,
     CACHE_MARKET_BREADTH_FILENAME,
@@ -68,6 +69,7 @@ from intelligence.macro_sentiment_ssot import (
     get_macro_calendar_endpoint_url,
     get_macro_calendar_medium_tier_keywords,
     get_nasdaq_earnings_calendar_url,
+    get_spot_etf_flow_urls,
     get_tracked_equity_base_tickers,
     get_yahoo_chart_url,
     load_microstructure_cycle_history,
@@ -109,8 +111,10 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     compute_futures_premarket_lead,
     enrich_macro_benchmarks_live_state,
     enrich_sentiment_advisor_live_flow_divergence,
+    format_etf_flows_summary_line,
     format_macro_benchmarks_summary_line,
     MACRO_BENCHMARK_SPECS,
+    parse_farside_etf_flows_html,
     reconcile_live_venue_equity_summary,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
@@ -736,6 +740,104 @@ class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
         return payload
 
 
+class SpotEtfFlowsCollector(MacroTelemetryCollectorBase):
+    """Concrete collector (Level 3) fetching daily US Spot BTC/ETH ETF net flows (Farside Investors HTML tables)."""
+
+    cls_name = "SpotEtfFlowsCollector"
+    COLLECTOR_ID = "spot_etf_flows"
+    # Shared wall-clock budget strictly below GlobalTelemetryCollector's 12.0s etf_flows step timeout.
+    _FETCH_DEADLINE_SEC = 10.0
+    _REQUEST_HEADERS: Dict[str, str] = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    def collect(
+        self,
+        cachedb_dir: str = "cachedb",
+        symbol: str = "*",
+        *,
+        now_ts: Optional[float] = None,
+        timeout_sec: float = 4.0,
+        allow_network: bool = True,
+        persist: bool = True,
+        fetch_text_fn: Optional[Callable[..., Any]] = None,
+        read_json_fn: Any = None,
+        skip_if_fresh_sec: float = 0.0,
+        max_days: int = 10,
+        **kwargs: Any,
+    ) -> Optional[Dict[str, Any]]:
+        _ = (symbol, kwargs)
+        eff_now = resolve_now_ts(now_ts)
+        flow_urls = get_spot_etf_flow_urls()
+        expected_assets = tuple(asset_u for asset_u, _ in flow_urls)
+        prev_snap, is_fresh_cached = self._read_fresh_cached_snapshot(
+            cachedb_dir,
+            "etf_flows_files",
+            CACHE_ETF_FLOWS_FILENAME,
+            now_ts=eff_now,
+            skip_if_fresh_sec=skip_if_fresh_sec,
+            read_json_fn=read_json_fn,
+            is_healthy_fn=lambda d: isinstance(d.get("assets"), dict)
+            and bool(d["assets"])
+            and all(a in d["assets"] for a in expected_assets),
+        )
+        if not allow_network and fetch_text_fn is None:
+            return prev_snap
+        if is_fresh_cached and prev_snap is not None:
+            return prev_snap
+        if not flow_urls:
+            return None
+
+        _fetch_text = self._resolve_text_fetch_fn(fetch_text_fn)
+        deadline_mono = self._build_fetch_deadline(fetch_text_fn)
+        assets_out: Dict[str, Dict[str, Any]] = {}
+        ok_flags: Dict[str, bool] = {}
+
+        for asset_u, url in flow_urls:
+            req_to = resolve_remaining_timeout_sec(deadline_mono, timeout_sec, min_timeout=1.5)
+            if req_to is None:
+                ok_flags[asset_u] = False
+                continue
+            try:
+                html_raw = _fetch_text(url, timeout=req_to, headers=dict(self._REQUEST_HEADERS))
+                parsed = parse_farside_etf_flows_html(html_raw, asset=asset_u, max_days=max_days)
+                if isinstance(parsed, dict) and parsed:
+                    assets_out[asset_u] = parsed
+                    ok_flags[asset_u] = True
+                else:
+                    ok_flags[asset_u] = False
+            except Exception as exc:
+                ok_flags[asset_u] = False
+                logger.debug("Farside %s spot ETF flow fetch failed: %s", asset_u, exc)
+
+        if not assets_out:
+            return None
+
+        done_now = resolve_now_ts(now_ts)
+        if self._is_snapshot_within_age(prev_snap, now_ts=done_now, max_age_sec=86400.0, inclusive=True) and isinstance(
+            prev_snap, dict
+        ):
+            prev_assets = prev_snap.get("assets")
+            if isinstance(prev_assets, dict):
+                for asset_u in expected_assets:
+                    if asset_u not in assets_out and isinstance(prev_assets.get(asset_u), dict):
+                        assets_out[asset_u] = dict(prev_assets[asset_u])
+
+        payload: Dict[str, Any] = {
+            "ts": round(done_now, 3),
+            "source": "farside",
+            "assets": assets_out,
+            **{f"{asset_u.lower()}_ok": bool(ok_flags.get(asset_u, False)) for asset_u in expected_assets},
+        }
+        payload["summary_line"] = format_etf_flows_summary_line(payload)
+        self._persist_snapshot(cachedb_dir, CACHE_ETF_FLOWS_FILENAME, payload, persist=persist)
+        return payload
+
+
 def _resolve_macro_collect_inputs(
     now_ts: Optional[float], read_json_fn: Optional[Callable]
 ) -> tuple[float, Callable, Callable]:
@@ -1218,7 +1320,8 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
             cache_dir, "macro_calendar_files", CACHE_MACRO_CALENDAR_FILENAME, _rj
         )
         if allow_network and read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
-            cal_itv_sec = _mss.resolve_derived_telemetry_intervals()["macro_calendar_interval_sec"]
+            derived_itvs = _mss.resolve_derived_telemetry_intervals()
+            cal_itv_sec = derived_itvs["macro_calendar_interval_sec"]
             cal_snap = self._maybe_backfill_cached_macro_snapshot(
                 cal_snap,
                 cal_path,
@@ -1232,6 +1335,25 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                     skip_if_fresh_sec=resolve_macro_fresh_guard_sec(cal_itv_sec),
                 ),
             )
+            if str(scope or "").strip().lower() not in ("equities", "equity"):
+                etf_itv_sec = derived_itvs["etf_flows_interval_sec"]
+                etf_cur = macro_sensors.get("etf_flows")
+                etf_path = self._resolve_cache_path(cache_dir, CACHE_ETF_FLOWS_FILENAME)
+                live_etf = self._maybe_backfill_cached_macro_snapshot(
+                    etf_cur,
+                    etf_path,
+                    now_ts=now_ts,
+                    max_age_sec=etf_itv_sec,
+                    collect_fn=lambda: collect_spot_etf_flows_snapshot(
+                        cache_dir,
+                        now_ts=now_ts,
+                        timeout_sec=4.0,
+                        persist=persist,
+                        skip_if_fresh_sec=resolve_macro_fresh_guard_sec(etf_itv_sec),
+                    ),
+                )
+                if isinstance(live_etf, dict) and live_etf and live_etf is not etf_cur:
+                    macro_sensors["etf_flows"] = _with_age_min(live_etf, etf_path)
         macro_sensors["macro_calendar"] = resolve_macro_economic_calendar(
             now_ts=now_ts,
             breaking_news=valid_news or breaking_news,
@@ -2028,12 +2150,36 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
 for _macro_collector_cls in (
     MacroBenchmarksSnapshotCollector,
     MacroEconomicCalendarCollector,
+    SpotEtfFlowsCollector,
     MacroAndNewsSensorsCollector,
     InitialPricesAndTrendsCollector,
     PortfolioAndVenueCyclesCollector,
     MarketAndPortfolioSnapshotOrchestrator,
 ):
     TelemetryCollectorFactory.register(_macro_collector_cls.COLLECTOR_ID, _macro_collector_cls)
+
+
+def collect_spot_etf_flows_snapshot(
+    cache_dir: str = "cachedb",
+    *,
+    now_ts: Optional[float] = None,
+    timeout_sec: float = 4.0,
+    persist: bool = True,
+    fetch_text_fn: Optional[Callable[..., Any]] = None,
+    skip_if_fresh_sec: float = 0.0,
+    max_days: int = 10,
+) -> Optional[Dict[str, Any]]:
+    """Fetch daily US Spot BTC/ETH ETF net flows (Farside Investors) and persist to cachedb."""
+    return TelemetryCollectorFactory.create("spot_etf_flows", start_sync=True).collect(
+        cache_dir,
+        "*",
+        now_ts=now_ts,
+        timeout_sec=timeout_sec,
+        persist=persist,
+        fetch_text_fn=fetch_text_fn,
+        skip_if_fresh_sec=skip_if_fresh_sec,
+        max_days=max_days,
+    )
 
 
 def collect_macro_calendar_snapshot(
@@ -2108,15 +2254,18 @@ __all__ = [
     "MacroTelemetryCollectorBase",
     "MarketAndPortfolioSnapshotOrchestrator",
     "PortfolioAndVenueCyclesCollector",
+    "SpotEtfFlowsCollector",
     "apply_asset_scope_filter",
     "build_cycle_fallback_prices",
     "collect_macro_benchmarks_snapshot",
     "collect_macro_calendar_snapshot",
+    "collect_spot_etf_flows_snapshot",
     "compute_cross_asset_regime",
     "compute_deribit_options_surface",
     "compute_equity_macro_regime",
     "compute_futures_premarket_lead",
     "enrich_sentiment_advisor_live_flow_divergence",
+    "format_etf_flows_summary_line",
     "format_macro_benchmarks_summary_line",
     "harvest_macro_and_news_sensors",
     "reconcile_live_venue_equity_summary",

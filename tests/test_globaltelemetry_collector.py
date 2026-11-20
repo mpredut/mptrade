@@ -2635,9 +2635,11 @@ def test_live_cycle_avoids_start_ts_backdating_and_fast_microstructure_deltas(tm
     col._last_breadth_ts = t_now + 1000.0
     col._last_macro_benchmarks_ts = t_now + 1000.0
     col._last_macro_calendar_ts = t_now + 1000.0
+    col._last_etf_flows_ts = t_now + 1000.0
     col._last_pretrade_caches_ts = t_now + 1000.0
     col._last_venue_balances_ts = t_now + 1000.0
     monkeypatch.setattr(col, "update_macro_calendar", lambda *_a, **_kw: True)
+    monkeypatch.setattr(col, "update_etf_flows", lambda *_a, **_kw: True)
     monkeypatch.setattr(col, "update_orderbook", _fake_ob)
     monkeypatch.setattr(col, "update_derivatives", lambda _s: True)
     monkeypatch.setattr(col, "update_whale", lambda _s: True)

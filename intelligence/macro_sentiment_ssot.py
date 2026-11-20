@@ -171,6 +171,7 @@ def __dir__() -> List[str]:
 
 
 from cachepaths import (
+    CACHE_ETF_FLOWS_FILENAME,
     CACHE_FEAR_GREED_FILENAME,
     CACHE_GEOPOLITICAL_EVAL_FILENAME,
     CACHE_MACRO_BENCHMARKS_FILENAME,
@@ -701,6 +702,7 @@ def resolve_derived_telemetry_intervals(
         "macro_benchmarks_interval_sec": _sec("macro_benchmarks_interval_mult", 5.0 / 6.0),
         "macro_benchmarks_us_open_interval_sec": _sec("macro_benchmarks_us_open_interval_mult", 1.0 / 8.0),
         "macro_calendar_interval_sec": _sec("macro_calendar_interval_mult", 60.0),
+        "etf_flows_interval_sec": _sec("etf_flows_interval_mult", 20.0),
         "fear_greed_interval_sec": _sec("fear_greed_interval_mult", 5.0),
         "sensor_stale_age_min": round(
             exec_min * _parse_cfg_ratio(_raw_interval("sensor_stale_age_mult"), 11.0 / 12.0),
@@ -743,9 +745,12 @@ MACRO_SENSOR_CACHE_SPECS: Tuple[Tuple[str, str, str], ...] = (
     ("sentiment_advisor", "sentiment_eval_files", CACHE_SENTIMENT_EVAL_FILENAME),
     ("geopolitical_threat", "geopolitical_eval_file", CACHE_GEOPOLITICAL_EVAL_FILENAME),
     ("macro_benchmarks", "macro_benchmarks_files", CACHE_MACRO_BENCHMARKS_FILENAME),
+    ("etf_flows", "etf_flows_files", CACHE_ETF_FLOWS_FILENAME),
 )
 MACRO_SENSOR_HEALTH_KEYS: Tuple[str, ...] = tuple(spec[0] for spec in MACRO_SENSOR_CACHE_SPECS)
-CRYPTO_ONLY_MACRO_SENSOR_KEYS: frozenset[str] = frozenset({"fear_greed", "market_breadth", "sentiment_advisor"})
+CRYPTO_ONLY_MACRO_SENSOR_KEYS: frozenset[str] = frozenset(
+    {"fear_greed", "market_breadth", "sentiment_advisor", "etf_flows"}
+)
 SYNTHETIC_MACRO_SENSOR_KEYS: frozenset[str] = frozenset({"macro_calendar"})
 
 _BREADTH_ROTATION_FIELDS: Tuple[str, ...] = (
@@ -886,6 +891,7 @@ def resolve_telemetry_domain_stale_thresholds_sec(
         "fear_greed": derived["fear_greed_interval_sec"] * mult,
         "market_breadth": derived["breadth_interval_sec"] * mult,
         "macro_benchmarks": mb_itv * mult,
+        "etf_flows": derived["etf_flows_interval_sec"] * mult,
         "sentiment_advisor": derived["default_sentiment_interval_sec"] * mult,
         "geopolitical_threat": derived["default_geopolitical_interval_sec"] * mult,
     }
@@ -1071,6 +1077,21 @@ def get_macro_benchmark_specs() -> Tuple[Tuple[str, str, str], ...]:
     if not specs:
         raise ValueError("Invalid [feeds] macro_benchmark_specs in macro_intelligence.conf")
     return tuple(specs)
+
+
+def get_spot_etf_flow_urls() -> Tuple[Tuple[str, str], ...]:
+    """Return declarative ``(asset, url)`` pairs from ``[feeds] spot_etf_flow_urls`` in ``macro_intelligence.conf``."""
+    raw = _cfg_str("feeds", "spot_etf_flow_urls")
+    out: List[Tuple[str, str]] = []
+    for item in split_csv(raw, lower=False, upper=False):
+        if ":" not in item:
+            continue
+        asset_raw, url_raw = item.split(":", 1)
+        asset_u = asset_raw.strip().upper()
+        url_s = url_raw.strip()
+        if asset_u and url_s.lower().startswith(("http://", "https://")):
+            out.append((asset_u, url_s))
+    return tuple(out)
 
 
 def get_tracked_equity_base_tickers(*, include_tokenized: bool = False) -> Tuple[str, ...]:
@@ -1425,6 +1446,11 @@ def load_cached_macro_calendar_snapshot(cache_dir: str) -> Optional[Dict[str, An
     return load_cached_macro_snapshot(cache_dir, "macro_calendar_files", CACHE_MACRO_CALENDAR_FILENAME)
 
 
+def load_cached_etf_flows_snapshot(cache_dir: str) -> Optional[Dict[str, Any]]:
+    """Load cached daily US Spot BTC/ETH ETF net flows snapshot from ``cache_dir`` without network I/O."""
+    return load_cached_macro_snapshot(cache_dir, "etf_flows_files", CACHE_ETF_FLOWS_FILENAME)
+
+
 def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load and normalize cached GeopoliticalThreatAnalyzer evaluation dictionary from ``cache_dir``."""
     return _read_and_finalize_cached_eval_dict(
@@ -1594,6 +1620,7 @@ class TelemetrySensorSnapshot:
     geopolitical_threat: Optional[Dict[str, Any]] = None
     macro_benchmarks: Optional[Dict[str, Any]] = None
     macro_calendar: Optional[Dict[str, Any]] = None
+    etf_flows: Optional[Dict[str, Any]] = None
     breaking_news: List[Dict[str, Any]] = field(default_factory=list)
     active_heartbeats: Dict[str, Any] = field(default_factory=dict)
     state_files: Dict[str, Any] = field(default_factory=dict)

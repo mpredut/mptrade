@@ -30,6 +30,7 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_bottom_structure_6h_parts,
     format_compact_usd,
     format_equity_macro_regime_line,
+    format_etf_flows_summary_line,
     format_macro_benchmarks_summary_line,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
@@ -499,6 +500,14 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         lines.append(
             f"- US Equities, Futures & Macro Rates Benchmarks (SPY / QQQ / ES=F / NQ=F / DXY / US10Y 24h Delta): {mb_bench_line}"
         )
+    if not is_equities_scope:
+        etf_flows = _resolve_macro_sensor(sensors, macro, "etf_flows", ps=ps)
+        if etf_flows:
+            etf_s = str(etf_flows.get("summary_line") or "").strip() or format_etf_flows_summary_line(etf_flows)
+            if etf_s:
+                lines.append(
+                    f"- US Spot Crypto ETF Net Flows (Farside Daily): {etf_s}{_age_sfx(etf_flows, parens=True)}"
+                )
     if breaking_news:
         lines.append("- Live Breaking News Feed (cachedb/macro/news_feed_collect.json, 1m refresh):")
         for hn in breaking_news:

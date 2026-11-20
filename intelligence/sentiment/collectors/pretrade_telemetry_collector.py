@@ -25,6 +25,7 @@ from botcore import (
 )
 from cachepaths import (
     CACHE_DERIVATIVES_TELEMETRY_PREFIX,
+    CACHE_ETF_FLOWS_FILENAME,
     CACHE_FEAR_GREED_FILENAME,
     CACHE_GEOPOLITICAL_EVAL_FILENAME,
     CACHE_KALMAN_TREND_FILENAME,
@@ -64,6 +65,7 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     enrich_macro_benchmarks_live_state,
     format_bottom_structure_6h_parts,
     format_equity_macro_regime_line,
+    format_pretrade_etf_flows_line,
 )
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
@@ -176,6 +178,7 @@ def resolve_pretrade_source_intervals_sec(asset_scope: str = "CRYPTO") -> Dict[s
         "short_slopes": SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
         "macro_benchmarks": derived["macro_benchmarks_interval_sec"],
         "macro_calendar": derived["macro_calendar_interval_sec"],
+        "etf_flows": derived["etf_flows_interval_sec"],
         "fear_greed": derived["fear_greed_interval_sec"],
         "sentiment_eval": derived["default_sentiment_interval_sec"],
         "geopolitical_eval": derived["default_geopolitical_interval_sec"],
@@ -2116,6 +2119,13 @@ class MacroPillarsStage(PretradePillarCollectorBase):
                             "fear_greed",
                             normalize_epoch_sec(fg_data.get("ts"), default=None) or extract_timestamp_s(fg_data),
                         )
+            except Exception:
+                pass
+            try:
+                if (etf_data := self._read_cached_pillar_dict(ctx, "etf_flows_files", CACHE_ETF_FLOWS_FILENAME)) is not None:
+                    if etf_line := format_pretrade_etf_flows_line(etf_data, symbol=ctx.symbol):
+                        ctx.telemetry["US Spot ETF Net Flows"] = etf_line
+                        ctx.record_source_timestamp("etf_flows", extract_timestamp_s(etf_data))
             except Exception:
                 pass
         try:
