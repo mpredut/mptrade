@@ -1560,14 +1560,20 @@ def _guard_quadratic_kinematic_overshoot(
     if len(recent_pts) < 2:
         recent_pts = pts_tau_y[len(pts_tau_y) // 2 :]
     v_rec = _linear_ols_slope(recent_pts)
-    if v_rec is None or (vel * v_rec) > 0.0:
+    if v_rec is None:
         return vel, acc
     tail_cut = pts_tau_y[-1][0] - span_min / 3.0
     tail_pts = [pt for pt in pts_tau_y if pt[0] >= tail_cut - 1e-9]
     if len(tail_pts) < 2:
         tail_pts = pts_tau_y[-2:]
     dy_tail = tail_pts[-1][1] - tail_pts[0][1]
-    if (vel * dy_tail) > 0.0:
+    tail_span = max(tail_pts[-1][0] - tail_pts[0][0], 1e-6)
+    v_tail = dy_tail / tail_span
+    if (vel * v_rec) > 0.0 or (vel * dy_tail) > 0.0:
+        max_rev_vel = 2.0 * max(abs(v_rec), abs(v_tail))
+        if max_rev_vel > 0.0 and abs(vel) > max_rev_vel:
+            scale = max_rev_vel / abs(vel)
+            return math.copysign(max_rev_vel, vel), acc * scale
         return vel, acc
     early_pts = [pt for pt in pts_tau_y if pt[0] <= tau_mid + 1e-9]
     if len(early_pts) < 2:
@@ -2193,11 +2199,13 @@ def apply_24h_series_enrichment(
     st_ts_e = safe_pos_float(entry.pop("_short_trend_ts", None), default=None)
     if series_24h:
         pts_s24_sorted = _extract_sorted_ts_px(series_24h)
-        stale_short_ts = bool(
-            st_ts_e is not None
-            and pts_s24_sorted
-            and ((safe_float(pts_s24_sorted[-1][0], default=0.0) or 0.0) / 1000.0 - st_ts_e) > 600.0
+        st_lag_s = (
+            ((safe_float(pts_s24_sorted[-1][0], default=0.0) or 0.0) / 1000.0 - st_ts_e)
+            if (st_ts_e is not None and pts_s24_sorted)
+            else 0.0
         )
+        stale_short_ts = bool(st_lag_s > 600.0)
+        stale_kin_ts = bool(st_lag_s > 45.0)
         if stale_short_ts:
             for k_st_clr in (
                 "slope_90s",
@@ -2225,15 +2233,37 @@ def apply_24h_series_enrichment(
             and abs(s_2_5h - s_15m) < 1e-12
             and abs(safe_float(entry.get("growth_2_5h"), 0.0) - safe_float(entry.get("growth_15m"), 0.0)) < 1e-9
         )
-        if (entry.get("vel_90s_pct_min") is None and entry.get("vel_5m_pct_min") is None) or stale_short_cache:
+        v90_cur = safe_float(entry.get("vel_90s_pct_min"), default=None)
+        c1m_cur = safe_float(entry.get("chg_1m_pct"), default=None)
+        s90_cur = safe_float(entry.get("slope_90s"), default=None)
+        gf_cur = safe_float(entry.get("gradient_recent_fast"), default=None)
+        kin_contradicts_short = bool(
+            v90_cur is not None
+            and abs(v90_cur) >= 0.02
+            and c1m_cur is not None
+            and abs(c1m_cur) >= 0.05
+            and (v90_cur * c1m_cur) < 0.0
+            and (
+                (s90_cur is not None and (v90_cur * s90_cur) < 0.0)
+                or (gf_cur is not None and (v90_cur * gf_cur) < 0.0)
+            )
+        )
+        if (
+            (entry.get("vel_90s_pct_min") is None and entry.get("vel_5m_pct_min") is None)
+            or stale_short_cache
+            or stale_kin_ts
+            or kin_contradicts_short
+        ):
             for kk_s, kv_s in compute_series_kinematics(series_24h).items():
-                if entry.get(kk_s) is None or stale_short_cache:
+                if entry.get(kk_s) is None or stale_short_cache or stale_kin_ts or kin_contradicts_short:
                     entry[kk_s] = kv_s
-        if (entry.get("slope_3_7m") is None or stale_short_cache) and (s_fb := compute_short_slopes_from_series(series_24h)):
+        if (entry.get("slope_3_7m") is None or stale_short_cache or stale_kin_ts) and (s_fb := compute_short_slopes_from_series(series_24h)):
             for sk, sv in s_fb.items():
                 if sv is None:
                     continue
                 if entry.get(sk) is None or (
+                    stale_kin_ts and sk in ("slope_90s", "growth_90s", "trend_90s", "gradient_recent_fast")
+                ) or (
                     stale_short_cache
                     and (
                         sk in ("slope_2_5h", "growth_2_5h", "trend_2_5h")

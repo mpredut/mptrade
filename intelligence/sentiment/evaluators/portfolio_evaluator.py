@@ -878,8 +878,13 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                 prev_m = origin_by_side_ts.get(side_ts_m)
                 origin_by_side_ts[side_ts_m] = ("AI", prev_m[1] if prev_m else None, prev_m[2] if prev_m else None)
 
+        ai_oids_frozen = frozenset(ai_oids)
+        ai_oids_len = len(ai_oids)
         for o in valid:
-            act_v, mod_v, rule_v = resolve_order_origin(o, ai_oids, audit_origin_map)
+            if len(ai_oids) != ai_oids_len:
+                ai_oids_frozen = frozenset(ai_oids)
+                ai_oids_len = len(ai_oids)
+            act_v, mod_v, rule_v = resolve_order_origin(o, ai_oids_frozen, audit_origin_map)
             if act_v == "BOT" and not (mod_v or rule_v or o.get("clientOrderId") or o.get("client_order_id")) and parsed_ai_intents:
                 if _matches_ai_intent(o):
                     act_v = "AI"

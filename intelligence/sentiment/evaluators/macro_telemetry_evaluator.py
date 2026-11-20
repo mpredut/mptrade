@@ -334,7 +334,7 @@ class FuturesPremarketLeadEvaluator(MacroTelemetryEvaluatorBase):
         if not isinstance(items, dict):
             return {}
         out: Dict[str, Any] = {}
-        any_cash_live_rth = False
+        any_cash_live_trading = False
         for lead_key, fut_sym, cash_sym in (("nq_qqq_lead_pct", "NQ=F", "QQQ"), ("es_spy_lead_pct", "ES=F", "SPY")):
             fut, cash = items.get(fut_sym), items.get(cash_sym)
             if not isinstance(fut, dict) or not isinstance(cash, dict):
@@ -351,9 +351,12 @@ class FuturesPremarketLeadEvaluator(MacroTelemetryEvaluatorBase):
             )
             is_off_rth = (cash_state not in ("", "REGULAR")) or not cash_has_fresh_intraday
             if not is_off_rth:
-                any_cash_live_rth = True
+                any_cash_live_trading = True
                 continue
-            if fut_globex is not None and abs(fut_globex) >= 0.25:
+            cash_live_extended = cash_state in ("PRE", "PREPRE", "POST", "POSTPOST") and cash_has_fresh_intraday
+            if cash_live_extended:
+                any_cash_live_trading = True
+            if not cash_live_extended and fut_globex is not None and abs(fut_globex) >= 0.25:
                 out[lead_key] = round(fut_globex, 2) + 0.0
             elif fut_24h is not None and cash_24h is not None:
                 diff_v = round(fut_24h - cash_24h, 2) + 0.0
@@ -366,7 +369,7 @@ class FuturesPremarketLeadEvaluator(MacroTelemetryEvaluatorBase):
             elif fut_1h is not None and abs(fut_1h) >= 0.25:
                 out[lead_key] = round(fut_1h, 2) + 0.0
         lead_v = out.get("nq_qqq_lead_pct") if out.get("nq_qqq_lead_pct") is not None else out.get("es_spy_lead_pct")
-        if lead_v is None and not any_cash_live_rth:
+        if lead_v is None and not any_cash_live_trading:
             lead_v = safe_float(data.get("futures_lead_pct", items.get("futures_lead_pct")), default=None)
         if lead_v is not None and abs(lead_v) >= 0.25:
             out["futures_lead_pct"] = round(lead_v, 2) + 0.0

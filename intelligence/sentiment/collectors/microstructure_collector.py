@@ -148,6 +148,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_24h_price_metrics,
     compute_7d_range_metrics,
     compute_atr_multi_horizon,
+    compute_series_kinematics,
     compute_session_vwap_metrics,
     compute_volume_profile_metrics,
     compute_volume_rvol_metrics,
@@ -184,6 +185,7 @@ from state_io import (
     read_json_dict,
     read_json_dict_recovering as _default_read_json_cached,
     read_json_recovering,
+    read_jsonl_records_since_span,
     read_tail_jsonl_records,
     save_json_state,
 )
@@ -436,6 +438,7 @@ def _read_archive_series_file(
     _rj: Any,
     is_default_rj: bool,
     max_b: int = 1024 * 1024,
+    span_ms: Optional[float] = None,
 ) -> list:
     if not os.path.exists(arch_path):
         return []
@@ -446,19 +449,27 @@ def _read_archive_series_file(
             return list(aser) if len(aser) >= 2 else []
         arch_key: Optional[Tuple[str, int, Tuple[str, ...]]] = None
         arch_sig: Optional[Tuple[int, int]] = None
-        if is_default_rj:
-            try:
-                ast = os.stat(arch_path)
-                arch_key = (os.path.abspath(arch_path), max_b, cands_upper_tup)
+        use_span_seek = False
+        try:
+            ast = os.stat(arch_path)
+            use_span_seek = bool(span_ms is not None and span_ms > 0.0 and ast.st_size > max_b)
+            if is_default_rj:
+                key_budget = -round(span_ms) if use_span_seek and span_ms is not None else max_b
+                arch_key = (os.path.abspath(arch_path), key_budget, cands_upper_tup)
                 arch_sig = (ast.st_mtime_ns, ast.st_size)
                 if (hit_arch := _ARCH_FILE_MEMO.get(arch_key)) is not None and hit_arch[0] == arch_sig:
                     return [list(r) for r in hit_arch[1]]
-            except OSError:
-                arch_key = None
-                arch_sig = None
+        except OSError:
+            arch_key = None
+            arch_sig = None
+        raw_recs = (
+            read_jsonl_records_since_span(arch_path, span_ms, max_records=4000)
+            if use_span_seek and span_ms is not None
+            else read_tail_jsonl_records(arch_path, limit=None, max_bytes=max_b)
+        )
         parsed_rows = [
             pt
-            for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=max_b)
+            for rec in raw_recs
             if (pt := CachePriceManagerBase.extract_jsonl_series_point(rec, cands_upper)) is not None
         ]
         parsed_rows = sort_ts_rows(parsed_rows)
@@ -540,17 +551,30 @@ def load_symbol_microstructure(
         if is_equity_symbol(c) == is_eq_sym
     ]
 
-    def _first_telemetry_dict(prefix: str, *, prefer_freshest: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    def _first_telemetry_dict(
+        prefix: str, *, prefer_freshest: bool = False, prefer_exact_within_sec: float = 0.0
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         best_d: Optional[Dict[str, Any]] = None
         best_cand: Optional[str] = None
         best_ts = -1.0
+        exact_d: Optional[Dict[str, Any]] = None
+        exact_cand: Optional[str] = None
+        exact_ts = -1.0
         for cand in sym_cands:
             if isinstance((d := read_json_fn(os.path.join(cache_dir, f"{prefix}{cand}.json"))), dict):
                 if not prefer_freshest:
                     return d, cand
                 ts_v = first_epoch_sec(d.get("ts"), d.get("timestamp"), default=0.0, allow_iso=True) or 0.0
+                if cand.upper() == sym_u and exact_d is None:
+                    exact_d, exact_cand, exact_ts = d, cand, ts_v
                 if best_d is None or ts_v > best_ts:
                     best_d, best_cand, best_ts = d, cand, ts_v
+        if (
+            exact_d is not None
+            and prefer_exact_within_sec > 0.0
+            and (best_ts <= 0.0 or exact_ts >= best_ts - prefer_exact_within_sec)
+        ):
+            return exact_d, exact_cand
         return best_d, best_cand
 
     if ob is None:
@@ -560,7 +584,9 @@ def load_symbol_microstructure(
         ob_cand = raw_ob_sym.strip() if isinstance(raw_ob_sym, str) and raw_ob_sym.strip() else None
     policy = resolve_asset_session_policy(sym_u)
     if deriv is None and policy.has_crypto_perpetuals:
-        deriv, _ = _first_telemetry_dict(CACHE_DERIVATIVES_TELEMETRY_PREFIX, prefer_freshest=True)
+        deriv, _ = _first_telemetry_dict(
+            CACHE_DERIVATIVES_TELEMETRY_PREFIX, prefer_freshest=True, prefer_exact_within_sec=120.0
+        )
     if whale is None and (policy.has_crypto_perpetuals or policy.is_equity):
         whale, _ = _first_telemetry_dict(CACHE_WHALE_SNAPSHOT_PREFIX, prefer_freshest=True)
     if not (ob or deriv or whale):
@@ -1328,7 +1354,14 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                         f_365_legacy,
                     ):
                         if sp_rows := _read_archive_series_file(
-                            sp_path, cands, cands_upper, cands_upper_tup, _rj, is_default_rj, max_b=512 * 1024
+                            sp_path,
+                            cands,
+                            cands_upper,
+                            cands_upper_tup,
+                            _rj,
+                            is_default_rj,
+                            max_b=512 * 1024,
+                            span_ms=7.05 * 86400.0 * 1000.0,
                         ):
                             sp0, sp1 = parse_ts_px_row(sp_rows[0]), parse_ts_px_row(sp_rows[-1])
                             if (
@@ -2099,6 +2132,16 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 ):
                     pt_map[sym]["chg_7d_pct"] = pct_delta(adopted_ob_px, safe_float(active_7d_vals[0], 0.0))
                 recalculate_live_price_geometry(pt_map[sym], adopted_ob_px)
+                if matched_series_24h and not is_eq_sym:
+                    ob_ts_ms_kin = math.trunc((ob_ts_m if ob_ts_m > 0.0 else eff_now) * 1000.0)
+                    last_kin_pt = parse_ts_px_row(matched_series_24h[-1])
+                    kin_ser = (
+                        list(matched_series_24h) + [[ob_ts_ms_kin, adopted_ob_px]]
+                        if (last_kin_pt is None or ob_ts_ms_kin > last_kin_pt[0])
+                        else override_series_tail_close(matched_series_24h, adopted_ob_px)
+                    )
+                    if refreshed_kin := compute_series_kinematics(kin_ser):
+                        pt_map[sym].update(refreshed_kin)
             elif action == "rescaled_fiat_walls" and isinstance(pt_map.get(sym), dict):
                 pt_map[sym]["price"] = new_px
         enrich_microstructure_cvd(m_info, pt_map.get(sym))

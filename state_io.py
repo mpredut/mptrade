@@ -36,6 +36,7 @@ from cachepaths import (
     exact_nonneg_int,
     exact_pos_int,
     resolve_cachedb_filepath,
+    safe_pos_float,
 )
 
 T = TypeVar("T")
@@ -482,6 +483,100 @@ def read_tail_lines(
         return []
     lines = _extract_tail_non_empty(chunks, drop_partial_head=(position > 0 and b"\n" in b"".join(reversed(chunks))))
     return lines[-limit_i:] if limit_i is not None else lines
+
+
+def _extract_jsonl_record_ts_ms(rec: Any) -> float | None:
+    item = rec.get("i") if isinstance(rec, dict) and "i" in rec else rec
+    if isinstance(item, (list, tuple)) and item:
+        raw_t = item[0]
+    elif isinstance(rec, dict):
+        raw_t = rec.get("ts_ms") or rec.get("ts") or rec.get("timestamp")
+    else:
+        return None
+    val = safe_pos_float(raw_t, default=None)
+    if val is None:
+        return None
+    return val * 1000.0 if val < 1e11 else val
+
+
+def read_jsonl_records_since_span(
+    path: str,
+    span_ms: float,
+    *,
+    max_records: int = 4000,
+    chunk_size: int = 65536,
+) -> list[Any]:
+    """Binary-seek a chronologically ordered JSONL file to ``last_ts - span_ms`` and return strided records."""
+    try:
+        resolved = _resolve_target_path(path)
+    except (TypeError, ValueError):
+        return []
+    if not os.path.isfile(resolved):
+        return []
+    span_f = safe_pos_float(span_ms, default=None)
+    if span_f is None:
+        return []
+    max_rec_i = exact_pos_int(max_records, default=4000) or 4000
+    eff_chunk = exact_pos_int(chunk_size, default=65536) or 65536
+    try:
+        file_size = os.path.getsize(resolved)
+        if file_size <= 0:
+            return []
+        with open(resolved, "rb") as handle:
+            handle.seek(max(0, file_size - min(file_size, 8192)))
+            tail_lines = [ln for ln in handle.read().splitlines() if ln.strip()]
+            last_ts: float | None = None
+            for raw_ln in reversed(tail_lines):
+                try:
+                    last_ts = _extract_jsonl_record_ts_ms(_fast_json_loads(raw_ln))
+                except ValueError:
+                    continue
+                if last_ts is not None:
+                    break
+            if last_ts is None:
+                return []
+            cutoff_ms = last_ts - span_f
+            lo, hi = 0, file_size
+            while hi - lo > eff_chunk:
+                mid = (lo + hi) // 2
+                handle.seek(mid)
+                handle.readline()
+                probe_ln = handle.readline()
+                if not probe_ln:
+                    hi = mid
+                    continue
+                try:
+                    probe_ts = _extract_jsonl_record_ts_ms(_fast_json_loads(probe_ln))
+                except ValueError:
+                    hi = mid
+                    continue
+                if probe_ts is None or probe_ts < cutoff_ms:
+                    lo = mid
+                else:
+                    hi = mid
+            handle.seek(lo)
+            if lo > 0:
+                handle.readline()
+            raw_lines = [ln for ln in handle.read().splitlines() if ln.strip()]
+    except OSError:
+        return []
+    if not raw_lines:
+        return []
+    n_lines = len(raw_lines)
+    if n_lines <= max_rec_i:
+        selected = raw_lines
+    else:
+        step = max(1, n_lines // max_rec_i)
+        selected = [raw_lines[i] for i in range(0, n_lines, step)]
+        if selected[-1] is not raw_lines[-1]:
+            selected.append(raw_lines[-1])
+    out: list[Any] = []
+    for raw_bytes in selected:
+        try:
+            out.append(_fast_json_loads(raw_bytes))
+        except ValueError:
+            continue
+    return out
 
 
 def read_tail_jsonl_records(

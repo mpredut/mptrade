@@ -283,6 +283,10 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
             spot_px = live_px or safe_pos_float((m_entry or {}).get("ob_mid_price"), default=None)
             if spot_px and spot_px > 0.0:
                 o["dist_from_spot_pct"] = pct_delta(lim_px, spot_px)
+            if (created_ts_o := normalize_epoch_sec(o.get("created_ts"), default=None)) is not None and created_ts_o > 0.0 and explicit_now is not None:
+                age_m_o = round(max(0.0, ref_now - created_ts_o) / 60.0, 1)
+                o["age_min"] = age_m_o
+                o["age"] = f"{age_m_o:.1f}m" if age_m_o < 60.0 else f"{age_m_o / 60.0:.1f}h"
             for _stale_tca_k in (
                 "wall_queue_pos",
                 "recommended_front_run_px",

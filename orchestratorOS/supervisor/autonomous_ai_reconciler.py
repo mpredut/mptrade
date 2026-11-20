@@ -195,7 +195,7 @@ class AutonomousAIReconciler:
                 logs_dirs=self.logs_dirs,
                 intent_gateway=self.intent_gateway,
                 scope=scope,
-                now_ts=now_ts,
+                now_ts=0.0,
                 read_json_fn=_read_json,
                 log=logger,
             )
@@ -208,7 +208,7 @@ class AutonomousAIReconciler:
             logs_dirs=self.logs_dirs,
             intent_gateway=self.intent_gateway,
             scope=scope,
-            now_ts=now_ts,
+            now_ts=0.0,
             read_json_fn=_read_json,
             log=logger,
             allow_network=allow_network,

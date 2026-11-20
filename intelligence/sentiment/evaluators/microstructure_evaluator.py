@@ -330,10 +330,11 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
         eff_v1h is not None
         and base_v1h is not None
         and eff_v1h > base_v1h
-        and avg_15m_base is not None
-        and avg_15m_base > 0.0
     ):
-        minfo["rvol_1h"] = round(eff_v1h / (avg_15m_base * 4.0), 2)
+        if avg_15m_base is not None and avg_15m_base > 0.0:
+            minfo["rvol_1h"] = round(eff_v1h / (avg_15m_base * 4.0), 2)
+        elif p_r1h is not None and base_v1h > 0.0:
+            minfo["rvol_1h"] = round(p_r1h * (eff_v1h / base_v1h), 2)
     elif minfo.get("rvol_1h") is None and p_r1h is not None:
         minfo["rvol_1h"] = round(p_r1h, 2)
     m_px = safe_pos_float(p_dict.get("price"), default=None) or (ob_mid if ob_mid > 0.0 else None)
@@ -564,7 +565,11 @@ def compute_liquidation_clusters(
         return {}
 
     # BY DESIGN: Require real positive perpetual Open Interest (oi_usd > 0); never fabricate OI from spot L2 depth * 12.
-    oi_usd = safe_pos_float(minfo.get("oi_usd"), default=0.0) or 0.0
+    # When a native L1 perpetual venue (e.g. Hyperliquid) carries larger OI than the Binance proxy, scale clusters to native L1 OI.
+    oi_usd = max(
+        safe_pos_float(minfo.get("oi_usd"), default=0.0) or 0.0,
+        safe_pos_float(minfo.get("native_l1_oi_usd"), default=0.0) or 0.0,
+    )
     if oi_usd <= 0.0:
         return {}
 

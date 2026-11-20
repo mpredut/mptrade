@@ -1744,6 +1744,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             snapshot = TelemetrySensorSnapshot()
         if not workspace_dir and cache_dir:
             workspace_dir = os.path.dirname(os.path.abspath(str(cache_dir).rstrip("/\\")))
+        is_live_wallclock = (safe_pos_float(now_ts, default=0.0) or 0.0) <= 0.0
         now_ts, _rj, _rj_any = _resolve_macro_collect_inputs(now_ts, read_json_fn)
         macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(
             cache_dir, now_ts, _rj, scope=scope, allow_network=allow_network, persist=persist
@@ -1818,6 +1819,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 allow_empty_inst_recovery=allow_empty_recovery,
                 allow_network=allow_network,
                 persist=harvest_persist,
+                now_ts=now_ts,
             )
 
         if tradable_positions:
@@ -1906,6 +1908,8 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         if recent_orders:
             snapshot.portfolio_summary["recent_orders"] = recent_orders
 
+        if is_live_wallclock:
+            now_ts = max(now_ts, _time.time())
         self._enrich_ai_intent_and_guard_telemetry(
             snapshot,
             intents_data,

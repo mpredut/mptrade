@@ -52,10 +52,13 @@ from cachepaths import (
 )
 
 DEFAULT_PATH = Path(__file__).resolve().with_name("instruments.conf")
+_ORIG_DEFAULT_PATH = DEFAULT_PATH
+_DEFAULT_RESOLVED_PATH = str(DEFAULT_PATH.resolve())
 CORE = {"provider", "symbol", "base", "quote", "enabled", "isolation", "market_hours"}
 ROLES = {"mt", "tradeall_fire", "kalman_primary", "trailing", "assetguardian", "archive", "rtrade", "force_sell"}
 _DEFAULT_USD_QUOTES = ("USDC", "USDT", "USD", "FDUSD")
 _REGISTRY_CACHE: dict = {}
+_SYMBOL_IDENTITY_CACHE: dict = {}
 
 
 def casefold_get(mapping: object, key: object, default=None):
@@ -180,8 +183,8 @@ class InstrumentSpec:
         return replace(self, params=updated)
 
 
-def load_registry(path=None):
-    """Validate the complete registry before returning any instrument (cached by mtime_ns + size)."""
+def _load_registry_cached(path=None) -> tuple[tuple[str, int, int], dict]:
+    """Validate and return ``(cache_key, internal_registry_dict)`` without per-call dict copy or redundant Path.resolve()."""
     if isinstance(path, bool) or (path is not None and not isinstance(path, (str, os.PathLike))):
         raise ValueError(f"Invalid registry path: {path!r}")
     if isinstance(path, os.PathLike):
@@ -190,15 +193,22 @@ def load_registry(path=None):
         if path.strip() and clean_scalar_str(path) is None:
             raise ValueError(f"Invalid registry path: {path!r}")
         path = clean_scalar_str(path)
-    path = Path(path) if path is not None else DEFAULT_PATH
-    st = path.stat()
-    cache_key = (str(path.resolve()), st.st_mtime_ns, st.st_size)
+    if path is None and DEFAULT_PATH == _ORIG_DEFAULT_PATH:
+        resolved_str = _DEFAULT_RESOLVED_PATH
+        st = os.stat(resolved_str)
+        target_path: Path | str = resolved_str
+    else:
+        p_obj = Path(path) if path is not None else DEFAULT_PATH
+        st = p_obj.stat()
+        resolved_str = str(p_obj.resolve())
+        target_path = p_obj
+    cache_key = (resolved_str, st.st_mtime_ns, st.st_size)
     cached = _REGISTRY_CACHE.get(cache_key)
     if cached is not None:
-        return dict(cached)
-    cp = load_ini_config(path, must_exist=True, inline_comments=True)
+        return cache_key, cached
+    cp = load_ini_config(target_path, must_exist=True, inline_comments=True)
     if not cp.sections():
-        raise ValueError(f"Instrument registry contains no sections: {path}")
+        raise ValueError(f"Instrument registry contains no sections: {target_path}")
     result, seen = {}, set()
     for name in cp.sections():
         values = dict(cp.items(name))
@@ -236,7 +246,13 @@ def load_registry(path=None):
             spec.rebuy_mode()
         result[name] = spec
     lru_dict_put(_REGISTRY_CACHE, cache_key, result, 16)
-    return dict(result)
+    return cache_key, result
+
+
+def load_registry(path=None):
+    """Validate the complete registry before returning any instrument (cached by mtime_ns + size)."""
+    _, cached = _load_registry_cached(path)
+    return dict(cached)
 
 
 def select_instruments(provider=None, role=None, *, path=None, only_enabled=True):
@@ -277,7 +293,7 @@ def resolve_registered_symbol_case(symbol: object, provider: str | None = None, 
     prov_norm = normalize_venue_name(provider) if provider is not None else None
     if sym_key:
         try:
-            reg = load_registry(path) if path is not None else load_registry()
+            _, reg = _load_registry_cached(path)
             for spec in reg.values():
                 if (prov_norm is None or spec.provider == prov_norm) and clean_symbol_key(spec.symbol) == sym_key:
                     return spec.symbol
@@ -370,9 +386,6 @@ def single_symbol_for(provider, role, *, path=None):
     return symbols[0]
 
 
-_DEFAULT_RESOLVED_PATH = str(DEFAULT_PATH.resolve())
-
-
 def is_equity_symbol(symbol: object, *, path=None) -> bool:
     """Return True if ``symbol`` represents an equity/RTH instrument (by suffix or ``instruments.conf`` SSOT)."""
     raw_s = clean_scalar_str(symbol)
@@ -383,14 +396,7 @@ def is_equity_symbol(symbol: object, *, path=None) -> bool:
     if len(sym_u) > 4 and sym_u.endswith(("USDC", "USDT", "FDUSD", "TUSD", "BUSD", "BTC", "ETH", "EUR")):
         return False
     try:
-        reg = None
-        if path is None:
-            for (cached_path, _, _), cached_reg in reversed(_REGISTRY_CACHE.items()):
-                if cached_path == _DEFAULT_RESOLVED_PATH:
-                    reg = cached_reg
-                    break
-        if reg is None:
-            reg = load_registry(path)
+        _, reg = _load_registry_cached(path)
         return any(
             (is_equity_venue(spec.provider) or spec.market_hours == "rth")
             and (spec.symbol.upper() == sym_u or spec.symbol.upper().split("_", 1)[0] == sym_u)
@@ -477,17 +483,29 @@ def resolve_symbol_identity(symbol: object, *, venue: object = None, path=None) 
     if not raw:
         return SymbolIdentity("", "", "", "", "crypto")
     v_norm = normalize_venue_name(venue) if venue is not None else ""
+    reg_key: Optional[tuple[str, int, int]] = None
+    try:
+        reg_key, _ = _load_registry_cached(path)
+    except Exception:
+        reg_key = None
+    id_cache_key = (reg_key, raw, v_norm)
+    if reg_key is not None and (cached_id := _SYMBOL_IDENTITY_CACHE.get(id_cache_key)) is not None:
+        return cached_id
     tok_pair, is_tok = resolve_kraken_tokenized_pair(raw, path=path)
     if is_tok or is_readonly_xstock_symbol(raw):
         wire = tok_pair or raw
-        return SymbolIdentity(raw, wire, wire, wire, "tokenized_equity")
-    if (v_norm and is_equity_venue(v_norm)) or is_equity_symbol(raw, path=path):
+        ident = SymbolIdentity(raw, wire, wire, wire, "tokenized_equity")
+    elif (v_norm and is_equity_venue(v_norm)) or is_equity_symbol(raw, path=path):
         up = raw.upper()
         wire = resolve_registered_symbol_case(raw, "t212", path=path) or up
-        return SymbolIdentity(raw, up, wire, up, "rth_equity")
-    storage = clean_symbol_key(raw) or raw.upper()
-    wire = resolve_registered_symbol_case(raw, v_norm or None, path=path) or storage
-    return SymbolIdentity(raw, storage, wire, storage, "crypto")
+        ident = SymbolIdentity(raw, up, wire, up, "rth_equity")
+    else:
+        storage = clean_symbol_key(raw) or raw.upper()
+        wire = resolve_registered_symbol_case(raw, v_norm or None, path=path) or storage
+        ident = SymbolIdentity(raw, storage, wire, storage, "crypto")
+    if reg_key is not None:
+        lru_dict_put(_SYMBOL_IDENTITY_CACHE, id_cache_key, ident, 512)
+    return ident
 
 
 def canonical_display_symbol(symbol: object, *, venue: object = None, path=None) -> str:

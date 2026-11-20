@@ -20,6 +20,7 @@ from botcore import (
     load_key_value_conf,
     normalize_epoch_sec,
     normalize_timestamp_ms,
+    resolve_now_ts,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -1491,6 +1492,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         allow_network: bool = True,
         persist: bool = True,
         force_persist: bool = False,
+        now_ts: Optional[float] = None,
         **kwargs: Any,
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
         inst_map = inst_map or {}
@@ -1506,7 +1508,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         updated_bals: Dict[str, Any] = {}
         live_open_ok_venues: set[str] = set()
         failed_open_venues: set[str] = set()
-        now_ts_oo = _time.time()
+        now_ts_oo = resolve_now_ts(now_ts)
         order_ts_map = _load_open_order_timestamps(cache_dir, cached_bals)
         audit_origin_map = _load_recent_audit_origins(cache_dir) if cache_dir else {}
         _, known_ai_order_ids = _resolve_ai_intents_and_known_order_ids(
@@ -2116,6 +2118,7 @@ def harvest_tradable_positions_and_orders(
     allow_network: bool = True,
     persist: bool = True,
     force_persist: bool = False,
+    now_ts: Optional[float] = None,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
     """Harvest spot wallet balances, trailing peaks, and open orders across tradable instruments."""
     return TelemetryCollectorFactory.create("portfolio_tradable_positions", start_sync=allow_network).collect(
@@ -2132,6 +2135,7 @@ def harvest_tradable_positions_and_orders(
         allow_network=allow_network,
         persist=persist,
         force_persist=force_persist,
+        now_ts=now_ts,
     )
 
 

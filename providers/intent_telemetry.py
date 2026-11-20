@@ -874,6 +874,7 @@ def summarize_active_ai_trade_plans(
 
     plans_rev: list[dict[str, Any]] = []
     seen_inst_keys: set[tuple[str, str, tuple[str, ...]]] = set()
+    seen_resting_keys: set[tuple[str, str, tuple[str, ...], str, str]] = set()
     _non_active_exec_statuses = (
         "CANCELED",
         "CANCELLED",
@@ -909,9 +910,13 @@ def summarize_active_ai_trade_plans(
         sym = det.get("symbol") or ""
         v_k, b_k, q_k, _ = _intent_venue_symbol_side_key(venue, sym, side)
         inst_key = (v_k, b_k, q_k)
-        if inst_key in seen_inst_keys:
-            continue
-        seen_inst_keys.add(inst_key)
+        is_resting = _is_open_resting_detail(det)
+        if not is_resting:
+            if inst_key in seen_inst_keys:
+                continue
+            seen_inst_keys.add(inst_key)
+        else:
+            seen_inst_keys.add(inst_key)
 
         eff_ts = safe_pos_float(det.get("fill_ts_val"), default=None) or safe_pos_float(det.get("ts_val"), default=0.0) or 0.0
         if max_age_sec > 0.0 and eff_ts > 0.0 and (eff_now - eff_ts) > max_age_sec:
@@ -922,11 +927,16 @@ def summarize_active_ai_trade_plans(
             or safe_pos_float(det.get("limit_px"), default=None)
             or safe_pos_float(det.get("ref_px"), default=None)
         )
+        if is_resting:
+            rest_oid = str(det.get("order_id") or "") or (f"{round(entry_px, 6)}" if entry_px is not None else "")
+            rest_key = (v_k, b_k, q_k, side, rest_oid)
+            if rest_key in seen_resting_keys:
+                continue
+            seen_resting_keys.add(rest_key)
         inv_px, tgt_px = extract_intent_trade_plan_levels(i, side=side, ref_price=entry_px)
         if inv_px is None and tgt_px is None:
             continue
 
-        is_resting = _is_open_resting_detail(det)
         pos_hit = _find_matching_position(venue, sym)
         if side == "BUY" and not is_resting and isinstance(pos_hit, dict):
             held_usd = (safe_float(pos_hit.get("value_usd"), 0.0) or 0.0) + (
@@ -948,6 +958,8 @@ def summarize_active_ai_trade_plans(
             "order_state": "RESTING" if is_resting else "FILLED",
             "status": status,
         }
+        if is_resting and det.get("order_id"):
+            plan_rec["order_id"] = str(det["order_id"])
         if entry_px is not None:
             plan_rec["entry_px"] = round(entry_px, 6)
         if spot_px is not None:

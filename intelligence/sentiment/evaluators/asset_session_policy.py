@@ -276,7 +276,31 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
         return 0.35
 
     def clean_raw_24h_series(self, rows: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
-        return strip_off_rth_flat_poller_tail(sort_ts_rows(rows), symbol, is_market_open_fn=is_market_open_fn)
+        ordered = sort_ts_rows(rows)
+        if len(ordered) >= 5:
+            pos_vol_indices = [
+                i
+                for i, r in enumerate(ordered)
+                if isinstance(r, (list, tuple)) and len(r) >= 3 and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+            ]
+            if len(pos_vol_indices) >= 4 and (first_pos_idx := pos_vol_indices[0]) > 0:
+                first_real_pt = parse_ts_px_row(ordered[first_pos_idx])
+                if first_real_pt is not None and first_real_pt[1] > 0.0:
+                    trim_start = 0
+                    for idx in range(first_pos_idx):
+                        lead_pt = parse_ts_px_row(ordered[idx])
+                        if lead_pt is None:
+                            trim_start = idx + 1
+                            continue
+                        gap_ms = first_real_pt[0] - lead_pt[0]
+                        px_rel_diff = abs(lead_pt[1] - first_real_pt[1]) / first_real_pt[1]
+                        if gap_ms > 30 * 60 * 1000 or px_rel_diff > 0.05:
+                            trim_start = idx + 1
+                        else:
+                            break
+                    if trim_start > 0:
+                        ordered = ordered[trim_start:]
+        return strip_off_rth_flat_poller_tail(ordered, symbol, is_market_open_fn=is_market_open_fn)
 
     def merge_ohlc24_into_raw_series(self, raw_ser: list, ohlc24_pts: list) -> list:
         ohlc_bars = [

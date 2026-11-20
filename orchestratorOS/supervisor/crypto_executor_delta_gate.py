@@ -190,7 +190,9 @@ def _evaluate_delta_gate_trade_plans(
         else:
             pl_status = str(pl.get("status") or "ACTIVE").strip().upper() or "ACTIVE"
         pl_key = f"{pl_ven}:{pl_sym}:{pl_side}"
-        plan_states[pl_key] = pl_status
+        _sev = {"ACTIVE": 0, "TARGET_HIT": 1, "INVALIDATED": 2}
+        if pl_key not in plan_states or _sev.get(pl_status, 0) > _sev.get(plan_states[pl_key], 0):
+            plan_states[pl_key] = pl_status
         if (
             not trigger_reason
             and pl_status in ("INVALIDATED", "TARGET_HIT")

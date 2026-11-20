@@ -1165,9 +1165,10 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         t_extra += f", lifo_realized_pnl=${lifo_p:+.2f}"
     taker_bps = pv["taker_bps"]
     maker_bps = pv["maker_bps"]
+    leg_fee_bps = max(maker_bps, taker_bps)
     sp_part = f", spread={pv['spread_bps']}bps" if pv["spread_bps"] is not None else ""
     t_extra += (
-        f", venue_fee_per_leg={taker_bps:g}bps "
+        f", venue_fee_per_leg={leg_fee_bps:g}bps "
         f"(tier={pv['fee_tier']}, maker={maker_bps:g}bps/taker={taker_bps:g}bps{sp_part})"
     )
     lim_parts: List[str] = []

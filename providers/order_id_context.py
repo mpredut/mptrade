@@ -371,6 +371,32 @@ def order_matches_owner(client_order_id: Optional[str], allowed_owners: Union[st
     return False
 
 
+_KNOWN_AI_ID_SETS_CACHE: dict[frozenset[Any], tuple[frozenset[str], frozenset[str]]] = {}
+
+
+def _resolve_known_ai_id_sets(
+    known_ai_order_ids: Any,
+) -> tuple[frozenset[str], frozenset[str]]:
+    if known_ai_order_ids is None or isinstance(known_ai_order_ids, (bool, str, bytes, dict)) or not hasattr(known_ai_order_ids, "__iter__"):
+        return frozenset(), frozenset()
+    if isinstance(known_ai_order_ids, frozenset):
+        cached = _KNOWN_AI_ID_SETS_CACHE.get(known_ai_order_ids)
+        if cached is not None:
+            return cached
+    exact_ids: set[str] = set()
+    lower_ids: set[str] = set()
+    for item in known_ai_order_ids:
+        if (cid := clean_order_id(item)) is not None:
+            exact_ids.add(cid)
+            lower_ids.add(cid.lower())
+    pair = (frozenset(exact_ids), frozenset(lower_ids))
+    if isinstance(known_ai_order_ids, frozenset):
+        if len(_KNOWN_AI_ID_SETS_CACHE) >= 64:
+            _KNOWN_AI_ID_SETS_CACHE.clear()
+        _KNOWN_AI_ID_SETS_CACHE[known_ai_order_ids] = pair
+    return pair
+
+
 def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = None) -> str:
     """Classify an order or fill record as placed by ``'AI'`` (autonomous executor) or ``'BOT'`` (deterministic fleet)."""
     if not isinstance(order, dict):
@@ -378,18 +404,18 @@ def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = Non
     explicit = clean_upper_scalar(order.get("actor")) or ""
     if explicit in ("AI", "BOT"):
         return explicit
-    exact_ids: set[str] = set()
-    lower_ids: set[str] = set()
-    if known_ai_order_ids is not None and not isinstance(known_ai_order_ids, (bool, str, bytes, dict)) and hasattr(known_ai_order_ids, "__iter__"):
-        for item in known_ai_order_ids:
-            if (cid := clean_order_id(item)) is not None:
-                exact_ids.add(cid)
-                lower_ids.add(cid.lower())
+    raw_cid = (extract_client_order_id(order, default="") or "").upper()
+    if raw_cid.startswith(("AI_", "MO_AI_")):
+        return "AI"
     oid = extract_order_id(order, default="")
+    if not oid and not raw_cid:
+        return "BOT"
+    if isinstance(known_ai_order_ids, (set, frozenset)) and oid and str(oid) in known_ai_order_ids:
+        return "AI"
+    exact_ids, lower_ids = _resolve_known_ai_id_sets(known_ai_order_ids)
     if oid and exact_ids and (str(oid) in exact_ids or str(oid).lower() in lower_ids):
         return "AI"
-    raw_cid = (extract_client_order_id(order, default="") or "").upper()
-    if raw_cid.startswith(("AI_", "MO_AI_")) or (raw_cid and lower_ids and raw_cid.lower() in lower_ids):
+    if raw_cid and lower_ids and raw_cid.lower() in lower_ids:
         return "AI"
     return "BOT"
 

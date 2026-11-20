@@ -14585,6 +14585,224 @@ def test_faza2_proactive_macro_calendar_earnings_and_pretrade_catalyst(tmp_path,
     assert live_ts_snap is not None and live_ts_snap["ts"] == pytest.approx(now_cpi_pre + 4.5)
 
 
+def test_prompt_telemetry_audit_fixes_critical_and_medium(tmp_path):
+    """Regression suite covering all 9 Critical & Medium auto_cryptotrade_executor telemetry audit fixes."""
+    from instrument_registry import resolve_symbol_identity
+    from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        compute_futures_premarket_lead,
+        format_macro_benchmarks_summary_line,
+    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        compute_liquidation_clusters,
+        enrich_microstructure_cvd,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        _guard_quadratic_kinematic_overshoot,
+        apply_24h_series_enrichment,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import enrich_open_limit_orders_tca
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import _evaluate_delta_gate_trade_plans
+    from orchestratorOS.supervisor.prompt_sections import _format_tradable_position_line
+    from providers.intent_state import extract_intent_notional
+    from providers.intent_telemetry import summarize_active_ai_trade_plans
+    from providers.order_id_context import resolve_order_actor
+    from state_io import read_jsonl_records_since_span
+
+    # 1. Identity cache coherence + frozenset actor memo + open-order age clock synchronization
+    id_a = resolve_symbol_identity("SPCXXUSD")
+    id_b = resolve_symbol_identity("SPCXXUSD")
+    assert id_a is id_b and id_a.display_symbol == "SPCXxUSD" and id_a.is_tokenized_equity
+    known_fset = frozenset({"727115018", "OYKJZC-OYNBR-DQUQJD"})
+    assert resolve_order_actor({"orderId": "727115018"}, known_fset) == "AI"
+    assert resolve_order_actor({"orderId": "999999"}, known_fset) == "BOT"
+
+    t_now = 1_795_176_000.0
+    oo_list = [{
+        "venue": "binance",
+        "symbol": "TAOUSDC",
+        "side": "SELL",
+        "price": 186.6,
+        "qty": 1.95,
+        "created_ts": t_now - 372.0,
+        "age_min": 8.8,
+        "age": "8.8m",
+    }]
+    enrich_open_limit_orders_tca(oo_list, {"TAOUSDC": {"price": 186.4, "vol_1h_pct": 1.2}}, {}, now_ts=t_now)
+    assert oo_list[0]["age_min"] == 6.2 and oo_list[0]["age"] == "6.2m"
+
+    # 2. Kinematics staleness (>45s) & sign-contradiction refresh + quadratic reversal overshoot clamp
+    base_ms = int((t_now - 360.0) * 1000.0)
+    falling_series = [[base_ms + i * 5000, round(64.5 - i * 0.01, 4)] for i in range(73)]
+    ent_stale = {
+        "price": falling_series[-1][1],
+        "chg_1m_pct": -0.18,
+        "slope_90s": -0.002,
+        "gradient_recent_fast": -0.002,
+        "vel_90s_pct_min": 0.25,
+        "accel_90s_pct_min2": 0.10,
+        "vel_5m_pct_min": 0.12,
+        "accel_5m_pct_min2": 0.05,
+        "_short_trend_ts": t_now - 90.0,
+    }
+    apply_24h_series_enrichment("HYPEUSDC", ent_stale, {"chg_1m_pct": -0.18}, falling_series, None)
+    assert ent_stale["vel_90s_pct_min"] < 0.0 and ent_stale["vel_5m_pct_min"] < 0.0
+
+    # Even with fresh short_trend_ts (<45s), contradictory positive vel_90s vs negative 1m & slope_90s is refreshed
+    ent_contra = {
+        "price": falling_series[-1][1],
+        "chg_1m_pct": -0.18,
+        "slope_90s": -0.002,
+        "gradient_recent_fast": -0.002,
+        "vel_90s_pct_min": 0.17,
+        "accel_90s_pct_min2": 0.40,
+        "_short_trend_ts": t_now - 10.0,
+    }
+    apply_24h_series_enrichment("ADAUSD", ent_contra, {"chg_1m_pct": -0.18}, falling_series, None)
+    assert ent_contra["vel_90s_pct_min"] < 0.0
+
+    pts_pullback = [(-5.0, 0.0), (-4.0, 0.15), (-3.0, 0.30), (-2.0, 0.42), (-1.0, 0.45), (-0.5, 0.43), (0.0, 0.41)]
+    clamped_v, _ = _guard_quadratic_kinematic_overshoot(pts_pullback, -0.50, -0.40)
+    assert abs(clamped_v) <= 0.16 and clamped_v < 0.0
+
+    # 3. Leading zero-volume pre-IPO indicative row stripped on RTH equity 24h series (ANT_US_EQ)
+    eq_pol = resolve_asset_session_policy("ANT_US_EQ")
+    raw_ant = [
+        [1_795_098_900_000, 83.0, 0.0],
+        [1_795_106_700_000, 111.68, 160_677_756.0],
+        [1_795_107_000_000, 111.51, 70_385_284.0],
+        [1_795_120_000_000, 105.03, 51_622_553.0],
+        [1_795_150_000_000, 101.22, 64_818_040.0],
+        [1_795_176_000_000, 90.02, 12_000_000.0],
+    ]
+    cleaned_ant = eq_pol.clean_raw_24h_series(raw_ant, "ANT_US_EQ")
+    assert cleaned_ant[0][1] == pytest.approx(111.68)
+    m24_ant = compute_24h_price_metrics(cleaned_ant, is_equity=True)
+    assert m24_ant["chg_24h_pct"] < -15.0 and m24_ant["low_24h"] == pytest.approx(90.02)
+
+    # 4. Binary-seek 7d JSONL recovery when sparse archive < 5d and dense 365d file > 512KB
+    dense_cdir = tmp_path / "dense_7d"
+    (dense_cdir / "prices").mkdir(parents=True)
+    end_ms = int(t_now * 1000.0)
+    start_10d_ms = end_ms - 10 * 86400 * 1000
+    f365 = dense_cdir / "prices" / "cache_365_price_SPCXxUSD.jsonl"
+    with open(f365, "w", encoding="utf-8") as fh:
+        for i in range(12_000):
+            ts_i = start_10d_ms + i * 72_000
+            px_i = 140.0 + (7.2 if i == 6000 else (-8.0 * i / 12_000.0))
+            fh.write(json.dumps({"s": "SPCXxUSD", "i": [ts_i, round(px_i, 4)]}) + "\n")
+    assert f365.stat().st_size > 512 * 1024
+    recs_7d = read_jsonl_records_since_span(str(f365), 7.05 * 86400 * 1000, max_records=2000)
+    assert len(recs_7d) >= 500
+    assert (recs_7d[-1]["i"][0] - recs_7d[0]["i"][0]) >= 6.5 * 86400 * 1000
+
+    # 5. Spot volume monotonicity (spot_vol_1h >= spot_vol_15m) & consistent RVOL scaling without avg_15m_base
+    m_vol = {"spot_vol_15m_usd": 154_700.0}
+    p_vol = {"spot_vol_15m_usd": 40_000.0, "spot_vol_1h_usd": 107_200.0, "rvol_1h": 0.54}
+    enrich_microstructure_cvd(m_vol, p_vol)
+    assert m_vol["spot_vol_1h_usd"] >= m_vol["spot_vol_15m_usd"]
+    assert m_vol["rvol_1h"] > 0.54
+
+    # 6. Exact-symbol derivatives precedence (HYPEUSDC L1 over newer HYPEUSD proxy) + L1 OI liquidation cluster scaling
+    d_cdir = tmp_path / "deriv_pref"
+    (d_cdir / "telemetry").mkdir(parents=True)
+    (d_cdir / "telemetry" / "derivatives_telemetry_HYPEUSDC.json").write_text(
+        json.dumps({"symbol": "HYPEUSDC", "open_interest_usd": 1_180_000_000.0, "funding_rate": 1.25e-5, "funding_annualized_pct": 10.95, "ts": t_now - 10.0}),
+        encoding="utf-8",
+    )
+    (d_cdir / "telemetry" / "derivatives_telemetry_HYPEUSD.json").write_text(
+        json.dumps({"symbol": "HYPEUSD", "open_interest_usd": 320_000_000.0, "funding_rate": 1.37e-5, "funding_annualized_pct": 1.50, "ts": t_now - 2.0}),
+        encoding="utf-8",
+    )
+    (d_cdir / "telemetry" / "whale_snapshot_HYPEUSDC.json").write_text(
+        json.dumps({"symbol": "HYPEUSDC", "open_interest_usd": 320_000_000.0, "top_traders_long_pct": 0.70, "taker_buy_vol_usd": 3_000_000.0, "taker_sell_vol_usd": 4_000_000.0, "ts": t_now - 5.0}),
+        encoding="utf-8",
+    )
+    m_hype = load_symbol_microstructure(str(d_cdir), "HYPEUSDC")
+    assert m_hype is not None
+    assert m_hype["native_l1_oi_usd"] == pytest.approx(1_180_000_000.0)
+    assert m_hype["funding_annualized_pct"] == pytest.approx(10.95)
+    liq_l1 = compute_liquidation_clusters({"price": 63.5, "vol_1h_pct": 1.5}, m_hype, symbol="HYPEUSDC")
+    assert liq_l1["long_liq_usd"] > 8_000_000.0
+
+    # 7. Multi-tranche resting Active AI Trade Plans + severity-preserving delta-gate state aggregation
+    multi_intents = [
+        {
+            "intent_id": "tao_sell_1",
+            "timestamp": t_now - 600.0,
+            "decision": "SELL",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 186.6,
+            "invalidation_px": 189.6,
+            "target_px": 183.5,
+            "suggested_notional_usd": 365.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "727115018", "status": "NEW"},
+        },
+        {
+            "intent_id": "tao_sell_2",
+            "timestamp": t_now - 300.0,
+            "decision": "SELL",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 189.2,
+            "invalidation_px": 192.5,
+            "target_px": 184.0,
+            "suggested_notional_usd": 371.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "727115947", "status": "NEW"},
+        },
+    ]
+    open_tao = [
+        {"venue": "binance", "symbol": "TAOUSDC", "side": "SELL", "order_id": "727115018", "price": 186.6, "qty": 1.95, "status": "NEW"},
+        {"venue": "binance", "symbol": "TAOUSDC", "side": "SELL", "order_id": "727115947", "price": 189.2, "qty": 1.96, "status": "NEW"},
+    ]
+    multi_plans = summarize_active_ai_trade_plans(
+        multi_intents, "crypto", t_now, extract_intent_notional, open_orders=open_tao, prices_and_trends={"TAOUSDC": {"price": 190.0}}
+    )
+    assert len(multi_plans) == 2
+    assert {p["entry_px"] for p in multi_plans} == {186.6, 189.2}
+    p_states, p_trig = _evaluate_delta_gate_trade_plans(
+        {"active_ai_trade_plans": multi_plans}, {"TAOUSDC": 190.0}, {"binance:TAOUSDC:SELL": "ACTIVE"}
+    )
+    assert p_states["binance:TAOUSDC:SELL"] == "INVALIDATED" and "trade_plan_invalidated" in p_trig
+
+    # 8. Futures_Lead suppressed in live US Pre-Market when QQQ/SPY already price the Globex move
+    premarket_live_mb = {
+        "items": {
+            "SPY": {"price": 710.63, "chg_24h_pct": -3.80, "chg_1h_pct": -0.15, "chg_15m_pct": -0.01, "market_state": "PRE", "last_bar_ts": t_now - 60.0},
+            "QQQ": {"price": 635.18, "chg_24h_pct": -5.58, "chg_1h_pct": -0.07, "chg_15m_pct": 0.10, "market_state": "PRE", "last_bar_ts": t_now - 60.0},
+            "ES=F": {"price": 7139.5, "chg_24h_pct": -3.82, "globex_session_chg_pct": -1.48, "chg_1h_pct": -0.20, "chg_15m_pct": -0.04, "last_bar_ts": t_now - 120.0},
+            "NQ=F": {"price": 26133.75, "chg_24h_pct": -5.76, "globex_session_chg_pct": -1.75, "chg_1h_pct": -0.25, "chg_15m_pct": -0.11, "last_bar_ts": t_now - 120.0},
+        },
+        "futures_lead_pct": -1.75,
+        "futures_lead_regime": "FUTURES_PREMARKET_GAP_DOWN",
+    }
+    assert compute_futures_premarket_lead(premarket_live_mb) == {}
+    assert "Futures_Lead=" not in format_macro_benchmarks_summary_line(premarket_live_mb)
+
+    # 9. venue_fee_per_leg reports conservative upper bound max(maker, taker) for Binance VIP0+BNB USDC (7.5 > 7.12)
+    bn_line = _format_tradable_position_line({
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "base": "BTC",
+        "quote": "USDC",
+        "price": 61500.0,
+        "free_base": 0.03,
+        "value_usd": 1845.0,
+        "free_quote": 5000.0,
+        "fee_tier": "VIP0_BNB",
+        "maker_fee_bps": 7.5,
+        "taker_fee_bps": 7.12,
+        "spread_bps": 0.01,
+    })
+    assert "venue_fee_per_leg=7.5bps (tier=VIP0_BNB, maker=7.5bps/taker=7.12bps" in bn_line
+
+
+
 
 
 
