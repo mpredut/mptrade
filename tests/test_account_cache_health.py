@@ -375,101 +375,12 @@ def test_account_cache_health_require_int_accepts_integer_strings_floats_and_rej
 
 def test_persistence_and_cache_layer_dag_and_sibling_purity_ast():
     """Enforce strict acyclic DAG imports across Layer 1/2 Persistence and Layer 3 Cache modules."""
+    from verify_tools.ssot_ast_audit import audit_persistence_and_cache_dag_ast
 
     repo_root = Path(__file__).resolve().parent.parent
-
-    def _imported_roots(rel_path: str) -> set[str]:
-        tree = ast.parse((repo_root / rel_path).read_text(encoding="utf-8"), filename=rel_path)
-        roots: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    roots.add(alias.name.split(".")[0])
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                roots.add(node.module.split(".")[0])
-            elif (
-                isinstance(node, ast.Call)
-                and node.args
-                and isinstance(node.args[0], ast.Constant)
-                and isinstance(node.args[0].value, str)
-            ):
-                if (
-                    isinstance(node.func, ast.Attribute) and node.func.attr == "import_module"
-                ) or (
-                    isinstance(node.func, ast.Name) and node.func.id in ("import_module", "__import__")
-                ):
-                    roots.add(node.args[0].value.split(".")[0])
-        return roots
-
     assert not (repo_root / "binance_cache_health.py").exists()
-
-    # Layer 2 persistence & window modules must never import Layer 3+ cache/provider/strategy/intelligence modules.
-    forbidden_layer2 = {
-        "account_cache_health",
-        "binance_cache_health",
-        "cacheInterface",
-        "cacheaccount",
-        "cacheprice",
-        "cachetrend",
-        "cacheManager",
-        "providers",
-        "instrument",
-        "order_guard",
-        "strategies",
-        "intelligence",
-        "shadow_signals",
-        "binance_api",
-        "kraken",
-        "hyperliquid",
-        "212trading",
-    }
-    for l2_mod in ("cachepaths.py", "state_io.py", "cacheintegrity.py", "pricewindow.py"):
-        l2_imports = _imported_roots(l2_mod)
-        assert not (l2_imports & forbidden_layer2), f"{l2_mod} upward leak: {l2_imports & forbidden_layer2}"
-    ach_imports = _imported_roots("account_cache_health.py")
-    assert not (ach_imports & (forbidden_layer2 - {"account_cache_health"})), (
-        f"account_cache_health.py upward leak: {ach_imports & (forbidden_layer2 - {'account_cache_health'})}"
-    )
-    ss_imports = _imported_roots("shadow_signals.py")
-    assert "intelligence" not in ss_imports, f"shadow_signals.py upward leak into intelligence: {ss_imports}"
-
-    # All 5 cache modules must never import higher layers or venue SDK packages.
-    forbidden_cache_upward = {
-        "binance_cache_health",
-        "instrument",
-        "order_guard",
-        "guard_hierarchy",
-        "order_lifecycle",
-        "order_retry",
-        "strategies",
-        "trailing_core",
-        "intelligence",
-        "shadow_signals",
-        "orchestratorOS",
-        "orchestratorTrade",
-        "binance_api",
-        "kraken",
-        "hyperliquid",
-        "212trading",
-    }
-    cache_modules = (
-        "cacheInterface.py",
-        "cacheaccount.py",
-        "cacheprice.py",
-        "cachetrend.py",
-        "cacheManager.py",
-    )
-    for mod_name in cache_modules:
-        imports = _imported_roots(mod_name)
-        assert not (imports & forbidden_cache_upward), f"{mod_name} upward leak: {imports & forbidden_cache_upward}"
-
-    # Sibling domain cache modules must remain mutually independent.
-    siblings = ("cacheaccount", "cacheprice", "cachetrend")
-    for sib in siblings:
-        imports = _imported_roots(f"{sib}.py")
-        other_siblings = set(siblings) - {sib}
-        assert not (imports & other_siblings), f"{sib}.py imports sibling cache domain: {imports & other_siblings}"
-        assert "cacheManager" not in imports, f"{sib}.py must not import cacheManager"
+    violations = audit_persistence_and_cache_dag_ast(repo_root)
+    assert violations == [], f"Persistence/cache layer DAG violation(s): {violations}"
 
 
 def test_persisted_sync_state_ignores_retired_symbols_and_requires_all_active_symbols():

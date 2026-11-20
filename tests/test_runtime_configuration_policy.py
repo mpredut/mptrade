@@ -16,6 +16,16 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from verify_tools.direct_order_api_inventory import inventory, scan_direct_calls
 from verify_tools.ownership_inventory import build_inventory, find_overlaps
+from verify_tools.pre_commit_gate import (
+    DETERMINISTIC_GATES,
+    OPERATIONAL_THRESHOLD_RUNTIME_FILES,
+    REQUIRED_OPERATIONAL_CONFIG_KEYS,
+    audit_static_config_policy,
+)
+from verify_tools.ssot_ast_audit import (
+    audit_bespoke_atomic_writers,
+    audit_removed_shim_imports_ast,
+)
 from verify_tools.translation_audit import TEXT_FILENAMES, TEXT_SUFFIXES
 
 
@@ -32,74 +42,19 @@ def test_market_alerts_and_hyperliquid_provider_use_shared_env_stack():
 
 
 def test_operational_thresholds_have_one_versioned_source():
-    config = (ROOT / "config.env").read_text(encoding="utf-8")
-    keys = {
-        "CM_CURRENT_PRICE_POLL_SEC",
-        "CM_PRICE_FRESHNESS_MAX_AGE_SEC",
-        "WATCHDOG_STALE_MINUTES",
-        "WATCHDOG_COOLDOWN_MINUTES",
-        "WATCHDOG_FAST_PRICE_MINUTES",
-        "ANOMALY_WINDOW_FILES_MIN",
-        "ANOMALY_COOLDOWN_MINUTES",
-        "ANOMALY_MAX_READ_BYTES",
-        "ANOMALY_THRESH_RATE_LIMIT",
-        "ANOMALY_THRESH_AUTH",
-        "ANOMALY_THRESH_BLIND",
-        "ANOMALY_THRESH_TRACEBACK",
-        "RISK_DD_ALERT_PCT",
-        "RISK_DD_REALERT_HOURS",
-        "RISK_DD_WORSEN_PCT",
-        "MONITOR_PORT",
-    }
-    configured = {
-        line.split("=", 1)[0].strip()
-        for line in config.splitlines()
-        if "=" in line and not line.lstrip().startswith("#")
-    }
-    assert keys <= configured
-
-    runtime_files = [
-        path for path in [
-            ROOT / "cacheprice.py",
-            ROOT / "cacheManager.py",
-            ROOT / "orchestratorOS/lib/technical_repair_ssot.py",
-            ROOT / "verify_tools/check_cache_coherence.py",
-            ROOT / "verify_tools/portfolio_snapshot.py",
-            ROOT / "verify_tools/monitor_night.py",
-        ] if path.exists()
-    ]
-    text = "\n".join(path.read_text(encoding="utf-8") for path in runtime_files)
-    for key in keys:
-        assert f'os.environ.get("{key}",' not in text
+    assert REQUIRED_OPERATIONAL_CONFIG_KEYS
+    rel_targets = ["config.env", *sorted(OPERATIONAL_THRESHOLD_RUNTIME_FILES)]
+    violations = audit_static_config_policy(ROOT, rel_paths=rel_targets)
+    assert violations == [], f"Operational threshold SSOT violations: {violations}"
 
 
 def test_specialized_atomic_writers_are_explicitly_bounded():
     # All bespoke atomic writers across the production fleet are fully migrated to state_io
-    remaining = set()
-    candidates = []
     tracked = subprocess.check_output(
         ["git", "ls-files", "*.py"], cwd=ROOT, text=True,
     ).splitlines()
-    for relative in tracked:
-        if (relative == "state_io.py"
-                or relative.startswith(("tests/", "offline/", "archive/"))
-                or "/test_" in relative):
-            continue
-        path = ROOT / relative
-        if not path.is_file():
-            continue
-        text = path.read_text(encoding="utf-8")
-        owns_temporary = re.search(
-            r"\b(?:tmp|tmp_file|tmp_path|tmp_bin|temporary)\s*=.*(?:\.tmp|mkstemp)", text,
-        )
-        defines_local_atomic = re.search(
-            r"^\s*def\s+(?:_?atomic_write(?:_json)?|_write_json_atomic)\b",
-            text,
-            re.MULTILINE,
-        )
-        if (owns_temporary and ("os.replace" in text or "mkstemp" in text)) or defines_local_atomic:
-            candidates.append(relative)
-    assert set(candidates) == remaining
+    violations = audit_bespoke_atomic_writers(ROOT, rel_paths=tracked)
+    assert violations == [], f"Bespoke atomic writers detected: {violations}"
 
 
 def test_dead_trade_cache_manager_is_archived_not_packaged():
@@ -112,17 +67,7 @@ def test_dead_trade_cache_manager_is_archived_not_packaged():
 def test_tracked_order_compatibility_shim_is_removed_after_consumer_migration():
     assert not (ROOT / "archive/providers_tracked_order.py").exists()
     assert not (ROOT / "providers/tracked_order.py").exists()
-    active_imports = []
-    for path in ROOT.rglob("*.py"):
-        relative = path.relative_to(ROOT)
-        if (set(relative.parts) & {"archive", "tests", ".venv", "myenv"}
-                or any(part.startswith(".") for part in relative.parts)):
-            continue
-        text = path.read_text(encoding="utf-8")
-        if ("providers.tracked_order" in text
-                or "from providers import tracked_order" in text):
-            active_imports.append(relative.as_posix())
-    assert active_imports == []
+    assert audit_removed_shim_imports_ast(ROOT) == []
 
 
 def test_live_launcher_env_defaults_are_location_based(monkeypatch):
@@ -1040,6 +985,90 @@ def test_ssot_ast_audit_pre_commit_blocks_manual_parsing_and_allows_ssot_delegat
             SimpleNamespace(
                 files=["intelligence/collector_ok.py", "providers/kraken_provider.py", "tests/test_fixture.py"],
                 root=str(tmp_path),
+            )
+        )
+        == 0
+    )
+
+
+def test_pre_commit_gate_runs_all_deterministic_checks_and_blocks_violations(tmp_path):
+    """Verify verify_tools.pre_commit_gate orchestrates every deterministic gate cleanly on staged files."""
+    from verify_tools import pre_commit_gate as gate
+
+    assert len(DETERMINISTIC_GATES) >= 11
+    assert gate.cmd_list(SimpleNamespace()) == 0
+
+    # Seed one violation for each non-trivial deterministic gate in tmp_path.
+    (tmp_path / "broken.sh").write_text("#!/usr/bin/env bash\nif [ 1 -eq 1 ]; then\n  echo hi\n", encoding="utf-8")
+    (tmp_path / "bad.json").write_text('{"a": 1,}\n', encoding="utf-8")
+    (tmp_path / "bad.toml").write_text("[section\nx = 1\n", encoding="utf-8")
+    (tmp_path / "config.env").write_text("X=$UNBOUND_VAR\n", encoding="utf-8")
+    (tmp_path / "instruments.conf").write_text("[BAD_INST]\nprovider=binance\n", encoding="utf-8")
+    (tmp_path / "cachepaths.py").write_text("import providers\nX = providers\n", encoding="utf-8")
+    (tmp_path / "cyc_a.py").write_text("import cyc_b\nX = cyc_b\n", encoding="utf-8")
+    (tmp_path / "cyc_b.py").write_text("import cyc_a\nY = cyc_a\n", encoding="utf-8")
+    (tmp_path / "consumer_bad.py").write_text(
+        textwrap.dedent(
+            """
+            import os
+
+            def run(client, sym: str):
+                tmp_path = "a.tmp"
+                os.replace(tmp_path, "a.json")
+                _ = get_current_price_manager(data_sync_mode="producer")
+                client.order_market_buy(symbol=sym, quantity=1)
+                return sym.endswith(("USDT", "USDC")) or sym.endswith("_US_EQ")
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+
+    bad_files = [
+        "broken.sh",
+        "bad.json",
+        "bad.toml",
+        "config.env",
+        "instruments.conf",
+        "cachepaths.py",
+        "cyc_a.py",
+        "consumer_bad.py",
+    ]
+    ctx = gate.GateContext(
+        root=tmp_path,
+        mode="pre-commit",
+        rel_paths=tuple(bad_files),
+        python_rels=tuple(f for f in bad_files if f.endswith(".py")),
+        explicit_files=True,
+    )
+    failures = gate.run_gates(ctx)
+    for expected_gate in (
+        "shell_syntax",
+        "config_policy",
+        "ssot_primitives_ast",
+        "equity_suffix_ast",
+        "layer_dag_ast",
+        "import_cycles_ast",
+        "producer_only_caches_ast",
+        "atomic_writers_ast",
+        "direct_order_boundaries_ast",
+    ):
+        assert expected_gate in failures, f"Expected gate {expected_gate} to fail; got {sorted(failures)}"
+    assert gate.cmd_pre_commit(SimpleNamespace(files=bad_files, root=str(tmp_path), min_score=2)) == 1
+
+    # Clean staged files across shell, JSON, TOML, and SSOT-delegating Python pass with exit code 0.
+    (tmp_path / "ok.sh").write_text("#!/usr/bin/env bash\nset -euo pipefail\necho ok\n", encoding="utf-8")
+    (tmp_path / "ok.json").write_text('{"ok": true}\n', encoding="utf-8")
+    (tmp_path / "ok.toml").write_text('[project]\nname = "mptrade"\n', encoding="utf-8")
+    (tmp_path / "clean_mod.py").write_text(
+        "from cachepaths import symbol_quote_asset\n\ndef is_usd(sym: str) -> bool:\n    return symbol_quote_asset(sym) == 'USDC'\n",
+        encoding="utf-8",
+    )
+    assert (
+        gate.cmd_pre_commit(
+            SimpleNamespace(
+                files=["ok.sh", "ok.json", "ok.toml", "clean_mod.py"],
+                root=str(tmp_path),
+                min_score=2,
             )
         )
         == 0

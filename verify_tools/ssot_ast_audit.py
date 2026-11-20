@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Canonical SSOT AST purity auditor for tests and git pre-commit hooks.
+"""Canonical SSOT AST purity, DAG, layering, and policy auditor.
 
-Enforces repository-wide SSOT boundaries so manual symbol/quote/equity parsing,
-venue string branching, raw stdlib I/O/HTTP/env/coercion calls, and transitive
-re-export imports are blocked immediately at commit time rather than surfacing
-later in full DEV regressions.
+Enforces repository-wide static AST invariants for both pytest policy suites
+and the unified git pre-commit gate (`verify_tools/pre_commit_gate.py`).
 
 Subcommands
   pre-commit [files...]  Audit staged Python files (or explicit paths).
@@ -15,6 +13,9 @@ from __future__ import annotations
 import argparse
 import ast
 import builtins
+from collections import defaultdict
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +27,8 @@ if str(_ROOT) not in sys.path:
 
 from state_io import read_text_file
 from verify_tools.translation_audit import PROD_PYTHON_SKIP_TOP, find_first_non_ascii_line
+
+ParsedCache = dict[str, tuple[str | None, ast.Module | None, str | None]]
 
 JSON_OWNERS = frozenset({"state_io.py", "botcore.py", "cacheintegrity.py"})
 TEXT_OWNERS = frozenset({"state_io.py", "botcore.py"})
@@ -59,6 +62,7 @@ CACHEPRICE_POLLER_ALIASES = frozenset({
 })
 VENUE_LEAF_DIRS = ("binance_api/", "kraken/", "hyperliquid/", "212trading/", "market_monitor/")
 VENUE_TOKENS = frozenset({"binance", "kraken", "hyperliquid", "t212", "trading212"})
+VENUE_LITERAL_SUBSTRINGS = ("binance", "kraken", "hyperliquid", "t212", "212trading")
 VENUE_BRANCH_EXCLUDED_TOP_DIRS = frozenset({
     "binance_api",
     "kraken",
@@ -81,6 +85,217 @@ REEXPORT_EXTRA_DIRS = ("offline", "verify_tools")
 _BUILTIN_NAMES = frozenset(dir(builtins)) | frozenset({
     "__file__", "__name__", "__package__", "__doc__", "__spec__", "__annotations__",
 })
+
+# -- Layer DAG & isolation constants -------------------------------------------
+
+LAYER2_MODULES = frozenset({"cachepaths.py", "state_io.py", "cacheintegrity.py", "pricewindow.py"})
+FORBIDDEN_LAYER2_IMPORTS = frozenset({
+    "account_cache_health",
+    "binance_cache_health",
+    "cacheInterface",
+    "cacheaccount",
+    "cacheprice",
+    "cachetrend",
+    "cacheManager",
+    "providers",
+    "instrument",
+    "order_guard",
+    "strategies",
+    "intelligence",
+    "shadow_signals",
+    "binance_api",
+    "kraken",
+    "hyperliquid",
+    "212trading",
+})
+CACHE_MODULES = frozenset({
+    "cacheInterface.py",
+    "cacheaccount.py",
+    "cacheprice.py",
+    "cachetrend.py",
+    "cacheManager.py",
+})
+CACHE_SIBLING_ROOTS = frozenset({"cacheaccount", "cacheprice", "cachetrend"})
+FORBIDDEN_CACHE_UPWARD = frozenset({
+    "binance_cache_health",
+    "instrument",
+    "order_guard",
+    "guard_hierarchy",
+    "order_lifecycle",
+    "order_retry",
+    "strategies",
+    "trailing_core",
+    "intelligence",
+    "shadow_signals",
+    "orchestratorOS",
+    "orchestratorTrade",
+    "binance_api",
+    "kraken",
+    "hyperliquid",
+    "212trading",
+})
+FORBIDDEN_CACHE_EXACT_PROVIDERS = frozenset({
+    "providers.binance_provider",
+    "providers.kraken_provider",
+    "providers.hyperliquid_provider",
+    "providers.t212_provider",
+})
+PROVIDER_BASE_MODULES = frozenset({
+    "providers/base.py",
+    "providers/ws_stream.py",
+    "providers/ssot_bridge.py",
+    "providers/venue_metadata.py",
+    "providers/ohlc_utils.py",
+    "providers/price_poller.py",
+})
+FORBIDDEN_PROVIDER_BASE_IMPORTS = frozenset({
+    "order_guard",
+    "guard_hierarchy",
+    "llm_order_guard",
+    "order_lifecycle",
+    "order_retry",
+    "order_retry_worker",
+    "instrument",
+    "strategies",
+    "market_regime",
+    "intelligence",
+    "orchestratorTrade",
+    "orchestratorOS",
+    "cacheManager",
+    "binance_api",
+    "kraken",
+    "hyperliquid",
+    "212trading",
+})
+PROVIDER_NON_FACADE_MODULES = frozenset({
+    "providers/base.py",
+    "providers/ws_stream.py",
+    "providers/ssot_bridge.py",
+    "providers/venue_metadata.py",
+    "providers/venue_ws_protocols.py",
+    "providers/broker_history.py",
+    "providers/price_poller.py",
+    "providers/binance_provider.py",
+    "providers/hyperliquid_provider.py",
+    "providers/kraken_provider.py",
+    "providers/t212_provider.py",
+    "providers/replay_provider.py",
+    "providers/order_id_context.py",
+    "providers/ohlc_utils.py",
+    "providers/order_ohlc_utils.py",
+    "providers/quantity.py",
+    "providers/strategy_executor.py",
+    "providers/execution_audit.py",
+    "providers/intent_state.py",
+    "providers/intent_execution.py",
+    "providers/intent_reconciliation.py",
+    "providers/intent_telemetry.py",
+})
+FORBIDDEN_PROVIDER_UPWARD = frozenset({
+    "cacheInterface",
+    "cacheaccount",
+    "cacheprice",
+    "cachetrend",
+    "cacheManager",
+    "market_regime",
+    "order_guard",
+    "guard_hierarchy",
+    "llm_order_guard",
+    "order_lifecycle",
+    "order_retry",
+    "order_retry_worker",
+    "instrument",
+    "strategies",
+    "intelligence",
+    "orchestratorTrade",
+    "orchestratorOS",
+})
+VENUE_TRANSPORT_MODULES = frozenset({
+    "binance_api/bapi.py",
+    "binance_api/bapi_allorders.py",
+    "binance_api/bapi_client.py",
+    "binance_api/bapi_placeorder.py",
+    "binance_api/bapi_trades.py",
+    "binance_api/bapi_ws.py",
+    "binance_api/bapi_ws_bridge.py",
+    "binance_api/bapi_ws_normalize.py",
+    "binance_api/market_data.py",
+    "212trading/t212_client.py",
+    "212trading/market_data.py",
+    "kraken/kraken_client.py",
+    "kraken/market_data.py",
+    "hyperliquid/hl_client.py",
+    "hyperliquid/market_data.py",
+})
+FORBIDDEN_TRANSPORT_PROVIDER_TARGETS = frozenset({
+    "providers.market_api",
+    "providers.binance_provider",
+    "providers.kraken_provider",
+    "providers.hyperliquid_provider",
+    "providers.t212_provider",
+    "providers.replay_provider",
+})
+ORDER_GATEWAY_MODULES = frozenset({
+    "instrument.py",
+    "order_guard.py",
+    "order_lifecycle.py",
+    "order_retry.py",
+    "order_retry_worker.py",
+})
+FORBIDDEN_GATEWAY_VENUE_SDKS = frozenset({
+    "binance_api", "binance", "kraken", "hyperliquid", "212trading", "hl_client",
+})
+FORBIDDEN_VENUE_SDK_ROOTS = frozenset({"binance", "binance_api", "kraken", "hyperliquid", "212trading"})
+VENUE_SDK_EXEMPT_PREFIXES = (
+    "binance_api/",
+    "kraken/",
+    "hyperliquid/",
+    "212trading/",
+    "providers/",
+    "tests/",
+    "archive/",
+    ".venv/",
+    "myenv/",
+)
+VENUE_SDK_EXEMPT_FILES = frozenset({"verify_tools/verify_account_facade.py"})
+STRATEGIES_FORBIDDEN_IMPORTS = frozenset({
+    "binance_api", "binance", "kraken", "hyperliquid", "212trading",
+    "hl_client", "orchestratorOS", "orchestratorTrade",
+    "monitortrades", "assetguardian", "rtrade", "tradeall",
+})
+STRATEGIES_PURE_VENUE_FILES = frozenset({
+    "strategies/base_spot_mixin.py",
+    "strategies/mt_position_accounting.py",
+    "strategies/position_exit_manager.py",
+    "strategies/rtrade_pair.py",
+    "strategies/spot_replay.py",
+    "strategies/spot_rules.py",
+    "strategies/state_store.py",
+})
+CACHE_PRODUCER_GETTERS = frozenset({
+    "get_cache_manager",
+    "get_current_price_manager",
+    "get_24_price_manager",
+    "get_sparse_price_manager",
+    "get_short_trend_manager",
+    "get_long_trend_manager",
+    "get_asset_value_manager",
+    "get_binance_order_manager",
+    "get_trade_manager",
+    "attach_default_price_ws_stream",
+})
+CACHE_LEGACY_KWARGS = frozenset({"start_sync", "sync_to_file", "mode", "writer"})
+CACHE_WS_SYNC_OWNERS = frozenset({"cacheaccount.py", "binance_api/bapi_ws_bridge.py"})
+CACHE_PRODUCER_SKIP_DIRS = frozenset({
+    "myenv", "venv", "__pycache__", "tests", "cachedb", "logs", "logger", "offline", "archive", "media", "models",
+})
+_TMP_WRITER_RE = re.compile(
+    r"\b(?:tmp|tmp_file|tmp_path|tmp_bin|temporary)\s*=.*(?:\.tmp|mkstemp)"
+)
+_LOCAL_ATOMIC_DEF_RE = re.compile(
+    r"^\s*def\s+(?:_?atomic_write(?:_json)?|_write_json_atomic)\b",
+    re.MULTILINE,
+)
 
 
 def _norm_rel_path(path: Path, root: Path) -> str | None:
@@ -187,13 +402,21 @@ def _is_equity_endswith_guarded(rel_s: str) -> bool:
     )
 
 
+_WALK_PRUNE_DIRS = frozenset({
+    "__pycache__", "venv", "myenv", "site-packages", "cachedb", "logs", "media", "models",
+})
+
+
 def _iter_repo_python_rels(root: Path) -> list[str]:
     rels: list[str] = []
-    for p in sorted(root.rglob("*.py")):
-        rel = p.relative_to(root)
-        if any(part.startswith(".") or part in ("__pycache__", "site-packages") for part in rel.parts):
-            continue
-        rels.append(rel.as_posix())
+    for cur_dir, dirnames, filenames in os.walk(str(root)):
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if not d.startswith(".") and d not in _WALK_PRUNE_DIRS
+        )
+        for fname in sorted(filenames):
+            if fname.endswith(".py"):
+                rels.append(Path(cur_dir, fname).relative_to(root).as_posix())
     return rels
 
 
@@ -213,10 +436,10 @@ def _normalize_target_rels(root: Path, rel_paths: Sequence[str] | None) -> list[
     return result
 
 
-def _parse_module(
+def parse_module_cached(
     path: Path,
     rel_s: str,
-    cache: dict[str, tuple[str | None, ast.Module | None, str | None]] | None = None,
+    cache: ParsedCache | None = None,
 ) -> tuple[str | None, ast.Module | None, str | None]:
     if cache is not None and rel_s in cache:
         return cache[rel_s]
@@ -233,11 +456,58 @@ def _parse_module(
     return res
 
 
+def _docstring_nodes(tree: ast.Module) -> set[ast.AST]:
+    nodes: set[ast.AST] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if (
+                node.body
+                and isinstance(node.body[0], ast.Expr)
+                and isinstance(node.body[0].value, ast.Constant)
+                and isinstance(node.body[0].value.value, str)
+            ):
+                nodes.add(node.body[0].value)
+    return nodes
+
+
+def _imported_roots_and_full(tree: ast.Module, *, include_dynamic: bool = False) -> tuple[set[str], set[str]]:
+    roots: set[str] = set()
+    fulls: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                roots.add(alias.name.split(".")[0])
+                fulls.add(alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            roots.add(node.module.split(".")[0])
+            fulls.add(node.module)
+            for alias in node.names:
+                fulls.add(f"{node.module}.{alias.name}")
+        elif (
+            include_dynamic
+            and isinstance(node, ast.Call)
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            if (
+                isinstance(node.func, ast.Attribute) and node.func.attr == "import_module"
+            ) or (
+                isinstance(node.func, ast.Name) and node.func.id in ("import_module", "__import__")
+            ):
+                val = node.args[0].value
+                roots.add(val.split(".")[0])
+                fulls.add(val)
+    return roots, fulls
+
+
+# -- Audit 1: Repo-wide SSOT primitives, ASCII, undefined names, re-exports ----
+
 def audit_repo_ssot_ast(
     root: Path = _ROOT,
     rel_paths: Sequence[str] | None = None,
     *,
-    _parsed_cache: dict[str, tuple[str | None, ast.Module | None, str | None]] | None = None,
+    _parsed_cache: ParsedCache | None = None,
 ) -> list[str]:
     """Audit production Python modules (and extra dirs for transitive re-exports) for SSOT AST purity."""
     root = Path(root)
@@ -256,7 +526,7 @@ def audit_repo_ssot_ast(
     ssot_violations: list[str] = []
 
     for rel_s in prod_rels:
-        src_text, tree, syntax_err = _parse_module(root / rel_s, rel_s, _parsed_cache)
+        src_text, tree, syntax_err = parse_module_cached(root / rel_s, rel_s, _parsed_cache)
         if src_text is not None:
             bad_ln = find_first_non_ascii_line(src_text)
             if bad_ln is not None:
@@ -292,7 +562,7 @@ def audit_repo_ssot_ast(
         if not _is_prod_python_rel(mod_rel):
             reexport_cache[target_mod] = None
             return None
-        _, mod_tree, _ = _parse_module(mod_path, mod_rel, _parsed_cache)
+        _, mod_tree, _ = parse_module_cached(mod_path, mod_rel, _parsed_cache)
         reexports = _extract_reexport_defs(mod_tree) if mod_tree is not None else None
         reexport_cache[target_mod] = reexports
         return reexports
@@ -444,7 +714,7 @@ def audit_repo_ssot_ast(
                 )
 
     for rel_s in reexport_extra_rels:
-        _, tree, syntax_err = _parse_module(root / rel_s, rel_s, _parsed_cache)
+        _, tree, syntax_err = parse_module_cached(root / rel_s, rel_s, _parsed_cache)
         if syntax_err is not None:
             ssot_violations.append(syntax_err)
             continue
@@ -457,11 +727,13 @@ def audit_repo_ssot_ast(
     return ssot_violations
 
 
+# -- Audit 2: Venue string branches --------------------------------------------
+
 def audit_venue_string_branches_ast(
     root: Path = _ROOT,
     rel_paths: Sequence[str] | None = None,
     *,
-    _parsed_cache: dict[str, tuple[str | None, ast.Module | None, str | None]] | None = None,
+    _parsed_cache: ParsedCache | None = None,
 ) -> list[str]:
     """Audit guarded non-venue-adapter modules for hardcoded venue string comparisons."""
     root = Path(root)
@@ -479,7 +751,7 @@ def audit_venue_string_branches_ast(
 
     violations: list[str] = []
     for rel in guarded:
-        _, tree, syntax_err = _parse_module(root / rel, rel, _parsed_cache)
+        _, tree, syntax_err = parse_module_cached(root / rel, rel, _parsed_cache)
         if syntax_err is not None:
             violations.append(syntax_err)
             continue
@@ -499,11 +771,13 @@ def audit_venue_string_branches_ast(
     return violations
 
 
+# -- Audit 3: Manual equity suffix .endswith() ---------------------------------
+
 def audit_equity_suffix_endswith_ast(
     root: Path = _ROOT,
     rel_paths: Sequence[str] | None = None,
     *,
-    _parsed_cache: dict[str, tuple[str | None, ast.Module | None, str | None]] | None = None,
+    _parsed_cache: ParsedCache | None = None,
 ) -> list[str]:
     """Audit Python modules outside cachepaths.py for manual _EQ/_US_EQ .endswith() calls."""
     root = Path(root)
@@ -513,7 +787,7 @@ def audit_equity_suffix_endswith_ast(
     ]
     violations: list[str] = []
     for rel in target_rels:
-        _, tree, syntax_err = _parse_module(root / rel, rel, _parsed_cache)
+        _, tree, syntax_err = parse_module_cached(root / rel, rel, _parsed_cache)
         if syntax_err is not None:
             violations.append(syntax_err)
             continue
@@ -539,20 +813,553 @@ def audit_equity_suffix_endswith_ast(
     return violations
 
 
+# -- Audit 4: Strict acyclic layer DAG, venue SDK & shim isolation -------------
+
+def audit_venue_sdk_imports_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Audit zero direct or dynamic venue SDK imports outside venue adapters and providers/."""
+    root = Path(root)
+    target_rels = _normalize_target_rels(root, rel_paths)
+    dynamic_exempt = VENUE_SDK_EXEMPT_PREFIXES + ("offline/",)
+    violations: list[str] = []
+    for rel in target_rels:
+        if not rel.endswith(".py"):
+            continue
+        if any(part.startswith(".") for part in Path(rel).parts):
+            continue
+        if rel.startswith(VENUE_SDK_EXEMPT_PREFIXES) or rel in VENUE_SDK_EXEMPT_FILES:
+            continue
+        _, tree, syntax_err = parse_module_cached(root / rel, rel, _parsed_cache)
+        if syntax_err is not None:
+            violations.append(syntax_err)
+            continue
+        if tree is None:
+            continue
+        check_dynamic = not rel.startswith(dynamic_exempt)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".", 1)[0] in FORBIDDEN_VENUE_SDK_ROOTS:
+                        violations.append(f"{rel}:{node.lineno}: direct venue SDK import {alias.name}")
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                if node.module.split(".", 1)[0] in FORBIDDEN_VENUE_SDK_ROOTS:
+                    violations.append(f"{rel}:{node.lineno}: direct venue SDK import from {node.module}")
+            elif check_dynamic and isinstance(node, ast.Call):
+                fn_name = (
+                    node.func.id
+                    if isinstance(node.func, ast.Name)
+                    else (node.func.attr if isinstance(node.func, ast.Attribute) else "")
+                )
+                if fn_name in ("load_local_module", "load_venue_module", "import_module"):
+                    for sub in ast.walk(node):
+                        if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                            parts = set(sub.value.replace("/", ".").replace("\\", ".").split("."))
+                            if parts & FORBIDDEN_VENUE_SDK_ROOTS:
+                                violations.append(
+                                    f"{rel}:{node.lineno}: dynamic venue SDK {fn_name}(... {sub.value!r} ...)"
+                                )
+    return violations
+
+
+def audit_persistence_and_cache_dag_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Audit Layer 2 persistence, shadow_signals, and Layer 3 cache DAG, sibling purity, and WS delegation."""
+    root = Path(root)
+    watched = LAYER2_MODULES | {"account_cache_health.py", "shadow_signals.py"} | CACHE_MODULES
+    if rel_paths is None:
+        target_rels = [r for r in sorted(watched) if (root / r).is_file()]
+    else:
+        target_rels = [r for r in _normalize_target_rels(root, rel_paths) if r in watched]
+    violations: list[str] = []
+    for rel in target_rels:
+        src, tree, syntax_err = parse_module_cached(root / rel, rel, _parsed_cache)
+        if syntax_err is not None:
+            violations.append(syntax_err)
+            continue
+        if tree is None or src is None:
+            continue
+        roots, fulls = _imported_roots_and_full(tree, include_dynamic=True)
+        if rel in LAYER2_MODULES:
+            if leak := sorted(roots & FORBIDDEN_LAYER2_IMPORTS):
+                violations.append(f"{rel}: upward layer leak {leak}")
+        elif rel == "account_cache_health.py":
+            if leak := sorted(roots & (FORBIDDEN_LAYER2_IMPORTS - {"account_cache_health"})):
+                violations.append(f"{rel}: upward layer leak {leak}")
+        elif rel == "shadow_signals.py":
+            if "intelligence" in roots:
+                violations.append("shadow_signals.py: upward leak into intelligence")
+        elif rel in CACHE_MODULES:
+            if "wss://" in src:
+                violations.append(f"{rel}: hardcoded venue wss:// URL (delegate to providers/)")
+            if leak := sorted(roots & FORBIDDEN_CACHE_UPWARD):
+                violations.append(f"{rel}: upward layer/venue leak {leak}")
+            if prov_leak := sorted(fulls & FORBIDDEN_CACHE_EXACT_PROVIDERS):
+                violations.append(f"{rel}: concrete venue provider import {prov_leak}")
+            stem = rel[:-3]
+            if stem in CACHE_SIBLING_ROOTS:
+                if sib_leak := sorted(roots & (CACHE_SIBLING_ROOTS - {stem})):
+                    violations.append(f"{rel}: sibling cache domain import {sib_leak}")
+                if "cacheManager" in roots:
+                    violations.append(f"{rel}: sibling cache must not import cacheManager")
+    return violations
+
+
+def audit_layer_dag_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Audit all acyclic architecture layer boundaries, venue SDK isolation, strategies/trailing purity, and removed shims."""
+    root = Path(root)
+    target_rels = _normalize_target_rels(root, rel_paths)
+    violations: list[str] = []
+    violations.extend(audit_persistence_and_cache_dag_ast(root, rel_paths=target_rels, _parsed_cache=_parsed_cache))
+    violations.extend(audit_venue_sdk_imports_ast(root, rel_paths=target_rels, _parsed_cache=_parsed_cache))
+
+    for rel in target_rels:
+        if not rel.endswith(".py"):
+            continue
+        parts = Path(rel).parts
+        if any(part.startswith(".") or part in ("__pycache__", "site-packages") for part in parts):
+            continue
+
+        needs_check = (
+            rel in PROVIDER_BASE_MODULES
+            or rel in PROVIDER_NON_FACADE_MODULES
+            or rel == "providers/market_api.py"
+            or rel in VENUE_TRANSPORT_MODULES
+            or rel in ORDER_GATEWAY_MODULES
+            or rel == "intelligence/globaltelemetry_collector.py"
+            or rel == "trailing_core.py"
+            or rel.startswith("strategies/")
+            or _is_prod_python_rel(rel)
+            or (parts[0] not in ("archive", "tests"))
+        )
+        if not needs_check:
+            continue
+
+        src, tree, syntax_err = parse_module_cached(root / rel, rel, _parsed_cache)
+        if syntax_err is not None or tree is None or src is None:
+            continue
+        roots, fulls = _imported_roots_and_full(tree, include_dynamic=False)
+
+        if rel in PROVIDER_BASE_MODULES:
+            if leak := sorted(roots & FORBIDDEN_PROVIDER_BASE_IMPORTS):
+                violations.append(f"{rel}: provider base DAG leak {leak}")
+        if rel in PROVIDER_NON_FACADE_MODULES:
+            if leak := sorted(roots & FORBIDDEN_PROVIDER_UPWARD):
+                violations.append(f"{rel}: provider upward DAG leak {leak}")
+        if rel == "providers/market_api.py":
+            if leak := sorted(roots & (FORBIDDEN_PROVIDER_UPWARD - {"market_regime"})):
+                violations.append(f"{rel}: MarketApi upward DAG leak {leak}")
+        if rel in VENUE_TRANSPORT_MODULES:
+            if leak := sorted(roots & (FORBIDDEN_PROVIDER_UPWARD | {"offline"})):
+                violations.append(f"{rel}: transport upward DAG leak {leak}")
+            if t_leak := sorted(fulls & FORBIDDEN_TRANSPORT_PROVIDER_TARGETS):
+                violations.append(f"{rel}: transport-to-adapter DAG leak {t_leak}")
+        if rel in ORDER_GATEWAY_MODULES:
+            if leak := sorted(roots & FORBIDDEN_GATEWAY_VENUE_SDKS):
+                violations.append(f"{rel}: order gateway venue SDK leak {leak}")
+        if rel == "intelligence/globaltelemetry_collector.py":
+            if leak := sorted(roots & {"orchestratorTrade", "orchestratorOS"}):
+                violations.append(f"{rel}: upward orchestrator import {leak}")
+        if rel.startswith("strategies/"):
+            if "_exit_manager_mode" in src:
+                violations.append(f"{rel}: forbidden legacy _exit_manager_mode reference")
+            if leak := sorted(roots & STRATEGIES_FORBIDDEN_IMPORTS):
+                violations.append(f"{rel}: strategies DAG leak {leak}")
+            if rel in STRATEGIES_PURE_VENUE_FILES:
+                docs = _docstring_nodes(tree)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Constant) and isinstance(node.value, str) and node not in docs:
+                        low = node.value.lower()
+                        if any(tok in low for tok in VENUE_LITERAL_SUBSTRINGS):
+                            violations.append(f"{rel}:{node.lineno}: hardcoded venue literal {node.value!r}")
+        if rel == "trailing_core.py":
+            docs = _docstring_nodes(tree)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        r_low = alias.name.split(".")[0].lower()
+                        if any(v in r_low for v in VENUE_LITERAL_SUBSTRINGS):
+                            violations.append(f"trailing_core.py:{node.lineno}: forbidden venue import {alias.name}")
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    r_low = node.module.split(".")[0].lower()
+                    if any(v in r_low for v in VENUE_LITERAL_SUBSTRINGS):
+                        violations.append(f"trailing_core.py:{node.lineno}: forbidden venue import from {node.module}")
+                elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node not in docs:
+                    low = node.value.lower()
+                    if any(v in low for v in VENUE_LITERAL_SUBSTRINGS):
+                        violations.append(f"trailing_core.py:{node.lineno}: hardcoded venue literal {node.value!r}")
+        if _is_prod_python_rel(rel) and "offline" in roots:
+            violations.append(f"{rel}: production module imports offline.*")
+        if parts[0] not in ("archive", "tests") and "providers.tracked_order" in fulls:
+            violations.append(f"{rel}: removed compatibility shim providers.tracked_order")
+
+    return violations
+
+
+def audit_removed_shim_imports_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Audit zero active AST imports of removed compatibility shims (e.g., providers.tracked_order)."""
+    root = Path(root)
+    violations: list[str] = []
+    for rel in _normalize_target_rels(root, rel_paths):
+        parts = Path(rel).parts
+        if not rel.endswith(".py") or not parts or parts[0] in ("archive", "tests"):
+            continue
+        _, tree, _ = parse_module_cached(root / rel, rel, _parsed_cache)
+        if tree is None:
+            continue
+        _, fulls = _imported_roots_and_full(tree, include_dynamic=True)
+        if "providers.tracked_order" in fulls:
+            violations.append(f"{rel}: removed compatibility shim providers.tracked_order")
+    return violations
+
+
+# -- Audit 5: Import cycles (lazy module DFS in pre-commit, Tarjan SCC in scan) -
+
+def _extract_local_import_targets(
+    rel_s: str,
+    tree: ast.Module,
+    mod_exists,
+) -> list[str]:
+    pkg_parts = Path(rel_s).parts[:-1]
+    targets: list[str] = []
+    for node in ast.walk(tree):
+        raw_tgts: list[str] = []
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                raw_tgts.append(a.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                raw_tgts.append(node.module)
+                for a in node.names:
+                    sub = f"{node.module}.{a.name}"
+                    if mod_exists(sub):
+                        raw_tgts.append(sub)
+            elif node.level > 0:
+                base_parts = list(pkg_parts[: len(pkg_parts) - (node.level - 1)])
+                if node.module:
+                    base_parts.extend(node.module.split("."))
+                rel_mod = ".".join(base_parts)
+                if node.module and rel_mod:
+                    raw_tgts.append(rel_mod)
+                for a in node.names:
+                    sub = f"{rel_mod}.{a.name}" if rel_mod else a.name
+                    if mod_exists(sub):
+                        raw_tgts.append(sub)
+        for tgt in raw_tgts:
+            if tgt.startswith(("hyperliquid.info", "hyperliquid.exchange", "hyperliquid.utils")):
+                continue
+            targets.append(tgt)
+    return targets
+
+
+def _find_sccs(graph: dict[str, set[str]]) -> list[list[str]]:
+    index = 0
+    indices: dict[str, int] = {}
+    lowlink: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    sccs: list[list[str]] = []
+
+    def _strongconnect(v: str) -> None:
+        nonlocal index
+        indices[v] = index
+        lowlink[v] = index
+        index += 1
+        stack.append(v)
+        on_stack.add(v)
+        for w in sorted(graph.get(v, ())):
+            if w not in indices:
+                _strongconnect(w)
+                lowlink[v] = min(lowlink[v], lowlink[w])
+            elif w in on_stack:
+                lowlink[v] = min(lowlink[v], indices[w])
+        if lowlink[v] == indices[v]:
+            scc: list[str] = []
+            while True:
+                w = stack.pop()
+                on_stack.remove(w)
+                scc.append(w)
+                if w == v:
+                    break
+            if len(scc) > 1:
+                sccs.append(sorted(scc))
+
+    for v in sorted(graph):
+        if v not in indices:
+            _strongconnect(v)
+    return sccs
+
+
+def audit_import_cycles_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Detect circular imports: lazy DFS from staged modules in pre-commit, full Tarjan SCC in repo scan."""
+    root = Path(root)
+    excluded_top_dirs = {"tests", "offline", "verify_tools"} | _detect_venv_roots(root)
+
+    def _subpkg_id(mod: str) -> str:
+        parts = mod.split(".")
+        return ".".join(parts[:2]) if len(parts) >= 2 else parts[0]
+
+    def _is_scc_member(rel_s: str) -> bool:
+        if not rel_s.endswith(".py"):
+            return False
+        parts = Path(rel_s).parts
+        return not (
+            not parts
+            or parts[0] in excluded_top_dirs
+            or any(part.startswith(".") or part in ("__pycache__", "site-packages") for part in parts)
+        )
+
+    if rel_paths is not None:
+        # Fast incremental module-level cycle detection lazily expanding only reachable local imports.
+        staged_rels = [r for r in _normalize_target_rels(root, rel_paths) if _is_scc_member(r)]
+        if not staged_rels:
+            return []
+
+        mod_path_cache: dict[str, str | None] = {}
+
+        def _resolve_mod_rel(mod: str) -> str | None:
+            if mod in mod_path_cache:
+                return mod_path_cache[mod]
+            if not mod or mod.split(".")[0] in excluded_top_dirs:
+                mod_path_cache[mod] = None
+                return None
+            parts = mod.split(".")
+            cand_py = root.joinpath(*parts).with_suffix(".py")
+            if cand_py.is_file():
+                rel_c = cand_py.relative_to(root).as_posix()
+                mod_path_cache[mod] = rel_c if _is_scc_member(rel_c) else None
+                return mod_path_cache[mod]
+            cand_init = root.joinpath(*parts, "__init__.py")
+            if cand_init.is_file():
+                rel_c = cand_init.relative_to(root).as_posix()
+                mod_path_cache[mod] = rel_c if _is_scc_member(rel_c) else None
+                return mod_path_cache[mod]
+            mod_path_cache[mod] = None
+            return None
+
+        edges_cache: dict[str, set[str]] = {}
+
+        def _neighbors(mod: str) -> set[str]:
+            if mod in edges_cache:
+                return edges_cache[mod]
+            rel_m = _resolve_mod_rel(mod)
+            if rel_m is None:
+                edges_cache[mod] = set()
+                return set()
+            _, tree, _ = parse_module_cached(root / rel_m, rel_m, _parsed_cache)
+            if tree is None:
+                edges_cache[mod] = set()
+                return set()
+            nbrs: set[str] = set()
+            for tgt in _extract_local_import_targets(rel_m, tree, lambda m: _resolve_mod_rel(m) is not None):
+                parts = tgt.split(".")
+                for i in range(len(parts), 0, -1):
+                    cand = ".".join(parts[:i])
+                    if _resolve_mod_rel(cand) is not None:
+                        if cand != mod:
+                            nbrs.add(cand)
+                        break
+            edges_cache[mod] = nbrs
+            return nbrs
+
+        violations: list[str] = []
+        seen_cycles: set[tuple[str, ...]] = set()
+        state: dict[str, int] = {}
+        path_stack: list[str] = []
+
+        def _dfs(u: str) -> None:
+            state[u] = 1
+            path_stack.append(u)
+            for v in sorted(_neighbors(u)):
+                st = state.get(v, 0)
+                if st == 1:
+                    cyc = path_stack[path_stack.index(v):]
+                    key = tuple(sorted(cyc))
+                    if key not in seen_cycles:
+                        seen_cycles.add(key)
+                        violations.append(f"circular module import cycle: {' -> '.join([*cyc, v])}")
+                elif st == 0:
+                    _dfs(v)
+            path_stack.pop()
+            state[u] = 2
+
+        for rel_s in staged_rels:
+            mod = _rel_to_mod(rel_s)
+            if state.get(mod, 0) == 0:
+                _dfs(mod)
+        return violations
+
+    # Full-repository Tarjan SCC across module, subpackage, and top-level package graphs.
+    all_mods: dict[str, str] = {}
+    for rel_s in _iter_repo_python_rels(root):
+        if _is_scc_member(rel_s):
+            all_mods[_rel_to_mod(rel_s)] = rel_s
+
+    pkg_edges: dict[str, set[str]] = defaultdict(set)
+    subpkg_edges: dict[str, set[str]] = defaultdict(set)
+    mod_edges: dict[str, set[str]] = defaultdict(set)
+    for mod_name, rel_s in sorted(all_mods.items()):
+        src_top = Path(rel_s).parts[0].removesuffix(".py")
+        src_subpkg = _subpkg_id(mod_name)
+        _, tree, _ = parse_module_cached(root / rel_s, rel_s, _parsed_cache)
+        if tree is None:
+            continue
+        for tgt in _extract_local_import_targets(rel_s, tree, lambda m: m in all_mods):
+            t_top = tgt.split(".")[0]
+            if (
+                t_top != src_top
+                and t_top not in excluded_top_dirs
+                and ((root / f"{t_top}.py").exists() or (root / t_top).is_dir())
+            ):
+                pkg_edges[src_top].add(t_top)
+            parts = tgt.split(".")
+            for i in range(len(parts), 0, -1):
+                cand = ".".join(parts[:i])
+                if cand in all_mods:
+                    if cand != mod_name:
+                        mod_edges[mod_name].add(cand)
+                    t_subpkg = _subpkg_id(cand)
+                    if t_subpkg != src_subpkg:
+                        subpkg_edges[src_subpkg].add(t_subpkg)
+                    break
+
+    violations = []
+    for cyc in _find_sccs(pkg_edges):
+        violations.append(f"top-level package SCC cycle: {cyc}")
+    for cyc in _find_sccs(subpkg_edges):
+        violations.append(f"subpackage SCC cycle: {cyc}")
+    for cyc in _find_sccs(mod_edges):
+        violations.append(f"module SCC cycle: {cyc}")
+    return violations
+
+
+# -- Audit 6: Producer-only cache ownership ------------------------------------
+
+def audit_producer_only_caches_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Audit that only cacheManager.py enables producer cache mode and zero legacy cache kwargs remain."""
+    root = Path(root)
+    target_rels = _normalize_target_rels(root, rel_paths)
+    violations: list[str] = []
+    for rel_s in target_rels:
+        if not rel_s.endswith(".py") or rel_s == "cacheManager.py":
+            continue
+        parts = Path(rel_s).parts
+        if any(part.startswith(".") or part in CACHE_PRODUCER_SKIP_DIRS for part in parts):
+            continue
+        _, tree, syntax_err = parse_module_cached(root / rel_s, rel_s, _parsed_cache)
+        if syntax_err is not None or tree is None:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func_name: str | None = None
+            is_cache_factory_get = False
+            if isinstance(node.func, ast.Name):
+                func_name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                func_name = node.func.attr
+                if func_name == "get" and (
+                    (isinstance(node.func.value, ast.Name) and node.func.value.id == "CacheFactory")
+                    or (isinstance(node.func.value, ast.Attribute) and node.func.value.attr == "CacheFactory")
+                ):
+                    is_cache_factory_get = True
+            if func_name in ("enable_real_ws_event_sync", "start_account_cache_daemon") and rel_s not in CACHE_WS_SYNC_OWNERS:
+                violations.append(f"{rel_s}:{node.lineno}: forbidden consumer cache WS/daemon call {func_name}()")
+            if is_cache_factory_get or func_name in CACHE_PRODUCER_GETTERS:
+                for kw in node.keywords:
+                    if kw.arg in CACHE_LEGACY_KWARGS:
+                        violations.append(f"{rel_s}:{node.lineno}: {func_name} legacy kwarg {kw.arg}")
+                    elif (
+                        kw.arg == "data_sync_mode"
+                        and isinstance(kw.value, ast.Constant)
+                        and str(kw.value.value).strip().lower() == "producer"
+                    ):
+                        violations.append(f"{rel_s}:{node.lineno}: {func_name} data_sync_mode='producer'")
+    return violations
+
+
+# -- Audit 7: Zero bespoke atomic writers outside state_io.py ------------------
+
+def audit_bespoke_atomic_writers(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Audit that zero bespoke mkstemp/tmp+os.replace or _atomic_write helpers exist outside state_io.py."""
+    root = Path(root)
+    target_rels = _normalize_target_rels(root, rel_paths)
+    violations: list[str] = []
+    for rel_s in target_rels:
+        if (
+            not rel_s.endswith(".py")
+            or rel_s == "state_io.py"
+            or rel_s.startswith(("tests/", "offline/", "archive/"))
+            or "/test_" in rel_s
+        ):
+            continue
+        if _parsed_cache is not None and rel_s in _parsed_cache:
+            text = _parsed_cache[rel_s][0]
+        else:
+            text = read_text_file(str(root / rel_s), default=None)
+        if not text:
+            continue
+        owns_tmp = bool(_TMP_WRITER_RE.search(text))
+        defines_local = bool(_LOCAL_ATOMIC_DEF_RE.search(text))
+        if (owns_tmp and ("os.replace" in text or "mkstemp" in text)) or defines_local:
+            violations.append(f"{rel_s}: bespoke atomic file writer (delegate to state_io.py)")
+    return violations
+
+
+# -- Combined SSOT AST audit runner --------------------------------------------
+
 def audit_all_ssot_ast(
     root: Path = _ROOT,
     rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
 ) -> list[str]:
-    """Run all SSOT AST audits (primitives/imports, venue branches, equity suffixes) and deduplicate."""
+    """Run all SSOT AST audits (primitives, venue branches, equity suffixes, DAG, cycles, producers, atomic writers)."""
     root = Path(root)
-    target_rels = _normalize_target_rels(root, rel_paths)
-    parsed_cache: dict[str, tuple[str | None, ast.Module | None, str | None]] = {}
+    target_rels = _normalize_target_rels(root, rel_paths) if rel_paths is not None else None
+    parsed_cache: ParsedCache = _parsed_cache if _parsed_cache is not None else {}
     combined: list[str] = []
     seen: set[str] = set()
     for err in (
         *audit_repo_ssot_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
         *audit_venue_string_branches_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
         *audit_equity_suffix_endswith_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
+        *audit_layer_dag_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
+        *audit_import_cycles_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
+        *audit_producer_only_caches_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
+        *audit_bespoke_atomic_writers(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
     ):
         if err not in seen:
             seen.add(err)

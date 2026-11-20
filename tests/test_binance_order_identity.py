@@ -553,53 +553,10 @@ def test_market_api_polymorphic_fetch_ohlc_candles_routes_across_venues():
 
 def test_production_runtime_zero_direct_venue_sdk_imports_ast():
     """Lock DAG boundary: no module outside venue adapters & providers imports venue SDKs statically or dynamically."""
+    from verify_tools.ssot_ast_audit import audit_venue_sdk_imports_ast
+
     repo_root = pathlib.Path(__file__).resolve().parent.parent
-    forbidden_roots = frozenset({"binance", "binance_api", "kraken", "hyperliquid", "212trading"})
-    exempt_prefixes = (
-        "binance_api/",
-        "kraken/",
-        "hyperliquid/",
-        "212trading/",
-        "providers/",
-        "tests/",
-        "archive/",
-        ".venv/",
-        "myenv/",
-    )
-    dynamic_loader_exempt_prefixes = exempt_prefixes + ("offline/",)
-    # Single intentional cross-check script comparing legacy binance_api against MarketApi parity:
-    exempt_files = frozenset({"verify_tools/verify_account_facade.py"})
-    violations: list[str] = []
-    for py_file in sorted(repo_root.rglob("*.py")):
-        rel = py_file.relative_to(repo_root).as_posix()
-        if any(part.startswith(".") for part in py_file.relative_to(repo_root).parts):
-            continue
-        if rel.startswith(exempt_prefixes) or rel in exempt_files:
-            continue
-        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=rel)
-        check_dynamic = not rel.startswith(dynamic_loader_exempt_prefixes)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name.split(".", 1)[0] in forbidden_roots:
-                        violations.append(f"{rel}:{node.lineno}: import {alias.name}")
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                if node.module.split(".", 1)[0] in forbidden_roots:
-                    violations.append(f"{rel}:{node.lineno}: from {node.module} import ...")
-            elif check_dynamic and isinstance(node, ast.Call):
-                fn_name = (
-                    node.func.id
-                    if isinstance(node.func, ast.Name)
-                    else (node.func.attr if isinstance(node.func, ast.Attribute) else "")
-                )
-                if fn_name in ("load_local_module", "load_venue_module", "import_module"):
-                    for sub in ast.walk(node):
-                        if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
-                            parts = set(sub.value.replace("/", ".").replace("\\", ".").split("."))
-                            if parts & forbidden_roots:
-                                violations.append(
-                                    f"{rel}:{node.lineno}: dynamic {fn_name}(... {sub.value!r} ...)"
-                                )
+    violations = audit_venue_sdk_imports_ast(repo_root)
     assert violations == [], f"Forbidden direct or dynamic venue SDK imports outside venue adapters/providers: {violations}"
 
 

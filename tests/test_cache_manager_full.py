@@ -2822,84 +2822,10 @@ def test_consumer_safe_defaults_and_auto_resync(tmp_path):
 
 def test_ast_only_producers_enable_cache_sync_or_writer():
     """Verify via AST that no consumer module passes data_sync_mode='producer' or writer=True."""
+    from verify_tools.ssot_ast_audit import audit_producer_only_caches_ast
 
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    cache_getters = {
-        "get_cache_manager",
-        "get_current_price_manager",
-        "get_24_price_manager",
-        "get_sparse_price_manager",
-        "get_short_trend_manager",
-        "get_long_trend_manager",
-        "get_asset_value_manager",
-        "get_binance_order_manager",
-        "get_trade_manager",
-        "attach_default_price_ws_stream",
-    }
-    legacy_aliases = {"start_sync", "sync_to_file", "mode", "writer"}
-    violations = []
-    for root, dirs, files in os.walk(repo_root):
-        dirs[:] = [
-            d for d in dirs
-            if not d.startswith(".")
-            and d not in {"myenv", "venv", "__pycache__", "tests", "cachedb", "logs", "logger", "offline", "archive", "media", "models"}
-        ]
-        for fname in files:
-            if not fname.endswith(".py"):
-                continue
-            rel_path = os.path.relpath(os.path.join(root, fname), repo_root)
-            if rel_path == "cacheManager.py":
-                continue
-            full_path = os.path.join(root, fname)
-            try:
-                with open(full_path, "r", encoding="utf-8") as fh:
-                    tree = ast.parse(fh.read(), filename=rel_path)
-            except Exception:
-                continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                func_name = None
-                is_cache_factory_get = False
-                if isinstance(node.func, ast.Name):
-                    func_name = node.func.id
-                elif isinstance(node.func, ast.Attribute):
-                    func_name = node.func.attr
-                    if (
-                        func_name == "get"
-                        and isinstance(node.func.value, ast.Name)
-                        and node.func.value.id == "CacheFactory"
-                    ):
-                        is_cache_factory_get = True
-                    elif (
-                        func_name == "get"
-                        and isinstance(node.func.value, ast.Attribute)
-                        and node.func.value.attr == "CacheFactory"
-                    ):
-                        is_cache_factory_get = True
-                if func_name in ("enable_real_ws_event_sync", "start_account_cache_daemon") and rel_path not in {
-                    "cacheaccount.py",
-                    os.path.join("binance_api", "bapi_ws_bridge.py"),
-                }:
-                    violations.append(f"{rel_path}:{node.lineno} ({func_name})")
-                if is_cache_factory_get or func_name in cache_getters:
-                    for kw in node.keywords:
-                        if kw.arg in legacy_aliases:
-                            violations.append(f"{rel_path}:{node.lineno} ({func_name} legacy kwarg {kw.arg})")
-                        elif (
-                            kw.arg == "data_sync_mode"
-                            and isinstance(kw.value, ast.Constant)
-                            and str(kw.value.value).strip().lower() == "producer"
-                        ):
-                            violations.append(f"{rel_path}:{node.lineno} ({func_name} data_sync_mode='producer')")
-                elif func_name == "get_short_trend_manager":
-                    for kw in node.keywords:
-                        if (
-                            kw.arg == "writer"
-                            and isinstance(kw.value, ast.Constant)
-                            and kw.value.value is True
-                        ):
-                            violations.append(f"{rel_path}:{node.lineno} (get_short_trend_manager writer=True)")
+    repo_root = Path(__file__).resolve().parent.parent
+    violations = audit_producer_only_caches_ast(repo_root)
     assert violations == [], f"Consumer modules must not enable producer mode or use legacy aliases: {violations}"
 
 

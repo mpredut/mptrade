@@ -7,6 +7,7 @@ gate until its ownership, persistence and recovery behavior are reviewed explici
 from __future__ import annotations
 
 import ast
+import os
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -83,21 +84,76 @@ class _Visitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def scan_direct_calls(root: Path = ROOT) -> set[DirectCall]:
+def _is_direct_order_scan_target(relative_path: Path) -> bool:
+    return not (
+        set(relative_path.parts) & EXCLUDED_PARTS
+        or any(part.startswith(".") for part in relative_path.parts)
+        or relative_path.name.startswith("test_")
+        or relative_path.name.endswith("_test.py")
+    )
+
+
+_WALK_SKIP_DIRS = EXCLUDED_PARTS | {"__pycache__", "venv", "site-packages", "cachedb", "logs", "media", "models"}
+
+
+def scan_direct_calls(
+    root: Path = ROOT,
+    rel_paths: list[str] | tuple[str, ...] | None = None,
+    *,
+    _parsed_cache: dict | None = None,
+) -> set[DirectCall]:
     result: set[DirectCall] = set()
-    for path in root.rglob("*.py"):
-        relative_path = path.relative_to(root)
-        if (set(relative_path.parts) & EXCLUDED_PARTS
-                or any(part.startswith(".") for part in relative_path.parts)
-                or path.name.startswith("test_") or path.name.endswith("_test.py")):
+    if rel_paths is None:
+        candidates: list[Path] = []
+        for cur_dir, dirnames, filenames in os.walk(str(root)):
+            dirnames[:] = sorted(
+                d for d in dirnames
+                if not d.startswith(".") and d not in _WALK_SKIP_DIRS
+            )
+            for fname in sorted(filenames):
+                if fname.endswith(".py"):
+                    candidates.append(Path(cur_dir, fname).relative_to(root))
+    else:
+        candidates = [Path(r) for r in rel_paths if r.endswith(".py") and (root / r).is_file()]
+    for relative_path in candidates:
+        if not _is_direct_order_scan_target(relative_path):
             continue
-        visitor = _Visitor(relative_path.as_posix())
-        try:
-            visitor.visit(ast.parse(read_text_file(path)))
-        except (OSError, SyntaxError, UnicodeError):
-            continue
+        rel_s = relative_path.as_posix()
+        visitor = _Visitor(rel_s)
+        tree = None
+        if _parsed_cache is not None and rel_s in _parsed_cache:
+            tree = _parsed_cache[rel_s][1]
+        if tree is None:
+            try:
+                tree = ast.parse(read_text_file(root / relative_path))
+            except (OSError, SyntaxError, UnicodeError):
+                continue
+        visitor.visit(tree)
         result.update(visitor.calls)
     return result
+
+
+def audit_direct_order_boundaries(
+    root: Path = ROOT,
+    rel_paths: list[str] | tuple[str, ...] | None = None,
+    *,
+    _parsed_cache: dict | None = None,
+) -> list[str]:
+    """Return human-readable violations for unapproved direct order calls (and stale allowlist on full scan)."""
+    found = scan_direct_calls(root, rel_paths=rel_paths, _parsed_cache=_parsed_cache)
+    violations: list[str] = []
+    for call in sorted(found):
+        if call.method not in APPROVED_BOUNDARIES.get(call.path, set()):
+            violations.append(
+                f"{call.path}: {call.function}() calls unapproved direct venue order API .{call.method}()"
+            )
+    if rel_paths is None:
+        found_boundaries = {(call.path, call.method) for call in found}
+        for path, methods in sorted(APPROVED_BOUNDARIES.items()):
+            for method in sorted(methods):
+                if (path, method) not in found_boundaries:
+                    violations.append(f"{path}: stale direct-order allowlist entry .{method}()")
+    return violations
 
 
 def inventory(root: Path = ROOT) -> dict:
