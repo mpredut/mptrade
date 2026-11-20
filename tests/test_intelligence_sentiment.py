@@ -15570,3 +15570,51 @@ def test_iter3_premarket_lead_rollover_kinematics_impulse_capacity_and_limit_dus
     assert by_sym_plan["SPCXxUSD"]["entry_px"] == 130.07
     assert by_sym_plan["TAOUSDC"]["entry_px"] == 184.4
 
+    # 5. Locked-quote resting order capacity remains actionable; post-eval <0.35% price chop suppresses duplicate impulse wakeups
+    from intelligence.globaltelemetry_collector import _filter_unmoved_since_eval_symbols
+
+    vb_locked_order = {
+        "pos:kraken:ADAUSD": {
+            "venue": "kraken",
+            "symbol": "ADAUSD",
+            "effective_max_buy_usd": 0.0,
+            "effective_max_sell_usd": 0.0,
+            "replace_max_buy_usd": 250.0,
+        },
+        "open_orders:kraken:ADAUSD": [{"order_id": "OYXYYN-2Z243-T3P6XZ"}],
+    }
+    assert _filter_actionable_impulse_symbols(["ADAUSD"], vb_locked_order) == ["ADAUSD"]
+
+    hold_eval_doc = {
+        "ts": t_now - 120.0,
+        "model_used": "gemini-4-neon-high",
+        "market_trading_decisions": [{"decision": "HOLD", "symbol": "ADAUSD"}],
+        "delta_gate_meta": {"eval_prices": {"ADAUSD": 0.1464, "HYPEUSDC": 63.10, "BTCUSDC": 61800.0}},
+    }
+    pt_live = {
+        "ADAUSD": {"price": 0.14646},     # +0.04% (< 0.35%) -> suppressed
+        "HYPEUSDC": {"price": 63.00},     # -0.16% (< 0.35%) -> suppressed
+        "BTCUSDC": {"price": 61520.0},    # -0.45% (>= 0.35%) -> wakes up!
+    }
+    assert (
+        _filter_unmoved_since_eval_symbols(
+            ["ADAUSD", "HYPEUSDC", "BTCUSDC"],
+            pt_live,
+            hold_eval_doc,
+            eff_now=t_now,
+            max_idle_sec=1080.0,
+            min_move_pct=0.35,
+        )
+        == ["BTCUSDC"]
+    )
+    actionable_eval_doc = {**hold_eval_doc, "market_trading_decisions": [{"decision": "BUY", "symbol": "ADAUSD"}]}
+    assert _filter_unmoved_since_eval_symbols(
+        ["ADAUSD"],
+        pt_live,
+        actionable_eval_doc,
+        eff_now=t_now,
+        max_idle_sec=1080.0,
+        min_move_pct=0.35,
+    ) == ["ADAUSD"]
+
+

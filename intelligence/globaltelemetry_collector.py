@@ -49,6 +49,7 @@ from cachepaths import (
     clean_symbol_key,
     crypto_quote_priority_rank,
     has_crypto_quote_suffix,
+    is_equity_venue,
     resolve_cachedb_filepath,
     resolve_workspace_dir_from_cachedb,
 )
@@ -80,13 +81,16 @@ from intelligence.macro_sentiment_ssot import (
     serialize_market_breadth_snapshot,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
 from instrument_registry import (
     canonical_display_symbol,
+    casefold_get,
     has_workspace_instrument_sources,
     is_equity_symbol,
     resolve_symbol_identity,
 )
 from providers.base import MarketDataProvider
+from providers.intent_state import eval_doc_was_actionable
 from providers.nav_drawdown import record_nav_history_snapshot
 
 load_tradable_instruments = MarketDataProvider.load_tradable_instruments
@@ -111,21 +115,28 @@ logger = logging.getLogger("intelligence.telemetry_collector")
 
 
 def _filter_actionable_impulse_symbols(shocked: List[str], venue_balances: Any) -> List[str]:
-    """Drop shocked symbols whose tracked venue balance entries all report zero buy and zero sell capacity."""
+    """Drop shocked symbols whose tracked non-equity venue entries all report zero buy/sell/order capacity."""
     if not shocked or not isinstance(venue_balances, dict) or not venue_balances:
         return list(shocked)
     caps_by_sym: Dict[str, List[Tuple[float, float]]] = {}
     for k, entry in venue_balances.items():
         if not (isinstance(k, str) and k.startswith("pos:") and isinstance(entry, dict)):
             continue
-        sym_k = str(entry.get("symbol") or "").strip().upper()
-        if not sym_k:
+        venue = str(entry.get("venue") or "").strip()
+        sym_raw = str(entry.get("symbol") or "").strip()
+        sym_k = sym_raw.upper()
+        if not sym_k or is_equity_venue(venue) or is_equity_symbol(sym_raw):
             continue
         mb = safe_float(entry.get("effective_max_buy_usd"), default=None)
         ms = safe_float(entry.get("effective_max_sell_usd"), default=None)
-        if mb is None and ms is None:
+        rmb = safe_pos_float(entry.get("replace_max_buy_usd"), default=0.0) or 0.0
+        oo_list = casefold_get(venue_balances, f"open_orders:{venue}:{sym_raw}") if venue else None
+        has_open = isinstance(oo_list, list) and len(oo_list) > 0
+        if mb is None and ms is None and rmb <= 0.0 and not has_open:
             continue
-        caps_by_sym.setdefault(sym_k, []).append((mb or 0.0, ms or 0.0))
+        eff_buy = max(mb or 0.0, rmb)
+        eff_sell = max(ms or 0.0, 1.0 if has_open else 0.0)
+        caps_by_sym.setdefault(sym_k, []).append((eff_buy, eff_sell))
     if not caps_by_sym:
         return list(shocked)
     return [
@@ -136,6 +147,52 @@ def _filter_actionable_impulse_symbols(shocked: List[str], venue_balances: Any) 
             and all(mb <= 0.0 and ms <= 0.0 for mb, ms in caps)
         )
     ]
+
+
+def _filter_unmoved_since_eval_symbols(
+    shocked: List[str],
+    prices_and_trends: Any,
+    eval_doc: Any,
+    *,
+    eff_now: float,
+    max_idle_sec: float,
+    min_move_pct: float,
+) -> List[str]:
+    """Suppress repeat mid-cycle impulse wakeups for symbols still within ``min_move_pct`` of a recent healthy HOLD baseline."""
+    if not shocked or not isinstance(eval_doc, dict) or not isinstance(prices_and_trends, dict):
+        return list(shocked)
+    eff_min_move = safe_pos_float(min_move_pct, default=0.0) or 0.0
+    eff_max_idle = safe_pos_float(max_idle_sec, default=0.0) or 0.0
+    if eff_min_move <= 0.0 or eff_max_idle <= 0.0:
+        return list(shocked)
+    raw_doc_ts = eval_doc.get("ts") if eval_doc.get("ts") is not None else eval_doc.get("evaluated_at_ts")
+    doc_ts = normalize_epoch_sec(raw_doc_ts, default=0.0, allow_iso=True) or 0.0
+    if doc_ts <= 0.0 or doc_ts > eff_now + 5.0 or (eff_now - doc_ts) >= eff_max_idle:
+        return list(shocked)
+    if is_degraded_trading_model(eval_doc.get("model_used")) or eval_doc_was_actionable(eval_doc):
+        return list(shocked)
+    dg_meta = eval_doc.get("delta_gate_meta")
+    raw_eval_prices = dg_meta.get("eval_prices") if isinstance(dg_meta, dict) else None
+    if not isinstance(raw_eval_prices, dict) or not raw_eval_prices:
+        return list(shocked)
+    prev_px_by_sym: Dict[str, float] = {}
+    for k, v in raw_eval_prices.items():
+        sym_k = canonical_display_symbol(k) or clean_symbol_key(k)
+        px_v = safe_pos_float(v, default=None)
+        if sym_k and px_v is not None:
+            prev_px_by_sym[sym_k] = px_v
+    if not prev_px_by_sym:
+        return list(shocked)
+    out: List[str] = []
+    for sym in shocked:
+        sym_c = canonical_display_symbol(sym) or clean_symbol_key(sym)
+        prev_px = prev_px_by_sym.get(sym_c)
+        p_entry = casefold_get(prices_and_trends, sym_c)
+        cur_px = safe_pos_float(p_entry.get("price"), default=None) if isinstance(p_entry, dict) else None
+        if prev_px is not None and cur_px is not None and abs((cur_px - prev_px) / prev_px) * 100.0 < eff_min_move:
+            continue
+        out.append(sym)
+    return out
 
 
 def evaluate_kinematic_impulse_symbols(
@@ -616,6 +673,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 return None
             eval_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "auto_cryptotrade_executor_eval.json")))
             last_eval_ts = 0.0
+            eval_doc: Optional[Dict[str, Any]] = None
             if os.path.exists(eval_path):
                 try:
                     mtime_val = safe_nonneg_ts(os.path.getmtime(eval_path), 0.0)
@@ -623,8 +681,9 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                         last_eval_ts = max(last_eval_ts, mtime_val)
                 except OSError:
                     pass
-                eval_doc = read_json_dict_recovering(eval_path)
-                if isinstance(eval_doc, dict):
+                raw_eval_doc = read_json_dict_recovering(eval_path)
+                if isinstance(raw_eval_doc, dict):
+                    eval_doc = raw_eval_doc
                     raw_doc_ts = eval_doc.get("ts") if eval_doc.get("ts") is not None else eval_doc.get("evaluated_at_ts")
                     doc_ts = normalize_epoch_sec(raw_doc_ts, default=0.0, allow_iso=True) or 0.0
                     if 0.0 < doc_ts <= eff_now + 5.0:
@@ -648,6 +707,15 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             if shocked:
                 _, vb_doc, _ = load_venue_balances_state(self.cache_dir, read_json_dict_recovering)
                 shocked = _filter_actionable_impulse_symbols(shocked, vb_doc)
+            if shocked and eval_doc is not None:
+                shocked = _filter_unmoved_since_eval_symbols(
+                    shocked,
+                    prices_and_trends,
+                    eval_doc,
+                    eff_now=eff_now,
+                    max_idle_sec=cycle_sec * pos_float_env("AI_DELTA_GATE_MAX_IDLE_MULT", 3.0),
+                    min_move_pct=pos_float_env("AI_DELTA_GATE_MIN_PRICE_MOVE_PCT", 0.35),
+                )
             if not shocked:
                 return None
             workspace_dir = resolve_workspace_dir_from_cachedb(self.cache_dir)

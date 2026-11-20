@@ -9716,6 +9716,39 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
     # Once the LLM has evaluated and held the resting wall-trapped rung, repeat quiet cycles skip until state transitions
     prev_ack_wall = {**prev_hold, "delta_gate_meta": wt_meta}
     assert evaluate_crypto_executor_delta_gate(wall_trapped_s, prev_ack_wall, now_ts=t0 + 360.0)[0] is True
+    # Transient [ob_stale] cycle preserves acknowledged wall-trapped flag so next fresh OB cycle does not flap
+    stale_ob_wall_s = SimpleNamespace(
+        **{
+            **base_sensors.__dict__,
+            "portfolio_summary": {
+                "open_limit_orders": [{"order_id": "ord-1", "dist_from_spot_pct": 1.8, "fill_prob_1h_pct": 25.0, "ob_flag": "[ob_stale]"}],
+                "recent_orders": {},
+            },
+        }
+    )
+    skip_st, _, _, st_meta = evaluate_crypto_executor_delta_gate(stale_ob_wall_s, prev_ack_wall, now_ts=t0 + 420.0)
+    assert skip_st is True and st_meta["order_attention_flags"] == {"ord-1": "open_order_wall_trapped"}
+    assert evaluate_crypto_executor_delta_gate(wall_trapped_s, {**prev_hold, "delta_gate_meta": st_meta}, now_ts=t0 + 480.0)[0] is True
+    # Deep passive capitulation bids (DEEP_PASSIVE_BID / FAR_ABOVE_ASK_WALL without front-run recommendation) are not wall-trapped
+    deep_passive_s = SimpleNamespace(
+        **{
+            **base_sensors.__dict__,
+            "portfolio_summary": {
+                "open_limit_orders": [
+                    {
+                        "order_id": "ord-1",
+                        "dist_from_spot_pct": -3.09,
+                        "fill_prob_1h_pct": 10.2,
+                        "wall_queue_pos": "DEEP_PASSIVE_BID",
+                        "bid_wall_ahead_px": 0.1455,
+                    }
+                ],
+                "recent_orders": {},
+            },
+        }
+    )
+    skip_dp, _, _, dp_meta = evaluate_crypto_executor_delta_gate(deep_passive_s, prev_with_order, now_ts=t0 + 360.0)
+    assert skip_dp is True and dp_meta["order_attention_flags"] == {}
     assert evaluate_crypto_executor_delta_gate(near_fill_s, prev_ack_wall, now_ts=t0 + 360.0)[:2] == (
         False,
         "open_order_near_fill",

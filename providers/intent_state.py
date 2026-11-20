@@ -6,7 +6,7 @@ import re
 import threading
 from contextlib import contextmanager
 from functools import lru_cache
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from botcore import (
     FileLock,
@@ -322,6 +322,29 @@ def decision_has_cancel_directive(d: Any) -> bool:
         _parse_bool_flag(d.get("cancel_bot_open_orders"), False)
         or bool(extract_intent_cancel_order_ids(d))
     )
+
+
+def eval_doc_was_actionable(eval_doc: Any) -> bool:
+    """Return True when a supervisor eval artifact emitted any BUY/SELL/cancel directive or non-HOLD intent."""
+    if not isinstance(eval_doc, Mapping):
+        return False
+    decs = eval_doc.get("market_trading_decisions")
+    dec_list = decs if isinstance(decs, list) else []
+    if not dec_list and isinstance(eval_doc.get("market_trading_decision"), Mapping):
+        dec_list = [eval_doc["market_trading_decision"]]
+    for d in dec_list:
+        if not isinstance(d, Mapping):
+            continue
+        if str(d.get("decision") or "HOLD").strip().upper() in ("BUY", "SELL") or decision_has_cancel_directive(dict(d)):
+            return True
+    intents = eval_doc.get("intents_emitted")
+    if isinstance(intents, list):
+        for it in intents:
+            if not isinstance(it, Mapping):
+                continue
+            if str(it.get("side") or it.get("decision") or "HOLD").strip().upper() in ("BUY", "SELL"):
+                return True
+    return False
 
 
 def resolve_hold_cancel_target(
@@ -885,6 +908,7 @@ __all__ = [
     "collect_known_ai_order_ids",
     "decision_has_cancel_directive",
     "durable_intents_lock",
+    "eval_doc_was_actionable",
     "extract_intent_cancel_order_ids",
     "extract_intent_limit_price",
     "extract_intent_notional",

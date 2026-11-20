@@ -17,7 +17,7 @@ from cachepaths import normalize_venue_name
 from instrument_registry import canonical_display_symbol
 from intelligence.macro_sentiment_ssot import normalize_threat_level
 from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
-from providers.intent_state import decision_has_cancel_directive
+from providers.intent_state import decision_has_cancel_directive, eval_doc_was_actionable
 from providers.intent_telemetry import evaluate_trade_plan_status
 
 _ATR_15M_DELTA_GATE_MULT = 0.75
@@ -63,26 +63,7 @@ def _extract_delta_gate_latest_fill_ts(portfolio_summary: Mapping[str, Any]) -> 
     return latest
 
 
-def _prev_eval_was_actionable(prev_eval: Mapping[str, Any]) -> bool:
-    """Return True when the prior eval emitted any BUY/SELL/cancel directive or non-HOLD intent."""
-    decs = prev_eval.get("market_trading_decisions")
-    dec_list = decs if isinstance(decs, list) else []
-    if not dec_list and isinstance(prev_eval.get("market_trading_decision"), Mapping):
-        dec_list = [prev_eval["market_trading_decision"]]
-    for d in dec_list:
-        if not isinstance(d, Mapping):
-            continue
-        if str(d.get("decision") or "HOLD").strip().upper() in ("BUY", "SELL") or decision_has_cancel_directive(dict(d)):
-            return True
-    intents = prev_eval.get("intents_emitted")
-    if isinstance(intents, list):
-        for it in intents:
-            if not isinstance(it, Mapping):
-                continue
-            side = str(it.get("side") or it.get("decision") or "HOLD").strip().upper()
-            if side in ("BUY", "SELL"):
-                return True
-    return False
+_prev_eval_was_actionable = eval_doc_was_actionable
 
 
 def _collect_delta_gate_prices(
@@ -141,6 +122,7 @@ def _collect_open_order_attention(
         filled_q = safe_float(oo.get("filled_qty"), default=0.0) or 0.0
         dist_pct = safe_float(oo.get("dist_from_spot_pct"), default=None)
         fill_prob = safe_float(oo.get("fill_prob_1h_pct"), default=None)
+        wall_q_pos = str(oo.get("wall_queue_pos") or "").strip().upper()
         cur_flag = ""
         cur_reason = ""
         if st == "PARTIALLY_FILLED" or filled_q > 0.0:
@@ -152,9 +134,14 @@ def _collect_open_order_attention(
         elif (fill_prob is not None and fill_prob <= 5.0) or (dist_pct is not None and abs(dist_pct) > 4.0):
             cur_flag = "open_order_stale_or_far"
             cur_reason = "open_order_stale_or_far"
-        elif oo.get("recommended_front_run_px") or oo.get("ask_wall_ahead_px") or oo.get("bid_wall_ahead_px"):
+        elif oo.get("recommended_front_run_px") or (
+            (oo.get("ask_wall_ahead_px") or oo.get("bid_wall_ahead_px"))
+            and wall_q_pos not in ("DEEP_PASSIVE_BID", "FAR_ABOVE_ASK_WALL")
+        ):
             cur_flag = "open_order_wall_trapped"
             cur_reason = "open_order_wall_trapped"
+        elif oo.get("ob_flag") == "[ob_stale]" and prev_flags.get(oid) == "open_order_wall_trapped":
+            cur_flag = "open_order_wall_trapped"
         if oid and cur_flag:
             order_attention_flags[oid] = cur_flag
             if not attention_reason and prev_flags.get(oid) != cur_flag:
