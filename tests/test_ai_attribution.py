@@ -753,7 +753,7 @@ def test_faza4_closed_loop_calibration_feedback_and_section_3c_prompt():
             "target_px": 182.0,
             "execution_payload": {"orderId": "c3", "status": "FILLED", "executedQty": "2.63", "avg_fill_price": 190.0},
         },
-        # Unfilled Binance LIMIT intent -> 2/3 (67%) fill rate
+        # Canceled Binance LIMIT intent -> 2/3 (67%) fill rate
         {
             "intent_id": "cal_u1",
             "timestamp": now_s - 1800.0,
@@ -764,7 +764,20 @@ def test_faza4_closed_loop_calibration_feedback_and_section_3c_prompt():
             "limit_price": 69000.0,
             "status": "EXECUTED",
             "clamped_notional_usd": 500.0,
-            "execution_payload": {"orderId": "c4", "status": "NEW", "executedQty": "0.0"},
+            "execution_payload": {"orderId": "c4", "status": "CANCELED", "executedQty": "0.0"},
+        },
+        # Fresh resting Binance LIMIT intent placed 5m ago -> MUST NOT penalize fill rate while actively working
+        {
+            "intent_id": "cal_u_fresh",
+            "timestamp": now_s - 300.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 69500.0,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 500.0,
+            "execution_payload": {"orderId": "c4_fresh", "status": "NEW", "executedQty": "0.0"},
         },
         # Out-of-scope equities fill (must stay isolated from scope="crypto")
         {

@@ -282,7 +282,8 @@ def resolve_crypto_executor_model_override(
         if def_rem is not None and def_rem <= eff_soft:
             healthy_alt_min = max(eff_soft * 2.0, 0.50)
             def_fam = model_family_base(clean_def)
-            for raw_fb in fallback_models:
+            fb_iter = () if isinstance(fallback_models, (str, bytes)) else fallback_models
+            for raw_fb in fb_iter:
                 fb = raw_fb.strip() if isinstance(raw_fb, str) else ""
                 if not fb or is_degraded_trading_model(fb):
                     continue

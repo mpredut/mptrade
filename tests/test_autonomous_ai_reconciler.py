@@ -10433,6 +10433,13 @@ def test_faza4_quota_soft_conservation_routing_policy_and_reconciler(tmp_path, m
         now_ts=1_795_400_000.0,
     ) == (None, "")
     assert resolve_crypto_executor_model_override(
+        soft_snap,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        fallback_models="claude-sonnet-5-5-medium",
+        escalate_high_effort=False,
+    ) == (None, "")
+    assert resolve_crypto_executor_model_override(
         {**soft_snap, "available_credits": 25.0},
         high_model="gemini-4-neon-high",
         default_model="gemini-4-neon-medium",

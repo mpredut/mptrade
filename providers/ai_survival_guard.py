@@ -53,7 +53,11 @@ from .intent_state import (
 )
 from .intent_telemetry import _compute_signed_exec_bps, evaluate_trade_plan_status
 from .order_ohlc_utils import extract_executed_qty
-from .order_status_ssot import NON_FILL_ORDER_STATUSES
+from .order_status_ssot import (
+    ACCEPTED_WORKING_VENUE_STATUSES,
+    NON_FILL_ORDER_STATUSES,
+    TERMINAL_CANCEL_VENUE_STATUSES,
+)
 from .venue_metadata import ProviderVenueMetadataMixin
 
 _FILLED_VENUE_STATUSES: frozenset[str] = frozenset({"FILLED", "CLOSED", "PARTIALLY_FILLED"})
@@ -66,6 +70,30 @@ _WHIPSAW_WINDOW_SEC = 21600.0
 _REFERENCE_RT_FEE_BPS = 20.0
 _MIN_FLIP_EDGE_FLOOR_PCT = 0.15
 _MIN_TARGET_EV_FLOOR_PCT = 0.10
+_RESTING_UNFILLED_GRACE_SEC = 3600.0
+
+
+def _is_terminal_or_stale_unfilled_intent(
+    it: Mapping[str, Any],
+    canceled_oids: set[str],
+    *,
+    now_ts: float,
+    ref_ts: float,
+    resting_grace_sec: float = _RESTING_UNFILLED_GRACE_SEC,
+) -> bool:
+    """Return True when an unfilled EXECUTED intent is canceled/expired or aged past active resting grace."""
+    prim_oid = extract_intent_primary_order_id(it, default="", include_top_level=True)
+    if prim_oid and str(prim_oid) in canceled_oids:
+        return True
+    ep = it.get("execution_payload") if isinstance(it.get("execution_payload"), Mapping) else {}
+    ep_st = (clean_upper_scalar(ep.get("status")) if ep else "") or ""
+    ep_msg = (clean_scalar_str(ep.get("msg")) or "").lower() if ep else ""
+    if ep_st in TERMINAL_CANCEL_VENUE_STATUSES:
+        return True
+    if ep_st in ACCEPTED_WORKING_VENUE_STATUSES or ep_msg == "resting" or not ep_st:
+        grace = max(0.0, safe_nonneg_float(resting_grace_sec, default=_RESTING_UNFILLED_GRACE_SEC))
+        return (now_ts - ref_ts) >= grace
+    return True
 
 
 def _collect_canceled_order_ids(items: list[dict[str, Any]], exclude_iid: str = "") -> set[str]:
@@ -1039,8 +1067,9 @@ def evaluate_ai_calibration_feedback(
             continue
         ot = extract_intent_order_type(it)
         if not _is_filled_ai_intent(it, canceled_oids):
-            k_unf = (ven or "unknown", "LIMIT" if ot == "LIMIT" else "MARKET")
-            unfilled_counts[k_unf] = unfilled_counts.get(k_unf, 0) + 1
+            if _is_terminal_or_stale_unfilled_intent(it, canceled_oids, now_ts=eff_now, ref_ts=ref_ts):
+                k_unf = (ven or "unknown", "LIMIT" if ot == "LIMIT" else "MARKET")
+                unfilled_counts[k_unf] = unfilled_counts.get(k_unf, 0) + 1
             continue
         side = extract_intent_side(it)
         if side not in ("BUY", "SELL"):

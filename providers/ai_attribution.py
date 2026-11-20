@@ -40,6 +40,7 @@ from .ai_survival_guard import (
     _extract_intent_exec_ts,
     _extract_intent_notional_usd,
     _is_filled_ai_intent,
+    _is_terminal_or_stale_unfilled_intent,
     _resolve_live_price_for_symbol,
     compute_signed_price_edge_pct,
     evaluate_filled_trade_plans,
@@ -581,9 +582,10 @@ def evaluate_ai_attribution(
                 cb_reason_counts[tag] = cb_reason_counts.get(tag, 0) + 1
 
         if lifecycle == "EXECUTED_UNFILLED":
-            unf_ot = "LIMIT" if extract_intent_order_type(it) == "LIMIT" else "MARKET"
-            k_unf = (ven or "unknown", unf_ot)
-            unfilled_counts[k_unf] = unfilled_counts.get(k_unf, 0) + 1
+            if _is_terminal_or_stale_unfilled_intent(it, canceled_oids, now_ts=eff_now, ref_ts=ref_ts):
+                unf_ot = "LIMIT" if extract_intent_order_type(it) == "LIMIT" else "MARKET"
+                k_unf = (ven or "unknown", unf_ot)
+                unfilled_counts[k_unf] = unfilled_counts.get(k_unf, 0) + 1
             continue
         if lifecycle != "EXECUTED_FILLED":
             continue
