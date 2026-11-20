@@ -8,7 +8,6 @@ import logging
 import math
 import os
 from typing import Any, Callable, Dict, List, Optional
-from zoneinfo import ZoneInfo
 
 from botcore import (
     _parse_bool_flag,
@@ -197,9 +196,30 @@ def _harvest_initial_prices_and_trends_impl(
 
 
 class MacroTelemetryCollectorBase(TelemetryCacheCollectorInterface, ABC):
-    """Abstract base contract (Level 2) for macro benchmarks, news sensors, and unified snapshot orchestrators."""
+    """Abstract base contract (Level 2) for macro benchmarks, calendar/news sensors, and unified snapshot orchestrators."""
 
     cls_name = "MacroTelemetryCollectorBase"
+
+    @staticmethod
+    def _resolve_fetch_fn(fetch_fn: Optional[Callable[..., Any]] = None) -> Callable[..., Any]:
+        """Resolve public JSON fetcher honoring module monkeypatches."""
+        return fetch_fn or _resolve_macro_ssot_attr("fetch_public_json", fetch_public_json, _default_fetch_public_json)
+
+    @staticmethod
+    def _persist_cache_json(path: str, payload: Any, *, indent: int = 2) -> None:
+        """Persist a macro cache artifact atomically honoring ``save_json_state`` monkeypatches."""
+        _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
+        _save_fn(path, payload, indent=indent)
+
+    @staticmethod
+    def _read_cached_dict(
+        cache_dir: str,
+        group_key: str,
+        default_file: str,
+        read_json_fn: Any = None,
+    ) -> tuple[Optional[Dict[str, Any]], str]:
+        """Read the first non-empty dict matching configured cache filenames for ``group_key``."""
+        return _read_first_cached_dict(cache_dir, group_key, default_file, read_json_fn)
 
 
 class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
@@ -222,7 +242,7 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
         **kwargs: Any,
     ) -> Optional[Dict[str, Any]]:
         if not allow_network and fetch_fn is None:
-            return _read_first_cached_dict(
+            return self._read_cached_dict(
                 cachedb_dir,
                 "macro_benchmarks_files",
                 "macro_benchmarks_collect.json",
@@ -230,7 +250,7 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
             )[0]
         cache_dir = cachedb_dir
         eff_now = resolve_now_ts(now_ts)
-        _fetch = fetch_fn or _resolve_macro_ssot_attr("fetch_public_json", fetch_public_json, _default_fetch_public_json)
+        _fetch = self._resolve_fetch_fn(fetch_fn)
         items: Dict[str, Dict[str, Any]] = {}
         for label, yahoo_sym, unit_kind in MACRO_BENCHMARK_SPECS:
             try:
@@ -424,8 +444,7 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
         payload["summary_line"] = format_macro_benchmarks_summary_line(payload)
         if persist and cache_dir:
             try:
-                _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
-                _save_fn(os.path.join(cache_dir, "macro_benchmarks_collect.json"), payload, indent=2)
+                self._persist_cache_json(os.path.join(cache_dir, "macro_benchmarks_collect.json"), payload, indent=2)
             except Exception:
                 pass
         return payload
@@ -445,6 +464,13 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
 
     cls_name = "MacroAndNewsSensorsCollector"
     COLLECTOR_ID = "macro_and_news_sensors"
+    _MACRO_SENSOR_CACHE_SPECS = (
+        ("fear_greed", "fear_greed_files", "fear_greed_collect.json"),
+        ("market_breadth", "market_breadth_files", "market_breadth_collect.json"),
+        ("sentiment_advisor", "sentiment_eval_files", "sentiment_eval.json"),
+        ("geopolitical_threat", "geopolitical_eval_file", "geopolitical_eval.json"),
+        ("macro_benchmarks", "macro_benchmarks_files", "macro_benchmarks_collect.json"),
+    )
 
     @staticmethod
     def _normalize_market_breadth_movers(enriched: Dict[str, Any]) -> None:
@@ -520,7 +546,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                         is_stale_us_bar = str(mb_copy.get("market_state") or "").strip().upper() == "CLOSED"
                         if bar_ts_v is None and not mb_copy.get("market_state") and now_ts > 0.0:
                             try:
-                                dt_ny = datetime.fromtimestamp(now_ts, tz=ZoneInfo("America/New_York"))
+                                dt_ny = _mss.resolve_secondary_ny_datetime(now_ts)
                                 mins_ny = dt_ny.hour * 60 + dt_ny.minute
                                 if dt_ny.weekday() >= 5 or not (570 <= mins_ny <= 1005):
                                     is_stale_us_bar = True
@@ -600,8 +626,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                             mb_payload[rot_k] = rot_v
                     mb_path = os.path.join(cache_dir, "market_breadth_collect.json")
                     if persist:
-                        _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
-                        _save_fn(mb_path, mb_payload, indent=2)
+                        MacroTelemetryCollectorBase._persist_cache_json(mb_path, mb_payload, indent=2)
                     macro_sensors["market_breadth"] = with_age_fn(mb_payload, mb_path)
             except Exception:
                 pass
@@ -797,9 +822,10 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                 gt_cur["age_min"] = 0.0
                 if persist and allow_network and read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
                     try:
-                        _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
                         geo_save_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "geopolitical_eval.json")))
-                        _save_fn(geo_save_path, {k: v for k, v in gt_cur.items() if k != "age_min"}, indent=2)
+                        MacroTelemetryCollectorBase._persist_cache_json(
+                            geo_save_path, {k: v for k, v in gt_cur.items() if k != "age_min"}, indent=2
+                        )
                     except Exception:
                         pass
 
@@ -883,14 +909,8 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
             return enriched
 
         macro_sensors: Dict[str, Optional[Dict[str, Any]]] = {}
-        for attr, group_key, fname in (
-            ("fear_greed", "fear_greed_files", "fear_greed_collect.json"),
-            ("market_breadth", "market_breadth_files", "market_breadth_collect.json"),
-            ("sentiment_advisor", "sentiment_eval_files", "sentiment_eval.json"),
-            ("geopolitical_threat", "geopolitical_eval_file", "geopolitical_eval.json"),
-            ("macro_benchmarks", "macro_benchmarks_files", "macro_benchmarks_collect.json"),
-        ):
-            data, s_path = _read_first_cached_dict(cache_dir, group_key, fname, _rj)
+        for attr, group_key, fname in self._MACRO_SENSOR_CACHE_SPECS:
+            data, s_path = self._read_cached_dict(cache_dir, group_key, fname, _rj)
             if data is not None:
                 enriched = _with_age_min(data, s_path, is_fear_greed=(attr == "fear_greed"))
                 if attr == "market_breadth":

@@ -13,6 +13,7 @@ boilerplate across ``intelligence/`` and ``llm_order_guard.py`` by:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 import importlib
 import logging
 import math
@@ -20,6 +21,7 @@ import os
 import re
 import sys
 import urllib.parse
+from zoneinfo import ZoneInfo
 
 _self_mod = sys.modules.get(__name__)
 if _self_mod is not None:
@@ -169,6 +171,7 @@ from cachepaths import (
     clean_non_bool_str,
     clean_symbol_key,
     compatible_quote_suffixes,
+    is_kraken_tokenized_asset,
     resolve_cachedb_filepath,
 )
 from instrument_registry import casefold_get, symbols_for
@@ -686,18 +689,39 @@ _EQUITY_RTH_DOMAIN_AGE_KEYS: frozenset[str] = frozenset(
 )
 
 
+def resolve_configured_tz_datetime(
+    now_ts: Optional[float] = None,
+    *,
+    tz_key: str = "secondary_timezone",
+    default_tz: str = "America/New_York",
+    fallback_offset_key: str = "secondary_fallback_offset_hours",
+    default_fallback_offset_hours: int = -5,
+) -> datetime:
+    """Resolve an epoch timestamp into a configured ``[sessions]`` timezone with deterministic offset fallback."""
+    ts = resolve_now_ts(now_ts)
+    ts = normalize_epoch_sec(ts, default=ts, allow_zero=True) or ts
+    tz_name = _cfg_str("sessions", tz_key, default_tz)
+    fb_off = _cfg_int("sessions", fallback_offset_key, default_fallback_offset_hours)
+    try:
+        return datetime.fromtimestamp(ts, tz=ZoneInfo(tz_name))
+    except Exception:
+        return datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=fb_off)))
+
+
+def resolve_secondary_ny_datetime(now_ts: Optional[float] = None) -> datetime:
+    """Resolve an epoch timestamp into the configured secondary US market timezone (default ``America/New_York``)."""
+    return resolve_configured_tz_datetime(
+        now_ts,
+        tz_key="secondary_timezone",
+        default_tz="America/New_York",
+        fallback_offset_key="secondary_fallback_offset_hours",
+        default_fallback_offset_hours=-5,
+    )
+
+
 def is_us_cash_open_volatility_window(now_ts: Optional[float] = None) -> bool:
     """Return True during Mon-Fri US NYSE/Nasdaq opening volatility window (09:25-10:15 America/New_York / 16:25-17:15 EET)."""
-    from datetime import datetime, timedelta, timezone
-    from zoneinfo import ZoneInfo
-
-    ts = resolve_now_ts(now_ts)
-    tz_name = _cfg_str("sessions", "secondary_timezone", "America/New_York")
-    fb_off = _cfg_int("sessions", "secondary_fallback_offset_hours", -5)
-    try:
-        dt_ny = datetime.fromtimestamp(ts, tz=ZoneInfo(tz_name))
-    except Exception:
-        dt_ny = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=fb_off)))
+    dt_ny = resolve_secondary_ny_datetime(now_ts)
     if dt_ny.weekday() >= 5:
         return False
     mins = dt_ny.hour * 60 + dt_ny.minute
@@ -913,16 +937,36 @@ def get_macro_benchmark_specs() -> Tuple[Tuple[str, str, str], ...]:
     return tuple(specs)
 
 
-def get_breadth_excluded_bases() -> Set[str]:
-    out = set(_tax_tuple("breadth_excluded_bases"))
+def get_tracked_equity_base_tickers(*, include_tokenized: bool = False) -> Tuple[str, ...]:
+    """Return deduplicated uppercase equity base tickers from ``t212`` (and optionally Kraken tokenized xStocks)."""
+    tickers: List[str] = []
+    seen: Set[str] = set()
     try:
         for eq_sym in symbols_for("t212"):
             eq_base = str(eq_sym or "").strip().upper().split("_", 1)[0]
-            if eq_base:
-                out.add(f"{eq_base}B")
-                out.add(f"{eq_base}XB")
+            if eq_base and eq_base not in seen:
+                seen.add(eq_base)
+                tickers.append(eq_base)
     except Exception:
         pass
+    if include_tokenized:
+        try:
+            for kr_sym in symbols_for("kraken"):
+                if is_kraken_tokenized_asset(kr_sym):
+                    tok_base = canonical_base_asset(kr_sym)
+                    if tok_base and tok_base not in seen:
+                        seen.add(tok_base)
+                        tickers.append(tok_base)
+        except Exception:
+            pass
+    return tuple(tickers)
+
+
+def get_breadth_excluded_bases() -> Set[str]:
+    out = set(_tax_tuple("breadth_excluded_bases"))
+    for eq_base in get_tracked_equity_base_tickers(include_tokenized=False):
+        out.add(f"{eq_base}B")
+        out.add(f"{eq_base}XB")
     return out
 
 

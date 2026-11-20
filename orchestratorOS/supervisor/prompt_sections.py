@@ -262,6 +262,40 @@ _GT_SUMMARY_DIRECTIVE_RE = re.compile(
 )
 
 
+def _format_macro_calendar_line(mc: Any) -> Optional[str]:
+    """Format the Section 1 Macro Economic Calendar & Session Window bullet line."""
+    if not (isinstance(mc, dict) and mc.get("next_high_impact_event")):
+        return None
+    if "next_event_is_high_impact" in mc:
+        is_confirmed_macro = bool(_parse_bool_flag(mc.get("next_event_is_high_impact"), False))
+    elif "macro_release_confirmed" in mc or "fomc_today" in mc:
+        is_confirmed_macro = bool(
+            _parse_bool_flag(mc.get("macro_release_confirmed"), False)
+            or _parse_bool_flag(mc.get("fomc_today"), False)
+        )
+    else:
+        is_confirmed_macro = True
+    ev_lbl = "next_high_impact_event" if is_confirmed_macro else "next_routine_session_window"
+    mc_parts = [
+        f'session="{mc.get("session_label")}"',
+        f'{ev_lbl}="{mc.get("next_high_impact_event")}"',
+    ]
+    if _parse_bool_flag(mc.get("active_release_window"), False) and mc.get("next_scheduled_event"):
+        mc_parts.append(f'next_scheduled="{mc.get("next_scheduled_event")}"')
+    if mc.get("fomc_today") is not None:
+        mc_parts.append(f'fomc_today={bool(_parse_bool_flag(mc.get("fomc_today"), False))}')
+    if mc.get("next_fomc_date"):
+        mc_parts.append(f'next_fomc_date="{mc.get("next_fomc_date")}"')
+    if mc.get("upcoming_windows"):
+        up_lbl = "upcoming" if is_confirmed_macro else "routine_session_transitions"
+        mc_parts.append(f'{up_lbl}={mc.get("upcoming_windows")}')
+    if mc.get("detected_macro_headlines"):
+        mc_parts.append(f'live_macro_headlines={mc.get("detected_macro_headlines")}')
+    if mc.get("live_macro_prints"):
+        mc_parts.append(f'live_macro_prints={mc.get("live_macro_prints")}')
+    return f"- Macro Economic Calendar & Session Window: {' | '.join(mc_parts)}"
+
+
 def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> List[str]:
     """Format Section 1 (Macro, Sentiment, Geopolitical & Live Breaking News) for the AI prompt."""
     is_equities_scope = str(asset_scope or "all").strip().lower() == "equities"
@@ -422,35 +456,8 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         or macro.get("macro_calendar")
         or resolve_macro_economic_calendar(breaking_news=breaking_news)
     )
-    if isinstance(mc, dict) and mc.get("next_high_impact_event"):
-        if "next_event_is_high_impact" in mc:
-            is_confirmed_macro = bool(_parse_bool_flag(mc.get("next_event_is_high_impact"), False))
-        elif "macro_release_confirmed" in mc or "fomc_today" in mc:
-            is_confirmed_macro = bool(
-                _parse_bool_flag(mc.get("macro_release_confirmed"), False)
-                or _parse_bool_flag(mc.get("fomc_today"), False)
-            )
-        else:
-            is_confirmed_macro = True
-        ev_lbl = "next_high_impact_event" if is_confirmed_macro else "next_routine_session_window"
-        mc_parts = [
-            f'session="{mc.get("session_label")}"',
-            f'{ev_lbl}="{mc.get("next_high_impact_event")}"',
-        ]
-        if _parse_bool_flag(mc.get("active_release_window"), False) and mc.get("next_scheduled_event"):
-            mc_parts.append(f'next_scheduled="{mc.get("next_scheduled_event")}"')
-        if mc.get("fomc_today") is not None:
-            mc_parts.append(f'fomc_today={bool(_parse_bool_flag(mc.get("fomc_today"), False))}')
-        if mc.get("next_fomc_date"):
-            mc_parts.append(f'next_fomc_date="{mc.get("next_fomc_date")}"')
-        if mc.get("upcoming_windows"):
-            up_lbl = "upcoming" if is_confirmed_macro else "routine_session_transitions"
-            mc_parts.append(f'{up_lbl}={mc.get("upcoming_windows")}')
-        if mc.get("detected_macro_headlines"):
-            mc_parts.append(f'live_macro_headlines={mc.get("detected_macro_headlines")}')
-        if mc.get("live_macro_prints"):
-            mc_parts.append(f'live_macro_prints={mc.get("live_macro_prints")}')
-        lines.append(f"- Macro Economic Calendar & Session Window: {' | '.join(mc_parts)}")
+    if mc_line := _format_macro_calendar_line(mc):
+        lines.append(mc_line)
     mb_bench_line = _extract_macro_benchmarks_line(mb_bench, include_crypto=True)
     if mb_bench_line and not (
         is_equities_scope

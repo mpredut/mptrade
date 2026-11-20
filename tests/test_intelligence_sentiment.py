@@ -14076,6 +14076,83 @@ def test_stabilize_faza1_and_audit_bugfixes(tmp_path, monkeypatch):
     assert "agg_spot_cvd_15m=+$145.0K[usdc+usdt, vol=$620.0K]" in sec_3b_spot
 
 
+def test_faza2_prep_seams_zero_behavior_change(tmp_path):
+    """Verify Faza 2 preparatory SSOT seams preserve exact live behavior while exposing clean extension hooks."""
+    from intelligence.macro.calendar_ssot import (
+        _collect_routine_session_windows,
+        _format_calendar_countdown,
+        _load_macro_calendar_windows,
+        _primary_eet_dt,
+    )
+    from intelligence.macro_sentiment_ssot import (
+        get_breadth_excluded_bases,
+        get_tracked_equity_base_tickers,
+        resolve_secondary_ny_datetime,
+    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MacroTelemetryCollectorBase
+    from orchestratorOS.supervisor.prompt_sections import _format_macro_calendar_line
+
+    # 1. Shared NY timezone resolver matches America/New_York EST/EDT accurately
+    ts_est = datetime(2026, 11, 20, 14, 30, 0, tzinfo=timezone.utc).timestamp()
+    dt_ny = resolve_secondary_ny_datetime(ts_est)
+    assert dt_ny.hour == 9 and dt_ny.minute == 30
+
+    # 2. Tracked equity base ticker SSOT feeds breadth exclusions and supports tokenized Kraken xStocks
+    t212_only = get_tracked_equity_base_tickers(include_tokenized=False)
+    with_tok = get_tracked_equity_base_tickers(include_tokenized=True)
+    assert set(t212_only) <= set(with_tok)
+    excluded = get_breadth_excluded_bases()
+    for base in t212_only:
+        assert f"{base}B" in excluded and f"{base}XB" in excluded
+
+    # 3. Calendar routine-window seam supports skip_slot_fn without altering default behavior
+    assert _format_calendar_countdown(10.0) == "10m"
+    assert _format_calendar_countdown(120.0) == "2h"
+    assert _format_calendar_countdown(135.0) == "2h15m"
+    windows, routine_labels = _load_macro_calendar_windows()
+    dt_eet = _primary_eet_dt(ts_est)
+    _, _, up_all = _collect_routine_session_windows(
+        ts_est,
+        dt_eet,
+        windows=windows,
+        routine_labels=routine_labels,
+        fomc_dates=set(),
+        macro_release_confirmed=False,
+        has_fomc_headline=False,
+    )
+    _, _, up_skip_open = _collect_routine_session_windows(
+        ts_est,
+        dt_eet,
+        windows=windows,
+        routine_labels=routine_labels,
+        fomc_dates=set(),
+        macro_release_confirmed=False,
+        has_fomc_headline=False,
+        skip_slot_fn=lambda _d, code, _t: code == "US_WALL_STREET_OPEN",
+    )
+    assert any(x[1] == "US_WALL_STREET_OPEN" for x in up_all)
+    assert all(x[1] != "US_WALL_STREET_OPEN" for x in up_skip_open)
+
+    # 4. MacroTelemetryCollectorBase shared cache persistence/read helpers + Section 1 calendar line helper
+    out_p = tmp_path / "macro_benchmarks_collect.json"
+    MacroTelemetryCollectorBase._persist_cache_json(str(out_p), {"ts": ts_est, "items": {"SPY": {"price": 595.0}}})
+    loaded, _ = MacroTelemetryCollectorBase._read_cached_dict(
+        str(tmp_path), "macro_benchmarks_files", "macro_benchmarks_collect.json"
+    )
+    assert isinstance(loaded, dict) and loaded["items"]["SPY"]["price"] == 595.0
+    assert _format_macro_calendar_line(None) is None
+    cal_line = _format_macro_calendar_line(
+        {
+            "session_label": "EU/US Overlap",
+            "next_high_impact_event": "US Wall Street Cash Open at 16:30 EET in 10m",
+            "next_event_is_high_impact": False,
+            "fomc_today": False,
+        }
+    )
+    assert cal_line is not None and 'next_routine_session_window="US Wall Street Cash Open at 16:30 EET in 10m"' in cal_line
+
+
+
 
 
 

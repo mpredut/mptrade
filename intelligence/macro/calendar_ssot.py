@@ -5,8 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import importlib
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
-from zoneinfo import ZoneInfo
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from intelligence.macro_sentiment_ssot import FearGreedSnapshot, MarketBreadthSnapshot
@@ -117,22 +116,18 @@ _WEEKDAY_SESSION_WINDOWS_EET: Tuple[Tuple[int, int, str, str, bool, bool, str, s
 )
 
 
-def _to_tz(now_ts: float, tz_name: str, fallback_offset_hours: int) -> datetime:
-    now_ts = normalize_epoch_sec(now_ts, default=now_ts, allow_zero=True) or now_ts
-    if ZoneInfo is not None:
-        try:
-            return datetime.fromtimestamp(now_ts, tz=ZoneInfo(tz_name))
-        except Exception:
-            pass
-    return datetime.fromtimestamp(now_ts, tz=timezone(timedelta(hours=fallback_offset_hours)))
-
-
 def _primary_eet_dt(ts: float) -> datetime:
-    return _to_tz(
+    return _ssot.resolve_configured_tz_datetime(
         ts,
-        _ssot._cfg_str("sessions", "primary_timezone", "Europe/Bucharest"),
-        _ssot._cfg_int("sessions", "primary_fallback_offset_hours", 2),
+        tz_key="primary_timezone",
+        default_tz="Europe/Bucharest",
+        fallback_offset_key="primary_fallback_offset_hours",
+        default_fallback_offset_hours=2,
     )
+
+
+def _secondary_ny_dt(ts: float) -> datetime:
+    return _ssot.resolve_secondary_ny_datetime(ts)
 
 
 def resolve_global_trading_session(now_ts: Optional[float] = None) -> GlobalSessionContext:
@@ -140,11 +135,7 @@ def resolve_global_trading_session(now_ts: Optional[float] = None) -> GlobalSess
     ts = resolve_now_ts(now_ts)
     dt_utc = datetime.fromtimestamp(ts, tz=timezone.utc)
     dt_eet = _primary_eet_dt(ts)
-    dt_ny = _to_tz(
-        ts,
-        _ssot._cfg_str("sessions", "secondary_timezone", "America/New_York"),
-        _ssot._cfg_int("sessions", "secondary_fallback_offset_hours", -5),
-    )
+    dt_ny = _secondary_ny_dt(ts)
 
     eet_str, ny_str, utc_str = (
         dt_eet.strftime("%Y-%m-%d %H:%M %Z"),
@@ -284,15 +275,8 @@ def parse_live_macro_release_surprises(breaking_news: Optional[Sequence[Any]]) -
     return out[:3]
 
 
-def resolve_macro_economic_calendar(
-    now_ts: Optional[float] = None,
-    breaking_news: Optional[Sequence[Any]] = None,
-) -> Dict[str, Any]:
-    """Resolve current trading session, next high-impact macro/liquidity window, and live macro headlines."""
-    ts = resolve_now_ts(now_ts)
-    session_ctx = resolve_global_trading_session(ts)
-    dt_eet = _primary_eet_dt(ts)
-    tz_abbr = dt_eet.strftime("%Z") or "EET"
+def _load_macro_calendar_windows() -> Tuple[Tuple[Tuple[int, int, str, str], ...], Dict[str, str]]:
+    """Parse ``[sessions] macro_calendar_windows_eet`` into ``(windows, routine_labels)``."""
     parsed_windows: List[Tuple[int, int, str, str]] = []
     routine_labels: Dict[str, str] = {}
     for item in split_csv(_ssot._cfg_str("sessions", "macro_calendar_windows_eet")):
@@ -305,14 +289,13 @@ def resolve_macro_economic_calendar(
                 parsed_windows.append((hh_i, mm_i, parts[1], parts[2]))
         if len(parts) >= 4 and parts[1] and parts[3]:
             routine_labels[parts[1]] = parts[3]
-    windows = tuple(parsed_windows)
-    fomc_dates = set(split_csv(_ssot._cfg_str("sessions", "fomc_decision_dates")))
-    today_iso = dt_eet.date().isoformat()
-    is_fomc_today = today_iso in fomc_dates
-    next_fomc_date = next((d for d in sorted(fomc_dates) if d >= today_iso), None)
+    return tuple(parsed_windows), routine_labels
 
+
+def _detect_macro_calendar_headlines(breaking_news: Optional[Sequence[Any]]) -> List[str]:
+    """Filter breaking news titles matching configured macro calendar keywords (excluding partisan noise)."""
     macro_kws = split_csv(_ssot._cfg_str("sessions", "macro_calendar_headline_keywords"), lower=True)
-    detected_macro_headlines: List[str] = []
+    detected: List[str] = []
     if breaking_news and macro_kws:
         for title, low_t in (
             (t, t.lower())
@@ -323,9 +306,85 @@ def resolve_macro_economic_calendar(
             if not matched_kws:
                 continue
             t_words = set(_ALPHA_WORD_RE.findall(low_t))
-            if matched_kws == ["inflation"] and (t_words & _PARTISAN_ELECTION_CONTEXT_WORDS) and not _MACRO_DATA_ANCHOR_RE.search(low_t):
+            if (
+                matched_kws == ["inflation"]
+                and (t_words & _PARTISAN_ELECTION_CONTEXT_WORDS)
+                and not _MACRO_DATA_ANCHOR_RE.search(low_t)
+            ):
                 continue
-            detected_macro_headlines.append(title)
+            detected.append(title)
+    return detected
+
+
+def _format_calendar_countdown(delta_min: float) -> str:
+    """Format a positive countdown in minutes as ``10m``, ``2h``, or ``2h15m``."""
+    m_cnt = round(abs(delta_min))
+    h_cnt, rem_cnt = divmod(m_cnt, 60)
+    return f"{m_cnt}m" if m_cnt < 60 else (f"{h_cnt}h{rem_cnt:02d}m" if rem_cnt else f"{h_cnt}h")
+
+
+def _collect_routine_session_windows(
+    ts: float,
+    dt_eet: datetime,
+    *,
+    windows: Tuple[Tuple[int, int, str, str], ...],
+    routine_labels: Dict[str, str],
+    fomc_dates: set[str],
+    macro_release_confirmed: bool,
+    has_fomc_headline: bool,
+    skip_slot_fn: Optional[Callable[[str, str, float], bool]] = None,
+) -> Tuple[Optional[str], bool, List[Tuple[float, str, str, str, bool]]]:
+    """Build active/upcoming weekday session transition windows over the next 4 calendar days."""
+    tz_abbr = dt_eet.strftime("%Z") or "EET"
+    active_window: Optional[str] = None
+    active_window_is_high_impact: bool = False
+    upcoming: List[Tuple[float, str, str, str, bool]] = []
+    for day_offset in range(0, 4):
+        cand_date = (dt_eet + timedelta(days=day_offset)).date()
+        if cand_date.weekday() >= 5:
+            continue
+        cand_iso = cand_date.isoformat()
+        cand_is_fomc = cand_iso in fomc_dates or (day_offset == 0 and has_fomc_headline)
+        for hh, mm, code, desc in windows:
+            ev_dt = datetime(cand_date.year, cand_date.month, cand_date.day, hh, mm, tzinfo=dt_eet.tzinfo)
+            ev_ts = ev_dt.timestamp()
+            if callable(skip_slot_fn) and skip_slot_fn(cand_iso, code, ev_ts):
+                continue
+            if code == "US_FOMC_FED_WINDOW":
+                is_confirmed_win = cand_is_fomc
+            elif code in routine_labels:
+                is_confirmed_win = (day_offset == 0) and macro_release_confirmed
+            else:
+                is_confirmed_win = False
+            eff_desc = desc if is_confirmed_win else routine_labels.get(code, desc)
+            delta_min = (ev_ts - ts) / 60.0
+            time_lbl = f"{ev_dt.strftime('%a')} {hh:02d}:{mm:02d} {tz_abbr}" if day_offset > 0 else f"{hh:02d}:{mm:02d} {tz_abbr}"
+            max_ago_min = -15.0 if code == "US_WALL_STREET_CLOSE" else -20.0
+            if (max_ago_min < delta_min <= 0.0 if code == "US_WALL_STREET_CLOSE" else max_ago_min <= delta_min <= 0.0) and active_window is None:
+                win_tag = "ACTIVE VOLATILITY WINDOW" if (is_confirmed_win or code not in routine_labels) else "ACTIVE SESSION WINDOW"
+                active_window = f"{eff_desc} at {time_lbl} ({abs(round(delta_min))}m ago \u2014 {win_tag})"
+                active_window_is_high_impact = is_confirmed_win
+            elif delta_min > 0.0:
+                cnt_lbl = _format_calendar_countdown(delta_min)
+                upcoming.append((delta_min, code, eff_desc, f"{eff_desc} at {time_lbl} in {cnt_lbl}", is_confirmed_win))
+    return active_window, active_window_is_high_impact, upcoming
+
+
+def resolve_macro_economic_calendar(
+    now_ts: Optional[float] = None,
+    breaking_news: Optional[Sequence[Any]] = None,
+) -> Dict[str, Any]:
+    """Resolve current trading session, next high-impact macro/liquidity window, and live macro headlines."""
+    ts = resolve_now_ts(now_ts)
+    session_ctx = resolve_global_trading_session(ts)
+    dt_eet = _primary_eet_dt(ts)
+    windows, routine_labels = _load_macro_calendar_windows()
+    fomc_dates = set(split_csv(_ssot._cfg_str("sessions", "fomc_decision_dates")))
+    today_iso = dt_eet.date().isoformat()
+    is_fomc_today = today_iso in fomc_dates
+    next_fomc_date = next((d for d in sorted(fomc_dates) if d >= today_iso), None)
+
+    detected_macro_headlines = _detect_macro_calendar_headlines(breaking_news)
     live_macro_prints = parse_live_macro_release_surprises(breaking_news)
     macro_release_confirmed = bool(detected_macro_headlines) or bool(live_macro_prints)
     has_fomc_headline = any(
@@ -342,35 +401,15 @@ def resolve_macro_economic_calendar(
         for h in detected_macro_headlines
     )
 
-    active_window: Optional[str] = None
-    active_window_is_high_impact: bool = False
-    upcoming: List[Tuple[float, str, str, str, bool]] = []
-    for day_offset in range(0, 4):
-        cand_date = (dt_eet + timedelta(days=day_offset)).date()
-        if cand_date.weekday() >= 5:
-            continue
-        cand_is_fomc = cand_date.isoformat() in fomc_dates or (day_offset == 0 and has_fomc_headline)
-        for hh, mm, code, desc in windows:
-            if code == "US_FOMC_FED_WINDOW":
-                is_confirmed_win = cand_is_fomc
-            elif code in routine_labels:
-                is_confirmed_win = (day_offset == 0) and macro_release_confirmed
-            else:
-                is_confirmed_win = False
-            eff_desc = desc if is_confirmed_win else routine_labels.get(code, desc)
-            ev_dt = datetime(cand_date.year, cand_date.month, cand_date.day, hh, mm, tzinfo=dt_eet.tzinfo)
-            delta_min = (ev_dt.timestamp() - ts) / 60.0
-            time_lbl = f"{ev_dt.strftime('%a')} {hh:02d}:{mm:02d} {tz_abbr}" if day_offset > 0 else f"{hh:02d}:{mm:02d} {tz_abbr}"
-            max_ago_min = -15.0 if code == "US_WALL_STREET_CLOSE" else -20.0
-            if (max_ago_min < delta_min <= 0.0 if code == "US_WALL_STREET_CLOSE" else max_ago_min <= delta_min <= 0.0) and active_window is None:
-                win_tag = "ACTIVE VOLATILITY WINDOW" if (is_confirmed_win or code not in routine_labels) else "ACTIVE SESSION WINDOW"
-                active_window = f"{eff_desc} at {time_lbl} ({abs(round(delta_min))}m ago \u2014 {win_tag})"
-                active_window_is_high_impact = is_confirmed_win
-            elif delta_min > 0.0:
-                m_cnt = round(abs(delta_min))
-                h_cnt, rem_cnt = divmod(m_cnt, 60)
-                cnt_lbl = f"{m_cnt}m" if m_cnt < 60 else (f"{h_cnt}h{rem_cnt:02d}m" if rem_cnt else f"{h_cnt}h")
-                upcoming.append((delta_min, code, eff_desc, f"{eff_desc} at {time_lbl} in {cnt_lbl}", is_confirmed_win))
+    active_window, active_window_is_high_impact, upcoming = _collect_routine_session_windows(
+        ts,
+        dt_eet,
+        windows=windows,
+        routine_labels=routine_labels,
+        fomc_dates=fomc_dates,
+        macro_release_confirmed=macro_release_confirmed,
+        has_fomc_headline=has_fomc_headline,
+    )
 
     upcoming.sort(key=lambda x: x[0])
     next_event = upcoming[0][3] if upcoming else "None scheduled"
