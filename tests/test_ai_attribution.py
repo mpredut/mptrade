@@ -825,3 +825,58 @@ def test_faza4_closed_loop_calibration_feedback_and_section_3c_prompt():
     )
     assert "AI Decision Scorecard (48h, n=2):" in sec_3c
     assert cal_line in sec_3c
+
+
+def test_planned_reentry_exit_row_plans_are_evaluated_consistently():
+    """Verify SELL->BUY re-entry plans where BOTH legs carry trade plans are evaluated without dropping the BUY leg."""
+    from providers.ai_survival_guard import (
+        evaluate_ai_calibration_feedback,
+        format_ai_calibration_feedback_line,
+    )
+
+    now_s = 1_795_200_000.0
+    intents = [
+        {
+            "intent_id": "re_s1",
+            "timestamp": now_s - 7200.0,
+            "decision": "SELL",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 184.4,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 500.0,
+            "invalidation_px": 187.5,
+            "target_px": 182.11,
+            "execution_payload": {"orderId": "r1", "status": "FILLED", "executedQty": "2.71", "avg_fill_price": 184.4},
+        },
+        {
+            "intent_id": "re_b1",
+            "timestamp": now_s - 3600.0,
+            "decision": "BUY",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 178.8,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 500.0,
+            "invalidation_px": 175.8,
+            "target_px": 184.4,
+            "execution_payload": {"orderId": "r2", "status": "FILLED", "executedQty": "2.79", "avg_fill_price": 178.8},
+        },
+    ]
+    live_px = {"TAOUSDC": 175.1}
+    cal = evaluate_ai_calibration_feedback(intents, now_ts=now_s, live_prices=live_px, lookback_days=7.0, scope="crypto")
+    assert cal["planned_filled"] == 2
+    assert sum(cal["status_counts"].values()) == 2
+    assert cal["by_side"]["SELL"]["TARGET_HIT"] == 1
+    assert cal["by_side"]["BUY"]["INVALIDATED"] == 1
+    assert cal["resolved_hit_rate_pct"] == pytest.approx(50.0)
+    line = format_ai_calibration_feedback_line(cal)
+    assert "plans=2 (BUY:0T/1I/0E/0A, SELL:1T/0I/0E/0A, hit=50%)" in line
+
+    attr = evaluate_ai_attribution(intents, now_ts=now_s, live_prices=live_px, lookback_days=7.0, scope="crypto")
+    plans = attr["trade_plan_calibration"]
+    assert plans["planned_filled"] == 2
+    assert plans["status_counts"] == {"TARGET_HIT": 1, "INVALIDATED": 1, "ACTIVE": 0, "CLOSED_EARLY": 0}
+

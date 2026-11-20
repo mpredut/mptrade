@@ -939,6 +939,53 @@ def summarize_execution_quality_by_venue_and_order_type(
     return by_venue, by_vot
 
 
+def evaluate_filled_trade_plans(
+    filled_rows: Sequence[Mapping[str, Any]],
+    live_prices: Optional[Mapping[str, Any]] = None,
+) -> tuple[dict[str, int], dict[str, dict[str, int]], int]:
+    """Evaluate every filled intent with a trade plan against its next opposite-side fill or live spot price."""
+    prices_map = live_prices if isinstance(live_prices, Mapping) else {}
+    empty_side = lambda: {"TARGET_HIT": 0, "INVALIDATED": 0, "CLOSED_EARLY": 0, "ACTIVE": 0}
+    status_counts = empty_side()
+    by_side = {"BUY": empty_side(), "SELL": empty_side()}
+    ordered = sorted(filled_rows, key=lambda r: safe_float(r.get("ts"), default=0.0) or 0.0)
+    by_inst: dict[Any, list[Mapping[str, Any]]] = {}
+    for row in ordered:
+        by_inst.setdefault(row.get("inst_key"), []).append(row)
+    planned_n = 0
+    for inst_rows in by_inst.values():
+        for idx, row in enumerate(inst_rows):
+            if not row.get("has_plan"):
+                continue
+            side_k = normalize_side(row.get("side"))
+            if side_k not in ("BUY", "SELL"):
+                continue
+            planned_n += 1
+            next_opp = next(
+                (nxt for nxt in inst_rows[idx + 1:] if normalize_side(nxt.get("side")) != side_k),
+                None,
+            )
+            if next_opp is not None:
+                st = evaluate_trade_plan_status(
+                    side_k, next_opp["px"], row.get("invalidation_px"), row.get("target_px")
+                )
+                final_st = st if st in ("TARGET_HIT", "INVALIDATED") else "CLOSED_EARLY"
+            else:
+                spot_px = _resolve_live_price_for_symbol(
+                    prices_map, str(row.get("venue") or ""), str(row.get("symbol") or "")
+                )
+                if spot_px is None or spot_px <= 0.0:
+                    final_st = "ACTIVE"
+                else:
+                    st = evaluate_trade_plan_status(
+                        side_k, spot_px, row.get("invalidation_px"), row.get("target_px")
+                    )
+                    final_st = st if st in ("TARGET_HIT", "INVALIDATED", "ACTIVE") else "ACTIVE"
+            status_counts[final_st] = status_counts.get(final_st, 0) + 1
+            by_side[side_k][final_st] = by_side[side_k].get(final_st, 0) + 1
+    return status_counts, by_side, planned_n
+
+
 def evaluate_ai_calibration_feedback(
     intents: list[dict[str, Any]],
     *,
@@ -1021,32 +1068,7 @@ def evaluate_ai_calibration_feedback(
             "market_slip_bps": mkt_slip,
         })
 
-    def _bump_plan(side_k: str, state: str) -> None:
-        status_counts[state] = status_counts.get(state, 0) + 1
-        if side_k in by_side:
-            by_side[side_k][state] = by_side[side_k].get(state, 0) + 1
-
-    closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo(filled_rows)
-    for _, entry_row, exit_row in closed_pairs:
-        if not entry_row["has_plan"]:
-            continue
-        st = evaluate_trade_plan_status(
-            entry_row["side"], exit_row["px"], entry_row["invalidation_px"], entry_row["target_px"]
-        )
-        _bump_plan(entry_row["side"], st if st in ("TARGET_HIT", "INVALIDATED") else "CLOSED_EARLY")
-
-    for side_k, open_rows in (("BUY", open_buys), ("SELL", open_sells)):
-        for row in open_rows:
-            if not row["has_plan"]:
-                continue
-            spot_px = _resolve_live_price_for_symbol(prices_map, row["venue"], row["symbol"])
-            if spot_px is None or spot_px <= 0.0:
-                _bump_plan(side_k, "ACTIVE")
-                continue
-            st = evaluate_trade_plan_status(side_k, spot_px, row["invalidation_px"], row["target_px"])
-            _bump_plan(side_k, st if st in ("TARGET_HIT", "INVALIDATED", "ACTIVE") else "ACTIVE")
-
-    planned_filled = sum(1 for r in filled_rows if r["has_plan"])
+    status_counts, by_side, planned_filled = evaluate_filled_trade_plans(filled_rows, prices_map)
     resolved_n = status_counts["TARGET_HIT"] + status_counts["INVALIDATED"]
     hit_rate = round((status_counts["TARGET_HIT"] / resolved_n) * 100.0, 1) if resolved_n > 0 else None
     by_venue, by_vot = summarize_execution_quality_by_venue_and_order_type(
@@ -1133,6 +1155,7 @@ __all__ = [
     "evaluate_ai_decision_scorecard",
     "evaluate_ai_ping_pong_guard",
     "evaluate_ai_target_ev_guard",
+    "evaluate_filled_trade_plans",
     "extract_fill_execution_slippage",
     "extract_live_prices_from_cache_payload",
     "format_ai_calibration_feedback_line",

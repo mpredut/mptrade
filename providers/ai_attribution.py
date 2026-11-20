@@ -42,6 +42,7 @@ from .ai_survival_guard import (
     _is_filled_ai_intent,
     _resolve_live_price_for_symbol,
     compute_signed_price_edge_pct,
+    evaluate_filled_trade_plans,
     extract_fill_execution_slippage,
     extract_live_prices_from_cache_payload,
     format_signed_usd,
@@ -636,7 +637,7 @@ def evaluate_ai_attribution(
 
     closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo(filled_rows)
     outcomes: list[dict[str, Any]] = []
-    plan_status_counts: dict[str, int] = {"TARGET_HIT": 0, "INVALIDATED": 0, "ACTIVE": 0, "CLOSED_EARLY": 0}
+    plan_status_counts, _, planned_filled = evaluate_filled_trade_plans(filled_rows, prices_map)
 
     def _record_closed_plan_outcome(entry_row: dict[str, Any], exit_px: float) -> str:
         if not entry_row["has_plan"]:
@@ -644,9 +645,7 @@ def evaluate_ai_attribution(
         st = evaluate_trade_plan_status(
             entry_row["side"], exit_px, entry_row["invalidation_px"], entry_row["target_px"]
         )
-        final_st = st if st in ("TARGET_HIT", "INVALIDATED") else "CLOSED_EARLY"
-        plan_status_counts[final_st] = plan_status_counts.get(final_st, 0) + 1
-        return final_st
+        return st if st in ("TARGET_HIT", "INVALIDATED") else "CLOSED_EARLY"
 
     for kind, entry_row, exit_row in closed_pairs:
         plan_st = _record_closed_plan_outcome(entry_row, exit_row["px"])
@@ -655,15 +654,12 @@ def evaluate_ai_attribution(
     def _evaluate_open_mtm_row(entry_row: dict[str, Any], side: str) -> Optional[dict[str, Any]]:
         spot_px = _resolve_live_price_for_symbol(prices_map, entry_row["venue"], entry_row["symbol"])
         if spot_px is None or spot_px <= 0.0:
-            if entry_row["has_plan"]:
-                plan_status_counts["ACTIVE"] += 1
             return None
         plan_st = ""
         if entry_row["has_plan"]:
             plan_st = evaluate_trade_plan_status(
                 side, spot_px, entry_row["invalidation_px"], entry_row["target_px"]
             )
-            plan_status_counts[plan_st] = plan_status_counts.get(plan_st, 0) + 1
         gross_pct = compute_signed_price_edge_pct(side, entry_row["px"], spot_px)
         rt_bps = entry_row["rt_fee_bps"]
         net_pct = gross_pct - (rt_bps / 100.0)
@@ -739,7 +735,6 @@ def evaluate_ai_attribution(
             "net_usd": round(sum(o["net_usd"] for o in ov_outcomes), 2),
         }
 
-    planned_filled = sum(1 for r in filled_rows if r["has_plan"])
     unplanned_filled = len(filled_rows) - planned_filled
     planned_outcomes = [o for o in outcomes if o["has_plan"]] + planned_sell_mtm_outcomes
     unplanned_outcomes = [o for o in outcomes if not o["has_plan"]]
