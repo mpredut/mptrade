@@ -180,7 +180,7 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
             lb_pnl_sfx = f" (pnl_vs_last_buy={lb_pnl:+.2f}%)"
     entry_px_part = f"entry_px={cyc.get('entry_price')}, " if cyc.get("entry_price") is not None else ""
     return (
-        f"    - [{venue}] {sym}: qty={cyc.get('qty')}, cost=${cyc.get('cost_usd')}, "
+        f"    - [{venue}] {sym}: qty={_fmt_plain_float(cyc.get('qty'))}, cost=${cyc.get('cost_usd')}, "
         f"avg_cost={cyc.get('avg_cost_px')}, {entry_px_part}"
         f"last_buy={cyc.get('last_buy_price')}{lb_pnl_sfx}, last_sell={cyc.get('last_sell_price')}"
         f"{exit_kind_sfx}, dca_buys={cyc.get('dca_buys')}, {dd_field}{extra_sfx}"
@@ -1147,7 +1147,7 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
             prof_usd, prof_q, prof_avg_pct = prof
             t_extra += f", profitable_lifo_usd=${prof_usd:.2f}({prof_q:g}_{lot_base_lbl}@{prof_avg_pct:+.2f}%)"
         if (older_q := pv["older_core_qty"]) is not None:
-            t_extra += f", older_core_qty={older_q:g}_{lot_base_lbl}"
+            t_extra += f", older_core_qty={_fmt_plain_float(older_q)}_{lot_base_lbl}"
     if (lifo_vwap := pv["lifo_rem_vwap"]) is not None:
         vwap, vwap_pnl = lifo_vwap
         vwap_sfx = f" (pnl_vs_lifo={vwap_pnl:+.2f}%)" if vwap_pnl is not None else ""
@@ -1179,7 +1179,7 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
     if (lb_q := pv["locked_base_qty"]) is not None:
         lb_u = pv["locked_base_usd"]
         lb_u_s = f" (${lb_u:.2f} USD)" if lb_u is not None else ""
-        fb_str += f", locked_base_qty={lb_q:g}{lb_u_s}"
+        fb_str += f", locked_base_qty={_fmt_plain_float(lb_q)}{lb_u_s}"
     fq_val = pv["free_quote"]
     fq_bd_items = pv["free_quote_breakdown_items"]
     fq_bd_s = (

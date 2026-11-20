@@ -2559,8 +2559,10 @@ def test_hot_path_caches_preserve_semantics_and_config_hot_reload(tmp_path, monk
     d2 = mss.resolve_derived_telemetry_intervals(executor_interval_sec=360.0, config_path=str(cfg_p))
     assert d2["orderbook_interval_sec"] == pytest.approx(15.0)
 
-    # Modifying file content/size invalidates load_ini_config -> new ConfigParser identity -> fresh intervals
-    cfg_p.write_text("[intervals]\norderbook_interval_mult = 1/12\n", encoding="utf-8")
+    # Modifying file content/size/mtime invalidates load_ini_config -> new ConfigParser identity -> fresh intervals
+    cfg_p.write_text("[intervals]\norderbook_interval_mult = 1/12\n# updated\n", encoding="utf-8")
+    st_cfg = cfg_p.stat()
+    os.utime(cfg_p, (st_cfg.st_atime + 2.0, st_cfg.st_mtime + 2.0))
     d3 = mss.resolve_derived_telemetry_intervals(executor_interval_sec=360.0, config_path=str(cfg_p))
     assert d3["orderbook_interval_sec"] == pytest.approx(30.0)
 
@@ -2594,6 +2596,17 @@ def test_hot_path_caches_preserve_semantics_and_config_hot_reload(tmp_path, monk
     assert extract_order_side({"side": "a"}) == "SELL"
     assert extract_order_side({"side": True, "type": "limit", "descr": {"type": "buy"}}) == "BUY"
     assert extract_order_side({"dir": "Spot", "isBuyer": True}) == "BUY"
+
+    # 5. _format_venue_cycle_line avoids scientific notation on dust cycle quantities (e.g. 1e-06 -> 0.000001)
+    from orchestratorOS.supervisor.prompt_sections import _format_venue_cycle_line
+    cyc_line = _format_venue_cycle_line(
+        "kraken",
+        "SPCXxUSD",
+        {"qty": 1e-06, "cost_usd": 0.0, "avg_cost_px": None, "last_buy_price": None, "last_sell_price": 130.07, "last_exit_kind": "SL", "dca_buys": 0},
+    )
+    assert "qty=0.000001," in cyc_line
+    assert "1e-06" not in cyc_line
+
 
 
 
