@@ -2784,3 +2784,60 @@ def test_active_intents_excludes_shadow_paper_state_files_and_orders(tmp_path):
     assert result["summary"]["net_exposures"]["total_cost"] == 635.94
     intent_ids = [it["intent_id"] for it in result["intents"]]
     assert intent_ids == ["60716106248"]
+
+
+def test_active_intents_prunes_freshly_filled_ai_order_despite_stale_venue_balances(tmp_path):
+    # Even when created < 300s ago and venue_balances_state.json still lists an order as NEW,
+    # an explicit FILLED record in cache_order_<venue>.json or order_retry_queue.jsonl prunes it immediately.
+    now_s = time.time()
+    _write_intent_file(
+        tmp_path / "cachedb/state/venue_balances_state.json",
+        {
+            "open_orders:binance:ARBUSDC": [
+                {"order_id": "567351718", "symbol": "ARBUSDC", "side": "SELL", "price": 0.1138, "qty": 5096.6, "status": "NEW"},
+                {"order_id": "567395125", "symbol": "ARBUSDC", "side": "SELL", "price": 0.1153, "qty": 2601.9, "status": "NEW"},
+            ]
+        },
+    )
+    _write_intent_file(
+        tmp_path / "cachedb/orders/cache_order_binance.json",
+        {
+            "items": {
+                "ARBUSDC": [
+                    {"orderId": 567351718, "price": 0.1138, "quantity": 5096.6, "side": "SELL", "status": "FILLED"},
+                    {"orderId": 567395125, "price": 0.1153, "quantity": 2601.9, "side": "SELL", "status": "NEW"},
+                ]
+            }
+        },
+    )
+    _write_intent_file(
+        tmp_path / "cachedb/state/autonomous_trade_intents_state.json",
+        [
+            {
+                "intent_id": "intent_filled_arb",
+                "venue": "binance",
+                "symbol": "ARBUSDC",
+                "side": "SELL",
+                "order_type": "LIMIT",
+                "requested_qty": 5096.6,
+                "requested_price": 0.1138,
+                "timestamp": now_s - 60.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "567351718", "status": "NEW"},
+            },
+            {
+                "intent_id": "intent_resting_arb",
+                "venue": "binance",
+                "symbol": "ARBUSDC",
+                "side": "SELL",
+                "order_type": "LIMIT",
+                "requested_qty": 2601.9,
+                "requested_price": 0.1153,
+                "timestamp": now_s - 30.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "567395125", "status": "NEW"},
+            },
+        ],
+    )
+    result = build_active_intent_index(str(tmp_path))
+    assert [it["intent_id"] for it in result["intents"]] == ["intent_resting_arb"]

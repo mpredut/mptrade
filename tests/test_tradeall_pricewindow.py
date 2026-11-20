@@ -1804,11 +1804,19 @@ def test_unlisted_symbol_missing_price_no_busy_spin_and_live_http_backoff(tmp_pa
     import cacheprice as cp_mod
 
     monkeypatch.setattr(ta, "is_symbol_market_open", lambda _sym: True)
+    monkeypatch.setattr(ta, "touch_module_heartbeat", lambda *_a, **_kw: None)
     price_calls = []
+    first_eval_done = threading.Event()
+
+    def _get_price_stub(sym):
+        price_calls.append(sym)
+        first_eval_done.set()
+        return None
+
     cpm_stub = SimpleNamespace(
         STALE_THRESHOLD_MS=3000,
         stale_threshold_ms_for=lambda _sym: 3000,
-        get_price=lambda sym: (price_calls.append(sym) and None),
+        get_price=_get_price_stub,
     )
     inst_stub = SimpleNamespace(
         window_big_sec=900,
@@ -1828,6 +1836,10 @@ def test_unlisted_symbol_missing_price_no_busy_spin_and_live_http_backoff(tmp_pa
     th = threading.Thread(target=coord.run, daemon=True)
     th.start()
     try:
+        assert first_eval_done.wait(timeout=2.0)
+        deadline = time.monotonic() + 2.0
+        while coord._dirty["ANTxUSD"] and time.monotonic() < deadline:
+            time.sleep(0.005)
         time.sleep(0.08)
         coord.stop()
     finally:

@@ -562,35 +562,19 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
     }
 
 
-def _load_cached_open_orders_and_covered_venues(root: str) -> tuple[list[dict[str, Any]], set[str]]:
-    """Collect read-only resting open orders and the set of venues with an on-disk open-order snapshot."""
+def _load_cached_order_book_index(
+    root: str,
+) -> tuple[list[dict[str, Any]], set[str], set[tuple[str, str]]]:
+    """Collect read-only resting open orders, covered venues, and explicitly terminal venue order keys."""
     out: list[dict[str, Any]] = []
     seen_keys: set[tuple[str, str]] = set()
-    covered_venues: set[str] = set()
-
-    vb_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(VENUE_BALANCES_STATE_FILENAME))))
-    if os.path.isfile(vb_path):
-        vb_data = read_json_dict_recovering(vb_path)
-        if isinstance(vb_data, dict):
-            for k, v in vb_data.items():
-                if isinstance(k, str) and k.startswith("open_orders:") and isinstance(v, list):
-                    parts = k.split(":")
-                    raw_v = parts[1] if len(parts) > 1 else ""
-                    venue_k = normalize_venue_name(raw_v) or raw_v
-                    if venue_k:
-                        covered_venues.add(venue_k)
-                    for oo in v:
-                        if isinstance(oo, dict):
-                            oid = clean_order_id(extract_order_id(oo, default=None)) or ""
-                            key_t = (venue_k, oid)
-                            if not oid or key_t not in seen_keys:
-                                if oid:
-                                    seen_keys.add(key_t)
-                                out.append({"venue": venue_k, **oo})
+    vb_covered: set[str] = set()
+    oc_covered: set[str] = set()
+    terminal_order_keys: set[tuple[str, str]] = set()
+    oc_open_by_venue: dict[str, list[dict[str, Any]]] = {}
+    terminal_venue_statuses = TERMINAL_AUDIT_VENUE_STATUSES | TERMINAL_CANCEL_VENUE_STATUSES
 
     for venue_key, order_fname in CacheOrderManager.VENUE_FILENAMES.items():
-        if venue_key in covered_venues:
-            continue
         oc_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(order_fname))))
         if not os.path.isfile(oc_path):
             continue
@@ -598,7 +582,7 @@ def _load_cached_open_orders_and_covered_venues(root: str) -> tuple[list[dict[st
         items = oc_data.get("items") if isinstance(oc_data, dict) else None
         if not isinstance(items, dict):
             continue
-        covered_venues.add(venue_key)
+        oc_covered.add(venue_key)
         for k_sym, sym_orders in items.items():
             if isinstance(sym_orders, dict):
                 if extract_order_id(sym_orders, default=None) is not None:
@@ -617,20 +601,97 @@ def _load_cached_open_orders_and_covered_venues(root: str) -> tuple[list[dict[st
                         latest_by_oid[oid] = oo
             for oid, oo in latest_by_oid.items():
                 oo_st = oo.get("status")
-                if not (
-                    is_open_working_status(oo_st, allow_empty=True)
-                    or clean_upper_scalar(oo_st) == "PARTIALLY_FILLED"
-                ):
+                oo_st_up = clean_upper_scalar(oo_st) or ""
+                if oo_st_up and oo_st_up in terminal_venue_statuses:
+                    terminal_order_keys.add((venue_key, oid))
                     continue
-                if (venue_key, oid) not in seen_keys:
-                    seen_keys.add((venue_key, oid))
-                    out.append({"venue": venue_key, "symbol": str(oo.get("symbol") or k_sym), **oo})
-    return out, covered_venues
+                if not (is_open_working_status(oo_st, allow_empty=True) or oo_st_up == "PARTIALLY_FILLED"):
+                    continue
+                oc_open_by_venue.setdefault(venue_key, []).append(
+                    {"venue": venue_key, "symbol": str(oo.get("symbol") or k_sym), **oo}
+                )
+
+    vb_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(VENUE_BALANCES_STATE_FILENAME))))
+    if os.path.isfile(vb_path):
+        vb_data = read_json_dict_recovering(vb_path)
+        if isinstance(vb_data, dict):
+            for k, v in vb_data.items():
+                if isinstance(k, str) and k.startswith("open_orders:") and isinstance(v, list):
+                    parts = k.split(":")
+                    raw_v = parts[1] if len(parts) > 1 else ""
+                    venue_k = normalize_venue_name(raw_v) or raw_v
+                    if venue_k:
+                        vb_covered.add(venue_k)
+                    for oo in v:
+                        if isinstance(oo, dict):
+                            oid = clean_order_id(extract_order_id(oo, default=None)) or ""
+                            key_t = (venue_k, oid)
+                            if oid and key_t in terminal_order_keys:
+                                continue
+                            if not oid or key_t not in seen_keys:
+                                if oid:
+                                    seen_keys.add(key_t)
+                                out.append({"venue": venue_k, **oo})
+
+    for venue_key, oc_orders in oc_open_by_venue.items():
+        if venue_key in vb_covered:
+            continue
+        for oo in oc_orders:
+            oid = clean_order_id(extract_order_id(oo, default=None)) or ""
+            key_t = (venue_key, oid)
+            if not oid or key_t not in seen_keys:
+                if oid:
+                    seen_keys.add(key_t)
+                out.append(oo)
+
+    return out, (vb_covered | oc_covered), terminal_order_keys
+
+
+def _load_cached_open_orders_and_covered_venues(root: str) -> tuple[list[dict[str, Any]], set[str]]:
+    """Collect read-only resting open orders and the set of venues with an on-disk open-order snapshot."""
+    open_orders, covered_venues, _ = _load_cached_order_book_index(root)
+    return open_orders, covered_venues
 
 
 def _load_cached_open_orders(root: str) -> list[dict[str, Any]]:
     """Collect read-only resting open orders across all venue order caches and venue_balances_state."""
-    return _load_cached_open_orders_and_covered_venues(root)[0]
+    return _load_cached_order_book_index(root)[0]
+
+
+def _collect_terminal_outbox_keys(root: str) -> tuple[set[str], set[tuple[str, str]]]:
+    """Return terminal intent_ids and (venue, order_id) pairs recorded in order_retry_queue.jsonl."""
+    term_iids: set[str] = set()
+    term_oids: set[tuple[str, str]] = set()
+    for path in _iter_resolved_source_paths(root, DEFAULT_SOURCES[0]):
+        try:
+            records = _read(path, json_lines=True)
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(records, list):
+            continue
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            is_term = False
+            for st_field in _STATUS_FIELDS:
+                fv = _first(rec, st_field)
+                if fv is not None and str(fv).strip().lower() in _TERMINAL:
+                    is_term = True
+                    break
+            if not is_term:
+                tp = rec.get("terminal_status")
+                tp_st = _first(tp, "status") if isinstance(tp, dict) else (_first(rec, "terminal_status") if isinstance(tp, str) else None)
+                if tp_st is not None and str(tp_st).strip().lower() in _TERMINAL:
+                    is_term = True
+            if not is_term:
+                continue
+            if iid := clean_order_id(_first(rec, "intent_id")):
+                term_iids.add(iid)
+            raw_v = _first(rec, "provider_name", "venue")
+            v_k = str(normalize_venue_name(str(raw_v)) or raw_v or "").strip().lower()
+            if v_k and (oid := clean_order_id(_first(rec, "order_id", "id", "txid"))):
+                term_oids.add((v_k, oid))
+    return term_iids, term_oids
 
 
 def _prune_and_deduplicate_active_intents(intents: list[dict[str, Any]], root: str) -> list[dict[str, Any]]:
@@ -638,7 +699,7 @@ def _prune_and_deduplicate_active_intents(intents: list[dict[str, Any]], root: s
     if not intents:
         return []
     now_s = resolve_now_ts(None)
-    open_orders, covered_venues = _load_cached_open_orders_and_covered_venues(root)
+    open_orders, covered_venues, terminal_order_keys = _load_cached_order_book_index(root)
     live_open_oids: dict[str, set[str]] = {}
     for oo in open_orders:
         v_oo = str(oo.get("venue") or "").strip().lower()
@@ -653,22 +714,30 @@ def _prune_and_deduplicate_active_intents(intents: list[dict[str, Any]], root: s
         for r in outbox_rows
         if (oid_r := clean_order_id(r.get("order_id")))
     }
+    term_outbox_iids, term_outbox_oids = _collect_terminal_outbox_keys(root)
+    eff_terminal_oids = terminal_order_keys | (term_outbox_oids - outbox_oids)
+    eff_terminal_iids = term_outbox_iids - outbox_iids
 
     kept_primary: list[dict[str, Any]] = []
     for row in primary_rows:
         created_ts_s = safe_pos_float(row.pop("_created_ts_s", None), default=None)
-        if row.get("owner") == "autonomous_ai" and created_ts_s is not None:
-            age_s = max(0.0, now_s - created_ts_s)
+        if row.get("owner") == "autonomous_ai":
             v_k = str(row.get("venue") or "").strip().lower()
             oid_k = clean_order_id(row.get("order_id"))
             v_open_set = live_open_oids.get(v_k, set())
-            st_lc = str(row.get("status") or "").strip().lower()
-            if st_lc in {"pending", "pending_execution", "submit_unknown"} and age_s > 3600.0:
-                if row["intent_id"] not in outbox_iids and (not oid_k or oid_k not in v_open_set):
-                    continue
-            elif age_s > 300.0 and oid_k and v_k in covered_venues:
-                if oid_k not in v_open_set and (v_k, oid_k) not in outbox_oids:
-                    continue
+            if (oid_k and (v_k, oid_k) in eff_terminal_oids) or (
+                row.get("intent_id") in eff_terminal_iids and (not oid_k or oid_k not in v_open_set)
+            ):
+                continue
+            if created_ts_s is not None:
+                age_s = max(0.0, now_s - created_ts_s)
+                st_lc = str(row.get("status") or "").strip().lower()
+                if st_lc in {"pending", "pending_execution", "submit_unknown"} and age_s > 3600.0:
+                    if row["intent_id"] not in outbox_iids and (not oid_k or oid_k not in v_open_set):
+                        continue
+                elif age_s > 300.0 and oid_k and v_k in covered_venues:
+                    if oid_k not in v_open_set and (v_k, oid_k) not in outbox_oids:
+                        continue
         kept_primary.append(row)
 
     primary_iids = {r["intent_id"] for r in kept_primary if r.get("intent_id")}
