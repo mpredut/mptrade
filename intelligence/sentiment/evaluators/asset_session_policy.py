@@ -11,7 +11,7 @@ import math
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Tuple
 
-from botcore import safe_nonneg_float, safe_pos_float
+from botcore import _prices_diverged, safe_nonneg_float, safe_pos_float
 from instrument_registry import resolve_symbol_identity
 from intelligence.macro_sentiment_ssot import (
     SHORT_KINEMATIC_METRIC_KEYS,
@@ -21,7 +21,6 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     STALE_SHORT_24H_KEYS,
     _RTH_VP_ANCHOR_KEYS,
     _SHORT_SLOPE_OVERRIDE_KEYS,
-    _prices_diverged,
     compute_24h_price_metrics,
     normalize_and_dedup_24h_series,
     pct_delta,

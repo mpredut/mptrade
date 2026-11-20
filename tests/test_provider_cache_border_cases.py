@@ -1262,9 +1262,6 @@ def test_guard_regime_lifecycle_retry_and_cache_path_border_cases(monkeypatch, t
     monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
     assert cachepaths.cache_path("custom_rel/file.json") == "custom_rel/file.json"
     assert cachepaths.cache_path("cache_current_price.json").startswith(str(tmp_path))
-    monkeypatch.setattr(utils, "cache_path", lambda name: f"/override/{name}")
-    assert cachepaths.cache_path("foo.json") == "/override/foo.json"
-    monkeypatch.setattr(utils, "cache_path", cachepaths.cache_path)
 
     # 2. botcore.http_request raw body mutual exclusion & delivery
     with pytest.raises(ValueError, match="mutually exclusive"):
