@@ -59,7 +59,6 @@ from intelligence.macro_sentiment_ssot import (
     get_macro_benchmark_specs,
     get_market_breadth_endpoint_url,
     get_yahoo_chart_url,
-    load_cached_macro_benchmarks,
     normalize_market_bias,
     normalize_recommended_action,
     normalize_recommended_brake,
@@ -82,6 +81,7 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     evaluate_institutional_posture_divergence,
     format_equity_macro_regime_line,
     format_macro_benchmarks_summary_line,
+    load_cached_macro_benchmarks,
 )
 from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     build_cross_market_context,

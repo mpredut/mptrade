@@ -125,6 +125,7 @@ from intelligence.sentiment.collectors.portfolio_collector import (
     _resolve_ai_intents_and_known_order_ids,
 )
 from intelligence.sentiment.evaluators import (
+    macro_telemetry_evaluator as mte_mod,
     microstructure_evaluator as me_mod,
     price_series_evaluator as pse_mod,
 )
@@ -1325,7 +1326,7 @@ def test_guard_regime_lifecycle_retry_and_cache_path_border_cases(monkeypatch, t
             "sentiment_eval.json",
         ),
     )
-    monkeypatch.setattr(mss, "load_cached_macro_benchmarks", lambda *_a, **_kw: {"ts": "corrupt"})
+    monkeypatch.setattr(mte_mod, "load_cached_macro_benchmarks", lambda *_a, **_kw: {"ts": "corrupt"})
     ok, _, scale = llm_order_guard.check_geopolitical_order_guards(
         "BTCUSDC",
         "BUY",
@@ -2775,7 +2776,7 @@ def test_wave15_bind_attr_call_monkeypatch_seams_isolated_cfg_loader_and_nan_ts_
     )
     assert coord.evaluate("BTCUSDC") is None
 
-    summary_crypto_only = mss.format_macro_benchmarks_summary_line(
+    summary_crypto_only = mte_mod.format_macro_benchmarks_summary_line(
         {"items": {}, "coinbase_premium_bps": 12.5, "btc_dvol": 55.0}
     )
     assert "CB_Premium=+12.5bps" in summary_crypto_only and "BTC_DVOL=55.0%" in summary_crypto_only

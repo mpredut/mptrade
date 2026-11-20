@@ -61,10 +61,12 @@ import intelligence.macro.news_feed_collector as _news_collector
 from intelligence.macro_sentiment_ssot import (
     extract_high_severity_headlines_and_digest,
     load_cached_fear_greed_snapshot,
-    load_cached_macro_benchmarks,
     load_cached_market_breadth_snapshot,
     load_cached_whale_telemetry,
     resolve_derived_telemetry_intervals,
+)
+from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+    load_cached_macro_benchmarks,
 )
 import intelligence.sentiment.sentiment_advisor as _sentiment_advisor
 import notify_engine.alertnotifiers as _alertnotifiers

@@ -8,6 +8,7 @@ intrabar ambiguity resolution without network, notifications, or persistent stat
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 import contextlib
 import copy
 import dataclasses
@@ -317,6 +318,431 @@ def run_replay(
     return chosen
 
 
+class ReplaySessionBase(ABC):
+    """Abstract base (Level 2) for bar-by-bar OHLC replay sessions sharing accounting and summary logic."""
+
+    def __init__(
+        self,
+        ohlc,
+        *,
+        initial_capital: float,
+        account_currency: str,
+        execution: ExecutionModel,
+        bar_minutes: float | None = None,
+        periods_per_year: float | None = None,
+        initial_cycle_net_start: float = 0.0,
+    ) -> None:
+        self.ohlc = ohlc
+        self.initial_capital = initial_capital
+        self.account_currency = account_currency
+        self.execution = execution
+        self.bar_minutes = bar_minutes
+        self.periods_per_year = periods_per_year
+        self.equity_curve: list[float] = [initial_capital]
+        self.exposure: list[bool] = []
+        self.trade_pnls: list[float] = []
+        self.fills = 0
+        self.wins = 0
+        self.ambiguous_bars = 0
+        self.turnover_notional = 0.0
+        self.cycle_net_start = initial_cycle_net_start
+
+    def _execution_context(self):
+        return contextlib.nullcontext()
+
+    def _setup_session(self) -> None:
+        return None
+
+    @abstractmethod
+    def _step_bar(self, bar_index: int, open_: float, high: float, low: float, close: float) -> None:
+        """Advance the replay session through a single OHLC bar."""
+
+    def _finalize_end_of_replay(self) -> None:
+        return None
+
+    @abstractmethod
+    def _build_summary(self) -> dict:
+        """Build the standardized replay summary dict after the bar loop completes."""
+
+    def _record_bar_equity(self, equity: float, exposed: bool) -> None:
+        self.equity_curve.append(equity)
+        self.exposure.append(exposed)
+
+    def _overwrite_tail_equity(self, equity: float, exposed: bool) -> None:
+        overwrite_tail_equity_and_exposure(self.equity_curve, self.exposure, equity, exposed)
+
+    def _record_closed_cycle(self, realized_net: float) -> None:
+        self.cycle_net_start, self.wins = record_closed_cycle_pnl(
+            realized_net, self.cycle_net_start, self.trade_pnls, self.wins
+        )
+
+    def _build_summary_from_state(
+        self,
+        *,
+        realized: float,
+        net: float,
+        fees: float,
+        total: float,
+        final_upnl: float,
+        cycles: int,
+        open_qty: float,
+        extra_fields: dict | None = None,
+    ) -> dict:
+        return build_replay_summary(
+            realized=realized,
+            net=net,
+            fees=fees,
+            total=total,
+            final_upnl=final_upnl,
+            cycles=cycles,
+            wins=self.wins,
+            open_qty=open_qty,
+            fills=self.fills,
+            ambiguous_bars=self.ambiguous_bars,
+            initial_capital=self.initial_capital,
+            account_currency=self.account_currency,
+            equity_curve=self.equity_curve,
+            exposure=self.exposure,
+            trade_pnls=self.trade_pnls,
+            turnover_notional=self.turnover_notional,
+            bar_minutes=self.bar_minutes,
+            periods_per_year=self.periods_per_year,
+            extra_fields=extra_fields,
+        )
+
+    def run(self) -> dict:
+        """Execute the full replay session lifecycle and return the summary dict."""
+        with self._execution_context():
+            self._setup_session()
+            for bar_index, row in enumerate(self.ohlc):
+                open_, high, low, close = unpack_ohlc_bar(row)
+                self._step_bar(bar_index, open_, high, low, close)
+            self._finalize_end_of_replay()
+        return self._build_summary()
+
+
+class _SpotReplaySession(ReplaySessionBase):
+    """Concrete replay session (Level 3) executing ``strategies.spot_engine.Strategy``."""
+
+    def __init__(
+        self,
+        ohlc,
+        params,
+        *,
+        fee_model: FeeModel,
+        bar_minutes: float | None,
+        warmup_ohlc,
+        execution: ExecutionModel,
+        include_decision_trace: bool,
+        initial_cash: float | None,
+        dca_drop_series=None,
+        reentry_series=None,
+        intrabar_high: bool = False,
+        timestamps: tuple[float, ...] | None = None,
+        warmup_timestamps: tuple[float | None, ...] | None = None,
+    ) -> None:
+        if dca_drop_series is not None or reentry_series is not None:
+            params = dataclasses.replace(params) if dataclasses.is_dataclass(params) else copy.copy(params)
+        self.params = params
+        self.fee_model = fee_model
+        self.warmup_ohlc = warmup_ohlc
+        self.include_decision_trace = include_decision_trace
+        self.initial_cash = initial_cash
+        self.dca_drop_series = dca_drop_series
+        self.reentry_series = reentry_series
+        self.intrabar_high = intrabar_high
+        self.timestamps = timestamps
+        self.warmup_timestamps = warmup_timestamps
+        self.allocated_budget = require_pos_float(params.allocated_budget(), "allocated_budget")
+        self.cash = require_pos_float(initial_cash, "initial_cash") if initial_cash is not None else None
+        self.min_cash = self.cash
+        self.cash_refusals = 0
+        self.decision_trace: list[dict] = []
+        self.current_bar = -1
+        self.default_dca_drop = params.dca_drop_pct
+        self.default_reentry_drop = params.reentry_drop_pct
+        self.check_ttl = bar_minutes is None or bar_minutes >= params.order_ttl_min
+        self.bar_step_sec = bar_minutes * 60 if bar_minutes else 1
+        self.side_order = execution.side_order()
+        self.client = _ReplayClient(self.allocated_budget)
+        self.strategy = None
+        self._original_place = None
+        self.cycle0 = 1
+        self.last_close = 0.0
+        super().__init__(
+            ohlc,
+            initial_capital=self.allocated_budget if self.cash is None else self.cash,
+            account_currency=params.currency,
+            execution=execution,
+            bar_minutes=bar_minutes,
+        )
+
+    def _execution_context(self):
+        return silence_strategy_log_notify(_strat)
+
+    def _setup_session(self) -> None:
+        strategy = _strat.Strategy(
+            self.client, "REPLAY", self.params, dry_run=True, initial_state=_strat._new_state(), replay_mode=True,
+        )
+        base_ts = self.timestamps[0] if self.timestamps else 0.0
+        for eff_wt, close_f in build_warmup_shadow_prices(
+            self.warmup_ohlc,
+            bar_minutes=self.bar_minutes,
+            base_ts=base_ts,
+            warmup_timestamps=self.warmup_timestamps,
+            normalize_ms=True,
+        ):
+            strategy._shadow_prices.append((eff_wt, close_f))
+            if strategy._surge_replay_closes is not None:
+                strategy._surge_replay_closes.append(close_f)
+        strategy.set_simulated_time(base_ts)
+        strategy._save = _silent
+        self.strategy = strategy
+        self._original_place = strategy._place
+        self.client._free_balance_fn = self._free_balance_for_asset
+        if self.cash is not None:
+            self.client.buy_fee_pct = self.fee_model.rate_pct(market=False)
+        if self.include_decision_trace or self.cash is not None:
+            strategy._place = self._traced_place
+        self.cycle0 = strategy.s.get("cycle", 1)
+        self.cycle_net_start = strategy.s["realized_net"]
+
+    def _free_balance_for_asset(self, asset) -> float:
+        asset_norm = str(asset or "").strip().upper()
+        if asset_norm == _REPLAY_PRECISION.base_asset:
+            reserved_sell = sum(
+                safe_nonneg_float(o.get("vol"), default=0.0)
+                for o in self.strategy.s["orders"]
+                if normalize_side(o.get("side")) == "SELL"
+            )
+            return max(0.0, safe_nonneg_float(self.strategy.s.get("qty"), default=0.0) - reserved_sell)
+        if self.cash is None:
+            return self.client._default_balance
+        reserved = sum(
+            o["vol"] * o["price"] * (1 + self.fee_model.rate_pct(market=is_market_order(o)) / 100)
+            for o in self.strategy.s["orders"]
+            if normalize_side(o.get("side")) == "BUY"
+        )
+        return max(0.0, self.cash - reserved)
+
+    def _traced_place(self, side, vol, price, kind, amount=0.0, market=False, **place_kw):
+        market = _parse_bool_flag(market, False)
+        side_norm = normalize_side(side)
+        vol_f = safe_pos_float(vol, default=None)
+        px_f = safe_pos_float(price, default=None)
+        if self.cash is not None and side_norm == "BUY":
+            insufficient = (
+                vol_f is not None
+                and px_f is not None
+                and (
+                    round(vol_f, self.strategy.vol_dec)
+                    * round(px_f, self.strategy.price_dec)
+                    * (1 + self.fee_model.rate_pct(market=market) / 100)
+                    > self._free_balance_for_asset(self.params.currency) + 1e-9
+                )
+            )
+            if vol_f is None or px_f is None or insufficient:
+                self.cash_refusals += 1 if insufficient else 0
+                return False
+        accepted = self._original_place(side, vol, price, kind, amount=amount, market=market, **place_kw)
+        if accepted and self.include_decision_trace and px_f is not None and vol_f is not None:
+            self.decision_trace.append({
+                "bar": self.current_bar,
+                "side": side,
+                "kind": kind,
+                "market": market,
+                "price": round(px_f, 10),
+                "qty": round(vol_f, 10),
+            })
+        return accepted
+
+    def _settle_order_fill(
+        self,
+        order_to_remove: dict | None,
+        fill_order: dict,
+        side: str,
+        volume: float,
+        price: float,
+        *,
+        market: bool,
+        final: bool,
+    ) -> None:
+        if order_to_remove is not None:
+            self.strategy._remove(order_to_remove)
+        fee = self.fee_model.rate_pct(market=market) / 100.0 * volume * price
+        if self.cash is not None:
+            self.cash += (-1 if side == "buy" else 1) * volume * price - fee
+            if self.cash < -1e-8:
+                raise ValueError("cash account overdrawn by simulated execution")
+            if self.cash < 0.0:
+                self.cash = 0.0
+            self.min_cash = min(self.min_cash, self.cash)
+        self.strategy._apply_fill(fill_order, volume, price, fee=fee, final=final)
+        self.fills += 1
+        self.turnover_notional += volume * price
+        if side == "sell" and self.strategy.s.get("cycle", 1) > self.cycle0 + len(self.trade_pnls):
+            self._record_closed_cycle(self.strategy.s["realized_net"])
+
+    def _cap_buy_fill_to_cash(
+        self,
+        order: dict,
+        fill_order: dict,
+        volume: float,
+        price: float,
+        *,
+        market: bool,
+        complete: bool,
+    ) -> tuple[float, bool] | None:
+        if self.cash is None:
+            return volume, complete
+        fee_mult = 1.0 + self.fee_model.rate_pct(market=market) / 100.0
+        needed = volume * price * fee_mult
+        if needed <= self.cash + 1e-8:
+            return volume, complete
+        max_vol = max(0.0, self.cash / (price * fee_mult)) if price * fee_mult > 0 else 0.0
+        if max_vol <= 1e-12:
+            self.strategy._remove(order)
+            self.cash_refusals += 1
+            return None
+        orig_vol = volume
+        volume = min(volume, max_vol)
+        fill_order["vol"] = volume
+        orig_amt = safe_nonneg_float(fill_order.get("amount"), default=None)
+        fill_order["amount"] = (
+            orig_amt * (volume / orig_vol)
+            if orig_amt is not None and orig_vol > 0.0
+            else volume * price
+        )
+        order["vol"] = 0.0
+        if "amount" in order:
+            order["amount"] = 0.0
+        return volume, True
+
+    def _settle_intrabar_orders(self, open_: float, high: float, low: float, close: float) -> None:
+        orders = self.strategy.s["orders"]
+        if not orders:
+            return
+        eligible_orders, is_ambiguous = select_eligible_intrabar_orders(
+            orders, self.execution, high=high, low=low, limit_key="price",
+        )
+        if eligible_orders:
+            self.ambiguous_bars += 1 if is_ambiguous else 0
+            for side, order in iter_eligible_orders_in_side_order(
+                eligible_orders, self.strategy.s["orders"], self.side_order
+            ):
+                market, price = resolve_order_fill_price(
+                    order, side, open_, self.execution, limit_key="price"
+                )
+                fill_order, volume, complete = split_order_fill(
+                    order,
+                    quantity_key="vol",
+                    amount_key="amount" if side == "buy" else None,
+                    ratio=self.execution.partial_fill_ratio,
+                    force_full=market,
+                )
+                if side == "sell":
+                    volume, complete = clamp_sell_fill_to_held(volume, self.strategy.s["qty"], complete)
+                    if volume <= 0.0:
+                        self.strategy._remove(order)
+                        continue
+                    fill_order["vol"] = volume
+                elif side == "buy":
+                    capped = self._cap_buy_fill_to_cash(
+                        order, fill_order, volume, price, market=market, complete=complete
+                    )
+                    if capped is None:
+                        continue
+                    volume, complete = capped
+                self._settle_order_fill(
+                    order if complete else None,
+                    fill_order,
+                    side,
+                    volume,
+                    price,
+                    market=market,
+                    final=complete,
+                )
+        if self.check_ttl and self.strategy.s["orders"]:
+            for order in list(self.strategy.s["orders"]):
+                if order["side"] == "buy" and not is_market_order(order) and close > order["price"] * 1.003:
+                    self.strategy._remove(order)
+
+    def _step_bar(self, bar_index: int, open_: float, high: float, low: float, close: float) -> None:
+        self.current_bar = bar_index
+        replay_time = self.timestamps[bar_index] if self.timestamps else bar_index * self.bar_step_sec
+        self.strategy.set_simulated_time(replay_time)
+        if self.dca_drop_series is not None:
+            self.strategy.p.dca_drop_pct = (
+                safe_pos_float(self.dca_drop_series[bar_index], default=self.default_dca_drop)
+                if bar_index < len(self.dca_drop_series)
+                else self.default_dca_drop
+            )
+        if self.reentry_series is not None:
+            self.strategy.p.reentry_drop_pct = (
+                safe_nonneg_float(self.reentry_series[bar_index], default=self.default_reentry_drop)
+                if bar_index < len(self.reentry_series)
+                else self.default_reentry_drop
+            )
+        self._settle_intrabar_orders(open_, high, low, close)
+        self.strategy.step(close, timestamp=replay_time, high=high if self.intrabar_high else None)
+        q = self.strategy.s["qty"]
+        upnl = (close - self.strategy.s["cost"] / q) * q if q > 1e-12 else 0.0
+        self._record_bar_equity(self.initial_capital + self.strategy.s["realized_net"] + upnl, q > 1e-12)
+
+    def _finalize_end_of_replay(self) -> None:
+        last_close, end_exit_orders = iter_end_of_replay_market_sell_orders(
+            self.ohlc, self.strategy.s["orders"], self.strategy.s["qty"]
+        )
+        self.last_close = last_close
+        settled_end_exit = False
+        for order in end_exit_orders:
+            if self.strategy.s["qty"] <= 1e-12:
+                break
+            volume = min(require_pos_float(order["vol"], "order_vol"), self.strategy.s["qty"])
+            self._settle_order_fill(
+                order,
+                order,
+                "sell",
+                volume,
+                self.execution.market_price("sell", last_close),
+                market=True,
+                final=True,
+            )
+            settled_end_exit = True
+        if settled_end_exit:
+            q = self.strategy.s["qty"]
+            upnl = (last_close - self.strategy.s["cost"] / q) * q if q > 1e-12 else 0.0
+            self._overwrite_tail_equity(self.initial_capital + self.strategy.s["realized_net"] + upnl, q > 1e-12)
+
+    def _build_summary(self) -> dict:
+        qty = self.strategy.s["qty"]
+        final_upnl = (self.last_close - self.strategy.s["cost"] / qty) * qty if qty > 1e-12 else 0.0
+        result = self._build_summary_from_state(
+            realized=self.strategy.s["realized_gross"],
+            net=self.strategy.s["realized_net"],
+            fees=self.strategy.s["fees_total"],
+            total=self.strategy.s["realized_net"] + final_upnl,
+            final_upnl=final_upnl,
+            cycles=self.strategy.s.get("cycle", 1) - self.cycle0,
+            open_qty=qty,
+        )
+        if self.include_decision_trace:
+            result["decision_trace"] = self.decision_trace
+        if self.cash is not None:
+            result["funding"] = {
+                "initial_cash": self.initial_cash,
+                "final_cash": round_metric(self.cash),
+                "minimum_cash": round_metric(self.min_cash),
+                "refused_buys": self.cash_refusals,
+            }
+        global _LAST_REPLAY_DIAG
+        _LAST_REPLAY_DIAG = {
+            "max_active_surge_vol": self.strategy._max_active_surge_vol,
+            "surge_win_check_ts": tuple(self.strategy._surge_win_check_ts),
+        }
+        return result
+
+
 def _run_once(
     ohlc,
     params,
@@ -333,303 +759,21 @@ def _run_once(
     timestamps: tuple[float, ...] | None = None,
     warmup_timestamps: tuple[float | None, ...] | None = None,
 ) -> dict:
-    if dca_drop_series is not None or reentry_series is not None:
-        params = dataclasses.replace(params) if dataclasses.is_dataclass(params) else copy.copy(params)
-    allocated_budget = require_pos_float(params.allocated_budget(), "allocated_budget")
-    client = _ReplayClient(allocated_budget)
-    with silence_strategy_log_notify(_strat):
-        strategy = _strat.Strategy(
-            client, "REPLAY", params, dry_run=True, initial_state=_strat._new_state(), replay_mode=True,
-        )
-        base_ts = timestamps[0] if timestamps else 0.0
-        for eff_wt, close_f in build_warmup_shadow_prices(
-            warmup_ohlc,
-            bar_minutes=bar_minutes,
-            base_ts=base_ts,
-            warmup_timestamps=warmup_timestamps,
-            normalize_ms=True,
-        ):
-            strategy._shadow_prices.append((eff_wt, close_f))
-            if strategy._surge_replay_closes is not None:
-                strategy._surge_replay_closes.append(close_f)
-        strategy.set_simulated_time(base_ts)
-        strategy._save = _silent
-        decision_trace = []
-        current_bar = -1
-        original_place = strategy._place
-        cash = require_pos_float(initial_cash, "initial_cash") if initial_cash is not None else None
-        min_cash = cash
-        cash_refusals = 0
-
-        def free_balance_for_asset(asset):
-            asset_norm = str(asset or "").strip().upper()
-            if asset_norm == _REPLAY_PRECISION.base_asset:
-                reserved_sell = sum(
-                    safe_nonneg_float(o.get("vol"), default=0.0)
-                    for o in strategy.s["orders"]
-                    if normalize_side(o.get("side")) == "SELL"
-                )
-                return max(0.0, safe_nonneg_float(strategy.s.get("qty"), default=0.0) - reserved_sell)
-            if cash is None:
-                return client._default_balance
-            reserved = sum(
-                o["vol"] * o["price"] * (1 + fee_model.rate_pct(market=is_market_order(o)) / 100)
-                for o in strategy.s["orders"]
-                if normalize_side(o.get("side")) == "BUY"
-            )
-            return max(0.0, cash - reserved)
-
-        client._free_balance_fn = free_balance_for_asset
-        if cash is not None:
-            client.buy_fee_pct = fee_model.rate_pct(market=False)
-
-        def traced_place(side, vol, price, kind, amount=0.0, market=False, **place_kw):
-            nonlocal cash_refusals
-            market = _parse_bool_flag(market, False)
-            side_norm = normalize_side(side)
-            vol_f = safe_pos_float(vol, default=None)
-            px_f = safe_pos_float(price, default=None)
-            if cash is not None and side_norm == "BUY":
-                insufficient = (
-                    vol_f is not None
-                    and px_f is not None
-                    and (
-                        round(vol_f, strategy.vol_dec)
-                        * round(px_f, strategy.price_dec)
-                        * (1 + fee_model.rate_pct(market=market) / 100)
-                        > free_balance_for_asset(params.currency) + 1e-9
-                    )
-                )
-                if vol_f is None or px_f is None or insufficient:
-                    cash_refusals += 1 if insufficient else 0
-                    return False
-            accepted = original_place(side, vol, price, kind, amount=amount, market=market, **place_kw)
-            if accepted and include_decision_trace and px_f is not None and vol_f is not None:
-                decision_trace.append({
-                    "bar": current_bar,
-                    "side": side,
-                    "kind": kind,
-                    "market": market,
-                    "price": round(px_f, 10),
-                    "qty": round(vol_f, 10),
-                })
-            return accepted
-
-        if include_decision_trace or cash is not None:
-            strategy._place = traced_place
-        cycle0 = strategy.s.get("cycle", 1)
-        wins = fill_count = ambiguous_bars = 0
-        turnover_notional = 0.0
-        trade_pnls = []
-        cycle_net_start = strategy.s["realized_net"]
-        initial_capital = allocated_budget if cash is None else cash
-        equity_curve = [initial_capital]
-        exposure = []
-
-        default_dca_drop, default_reentry_drop = params.dca_drop_pct, params.reentry_drop_pct
-        check_ttl = bar_minutes is None or bar_minutes >= params.order_ttl_min
-        bar_step_sec = bar_minutes * 60 if bar_minutes else 1
-        side_order = execution.side_order()
-
-        def _settle_order_fill(
-            order_to_remove: dict | None,
-            fill_order: dict,
-            side: str,
-            volume: float,
-            price: float,
-            *,
-            market: bool,
-            final: bool,
-        ) -> None:
-            nonlocal cash, min_cash, fill_count, turnover_notional, wins, cycle_net_start
-            if order_to_remove is not None:
-                strategy._remove(order_to_remove)
-            fee = fee_model.rate_pct(market=market) / 100.0 * volume * price
-            if cash is not None:
-                cash += (-1 if side == "buy" else 1) * volume * price - fee
-                if cash < -1e-8:
-                    raise ValueError("cash account overdrawn by simulated execution")
-                if cash < 0.0:
-                    cash = 0.0
-                min_cash = min(min_cash, cash)
-            strategy._apply_fill(fill_order, volume, price, fee=fee, final=final)
-            fill_count += 1
-            turnover_notional += volume * price
-            if side == "sell" and strategy.s.get("cycle", 1) > cycle0 + len(trade_pnls):
-                cycle_net_start, wins = record_closed_cycle_pnl(
-                    strategy.s["realized_net"], cycle_net_start, trade_pnls, wins
-                )
-
-        def _cap_spot_buy_fill_to_cash(
-            order: dict,
-            fill_order: dict,
-            volume: float,
-            price: float,
-            *,
-            market: bool,
-            complete: bool,
-        ) -> tuple[float, bool] | None:
-            nonlocal cash_refusals
-            if cash is None:
-                return volume, complete
-            fee_mult = 1.0 + fee_model.rate_pct(market=market) / 100.0
-            needed = volume * price * fee_mult
-            if needed <= cash + 1e-8:
-                return volume, complete
-            max_vol = max(0.0, cash / (price * fee_mult)) if price * fee_mult > 0 else 0.0
-            if max_vol <= 1e-12:
-                strategy._remove(order)
-                cash_refusals += 1
-                return None
-            orig_vol = volume
-            volume = min(volume, max_vol)
-            fill_order["vol"] = volume
-            orig_amt = safe_nonneg_float(fill_order.get("amount"), default=None)
-            fill_order["amount"] = (
-                orig_amt * (volume / orig_vol)
-                if orig_amt is not None and orig_vol > 0.0
-                else volume * price
-            )
-            order["vol"] = 0.0
-            if "amount" in order:
-                order["amount"] = 0.0
-            return volume, True
-
-        def _settle_spot_intrabar_orders(open_: float, high: float, low: float, close: float) -> None:
-            nonlocal ambiguous_bars
-            orders = strategy.s["orders"]
-            if not orders:
-                return
-            eligible_orders, is_ambiguous = select_eligible_intrabar_orders(
-                orders, execution, high=high, low=low, limit_key="price",
-            )
-            if eligible_orders:
-                ambiguous_bars += 1 if is_ambiguous else 0
-                for side, order in iter_eligible_orders_in_side_order(
-                    eligible_orders, strategy.s["orders"], side_order
-                ):
-                    market, price = resolve_order_fill_price(
-                        order, side, open_, execution, limit_key="price"
-                    )
-                    fill_order, volume, complete = split_order_fill(
-                        order,
-                        quantity_key="vol",
-                        amount_key="amount" if side == "buy" else None,
-                        ratio=execution.partial_fill_ratio,
-                        force_full=market,
-                    )
-                    if side == "sell":
-                        volume, complete = clamp_sell_fill_to_held(volume, strategy.s["qty"], complete)
-                        if volume <= 0.0:
-                            strategy._remove(order)
-                            continue
-                        fill_order["vol"] = volume
-                    elif side == "buy":
-                        capped = _cap_spot_buy_fill_to_cash(
-                            order, fill_order, volume, price, market=market, complete=complete
-                        )
-                        if capped is None:
-                            continue
-                        volume, complete = capped
-                    _settle_order_fill(
-                        order if complete else None,
-                        fill_order,
-                        side,
-                        volume,
-                        price,
-                        market=market,
-                        final=complete,
-                    )
-            if check_ttl and strategy.s["orders"]:
-                for order in list(strategy.s["orders"]):
-                    if order["side"] == "buy" and not is_market_order(order) and close > order["price"] * 1.003:
-                        strategy._remove(order)
-
-        for bar_index, row in enumerate(ohlc):
-            open_, high, low, close = unpack_ohlc_bar(row)
-            current_bar = bar_index
-            replay_time = timestamps[bar_index] if timestamps else bar_index * bar_step_sec
-            strategy.set_simulated_time(replay_time)
-            if dca_drop_series is not None:
-                strategy.p.dca_drop_pct = (
-                    safe_pos_float(dca_drop_series[bar_index], default=default_dca_drop)
-                    if bar_index < len(dca_drop_series)
-                    else default_dca_drop
-                )
-            if reentry_series is not None:
-                strategy.p.reentry_drop_pct = (
-                    safe_nonneg_float(reentry_series[bar_index], default=default_reentry_drop)
-                    if bar_index < len(reentry_series)
-                    else default_reentry_drop
-                )
-            _settle_spot_intrabar_orders(open_, high, low, close)
-            strategy.step(close, timestamp=replay_time, high=high if intrabar_high else None)
-            q = strategy.s["qty"]
-            upnl = (close - strategy.s["cost"] / q) * q if q > 1e-12 else 0.0
-            equity_curve.append(initial_capital + strategy.s["realized_net"] + upnl)
-            exposure.append(q > 1e-12)
-
-        last_close, end_exit_orders = iter_end_of_replay_market_sell_orders(
-            ohlc, strategy.s["orders"], strategy.s["qty"]
-        )
-        settled_end_exit = False
-        for order in end_exit_orders:
-            if strategy.s["qty"] <= 1e-12:
-                break
-            volume = min(require_pos_float(order["vol"], "order_vol"), strategy.s["qty"])
-            _settle_order_fill(
-                order,
-                order,
-                "sell",
-                volume,
-                execution.market_price("sell", last_close),
-                market=True,
-                final=True,
-            )
-            settled_end_exit = True
-        if settled_end_exit:
-            q = strategy.s["qty"]
-            upnl = (last_close - strategy.s["cost"] / q) * q if q > 1e-12 else 0.0
-            overwrite_tail_equity_and_exposure(
-                equity_curve, exposure, initial_capital + strategy.s["realized_net"] + upnl, q > 1e-12
-            )
-
-    qty = strategy.s["qty"]
-    final_upnl = (last_close - strategy.s["cost"] / qty) * qty if qty > 1e-12 else 0.0
-    result = build_replay_summary(
-        realized=strategy.s["realized_gross"],
-        net=strategy.s["realized_net"],
-        fees=strategy.s["fees_total"],
-        total=strategy.s["realized_net"] + final_upnl,
-        final_upnl=final_upnl,
-        cycles=strategy.s.get("cycle", 1) - cycle0,
-        wins=wins,
-        open_qty=qty,
-        fills=fill_count,
-        ambiguous_bars=ambiguous_bars,
-        initial_capital=initial_capital,
-        account_currency=params.currency,
-        equity_curve=equity_curve,
-        exposure=exposure,
-        trade_pnls=trade_pnls,
-        turnover_notional=turnover_notional,
+    return _SpotReplaySession(
+        ohlc,
+        params,
+        fee_model=fee_model,
         bar_minutes=bar_minutes,
-    )
-    if include_decision_trace:
-        result["decision_trace"] = decision_trace
-    if cash is not None:
-        result["funding"] = {
-            "initial_cash": initial_cash,
-            "final_cash": round_metric(cash),
-            "minimum_cash": round_metric(min_cash),
-            "refused_buys": cash_refusals,
-        }
-    global _LAST_REPLAY_DIAG
-    _LAST_REPLAY_DIAG = {
-        "max_active_surge_vol": strategy._max_active_surge_vol,
-        "surge_win_check_ts": tuple(strategy._surge_win_check_ts),
-    }
-    return result
+        warmup_ohlc=warmup_ohlc,
+        execution=execution,
+        include_decision_trace=include_decision_trace,
+        initial_cash=initial_cash,
+        dca_drop_series=dca_drop_series,
+        reentry_series=reentry_series,
+        intrabar_high=intrabar_high,
+        timestamps=timestamps,
+        warmup_timestamps=warmup_timestamps,
+    ).run()
 
 
 def make_spot_replay_adapter(

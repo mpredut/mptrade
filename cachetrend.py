@@ -570,6 +570,128 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             self._start_full_eval_loop()
 
     # -- Full metric calculation without trading logic ------------------------
+    def _compute_kinematic_metrics(self, wins, pwin) -> Dict[str, float]:
+        kin_extra: Dict[str, float] = {}
+        try:
+            w_90_kin = wins.get(90) or pwin
+            w_5m_kin = wins.get(900) or wins.get(300) or wins.get(self.window_seconds[-1]) or pwin
+            for w_kin, horizon_sec, min_span_sec, label in (
+                (w_90_kin, 90.0, 45.0, "90s"),
+                (w_5m_kin, 300.0, 120.0, "5m"),
+            ):
+                n_kin = len(getattr(w_kin, "prices", ()))
+                r_kin = max(safe_pos_float(getattr(w_kin, "sample_rate_sec", 1.0), default=1.0) or 1.0, 0.1)
+                if hasattr(w_kin, "calculate_acceleration") and n_kin >= 3 and (n_kin - 1) * r_kin >= min_span_sec:
+                    vel_k, acc_k = w_kin.calculate_acceleration(window_sec=horizon_sec)
+                    if abs(vel_k) >= 1e-6 or abs(acc_k) >= 1e-6:
+                        kin_extra[f"vel_{label}_pct_min"] = round(vel_k, 5)
+                        kin_extra[f"accel_{label}_pct_min2"] = round(acc_k, 5)
+        except Exception:
+            pass
+        return kin_extra
+
+    def _compute_realized_vol_1h(self, symbol: str, w_big) -> Optional[float]:
+        if w_big is None:
+            return None
+        try:
+            with getattr(w_big, "_lock", threading.RLock()):
+                eff_v1h_sr = safe_pos_float(w_big.sample_rate_sec, default=1.0) or 1.0
+                n_big = len(w_big.prices)
+                v1h_prices = w_big.prices
+                if n_big >= 20:
+                    with self._lock:
+                        tbuf_v = self._get_trend_buffer(symbol)
+                        ts_tail = list(tbuf_v.timestamps[-n_big:]) if len(tbuf_v.timestamps) >= n_big else []
+                    if len(ts_tail) >= 20:
+                        max_intra_dt = max(
+                            1800.0,
+                            min(7200.0, safe_pos_float(getattr(w_big, "window_seconds", 9000.0), default=9000.0) or 9000.0),
+                        )
+                        active_dts = [
+                            (ts_tail[i] - ts_tail[i - 1]) / 1000.0
+                            for i in range(1, len(ts_tail))
+                            if 0.0 < (ts_tail[i] - ts_tail[i - 1]) / 1000.0 <= max_intra_dt
+                        ]
+                        if active_dts:
+                            eff_v1h_sr = max(eff_v1h_sr, sum(active_dts) / len(active_dts))
+                        nz_big = sum(
+                            1 for i in range(1, len(w_big.prices)) if abs(w_big.prices[i] - w_big.prices[i - 1]) > 1e-12
+                        )
+                        if nz_big < 10 or eff_v1h_sr < 30.0:
+                            with self._lock:
+                                tbuf_v = self._get_trend_buffer(symbol)
+                                all_tbuf_ts = list(tbuf_v.timestamps)
+                                all_tbuf_px = list(tbuf_v.prices)
+                            if len(all_tbuf_ts) >= 20 and len(all_tbuf_ts) == len(all_tbuf_px):
+                                sub_1m: List[Tuple[float, float]] = []
+                                last_t_ms = -1e18
+                                for t_ms, px_v in zip(all_tbuf_ts, all_tbuf_px):
+                                    t_ms_f = safe_float(t_ms, default=None)
+                                    px_v_f = safe_pos_float(px_v, default=None)
+                                    if t_ms_f is not None and px_v_f is not None and (t_ms_f - last_t_ms) >= 55000.0:
+                                        sub_1m.append((t_ms_f, px_v_f))
+                                        last_t_ms = t_ms_f
+                                if len(sub_1m) >= 20:
+                                    tail_1m = sub_1m[-60:]
+                                    eff_v1h_sr = max(
+                                        60.0,
+                                        (tail_1m[-1][0] - tail_1m[0][0]) / (1000.0 * max(1, len(tail_1m) - 1)),
+                                    )
+                                    v1h_prices = [r[1] for r in tail_1m]
+                return pw.calculate_volatility_1h(v1h_prices, eff_v1h_sr)
+        except Exception:
+            return None
+
+    def _update_kalman_tracker_fields(
+        self,
+        symbol: str,
+        observed_at: float,
+        current_price: float,
+        eps_primary: float,
+        w_big,
+        v1h: Optional[float],
+    ) -> Dict[str, Any]:
+        if not (
+            self.writer
+            and self._full_eval_thread is not None
+            and is_live_network_backfill_enabled(getattr(self, "_enable_kalman_tracker", None))
+        ):
+            return {}
+        try:
+            k_tracker = getattr(self, "_kalman_tracker", None)
+            if k_tracker is None:
+                k_path = os.path.join(os.path.dirname(self.filename), self.KALMAN_TREND_FILENAME)
+                tracker_cls = self._kalman_tracker_factory if callable(self._kalman_tracker_factory) else KalmanStateTracker
+                k_tracker = tracker_cls(state_path=k_path, compute_vol=False)
+                self._kalman_tracker = k_tracker
+            with getattr(w_big, "_lock", threading.RLock()) if w_big is not None else threading.RLock():
+                big_seq = list(w_big.prices) if w_big is not None else ()
+                big_sr = (safe_pos_float(w_big.sample_rate_sec, default=1.0) or 1.0) if w_big is not None else 1.0
+            k_fields = k_tracker.update(
+                symbol,
+                observed_at,
+                current_price,
+                epsilon=eps_primary,
+                big_prices=big_seq,
+                big_sample_rate=big_sr,
+                precomputed_vol_1h_pct=v1h,
+            )
+            if isinstance(k_fields, dict):
+                return {
+                    k: k_fields[k]
+                    for k in (
+                        "kalman_vel",
+                        "kalman_vel_std",
+                        "kalman_trend",
+                        "adapt_reentry_pct",
+                        "adapt_dca_pct",
+                    )
+                    if k_fields.get(k) is not None
+                }
+        except Exception:
+            pass
+        return {}
+
     def evaluate_full(self, symbol):
         wins = self.windows.get(symbol)
         ans  = self.analyzers.get(symbol)
@@ -613,23 +735,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         pwin = wins[primary]
         gradient, gc, slope_full, gradient_recent = pwin.get_short_trend()
         eps_primary = pwin.get_noise_epsilon(self.EPSILON_K)
-        kin_extra: Dict[str, float] = {}
-        try:
-            w_90_kin = wins.get(90) or pwin
-            w_5m_kin = wins.get(900) or wins.get(300) or wins.get(self.window_seconds[-1]) or pwin
-            for w_kin, horizon_sec, min_span_sec, label in (
-                (w_90_kin, 90.0, 45.0, "90s"),
-                (w_5m_kin, 300.0, 120.0, "5m"),
-            ):
-                n_kin = len(getattr(w_kin, "prices", ()))
-                r_kin = max(safe_pos_float(getattr(w_kin, "sample_rate_sec", 1.0), default=1.0) or 1.0, 0.1)
-                if hasattr(w_kin, "calculate_acceleration") and n_kin >= 3 and (n_kin - 1) * r_kin >= min_span_sec:
-                    vel_k, acc_k = w_kin.calculate_acceleration(window_sec=horizon_sec)
-                    if abs(vel_k) >= 1e-6 or abs(acc_k) >= 1e-6:
-                        kin_extra[f"vel_{label}_pct_min"] = round(vel_k, 5)
-                        kin_extra[f"accel_{label}_pct_min2"] = round(acc_k, 5)
-        except Exception:
-            pass
+        kin_extra = self._compute_kinematic_metrics(wins, pwin)
         published_dyn = self._published_dynamic_windows(symbol, now=observed_at)
         primary_key = pw.dynamic_window_key(primary)
         published_dyn[primary_key] = dict(
@@ -659,97 +765,10 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             self._dirty_live_symbols.add(symbol)
 
         w_big = wins.get(self.window_seconds[-1])
-        v1h = None
-        kalman_extra = {}
-        if w_big is not None:
-            try:
-                with getattr(w_big, "_lock", threading.RLock()):
-                    eff_v1h_sr = safe_pos_float(w_big.sample_rate_sec, default=1.0) or 1.0
-                    n_big = len(w_big.prices)
-                    v1h_prices = w_big.prices
-                    if n_big >= 20:
-                        with self._lock:
-                            tbuf_v = self._get_trend_buffer(symbol)
-                            ts_tail = list(tbuf_v.timestamps[-n_big:]) if len(tbuf_v.timestamps) >= n_big else []
-                        if len(ts_tail) >= 20:
-                            max_intra_dt = max(
-                                1800.0,
-                                min(7200.0, safe_pos_float(getattr(w_big, "window_seconds", 9000.0), default=9000.0) or 9000.0),
-                            )
-                            active_dts = [
-                                (ts_tail[i] - ts_tail[i - 1]) / 1000.0
-                                for i in range(1, len(ts_tail))
-                                if 0.0 < (ts_tail[i] - ts_tail[i - 1]) / 1000.0 <= max_intra_dt
-                            ]
-                            if active_dts:
-                                eff_v1h_sr = max(eff_v1h_sr, sum(active_dts) / len(active_dts))
-                            nz_big = sum(
-                                1 for i in range(1, len(w_big.prices)) if abs(w_big.prices[i] - w_big.prices[i - 1]) > 1e-12
-                            )
-                            if nz_big < 10 or eff_v1h_sr < 30.0:
-                                with self._lock:
-                                    tbuf_v = self._get_trend_buffer(symbol)
-                                    all_tbuf_ts = list(tbuf_v.timestamps)
-                                    all_tbuf_px = list(tbuf_v.prices)
-                                if len(all_tbuf_ts) >= 20 and len(all_tbuf_ts) == len(all_tbuf_px):
-                                    sub_1m: List[Tuple[float, float]] = []
-                                    last_t_ms = -1e18
-                                    for t_ms, px_v in zip(all_tbuf_ts, all_tbuf_px):
-                                        t_ms_f = safe_float(t_ms, default=None)
-                                        px_v_f = safe_pos_float(px_v, default=None)
-                                        if t_ms_f is not None and px_v_f is not None and (t_ms_f - last_t_ms) >= 55000.0:
-                                            sub_1m.append((t_ms_f, px_v_f))
-                                            last_t_ms = t_ms_f
-                                    if len(sub_1m) >= 20:
-                                        tail_1m = sub_1m[-60:]
-                                        eff_v1h_sr = max(
-                                            60.0,
-                                            (tail_1m[-1][0] - tail_1m[0][0]) / (1000.0 * max(1, len(tail_1m) - 1)),
-                                        )
-                                        v1h_prices = [r[1] for r in tail_1m]
-                    v1h = pw.calculate_volatility_1h(
-                        v1h_prices, eff_v1h_sr
-                    )
-            except Exception:
-                pass
-        if (
-            self.writer
-            and self._full_eval_thread is not None
-            and is_live_network_backfill_enabled(getattr(self, "_enable_kalman_tracker", None))
-        ):
-            try:
-                k_tracker = getattr(self, "_kalman_tracker", None)
-                if k_tracker is None:
-                    k_path = os.path.join(os.path.dirname(self.filename), self.KALMAN_TREND_FILENAME)
-                    tracker_cls = self._kalman_tracker_factory if callable(self._kalman_tracker_factory) else KalmanStateTracker
-                    k_tracker = tracker_cls(state_path=k_path, compute_vol=False)
-                    self._kalman_tracker = k_tracker
-                with getattr(w_big, "_lock", threading.RLock()) if w_big is not None else threading.RLock():
-                    big_seq = list(w_big.prices) if w_big is not None else ()
-                    big_sr = (safe_pos_float(w_big.sample_rate_sec, default=1.0) or 1.0) if w_big is not None else 1.0
-                k_fields = k_tracker.update(
-                    symbol,
-                    observed_at,
-                    current_price,
-                    epsilon=eps_primary,
-                    big_prices=big_seq,
-                    big_sample_rate=big_sr,
-                    precomputed_vol_1h_pct=v1h,
-                )
-                if isinstance(k_fields, dict):
-                    kalman_extra = {
-                        k: k_fields[k]
-                        for k in (
-                            "kalman_vel",
-                            "kalman_vel_std",
-                            "kalman_trend",
-                            "adapt_reentry_pct",
-                            "adapt_dca_pct",
-                        )
-                        if k_fields.get(k) is not None
-                    }
-            except Exception:
-                pass
+        v1h = self._compute_realized_vol_1h(symbol, w_big)
+        kalman_extra = self._update_kalman_tracker_fields(
+            symbol, observed_at, current_price, eps_primary, w_big, v1h
+        )
 
         # Update memory only; the flush loop writes in the background.
         self._set_mem(

@@ -41,8 +41,6 @@ from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
 from intelligence.macro_sentiment_ssot import (
     ALL_KINEMATIC_METRIC_KEYS,
     TELEMETRY_SOURCE_STALE_INTERVAL_MULT,
-    enrich_macro_benchmarks_live_state,
-    format_equity_macro_regime_line,
     format_interval_sec_label,
     load_venue_balances_state,
     read_first_cached_dict,
@@ -51,6 +49,10 @@ from intelligence.macro_sentiment_ssot import (
     resolve_read_json_cached,
     SHORT_KINEMATIC_METRIC_KEYS,
     parse_ts_px_row,
+)
+from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+    enrich_macro_benchmarks_live_state,
+    format_equity_macro_regime_line,
 )
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,

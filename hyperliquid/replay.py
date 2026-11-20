@@ -32,11 +32,11 @@ from botcore import (  # noqa: E402
 ensure_local_module_priority(_HERE, "strategy")
 from strategies.spot_engine import StratParams as SpotStratParams  # noqa: E402
 from strategies.spot_replay import (  # noqa: E402
+    ReplaySessionBase,
     build_replay_summary,
     extract_adapter_context_timestamps,
     make_spot_replay_adapter,
     prepare_spot_interval_params,
-    record_closed_cycle_pnl,
 )
 from strategy import Strategy, StratParams, HL_FEE_PCT  # noqa: E402
 from providers.ohlc_utils import validate_ohlc_bars
@@ -45,7 +45,6 @@ from strategies.replay_execution import (
     clamp_sell_fill_to_held,
     ExecutionModel,
     split_order_fill,
-    unpack_ohlc_bar,
 )
 from strategies.replay_metrics import round_metric  # noqa: E402
 
@@ -204,76 +203,73 @@ def run_replay(
     )
 
 
-def _run_once(
-    ohlc: list[tuple[float, float, float, float]],
-    ts: list[int] | None = None,
-    fund_ts: list[float] | None = None,
-    fund_rates: list[float] | None = None,
-    sig: list[str] | None = None,
-    params: StratParams | dict | None = None,
-    direction: str | None = None,
-    coin: str = "HYPE",
-    bar_minutes: float | None = 60.0,
-    periods_per_year: float | None = None,
-    execution: ExecutionModel | None = None,
-    fee_pct: float | None = None,
-) -> dict:
-    exec_model = execution or ExecutionModel()
-    strat_params = _resolve_hl_strat_params(params, direction, fee_pct)
-    initial_capital = require_pos_float(strat_params.max_budget, "max_budget")
+class _HyperliquidReplaySession(ReplaySessionBase):
+    """Concrete replay session (Level 3) executing the live Hyperliquid perpetual strategy."""
 
-    strategy = Strategy(
-        client=None,
-        coin=coin,
-        params=strat_params,
-        dry_run=True,
-        replay_mode=True,
-    )
-
-    validate_ohlc_bars(ohlc, check_envelope=True)
-
-    equity_curve = [initial_capital]
-    exposure: list[bool] = []
-    trade_pnls: list[float] = []
-    cycle_total_start = 0.0
-    net_wins = 0
-    turnover_notional = 0.0
-    fills = 0
-    funding = 0.0
-    ambiguous_bars = 0
-    liquidated = False
-    c = require_pos_float(ohlc[0][3], "close")
-
-    open_side = "buy" if strategy.sign > 0 else "sell"
-    close_side = "sell" if strategy.sign > 0 else "buy"
-    order_placed_bar: dict[str, int] = {}
-    valid_bar_minutes = safe_pos_float(bar_minutes, default=None)
-    eff_bar_minutes = valid_bar_minutes if valid_bar_minutes is not None else 60.0
-    lot_step = 10.0 ** (-strategy.sz_dec)
-    dust_eps = max(1e-12, 0.5 * lot_step)
-    f_ts = fund_ts or []
-    f_rates = fund_rates or []
-
-    def _record_closed_cycle() -> None:
-        nonlocal cycle_total_start, net_wins
-        cycle_total_start, net_wins = record_closed_cycle_pnl(
-            strategy.s["realized_net"] + funding, cycle_total_start, trade_pnls, net_wins
+    def __init__(
+        self,
+        ohlc: list[tuple[float, float, float, float]],
+        *,
+        ts: list[int] | None = None,
+        fund_ts: list[float] | None = None,
+        fund_rates: list[float] | None = None,
+        sig: list[str] | None = None,
+        params: StratParams | dict | None = None,
+        direction: str | None = None,
+        coin: str = "HYPE",
+        bar_minutes: float | None = 60.0,
+        periods_per_year: float | None = None,
+        execution: ExecutionModel | None = None,
+        fee_pct: float | None = None,
+    ) -> None:
+        exec_model = execution or ExecutionModel()
+        strat_params = _resolve_hl_strat_params(params, direction, fee_pct)
+        initial_capital = require_pos_float(strat_params.max_budget, "max_budget")
+        self.strategy = Strategy(
+            client=None,
+            coin=coin,
+            params=strat_params,
+            dry_run=True,
+            replay_mode=True,
+        )
+        validate_ohlc_bars(ohlc, check_envelope=True)
+        self.ts = ts
+        self.sig = sig
+        self.f_ts = fund_ts or []
+        self.f_rates = fund_rates or []
+        self.funding = 0.0
+        self.liquidated = False
+        self.last_close = require_pos_float(ohlc[0][3], "close")
+        self.open_side = "buy" if self.strategy.sign > 0 else "sell"
+        self.close_side = "sell" if self.strategy.sign > 0 else "buy"
+        self.order_placed_bar: dict[str, int] = {}
+        valid_bar_minutes = safe_pos_float(bar_minutes, default=None)
+        self.eff_bar_minutes = valid_bar_minutes if valid_bar_minutes is not None else 60.0
+        lot_step = 10.0 ** (-self.strategy.sz_dec)
+        self.dust_eps = max(1e-12, 0.5 * lot_step)
+        super().__init__(
+            ohlc,
+            initial_capital=initial_capital,
+            account_currency=strat_params.currency,
+            execution=exec_model,
+            bar_minutes=valid_bar_minutes,
+            periods_per_year=periods_per_year,
         )
 
-    def _quantize_partial_fill(order_dict: dict, *, is_open: bool) -> tuple[dict, float, bool]:
+    def _quantize_partial_fill(self, order_dict: dict, *, is_open: bool) -> tuple[dict, float, bool]:
         orig_sz = require_pos_float(order_dict.get("sz"), "sz")
         orig_amt = safe_nonneg_float(order_dict.get("amount", 0.0), default=0.0) if is_open else 0.0
         fill_order, sz, complete = split_order_fill(
             order_dict,
             quantity_key="sz",
             amount_key="amount" if is_open else None,
-            ratio=exec_model.partial_fill_ratio,
+            ratio=self.execution.partial_fill_ratio,
             force_full=False,
         )
         if not complete:
-            q_sz = round(sz, strategy.sz_dec)
-            rem_sz = max(0.0, round(orig_sz - q_sz, strategy.sz_dec))
-            if q_sz <= 0.0 or q_sz >= orig_sz - dust_eps or rem_sz <= dust_eps:
+            q_sz = round(sz, self.strategy.sz_dec)
+            rem_sz = max(0.0, round(orig_sz - q_sz, self.strategy.sz_dec))
+            if q_sz <= 0.0 or q_sz >= orig_sz - self.dust_eps or rem_sz <= self.dust_eps:
                 q_sz = orig_sz
                 complete = True
                 order_dict["sz"] = 0.0
@@ -291,91 +287,88 @@ def _run_once(
             sz = q_sz
         return fill_order, sz, complete
 
-    def _bankruptcy_price_if_breached(adverse_px: float) -> float | None:
-        held_q = strategy.s["qty"]
-        if held_q <= dust_eps:
+    def _bankruptcy_price_if_breached(self, adverse_px: float) -> float | None:
+        held_q = self.strategy.s["qty"]
+        if held_q <= self.dust_eps:
             return None
-        avg_now = strategy._avg()
+        avg_now = self.strategy._avg()
         if not avg_now or avg_now <= 0.0:
             return None
-        fee_rate = getattr(strategy.p, "fee_pct", HL_FEE_PCT) / 100.0
-        avail = initial_capital + strategy.s["realized_net"] + funding
+        fee_rate = getattr(self.strategy.p, "fee_pct", HL_FEE_PCT) / 100.0
+        avail = self.initial_capital + self.strategy.s["realized_net"] + self.funding
         if avail <= 0.0:
             return max(1e-12, adverse_px)
-        denom = strategy.sign - fee_rate
+        denom = self.strategy.sign - fee_rate
         if abs(denom) <= 1e-12:
             return None
-        liq_px = ((strategy.sign + fee_rate) * avg_now - (avail / held_q)) / denom
-        if strategy.sign > 0:
+        liq_px = ((self.strategy.sign + fee_rate) * avg_now - (avail / held_q)) / denom
+        if self.strategy.sign > 0:
             if liq_px > 0.0 and adverse_px <= liq_px + 1e-12:
                 return max(1e-12, liq_px)
-        else:
-            if liq_px > 0.0 and adverse_px >= liq_px - 1e-12:
-                return liq_px
+        elif liq_px > 0.0 and adverse_px >= liq_px - 1e-12:
+            return liq_px
         return None
 
-    def _record_fill_and_closed_cycle(filled_sz: float, filled_px: float, cycle_before: int) -> None:
-        nonlocal fills, turnover_notional
-        turnover_notional += filled_sz * filled_px
-        fills += 1
-        if strategy.s.get("cycles_completed", 0) > cycle_before:
-            _record_closed_cycle()
+    def _record_fill_and_closed_cycle(self, filled_sz: float, filled_px: float, cycle_before: int) -> None:
+        self.turnover_notional += filled_sz * filled_px
+        self.fills += 1
+        if self.strategy.s.get("cycles_completed", 0) > cycle_before:
+            self._record_closed_cycle(self.strategy.s["realized_net"] + self.funding)
 
-    def _execute_liquidation(liq_px: float) -> None:
-        nonlocal liquidated
-        held_q = strategy.s["qty"]
-        avg_now = strategy._avg() or liq_px
-        strategy.s["orders"].clear()
-        order_placed_bar.clear()
-        cycle_before = strategy.s.get("cycles_completed", 0)
-        strategy._apply_close(avg_now, liq_px, held_q)
+    def _execute_liquidation(self, liq_px: float) -> None:
+        held_q = self.strategy.s["qty"]
+        avg_now = self.strategy._avg() or liq_px
+        self.strategy.s["orders"].clear()
+        self.order_placed_bar.clear()
+        cycle_before = self.strategy.s.get("cycles_completed", 0)
+        self.strategy._apply_close(avg_now, liq_px, held_q)
         # Clamp residual float rounding so ruined account equity is absorbed at 0.0.
-        strategy.s["realized_net"] = -(initial_capital + funding)
-        _record_fill_and_closed_cycle(held_q, liq_px, cycle_before)
-        liquidated = True
-        equity_curve.append(0.0)
-        exposure.append(False)
+        self.strategy.s["realized_net"] = -(self.initial_capital + self.funding)
+        self._record_fill_and_closed_cycle(held_q, liq_px, cycle_before)
+        self.liquidated = True
+        self._record_bar_equity(0.0, False)
 
-    def _compute_bar_funding_rate(t_ms: int | None) -> float:
+    def _compute_bar_funding_rate(self, t_ms: int | None) -> float:
         t_val = _to_funding_ms(t_ms)
         if t_val is None:
             return 0.0
-        if eff_bar_minutes <= 60.0 or t_val < 0:
-            return _lookup_sorted_funding_ms(f_ts, f_rates, t_val) * (eff_bar_minutes / 60.0)
-        rem_hours = eff_bar_minutes / 60.0
+        if self.eff_bar_minutes <= 60.0 or t_val < 0:
+            return _lookup_sorted_funding_ms(self.f_ts, self.f_rates, t_val) * (self.eff_bar_minutes / 60.0)
+        rem_hours = self.eff_bar_minutes / 60.0
         bar_f_rate = 0.0
         hour_idx = 0
         while rem_hours > 1e-9:
             weight = min(1.0, rem_hours)
-            bar_f_rate += _lookup_sorted_funding_ms(f_ts, f_rates, t_val + hour_idx * 3_600_000.0) * weight
+            bar_f_rate += _lookup_sorted_funding_ms(self.f_ts, self.f_rates, t_val + hour_idx * 3_600_000.0) * weight
             rem_hours -= weight
             hour_idx += 1
         return bar_f_rate
 
-    def _evaluate_hl_open_order_eligible(open_order: dict | None, o: float, h: float, l: float) -> bool:
-        if not open_order or not exec_model.limit_touched(open_side, high=h, low=l, limit=open_order["px"]):
+    def _evaluate_open_order_eligible(self, open_order: dict | None, o: float, h: float, l: float) -> bool:
+        if not open_order or not self.execution.limit_touched(self.open_side, high=h, low=l, limit=open_order["px"]):
             return False
-        if strategy.s["qty"] <= dust_eps:
+        if self.strategy.s["qty"] <= self.dust_eps:
             return True
-        liq_open_bar = _bankruptcy_price_if_breached(o)
-        liq_pre = _bankruptcy_price_if_breached(l if strategy.sign > 0 else h)
+        liq_open_bar = self._bankruptcy_price_if_breached(o)
+        liq_pre = self._bankruptcy_price_if_breached(l if self.strategy.sign > 0 else h)
         if liq_open_bar is not None or (
-            liq_pre is not None and strategy.sign * (liq_pre - open_order["px"]) >= 0
+            liq_pre is not None and self.strategy.sign * (liq_pre - open_order["px"]) >= 0
         ):
             return False
-        if strategy.p.stop_loss_pct > 0 and (avg_now := strategy._avg()):
-            sl_level_pre = avg_now * (1.0 - strategy.sign * strategy.p.stop_loss_pct / 100.0)
-            open_loss_pct = -strategy.sign * (o - avg_now) / avg_now * 100.0
-            worst_px_pre = l if strategy.sign > 0 else h
-            loss_pre = -strategy.sign * (worst_px_pre - avg_now) / avg_now * 100.0
-            if open_loss_pct >= strategy.p.stop_loss_pct - 1e-9 or (
-                loss_pre >= strategy.p.stop_loss_pct - 1e-9
-                and strategy.sign * (sl_level_pre - open_order["px"]) >= 0
+        if self.strategy.p.stop_loss_pct > 0 and (avg_now := self.strategy._avg()):
+            sl_level_pre = avg_now * (1.0 - self.strategy.sign * self.strategy.p.stop_loss_pct / 100.0)
+            open_loss_pct = -self.strategy.sign * (o - avg_now) / avg_now * 100.0
+            worst_px_pre = l if self.strategy.sign > 0 else h
+            loss_pre = -self.strategy.sign * (worst_px_pre - avg_now) / avg_now * 100.0
+            if open_loss_pct >= self.strategy.p.stop_loss_pct - 1e-9 or (
+                loss_pre >= self.strategy.p.stop_loss_pct - 1e-9
+                and self.strategy.sign * (sl_level_pre - open_order["px"]) >= 0
             ):
                 return False
         return True
 
-    def _settle_hl_intrabar_limit_fills(
+    def _settle_intrabar_limit_fills(
+        self,
         open_order: dict | None,
         close_order: dict | None,
         *,
@@ -383,11 +376,10 @@ def _run_once(
         close_eligible: bool,
         o: float,
     ) -> None:
-        nonlocal turnover_notional, fills
-        for side in exec_model.side_order():
-            if side == open_side and open_eligible and open_order in strategy.s["orders"]:
-                px = min(open_order["px"], o) if strategy.sign > 0 else max(open_order["px"], o)
-                fill_order, sz, complete = _quantize_partial_fill(open_order, is_open=True)
+        for side in self.execution.side_order():
+            if side == self.open_side and open_eligible and open_order in self.strategy.s["orders"]:
+                px = min(open_order["px"], o) if self.strategy.sign > 0 else max(open_order["px"], o)
+                fill_order, sz, complete = self._quantize_partial_fill(open_order, is_open=True)
                 open_kind = fill_order.get("kind")
                 if open_kind == "ENTRY":
                     count_dca = False
@@ -395,174 +387,194 @@ def _run_once(
                     count_dca = not _parse_bool_flag(open_order.get("dca_counted"), False)
                     open_order["dca_counted"] = True
                 if complete:
-                    strategy._remove(open_order)
-                    order_placed_bar.pop(open_order.get("oid", ""), None)
-                strategy._apply_open(
+                    self.strategy._remove(open_order)
+                    self.order_placed_bar.pop(open_order.get("oid", ""), None)
+                self.strategy._apply_open(
                     sz, px, fill_order.get("amount", 0.0), open_kind, count_dca=count_dca,
                 )
-                turnover_notional += sz * px
-                fills += 1
+                self.turnover_notional += sz * px
+                self.fills += 1
 
-            if side == close_side and close_eligible and close_order in strategy.s["orders"] and strategy.s["qty"] > dust_eps:
-                px = max(close_order["px"], o) if strategy.sign > 0 else min(close_order["px"], o)
-                _, sz, complete = _quantize_partial_fill(close_order, is_open=False)
-                sz, complete = clamp_sell_fill_to_held(sz, strategy.s["qty"], complete, eps=dust_eps)
+            if (
+                side == self.close_side
+                and close_eligible
+                and close_order in self.strategy.s["orders"]
+                and self.strategy.s["qty"] > self.dust_eps
+            ):
+                px = max(close_order["px"], o) if self.strategy.sign > 0 else min(close_order["px"], o)
+                _, sz, complete = self._quantize_partial_fill(close_order, is_open=False)
+                sz, complete = clamp_sell_fill_to_held(sz, self.strategy.s["qty"], complete, eps=self.dust_eps)
                 if sz <= 0.0:
-                    strategy._remove(close_order)
+                    self.strategy._remove(close_order)
                     continue
                 if complete:
-                    strategy._remove(close_order)
-                avg = strategy._avg() or px
-                cycle_before = strategy.s.get("cycles_completed", 0)
-                strategy._apply_close(avg, px, sz)
-                _record_fill_and_closed_cycle(sz, px, cycle_before)
+                    self.strategy._remove(close_order)
+                avg = self.strategy._avg() or px
+                cycle_before = self.strategy.s.get("cycles_completed", 0)
+                self.strategy._apply_close(avg, px, sz)
+                self._record_fill_and_closed_cycle(sz, px, cycle_before)
 
-    def _check_hl_intrabar_stop_and_liquidation(o: float, h: float, l: float, *, held_at_bar_open: bool) -> bool:
+    def _check_intrabar_stop_and_liquidation(self, o: float, h: float, l: float, *, held_at_bar_open: bool) -> bool:
         """Return True when the account liquidated inside the bar."""
-        if strategy.s["qty"] <= dust_eps:
+        if self.strategy.s["qty"] <= self.dust_eps:
             return False
-        worst_px = l if strategy.sign > 0 else h
-        if strategy.p.stop_loss_pct > 0 and (avg := strategy._avg()):
-            loss_pct = -strategy.sign * (worst_px - avg) / avg * 100.0
-            if loss_pct >= strategy.p.stop_loss_pct - 1e-9:
-                sl_level = avg * (1.0 - strategy.sign * strategy.p.stop_loss_pct / 100.0)
-                raw_exec_px = (min(o, sl_level) if strategy.sign > 0 else max(o, sl_level)) if held_at_bar_open else sl_level
-                exec_px = exec_model.market_price(close_side, raw_exec_px)
-                liq_sl = _bankruptcy_price_if_breached(exec_px)
+        worst_px = l if self.strategy.sign > 0 else h
+        if self.strategy.p.stop_loss_pct > 0 and (avg := self.strategy._avg()):
+            loss_pct = -self.strategy.sign * (worst_px - avg) / avg * 100.0
+            if loss_pct >= self.strategy.p.stop_loss_pct - 1e-9:
+                sl_level = avg * (1.0 - self.strategy.sign * self.strategy.p.stop_loss_pct / 100.0)
+                raw_exec_px = (min(o, sl_level) if self.strategy.sign > 0 else max(o, sl_level)) if held_at_bar_open else sl_level
+                exec_px = self.execution.market_price(self.close_side, raw_exec_px)
+                liq_sl = self._bankruptcy_price_if_breached(exec_px)
                 if liq_sl is not None:
-                    _execute_liquidation(liq_sl)
+                    self._execute_liquidation(liq_sl)
                     return True
-                held_qty = strategy.s["qty"]
-                cycle_before = strategy.s.get("cycles_completed", 0)
-                if strategy._check_stop_loss(exec_px):
-                    _record_fill_and_closed_cycle(held_qty, exec_px, cycle_before)
-        if strategy.s["qty"] > dust_eps:
-            liq_intrabar = _bankruptcy_price_if_breached(worst_px)
+                held_qty = self.strategy.s["qty"]
+                cycle_before = self.strategy.s.get("cycles_completed", 0)
+                if self.strategy._check_stop_loss(exec_px):
+                    self._record_fill_and_closed_cycle(held_qty, exec_px, cycle_before)
+        if self.strategy.s["qty"] > self.dust_eps:
+            liq_intrabar = self._bankruptcy_price_if_breached(worst_px)
             if liq_intrabar is not None:
-                _execute_liquidation(liq_intrabar)
+                self._execute_liquidation(liq_intrabar)
                 return True
         return False
 
-    for i in range(len(ohlc)):
-        o, h, l, c = unpack_ohlc_bar(ohlc[i])
-        t_ms = ts[i] if ts is not None and i < len(ts) else None
-
-        if liquidated:
-            equity_curve.append(0.0)
-            exposure.append(False)
-            continue
-
-        held_at_bar_open = strategy.s["qty"] > dust_eps
+    def _step_bar(self, bar_index: int, o: float, h: float, l: float, c: float) -> None:
+        self.last_close = c
+        t_ms = self.ts[bar_index] if self.ts is not None and bar_index < len(self.ts) else None
+        if self.liquidated:
+            self._record_bar_equity(0.0, False)
+            return
+        held_at_bar_open = self.strategy.s["qty"] > self.dust_eps
 
         # 1. Funding on held perpetuals at bar open notional: shorts receive funding; longs pay it.
-        qty = strategy.s["qty"]
-        if qty > dust_eps and f_ts:
-            f = _compute_bar_funding_rate(t_ms) * qty * o
-            funding += (f if strategy.sign < 0 else -f)
-            liq_open = _bankruptcy_price_if_breached(o)
+        qty = self.strategy.s["qty"]
+        if qty > self.dust_eps and self.f_ts:
+            f = self._compute_bar_funding_rate(t_ms) * qty * o
+            self.funding += (f if self.strategy.sign < 0 else -f)
+            liq_open = self._bankruptcy_price_if_breached(o)
             if liq_open is not None:
-                _execute_liquidation(liq_open)
-                continue
+                self._execute_liquidation(liq_open)
+                return
 
         # 2. Check active limit orders against the bar range
-        open_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "open"), None)
-        open_eligible = _evaluate_hl_open_order_eligible(open_order, o, h, l)
-        close_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "close"), None)
+        open_order = next((x for x in list(self.strategy.s["orders"]) if x["role"] == "open"), None)
+        open_eligible = self._evaluate_open_order_eligible(open_order, o, h, l)
+        close_order = next((x for x in list(self.strategy.s["orders"]) if x["role"] == "close"), None)
         close_eligible = bool(
             close_order
-            and strategy.s["qty"] > dust_eps
-            and exec_model.limit_touched(close_side, high=h, low=l, limit=close_order["px"])
+            and self.strategy.s["qty"] > self.dust_eps
+            and self.execution.limit_touched(self.close_side, high=h, low=l, limit=close_order["px"])
         )
         if open_eligible and close_eligible:
-            ambiguous_bars += 1
-        _settle_hl_intrabar_limit_fills(
+            self.ambiguous_bars += 1
+        self._settle_intrabar_limit_fills(
             open_order, close_order, open_eligible=open_eligible, close_eligible=close_eligible, o=o
         )
 
         # 3. Intrabar Stop-Loss & Margin Wipeout Check (if held after limit fills)
-        if _check_hl_intrabar_stop_and_liquidation(o, h, l, held_at_bar_open=held_at_bar_open):
-            continue
+        if self._check_intrabar_stop_and_liquidation(o, h, l, held_at_bar_open=held_at_bar_open):
+            return
 
         # 4. TTL / Runaway price cancellation
-        open_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "open"), None)
+        open_order = next((x for x in list(self.strategy.s["orders"]) if x["role"] == "open"), None)
         if open_order:
             oid = open_order.get("oid", "")
-            placed_b = order_placed_bar.setdefault(oid, i)
-            elapsed_min = (i - placed_b) * eff_bar_minutes
-            if strategy._open_is_stale(open_order, c, elapsed_min=elapsed_min):
-                strategy._remove(open_order)
-                order_placed_bar.pop(oid, None)
+            placed_b = self.order_placed_bar.setdefault(oid, bar_index)
+            elapsed_min = (bar_index - placed_b) * self.eff_bar_minutes
+            if self.strategy._open_is_stale(open_order, c, elapsed_min=elapsed_min):
+                self.strategy._remove(open_order)
+                self.order_placed_bar.pop(oid, None)
 
         # 5. Strategy decisions at bar close
-        signal_val = sig[i] if sig and i < len(sig) else (None if strategy.p.signal_gate else "__any__")
-        cycle_before_step = strategy.s.get("cycles_completed", 0)
-        held_before_step = strategy.s["qty"]
-        strategy.step(c, signal=signal_val)
-        if strategy.s.get("cycles_completed", 0) > cycle_before_step:
-            if held_before_step > dust_eps:
-                turnover_notional += held_before_step * c
-            _record_closed_cycle()
-            fills += 1
+        signal_val = self.sig[bar_index] if self.sig and bar_index < len(self.sig) else (
+            None if self.strategy.p.signal_gate else "__any__"
+        )
+        cycle_before_step = self.strategy.s.get("cycles_completed", 0)
+        held_before_step = self.strategy.s["qty"]
+        self.strategy.step(c, signal=signal_val)
+        if self.strategy.s.get("cycles_completed", 0) > cycle_before_step:
+            if held_before_step > self.dust_eps:
+                self.turnover_notional += held_before_step * c
+            self._record_closed_cycle(self.strategy.s["realized_net"] + self.funding)
+            self.fills += 1
 
-        for o_ord in strategy.s["orders"]:
+        for o_ord in self.strategy.s["orders"]:
             oid = o_ord.get("oid", "")
-            if o_ord["role"] == "open" and oid not in order_placed_bar:
-                order_placed_bar[oid] = i
+            if o_ord["role"] == "open" and oid not in self.order_placed_bar:
+                self.order_placed_bar[oid] = bar_index
 
         # 6. Equity curve and exposure tracking
-        qty = strategy.s["qty"]
-        cost = strategy.s["cost"]
-        realized = strategy.s["realized_net"]
-        upnl = (strategy.sign * (c - cost / qty) * qty) if qty > dust_eps else 0.0
-        fee_pct_eff = getattr(strategy.p, "fee_pct", HL_FEE_PCT)
-        open_fee = (fee_pct_eff / 100.0) * cost if qty > dust_eps else 0.0
-        current_equity = initial_capital + realized + funding + upnl - open_fee
+        qty = self.strategy.s["qty"]
+        cost = self.strategy.s["cost"]
+        realized = self.strategy.s["realized_net"]
+        upnl = (self.strategy.sign * (c - cost / qty) * qty) if qty > self.dust_eps else 0.0
+        fee_pct_eff = getattr(self.strategy.p, "fee_pct", HL_FEE_PCT)
+        open_fee = (fee_pct_eff / 100.0) * cost if qty > self.dust_eps else 0.0
+        current_equity = self.initial_capital + realized + self.funding + upnl - open_fee
         if current_equity <= 0.0:
-            if qty > dust_eps:
-                _execute_liquidation(c)
-                continue
-            strategy.s["orders"].clear()
-            strategy.s["realized_net"] = -(initial_capital + funding)
-            liquidated = True
+            if qty > self.dust_eps:
+                self._execute_liquidation(c)
+                return
+            self.strategy.s["orders"].clear()
+            self.strategy.s["realized_net"] = -(self.initial_capital + self.funding)
+            self.liquidated = True
             current_equity = 0.0
-        equity_curve.append(current_equity)
-        exposure.append(qty > dust_eps)
+        self._record_bar_equity(current_equity, qty > self.dust_eps)
 
-    qty = strategy.s["qty"]
-    cost = strategy.s["cost"]
-    realized_gross = strategy.s["realized_gross"]
-    realized_net = strategy.s["realized_net"]
-    final_upnl = (strategy.sign * (c - cost / qty) * qty) if qty > dust_eps else 0.0
-    cycles = strategy.s.get("cycles_completed", 0)
-    wins = net_wins
-    total_fees = strategy.s["fees_total"]
-    final_open_fee = 0.0
-    if qty > dust_eps:
-        fee_pct_eff = getattr(strategy.p, "fee_pct", HL_FEE_PCT)
-        final_open_fee = (fee_pct_eff / 100.0) * cost
-        total_fees += final_open_fee
+    def _build_summary(self) -> dict:
+        qty = self.strategy.s["qty"]
+        cost = self.strategy.s["cost"]
+        realized_gross = self.strategy.s["realized_gross"]
+        realized_net = self.strategy.s["realized_net"]
+        final_upnl = (self.strategy.sign * (self.last_close - cost / qty) * qty) if qty > self.dust_eps else 0.0
+        total_fees = self.strategy.s["fees_total"]
+        final_open_fee = 0.0
+        if qty > self.dust_eps:
+            fee_pct_eff = getattr(self.strategy.p, "fee_pct", HL_FEE_PCT)
+            final_open_fee = (fee_pct_eff / 100.0) * cost
+            total_fees += final_open_fee
+        return self._build_summary_from_state(
+            realized=realized_gross,
+            net=realized_net + self.funding,
+            fees=total_fees,
+            total=realized_net + self.funding + final_upnl - final_open_fee,
+            final_upnl=final_upnl,
+            cycles=self.strategy.s.get("cycles_completed", 0),
+            open_qty=qty,
+            extra_fields={"funding": round_metric(self.funding)},
+        )
 
-    return build_replay_summary(
-        realized=realized_gross,
-        net=realized_net + funding,
-        fees=total_fees,
-        total=realized_net + funding + final_upnl - final_open_fee,
-        final_upnl=final_upnl,
-        cycles=cycles,
-        wins=wins,
-        open_qty=qty,
-        fills=fills,
-        ambiguous_bars=ambiguous_bars,
-        initial_capital=initial_capital,
-        account_currency=strat_params.currency,
-        equity_curve=equity_curve,
-        exposure=exposure,
-        trade_pnls=trade_pnls,
-        turnover_notional=turnover_notional,
-        bar_minutes=valid_bar_minutes,
+
+def _run_once(
+    ohlc: list[tuple[float, float, float, float]],
+    ts: list[int] | None = None,
+    fund_ts: list[float] | None = None,
+    fund_rates: list[float] | None = None,
+    sig: list[str] | None = None,
+    params: StratParams | dict | None = None,
+    direction: str | None = None,
+    coin: str = "HYPE",
+    bar_minutes: float | None = 60.0,
+    periods_per_year: float | None = None,
+    execution: ExecutionModel | None = None,
+    fee_pct: float | None = None,
+) -> dict:
+    return _HyperliquidReplaySession(
+        ohlc,
+        ts=ts,
+        fund_ts=fund_ts,
+        fund_rates=fund_rates,
+        sig=sig,
+        params=params,
+        direction=direction,
+        coin=coin,
+        bar_minutes=bar_minutes,
         periods_per_year=periods_per_year,
-        extra_fields={"funding": round_metric(funding)},
-    )
+        execution=execution,
+        fee_pct=fee_pct,
+    ).run()
 
 
 _HL_TO_SPOT_PARAM_FIELDS = (

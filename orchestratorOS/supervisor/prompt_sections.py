@@ -26,9 +26,7 @@ from cachepaths import (
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
 from intelligence.macro_sentiment_ssot import (
     TELEMETRY_SOURCE_STALE_INTERVAL_MULT,
-    format_equity_macro_regime_line,
     format_interval_sec_label,
-    format_macro_benchmarks_summary_line,
     resolve_derived_telemetry_intervals,
 )
 from intelligence.sentiment.evaluators.guard_probe_evaluator import (
@@ -36,6 +34,8 @@ from intelligence.sentiment.evaluators.guard_probe_evaluator import (
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_bottom_structure_6h_parts,
+    format_equity_macro_regime_line,
+    format_macro_benchmarks_summary_line,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     format_book_window_cap_tag,

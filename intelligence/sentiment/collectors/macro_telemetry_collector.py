@@ -52,7 +52,6 @@ from intelligence.macro.lexicon_ssot import (
 )
 import intelligence.macro_sentiment_ssot as _mss
 from intelligence.macro_sentiment_ssot import (
-    format_macro_benchmarks_summary_line,
     get_breadth_excluded_bases,
     get_deribit_options_currencies,
     get_yahoo_chart_url,
@@ -94,7 +93,9 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     compute_deribit_options_surface,
     compute_equity_macro_regime,
     compute_futures_premarket_lead,
+    enrich_macro_benchmarks_live_state,
     enrich_sentiment_advisor_live_flow_divergence,
+    format_macro_benchmarks_summary_line,
     MACRO_BENCHMARK_SPECS,
     reconcile_live_venue_equity_summary,
 )
@@ -525,7 +526,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                     enriched_items[mb_k] = mb_v
             enriched["items"] = enriched_items
         return (
-            _mss.enrich_macro_benchmarks_live_state(
+            enrich_macro_benchmarks_live_state(
                 enriched,
                 cache_dir=cache_dir,
                 force_recompute=stripped_stale_intraday,
