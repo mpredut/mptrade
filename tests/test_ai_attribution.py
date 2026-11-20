@@ -270,8 +270,54 @@ def test_ai_attribution_workspace_loader_and_cli(tmp_path, capsys):
     assert cli_payload["ai_summary"]["closed_trades"] == 2
     assert cli_payload["delta_gate_efficiency"]["delta_gate_skips"] == 3
 
-    # CLI default text mode emits formatted table
-    rc_txt = attr_cli.main(["--workspace", str(tmp_path), "--days", "7"])
+    # CLI default text mode emits formatted table and --out-json atomically persists status JSON
+    out_json_path = tmp_path / "cachedb" / "system" / "ai_attribution_status.json"
+    rc_txt = attr_cli.main(["--workspace", str(tmp_path), "--days", "7", "--out-json", str(out_json_path)])
     assert rc_txt == 0
     cli_out = capsys.readouterr().out
     assert "=== MPTrade AI Attribution & Audit Report" in cli_out
+    assert out_json_path.is_file()
+    persisted = json.loads(out_json_path.read_text(encoding="utf-8"))
+    assert persisted["ai_intents_total"] == 7
+
+    # Persisted live Binance BNB discount fee (7.5 bps maker = 15 bps RT) and LIMIT execution quality metrics
+    from cachepaths import resolve_cache_subdomain
+
+    assert resolve_cache_subdomain("ai_attribution_status.json") == "system"
+    intents_with_lim = [
+        {
+            **intents[0],
+            "limit_price": 70000.0,
+            "reference_price": 70350.0,  # filled 50 bps better than arrival spot (-50 bps shortfall)
+        },
+        *intents[1:],
+    ]
+    (tmp_path / "cachedb" / "state" / "autonomous_trade_intents_state.json").write_text(
+        json.dumps(intents_with_lim), encoding="utf-8"
+    )
+    (tmp_path / "cachedb" / "state" / "venue_fee_maintenance_state.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "ts": now_s - 60.0,
+            "state_max_age_sec": 43200.0,
+            "venues": {
+                "binance": {
+                    "ts": now_s - 60.0,
+                    "fee_spec": {
+                        "fee_tier": "VIP0_BNB25",
+                        "maker_fee_bps": 7.5,
+                        "taker_fee_bps": 7.5,
+                    },
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+    loaded_bnb = load_and_evaluate_ai_attribution(str(tmp_path), lookback_days=7.0, scope="crypto", now_ts=now_s)
+    # BTCUSDC $1000 RT with 15 bps BNB fee = $1.50 fee -> $18.50 net (instead of $18.00 at static 20 bps)
+    assert loaded_bnb["ai_by_symbol"]["binance:BTCUSDC"]["realized_net_usd"] == pytest.approx(18.50, abs=0.05)
+    assert loaded_bnb["execution_quality"]["limit_filled"] == 5
+    assert loaded_bnb["execution_quality"]["avg_limit_slippage_bps"] == pytest.approx(0.0, abs=0.05)
+    assert loaded_bnb["execution_quality"]["avg_arrival_shortfall_bps"] == pytest.approx(-49.75, abs=0.5)
+    assert "Execution Quality: LIMIT(" in format_ai_attribution_report(loaded_bnb)
+

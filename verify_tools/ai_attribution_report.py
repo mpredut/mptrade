@@ -26,7 +26,7 @@ with contextlib.redirect_stdout(sys.stderr):
         format_ai_attribution_report,
         load_and_evaluate_ai_attribution,
     )
-    from state_io import encode_json_payload  # noqa: E402
+    from state_io import encode_json_payload, save_json_state  # noqa: E402
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -57,6 +57,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         dest="as_json",
         help="Emit strict JSON payload to stdout",
     )
+    parser.add_argument(
+        "--out-json",
+        default="",
+        help="Optional output path to atomically persist the JSON attribution report",
+    )
     args = parser.parse_args(argv)
 
     with contextlib.redirect_stdout(sys.stderr):
@@ -65,6 +70,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             lookback_days=args.days,
             scope=args.scope,
         )
+        if args.out_json:
+            save_json_state(args.out_json, report, indent=2)
     if args.as_json:
         sys.stdout.write(encode_json_payload(report, indent=2, sort_keys=True) + "\n")
     else:

@@ -46,6 +46,20 @@ sync_to_dev() {
                 -e "ssh -o BatchMode=yes -p $DEV_PORT" 2>/dev/null || true
         fi
     done
+    if [ -d "$ROOT/logger/execution_audit" ]; then
+        rsync -az --prune-empty-dirs \
+            --rsync-path="mkdir -p $DEV_PATH/logger/execution_audit && rsync" \
+            --include='execution_audit_*.jsonl' --exclude='*' \
+            "$ROOT/logger/execution_audit/" "$DEV_USER@$DEV_HOST:$DEV_PATH/logger/execution_audit/" \
+            -e "ssh -o BatchMode=yes -p $DEV_PORT" 2>/dev/null || true
+    fi
+    if [ -d "$ROOT/logger" ]; then
+        rsync -az --prune-empty-dirs \
+            --rsync-path="mkdir -p $DEV_PATH/logger && rsync" \
+            --include='autonomous_ai_reconciler*.log' --exclude='*' \
+            "$ROOT/logger/" "$DEV_USER@$DEV_HOST:$DEV_PATH/logger/" \
+            -e "ssh -o BatchMode=yes -p $DEV_PORT" 2>/dev/null || true
+    fi
     echo "[sync_cache_to:dev $(date '+%F %T')] done"
 }
 

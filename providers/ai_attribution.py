@@ -11,13 +11,14 @@ from datetime import datetime, timezone
 import glob
 import os
 import re
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from botcore import (
     BUCHAREST,
     clean_order_id,
     clean_scalar_str,
     clean_upper_scalar,
+    first_pos_float,
     normalize_side,
     resolve_now_ts,
     safe_float,
@@ -53,7 +54,7 @@ from .intent_state import (
     load_durable_intents_state,
     parse_pos_epoch_s,
 )
-from .intent_telemetry import evaluate_trade_plan_status
+from .intent_telemetry import _compute_signed_exec_bps, evaluate_trade_plan_status
 from .nav_drawdown import (
     build_nav_history_point,
     evaluate_nav_drawdown_metrics,
@@ -61,6 +62,7 @@ from .nav_drawdown import (
     load_nav_history_state,
 )
 from .order_id_context import resolve_order_owner
+from .venue_fee_maintenance import read_persisted_venue_fee_spec
 
 _GUARD_CODE_RE = re.compile(r"^([A-Za-z0-9_]+)")
 _CB_TAG_RE = re.compile(r"^([a-z0-9_]+)")
@@ -147,6 +149,7 @@ def _evaluate_execution_audit_actors(
     cutoff_ts: float,
     eff_now: float,
     scope: str,
+    fee_resolver: Optional[Callable[[str, str, str], Optional[float]]] = None,
 ) -> dict[str, Any]:
     """Deduplicate multi-venue execution_audit JSONL events into filled orders and compare AI vs BOT vs MANUAL."""
     orders: dict[tuple[str, str], dict[str, Any]] = {}
@@ -253,8 +256,12 @@ def _evaluate_execution_audit_actors(
         else:
             actor = "OTHER"
             owner = "unattributed"
+        live_rt = fee_resolver(entry["venue"], entry["symbol"], entry["order_type"]) if callable(fee_resolver) else None
         leg_fee_bps = resolve_venue_round_trip_fee_bps(
-            entry["venue"], entry["symbol"], order_type=entry["order_type"]
+            entry["venue"],
+            entry["symbol"],
+            order_type=entry["order_type"],
+            round_trip_fee_bps=live_rt,
         ) / 2.0
         est_fee_usd = entry["fee_usd"] if entry["fee_usd"] > 0.0 else cost * (leg_fee_bps / 10000.0)
         filled_entries.append({
@@ -407,6 +414,7 @@ def evaluate_ai_attribution(
     crypto_eval_state: Optional[Mapping[str, Any]] = None,
     nav_history: Optional[list[dict[str, Any]]] = None,
     current_nav_point: Optional[Mapping[str, Any]] = None,
+    fee_resolver: Optional[Callable[[str, str, str], Optional[float]]] = None,
 ) -> dict[str, Any]:
     """Compute standalone multi-venue AI attribution, model-tier audit, override audit, and AI vs BOT comparison."""
     eff_now = resolve_now_ts(now_ts)
@@ -468,8 +476,20 @@ def evaluate_ai_attribution(
 
         m_cnt["filled"] += 1
         ot = extract_intent_order_type(it)
-        rt_bps = resolve_venue_round_trip_fee_bps(ven, sym, order_type=ot)
+        live_rt = fee_resolver(ven, sym, ot) if callable(fee_resolver) else None
+        rt_bps = resolve_venue_round_trip_fee_bps(ven, sym, order_type=ot, round_trip_fee_bps=live_rt)
         inv_px, tgt_px = extract_intent_trade_plan_levels(it, side=side, ref_price=px)
+        lim_px = first_pos_float(it.get("limit_price"), it.get("requested_price") if ot == "LIMIT" else None)
+        ref_px = first_pos_float(it.get("reference_price"))
+        limit_slip_bps: Optional[float] = None
+        arrival_sf_bps: Optional[float] = None
+        market_slip_bps: Optional[float] = None
+        if ot == "LIMIT" and lim_px is not None:
+            limit_slip_bps = _compute_signed_exec_bps(side, px, lim_px)
+            if ref_px is not None and abs(ref_px - lim_px) / lim_px > 1e-6:
+                arrival_sf_bps = _compute_signed_exec_bps(side, px, ref_px)
+        elif ot != "LIMIT" and ref_px is not None:
+            market_slip_bps = _compute_signed_exec_bps(side, px, ref_px)
         raw_ov = it.get("advisory_guards_overridden")
         ov_codes = sorted({
             code
@@ -498,6 +518,9 @@ def evaluate_ai_attribution(
             "target_px": tgt_px,
             "has_plan": inv_px is not None or tgt_px is not None,
             "override_codes": ov_codes,
+            "limit_slip_bps": limit_slip_bps,
+            "arrival_sf_bps": arrival_sf_bps,
+            "market_slip_bps": market_slip_bps,
         })
 
     filled_rows.sort(key=lambda r: r["ts"])
@@ -682,7 +705,18 @@ def evaluate_ai_attribution(
         cutoff_ts=cutoff,
         eff_now=eff_now,
         scope=eff_scope,
+        fee_resolver=fee_resolver,
     )
+    lim_slips = [r["limit_slip_bps"] for r in filled_rows if r["limit_slip_bps"] is not None]
+    arr_sfs = [r["arrival_sf_bps"] for r in filled_rows if r["arrival_sf_bps"] is not None]
+    mkt_slips = [r["market_slip_bps"] for r in filled_rows if r["market_slip_bps"] is not None]
+    execution_quality = {
+        "limit_filled": sum(1 for r in filled_rows if r["order_type"] == "LIMIT"),
+        "market_filled": sum(1 for r in filled_rows if r["order_type"] != "LIMIT"),
+        "avg_limit_slippage_bps": round(sum(lim_slips) / len(lim_slips), 2) if lim_slips else None,
+        "avg_arrival_shortfall_bps": round(sum(arr_sfs) / len(arr_sfs), 2) if arr_sfs else None,
+        "avg_market_slippage_bps": round(sum(mkt_slips) / len(mkt_slips), 2) if mkt_slips else None,
+    }
     delta_gate = summarize_delta_gate_logs(
         reconciler_log_lines if isinstance(reconciler_log_lines, list) else [],
         cutoff_ts=cutoff,
@@ -708,6 +742,7 @@ def evaluate_ai_attribution(
         "ai_by_model": by_model,
         "advisory_guard_override_audit": override_audit,
         "trade_plan_calibration": trade_plan_calibration,
+        "execution_quality": execution_quality,
         "execution_audit_ai_vs_bot": actor_comparison,
         "delta_gate_efficiency": delta_gate,
         "unified_nav_drawdown": nav_dd,
@@ -783,6 +818,15 @@ def load_and_evaluate_ai_attribution(
     vb_path = _workspace_cachedb_path(workspace_dir, "venue_balances_state.json")
     vb_state = read_json_dict(vb_path, default={})
     cur_nav_pt = build_nav_history_point(vb_state, live_prices=live_prices, now_ts=eff_now, scope="all")
+    cache_dir = os.path.join(workspace_dir, "cachedb")
+
+    def _persisted_rt_fee_bps(venue: str, symbol: str, order_type: str) -> Optional[float]:
+        spec = read_persisted_venue_fee_spec(venue, symbol, cache_dir=cache_dir, now_ts=eff_now)
+        if not isinstance(spec, dict) or not spec:
+            return None
+        leg_key = "taker_fee_bps" if (clean_upper_scalar(order_type) or "LIMIT") == "MARKET" else "maker_fee_bps"
+        leg_bps = safe_nonneg_float(spec.get(leg_key), default=None)
+        return round(2.0 * leg_bps, 4) if leg_bps is not None else None
 
     return evaluate_ai_attribution(
         intents,
@@ -795,6 +839,7 @@ def load_and_evaluate_ai_attribution(
         crypto_eval_state=crypto_eval,
         nav_history=nav_history,
         current_nav_point=cur_nav_pt,
+        fee_resolver=_persisted_rt_fee_bps,
     )
 
 
@@ -933,6 +978,25 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
             f"high_escalations={safe_nonneg_int(dg.get('high_effort_escalations'), 0)}, "
             f"last_model={dg.get('last_eval_model') or 'n/a'} --"
         )
+
+    eq = report.get("execution_quality") if isinstance(report.get("execution_quality"), Mapping) else {}
+    if eq and (safe_nonneg_int(eq.get("limit_filled"), 0) + safe_nonneg_int(eq.get("market_filled"), 0)) > 0:
+        lim_s = eq.get("avg_limit_slippage_bps")
+        arr_s = eq.get("avg_arrival_shortfall_bps")
+        mkt_s = eq.get("avg_market_slippage_bps")
+        eq_parts = [
+            f"LIMIT(n={safe_nonneg_int(eq.get('limit_filled'), 0)}"
+            + (f", slip={safe_float(lim_s, 0.0):+.1f}bps" if lim_s is not None else "")
+            + (f", arrival_sf={safe_float(arr_s, 0.0):+.1f}bps" if arr_s is not None else "")
+            + ")"
+        ]
+        if safe_nonneg_int(eq.get("market_filled"), 0) > 0:
+            eq_parts.append(
+                f"MARKET(n={safe_nonneg_int(eq.get('market_filled'), 0)}"
+                + (f", slip={safe_float(mkt_s, 0.0):+.1f}bps" if mkt_s is not None else "")
+                + ")"
+            )
+        lines.append(f"Execution Quality: {', '.join(eq_parts)}")
 
     nav_dd = report.get("unified_nav_drawdown") if isinstance(report.get("unified_nav_drawdown"), Mapping) else {}
     if nav_line := format_nav_drawdown_summary_line(nav_dd):
