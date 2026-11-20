@@ -13303,6 +13303,15 @@ def test_sentiment_advisor_quantitative_prompt_enrichment_geopolitical_context_a
     assert "'ts':" not in sec_3c_clean
     assert "'age_h': 2.5" in sec_3c_clean
 
+    from intelligence.sentiment.sentiment_advisor import _format_geopolitical_line
+
+    long_geo = _format_geopolitical_line(
+        {"risk_score": 0.68, "headlines_analyzed": 7, "ts": now_s - 600.0, "summary": "word " * 120 + "Coinbase"},
+        now_s,
+    )
+    assert long_geo is not None and long_geo.endswith("word...")
+
+
 
 
 def test_etapa0_derivatives_short_horizon_deltas_and_rendering(tmp_path):

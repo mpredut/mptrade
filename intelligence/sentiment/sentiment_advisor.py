@@ -293,8 +293,11 @@ def _format_geopolitical_line(geopolitical: Any, now: float) -> Optional[str]:
     elif meta_parts:
         head_parts.append(f"({', '.join(meta_parts)})")
     if summary:
-        if len(summary) > 420:
-            summary = summary[:417].rstrip(" ,;:") + "..."
+        if len(summary) > 520:
+            cut = summary[:517]
+            if " " in cut:
+                cut = cut.rsplit(" ", 1)[0]
+            summary = cut.rstrip(" ,;:") + "..."
         head_parts.append(f"summary={summary}")
     return f"- Geopolitical Context: {' | '.join(head_parts)}"
 

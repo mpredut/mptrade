@@ -2213,6 +2213,7 @@ def test_multi_venue_liquidations_whale_bar_ts_btc_ob_widen_hl_span_and_agg_spot
 
     now_s = 1_795_000_000.0
     bn_col = BinanceFuturesLiquidationCollector(symbols=["BTCUSDT", "HYPEUSDT"], start_sync=False)
+    assert bn_col._ws_url() == "wss://fstream.binance.com/market/ws/!forceOrder@arr"
     # Binance forceOrder SELL liquidates a LONG position; BUY liquidates a SHORT position
     bn_col._ingest(
         json.dumps(
@@ -2242,6 +2243,7 @@ def test_multi_venue_liquidations_whale_bar_ts_btc_ob_widen_hl_span_and_agg_spot
         start_sync=False,
         ct_val_by_inst={"BTC-USDT-SWAP": 0.01},
     )
+    assert okx_col._ws_url() == "wss://ws.okx.com/ws/v5/public"
     okx_col._ingest(
         json.dumps(
             {
