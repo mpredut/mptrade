@@ -10,7 +10,6 @@ from cachepaths import (
     INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     clean_scalar_str,
-    clean_upper_scalar,
     exact_int,
     exact_pos_int,
     is_kraken_tokenized_asset,

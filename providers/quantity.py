@@ -12,7 +12,6 @@ from botcore import (
     _parse_bool_flag,
     clean_order_id_str,
     clean_scalar_str,
-    clean_upper_scalar,
     extract_order_price,
     extract_order_qty,
     extract_order_side,

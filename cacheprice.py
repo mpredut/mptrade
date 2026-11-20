@@ -21,7 +21,6 @@ import math
 from operator import itemgetter
 import os
 import socket
-import sys
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -51,7 +50,6 @@ from botcore import (
     parse_symbol_list,
     required_float_env,
     required_int_env,
-    resolve_now_ms,
     resolve_now_ts,
     resolve_positive_max_age,
     safe_nonneg_float,
@@ -116,7 +114,6 @@ from providers.price_poller import (  # noqa: F401
 )
 from providers.ssot_bridge import live_price_fetch_context
 from state_io import (
-    atomic_snapshot_file,
     atomic_text_writer,
     atomic_write_json,
     atomic_write_jsonl,

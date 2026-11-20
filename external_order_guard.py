@@ -16,7 +16,6 @@ from botcore import (
     _parse_bool_flag,
     check_cooldown_gate,
     clean_scalar_str,
-    clean_scale,
     format_notify_price,
     normalize_side,
     obj_attr,

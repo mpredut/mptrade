@@ -16,7 +16,7 @@ Intentional prompt compression & cycle-boundary invariants (BY DESIGN -- DO NOT 
 import math
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from botcore import _parse_bool_flag, normalize_epoch_sec, normalize_timestamp_ms, safe_float, safe_int, safe_pos_float
 from cachepaths import (

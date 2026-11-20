@@ -40,7 +40,6 @@ from botcore import (
     is_auto_start_websockets_enabled,
     is_live_network_backfill_enabled,
     log,
-    normalize_epoch_sec,
     normalize_side,
     resolve_now_ms,
     resolve_now_ts,
@@ -83,7 +82,6 @@ from instrument_registry import casefold_get
 from providers.base import MarketDataProvider
 from providers.portfolio_valuation import compute_venue_nav_breakdown
 from state_io import (
-    atomic_snapshot_file,
     atomic_text_writer,
     atomic_write_json,
     discard_generation_file,

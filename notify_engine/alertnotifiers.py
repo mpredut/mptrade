@@ -106,6 +106,10 @@ _OWNER_TAG_RE = re.compile(
     rf"|\((?:(?:{_VENUE_PAT}):)?({_OWNER_PAT})\)",
     flags=re.IGNORECASE,
 )
+_LINEBREAK_RE = re.compile(r"[\r\n]+")
+_BULK_PRICE_AT_RE = re.compile(r"@\s*\$?[0-9][0-9.,]*")
+_BULK_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+_WHITESPACE_RE = re.compile(r"\s+")
 _GATE_SUPPRESSED_REASONS = (
     "duplicate", "similar_eliminated", "queue_full_dropped", "topic_queue_full_dropped",
 )
@@ -116,7 +120,7 @@ def sanitize_single_line(val: Any, default: str = "") -> str:
     """Coerce ``val`` to a single-line stripped string (rejecting booleans/None) or return ``default``."""
     if isinstance(val, bool) or val is None:
         return default
-    cleaned = re.sub(r"[\r\n]+", " ", str(val)).strip()
+    cleaned = _LINEBREAK_RE.sub(" ", str(val)).strip()
     return cleaned if cleaned else default
 
 
@@ -623,9 +627,9 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
         item_tags.append(tags)
 
         stripped = _BRACKET_GROUP_RE.sub(" ", raw_t)
-        stripped = re.sub(r"@\s*\$?[0-9][0-9.,]*", " ", stripped)
+        stripped = _BULK_PRICE_AT_RE.sub(" ", stripped)
         tokens = [
-            tok for tok in re.findall(r"[A-Za-z][A-Za-z0-9_]*", stripped)
+            tok for tok in _BULK_TOKEN_RE.findall(stripped)
             if tok.lower() not in _BULK_TITLE_STOPWORDS and len(tok) > 1
         ]
         item_tokens.append(tokens)
@@ -835,8 +839,8 @@ def pass_common_gate(
     first_line = next((ln.strip() for ln in str(body or "").splitlines() if ln.strip()), "")
     norm_body_head = _normalize_text_for_similarity(first_line)[:120]
     if is_pure_trade:
-        raw_t = re.sub(r"\s+", " ", str(title or "")).strip().lower()
-        raw_b = re.sub(r"\s+", " ", first_line).strip().lower()[:120]
+        raw_t = _WHITESPACE_RE.sub(" ", str(title or "")).strip().lower()
+        raw_b = _WHITESPACE_RE.sub(" ", first_line).strip().lower()[:120]
         sig_raw = f"sim|{topic}|{raw_t}|{raw_b}"
     elif is_generic_title:
         sig_raw = f"sim|{topic}|{norm_title}|{norm_body_head}"

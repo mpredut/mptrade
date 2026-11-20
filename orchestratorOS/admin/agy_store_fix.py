@@ -117,6 +117,15 @@ UNIT = "antigravity-cli-daemon.service"
 
 log = logging.getLogger("agy_store_fix")
 
+_CLI_LOG_TS_RE = re.compile(r"cli-(\d{8}_\d{6})\.log$")
+_BG_TASK_ID_RE = re.compile(r"\A(?:Created At: [^\n]+\n)?Tool is running as a background task with task id:\s*(\S+)")
+_BG_TASK_LINE_RE = re.compile(r"\A(?:Created At: [^\n]+\n)?Tool is running as a background task with task id:\s*(\S+)\s*(?:\n|\Z)")
+_TIMER_CRON_DESC_RE = re.compile(r"^Task Description:\s*(?:Timer|Cron):", re.MULTILINE)
+_SUBAGENT_CREATED_RE = re.compile(r'\A(?:Created At: [^\n]+\nCompleted At: [^\n]+\n)?Created the following subagent:\s*\{')
+_SUBAGENT_CID_RE = re.compile(r'"conversationId"\s*:\s*"([^"\s]+)"')
+_CRON_ITER_RE = re.compile(r"\(iteration\s+(\d+)\)")
+_SENDER_ID_RE = re.compile(r"\bsender=(\S+)")
+
 
 # ---------------------------------------------------------------- file helpers
 def same_file(a: str, b: str) -> bool:
@@ -376,7 +385,7 @@ def repair_summaries(mt: dict) -> int:
 # ---------------------------------------------------------------- post
 def log_started_at(path: str) -> float:
     """cli-YYYYMMDD_HHMMSS.log -> epoch seconds (local time); 0 if the name does not match."""
-    m = re.search(r"cli-(\d{8}_\d{6})\.log$", path)
+    m = _CLI_LOG_TS_RE.search(path)
     try:
         return time.mktime(time.strptime(m.group(1), "%Y%m%d_%H%M%S")) if m else 0.0
     except ValueError:
@@ -852,28 +861,19 @@ def last_store_activity() -> float:
                     sched_calls = 0
                     latest_user_input_ts = max(latest_user_input_ts, _record_ts(rec))
                 if awaiting_sched_task_id and step_type == "GENERIC":
-                    m_tid = re.match(
-                        r"\A(?:Created At: [^\n]+\n)?Tool is running as a background task with task id:\s*(\S+)",
-                        content,
-                    )
+                    m_tid = _BG_TASK_ID_RE.match(content)
                     if m_tid and ("Timer:" in content or "Cron:" in content or "schedule" in content):
                         sched_task_id = m_tid.group(1).strip()
                     awaiting_sched_task_id = False
                 if step_type == "GENERIC":
-                    m_bg = re.match(
-                        r"\A(?:Created At: [^\n]+\n)?Tool is running as a background task with task id:\s*(\S+)\s*(?:\n|\Z)",
-                        content,
-                    )
-                    if m_bg and not re.search(r"^Task Description:\s*(?:Timer|Cron):", content, re.MULTILINE):
+                    m_bg = _BG_TASK_LINE_RE.match(content)
+                    if m_bg and not _TIMER_CRON_DESC_RE.search(content):
                         bg_tid = m_bg.group(1).strip()
                         if bg_tid and bg_tid.startswith(f"{cid}/") and bg_tid != sched_task_id:
                             active_bg_tasks[bg_tid] = _record_ts(rec)
-                    if re.match(
-                        r'\A(?:Created At: [^\n]+\nCompleted At: [^\n]+\n)?Created the following subagent:\s*\{',
-                        content,
-                    ):
+                    if _SUBAGENT_CREATED_RE.match(content):
                         sub_ts = _record_ts(rec)
-                        for m_sub in re.finditer(r'"conversationId"\s*:\s*"([^"\s]+)"', content):
+                        for m_sub in _SUBAGENT_CID_RE.finditer(content):
                             sub_cid = m_sub.group(1).strip()
                             if sub_cid:
                                 active_subagents[sub_cid] = sub_ts
@@ -883,14 +883,14 @@ def last_store_activity() -> float:
                         latest_sched_ts, sched_task_id, sched_calls = 0.0, "", 0
                         active_bg_tasks.clear()
                         active_subagents.clear()
-                    elif m_iter := re.search(r"\(iteration\s+(\d+)\)", content):
+                    elif m_iter := _CRON_ITER_RE.search(content):
                         cron_active = True
                         cron_max_iter = max(cron_max_iter, safe_nonneg_int(m_iter.group(1), default=0) or 0)
-                        m_sender = re.search(r"\bsender=(\S+)", content)
+                        m_sender = _SENDER_ID_RE.search(content)
                         if m_sender:
                             sched_task_id = m_sender.group(1).strip()
                     else:
-                        m_sender = re.search(r"\bsender=(\S+)", content)
+                        m_sender = _SENDER_ID_RE.search(content)
                         sender_id = m_sender.group(1).strip() if m_sender else ""
                         if sender_id:
                             active_bg_tasks.pop(sender_id, None)

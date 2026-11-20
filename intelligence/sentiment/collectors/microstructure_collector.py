@@ -40,7 +40,6 @@ from cachepaths import (
     clean_symbol_key,
     clean_upper_scalar,
     compatible_quote_suffixes,
-    has_crypto_quote_suffix,
     has_equity_suffix,
     is_equity_venue,
     is_fiat_usd_pair,

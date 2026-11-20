@@ -17,7 +17,6 @@ from botcore import (
     lru_dict_put,
     normalize_epoch_sec,
     safe_float,
-    safe_int,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
@@ -2148,9 +2147,6 @@ def append_newer_24h_to_7d_vals(vals_7d: list, series_24h: list, arch_7d_end_ts:
     return vals_7d
 
 
-from providers.ohlc_utils import normalize_yahoo_5d_chart_bars
-
-
 class TelemetryEvaluatorInterface(ABC):
     """Pure abstract base contract (Level 1) for stateless quantitative telemetry evaluators.
 
@@ -2396,6 +2392,22 @@ class AssetSessionPolicy(AssetClassPolicyInterface):
         if type(self) in (AssetSessionPolicy, Continuous24x7SessionPolicy):
             raise TypeError(f"Cannot instantiate abstract class {type(self).__name__}")
 
+    @property
+    def is_tokenized_equity(self) -> bool:
+        return False
+
+    @property
+    def has_crypto_perpetuals(self) -> bool:
+        return False
+
+    @property
+    def has_liquidation_clusters(self) -> bool:
+        return False
+
+    @property
+    def uses_equity_risk_priors(self) -> bool:
+        return True
+
     def normalize_24h_series(self, series_24h: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
         """Deduplicate and session-normalize the 24h series."""
         return normalize_and_dedup_24h_series(series_24h, symbol, is_market_open_fn=is_market_open_fn)
@@ -2477,10 +2489,6 @@ class Crypto24x7SessionPolicy(Continuous24x7SessionPolicy):
         return "crypto"
 
     @property
-    def is_tokenized_equity(self) -> bool:
-        return False
-
-    @property
     def has_crypto_perpetuals(self) -> bool:
         return True
 
@@ -2506,18 +2514,6 @@ class TokenizedEquity24x7SessionPolicy(Continuous24x7SessionPolicy):
     def is_tokenized_equity(self) -> bool:
         return True
 
-    @property
-    def has_crypto_perpetuals(self) -> bool:
-        return False
-
-    @property
-    def has_liquidation_clusters(self) -> bool:
-        return False
-
-    @property
-    def uses_equity_risk_priors(self) -> bool:
-        return True
-
 
 class EquityRthSessionPolicy(AssetSessionPolicy):
     """Concrete policy (Level 3) for RTH-gated cash equities (`_EQ` / `_US_EQ`)."""
@@ -2530,22 +2526,6 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
 
     @property
     def is_equity(self) -> bool:
-        return True
-
-    @property
-    def is_tokenized_equity(self) -> bool:
-        return False
-
-    @property
-    def has_crypto_perpetuals(self) -> bool:
-        return False
-
-    @property
-    def has_liquidation_clusters(self) -> bool:
-        return False
-
-    @property
-    def uses_equity_risk_priors(self) -> bool:
         return True
 
     @property

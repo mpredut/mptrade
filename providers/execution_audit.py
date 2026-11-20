@@ -6,7 +6,6 @@ Writes are best-effort, so an audit I/O failure does not change the executor res
 from __future__ import annotations
 
 import glob
-import hashlib
 import inspect
 import os
 import re

@@ -17,12 +17,10 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from botcore import (
-    is_market_order,
     load_local_module,
     require_pos_float,
     safe_nonneg_float,
     safe_pos_float,
-    _parse_bool_flag,
 )
 _md = load_local_module(_T212_DIR, "market_data", module_key="t212_market_data")
 _prev_md = sys.modules.get("market_data")

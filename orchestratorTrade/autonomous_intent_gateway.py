@@ -37,7 +37,6 @@ from botcore import (
     _parse_bool_flag,
     add_store_true_cli_args,
     clean_order_id,
-    clean_scale,
     disable_auto_start_websockets_default,
     is_us_rth_open,
     load_key_value_conf,

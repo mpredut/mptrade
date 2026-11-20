@@ -26,7 +26,6 @@ from botcore import (
     clean_upper_scalar,
     env_values_map,
     extract_order_id,
-    extract_timestamp_ms,
     first_pos_float,
     folder_or_env_value,
     normalize_side,

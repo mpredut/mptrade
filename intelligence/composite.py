@@ -41,7 +41,6 @@ from intelligence.sentiment.guards.high_stake_guard import DEFAULT_MIN_NOTIONAL_
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
 from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
 from botcore import (
-    clean_scale,
     normalize_epoch_sec,
     normalize_side,
     obj_attr,

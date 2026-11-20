@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import (
     clean_scalar_str,
-    clean_scale,
     obj_attr,
     resolve_patched_attr,
     safe_nonneg_float,

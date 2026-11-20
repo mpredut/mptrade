@@ -20,7 +20,6 @@ from typing import Any, Dict, Optional, Tuple
 from botcore import (
     _parse_bool_flag,
     check_cooldown_gate,
-    clean_scale,
     format_price_log,
     resolve_now_ts,
     resolve_order_notional,

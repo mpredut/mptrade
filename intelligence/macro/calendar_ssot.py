@@ -27,6 +27,22 @@ from botcore import (
     split_csv,
 )
 
+_MACRO_ACTUAL_RE = re.compile(
+    r"\b(?:actual|prints?|comes?\s+in\s+at|rises?\s+to|falls?\s+to|at)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)(?![\d:.])\s*(%|k\b)?"
+)
+_MACRO_CONSENSUS_RE = re.compile(
+    r"\b(?:(?:vs\.?|versus)\s*(?:est(?:imate)?\.?|consensus|forecast|exp(?:ected)?\.?)?|est(?:imate)?\.?|consensus|forecast|exp(?:ected)?\.?)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)(?![\d:.])\s*(%|k\b)?"
+)
+_MACRO_PRIOR_RE = re.compile(r"\b(?:prior|prev(?:ious)?\.?)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)(?![\d:.])\s*(%|k\b)?")
+_ALPHA_WORD_RE = re.compile(r"[a-zA-Z]{3,}")
+_MACRO_DATA_ANCHOR_RE = re.compile(r"\b(?:cpi|pce|ppi|fed|fomc|rate|bls)\b|\d+(?:\.\d+)?%")
+_CITED_FG_RE = re.compile(
+    r"(?:F&G(?:\s+Index)?(?:\s*(?:at|of|=|:|is))?\s*([0-9]{1,3})\b|Fear\s*(?:&|and)\s*Greed(?:\s+Index)?[^0-9]{0,20}?([0-9]{1,3})(?:/100|\b))",
+    re.IGNORECASE,
+)
+_CITED_ADV_PCT_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)%\s+advancing\b", re.IGNORECASE)
+_CITED_ADV_RATIO_RE = re.compile(r"advance_ratio\s*[=:]\s*([0-9]+\.[0-9]+)", re.IGNORECASE)
+
 
 @dataclass(frozen=True)
 class GlobalSessionContext:
@@ -236,18 +252,9 @@ def parse_live_macro_release_surprises(breaking_news: Optional[Sequence[Any]]) -
                 break
         if not ev_name:
             continue
-        m_act = re.search(
-            r"\b(?:actual|prints?|comes?\s+in\s+at|rises?\s+to|falls?\s+to|at)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)(?![\d:.])\s*(%|k\b)?",
-            low,
-        )
-        m_cons = re.search(
-            r"\b(?:(?:vs\.?|versus)\s*(?:est(?:imate)?\.?|consensus|forecast|exp(?:ected)?\.?)?|est(?:imate)?\.?|consensus|forecast|exp(?:ected)?\.?)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)(?![\d:.])\s*(%|k\b)?",
-            low,
-        )
-        m_prior = re.search(
-            r"\b(?:prior|prev(?:ious)?\.?)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)(?![\d:.])\s*(%|k\b)?",
-            low,
-        )
+        m_act = _MACRO_ACTUAL_RE.search(low)
+        m_cons = _MACRO_CONSENSUS_RE.search(low)
+        m_prior = _MACRO_PRIOR_RE.search(low)
         if m_act and m_cons:
             act_v = safe_float(m_act.group(1), None)
             cons_v = safe_float(m_cons.group(1), None)
@@ -315,8 +322,8 @@ def resolve_macro_economic_calendar(
             matched_kws = [kw for kw in macro_kws if re.search(r"\b" + re.escape(kw) + r"\b", low_t)]
             if not matched_kws:
                 continue
-            t_words = set(re.findall(r"[a-zA-Z]{3,}", low_t))
-            if matched_kws == ["inflation"] and (t_words & _PARTISAN_ELECTION_CONTEXT_WORDS) and not re.search(r"\b(?:cpi|pce|ppi|fed|fomc|rate|bls)\b|\d+(?:\.\d+)?%", low_t):
+            t_words = set(_ALPHA_WORD_RE.findall(low_t))
+            if matched_kws == ["inflation"] and (t_words & _PARTISAN_ELECTION_CONTEXT_WORDS) and not _MACRO_DATA_ANCHOR_RE.search(low_t):
                 continue
             detected_macro_headlines.append(title)
     live_macro_prints = parse_live_macro_release_surprises(breaking_news)
@@ -732,31 +739,19 @@ def compute_dynamic_sentiment_interval(
         kr_txt = " ".join(str(x) for x in raw_kr) if isinstance(raw_kr, (list, tuple)) else str(raw_kr or "")
         combined_cached_txt = f"{cached_sum_txt} {kr_txt}".strip()
         if prev_fg_val is None and combined_cached_txt:
-            m_fg = re.search(
-                r"(?:F&G(?:\s+Index)?(?:\s*(?:at|of|=|:|is))?\s*([0-9]{1,3})\b|Fear\s*(?:&|and)\s*Greed(?:\s+Index)?[^0-9]{0,20}?([0-9]{1,3})(?:/100|\b))",
-                combined_cached_txt,
-                re.IGNORECASE,
-            )
+            m_fg = _CITED_FG_RE.search(combined_cached_txt)
             if m_fg:
                 cand_fg = safe_int(m_fg.group(1) or m_fg.group(2), None)
                 if cand_fg is not None and 0 <= cand_fg <= 100:
                     prev_fg_val = cand_fg
         if prev_adv is None and combined_cached_txt:
-            m_adv_pct = re.search(
-                r"([0-9]+(?:\.[0-9]+)?)%\s+advancing\b",
-                combined_cached_txt,
-                re.IGNORECASE,
-            )
+            m_adv_pct = _CITED_ADV_PCT_RE.search(combined_cached_txt)
             if m_adv_pct:
                 cand_pct = safe_float(m_adv_pct.group(1), None)
                 if cand_pct is not None and 0.0 <= cand_pct <= 100.0:
                     prev_adv = cand_pct / 100.0
             else:
-                m_adv_ratio = re.search(
-                    r"advance_ratio\s*[=:]\s*([0-9]+\.[0-9]+)",
-                    combined_cached_txt,
-                    re.IGNORECASE,
-                )
+                m_adv_ratio = _CITED_ADV_RATIO_RE.search(combined_cached_txt)
                 if m_adv_ratio:
                     prev_adv = safe_float(m_adv_ratio.group(1), None)
     if cur_fg_val is not None and prev_fg_val is not None and abs(cur_fg_val - prev_fg_val) >= 8:

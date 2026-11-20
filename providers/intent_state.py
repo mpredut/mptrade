@@ -1,7 +1,6 @@
 """Durable AI intent state persistence, schema normalization, and ID correlation."""
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import threading
