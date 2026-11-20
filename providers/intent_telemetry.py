@@ -813,6 +813,8 @@ def evaluate_trade_plan_status(
     spot_px: Optional[float],
     invalidation_px: Optional[float],
     target_px: Optional[float],
+    *,
+    is_resting: bool = False,
 ) -> str:
     """Evaluate live status ('ACTIVE' | 'TARGET_HIT' | 'INVALIDATED') of a structured AI trade plan."""
     s_norm = (clean_upper_scalar(side) or "").strip()
@@ -824,12 +826,12 @@ def evaluate_trade_plan_status(
     if s_norm == "BUY":
         if inv is not None and px <= inv:
             return "INVALIDATED"
-        if tgt is not None and px >= tgt:
+        if not is_resting and tgt is not None and px >= tgt:
             return "TARGET_HIT"
         return "ACTIVE"
     if inv is not None and px >= inv:
         return "INVALIDATED"
-    if tgt is not None and px <= tgt:
+    if not is_resting and tgt is not None and px <= tgt:
         return "TARGET_HIT"
     return "ACTIVE"
 
@@ -955,7 +957,7 @@ def summarize_active_ai_trade_plans(
                 continue
 
         spot_px = _resolve_spot_px(venue, sym, pos_hit)
-        status = evaluate_trade_plan_status(side, spot_px, inv_px, tgt_px)
+        status = evaluate_trade_plan_status(side, spot_px, inv_px, tgt_px, is_resting=is_resting)
         ident = resolve_symbol_identity(sym)
         disp_sym = ident.display_symbol if (ident.is_tokenized_equity and ident.display_symbol) else sym
         dist_anchor = spot_px if (spot_px is not None and spot_px > 0.0) else entry_px

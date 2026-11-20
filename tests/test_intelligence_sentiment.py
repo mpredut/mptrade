@@ -15817,3 +15817,119 @@ def test_faza3b_spot_etf_flows_collector_parser_pretrade_and_prompt(tmp_path, mo
     assert format_etf_flows_summary_line(snap) in captured_prompts[0]
 
 
+def test_iter4_slope_unit_scaling_resting_plan_target_hit_and_post_sell_lifo_reset():
+    """Verify price-unit slope scaling on s90_flipped, no TARGET_HIT on unfilled RESTING plans, and post-flat Binance LIFO lot/PnL reset."""
+    from intelligence.sentiment.evaluators.portfolio_evaluator import PositionCostBasisEnrichmentEvaluator
+    from intelligence.sentiment.evaluators.price_series_evaluator import apply_24h_series_enrichment
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import _evaluate_delta_gate_trade_plans
+    from providers.intent_state import extract_intent_notional
+    from providers.intent_telemetry import (
+        evaluate_trade_plan_status,
+        summarize_active_ai_trade_plans,
+    )
+
+    t_now = 1_795_185_000.0
+
+    # 1. Price-unit scaling on s90_flipped prevents 500x unit mismatch & sign contradiction on low-price coins (ARBUSDC)
+    # Build 5m series with a noisy outlier spike at -90s (0.1186) followed by steady rise 0.1182 -> 0.1185
+    series_arb = []
+    for sec in range(301):
+        ts_ms = (t_now - 300.0 + sec) * 1000.0
+        if sec == 210:
+            px = 0.11865  # 1-tick outlier at -90s
+        elif sec < 210:
+            px = 0.1182
+        else:
+            px = 0.1182 + 0.0003 * ((sec - 210) / 90.0)
+        series_arb.append([ts_ms, px])
+    entry_arb = {
+        "price": 0.1185,
+        "slope_90s": -2.0e-6,
+        "slope_3_7m": 1.8e-7,
+        "slope_15m": 7.7e-7,
+        "slope_2_5h": 4.1e-7,
+        "gradient_recent": -3.1e-6,
+        "gradient_recent_fast": -2.0e-6,
+        "epsilon": 9.6e-5,
+        "vel_90s_pct_min": -0.25,  # stale opposite-sign vel triggers kin_contradicts_short -> recompute + s90_flipped
+        "accel_90s_pct_min2": -0.10,
+        "short_trend_ts": t_now,
+    }
+    apply_24h_series_enrichment("ARBUSDC", entry_arb, {"chg_1m_pct": 0.08}, series_arb, None)
+    assert entry_arb["vel_90s_pct_min"] > 0.0
+    assert entry_arb["slope_90s"] > 0.0
+    assert entry_arb["slope_90s"] < 5.0e-5  # price-unit ($/sec), NOT ~0.002 ((dp/p)/min)
+    assert entry_arb["gradient_recent_fast"] > 0.0
+    assert entry_arb["gradient_recent_fast"] < 5.0e-5
+
+    # 2. Unfilled RESTING orders must NEVER report TARGET_HIT or trigger delta-gate target_hit wakeups (INVALIDATED still works)
+    assert evaluate_trade_plan_status("BUY", 0.1472, 0.139, 0.147, is_resting=True) == "ACTIVE"
+    assert evaluate_trade_plan_status("BUY", 0.1385, 0.139, 0.147, is_resting=True) == "INVALIDATED"
+    assert evaluate_trade_plan_status("BUY", 0.1472, 0.139, 0.147, is_resting=False) == "TARGET_HIT"
+    assert evaluate_trade_plan_status("SELL", 180.0, 192.0, 184.0, is_resting=True) == "ACTIVE"
+    assert evaluate_trade_plan_status("SELL", 193.0, 192.0, 184.0, is_resting=True) == "INVALIDATED"
+
+    resting_ada_intent = [
+        {
+            "intent_id": "ada_buy_rest",
+            "timestamp": t_now - 3600.0,
+            "decision": "BUY",
+            "symbol": "ADAUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 0.1418,
+            "target_px": 0.147,
+            "invalidation_px": 0.139,
+            "suggested_notional_usd": 250.0,
+            "status": "EXECUTED",
+            "execution_payload": {"order_id": "OYXYYN-2Z243-T3P6XZ", "status": "NEW"},
+        }
+    ]
+    open_ada = [
+        {"venue": "kraken", "symbol": "ADAUSD", "side": "BUY", "order_id": "OYXYYN-2Z243-T3P6XZ", "price": 0.1418, "qty": 1763.05, "status": "NEW"}
+    ]
+    ada_plans = summarize_active_ai_trade_plans(
+        resting_ada_intent, "crypto", t_now, extract_intent_notional, open_orders=open_ada, prices_and_trends={"ADAUSD": {"price": 0.147126}}
+    )
+    assert len(ada_plans) == 1 and ada_plans[0]["order_state"] == "RESTING" and ada_plans[0]["status"] == "ACTIVE"
+    dg_states, dg_trig = _evaluate_delta_gate_trade_plans(
+        {"active_ai_trade_plans": ada_plans}, {"ADAUSD": 0.147126}, {"kraken:ADAUSD:BUY": "ACTIVE"}
+    )
+    assert dg_states["kraken:ADAUSD:BUY"] == "ACTIVE" and dg_trig == ""
+
+    # 3. Fresh post-sell buy matching >=98% of live wallet prunes pre-sell phantom fee-drift lots & resets closed-cycle LIFO PnL
+    ls_ts_ms = int((t_now - 24000.0) * 1000)
+    new_buy_ts_ms = int((t_now - 300.0) * 1000)
+    ro_arb = {
+        "last_action_side": "BUY",
+        "last_buy": {"price": 0.1184, "qty": 3489.5, "ts_ms": new_buy_ts_ms},
+        "last_sell": {"price": 0.1201, "qty": 3584.5, "ts_ms": ls_ts_ms},
+        "active_avg_buy_px": 0.118715,
+        "lifo_realized_pnl_usd": -310.86,
+        "open_lots": [
+            {"lot_id": "L27", "qty": 84.1, "entry_px": 0.1595, "ts_ms": ls_ts_ms - 15 * 86400 * 1000},
+            {"lot_id": "L51", "qty": 27.9, "entry_px": 0.1357, "ts_ms": ls_ts_ms - 4 * 86400 * 1000},
+            {"lot_id": "L59", "qty": 3489.5, "entry_px": 0.1184, "ts_ms": new_buy_ts_ms},
+        ],
+    }
+    pos_arb = {"venue": "binance", "symbol": "ARBUSDC", "price": 0.1186, "free_base": 3493.14511, "value_usd": 414.29}
+    PositionCostBasisEnrichmentEvaluator._enrich_position_from_recent_orders(
+        pos_arb,
+        ro_arb,
+        p_sym="ARBUSDC",
+        p_quote_variants=("ARBUSDC",),
+        pos_px_f=0.1186,
+        held_cur=3493.14511,
+        is_flat_balance=False,
+        is_flat_after_exit=False,
+        prices_and_trends={},
+        cache_dir="",
+        cycle_high_memo={},
+    )
+    assert len(pos_arb["open_lots"]) == 1 and pos_arb["open_lots"][0]["entry_px"] == 0.1184
+    assert pos_arb["active_avg_buy_px"] == pytest.approx(0.1184)
+    assert "lifo_realized_pnl_usd" not in pos_arb
+    assert ro_arb["lifo_realized_pnl_usd"] == 0.0
+
+
+

@@ -172,8 +172,9 @@ def _evaluate_delta_gate_trade_plans(
         spot_px = eval_prices.get(pl_sym) or safe_pos_float(pl.get("spot_px"), default=None)
         inv_px = safe_pos_float(pl.get("invalidation_px"), default=None)
         tgt_px = safe_pos_float(pl.get("target_px"), default=None)
+        pl_is_resting = (str(pl.get("order_state") or "").strip().upper() == "RESTING")
         if spot_px is not None and (inv_px is not None or tgt_px is not None):
-            pl_status = evaluate_trade_plan_status(pl_side, spot_px, inv_px, tgt_px)
+            pl_status = evaluate_trade_plan_status(pl_side, spot_px, inv_px, tgt_px, is_resting=pl_is_resting)
         else:
             pl_status = str(pl.get("status") or "ACTIVE").strip().upper() or "ACTIVE"
         pl_key = f"{pl_ven}:{pl_sym}:{pl_side}"

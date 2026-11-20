@@ -2332,6 +2332,22 @@ def apply_24h_series_enrichment(
                 and s90_cur is not None
                 and (v90_post * s90_cur) < 0.0
             )
+            cur_px_e = safe_pos_float(entry.get("price"), default=None)
+            use_price_units = bool(
+                not stale_short_cache
+                and cur_px_e is not None
+                and (entry.get("epsilon") is not None or entry.get("slope_3_7m") is not None)
+            )
+            unit_scale = (cur_px_e / 60.0) if (use_price_units and cur_px_e is not None) else 1.0
+            if s90_flipped and v90_post is not None:
+                s90_fb_v = safe_float(s_fb.get("slope_90s"), default=None)
+                if s90_fb_v is None or (s90_fb_v * v90_post) <= 0.0:
+                    s_fb = dict(s_fb)
+                    s90_from_vel = _round_small_slope(v90_post / 100.0)
+                    s_fb["slope_90s"] = s90_from_vel
+                    s_fb["growth_90s"] = s90_from_vel
+                    s_fb["trend_90s"] = 1 if v90_post > 0.0 else -1
+                    s_fb["gradient_recent_fast"] = s90_from_vel
             for sk, sv in s_fb.items():
                 if sv is None:
                     continue
@@ -2344,7 +2360,10 @@ def apply_24h_series_enrichment(
                         or (sk in ("slope_90s", "growth_90s", "trend_90s") and abs(safe_float(entry.get("slope_90s"), 0.0)) < 1e-12)
                     )
                 ):
-                    entry[sk] = sv
+                    if use_price_units and sk not in ("trend_90s", "trend_3_7m", "trend_15m", "trend_2_5h"):
+                        entry[sk] = _round_small_slope(sv * unit_scale)
+                    else:
+                        entry[sk] = sv
             if stale_short_cache and "growth_2_5h" not in s_fb:
                 entry.pop("growth_2_5h", None)
             if entry.get("gradient_recent") is None or abs(safe_float(entry.get("gradient_recent"), 0.0)) < 1e-12:

@@ -1724,6 +1724,23 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
         if is_flat_after_exit:
             reset_flat_position_and_recent_order_state(ro, pos, full_pos_clear=True)
         else:
+            ls_ts_pos = (safe_pos_int(ls.get("ts_ms"), default=0) or 0) if isinstance(ls, dict) else 0
+            raw_lots_pos = ro.get("open_lots") if isinstance(ro.get("open_lots"), list) else []
+            if held_cur > 1e-8 and ls_ts_pos > 0 and raw_lots_pos:
+                post_sell_lots = [
+                    lt for lt in raw_lots_pos
+                    if isinstance(lt, dict) and (safe_pos_int(lt.get("ts_ms"), default=0) or 0) > ls_ts_pos
+                ]
+                if post_sell_lots and len(post_sell_lots) < len(raw_lots_pos):
+                    post_sell_q = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in post_sell_lots)
+                    if abs(post_sell_q - held_cur) <= max(1e-4, held_cur * 0.02):
+                        ro["open_lots"] = post_sell_lots
+                        ro["lifo_realized_pnl_usd"] = 0.0
+                        pos.pop("lifo_realized_pnl_usd", None)
+                        if (ps_vwap := compute_open_lots_vwap(post_sell_lots)[0]) is not None:
+                            ro["active_avg_buy_px"] = ps_vwap
+                            ro.pop("tactical_avg_buy_px", None)
+                            ro.pop("swing_subcycle_avg_px", None)
             set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", ro.get("active_avg_buy_px"), pos_px_f)
             set_pos_anchor(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct", ro.get("tactical_avg_buy_px"), pos_px_f)
             sw_avg = safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)
