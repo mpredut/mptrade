@@ -533,8 +533,9 @@ def evaluate_ai_decision_scorecard(
             buy_shadow_active = True
             cooldown_remaining_h = round((cd_until - eff_now) / 3600.0, 2)
             trig = f"streak={loss_streak}L" if tripped_streak else f"weak_window={losses}/{len(recent)}L"
+            net_lbl = f"+${abs(net_usd):.0f}" if net_usd >= 0.0 else f"-${abs(net_usd):.0f}"
             reason = (
-                f"ai_scorecard_buy_shadow_cooldown({trig}, net=${net_usd:+.0f}, "
+                f"ai_scorecard_buy_shadow_cooldown({trig}, net={net_lbl}, "
                 f"remaining={cooldown_remaining_h:.1f}h)"
             )
 

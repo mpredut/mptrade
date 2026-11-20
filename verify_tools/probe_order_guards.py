@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import sys
 
@@ -18,9 +19,10 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import disable_auto_start_websockets_default, parse_pos_cli_float
-from intelligence.sentiment.evaluators.guard_probe_evaluator import probe_deterministic_guards
-from state_io import encode_json_payload
+with contextlib.redirect_stdout(sys.stderr):
+    from botcore import disable_auto_start_websockets_default, parse_pos_cli_float
+    from intelligence.sentiment.evaluators.guard_probe_evaluator import probe_deterministic_guards
+    from state_io import encode_json_payload
 
 
 def main(argv: list[str] | None = None) -> int:

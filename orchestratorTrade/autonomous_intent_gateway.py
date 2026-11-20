@@ -37,8 +37,10 @@ from botcore import (
     _parse_bool_flag,
     add_store_true_cli_args,
     clean_order_id,
+    clean_upper_scalar,
     disable_auto_start_websockets_default,
     extract_current_price_item,
+    extract_order_id,
     extract_order_price,
     extract_timestamp_s,
     format_notify_price,
@@ -93,7 +95,8 @@ from providers.intent_state import (
     upsert_durable_intent,
     validate_and_build_intent_dict,
 )
-from providers.order_id_context import resolve_order_actor
+from providers.order_id_context import extract_client_order_id, resolve_order_actor
+from providers.order_status_ssot import NON_FILL_ORDER_STATUSES
 from providers.quantity import clamp_notional_to_wallet_balance
 from state_io import read_json_dict
 
@@ -272,7 +275,13 @@ class AutonomousIntentGateway:
         for ord_item in raw_orders:
             if not isinstance(ord_item, dict):
                 continue
-            if resolve_order_actor(ord_item, known_ai_oids=known_ai_oids) != "BOT":
+            # Ignore synthetic fallback placeholders (e.g. T212 averagePrice position fallback with no order/client ID)
+            if not extract_order_id(ord_item, default="") and not extract_client_order_id(ord_item, default=""):
+                continue
+            ord_st = clean_upper_scalar(ord_item.get("status")) or ""
+            if ord_st in NON_FILL_ORDER_STATUSES:
+                continue
+            if resolve_order_actor(ord_item, known_ai_order_ids=known_ai_oids) != "BOT":
                 continue
             ts_s = extract_timestamp_s(ord_item, default=0.0) or 0.0
             px_f = extract_order_price(ord_item, default=0.0) or 0.0

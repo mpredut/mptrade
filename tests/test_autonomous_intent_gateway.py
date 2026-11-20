@@ -3823,6 +3823,22 @@ def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
     assert rec_crypto_ok["status"] == "EXECUTED"
     btc_inst.place.assert_called_once()
 
+    # (e) _resolve_recent_bot_opposite_fill ignores synthetic ID-less fallbacks (e.g. T212 averagePrice) and non-fills
+    fake_t212_inst = MagicMock(symbol="NVDA_US_EQ", provider_name="t212")
+    fake_t212_inst._provider.get_orders.return_value = [
+        {"side": "BUY", "price": 190.0, "qty": 1.0, "timestamp": int((live_now - 900.0) * 1000)},
+        {"orderId": "bot_canc_1", "side": "BUY", "price": 190.0, "status": "CANCELED", "timestamp": int((live_now - 300.0) * 1000)},
+    ]
+    assert AutonomousIntentGateway._resolve_recent_bot_opposite_fill(fake_t212_inst, "SELL", live_now, []) is None
+    fake_t212_inst._provider.get_orders.return_value.extend([
+        {"orderId": "ai_known_1", "side": "BUY", "price": 192.0, "status": "FILLED", "timestamp": int((live_now - 120.0) * 1000)},
+        {"orderId": "bot_fill_1", "side": "BUY", "price": 191.0, "status": "FILLED", "timestamp": int((live_now - 240.0) * 1000)},
+    ])
+    known_ai_intents = [{"intent_id": "ai_k1", "execution_payload": {"orderId": "ai_known_1"}}]
+    bot_hit = AutonomousIntentGateway._resolve_recent_bot_opposite_fill(fake_t212_inst, "SELL", live_now, known_ai_intents)
+    assert bot_hit is not None and bot_hit["actor"] == "BOT" and bot_hit["price"] == pytest.approx(191.0)
+
+
 
 
 
