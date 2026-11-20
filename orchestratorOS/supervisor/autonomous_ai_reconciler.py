@@ -30,19 +30,17 @@ from botcore import (
     bool_env,
     canonical_topic_key,
     disable_auto_start_websockets_default,
-    float_env,
     is_us_rth_open,
     load_dotenv,
     load_key_value_conf,
     optional_env,
     parse_pos_cli_float,
     parse_symbol_list,
-    safe_float,
     safe_nonneg_float,
     safe_pos_float,
     topic_spec,
 )
-from cachepaths import resolve_cache_subdomain, resolve_cachedb_filepath
+from cachepaths import LLM_QUOTA_STATUS_FILENAME, resolve_cache_subdomain, resolve_cachedb_filepath
 
 disable_auto_start_websockets_default()
 from intelligence.macro_sentiment_ssot import (
@@ -50,6 +48,7 @@ from intelligence.macro_sentiment_ssot import (
     resolve_derived_telemetry_intervals,
 )
 from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
+from intelligence.sentiment.llm_quota_router import evaluate_model_quota_escalation_allowed
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     MarketAndPortfolioSnapshotOrchestrator,
 )
@@ -236,6 +235,14 @@ class AutonomousAIReconciler:
         hours = safe_pos_float(lookback_hours, default=self.lookback_hours) or self.lookback_hours
         return harvest_log_anomalies_from_dirs(self.logs_dirs, hours)
 
+    def _load_cached_quota_snapshot(self) -> Dict[str, Any]:
+        """Read cached ``llm_quota_status.json`` from ``self.cache_dir`` honoring subdomain routing."""
+        quota_path = _resolve_topic_cache_path(self.cache_dir, LLM_QUOTA_STATUS_FILENAME)
+        if not (os.path.exists(quota_path) or os.path.exists(f"{quota_path}.previous")):
+            return {}
+        raw = read_json_recovering(quota_path, default={})
+        return raw if isinstance(raw, dict) else {}
+
     def synthesize_and_diagnose(
         self,
         sensors: TelemetrySensorSnapshot,
@@ -292,19 +299,9 @@ class AutonomousAIReconciler:
         ):
             high_model = (optional_env("LLM_HIGH_STAKE_MODEL", "") or "").strip()
             if high_model:
-                low_warn = max(
-                    0.0, min(0.5, safe_float(float_env("LLM_QUOTA_LOW_WARN_FRACTION", default=0.10), 0.10) or 0.10)
-                )
-                quota_path = _resolve_topic_cache_path(self.cache_dir, "llm_quota_status.json")
-                q_snap = read_json_recovering(quota_path, default={}) if os.path.exists(quota_path) else {}
-                q_buckets = (
-                    q_snap.get("buckets")
-                    if isinstance(q_snap, dict) and isinstance(q_snap.get("buckets"), dict)
-                    else {}
-                )
-                q_cred = safe_float(q_snap.get("available_credits"), default=0.0) if isinstance(q_snap, dict) else 0.0
-                high_rem = safe_float(q_buckets.get(high_model), default=None) if high_model in q_buckets else None
-                if (q_cred or 0.0) <= 0.0 and high_rem is not None and high_rem <= low_warn:
+                q_snap = self._load_cached_quota_snapshot()
+                esc_allowed, high_rem, low_warn = evaluate_model_quota_escalation_allowed(q_snap, high_model)
+                if not esc_allowed and high_rem is not None:
                     logger.info(
                         "[%s] Suppressing high-effort escalation to %s (remaining quota %.1f%% <= %.1f%% warn threshold).",
                         resolved_topic,

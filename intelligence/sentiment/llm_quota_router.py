@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
 
 from botcore import (
     _parse_bool_flag,
@@ -26,7 +26,7 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
 )
-from cachepaths import cache_path
+from cachepaths import LLM_QUOTA_STATUS_FILENAME, cache_path
 from core.llm_topics import resolve_configured_llm_models
 from state_io import generation_file_lock, read_json_dict, save_json_state
 
@@ -131,6 +131,61 @@ def _expand_family_variants(
                 seen.add(cand)
                 out.append(cand)
     return tuple(out)
+
+
+def resolve_quota_low_warn_fraction(default: float = 0.10) -> float:
+    """Return clamped ``LLM_QUOTA_LOW_WARN_FRACTION`` in ``[0.0, 0.5]``."""
+    raw = float_env("LLM_QUOTA_LOW_WARN_FRACTION", default=default)
+    val = safe_float(raw, default)
+    return max(0.0, min(0.5, val if val is not None else default))
+
+
+def summarize_quota_pool_remaining(
+    snapshot: Optional[Mapping[str, Any]],
+    *,
+    paid_gemini_models: Iterable[str],
+    flash_gemini_models: Iterable[str],
+    claude_models: Iterable[str],
+) -> Dict[str, float]:
+    """Compute remaining quota fractions for paid Gemini, Claude, and Flash pools plus top-up credits."""
+    if not isinstance(snapshot, Mapping):
+        return {"available_credits": 0.0, "primary_rem": 0.0, "claude_rem": 0.0, "flash_rem": 0.0}
+    buckets = snapshot.get("buckets")
+    b_map = buckets if isinstance(buckets, Mapping) else {}
+    available_credits = safe_float(snapshot.get("available_credits"), 0.0)
+    primary_rem = max((safe_float(b_map.get(m), 0.0) for m in paid_gemini_models), default=0.0)
+    claude_keys = set(claude_models) | {k for k in b_map if is_claude_model(k)}
+    claude_rem = max((safe_float(b_map.get(m), 0.0) for m in claude_keys), default=0.0)
+    flash_keys = set(flash_gemini_models) | {k for k in b_map if is_gemini_flash_model(k)}
+    flash_rem = max((safe_float(b_map.get(m), 0.0) for m in flash_keys), default=0.0)
+    return {
+        "available_credits": available_credits,
+        "primary_rem": primary_rem,
+        "claude_rem": claude_rem,
+        "flash_rem": flash_rem,
+    }
+
+
+def evaluate_model_quota_escalation_allowed(
+    quota_snapshot: Optional[Mapping[str, Any]],
+    model_name: str,
+    *,
+    min_remaining_fraction: Optional[float] = None,
+) -> tuple[bool, Optional[float], float]:
+    """Return ``(allowed, remaining_fraction, threshold)`` for high-effort escalation to ``model_name``."""
+    eff_thresh = (
+        resolve_quota_low_warn_fraction()
+        if min_remaining_fraction is None
+        else max(0.0, min(0.5, safe_float(min_remaining_fraction, 0.10)))
+    )
+    if not isinstance(quota_snapshot, Mapping) or not isinstance(model_name, str) or not model_name.strip():
+        return True, None, eff_thresh
+    q_buckets = quota_snapshot.get("buckets") if isinstance(quota_snapshot.get("buckets"), Mapping) else {}
+    q_cred = safe_float(quota_snapshot.get("available_credits"), default=0.0) or 0.0
+    rem = safe_float(q_buckets.get(model_name), default=None) if model_name in q_buckets else None
+    if q_cred <= 0.0 and rem is not None and rem <= eff_thresh:
+        return False, rem, eff_thresh
+    return True, rem, eff_thresh
 
 
 def canonical_rest_model(model_name: str) -> str:
@@ -247,7 +302,7 @@ class GeminiQuotaRouterMixin:
     @staticmethod
     def _get_quota_state_path() -> str:
         """Return shared SSOT cache path for live LLM model quota & credit status."""
-        return _gc_attr("cache_path", cache_path)("llm_quota_status.json")
+        return _gc_attr("cache_path", cache_path)(LLM_QUOTA_STATUS_FILENAME)
 
     @staticmethod
     def _extract_available_credits(load_assist_payload: Any) -> float:
@@ -599,29 +654,22 @@ class GeminiQuotaRouterMixin:
         buckets = snapshot.get("buckets")
         if not isinstance(buckets, dict) or not buckets:
             return
-        available_credits = safe_float(snapshot.get("available_credits"), 0.0)
-        warn_threshold = max(
-            0.0, min(0.5, safe_float(float_env("LLM_QUOTA_LOW_WARN_FRACTION", default=0.10), 0.10))
-        )
+        warn_threshold = resolve_quota_low_warn_fraction(default=0.10)
         cooldown_sec = max(
             300.0, safe_float(float_env("LLM_QUOTA_ALERT_COOLDOWN_SEC", default=14400.0), 14400.0)
         )
 
         paid_gemini_models, flash_gemini_models, claude_models = cls._resolve_model_pools()
-        primary_rem = max(
-            (safe_float(buckets.get(m), 0.0) for m in paid_gemini_models),
-            default=0.0,
+        pool_rem = summarize_quota_pool_remaining(
+            snapshot,
+            paid_gemini_models=paid_gemini_models,
+            flash_gemini_models=flash_gemini_models,
+            claude_models=claude_models,
         )
-        claude_keys = set(claude_models) | {k for k in buckets if is_claude_model(k)}
-        claude_rem = max(
-            (safe_float(buckets.get(m), 0.0) for m in claude_keys),
-            default=0.0,
-        )
-        flash_keys = set(flash_gemini_models) | {k for k in buckets if is_gemini_flash_model(k)}
-        flash_rem = max(
-            (safe_float(buckets.get(m), 0.0) for m in flash_keys),
-            default=0.0,
-        )
+        available_credits = pool_rem["available_credits"]
+        primary_rem = pool_rem["primary_rem"]
+        claude_rem = pool_rem["claude_rem"]
+        flash_rem = pool_rem["flash_rem"]
 
         alert_updates: Dict[str, Any] = {}
         if available_credits > 0.0 or primary_rem > warn_threshold:

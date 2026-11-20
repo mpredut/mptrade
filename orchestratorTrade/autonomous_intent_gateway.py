@@ -39,7 +39,6 @@ from botcore import (
     clean_order_id,
     clean_upper_scalar,
     disable_auto_start_websockets_default,
-    extract_current_price_item,
     extract_order_id,
     extract_order_price,
     extract_timestamp_s,
@@ -86,6 +85,7 @@ from providers.ai_survival_guard import (
     evaluate_ai_decision_scorecard,
     evaluate_ai_ping_pong_guard,
     evaluate_ai_target_ev_guard,
+    extract_live_prices_from_cache_payload,
 )
 from providers.nav_drawdown import (
     DEFAULT_DAILY_NAV_DD_LIMIT_PCT,
@@ -259,14 +259,7 @@ class AutonomousIntentGateway:
             cp_path = resolve_cachedb_filepath(os.path.join(self.cache_dir, CACHE_CURRENT_PRICE_FILENAME))
             if cp_path and os.path.exists(cp_path):
                 data = read_json_dict(cp_path, default=None, recover_previous=True)
-                items = data.get("items") if isinstance(data, dict) else None
-                if isinstance(items, dict):
-                    for k, v in items.items():
-                        px_v = safe_pos_float(extract_current_price_item(v), default=None)
-                        if px_v is None and isinstance(v, dict):
-                            px_v = safe_pos_float(v.get("price"), default=None)
-                        if px_v is not None:
-                            prices[str(k)] = px_v
+                prices = extract_live_prices_from_cache_payload(data)
         except Exception:
             pass
         if (sp := safe_pos_float(spot_price, default=None)) is not None:

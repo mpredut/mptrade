@@ -133,7 +133,10 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 from instrument_registry import canonical_display_symbol, casefold_get, has_workspace_instrument_sources
 from cacheprice import resolve_ssot_price_from_cache
 from providers.ai_circuit_breaker import parse_intent_circuit_breaker_config
-from providers.ai_survival_guard import evaluate_ai_decision_scorecard
+from providers.ai_survival_guard import (
+    build_intent_live_price_map,
+    evaluate_ai_decision_scorecard,
+)
 from providers.nav_drawdown import load_and_evaluate_nav_drawdown
 from providers.intent_telemetry import (
     build_last_cycle_execution_status,
@@ -1514,13 +1517,10 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 snapshot.portfolio_summary["active_ai_trade_plans"] = active_plans_out
             try:
                 cb_cfg = parse_intent_circuit_breaker_config(load_key_value_conf(workspace_dir))
-                sc_prices: Dict[str, Any] = dict(snapshot.prices_and_trends or {})
-                for tp in (snapshot.portfolio_summary.get("tradable_positions") or ()):
-                    if isinstance(tp, dict) and tp.get("symbol") and (tp_px := safe_pos_float(tp.get("price"), default=None)) is not None:
-                        tp_sym = str(tp["symbol"])
-                        sc_prices.setdefault(tp_sym, tp_px)
-                        if tp.get("venue"):
-                            sc_prices[f"{tp['venue']}:{tp_sym}"] = tp_px
+                sc_prices = build_intent_live_price_map(
+                    snapshot.prices_and_trends,
+                    snapshot.portfolio_summary.get("tradable_positions"),
+                )
                 ai_scorecard = evaluate_ai_decision_scorecard(
                     intents_data,
                     now_ts=now_ts,

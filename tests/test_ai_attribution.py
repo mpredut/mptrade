@@ -463,5 +463,118 @@ def test_delta_gate_log_summary_tracks_wake_reasons():
     assert "Wake reasons: price_move=2, open_orders_changed=1" in rendered
 
 
+def test_faza4_prep_shared_ssot_primitives(monkeypatch):
+    """Verify Faza 4 prep SSOT helpers across cachepaths, survival guard, attribution TCA, and quota router."""
+    from cachepaths import (
+        AI_ATTRIBUTION_30D_FILENAME,
+        AI_ATTRIBUTION_STATUS_FILENAME,
+        LLM_QUOTA_STATUS_FILENAME,
+        resolve_cache_subdomain,
+    )
+    from intelligence.sentiment.llm_quota_router import (
+        evaluate_model_quota_escalation_allowed,
+        resolve_quota_low_warn_fraction,
+        summarize_quota_pool_remaining,
+    )
+    from providers.ai_attribution import (
+        extract_fill_execution_slippage,
+        format_execution_quality_parts,
+        summarize_execution_quality_bucket,
+    )
+    from providers.ai_survival_guard import (
+        build_intent_live_price_map,
+        compute_signed_price_edge_pct,
+        extract_live_prices_from_cache_payload,
+        format_signed_usd,
+        match_filled_intent_rows_lifo,
+        resolve_matched_notional_usd,
+    )
 
+    # 1. System cache filename SSOT constants
+    for fn in (AI_ATTRIBUTION_STATUS_FILENAME, AI_ATTRIBUTION_30D_FILENAME, LLM_QUOTA_STATUS_FILENAME):
+        assert resolve_cache_subdomain(fn) == "system"
 
+    # 2. Pure LIFO matching, signed edge, USD formatting, and live-price payload helpers
+    assert compute_signed_price_edge_pct("BUY", 100.0, 102.5) == pytest.approx(2.5)
+    assert compute_signed_price_edge_pct("SELL", 100.0, 97.5) == pytest.approx(2.5)
+    assert compute_signed_price_edge_pct("BUY", 0.0, 100.0) == 0.0
+    assert resolve_matched_notional_usd(500.0, 300.0) == 300.0
+    assert resolve_matched_notional_usd(500.0, 0.0) == 500.0
+    assert format_signed_usd(12.345) == "+$12.35"
+    assert format_signed_usd(-12.345, decimals=0) == "-$12"
+
+    rows = [
+        {"ts": 20.0, "inst_key": ("binance", "BTC", ("USD",)), "side": "SELL", "px": 102.0, "usd": 500.0},
+        {"ts": 10.0, "inst_key": ("binance", "BTC", ("USD",)), "side": "BUY", "px": 100.0, "usd": 500.0},
+        {"ts": 30.0, "inst_key": ("kraken", "ETH", ("USD",)), "side": "BUY", "px": 2000.0, "usd": 400.0},
+        {"ts": 40.0, "inst_key": ("kraken", "TAO", ("USD",)), "side": "SELL", "px": 200.0, "usd": 300.0},
+    ]
+    closed, open_b, open_s = match_filled_intent_rows_lifo(rows)
+    assert len(closed) == 1 and closed[0][0] == "BUY->SELL" and closed[0][1]["ts"] == 10.0 and closed[0][2]["ts"] == 20.0
+    assert len(open_b) == 1 and open_b[0]["ts"] == 30.0
+    assert len(open_s) == 1 and open_s[0]["ts"] == 40.0
+
+    parsed_px = extract_live_prices_from_cache_payload({
+        "items": {
+            "BTCUSDC": 70000.0,
+            "ETHUSDC": [[1_795_000_000.0, 2500.0]],
+            "TAOUSDC": {"price": 190.5},
+            "BAD": -5.0,
+        }
+    })
+    assert parsed_px == {"BTCUSDC": 70000.0, "ETHUSDC": 2500.0, "TAOUSDC": 190.5}
+    live_map = build_intent_live_price_map(
+        {"BTCUSDC": {"price": 70000.0}},
+        [{"venue": "kraken", "symbol": "TAOUSD", "price": 190.5}],
+    )
+    assert live_map["BTCUSDC"] == {"price": 70000.0}
+    assert live_map["TAOUSD"] == 190.5
+    assert live_map["kraken:TAOUSD"] == 190.5
+
+    # 3. Modular TCA execution quality helpers (global + per-venue slicing)
+    lim_s, arr_s, mkt_s = extract_fill_execution_slippage(
+        {"limit_price": 100.0, "reference_price": 100.5}, side="BUY", exec_px=99.9, order_type="LIMIT"
+    )
+    assert lim_s == pytest.approx(-10.0, abs=0.05)
+    assert arr_s == pytest.approx(-59.7, abs=0.1)
+    assert mkt_s is None
+    lim_s2, arr_s2, mkt_s2 = extract_fill_execution_slippage(
+        {"reference_price": 100.0}, side="SELL", exec_px=99.8, order_type="MARKET"
+    )
+    assert lim_s2 is None and arr_s2 is None and mkt_s2 == pytest.approx(20.0, abs=0.05)
+
+    eq_bucket = summarize_execution_quality_bucket([
+        {"order_type": "LIMIT", "limit_slip_bps": lim_s, "arrival_sf_bps": arr_s, "market_slip_bps": None},
+        {"order_type": "MARKET", "limit_slip_bps": None, "arrival_sf_bps": None, "market_slip_bps": mkt_s2},
+    ])
+    assert eq_bucket["limit_filled"] == 1 and eq_bucket["market_filled"] == 1
+    parts = format_execution_quality_parts(eq_bucket)
+    assert len(parts) == 2 and parts[0].startswith("LIMIT(n=1") and parts[1].startswith("MARKET(n=1")
+    assert format_execution_quality_parts({"limit_filled": 0, "market_filled": 0}) == []
+
+    # 4. Shared quota pool & escalation policy helpers
+    monkeypatch.setenv("LLM_QUOTA_LOW_WARN_FRACTION", "0.15")
+    assert resolve_quota_low_warn_fraction() == pytest.approx(0.15)
+    monkeypatch.setenv("LLM_QUOTA_LOW_WARN_FRACTION", "0.0")
+    assert resolve_quota_low_warn_fraction() == pytest.approx(0.0)
+    monkeypatch.setenv("LLM_QUOTA_LOW_WARN_FRACTION", "0.10")
+
+    q_snap = {
+        "available_credits": 0.0,
+        "buckets": {
+            "gemini-4-neon-high": 0.08,
+            "claude-sonnet-5-5-medium": 0.99,
+            "gemini-3.8-flash-low": 1.0,
+        },
+    }
+    pool = summarize_quota_pool_remaining(
+        q_snap,
+        paid_gemini_models=("gemini-4-neon-high",),
+        flash_gemini_models=("gemini-3.8-flash-low",),
+        claude_models=("claude-sonnet-5-5-medium",),
+    )
+    assert pool == {"available_credits": 0.0, "primary_rem": 0.08, "claude_rem": 0.99, "flash_rem": 1.0}
+    assert evaluate_model_quota_escalation_allowed(q_snap, "gemini-4-neon-high") == (False, 0.08, 0.10)
+    assert evaluate_model_quota_escalation_allowed({}, "gemini-4-neon-high") == (True, None, 0.10)
+    assert evaluate_model_quota_escalation_allowed({**q_snap, "available_credits": 50.0}, "gemini-4-neon-high") == (True, 0.08, 0.10)
+    assert evaluate_model_quota_escalation_allowed(q_snap, "claude-sonnet-5-5-medium") == (True, 0.99, 0.10)

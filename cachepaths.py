@@ -39,6 +39,9 @@ NAV_HISTORY_STATE_FILENAME = "nav_history_state.json"
 VENUE_BALANCES_STATE_FILENAME = "venue_balances_state.json"
 VENUE_FEE_MAINTENANCE_STATE_FILENAME = "venue_fee_maintenance_state.json"
 KINEMATIC_IMPULSE_SIGNAL_FILENAME = "kinematic_impulse_signal.json"
+AI_ATTRIBUTION_STATUS_FILENAME = "ai_attribution_status.json"
+AI_ATTRIBUTION_30D_FILENAME = "ai_attribution_30d.json"
+LLM_QUOTA_STATUS_FILENAME = "llm_quota_status.json"
 
 CACHE_ORDERBOOK_DEPTH_PREFIX = "orderbook_depth_"
 CACHE_DERIVATIVES_TELEMETRY_PREFIX = "derivatives_telemetry_"
@@ -262,8 +265,8 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     "system": {
         "exact": (
             "fleet_health_status.json", "dev_regression_status.json",
-            "ai_attribution_status.json", "ai_attribution_30d.json",
-            "llm_topic_threads.json", "llm_quota_status.json", "llm_model_catalog.json",
+            AI_ATTRIBUTION_STATUS_FILENAME, AI_ATTRIBUTION_30D_FILENAME,
+            "llm_topic_threads.json", LLM_QUOTA_STATUS_FILENAME, "llm_model_catalog.json",
             "notify_queue.json",
             KINEMATIC_IMPULSE_SIGNAL_FILENAME,
         ),

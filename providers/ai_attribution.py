@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import glob
 import os
 import re
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from botcore import (
     BUCHAREST,
@@ -27,6 +27,9 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
+    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
+    CACHE_CURRENT_PRICE_FILENAME,
+    VENUE_BALANCES_STATE_FILENAME,
     matches_asset_scope,
     normalize_venue_name,
     resolve_cachedb_filepath,
@@ -39,6 +42,11 @@ from .ai_survival_guard import (
     _extract_intent_notional_usd,
     _is_filled_ai_intent,
     _resolve_live_price_for_symbol,
+    compute_signed_price_edge_pct,
+    extract_live_prices_from_cache_payload,
+    format_signed_usd,
+    match_filled_intent_rows_lifo,
+    resolve_matched_notional_usd,
     resolve_venue_round_trip_fee_bps,
 )
 from .execution_audit import _extract_audit_fill_metrics, iter_audit_jsonl_paths
@@ -141,6 +149,100 @@ def _classify_intent_lifecycle(it: dict[str, Any], canceled_oids: set[str]) -> s
     ):
         return st
     return "FAILED_OR_OTHER"
+
+
+def extract_fill_execution_slippage(
+    intent: Mapping[str, Any],
+    *,
+    side: str,
+    exec_px: float,
+    order_type: str,
+) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """Compute ``(limit_slip_bps, arrival_sf_bps, market_slip_bps)`` for one filled intent."""
+    ot = (clean_upper_scalar(order_type) or "LIMIT")
+    lim_px = first_pos_float(intent.get("limit_price"), intent.get("requested_price") if ot == "LIMIT" else None)
+    ref_px = first_pos_float(intent.get("reference_price"))
+    limit_slip_bps: Optional[float] = None
+    arrival_sf_bps: Optional[float] = None
+    market_slip_bps: Optional[float] = None
+    if ot == "LIMIT" and lim_px is not None:
+        limit_slip_bps = _compute_signed_exec_bps(side, exec_px, lim_px)
+        if ref_px is not None and abs(ref_px - lim_px) / lim_px > 1e-6:
+            arrival_sf_bps = _compute_signed_exec_bps(side, exec_px, ref_px)
+    elif ot != "LIMIT" and ref_px is not None:
+        market_slip_bps = _compute_signed_exec_bps(side, exec_px, ref_px)
+    return limit_slip_bps, arrival_sf_bps, market_slip_bps
+
+
+def summarize_execution_quality_bucket(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Aggregate LIMIT/MARKET fill counts and average slippage/arrival shortfall bps for a bucket of fills."""
+    lim_slips = [r["limit_slip_bps"] for r in rows if r.get("limit_slip_bps") is not None]
+    arr_sfs = [r["arrival_sf_bps"] for r in rows if r.get("arrival_sf_bps") is not None]
+    mkt_slips = [r["market_slip_bps"] for r in rows if r.get("market_slip_bps") is not None]
+    return {
+        "limit_filled": sum(1 for r in rows if r.get("order_type") == "LIMIT"),
+        "market_filled": sum(1 for r in rows if r.get("order_type") != "LIMIT"),
+        "avg_limit_slippage_bps": round(sum(lim_slips) / len(lim_slips), 2) if lim_slips else None,
+        "avg_arrival_shortfall_bps": round(sum(arr_sfs) / len(arr_sfs), 2) if arr_sfs else None,
+        "avg_market_slippage_bps": round(sum(mkt_slips) / len(mkt_slips), 2) if mkt_slips else None,
+    }
+
+
+def format_execution_quality_parts(eq: Mapping[str, Any]) -> list[str]:
+    """Format an execution quality bucket into compact LIMIT/MARKET summary segments."""
+    if not isinstance(eq, Mapping):
+        return []
+    lim_n = safe_nonneg_int(eq.get("limit_filled"), 0)
+    mkt_n = safe_nonneg_int(eq.get("market_filled"), 0)
+    if (lim_n + mkt_n) <= 0:
+        return []
+    lim_s = eq.get("avg_limit_slippage_bps")
+    arr_s = eq.get("avg_arrival_shortfall_bps")
+    mkt_s = eq.get("avg_market_slippage_bps")
+    parts = [
+        f"LIMIT(n={lim_n}"
+        + (f", slip={safe_float(lim_s, 0.0):+.1f}bps" if lim_s is not None else "")
+        + (f", arrival_sf={safe_float(arr_s, 0.0):+.1f}bps" if arr_s is not None else "")
+        + ")"
+    ]
+    if mkt_n > 0:
+        parts.append(
+            f"MARKET(n={mkt_n}"
+            + (f", slip={safe_float(mkt_s, 0.0):+.1f}bps" if mkt_s is not None else "")
+            + ")"
+        )
+    return parts
+
+
+def _build_closed_round_trip_outcome(
+    kind: str,
+    entry_row: Mapping[str, Any],
+    exit_row: Mapping[str, Any],
+    *,
+    plan_outcome: str,
+) -> dict[str, Any]:
+    gross_pct = compute_signed_price_edge_pct(entry_row["side"], entry_row["px"], exit_row["px"])
+    rt_bps = entry_row["leg_fee_bps"] + exit_row["leg_fee_bps"]
+    net_pct = gross_pct - (rt_bps / 100.0)
+    matched_usd = resolve_matched_notional_usd(entry_row["usd"], exit_row["usd"])
+    gross_usd = matched_usd * (gross_pct / 100.0)
+    fee_usd = matched_usd * (rt_bps / 10000.0)
+    return {
+        "ts": exit_row["ts"],
+        "kind": kind,
+        "venue": exit_row["venue"],
+        "symbol": exit_row["symbol"],
+        "model_used": entry_row["model_used"],
+        "matched_usd": matched_usd,
+        "gross_edge_pct": gross_pct,
+        "net_edge_pct": net_pct,
+        "gross_usd": gross_usd,
+        "fee_usd": fee_usd,
+        "net_usd": gross_usd - fee_usd,
+        "has_plan": entry_row["has_plan"],
+        "plan_outcome": plan_outcome,
+        "override_codes": list(entry_row["override_codes"]),
+    }
 
 
 def _merge_audit_order_entry(dst: dict[str, Any], src: dict[str, Any]) -> None:
@@ -507,17 +609,9 @@ def evaluate_ai_attribution(
         live_rt = fee_resolver(ven, sym, ot) if callable(fee_resolver) else None
         rt_bps = resolve_venue_round_trip_fee_bps(ven, sym, order_type=ot, round_trip_fee_bps=live_rt)
         inv_px, tgt_px = extract_intent_trade_plan_levels(it, side=side, ref_price=px)
-        lim_px = first_pos_float(it.get("limit_price"), it.get("requested_price") if ot == "LIMIT" else None)
-        ref_px = first_pos_float(it.get("reference_price"))
-        limit_slip_bps: Optional[float] = None
-        arrival_sf_bps: Optional[float] = None
-        market_slip_bps: Optional[float] = None
-        if ot == "LIMIT" and lim_px is not None:
-            limit_slip_bps = _compute_signed_exec_bps(side, px, lim_px)
-            if ref_px is not None and abs(ref_px - lim_px) / lim_px > 1e-6:
-                arrival_sf_bps = _compute_signed_exec_bps(side, px, ref_px)
-        elif ot != "LIMIT" and ref_px is not None:
-            market_slip_bps = _compute_signed_exec_bps(side, px, ref_px)
+        limit_slip_bps, arrival_sf_bps, market_slip_bps = extract_fill_execution_slippage(
+            it, side=side, exec_px=px, order_type=ot
+        )
         raw_ov = it.get("advisory_guards_overridden")
         ov_codes = sorted({
             code
@@ -551,10 +645,7 @@ def evaluate_ai_attribution(
             "market_slip_bps": market_slip_bps,
         })
 
-    filled_rows.sort(key=lambda r: r["ts"])
-
-    pending_buys: dict[tuple[str, str, tuple[str, ...]], list[dict[str, Any]]] = {}
-    pending_sells: dict[tuple[str, str, tuple[str, ...]], list[dict[str, Any]]] = {}
+    closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo(filled_rows)
     outcomes: list[dict[str, Any]] = []
     plan_status_counts: dict[str, int] = {"TARGET_HIT": 0, "INVALIDATED": 0, "ACTIVE": 0, "CLOSED_EARLY": 0}
 
@@ -568,74 +659,9 @@ def evaluate_ai_attribution(
         plan_status_counts[final_st] = plan_status_counts.get(final_st, 0) + 1
         return final_st
 
-    for row in filled_rows:
-        ikey = row["inst_key"]
-        if row["side"] == "BUY":
-            sq = pending_sells.get(ikey)
-            if sq:
-                prev_s = sq.pop()
-                gross_pct = ((prev_s["px"] - row["px"]) / prev_s["px"]) * 100.0
-                rt_bps = prev_s["leg_fee_bps"] + row["leg_fee_bps"]
-                net_pct = gross_pct - (rt_bps / 100.0)
-                matched_usd = (
-                    min(prev_s["usd"], row["usd"])
-                    if (prev_s["usd"] > 0.0 and row["usd"] > 0.0)
-                    else max(prev_s["usd"], row["usd"])
-                )
-                gross_usd = matched_usd * (gross_pct / 100.0)
-                fee_usd = matched_usd * (rt_bps / 10000.0)
-                plan_st = _record_closed_plan_outcome(prev_s, row["px"])
-                outcomes.append({
-                    "ts": row["ts"],
-                    "kind": "SELL->BUY",
-                    "venue": row["venue"],
-                    "symbol": row["symbol"],
-                    "model_used": prev_s["model_used"],
-                    "matched_usd": matched_usd,
-                    "gross_edge_pct": gross_pct,
-                    "net_edge_pct": net_pct,
-                    "gross_usd": gross_usd,
-                    "fee_usd": fee_usd,
-                    "net_usd": gross_usd - fee_usd,
-                    "has_plan": prev_s["has_plan"],
-                    "plan_outcome": plan_st,
-                    "override_codes": list(prev_s["override_codes"]),
-                })
-            else:
-                pending_buys.setdefault(ikey, []).append(row)
-        else:
-            bq = pending_buys.get(ikey)
-            if bq:
-                prev_b = bq.pop()
-                gross_pct = ((row["px"] - prev_b["px"]) / prev_b["px"]) * 100.0
-                rt_bps = prev_b["leg_fee_bps"] + row["leg_fee_bps"]
-                net_pct = gross_pct - (rt_bps / 100.0)
-                matched_usd = (
-                    min(prev_b["usd"], row["usd"])
-                    if (prev_b["usd"] > 0.0 and row["usd"] > 0.0)
-                    else max(prev_b["usd"], row["usd"])
-                )
-                gross_usd = matched_usd * (gross_pct / 100.0)
-                fee_usd = matched_usd * (rt_bps / 10000.0)
-                plan_st = _record_closed_plan_outcome(prev_b, row["px"])
-                outcomes.append({
-                    "ts": row["ts"],
-                    "kind": "BUY->SELL",
-                    "venue": row["venue"],
-                    "symbol": row["symbol"],
-                    "model_used": prev_b["model_used"],
-                    "matched_usd": matched_usd,
-                    "gross_edge_pct": gross_pct,
-                    "net_edge_pct": net_pct,
-                    "gross_usd": gross_usd,
-                    "fee_usd": fee_usd,
-                    "net_usd": gross_usd - fee_usd,
-                    "has_plan": prev_b["has_plan"],
-                    "plan_outcome": plan_st,
-                    "override_codes": list(prev_b["override_codes"]),
-                })
-            else:
-                pending_sells.setdefault(ikey, []).append(row)
+    for kind, entry_row, exit_row in closed_pairs:
+        plan_st = _record_closed_plan_outcome(entry_row, exit_row["px"])
+        outcomes.append(_build_closed_round_trip_outcome(kind, entry_row, exit_row, plan_outcome=plan_st))
 
     def _evaluate_open_mtm_row(entry_row: dict[str, Any], side: str) -> Optional[dict[str, Any]]:
         spot_px = _resolve_live_price_for_symbol(prices_map, entry_row["venue"], entry_row["symbol"])
@@ -649,11 +675,7 @@ def evaluate_ai_attribution(
                 side, spot_px, entry_row["invalidation_px"], entry_row["target_px"]
             )
             plan_status_counts[plan_st] = plan_status_counts.get(plan_st, 0) + 1
-        gross_pct = (
-            ((spot_px - entry_row["px"]) / entry_row["px"]) * 100.0
-            if side == "BUY"
-            else ((entry_row["px"] - spot_px) / entry_row["px"]) * 100.0
-        )
+        gross_pct = compute_signed_price_edge_pct(side, entry_row["px"], spot_px)
         rt_bps = entry_row["rt_fee_bps"]
         net_pct = gross_pct - (rt_bps / 100.0)
         gross_usd = entry_row["usd"] * (gross_pct / 100.0)
@@ -675,18 +697,16 @@ def evaluate_ai_attribution(
             "override_codes": list(entry_row["override_codes"]),
         }
 
-    for bq in pending_buys.values():
-        for buy_row in bq:
-            if (mtm_out := _evaluate_open_mtm_row(buy_row, "BUY")) is not None:
-                outcomes.append(mtm_out)
+    for buy_row in open_buys:
+        if (mtm_out := _evaluate_open_mtm_row(buy_row, "BUY")) is not None:
+            outcomes.append(mtm_out)
 
     planned_sell_mtm_outcomes: list[dict[str, Any]] = []
-    for sq in pending_sells.values():
-        for sell_row in sq:
-            if not sell_row["has_plan"]:
-                continue
-            if (sell_mtm := _evaluate_open_mtm_row(sell_row, "SELL")) is not None:
-                planned_sell_mtm_outcomes.append(sell_mtm)
+    for sell_row in open_sells:
+        if not sell_row["has_plan"]:
+            continue
+        if (sell_mtm := _evaluate_open_mtm_row(sell_row, "SELL")) is not None:
+            planned_sell_mtm_outcomes.append(sell_mtm)
 
     # Groupings: by venue, by venue:symbol, by model_used, by overridden guard, by trade plan coverage
     by_venue_rows: dict[str, list[dict[str, Any]]] = {}
@@ -751,16 +771,7 @@ def evaluate_ai_attribution(
         scope=eff_scope,
         fee_resolver=fee_resolver,
     )
-    lim_slips = [r["limit_slip_bps"] for r in filled_rows if r["limit_slip_bps"] is not None]
-    arr_sfs = [r["arrival_sf_bps"] for r in filled_rows if r["arrival_sf_bps"] is not None]
-    mkt_slips = [r["market_slip_bps"] for r in filled_rows if r["market_slip_bps"] is not None]
-    execution_quality = {
-        "limit_filled": sum(1 for r in filled_rows if r["order_type"] == "LIMIT"),
-        "market_filled": sum(1 for r in filled_rows if r["order_type"] != "LIMIT"),
-        "avg_limit_slippage_bps": round(sum(lim_slips) / len(lim_slips), 2) if lim_slips else None,
-        "avg_arrival_shortfall_bps": round(sum(arr_sfs) / len(arr_sfs), 2) if arr_sfs else None,
-        "avg_market_slippage_bps": round(sum(mkt_slips) / len(mkt_slips), 2) if mkt_slips else None,
-    }
+    execution_quality = summarize_execution_quality_bucket(filled_rows)
     delta_gate = summarize_delta_gate_logs(
         reconciler_log_lines if isinstance(reconciler_log_lines, list) else [],
         cutoff_ts=cutoff,
@@ -798,21 +809,9 @@ def _workspace_cachedb_path(workspace_dir: str, filename: str) -> str:
 
 
 def _load_live_prices_from_workspace(workspace_dir: str) -> dict[str, float]:
-    price_path = _workspace_cachedb_path(workspace_dir, "cache_current_price.json")
-    raw = read_json_dict(price_path, default={})
-    items = raw.get("items") if isinstance(raw, dict) else None
-    prices: dict[str, float] = {}
-    if isinstance(items, dict):
-        for k, v in items.items():
-            px = safe_pos_float(v, default=None)
-            if px is None and isinstance(v, list) and v:
-                last = v[-1]
-                px = safe_pos_float(last[1], default=None) if isinstance(last, (list, tuple)) and len(last) >= 2 else safe_pos_float(last, default=None)
-            if px is None and isinstance(v, dict):
-                px = safe_pos_float(v.get("price"), default=None)
-            if px is not None:
-                prices[str(k)] = px
-    return prices
+    price_path = _workspace_cachedb_path(workspace_dir, CACHE_CURRENT_PRICE_FILENAME)
+    raw = read_json_dict(price_path, default={}, recover_previous=True)
+    return extract_live_prices_from_cache_payload(raw)
 
 
 def _load_reconciler_log_lines(workspace_dir: str, *, min_day: str, max_day: str) -> list[str]:
@@ -846,7 +845,7 @@ def load_and_evaluate_ai_attribution(
     min_day = datetime.fromtimestamp(max(0.0, cutoff - 86400.0), timezone.utc).strftime("%Y-%m-%d")
     max_day = datetime.fromtimestamp(eff_now + 86400.0, timezone.utc).strftime("%Y-%m-%d")
 
-    intents_path = _workspace_cachedb_path(workspace_dir, "autonomous_trade_intents_state.json")
+    intents_path = _workspace_cachedb_path(workspace_dir, AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME)
     intents = load_durable_intents_state(intents_path)
     live_prices = _load_live_prices_from_workspace(workspace_dir)
 
@@ -859,7 +858,7 @@ def load_and_evaluate_ai_attribution(
     eval_path = _workspace_cachedb_path(workspace_dir, "auto_cryptotrade_executor_eval.json")
     crypto_eval = read_json_dict(eval_path, default={})
     nav_history = load_nav_history_state(workspace_dir)
-    vb_path = _workspace_cachedb_path(workspace_dir, "venue_balances_state.json")
+    vb_path = _workspace_cachedb_path(workspace_dir, VENUE_BALANCES_STATE_FILENAME)
     vb_state = read_json_dict(vb_path, default={})
     cur_nav_pt = build_nav_history_point(vb_state, live_prices=live_prices, now_ts=eff_now, scope="all")
     cache_dir = os.path.join(workspace_dir, "cachedb")
@@ -888,8 +887,7 @@ def load_and_evaluate_ai_attribution(
 
 
 def _fmt_usd(val: Any) -> str:
-    v = safe_float(val, default=0.0) or 0.0
-    return f"+${abs(v):.2f}" if v >= 0.0 else f"-${abs(v):.2f}"
+    return format_signed_usd(val, decimals=2)
 
 
 def _fmt_pf(pf: Any) -> str:
@@ -1030,22 +1028,7 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
                 lines.append(f"  Wake reasons: {top_wakes}")
 
     eq = report.get("execution_quality") if isinstance(report.get("execution_quality"), Mapping) else {}
-    if eq and (safe_nonneg_int(eq.get("limit_filled"), 0) + safe_nonneg_int(eq.get("market_filled"), 0)) > 0:
-        lim_s = eq.get("avg_limit_slippage_bps")
-        arr_s = eq.get("avg_arrival_shortfall_bps")
-        mkt_s = eq.get("avg_market_slippage_bps")
-        eq_parts = [
-            f"LIMIT(n={safe_nonneg_int(eq.get('limit_filled'), 0)}"
-            + (f", slip={safe_float(lim_s, 0.0):+.1f}bps" if lim_s is not None else "")
-            + (f", arrival_sf={safe_float(arr_s, 0.0):+.1f}bps" if arr_s is not None else "")
-            + ")"
-        ]
-        if safe_nonneg_int(eq.get("market_filled"), 0) > 0:
-            eq_parts.append(
-                f"MARKET(n={safe_nonneg_int(eq.get('market_filled'), 0)}"
-                + (f", slip={safe_float(mkt_s, 0.0):+.1f}bps" if mkt_s is not None else "")
-                + ")"
-            )
+    if eq_parts := format_execution_quality_parts(eq):
         lines.append(f"Execution Quality: {', '.join(eq_parts)}")
 
     nav_dd = report.get("unified_nav_drawdown") if isinstance(report.get("unified_nav_drawdown"), Mapping) else {}
@@ -1059,7 +1042,10 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
 
 __all__ = [
     "evaluate_ai_attribution",
+    "extract_fill_execution_slippage",
     "format_ai_attribution_report",
+    "format_execution_quality_parts",
     "load_and_evaluate_ai_attribution",
     "summarize_delta_gate_logs",
+    "summarize_execution_quality_bucket",
 ]

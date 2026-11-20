@@ -6,13 +6,14 @@ and order_guard.conf thresholds in 0 ms with zero network calls or extra disk st
 """
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 from botcore import (
     _parse_bool_flag,
     clean_order_id,
     clean_scalar_str,
     clean_upper_scalar,
+    extract_current_price_item,
     extract_order_price,
     first_pos_float,
     normalize_side,
@@ -159,6 +160,89 @@ def _extract_intent_exec_ts(it: dict[str, Any]) -> float:
 
 def _extract_intent_notional_usd(it: dict[str, Any]) -> float:
     return _intent_executed_notional_usd(it)
+
+
+def compute_signed_price_edge_pct(side: str, entry_px: float, exit_px: float) -> float:
+    """Return directional gross percentage price move from ``entry_px`` to ``exit_px`` (+ favorable)."""
+    if entry_px <= 0.0 or exit_px <= 0.0:
+        return 0.0
+    return (
+        ((exit_px - entry_px) / entry_px) * 100.0
+        if side == "BUY"
+        else ((entry_px - exit_px) / entry_px) * 100.0
+    )
+
+
+def resolve_matched_notional_usd(entry_usd: float, exit_usd: float) -> float:
+    """Return matched round-trip USD notional (``min`` when both positive, else ``max``)."""
+    return min(entry_usd, exit_usd) if (entry_usd > 0.0 and exit_usd > 0.0) else max(entry_usd, exit_usd)
+
+
+def match_filled_intent_rows_lifo(
+    filled_rows: Sequence[dict[str, Any]],
+) -> tuple[list[tuple[str, dict[str, Any], dict[str, Any]]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Chronologically match filled intent rows LIFO per ``inst_key`` into closed pairs and open queues."""
+    sorted_rows = sorted(filled_rows, key=lambda r: r["ts"])
+    pending_buys: dict[Any, list[dict[str, Any]]] = {}
+    pending_sells: dict[Any, list[dict[str, Any]]] = {}
+    closed_pairs: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for row in sorted_rows:
+        ikey = row["inst_key"]
+        if row["side"] == "BUY":
+            s_queue = pending_sells.get(ikey)
+            if s_queue:
+                closed_pairs.append(("SELL->BUY", s_queue.pop(), row))
+            else:
+                pending_buys.setdefault(ikey, []).append(row)
+        else:
+            b_queue = pending_buys.get(ikey)
+            if b_queue:
+                closed_pairs.append(("BUY->SELL", b_queue.pop(), row))
+            else:
+                pending_sells.setdefault(ikey, []).append(row)
+    open_buys = [row for q in pending_buys.values() for row in q]
+    open_sells = [row for q in pending_sells.values() for row in q]
+    return closed_pairs, open_buys, open_sells
+
+
+def format_signed_usd(val: Any, *, decimals: int = 2) -> str:
+    """Format a signed USD value as ``+$X.XX`` / ``-$X.XX`` (or integer dollars when ``decimals=0``)."""
+    v = safe_float(val, default=0.0) or 0.0
+    prec = max(0, safe_nonneg_int(decimals, default=2))
+    return f"+${abs(v):.{prec}f}" if v >= 0.0 else f"-${abs(v):.{prec}f}"
+
+
+def extract_live_prices_from_cache_payload(raw_data: Any) -> dict[str, float]:
+    """Parse ``cache_current_price.json`` payload items into a clean ``symbol -> positive_price`` map."""
+    items = raw_data.get("items") if isinstance(raw_data, Mapping) else None
+    prices: dict[str, float] = {}
+    if isinstance(items, Mapping):
+        for k, v in items.items():
+            px = safe_pos_float(extract_current_price_item(v), default=None)
+            if px is None and isinstance(v, Mapping):
+                px = safe_pos_float(v.get("price"), default=None)
+            if px is not None:
+                prices[str(k)] = px
+    return prices
+
+
+def build_intent_live_price_map(
+    prices_and_trends: Any,
+    tradable_positions: Any = None,
+) -> dict[str, Any]:
+    """Build a unified symbol / ``venue:symbol`` live price lookup map for MTM scoring and calibration."""
+    sc_prices: dict[str, Any] = dict(prices_and_trends) if isinstance(prices_and_trends, Mapping) else {}
+    for tp in (tradable_positions if isinstance(tradable_positions, Sequence) and not isinstance(tradable_positions, (str, bytes)) else ()):
+        if (
+            isinstance(tp, Mapping)
+            and tp.get("symbol")
+            and (tp_px := safe_pos_float(tp.get("price"), default=None)) is not None
+        ):
+            tp_sym = str(tp["symbol"])
+            sc_prices.setdefault(tp_sym, tp_px)
+            if tp.get("venue"):
+                sc_prices[f"{tp['venue']}:{tp_sym}"] = tp_px
+    return sc_prices
 
 
 def _resolve_live_price_for_symbol(
@@ -580,8 +664,6 @@ def evaluate_ai_decision_scorecard(
     if not filled_rows:
         return empty_res
 
-    filled_rows.sort(key=lambda r: r["ts"])
-
     def _classify(
         edge_pct: float,
         *,
@@ -594,69 +676,44 @@ def evaluate_ai_decision_scorecard(
             return "WIN"
         return "SCRATCH"
 
-    pending_buys: dict[tuple[str, str, tuple[str, ...]], list[dict[str, Any]]] = {}
-    pending_sells: dict[tuple[str, str, tuple[str, ...]], list[dict[str, Any]]] = {}
+    closed_pairs, open_buys, _ = match_filled_intent_rows_lifo(filled_rows)
     outcomes: list[dict[str, Any]] = []
 
-    for row in filled_rows:
-        ikey = row["inst_key"]
-        if row["side"] == "BUY":
-            s_queue = pending_sells.get(ikey)
-            if s_queue:
-                prev_sell = s_queue.pop()
-                edge_pct = ((prev_sell["px"] - row["px"]) / prev_sell["px"]) * 100.0
-                matched_usd = min(prev_sell["usd"], row["usd"]) if (prev_sell["usd"] > 0.0 and row["usd"] > 0.0) else max(prev_sell["usd"], row["usd"])
-                outcomes.append({
-                    "ts": row["ts"],
-                    "kind": "SELL->BUY",
-                    "symbol": row["symbol"],
-                    "edge_pct": edge_pct,
-                    "usd_impact": matched_usd * (edge_pct / 100.0),
-                    "grade": _classify(edge_pct),
-                })
-            else:
-                pending_buys.setdefault(ikey, []).append(row)
-        else:
-            b_queue = pending_buys.get(ikey)
-            if b_queue:
-                prev_buy = b_queue.pop()
-                edge_pct = ((row["px"] - prev_buy["px"]) / prev_buy["px"]) * 100.0
-                matched_usd = min(prev_buy["usd"], row["usd"]) if (prev_buy["usd"] > 0.0 and row["usd"] > 0.0) else max(prev_buy["usd"], row["usd"])
-                outcomes.append({
-                    "ts": row["ts"],
-                    "kind": "BUY->SELL",
-                    "symbol": row["symbol"],
-                    "edge_pct": edge_pct,
-                    "usd_impact": matched_usd * (edge_pct / 100.0),
-                    "grade": _classify(edge_pct),
-                })
-            else:
-                pending_sells.setdefault(ikey, []).append(row)
+    for kind, entry_row, exit_row in closed_pairs:
+        edge_pct = compute_signed_price_edge_pct(entry_row["side"], entry_row["px"], exit_row["px"])
+        matched_usd = resolve_matched_notional_usd(entry_row["usd"], exit_row["usd"])
+        outcomes.append({
+            "ts": exit_row["ts"],
+            "kind": kind,
+            "symbol": exit_row["symbol"],
+            "edge_pct": edge_pct,
+            "usd_impact": matched_usd * (edge_pct / 100.0),
+            "grade": _classify(edge_pct),
+        })
 
-    for b_queue in pending_buys.values():
-        for buy_row in b_queue:
-            spot_px = _resolve_live_price_for_symbol(prices_map, buy_row["venue"], buy_row["symbol"])
-            if spot_px is None or spot_px <= 0.0:
-                continue
-            plan_st = evaluate_trade_plan_status(
-                "BUY", spot_px, buy_row["invalidation_px"], buy_row["target_px"]
-            )
-            is_invalidated = plan_st == "INVALIDATED"
-            if not is_invalidated and (eff_now - buy_row["ts"]) < mature_sec:
-                continue
-            edge_pct = ((spot_px - buy_row["px"]) / buy_row["px"]) * 100.0
-            outcomes.append({
-                "ts": buy_row["ts"],
-                "kind": "BUY_MTM",
-                "symbol": buy_row["symbol"],
-                "edge_pct": edge_pct,
-                "usd_impact": buy_row["usd"] * (edge_pct / 100.0),
-                "grade": _classify(
-                    edge_pct,
-                    invalidated=is_invalidated,
-                    loss_threshold=_OPEN_MTM_LOSS_EDGE_PCT,
-                ),
-            })
+    for buy_row in open_buys:
+        spot_px = _resolve_live_price_for_symbol(prices_map, buy_row["venue"], buy_row["symbol"])
+        if spot_px is None or spot_px <= 0.0:
+            continue
+        plan_st = evaluate_trade_plan_status(
+            "BUY", spot_px, buy_row["invalidation_px"], buy_row["target_px"]
+        )
+        is_invalidated = plan_st == "INVALIDATED"
+        if not is_invalidated and (eff_now - buy_row["ts"]) < mature_sec:
+            continue
+        edge_pct = compute_signed_price_edge_pct("BUY", buy_row["px"], spot_px)
+        outcomes.append({
+            "ts": buy_row["ts"],
+            "kind": "BUY_MTM",
+            "symbol": buy_row["symbol"],
+            "edge_pct": edge_pct,
+            "usd_impact": buy_row["usd"] * (edge_pct / 100.0),
+            "grade": _classify(
+                edge_pct,
+                invalidated=is_invalidated,
+                loss_threshold=_OPEN_MTM_LOSS_EDGE_PCT,
+            ),
+        })
 
     if not outcomes:
         return empty_res
@@ -690,7 +747,7 @@ def evaluate_ai_decision_scorecard(
             buy_shadow_active = True
             cooldown_remaining_h = round((cd_until - eff_now) / 3600.0, 2)
             trig = f"streak={loss_streak}L" if tripped_streak else f"weak_window={losses}/{len(recent)}L"
-            net_lbl = f"+${abs(net_usd):.0f}" if net_usd >= 0.0 else f"-${abs(net_usd):.0f}"
+            net_lbl = format_signed_usd(net_usd, decimals=0)
             reason = (
                 f"ai_scorecard_buy_shadow_cooldown({trig}, net={net_lbl}, "
                 f"remaining={cooldown_remaining_h:.1f}h)"
@@ -741,7 +798,7 @@ def format_ai_decision_scorecard_line(scorecard: Any) -> str:
         tag_sfx = f" [BUY_SHADOW_COOLDOWN: {rem_h:.1f}h left]"
     else:
         tag_sfx = ""
-    net_lbl = f"+${abs(net_u):.0f}" if net_u >= 0.0 else f"-${abs(net_u):.0f}"
+    net_lbl = format_signed_usd(net_u, decimals=0)
     return (
         f"AI Decision Scorecard (48h, n={cnt}): "
         f"{w}W/{s}S/{lo}L, avg={avg_e:+.2f}%, net={net_lbl}{streak_sfx}{tag_sfx}"
@@ -749,10 +806,16 @@ def format_ai_decision_scorecard_line(scorecard: Any) -> str:
 
 
 __all__ = [
+    "build_intent_live_price_map",
+    "compute_signed_price_edge_pct",
     "evaluate_ai_decision_scorecard",
     "evaluate_ai_ping_pong_guard",
     "evaluate_ai_target_ev_guard",
+    "extract_live_prices_from_cache_payload",
     "format_ai_decision_scorecard_line",
+    "format_signed_usd",
+    "match_filled_intent_rows_lifo",
+    "resolve_matched_notional_usd",
     "resolve_venue_flip_min_edge_pct",
     "resolve_venue_round_trip_fee_bps",
 ]
