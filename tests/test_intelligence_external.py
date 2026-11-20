@@ -2493,3 +2493,54 @@ def test_etapa0_whale_oi_15m_and_cross_venue_agg_spot_cvd_with_negative_cache(tm
     assert len(bn_hype_calls) == 1
 
 
+def test_enrich_microstructure_cvd_reconciles_live_15m_surge_into_1h_volume_and_rvol():
+    """Live 15m trade surges leading lagged 5m OHLC bars must lift 1h volume/RVOL so vol_15m <= vol_1h."""
+    # 1. Live liquidation surge: live_v15 ($8.66M) >> lagged OHLC p_v15 ($1.10M) and even > lagged p_v1h ($4.41M)
+    minfo_surge = {"spot_vol_15m_usd": 8_660_000.0}
+    pinfo_surge = {
+        "price": 63.11,
+        "spot_vol_15m_usd": 1_100_000.0,
+        "spot_vol_1h_usd": 4_410_000.0,
+        "spot_vol_24h_avg_15m_usd": 931_000.0,
+        "rvol_1h": 1.18,
+    }
+    enrich_microstructure_cvd(minfo_surge, pinfo_surge)
+    assert minfo_surge["spot_vol_15m_usd"] == pytest.approx(8_660_000.0)
+    assert minfo_surge["rvol_15m"] == pytest.approx(9.3, abs=0.01)
+    assert minfo_surge["spot_vol_1h_usd"] == pytest.approx(11_970_000.0)
+    assert minfo_surge["spot_vol_1h_usd"] >= minfo_surge["spot_vol_15m_usd"]
+    assert minfo_surge["rvol_1h"] == pytest.approx(3.21, abs=0.01)
+
+    # Idempotency: re-running with the same inputs produces identical values
+    enrich_microstructure_cvd(minfo_surge, pinfo_surge)
+    assert minfo_surge["spot_vol_1h_usd"] == pytest.approx(11_970_000.0)
+    assert minfo_surge["rvol_1h"] == pytest.approx(3.21, abs=0.01)
+
+    # 2. Post-surge cooldown: live_v15 < lagged p_v15 must NOT shrink 1h volume (earlier bar is still in 1h window)
+    minfo_cool = {"spot_vol_15m_usd": 2_884.0}
+    pinfo_cool = {
+        "price": 0.1177,
+        "spot_vol_15m_usd": 15_273.0,
+        "spot_vol_1h_usd": 32_435.0,
+        "spot_vol_24h_avg_15m_usd": 4_686.0,
+        "rvol_1h": 1.73,
+    }
+    enrich_microstructure_cvd(minfo_cool, pinfo_cool)
+    assert minfo_cool["spot_vol_15m_usd"] == pytest.approx(2_884.0)
+    assert minfo_cool["spot_vol_1h_usd"] == pytest.approx(32_435.0)
+    assert minfo_cool["rvol_1h"] == pytest.approx(1.73)
+
+    # 3. Missing OHLC p_v15: live_v15 exceeding lagged p_v1h still enforces vol_1h >= vol_15m and lifts rvol_1h
+    minfo_no_p15 = {"spot_vol_15m_usd": 25_000.0}
+    pinfo_no_p15 = {
+        "price": 143.36,
+        "spot_vol_1h_usd": 20_000.0,
+        "spot_vol_24h_avg_15m_usd": 3_000.0,
+        "rvol_1h": 1.67,
+    }
+    enrich_microstructure_cvd(minfo_no_p15, pinfo_no_p15)
+    assert minfo_no_p15["spot_vol_1h_usd"] == pytest.approx(25_000.0)
+    assert minfo_no_p15["rvol_1h"] == pytest.approx(2.08, abs=0.01)
+
+
+

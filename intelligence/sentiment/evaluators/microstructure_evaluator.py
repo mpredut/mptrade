@@ -312,9 +312,29 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
         minfo["rvol_15m"] = round(eff_v15 / avg_15m_base, 2)
     elif minfo.get("rvol_15m") is None and (p_r15 := safe_pos_float(p_dict.get("rvol_15m"), default=None)) is not None:
         minfo["rvol_15m"] = round(p_r15, 2)
-    if minfo.get("spot_vol_1h_usd") is None and (p_v1h := safe_pos_float(p_dict.get("spot_vol_1h_usd"), default=None)) is not None:
-        minfo["spot_vol_1h_usd"] = round(p_v1h, 0)
-    if minfo.get("rvol_1h") is None and (p_r1h := safe_pos_float(p_dict.get("rvol_1h"), default=None)) is not None:
+    p_v1h = safe_pos_float(p_dict.get("spot_vol_1h_usd"), default=None)
+    cur_v1h = safe_pos_float(minfo.get("spot_vol_1h_usd"), default=None)
+    base_v1h = cur_v1h if cur_v1h is not None else p_v1h
+    eff_v1h = base_v1h
+    if eff_v15 is not None and base_v1h is not None:
+        reconciled_v1h = (
+            max(0.0, p_v1h - p_v15) + eff_v15
+            if (p_v1h is not None and p_v15 is not None)
+            else eff_v15
+        )
+        eff_v1h = max(base_v1h, reconciled_v1h)
+    if eff_v1h is not None:
+        minfo["spot_vol_1h_usd"] = round(eff_v1h, 0)
+    p_r1h = safe_pos_float(p_dict.get("rvol_1h"), default=None)
+    if (
+        eff_v1h is not None
+        and base_v1h is not None
+        and eff_v1h > base_v1h
+        and avg_15m_base is not None
+        and avg_15m_base > 0.0
+    ):
+        minfo["rvol_1h"] = round(eff_v1h / (avg_15m_base * 4.0), 2)
+    elif minfo.get("rvol_1h") is None and p_r1h is not None:
         minfo["rvol_1h"] = round(p_r1h, 2)
     m_px = safe_pos_float(p_dict.get("price"), default=None) or (ob_mid if ob_mid > 0.0 else None)
     funding_r = safe_float(minfo.get("funding_rate"), default=0.0) or 0.0
