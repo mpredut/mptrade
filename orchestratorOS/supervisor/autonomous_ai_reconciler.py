@@ -584,7 +584,13 @@ class AutonomousAIReconciler:
         if spec.can_self_heal:
             report.notification_sent = self.dispatch_notification(report, topic_key=topic_key)
         else:
-            notified_statuses = ("OBSERVED_SHADOW", "EXECUTED", "BLOCKED_BY_GUARD", "FAILED")
+            notified_statuses = (
+                "OBSERVED_SHADOW",
+                "EXECUTED",
+                "BLOCKED_BY_GUARD",
+                "REJECTED_AI_CIRCUIT_BREAKER",
+                "FAILED",
+            )
             report.notification_sent = bool(
                 getattr(self.intent_gateway, "notify_enabled", False)
                 and any(

@@ -293,6 +293,7 @@ def _resolve_intent_fill_ts_and_reason(
                     last_hist.get("guard_reason"),
                     last_hist.get("error"),
                     intent.get("guard_reason"),
+                    intent.get("circuit_breaker_reason"),
                     intent.get("error"),
                     exec_pay.get("reason") if isinstance(exec_pay, dict) else None,
                     exec_pay.get("error") if isinstance(exec_pay, dict) else None,

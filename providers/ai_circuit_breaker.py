@@ -27,7 +27,13 @@ from .intent_state import (
     symbols_match_intent_scope_and_quote,
 )
 from .order_ohlc_utils import extract_executed_qty
-from .order_status_ssot import CANCEL_OR_EXPIRE_VENUE_STATUSES
+from .order_status_ssot import TERMINAL_CANCEL_VENUE_STATUSES
+
+_NON_COUNTED_ZERO_FILL_STATUSES: frozenset[str] = TERMINAL_CANCEL_VENUE_STATUSES | frozenset({
+    "FAILED",
+    "ERROR",
+    "REFUSED",
+})
 
 DEFAULT_MAX_DAILY_BUYS_PER_SYMBOL: int = 12
 DEFAULT_MAX_HOURLY_REPLACES_PER_SYMBOL: int = 6
@@ -142,7 +148,7 @@ def evaluate_ai_intent_circuit_breaker(
         if filled_q <= 0.0:
             filled_q = safe_nonneg_float(it.get("filled_qty"), default=0.0)
         ep_st = (clean_upper_scalar(ep.get("status")) if isinstance(ep, dict) else "") or ""
-        if ep_st in CANCEL_OR_EXPIRE_VENUE_STATUSES and filled_q <= 0.0:
+        if ep_st in _NON_COUNTED_ZERO_FILL_STATUSES and filled_q <= 0.0:
             return False
         prim_oid = extract_intent_primary_order_id(it, default="", include_top_level=True)
         if prim_oid and str(prim_oid) in all_canceled_oids and filled_q <= 0.0:

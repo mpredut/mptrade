@@ -266,7 +266,7 @@ def evaluate_crypto_executor_delta_gate(
     ) or 0.0
     geo_level = normalize_threat_level(gt.get("threat_level")) if isinstance(gt, Mapping) else ""
     geo_score = safe_float(gt.get("risk_score"), default=0.0) if isinstance(gt, Mapping) else 0.0
-    geo_shock = bool(geo_level in ("HIGH", "CRITICAL") or (geo_score is not None and geo_score >= 0.70))
+    geo_shock = bool(geo_level == "CRITICAL_SHOCK" or (geo_score is not None and geo_score >= 0.70))
 
     latest_fill_ts = _extract_delta_gate_latest_fill_ts(ps_map)
     open_order_ids, open_order_attention_reason = _collect_open_order_attention(ps_map)

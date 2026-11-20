@@ -116,6 +116,8 @@ TERMINAL_ACTIVE_INTENT_STATUSES: frozenset[str] = frozenset({
     "canceled_or_expired",
     "failed",
     "blocked_by_guard",
+    "rejected_ai_circuit_breaker",
+    "rejected_gateway_disabled",
     "skipped_duplicate_open_order",
     "observed_shadow",
     "ignored_hold",

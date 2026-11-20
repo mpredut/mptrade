@@ -4084,4 +4084,45 @@ def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
     sc_csl = evaluate_ai_decision_scorecard(closed_small_loss, now_ts=now_s)
     assert sc_csl["count"] == 1 and sc_csl["losses"] == 1
 
+    # Zero-fill CANCELED_OR_EXPIRED / FAILED intents must not consume daily BUY budget, and circuit-breaker rejections are terminal
+    from providers.ai_circuit_breaker import evaluate_ai_intent_circuit_breaker
+    from providers.order_status_ssot import TERMINAL_ACTIVE_INTENT_STATUSES
+
+    assert "rejected_ai_circuit_breaker" in TERMINAL_ACTIVE_INTENT_STATUSES
+    zero_fill_non_counted = [
+        {
+            "intent_id": "zf_1",
+            "timestamp": now_s - 600.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 5000.0,
+            "execution_payload": {"orderId": "ozf1", "status": "CANCELED_OR_EXPIRED", "executedQty": "0.0"},
+        },
+        {
+            "intent_id": "zf_2",
+            "timestamp": now_s - 500.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 5000.0,
+            "execution_payload": {"orderId": "ozf2", "status": "FAILED", "executedQty": "0.0"},
+        },
+    ]
+    ok_zf, usd_zf, _, m_zf = evaluate_ai_intent_circuit_breaker(
+        {"intent_id": "zf_new", "decision": "BUY"},
+        zero_fill_non_counted,
+        decision="BUY",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=70000.0,
+        effective_usd=1000.0,
+        min_notional_usd=10.0,
+        now_ts=now_s,
+        max_daily_buy_notional_usd=5000.0,
+    )
+    assert ok_zf is True and usd_zf == pytest.approx(1000.0) and m_zf["daily_buy_notional_usd"] == 0.0
+
 

@@ -9684,6 +9684,10 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
 
     geo_upd = SimpleNamespace(**{**base_sensors.__dict__, "geopolitical_threat": {"ts": t0 + 100.0, "threat_level": "CRITICAL", "risk_score": 0.9}})
     assert evaluate_crypto_executor_delta_gate(geo_upd, prev_hold, now_ts=t0 + 360.0)[:3] == (False, "geo_update", True)
+    geo_crit_low_score = SimpleNamespace(
+        **{**base_sensors.__dict__, "geopolitical_threat": {"ts": t0 + 100.0, "threat_level": "CRITICAL_SHOCK", "risk_score": 0.55}}
+    )
+    assert evaluate_crypto_executor_delta_gate(geo_crit_low_score, prev_hold, now_ts=t0 + 360.0)[:3] == (False, "geo_update", True)
 
     prev_with_order = {**prev_hold, "delta_gate_meta": {**prev_hold["delta_gate_meta"], "open_order_ids": ["ord-1"]}}
     near_fill_s = SimpleNamespace(

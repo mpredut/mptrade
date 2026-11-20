@@ -29,6 +29,14 @@ from cachepaths import (
     normalize_venue_name,
 )
 from instrument_registry import casefold_get
+from .ai_circuit_breaker import (
+    DEFAULT_FLIP_COOLDOWN_MIN,
+    DEFAULT_FLIP_MIN_EDGE_PCT,
+    DEFAULT_MAX_FLIPS_6H,
+    DEFAULT_SCORECARD_COOLDOWN_HOURS,
+    DEFAULT_SCORECARD_MAX_LOSS_STREAK,
+    DEFAULT_SCORECARD_WINDOW_TRADES,
+)
 from .intent_state import (
     _extract_intent_id,
     _intent_executed_notional_usd,
@@ -187,9 +195,9 @@ def evaluate_ai_ping_pong_guard(
     venue: str,
     price: float,
     now_ts: float,
-    flip_cooldown_min: float = 30.0,
-    flip_min_edge_pct: float = 0.60,
-    max_flips_6h: int = 2,
+    flip_cooldown_min: float = DEFAULT_FLIP_COOLDOWN_MIN,
+    flip_min_edge_pct: float = DEFAULT_FLIP_MIN_EDGE_PCT,
+    max_flips_6h: int = DEFAULT_MAX_FLIPS_6H,
     spot_price: Optional[float] = None,
     recent_bot_fill: Optional[Mapping[str, Any]] = None,
 ) -> tuple[bool, str, dict[str, Any]]:
@@ -212,9 +220,9 @@ def evaluate_ai_ping_pong_guard(
     eff_now = resolve_now_ts(now_ts)
     eff_px = safe_pos_float(price, default=0.0) or 0.0
     eff_spot = safe_pos_float(spot_price, default=eff_px) or eff_px
-    cd_min = safe_nonneg_float(flip_cooldown_min, default=30.0)
-    min_edge = safe_nonneg_float(flip_min_edge_pct, default=0.60)
-    cap_flips = safe_nonneg_int(max_flips_6h, default=2)
+    cd_min = safe_nonneg_float(flip_cooldown_min, default=DEFAULT_FLIP_COOLDOWN_MIN)
+    min_edge = safe_nonneg_float(flip_min_edge_pct, default=DEFAULT_FLIP_MIN_EDGE_PCT)
+    cap_flips = safe_nonneg_int(max_flips_6h, default=DEFAULT_MAX_FLIPS_6H)
     emergency_drop_pct = min_edge * _EMERGENCY_SELL_EDGE_MULT
     urgency = clean_upper_scalar(intent.get("urgency")) or "NORMAL"
 
@@ -364,9 +372,9 @@ def evaluate_ai_decision_scorecard(
     *,
     now_ts: float,
     live_prices: Optional[Mapping[str, Any]] = None,
-    window_trades: int = 5,
-    max_loss_streak: int = 3,
-    cooldown_hours: float = 4.0,
+    window_trades: int = DEFAULT_SCORECARD_WINDOW_TRADES,
+    max_loss_streak: int = DEFAULT_SCORECARD_MAX_LOSS_STREAK,
+    cooldown_hours: float = DEFAULT_SCORECARD_COOLDOWN_HOURS,
     lookback_hours: float = 48.0,
     min_mature_minutes: float = 60.0,
     scope: str = "all",
@@ -381,9 +389,9 @@ def evaluate_ai_decision_scorecard(
     - Standalone unmatched ``SELL`` exits (e.g. taking profit on older inventory) are never penalized.
     """
     eff_now = resolve_now_ts(now_ts)
-    win_n = safe_nonneg_int(window_trades, default=5)
-    streak_cap = safe_nonneg_int(max_loss_streak, default=3)
-    cd_hours = safe_nonneg_float(cooldown_hours, default=4.0)
+    win_n = safe_nonneg_int(window_trades, default=DEFAULT_SCORECARD_WINDOW_TRADES)
+    streak_cap = safe_nonneg_int(max_loss_streak, default=DEFAULT_SCORECARD_MAX_LOSS_STREAK)
+    cd_hours = safe_nonneg_float(cooldown_hours, default=DEFAULT_SCORECARD_COOLDOWN_HOURS)
     lb_sec = max(3600.0, (safe_pos_float(lookback_hours, default=48.0) or 48.0) * 3600.0)
     mature_sec = max(0.0, safe_nonneg_float(min_mature_minutes, default=60.0)) * 60.0
     prices_map = live_prices if isinstance(live_prices, Mapping) else {}
