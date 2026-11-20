@@ -48,6 +48,7 @@ from cachepaths import (
     clean_upper_scalar,
     migrate_legacy_filename_if_needed,
 )
+from instrument_registry import resolve_symbol_identity
 from state_io import (
     append_jsonl_bucket_delta,
     atomic_gzip_file,
@@ -197,7 +198,8 @@ class CacheManagerInterface(ABC):
             return cls.DEFAULT_FILENAME
         clean_sym = clean_scalar_str(symbol)
         if cls.FILE_PREFIX and cls.FILE_EXT and clean_sym is not None:
-            return f"{cls.FILE_PREFIX}{clean_sym}.{cls.FILE_EXT}"
+            storage_sym = resolve_symbol_identity(clean_sym).storage_key or clean_sym
+            return f"{cls.FILE_PREFIX}{storage_sym}.{cls.FILE_EXT}"
         return ""
 
     # -- Periodically enforced retention and rotation policy for append caches --

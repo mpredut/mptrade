@@ -484,6 +484,17 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
     assert CacheShortTrendManager.live_window_relpath_for_symbol("BTCUSDC").replace("\\", "/") == "24trend/live_BTCUSDC.json"
     assert CacheShortTrendManager.live_window_relpath_for_symbol("SPCXxUSD").replace("\\", "/") == "24trend/live_SPCXxUSD.json"
     assert CacheShortTrendManager.live_window_relpath_for_symbol("SPCXXUSD").replace("\\", "/") == "24trend/live_SPCXxUSD.json"
+    assert CacheShortTrendManager.live_window_relpath_for_symbol("ANTXUSD").replace("\\", "/") == "24trend/live_ANTxUSD.json"
+    assert Cache24PriceManager.disk_filename_for_symbol("SPCXXUSD") == "cache_24_price_SPCXxUSD.json"
+    assert Cache365PriceManager.disk_filename_for_symbol("ANTXUSD") == "cache_365_price_ANTxUSD.jsonl"
+    assert CacheSparsePriceManager.disk_filename_for_symbol("SPCXXUSD") == "cache_sparse_price_SPCXxUSD.jsonl"
+    stm_case = CacheShortTrendManager(
+        symbols=["SPCXxUSD"],
+        filename=os.path.join(temp_cache_dir, "cache_short_trend.json"),
+        data_sync_mode="disk_reader",
+    )
+    assert os.path.basename(stm_case._live_trend_file("SPCXXUSD")) == "live_SPCXxUSD.json"
+    assert os.path.basename(stm_case._live_trend_file("ANTXUSD")) == "live_ANTxUSD.json"
     assert CacheLongTrendManager.disk_filename_for_symbol() == "cache_long_trend.json"
     assert CacheTradeManager.disk_filename_for_symbol() == "cache_trade_binance.jsonl"
     assert CacheOrderManager.disk_filename_for_symbol() == "cache_order_binance.json"
@@ -2337,7 +2348,40 @@ def test_xstock_canonical_case_coalescing_adopted_ipo_pnl_and_ob_mid_rounding(tm
     assert cache_ohlc_24h_filename("SPCXxUSD") == "cache_ohlc_24h_SPCXxUSD.json"
     assert telemetry_cache_file_path(str(c_dir), "orderbook_depth", "SPCXxUSD").endswith("orderbook_depth_SPCXxUSD.json")
     assert KrakenProvider.format_strategy_heartbeat_name("SPCXxUSD") == "Kraken-SPCXxUSD"
+    assert KrakenProvider.format_strategy_heartbeat_name("SPCXXUSD") == "Kraken-SPCXxUSD"
     assert resolve_assets("SPCXxUSD") == ("SPCXx", "USD")
+
+    # Initial live_24trend harvest preserves canonical mixed-case xStock keys without creating SPCXXUSD/ANTXUSD duplicates
+    from intelligence.sentiment.collectors.macro_telemetry_collector import _harvest_initial_prices_and_trends_impl
+    from strategies.base_spot_mixin import BaseSpotMixin
+
+    t24_dir = c_dir / "trends" / "24trend"
+    t24_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(str(t24_dir / "live_SPCXxUSD.json"), {"222": {"final_trend": 1, "current_price": 145.355, "ts": now_s}})
+    atomic_write_json(str(t24_dir / "live_ANTxUSD.json"), {"222": {"final_trend": -1, "current_price": 90.8, "ts": now_s}})
+    harvested = _harvest_initial_prices_and_trends_impl(
+        str(c_dir),
+        {"items": {"SPCXxUSD": 145.355, "ANTxUSD": 90.8}},
+        {"items": {}},
+    )
+    assert "SPCXxUSD" in harvested and "SPCXXUSD" not in harvested
+    assert "ANTxUSD" in harvested and "ANTXUSD" not in harvested
+    assert harvested["SPCXxUSD"].get("trend_3_7m") == 1
+    assert harvested["ANTxUSD"].get("trend_3_7m") == -1
+
+    # Strategy heartbeat preserves canonical xStock symbol case in both filename and payload
+    hb_calls = []
+
+    class _DummyKrakenStrat(BaseSpotMixin):
+        venue_label = "Kraken"
+        pair = "SPCXXUSD"
+
+    with patch("strategies.base_spot_mixin.touch_module_heartbeat", side_effect=lambda *a, **kw: hb_calls.append((a, kw))):
+        _DummyKrakenStrat()._touch_strategy_heartbeat(145.355, 15.0, force=True)
+    assert len(hb_calls) == 1
+    assert hb_calls[0][0][0] == "Kraken-SPCXxUSD"
+    assert hb_calls[0][1]["symbols"] == ["SPCXxUSD"]
+    assert hb_calls[0][1]["status"]["symbol"] == "SPCXxUSD"
     tr_doc = {"items": {"SPCXXUSD": [{"id": "T1", "symbol": "SPCXXUSD", "time": 1000, "price": 144.89, "qty": 5.5}]}, "fetchtime": {"SPCXXUSD": 1000}}
     CacheTradeManager.merge_venue_fills_into_dict(tr_doc, {"SPCXxUSD": []}, now_ms=2000)
     assert "SPCXxUSD" in tr_doc["items"] and "SPCXXUSD" not in tr_doc["items"]

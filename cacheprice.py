@@ -2841,7 +2841,6 @@ def _get_per_symbol_price_managers(
                 CacheManagerInterface._resync_readonly_reader(mgr)
         return True
 
-    prefix, ext = manager_cls.FILE_PREFIX, manager_cls.FILE_EXT
     return CacheManagerInterface._get_or_create_readonly_reader(
         _READONLY_PRICE_LOCK,
         _READONLY_PRICE_READERS,
@@ -2851,7 +2850,7 @@ def _get_per_symbol_price_managers(
         builder_fn=lambda: {
             s: manager_cls(
                 sync_ts=default_sync_ts,
-                filename=f"{prefix}{s}.{ext}",
+                filename=manager_cls.disk_filename_for_symbol(s),
                 symbols=[s],
                 read_only=eff_read_only,
                 data_sync_mode=resolved_mode,

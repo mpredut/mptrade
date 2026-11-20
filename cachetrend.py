@@ -446,7 +446,8 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
     def _live_trend_file(self, symbol: str) -> str:
         safe_sym = str(symbol or "").strip().replace("/", "").replace("\\", "")
-        return os.path.join(self.trend_dir, f"{self.LIVE_FILE_PREFIX}{safe_sym}.{self.LIVE_FILE_EXT}")
+        storage_sym = (resolve_symbol_identity(safe_sym).storage_key or safe_sym) if safe_sym else ""
+        return os.path.join(self.trend_dir, f"{self.LIVE_FILE_PREFIX}{storage_sym}.{self.LIVE_FILE_EXT}")
 
     def _get_trend_buffer(self, symbol: str):
         buf = self._trend_buffers.get(symbol)

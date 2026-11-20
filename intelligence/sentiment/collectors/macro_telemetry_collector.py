@@ -111,7 +111,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     apply_live_24trend_windows,
     apply_short_trend_item,
 )
-from instrument_registry import casefold_get, has_workspace_instrument_sources
+from instrument_registry import canonical_display_symbol, casefold_get, has_workspace_instrument_sources
 from cacheprice import resolve_ssot_price_from_cache
 from providers.ai_survival_guard import evaluate_ai_decision_scorecard
 from providers.intent_telemetry import (
@@ -190,7 +190,8 @@ def _harvest_initial_prices_and_trends_impl(
     lw_ext = f".{st_cls.LIVE_FILE_EXT}"
     if os.path.isdir(live_24trend_dir := str(resolve_cachedb_filepath(os.path.join(cache_dir, lw_subdir)))):
         for lt_path in sorted(_glob.glob(os.path.join(live_24trend_dir, f"{lw_prefix}*{lw_ext}"))):
-            sym = os.path.basename(lt_path)[len(lw_prefix) : -len(lw_ext)].upper()
+            raw_sym = os.path.basename(lt_path)[len(lw_prefix) : -len(lw_ext)]
+            sym = canonical_display_symbol(raw_sym) or raw_sym.upper()
             if sym and isinstance(lt_win := _rj(lt_path), dict):
                 apply_live_24trend_windows(prices_and_trends.setdefault(sym, {}), lt_win, fallback_price=price_map.get(sym))
     return prices_and_trends

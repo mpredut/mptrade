@@ -24,6 +24,7 @@ from botcore import (
     resolve_now_ts, safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
     split_csv, touch_module_heartbeat,
 )
+from instrument_registry import canonical_display_symbol
 from pricewindow import adaptive_thresholds, vol_pct_to_ratio
 from intelligence.internal.state.volatility import (
     resolve_cached_volatility_1h,
@@ -1251,10 +1252,10 @@ class BaseSpotMixin:
     def _touch_strategy_heartbeat(self, price: float | None, sleep_sec: float, *, force: bool = False) -> None:
         if _is_replay_mode(self):
             return
-        sym = str(self._symbol_id or "").strip().upper()
-        hb_name = MarketDataProvider.resolve_venue_strategy_heartbeat(
-            getattr(self, "venue_label", ""), sym
-        )
+        venue_lbl = getattr(self, "venue_label", "")
+        raw_sym = str(self._symbol_id or "").strip()
+        sym = canonical_display_symbol(raw_sym, venue=venue_lbl) or raw_sym.upper()
+        hb_name = MarketDataProvider.resolve_venue_strategy_heartbeat(venue_lbl, sym)
         touch_module_heartbeat(
             hb_name,
             interval_sec=30.0,

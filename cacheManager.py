@@ -407,7 +407,7 @@ class CacheFactory:
                     instance = {
                         s: manager_class(
                             sync_ts=eff_sync_ts,
-                            filename=f"{prefix}{s}.{ext}",
+                            filename=f"{prefix}{sym.resolve_symbol_identity(s).storage_key or s}.{ext}",
                             symbols=[s],
                             read_only=eff_read_only,
                             data_sync_mode=resolved_mode,
