@@ -68,8 +68,6 @@ from intelligence.sentiment.evaluators.guard_probe_evaluator import (
 import notify_engine.alertnotifiers as _alertnotifiers
 from order_lifecycle import restore_cancelled_instrument_orders
 from providers.ai_circuit_breaker import (
-    DEFAULT_DAILY_NAV_DD_LIMIT_PCT,
-    DEFAULT_DAILY_NAV_DD_MODE,
     DEFAULT_FLIP_COOLDOWN_MIN,
     DEFAULT_FLIP_MIN_EDGE_PCT,
     DEFAULT_MAX_DAILY_BUY_NOTIONAL_USD,
@@ -90,6 +88,8 @@ from providers.ai_survival_guard import (
     evaluate_ai_target_ev_guard,
 )
 from providers.nav_drawdown import (
+    DEFAULT_DAILY_NAV_DD_LIMIT_PCT,
+    DEFAULT_DAILY_NAV_DD_MODE,
     evaluate_daily_nav_drawdown_guard,
     load_and_evaluate_nav_drawdown,
 )

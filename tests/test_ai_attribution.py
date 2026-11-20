@@ -131,7 +131,9 @@ def _make_sample_fixture(now_s: float):
     ]
 
     ts_lbl = datetime.fromtimestamp(now_s - 1200.0, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    stale_ts_lbl = datetime.fromtimestamp(now_s - 7.5 * 86400.0, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     log_lines = [
+        f"{stale_ts_lbl} INFO Autonomous AI Supervisor cycle complete: Stale 7.5d entry outside 7d window.",
         f"{ts_lbl} INFO [DELTA GATE] Delta-Gate HOLD carry-forward (quiet_flat); redundant LLM call skipped.",
         f"{ts_lbl} INFO [DELTA GATE] Delta-Gate HOLD carry-forward (quiet_flat); redundant LLM call skipped.",
         f"{ts_lbl} INFO [DELTA GATE] Delta-Gate HOLD carry-forward (quiet_flat); redundant LLM call skipped.",

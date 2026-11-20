@@ -9710,7 +9710,16 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
             },
         }
     )
-    assert evaluate_crypto_executor_delta_gate(wall_trapped_s, prev_with_order, now_ts=t0 + 360.0)[:2] == (False, "open_order_wall_trapped")
+    skip_wt, rsn_wt, _, wt_meta = evaluate_crypto_executor_delta_gate(wall_trapped_s, prev_with_order, now_ts=t0 + 360.0)
+    assert (skip_wt, rsn_wt) == (False, "open_order_wall_trapped")
+    assert wt_meta["order_attention_flags"] == {"ord-1": "open_order_wall_trapped"}
+    # Once the LLM has evaluated and held the resting wall-trapped rung, repeat quiet cycles skip until state transitions
+    prev_ack_wall = {**prev_hold, "delta_gate_meta": wt_meta}
+    assert evaluate_crypto_executor_delta_gate(wall_trapped_s, prev_ack_wall, now_ts=t0 + 360.0)[0] is True
+    assert evaluate_crypto_executor_delta_gate(near_fill_s, prev_ack_wall, now_ts=t0 + 360.0)[:2] == (
+        False,
+        "open_order_near_fill",
+    )
 
     assert evaluate_crypto_executor_delta_gate(base_sensors, prev_hold, now_ts=t0 + 360.0, ui_turn_pending=True)[:2] == (False, "ui_turn_pending")
     skip_foc, rsn_foc, hi_foc, _ = evaluate_crypto_executor_delta_gate(

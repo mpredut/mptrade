@@ -111,12 +111,17 @@ def _collect_delta_gate_prices(
     return eval_prices
 
 
-def _collect_open_order_attention(ps_map: Mapping[str, Any]) -> Tuple[List[str], str]:
-    """Return sorted unique open order IDs and the first attention reason requiring an LLM wakeup."""
+def _collect_open_order_attention(
+    ps_map: Mapping[str, Any],
+    prev_order_flags: Optional[Mapping[str, str]] = None,
+) -> Tuple[List[str], Dict[str, str], str]:
+    """Return sorted unique open order IDs, active per-order attention flags, and first transition wakeup reason."""
     raw_open = ps_map.get("open_limit_orders")
     if not isinstance(raw_open, list):
         raw_open = ps_map.get("open_orders") if isinstance(ps_map.get("open_orders"), list) else []
+    prev_flags = prev_order_flags if isinstance(prev_order_flags, Mapping) else {}
     open_order_ids: List[str] = []
+    order_attention_flags: Dict[str, str] = {}
     attention_reason = ""
     for oo in raw_open:
         if not isinstance(oo, Mapping):
@@ -130,20 +135,29 @@ def _collect_open_order_attention(ps_map: Mapping[str, Any]) -> Tuple[List[str],
         )
         if oid:
             open_order_ids.append(oid)
-        if not attention_reason:
-            st = str(oo.get("status") or "").strip().upper()
-            filled_q = safe_float(oo.get("filled_qty"), default=0.0) or 0.0
-            dist_pct = safe_float(oo.get("dist_from_spot_pct"), default=None)
-            fill_prob = safe_float(oo.get("fill_prob_1h_pct"), default=None)
-            if st == "PARTIALLY_FILLED" or filled_q > 0.0:
-                attention_reason = "open_order_partial_fill"
-            elif dist_pct is not None and abs(dist_pct) <= 0.50:
-                attention_reason = "open_order_near_fill"
-            elif (fill_prob is not None and fill_prob <= 5.0) or (dist_pct is not None and abs(dist_pct) > 4.0):
-                attention_reason = "open_order_stale_or_far"
-            elif oo.get("recommended_front_run_px") or oo.get("ask_wall_ahead_px") or oo.get("bid_wall_ahead_px"):
-                attention_reason = "open_order_wall_trapped"
-    return sorted(set(open_order_ids)), attention_reason
+        st = str(oo.get("status") or "").strip().upper()
+        filled_q = safe_float(oo.get("filled_qty"), default=0.0) or 0.0
+        dist_pct = safe_float(oo.get("dist_from_spot_pct"), default=None)
+        fill_prob = safe_float(oo.get("fill_prob_1h_pct"), default=None)
+        cur_flag = ""
+        cur_reason = ""
+        if st == "PARTIALLY_FILLED" or filled_q > 0.0:
+            cur_flag = f"open_order_partial_fill:{round(filled_q, 8)}"
+            cur_reason = "open_order_partial_fill"
+        elif dist_pct is not None and abs(dist_pct) <= 0.50:
+            cur_flag = "open_order_near_fill"
+            cur_reason = "open_order_near_fill"
+        elif (fill_prob is not None and fill_prob <= 5.0) or (dist_pct is not None and abs(dist_pct) > 4.0):
+            cur_flag = "open_order_stale_or_far"
+            cur_reason = "open_order_stale_or_far"
+        elif oo.get("recommended_front_run_px") or oo.get("ask_wall_ahead_px") or oo.get("bid_wall_ahead_px"):
+            cur_flag = "open_order_wall_trapped"
+            cur_reason = "open_order_wall_trapped"
+        if oid and cur_flag:
+            order_attention_flags[oid] = cur_flag
+            if not attention_reason and prev_flags.get(oid) != cur_flag:
+                attention_reason = cur_reason
+    return sorted(set(open_order_ids)), order_attention_flags, attention_reason
 
 
 def _evaluate_delta_gate_trade_plans(
@@ -269,12 +283,20 @@ def evaluate_crypto_executor_delta_gate(
     geo_shock = bool(geo_level == "CRITICAL_SHOCK" or (geo_score is not None and geo_score >= 0.70))
 
     latest_fill_ts = _extract_delta_gate_latest_fill_ts(ps_map)
-    open_order_ids, open_order_attention_reason = _collect_open_order_attention(ps_map)
 
     prev_map = prev_eval if isinstance(prev_eval, Mapping) else {}
     prev_ts = normalize_epoch_sec(prev_map.get("ts"), default=0.0, allow_iso=True) or 0.0
     prev_meta_raw = prev_map.get("delta_gate_meta")
     prev_meta = prev_meta_raw if isinstance(prev_meta_raw, Mapping) else {}
+    prev_order_flags_raw = prev_meta.get("order_attention_flags")
+    prev_order_flags: Dict[str, str] = (
+        {str(k).strip(): str(v).strip() for k, v in prev_order_flags_raw.items() if str(k).strip() and str(v).strip()}
+        if isinstance(prev_order_flags_raw, Mapping)
+        else {}
+    )
+    open_order_ids, order_attention_flags, open_order_attention_reason = _collect_open_order_attention(
+        ps_map, prev_order_flags
+    )
     prev_plan_states_raw = prev_meta.get("plan_states")
     prev_plan_states: Dict[str, str] = (
         {str(k): str(v).strip().upper() for k, v in prev_plan_states_raw.items() if str(k).strip()}
@@ -289,6 +311,7 @@ def evaluate_crypto_executor_delta_gate(
         "geo_ts": round(geo_ts, 3),
         "latest_fill_ts": round(latest_fill_ts, 3),
         "open_order_ids": open_order_ids,
+        "order_attention_flags": order_attention_flags,
         "plan_states": plan_states,
     }
 

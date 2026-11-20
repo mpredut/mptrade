@@ -223,6 +223,7 @@ class ProviderVenueMetadataMixin:
         )
 
     has_native_l1_derivatives = _bind_venue_bool_capability("_HAS_NATIVE_L1_DERIVATIVES")
+    supports_tokenized_assets = _bind_venue_bool_capability("_SUPPORTS_TOKENIZED_ASSETS")
 
     @classmethod
     def canonical_venues(cls) -> tuple[str, ...]:

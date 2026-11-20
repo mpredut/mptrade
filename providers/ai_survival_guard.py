@@ -203,7 +203,7 @@ def resolve_venue_round_trip_fee_bps(
         return round(safe_nonneg_float(round_trip_fee_bps, default=0.0), 4)
     ven = normalize_venue_name(clean_scalar_str(venue) or "")
     sym = clean_scalar_str(symbol) or ""
-    if ven == "kraken" and sym and resolve_symbol_identity(sym).is_tokenized_equity:
+    if ProviderVenueMetadataMixin.supports_tokenized_assets(ven) and sym and resolve_symbol_identity(sym).is_tokenized_equity:
         return 0.0
     _, maker_bps, taker_bps, _ = ProviderVenueMetadataMixin.resolve_venue_default_fee_spec(ven)
     ot = clean_upper_scalar(order_type) or "LIMIT"
@@ -738,13 +738,13 @@ def format_ai_decision_scorecard_line(scorecard: Any) -> str:
     rem_h = safe_nonneg_float(scorecard.get("cooldown_remaining_h"), default=0.0)
     streak_sfx = f", streak={streak}L" if streak >= 2 else ""
     if status == "BUY_SHADOW_COOLDOWN" and rem_h > 0.0:
-        tag = f"[BUY_SHADOW_COOLDOWN: {rem_h:.1f}h left]"
+        tag_sfx = f" [BUY_SHADOW_COOLDOWN: {rem_h:.1f}h left]"
     else:
-        tag = f"[{status}]"
+        tag_sfx = ""
     net_lbl = f"+${abs(net_u):.0f}" if net_u >= 0.0 else f"-${abs(net_u):.0f}"
     return (
         f"AI Decision Scorecard (48h, n={cnt}): "
-        f"{w}W/{s}S/{lo}L, avg={avg_e:+.2f}%, net={net_lbl}{streak_sfx} {tag}"
+        f"{w}W/{s}S/{lo}L, avg={avg_e:+.2f}%, net={net_lbl}{streak_sfx}{tag_sfx}"
     )
 
 

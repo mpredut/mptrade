@@ -14,6 +14,7 @@ import re
 from typing import Any, Mapping, Optional
 
 from botcore import (
+    BUCHAREST,
     clean_order_id,
     clean_scalar_str,
     clean_upper_scalar,
@@ -363,9 +364,9 @@ def summarize_delta_gate_logs(
             if m_ts:
                 try:
                     dt = datetime.strptime(m_ts.group(1).replace("T", " "), "%Y-%m-%d %H:%M:%S").replace(
-                        tzinfo=timezone.utc
+                        tzinfo=BUCHAREST
                     )
-                    if dt.timestamp() < cutoff_ts - 86400.0:
+                    if dt.timestamp() < cutoff_ts:
                         continue
                 except ValueError:
                     pass
