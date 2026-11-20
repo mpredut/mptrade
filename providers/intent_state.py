@@ -317,10 +317,13 @@ def extract_intent_cancel_order_ids(data: dict[str, Any]) -> list[str]:
 
 
 def decision_has_cancel_directive(d: Any) -> bool:
-    """Return True when a trading decision dict specifies bot/order cancellation."""
-    return isinstance(d, dict) and (
-        _parse_bool_flag(d.get("cancel_bot_open_orders"), False)
-        or bool(extract_intent_cancel_order_ids(d))
+    """Return True when a trading decision dict specifies an executable bot/order cancellation."""
+    if not isinstance(d, dict):
+        return False
+    if extract_intent_cancel_order_ids(d):
+        return True
+    return extract_intent_side(d) in ("BUY", "SELL") and _parse_bool_flag(
+        d.get("cancel_bot_open_orders"), False
     )
 
 

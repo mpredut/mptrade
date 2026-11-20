@@ -9759,6 +9759,21 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
         base_sensors, prev_hold, now_ts=t0 + 360.0, focus_symbols=["BTCUSDC"]
     )
     assert skip_foc is False and "focus_symbols" in rsn_foc and hi_foc is True
+    # Standalone HOLD with cancel_bot_open_orders=True but empty cancel_order_ids is a gateway no-op (not actionable),
+    # whereas HOLD with explicit cancel_order_ids IS actionable and wakes the next Delta-Gate cycle.
+    prev_noop_hold_cancel = {
+        **prev_hold,
+        "market_trading_decisions": [{"decision": "HOLD", "symbol": "BTCUSDC", "cancel_bot_open_orders": True, "cancel_order_ids": []}],
+    }
+    assert evaluate_crypto_executor_delta_gate(base_sensors, prev_noop_hold_cancel, now_ts=t0 + 360.0)[0] is True
+    prev_real_hold_cancel = {
+        **prev_hold,
+        "market_trading_decisions": [{"decision": "HOLD", "symbol": "BTCUSDC", "cancel_bot_open_orders": True, "cancel_order_ids": ["567278998"]}],
+    }
+    assert evaluate_crypto_executor_delta_gate(base_sensors, prev_real_hold_cancel, now_ts=t0 + 360.0)[:2] == (
+        False,
+        "prev_eval_actionable",
+    )
 
     # 2. End-to-end AutonomousAIReconciler.run_cycle verification (heartbeat-only skip + effort escalation)
     cache_dir = tmp_path / "cachedb"
