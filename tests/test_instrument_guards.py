@@ -2742,3 +2742,45 @@ def test_instrument_place_native_replace_dispatch_and_locked_balance(monkeypatch
     assert out_refused["accepted"] is False
     assert out_refused["state"] == "refused"
     assert out_refused["reason"] == "replace_not_attempted"
+
+
+def test_active_intents_excludes_shadow_paper_state_files_and_orders(tmp_path):
+    # Paper/replay state filenames and PAPER-* payload states (e.g. hyperliquid/.state_HYPE_long.json) must never
+    # inflate live open positions or pending notional in active_intents.py.
+    _write_intent_file(
+        tmp_path / "hyperliquid/.state_HYPE_long.json",
+        {
+            "cycle": 1,
+            "qty": 0.85,
+            "cost": 50.19,
+            "orders": [{"oid": "PAPER-2", "side": "sell", "sz": 0.85, "px": 59.35, "kind": "TP"}],
+        },
+    )
+    _write_intent_file(
+        tmp_path / "kraken/.state_REPLAY.json",
+        {
+            "cycle": 1,
+            "qty": 4.0,
+            "cost": 240.0,
+            "orders": [{"id": "O-REPLAY-LIVE-LIKE", "side": "SELL", "vol": 4.0, "price": 62.0}],
+        },
+    )
+    _write_intent_file(
+        tmp_path / "212trading/.state_SPCX_US_EQ.json",
+        {
+            "cycle": 3,
+            "qty": 4.44,
+            "cost_usd": 635.94,
+            "orders": [
+                {"id": "PAPER-99", "side": "SELL", "qty": 1.0, "limit": 150.0},
+                {"id": "60716106248", "side": "SELL", "qty": 2.0, "limit": 145.0},
+            ],
+        },
+    )
+
+    result = build_active_intent_index(str(tmp_path))
+    exp_syms = [e["symbol"] for e in result["exposures"]]
+    assert exp_syms == ["SPCX_US_EQ"]
+    assert result["summary"]["net_exposures"]["total_cost"] == 635.94
+    intent_ids = [it["intent_id"] for it in result["intents"]]
+    assert intent_ids == ["60716106248"]

@@ -254,7 +254,7 @@ class AutonomousAIReconciler:
         focus_symbols: Optional[List[str]] = None,
         topic_key: str,
         escalate_high_effort: bool = False,
-        urgent_escalation: bool = False,
+        urgent_escalation: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Feeds topic-appropriate telemetry to Gemini; the topic spec bounds both prompt scope and side effects."""
         spec = topic_spec(topic_key)
@@ -295,8 +295,11 @@ class AutonomousAIReconciler:
         effective_escalate = _parse_bool_flag(escalate_high_effort, False) or bool(
             focus_symbols and parse_symbol_list(focus_symbols)
         )
-        effective_urgent = _parse_bool_flag(urgent_escalation, False) or is_urgent_delta_gate_wakeup(
-            "", focus_symbols=focus_symbols, sensors=sensors
+        effective_urgent = (
+            _parse_bool_flag(urgent_escalation, False)
+            or bool(focus_symbols and parse_symbol_list(focus_symbols))
+            if urgent_escalation is not None
+            else is_urgent_delta_gate_wakeup("", focus_symbols=focus_symbols, sensors=sensors)
         )
         if (
             resolved_topic == "auto_cryptotrade_executor"

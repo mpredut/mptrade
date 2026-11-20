@@ -10503,3 +10503,95 @@ def test_faza4_quota_soft_conservation_routing_policy_and_reconciler(tmp_path, m
     reconciler.synthesize_and_diagnose(snap_s, empty_logs, topic_key="auto_cryptotrade_executor", focus_symbols=["BTCUSDC"], escalate_high_effort=True)
 
     assert captured_models == ["claude-sonnet-5-5-medium", None, "gemini-4-neon-high"]
+
+
+def test_acknowledged_geo_shock_and_vol_scaled_impulse_filter_do_not_over_escalate(tmp_path, monkeypatch):
+    """Verify static already-evaluated risk_score>=0.70 geo snapshots and sub-ATR chop do not force -high wakeups."""
+    from types import SimpleNamespace
+    from cachepaths import KINEMATIC_IMPULSE_SIGNAL_FILENAME, resolve_cachedb_filepath
+    from intelligence.globaltelemetry_collector import (
+        GlobalTelemetryCollector,
+        _filter_actionable_impulse_symbols,
+        _filter_unmoved_since_eval_symbols,
+    )
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import (
+        evaluate_crypto_executor_delta_gate,
+        is_urgent_delta_gate_wakeup,
+    )
+    from state_io import save_json_state
+
+    t0 = 1_795_206_900.0
+    prev_eval = {
+        "ts": t0 + 60.0,
+        "model_used": "gemini-4-neon-high",
+        "market_trading_decisions": [{"decision": "BUY", "symbol": "HYPEUSDC"}],
+        "delta_gate_meta": {
+            "eval_prices": {"BTCUSDC": 58300.0, "HYPEUSDC": 60.20},
+            "macro_ts": t0 - 300.0,
+            "geo_ts": t0,
+            "latest_fill_ts": 0.0,
+            "open_order_ids": ["O-1"],
+            "order_attention_flags": {},
+            "plan_states": {},
+        },
+    }
+    sensors_same_geo = SimpleNamespace(
+        prices_and_trends={"BTCUSDC": {"price": 58350.0}, "HYPEUSDC": {"price": 60.30}},
+        portfolio_summary={"open_limit_orders": [{"order_id": "O-1", "dist_from_spot_pct": 1.2, "fill_prob_1h_pct": 45.0}], "recent_orders": {}},
+        sentiment_advisor={"ts": t0 - 300.0},
+        geopolitical_threat={"ts": t0, "threat_level": "ELEVATED", "risk_score": 0.70},
+        source_timestamps={},
+    )
+    skip, reason, esc_hi, _ = evaluate_crypto_executor_delta_gate(sensors_same_geo, prev_eval, now_ts=t0 + 420.0)
+    assert (skip, reason, esc_hi) == (False, "prev_eval_actionable", False)
+    assert is_urgent_delta_gate_wakeup(reason, sensors=sensors_same_geo, prev_eval=prev_eval) is False
+
+    # Fresh geo update with risk_score>=0.70 still escalates and marks urgent once
+    sensors_new_geo = SimpleNamespace(
+        **{**sensors_same_geo.__dict__, "geopolitical_threat": {"ts": t0 + 300.0, "threat_level": "ELEVATED", "risk_score": 0.75}}
+    )
+    prev_hold = {**prev_eval, "market_trading_decisions": [{"decision": "HOLD", "symbol": "HYPEUSDC"}]}
+    skip_n, reason_n, esc_n, _ = evaluate_crypto_executor_delta_gate(sensors_new_geo, prev_hold, now_ts=t0 + 420.0)
+    assert (skip_n, reason_n, esc_n) == (False, "geo_update", True)
+    assert is_urgent_delta_gate_wakeup(reason_n, sensors=sensors_new_geo, prev_eval=prev_hold) is True
+
+    # Volatility-scaled _filter_unmoved_since_eval_symbols suppresses 0.51% move when vol_1h_pct=1.64% (thresh=0.615%)
+    pt_vol = {
+        "HYPEUSDC": {"price": 60.507, "vol_1h_pct": 1.64},
+        "BTCUSDC": {"price": 58560.0, "vol_1h_pct": 0.90},
+    }
+    assert _filter_unmoved_since_eval_symbols(
+        ["HYPEUSDC", "BTCUSDC"],
+        pt_vol,
+        prev_hold,
+        eff_now=t0 + 180.0,
+        max_idle_sec=1080.0,
+        min_move_pct=0.35,
+        high_move_pct=1.0,
+    ) == ["BTCUSDC"]
+
+    # Symmetric replace_max_sell_usd keeps locked-base resting SELL orders actionable
+    vb_sell_locked = {
+        "pos:binance:TAOUSDC": {
+            "venue": "binance",
+            "symbol": "TAOUSDC",
+            "effective_max_buy_usd": 0.0,
+            "effective_max_sell_usd": 0.0,
+            "replace_max_sell_usd": 400.0,
+        }
+    }
+    assert _filter_actionable_impulse_symbols(["TAOUSDC"], vb_sell_locked) == ["TAOUSDC"]
+
+    #Persisted kinematic_impulse_signal.json seeds _last_ai_impulse_ts across collector restarts
+    cdb = tmp_path / "cachedb"
+    cdb.mkdir(parents=True, exist_ok=True)
+    sig_file = resolve_cachedb_filepath(str(cdb / KINEMATIC_IMPULSE_SIGNAL_FILENAME))
+    save_json_state(str(sig_file), {"ts": t0 + 100.0, "symbols": ["HYPEUSDC"]})
+    gtc = object.__new__(GlobalTelemetryCollector)
+    gtc.cache_dir = str(cdb)
+    gtc.crypto_executor_interval_sec = 360.0
+    gtc.ai_impulse_cooldown_sec = 150.0
+    gtc._last_ai_impulse_ts = 0.0
+    gtc._active_cycle_ts = None
+    assert gtc.maybe_trigger_kinematic_ai_wakeup(now=t0 + 160.0) is None
+    assert gtc._last_ai_impulse_ts == pytest.approx(t0 + 100.0)

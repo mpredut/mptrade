@@ -31,6 +31,44 @@ def _is_geopolitical_shock(gt: Any) -> bool:
     return bool(geo_level == "CRITICAL_SHOCK" or (geo_score is not None and geo_score >= 0.70))
 
 
+def _extract_delta_gate_geo_ts(gt: Any, src_ts_map: Optional[Mapping[str, Any]] = None) -> float:
+    s_map = src_ts_map if isinstance(src_ts_map, Mapping) else {}
+    return (
+        first_epoch_sec(
+            gt.get("ts") if isinstance(gt, Mapping) else None,
+            gt.get("evaluated_at_ts") if isinstance(gt, Mapping) else None,
+            gt.get("updated_ts") if isinstance(gt, Mapping) else None,
+            s_map.get("geopolitical"),
+            s_map.get("geopolitical_threat"),
+            default=0.0,
+            allow_iso=True,
+        )
+        or 0.0
+    )
+
+
+def _has_unacknowledged_geo_shock(
+    gt: Any,
+    prev_eval: Optional[Mapping[str, Any]],
+    *,
+    src_ts_map: Optional[Mapping[str, Any]] = None,
+    geo_ts: Optional[float] = None,
+) -> bool:
+    if not _is_geopolitical_shock(gt):
+        return False
+    if not isinstance(prev_eval, Mapping) or not prev_eval:
+        return True
+    eff_geo_ts = _extract_delta_gate_geo_ts(gt, src_ts_map) if geo_ts is None else geo_ts
+    if eff_geo_ts <= 0.0:
+        return True
+    prev_ts = normalize_epoch_sec(prev_eval.get("ts"), default=0.0, allow_iso=True) or 0.0
+    prev_meta = prev_eval.get("delta_gate_meta") if isinstance(prev_eval.get("delta_gate_meta"), Mapping) else {}
+    prev_geo_ts = normalize_epoch_sec(prev_meta.get("geo_ts"), default=0.0, allow_iso=True) or 0.0
+    if prev_geo_ts > 0.0:
+        return eff_geo_ts > prev_geo_ts + 0.5
+    return prev_ts <= 0.0 or eff_geo_ts > prev_ts + 0.5
+
+
 def _has_new_fill_since_prev(
     ps_map: Mapping[str, Any],
     prev_eval: Optional[Mapping[str, Any]],
@@ -57,7 +95,7 @@ def is_urgent_delta_gate_wakeup(
     sensors: Any = None,
     prev_eval: Optional[Mapping[str, Any]] = None,
 ) -> bool:
-    """Return True when a wakeup reflects an urgent catalyst (impulse, fill, trade-plan break, or geo shock)."""
+    """Return True when a wakeup reflects an urgent catalyst (impulse, fill, trade-plan break, or fresh geo shock)."""
     if focus_symbols and parse_symbol_list(focus_symbols):
         return True
     reason_lc = str(gate_reason or "").strip().lower()
@@ -65,7 +103,8 @@ def is_urgent_delta_gate_wakeup(
         return True
     if sensors is not None:
         gt = getattr(sensors, "geopolitical_threat", None)
-        if _is_geopolitical_shock(gt):
+        src_ts = getattr(sensors, "source_timestamps", None)
+        if _has_unacknowledged_geo_shock(gt, prev_eval, src_ts_map=src_ts if isinstance(src_ts, Mapping) else None):
             return True
         ps = getattr(sensors, "portfolio_summary", None)
         if isinstance(ps, Mapping) and prev_eval is not None and _has_new_fill_since_prev(ps, prev_eval):
@@ -407,16 +446,8 @@ def evaluate_crypto_executor_delta_gate(
         default=0.0,
         allow_iso=True,
     ) or 0.0
-    geo_ts = first_epoch_sec(
-        gt.get("ts") if isinstance(gt, Mapping) else None,
-        gt.get("evaluated_at_ts") if isinstance(gt, Mapping) else None,
-        gt.get("updated_ts") if isinstance(gt, Mapping) else None,
-        src_ts_map.get("geopolitical"),
-        src_ts_map.get("geopolitical_threat"),
-        default=0.0,
-        allow_iso=True,
-    ) or 0.0
-    geo_shock = _is_geopolitical_shock(gt)
+    geo_ts = _extract_delta_gate_geo_ts(gt, src_ts_map)
+    geo_shock = _has_unacknowledged_geo_shock(gt, prev_eval, src_ts_map=src_ts_map, geo_ts=geo_ts)
 
     latest_fill_ts = _extract_delta_gate_latest_fill_ts(ps_map)
 

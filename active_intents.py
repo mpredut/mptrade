@@ -39,6 +39,9 @@ from cachepaths import (
     VENUE_BALANCES_STATE_FILENAME,
     cache_relpath,
     is_cachedb_relpath,
+    is_shadow_or_paper_order_id,
+    is_shadow_or_paper_state_filename,
+    is_shadow_or_paper_state_payload,
     legacy_filenames_for,
     normalize_venue_name,
     resolve_cachedb_filepath,
@@ -223,7 +226,9 @@ def _intent_row(
         return _autonomous_ai_intent_row(
             row, source=source, location=location, include_terminal=include_terminal
         )
-    if not include_terminal and _parse_bool_flag(row.get("active"), True) is False:
+    if not include_terminal and (
+        _parse_bool_flag(row.get("active"), True) is False or is_shadow_or_paper_order_id(row)
+    ):
         return None
     place_kwargs = row.get("place_kwargs")
     nested_kwargs = place_kwargs if isinstance(place_kwargs, dict) else {}
@@ -500,6 +505,7 @@ def _iter_resolved_source_paths(root: str, spec: StateSource) -> list[str]:
         p
         for p in matched_paths
         if not any(token in os.path.basename(p) for token in (".pre_", ".bak", ".backup", ".tmp"))
+        and not is_shadow_or_paper_state_filename(p)
     ]
 
 
@@ -517,6 +523,8 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
             files.append(relative)
             try:
                 payload = _read(path, json_lines=spec.json_lines)
+                if not spec.json_lines and isinstance(payload, dict) and is_shadow_or_paper_state_payload(payload):
+                    continue
                 inherited = (
                     {"symbol": name[len(".state_"):-len(".json")]}
                     if name.startswith(".state_") and name.endswith(".json")

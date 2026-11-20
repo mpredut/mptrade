@@ -1252,6 +1252,45 @@ def resolve_venue_trailing_state_path(
 
 
 _SHADOW_CYCLE_STATE_TOKENS: frozenset[str] = frozenset({"PAPER", "REPLAY", "SHADOW", "BACKTEST", "MOCK"})
+_SHADOW_OID_PREFIXES: tuple[str, ...] = ("PAPER-", "REPLAY-", "SHADOW-", "BACKTEST-", "MOCK-")
+
+
+def is_shadow_or_paper_order_id(val: object) -> bool:
+    """Return True if ``val`` (scalar ID or order dict) carries a paper/replay/shadow/backtest/mock prefix."""
+    if isinstance(val, str):
+        return val.strip().upper().startswith(_SHADOW_OID_PREFIXES)
+    if isinstance(val, dict):
+        return any(
+            str(val.get(k) or "").strip().upper().startswith(_SHADOW_OID_PREFIXES)
+            for k in ("oid", "order_id", "id", "txid", "intent_id", "client_order_id", "clientOrderId")
+        )
+    return False
+
+
+def is_shadow_or_paper_state_payload(payload: object) -> bool:
+    """Return True if a parsed ``.state_*.json`` dict represents a paper, replay, shadow, or mock session."""
+    if not isinstance(payload, dict):
+        return False
+    if any(_parse_bool_flag(payload.get(fk), False) is True for fk in ("paper", "dry_run", "shadow", "replay")):
+        return True
+    if str(payload.get("mode") or payload.get("execution_mode") or "").strip().upper() in _SHADOW_CYCLE_STATE_TOKENS:
+        return True
+    if any(
+        is_shadow_or_paper_order_id(payload.get(pk))
+        for pk in ("last_hist_fill_id", "pending_intent", "pending_submit", "pending_exit", "tp_pending_exit", "sl_pending_exit")
+    ):
+        return True
+    raw_orders = payload.get("orders")
+    if isinstance(raw_orders, list) and raw_orders:
+        oids = [
+            oid
+            for o in raw_orders
+            if isinstance(o, dict)
+            and (oid := str(o.get("oid") or o.get("order_id") or o.get("id") or o.get("txid") or "").strip().upper())
+        ]
+        if oids and all(oid.startswith(_SHADOW_OID_PREFIXES) for oid in oids):
+            return True
+    return False
 
 
 def is_shadow_or_paper_state_filename(path: object) -> bool:
@@ -1260,7 +1299,7 @@ def is_shadow_or_paper_state_filename(path: object) -> bool:
     if not (bname.startswith(".state_") and bname.lower().endswith(".json")):
         return False
     stem = bname[len(".state_") : -len(".json")].strip().upper()
-    if not stem or stem.startswith(("PAPER-", "REPLAY-", "SHADOW-", "BACKTEST-", "MOCK-")):
+    if not stem or stem.startswith(_SHADOW_OID_PREFIXES):
         return True
     parts = [p for p in stem.replace("-", "_").split("_") if p]
     return bool(parts) and (parts[0] in _SHADOW_CYCLE_STATE_TOKENS or parts[-1] in _SHADOW_CYCLE_STATE_TOKENS)

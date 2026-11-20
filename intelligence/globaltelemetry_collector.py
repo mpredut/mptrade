@@ -131,12 +131,13 @@ def _filter_actionable_impulse_symbols(shocked: List[str], venue_balances: Any) 
         mb = safe_float(entry.get("effective_max_buy_usd"), default=None)
         ms = safe_float(entry.get("effective_max_sell_usd"), default=None)
         rmb = safe_pos_float(entry.get("replace_max_buy_usd"), default=0.0) or 0.0
+        rms = safe_pos_float(entry.get("replace_max_sell_usd"), default=0.0) or 0.0
         oo_list = casefold_get(venue_balances, f"open_orders:{venue}:{sym_raw}") if venue else None
         has_open = isinstance(oo_list, list) and len(oo_list) > 0
-        if mb is None and ms is None and rmb <= 0.0 and not has_open:
+        if mb is None and ms is None and rmb <= 0.0 and rms <= 0.0 and not has_open:
             continue
         eff_buy = max(mb or 0.0, rmb)
-        eff_sell = max(ms or 0.0, 1.0 if has_open else 0.0)
+        eff_sell = max(ms or 0.0, rms, 1.0 if has_open else 0.0)
         caps_by_sym.setdefault(sym_k, []).append((eff_buy, eff_sell))
     if not caps_by_sym:
         return list(shocked)
@@ -158,14 +159,16 @@ def _filter_unmoved_since_eval_symbols(
     eff_now: float,
     max_idle_sec: float,
     min_move_pct: float,
+    high_move_pct: float = 1.0,
 ) -> List[str]:
-    """Suppress repeat mid-cycle impulse wakeups for symbols still within ``min_move_pct`` of a recent healthy HOLD baseline."""
+    """Suppress repeat mid-cycle impulse wakeups for symbols still within their volatility-scaled Delta-Gate band."""
     if not shocked or not isinstance(eval_doc, dict) or not isinstance(prices_and_trends, dict):
         return list(shocked)
     eff_min_move = safe_pos_float(min_move_pct, default=0.0) or 0.0
     eff_max_idle = safe_pos_float(max_idle_sec, default=0.0) or 0.0
     if eff_min_move <= 0.0 or eff_max_idle <= 0.0:
         return list(shocked)
+    eff_high_move = max(eff_min_move, safe_pos_float(high_move_pct, default=1.0) or 1.0)
     raw_doc_ts = eval_doc.get("ts") if eval_doc.get("ts") is not None else eval_doc.get("evaluated_at_ts")
     doc_ts = normalize_epoch_sec(raw_doc_ts, default=0.0, allow_iso=True) or 0.0
     if doc_ts <= 0.0 or doc_ts > eff_now + 5.0 or (eff_now - doc_ts) >= eff_max_idle:
@@ -190,7 +193,17 @@ def _filter_unmoved_since_eval_symbols(
         prev_px = prev_px_by_sym.get(sym_c)
         p_entry = casefold_get(prices_and_trends, sym_c)
         cur_px = safe_pos_float(p_entry.get("price"), default=None) if isinstance(p_entry, dict) else None
-        if prev_px is not None and cur_px is not None and abs((cur_px - prev_px) / prev_px) * 100.0 < eff_min_move:
+        atr_15m = safe_pos_float(p_entry.get("atr_15m_pct"), default=None) if isinstance(p_entry, dict) else None
+        if atr_15m is None and isinstance(p_entry, dict):
+            vol_1h = safe_pos_float(p_entry.get("vol_1h_pct"), default=None)
+            if vol_1h is not None:
+                atr_15m = vol_1h * 0.5
+        sym_thresh = (
+            min(eff_high_move, max(eff_min_move, atr_15m * 0.75))
+            if atr_15m is not None
+            else eff_min_move
+        )
+        if prev_px is not None and cur_px is not None and abs((cur_px - prev_px) / prev_px) * 100.0 < sym_thresh:
             continue
         out.append(sym)
     return out
@@ -689,6 +702,12 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 "AI_IMPULSE_COOLDOWN_SEC",
                 safe_pos_float(getattr(self, "ai_impulse_cooldown_sec", None), 150.0),
             )
+            sig_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, KINEMATIC_IMPULSE_SIGNAL_FILENAME)))
+            if self._last_ai_impulse_ts <= 0.0 and os.path.exists(sig_path):
+                sig_doc = read_json_dict_recovering(sig_path)
+                sig_ts = normalize_epoch_sec(sig_doc.get("ts") if isinstance(sig_doc, dict) else None, default=0.0, allow_iso=True) or 0.0
+                if 0.0 < sig_ts <= eff_now + 5.0:
+                    self._last_ai_impulse_ts = sig_ts
             if self._last_ai_impulse_ts > 0.0 and 0.0 <= (eff_now - self._last_ai_impulse_ts) < cooldown_sec:
                 return None
             post_cron_guard_sec = safe_pos_float(getattr(self, "ai_impulse_post_cron_guard_sec", None), 20.0)
@@ -740,6 +759,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                     eff_now=eff_now,
                     max_idle_sec=cycle_sec * pos_float_env("AI_DELTA_GATE_MAX_IDLE_MULT", 3.0),
                     min_move_pct=pos_float_env("AI_DELTA_GATE_MIN_PRICE_MOVE_PCT", 0.35),
+                    high_move_pct=pos_float_env("AI_HIGH_EFFORT_PRICE_MOVE_PCT", 1.0),
                 )
             if not shocked:
                 return None
@@ -751,7 +771,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 return None
             focus_csv = ",".join(shocked)
             save_json_state(
-                str(resolve_cachedb_filepath(os.path.join(self.cache_dir, KINEMATIC_IMPULSE_SIGNAL_FILENAME))),
+                sig_path,
                 {"ts": eff_now, "symbols": shocked},
                 indent=2,
             )
