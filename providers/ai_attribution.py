@@ -159,6 +159,10 @@ def extract_fill_execution_slippage(
     order_type: str,
 ) -> tuple[Optional[float], Optional[float], Optional[float]]:
     """Compute ``(limit_slip_bps, arrival_sf_bps, market_slip_bps)`` for one filled intent."""
+    side_u = normalize_side(side)
+    ep = safe_pos_float(exec_px, default=None)
+    if side_u not in ("BUY", "SELL") or ep is None or not isinstance(intent, Mapping):
+        return None, None, None
     ot = (clean_upper_scalar(order_type) or "LIMIT")
     lim_px = first_pos_float(intent.get("limit_price"), intent.get("requested_price") if ot == "LIMIT" else None)
     ref_px = first_pos_float(intent.get("reference_price"))
@@ -166,22 +170,33 @@ def extract_fill_execution_slippage(
     arrival_sf_bps: Optional[float] = None
     market_slip_bps: Optional[float] = None
     if ot == "LIMIT" and lim_px is not None:
-        limit_slip_bps = _compute_signed_exec_bps(side, exec_px, lim_px)
+        limit_slip_bps = _compute_signed_exec_bps(side_u, ep, lim_px)
         if ref_px is not None and abs(ref_px - lim_px) / lim_px > 1e-6:
-            arrival_sf_bps = _compute_signed_exec_bps(side, exec_px, ref_px)
+            arrival_sf_bps = _compute_signed_exec_bps(side_u, ep, ref_px)
     elif ot != "LIMIT" and ref_px is not None:
-        market_slip_bps = _compute_signed_exec_bps(side, exec_px, ref_px)
+        market_slip_bps = _compute_signed_exec_bps(side_u, ep, ref_px)
     return limit_slip_bps, arrival_sf_bps, market_slip_bps
 
 
 def summarize_execution_quality_bucket(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Aggregate LIMIT/MARKET fill counts and average slippage/arrival shortfall bps for a bucket of fills."""
-    lim_slips = [r["limit_slip_bps"] for r in rows if r.get("limit_slip_bps") is not None]
-    arr_sfs = [r["arrival_sf_bps"] for r in rows if r.get("arrival_sf_bps") is not None]
-    mkt_slips = [r["market_slip_bps"] for r in rows if r.get("market_slip_bps") is not None]
+    valid_rows = [r for r in rows if isinstance(r, Mapping)]
+    lim_slips = [
+        v for r in valid_rows
+        if (v := safe_float(r.get("limit_slip_bps"), default=None)) is not None
+    ]
+    arr_sfs = [
+        v for r in valid_rows
+        if (v := safe_float(r.get("arrival_sf_bps"), default=None)) is not None
+    ]
+    mkt_slips = [
+        v for r in valid_rows
+        if (v := safe_float(r.get("market_slip_bps"), default=None)) is not None
+    ]
+    lim_filled = sum(1 for r in valid_rows if (clean_upper_scalar(r.get("order_type")) or "") == "LIMIT")
     return {
-        "limit_filled": sum(1 for r in rows if r.get("order_type") == "LIMIT"),
-        "market_filled": sum(1 for r in rows if r.get("order_type") != "LIMIT"),
+        "limit_filled": lim_filled,
+        "market_filled": len(valid_rows) - lim_filled,
         "avg_limit_slippage_bps": round(sum(lim_slips) / len(lim_slips), 2) if lim_slips else None,
         "avg_arrival_shortfall_bps": round(sum(arr_sfs) / len(arr_sfs), 2) if arr_sfs else None,
         "avg_market_slippage_bps": round(sum(mkt_slips) / len(mkt_slips), 2) if mkt_slips else None,
@@ -196,19 +211,19 @@ def format_execution_quality_parts(eq: Mapping[str, Any]) -> list[str]:
     mkt_n = safe_nonneg_int(eq.get("market_filled"), 0)
     if (lim_n + mkt_n) <= 0:
         return []
-    lim_s = eq.get("avg_limit_slippage_bps")
-    arr_s = eq.get("avg_arrival_shortfall_bps")
-    mkt_s = eq.get("avg_market_slippage_bps")
+    lim_s = safe_float(eq.get("avg_limit_slippage_bps"), default=None)
+    arr_s = safe_float(eq.get("avg_arrival_shortfall_bps"), default=None)
+    mkt_s = safe_float(eq.get("avg_market_slippage_bps"), default=None)
     parts = [
         f"LIMIT(n={lim_n}"
-        + (f", slip={safe_float(lim_s, 0.0):+.1f}bps" if lim_s is not None else "")
-        + (f", arrival_sf={safe_float(arr_s, 0.0):+.1f}bps" if arr_s is not None else "")
+        + (f", slip={lim_s:+.1f}bps" if lim_s is not None else "")
+        + (f", arrival_sf={arr_s:+.1f}bps" if arr_s is not None else "")
         + ")"
     ]
     if mkt_n > 0:
         parts.append(
             f"MARKET(n={mkt_n}"
-            + (f", slip={safe_float(mkt_s, 0.0):+.1f}bps" if mkt_s is not None else "")
+            + (f", slip={mkt_s:+.1f}bps" if mkt_s is not None else "")
             + ")"
         )
     return parts

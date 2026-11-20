@@ -575,6 +575,28 @@ def test_faza4_prep_shared_ssot_primitives(monkeypatch):
     )
     assert pool == {"available_credits": 0.0, "primary_rem": 0.08, "claude_rem": 0.99, "flash_rem": 1.0}
     assert evaluate_model_quota_escalation_allowed(q_snap, "gemini-4-neon-high") == (False, 0.08, 0.10)
+    assert evaluate_model_quota_escalation_allowed(q_snap, " GEMINI-4-NEON-HIGH ") == (False, 0.08, 0.10)
+    assert evaluate_model_quota_escalation_allowed(q_snap, "claude-sonnet-5-5-medium", min_remaining_fraction=0.995) == (False, 0.99, 0.995)
     assert evaluate_model_quota_escalation_allowed({}, "gemini-4-neon-high") == (True, None, 0.10)
     assert evaluate_model_quota_escalation_allowed({**q_snap, "available_credits": 50.0}, "gemini-4-neon-high") == (True, 0.08, 0.10)
     assert evaluate_model_quota_escalation_allowed(q_snap, "claude-sonnet-5-5-medium") == (True, 0.99, 0.10)
+
+    # 5. Defensive edge cases: lowercase/invalid sides, NaN/non-positive prices, corrupt slippage fields
+    assert compute_signed_price_edge_pct("buy", 100.0, 102.5) == pytest.approx(2.5)
+    assert compute_signed_price_edge_pct("HOLD", 100.0, 102.5) == 0.0
+    assert compute_signed_price_edge_pct("BUY", float("nan"), 100.0) == 0.0
+    assert resolve_matched_notional_usd(float("nan"), 250.0) == 250.0
+    closed_d, open_bd, open_sd = match_filled_intent_rows_lifo([
+        {"ts": 1.0, "inst_key": ("binance", "BTC", ("USD",)), "side": "HOLD", "px": 100.0, "usd": 100.0},
+        {"ts": 2.0, "inst_key": ("binance", "BTC", ("USD",)), "side": "buy", "px": 100.0, "usd": 100.0},
+        {"ts": 3.0, "inst_key": ("binance", "BTC", ("USD",)), "side": "sell", "px": 101.0, "usd": 100.0},
+    ])
+    assert len(closed_d) == 1 and len(open_bd) == 0 and len(open_sd) == 0
+    assert extract_fill_execution_slippage({"limit_price": 100.0}, side="buy", exec_px=99.9, order_type="limit")[0] == pytest.approx(-10.0, abs=0.05)
+    assert extract_fill_execution_slippage({"limit_price": 100.0}, side="HOLD", exec_px=99.9, order_type="LIMIT") == (None, None, None)
+    assert extract_fill_execution_slippage({"limit_price": 100.0}, side="BUY", exec_px=float("nan"), order_type="LIMIT") == (None, None, None)
+    eq_dirty = summarize_execution_quality_bucket([
+        {"order_type": "limit", "limit_slip_bps": float("nan"), "arrival_sf_bps": -5.0},
+    ])
+    assert eq_dirty["limit_filled"] == 1 and eq_dirty["avg_limit_slippage_bps"] is None and eq_dirty["avg_arrival_shortfall_bps"] == -5.0
+    assert format_execution_quality_parts({"limit_filled": 1, "market_filled": 0, "avg_limit_slippage_bps": "nan"}) == ["LIMIT(n=1)"]

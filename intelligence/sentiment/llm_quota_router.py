@@ -176,13 +176,19 @@ def evaluate_model_quota_escalation_allowed(
     eff_thresh = (
         resolve_quota_low_warn_fraction()
         if min_remaining_fraction is None
-        else max(0.0, min(0.5, safe_float(min_remaining_fraction, 0.10)))
+        else max(0.0, min(1.0, safe_float(min_remaining_fraction, 0.10)))
     )
-    if not isinstance(quota_snapshot, Mapping) or not isinstance(model_name, str) or not model_name.strip():
+    cleaned_model = model_name.strip() if isinstance(model_name, str) else ""
+    if not isinstance(quota_snapshot, Mapping) or not cleaned_model:
         return True, None, eff_thresh
     q_buckets = quota_snapshot.get("buckets") if isinstance(quota_snapshot.get("buckets"), Mapping) else {}
     q_cred = safe_float(quota_snapshot.get("available_credits"), default=0.0) or 0.0
-    rem = safe_float(q_buckets.get(model_name), default=None) if model_name in q_buckets else None
+    raw_rem = (
+        q_buckets.get(cleaned_model)
+        if cleaned_model in q_buckets
+        else (q_buckets.get(cleaned_model.lower()) if cleaned_model.lower() in q_buckets else None)
+    )
+    rem = safe_float(raw_rem, default=None)
     if q_cred <= 0.0 and rem is not None and rem <= eff_thresh:
         return False, rem, eff_thresh
     return True, rem, eff_thresh

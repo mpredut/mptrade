@@ -164,18 +164,23 @@ def _extract_intent_notional_usd(it: dict[str, Any]) -> float:
 
 def compute_signed_price_edge_pct(side: str, entry_px: float, exit_px: float) -> float:
     """Return directional gross percentage price move from ``entry_px`` to ``exit_px`` (+ favorable)."""
-    if entry_px <= 0.0 or exit_px <= 0.0:
+    s_norm = normalize_side(side)
+    ep = safe_pos_float(entry_px, default=None)
+    xp = safe_pos_float(exit_px, default=None)
+    if ep is None or xp is None or s_norm not in ("BUY", "SELL"):
         return 0.0
     return (
-        ((exit_px - entry_px) / entry_px) * 100.0
-        if side == "BUY"
-        else ((entry_px - exit_px) / entry_px) * 100.0
+        ((xp - ep) / ep) * 100.0
+        if s_norm == "BUY"
+        else ((ep - xp) / ep) * 100.0
     )
 
 
 def resolve_matched_notional_usd(entry_usd: float, exit_usd: float) -> float:
     """Return matched round-trip USD notional (``min`` when both positive, else ``max``)."""
-    return min(entry_usd, exit_usd) if (entry_usd > 0.0 and exit_usd > 0.0) else max(entry_usd, exit_usd)
+    e_u = safe_nonneg_float(entry_usd, default=0.0)
+    x_u = safe_nonneg_float(exit_usd, default=0.0)
+    return min(e_u, x_u) if (e_u > 0.0 and x_u > 0.0) else max(e_u, x_u)
 
 
 def match_filled_intent_rows_lifo(
@@ -187,8 +192,11 @@ def match_filled_intent_rows_lifo(
     pending_sells: dict[Any, list[dict[str, Any]]] = {}
     closed_pairs: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     for row in sorted_rows:
+        side = normalize_side(row.get("side"))
+        if side not in ("BUY", "SELL"):
+            continue
         ikey = row["inst_key"]
-        if row["side"] == "BUY":
+        if side == "BUY":
             s_queue = pending_sells.get(ikey)
             if s_queue:
                 closed_pairs.append(("SELL->BUY", s_queue.pop(), row))
