@@ -187,7 +187,7 @@ def build_supervisor_prompt(
             "or wall-trapped orders (`recommended_front_run_px`) via `replace_open_orders: true`; returning `'HOLD'` leaves resting orders untouched.\n"
             "   - STRUCTURE, LIQUIDATIONS & CROSS-ASSET MACRO, VIX & INSTITUTIONAL CRYPTO/OPTIONS SURFACE SYMMETRY: Combine `vol_profile` (`POC`/`VAL`/`VAH`/`LVN`, `REAL_VOL` vs `TPO`), "
             "`liq_clusters` (`src=model_est` heuristic bands; prioritize `realized_liq_15m` when present), `book_window` cap tags, per-venue fees/spread/`limits`, and Section 1 cross-asset telemetry "
-            "(`SPY/QQQ/ES=F/NQ=F/VIX/DXY/US10Y`, `Futures_Lead`, `IBIT`, `CB_Premium`, `BTC_DVOL/ETH_DVOL`, `Options_Surface` & `ETH_Options`, distinguishing coupled risk-on/off from `CRYPTO_BULLISH_DECOUPLING` / `EQUITY_BULLISH_DECOUPLING`).\n"
+            "(`SPY/QQQ/ES=F/NQ=F/VIX/DXY/US10Y`, `Futures_Lead`, `IBIT`, `CB_Premium`, `BTC_DVOL/ETH_DVOL`, `Options_Surface` & `ETH_Options`, judging coupled risk-on/off vs cross-asset decoupling directly from the numbers; positive `Skew_25d` = Put_IV - Call_IV > 0 reflects put-buying fear, negative reflects call demand).\n"
             f"   - Emit one entry per actionable instrument in `market_trading_decisions` (`confidence >= {min_conf:g}`, `suggested_notional_usd` between {min_usd:g} and {max_usd:g} USD; "
             "gateway clamps strictly to free balance with zero artificial cooldowns or dedup locks), or a single `'HOLD'` entry. "
             "On actionable BUY/SELL, set numeric `invalidation_px` (thesis break) and `target_px` (primary objective); active plans persist in Section 3C across compactions."

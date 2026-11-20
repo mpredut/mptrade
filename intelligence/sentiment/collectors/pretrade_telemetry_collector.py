@@ -132,7 +132,8 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     load_stitched_24h_ohlc_points,
     STALE_SHORT_24H_KEYS,
 )
-from instrument_registry import casefold_get, is_equity_symbol, is_symbol_market_open, resolve_symbol_identity
+from instrument_registry import casefold_get, is_equity_symbol, is_symbol_market_open, resolve_symbol_identity, venue_for_symbol
+from providers.base import MarketDataProvider
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
 )
@@ -498,6 +499,20 @@ def _ensure_fresh_pretrade_microstructure(
     return refreshed_any
 
 
+def _funding_period_label(
+    fr: float,
+    ann_pct: Optional[float] = None,
+    *,
+    symbol: str = "",
+) -> str:
+    """Resolve '1h' (native L1 hourly funding, e.g. Hyperliquid) vs '8h' (standard CEX perp funding)."""
+    if ann_pct is not None and abs(fr) > 1e-8:
+        return "1h" if abs(ann_pct / (fr * 100.0)) > 4000.0 else "8h"
+    if symbol and MarketDataProvider.has_native_l1_derivatives(venue_for_symbol(symbol)):
+        return "1h"
+    return "8h"
+
+
 def _snap_ts(obj: Any) -> float:
     raw_t = obj_attr(obj, "ts", obj_attr(obj, "timestamp", None))
     return normalize_epoch_sec(raw_t, default=0.0) or 0.0
@@ -762,9 +777,11 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
             )
             if f_snap is not None:
                 fr_f = safe_float(obj_attr(f_snap, "funding_rate", None), default=None)
+                fr_ann_f = safe_float(obj_attr(f_snap, "funding_annualized_pct", None), default=None)
                 oi_f = safe_pos_float(obj_attr(f_snap, "open_interest_usd", None), 0.0)
                 if fr_f is not None and not (is_eq_sym and abs(fr_f) < 1e-12):
-                    telemetry["Perpetual Funding Rate"] = f"{fr_f * 100:+.4f}% (8h)"
+                    fr_period = _funding_period_label(fr_f, fr_ann_f, symbol=symbol)
+                    telemetry["Perpetual Funding Rate"] = f"{fr_f * 100:+.4f}% ({fr_period})"
                 if oi_f > 0.0:
                     telemetry["Derivatives Open Interest"] = (
                         f"${oi_f:,.0f} (Cboe options chain OI)" if is_eq_sym else f"${oi_f:,.0f}"
@@ -1652,6 +1669,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
         cur_m_info: Dict[str, Any],
         is_eq_sym: bool,
         is_tok_xstock_pt: bool,
+        symbol: str = "",
     ) -> None:
         eq_no_oi_pt = is_eq_sym and (safe_pos_float(cur_m_info.get("oi_usd"), default=0.0) or 0.0) <= 0.0
         if (
@@ -1676,8 +1694,9 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
         if is_eq_sym and abs(safe_float(cur_m_info.get("funding_rate"), default=0.0) or 0.0) < 1e-12:
             telemetry.pop("Perpetual Funding Rate", None)
         elif (fr_v := safe_float(cur_m_info.get("funding_rate"), default=None)) is not None:
-            fr_base = telemetry.get("Perpetual Funding Rate") or f"{fr_v * 100:+.4f}% (8h)"
             f_ann = safe_float(cur_m_info.get("funding_annualized_pct"), default=None)
+            fr_period = _funding_period_label(fr_v, f_ann, symbol=symbol)
+            fr_base = telemetry.get("Perpetual Funding Rate") or f"{fr_v * 100:+.4f}% ({fr_period})"
             b_bps = safe_float(cur_m_info.get("perp_spot_basis_bps"), default=None)
             b_d15 = safe_float(cur_m_info.get("basis_delta_15m_bps"), default=None)
             f_d1h = safe_float(cur_m_info.get("funding_delta_1h_bps"), default=None)
@@ -1864,7 +1883,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                     )
             except Exception:
                 pass
-        self._format_derivatives_and_whale_lines(telemetry, cur_m_info, ctx.is_eq_sym, is_tok_xstock_pt)
+        self._format_derivatives_and_whale_lines(telemetry, cur_m_info, ctx.is_eq_sym, is_tok_xstock_pt, symbol=symbol)
         no_perp_liq = not ctx.session_policy.has_liquidation_clusters
         if no_perp_liq:
             liq_c: Dict[str, Any] = {}

@@ -1782,21 +1782,42 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     psg_prompt = PostStopReentryGuard._build_post_stop_prompt("BTCUSDC", f"- Equity & Macro Regime: {eq_macro_line}")
     for gp in (hsg_buy_prompt, hsg_sell_prompt, psg_prompt):
         assert "CROSS-ASSET MACRO, VIX & INSTITUTIONAL FLOW" in gp
-        assert "CRYPTO_BULLISH_DECOUPLING" in gp
-        assert "EQUITY_BULLISH_DECOUPLING" in gp
         assert "CB_Premium" in gp
         assert "Options_Surface" in gp
         assert "ETH_Options" in gp
         assert "Futures_Lead" in gp
+        assert "positive Skew_25d (Put_IV - Call_IV > 0, put-buying fear)" in gp
+        assert "negative Skew_25d (put-buying fear)" not in gp
+        for stale_lbl in (
+            "CRYPTO_BULLISH_DECOUPLING",
+            "EQUITY_BULLISH_DECOUPLING",
+            "COUPLED_RISK_ON",
+            "COUPLED_RISK_OFF",
+            "FUTURES_PREMARKET_GAP_UP",
+            "FUTURES_PREMARKET_GAP_DOWN",
+            "HIGHER_LOW_DOUBLE_BOTTOM",
+            "LIQUIDITY_SWEEP_RECLAIM",
+        ):
+            assert stale_lbl not in gp
 
     sup_cr = build_supervisor_prompt(sensors_ns, SimpleNamespace(), topic_key="auto_cryptotrade_executor")
     sup_eq = build_supervisor_prompt(sensors_ns, SimpleNamespace(), topic_key="auto_sharetrade_executor")
     for sp in (sup_cr, sup_eq):
         assert "CROSS-ASSET MACRO, VIX & INSTITUTIONAL CRYPTO/OPTIONS SURFACE SYMMETRY" in sp
-        assert "CRYPTO_BULLISH_DECOUPLING" in sp
-        assert "EQUITY_BULLISH_DECOUPLING" in sp
         assert "ETH_Options" in sp
         assert "Futures_Lead" in sp
+        assert "positive `Skew_25d` = Put_IV - Call_IV > 0" in sp
+        assert "CRYPTO_BULLISH_DECOUPLING" not in sp
+        assert "EQUITY_BULLISH_DECOUPLING" not in sp
+
+    # 6b. PretradeTelemetry funding period label resolves (1h) for Hyperliquid L1 funding vs (8h) for CEX funding
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import _funding_period_label
+
+    assert _funding_period_label(1.01335e-05, 8.88, symbol="HYPEUSDC") == "1h"
+    assert _funding_period_label(1.01335e-05, 8.88, symbol="HYPEUSD") == "1h"
+    assert _funding_period_label(0.0, None, symbol="HYPEUSDC") == "1h"
+    assert _funding_period_label(3.3e-05, 3.6, symbol="BTCUSDC") == "8h"
+    assert _funding_period_label(1.0e-04, 10.95, symbol="HYPEUSDC") == "8h"
 
     # 7. VIX spike guard in compute_cross_asset_regime & live 24h BTC delta enrichment when IBIT is closed
     assert (
