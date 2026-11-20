@@ -51,6 +51,7 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
     MarketAndPortfolioSnapshotOrchestrator,
 )
 from orchestratorOS.agy.topics import has_pending_ui_turn
+from orchestratorOS.supervisor.crypto_executor_delta_gate import evaluate_crypto_executor_delta_gate
 from state_io import read_json_recovering
 from orchestratorOS.lib.technical_repair_ssot import (
     apply_code_patch_safely,
@@ -58,7 +59,6 @@ from orchestratorOS.lib.technical_repair_ssot import (
     build_llm_config_env_remediation,
     build_sensor_health_summary,
     default_supervisor_fallback_plan,
-    evaluate_crypto_executor_delta_gate,
     execute_venue_or_fleet_repair_action,
     format_supervisor_ntfy_notification,
     harvest_heartbeats_and_state_files,

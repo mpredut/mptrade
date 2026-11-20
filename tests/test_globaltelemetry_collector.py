@@ -149,10 +149,13 @@ from intelligence.sentiment.evaluators.portfolio_evaluator import (
     VenueCycleReconciliationEvaluator,
     VenueCycleStateEvaluator,
 )
-from intelligence.sentiment.evaluators.price_series_evaluator import (
+from intelligence.sentiment.evaluators.asset_session_policy import (
     AssetSessionPolicy,
     Crypto24x7SessionPolicy,
     EquityRthSessionPolicy,
+    resolve_asset_session_policy,
+)
+from intelligence.sentiment.evaluators.price_series_evaluator import (
     Horizon24hPriceEvaluator,
     PriceSeriesEvaluatorBase,
     ShortTrendAndKalmanEvaluator,
@@ -162,7 +165,6 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     VolumeProfileEvaluator,
     apply_24h_series_enrichment,
     recalculate_live_price_geometry,
-    resolve_asset_session_policy,
 )
 from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     CrossMarketContextEvaluator,

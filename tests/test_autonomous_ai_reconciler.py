@@ -9600,7 +9600,7 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
     """Verify 3.4 Smart No-Op Delta-Gate skips quiet flat cycles (heartbeat-only) and escalates high-signal cycles."""
     from types import SimpleNamespace
     from state_io import read_json_dict
-    from orchestratorOS.lib.technical_repair_ssot import evaluate_crypto_executor_delta_gate
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import evaluate_crypto_executor_delta_gate
     from orchestratorOS.supervisor import autonomous_ai_reconciler as aar_mod
     from tests.conftest import setup_isolated_agy_stores
 
@@ -9784,7 +9784,7 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
 def test_proposal4a_structured_trade_plans_3c_memory_and_delta_gate_trigger():
     """Verify 4A invalidation_px/target_px extraction, Section 3C memory persistence, and Delta-Gate high-effort trigger."""
     from types import SimpleNamespace
-    from orchestratorOS.lib.technical_repair_ssot import evaluate_crypto_executor_delta_gate
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import evaluate_crypto_executor_delta_gate
     from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
     from providers.intent_state import (
         extract_intent_notional,

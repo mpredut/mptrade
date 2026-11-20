@@ -302,7 +302,7 @@ class TelemetryCacheCollectorInterface(SyncModeMixin, ABC):
 
     @staticmethod
     def resolve_session_policy(symbol: str) -> Any:
-        return importlib.import_module("intelligence.sentiment.evaluators.price_series_evaluator").resolve_asset_session_policy(symbol)
+        return importlib.import_module("intelligence.sentiment.evaluators.asset_session_policy").resolve_asset_session_policy(symbol)
 
     @abstractmethod
     def collect(self, cachedb_dir: str, symbol: str = "", **kwargs: Any) -> Any:

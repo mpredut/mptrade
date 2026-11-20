@@ -12111,17 +12111,17 @@ def test_phase1_symbol_identity_3tier_asset_policy_and_spot_ob_reconciler_ssot()
         SpotOrderbookPriceReconcilerEvaluator,
         reconcile_spot_and_orderbook_microstructure,
     )
-    from intelligence.sentiment.evaluators.price_series_evaluator import (
+    from intelligence.sentiment.evaluators.asset_session_policy import (
         AssetClassPolicyInterface,
         AssetClassPolicyRegistry,
         AssetSessionPolicy,
         Continuous24x7SessionPolicy,
         Crypto24x7SessionPolicy,
         EquityRthSessionPolicy,
-        TelemetryEvaluatorFactory,
         TokenizedEquity24x7SessionPolicy,
         resolve_asset_session_policy,
     )
+    from intelligence.sentiment.evaluators.price_series_evaluator import TelemetryEvaluatorFactory
 
     id_btc = resolve_symbol_identity("BTCUSDC")
     assert id_btc.asset_class == "crypto" and id_btc.is_crypto and id_btc.has_crypto_perpetuals and not id_btc.uses_equity_risk_priors

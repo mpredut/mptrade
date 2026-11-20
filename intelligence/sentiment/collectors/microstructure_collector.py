@@ -139,6 +139,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
 )
 from providers.ohlc_utils import normalize_yahoo_5d_chart_bars
+from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     append_newer_24h_to_7d_vals,
     collapse_watcher_equity_series,
@@ -150,7 +151,6 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     pct_delta,
     prepend_older_non_diverged_points,
     recalculate_live_price_geometry,
-    resolve_asset_session_policy,
     round_opt_px,
     sort_ts_rows,
     apply_24h_series_enrichment,
