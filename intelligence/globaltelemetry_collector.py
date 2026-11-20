@@ -671,19 +671,25 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self._active_cycle_ts = current_ts if explicit_now else None
         live_clock = not explicit_now
         end_ts = current_ts
+
+        def _refresh_live_heartbeat() -> None:
+            if live_clock:
+                results["ts"] = resolve_now_ts(None)
+            self.write_heartbeat(results)
+
         try:
             self._step_external_symbols(
                 current_ts,
                 force,
                 results,
                 bounded=True,
-                on_symbol_done=lambda: self.write_heartbeat(results),
+                on_symbol_done=_refresh_live_heartbeat,
                 live_clock=live_clock,
             )
 
             eff_mb_itv = self._effective_macro_benchmarks_interval_sec(current_ts if explicit_now else resolve_now_ts(None))
             scheduled_tasks = (
-                (not self.skip_news, "_last_news_ts", self.news_interval_sec, self.update_news, (force,), 15.0, "news", "news_updated", lambda: self.write_heartbeat(results)),
+                (not self.skip_news, "_last_news_ts", self.news_interval_sec, self.update_news, (force,), 15.0, "news", "news_updated", _refresh_live_heartbeat),
                 (True, "_last_fear_greed_ts", self.fear_greed_interval_sec, self.update_fear_greed, (force,), 12.0, "fear_greed", "fear_greed_updated", None),
                 (True, "_last_breadth_ts", self.breadth_interval_sec, self.update_market_breadth, (force,), 15.0, "breadth", "breadth_updated", None),
                 (not self.skip_external, "_last_macro_benchmarks_ts", eff_mb_itv, self.update_macro_benchmarks, (force,), 15.0, "macro_benchmarks", "macro_benchmarks_updated", None),

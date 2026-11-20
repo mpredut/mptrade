@@ -2644,6 +2644,10 @@ def test_live_cycle_avoids_start_ts_backdating_and_fast_microstructure_deltas(tm
     monkeypatch.setattr(col, "_active_liquidation_collectors", lambda: [object()])
     monkeypatch.setattr(col, "update_realized_liquidations", _fake_liq)
 
+    hb_ts_log = []
+    orig_write_hb = col.write_heartbeat
+    monkeypatch.setattr(col, "write_heartbeat", lambda st: (hb_ts_log.append(st.get("ts")), orig_write_hb(st)))
+
     res_live = col.run_cycle(force=False)
     assert seen_active_ts == [("BTCUSDC", None), ("ADAUSD", None)]
     assert col._last_orderbook_ts["BTCUSDC"] == pytest.approx(t_now + 10.0)
@@ -2651,6 +2655,12 @@ def test_live_cycle_avoids_start_ts_backdating_and_fast_microstructure_deltas(tm
     assert liq_written_ts == [(None, None, t_now + 20.0)]
     assert col._last_realized_liq_ts == pytest.approx(t_now + 22.0)
     assert res_live["ts"] == pytest.approx(t_now + 22.0)
+    assert hb_ts_log == [
+        pytest.approx(t_now),
+        pytest.approx(t_now + 10.0),
+        pytest.approx(t_now + 20.0),
+        pytest.approx(t_now + 22.0),
+    ]
 
     # 3. Deterministic run_cycle(now=t_det) still pins _active_cycle_ts to t_det for replay/test reproducibility.
     t_det = t_now + 500.0
