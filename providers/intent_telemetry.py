@@ -955,6 +955,12 @@ def summarize_active_ai_trade_plans(
             )
             if held_usd < 5.0:
                 continue
+        if side == "SELL" and not is_resting and isinstance(pos_hit, dict):
+            if "effective_max_buy_usd" in pos_hit or "effective_max_sell_usd" in pos_hit:
+                mb_u = safe_pos_float(pos_hit.get("effective_max_buy_usd"), default=0.0) or 0.0
+                rmb_u = safe_pos_float(pos_hit.get("replace_max_buy_usd"), default=0.0) or 0.0
+                if mb_u <= 0.0 and rmb_u <= 0.0:
+                    continue
 
         spot_px = _resolve_spot_px(venue, sym, pos_hit)
         status = evaluate_trade_plan_status(side, spot_px, inv_px, tgt_px, is_resting=is_resting)

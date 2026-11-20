@@ -498,7 +498,7 @@ def format_recent_fill_subcycle_parts(
             parts.append(f"Post-Trade Markout({', '.join(m_parts)})")
     for key_tr, lbl_tr in (("recent_buys", "Recent BUY Tranches"), ("recent_sells", "Recent SELL Tranches")):
         tr_list = [
-            f"{item.get('qty')}@{round_opt_px(item.get('price'), 6)}"
+            f"{round_opt_px(item.get('qty'), 8)}@{round_opt_px(item.get('price'), 6)}"
             for item in (fills.get(key_tr) or ())
             if isinstance(item, dict) and item.get("qty") is not None and item.get("price") is not None
         ]

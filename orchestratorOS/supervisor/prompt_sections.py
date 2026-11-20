@@ -1066,12 +1066,14 @@ def _format_microstructure_section(
                 )
             continue
         eq_zero_fund_3b = sym_is_eq_3b
+        oi_1h_v = safe_float(minfo.get("oi_1h_chg_pct"), None)
+        oi_1h_lbl = (oi_1h_v + 0.0) if oi_1h_v is not None else minfo.get("oi_1h_chg_pct")
         oi_15m_v = safe_float(minfo.get("oi_15m_chg_pct"), None)
-        oi_15m_sfx = f", oi_15m_chg={oi_15m_v:+.2f}%" if oi_15m_v is not None else ""
+        oi_15m_sfx = f", oi_15m_chg={oi_15m_v + 0.0:+.2f}%" if oi_15m_v is not None else ""
         if sym_is_tok_xstock_3b or (eq_no_oi_3b and eq_zero_fund_3b):
             deriv_oi_sfx = ""
         elif eq_zero_fund_3b:
-            deriv_oi_sfx = f", oi_usd={oi_lbl} (cboe_options_oi), oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
+            deriv_oi_sfx = f", oi_usd={oi_lbl} (cboe_options_oi), oi_1h_chg={oi_1h_lbl}%"
         else:
             fr_v = safe_float(minfo.get("funding_rate"), default=None)
             pfr_v = safe_float(minfo.get("pred_funding_rate"), default=None)
@@ -1087,7 +1089,7 @@ def _format_microstructure_section(
                     else ""
                 )
                 fund_part = f", funding={_fmt_plain_float(fr_v)}{pred_sfx}"
-            deriv_oi_sfx = f"{fund_part}, oi_usd={oi_lbl}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%{oi_15m_sfx}"
+            deriv_oi_sfx = f"{fund_part}, oi_usd={oi_lbl}, oi_1h_chg={oi_1h_lbl}%{oi_15m_sfx}"
         src_age_sfx = _format_3b_source_ages_suffix(
             minfo,
             now_ts=now_ts,

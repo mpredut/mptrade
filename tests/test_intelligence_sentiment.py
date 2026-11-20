@@ -16417,4 +16417,156 @@ def test_iter6_deribit_carryover_active_cycle_lifo_and_sibling_whale_freshness(t
     assert by_sym["TAOUSD"]["shared_perp_sym"] == "TAOUSDC"
 
 
+def test_iter7_sell_only_trade_plan_delta_gate_and_tranche_formatting():
+    """Verify SELL-only ghost trade plans are pruned, Delta-Gate ignores unactionable $0/$0 plans, and tranches/OI avoid float dust/-0.0."""
+    from types import SimpleNamespace
+    from intelligence.sentiment.evaluators.portfolio_evaluator import format_recent_fill_subcycle_parts
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import evaluate_crypto_executor_delta_gate
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+    from providers.intent_state import extract_intent_notional
+    from providers.intent_telemetry import summarize_active_ai_trade_plans
+
+    t_now = 1_795_208_051.0
+
+    # 1. summarize_active_ai_trade_plans drops FILLED SELL plans on SELL-only instruments (max_buy=$0, e.g. Kraken SPCXxUSD)
+    #    while preserving FILLED SELL plans on tradable crypto (TAOUSD max_buy=$2000) and RESTING SELL plans on xStocks.
+    intents = [
+        {
+            "status": "EXECUTED",
+            "venue": "kraken",
+            "symbol": "SPCXxUSD",
+            "decision": "SELL",
+            "order_type": "LIMIT",
+            "timestamp": t_now - 8 * 3600.0,
+            "target_px": 128.89,
+            "invalidation_px": 131.2,
+            "execution_payload": {"status": "FILLED", "price": 130.07, "filled_qty": 4.968943},
+        },
+        {
+            "status": "EXECUTED",
+            "venue": "kraken",
+            "symbol": "TAOUSD",
+            "decision": "SELL",
+            "order_type": "LIMIT",
+            "timestamp": t_now - 10 * 3600.0,
+            "target_px": 184.2,
+            "invalidation_px": 192.5,
+            "execution_payload": {"status": "FILLED", "price": 187.42, "filled_qty": 0.61499},
+        },
+        {
+            "status": "EXECUTED",
+            "venue": "kraken",
+            "symbol": "ANTxUSD",
+            "decision": "SELL",
+            "order_type": "LIMIT",
+            "timestamp": t_now - 1800.0,
+            "target_px": 85.0,
+            "invalidation_px": 92.0,
+            "execution_payload": {"status": "OPEN", "order_id": "O-ANT-1", "price": 90.0},
+        },
+    ]
+    positions = [
+        {"venue": "kraken", "symbol": "SPCXxUSD", "price": 128.625, "value_usd": 0.0, "effective_max_buy_usd": 0.0, "effective_max_sell_usd": 0.0},
+        {"venue": "kraken", "symbol": "TAOUSD", "price": 175.20, "value_usd": 0.0, "effective_max_buy_usd": 2000.0, "effective_max_sell_usd": 0.0},
+        {"venue": "kraken", "symbol": "ANTxUSD", "price": 87.505, "value_usd": 200.0, "effective_max_buy_usd": 0.0, "effective_max_sell_usd": 200.0},
+    ]
+    open_orders = [{"venue": "kraken", "symbol": "ANTxUSD", "side": "SELL", "order_id": "O-ANT-1", "price": 90.0, "status": "OPEN"}]
+    plans = summarize_active_ai_trade_plans(
+        intents,
+        "crypto",
+        t_now,
+        extract_intent_notional,
+        tradable_positions=positions,
+        open_orders=open_orders,
+    )
+    plan_syms = {p["symbol"] for p in plans}
+    assert "SPCXxUSD" not in plan_syms
+    assert "TAOUSD" in plan_syms
+    assert "ANTxUSD" in plan_syms
+
+    # 2. Delta-Gate ignores trade_plan_target_hit / invalidated on unactionable $0/$0 symbols (no high-effort wakeup)
+    sensors = SimpleNamespace(
+        prices_and_trends={"BTCUSDC": {"price": 58300.0}, "SPCXxUSD": {"price": 128.625}},
+        portfolio_summary={
+            "tradable_positions": [
+                {"venue": "binance", "symbol": "BTCUSDC", "price": 58300.0, "effective_max_buy_usd": 2000.0, "effective_max_sell_usd": 2000.0},
+                {"venue": "kraken", "symbol": "SPCXxUSD", "price": 128.625, "effective_max_buy_usd": 0.0, "effective_max_sell_usd": 0.0},
+            ],
+            "active_ai_trade_plans": [
+                {"venue": "kraken", "symbol": "SPCXxUSD", "side": "SELL", "order_state": "FILLED", "target_px": 128.89, "invalidation_px": 131.2, "status": "TARGET_HIT"},
+            ],
+            "open_limit_orders": [],
+            "recent_orders": {},
+        },
+        sentiment_advisor={"ts": t_now - 1800.0},
+        geopolitical_threat={"ts": t_now - 1200.0, "risk_score": 0.4},
+        source_timestamps={},
+    )
+    prev_eval = {
+        "ts": t_now - 360.0,
+        "decision": "HOLD",
+        "model_used": "gemini-4-neon-medium",
+        "delta_gate_meta": {
+            "eval_prices": {"BTCUSDC": 58310.0, "SPCXxUSD": 128.95},
+            "macro_ts": t_now - 1800.0,
+            "geo_ts": t_now - 1200.0,
+            "latest_fill_ts": 0.0,
+            "open_order_ids": [],
+            "order_attention_flags": {},
+            "plan_states": {"kraken:SPCXxUSD:SELL": "ACTIVE"},
+        },
+    }
+    should_skip, reason, escalate_hi, _meta = evaluate_crypto_executor_delta_gate(
+        sensors, prev_eval, now_ts=t_now
+    )
+    assert should_skip is True
+    assert "quiet_flat" in reason
+    assert escalate_hi is False
+
+    # 3. format_recent_fill_subcycle_parts strips IEEE-754 float dust on tranche qty while preserving 8-decimal precision
+    parts = format_recent_fill_subcycle_parts(
+        {
+            "recent_buys": [
+                {"qty": 5.7299999999999995, "price": 61.02},
+                {"qty": 6.721433899999999, "price": 66.95},
+            ],
+            "recent_sells": [
+                {"qty": 3.0970999999999997, "price": 185.98},
+                {"qty": 2155.17241379, "price": 0.1392},
+            ],
+        }
+    )
+    joined_tr = " | ".join(parts)
+    assert "5.73@61.02" in joined_tr
+    assert "6.7214339@66.95" in joined_tr
+    assert "3.0971@185.98" in joined_tr
+    assert "2155.17241379@0.1392" in joined_tr
+    assert "999999" not in joined_tr
+
+    # 4. Section 3B normalizes negative-zero oi_1h_chg (-0.0 -> 0.0)
+    sec3b = "\n".join(
+        _format_microstructure_section(
+            {
+                "BTCUSDC": {
+                    "ob_imbalance": 0.6,
+                    "bid_depth_usd": 1000000.0,
+                    "ask_depth_usd": 700000.0,
+                    "ob_mid_price": 58300.0,
+                    "oi_usd": 5500000000.0,
+                    "oi_1h_chg_pct": -0.0,
+                    "funding_annualized_pct": -5.0,
+                    "whale_long_pct": 0.63,
+                    "taker_buy_sell_ratio": 0.9,
+                    "taker_buy_vol_usd": 100000.0,
+                    "taker_sell_vol_usd": 110000.0,
+                }
+            },
+            {"BTCUSDC": {"price": 58300.0}},
+        )
+    )
+    assert "oi_1h_chg=0.0%" in sec3b
+    assert "oi_1h_chg=-0.0%" not in sec3b
+
+
+
 

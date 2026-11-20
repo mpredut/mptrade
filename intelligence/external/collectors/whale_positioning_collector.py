@@ -496,7 +496,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                 taker_buy_vol_usd=taker_buy,
                 taker_sell_vol_usd=taker_sell,
                 open_interest_usd=latest_oi_usd,
-                open_interest_1h_change_pct=round(oi_change_pct, 2),
+                open_interest_1h_change_pct=round(oi_change_pct, 2) + 0.0,
                 divergence_regime=regime,
                 ts=now,
                 funding_rate=funding_rate,

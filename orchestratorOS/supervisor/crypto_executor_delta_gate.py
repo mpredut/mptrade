@@ -203,6 +203,8 @@ def _evaluate_delta_gate_trade_plans(
     ps_map: Mapping[str, Any],
     eval_prices: Mapping[str, float],
     prev_plan_states: Mapping[str, str],
+    *,
+    unactionable_syms: Optional[Collection[str]] = None,
 ) -> Tuple[Dict[str, str], str]:
     """Evaluate active AI trade plans and detect first-transition INVALIDATED / TARGET_HIT wake triggers."""
     plan_states: Dict[str, str] = {}
@@ -210,6 +212,7 @@ def _evaluate_delta_gate_trade_plans(
     raw_plans = ps_map.get("active_ai_trade_plans")
     if not isinstance(raw_plans, list):
         return plan_states, trigger_reason
+    ignored_syms = set(unactionable_syms) if unactionable_syms else set()
     for pl in raw_plans:
         if not isinstance(pl, Mapping):
             continue
@@ -233,6 +236,7 @@ def _evaluate_delta_gate_trade_plans(
             plan_states[pl_key] = pl_status
         if (
             not trigger_reason
+            and pl_sym not in ignored_syms
             and pl_status in ("INVALIDATED", "TARGET_HIT")
             and prev_plan_states.get(pl_key) != pl_status
         ):
@@ -287,7 +291,8 @@ def _resolve_unactionable_delta_gate_symbols(ps_map: Mapping[str, Any]) -> set[s
         mb = safe_pos_float(pos.get("effective_max_buy_usd"), default=0.0) or 0.0
         ms = safe_pos_float(pos.get("effective_max_sell_usd"), default=0.0) or 0.0
         rmb = safe_pos_float(pos.get("replace_max_buy_usd"), default=0.0) or 0.0
-        if mb > 0.0 or ms > 0.0 or rmb > 0.0 or sym_k in open_syms:
+        rms = safe_pos_float(pos.get("replace_max_sell_usd"), default=0.0) or 0.0
+        if mb > 0.0 or ms > 0.0 or rmb > 0.0 or rms > 0.0 or sym_k in open_syms:
             actionable_syms.add(sym_k)
     return seen_syms - actionable_syms
 
@@ -434,7 +439,10 @@ def evaluate_crypto_executor_delta_gate(
         if isinstance(prev_plan_states_raw, Mapping)
         else {}
     )
-    plan_states, plan_trigger_reason = _evaluate_delta_gate_trade_plans(ps_map, eval_prices, prev_plan_states)
+    unactionable_syms = _resolve_unactionable_delta_gate_symbols(ps_map)
+    plan_states, plan_trigger_reason = _evaluate_delta_gate_trade_plans(
+        ps_map, eval_prices, prev_plan_states, unactionable_syms=unactionable_syms
+    )
 
     snapshot_meta: Dict[str, Any] = {
         "eval_prices": eval_prices,
@@ -446,7 +454,6 @@ def evaluate_crypto_executor_delta_gate(
         "plan_states": plan_states,
     }
 
-    unactionable_syms = _resolve_unactionable_delta_gate_symbols(ps_map)
     (
         max_move_pct,
         _max_move_sym,
