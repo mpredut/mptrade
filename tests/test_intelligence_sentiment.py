@@ -15715,7 +15715,8 @@ def test_faza3b_spot_etf_flows_collector_parser_pretrade_and_prompt(tmp_path, mo
     assert snap is not None and snap["btc_ok"] is True and snap["eth_ok"] is True
     assert len(fetch_calls) == 2
     assert "BTC_ETF(2026-11-19): -$632.20M [IBIT -$541.10M, FBTC -$45.90M, ARKB -$31.30M]" in snap["summary_line"]
-    assert "streak=-3d, STRONG_OUTFLOW" in snap["summary_line"]
+    assert "5d=-$907.20M, streak=-3d)" in snap["summary_line"]
+    assert "STRONG_OUTFLOW" not in snap["summary_line"]
     assert "ETH_ETF(2026-11-19): -$129.40M [ETHA -$124.20M, ETHE -$5.20M]" in snap["summary_line"]
     assert "partial=2/3" in snap["summary_line"]
 
@@ -15765,6 +15766,7 @@ def test_faza3b_spot_etf_flows_collector_parser_pretrade_and_prompt(tmp_path, mo
     crypto_prompt = build_supervisor_prompt(crypto_snap, SimpleNamespace(), topic_key="auto_cryptotrade_executor")
     assert "- US Spot Crypto ETF Net Flows (Farside Daily):" in crypto_prompt
     assert "BTC_ETF(2026-11-19): -$632.20M" in crypto_prompt
+    assert "STRONG_OUTFLOW" not in crypto_prompt
     assert "etf_flows=" in crypto_prompt
 
     eq_snap = orch.read_snapshot(str(cdir), scope="equities", now_ts=t_now + 7260.0)

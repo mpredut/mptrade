@@ -503,7 +503,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
     if not is_equities_scope:
         etf_flows = _resolve_macro_sensor(sensors, macro, "etf_flows", ps=ps)
         if etf_flows:
-            etf_s = str(etf_flows.get("summary_line") or "").strip() or format_etf_flows_summary_line(etf_flows)
+            etf_s = format_etf_flows_summary_line(etf_flows) or str(etf_flows.get("summary_line") or "").strip()
             if etf_s:
                 lines.append(
                     f"- US Spot Crypto ETF Net Flows (Farside Daily): {etf_s}{_age_sfx(etf_flows, parens=True)}"

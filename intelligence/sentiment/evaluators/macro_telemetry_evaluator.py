@@ -1526,9 +1526,6 @@ def _format_single_asset_etf_flow(asset_u: str, entry: Dict[str, Any]) -> str:
         tot = safe_int(entry.get("total_issuers"), 0)
         if tot > 0:
             meta_parts.append(f"partial={rep}/{tot}")
-    regime = str(entry.get("flow_regime") or "").strip().upper()
-    if regime:
-        meta_parts.append(regime)
     meta_sfx = f" ({', '.join(meta_parts)})" if meta_parts else ""
     return f"{hdr}: {format_compact_usd(net_usd, signed=True)}{issuer_sfx}{meta_sfx}"
 
