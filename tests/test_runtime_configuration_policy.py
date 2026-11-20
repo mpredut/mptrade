@@ -515,7 +515,12 @@ def test_pyproject_python_version_and_active_packages_aligned():
     assert pyproject["tool"]["mypy"]["python_version"] == "3.12"
 
     include_patterns = set(pyproject["tool"]["setuptools"]["packages"]["find"]["include"])
+    py_modules = set(pyproject["tool"]["setuptools"]["py-modules"])
     assert "shmem*" not in include_patterns
+    assert "lock*" not in include_patterns
+    assert "utils" not in py_modules
+    assert not (ROOT / "utils.py").exists()
+    assert not (ROOT / "lock/cooldown.py").exists()
     expected_packages = {
         "212trading*",
         "binance_api*",
@@ -523,7 +528,6 @@ def test_pyproject_python_version_and_active_packages_aligned():
         "hyperliquid*",
         "intelligence*",
         "kraken*",
-        "lock*",
         "market_monitor*",
         "notify_engine*",
         "orchestratorOS*",

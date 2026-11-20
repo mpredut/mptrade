@@ -274,12 +274,17 @@ def fetch_requests_json_post(
     )
 
 
+_PEM_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN PRIVATE KEY-----(.*?)-----END PRIVATE KEY-----", re.DOTALL
+)
+
+
 def _load_ed25519_signing_key():
     try:
         import nacl.signing
 
         pem_data = _state_io.read_text_file("keys/ed25519_private.pem")
-        b64match = re.search(r"-----BEGIN PRIVATE KEY-----(.*?)-----END PRIVATE KEY-----", pem_data, re.DOTALL)
+        b64match = _PEM_PRIVATE_KEY_RE.search(pem_data)
         if not b64match:
             raise ValueError("Invalid PEM")
         der_bytes = base64.b64decode(b64match.group(1).strip())

@@ -93,7 +93,6 @@ py-modules = [
     "state_io",
     "tradeall",
     "trailing_core",
-    "utils",
 ]
 
 [tool.setuptools.packages.find]
@@ -105,7 +104,6 @@ include = [
     "hyperliquid*",
     "intelligence*",
     "kraken*",
-    "lock*",
     "market_monitor*",
     "notify_engine*",
     "orchestratorOS*",

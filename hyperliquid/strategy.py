@@ -54,7 +54,7 @@ ensure_local_module_priority(_HERE, "common", "hl_client", "market_data", "signa
 
 from common import load_hl_default_env as _hl_default_env, notify
 from notify_engine.alertnotifiers import emit_trade_notification  # noqa: E402
-from strategies.base_spot_mixin import BaseSpotMixin, load_common_core_strat_env, sanitize_common_spot_state
+from strategies.base_spot_mixin import BaseSpotMixin, SpotParamsMixin, load_common_core_strat_env, sanitize_common_spot_state
 from strategies.state_store import safe_state_token, state_path_for as _shared_state_path_for
 from hl_client import HLClient
 from market_data import get_price
@@ -71,7 +71,7 @@ def state_path_for(coin: str, direction: str) -> str:
 
 
 @dataclass
-class StratParams:
+class StratParams(SpotParamsMixin):
     currency: str = "USDC"
     direction: str = "long"            # "long" | "short"
     entry_amount: float = 50.0
@@ -88,8 +88,12 @@ class StratParams:
     stop_loss_pct: float = 0.0       # close all when unrealized loss exceeds this percentage; 0 disables
     reentry_tolerance_pct: float = 0.0  # deterministically treat near-threshold as DCA hit via are_close
                                   # 0 preserves the exact legacy behavior; see kraken/212trading
-    fee_pct: float = 0.045
+    fee_pct: float = HL_FEE_PCT
     sz_decimals: int = 4
+
+    def __post_init__(self) -> None:
+        # Strict bool/bound validation runs in _validate_numeric_bounds so invalid values fail fast.
+        pass
 
     def _validate_numeric_bounds(self, dir_norm: str) -> None:
         require_pos_float(self.entry_amount, "entry_amount")

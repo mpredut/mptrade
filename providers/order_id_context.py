@@ -137,17 +137,22 @@ VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = {
 }
 
 
+_PROCESS_STEM_SPLIT_RE = re.compile(r"[_\-.]+")
+_NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]")
+_CID_TOKEN_SPLIT_RE = re.compile(r"[_-]+")
+
+
 def _derive_process_name(stem):
     stem = "python" if (stem is None or isinstance(stem, bool)) else (str(stem) or "python")
     key = stem.lower()
     if key in _PROCESS_NAME_OVERRIDES:
         return _PROCESS_NAME_OVERRIDES[key]
 
-    parts = [part for part in re.split(r"[_\-.]+", stem) if part]
+    parts = [part for part in _PROCESS_STEM_SPLIT_RE.split(stem) if part]
     if len(parts) > 1:
         return "".join(part[0].upper() for part in parts if part)
 
-    alpha = re.sub(r"[^A-Za-z0-9]", "", stem)
+    alpha = _NON_ALNUM_RE.sub("", stem)
     return alpha[:6].upper() if alpha else "PY"
 
 
@@ -432,7 +437,7 @@ def resolve_order_origin(
                         rule = "SL_PROTECT" if pfx == "AGS" else "BUY_TIER"
                     else:
                         rem = raw_cid[len(pfx):].lstrip("_-")
-                        tokens = [t for t in re.split(r"[_-]+", rem) if t and t.upper() not in _GENERIC_CID_TOKENS]
+                        tokens = [t for t in _CID_TOKEN_SPLIT_RE.split(rem) if t and t.upper() not in _GENERIC_CID_TOKENS]
                         if tokens:
                             cand = (
                                 "_".join(tokens[:-1])

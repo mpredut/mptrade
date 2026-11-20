@@ -7,6 +7,8 @@ import email.utils
 import logging
 import os
 import re
+
+_WS_COLLAPSE_RE = re.compile(r"\s+")
 import time
 from typing import Any, Dict, List, Optional, Tuple
 import urllib.request  # noqa: F401
@@ -131,7 +133,7 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
     def _normalize_title(self, title: Any) -> str:
         if not isinstance(title, str):
             return ""
-        return re.sub(r"\s+", " ", _strip_headline_publisher_suffix(title).strip().lower())
+        return _WS_COLLAPSE_RE.sub(" ", _strip_headline_publisher_suffix(title).strip().lower())
 
     def _merge_same_norm_headlines(
         self,
@@ -621,7 +623,7 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         seen_norms: Dict[str, int] = {}
         seen_urls: Dict[str, int] = {}
         for item in candidate_items:
-            norm_t = re.sub(r"\s+", " ", _strip_headline_publisher_suffix(item["title"]).strip().lower())
+            norm_t = _WS_COLLAPSE_RE.sub(" ", _strip_headline_publisher_suffix(item["title"]).strip().lower())
             canon_u = canonical_article_url(item["url"])
             dup_idx = seen_norms.get(norm_t) if norm_t else None
             if dup_idx is None and canon_u:

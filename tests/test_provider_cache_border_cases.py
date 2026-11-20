@@ -347,7 +347,6 @@ from tests.conftest import (
 )
 import tradeall
 from trailing_core import TrailingAdapterBase, TrailingCore, extract_trailing_intent_action_asset
-import utils
 from verify_tools import check_cache_coherence, monitor_night, ownership_inventory, portfolio_snapshot
 import visuals.tradeall_observe as tobs
 
@@ -1258,9 +1257,8 @@ def test_embedded_json_ssot_fetch_public_bytes_and_hl_client_border_cases(monkey
 def test_guard_regime_lifecycle_retry_and_cache_path_border_cases(monkeypatch, tmp_path):
     """Verify cache_path SSOT, http_request body, guard config validation, geo ts normalization, MarketRegimeService, OrderLifecycle, and order_retry border cases."""
 
-    # 1. cache_path SSOT: single canonical definition in cachepaths, re-exported identically in botcore and utils
+    # 1. cache_path SSOT: single canonical definition in cachepaths, re-exported identically in botcore
     assert botcore.cache_path is cachepaths.cache_path
-    assert utils.cache_path is cachepaths.cache_path
     monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
     assert cachepaths.cache_path("custom_rel/file.json") == "custom_rel/file.json"
     assert cachepaths.cache_path("cache_current_price.json").startswith(str(tmp_path))

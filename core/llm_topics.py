@@ -27,6 +27,10 @@ def _ensure_llm_env_loaded(env_key: str) -> None:
         pass
 
 
+_BRACKET_TAG_RE = re.compile(r"(\[[^\]]+\])")
+_NTFY_PREFIX_RE = re.compile(r"^([^\[]*\[[^\]]+\])")
+
+
 @dataclass(frozen=True)
 class TopicSpec:
     """Permanent identity and capabilities of an LLM topic thread."""
@@ -64,13 +68,13 @@ class TopicSpec:
     @property
     def bracket_tag(self) -> str:
         """Canonical '[auto_...]' tag from the thread title."""
-        m = re.search(r"(\[[^\]]+\])", self.title)
+        m = _BRACKET_TAG_RE.search(self.title)
         return m.group(1) if m else self.title
 
     @property
     def ntfy_prefix(self) -> str:
         """Canonical '<icon> [auto_...]' prefix from the beginning of the thread title."""
-        m = re.match(r"^([^\[]*\[[^\]]+\])", self.title)
+        m = _NTFY_PREFIX_RE.match(self.title)
         return m.group(1).strip() if m else self.title
 
 

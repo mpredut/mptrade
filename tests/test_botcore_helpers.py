@@ -74,7 +74,6 @@ from state_io import exact_nonneg_int
 from strategies.state_store import JsonStateStore, StatePersistenceError
 from tests.conftest import TempDirTestCase, DummyCachedHttpJsonCollector
 from trailing_core import vwap_or_fallback
-import utils
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -371,7 +370,7 @@ class TestCachepaths(TempDirTestCase):
 
     def test_utils_cache_path_integration(self):
         with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": "/tmp/custom_cache"}, clear=False):
-            p = utils.cache_path("my_cache.json")
+            p = botcore.cache_path("my_cache.json")
             self.assertEqual(p.replace("\\", "/"), "/tmp/custom_cache/my_cache.json")
 
     def test_resolve_cache_subdomain_covers_all_thematic_domains_and_sidecars(self):
@@ -1028,9 +1027,8 @@ def test_safe_float_is_us_rth_open_handle_overflowerror_booleans_and_out_of_iter
     assert isinstance(is_us_rth_open(1e20), bool)
 
 def test_utils_gaussian_weights_from_idx_handles_overflowerror_and_clamps_huge_t_iter71_s5():
-    """[ITER71 #5] utils.gaussian_weights_from_idx handles OverflowError and clamps huge T."""
-    # 5. utils.gaussian_weights_from_idx handles OverflowError and clamps huge T
-    t_arr, w_arr = utils.gaussian_weights_from_idx(10**400, 0)
+    """[ITER71 #5] botcore.gaussian_weights_from_idx handles OverflowError and clamps huge T."""
+    t_arr, w_arr = botcore.gaussian_weights_from_idx(10**400, 0)
     assert len(t_arr) == 0 and len(w_arr) == 0
 
 def test_config__parse_bool_flag_handles_nan_inf_and_unrecognized_strings_iter81_s3():
@@ -1098,16 +1096,15 @@ def test_botcore_http_request_fail_closed_on_malformed_method_url_iter99_s2():
     assert botcore.http_request("GET", "not-a-valid-url") == (0, b"")
 
 def test_utils_timestamp_decay_helpers_iter99_s3():
-    """[ITER99 #3] utils timestamp & decay helpers."""
-    # 3. utils timestamp & decay helpers
-    assert utils.timestampToTime(None) == "N/A"
-    assert utils.timestampToTime(True) == "N/A"
-    assert utils.timestampToTime(-100) == "N/A"
-    assert utils.timestampToTime(float("nan")) == "N/A"
-    assert utils.timeToHMS(None) == "N/A"
-    assert utils.timeToHMS(False) == "N/A"
-    assert utils.timeToHMS(-5) == "N/A"
-    assert utils.timeToHMS(65).endswith(":01:05")
+    """[ITER99 #3] botcore timestamp & decay helpers."""
+    assert botcore.timestampToTime(None) == "N/A"
+    assert botcore.timestampToTime(True) == "N/A"
+    assert botcore.timestampToTime(-100) == "N/A"
+    assert botcore.timestampToTime(float("nan")) == "N/A"
+    assert botcore.timeToHMS(None) == "N/A"
+    assert botcore.timeToHMS(False) == "N/A"
+    assert botcore.timeToHMS(-5) == "N/A"
+    assert botcore.timeToHMS(65).endswith(":01:05")
 
 def test_providers_http_resilience_mount_connect_retry_rejects_boolean_status_forcelist_iter109_s2():
     """[ITER109 #2] providers.http_resilience: mount_connect_retry rejects boolean status_forcelist."""
@@ -1115,14 +1112,13 @@ def test_providers_http_resilience_mount_connect_retry_rejects_boolean_status_fo
     assert mount_connect_retry(SimpleNamespace(), status_forcelist=True) is False
 
 def test_utils_value_diff_to_percent_secondsto_cache_path_iter110_s3():
-    """[ITER110 #3] utils: value_diff_to_percent, secondsTo*, cache_path."""
-    # 3. utils: value_diff_to_percent, secondsTo*, cache_path
-    assert utils.value_diff_to_percent(True, 100.0) == 0.0
-    assert utils.value_diff_to_percent(float("nan"), 100.0) == 0.0
-    assert utils.value_diff_to_percent(0.0, 100.0) == 0.0
-    assert utils.secondsToDays(True) == 0.0
-    assert utils.secondsToHours(None) == 0.0
-    assert utils.cache_path(True) is True
+    """[ITER110 #3] botcore: value_diff_to_percent, secondsTo*, cache_path."""
+    assert botcore.value_diff_to_percent(True, 100.0) == 0.0
+    assert botcore.value_diff_to_percent(float("nan"), 100.0) == 0.0
+    assert botcore.value_diff_to_percent(0.0, 100.0) == 0.0
+    assert botcore.secondsToDays(True) == 0.0
+    assert botcore.secondsToHours(None) == 0.0
+    assert botcore.cache_path(True) is True
 
 def test_botcore__dotenv_pairs_required_env_defined_env_required_bool_env_iter114_s2():
     """[ITER114 #2] botcore._dotenv_pairs, required_env, defined_env, required_bool_env."""

@@ -480,6 +480,8 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
 
     assert CacheShortTrendManager.disk_filename_for_symbol() == "cache_short_trend.json"
     assert CacheShortTrendManager.live_window_relpath_for_symbol("BTCUSDC").replace("\\", "/") == "24trend/live_BTCUSDC.json"
+    assert CacheShortTrendManager.live_window_relpath_for_symbol("SPCXxUSD").replace("\\", "/") == "24trend/live_SPCXxUSD.json"
+    assert CacheShortTrendManager.live_window_relpath_for_symbol("SPCXXUSD").replace("\\", "/") == "24trend/live_SPCXxUSD.json"
     assert CacheLongTrendManager.disk_filename_for_symbol() == "cache_long_trend.json"
     assert CacheTradeManager.disk_filename_for_symbol() == "cache_trade_binance.jsonl"
     assert CacheOrderManager.disk_filename_for_symbol() == "cache_order_binance.json"

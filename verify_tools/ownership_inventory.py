@@ -66,11 +66,14 @@ def _env(*paths: Path) -> dict[str, str]:
     return result
 
 
+_NON_ALNUM_UPPER_RE = re.compile(r"[^A-Z0-9]+")
+
+
 def _account_ref(
     env: dict[str, str], venue: str, owner_id: str | None = None,
 ) -> str:
     owner_key = (
-        re.sub(r"[^A-Z0-9]+", "_", owner_id.upper()).strip("_") + "_ACCOUNT_REF"
+        _NON_ALNUM_UPPER_RE.sub("_", owner_id.upper()).strip("_") + "_ACCOUNT_REF"
         if owner_id else ""
     )
     return (

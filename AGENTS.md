@@ -4,7 +4,7 @@
 - **Topology:** Local WSL `/home/mariusp/mptrade` | PROD `mptrade-prod` (`192.168.0.144`, `/home/predut/mptrade`) | DEV `mptrade-dev` (`192.168.0.138`, `/home/predut/mptrade`).
 
 # Core Tenets
-- **Single Source of Truth (SSOT) & Reuse-First:** Consolidate logic into canonical modules; generalize and reuse existing classes/primitives before creating new ones. Always import canonical SSOT modules directly (never legacy compatibility shims such as `utils.py` or `lock/cooldown.py`).
+- **Single Source of Truth (SSOT) & Reuse-First:** Consolidate logic into canonical modules; generalize and reuse existing classes/primitives before creating new ones. Always import canonical SSOT modules directly (never re-export compatibility shims).
 - **Pragmatic Simplicity (No Speculative Edge-Case Bloat):** Do not add defensive branches, extra state, or recovery plumbing for rare/theoretical edge cases (e.g., mid-write process kill, local disk-write failure, sub-millisecond race) if the guard costs more than 1 line of code. Keep the happy path and realistic venue/network failures simple and linear; if a low-probability corner case would require >1 line, skip it or ask the user first.
 - **Separation of Concerns (SoC) & 3-Tier Polymorphic Class Design:**
   - Keep files small, modular, and strictly isolated to a single domain responsibility across the architecture layers below.

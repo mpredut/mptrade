@@ -8,7 +8,6 @@ import numbers
 import os
 import shutil
 import sys
-import threading
 import time
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -556,24 +555,12 @@ def resolve_workspace_dir_from_cachedb(cache_dir: object) -> str:
     return os.path.dirname(abs_dir) if os.path.basename(abs_dir).lower() == "cachedb" else abs_dir
 
 
-_CACHE_PATH_TLS = threading.local()
-
-
 def cache_path(name: str) -> str:
     """Return the path to a cache file inside the canonical cachedb directory.
 
     Preserves name when it is already absolute or None/empty, while resolving
     thematic cachedb subdomains when active on disk.
     """
-    if not getattr(_CACHE_PATH_TLS, "active", False):
-        u_mod = sys.modules.get("utils")
-        u_cp = getattr(u_mod, "cache_path", None) if u_mod is not None else None
-        if callable(u_cp) and getattr(u_cp, "_is_canonical_cache_path", None) is not True and u_cp is not cache_path:
-            _CACHE_PATH_TLS.active = True
-            try:
-                return u_cp(name)
-            finally:
-                _CACHE_PATH_TLS.active = False
     raw = _clean_path_str(name)
     if not raw:
         return name
@@ -1468,7 +1455,6 @@ def _sync_cachepaths_reexports() -> None:
             "core.http",
             "core.time_market",
             "core.heartbeat_runtime",
-            "utils",
             "state_io",
             "intelligence.macro_sentiment_ssot",
         ),

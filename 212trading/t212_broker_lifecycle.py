@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 import re
+
+_T212_OWNED_QTY_RE = re.compile(r'owned["\']?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)')
 import sys
 from collections.abc import Callable
 from typing import Any
@@ -521,7 +523,7 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                 self._log_msg(f"  ! [STRAT] SELL {kind}{tag} outcome unknown: {message}; keeping pending")
             if "selling-equity-not-owned" not in message:
                 return not definitive
-            _m = re.search(r'owned["\']?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)', message)
+            _m = _T212_OWNED_QTY_RE.search(message)
             _owned = safe_nonneg_float(_m.group(1), default=None) if _m is not None else None
             if _m is None:
                 self._log_msg("  ! [STRAT] selling-not-owned without the owned quantity \u2014 NOT resetting the position")

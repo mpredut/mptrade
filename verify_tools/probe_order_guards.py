@@ -11,7 +11,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 
@@ -21,6 +20,7 @@ if _ROOT_DIR not in sys.path:
 
 from botcore import disable_auto_start_websockets_default, parse_pos_cli_float
 from intelligence.sentiment.evaluators.guard_probe_evaluator import probe_deterministic_guards
+from state_io import encode_json_payload
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
         opposite_fill_px=args.opposite_fill_px,
         allow_disk_cache=True,
     )
-    sys.stdout.write(json.dumps(result, indent=2, sort_keys=False) + "\n")
+    sys.stdout.write(encode_json_payload(result, indent=2, sort_keys=False) + "\n")
     return 0
 
 

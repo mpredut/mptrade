@@ -42,6 +42,9 @@ def _close_process_transport(proc: Any) -> None:
             pass
 
 
+_APPEND_REDIRECT_RE = re.compile(r">>\s*[^\s]+")
+
+
 class BotManager:
     def __init__(self, server: NotificationServer):
         self.server = server
@@ -132,7 +135,7 @@ class BotManager:
 
         # Clean up legacy bash wrappers (nohup, redirects, backgrounding)
         cmd = cmd.replace("nohup ", "")
-        cmd = re.sub(r'>>\s*[^\s]+', '', cmd)
+        cmd = _APPEND_REDIRECT_RE.sub("", cmd)
         cmd = cmd.replace("2>&1", "")
         cmd = cmd.removesuffix("&").strip()
         cmd = cmd.strip()
@@ -346,8 +349,6 @@ class BotManager:
             importlib.reload(_cp)
             importlib.reload(_sio)
             importlib.reload(botcore)
-            if (_u_mod := sys.modules.get("utils")) is not None:
-                importlib.reload(_u_mod)
             organize_cachedb_subdomains = _cp.organize_cachedb_subdomains
             resolve_cachedb_filepath = _cp.resolve_cachedb_filepath
             open_append_text_file = _sio.open_append_text_file

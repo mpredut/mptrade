@@ -240,6 +240,20 @@ def _fmt_px(px_f: float, raw_px: Any = None) -> str:
     return "N/A"
 
 
+_SA_FLOW_POSTURE_RE = re.compile(
+    r"(-old\s+)(?:(?:ACCUMULATE|HOLD|DEFENSIVE|TRIM_PROFITS|BULLISH|BEARISH|NEUTRAL|CAUTION)(?:/(?:ACCUMULATE|HOLD|DEFENSIVE|TRIM_PROFITS|BULLISH|BEARISH|NEUTRAL|CAUTION))?)\b",
+    re.IGNORECASE,
+)
+_SA_SUMMARY_DIRECTIVE_RE = re.compile(
+    r"(?:,\s*(?:so\s+|therefore\s+|thus\s+)?|\s*)\b(?:pausing|shifting|maintaining|staying|switching|recommending)\b[^.]*\b(?:HOLD|ACCUMULATE|DEFENSIVE|TRIM_PROFITS)\b[^.]*\.?",
+    re.IGNORECASE,
+)
+_GT_SUMMARY_DIRECTIVE_RE = re.compile(
+    r",?\s*(?:so|therefore|thus)\s+(?:maintain|apply|use|keep|enforce)\s+[^.]*(?:downscale|brake|veto|halt|exposure)[^.]*\.?",
+    re.IGNORECASE,
+)
+
+
 def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> List[str]:
     """Format Section 1 (Macro, Sentiment, Geopolitical & Live Breaking News) for the AI prompt."""
     is_equities_scope = str(asset_scope or "all").strip().lower() == "equities"
@@ -296,12 +310,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         else (f"({sa_flow_raw})" if sa_flow_raw else "")
     )
     if sa_flow_delta:
-        sa_flow_delta = re.sub(
-            r"(-old\s+)(?:(?:ACCUMULATE|HOLD|DEFENSIVE|TRIM_PROFITS|BULLISH|BEARISH|NEUTRAL|CAUTION)(?:/(?:ACCUMULATE|HOLD|DEFENSIVE|TRIM_PROFITS|BULLISH|BEARISH|NEUTRAL|CAUTION))?)\b",
-            r"\1summary",
-            sa_flow_delta,
-            flags=re.IGNORECASE,
-        )
+        sa_flow_delta = _SA_FLOW_POSTURE_RE.sub(r"\1summary", sa_flow_delta)
         if (
             "CB_Prem=" not in sa_flow_delta
             and " vs " in sa_flow_delta
@@ -348,11 +357,9 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
                 sa_flow_delta = f"({', '.join(d_parts)} vs {sa.get('age_min')}m-old summary)"
     sa_summary_raw = str(sa.get("summary") or "").strip() if sa else ""
     sa_summary = (
-        re.sub(
-            r"(?:,\s*(?:so\s+|therefore\s+|thus\s+)?|\s*)\b(?:pausing|shifting|maintaining|staying|switching|recommending)\b[^.]*\b(?:HOLD|ACCUMULATE|DEFENSIVE|TRIM_PROFITS)\b[^.]*\.?",
+        _SA_SUMMARY_DIRECTIVE_RE.sub(
             lambda m: "." if m.group(0).lstrip().startswith(",") else "",
             sa_summary_raw,
-            flags=re.IGNORECASE,
         )
         .replace("..", ".")
         .strip()
@@ -374,12 +381,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
     )
     gt_summary_raw = str(gt.get("summary") or "").strip() if gt else ""
     gt_summary = (
-        re.sub(
-            r",?\s*(?:so|therefore|thus)\s+(?:maintain|apply|use|keep|enforce)\s+[^.]*(?:downscale|brake|veto|halt|exposure)[^.]*\.?",
-            ".",
-            gt_summary_raw,
-            flags=re.IGNORECASE,
-        )
+        _GT_SUMMARY_DIRECTIVE_RE.sub(".", gt_summary_raw)
         .replace("..", ".")
         .strip()
     )

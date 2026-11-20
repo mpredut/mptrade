@@ -150,6 +150,9 @@ def romanian_score(text: str) -> int:
     return sum(1 for word in words if word in RO_WORDS)
 
 
+_HASH_COMMENT_RE = re.compile(r"#.*$")
+
+
 def scan_file(path: str, min_score: int) -> Tuple[List[tuple], bool]:
     """Return (hits, doc_is_runtime) for one file; a hit is (line, kind, score, text)."""
     source = read_text_file(path, default=None)
@@ -159,7 +162,7 @@ def scan_file(path: str, min_score: int) -> Tuple[List[tuple], bool]:
     hits: List[tuple] = []
     if not path.endswith(".py"):
         for idx, line in enumerate(source.splitlines(), 1):
-            text = line if path.endswith(".md") else (m.group(0) if (m := re.search(r"#.*$", line)) else "")
+            text = line if path.endswith(".md") else (m.group(0) if (m := _HASH_COMMENT_RE.search(line)) else "")
             if text and (score := romanian_score(text)) >= min_score:
                 hits.append((idx, "comment", score, text.strip()))
         return hits, False

@@ -105,7 +105,7 @@ def parse_db_timestamp(ts_str: str) -> Optional[datetime]:
         if raw.endswith(("Z", "z")):
             raw = raw[:-1].strip()
         else:
-            m_tz = re.search(r"([+-]\d{2}:\d{2})\s*$", raw)
+            m_tz = _TZ_OFFSET_RE.search(raw)
             if m_tz:
                 tz_suffix = m_tz.group(1)
                 raw = raw[: m_tz.start()].strip()
@@ -171,6 +171,10 @@ def get_thread_step_count(cid: str, cli_base: str) -> Tuple[bool, int, str]:
     return (exists, safe_nonneg_int(row.get("step_count")), status_str)
 
 
+_TZ_OFFSET_RE = re.compile(r"([+-]\d{2}:\d{2})\s*$")
+_ANNOTATION_TITLE_RE = re.compile(r'title:\s*"((?:[^"\\]|\\.)*)"')
+
+
 def read_annotation_title(cli_base: str, cid: str) -> str:
     """Read ``title`` from annotations/<cid>.pbtxt, or '' if absent."""
     txt = read_text_file(
@@ -178,7 +182,7 @@ def read_annotation_title(cli_base: str, cid: str) -> str:
         default="",
         errors="ignore",
     )
-    m = re.search(r'title:\s*"((?:[^"\\]|\\.)*)"', txt)
+    m = _ANNOTATION_TITLE_RE.search(txt)
     return m.group(1).replace('\\"', '"').replace("\\\\", "\\").strip() if m else ""
 
 

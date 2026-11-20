@@ -350,7 +350,6 @@ from core.llm_topics import (  # noqa: E402
 _BOTCORE_INITIALIZED = True
 
 _REEXPORT_MODULE_NAMES = (
-    "utils",
     "order_guard",
     "intelligence.macro_sentiment_ssot",
     "macro_sentiment_ssot",

@@ -548,6 +548,9 @@ def parse_json_payload(raw: str | bytes, *, default: Any = _MISSING) -> Any:
         return default
 
 
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```")
+
+
 def extract_json_object(text: Any) -> dict[str, Any] | None:
     """Extract a JSON dict from pure JSON, markdown code fences, or hybrid prose + trailing JSON."""
     if not isinstance(text, str):
@@ -556,7 +559,7 @@ def extract_json_object(text: Any) -> dict[str, Any] | None:
     if not cleaned:
         return None
     if "```" in cleaned:
-        fences = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
+        fences = _JSON_FENCE_RE.findall(cleaned)
         for block in reversed(fences):
             cand = block.strip()
             if not cand:

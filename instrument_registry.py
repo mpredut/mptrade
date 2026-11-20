@@ -10,6 +10,8 @@ import glob
 import os
 from pathlib import Path
 import re
+
+_PRIMARY_STREAM_SYMBOL_RE = re.compile(r"[A-Z0-9]{3,24}")
 import sys
 from typing import Any, Callable, Optional
 import types as _types
@@ -219,7 +221,7 @@ def load_registry(path=None):
             raise ValueError(f"instruments.conf [{name}]: unknown roles {sorted(unknown)}")
         spec = InstrumentSpec(name=name, params=params, **core)
         if is_primary_stream_venue(spec.provider) and (
-            not re.fullmatch(r"[A-Z0-9]{3,24}", spec.symbol) or spec.symbol != spec.base + spec.quote
+            not _PRIMARY_STREAM_SYMBOL_RE.fullmatch(spec.symbol) or spec.symbol != spec.base + spec.quote
         ):
             raise ValueError(f"instruments.conf [{name}]: Binance symbol must equal uppercase base + quote")
         roles = {role for role in ROLES if spec.has_role(role)}

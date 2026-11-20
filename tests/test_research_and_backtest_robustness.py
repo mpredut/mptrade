@@ -48,7 +48,6 @@ import tradeall as ta
 import trailing_core
 import types
 import urllib.request
-import utils
 import verify_tools.watch_trade_decisions as wtd
 from binance_api import (
     bapi,
@@ -145,7 +144,7 @@ from kraken import (
 )
 from kraken.kraken_client import KrakenClient
 from kraken.trailing_stop import KrakenTrailing, TRAIL_PCT as KRAKEN_TRAIL_PCT
-from lock.cooldown import FileLock
+from core.lock import FileLock
 from market_monitor import alerts_config, new_coins_discovery as ncd, pricefetcher as pf
 from market_monitor.new_coins_discovery import NewCoinsMonitor, is_trackable_symbol
 from market_monitor.pricechecker import PriceAlert, PriceChecker
@@ -2647,10 +2646,10 @@ def test_root_modules_batch4_hardening():
         "average",
     ) == 110.0
 
-    # utils.slope
-    assert utils.slope(True, 0, 10, 5) == 0.0
-    assert utils.slope(0, 5, 10, 5) == 0.0
-    assert utils.slope(0, 0, 10, 5) == 2.0
+    # botcore.slope
+    assert bc_mod.slope(True, 0, 10, 5) == 0.0
+    assert bc_mod.slope(0, 5, 10, 5) == 0.0
+    assert bc_mod.slope(0, 0, 10, 5) == 2.0
 
     # priceAnalysis.get_trade_weight
     t_seq, w_seq = priceAnalysis.get_trade_weight(
@@ -2896,8 +2895,9 @@ def test_batch9_hardening(tmp_path):
     assert len(res2) == 6
 
 
-def test_batch10_archive_hardening(tmp_path):
+def test_batch10_archive_hardening(tmp_path, monkeypatch):
 
+    monkeypatch.setitem(sys.modules, "utils", bc_mod)
     arch_dir = os.path.join(_REPO_ROOT, "archive")
     evaluate_forward_classifications = load_local_module(arch_dir, "market_regime_backtest").evaluate_forward_classifications
     mt_leg = load_local_module(arch_dir, "monitortrades_legacy")
@@ -4314,11 +4314,11 @@ def test_batch34_spot_engine_market_regime_llm_guard_and_state_io_hardening(tmp_
     with pytest.raises(state_io.StateReadError):
         state_io.load_json_state(True, default_factory=dict, fail_closed=True, label="test")  # type: ignore[arg-type]
 
-    # 6. utils._sign_ed25519 rejects None/bool and accepts str or bytes
+    # 6. botcore._sign_ed25519 rejects None/bool and accepts str or bytes
     with pytest.raises(ValueError, match="signing_key and payload are required"):
-        utils._sign_ed25519(None, "msg")
+        bc_mod._sign_ed25519(None, "msg")
     fake_key = SimpleNamespace(sign=lambda b: SimpleNamespace(signature=b"sig:" + b))
-    assert utils._sign_ed25519(fake_key, "hello") == utils._sign_ed25519(fake_key, b"hello")
+    assert bc_mod._sign_ed25519(fake_key, "hello") == bc_mod._sign_ed25519(fake_key, b"hello")
 
 
 def test_batch35_spot_replay_intelligence_volatility_and_verify_tools_hardening(tmp_path, monkeypatch):

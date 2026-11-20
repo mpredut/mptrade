@@ -1365,7 +1365,7 @@ def resolve_live_24trend_current_price(
     l24_s = rj_fn(
         os.path.join(
             cachedb_dir,
-            CacheShortTrendManager.live_window_relpath_for_symbol(sym_u.upper()),
+            CacheShortTrendManager.live_window_relpath_for_symbol(sym_u),
         )
     )
     if not isinstance(l24_s, dict):

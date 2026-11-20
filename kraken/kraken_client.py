@@ -19,6 +19,8 @@ import hashlib
 import hmac
 import os
 import re
+
+_KRAKEN_CL_ORD_ID_RE = re.compile(r"[0-9a-fA-F]{32}")
 import sys
 import threading
 import time
@@ -400,7 +402,7 @@ class KrakenClient:
             if _parse_bool_flag(post_only, default=True):
                 data["oflags"] = "post"
         if cl_ord_id is not None:
-            if isinstance(cl_ord_id, bool) or not re.fullmatch(r"[0-9a-fA-F]{32}", str(cl_ord_id).strip()):
+            if isinstance(cl_ord_id, bool) or not _KRAKEN_CL_ORD_ID_RE.fullmatch(str(cl_ord_id).strip()):
                 raise ValueError("a Kraken cl_ord_id must be a 128-bit hex UUID")
             data["cl_ord_id"] = str(cl_ord_id).strip().lower()
         if _parse_bool_flag(validate, default=False):

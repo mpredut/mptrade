@@ -307,6 +307,9 @@ def normalize_order(order: dict) -> dict:
     }
 
 
+_CID_EPOCH_TS_RE = re.compile(r"(?:^|[_-])(1[789]\d{8}(?:\d{3})?)(?:$|[_-])")
+
+
 def normalize_open_order(
     order: Any,
     *,
@@ -375,7 +378,7 @@ def normalize_open_order(
         rec["client_order_id"] = cid
     ts_ms = extract_timestamp_ms(order, default=None)
     if ts_ms is None and cid:
-        if m_ts := re.search(r"(?:^|[_-])(1[789]\d{8}(?:\d{3})?)(?:$|[_-])", str(cid)):
+        if m_ts := _CID_EPOCH_TS_RE.search(str(cid)):
             ts_ms = normalize_timestamp_ms(m_ts.group(1), default=None)
     if ts_ms is None and isinstance(order_ts_map, dict):
         for tk in (str(oid) if oid is not None else "", str(cid or ""), str(cid or "").lower()):

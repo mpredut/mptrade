@@ -28,7 +28,6 @@ import qlimit_order_guard
 import subprocess
 import time
 import urllib.request
-import utils as u
 from cachepaths import cache_symbol_variants, canonical_base_asset, resolve_binance_lookup_symbol
 from cachetrend import CacheShortTrendManager
 from instrument import Instrument
@@ -1923,7 +1922,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert canonical_base_asset("TAO_USDC") == "TAO"
 
         # Float T in gaussian_weights_from_idx and get_trade_weight at seam (trend_len=6.0, T=6.1)
-        t_arr, w_arr = u.gaussian_weights_from_idx(6.1, 0)
+        t_arr, w_arr = botcore.gaussian_weights_from_idx(6.1, 0)
         assert len(w_arr) == 6
         t_seq, w_seq = pa.get_trade_weight(T=6.1, trend_len=6.0, trend="up", order_type="BUY")
         assert len(w_seq) >= 1
@@ -2373,11 +2372,10 @@ def test_guard_producer_consumer_decoupling_and_topic_spec_dag_purity():
     assert _SSOTSnapshot is _CollectorSnapshot
     assert _SSOTSnapshot is _ReconcilerSnapshot
 
-    # 7. importlib.reload(botcore) keeps botcore.cache_path, utils.*, and macro_sentiment_ssot.* synchronized
+    # 7. importlib.reload(botcore) keeps botcore.cache_path and macro_sentiment_ssot.* synchronized
 
     importlib.reload(botcore)
     assert botcore.cache_path("cache_short_trend.json").endswith("cache_short_trend.json")
-    assert u.cache_path("cache_short_trend.json").endswith("cache_short_trend.json")
     assert _ssot_mod.fetch_public_json is botcore.fetch_public_json
 
     # 8. Zero raw json.load/loads/dump/dumps outside state_io.py and botcore.py across production code

@@ -68,8 +68,6 @@ from strategies.position_exit_manager import (  # noqa: E402
     PositionExitManager, ExitAction,
 )
 
-FX_FEE_PCT = 0.15  # T212 currency-conversion fee per direction.
-
 
 def log(msg: str) -> None:
     """Log with the asset's thread name: t212_bot runs one thread per asset into one log."""
@@ -100,7 +98,7 @@ class StratParams(SpotParamsMixin):
     reentry_drop_pct: float = 0.0
     reentry_tolerance_pct: float = 0.0
     tp_ladder: list = field(default_factory=list)
-    fx_fee_pct: float = FX_FEE_PCT
+    fx_fee_pct: float = 0.0
     loss_alert_step: float = 1.0
     ladder_min_free: float = 6.0
     sl_rebuy_enabled: bool = False

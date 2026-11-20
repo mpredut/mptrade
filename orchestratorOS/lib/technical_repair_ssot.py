@@ -1599,7 +1599,8 @@ def execute_venue_or_fleet_repair_action(
                 log.warning("[ENFORCE] CANCEL_ORDER missing symbol or order_id: %s", act)
             return False
         try:
-            if (inst := resolve_instrument_fn(symbol.upper(), venue=venue)) is None:
+            eff_sym = canonical_display_symbol(symbol, venue=venue) or symbol
+            if (inst := resolve_instrument_fn(eff_sym, venue=venue)) is None:
                 if is_cancel and log:
                     log.warning("[ENFORCE] CANCEL_ORDER could not resolve instrument %s on %s", symbol, venue)
                 return False

@@ -217,9 +217,12 @@ def format_topic_turn_header(topic_key: Optional[str], thread_title: Optional[st
     canonical = TOPIC_SPECS[resolved].title
     if not raw or raw == canonical or raw.startswith(canonical):
         return raw or canonical
-    cleaned = re.sub(r"^ntfy-(?:guard|macro):\s*", "", raw)
+    cleaned = _NTFY_TOPIC_PREFIX_RE.sub("", raw)
     return f"{canonical} \u2014 {cleaned}" if cleaned else canonical
 
+
+
+_NTFY_TOPIC_PREFIX_RE = re.compile(r"^ntfy-(?:guard|macro):\s*")
 
 
 class TopicSession(NamedTuple):

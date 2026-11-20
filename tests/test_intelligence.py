@@ -46,7 +46,6 @@ import time
 import tradeall
 import types
 import unittest
-import utils as u
 from binance_api import trailing_stop as bin_ts
 from binance_api.bapi_ws import BinancePriceStream, PublicPriceStreamBase
 from botcore import pos_float_env, safe_pos_int, strict_ascii_int
@@ -3565,9 +3564,9 @@ def test_iter69_spot_engine_sma_zero_ms_timestamps_and_monitororder_initial_pric
 
 def test_iter70_t212_state_ms_shadow_vol_tradeall_and_rtrade_recovery():
 
-    # 1. utils.timeToHMS normalizes millisecond timestamps (> 1e11) instead of returning N/A
-    assert u.timeToHMS(1700000000000.0) == u.timeToHMS(1700000000.0)
-    assert u.timeToHMS(1700000000000.0) != "N/A"
+    # 1. botcore.timeToHMS normalizes millisecond timestamps (> 1e11) instead of returning N/A
+    assert botcore.timeToHMS(1700000000000.0) == botcore.timeToHMS(1700000000.0)
+    assert botcore.timeToHMS(1700000000000.0) != "N/A"
 
     # 2. tradeall.TrendState normalizes millisecond clock values (> 1e11) for freshness/expiration/cooldown
     now_ms = [1700000000000.0]

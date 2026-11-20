@@ -52,6 +52,7 @@ from state_io import parse_json_payload
 
 _ORIG_HTTP_GET = http_get
 _SSOT_CACHE_DIR_OVERRIDE: str | None = None
+_DAY_RANGE_RE = re.compile(r"([1-9][0-9]*)d")
 
 
 def parse_interval_minutes(value: str) -> int:
@@ -88,7 +89,7 @@ def fetch_yahoo_candles(
     range_ = rng_clean
     interval = itv_clean
     query = {"range": range_, "interval": interval}
-    day_range = re.fullmatch(r"([1-9][0-9]*)d", range_.lower())
+    day_range = _DAY_RANGE_RE.fullmatch(range_.lower())
     if day_range:
         end = safe_int(time.time(), 0)
         days = exact_pos_int(day_range.group(1), default=1) or 1

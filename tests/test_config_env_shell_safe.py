@@ -121,7 +121,6 @@ from tests.conftest import (
 )
 import tradeall as ta
 import trailing_core as tc
-import utils as u
 from verify_tools import portfolio_snapshot as ps, watch_trade_decisions as wtd
 from verify_tools.gen_alert_thresholds import thresholds_from_prices
 from visuals import tradeall_observe as tobs
@@ -756,10 +755,10 @@ def test_shadow_signals_utils_and_volatility_hardening():
     out_bad = tracker.update("BTCUSDC", 200.0, float("nan"), 1.0, [], 1.0)
     assert out_bad["kalman_trend"] == out["kalman_trend"]
 
-    # 2. utils.gaussian_weights_from_idx handles non-finite T/idx and negative idx
-    t_arr, w_arr = u.gaussian_weights_from_idx(float("inf"), 0)
+    # 2. botcore.gaussian_weights_from_idx handles non-finite T/idx and negative idx
+    t_arr, w_arr = botcore.gaussian_weights_from_idx(float("inf"), 0)
     assert len(t_arr) == 0 and len(w_arr) == 0
-    t_arr2, w_arr2 = u.gaussian_weights_from_idx(10, -3)
+    t_arr2, w_arr2 = botcore.gaussian_weights_from_idx(10, -3)
     assert len(t_arr2) == 10 and abs(float(w_arr2.sum()) - 1.0) < 1e-9
 
     # 3. volatility.calculate_volatility_1h and adaptive_thresholds handle non-finite/bool args

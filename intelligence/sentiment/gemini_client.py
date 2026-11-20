@@ -5,6 +5,8 @@ import importlib
 import logging
 import os
 import re
+
+_DETACHED_CID_RE = re.compile(r"[A-Za-z0-9_-]{4,128}")
 import subprocess
 import threading
 import time
@@ -836,7 +838,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         if not bot_cli_base or not isinstance(cid, str):
             return
         cid = cid.strip()
-        if not re.fullmatch(r"[A-Za-z0-9_-]{4,128}", cid):
+        if not _DETACHED_CID_RE.fullmatch(cid):
             return
         delete_threads({cid}, bot_cli_base)
 

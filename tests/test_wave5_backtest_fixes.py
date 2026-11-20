@@ -7,7 +7,6 @@ import numpy as np
 import pytest
 import shutil
 import subprocess
-import utils
 from offline.backtests import tradeall as bt_ta
 from offline.backtests.comparison import pareto_frontier, relative_to_baseline
 from offline.backtests.evaluation import load_venue_module
@@ -510,19 +509,13 @@ def test_batch_d_chop_intelligence_short_trend_report3_and_sim_window(tmp_path, 
 
 def test_botcore_cache_path_reload_and_sequence_timestamp_extraction(monkeypatch):
 
-    # 1. Reloading botcore does not trigger RecursionError in botcore.cache_path / utils.cache_path
+    # 1. Reloading botcore preserves cachepaths.cache_path identity without RecursionError
+    import cachepaths
     importlib.reload(botcore)
     p1 = botcore.cache_path("cache_current_price.json")
-    p2 = utils.cache_path("cache_current_price.json")
+    p2 = cachepaths.cache_path("cache_current_price.json")
     assert p1 == p2 and p1.endswith("cache_current_price.json")
-
-    orig_cp = utils.cache_path
-    monkeypatch.setattr(utils, "cache_path", lambda name: f"/custom/{orig_cp(name).split('/')[-1]}")
-    assert botcore.cache_path("cache_current_price.json") == "/custom/cache_current_price.json"
-    monkeypatch.undo()
-
-    with patch("utils.cache_path", side_effect=lambda name: f"/mocked/{name}"):
-        assert botcore.cache_path("cache_24_price_BTCUSDC.json") == "/mocked/cache_24_price_BTCUSDC.json"
+    assert botcore.cache_path is cachepaths.cache_path
 
     # 2. extract_timestamp_ms / extract_timestamp_s support [ts, price] sequence records
     assert botcore.extract_timestamp_ms(["1700000000000", 100.0], default=0) == 1_700_000_000_000

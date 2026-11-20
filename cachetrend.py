@@ -67,7 +67,7 @@ from cachepaths import (
     migrate_legacy_filename_if_needed,
     resolve_cachedb_filepath,
 )
-from instrument_registry import casefold_get, tracked_price_instruments
+from instrument_registry import casefold_get, resolve_symbol_identity, tracked_price_instruments
 from state_io import (
     append_text_line,
     atomic_write_json,
@@ -292,7 +292,9 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         clean_sym = clean_scalar_str(symbol)
         if clean_sym is None:
             raise ValueError(f"Invalid live trend symbol: {symbol!r}")
-        return os.path.join(cls.LIVE_TREND_SUBDIR, f"{cls.LIVE_FILE_PREFIX}{clean_sym}.{cls.LIVE_FILE_EXT}")
+        ident = resolve_symbol_identity(clean_sym)
+        storage_sym = ident.storage_key or clean_sym
+        return os.path.join(cls.LIVE_TREND_SUBDIR, f"{cls.LIVE_FILE_PREFIX}{storage_sym}.{cls.LIVE_FILE_EXT}")
 
     EPSILON_K         = 1.0     # Informed noise threshold: k * stddev(gradient).
     UPWARD_EPSILON_K  = pw.UPWARD_EPSILON_K  # Minimum growth_coefficient / epsilon ratio to confirm upward trend above noise.
