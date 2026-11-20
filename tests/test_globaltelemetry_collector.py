@@ -2382,6 +2382,42 @@ def test_xstock_canonical_case_coalescing_adopted_ipo_pnl_and_ob_mid_rounding(tm
     assert hb_calls[0][0][0] == "Kraken-SPCXxUSD"
     assert hb_calls[0][1]["symbols"] == ["SPCXxUSD"]
     assert hb_calls[0][1]["status"]["symbol"] == "SPCXxUSD"
+
+    # SSOT cache readers and state_path_for resolve uppercase SPCXXUSD/ANTXUSD to canonical mixed-case files
+    from cacheprice import resolve_cached_symbol_price, resolve_ssot_price_from_cache
+    from providers.ssot_bridge import ProviderSsotBridgeMixin
+    from strategies.state_store import state_path_for
+
+    assert os.path.basename(state_path_for("SPCXXUSD", venue="kraken")) == ".state_SPCXxUSD.json"
+    assert os.path.basename(state_path_for("ANTXUSD", venue="kraken")) == ".state_ANTxUSD.json"
+    assert os.path.basename(state_path_for("dn_HYPE", venue="hyperliquid")) == ".state_dn_HYPE.json"
+
+    iso_dir = tmp_path / "xstock_iso_cache"
+    (iso_dir / "prices").mkdir(parents=True, exist_ok=True)
+    (iso_dir / "telemetry").mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        str(iso_dir / "telemetry" / "orderbook_depth_SPCXxUSD.json"),
+        {"ts": now_s, "symbol": "SPCXxUSD", "mid_price": 144.25},
+    )
+    assert resolve_cached_symbol_price("SPCXxUSD", cache_dir=str(iso_dir)) == pytest.approx(144.25)
+    assert resolve_cached_symbol_price("SPCXXUSD", cache_dir=str(iso_dir)) == pytest.approx(144.25)
+    atomic_write_json(
+        str(iso_dir / "prices" / "cache_24_price_SPCXxUSD.json"),
+        {"items": {"SPCXxUSD": [[int(now_s * 1000), 146.5]]}},
+    )
+    assert resolve_ssot_price_from_cache("SPCXxUSD", cache_dir=str(iso_dir), now_ts=now_s) == pytest.approx(146.5)
+    atomic_write_json(
+        str(iso_dir / "prices" / "cache_ohlc_24h_SPCXxUSD.json"),
+        {"ts": now_s, "symbol": "SPCXxUSD", "points": [[int(now_s * 1000), 145.0], [int(now_s * 1000) + 300_000, 146.0]]},
+    )
+    with patch("providers.ssot_bridge.resolve_now_ts", return_value=now_s):
+        assert ProviderSsotBridgeMixin.read_ssot_ohlc_24h_closes(["SPCXXUSD"], cache_dir_override=str(iso_dir)) == [145.0, 146.0]
+    stm_iso = CacheShortTrendManager(
+        symbols=["SPCXxUSD"],
+        filename=str(iso_dir / "trends" / "cache_short_trend.json"),
+        data_sync_mode="disk_reader",
+    )
+    assert stm_iso._load_disk_cache24_entries("SPCXXUSD") == [[int(now_s * 1000), 146.5]]
     tr_doc = {"items": {"SPCXXUSD": [{"id": "T1", "symbol": "SPCXXUSD", "time": 1000, "price": 144.89, "qty": 5.5}]}, "fetchtime": {"SPCXXUSD": 1000}}
     CacheTradeManager.merge_venue_fills_into_dict(tr_doc, {"SPCXxUSD": []}, now_ms=2000)
     assert "SPCXxUSD" in tr_doc["items"] and "SPCXXUSD" not in tr_doc["items"]

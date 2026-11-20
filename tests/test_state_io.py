@@ -721,7 +721,7 @@ def test_read_json_dict_cached_inode_invalidation_and_memoized_ssot_price_trend_
 
     importlib.reload(state_io)
     assert state_io.is_state_io_dict_reader_unpatched() is True
-    c24_file = tmp_path / cacheprice.cache_24_price_filename("BTCUSDC")
+    c24_file = tmp_path / cacheprice.Cache24PriceManager.disk_filename_for_symbol("BTCUSDC")
     now_ms = int(now_s * 1000)
     atomic_write_json(
         str(c24_file),

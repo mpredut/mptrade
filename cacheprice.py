@@ -71,7 +71,6 @@ from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
     CACHE_CURRENT_PRICE_TICKS_SOCKET_FILENAME,
     CACHE_SPARSE_PRICE_PREFIX,
-    cache_24_price_filename,
     cache_ohlc_24h_filename,
     cache_path,
     cache_symbol_variants,
@@ -928,7 +927,7 @@ class Cache24PriceManager(CachePriceManagerBase):
         now_s = _now_time()
         cutoff_ms = math.trunc((now_s - lh_f * 3600.0) * 1000)
         for cand in candidates:
-            c24_fname = cache_24_price_filename(cand)
+            c24_fname = cls.disk_filename_for_symbol(cand)
             c24_path = (
                 str(resolve_cachedb_filepath(os.path.join(str(custom_dir), c24_fname)))
                 if custom_dir
@@ -2511,7 +2510,7 @@ def resolve_ssot_price_from_cache(
 
     for cand in cands:
         c24_path = str(
-            resolve_cachedb_filepath(os.path.join(eff_dir, cache_24_price_filename(cand)))
+            resolve_cachedb_filepath(os.path.join(eff_dir, Cache24PriceManager.disk_filename_for_symbol(cand)))
         )
         try:
             raw, entries = Cache24PriceManager.read_ssot_24price_entries(c24_path, cand)
@@ -2638,7 +2637,8 @@ def resolve_cached_symbol_price(
                 and compatible_quote_suffixes(c, default_usd=_DEFAULT_USD_QUOTES) == allowed_quotes
             ]
             for cand in ob_cands:
-                ob_path = telemetry_cache_file_path(cache_dir, "orderbook_depth", cand)
+                ob_sym = sym.resolve_symbol_identity(cand).storage_key or cand
+                ob_path = telemetry_cache_file_path(cache_dir, "orderbook_depth", ob_sym)
                 if not ob_path or (not os.path.exists(ob_path) and not os.path.exists(previous_generation_path(ob_path))):
                     continue
                 ob = read_dict(ob_path)

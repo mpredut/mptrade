@@ -47,7 +47,7 @@ from intelligence.internal.state.survival import (
     last_timestamp,
     last_w,
 )
-from instrument_registry import casefold_get, is_equity_symbol, resolve_kraken_tokenized_pair, tracked_price_instruments
+from instrument_registry import casefold_get, is_equity_symbol, resolve_kraken_tokenized_pair, resolve_symbol_identity, tracked_price_instruments
 from state_io import atomic_write_json, save_json_state
 
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -172,7 +172,8 @@ def drawPriceLst(timestamps, prices, trend_block_indices, symbol, trend_directio
 
     out_dir = os.path.join(_CONFIG_ROOT, "logger", "plots")
     os.makedirs(out_dir, exist_ok=True)
-    fig.savefig(os.path.join(out_dir, f"plot_{symbol}.png"))
+    plot_sym = resolve_symbol_identity(symbol).storage_key or symbol
+    fig.savefig(os.path.join(out_dir, f"plot_{plot_sym}.png"))
 
 
 _ORIG_PRICE_LST_FOR = priceLstFor

@@ -18,6 +18,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import resolve_venue_runtime_dir
+from instrument_registry import resolve_registered_symbol_case
 from state_io import StateReadError, load_json_state, save_json_state
 from .position_exit_manager import PositionExitConfig, PositionExitManager, is_stop_exit_kind
 
@@ -160,7 +161,8 @@ def state_path_for(
     venue: str | None = None,
 ) -> str:
     """Return ``<dir>/.state_<safe_symbol>.json`` using ``default_dir`` or ``resolve_venue_runtime_dir(venue)`` when ``state_dir`` is blank."""
-    safe = safe_state_token(symbol, "unknown")
+    norm_sym = resolve_registered_symbol_case(symbol, venue) or symbol
+    safe = safe_state_token(norm_sym, "unknown")
     venue_str = clean_scalar_str(venue) or ""
     eff_default = clean_scalar_str(default_dir) or (resolve_venue_runtime_dir(venue_str) if venue_str else "")
     raw_dir = os.fspath(state_dir) if isinstance(state_dir, (str, os.PathLike)) else None

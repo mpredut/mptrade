@@ -74,7 +74,7 @@ from state_io import (
     write_meta_json,
 )
 from credentials import kraken_credentials
-from instrument_registry import casefold_get, symbols_for
+from instrument_registry import casefold_get, resolve_registered_symbol_case, symbols_for
 from trailing_core import add_once_status_cli_args
 
 
@@ -667,9 +667,10 @@ def ensure_active_xstock_bots(desktop: bool = False) -> None:
         if ":" not in spec:
             continue
         raw_pair, raw_cost = spec.split(":", 1)
-        pair, cost_f = clean_scalar_str(raw_pair), safe_pos_float(raw_cost, None)
-        if not pair or cost_f is None:
+        pair_raw, cost_f = clean_scalar_str(raw_pair), safe_pos_float(raw_cost, None)
+        if not pair_raw or cost_f is None:
             continue
+        pair = resolve_registered_symbol_case(pair_raw, "kraken") or pair_raw
         pid_file = os.path.join(_HERE, f".xstock_bot_{pair}.pid")
         prev_pid = _clean_pid(read_json_dict(pid_file, default={}).get("pid")) if os.path.exists(pid_file) else None
         if _bot_alive(prev_pid):

@@ -912,7 +912,8 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         for cand in _short_trend_symbol_variants(symbol):
             if not isinstance(cand, str) or not cand:
                 continue
-            cand_file = str(resolve_cachedb_filepath(os.path.join(base_dir, cache_24_price_filename(cand))))
+            cand_sym = resolve_symbol_identity(cand).storage_key or cand
+            cand_file = str(resolve_cachedb_filepath(os.path.join(base_dir, cache_24_price_filename(cand_sym))))
             migrate_legacy_filename_if_needed(cand_file)
             if os.path.exists(cand_file) or os.path.exists(
                 previous_generation_path(cand_file)

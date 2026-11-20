@@ -8474,7 +8474,7 @@ def test_read_ssot_price_history_memo_bisect_and_lookback_expansion(tmp_path, mo
     rows.append({"timestamp": now_ms - 30_000, "price": 80_010.25})
     rows.append([[now_ms - 5_000, 80_020.5]])
 
-    c24_file = tmp_path / cp_mod.cache_24_price_filename("BTCUSDC")
+    c24_file = tmp_path / cp_mod.Cache24PriceManager.disk_filename_for_symbol("BTCUSDC")
     c24_file.parent.mkdir(parents=True, exist_ok=True)
     c24_file.write_text(json.dumps({"items": {"BTCUSDC": rows}}), encoding="utf-8")
 
@@ -8521,7 +8521,7 @@ def test_read_ssot_price_history_memo_bisect_and_lookback_expansion(tmp_path, mo
         [now_ms + 15_000, 105.0],
         [now_ms - 10_000, 101.0],
     ]
-    c24_eth = tmp_path / cp_mod.cache_24_price_filename("ETHUSDC")
+    c24_eth = tmp_path / cp_mod.Cache24PriceManager.disk_filename_for_symbol("ETHUSDC")
     c24_eth.parent.mkdir(parents=True, exist_ok=True)
     c24_eth.write_text(json.dumps({"items": {"ETHUSDC": bad_future_rows}}), encoding="utf-8")
     assert Cache24PriceManager.read_ssot_price_history(("ETHUSDC",), 1.0, custom_dir=str(tmp_path)) is None

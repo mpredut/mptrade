@@ -714,12 +714,12 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 return sym_clean, now_f, cached_ex, None, True
         cached, fresh = self._lookup_cached(sym_clean, now_f, exact_only=False)
         if fresh is not None:
-            if allow_net_bool and not self._QUOTE_ISOLATED and str(getattr(fresh, "symbol", "") or "").strip().upper() != sym_clean:
+            if allow_net_bool and not self._QUOTE_ISOLATED and str(getattr(fresh, "symbol", "") or "").strip().upper() != sym_clean.upper():
                 self._sync_existing_sibling_disk_file(sym_clean, fresh)
             return sym_clean, now_f, cached, fresh, False
         disk_snap = self._load_from_disk(sym_clean, now_f, exact_only=False)
         if disk_snap is not None:
-            if allow_net_bool and not self._QUOTE_ISOLATED and str(getattr(disk_snap, "symbol", "") or "").strip().upper() != sym_clean:
+            if allow_net_bool and not self._QUOTE_ISOLATED and str(getattr(disk_snap, "symbol", "") or "").strip().upper() != sym_clean.upper():
                 self._sync_existing_sibling_disk_file(sym_clean, disk_snap)
             return sym_clean, now_f, cached, disk_snap, False
         return sym_clean, now_f, cached, None, allow_net_bool

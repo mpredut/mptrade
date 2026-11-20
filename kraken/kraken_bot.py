@@ -41,6 +41,7 @@ from botcore import (
     single_instance,
 )
 from cachepaths import is_kraken_tokenized_asset
+from instrument_registry import resolve_registered_symbol_case
 from kraken.kraken_common import build_kraken_client, notify
 from kraken.kraken_client import KrakenClient, KrakenError
 from kraken.market_data import check_pair_listing, get_price
@@ -80,7 +81,8 @@ def main() -> int:
     args = ap.parse_args()
     def _norm_pair(raw: str) -> str:
         s = raw.strip()
-        return s if is_kraken_tokenized_asset(s) else s.upper()
+        reg = resolve_registered_symbol_case(s, "kraken")
+        return reg if (reg != s or is_kraken_tokenized_asset(s)) else s.upper()
 
     if args.test_strategy:
         args.test_strategy = _norm_pair(args.test_strategy)
