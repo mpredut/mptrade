@@ -476,6 +476,14 @@ def _resolve_intent_execution_details(
         if order_type == "LIMIT"
         else None
     )
+    if (
+        order_type == "LIMIT"
+        and exec_status == "FILLED"
+        and fill_px is not None
+        and limit_px is not None
+        and abs(fill_px - limit_px) <= limit_px * 1e-5
+    ):
+        fill_px = limit_px
     fill_ts_val, fail_reason = _resolve_intent_fill_ts_and_reason(
         i,
         exec_pay=exec_pay,

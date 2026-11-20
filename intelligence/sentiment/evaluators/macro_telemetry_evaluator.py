@@ -357,7 +357,8 @@ class FuturesPremarketLeadEvaluator(MacroTelemetryEvaluatorBase):
             cash_live_extended = cash_state in ("PRE", "PREPRE", "POST", "POSTPOST") and cash_has_fresh_intraday
             if cash_live_extended:
                 any_cash_live_trading = True
-            if not cash_live_extended and fut_globex is not None and abs(fut_globex) >= 0.25:
+                continue
+            if fut_globex is not None and abs(fut_globex) >= 0.25:
                 out[lead_key] = round(fut_globex, 2) + 0.0
             elif fut_24h is not None and cash_24h is not None:
                 diff_v = round(fut_24h - cash_24h, 2) + 0.0

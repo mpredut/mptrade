@@ -1147,6 +1147,13 @@ class PriceWindow:
                     v_tail = _ols_vel(y_pct[tail_idx:])
                     end_idx = max(tail_idx, n - max(3, n // 6))
                     v_end_raw = _ols_vel(y_pct[end_idx:])
+                    if (
+                        (velocity * v_end_raw) < 0.0
+                        and ((velocity * v_tail) <= 0.0 or abs(v_end_raw) >= abs(v_rec))
+                    ):
+                        roll_vel = v_tail if (velocity * v_tail) < 0.0 else v_full
+                        span_min = max((n - 1) * dt_min, 1e-9)
+                        return roll_vel, (roll_vel - v_rec) / (0.5 * span_min)
                     v_end = v_end_raw if (velocity * v_end_raw) > 0.0 else 0.0
                     max_rev_vel = max(abs(v_rec), abs(v_tail), abs(v_end))
                     if max_rev_vel > 0.0 and abs(velocity) > max_rev_vel:

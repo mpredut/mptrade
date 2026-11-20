@@ -73,6 +73,7 @@ from intelligence.macro.daemon_ssot import (
 )
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import (
+    load_venue_balances_state,
     resolve_derived_telemetry_intervals,
     resolve_effective_macro_benchmarks_interval_sec,
     resolve_macro_fresh_guard_sec,
@@ -107,6 +108,34 @@ from state_io import open_append_text_file, read_json_dict_recovering, save_json
 load_dotenv()
 
 logger = logging.getLogger("intelligence.telemetry_collector")
+
+
+def _filter_actionable_impulse_symbols(shocked: List[str], venue_balances: Any) -> List[str]:
+    """Drop shocked symbols whose tracked venue balance entries all report zero buy and zero sell capacity."""
+    if not shocked or not isinstance(venue_balances, dict) or not venue_balances:
+        return list(shocked)
+    caps_by_sym: Dict[str, List[Tuple[float, float]]] = {}
+    for k, entry in venue_balances.items():
+        if not (isinstance(k, str) and k.startswith("pos:") and isinstance(entry, dict)):
+            continue
+        sym_k = str(entry.get("symbol") or "").strip().upper()
+        if not sym_k:
+            continue
+        mb = safe_float(entry.get("effective_max_buy_usd"), default=None)
+        ms = safe_float(entry.get("effective_max_sell_usd"), default=None)
+        if mb is None and ms is None:
+            continue
+        caps_by_sym.setdefault(sym_k, []).append((mb or 0.0, ms or 0.0))
+    if not caps_by_sym:
+        return list(shocked)
+    return [
+        sym
+        for sym in shocked
+        if not (
+            (caps := caps_by_sym.get(str(sym).strip().upper()))
+            and all(mb <= 0.0 and ms <= 0.0 for mb, ms in caps)
+        )
+    ]
 
 
 def evaluate_kinematic_impulse_symbols(
@@ -616,6 +645,9 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             )
             cand_syms = self.symbols if (self.symbols or getattr(self, "_explicit_symbols", False)) else None
             shocked = evaluate_kinematic_impulse_symbols(prices_and_trends, candidate_symbols=cand_syms)
+            if shocked:
+                _, vb_doc, _ = load_venue_balances_state(self.cache_dir, read_json_dict_recovering)
+                shocked = _filter_actionable_impulse_symbols(shocked, vb_doc)
             if not shocked:
                 return None
             workspace_dir = resolve_workspace_dir_from_cachedb(self.cache_dir)

@@ -15433,3 +15433,140 @@ def test_faza3b_prep_ssot_seams_zero_behavior_change(tmp_path, monkeypatch):
     ) is False
     assert _resolve_macro_sensor(SimpleNamespace(macro_benchmarks=None), {"macro_benchmarks": {"x": 1}}, "macro_benchmarks") == {"x": 1}
     assert _resolve_macro_sensor(SimpleNamespace(macro_benchmarks=None), {}, "macro_benchmarks", ps={"macro_benchmarks": {"x": 2}}) == {"x": 2}
+
+
+def test_iter3_premarket_lead_rollover_kinematics_impulse_capacity_and_limit_dust_snap():
+    """Verify live PRE delayed-futures suppression, U-bounce rollover kinematic guard, unactionable impulse filtering, and LIMIT float-dust snapping."""
+    import pricewindow as pw
+    from intelligence.globaltelemetry_collector import _filter_actionable_impulse_symbols
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        compute_futures_premarket_lead,
+        format_macro_benchmarks_summary_line,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_series_kinematics
+    from providers.intent_state import extract_intent_notional
+    from providers.intent_telemetry import (
+        summarize_active_ai_trade_plans,
+        summarize_recent_ai_intents,
+    )
+
+    t_now = 1_795_183_036.0
+
+    # 1. Unactionable ($0 buy / $0 sell) symbols such as flat SELL-only xStocks must not trigger impulse wakeups
+    vb_state = {
+        "pos:kraken:ANTxUSD": {"symbol": "ANTxUSD", "effective_max_buy_usd": 0.0, "effective_max_sell_usd": 0.0},
+        "pos:kraken:SPCXxUSD": {"symbol": "SPCXxUSD", "effective_max_buy_usd": 0.0, "effective_max_sell_usd": 615.0},
+        "pos:binance:BTCUSDC": {"symbol": "BTCUSDC", "effective_max_buy_usd": 2000.0, "effective_max_sell_usd": 2000.0},
+    }
+    assert _filter_actionable_impulse_symbols(["ANTxUSD"], vb_state) == []
+    assert _filter_actionable_impulse_symbols(["ANTxUSD", "SPCXxUSD", "BTCUSDC"], vb_state) == ["SPCXxUSD", "BTCUSDC"]
+    assert _filter_actionable_impulse_symbols(["ANTxUSD"], {}) == ["ANTxUSD"]
+
+    # 2. Delayed Yahoo CME futures (14m behind live PRE QQQ/SPY) must NOT emit inverted Futures_Lead
+    delayed_premarket_mb = {
+        "items": {
+            "SPY": {"price": 709.43, "chg_24h_pct": -3.86, "chg_15m_pct": 0.13, "market_state": "PRE", "last_bar_ts": t_now},
+            "QQQ": {"price": 634.25, "chg_24h_pct": -5.59, "chg_15m_pct": 0.28, "market_state": "PRE", "last_bar_ts": t_now},
+            "ES=F": {"price": 7109.75, "chg_24h_pct": -4.08, "last_bar_ts": t_now - 840.0},
+            "NQ=F": {"price": 26022.50, "chg_24h_pct": -5.91, "last_bar_ts": t_now - 840.0},
+        },
+        "futures_lead_pct": -0.32,
+        "futures_lead_regime": "FUTURES_PREMARKET_GAP_DOWN",
+    }
+    assert compute_futures_premarket_lead(delayed_premarket_mb) == {}
+    assert "Futures_Lead=" not in format_macro_benchmarks_summary_line(delayed_premarket_mb)
+
+    # Overnight CLOSED ETFs still emit Globex Futures_Lead
+    overnight_closed_mb = {
+        "items": {
+            "SPY": {"price": 709.43, "chg_24h_pct": -3.86, "market_state": "CLOSED", "last_bar_ts": t_now - 7200.0},
+            "QQQ": {"price": 634.25, "chg_24h_pct": -5.59, "market_state": "CLOSED", "last_bar_ts": t_now - 7200.0},
+            "ES=F": {"price": 7109.75, "chg_24h_pct": -4.30, "globex_session_chg_pct": -0.45, "last_bar_ts": t_now - 600.0},
+            "NQ=F": {"price": 26022.50, "chg_24h_pct": -6.44, "globex_session_chg_pct": -0.85, "last_bar_ts": t_now - 600.0},
+        },
+    }
+    assert compute_futures_premarket_lead(overnight_closed_mb)["futures_lead_pct"] == -0.85
+
+    # 3. Failed mid-window bounce rollover (drop -> mid bounce -> final-minute rollover) must NOT emit positive vel_5m
+    # 301 samples at 1s spacing (5.0m): drop from 61880 to 61750 (-5m..-2.2m), bounce to 61815 (-2.2m..-0.6m), roll over to 61750 (-0.6m..0m)
+    prices_down_roll = []
+    for sec in range(301):
+        if sec <= 168:
+            px = 61880.0 - (130.0 * (sec / 168.0))
+        elif sec <= 264:
+            px = 61750.0 + (65.0 * ((sec - 168) / 96.0))
+        else:
+            px = 61815.0 - (65.0 * ((sec - 264) / 36.0))
+        prices_down_roll.append(px)
+    series_down = [[(t_now - 300.0 + idx) * 1000.0, px] for idx, px in enumerate(prices_down_roll)]
+    kin_down = compute_series_kinematics(series_down)
+    assert kin_down["vel_5m_pct_min"] < 0.0
+    assert kin_down["accel_5m_pct_min2"] < 0.0
+    win_down = pw.PriceWindow("BTCUSDC", 301, sample_rate_sec=1.0, initial_prices=prices_down_roll, window_seconds=300.0)
+    v_pw_down, a_pw_down = win_down.calculate_acceleration(window_sec=300.0)
+    assert v_pw_down < 0.0 and a_pw_down < 0.0
+
+    # Symmetric inverted-U rollover (rally -> mid dip -> final-minute reclaim) must emit positive vel_5m & accel_5m
+    prices_up_roll = [2.0 * 61880.0 - px for px in prices_down_roll]
+    series_up = [[(t_now - 300.0 + idx) * 1000.0, px] for idx, px in enumerate(prices_up_roll)]
+    kin_up = compute_series_kinematics(series_up)
+    assert kin_up["vel_5m_pct_min"] > 0.0
+    assert kin_up["accel_5m_pct_min2"] > 0.0
+    win_up = pw.PriceWindow("BTCUSDC", 301, sample_rate_sec=1.0, initial_prices=prices_up_roll, window_seconds=300.0)
+    v_pw_up, a_pw_up = win_up.calculate_acceleration(window_sec=300.0)
+    assert v_pw_up > 0.0 and a_pw_up > 0.0
+
+    # 4. Historical FILLED LIMIT float dust (cost/vol = 130.070001 vs limit 130.07) snaps cleanly while real fill improvement is preserved
+    intents = [
+        {
+            "venue": "kraken",
+            "symbol": "SPCXxUSD",
+            "decision": "SELL",
+            "order_type": "LIMIT",
+            "status": "EXECUTED",
+            "limit_price": 130.07,
+            "target_px": 128.89,
+            "invalidation_px": 131.2,
+            "suggested_notional_usd": 646.31,
+            "ts": t_now - 3600.0,
+            "execution_payload": {
+                "order_id": "OLZEGS-C2J2M-OTMPY2",
+                "status": "FILLED",
+                "price": 130.0700008,
+                "executedQty": "4.968943",
+            },
+        },
+        {
+            "venue": "binance",
+            "symbol": "TAOUSDC",
+            "decision": "SELL",
+            "order_type": "LIMIT",
+            "status": "EXECUTED",
+            "limit_price": 184.45,
+            "target_px": 182.11,
+            "invalidation_px": 187.5,
+            "suggested_notional_usd": 722.04,
+            "ts": t_now - 3000.0,
+            "execution_payload": {
+                "order_id": "727133845",
+                "status": "FILLED",
+                "price": 184.4,
+                "executedQty": "3.9156",
+            },
+        },
+    ]
+    rec_sum = summarize_recent_ai_intents(intents, "crypto", t_now, extract_intent_notional)
+    by_sym_rec = {row["symbol"]: row for row in rec_sum}
+    assert by_sym_rec["SPCXxUSD"]["fill_px"] == 130.07
+    assert by_sym_rec["TAOUSDC"]["fill_px"] == 184.4
+    plans = summarize_active_ai_trade_plans(
+        intents,
+        "crypto",
+        t_now,
+        extract_intent_notional,
+        prices_and_trends={"SPCXxUSD": {"price": 130.1}, "TAOUSDC": {"price": 185.8}},
+    )
+    by_sym_plan = {row["symbol"]: row for row in plans}
+    assert by_sym_plan["SPCXxUSD"]["entry_px"] == 130.07
+    assert by_sym_plan["TAOUSDC"]["entry_px"] == 184.4
+
