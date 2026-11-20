@@ -1236,6 +1236,8 @@ def _format_portfolio_section(
             pre_parts.append(
                 f"cvar_975=${safe_float(pre.get('intraday_cvar_975_usd'), 0.0):,.2f} ({pre.get('intraday_cvar_975_pct')}%)"
             )
+        if pre.get("daily_nav_drawdown_pct") is not None:
+            pre_parts.append(f"nav_dd_day={safe_float(pre.get('daily_nav_drawdown_pct'), 0.0):+.2f}%")
         for k_pre, lbl_pre, fmt_pre in (
             ("vol_target_tranche_usd", "vol_target_tranche=$", ",.0f"),
             ("subcycle_lifo_realized_pnl_usd", "subcycle_lifo_pnl=$", "+.2f"),

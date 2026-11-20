@@ -53,6 +53,12 @@ from .intent_state import (
     parse_pos_epoch_s,
 )
 from .intent_telemetry import evaluate_trade_plan_status
+from .nav_drawdown import (
+    build_nav_history_point,
+    evaluate_nav_drawdown_metrics,
+    format_nav_drawdown_summary_line,
+    load_nav_history_state,
+)
 from .order_id_context import resolve_order_owner
 
 _GUARD_CODE_RE = re.compile(r"^([A-Za-z0-9_]+)")
@@ -398,6 +404,8 @@ def evaluate_ai_attribution(
     audit_records: Optional[list[dict[str, Any]]] = None,
     reconciler_log_lines: Optional[list[str]] = None,
     crypto_eval_state: Optional[Mapping[str, Any]] = None,
+    nav_history: Optional[list[dict[str, Any]]] = None,
+    current_nav_point: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Compute standalone multi-venue AI attribution, model-tier audit, override audit, and AI vs BOT comparison."""
     eff_now = resolve_now_ts(now_ts)
@@ -441,6 +449,8 @@ def evaluate_ai_attribution(
         if cb_rsn := (
             it.get("circuit_breaker_reason")
             or it.get("scorecard_downgraded_to_shadow")
+            or it.get("daily_nav_dd_downgraded_to_shadow")
+            or it.get("daily_nav_dd_shadow_warning")
             or (it.get("history")[-1].get("guard_reason") if isinstance(it.get("history"), list) and it.get("history") and isinstance(it.get("history")[-1], dict) and it.get("history")[-1].get("guard_allowed") is False else "")
         ):
             if tag := _extract_cb_tag(cb_rsn):
@@ -677,6 +687,11 @@ def evaluate_ai_attribution(
         cutoff_ts=cutoff,
         eval_state=crypto_eval_state,
     )
+    nav_dd = evaluate_nav_drawdown_metrics(
+        nav_history if isinstance(nav_history, list) else [],
+        now_ts=eff_now,
+        current_point=current_nav_point,
+    )
 
     return {
         "generated_at_ts": round(eff_now, 3),
@@ -694,6 +709,7 @@ def evaluate_ai_attribution(
         "trade_plan_calibration": trade_plan_calibration,
         "execution_audit_ai_vs_bot": actor_comparison,
         "delta_gate_efficiency": delta_gate,
+        "unified_nav_drawdown": nav_dd,
     }
 
 
@@ -762,6 +778,10 @@ def load_and_evaluate_ai_attribution(
     log_lines = _load_reconciler_log_lines(workspace_dir, min_day=min_day, max_day=max_day)
     eval_path = _workspace_cachedb_path(workspace_dir, "auto_cryptotrade_executor_eval.json")
     crypto_eval = read_json_dict(eval_path, default={})
+    nav_history = load_nav_history_state(workspace_dir)
+    vb_path = _workspace_cachedb_path(workspace_dir, "venue_balances_state.json")
+    vb_state = read_json_dict(vb_path, default={})
+    cur_nav_pt = build_nav_history_point(vb_state, live_prices=live_prices, now_ts=eff_now, scope="all")
 
     return evaluate_ai_attribution(
         intents,
@@ -772,6 +792,8 @@ def load_and_evaluate_ai_attribution(
         audit_records=audit_records,
         reconciler_log_lines=log_lines,
         crypto_eval_state=crypto_eval,
+        nav_history=nav_history,
+        current_nav_point=cur_nav_pt,
     )
 
 
@@ -910,6 +932,12 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
             f"high_escalations={safe_nonneg_int(dg.get('high_effort_escalations'), 0)}, "
             f"last_model={dg.get('last_eval_model') or 'n/a'} --"
         )
+
+    nav_dd = report.get("unified_nav_drawdown") if isinstance(report.get("unified_nav_drawdown"), Mapping) else {}
+    if nav_line := format_nav_drawdown_summary_line(nav_dd):
+        lines.append("")
+        lines.append("-- Unified NAV & Drawdown Curve --")
+        lines.append(f"  {nav_line}")
 
     return "\n".join(lines)
 

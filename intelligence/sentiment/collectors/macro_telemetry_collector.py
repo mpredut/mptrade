@@ -113,6 +113,7 @@ from instrument_registry import canonical_display_symbol, casefold_get, has_work
 from cacheprice import resolve_ssot_price_from_cache
 from providers.ai_circuit_breaker import parse_intent_circuit_breaker_config
 from providers.ai_survival_guard import evaluate_ai_decision_scorecard
+from providers.nav_drawdown import load_and_evaluate_nav_drawdown
 from providers.intent_telemetry import (
     build_last_cycle_execution_status,
     summarize_active_ai_trade_plans,
@@ -1099,6 +1100,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         now_ts: float,
         inst_by_sym: Dict[str, Any],
         t212_cycles: Any,
+        workspace_dir: str = "",
     ) -> None:
         if isinstance(mb_snap_pre := getattr(snapshot, "macro_benchmarks", None), dict) and mb_snap_pre:
             btc_chg_24h_live = next(
@@ -1141,6 +1143,18 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             if risk_eng := compute_enterprise_portfolio_risk_metrics(
                 snapshot.portfolio_summary, snapshot.prices_and_trends, snapshot.microstructure
             ):
+                if workspace_dir:
+                    try:
+                        nav_dd = load_and_evaluate_nav_drawdown(
+                            workspace_dir,
+                            now_ts=now_ts,
+                            include_live_point=False,
+                        )
+                        if nav_dd.get("sample_count", 0) >= 2:
+                            risk_eng["daily_nav_drawdown_pct"] = nav_dd["daily_nav_drawdown_pct"]
+                            risk_eng["daily_nav_return_pct"] = nav_dd["daily_nav_return_pct"]
+                    except Exception:
+                        pass
                 snapshot.portfolio_summary["portfolio_risk_engine"] = risk_eng
 
     @staticmethod
@@ -1621,7 +1635,12 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             harvest_bot_runtime_states(cache_dir, now_ts, _rj, tradable_positions=snapshot.portfolio_summary.get("tradable_positions"))
         )
         self._apply_macro_scope_and_risk_overlays(
-            snapshot, scope=scope, now_ts=now_ts, inst_by_sym=inst_by_sym, t212_cycles=t212_cycles
+            snapshot,
+            scope=scope,
+            now_ts=now_ts,
+            inst_by_sym=inst_by_sym,
+            t212_cycles=t212_cycles,
+            workspace_dir=workspace_dir,
         )
         self._stamp_snapshot_domain_timestamps(
             snapshot,

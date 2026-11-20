@@ -67,6 +67,8 @@ from intelligence.sentiment.evaluators.guard_probe_evaluator import (
 import notify_engine.alertnotifiers as _alertnotifiers
 from order_lifecycle import restore_cancelled_instrument_orders
 from providers.ai_circuit_breaker import (
+    DEFAULT_DAILY_NAV_DD_LIMIT_PCT,
+    DEFAULT_DAILY_NAV_DD_MODE,
     DEFAULT_FLIP_COOLDOWN_MIN,
     DEFAULT_FLIP_MIN_EDGE_PCT,
     DEFAULT_MAX_DAILY_BUY_NOTIONAL_USD,
@@ -85,6 +87,10 @@ from providers.ai_survival_guard import (
     evaluate_ai_decision_scorecard,
     evaluate_ai_ping_pong_guard,
     evaluate_ai_target_ev_guard,
+)
+from providers.nav_drawdown import (
+    evaluate_daily_nav_drawdown_guard,
+    load_and_evaluate_nav_drawdown,
 )
 from providers.intent_reconciliation import (
     reconcile_intents_from_execution_audit,
@@ -181,6 +187,8 @@ class AutonomousIntentGateway:
         self.scorecard_window_trades: int = cb_cfg["scorecard_window_trades"]
         self.scorecard_max_loss_streak: int = cb_cfg["scorecard_max_loss_streak"]
         self.scorecard_cooldown_hours: float = cb_cfg["scorecard_cooldown_hours"]
+        self.daily_nav_dd_mode: str = cb_cfg["daily_nav_dd_mode"]
+        self.daily_nav_dd_limit_pct: float = cb_cfg["daily_nav_dd_limit_pct"]
 
     def load_all_intents(self) -> List[Dict[str, Any]]:
         """Loads all intents from the durable JSON queue with `.previous` crash recovery."""
@@ -716,6 +724,52 @@ class AutonomousIntentGateway:
                     ),
                     effective_usd,
                 )
+
+        nav_dd_mode = getattr(self, "daily_nav_dd_mode", DEFAULT_DAILY_NAV_DD_MODE)
+        nav_dd_limit = getattr(self, "daily_nav_dd_limit_pct", DEFAULT_DAILY_NAV_DD_LIMIT_PCT)
+        if decision == "BUY" and nav_dd_mode in ("shadow", "enforce") and nav_dd_limit > 0.0:
+            nav_metrics = load_and_evaluate_nav_drawdown(self.workspace_dir, now_ts=now_ts, include_live_point=True)
+            nav_ok, nav_reason, nav_g_metrics = evaluate_daily_nav_drawdown_guard(
+                nav_metrics,
+                decision=decision,
+                mode=nav_dd_mode,
+                limit_pct=nav_dd_limit,
+            )
+            if not nav_ok:
+                intent["nav_drawdown_metrics"] = nav_g_metrics
+                if nav_dd_mode == "shadow":
+                    intent["daily_nav_dd_shadow_warning"] = nav_reason
+                    logger.warning(
+                        "[LLM TRADER] Observational daily NAV drawdown warning on BUY %s (shadow mode, order allowed): %s",
+                        inst.symbol, nav_reason,
+                    )
+                else:
+                    intent["daily_nav_dd_downgraded_to_shadow"] = nav_reason
+                    nav_qty = effective_usd / price if (effective_usd > 0.0 and price > 0.0) else 0.0
+                    logger.warning(
+                        "[LLM TRADER] Downgrading BUY %s to shadow via daily NAV drawdown guard: %s",
+                        inst.symbol, nav_reason,
+                    )
+                    return (
+                        record_shadow_intent_observation(
+                            inst,
+                            intent,
+                            decision=decision,
+                            target_qty=nav_qty,
+                            price=price,
+                            effective_usd=effective_usd,
+                            confidence=confidence,
+                            guard_allowed=False,
+                            guard_reason=nav_reason,
+                            thesis=thesis,
+                            trade_tag=trade_tag,
+                            now_ts=now_ts,
+                            is_limit=is_limit,
+                            dispatch_notify_fn=self._dispatch_notify,
+                            log=logger,
+                        ),
+                        effective_usd,
+                    )
         return None, effective_usd
 
     def _unlock_and_clamp_wallet_notional(

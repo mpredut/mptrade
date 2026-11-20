@@ -26,6 +26,11 @@ from .intent_state import (
     extract_intent_timestamp_s,
     symbols_match_intent_scope_and_quote,
 )
+from .nav_drawdown import (
+    DEFAULT_DAILY_NAV_DD_LIMIT_PCT,
+    DEFAULT_DAILY_NAV_DD_MODE,
+    normalize_nav_dd_mode,
+)
 from .order_ohlc_utils import extract_executed_qty
 from .order_status_ssot import TERMINAL_CANCEL_VENUE_STATUSES
 
@@ -95,6 +100,14 @@ def parse_intent_circuit_breaker_config(conf: dict[str, str]) -> dict[str, Any]:
         "scorecard_cooldown_hours": safe_nonneg_float(
             cfg.get("autonomous_trading_scorecard_cooldown_hours"),
             default=DEFAULT_SCORECARD_COOLDOWN_HOURS,
+        ),
+        "daily_nav_dd_mode": normalize_nav_dd_mode(
+            cfg.get("autonomous_trading_daily_nav_dd_mode"),
+            default=DEFAULT_DAILY_NAV_DD_MODE,
+        ),
+        "daily_nav_dd_limit_pct": safe_nonneg_float(
+            cfg.get("autonomous_trading_daily_nav_dd_limit_pct"),
+            default=DEFAULT_DAILY_NAV_DD_LIMIT_PCT,
         ),
     }
 
@@ -266,6 +279,8 @@ def evaluate_ai_intent_circuit_breaker(
 
 
 __all__ = [
+    "DEFAULT_DAILY_NAV_DD_LIMIT_PCT",
+    "DEFAULT_DAILY_NAV_DD_MODE",
     "DEFAULT_FLIP_COOLDOWN_MIN",
     "DEFAULT_FLIP_MIN_EDGE_PCT",
     "DEFAULT_MAX_DAILY_BUY_NOTIONAL_USD",

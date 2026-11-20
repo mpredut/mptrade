@@ -81,6 +81,7 @@ from instrument_registry import (
     resolve_symbol_identity,
 )
 from providers.base import MarketDataProvider
+from providers.nav_drawdown import record_nav_history_snapshot
 
 load_tradable_instruments = MarketDataProvider.load_tradable_instruments
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
@@ -501,6 +502,10 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                     persist=True,
                     force_persist=True,
                 )
+                try:
+                    record_nav_history_snapshot(workspace_dir, now_ts=eff_now)
+                except Exception as nav_exc:
+                    logger.debug("Skipped NAV history snapshot update: %s", nav_exc)
             micro_map: Dict[str, Any] = {}
             enrich_24h_and_microstructure(
                 self.cache_dir,

@@ -35,6 +35,7 @@ MT_STATE_FILENAME = "mt_state.json"
 RTRADE_PAIRS_STATE_FILENAME = "rtrade_pairs_state.json"
 SMART_STOP_LOSS_STATE_FILENAME = "smart_stop_loss_state.json"
 TRAILING_STATE_FILENAME = "trailing_state.json"
+NAV_HISTORY_STATE_FILENAME = "nav_history_state.json"
 VENUE_BALANCES_STATE_FILENAME = "venue_balances_state.json"
 VENUE_FEE_MAINTENANCE_STATE_FILENAME = "venue_fee_maintenance_state.json"
 KINEMATIC_IMPULSE_SIGNAL_FILENAME = "kinematic_impulse_signal.json"
@@ -228,13 +229,13 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         "exact": (
             ASSETGUARDIAN_STATE_FILENAME, MT_STATE_FILENAME, TRAILING_STATE_FILENAME,
             SMART_STOP_LOSS_STATE_FILENAME, RTRADE_PAIRS_STATE_FILENAME,
-            AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME, VENUE_BALANCES_STATE_FILENAME,
-            VENUE_FEE_MAINTENANCE_STATE_FILENAME,
+            AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME, NAV_HISTORY_STATE_FILENAME,
+            VENUE_BALANCES_STATE_FILENAME, VENUE_FEE_MAINTENANCE_STATE_FILENAME,
         ),
         "prefixes": (
             "assetguardian_state", "rtrade_pairs", "mt_state.", "trailing_state.",
-            "smart_stop_loss_state.", "autonomous_trade_intents", "venue_balances_state",
-            "venue_fee_maintenance_state",
+            "smart_stop_loss_state.", "autonomous_trade_intents", "nav_history_state",
+            "venue_balances_state", "venue_fee_maintenance_state",
         ),
         "suffixes": ("_state.json",),
     },
