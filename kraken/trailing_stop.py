@@ -83,7 +83,7 @@ from cachepaths import (  # noqa: E402
     split_kraken_pair,
 )
 from guard_hierarchy import normalize_bypassed_guards  # noqa: E402
-from instrument_registry import casefold_get, select_instruments  # noqa: E402
+from instrument_registry import canonical_display_symbol, casefold_get, select_instruments  # noqa: E402
 import order_guard  # noqa: E402
 
 STATE_FILE = resolve_venue_trailing_state_path("kraken")
@@ -107,7 +107,7 @@ TRAIL_PCT = {
     for asset, spec in TRAILING_INSTRUMENTS.items()
 }
 PAIR_FOR = {
-    asset: spec.symbol.strip().upper()
+    asset: canonical_display_symbol(spec.symbol, venue="kraken") or spec.symbol.strip()
     for asset, spec in TRAILING_INSTRUMENTS.items()
 }
 REBUY_MODE_BY_ASSET = {
@@ -253,7 +253,7 @@ class KrakenTrailing(TrailingAdapterBase):
         if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
             return None
         try:
-            pair_norm = pair.strip().upper()
+            pair_norm = canonical_display_symbol(pair, venue="kraken") or pair.strip()
             spec = self._lookup_symbol_entry(TRAILING_INSTRUMENTS, pair)
             asset = spec.base if spec is not None else split_kraken_pair(pair_norm)[0]
             if not asset:

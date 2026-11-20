@@ -85,6 +85,27 @@ def clean_upper_scalar(val: object) -> str | None:
     return s.upper() if (s := clean_scalar_str(val)) is not None else None
 
 
+_SYMBOL_CASE_RESOLVER = globals().get("_SYMBOL_CASE_RESOLVER")
+
+
+def bind_symbol_case_resolver(resolver) -> None:
+    """Bind a higher-layer symbol-case canonicalizer (e.g. ``instrument_registry.resolve_registered_symbol_case``)."""
+    global _SYMBOL_CASE_RESOLVER
+    _SYMBOL_CASE_RESOLVER = resolver if callable(resolver) else None
+
+
+def _resolve_canonical_cache_symbol(raw_sym: str) -> str:
+    resolver = _SYMBOL_CASE_RESOLVER
+    if callable(resolver):
+        try:
+            resolved = resolver(raw_sym)
+            if isinstance(resolved, str) and resolved:
+                return resolved
+        except Exception:
+            pass
+    return raw_sym
+
+
 def _clean_cache_symbol(symbol: object, *, preserve_case: bool = False) -> str:
     if symbol is None or isinstance(symbol, (bool, bytes, bytearray, dict, list, tuple, set, frozenset)):
         return ""
@@ -92,6 +113,8 @@ def _clean_cache_symbol(symbol: object, *, preserve_case: bool = False) -> str:
     s = clean_scalar_str(raw)
     if s is None:
         return ""
+    if not preserve_case:
+        s = _resolve_canonical_cache_symbol(s)
     return s if (preserve_case or is_kraken_tokenized_asset(s)) else s.upper()
 
 
@@ -767,7 +790,7 @@ def _strip_kraken_asset_suffixes(token: str) -> str:
 
 def clean_symbol_key(symbol: object) -> str:
     """Return uppercase alphanumeric symbol key stripped of '/', '-', '_'."""
-    raw_u = _clean_cache_symbol(symbol)
+    raw_u = _clean_cache_symbol(symbol, preserve_case=True)
     if not raw_u:
         return ""
     stripped = raw_u.replace("/", "").replace("-", "").replace("_", "")
@@ -1148,6 +1171,7 @@ def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) ->
     clean_pfx = clean_scalar_str(prefix)
     if not eff_dir or raw_sym is None or clean_pfx is None:
         return None
+    raw_sym = _resolve_canonical_cache_symbol(raw_sym)
     raw_u = raw_sym.upper()
     if is_kraken_tokenized_asset(raw_sym) and raw_sym.replace("_", "").isalnum():
         safe_sym = raw_sym

@@ -931,8 +931,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         for cand in _short_trend_symbol_variants(symbol):
             if not isinstance(cand, str) or not cand:
                 continue
-            cand_sym = resolve_symbol_identity(cand).storage_key or cand
-            cand_file = str(resolve_cachedb_filepath(os.path.join(base_dir, cache_24_price_filename(cand_sym))))
+            cand_file = str(resolve_cachedb_filepath(os.path.join(base_dir, cache_24_price_filename(cand))))
             migrate_legacy_filename_if_needed(cand_file)
             if os.path.exists(cand_file) or os.path.exists(
                 previous_generation_path(cand_file)
@@ -1762,7 +1761,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 store_key = (
                     matched_key
                     if isinstance(matched_key, str) and matched_key
-                    else str(symbol).strip().upper()
+                    else (resolve_symbol_identity(symbol).storage_key or str(symbol).strip().upper())
                 )
                 with self._lock:
                     cleaned_snap = {
@@ -2117,7 +2116,7 @@ class KalmanStateTracker:
         # snapshot remains populated.
         with self._lock:
             s_strip = symbol.strip() if isinstance(symbol, str) else ""
-            norm_sym = s_strip if (s_strip and is_kraken_tokenized_asset(s_strip)) else s_strip.upper()
+            norm_sym = (resolve_symbol_identity(s_strip).storage_key or s_strip.upper()) if s_strip else ""
             if norm_sym:
                 for alt_k in [k for k in list(self._state) if k != norm_sym and str(k).upper() == norm_sym.upper()]:
                     val_sym = self._state.pop(alt_k, None)

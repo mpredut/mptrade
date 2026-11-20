@@ -262,7 +262,7 @@ class SyncModeMixin:
         return cached
 
     def used_stale_fallback(self, symbol: Optional[str] = None) -> bool:
-        if symbol is not None and (sym_clean := str(symbol).strip().upper()):
+        if symbol is not None and (sym_clean := canonical_display_symbol(symbol) or str(symbol).strip().upper()):
             stale_set = getattr(self, "_stale_fallback_symbols", None)
             if isinstance(stale_set, set):
                 return sym_clean in stale_set
@@ -274,7 +274,7 @@ def collector_used_stale_fallback(collector: Any, symbol: Optional[str] = None) 
     check_fn = getattr(collector, "used_stale_fallback", None)
     if callable(check_fn):
         return bool(check_fn(symbol))
-    if symbol is not None and (sym_clean := str(symbol).strip().upper()):
+    if symbol is not None and (sym_clean := canonical_display_symbol(symbol) or str(symbol).strip().upper()):
         stale_set = getattr(collector, "_stale_fallback_symbols", None)
         if isinstance(stale_set, set):
             return sym_clean in stale_set

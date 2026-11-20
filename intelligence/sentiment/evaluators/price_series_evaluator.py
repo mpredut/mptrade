@@ -1307,7 +1307,7 @@ def load_stitched_24h_ohlc_points(
             )
             read_cpath = cpath
             if not os.path.exists(read_cpath) and sym_canon != sym_u:
-                alt_fname = cache_ohlc_24h_filename(sym_u)
+                alt_fname = cache_ohlc_24h_filename(sym_u, preserve_case=True)
                 alt_cpath = (
                     str(resolve_cachedb_filepath(os.path.join(cache_dir, alt_fname)))
                     if cache_dir

@@ -31,7 +31,6 @@ from cachepaths import (
     resolve_cachedb_filepath,
     split_symbol_assets,
 )
-from instrument_registry import resolve_symbol_identity
 from state_io import read_json_dict_recovering
 
 _LIVE_FETCH_LOCAL = threading.local()
@@ -509,7 +508,7 @@ class ProviderSsotBridgeMixin:
         now_s = resolve_now_ts()
         dir_override = _clean_fs_path(cache_dir_override)
         for cand in norm_cands:
-            fname = cache_ohlc_24h_filename(resolve_symbol_identity(cand).storage_key or cand)
+            fname = cache_ohlc_24h_filename(cand)
             ohlc_path = (
                 str(resolve_cachedb_filepath(os.path.join(dir_override, fname)))
                 if dir_override

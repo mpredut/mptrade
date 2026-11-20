@@ -24,6 +24,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import CACHE_T_TREND_FILENAME, cache_symbol_variants, clean_symbol_key
+from instrument_registry import canonical_display_symbol
 import intelligence.daemon as _intel_daemon
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
 from intelligence.internal.state.survival import (
@@ -85,7 +86,7 @@ def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
 
 def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict[str, Any]:
     """Consolidate full multi-pillar state for a symbol."""
-    symbol = "" if isinstance(symbol, bool) or symbol is None else str(symbol).strip().upper()
+    symbol = "" if isinstance(symbol, bool) or symbol is None else (canonical_display_symbol(symbol) or str(symbol).strip().upper())
     now = time.time()
     result: Dict[str, Any] = {
         "symbol": symbol,
@@ -319,7 +320,7 @@ def main():
         parser.add_argument(flag_name, type=parse_pos_cli_float, default=default_val, help=flag_help)
 
     args = parser.parse_args()
-    symbol = args.symbol.strip().upper()
+    symbol = canonical_display_symbol(args.symbol) or args.symbol.strip().upper()
 
     # 1. Daemon Status Check
     if args.daemon_status:

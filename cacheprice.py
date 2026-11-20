@@ -2637,8 +2637,7 @@ def resolve_cached_symbol_price(
                 and compatible_quote_suffixes(c, default_usd=_DEFAULT_USD_QUOTES) == allowed_quotes
             ]
             for cand in ob_cands:
-                ob_sym = sym.resolve_symbol_identity(cand).storage_key or cand
-                ob_path = telemetry_cache_file_path(cache_dir, "orderbook_depth", ob_sym)
+                ob_path = telemetry_cache_file_path(cache_dir, "orderbook_depth", cand)
                 if not ob_path or (not os.path.exists(ob_path) and not os.path.exists(previous_generation_path(ob_path))):
                     continue
                 ob = read_dict(ob_path)

@@ -948,6 +948,33 @@ def test_secondary_writers_and_t212_ssot_market_data(tmp_path, monkeypatch):
     assert chart_calls == ["NVDA"]
 
 
+def test_cachepaths_symbol_case_delegates_to_symbol_api_preserving_dag(tmp_path):
+    """Verify cachepaths delegates canonical xStock symbol case to instrument_registry via DI without violating DAG."""
+    import cachepaths
+    import instrument_registry  # noqa: F401 - binds symbol case resolver on import
+
+    cp_src = (ROOT / "cachepaths.py").read_text(encoding="utf-8")
+    assert "import instrument_registry" not in cp_src
+    assert "from instrument_registry" not in cp_src
+
+    assert cachepaths.cache_24_price_filename("SPCXXUSD") == "cache_24_price_SPCXxUSD.json"
+    assert cachepaths.cache_365_price_filename("ANTXUSD") == "cache_365_price_ANTxUSD.jsonl"
+    assert cachepaths.cache_sparse_price_filename("spcxxusd") == "cache_sparse_price_SPCXxUSD.jsonl"
+    assert cachepaths.cache_ohlc_24h_filename("SPCXXUSD") == "cache_ohlc_24h_SPCXxUSD.json"
+    assert cachepaths.cache_ohlc_24h_filename("SPCXXUSD", preserve_case=True) == "cache_ohlc_24h_SPCXXUSD.json"
+    assert cachepaths.telemetry_cache_file_path(str(tmp_path), "orderbook_depth", "SPCXXUSD").endswith(
+        "orderbook_depth_SPCXxUSD.json"
+    )
+    assert cachepaths.telemetry_cache_file_path(str(tmp_path), "orderbook_depth", "antxusd").endswith(
+        "orderbook_depth_ANTxUSD.json"
+    )
+    import importlib
+
+    importlib.reload(cachepaths)
+    assert cachepaths.cache_24_price_filename("SPCXXUSD") == "cache_24_price_SPCXxUSD.json"
+
+
+
 
 
 

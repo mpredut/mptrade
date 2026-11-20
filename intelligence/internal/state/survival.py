@@ -64,7 +64,7 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 import cachetrend as ct
-from instrument_registry import is_equity_symbol, resolve_kraken_tokenized_pair, resolve_symbol_identity
+from instrument_registry import is_equity_symbol, resolve_kraken_tokenized_pair
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_latest_long_trend_value
 import providers.market_api as _market_api_mod
 from state_io import generation_file_lock, read_json_dict, read_json_dict_cached, save_json_state
@@ -1010,7 +1010,7 @@ def _read_cached_price_history(
         return (ts_sec, px) if (ts_sec is not None and px is not None) else None
 
     p24_paths = list(dict.fromkeys(
-        str(resolve_cachedb_filepath(os.path.join(cachedb_dir, cache_24_price_filename(resolve_symbol_identity(cand).storage_key or cand))))
+        str(resolve_cachedb_filepath(os.path.join(cachedb_dir, cache_24_price_filename(cand))))
         for cand in cand_symbols
         if "/" not in cand and ("_" not in cand or has_equity_suffix(cand))
     ))

@@ -31,6 +31,7 @@ from botcore import (
 )
 from cachepaths import (
     READONLY_XSTOCK_SUFFIXES,
+    bind_symbol_case_resolver,
     cache_symbol_variants,
     canonical_base_asset,
     clean_scalar_str,
@@ -988,6 +989,7 @@ def validate_params(order_type, symbol, price=1, qty=1):
 
 
 register_module_aliases(__name__, "symbols")
+bind_symbol_case_resolver(resolve_registered_symbol_case)
 
 
 if __name__ == "__main__":

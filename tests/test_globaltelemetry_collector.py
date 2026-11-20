@@ -2346,10 +2346,24 @@ def test_xstock_canonical_case_coalescing_adopted_ipo_pnl_and_ob_mid_rounding(tm
     from providers.quantity import resolve_assets
 
     assert cache_ohlc_24h_filename("SPCXxUSD") == "cache_ohlc_24h_SPCXxUSD.json"
+    assert cache_ohlc_24h_filename("SPCXXUSD") == "cache_ohlc_24h_SPCXxUSD.json"
     assert telemetry_cache_file_path(str(c_dir), "orderbook_depth", "SPCXxUSD").endswith("orderbook_depth_SPCXxUSD.json")
+    assert telemetry_cache_file_path(str(c_dir), "orderbook_depth", "SPCXXUSD").endswith("orderbook_depth_SPCXxUSD.json")
+    assert telemetry_cache_file_path(str(c_dir), "orderbook_depth", "ANTXUSD").endswith("orderbook_depth_ANTxUSD.json")
     assert KrakenProvider.format_strategy_heartbeat_name("SPCXxUSD") == "Kraken-SPCXxUSD"
     assert KrakenProvider.format_strategy_heartbeat_name("SPCXXUSD") == "Kraken-SPCXxUSD"
     assert resolve_assets("SPCXxUSD") == ("SPCXx", "USD")
+
+    # Collector stale-fallback tracking and Kalman tracker resolve SPCXXUSD -> SPCXxUSD via the Symbol API
+    from intelligence.external.collectors.base_collector import collector_used_stale_fallback
+
+    ob_col._stale_fallback_symbols.add("SPCXxUSD")
+    assert ob_col.used_stale_fallback("SPCXxUSD") is True
+    assert ob_col.used_stale_fallback("SPCXXUSD") is True
+    assert collector_used_stale_fallback(ob_col, "SPCXXUSD") is True
+    ob_col._stale_fallback_symbols.discard("SPCXxUSD")
+    kst.update("SPCXXUSD", now_s + 5.0, 145.5)
+    assert "SPCXxUSD" in kst._state and "SPCXXUSD" not in kst._state
 
     # Initial live_24trend harvest preserves canonical mixed-case xStock keys without creating SPCXXUSD/ANTXUSD duplicates
     from intelligence.sentiment.collectors.macro_telemetry_collector import _harvest_initial_prices_and_trends_impl
