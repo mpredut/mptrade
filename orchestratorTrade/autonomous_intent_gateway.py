@@ -77,12 +77,14 @@ from providers.ai_circuit_breaker import (
     DEFAULT_SCORECARD_COOLDOWN_HOURS,
     DEFAULT_SCORECARD_MAX_LOSS_STREAK,
     DEFAULT_SCORECARD_WINDOW_TRADES,
+    DEFAULT_TARGET_EV_FEE_MULT,
     evaluate_ai_intent_circuit_breaker,
     parse_intent_circuit_breaker_config,
 )
 from providers.ai_survival_guard import (
     evaluate_ai_decision_scorecard,
     evaluate_ai_ping_pong_guard,
+    evaluate_ai_target_ev_guard,
 )
 from providers.intent_reconciliation import (
     reconcile_intents_from_execution_audit,
@@ -174,6 +176,7 @@ class AutonomousIntentGateway:
         self.max_daily_buy_notional_usd: float = cb_cfg["max_daily_buy_notional_usd"]
         self.flip_cooldown_min: float = cb_cfg["flip_cooldown_min"]
         self.flip_min_edge_pct: float = cb_cfg["flip_min_edge_pct"]
+        self.target_ev_fee_mult: float = cb_cfg["target_ev_fee_mult"]
         self.max_flips_6h: int = cb_cfg["max_flips_6h"]
         self.scorecard_window_trades: int = cb_cfg["scorecard_window_trades"]
         self.scorecard_max_loss_streak: int = cb_cfg["scorecard_max_loss_streak"]
@@ -613,6 +616,24 @@ class AutonomousIntentGateway:
                     inst, intent, mode=mode, decision=decision, price=price, effective_usd=effective_usd,
                     confidence=confidence, thesis=thesis, trade_tag=trade_tag, now_ts=now_ts,
                     is_limit=is_limit, reason_str=cb_reason, metrics_dict=cb_metrics,
+                ),
+                effective_usd,
+            )
+
+        ev_allowed, ev_reason, ev_metrics = evaluate_ai_target_ev_guard(
+            intent,
+            decision=decision,
+            symbol=symbol,
+            venue=venue,
+            price=price,
+            target_ev_fee_mult=getattr(self, "target_ev_fee_mult", DEFAULT_TARGET_EV_FEE_MULT),
+        )
+        if not ev_allowed:
+            return (
+                self._block_by_circuit_breaker(
+                    inst, intent, mode=mode, decision=decision, price=price, effective_usd=effective_usd,
+                    confidence=confidence, thesis=thesis, trade_tag=trade_tag, now_ts=now_ts,
+                    is_limit=is_limit, reason_str=ev_reason, metrics_dict=ev_metrics,
                 ),
                 effective_usd,
             )

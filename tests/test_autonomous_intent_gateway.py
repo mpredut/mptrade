@@ -3080,6 +3080,7 @@ def test_proposal4c_asymmetric_ai_circuit_breaker_and_replace_churn_cap(tmp_path
     assert cb_cfg["max_daily_buy_notional_usd"] == pytest.approx(20000.0)
     assert cb_cfg["flip_cooldown_min"] == pytest.approx(30.0)
     assert cb_cfg["flip_min_edge_pct"] == pytest.approx(0.60)
+    assert cb_cfg["target_ev_fee_mult"] == pytest.approx(2.0)
 
     # 2. Pure unit tests on evaluate_ai_intent_circuit_breaker
     now_s = 1_795_000_000.0
@@ -4124,5 +4125,214 @@ def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
         max_daily_buy_notional_usd=5000.0,
     )
     assert ok_zf is True and usd_zf == pytest.approx(1000.0) and m_zf["daily_buy_notional_usd"] == 0.0
+
+
+def test_fee_aware_ping_pong_and_4b1_negative_ev_target_guard(tmp_path):
+    """Verify venue-fee-aware ping-pong thresholds and 4B-1 negative-EV target_px filtering."""
+    from providers.ai_survival_guard import (
+        evaluate_ai_ping_pong_guard,
+        evaluate_ai_target_ev_guard,
+        resolve_venue_flip_min_edge_pct,
+        resolve_venue_round_trip_fee_bps,
+    )
+
+    # 1. Venue SSOT round-trip fees and fee-aware flip minimum edge scaling
+    assert resolve_venue_round_trip_fee_bps("kraken", "SPCXxUSD", order_type="LIMIT") == pytest.approx(0.0)
+    assert resolve_venue_round_trip_fee_bps("hyperliquid", "HYPEUSDC", order_type="LIMIT") == pytest.approx(8.0)
+    assert resolve_venue_round_trip_fee_bps("hyperliquid", "HYPEUSDC", order_type="MARKET") == pytest.approx(14.0)
+    assert resolve_venue_round_trip_fee_bps("binance", "BTCUSDC", order_type="LIMIT") == pytest.approx(20.0)
+    assert resolve_venue_round_trip_fee_bps("t212", "NVDA_US_EQ", order_type="LIMIT") == pytest.approx(30.0)
+    assert resolve_venue_round_trip_fee_bps("kraken", "TAOUSD", order_type="LIMIT") == pytest.approx(32.0)
+    assert resolve_venue_round_trip_fee_bps("kraken", "TAOUSD", order_type="MARKET") == pytest.approx(52.0)
+
+    assert resolve_venue_flip_min_edge_pct("kraken", "SPCXxUSD", order_type="LIMIT") == (pytest.approx(0.20), pytest.approx(0.0))
+    assert resolve_venue_flip_min_edge_pct("hyperliquid", "HYPEUSDC", order_type="LIMIT") == (pytest.approx(0.36), pytest.approx(8.0))
+    assert resolve_venue_flip_min_edge_pct("binance", "BTCUSDC", order_type="LIMIT") == (pytest.approx(0.60), pytest.approx(20.0))
+    assert resolve_venue_flip_min_edge_pct("t212", "NVDA_US_EQ", order_type="LIMIT") == (pytest.approx(0.80), pytest.approx(30.0))
+    assert resolve_venue_flip_min_edge_pct("kraken", "TAOUSD", order_type="LIMIT") == (pytest.approx(0.84), pytest.approx(32.0))
+    assert resolve_venue_flip_min_edge_pct("kraken", "TAOUSD", order_type="MARKET") == (pytest.approx(1.24), pytest.approx(52.0))
+
+    # 2. Ping-pong respects per-venue fee tiers: +0.45% passes on HL LIMIT (0.36%), +0.65% blocks on Kraken Crypto LIMIT (0.84%), +0.25% passes on xStock (0.20%)
+    now_s = 1_795_200_000.0
+    hl_buy = [{
+        "intent_id": "hl_b1",
+        "timestamp": now_s - 600.0,
+        "decision": "BUY",
+        "symbol": "HYPEUSDC",
+        "venue": "hyperliquid",
+        "order_type": "LIMIT",
+        "status": "EXECUTED",
+        "execution_payload": {"orderId": "ohl1", "status": "FILLED", "executedQty": "10.0", "avg_fill_price": 50.0},
+    }]
+    ok_hl, _, m_hl = evaluate_ai_ping_pong_guard(
+        {"intent_id": "hl_s1", "decision": "SELL", "order_type": "LIMIT", "urgency": "NORMAL"},
+        hl_buy,
+        decision="SELL",
+        symbol="HYPEUSDC",
+        venue="hyperliquid",
+        price=50.225,  # +0.45% >= 0.36%
+        now_ts=now_s,
+    )
+    assert ok_hl is True and m_hl["effective_flip_min_edge_pct"] == pytest.approx(0.36)
+
+    kr_buy = [{
+        "intent_id": "kr_b1",
+        "timestamp": now_s - 600.0,
+        "decision": "BUY",
+        "symbol": "TAOUSD",
+        "venue": "kraken",
+        "order_type": "LIMIT",
+        "status": "EXECUTED",
+        "execution_payload": {"orderId": "okr1", "status": "FILLED", "executedQty": "2.0", "avg_fill_price": 200.0},
+    }]
+    ok_kr, rsn_kr, m_kr = evaluate_ai_ping_pong_guard(
+        {"intent_id": "kr_s1", "decision": "SELL", "order_type": "LIMIT", "urgency": "NORMAL"},
+        kr_buy,
+        decision="SELL",
+        symbol="TAOUSD",
+        venue="kraken",
+        price=201.30,  # +0.65% < 0.84% Kraken Crypto LIMIT edge
+        now_ts=now_s,
+    )
+    assert ok_kr is False and "ai_ping_pong_flip_cooldown" in rsn_kr
+    assert m_kr["effective_flip_min_edge_pct"] == pytest.approx(0.84)
+
+    xs_buy = [{
+        "intent_id": "xs_b1",
+        "timestamp": now_s - 600.0,
+        "decision": "BUY",
+        "symbol": "SPCXxUSD",
+        "venue": "kraken",
+        "order_type": "LIMIT",
+        "status": "EXECUTED",
+        "execution_payload": {"orderId": "oxs1", "status": "FILLED", "executedQty": "50.0", "avg_fill_price": 10.0},
+    }]
+    ok_xs, _, m_xs = evaluate_ai_ping_pong_guard(
+        {"intent_id": "xs_s1", "decision": "SELL", "order_type": "LIMIT", "urgency": "NORMAL"},
+        xs_buy,
+        decision="SELL",
+        symbol="SPCXxUSD",
+        venue="kraken",
+        price=10.025,  # +0.25% >= 0.20% xStock zero-fee edge
+        now_ts=now_s,
+    )
+    assert ok_xs is True and m_xs["venue_rt_fee_bps"] == pytest.approx(0.0)
+
+    # 3. 4B-1 Negative-EV target_px guard unit tests
+    ok_ev_bad, rsn_ev_bad, m_ev_bad = evaluate_ai_target_ev_guard(
+        {"decision": "BUY", "order_type": "LIMIT", "urgency": "NORMAL", "target_px": 200.6, "invalidation_px": 196.0},
+        decision="BUY",
+        symbol="TAOUSD",
+        venue="kraken",
+        price=200.0,  # +0.30% < 0.64% (2x 32 bps)
+    )
+    assert ok_ev_bad is False and "ai_negative_ev_target" in rsn_ev_bad
+    assert m_ev_bad["min_target_ev_pct"] == pytest.approx(0.64)
+
+    # Valid Kraken Crypto target (+1.50% >= 0.64%) passes
+    ok_ev_good, _, _ = evaluate_ai_target_ev_guard(
+        {"decision": "BUY", "order_type": "LIMIT", "urgency": "NORMAL", "target_px": 203.0, "invalidation_px": 196.0},
+        decision="BUY",
+        symbol="TAOUSD",
+        venue="kraken",
+        price=200.0,
+    )
+    assert ok_ev_good is True
+
+    # Urgency=HIGH bypasses 4B-1, and defensive SELL without target_px always passes
+    ok_ev_high, _, _ = evaluate_ai_target_ev_guard(
+        {"decision": "BUY", "order_type": "LIMIT", "urgency": "HIGH", "target_px": 200.4},
+        decision="BUY",
+        symbol="TAOUSD",
+        venue="kraken",
+        price=200.0,
+    )
+    assert ok_ev_high is True
+    ok_ev_notgt, _, _ = evaluate_ai_target_ev_guard(
+        {"decision": "SELL", "order_type": "LIMIT", "urgency": "NORMAL"},
+        decision="SELL",
+        symbol="TAOUSD",
+        venue="kraken",
+        price=200.0,
+    )
+    assert ok_ev_notgt is True
+
+    # Hyperliquid LIMIT (+0.30% >= 0.16%) passes while xStock below 0.10% floor blocks
+    ok_ev_hl, _, _ = evaluate_ai_target_ev_guard(
+        {"decision": "BUY", "order_type": "LIMIT", "urgency": "NORMAL", "target_px": 50.15},
+        decision="BUY",
+        symbol="HYPEUSDC",
+        venue="hyperliquid",
+        price=50.0,
+    )
+    assert ok_ev_hl is True
+    ok_ev_xs_bad, _, _ = evaluate_ai_target_ev_guard(
+        {"decision": "BUY", "order_type": "LIMIT", "urgency": "NORMAL", "target_px": 10.005},
+        decision="BUY",
+        symbol="SPCXxUSD",
+        venue="kraken",
+        price=10.0,
+    )
+    assert ok_ev_xs_bad is False
+
+    # 4. End-to-end gateway enforcement: blocks negative-EV target_px without placing/canceling orders
+    (tmp_path / "order_guard.conf").write_text(
+        "autonomous_trading_mode = enforce\n"
+        "autonomous_trading_min_notional_usd = 10.0\n"
+        "autonomous_trading_max_notional_usd = 2000.0\n"
+        "autonomous_trading_min_confidence = 0.85\n"
+        "autonomous_trading_notify = 0\n"
+        "autonomous_trading_target_ev_fee_mult = 2.0\n",
+        encoding="utf-8",
+    )
+    gw = AutonomousIntentGateway(workspace_dir=str(tmp_path))
+    tao_inst = MagicMock(symbol="TAOUSD", provider_name="kraken", base="TAO", quote="USD", params={})
+    tao_inst._provider.name = "kraken"
+    tao_inst._provider.get_current_price.return_value = 200.0
+    tao_inst._provider.free_balance.return_value = 2000.0
+    tao_inst.open_orders.return_value = []
+    tao_inst.place.return_value = {"orderId": "kr_ok_1", "status": "NEW", "executedQty": "0.0"}
+
+    rec_bad = gw.submit(
+        {
+            "decision": "BUY",
+            "symbol": "TAOUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 200.0,
+            "target_px": 200.5,  # +0.25% < 0.64% Kraken LIMIT RT EV floor
+            "invalidation_px": 195.0,
+            "confidence": 0.92,
+            "suggested_notional_usd": 300.0,
+            "urgency": "NORMAL",
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"TAOUSD": tao_inst},
+    )
+    assert rec_bad["status"] == "REJECTED_AI_CIRCUIT_BREAKER"
+    assert "ai_negative_ev_target" in rec_bad["circuit_breaker_reason"]
+    tao_inst.place.assert_not_called()
+
+    rec_ok = gw.submit(
+        {
+            "decision": "BUY",
+            "symbol": "TAOUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 200.0,
+            "target_px": 204.0,  # +2.00% >= 0.64%
+            "invalidation_px": 195.0,
+            "confidence": 0.92,
+            "suggested_notional_usd": 300.0,
+            "urgency": "NORMAL",
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"TAOUSD": tao_inst},
+    )
+    assert rec_ok["status"] == "EXECUTED"
+    tao_inst.place.assert_called_once()
+
 
 

@@ -28,7 +28,7 @@ from cachepaths import (
     matches_asset_scope,
     normalize_venue_name,
 )
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, resolve_symbol_identity
 from .ai_circuit_breaker import (
     DEFAULT_FLIP_COOLDOWN_MIN,
     DEFAULT_FLIP_MIN_EDGE_PCT,
@@ -36,6 +36,7 @@ from .ai_circuit_breaker import (
     DEFAULT_SCORECARD_COOLDOWN_HOURS,
     DEFAULT_SCORECARD_MAX_LOSS_STREAK,
     DEFAULT_SCORECARD_WINDOW_TRADES,
+    DEFAULT_TARGET_EV_FEE_MULT,
 )
 from .intent_state import (
     _extract_intent_id,
@@ -52,6 +53,7 @@ from .intent_state import (
 from .intent_telemetry import evaluate_trade_plan_status
 from .order_ohlc_utils import extract_executed_qty
 from .order_status_ssot import NON_FILL_ORDER_STATUSES
+from .venue_metadata import ProviderVenueMetadataMixin
 
 _FILLED_VENUE_STATUSES: frozenset[str] = frozenset({"FILLED", "CLOSED", "PARTIALLY_FILLED"})
 _WIN_EDGE_PCT = 0.20
@@ -60,6 +62,9 @@ _OPEN_MTM_LOSS_EDGE_PCT = -1.50
 _EMERGENCY_SELL_EDGE_MULT = 2.5
 _MAX_BOT_FLIP_COOLDOWN_SEC = 1800.0
 _WHIPSAW_WINDOW_SEC = 21600.0
+_REFERENCE_RT_FEE_BPS = 20.0
+_MIN_FLIP_EDGE_FLOOR_PCT = 0.15
+_MIN_TARGET_EV_FLOOR_PCT = 0.10
 
 
 def _collect_canceled_order_ids(items: list[dict[str, Any]], exclude_iid: str = "") -> set[str]:
@@ -186,6 +191,118 @@ def _resolve_live_price_for_symbol(
     return None
 
 
+def resolve_venue_round_trip_fee_bps(
+    venue: Any,
+    symbol: Any = "",
+    *,
+    order_type: Any = "LIMIT",
+    round_trip_fee_bps: Optional[float] = None,
+) -> float:
+    """Resolve declarative round-trip (2x leg) fee in basis points via venue metadata SSOT (0 ms, no I/O)."""
+    if round_trip_fee_bps is not None:
+        return round(safe_nonneg_float(round_trip_fee_bps, default=0.0), 4)
+    ven = normalize_venue_name(clean_scalar_str(venue) or "")
+    sym = clean_scalar_str(symbol) or ""
+    if ven == "kraken" and sym and resolve_symbol_identity(sym).is_tokenized_equity:
+        return 0.0
+    _, maker_bps, taker_bps, _ = ProviderVenueMetadataMixin.resolve_venue_default_fee_spec(ven)
+    ot = clean_upper_scalar(order_type) or "LIMIT"
+    leg_bps = safe_nonneg_float(taker_bps if ot == "MARKET" else maker_bps, default=10.0)
+    return round(2.0 * leg_bps, 4)
+
+
+def resolve_venue_flip_min_edge_pct(
+    venue: Any,
+    symbol: Any = "",
+    *,
+    order_type: Any = "LIMIT",
+    base_min_edge_pct: float = DEFAULT_FLIP_MIN_EDGE_PCT,
+    round_trip_fee_bps: Optional[float] = None,
+) -> tuple[float, float]:
+    """Scale flip minimum edge by venue round-trip fee anchored at Binance 20 bps RT.
+
+    Returns ``(effective_min_edge_pct, venue_rt_fee_bps)``.
+    With default ``base_min_edge_pct=0.60``:
+    - Kraken xStocks (0 bps RT) -> 0.20%
+    - Hyperliquid LIMIT (8 bps RT) -> 0.36% (MARKET 14 bps -> 0.48%)
+    - Binance LIMIT/MARKET (20 bps RT) -> 0.60%
+    - Trading212 (30 bps FX RT) -> 0.80%
+    - Kraken Crypto LIMIT (32 bps RT) -> 0.84% (MARKET 52 bps -> 1.24%)
+    """
+    rt_bps = resolve_venue_round_trip_fee_bps(
+        venue, symbol, order_type=order_type, round_trip_fee_bps=round_trip_fee_bps
+    )
+    base_edge = safe_nonneg_float(base_min_edge_pct, default=DEFAULT_FLIP_MIN_EDGE_PCT)
+    if base_edge <= 0.0:
+        return 0.0, rt_bps
+    rt_pct = rt_bps / 100.0
+    ref_pct = _REFERENCE_RT_FEE_BPS / 100.0
+    adjusted = base_edge + 2.0 * (rt_pct - ref_pct)
+    floor = max(_MIN_FLIP_EDGE_FLOOR_PCT, 1.5 * rt_pct) if base_edge >= 0.20 else base_edge
+    return round(max(floor, adjusted), 4), rt_bps
+
+
+def evaluate_ai_target_ev_guard(
+    intent: dict[str, Any],
+    *,
+    decision: str,
+    symbol: str,
+    venue: str,
+    price: float,
+    target_ev_fee_mult: float = DEFAULT_TARGET_EV_FEE_MULT,
+    round_trip_fee_bps: Optional[float] = None,
+) -> tuple[bool, str, dict[str, Any]]:
+    """Pure 4B-1 guard blocking ``urgency='NORMAL'`` intents whose explicit ``target_px`` has negative net EV.
+
+    Returns ``(allowed, reason, metrics)``.
+    - Never blocks intents without an explicit ``target_px`` (e.g. defensive exits or open-ended holds).
+    - Never blocks ``urgency == 'HIGH'`` intents.
+    - Blocks only when the gross distance from entry ``price`` to ``target_px`` is strictly below
+      ``max(0.10%, target_ev_fee_mult * venue_round_trip_fee_pct)``.
+    """
+    mult = safe_nonneg_float(target_ev_fee_mult, default=DEFAULT_TARGET_EV_FEE_MULT)
+    if mult <= 0.0:
+        return True, "", {}
+    side = normalize_side(decision) or extract_intent_side(intent)
+    if side not in ("BUY", "SELL"):
+        return True, "", {}
+    urgency = clean_upper_scalar(intent.get("urgency")) or "NORMAL"
+    if urgency == "HIGH":
+        return True, "", {"bypassed_urgency": "HIGH"}
+    eff_px = safe_pos_float(price, default=0.0) or 0.0
+    if eff_px <= 0.0:
+        return True, "", {}
+    _, tgt_px = extract_intent_trade_plan_levels(intent, side=side, ref_price=eff_px)
+    if tgt_px is None:
+        return True, "", {}
+    order_type = extract_intent_order_type(intent)
+    rt_bps = resolve_venue_round_trip_fee_bps(
+        venue, symbol, order_type=order_type, round_trip_fee_bps=round_trip_fee_bps
+    )
+    gross_pct = (
+        ((tgt_px - eff_px) / eff_px) * 100.0
+        if side == "BUY"
+        else ((eff_px - tgt_px) / eff_px) * 100.0
+    )
+    min_target_pct = max(_MIN_TARGET_EV_FLOOR_PCT, mult * (rt_bps / 100.0))
+    metrics: dict[str, Any] = {
+        "target_px": tgt_px,
+        "target_gross_pct": round(gross_pct, 4),
+        "min_target_ev_pct": round(min_target_pct, 4),
+        "venue_rt_fee_bps": rt_bps,
+    }
+    if gross_pct < min_target_pct:
+        return (
+            False,
+            (
+                f"ai_negative_ev_target({symbol}@{venue}:target={tgt_px:g}, "
+                f"gross={gross_pct:.2f}%<min={min_target_pct:.2f}%, rt_fee={rt_bps:.0f}bps)"
+            ),
+            metrics,
+        )
+    return True, "", metrics
+
+
 def evaluate_ai_ping_pong_guard(
     intent: dict[str, Any],
     existing_intents: list[dict[str, Any]],
@@ -200,14 +317,16 @@ def evaluate_ai_ping_pong_guard(
     max_flips_6h: int = DEFAULT_MAX_FLIPS_6H,
     spot_price: Optional[float] = None,
     recent_bot_fill: Optional[Mapping[str, Any]] = None,
+    round_trip_fee_bps: Optional[float] = None,
 ) -> tuple[bool, str, dict[str, Any]]:
-    """Deterministic anti-ping-pong guard protecting against rapid unprofitable opposite-side flips.
+    """Deterministic fee-aware anti-ping-pong guard protecting against rapid unprofitable opposite-side flips.
 
     Returns ``(allowed, reason, metrics)``.
     - Allows opposite-side flips immediately when the AI's pre-committed ``invalidation_px`` or
       ``target_px`` plan level is triggered.
-    - Allows opposite-side flips when favorable edge >= ``flip_min_edge_pct``, or on emergency
-      defensive ``SELL`` drops <= ``-2.5 * flip_min_edge_pct`` (or ``urgency == "HIGH"`` <= ``-flip_min_edge_pct``).
+    - Scales ``flip_min_edge_pct`` by venue round-trip fee (anchored at Binance 20 bps RT), and
+      allows flips when favorable edge >= effective edge or on emergency defensive ``SELL`` drops
+      <= ``-2.5 * effective_edge`` (or ``urgency == "HIGH"`` <= ``-effective_edge``).
     - Blocks narrow-band/adverse rapid flips within ``flip_cooldown_min`` (including fresh ``by=BOT`` fills
       within 30m) and caps 6h opposite-side reversals per ``(venue, symbol)`` at ``max_flips_6h``.
     """
@@ -221,7 +340,15 @@ def evaluate_ai_ping_pong_guard(
     eff_px = safe_pos_float(price, default=0.0) or 0.0
     eff_spot = safe_pos_float(spot_price, default=eff_px) or eff_px
     cd_min = safe_nonneg_float(flip_cooldown_min, default=DEFAULT_FLIP_COOLDOWN_MIN)
-    min_edge = safe_nonneg_float(flip_min_edge_pct, default=DEFAULT_FLIP_MIN_EDGE_PCT)
+    base_min_edge = safe_nonneg_float(flip_min_edge_pct, default=DEFAULT_FLIP_MIN_EDGE_PCT)
+    order_type = extract_intent_order_type(intent)
+    min_edge, rt_fee_bps = resolve_venue_flip_min_edge_pct(
+        venue,
+        symbol,
+        order_type=order_type,
+        base_min_edge_pct=base_min_edge,
+        round_trip_fee_bps=round_trip_fee_bps,
+    )
     cap_flips = safe_nonneg_int(max_flips_6h, default=DEFAULT_MAX_FLIPS_6H)
     emergency_drop_pct = min_edge * _EMERGENCY_SELL_EDGE_MULT
     urgency = clean_upper_scalar(intent.get("urgency")) or "NORMAL"
@@ -305,6 +432,8 @@ def evaluate_ai_ping_pong_guard(
     metrics: dict[str, Any] = {
         "flips_6h": flips_6h,
         "last_6h_side": prev_side_6h or None,
+        "venue_rt_fee_bps": rt_fee_bps,
+        "effective_flip_min_edge_pct": min_edge,
     }
 
     # Resolve the most recent opposite-side fill within cooldown (AI fill or fresh BOT fill <= 30m)
@@ -622,5 +751,8 @@ def format_ai_decision_scorecard_line(scorecard: Any) -> str:
 __all__ = [
     "evaluate_ai_decision_scorecard",
     "evaluate_ai_ping_pong_guard",
+    "evaluate_ai_target_ev_guard",
     "format_ai_decision_scorecard_line",
+    "resolve_venue_flip_min_edge_pct",
+    "resolve_venue_round_trip_fee_bps",
 ]

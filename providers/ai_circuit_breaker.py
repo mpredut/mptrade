@@ -41,6 +41,7 @@ DEFAULT_REPLACE_MIN_PRICE_DELTA_PCT: float = 0.25
 DEFAULT_MAX_DAILY_BUY_NOTIONAL_USD: float = 20000.0
 DEFAULT_FLIP_COOLDOWN_MIN: float = 30.0
 DEFAULT_FLIP_MIN_EDGE_PCT: float = 0.60
+DEFAULT_TARGET_EV_FEE_MULT: float = 2.0
 DEFAULT_MAX_FLIPS_6H: int = 2
 DEFAULT_SCORECARD_WINDOW_TRADES: int = 5
 DEFAULT_SCORECARD_MAX_LOSS_STREAK: int = 3
@@ -74,6 +75,10 @@ def parse_intent_circuit_breaker_config(conf: dict[str, str]) -> dict[str, Any]:
         "flip_min_edge_pct": safe_nonneg_float(
             cfg.get("autonomous_trading_flip_min_edge_pct"),
             default=DEFAULT_FLIP_MIN_EDGE_PCT,
+        ),
+        "target_ev_fee_mult": safe_nonneg_float(
+            cfg.get("autonomous_trading_target_ev_fee_mult"),
+            default=DEFAULT_TARGET_EV_FEE_MULT,
         ),
         "max_flips_6h": safe_nonneg_int(
             cfg.get("autonomous_trading_max_flips_6h"),
@@ -271,6 +276,7 @@ __all__ = [
     "DEFAULT_SCORECARD_COOLDOWN_HOURS",
     "DEFAULT_SCORECARD_MAX_LOSS_STREAK",
     "DEFAULT_SCORECARD_WINDOW_TRADES",
+    "DEFAULT_TARGET_EV_FEE_MULT",
     "evaluate_ai_intent_circuit_breaker",
     "parse_intent_circuit_breaker_config",
 ]

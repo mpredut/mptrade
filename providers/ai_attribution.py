@@ -1,0 +1,922 @@
+"""Pure standalone AI vs. BOT attribution, model-tier audit, override audit, and Delta-Gate telemetry.
+
+Single Source of Truth (SSOT) for offline performance attribution across all venues (Binance, Kraken,
+Hyperliquid, Trading212). Core evaluation functions operate purely in memory (0 ms, zero network or
+broker dependencies); the optional workspace loader reads local state/audit/log artifacts via
+``state_io`` and ``cachepaths``.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import glob
+import os
+import re
+from typing import Any, Mapping, Optional
+
+from botcore import (
+    clean_order_id,
+    clean_scalar_str,
+    clean_upper_scalar,
+    normalize_side,
+    resolve_now_ts,
+    safe_float,
+    safe_nonneg_float,
+    safe_nonneg_int,
+    safe_pos_float,
+)
+from cachepaths import (
+    matches_asset_scope,
+    normalize_venue_name,
+    resolve_cachedb_filepath,
+)
+from state_io import read_json_dict, read_jsonl_dicts, read_text_lines
+from .ai_survival_guard import (
+    _collect_canceled_order_ids,
+    _extract_intent_exec_price,
+    _extract_intent_exec_ts,
+    _extract_intent_notional_usd,
+    _is_filled_ai_intent,
+    _resolve_live_price_for_symbol,
+    resolve_venue_round_trip_fee_bps,
+)
+from .execution_audit import _extract_audit_fill_metrics, iter_audit_jsonl_paths
+from .intent_state import (
+    _extract_intent_id,
+    _intent_venue_symbol_side_key,
+    collect_known_ai_order_ids,
+    extract_intent_order_type,
+    extract_intent_primary_order_id,
+    extract_intent_side,
+    extract_intent_timestamp_s,
+    extract_intent_trade_plan_levels,
+    load_durable_intents_state,
+    parse_pos_epoch_s,
+)
+from .intent_telemetry import evaluate_trade_plan_status
+from .order_id_context import resolve_order_owner
+
+_GUARD_CODE_RE = re.compile(r"^([A-Za-z0-9_]+)")
+_CB_TAG_RE = re.compile(r"^([a-z0-9_]+)")
+_LOG_DAY_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+_LOG_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})")
+_ESCALATE_MODEL_RE = re.compile(r"Escalating reasoning effort to\s+([^\s]+)\s+for high-signal cycle")
+_AUDIT_SKIP_EVENTS = frozenset({"submit_requested", "submit_refused", "cancel_requested", "cancel_accepted", "cancel_rejected", "status_error"})
+
+
+def _extract_guard_code(raw_entry: Any) -> str:
+    txt = clean_scalar_str(raw_entry) or ""
+    if not txt:
+        return ""
+    m = _GUARD_CODE_RE.match(txt)
+    return m.group(1).upper() if m else ""
+
+
+def _extract_cb_tag(raw_reason: Any) -> str:
+    txt = (clean_scalar_str(raw_reason) or "").lower()
+    if not txt:
+        return ""
+    m = _CB_TAG_RE.match(txt)
+    return m.group(1) if m else txt[:48]
+
+
+def _compute_profit_factor(outcomes: list[dict[str, Any]]) -> Optional[float]:
+    gross_win = sum(o["net_usd"] for o in outcomes if o["net_usd"] > 0.0)
+    gross_loss = abs(sum(o["net_usd"] for o in outcomes if o["net_usd"] < 0.0))
+    if gross_loss <= 1e-9:
+        return None
+    return round(gross_win / gross_loss, 3)
+
+
+def _summarize_outcomes_bucket(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    closed = [o for o in outcomes if o["kind"] != "BUY_MTM"]
+    open_mtm = [o for o in outcomes if o["kind"] == "BUY_MTM"]
+    wins = sum(1 for o in outcomes if o["net_edge_pct"] > 0.0)
+    losses = sum(1 for o in outcomes if o["net_edge_pct"] < 0.0)
+    flat = len(outcomes) - wins - losses
+    n = len(outcomes)
+    realized_gross = sum(o["gross_usd"] for o in closed)
+    realized_fees = sum(o["fee_usd"] for o in closed)
+    realized_net = sum(o["net_usd"] for o in closed)
+    open_net = sum(o["net_usd"] for o in open_mtm)
+    open_fees = sum(o["fee_usd"] for o in open_mtm)
+    avg_net_edge = (sum(o["net_edge_pct"] for o in outcomes) / n) if n > 0 else 0.0
+    win_rate = ((wins / n) * 100.0) if n > 0 else 0.0
+    return {
+        "scored": n,
+        "closed_trades": len(closed),
+        "open_mtm": len(open_mtm),
+        "wins": wins,
+        "losses": losses,
+        "flat": flat,
+        "win_rate_pct": round(win_rate, 1),
+        "avg_net_edge_pct": round(avg_net_edge, 3),
+        "realized_gross_usd": round(realized_gross, 2),
+        "realized_net_usd": round(realized_net, 2),
+        "open_mtm_net_usd": round(open_net, 2),
+        "total_net_usd": round(realized_net + open_net, 2),
+        "est_fees_usd": round(realized_fees + open_fees, 2),
+        "profit_factor": _compute_profit_factor(outcomes),
+    }
+
+
+def _classify_intent_lifecycle(it: dict[str, Any], canceled_oids: set[str]) -> str:
+    st = clean_upper_scalar(it.get("status")) or "UNKNOWN"
+    if st == "EXECUTED":
+        return "EXECUTED_FILLED" if _is_filled_ai_intent(it, canceled_oids) else "EXECUTED_UNFILLED"
+    if st in (
+        "OBSERVED_SHADOW",
+        "REJECTED_AI_CIRCUIT_BREAKER",
+        "SKIPPED_DUPLICATE_OPEN_ORDER",
+        "BLOCKED_BY_GUARD",
+    ):
+        return st
+    return "FAILED_OR_OTHER"
+
+
+def _evaluate_execution_audit_actors(
+    audit_records: list[dict[str, Any]],
+    *,
+    known_ai_order_ids: set[str],
+    cutoff_ts: float,
+    eff_now: float,
+    scope: str,
+) -> dict[str, Any]:
+    """Deduplicate multi-venue execution_audit JSONL events into filled orders and compare AI vs BOT vs MANUAL."""
+    orders: dict[tuple[str, str], dict[str, Any]] = {}
+    intent_to_key: dict[str, tuple[str, str]] = {}
+
+    for rec in audit_records:
+        if not isinstance(rec, dict):
+            continue
+        ev = (clean_scalar_str(rec.get("event")) or "").lower()
+        if ev in _AUDIT_SKIP_EVENTS:
+            continue
+        ts_s = parse_pos_epoch_s(rec.get("ts")) or 0.0
+        if ts_s <= 0.0 or ts_s < cutoff_ts or ts_s > eff_now + 60.0:
+            continue
+        ven = normalize_venue_name(clean_scalar_str(rec.get("venue")) or "")
+        sym = clean_scalar_str(rec.get("symbol")) or ""
+        if not sym:
+            continue
+        if scope and scope != "all" and not matches_asset_scope(sym, ven, scope):
+            continue
+        oid = clean_order_id(rec.get("order_id")) or ""
+        iid = _extract_intent_id(rec) or ""
+        key: Optional[tuple[str, str]] = None
+        if oid:
+            key = (ven, oid)
+            if iid:
+                prev_key = intent_to_key.get(iid)
+                if prev_key is not None and prev_key != key and prev_key in orders:
+                    merged = orders.pop(prev_key)
+                    orders.setdefault(key, {}).update(merged)
+                intent_to_key[iid] = key
+        elif iid:
+            key = intent_to_key.get(iid) or (ven, f"intent:{iid}")
+            intent_to_key[iid] = key
+        if key is None:
+            continue
+
+        entry = orders.setdefault(
+            key,
+            {
+                "venue": ven,
+                "symbol": sym,
+                "order_id": oid,
+                "intent_id": iid,
+                "client_order_id": "",
+                "side": "",
+                "order_type": "LIMIT",
+                "ts": ts_s,
+                "filled_qty": 0.0,
+                "cost_usd": 0.0,
+                "price": 0.0,
+                "fee_usd": 0.0,
+                "is_fill": False,
+            },
+        )
+        if oid and not entry["order_id"]:
+            entry["order_id"] = oid
+        if cid := clean_order_id(rec.get("client_order_id")):
+            entry["client_order_id"] = cid
+        if sd := normalize_side(rec.get("side")):
+            entry["side"] = sd
+        if rec.get("market") is True:
+            entry["order_type"] = "MARKET"
+        if ts_s > entry["ts"]:
+            entry["ts"] = ts_s
+
+        _, _, _, f_q, _, cost_f, f_px, is_fill = _extract_audit_fill_metrics(rec, fallback_ref_price=False)
+        if f_px is not None and f_px > 0.0 and entry["price"] <= 0.0:
+            entry["price"] = f_px
+        if is_fill:
+            entry["is_fill"] = True
+            if f_q is not None and f_q > entry["filled_qty"]:
+                entry["filled_qty"] = f_q
+            if cost_f is not None and cost_f > entry["cost_usd"]:
+                entry["cost_usd"] = cost_f
+            if f_px is not None and f_px > 0.0:
+                entry["price"] = f_px
+            if (fee_f := safe_nonneg_float(rec.get("fee"), default=0.0)) > entry["fee_usd"]:
+                entry["fee_usd"] = fee_f
+
+    filled_entries: list[dict[str, Any]] = []
+    for entry in orders.values():
+        if not entry["is_fill"] or entry["side"] not in ("BUY", "SELL"):
+            continue
+        px = entry["price"]
+        qty = entry["filled_qty"]
+        cost = entry["cost_usd"]
+        if cost <= 0.0 and qty > 0.0 and px > 0.0:
+            cost = qty * px
+        if px <= 0.0 and cost > 0.0 and qty > 0.0:
+            px = cost / qty
+        if px <= 0.0 or cost <= 0.0:
+            continue
+        oid = entry["order_id"]
+        cid = entry["client_order_id"]
+        owner = resolve_order_owner(cid) if cid else ""
+        if owner == "ai_executor" or (oid and oid in known_ai_order_ids) or (cid and cid in known_ai_order_ids):
+            actor = "AI"
+            owner = "ai_executor"
+        elif owner == "manual":
+            actor = "MANUAL"
+        elif owner:
+            actor = "BOT"
+        else:
+            actor = "OTHER"
+            owner = "unattributed"
+        leg_fee_bps = resolve_venue_round_trip_fee_bps(
+            entry["venue"], entry["symbol"], order_type=entry["order_type"]
+        ) / 2.0
+        est_fee_usd = entry["fee_usd"] if entry["fee_usd"] > 0.0 else cost * (leg_fee_bps / 10000.0)
+        filled_entries.append({
+            **entry,
+            "price": px,
+            "cost_usd": cost,
+            "actor": actor,
+            "owner": owner,
+            "leg_fee_bps": leg_fee_bps,
+            "est_fee_usd": est_fee_usd,
+        })
+
+    filled_entries.sort(key=lambda r: r["ts"])
+
+    def _aggregate(group_field: str) -> dict[str, dict[str, Any]]:
+        buckets: dict[str, dict[str, Any]] = {}
+        pending_b: dict[tuple[str, str, str, tuple[str, ...]], list[dict[str, Any]]] = {}
+        pending_s: dict[tuple[str, str, str, tuple[str, ...]], list[dict[str, Any]]] = {}
+
+        for row in filled_entries:
+            g_name = str(row[group_field])
+            b = buckets.setdefault(
+                g_name,
+                {
+                    "filled_orders": 0,
+                    "buys": 0,
+                    "sells": 0,
+                    "buy_notional_usd": 0.0,
+                    "sell_notional_usd": 0.0,
+                    "est_fees_usd": 0.0,
+                    "matched_round_trips": 0,
+                    "realized_net_usd": 0.0,
+                },
+            )
+            b["filled_orders"] += 1
+            b["est_fees_usd"] += row["est_fee_usd"]
+            if row["side"] == "BUY":
+                b["buys"] += 1
+                b["buy_notional_usd"] += row["cost_usd"]
+            else:
+                b["sells"] += 1
+                b["sell_notional_usd"] += row["cost_usd"]
+
+            v_k, base_k, q_k, _ = _intent_venue_symbol_side_key(row["venue"], row["symbol"], row["side"])
+            pkey = (g_name, v_k, base_k, q_k)
+            if row["side"] == "BUY":
+                sq = pending_s.get(pkey)
+                if sq:
+                    prev_s = sq.pop()
+                    matched_usd = min(prev_s["cost_usd"], row["cost_usd"])
+                    gross_pct = ((prev_s["price"] - row["price"]) / prev_s["price"]) * 100.0
+                    rt_bps = prev_s["leg_fee_bps"] + row["leg_fee_bps"]
+                    b["matched_round_trips"] += 1
+                    b["realized_net_usd"] += matched_usd * ((gross_pct - rt_bps / 100.0) / 100.0)
+                else:
+                    pending_b.setdefault(pkey, []).append(row)
+            else:
+                bq = pending_b.get(pkey)
+                if bq:
+                    prev_b = bq.pop()
+                    matched_usd = min(prev_b["cost_usd"], row["cost_usd"])
+                    gross_pct = ((row["price"] - prev_b["price"]) / prev_b["price"]) * 100.0
+                    rt_bps = prev_b["leg_fee_bps"] + row["leg_fee_bps"]
+                    b["matched_round_trips"] += 1
+                    b["realized_net_usd"] += matched_usd * ((gross_pct - rt_bps / 100.0) / 100.0)
+                else:
+                    pending_s.setdefault(pkey, []).append(row)
+
+        out: dict[str, dict[str, Any]] = {}
+        for g_name, b in sorted(buckets.items()):
+            out[g_name] = {
+                "filled_orders": b["filled_orders"],
+                "buys": b["buys"],
+                "sells": b["sells"],
+                "buy_notional_usd": round(b["buy_notional_usd"], 2),
+                "sell_notional_usd": round(b["sell_notional_usd"], 2),
+                "est_fees_usd": round(b["est_fees_usd"], 2),
+                "matched_round_trips": b["matched_round_trips"],
+                "realized_net_usd": round(b["realized_net_usd"], 2),
+            }
+        return out
+
+    return {
+        "total_filled_orders": len(filled_entries),
+        "by_actor": _aggregate("actor"),
+        "by_owner": _aggregate("owner"),
+    }
+
+
+def summarize_delta_gate_logs(
+    log_lines: list[str],
+    *,
+    cutoff_ts: float = 0.0,
+    eval_state: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Summarize Delta-Gate LLM call savings and high-effort escalations from supervisor log lines."""
+    skips = 0
+    llm_cycles = 0
+    escalations = 0
+    escalated_models: dict[str, int] = {}
+
+    for line in log_lines:
+        if not isinstance(line, str) or not line:
+            continue
+        if cutoff_ts > 0.0:
+            m_ts = _LOG_TS_RE.search(line)
+            if m_ts:
+                try:
+                    dt = datetime.strptime(m_ts.group(1).replace("T", " "), "%Y-%m-%d %H:%M:%S").replace(
+                        tzinfo=timezone.utc
+                    )
+                    if dt.timestamp() < cutoff_ts - 86400.0:
+                        continue
+                except ValueError:
+                    pass
+        if "[DELTA GATE] Delta-Gate HOLD carry-forward" in line:
+            skips += 1
+        elif "Autonomous AI Supervisor cycle complete:" in line:
+            llm_cycles += 1
+        elif m_esc := _ESCALATE_MODEL_RE.search(line):
+            escalations += 1
+            mdl = m_esc.group(1).strip()
+            if mdl:
+                escalated_models[mdl] = escalated_models.get(mdl, 0) + 1
+
+    total_cycles = skips + llm_cycles
+    saved_pct = round((skips / total_cycles) * 100.0, 1) if total_cycles > 0 else 0.0
+    ev_map = eval_state if isinstance(eval_state, Mapping) else {}
+    return {
+        "delta_gate_skips": skips,
+        "llm_cycles_completed": llm_cycles,
+        "total_cycles_observed": total_cycles,
+        "calls_saved_pct": saved_pct,
+        "high_effort_escalations": escalations,
+        "escalated_models": escalated_models,
+        "last_eval_model": clean_scalar_str(ev_map.get("model_used")) or "",
+        "last_eval_ts": round(parse_pos_epoch_s(ev_map.get("ts")) or 0.0, 3),
+    }
+
+
+def evaluate_ai_attribution(
+    intents: list[dict[str, Any]],
+    *,
+    now_ts: Optional[float] = None,
+    lookback_days: float = 7.0,
+    scope: str = "all",
+    live_prices: Optional[Mapping[str, Any]] = None,
+    audit_records: Optional[list[dict[str, Any]]] = None,
+    reconciler_log_lines: Optional[list[str]] = None,
+    crypto_eval_state: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Compute standalone multi-venue AI attribution, model-tier audit, override audit, and AI vs BOT comparison."""
+    eff_now = resolve_now_ts(now_ts)
+    lb_days = safe_pos_float(lookback_days, default=7.0) or 7.0
+    eff_scope = (clean_scalar_str(scope) or "all").lower()
+    cutoff = eff_now - (lb_days * 86400.0)
+    prices_map = live_prices if isinstance(live_prices, Mapping) else {}
+    items = intents if isinstance(intents, list) else []
+
+    canceled_oids = _collect_canceled_order_ids(items)
+    known_ai_oids = collect_known_ai_order_ids(items)
+
+    status_counts: dict[str, int] = {}
+    cb_reason_counts: dict[str, int] = {}
+    model_intent_counts: dict[str, dict[str, int]] = {}
+    override_intent_counts: dict[str, int] = {}
+    filled_rows: list[dict[str, Any]] = []
+
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        sym = clean_scalar_str(it.get("symbol")) or ""
+        ven = normalize_venue_name(clean_scalar_str(it.get("venue")) or "")
+        if not sym:
+            continue
+        if eff_scope != "all" and not matches_asset_scope(sym, ven, eff_scope):
+            continue
+        _, base_ts = extract_intent_timestamp_s(it)
+        exec_ts = _extract_intent_exec_ts(it)
+        ref_ts = exec_ts if exec_ts > 0.0 else base_ts
+        if ref_ts <= 0.0 or ref_ts < cutoff or ref_ts > eff_now + 60.0:
+            continue
+
+        lifecycle = _classify_intent_lifecycle(it, canceled_oids)
+        status_counts[lifecycle] = status_counts.get(lifecycle, 0) + 1
+
+        mdl = clean_scalar_str(it.get("model_used")) or "unknown"
+        m_cnt = model_intent_counts.setdefault(mdl, {"intents": 0, "filled": 0})
+        m_cnt["intents"] += 1
+
+        if cb_rsn := (
+            it.get("circuit_breaker_reason")
+            or it.get("scorecard_downgraded_to_shadow")
+            or (it.get("history")[-1].get("guard_reason") if isinstance(it.get("history"), list) and it.get("history") and isinstance(it.get("history")[-1], dict) and it.get("history")[-1].get("guard_allowed") is False else "")
+        ):
+            if tag := _extract_cb_tag(cb_rsn):
+                cb_reason_counts[tag] = cb_reason_counts.get(tag, 0) + 1
+
+        if lifecycle != "EXECUTED_FILLED":
+            continue
+        side = extract_intent_side(it)
+        if side not in ("BUY", "SELL"):
+            continue
+        px = _extract_intent_exec_price(it)
+        if px <= 0.0:
+            continue
+
+        m_cnt["filled"] += 1
+        ot = extract_intent_order_type(it)
+        rt_bps = resolve_venue_round_trip_fee_bps(ven, sym, order_type=ot)
+        inv_px, tgt_px = extract_intent_trade_plan_levels(it, side=side, ref_price=px)
+        raw_ov = it.get("advisory_guards_overridden")
+        ov_codes = sorted({
+            code
+            for raw_item in (raw_ov if isinstance(raw_ov, list) else [])
+            if (code := _extract_guard_code(raw_item))
+        })
+        for code in ov_codes:
+            override_intent_counts[code] = override_intent_counts.get(code, 0) + 1
+
+        v_k, b_k, q_k, _ = _intent_venue_symbol_side_key(ven, sym, side)
+        filled_rows.append({
+            "intent_id": _extract_intent_id(it),
+            "order_id": extract_intent_primary_order_id(it, default="", include_top_level=True),
+            "ts": ref_ts,
+            "venue": ven,
+            "symbol": sym,
+            "inst_key": (v_k, b_k, q_k),
+            "side": side,
+            "order_type": ot,
+            "px": px,
+            "usd": _extract_intent_notional_usd(it),
+            "leg_fee_bps": rt_bps / 2.0,
+            "rt_fee_bps": rt_bps,
+            "model_used": mdl,
+            "invalidation_px": inv_px,
+            "target_px": tgt_px,
+            "has_plan": inv_px is not None or tgt_px is not None,
+            "override_codes": ov_codes,
+        })
+
+    filled_rows.sort(key=lambda r: r["ts"])
+
+    pending_buys: dict[tuple[str, str, tuple[str, ...]], list[dict[str, Any]]] = {}
+    pending_sells: dict[tuple[str, str, tuple[str, ...]], list[dict[str, Any]]] = {}
+    outcomes: list[dict[str, Any]] = []
+    plan_status_counts: dict[str, int] = {"TARGET_HIT": 0, "INVALIDATED": 0, "ACTIVE": 0, "CLOSED_EARLY": 0}
+
+    def _record_closed_plan_outcome(entry_row: dict[str, Any], exit_px: float) -> str:
+        if not entry_row["has_plan"]:
+            return ""
+        st = evaluate_trade_plan_status(
+            entry_row["side"], exit_px, entry_row["invalidation_px"], entry_row["target_px"]
+        )
+        final_st = st if st in ("TARGET_HIT", "INVALIDATED") else "CLOSED_EARLY"
+        plan_status_counts[final_st] = plan_status_counts.get(final_st, 0) + 1
+        return final_st
+
+    for row in filled_rows:
+        ikey = row["inst_key"]
+        if row["side"] == "BUY":
+            sq = pending_sells.get(ikey)
+            if sq:
+                prev_s = sq.pop()
+                gross_pct = ((prev_s["px"] - row["px"]) / prev_s["px"]) * 100.0
+                rt_bps = prev_s["leg_fee_bps"] + row["leg_fee_bps"]
+                net_pct = gross_pct - (rt_bps / 100.0)
+                matched_usd = (
+                    min(prev_s["usd"], row["usd"])
+                    if (prev_s["usd"] > 0.0 and row["usd"] > 0.0)
+                    else max(prev_s["usd"], row["usd"])
+                )
+                gross_usd = matched_usd * (gross_pct / 100.0)
+                fee_usd = matched_usd * (rt_bps / 10000.0)
+                plan_st = _record_closed_plan_outcome(prev_s, row["px"])
+                outcomes.append({
+                    "ts": row["ts"],
+                    "kind": "SELL->BUY",
+                    "venue": row["venue"],
+                    "symbol": row["symbol"],
+                    "model_used": prev_s["model_used"],
+                    "matched_usd": matched_usd,
+                    "gross_edge_pct": gross_pct,
+                    "net_edge_pct": net_pct,
+                    "gross_usd": gross_usd,
+                    "fee_usd": fee_usd,
+                    "net_usd": gross_usd - fee_usd,
+                    "has_plan": prev_s["has_plan"],
+                    "plan_outcome": plan_st,
+                    "override_codes": list(prev_s["override_codes"]),
+                })
+            else:
+                pending_buys.setdefault(ikey, []).append(row)
+        else:
+            bq = pending_buys.get(ikey)
+            if bq:
+                prev_b = bq.pop()
+                gross_pct = ((row["px"] - prev_b["px"]) / prev_b["px"]) * 100.0
+                rt_bps = prev_b["leg_fee_bps"] + row["leg_fee_bps"]
+                net_pct = gross_pct - (rt_bps / 100.0)
+                matched_usd = (
+                    min(prev_b["usd"], row["usd"])
+                    if (prev_b["usd"] > 0.0 and row["usd"] > 0.0)
+                    else max(prev_b["usd"], row["usd"])
+                )
+                gross_usd = matched_usd * (gross_pct / 100.0)
+                fee_usd = matched_usd * (rt_bps / 10000.0)
+                plan_st = _record_closed_plan_outcome(prev_b, row["px"])
+                outcomes.append({
+                    "ts": row["ts"],
+                    "kind": "BUY->SELL",
+                    "venue": row["venue"],
+                    "symbol": row["symbol"],
+                    "model_used": prev_b["model_used"],
+                    "matched_usd": matched_usd,
+                    "gross_edge_pct": gross_pct,
+                    "net_edge_pct": net_pct,
+                    "gross_usd": gross_usd,
+                    "fee_usd": fee_usd,
+                    "net_usd": gross_usd - fee_usd,
+                    "has_plan": prev_b["has_plan"],
+                    "plan_outcome": plan_st,
+                    "override_codes": list(prev_b["override_codes"]),
+                })
+            else:
+                pending_sells.setdefault(ikey, []).append(row)
+
+    for bq in pending_buys.values():
+        for buy_row in bq:
+            spot_px = _resolve_live_price_for_symbol(prices_map, buy_row["venue"], buy_row["symbol"])
+            if spot_px is None or spot_px <= 0.0:
+                if buy_row["has_plan"]:
+                    plan_status_counts["ACTIVE"] += 1
+                continue
+            plan_st = ""
+            if buy_row["has_plan"]:
+                plan_st = evaluate_trade_plan_status(
+                    "BUY", spot_px, buy_row["invalidation_px"], buy_row["target_px"]
+                )
+                plan_status_counts[plan_st] = plan_status_counts.get(plan_st, 0) + 1
+            gross_pct = ((spot_px - buy_row["px"]) / buy_row["px"]) * 100.0
+            rt_bps = buy_row["rt_fee_bps"]
+            net_pct = gross_pct - (rt_bps / 100.0)
+            gross_usd = buy_row["usd"] * (gross_pct / 100.0)
+            fee_usd = buy_row["usd"] * (rt_bps / 10000.0)
+            outcomes.append({
+                "ts": buy_row["ts"],
+                "kind": "BUY_MTM",
+                "venue": buy_row["venue"],
+                "symbol": buy_row["symbol"],
+                "model_used": buy_row["model_used"],
+                "matched_usd": buy_row["usd"],
+                "gross_edge_pct": gross_pct,
+                "net_edge_pct": net_pct,
+                "gross_usd": gross_usd,
+                "fee_usd": fee_usd,
+                "net_usd": gross_usd - fee_usd,
+                "has_plan": buy_row["has_plan"],
+                "plan_outcome": plan_st,
+                "override_codes": list(buy_row["override_codes"]),
+            })
+
+    # Groupings: by venue, by venue:symbol, by model_used, by overridden guard, by trade plan coverage
+    by_venue_rows: dict[str, list[dict[str, Any]]] = {}
+    by_symbol_rows: dict[str, list[dict[str, Any]]] = {}
+    by_model_rows: dict[str, list[dict[str, Any]]] = {}
+    by_override_rows: dict[str, list[dict[str, Any]]] = {}
+    for out in outcomes:
+        by_venue_rows.setdefault(out["venue"] or "unknown", []).append(out)
+        by_symbol_rows.setdefault(f"{out['venue']}:{out['symbol']}", []).append(out)
+        by_model_rows.setdefault(out["model_used"], []).append(out)
+        for code in out["override_codes"]:
+            by_override_rows.setdefault(code, []).append(out)
+
+    by_venue = {v: _summarize_outcomes_bucket(rows) for v, rows in sorted(by_venue_rows.items())}
+    by_symbol = {k: _summarize_outcomes_bucket(rows) for k, rows in sorted(by_symbol_rows.items())}
+
+    by_model: dict[str, dict[str, Any]] = {}
+    all_models = sorted(set(model_intent_counts.keys()) | set(by_model_rows.keys()))
+    for mdl in all_models:
+        cnts = model_intent_counts.get(mdl, {"intents": 0, "filled": 0})
+        by_model[mdl] = {
+            "intents": cnts["intents"],
+            "filled": cnts["filled"],
+            **_summarize_outcomes_bucket(by_model_rows.get(mdl, [])),
+        }
+
+    override_audit: dict[str, dict[str, Any]] = {}
+    all_ov_codes = sorted(set(override_intent_counts.keys()) | set(by_override_rows.keys()))
+    for code in all_ov_codes:
+        ov_outcomes = by_override_rows.get(code, [])
+        ai_right = sum(1 for o in ov_outcomes if o["net_edge_pct"] > 0.0)
+        guard_right = sum(1 for o in ov_outcomes if o["net_edge_pct"] < 0.0)
+        n_ov = len(ov_outcomes)
+        override_audit[code] = {
+            "overrides_filled": override_intent_counts.get(code, 0),
+            "scored": n_ov,
+            "ai_right": ai_right,
+            "guard_right": guard_right,
+            "ai_win_rate_pct": round((ai_right / n_ov) * 100.0, 1) if n_ov > 0 else 0.0,
+            "avg_net_edge_pct": round(sum(o["net_edge_pct"] for o in ov_outcomes) / n_ov, 3) if n_ov > 0 else 0.0,
+            "net_usd": round(sum(o["net_usd"] for o in ov_outcomes), 2),
+        }
+
+    planned_filled = sum(1 for r in filled_rows if r["has_plan"])
+    unplanned_filled = len(filled_rows) - planned_filled
+    planned_outcomes = [o for o in outcomes if o["has_plan"]]
+    unplanned_outcomes = [o for o in outcomes if not o["has_plan"]]
+    trade_plan_calibration = {
+        "planned_filled": planned_filled,
+        "unplanned_filled": unplanned_filled,
+        "plan_coverage_pct": round((planned_filled / len(filled_rows)) * 100.0, 1) if filled_rows else 0.0,
+        "status_counts": plan_status_counts,
+        "planned_performance": _summarize_outcomes_bucket(planned_outcomes),
+        "unplanned_performance": _summarize_outcomes_bucket(unplanned_outcomes),
+    }
+
+    actor_comparison = _evaluate_execution_audit_actors(
+        audit_records if isinstance(audit_records, list) else [],
+        known_ai_order_ids=known_ai_oids,
+        cutoff_ts=cutoff,
+        eff_now=eff_now,
+        scope=eff_scope,
+    )
+    delta_gate = summarize_delta_gate_logs(
+        reconciler_log_lines if isinstance(reconciler_log_lines, list) else [],
+        cutoff_ts=cutoff,
+        eval_state=crypto_eval_state,
+    )
+
+    return {
+        "generated_at_ts": round(eff_now, 3),
+        "lookback_days": lb_days,
+        "scope": eff_scope,
+        "ai_intents_total": sum(status_counts.values()),
+        "ai_filled_total": len(filled_rows),
+        "ai_status_counts": status_counts,
+        "ai_circuit_breaker_triggers": cb_reason_counts,
+        "ai_summary": _summarize_outcomes_bucket(outcomes),
+        "ai_by_venue": by_venue,
+        "ai_by_symbol": by_symbol,
+        "ai_by_model": by_model,
+        "advisory_guard_override_audit": override_audit,
+        "trade_plan_calibration": trade_plan_calibration,
+        "execution_audit_ai_vs_bot": actor_comparison,
+        "delta_gate_efficiency": delta_gate,
+    }
+
+
+def _workspace_cachedb_path(workspace_dir: str, filename: str) -> str:
+    return str(resolve_cachedb_filepath(os.path.join(workspace_dir, "cachedb", filename)))
+
+
+def _load_live_prices_from_workspace(workspace_dir: str) -> dict[str, float]:
+    price_path = _workspace_cachedb_path(workspace_dir, "cache_current_price.json")
+    raw = read_json_dict(price_path, default={})
+    items = raw.get("items") if isinstance(raw, dict) else None
+    prices: dict[str, float] = {}
+    if isinstance(items, dict):
+        for k, v in items.items():
+            px = safe_pos_float(v, default=None)
+            if px is None and isinstance(v, list) and v:
+                last = v[-1]
+                px = safe_pos_float(last[1], default=None) if isinstance(last, (list, tuple)) and len(last) >= 2 else safe_pos_float(last, default=None)
+            if px is None and isinstance(v, dict):
+                px = safe_pos_float(v.get("price"), default=None)
+            if px is not None:
+                prices[str(k)] = px
+    return prices
+
+
+def _load_reconciler_log_lines(workspace_dir: str, *, min_day: str, max_day: str) -> list[str]:
+    log_dir = os.path.join(workspace_dir, "logger")
+    if not os.path.isdir(log_dir):
+        return []
+    paths = sorted(glob.glob(os.path.join(glob.escape(log_dir), "autonomous_ai_reconciler*.log")))
+    lines: list[str] = []
+    for lp in paths:
+        bn = os.path.basename(lp)
+        m_day = _LOG_DAY_RE.search(bn)
+        if m_day:
+            file_day = m_day.group(1)
+            if (min_day and file_day < min_day) or (max_day and file_day > max_day):
+                continue
+        lines.extend(read_text_lines(lp, strip=True, skip_empty=True))
+    return lines
+
+
+def load_and_evaluate_ai_attribution(
+    workspace_dir: str,
+    *,
+    lookback_days: float = 7.0,
+    scope: str = "all",
+    now_ts: Optional[float] = None,
+) -> dict[str, Any]:
+    """Load local workspace intents, execution audits, live price cache, and reconciler logs and evaluate attribution."""
+    eff_now = resolve_now_ts(now_ts)
+    lb_days = safe_pos_float(lookback_days, default=7.0) or 7.0
+    cutoff = max(0.0, eff_now - (lb_days * 86400.0))
+    min_day = datetime.fromtimestamp(max(0.0, cutoff - 86400.0), timezone.utc).strftime("%Y-%m-%d")
+    max_day = datetime.fromtimestamp(eff_now + 86400.0, timezone.utc).strftime("%Y-%m-%d")
+
+    intents_path = _workspace_cachedb_path(workspace_dir, "autonomous_trade_intents_state.json")
+    intents = load_durable_intents_state(intents_path)
+    live_prices = _load_live_prices_from_workspace(workspace_dir)
+
+    audit_dir = os.path.join(workspace_dir, "logger", "execution_audit")
+    audit_records: list[dict[str, Any]] = []
+    for ap in iter_audit_jsonl_paths(audit_dir, min_day=min_day, max_day=max_day):
+        audit_records.extend(read_jsonl_dicts(ap))
+
+    log_lines = _load_reconciler_log_lines(workspace_dir, min_day=min_day, max_day=max_day)
+    eval_path = _workspace_cachedb_path(workspace_dir, "auto_cryptotrade_executor_eval.json")
+    crypto_eval = read_json_dict(eval_path, default={})
+
+    return evaluate_ai_attribution(
+        intents,
+        now_ts=eff_now,
+        lookback_days=lb_days,
+        scope=scope,
+        live_prices=live_prices,
+        audit_records=audit_records,
+        reconciler_log_lines=log_lines,
+        crypto_eval_state=crypto_eval,
+    )
+
+
+def _fmt_usd(val: Any) -> str:
+    v = safe_float(val, default=0.0) or 0.0
+    return f"+${abs(v):.2f}" if v >= 0.0 else f"-${abs(v):.2f}"
+
+
+def _fmt_pf(pf: Any) -> str:
+    v = safe_pos_float(pf, default=None)
+    return f"{v:.2f}" if v is not None else "n/a"
+
+
+def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
+    """Format an attribution payload into a compact, readable ASCII summary report."""
+    if not isinstance(report, Mapping):
+        return ""
+    lb_days = safe_pos_float(report.get("lookback_days"), default=7.0) or 7.0
+    scope = clean_scalar_str(report.get("scope")) or "all"
+    ai_sum = report.get("ai_summary") if isinstance(report.get("ai_summary"), Mapping) else {}
+    lines: list[str] = [
+        f"=== MPTrade AI Attribution & Audit Report ({lb_days:g}d | scope={scope}) ===",
+        (
+            f"AI Intents: total={safe_nonneg_int(report.get('ai_intents_total'), 0)}, "
+            f"filled={safe_nonneg_int(report.get('ai_filled_total'), 0)}, "
+            f"scored={safe_nonneg_int(ai_sum.get('scored'), 0)} "
+            f"({safe_nonneg_int(ai_sum.get('closed_trades'), 0)} closed / {safe_nonneg_int(ai_sum.get('open_mtm'), 0)} open MTM)"
+        ),
+        (
+            f"AI Net P&L: realized={_fmt_usd(ai_sum.get('realized_net_usd'))} "
+            f"(gross={_fmt_usd(ai_sum.get('realized_gross_usd'))}), "
+            f"open_mtm={_fmt_usd(ai_sum.get('open_mtm_net_usd'))}, "
+            f"total={_fmt_usd(ai_sum.get('total_net_usd'))}, "
+            f"est_fees=${safe_nonneg_float(ai_sum.get('est_fees_usd'), 0.0):.2f}, "
+            f"WR={safe_nonneg_float(ai_sum.get('win_rate_pct'), 0.0):.1f}%, "
+            f"avg_edge={safe_float(ai_sum.get('avg_net_edge_pct'), 0.0) or 0.0:+.2f}%, "
+            f"PF={_fmt_pf(ai_sum.get('profit_factor'))}"
+        ),
+    ]
+
+    if st_counts := (report.get("ai_status_counts") if isinstance(report.get("ai_status_counts"), Mapping) else {}):
+        st_str = ", ".join(f"{k}={v}" for k, v in sorted(st_counts.items()))
+        lines.append(f"Lifecycle: {st_str}")
+
+    if cb_tr := (report.get("ai_circuit_breaker_triggers") if isinstance(report.get("ai_circuit_breaker_triggers"), Mapping) else {}):
+        cb_str = ", ".join(f"{k}={v}" for k, v in sorted(cb_tr.items()))
+        lines.append(f"AI Guard Triggers: {cb_str}")
+
+    by_model = report.get("ai_by_model") if isinstance(report.get("ai_by_model"), Mapping) else {}
+    if by_model:
+        lines.append("")
+        lines.append("-- By model_used --")
+        lines.append(f"  {'Model':<28} {'Int':>4} {'Fil':>4} {'Scr':>4} {'WR%':>6} {'Avg%':>7} {'NetUSD':>10} {'PF':>6}")
+        for mdl, m in sorted(by_model.items()):
+            lines.append(
+                f"  {mdl:<28} {safe_nonneg_int(m.get('intents'), 0):>4} "
+                f"{safe_nonneg_int(m.get('filled'), 0):>4} {safe_nonneg_int(m.get('scored'), 0):>4} "
+                f"{safe_nonneg_float(m.get('win_rate_pct'), 0.0):>5.1f}% "
+                f"{(safe_float(m.get('avg_net_edge_pct'), 0.0) or 0.0):>+6.2f}% "
+                f"{_fmt_usd(m.get('total_net_usd')):>10} {_fmt_pf(m.get('profit_factor')):>6}"
+            )
+
+    by_sym = report.get("ai_by_symbol") if isinstance(report.get("ai_by_symbol"), Mapping) else {}
+    if by_sym:
+        lines.append("")
+        lines.append("-- AI By Venue:Symbol --")
+        lines.append(f"  {'Venue:Symbol':<24} {'Cls':>4} {'MTM':>4} {'WR%':>6} {'Avg%':>7} {'RealUSD':>10} {'TotUSD':>10} {'Fees':>7}")
+        for vs, m in sorted(by_sym.items()):
+            lines.append(
+                f"  {vs:<24} {safe_nonneg_int(m.get('closed_trades'), 0):>4} "
+                f"{safe_nonneg_int(m.get('open_mtm'), 0):>4} "
+                f"{safe_nonneg_float(m.get('win_rate_pct'), 0.0):>5.1f}% "
+                f"{(safe_float(m.get('avg_net_edge_pct'), 0.0) or 0.0):>+6.2f}% "
+                f"{_fmt_usd(m.get('realized_net_usd')):>10} {_fmt_usd(m.get('total_net_usd')):>10} "
+                f"${safe_nonneg_float(m.get('est_fees_usd'), 0.0):>6.2f}"
+            )
+
+    ov_audit = report.get("advisory_guard_override_audit") if isinstance(report.get("advisory_guard_override_audit"), Mapping) else {}
+    if ov_audit:
+        lines.append("")
+        lines.append("-- Advisory Guard Override Audit (AI_RIGHT vs GUARD_RIGHT) --")
+        lines.append(f"  {'Guard':<14} {'Filled':>6} {'Scored':>6} {'AI_OK':>6} {'G_OK':>6} {'AI_WR%':>7} {'Avg%':>7} {'NetUSD':>10}")
+        for g_code, g in sorted(ov_audit.items()):
+            lines.append(
+                f"  {g_code:<14} {safe_nonneg_int(g.get('overrides_filled'), 0):>6} "
+                f"{safe_nonneg_int(g.get('scored'), 0):>6} {safe_nonneg_int(g.get('ai_right'), 0):>6} "
+                f"{safe_nonneg_int(g.get('guard_right'), 0):>6} {safe_nonneg_float(g.get('ai_win_rate_pct'), 0.0):>6.1f}% "
+                f"{(safe_float(g.get('avg_net_edge_pct'), 0.0) or 0.0):>+6.2f}% {_fmt_usd(g.get('net_usd')):>10}"
+            )
+
+    plans = report.get("trade_plan_calibration") if isinstance(report.get("trade_plan_calibration"), Mapping) else {}
+    if plans:
+        psc = plans.get("status_counts") if isinstance(plans.get("status_counts"), Mapping) else {}
+        p_perf = plans.get("planned_performance") if isinstance(plans.get("planned_performance"), Mapping) else {}
+        u_perf = plans.get("unplanned_performance") if isinstance(plans.get("unplanned_performance"), Mapping) else {}
+        lines.append("")
+        lines.append(
+            f"-- 4A Trade Plan Calibration: coverage={safe_nonneg_float(plans.get('plan_coverage_pct'), 0.0):.1f}% "
+            f"({safe_nonneg_int(plans.get('planned_filled'), 0)} planned / {safe_nonneg_int(plans.get('unplanned_filled'), 0)} unplanned) --"
+        )
+        lines.append(
+            f"  Outcomes: TARGET_HIT={safe_nonneg_int(psc.get('TARGET_HIT'), 0)}, "
+            f"INVALIDATED={safe_nonneg_int(psc.get('INVALIDATED'), 0)}, "
+            f"CLOSED_EARLY={safe_nonneg_int(psc.get('CLOSED_EARLY'), 0)}, "
+            f"ACTIVE={safe_nonneg_int(psc.get('ACTIVE'), 0)}"
+        )
+        lines.append(
+            f"  Planned avg={safe_float(p_perf.get('avg_net_edge_pct'), 0.0) or 0.0:+.2f}% ({_fmt_usd(p_perf.get('total_net_usd'))}) | "
+            f"Unplanned avg={safe_float(u_perf.get('avg_net_edge_pct'), 0.0) or 0.0:+.2f}% ({_fmt_usd(u_perf.get('total_net_usd'))})"
+        )
+
+    exec_cmp = report.get("execution_audit_ai_vs_bot") if isinstance(report.get("execution_audit_ai_vs_bot"), Mapping) else {}
+    by_actor = exec_cmp.get("by_actor") if isinstance(exec_cmp.get("by_actor"), Mapping) else {}
+    if by_actor:
+        lines.append("")
+        lines.append("-- Multi-Venue Execution Audit (AI vs BOT vs MANUAL) --")
+        lines.append(f"  {'Actor':<12} {'Fills':>5} {'B/S':>7} {'BuyUSD':>10} {'SellUSD':>10} {'RT':>4} {'RealNet':>10} {'Fees':>7}")
+        for actor, a in sorted(by_actor.items()):
+            bs = f"{safe_nonneg_int(a.get('buys'), 0)}/{safe_nonneg_int(a.get('sells'), 0)}"
+            lines.append(
+                f"  {actor:<12} {safe_nonneg_int(a.get('filled_orders'), 0):>5} {bs:>7} "
+                f"${safe_nonneg_float(a.get('buy_notional_usd'), 0.0):>9.0f} "
+                f"${safe_nonneg_float(a.get('sell_notional_usd'), 0.0):>9.0f} "
+                f"{safe_nonneg_int(a.get('matched_round_trips'), 0):>4} "
+                f"{_fmt_usd(a.get('realized_net_usd')):>10} "
+                f"${safe_nonneg_float(a.get('est_fees_usd'), 0.0):>6.2f}"
+            )
+
+    dg = report.get("delta_gate_efficiency") if isinstance(report.get("delta_gate_efficiency"), Mapping) else {}
+    if dg and (safe_nonneg_int(dg.get("total_cycles_observed"), 0) > 0 or dg.get("last_eval_model")):
+        lines.append("")
+        lines.append(
+            f"-- Delta-Gate Efficiency: skips={safe_nonneg_int(dg.get('delta_gate_skips'), 0)}, "
+            f"llm_cycles={safe_nonneg_int(dg.get('llm_cycles_completed'), 0)}, "
+            f"saved={safe_nonneg_float(dg.get('calls_saved_pct'), 0.0):.1f}%, "
+            f"high_escalations={safe_nonneg_int(dg.get('high_effort_escalations'), 0)}, "
+            f"last_model={dg.get('last_eval_model') or 'n/a'} --"
+        )
+
+    return "\n".join(lines)
+
+
+__all__ = [
+    "evaluate_ai_attribution",
+    "format_ai_attribution_report",
+    "load_and_evaluate_ai_attribution",
+    "summarize_delta_gate_logs",
+]
