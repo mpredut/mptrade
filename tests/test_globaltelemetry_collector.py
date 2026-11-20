@@ -2839,6 +2839,54 @@ def test_orderbook_shared_deadline_singleton_cache_isolation_and_pre_faza3_seams
     assert hasattr(mtc_mod.MacroBenchmarksSnapshotCollector, "_FETCH_DEADLINE_SEC")
 
 
+def test_step_external_symbols_cadence_first_and_slow_task_interleave(tmp_path, monkeypatch):
+    """Verify tier-first ob->deriv->whale sweep and fast ob/deriv interleave after slow scheduled tasks."""
+    import intelligence.globaltelemetry_collector as gtc_mod
+
+    col = GlobalTelemetryCollector(
+        symbols=["BTCUSDC", "TAOUSD"],
+        cache_dir=str(tmp_path),
+        orderbook_interval_sec=15.0,
+        derivatives_interval_sec=30.0,
+        whale_interval_sec=60.0,
+        skip_news=True,
+        skip_external=False,
+    )
+    order_log = []
+    monkeypatch.setattr(col, "update_orderbook", lambda s: (order_log.append(("ob", s)), True)[1])
+    monkeypatch.setattr(col, "update_derivatives", lambda s: (order_log.append(("deriv", s)), True)[1])
+    monkeypatch.setattr(col, "update_whale", lambda s: (order_log.append(("whale", s)), True)[1])
+
+    # 1. Cadence-first sweep updates all orderbooks before any derivatives or whales
+    res = col._new_external_cycle_results(1000.0)
+    col._step_external_symbols(1000.0, True, res, bounded=False)
+    assert order_log == [
+        ("ob", "BTCUSDC"), ("ob", "TAOUSD"),
+        ("deriv", "BTCUSDC"), ("deriv", "TAOUSD"),
+        ("whale", "BTCUSDC"), ("whale", "TAOUSD"),
+    ]
+    assert res["orderbook_updated"] == 2 and res["derivatives_updated"] == 2 and res["whale_updated"] == 2
+
+    # 2. Tier filter runs only requested fast tiers
+    order_log.clear()
+    res_fast = col._new_external_cycle_results(1020.0)
+    col._step_external_symbols(1020.0, False, res_fast, bounded=False, tiers=("ob", "deriv"))
+    assert order_log == [("ob", "BTCUSDC"), ("ob", "TAOUSD")]
+
+    # 3. Live steady-state run_cycle interleaves ("ob", "deriv") after a slow (>=3s) scheduled task
+    step_calls = []
+    monkeypatch.setattr(col, "_step_external_symbols", lambda *a, **kw: step_calls.append(kw.get("tiers")))
+    mono_vals = iter([100.0, 108.0] + [110.0] * 30)
+    monkeypatch.setattr(gtc_mod.time, "monotonic", lambda: next(mono_vals, 110.0))
+    for attr in ("update_fear_greed", "update_market_breadth", "update_macro_benchmarks",
+                 "update_macro_calendar", "update_etf_flows", "update_pretrade_caches", "update_venue_balances"):
+        monkeypatch.setattr(col, attr, lambda *_a, **_kw: True)
+    col.run_cycle(force=False, now=None)
+    assert step_calls[0] is None
+    assert ("ob", "deriv") in step_calls[1:]
+
+
+
 
 
 

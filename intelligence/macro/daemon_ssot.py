@@ -668,21 +668,26 @@ class ExternalTelemetryMixin:
         bounded: bool = False,
         on_symbol_done: Optional[Callable[[], None]] = None,
         live_clock: bool = False,
+        tiers: Optional[Sequence[str]] = None,
     ) -> None:
         if getattr(self, "skip_external", False):
             return
-        steps = (
+        all_steps = (
             ("orderbook_updated", "_last_orderbook_ts", self.orderbook_interval_sec, self.update_orderbook, 15.0, "ob"),
             ("derivatives_updated", "_last_derivatives_ts", self.derivatives_interval_sec, self.update_derivatives, 15.0, "deriv"),
             ("whale_updated", "_last_whale_ts", self.whale_interval_sec, self.update_whale, 18.0, "whale"),
         )
-        for sym in getattr(self, "symbols", ()):
-            ident = resolve_symbol_identity(sym)
-            for res_key, ts_attr, interval_sec, fn, timeout_s, lbl_prefix in steps:
+        tier_filter = set(tiers) if tiers is not None else None
+        steps = tuple(s for s in all_steps if tier_filter is None or s[5] in tier_filter)
+        idents = [(sym, resolve_symbol_identity(sym)) for sym in getattr(self, "symbols", ())]
+        # Cadence-first sweep (all ob -> all deriv -> all whale) prevents tail-symbol orderbooks
+        # from starving behind slow earlier-symbol whale HTTP calls.
+        for res_key, ts_attr, interval_sec, fn, timeout_s, lbl_prefix in steps:
+            ts_map: Dict[str, float] = getattr(self, ts_attr)
+            for sym, ident in idents:
                 # BY DESIGN: Spot tokenized equities have no crypto perpetual derivatives/whale L/S; skip instead of 0.25x retry spinning.
                 if ident.is_tokenized_equity and lbl_prefix in ("deriv", "whale"):
                     continue
-                ts_map: Dict[str, float] = getattr(self, ts_attr)
                 step_now = resolve_now_ts(None) if live_clock else current_ts
                 if is_interval_due(step_now, ts_map.get(sym, 0.0), interval_sec, force=force):
                     ok = (
@@ -707,8 +712,8 @@ class ExternalTelemetryMixin:
                             ts_map[sym] = done_ts
                         else:
                             ts_map[sym] = compute_step_retry_ts(ts_map.get(sym, 0.0), done_ts, interval_sec)
-            if on_symbol_done is not None:
-                on_symbol_done()
+                    if on_symbol_done is not None:
+                        on_symbol_done()
 
     def _fetch_and_log(self, collector: Any, symbol: str, err_label: str, fmt_msg: str, *attr_specs: Any) -> bool:
         log = getattr(self, "_telemetry_logger", logger)

@@ -847,6 +847,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             )
             for enabled, ts_attr, itv_sec, fn, fn_args, timeout_s, lbl, res_key, on_done_cb in scheduled_tasks:
                 if enabled:
+                    t_task_start = time.monotonic() if (live_clock and not force) else 0.0
                     run_scheduled_step(
                         self,
                         current_ts=current_ts,
@@ -863,6 +864,21 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                         on_done=on_done_cb,
                         live_clock=live_clock,
                     )
+                    if (
+                        live_clock
+                        and not force
+                        and not self.skip_external
+                        and (time.monotonic() - t_task_start) >= 3.0
+                    ):
+                        self._step_external_symbols(
+                            resolve_now_ts(None),
+                            False,
+                            results,
+                            bounded=True,
+                            on_symbol_done=_refresh_live_heartbeat,
+                            live_clock=True,
+                            tiers=("ob", "deriv"),
+                        )
             end_ts = current_ts if explicit_now else resolve_now_ts(None)
             last_imp_chk = safe_nonneg_ts(getattr(self, "_last_ai_impulse_check_ts", 0.0), 0.0)
             if (
