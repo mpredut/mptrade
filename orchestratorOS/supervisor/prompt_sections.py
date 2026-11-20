@@ -52,6 +52,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     build_vp_position_dict,
     compute_horizon_range_dict,
     format_atr_parts,
+    format_equity_quote_meta_suffix,
     format_kinematic_parts,
     format_multi_window_slopes_core,
     format_session_extremes_parts,
@@ -801,14 +802,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 extras.append(f"long_trend=NEUTRAL(med_d={pinfo.get('weibull_median_d')}d/p90={pinfo.get('weibull_p90_d')}d)")
             else:
                 extras.append("long_trend=NEUTRAL")
-        eq_qmeta_sfx = ""
-        if is_equity_symbol(sym) and pinfo.get("quote_source"):
-            qm_parts = [f"src={pinfo['quote_source']}"]
-            if pinfo.get("quote_age_min") is not None:
-                qm_parts.append(f"age={pinfo['quote_age_min']}m")
-            if pinfo.get("t212_close_px") is not None:
-                qm_parts.append(f"t212_close=${pinfo['t212_close_px']}")
-            eq_qmeta_sfx = f" [{', '.join(qm_parts)}]"
+        eq_qmeta_sfx = format_equity_quote_meta_suffix(pinfo) if is_equity_symbol(sym) else ""
         extra_str = f" | {' | '.join(extras)}" if extras else ""
         lines.append(f"  * {sym}{sib_lbl}: Price={px_str}{eq_qmeta_sfx}{extra_str}")
     return lines

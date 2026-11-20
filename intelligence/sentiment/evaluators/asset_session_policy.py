@@ -11,7 +11,7 @@ import math
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Tuple
 
-from botcore import _prices_diverged, safe_nonneg_float, safe_pos_float
+from botcore import _prices_diverged, resolve_us_equity_session_state, safe_nonneg_float, safe_pos_float
 from instrument_registry import resolve_symbol_identity
 from intelligence.macro_sentiment_ssot import (
     SHORT_KINEMATIC_METRIC_KEYS,
@@ -50,6 +50,15 @@ class AssetClassPolicyInterface(ABC):
     @abstractmethod
     def is_tokenized_equity(self) -> bool:
         """Whether this asset is a 24/7 spot tokenized equity (xStock)."""
+
+    @property
+    @abstractmethod
+    def supports_extended_hours(self) -> bool:
+        """Whether this asset class has distinct pre-market / after-hours sessions outside regular hours."""
+
+    @abstractmethod
+    def resolve_session_state(self, now_ts: Optional[float] = None) -> str:
+        """Return canonical session state ('24X7', 'PRE', 'REGULAR', 'POST', or 'CLOSED') for this asset class."""
 
     @property
     @abstractmethod
@@ -170,6 +179,14 @@ class Continuous24x7SessionPolicy(AssetSessionPolicy):
         return False
 
     @property
+    def supports_extended_hours(self) -> bool:
+        return False
+
+    def resolve_session_state(self, now_ts: Optional[float] = None) -> str:
+        _ = now_ts
+        return "24X7"
+
+    @property
     def allow_live_vp_ohlc_network(self) -> bool:
         return True
 
@@ -262,6 +279,13 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
     @property
     def is_equity(self) -> bool:
         return True
+
+    @property
+    def supports_extended_hours(self) -> bool:
+        return True
+
+    def resolve_session_state(self, now_ts: Optional[float] = None) -> str:
+        return resolve_us_equity_session_state(now_ts)
 
     @property
     def allow_live_vp_ohlc_network(self) -> bool:

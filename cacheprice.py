@@ -496,6 +496,23 @@ class Cache24PriceManager(CachePriceManagerBase):
         self.cache[symbol] = merged_pts
         return merged_pts
 
+    def _resolve_equity_ohlc_refresh_interval_sec(
+        self,
+        symbol: str,
+        now_s: float,
+        *,
+        row_count: int,
+        has_pos_vol_ohlc: bool,
+    ) -> tuple[bool, float]:
+        """Return ``(eq_rth_open, min_refresh_interval_sec)`` for an equity 5d/5m OHLC refresh."""
+        eq_rth_open = bool(is_symbol_market_open(symbol, now_s))
+        min_interval = (
+            self.EQUITY_OHLC_RTH_REFRESH_SEC
+            if (eq_rth_open or row_count < 10 or not has_pos_vol_ohlc)
+            else self.EQUITY_OHLC_OFF_RTH_REFRESH_SEC
+        )
+        return eq_rth_open, min_interval
+
     def refresh_equity_ohlc_series(
         self,
         *,
@@ -529,11 +546,8 @@ class Cache24PriceManager(CachePriceManagerBase):
                 and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
                 for r in cur_rows
             )
-            eq_rth_open = bool(is_symbol_market_open(sym_eq, eff_now))
-            min_interval = (
-                self.EQUITY_OHLC_RTH_REFRESH_SEC
-                if (eq_rth_open or len(cur_rows) < 10 or not has_pos_vol_ohlc)
-                else self.EQUITY_OHLC_OFF_RTH_REFRESH_SEC
+            eq_rth_open, min_interval = self._resolve_equity_ohlc_refresh_interval_sec(
+                sym_eq, eff_now, row_count=len(cur_rows), has_pos_vol_ohlc=has_pos_vol_ohlc
             )
             last_ref = refresh_map.get(sym_eq, -1e18)
             if not force and 0.0 <= (eff_now - last_ref) < min_interval:
@@ -1774,6 +1788,24 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             eff_now_ms = _now_time() * 1000.0
         return -5_000.0 <= (eff_now_ms - cur_ts_ms) < (self.ws_timeout_sec_for(symbol) * 1000.0)
 
+    def _should_skip_equity_poll_for_session(self, symbol: str, now_s: float) -> bool:
+        """Return True when an equity remote price poll should be skipped under the active session/RTH gate."""
+        if not is_rth_gate_enabled(
+            getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
+        ):
+            return False
+        if (last_eb := self._rth_empty_backoff_ts.get(symbol, 0.0)) > 0.0 and 0.0 <= (now_s - last_eb) < 60.0:
+            return True
+        if not is_us_rth_open(now_s):
+            with self.lock:
+                existing_entries = self.cache.get(symbol)
+            if (
+                existing_entries
+                and self.extract_price_and_ts(existing_entries)[0] is not None
+            ):
+                return True
+        return False
+
     def query_remote_and_update_cache(self):
         if not self.fetchtime_per_symbol:
             self._ensure_fetchtimes_initialized()
@@ -1796,20 +1828,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             if is_live_net and self._is_empty_http_backed_off(symbol, now_ms_scan / 1000.0):
                 continue
             is_rth_sym = self._is_equity_instrument(symbol)
-            if is_rth_sym and is_rth_gate_enabled(
-                getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
-            ):
-                now_s = _now_time()
-                if (last_eb := self._rth_empty_backoff_ts.get(symbol, 0.0)) > 0.0 and 0.0 <= (now_s - last_eb) < 60.0:
-                    continue
-                if not is_us_rth_open(now_s):
-                    with self.lock:
-                        existing_entries = self.cache.get(symbol)
-                    if (
-                        existing_entries
-                        and self.extract_price_and_ts(existing_entries)[0] is not None
-                    ):
-                        continue
+            if is_rth_sym and self._should_skip_equity_poll_for_session(symbol, _now_time()):
+                continue
             if is_live_daemon_poll:
                 now_s = _now_time()
                 last_poll = self._last_http_poll_ts_per_symbol.get(symbol, 0.0)

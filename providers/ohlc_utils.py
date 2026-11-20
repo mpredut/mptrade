@@ -47,6 +47,7 @@ __all__ = [
     "extract_kraken_ohlc_rows",
     "extract_trading_quote_pairs",
     "extract_yahoo_chart_latest_price",
+    "extract_yahoo_chart_ohlcv_bars",
     "extract_yahoo_chart_result_and_quote",
     "extract_yahoo_intraday_chart_bars",
     "normalize_ohlc_row",
@@ -665,12 +666,55 @@ def extract_yahoo_chart_result_and_quote(payload: Any) -> tuple[Optional[dict], 
     return result, chart_d, timestamps, quote
 
 
-def extract_yahoo_chart_latest_price(payload: Any, *, decimals: Optional[int] = None) -> Optional[float]:
-    """Extract the latest positive intraday close (or ``meta.regularMarketPrice`` fallback) from a Yahoo chart payload."""
+def extract_yahoo_chart_ohlcv_bars(
+    payload: Any,
+) -> tuple[Optional[dict], list[tuple[float, float, float, float, float, float]]]:
+    """Unpack a Yahoo v8 chart payload into ``(meta_or_none, sorted_bars)`` where each bar is ``(ts_sec, o, h, l, c, v)``."""
+    result, _, ts_seq, q0 = extract_yahoo_chart_result_and_quote(payload)
+    if result is None:
+        return None, []
+    meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    opens = q0.get("open") if isinstance(q0.get("open"), list) else []
+    highs = q0.get("high") if isinstance(q0.get("high"), list) else []
+    lows = q0.get("low") if isinstance(q0.get("low"), list) else []
+    closes = q0.get("close") if isinstance(q0.get("close"), list) else []
+    vols = q0.get("volume") if isinstance(q0.get("volume"), list) else []
+    bars: list[tuple[float, float, float, float, float, float]] = []
+    for idx, raw_t in enumerate(ts_seq):
+        tf = normalize_epoch_sec(raw_t, default=None)
+        cf = safe_pos_float(closes[idx] if idx < len(closes) else None, default=None)
+        if tf is None or cf is None:
+            continue
+        of = safe_pos_float(opens[idx] if idx < len(opens) else None, default=cf) or cf
+        hf = safe_pos_float(highs[idx] if idx < len(highs) else None, default=cf) or cf
+        lf = safe_pos_float(lows[idx] if idx < len(lows) else None, default=cf) or cf
+        vf = safe_nonneg_float(vols[idx] if idx < len(vols) else None, default=0.0) or 0.0
+        bars.append((tf, of, max(hf, cf, of), min(lf, cf, of), cf, vf))
+    bars.sort(key=lambda b: b[0])
+    return meta, bars
+
+
+def extract_yahoo_chart_latest_price(
+    payload: Any,
+    *,
+    decimals: Optional[int] = None,
+    include_extended: bool = False,
+    now_ts: Optional[float] = None,
+) -> Optional[float]:
+    """Extract the latest positive intraday close (or optional extended-hours/regular price) from a Yahoo chart payload."""
+    dec_i = safe_nonneg_int(decimals, default=None) if decimals is not None else None
+    if _parse_bool_flag(include_extended, False):
+        meta, bars = extract_yahoo_chart_ohlcv_bars(payload)
+        if meta is None:
+            return None
+        pts = [(b[0], b[4]) for b in bars]
+        _, px, _ = resolve_yahoo_chart_market_state_and_price(meta, pts, now_ts=now_ts)
+        if px is None:
+            return None
+        return round(px, dec_i) if dec_i is not None else px
     result, _, _, quote = extract_yahoo_chart_result_and_quote(payload)
     if result is None:
         return None
-    dec_i = safe_nonneg_int(decimals, default=None) if decimals is not None else None
     raw_closes = quote.get("close")
     if isinstance(raw_closes, Sequence) and not isinstance(raw_closes, (str, bytes)):
         for c in reversed(raw_closes):

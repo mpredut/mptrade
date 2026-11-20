@@ -36,6 +36,7 @@ from intelligence.sentiment.evaluators.portfolio_evaluator import (
     same_anchor_px,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
+    EQUITY_QUOTE_META_KEYS,
     TelemetryEvaluatorFactory,
     TelemetryEvaluatorInterface,
     recalculate_live_price_geometry,
@@ -83,7 +84,7 @@ _CMC_LABEL_KEYS: frozenset[str] = frozenset({
 })
 
 _COMPACT_EQ_BELLWETHER_KEYS: Tuple[str, ...] = (
-    "price", "quote_source", "quote_age_min", "t212_close_px",
+    "price", *EQUITY_QUOTE_META_KEYS,
     "chg_15m_pct", "chg_1h_pct", "chg_24h_pct", "chg_7d_pct", "pos_24h_pct",
 )
 

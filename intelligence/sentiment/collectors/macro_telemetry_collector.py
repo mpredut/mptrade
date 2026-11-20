@@ -132,7 +132,7 @@ from providers.intent_state import (
     extract_intent_notional,
 )
 from providers.ohlc_utils import (
-    extract_yahoo_chart_result_and_quote,
+    extract_yahoo_chart_ohlcv_bars,
     resolve_yahoo_chart_market_state_and_price,
 )
 from state_io import (
@@ -296,19 +296,10 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
             try:
                 url = get_yahoo_chart_url(yahoo_sym)
                 raw = _fetch(url, timeout=req_to, headers={"User-Agent": "Mozilla/5.0"})
-                res, _, ts_list, q_obj = extract_yahoo_chart_result_and_quote(raw)
-                if res is None:
+                meta, ohlcv_bars = extract_yahoo_chart_ohlcv_bars(raw)
+                if meta is None:
                     continue
-                meta = res.get("meta") if isinstance(res.get("meta"), dict) else {}
-                closes = q_obj.get("close") if isinstance(q_obj.get("close"), list) else []
-                pts = sorted(
-                    (
-                        (normalize_epoch_sec(ts_f, default=ts_f), c_f)
-                        for ts, c in zip(ts_list, closes)
-                        if (ts_f := safe_pos_float(ts, default=None)) is not None and (c_f := safe_pos_float(c, default=None)) is not None
-                    ),
-                    key=lambda pt: pt[0],
-                )
+                pts = [(b[0], b[4]) for b in ohlcv_bars]
                 pts_24h = ([p for p in pts if p[0] >= pts[-1][0] - 86400.0] or pts) if pts else []
                 mkt_state, px, ext_px = resolve_yahoo_chart_market_state_and_price(meta, pts, now_ts=eff_now)
                 if px is None:

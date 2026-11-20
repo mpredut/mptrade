@@ -871,6 +871,33 @@ def format_session_extremes_parts(entry: Any) -> List[str]:
     ]
 
 
+EQUITY_QUOTE_META_KEYS: Tuple[str, ...] = (
+    "quote_source",
+    "quote_age_min",
+    "t212_close_px",
+    "market_state",
+    "ext_vs_rth_pct",
+)
+
+
+def format_equity_quote_meta_suffix(entry: Any) -> str:
+    """Format compact equity quote provenance & extended-hours suffix ``' [src=..., age=...m, ...]'``."""
+    if not isinstance(entry, dict) or not entry.get("quote_source"):
+        return ""
+    qm_parts: List[str] = []
+    m_state = str(entry.get("market_state") or "").strip().upper()
+    if m_state in ("PRE", "POST"):
+        qm_parts.append(m_state)
+    qm_parts.append(f"src={entry['quote_source']}")
+    if entry.get("quote_age_min") is not None:
+        qm_parts.append(f"age={entry['quote_age_min']}m")
+    if (ext_chg := safe_float(entry.get("ext_vs_rth_pct"), default=None)) is not None:
+        qm_parts.append(f"ext_vs_rth={ext_chg:+.2f}%")
+    if entry.get("t212_close_px") is not None:
+        qm_parts.append(f"t212_close=${entry['t212_close_px']}")
+    return f" [{', '.join(qm_parts)}]"
+
+
 def compute_24h_price_metrics(
     series: list,
     *,

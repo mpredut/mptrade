@@ -22,6 +22,10 @@ from core.config import _eff_root_config_path, optional_env, parse_dotenv, requi
 from core.math_coercion import _first_mapped, coerce_dict_maps
 
 ET = ZoneInfo("America/New_York")
+US_EQUITY_PREMARKET_OPEN_ET = dt_time(4, 0)
+US_EQUITY_RTH_OPEN_ET = dt_time(9, 30)
+US_EQUITY_RTH_CLOSE_ET = dt_time(16, 0)
+US_EQUITY_POSTMARKET_CLOSE_ET = dt_time(20, 0)
 
 
 def _active_clock_fn() -> object:
@@ -34,14 +38,33 @@ def _active_clock_fn() -> object:
     return None
 
 
-def is_us_rth_open(now_ts: float | None = None) -> bool:
-    """Return True if US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) are open."""
+def resolve_us_equity_session_state(now_ts: float | None = None) -> str:
+    """Return canonical US equity session state ('PRE', 'REGULAR', 'POST', or 'CLOSED') in America/New_York."""
     ts = resolve_now_ts(now_ts)
     try:
         ny_dt = datetime.fromtimestamp(ts, tz=ET)
     except (ValueError, OverflowError, OSError):
         ny_dt = datetime.fromtimestamp(_time.time(), tz=ET)
-    return ny_dt.weekday() < 5 and dt_time(9, 30) <= ny_dt.time() < dt_time(16, 0)
+    if ny_dt.weekday() >= 5:
+        return "CLOSED"
+    t_ny = ny_dt.time()
+    if US_EQUITY_RTH_OPEN_ET <= t_ny < US_EQUITY_RTH_CLOSE_ET:
+        return "REGULAR"
+    if US_EQUITY_PREMARKET_OPEN_ET <= t_ny < US_EQUITY_RTH_OPEN_ET:
+        return "PRE"
+    if US_EQUITY_RTH_CLOSE_ET <= t_ny < US_EQUITY_POSTMARKET_CLOSE_ET:
+        return "POST"
+    return "CLOSED"
+
+
+def is_us_rth_open(now_ts: float | None = None) -> bool:
+    """Return True if US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) are open."""
+    return resolve_us_equity_session_state(now_ts) == "REGULAR"
+
+
+def is_us_extended_hours_open(now_ts: float | None = None) -> bool:
+    """Return True if US equities extended trading hours (04:00-09:30 or 16:00-20:00 America/New_York, Mon-Fri) are open."""
+    return resolve_us_equity_session_state(now_ts) in ("PRE", "POST")
 
 
 def timestampToTime(timestamp_ms) -> str:

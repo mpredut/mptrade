@@ -35,6 +35,7 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import compute_
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     CLOSED_EQUITY_INTRADAY_KEYS,
     CLOSED_EQUITY_QUOTE_AGE_MIN,
+    EQUITY_QUOTE_META_KEYS,
     TelemetryEvaluatorFactory,
     TelemetryEvaluatorInterface,
     pct_delta,
@@ -761,7 +762,7 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
                 **({"price": round(eq_px_f, 6)} if eq_px_f is not None else {}),
                 **{
                     qm_k: pinfo[qm_k]
-                    for qm_k in ("quote_source", "quote_age_min", "t212_close_px")
+                    for qm_k in EQUITY_QUOTE_META_KEYS
                     if pinfo.get(qm_k) is not None
                 },
                 **eq_horizons,

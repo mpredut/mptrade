@@ -24,6 +24,7 @@ from botcore import (
     normalize_side,
     parse_dotenv,
     register_module_aliases,
+    resolve_us_equity_session_state,
     safe_float,
     safe_int,
     safe_pos_float,
@@ -580,6 +581,11 @@ def is_equity_or_tokenized_symbol(symbol: object, *, path=None) -> bool:
     """Return True when ``symbol`` is an RTH equity or a 24/7 tokenized xStock (lacks a crypto perpetual market)."""
     ident = resolve_symbol_identity(symbol, path=path)
     return bool(ident.raw) and not ident.has_crypto_perpetuals
+
+
+def resolve_symbol_market_session(symbol: object, now_ts: float | None = None, *, path=None) -> str:
+    """Return canonical market session state ('PRE', 'REGULAR', 'POST', 'CLOSED', or '24X7') for ``symbol``."""
+    return resolve_us_equity_session_state(now_ts) if is_equity_symbol(symbol, path=path) else "24X7"
 
 
 def is_symbol_market_open(symbol: object, now_ts: float | None = None, *, path=None) -> bool:

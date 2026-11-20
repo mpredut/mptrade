@@ -59,7 +59,7 @@ from intelligence.macro_sentiment_ssot import (
 )
 from cacheprice import resolve_ssot_price_from_cache
 from providers.base import MarketDataProvider
-from providers.ohlc_utils import extract_yahoo_chart_result_and_quote
+from providers.ohlc_utils import extract_yahoo_chart_ohlcv_bars
 from state_io import read_json_dict, read_json_dict_recovering, save_json_state
 
 logger = logging.getLogger("intelligence.external.base_collector")
@@ -1005,25 +1005,9 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 timeout=timeout,
                 user_agent="Mozilla/5.0",
             )
-            res0, _, ts_seq, q0 = extract_yahoo_chart_result_and_quote(yh)
-            meta = res0.get("meta") if isinstance(res0, dict) else {}
+            meta, bars = extract_yahoo_chart_ohlcv_bars(yh)
             if last_px <= 0.0 and isinstance(meta, dict):
                 last_px = safe_pos_float(meta.get("regularMarketPrice"), default=0.0) or 0.0
-            opens = q0.get("open") or []
-            highs = q0.get("high") or []
-            lows = q0.get("low") or []
-            closes = q0.get("close") or []
-            vols = q0.get("volume") or []
-            for idx, raw_t in enumerate(ts_seq):
-                tf = normalize_epoch_sec(raw_t, default=None)
-                cf = safe_pos_float(closes[idx] if idx < len(closes) else None, default=None)
-                if tf is None or cf is None:
-                    continue
-                of = safe_pos_float(opens[idx] if idx < len(opens) else None, default=cf) or cf
-                hf = safe_pos_float(highs[idx] if idx < len(highs) else None, default=cf) or cf
-                lf = safe_pos_float(lows[idx] if idx < len(lows) else None, default=cf) or cf
-                vf = safe_nonneg_float(vols[idx] if idx < len(vols) else None, default=0.0) or 0.0
-                bars.append((tf, of, max(hf, cf, of), min(lf, cf, of), cf, vf))
             if bars and last_px <= 0.0:
                 last_px = bars[-1][4]
         except Exception:

@@ -14802,6 +14802,112 @@ def test_prompt_telemetry_audit_fixes_critical_and_medium(tmp_path):
     assert "venue_fee_per_leg=7.5bps (tier=VIP0_BNB, maker=7.5bps/taker=7.12bps" in bn_line
 
 
+def test_faza3a_prep_ssot_seams_zero_behavior_change(tmp_path):
+    """Verify Faza 3A SSOT & SoC infrastructure seams preserve exact runtime behavior while unifying equity session & Yahoo chart parsing."""
+    from datetime import datetime
+    from botcore import ET, is_us_extended_hours_open, is_us_rth_open, resolve_us_equity_session_state
+    from cacheprice import Cache24PriceManager, CacheCurrentPriceManager
+    from instrument_registry import is_symbol_market_open, resolve_symbol_market_session
+    from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        EQUITY_QUOTE_META_KEYS,
+        format_equity_quote_meta_suffix,
+    )
+    from providers.ohlc_utils import extract_yahoo_chart_latest_price, extract_yahoo_chart_ohlcv_bars
+
+    # 1. Canonical US equity session state SSOT (Mon-Fri ET windows + weekend CLOSED)
+    ts_pre = datetime(2026, 11, 18, 7, 15, tzinfo=ET).timestamp()
+    ts_rth = datetime(2026, 11, 18, 11, 30, tzinfo=ET).timestamp()
+    ts_post = datetime(2026, 11, 18, 17, 45, tzinfo=ET).timestamp()
+    ts_night = datetime(2026, 11, 18, 22, 0, tzinfo=ET).timestamp()
+    ts_sat = datetime(2026, 11, 21, 12, 0, tzinfo=ET).timestamp()
+
+    assert resolve_us_equity_session_state(ts_pre) == "PRE"
+    assert resolve_us_equity_session_state(ts_rth) == "REGULAR"
+    assert resolve_us_equity_session_state(ts_post) == "POST"
+    assert resolve_us_equity_session_state(ts_night) == "CLOSED"
+    assert resolve_us_equity_session_state(ts_sat) == "CLOSED"
+
+    assert is_us_rth_open(ts_rth) is True
+    assert is_us_rth_open(ts_pre) is False and is_us_rth_open(ts_post) is False and is_us_rth_open(ts_sat) is False
+    assert is_us_extended_hours_open(ts_pre) is True and is_us_extended_hours_open(ts_post) is True
+    assert is_us_extended_hours_open(ts_rth) is False and is_us_extended_hours_open(ts_night) is False
+
+    # Symbol-level session SSOT keeps 24X7 for crypto/tokenized xStocks and delegates equities
+    assert resolve_symbol_market_session("BTCUSDC", ts_pre) == "24X7"
+    assert resolve_symbol_market_session("SPCXxUSD", ts_post) == "24X7"
+    assert resolve_symbol_market_session("NVDA_US_EQ", ts_pre) == "PRE"
+    assert is_symbol_market_open("NVDA_US_EQ", ts_rth) is True
+    assert is_symbol_market_open("NVDA_US_EQ", ts_pre) is False
+
+    # 2. Polymorphic AssetSessionPolicy contract
+    crypto_pol = resolve_asset_session_policy("BTCUSDC")
+    tok_pol = resolve_asset_session_policy("SPCXxUSD")
+    eq_pol = resolve_asset_session_policy("NVDA_US_EQ")
+    assert crypto_pol.supports_extended_hours is False and crypto_pol.resolve_session_state(ts_pre) == "24X7"
+    assert tok_pol.supports_extended_hours is False and tok_pol.resolve_session_state(ts_post) == "24X7"
+    assert eq_pol.supports_extended_hours is True and eq_pol.resolve_session_state(ts_pre) == "PRE"
+    assert eq_pol.resolve_session_state(ts_rth) == "REGULAR" and eq_pol.resolve_session_state(ts_post) == "POST"
+
+    # 3. Unified Yahoo v8 chart OHLCV & opt-in extended-hours price extraction
+    yh_payload = {
+        "chart": {
+            "result": [
+                {
+                    "meta": {
+                        "marketState": "PRE",
+                        "regularMarketPrice": 140.0,
+                        "preMarketPrice": 144.25,
+                    },
+                    "timestamp": [1_795_000_600, 1_795_000_300],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [140.0, 139.0],
+                                "high": [141.0, 140.5],
+                                "low": [139.5, 138.8],
+                                "close": [140.2, 139.8],
+                                "volume": [1200, 800],
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+    meta, bars = extract_yahoo_chart_ohlcv_bars(yh_payload)
+    assert isinstance(meta, dict) and len(bars) == 2
+    assert bars[0][0] < bars[1][0] and bars[0][4] == pytest.approx(139.8) and bars[1][4] == pytest.approx(140.2)
+    assert extract_yahoo_chart_latest_price(yh_payload) == pytest.approx(139.8)
+    assert extract_yahoo_chart_latest_price(yh_payload, include_extended=True, now_ts=ts_pre) == pytest.approx(144.25)
+
+    # 4. Cache24PriceManager & CacheCurrentPriceManager equity session hooks preserve exact current behavior
+    p24 = Cache24PriceManager(60, ["NVDA_US_EQ"], str(tmp_path / "p24.json"), data_sync_mode="disk_reader")
+    assert p24._resolve_equity_ohlc_refresh_interval_sec("NVDA_US_EQ", ts_rth, row_count=50, has_pos_vol_ohlc=True) == (
+        True,
+        p24.EQUITY_OHLC_RTH_REFRESH_SEC,
+    )
+    assert p24._resolve_equity_ohlc_refresh_interval_sec("NVDA_US_EQ", ts_pre, row_count=50, has_pos_vol_ohlc=True) == (
+        False,
+        p24.EQUITY_OHLC_OFF_RTH_REFRESH_SEC,
+    )
+    cp = CacheCurrentPriceManager(60, ["NVDA_US_EQ"], str(tmp_path / "cp.json"), data_sync_mode="disk_reader")
+    cp._enforce_rth_gate = True
+    cp.cache["NVDA_US_EQ"] = [[int(ts_rth * 1000), 140.0]]
+    assert cp._should_skip_equity_poll_for_session("NVDA_US_EQ", ts_rth) is False
+    assert cp._should_skip_equity_poll_for_session("NVDA_US_EQ", ts_pre) is True
+
+    # 5. Equity quote metadata SSOT preserves byte-identical legacy formatting and supports PRE/POST tags
+    assert "quote_source" in EQUITY_QUOTE_META_KEYS and "market_state" in EQUITY_QUOTE_META_KEYS
+    assert format_equity_quote_meta_suffix(
+        {"quote_source": "yahoo_ext", "quote_age_min": 2.5, "t212_close_px": 140.0}
+    ) == " [src=yahoo_ext, age=2.5m, t212_close=$140.0]"
+    assert format_equity_quote_meta_suffix(
+        {"market_state": "PRE", "quote_source": "yahoo_ext", "quote_age_min": 1.0, "ext_vs_rth_pct": 2.15, "t212_close_px": 140.0}
+    ) == " [PRE, src=yahoo_ext, age=1.0m, ext_vs_rth=+2.15%, t212_close=$140.0]"
+
+
+
 
 
 
