@@ -140,6 +140,33 @@ def resolve_quota_low_warn_fraction(default: float = 0.10) -> float:
     return max(0.0, min(0.5, val if val is not None else default))
 
 
+def resolve_quota_soft_conserve_fraction(default: float = 0.25) -> float:
+    """Return clamped ``LLM_QUOTA_SOFT_CONSERVE_FRACTION`` in ``[0.0, 0.8]`` (0.0 disables)."""
+    raw = float_env("LLM_QUOTA_SOFT_CONSERVE_FRACTION", default=default)
+    val = safe_float(raw, default)
+    return max(0.0, min(0.8, val if val is not None else default))
+
+
+def _lookup_bucket_remaining(buckets: Mapping[str, Any], model_name: str) -> Optional[float]:
+    cleaned = model_name.strip() if isinstance(model_name, str) else ""
+    if not cleaned or not isinstance(buckets, Mapping):
+        return None
+    if cleaned in buckets:
+        raw = buckets.get(cleaned)
+    elif cleaned.lower() in buckets:
+        raw = buckets.get(cleaned.lower())
+    else:
+        return None
+    return safe_float(raw, default=None)
+
+
+def _is_model_runtime_exhausted(rt_exhausted: Mapping[str, Any], model_name: str, now_ts: float) -> bool:
+    if not isinstance(rt_exhausted, Mapping) or not model_name:
+        return False
+    exp = _lookup_bucket_remaining(rt_exhausted, model_name)
+    return exp is not None and exp > now_ts
+
+
 def summarize_quota_pool_remaining(
     snapshot: Optional[Mapping[str, Any]],
     *,
@@ -183,15 +210,93 @@ def evaluate_model_quota_escalation_allowed(
         return True, None, eff_thresh
     q_buckets = quota_snapshot.get("buckets") if isinstance(quota_snapshot.get("buckets"), Mapping) else {}
     q_cred = safe_float(quota_snapshot.get("available_credits"), default=0.0) or 0.0
-    raw_rem = (
-        q_buckets.get(cleaned_model)
-        if cleaned_model in q_buckets
-        else (q_buckets.get(cleaned_model.lower()) if cleaned_model.lower() in q_buckets else None)
-    )
-    rem = safe_float(raw_rem, default=None)
+    rem = _lookup_bucket_remaining(q_buckets, cleaned_model)
     if q_cred <= 0.0 and rem is not None and rem <= eff_thresh:
         return False, rem, eff_thresh
     return True, rem, eff_thresh
+
+
+def resolve_crypto_executor_model_override(
+    quota_snapshot: Optional[Mapping[str, Any]],
+    *,
+    high_model: str,
+    default_model: str,
+    fallback_models: Iterable[str] = (),
+    escalate_high_effort: bool = False,
+    urgent_escalation: bool = False,
+    low_warn_fraction: Optional[float] = None,
+    soft_conserve_fraction: Optional[float] = None,
+    now_ts: Optional[float] = None,
+) -> tuple[Optional[str], str]:
+    """Select quota-aware model override for ``auto_cryptotrade_executor``.
+
+    Returns ``(model_override, decision_reason)``:
+    - Hard low quota (``<= low_warn``): suppresses ``-high`` escalation even on urgent signals.
+    - Soft conservation band (``low_warn < rem <= soft_conserve``): suppresses routine ``-high``
+      escalation (preserving ``-high`` for urgent catalysts like ``focus_symbols``, fills,
+      trade-plan triggers, or critical geo shocks), and on routine non-escalated cycles routes
+      to the first healthy paid cross-family fallback (e.g. Claude ``>= 50%``).
+    - Top-up credits (``available_credits > 0``) or missing quota cache never throttle routing.
+    """
+    eff_low = (
+        resolve_quota_low_warn_fraction()
+        if low_warn_fraction is None
+        else max(0.0, min(0.5, safe_float(low_warn_fraction, 0.10)))
+    )
+    eff_soft_raw = (
+        resolve_quota_soft_conserve_fraction()
+        if soft_conserve_fraction is None
+        else max(0.0, min(0.8, safe_float(soft_conserve_fraction, 0.25)))
+    )
+    eff_soft = max(eff_soft_raw, eff_low) if eff_soft_raw > 0.0 else 0.0
+    clean_high = high_model.strip() if isinstance(high_model, str) else ""
+    clean_def = default_model.strip() if isinstance(default_model, str) else ""
+    q_snap = quota_snapshot if isinstance(quota_snapshot, Mapping) else {}
+    q_buckets = q_snap.get("buckets") if isinstance(q_snap.get("buckets"), Mapping) else {}
+    q_cred = safe_float(q_snap.get("available_credits"), default=0.0) or 0.0
+    rt_ex = q_snap.get("runtime_exhausted") if isinstance(q_snap.get("runtime_exhausted"), Mapping) else {}
+    eff_now = safe_pos_float(now_ts, default=None) or time.time()
+
+    if escalate_high_effort and clean_high:
+        low_ok, high_rem, _ = evaluate_model_quota_escalation_allowed(
+            q_snap, clean_high, min_remaining_fraction=eff_low
+        )
+        if not low_ok and high_rem is not None:
+            return (
+                None,
+                f"suppress_low_quota({clean_high}:{high_rem * 100.0:.1f}%<={eff_low * 100.0:.1f}%)",
+            )
+        if not urgent_escalation and eff_soft > 0.0:
+            soft_ok, soft_rem, _ = evaluate_model_quota_escalation_allowed(
+                q_snap, clean_high, min_remaining_fraction=eff_soft
+            )
+            if not soft_ok and soft_rem is not None:
+                return (
+                    None,
+                    f"suppress_soft_conserve({clean_high}:{soft_rem * 100.0:.1f}%<={eff_soft * 100.0:.1f}%)",
+                )
+        return clean_high, "escalate_high_effort"
+
+    if not escalate_high_effort and eff_soft > 0.0 and q_cred <= 0.0 and clean_def and q_buckets:
+        def_rem = _lookup_bucket_remaining(q_buckets, clean_def)
+        if def_rem is not None and def_rem <= eff_soft:
+            healthy_alt_min = max(eff_soft * 2.0, 0.50)
+            def_fam = model_family_base(clean_def)
+            for raw_fb in fallback_models:
+                fb = raw_fb.strip() if isinstance(raw_fb, str) else ""
+                if not fb or is_degraded_trading_model(fb):
+                    continue
+                if model_family_base(fb) == def_fam:
+                    continue
+                if _is_model_runtime_exhausted(rt_ex, fb, eff_now):
+                    continue
+                fb_rem = _lookup_bucket_remaining(q_buckets, fb)
+                if fb_rem is not None and fb_rem >= healthy_alt_min:
+                    return (
+                        fb,
+                        f"soft_conserve_fallback({clean_def}:{def_rem * 100.0:.1f}%<={eff_soft * 100.0:.1f}%->{fb}:{fb_rem * 100.0:.1f}%)",
+                    )
+    return None, ""
 
 
 def canonical_rest_model(model_name: str) -> str:

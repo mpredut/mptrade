@@ -23,6 +23,56 @@ from providers.intent_telemetry import evaluate_trade_plan_status
 _ATR_15M_DELTA_GATE_MULT = 0.75
 
 
+def _is_geopolitical_shock(gt: Any) -> bool:
+    if not isinstance(gt, Mapping):
+        return False
+    geo_level = normalize_threat_level(gt.get("threat_level"))
+    geo_score = safe_float(gt.get("risk_score"), default=0.0)
+    return bool(geo_level == "CRITICAL_SHOCK" or (geo_score is not None and geo_score >= 0.70))
+
+
+def _has_new_fill_since_prev(
+    ps_map: Mapping[str, Any],
+    prev_eval: Optional[Mapping[str, Any]],
+    *,
+    latest_fill_ts: Optional[float] = None,
+) -> bool:
+    eff_latest = _extract_delta_gate_latest_fill_ts(ps_map) if latest_fill_ts is None else latest_fill_ts
+    if eff_latest <= 0.0:
+        return False
+    prev_map = prev_eval if isinstance(prev_eval, Mapping) else {}
+    prev_ts = normalize_epoch_sec(prev_map.get("ts"), default=0.0, allow_iso=True) or 0.0
+    prev_meta = prev_map.get("delta_gate_meta") if isinstance(prev_map.get("delta_gate_meta"), Mapping) else {}
+    prev_fill_ts = normalize_epoch_sec(prev_meta.get("latest_fill_ts"), default=0.0, allow_iso=True) or 0.0
+    return bool(
+        (prev_fill_ts > 0.0 and eff_latest > prev_fill_ts + 0.5)
+        or (prev_ts > 0.0 and eff_latest > prev_ts + 0.5)
+    )
+
+
+def is_urgent_delta_gate_wakeup(
+    gate_reason: str = "",
+    *,
+    focus_symbols: Optional[Sequence[str]] = None,
+    sensors: Any = None,
+    prev_eval: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    """Return True when a wakeup reflects an urgent catalyst (impulse, fill, trade-plan break, or geo shock)."""
+    if focus_symbols and parse_symbol_list(focus_symbols):
+        return True
+    reason_lc = str(gate_reason or "").strip().lower()
+    if reason_lc.startswith(("focus_symbols(", "trade_plan_", "new_fill")):
+        return True
+    if sensors is not None:
+        gt = getattr(sensors, "geopolitical_threat", None)
+        if _is_geopolitical_shock(gt):
+            return True
+        ps = getattr(sensors, "portfolio_summary", None)
+        if isinstance(ps, Mapping) and prev_eval is not None and _has_new_fill_since_prev(ps, prev_eval):
+            return True
+    return False
+
+
 def _extract_delta_gate_latest_fill_ts(portfolio_summary: Mapping[str, Any]) -> float:
     """Extract the newest fill/execution epoch-second timestamp across recent_orders and last_cycle_execution_status."""
     latest = 0.0
@@ -320,9 +370,7 @@ def evaluate_crypto_executor_delta_gate(
         default=0.0,
         allow_iso=True,
     ) or 0.0
-    geo_level = normalize_threat_level(gt.get("threat_level")) if isinstance(gt, Mapping) else ""
-    geo_score = safe_float(gt.get("risk_score"), default=0.0) if isinstance(gt, Mapping) else 0.0
-    geo_shock = bool(geo_level == "CRITICAL_SHOCK" or (geo_score is not None and geo_score >= 0.70))
+    geo_shock = _is_geopolitical_shock(gt)
 
     latest_fill_ts = _extract_delta_gate_latest_fill_ts(ps_map)
 
@@ -373,14 +421,7 @@ def evaluate_crypto_executor_delta_gate(
         high_move_pct=eff_high_move_pct,
         atr_15m_by_sym=atr_15m_by_sym,
     )
-    prev_fill_ts = normalize_epoch_sec(prev_meta.get("latest_fill_ts"), default=0.0, allow_iso=True) or 0.0
-    has_new_fill = bool(
-        latest_fill_ts > 0.0
-        and (
-            (prev_fill_ts > 0.0 and latest_fill_ts > prev_fill_ts + 0.5)
-            or (prev_ts > 0.0 and latest_fill_ts > prev_ts + 0.5)
-        )
-    )
+    has_new_fill = _has_new_fill_since_prev(ps_map, prev_map, latest_fill_ts=latest_fill_ts)
 
     clean_focus = parse_symbol_list(focus_symbols) if focus_symbols else []
     escalate_high_effort = bool(

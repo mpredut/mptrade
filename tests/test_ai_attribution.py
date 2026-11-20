@@ -600,3 +600,228 @@ def test_faza4_prep_shared_ssot_primitives(monkeypatch):
     ])
     assert eq_dirty["limit_filled"] == 1 and eq_dirty["avg_limit_slippage_bps"] is None and eq_dirty["avg_arrival_shortfall_bps"] == -5.0
     assert format_execution_quality_parts({"limit_filled": 1, "market_filled": 0, "avg_limit_slippage_bps": "nan"}) == ["LIMIT(n=1)"]
+
+
+def test_faza4_per_venue_order_type_tca_fill_rate_and_quota_logs():
+    """Verify Faza 4B per-(venue, order_type) TCA breakdown, LIMIT fill rate, and quota log telemetry."""
+    now_s = 1_795_400_000.0
+    intents = [
+        # Binance LIMIT BUY filled with -10bps limit improvement and -20bps arrival improvement
+        {
+            "intent_id": "tca_1",
+            "timestamp": now_s - 7200.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 70000.0,
+            "reference_price": 70070.0,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 1000.0,
+            "execution_payload": {"orderId": "bn_1", "status": "FILLED", "executedQty": "0.0143", "avg_fill_price": 69930.0},
+        },
+        # Binance LIMIT BUY unfilled (resting/canceled) -> drives 50.0% fill rate on binance:LIMIT
+        {
+            "intent_id": "tca_2",
+            "timestamp": now_s - 5400.0,
+            "decision": "BUY",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 180.0,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 500.0,
+            "execution_payload": {"orderId": "bn_2", "status": "NEW", "executedQty": "0.0"},
+        },
+        # Hyperliquid MARKET SELL filled with +20bps adverse market slippage
+        {
+            "intent_id": "tca_3",
+            "timestamp": now_s - 3600.0,
+            "decision": "SELL",
+            "symbol": "HYPEUSDC",
+            "venue": "hyperliquid",
+            "order_type": "MARKET",
+            "reference_price": 50.0,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 600.0,
+            "execution_payload": {"orderId": "hl_1", "status": "FILLED", "executedQty": "12.0", "avg_fill_price": 49.9},
+        },
+        # Kraken unfilled-only LIMIT order -> still visible in by_venue / by_venue_order_type with 0.0% fill rate
+        {
+            "intent_id": "tca_4",
+            "timestamp": now_s - 1800.0,
+            "decision": "BUY",
+            "symbol": "ADAUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 0.14,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 300.0,
+            "execution_payload": {"orderId": "kr_1", "status": "CANCELED", "executedQty": "0.0"},
+        },
+    ]
+    logs = [
+        "2026-11-20 12:00:01 [INFO] [auto_cryptotrade_executor] Escalating reasoning effort to gemini-4-neon-high for high-signal cycle.",
+        "2026-11-20 12:06:01 [INFO] [auto_cryptotrade_executor] Suppressing high-effort escalation to gemini-4-neon-high (suppress_soft_conserve(gemini-4-neon-high:22.0%<=25.0%)).",
+        "2026-11-20 12:12:01 [INFO] [auto_cryptotrade_executor] Quota soft-conserve routing routine cycle to claude-sonnet-5-5-medium (soft_conserve_fallback(gemini-4-neon-medium:21.0%<=25.0%->claude-sonnet-5-5-medium:99.0%)).",
+        "2026-11-20 12:12:15 [INFO] Autonomous AI Supervisor cycle complete: HOLD",
+    ]
+    rep = evaluate_ai_attribution(intents, now_ts=now_s, lookback_days=7.0, scope="crypto", reconciler_log_lines=logs)
+    eq = rep["execution_quality"]
+    assert eq["limit_filled"] == 1
+    assert eq["limit_unfilled"] == 2
+    assert eq["limit_fill_rate_pct"] == pytest.approx(33.3, abs=0.1)
+    assert eq["market_filled"] == 1
+    assert eq["by_venue"]["binance"]["limit_filled"] == 1
+    assert eq["by_venue"]["binance"]["limit_unfilled"] == 1
+    assert eq["by_venue"]["binance"]["limit_fill_rate_pct"] == pytest.approx(50.0)
+    assert eq["by_venue"]["kraken"]["limit_filled"] == 0
+    assert eq["by_venue"]["kraken"]["limit_unfilled"] == 1
+    assert eq["by_venue"]["kraken"]["limit_fill_rate_pct"] == pytest.approx(0.0)
+
+    vot = eq["by_venue_order_type"]
+    assert vot["binance:LIMIT"]["filled"] == 1 and vot["binance:LIMIT"]["unfilled"] == 1
+    assert vot["binance:LIMIT"]["fill_rate_pct"] == pytest.approx(50.0)
+    assert vot["binance:LIMIT"]["avg_slippage_bps"] == pytest.approx(-10.0, abs=0.05)
+    assert vot["binance:LIMIT"]["avg_arrival_shortfall_bps"] == pytest.approx(-19.98, abs=0.1)
+    assert vot["hyperliquid:MARKET"]["filled"] == 1 and vot["hyperliquid:MARKET"]["avg_slippage_bps"] == pytest.approx(20.0, abs=0.05)
+    assert vot["kraken:LIMIT"]["filled"] == 0 and vot["kraken:LIMIT"]["unfilled"] == 1
+
+    dg = rep["delta_gate_efficiency"]
+    assert dg["high_effort_escalations"] == 1
+    assert dg["quota_escalation_suppressions"] == 1
+    assert dg["quota_soft_conserve_shifts"] == 1
+    assert dg["soft_shift_models"] == {"claude-sonnet-5-5-medium": 1}
+
+    rendered = format_ai_attribution_report(rep)
+    assert "Execution TCA by Venue:OrderType" in rendered
+    assert "binance:LIMIT" in rendered and "hyperliquid:MARKET" in rendered and "kraken:LIMIT" in rendered
+    assert "fill_rate=33.3%" in rendered
+    assert "quota_suppressed=1, soft_shifts=1" in rendered
+
+
+def test_faza4_closed_loop_calibration_feedback_and_section_3c_prompt():
+    """Verify Faza 4C 0ms BUY/SELL calibration + venue TCA evaluation, scope isolation, and Section 3C rendering."""
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+    from providers.ai_survival_guard import (
+        evaluate_ai_calibration_feedback,
+        format_ai_calibration_feedback_line,
+    )
+
+    now_s = 1_795_400_000.0
+    intents = [
+        # Closed BUY -> SELL hitting BUY target_px -> BUY TARGET_HIT
+        {
+            "intent_id": "cal_b1",
+            "timestamp": now_s - 7200.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 70000.0,
+            "reference_price": 70100.0,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 1000.0,
+            "invalidation_px": 68500.0,
+            "target_px": 71400.0,
+            "execution_payload": {"orderId": "c1", "status": "FILLED", "executedQty": "0.0143", "avg_fill_price": 70000.0},
+        },
+        {
+            "intent_id": "cal_s1",
+            "timestamp": now_s - 5000.0,
+            "decision": "SELL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 71500.0,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 1020.0,
+            "execution_payload": {"orderId": "c2", "status": "FILLED", "executedQty": "0.0143", "avg_fill_price": 71500.0},
+        },
+        # Open planned SELL invalidated by live price breakout -> SELL INVALIDATED
+        {
+            "intent_id": "cal_s2",
+            "timestamp": now_s - 3600.0,
+            "decision": "SELL",
+            "symbol": "TAOUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 190.0,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 500.0,
+            "invalidation_px": 194.0,
+            "target_px": 182.0,
+            "execution_payload": {"orderId": "c3", "status": "FILLED", "executedQty": "2.63", "avg_fill_price": 190.0},
+        },
+        # Unfilled Binance LIMIT intent -> 2/3 (67%) fill rate
+        {
+            "intent_id": "cal_u1",
+            "timestamp": now_s - 1800.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 69000.0,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 500.0,
+            "execution_payload": {"orderId": "c4", "status": "NEW", "executedQty": "0.0"},
+        },
+        # Out-of-scope equities fill (must stay isolated from scope="crypto")
+        {
+            "intent_id": "cal_eq1",
+            "timestamp": now_s - 1200.0,
+            "decision": "BUY",
+            "symbol": "NVDA_US_EQ",
+            "venue": "t212",
+            "order_type": "MARKET",
+            "reference_price": 150.0,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 400.0,
+            "invalidation_px": 145.0,
+            "target_px": 160.0,
+            "execution_payload": {"orderId": "c5", "status": "FILLED", "executedQty": "2.66", "avg_fill_price": 150.15},
+        },
+    ]
+
+    cal_crypto = evaluate_ai_calibration_feedback(
+        intents, now_ts=now_s, live_prices={"TAOUSD": 196.0}, lookback_days=7.0, scope="crypto"
+    )
+    assert cal_crypto["filled_total"] == 3
+    assert cal_crypto["planned_filled"] == 2
+    assert cal_crypto["by_side"]["BUY"]["TARGET_HIT"] == 1
+    assert cal_crypto["by_side"]["SELL"]["INVALIDATED"] == 1
+    assert cal_crypto["resolved_hit_rate_pct"] == pytest.approx(50.0)
+    assert "t212" not in cal_crypto["venue_tca"]
+    assert cal_crypto["venue_tca"]["binance"]["limit_filled"] == 2
+    assert cal_crypto["venue_tca"]["binance"]["limit_unfilled"] == 1
+
+    cal_line = format_ai_calibration_feedback_line(cal_crypto)
+    assert cal_line.startswith("AI Execution & Plan Calibration (7d): ")
+    assert "plans=2 (BUY:1T/0I/0E/0A, SELL:0T/1I/0E/0A, hit=50%)" in cal_line
+    assert "binance: LIM 2/3[67%]" in cal_line
+    assert "kraken: LIM 1" in cal_line
+    assert "t212" not in cal_line
+    assert format_ai_calibration_feedback_line({}) == ""
+    assert format_ai_calibration_feedback_line(evaluate_ai_calibration_feedback([], now_ts=now_s)) == ""
+
+    # Section 3C prompt integration renders calibration directly alongside AI Decision Scorecard
+    sec_3c = "\n".join(
+        _format_portfolio_section(
+            {
+                "ai_decision_scorecard": {
+                    "count": 2,
+                    "wins": 1,
+                    "scratches": 0,
+                    "losses": 1,
+                    "avg_edge_pct": 0.35,
+                    "net_usd": 12.0,
+                    "loss_streak": 0,
+                    "status": "HEALTHY",
+                },
+                "ai_calibration_feedback": cal_crypto,
+            },
+            asset_scope="crypto",
+        )
+    )
+    assert "AI Decision Scorecard (48h, n=2):" in sec_3c
+    assert cal_line in sec_3c

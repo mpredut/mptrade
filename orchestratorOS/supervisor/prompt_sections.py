@@ -66,7 +66,10 @@ from intelligence.sentiment.evaluators.prompt_view_evaluator import (
     evaluate_tradable_position_prompt_view,
 )
 from instrument_registry import is_equity_or_tokenized_symbol, is_equity_symbol, resolve_symbol_identity
-from providers.ai_survival_guard import format_ai_decision_scorecard_line
+from providers.ai_survival_guard import (
+    format_ai_calibration_feedback_line,
+    format_ai_decision_scorecard_line,
+)
 from providers.order_id_context import format_actor_tag
 
 
@@ -1400,6 +1403,8 @@ def _format_portfolio_section(
             )
     if sc_line := format_ai_decision_scorecard_line(view.get("ai_decision_scorecard")):
         lines.append(f"  * {sc_line}")
+    if cal_line := format_ai_calibration_feedback_line(view.get("ai_calibration_feedback")):
+        lines.append(f"  * {cal_line}")
     for venue_lbl, venue_id, cyc_items in view["venue_cycles"]:
         lines.append(f"  * {venue_lbl} Active Cycle Cost & Drawdown Anchors:")
         for c_sym, c_data in cyc_items:

@@ -10269,15 +10269,149 @@ def test_crypto_executor_delta_gate_atr_15m_scaling():
     assert skip_e is False and hi_e is True and "price_move(HYPEUSDC:1.05%>=1.00%)" in rsn_e
 
 
+def test_faza4_quota_soft_conservation_routing_policy_and_reconciler(tmp_path, monkeypatch):
+    """Verify Faza 4A quota soft-conservation routing: routine -high suppression, urgent preservation, and healthy Claude fallback."""
+    from types import SimpleNamespace
+    from intelligence.sentiment.llm_quota_router import (
+        resolve_crypto_executor_model_override,
+        resolve_quota_soft_conserve_fraction,
+    )
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import is_urgent_delta_gate_wakeup
 
+    monkeypatch.setenv("LLM_QUOTA_LOW_WARN_FRACTION", "0.10")
+    monkeypatch.setenv("LLM_QUOTA_SOFT_CONSERVE_FRACTION", "0.25")
+    assert resolve_quota_soft_conserve_fraction() == pytest.approx(0.25)
 
+    assert is_urgent_delta_gate_wakeup("focus_symbols(BTCUSDC)") is True
+    assert is_urgent_delta_gate_wakeup("trade_plan_invalidated(HYPEUSDC)") is True
+    assert is_urgent_delta_gate_wakeup("new_fill") is True
+    assert is_urgent_delta_gate_wakeup("price_move(HYPEUSDC:1.25%>=1.00%)") is False
+    assert is_urgent_delta_gate_wakeup(
+        "price_move(HYPEUSDC:1.25%>=1.00%)",
+        sensors=SimpleNamespace(
+            geopolitical_threat={},
+            portfolio_summary={"recent_orders": {"BTCUSDC": {"ts": 1_795_400_100.0}}},
+        ),
+        prev_eval={"ts": 1_795_400_000.0, "delta_gate_meta": {"latest_fill_ts": 1_795_399_900.0}},
+    ) is True
+    assert is_urgent_delta_gate_wakeup(
+        "price_move(HYPEUSDC:1.25%>=1.00%)",
+        sensors=SimpleNamespace(geopolitical_threat={"threat_level": "CRITICAL_SHOCK", "risk_score": 0.85}),
+    ) is True
 
+    soft_snap = {
+        "available_credits": 0.0,
+        "buckets": {
+            "gemini-4-neon-high": 0.20,
+            "gemini-4-neon-medium": 0.20,
+            "claude-sonnet-5-5-medium": 0.99,
+            "gemini-3.8-flash-low": 1.0,
+        },
+    }
+    fallbacks = ("gemini-4-neon-medium", "gemini-3.8-flash-low", "claude-sonnet-5-5-medium")
 
+    # 1. Soft conservation (20% <= 25%): routine -high suppressed; urgent -high preserved; routine medium shifts to healthy Claude (skipping Flash/same-family)
+    ov_routine_hi, rsn_rh = resolve_crypto_executor_model_override(
+        soft_snap,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        fallback_models=fallbacks,
+        escalate_high_effort=True,
+        urgent_escalation=False,
+    )
+    assert ov_routine_hi is None and rsn_rh.startswith("suppress_soft_conserve(")
 
+    ov_urgent_hi, rsn_uh = resolve_crypto_executor_model_override(
+        soft_snap,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        fallback_models=fallbacks,
+        escalate_high_effort=True,
+        urgent_escalation=True,
+    )
+    assert ov_urgent_hi == "gemini-4-neon-high" and rsn_uh == "escalate_high_effort"
 
+    ov_routine_med, rsn_rm = resolve_crypto_executor_model_override(
+        soft_snap,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        fallback_models=fallbacks,
+        escalate_high_effort=False,
+        urgent_escalation=False,
+    )
+    assert ov_routine_med == "claude-sonnet-5-5-medium" and rsn_rm.startswith("soft_conserve_fallback(")
 
+    # 2. Runtime-exhausted Claude or degraded-only fallbacks are never chosen; top-up credits disable throttling
+    exhausted_claude_snap = {**soft_snap, "runtime_exhausted": {"claude-sonnet-5-5-medium": 2_000_000_000.0}}
+    assert resolve_crypto_executor_model_override(
+        exhausted_claude_snap,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        fallback_models=fallbacks,
+        escalate_high_effort=False,
+        now_ts=1_795_400_000.0,
+    ) == (None, "")
+    assert resolve_crypto_executor_model_override(
+        {**soft_snap, "available_credits": 25.0},
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        fallback_models=fallbacks,
+        escalate_high_effort=True,
+        urgent_escalation=False,
+    ) == ("gemini-4-neon-high", "escalate_high_effort")
 
+    # 3. Hard low quota (<= 10%): suppresses -high even on urgent catalysts
+    hard_low_snap = {**soft_snap, "buckets": {**soft_snap["buckets"], "gemini-4-neon-high": 0.08}}
+    ov_hard, rsn_hard = resolve_crypto_executor_model_override(
+        hard_low_snap,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        fallback_models=fallbacks,
+        escalate_high_effort=True,
+        urgent_escalation=True,
+    )
+    assert ov_hard is None and rsn_hard.startswith("suppress_low_quota(")
 
+    # 4. End-to-end AutonomousAIReconciler.synthesize_and_diagnose respects soft conservation + urgent override
+    sys_dir = tmp_path / "cachedb" / "system"
+    sys_dir.mkdir(parents=True, exist_ok=True)
+    (sys_dir / "llm_quota_status.json").write_text(json.dumps(soft_snap), encoding="utf-8")
+    monkeypatch.delenv("LLM_TOPIC_MODEL_AUTO_CRYPTOTRADE_EXECUTOR", raising=False)
+    monkeypatch.setenv("LLM_HIGH_STAKE_MODEL", "gemini-4-neon-high")
 
+    captured_models = []
 
+    class _MockAuditor:
+        _explicit_model = False
+        model = "gemini-4-neon-medium"
+        fallback_models = fallbacks
+        last_model_used = "claude-sonnet-5-5-medium"
 
+        def query_json(self, prompt, **kwargs):
+            captured_models.append(kwargs.get("model"))
+            return {"summary": "HOLD", "market_trading_decisions": [{"decision": "HOLD", "confidence": 0.0, "thesis": "flat"}]}
+
+    reconciler = AutonomousAIReconciler(
+        mode="shadow",
+        workspace_dir=str(tmp_path),
+        gemini_auditor=_MockAuditor(),
+        notify_enabled=False,
+    )
+    snap_s = SimpleNamespace(
+        prices_and_trends={"BTCUSDC": {"price": 70000.0}},
+        portfolio_summary={},
+        microstructure={},
+        geopolitical_threat={},
+        sentiment_advisor={},
+        source_timestamps={},
+    )
+    empty_logs = LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0)
+
+    # Routine non-escalated -> shifts to Claude
+    reconciler.synthesize_and_diagnose(snap_s, empty_logs, topic_key="auto_cryptotrade_executor", escalate_high_effort=False)
+    # Routine price-move escalation (urgent=False) -> suppresses -high (model=None -> default medium)
+    reconciler.synthesize_and_diagnose(snap_s, empty_logs, topic_key="auto_cryptotrade_executor", escalate_high_effort=True, urgent_escalation=False)
+    # Urgent escalation (focus_symbols) -> preserves -high
+    reconciler.synthesize_and_diagnose(snap_s, empty_logs, topic_key="auto_cryptotrade_executor", focus_symbols=["BTCUSDC"], escalate_high_effort=True)
+
+    assert captured_models == ["claude-sonnet-5-5-medium", None, "gemini-4-neon-high"]

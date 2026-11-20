@@ -11,14 +11,13 @@ from datetime import datetime, timezone
 import glob
 import os
 import re
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional
 
 from botcore import (
     BUCHAREST,
     clean_order_id,
     clean_scalar_str,
     clean_upper_scalar,
-    first_pos_float,
     normalize_side,
     resolve_now_ts,
     safe_float,
@@ -43,11 +42,14 @@ from .ai_survival_guard import (
     _is_filled_ai_intent,
     _resolve_live_price_for_symbol,
     compute_signed_price_edge_pct,
+    extract_fill_execution_slippage,
     extract_live_prices_from_cache_payload,
     format_signed_usd,
     match_filled_intent_rows_lifo,
     resolve_matched_notional_usd,
     resolve_venue_round_trip_fee_bps,
+    summarize_execution_quality_bucket,
+    summarize_execution_quality_by_venue_and_order_type,
 )
 from .execution_audit import _extract_audit_fill_metrics, iter_audit_jsonl_paths
 from .intent_state import (
@@ -62,7 +64,7 @@ from .intent_state import (
     load_durable_intents_state,
     parse_pos_epoch_s,
 )
-from .intent_telemetry import _compute_signed_exec_bps, evaluate_trade_plan_status
+from .intent_telemetry import evaluate_trade_plan_status
 from .nav_drawdown import (
     build_nav_history_point,
     evaluate_nav_drawdown_metrics,
@@ -77,6 +79,8 @@ _CB_TAG_RE = re.compile(r"^([a-z0-9_]+)")
 _LOG_DAY_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 _LOG_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})")
 _ESCALATE_MODEL_RE = re.compile(r"Escalating reasoning effort to\s+([^\s]+)\s+for high-signal cycle")
+_QUOTA_SUPPRESS_RE = re.compile(r"Suppressing high-effort escalation to\s+([^\s]+)")
+_QUOTA_SOFT_SHIFT_RE = re.compile(r"Quota soft-conserve routing routine cycle to\s+([^\s]+)")
 _DELTA_GATE_WAKE_RE = re.compile(r"\[DELTA GATE\]\s+Wake LLM\s+\(([A-Za-z0-9_]+)")
 _AUDIT_SKIP_EVENTS = frozenset({"submit_requested", "submit_refused", "cancel_requested", "cancel_accepted", "cancel_rejected", "status_error"})
 
@@ -151,71 +155,22 @@ def _classify_intent_lifecycle(it: dict[str, Any], canceled_oids: set[str]) -> s
     return "FAILED_OR_OTHER"
 
 
-def extract_fill_execution_slippage(
-    intent: Mapping[str, Any],
-    *,
-    side: str,
-    exec_px: float,
-    order_type: str,
-) -> tuple[Optional[float], Optional[float], Optional[float]]:
-    """Compute ``(limit_slip_bps, arrival_sf_bps, market_slip_bps)`` for one filled intent."""
-    side_u = normalize_side(side)
-    ep = safe_pos_float(exec_px, default=None)
-    if side_u not in ("BUY", "SELL") or ep is None or not isinstance(intent, Mapping):
-        return None, None, None
-    ot = (clean_upper_scalar(order_type) or "LIMIT")
-    lim_px = first_pos_float(intent.get("limit_price"), intent.get("requested_price") if ot == "LIMIT" else None)
-    ref_px = first_pos_float(intent.get("reference_price"))
-    limit_slip_bps: Optional[float] = None
-    arrival_sf_bps: Optional[float] = None
-    market_slip_bps: Optional[float] = None
-    if ot == "LIMIT" and lim_px is not None:
-        limit_slip_bps = _compute_signed_exec_bps(side_u, ep, lim_px)
-        if ref_px is not None and abs(ref_px - lim_px) / lim_px > 1e-6:
-            arrival_sf_bps = _compute_signed_exec_bps(side_u, ep, ref_px)
-    elif ot != "LIMIT" and ref_px is not None:
-        market_slip_bps = _compute_signed_exec_bps(side_u, ep, ref_px)
-    return limit_slip_bps, arrival_sf_bps, market_slip_bps
-
-
-def summarize_execution_quality_bucket(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Aggregate LIMIT/MARKET fill counts and average slippage/arrival shortfall bps for a bucket of fills."""
-    valid_rows = [r for r in rows if isinstance(r, Mapping)]
-    lim_slips = [
-        v for r in valid_rows
-        if (v := safe_float(r.get("limit_slip_bps"), default=None)) is not None
-    ]
-    arr_sfs = [
-        v for r in valid_rows
-        if (v := safe_float(r.get("arrival_sf_bps"), default=None)) is not None
-    ]
-    mkt_slips = [
-        v for r in valid_rows
-        if (v := safe_float(r.get("market_slip_bps"), default=None)) is not None
-    ]
-    lim_filled = sum(1 for r in valid_rows if (clean_upper_scalar(r.get("order_type")) or "") == "LIMIT")
-    return {
-        "limit_filled": lim_filled,
-        "market_filled": len(valid_rows) - lim_filled,
-        "avg_limit_slippage_bps": round(sum(lim_slips) / len(lim_slips), 2) if lim_slips else None,
-        "avg_arrival_shortfall_bps": round(sum(arr_sfs) / len(arr_sfs), 2) if arr_sfs else None,
-        "avg_market_slippage_bps": round(sum(mkt_slips) / len(mkt_slips), 2) if mkt_slips else None,
-    }
-
-
 def format_execution_quality_parts(eq: Mapping[str, Any]) -> list[str]:
     """Format an execution quality bucket into compact LIMIT/MARKET summary segments."""
     if not isinstance(eq, Mapping):
         return []
     lim_n = safe_nonneg_int(eq.get("limit_filled"), 0)
     mkt_n = safe_nonneg_int(eq.get("market_filled"), 0)
-    if (lim_n + mkt_n) <= 0:
+    lim_unf = safe_nonneg_int(eq.get("limit_unfilled"), 0)
+    if (lim_n + mkt_n + lim_unf) <= 0:
         return []
     lim_s = safe_float(eq.get("avg_limit_slippage_bps"), default=None)
     arr_s = safe_float(eq.get("avg_arrival_shortfall_bps"), default=None)
     mkt_s = safe_float(eq.get("avg_market_slippage_bps"), default=None)
+    fill_rate = safe_float(eq.get("limit_fill_rate_pct"), default=None)
     parts = [
         f"LIMIT(n={lim_n}"
+        + (f", fill_rate={fill_rate:.1f}%" if (lim_unf > 0 and fill_rate is not None) else "")
         + (f", slip={lim_s:+.1f}bps" if lim_s is not None else "")
         + (f", arrival_sf={arr_s:+.1f}bps" if arr_s is not None else "")
         + ")"
@@ -496,11 +451,14 @@ def summarize_delta_gate_logs(
     cutoff_ts: float = 0.0,
     eval_state: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Summarize Delta-Gate LLM call savings and high-effort escalations from supervisor log lines."""
+    """Summarize Delta-Gate LLM call savings, quota routing shifts, and high-effort escalations."""
     skips = 0
     llm_cycles = 0
     escalations = 0
+    quota_suppressions = 0
+    quota_soft_shifts = 0
     escalated_models: dict[str, int] = {}
+    soft_shift_models: dict[str, int] = {}
     wake_reasons: dict[str, int] = {}
 
     for line in log_lines:
@@ -530,6 +488,13 @@ def summarize_delta_gate_logs(
             mdl = m_esc.group(1).strip()
             if mdl:
                 escalated_models[mdl] = escalated_models.get(mdl, 0) + 1
+        elif _QUOTA_SUPPRESS_RE.search(line):
+            quota_suppressions += 1
+        elif m_shift := _QUOTA_SOFT_SHIFT_RE.search(line):
+            quota_soft_shifts += 1
+            mdl = m_shift.group(1).strip()
+            if mdl:
+                soft_shift_models[mdl] = soft_shift_models.get(mdl, 0) + 1
 
     total_cycles = skips + llm_cycles
     saved_pct = round((skips / total_cycles) * 100.0, 1) if total_cycles > 0 else 0.0
@@ -540,7 +505,10 @@ def summarize_delta_gate_logs(
         "total_cycles_observed": total_cycles,
         "calls_saved_pct": saved_pct,
         "high_effort_escalations": escalations,
+        "quota_escalation_suppressions": quota_suppressions,
+        "quota_soft_conserve_shifts": quota_soft_shifts,
         "escalated_models": escalated_models,
+        "soft_shift_models": soft_shift_models,
         "wake_reasons": wake_reasons,
         "last_eval_model": clean_scalar_str(ev_map.get("model_used")) or "",
         "last_eval_ts": round(parse_pos_epoch_s(ev_map.get("ts")) or 0.0, 3),
@@ -576,6 +544,7 @@ def evaluate_ai_attribution(
     cb_reason_counts: dict[str, int] = {}
     model_intent_counts: dict[str, dict[str, int]] = {}
     override_intent_counts: dict[str, int] = {}
+    unfilled_counts: dict[tuple[str, str], int] = {}
     filled_rows: list[dict[str, Any]] = []
 
     for it in items:
@@ -610,6 +579,11 @@ def evaluate_ai_attribution(
             if tag := _extract_cb_tag(cb_rsn):
                 cb_reason_counts[tag] = cb_reason_counts.get(tag, 0) + 1
 
+        if lifecycle == "EXECUTED_UNFILLED":
+            unf_ot = "LIMIT" if extract_intent_order_type(it) == "LIMIT" else "MARKET"
+            k_unf = (ven or "unknown", unf_ot)
+            unfilled_counts[k_unf] = unfilled_counts.get(k_unf, 0) + 1
+            continue
         if lifecycle != "EXECUTED_FILLED":
             continue
         side = extract_intent_side(it)
@@ -786,7 +760,19 @@ def evaluate_ai_attribution(
         scope=eff_scope,
         fee_resolver=fee_resolver,
     )
-    execution_quality = summarize_execution_quality_bucket(filled_rows)
+    eq_global = summarize_execution_quality_bucket(filled_rows)
+    eq_by_venue, eq_by_vot = summarize_execution_quality_by_venue_and_order_type(
+        filled_rows, unfilled_counts=unfilled_counts
+    )
+    lim_unf_total = sum(v for (_, ot_k), v in unfilled_counts.items() if ot_k == "LIMIT")
+    lim_sub_total = eq_global["limit_filled"] + lim_unf_total
+    execution_quality = {
+        **eq_global,
+        "limit_unfilled": lim_unf_total,
+        "limit_fill_rate_pct": round((eq_global["limit_filled"] / lim_sub_total) * 100.0, 1) if lim_sub_total > 0 else None,
+        "by_venue": eq_by_venue,
+        "by_venue_order_type": eq_by_vot,
+    }
     delta_gate = summarize_delta_gate_logs(
         reconciler_log_lines if isinstance(reconciler_log_lines, list) else [],
         cutoff_ts=cutoff,
@@ -1027,12 +1013,20 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
 
     dg = report.get("delta_gate_efficiency") if isinstance(report.get("delta_gate_efficiency"), Mapping) else {}
     if dg and (safe_nonneg_int(dg.get("total_cycles_observed"), 0) > 0 or dg.get("last_eval_model")):
+        q_sup = safe_nonneg_int(dg.get("quota_escalation_suppressions"), 0)
+        q_shf = safe_nonneg_int(dg.get("quota_soft_conserve_shifts"), 0)
+        q_sfx = ""
+        if q_sup > 0:
+            q_sfx += f", quota_suppressed={q_sup}"
+        if q_shf > 0:
+            q_sfx += f", soft_shifts={q_shf}"
         lines.append("")
         lines.append(
             f"-- Delta-Gate Efficiency: skips={safe_nonneg_int(dg.get('delta_gate_skips'), 0)}, "
             f"llm_cycles={safe_nonneg_int(dg.get('llm_cycles_completed'), 0)}, "
             f"saved={safe_nonneg_float(dg.get('calls_saved_pct'), 0.0):.1f}%, "
-            f"high_escalations={safe_nonneg_int(dg.get('high_effort_escalations'), 0)}, "
+            f"high_escalations={safe_nonneg_int(dg.get('high_effort_escalations'), 0)}"
+            f"{q_sfx}, "
             f"last_model={dg.get('last_eval_model') or 'n/a'} --"
         )
         if wake_rs := (dg.get("wake_reasons") if isinstance(dg.get("wake_reasons"), Mapping) else {}):
@@ -1045,6 +1039,26 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
     eq = report.get("execution_quality") if isinstance(report.get("execution_quality"), Mapping) else {}
     if eq_parts := format_execution_quality_parts(eq):
         lines.append(f"Execution Quality: {', '.join(eq_parts)}")
+    by_vot = eq.get("by_venue_order_type") if isinstance(eq.get("by_venue_order_type"), Mapping) else {}
+    if by_vot:
+        lines.append("  -- Execution TCA by Venue:OrderType --")
+        lines.append(f"  {'Venue:Type':<20} {'Fil':>4} {'Unf':>4} {'FR%':>6} {'SlipBps':>8} {'ArrBps':>8} {'FeeBps':>7} {'Notional':>10}")
+        for vot_k, v_row in sorted(by_vot.items()):
+            if not isinstance(v_row, Mapping):
+                continue
+            fr_v = safe_float(v_row.get("fill_rate_pct"), default=None)
+            sl_v = safe_float(v_row.get("avg_slippage_bps"), default=None)
+            ar_v = safe_float(v_row.get("avg_arrival_shortfall_bps"), default=None)
+            fe_v = safe_float(v_row.get("avg_leg_fee_bps"), default=None)
+            fr_s = f"{fr_v:>5.1f}%" if fr_v is not None else f"{'n/a':>6}"
+            sl_s = f"{sl_v:>+8.1f}" if sl_v is not None else f"{'n/a':>8}"
+            ar_s = f"{ar_v:>+8.1f}" if ar_v is not None else f"{'n/a':>8}"
+            fe_s = f"{fe_v:>7.1f}" if fe_v is not None else f"{'n/a':>7}"
+            lines.append(
+                f"  {vot_k:<20} {safe_nonneg_int(v_row.get('filled'), 0):>4} "
+                f"{safe_nonneg_int(v_row.get('unfilled'), 0):>4} {fr_s} {sl_s} {ar_s} {fe_s} "
+                f"${safe_nonneg_float(v_row.get('notional_usd'), 0.0):>9.0f}"
+            )
 
     nav_dd = report.get("unified_nav_drawdown") if isinstance(report.get("unified_nav_drawdown"), Mapping) else {}
     if nav_line := format_nav_drawdown_summary_line(nav_dd):
@@ -1063,4 +1077,5 @@ __all__ = [
     "load_and_evaluate_ai_attribution",
     "summarize_delta_gate_logs",
     "summarize_execution_quality_bucket",
+    "summarize_execution_quality_by_venue_and_order_type",
 ]

@@ -51,7 +51,7 @@ from .intent_state import (
     parse_pos_epoch_s,
     symbols_match_intent_scope_and_quote,
 )
-from .intent_telemetry import evaluate_trade_plan_status
+from .intent_telemetry import _compute_signed_exec_bps, evaluate_trade_plan_status
 from .order_ohlc_utils import extract_executed_qty
 from .order_status_ssot import NON_FILL_ORDER_STATUSES
 from .venue_metadata import ProviderVenueMetadataMixin
@@ -813,17 +813,335 @@ def format_ai_decision_scorecard_line(scorecard: Any) -> str:
     )
 
 
+def extract_fill_execution_slippage(
+    intent: Mapping[str, Any],
+    *,
+    side: str,
+    exec_px: float,
+    order_type: str,
+) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """Compute ``(limit_slip_bps, arrival_sf_bps, market_slip_bps)`` for one filled intent."""
+    side_u = normalize_side(side)
+    ep = safe_pos_float(exec_px, default=None)
+    if side_u not in ("BUY", "SELL") or ep is None or not isinstance(intent, Mapping):
+        return None, None, None
+    ot = clean_upper_scalar(order_type) or "LIMIT"
+    lim_px = first_pos_float(intent.get("limit_price"), intent.get("requested_price") if ot == "LIMIT" else None)
+    ref_px = first_pos_float(intent.get("reference_price"))
+    limit_slip_bps: Optional[float] = None
+    arrival_sf_bps: Optional[float] = None
+    market_slip_bps: Optional[float] = None
+    if ot == "LIMIT" and lim_px is not None:
+        limit_slip_bps = _compute_signed_exec_bps(side_u, ep, lim_px)
+        if ref_px is not None and abs(ref_px - lim_px) / lim_px > 1e-6:
+            arrival_sf_bps = _compute_signed_exec_bps(side_u, ep, ref_px)
+    elif ot != "LIMIT" and ref_px is not None:
+        market_slip_bps = _compute_signed_exec_bps(side_u, ep, ref_px)
+    return limit_slip_bps, arrival_sf_bps, market_slip_bps
+
+
+def summarize_execution_quality_bucket(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Aggregate LIMIT/MARKET fill counts and average slippage/arrival shortfall bps for a bucket of fills."""
+    valid_rows = [r for r in rows if isinstance(r, Mapping)]
+    lim_slips = [
+        v for r in valid_rows
+        if (v := safe_float(r.get("limit_slip_bps"), default=None)) is not None
+    ]
+    arr_sfs = [
+        v for r in valid_rows
+        if (v := safe_float(r.get("arrival_sf_bps"), default=None)) is not None
+    ]
+    mkt_slips = [
+        v for r in valid_rows
+        if (v := safe_float(r.get("market_slip_bps"), default=None)) is not None
+    ]
+    lim_filled = sum(1 for r in valid_rows if (clean_upper_scalar(r.get("order_type")) or "") == "LIMIT")
+    return {
+        "limit_filled": lim_filled,
+        "market_filled": len(valid_rows) - lim_filled,
+        "avg_limit_slippage_bps": round(sum(lim_slips) / len(lim_slips), 2) if lim_slips else None,
+        "avg_arrival_shortfall_bps": round(sum(arr_sfs) / len(arr_sfs), 2) if arr_sfs else None,
+        "avg_market_slippage_bps": round(sum(mkt_slips) / len(mkt_slips), 2) if mkt_slips else None,
+    }
+
+
+def summarize_execution_quality_by_venue_and_order_type(
+    filled_rows: Sequence[Mapping[str, Any]],
+    *,
+    unfilled_counts: Optional[Mapping[tuple[str, str], int]] = None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Group filled and unfilled execution TCA metrics by ``venue`` and by ``venue:order_type``."""
+    valid_rows = [r for r in filled_rows if isinstance(r, Mapping)]
+    unf_map: dict[tuple[str, str], int] = {}
+    if isinstance(unfilled_counts, Mapping):
+        for k, v in unfilled_counts.items():
+            if isinstance(k, tuple) and len(k) == 2:
+                ven_u = normalize_venue_name(clean_scalar_str(k[0]) or "") or "unknown"
+                ot_u = clean_upper_scalar(k[1]) or "LIMIT"
+                cnt_u = safe_nonneg_int(v, default=0)
+                if cnt_u > 0:
+                    unf_map[(ven_u, ot_u)] = unf_map.get((ven_u, ot_u), 0) + cnt_u
+
+    by_venue_rows: dict[str, list[Mapping[str, Any]]] = {}
+    by_vot_rows: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    for row in valid_rows:
+        ven = normalize_venue_name(clean_scalar_str(row.get("venue")) or "") or "unknown"
+        ot = "LIMIT" if (clean_upper_scalar(row.get("order_type")) or "LIMIT") == "LIMIT" else "MARKET"
+        by_venue_rows.setdefault(ven, []).append(row)
+        by_vot_rows.setdefault((ven, ot), []).append(row)
+
+    all_venues = sorted(set(by_venue_rows.keys()) | {v for v, _ in unf_map})
+    by_venue: dict[str, dict[str, Any]] = {}
+    for ven in all_venues:
+        v_rows = by_venue_rows.get(ven, [])
+        bucket = summarize_execution_quality_bucket(v_rows)
+        lim_unf = unf_map.get((ven, "LIMIT"), 0)
+        lim_tot = bucket["limit_filled"] + lim_unf
+        notional_usd = sum(safe_nonneg_float(r.get("usd"), default=0.0) for r in v_rows)
+        leg_fees = [
+            f_v for r in v_rows
+            if (f_v := safe_nonneg_float(r.get("leg_fee_bps"), default=None)) is not None
+        ]
+        by_venue[ven] = {
+            **bucket,
+            "limit_unfilled": lim_unf,
+            "limit_fill_rate_pct": round((bucket["limit_filled"] / lim_tot) * 100.0, 1) if lim_tot > 0 else None,
+            "notional_usd": round(notional_usd, 2),
+            "avg_leg_fee_bps": round(sum(leg_fees) / len(leg_fees), 2) if leg_fees else None,
+        }
+
+    all_vot = sorted(set(by_vot_rows.keys()) | set(unf_map.keys()))
+    by_vot: dict[str, dict[str, Any]] = {}
+    for ven, ot in all_vot:
+        rows_k = by_vot_rows.get((ven, ot), [])
+        bucket = summarize_execution_quality_bucket(rows_k)
+        n_filled = len(rows_k)
+        n_unf = unf_map.get((ven, ot), 0)
+        n_sub = n_filled + n_unf
+        notional_usd = sum(safe_nonneg_float(r.get("usd"), default=0.0) for r in rows_k)
+        leg_fees = [
+            f_v for r in rows_k
+            if (f_v := safe_nonneg_float(r.get("leg_fee_bps"), default=None)) is not None
+        ]
+        avg_slip = bucket["avg_limit_slippage_bps"] if ot == "LIMIT" else bucket["avg_market_slippage_bps"]
+        avg_arr = bucket["avg_arrival_shortfall_bps"] if ot == "LIMIT" else None
+        by_vot[f"{ven}:{ot}"] = {
+            "venue": ven,
+            "order_type": ot,
+            "filled": n_filled,
+            "unfilled": n_unf,
+            "fill_rate_pct": round((n_filled / n_sub) * 100.0, 1) if n_sub > 0 else None,
+            "notional_usd": round(notional_usd, 2),
+            "avg_slippage_bps": avg_slip,
+            "avg_arrival_shortfall_bps": avg_arr,
+            "avg_leg_fee_bps": round(sum(leg_fees) / len(leg_fees), 2) if leg_fees else None,
+        }
+    return by_venue, by_vot
+
+
+def evaluate_ai_calibration_feedback(
+    intents: list[dict[str, Any]],
+    *,
+    now_ts: float,
+    live_prices: Optional[Mapping[str, Any]] = None,
+    lookback_days: float = 7.0,
+    scope: str = "all",
+) -> dict[str, Any]:
+    """Compute 0ms closed-loop BUY/SELL trade-plan calibration and per-venue execution TCA for Section 3C."""
+    eff_now = resolve_now_ts(now_ts)
+    lb_days = safe_pos_float(lookback_days, default=7.0) or 7.0
+    cutoff = eff_now - (lb_days * 86400.0)
+    eff_scope = (clean_scalar_str(scope) or "all").lower()
+    prices_map = live_prices if isinstance(live_prices, Mapping) else {}
+    items = intents if isinstance(intents, list) else []
+
+    empty_side = lambda: {"TARGET_HIT": 0, "INVALIDATED": 0, "CLOSED_EARLY": 0, "ACTIVE": 0}
+    status_counts = empty_side()
+    by_side = {"BUY": empty_side(), "SELL": empty_side()}
+    if not items:
+        return {
+            "lookback_days": lb_days,
+            "filled_total": 0,
+            "planned_filled": 0,
+            "status_counts": status_counts,
+            "by_side": by_side,
+            "resolved_hit_rate_pct": None,
+            "venue_tca": {},
+            "venue_order_type_tca": {},
+        }
+
+    canceled_oids = _collect_canceled_order_ids(items)
+    filled_rows: list[dict[str, Any]] = []
+    unfilled_counts: dict[tuple[str, str], int] = {}
+
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        if (clean_upper_scalar(it.get("status")) or "") != "EXECUTED":
+            continue
+        sym = clean_scalar_str(it.get("symbol")) or ""
+        ven = normalize_venue_name(clean_scalar_str(it.get("venue")) or "")
+        if not sym:
+            continue
+        if eff_scope != "all" and not matches_asset_scope(sym, ven, eff_scope):
+            continue
+        _, base_ts = extract_intent_timestamp_s(it)
+        exec_ts = _extract_intent_exec_ts(it)
+        ref_ts = exec_ts if exec_ts > 0.0 else base_ts
+        if ref_ts <= 0.0 or ref_ts < cutoff or ref_ts > eff_now + 60.0:
+            continue
+        ot = extract_intent_order_type(it)
+        if not _is_filled_ai_intent(it, canceled_oids):
+            k_unf = (ven or "unknown", "LIMIT" if ot == "LIMIT" else "MARKET")
+            unfilled_counts[k_unf] = unfilled_counts.get(k_unf, 0) + 1
+            continue
+        side = extract_intent_side(it)
+        if side not in ("BUY", "SELL"):
+            continue
+        px = _extract_intent_exec_price(it)
+        if px <= 0.0:
+            continue
+        inv_px, tgt_px = extract_intent_trade_plan_levels(it, side=side, ref_price=px)
+        lim_slip, arr_sf, mkt_slip = extract_fill_execution_slippage(it, side=side, exec_px=px, order_type=ot)
+        v_k, b_k, q_k, _ = _intent_venue_symbol_side_key(ven, sym, side)
+        filled_rows.append({
+            "ts": ref_ts,
+            "venue": ven,
+            "symbol": sym,
+            "inst_key": (v_k, b_k, q_k),
+            "side": side,
+            "order_type": ot,
+            "px": px,
+            "usd": _extract_intent_notional_usd(it),
+            "invalidation_px": inv_px,
+            "target_px": tgt_px,
+            "has_plan": inv_px is not None or tgt_px is not None,
+            "limit_slip_bps": lim_slip,
+            "arrival_sf_bps": arr_sf,
+            "market_slip_bps": mkt_slip,
+        })
+
+    def _bump_plan(side_k: str, state: str) -> None:
+        status_counts[state] = status_counts.get(state, 0) + 1
+        if side_k in by_side:
+            by_side[side_k][state] = by_side[side_k].get(state, 0) + 1
+
+    closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo(filled_rows)
+    for _, entry_row, exit_row in closed_pairs:
+        if not entry_row["has_plan"]:
+            continue
+        st = evaluate_trade_plan_status(
+            entry_row["side"], exit_row["px"], entry_row["invalidation_px"], entry_row["target_px"]
+        )
+        _bump_plan(entry_row["side"], st if st in ("TARGET_HIT", "INVALIDATED") else "CLOSED_EARLY")
+
+    for side_k, open_rows in (("BUY", open_buys), ("SELL", open_sells)):
+        for row in open_rows:
+            if not row["has_plan"]:
+                continue
+            spot_px = _resolve_live_price_for_symbol(prices_map, row["venue"], row["symbol"])
+            if spot_px is None or spot_px <= 0.0:
+                _bump_plan(side_k, "ACTIVE")
+                continue
+            st = evaluate_trade_plan_status(side_k, spot_px, row["invalidation_px"], row["target_px"])
+            _bump_plan(side_k, st if st in ("TARGET_HIT", "INVALIDATED", "ACTIVE") else "ACTIVE")
+
+    planned_filled = sum(1 for r in filled_rows if r["has_plan"])
+    resolved_n = status_counts["TARGET_HIT"] + status_counts["INVALIDATED"]
+    hit_rate = round((status_counts["TARGET_HIT"] / resolved_n) * 100.0, 1) if resolved_n > 0 else None
+    by_venue, by_vot = summarize_execution_quality_by_venue_and_order_type(
+        filled_rows, unfilled_counts=unfilled_counts
+    )
+    return {
+        "lookback_days": lb_days,
+        "filled_total": len(filled_rows),
+        "planned_filled": planned_filled,
+        "status_counts": status_counts,
+        "by_side": by_side,
+        "resolved_hit_rate_pct": hit_rate,
+        "venue_tca": by_venue,
+        "venue_order_type_tca": by_vot,
+    }
+
+
+def format_ai_calibration_feedback_line(calibration: Any) -> str:
+    """Format a compact single-line objective summary of trade-plan calibration and venue TCA for Section 3C."""
+    if not isinstance(calibration, Mapping):
+        return ""
+    lb_days = safe_pos_float(calibration.get("lookback_days"), default=7.0) or 7.0
+    planned_n = safe_nonneg_int(calibration.get("planned_filled"), default=0)
+    by_side = calibration.get("by_side") if isinstance(calibration.get("by_side"), Mapping) else {}
+    venue_tca = calibration.get("venue_tca") if isinstance(calibration.get("venue_tca"), Mapping) else {}
+    segments: list[str] = []
+
+    if planned_n > 0:
+        side_parts: list[str] = []
+        for sk in ("BUY", "SELL"):
+            sc = by_side.get(sk)
+            if not isinstance(sc, Mapping):
+                continue
+            t_n = safe_nonneg_int(sc.get("TARGET_HIT"), default=0)
+            i_n = safe_nonneg_int(sc.get("INVALIDATED"), default=0)
+            e_n = safe_nonneg_int(sc.get("CLOSED_EARLY"), default=0)
+            a_n = safe_nonneg_int(sc.get("ACTIVE"), default=0)
+            if (t_n + i_n + e_n + a_n) > 0:
+                side_parts.append(f"{sk}:{t_n}T/{i_n}I/{e_n}E/{a_n}A")
+        hit_r = safe_float(calibration.get("resolved_hit_rate_pct"), default=None)
+        if hit_r is not None:
+            side_parts.append(f"hit={hit_r:.0f}%")
+        inner = f" ({', '.join(side_parts)})" if side_parts else ""
+        segments.append(f"plans={planned_n}{inner}")
+
+    venue_parts: list[str] = []
+    for ven, vt in sorted(venue_tca.items()):
+        if not isinstance(vt, Mapping):
+            continue
+        lim_f = safe_nonneg_int(vt.get("limit_filled"), default=0)
+        lim_u = safe_nonneg_int(vt.get("limit_unfilled"), default=0)
+        mkt_f = safe_nonneg_int(vt.get("market_filled"), default=0)
+        if (lim_f + lim_u + mkt_f) <= 0:
+            continue
+        v_bits: list[str] = []
+        if (lim_f + lim_u) > 0:
+            fr = safe_float(vt.get("limit_fill_rate_pct"), default=None)
+            lim_hdr = f"LIM {lim_f}/{lim_f + lim_u}[{fr:.0f}%]" if (lim_u > 0 and fr is not None) else f"LIM {lim_f}"
+            lim_s = safe_float(vt.get("avg_limit_slippage_bps"), default=None)
+            arr_s = safe_float(vt.get("avg_arrival_shortfall_bps"), default=None)
+            if lim_s is not None:
+                lim_hdr += f" slip={lim_s:+.1f}bps"
+            if arr_s is not None:
+                lim_hdr += f" arr={arr_s:+.1f}bps"
+            v_bits.append(lim_hdr)
+        if mkt_f > 0:
+            mkt_s = safe_float(vt.get("avg_market_slippage_bps"), default=None)
+            mkt_hdr = f"MKT {mkt_f}" + (f" slip={mkt_s:+.1f}bps" if mkt_s is not None else "")
+            v_bits.append(mkt_hdr)
+        if v_bits:
+            venue_parts.append(f"{ven}: {' | '.join(v_bits)}")
+    if venue_parts:
+        segments.append(f"venue_tca({', '.join(venue_parts)})")
+
+    if not segments:
+        return ""
+    return f"AI Execution & Plan Calibration ({lb_days:g}d): {'; '.join(segments)}"
+
+
 __all__ = [
     "build_intent_live_price_map",
     "compute_signed_price_edge_pct",
+    "evaluate_ai_calibration_feedback",
     "evaluate_ai_decision_scorecard",
     "evaluate_ai_ping_pong_guard",
     "evaluate_ai_target_ev_guard",
+    "extract_fill_execution_slippage",
     "extract_live_prices_from_cache_payload",
+    "format_ai_calibration_feedback_line",
     "format_ai_decision_scorecard_line",
     "format_signed_usd",
     "match_filled_intent_rows_lifo",
     "resolve_matched_notional_usd",
     "resolve_venue_flip_min_edge_pct",
     "resolve_venue_round_trip_fee_bps",
+    "summarize_execution_quality_bucket",
+    "summarize_execution_quality_by_venue_and_order_type",
 ]

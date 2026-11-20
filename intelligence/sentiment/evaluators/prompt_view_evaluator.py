@@ -929,6 +929,12 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
 
         raw_scorecard = ps.get("ai_decision_scorecard")
         ai_decision_scorecard = dict(raw_scorecard) if isinstance(raw_scorecard, dict) and raw_scorecard.get("count") else None
+        raw_cal = ps.get("ai_calibration_feedback")
+        ai_calibration_feedback = (
+            dict(raw_cal)
+            if isinstance(raw_cal, dict) and (raw_cal.get("filled_total") or raw_cal.get("planned_filled") or raw_cal.get("venue_tca"))
+            else None
+        )
 
         return {
             "scope_s": scope_s,
@@ -937,6 +943,7 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
             "clean_open_limit_orders": clean_open_lim,
             "active_ai_trade_plans": active_ai_trade_plans,
             "ai_decision_scorecard": ai_decision_scorecard,
+            "ai_calibration_feedback": ai_calibration_feedback,
             "venue_cycles": venue_cycles,
             "kraken_xstocks": xs_view,
             "crypto_bellwethers": crypto_bw_view,

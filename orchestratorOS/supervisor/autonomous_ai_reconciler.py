@@ -48,12 +48,15 @@ from intelligence.macro_sentiment_ssot import (
     resolve_derived_telemetry_intervals,
 )
 from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
-from intelligence.sentiment.llm_quota_router import evaluate_model_quota_escalation_allowed
+from intelligence.sentiment.llm_quota_router import resolve_crypto_executor_model_override
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     MarketAndPortfolioSnapshotOrchestrator,
 )
 from orchestratorOS.agy.topics import has_pending_ui_turn
-from orchestratorOS.supervisor.crypto_executor_delta_gate import evaluate_crypto_executor_delta_gate
+from orchestratorOS.supervisor.crypto_executor_delta_gate import (
+    evaluate_crypto_executor_delta_gate,
+    is_urgent_delta_gate_wakeup,
+)
 from state_io import read_json_recovering
 from orchestratorOS.lib.technical_repair_ssot import (
     apply_code_patch_safely,
@@ -251,6 +254,7 @@ class AutonomousAIReconciler:
         focus_symbols: Optional[List[str]] = None,
         topic_key: str,
         escalate_high_effort: bool = False,
+        urgent_escalation: bool = False,
     ) -> Dict[str, Any]:
         """Feeds topic-appropriate telemetry to Gemini; the topic spec bounds both prompt scope and side effects."""
         spec = topic_spec(topic_key)
@@ -291,31 +295,44 @@ class AutonomousAIReconciler:
         effective_escalate = _parse_bool_flag(escalate_high_effort, False) or bool(
             focus_symbols and parse_symbol_list(focus_symbols)
         )
+        effective_urgent = _parse_bool_flag(urgent_escalation, False) or is_urgent_delta_gate_wakeup(
+            "", focus_symbols=focus_symbols, sensors=sensors
+        )
         if (
             resolved_topic == "auto_cryptotrade_executor"
-            and effective_escalate
             and not (optional_env("LLM_TOPIC_MODEL_AUTO_CRYPTOTRADE_EXECUTOR", "") or "").strip()
             and not getattr(self.gemini_auditor, "_explicit_model", False)
         ):
             high_model = (optional_env("LLM_HIGH_STAKE_MODEL", "") or "").strip()
-            if high_model:
-                q_snap = self._load_cached_quota_snapshot()
-                esc_allowed, high_rem, low_warn = evaluate_model_quota_escalation_allowed(q_snap, high_model)
-                if not esc_allowed and high_rem is not None:
-                    logger.info(
-                        "[%s] Suppressing high-effort escalation to %s (remaining quota %.1f%% <= %.1f%% warn threshold).",
-                        resolved_topic,
-                        high_model,
-                        high_rem * 100.0,
-                        low_warn * 100.0,
-                    )
-                else:
-                    model_override = high_model
-                    logger.info(
-                        "[%s] Escalating reasoning effort to %s for high-signal cycle.",
-                        resolved_topic,
-                        high_model,
-                    )
+            q_snap = self._load_cached_quota_snapshot()
+            model_override, route_reason = resolve_crypto_executor_model_override(
+                q_snap,
+                high_model=high_model,
+                default_model=str(getattr(self.gemini_auditor, "model", "") or ""),
+                fallback_models=getattr(self.gemini_auditor, "fallback_models", ()) or (),
+                escalate_high_effort=effective_escalate,
+                urgent_escalation=effective_urgent,
+            )
+            if route_reason == "escalate_high_effort" and model_override:
+                logger.info(
+                    "[%s] Escalating reasoning effort to %s for high-signal cycle.",
+                    resolved_topic,
+                    model_override,
+                )
+            elif route_reason.startswith("suppress_"):
+                logger.info(
+                    "[%s] Suppressing high-effort escalation to %s (%s).",
+                    resolved_topic,
+                    high_model,
+                    route_reason,
+                )
+            elif route_reason.startswith("soft_conserve_fallback(") and model_override:
+                logger.info(
+                    "[%s] Quota soft-conserve routing routine cycle to %s (%s).",
+                    resolved_topic,
+                    model_override,
+                    route_reason,
+                )
 
         call_timeout = safe_pos_float(getattr(spec, "default_timeout_sec", None), default=None) or (
             120.0 if spec.can_self_heal else 90.0
@@ -474,6 +491,7 @@ class AutonomousAIReconciler:
         )
         resolved_topic = canonical_topic_key(topic_key)
         escalate_high_effort = False
+        urgent_escalation = False
         delta_gate_meta: Dict[str, Any] = {}
         if resolved_topic == "auto_cryptotrade_executor":
             delta_gate_enabled = bool_env("AI_DELTA_GATE_ENABLED", True)
@@ -507,6 +525,12 @@ class AutonomousAIReconciler:
                 high_effort_price_move_pct=high_effort_move_pct,
                 ui_turn_pending=ui_turn_pending,
             )
+            urgent_escalation = is_urgent_delta_gate_wakeup(
+                gate_reason,
+                focus_symbols=focus_symbols,
+                sensors=sensors,
+                prev_eval=prev_eval,
+            )
             if delta_gate_enabled and should_skip_llm:
                 prev_meta = prev_eval.get("delta_gate_meta") if isinstance(prev_eval.get("delta_gate_meta"), dict) else {}
                 skip_summary = f"Delta-Gate HOLD carry-forward ({gate_reason}); redundant LLM call skipped."
@@ -538,6 +562,7 @@ class AutonomousAIReconciler:
             focus_symbols=focus_symbols,
             topic_key=topic_key,
             escalate_high_effort=escalate_high_effort,
+            urgent_escalation=urgent_escalation,
         )
         cat_audit = (
             sensors.system_and_vpn.get("llm_catalog_audit")

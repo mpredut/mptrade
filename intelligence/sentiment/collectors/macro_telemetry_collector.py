@@ -135,6 +135,7 @@ from cacheprice import resolve_ssot_price_from_cache
 from providers.ai_circuit_breaker import parse_intent_circuit_breaker_config
 from providers.ai_survival_guard import (
     build_intent_live_price_map,
+    evaluate_ai_calibration_feedback,
     evaluate_ai_decision_scorecard,
 )
 from providers.nav_drawdown import load_and_evaluate_nav_drawdown
@@ -1532,6 +1533,15 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 )
                 if ai_scorecard.get("count", 0) > 0:
                     snapshot.portfolio_summary["ai_decision_scorecard"] = ai_scorecard
+                ai_cal = evaluate_ai_calibration_feedback(
+                    intents_data,
+                    now_ts=now_ts,
+                    live_prices=sc_prices,
+                    lookback_days=7.0,
+                    scope=scope,
+                )
+                if ai_cal.get("filled_total", 0) > 0 or ai_cal.get("venue_tca"):
+                    snapshot.portfolio_summary["ai_calibration_feedback"] = ai_cal
             except Exception:
                 pass
 
