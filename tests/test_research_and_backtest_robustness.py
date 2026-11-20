@@ -3950,7 +3950,7 @@ def test_batch31_intelligence_macro_gemini_parabolic_and_verify_tools_hardening(
     ma = MacroAnalyzer(cache_dir=str(cache_dir))
     ma.shadow_notify = False
     ma.gemini_advisor = SimpleNamespace(  # type: ignore[assignment]
-        review=lambda *, fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False, now_ts=None: (
+        review=lambda *, fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False, now_ts=None, **_kw: (
             captured_fg.update({"snap": fear_greed})
             or SimpleNamespace(
                 market_bias="NEUTRAL",
