@@ -195,7 +195,7 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
             super()._restore_memory_state_locked(state)
 
     def get_persisted_sync_state(self) -> tuple[str, int]:
-        """Return ``(data_version, min_cursor_ms)`` from loaded/persisted account cache state."""
+        """Return ``(data_version, min_cursor_ms)`` across active configured symbols from loaded/persisted state."""
         version = str(
             getattr(self, "_persisted_data_version", "")
             or getattr(self, "_loaded_data_version", "")
@@ -206,17 +206,25 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
             or getattr(self, "fetchtime_per_symbol", None)
             or {}
         )
-        sync_ms = (
-            min(
-                (
-                    vi
-                    for v in cursors.values()
-                    if (vi := safe_pos_int(v, default=None)) is not None
-                ),
-                default=0,
-            )
-            if isinstance(cursors, dict)
-            else 0
+        if not isinstance(cursors, dict) or not cursors:
+            return version, 0
+        active_syms = [
+            s_str
+            for s in (getattr(self, "symbols", None) or ())
+            if (s_str := clean_scalar_str(s)) is not None
+        ]
+        if active_syms:
+            vals = [safe_pos_int(casefold_get(cursors, s), default=None) for s in active_syms]
+            if any(v is None for v in vals):
+                return version, 0
+            return version, min(v for v in vals if v is not None)
+        sync_ms = min(
+            (
+                vi
+                for v in cursors.values()
+                if (vi := safe_pos_int(v, default=None)) is not None
+            ),
+            default=0,
         )
         return version, sync_ms
 

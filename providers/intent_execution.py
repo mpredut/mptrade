@@ -19,6 +19,7 @@ from botcore import (
     format_notify_qty,
     get_stale_cache_retry_delay_sec,
     normalize_side,
+    safe_nonneg_int,
     safe_pos_float,
 )
 import notify_engine.alertnotifiers as _alertnotifiers
@@ -132,6 +133,41 @@ def record_shadow_intent_observation(
         **extra_limit,
     )
     return intent
+
+
+def ensure_submit_account_cache_ready(
+    inst: Any,
+    *,
+    max_retries: int = 3,
+    retry_delay_sec: Optional[float] = None,
+    sleep_fn: Optional[Callable[[float], Any]] = None,
+) -> tuple[bool, str]:
+    """Verify provider account-cache permit readiness before canceling prior live open orders."""
+    prov = getattr(inst, "_provider", None)
+    req_fn = getattr(inst, "_provider_bool_cap", None)
+    if (
+        prov is None
+        or hasattr(prov, "_mock_name")
+        or not callable(req_fn)
+        or hasattr(req_fn, "_mock_name")
+        or req_fn("requires_cache_permit") is not True
+    ):
+        return True, ""
+    prepare_order_state = getattr(prov, "prepare_order_state", None)
+    if not callable(prepare_order_state) or hasattr(prepare_order_state, "_mock_name"):
+        return False, "account_cache_not_fresh"
+    eff_sleep = sleep_fn if callable(sleep_fn) else time.sleep
+    delay = get_stale_cache_retry_delay_sec(retry_delay_sec)
+    attempts = max(1, (safe_nonneg_int(max_retries, default=3) or 0) + 1)
+    for idx in range(attempts):
+        try:
+            if prepare_order_state() is not None:
+                return True, ""
+        except Exception:
+            pass
+        if idx + 1 < attempts:
+            eff_sleep(delay)
+    return False, "account_cache_not_fresh"
 
 
 def execute_enforce_intent_order(

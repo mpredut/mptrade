@@ -28,6 +28,7 @@ from botcore import (
     extract_order_price,
     extract_order_qty,
     extract_order_side,
+    get_stale_cache_retry_delay_sec,
     load_dotenv,
     load_root_config,
     lru_dict_put,
@@ -835,11 +836,15 @@ def restore_cancelled_instrument_orders(
     log_fn: Callable[[str], None] = print,
     reason: str = "",
     restored_orders_out: Optional[list[dict[str, Any]]] = None,
+    retry_delay_sec: Optional[float] = None,
+    sleep_fn: Optional[Callable[[float], Any]] = None,
 ) -> int:
     """Restore cancelled resting orders on a canonical ``Instrument`` when a replacement/exit fails."""
     place_fn = getattr(inst, "place", None)
     if not callable(place_fn):
         return 0
+    eff_sleep = sleep_fn if callable(sleep_fn) else time.sleep
+    delay = get_stale_cache_retry_delay_sec(retry_delay_sec)
 
     def _restore_one(params: dict[str, Any]) -> bool:
         raw_ord = params.get("raw") if isinstance(params.get("raw"), dict) else {}
@@ -851,6 +856,7 @@ def restore_cancelled_instrument_orders(
             or orig_cid.upper().startswith("AI_")
         )
         pfx = "AI" if is_ai else rc.resolve_owner_cid_prefix(owner)
+        outcome_ctx: dict[str, Any] = {}
         place_kw: dict[str, Any] = {
             "side": params["side"],
             "price": params["limit"],
@@ -862,10 +868,23 @@ def restore_cancelled_instrument_orders(
             "caller_owns_retry": True,
             "bypass_guards": bypass_guards,
             "reason": f"atomic_rollback:{clean_scalar_str(reason) or 'restore_cancelled_order'}",
+            "_outcome_context": outcome_ctx,
         }
         if pfx:
             place_kw["client_order_id"] = rc.create_client_order_id(process_name=pfx)
-        res = place_fn(**place_kw)
+        res = None
+        for attempt in range(4):
+            outcome_ctx.clear()
+            res = place_fn(**place_kw)
+            if res:
+                break
+            if attempt < 3 and outcome_ctx.get("reason") in (
+                "account_cache_not_fresh",
+                "account_cache_snapshot_changed",
+            ):
+                eff_sleep(delay)
+                continue
+            break
         if res and restored_orders_out is not None:
             restored_orders_out.append({
                 "actor": "AI" if is_ai else "BOT",

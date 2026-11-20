@@ -470,3 +470,28 @@ def test_persistence_and_cache_layer_dag_and_sibling_purity_ast():
         other_siblings = set(siblings) - {sib}
         assert not (imports & other_siblings), f"{sib}.py imports sibling cache domain: {imports & other_siblings}"
         assert "cacheManager" not in imports, f"{sib}.py must not import cacheManager"
+
+
+def test_persisted_sync_state_ignores_retired_symbols_and_requires_all_active_symbols():
+    """Verify retired symbol cursors (e.g. BNBUSDC) do not block startup seeding while missing active symbols return 0."""
+    from cacheaccount import CacheOrderManager
+
+    mgr = object.__new__(CacheOrderManager)
+    mgr.symbols = ["BTCUSDC", "TAOUSDC", "ARBUSDC"]
+    mgr._persisted_data_version = "snapshot:live_v1"
+    mgr._loaded_data_version = ""
+    mgr._rest_sync_cursor_per_symbol = {
+        "BTCUSDC": 1_795_173_456_830,
+        "TAOUSDC": 1_795_173_457_096,
+        "ARBUSDC": 1_795_173_457_360,
+        "BNBUSDC": 1_795_009_281_722,  # retired 45h-old symbol in .meta
+    }
+    mgr.fetchtime_per_symbol = {}
+    ver, sync_ms = mgr.get_persisted_sync_state()
+    assert ver == "snapshot:live_v1"
+    assert sync_ms == 1_795_173_456_830
+
+    # Newly added active symbol without cursor must not claim fresh sync
+    mgr.symbols = ["BTCUSDC", "TAOUSDC", "ARBUSDC", "SOLUSDC"]
+    assert mgr.get_persisted_sync_state() == ("snapshot:live_v1", 0)
+

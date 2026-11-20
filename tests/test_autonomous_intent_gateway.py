@@ -4582,6 +4582,94 @@ def test_ping_pong_guard_allows_same_side_continuation_after_already_completed_f
     assert allowed is True, f"Same-side continuation SELL was falsely blocked: {reason}"
 
 
+def test_pre_cancel_submit_cache_gate_and_rollback_stale_cache_retry(temp_workspace, monkeypatch):
+    """Verify replace_open_orders never cancels live resting orders when account_cache_not_fresh, and atomic rollback retries transient stale cache."""
+    import order_lifecycle as ol_mod
+    import providers.intent_execution as ie_mod
+
+    monkeypatch.setattr(ie_mod, "get_stale_cache_retry_delay_sec", lambda _d=None: 0.0)
+    ws, _ = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce", notify_enabled=False)
+
+    canceled_calls: list[str] = []
+    place_calls: list[dict] = []
+    fake_prov = SimpleNamespace(
+        name="binance",
+        get_current_price=lambda _s: 188.0,
+        free_balance=lambda _a: 3.15,
+        prepare_order_state=lambda: None,
+    )
+    tao_inst = SimpleNamespace(
+        symbol="TAOUSDC",
+        base="TAO",
+        quote="USDC",
+        provider_name="binance",
+        _provider=fake_prov,
+        _provider_bool_cap=lambda cap, **_kw: cap == "requires_cache_permit",
+        open_orders=lambda: [
+            {
+                "orderId": "727100712",
+                "clientOrderId": "AI_prior_tao_sell",
+                "side": "SELL",
+                "price": "188.80",
+                "origQty": "3.1493",
+                "executedQty": "0.0",
+            }
+        ],
+        cancel_order=lambda oid: canceled_calls.append(oid) or True,
+        place=lambda **kw: place_calls.append(kw) or {"orderId": "new_1"},
+    )
+
+    res = gw.submit(
+        {
+            "decision": "SELL",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 188.40,
+            "replace_open_orders": True,
+            "confidence": 0.94,
+            "suggested_notional_usd": 593.0,
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"TAOUSDC": tao_inst},
+    )
+    assert res["status"] == "FAILED"
+    assert res["history"][-1]["reason"] == "account_cache_not_fresh"
+    assert canceled_calls == []
+    assert place_calls == []
+
+    # Atomic rollback retries transient account_cache_not_fresh and restores the canceled order
+    rb_attempts = []
+
+    def _flaky_rb_place(**kw):
+        rb_attempts.append(kw)
+        if len(rb_attempts) < 3:
+            if isinstance(ctx := kw.get("_outcome_context"), dict):
+                ctx["state"] = "refused"
+                ctx["reason"] = "account_cache_not_fresh"
+            return None
+        return {"orderId": "restored_tao_727", "status": "NEW"}
+
+    rb_inst = SimpleNamespace(place=_flaky_rb_place)
+    restored_out: list[dict] = []
+    cnt = ol_mod.restore_cancelled_instrument_orders(
+        rb_inst,
+        [{"orderId": "727100712", "clientOrderId": "AI_prior_tao_sell", "side": "SELL", "price": "188.80", "origQty": "3.1493"}],
+        bypass_guards={"all"},
+        reason="test_stale_cache_rollback",
+        restored_orders_out=restored_out,
+        retry_delay_sec=0.0,
+        sleep_fn=lambda _d: None,
+    )
+    assert cnt == 1
+    assert len(rb_attempts) == 3
+    assert restored_out[0]["order_id"] == "restored_tao_727"
+    assert restored_out[0]["actor"] == "AI"
+
+
+
 
 
 

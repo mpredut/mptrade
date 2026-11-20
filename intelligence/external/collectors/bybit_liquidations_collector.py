@@ -34,7 +34,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import cache_symbol_variants, canonical_base_asset, clean_symbol_key
+from cachepaths import cache_symbol_variants, canonical_base_asset, clean_symbol_key, symbol_quote_asset
 from instrument_registry import casefold_get
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
@@ -469,7 +469,7 @@ class BinanceFuturesLiquidationCollector(LiquidationCollectorBase):
             if not isinstance(order, dict):
                 continue
             raw_sym = str(order.get("s") or "").strip().upper()
-            if not raw_sym.endswith(("USDT", "USDC")):
+            if "_" in raw_sym or symbol_quote_asset(raw_sym) not in ("USDT", "USDC"):
                 continue
             base = canonical_base_asset(raw_sym)
             if not base or (self._tracked_bases and base not in self._tracked_bases):

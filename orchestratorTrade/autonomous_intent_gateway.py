@@ -98,6 +98,7 @@ from providers.intent_reconciliation import (
 )
 from providers.intent_execution import (
     cancel_existing_ai_open_orders,
+    ensure_submit_account_cache_ready,
     execute_enforce_intent_order,
     find_duplicate_ai_open_limit_order,
     preflight_intent_and_resolve_price,
@@ -432,6 +433,24 @@ class AutonomousIntentGateway:
         extra_intent_key: Optional[str] = None,
         intents: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[bool, List[str]]:
+        if intent is not None:
+            cache_ok, cache_reason = ensure_submit_account_cache_ready(inst)
+            if not cache_ok:
+                sym_lbl = str(getattr(inst, "symbol", "") or intent.get("symbol") or "")
+                logger.warning(
+                    "[LLM TRADER \u00b7 ENFORCE] Aborting pre-submit cancel for %s %s: %s (keeping prior open orders active)",
+                    decision,
+                    sym_lbl,
+                    cache_reason,
+                )
+                intent["status"] = "FAILED"
+                append_intent_history(intent, {
+                    "ts": now_ts,
+                    "action": "FAILED",
+                    "reason": cache_reason,
+                    "category": "refused_pre_submit",
+                })
+                return False, []
         failed_ids: List[str] = []
         scan_errors: List[str] = []
         canceled_ids = cancel_existing_ai_open_orders(
