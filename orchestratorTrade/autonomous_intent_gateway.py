@@ -38,19 +38,34 @@ from botcore import (
     add_store_true_cli_args,
     clean_order_id,
     disable_auto_start_websockets_default,
+    extract_order_price,
+    extract_timestamp_s,
     format_notify_price,
     is_us_rth_open,
     load_key_value_conf,
+    opposite_side,
+    safe_pos_float,
 )
-from cachepaths import AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME
+from cachepaths import (
+    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
+    CACHE_CURRENT_PRICE_FILENAME,
+    resolve_cachedb_filepath,
+)
 from instrument import (
     load_tradable_instruments,
     resolve_instrument_live_price,
     resolve_tradable_instrument,
 )
 from instrument_registry import discover_tradable_specs, resolve_instrument_spec
+from intelligence.sentiment.evaluators.guard_probe_evaluator import (
+    probe_deterministic_guards,
+)
 import notify_engine.alertnotifiers as _alertnotifiers
 from order_lifecycle import restore_cancelled_instrument_orders
+from providers.ai_survival_guard import (
+    evaluate_ai_decision_scorecard,
+    evaluate_ai_ping_pong_guard,
+)
 from providers.intent_reconciliation import (
     reconcile_intents_from_execution_audit,
 )
@@ -65,6 +80,7 @@ from providers.intent_execution import (
 )
 from providers.intent_state import (
     append_intent_history,
+    collect_known_ai_order_ids,
     evaluate_ai_intent_circuit_breaker,
     extract_intent_cancel_order_ids,
     load_durable_intents_state,
@@ -75,7 +91,9 @@ from providers.intent_state import (
     upsert_durable_intent,
     validate_and_build_intent_dict,
 )
+from providers.order_id_context import resolve_order_actor
 from providers.quantity import clamp_notional_to_wallet_balance
+from state_io import read_json_dict
 
 # Symmetric guard bypass set for autonomous AI orders across both BUY and SELL:
 # Trade thesis, profit/loss protection, multi-tranche scaling, trend timing, microstructure, and
@@ -137,6 +155,12 @@ class AutonomousIntentGateway:
         self.max_hourly_replaces_per_symbol: int = cb_cfg["max_hourly_replaces_per_symbol"]
         self.replace_min_price_delta_pct: float = cb_cfg["replace_min_price_delta_pct"]
         self.max_daily_buy_notional_usd: float = cb_cfg["max_daily_buy_notional_usd"]
+        self.flip_cooldown_min: float = cb_cfg["flip_cooldown_min"]
+        self.flip_min_edge_pct: float = cb_cfg["flip_min_edge_pct"]
+        self.max_flips_6h: int = cb_cfg["max_flips_6h"]
+        self.scorecard_window_trades: int = cb_cfg["scorecard_window_trades"]
+        self.scorecard_max_loss_streak: int = cb_cfg["scorecard_max_loss_streak"]
+        self.scorecard_cooldown_hours: float = cb_cfg["scorecard_cooldown_hours"]
 
     def load_all_intents(self) -> List[Dict[str, Any]]:
         """Loads all intents from the durable JSON queue with `.previous` crash recovery."""
@@ -191,6 +215,68 @@ class AutonomousIntentGateway:
     def _get_live_price(self, inst: Any) -> float:
         """Fetches live market price from provider or cache."""
         return resolve_instrument_live_price(inst, cache_dir=self.cache_dir)
+
+    def _load_live_prices_for_scorecard(
+        self,
+        symbol: str,
+        venue: str,
+        spot_price: float,
+    ) -> Dict[str, float]:
+        """Collect local live spot prices for MTM scoring of open AI BUY intents (0 ms, no network)."""
+        prices: Dict[str, float] = {}
+        try:
+            cp_path = resolve_cachedb_filepath(os.path.join(self.cache_dir, CACHE_CURRENT_PRICE_FILENAME))
+            if cp_path and os.path.exists(cp_path):
+                data = read_json_dict(cp_path, default=None, recover_previous=True)
+                items = data.get("items") if isinstance(data, dict) else None
+                if isinstance(items, dict):
+                    for k, v in items.items():
+                        px_v = safe_pos_float(v.get("price") if isinstance(v, dict) else v, default=None)
+                        if px_v is not None:
+                            prices[str(k)] = px_v
+        except Exception:
+            pass
+        if (sp := safe_pos_float(spot_price, default=None)) is not None:
+            prices[symbol] = sp
+            if venue:
+                prices[f"{venue}:{symbol}"] = sp
+        return prices
+
+    @staticmethod
+    def _resolve_recent_bot_opposite_fill(
+        inst: Any,
+        decision: str,
+        now_ts: float,
+        all_intents: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Return latest recent by=BOT opposite-side fill from local provider order cache (mock-safe)."""
+        opp = opposite_side(decision)
+        if opp not in ("BUY", "SELL"):
+            return None
+        prov = getattr(inst, "_provider", None)
+        get_orders_fn = getattr(prov, "get_orders", None) if prov is not None else None
+        if not callable(get_orders_fn):
+            return None
+        try:
+            raw_orders = get_orders_fn(inst.symbol, opp, 1800)
+        except Exception:
+            return None
+        if not isinstance(raw_orders, list) or not raw_orders:
+            return None
+        known_ai_oids = collect_known_ai_order_ids(all_intents)
+        latest: Optional[Dict[str, Any]] = None
+        for ord_item in raw_orders:
+            if not isinstance(ord_item, dict):
+                continue
+            if resolve_order_actor(ord_item, known_ai_oids=known_ai_oids) != "BOT":
+                continue
+            ts_s = extract_timestamp_s(ord_item, default=0.0) or 0.0
+            px_f = extract_order_price(ord_item, default=0.0) or 0.0
+            if ts_s <= 0.0 or ts_s > now_ts + 60.0 or px_f <= 0.0:
+                continue
+            if latest is None or ts_s > latest["ts"]:
+                latest = {"ts": ts_s, "price": px_f, "side": opp, "actor": "BOT"}
+        return latest
 
     def _clamp_notional_to_wallet_balance(
         self,
@@ -455,6 +541,56 @@ class AutonomousIntentGateway:
         )
         trade_tag = resolve_intent_topic_tag(intent, venue)
 
+        def _block_by_circuit_breaker(reason_str: str, metrics_dict: Dict[str, Any]) -> Dict[str, Any]:
+            cb_qty = effective_usd / price if (effective_usd > 0.0 and price > 0.0) else 0.0
+            if mode == "shadow":
+                return record_shadow_intent_observation(
+                    inst,
+                    intent,
+                    decision=decision,
+                    target_qty=cb_qty,
+                    price=price,
+                    effective_usd=effective_usd,
+                    confidence=confidence,
+                    guard_allowed=False,
+                    guard_reason=reason_str,
+                    thesis=thesis,
+                    trade_tag=trade_tag,
+                    now_ts=now,
+                    is_limit=is_limit,
+                    dispatch_notify_fn=self._dispatch_notify,
+                    log=logger,
+                )
+            logger.warning(
+                "[LLM TRADER \u00b7 ENFORCE] AI circuit-breaker blocked %s %s: %s",
+                decision, inst.symbol, reason_str,
+            )
+            _alertnotifiers.emit_trade_notification(
+                self._dispatch_notify,
+                "BLOCKED",
+                decision,
+                inst.symbol,
+                format_notify_price(price, comma=False),
+                cb_qty,
+                effective_usd,
+                venue=inst.provider_name,
+                owner=trade_tag,
+                detail=("LIMIT" if is_limit else "MARKET", f"Reason: {reason_str}"),
+                thesis=thesis,
+                notify_kwargs={"symbol": inst.symbol},
+            )
+            intent["status"] = "REJECTED_AI_CIRCUIT_BREAKER"
+            intent["circuit_breaker_reason"] = reason_str
+            intent["circuit_breaker_metrics"] = metrics_dict
+            append_intent_history(intent, {
+                "ts": now,
+                "action": "REJECTED_AI_CIRCUIT_BREAKER",
+                "reason": reason_str,
+                **metrics_dict,
+            })
+            return intent
+
+        live_spot_px = price
         if not dup_oid and mode in ("enforce", "shadow"):
             cb_allowed, cb_usd, cb_reason, cb_metrics = evaluate_ai_intent_circuit_breaker(
                 intent,
@@ -479,18 +615,66 @@ class AutonomousIntentGateway:
                 effective_usd = cb_usd
                 intent["circuit_breaker_clamped"] = cb_reason
             elif not cb_allowed:
-                cb_qty = effective_usd / price if (effective_usd > 0.0 and price > 0.0) else 0.0
-                if mode == "shadow":
+                return _block_by_circuit_breaker(cb_reason, cb_metrics)
+
+            if is_limit:
+                try:
+                    fetched_spot = safe_pos_float(self._get_live_price(inst), default=None)
+                    if fetched_spot is not None:
+                        live_spot_px = fetched_spot
+                except Exception:
+                    pass
+
+            recent_bot_fill = self._resolve_recent_bot_opposite_fill(inst, decision, now, all_intents)
+            pp_allowed, pp_reason, pp_metrics = evaluate_ai_ping_pong_guard(
+                intent,
+                all_intents,
+                decision=decision,
+                symbol=symbol,
+                venue=venue,
+                price=price,
+                now_ts=now,
+                flip_cooldown_min=getattr(self, "flip_cooldown_min", 45.0),
+                flip_min_edge_pct=getattr(self, "flip_min_edge_pct", 0.90),
+                max_flips_6h=getattr(self, "max_flips_6h", 2),
+                spot_price=live_spot_px,
+                recent_bot_fill=recent_bot_fill,
+            )
+            if not pp_allowed:
+                return _block_by_circuit_breaker(pp_reason, pp_metrics)
+
+            sc_win = getattr(self, "scorecard_window_trades", 5)
+            sc_streak = getattr(self, "scorecard_max_loss_streak", 3)
+            sc_cd_h = getattr(self, "scorecard_cooldown_hours", 4.0)
+            if decision == "BUY" and sc_win > 0 and sc_streak > 0 and sc_cd_h > 0.0:
+                sc_prices = self._load_live_prices_for_scorecard(symbol, venue, live_spot_px)
+                scorecard = evaluate_ai_decision_scorecard(
+                    all_intents,
+                    now_ts=now,
+                    live_prices=sc_prices,
+                    window_trades=sc_win,
+                    max_loss_streak=sc_streak,
+                    cooldown_hours=sc_cd_h,
+                )
+                if scorecard.get("buy_shadow_active"):
+                    sc_reason = str(scorecard.get("reason") or "ai_scorecard_buy_shadow_cooldown")
+                    intent["scorecard_downgraded_to_shadow"] = sc_reason
+                    intent["ai_decision_scorecard"] = scorecard
+                    sc_qty = effective_usd / price if (effective_usd > 0.0 and price > 0.0) else 0.0
+                    logger.warning(
+                        "[LLM TRADER] Downgrading BUY %s to shadow via AI decision scorecard: %s",
+                        inst.symbol, sc_reason,
+                    )
                     return record_shadow_intent_observation(
                         inst,
                         intent,
                         decision=decision,
-                        target_qty=cb_qty,
+                        target_qty=sc_qty,
                         price=price,
                         effective_usd=effective_usd,
                         confidence=confidence,
                         guard_allowed=False,
-                        guard_reason=cb_reason,
+                        guard_reason=sc_reason,
                         thesis=thesis,
                         trade_tag=trade_tag,
                         now_ts=now,
@@ -498,34 +682,6 @@ class AutonomousIntentGateway:
                         dispatch_notify_fn=self._dispatch_notify,
                         log=logger,
                     )
-                logger.warning(
-                    "[LLM TRADER \u00b7 ENFORCE] AI circuit-breaker blocked %s %s: %s",
-                    decision, inst.symbol, cb_reason,
-                )
-                _alertnotifiers.emit_trade_notification(
-                    self._dispatch_notify,
-                    "BLOCKED",
-                    decision,
-                    inst.symbol,
-                    format_notify_price(price, comma=False),
-                    cb_qty,
-                    effective_usd,
-                    venue=inst.provider_name,
-                    owner=trade_tag,
-                    detail=("LIMIT" if is_limit else "MARKET", f"Reason: {cb_reason}"),
-                    thesis=thesis,
-                    notify_kwargs={"symbol": inst.symbol},
-                )
-                intent["status"] = "REJECTED_AI_CIRCUIT_BREAKER"
-                intent["circuit_breaker_reason"] = cb_reason
-                intent["circuit_breaker_metrics"] = cb_metrics
-                append_intent_history(intent, {
-                    "ts": now,
-                    "action": "REJECTED_AI_CIRCUIT_BREAKER",
-                    "reason": cb_reason,
-                    **cb_metrics,
-                })
-                return intent
 
         canceled_order_snapshots: list[dict[str, Any]] = []
         if mode == "enforce" and (replace_open or cancel_bot_open or bool(target_oids)):
@@ -631,6 +787,24 @@ class AutonomousIntentGateway:
                 "mode": mode,
             })
             return intent
+
+        if guard_allowed:
+            try:
+                use_disk = os.path.abspath(self.workspace_dir) == os.path.abspath(ROOT_DIR)
+                probe_res = probe_deterministic_guards(
+                    symbol,
+                    decision,
+                    price,
+                    venue=venue,
+                    now_ts=now,
+                    allow_disk_cache=use_disk,
+                )
+                if probe_flags := probe_res.get("flags"):
+                    intent["advisory_guards_overridden"] = [
+                        f"{f['guard']}:{f['action']}({f['reason']})" for f in probe_flags
+                    ]
+            except Exception:
+                pass
 
         res_intent = execute_enforce_intent_order(
             inst,

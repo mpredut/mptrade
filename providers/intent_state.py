@@ -642,7 +642,7 @@ def parse_intent_gateway_config(
 
 
 def parse_intent_circuit_breaker_config(conf: dict[str, str]) -> dict[str, Any]:
-    """Parse optional asymmetric ``by=AI`` circuit-breaker parameters from ``order_guard.conf``."""
+    """Parse optional asymmetric ``by=AI`` circuit-breaker and survival guard parameters from ``order_guard.conf``."""
     cfg = conf if isinstance(conf, dict) else {}
     return {
         "max_daily_buys_per_symbol": safe_nonneg_int(
@@ -656,6 +656,24 @@ def parse_intent_circuit_breaker_config(conf: dict[str, str]) -> dict[str, Any]:
         ),
         "max_daily_buy_notional_usd": safe_nonneg_float(
             cfg.get("autonomous_trading_max_daily_buy_notional_usd"), default=6000.0
+        ),
+        "flip_cooldown_min": safe_nonneg_float(
+            cfg.get("autonomous_trading_flip_cooldown_min"), default=45.0
+        ),
+        "flip_min_edge_pct": safe_nonneg_float(
+            cfg.get("autonomous_trading_flip_min_edge_pct"), default=0.90
+        ),
+        "max_flips_6h": safe_nonneg_int(
+            cfg.get("autonomous_trading_max_flips_6h"), default=2
+        ),
+        "scorecard_window_trades": safe_nonneg_int(
+            cfg.get("autonomous_trading_scorecard_window_trades"), default=5
+        ),
+        "scorecard_max_loss_streak": safe_nonneg_int(
+            cfg.get("autonomous_trading_scorecard_max_loss_streak"), default=3
+        ),
+        "scorecard_cooldown_hours": safe_nonneg_float(
+            cfg.get("autonomous_trading_scorecard_cooldown_hours"), default=4.0
         ),
     }
 

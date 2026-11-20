@@ -9979,6 +9979,150 @@ def test_proposal4a_structured_trade_plans_3c_memory_and_delta_gate_trigger():
     assert skip_t is False and rsn_t == "trade_plan_target_hit(BTCUSDC)" and hi_t is True
 
 
+def test_advisory_guard_probe_and_scorecard_surfaced_in_section_3c(capsys):
+    """Verify read-only deterministic guard probing (0 ms, no side effects), CLI probe, and Section 3C rendering."""
+    from intelligence.sentiment.evaluators.guard_probe_evaluator import (
+        format_guard_advisory_line,
+        probe_deterministic_guards,
+        summarize_symbol_guard_advisories,
+    )
+    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
+    from verify_tools import probe_order_guards as probe_cli
+
+    t0 = 1_795_200_000.0
+    test_margins = {
+        "default": 1.15,
+        "binance": 1.15,
+        "internal_guard_mode": "enforce",
+        "parabolic_surge_pct": 15.0,
+        "parabolic_pullback_pct": 2.0,
+        "weibull_exhaustion_policy": "downscale",
+        "weibull_exhausted_scale": 0.25,
+        "weibull_p90_days": 7.0,
+        "external_guard_mode": "enforce",
+        "whale_guard_mode": "enforce",
+        "severe_cascade_oi_pct": -5.0,
+        "min_taker_ratio": 0.75,
+        "taker_downscale_threshold": 0.90,
+        "taker_downscaled_scale": 0.50,
+        "orderbook_wall_guard_mode": "enforce",
+        "whale_wall_usd_limit": 1_000_000.0,
+        "min_buy_imbalance": 0.25,
+        "max_sell_imbalance": 0.75,
+        "funding_guard_mode": "enforce",
+        "funding_max_long_rate": 0.0005,
+        "funding_min_short_rate": -0.0005,
+        "funding_crowding_policy": "downscale",
+        "funding_crowded_scale": 0.50,
+        "geopolitical_guard_mode": "enforce",
+    }
+
+    # 1. Clean instrument -> OK with empty flags (0 stdout, 0 prompt noise)
+    clean_res = probe_deterministic_guards(
+        "BTCUSDC",
+        "BUY",
+        70000.0,
+        venue="binance",
+        margins=test_margins,
+        microstructure_entry={
+            "taker_buy_sell_ratio": 1.15,
+            "whale_long_pct": 0.55,
+            "ob_imbalance": 0.52,
+            "ask_wall_usd": 200_000.0,
+            "bid_wall_usd": 200_000.0,
+            "funding_rate": 0.0001,
+        },
+        geopolitical_assessment={"threat_level": "NORMAL", "recommended_brake": "NONE", "risk_score": 0.1},
+        opposite_fill_px=72000.0,  # +2.78% favorable below last sell
+        now_ts=t0,
+        allow_disk_cache=False,
+    )
+    assert clean_res["overall"] == "OK" and clean_res["flags"] == [] and clean_res["suggested_scale"] == 1.0
+    assert capsys.readouterr().out == ""
+
+    # 2. Multi-guard conflict: G_PROF + GI_WHALE + GI_OBOOK + GI_FUNDING + GLLM3 all reported individually
+    flagged_res = probe_deterministic_guards(
+        "TAOUSDC",
+        "BUY",
+        210.0,
+        venue="binance",
+        margins=test_margins,
+        microstructure_entry={
+            "taker_buy_sell_ratio": 0.62,
+            "whale_long_pct": 0.40,
+            "ob_imbalance": 0.18,
+            "ask_wall_usd": 1_500_000.0,
+            "ask_wall_px": 211.0,
+            "funding_rate": 0.0008,
+        },
+        geopolitical_assessment={"threat_level": "ELEVATED", "recommended_brake": "DOWNSCALE_50", "risk_score": 0.7, "summary": "oil shock"},
+        opposite_fill_px=208.0,  # buying above prior sell -> G_PROF VETO
+        now_ts=t0,
+        allow_disk_cache=False,
+    )
+    assert flagged_res["overall"] == "VETO"
+    flagged_codes = {f["guard"] for f in flagged_res["flags"]}
+    assert {"G_PROF", "GI_WHALE", "GI_OBOOK", "GI_FUNDING", "GLLM3"}.issubset(flagged_codes)
+    assert capsys.readouterr().out == ""
+
+    # 3. summarize_symbol_guard_advisories emits ONLY flagged instruments (omits clean BTCUSDC)
+    advisories = summarize_symbol_guard_advisories(
+        tradable_positions=[
+            {"venue": "binance", "symbol": "BTCUSDC", "price": 70000.0},
+            {"venue": "binance", "symbol": "TAOUSDC", "price": 210.0},
+        ],
+        prices_and_trends={},
+        microstructure={
+            "BTCUSDC": {"taker_buy_sell_ratio": 1.1, "ob_imbalance": 0.5, "funding_rate": 0.0001},
+            "TAOUSDC": {"taker_buy_sell_ratio": 0.62, "ob_imbalance": 0.18, "funding_rate": 0.0008},
+        },
+        recent_orders={"TAOUSDC": {"last_sell": {"price": 208.0}}},
+        geopolitical_threat={"threat_level": "NORMAL", "recommended_brake": "NONE", "risk_score": 0.1},
+        now_ts=t0,
+        margins=test_margins,
+    )
+    assert len(advisories) == 1 and advisories[0]["symbol"] == "TAOUSDC"
+    adv_line = format_guard_advisory_line(advisories[0])
+    assert "[binance] TAOUSDC: BUY=" in adv_line and "GI_WHALE" in adv_line and "| SELL=OK" in adv_line
+
+    # 4. Section 3C + prompt policy surface both AI Decision Scorecard and non-blocking Advisory Guard Probes
+    snap = TelemetrySensorSnapshot(
+        prices_and_trends={"TAOUSDC": {"price": 210.0}},
+        portfolio_summary={
+            "ai_decision_scorecard": {
+                "count": 4,
+                "wins": 1,
+                "scratches": 0,
+                "losses": 3,
+                "net_usd": -195.0,
+                "avg_edge_pct": -1.45,
+                "loss_streak": 3,
+                "status": "BUY_SHADOW_COOLDOWN",
+                "cooldown_remaining_h": 3.4,
+            },
+            "advisory_guard_probes": advisories,
+        },
+        evaluated_at_ts=t0,
+    )
+    prompt_txt = build_supervisor_prompt(
+        snap,
+        LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0),
+        topic_spec("auto_cryptotrade_executor"),
+    )
+    assert "verify_tools/probe_order_guards.py" in prompt_txt
+    assert "AI Decision Scorecard (48h, n=4): 1W/0S/3L, avg=-1.45%, net=-$195, streak=3L [BUY_SHADOW_COOLDOWN: 3.4h left]" in prompt_txt
+    assert "Advisory Deterministic Guard Probes (Non-Blocking; Inspect & Override Freely):" in prompt_txt
+    assert "[binance] TAOUSDC: BUY=" in prompt_txt
+
+    # 5. CLI verify_tools/probe_order_guards.py prints valid JSON payload
+    rc = probe_cli.main(["--venue", "binance", "--symbol", "BTCUSDC", "--side", "BUY", "--price", "70000", "--opposite-fill-px", "69000"])
+    assert rc == 0
+    cli_payload = json.loads(capsys.readouterr().out)
+    assert cli_payload["symbol"] == "BTCUSDC" and cli_payload["side"] == "BUY"
+    assert any(f["guard"] == "G_PROF" for f in cli_payload["flags"])
+
+
+
 
 
 

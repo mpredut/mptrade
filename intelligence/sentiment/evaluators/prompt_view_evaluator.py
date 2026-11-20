@@ -915,12 +915,29 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                     pl_copy["symbol"] = pl_ident.display_symbol
                 active_ai_trade_plans.append(pl_copy)
 
+        raw_scorecard = ps.get("ai_decision_scorecard")
+        ai_decision_scorecard = dict(raw_scorecard) if isinstance(raw_scorecard, dict) and raw_scorecard.get("count") else None
+
+        raw_probes = ps.get("advisory_guard_probes")
+        advisory_guard_probes: List[Dict[str, Any]] = []
+        if isinstance(raw_probes, list):
+            for pr in raw_probes:
+                if not isinstance(pr, dict):
+                    continue
+                pr_copy = dict(pr)
+                pr_ident = resolve_symbol_identity(pr_copy.get("symbol"))
+                if pr_ident.is_tokenized_equity and pr_ident.display_symbol:
+                    pr_copy["symbol"] = pr_ident.display_symbol
+                advisory_guard_probes.append(pr_copy)
+
         return {
             "scope_s": scope_s,
             "tradable_positions": tradable_positions_view,
             "has_open_orders": bool(open_lim),
             "clean_open_limit_orders": clean_open_lim,
             "active_ai_trade_plans": active_ai_trade_plans,
+            "ai_decision_scorecard": ai_decision_scorecard,
+            "advisory_guard_probes": advisory_guard_probes,
             "venue_cycles": venue_cycles,
             "kraken_xstocks": xs_view,
             "crypto_bellwethers": crypto_bw_view,

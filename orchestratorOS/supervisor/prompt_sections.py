@@ -31,6 +31,9 @@ from intelligence.macro_sentiment_ssot import (
     format_macro_benchmarks_summary_line,
     resolve_derived_telemetry_intervals,
 )
+from intelligence.sentiment.evaluators.guard_probe_evaluator import (
+    format_guard_advisory_line,
+)
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_bottom_structure_6h_parts,
 )
@@ -61,6 +64,7 @@ from intelligence.sentiment.evaluators.prompt_view_evaluator import (
     evaluate_tradable_position_prompt_view,
 )
 from instrument_registry import is_equity_symbol, resolve_symbol_identity
+from providers.ai_survival_guard import format_ai_decision_scorecard_line
 from providers.order_id_context import format_actor_tag
 
 
@@ -1299,6 +1303,13 @@ def _format_portfolio_section(
                 f"    - [{pl.get('venue')}] {pl.get('symbol')} {pl.get('side')}{entry_s} "
                 f"({', '.join(meta_p)}): {', '.join(p_parts)} [{pl.get('status', 'ACTIVE')}]"
             )
+    if sc_line := format_ai_decision_scorecard_line(view.get("ai_decision_scorecard")):
+        lines.append(f"  * {sc_line}")
+    if guard_probes := view.get("advisory_guard_probes"):
+        lines.append("  * Advisory Deterministic Guard Probes (Non-Blocking; Inspect & Override Freely):")
+        for gp in guard_probes:
+            if gp_line := format_guard_advisory_line(gp):
+                lines.append(gp_line)
     for venue_lbl, venue_id, cyc_items in view["venue_cycles"]:
         lines.append(f"  * {venue_lbl} Active Cycle Cost & Drawdown Anchors:")
         for c_sym, c_data in cyc_items:

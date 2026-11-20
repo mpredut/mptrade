@@ -21,6 +21,7 @@ from botcore import (
     first_pos_float,
     is_live_network_backfill_enabled,
     is_us_rth_open,
+    load_key_value_conf,
     normalize_epoch_sec,
     resolve_now_ts,
     resolve_patched_attr,
@@ -83,6 +84,9 @@ from intelligence.sentiment.collectors.portfolio_collector import (
     harvest_tradable_positions_and_orders,
     harvest_venue_cycles,
 )
+from intelligence.sentiment.evaluators.guard_probe_evaluator import (
+    summarize_symbol_guard_advisories,
+)
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     apply_asset_scope_filter,
     build_cycle_fallback_prices,
@@ -109,6 +113,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 )
 from instrument_registry import casefold_get, has_workspace_instrument_sources
 from cacheprice import resolve_ssot_price_from_cache
+from providers.ai_survival_guard import evaluate_ai_decision_scorecard
 from providers.intent_telemetry import (
     build_last_cycle_execution_status,
     summarize_active_ai_trade_plans,
@@ -117,6 +122,7 @@ from providers.intent_telemetry import (
 from providers.intent_state import (
     collect_known_ai_order_ids,
     extract_intent_notional,
+    parse_intent_circuit_breaker_config,
 )
 from providers.ohlc_utils import extract_yahoo_chart_result_and_quote
 from state_io import (
@@ -1165,6 +1171,41 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 verified_open_venues=eff_verified_venues,
             ):
                 snapshot.portfolio_summary["active_ai_trade_plans"] = active_plans_out
+            try:
+                cb_cfg = parse_intent_circuit_breaker_config(load_key_value_conf(workspace_dir))
+                sc_prices: Dict[str, Any] = dict(snapshot.prices_and_trends or {})
+                for tp in (snapshot.portfolio_summary.get("tradable_positions") or ()):
+                    if isinstance(tp, dict) and tp.get("symbol") and (tp_px := safe_pos_float(tp.get("price"), default=None)) is not None:
+                        tp_sym = str(tp["symbol"])
+                        sc_prices.setdefault(tp_sym, tp_px)
+                        if tp.get("venue"):
+                            sc_prices[f"{tp['venue']}:{tp_sym}"] = tp_px
+                ai_scorecard = evaluate_ai_decision_scorecard(
+                    intents_data,
+                    now_ts=now_ts,
+                    live_prices=sc_prices,
+                    window_trades=cb_cfg["scorecard_window_trades"],
+                    max_loss_streak=cb_cfg["scorecard_max_loss_streak"],
+                    cooldown_hours=cb_cfg["scorecard_cooldown_hours"],
+                    scope=scope,
+                )
+                if ai_scorecard.get("count", 0) > 0:
+                    snapshot.portfolio_summary["ai_decision_scorecard"] = ai_scorecard
+            except Exception:
+                pass
+
+        try:
+            if guard_advisories := summarize_symbol_guard_advisories(
+                snapshot.portfolio_summary.get("tradable_positions"),
+                snapshot.prices_and_trends,
+                snapshot.microstructure,
+                recent_orders,
+                getattr(snapshot, "geopolitical_threat", None),
+                now_ts=now_ts,
+            ):
+                snapshot.portfolio_summary["advisory_guard_probes"] = guard_advisories
+        except Exception:
+            pass
 
         snapshot.portfolio_summary.update(
             harvest_bot_runtime_states(cache_dir, now_ts, _rj, tradable_positions=snapshot.portfolio_summary.get("tradable_positions"))

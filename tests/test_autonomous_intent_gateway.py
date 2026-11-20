@@ -3294,6 +3294,332 @@ def test_proposal4c_asymmetric_ai_circuit_breaker_and_replace_churn_cap(tmp_path
     btc_inst.place.assert_called_once()
 
 
+def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
+    """Verify deterministic anti-ping-pong flip protection, 6h whipsaw cap, and 48h AI decision scorecard BUY shadow cooldown."""
+    from providers.ai_survival_guard import (
+        evaluate_ai_decision_scorecard,
+        evaluate_ai_ping_pong_guard,
+        format_ai_decision_scorecard_line,
+    )
+
+    now_s = 1_795_100_000.0
+
+    # 1. Rapid opposite-side flip within 45m without edge -> BLOCKED
+    recent_buy_fill = [
+        {
+            "intent_id": "ai_b1",
+            "timestamp": now_s - 600.0,  # 10m ago
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "limit_price": 70000.0,
+            "clamped_notional_usd": 1000.0,
+            "execution_payload": {"orderId": "o_b1", "status": "FILLED", "executedQty": "0.014", "avg_fill_price": 70000.0},
+        }
+    ]
+    ok_pp, rsn_pp, m_pp = evaluate_ai_ping_pong_guard(
+        {"intent_id": "cur_s1", "decision": "SELL", "urgency": "NORMAL"},
+        recent_buy_fill,
+        decision="SELL",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=70100.0,  # +0.14% < 0.90% min edge
+        now_ts=now_s,
+    )
+    assert ok_pp is False and "ai_ping_pong_flip_cooldown" in rsn_pp
+    assert m_pp["flip_ref_actor"] == "AI"
+
+    # Favorable take-profit >= 0.90% passes immediately
+    ok_tp, _, _ = evaluate_ai_ping_pong_guard(
+        {"intent_id": "cur_s2", "decision": "SELL", "urgency": "NORMAL"},
+        recent_buy_fill,
+        decision="SELL",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=70800.0,  # +1.14% >= 0.90%
+        now_ts=now_s,
+    )
+    assert ok_tp is True
+
+    # Formulaic emergency SELL drop (<= -2.25% = -2.5 * 0.90%) passes immediately
+    ok_emg, _, _ = evaluate_ai_ping_pong_guard(
+        {"intent_id": "cur_s3", "decision": "SELL", "urgency": "NORMAL"},
+        recent_buy_fill,
+        decision="SELL",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=68200.0,  # -2.57% <= -2.25%
+        now_ts=now_s,
+    )
+    assert ok_emg is True
+
+    # Pre-committed invalidation_px breach bypasses flip cooldown even on small drop (-0.50%)
+    plan_buy_fill = [
+        {
+            **recent_buy_fill[0],
+            "invalidation_px": 69700.0,
+            "target_px": 72500.0,
+        }
+    ]
+    ok_inv, _, m_inv = evaluate_ai_ping_pong_guard(
+        {"intent_id": "cur_s4", "decision": "SELL", "urgency": "NORMAL"},
+        plan_buy_fill,
+        decision="SELL",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=69650.0,
+        spot_price=69650.0,
+        now_ts=now_s,
+    )
+    assert ok_inv is True and m_inv.get("plan_triggered") == "INVALIDATED"
+
+    # Unfilled resting LIMIT order does NOT trigger flip cooldown
+    unfilled_buy = [
+        {
+            **recent_buy_fill[0],
+            "execution_payload": {"orderId": "o_rest", "status": "NEW", "executedQty": "0.0"},
+        }
+    ]
+    ok_rest, _, _ = evaluate_ai_ping_pong_guard(
+        {"intent_id": "cur_s5", "decision": "SELL", "urgency": "NORMAL"},
+        unfilled_buy,
+        decision="SELL",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=70050.0,
+        now_ts=now_s,
+    )
+    assert ok_rest is True
+
+    # Fresh by=BOT fill within 30m also blocks unprofitable reversal
+    ok_bot, rsn_bot, m_bot = evaluate_ai_ping_pong_guard(
+        {"intent_id": "cur_b_rev", "decision": "BUY", "urgency": "NORMAL"},
+        [],
+        decision="BUY",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=70020.0,
+        now_ts=now_s,
+        recent_bot_fill={"ts": now_s - 420.0, "price": 70000.0, "side": "SELL", "actor": "BOT"},
+    )
+    assert ok_bot is False and "by=BOT" in rsn_bot and m_bot["flip_ref_actor"] == "BOT"
+
+    # 6-hour whipsaw cap (2 flips already happened: BUY -> SELL -> BUY -> 3rd reversal SELL blocked even at +1.2%)
+    whipsaw_hist = [
+        {
+            "intent_id": "w1",
+            "timestamp": now_s - 14400.0,
+            "decision": "BUY",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "ow1", "status": "FILLED", "executedQty": "2.0", "avg_fill_price": 200.0},
+        },
+        {
+            "intent_id": "w2",
+            "timestamp": now_s - 10800.0,
+            "decision": "SELL",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "ow2", "status": "FILLED", "executedQty": "2.0", "avg_fill_price": 205.0},
+        },
+        {
+            "intent_id": "w3",
+            "timestamp": now_s - 7200.0,
+            "decision": "BUY",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "ow3", "status": "FILLED", "executedQty": "2.0", "avg_fill_price": 201.0},
+        },
+    ]
+    ok_ws, rsn_ws, _ = evaluate_ai_ping_pong_guard(
+        {"intent_id": "w4", "decision": "SELL", "urgency": "NORMAL"},
+        whipsaw_hist,
+        decision="SELL",
+        symbol="TAOUSDC",
+        venue="binance",
+        price=204.0,  # +1.49% favorable, >45m elapsed, but 3rd flip in 6h -> BLOCKED
+        now_ts=now_s,
+    )
+    assert ok_ws is False and "ai_ping_pong_whipsaw_cap" in rsn_ws
+
+    # 2. AI Decision Scorecard: standalone profit-taking SELL never penalized
+    standalone_sell = [
+        {
+            "intent_id": "ss1",
+            "timestamp": now_s - 3600.0,
+            "decision": "SELL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 1000.0,
+            "execution_payload": {"orderId": "oss1", "status": "FILLED", "executedQty": "0.015", "avg_fill_price": 70000.0},
+        }
+    ]
+    sc_empty = evaluate_ai_decision_scorecard(standalone_sell, now_ts=now_s, live_prices={"BTCUSDC": 75000.0})
+    assert sc_empty["count"] == 0 and sc_empty["buy_shadow_active"] is False
+
+    # 3 consecutive LOSS outcomes (closed BUY->SELL loss + bad SELL->BUY reload + matured losing BUY MTM) -> BUY shadow cooldown!
+    losing_history = [
+        # Loss 1: BUY @ 210 -> SELL @ 205 (-2.38%)
+        {
+            "intent_id": "l1_b",
+            "timestamp": now_s - 10800.0,
+            "decision": "BUY",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 1000.0,
+            "execution_payload": {"orderId": "ol1b", "status": "FILLED", "executedQty": "4.76", "avg_fill_price": 210.0},
+        },
+        {
+            "intent_id": "l1_s",
+            "timestamp": now_s - 9000.0,
+            "decision": "SELL",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 1000.0,
+            "execution_payload": {"orderId": "ol1s", "status": "FILLED", "executedQty": "4.76", "avg_fill_price": 205.0},
+        },
+        # Loss 2: unmatched SELL @ 0.15 -> higher reload BUY @ 0.156 (-4.0%)
+        {
+            "intent_id": "l2_s",
+            "timestamp": now_s - 7200.0,
+            "decision": "SELL",
+            "symbol": "ARBUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 500.0,
+            "execution_payload": {"orderId": "ol2s", "status": "FILLED", "executedQty": "3333", "avg_fill_price": 0.15},
+        },
+        {
+            "intent_id": "l2_b",
+            "timestamp": now_s - 5400.0,
+            "decision": "BUY",
+            "symbol": "ARBUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 500.0,
+            "execution_payload": {"orderId": "ol2b", "status": "FILLED", "executedQty": "3205", "avg_fill_price": 0.156},
+        },
+        # Loss 3: matured open BUY @ 80.0 now trading at 77.5 (-3.125%)
+        {
+            "intent_id": "l3_b",
+            "timestamp": now_s - 3600.0,
+            "decision": "BUY",
+            "symbol": "HYPEUSDC",
+            "venue": "hyperliquid",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 800.0,
+            "execution_payload": {"orderId": "ol3b", "status": "FILLED", "executedQty": "10.0", "avg_fill_price": 80.0},
+        },
+    ]
+    sc_bad = evaluate_ai_decision_scorecard(
+        losing_history,
+        now_ts=now_s,
+        live_prices={"hyperliquid:HYPEUSDC": 77.5},
+        window_trades=5,
+        max_loss_streak=3,
+        cooldown_hours=4.0,
+    )
+    assert sc_bad["count"] == 3 and sc_bad["losses"] == 3 and sc_bad["loss_streak"] == 3
+    assert sc_bad["buy_shadow_active"] is True
+    assert sc_bad["status"] == "BUY_SHADOW_COOLDOWN"
+    assert sc_bad["cooldown_remaining_h"] > 2.5
+    sc_line = format_ai_decision_scorecard_line(sc_bad)
+    assert "0W/0S/3L" in sc_line and "BUY_SHADOW_COOLDOWN" in sc_line
+
+    # Cooldown auto-expires once > 4h elapsed from latest loss
+    sc_expired = evaluate_ai_decision_scorecard(
+        losing_history,
+        now_ts=now_s + 4.5 * 3600.0,
+        live_prices={"hyperliquid:HYPEUSDC": 77.5},
+        window_trades=5,
+        max_loss_streak=3,
+        cooldown_hours=4.0,
+    )
+    assert sc_expired["buy_shadow_active"] is False
+
+    # 3. End-to-end gateway test: scorecard downgrades BUY to OBSERVED_SHADOW while allowing protective SELL live
+    (tmp_path / "order_guard.conf").write_text(
+        "autonomous_trading_mode = enforce\n"
+        "autonomous_trading_min_notional_usd = 10.0\n"
+        "autonomous_trading_max_notional_usd = 2000.0\n"
+        "autonomous_trading_min_confidence = 0.85\n"
+        "autonomous_trading_notify = 0\n"
+        "autonomous_trading_flip_cooldown_min = 45\n"
+        "autonomous_trading_flip_min_edge_pct = 0.90\n"
+        "autonomous_trading_max_flips_6h = 2\n"
+        "autonomous_trading_scorecard_window_trades = 5\n"
+        "autonomous_trading_scorecard_max_loss_streak = 3\n"
+        "autonomous_trading_scorecard_cooldown_hours = 4.0\n",
+        encoding="utf-8",
+    )
+    gw = AutonomousIntentGateway(workspace_dir=str(tmp_path))
+    live_now = time.time()
+    shifted = []
+    for it in losing_history:
+        dt = now_s - it["timestamp"]
+        shifted.append({**it, "timestamp": live_now - dt})
+    gw.save_all_intents(shifted)
+    (tmp_path / "cachedb" / "prices").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "cachedb" / "prices" / "cache_current_price.json").write_text(
+        json.dumps({"items": {"HYPEUSDC": 77.5, "BTCUSDC": 70000.0}}),
+        encoding="utf-8",
+    )
+
+    btc_inst = MagicMock(symbol="BTCUSDC", provider_name="binance", base="BTC", quote="USDC", params={})
+    btc_inst._provider.name = "binance"
+    btc_inst._provider.get_current_price.return_value = 70000.0
+    btc_inst._provider.free_balance.side_effect = lambda a: 3000.0 if a == "USDC" else 0.1
+    btc_inst.open_orders.return_value = []
+    btc_inst.place.return_value = {"orderId": "sell_live_1", "status": "NEW", "executedQty": "0.0"}
+
+    # New BUY during 3L streak -> downgraded to OBSERVED_SHADOW without touching exchange!
+    rec_buy_cd = gw.submit(
+        {
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 69800.0,
+            "confidence": 0.95,
+            "suggested_notional_usd": 500.0,
+            "urgency": "HIGH",
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+    assert rec_buy_cd["status"] == "OBSERVED_SHADOW"
+    assert "ai_scorecard_buy_shadow_cooldown" in rec_buy_cd.get("scorecard_downgraded_to_shadow", "")
+    btc_inst.place.assert_not_called()
+
+    # Protective SELL during the same 3L streak -> still executes live!
+    rec_sell_ok = gw.submit(
+        {
+            "decision": "SELL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 70050.0,
+            "confidence": 0.92,
+            "suggested_notional_usd": 500.0,
+            "urgency": "NORMAL",
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+    assert rec_sell_ok["status"] == "EXECUTED"
+    btc_inst.place.assert_called_once()
+
+
+
 
 
 
