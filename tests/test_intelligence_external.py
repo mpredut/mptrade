@@ -2608,6 +2608,99 @@ def test_hot_path_caches_preserve_semantics_and_config_hot_reload(tmp_path, monk
     assert "1e-06" not in cyc_line
 
 
+def test_faza3a_extended_hours_nonbinance_poller_and_stale_cp_guard(monkeypatch):
+    """NonBinanceTrendPoller must poll PRE/POST equities via public extended feed and _seed_t212_positions must reject stale prior-RTH cp quotes."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    import providers.price_poller as pp
+    from intelligence.sentiment.collectors.microstructure_collector import Fleet24hAndMicrostructureEnricher
+
+    ny_tz = ZoneInfo("America/New_York")
+    ts_pre = datetime(2026, 11, 20, 8, 30, 0, tzinfo=ny_tz).timestamp()
+    ts_prev_rth_close = datetime(2026, 11, 19, 15, 59, 55, tzinfo=ny_tz).timestamp()
+    ts_night = datetime(2026, 11, 20, 2, 0, 0, tzinfo=ny_tz).timestamp()
+
+    # 1. Stale prior-session RTH close in cache_current_price (even 4s newer than pos:t212) must NOT masquerade as live PRE yahoo_ext
+    pt_map = {"ANT_US_EQ": {"price": 96.705, "trend": 0, "growth_coefficient": 0.0}}
+    cp_map = {"ANT_US_EQ": [[int(ts_prev_rth_close * 1000), 96.705]]}
+    cached_bals = {"pos:t212:ANT_US_EQ": {"symbol": "ANT_US_EQ", "free": 0.0, "price": 96.705, "ts": ts_prev_rth_close - 4.0}}
+    seeded, _, _ = Fleet24hAndMicrostructureEnricher._seed_t212_positions(
+        "",
+        pt_map,
+        cp_map,
+        {},
+        cached_bals,
+        "",
+        0.0,
+        ts_pre,
+        lambda _p: None,
+        False,
+    )
+    assert "ANT_US_EQ" in seeded
+    assert pt_map["ANT_US_EQ"].get("quote_source") == "t212_rth_close"
+    assert pt_map["ANT_US_EQ"].get("market_state") is None
+
+    # 2. NonBinanceTrendPoller polls PRE equities with prefer_public_extended=True even when seeded with stale RTH close
+    calls = []
+
+    class _FakeApi:
+        def get_current_price(self, symbol, provider_name=None, prefer_public_extended=False):
+            calls.append((symbol, provider_name, prefer_public_extended))
+            return 84.55
+
+    class _FakeCpm:
+        def __init__(self, cached_ts_s):
+            self.market_api = _FakeApi()
+            self._enforce_rth_gate = True
+            self._delegated_poller_symbols = set()
+            self.cache = {"ANT_US_EQ": [[int(cached_ts_s * 1000), 96.705]]}
+            self.pushed = []
+
+        def bind_providers(self, _b):
+            pass
+
+        @staticmethod
+        def extract_price_and_ts(entries):
+            if isinstance(entries, list) and entries:
+                return entries[-1][1], entries[-1][0]
+            return None, None
+
+        def mark_symbol_ws_event(self, _s, _t):
+            pass
+
+        def push_price(self, sym, px):
+            self.pushed.append((sym, px))
+            self.cache[sym] = [[int(ts_pre * 1000), px]]
+
+    monkeypatch.setattr(pp.time, "time", lambda: ts_pre)
+    cpm_pre = _FakeCpm(ts_prev_rth_close)
+    poller_pre = pp.start_nonbinance_trend_poller(
+        cpm_pre, ["ANT_US_EQ"], interval_sec=0.05, fetch_deadline_sec=1.0, provider_names={"ANT_US_EQ": "t212"}, start_ws=False
+    )
+    try:
+        deadline = time.monotonic() + 2.0
+        while not cpm_pre.pushed and time.monotonic() < deadline:
+            time.sleep(0.02)
+    finally:
+        poller_pre.stop(timeout=1.0)
+    assert calls and calls[0] == ("ANT_US_EQ", "t212", True)
+    assert cpm_pre.pushed and cpm_pre.pushed[0] == ("ANT_US_EQ", pytest.approx(84.55))
+
+    # 3. During CLOSED overnight hours (02:00 ET), seeded equity remains paused (zero REST polls)
+    calls.clear()
+    monkeypatch.setattr(pp.time, "time", lambda: ts_night)
+    cpm_night = _FakeCpm(ts_prev_rth_close)
+    poller_night = pp.start_nonbinance_trend_poller(
+        cpm_night, ["ANT_US_EQ"], interval_sec=0.05, fetch_deadline_sec=1.0, provider_names={"ANT_US_EQ": "t212"}, start_ws=False
+    )
+    try:
+        time.sleep(0.15)
+    finally:
+        poller_night.stop(timeout=1.0)
+    assert calls == []
+
+
+
 
 
 

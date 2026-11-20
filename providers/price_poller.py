@@ -20,6 +20,7 @@ from botcore import (
     is_auto_start_websockets_enabled,
     is_live_network_backfill_enabled,
     is_rth_gate_enabled,
+    is_us_extended_hours_open,
     is_us_rth_open,
     resolve_now_ms,
     safe_nonneg_float,
@@ -400,6 +401,7 @@ def fetch_price_with_deadline(
     pool,
     deadline_sec=_NB_FETCH_DEADLINE_SEC,
     provider_name=None,
+    prefer_public_extended=False,
 ):
     """Bound the poller's wait while the provider owns the network-call timeout."""
     kwargs = {"symbol": symbol}
@@ -409,9 +411,15 @@ def fetch_price_with_deadline(
                 kwargs["provider_name"] = pn
         else:
             kwargs["provider_name"] = provider_name
+    use_ext = _parse_bool_flag(prefer_public_extended, False)
 
     def _poll():
         with live_price_fetch_context():
+            if use_ext:
+                try:
+                    return market_api.get_current_price(**kwargs, prefer_public_extended=True)
+                except TypeError:
+                    pass
             return market_api.get_current_price(**kwargs)
 
     fut = pool.submit(_poll)
@@ -564,6 +572,7 @@ def start_nonbinance_trend_poller(
         empty_backoff_ts: dict[str, float] = {}
         last_equity_poll_ts: dict[str, float] = {}
         equity_min_gap_sec = max(eff_interval, 6.0)
+        equity_ext_gap_sec = max(60.0, equity_min_gap_sec)
         cpm_cache = getattr(cpm, "cache", None)
         extract_fn = getattr(cpm, "extract_price_and_ts", None)
         if isinstance(cpm_cache, dict) and callable(extract_fn):
@@ -601,8 +610,23 @@ def start_nonbinance_trend_poller(
             else:
                 empty_backoff_ts[sym_item] = now_done
 
+        def _mark_eq_idle(sym_item: str, ts_val: float) -> None:
+            if has_cls_mark_ws:
+                cpm.mark_symbol_ws_event(sym_item, ts_val)
+            elif isinstance(ws_ts_map := getattr(cpm, "_ws_last_event_ts_per_symbol", None), dict):
+                ws_ts_map[sym_item] = ts_val
+
+        def _cached_ts_ms(sym_item: str) -> Optional[float]:
+            if isinstance(cpm_cache, dict) and callable(extract_fn):
+                try:
+                    _, ts_v = extract_fn(cpm_cache.get(sym_item))
+                    return safe_pos_float(ts_v, default=None)
+                except Exception:
+                    return None
+            return None
+
         while not stop_event.is_set():
-            pending_polls: list[tuple[str, str, bool]] = []
+            pending_polls: list[tuple[str, str, bool, bool]] = []
             for s in symbols:
                 if stop_event.is_set():
                     break
@@ -617,20 +641,24 @@ def start_nonbinance_trend_poller(
                 now_ts = time.time()
                 last_empty = empty_backoff_ts.get(s, 0.0)
                 market_open = not rth_gate_active or is_symbol_market_open(s, now_ts)
-                if rth_gate_active and market_open and last_empty > 0.0 and (now_ts - last_empty) < 60.0:
+                is_ext_open = bool(is_eq and rth_gate_active and not market_open and is_us_extended_hours_open(now_ts))
+                if rth_gate_active and (market_open or is_ext_open) and last_empty > 0.0 and (now_ts - last_empty) < 60.0:
                     continue
-                if (
+                if is_ext_open:
+                    cur_ts_ms = _cached_ts_ms(s)
+                    ext_cache_fresh = cur_ts_ms is not None and -5_000.0 <= (now_ts * 1000.0 - cur_ts_ms) < (equity_ext_gap_sec * 1000.0)
+                    if (s in rth_seeded and (now_ts - last_equity_poll_ts.get(s, 0.0)) < equity_ext_gap_sec) or ext_cache_fresh:
+                        _mark_eq_idle(s, now_ts)
+                        continue
+                elif (
                     not market_open and (s in rth_seeded or (last_empty > 0.0 and (now_ts - last_empty) < 300.0))
                 ) or (is_eq and s in rth_seeded and (now_ts - last_equity_poll_ts.get(s, 0.0)) < equity_min_gap_sec):
-                    if has_cls_mark_ws:
-                        cpm.mark_symbol_ws_event(s, now_ts)
-                    elif isinstance(ws_ts_map := getattr(cpm, "_ws_last_event_ts_per_symbol", None), dict):
-                        ws_ts_map[s] = now_ts
+                    _mark_eq_idle(s, now_ts)
                     continue
-                pending_polls.append((s, prov_name, is_eq))
+                pending_polls.append((s, prov_name, is_eq, is_ext_open))
 
             if len(pending_polls) == 1:
-                s_one, prov_one, is_eq_one = pending_polls[0]
+                s_one, prov_one, is_eq_one, use_ext_one = pending_polls[0]
                 try:
                     p = fetch_price_with_deadline(
                         cpm.market_api,
@@ -638,6 +666,7 @@ def start_nonbinance_trend_poller(
                         pool,
                         eff_deadline,
                         provider_name=prov_one,
+                        prefer_public_extended=use_ext_one,
                     )
                     _apply_fetched_price(s_one, p, is_eq=is_eq_one)
                 except _futures.TimeoutError:
@@ -649,9 +678,16 @@ def start_nonbinance_trend_poller(
                     builtins.print(f"[NB-trend] {s_one}: {_e}")
             elif len(pending_polls) > 1:
                 fut_map = {}
-                for s_item, prov_item, is_eq_item in pending_polls:
-                    def _poll_item(_sym=s_item, _prov=prov_item):
+                for s_item, prov_item, is_eq_item, use_ext_item in pending_polls:
+                    def _poll_item(_sym=s_item, _prov=prov_item, _ext=use_ext_item):
                         with live_price_fetch_context():
+                            if _ext:
+                                try:
+                                    return cpm.market_api.get_current_price(
+                                        symbol=_sym, provider_name=_prov, prefer_public_extended=True
+                                    )
+                                except TypeError:
+                                    pass
                             return cpm.market_api.get_current_price(symbol=_sym, provider_name=_prov)
                     fut_map[pool.submit(_poll_item)] = (s_item, is_eq_item)
                 done, not_done = _futures.wait(fut_map.keys(), timeout=eff_deadline)

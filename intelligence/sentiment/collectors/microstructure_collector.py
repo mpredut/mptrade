@@ -1651,6 +1651,8 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 and cp_pt is not None
                 and cp_pt[1] > 0.0
                 and cp_ts_s_eq > (pos_ts_val or 0.0) + 1.0
+                and 0.0 <= (eff_now - cp_ts_s_eq) <= 20.0 * 60.0
+                and resolve_symbol_market_session(ticker, cp_ts_s_eq) == eq_sess
             )
             if cp_is_fresher_ext and cp_pt is not None:
                 ext_live_px = round(cp_pt[1], 4)
