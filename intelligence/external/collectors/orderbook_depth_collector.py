@@ -60,6 +60,9 @@ class OrderbookSnapshot:
     spot_cvd_15m_usd: Optional[float] = None
     spot_cvd_source: Optional[str] = None
     spot_vol_15m_usd: Optional[float] = None
+    agg_spot_cvd_15m_usd: Optional[float] = None
+    agg_spot_vol_15m_usd: Optional[float] = None
+    agg_spot_cvd_source: Optional[str] = None
 
     to_dict = asdict
 
@@ -99,6 +102,9 @@ class OrderbookSnapshot:
             spot_cvd_15m_usd=safe_float(data.get("spot_cvd_15m_usd"), default=None),
             spot_cvd_source=str(data["spot_cvd_source"]).strip() if data.get("spot_cvd_source") else None,
             spot_vol_15m_usd=safe_nonneg_float(data.get("spot_vol_15m_usd"), default=None),
+            agg_spot_cvd_15m_usd=safe_float(data.get("agg_spot_cvd_15m_usd"), default=None),
+            agg_spot_vol_15m_usd=safe_nonneg_float(data.get("agg_spot_vol_15m_usd"), default=None),
+            agg_spot_cvd_source=str(data["agg_spot_cvd_source"]).strip() if data.get("agg_spot_cvd_source") else None,
         )
 
 
@@ -131,6 +137,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         self._preferred_url: Dict[str, str] = {}
         self._unlisted_xstock_until: Dict[str, float] = {}
         self._spot_cvd_memo: Dict[Tuple[str, str], Tuple[float, float, Optional[float]]] = {}
+        self._agg_spot_cvd_memo: Dict[Tuple[str, str], Tuple[float, float, Optional[float], str]] = {}
 
     def _fetch_spot_cvd_payload(self, url: str, post_body: Optional[dict]) -> Any:
         if post_body is not None:
@@ -170,10 +177,68 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 vol_f = None
             if cvd_f is not None:
                 lru_dict_put(self._spot_cvd_memo, memo_key, (now, cvd_f, vol_f), 128)
+                self._resolve_agg_spot_cvd_15m(
+                    symbol,
+                    venue=venue,
+                    now=now,
+                    local_url=url,
+                    local_cvd=cvd_f,
+                    local_vol=vol_f,
+                    ttl_sec=ttl_sec,
+                )
                 return cvd_f
         except Exception as exc:
             logger.debug("Could not fetch real 15m spot CVD for %s on %s: %s", symbol, venue, exc)
         return cached_cvd[1] if cached_cvd is not None and 0.0 <= (now - cached_cvd[0]) < ttl_sec * 3.0 else None
+
+    def _resolve_agg_spot_cvd_15m(
+        self,
+        symbol: str,
+        *,
+        venue: str,
+        now: float,
+        local_url: str,
+        local_cvd: float,
+        local_vol: Optional[float],
+        ttl_sec: float,
+    ) -> Optional[Tuple[float, Optional[float], str]]:
+        """Combine venue-local USDC spot flow with deep primary-quote (USDT) spot flow when available."""
+        memo_key = (venue, symbol)
+        cached_agg = self._agg_spot_cvd_memo.get(memo_key)
+        if cached_agg is not None and 0.0 <= (now - cached_agg[0]) < ttl_sec:
+            return cached_agg[1], cached_agg[2], cached_agg[3]
+        agg_spec, agg_ext = MarketDataProvider.resolve_agg_spot_flow_15m_spec(symbol, venue=venue, now_ts=now)
+        if agg_spec is None or not callable(agg_ext):
+            return None
+        agg_url, agg_body = agg_spec
+        if agg_url == local_url:
+            return None
+        try:
+            raw_agg = self._fetch_spot_cvd_payload(agg_url, agg_body)
+            agg_res = agg_ext(raw_agg, since_ts=max(0.0, now - 900.0))
+            if isinstance(agg_res, (tuple, list)) and len(agg_res) >= 2:
+                sib_cvd = safe_float(agg_res[0], default=None)
+                sib_vol = safe_nonneg_float(agg_res[1], default=None)
+            else:
+                sib_cvd = safe_float(agg_res, default=None)
+                sib_vol = None
+            if sib_cvd is not None:
+                tot_cvd = round(local_cvd + sib_cvd, 0)
+                tot_vol = (
+                    round((local_vol or 0.0) + sib_vol, 0)
+                    if (local_vol is not None or sib_vol is not None)
+                    else None
+                )
+                src_lbl = "usdc+usdt"
+                lru_dict_put(self._agg_spot_cvd_memo, memo_key, (now, tot_cvd, tot_vol, src_lbl), 128)
+                return tot_cvd, tot_vol, src_lbl
+        except Exception as exc:
+            logger.debug("Could not fetch aggregated 15m spot CVD for %s on %s: %s", symbol, venue, exc)
+        return (
+            (cached_agg[1], cached_agg[2], cached_agg[3])
+            if cached_agg is not None and 0.0 <= (now - cached_agg[0]) < ttl_sec * 3.0
+            else None
+        )
 
     def is_unlisted_xstock_backoff_active(self, symbol: str, now: float) -> bool:
         """Return True when ``symbol`` is a pre-IPO/empty Kraken tokenized pair within its quiet backoff window."""
@@ -220,9 +285,26 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 multi_venue=bool(reg_venue) or _is_multi_venue_base(query_sym),
             )
             pref_url = self._preferred_url.get(symbol)
+            pref_matches_base = bool(
+                pref_url
+                and (
+                    pref_url in base_urls
+                    or (
+                        "&limit=1000" in pref_url
+                        and pref_url.replace("&limit=1000", "&limit=500") in base_urls
+                    )
+                )
+            )
             urls = (
-                (pref_url, *(u for u in base_urls if u != pref_url))
-                if (pref_url and pref_url in base_urls)
+                (
+                    pref_url,
+                    *(
+                        u
+                        for u in base_urls
+                        if u != pref_url and u != pref_url.replace("&limit=1000", "&limit=500")
+                    ),
+                )
+                if pref_matches_base and pref_url
                 else base_urls
             )
             for url in urls:
@@ -278,6 +360,33 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             mid = safe_pos_float(round((best_bid + best_ask) / 2.0, 8), default=None)
             if mid is None:
                 return None
+
+            # Auto-widen Binance Spot limit=500 -> limit=1000 when tight-tick books (e.g. BTCUSDC) saturate
+            # 500 levels before reaching +/-1.05%, keeping thin pairs at lighter weight while uncovering +/-1% depth.
+            cur_pref_url = self._preferred_url.get(symbol) or ""
+            if (
+                "api.binance.com/api/v3/depth" in cur_pref_url
+                and "&limit=500" in cur_pref_url
+                and (
+                    (len(bids) >= 500 and bids[-1][0] > mid * 0.9895)
+                    or (len(asks) >= 500 and asks[-1][0] < mid * 1.0105)
+                )
+            ):
+                wide_url = cur_pref_url.replace("&limit=500", "&limit=1000")
+                try:
+                    wide_raw = self._fetch_json_dict(
+                        wide_url, "depth_wide", lookup_sym, timeout=4, user_agent="mptrade-orderbook/1.0"
+                    )
+                    wide_book = MarketDataProvider.normalize_orderbook_payload(wide_raw)
+                    if isinstance(wide_book, dict) and wide_book.get("bids") and wide_book.get("asks"):
+                        w_bid, w_ask = round(wide_book["bids"][0][0], 8), round(wide_book["asks"][0][0], 8)
+                        w_mid = safe_pos_float(round((w_bid + w_ask) / 2.0, 8), default=None)
+                        if w_bid > 0 and w_ask >= w_bid and w_mid is not None:
+                            bids, asks = wide_book["bids"], wide_book["asks"]
+                            best_bid, best_ask, mid = w_bid, w_ask, w_mid
+                            self._preferred_url[symbol] = wide_url
+                except Exception:
+                    pass
 
             # Hyperliquid's default l2Book returns 20 fine tick levels (~0.02% around mid).
             # Extend deeper levels within the +/-1.5% band via aggregated nSigFigs=4 (and nSigFigs=3 if needed) while preserving top-of-book spread.
@@ -345,6 +454,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             imbalance = bid_depth_usd / total_depth if total_depth > 0 else 0.5
             spread_bps = round_spread_bps(best_bid=best_bid, best_ask=best_ask, mid_price=mid) or 0.0
             book_span_pct = 0.0
+            is_hl_book = bool(hl_book_url and self._preferred_url.get(symbol) == hl_book_url)
+            min_cap_levels = 20 if is_hl_book else 100
             if mid > 0:
                 capped_spans = [
                     max(0.0, dist_pct)
@@ -352,7 +463,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                         (bids, ((mid - bids[-1][0]) / mid) * 100.0 if bids else 0.0),
                         (asks, ((asks[-1][0] - mid) / mid) * 100.0 if asks else 0.0),
                     )
-                    if len(side_lvls) >= 100
+                    if len(side_lvls) >= min_cap_levels
                 ]
                 if capped_spans:
                     book_span_pct = round(min(*capped_spans, self.depth_band_pct), 3)
@@ -362,10 +473,18 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             )
             real_spot_cvd = self._resolve_real_spot_cvd_15m(query_sym, venue=eff_spot_venue, now=now)
             real_spot_vol: Optional[float] = None
+            agg_spot_cvd: Optional[float] = None
+            agg_spot_vol: Optional[float] = None
+            agg_spot_src: Optional[str] = None
             if real_spot_cvd is not None and eff_spot_venue:
                 memo_flow = self._spot_cvd_memo.get((eff_spot_venue, query_sym))
                 if isinstance(memo_flow, tuple) and len(memo_flow) >= 3:
                     real_spot_vol = safe_nonneg_float(memo_flow[2], default=None)
+                memo_agg = self._agg_spot_cvd_memo.get((eff_spot_venue, query_sym))
+                if isinstance(memo_agg, tuple) and len(memo_agg) >= 4:
+                    agg_spot_cvd = safe_float(memo_agg[1], default=None)
+                    agg_spot_vol = safe_nonneg_float(memo_agg[2], default=None)
+                    agg_spot_src = memo_agg[3] or None
             snapshot = OrderbookSnapshot(
                 symbol=symbol,
                 mid_price=round(mid, 8),
@@ -386,6 +505,9 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 spot_cvd_15m_usd=real_spot_cvd,
                 spot_cvd_source="real_spot" if real_spot_cvd is not None else None,
                 spot_vol_15m_usd=real_spot_vol,
+                agg_spot_cvd_15m_usd=agg_spot_cvd,
+                agg_spot_vol_15m_usd=agg_spot_vol,
+                agg_spot_cvd_source=agg_spot_src,
             )
             return self._commit_snapshot(symbol, now, snapshot)
         except Exception as e:

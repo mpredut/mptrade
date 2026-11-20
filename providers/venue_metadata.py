@@ -603,6 +603,14 @@ class ProviderVenueMetadataMixin:
         return None
 
     @classmethod
+    def public_primary_quote_spot_cvd_15m_request(
+        cls, symbol: str, now_ts: float
+    ) -> Optional[tuple[str, Optional[dict]]]:
+        """Return ``(url, post_json_body_or_none)`` for a deep sibling quote pair (e.g. USDT for thin USDC pairs)."""
+        _ = (symbol, now_ts)
+        return None
+
+    @classmethod
     def extract_spot_cvd_15m_usd(
         cls, raw_data: Any, *, since_ts: float = 0.0
     ) -> Optional[float]:
@@ -668,4 +676,32 @@ class ProviderVenueMetadataMixin:
             return req, prov_cls.extract_spot_flow_15m_usd
         except Exception as exc:
             cls._log_orderbook_provider_error("spot flow request resolution", v_norm, query_sym, exc)
+            return None, None
+
+    @classmethod
+    def resolve_agg_spot_flow_15m_spec(
+        cls,
+        symbol: str,
+        *,
+        venue: str = "",
+        now_ts: float = 0.0,
+    ) -> tuple[Optional[tuple[str, Optional[dict]]], Optional[Any]]:
+        """Return optional deep-sibling quote ``(request_spec, flow_extractor_fn)`` for aggregated spot CVD."""
+        tok_sym, is_tok = _default_ir.resolve_kraken_tokenized_pair(symbol)
+        if is_tok:
+            return None, None
+        query_sym = canonical_symbol_key(symbol)
+        v_norm = normalize_venue_name(venue)
+        if not v_norm or symbol_quote_asset(query_sym) == "EUR":
+            return None, None
+        try:
+            prov_cls = cls.resolve_venue_provider_class(v_norm)
+            if prov_cls is None or getattr(prov_cls, "_ASSET_SCOPE", "crypto") != "crypto":
+                return None, None
+            req = prov_cls.public_primary_quote_spot_cvd_15m_request(query_sym, now_ts)
+            if req is None:
+                return None, None
+            return req, prov_cls.extract_spot_flow_15m_usd
+        except Exception as exc:
+            cls._log_orderbook_provider_error("aggregated spot flow request resolution", v_norm, query_sym, exc)
             return None, None

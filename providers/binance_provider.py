@@ -560,6 +560,19 @@ class BinanceProvider(MarketDataProvider):
         )
 
     @classmethod
+    def public_primary_quote_spot_cvd_15m_request(
+        cls, symbol: str, now_ts: float
+    ) -> Optional[tuple[str, Optional[dict]]]:
+        _ = now_ts
+        if (parsed := cls._parse_non_tokenized_crypto_symbol(symbol)) is None:
+            return None
+        _, base_asset, quote_asset = parsed
+        if not base_asset or quote_asset != "USDC":
+            return None
+        usdt_sym = f"{base_asset}USDT"
+        return (f"https://api.binance.com/api/v3/klines?symbol={usdt_sym}&interval=5m&limit=3", None)
+
+    @classmethod
     def extract_spot_flow_15m_usd(
         cls, raw_data: Any, *, since_ts: float = 0.0
     ) -> Optional[tuple[float, Optional[float]]]:

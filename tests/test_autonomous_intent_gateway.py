@@ -4335,4 +4335,46 @@ def test_fee_aware_ping_pong_and_4b1_negative_ev_target_guard(tmp_path):
     tao_inst.place.assert_called_once()
 
 
+def test_passive_limit_fill_reports_zero_limit_slippage_and_separate_arrival_shortfall():
+    """Verify passive LIMIT fills measure slippage_bps vs limit_price while preserving arrival_shortfall_bps vs reference_price."""
+    from providers.intent_telemetry import build_last_cycle_execution_status, summarize_recent_ai_intents
+
+    now_s = 1_795_000_000.0
+    intents = [
+        {
+            "intent_id": "lim_sell_arb_1",
+            "timestamp": now_s - 4200.0,
+            "decision": "SELL",
+            "symbol": "ARBUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 0.1201,
+            "reference_price": 0.1194,
+            "suggested_notional_usd": 240.2,
+            "status": "EXECUTED",
+            "execution_payload": {
+                "orderId": "ARB_LIM_1",
+                "status": "FILLED",
+                "price": "0.1201",
+                "avgPrice": "0.1201",
+                "origQty": "2000.0",
+                "executedQty": "2000.0",
+                "filled_ts": now_s - 30.0,
+            },
+        }
+    ]
+    st = build_last_cycle_execution_status(intents, "crypto", now_s, lambda d, default=None: d.get("suggested_notional_usd", default))
+    assert isinstance(st, dict)
+    assert st["status"] == "FILLED"
+    assert st["fill_px"] == pytest.approx(0.1201)
+    assert st["limit_px"] == pytest.approx(0.1201)
+    assert st["slippage_bps"] == 0.0
+    assert st["arrival_shortfall_bps"] == pytest.approx(-58.63, abs=0.05)
+
+    summ = summarize_recent_ai_intents(intents, "crypto", now_s, lambda d, default=None: d.get("suggested_notional_usd", default))
+    assert len(summ) == 1
+    assert summ[0]["slippage_bps"] == 0.0
+    assert summ[0]["arrival_shortfall_bps"] == pytest.approx(-58.63, abs=0.05)
+
+
 

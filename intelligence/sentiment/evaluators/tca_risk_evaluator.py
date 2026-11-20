@@ -33,6 +33,8 @@ from botcore import (
 from providers.portfolio_valuation import compute_venue_nav_breakdown
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import compute_futures_premarket_lead
 from intelligence.sentiment.evaluators.price_series_evaluator import (
+    CLOSED_EQUITY_INTRADAY_KEYS,
+    CLOSED_EQUITY_QUOTE_AGE_MIN,
     TelemetryEvaluatorFactory,
     TelemetryEvaluatorInterface,
     pct_delta,
@@ -746,6 +748,10 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
             )
             eq_px_f = safe_pos_float(pinfo.get("price"), default=None)
             eq_horizons, is_sub24h_dup_7d = _extract_bellwether_horizons(pinfo, drop_zero_kalman=True)
+            eq_q_age = safe_nonneg_float(pinfo.get("quote_age_min"), default=None)
+            if eq_q_age is not None and eq_q_age > CLOSED_EQUITY_QUOTE_AGE_MIN:
+                for k_closed in CLOSED_EQUITY_INTRADAY_KEYS:
+                    eq_horizons.pop(k_closed, None)
             eq_entry: Dict[str, Any] = {
                 "symbol": eq_sym,
                 **({"price": round(eq_px_f, 6)} if eq_px_f is not None else {}),

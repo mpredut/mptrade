@@ -12848,5 +12848,152 @@ def test_mixed_case_xstock_routing_frozen_ob_suppression_bnb_reserve_and_limit_p
     assert ensure_fresh_symbol_microstructure(str(cdir), "SPCXxUSD", now_ts=now_s, max_age_ob_sec=180.0, allow_network=True) is False
 
 
+def test_ghost_cvd_delta_macro_bar_age_closed_equity_intraday_and_agg_spot_flow(tmp_path):
+    """Verify ghost d_cvd suppression, macro benchmark bar_age/CLOSED, closed US equity delta pruning, rvol_15m=0.00x, and agg spot CVD."""
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MacroAndNewsSensorsCollector
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        enrich_microstructure_cvd,
+        evaluate_microstructure_cycle_deltas,
+        format_spot_volume_rvol_parts,
+    )
+
+    now_s = 1_795_000_000.0
+    bar_ts_ms = int((now_s - 180.0) * 1000)
+
+    # 1. Ghost d_cvd from mark_px jitter on same upstream Binance 5m bar is suppressed (both explicit taker_bar_ts_ms and legacy fallback)
+    hist_same_bar = {
+        "BTCUSDC": [
+            {
+                "ts": now_s - 360.0,
+                "ob_imbalance": 0.55,
+                "cvd_15m_usd": 8_950_000.0,
+                "whale_long_pct": 0.65,
+                "oi_usd": 5_000_000_000.0,
+                "taker_buy_sell_ratio": 1.0915,
+                "taker_bar_ts_ms": bar_ts_ms,
+            }
+        ],
+        "ARBUSDC": [
+            {
+                "ts": now_s - 360.0,
+                "ob_imbalance": 0.50,
+                "cvd_15m_usd": 4_159_566.0,
+                "whale_long_pct": 0.60,
+                "oi_usd": 50_000_000.0,
+                "taker_buy_sell_ratio": 1.1234,
+            }
+        ],
+    }
+    micro_jitter = {
+        "BTCUSDC": {
+            "ob_imbalance": 0.57,
+            "cvd_15m_usd": 8_956_500.0,  # +$6.5K jitter on exact same bar_ts_ms
+            "whale_long_pct": 0.65,
+            "oi_usd": 5_000_000_000.0,
+            "taker_buy_sell_ratio": 1.0915,
+            "_taker_bar_ts_ms": bar_ts_ms,
+        },
+        "ARBUSDC": {
+            "ob_imbalance": 0.51,
+            "cvd_15m_usd": 4_156_647.0,  # -$2,919 (<2%) jitter with identical 4-dec taker_buy_sell_ratio
+            "whale_long_pct": 0.60,
+            "oi_usd": 50_000_000.0,
+            "taker_buy_sell_ratio": 1.1234,
+        },
+    }
+    out_m, out_hist, _ = evaluate_microstructure_cycle_deltas(micro_jitter, hist_same_bar, now_ts=now_s)
+    assert out_m["BTCUSDC"]["cycle_delta"]["cvd_15m_delta_usd"] == 0.0
+    assert out_m["ARBUSDC"]["cycle_delta"]["cvd_15m_delta_usd"] == 0.0
+    assert out_hist["BTCUSDC"][-1]["taker_bar_ts_ms"] == bar_ts_ms
+    sec_3b_no_ghost = "\n".join(
+        _format_microstructure_section(out_m, {"BTCUSDC": {"price": 62000.0}, "ARBUSDC": {"price": 0.12}}, now_ts=now_s)
+    )
+    assert "d_cvd=" not in sec_3b_no_ghost
+
+    # 2. Macro benchmarks expose real bar_age_min and mark non-prepost assets (US10Y) CLOSED when stale >45m
+    mb_raw = {
+        "ts": now_s - 60.0,
+        "items": {
+            "ES=F": {
+                "price": 6500.0,
+                "unit": "usd",
+                "chg_24h_pct": 0.45,
+                "chg_1h_pct": 0.12,
+                "chg_15m_pct": 0.04,
+                "last_bar_ts": int(now_s - 600.0),  # 10m Yahoo delay
+            },
+            "US10Y": {
+                "price": 4.25,
+                "unit": "yield_pct",
+                "chg_24h_pct": 0.10,
+                "chg_1h_pct": 0.05,
+                "chg_15m_pct": 0.02,
+                "last_bar_ts": int(now_s - 12.8 * 3600.0),  # 12.8h old without market_state
+            },
+        },
+    }
+    mb_norm = MacroAndNewsSensorsCollector._normalize_macro_benchmarks_items(
+        mb_raw, cache_dir=str(tmp_path), now_ts=now_s
+    )
+    assert mb_norm["items"]["ES=F"]["bar_age_min"] == pytest.approx(10.0)
+    assert mb_norm["items"]["US10Y"]["market_state"] == "CLOSED"
+    assert "chg_15m_pct" not in mb_norm["items"]["US10Y"]
+    assert "chg_1h_pct" not in mb_norm["items"]["US10Y"]
+    mb_line = format_macro_benchmarks_summary_line(mb_norm)
+    assert "ES=F=$6,500.00 (+0.45% 24h, +0.12% 1h, +0.04% 15m, bar_age=10m)" in mb_line
+    assert "US10Y=4.25% (+0.10% 24h, closed, bar_age=12.8h)" in mb_line
+
+    # 3. Closed US equity (quote_age_min > 30) strips stale chg_15m_pct / chg_1h_pct in CrossMarketContextEvaluator
+    cm_closed = build_cross_market_context(
+        {
+            "NVDA_US_EQ": {
+                "price": 180.0,
+                "quote_source": "t212_rth_close",
+                "quote_age_min": 698.8,
+                "chg_15m_pct": 5.23,
+                "chg_30m_pct": 4.10,
+                "chg_1h_pct": 1.47,
+                "chg_24h_pct": 2.15,
+            }
+        },
+        {},
+        {},
+        macro_benchmarks={
+            "items": {
+                "SPY": {"price": 600.0, "chg_24h_pct": 0.2, "market_state": "CLOSED"},
+                "ES=F": {"price": 605.0, "chg_24h_pct": 1.0, "globex_session_chg_pct": 0.8},
+            }
+        },
+    )
+    nvda_cb = cm_closed["equity_bellwethers"]["NVDA_US_EQ"]
+    assert "chg_15m_pct" not in nvda_cb
+    assert "chg_30m_pct" not in nvda_cb
+    assert "chg_1h_pct" not in nvda_cb
+    assert nvda_cb["chg_24h_pct"] == pytest.approx(2.15)
+    assert nvda_cb["futures_lead_pct"] == pytest.approx(0.8)
+
+    # 4. Thin USDC pair uses agg_spot_cvd_15m_usd for spot_perp_flow_regime, shows rvol_15m=0.00x, and renders agg_spot_cvd_15m
+    arb_m = {
+        "ob_imbalance": 0.56,
+        "bid_depth_usd": 50_000.0,
+        "ask_depth_usd": 40_000.0,
+        "cvd_15m_usd": 80_000.0,
+        "spot_cvd_15m_usd": 6.0,
+        "spot_cvd_source": "real_spot",
+        "spot_vol_15m_usd": 6.0,
+        "agg_spot_cvd_15m_usd": 120_000.0,
+        "agg_spot_vol_15m_usd": 250_000.0,
+        "agg_spot_cvd_source": "usdc+usdt",
+    }
+    enrich_microstructure_cvd(arb_m, {"price": 0.12, "chg_15m_pct": 0.4, "spot_vol_24h_avg_15m_usd": 9550.0})
+    assert arb_m["rvol_15m"] == 0.0
+    assert arb_m["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_BUYING"
+    vol_parts = format_spot_volume_rvol_parts(arb_m, lambda v: f"${v:,.0f}")
+    assert any("rvol_15m=0.00x" in p for p in vol_parts)
+    sec_3b_arb = "\n".join(_format_microstructure_section({"ARBUSDC": arb_m}, {"ARBUSDC": {"price": 0.12}}, now_ts=now_s))
+    assert "agg_spot_cvd_15m=+$120.0K[usdc+usdt, vol=$250.0K]" in sec_3b_arb
+
+
+
 
 

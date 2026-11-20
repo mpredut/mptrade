@@ -2190,3 +2190,192 @@ def test_intelligence_and_market_monitor_zero_venue_sdk_imports_ast():
                     imported.add(node.args[0].value.split(".")[0])
             leak = imported & forbidden_venue_sdks
             assert not leak, f"{rel} imports venue SDK directly instead of providers/: {leak}"
+
+
+def test_multi_venue_liquidations_whale_bar_ts_btc_ob_widen_hl_span_and_agg_spot_cvd(tmp_path):
+    """Verify multi-venue realized liquidations, taker_bar_ts_ms, BTC limit=1000 auto-widening, HL book_span_pct, and agg spot CVD."""
+    import json
+    from intelligence.external.collectors.bybit_liquidations_collector import (
+        BinanceFuturesLiquidationCollector,
+        BybitLiquidationCollector,
+        LIQUIDATION_COLLECTOR_REGISTRY,
+        LiquidationCollectorBase,
+        OkxLiquidationCollector,
+    )
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+
+    # 1. 3-tier polymorphic liquidation collectors (Bybit + Binance Futures + OKX)
+    assert set(LIQUIDATION_COLLECTOR_REGISTRY.keys()) >= {"bybit_ws", "binance_futures_ws", "okx_ws"}
+    for cls in LIQUIDATION_COLLECTOR_REGISTRY.values():
+        assert issubclass(cls, LiquidationCollectorBase)
+
+    now_s = 1_795_000_000.0
+    bn_col = BinanceFuturesLiquidationCollector(symbols=["BTCUSDT", "HYPEUSDT"], start_sync=False)
+    # Binance forceOrder SELL liquidates a LONG position; BUY liquidates a SHORT position
+    bn_col._ingest(
+        json.dumps(
+            {
+                "e": "forceOrder",
+                "E": int(now_s * 1000),
+                "o": {"s": "BTCUSDT", "S": "SELL", "q": "2.0", "ap": "62000.0", "z": "2.0", "T": int(now_s * 1000)},
+            }
+        )
+    )
+    bn_col._ingest(
+        json.dumps(
+            {
+                "e": "forceOrder",
+                "E": int(now_s * 1000),
+                "o": {"s": "BTCUSDT", "S": "BUY", "q": "0.5", "ap": "62000.0", "z": "0.5", "T": int(now_s * 1000)},
+            }
+        )
+    )
+    bn_sum = bn_col.get_summary("BTCUSDT", window_sec=900.0, now=now_s)
+    assert bn_sum.long_liq_usd == pytest.approx(124_000.0)
+    assert bn_sum.short_liq_usd == pytest.approx(31_000.0)
+    assert bn_sum.events_count == 2
+
+    okx_col = OkxLiquidationCollector(
+        symbols=["BTCUSDT"],
+        start_sync=False,
+        ct_val_by_inst={"BTC-USDT-SWAP": 0.01},
+    )
+    okx_col._ingest(
+        json.dumps(
+            {
+                "arg": {"channel": "liquidation-orders", "instType": "SWAP"},
+                "data": [
+                    {
+                        "instId": "BTC-USDT-SWAP",
+                        "details": [
+                            {"side": "sell", "posSide": "long", "bkPx": "62000", "sz": "100", "ts": str(int(now_s * 1000))},
+                            {"side": "buy", "posSide": "short", "bkPx": "62000", "sz": "50", "ts": str(int(now_s * 1000))},
+                        ],
+                    },
+                    {
+                        # Unknown contract multiplier must be skipped (never unscaled)
+                        "instId": "ETH-USDT-SWAP",
+                        "details": [{"side": "sell", "posSide": "long", "bkPx": "3000", "sz": "10", "ts": str(int(now_s * 1000))}],
+                    },
+                ],
+            }
+        )
+    )
+    okx_sum = okx_col.get_summary("BTCUSDT", window_sec=900.0, now=now_s)
+    assert okx_sum.long_liq_usd == pytest.approx(62_000.0)
+    assert okx_sum.short_liq_usd == pytest.approx(31_000.0)
+    assert okx_col.get_summary("ETHUSDT", window_sec=900.0, now=now_s).events_count == 0
+
+    bybit_col = BybitLiquidationCollector(symbols=["BTCUSDT"], start_sync=False)
+    bybit_col.record_event("BTCUSDT", "Buy", 10_000.0, ts=now_s)
+
+    gtc = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=str(tmp_path), skip_news=True, skip_external=True)
+    gtc.bybit_liq_collector = bybit_col
+    gtc.binance_liq_collector = bn_col
+    gtc.okx_liq_collector = okx_col
+    assert gtc.update_realized_liquidations(force=True, now=now_s) is True
+    from cachepaths import CACHE_REALIZED_LIQUIDATIONS_FILENAME, resolve_cachedb_filepath
+
+    rliq_path = Path(str(resolve_cachedb_filepath(str(tmp_path / CACHE_REALIZED_LIQUIDATIONS_FILENAME))))
+    rliq_doc = json.loads(rliq_path.read_text(encoding="utf-8"))
+    assert rliq_doc["source"] == "multi_venue_ws"
+    assert rliq_doc["sources"] == ["bybit_ws", "binance_futures_ws", "okx_ws"]
+    btc_rl = rliq_doc["symbols"]["BTCUSDT"]
+    assert btc_rl["long_15m_usd"] == pytest.approx(196_000.0)
+    assert btc_rl["short_15m_usd"] == pytest.approx(62_000.0)
+    assert btc_rl["events_15m"] == 5
+    assert set(btc_rl["by_venue"].keys()) == {"bybit_ws", "binance_futures_ws", "okx_ws"}
+
+    # 2. WhalePositioningCollector persists upstream Binance taker_bar_ts_ms
+    w_col = WhalePositioningCollector(cache_dir=str(tmp_path), cache_ttl_sec=0.0)
+    bar_ts_ms = int((now_s - 120.0) * 1000)
+
+    def _fake_whale_row(url, label, lookup_sym, **kwargs):
+        if "topLongShortPositionRatio" in url:
+            row = {"longShortRatio": "1.5", "longAccount": "0.60"}
+            return row, [row]
+        if "takerlongshortRatio" in url:
+            row = {"buyVol": "100.0", "sellVol": "80.0", "buySellRatio": "1.25", "timestamp": bar_ts_ms}
+            return row, [row]
+        oi_row = {"sumOpenInterestValue": "620000000.0", "sumOpenInterest": "10000.0"}
+        return oi_row, [oi_row, oi_row]
+
+    w_col._fetch_latest_json_row = _fake_whale_row
+    w_snap = w_col.fetch("BTCUSDC", allow_network=True, now=now_s)
+    assert w_snap is not None and w_snap.taker_bar_ts_ms == bar_ts_ms
+
+    # 3. OrderbookDepthCollector auto-widens Binance limit=500 -> limit=1000 when 500 levels saturate < +/-1.05%
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path), cache_ttl_sec=0.0)
+    seen_ob_urls = []
+
+    def _fake_btc_depth(url, label, lookup_sym, **kwargs):
+        seen_ob_urls.append(url)
+        if "limit=500" in url:
+            return {
+                "bids": [[62000.0 - i * 0.8, 0.1] for i in range(1, 501)],  # reaches only ~0.645%
+                "asks": [[62000.0 + i * 0.8, 0.1] for i in range(1, 501)],
+            }
+        return {
+            "bids": [[62000.0 - i * 1.1, 0.1] for i in range(1, 1001)],  # reaches ~1.77%
+            "asks": [[62000.0 + i * 1.1, 0.1] for i in range(1, 1001)],
+        }
+
+    ob_col._fetch_json_dict = _fake_btc_depth
+    ob_col._resolve_real_spot_cvd_15m = lambda *_a, **_kw: None
+    btc_snap = ob_col.fetch("BTCUSDC", allow_network=True, now=now_s)
+    assert btc_snap is not None
+    assert any("limit=1000" in u for u in seen_ob_urls)
+    assert btc_snap.book_span_pct == pytest.approx(1.5)
+    assert btc_snap.bid_depth_usd > btc_snap.depth_1pct_bid_usd
+
+    # 4. Hyperliquid l2Book computes real book_span_pct (non-zero) after nSigFigs=4/3 stitching (<100 levels)
+    hl_col = OrderbookDepthCollector(cache_dir=str(tmp_path), cache_ttl_sec=0.0)
+
+    def _fake_hl_depth(url, label, lookup_sym, **kwargs):
+        if "nSigFigs=4" in url:
+            return {
+                "levels": [
+                    [{"px": f"{40.0 - i * 0.05:.3f}", "sz": "100"} for i in range(1, 21)],
+                    [{"px": f"{40.0 + i * 0.05:.3f}", "sz": "100"} for i in range(1, 21)],
+                ]
+            }
+        return {
+            "levels": [
+                [{"px": f"{40.0 - i * 0.005:.4f}", "sz": "100"} for i in range(1, 21)],
+                [{"px": f"{40.0 + i * 0.005:.4f}", "sz": "100"} for i in range(1, 21)],
+            ]
+        }
+
+    hl_col._fetch_json_dict = _fake_hl_depth
+    hl_col._resolve_real_spot_cvd_15m = lambda *_a, **_kw: None
+    hl_snap = hl_col.fetch("HYPEUSDC", allow_network=True, now=now_s)
+    assert hl_snap is not None
+    assert hl_snap.book_span_pct == pytest.approx(1.5)
+
+    # 5. Aggregated USDC+USDT spot CVD for thin Binance USDC pairs (ARBUSDC)
+    arb_col = OrderbookDepthCollector(cache_dir=str(tmp_path), cache_ttl_sec=0.0)
+    arb_col._fetch_json_dict = lambda *_a, **_kw: {
+        "bids": [["0.1200", "10000"], ["0.1180", "10000"]],
+        "asks": [["0.1202", "10000"], ["0.1220", "10000"]],
+    }
+
+    def _fake_klines(url, post_body):
+        if "symbol=ARBUSDC" in url:
+            # Tiny $6 USDC volume (buy=$6 -> cvd=+$6)
+            return [[0, 0, 0, 0, 0, 0, 0, "6.0", 0, 0, "6.0"]]
+        if "symbol=ARBUSDT" in url:
+            # Deep $300k USDT volume (buy=$225k -> cvd=+$150k)
+            return [[0, 0, 0, 0, 0, 0, 0, "300000.0", 0, 0, "225000.0"]]
+        return []
+
+    arb_col._fetch_spot_cvd_payload = _fake_klines
+    arb_snap = arb_col.fetch("ARBUSDC", allow_network=True, now=now_s)
+    assert arb_snap is not None
+    assert arb_snap.spot_cvd_15m_usd == pytest.approx(6.0)
+    assert arb_snap.spot_vol_15m_usd == pytest.approx(6.0)
+    assert arb_snap.agg_spot_cvd_15m_usd == pytest.approx(150_006.0)
+    assert arb_snap.agg_spot_vol_15m_usd == pytest.approx(300_006.0)
+    assert arb_snap.agg_spot_cvd_source == "usdc+usdt"
+

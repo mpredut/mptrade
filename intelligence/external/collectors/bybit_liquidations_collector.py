@@ -1,11 +1,15 @@
-"""Bybit liquidation WebSocket stream collector.
+"""Multi-venue forced liquidation WebSocket stream collectors (Bybit, Binance Futures, OKX).
 
-Streams public Bybit USDT-perp forced liquidations in real-time.
-Decoupled, zero-credential public endpoint accessible without API keys.
+Streams public USDT-perpetual forced liquidations in real time over zero-credential public endpoints
+through a 3-tier polymorphic hierarchy:
+- Level 1: ``TelemetryCacheCollectorInterface``
+- Level 2: ``LiquidationCollectorBase``
+- Level 3: ``BybitLiquidationCollector``, ``BinanceFuturesLiquidationCollector``, ``OkxLiquidationCollector``
 """
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 import asyncio
 import logging
 import math
@@ -13,13 +17,14 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple, Type
 
 import websockets
 
 from botcore import (
     _parse_bool_flag,
     async_interruptible_sleep,
+    first_pos_float,
     is_worker_thread_alive,
     normalize_epoch_sec,
     normalize_side,
@@ -29,18 +34,25 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import cache_symbol_variants, clean_symbol_key
+from cachepaths import cache_symbol_variants, canonical_base_asset, clean_symbol_key
 from instrument_registry import casefold_get
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
     TelemetryCollectorFactory,
+)
+from intelligence.macro_sentiment_ssot import (
+    fetch_public_json,
+    get_binance_futures_liquidations_ws_url,
+    get_bybit_liquidations_ws_url,
+    get_okx_public_ws_url,
+    get_okx_swap_instruments_url,
 )
 from providers.ws_stream import run_ws_event_loop
 from state_io import encode_json_payload, parse_json_payload
 
 logger = logging.getLogger("intelligence.external.bybit_liquidations")
 
-BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/linear"
+BYBIT_WS_URL = get_bybit_liquidations_ws_url()
 DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
 MAX_RETENTION_SEC = 3600.0
@@ -52,6 +64,8 @@ WS_CLOSE_TIMEOUT = 2
 WS_RETRY_INITIAL = 1.0
 WS_RETRY_MAX = 60.0
 STABLE_SESSION_SEC = 60.0
+
+LIQUIDATION_COLLECTOR_REGISTRY: Dict[str, Type["LiquidationCollectorBase"]] = {}
 
 
 @dataclass(frozen=True)
@@ -73,11 +87,25 @@ class LiquidationSummary:
         return self.long_liq_usd + self.short_liq_usd
 
 
-class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
-    """Thread-safe background collector tracking rolling liquidation volumes from Bybit."""
+def _normalize_liq_position_side(raw_side: Any) -> Optional[str]:
+    """Normalize a liquidated position side into canonical ``LONG`` or ``SHORT``."""
+    s_u = str(raw_side or "").strip().upper()
+    if s_u in ("LONG", "SHORT"):
+        return s_u
+    norm_s = normalize_side(raw_side)
+    if norm_s == "BUY":
+        return "LONG"
+    if norm_s == "SELL":
+        return "SHORT"
+    return None
 
-    cls_name = "BybitLiquidationCollector"
-    COLLECTOR_ID = "external_bybit_liquidations"
+
+class LiquidationCollectorBase(TelemetryCacheCollectorInterface, ABC):
+    """Level 2 abstract base class for thread-safe rolling WebSocket forced-liquidation collectors."""
+
+    cls_name = "LiquidationCollectorBase"
+    VENUE_SOURCE: str = ""
+    _THREAD_NAME: str = "LiquidationWS"
 
     def __init__(
         self,
@@ -88,6 +116,9 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
     ) -> None:
         super().__init__(start_sync=start_sync)
         self._symbols = parse_symbol_list(symbols) or list(DEFAULT_SYMBOLS)
+        self._tracked_bases = {
+            b for s in self._symbols if (b := canonical_base_asset(s))
+        }
         self._retention = safe_pos_float(retention_sec, default=MAX_RETENTION_SEC) or MAX_RETENTION_SEC
         # symbol -> deque[(ts, "LONG"|"SHORT", notional_usd)]
         self._events: Dict[str, Deque[Tuple[float, str, float]]] = {}
@@ -97,15 +128,35 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
         self._thread: Optional[threading.Thread] = None
         self._retry = WS_RETRY_INITIAL
 
-    def start(self, name: str = "BybitLiquidationWS", daemon: bool = True) -> "BybitLiquidationCollector":
+    @abstractmethod
+    def _ws_url(self) -> str:
+        """Return the public WebSocket endpoint URL for this venue."""
+
+    def _subscribe_payload(self) -> Optional[Any]:
+        """Return optional subscribe message (dict or str) sent immediately upon WS connect."""
+        return None
+
+    def _app_ping_payload(self) -> Optional[Any]:
+        """Return optional application-level heartbeat payload (dict or str) sent every ``WS_APP_PING_SEC``."""
+        return None
+
+    def _before_session(self) -> None:
+        """Optional hook executed before opening a WebSocket session (e.g., loading contract multipliers)."""
+
+    @abstractmethod
+    def _ingest(self, raw: str) -> None:
+        """Parse one raw WebSocket frame and call ``record_event()`` for matching liquidation events."""
+
+    def start(self, name: Optional[str] = None, daemon: bool = True) -> "LiquidationCollectorBase":
         daemon_b = _parse_bool_flag(daemon, True)
+        thread_name = str(name).strip() if isinstance(name, str) and name.strip() else self._THREAD_NAME
         with self._start_lock:
             if self._thread and self._thread.is_alive():
                 return self
             self._stop.clear()
-            self._thread = threading.Thread(target=self._worker, name=name, daemon=daemon_b)
+            self._thread = threading.Thread(target=self._worker, name=thread_name, daemon=daemon_b)
             self._thread.start()
-        logger.info("Bybit liquidation collector started for %s", ",".join(self._symbols))
+        logger.info("%s started for %s", self.cls_name, ",".join(self._symbols))
         return self
 
     def stop(self, timeout: float = 8.0) -> None:
@@ -127,9 +178,9 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
             else:
                 asyncio.run(self._run_with_reconnect())
         except Exception as e:
-            logger.exception("Liquidation worker crash: %s", e)
+            logger.exception("%s worker crash: %s", self.cls_name, e)
         finally:
-            logger.info("Liquidation worker exited")
+            logger.info("%s worker exited", self.cls_name)
 
     async def _run_with_reconnect(self) -> None:
         while not self._stop.is_set():
@@ -137,31 +188,34 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
             try:
                 await self._session()
             except Exception as e:
-                logger.warning("Bybit liquidation WS error: %s", e)
+                logger.warning("%s WS error: %s", self.cls_name, e)
             if self._stop.is_set():
                 break
             if time.time() - t0 >= STABLE_SESSION_SEC:
                 self._retry = WS_RETRY_INITIAL
-            logger.info("Bybit liquidation reconnecting in %.1fs", self._retry)
+            logger.info("%s reconnecting in %.1fs", self.cls_name, self._retry)
             await self._sleep(self._retry)
             self._retry = min(self._retry * 2, WS_RETRY_MAX)
 
     async def _session(self) -> None:
+        self._before_session()
         async with websockets.connect(
-            BYBIT_WS_URL,
+            self._ws_url(),
             ping_interval=WS_PING_INTERVAL,
             ping_timeout=WS_PING_TIMEOUT,
             close_timeout=WS_CLOSE_TIMEOUT,
         ) as ws:
-            args = [f"allLiquidation.{s}" for s in self._symbols]
-            await ws.send(encode_json_payload({"op": "subscribe", "args": args}))
+            sub_msg = self._subscribe_payload()
+            if sub_msg is not None:
+                await ws.send(encode_json_payload(sub_msg) if isinstance(sub_msg, (dict, list)) else str(sub_msg))
+            ping_msg = self._app_ping_payload()
             last_ping = time.time()
             while not self._stop.is_set():
                 now = time.time()
                 if now < last_ping:
                     last_ping = now
-                if now - last_ping >= WS_APP_PING_SEC:
-                    await ws.send(encode_json_payload({"op": "ping"}))
+                if ping_msg is not None and now - last_ping >= WS_APP_PING_SEC:
+                    await ws.send(encode_json_payload(ping_msg) if isinstance(ping_msg, (dict, list)) else str(ping_msg))
                     last_ping = now
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
@@ -174,27 +228,6 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
     async def _sleep(self, delay: float, step: float = 0.2) -> None:
         await async_interruptible_sleep(self._stop, delay, step, sleep_fn=asyncio.sleep)
 
-    def _ingest(self, raw: str) -> None:
-        msg = parse_json_payload(raw, default=None) if isinstance(raw, (str, bytes, bytearray)) else None
-        if not isinstance(msg, dict):
-            return
-        topic = str(msg.get("topic") or "")
-        if not topic.startswith("allLiquidation."):
-            return
-        now = time.time()
-        data_items = msg.get("data")
-        if not isinstance(data_items, list):
-            return
-        for item in data_items:
-            if not isinstance(item, dict):
-                continue
-            v = safe_pos_float(item.get("v"), default=None)
-            p = safe_pos_float(item.get("p"), default=None)
-            if v is not None and p is not None:
-                notional = safe_pos_float(v * p, default=None)
-                if notional is not None:
-                    self.record_event(item.get("s"), item.get("S"), notional, ts=now)
-
     def record_event(self, symbol: str, side: str, notional_usd: float, ts: Optional[float] = None) -> None:
         """Inject event directly (useful for tests and synthetic feeds)."""
         notional = safe_pos_float(notional_usd, default=None)
@@ -203,7 +236,7 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
         sym_norm = clean_symbol_key(symbol)
         if not sym_norm:
             return
-        side_norm = "LONG" if (norm_s := normalize_side(side)) == "BUY" else ("SHORT" if norm_s == "SELL" else None)
+        side_norm = _normalize_liq_position_side(side)
         if side_norm is None:
             return
         now = normalize_epoch_sec(ts) if ts is not None else time.time()
@@ -257,7 +290,7 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
             notional_f = safe_pos_float(notional, default=None)
             if notional_f is None:
                 continue
-            side_norm = side if side in ("LONG", "SHORT") else ("LONG" if (norm_s := normalize_side(side)) == "BUY" else ("SHORT" if norm_s == "SELL" else None))
+            side_norm = _normalize_liq_position_side(side)
             if side_norm not in ("LONG", "SHORT"):
                 continue
             last_ts = max(last_ts, ts_f)
@@ -368,5 +401,206 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
         return self.collect(symbol_or_cache_dir, symbol, window_sec=window_sec, now=now, **kwargs)
 
 
-TelemetryCollectorFactory.register(BybitLiquidationCollector.COLLECTOR_ID, BybitLiquidationCollector)
+class BybitLiquidationCollector(LiquidationCollectorBase):
+    """Level 3 collector tracking rolling forced liquidations from Bybit Linear WS."""
 
+    cls_name = "BybitLiquidationCollector"
+    COLLECTOR_ID = "external_bybit_liquidations"
+    VENUE_SOURCE = "bybit_ws"
+    _THREAD_NAME = "BybitLiquidationWS"
+
+    def _ws_url(self) -> str:
+        return BYBIT_WS_URL
+
+    def _subscribe_payload(self) -> Optional[Any]:
+        return {"op": "subscribe", "args": [f"allLiquidation.{s}" for s in self._symbols]}
+
+    def _app_ping_payload(self) -> Optional[Any]:
+        return {"op": "ping"}
+
+    def _ingest(self, raw: str) -> None:
+        msg = parse_json_payload(raw, default=None) if isinstance(raw, (str, bytes, bytearray)) else None
+        if not isinstance(msg, dict):
+            return
+        topic = str(msg.get("topic") or "")
+        if not topic.startswith("allLiquidation."):
+            return
+        now = time.time()
+        data_items = msg.get("data")
+        if not isinstance(data_items, list):
+            return
+        for item in data_items:
+            if not isinstance(item, dict):
+                continue
+            v = safe_pos_float(item.get("v"), default=None)
+            p = safe_pos_float(item.get("p"), default=None)
+            if v is not None and p is not None:
+                notional = safe_pos_float(v * p, default=None)
+                if notional is not None:
+                    self.record_event(item.get("s"), item.get("S"), notional, ts=now)
+
+
+class BinanceFuturesLiquidationCollector(LiquidationCollectorBase):
+    """Level 3 collector tracking rolling forced liquidations from Binance Futures ``!forceOrder@arr`` WS."""
+
+    cls_name = "BinanceFuturesLiquidationCollector"
+    COLLECTOR_ID = "external_binance_futures_liquidations"
+    VENUE_SOURCE = "binance_futures_ws"
+    _THREAD_NAME = "BinanceFuturesLiquidationWS"
+
+    def _ws_url(self) -> str:
+        return get_binance_futures_liquidations_ws_url()
+
+    def _ingest(self, raw: str) -> None:
+        parsed = parse_json_payload(raw, default=None) if isinstance(raw, (str, bytes, bytearray)) else None
+        if isinstance(parsed, dict) and isinstance(parsed.get("data"), (dict, list)):
+            parsed = parsed["data"]
+        events = parsed if isinstance(parsed, list) else ([parsed] if isinstance(parsed, dict) else [])
+        for msg in events:
+            if not isinstance(msg, dict):
+                continue
+            if str(msg.get("e") or "") != "forceOrder":
+                continue
+            order = msg.get("o")
+            if not isinstance(order, dict):
+                continue
+            raw_sym = str(order.get("s") or "").strip().upper()
+            base = canonical_base_asset(raw_sym)
+            if not base or (self._tracked_bases and base not in self._tracked_bases):
+                continue
+            # Binance Futures forceOrder reports the forced liquidation order side:
+            # SELL order liquidates a LONG position; BUY order liquidates a SHORT position.
+            ord_side = normalize_side(order.get("S"))
+            liq_side = "LONG" if ord_side == "SELL" else ("SHORT" if ord_side == "BUY" else None)
+            if liq_side is None:
+                continue
+            qty = first_pos_float(order.get("z"), order.get("l"), order.get("q"))
+            px = first_pos_float(order.get("ap"), order.get("p"))
+            if qty is None or px is None:
+                continue
+            notional = safe_pos_float(qty * px, default=None)
+            if notional is None:
+                continue
+            ev_ts = normalize_epoch_sec(order.get("T") or msg.get("E")) or time.time()
+            self.record_event(f"{base}USDT", liq_side, notional, ts=ev_ts)
+
+
+class OkxLiquidationCollector(LiquidationCollectorBase):
+    """Level 3 collector tracking rolling forced liquidations from OKX public SWAP WS."""
+
+    cls_name = "OkxLiquidationCollector"
+    COLLECTOR_ID = "external_okx_liquidations"
+    VENUE_SOURCE = "okx_ws"
+    _THREAD_NAME = "OkxLiquidationWS"
+
+    def __init__(
+        self,
+        symbols: Optional[List[str]] = None,
+        retention_sec: float = MAX_RETENTION_SEC,
+        *,
+        start_sync: bool = False,
+        ct_val_by_inst: Optional[Dict[str, float]] = None,
+    ) -> None:
+        super().__init__(symbols=symbols, retention_sec=retention_sec, start_sync=start_sync)
+        self._ct_val_by_inst: Dict[str, float] = {
+            str(k).strip().upper(): v
+            for k, raw_v in (ct_val_by_inst or {}).items()
+            if (v := safe_pos_float(raw_v, default=None)) is not None
+        }
+
+    def _ws_url(self) -> str:
+        return get_okx_public_ws_url()
+
+    def _subscribe_payload(self) -> Optional[Any]:
+        return {"op": "subscribe", "args": [{"channel": "liquidation-orders", "instType": "SWAP"}]}
+
+    def _app_ping_payload(self) -> Optional[Any]:
+        return "ping"
+
+    def _before_session(self) -> None:
+        if self._ct_val_by_inst:
+            return
+        try:
+            payload = fetch_public_json(
+                get_okx_swap_instruments_url(),
+                timeout=4.0,
+                user_agent="mptrade-liquidations/1.0",
+            )
+            rows = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(rows, list):
+                return
+            loaded: Dict[str, float] = {}
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                inst_id = str(row.get("instId") or "").strip().upper()
+                if not inst_id.endswith("-USDT-SWAP"):
+                    continue
+                ct_val = safe_pos_float(row.get("ctVal"), default=None)
+                if ct_val is not None:
+                    loaded[inst_id] = ct_val
+            if loaded:
+                self._ct_val_by_inst = loaded
+        except Exception as exc:
+            logger.debug("Could not load OKX SWAP contract multipliers: %s", exc)
+
+    def _ingest(self, raw: str) -> None:
+        if isinstance(raw, str) and raw.strip().lower() == "pong":
+            return
+        msg = parse_json_payload(raw, default=None) if isinstance(raw, (str, bytes, bytearray)) else None
+        if not isinstance(msg, dict):
+            return
+        arg = msg.get("arg")
+        if not isinstance(arg, dict) or str(arg.get("channel") or "") != "liquidation-orders":
+            return
+        data_items = msg.get("data")
+        if not isinstance(data_items, list):
+            return
+        for item in data_items:
+            if not isinstance(item, dict):
+                continue
+            inst_id = str(item.get("instId") or "").strip().upper()
+            if not inst_id.endswith("-USDT-SWAP"):
+                continue
+            base = inst_id.split("-", 1)[0].strip().upper()
+            if not base or (self._tracked_bases and base not in self._tracked_bases):
+                continue
+            ct_val = safe_pos_float(self._ct_val_by_inst.get(inst_id), default=None)
+            if ct_val is None:
+                continue
+            details = item.get("details")
+            if not isinstance(details, list):
+                continue
+            for det in details:
+                if not isinstance(det, dict):
+                    continue
+                sz = safe_pos_float(det.get("sz"), default=None)
+                bk_px = safe_pos_float(det.get("bkPx"), default=None)
+                if sz is None or bk_px is None:
+                    continue
+                pos_side = str(det.get("posSide") or "").strip().lower()
+                ord_side = normalize_side(det.get("side"))
+                if pos_side == "long":
+                    liq_side = "LONG"
+                elif pos_side == "short":
+                    liq_side = "SHORT"
+                elif ord_side == "SELL":
+                    liq_side = "LONG"
+                elif ord_side == "BUY":
+                    liq_side = "SHORT"
+                else:
+                    continue
+                notional = safe_pos_float(sz * ct_val * bk_px, default=None)
+                if notional is None:
+                    continue
+                ev_ts = normalize_epoch_sec(det.get("ts")) or time.time()
+                self.record_event(f"{base}USDT", liq_side, notional, ts=ev_ts)
+
+
+for _liq_cls in (
+    BybitLiquidationCollector,
+    BinanceFuturesLiquidationCollector,
+    OkxLiquidationCollector,
+):
+    TelemetryCollectorFactory.register(_liq_cls.COLLECTOR_ID, _liq_cls)
+    LIQUIDATION_COLLECTOR_REGISTRY[_liq_cls.VENUE_SOURCE] = _liq_cls

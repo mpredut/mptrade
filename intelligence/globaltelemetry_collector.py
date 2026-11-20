@@ -50,7 +50,12 @@ from cachepaths import (
     resolve_workspace_dir_from_cachedb,
 )
 from intelligence.external.collectors.base_collector import collector_used_stale_fallback
-from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
+from intelligence.external.collectors.bybit_liquidations_collector import (
+    BinanceFuturesLiquidationCollector,
+    BybitLiquidationCollector,
+    LiquidationCollectorBase,
+    OkxLiquidationCollector,
+)
 from intelligence.macro.daemon_ssot import (
     ExternalTelemetryMixin,
     add_external_telemetry_cli_args,
@@ -206,6 +211,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
 
         self._init_external_collectors(logger, skip_external=skip_external)
         self.bybit_liq_collector: Optional[BybitLiquidationCollector] = None
+        self.binance_liq_collector: Optional[BinanceFuturesLiquidationCollector] = None
+        self.okx_liq_collector: Optional[OkxLiquidationCollector] = None
         self._last_realized_liq_ts: float = 0.0
         self.news_collector = NewsFeedCollector(
             cache_ttl_sec=max(30.0, self.news_interval_sec * 0.5),
@@ -354,28 +361,65 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 perp_syms.append(f"{base}USDT")
         return perp_syms
 
+    def _active_liquidation_collectors(self) -> List[LiquidationCollectorBase]:
+        cols: List[LiquidationCollectorBase] = []
+        for attr in ("bybit_liq_collector", "binance_liq_collector", "okx_liq_collector"):
+            col = getattr(self, attr, None)
+            if col is not None:
+                cols.append(col)
+        return cols
+
     def update_realized_liquidations(self, force: bool = False, now: Optional[float] = None) -> bool:
-        """Persist rolling 15m Bybit realized forced liquidations snapshot when WS stream is active."""
+        """Persist rolling 15m multi-venue realized forced liquidations snapshot when WS stream(s) are active."""
         _ = force
-        col = getattr(self, "bybit_liq_collector", None)
-        if col is None:
+        active_cols = self._active_liquidation_collectors()
+        if not active_cols:
             return False
         try:
             eff_now = resolve_now_ts(self._resolve_step_now(now))
+            sources = [str(getattr(c, "VENUE_SOURCE", "") or "bybit_ws") for c in active_cols]
+            connected_sources = [
+                str(getattr(c, "VENUE_SOURCE", "") or "bybit_ws")
+                for c in active_cols
+                if bool(getattr(c, "is_running", False))
+            ]
             items: Dict[str, Dict[str, Any]] = {}
             for psym in self._realized_liquidation_perp_symbols():
-                summ = col.get_summary(psym, window_sec=900.0, now=eff_now)
-                items[psym] = {
-                    "long_15m_usd": round(summ.long_liq_usd, 0),
-                    "short_15m_usd": round(summ.short_liq_usd, 0),
-                    "net_15m_usd": round(summ.net_usd, 0),
-                    "events_15m": safe_int(summ.events_count, 0),
-                    "last_event_ts": round(summ.last_event_ts, 3) if summ.last_event_ts else 0.0,
+                long_tot = short_tot = last_ts = 0.0
+                events_tot = 0
+                by_venue: Dict[str, Dict[str, Any]] = {}
+                for col, src_lbl in zip(active_cols, sources):
+                    summ = col.get_summary(psym, window_sec=900.0, now=eff_now)
+                    l_u = round(summ.long_liq_usd, 0)
+                    s_u = round(summ.short_liq_usd, 0)
+                    ev_n = safe_int(summ.events_count, 0)
+                    long_tot += l_u
+                    short_tot += s_u
+                    events_tot += ev_n
+                    if summ.last_event_ts:
+                        last_ts = max(last_ts, summ.last_event_ts)
+                    if len(active_cols) > 1 and (ev_n > 0 or l_u > 0.0 or s_u > 0.0):
+                        by_venue[src_lbl] = {
+                            "long_15m_usd": l_u,
+                            "short_15m_usd": s_u,
+                            "events_15m": ev_n,
+                        }
+                entry: Dict[str, Any] = {
+                    "long_15m_usd": round(long_tot, 0),
+                    "short_15m_usd": round(short_tot, 0),
+                    "net_15m_usd": round(short_tot - long_tot, 0),
+                    "events_15m": events_tot,
+                    "last_event_ts": round(last_ts, 3) if last_ts else 0.0,
                 }
+                if by_venue:
+                    entry["by_venue"] = by_venue
+                items[psym] = entry
             payload = {
                 "ts": eff_now,
-                "source": "bybit_ws",
-                "connected": bool(getattr(col, "is_running", False)),
+                "source": sources[0] if len(sources) == 1 else "multi_venue_ws",
+                "sources": sources,
+                "connected_sources": connected_sources,
+                "connected": bool(connected_sources),
                 "symbols": items,
             }
             out_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, CACHE_REALIZED_LIQUIDATIONS_FILENAME)))
@@ -607,7 +651,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 (True, "_last_fear_greed_ts", self.fear_greed_interval_sec, self.update_fear_greed, (force,), 12.0, "fear_greed", "fear_greed_updated", None),
                 (True, "_last_breadth_ts", self.breadth_interval_sec, self.update_market_breadth, (force,), 15.0, "breadth", "breadth_updated", None),
                 (not self.skip_external, "_last_macro_benchmarks_ts", eff_mb_itv, self.update_macro_benchmarks, (force,), 15.0, "macro_benchmarks", "macro_benchmarks_updated", None),
-                (not self.skip_external and getattr(self, "bybit_liq_collector", None) is not None, "_last_realized_liq_ts", getattr(self, "derivatives_interval_sec", 30.0), self.update_realized_liquidations, (force,), 5.0, "realized_liquidations", "realized_liquidations_updated", None),
+                (not self.skip_external and bool(self._active_liquidation_collectors()), "_last_realized_liq_ts", getattr(self, "derivatives_interval_sec", 30.0), self.update_realized_liquidations, (force,), 5.0, "realized_liquidations", "realized_liquidations_updated", None),
                 (not self.skip_external, "_last_pretrade_caches_ts", self.pretrade_caches_interval_sec, self.update_pretrade_caches, (force,), 24.0, "pretrade_caches", "pretrade_caches_updated", None),
                 (not self.skip_external, "_last_venue_balances_ts", self.venue_balances_interval_sec, self.update_venue_balances, (force,), 18.0, "venue_balances", "venue_balances_updated", None),
             )
@@ -671,13 +715,19 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
     def start(self, poll_interval_sec: float = 1.0) -> None:
         """Run the main telemetry collection loop continuously."""
         self._live_impulse_wakeup_enabled = bool_env("AI_IMPULSE_TRIGGER_ENABLED", True)
-        if not self.skip_external and bool_env("BYBIT_LIQUIDATIONS_WS_ENABLED", True):
-            try:
-                perp_syms = self._realized_liquidation_perp_symbols()
-                if perp_syms and self.bybit_liq_collector is None:
-                    self.bybit_liq_collector = BybitLiquidationCollector(symbols=perp_syms, start_sync=False).start()
-            except Exception as exc:
-                logger.debug("Could not start BybitLiquidationCollector WS: %s", exc)
+        if not self.skip_external and bool_env("REALIZED_LIQUIDATIONS_WS_ENABLED", True):
+            perp_syms = self._realized_liquidation_perp_symbols()
+            if perp_syms:
+                for attr, env_k, cls in (
+                    ("bybit_liq_collector", "BYBIT_LIQUIDATIONS_WS_ENABLED", BybitLiquidationCollector),
+                    ("binance_liq_collector", "BINANCE_LIQUIDATIONS_WS_ENABLED", BinanceFuturesLiquidationCollector),
+                    ("okx_liq_collector", "OKX_LIQUIDATIONS_WS_ENABLED", OkxLiquidationCollector),
+                ):
+                    if bool_env(env_k, True) and getattr(self, attr, None) is None:
+                        try:
+                            setattr(self, attr, cls(symbols=perp_syms, start_sync=False).start())
+                        except Exception as exc:
+                            logger.debug("Could not start %s WS: %s", cls.cls_name, exc)
         try:
             run_daemon_loop(
                 self,
@@ -693,9 +743,9 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 reraise_initial_exit=True,
             )
         finally:
-            if self.bybit_liq_collector is not None:
+            for col in self._active_liquidation_collectors():
                 try:
-                    self.bybit_liq_collector.stop(timeout=3.0)
+                    col.stop(timeout=3.0)
                 except Exception:
                     pass
 

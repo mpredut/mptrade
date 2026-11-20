@@ -861,6 +861,22 @@ get_market_breadth_endpoint_url = _bind_feed_url_getter(
     "market_breadth_endpoint_url",
     "Resolve the Market Breadth 24h ticker endpoint URL from [feeds] in macro_intelligence.conf.",
 )
+get_bybit_liquidations_ws_url = _bind_feed_url_getter(
+    "bybit_liquidations_ws_url",
+    "Resolve the Bybit linear forced liquidations WS URL from [feeds] in macro_intelligence.conf.",
+)
+get_binance_futures_liquidations_ws_url = _bind_feed_url_getter(
+    "binance_futures_liquidations_ws_url",
+    "Resolve the Binance Futures forced liquidations WS URL from [feeds] in macro_intelligence.conf.",
+)
+get_okx_public_ws_url = _bind_feed_url_getter(
+    "okx_public_ws_url",
+    "Resolve the OKX public WS URL from [feeds] in macro_intelligence.conf.",
+)
+get_okx_swap_instruments_url = _bind_feed_url_getter(
+    "okx_swap_instruments_url",
+    "Resolve the OKX public SWAP instruments metadata URL from [feeds] in macro_intelligence.conf.",
+)
 
 
 def _require_feed_str(key: str) -> str:

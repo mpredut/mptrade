@@ -325,7 +325,12 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                 if len(pts) >= 2:
                     last_bar_ts = pts[-1][0]
                     item_entry["last_bar_ts"] = math.trunc(last_bar_ts)
-                    if mkt_state != "CLOSED" and (eff_now <= 0.0 or (eff_now - last_bar_ts) <= 2700.0):
+                    bar_age_s = max(0.0, eff_now - last_bar_ts) if eff_now > 0.0 else 0.0
+                    if eff_now > 0.0:
+                        item_entry["bar_age_min"] = round(bar_age_s / 60.0, 1)
+                    if not mkt_state and eff_now > 0.0 and bar_age_s > 2700.0:
+                        mkt_state = "CLOSED"
+                    if mkt_state != "CLOSED" and (eff_now <= 0.0 or bar_age_s <= 2700.0):
                         prior_pts = pts[:-1]
                         for target_sec, key_name in ((3600.0, "chg_1h_pct"), (900.0, "chg_15m_pct")):
                             target_ts = last_bar_ts - target_sec
@@ -497,12 +502,21 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                                 ref_bound = mb_hi if chg_24_raw < 0.0 else mb_lo
                                 mb_copy["chg_24h_pct"] = round(((mb_px - ref_bound) / ref_bound) * 100.0, 2) + 0.0
                                 stripped_stale_intraday = True
+                    bar_ts_v = safe_pos_float(mb_copy.get("last_bar_ts"), default=None)
+                    if bar_ts_v is not None and now_ts > 0.0:
+                        bar_age_s = max(0.0, now_ts - bar_ts_v)
+                        mb_copy["bar_age_min"] = round(bar_age_s / 60.0, 1)
+                        if bar_age_s > 2700.0:
+                            if str(mb_copy.get("market_state") or "").strip().upper() != "CLOSED":
+                                mb_copy["market_state"] = "CLOSED"
+                                stripped_stale_intraday = True
+                            for stale_k in ("chg_1h_pct", "chg_15m_pct"):
+                                if stale_k in mb_copy:
+                                    mb_copy.pop(stale_k, None)
+                                    stripped_stale_intraday = True
                     if mb_k in ("SPY", "QQQ", "IBIT", "US10Y", "VIX"):
-                        bar_ts_v = safe_pos_float(mb_copy.get("last_bar_ts"), default=None)
                         is_stale_us_bar = str(mb_copy.get("market_state") or "").strip().upper() == "CLOSED"
-                        if bar_ts_v is not None and now_ts > 0.0 and (now_ts - bar_ts_v) > 2700.0:
-                            is_stale_us_bar = True
-                        elif bar_ts_v is None and not mb_copy.get("market_state") and now_ts > 0.0:
+                        if bar_ts_v is None and not mb_copy.get("market_state") and now_ts > 0.0:
                             try:
                                 dt_ny = datetime.fromtimestamp(now_ts, tz=ZoneInfo("America/New_York"))
                                 mins_ny = dt_ny.hour * 60 + dt_ny.minute

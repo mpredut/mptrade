@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 from botcore import (
     clean_scale,
     is_cache_fresh,
+    normalize_timestamp_ms,
     obj_attr,
     resolve_now_ts,
     safe_float,
@@ -64,6 +65,7 @@ class WhalePositioningSnapshot:
     cvd_5m_usd: Optional[float] = None
     cvd_1h_usd: Optional[float] = None
     cvd_4h_usd: Optional[float] = None
+    taker_bar_ts_ms: Optional[int] = None
 
     to_dict = asdict
 
@@ -93,6 +95,7 @@ class WhalePositioningSnapshot:
             cvd_5m_usd=safe_float(data.get("cvd_5m_usd"), default=None),
             cvd_1h_usd=safe_float(data.get("cvd_1h_usd"), default=None),
             cvd_4h_usd=safe_float(data.get("cvd_4h_usd"), default=None),
+            taker_bar_ts_ms=normalize_timestamp_ms(data.get("taker_bar_ts_ms"), default=None),
         )
 
 
@@ -388,6 +391,14 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             url_taker = f"https://fapi.binance.com/futures/data/takerlongshortRatio?symbol={lookup_sym}&period=5m&limit=48"
             latest_taker, data_taker = self._fetch_latest_json_row(url_taker, "takerlongshortRatio", lookup_sym)
             all_taker_rows = [r for r in (data_taker if isinstance(data_taker, list) else []) if isinstance(r, dict)] or [latest_taker]
+            taker_bar_ts_ms = normalize_timestamp_ms(latest_taker.get("timestamp"), default=None)
+            if taker_bar_ts_ms is None:
+                bar_ts_vals = [
+                    t_ms
+                    for r in all_taker_rows
+                    if (t_ms := normalize_timestamp_ms(r.get("timestamp"), default=None)) is not None
+                ]
+                taker_bar_ts_ms = max(bar_ts_vals) if bar_ts_vals else None
             taker_rows = all_taker_rows[-3:]
             taker_buy = sum(max(0.0, _clean_dict_float(r, "buyVol", 0.0)) for r in taker_rows)
             taker_sell = sum(max(0.0, _clean_dict_float(r, "sellVol", 0.0)) for r in taker_rows)
@@ -467,6 +478,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                 cvd_5m_usd=cvd_5m,
                 cvd_1h_usd=cvd_1h,
                 cvd_4h_usd=cvd_4h,
+                taker_bar_ts_ms=taker_bar_ts_ms,
             )
             return self._commit_snapshot(symbol, now, snapshot)
         except Exception as e:
@@ -498,9 +510,12 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             return None
         taker_buy = 0.0
         taker_sell = 0.0
+        hl_last_trade_ts_ms: Optional[int] = None
         for tr in trades:
             if not isinstance(tr, dict):
                 continue
+            if (tr_ms := normalize_timestamp_ms(tr.get("time"), default=None)) is not None:
+                hl_last_trade_ts_ms = max(hl_last_trade_ts_ms or 0, tr_ms)
             px = safe_pos_float(tr.get("px"), default=0.0) or 0.0
             sz = safe_pos_float(tr.get("sz"), default=0.0) or 0.0
             side = str(tr.get("side") or "").strip().upper()
@@ -553,6 +568,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             funding_rate=funding_rate,
             taker_ratio_5m=taker_ratio if (taker_buy + taker_sell) > 0.0 and taker_ratio > 0.0 else None,
             cvd_5m_usd=round(taker_buy - taker_sell, 0) if (taker_buy + taker_sell) > 0.0 else None,
+            taker_bar_ts_ms=hl_last_trade_ts_ms,
         )
         return self._commit_snapshot(symbol, now, snapshot)
 

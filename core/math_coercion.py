@@ -625,7 +625,8 @@ def value_diff_to_percent(value1, value2) -> float:
 def profit_diff_pct(order_type: str, price: float, ref_price: float) -> float:
     """Compute signed favorable profit percentage of ``price`` relative to ``ref_price`` symmetrically."""
     side = require_buy_sell_side(order_type, name="order_type")
-    return value_diff_to_percent(ref_price, price) if side == "BUY" else value_diff_to_percent(price, ref_price)
+    buy_pct = value_diff_to_percent(ref_price, price)
+    return buy_pct if side == "BUY" else (-buy_pct + 0.0)
 
 
 def slope(val1, idx1, val2, idx2) -> float:

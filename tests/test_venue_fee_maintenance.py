@@ -324,3 +324,85 @@ def test_binance_trailing_stop_rebuy_uses_passive_maker_while_sell_keeps_market(
     )
     assert calls[0][2]["force"] is False
     assert calls[1][2]["force"] is True
+
+
+def test_binance_per_symbol_fee_schedule_and_live_maker_cross_venue_arb(tmp_path, monkeypatch):
+    """Verify BinanceFeeMaintainer stores by_symbol schedules and compute_cross_venue_arb_metrics uses live maker fees."""
+    from intelligence.sentiment.evaluators.microstructure_evaluator import compute_cross_venue_arb_metrics
+    from providers.venue_fee_maintenance import read_persisted_venue_fee_spec
+    from state_io import save_json_state
+
+    monkeypatch.setattr(botcore, "is_trade_enabled", lambda: True)
+    now_ts = 1_770_050_000.0
+    cli = MagicMock()
+    cli.get_bnb_burn_spot_margin.return_value = {"spotBNBBurn": True}
+    cli.get_account.return_value = {
+        "balances": [
+            {"asset": "BNB", "free": "0.30", "locked": "0.0"},
+            {"asset": "USDC", "free": "1500.0", "locked": "0.0"},
+        ]
+    }
+    cli.get_orderbook_ticker.return_value = {"symbol": "BNBUSDC", "bidPrice": "600.00", "askPrice": "600.10"}
+    cli.get_open_orders.return_value = []
+    cli.get_trade_fee.return_value = [
+        {"symbol": "BTCUSDC", "makerCommission": "0.001", "takerCommission": "0.00095"},
+        {"symbol": "TAOUSDC", "makerCommission": "0.001", "takerCommission": "0.001"},
+        {"symbol": "ARBUSDC", "makerCommission": "0.0", "takerCommission": "0.00095"},
+    ]
+
+    maintainer = BinanceFeeMaintainer(
+        client=cli,
+        bapi_mod=SimpleNamespace(client=cli, _cancel_and_resolve=MagicMock()),
+        placeorder_mod=SimpleNamespace(_submit_binance_order=MagicMock()),
+        audit=ExecutionAudit(directory=str(tmp_path / "audit")),
+    )
+    res = maintainer.maintain(now_ts, {}, load_fee_maintenance_config(_sample_cfg()))
+    assert res["fee_spec"] == {"fee_tier": "VIP0_BNB", "maker_fee_bps": 7.5, "taker_fee_bps": 7.12}
+    assert res["by_symbol"]["BTCUSDC"] == {"fee_tier": "VIP0_BNB", "maker_fee_bps": 7.5, "taker_fee_bps": 7.12}
+    assert res["by_symbol"]["TAOUSDC"] == {"fee_tier": "VIP0_BNB", "maker_fee_bps": 7.5, "taker_fee_bps": 7.5}
+    assert res["by_symbol"]["ARBUSDC"] == {"fee_tier": "VIP0_BNB", "maker_fee_bps": 0.0, "taker_fee_bps": 7.12}
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    save_json_state(
+        str(state_dir / "venue_fee_maintenance_state.json"),
+        {
+            "schema_version": 1,
+            "ts": now_ts,
+            "interval_sec": 14400.0,
+            "state_max_age_sec": 86400.0,
+            "venues": {
+                "binance": res,
+                "kraken": {
+                    "ts": now_ts,
+                    "fee_spec": {"fee_tier": "PRO_LIVE", "maker_fee_bps": 22.0, "taker_fee_bps": 38.0},
+                    "by_symbol": {
+                        "TAOUSD": {"fee_tier": "PRO_LIVE", "maker_fee_bps": 22.0, "taker_fee_bps": 38.0}
+                    },
+                },
+            },
+        },
+        indent=2,
+    )
+    assert read_persisted_venue_fee_spec("binance", "TAOUSDC", cache_dir=str(tmp_path), now_ts=now_ts)["taker_fee_bps"] == 7.5
+    assert read_persisted_venue_fee_spec("binance", "ARBUSDC", cache_dir=str(tmp_path), now_ts=now_ts)["maker_fee_bps"] == 0.0
+
+    # Cross-venue arb uses live persisted maker fees (Binance 7.5 vs Kraken 22.0) instead of static defaults (10 vs 16)
+    m_bn = {"ob_mid_price": 200.0, "spread_bps": 4.0}
+    m_kr = {"ob_mid_price": 200.0, "spread_bps": 10.0}
+    compute_cross_venue_arb_metrics(
+        "TAOUSDC",
+        m_bn,
+        {"price": 200.0},
+        {"TAOUSDC": m_bn, "TAOUSD": m_kr},
+        {"TAOUSDC": {"price": 200.0}, "TAOUSD": {"price": 200.0}},
+        cache_dir=str(tmp_path),
+        now_ts=now_ts,
+    )
+    assert m_bn["arb_fee_basis"] == "maker"
+    assert m_bn["net_buy_edge_vs_peer_bps"] == pytest.approx(22.0 - 7.5, abs=0.1)
+    assert m_bn["net_sell_edge_vs_peer_bps"] == pytest.approx(22.0 - 7.5, abs=0.1)
+    # Taker edge uses live persisted taker fees (38 + 5) - (7.5 + 2) = +33.5 bps
+    assert m_bn["net_buy_taker_edge_vs_peer_bps"] == pytest.approx(33.5, abs=0.1)
+    assert m_bn["best_buy_venue"] == "binance:TAOUSDC"
+

@@ -231,23 +231,68 @@ class BinanceFeeMaintainer(VenueFeeMaintainerBase):
         return bid_px
 
     @classmethod
-    def _extract_base_fee_bps(cls, cli: Any) -> tuple[float, float]:
-        _, maker_bps, taker_bps = cls._default_venue_fee_tuple()
+    def _extract_symbol_fee_schedule_bps(cls, cli: Any) -> tuple[float, float, Dict[str, tuple[float, float]]]:
+        _, default_maker_bps, default_taker_bps = cls._default_venue_fee_tuple()
         tf_fn = getattr(cli, "get_trade_fee", None)
         if not callable(tf_fn):
-            return maker_bps, taker_bps
-        try:
-            raw_tf = tf_fn(symbol="BTCUSDC")
-            row = raw_tf[0] if isinstance(raw_tf, list) and raw_tf else (raw_tf if isinstance(raw_tf, dict) else None)
-            if isinstance(row, dict):
+            return default_maker_bps, default_taker_bps, {}
+        target_syms = [
+            s
+            for raw_s in symbols_for("binance")
+            if (s := clean_upper_scalar(raw_s)) is not None and not has_equity_suffix(s)
+        ]
+        if not target_syms:
+            target_syms = ["BTCUSDC"]
+
+        def _parse_fee_rows(raw_tf: Any) -> Dict[str, tuple[float, float]]:
+            rows = raw_tf if isinstance(raw_tf, list) else ([raw_tf] if isinstance(raw_tf, dict) else [])
+            parsed: Dict[str, tuple[float, float]] = {}
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
                 m_rate = safe_nonneg_float(row.get("makerCommission"), default=None)
                 t_rate = safe_nonneg_float(row.get("takerCommission"), default=None)
-                if m_rate is not None:
-                    maker_bps = m_rate * 10000.0
-                if t_rate is not None:
-                    taker_bps = t_rate * 10000.0
+                if m_rate is None and t_rate is None:
+                    continue
+                row_sym = clean_upper_scalar(row.get("symbol")) or ""
+                parsed[row_sym] = (
+                    m_rate * 10000.0 if m_rate is not None else default_maker_bps,
+                    t_rate * 10000.0 if t_rate is not None else default_taker_bps,
+                )
+            return parsed
+
+        schedule: Dict[str, tuple[float, float]] = {}
+        try:
+            all_rows = _parse_fee_rows(tf_fn())
+            for sym in target_syms:
+                if sym in all_rows:
+                    schedule[sym] = all_rows[sym]
         except Exception:
-            pass
+            all_rows = {}
+        for sym in target_syms:
+            if sym in schedule:
+                continue
+            try:
+                sym_rows = _parse_fee_rows(tf_fn(symbol=sym))
+                if sym in sym_rows:
+                    schedule[sym] = sym_rows[sym]
+                elif len(sym_rows) == 1:
+                    only_k, only_v = next(iter(sym_rows.items()))
+                    if not only_k or only_k == sym:
+                        schedule[sym] = only_v
+            except Exception:
+                continue
+        if not schedule and all_rows:
+            first_pair = next(iter(all_rows.values()))
+            return first_pair[0], first_pair[1], {}
+        if schedule:
+            anchor = schedule.get("BTCUSDC") or next(iter(schedule.values()))
+            return anchor[0], anchor[1], schedule
+        return default_maker_bps, default_taker_bps, {}
+
+    @classmethod
+    def _extract_base_fee_bps(cls, cli: Any) -> tuple[float, float]:
+        maker_bps, taker_bps, _ = cls._extract_symbol_fee_schedule_bps(cli)
         return maker_bps, taker_bps
 
     def maintain(
@@ -455,15 +500,21 @@ class BinanceFeeMaintainer(VenueFeeMaintainerBase):
                         topup_action = "submit_failed"
                         retry_soon = True
 
-        base_maker_bps, base_taker_bps = self._extract_base_fee_bps(cli)
+        base_maker_bps, base_taker_bps, sym_schedule = self._extract_symbol_fee_schedule_bps(cli)
         discount_active = bool(spot_bnb_burn) and held_bnb_usdc >= 1.0
-        eff_maker_bps = base_maker_bps * self.SPOT_BNB_DISCOUNT_FACTOR if discount_active else base_maker_bps
-        eff_taker_bps = base_taker_bps * self.SPOT_BNB_DISCOUNT_FACTOR if discount_active else base_taker_bps
+        disc = self.SPOT_BNB_DISCOUNT_FACTOR if discount_active else 1.0
+        eff_maker_bps = base_maker_bps * disc
+        eff_taker_bps = base_taker_bps * disc
         fee_tier = "VIP0_BNB" if discount_active else "VIP0"
+        by_symbol: Dict[str, Dict[str, Any]] = {
+            s_k: self.build_fee_spec(fee_tier, m_b * disc, t_b * disc)
+            for s_k, (m_b, t_b) in sym_schedule.items()
+        }
 
         out: Dict[str, Any] = {
             "ts": round(now_ts, 3),
             "fee_spec": self.build_fee_spec(fee_tier, eff_maker_bps, eff_taker_bps),
+            "by_symbol": by_symbol,
             "spot_bnb_burn": spot_bnb_burn,
             "bnb_free": round(bnb_free, 6),
             "bnb_locked": round(bnb_locked, 6),

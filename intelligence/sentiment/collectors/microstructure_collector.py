@@ -20,6 +20,7 @@ from botcore import (
     load_dotenv,
     lru_dict_put,
     normalize_epoch_sec,
+    normalize_timestamp_ms,
     obj_attr,
     resolve_now_ts,
     safe_float,
@@ -569,6 +570,12 @@ def load_symbol_microstructure(
                 m_info["spot_cvd_source"] = str(obj_attr(ob, "spot_cvd_source") or "real_spot").strip()
             if (ob_sp_vol := safe_pos_float(obj_attr(ob, "spot_vol_15m_usd"), default=None)) is not None:
                 m_info["spot_vol_15m_usd"] = round(ob_sp_vol, 0)
+            if (ob_agg_cvd := safe_float(obj_attr(ob, "agg_spot_cvd_15m_usd"), default=None)) is not None:
+                m_info["agg_spot_cvd_15m_usd"] = round(ob_agg_cvd, 0)
+                if (ob_agg_src := obj_attr(ob, "agg_spot_cvd_source")) and isinstance(ob_agg_src, str):
+                    m_info["agg_spot_cvd_source"] = ob_agg_src.strip()
+            if (ob_agg_vol := safe_pos_float(obj_attr(ob, "agg_spot_vol_15m_usd"), default=None)) is not None:
+                m_info["agg_spot_vol_15m_usd"] = round(ob_agg_vol, 0)
         for k_src, k_dst in (
             ("bid_depth_usd", "bid_depth_usd"), ("ask_depth_usd", "ask_depth_usd"),
             ("depth_1pct_bid_usd", "depth_1pct_bid_usd"), ("depth_1pct_ask_usd", "depth_1pct_ask_usd"),
@@ -607,6 +614,8 @@ def load_symbol_microstructure(
         whale_ts_v = normalize_epoch_sec(obj_attr(whale, "ts", obj_attr(whale, "timestamp", None)), default=0.0) or 0.0
         if whale_ts_v > 0.0:
             m_info["_whale_ts"] = whale_ts_v
+        if (w_bar_ts_ms := normalize_timestamp_ms(obj_attr(whale, "taker_bar_ts_ms"), default=None)) is not None:
+            m_info["_taker_bar_ts_ms"] = w_bar_ts_ms
         for dst_k, src_k, alt_k in (
             ("whale_long_pct", "top_traders_long_pct", "whale_long_pct"),
             ("whale_long_ratio", "top_traders_long_ratio", "whale_long_ratio"),
@@ -716,9 +725,13 @@ def load_symbol_microstructure(
                         m_info["realized_liq_15m_short_usd"] = round(rl_s, 0)
                         m_info["realized_liq_15m_events"] = rl_n
                         m_info["_realized_liq_ts"] = rliq_ts
+                        if isinstance(rliq_srcs := rliq_doc.get("sources"), list) and rliq_srcs:
+                            m_info["realized_liq_sources"] = [str(s).strip() for s in rliq_srcs if str(s).strip()]
+                        elif isinstance(rliq_src_s := rliq_doc.get("source"), str) and rliq_src_s.strip():
+                            m_info["realized_liq_sources"] = [rliq_src_s.strip()]
     if m_info.get("funding_annualized_pct") is None and (fr_v := safe_float(m_info.get("funding_rate"), default=None)) is not None:
         m_info["funding_annualized_pct"] = round(fr_v * 3.0 * 365.0 * 100.0, 2)
-    for usd_k in ("oi_usd", "taker_buy_vol_usd", "taker_sell_vol_usd", "cvd_5m_usd", "cvd_15m_usd", "spot_cvd_15m_usd", "spot_vol_15m_usd", "cvd_1h_usd", "cvd_4h_usd"):
+    for usd_k in ("oi_usd", "taker_buy_vol_usd", "taker_sell_vol_usd", "cvd_5m_usd", "cvd_15m_usd", "spot_cvd_15m_usd", "spot_vol_15m_usd", "agg_spot_cvd_15m_usd", "agg_spot_vol_15m_usd", "cvd_1h_usd", "cvd_4h_usd"):
         if (uv := safe_float(m_info.get(usd_k), default=None)) is not None:
             m_info[usd_k] = round(uv, 2)
     enrich_microstructure_cvd(m_info)

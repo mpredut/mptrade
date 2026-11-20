@@ -10,6 +10,7 @@ from botcore import (
     coerce_dict_maps,
     is_live_network_backfill_enabled,
     normalize_epoch_sec,
+    normalize_timestamp_ms,
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
@@ -56,6 +57,7 @@ from instrument_registry import (
     resolve_symbol_identity,
 )
 from providers.market_api import api as mkt_api
+from providers.venue_fee_maintenance import read_persisted_venue_fee_spec
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_evaluator")
 
@@ -70,6 +72,7 @@ MICRO_OB_LOCAL_KEYS: frozenset[str] = frozenset({
     "book_span_pct", "bid_wall_usd", "ask_wall_usd", "bid_wall_px", "ask_wall_px",
     "est_slip_2k_bps", "spot_cvd_15m_usd", "spot_cvd_source", "spot_perp_flow_regime",
     "spot_vol_15m_usd", "spot_vol_1h_usd", "rvol_15m", "rvol_1h",
+    "agg_spot_cvd_15m_usd", "agg_spot_vol_15m_usd", "agg_spot_cvd_source",
     "_ob_raw_ts", "_ob_ts",
 })
 _FLOW_HORIZON_SPECS: Tuple[Tuple[str, str, str], ...] = (
@@ -98,12 +101,12 @@ def format_spot_volume_rvol_parts(
         return []
     parts: List[str] = []
     if (v15 := safe_pos_float(minfo.get("spot_vol_15m_usd"), default=None)) is not None:
-        r15 = safe_pos_float(minfo.get("rvol_15m"), default=None)
+        r15 = safe_nonneg_float(minfo.get("rvol_15m"), default=None)
         parts.append(f"spot_vol_15m={fmt_usd(v15)}" + (f" (rvol_15m={r15:.2f}x)" if r15 is not None else ""))
     elif (r15 := safe_pos_float(minfo.get("rvol_15m"), default=None)) is not None:
         parts.append(f"rvol_15m={r15:.2f}x")
     if (v1h := safe_pos_float(minfo.get("spot_vol_1h_usd"), default=None)) is not None:
-        r1h = safe_pos_float(minfo.get("rvol_1h"), default=None)
+        r1h = safe_nonneg_float(minfo.get("rvol_1h"), default=None)
         parts.append(f"spot_vol_1h={fmt_usd(v1h)}" + (f" (rvol_1h={r1h:.2f}x)" if r1h is not None else ""))
     elif (r1h := safe_pos_float(minfo.get("rvol_1h"), default=None)) is not None:
         parts.append(f"rvol_1h={r1h:.2f}x")
@@ -400,7 +403,18 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
         )
         minfo["_synthetic_spot_cvd"] = True
         minfo["spot_cvd_source"] = "est_ob_15m"
-    spot_cvd = safe_float(minfo.get("spot_cvd_15m_usd"), default=0.0) or 0.0
+    local_spot_cvd = safe_float(minfo.get("spot_cvd_15m_usd"), default=0.0) or 0.0
+    agg_spot_cvd = safe_float(minfo.get("agg_spot_cvd_15m_usd"), default=None)
+    local_spot_vol = safe_nonneg_float(minfo.get("spot_vol_15m_usd"), default=0.0) or 0.0
+    agg_spot_vol = safe_nonneg_float(minfo.get("agg_spot_vol_15m_usd"), default=0.0) or 0.0
+    use_agg_spot = (
+        agg_spot_cvd is not None
+        and (
+            local_spot_vol < 25_000.0
+            or (agg_spot_vol > 0.0 and agg_spot_vol >= local_spot_vol * 2.0)
+        )
+    )
+    spot_cvd = agg_spot_cvd if use_agg_spot else local_spot_cvd
     oi_chg = safe_float(minfo.get("oi_1h_chg_pct"), default=0.0) or 0.0
     cvd_5m = safe_float(minfo.get("cvd_5m_usd"), default=0.0) or 0.0
     cvd_1h = safe_float(minfo.get("cvd_1h_usd"), default=0.0) or 0.0
@@ -655,8 +669,14 @@ def compute_liquidation_clusters(
     }
 
 
-def _infer_symbol_venue_and_fees_bps(sym: str, m_dict: Dict[str, Any]) -> Tuple[str, float, float, float]:
-    """Infer canonical venue name, maker/taker fee bps, and half-spread bps via ``MarketApi`` & ``MarketDataProvider``."""
+def _infer_symbol_venue_and_fees_bps(
+    sym: str,
+    m_dict: Dict[str, Any],
+    *,
+    cache_dir: Optional[str] = None,
+    now_ts: Optional[float] = None,
+) -> Tuple[str, float, float, float]:
+    """Infer canonical venue name, live/default maker/taker fee bps, and half-spread bps."""
     venue = mkt_api.infer_symbol_venue(
         sym,
         explicit_venue=(m_dict or {}).get("venue") if isinstance(m_dict, dict) else None,
@@ -665,6 +685,16 @@ def _infer_symbol_venue_and_fees_bps(sym: str, m_dict: Dict[str, Any]) -> Tuple[
     _, maker_bps, taker_bps, _ = MarketDataProvider.resolve_venue_default_fee_spec(
         venue, fallback_venue="t212"
     )
+    if cache_dir:
+        live_spec = read_persisted_venue_fee_spec(venue, sym, cache_dir=cache_dir, now_ts=now_ts)
+        if isinstance(live_spec, dict) and live_spec:
+            maker_bps = safe_nonneg_float(live_spec.get("maker_fee_bps"), default=maker_bps)
+            taker_bps = safe_nonneg_float(live_spec.get("taker_fee_bps"), default=taker_bps)
+    if isinstance(m_dict, dict):
+        if (m_ov := safe_nonneg_float(m_dict.get("maker_fee_bps"), default=None)) is not None:
+            maker_bps = m_ov
+        if (t_ov := safe_nonneg_float(m_dict.get("taker_fee_bps"), default=None)) is not None:
+            taker_bps = t_ov
     half_sp = 0.5 * (safe_nonneg_float((m_dict or {}).get("spread_bps"), default=0.0) or 0.0)
     return venue, maker_bps, taker_bps, half_sp
 
@@ -675,8 +705,11 @@ def compute_cross_venue_arb_metrics(
     p_match: Optional[Dict[str, Any]],
     microstructure: Dict[str, Any],
     prices_and_trends: Dict[str, Any],
+    *,
+    cache_dir: Optional[str] = None,
+    now_ts: Optional[float] = None,
 ) -> None:
-    """Populate Cross-Venue Relative Value / Arbitrage Spread (`cross_venue_arb_bps`, `net_buy_edge_vs_peer_bps`, etc.) on `minfo`."""
+    """Populate Cross-Venue Relative Value / Arbitrage Spread using live maker fees (with taker edge alongside)."""
     if not isinstance(minfo, dict) or not isinstance(microstructure, dict):
         return
     prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
@@ -685,7 +718,9 @@ def compute_cross_venue_arb_metrics(
         return
     mbase = canonical_base_asset(msym)
     msym_is_eq = has_equity_suffix(msym)
-    own_v, _, own_taker, own_hsp = _infer_symbol_venue_and_fees_bps(msym, minfo)
+    own_v, own_maker, own_taker, own_hsp = _infer_symbol_venue_and_fees_bps(
+        msym, minfo, cache_dir=cache_dir, now_ts=now_ts
+    )
     peer_candidates = [
         (peer_sym, peer_m)
         for peer_sym, peer_m in microstructure.items()
@@ -699,7 +734,9 @@ def compute_cross_venue_arb_metrics(
         key=lambda kv: (0 if (is_usdc_pair(kv[0]) or is_fiat_usd_pair(kv[0])) else 1, str(kv[0]).upper())
     )
     for peer_sym, peer_m in peer_candidates:
-        peer_v, _, peer_taker, peer_hsp = _infer_symbol_venue_and_fees_bps(peer_sym, peer_m)
+        peer_v, peer_maker, peer_taker, peer_hsp = _infer_symbol_venue_and_fees_bps(
+            peer_sym, peer_m, cache_dir=cache_dir, now_ts=now_ts
+        )
         if peer_v == own_v:
             continue
         peer_p_dict = casefold_get(prices_and_trends, peer_sym)
@@ -712,16 +749,18 @@ def compute_cross_venue_arb_metrics(
             minfo["cross_venue_peer"] = peer_sym
             minfo["cross_venue_peer_px"] = peer_px
             minfo["cross_venue_arb_bps"] = arb_bps
-            own_buy_cost = arb_bps + own_taker + own_hsp
-            peer_buy_cost = peer_taker + peer_hsp
-            net_buy_edge = round(peer_buy_cost - own_buy_cost, 1)
-            own_sell_net = arb_bps - own_taker - own_hsp
-            peer_sell_net = -peer_taker - peer_hsp
-            net_sell_edge = round(own_sell_net - peer_sell_net, 1)
-            minfo["net_buy_edge_vs_peer_bps"] = net_buy_edge
-            minfo["net_sell_edge_vs_peer_bps"] = net_sell_edge
-            minfo["best_buy_venue"] = f"{own_v}:{msym}" if net_buy_edge >= 0.0 else f"{peer_v}:{peer_sym}"
-            minfo["best_sell_venue"] = f"{own_v}:{msym}" if net_sell_edge >= 0.0 else f"{peer_v}:{peer_sym}"
+            # Primary edge uses passive maker fees (LIMIT execution does not cross half-spread).
+            net_buy_maker_edge = round(peer_maker - (arb_bps + own_maker), 1)
+            net_sell_maker_edge = round((arb_bps - own_maker) - (-peer_maker), 1)
+            net_buy_taker_edge = round((peer_taker + peer_hsp) - (arb_bps + own_taker + own_hsp), 1)
+            net_sell_taker_edge = round((arb_bps - own_taker - own_hsp) - (-peer_taker - peer_hsp), 1)
+            minfo["arb_fee_basis"] = "maker"
+            minfo["net_buy_edge_vs_peer_bps"] = net_buy_maker_edge
+            minfo["net_sell_edge_vs_peer_bps"] = net_sell_maker_edge
+            minfo["net_buy_taker_edge_vs_peer_bps"] = net_buy_taker_edge
+            minfo["net_sell_taker_edge_vs_peer_bps"] = net_sell_taker_edge
+            minfo["best_buy_venue"] = f"{own_v}:{msym}" if net_buy_maker_edge >= 0.0 else f"{peer_v}:{peer_sym}"
+            minfo["best_sell_venue"] = f"{own_v}:{msym}" if net_sell_maker_edge >= 0.0 else f"{peer_v}:{peer_sym}"
             break
 
 
@@ -733,6 +772,35 @@ def _is_unnormalized_zero_oi_whale_snap(snap: Dict[str, Any]) -> bool:
         return False
     wl_v = clean_scale(snap.get("whale_long_pct"), default=None, allow_percent=True)
     return wl_v is not None and (wl_v <= 0.0 or wl_v >= 1.0)
+
+
+def _is_same_cvd_source_bar(
+    cur_bar_ts_ms: Optional[int],
+    cur_tr: Optional[float],
+    cur_cvd: Optional[float],
+    cand_snap: Optional[Dict[str, Any]],
+) -> bool:
+    """Detect when a historical snapshot came from the exact same frozen 5m taker bar (only mark_px jittered)."""
+    if not isinstance(cand_snap, dict):
+        return False
+    cand_bar_ts = normalize_timestamp_ms(cand_snap.get("taker_bar_ts_ms"), default=None)
+    if cur_bar_ts_ms is not None and cand_bar_ts is not None:
+        return cur_bar_ts_ms == cand_bar_ts
+    # Legacy fallback when taker_bar_ts_ms was not yet persisted in cycle history:
+    # identical 4-decimal taker_buy_sell_ratio with small same-sign USD drift indicates pure mark_px jitter.
+    cand_tr = safe_pos_float(cand_snap.get("taker_buy_sell_ratio"), default=None)
+    cand_cvd = safe_float(cand_snap.get("cvd_15m_usd"), None)
+    if (
+        cur_tr is not None
+        and cand_tr is not None
+        and abs(cur_tr - cand_tr) <= 1e-6
+        and cur_cvd is not None
+        and cand_cvd is not None
+        and (cur_cvd * cand_cvd) > 0.0
+        and abs(cur_cvd - cand_cvd) / max(abs(cur_cvd), abs(cand_cvd), 1.0) <= 0.02
+    ):
+        return True
+    return False
 
 
 def _resolve_non_static_prev_metric(
@@ -827,6 +895,10 @@ def evaluate_microstructure_cycle_deltas(
         cur_wl = clean_scale(minfo.get("whale_long_pct"), default=None, allow_percent=True)
         cur_oi = safe_pos_float(minfo.get("oi_usd"), default=None)
         cur_tr = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=None)
+        cur_bar_ts_ms = normalize_timestamp_ms(
+            minfo.get("_taker_bar_ts_ms") or minfo.get("taker_bar_ts_ms"),
+            default=None,
+        )
         if all(v is None for v in (cur_ob, cur_cvd, cur_wl, cur_oi, cur_tr)):
             continue
         canon_msym = canonical_display_symbol(msym) or msym
@@ -856,10 +928,25 @@ def evaluate_microstructure_cycle_deltas(
             ):
                 delta_d["ob_imbalance_delta"] = round(cur_ob - p_ob, 4)
                 delta_d["prev_ob_imbalance"] = round(p_ob, 4)
-            p_cvd = _resolve_non_static_prev_metric(
-                h_list, eff_now, "cvd_15m_usd", cur_cvd, safe_float(ref_snap.get("cvd_15m_usd"), None),
-                static_tol=0.5, min_diff=0.5,
-            )
+            ref_cvd_raw = safe_float(ref_snap.get("cvd_15m_usd"), None)
+            if cur_cvd is not None and _is_same_cvd_source_bar(cur_bar_ts_ms, cur_tr, cur_cvd, ref_snap):
+                p_cvd = cur_cvd
+                for cand in reversed(h_list):
+                    if not isinstance(cand, dict):
+                        continue
+                    cand_ts = normalize_epoch_sec(cand.get("ts"), default=0.0) or 0.0
+                    if cand_ts > 0.0 and 180.0 <= (eff_now - cand_ts) <= 900.0:
+                        if _is_same_cvd_source_bar(cur_bar_ts_ms, cur_tr, cur_cvd, cand):
+                            continue
+                        cand_cvd = safe_float(cand.get("cvd_15m_usd"), None)
+                        if cand_cvd is not None and abs(cur_cvd - cand_cvd) >= 0.5:
+                            p_cvd = cand_cvd
+                            break
+            else:
+                p_cvd = _resolve_non_static_prev_metric(
+                    h_list, eff_now, "cvd_15m_usd", cur_cvd, ref_cvd_raw,
+                    static_tol=0.5, min_diff=0.5,
+                )
             if cur_cvd is not None and p_cvd is not None:
                 delta_d["cvd_15m_delta_usd"] = round(cur_cvd - p_cvd, 2)
                 delta_d["prev_cvd_15m_usd"] = round(p_cvd, 2)
@@ -928,6 +1015,8 @@ def evaluate_microstructure_cycle_deltas(
             ):
                 if v_rec is not None:
                     new_rec[k_rec] = round(v_rec, dec_r)
+            if cur_bar_ts_ms is not None:
+                new_rec["taker_bar_ts_ms"] = cur_bar_ts_ms
             mhist[canon_msym] = [x for x in own_h_list if eff_now - _snap_ts(x) <= 14400.0][-11:] + [new_rec]
             mhist_dirty = True
         elif stale_case_keys and canon_msym not in mhist and own_h_list:
@@ -1383,7 +1472,15 @@ def sync_sibling_symbol_telemetry(
             purge_liquidation_cluster_keys(minfo)
         if isinstance(p_match, dict) and minfo.get("spread_bps") is not None:
             p_match.setdefault("spread_bps", minfo["spread_bps"])
-        compute_cross_venue_arb_metrics(msym, minfo, p_match, microstructure, prices_and_trends)
+        compute_cross_venue_arb_metrics(
+            msym,
+            minfo,
+            p_match,
+            microstructure,
+            prices_and_trends,
+            cache_dir=cache_dir,
+            now_ts=now_ts,
+        )
 
     reconcile_sibling_flow_and_liq_regimes(microstructure, prices_and_trends)
     if isinstance(cycle_history, dict) and not persist_cycle_deltas:
@@ -1808,6 +1905,7 @@ class CrossVenueSiblingArbEvaluator(MicrostructureEvaluatorBase):
         price_info: Optional[Dict[str, Any]] = None,
         microstructure_map: Optional[Dict[str, Dict[str, Any]]] = None,
         price_trends_map: Optional[Dict[str, Dict[str, Any]]] = None,
+        cache_dir: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         m_info = data if isinstance(data, dict) else {}
@@ -1820,6 +1918,8 @@ class CrossVenueSiblingArbEvaluator(MicrostructureEvaluatorBase):
                     price_info or price_trends_map.get(symbol, {}),
                     microstructure_map,
                     price_trends_map,
+                    cache_dir=cache_dir,
+                    now_ts=now_ts,
                 )
         return m_info
 

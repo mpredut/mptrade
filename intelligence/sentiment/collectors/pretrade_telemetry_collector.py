@@ -1737,14 +1737,23 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                 sib_m.update(compute_liquidation_clusters(sib_p_est, sib_m, symbol=cand_u))
                 micro_pair, pt_pair = {symbol: cur_m_info, cand_u: sib_m}, {symbol: p_est, cand_u: sib_p_est}
                 reconcile_sibling_flow_and_liq_regimes(micro_pair, pt_pair)
-                compute_cross_venue_arb_metrics(symbol, cur_m_info, p_est, micro_pair, pt_pair)
+                compute_cross_venue_arb_metrics(
+                    symbol,
+                    cur_m_info,
+                    p_est,
+                    micro_pair,
+                    pt_pair,
+                    cache_dir=cachedb_dir,
+                    now_ts=_time.time(),
+                )
                 liq_c["liq_magnet_bias"] = cur_m_info.get("liq_magnet_bias")
                 if (arb_bps := safe_float(cur_m_info.get("cross_venue_arb_bps"), default=None)) is not None and cur_m_info.get("cross_venue_peer"):
                     net_b = safe_float(cur_m_info.get("net_buy_edge_vs_peer_bps"), default=None)
                     best_b = cur_m_info.get("best_buy_venue")
+                    fee_basis = str(cur_m_info.get("arb_fee_basis") or "maker").strip().lower()
                     arb_s = f"arb_vs_{cur_m_info['cross_venue_peer']}={arb_bps:+.1f}bps"
                     if net_b is not None and best_b:
-                        arb_s += f", net_buy_edge={net_b:+.1f}bps (best_buy={best_b})"
+                        arb_s += f", net_buy_edge={net_b:+.1f}bps[{fee_basis}] (best_buy={best_b})"
                     telemetry["Cross-Venue Relative Value (Arbitrage)"] = arb_s
             break
 

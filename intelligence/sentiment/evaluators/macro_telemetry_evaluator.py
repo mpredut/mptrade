@@ -1048,6 +1048,7 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
     ordered_keys = [k for k, _, _ in specs if k in items and k not in meta_skip] + [
         k for k in items if k not in {s[0] for s in specs} and k not in meta_skip
     ]
+    data_ts = safe_pos_float(data.get("ts"), default=None)
     parts: List[str] = []
     for sym in ordered_keys:
         entry = items.get(sym)
@@ -1059,7 +1060,12 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
             if (sym == "US10Y" or unit_kind == "yield_pct")
             else (f"{px:.2f}" if (sym in ("DXY", "VIX") or unit_kind == "index") else f"${px:,.2f}")
         )
+        bar_age_min = safe_nonneg_float(entry.get("bar_age_min"), default=None)
+        if bar_age_min is None and data_ts is not None and (b_ts := safe_pos_float(entry.get("last_bar_ts"), default=None)) is not None:
+            bar_age_min = round(max(0.0, data_ts - b_ts) / 60.0, 1)
         m_state = str(entry.get("market_state") or "").strip().upper()
+        if not m_state and bar_age_min is not None and bar_age_min > 45.0:
+            m_state = "CLOSED"
         d_parts = [
             f"{(round(val, 2) + 0.0):+.2f}% {h_lbl}"
             for h_lbl, h_key in (
@@ -1071,6 +1077,11 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
         ]
         if m_state and m_state != "REGULAR":
             d_parts.append(m_state.lower())
+        if bar_age_min is not None:
+            if m_state == "CLOSED" and bar_age_min >= 60.0:
+                d_parts.append(f"bar_age={bar_age_min / 60.0:.1f}h")
+            elif bar_age_min >= 5.0:
+                d_parts.append(f"bar_age={bar_age_min:.0f}m")
         delta_s = f" ({', '.join(d_parts)})" if d_parts else ""
         parts.append(f"{sym}={px_s}{delta_s}")
     lead_info = compute_futures_premarket_lead(data)

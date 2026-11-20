@@ -1298,3 +1298,30 @@ def test_botcore_config_runtime_services_and_account_bridge_hierarchy(tmp_path, 
     assert ws_stub.registered[0][0] == "userFills"
     assert ws_stub._resolve_fills_cache_file() == str(tmp_path / "hl_trades.json")
 
+
+def test_profit_diff_pct_sell_denominator_matches_pnl_and_guard_probe():
+    """Verify profit_diff_pct divides by ref_price on both BUY and SELL (matching PnL on deep underwater SELLs)."""
+    from intelligence.sentiment.evaluators.guard_probe_evaluator import probe_deterministic_guards
+
+    # SELL PnL vs ref_price=100: -20.48% and -33.06% (previously distorted to -25.76% and -49.40%)
+    assert botcore.profit_diff_pct("SELL", 79.52, 100.0) == pytest.approx(-20.48, abs=1e-6)
+    assert botcore.profit_diff_pct("SELL", 66.94, 100.0) == pytest.approx(-33.06, abs=1e-6)
+    assert botcore.profit_diff_pct("SELL", 101.15, 100.0) == pytest.approx(1.15, abs=1e-6)
+    # Strict directional symmetry around ref_price
+    assert botcore.profit_diff_pct("SELL", 85.0, 100.0) == pytest.approx(-botcore.profit_diff_pct("BUY", 85.0, 100.0))
+    assert botcore.profit_diff_pct("SELL", 100.0, 100.0) == 0.0
+
+    probe = probe_deterministic_guards(
+        "ADAUSD",
+        "SELL",
+        66.94,
+        venue="kraken",
+        margins={"default": 1.15, "kraken": 1.15, "default_sell_reference": "average"},
+        opposite_fill_px=100.0,
+        allow_disk_cache=False,
+    )
+    g_prof_flags = [f for f in probe["flags"] if f.get("guard") == "G_PROF"]
+    assert len(g_prof_flags) == 1
+    assert "margin=-33.06%" in g_prof_flags[0]["reason"]
+
+

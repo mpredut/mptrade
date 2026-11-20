@@ -892,6 +892,12 @@ def _format_microstructure_section(
             if not ob_is_frozen and (sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None:
                 sp_s = f"{'+' if sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sp_cvd))}"
                 cvd_sfx += f", spot_cvd_15m={sp_s}{format_spot_cvd_source_tag(minfo)}"
+            if not ob_is_frozen and (agg_sp_cvd := safe_float(minfo.get("agg_spot_cvd_15m_usd"), None)) is not None:
+                agg_s = f"{'+' if agg_sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(agg_sp_cvd))}"
+                agg_src = str(minfo.get("agg_spot_cvd_source") or "usdc+usdt").strip()
+                agg_vol = safe_pos_float(minfo.get("agg_spot_vol_15m_usd"), default=None)
+                agg_vol_s = f", vol={_fmt_liq_usd(agg_vol)}" if agg_vol is not None else ""
+                cvd_sfx += f", agg_spot_cvd_15m={agg_s}[{agg_src}{agg_vol_s}]"
             if sp_vol_parts := format_spot_volume_rvol_parts(minfo, _fmt_liq_usd):
                 cvd_sfx += f", {', '.join(sp_vol_parts)}"
 
@@ -905,7 +911,8 @@ def _format_microstructure_section(
         if (arb_bps := safe_float(minfo.get("cross_venue_arb_bps"), None)) is not None and minfo.get("cross_venue_peer"):
             basis_parts.append(f"arb_vs_{minfo['cross_venue_peer']}={arb_bps:+.1f}bps")
             if (net_b := safe_float(minfo.get("net_buy_edge_vs_peer_bps"), None)) is not None and minfo.get("best_buy_venue"):
-                basis_parts.append(f"net_buy_edge={net_b:+.1f}bps(best_buy={minfo['best_buy_venue']})")
+                fee_basis = str(minfo.get("arb_fee_basis") or "maker").strip().lower()
+                basis_parts.append(f"net_buy_edge={net_b:+.1f}bps[{fee_basis}](best_buy={minfo['best_buy_venue']})")
         if basis_parts:
             basis_sfx = f", {', '.join(basis_parts)}"
 
@@ -937,7 +944,13 @@ def _format_microstructure_section(
         ):
             rl_n = safe_int(minfo.get("realized_liq_15m_events"), 0) or 0
             rl_n_sfx = f", n={rl_n}" if rl_n > 0 else ""
-            liq_sfx += f", realized_liq_15m(long={_fmt_liq_usd(rl_l)}, short={_fmt_liq_usd(rl_s)}{rl_n_sfx})"
+            rl_srcs = minfo.get("realized_liq_sources")
+            rl_src_sfx = (
+                f", src={'+'.join(str(s).replace('_futures_ws', '').replace('_ws', '') for s in rl_srcs)}"
+                if isinstance(rl_srcs, list) and len(rl_srcs) > 1
+                else ""
+            )
+            liq_sfx += f", realized_liq_15m(long={_fmt_liq_usd(rl_l)}, short={_fmt_liq_usd(rl_s)}{rl_n_sfx}{rl_src_sfx})"
         cd_sfx = ""
         if isinstance(cd_map := minfo.get("cycle_delta"), dict):
             cd_parts: List[str] = []
@@ -967,6 +980,12 @@ def _format_microstructure_section(
             if not ob_is_frozen and (sib_sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
                 sib_sp_s = f"{'+' if sib_sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sib_sp_cvd))}"
                 sib_sp_parts.append(f"spot_cvd_15m={sib_sp_s}[real_spot]")
+            if not ob_is_frozen and (sib_agg_cvd := safe_float(minfo.get("agg_spot_cvd_15m_usd"), None)) is not None:
+                sib_agg_s = f"{'+' if sib_agg_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sib_agg_cvd))}"
+                sib_agg_src = str(minfo.get("agg_spot_cvd_source") or "usdc+usdt").strip()
+                sib_agg_vol = safe_pos_float(minfo.get("agg_spot_vol_15m_usd"), default=None)
+                sib_agg_vol_s = f", vol={_fmt_liq_usd(sib_agg_vol)}" if sib_agg_vol is not None else ""
+                sib_sp_parts.append(f"agg_spot_cvd_15m={sib_agg_s}[{sib_agg_src}{sib_agg_vol_s}]")
             if not ob_is_frozen:
                 sib_sp_parts.extend(format_spot_volume_rvol_parts(minfo, _fmt_liq_usd))
             sib_sp_sfx = f", {', '.join(sib_sp_parts)}" if sib_sp_parts else ""

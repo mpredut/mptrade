@@ -1767,6 +1767,12 @@ STALE_SHORT_24H_KEYS: Tuple[str, ...] = (
     "pos_15m_pct",
     "span_15m_pct",
 )
+CLOSED_EQUITY_INTRADAY_KEYS: Tuple[str, ...] = (
+    "chg_15m_pct",
+    "chg_30m_pct",
+    "chg_1h_pct",
+)
+CLOSED_EQUITY_QUOTE_AGE_MIN: float = 30.0
 _SHORT_SLOPE_OVERRIDE_KEYS: Tuple[str, ...] = (
     "kalman_vel",
     "kalman_vel_std",

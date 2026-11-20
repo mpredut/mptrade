@@ -183,20 +183,30 @@ def _match_intent_recent_fill(
     return fill_px, filled_qty, matched_fill_ts_ms
 
 
+def _compute_signed_exec_bps(side: str, fill_px: float, anchor_px: float) -> float:
+    raw = (
+        ((fill_px - anchor_px) / anchor_px) * 10_000.0
+        if side == "BUY"
+        else ((anchor_px - fill_px) / anchor_px) * 10_000.0
+    )
+    return round(raw, 2) + 0.0
+
+
 def _classify_intent_exec_status_and_slippage(
     intent: dict[str, Any],
     *,
     last_hist: dict[str, Any],
     raw_intent_st: str,
     side: str,
+    order_type: str = "",
     venue_st: str,
     matched_open: Optional[dict[str, Any]],
     is_unfilled_resting_limit: bool,
     is_unfilled_accepted_market: bool,
     fill_px: Optional[float],
     filled_qty: float,
-) -> tuple[str, str, Optional[float], Optional[float], Optional[float]]:
-    """Compute canonical ``(exec_status, venue_st, fill_px, ref_px, slippage_bps)``."""
+) -> tuple[str, str, Optional[float], Optional[float], Optional[float], Optional[float]]:
+    """Compute canonical ``(exec_status, venue_st, fill_px, ref_px, slippage_bps, arrival_shortfall_bps)``."""
     if (
         fill_px is None
         and raw_intent_st in ("EXECUTED", "OBSERVED_SHADOW")
@@ -225,32 +235,42 @@ def _classify_intent_exec_status_and_slippage(
     elif exec_status == "FILLED" and raw_intent_st == "EXECUTED" and venue_st in UNFILLED_ORDER_STATUSES:
         venue_st = "FILLED"
 
-    ref_px = first_pos_float(
+    eff_ot = clean_upper_scalar(order_type) or extract_intent_order_type(intent)
+    lim_px = first_pos_float(
+        matched_open.get("price") if isinstance(matched_open, dict) else None,
+        intent.get("limit_price"),
+        intent.get("requested_price") if eff_ot == "LIMIT" else None,
+    )
+    arrival_ref_px = first_pos_float(
         intent.get("reference_price"),
         intent.get("limit_price"),
         intent.get("requested_price"),
         last_hist.get("price"),
         fill_px,
     )
+    ref_px = arrival_ref_px
     if exec_status in ("OPEN_RESTING", "ACCEPTED", *TERMINAL_CANCEL_VENUE_STATUSES) and filled_qty <= 0:
         fill_px = None
     slippage_bps: Optional[float] = None
+    arrival_shortfall_bps: Optional[float] = None
     if (
         exec_status in ("FILLED", "PARTIALLY_FILLED", "SHADOW_SIMULATED")
         and fill_px is not None
         and fill_px > 0
-        and ref_px is not None
-        and ref_px > 0
     ):
-        raw_slip = (
-            ((fill_px - ref_px) / ref_px) * 10_000.0
-            if side == "BUY"
-            else ((ref_px - fill_px) / ref_px) * 10_000.0
-        )
-        slippage_bps = round(raw_slip, 2)
-    elif exec_status in ("FILLED", "SHADOW_SIMULATED") and fill_px is not None:
-        slippage_bps = 0.0
-    return exec_status, venue_st, fill_px, ref_px, slippage_bps
+        if eff_ot == "LIMIT" and lim_px is not None and lim_px > 0:
+            slippage_bps = _compute_signed_exec_bps(side, fill_px, lim_px)
+            if (
+                arrival_ref_px is not None
+                and arrival_ref_px > 0
+                and abs(arrival_ref_px - lim_px) / lim_px > 1e-6
+            ):
+                arrival_shortfall_bps = _compute_signed_exec_bps(side, fill_px, arrival_ref_px)
+        elif ref_px is not None and ref_px > 0:
+            slippage_bps = _compute_signed_exec_bps(side, fill_px, ref_px)
+        elif exec_status in ("FILLED", "SHADOW_SIMULATED"):
+            slippage_bps = 0.0
+    return exec_status, venue_st, fill_px, ref_px, slippage_bps, arrival_shortfall_bps
 
 
 def _resolve_intent_fill_ts_and_reason(
@@ -428,11 +448,12 @@ def _resolve_intent_execution_details(
     ):
         venue_st = "CANCELED_OR_EXPIRED"
 
-    exec_status, venue_st, fill_px, ref_px, slippage_bps = _classify_intent_exec_status_and_slippage(
+    exec_status, venue_st, fill_px, ref_px, slippage_bps, arrival_shortfall_bps = _classify_intent_exec_status_and_slippage(
         i,
         last_hist=last_hist,
         raw_intent_st=raw_intent_st,
         side=side,
+        order_type=order_type,
         venue_st=venue_st,
         matched_open=matched_open,
         is_unfilled_resting_limit=is_unfilled_resting_limit,
@@ -495,6 +516,7 @@ def _resolve_intent_execution_details(
         "filled_notional_usd": filled_notional_usd,
         "notional_usd": round(eff_notional, 2) if eff_notional is not None else i.get("suggested_notional_usd"),
         "slippage_bps": slippage_bps,
+        "arrival_shortfall_bps": arrival_shortfall_bps,
         "reason": fail_reason,
         "ts": ts_raw,
         "ts_val": ts_val,
@@ -583,7 +605,7 @@ def summarize_recent_ai_intents(
             intent_summary["target_px"] = i.get("target_px")
         if det["venue_status"]:
             intent_summary["venue_status"] = det["venue_status"]
-        for k in ("order_id", "fill_px", "filled_qty", "filled_notional_usd", "slippage_bps"):
+        for k in ("order_id", "fill_px", "filled_qty", "filled_notional_usd", "slippage_bps", "arrival_shortfall_bps"):
             if det.get(k) is not None:
                 intent_summary[k] = det[k]
         if det.get("reason"):
@@ -706,7 +728,7 @@ def build_last_cycle_execution_status(
             "notional_usd": det["notional_usd"],
             "slippage_bps": det["slippage_bps"],
         }
-        for k in ("filled_notional_usd", "limit_px", "order_id"):
+        for k in ("filled_notional_usd", "limit_px", "order_id", "arrival_shortfall_bps"):
             if det.get(k) is not None:
                 rec[k] = det[k]
         if det.get("reason"):
