@@ -2555,13 +2555,19 @@ def sort_ts_rows(rows: list) -> list:
     return rows
 
 
-def prepend_older_non_diverged_points(cur_ser: list, cand_ser: list) -> list:
+def prepend_older_non_diverged_points(cur_ser: list, cand_ser: list, *, threshold: float = 0.10) -> list:
     """Prepend older points from `cand_ser` to `cur_ser` when prices are non-diverged."""
     if not cur_ser or not cand_ser:
         return cur_ser
     cur_p0 = parse_ts_px_row(cur_ser[0])
     sib_p0, sib_p1 = parse_ts_px_row(cand_ser[0]), parse_ts_px_row(cand_ser[-1])
-    if cur_p0 and sib_p0 and sib_p1 and sib_p0[0] < cur_p0[0] and not _prices_diverged(sib_p1[1], cur_p0[1]):
+    if (
+        cur_p0
+        and sib_p0
+        and sib_p1
+        and sib_p0[0] < cur_p0[0]
+        and not _prices_diverged(sib_p1[1], cur_p0[1], threshold=threshold)
+    ):
         older_pts = [r for r in cand_ser if (pt := parse_ts_px_row(r)) is not None and pt[0] < cur_p0[0]]
         if older_pts:
             return older_pts + cur_ser
@@ -2796,11 +2802,12 @@ def extract_archive_24h_and_7d_slices(
             arch_7d_end_ts = pts_7d_ts[-1] if pts_7d_ts else last_pt[0]
             if len(pts_7d_ts) >= 2:
                 arch_7d_span_ms = max(0.0, pts_7d_ts[-1] - pts_7d_ts[0])
+            div_thr = 0.35 if is_equity_symbol(sym_u_arch) else 0.10
             if sparse_7d_pts and (sp_last := parse_ts_px_row(sparse_7d_pts[-1])) is not None:
                 merged_sp = (
-                    prepend_older_non_diverged_points(archive_pts, sparse_7d_pts)
+                    prepend_older_non_diverged_points(archive_pts, sparse_7d_pts, threshold=div_thr)
                     if last_pt[0] >= sp_last[0]
-                    else prepend_older_non_diverged_points(sparse_7d_pts, archive_pts)
+                    else prepend_older_non_diverged_points(sparse_7d_pts, archive_pts, threshold=div_thr)
                 )
                 sp_cutoff_7d = max(last_pt[0], sp_last[0]) - 7.0 * 86400.0 * 1000.0
                 sp_pts = [pt for row in merged_sp if (pt := parse_ts_px_row(row)) is not None and pt[0] >= sp_cutoff_7d]
@@ -2811,7 +2818,11 @@ def extract_archive_24h_and_7d_slices(
             if len(pts_7d_vals) >= 2:
                 vals_7d = pts_7d_vals
             if need_24h_supplement and pts_24:
-                series_24h = prepend_older_non_diverged_points(series_24h, pts_24) if series_24h else pts_24
+                series_24h = (
+                    prepend_older_non_diverged_points(series_24h, pts_24, threshold=div_thr)
+                    if series_24h
+                    else pts_24
+                )
     except Exception:
         pass
     return series_24h, vals_7d, arch_7d_end_ts, arch_7d_span_ms

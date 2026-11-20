@@ -1324,7 +1324,13 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                         break
                 ser = session_policy.clean_raw_24h_series(raw_ser, symbol)
                 if len(ser) >= 2:
-                    series_24h = list(ser) if not series_24h else prepend_older_non_diverged_points(series_24h, ser)
+                    series_24h = (
+                        list(ser)
+                        if not series_24h
+                        else prepend_older_non_diverged_points(
+                            series_24h, ser, threshold=session_policy.price_divergence_threshold
+                        )
+                    )
                     p0, p1 = parse_ts_px_row(series_24h[0]), parse_ts_px_row(series_24h[-1])
                     span_24h_ms = max(0.0, p1[0] - p0[0]) if (p0 and p1) else 0.0
                     break
@@ -1350,7 +1356,13 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                     cand_arch = rows
                     break
             if cand_arch:
-                archive_pts = cand_arch if not archive_pts else prepend_older_non_diverged_points(archive_pts, cand_arch)
+                archive_pts = (
+                    cand_arch
+                    if not archive_pts
+                    else prepend_older_non_diverged_points(
+                        archive_pts, cand_arch, threshold=session_policy.price_divergence_threshold
+                    )
+                )
                 a0, a1 = parse_ts_px_row(archive_pts[0]), parse_ts_px_row(archive_pts[-1])
                 arch_span_ms = (a1[0] - a0[0]) if (a0 and a1) else 0.0
                 if include_7d and arch_span_ms < 5.0 * 86400.0 * 1000.0 and not sparse_7d_pts:

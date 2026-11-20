@@ -16568,5 +16568,63 @@ def test_iter7_sell_only_trade_plan_delta_gate_and_tranche_formatting():
     assert "oi_1h_chg=-0.0%" not in sec3b
 
 
+def test_iter8_equity_ext_hours_24h_preservation_and_sudan_news_filter():
+    """Verify continuous Yahoo extended-hours vol=0 equity bars stay intact for 24h delta and non-financial humanitarian war filler is filtered."""
+    from intelligence.macro.lexicon_ssot import filter_valid_severity_keywords
+    from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        compute_24h_price_metrics,
+        prepend_older_non_diverged_points,
+    )
+
+    # 1. EquityRthSessionPolicy.clean_raw_24h_series preserves continuous extended-hours vol=0 bars before RTH open
+    #    (e.g., NVDA_US_EQ after 16:00 EST close when prior-day post-market + pre-market precede 09:30 EST RTH open)
+    eq_pol = resolve_asset_session_policy("NVDA_US_EQ")
+    t_rth0 = 1_795_185_000_000
+    ext_bars = [
+        [t_rth0 - 17 * 3600 * 1000, 145.31, 0.0, 145.98, 145.30, 145.54],
+        [t_rth0 - 16 * 3600 * 1000, 144.80, 0.0, 145.10, 144.40, 145.00],
+        [t_rth0 - 15 * 3600 * 1000, 144.20, 0.0, 144.60, 144.00, 144.50],
+        [t_rth0 - 600_000, 143.50, 0.0, 143.70, 143.10, 143.40],
+        [t_rth0 - 300_000, 143.64, 0.0, 144.27, 143.58, 143.58],
+    ]
+    rth_bars = [
+        [t_rth0 + i * 300_000, round(140.82 - i * 0.25, 2), 12_000_000.0]
+        for i in range(60)
+    ]
+    cleaned_nvda = eq_pol.clean_raw_24h_series(ext_bars + rth_bars, "NVDA_US_EQ")
+    assert cleaned_nvda[0][1] == pytest.approx(145.31)
+    m24_nvda = compute_24h_price_metrics(cleaned_nvda, is_equity=True)
+    assert m24_nvda["chg_24h_pct"] is not None and m24_nvda["chg_24h_pct"] < -10.0
+
+    # Flat multi-row pre-IPO indicative stub with >5% jump into IPO open is still stripped
+    flat_stub = [
+        [t_rth0 - 3600_000, 83.0, 0.0],
+        [t_rth0 - 1800_000, 83.0, 0.0],
+        [t_rth0 - 300_000, 83.0, 0.0],
+        [t_rth0, 111.68, 160_000_000.0],
+        [t_rth0 + 300_000, 111.50, 70_000_000.0],
+        [t_rth0 + 600_000, 108.00, 50_000_000.0],
+        [t_rth0 + 900_000, 106.50, 40_000_000.0],
+    ]
+    cleaned_stub = eq_pol.clean_raw_24h_series(flat_stub, "ANT_US_EQ")
+    assert cleaned_stub[0][1] == pytest.approx(111.68)
+
+    # 2. Equity divergence threshold (0.35) allows stitching -14% single-day equity crash slices
+    older_eq = [[t_rth0 - 86_400_000, 146.0], [t_rth0 - 3600_000, 145.0]]
+    cur_eq = [[t_rth0, 125.5], [t_rth0 + 300_000, 127.8]]
+    stitched_eq = prepend_older_non_diverged_points(cur_eq, older_eq, threshold=0.35)
+    assert len(stitched_eq) == 4 and stitched_eq[0][1] == pytest.approx(146.0)
+
+    # 3. Humanitarian/education war filler headline is excluded while kinetic oil-theater strikes remain valid
+    assert filter_valid_severity_keywords(
+        ["war"], title="Sudan’s war leaves disabled children missing out on education"
+    ) == ()
+    assert "airstrike" in filter_valid_severity_keywords(
+        ["airstrike"], title="Airstrike hits major oil terminal in Sudan"
+    )
+
+
+
 
 

@@ -310,20 +310,29 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
             if len(pos_vol_indices) >= 4 and (first_pos_idx := pos_vol_indices[0]) > 0:
                 first_real_pt = parse_ts_px_row(ordered[first_pos_idx])
                 if first_real_pt is not None and first_real_pt[1] > 0.0:
-                    trim_start = 0
-                    for idx in range(first_pos_idx):
-                        lead_pt = parse_ts_px_row(ordered[idx])
-                        if lead_pt is None:
-                            trim_start = idx + 1
-                            continue
-                        gap_ms = first_real_pt[0] - lead_pt[0]
-                        px_rel_diff = abs(lead_pt[1] - first_real_pt[1]) / first_real_pt[1]
-                        if gap_ms > 30 * 60 * 1000 or px_rel_diff > 0.05:
-                            trim_start = idx + 1
-                        else:
-                            break
-                    if trim_start > 0:
-                        ordered = ordered[trim_start:]
+                    lead_pts = [pt for r in ordered[:first_pos_idx] if (pt := parse_ts_px_row(r)) is not None]
+                    last_lead_pt = lead_pts[-1] if lead_pts else None
+                    has_continuous_ext_session = bool(
+                        last_lead_pt is not None
+                        and len({round(pt[1], 4) for pt in lead_pts}) >= 4
+                        and (first_real_pt[0] - last_lead_pt[0]) <= 30 * 60 * 1000
+                        and abs(last_lead_pt[1] - first_real_pt[1]) / first_real_pt[1] <= 0.05
+                    )
+                    if not has_continuous_ext_session:
+                        trim_start = 0
+                        for idx in range(first_pos_idx):
+                            lead_pt = parse_ts_px_row(ordered[idx])
+                            if lead_pt is None:
+                                trim_start = idx + 1
+                                continue
+                            gap_ms = first_real_pt[0] - lead_pt[0]
+                            px_rel_diff = abs(lead_pt[1] - first_real_pt[1]) / first_real_pt[1]
+                            if gap_ms > 30 * 60 * 1000 or px_rel_diff > 0.05:
+                                trim_start = idx + 1
+                            else:
+                                break
+                        if trim_start > 0:
+                            ordered = ordered[trim_start:]
         return strip_off_rth_flat_poller_tail(ordered, symbol, is_market_open_fn=is_market_open_fn)
 
     def merge_ohlc24_into_raw_series(self, raw_ser: list, ohlc24_pts: list) -> list:

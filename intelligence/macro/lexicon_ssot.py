@@ -67,17 +67,18 @@ _PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({
 _HUMAN_INTEREST_WAR_FILLER_WORDS: frozenset[str] = frozenset({
     "academic", "alaska", "alaskan", "alaskans", "appreciation", "assistance",
     "asu", "bags", "bills", "bird", "birds", "broadcasting", "cabin", "cabins",
-    "cambodia", "centcom", "concentration", "consortium", "counterpunch",
-    "cruise", "cruises", "decider", "declassified", "disney", "drama", "dreading",
-    "episode", "episodes", "explained", "finale", "forever", "french", "fries",
-    "greenland", "hbo", "heating", "hitler", "holocaust", "hulu", "journalist",
-    "journalists", "liberators", "memorial", "mosquito", "mosquitoes",
+    "cambodia", "centcom", "children", "concentration", "consortium", "counterpunch",
+    "cruise", "cruises", "decider", "declassified", "disabled", "disney", "drama",
+    "dreading", "education", "episode", "episodes", "explained", "finale", "forever",
+    "french", "fries", "greenland", "hbo", "heating", "hitler", "holocaust", "hulu",
+    "journalist", "journalists", "liberators", "memorial", "mosquito", "mosquitoes",
     "mosquitos", "museum", "myanmar", "mystery", "nazi", "nazis", "netflix",
-    "nuremberg", "pack", "packing",
-    "passengers", "podcast", "podcasts", "premiere", "recap", "residents",
-    "retirees", "retirement", "review", "rsf", "seafarer", "seafarers", "season",
-    "social", "streets", "tourist", "tourists", "trailer", "tunnels", "vacation",
-    "vatican", "veteran", "veterans", "vulture", "wwi", "wwii",
+    "nuremberg", "orphan", "orphans", "pack", "packing", "passengers", "podcast",
+    "podcasts", "premiere", "recap", "refugee", "refugees", "residents", "retirees",
+    "retirement", "review", "rsf", "school", "schools", "seafarer", "seafarers",
+    "season", "social", "streets", "students", "sudan", "sudanese", "tourist",
+    "tourists", "trailer", "tunnels", "vacation", "vatican", "veteran", "veterans",
+    "vulture", "wwi", "wwii",
 })
 
 _COMMERCIAL_METAPHOR_WAR_WORDS: frozenset[str] = frozenset({
