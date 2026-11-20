@@ -33,6 +33,7 @@ from .intent_state import (
     collect_known_ai_order_ids,
     extract_intent_limit_price,
     extract_intent_order_type,
+    extract_intent_trade_plan_levels,
     intent_venue_client_order_ids,
     is_non_fiat_btc_quote_instrument,
     normalize_intent_fields,
@@ -812,6 +813,16 @@ def preflight_intent_and_resolve_price(
         return False, intent_id, decision, symbol, venue, confidence, inst, effective_usd, price, is_limit
 
     intent["requested_price"] = round(price, 8)
+    if any(k in intent for k in ("invalidation_px", "invalidation_price", "stop_loss_px", "target_px", "take_profit_px", "tp_px")):
+        inv_px, tgt_px = extract_intent_trade_plan_levels(intent, side=decision, ref_price=price)
+        if inv_px is not None:
+            intent["invalidation_px"] = inv_px
+        else:
+            intent.pop("invalidation_px", None)
+        if tgt_px is not None:
+            intent["target_px"] = tgt_px
+        else:
+            intent.pop("target_px", None)
     return True, intent_id, decision, symbol, venue, confidence, inst, effective_usd, price, is_limit
 
 

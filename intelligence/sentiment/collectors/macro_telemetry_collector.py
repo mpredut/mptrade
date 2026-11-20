@@ -111,6 +111,7 @@ from instrument_registry import casefold_get, has_workspace_instrument_sources
 from cacheprice import resolve_ssot_price_from_cache
 from providers.intent_telemetry import (
     build_last_cycle_execution_status,
+    summarize_active_ai_trade_plans,
     summarize_recent_ai_intents,
 )
 from providers.intent_state import (
@@ -1152,6 +1153,18 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 verified_open_venues=eff_verified_venues,
             )) is not None:
                 snapshot.portfolio_summary["last_cycle_execution_status"] = last_exec_status
+            if active_plans_out := summarize_active_ai_trade_plans(
+                intents_data,
+                scope,
+                now_ts,
+                extract_intent_notional,
+                tradable_positions=snapshot.portfolio_summary.get("tradable_positions"),
+                prices_and_trends=snapshot.prices_and_trends,
+                recent_orders=recent_orders,
+                open_orders=open_orders_list,
+                verified_open_venues=eff_verified_venues,
+            ):
+                snapshot.portfolio_summary["active_ai_trade_plans"] = active_plans_out
 
         snapshot.portfolio_summary.update(
             harvest_bot_runtime_states(cache_dir, now_ts, _rj, tradable_positions=snapshot.portfolio_summary.get("tradable_positions"))

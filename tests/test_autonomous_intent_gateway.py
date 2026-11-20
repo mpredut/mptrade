@@ -3028,6 +3028,273 @@ def test_atomic_rollback_restores_canceled_open_orders_when_replacement_fails_or
     assert "RESTING_IN_BOOK" in sec3c_lines
 
 
+def test_proposal4c_asymmetric_ai_circuit_breaker_and_replace_churn_cap(tmp_path):
+    """Verify 4C asymmetric by=AI circuit-breaker (24h BUY count/notional + 1h micro-replace cap; SELL & HIGH escape)."""
+    from botcore import load_key_value_conf
+    from orchestratorTrade.autonomous_intent_gateway import ROOT_DIR as GW_ROOT_DIR
+    from providers.intent_state import (
+        evaluate_ai_intent_circuit_breaker,
+        parse_intent_circuit_breaker_config,
+    )
+
+    # 1. Versioned order_guard.conf exposes the 4 circuit-breaker knobs
+    root_cfg = load_key_value_conf(GW_ROOT_DIR, GW_ROOT_DIR)
+    cb_cfg = parse_intent_circuit_breaker_config(root_cfg)
+    assert cb_cfg["max_daily_buys_per_symbol"] == 6
+    assert cb_cfg["max_hourly_replaces_per_symbol"] == 3
+    assert cb_cfg["replace_min_price_delta_pct"] == pytest.approx(0.50)
+    assert cb_cfg["max_daily_buy_notional_usd"] == pytest.approx(6000.0)
+
+    # 2. Pure unit tests on evaluate_ai_intent_circuit_breaker
+    now_s = 1_795_000_000.0
+    prior_6_buys = [
+        {
+            "intent_id": f"buy_{k}",
+            "timestamp": now_s - 600.0 * (k + 1),
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 500.0,
+            "limit_price": 90000.0,
+            "execution_payload": {"orderId": f"ord_{k}", "status": "FILLED", "executedQty": "0.005"},
+        }
+        for k in range(6)
+    ]
+    # Add an extra canceled-unfilled AI order -> must NOT count toward 24h BUY count or notional
+    prior_with_canceled = [
+        *prior_6_buys[:5],
+        {
+            "intent_id": "canceled_buy",
+            "timestamp": now_s - 500.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 1500.0,
+            "limit_price": 89900.0,
+            "execution_payload": {"orderId": "ord_canceled", "status": "CANCELED", "executedQty": "0.0"},
+        },
+    ]
+    ok_5, usd_5, rsn_5, m_5 = evaluate_ai_intent_circuit_breaker(
+        {"intent_id": "new_6", "decision": "BUY", "urgency": "NORMAL"},
+        prior_with_canceled,
+        decision="BUY",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=90000.0,
+        effective_usd=500.0,
+        min_notional_usd=10.0,
+        now_ts=now_s,
+    )
+    assert ok_5 is True and usd_5 == pytest.approx(500.0) and rsn_5 == ""
+    assert m_5["daily_sym_buys"] == 5 and m_5["daily_buy_notional_usd"] == pytest.approx(2500.0)
+
+    # 7th BUY on same symbol blocked by per-symbol 24h BUY cap
+    ok_7, _, rsn_7, _ = evaluate_ai_intent_circuit_breaker(
+        {"intent_id": "new_7", "decision": "BUY", "urgency": "NORMAL"},
+        prior_6_buys,
+        decision="BUY",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=90000.0,
+        effective_usd=500.0,
+        min_notional_usd=10.0,
+        now_ts=now_s,
+    )
+    assert ok_7 is False and "ai_daily_buy_count_cap" in rsn_7
+
+    # Asymmetric safety: protective SELL on same symbol is NEVER blocked by BUY cap
+    ok_sell, usd_sell, rsn_sell, _ = evaluate_ai_intent_circuit_breaker(
+        {"intent_id": "prot_sell", "decision": "SELL", "urgency": "NORMAL"},
+        prior_6_buys,
+        decision="SELL",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=89500.0,
+        effective_usd=1500.0,
+        min_notional_usd=10.0,
+        now_ts=now_s,
+    )
+    assert ok_sell is True and usd_sell == pytest.approx(1500.0) and rsn_sell == ""
+
+    # Global 24h BUY notional cap smoothly clamps remaining headroom, then blocks when exhausted
+    prior_5400 = [
+        {
+            "intent_id": f"big_{k}",
+            "timestamp": now_s - 1000.0 * (k + 1),
+            "decision": "BUY",
+            "symbol": f"SYM{k}USDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 1800.0,
+            "execution_payload": {"orderId": f"big_ord_{k}", "status": "FILLED", "executedQty": "1.0"},
+        }
+        for k in range(3)
+    ]
+    ok_clamp, usd_clamp, rsn_clamp, _ = evaluate_ai_intent_circuit_breaker(
+        {"intent_id": "clamp_buy", "decision": "BUY", "urgency": "NORMAL"},
+        prior_5400,
+        decision="BUY",
+        symbol="TAOUSDC",
+        venue="binance",
+        price=300.0,
+        effective_usd=1000.0,
+        min_notional_usd=10.0,
+        now_ts=now_s,
+        max_daily_buy_notional_usd=6000.0,
+    )
+    assert ok_clamp is True and usd_clamp == pytest.approx(600.0) and "ai_daily_buy_notional_clamped" in rsn_clamp
+
+    prior_6000 = [*prior_5400, {"intent_id": "big_4", "timestamp": now_s - 300.0, "decision": "BUY", "symbol": "TAOUSDC", "venue": "binance", "status": "EXECUTED", "clamped_notional_usd": 600.0}]
+    ok_full, _, rsn_full, _ = evaluate_ai_intent_circuit_breaker(
+        {"intent_id": "over_buy", "decision": "BUY", "urgency": "NORMAL"},
+        prior_6000,
+        decision="BUY",
+        symbol="ARBUSDC",
+        venue="binance",
+        price=1.0,
+        effective_usd=200.0,
+        min_notional_usd=10.0,
+        now_ts=now_s,
+        max_daily_buy_notional_usd=6000.0,
+    )
+    assert ok_full is False and "ai_daily_buy_notional_cap" in rsn_full
+
+    # 3. End-to-end gateway test for 1h micro-replace churn cap (MUST NOT cancel resting order when blocked!)
+    (tmp_path / "order_guard.conf").write_text(
+        "autonomous_trading_mode = enforce\n"
+        "autonomous_trading_min_notional_usd = 10.0\n"
+        "autonomous_trading_max_notional_usd = 2000.0\n"
+        "autonomous_trading_min_confidence = 0.85\n"
+        "autonomous_trading_notify = 0\n"
+        "autonomous_trading_max_daily_buys_per_symbol = 6\n"
+        "autonomous_trading_max_hourly_replaces_per_symbol = 3\n"
+        "autonomous_trading_replace_min_price_delta_pct = 0.50\n"
+        "autonomous_trading_max_daily_buy_notional_usd = 6000.0\n",
+        encoding="utf-8",
+    )
+    gw = AutonomousIntentGateway(workspace_dir=str(tmp_path))
+    recent_replaces = [
+        {
+            "intent_id": f"rep_{k}",
+            "timestamp": time.time() - 300.0 * (3 - k),
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "order_type": "LIMIT",
+            "limit_price": 90000.0 + k * 5.0,
+            "replace_open_orders": True,
+            "canceled_prior_open_orders": [f"old_ord_{k}"],
+            "clamped_notional_usd": 300.0,
+            "execution_payload": {"orderId": f"rep_ord_{k}", "status": "CANCELED" if k < 2 else "NEW", "executedQty": "0.0"},
+        }
+        for k in range(3)
+    ]
+    gw.save_all_intents(recent_replaces)
+
+    btc_inst = MagicMock(symbol="BTCUSDC", provider_name="binance", base="BTC", quote="USDC", params={})
+    btc_inst._provider.name = "binance"
+    btc_inst._provider.get_current_price.return_value = 90500.0
+    btc_inst._provider.free_balance.return_value = 2000.0
+    btc_inst.open_orders.return_value = [
+        {"orderId": "rep_ord_2", "clientOrderId": "AI_rep_2", "side": "BUY", "price": "90010.0", "origQty": "0.0033", "executedQty": "0.0"}
+    ]
+    btc_inst.cancel_order.return_value = True
+    btc_inst.place.return_value = {"orderId": "new_placed_9", "status": "NEW", "executedQty": "0.0"}
+
+    # 4th micro-replace (+0.05% delta < 0.50%, NORMAL urgency) -> BLOCKED without canceling rep_ord_2!
+    rec_micro = gw.submit(
+        {
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 90050.0,
+            "replace_open_orders": True,
+            "confidence": 0.92,
+            "suggested_notional_usd": 300.0,
+            "urgency": "NORMAL",
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+    assert rec_micro["status"] == "REJECTED_AI_CIRCUIT_BREAKER"
+    assert "ai_hourly_replace_churn_cap" in rec_micro["circuit_breaker_reason"]
+    btc_inst.cancel_order.assert_not_called()
+    btc_inst.place.assert_not_called()
+
+    # Shadow mode reports guard_allowed=False with the same circuit-breaker reason
+    rec_shadow = gw.submit(
+        {
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 90050.0,
+            "replace_open_orders": True,
+            "confidence": 0.92,
+            "suggested_notional_usd": 300.0,
+            "urgency": "NORMAL",
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="shadow",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+    assert rec_shadow["status"] == "OBSERVED_SHADOW"
+    assert rec_shadow["history"][-1]["guard_allowed"] is False
+    assert "ai_hourly_replace_churn_cap" in rec_shadow["history"][-1]["guard_reason"]
+
+    # Same 4th replace with material price move (>= 0.50%) -> ALLOWED!
+    rec_moved = gw.submit(
+        {
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 89400.0,
+            "replace_open_orders": True,
+            "confidence": 0.92,
+            "suggested_notional_usd": 300.0,
+            "urgency": "NORMAL",
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+    assert rec_moved["status"] == "EXECUTED"
+    btc_inst.cancel_order.assert_called_once_with("rep_ord_2")
+    btc_inst.place.assert_called_once()
+
+    # Urgency=HIGH also bypasses hourly micro-replace cap
+    btc_inst.cancel_order.reset_mock()
+    btc_inst.place.reset_mock()
+    btc_inst.open_orders.return_value = [
+        {"orderId": "new_placed_9", "clientOrderId": "AI_rep_9", "side": "BUY", "price": "89400.0", "origQty": "0.0033", "executedQty": "0.0"}
+    ]
+    rec_high = gw.submit(
+        {
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 89450.0,
+            "replace_open_orders": True,
+            "confidence": 0.92,
+            "suggested_notional_usd": 300.0,
+            "urgency": "HIGH",
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+    assert rec_high["status"] == "EXECUTED"
+    btc_inst.place.assert_called_once()
+
+
+
 
 
 

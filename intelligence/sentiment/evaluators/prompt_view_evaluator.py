@@ -903,11 +903,24 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
             else:
                 clean_lces = raw_lces
 
+        raw_plans = ps.get("active_ai_trade_plans")
+        active_ai_trade_plans: List[Dict[str, Any]] = []
+        if isinstance(raw_plans, list):
+            for pl in raw_plans:
+                if not isinstance(pl, dict):
+                    continue
+                pl_copy = dict(pl)
+                pl_ident = resolve_symbol_identity(pl_copy.get("symbol"))
+                if pl_ident.is_tokenized_equity and pl_ident.display_symbol:
+                    pl_copy["symbol"] = pl_ident.display_symbol
+                active_ai_trade_plans.append(pl_copy)
+
         return {
             "scope_s": scope_s,
             "tradable_positions": tradable_positions_view,
             "has_open_orders": bool(open_lim),
             "clean_open_limit_orders": clean_open_lim,
+            "active_ai_trade_plans": active_ai_trade_plans,
             "venue_cycles": venue_cycles,
             "kraken_xstocks": xs_view,
             "crypto_bellwethers": crypto_bw_view,

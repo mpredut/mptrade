@@ -45,6 +45,8 @@ from .order_id_context import (
     extract_client_order_id,
     resolve_order_actor,
 )
+from .order_ohlc_utils import extract_executed_qty
+from .order_status_ssot import CANCEL_OR_EXPIRE_VENUE_STATUSES
 
 _CURRENCY_STRIP_RE = re.compile(r"[\$,\s]|(?:USD[CT]?)\b", re.IGNORECASE)
 _EXPLICIT_INTENT_OID_KEYS: tuple[str, ...] = ("orderId", "order_id", "ordertxid", "txid", "oid")
@@ -234,6 +236,62 @@ def extract_intent_order_type(data: dict[str, Any]) -> str:
     return "MARKET"
 
 
+_INVALIDATION_PX_KEYS: tuple[str, ...] = ("invalidation_px", "invalidation_price", "stop_loss_px")
+_TARGET_PX_KEYS: tuple[str, ...] = ("target_px", "take_profit_px", "tp_px")
+
+
+def _parse_optional_plan_px(data: dict[str, Any], keys: tuple[str, ...]) -> Optional[float]:
+    for pk in keys:
+        raw_v = data.get(pk)
+        if raw_v is None or isinstance(raw_v, bool):
+            continue
+        cleaned = _CURRENCY_STRIP_RE.sub("", raw_v).strip() if isinstance(raw_v, str) else raw_v
+        val = safe_pos_float(cleaned, None)
+        if val is not None:
+            return round(val, 8)
+    return None
+
+
+def extract_intent_trade_plan_levels(
+    data: dict[str, Any],
+    *,
+    side: str = "",
+    ref_price: Optional[float] = None,
+) -> tuple[Optional[float], Optional[float]]:
+    """Extract and geometrically validate ``(invalidation_px, target_px)`` for a BUY/SELL trade plan.
+
+    Invalid, inverted, or wildly out-of-range levels (< 0.25x or > 4.0x anchor) are dropped to
+    ``None`` cleanly without blocking order execution.
+    """
+    if not isinstance(data, dict):
+        return None, None
+    eff_side = normalize_side(side) or extract_intent_side(data)
+    if eff_side not in ("BUY", "SELL"):
+        return None, None
+    inv_px = _parse_optional_plan_px(data, _INVALIDATION_PX_KEYS)
+    tgt_px = _parse_optional_plan_px(data, _TARGET_PX_KEYS)
+    anchor_px = safe_pos_float(ref_price, default=None) or extract_intent_limit_price(data, default=None)
+    if anchor_px is not None and anchor_px > 0.0:
+        lo_bound = anchor_px * 0.25
+        hi_bound = anchor_px * 4.0
+        if eff_side == "BUY":
+            if inv_px is not None and not (lo_bound <= inv_px < anchor_px):
+                inv_px = None
+            if tgt_px is not None and not (anchor_px < tgt_px <= hi_bound):
+                tgt_px = None
+        else:
+            if tgt_px is not None and not (lo_bound <= tgt_px < anchor_px):
+                tgt_px = None
+            if inv_px is not None and not (anchor_px < inv_px <= hi_bound):
+                inv_px = None
+    elif inv_px is not None and tgt_px is not None:
+        if eff_side == "BUY" and not (inv_px < tgt_px):
+            inv_px, tgt_px = None, None
+        elif eff_side == "SELL" and not (tgt_px < inv_px):
+            inv_px, tgt_px = None, None
+    return inv_px, tgt_px
+
+
 def extract_intent_cancel_order_ids(data: dict[str, Any]) -> list[str]:
     """Extract deduplicated explicit venue order IDs targeted for cancellation before placement."""
     if not isinstance(data, dict):
@@ -351,6 +409,15 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
             d["order_type"] = order_type
             if limit_px is not None and order_type == "LIMIT":
                 d["limit_price"] = limit_px
+            inv_px, tgt_px = extract_intent_trade_plan_levels(d, side=raw_side, ref_price=limit_px)
+            if inv_px is not None:
+                d["invalidation_px"] = inv_px
+            elif "invalidation_px" in d:
+                d.pop("invalidation_px", None)
+            if tgt_px is not None:
+                d["target_px"] = tgt_px
+            elif "target_px" in d:
+                d.pop("target_px", None)
             if "replace_open_orders" in d:
                 d["replace_open_orders"] = _parse_bool_flag(d.get("replace_open_orders"), False)
             if "cancel_bot_open_orders" in d:
@@ -497,6 +564,7 @@ def validate_and_build_intent_dict(
     thesis = clean_scalar_str(decision.get("thesis")) or ""
     order_type = extract_intent_order_type(decision)
     limit_px = extract_intent_limit_price(decision, default=None) if order_type == "LIMIT" else None
+    inv_px, tgt_px = extract_intent_trade_plan_levels(decision, side=side, ref_price=limit_px)
     replace_open = _parse_bool_flag(decision.get("replace_open_orders"), default=False)
     cancel_bot_open = _parse_bool_flag(decision.get("cancel_bot_open_orders"), default=False)
     cancel_oids = extract_intent_cancel_order_ids(decision)
@@ -518,6 +586,10 @@ def validate_and_build_intent_dict(
         "created_by": clean_scalar_str(source) or "",
         "history": [],
     }
+    if inv_px is not None:
+        rec["invalidation_px"] = inv_px
+    if tgt_px is not None:
+        rec["target_px"] = tgt_px
     if (mm := clean_scalar_str(max_mode)) is not None:
         rec["max_mode"] = mm
     if (mu := clean_scalar_str(decision.get("model_used"))) is not None:
@@ -567,6 +639,203 @@ def parse_intent_gateway_config(
 
     notify_flag = parse_notify_enabled_flag(notify_enabled, conf, "autonomous_trading_notify")
     return norm_mode, min_usd, max_usd, conf_val, notify_flag
+
+
+def parse_intent_circuit_breaker_config(conf: dict[str, str]) -> dict[str, Any]:
+    """Parse optional asymmetric ``by=AI`` circuit-breaker parameters from ``order_guard.conf``."""
+    cfg = conf if isinstance(conf, dict) else {}
+    return {
+        "max_daily_buys_per_symbol": safe_nonneg_int(
+            cfg.get("autonomous_trading_max_daily_buys_per_symbol"), default=6
+        ),
+        "max_hourly_replaces_per_symbol": safe_nonneg_int(
+            cfg.get("autonomous_trading_max_hourly_replaces_per_symbol"), default=3
+        ),
+        "replace_min_price_delta_pct": safe_nonneg_float(
+            cfg.get("autonomous_trading_replace_min_price_delta_pct"), default=0.50
+        ),
+        "max_daily_buy_notional_usd": safe_nonneg_float(
+            cfg.get("autonomous_trading_max_daily_buy_notional_usd"), default=6000.0
+        ),
+    }
+
+
+def _intent_executed_notional_usd(item: dict[str, Any]) -> float:
+    for key in ("filled_notional_usd", "clamped_notional_usd"):
+        if (val := safe_pos_float(item.get(key), default=None)) is not None:
+            return val
+    ep = item.get("execution_payload")
+    if isinstance(ep, dict):
+        for key in ("cummulativeQuoteQty", "cumulativeQuoteQty", "quote_notional", "cost", "notional_usd"):
+            if (val := safe_pos_float(ep.get(key), default=None)) is not None:
+                return val
+    return safe_pos_float(extract_intent_notional(item, default=None), default=0.0) or 0.0
+
+
+def evaluate_ai_intent_circuit_breaker(
+    intent: dict[str, Any],
+    existing_intents: list[dict[str, Any]],
+    *,
+    decision: str,
+    symbol: str,
+    venue: str,
+    price: float,
+    effective_usd: float,
+    min_notional_usd: float,
+    now_ts: float,
+    max_daily_buys_per_symbol: int = 6,
+    max_hourly_replaces_per_symbol: int = 3,
+    replace_min_price_delta_pct: float = 0.50,
+    max_daily_buy_notional_usd: float = 6000.0,
+) -> tuple[bool, float, str, dict[str, Any]]:
+    """Asymmetric safety circuit-breaker strictly on ``by=AI`` intents.
+
+    Returns ``(allowed, adjusted_usd, reason, metrics)``.
+    - Never counts deterministic ``by=BOT`` trades.
+    - Protective ``SELL`` exits bypass all 24h ``BUY`` count/notional caps.
+    - ``urgency == "HIGH"``, ``cancel_bot_open_orders``, and explicit ``cancel_order_ids``
+      bypass the 1h micro-replace churn cap; price moves >= ``replace_min_price_delta_pct``
+      also bypass the 1h micro-replace churn cap.
+    - Smoothly clamps ``BUY`` notional to remaining 24h budget when headroom >= ``min_notional_usd``.
+    """
+    side = normalize_side(decision) or extract_intent_side(intent)
+    cur_iid = _extract_intent_id(intent)
+    eff_now = safe_pos_float(now_ts, default=0.0) or 0.0
+    eff_px = safe_pos_float(price, default=0.0) or 0.0
+    eff_usd = safe_pos_float(effective_usd, default=0.0) or 0.0
+    eff_min_usd = safe_pos_float(min_notional_usd, default=10.0) or 10.0
+    cap_sym_buys = safe_nonneg_int(max_daily_buys_per_symbol, default=6)
+    cap_hr_replaces = safe_nonneg_int(max_hourly_replaces_per_symbol, default=3)
+    min_rep_delta_pct = safe_nonneg_float(replace_min_price_delta_pct, default=0.50)
+    cap_daily_notional = safe_nonneg_float(max_daily_buy_notional_usd, default=6000.0)
+
+    items = existing_intents if isinstance(existing_intents, list) else []
+    all_canceled_oids: set[str] = set()
+    for it in items:
+        if not isinstance(it, dict) or (cur_iid and _extract_intent_id(it) == cur_iid):
+            continue
+        for c_id in (it.get("canceled_prior_open_orders") or ()):
+            if clean_c := clean_order_id(c_id):
+                all_canceled_oids.add(clean_c)
+
+    def _is_counted_executed(it: dict[str, Any]) -> bool:
+        if (clean_upper_scalar(it.get("status")) or "") != "EXECUTED":
+            return False
+        ep = it.get("execution_payload")
+        filled_q = extract_executed_qty(ep, default=0.0) if isinstance(ep, dict) else 0.0
+        if filled_q <= 0.0:
+            filled_q = safe_nonneg_float(it.get("filled_qty"), default=0.0)
+        ep_st = (clean_upper_scalar(ep.get("status")) if isinstance(ep, dict) else "") or ""
+        if ep_st in CANCEL_OR_EXPIRE_VENUE_STATUSES and filled_q <= 0.0:
+            return False
+        prim_oid = extract_intent_primary_order_id(it, default="", include_top_level=True)
+        if prim_oid and str(prim_oid) in all_canceled_oids and filled_q <= 0.0:
+            return False
+        return True
+
+    day_cutoff = eff_now - 86400.0
+    hour_cutoff = eff_now - 3600.0
+    daily_sym_buys = 0
+    daily_buy_notional = 0.0
+    hourly_replaces = 0
+    latest_same_side_px = 0.0
+    latest_same_side_ts = 0.0
+
+    for it in items:
+        if not isinstance(it, dict) or (cur_iid and _extract_intent_id(it) == cur_iid):
+            continue
+        _, ts_s = extract_intent_timestamp_s(it)
+        if ts_s <= 0.0 or ts_s < day_cutoff or ts_s > eff_now + 60.0:
+            continue
+        it_side = extract_intent_side(it)
+        it_sym = it.get("symbol")
+        it_ven = it.get("venue")
+        same_inst = symbols_match_intent_scope_and_quote(it_sym, symbol, venue_a=it_ven, venue_b=venue)
+        is_exec = (clean_upper_scalar(it.get("status")) or "") == "EXECUTED"
+
+        if same_inst and it_side == side and is_exec:
+            if ts_s >= latest_same_side_ts:
+                cand_px = (
+                    safe_pos_float(it.get("limit_price"), default=None)
+                    or safe_pos_float(it.get("requested_price"), default=None)
+                    or safe_pos_float(it.get("reference_price"), default=None)
+                )
+                if cand_px is not None:
+                    latest_same_side_px = cand_px
+                    latest_same_side_ts = ts_s
+            if (
+                ts_s >= hour_cutoff
+                and _parse_bool_flag(it.get("replace_open_orders"), False)
+                and bool(it.get("canceled_prior_open_orders"))
+            ):
+                hourly_replaces += 1
+
+        if it_side == "BUY" and _is_counted_executed(it):
+            daily_buy_notional += _intent_executed_notional_usd(it)
+            if same_inst:
+                daily_sym_buys += 1
+
+    metrics: dict[str, Any] = {
+        "daily_sym_buys": daily_sym_buys,
+        "daily_buy_notional_usd": round(daily_buy_notional, 2),
+        "hourly_replaces": hourly_replaces,
+    }
+
+    urgency = (clean_upper_scalar(intent.get("urgency")) or "NORMAL")
+    replace_open = _parse_bool_flag(intent.get("replace_open_orders"), default=False)
+    cancel_bot_open = _parse_bool_flag(intent.get("cancel_bot_open_orders"), default=False)
+    target_oids = extract_intent_cancel_order_ids(intent)
+
+    if (
+        replace_open
+        and cap_hr_replaces > 0
+        and urgency != "HIGH"
+        and not cancel_bot_open
+        and not target_oids
+        and hourly_replaces >= cap_hr_replaces
+    ):
+        delta_pct: Optional[float] = None
+        if latest_same_side_px > 0.0 and eff_px > 0.0:
+            delta_pct = abs((eff_px - latest_same_side_px) / latest_same_side_px) * 100.0
+            metrics["replace_price_delta_pct"] = round(delta_pct, 4)
+        if delta_pct is None or delta_pct < min_rep_delta_pct:
+            delta_lbl = f"{delta_pct:.2f}%" if delta_pct is not None else "n/a"
+            return (
+                False,
+                0.0,
+                f"ai_hourly_replace_churn_cap({symbol}@{venue}:{hourly_replaces}/{cap_hr_replaces}, delta={delta_lbl}<{min_rep_delta_pct:.2f}%)",
+                metrics,
+            )
+
+    if side != "BUY":
+        return True, eff_usd, "", metrics
+
+    if cap_sym_buys > 0 and daily_sym_buys >= cap_sym_buys:
+        return (
+            False,
+            0.0,
+            f"ai_daily_buy_count_cap({symbol}@{venue}:{daily_sym_buys}/{cap_sym_buys})",
+            metrics,
+        )
+
+    if cap_daily_notional > 0.0 and (daily_buy_notional + eff_usd) > cap_daily_notional + 1e-6:
+        remaining = max(0.0, cap_daily_notional - daily_buy_notional)
+        if remaining >= eff_min_usd:
+            clamped_usd = round(remaining, 2)
+            return (
+                True,
+                clamped_usd,
+                f"ai_daily_buy_notional_clamped(${daily_buy_notional:.0f}+${clamped_usd:.0f}/${cap_daily_notional:.0f})",
+                metrics,
+            )
+        return (
+            False,
+            0.0,
+            f"ai_daily_buy_notional_cap(${daily_buy_notional:.0f}/${cap_daily_notional:.0f})",
+            metrics,
+        )
+
+    return True, eff_usd, "", metrics
 
 
 @contextmanager
@@ -762,6 +1031,7 @@ __all__ = [
     "collect_known_ai_order_ids",
     "decision_has_cancel_directive",
     "durable_intents_lock",
+    "evaluate_ai_intent_circuit_breaker",
     "extract_intent_cancel_order_ids",
     "extract_intent_limit_price",
     "extract_intent_notional",
@@ -769,6 +1039,7 @@ __all__ = [
     "extract_intent_primary_order_id",
     "extract_intent_side",
     "extract_intent_timestamp_s",
+    "extract_intent_trade_plan_levels",
     "generate_unique_intent_id",
     "intent_venue_client_order_ids",
     "is_non_fiat_btc_quote_instrument",
@@ -776,6 +1047,7 @@ __all__ = [
     "normalize_intent_fields",
     "normalize_trading_decisions",
     "order_matches_intent_client_id",
+    "parse_intent_circuit_breaker_config",
     "parse_intent_gateway_config",
     "parse_pos_epoch_s",
     "resolve_hold_cancel_target",

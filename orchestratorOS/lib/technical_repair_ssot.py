@@ -70,6 +70,7 @@ from intelligence.macro_sentiment_ssot import (
 from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
 import notify_engine.alertnotifiers as _alertnotifiers
 from providers.intent_state import decision_has_cancel_directive, normalize_trading_decisions
+from providers.intent_telemetry import evaluate_trade_plan_status
 from state_io import (
     atomic_write_text,
     generation_file_lock,
@@ -2242,18 +2243,55 @@ def evaluate_crypto_executor_delta_gate(
                 open_order_attention_reason = "open_order_wall_trapped"
     open_order_ids = sorted(set(open_order_ids))
 
+    prev_map = prev_eval if isinstance(prev_eval, Mapping) else {}
+    prev_ts = normalize_epoch_sec(prev_map.get("ts"), default=0.0, allow_iso=True) or 0.0
+    prev_meta_raw = prev_map.get("delta_gate_meta")
+    prev_meta = prev_meta_raw if isinstance(prev_meta_raw, Mapping) else {}
+    prev_plan_states_raw = prev_meta.get("plan_states")
+    prev_plan_states: Dict[str, str] = (
+        {str(k): str(v).strip().upper() for k, v in prev_plan_states_raw.items() if str(k).strip()}
+        if isinstance(prev_plan_states_raw, Mapping)
+        else {}
+    )
+
+    plan_states: Dict[str, str] = {}
+    plan_trigger_reason = ""
+    raw_plans = ps_map.get("active_ai_trade_plans")
+    if isinstance(raw_plans, list):
+        for pl in raw_plans:
+            if not isinstance(pl, Mapping):
+                continue
+            pl_ven = normalize_venue_name(pl.get("venue"), default="")
+            pl_sym_raw = str(pl.get("symbol") or "").strip()
+            pl_sym = canonical_display_symbol(pl_sym_raw, venue=pl_ven) or pl_sym_raw.upper()
+            pl_side = str(pl.get("side") or "").strip().upper()
+            if not pl_sym or pl_side not in ("BUY", "SELL"):
+                continue
+            spot_px = eval_prices.get(pl_sym) or safe_pos_float(pl.get("spot_px"), default=None)
+            inv_px = safe_pos_float(pl.get("invalidation_px"), default=None)
+            tgt_px = safe_pos_float(pl.get("target_px"), default=None)
+            if spot_px is not None and (inv_px is not None or tgt_px is not None):
+                pl_status = evaluate_trade_plan_status(pl_side, spot_px, inv_px, tgt_px)
+            else:
+                pl_status = str(pl.get("status") or "ACTIVE").strip().upper() or "ACTIVE"
+            pl_key = f"{pl_ven}:{pl_sym}:{pl_side}"
+            plan_states[pl_key] = pl_status
+            if (
+                not plan_trigger_reason
+                and pl_status in ("INVALIDATED", "TARGET_HIT")
+                and prev_plan_states.get(pl_key) != pl_status
+            ):
+                plan_trigger_reason = f"trade_plan_{pl_status.lower()}({pl_sym})"
+
     snapshot_meta: Dict[str, Any] = {
         "eval_prices": eval_prices,
         "macro_ts": round(macro_ts, 3),
         "geo_ts": round(geo_ts, 3),
         "latest_fill_ts": round(latest_fill_ts, 3),
         "open_order_ids": open_order_ids,
+        "plan_states": plan_states,
     }
 
-    prev_map = prev_eval if isinstance(prev_eval, Mapping) else {}
-    prev_ts = normalize_epoch_sec(prev_map.get("ts"), default=0.0, allow_iso=True) or 0.0
-    prev_meta_raw = prev_map.get("delta_gate_meta")
-    prev_meta = prev_meta_raw if isinstance(prev_meta_raw, Mapping) else {}
     prev_prices_raw = prev_meta.get("eval_prices")
     prev_prices: Dict[str, float] = {}
     if isinstance(prev_prices_raw, Mapping):
@@ -2292,6 +2330,7 @@ def evaluate_crypto_executor_delta_gate(
         or max_move_pct >= eff_high_move_pct
         or has_new_fill
         or geo_shock
+        or plan_trigger_reason
     )
 
     if clean_focus:
@@ -2308,6 +2347,8 @@ def evaluate_crypto_executor_delta_gate(
         return False, "no_price_baseline", escalate_high_effort, snapshot_meta
 
     elapsed_sec = max(0.0, eff_now - prev_ts)
+    if plan_trigger_reason:
+        return False, plan_trigger_reason, True, snapshot_meta
     if elapsed_sec >= eff_max_idle_sec:
         return False, f"max_idle_elapsed({elapsed_sec:.0f}s>={eff_max_idle_sec:.0f}s)", escalate_high_effort, snapshot_meta
     if max_move_pct >= eff_min_move_pct:

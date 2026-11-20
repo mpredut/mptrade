@@ -38,6 +38,7 @@ from botcore import (
     add_store_true_cli_args,
     clean_order_id,
     disable_auto_start_websockets_default,
+    format_notify_price,
     is_us_rth_open,
     load_key_value_conf,
 )
@@ -64,8 +65,10 @@ from providers.intent_execution import (
 )
 from providers.intent_state import (
     append_intent_history,
+    evaluate_ai_intent_circuit_breaker,
     extract_intent_cancel_order_ids,
     load_durable_intents_state,
+    parse_intent_circuit_breaker_config,
     parse_intent_gateway_config,
     resolve_hold_cancel_target,
     save_durable_intents_state,
@@ -129,6 +132,11 @@ class AutonomousIntentGateway:
             min_confidence=min_confidence,
             notify_enabled=notify_enabled,
         )
+        cb_cfg = parse_intent_circuit_breaker_config(conf)
+        self.max_daily_buys_per_symbol: int = cb_cfg["max_daily_buys_per_symbol"]
+        self.max_hourly_replaces_per_symbol: int = cb_cfg["max_hourly_replaces_per_symbol"]
+        self.replace_min_price_delta_pct: float = cb_cfg["replace_min_price_delta_pct"]
+        self.max_daily_buy_notional_usd: float = cb_cfg["max_daily_buy_notional_usd"]
 
     def load_all_intents(self) -> List[Dict[str, Any]]:
         """Loads all intents from the durable JSON queue with `.previous` crash recovery."""
@@ -412,6 +420,7 @@ class AutonomousIntentGateway:
             and any(b in thesis_low for b in ("bot", "tradeall", "assetguardian", "by=bot"))
             and any(a in thesis_low for a in ("cancel", "override", "unwanted", "premature", "unlock"))
         )
+        all_intents = self.load_all_intents()
         dup_oid: Optional[str] = None
         if mode == "enforce" and is_limit and not (cancel_bot_open or thesis_cancels_bot_order or target_oids):
             dup_oid = find_duplicate_ai_open_limit_order(
@@ -419,9 +428,105 @@ class AutonomousIntentGateway:
                 decision,
                 price,
                 effective_usd,
-                intents=self.load_all_intents(),
+                intents=all_intents,
                 require_notional_match=replace_open,
             )
+        if dup_oid and not (replace_open or cancel_bot_open or bool(target_oids)):
+            logger.info(
+                "[LLM TRADER \u00b7 ENFORCE] Skipping duplicate %s LIMIT %s @ $%.4f ($%.2f); identical AI order %s is already open.",
+                decision, inst.symbol, price, effective_usd, dup_oid,
+            )
+            intent["status"] = "SKIPPED_DUPLICATE_OPEN_ORDER"
+            intent["duplicate_of_order_id"] = dup_oid
+            append_intent_history(intent, {
+                "ts": now,
+                "action": "SKIPPED_DUPLICATE_OPEN_ORDER",
+                "duplicate_of_order_id": dup_oid,
+                "price": price,
+                "notional_usd": effective_usd,
+            })
+            return intent
+
+        raw_thesis = intent.get("thesis")
+        thesis = (
+            "Autonomous strategy thesis"
+            if raw_thesis is None or isinstance(raw_thesis, bool) or not str(raw_thesis).strip()
+            else str(raw_thesis).strip()
+        )
+        trade_tag = resolve_intent_topic_tag(intent, venue)
+
+        if not dup_oid and mode in ("enforce", "shadow"):
+            cb_allowed, cb_usd, cb_reason, cb_metrics = evaluate_ai_intent_circuit_breaker(
+                intent,
+                all_intents,
+                decision=decision,
+                symbol=symbol,
+                venue=venue,
+                price=price,
+                effective_usd=effective_usd,
+                min_notional_usd=self.min_notional_usd,
+                now_ts=now,
+                max_daily_buys_per_symbol=getattr(self, "max_daily_buys_per_symbol", 6),
+                max_hourly_replaces_per_symbol=getattr(self, "max_hourly_replaces_per_symbol", 3),
+                replace_min_price_delta_pct=getattr(self, "replace_min_price_delta_pct", 0.50),
+                max_daily_buy_notional_usd=getattr(self, "max_daily_buy_notional_usd", 6000.0),
+            )
+            if cb_allowed and cb_reason and cb_usd < effective_usd:
+                logger.info(
+                    "[LLM TRADER] Clamped %s %s notional from $%.2f to $%.2f (%s).",
+                    decision, inst.symbol, effective_usd, cb_usd, cb_reason,
+                )
+                effective_usd = cb_usd
+                intent["circuit_breaker_clamped"] = cb_reason
+            elif not cb_allowed:
+                cb_qty = effective_usd / price if (effective_usd > 0.0 and price > 0.0) else 0.0
+                if mode == "shadow":
+                    return record_shadow_intent_observation(
+                        inst,
+                        intent,
+                        decision=decision,
+                        target_qty=cb_qty,
+                        price=price,
+                        effective_usd=effective_usd,
+                        confidence=confidence,
+                        guard_allowed=False,
+                        guard_reason=cb_reason,
+                        thesis=thesis,
+                        trade_tag=trade_tag,
+                        now_ts=now,
+                        is_limit=is_limit,
+                        dispatch_notify_fn=self._dispatch_notify,
+                        log=logger,
+                    )
+                logger.warning(
+                    "[LLM TRADER \u00b7 ENFORCE] AI circuit-breaker blocked %s %s: %s",
+                    decision, inst.symbol, cb_reason,
+                )
+                _alertnotifiers.emit_trade_notification(
+                    self._dispatch_notify,
+                    "BLOCKED",
+                    decision,
+                    inst.symbol,
+                    format_notify_price(price, comma=False),
+                    cb_qty,
+                    effective_usd,
+                    venue=inst.provider_name,
+                    owner=trade_tag,
+                    detail=("LIMIT" if is_limit else "MARKET", f"Reason: {cb_reason}"),
+                    thesis=thesis,
+                    notify_kwargs={"symbol": inst.symbol},
+                )
+                intent["status"] = "REJECTED_AI_CIRCUIT_BREAKER"
+                intent["circuit_breaker_reason"] = cb_reason
+                intent["circuit_breaker_metrics"] = cb_metrics
+                append_intent_history(intent, {
+                    "ts": now,
+                    "action": "REJECTED_AI_CIRCUIT_BREAKER",
+                    "reason": cb_reason,
+                    **cb_metrics,
+                })
+                return intent
+
         canceled_order_snapshots: list[dict[str, Any]] = []
         if mode == "enforce" and (replace_open or cancel_bot_open or bool(target_oids)):
             ok_cancel, _ = self._cancel_prior_orders_or_abort(
@@ -438,6 +543,7 @@ class AutonomousIntentGateway:
                 target_order_ids=target_oids or None,
                 verify_not_filled=replace_open or bool(target_oids),
                 extra_intent_key="canceled_bot_open_orders" if thesis_cancels_bot_order else None,
+                intents=all_intents,
             )
             if not ok_cancel:
                 return intent
@@ -483,6 +589,7 @@ class AutonomousIntentGateway:
                 include_bot_orders=True,
                 only_bot_orders=True,
                 extra_intent_key="canceled_bot_open_orders",
+                intents=all_intents,
             )
             if not ok_unlock:
                 return intent
@@ -493,14 +600,6 @@ class AutonomousIntentGateway:
         if guard_allowed and effective_usd > 0:
             intent["clamped_notional_usd"] = round(effective_usd, 2)
         target_qty = effective_usd / price if effective_usd > 0 else 0.0
-
-        raw_thesis = intent.get("thesis")
-        thesis = (
-            "Autonomous strategy thesis"
-            if raw_thesis is None or isinstance(raw_thesis, bool) or not str(raw_thesis).strip()
-            else str(raw_thesis).strip()
-        )
-        trade_tag = resolve_intent_topic_tag(intent, venue)
 
         # Execution or Observation Branch
         if mode == "shadow":

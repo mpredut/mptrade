@@ -1279,6 +1279,26 @@ def _format_portfolio_section(
         lines.append(
             "  * Active Open Limit Orders on Exchange \u2014 open_limit_orders: [] (none resting)"
         )
+    if active_plans := view.get("active_ai_trade_plans"):
+        lines.append("  * Active AI Trade Plans (Persistent Exit/Invalidation Memory):")
+        for pl in active_plans:
+            p_parts: List[str] = []
+            if pl.get("target_px") is not None:
+                td = pl.get("target_dist_pct")
+                td_s = f" ({safe_float(td, 0.0):+.2f}%)" if td is not None else ""
+                p_parts.append(f"target={pl['target_px']}{td_s}")
+            if pl.get("invalidation_px") is not None:
+                id_v = pl.get("invalidation_dist_pct")
+                id_s = f" ({safe_float(id_v, 0.0):+.2f}%)" if id_v is not None else ""
+                p_parts.append(f"invalidation={pl['invalidation_px']}{id_s}")
+            entry_s = f"@{pl['entry_px']}" if pl.get("entry_px") is not None else ""
+            meta_p = [str(pl.get("order_state") or "FILLED")]
+            if pl.get("age_h") is not None:
+                meta_p.append(f"age={pl['age_h']}h")
+            lines.append(
+                f"    - [{pl.get('venue')}] {pl.get('symbol')} {pl.get('side')}{entry_s} "
+                f"({', '.join(meta_p)}): {', '.join(p_parts)} [{pl.get('status', 'ACTIVE')}]"
+            )
     for venue_lbl, venue_id, cyc_items in view["venue_cycles"]:
         lines.append(f"  * {venue_lbl} Active Cycle Cost & Drawdown Anchors:")
         for c_sym, c_data in cyc_items:

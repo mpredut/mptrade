@@ -9781,6 +9781,205 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
     assert "model" not in auditor.calls[-1][1]
 
 
+def test_proposal4a_structured_trade_plans_3c_memory_and_delta_gate_trigger():
+    """Verify 4A invalidation_px/target_px extraction, Section 3C memory persistence, and Delta-Gate high-effort trigger."""
+    from types import SimpleNamespace
+    from orchestratorOS.lib.technical_repair_ssot import evaluate_crypto_executor_delta_gate
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+    from providers.intent_state import (
+        extract_intent_notional,
+        extract_intent_trade_plan_levels,
+        normalize_trading_decisions,
+        validate_and_build_intent_dict,
+    )
+    from providers.intent_telemetry import summarize_active_ai_trade_plans
+
+    # 1. Prompt schema includes invalidation_px & target_px and stays within compression bounds
+    p_full = build_supervisor_prompt(
+        SimpleNamespace(),
+        LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0),
+        topic_spec("auto_cryptotrade_executor"),
+    )
+    assert '"invalidation_px": null, "target_px": null' in p_full
+    assert len(p_full) < 8500
+    assert len(p_full.split()) < 1100
+
+    # 2. Geometric extraction & validation (drops inverted/hallucinated levels cleanly; target_price stays limit_price alias)
+    assert extract_intent_trade_plan_levels(
+        {"decision": "BUY", "limit_price": 90000.0, "invalidation_px": 88500.0, "target_px": 93000.0}
+    ) == (88500.0, 93000.0)
+    assert extract_intent_trade_plan_levels(
+        {"decision": "BUY", "limit_price": 90000.0, "invalidation_px": 91000.0, "target_px": 88000.0}
+    ) == (None, None)
+    assert extract_intent_trade_plan_levels(
+        {"decision": "SELL", "limit_price": 90000.0, "invalidation_px": 91500.0, "target_px": 86500.0}
+    ) == (91500.0, 86500.0)
+    # Legacy target_price must NOT be misread as target_px
+    assert extract_intent_trade_plan_levels(
+        {"decision": "BUY", "target_price": 90000.0}
+    ) == (None, None)
+
+    decs = normalize_trading_decisions({
+        "market_trading_decisions": [{
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 89500.0,
+            "invalidation_px": 88100.0,
+            "target_px": 92200.0,
+            "confidence": 0.91,
+            "suggested_notional_usd": 500.0,
+        }]
+    })
+    assert decs[0]["invalidation_px"] == 88100.0 and decs[0]["target_px"] == 92200.0
+
+    rec = validate_and_build_intent_dict(
+        decs[0],
+        source="auto_cryptotrade_executor",
+        min_confidence=0.85,
+        min_notional_usd=10.0,
+        max_notional_usd=2000.0,
+        existing_intents=[],
+        now_ts=1_795_000_000.0,
+    )
+    assert rec is not None and rec["invalidation_px"] == 88100.0 and rec["target_px"] == 92200.0
+
+    # 3. Active trade plan telemetry retains active/triggered plans, clears closed/superseded plans, and renders in Section 3C
+    t0 = 1_795_000_000.0
+    intents_hist = [
+        {
+            "intent_id": "buy_btc_1",
+            "timestamp": t0 - 7200.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 89500.0,
+            "invalidation_px": 88100.0,
+            "target_px": 92200.0,
+            "suggested_notional_usd": 500.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "b1", "status": "FILLED", "avgPrice": "89500.0", "executedQty": "0.0056"},
+        },
+        {
+            "intent_id": "buy_tao_1",
+            "timestamp": t0 - 5400.0,
+            "decision": "BUY",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 300.0,
+            "invalidation_px": 285.0,
+            "target_px": 330.0,
+            "suggested_notional_usd": 300.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "t1", "status": "FILLED", "avgPrice": "300.0", "executedQty": "1.0"},
+        },
+        {
+            # Exited TAO via newer AI SELL with no reload plan -> supersedes buy_tao_1
+            "intent_id": "sell_tao_2",
+            "timestamp": t0 - 1800.0,
+            "decision": "SELL",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 318.0,
+            "suggested_notional_usd": 318.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "t2", "status": "FILLED", "avgPrice": "318.0", "executedQty": "1.0"},
+        },
+        {
+            # Exited ARB externally (value_usd == 0 in tradable_positions) -> zombie plan omitted
+            "intent_id": "buy_arb_1",
+            "timestamp": t0 - 3600.0,
+            "decision": "BUY",
+            "symbol": "ARBUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 1.0,
+            "invalidation_px": 0.90,
+            "target_px": 1.15,
+            "suggested_notional_usd": 200.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "a1", "status": "FILLED", "avgPrice": "1.0", "executedQty": "200.0"},
+        },
+    ]
+    positions = [
+        {"venue": "binance", "symbol": "BTCUSDC", "price": 90000.0, "value_usd": 504.0},
+        {"venue": "binance", "symbol": "TAOUSDC", "price": 315.0, "value_usd": 0.0},
+        {"venue": "binance", "symbol": "ARBUSDC", "price": 1.02, "value_usd": 0.0},
+    ]
+    plans = summarize_active_ai_trade_plans(
+        intents_hist, "crypto", t0, extract_intent_notional, tradable_positions=positions
+    )
+    assert len(plans) == 1
+    assert plans[0]["symbol"] == "BTCUSDC"
+    assert plans[0]["status"] == "ACTIVE"
+    assert plans[0]["target_px"] == 92200.0 and plans[0]["invalidation_px"] == 88100.0
+
+    sec3c = "\n".join(_format_portfolio_section({"active_ai_trade_plans": plans}, "crypto"))
+    assert "Active AI Trade Plans (Persistent Exit/Invalidation Memory):" in sec3c
+    assert "[binance] BTCUSDC BUY@89500" in sec3c
+    assert "target=92200" in sec3c and "invalidation=88100" in sec3c and "[ACTIVE]" in sec3c
+
+    # 4. Delta-Gate synergy: crossing invalidation_px/target_px wakes immediately + escalates to high effort
+    prev_eval = {
+        "ts": t0,
+        "mode": "shadow",
+        "model_used": "gemini-4-neon-medium",
+        "market_trading_decisions": [{"decision": "HOLD", "confidence": 0.5}],
+        "delta_gate_meta": {
+            "eval_prices": {"BTCUSDC": 88200.0},
+            "macro_ts": 0.0,
+            "geo_ts": 0.0,
+            "latest_fill_ts": 0.0,
+            "open_order_ids": [],
+            "plan_states": {"binance:BTCUSDC:BUY": "ACTIVE"},
+        },
+    }
+    # Tiny -0.17% tick (88200 -> 88050, below 0.35% threshold) breaches invalidation_px=88100 -> instant high-effort wakeup!
+    breach_sensors = SimpleNamespace(
+        prices_and_trends={"BTCUSDC": {"price": 88050.0}},
+        portfolio_summary={
+            "open_limit_orders": [],
+            "recent_orders": {},
+            "active_ai_trade_plans": plans,
+        },
+        sentiment_advisor=None,
+        geopolitical_threat=None,
+        source_timestamps={},
+    )
+    skip_b, rsn_b, hi_b, meta_b = evaluate_crypto_executor_delta_gate(breach_sensors, prev_eval, now_ts=t0 + 360.0)
+    assert skip_b is False
+    assert rsn_b == "trade_plan_invalidated(BTCUSDC)"
+    assert hi_b is True
+    assert meta_b["plan_states"]["binance:BTCUSDC:BUY"] == "INVALIDATED"
+
+    # Anti-spam: if AI consciously HOLDs after breach, next flat cycle at same price does NOT re-trigger repeatedly
+    prev_after_breach = {
+        **prev_eval,
+        "ts": t0 + 360.0,
+        "delta_gate_meta": meta_b,
+    }
+    skip_repeat, rsn_repeat, hi_repeat, _ = evaluate_crypto_executor_delta_gate(
+        breach_sensors, prev_after_breach, now_ts=t0 + 720.0
+    )
+    assert skip_repeat is True and "quiet_flat" in rsn_repeat and hi_repeat is False
+
+    # Target hit transition (92100 -> 92250, +0.16% < 0.35%) also wakes immediately + escalates to high effort
+    prev_near_tgt = {
+        **prev_eval,
+        "delta_gate_meta": {**prev_eval["delta_gate_meta"], "eval_prices": {"BTCUSDC": 92100.0}},
+    }
+    tgt_sensors = SimpleNamespace(
+        **{**breach_sensors.__dict__, "prices_and_trends": {"BTCUSDC": {"price": 92250.0}}}
+    )
+    skip_t, rsn_t, hi_t, _ = evaluate_crypto_executor_delta_gate(tgt_sensors, prev_near_tgt, now_ts=t0 + 360.0)
+    assert skip_t is False and rsn_t == "trade_plan_target_hit(BTCUSDC)" and hi_t is True
+
+
+
 
 
 

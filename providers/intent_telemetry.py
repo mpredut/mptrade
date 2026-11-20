@@ -15,6 +15,7 @@ from botcore import (
     first_pos_float,
     normalize_timestamp_ms,
     resolve_now_ts,
+    safe_float,
     safe_pos_float,
 )
 from cachepaths import (
@@ -25,7 +26,7 @@ from cachepaths import (
     matches_asset_scope,
     normalize_venue_name,
 )
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, resolve_symbol_identity
 from .base import MarketDataProvider
 from .intent_state import (
     _clean_intent_symbol,
@@ -34,6 +35,7 @@ from .intent_state import (
     extract_intent_primary_order_id,
     extract_intent_side,
     extract_intent_timestamp_s,
+    extract_intent_trade_plan_levels,
     intent_venue_client_order_ids,
     order_matches_intent_client_id,
     parse_pos_epoch_s,
@@ -574,6 +576,10 @@ def summarize_recent_ai_intents(
         }
         if i.get("limit_price") is not None:
             intent_summary["limit_price"] = i.get("limit_price")
+        if i.get("invalidation_px") is not None:
+            intent_summary["invalidation_px"] = i.get("invalidation_px")
+        if i.get("target_px") is not None:
+            intent_summary["target_px"] = i.get("target_px")
         if det["venue_status"]:
             intent_summary["venue_status"] = det["venue_status"]
         for k in ("order_id", "fill_px", "filled_qty", "filled_notional_usd", "slippage_bps"):
@@ -770,6 +776,174 @@ def build_last_cycle_execution_status(
     return out[0] if len(out) == 1 else out
 
 
+def evaluate_trade_plan_status(
+    side: str,
+    spot_px: Optional[float],
+    invalidation_px: Optional[float],
+    target_px: Optional[float],
+) -> str:
+    """Evaluate live status ('ACTIVE' | 'TARGET_HIT' | 'INVALIDATED') of a structured AI trade plan."""
+    s_norm = (clean_upper_scalar(side) or "").strip()
+    px = safe_pos_float(spot_px, default=None)
+    inv = safe_pos_float(invalidation_px, default=None)
+    tgt = safe_pos_float(target_px, default=None)
+    if px is None or s_norm not in ("BUY", "SELL"):
+        return "ACTIVE"
+    if s_norm == "BUY":
+        if inv is not None and px <= inv:
+            return "INVALIDATED"
+        if tgt is not None and px >= tgt:
+            return "TARGET_HIT"
+        return "ACTIVE"
+    if inv is not None and px >= inv:
+        return "INVALIDATED"
+    if tgt is not None and px <= tgt:
+        return "TARGET_HIT"
+    return "ACTIVE"
+
+
+def summarize_active_ai_trade_plans(
+    intents_data: list[dict[str, Any]],
+    scope: str,
+    now_ts: float,
+    extract_notional_fn: Callable[..., Any],
+    *,
+    tradable_positions: Optional[list[dict[str, Any]]] = None,
+    prices_and_trends: Optional[dict[str, Any]] = None,
+    recent_orders: Optional[dict[str, Any]] = None,
+    open_orders: Optional[list[dict[str, Any]]] = None,
+    verified_open_venues: Optional[set[str]] = None,
+    max_age_days: float = 14.0,
+) -> list[dict[str, Any]]:
+    """Build compact persistent exit/invalidation memory for active executed/resting AI trade plans.
+
+    Retains at most one latest active plan per ``(venue, symbol)``, clearing superseded plans on
+    newer AI actions or exited spot positions so structured exit memory survives ``/compact``.
+    """
+    scoped_intents = _filter_intents_by_scope(intents_data, scope)
+    if not scoped_intents:
+        return []
+
+    eff_now = resolve_now_ts(now_ts)
+    max_age_sec = max(0.0, safe_pos_float(max_age_days, default=14.0) or 14.0) * 86400.0
+    pos_list = tradable_positions if isinstance(tradable_positions, list) else []
+    pt_map = prices_and_trends if isinstance(prices_and_trends, dict) else {}
+
+    def _find_matching_position(ven: str, sym: str) -> Optional[dict[str, Any]]:
+        for p in pos_list:
+            if not isinstance(p, dict):
+                continue
+            if symbols_match_intent_scope_and_quote(p.get("symbol"), sym, venue_a=p.get("venue"), venue_b=ven):
+                return p
+        return None
+
+    def _resolve_spot_px(ven: str, sym: str, pos_hit: Optional[dict[str, Any]]) -> Optional[float]:
+        if isinstance(pos_hit, dict):
+            if (p_px := safe_pos_float(pos_hit.get("price"), default=None)) is not None:
+                return p_px
+        if pt_map:
+            for cand in (sym, *cache_symbol_variants(sym, include_base=True)):
+                pinfo = casefold_get(pt_map, cand)
+                if isinstance(pinfo, dict):
+                    if (c_px := safe_pos_float(pinfo.get("price"), default=None)) is not None:
+                        return c_px
+        return None
+
+    plans_rev: list[dict[str, Any]] = []
+    seen_inst_keys: set[tuple[str, str, tuple[str, ...]]] = set()
+    _non_active_exec_statuses = (
+        "CANCELED",
+        "CANCELLED",
+        "EXPIRED",
+        "CANCELED_OR_EXPIRED",
+        "FAILED",
+        "REJECTED",
+        "BLOCKED_BY_GUARD",
+        "SUBMIT_UNKNOWN",
+        "SKIPPED_DUPLICATE_OPEN_ORDER",
+    )
+
+    for i in reversed(scoped_intents):
+        if not isinstance(i, dict):
+            continue
+        if (clean_upper_scalar(i.get("status")) or "") != "EXECUTED":
+            continue
+        det = _resolve_intent_execution_details(
+            i,
+            eff_now,
+            extract_notional_fn,
+            recent_orders=recent_orders,
+            open_orders=open_orders,
+            verified_open_venues=verified_open_venues,
+        )
+        side = det.get("side") or ""
+        if side not in ("BUY", "SELL"):
+            continue
+        filled_q = safe_pos_float(det.get("filled_qty"), default=0.0) or 0.0
+        if det.get("exec_status") in _non_active_exec_statuses and filled_q <= 0.0:
+            continue
+        venue = det.get("venue") or ""
+        sym = det.get("symbol") or ""
+        v_k, b_k, q_k, _ = _intent_venue_symbol_side_key(venue, sym, side)
+        inst_key = (v_k, b_k, q_k)
+        if inst_key in seen_inst_keys:
+            continue
+        seen_inst_keys.add(inst_key)
+
+        eff_ts = safe_pos_float(det.get("fill_ts_val"), default=None) or safe_pos_float(det.get("ts_val"), default=0.0) or 0.0
+        if max_age_sec > 0.0 and eff_ts > 0.0 and (eff_now - eff_ts) > max_age_sec:
+            continue
+
+        entry_px = (
+            safe_pos_float(det.get("fill_px"), default=None)
+            or safe_pos_float(det.get("limit_px"), default=None)
+            or safe_pos_float(det.get("ref_px"), default=None)
+        )
+        inv_px, tgt_px = extract_intent_trade_plan_levels(i, side=side, ref_price=entry_px)
+        if inv_px is None and tgt_px is None:
+            continue
+
+        is_resting = _is_open_resting_detail(det)
+        pos_hit = _find_matching_position(venue, sym)
+        if side == "BUY" and not is_resting and isinstance(pos_hit, dict):
+            held_usd = (safe_float(pos_hit.get("value_usd"), 0.0) or 0.0) + (
+                safe_float(pos_hit.get("locked_base_usd"), 0.0) or 0.0
+            )
+            if held_usd < 5.0:
+                continue
+
+        spot_px = _resolve_spot_px(venue, sym, pos_hit)
+        status = evaluate_trade_plan_status(side, spot_px, inv_px, tgt_px)
+        ident = resolve_symbol_identity(sym)
+        disp_sym = ident.display_symbol if (ident.is_tokenized_equity and ident.display_symbol) else sym
+        dist_anchor = spot_px if (spot_px is not None and spot_px > 0.0) else entry_px
+
+        plan_rec: dict[str, Any] = {
+            "venue": venue,
+            "symbol": disp_sym,
+            "side": side,
+            "order_state": "RESTING" if is_resting else "FILLED",
+            "status": status,
+        }
+        if entry_px is not None:
+            plan_rec["entry_px"] = round(entry_px, 6)
+        if spot_px is not None:
+            plan_rec["spot_px"] = round(spot_px, 6)
+        if tgt_px is not None:
+            plan_rec["target_px"] = round(tgt_px, 6)
+            if dist_anchor is not None and dist_anchor > 0.0:
+                plan_rec["target_dist_pct"] = round(((tgt_px - dist_anchor) / dist_anchor) * 100.0, 2)
+        if inv_px is not None:
+            plan_rec["invalidation_px"] = round(inv_px, 6)
+            if dist_anchor is not None and dist_anchor > 0.0:
+                plan_rec["invalidation_dist_pct"] = round(((inv_px - dist_anchor) / dist_anchor) * 100.0, 2)
+        if eff_ts > 0.0 and eff_now >= eff_ts:
+            plan_rec["age_h"] = round((eff_now - eff_ts) / 3600.0, 1)
+        plans_rev.append(plan_rec)
+
+    return list(reversed(plans_rev))
+
+
 __all__ = [
     "_attach_intent_age_fields",
     "_filter_intents_by_scope",
@@ -777,5 +951,7 @@ __all__ = [
     "_resolve_executed_open_resting_detail",
     "_resolve_intent_execution_details",
     "build_last_cycle_execution_status",
+    "evaluate_trade_plan_status",
+    "summarize_active_ai_trade_plans",
     "summarize_recent_ai_intents",
 ]

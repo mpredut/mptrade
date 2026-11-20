@@ -187,11 +187,14 @@ def build_supervisor_prompt(
             "`liq_clusters` (`src=model_est` heuristic bands; prioritize `realized_liq_15m` when present), `book_window` cap tags, per-venue fees/spread/`limits`, and Section 1 cross-asset telemetry "
             "(`SPY/QQQ/ES=F/NQ=F/VIX/DXY/US10Y`, `Futures_Lead`, `IBIT`, `CB_Premium`, `BTC_DVOL/ETH_DVOL`, `Options_Surface` & `ETH_Options`, distinguishing coupled risk-on/off from `CRYPTO_BULLISH_DECOUPLING` / `EQUITY_BULLISH_DECOUPLING`).\n"
             f"   - Emit one entry per actionable instrument in `market_trading_decisions` (`confidence >= {min_conf:g}`, `suggested_notional_usd` between {min_usd:g} and {max_usd:g} USD; "
-            "gateway clamps strictly to free balance with zero artificial cooldowns or dedup locks), or a single `'HOLD'` entry."
+            "gateway clamps strictly to free balance with zero artificial cooldowns or dedup locks), or a single `'HOLD'` entry. "
+            "On actionable BUY/SELL, set numeric `invalidation_px` (thesis break) and `target_px` (primary objective); active plans persist in Section 3C across compactions."
         )
         schema.append(
             f'  "market_trading_decisions": [{{"decision": "BUY" | "SELL" | "HOLD", "symbol": {ex_sym}, '
-            f'"venue": {venue_schema}, "order_type": "MARKET" | "LIMIT", "limit_price": null, "replace_open_orders": false, "cancel_bot_open_orders": false, "cancel_order_ids": [], '
+            f'"venue": {venue_schema}, "order_type": "MARKET" | "LIMIT", "limit_price": null, '
+            f'"invalidation_px": null, "target_px": null, '
+            f'"replace_open_orders": false, "cancel_bot_open_orders": false, "cancel_order_ids": [], '
             f'"confidence": 0.90, "suggested_notional_usd": 1000.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
         )
 
