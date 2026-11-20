@@ -66,6 +66,9 @@ logger = logging.getLogger("llm_order_guard")
 
 _LLM_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str], float] = {}
 _GEO_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str], float] = {}
+_HIGH_STAKE_REASON_PREFIX_RE = re.compile(
+    r"^(?:Gemini|LLM) (?:vetoed|approved|downscaled) high-stake (?:BUY|SELL):\s*"
+)
 
 
 # ============================================================================
@@ -211,8 +214,7 @@ def evaluate_high_stake_order_guard(
                     g_title = f"\U0001f9ed {hs_tag} ACCEPT {side} {symbol}"
 
                 meta_reason = clean_scalar_str(g_meta.get("gemini_reason"))
-                clean_reason = (meta_reason or re.sub(
-                    r"^(?:Gemini|LLM) (?:vetoed|approved|downscaled) high-stake (?:BUY|SELL):\s*",
+                clean_reason = (meta_reason or _HIGH_STAKE_REASON_PREFIX_RE.sub(
                     "",
                     str(g_reason_str or ""),
                 )).strip()

@@ -158,8 +158,11 @@ def _fetch_with_ts(pair: str, interval: int):
     return [(r["timestamp"], r["open"], r["high"], r["low"], r["close"]) for r in records]
 
 
+_SAFE_PAIR_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
 def _safe_pair(pair: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(pair or "").strip()).strip("._")
+    cleaned = _SAFE_PAIR_RE.sub("_", str(pair or "").strip()).strip("._")
     return cleaned or "UNKNOWN"
 
 
