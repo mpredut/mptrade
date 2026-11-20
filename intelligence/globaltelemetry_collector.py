@@ -817,10 +817,16 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self._active_cycle_ts = current_ts if explicit_now else None
         live_clock = not explicit_now
         end_ts = current_ts
+        last_hb_ts = current_ts
 
         def _refresh_live_heartbeat() -> None:
+            nonlocal last_hb_ts
             if live_clock:
-                results["ts"] = resolve_now_ts(None)
+                now_hb = resolve_now_ts(None)
+                if now_hb <= last_hb_ts:
+                    return
+                last_hb_ts = now_hb
+                results["ts"] = now_hb
             self.write_heartbeat(results)
 
         try:

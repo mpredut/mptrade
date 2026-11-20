@@ -675,11 +675,14 @@ class GeminiClient(GeminiQuotaRouterMixin):
 
             resume_abandoned = False
             tried_detached_models: set[str] = set()
+            exhausted_in_call: set[str] = set()
 
             for attempt_idx, model_candidate in enumerate(models_to_try):
                 if resume_abandoned and model_candidate in tried_detached_models:
                     continue
                 if attempt_idx > 0 and enable_pre_quota:
+                    if model_candidate.strip().lower() in exhausted_in_call:
+                        continue
                     rt_ex = (
                         self._QUOTA_MEM_CACHE.get("runtime_exhausted")
                         if isinstance(self._QUOTA_MEM_CACHE, dict)
@@ -689,6 +692,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                     now_iter = time.time()
                     if safe_float(rt_ex.get(model_candidate), 0.0) > now_iter and any(
                         safe_float(rt_ex.get(rem_m), 0.0) <= now_iter
+                        and rem_m.strip().lower() not in exhausted_in_call
                         for rem_m in models_to_try[attempt_idx + 1:]
                     ):
                         continue
@@ -844,10 +848,20 @@ class GeminiClient(GeminiQuotaRouterMixin):
                     return True, output
 
                 if enable_pre_quota and self._is_quota_or_credit_error(proc):
+                    is_unrec = self._is_unrecognized_model_error(proc)
                     self._record_model_quota_exhausted(
                         model_candidate,
-                        model_unrecognized=self._is_unrecognized_model_error(proc),
+                        model_unrecognized=is_unrec,
                     )
+                    if not is_unrec:
+                        cand_lc = model_candidate.strip().lower()
+                        p_gem, f_gem, c_mod = self._resolve_model_pools(extra_models=(model_candidate.strip(),))
+                        pool = (
+                            p_gem
+                            if cand_lc in p_gem
+                            else (f_gem if cand_lc in f_gem else (c_mod if cand_lc in c_mod else (cand_lc,)))
+                        )
+                        exhausted_in_call.update(m.lower() for m in pool)
                 logger.warning(
                     "agy CLI with model '%s' failed (code %s): %s",
                     model_candidate,

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Collection, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from botcore import (
     _parse_bool_flag,
@@ -255,6 +255,43 @@ def _collect_delta_gate_atr_15m(prices_and_trends: Any) -> Dict[str, float]:
     return atr_map
 
 
+def _resolve_unactionable_delta_gate_symbols(ps_map: Mapping[str, Any]) -> set[str]:
+    """Return canonical symbols whose tracked positions all report zero buy/sell/replace capacity and zero open orders."""
+    raw_positions = ps_map.get("tradable_positions")
+    if not isinstance(raw_positions, list) or not raw_positions:
+        return set()
+    raw_open = ps_map.get("open_limit_orders")
+    if not isinstance(raw_open, list):
+        raw_open = ps_map.get("open_orders") if isinstance(ps_map.get("open_orders"), list) else []
+    open_syms: set[str] = set()
+    for oo in raw_open:
+        if not isinstance(oo, Mapping):
+            continue
+        oo_raw = str(oo.get("symbol") or "").strip()
+        oo_sym = canonical_display_symbol(oo_raw, venue=oo.get("venue")) or oo_raw.upper()
+        if oo_sym:
+            open_syms.add(oo_sym)
+    seen_syms: set[str] = set()
+    actionable_syms: set[str] = set()
+    for pos in raw_positions:
+        if not isinstance(pos, Mapping):
+            continue
+        sym_raw = str(pos.get("symbol") or "").strip()
+        sym_k = canonical_display_symbol(sym_raw, venue=pos.get("venue")) or sym_raw.upper()
+        if not sym_k:
+            continue
+        seen_syms.add(sym_k)
+        if "effective_max_buy_usd" not in pos and "effective_max_sell_usd" not in pos:
+            actionable_syms.add(sym_k)
+            continue
+        mb = safe_pos_float(pos.get("effective_max_buy_usd"), default=0.0) or 0.0
+        ms = safe_pos_float(pos.get("effective_max_sell_usd"), default=0.0) or 0.0
+        rmb = safe_pos_float(pos.get("replace_max_buy_usd"), default=0.0) or 0.0
+        if mb > 0.0 or ms > 0.0 or rmb > 0.0 or sym_k in open_syms:
+            actionable_syms.add(sym_k)
+    return seen_syms - actionable_syms
+
+
 def _compute_max_spot_move(
     eval_prices: Mapping[str, float],
     prev_prices_raw: Any,
@@ -262,6 +299,7 @@ def _compute_max_spot_move(
     min_move_pct: float = 0.35,
     high_move_pct: float = 1.0,
     atr_15m_by_sym: Optional[Mapping[str, float]] = None,
+    unactionable_syms: Optional[Collection[str]] = None,
 ) -> Tuple[float, str, float, str, float, float, int, Dict[str, float]]:
     """Compute raw max spot move and strongest per-symbol ATR-scaled threshold breach since the prior real eval."""
     prev_prices: Dict[str, float] = {}
@@ -273,6 +311,7 @@ def _compute_max_spot_move(
             if sym_k and px is not None:
                 prev_prices[sym_k] = px
     atr_map = atr_15m_by_sym if isinstance(atr_15m_by_sym, Mapping) else {}
+    ignored_syms = set(unactionable_syms) if unactionable_syms else set()
     max_move_pct = 0.0
     max_move_sym = ""
     max_move_thresh_pct = min_move_pct
@@ -285,6 +324,8 @@ def _compute_max_spot_move(
         if sym_u not in prev_prices:
             continue
         common_count += 1
+        if sym_u in ignored_syms:
+            continue
         base_px = prev_prices[sym_u]
         move_pct = abs((cur_px - base_px) / base_px) * 100.0
         atr_15m = safe_pos_float(atr_map.get(sym_u), default=None)
@@ -405,6 +446,7 @@ def evaluate_crypto_executor_delta_gate(
         "plan_states": plan_states,
     }
 
+    unactionable_syms = _resolve_unactionable_delta_gate_symbols(ps_map)
     (
         max_move_pct,
         _max_move_sym,
@@ -420,6 +462,7 @@ def evaluate_crypto_executor_delta_gate(
         min_move_pct=eff_min_move_pct,
         high_move_pct=eff_high_move_pct,
         atr_15m_by_sym=atr_15m_by_sym,
+        unactionable_syms=unactionable_syms,
     )
     has_new_fill = _has_new_fill_since_prev(ps_map, prev_map, latest_fill_ts=latest_fill_ts)
 

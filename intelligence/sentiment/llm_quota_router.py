@@ -732,7 +732,7 @@ class GeminiQuotaRouterMixin:
                 if isinstance(data.get("runtime_exhausted"), dict)
                 else {}
             )
-            paid_gemini_models, flash_gemini_models, _ = cls._resolve_model_pools(extra_models=(cleaned,))
+            paid_gemini_models, flash_gemini_models, claude_models = cls._resolve_model_pools(extra_models=(cleaned,))
             cleaned_lc = cleaned.lower()
             if unrec:
                 affected: tuple[str, ...] = (cleaned,)
@@ -740,6 +740,8 @@ class GeminiQuotaRouterMixin:
                 affected = paid_gemini_models
             elif cleaned_lc in flash_gemini_models:
                 affected = flash_gemini_models
+            elif cleaned_lc in claude_models or is_claude_model(cleaned_lc):
+                affected = tuple(dict.fromkeys((*claude_models, *(k for k in buckets if is_claude_model(k)))))
             else:
                 affected = (cleaned,)
             for m_alias in affected:

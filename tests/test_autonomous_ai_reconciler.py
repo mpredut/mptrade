@@ -9774,6 +9774,87 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
         False,
         "prev_eval_actionable",
     )
+    # Unactionable zero-capacity symbols (e.g. flat SELL-only xStock ANTxUSD) do not trigger Delta-Gate price_move wakeups
+    unactionable_xstock_s = SimpleNamespace(
+        **{
+            **base_sensors.__dict__,
+            "prices_and_trends": {"BTCUSDC": {"price": 90010.0}, "ANTxUSD": {"price": 88.50}},
+            "portfolio_summary": {
+                "tradable_positions": [
+                    {"venue": "binance", "symbol": "BTCUSDC", "price": 90010.0, "effective_max_buy_usd": 2000.0, "effective_max_sell_usd": 2000.0},
+                    {"venue": "kraken", "symbol": "ANTxUSD", "price": 88.50, "effective_max_buy_usd": 0.0, "effective_max_sell_usd": 0.0},
+                ],
+                "open_limit_orders": [],
+                "recent_orders": {},
+            },
+        }
+    )
+    prev_with_antx = {
+        **prev_hold,
+        "delta_gate_meta": {**prev_hold["delta_gate_meta"], "eval_prices": {"BTCUSDC": 90000.0, "ANTxUSD": 87.20}},
+    }
+    skip_unact, rsn_unact, hi_unact, _ = evaluate_crypto_executor_delta_gate(
+        unactionable_xstock_s, prev_with_antx, now_ts=t0 + 360.0
+    )
+    assert skip_unact is True and "quiet_flat" in rsn_unact and hi_unact is False
+
+    # Same-call pool exhaustion skips sibling models (neon-medium after neon-high 429) and marks Claude pool symmetrically
+    import subprocess as _sp
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from state_io import atomic_write_json
+
+    q_state = tmp_path / "quota_pool_test.json"
+    atomic_write_json(
+        str(q_state),
+        {
+            "checked_ts": t0,
+            "available_credits": 0.0,
+            "buckets": {
+                "gemini-4-neon-high": 0.0,
+                "gemini-4-neon-medium": 0.0,
+                "claude-sonnet-5-5-medium": 0.5,
+                "claude-sonnet-5-5-high": 0.5,
+            },
+            "runtime_exhausted": {},
+        },
+    )
+    monkeypatch.setattr(GeminiClient, "_get_quota_state_path", staticmethod(lambda: str(q_state)))
+    GeminiClient._record_model_quota_exhausted("claude-sonnet-5-5-medium")
+    assert GeminiClient._QUOTA_MEM_CACHE["buckets"]["claude-sonnet-5-5-medium"] == 0.0
+    assert GeminiClient._QUOTA_MEM_CACHE["buckets"]["claude-sonnet-5-5-high"] == 0.0
+
+    seen_429_models: list[str] = []
+    client_429 = GeminiClient(
+        cli_path="/bin/false",
+        api_key="",
+        fallback_models=["gemini-4-neon-medium", "claude-sonnet-5-5-medium"],
+    )
+    monkeypatch.setattr(
+        client_429,
+        "probe_live_model_quota",
+        lambda **_kw: {
+            "checked_ts": time.time(),
+            "available_credits": 0.0,
+            "buckets": {"gemini-4-neon-high": 0.0, "gemini-4-neon-medium": 0.0, "claude-sonnet-5-5-medium": 0.0},
+            "runtime_exhausted": {
+                "gemini-4-neon-high": time.time() + 60.0,
+                "gemini-4-neon-medium": time.time() + 60.0,
+                "claude-sonnet-5-5-medium": time.time() + 60.0,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        client_429,
+        "_execute_cli",
+        lambda _cid, _txt, _to, cli_m, *_rest, **_kw: (
+            seen_429_models.append(cli_m)
+            or _sp.CompletedProcess(
+                ["agy"], returncode=3, stdout="", stderr="error: Your AI credits balance is too low to continue."
+            )
+        ),
+    )
+    assert client_429.query_text("ping", model="gemini-4-neon-high", cache_ttl_sec=0.0) is None
+    assert seen_429_models == ["gemini-4-neon-high", "claude-sonnet-5-5-medium"]
 
     # 2. End-to-end AutonomousAIReconciler.run_cycle verification (heartbeat-only skip + effort escalation)
     cache_dir = tmp_path / "cachedb"
