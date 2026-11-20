@@ -1498,14 +1498,63 @@ def test_batch51_verify_tools_hardening(tmp_path, monkeypatch):
     assert ta_mod.cmd_pre_commit(SimpleNamespace(files=[str(sample_py)], min_score=2)) == 0
     assert sample_py.read_text(encoding="utf-8") == "# English comment with diacritic as\n"
 
+    # Prod Python auto-hygiene: CRLF->LF, comment/docstring typography, and runtime string/f-string escapes
+    hygiene_py = tmp_path / "prod_hygiene.py"
+    hygiene_src = (
+        '"""Check price \u2265 threshold \u2014 fast path \u2192 ready."""\r\n'
+        '# Note \u2014 keep \u201cquotes\u201d \u2192 ASCII\r\n'
+        'def render(v):\r\n'
+        '    msg = "\U0001f7e2 ok \u2014 done"\r\n'
+        '    fmsg = f"{{hdr}} \U0001f7e2 {f"sub \u2014 {v}"} \u2265 0"\r\n'
+        '    return msg, fmsg\r\n'
+    )
+    hygiene_py.write_bytes(hygiene_src.encode("utf-8"))
+    assert ta_mod.cmd_pre_commit(SimpleNamespace(files=[str(hygiene_py)], min_score=2)) == 0
+    hygiene_after = hygiene_py.read_bytes().decode("utf-8")
+    assert "\r" not in hygiene_after
+    assert hygiene_after.isascii()
+    assert '# Note -- keep "quotes" -> ASCII\n' in hygiene_after
+    assert '"""Check price >= threshold -- fast path -> ready."""\n' in hygiene_after
+    ns_before: dict = {}
+    ns_after: dict = {}
+    exec(hygiene_src.replace("\r\n", "\n"), ns_before)
+    exec(hygiene_after, ns_after)
+    assert ns_after["render"](7) == ns_before["render"](7)
+
+    # Prod Python blocks unmapped non-ASCII (e.g. raw regex or emoji in comment) without corrupting raw strings
+    raw_py = tmp_path / "raw_non_ascii.py"
+    raw_py.write_text('PAT = r"a\u2014b"\n', encoding="utf-8")
+    assert ta_mod.cmd_pre_commit(SimpleNamespace(files=[str(raw_py)], min_score=2)) == 1
+    assert raw_py.read_text(encoding="utf-8") == 'PAT = r"a\u2014b"\n'
+
+    emoji_comment_py = tmp_path / "emoji_comment.py"
+    emoji_comment_py.write_text("# \U0001f680 launch\n", encoding="utf-8")
+    assert ta_mod.cmd_pre_commit(SimpleNamespace(files=[str(emoji_comment_py)], min_score=2)) == 1
+
+    # Non-prod text files (conf/json/tests) normalize CRLF->LF while preserving intentional Unicode test fixtures
+    conf_file = tmp_path / "sample.conf"
+    conf_file.write_bytes(b"KEY=1\r\nVAL=2\r\n")
+    assert ta_mod.cmd_pre_commit(SimpleNamespace(files=[str(conf_file)], min_score=2)) == 0
+    assert conf_file.read_bytes() == b"KEY=1\nVAL=2\n"
+
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    fixture_py = tests_dir / "test_unicode_fixture.py"
+    fixture_py.write_bytes('VAL = "\u0661\u0662\u0663"\r\n'.encode("utf-8"))
+    assert ta_mod.cmd_pre_commit(SimpleNamespace(files=[str(fixture_py)], min_score=2)) == 0
+    assert fixture_py.read_bytes() == 'VAL = "\u0661\u0662\u0663"\n'.encode("utf-8")
+
     ro_py = tmp_path / "ro_sample.py"
     ro_py.write_text("# verifica pretul pentru ordinul activ\n", encoding="utf-8")
     assert ta_mod.cmd_pre_commit(SimpleNamespace(files=[str(ro_py)], min_score=2)) == 1
 
     msg_file = tmp_path / "COMMIT_EDITMSG"
-    msg_file.write_text("Fix order guard threshold \u0219i-like typo\n", encoding="utf-8")
+    msg_file.write_bytes("Fix order guard threshold \u0219i-like typo \u2014 fast \u2192 ok\r\n".encode("utf-8"))
     assert ta_mod.cmd_commit_msg(SimpleNamespace(msg_file=str(msg_file), min_score=2)) == 0
-    assert msg_file.read_text(encoding="utf-8") == "Fix order guard threshold si-like typo\n"
+    assert msg_file.read_bytes() == b"Fix order guard threshold si-like typo -- fast -> ok\n"
+
+    msg_file.write_text("Fix \U0001f680 emoji commit\n", encoding="utf-8")
+    assert ta_mod.cmd_commit_msg(SimpleNamespace(msg_file=str(msg_file), min_score=2)) == 1
 
     msg_file.write_text("repara eroarea pentru ordinul de cumparare\n", encoding="utf-8")
     assert ta_mod.cmd_commit_msg(SimpleNamespace(msg_file=str(msg_file), min_score=2)) == 1

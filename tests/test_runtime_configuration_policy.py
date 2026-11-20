@@ -16,13 +16,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from verify_tools.direct_order_api_inventory import inventory, scan_direct_calls
 from verify_tools.ownership_inventory import build_inventory, find_overlaps
+from verify_tools.translation_audit import TEXT_FILENAMES, TEXT_SUFFIXES
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TEXT_SUFFIXES = {
-    ".conf", ".csv", ".env", ".html", ".ini", ".json", ".md", ".ps1",
-    ".py", ".service", ".sh", ".toml", ".txt", ".yaml", ".yml",
-}
 
 
 def test_market_alerts_and_hyperliquid_provider_use_shared_env_stack():
@@ -193,9 +190,7 @@ def _tracked_text_files():
         path = ROOT / relative
         if not path.is_file():
             continue
-        if path.suffix.lower() in TEXT_SUFFIXES or path.name in {
-            ".gitattributes", ".gitignore", "submit",
-        }:
+        if path.suffix.lower() in TEXT_SUFFIXES or path.name in TEXT_FILENAMES:
             yield path
 
 

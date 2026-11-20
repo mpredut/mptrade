@@ -1,5 +1,5 @@
 # Repository Rules & Execution Scope
-- **English, ASCII & LF Hygiene (`.githooks/`):** Write code, comments, logs, docs, and commits in 7-bit ASCII English with Unix LF line endings (enforced by `.githooks/` via `verify_tools/translation_audit.py` and `tests/test_runtime_configuration_policy.py`).
+- **English Only:** Write code, comments, docs, and commits in English.
 - **Auto-Push & Targeted Testing:** Automatically push verified commits to `origin/main`. Run targeted `.venv/bin/pytest` suites locally (include `tests/test_runtime_configuration_policy.py` when touching order paths, atomic I/O, config keys, or cache ownership); full regressions run on DEV (`./offline/runners/trigger_dev_regression.sh`, status via `./offline/runners/check_dev_regression.sh` or `mptrade-dev:cachedb/dev_regression_status.json`).
 - **Topology:** Local WSL `/home/mariusp/mptrade` | PROD `mptrade-prod` (`192.168.0.144`, `/home/predut/mptrade`) | DEV `mptrade-dev` (`192.168.0.138`, `/home/predut/mptrade`).
 

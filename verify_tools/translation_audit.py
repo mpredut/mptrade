@@ -43,7 +43,57 @@ from state_io import atomic_write_text, read_text_file
 _RO_DIACRITIC_SRC = "\u0103\u00e2\u00ee\u0219\u021b\u0102\u00c2\u00ce\u0218\u021a\u015f\u0163\u015e\u0162"
 _RO_DIACRITIC_DST = "aaistAAISTstST"
 RO_DIACRITICS = set(_RO_DIACRITIC_SRC)
-RO_DIACRITIC_TRANS = str.maketrans(_RO_DIACRITIC_SRC, _RO_DIACRITIC_DST)
+_RO_DIACRITIC_MAP = dict(zip(_RO_DIACRITIC_SRC, _RO_DIACRITIC_DST))
+RO_DIACRITIC_TRANS = str.maketrans(_RO_DIACRITIC_MAP)
+
+_ASCII_TYPOGRAPHY_COMMON = {
+    "\u2014": "--",
+    "\u2013": "-",
+    "\u2212": "-",
+    "\u2010": "-",
+    "\u2011": "-",
+    "\u2026": "...",
+    "\u00a0": " ",
+    "\u2009": " ",
+    "\u202f": " ",
+    "\u200b": "",
+    "\ufeff": "",
+    "\u2192": "->",
+    "\u2794": "->",
+    "\u2190": "<-",
+    "\u2194": "<->",
+    "\u21d2": "=>",
+    "\u2264": "<=",
+    "\u2265": ">=",
+    "\u2260": "!=",
+    "\u2248": "~=",
+    "\u00b1": "+/-",
+    "\u00d7": "x",
+    "\u00b7": "-",
+    "\u2022": "-",
+}
+_ASCII_QUOTES = {
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+}
+_ASCII_PROSE_TRANS = str.maketrans({**_RO_DIACRITIC_MAP, **_ASCII_TYPOGRAPHY_COMMON, **_ASCII_QUOTES})
+_ASCII_PROSE_NO_DIACRITIC_TRANS = str.maketrans({**_ASCII_TYPOGRAPHY_COMMON, **_ASCII_QUOTES})
+_ASCII_DOCSTRING_TRANS = str.maketrans({**_RO_DIACRITIC_MAP, **_ASCII_TYPOGRAPHY_COMMON})
+_ASCII_DOCSTRING_NO_DIACRITIC_TRANS = str.maketrans(_ASCII_TYPOGRAPHY_COMMON)
+_FSTRING_START = getattr(tokenize, "FSTRING_START", -1)
+_FSTRING_MIDDLE = getattr(tokenize, "FSTRING_MIDDLE", -1)
+_FSTRING_END = getattr(tokenize, "FSTRING_END", -1)
+
+TEXT_SUFFIXES = frozenset({
+    ".conf", ".csv", ".env", ".example", ".html", ".ini", ".json", ".md", ".ps1",
+    ".py", ".service", ".sh", ".toml", ".txt", ".yaml", ".yml",
+})
+TEXT_FILENAMES = frozenset({".gitattributes", ".gitignore", "submit"})
+PROD_PYTHON_SKIP_TOP = frozenset({
+    "tests", "offline", "verify_tools", "ops", ".venv", "venv", "myenv", ".git", "__pycache__",
+})
 
 DIACRITIC_EXEMPT_PATHS = frozenset({
     "orchestratorOS/admin/prune_llm_threads.py",
@@ -59,10 +109,153 @@ def strip_romanian_diacritics(text: str) -> str:
     return text.translate(RO_DIACRITIC_TRANS)
 
 
+def normalize_line_endings(text: str) -> str:
+    """Normalize CRLF/CR line endings to Unix LF."""
+    return text.replace("\r\n", "\n").replace("\r", "\n") if "\r" in text else text
+
+
+def normalize_ascii_prose(text: str, *, strip_diacritics: bool = True) -> str:
+    """Replace Romanian diacritics and common Unicode punctuation/symbols with 7-bit ASCII."""
+    return text.translate(_ASCII_PROSE_TRANS if strip_diacritics else _ASCII_PROSE_NO_DIACRITIC_TRANS)
+
+
+def escape_non_ascii_literals(text: str) -> str:
+    """Escape non-ASCII characters as Python \\uXXXX / \\UXXXXXXXX sequences."""
+    if text.isascii():
+        return text
+    return "".join(
+        ch if ord(ch) < 128 else (f"\\u{ord(ch):04x}" if ord(ch) <= 0xFFFF else f"\\U{ord(ch):08x}")
+        for ch in text
+    )
+
+
 def is_diacritic_exempt(path: str) -> bool:
     """Return True when ``path`` is an intentional bilingual matcher/test file."""
     rel = os.path.relpath(os.path.abspath(path), _ROOT).replace(os.sep, "/")
     return rel in DIACRITIC_EXEMPT_PATHS or path.replace(os.sep, "/") in DIACRITIC_EXEMPT_PATHS
+
+
+def is_text_hygiene_path(path: str) -> bool:
+    """Return True when ``path`` is a tracked text file subject to LF hygiene."""
+    base = os.path.basename(path)
+    if base == ".env":
+        return False
+    if base in TEXT_FILENAMES:
+        return True
+    _, ext = os.path.splitext(base)
+    return ext.lower() in TEXT_SUFFIXES
+
+
+def is_prod_python_path(path: str, repo_root: str = _ROOT) -> bool:
+    """Return True when ``path`` is a production Python module subject to 7-bit ASCII purity."""
+    if not path.endswith(".py"):
+        return False
+    abs_root = os.path.abspath(repo_root)
+    abs_path = os.path.abspath(path)
+    try:
+        in_repo = os.path.commonpath([abs_root, abs_path]) == abs_root
+    except ValueError:
+        in_repo = False
+    if in_repo:
+        rel_parts = os.path.relpath(abs_path, abs_root).replace(os.sep, "/").split("/")
+        return not any(
+            part in PROD_PYTHON_SKIP_TOP or part.startswith(".") or part == "site-packages"
+            for part in rel_parts
+        )
+    parts = [p for p in abs_path.replace(os.sep, "/").split("/") if p]
+    return not any(part in PROD_PYTHON_SKIP_TOP or part == "site-packages" for part in parts)
+
+
+def _docstring_spans(source: str) -> set[Tuple[int, int]]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    has_runtime_doc = "__doc__" in source
+    spans: set[Tuple[int, int]] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, DOC_OWNERS) and getattr(node, "body", None):
+            if isinstance(node, ast.Module) and has_runtime_doc:
+                continue
+            first = node.body[0]
+            if (
+                isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)
+            ):
+                spans.add((first.value.lineno, first.value.col_offset))
+    return spans
+
+
+def sanitize_python_ascii(source: str, *, strip_diacritics: bool = True) -> str:
+    """Normalize comments/docstrings to ASCII and escape non-ASCII in non-raw Python string literals."""
+    if source.isascii():
+        return source
+    lines = source.splitlines(keepends=True)
+    offsets = [0]
+    for ln in lines:
+        offsets.append(offsets[-1] + len(ln))
+    doc_starts = _docstring_spans(source)
+    doc_trans = _ASCII_DOCSTRING_TRANS if strip_diacritics else _ASCII_DOCSTRING_NO_DIACRITIC_TRANS
+    fstring_raw_stack: List[bool] = []
+    replacements: List[Tuple[int, int, str]] = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == _FSTRING_START:
+                fstring_raw_stack.append("r" in tok.string.lower())
+                continue
+            if tok.type == _FSTRING_END:
+                if fstring_raw_stack:
+                    fstring_raw_stack.pop()
+                continue
+            if tok.type not in (tokenize.COMMENT, tokenize.STRING, _FSTRING_MIDDLE):
+                continue
+            start_idx = offsets[tok.start[0] - 1] + tok.start[1]
+            end_idx = offsets[tok.end[0] - 1] + tok.end[1]
+            raw_slice = source[start_idx:end_idx]
+            if raw_slice.isascii():
+                continue
+            if tok.type == tokenize.COMMENT:
+                new_slice = normalize_ascii_prose(raw_slice, strip_diacritics=strip_diacritics)
+            elif tok.type == tokenize.STRING:
+                q_pos = min((i for i in (raw_slice.find("'"), raw_slice.find('"')) if i >= 0), default=0)
+                prefix = raw_slice[:q_pos].lower()
+                if "r" in prefix or "b" in prefix:
+                    continue
+                if tok.start in doc_starts:
+                    new_slice = escape_non_ascii_literals(raw_slice.translate(doc_trans))
+                else:
+                    new_slice = escape_non_ascii_literals(raw_slice)
+            else:
+                if not fstring_raw_stack or fstring_raw_stack[-1]:
+                    continue
+                new_slice = escape_non_ascii_literals(raw_slice)
+            if new_slice != raw_slice:
+                replacements.append((start_idx, end_idx, new_slice))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return source
+    if not replacements:
+        return source
+    out: List[str] = []
+    cursor = 0
+    for s, e, rep in replacements:
+        out.append(source[cursor:s])
+        out.append(rep)
+        cursor = e
+    out.append(source[cursor:])
+    cleaned = "".join(out)
+    try:
+        ast.parse(cleaned)
+    except SyntaxError:
+        return source
+    return cleaned
+
+
+def find_first_non_ascii_line(text: str) -> int | None:
+    """Return 1-based line number of the first non-ASCII line, or None if pure 7-bit ASCII."""
+    if text.isascii():
+        return None
+    return next((idx for idx, ln in enumerate(text.splitlines(), 1) if not ln.isascii()), 1)
 
 
 def sanitize_file_diacritics(path: str) -> bool:
@@ -77,6 +270,31 @@ def sanitize_file_diacritics(path: str) -> bool:
         return False
     atomic_write_text(path, cleaned, newline="", preserve_mode=True)
     return True
+
+
+def sanitize_file_hygiene(path: str, *, repo_root: str = _ROOT) -> List[str]:
+    """Auto-fix LF line endings, prod Python 7-bit ASCII, and Romanian diacritics in-place."""
+    source = read_text_file(path, default=None, newline="")
+    if source is None:
+        return []
+    cleaned = source
+    actions: List[str] = []
+    if "\r" in cleaned:
+        cleaned = normalize_line_endings(cleaned)
+        actions.append("CRLF->LF")
+    if is_prod_python_path(path, repo_root=repo_root):
+        next_cleaned = sanitize_python_ascii(cleaned, strip_diacritics=not is_diacritic_exempt(path))
+        if next_cleaned != cleaned:
+            cleaned = next_cleaned
+            actions.append("ASCII")
+    elif path.endswith(SCAN_EXTS) and not is_diacritic_exempt(path):
+        next_cleaned = strip_romanian_diacritics(cleaned)
+        if next_cleaned != cleaned:
+            cleaned = next_cleaned
+            actions.append("diacritics->ASCII")
+    if cleaned != source:
+        atomic_write_text(path, cleaned, newline="", preserve_mode=True)
+    return actions
 
 
 def ensure_git_hooks_configured(repo_root: str = _ROOT) -> bool:
@@ -228,7 +446,7 @@ def cmd_scan(args) -> int:
         print(f"\n=== {path}  ({len(hits)} block(s)) ===")
         if runtime_doc:
             print("    WARNING: this file references __doc__; its module docstring may be"
-                  " runtime CLI text — do not translate it as ordinary prose.")
+                  " runtime CLI text -- do not translate it as ordinary prose.")
         shown = hits if args.all else hits[:safe_nonneg_int(args.limit, default=0)]
         for line, kind, score, text in shown:
             print(f"  L{line:<5} {kind:<9} score={score:<3} {text[:100]}")
@@ -309,7 +527,7 @@ def cmd_verify(args) -> int:
                   f"line_endings_identical={same_endings}")
             if not same_endings:
                 print(f"       HEAD={head_endings}  worktree={work_endings}"
-                      "  — reopen with newline='' and redo the edit")
+                      "  -- reopen with newline='' and redo the edit")
 
     print()
     print("RESULT:", "every file changed prose only" if not failures
@@ -319,7 +537,7 @@ def cmd_verify(args) -> int:
 
 # -- git hooks (pre-commit / commit-msg) ---------------------------------------
 
-def _staged_scannable_files(explicit_files: List[str] | None = None) -> List[str]:
+def _staged_hygiene_files(explicit_files: List[str] | None = None) -> List[str]:
     if explicit_files is not None:
         candidates = explicit_files
     else:
@@ -331,9 +549,7 @@ def _staged_scannable_files(explicit_files: List[str] | None = None) -> List[str
     selected: List[str] = []
     for rel in candidates:
         parts = set(rel.replace("\\", "/").split("/"))
-        if parts & SKIP_DIRS or os.path.basename(rel) == ".env":
-            continue
-        if not rel.endswith(SCAN_EXTS):
+        if parts & SKIP_DIRS or not is_text_hygiene_path(rel):
             continue
         full = rel if os.path.isabs(rel) else os.path.join(_ROOT, rel)
         if os.path.isfile(full):
@@ -342,38 +558,57 @@ def _staged_scannable_files(explicit_files: List[str] | None = None) -> List[str
 
 
 def cmd_pre_commit(args) -> int:
-    files = _staged_scannable_files(args.files if args.files else None)
+    files = _staged_hygiene_files(args.files if args.files else None)
     total_hits = 0
+    non_ascii_errors: List[str] = []
     for path in files:
         rel = os.path.relpath(path, _ROOT) if os.path.isabs(path) else path
-        if sanitize_file_diacritics(path):
-            print(f"[pre-commit] Auto-replaced Romanian diacritics with ASCII: {rel}")
+        actions = sanitize_file_hygiene(path)
+        if actions:
+            print(f"[pre-commit] Auto-fixed ({', '.join(actions)}): {rel}")
             if not args.files:
                 subprocess.run(["git", "add", "--", path], cwd=_ROOT, check=False)
-        if is_diacritic_exempt(path) or not (hits := scan_file(path, args.min_score)[0]):
+        if is_prod_python_path(path):
+            source = read_text_file(path, default=None, newline="")
+            bad_ln = find_first_non_ascii_line(source) if source is not None else None
+            if bad_ln is not None:
+                non_ascii_errors.append(
+                    f"{rel}:{bad_ln}: non-ASCII source character (use \\uXXXX/\\UXXXXXXXX escapes in runtime strings)"
+                )
+        if not path.endswith(SCAN_EXTS) or is_diacritic_exempt(path):
+            continue
+        hits = scan_file(path, args.min_score)[0]
+        if not hits:
             continue
         total_hits += len(hits)
         print(f"\n=== {rel} ({len(hits)} Romanian block(s)) ===")
         for line, kind, score, text in hits:
             print(f"  L{line:<5} {kind:<9} score={score:<3} {text[:100]}")
+    if non_ascii_errors:
+        print("\n[pre-commit] Blocked: non-ASCII character(s) remain in production Python file(s):")
+        for err in non_ascii_errors:
+            print(f"  {err}")
     if total_hits:
         print(f"\n[pre-commit] Blocked: {total_hits} Romanian block(s) detected. "
               "Write comments, docstrings, and docs in English.")
-        return 1
-    return 0
+    return 1 if (non_ascii_errors or total_hits) else 0
 
 
 def cmd_commit_msg(args) -> int:
     source = read_text_file(args.msg_file, default=None, newline="")
     if source is None:
         return 0
-    cleaned = strip_romanian_diacritics(source)
+    cleaned = normalize_ascii_prose(normalize_line_endings(source))
     if cleaned != source:
         atomic_write_text(args.msg_file, cleaned, newline="")
-        print("[commit-msg] Auto-replaced Romanian diacritics with ASCII in commit message.")
+        print("[commit-msg] Auto-normalized commit message to 7-bit ASCII LF.")
     prose = "\n".join(
         line for line in cleaned.splitlines() if not line.lstrip().startswith("#")
     )
+    if not prose.isascii():
+        print("[commit-msg] Blocked: non-ASCII characters remain in commit message. "
+              "Use 7-bit ASCII English.")
+        return 1
     score = romanian_score(prose)
     if score >= args.min_score:
         matched = [w for w in _TOKEN_RE.findall(prose.lower()) if w in RO_WORDS]
@@ -404,13 +639,17 @@ def main() -> int:
     verify.add_argument("--rev", default="HEAD", help="revision to compare against")
     verify.set_defaults(func=cmd_verify)
 
-    pre_commit = sub.add_parser("pre-commit", help="auto-strip diacritics and check staged files")
+    pre_commit = sub.add_parser(
+        "pre-commit", help="auto-fix LF/ASCII/diacritics and verify staged files",
+    )
     pre_commit.add_argument("files", nargs="*", help="optional explicit file paths")
     pre_commit.add_argument("--min-score", type=parse_nonneg_cli_int, default=2,
                             help="report a block at or above this score (default: 2)")
     pre_commit.set_defaults(func=cmd_pre_commit)
 
-    commit_msg = sub.add_parser("commit-msg", help="auto-strip diacritics and check commit message")
+    commit_msg = sub.add_parser(
+        "commit-msg", help="auto-normalize LF/ASCII/diacritics and verify commit message",
+    )
     commit_msg.add_argument("msg_file", help="path to git commit message file")
     commit_msg.add_argument("--min-score", type=parse_nonneg_cli_int, default=2,
                             help="block commit message at or above this score (default: 2)")

@@ -63,6 +63,7 @@ from providers.strategy_executor import (
     StrategyExecutor,
     SubmissionRefused,
 )
+from verify_tools.translation_audit import PROD_PYTHON_SKIP_TOP, find_first_non_ascii_line
 from providers.t212_provider import T212Provider
 from strategies import replay_execution, replay_metrics
 from trailing_core import apply_trailing_asset_env_overrides
@@ -1069,7 +1070,7 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
 def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
     """Lock repo-wide SSOT AST boundaries (zero raw json/ConfigParser/urlopen/Request/os.environ outside canonical SSOT modules) and verify quote/env/HTTP helpers."""
     root = Path(__file__).resolve().parents[1]
-    skip_top = {"tests", "offline", "verify_tools", "ops", ".venv", "venv", "myenv", ".git", "__pycache__"}
+    skip_top = PROD_PYTHON_SKIP_TOP
     prod_files: list[tuple[str, Path]] = []
     for p in sorted(root.rglob("*.py")):
         rel = p.relative_to(root)
@@ -1116,8 +1117,8 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
     for rel_s, path_obj in prod_files:
         mod_name = _rel_to_mod(rel_s)
         src_text = path_obj.read_text(encoding="utf-8")
-        if not src_text.isascii():
-            bad_ln = next((i + 1 for i, ln in enumerate(src_text.splitlines()) if not ln.isascii()), 1)
+        bad_ln = find_first_non_ascii_line(src_text)
+        if bad_ln is not None:
             non_ascii_violations.append(
                 f"{rel_s}:{bad_ln}: non-ASCII source character (use \\uXXXX/\\UXXXXXXXX escapes in runtime strings)"
             )
