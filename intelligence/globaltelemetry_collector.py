@@ -129,7 +129,7 @@ def evaluate_kinematic_impulse_symbols(
     for raw_sym, pinfo in prices_and_trends.items():
         if not isinstance(raw_sym, str) or not isinstance(pinfo, dict):
             continue
-        sym = clean_symbol_key(raw_sym)
+        sym = canonical_display_symbol(raw_sym) or clean_symbol_key(raw_sym)
         if not sym or is_equity_symbol(sym) or not has_crypto_quote_suffix(sym):
             continue
         base = canonical_base_asset(sym)
@@ -140,17 +140,38 @@ def evaluate_kinematic_impulse_symbols(
         v90 = safe_float(pinfo.get("vel_90s_pct_min"), default=None)
         a90 = safe_float(pinfo.get("accel_90s_pct_min2"), default=None)
         v5m = safe_float(pinfo.get("vel_5m_pct_min"), default=None)
+        s90_raw = safe_float(pinfo.get("slope_90s"), default=None)
+        px_cur = safe_pos_float(pinfo.get("price"), default=None)
+        s90_pct_min = ((s90_raw / px_cur) * 6000.0) if (s90_raw is not None and px_cur is not None) else None
+        # When 90s linear trend is present, require v90 impulse spikes to be corroborated by a real
+        # directional 90s move (>= 0.15%/min = 0.225% over 90s) so flat-plateau single ticks and
+        # counter-trend micro-bounces do not trigger false mid-cycle high-effort LLM wakeups.
+        v90_corroborated = (
+            s90_pct_min is None
+            or (
+                v90 is not None
+                and (
+                    ((v90 * s90_pct_min) > 0.0 and abs(s90_pct_min) >= 0.15)
+                    or (v5m is not None and (v90 * v5m) > 0.0 and abs(v5m) >= 0.18)
+                )
+            )
+        )
         shock = (
             (c3m is not None and abs(c3m) >= 0.55)
             or (c5m is not None and abs(c5m) >= 0.70)
             or (
-                v90 is not None
-                and a90 is not None
-                and abs(v90) >= 0.22
-                and abs(a90) >= 0.14
-                and (v90 * a90) > 0.0
+                v90_corroborated
+                and (
+                    (
+                        v90 is not None
+                        and a90 is not None
+                        and abs(v90) >= 0.22
+                        and abs(a90) >= 0.14
+                        and (v90 * a90) > 0.0
+                    )
+                    or (v90 is not None and abs(v90) >= 0.35)
+                )
             )
-            or (v90 is not None and abs(v90) >= 0.35)
             or (
                 v5m is not None
                 and v90 is not None

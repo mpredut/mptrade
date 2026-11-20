@@ -1610,7 +1610,7 @@ def _guard_quadratic_kinematic_overshoot(
             end_pts = pts_tau_y[-min(3, len(pts_tau_y)) :]
         v_end_ols = _linear_ols_slope(end_pts)
         v_end = v_end_ols if (v_end_ols is not None and (vel * v_end_ols) > 0.0) else 0.0
-        max_rev_vel = max(abs(v_rec), abs(eff_v_tail), 1.5 * abs(v_end))
+        max_rev_vel = max(abs(v_rec), abs(eff_v_tail), abs(v_end))
         if max_rev_vel > 0.0 and abs(vel) > max_rev_vel:
             scale = max_rev_vel / abs(vel)
             return math.copysign(max_rev_vel, vel), acc * scale

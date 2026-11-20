@@ -70,9 +70,10 @@ _HUMAN_INTEREST_WAR_FILLER_WORDS: frozenset[str] = frozenset({
     "cambodia", "centcom", "concentration", "consortium", "counterpunch",
     "cruise", "cruises", "decider", "declassified", "disney", "drama", "dreading",
     "episode", "episodes", "explained", "finale", "forever", "french", "fries",
-    "greenland", "hbo", "heating", "holocaust", "hulu", "journalist",
+    "greenland", "hbo", "heating", "hitler", "holocaust", "hulu", "journalist",
     "journalists", "liberators", "memorial", "mosquito", "mosquitoes",
-    "mosquitos", "museum", "myanmar", "mystery", "netflix", "pack", "packing",
+    "mosquitos", "museum", "myanmar", "mystery", "nazi", "nazis", "netflix",
+    "nuremberg", "pack", "packing",
     "passengers", "podcast", "podcasts", "premiere", "recap", "residents",
     "retirees", "retirement", "review", "rsf", "seafarer", "seafarers", "season",
     "social", "streets", "tourist", "tourists", "trailer", "tunnels", "vacation",
@@ -342,7 +343,7 @@ def _is_excluded_non_crisis_attack_keyword(
             return True
     if kw_words and kw_words <= {"invasion", "war", "wars"}:
         if (
-            (combined_words & {"anniversary", "extinguished", "kuwait", "wwi", "wwii", "memorial", "museum"})
+            (combined_words & {"anniversary", "extinguished", "hitler", "holocaust", "kuwait", "memorial", "museum", "nazi", "nazis", "nuremberg", "wwi", "wwii"})
             or ("years" in combined_words and "since" in combined_words)
         ) and not (
             combined_words

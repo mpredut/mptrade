@@ -15260,6 +15260,52 @@ def test_kinematic_reversal_overshoot_parity_and_filled_limit_px_precision():
     assert st_filled["limit_px"] == pytest.approx(130.07)
     assert st_filled["fill_px"] == pytest.approx(130.070001)
 
+    # 4. Historical WWII war-crimes essays must not match [HIGH-SEV] 'war' or rank as macro/geo breaking news
+    from intelligence.macro.lexicon_ssot import (
+        filter_valid_severity_keywords,
+        has_financial_or_geopolitical_context,
+        is_off_topic_general_news_title,
+        match_high_severity_keywords,
+    )
+    from intelligence.globaltelemetry_collector import evaluate_kinematic_impulse_symbols
+
+    nazi_title = "When Nazis were held responsible for war crimes"
+    assert match_high_severity_keywords(nazi_title) == ()
+    assert filter_valid_severity_keywords(["war"], title=nazi_title) == ()
+    assert has_financial_or_geopolitical_context(nazi_title) is False
+    assert is_off_topic_general_news_title(nazi_title) is True
+
+    # 5. Kinematic impulse wakeup suppresses counter-trend micro-bounces and flat-plateau single ticks when slope_90s disproves them
+    imp_res = evaluate_kinematic_impulse_symbols(
+        {
+            # Counter-trend micro-bounce: slope_90s negative (-0.17%/m), vel_90s positive (+0.39%/m), vel_5m negative -> ignored
+            "ADAUSD": {
+                "price": 0.14488,
+                "slope_90s": -4.01e-06,
+                "vel_90s_pct_min": 0.3931,
+                "accel_90s_pct_min2": 0.6567,
+                "vel_5m_pct_min": -0.1097,
+            },
+            # Flat-plateau +18bps single tick: slope_90s only +0.09%/m (< 0.15%/m) -> ignored
+            "ARBUSDC": {
+                "price": 0.1172,
+                "slope_90s": 1.75e-06,
+                "vel_90s_pct_min": 0.41,
+                "accel_90s_pct_min2": 0.52,
+                "vel_5m_pct_min": 0.04,
+            },
+            # Genuine corroborated crash: slope_90s -0.28%/m, vel_90s -0.39%/m -> triggers!
+            "HYPEUSDC": {
+                "price": 62.48,
+                "slope_90s": -0.0029,
+                "vel_90s_pct_min": -0.39,
+                "accel_90s_pct_min2": -0.28,
+                "vel_5m_pct_min": -0.26,
+            },
+        }
+    )
+    assert imp_res == ["HYPEUSDC"]
+
 
 def test_faza3b_prep_ssot_seams_zero_behavior_change(tmp_path, monkeypatch):
     """Verify Faza 3B infrastructure prep SSOT seams: fetch_public_text, macro cache constants/registry, breadth serializer, compact USD formatter, and collector/daemon lifecycle helpers."""
@@ -15387,4 +15433,3 @@ def test_faza3b_prep_ssot_seams_zero_behavior_change(tmp_path, monkeypatch):
     ) is False
     assert _resolve_macro_sensor(SimpleNamespace(macro_benchmarks=None), {"macro_benchmarks": {"x": 1}}, "macro_benchmarks") == {"x": 1}
     assert _resolve_macro_sensor(SimpleNamespace(macro_benchmarks=None), {}, "macro_benchmarks", ps={"macro_benchmarks": {"x": 2}}) == {"x": 2}
-

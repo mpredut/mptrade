@@ -1148,7 +1148,7 @@ class PriceWindow:
                     end_idx = max(tail_idx, n - max(3, n // 6))
                     v_end_raw = _ols_vel(y_pct[end_idx:])
                     v_end = v_end_raw if (velocity * v_end_raw) > 0.0 else 0.0
-                    max_rev_vel = max(abs(v_rec), abs(v_tail), 1.5 * abs(v_end))
+                    max_rev_vel = max(abs(v_rec), abs(v_tail), abs(v_end))
                     if max_rev_vel > 0.0 and abs(velocity) > max_rev_vel:
                         scale = max_rev_vel / abs(velocity)
                         velocity = math.copysign(max_rev_vel, velocity)
