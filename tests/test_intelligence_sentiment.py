@@ -10505,7 +10505,22 @@ def test_24h_price_metrics_bisect_parity_and_series_memo_shallow_copy(tmp_path, 
             dense_series.append([t_ms, round(px + 0.08, 4)])
     dense_series[-10][1] = 95.80
     dense_series[-1][1] = 96.85
-    assert compute_24h_price_metrics(dense_series) == _legacy_compute_24h_and_tpo(dense_series)
+    _faza1_additive_keys = {
+        "atr_15m_pct",
+        "atr_1h_pct",
+        "atr_4h_pct",
+        "session_vwap_px",
+        "dist_vs_session_vwap_pct",
+        "session_vwap_sigma_pct",
+        "session_vwap_z",
+        "session_vwap_anchor",
+        "session_extremes",
+    }
+
+    def _strip_faza1(d: dict) -> dict:
+        return {k: v for k, v in d.items() if k not in _faza1_additive_keys}
+
+    assert _strip_faza1(compute_24h_price_metrics(dense_series)) == _legacy_compute_24h_and_tpo(dense_series)
 
     # 2. Sparse series with overnight gap (>4h) triggering forward-point fallback and HIGHER_LOW_DOUBLE_BOTTOM
     now_ms = base_ms + 24 * 3600_000.0
@@ -10527,7 +10542,7 @@ def test_24h_price_metrics_bisect_parity_and_series_memo_shallow_copy(tmp_path, 
         [now_ms, 201.2],
     ]
     res_sparse = compute_24h_price_metrics(sparse_overnight)
-    assert res_sparse == _legacy_compute_24h_and_tpo(sparse_overnight)
+    assert _strip_faza1(res_sparse) == _legacy_compute_24h_and_tpo(sparse_overnight)
     assert res_sparse.get("bottom_structure_6h") == "HIGHER_LOW_DOUBLE_BOTTOM"
 
     # 3. _extract_sorted_ts_px is called only once inside compute_24h_price_metrics on 2-col series
@@ -10542,7 +10557,7 @@ def test_24h_price_metrics_bisect_parity_and_series_memo_shallow_copy(tmp_path, 
     monkeypatch.setattr(pse_mod, "_extract_sorted_ts_px", _counting_extract)
     res_counted = compute_24h_price_metrics(dense_series)
     assert len(extract_calls) == 1
-    assert res_counted == _legacy_compute_24h_and_tpo(dense_series)
+    assert _strip_faza1(res_counted) == _legacy_compute_24h_and_tpo(dense_series)
     monkeypatch.setattr(pse_mod, "_extract_sorted_ts_px", real_extract)
 
     # 4. load_symbol_price_series memo hit returns distinct outer list without reallocating inner row lists
@@ -13371,6 +13386,159 @@ def test_etapa0_derivatives_short_horizon_deltas_and_rendering(tmp_path):
     assert "fund_d1h=+1.00bps" in pt_tel["Perpetual Funding Rate"]
     assert "basis_d15m=+4.5bps" in pt_tel["Perpetual Funding Rate"]
     assert "15m_chg=+1.15%" in pt_tel["Derivatives Open Interest"]
+
+
+def test_faza1_multi_horizon_atr_session_vwap_and_intraday_extremes(tmp_path):
+    """Verify Faza 1: multi-horizon Wilder ATR (15m/1h/4h), UTC/RTH Session VWAP + bands/z, Asia/London/NY extremes, sibling isolation, and rendering."""
+    from types import SimpleNamespace
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import Pretrade24hAndBtcFormatStage
+    from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        build_compact_4h_ohlc_bars,
+        compute_atr_multi_horizon,
+        compute_intraday_session_extremes,
+        compute_session_vwap_metrics,
+    )
+
+    # Anchor at 2026-11-20 15:00:00 UTC (Asia closed, London active, NY open 90m)
+    day_utc_00_ms = datetime(2026, 11, 20, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+    now_utc_15_ms = datetime(2026, 11, 20, 15, 0, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+
+    # 1. Crypto 24h dense series (1m steps over 24h) + 7d archive -> compact 4h bars & monotonic ATR(15m < 1h < 4h)
+    arch_7d = []
+    for h_back in range(168, 0, -1):
+        t_h = now_utc_15_ms - h_back * 3_600_000.0
+        base_p = 60000.0 + math.sin(h_back * 0.25) * 1400.0
+        arch_7d.append([t_h, round(base_p, 2)])
+        arch_7d.append([t_h + 1_800_000.0, round(base_p + 280.0 * (1 if h_back % 2 == 0 else -1), 2)])
+    bars_4h_7d = build_compact_4h_ohlc_bars(arch_7d, [], [])
+    assert 35 <= len(bars_4h_7d) <= 46
+    assert all(len(r) == 5 and r[3] >= r[1] >= r[4] for r in bars_4h_7d)
+
+    crypto_24h = []
+    for m_back in range(24 * 60, -1, -1):
+        t_m = now_utc_15_ms - m_back * 60_000.0
+        px_m = 62000.0 + math.sin(m_back * 0.08) * 350.0 + math.sin(m_back * 0.5) * 90.0
+        # Inject distinctive session extremes inside today's Asia (02:00 UTC), London (10:00 UTC), NY (14:00 UTC)
+        if abs(t_m - (day_utc_00_ms + 2 * 3_600_000.0)) < 30_000.0:
+            px_m = 61100.0
+        elif abs(t_m - (day_utc_00_ms + 5 * 3_600_000.0)) < 30_000.0:
+            px_m = 62900.0
+        elif abs(t_m - (day_utc_00_ms + 10 * 3_600_000.0)) < 30_000.0:
+            px_m = 63150.0
+        elif abs(t_m - (day_utc_00_ms + 14 * 3_600_000.0)) < 30_000.0:
+            px_m = 61400.0
+        crypto_24h.append([t_m, round(px_m, 2)])
+    crypto_24h[-1][1] = 62100.0
+
+    m24_btc = compute_24h_price_metrics(crypto_24h, is_equity=False, series_7d_ts_px=bars_4h_7d)
+    assert m24_btc["atr_15m_pct"] > 0.0
+    assert m24_btc["atr_1h_pct"] > m24_btc["atr_15m_pct"]
+    assert m24_btc["atr_4h_pct"] > m24_btc["atr_1h_pct"]
+    sess_ex = m24_btc["session_extremes"]
+    assert sess_ex["asia"][0] == pytest.approx(61100.0)
+    assert sess_ex["asia"][1] == pytest.approx(62900.0)
+    assert sess_ex["london"][1] == pytest.approx(63150.0)
+    assert sess_ex["ny"][0] == pytest.approx(61400.0)
+
+    # At 06:00 UTC, only Asia is emitted (London 07:00 & NY 13:30 have not opened yet)
+    early_asia_pts = [pt for pt in crypto_24h if pt[0] <= day_utc_00_ms + 6 * 3_600_000.0]
+    early_sess = compute_intraday_session_extremes(early_asia_pts, is_equity=False).get("session_extremes") or {}
+    assert set(early_sess.keys()) == {"asia"}
+
+    # 2. Crypto Session VWAP anchored to 00:00 UTC (excludes prior UTC day bars) + live price geometry sync
+    ohlc_crypto = [
+        [day_utc_00_ms - 3_600_000.0, 50000.0, 9999.0],  # Yesterday UTC -- MUST be excluded
+        [day_utc_00_ms + 900_000.0, 62000.0, 100.0],
+        [day_utc_00_ms + 1_800_000.0, 62200.0, 100.0],
+        [day_utc_00_ms + 2_700_000.0, 62400.0, 200.0],
+    ]
+    # Expected VWAP = (62000*100 + 62200*100 + 62400*200) / 400 = 62250.0
+    vwap_c = compute_session_vwap_metrics(ohlc_crypto, is_equity=False, cur_px=62100.0)
+    assert vwap_c["session_vwap_px"] == pytest.approx(62250.0)
+    assert vwap_c["session_vwap_anchor"] == "utc_00"
+    assert vwap_c["dist_vs_session_vwap_pct"] == pytest.approx(((62100.0 / 62250.0) - 1.0) * 100.0, abs=0.01)
+    assert vwap_c["session_vwap_sigma_pct"] > 0.0
+    assert vwap_c["session_vwap_z"] < 0.0
+    m24_btc.update(vwap_c)
+
+    # Live price geometry recomputes dist_vs_session_vwap_pct and flips z-score sign above VWAP
+    recalculate_live_price_geometry(m24_btc, 62500.0)
+    assert m24_btc["dist_vs_session_vwap_pct"] == pytest.approx(((62500.0 / 62250.0) - 1.0) * 100.0, abs=0.01)
+    assert m24_btc["session_vwap_z"] > 0.0
+
+    # Degenerate <2 bars after UTC midnight returns {}
+    assert compute_session_vwap_metrics(
+        [[day_utc_00_ms - 900_000.0, 61000.0, 50.0], [day_utc_00_ms + 300_000.0, 62000.0, 10.0]],
+        is_equity=False,
+    ) == {}
+
+    # 3. US Equity RTH Session VWAP (09:30-16:00 NY), overnight gap immunity on intraday ATR, no crypto sessions, post-RTH override preservation
+    # Day 1 RTH (Nov 18, 2026 EST = UTC-5 -> 14:30-21:00 UTC) around $150; Day 2 RTH (Nov 19) gaps +10% to $165
+    d1_rth0 = datetime(2026, 11, 18, 14, 30, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+    d2_rth0 = datetime(2026, 11, 19, 14, 30, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+    eq_bars = []
+    for i in range(78):  # 6.5h of 5m bars on Day 1 around $150 +/- $0.30
+        eq_bars.append([d1_rth0 + i * 300_000.0, round(150.0 + (0.30 if i % 2 == 0 else -0.30), 4), 1_000_000.0])
+    # Zero-volume pre-market tick on Day 2 before 09:30 NY
+    eq_bars.append([d2_rth0 - 1_800_000.0, 166.0, 0.0])
+    for i in range(78):  # 6.5h of 5m bars on Day 2 around $165 +/- $0.33 (~0.4% intrabar range)
+        eq_bars.append([d2_rth0 + i * 300_000.0, round(165.0 + (0.33 if i % 2 == 0 else -0.33), 4), 2_000_000.0])
+    # Zero-volume after-hours tick after 16:00 NY
+    eq_bars.append([d2_rth0 + 79 * 300_000.0, 168.0, 0.0])
+
+    m24_eq = compute_24h_price_metrics(eq_bars, is_equity=True)
+    assert "session_extremes" not in m24_eq
+    assert m24_eq["session_vwap_anchor"] == "rth"
+    # Day 2 RTH mean is exactly $165.00 (excludes Day 1 $150 and zero-vol $166/$168 ticks)
+    assert m24_eq["session_vwap_px"] == pytest.approx(165.0, abs=0.05)
+    # Overnight +10% gap must NOT inflate 15m ATR to >2%
+    assert 0.1 < m24_eq["atr_15m_pct"] < 1.0
+    assert 0.1 < m24_eq["atr_1h_pct"] < 1.2
+
+    # Post-RTH price override preserves RTH Session VWAP anchor
+    eq_policy = resolve_asset_session_policy("NVDA_US_EQ")
+    _, m24_eq_ov, _ = eq_policy.apply_post_rth_price_override(eq_bars, dict(m24_eq), 170.0)
+    assert m24_eq_ov["session_vwap_px"] == pytest.approx(m24_eq["session_vwap_px"])
+    assert m24_eq_ov["session_vwap_anchor"] == "rth"
+
+    # 4. Sibling sync shares ATR across all quotes but isolates VWAP & session extremes between USD and EUR
+    p_sib = {
+        "BTCUSDC": {"price": 62500.0, **m24_btc},
+        "BTCUSD": {"price": 62505.0},
+        "BTCEUR": {"price": 57500.0},
+    }
+    sync_sibling_symbol_telemetry(p_sib, {})
+    assert p_sib["BTCUSD"]["atr_1h_pct"] == pytest.approx(m24_btc["atr_1h_pct"])
+    assert p_sib["BTCUSD"]["session_vwap_px"] == pytest.approx(62250.0)
+    assert p_sib["BTCEUR"]["atr_1h_pct"] == pytest.approx(m24_btc["atr_1h_pct"])
+    assert "session_vwap_px" not in p_sib["BTCEUR"]
+    assert "session_extremes" not in p_sib["BTCEUR"]
+
+    # 5. Section 3A & Pretrade telemetry render compact ATR, Session VWAP, and sessions
+    sec_3a = "\n".join(_format_market_prices_section({"BTCUSDC": {"price": 62500.0, **m24_btc}}))
+    assert "session_vwap=$62,250.00 (+0.40%, z=" in sec_3a
+    assert "utc_00)" in sec_3a
+    assert "sessions(asia=[61100.0, 62900.0], ldn=" in sec_3a
+    assert f"atr(15m={m24_btc['atr_15m_pct']:.2f}%, 1h={m24_btc['atr_1h_pct']:.2f}%, 4h={m24_btc['atr_4h_pct']:.2f}%)" in sec_3a
+
+    pt_ctx = SimpleNamespace(
+        cachedb_dir=str(tmp_path),
+        symbol="BTCUSDC",
+        telemetry={},
+        m24=m24_btc,
+        alt_series_24h=crypto_24h,
+        cur_p_items={},
+        cur_px_est=62500.0,
+        rj=lambda _p: {},
+    )
+    Pretrade24hAndBtcFormatStage().evaluate(pt_ctx)
+    assert "Multi-Timeframe ATR" in pt_ctx.telemetry
+    assert f"1h={m24_btc['atr_1h_pct']:.2f}%" in pt_ctx.telemetry["Multi-Timeframe ATR"]
+    assert "Session VWAP & Intraday Structure" in pt_ctx.telemetry
+    assert "Session VWAP=$62250.0 (+0.40%" in pt_ctx.telemetry["Session VWAP & Intraday Structure"]
+    assert "sessions(asia=[61100.0, 62900.0]" in pt_ctx.telemetry["Session VWAP & Intraday Structure"]
+
 
 
 

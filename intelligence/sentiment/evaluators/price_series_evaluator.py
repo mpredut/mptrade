@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import bisect
+from datetime import datetime, timezone
 import math
 import os
 import statistics
@@ -9,6 +10,7 @@ import time as _time
 from abc import ABC, abstractmethod
 from operator import itemgetter
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from botcore import (
     _prices_diverged,
@@ -49,6 +51,12 @@ KalmanTrend: Any = None
 _OHLC_24H_DISK_MEMO: Dict[str, Tuple[Tuple[int, int], List[List[Any]]]] = {}
 _LAST_OHLC_WRITER_ID_BY_PATH: Dict[str, Any] = {}
 LAST_7D_SPAN_MS_BY_SYM: Dict[str, float] = {}
+LAST_7D_4H_BARS_BY_SYM: Dict[str, List[List[Any]]] = {}
+_NY_TZ = ZoneInfo("America/New_York")
+_MS_15M = 900_000.0
+_MS_1H = 3_600_000.0
+_MS_4H = 14_400_000.0
+_MS_1D = 86_400_000.0
 
 
 def round_opt_px(val: Any, decimals: int = 6) -> Optional[float]:
@@ -405,8 +413,441 @@ def compute_volume_rvol_metrics(series: list) -> Dict[str, float]:
     return out
 
 
-def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
-    """Compute multi-horizon percentage changes (15m, 30m, 1h, 3h) and 24h range from a cache_24_price series."""
+def _resample_ohlc_bars(
+    series: Any,
+    bucket_ms: float,
+    *,
+    precleaned_ts_px: Optional[List[Tuple[float, float]]] = None,
+) -> List[List[Any]]:
+    """Aggregate sorted price or OHLCV rows into ``[bar_key, open, high, low, close, first_ts, last_ts, count]`` bars."""
+    if bucket_ms <= 0.0:
+        return []
+    has_hl = isinstance(series, (list, tuple)) and any(
+        isinstance(r, (list, tuple)) and len(r) >= 5 for r in series[:8]
+    )
+    bars: List[List[Any]] = []
+    if not has_hl:
+        pts = (
+            precleaned_ts_px
+            if precleaned_ts_px is not None
+            else (_extract_sorted_ts_px(series) if isinstance(series, (list, tuple)) else [])
+        )
+        for ts_ms, px in pts:
+            if px <= 0.0:
+                continue
+            b_key = math.floor(ts_ms / bucket_ms)
+            if bars and bars[-1][0] == b_key:
+                cur = bars[-1]
+                if px > cur[2]:
+                    cur[2] = px
+                elif px < cur[3]:
+                    cur[3] = px
+                cur[4] = px
+                cur[6] = ts_ms
+                cur[7] += 1
+            else:
+                bars.append([b_key, px, px, px, px, ts_ms, ts_ms, 1])
+        return bars
+
+    parsed_hl: List[Tuple[float, float, float, float, float]] = []
+    for row in series:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            continue
+        pt = parse_ts_px_row(row)
+        if pt is None:
+            continue
+        ts_ms, close_px = pt
+        raw_hi = safe_pos_float(row[3], default=None) if len(row) >= 4 else None
+        raw_lo = safe_pos_float(row[4], default=None) if len(row) >= 5 else None
+        raw_op = safe_pos_float(row[5], default=None) if len(row) >= 6 else None
+        hi_px = max(close_px, raw_hi) if raw_hi is not None else close_px
+        lo_px = min(close_px, raw_lo) if raw_lo is not None else close_px
+        op_px = raw_op if raw_op is not None else close_px
+        parsed_hl.append((ts_ms, op_px, hi_px, lo_px, close_px))
+    parsed_hl.sort(key=itemgetter(0))
+    for ts_ms, op_px, hi_px, lo_px, close_px in parsed_hl:
+        b_key = math.floor(ts_ms / bucket_ms)
+        if bars and bars[-1][0] == b_key:
+            cur = bars[-1]
+            if hi_px > cur[2]:
+                cur[2] = hi_px
+            if lo_px < cur[3]:
+                cur[3] = lo_px
+            cur[4] = close_px
+            cur[6] = ts_ms
+            cur[7] += 1
+        else:
+            bars.append([b_key, op_px, hi_px, lo_px, close_px, ts_ms, ts_ms, 1])
+    return bars
+
+
+def _rollup_ohlc_bars(bars: List[List[Any]], div_factor: int) -> List[List[Any]]:
+    """Roll up finer OHLC bars into coarser aligned bars (e.g. 15m -> 1h via factor 4, 1h -> 4h via factor 4)."""
+    if not bars or div_factor <= 1:
+        return [list(b) for b in bars]
+    out: List[List[Any]] = []
+    for b in bars:
+        ck = b[0] // div_factor
+        if out and out[-1][0] == ck:
+            cur = out[-1]
+            if b[2] > cur[2]:
+                cur[2] = b[2]
+            if b[3] < cur[3]:
+                cur[3] = b[3]
+            cur[4] = b[4]
+            if b[6] > cur[6]:
+                cur[6] = b[6]
+            cur[7] += b[7]
+        else:
+            out.append([ck, b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+    return out
+
+
+def _merge_ohlc_bar_lists(older: List[List[Any]], newer: List[List[Any]]) -> List[List[Any]]:
+    """Merge two sorted OHLC bar lists keyed by ``bar_key``, preserving full combined high/low range on overlap."""
+    if not older:
+        return [list(b) for b in newer]
+    if not newer:
+        return [list(b) for b in older]
+    merged: Dict[int, List[Any]] = {b[0]: list(b) for b in older}
+    for b in newer:
+        bk = b[0]
+        if (prev := merged.get(bk)) is None:
+            merged[bk] = list(b)
+        else:
+            if b[5] < prev[5]:
+                prev[1] = b[1]
+                prev[5] = b[5]
+            if b[2] > prev[2]:
+                prev[2] = b[2]
+            if b[3] < prev[3]:
+                prev[3] = b[3]
+            if b[6] >= prev[6]:
+                prev[4] = b[4]
+                prev[6] = b[6]
+            prev[7] += b[7]
+    return [merged[k] for k in sorted(merged)]
+
+
+def _wilder_atr_pct(
+    bars: List[List[Any]],
+    bucket_ms: float,
+    cur_px: float,
+    *,
+    period: int = 14,
+    max_gap_buckets: int = 0,
+) -> Optional[float]:
+    """Compute Wilder RMA ATR as a percentage of ``cur_px`` from sorted OHLC bars."""
+    if cur_px <= 0.0 or len(bars) < 6:
+        return None
+    eff_bars = bars
+    if len(bars) >= 7:
+        dense_prior = sum(1 for b in bars[:-1] if b[7] >= 2)
+        if dense_prior >= max(2, (len(bars) - 1) // 2) and (bars[-1][6] - bars[-1][5]) < 0.35 * bucket_ms:
+            eff_bars = bars[:-1]
+    if len(eff_bars) < 6:
+        return None
+    trs: List[float] = []
+    first_hl = max(0.0, eff_bars[0][2] - eff_bars[0][3])
+    if first_hl > 0.0:
+        trs.append(first_hl)
+    for idx in range(1, len(eff_bars)):
+        prev_c = eff_bars[idx - 1][4]
+        hi_v, lo_v = eff_bars[idx][2], eff_bars[idx][3]
+        hl_v = max(0.0, hi_v - lo_v)
+        if max_gap_buckets > 0 and (eff_bars[idx][0] - eff_bars[idx - 1][0]) > max_gap_buckets:
+            trs.append(hl_v)
+        else:
+            trs.append(max(hl_v, abs(hi_v - prev_c), abs(lo_v - prev_c)))
+    if len(trs) < 6:
+        return None
+    if len(trs) >= period:
+        atr_val = statistics.fmean(trs[:period])
+        for tr_v in trs[period:]:
+            atr_val = (atr_val * (period - 1) + tr_v) / period
+    else:
+        atr_val = statistics.fmean(trs)
+    if atr_val <= 0.0 or not math.isfinite(atr_val):
+        return None
+    atr_pct = (atr_val / cur_px) * 100.0
+    if not math.isfinite(atr_pct) or atr_pct <= 0.0:
+        return None
+    return (round(atr_pct, 3) if atr_pct < 0.10 else round(atr_pct, 2)) + 0.0
+
+
+def build_compact_4h_ohlc_bars(
+    archive_pts: list,
+    sparse_7d_pts: list,
+    watcher_7d_pts: list,
+) -> List[List[Any]]:
+    """Build at most ~45 compact 4h ``[ts_ms, close, 0.0, high, low]`` bars from 7d archive rows (0 extra I/O)."""
+    src_pts: list = []
+    if watcher_7d_pts and len(watcher_7d_pts) >= 2:
+        src_pts = list(watcher_7d_pts)
+    elif sparse_7d_pts and archive_pts:
+        a_last = parse_ts_px_row(archive_pts[-1])
+        s_last = parse_ts_px_row(sparse_7d_pts[-1])
+        if a_last is not None and s_last is not None:
+            src_pts = (
+                prepend_older_non_diverged_points(archive_pts, sparse_7d_pts)
+                if a_last[0] >= s_last[0]
+                else prepend_older_non_diverged_points(sparse_7d_pts, archive_pts)
+            )
+        else:
+            src_pts = list(archive_pts or sparse_7d_pts)
+    elif archive_pts:
+        src_pts = list(archive_pts)
+    elif sparse_7d_pts:
+        src_pts = list(sparse_7d_pts)
+    if len(src_pts) < 2:
+        return []
+    bars_4h = _resample_ohlc_bars(src_pts, _MS_4H)
+    if not bars_4h:
+        return []
+    cutoff_key = bars_4h[-1][0] - 45
+    return [
+        [round(b[6]), b[4], 0.0, b[2], b[3]]
+        for b in bars_4h
+        if b[0] >= cutoff_key
+    ]
+
+
+def compute_atr_multi_horizon(
+    series_24h: list,
+    *,
+    series_7d_ts_px: Optional[list] = None,
+    cur_px: Optional[float] = None,
+    is_equity: bool = False,
+    period: int = 14,
+    precleaned_ts_px: Optional[List[Tuple[float, float]]] = None,
+    precomputed_bars_15m: Optional[List[List[Any]]] = None,
+) -> Dict[str, float]:
+    """Compute pure Wilder RMA ATR(14) percentages across 15m, 1h, and 4h horizons."""
+    bars_15m = (
+        precomputed_bars_15m
+        if precomputed_bars_15m is not None
+        else _resample_ohlc_bars(series_24h, _MS_15M, precleaned_ts_px=precleaned_ts_px)
+    )
+    if not bars_15m and not series_7d_ts_px:
+        return {}
+    eff_px = safe_pos_float(cur_px, default=None)
+    if eff_px is None and bars_15m:
+        eff_px = safe_pos_float(bars_15m[-1][4], default=None)
+    if eff_px is None or eff_px <= 0.0:
+        return {}
+
+    eff_period = safe_pos_int(period, default=14) or 14
+    intraday_gap_cap = 4 if is_equity else 0
+    out: Dict[str, float] = {}
+
+    if (atr_15m := _wilder_atr_pct(bars_15m, _MS_15M, eff_px, period=eff_period, max_gap_buckets=intraday_gap_cap)) is not None:
+        out["atr_15m_pct"] = atr_15m
+
+    bars_1h = _rollup_ohlc_bars(bars_15m, 4)
+    bars_4h = _rollup_ohlc_bars(bars_1h, 4)
+    if isinstance(series_7d_ts_px, (list, tuple)) and len(series_7d_ts_px) >= 2:
+        is_compact_4h = len(series_7d_ts_px) <= 60 and all(
+            isinstance(r, (list, tuple)) and len(r) >= 5 for r in series_7d_ts_px[:4]
+        )
+        if not is_compact_4h:
+            bars_1h_7d = _resample_ohlc_bars(series_7d_ts_px, _MS_1H)
+            bars_1h = _merge_ohlc_bar_lists(bars_1h_7d, bars_1h)
+            bars_4h_7d = _rollup_ohlc_bars(bars_1h_7d, 4)
+            bars_4h = _merge_ohlc_bar_lists(bars_4h_7d, bars_4h)
+        else:
+            bars_4h_7d = _resample_ohlc_bars(series_7d_ts_px, _MS_4H)
+            bars_4h = _merge_ohlc_bar_lists(bars_4h_7d, bars_4h)
+
+    if (atr_1h := _wilder_atr_pct(bars_1h, _MS_1H, eff_px, period=eff_period, max_gap_buckets=intraday_gap_cap)) is not None:
+        out["atr_1h_pct"] = atr_1h
+    if (atr_4h := _wilder_atr_pct(bars_4h, _MS_4H, eff_px, period=eff_period, max_gap_buckets=0)) is not None:
+        out["atr_4h_pct"] = atr_4h
+    return out
+
+
+def compute_session_vwap_metrics(
+    series_with_vol: list,
+    *,
+    is_equity: bool = False,
+    cur_px: Optional[float] = None,
+    decimals: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Compute volume-weighted Session VWAP anchored to 00:00 UTC (crypto) or 09:30 NY RTH (US equities)."""
+    if not isinstance(series_with_vol, (list, tuple)) or len(series_with_vol) < 2:
+        return {}
+    pos_bars: List[Tuple[float, float, float]] = []
+    max_any_ts = 0.0
+    last_any_px: Optional[float] = None
+    for row in series_with_vol:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            continue
+        pt = parse_ts_px_row(row)
+        if pt is None:
+            continue
+        ts_ms, close_px = pt
+        if ts_ms >= max_any_ts:
+            max_any_ts = ts_ms
+            last_any_px = close_px
+        if len(row) < 3:
+            continue
+        vol_v = safe_pos_float(row[2], default=None)
+        if vol_v is None:
+            continue
+        tp_px = close_px
+        if len(row) >= 5:
+            hi_v = safe_pos_float(row[3], default=None)
+            lo_v = safe_pos_float(row[4], default=None)
+            if hi_v is not None and lo_v is not None and hi_v >= lo_v > 0.0:
+                tp_px = (hi_v + lo_v + close_px) / 3.0
+        pos_bars.append((ts_ms, tp_px, vol_v))
+    if len(pos_bars) < 2:
+        return {}
+    pos_bars.sort(key=itemgetter(0))
+
+    if is_equity:
+        latest_ny_dt = datetime.fromtimestamp(pos_bars[-1][0] / 1000.0, tz=timezone.utc).astimezone(_NY_TZ)
+        target_date = latest_ny_dt.date()
+        rth_bars: List[Tuple[float, float, float]] = []
+        same_day_bars: List[Tuple[float, float, float]] = []
+        for ts_ms, tp_px, vol_v in pos_bars:
+            ny_dt = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(_NY_TZ)
+            if ny_dt.date() != target_date:
+                continue
+            same_day_bars.append((ts_ms, tp_px, vol_v))
+            mins_ny = ny_dt.hour * 60 + ny_dt.minute
+            if 9 * 60 + 30 <= mins_ny <= 16 * 60 + 5:
+                rth_bars.append((ts_ms, tp_px, vol_v))
+        sess_bars = rth_bars if len(rth_bars) >= 2 else same_day_bars
+        anchor_lbl = "rth"
+    else:
+        ref_ms = max_any_ts if max_any_ts > 0.0 else pos_bars[-1][0]
+        day_start_ms = math.floor(ref_ms / _MS_1D) * _MS_1D
+        sess_bars = [b for b in pos_bars if b[0] >= day_start_ms]
+        anchor_lbl = "utc_00"
+
+    if len(sess_bars) < 2:
+        return {}
+    tot_vol = sum(b[2] for b in sess_bars)
+    if tot_vol <= 0.0:
+        return {}
+    vwap = sum(b[1] * b[2] for b in sess_bars) / tot_vol
+    if vwap <= 0.0 or not math.isfinite(vwap):
+        return {}
+    eff_px = safe_pos_float(cur_px, default=None) or last_any_px or sess_bars[-1][1]
+    if eff_px <= 0.0:
+        return {}
+    eff_dec = 4 if (is_equity and decimals is None) else _auto_px_decimals(vwap, decimals)
+    out: Dict[str, Any] = {
+        "session_vwap_px": round(vwap, eff_dec),
+        "dist_vs_session_vwap_pct": pct_delta(eff_px, vwap),
+        "session_vwap_anchor": anchor_lbl,
+    }
+    var_w = sum(b[2] * ((b[1] - vwap) ** 2) for b in sess_bars) / tot_vol
+    sigma = math.sqrt(max(0.0, var_w))
+    if sigma >= vwap * 1e-4 and math.isfinite(sigma):
+        out["session_vwap_sigma_pct"] = round((sigma / vwap) * 100.0, 2) + 0.0
+        out["session_vwap_z"] = round((eff_px - vwap) / sigma, 2) + 0.0
+    return out
+
+
+def compute_intraday_session_extremes(
+    series_24h: list,
+    *,
+    is_equity: bool = False,
+    decimals: Optional[int] = None,
+    precleaned_ts_px: Optional[List[Tuple[float, float]]] = None,
+    precomputed_bars_15m: Optional[List[List[Any]]] = None,
+) -> Dict[str, Any]:
+    """Compute current UTC-day Asia/London/NY session highs & lows for 24/7 crypto assets."""
+    if is_equity:
+        return {}
+    bars_15m = (
+        precomputed_bars_15m
+        if precomputed_bars_15m is not None
+        else _resample_ohlc_bars(series_24h, _MS_15M, precleaned_ts_px=precleaned_ts_px)
+    )
+    if not bars_15m:
+        return {}
+    ref_ms = bars_15m[-1][6]
+    cur_px = bars_15m[-1][4]
+    if ref_ms <= 0.0 or cur_px <= 0.0:
+        return {}
+    day_start_bucket = math.floor(ref_ms / _MS_1D) * 96
+    day_start_ms = day_start_bucket * _MS_15M
+    eff_dec = _auto_px_decimals(cur_px, decimals)
+    sessions: Dict[str, List[float]] = {}
+    for s_name, b_start_off, b_end_off in (
+        ("asia", 0, 32),      # 00:00 - 08:00 UTC
+        ("london", 28, 64),   # 07:00 - 16:00 UTC
+        ("ny", 54, 84),       # 13:30 - 21:00 UTC
+    ):
+        sess_start_ms = day_start_ms + b_start_off * _MS_15M
+        if ref_ms < sess_start_ms + _MS_15M:
+            continue
+        k_lo = day_start_bucket + b_start_off
+        k_hi = day_start_bucket + b_end_off
+        win_bars = [b for b in bars_15m if k_lo <= b[0] < k_hi]
+        if not win_bars or sum(b[7] for b in win_bars) < 3:
+            continue
+        lo_s = min(b[3] for b in win_bars)
+        hi_s = max(b[2] for b in win_bars)
+        if hi_s > 0.0 and lo_s > 0.0:
+            sessions[s_name] = [round(lo_s, eff_dec), round(hi_s, eff_dec)]
+    return {"session_extremes": sessions} if sessions else {}
+
+
+def format_atr_parts(entry: Any) -> List[str]:
+    """Format compact multi-horizon ATR percentage tokens ``['15m=...', '1h=...', '4h=...']``."""
+    if not isinstance(entry, dict):
+        return []
+    return [
+        f"{lbl}={val:.2f}%" if val >= 0.10 else f"{lbl}={val:.3f}%"
+        for lbl, key in (("15m", "atr_15m_pct"), ("1h", "atr_1h_pct"), ("4h", "atr_4h_pct"))
+        if (val := safe_pos_float(entry.get(key), default=None)) is not None
+    ]
+
+
+def format_session_vwap_summary(entry: Any, *, cur_px: Optional[float] = None, fmt_px_fn: Any = None) -> str:
+    """Format compact Session VWAP summary string (e.g. ``$62,110.00 (-0.28%, z=-0.62, utc_00)``)."""
+    if not isinstance(entry, dict):
+        return ""
+    vwap_px = safe_pos_float(entry.get("session_vwap_px"), default=None)
+    if vwap_px is None:
+        return ""
+    dist_pct = safe_float(entry.get("dist_vs_session_vwap_pct"), default=None)
+    if dist_pct is None and cur_px is not None and cur_px > 0.0:
+        dist_pct = pct_delta(cur_px, vwap_px)
+    meta: List[str] = []
+    if dist_pct is not None:
+        meta.append(f"{dist_pct:+.2f}%")
+    if (z_val := safe_float(entry.get("session_vwap_z"), default=None)) is not None:
+        meta.append(f"z={z_val:+.2f}")
+    if (sig_pct := safe_pos_float(entry.get("session_vwap_sigma_pct"), default=None)) is not None and len(meta) < 2:
+        meta.append(f"1s={sig_pct:.2f}%")
+    if anc := str(entry.get("session_vwap_anchor") or "").strip():
+        meta.append(anc)
+    px_s = fmt_px_fn(vwap_px) if callable(fmt_px_fn) else f"${vwap_px}"
+    return f"{px_s} ({', '.join(meta)})" if meta else px_s
+
+
+def format_session_extremes_parts(entry: Any) -> List[str]:
+    """Format compact intraday Asia/London/NY session extreme ranges ``['asia=[lo, hi]', ...]``."""
+    if not isinstance(entry, dict) or not isinstance(sess_ex := entry.get("session_extremes"), dict):
+        return []
+    return [
+        f"{lbl}=[{vals[0]}, {vals[1]}]"
+        for lbl, key in (("asia", "asia"), ("ldn", "london"), ("ny", "ny"))
+        if isinstance(vals := sess_ex.get(key), (list, tuple)) and len(vals) == 2
+    ]
+
+
+def compute_24h_price_metrics(
+    series: list,
+    *,
+    is_equity: bool = False,
+    series_7d_ts_px: Optional[list] = None,
+) -> Dict[str, Any]:
+    """Compute multi-horizon percentage changes (15m, 30m, 1h, 3h), 24h range, ATR, Session VWAP, and session extremes."""
     if not isinstance(series, list) or len(series) < 2:
         return {}
     try:
@@ -558,6 +999,25 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
         out.update(vp_metrics)
         if vol_rvol := compute_volume_rvol_metrics(series):
             out.update(vol_rvol)
+        bars_15m = _resample_ohlc_bars(series, _MS_15M, precleaned_ts_px=clean_series)
+        if atr_m := compute_atr_multi_horizon(
+            series,
+            series_7d_ts_px=series_7d_ts_px,
+            cur_px=cur_px,
+            is_equity=is_equity,
+            precleaned_ts_px=clean_series,
+            precomputed_bars_15m=bars_15m,
+        ):
+            out.update(atr_m)
+        if vwap_m := compute_session_vwap_metrics(series, is_equity=is_equity, cur_px=cur_px):
+            out.update(vwap_m)
+        if sess_m := compute_intraday_session_extremes(
+            series,
+            is_equity=is_equity,
+            precleaned_ts_px=clean_series,
+            precomputed_bars_15m=bars_15m,
+        ):
+            out.update(sess_m)
         return out
     except Exception:
         return {}
@@ -1257,9 +1717,14 @@ def _extract_ohlc_series_points(
     max_ts: float = math.inf,
     require_positive_volume: bool = False,
 ) -> List[List[Any]]:
-    """Extract `[ts_ms, close, (vol)]` rows from an OHLC series within `[min_ts, max_ts]`."""
+    """Extract `[ts_ms, close, (vol), (high, low, (open))]` rows from an OHLC series within `[min_ts, max_ts]`."""
     vols = getattr(ohlc_obj, "volumes", ()) or ()
     has_vols = isinstance(vols, (list, tuple)) and bool(vols)
+    highs = getattr(ohlc_obj, "highs", ()) or ()
+    lows = getattr(ohlc_obj, "lows", ()) or ()
+    opens = getattr(ohlc_obj, "opens", ()) or ()
+    has_hl = isinstance(highs, (list, tuple)) and isinstance(lows, (list, tuple)) and bool(highs) and bool(lows)
+    has_opens = isinstance(opens, (list, tuple)) and bool(opens)
     min_s = normalize_epoch_sec(min_ts, default=0.0, allow_zero=True) or 0.0
     max_s = (normalize_epoch_sec(max_ts, default=math.inf) or math.inf) if math.isfinite(max_ts) else math.inf
     pts: List[List[Any]] = []
@@ -1270,7 +1735,16 @@ def _extract_ohlc_series_points(
             if require_positive_volume and v_f <= 0.0:
                 continue
             ts_ms_i = round(ts_s * 1000.0)
-            pts.append([ts_ms_i, px_f, v_f] if v_f > 0.0 else [ts_ms_i, px_f])
+            hi_f = safe_pos_float(highs[idx], default=None) if (has_hl and idx < len(highs)) else None
+            lo_f = safe_pos_float(lows[idx], default=None) if (has_hl and idx < len(lows)) else None
+            if hi_f is not None and lo_f is not None and hi_f >= lo_f > 0.0:
+                row: List[Any] = [ts_ms_i, px_f, v_f, hi_f, lo_f]
+                op_f = safe_pos_float(opens[idx], default=None) if (has_opens and idx < len(opens)) else None
+                if op_f is not None and op_f > 0.0:
+                    row.append(op_f)
+                pts.append(row)
+            else:
+                pts.append([ts_ms_i, px_f, v_f] if v_f > 0.0 else [ts_ms_i, px_f])
     pts.sort(key=lambda x: x[0])
     return pts
 
@@ -1426,6 +1900,12 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
     poc_v, val_v, vah_v = (safe_pos_float(pinfo.get(k), default=0.0) or 0.0 for k in ("poc_px", "val_px", "vah_px"))
     if poc_v > 0.0 and val_v > 0.0 and vah_v > val_v:
         pinfo.update(build_vp_position_dict(p_cur, poc_v, val_v, vah_v))
+    if (vwap_v := safe_pos_float(pinfo.get("session_vwap_px"), default=None)) is not None:
+        pinfo["dist_vs_session_vwap_pct"] = pct_delta(p_cur, vwap_v)
+        if (sig_pct_v := safe_pos_float(pinfo.get("session_vwap_sigma_pct"), default=None)) is not None:
+            sig_px_v = vwap_v * (sig_pct_v / 100.0)
+            if sig_px_v > 0.0:
+                pinfo["session_vwap_z"] = round((p_cur - vwap_v) / sig_px_v, 2) + 0.0
     l24 = safe_pos_float(pinfo.get("low_24h"), default=None)
     h24 = safe_pos_float(pinfo.get("high_24h"), default=None)
     if l24 is not None and h24 is not None:
@@ -1756,6 +2236,11 @@ _RTH_VP_ANCHOR_KEYS: Tuple[str, ...] = (
     "vah_px",
     "profile_shape",
     "vp_source",
+)
+_RTH_VWAP_ANCHOR_KEYS: Tuple[str, ...] = (
+    "session_vwap_px",
+    "session_vwap_sigma_pct",
+    "session_vwap_anchor",
 )
 STALE_SHORT_24H_KEYS: Tuple[str, ...] = (
     "chg_1m_pct",

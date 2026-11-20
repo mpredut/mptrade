@@ -108,13 +108,17 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_7d_range_metrics,
     compute_cross_btc_metrics,
     compute_series_kinematics,
+    format_atr_parts,
     format_kinematic_parts,
     format_multi_window_slopes_core,
+    format_session_extremes_parts,
+    format_session_vwap_summary,
     is_unseeded_kalman_state,
     recalculate_live_price_geometry,
     apply_24h_series_enrichment,
     compute_kalman_from_series,
     compute_short_slopes_from_series,
+    LAST_7D_4H_BARS_BY_SYM,
     LAST_7D_SPAN_MS_BY_SYM,
     load_stitched_24h_ohlc_points,
     STALE_SHORT_24H_KEYS,
@@ -125,6 +129,18 @@ from state_io import (
 )
 
 read_json_cached = _default_read_json_cached
+_ORIG_COMPUTE_24H_METRICS = compute_24h_price_metrics
+
+
+def _call_compute_24h(
+    series: list,
+    *,
+    is_equity: bool = False,
+    series_7d_ts_px: Optional[list] = None,
+) -> Dict[str, Any]:
+    if compute_24h_price_metrics is _ORIG_COMPUTE_24H_METRICS:
+        return compute_24h_price_metrics(series, is_equity=is_equity, series_7d_ts_px=series_7d_ts_px) or {}
+    return compute_24h_price_metrics(series) or {}
 
 DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC: float = 1800.0
 PRETRADE_SOURCE_STALE_INTERVAL_MULT: float = TELEMETRY_SOURCE_STALE_INTERVAL_MULT
@@ -853,7 +869,12 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
         alt_series_24h, arch_vals_7d = load_symbol_price_series(
             cachedb_dir, symbol, current_price_items=cur_p_items, include_7d=True
         )
-        m24 = compute_24h_price_metrics(alt_series_24h) if alt_series_24h else {}
+        bars_4h_pt = LAST_7D_4H_BARS_BY_SYM.get(str(symbol).strip().upper())
+        m24 = (
+            _call_compute_24h(alt_series_24h, is_equity=is_eq_sym, series_7d_ts_px=bars_4h_pt)
+            if alt_series_24h
+            else {}
+        )
         last_alt_pt = parse_ts_px_row(alt_series_24h[-1]) if alt_series_24h else None
         cur_px_est = last_alt_pt[1] if last_alt_pt is not None else 0.0
         if not cur_px_est or cur_px_est <= 0.0:
@@ -903,7 +924,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                     alt_series_24h = list(pts_24_eq)
                     arch_vals_7d = [pt[1] for pt in pts_5d_eq]
                     eq_chart_refreshed = len(alt_series_24h) >= 5
-                    m24 = compute_24h_price_metrics(alt_series_24h) or {}
+                    m24 = _call_compute_24h(alt_series_24h, is_equity=True, series_7d_ts_px=pts_5d_eq)
                     last_alt_pt = parse_ts_px_row(alt_series_24h[-1]) if alt_series_24h else None
                     if last_alt_pt is not None:
                         cur_px_est = last_alt_pt[1]
@@ -947,7 +968,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                     if (eq_pt_ts_ms - last_alt_pt[0]) > 300 * 1000:
                         eq_pt_ts_ms = math.trunc(last_alt_pt[0] + 1000)
                     alt_series_24h = list(alt_series_24h) + [[eq_pt_ts_ms, cur_px_est]]
-                    m24 = compute_24h_price_metrics(alt_series_24h) or m24
+                    m24 = _call_compute_24h(alt_series_24h, is_equity=True, series_7d_ts_px=bars_4h_pt) or m24
                 elif m24:
                     alt_series_24h, m24, eq_px_diverged_05pct = ctx.session_policy.apply_post_rth_price_override(
                         alt_series_24h, m24, live_cur_px
@@ -1137,6 +1158,16 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
                 f"VAH=${m24.get('vah_px')} ({safe_float(m24.get('vah_dist_pct'), 0.0):+.2f}%), "
                 f"va_pos={m24.get('va_pos_pct')}%{vp_src_s}"
             )
+
+        if atr_parts := format_atr_parts(m24):
+            telemetry["Multi-Timeframe ATR"] = ", ".join(atr_parts)
+        sess_struct_parts: List[str] = []
+        if sv_summary := format_session_vwap_summary(m24, cur_px=ctx.cur_px_est):
+            sess_struct_parts.append(f"Session VWAP={sv_summary}")
+        if sess_ex_parts := format_session_extremes_parts(m24):
+            sess_struct_parts.append(f"sessions({', '.join(sess_ex_parts)})")
+        if sess_struct_parts:
+            telemetry["Session VWAP & Intraday Structure"] = " | ".join(sess_struct_parts)
 
         if canonical_base_asset(symbol) != "BTC" and not is_equity_symbol(symbol):
             btc_series_24h, btc_vals_7d = load_symbol_price_series(

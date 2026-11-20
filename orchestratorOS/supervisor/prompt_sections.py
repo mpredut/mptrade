@@ -49,8 +49,11 @@ from intelligence.sentiment.evaluators.portfolio_evaluator import (
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     build_vp_position_dict,
     compute_horizon_range_dict,
+    format_atr_parts,
     format_kinematic_parts,
     format_multi_window_slopes_core,
+    format_session_extremes_parts,
+    format_session_vwap_summary,
     format_slope_val as _fmt_slope_val,
     round_opt_px,
 )
@@ -640,6 +643,10 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 f"VAH={pinfo.get('vah_px')}[{vah_d:+.2f}%], "
                 f"va_pos={va_pos}%{vp_src_sfx})"
             )
+        if sv_summary := format_session_vwap_summary(pinfo, cur_px=px_f, fmt_px_fn=_fmt_px):
+            extras.append(f"session_vwap={sv_summary}")
+        if sess_parts := format_session_extremes_parts(pinfo):
+            extras.append(f"sessions({', '.join(sess_parts)})")
 
         is_sub24h_dup_7d = (
             "chg_24h_pct" not in pinfo
@@ -740,6 +747,8 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 extras.append(f"g_coeff({', '.join(g_parts)})")
         if pinfo.get("vol_1h_pct") is not None:
             extras.append(f"vol_1h={pinfo.get('vol_1h_pct')}%")
+        if atr_parts := format_atr_parts(pinfo):
+            extras.append(f"atr({', '.join(atr_parts)})")
         if (kv := safe_float(pinfo.get("kalman_vel"), None)) is not None and abs(kv) >= 1e-9:
             extras.append(f"kalman_vel={_fmt_slope_val(kv, 5)}")
         if kin_parts := format_kinematic_parts(pinfo, compact=True):

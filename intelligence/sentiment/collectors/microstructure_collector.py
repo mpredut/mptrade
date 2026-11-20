@@ -143,9 +143,11 @@ from providers.ohlc_utils import normalize_yahoo_5d_chart_bars
 from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     append_newer_24h_to_7d_vals,
+    build_compact_4h_ohlc_bars,
     collapse_watcher_equity_series,
     compute_24h_price_metrics,
     compute_7d_range_metrics,
+    compute_session_vwap_metrics,
     compute_volume_profile_metrics,
     compute_volume_rvol_metrics,
     extract_archive_24h_and_7d_slices,
@@ -155,6 +157,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     round_opt_px,
     sort_ts_rows,
     apply_24h_series_enrichment,
+    LAST_7D_4H_BARS_BY_SYM,
     LAST_7D_SPAN_MS_BY_SYM,
     load_stitched_24h_ohlc_points,
     _RTH_VP_ANCHOR_KEYS,
@@ -173,6 +176,19 @@ from instrument_registry import (
 from providers import t212_provider as _t212_prov_mod
 from providers.base import MarketDataProvider
 from providers.market_api import api as mkt
+
+_ORIG_COMPUTE_24H_METRICS = compute_24h_price_metrics
+
+
+def _call_compute_24h(
+    series: list,
+    *,
+    is_equity: bool = False,
+    series_7d_ts_px: Optional[list] = None,
+) -> Dict[str, Any]:
+    if compute_24h_price_metrics is _ORIG_COMPUTE_24H_METRICS:
+        return compute_24h_price_metrics(series, is_equity=is_equity, series_7d_ts_px=series_7d_ts_px) or {}
+    return compute_24h_price_metrics(series) or {}
 from state_io import (
     generation_file_lock,
     read_json_dict,
@@ -1094,6 +1110,8 @@ def upgrade_tpo_vp_from_ohlc(
                     if vol_rvol_vp := compute_volume_rvol_metrics(pts_vp):
                         for vr_k, vr_v in vol_rvol_vp.items():
                             m24.setdefault(vr_k, vr_v)
+                    if vwap_vp := compute_session_vwap_metrics(pts_vp, is_equity=policy.is_equity, cur_px=cur_px):
+                        m24.update(vwap_vp)
     except Exception:
         pass
 
@@ -1206,6 +1224,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                 cached_entry = _PRICE_SERIES_MEMO.get(memo_key)
                 if cached_entry is not None and cached_entry[0] == memo_file_sig and cached_entry[1] == memo_cur_sig:
                     LAST_7D_SPAN_MS_BY_SYM[sym_u] = cached_entry[4]
+                    LAST_7D_4H_BARS_BY_SYM[sym_u] = list(cached_entry[5]) if len(cached_entry) >= 6 else []
                     return list(cached_entry[2]), list(cached_entry[3])
             except Exception:
                 memo_key = None
@@ -1308,6 +1327,8 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
             archive_pts, sparse_7d_pts, watcher_7d_pts, series_24h, symbol, need_24h_supplement, watcher_cutoff_24h
         )
         LAST_7D_SPAN_MS_BY_SYM[sym_u] = arch_7d_span_ms
+        bars_4h_7d = build_compact_4h_ohlc_bars(archive_pts, sparse_7d_pts, watcher_7d_pts)
+        LAST_7D_4H_BARS_BY_SYM[sym_u] = bars_4h_7d
         if isinstance(current_price_items, dict) and current_price_items:
             last_24_pt = parse_ts_px_row(series_24h[-1]) if series_24h else None
             for cand in cands:
@@ -1364,6 +1385,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                     list(series_24h),
                     list(vals_7d),
                     arch_7d_span_ms,
+                    list(bars_4h_7d),
                 ),
                 128,
             )
@@ -1716,14 +1738,17 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 if px_diff_from_chart and not rth_bar_fresh and not px_diverged_05pct and len(pts_24h) >= 2:
                     last_bar_tail = list(pts_24h[-1][2:]) if isinstance(pts_24h[-1], (list, tuple)) and len(pts_24h[-1]) >= 3 else []
                     pts_24h_for_m24 = list(pts_24h[:-1]) + [[pts_24h[-1][0], round(sym_px_cur, 4), *last_bar_tail]]
-                if m24_new := (compute_24h_price_metrics(pts_24h_for_m24) or {}):
+                if m24_new := _call_compute_24h(pts_24h_for_m24, is_equity=True, series_7d_ts_px=pts_5d):
                     m24 = m24_new
-                    if not rth_bar_fresh and px_diff_from_chart and (rth_vp_chart := compute_volume_profile_metrics(pts_24h_to_save)):
-                        for k_vp_clr in _RTH_VP_ANCHOR_KEYS:
-                            m24.pop(k_vp_clr, None)
-                        for k_vp in _RTH_VP_ANCHOR_KEYS:
-                            if k_vp in rth_vp_chart:
-                                m24[k_vp] = rth_vp_chart[k_vp]
+                    if not rth_bar_fresh and px_diff_from_chart:
+                        if rth_vp_chart := compute_volume_profile_metrics(pts_24h_to_save):
+                            for k_vp_clr in _RTH_VP_ANCHOR_KEYS:
+                                m24.pop(k_vp_clr, None)
+                            for k_vp in _RTH_VP_ANCHOR_KEYS:
+                                if k_vp in rth_vp_chart:
+                                    m24[k_vp] = rth_vp_chart[k_vp]
+                        if rth_vwap_chart := compute_session_vwap_metrics(pts_24h_to_save, is_equity=True, cur_px=sym_px_cur):
+                            m24.update(rth_vwap_chart)
                     matched_series_24h = pts_24h
                     post_rth_px_override = None
                     if not rth_bar_fresh or px_diverged_05pct:
@@ -1834,7 +1859,12 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         s24_p0 = parse_ts_px_row(matched_series_24h[0]) if len(matched_series_24h) >= 2 else None
         s24_p1 = parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
         span_24h_ms = max(0.0, s24_p1[0] - s24_p0[0]) if (s24_p0 and s24_p1) else 0.0
-        m24: Dict[str, Any] = compute_24h_price_metrics(matched_series_24h) or {} if matched_series_24h else {}
+        bars_4h_sym = LAST_7D_4H_BARS_BY_SYM.get(sym.upper())
+        m24: Dict[str, Any] = (
+            _call_compute_24h(matched_series_24h, is_equity=is_eq_sym, series_7d_ts_px=bars_4h_sym)
+            if matched_series_24h
+            else {}
+        )
         matched_series_24h, m24, post_rth_px_override, post_rth_series_replaced = session_policy.evaluate_post_rth_override(
             matched_series_24h,
             m24,
@@ -1872,13 +1902,13 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 try:
                     pts_24h = load_stitched_24h_ohlc_points(ohlc_fn, sym, eff_now - 86400.0)
                     if not m24:
-                        if m24 := (compute_24h_price_metrics(pts_24h) or {}):
+                        if m24 := _call_compute_24h(pts_24h, is_equity=is_eq_sym, series_7d_ts_px=bars_4h_sym):
                             matched_series_24h = pts_24h
                     elif len(pts_24h) >= 8 and (pts_24h[-1][0] - pts_24h[0][0]) >= 18 * 3600 * 1000 and s24_p0 is not None:
                         older_ohlc = [pt for pt in pts_24h if pt[0] < s24_p0[0]]
                         if older_ohlc:
                             matched_series_24h = older_ohlc + list(matched_series_24h)
-                            if m24_full := (compute_24h_price_metrics(matched_series_24h) or {}):
+                            if m24_full := _call_compute_24h(matched_series_24h, is_equity=is_eq_sym, series_7d_ts_px=bars_4h_sym):
                                 m24 = m24_full
                 except Exception:
                     pass
