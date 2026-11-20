@@ -1088,6 +1088,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 recent_orders,
                 getattr(snapshot, "geopolitical_threat", None),
                 now_ts=now_ts,
+                scope=scope,
             ):
                 snapshot.portfolio_summary["advisory_guard_probes"] = guard_advisories
         except Exception:

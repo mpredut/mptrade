@@ -218,6 +218,7 @@ def evaluate_ai_ping_pong_guard(
 
     sym_fills: list[tuple[float, str, float, dict[str, Any]]] = []
     latest_opp_ai: Optional[tuple[float, float, dict[str, Any]]] = None
+    latest_same_ai_ts = 0.0
     for it in items:
         if not isinstance(it, dict) or (cur_iid and _extract_intent_id(it) == cur_iid):
             continue
@@ -238,10 +239,34 @@ def evaluate_ai_ping_pong_guard(
             sym_fills.append((ts_s, it_side, fill_px, it))
         if it_side == opp_side and (latest_opp_ai is None or ts_s >= latest_opp_ai[0]):
             latest_opp_ai = (ts_s, fill_px, it)
+        elif it_side == side and ts_s > latest_same_ai_ts:
+            latest_same_ai_ts = ts_s
 
-    # 1. Pre-committed AI trade plan check (invalidation_px / target_px bypasses ping-pong guards)
+    # Resolve any fresh by=BOT opposite-side fill within bot cooldown (<= 30m)
+    cd_sec = cd_min * 60.0
+    bot_cd_sec = min(cd_sec, _MAX_BOT_FLIP_COOLDOWN_SEC) if cd_sec > 0.0 else 0.0
+    bot_opp_ts = 0.0
+    bot_opp_px = 0.0
+    if bot_cd_sec > 0.0 and isinstance(recent_bot_fill, Mapping):
+        b_side = normalize_side(recent_bot_fill.get("side"))
+        b_ts = parse_pos_epoch_s(recent_bot_fill.get("ts")) or 0.0
+        b_px = safe_pos_float(recent_bot_fill.get("price"), default=0.0) or 0.0
+        if (
+            (not b_side or b_side == opp_side)
+            and b_ts > 0.0
+            and b_ts <= eff_now + 60.0
+            and (eff_now - b_ts) <= bot_cd_sec
+        ):
+            bot_opp_ts, bot_opp_px = b_ts, b_px
+
+    # 1. Pre-committed AI trade plan check (only for an active, unclosed opposite AI fill not superseded by a newer BOT fill)
     plan_status = "ACTIVE"
-    if latest_opp_ai is not None and eff_spot > 0.0:
+    if (
+        latest_opp_ai is not None
+        and latest_opp_ai[0] > latest_same_ai_ts
+        and latest_opp_ai[0] >= bot_opp_ts
+        and eff_spot > 0.0
+    ):
         _, opp_px_ai, opp_intent_ai = latest_opp_ai
         inv_px, tgt_px = extract_intent_trade_plan_levels(
             opp_intent_ai, side=opp_side, ref_price=opp_px_ai if opp_px_ai > 0.0 else None
@@ -266,25 +291,13 @@ def evaluate_ai_ping_pong_guard(
     }
 
     # Resolve the most recent opposite-side fill within cooldown (AI fill or fresh BOT fill <= 30m)
-    cd_sec = cd_min * 60.0
-    bot_cd_sec = min(cd_sec, _MAX_BOT_FLIP_COOLDOWN_SEC) if cd_sec > 0.0 else 0.0
     ref_opp_ts = 0.0
     ref_opp_px = 0.0
     ref_opp_actor = ""
     if cd_sec > 0.0 and latest_opp_ai is not None and (eff_now - latest_opp_ai[0]) <= cd_sec:
         ref_opp_ts, ref_opp_px, ref_opp_actor = latest_opp_ai[0], latest_opp_ai[1], "AI"
-    if bot_cd_sec > 0.0 and isinstance(recent_bot_fill, Mapping):
-        b_side = normalize_side(recent_bot_fill.get("side"))
-        b_ts = parse_pos_epoch_s(recent_bot_fill.get("ts")) or 0.0
-        b_px = safe_pos_float(recent_bot_fill.get("price"), default=0.0) or 0.0
-        if (
-            (not b_side or b_side == opp_side)
-            and b_ts > 0.0
-            and b_ts <= eff_now + 60.0
-            and (eff_now - b_ts) <= bot_cd_sec
-            and b_ts > ref_opp_ts
-        ):
-            ref_opp_ts, ref_opp_px, ref_opp_actor = b_ts, b_px, "BOT"
+    if bot_opp_ts > ref_opp_ts:
+        ref_opp_ts, ref_opp_px, ref_opp_actor = bot_opp_ts, bot_opp_px, "BOT"
 
     fav_pct: Optional[float] = None
     if ref_opp_px > 0.0 and eff_px > 0.0:
@@ -322,9 +335,12 @@ def evaluate_ai_ping_pong_guard(
                 metrics,
             )
 
-    # 3. 6-hour whipsaw reversal cap per symbol
+    # 3. 6-hour whipsaw reversal cap per symbol (always allow emergency crash SELL vs latest AI BUY fill)
     if cap_flips > 0 and prev_side_6h and side != prev_side_6h and flips_6h >= cap_flips:
-        if not (side == "SELL" and fav_pct is not None and fav_pct <= -emergency_drop_pct):
+        ai_sell_fav_pct = fav_pct
+        if side == "SELL" and ai_sell_fav_pct is None and latest_opp_ai is not None and latest_opp_ai[1] > 0.0 and eff_px > 0.0:
+            ai_sell_fav_pct = ((eff_px - latest_opp_ai[1]) / latest_opp_ai[1]) * 100.0
+        if not (side == "SELL" and ai_sell_fav_pct is not None and ai_sell_fav_pct <= -emergency_drop_pct):
             return (
                 False,
                 f"ai_ping_pong_whipsaw_cap({symbol}@{venue}:{flips_6h}/{cap_flips} flips in 6h)",
@@ -435,7 +451,7 @@ def evaluate_ai_decision_scorecard(
         if row["side"] == "BUY":
             s_queue = pending_sells.get(ikey)
             if s_queue:
-                prev_sell = s_queue.pop(0)
+                prev_sell = s_queue.pop()
                 edge_pct = ((prev_sell["px"] - row["px"]) / prev_sell["px"]) * 100.0
                 matched_usd = min(prev_sell["usd"], row["usd"]) if (prev_sell["usd"] > 0.0 and row["usd"] > 0.0) else max(prev_sell["usd"], row["usd"])
                 outcomes.append({
@@ -451,7 +467,7 @@ def evaluate_ai_decision_scorecard(
         else:
             b_queue = pending_buys.get(ikey)
             if b_queue:
-                prev_buy = b_queue.pop(0)
+                prev_buy = b_queue.pop()
                 edge_pct = ((row["px"] - prev_buy["px"]) / prev_buy["px"]) * 100.0
                 matched_usd = min(prev_buy["usd"], row["usd"]) if (prev_buy["usd"] > 0.0 and row["usd"] > 0.0) else max(prev_buy["usd"], row["usd"])
                 outcomes.append({

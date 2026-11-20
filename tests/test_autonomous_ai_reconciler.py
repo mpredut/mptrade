@@ -10065,25 +10065,36 @@ def test_advisory_guard_probe_and_scorecard_surfaced_in_section_3c(capsys):
     assert {"G_PROF", "GI_WHALE", "GI_OBOOK", "GI_FUNDING", "GLLM3"}.issubset(flagged_codes)
     assert capsys.readouterr().out == ""
 
-    # 3. summarize_symbol_guard_advisories emits ONLY flagged instruments (omits clean BTCUSDC)
+    # 3. summarize_symbol_guard_advisories emits ONLY flagged instruments in scope (omits clean BTCUSDC & out-of-scope T212 equity)
     advisories = summarize_symbol_guard_advisories(
         tradable_positions=[
             {"venue": "binance", "symbol": "BTCUSDC", "price": 70000.0},
             {"venue": "binance", "symbol": "TAOUSDC", "price": 210.0},
+            {"venue": "t212", "symbol": "NVDA_US_EQ", "price": 160.0},
         ],
         prices_and_trends={},
         microstructure={
             "BTCUSDC": {"taker_buy_sell_ratio": 1.1, "ob_imbalance": 0.5, "funding_rate": 0.0001},
             "TAOUSDC": {"taker_buy_sell_ratio": 0.62, "ob_imbalance": 0.18, "funding_rate": 0.0008},
+            "NVDA_US_EQ": {"ob_imbalance": 0.10, "ask_wall_usd": 2_000_000.0, "ask_wall_px": 161.0},
         },
         recent_orders={"TAOUSDC": {"last_sell": {"price": 208.0}}},
         geopolitical_threat={"threat_level": "NORMAL", "recommended_brake": "NONE", "risk_score": 0.1},
         now_ts=t0,
         margins=test_margins,
+        scope="crypto",
     )
     assert len(advisories) == 1 and advisories[0]["symbol"] == "TAOUSDC"
     adv_line = format_guard_advisory_line(advisories[0])
     assert "[binance] TAOUSDC: BUY=" in adv_line and "GI_WHALE" in adv_line and "| SELL=OK" in adv_line
+    # Verify full numeric whale taker ratio is preserved without mid-number truncation
+    whale_line = format_guard_advisory_line({
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "BUY": [],
+        "SELL": [{"guard": "GI_WHALE", "action": "SCALE", "scale": 0.5, "reason": "moderate_taker_buying_pressure (taker_ratio=1.14 > 1.11)"}],
+    })
+    assert "taker_ratio=1.14 > 1.11" in whale_line
 
     # 4. Section 3C + prompt policy surface both AI Decision Scorecard and non-blocking Advisory Guard Probes
     snap = TelemetrySensorSnapshot(

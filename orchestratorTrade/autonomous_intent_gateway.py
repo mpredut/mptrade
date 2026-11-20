@@ -38,6 +38,7 @@ from botcore import (
     add_store_true_cli_args,
     clean_order_id,
     disable_auto_start_websockets_default,
+    extract_current_price_item,
     extract_order_price,
     extract_timestamp_s,
     format_notify_price,
@@ -49,6 +50,7 @@ from botcore import (
 from cachepaths import (
     AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
     CACHE_CURRENT_PRICE_FILENAME,
+    is_equity_venue_or_suffix,
     resolve_cachedb_filepath,
 )
 from instrument import (
@@ -231,7 +233,9 @@ class AutonomousIntentGateway:
                 items = data.get("items") if isinstance(data, dict) else None
                 if isinstance(items, dict):
                     for k, v in items.items():
-                        px_v = safe_pos_float(v.get("price") if isinstance(v, dict) else v, default=None)
+                        px_v = safe_pos_float(extract_current_price_item(v), default=None)
+                        if px_v is None and isinstance(v, dict):
+                            px_v = safe_pos_float(v.get("price"), default=None)
                         if px_v is not None:
                             prices[str(k)] = px_v
         except Exception:
@@ -631,6 +635,7 @@ class AutonomousIntentGateway:
         sc_cd_h = getattr(self, "scorecard_cooldown_hours", 4.0)
         if decision == "BUY" and sc_win > 0 and sc_streak > 0 and sc_cd_h > 0.0:
             sc_prices = self._load_live_prices_for_scorecard(symbol, venue, live_spot_px)
+            sc_scope = "equities" if is_equity_venue_or_suffix(symbol, venue) else "crypto"
             scorecard = evaluate_ai_decision_scorecard(
                 all_intents,
                 now_ts=now_ts,
@@ -638,6 +643,7 @@ class AutonomousIntentGateway:
                 window_trades=sc_win,
                 max_loss_streak=sc_streak,
                 cooldown_hours=sc_cd_h,
+                scope=sc_scope,
             )
             if scorecard.get("buy_shadow_active"):
                 sc_reason = str(scorecard.get("reason") or "ai_scorecard_buy_shadow_cooldown")

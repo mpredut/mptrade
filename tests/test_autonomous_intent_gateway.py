@@ -3692,6 +3692,138 @@ def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
     assert rec_sell_ok["status"] == "EXECUTED"
     btc_inst.place.assert_called_once()
 
+    # 4. Regression checks from verification pass:
+    # (a) Closed stale AI BUY plan does NOT bypass a fresh by=BOT BUY flip cooldown
+    closed_plan_hist = [
+        {
+            "intent_id": "cp_b1",
+            "timestamp": now_s - 86400.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "invalidation_px": 68000.0,
+            "execution_payload": {"orderId": "ocp1", "status": "FILLED", "executedQty": "0.01", "avg_fill_price": 70000.0},
+        },
+        {
+            "intent_id": "cp_s1",
+            "timestamp": now_s - 43200.0,
+            "decision": "SELL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "ocp2", "status": "FILLED", "executedQty": "0.01", "avg_fill_price": 68000.0},
+        },
+    ]
+    ok_stale_plan, rsn_stale_plan, _ = evaluate_ai_ping_pong_guard(
+        {"intent_id": "cp_s2", "decision": "SELL", "urgency": "NORMAL"},
+        closed_plan_hist,
+        decision="SELL",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=67500.0,
+        spot_price=67500.0,
+        now_ts=now_s,
+        recent_bot_fill={"ts": now_s - 300.0, "price": 67550.0, "side": "BUY", "actor": "BOT"},
+    )
+    assert ok_stale_plan is False and "by=BOT" in rsn_stale_plan
+
+    # (b) 6h whipsaw cap MUST still allow emergency crash SELL even when last AI BUY is > 45m old
+    ok_ws_crash, _, _ = evaluate_ai_ping_pong_guard(
+        {"intent_id": "w_crash", "decision": "SELL", "urgency": "NORMAL"},
+        whipsaw_hist,  # last BUY @ 201.0 was 2h ago (> 45m flip cooldown)
+        decision="SELL",
+        symbol="TAOUSDC",
+        venue="binance",
+        price=190.0,  # -5.47% crash <= -2.25% emergency drop
+        now_ts=now_s,
+    )
+    assert ok_ws_crash is True
+
+    # (c) LIFO matching: harvesting a profitable dip BUY (75k -> 68k -> SELL 70k) scores latest outcome as WIN
+    lifo_hist = [
+        {
+            "intent_id": "lf1",
+            "timestamp": now_s - 10800.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 500.0,
+            "execution_payload": {"orderId": "olf1", "status": "FILLED", "executedQty": "0.0067", "avg_fill_price": 75000.0},
+        },
+        {
+            "intent_id": "lf2",
+            "timestamp": now_s - 7200.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 500.0,
+            "execution_payload": {"orderId": "olf2", "status": "FILLED", "executedQty": "0.0073", "avg_fill_price": 68000.0},
+        },
+        {
+            "intent_id": "lf3",
+            "timestamp": now_s - 1800.0,
+            "decision": "SELL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 515.0,
+            "execution_payload": {"orderId": "olf3", "status": "FILLED", "executedQty": "0.0073", "avg_fill_price": 70000.0},
+        },
+    ]
+    sc_lifo = evaluate_ai_decision_scorecard(lifo_hist, now_ts=now_s, live_prices={"BTCUSDC": 70000.0})
+    assert sc_lifo["wins"] == 1 and sc_lifo["losses"] == 1 and sc_lifo["loss_streak"] == 0
+
+    # (d) Gateway scorecard parses production [[ts_ms, price]] cache_current_price format & isolates crypto vs equities scope
+    (tmp_path / "cachedb" / "prices" / "cache_current_price.json").write_text(
+        json.dumps({"items": {"HYPEUSDC": [[int(live_now * 1000), 77.5]], "BTCUSDC": [[int(live_now * 1000), 70000.0]]}}),
+        encoding="utf-8",
+    )
+    loaded_px = gw._load_live_prices_for_scorecard("BTCUSDC", "binance", 70000.0)
+    assert loaded_px["HYPEUSDC"] == pytest.approx(77.5)
+
+    # 3 T212 equity losses must NOT downgrade a Binance crypto BUY (asset-scope isolation)
+    eq_losses = [
+        {
+            "intent_id": f"eq_l{k}",
+            "timestamp": live_now - (3600.0 * (4 - k)),
+            "decision": "BUY",
+            "symbol": "NVDA_US_EQ",
+            "venue": "t212",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 300.0,
+            "execution_payload": {"orderId": f"oeq{k}", "status": "FILLED", "executedQty": "1.5", "avg_fill_price": 200.0},
+        }
+        for k in range(3)
+    ]
+    gw.save_all_intents(eq_losses)
+    (tmp_path / "cachedb" / "prices" / "cache_current_price.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": [[int(live_now * 1000), 185.0]], "BTCUSDC": [[int(live_now * 1000), 70000.0]]}}),
+        encoding="utf-8",
+    )
+    btc_inst.place.reset_mock()
+    btc_inst.place.return_value = {"orderId": "btc_buy_isolated", "status": "NEW", "executedQty": "0.0"}
+    rec_crypto_ok = gw.submit(
+        {
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 69800.0,
+            "confidence": 0.92,
+            "suggested_notional_usd": 500.0,
+            "urgency": "NORMAL",
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+    assert rec_crypto_ok["status"] == "EXECUTED"
+    btc_inst.place.assert_called_once()
+
+
 
 
 

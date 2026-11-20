@@ -14,7 +14,6 @@ from botcore import (
     clean_scalar_str,
     clean_scale,
     normalize_side,
-    opposite_side,
     profit_diff_pct,
     resolve_now_ts,
     safe_float,
@@ -24,6 +23,7 @@ from cachepaths import (
     cache_path,
     cache_symbol_variants,
     is_equity_venue_or_suffix,
+    matches_asset_scope,
     normalize_venue_name,
 )
 from guard_hierarchy import _load_margins, validate_guard_mode_cfg
@@ -357,12 +357,14 @@ def summarize_symbol_guard_advisories(
     *,
     now_ts: Optional[float] = None,
     margins: Optional[Mapping[str, Any]] = None,
+    scope: str = "all",
 ) -> list[dict[str, Any]]:
-    """Build compact non-blocking deterministic guard probe summaries ONLY for flagged symbols."""
+    """Build compact non-blocking deterministic guard probe summaries ONLY for flagged symbols in scope."""
     if not isinstance(tradable_positions, list) or not tradable_positions:
         return []
     m = _safe_load_margins(margins)
     eff_now = resolve_now_ts(now_ts)
+    scope_norm = (clean_scalar_str(scope) or "all").lower()
     out: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
 
@@ -373,6 +375,8 @@ def summarize_symbol_guard_advisories(
         ven = normalize_venue_name(clean_scalar_str(pos.get("venue")) or "")
         px = safe_pos_float(pos.get("price"), default=0.0) or 0.0
         if not sym or px <= 0.0:
+            continue
+        if scope_norm != "all" and not matches_asset_scope(sym, ven, scope_norm):
             continue
         key = (ven, sym)
         if key in seen:
@@ -435,7 +439,7 @@ def format_guard_advisory_line(entry: Mapping[str, Any]) -> str:
             act = str(f.get("action") or "WARN").upper()
             g = str(f.get("guard") or "GUARD")
             sc = safe_pos_float(f.get("scale"), default=None)
-            rsn = _compact_reason(str(f.get("reason") or ""), max_len=48)
+            rsn = _compact_reason(str(f.get("reason") or ""), max_len=64)
             if act == "SCALE" and sc is not None and sc < 1.0:
                 tokens.append(f"SCALE({sc:g}x):{g}({rsn})")
             else:
