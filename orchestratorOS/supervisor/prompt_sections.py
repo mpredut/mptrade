@@ -1091,6 +1091,16 @@ def _format_microstructure_section(
                 tok_sp_parts.extend(format_spot_volume_rvol_parts(minfo, _fmt_liq_usd))
             tok_sp_sfx = f", {', '.join(tok_sp_parts)}" if tok_sp_parts else ""
             flow_3b_core = f"perp_derivatives=N/A[spot_tokenized_equity]{cvd_sfx}{tok_sp_sfx}"
+        elif (
+            sym_is_eq_3b
+            and not has_perp_cvd
+            and safe_float(minfo.get("taker_buy_vol_usd"), 0.0) <= 0.0
+            and safe_float(minfo.get("taker_sell_vol_usd"), 0.0) <= 0.0
+        ):
+            flow_3b_core = (
+                f"whale_long_pct={minfo.get('whale_long_pct')}, "
+                f"intraday_rth_flow=N/A[no_fresh_vol_bars]{cvd_sfx}"
+            )
         else:
             flow_3b_core = (
                 f"whale_long_pct={minfo.get('whale_long_pct')}, "

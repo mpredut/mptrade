@@ -2700,6 +2700,74 @@ def test_faza3a_extended_hours_nonbinance_poller_and_stale_cp_guard(monkeypatch)
     assert calls == []
 
 
+def test_equity_whale_excludes_prior_session_moc_bars_and_sets_taker_bar_ts_ms(tmp_path, monkeypatch):
+    """Equity whale flow must exclude stale prior-day MOC closing bars during PRE-market and opening bell."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+
+    ny_tz = ZoneInfo("America/New_York")
+    ts_pre = datetime(2026, 11, 20, 9, 0, 0, tzinfo=ny_tz).timestamp()
+    ts_open_6m = datetime(2026, 11, 20, 9, 36, 0, tzinfo=ny_tz).timestamp()
+    ts_prev_moc = datetime(2026, 11, 19, 15, 55, 0, tzinfo=ny_tz).timestamp()
+
+    # 1. PRE-market: only 17h-old prior-session MOC bars have volume -> zero live flow, None horizons, N/A in Section 3B
+    moc_bars = [
+        (int((ts_prev_moc - 600) * 1000), 96.5, 97.0, 96.0, 96.2, 5_000_000.0),
+        (int((ts_prev_moc - 300) * 1000), 96.2, 96.8, 95.8, 96.0, 8_000_000.0),
+        (int(ts_prev_moc * 1000), 96.0, 97.5, 95.5, 95.6, 15_000_000.0),
+        (int(ts_pre * 1000), 87.3, 87.3, 87.3, 87.3, 0.0),
+    ]
+    w_col = WhalePositioningCollector(cache_dir=str(tmp_path / "eq_pre"), cache_ttl_sec=0.0, disk_ttl_sec=0.0, start_sync=False)
+    monkeypatch.setattr(w_col, "_resolve_equity_context_bars_and_price", lambda *_a, **_kw: ({}, moc_bars, 87.3))
+    snap_pre = w_col._fetch_equity_whale("ANT_US_EQ", ts_pre, 0.0, None)
+    assert snap_pre is not None
+    assert snap_pre.taker_buy_vol_usd == 0.0
+    assert snap_pre.taker_sell_vol_usd == 0.0
+    assert snap_pre.cvd_5m_usd is None
+    assert snap_pre.cvd_1h_usd is None
+    assert snap_pre.cvd_4h_usd is None
+    assert snap_pre.taker_bar_ts_ms is None
+
+    sec3b = "\n".join(
+        _format_microstructure_section(
+            {
+                "ANT_US_EQ": {
+                    "ob_imbalance": 0.52,
+                    "bid_depth_usd": 5000.0,
+                    "ask_depth_usd": 4500.0,
+                    "whale_long_pct": snap_pre.top_traders_long_pct,
+                    "taker_buy_sell_ratio": snap_pre.taker_buy_sell_ratio,
+                    "taker_buy_vol_usd": snap_pre.taker_buy_vol_usd,
+                    "taker_sell_vol_usd": snap_pre.taker_sell_vol_usd,
+                }
+            },
+            {"ANT_US_EQ": {"price": 87.3}},
+            now_ts=ts_pre,
+        )
+    )
+    assert "intraday_rth_flow=N/A[no_fresh_vol_bars]" in sec3b
+    assert "buy_v=$0.0" not in sec3b
+
+    # 2. Opening bell (+6m): only today's fresh 09:30 & 09:35 bullish bars count; yesterday's $1.4B bearish MOC bar is excluded
+    ts_b1 = int(datetime(2026, 11, 20, 9, 30, 0, tzinfo=ny_tz).timestamp() * 1000)
+    ts_b2 = int(datetime(2026, 11, 20, 9, 35, 0, tzinfo=ny_tz).timestamp() * 1000)
+    open_bars = moc_bars[:3] + [
+        (ts_b1, 87.0, 88.0, 86.9, 87.9, 100_000.0),
+        (ts_b2, 87.9, 89.0, 87.8, 88.9, 120_000.0),
+    ]
+    monkeypatch.setattr(w_col, "_resolve_equity_context_bars_and_price", lambda *_a, **_kw: ({}, open_bars, 88.9))
+    snap_open = w_col._fetch_equity_whale("ANT_US_EQ", ts_open_6m, 0.0, None)
+    assert snap_open is not None
+    assert snap_open.taker_buy_sell_ratio > 2.0
+    assert snap_open.taker_buy_vol_usd < 30_000_000.0  # yesterday's ~$1.4B MOC bar excluded
+    assert snap_open.taker_sell_vol_usd < 10_000_000.0
+    assert snap_open.cvd_5m_usd is not None and snap_open.cvd_5m_usd > 0.0
+    assert snap_open.taker_bar_ts_ms == ts_b2
+
+
+
 
 
 

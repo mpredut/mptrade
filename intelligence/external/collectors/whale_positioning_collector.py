@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 from botcore import (
     clean_scale,
     is_cache_fresh,
+    normalize_epoch_sec,
     normalize_timestamp_ms,
     obj_attr,
     resolve_now_ts,
@@ -306,29 +307,43 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             r_val = round(b_u / s_u, 4) if b_u > 0.0 and s_u > 0.0 else (2.0 if b_u > 0.0 else 0.5)
             return r_val, round(b_u - s_u, 0)
 
-        active_bars = [b for b in bars if b[5] > 0.0] or list(bars)
-        taker_buy, taker_sell = _bars_buy_sell(active_bars[-3:])
+        active_bars = [b for b in bars if b[5] > 0.0]
+
+        def _bars_within(max_age_sec: float, limit: int) -> list:
+            matched = []
+            for b in active_bars:
+                b_ts = normalize_epoch_sec(b[0], default=0.0) or 0.0
+                if b_ts > 0.0 and -60.0 <= (now - b_ts) <= max_age_sec:
+                    matched.append(b)
+            return matched[-limit:]
+
+        bars_5m = _bars_within(600.0, 1)
+        bars_15m = _bars_within(1200.0, 3)
+        bars_1h = _bars_within(3900.0, 12)
+        bars_4h = _bars_within(14700.0, 48)
+        taker_buy, taker_sell = _bars_buy_sell(bars_15m)
         taker_ratio = (
             round(taker_buy / taker_sell, 4)
             if taker_buy > 0.0 and taker_sell > 0.0
             else (1.25 if taker_buy > 0.0 else (0.8 if taker_sell > 0.0 else 1.0))
         )
-        tr_5m, cvd_5m = _horizon_stats(active_bars[-1:])
-        tr_1h, cvd_1h = _horizon_stats(active_bars[-12:]) if len(active_bars) >= 4 else (None, None)
-        tr_4h, cvd_4h = _horizon_stats(active_bars[-48:]) if len(active_bars) >= 13 else (None, None)
+        tr_5m, cvd_5m = _horizon_stats(bars_5m)
+        tr_1h, cvd_1h = _horizon_stats(bars_1h) if len(bars_1h) >= 4 else (None, None)
+        tr_4h, cvd_4h = _horizon_stats(bars_4h) if len(bars_4h) >= 13 else (None, None)
+        taker_bar_ts_ms = normalize_timestamp_ms(bars_15m[-1][0], default=None) if bars_15m else None
 
         call_oi, put_oi, total_opt, _, oi_usd = self._extract_equity_options_oi(ctx, mark_px)
         if total_opt > 0.0:
             top_long_pct = round(call_oi / total_opt, 4)
             top_ratio = round(call_oi / put_oi, 4) if put_oi > 0.0 else 2.0
         else:
-            b_1h, s_1h = _bars_buy_sell(active_bars[-12:]) if len(active_bars) >= 4 else (taker_buy, taker_sell)
+            b_1h, s_1h = _bars_buy_sell(bars_1h) if len(bars_1h) >= 4 else (taker_buy, taker_sell)
             top_long_pct = round(b_1h / (b_1h + s_1h), 4) if (b_1h + s_1h) > 0.0 else 0.5
             top_ratio = round(b_1h / s_1h, 4) if b_1h > 0.0 and s_1h > 0.0 else taker_ratio
             oi_usd = 0.0
 
-        if abs(price_1h_change_pct) < 1e-6 and len(active_bars) >= 12 and active_bars[-12][4] > 0.0:
-            price_1h_change_pct = ((active_bars[-1][4] - active_bars[-12][4]) / active_bars[-12][4]) * 100.0
+        if abs(price_1h_change_pct) < 1e-6 and len(bars_1h) >= 12 and bars_1h[0][4] > 0.0:
+            price_1h_change_pct = ((bars_1h[-1][4] - bars_1h[0][4]) / bars_1h[0][4]) * 100.0
 
         _, oi_chg_pct, prev_reg = self._resolve_previous_whale_state(
             symbol, now, cached, oi_usd=oi_usd, exact_only=True
@@ -360,6 +375,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             cvd_5m_usd=cvd_5m,
             cvd_1h_usd=cvd_1h,
             cvd_4h_usd=cvd_4h,
+            taker_bar_ts_ms=taker_bar_ts_ms,
         )
         return self._commit_snapshot(symbol, now, eq_snapshot)
 
