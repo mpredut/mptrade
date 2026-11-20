@@ -1068,7 +1068,7 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
             for sfx in ("dvol", "rv_pct", "vrp_pct", "pc_oi_ratio", "skew_25d_pct")
         ),
     })
-    meta_skip = {"ts", "age_min", "summary_line", "items"} | extra_keys
+    meta_skip = {"ts", "age_min", "summary_line", "items", "deribit_ts", "coinbase_premium_ts"} | extra_keys
     if not include_crypto:
         meta_skip = meta_skip | {"IBIT"}
     ordered_keys = [k for k, _, _ in specs if k in items and k not in meta_skip] + [

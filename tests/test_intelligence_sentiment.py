@@ -16238,3 +16238,183 @@ def test_iter5_n_wave_5m_kinematics_guard_and_retry_queue_price_age(tmp_path):
     assert rq["age_min"] == 15.0
 
 
+def test_iter6_deribit_carryover_active_cycle_lifo_and_sibling_whale_freshness(tmp_path, monkeypatch):
+    """Verify Deribit/Coinbase carryover on transient 503, active-cycle LIFO reconciliation, and freshest sibling whale sync."""
+    from intelligence.sentiment.collectors import macro_telemetry_collector as mtc_mod
+    from intelligence.sentiment.evaluators.microstructure_evaluator import reconcile_sibling_flow_and_liq_regimes
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        PositionCostBasisEnrichmentEvaluator,
+        extract_symbol_recent_fills,
+    )
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import evaluate_microstructure_prompt_view
+
+    t_now = 1_795_206_900.0
+
+    # 1. MacroBenchmarksSnapshotCollector carries forward recent Deribit options surface & Coinbase premium on HTTP 503,
+    #    and expires them cleanly once older than their staleness cap.
+    cdir = tmp_path / "cachedb"
+    macro_dir = cdir / "macro"
+    macro_dir.mkdir(parents=True)
+    prev_mb = {
+        "ts": t_now - 600.0,
+        "deribit_ts": t_now - 600.0,
+        "coinbase_premium_ts": t_now - 120.0,
+        "items": {"SPY": {"symbol": "SPY", "price": 690.0, "chg_24h_pct": -1.5}},
+        "coinbase_premium_bps": -10.5,
+        "coinbase_premium_regime": "US_SPOT_SELLING_PRESSURE",
+        "btc_dvol": 56.4,
+        "btc_rv_pct": 48.2,
+        "btc_vrp_pct": 8.2,
+        "btc_pc_oi_ratio": 0.64,
+        "btc_skew_25d_pct": 5.1,
+        "eth_dvol": 68.1,
+        "eth_rv_pct": 61.0,
+        "eth_vrp_pct": 7.1,
+        "eth_pc_oi_ratio": 0.55,
+        "eth_skew_25d_pct": 6.4,
+        "options_vol_regime": "NORMAL_IV",
+    }
+    (macro_dir / "macro_benchmarks_collect.json").write_text(json.dumps(prev_mb), encoding="utf-8")
+
+    def _mock_fetch_503(url, timeout=3.0, headers=None):
+        if "yahoo" in url:
+            return {
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {"regularMarketPrice": 691.0, "previousClose": 700.0, "marketState": "REGULAR"},
+                            "timestamp": [int(t_now - 3600), int(t_now)],
+                            "indicators": {"quote": [{"close": [695.0, 691.0]}]},
+                        }
+                    ]
+                }
+            }
+        raise RuntimeError("HTTP 503 system_maintenance")
+
+    monkeypatch.setattr(mtc_mod, "fetch_public_json", _mock_fetch_503)
+    snap_carried = mtc_mod.MacroBenchmarksSnapshotCollector().collect(str(cdir), now_ts=t_now, persist=True)
+    assert snap_carried is not None
+    assert snap_carried["btc_dvol"] == 56.4
+    assert snap_carried["eth_dvol"] == 68.1
+    assert snap_carried["btc_skew_25d_pct"] == 5.1
+    assert snap_carried["options_vol_regime"] == "NORMAL_IV"
+    assert snap_carried["deribit_ts"] == pytest.approx(t_now - 600.0)
+    assert snap_carried["coinbase_premium_bps"] == -10.5
+    assert "BTC_DVOL=56.4" in snap_carried["summary_line"]
+    assert "ETH_DVOL=68.1" in snap_carried["summary_line"]
+    assert "deribit_ts" not in snap_carried["summary_line"]
+
+    # After staleness cap (> 3600s for Deribit, > 300s for Coinbase), stale carryover expires cleanly
+    snap_expired = mtc_mod.MacroBenchmarksSnapshotCollector().collect(str(cdir), now_ts=t_now + 4000.0, persist=False)
+    assert snap_expired is not None
+    assert "btc_dvol" not in snap_expired
+    assert "eth_dvol" not in snap_expired
+    assert "coinbase_premium_bps" not in snap_expired
+
+    # 2. Active-cycle LIFO reconciliation drops phantom pre-flat losses (TAOUSDC) while preserving genuine held-core swing PnL (BTCUSDC)
+    t_ms = int(t_now * 1000)
+    tao_orders = [
+        # Ancient phantom fee-drift lot (never closed in order log due to fee dust, not held in wallet)
+        {"symbol": "TAOUSDC", "side": "BUY", "executedQty": "62.31", "price": "320.0", "updateTime": t_ms - 60 * 86400 * 1000, "status": "FILLED"},
+        # Prior cycle closed 100% flat before current cycle
+        {"symbol": "TAOUSDC", "side": "BUY", "executedQty": "3.92", "price": "190.0", "updateTime": t_ms - 12 * 3600 * 1000, "status": "FILLED"},
+        {"symbol": "TAOUSDC", "side": "SELL", "executedQty": "3.92", "price": "184.4", "updateTime": t_ms - 10 * 3600 * 1000, "status": "FILLED"},
+        {"symbol": "TAOUSDC", "side": "SELL", "executedQty": "3.90", "price": "184.4", "updateTime": t_ms - 9 * 3600 * 1000, "status": "FILLED"},
+        # Brand-new active cycle + two partial harvests (+0.28 net LIFO)
+        {"symbol": "TAOUSDC", "side": "BUY", "executedQty": "2.2365", "price": "178.8", "updateTime": t_ms - 5 * 3600 * 1000, "status": "FILLED"},
+        {"symbol": "TAOUSDC", "side": "BUY", "executedQty": "13.7709", "price": "176.5", "updateTime": t_ms - 4 * 3600 * 1000, "status": "FILLED"},
+        {"symbol": "TAOUSDC", "side": "SELL", "executedQty": "11.3571", "price": "176.1", "updateTime": t_ms - 3 * 3600 * 1000, "status": "FILLED"},
+        {"symbol": "TAOUSDC", "side": "SELL", "executedQty": "2.4089", "price": "178.5", "updateTime": t_ms - 2 * 3600 * 1000, "status": "FILLED"},
+    ]
+    tao_ro = extract_symbol_recent_fills(tao_orders, symbol="TAOUSDC")
+    assert tao_ro is not None and tao_ro["lifo_realized_pnl_usd"] < -500.0
+    tao_pos = {"venue": "binance", "symbol": "TAOUSDC", "price": 175.65, "free_base": 0.002259, "locked_base_qty": 2.2431}
+    PositionCostBasisEnrichmentEvaluator._enrich_position_from_recent_orders(
+        tao_pos,
+        tao_ro,
+        p_sym="TAOUSDC",
+        p_quote_variants=("TAOUSDC",),
+        pos_px_f=175.65,
+        held_cur=2.245359,
+        is_flat_balance=False,
+        is_flat_after_exit=False,
+        prices_and_trends={"TAOUSDC": {"price": 175.65}},
+        cache_dir="",
+        cycle_high_memo={},
+    )
+    assert tao_ro["lifo_realized_pnl_usd"] == pytest.approx(0.28, abs=0.02)
+    assert tao_pos["lifo_realized_pnl_usd"] == pytest.approx(0.28, abs=0.02)
+
+    # BTCUSDC-style held core lot + swing loss in active cycle stays intact
+    btc_orders = [
+        {"symbol": "BTCUSDC", "side": "BUY", "executedQty": "0.020", "price": "70000.0", "updateTime": t_ms - 30 * 86400 * 1000, "status": "FILLED"},
+        {"symbol": "BTCUSDC", "side": "BUY", "executedQty": "0.030", "price": "64000.0", "updateTime": t_ms - 5 * 86400 * 1000, "status": "FILLED"},
+        {"symbol": "BTCUSDC", "side": "BUY", "executedQty": "0.010", "price": "60000.0", "updateTime": t_ms - 6 * 3600 * 1000, "status": "FILLED"},
+        {"symbol": "BTCUSDC", "side": "SELL", "executedQty": "0.010", "price": "58500.0", "updateTime": t_ms - 2 * 3600 * 1000, "status": "FILLED"},
+    ]
+    btc_ro = extract_symbol_recent_fills(btc_orders, symbol="BTCUSDC")
+    btc_pos = {"venue": "binance", "symbol": "BTCUSDC", "price": 58460.0, "free_base": 0.030, "locked_base_qty": 0.0}
+    PositionCostBasisEnrichmentEvaluator._enrich_position_from_recent_orders(
+        btc_pos,
+        btc_ro,
+        p_sym="BTCUSDC",
+        p_quote_variants=("BTCUSDC",),
+        pos_px_f=58460.0,
+        held_cur=0.030,
+        is_flat_balance=False,
+        is_flat_after_exit=False,
+        prices_and_trends={"BTCUSDC": {"price": 58460.0}},
+        cache_dir="",
+        cycle_high_memo={},
+    )
+    assert btc_ro["lifo_realized_pnl_usd"] == pytest.approx(-15.0, abs=0.05)
+    assert btc_pos["lifo_realized_pnl_usd"] == pytest.approx(-15.0, abs=0.05)
+
+    # 3. Fresher sibling Binance Futures whale snapshot propagates to primary TAOUSDC and cleanly deduplicates TAOUSD
+    sib_pt = {
+        "TAOUSDC": {"price": 175.85, "chg_15m_pct": -0.03},
+        "TAOUSD": {"price": 175.61, "chg_15m_pct": -0.03},
+    }
+    sib_micro = {
+        "TAOUSDC": {
+            "ob_mid_price": 175.85,
+            "ob_imbalance": 0.45,
+            "bid_depth_usd": 89594.0,
+            "ask_depth_usd": 109489.0,
+            "oi_usd": 40053156.04,
+            "whale_long_pct": 0.6902,
+            "taker_buy_sell_ratio": 1.2743,
+            "taker_ratio_5m": 0.84,
+            "cvd_5m_usd": -22400.0,
+            "cvd_15m_usd": 107500.0,
+            "_deriv_ts": t_now - 19.8,
+            "_whale_ts": t_now - 66.8,
+        },
+        "TAOUSD": {
+            "ob_mid_price": 175.61,
+            "ob_imbalance": 0.527,
+            "bid_depth_usd": 864533.0,
+            "ask_depth_usd": 777400.0,
+            "oi_usd": 40053156.04,
+            "whale_long_pct": 0.6898,
+            "taker_buy_sell_ratio": 1.2362,
+            "taker_ratio_5m": 1.02,
+            "cvd_5m_usd": 2200.0,
+            "cvd_15m_usd": 83300.0,
+            "_deriv_ts": t_now - 19.8,
+            "_whale_ts": t_now - 4.1,
+        },
+    }
+    reconcile_sibling_flow_and_liq_regimes(sib_micro, sib_pt)
+    assert sib_micro["TAOUSDC"]["taker_buy_sell_ratio"] == pytest.approx(1.2362)
+    assert sib_micro["TAOUSDC"]["taker_ratio_5m"] == pytest.approx(1.02)
+    assert sib_micro["TAOUSDC"]["cvd_5m_usd"] == pytest.approx(2200.0)
+    assert sib_micro["TAOUSDC"]["_whale_ts"] == pytest.approx(t_now - 4.1)
+
+    rows = evaluate_microstructure_prompt_view(sib_micro, sib_pt)
+    by_sym = {r["sym"]: r for r in rows}
+    assert by_sym["TAOUSDC"]["shared_perp_sym"] is None
+    assert by_sym["TAOUSD"]["shared_perp_sym"] == "TAOUSDC"
+
+
+

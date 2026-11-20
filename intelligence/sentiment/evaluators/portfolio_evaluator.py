@@ -513,7 +513,7 @@ def reconcile_fresh_lots_vwap(
     fresh_lots: List[Dict[str, Any]],
     held_qty: float,
 ) -> tuple[Optional[float], float]:
-    """Recompute active VWAP on ``fills_or_ro`` when pruned ``fresh_lots`` match ``held_qty`` better than stale open lots."""
+    """Recompute active VWAP and active-cycle LIFO PnL when pruned ``fresh_lots`` match ``held_qty`` better than stale open lots."""
     fresh_q = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots if isinstance(lt, dict))
     lots_seq = open_lots if isinstance(open_lots, list) else []
     if held_qty > 1e-8 and fresh_lots and len(fresh_lots) < len(lots_seq):
@@ -529,6 +529,25 @@ def reconcile_fresh_lots_vwap(
                 fills_or_ro["active_cycle_rem_qty"] = round(vwap_q, 6)
                 if same_anchor_px(fills_or_ro.get("tactical_avg_buy_px"), fresh_vwap):
                     fills_or_ro.pop("tactical_avg_buy_px", None)
+                sell_matches = fills_or_ro.get("_lifo_sell_matches")
+                oldest_fresh_ts = min(
+                    (
+                        t
+                        for lt in fresh_lots
+                        if isinstance(lt, dict) and (t := safe_pos_int(lt.get("ts_ms"), 0) or 0) > 0
+                    ),
+                    default=0,
+                )
+                if oldest_fresh_ts > 0 and isinstance(sell_matches, list):
+                    active_lifo_pnl = sum(
+                        pnl
+                        for s_ts, l_ts, pnl in sell_matches
+                        if (s_ts <= 0 or s_ts >= oldest_fresh_ts)
+                        and (l_ts <= 0 or l_ts >= oldest_fresh_ts)
+                    )
+                    fills_or_ro["lifo_realized_pnl_usd"] = (
+                        round(active_lifo_pnl, 2) if abs(active_lifo_pnl) >= 0.01 else 0.0
+                    )
                 return fresh_vwap, fresh_q
     return None, fresh_q
 
@@ -950,6 +969,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
         cycle_sells_fmt: list[Dict[str, Any]] = []
         open_lots: list[Dict[str, Any]] = []
         lifo_realized_pnl_usd = 0.0
+        lifo_sell_matches: list[tuple[int, int, float]] = []
         lot_seq = 0
         last_sell_ts_ms = 0
         last_exit_oversold = False
@@ -983,6 +1003,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                         )
                         if not keep_oversold_swing_pnl:
                             lifo_realized_pnl_usd = 0.0
+                            lifo_sell_matches.clear()
                             cycle_buys_fmt.clear()
                         elif latest_fill_ts_ms > 0:
                             cycle_buys_fmt = [
@@ -1058,9 +1079,12 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                         top_lot = open_lots[-1]
                         lot_q = safe_pos_float(top_lot.get("qty"), default=0.0) or 0.0
                         lot_px = safe_pos_float(top_lot.get("entry_px"), default=0.0) or 0.0
+                        lot_ts_i = safe_pos_int(top_lot.get("ts_ms"), default=0) or 0
                         matched_q = min(rem_to_close, lot_q)
                         if in_active_swing_window and p_f is not None and p_f > 0.0 and lot_px > 0.0:
-                            lifo_realized_pnl_usd += matched_q * (p_f - lot_px)
+                            matched_pnl = matched_q * (p_f - lot_px)
+                            lifo_realized_pnl_usd += matched_pnl
+                            lifo_sell_matches.append((ts_sell_i, lot_ts_i, matched_pnl))
                         rem_to_close -= matched_q
                         if lot_q - matched_q <= 1e-9:
                             open_lots.pop()
@@ -1078,6 +1102,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
             "cycle_sells_fmt": cycle_sells_fmt,
             "open_lots": open_lots,
             "lifo_realized_pnl_usd": lifo_realized_pnl_usd,
+            "lifo_sell_matches": lifo_sell_matches,
             "last_sell_ts_ms": last_sell_ts_ms,
         }
 
@@ -1213,6 +1238,8 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                 else sells_fmt
             )[-4:],
         }
+        if lot_state.get("lifo_sell_matches"):
+            out_fills["_lifo_sell_matches"] = lot_state["lifo_sell_matches"]
         if cost_qty > 1e-12:
             out_fills["active_cycle_rem_qty"] = round(cost_qty, 6)
         if tactical_avg_r is not None and active_avg_r is not None and abs(tactical_avg_r - active_avg_r) / max(active_avg_r, 1e-12) >= 0.001:
@@ -1773,6 +1800,10 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     open_lots = clipped_fresh
                 if fresh_vwap is not None:
                     set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", fresh_vwap, pos_px_f, overwrite=True)
+                    if (rec_lifo := safe_float(ro.get("lifo_realized_pnl_usd"), default=None)) is not None and abs(rec_lifo) >= 0.01:
+                        pos["lifo_realized_pnl_usd"] = round(rec_lifo, 2)
+                    else:
+                        pos.pop("lifo_realized_pnl_usd", None)
                     if "tactical_avg_buy_px" not in ro:
                         _clear_pos_pair(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct")
                     if (sw_cur := safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)) is not None and abs(

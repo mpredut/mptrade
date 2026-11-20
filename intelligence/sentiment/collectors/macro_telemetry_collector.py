@@ -335,6 +335,9 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
     COLLECTOR_ID = "macro_benchmarks_snapshot"
     # Shared wall-clock budget strictly below GlobalTelemetryCollector's 15.0s macro_benchmarks step timeout.
     _FETCH_DEADLINE_SEC = 12.5
+    _DERIBIT_CARRYOVER_MAX_AGE_SEC = 3600.0
+    _COINBASE_CARRYOVER_MAX_AGE_SEC = 300.0
+    _DERIBIT_METRIC_SUFFIXES = ("dvol", "rv_pct", "vrp_pct", "pc_oi_ratio", "skew_25d_pct")
 
     def collect(
         self,
@@ -445,6 +448,12 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
             return None
         extra_macro: Dict[str, Any] = {}
         if fetch_fn is None:
+            prev_snap, _ = self._read_cached_dict(
+                cache_dir,
+                "macro_benchmarks_files",
+                CACHE_MACRO_BENCHMARKS_FILENAME,
+                read_json_fn=read_json_fn,
+            )
             # 1. Coinbase BTC Premium Index (Coinbase BTC-USD vs SSOT cacheManager BTCUSDC / fallback Binance HTTP)
             if (cb_to := resolve_remaining_timeout_sec(deadline_mono, 2.0, min_timeout=1.0)) is not None:
                 try:
@@ -460,9 +469,19 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                         extra_macro["coinbase_premium_regime"] = (
                             "US_INSTITUTIONAL_BUYING" if cb_bps >= 5.0 else ("US_SPOT_SELLING_PRESSURE" if cb_bps <= -5.0 else "NEUTRAL")
                         )
+                        extra_macro["coinbase_premium_ts"] = eff_now
                 except Exception:
                     pass
+            if "coinbase_premium_bps" not in extra_macro and isinstance(prev_snap, dict) and prev_snap.get("coinbase_premium_bps") is not None:
+                prev_cb_ts = normalize_epoch_sec(prev_snap.get("coinbase_premium_ts") or prev_snap.get("ts"), default=0.0) or 0.0
+                if prev_cb_ts > 0.0 and 0.0 <= (eff_now - prev_cb_ts) <= self._COINBASE_CARRYOVER_MAX_AGE_SEC:
+                    extra_macro["coinbase_premium_bps"] = prev_snap["coinbase_premium_bps"]
+                    if prev_snap.get("coinbase_premium_regime") is not None:
+                        extra_macro["coinbase_premium_regime"] = prev_snap["coinbase_premium_regime"]
+                    extra_macro["coinbase_premium_ts"] = prev_cb_ts
             # 2. Deribit BTC / ETH Implied Volatility Index (DVOL) & Institutional Options Surface
+            deribit_currencies = tuple(get_deribit_options_currencies())
+            fresh_deribit_any = False
             if resolve_remaining_timeout_sec(deadline_mono, 2.0, min_timeout=1.2) is not None:
                 try:
                     end_ms = math.trunc(eff_now * 1000)
@@ -470,16 +489,20 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                     dvol_tpl = _cfg_str("feeds", "deribit_dvol_url_template")
                     hvol_tpl = _cfg_str("feeds", "deribit_hist_vol_url_template")
                     obook_tpl = _cfg_str("feeds", "deribit_options_book_url_template")
-                    for ccy in get_deribit_options_currencies():
+                    for ccy in deribit_currencies:
                         dvol_to = resolve_remaining_timeout_sec(deadline_mono, 2.0, min_timeout=1.0)
                         if dvol_to is None:
                             break
                         d_key = f"{ccy.lower()}_dvol"
-                        d_raw = _fetch(dvol_tpl.format(currency=ccy, start_ms=start_ms, end_ms=end_ms), timeout=dvol_to, headers={"User-Agent": "Mozilla/5.0"})
-                        d_data = ((d_raw or {}).get("result") or {}).get("data") if isinstance(d_raw, dict) else None
-                        if isinstance(d_data, list) and d_data and isinstance(d_data[-1], list) and len(d_data[-1]) >= 5:
-                            if (dv := safe_pos_float(d_data[-1][4], default=None)) is not None:
-                                extra_macro[d_key] = round(dv, 2)
+                        try:
+                            d_raw = _fetch(dvol_tpl.format(currency=ccy, start_ms=start_ms, end_ms=end_ms), timeout=dvol_to, headers={"User-Agent": "Mozilla/5.0"})
+                            d_data = ((d_raw or {}).get("result") or {}).get("data") if isinstance(d_raw, dict) else None
+                            if isinstance(d_data, list) and d_data and isinstance(d_data[-1], list) and len(d_data[-1]) >= 5:
+                                if (dv := safe_pos_float(d_data[-1][4], default=None)) is not None:
+                                    extra_macro[d_key] = round(dv, 2)
+                                    fresh_deribit_any = True
+                        except Exception:
+                            pass
                         rv_val: Optional[float] = None
                         if (hv_to := resolve_remaining_timeout_sec(deadline_mono, 2.0, min_timeout=0.8)) is not None:
                             try:
@@ -496,19 +519,35 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                                 opt_books_list = (ob_raw or {}).get("result") if isinstance(ob_raw, dict) else None
                             except Exception:
                                 pass
-                        extra_macro.update(
-                            compute_deribit_options_surface(
-                                opt_books_list,
-                                currency=ccy,
-                                dvol=extra_macro.get(d_key),
-                                rv=rv_val,
-                            )
+                        surf = compute_deribit_options_surface(
+                            opt_books_list,
+                            currency=ccy,
+                            dvol=extra_macro.get(d_key),
+                            rv=rv_val,
                         )
-                    if "btc_dvol" in extra_macro:
-                        bv = extra_macro["btc_dvol"]
-                        extra_macro["options_vol_regime"] = "HIGH_IV_EVENT_HEDGING" if bv >= 62.0 else ("COMPRESSED_IV" if bv <= 42.0 else "NORMAL_IV")
+                        if surf:
+                            extra_macro.update(surf)
+                            fresh_deribit_any = True
                 except Exception:
                     pass
+            carried_deribit_ts = 0.0
+            if isinstance(prev_snap, dict):
+                prev_db_ts = normalize_epoch_sec(prev_snap.get("deribit_ts") or prev_snap.get("ts"), default=0.0) or 0.0
+                if prev_db_ts > 0.0 and 0.0 <= (eff_now - prev_db_ts) <= self._DERIBIT_CARRYOVER_MAX_AGE_SEC:
+                    for ccy in deribit_currencies:
+                        ccy_keys = tuple(f"{ccy.lower()}_{sfx}" for sfx in self._DERIBIT_METRIC_SUFFIXES)
+                        if not any(k in extra_macro for k in ccy_keys):
+                            for k in ccy_keys:
+                                if prev_snap.get(k) is not None:
+                                    extra_macro[k] = prev_snap[k]
+                                    carried_deribit_ts = prev_db_ts
+            if fresh_deribit_any:
+                extra_macro["deribit_ts"] = eff_now
+            elif carried_deribit_ts > 0.0:
+                extra_macro["deribit_ts"] = carried_deribit_ts
+            if "btc_dvol" in extra_macro:
+                bv = extra_macro["btc_dvol"]
+                extra_macro["options_vol_regime"] = "HIGH_IV_EVENT_HEDGING" if bv >= 62.0 else ("COMPRESSED_IV" if bv <= 42.0 else "NORMAL_IV")
 
         extra_macro.update(compute_futures_premarket_lead({"items": items}))
         payload_ts = eff_now if explicit_now else resolve_now_ts(None)

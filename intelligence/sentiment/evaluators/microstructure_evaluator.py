@@ -80,6 +80,18 @@ _FLOW_HORIZON_SPECS: Tuple[Tuple[str, str, str], ...] = (
     ("1h", "taker_ratio_1h", "cvd_1h_usd"),
     ("4h", "taker_ratio_4h", "cvd_4h_usd"),
 )
+_SHARED_PERP_DERIV_KEYS: Tuple[str, ...] = (
+    "oi_usd", "oi_1h_chg_pct", "mark_price", "index_price",
+    "perp_spot_basis_bps", "funding_rate", "pred_funding_rate",
+    "predicted_funding_rate", "funding_annualized_pct", "_deriv_ts",
+)
+_SHARED_PERP_WHALE_KEYS: Tuple[str, ...] = (
+    "whale_long_pct", "whale_long_ratio", "taker_buy_sell_ratio",
+    "taker_buy_vol_usd", "taker_sell_vol_usd", "oi_1h_chg_pct", "oi_15m_chg_pct",
+    "divergence_regime", "taker_ratio_5m", "taker_ratio_1h", "taker_ratio_4h",
+    "cvd_5m_usd", "cvd_15m_usd", "cvd_1h_usd", "cvd_4h_usd",
+    "_whale_ts", "_taker_bar_ts_ms",
+)
 
 
 def format_spot_cvd_source_tag(minfo: Optional[Dict[str, Any]]) -> str:
@@ -1634,6 +1646,62 @@ def reconcile_sibling_flow_and_liq_regimes(
         ]
         if len(non_div) < 2:
             continue
+        prim_oi_pre = safe_pos_float(prim_m.get("oi_usd"), default=None)
+        same_perp_pre = [
+            (s, m)
+            for s, m in non_div
+            if prim_oi_pre is not None
+            and (sib_oi := safe_pos_float(m.get("oi_usd"), default=None)) is not None
+            and abs(prim_oi_pre - sib_oi) / max(prim_oi_pre, sib_oi) <= 0.05
+        ]
+        if len(same_perp_pre) >= 2:
+            deriv_src_sym, deriv_src_m = max(
+                same_perp_pre,
+                key=lambda kv: (safe_pos_float(kv[1].get("_deriv_ts"), default=0.0) or 0.0, 1 if kv[0] == prim_sym else 0),
+            )
+            deriv_src_ts = safe_pos_float(deriv_src_m.get("_deriv_ts"), default=0.0) or 0.0
+            whale_cands = [
+                (s, m)
+                for s, m in same_perp_pre
+                if m.get("taker_buy_sell_ratio") is not None or (safe_pos_float(m.get("_whale_ts"), default=0.0) or 0.0) > 0.0
+            ]
+            whale_src_sym, whale_src_m = (
+                max(
+                    whale_cands,
+                    key=lambda kv: (safe_pos_float(kv[1].get("_whale_ts"), default=0.0) or 0.0, 1 if kv[0] == prim_sym else 0),
+                )
+                if whale_cands
+                else (None, None)
+            )
+            whale_src_ts = (safe_pos_float(whale_src_m.get("_whale_ts"), default=0.0) or 0.0) if isinstance(whale_src_m, dict) else 0.0
+            for s_k, m_s in same_perp_pre:
+                re_enrich_perp = False
+                own_deriv_ts = safe_pos_float(m_s.get("_deriv_ts"), default=0.0) or 0.0
+                if s_k != deriv_src_sym and deriv_src_ts > own_deriv_ts:
+                    for dk in _SHARED_PERP_DERIV_KEYS:
+                        if deriv_src_m.get(dk) is not None:
+                            m_s[dk] = deriv_src_m[dk]
+                    re_enrich_perp = True
+                if isinstance(whale_src_m, dict) and s_k != whale_src_sym:
+                    own_whale_ts = safe_pos_float(m_s.get("_whale_ts"), default=0.0) or 0.0
+                    if (
+                        (whale_src_ts > 0.0 and own_whale_ts != whale_src_ts)
+                        or (
+                            whale_src_m.get("taker_buy_sell_ratio") is not None
+                            and m_s.get("taker_buy_sell_ratio") is not None
+                            and m_s.get("taker_buy_sell_ratio") != whale_src_m.get("taker_buy_sell_ratio")
+                        )
+                    ):
+                        for wk in _SHARED_PERP_WHALE_KEYS:
+                            if whale_src_m.get(wk) is not None:
+                                m_s[wk] = whale_src_m[wk]
+                        re_enrich_perp = True
+                if re_enrich_perp:
+                    s_p = casefold_get(pt_map, s_k)
+                    p_arg = s_p if isinstance(s_p, dict) else (prim_p_dict if isinstance(prim_p_dict, dict) else None)
+                    enrich_microstructure_cvd(m_s, p_arg)
+                    if m_s.get("liq_magnet_bias") is not None and isinstance(p_arg, dict):
+                        m_s.update(compute_liquidation_clusters(p_arg, m_s, symbol=s_k))
         agg_b = sum(safe_nonneg_float(m_s.get("bid_depth_usd"), 0.0) or 0.0 for _, m_s in non_div)
         agg_a = sum(safe_nonneg_float(m_s.get("ask_depth_usd"), 0.0) or 0.0 for _, m_s in non_div)
         agg_tot = agg_b + agg_a

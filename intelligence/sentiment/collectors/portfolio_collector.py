@@ -1742,6 +1742,8 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                 fills["open_lots"] = clip_open_lots_to_held_qty(
                     fresh_lots, held_cur_f, total_qty=fresh_q
                 )
+        if isinstance(fills, dict):
+            fills.pop("_lifo_sell_matches", None)
         return fills
 
 
@@ -1974,6 +1976,9 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
             gateway_max_usd=gateway_max_usd,
             cache_dir=cache_dir,
         )
+        for ro_val in recent_orders.values():
+            if isinstance(ro_val, dict):
+                ro_val.pop("_lifo_sell_matches", None)
         return recent_orders
 
 
