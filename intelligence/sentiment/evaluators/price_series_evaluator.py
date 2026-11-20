@@ -1614,14 +1614,7 @@ def _guard_quadratic_kinematic_overshoot(
     if span_min <= 1e-6:
         return vel, acc
     v_full = _linear_ols_slope(pts_tau_y)
-    if v_full is None or (vel * v_full) >= 0.0:
-        return vel, acc
-    tau_mid = 0.5 * (pts_tau_y[0][0] + pts_tau_y[-1][0])
-    recent_pts = [pt for pt in pts_tau_y if pt[0] >= tau_mid - 1e-9]
-    if len(recent_pts) < 2:
-        recent_pts = pts_tau_y[len(pts_tau_y) // 2 :]
-    v_rec = _linear_ols_slope(recent_pts)
-    if v_rec is None:
+    if v_full is None:
         return vel, acc
     tail_cut = pts_tau_y[-1][0] - span_min / 3.0
     tail_pts = [pt for pt in pts_tau_y if pt[0] >= tail_cut - 1e-9]
@@ -1630,6 +1623,32 @@ def _guard_quadratic_kinematic_overshoot(
     dy_tail = tail_pts[-1][1] - tail_pts[0][1]
     tail_span = max(tail_pts[-1][0] - tail_pts[0][0], 1e-6)
     v_tail = dy_tail / tail_span
+    if (vel * v_full) >= 0.0:
+        dy_full = pts_tau_y[-1][1] - pts_tau_y[0][1]
+        if abs(dy_full) >= 0.15 and abs(dy_tail) >= 0.10 and (vel * dy_full) < 0.0 and (vel * dy_tail) < 0.0:
+            end_cut = pts_tau_y[-1][0] - span_min / 6.0
+            end_pts = [pt for pt in pts_tau_y if pt[0] >= end_cut - 1e-9]
+            if len(end_pts) < 3:
+                end_pts = pts_tau_y[-min(3, len(pts_tau_y)) :]
+            v_end_ols = _linear_ols_slope(end_pts)
+            if v_end_ols is not None and (vel * v_end_ols) < 0.0:
+                v_tail_ols = _linear_ols_slope(tail_pts)
+                eff_v = v_tail_ols if (v_tail_ols is not None and (vel * v_tail_ols) < 0.0) else v_tail
+                tau_mid = 0.5 * (pts_tau_y[0][0] + pts_tau_y[-1][0])
+                rec_pts = [pt for pt in pts_tau_y if pt[0] >= tau_mid - 1e-9]
+                if len(rec_pts) < 2:
+                    rec_pts = pts_tau_y[len(pts_tau_y) // 2 :]
+                v_rec_n = _linear_ols_slope(rec_pts)
+                base_v = v_rec_n if (v_rec_n is not None and (v_rec_n * vel) > 0.0) else v_full
+                return eff_v, (eff_v - base_v) / (0.5 * span_min)
+        return vel, acc
+    tau_mid = 0.5 * (pts_tau_y[0][0] + pts_tau_y[-1][0])
+    recent_pts = [pt for pt in pts_tau_y if pt[0] >= tau_mid - 1e-9]
+    if len(recent_pts) < 2:
+        recent_pts = pts_tau_y[len(pts_tau_y) // 2 :]
+    v_rec = _linear_ols_slope(recent_pts)
+    if v_rec is None:
+        return vel, acc
     if (vel * v_rec) > 0.0 or (vel * dy_tail) > 0.0:
         v_tail_ols = _linear_ols_slope(tail_pts)
         eff_v_tail = v_tail_ols if v_tail_ols is not None else v_tail

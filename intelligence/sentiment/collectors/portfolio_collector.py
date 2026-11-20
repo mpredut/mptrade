@@ -2042,10 +2042,16 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
                     checked_oq_expiry or lifecycle == "awaiting_cancel" or exp_ts == 0.0 or exp_ts > eff_now
                 ):
                     raw_rq_v = rec.get("provider_name") if rec.get("provider_name") is not None else rec.get("venue")
-                    active_retries.append({
+                    rq_item: Dict[str, Any] = {
                         "venue": normalize_venue_name(raw_rq_v) or str(raw_rq_v or "").strip().lower(),
                         **{k: rec.get(k) for k in ("symbol", "side", "qty", "requested_price", "kind", "attempts", "last_failure_reason")},
-                    })
+                    }
+                    if (req_px := safe_pos_float(rec.get("requested_price"), default=None)) is not None:
+                        rq_item["requested_price"] = round(req_px, 6)
+                    c_ts = normalize_epoch_sec(rec.get("created_ts"), default=0.0, allow_zero=True, allow_iso=True) or 0.0
+                    if c_ts > 0.0 and eff_now >= c_ts:
+                        rq_item["age_min"] = round((eff_now - c_ts) / 60.0, 1)
+                    active_retries.append(rq_item)
             if active_retries:
                 out["active_retry_queue"] = active_retries
 

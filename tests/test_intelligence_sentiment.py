@@ -16182,3 +16182,59 @@ def test_post_us_open_vwap_rvol_equity_placeholder_and_bellwether_funding():
     assert btc_bw["funding_annualized_pct"] == pytest.approx(7.3)
     assert "funding_rate" not in btc_bw
 
+
+def test_iter5_n_wave_5m_kinematics_guard_and_retry_queue_price_age(tmp_path):
+    """Verify N-wave 5m breakout/breakdown kinematics guard and retry-queue requested_price rounding + age_min."""
+    from intelligence.sentiment.collectors.portfolio_collector import BotRuntimeStatesCollector
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_series_kinematics
+
+    t_now = 1_795_186_821.0
+
+    # 1. Bullish N-wave (rally -> mid-dip -> final-minute breakout to fresh 5m high) must NOT emit negative vel_5m
+    # Mirrors live TAOUSDC 17:00:21 profile: 0.00% -> +0.22% (-4m) -> -0.05% (-0.5m) -> +0.32% (0m)
+    prices_n_up = []
+    for sec in range(301):
+        if sec <= 60:
+            pct = 0.22 * (sec / 60.0)
+        elif sec <= 265:
+            pct = 0.22 - 0.27 * ((sec - 60) / 205.0)
+        else:
+            pct = -0.05 + 0.37 * ((sec - 265) / 35.0)
+        prices_n_up.append(185.65 * (1.0 + pct / 100.0))
+    series_n_up = [[(t_now - 300.0 + idx) * 1000.0, px] for idx, px in enumerate(prices_n_up)]
+    kin_up = compute_series_kinematics(series_n_up)
+    assert kin_up["vel_5m_pct_min"] > 0.0
+    assert kin_up["accel_5m_pct_min2"] > 0.0
+
+    # Symmetric bearish N-wave (drop -> mid-bounce -> final-minute breakdown to fresh 5m low) must emit negative vel_5m
+    prices_n_dn = [2.0 * 185.65 - px for px in prices_n_up]
+    series_n_dn = [[(t_now - 300.0 + idx) * 1000.0, px] for idx, px in enumerate(prices_n_dn)]
+    kin_dn = compute_series_kinematics(series_n_dn)
+    assert kin_dn["vel_5m_pct_min"] < 0.0
+    assert kin_dn["accel_5m_pct_min2"] < 0.0
+
+    # 2. BotRuntimeStatesCollector rounds IEEE-754 float dust on requested_price and reports age_min
+    cdir = tmp_path / "cachedb"
+    orders_dir = cdir / "orders"
+    orders_dir.mkdir(parents=True)
+    rec = {
+        "id": "r1",
+        "provider_name": "Binance",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "qty": 0.00878,
+        "requested_price": 61561.98597200001,
+        "kind": "accel_surge_up",
+        "attempts": 2,
+        "last_failure_reason": "profit_guard",
+        "created_ts": t_now - 900.0,
+        "lifecycle": "submit_pending",
+        "expires_at_ts": t_now + 3600.0,
+    }
+    (orders_dir / "order_retry_queue.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
+    rt_out = BotRuntimeStatesCollector(start_sync=False).collect(str(cdir), now_ts=t_now)
+    rq = rt_out["active_retry_queue"][0]
+    assert rq["requested_price"] == 61561.985972
+    assert rq["age_min"] == 15.0
+
+
