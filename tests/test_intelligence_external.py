@@ -2543,4 +2543,58 @@ def test_enrich_microstructure_cvd_reconciles_live_15m_surge_into_1h_volume_and_
     assert minfo_no_p15["rvol_1h"] == pytest.approx(2.08, abs=0.01)
 
 
+def test_hot_path_caches_preserve_semantics_and_config_hot_reload(tmp_path, monkeypatch):
+    """Cached telemetry intervals, parse_ts_px_row, symbol scope matching, and side extraction stay exact."""
+    from collections import namedtuple
+    import intelligence.macro_sentiment_ssot as mss
+    from core.math_coercion import extract_order_side, normalize_side
+    from providers.intent_state import symbols_match_intent_scope_and_quote
+
+    # 1. resolve_derived_telemetry_intervals memoizes by ConfigParser identity, isolates mutation, and hot-reloads
+    cfg_p = tmp_path / "macro_intelligence.conf"
+    cfg_p.write_text("[intervals]\norderbook_interval_mult = 1/24\n", encoding="utf-8")
+    d1 = mss.resolve_derived_telemetry_intervals(executor_interval_sec=360.0, config_path=str(cfg_p))
+    assert d1["orderbook_interval_sec"] == pytest.approx(15.0)
+    d1["orderbook_interval_sec"] = 999.0
+    d2 = mss.resolve_derived_telemetry_intervals(executor_interval_sec=360.0, config_path=str(cfg_p))
+    assert d2["orderbook_interval_sec"] == pytest.approx(15.0)
+
+    # Modifying file content/size invalidates load_ini_config -> new ConfigParser identity -> fresh intervals
+    cfg_p.write_text("[intervals]\norderbook_interval_mult = 1/12\n", encoding="utf-8")
+    d3 = mss.resolve_derived_telemetry_intervals(executor_interval_sec=360.0, config_path=str(cfg_p))
+    assert d3["orderbook_interval_sec"] == pytest.approx(30.0)
+
+    # Monkeypatching _cfg_str bypasses cache cleanly
+    monkeypatch.setattr(mss, "_cfg_str", lambda sec, k, fb="", config_path=None: "1/6" if k == "orderbook_interval_mult" else fb)
+    d4 = mss.resolve_derived_telemetry_intervals(executor_interval_sec=360.0, config_path=str(cfg_p))
+    assert d4["orderbook_interval_sec"] == pytest.approx(60.0)
+
+    # 2. parse_ts_px_row handles int/float/sec/ms/str/bool/NaN/inf/namedtuple cleanly
+    Row = namedtuple("Row", ["ts", "px"])
+    assert mss.parse_ts_px_row([1_700_000_000, 61000.5]) == (1_700_000_000_000.0, 61000.5)
+    assert mss.parse_ts_px_row([1_700_000_000_000, 61000.5]) == (1_700_000_000_000.0, 61000.5)
+    assert mss.parse_ts_px_row(Row(1_700_000_000, 100)) == (1_700_000_000_000.0, 100.0)
+    assert mss.parse_ts_px_row(["1700000000", "42.5"]) == (1_700_000_000_000.0, 42.5)
+    assert mss.parse_ts_px_row([True, 100.0]) is None
+    assert mss.parse_ts_px_row([1_700_000_000, float("nan")]) is None
+    assert mss.parse_ts_px_row([1_700_000_000, float("inf")]) is None
+    assert mss.parse_ts_px_row([0, 100.0]) is None
+
+    # 3. symbols_match_intent_scope_and_quote handles str fast-path and unhashable non-str inputs
+    assert symbols_match_intent_scope_and_quote("BTCUSDC", "BTCUSD", venue_a="binance", venue_b="binance") is True
+    assert symbols_match_intent_scope_and_quote("NVDA_US_EQ", "NVDAUSDC", venue_a="t212", venue_b="binance") is False
+    assert symbols_match_intent_scope_and_quote({"bad": 1}, "BTCUSDC") is False
+
+    # 4. normalize_side and extract_order_side fast-path and fallback shapes
+    assert normalize_side("BUY") == "BUY"
+    assert normalize_side("sell") == "SELL"
+    assert normalize_side("open_long") == "BUY"
+    assert normalize_side(True) == ""
+    assert extract_order_side({"side": "BUY"}) == "BUY"
+    assert extract_order_side({"side": "a"}) == "SELL"
+    assert extract_order_side({"side": True, "type": "limit", "descr": {"type": "buy"}}) == "BUY"
+    assert extract_order_side({"dir": "Spot", "isBuyer": True}) == "BUY"
+
+
+
 

@@ -5,6 +5,7 @@ import os
 import re
 import threading
 from contextlib import contextmanager
+from functools import lru_cache
 from typing import Any, Callable, Optional
 
 from botcore import (
@@ -792,15 +793,13 @@ def extract_intent_primary_order_id(
     return default
 
 
-def symbols_match_intent_scope_and_quote(
+def _symbols_match_intent_scope_and_quote_impl(
     sym_a: Any,
     sym_b: Any,
-    *,
-    venue_a: Any = None,
-    venue_b: Any = None,
-    allow_missing_symbol: bool = False,
+    venue_a: Any,
+    venue_b: Any,
+    allow_missing_symbol: bool,
 ) -> bool:
-    """Return True when two symbols/venues share the same asset class and compatible quote currency."""
     sa = _clean_intent_symbol(sym_a)
     sb = _clean_intent_symbol(sym_b)
     va = normalize_venue_name(clean_scalar_str(venue_a) or "") if venue_a else ""
@@ -817,6 +816,42 @@ def symbols_match_intent_scope_and_quote(
     return sa == sb or (
         same_canonical_base_asset(sa, sb)
         and compatible_quote_suffixes(sa) == compatible_quote_suffixes(sb)
+    )
+
+
+@lru_cache(maxsize=2048)
+def _symbols_match_intent_scope_and_quote_cached(
+    sym_a: str,
+    sym_b: str,
+    venue_a: str,
+    venue_b: str,
+    allow_missing_symbol: bool,
+) -> bool:
+    return _symbols_match_intent_scope_and_quote_impl(
+        sym_a, sym_b, venue_a, venue_b, allow_missing_symbol
+    )
+
+
+def symbols_match_intent_scope_and_quote(
+    sym_a: Any,
+    sym_b: Any,
+    *,
+    venue_a: Any = None,
+    venue_b: Any = None,
+    allow_missing_symbol: bool = False,
+) -> bool:
+    """Return True when two symbols/venues share the same asset class and compatible quote currency."""
+    if (
+        (sym_a is None or type(sym_a) is str)
+        and (sym_b is None or type(sym_b) is str)
+        and (venue_a is None or type(venue_a) is str)
+        and (venue_b is None or type(venue_b) is str)
+    ):
+        return _symbols_match_intent_scope_and_quote_cached(
+            sym_a or "", sym_b or "", venue_a or "", venue_b or "", bool(allow_missing_symbol)
+        )
+    return _symbols_match_intent_scope_and_quote_impl(
+        sym_a, sym_b, venue_a, venue_b, bool(allow_missing_symbol)
     )
 
 

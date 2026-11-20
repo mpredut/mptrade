@@ -262,10 +262,8 @@ def _cfg_float(section: str, key: str, fallback: float, config_path: Optional[st
     return safe_float(cfg_str_fn(section, key, "", config_path=config_path), fallback)
 
 
-def _cfg_ratio(section: str, key: str, fallback: float, config_path: Optional[str] = None) -> float:
-    """Parse a float or rational multiplier expression (e.g. ``1/24``, ``5/6``, ``5/3``) from config."""
-    cfg_str_fn = _resolve_macro_cfg_attr("_cfg_str", _cfg_str)
-    raw = cfg_str_fn(section, key, "", config_path=config_path)
+def _parse_cfg_ratio(raw: str, fallback: float) -> float:
+    """Parse a float or rational multiplier expression (e.g. ``1/24``, ``5/6``, ``5/3``)."""
     if not raw:
         return fallback
     if "/" in raw:
@@ -275,6 +273,12 @@ def _cfg_ratio(section: str, key: str, fallback: float, config_path: Optional[st
         if num is not None and den > 0.0:
             return num / den
     return safe_float(raw, fallback)
+
+
+def _cfg_ratio(section: str, key: str, fallback: float, config_path: Optional[str] = None) -> float:
+    """Parse a float or rational multiplier expression (e.g. ``1/24``, ``5/6``, ``5/3``) from config."""
+    cfg_str_fn = _resolve_macro_cfg_attr("_cfg_str", _cfg_str)
+    return _parse_cfg_ratio(cfg_str_fn(section, key, "", config_path=config_path), fallback)
 
 
 def _cfg_int(section: str, key: str, fallback: int, config_path: Optional[str] = None) -> int:
@@ -289,15 +293,23 @@ def _cfg_int(section: str, key: str, fallback: int, config_path: Optional[str] =
 
 _NUMERIC_ROW_TYPES = (int, float)
 _SEQ_ROW_TYPES = (list, tuple)
+_POS_INF = math.inf
 
 
 def parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
-    if not isinstance(row, (list, tuple)) or len(row) < 2:
+    rt = type(row)
+    if (rt is not list and rt is not tuple and not isinstance(row, _SEQ_ROW_TYPES)) or len(row) < 2:
         return None
     t, p = row[0], row[1]
-    if type(t) in _NUMERIC_ROW_TYPES and type(p) in _NUMERIC_ROW_TYPES:
-        if t > 0.0 and p > 0.0 and math.isfinite(t) and math.isfinite(p):
-            return ((t * 1000.0 if t < 1e11 else t * 1.0), p * 1.0)
+    tt = type(t)
+    pt = type(p)
+    if tt is int and pt is float:
+        if t > 0 and 0.0 < p < _POS_INF:
+            return (t * 1000.0 if t < 1e11 else t * 1.0, p)
+        return None
+    if (tt is float or tt is int) and (pt is float or pt is int):
+        if 0.0 < t < _POS_INF and 0.0 < p < _POS_INF:
+            return (t * 1000.0 if t < 1e11 else t * 1.0, p * 1.0)
         return None
     tf, pf = safe_pos_float(t, 0.0), safe_pos_float(p, 0.0)
     return ((tf * 1000.0 if tf < 1e11 else tf), pf) if (tf > 0.0 and pf > 0.0) else None
@@ -627,6 +639,9 @@ def resolve_crypto_executor_interval_sec(
     return max(30.0, cfg_sec)
 
 
+_DERIVED_INTERVALS_CACHE: Dict[Tuple[float, int], Tuple[Any, Dict[str, float]]] = {}
+
+
 def resolve_derived_telemetry_intervals(
     executor_interval_sec: Optional[float] = None,
     config_path: Optional[str] = None,
@@ -637,16 +652,31 @@ def resolve_derived_telemetry_intervals(
         config_path=config_path,
         crontab_path=crontab_path,
     )
+    cfg_str_fn = _resolve_macro_cfg_attr("_cfg_str", _cfg_str)
+    cfg_obj = None
+    cache_key: Optional[Tuple[float, int]] = None
+    if cfg_str_fn is _ORIG_MACRO_CFG_ATTRS["_cfg_str"]:
+        loader = _resolve_macro_cfg_attr("load_macro_intelligence_config", load_macro_intelligence_config)
+        cfg_obj = loader(config_path)
+        cache_key = (exec_sec, id(cfg_obj))
+        cached = _DERIVED_INTERVALS_CACHE.get(cache_key)
+        if cached is not None and cached[0] is cfg_obj:
+            return dict(cached[1])
     exec_min = exec_sec / 60.0
+
+    def _raw_interval(key: str) -> str:
+        if cfg_obj is not None:
+            return cfg_obj.get("intervals", key).strip() if cfg_obj.has_option("intervals", key) else ""
+        return cfg_str_fn("intervals", key, "", config_path=config_path)
 
     def _sec(mult_key: str, default_mult: float, legacy_sec_key: str = "") -> float:
         if legacy_sec_key:
-            explicit = safe_pos_float(_cfg_str("intervals", legacy_sec_key, "", config_path=config_path), 0.0)
+            explicit = safe_pos_float(_raw_interval(legacy_sec_key), 0.0)
             if explicit > 0.0:
                 return explicit
-        return round(exec_sec * _cfg_ratio("intervals", mult_key, default_mult, config_path=config_path), 6)
+        return round(exec_sec * _parse_cfg_ratio(_raw_interval(mult_key), default_mult), 6)
 
-    return {
+    out: Dict[str, float] = {
         "crypto_executor_interval_sec": round(exec_sec, 6),
         "share_executor_interval_sec": _sec("share_executor_interval_mult", 5.0),
         "ui_sync_interval_sec": _sec("ui_sync_interval_mult", 2.0),
@@ -661,7 +691,7 @@ def resolve_derived_telemetry_intervals(
         "macro_calendar_interval_sec": _sec("macro_calendar_interval_mult", 60.0),
         "fear_greed_interval_sec": _sec("fear_greed_interval_mult", 5.0),
         "sensor_stale_age_min": round(
-            exec_min * _cfg_ratio("intervals", "sensor_stale_age_mult", 11.0 / 12.0, config_path=config_path),
+            exec_min * _parse_cfg_ratio(_raw_interval("sensor_stale_age_mult"), 11.0 / 12.0),
             6,
         ),
         "unfilled_order_cancel_grace_sec": _sec("unfilled_order_cancel_grace_mult", 5.0 / 3.0),
@@ -683,6 +713,10 @@ def resolve_derived_telemetry_intervals(
         "ai_impulse_min_eval_gap_sec": _sec("ai_impulse_min_eval_gap_mult", 13.0 / 72.0),
         "ai_impulse_exec_timeout_sec": _sec("ai_impulse_exec_timeout_mult", 0.75),
     }
+    if cache_key is not None and cfg_obj is not None:
+        lru_dict_put(_DERIVED_INTERVALS_CACHE, cache_key, (cfg_obj, out), 16)
+        return dict(out)
+    return out
 
 
 TELEMETRY_SOURCE_STALE_INTERVAL_MULT: float = 2.0

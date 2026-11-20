@@ -284,12 +284,28 @@ _TREND_UP_TOKENS = frozenset(("up", "bull", "uptrend", "bullish"))
 _TREND_DOWN_TOKENS = frozenset(("down", "bear", "downtrend", "bearish"))
 _BUY_SIDE_TOKENS = frozenset(("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"))
 _SELL_SIDE_TOKENS = frozenset(("A", "S", "SELL", "SOLD", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"))
+_EXACT_SIDE_MAP = {
+    "BUY": "BUY",
+    "SELL": "SELL",
+    "buy": "BUY",
+    "sell": "SELL",
+    "B": "BUY",
+    "b": "BUY",
+    "S": "SELL",
+    "s": "SELL",
+    "A": "SELL",
+    "a": "SELL",
+}
 _INVALID_OID_STRINGS = INVALID_SCALAR_STRINGS | frozenset(("0", "0.0", "-0", "+0", "+0.0", "-0.0"))
 
 
 def normalize_side(side: object, *, require_str: bool = False) -> str:
     """Normalize a scalar order side token to ``'BUY'`` or ``'SELL'`` (or ``''`` when unrecognized)."""
-    if side is None or isinstance(side, bool) or (require_str and not isinstance(side, str)):
+    if type(side) is str:
+        fast = _EXACT_SIDE_MAP.get(side)
+        if fast is not None:
+            return fast
+    elif side is None or isinstance(side, bool) or require_str:
         return ""
     s = " ".join(str(side).strip().upper().replace("_", " ").replace("-", " ").split())
     if s in _BUY_SIDE_TOKENS:
@@ -441,11 +457,17 @@ def extract_order_id(order: object, default: str | None = None) -> str | None:
 
 def extract_order_side(order: object) -> str:
     """Extract and normalize order side (``'BUY'`` or ``'SELL'``) from any venue shape."""
-    if not isinstance(order, dict):
+    if type(order) is not dict and not isinstance(order, dict):
         return ""
-    s_norm = _first_mapped(order, ("side", "S", "dir"), lambda v: normalize_side(v) or None)
-    if s_norm:
-        return s_norm
+    for k in ("side", "S", "dir"):
+        raw_s = order.get(k)
+        if raw_s is not None:
+            if type(raw_s) is str:
+                fast = _EXACT_SIDE_MAP.get(raw_s)
+                if fast is not None:
+                    return fast
+            if (s_norm := normalize_side(raw_s)):
+                return s_norm
     descr = order.get("descr")
     for raw_type in (order.get("type"), descr.get("type") if isinstance(descr, dict) else None):
         if (t_norm := normalize_side(raw_type)) in ("BUY", "SELL"):
