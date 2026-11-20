@@ -3867,11 +3867,105 @@ def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
     bot_hit = AutonomousIntentGateway._resolve_recent_bot_opposite_fill(fake_t212_inst, "SELL", live_now, known_ai_intents)
     assert bot_hit is not None and bot_hit["actor"] == "BOT" and bot_hit["price"] == pytest.approx(191.0)
 
+    # (f) Real Binance MARKET fills (price='0.00000000' + fills/cummulativeQuoteQty), partial fills, and reconciled LIMIT fill timestamps
+    from providers.ai_survival_guard import (
+        _extract_intent_exec_price,
+        _extract_intent_exec_ts,
+        _extract_intent_notional_usd,
+    )
+    from intelligence.sentiment.evaluators.guard_probe_evaluator import probe_deterministic_guards
 
+    binance_mkt_buy = {
+        "intent_id": "bn_mkt_1",
+        "timestamp": live_now - 7200.0,
+        "decision": "BUY",
+        "symbol": "BTCUSDC",
+        "venue": "binance",
+        "status": "EXECUTED",
+        "clamped_notional_usd": 800.0,
+        "execution_payload": {
+            "orderId": 9001,
+            "status": "FILLED",
+            "price": "0.00000000",
+            "executedQty": "0.005",
+            "cummulativeQuoteQty": "400.0",
+            "transactTime": int((live_now - 7190.0) * 1000),
+            "fills": [{"price": "80000.00000000", "qty": "0.005"}],
+        },
+    }
+    assert _extract_intent_exec_price(binance_mkt_buy) == pytest.approx(80000.0)
+    assert _extract_intent_exec_ts(binance_mkt_buy) == pytest.approx(live_now - 7190.0)
+    assert _extract_intent_notional_usd(binance_mkt_buy) == pytest.approx(400.0)
 
+    # Placement executed_at must NOT shadow a later resting LIMIT fill_at / RECONCILED_EXECUTED history ts
+    reconciled_limit = {
+        "intent_id": "lim_rec_1",
+        "timestamp": live_now - 10800.0,
+        "executed_at": live_now - 10795.0,
+        "decision": "BUY",
+        "symbol": "TAOUSDC",
+        "venue": "binance",
+        "order_type": "LIMIT",
+        "status": "EXECUTED",
+        "execution_payload": {"orderId": 9002, "status": "FILLED", "executedQty": "2.0", "filled_at": live_now - 600.0},
+    }
+    assert _extract_intent_exec_ts(reconciled_limit) == pytest.approx(live_now - 600.0)
 
+    hist_reconciled = {
+        "intent_id": "hist_rec_1",
+        "timestamp": live_now - 10800.0,
+        "decision": "SELL",
+        "symbol": "TAOUSDC",
+        "venue": "binance",
+        "status": "EXECUTED",
+        "execution_payload": {"orderId": 9003, "status": "FILLED", "executedQty": "2.0", "cummulativeQuoteQty": "420.0"},
+        "history": [{"ts": live_now - 900.0, "action": "RECONCILED_EXECUTED"}],
+    }
+    assert _extract_intent_exec_price(hist_reconciled) == pytest.approx(210.0)
+    assert _extract_intent_exec_ts(hist_reconciled) == pytest.approx(live_now - 900.0)
 
+    # (g) probe_deterministic_guards honors intelligence_guards_mode='off', venue reference='off', and stale micro timestamps
+    stale_micro = {
+        "ob_imbalance": 0.10,
+        "ask_wall_usd": 2_000_000.0,
+        "ask_wall_px": 100.5,
+        "_ob_raw_ts": live_now - 86400.0 * 3,
+        "taker_buy_sell_ratio": 0.50,
+        "_whale_ts": live_now - 86400.0 * 3,
+    }
+    p_stale = probe_deterministic_guards(
+        "BTCUSDC", "BUY", 100.0, venue="binance", microstructure_entry=stale_micro, now_ts=live_now, allow_disk_cache=False
+    )
+    assert p_stale["flags"] == []
 
+    fresh_micro = {
+        "ob_imbalance": 0.10,
+        "ask_wall_usd": 2_000_000.0,
+        "ask_wall_px": 100.5,
+        "_ob_raw_ts": live_now - 30.0,
+    }
+    p_master_off = probe_deterministic_guards(
+        "BTCUSDC",
+        "BUY",
+        100.0,
+        venue="binance",
+        margins={"intelligence_guards_mode": "off", "default": 1.15},
+        microstructure_entry=fresh_micro,
+        opposite_fill_px=100.2,
+        now_ts=live_now,
+        allow_disk_cache=False,
+    )
+    assert [f["guard"] for f in p_master_off["flags"]] == ["G_PROF"]
 
-
+    p_ref_off = probe_deterministic_guards(
+        "BTCUSDC",
+        "BUY",
+        100.0,
+        venue="binance",
+        margins={"intelligence_guards_mode": "off", "binance_buy_reference": "off", "default": 1.15},
+        opposite_fill_px=100.2,
+        now_ts=live_now,
+        allow_disk_cache=False,
+    )
+    assert p_ref_off["flags"] == []
 

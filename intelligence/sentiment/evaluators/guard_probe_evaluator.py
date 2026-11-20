@@ -13,7 +13,9 @@ from botcore import (
     _parse_bool_flag,
     clean_scalar_str,
     clean_scale,
+    normalize_epoch_sec,
     normalize_side,
+    obj_attr,
     profit_diff_pct,
     resolve_now_ts,
     safe_float,
@@ -26,7 +28,7 @@ from cachepaths import (
     matches_asset_scope,
     normalize_venue_name,
 )
-from guard_hierarchy import _load_margins, validate_guard_mode_cfg
+from guard_hierarchy import _load_margins, is_intelligence_master_off, validate_guard_mode_cfg
 from instrument_registry import casefold_get, resolve_symbol_identity
 from intelligence.external.collectors.base_collector import (
     get_derivatives_collector,
@@ -72,6 +74,23 @@ def _mode_enabled(m: Mapping[str, Any], key: str) -> bool:
         return validate_guard_mode_cfg(m[key], key) != "off"
     except Exception:
         return str(m.get(key) or "").strip().lower() != "off"
+
+
+def _is_snapshot_fresh(
+    snap: Any,
+    ts_keys: tuple[str, ...],
+    now_ts: float,
+    max_age_sec: float,
+) -> bool:
+    """Return False only when ``snap`` carries a valid timestamp strictly older than ``max_age_sec``."""
+    if max_age_sec <= 0.0 or snap is None:
+        return True
+    for k in ts_keys:
+        raw_t = snap.get(k) if isinstance(snap, Mapping) else obj_attr(snap, k)
+        ts_s = normalize_epoch_sec(raw_t, default=None, allow_iso=True)
+        if ts_s is not None and ts_s > 0.0:
+            return (now_ts - ts_s) <= max_age_sec
+    return True
 
 
 def _compact_reason(raw_reason: str, max_len: int = 64) -> str:
@@ -180,7 +199,11 @@ def probe_deterministic_guards(
 
     # 1. G_PROF: Deterministic profit margin vs last opposite fill
     ref_px = safe_pos_float(opposite_fill_px, default=None)
-    if ref_px is not None:
+    side_ref_key = f"{ven_s}_{side_u.lower()}_reference" if ven_s else ""
+    ref_mode = clean_scalar_str(
+        m.get(side_ref_key) if (side_ref_key and side_ref_key in m) else m.get(f"default_{side_u.lower()}_reference")
+    )
+    if ref_px is not None and (ref_mode or "").lower() != "off":
         prof_pct = safe_pos_float(m.get(ven_s), default=None) or safe_pos_float(m.get("default"), default=1.15) or 1.15
         diff_pct = profit_diff_pct(side_u, px_f, ref_px)
         if diff_pct < prof_pct:
@@ -192,8 +215,10 @@ def probe_deterministic_guards(
             })
             min_scale = 0.0
 
+    intel_master_on = not is_intelligence_master_off(m)
+
     # 2. G_QLIMIT2: Parabolic surge & Weibull exhaustion
-    if _mode_enabled(m, "internal_guard_mode"):
+    if intel_master_on and _mode_enabled(m, "internal_guard_mode"):
         hist = price_history
         if hist is None and allow_disk_cache:
             try:
@@ -251,13 +276,17 @@ def probe_deterministic_guards(
                 pass
 
     # 3. External Microstructure Guards (GI_WHALE, GI_OBOOK, GI_FUNDING)
-    ext_enabled = _mode_enabled(m, "external_guard_mode")
+    ext_enabled = intel_master_on and _mode_enabled(m, "external_guard_mode")
     micro = microstructure_entry if isinstance(microstructure_entry, Mapping) else None
 
     if ext_enabled and not is_tok_or_eq and _mode_enabled(m, "whale_guard_mode"):
         whale_snap: Any = None
-        if micro is not None and (
-            micro.get("taker_buy_sell_ratio") is not None or micro.get("whale_long_pct") is not None
+        if micro is not None and _is_snapshot_fresh(micro, ("_whale_ts",), eff_now, 3600.0) and (
+            micro.get("taker_buy_sell_ratio") is not None
+            or micro.get("whale_long_pct") is not None
+            or micro.get("top_traders_long_pct") is not None
+            or micro.get("divergence_regime") is not None
+            or micro.get("div_regime") is not None
         ):
             whale_snap = micro
         elif micro is None and allow_disk_cache:
@@ -281,8 +310,14 @@ def probe_deterministic_guards(
     if ext_enabled and _mode_enabled(m, "orderbook_wall_guard_mode"):
         ob_snap: Any = None
         if micro is not None:
-            if not _parse_bool_flag(micro.get("ob_stale_frozen"), False) and (
-                micro.get("ob_imbalance") is not None or micro.get("ask_wall_usd") is not None or micro.get("bid_wall_usd") is not None
+            if (
+                not _parse_bool_flag(micro.get("ob_stale_frozen"), False)
+                and _is_snapshot_fresh(micro, ("_ob_raw_ts", "_ob_ts"), eff_now, 1800.0)
+                and (
+                    micro.get("ob_imbalance") is not None
+                    or micro.get("ask_wall_usd") is not None
+                    or micro.get("bid_wall_usd") is not None
+                )
             ):
                 ob_snap = micro
         elif allow_disk_cache:
@@ -304,7 +339,7 @@ def probe_deterministic_guards(
 
     if ext_enabled and not is_tok_or_eq and _mode_enabled(m, "funding_guard_mode"):
         deriv_snap: Any = None
-        if micro is not None and micro.get("funding_rate") is not None:
+        if micro is not None and _is_snapshot_fresh(micro, ("_deriv_ts",), eff_now, 3600.0) and micro.get("funding_rate") is not None:
             deriv_snap = micro
         elif micro is None and allow_disk_cache:
             try:
@@ -325,11 +360,11 @@ def probe_deterministic_guards(
                 pass
 
     # 4. GLLM3: Cached Geopolitical Shock Shield (0 ms local cache)
-    if _mode_enabled(m, "geopolitical_guard_mode"):
+    if intel_master_on and _mode_enabled(m, "geopolitical_guard_mode"):
         geo_assess = geopolitical_assessment
         if geo_assess is None and allow_disk_cache:
             geo_assess = _read_local_geo_assessment()
-        if geo_assess is not None:
+        if geo_assess is not None and _is_snapshot_fresh(geo_assess, ("ts", "timestamp"), eff_now, 86400.0):
             try:
                 g_dec = GeopoliticalShockGuard().check(sym_s, side_u, geo_assess)
                 min_scale = min(min_scale, _record_decision_flag(flags, "GLLM3", g_dec, "geopolitical_shock"))

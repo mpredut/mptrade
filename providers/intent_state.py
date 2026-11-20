@@ -679,14 +679,19 @@ def parse_intent_circuit_breaker_config(conf: dict[str, str]) -> dict[str, Any]:
 
 
 def _intent_executed_notional_usd(item: dict[str, Any]) -> float:
-    for key in ("filled_notional_usd", "clamped_notional_usd"):
-        if (val := safe_pos_float(item.get(key), default=None)) is not None:
-            return val
+    if (val := safe_pos_float(item.get("filled_notional_usd"), default=None)) is not None:
+        return val
     ep = item.get("execution_payload")
     if isinstance(ep, dict):
-        for key in ("cummulativeQuoteQty", "cumulativeQuoteQty", "quote_notional", "cost", "notional_usd"):
+        for key in ("cummulativeQuoteQty", "cumulativeQuoteQty", "cost", "filledValue", "quote_notional", "notional_usd"):
             if (val := safe_pos_float(ep.get(key), default=None)) is not None:
                 return val
+    if (val := safe_pos_float(item.get("clamped_notional_usd"), default=None)) is not None:
+        return val
+    hist = item.get("history")
+    if isinstance(hist, list) and hist and isinstance(hist[-1], dict):
+        if (val := safe_pos_float(hist[-1].get("notional_usd"), default=None)) is not None:
+            return val
     return safe_pos_float(extract_intent_notional(item, default=None), default=0.0) or 0.0
 
 
@@ -1040,6 +1045,7 @@ def order_matches_intent_client_id(
 __all__ = [
     "_clean_intent_symbol",
     "_extract_intent_id",
+    "_intent_executed_notional_usd",
     "_intent_order_ids",
     "_intent_venue_symbol_side_key",
     "_record_intent_state",

@@ -13,6 +13,7 @@ from botcore import (
     clean_order_id,
     clean_scalar_str,
     clean_upper_scalar,
+    extract_order_price,
     first_pos_float,
     normalize_side,
     opposite_side,
@@ -30,8 +31,8 @@ from cachepaths import (
 from instrument_registry import casefold_get
 from .intent_state import (
     _extract_intent_id,
+    _intent_executed_notional_usd,
     _intent_venue_symbol_side_key,
-    extract_intent_notional,
     extract_intent_order_type,
     extract_intent_primary_order_id,
     extract_intent_side,
@@ -100,11 +101,12 @@ def _extract_intent_exec_price(it: dict[str, Any]) -> float:
     ep = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}
     hist = it.get("history") if isinstance(it.get("history"), list) else []
     last_h = hist[-1] if hist and isinstance(hist[-1], dict) else {}
+    ep_px = extract_order_price(ep, default=None) if ep else None
     px = first_pos_float(
+        ep_px,
         ep.get("avg_fill_price"),
         ep.get("avgPrice"),
         ep.get("fill_price"),
-        ep.get("price"),
         it.get("fill_px"),
         last_h.get("price"),
         it.get("limit_price"),
@@ -116,27 +118,33 @@ def _extract_intent_exec_price(it: dict[str, Any]) -> float:
 
 def _extract_intent_exec_ts(it: dict[str, Any]) -> float:
     _, base_ts = extract_intent_timestamp_s(it)
-    for key in ("filled_ts", "filled_at", "executed_at", "executed_ts"):
-        if (ts_v := parse_pos_epoch_s(it.get(key))) is not None:
-            return max(base_ts, ts_v)
+    fill_ts = base_ts
+    for key in ("filled_ts", "filled_at"):
+        if (ts_v := parse_pos_epoch_s(it.get(key))) is not None and ts_v >= base_ts:
+            fill_ts = max(fill_ts, ts_v)
+            break
     ep = it.get("execution_payload")
     if isinstance(ep, dict):
-        for key in ("filled_at", "filled_ts", "terminal_ts"):
-            if (ts_v := parse_pos_epoch_s(ep.get(key))) is not None:
-                return max(base_ts, ts_v)
-    return base_ts
+        for key in ("filled_at", "filled_ts", "terminal_ts", "updated_ts", "updateTime", "workingTime", "transactTime"):
+            if (ts_v := parse_pos_epoch_s(ep.get(key))) is not None and ts_v >= base_ts:
+                fill_ts = max(fill_ts, ts_v)
+                break
+    if fill_ts <= base_ts:
+        hist = it.get("history") if isinstance(it.get("history"), list) else []
+        last_h = hist[-1] if hist and isinstance(hist[-1], dict) else {}
+        if str(last_h.get("action") or "") in ("RECONCILED_EXECUTED", "RECONCILED_PARTIAL"):
+            if (lh_ts := parse_pos_epoch_s(last_h.get("ts"))) is not None and lh_ts > fill_ts:
+                fill_ts = lh_ts
+    if fill_ts <= base_ts:
+        for key in ("executed_at", "executed_ts"):
+            if (ts_v := parse_pos_epoch_s(it.get(key))) is not None and ts_v > fill_ts:
+                fill_ts = ts_v
+                break
+    return fill_ts
 
 
 def _extract_intent_notional_usd(it: dict[str, Any]) -> float:
-    for key in ("filled_notional_usd", "clamped_notional_usd"):
-        if (val := safe_pos_float(it.get(key), default=None)) is not None:
-            return val
-    ep = it.get("execution_payload")
-    if isinstance(ep, dict):
-        for key in ("cummulativeQuoteQty", "cumulativeQuoteQty", "quote_notional", "cost", "notional_usd"):
-            if (val := safe_pos_float(ep.get(key), default=None)) is not None:
-                return val
-    return safe_pos_float(extract_intent_notional(it, default=None), default=0.0) or 0.0
+    return _intent_executed_notional_usd(it)
 
 
 def _resolve_live_price_for_symbol(
