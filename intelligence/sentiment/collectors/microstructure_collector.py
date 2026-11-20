@@ -1223,7 +1223,12 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                 cached_entry = _PRICE_SERIES_MEMO.get(memo_key)
                 if cached_entry is not None and cached_entry[0] == memo_file_sig and cached_entry[1] == memo_cur_sig:
                     LAST_7D_SPAN_MS_BY_SYM[sym_u] = cached_entry[4]
-                    LAST_7D_4H_BARS_BY_SYM[sym_u] = list(cached_entry[5]) if len(cached_entry) >= 6 else []
+                    lru_dict_put(
+                        LAST_7D_4H_BARS_BY_SYM,
+                        sym_u,
+                        list(cached_entry[5]) if len(cached_entry) >= 6 else [],
+                        128,
+                    )
                     return list(cached_entry[2]), list(cached_entry[3])
             except Exception:
                 memo_key = None
@@ -1327,7 +1332,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         )
         LAST_7D_SPAN_MS_BY_SYM[sym_u] = arch_7d_span_ms
         bars_4h_7d = build_compact_4h_ohlc_bars(archive_pts, sparse_7d_pts, watcher_7d_pts)
-        LAST_7D_4H_BARS_BY_SYM[sym_u] = bars_4h_7d
+        lru_dict_put(LAST_7D_4H_BARS_BY_SYM, sym_u, bars_4h_7d, 128)
         if isinstance(current_price_items, dict) and current_price_items:
             last_24_pt = parse_ts_px_row(series_24h[-1]) if series_24h else None
             for cand in cands:
@@ -1857,7 +1862,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         s24_p0 = parse_ts_px_row(matched_series_24h[0]) if len(matched_series_24h) >= 2 else None
         s24_p1 = parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
         span_24h_ms = max(0.0, s24_p1[0] - s24_p0[0]) if (s24_p0 and s24_p1) else 0.0
-        bars_4h_sym = LAST_7D_4H_BARS_BY_SYM.get(sym.upper())
+        bars_4h_sym = LAST_7D_4H_BARS_BY_SYM.get(sym.upper()) if arch_vals_7d else None
         m24: Dict[str, Any] = (
             _call_compute_24h(matched_series_24h, is_equity=is_eq_sym, series_7d_ts_px=bars_4h_sym)
             if matched_series_24h

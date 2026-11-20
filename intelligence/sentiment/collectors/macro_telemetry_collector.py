@@ -508,7 +508,8 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                         bar_age_s = max(0.0, now_ts - bar_ts_v)
                         mb_copy["bar_age_min"] = round(bar_age_s / 60.0, 1)
                         if bar_age_s > 2700.0:
-                            if str(mb_copy.get("market_state") or "").strip().upper() != "CLOSED":
+                            cur_ms = str(mb_copy.get("market_state") or "").strip().upper()
+                            if cur_ms in ("", "REGULAR"):
                                 mb_copy["market_state"] = "CLOSED"
                                 stripped_stale_intraday = True
                             for stale_k in ("chg_1h_pct", "chg_15m_pct"):

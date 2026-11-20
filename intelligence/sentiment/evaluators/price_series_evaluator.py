@@ -543,8 +543,9 @@ def _wilder_atr_pct(
         return None
     eff_bars = bars
     if len(bars) >= 7:
-        dense_prior = sum(1 for b in bars[:-1] if b[7] >= 2)
-        if dense_prior >= max(2, (len(bars) - 1) // 2) and (bars[-1][6] - bars[-1][5]) < 0.35 * bucket_ms:
+        recent_prior = bars[-6:-1]
+        dense_prior = sum(1 for b in recent_prior if b[7] >= 2)
+        if dense_prior >= max(2, len(recent_prior) // 2) and (bars[-1][6] - bars[-1][5]) < 0.35 * bucket_ms:
             eff_bars = bars[:-1]
     if len(eff_bars) < 6:
         return None
@@ -649,24 +650,26 @@ def compute_atr_multi_horizon(
     if isinstance(series_7d_ts_px, (list, tuple)) and len(series_7d_ts_px) >= 2:
         p7_first = parse_ts_px_row(series_7d_ts_px[0])
         p7_last = parse_ts_px_row(series_7d_ts_px[-1])
-        avg_step_7d_ms = (
-            abs(p7_last[0] - p7_first[0]) / max(1, len(series_7d_ts_px) - 1)
-            if (p7_first is not None and p7_last is not None)
-            else 0.0
-        )
-        is_compact_4h = (
-            len(series_7d_ts_px) <= 60
-            and avg_step_7d_ms >= 2.0 * _MS_1H
-            and all(isinstance(r, (list, tuple)) and len(r) >= 5 for r in series_7d_ts_px[:4])
-        )
-        if not is_compact_4h:
-            bars_1h_7d = _resample_ohlc_bars(series_7d_ts_px, _MS_1H)
-            bars_1h = _merge_ohlc_bar_lists(bars_1h_7d, bars_1h)
-            bars_4h_7d = _rollup_ohlc_bars(bars_1h_7d, 4)
-            bars_4h = _merge_ohlc_bar_lists(bars_4h_7d, bars_4h)
-        else:
-            bars_4h_7d = _resample_ohlc_bars(series_7d_ts_px, _MS_4H)
-            bars_4h = _merge_ohlc_bar_lists(bars_4h_7d, bars_4h)
+        div_thr_7d = 0.35 if is_equity else 0.25
+        if p7_last is not None and not _prices_diverged(eff_px, p7_last[1], threshold=div_thr_7d):
+            avg_step_7d_ms = (
+                abs(p7_last[0] - p7_first[0]) / max(1, len(series_7d_ts_px) - 1)
+                if p7_first is not None
+                else 0.0
+            )
+            is_compact_4h = (
+                len(series_7d_ts_px) <= 60
+                and avg_step_7d_ms >= 2.0 * _MS_1H
+                and all(isinstance(r, (list, tuple)) and len(r) >= 5 for r in series_7d_ts_px[:4])
+            )
+            if not is_compact_4h:
+                bars_1h_7d = _resample_ohlc_bars(series_7d_ts_px, _MS_1H)
+                bars_1h = _merge_ohlc_bar_lists(bars_1h_7d, bars_1h)
+                bars_4h_7d = _rollup_ohlc_bars(bars_1h_7d, 4)
+                bars_4h = _merge_ohlc_bar_lists(bars_4h_7d, bars_4h)
+            else:
+                bars_4h_7d = _resample_ohlc_bars(series_7d_ts_px, _MS_4H)
+                bars_4h = _merge_ohlc_bar_lists(bars_4h_7d, bars_4h)
 
     if (atr_1h := _wilder_atr_pct(bars_1h, _MS_1H, eff_px, period=eff_period, max_gap_buckets=intraday_gap_cap)) is not None:
         out["atr_1h_pct"] = atr_1h
@@ -716,21 +719,30 @@ def compute_session_vwap_metrics(
 
     if is_equity:
         latest_ny_dt = datetime.fromtimestamp(pos_bars[-1][0] / 1000.0, tz=timezone.utc).astimezone(_NY_TZ)
-        target_date = latest_ny_dt.date()
-        rth_bars: List[Tuple[float, float, float]] = []
+        latest_date = latest_ny_dt.date()
+        rth_by_date: Dict[Any, List[Tuple[float, float, float]]] = {}
         same_day_bars: List[Tuple[float, float, float]] = []
         for ts_ms, tp_px, vol_v in pos_bars:
             ny_dt = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(_NY_TZ)
-            if ny_dt.date() != target_date:
-                continue
-            same_day_bars.append((ts_ms, tp_px, vol_v))
+            bar_date = ny_dt.date()
+            if bar_date == latest_date:
+                same_day_bars.append((ts_ms, tp_px, vol_v))
             mins_ny = ny_dt.hour * 60 + ny_dt.minute
             if 9 * 60 + 30 <= mins_ny <= 16 * 60 + 5:
-                rth_bars.append((ts_ms, tp_px, vol_v))
-        sess_bars = rth_bars if len(rth_bars) >= 2 else same_day_bars
-        anchor_lbl = "rth"
+                rth_by_date.setdefault(bar_date, []).append((ts_ms, tp_px, vol_v))
+        valid_rth_dates = sorted(d for d, d_bars in rth_by_date.items() if len(d_bars) >= 2)
+        if valid_rth_dates:
+            sess_bars = rth_by_date[valid_rth_dates[-1]]
+            anchor_lbl = "rth"
+        else:
+            sess_bars = same_day_bars
+            anchor_lbl = "session"
     else:
-        ref_ms = max_any_ts if max_any_ts > 0.0 else pos_bars[-1][0]
+        ref_ms = (
+            pos_bars[-1][0]
+            if (max_any_ts <= 0.0 or (max_any_ts - pos_bars[-1][0]) <= _MS_1H)
+            else max_any_ts
+        )
         day_start_ms = math.floor(ref_ms / _MS_1D) * _MS_1D
         sess_bars = [b for b in pos_bars if b[0] >= day_start_ms]
         anchor_lbl = "utc_00"
@@ -836,7 +848,15 @@ def format_session_vwap_summary(entry: Any, *, cur_px: Optional[float] = None, f
         meta.append(f"1s={sig_pct:.2f}%")
     if anc := str(entry.get("session_vwap_anchor") or "").strip():
         meta.append(anc)
-    px_s = fmt_px_fn(vwap_px) if callable(fmt_px_fn) else f"${vwap_px}"
+    if callable(fmt_px_fn):
+        px_s = fmt_px_fn(vwap_px)
+    elif vwap_px >= 1.0:
+        if vwap_px < 1000.0 and abs(vwap_px - round(vwap_px, 2)) >= 1e-5:
+            px_s = f"${vwap_px:,.4f}".rstrip("0").rstrip(".")
+        else:
+            px_s = f"${vwap_px:,.2f}"
+    else:
+        px_s = f"${vwap_px:.6g}"
     return f"{px_s} ({', '.join(meta)})" if meta else px_s
 
 

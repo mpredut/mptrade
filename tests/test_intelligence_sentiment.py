@@ -13545,7 +13545,7 @@ def test_faza1_multi_horizon_atr_session_vwap_and_intraday_extremes(tmp_path):
     assert "Multi-Timeframe ATR" in pt_ctx.telemetry
     assert f"1h={m24_btc['atr_1h_pct']:.2f}%" in pt_ctx.telemetry["Multi-Timeframe ATR"]
     assert "Session VWAP & Intraday Structure" in pt_ctx.telemetry
-    assert "Session VWAP=$62250.0 (+0.40%" in pt_ctx.telemetry["Session VWAP & Intraday Structure"]
+    assert "Session VWAP=$62,250.00 (+0.40%" in pt_ctx.telemetry["Session VWAP & Intraday Structure"]
     assert "sessions(asia=[61100.0, 62900.0]" in pt_ctx.telemetry["Session VWAP & Intraday Structure"]
 
 
@@ -13863,6 +13863,214 @@ def test_root_cause_normalizations_ohlc_rth_anchors_and_model_cache_isolation():
     assert is_degraded_trading_model("openai_compat:glm-5.3") is False
     assert is_degraded_trading_model("openai_compat:gemini-2.5-flash") is True
     assert is_degraded_trading_model("openai_compat:qwen-low") is True
+
+
+def test_stabilize_faza1_and_audit_bugfixes(tmp_path, monkeypatch):
+    """Verify Faza 1 stabilization and real audit bugfixes: pretrade basis/fund deltas, PRE/POST benchmark preservation,
+    OKX ctVal periodic retry + Binance quote filter, 4h ATR tail-bar & divergence guards, equity pre-market VWAP, and spot-only Section 3B CVD."""
+    import asyncio
+    from intelligence.external.collectors import bybit_liquidations_collector as liq_mod
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MacroAndNewsSensorsCollector
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        compute_atr_multi_horizon,
+        compute_session_vwap_metrics,
+        format_session_vwap_summary,
+    )
+
+    # 1. Pre-trade telemetry loads microstructure_cycle_history.json read-only and populates basis_d15m + fund_d1h
+    cdir = tmp_path / "cachedb"
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+    now_s = 1_795_100_000.0
+    hist_path = cdir / "telemetry" / "microstructure_cycle_history.json"
+    hist_orig = {
+        "BTCUSDC": [
+            {"ts": now_s - 3600.0, "funding_rate": 0.00010, "perp_spot_basis_bps": -2.0},
+            {"ts": now_s - 900.0, "funding_rate": 0.00015, "perp_spot_basis_bps": -1.0},
+        ]
+    }
+    hist_path.write_text(json.dumps(hist_orig), encoding="utf-8")
+    (cdir / "telemetry" / "orderbook_depth_BTCUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "BTCUSDC",
+                "mid_price": 62000.0,
+                "best_bid": 61999.5,
+                "best_ask": 62000.5,
+                "bid_depth_usd": 500000.0,
+                "ask_depth_usd": 450000.0,
+                "imbalance_ratio": 0.53,
+                "spread_bps": 0.16,
+                "ts": now_s - 5.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir / "telemetry" / "derivatives_telemetry_BTCUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "BTCUSDC",
+                "funding_rate": 0.00025,
+                "funding_annualized_pct": 27.38,
+                "perp_spot_basis_bps": 4.5,
+                "open_interest_usd": 1_500_000_000.0,
+                "ts": now_s - 10.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_btc = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(cdir), now_ts=now_s)
+    fr_line = pt_btc.get("Perpetual Funding Rate", "")
+    assert "basis_d15m=+5.5bps" in fr_line
+    assert "fund_d1h=+1.50bps" in fr_line
+    # Confirm read-only: cycle history file on disk was NOT modified
+    assert json.loads(hist_path.read_text(encoding="utf-8")) == hist_orig
+
+    # 2. _normalize_macro_benchmarks_items preserves PRE/POST market_state when bar_age_s > 2700s while stripping stale intraday deltas
+    mb_norm = MacroAndNewsSensorsCollector._normalize_macro_benchmarks_items(
+        {
+            "ts": now_s,
+            "items": {
+                "SPY": {
+                    "price": 595.0,
+                    "chg_24h_pct": 0.45,
+                    "chg_1h_pct": 0.12,
+                    "chg_15m_pct": 0.05,
+                    "market_state": "PRE",
+                    "last_bar_ts": now_s - 3600.0,
+                },
+                "US10Y": {
+                    "price": 4.25,
+                    "chg_24h_pct": -0.3,
+                    "chg_1h_pct": 0.08,
+                    "chg_15m_pct": 0.02,
+                    "market_state": "REGULAR",
+                    "last_bar_ts": now_s - 3600.0,
+                },
+            },
+        },
+        cache_dir=str(cdir),
+        now_ts=now_s,
+    )
+    assert mb_norm["items"]["SPY"]["market_state"] == "PRE"
+    assert "chg_15m_pct" not in mb_norm["items"]["SPY"]
+    assert "chg_1h_pct" not in mb_norm["items"]["SPY"]
+    assert mb_norm["items"]["US10Y"]["market_state"] == "CLOSED"
+    assert "chg_15m_pct" not in mb_norm["items"]["US10Y"]
+
+    # 3. BinanceFuturesLiquidationCollector filters non-USDT/USDC symbols; OkxLiquidationCollector self-heals ctVal on tick
+    bf_col = liq_mod.BinanceFuturesLiquidationCollector(symbols=["BTCUSDT"], start_sync=False)
+    bf_col._ingest(
+        json.dumps(
+            {
+                "e": "forceOrder",
+                "E": int(now_s * 1000),
+                "o": {"s": "BTCUSD_PERP", "S": "SELL", "q": "10", "ap": "62000.0", "T": int(now_s * 1000)},
+            }
+        )
+    )
+    assert bf_col.get_summary("BTCUSDT", window_sec=900.0, now=now_s).events_count == 0
+    bf_col._ingest(
+        json.dumps(
+            {
+                "e": "forceOrder",
+                "E": int(now_s * 1000),
+                "o": {"s": "BTCUSDT", "S": "SELL", "q": "0.5", "ap": "62000.0", "T": int(now_s * 1000)},
+            }
+        )
+    )
+    assert bf_col.get_summary("BTCUSDT", window_sec=900.0, now=now_s).long_liq_usd == pytest.approx(31000.0)
+
+    okx_calls = []
+
+    def _fake_okx_fetch(_url, **_kw):
+        okx_calls.append(1)
+        if len(okx_calls) == 1:
+            raise RuntimeError("transient VPN startup outage")
+        return {"data": [{"instId": "BTC-USDT-SWAP", "ctVal": "0.01"}]}
+
+    monkeypatch.setattr(liq_mod, "fetch_public_json", _fake_okx_fetch)
+    okx_col = liq_mod.OkxLiquidationCollector(symbols=["BTCUSDT"], start_sync=False, ct_val_retry_sec=300.0)
+    okx_col._before_session()
+    assert okx_col._ct_val_by_inst == {}
+    # Before retry interval elapses, does not re-fetch
+    asyncio.run(okx_col._on_session_tick(okx_col._last_ct_val_attempt_ts + 60.0))
+    assert len(okx_calls) == 1
+    # After retry interval elapses, self-heals ctVal without requiring WS disconnect
+    asyncio.run(okx_col._on_session_tick(okx_col._last_ct_val_attempt_ts + 305.0))
+    assert len(okx_calls) == 2
+    assert okx_col._ct_val_by_inst.get("BTC-USDT-SWAP") == pytest.approx(0.01)
+
+    # 4. 4h ATR excludes a 2-minute forming tail bar even when merged with compact 7d 4h bars AND rejects diverged 7d archives
+    base_4h_ms = 1_795_008_000_000.0  # Aligned to 4h boundary
+    compact_7d_4h = [
+        [base_4h_ms - (40 - i) * 14_400_000.0, 62000.0, 0.0, 62620.0, 61380.0]
+        for i in range(40)
+    ]  # 2.0% true range per 4h bar
+    dense_24h = []
+    for b_idx in range(6):
+        b_start = base_4h_ms + b_idx * 14_400_000.0
+        for m_step in range(0, 240, 15):
+            px_v = 62620.0 if (m_step // 15) % 2 == 0 else 61380.0
+            dense_24h.append([b_start + m_step * 60_000.0, px_v])
+    atr_clean = compute_atr_multi_horizon(dense_24h, series_7d_ts_px=compact_7d_4h, cur_px=62000.0)
+    # Append a tiny 2-minute forming tail 4h bar with $1 range (should be excluded!)
+    dense_with_tail = dense_24h + [
+        [base_4h_ms + 6 * 14_400_000.0, 62000.0],
+        [base_4h_ms + 6 * 14_400_000.0 + 120_000.0, 62001.0],
+    ]
+    atr_with_tail = compute_atr_multi_horizon(dense_with_tail, series_7d_ts_px=compact_7d_4h, cur_px=62000.0)
+    assert atr_with_tail["atr_4h_pct"] == pytest.approx(atr_clean["atr_4h_pct"], abs=0.02)
+
+    # Diverged 7d archive (e.g. pre-split $200 vs current $62000) must be ignored instead of exploding atr_4h_pct
+    diverged_7d = [[base_4h_ms - (40 - i) * 14_400_000.0, 200.0, 0.0, 205.0, 195.0] for i in range(40)]
+    atr_div = compute_atr_multi_horizon(dense_24h, series_7d_ts_px=diverged_7d, cur_px=62000.0)
+    assert atr_div["atr_4h_pct"] < 5.0
+
+    # 5. US equity pre-market bars preserve prior RTH Session VWAP; crypto 00:02 UTC 0-vol tick preserves fresh UTC VWAP
+    d1_rth0 = datetime(2026, 11, 19, 14, 30, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+    d2_pre0 = datetime(2026, 11, 20, 10, 0, 0, tzinfo=timezone.utc).timestamp() * 1000.0  # 05:00 NY pre-market
+    eq_pre_bars = [
+        [d1_rth0 + i * 300_000.0, 180.0, 500_000.0] for i in range(10)
+    ] + [
+        [d2_pre0, 185.0, 1200.0],  # Single positive-vol pre-market print today
+        [d2_pre0 + 300_000.0, 185.5, 900.0],
+    ]
+    eq_vwap_pre = compute_session_vwap_metrics(eq_pre_bars, is_equity=True, cur_px=185.5)
+    assert eq_vwap_pre["session_vwap_anchor"] == "rth"
+    assert eq_vwap_pre["session_vwap_px"] == pytest.approx(180.0)
+
+    utc_mid_ms = datetime(2026, 11, 20, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+    crypto_midnight = [
+        [utc_mid_ms - 900_000.0, 62000.0, 100.0],
+        [utc_mid_ms - 600_000.0, 62200.0, 100.0],
+        [utc_mid_ms - 300_000.0, 62400.0, 200.0],
+        [utc_mid_ms + 120_000.0, 62500.0, 0.0],  # 00:02 UTC 0-vol live tick
+    ]
+    c_vwap_mid = compute_session_vwap_metrics(crypto_midnight, is_equity=False, cur_px=62500.0)
+    assert c_vwap_mid["session_vwap_px"] == pytest.approx(62250.0)
+    assert format_session_vwap_summary(c_vwap_mid, cur_px=62500.0).startswith("$62,250.00 (")
+
+    # 6. Section 3B emits real spot CVD & agg_spot_cvd_15m even when perp cvd_15m_usd is None (spot-only / missing whale)
+    sec_3b_spot = "\n".join(
+        _format_microstructure_section(
+            {
+                "ARBUSDC": {
+                    "ob_imbalance": 0.55,
+                    "bid_depth_usd": 50000.0,
+                    "ask_depth_usd": 40000.0,
+                    "spread_bps": 3.5,
+                    "spot_cvd_15m_usd": -12500.0,
+                    "spot_cvd_source": "real_spot",
+                    "agg_spot_cvd_15m_usd": 145000.0,
+                    "agg_spot_cvd_source": "usdc+usdt",
+                    "agg_spot_vol_15m_usd": 620000.0,
+                }
+            },
+            {"ARBUSDC": {"price": 0.25}},
+        )
+    )
+    assert "spot_cvd_15m=-$12.5K[real_spot]" in sec_3b_spot
+    assert "agg_spot_cvd_15m=+$145.0K[usdc+usdt, vol=$620.0K]" in sec_3b_spot
 
 
 

@@ -42,6 +42,7 @@ from intelligence.macro_sentiment_ssot import (
     ALL_KINEMATIC_METRIC_KEYS,
     TELEMETRY_SOURCE_STALE_INTERVAL_MULT,
     format_interval_sec_label,
+    load_microstructure_cycle_history,
     load_venue_balances_state,
     read_first_cached_dict,
     resolve_derived_telemetry_intervals,
@@ -78,6 +79,7 @@ from intelligence.sentiment.collectors.microstructure_collector import (
 import intelligence.sentiment.collectors.microstructure_collector as _mc_mod
 from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
+    MicrostructureCycleDeltaEvaluator,
     compute_cross_venue_arb_metrics,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
@@ -869,7 +871,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
         alt_series_24h, arch_vals_7d = load_symbol_price_series(
             cachedb_dir, symbol, current_price_items=cur_p_items, include_7d=True
         )
-        bars_4h_pt = LAST_7D_4H_BARS_BY_SYM.get(str(symbol).strip().upper())
+        bars_4h_pt = LAST_7D_4H_BARS_BY_SYM.get(str(symbol).strip().upper()) if arch_vals_7d else None
         eq_7d_series = bars_4h_pt
         m24 = (
             _call_compute_24h(alt_series_24h, is_equity=is_eq_sym, series_7d_ts_px=eq_7d_series)
@@ -1838,6 +1840,22 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             recalculate_live_price_geometry(p_est, cur_px_est)
         enrich_microstructure_cvd(cur_m_info, p_est)
         is_tok_xstock_pt = ctx.session_policy.is_tokenized_equity
+        if (
+            not ctx.is_eq_sym
+            and not is_tok_xstock_pt
+            and (cur_m_info.get("basis_delta_15m_bps") is None or cur_m_info.get("funding_delta_1h_bps") is None)
+            and (cur_m_info.get("perp_spot_basis_bps") is not None or cur_m_info.get("funding_rate") is not None)
+        ):
+            try:
+                mhist_pt = load_microstructure_cycle_history(ctx.cachedb_dir, read_json_fn=ctx.rj)
+                if mhist_pt:
+                    MicrostructureCycleDeltaEvaluator().evaluate(
+                        {symbol: cur_m_info},
+                        history=mhist_pt,
+                        now_ts=safe_pos_float(getattr(ctx, "now_ts", None), default=None) or _time.time(),
+                    )
+            except Exception:
+                pass
         self._format_derivatives_and_whale_lines(telemetry, cur_m_info, ctx.is_eq_sym, is_tok_xstock_pt)
         no_perp_liq = not ctx.session_policy.has_liquidation_clusters
         if no_perp_liq:

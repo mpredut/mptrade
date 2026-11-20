@@ -918,7 +918,7 @@ def evaluate_microstructure_cycle_deltas(
             minfo.get("_taker_bar_ts_ms") or minfo.get("taker_bar_ts_ms"),
             default=None,
         )
-        if all(v is None for v in (cur_ob, cur_cvd, cur_wl, cur_oi, cur_tr)):
+        if all(v is None for v in (cur_ob, cur_cvd, cur_wl, cur_oi, cur_tr, cur_fr, cur_basis)):
             continue
         canon_msym = canonical_display_symbol(msym) or msym
         own_h_list = _casefold_hist_list(canon_msym)

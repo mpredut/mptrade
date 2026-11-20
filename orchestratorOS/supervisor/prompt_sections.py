@@ -890,7 +890,8 @@ def _format_microstructure_section(
             )
 
         cvd_sfx = ""
-        if (cvd_usd_raw := minfo.get("cvd_15m_usd")) is not None:
+        has_perp_cvd = (cvd_usd_raw := minfo.get("cvd_15m_usd")) is not None
+        if has_perp_cvd:
             cvd_u = safe_float(cvd_usd_raw, 0.0)
             usd_s = f"{'+' if cvd_u >= 0.0 else '-'}{_fmt_liq_usd(abs(cvd_u))}"
             cvd_b = minfo.get("cvd_15m_base")
@@ -906,17 +907,21 @@ def _format_microstructure_section(
                 minfo, lambda v: f"{'+' if v >= 0.0 else '-'}{_fmt_liq_usd(abs(v))}"
             ):
                 cvd_sfx += f", flow_horizons({', '.join(mh_parts)})"
-            if not ob_is_frozen and (sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None:
-                sp_s = f"{'+' if sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sp_cvd))}"
-                cvd_sfx += f", spot_cvd_15m={sp_s}{format_spot_cvd_source_tag(minfo)}"
-            if not ob_is_frozen and (agg_sp_cvd := safe_float(minfo.get("agg_spot_cvd_15m_usd"), None)) is not None:
-                agg_s = f"{'+' if agg_sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(agg_sp_cvd))}"
-                agg_src = str(minfo.get("agg_spot_cvd_source") or "usdc+usdt").strip()
-                agg_vol = safe_pos_float(minfo.get("agg_spot_vol_15m_usd"), default=None)
-                agg_vol_s = f", vol={_fmt_liq_usd(agg_vol)}" if agg_vol is not None else ""
-                cvd_sfx += f", agg_spot_cvd_15m={agg_s}[{agg_src}{agg_vol_s}]"
-            if sp_vol_parts := format_spot_volume_rvol_parts(minfo, _fmt_liq_usd):
-                cvd_sfx += f", {', '.join(sp_vol_parts)}"
+        if (
+            not ob_is_frozen
+            and (sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None
+            and (has_perp_cvd or minfo.get("spot_cvd_source") == "real_spot")
+        ):
+            sp_s = f"{'+' if sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sp_cvd))}"
+            cvd_sfx += f", spot_cvd_15m={sp_s}{format_spot_cvd_source_tag(minfo)}"
+        if not ob_is_frozen and (agg_sp_cvd := safe_float(minfo.get("agg_spot_cvd_15m_usd"), None)) is not None:
+            agg_s = f"{'+' if agg_sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(agg_sp_cvd))}"
+            agg_src = str(minfo.get("agg_spot_cvd_source") or "usdc+usdt").strip()
+            agg_vol = safe_pos_float(minfo.get("agg_spot_vol_15m_usd"), default=None)
+            agg_vol_s = f", vol={_fmt_liq_usd(agg_vol)}" if agg_vol is not None else ""
+            cvd_sfx += f", agg_spot_cvd_15m={agg_s}[{agg_src}{agg_vol_s}]"
+        if sp_vol_parts := format_spot_volume_rvol_parts(minfo, _fmt_liq_usd):
+            cvd_sfx += f", {', '.join(sp_vol_parts)}"
 
         basis_sfx = ""
         basis_parts: List[str] = []

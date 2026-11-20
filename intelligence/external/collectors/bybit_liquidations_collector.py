@@ -143,6 +143,9 @@ class LiquidationCollectorBase(TelemetryCacheCollectorInterface, ABC):
     def _before_session(self) -> None:
         """Optional hook executed before opening a WebSocket session (e.g., loading contract multipliers)."""
 
+    async def _on_session_tick(self, now: float) -> None:
+        """Optional async periodic hook inside an active WebSocket session."""
+
     @abstractmethod
     def _ingest(self, raw: str) -> None:
         """Parse one raw WebSocket frame and call ``record_event()`` for matching liquidation events."""
@@ -217,6 +220,7 @@ class LiquidationCollectorBase(TelemetryCacheCollectorInterface, ABC):
                 if ping_msg is not None and now - last_ping >= WS_APP_PING_SEC:
                     await ws.send(encode_json_payload(ping_msg) if isinstance(ping_msg, (dict, list)) else str(ping_msg))
                     last_ping = now
+                await self._on_session_tick(now)
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
                 except asyncio.TimeoutError:
@@ -465,6 +469,8 @@ class BinanceFuturesLiquidationCollector(LiquidationCollectorBase):
             if not isinstance(order, dict):
                 continue
             raw_sym = str(order.get("s") or "").strip().upper()
+            if not raw_sym.endswith(("USDT", "USDC")):
+                continue
             base = canonical_base_asset(raw_sym)
             if not base or (self._tracked_bases and base not in self._tracked_bases):
                 continue
@@ -500,6 +506,7 @@ class OkxLiquidationCollector(LiquidationCollectorBase):
         *,
         start_sync: bool = False,
         ct_val_by_inst: Optional[Dict[str, float]] = None,
+        ct_val_retry_sec: float = 300.0,
     ) -> None:
         super().__init__(symbols=symbols, retention_sec=retention_sec, start_sync=start_sync)
         self._ct_val_by_inst: Dict[str, float] = {
@@ -507,6 +514,8 @@ class OkxLiquidationCollector(LiquidationCollectorBase):
             for k, raw_v in (ct_val_by_inst or {}).items()
             if (v := safe_pos_float(raw_v, default=None)) is not None
         }
+        self._ct_val_retry_sec: float = safe_pos_float(ct_val_retry_sec, default=300.0) or 300.0
+        self._last_ct_val_attempt_ts: float = 0.0
 
     def _ws_url(self) -> str:
         return get_okx_public_ws_url()
@@ -520,6 +529,7 @@ class OkxLiquidationCollector(LiquidationCollectorBase):
     def _before_session(self) -> None:
         if self._ct_val_by_inst:
             return
+        self._last_ct_val_attempt_ts = time.time()
         try:
             payload = fetch_public_json(
                 get_okx_swap_instruments_url(),
@@ -543,6 +553,12 @@ class OkxLiquidationCollector(LiquidationCollectorBase):
                 self._ct_val_by_inst = loaded
         except Exception as exc:
             logger.debug("Could not load OKX SWAP contract multipliers: %s", exc)
+
+    async def _on_session_tick(self, now: float) -> None:
+        if self._ct_val_by_inst:
+            return
+        if self._last_ct_val_attempt_ts <= 0.0 or (now - self._last_ct_val_attempt_ts) >= self._ct_val_retry_sec:
+            await asyncio.to_thread(self._before_session)
 
     def _ingest(self, raw: str) -> None:
         if isinstance(raw, str) and raw.strip().lower() == "pong":
