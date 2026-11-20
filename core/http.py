@@ -113,6 +113,21 @@ def fetch_public_bytes(
     return _urlopen_bytes(_build_public_get_request(url, user_agent=user_agent, headers=headers), timeout)
 
 
+def fetch_public_text(
+    url: str,
+    *,
+    timeout: float = 5.0,
+    user_agent: str = "mptrade-intelligence/1.0",
+    headers: dict | None = None,
+    encoding: str = "utf-8",
+    errors: str = "replace",
+) -> str:
+    """Fetch and decode a text/HTML/CSV payload from a public HTTP GET endpoint."""
+    return fetch_public_bytes(url, timeout=timeout, user_agent=user_agent, headers=headers).decode(
+        encoding, errors=errors
+    )
+
+
 def fetch_public_json(
     url: str, *, timeout: float = 5.0, user_agent: str = "mptrade-intelligence/1.0", headers: dict | None = None
 ) -> object:

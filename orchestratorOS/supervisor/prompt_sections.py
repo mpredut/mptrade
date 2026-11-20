@@ -28,6 +28,7 @@ from intelligence.macro_sentiment_ssot import (
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_bottom_structure_6h_parts,
+    format_compact_usd,
     format_equity_macro_regime_line,
     format_macro_benchmarks_summary_line,
 )
@@ -216,16 +217,12 @@ def _extract_macro_benchmarks_line(mb_raw: Any, *, include_crypto: bool = True) 
     return f"{summary_s}{_age_sfx(mb_raw, parens=True)}" if summary_s else ""
 
 
-def _fmt_liq_usd(val: Any) -> str:
-    vf = safe_float(val, 0.0)
-    for threshold, suffix, decimals in (
-        (1_000_000_000.0, "B", 2),
-        (1_000_000.0, "M", 2),
-        (1_000.0, "K", 1),
-    ):
-        if vf >= threshold:
-            return f"${vf / threshold:.{decimals}f}{suffix}"
-    return f"${vf:.0f}"
+def _fmt_liq_usd(val: Any, *, signed: bool = False) -> str:
+    return format_compact_usd(val, signed=signed)
+
+
+def _fmt_signed_usd(val: Any) -> str:
+    return format_compact_usd(val, signed=True)
 
 
 def _fmt_plain_float(val: Any, decimals: int = 8) -> str:
@@ -322,21 +319,33 @@ def _format_macro_calendar_line(mc: Any) -> Optional[str]:
     return f"- Macro Economic Calendar & Session Window: {' | '.join(mc_parts)}"
 
 
+def _resolve_macro_sensor(
+    sensors: Any,
+    macro: Dict[str, Any],
+    attr: str,
+    *,
+    fallback_key: Optional[str] = None,
+    ps: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Resolve a macro sensor dictionary from ``sensors.<attr>``, ``macro_and_sentiment``, or ``portfolio_summary``."""
+    val = (
+        getattr(sensors, attr, None)
+        or macro.get(fallback_key or attr)
+        or (ps.get(attr) if isinstance(ps, dict) else None)
+    )
+    return val if isinstance(val, dict) else {}
+
+
 def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> List[str]:
     """Format Section 1 (Macro, Sentiment, Geopolitical & Live Breaking News) for the AI prompt."""
     is_equities_scope = str(asset_scope or "all").strip().lower() == "equities"
     macro = getattr(sensors, "macro_and_sentiment", None) or {}
-    fg = getattr(sensors, "fear_greed", None) or macro.get("fear_greed") or {}
-    mb = getattr(sensors, "market_breadth", None) or macro.get("market_breadth") or {}
-    sa = getattr(sensors, "sentiment_advisor", None) or macro.get("sentiment_advisor") or {}
-    gt = getattr(sensors, "geopolitical_threat", None) or macro.get("geopolitical") or {}
     ps = getattr(sensors, "portfolio_summary", None) or {}
-    mb_bench = (
-        getattr(sensors, "macro_benchmarks", None)
-        or macro.get("macro_benchmarks")
-        or (ps.get("macro_benchmarks") if isinstance(ps, dict) else None)
-        or {}
-    )
+    fg = _resolve_macro_sensor(sensors, macro, "fear_greed")
+    mb = _resolve_macro_sensor(sensors, macro, "market_breadth")
+    sa = _resolve_macro_sensor(sensors, macro, "sentiment_advisor")
+    gt = _resolve_macro_sensor(sensors, macro, "geopolitical_threat", fallback_key="geopolitical")
+    mb_bench = _resolve_macro_sensor(sensors, macro, "macro_benchmarks", ps=ps)
 
     fg_hist = fg.get("historical_values")[:7] if isinstance(fg.get("historical_values"), list) else None
     fg_line = (
@@ -477,10 +486,8 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
             f"- Geopolitical Threat Shield: {gt_line}",
         ]
     breaking_news = getattr(sensors, "breaking_news", None) or macro.get("recent_news") or []
-    mc = (
-        getattr(sensors, "macro_calendar", None)
-        or macro.get("macro_calendar")
-        or resolve_macro_economic_calendar(breaking_news=breaking_news)
+    mc = _resolve_macro_sensor(sensors, macro, "macro_calendar") or resolve_macro_economic_calendar(
+        breaking_news=breaking_news
     )
     if mc_line := _format_macro_calendar_line(mc):
         lines.append(mc_line)
@@ -919,7 +926,7 @@ def _format_microstructure_section(
         has_perp_cvd = (cvd_usd_raw := minfo.get("cvd_15m_usd")) is not None
         if has_perp_cvd:
             cvd_u = safe_float(cvd_usd_raw, 0.0)
-            usd_s = f"{'+' if cvd_u >= 0.0 else '-'}{_fmt_liq_usd(abs(cvd_u))}"
+            usd_s = _fmt_signed_usd(cvd_u)
             cvd_b = minfo.get("cvd_15m_base")
             cvd_b_s = f"{safe_float(cvd_b, 0.0):+.3f}".rstrip("0").rstrip(".") if cvd_b is not None else ""
             if cvd_b_s in ("+", "-", ""):
@@ -929,23 +936,16 @@ def _format_microstructure_section(
                 if cvd_b is not None
                 else f", cvd_15m={usd_s}"
             )
-            if mh_parts := format_flow_horizon_parts(
-                minfo, lambda v: f"{'+' if v >= 0.0 else '-'}{_fmt_liq_usd(abs(v))}"
-            ):
+            if mh_parts := format_flow_horizon_parts(minfo, _fmt_signed_usd):
                 cvd_sfx += f", flow_horizons({', '.join(mh_parts)})"
         if (
             not ob_is_frozen
             and (sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None
             and (has_perp_cvd or minfo.get("spot_cvd_source") == "real_spot")
         ):
-            sp_s = f"{'+' if sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sp_cvd))}"
-            cvd_sfx += f", spot_cvd_15m={sp_s}{format_spot_cvd_source_tag(minfo)}"
+            cvd_sfx += f", spot_cvd_15m={_fmt_signed_usd(sp_cvd)}{format_spot_cvd_source_tag(minfo)}"
         if not ob_is_frozen and (
-            agg_sp_part := format_agg_spot_cvd_part(
-                minfo,
-                lambda v: f"{'+' if v >= 0.0 else '-'}{_fmt_liq_usd(abs(v))}",
-                _fmt_liq_usd,
-            )
+            agg_sp_part := format_agg_spot_cvd_part(minfo, _fmt_signed_usd, _fmt_liq_usd)
         ):
             cvd_sfx += f", {agg_sp_part}"
         if sp_vol_parts := format_spot_volume_rvol_parts(minfo, _fmt_liq_usd):
@@ -1009,7 +1009,7 @@ def _format_microstructure_section(
             if (d_ob := safe_float(cd_map.get("ob_imbalance_delta"), None)) is not None and abs(d_ob) >= 0.0005:
                 cd_parts.append(f"d_ob={d_ob:+.3f}")
             if (d_cvd := safe_float(cd_map.get("cvd_15m_delta_usd"), None)) is not None and abs(d_cvd) >= 1.0:
-                cd_parts.append(f"d_cvd={'+' if d_cvd >= 0 else '-'}{_fmt_liq_usd(abs(d_cvd))}")
+                cd_parts.append(f"d_cvd={_fmt_signed_usd(d_cvd)}")
             if (d_wl := safe_float(cd_map.get("whale_long_delta_pct"), None)) is not None and abs(d_wl) >= 0.005:
                 cd_parts.append(f"d_whale_long={d_wl:+.2f}%")
             if (d_oi := safe_float(cd_map.get("oi_delta_pct"), None)) is not None and abs(d_oi) >= 0.005:
@@ -1028,14 +1028,9 @@ def _format_microstructure_section(
             arb_sfx = f", {', '.join(arb_only_parts)}" if arb_only_parts else ""
             sib_sp_parts: List[str] = []
             if not ob_is_frozen and (sib_sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
-                sib_sp_s = f"{'+' if sib_sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sib_sp_cvd))}"
-                sib_sp_parts.append(f"spot_cvd_15m={sib_sp_s}[real_spot]")
+                sib_sp_parts.append(f"spot_cvd_15m={_fmt_signed_usd(sib_sp_cvd)}[real_spot]")
             if not ob_is_frozen and (
-                sib_agg_part := format_agg_spot_cvd_part(
-                    minfo,
-                    lambda v: f"{'+' if v >= 0.0 else '-'}{_fmt_liq_usd(abs(v))}",
-                    _fmt_liq_usd,
-                )
+                sib_agg_part := format_agg_spot_cvd_part(minfo, _fmt_signed_usd, _fmt_liq_usd)
             ):
                 sib_sp_parts.append(sib_agg_part)
             if not ob_is_frozen:
@@ -1091,8 +1086,7 @@ def _format_microstructure_section(
         if sym_is_tok_xstock_3b and minfo.get("whale_long_pct") is None and minfo.get("taker_buy_sell_ratio") is None:
             tok_sp_parts: List[str] = []
             if not cvd_sfx and not ob_is_frozen and (tok_sp := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
-                tok_sp_s = f"{'+' if tok_sp >= 0.0 else '-'}{_fmt_liq_usd(abs(tok_sp))}"
-                tok_sp_parts.append(f"spot_cvd_15m={tok_sp_s}[real_spot]")
+                tok_sp_parts.append(f"spot_cvd_15m={_fmt_signed_usd(tok_sp)}[real_spot]")
             if not cvd_sfx and not ob_is_frozen:
                 tok_sp_parts.extend(format_spot_volume_rvol_parts(minfo, _fmt_liq_usd))
             tok_sp_sfx = f", {', '.join(tok_sp_parts)}" if tok_sp_parts else ""

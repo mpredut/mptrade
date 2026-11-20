@@ -17,6 +17,7 @@ from botcore import (
     extract_current_price_timestamp_sec,
     extract_timestamp_s,
     fetch_public_json,
+    fetch_public_text,
     first_epoch_sec,
     first_pos_float,
     is_live_network_backfill_enabled,
@@ -31,7 +32,10 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
+    CACHE_MACRO_BENCHMARKS_FILENAME,
     CACHE_MACRO_CALENDAR_FILENAME,
+    CACHE_MARKET_BREADTH_FILENAME,
+    CACHE_NEWS_FEED_FILENAME,
     CACHE_WATCHER_ALL_PRICE_FILENAME,
     VENUE_FEE_MAINTENANCE_STATE_FILENAME,
     cache_symbol_variants,
@@ -54,6 +58,9 @@ from intelligence.macro.lexicon_ssot import (
 )
 import intelligence.macro_sentiment_ssot as _mss
 from intelligence.macro_sentiment_ssot import (
+    CRYPTO_ONLY_MACRO_SENSOR_KEYS,
+    MACRO_SENSOR_CACHE_SPECS,
+    SYNTHETIC_MACRO_SENSOR_KEYS,
     get_breadth_excluded_bases,
     get_deribit_options_currencies,
     get_earnings_bellwether_tickers,
@@ -66,8 +73,10 @@ from intelligence.macro_sentiment_ssot import (
     load_microstructure_cycle_history,
     load_venue_balances_state,
     read_first_cached_dict,
+    resolve_macro_fresh_guard_sec,
     resolve_read_json_cached,
     save_microstructure_cycle_history,
+    serialize_market_breadth_snapshot,
     split_headlines_digest,
     TelemetrySensorSnapshot,
     _cfg_str,
@@ -145,6 +154,7 @@ from state_io import (
 read_json_cached = _default_read_json_cached
 save_json_state = _default_save_json_state
 _default_fetch_public_json = fetch_public_json
+_default_fetch_public_text = fetch_public_text
 
 logger = logging.getLogger("intelligence.sentiment.macro_telemetry_collector")
 
@@ -211,6 +221,7 @@ class MacroTelemetryCollectorBase(TelemetryCacheCollectorInterface, ABC):
     """Abstract base contract (Level 2) for macro benchmarks, calendar/news sensors, and unified snapshot orchestrators."""
 
     cls_name = "MacroTelemetryCollectorBase"
+    _FETCH_DEADLINE_SEC: float = 0.0
 
     @staticmethod
     def _resolve_fetch_fn(fetch_fn: Optional[Callable[..., Any]] = None) -> Callable[..., Any]:
@@ -218,10 +229,47 @@ class MacroTelemetryCollectorBase(TelemetryCacheCollectorInterface, ABC):
         return fetch_fn or _resolve_macro_ssot_attr("fetch_public_json", fetch_public_json, _default_fetch_public_json)
 
     @staticmethod
+    def _resolve_text_fetch_fn(fetch_text_fn: Optional[Callable[..., Any]] = None) -> Callable[..., Any]:
+        """Resolve public text/HTML/CSV fetcher honoring module monkeypatches."""
+        return fetch_text_fn or _resolve_macro_ssot_attr(
+            "fetch_public_text", fetch_public_text, _default_fetch_public_text
+        )
+
+    @classmethod
+    def _build_fetch_deadline(cls, fetch_fn: Optional[Callable[..., Any]] = None) -> Optional[float]:
+        """Return monotonic wall-clock deadline when using live network fetches and ``_FETCH_DEADLINE_SEC > 0``."""
+        budget = safe_nonneg_float(getattr(cls, "_FETCH_DEADLINE_SEC", 0.0), 0.0) or 0.0
+        return (_time.monotonic() + budget) if (fetch_fn is None and budget > 0.0) else None
+
+    @staticmethod
+    def _resolve_cache_path(cache_dir: str, filename: str) -> str:
+        """Resolve the canonical cachedb subdomain path for ``filename`` inside ``cache_dir``."""
+        return str(resolve_cachedb_filepath(os.path.join(cache_dir, filename)))
+
+    @staticmethod
     def _persist_cache_json(path: str, payload: Any, *, indent: int = 2) -> None:
         """Persist a macro cache artifact atomically honoring ``save_json_state`` monkeypatches."""
         _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
         _save_fn(path, payload, indent=indent)
+
+    @classmethod
+    def _persist_snapshot(
+        cls,
+        cache_dir: str,
+        filename: str,
+        payload: Any,
+        *,
+        persist: bool = True,
+        indent: int = 2,
+    ) -> bool:
+        """Safely persist ``payload`` to ``filename`` under ``cache_dir`` when ``persist`` is enabled."""
+        if not persist or not cache_dir:
+            return False
+        try:
+            cls._persist_cache_json(cls._resolve_cache_path(cache_dir, filename), payload, indent=indent)
+            return True
+        except Exception:
+            return False
 
     @staticmethod
     def _read_cached_dict(
@@ -232,6 +280,24 @@ class MacroTelemetryCollectorBase(TelemetryCacheCollectorInterface, ABC):
     ) -> tuple[Optional[Dict[str, Any]], str]:
         """Read the first non-empty dict matching configured cache filenames for ``group_key``."""
         return _read_first_cached_dict(cache_dir, group_key, default_file, read_json_fn)
+
+    @staticmethod
+    def _is_snapshot_within_age(
+        snap: Any,
+        *,
+        now_ts: float,
+        max_age_sec: float,
+        inclusive: bool = False,
+    ) -> bool:
+        """Return True when ``snap['ts']`` is valid and within ``max_age_sec`` of ``now_ts``."""
+        limit = safe_nonneg_float(max_age_sec, 0.0) or 0.0
+        if limit <= 0.0 or not isinstance(snap, dict):
+            return False
+        prev_ts = normalize_epoch_sec(snap.get("ts"), default=0.0) or 0.0
+        if prev_ts <= 0.0:
+            return False
+        age = now_ts - prev_ts
+        return bool(0.0 <= age <= limit) if inclusive else bool(0.0 <= age < limit)
 
     def _read_fresh_cached_snapshot(
         self,
@@ -251,8 +317,7 @@ class MacroTelemetryCollectorBase(TelemetryCacheCollectorInterface, ABC):
             return prev_snap, False
         if callable(is_healthy_fn) and not is_healthy_fn(prev_snap):
             return prev_snap, False
-        prev_ts = normalize_epoch_sec(prev_snap.get("ts"), default=0.0) or 0.0
-        return prev_snap, bool(prev_ts > 0.0 and 0.0 <= (now_ts - prev_ts) < fresh_guard_sec)
+        return prev_snap, self._is_snapshot_within_age(prev_snap, now_ts=now_ts, max_age_sec=fresh_guard_sec)
 
 
 class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
@@ -280,14 +345,14 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
             return self._read_cached_dict(
                 cachedb_dir,
                 "macro_benchmarks_files",
-                "macro_benchmarks_collect.json",
+                CACHE_MACRO_BENCHMARKS_FILENAME,
                 read_json_fn=read_json_fn,
             )[0]
         cache_dir = cachedb_dir
         explicit_now = now_ts is not None
         eff_now = resolve_now_ts(now_ts)
         _fetch = self._resolve_fetch_fn(fetch_fn)
-        deadline_mono = (_time.monotonic() + self._FETCH_DEADLINE_SEC) if fetch_fn is None else None
+        deadline_mono = self._build_fetch_deadline(fetch_fn)
         items: Dict[str, Dict[str, Any]] = {}
         for label, yahoo_sym, unit_kind in MACRO_BENCHMARK_SPECS:
             req_to = resolve_remaining_timeout_sec(deadline_mono, timeout_sec, min_timeout=0.8)
@@ -450,11 +515,7 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
             btc_chg_24h_pct=resolve_cached_btc_24h_change_pct(cache_dir),
         )
         payload["summary_line"] = format_macro_benchmarks_summary_line(payload)
-        if persist and cache_dir:
-            try:
-                self._persist_cache_json(os.path.join(cache_dir, "macro_benchmarks_collect.json"), payload, indent=2)
-            except Exception:
-                pass
+        self._persist_snapshot(cache_dir, CACHE_MACRO_BENCHMARKS_FILENAME, payload, persist=persist)
         return payload
 
 
@@ -463,6 +524,8 @@ class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
 
     cls_name = "MacroEconomicCalendarCollector"
     COLLECTOR_ID = "macro_economic_calendar"
+    # Shared wall-clock budget strictly below GlobalTelemetryCollector's 12.0s macro_calendar step timeout.
+    _FETCH_DEADLINE_SEC = 10.0
 
     @staticmethod
     def _target_earnings_dates(dt_ny: datetime) -> List[str]:
@@ -505,6 +568,7 @@ class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
         if is_fresh_cached and prev_snap is not None:
             return prev_snap
         _fetch = self._resolve_fetch_fn(fetch_fn)
+        deadline_mono = self._build_fetch_deadline(fetch_fn)
         dt_ny = _mss.resolve_secondary_ny_datetime(eff_now)
         tz_ny = dt_ny.tzinfo or timezone.utc
         req_headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
@@ -515,9 +579,9 @@ class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
         allowed_countries = set(get_macro_calendar_countries())
         medium_kws = get_macro_calendar_medium_tier_keywords()
         ff_url = get_macro_calendar_endpoint_url()
-        if ff_url:
+        if ff_url and (ff_to := resolve_remaining_timeout_sec(deadline_mono, timeout_sec, min_timeout=0.8)) is not None:
             try:
-                raw_ff = _fetch(ff_url, timeout=timeout_sec, headers=req_headers)
+                raw_ff = _fetch(ff_url, timeout=ff_to, headers=req_headers)
                 if isinstance(raw_ff, list):
                     events_ok = True
                     seen_ev: set[tuple[int, str]] = set()
@@ -583,9 +647,12 @@ class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
         watch_tickers = tracked_set | bellwether_set
         seen_er: set[tuple[str, str]] = set()
         for d_iso in target_dates:
+            nq_to = resolve_remaining_timeout_sec(deadline_mono, timeout_sec, min_timeout=0.8)
+            if nq_to is None:
+                break
             try:
                 nq_url = get_nasdaq_earnings_calendar_url(d_iso)
-                raw_nq = _fetch(nq_url, timeout=timeout_sec, headers=req_headers)
+                raw_nq = _fetch(nq_url, timeout=nq_to, headers=req_headers)
                 if not isinstance(raw_nq, dict):
                     continue
                 data_obj = raw_nq.get("data")
@@ -648,12 +715,9 @@ class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
         if not events_ok and not earnings_ok:
             return None
         done_now = resolve_now_ts(now_ts)
-        prev_fresh = (
-            isinstance(prev_snap, dict)
-            and (prev_ts := normalize_epoch_sec(prev_snap.get("ts"), default=0.0) or 0.0) > 0.0
-            and 0.0 <= (done_now - prev_ts) <= 86400.0
-        )
-        if prev_fresh and isinstance(prev_snap, dict):
+        if self._is_snapshot_within_age(prev_snap, now_ts=done_now, max_age_sec=86400.0, inclusive=True) and isinstance(
+            prev_snap, dict
+        ):
             if not events_ok and isinstance(prev_snap.get("events"), list):
                 events = list(prev_snap["events"])
             if not earnings_ok and isinstance(prev_snap.get("earnings"), list):
@@ -668,15 +732,7 @@ class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
             "events": events,
             "earnings": earnings,
         }
-        if persist and cachedb_dir:
-            try:
-                self._persist_cache_json(
-                    str(resolve_cachedb_filepath(os.path.join(cachedb_dir, CACHE_MACRO_CALENDAR_FILENAME))),
-                    payload,
-                    indent=2,
-                )
-            except Exception:
-                pass
+        self._persist_snapshot(cachedb_dir, CACHE_MACRO_CALENDAR_FILENAME, payload, persist=persist)
         return payload
 
 
@@ -694,13 +750,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
 
     cls_name = "MacroAndNewsSensorsCollector"
     COLLECTOR_ID = "macro_and_news_sensors"
-    _MACRO_SENSOR_CACHE_SPECS = (
-        ("fear_greed", "fear_greed_files", "fear_greed_collect.json"),
-        ("market_breadth", "market_breadth_files", "market_breadth_collect.json"),
-        ("sentiment_advisor", "sentiment_eval_files", "sentiment_eval.json"),
-        ("geopolitical_threat", "geopolitical_eval_file", "geopolitical_eval.json"),
-        ("macro_benchmarks", "macro_benchmarks_files", "macro_benchmarks_collect.json"),
-    )
+    _MACRO_SENSOR_CACHE_SPECS = MACRO_SENSOR_CACHE_SPECS
 
     @staticmethod
     def _normalize_market_breadth_movers(enriched: Dict[str, Any]) -> None:
@@ -828,35 +878,11 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
             try:
                 breadth_snap = MarketBreadthCollector(cache_ttl_sec=60.0).fetch(force_refresh=True, now_ts=now_ts)
                 if breadth_snap is not None:
-                    raw_gainers = getattr(breadth_snap, "top_gainers", None) or ()
-                    raw_losers = getattr(breadth_snap, "top_losers", None) or ()
-                    tot = getattr(breadth_snap, "total_count", 0)
-                    mb_payload: Dict[str, Any] = {
-                        "advance_ratio": breadth_snap.advance_ratio,
-                        "median_change_pct": breadth_snap.median_change_pct,
-                        "mean_change_pct": breadth_snap.mean_change_pct,
-                        "dispersion_std": breadth_snap.dispersion_std,
-                        "regime": breadth_snap.regime,
-                        "total_symbols": tot,
-                        "total_count": tot,
-                        "advancing": breadth_snap.advancing_count,
-                        "advancing_count": breadth_snap.advancing_count,
-                        "declining": breadth_snap.declining_count,
-                        "declining_count": breadth_snap.declining_count,
-                        "top_gainers": [list(x) for x in raw_gainers if isinstance(x, (list, tuple))],
-                        "top_losers": [list(x) for x in raw_losers if isinstance(x, (list, tuple))],
-                        "ts": safe_pos_float(getattr(breadth_snap, "ts", None), now_ts) or now_ts,
-                    }
-                    for rot_k in (
-                        "btc_price", "btc_chg_24h_pct", "eth_price", "eth_chg_24h_pct",
-                        "eth_btc_ratio", "eth_btc_chg_24h_pct", "btc_vol_share_pct",
-                        "eth_vol_share_pct", "alt_vol_share_pct", "rotation_regime",
-                    ):
-                        if (rot_v := getattr(breadth_snap, rot_k, None)) is not None:
-                            mb_payload[rot_k] = rot_v
-                    mb_path = os.path.join(cache_dir, "market_breadth_collect.json")
-                    if persist:
-                        MacroTelemetryCollectorBase._persist_cache_json(mb_path, mb_payload, indent=2)
+                    mb_payload = serialize_market_breadth_snapshot(breadth_snap, now_ts=now_ts)
+                    mb_path = os.path.join(cache_dir, CACHE_MARKET_BREADTH_FILENAME)
+                    MacroTelemetryCollectorBase._persist_snapshot(
+                        cache_dir, CACHE_MARKET_BREADTH_FILENAME, mb_payload, persist=persist
+                    )
                     macro_sensors["market_breadth"] = with_age_fn(mb_payload, mb_path)
             except Exception:
                 pass
@@ -869,7 +895,28 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
         )
         if bench_cur is None or bench_age is None or bench_age > bench_stale_min:
             if isinstance(live_mb := collect_macro_benchmarks_snapshot(cache_dir, now_ts=now_ts, timeout_sec=2.5, persist=persist), dict) and live_mb:
-                macro_sensors["macro_benchmarks"] = with_age_fn(live_mb, os.path.join(cache_dir, "macro_benchmarks_collect.json"))
+                macro_sensors["macro_benchmarks"] = with_age_fn(live_mb, os.path.join(cache_dir, CACHE_MACRO_BENCHMARKS_FILENAME))
+
+    @staticmethod
+    def _maybe_backfill_cached_macro_snapshot(
+        cur_snap: Optional[Dict[str, Any]],
+        snap_path: str,
+        *,
+        now_ts: float,
+        max_age_sec: float,
+        collect_fn: Callable[[], Optional[Dict[str, Any]]],
+    ) -> Optional[Dict[str, Any]]:
+        """Invoke ``collect_fn`` when a slow disk-backed macro snapshot is missing or older than ``max_age_sec``."""
+        snap_ts = normalize_epoch_sec((cur_snap or {}).get("ts"), default=0.0) or 0.0
+        if snap_ts <= 0.0 and snap_path and os.path.exists(snap_path):
+            try:
+                snap_ts = os.path.getmtime(snap_path)
+            except OSError:
+                snap_ts = 0.0
+        if not cur_snap or snap_ts <= 0.0 or (now_ts - snap_ts) > max_age_sec:
+            if isinstance(live_snap := collect_fn(), dict) and live_snap:
+                return live_snap
+        return cur_snap
 
     @staticmethod
     def _collect_and_rank_breaking_news(
@@ -878,7 +925,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
         breaking_news: List[Dict[str, Any]] = []
         valid_news: List[Dict[str, Any]] = []
         stale_valid_sev_titles: set[str] = set()
-        news_raw = read_json_any_fn(os.path.join(cache_dir, "news_feed_collect.json"))
+        news_raw = read_json_any_fn(os.path.join(cache_dir, CACHE_NEWS_FEED_FILENAME))
         news_data = (news_raw.get("items") or news_raw.get("headlines")) if isinstance(news_raw, dict) else news_raw
         if not (isinstance(news_data, list) and news_data):
             return breaking_news, valid_news, stale_valid_sev_titles
@@ -1172,24 +1219,19 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
         )
         if allow_network and read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
             cal_itv_sec = _mss.resolve_derived_telemetry_intervals()["macro_calendar_interval_sec"]
-            cal_ts = normalize_epoch_sec((cal_snap or {}).get("ts"), default=0.0) or 0.0
-            if cal_ts <= 0.0 and cal_path and os.path.exists(cal_path):
-                try:
-                    cal_ts = os.path.getmtime(cal_path)
-                except OSError:
-                    cal_ts = 0.0
-            if not cal_snap or cal_ts <= 0.0 or (now_ts - cal_ts) > cal_itv_sec:
-                if isinstance(
-                    live_cal := collect_macro_calendar_snapshot(
-                        cache_dir,
-                        now_ts=now_ts,
-                        timeout_sec=3.0,
-                        persist=persist,
-                        skip_if_fresh_sec=min(1800.0, cal_itv_sec * 0.25),
-                    ),
-                    dict,
-                ) and live_cal:
-                    cal_snap = live_cal
+            cal_snap = self._maybe_backfill_cached_macro_snapshot(
+                cal_snap,
+                cal_path,
+                now_ts=now_ts,
+                max_age_sec=cal_itv_sec,
+                collect_fn=lambda: collect_macro_calendar_snapshot(
+                    cache_dir,
+                    now_ts=now_ts,
+                    timeout_sec=3.0,
+                    persist=persist,
+                    skip_if_fresh_sec=resolve_macro_fresh_guard_sec(cal_itv_sec),
+                ),
+            )
         macro_sensors["macro_calendar"] = resolve_macro_economic_calendar(
             now_ts=now_ts,
             breaking_news=valid_news or breaking_news,
@@ -1554,7 +1596,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         active_macro_sensors = {
             m_name: m_val
             for m_name in macro_sensors
-            if m_name != "macro_calendar" and isinstance(m_val := getattr(snapshot, m_name, None), dict)
+            if m_name not in SYNTHETIC_MACRO_SENSOR_KEYS and isinstance(m_val := getattr(snapshot, m_name, None), dict)
         }
         if snap_ts is None:
             sensor_ts_candidates = [
@@ -1755,9 +1797,8 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         for attr, val in macro_sensors.items():
             setattr(snapshot, attr, val)
         if str(scope or "").strip().lower() in ("equities", "equity"):
-            snapshot.fear_greed = None
-            snapshot.market_breadth = None
-            snapshot.sentiment_advisor = None
+            for _crypto_attr in CRYPTO_ONLY_MACRO_SENSOR_KEYS:
+                setattr(snapshot, _crypto_attr, None)
 
         _mc.ensure_cacheprice_classes_bound()
         prices_data = _rj(os.path.join(cache_dir, _mc.CacheCurrentPriceManager.DEFAULT_FILENAME))

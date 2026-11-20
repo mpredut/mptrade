@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from botcore import is_us_rth_open, parse_symbol_list, safe_pos_float, topic_spec
 from intelligence.macro_sentiment_ssot import (
+    CRYPTO_ONLY_MACRO_SENSOR_KEYS,
     format_telemetry_domain_age_tag,
     resolve_telemetry_domain_stale_thresholds_sec,
 )
@@ -65,9 +66,9 @@ def build_supervisor_prompt(
     eval_now_ts = safe_pos_float(getattr(sensors, "evaluated_at_ts", None), default=None)
     spec_scope_norm = str(getattr(spec, "asset_scope", "all") or "all").strip().lower()
     skip_domain_keys = (
-        {"fear_greed", "market_breadth", "sentiment_advisor"}
+        CRYPTO_ONLY_MACRO_SENSOR_KEYS
         if spec_scope_norm in ("equities", "equity")
-        else set()
+        else frozenset()
     )
     if not is_pure_sre and isinstance(domain_ages, dict) and domain_ages:
         eff_now_s0 = eval_now_ts if eval_now_ts is not None else time.time()

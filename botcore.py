@@ -237,6 +237,7 @@ from core.http import (  # noqa: E402
     fetch_json_post,
     fetch_public_bytes,
     fetch_public_json,
+    fetch_public_text,
     fetch_requests_json_get,
     fetch_requests_json_post,
     http_get,

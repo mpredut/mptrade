@@ -25,9 +25,13 @@ from botcore import (
 )
 from cachepaths import (
     CACHE_DERIVATIVES_TELEMETRY_PREFIX,
+    CACHE_FEAR_GREED_FILENAME,
+    CACHE_GEOPOLITICAL_EVAL_FILENAME,
     CACHE_KALMAN_TREND_FILENAME,
+    CACHE_MACRO_BENCHMARKS_FILENAME,
     CACHE_MACRO_CALENDAR_FILENAME,
     CACHE_ORDERBOOK_DEPTH_PREFIX,
+    CACHE_SENTIMENT_EVAL_FILENAME,
     CACHE_WATCHER_ALL_PRICE_FILENAME,
     CACHE_WHALE_SNAPSHOT_PREFIX,
     cache_ohlc_24h_filename,
@@ -2055,19 +2059,23 @@ class RecentFillsExecutionStage(PretradePillarCollectorBase):
 
 
 class MacroPillarsStage(PretradePillarCollectorBase):
-    """Concrete pillar collector (Level 3): Equity/Crypto Macro Regime, Fear & Greed, and Geopolitical Threat pillars."""
+    """Concrete pillar collector (Level 3): Equity/Crypto Macro Regime, Fear & Greed, Geopolitical Threat, and Macro Calendar pillars."""
 
     cls_name = "MacroPillarsStage"
+
+    @staticmethod
+    def _read_cached_pillar_dict(
+        ctx: PretradeEvaluationContext,
+        group_key: str,
+        default_filename: str,
+    ) -> Optional[Dict[str, Any]]:
+        data = _read_first_cached_dict(ctx.cachedb_dir, group_key, default_filename)[0]
+        return data if isinstance(data, dict) else None
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
         before_cnt = len(ctx.telemetry)
         try:
-            if isinstance(
-                mb_data := _read_first_cached_dict(
-                    ctx.cachedb_dir, "macro_benchmarks_files", "macro_benchmarks_collect.json"
-                )[0],
-                dict,
-            ):
+            if (mb_data := self._read_cached_pillar_dict(ctx, "macro_benchmarks_files", CACHE_MACRO_BENCHMARKS_FILENAME)) is not None:
                 btc_chg_24h_live: Optional[float] = None
                 if not ctx.is_eq_sym and canonical_base_asset(ctx.symbol) == "BTC":
                     btc_chg_24h_live = safe_float(ctx.m24.get("chg_24h_pct"), default=None)
@@ -2086,12 +2094,7 @@ class MacroPillarsStage(PretradePillarCollectorBase):
             pass
         if not ctx.is_eq_sym:
             try:
-                if isinstance(
-                    m_data := _read_first_cached_dict(
-                        ctx.cachedb_dir, "sentiment_eval_files", "sentiment_eval.json"
-                    )[0],
-                    dict,
-                ):
+                if (m_data := self._read_cached_pillar_dict(ctx, "sentiment_eval_files", CACHE_SENTIMENT_EVAL_FILENAME)) is not None:
                     bias, risk, action = (
                         str(m_data.get(k) or "").strip() for k in ("market_bias", "risk_level", "recommended_action")
                     )
@@ -2103,12 +2106,7 @@ class MacroPillarsStage(PretradePillarCollectorBase):
             except Exception:
                 pass
             try:
-                if isinstance(
-                    fg_data := _read_first_cached_dict(
-                        ctx.cachedb_dir, "fear_greed_files", "fear_greed_collect.json"
-                    )[0],
-                    dict,
-                ):
+                if (fg_data := self._read_cached_pillar_dict(ctx, "fear_greed_files", CACHE_FEAR_GREED_FILENAME)) is not None:
                     val, label = fg_data.get("value", ""), fg_data.get("classification", "")
                     if val is not None and not isinstance(val, bool) and str(val).strip() != "":
                         ctx.telemetry["Fear & Greed Index"] = (
@@ -2121,12 +2119,7 @@ class MacroPillarsStage(PretradePillarCollectorBase):
             except Exception:
                 pass
         try:
-            if isinstance(
-                g_data := _read_first_cached_dict(
-                    ctx.cachedb_dir, "geopolitical_eval_file", "geopolitical_eval.json"
-                )[0],
-                dict,
-            ):
+            if (g_data := self._read_cached_pillar_dict(ctx, "geopolitical_eval_file", CACHE_GEOPOLITICAL_EVAL_FILENAME)) is not None:
                 level = g_data.get("threat_level", "")
                 if level is not None and not isinstance(level, bool) and str(level).strip() != "":
                     ctx.telemetry["Geopolitical Threat Level"] = str(level).strip()
@@ -2134,18 +2127,16 @@ class MacroPillarsStage(PretradePillarCollectorBase):
         except Exception:
             pass
         try:
-            cal_snap = _read_first_cached_dict(
-                ctx.cachedb_dir, "macro_calendar_files", CACHE_MACRO_CALENDAR_FILENAME
-            )[0]
-            if (isinstance(cal_snap, dict) and cal_snap) or bool(ctx.telemetry):
-                eff_cal_now = safe_pos_float(getattr(ctx, "now_ts", None), default=None) or _time.time()
+            cal_snap = self._read_cached_pillar_dict(ctx, "macro_calendar_files", CACHE_MACRO_CALENDAR_FILENAME)
+            if (cal_snap is not None and cal_snap) or bool(ctx.telemetry):
+                eff_cal_now = resolve_now_ts(getattr(ctx, "now_ts", None))
                 cal_eval = resolve_macro_economic_calendar(
                     now_ts=eff_cal_now,
-                    calendar_snapshot=cal_snap if isinstance(cal_snap, dict) else None,
+                    calendar_snapshot=cal_snap,
                 )
                 if cat_line := format_pretrade_macro_catalyst_line(cal_eval, symbol=ctx.symbol):
                     ctx.telemetry["Upcoming Macro / Earnings Catalyst"] = cat_line
-                    if isinstance(cal_snap, dict) and cal_snap:
+                    if cal_snap:
                         ctx.record_source_timestamp("macro_calendar", extract_timestamp_s(cal_snap))
         except Exception:
             pass

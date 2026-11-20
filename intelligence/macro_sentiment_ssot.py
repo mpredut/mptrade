@@ -107,6 +107,10 @@ class MarketBreadthSnapshot:
     alt_vol_share_pct: Optional[float] = None
     rotation_regime: Optional[str] = None
 
+    def to_cache_dict(self, now_ts: Optional[float] = None) -> Dict[str, Any]:
+        """Serialize this snapshot into the canonical `market_breadth_collect.json` dictionary."""
+        return serialize_market_breadth_snapshot(self, now_ts=now_ts)
+
 import botcore as _botcore
 from botcore import (
     _parse_bool_flag,
@@ -126,6 +130,7 @@ from botcore import (
     safe_float,
     safe_int,
     safe_nonneg_float,
+    safe_nonneg_ts,
     safe_pos_float,
     split_csv,
 )
@@ -154,17 +159,24 @@ def _lex_attr(name: str) -> Any:
 def __getattr__(name: str) -> Any:
     if name == "fetch_public_json":
         return _botcore.fetch_public_json
+    if name == "fetch_public_text":
+        return _botcore.fetch_public_text
     if name in _LEXICON_DELEGATED_ATTRS:
         return getattr(importlib.import_module("intelligence.macro.lexicon_ssot"), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__() -> List[str]:
-    return sorted({*globals(), "fetch_public_json", *_LEXICON_DELEGATED_ATTRS})
+    return sorted({*globals(), "fetch_public_json", "fetch_public_text", *_LEXICON_DELEGATED_ATTRS})
 
 
 from cachepaths import (
+    CACHE_FEAR_GREED_FILENAME,
+    CACHE_GEOPOLITICAL_EVAL_FILENAME,
+    CACHE_MACRO_BENCHMARKS_FILENAME,
     CACHE_MACRO_CALENDAR_FILENAME,
+    CACHE_MARKET_BREADTH_FILENAME,
+    CACHE_SENTIMENT_EVAL_FILENAME,
     VENUE_BALANCES_STATE_FILENAME,
     cache_symbol_variants,
     canonical_base_asset,
@@ -723,6 +735,72 @@ TELEMETRY_SOURCE_STALE_INTERVAL_MULT: float = 2.0
 _EQUITY_RTH_DOMAIN_AGE_KEYS: frozenset[str] = frozenset(
     {"prices_newest", "prices_oldest", "orderbook_newest", "orderbook_oldest", "short_trends", "venue_balances"}
 )
+
+# Declarative SSOT metadata for disk-backed macro sensors (used across collectors, prompt scope filters, and SRE health)
+MACRO_SENSOR_CACHE_SPECS: Tuple[Tuple[str, str, str], ...] = (
+    ("fear_greed", "fear_greed_files", CACHE_FEAR_GREED_FILENAME),
+    ("market_breadth", "market_breadth_files", CACHE_MARKET_BREADTH_FILENAME),
+    ("sentiment_advisor", "sentiment_eval_files", CACHE_SENTIMENT_EVAL_FILENAME),
+    ("geopolitical_threat", "geopolitical_eval_file", CACHE_GEOPOLITICAL_EVAL_FILENAME),
+    ("macro_benchmarks", "macro_benchmarks_files", CACHE_MACRO_BENCHMARKS_FILENAME),
+)
+MACRO_SENSOR_HEALTH_KEYS: Tuple[str, ...] = tuple(spec[0] for spec in MACRO_SENSOR_CACHE_SPECS)
+CRYPTO_ONLY_MACRO_SENSOR_KEYS: frozenset[str] = frozenset({"fear_greed", "market_breadth", "sentiment_advisor"})
+SYNTHETIC_MACRO_SENSOR_KEYS: frozenset[str] = frozenset({"macro_calendar"})
+
+_BREADTH_ROTATION_FIELDS: Tuple[str, ...] = (
+    "btc_price",
+    "btc_chg_24h_pct",
+    "eth_price",
+    "eth_chg_24h_pct",
+    "eth_btc_ratio",
+    "eth_btc_chg_24h_pct",
+    "btc_vol_share_pct",
+    "eth_vol_share_pct",
+    "alt_vol_share_pct",
+    "rotation_regime",
+)
+
+
+def serialize_market_breadth_snapshot(breadth: Any, *, now_ts: Optional[float] = None) -> Dict[str, Any]:
+    """Serialize a ``MarketBreadthSnapshot`` (or duck-typed object) into the canonical ``market_breadth_collect.json`` dict."""
+    now_val = resolve_now_ts(now_ts)
+    raw_gainers = getattr(breadth, "top_gainers", None) or ()
+    raw_losers = getattr(breadth, "top_losers", None) or ()
+    tot = getattr(breadth, "total_count", 0)
+    b_ts = safe_nonneg_ts(getattr(breadth, "ts", None), now_val) or now_val
+    payload: Dict[str, Any] = {
+        "advance_ratio": breadth.advance_ratio,
+        "median_change_pct": breadth.median_change_pct,
+        "mean_change_pct": breadth.mean_change_pct,
+        "dispersion_std": breadth.dispersion_std,
+        "regime": breadth.regime,
+        "total_symbols": tot,
+        "total_count": tot,
+        "advancing": breadth.advancing_count,
+        "advancing_count": breadth.advancing_count,
+        "declining": breadth.declining_count,
+        "declining_count": breadth.declining_count,
+        "top_gainers": [list(x) for x in raw_gainers if isinstance(x, (list, tuple))],
+        "top_losers": [list(x) for x in raw_losers if isinstance(x, (list, tuple))],
+        "ts": b_ts,
+    }
+    for rot_k in _BREADTH_ROTATION_FIELDS:
+        if (rot_v := getattr(breadth, rot_k, None)) is not None:
+            payload[rot_k] = rot_v
+    return payload
+
+
+def resolve_macro_fresh_guard_sec(
+    interval_sec: Any,
+    *,
+    default_interval_sec: float = 21600.0,
+    ratio: float = 0.25,
+    max_guard_sec: float = 1800.0,
+) -> float:
+    """Compute bounded cross-process freshness guard ``min(max_guard_sec, interval_sec * ratio)`` for slow macro feeds."""
+    itv = safe_pos_float(interval_sec, default_interval_sec) or default_interval_sec
+    return min(max_guard_sec, itv * ratio)
 
 
 def resolve_configured_tz_datetime(
@@ -1316,6 +1394,16 @@ def _read_and_finalize_cached_eval_dict(
     return out
 
 
+def load_cached_macro_snapshot(
+    cache_dir: str,
+    group_key: str,
+    default_filename: str,
+) -> Optional[Dict[str, Any]]:
+    """Load a cached raw macro telemetry snapshot dict from ``cache_dir`` without network I/O."""
+    data, _ = read_first_cached_dict(cache_dir, group_key, default_filename)
+    return data if isinstance(data, dict) and data else None
+
+
 def load_cached_sentiment_advisor_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load and normalize cached SentimentAdvisor evaluation dictionary from ``cache_dir``."""
     return _read_and_finalize_cached_eval_dict(
@@ -1326,7 +1414,7 @@ def load_cached_sentiment_advisor_eval(cache_dir: str) -> Optional[Dict[str, Any
             "risk_level": normalize_risk_level(d.get("risk_level")),
             "recommended_action": normalize_recommended_action(d.get("recommended_action")),
         },
-        default_fname="sentiment_eval.json",
+        default_fname=CACHE_SENTIMENT_EVAL_FILENAME,
         scale_key="confidence",
         scale_default=0.5,
     )
@@ -1334,8 +1422,7 @@ def load_cached_sentiment_advisor_eval(cache_dir: str) -> Optional[Dict[str, Any
 
 def load_cached_macro_calendar_snapshot(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load cached economic calendar and corporate earnings snapshot from ``cache_dir`` without network I/O."""
-    data, _ = read_first_cached_dict(cache_dir, "macro_calendar_files", CACHE_MACRO_CALENDAR_FILENAME)
-    return data if isinstance(data, dict) and data else None
+    return load_cached_macro_snapshot(cache_dir, "macro_calendar_files", CACHE_MACRO_CALENDAR_FILENAME)
 
 
 def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
@@ -1348,7 +1435,7 @@ def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
             "recommended_brake": normalize_recommended_brake(d.get("recommended_brake"), threat_level=tl),
         },
         cfg_key="geopolitical_eval_file",
-        default_fname="geopolitical_eval.json",
+        default_fname=CACHE_GEOPOLITICAL_EVAL_FILENAME,
         scale_key="risk_score",
         scale_default=0.0,
     )

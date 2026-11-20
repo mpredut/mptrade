@@ -17,7 +17,7 @@ import os
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT_DIR not in sys.path:
@@ -39,6 +39,9 @@ from botcore import (
 )
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
+    CACHE_FEAR_GREED_FILENAME,
+    CACHE_MARKET_BREADTH_FILENAME,
+    CACHE_NEWS_FEED_FILENAME,
     CACHE_REALIZED_LIQUIDATIONS_FILENAME,
     CACHE_SHORT_TREND_FILENAME,
     KINEMATIC_IMPULSE_SIGNAL_FILENAME,
@@ -72,6 +75,8 @@ from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import (
     resolve_derived_telemetry_intervals,
     resolve_effective_macro_benchmarks_interval_sec,
+    resolve_macro_fresh_guard_sec,
+    serialize_market_breadth_snapshot,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
 from instrument_registry import (
@@ -220,7 +225,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self._last_realized_liq_ts: float = 0.0
         self.news_collector = NewsFeedCollector(
             cache_ttl_sec=max(30.0, self.news_interval_sec * 0.5),
-            history_file=os.path.join(self.cache_dir, "news_feed_collect.json"),
+            history_file=os.path.join(self.cache_dir, CACHE_NEWS_FEED_FILENAME),
             start_sync=True,
         )
         self.fear_greed_collector = FearGreedCollector(
@@ -283,7 +288,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 idx_ts = safe_nonneg_ts(getattr(snap, "timestamp", None), now_val) or now_val
                 fetch_ts = safe_pos_float(getattr(self.fear_greed_collector, "_last_fetch_ts", None), default=None) or now_val
                 save_json_state(
-                    os.path.join(self.cache_dir, "fear_greed_collect.json"),
+                    os.path.join(self.cache_dir, CACHE_FEAR_GREED_FILENAME),
                     {
                         "value": snap.value,
                         "sentiment": snap.classification,
@@ -308,35 +313,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         try:
             breadth, eff_now = self._fetch_fresh_collector_snapshot(self.breadth_collector, force=force, now=now)
             if breadth:
-                now_val = resolve_now_ts(eff_now)
-                raw_gainers = getattr(breadth, "top_gainers", None) or ()
-                raw_losers = getattr(breadth, "top_losers", None) or ()
-                tot = getattr(breadth, "total_count", 0)
-                b_ts = safe_nonneg_ts(getattr(breadth, "ts", None), now_val) or now_val
-                mb_payload: Dict[str, Any] = {
-                    "advance_ratio": breadth.advance_ratio,
-                    "median_change_pct": breadth.median_change_pct,
-                    "mean_change_pct": breadth.mean_change_pct,
-                    "dispersion_std": breadth.dispersion_std,
-                    "regime": breadth.regime,
-                    "total_symbols": tot,
-                    "total_count": tot,
-                    "advancing": breadth.advancing_count,
-                    "advancing_count": breadth.advancing_count,
-                    "declining": breadth.declining_count,
-                    "declining_count": breadth.declining_count,
-                    "top_gainers": [list(x) for x in raw_gainers if isinstance(x, (list, tuple))],
-                    "top_losers": [list(x) for x in raw_losers if isinstance(x, (list, tuple))],
-                    "ts": b_ts,
-                }
-                for rot_k in (
-                    "btc_price", "btc_chg_24h_pct", "eth_price", "eth_chg_24h_pct",
-                    "eth_btc_ratio", "eth_btc_chg_24h_pct", "btc_vol_share_pct",
-                    "eth_vol_share_pct", "alt_vol_share_pct", "rotation_regime",
-                ):
-                    if (rot_v := getattr(breadth, rot_k, None)) is not None:
-                        mb_payload[rot_k] = rot_v
-                save_json_state(os.path.join(self.cache_dir, "market_breadth_collect.json"), mb_payload, indent=2)
+                mb_payload = serialize_market_breadth_snapshot(breadth, now_ts=eff_now)
+                save_json_state(os.path.join(self.cache_dir, CACHE_MARKET_BREADTH_FILENAME), mb_payload, indent=2)
                 logger.debug("Market breadth updated: %.1f%% advancing", breadth.advance_ratio * 100)
                 return True
         except Exception as e:
@@ -434,40 +412,61 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             logger.debug("Failed persisting realized liquidations snapshot: %s", e)
             return False
 
-    def update_macro_benchmarks(self, force: bool = False, now: Optional[float] = None) -> bool:
-        """Fetch SPY, QQQ, ES=F, NQ=F, DXY, and US10Y macro benchmarks and persist to cachedb/."""
+    def _run_macro_snapshot_update(
+        self,
+        *,
+        label: str,
+        collect_fn: Callable[[Optional[float]], Any],
+        is_valid_fn: Callable[[Dict[str, Any]], bool],
+        now: Optional[float] = None,
+        on_success_log: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> bool:
+        """Execute a periodic disk-persisted macro snapshot collector with uniform error handling and clock resolution."""
         try:
             eff_now = self._resolve_step_now(now)
-            snap = collect_macro_benchmarks_snapshot(self.cache_dir, timeout_sec=3.5, persist=True, now_ts=eff_now)
-            if isinstance(snap, dict) and snap.get("items"):
-                logger.debug("Macro benchmarks updated: %s", snap.get("summary_line", ""))
+            snap = collect_fn(eff_now)
+            if isinstance(snap, dict) and is_valid_fn(snap):
+                if callable(on_success_log):
+                    on_success_log(snap)
                 return True
         except Exception as e:
-            logger.warning("Failed updating macro benchmarks: %s", e)
+            logger.warning("Failed updating %s: %s", label, e)
         return False
+
+    def update_macro_benchmarks(self, force: bool = False, now: Optional[float] = None) -> bool:
+        """Fetch SPY, QQQ, ES=F, NQ=F, DXY, and US10Y macro benchmarks and persist to cachedb/."""
+        _ = force
+        return self._run_macro_snapshot_update(
+            label="macro benchmarks",
+            now=now,
+            collect_fn=lambda eff_now: collect_macro_benchmarks_snapshot(
+                self.cache_dir, timeout_sec=3.5, persist=True, now_ts=eff_now
+            ),
+            is_valid_fn=lambda snap: bool(snap.get("items")),
+            on_success_log=lambda snap: logger.debug("Macro benchmarks updated: %s", snap.get("summary_line", "")),
+        )
 
     def update_macro_calendar(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch weekly USD macro releases and tracked/bellwether corporate earnings and persist to cachedb/."""
-        try:
-            eff_now = self._resolve_step_now(now)
-            fresh_guard = min(1800.0, safe_pos_float(getattr(self, "macro_calendar_interval_sec", None), 21600.0) * 0.25)
-            snap = collect_macro_calendar_snapshot(
+        _ = force
+        fresh_guard = resolve_macro_fresh_guard_sec(getattr(self, "macro_calendar_interval_sec", None))
+        return self._run_macro_snapshot_update(
+            label="macro calendar",
+            now=now,
+            collect_fn=lambda eff_now: collect_macro_calendar_snapshot(
                 self.cache_dir,
                 timeout_sec=3.0,
                 persist=True,
                 now_ts=eff_now,
                 skip_if_fresh_sec=fresh_guard,
-            )
-            if isinstance(snap, dict) and (snap.get("events_ok") or snap.get("earnings_ok")):
-                logger.debug(
-                    "Macro calendar updated: %d events, %d earnings",
-                    len(snap.get("events") or ()),
-                    len(snap.get("earnings") or ()),
-                )
-                return True
-        except Exception as e:
-            logger.warning("Failed updating macro calendar: %s", e)
-        return False
+            ),
+            is_valid_fn=lambda snap: bool(snap.get("events_ok") or snap.get("earnings_ok")),
+            on_success_log=lambda snap: logger.debug(
+                "Macro calendar updated: %d events, %d earnings",
+                len(snap.get("events") or ()),
+                len(snap.get("earnings") or ()),
+            ),
+        )
 
     def update_pretrade_caches(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Producer refresh of pre-trade caches (per-symbol microstructure and once-per-round T212 position prices)."""

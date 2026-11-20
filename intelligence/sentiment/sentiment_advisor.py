@@ -35,6 +35,7 @@ from intelligence.macro_sentiment_ssot import (
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     enrich_macro_benchmarks_live_state,
+    format_compact_usd,
     format_equity_macro_regime_line,
     load_cached_macro_benchmarks,
 )
@@ -42,27 +43,14 @@ from intelligence.sentiment.gemini_client import GeminiClient
 import intelligence.sentiment.collectors.microstructure_collector as _mc
 from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
 from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
-from cachepaths import cache_path, resolve_cachedb_filepath
+from cachepaths import CACHE_SENTIMENT_EVAL_FILENAME, cache_path, resolve_cachedb_filepath
 
 logger = logging.getLogger("intelligence.sentiment.sentiment_advisor")
 
 _SENTIMENT_FILENAMES = get_cache_filenames("sentiment_advisor_files")
-DEFAULT_CACHE_FILE = cache_path(_SENTIMENT_FILENAMES[0] if _SENTIMENT_FILENAMES else "sentiment_eval.json")
+DEFAULT_CACHE_FILE = cache_path(_SENTIMENT_FILENAMES[0] if _SENTIMENT_FILENAMES else CACHE_SENTIMENT_EVAL_FILENAME)
 
-
-def _fmt_compact_usd(val: float, *, signed: bool = False) -> str:
-    """Format a USD dollar magnitude compactly ($B/$M/$K) without scientific notation or -0.00."""
-    if abs(val) < 0.5:
-        return "+$0" if signed else "$0"
-    sgn = ("+" if val > 0.0 else "-") if signed else ("-" if val < 0.0 else "")
-    abs_v = abs(val)
-    if abs_v >= 1_000_000_000.0:
-        return f"{sgn}${abs_v / 1_000_000_000.0:.2f}B"
-    if abs_v >= 1_000_000.0:
-        return f"{sgn}${abs_v / 1_000_000.0:.2f}M"
-    if abs_v >= 1_000.0:
-        return f"{sgn}${abs_v / 1_000.0:.1f}K"
-    return f"{sgn}${abs_v:.0f}"
+_fmt_compact_usd = format_compact_usd
 
 
 def _format_breadth_line(breadth: Any) -> str:

@@ -6,6 +6,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import (
+    CACHE_MACRO_BENCHMARKS_FILENAME,
     VENUE_RUNTIME_DIR_MAP,
     cache_symbol_variants,
     canonical_base_asset,
@@ -1023,6 +1024,23 @@ def evaluate_institutional_posture_divergence(
     )
 
 
+def format_compact_usd(val: Any, *, signed: bool = False) -> str:
+    """Format a USD dollar magnitude compactly ($B/$M/$K) without scientific notation or -0."""
+    vf = safe_float(val, default=0.0)
+    if vf is None or abs(vf) < 0.5:
+        return "+$0" if signed else "$0"
+    sgn = ("+" if vf > 0.0 else "-") if signed else ("-" if vf < 0.0 else "")
+    abs_v = abs(vf)
+    for threshold, suffix, decimals in (
+        (1_000_000_000.0, "B", 2),
+        (1_000_000.0, "M", 2),
+        (1_000.0, "K", 1),
+    ):
+        if abs_v >= threshold:
+            return f"{sgn}${abs_v / threshold:.{decimals}f}{suffix}"
+    return f"{sgn}${abs_v:.0f}"
+
+
 def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = True) -> str:
     """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / VIX / DXY / US10Y / IBIT / Coinbase Premium / DVOL & Options Surface)."""
     if not isinstance(data, dict):
@@ -1214,7 +1232,7 @@ def enrich_macro_benchmarks_live_state(
 
 def load_cached_macro_benchmarks(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load cached macro benchmarks snapshot from ``cache_dir`` without network I/O, enriched with live futures lead and BTC 24h delta."""
-    data, _ = _mss.read_first_cached_dict(cache_dir, "macro_benchmarks_files", "macro_benchmarks_collect.json")
+    data, _ = _mss.read_first_cached_dict(cache_dir, "macro_benchmarks_files", CACHE_MACRO_BENCHMARKS_FILENAME)
     return enrich_macro_benchmarks_live_state(data, cache_dir=cache_dir)
 
 
@@ -1238,6 +1256,7 @@ __all__ = [
     "enrich_sentiment_advisor_live_flow_divergence",
     "evaluate_institutional_posture_divergence",
     "format_bottom_structure_6h_parts",
+    "format_compact_usd",
     "format_equity_macro_regime_line",
     "format_macro_benchmarks_summary_line",
     "load_cached_macro_benchmarks",

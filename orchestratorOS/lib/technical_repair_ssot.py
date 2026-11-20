@@ -61,6 +61,7 @@ from core.config import parse_dotenv
 from core.llm_topics import resolve_configured_llm_models
 from instrument_registry import canonical_display_symbol, is_xstock_trading_enabled
 from intelligence.macro_sentiment_ssot import (
+    MACRO_SENSOR_HEALTH_KEYS,
     normalize_market_bias,
     normalize_recommended_action,
     normalize_risk_level,
@@ -2082,7 +2083,7 @@ def submit_supervisor_trading_decisions(
 def build_sensor_health_summary(sensors: Any) -> Dict[str, Any]:
     """Build sensor_health dictionary for SupervisorAuditReport."""
     summary: Dict[str, Any] = {
-        **{f"{k}_present": getattr(sensors, k, None) is not None for k in ("fear_greed", "market_breadth", "sentiment_advisor", "geopolitical_threat", "macro_benchmarks")},
+        **{f"{k}_present": getattr(sensors, k, None) is not None for k in MACRO_SENSOR_HEALTH_KEYS},
         **{f"{k}_count": len(getattr(sensors, k, None) or {}) for k in ("prices_and_trends", "microstructure", "active_heartbeats")},
     }
     sys_vpn = getattr(sensors, "system_and_vpn", None)

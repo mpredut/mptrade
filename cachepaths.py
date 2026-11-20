@@ -44,7 +44,14 @@ CACHE_ORDERBOOK_DEPTH_PREFIX = "orderbook_depth_"
 CACHE_DERIVATIVES_TELEMETRY_PREFIX = "derivatives_telemetry_"
 CACHE_WHALE_SNAPSHOT_PREFIX = "whale_snapshot_"
 CACHE_REALIZED_LIQUIDATIONS_FILENAME = "realized_liquidations.json"
+CACHE_FEAR_GREED_FILENAME = "fear_greed_collect.json"
+CACHE_MARKET_BREADTH_FILENAME = "market_breadth_collect.json"
+CACHE_MACRO_BENCHMARKS_FILENAME = "macro_benchmarks_collect.json"
 CACHE_MACRO_CALENDAR_FILENAME = "macro_calendar_collect.json"
+CACHE_MACRO_LEXICON_FILENAME = "macro_lexicon_collect.json"
+CACHE_NEWS_FEED_FILENAME = "news_feed_collect.json"
+CACHE_SENTIMENT_EVAL_FILENAME = "sentiment_eval.json"
+CACHE_GEOPOLITICAL_EVAL_FILENAME = "geopolitical_eval.json"
 
 CACHE_SPARSE_PRICE_PREFIX = "cache_sparse_price_"
 CACHE_SPARSE_PRICE_EXT = ".jsonl"
@@ -208,10 +215,14 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "macro": {
         "exact": (
-            "macro_lexicon_collect.json", "macro_benchmarks_collect.json",
-            "macro_calendar_collect.json",
-            "sentiment_eval.json", "geopolitical_eval.json",
-            "fear_greed_collect.json", "market_breadth_collect.json", "news_feed_collect.json",
+            CACHE_MACRO_LEXICON_FILENAME,
+            CACHE_MACRO_BENCHMARKS_FILENAME,
+            CACHE_MACRO_CALENDAR_FILENAME,
+            CACHE_SENTIMENT_EVAL_FILENAME,
+            CACHE_GEOPOLITICAL_EVAL_FILENAME,
+            CACHE_FEAR_GREED_FILENAME,
+            CACHE_MARKET_BREADTH_FILENAME,
+            CACHE_NEWS_FEED_FILENAME,
         ),
         "prefixes": (
             "fear_greed_", "market_breadth_", "macro_benchmarks_", "macro_calendar_",

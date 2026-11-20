@@ -15259,3 +15259,132 @@ def test_kinematic_reversal_overshoot_parity_and_filled_limit_px_precision():
     assert st_filled is not None
     assert st_filled["limit_px"] == pytest.approx(130.07)
     assert st_filled["fill_px"] == pytest.approx(130.070001)
+
+
+def test_faza3b_prep_ssot_seams_zero_behavior_change(tmp_path, monkeypatch):
+    """Verify Faza 3B infrastructure prep SSOT seams: fetch_public_text, macro cache constants/registry, breadth serializer, compact USD formatter, and collector/daemon lifecycle helpers."""
+    import botcore
+    import cachepaths
+    import core.http as core_http
+    import intelligence.macro_sentiment_ssot as mss
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+    from intelligence.sentiment.collectors.macro_telemetry_collector import (
+        MacroAndNewsSensorsCollector,
+        MacroEconomicCalendarCollector,
+        MacroTelemetryCollectorBase,
+    )
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import format_compact_usd
+    import intelligence.sentiment.sentiment_advisor as sa_mod
+    from orchestratorOS.lib.technical_repair_ssot import build_sensor_health_summary
+    from orchestratorOS.supervisor.prompt_sections import (
+        _fmt_liq_usd,
+        _fmt_signed_usd,
+        _resolve_macro_sensor,
+    )
+
+    # 1. Level-0 fetch_public_text + MacroTelemetryCollectorBase._resolve_text_fetch_fn monkeypatch resolution
+    monkeypatch.setattr(core_http, "fetch_public_bytes", lambda url, **_kw: f"CSV:{url}".encode("utf-8"))
+    assert botcore.fetch_public_text("https://example.test/etf.html") == "CSV:https://example.test/etf.html"
+    monkeypatch.setattr(mss, "fetch_public_text", lambda url, **_kw: f"PATCHED:{url}", raising=False)
+    assert MacroTelemetryCollectorBase._resolve_text_fetch_fn()("https://example.test/x") == "PATCHED:https://example.test/x"
+    assert MacroTelemetryCollectorBase._resolve_text_fetch_fn(lambda u, **_kw: f"EXPLICIT:{u}")("u") == "EXPLICIT:u"
+
+    # 2. Macro cache filename constants & declarative sensor registry parity
+    macro_exact = set(cachepaths.CACHEDB_SUBDOMAINS["macro"]["exact"])
+    for fname in (
+        cachepaths.CACHE_FEAR_GREED_FILENAME,
+        cachepaths.CACHE_MARKET_BREADTH_FILENAME,
+        cachepaths.CACHE_MACRO_BENCHMARKS_FILENAME,
+        cachepaths.CACHE_MACRO_CALENDAR_FILENAME,
+        cachepaths.CACHE_MACRO_LEXICON_FILENAME,
+        cachepaths.CACHE_NEWS_FEED_FILENAME,
+        cachepaths.CACHE_SENTIMENT_EVAL_FILENAME,
+        cachepaths.CACHE_GEOPOLITICAL_EVAL_FILENAME,
+    ):
+        assert fname in macro_exact
+    assert MacroAndNewsSensorsCollector._MACRO_SENSOR_CACHE_SPECS == mss.MACRO_SENSOR_CACHE_SPECS
+    assert mss.MACRO_SENSOR_HEALTH_KEYS == ("fear_greed", "market_breadth", "sentiment_advisor", "geopolitical_threat", "macro_benchmarks")
+    assert mss.CRYPTO_ONLY_MACRO_SENSOR_KEYS == frozenset({"fear_greed", "market_breadth", "sentiment_advisor"})
+    assert "macro_calendar" in mss.SYNTHETIC_MACRO_SENSOR_KEYS
+    sh = build_sensor_health_summary(SimpleNamespace(fear_greed={"value": 50}, macro_benchmarks={"items": {}}))
+    assert sh["fear_greed_present"] is True and sh["macro_benchmarks_present"] is True and sh["market_breadth_present"] is False
+
+    # 3. Unified MarketBreadthSnapshot serialization + fresh guard + cached macro snapshot loader
+    t_now = 1_795_200_000.0
+    mb_snap = mss.MarketBreadthSnapshot(
+        advance_ratio=0.62,
+        advancing_count=62,
+        declining_count=38,
+        total_count=100,
+        median_change_pct=1.25,
+        mean_change_pct=1.40,
+        dispersion_std=2.1,
+        regime="BULLISH_BREADTH",
+        top_gainers=(("BTCUSDT", 4.5),),
+        top_losers=(("XRPUSDT", -2.1),),
+        ts=t_now,
+        btc_price=95000.0,
+        btc_vol_share_pct=41.2,
+        rotation_regime="ALT_INFLOW_ROTATION",
+    )
+    mb_dict = mb_snap.to_cache_dict(now_ts=t_now)
+    assert mb_dict["total_symbols"] == 100 and mb_dict["total_count"] == 100
+    assert mb_dict["top_gainers"] == [["BTCUSDT", 4.5]] and mb_dict["rotation_regime"] == "ALT_INFLOW_ROTATION"
+    assert mb_dict == mss.serialize_market_breadth_snapshot(mb_snap, now_ts=t_now)
+    assert mss.resolve_macro_fresh_guard_sec(21600.0) == pytest.approx(1800.0)
+    assert mss.resolve_macro_fresh_guard_sec(3600.0) == pytest.approx(900.0)
+
+    # 4. Unified compact USD formatter across macro_telemetry_evaluator, sentiment_advisor, and prompt_sections
+    assert sa_mod._fmt_compact_usd is format_compact_usd
+    assert format_compact_usd(1_250_000_000.0) == "$1.25B"
+    assert format_compact_usd(-185_400_000.0, signed=True) == "-$185.40M"
+    assert format_compact_usd(312_500_000.0, signed=True) == "+$312.50M"
+    assert format_compact_usd(42_500.0) == "$42.5K"
+    assert format_compact_usd(-0.2, signed=True) == "+$0"
+    assert format_compact_usd(-0.2, signed=False) == "$0"
+    assert _fmt_liq_usd(2_500_000.0) == "$2.50M"
+    assert _fmt_signed_usd(-2_500_000.0) == "-$2.50M"
+
+    # 5. MacroTelemetryCollectorBase lifecycle helpers, backfill helper, GlobalTelemetryCollector wrapper & Section 1 resolver
+    cdir = tmp_path / "cachedb"
+    cdir.mkdir()
+    assert MacroEconomicCalendarCollector._build_fetch_deadline(None) is not None
+    assert MacroEconomicCalendarCollector._build_fetch_deadline(lambda *_a, **_kw: None) is None
+    assert MacroTelemetryCollectorBase._persist_snapshot(str(cdir), cachepaths.CACHE_MACRO_CALENDAR_FILENAME, {"ts": t_now, "events_ok": True}) is True
+    loaded_cal = mss.load_cached_macro_snapshot(str(cdir), "macro_calendar_files", cachepaths.CACHE_MACRO_CALENDAR_FILENAME)
+    assert isinstance(loaded_cal, dict) and loaded_cal["events_ok"] is True
+    assert MacroTelemetryCollectorBase._is_snapshot_within_age({"ts": t_now - 100.0}, now_ts=t_now, max_age_sec=300.0) is True
+    assert MacroTelemetryCollectorBase._is_snapshot_within_age({"ts": t_now - 300.0}, now_ts=t_now, max_age_sec=300.0, inclusive=False) is False
+    assert MacroTelemetryCollectorBase._is_snapshot_within_age({"ts": t_now - 300.0}, now_ts=t_now, max_age_sec=300.0, inclusive=True) is True
+
+    called = {"n": 0}
+
+    def _fake_live():
+        called["n"] += 1
+        return {"ts": t_now, "live": True}
+
+    kept = MacroAndNewsSensorsCollector._maybe_backfill_cached_macro_snapshot(
+        {"ts": t_now - 60.0}, "", now_ts=t_now, max_age_sec=300.0, collect_fn=_fake_live
+    )
+    assert kept == {"ts": t_now - 60.0} and called["n"] == 0
+    refreshed = MacroAndNewsSensorsCollector._maybe_backfill_cached_macro_snapshot(
+        {"ts": t_now - 600.0}, "", now_ts=t_now, max_age_sec=300.0, collect_fn=_fake_live
+    )
+    assert refreshed == {"ts": t_now, "live": True} and called["n"] == 1
+
+    gtc = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=str(cdir), skip_external=True, skip_news=True)
+    assert gtc._run_macro_snapshot_update(
+        label="test_macro",
+        now=t_now,
+        collect_fn=lambda eff: {"ts": eff, "ok": True},
+        is_valid_fn=lambda s: bool(s.get("ok")),
+    ) is True
+    assert gtc._run_macro_snapshot_update(
+        label="test_macro_err",
+        now=t_now,
+        collect_fn=lambda _eff: (_ for _ in ()).throw(RuntimeError("boom")),
+        is_valid_fn=lambda s: bool(s),
+    ) is False
+    assert _resolve_macro_sensor(SimpleNamespace(macro_benchmarks=None), {"macro_benchmarks": {"x": 1}}, "macro_benchmarks") == {"x": 1}
+    assert _resolve_macro_sensor(SimpleNamespace(macro_benchmarks=None), {}, "macro_benchmarks", ps={"macro_benchmarks": {"x": 2}}) == {"x": 2}
+
