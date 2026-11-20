@@ -9792,6 +9792,31 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
     assert auditor.call_count == 4
     assert "model" not in auditor.calls[-1][1]
 
+    # Cycle 6: Production cachedb/system/ subdomain routing resolves prev_eval cleanly (never falls into no_prev_eval)
+    monkeypatch.delenv("LLM_TOPIC_MODEL_AUTO_CRYPTOTRADE_EXECUTOR", raising=False)
+    sys_dir = cache_dir / "system"
+    sys_dir.mkdir(parents=True, exist_ok=True)
+    sub_eval_path = sys_dir / "auto_cryptotrade_executor_eval.json"
+    eval_path.replace(sub_eval_path)
+    assert not eval_path.exists()
+    cycle_clock[0] = t0 + 820.0
+    cycle_sensors[0] = SimpleNamespace(
+        **{**base_sensors.__dict__, "prices_and_trends": {"BTCUSDC": {"price": 91320.0}, "TAOUSDC": {"price": 300.2}}}
+    )
+    rep6 = reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
+    assert auditor.call_count == 4
+    assert rep6.model_used == "delta_gate_skip"
+
+    # Cycle 7: Near-zero primary quota (<= LLM_QUOTA_LOW_WARN_FRACTION) suppresses -high escalation to conserve pool
+    (sys_dir / "llm_quota_status.json").write_text(
+        json.dumps({"available_credits": 0.0, "buckets": {high_model: 0.075}}),
+        encoding="utf-8",
+    )
+    cycle_clock[0] = t0 + 860.0
+    reconciler.run_cycle(topic_key="auto_cryptotrade_executor", focus_symbols=["BTCUSDC"])
+    assert auditor.call_count == 5
+    assert "model" not in auditor.calls[-1][1]
+
 
 def test_proposal4a_structured_trade_plans_3c_memory_and_delta_gate_trigger():
     """Verify 4A invalidation_px/target_px extraction, Section 3C memory persistence, and Delta-Gate high-effort trigger."""

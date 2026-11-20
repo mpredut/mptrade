@@ -30,16 +30,19 @@ from botcore import (
     bool_env,
     canonical_topic_key,
     disable_auto_start_websockets_default,
+    float_env,
     is_us_rth_open,
     load_dotenv,
     load_key_value_conf,
     optional_env,
     parse_pos_cli_float,
     parse_symbol_list,
+    safe_float,
     safe_nonneg_float,
     safe_pos_float,
     topic_spec,
 )
+from cachepaths import resolve_cache_subdomain, resolve_cachedb_filepath
 
 disable_auto_start_websockets_default()
 from intelligence.macro_sentiment_ssot import (
@@ -82,6 +85,19 @@ load_dotenv()
 
 logger = logging.getLogger("orchestratorOS.supervisor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def _resolve_topic_cache_path(cache_dir: str, filename: str) -> str:
+    """Resolve ``filename`` inside ``cache_dir``, honoring ``cachedb/<subdomain>/`` routing."""
+    raw = os.path.join(cache_dir, filename)
+    resolved = str(resolve_cachedb_filepath(raw))
+    if os.path.exists(resolved) or os.path.exists(f"{resolved}.previous"):
+        return resolved
+    if sub := resolve_cache_subdomain(filename):
+        sub_path = os.path.join(cache_dir, sub, filename)
+        if os.path.exists(sub_path) or os.path.exists(f"{sub_path}.previous"):
+            return sub_path
+    return raw
 
 
 @dataclass
@@ -276,12 +292,33 @@ class AutonomousAIReconciler:
         ):
             high_model = (optional_env("LLM_HIGH_STAKE_MODEL", "") or "").strip()
             if high_model:
-                model_override = high_model
-                logger.info(
-                    "[%s] Escalating reasoning effort to %s for high-signal cycle.",
-                    resolved_topic,
-                    high_model,
+                low_warn = max(
+                    0.0, min(0.5, safe_float(float_env("LLM_QUOTA_LOW_WARN_FRACTION", default=0.10), 0.10) or 0.10)
                 )
+                quota_path = _resolve_topic_cache_path(self.cache_dir, "llm_quota_status.json")
+                q_snap = read_json_recovering(quota_path, default={}) if os.path.exists(quota_path) else {}
+                q_buckets = (
+                    q_snap.get("buckets")
+                    if isinstance(q_snap, dict) and isinstance(q_snap.get("buckets"), dict)
+                    else {}
+                )
+                q_cred = safe_float(q_snap.get("available_credits"), default=0.0) if isinstance(q_snap, dict) else 0.0
+                high_rem = safe_float(q_buckets.get(high_model), default=None) if high_model in q_buckets else None
+                if (q_cred or 0.0) <= 0.0 and high_rem is not None and high_rem <= low_warn:
+                    logger.info(
+                        "[%s] Suppressing high-effort escalation to %s (remaining quota %.1f%% <= %.1f%% warn threshold).",
+                        resolved_topic,
+                        high_model,
+                        high_rem * 100.0,
+                        low_warn * 100.0,
+                    )
+                else:
+                    model_override = high_model
+                    logger.info(
+                        "[%s] Escalating reasoning effort to %s for high-signal cycle.",
+                        resolved_topic,
+                        high_model,
+                    )
 
         call_timeout = safe_pos_float(getattr(spec, "default_timeout_sec", None), default=None) or (
             120.0 if spec.can_self_heal else 90.0
@@ -450,7 +487,12 @@ class AutonomousAIReconciler:
             min_move_pct = safe_pos_float(optional_env("AI_DELTA_GATE_MIN_PRICE_MOVE_PCT", ""), default=0.35) or 0.35
             high_effort_move_pct = safe_pos_float(optional_env("AI_HIGH_EFFORT_PRICE_MOVE_PCT", ""), default=1.0) or 1.0
             _read_json = _resolve_repair_json_reader(read_json_recovering)
-            prev_eval_raw = _read_json(self.state_file, default={}) if os.path.exists(self.state_file) else {}
+            eval_disk_path = _resolve_topic_cache_path(self.cache_dir, f"{topic_key}_eval.json")
+            prev_eval_raw = (
+                _read_json(eval_disk_path, default={})
+                if (os.path.exists(eval_disk_path) or os.path.exists(f"{eval_disk_path}.previous"))
+                else {}
+            )
             prev_eval = prev_eval_raw if isinstance(prev_eval_raw, dict) else {}
             ui_turn_pending = False
             if delta_gate_enabled:
