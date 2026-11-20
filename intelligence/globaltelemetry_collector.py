@@ -87,6 +87,7 @@ load_tradable_instruments = MarketDataProvider.load_tradable_instruments
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     InitialPricesAndTrendsCollector,
     collect_macro_benchmarks_snapshot,
+    collect_macro_calendar_snapshot,
 )
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
 from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
@@ -176,6 +177,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         fear_greed_interval_sec: Optional[float] = None,
         breadth_interval_sec: Optional[float] = None,
         macro_benchmarks_interval_sec: Optional[float] = None,
+        macro_calendar_interval_sec: Optional[float] = None,
         venue_balances_interval_sec: Optional[float] = None,
         skip_news: bool = False,
         skip_external: bool = False,
@@ -202,6 +204,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self._explicit_macro_benchmarks_interval = macro_benchmarks_interval_sec is not None
         self._default_macro_benchmarks_interval_sec = derived["macro_benchmarks_interval_sec"]
         self.macro_benchmarks_interval_sec = safe_pos_float(macro_benchmarks_interval_sec, derived["macro_benchmarks_interval_sec"])
+        self.macro_calendar_interval_sec = safe_pos_float(macro_calendar_interval_sec, derived["macro_calendar_interval_sec"])
         self.pretrade_caches_interval_sec = max(60.0, self.orderbook_interval_sec * 3.0)
         self.venue_balances_interval_sec = safe_pos_float(venue_balances_interval_sec, self.pretrade_caches_interval_sec)
         self.skip_news = _parse_bool_flag(skip_news, False)
@@ -233,6 +236,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self._last_fear_greed_ts: float = 0.0
         self._last_breadth_ts: float = 0.0
         self._last_macro_benchmarks_ts: float = 0.0
+        self._last_macro_calendar_ts: float = 0.0
         self._last_pretrade_caches_ts: float = 0.0
         self._last_venue_balances_ts: float = 0.0
         self._last_ai_impulse_ts: float = 0.0
@@ -442,6 +446,22 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             logger.warning("Failed updating macro benchmarks: %s", e)
         return False
 
+    def update_macro_calendar(self, force: bool = False, now: Optional[float] = None) -> bool:
+        """Fetch weekly USD macro releases and tracked/bellwether corporate earnings and persist to cachedb/."""
+        try:
+            eff_now = self._resolve_step_now(now)
+            snap = collect_macro_calendar_snapshot(self.cache_dir, timeout_sec=5.0, persist=True, now_ts=eff_now)
+            if isinstance(snap, dict) and (snap.get("events_ok") or snap.get("earnings_ok")):
+                logger.debug(
+                    "Macro calendar updated: %d events, %d earnings",
+                    len(snap.get("events") or ()),
+                    len(snap.get("earnings") or ()),
+                )
+                return True
+        except Exception as e:
+            logger.warning("Failed updating macro calendar: %s", e)
+        return False
+
     def update_pretrade_caches(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Producer refresh of pre-trade caches (per-symbol microstructure and once-per-round T212 position prices)."""
         try:
@@ -639,6 +659,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             fear_greed_updated=False,
             breadth_updated=False,
             macro_benchmarks_updated=False,
+            macro_calendar_updated=False,
             pretrade_caches_updated=False,
             venue_balances_updated=False,
         )
@@ -656,6 +677,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 (True, "_last_fear_greed_ts", self.fear_greed_interval_sec, self.update_fear_greed, (force,), 12.0, "fear_greed", "fear_greed_updated", None),
                 (True, "_last_breadth_ts", self.breadth_interval_sec, self.update_market_breadth, (force,), 15.0, "breadth", "breadth_updated", None),
                 (not self.skip_external, "_last_macro_benchmarks_ts", eff_mb_itv, self.update_macro_benchmarks, (force,), 15.0, "macro_benchmarks", "macro_benchmarks_updated", None),
+                (not self.skip_external and hasattr(self, "macro_calendar_interval_sec"), "_last_macro_calendar_ts", getattr(self, "macro_calendar_interval_sec", 21600.0), self.update_macro_calendar, (force,), 12.0, "macro_calendar", "macro_calendar_updated", None),
                 (not self.skip_external and bool(self._active_liquidation_collectors()), "_last_realized_liq_ts", getattr(self, "derivatives_interval_sec", 30.0), self.update_realized_liquidations, (force,), 5.0, "realized_liquidations", "realized_liquidations_updated", None),
                 (not self.skip_external, "_last_pretrade_caches_ts", self.pretrade_caches_interval_sec, self.update_pretrade_caches, (force,), 24.0, "pretrade_caches", "pretrade_caches_updated", None),
                 (not self.skip_external, "_last_venue_balances_ts", self.venue_balances_interval_sec, self.update_venue_balances, (force,), 18.0, "venue_balances", "venue_balances_updated", None),
@@ -712,6 +734,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 "fear_greed": self.fear_greed_interval_sec,
                 "breadth": self.breadth_interval_sec,
                 "macro_benchmarks": getattr(self, "macro_benchmarks_interval_sec", None),
+                "macro_calendar": getattr(self, "macro_calendar_interval_sec", None),
                 "venue_balances": getattr(self, "venue_balances_interval_sec", None),
             },
             logger_inst=logger,

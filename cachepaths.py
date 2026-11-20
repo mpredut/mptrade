@@ -44,6 +44,7 @@ CACHE_ORDERBOOK_DEPTH_PREFIX = "orderbook_depth_"
 CACHE_DERIVATIVES_TELEMETRY_PREFIX = "derivatives_telemetry_"
 CACHE_WHALE_SNAPSHOT_PREFIX = "whale_snapshot_"
 CACHE_REALIZED_LIQUIDATIONS_FILENAME = "realized_liquidations.json"
+CACHE_MACRO_CALENDAR_FILENAME = "macro_calendar_collect.json"
 
 CACHE_SPARSE_PRICE_PREFIX = "cache_sparse_price_"
 CACHE_SPARSE_PRICE_EXT = ".jsonl"
@@ -208,11 +209,12 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     "macro": {
         "exact": (
             "macro_lexicon_collect.json", "macro_benchmarks_collect.json",
+            "macro_calendar_collect.json",
             "sentiment_eval.json", "geopolitical_eval.json",
             "fear_greed_collect.json", "market_breadth_collect.json", "news_feed_collect.json",
         ),
         "prefixes": (
-            "fear_greed_", "market_breadth_", "macro_benchmarks_",
+            "fear_greed_", "market_breadth_", "macro_benchmarks_", "macro_calendar_",
             "news_feed_", "geopolitical_", "macro_lexicon_", "sentiment_eval.",
         ),
         "suffixes": (),

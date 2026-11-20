@@ -289,6 +289,32 @@ def _format_macro_calendar_line(mc: Any) -> Optional[str]:
     if mc.get("upcoming_windows"):
         up_lbl = "upcoming" if is_confirmed_macro else "routine_session_transitions"
         mc_parts.append(f'{up_lbl}={mc.get("upcoming_windows")}')
+    if _parse_bool_flag(mc.get("pre_event_risk_window"), False) and mc.get("pre_event_risk_reason"):
+        mc_parts.append(f'PRE_EVENT_RISK="{mc.get("pre_event_risk_reason")}"')
+    if isinstance(conf_today := mc.get("confirmed_events_today"), list) and conf_today:
+        ev_sums = [
+            str(ev.get("summary")).strip()
+            for ev in conf_today[:5]
+            if isinstance(ev, dict) and str(ev.get("summary") or "").strip()
+        ]
+        if ev_sums:
+            mc_parts.append(f"confirmed_macro_today={ev_sums}")
+    if isinstance(er_today := mc.get("earnings_today"), list) and er_today:
+        er_sums = [
+            str(er.get("summary")).strip()
+            for er in er_today[:5]
+            if isinstance(er, dict) and str(er.get("summary") or "").strip()
+        ]
+        if er_sums:
+            mc_parts.append(f"earnings_today={er_sums}")
+    if isinstance(up_er := mc.get("upcoming_earnings"), list) and up_er:
+        up_er_sums = [
+            f"{er.get('date_iso')} {er.get('summary')}".strip()
+            for er in up_er[:4]
+            if isinstance(er, dict) and str(er.get("summary") or "").strip()
+        ]
+        if up_er_sums:
+            mc_parts.append(f"upcoming_earnings={up_er_sums}")
     if mc.get("detected_macro_headlines"):
         mc_parts.append(f'live_macro_headlines={mc.get("detected_macro_headlines")}')
     if mc.get("live_macro_prints"):

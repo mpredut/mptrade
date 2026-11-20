@@ -14152,6 +14152,231 @@ def test_faza2_prep_seams_zero_behavior_change(tmp_path):
     assert cal_line is not None and 'next_routine_session_window="US Wall Street Cash Open at 16:30 EET in 10m"' in cal_line
 
 
+def test_faza2_proactive_macro_calendar_earnings_and_pretrade_catalyst(tmp_path, monkeypatch):
+    """Verify Faza 2 end-to-end: ForexFactory + Nasdaq collector, partial-failure resilience, static BLS/BEA/FOMC
+    dedup & DST accuracy, pre_event_risk_window, Section 1 rendering, Pre-Trade catalyst, and GTC daemon step."""
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+    from intelligence.macro.calendar_ssot import (
+        format_pretrade_macro_catalyst_line,
+        resolve_macro_economic_calendar,
+    )
+    from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
+    from intelligence.sentiment.collectors.macro_telemetry_collector import (
+        MacroAndNewsSensorsCollector,
+        collect_macro_calendar_snapshot,
+    )
+    from orchestratorOS.supervisor.prompt_sections import _format_macro_calendar_line
+
+    # 1. Interval scales mathematically from T_exec (60 * 360s = 21600s = 6h)
+    assert resolve_derived_telemetry_intervals(executor_interval_sec=360.0)["macro_calendar_interval_sec"] == 21600.0
+
+    # 2. MacroEconomicCalendarCollector filters ForexFactory (USD High + whitelisted Medium; drops EUR & non-whitelisted Medium)
+    #    and Nasdaq earnings (tracked holdings + bellwethers; drops noise symbols; maps BMO/AMC/TBD)
+    # Test date: Wed 2026-11-18 13:00 UTC (08:00 EST / 15:00 EET — 30m before 08:30 EST Core CPI)
+    now_cpi_pre = datetime(2026, 11, 18, 13, 0, 0, tzinfo=timezone.utc).timestamp()
+    ff_payload = [
+        {
+            "title": "Core CPI m/m",
+            "country": "USD",
+            "date": "2026-11-18T08:30:00-05:00",
+            "impact": "High",
+            "forecast": "0.3%",
+            "previous": "0.2%",
+        },
+        {
+            "title": "Unemployment Claims",
+            "country": "USD",
+            "date": "2026-11-19T08:30:00-05:00",
+            "impact": "Medium",
+            "forecast": "215K",
+            "previous": "210K",
+        },
+        {
+            "title": "Natural Gas Storage",
+            "country": "USD",
+            "date": "2026-11-19T10:30:00-05:00",
+            "impact": "Medium",
+            "forecast": "10B",
+            "previous": "20B",
+        },
+        {
+            "title": "German Flash PMI",
+            "country": "EUR",
+            "date": "2026-11-18T03:30:00-05:00",
+            "impact": "High",
+            "forecast": "48.0",
+            "previous": "47.5",
+        },
+    ]
+    nq_by_date = {
+        "2026-11-18": {
+            "data": {
+                "rows": [
+                    {"symbol": "NVDA", "name": "NVIDIA Corp", "time": "time-after-hours", "epsForecast": "$0.85", "fiscalQuarterEnding": "Oct/2026"},
+                    {"symbol": "NOISE", "name": "Tiny Co", "time": "time-pre-market", "epsForecast": "$0.10"},
+                ]
+            }
+        },
+        "2026-11-19": {
+            "data": {
+                "rows": [
+                    {"symbol": "AAPL", "name": "Apple Inc", "time": "time-after-hours", "epsForecast": "$1.62", "fiscalQuarterEnding": "Sep/2026"},
+                ]
+            }
+        },
+    }
+
+    def _fake_fetch(url, **_kw):
+        if "ff_calendar" in url:
+            return ff_payload
+        for d_iso, body in nq_by_date.items():
+            if d_iso in url:
+                return body
+        return None
+
+    cdir = tmp_path / "cachedb"
+    (cdir / "macro").mkdir(parents=True, exist_ok=True)
+    snap = collect_macro_calendar_snapshot(
+        str(cdir),
+        now_ts=now_cpi_pre,
+        persist=True,
+        fetch_fn=_fake_fetch,
+        tracked_equity_tickers=["NVDA", "SPCX"],
+    )
+    assert snap is not None and snap["events_ok"] is True and snap["earnings_ok"] is True
+    ev_titles = [e["title"] for e in snap["events"]]
+    assert ev_titles == ["Core CPI m/m", "Unemployment Claims"]
+    assert [e["symbol"] for e in snap["earnings"]] == ["NVDA", "AAPL"]
+    assert snap["earnings"][0]["timing"] == "AMC" and snap["earnings"][0]["is_portfolio_holding"] is True
+    assert snap["earnings"][1]["is_portfolio_holding"] is False
+    assert (cdir / "macro" / "macro_calendar_collect.json").exists()
+
+    # Partial failure (Nasdaq down, ForexFactory up) preserves prior fresh earnings from cache
+    def _ff_only_fetch(url, **_kw):
+        if "ff_calendar" in url:
+            return ff_payload
+        raise RuntimeError("nasdaq timeout")
+
+    snap_partial = collect_macro_calendar_snapshot(
+        str(cdir),
+        now_ts=now_cpi_pre + 600.0,
+        persist=True,
+        fetch_fn=_ff_only_fetch,
+        tracked_equity_tickers=["NVDA", "SPCX"],
+    )
+    assert snap_partial is not None and snap_partial["events_ok"] is True and snap_partial["earnings_ok"] is False
+    assert [e["symbol"] for e in snap_partial["earnings"]] == ["NVDA", "AAPL"]
+
+    # Complete failure returns None without clobbering existing cached file
+    assert (
+        collect_macro_calendar_snapshot(
+            str(cdir),
+            now_ts=now_cpi_pre + 1200.0,
+            persist=True,
+            fetch_fn=lambda _u, **_kw: (_ for _ in ()).throw(RuntimeError("offline")),
+        )
+        is None
+    )
+
+    # 3. Pure resolver merges live snapshot, triggers pre_event_risk_window (30m <= 45m), replaces generic 08:30 slot, renders Section 1
+    cal = resolve_macro_economic_calendar(
+        now_ts=now_cpi_pre,
+        calendar_snapshot=snap,
+        tracked_equity_tickers=["NVDA", "SPCX"],
+    )
+    assert cal["macro_release_confirmed"] is True
+    assert cal["next_event_is_high_impact"] is True
+    assert "Core CPI m/m [HIGH] (fc=0.3%, prev=0.2%) at 15:30 EET in 30m" == cal["next_high_impact_event"]
+    assert cal["pre_event_risk_window"] is True
+    assert "Core CPI m/m [HIGH] in 30m (fc=0.3%, prev=0.2%)" == cal["pre_event_risk_reason"]
+    assert len(cal["confirmed_events_today"]) == 1
+    assert len(cal["earnings_today"]) == 1 and cal["earnings_today"][0]["symbol"] == "NVDA"
+    assert len(cal["upcoming_earnings"]) == 1 and cal["upcoming_earnings"][0]["symbol"] == "AAPL"
+    assert all("Pre-Market Macro & Treasury Liquidity Window" not in w for w in cal["upcoming_windows"][:2])
+
+    sec1_line = _format_macro_calendar_line(cal)
+    assert sec1_line is not None
+    assert 'PRE_EVENT_RISK="Core CPI m/m [HIGH] in 30m (fc=0.3%, prev=0.2%)"' in sec1_line
+    assert "confirmed_macro_today=" in sec1_line
+    assert "earnings_today=['NVDA (AMC, eps_fc=$0.85) [HOLDING]']" in sec1_line
+    assert "upcoming_earnings=['2026-11-19 AAPL (AMC, eps_fc=$1.62)']" in sec1_line
+
+    # 4. Portfolio-holding earnings within 60m of AMC (15:30 EST = 20:30 UTC -> 35m before 16:05 EST AMC) triggers pre_event_risk_window
+    now_nvda_amc = datetime(2026, 11, 18, 20, 30, 0, tzinfo=timezone.utc).timestamp()
+    cal_amc = resolve_macro_economic_calendar(
+        now_ts=now_nvda_amc,
+        calendar_snapshot=snap,
+        tracked_equity_tickers=["NVDA"],
+    )
+    assert cal_amc["pre_event_risk_window"] is True
+    assert "NVDA earnings AMC in 35m" == cal_amc["pre_event_risk_reason"]
+    cat_nvda = format_pretrade_macro_catalyst_line(cal_amc, symbol="NVDA_US_EQ")
+    assert cat_nvda == "PRE_EVENT_RISK: NVDA earnings AMC in 35m"
+
+    # 5. Static BLS/BEA/FOMC fallback handles US/EU DST mismatch week accurately (2026-03-18 FOMC: 14:00 EDT = 20:00 EET!)
+    ts_dst_fomc = datetime(2026, 3, 18, 17, 30, 0, tzinfo=timezone.utc).timestamp()  # 13:30 EDT / 19:30 EET (30m before 14:00 EDT)
+    cal_dst = resolve_macro_economic_calendar(now_ts=ts_dst_fomc)
+    assert cal_dst["fomc_today"] is True
+    assert "FOMC Rate Decision [HIGH] at 20:00 EET in 30m" == cal_dst["next_high_impact_event"]
+    assert cal_dst["pre_event_risk_window"] is True
+    assert all("Afternoon Treasury Auction" not in w for w in cal_dst["upcoming_windows"])
+
+    # Static BLS CPI fallback (2026-11-10) deduplicates cleanly when live ForexFactory CPI exists on same date
+    ts_static_cpi = datetime(2026, 11, 10, 13, 0, 0, tzinfo=timezone.utc).timestamp()
+    cal_static_cpi = resolve_macro_economic_calendar(now_ts=ts_static_cpi)
+    assert cal_static_cpi["pre_event_risk_window"] is True
+    assert "US CPI Inflation Report [HIGH] in 30m" == cal_static_cpi["pre_event_risk_reason"]
+    cal_dedup_cpi = resolve_macro_economic_calendar(
+        now_ts=ts_static_cpi,
+        calendar_snapshot={
+            "ts": ts_static_cpi,
+            "events": [
+                {
+                    "ts": datetime(2026, 11, 10, 13, 30, 0, tzinfo=timezone.utc).timestamp(),
+                    "date_iso": "2026-11-10",
+                    "ny_time": "08:30",
+                    "title": "CPI y/y",
+                    "impact": "HIGH",
+                    "forecast": "2.8%",
+                    "previous": "2.9%",
+                }
+            ],
+        },
+    )
+    assert len(cal_dedup_cpi["confirmed_events_today"]) == 1
+    assert cal_dedup_cpi["confirmed_events_today"][0]["title"] == "CPI y/y"
+
+    # 6. MacroAndNewsSensorsCollector + Pre-Trade MacroPillarsStage + GlobalTelemetryCollector integration
+    sensors, _ = MacroAndNewsSensorsCollector(start_sync=False).collect(
+        str(cdir), now_ts=now_cpi_pre, allow_network=False, persist=False
+    )
+    assert sensors["macro_calendar"]["pre_event_risk_window"] is True
+    assert sensors["macro_calendar"]["earnings_today"][0]["symbol"] == "NVDA"
+
+    pt_cal = collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(cdir), now_ts=now_cpi_pre)
+    assert "Upcoming Macro / Earnings Catalyst" in pt_cal
+    assert "PRE_EVENT_RISK: Core CPI m/m [HIGH] in 30m" in pt_cal["Upcoming Macro / Earnings Catalyst"]
+    assert "Earnings TODAY: NVDA (AMC, eps_fc=$0.85) [HOLDING]" in pt_cal["Upcoming Macro / Earnings Catalyst"]
+    # Empty cache dir remains unavailable (static dates alone must not fabricate a populated snapshot)
+    empty_dir = tmp_path / "empty_cachedb"
+    empty_dir.mkdir()
+    assert collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(empty_dir), now_ts=ts_static_cpi) == {}
+
+    # GlobalTelemetryCollector.update_macro_calendar persists snapshot cleanly
+    monkeypatch.setattr(
+        "intelligence.globaltelemetry_collector.collect_macro_calendar_snapshot",
+        lambda cache_dir, **_kw: collect_macro_calendar_snapshot(
+            cache_dir, now_ts=now_cpi_pre, persist=True, fetch_fn=_fake_fetch, tracked_equity_tickers=["NVDA"]
+        ),
+    )
+    gtc_dir = tmp_path / "gtc_cache"
+    (gtc_dir / "macro").mkdir(parents=True, exist_ok=True)
+    gtc = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=str(gtc_dir), skip_external=True, skip_news=True)
+    assert gtc.update_macro_calendar(force=True, now=now_cpi_pre) is True
+    assert (gtc_dir / "macro" / "macro_calendar_collect.json").exists()
+
+
+
 
 
 

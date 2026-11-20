@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import importlib
 import re
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from intelligence.macro_sentiment_ssot import FearGreedSnapshot, MarketBreadthSnapshot
@@ -25,6 +25,7 @@ from botcore import (
     safe_pos_float,
     split_csv,
 )
+from cachepaths import canonical_base_asset
 
 _MACRO_ACTUAL_RE = re.compile(
     r"\b(?:actual|prints?|comes?\s+in\s+at|rises?\s+to|falls?\s+to|at)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)(?![\d:.])\s*(%|k\b)?"
@@ -370,23 +371,381 @@ def _collect_routine_session_windows(
     return active_window, active_window_is_high_impact, upcoming
 
 
+_STATIC_TIER1_MACRO_SCHEDULES: Tuple[Tuple[str, int, int, str, str, str], ...] = (
+    ("us_cpi_release_dates", 8, 30, "US CPI Inflation Report", "cpi", "static_bls"),
+    ("us_nfp_release_dates", 8, 30, "US Non-Farm Payrolls (NFP)", "nfp", "static_bls"),
+    ("us_pce_release_dates", 8, 30, "US Core PCE Price Index", "pce", "static_bea"),
+    ("fomc_decision_dates", 14, 0, "FOMC Rate Decision", "fomc", "static_fed"),
+)
+
+
+def _classify_macro_event_category(title: str) -> str:
+    low = str(title or "").strip().lower()
+    if not low:
+        return ""
+    if "fomc" in low or "federal funds rate" in low or "interest rate decision" in low:
+        return "fomc"
+    if "cpi" in low or "consumer price" in low:
+        return "cpi"
+    if "non-farm" in low or "nonfarm" in low or "payrolls" in low:
+        return "nfp"
+    if "pce" in low:
+        return "pce"
+    return ""
+
+
+def _parse_iso_date_parts(date_str: str) -> Optional[Tuple[int, int, int]]:
+    parts = str(date_str or "").strip().split("-")
+    if len(parts) != 3:
+        return None
+    yr = exact_int(parts[0], default=None)
+    mo = exact_int(parts[1], default=None)
+    dy = exact_int(parts[2], default=None)
+    if yr is None or mo is None or dy is None or not (1970 <= yr <= 2100 and 1 <= mo <= 12 and 1 <= dy <= 31):
+        return None
+    return yr, mo, dy
+
+
+def _format_confirmed_event_meta(forecast: str = "", previous: str = "") -> str:
+    bits = [b for b in (f"fc={forecast}" if forecast else "", f"prev={previous}" if previous else "") if b]
+    return f" ({', '.join(bits)})" if bits else ""
+
+
+def _format_confirmed_event_summary(
+    title: str,
+    impact: str,
+    eet_time: str,
+    forecast: str = "",
+    previous: str = "",
+) -> str:
+    return f"{title} [{impact}] at {eet_time}{_format_confirmed_event_meta(forecast, previous)}"
+
+
+def _format_confirmed_event_inline(ev: Mapping[str, Any]) -> str:
+    title = str(ev.get("title") or "").strip()
+    impact = str(ev.get("impact") or "HIGH").strip().upper()
+    fc = str(ev.get("forecast") or "").strip()
+    prev = str(ev.get("previous") or "").strip()
+    return f"{title} [{impact}]{_format_confirmed_event_meta(fc, prev)}"
+
+
+def _merge_confirmed_macro_events(
+    ts: float,
+    dt_eet: datetime,
+    dt_ny: datetime,
+    calendar_snapshot: Optional[Mapping[str, Any]],
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """Merge fresh live economic calendar events with static Tier-1 BLS/BEA/FOMC release dates."""
+    tz_eet = dt_eet.tzinfo or timezone.utc
+    tz_ny = dt_ny.tzinfo or timezone.utc
+    tz_eet_abbr = dt_eet.strftime("%Z") or "EET"
+    tz_ny_abbr = dt_ny.strftime("%Z") or "EST"
+    horizon_start_date = (dt_ny - timedelta(days=1)).date()
+    horizon_end_date = (dt_ny + timedelta(days=4)).date()
+
+    merged: List[Dict[str, Any]] = []
+    live_cat_dates: set[Tuple[str, str]] = set()
+    seen_ts_titles: set[Tuple[int, str]] = set()
+    has_live_feed = False
+
+    if isinstance(calendar_snapshot, Mapping):
+        snap_ts = normalize_epoch_sec(calendar_snapshot.get("ts"), default=0.0) or 0.0
+        snap_fresh = snap_ts <= 0.0 or (ts - snap_ts) <= (72.0 * 3600.0)
+        raw_events = calendar_snapshot.get("events") if snap_fresh else None
+        if isinstance(raw_events, (list, tuple)):
+            for raw_ev in raw_events:
+                if not isinstance(raw_ev, Mapping):
+                    continue
+                title = str(raw_ev.get("title") or "").strip()
+                if not title:
+                    continue
+                impact_u = str(raw_ev.get("impact") or "HIGH").strip().upper()
+                if impact_u not in ("HIGH", "MEDIUM"):
+                    continue
+                ev_ts = normalize_epoch_sec(raw_ev.get("ts"), default=None)
+                if ev_ts is None:
+                    d_parts = _parse_iso_date_parts(str(raw_ev.get("date_iso") or ""))
+                    ny_hm = str(raw_ev.get("ny_time") or "").strip().split(":")
+                    if d_parts is not None and len(ny_hm) >= 2:
+                        hh_i = exact_int(ny_hm[0], default=None)
+                        mm_i = exact_int(ny_hm[1], default=None)
+                        if hh_i is not None and mm_i is not None:
+                            try:
+                                ev_ts = datetime(d_parts[0], d_parts[1], d_parts[2], hh_i, mm_i, tzinfo=tz_ny).timestamp()
+                            except Exception:
+                                ev_ts = None
+                if ev_ts is None or ev_ts <= 0.0:
+                    continue
+                ev_ny = datetime.fromtimestamp(ev_ts, tz=tz_ny)
+                if not (horizon_start_date <= ev_ny.date() <= horizon_end_date):
+                    continue
+                ev_eet = datetime.fromtimestamp(ev_ts, tz=tz_eet)
+                dedup_k = (round(ev_ts / 60.0), title.lower())
+                if dedup_k in seen_ts_titles:
+                    continue
+                seen_ts_titles.add(dedup_k)
+                has_live_feed = True
+                ny_date_iso = ev_ny.date().isoformat()
+                cat = _classify_macro_event_category(title)
+                if cat:
+                    live_cat_dates.add((ny_date_iso, cat))
+                fc = str(raw_ev.get("forecast") or "").strip()
+                prev = str(raw_ev.get("previous") or "").strip()
+                eet_lbl = f"{ev_eet.strftime('%H:%M')} {ev_eet.strftime('%Z') or tz_eet_abbr}"
+                ny_lbl = f"{ev_ny.strftime('%H:%M')} {ev_ny.strftime('%Z') or tz_ny_abbr}"
+                merged.append(
+                    {
+                        "title": title,
+                        "impact": impact_u,
+                        "category": cat,
+                        "date_iso": ny_date_iso,
+                        "eet_date_iso": ev_eet.date().isoformat(),
+                        "eet_time": eet_lbl,
+                        "ny_time": ny_lbl,
+                        "ts": round(ev_ts, 3),
+                        "minutes_until": round((ev_ts - ts) / 60.0, 1),
+                        "forecast": fc,
+                        "previous": prev,
+                        "source": str(raw_ev.get("source") or "forexfactory").strip(),
+                        "summary": _format_confirmed_event_summary(title, impact_u, eet_lbl, fc, prev),
+                    }
+                )
+
+    for cfg_key, ny_hh, ny_mm, static_title, cat, src_lbl in _STATIC_TIER1_MACRO_SCHEDULES:
+        for d_iso in split_csv(_ssot._cfg_str("sessions", cfg_key)):
+            d_parts = _parse_iso_date_parts(d_iso)
+            if d_parts is None:
+                continue
+            try:
+                ev_ny = datetime(d_parts[0], d_parts[1], d_parts[2], ny_hh, ny_mm, tzinfo=tz_ny)
+            except Exception:
+                continue
+            if not (horizon_start_date <= ev_ny.date() <= horizon_end_date):
+                continue
+            norm_iso = ev_ny.date().isoformat()
+            if (norm_iso, cat) in live_cat_dates:
+                continue
+            ev_ts = ev_ny.timestamp()
+            dedup_k = (round(ev_ts / 60.0), static_title.lower())
+            if dedup_k in seen_ts_titles:
+                continue
+            seen_ts_titles.add(dedup_k)
+            ev_eet = datetime.fromtimestamp(ev_ts, tz=tz_eet)
+            eet_lbl = f"{ev_eet.strftime('%H:%M')} {ev_eet.strftime('%Z') or tz_eet_abbr}"
+            ny_lbl = f"{ev_ny.strftime('%H:%M')} {ev_ny.strftime('%Z') or tz_ny_abbr}"
+            merged.append(
+                {
+                    "title": static_title,
+                    "impact": "HIGH",
+                    "category": cat,
+                    "date_iso": norm_iso,
+                    "eet_date_iso": ev_eet.date().isoformat(),
+                    "eet_time": eet_lbl,
+                    "ny_time": ny_lbl,
+                    "ts": round(ev_ts, 3),
+                    "minutes_until": round((ev_ts - ts) / 60.0, 1),
+                    "forecast": "",
+                    "previous": "",
+                    "source": src_lbl,
+                    "summary": _format_confirmed_event_summary(static_title, "HIGH", eet_lbl),
+                }
+            )
+
+    merged.sort(key=lambda e: (e["ts"], 0 if e["impact"] == "HIGH" else 1, e["title"]))
+    return merged, has_live_feed
+
+
+def _extract_scheduled_earnings(
+    ts: float,
+    dt_ny: datetime,
+    calendar_snapshot: Optional[Mapping[str, Any]],
+    tracked_equity_tickers: Optional[Sequence[str]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Extract today's and upcoming corporate earnings from a cached calendar snapshot."""
+    if not isinstance(calendar_snapshot, Mapping):
+        return [], []
+    snap_ts = normalize_epoch_sec(calendar_snapshot.get("ts"), default=0.0) or 0.0
+    if snap_ts > 0.0 and (ts - snap_ts) > (48.0 * 3600.0):
+        return [], []
+    raw_earnings = calendar_snapshot.get("earnings")
+    if not isinstance(raw_earnings, (list, tuple)) or not raw_earnings:
+        return [], []
+
+    tracked_src = (
+        tracked_equity_tickers
+        if tracked_equity_tickers is not None
+        else _ssot.get_tracked_equity_base_tickers(include_tokenized=True)
+    )
+    tracked_set = {str(t or "").strip().upper() for t in tracked_src if str(t or "").strip()}
+    today_ny_iso = dt_ny.date().isoformat()
+    tz_ny = dt_ny.tzinfo or timezone.utc
+    earnings_today: List[Dict[str, Any]] = []
+    upcoming_earnings: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, str]] = set()
+
+    for raw_er in raw_earnings:
+        if not isinstance(raw_er, Mapping):
+            continue
+        sym = str(raw_er.get("symbol") or "").strip().upper()
+        d_iso = str(raw_er.get("date_iso") or "").strip()
+        if not sym or not d_iso or d_iso < today_ny_iso or (d_iso, sym) in seen:
+            continue
+        seen.add((d_iso, sym))
+        timing = str(raw_er.get("timing") or "TBD").strip().upper()
+        if timing not in ("BMO", "AMC", "TBD"):
+            timing = "TBD"
+        est_ts = normalize_epoch_sec(raw_er.get("est_ts"), default=None)
+        if est_ts is None and timing in ("BMO", "AMC"):
+            d_parts = _parse_iso_date_parts(d_iso)
+            if d_parts is not None:
+                est_hh, est_mm = (8, 0) if timing == "BMO" else (16, 5)
+                try:
+                    est_ts = datetime(d_parts[0], d_parts[1], d_parts[2], est_hh, est_mm, tzinfo=tz_ny).timestamp()
+                except Exception:
+                    est_ts = None
+        eps_fc = str(raw_er.get("eps_forecast") or "").strip()
+        is_holding = _parse_bool_flag(raw_er.get("is_portfolio_holding"), False) or (sym in tracked_set)
+        bits = [timing]
+        if eps_fc:
+            bits.append(f"eps_fc={eps_fc}")
+        hold_tag = " [HOLDING]" if is_holding else ""
+        entry: Dict[str, Any] = {
+            "symbol": sym,
+            "name": str(raw_er.get("name") or "").strip(),
+            "date_iso": d_iso,
+            "timing": timing,
+            "est_ts": round(est_ts, 3) if est_ts is not None else None,
+            "minutes_until": round((est_ts - ts) / 60.0, 1) if est_ts is not None else None,
+            "eps_forecast": eps_fc,
+            "is_portfolio_holding": is_holding,
+            "source": str(raw_er.get("source") or "nasdaq").strip(),
+            "summary": f"{sym} ({', '.join(bits)}){hold_tag}",
+        }
+        if d_iso == today_ny_iso:
+            earnings_today.append(entry)
+        else:
+            upcoming_earnings.append(entry)
+
+    def _er_sort_key(e: Mapping[str, Any]) -> Tuple[str, int, int, str]:
+        return (
+            str(e["date_iso"]),
+            0 if e["is_portfolio_holding"] else 1,
+            0 if e["timing"] == "BMO" else (1 if e["timing"] == "AMC" else 2),
+            str(e["symbol"]),
+        )
+
+    earnings_today.sort(key=_er_sort_key)
+    upcoming_earnings.sort(key=_er_sort_key)
+    return earnings_today[:8], upcoming_earnings[:8]
+
+
+def _evaluate_pre_event_risk_window(
+    merged_events: Sequence[Mapping[str, Any]],
+    earnings_today: Sequence[Mapping[str, Any]],
+) -> Tuple[bool, Optional[str]]:
+    """Return ``(is_active, reason)`` for imminent HIGH-impact macro prints (<=45m) or holding earnings (<=60m)."""
+    for ev in merged_events:
+        if ev.get("impact") != "HIGH":
+            continue
+        m_until = safe_float(ev.get("minutes_until"), None)
+        if m_until is not None and -20.0 <= m_until <= 45.0:
+            meta_sfx = _format_confirmed_event_meta(
+                str(ev.get("forecast") or "").strip(),
+                str(ev.get("previous") or "").strip(),
+            )
+            if m_until <= 0.0:
+                return True, f"{ev['title']} [HIGH] ACTIVE ({abs(round(m_until))}m ago){meta_sfx}"
+            return True, f"{ev['title']} [HIGH] in {round(m_until)}m{meta_sfx}"
+    for er in earnings_today:
+        if not er.get("is_portfolio_holding"):
+            continue
+        m_until = safe_float(er.get("minutes_until"), None)
+        if m_until is not None and -30.0 <= m_until <= 60.0:
+            if m_until <= 0.0:
+                return True, f"{er['symbol']} earnings {er['timing']} ACTIVE ({abs(round(m_until))}m ago)"
+            return True, f"{er['symbol']} earnings {er['timing']} in {round(m_until)}m"
+    return False, None
+
+
+def format_pretrade_macro_catalyst_line(cal: Any, *, symbol: str = "") -> Optional[str]:
+    """Format a compact actionable catalyst line for Pre-Trade telemetry, or None when quiet."""
+    if not isinstance(cal, Mapping):
+        return None
+    parts: List[str] = []
+    pre_risk = bool(_parse_bool_flag(cal.get("pre_event_risk_window"), False))
+    pre_reason = str(cal.get("pre_event_risk_reason") or "").strip()
+    if pre_risk and pre_reason:
+        parts.append(f"PRE_EVENT_RISK: {pre_reason}")
+
+    sym_base = canonical_base_asset(symbol) if symbol else ""
+    if sym_base:
+        today_match = next(
+            (
+                er
+                for er in (cal.get("earnings_today") or ())
+                if isinstance(er, Mapping) and str(er.get("symbol") or "").strip().upper() == sym_base
+            ),
+            None,
+        )
+        if today_match is not None:
+            if not (pre_risk and f"{sym_base} earnings" in pre_reason):
+                parts.append(f"Earnings TODAY: {today_match.get('summary')}")
+        else:
+            up_match = next(
+                (
+                    er
+                    for er in (cal.get("upcoming_earnings") or ())
+                    if isinstance(er, Mapping) and str(er.get("symbol") or "").strip().upper() == sym_base
+                ),
+                None,
+            )
+            if up_match is not None:
+                parts.append(f"Upcoming Earnings: {up_match.get('date_iso')} {up_match.get('summary')}")
+
+    if not pre_risk:
+        next_ev = cal.get("next_confirmed_event")
+        if isinstance(next_ev, Mapping) and str(next_ev.get("impact") or "").upper() == "HIGH":
+            m_until = safe_float(next_ev.get("minutes_until"), None)
+            if m_until is not None and 0.0 <= m_until <= 240.0 and next_ev.get("summary"):
+                parts.append(f"Next Macro: {next_ev['summary']} in {_format_calendar_countdown(m_until)}")
+    return " | ".join(parts) if parts else None
+
+
 def resolve_macro_economic_calendar(
     now_ts: Optional[float] = None,
     breaking_news: Optional[Sequence[Any]] = None,
+    *,
+    calendar_snapshot: Optional[Mapping[str, Any]] = None,
+    tracked_equity_tickers: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
-    """Resolve current trading session, next high-impact macro/liquidity window, and live macro headlines."""
+    """Resolve current trading session, proactive macro calendar & corporate earnings, and live macro headlines."""
     ts = resolve_now_ts(now_ts)
     session_ctx = resolve_global_trading_session(ts)
     dt_eet = _primary_eet_dt(ts)
+    dt_ny = _secondary_ny_dt(ts)
+    tz_abbr = dt_eet.strftime("%Z") or "EET"
     windows, routine_labels = _load_macro_calendar_windows()
     fomc_dates = set(split_csv(_ssot._cfg_str("sessions", "fomc_decision_dates")))
     today_iso = dt_eet.date().isoformat()
-    is_fomc_today = today_iso in fomc_dates
-    next_fomc_date = next((d for d in sorted(fomc_dates) if d >= today_iso), None)
+    today_ny_iso = dt_ny.date().isoformat()
+    is_fomc_today = (today_iso in fomc_dates) or (today_ny_iso in fomc_dates)
+    next_fomc_date = next((d for d in sorted(fomc_dates) if d >= today_ny_iso), None)
+
+    merged_events, has_live_feed = _merge_confirmed_macro_events(ts, dt_eet, dt_ny, calendar_snapshot)
+    confirmed_events_today = [
+        ev for ev in merged_events if ev.get("eet_date_iso") == today_iso or ev.get("date_iso") == today_ny_iso
+    ][:8]
+    if any(ev.get("category") == "fomc" for ev in confirmed_events_today):
+        is_fomc_today = True
+
+    earnings_today, upcoming_earnings = _extract_scheduled_earnings(
+        ts, dt_ny, calendar_snapshot, tracked_equity_tickers=tracked_equity_tickers
+    )
 
     detected_macro_headlines = _detect_macro_calendar_headlines(breaking_news)
     live_macro_prints = parse_live_macro_release_surprises(breaking_news)
-    macro_release_confirmed = bool(detected_macro_headlines) or bool(live_macro_prints)
+    headline_macro_confirmed = bool(detected_macro_headlines) or bool(live_macro_prints)
+    macro_release_confirmed = headline_macro_confirmed or bool(confirmed_events_today)
     has_fomc_headline = any(
         any(
             k in h.lower()
@@ -401,15 +760,83 @@ def resolve_macro_economic_calendar(
         for h in detected_macro_headlines
     )
 
-    active_window, active_window_is_high_impact, upcoming = _collect_routine_session_windows(
+    confirmed_groups: Dict[int, List[Dict[str, Any]]] = {}
+    confirmed_dates_with_830: set[str] = set()
+    confirmed_dates_with_1000: set[str] = set()
+    confirmed_dates_with_fomc: set[str] = set()
+    confirmed_slot_ts_list: List[float] = []
+    for ev in merged_events:
+        ev_ts = safe_pos_float(ev.get("ts"), 0.0) or 0.0
+        if ev_ts <= 0.0:
+            continue
+        confirmed_groups.setdefault(round(ev_ts / 60.0), []).append(ev)
+        ev_d_eet = str(ev.get("eet_date_iso") or "")
+        ev_d_ny = str(ev.get("date_iso") or "")
+        ny_hm_s = str(ev.get("ny_time") or "")[:5]
+        if ny_hm_s == "08:30":
+            confirmed_dates_with_830.update((ev_d_eet, ev_d_ny))
+        elif ny_hm_s == "10:00":
+            confirmed_dates_with_1000.update((ev_d_eet, ev_d_ny))
+        if ev.get("category") == "fomc" or ny_hm_s == "14:00":
+            confirmed_dates_with_fomc.update((ev_d_eet, ev_d_ny))
+
+    active_window: Optional[str] = None
+    active_window_is_high_impact: bool = False
+    upcoming: List[Tuple[float, str, str, str, bool]] = []
+    next_confirmed_event: Optional[Dict[str, Any]] = None
+
+    for min_key in sorted(confirmed_groups):
+        grp = sorted(confirmed_groups[min_key], key=lambda e: (0 if e.get("impact") == "HIGH" else 1, e.get("title") or ""))
+        lead = grp[0]
+        ev_ts = safe_pos_float(lead.get("ts"), 0.0) or 0.0
+        if ev_ts <= 0.0:
+            continue
+        confirmed_slot_ts_list.append(ev_ts)
+        delta_min = (ev_ts - ts) / 60.0
+        if delta_min >= -20.0 and next_confirmed_event is None:
+            next_confirmed_event = lead
+        ev_eet = datetime.fromtimestamp(ev_ts, tz=dt_eet.tzinfo or timezone.utc)
+        ev_tz_abbr = ev_eet.strftime("%Z") or tz_abbr
+        time_lbl = (
+            f"{ev_eet.strftime('%H:%M')} {ev_tz_abbr}"
+            if ev_eet.date() == dt_eet.date()
+            else f"{ev_eet.strftime('%a')} {ev_eet.strftime('%H:%M')} {ev_tz_abbr}"
+        )
+        inline_parts = [_format_confirmed_event_inline(e) for e in grp[:2]]
+        if len(grp) > 2:
+            inline_parts.append(f"+{len(grp) - 2} more")
+        grp_desc = " + ".join(inline_parts)
+        grp_code = "US_FOMC_FED_WINDOW" if any(e.get("category") == "fomc" for e in grp) else "CONFIRMED_MACRO_RELEASE"
+        if -20.0 <= delta_min <= 0.0 and active_window is None:
+            active_window = f"{grp_desc} at {time_lbl} ({abs(round(delta_min))}m ago \u2014 ACTIVE VOLATILITY WINDOW)"
+            active_window_is_high_impact = True
+        elif delta_min > 0.0:
+            cnt_lbl = _format_calendar_countdown(delta_min)
+            upcoming.append((delta_min, grp_code, grp_desc, f"{grp_desc} at {time_lbl} in {cnt_lbl}", True))
+
+    def _skip_replaced_routine_slot(cand_iso: str, code: str, ev_ts: float) -> bool:
+        if code == "US_FOMC_FED_WINDOW" and cand_iso in confirmed_dates_with_fomc:
+            return True
+        if code == "US_MACRO_830_PRINT" and cand_iso in confirmed_dates_with_830:
+            return True
+        if code == "US_ISM_MICHIGAN_1000" and cand_iso in confirmed_dates_with_1000:
+            return True
+        return code in routine_labels and any(abs(ev_ts - c_ts) <= 300.0 for c_ts in confirmed_slot_ts_list)
+
+    routine_active, routine_active_high, routine_upcoming = _collect_routine_session_windows(
         ts,
         dt_eet,
         windows=windows,
         routine_labels=routine_labels,
         fomc_dates=fomc_dates,
-        macro_release_confirmed=macro_release_confirmed,
+        macro_release_confirmed=headline_macro_confirmed,
         has_fomc_headline=has_fomc_headline,
+        skip_slot_fn=_skip_replaced_routine_slot,
     )
+    if active_window is None and routine_active is not None:
+        active_window = routine_active
+        active_window_is_high_impact = routine_active_high
+    upcoming.extend(routine_upcoming)
 
     upcoming.sort(key=lambda x: x[0])
     next_event = upcoming[0][3] if upcoming else "None scheduled"
@@ -417,11 +844,20 @@ def resolve_macro_economic_calendar(
     next_in_min = round(upcoming[0][0], 1) if upcoming else None
     next_event_is_high_impact = bool(active_window_is_high_impact if active_window else (upcoming and upcoming[0][4]))
     top_upcoming = [x[3] for x in upcoming[:3]]
-    if is_fomc_today:
-        for d_min, w_code, _, w_str, _ in upcoming[3:]:
-            if w_code == "US_FOMC_FED_WINDOW" and d_min <= 1440.0 and w_str not in top_upcoming:
-                top_upcoming.append(w_str)
-                break
+    extra_today_added = 0
+    for d_min, w_code, _, w_str, w_conf in upcoming[3:]:
+        if extra_today_added >= 2:
+            break
+        if w_conf and d_min <= 1440.0 and w_str not in top_upcoming and w_code in ("US_FOMC_FED_WINDOW", "CONFIRMED_MACRO_RELEASE"):
+            top_upcoming.append(w_str)
+            extra_today_added += 1
+
+    pre_event_risk_window, pre_event_risk_reason = _evaluate_pre_event_risk_window(merged_events, earnings_today)
+    cal_source = (
+        "live_feed+static"
+        if has_live_feed or bool(earnings_today or upcoming_earnings)
+        else ("static_schedule" if merged_events else "session_only")
+    )
 
     return {
         "session_key": session_ctx.session_key,
@@ -441,6 +877,13 @@ def resolve_macro_economic_calendar(
         "upcoming_windows": top_upcoming,
         "detected_macro_headlines": detected_macro_headlines[:3],
         "live_macro_prints": live_macro_prints,
+        "confirmed_events_today": confirmed_events_today,
+        "next_confirmed_event": next_confirmed_event,
+        "earnings_today": earnings_today,
+        "upcoming_earnings": upcoming_earnings,
+        "pre_event_risk_window": pre_event_risk_window,
+        "pre_event_risk_reason": pre_event_risk_reason,
+        "calendar_source": cal_source,
         "ts": ts,
     }
 

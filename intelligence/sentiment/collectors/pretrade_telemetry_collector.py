@@ -26,6 +26,7 @@ from botcore import (
 from cachepaths import (
     CACHE_DERIVATIVES_TELEMETRY_PREFIX,
     CACHE_KALMAN_TREND_FILENAME,
+    CACHE_MACRO_CALENDAR_FILENAME,
     CACHE_ORDERBOOK_DEPTH_PREFIX,
     CACHE_WATCHER_ALL_PRICE_FILENAME,
     CACHE_WHALE_SNAPSHOT_PREFIX,
@@ -38,6 +39,10 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
+from intelligence.macro.calendar_ssot import (
+    format_pretrade_macro_catalyst_line,
+    resolve_macro_economic_calendar,
+)
 from intelligence.macro_sentiment_ssot import (
     ALL_KINEMATIC_METRIC_KEYS,
     TELEMETRY_SOURCE_STALE_INTERVAL_MULT,
@@ -163,6 +168,7 @@ def resolve_pretrade_source_intervals_sec(asset_scope: str = "CRYPTO") -> Dict[s
         "whale": whale_itv,
         "short_slopes": SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
         "macro_benchmarks": derived["macro_benchmarks_interval_sec"],
+        "macro_calendar": derived["macro_calendar_interval_sec"],
         "fear_greed": derived["fear_greed_interval_sec"],
         "sentiment_eval": derived["default_sentiment_interval_sec"],
         "geopolitical_eval": derived["default_geopolitical_interval_sec"],
@@ -2088,6 +2094,22 @@ class MacroPillarsStage(PretradePillarCollectorBase):
                 if level is not None and not isinstance(level, bool) and str(level).strip() != "":
                     ctx.telemetry["Geopolitical Threat Level"] = str(level).strip()
                     ctx.record_source_timestamp("geopolitical_eval", extract_timestamp_s(g_data))
+        except Exception:
+            pass
+        try:
+            cal_snap = _read_first_cached_dict(
+                ctx.cachedb_dir, "macro_calendar_files", CACHE_MACRO_CALENDAR_FILENAME
+            )[0]
+            if (isinstance(cal_snap, dict) and cal_snap) or bool(ctx.telemetry):
+                eff_cal_now = safe_pos_float(getattr(ctx, "now_ts", None), default=None) or _time.time()
+                cal_eval = resolve_macro_economic_calendar(
+                    now_ts=eff_cal_now,
+                    calendar_snapshot=cal_snap if isinstance(cal_snap, dict) else None,
+                )
+                if cat_line := format_pretrade_macro_catalyst_line(cal_eval, symbol=ctx.symbol):
+                    ctx.telemetry["Upcoming Macro / Earnings Catalyst"] = cat_line
+                    if isinstance(cal_snap, dict) and cal_snap:
+                        ctx.record_source_timestamp("macro_calendar", extract_timestamp_s(cal_snap))
         except Exception:
             pass
         if len(ctx.telemetry) > before_cnt:

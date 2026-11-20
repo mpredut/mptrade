@@ -164,6 +164,7 @@ def __dir__() -> List[str]:
 
 
 from cachepaths import (
+    CACHE_MACRO_CALENDAR_FILENAME,
     VENUE_BALANCES_STATE_FILENAME,
     cache_symbol_variants,
     canonical_base_asset,
@@ -657,6 +658,7 @@ def resolve_derived_telemetry_intervals(
         "breadth_interval_sec": _sec("breadth_interval_mult", 5.0 / 6.0),
         "macro_benchmarks_interval_sec": _sec("macro_benchmarks_interval_mult", 5.0 / 6.0),
         "macro_benchmarks_us_open_interval_sec": _sec("macro_benchmarks_us_open_interval_mult", 1.0 / 8.0),
+        "macro_calendar_interval_sec": _sec("macro_calendar_interval_mult", 60.0),
         "fear_greed_interval_sec": _sec("fear_greed_interval_mult", 5.0),
         "sensor_stale_age_min": round(
             exec_min * _cfg_ratio("intervals", "sensor_stale_age_mult", 11.0 / 12.0, config_path=config_path),
@@ -901,6 +903,10 @@ get_okx_swap_instruments_url = _bind_feed_url_getter(
     "okx_swap_instruments_url",
     "Resolve the OKX public SWAP instruments metadata URL from [feeds] in macro_intelligence.conf.",
 )
+get_macro_calendar_endpoint_url = _bind_feed_url_getter(
+    "macro_calendar_endpoint_url",
+    "Resolve the weekly economic calendar JSON endpoint URL from [feeds] in macro_intelligence.conf.",
+)
 
 
 def _require_feed_str(key: str) -> str:
@@ -923,6 +929,24 @@ def get_deribit_options_currencies() -> Tuple[str, ...]:
 
 def get_yahoo_chart_url(symbol: str) -> str:
     return _require_feed_str("yahoo_chart_url_template").format(symbol=urllib.parse.quote(str(symbol or "").strip()))
+
+
+def get_nasdaq_earnings_calendar_url(date_iso: str) -> str:
+    return _require_feed_str("nasdaq_earnings_calendar_url_template").format(
+        date=urllib.parse.quote(str(date_iso or "").strip())
+    )
+
+
+def get_macro_calendar_countries() -> Tuple[str, ...]:
+    return split_csv(_cfg_str("feeds", "macro_calendar_countries", "USD"), upper=True) or ("USD",)
+
+
+def get_macro_calendar_medium_tier_keywords() -> Tuple[str, ...]:
+    return split_csv(_cfg_str("feeds", "macro_calendar_medium_tier_keywords"), lower=True)
+
+
+def get_earnings_bellwether_tickers() -> Tuple[str, ...]:
+    return split_csv(_cfg_str("feeds", "earnings_bellwether_tickers"), upper=True)
 
 
 def get_macro_benchmark_specs() -> Tuple[Tuple[str, str, str], ...]:
@@ -1272,6 +1296,12 @@ def load_cached_sentiment_advisor_eval(cache_dir: str) -> Optional[Dict[str, Any
         scale_key="confidence",
         scale_default=0.5,
     )
+
+
+def load_cached_macro_calendar_snapshot(cache_dir: str) -> Optional[Dict[str, Any]]:
+    """Load cached economic calendar and corporate earnings snapshot from ``cache_dir`` without network I/O."""
+    data, _ = read_first_cached_dict(cache_dir, "macro_calendar_files", CACHE_MACRO_CALENDAR_FILENAME)
+    return data if isinstance(data, dict) and data else None
 
 
 def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:

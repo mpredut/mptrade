@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import glob as _glob
 import logging
 import math
@@ -29,6 +29,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
+    CACHE_MACRO_CALENDAR_FILENAME,
     CACHE_WATCHER_ALL_PRICE_FILENAME,
     VENUE_FEE_MAINTENANCE_STATE_FILENAME,
     cache_symbol_variants,
@@ -53,6 +54,12 @@ import intelligence.macro_sentiment_ssot as _mss
 from intelligence.macro_sentiment_ssot import (
     get_breadth_excluded_bases,
     get_deribit_options_currencies,
+    get_earnings_bellwether_tickers,
+    get_macro_calendar_countries,
+    get_macro_calendar_endpoint_url,
+    get_macro_calendar_medium_tier_keywords,
+    get_nasdaq_earnings_calendar_url,
+    get_tracked_equity_base_tickers,
     get_yahoo_chart_url,
     load_microstructure_cycle_history,
     load_venue_balances_state,
@@ -445,6 +452,220 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
         if persist and cache_dir:
             try:
                 self._persist_cache_json(os.path.join(cache_dir, "macro_benchmarks_collect.json"), payload, indent=2)
+            except Exception:
+                pass
+        return payload
+
+
+class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
+    """Concrete collector (Level 3) fetching weekly USD macro releases (ForexFactory) and tracked/bellwether earnings (Nasdaq)."""
+
+    cls_name = "MacroEconomicCalendarCollector"
+    COLLECTOR_ID = "macro_economic_calendar"
+
+    @staticmethod
+    def _target_earnings_dates(dt_ny: datetime) -> List[str]:
+        cur = dt_ny.date()
+        while cur.weekday() >= 5:
+            cur += timedelta(days=1)
+        nxt = cur + timedelta(days=1)
+        while nxt.weekday() >= 5:
+            nxt += timedelta(days=1)
+        return [cur.isoformat(), nxt.isoformat()]
+
+    def collect(
+        self,
+        cachedb_dir: str = "cachedb",
+        symbol: str = "*",
+        *,
+        now_ts: Optional[float] = None,
+        timeout_sec: float = 5.0,
+        allow_network: bool = True,
+        persist: bool = True,
+        fetch_fn: Optional[Callable[..., Any]] = None,
+        read_json_fn: Any = None,
+        tracked_equity_tickers: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> Optional[Dict[str, Any]]:
+        prev_snap, _ = self._read_cached_dict(
+            cachedb_dir,
+            "macro_calendar_files",
+            CACHE_MACRO_CALENDAR_FILENAME,
+            read_json_fn=read_json_fn,
+        )
+        if not allow_network and fetch_fn is None:
+            return prev_snap
+        eff_now = resolve_now_ts(now_ts)
+        _fetch = self._resolve_fetch_fn(fetch_fn)
+        dt_ny = _mss.resolve_secondary_ny_datetime(eff_now)
+        tz_ny = dt_ny.tzinfo or timezone.utc
+        req_headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+
+        # 1. Weekly economic releases (ForexFactory JSON)
+        events: List[Dict[str, Any]] = []
+        events_ok = False
+        allowed_countries = set(get_macro_calendar_countries())
+        medium_kws = get_macro_calendar_medium_tier_keywords()
+        ff_url = get_macro_calendar_endpoint_url()
+        if ff_url:
+            try:
+                raw_ff = _fetch(ff_url, timeout=timeout_sec, headers=req_headers)
+                if isinstance(raw_ff, list):
+                    events_ok = True
+                    seen_ev: set[tuple[int, str]] = set()
+                    for row in raw_ff:
+                        if not isinstance(row, dict):
+                            continue
+                        country = str(row.get("country") or "").strip().upper()
+                        if allowed_countries and country not in allowed_countries:
+                            continue
+                        title = str(row.get("title") or "").strip()
+                        if not title:
+                            continue
+                        impact_u = str(row.get("impact") or "").strip().upper()
+                        if impact_u == "HIGH":
+                            norm_impact = "HIGH"
+                        elif impact_u == "MEDIUM" and medium_kws and any(kw in title.lower() for kw in medium_kws):
+                            norm_impact = "MEDIUM"
+                        else:
+                            continue
+                        date_raw = str(row.get("date") or "").strip()
+                        if not date_raw:
+                            continue
+                        try:
+                            ev_dt = datetime.fromisoformat(date_raw)
+                        except Exception:
+                            continue
+                        if ev_dt.tzinfo is None:
+                            ev_dt = ev_dt.replace(tzinfo=tz_ny)
+                        ev_ts = ev_dt.timestamp()
+                        dedup_k = (round(ev_ts / 60.0), title.lower())
+                        if dedup_k in seen_ev:
+                            continue
+                        seen_ev.add(dedup_k)
+                        ev_ny = ev_dt.astimezone(tz_ny)
+                        events.append(
+                            {
+                                "ts": round(ev_ts, 3),
+                                "date_iso": ev_ny.date().isoformat(),
+                                "ny_time": ev_ny.strftime("%H:%M"),
+                                "title": title,
+                                "country": country,
+                                "impact": norm_impact,
+                                "forecast": str(row.get("forecast") or "").strip(),
+                                "previous": str(row.get("previous") or "").strip(),
+                                "source": "forexfactory",
+                            }
+                        )
+                    events.sort(key=lambda e: (e["ts"], 0 if e["impact"] == "HIGH" else 1, e["title"]))
+            except Exception as exc:
+                logger.debug("ForexFactory economic calendar fetch failed: %s", exc)
+
+        # 2. Tracked portfolio & bellwether corporate earnings (Nasdaq API, 2 weekday requests max)
+        earnings: List[Dict[str, Any]] = []
+        earnings_ok = False
+        target_dates = self._target_earnings_dates(dt_ny)
+        tracked_src = (
+            tracked_equity_tickers
+            if tracked_equity_tickers is not None
+            else get_tracked_equity_base_tickers(include_tokenized=True)
+        )
+        tracked_set = {str(t or "").strip().upper() for t in tracked_src if str(t or "").strip()}
+        bellwether_set = set(get_earnings_bellwether_tickers())
+        watch_tickers = tracked_set | bellwether_set
+        seen_er: set[tuple[str, str]] = set()
+        for d_iso in target_dates:
+            try:
+                nq_url = get_nasdaq_earnings_calendar_url(d_iso)
+                raw_nq = _fetch(nq_url, timeout=timeout_sec, headers=req_headers)
+                if not isinstance(raw_nq, dict):
+                    continue
+                data_obj = raw_nq.get("data")
+                if not isinstance(data_obj, dict):
+                    continue
+                earnings_ok = True
+                rows = data_obj.get("rows")
+                if not isinstance(rows, list):
+                    continue
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    sym_u = str(row.get("symbol") or "").strip().upper()
+                    if not sym_u or (watch_tickers and sym_u not in watch_tickers) or (d_iso, sym_u) in seen_er:
+                        continue
+                    seen_er.add((d_iso, sym_u))
+                    time_raw = str(row.get("time") or "").strip().lower()
+                    est_ts: Optional[float] = None
+                    if "pre" in time_raw or "bmo" in time_raw:
+                        timing = "BMO"
+                        est_hm = (8, 0)
+                    elif "after" in time_raw or "amc" in time_raw:
+                        timing = "AMC"
+                        est_hm = (16, 5)
+                    else:
+                        timing = "TBD"
+                        est_hm = None
+                    if est_hm is not None:
+                        try:
+                            d_dt = datetime.fromisoformat(d_iso)
+                            est_ts = datetime(d_dt.year, d_dt.month, d_dt.day, est_hm[0], est_hm[1], tzinfo=tz_ny).timestamp()
+                        except Exception:
+                            est_ts = None
+                    earnings.append(
+                        {
+                            "symbol": sym_u,
+                            "name": str(row.get("name") or "").strip(),
+                            "date_iso": d_iso,
+                            "timing": timing,
+                            "est_ts": round(est_ts, 3) if est_ts is not None else None,
+                            "eps_forecast": str(row.get("epsForecast") or "").strip(),
+                            "fiscal_quarter": str(row.get("fiscalQuarterEnding") or "").strip(),
+                            "is_portfolio_holding": sym_u in tracked_set,
+                            "source": "nasdaq",
+                        }
+                    )
+            except Exception as exc:
+                logger.debug("Nasdaq earnings calendar fetch failed for %s: %s", d_iso, exc)
+
+        def _er_sort(e: Dict[str, Any]) -> tuple[str, int, int, str]:
+            return (
+                e["date_iso"],
+                0 if e["is_portfolio_holding"] else 1,
+                0 if e["timing"] == "BMO" else (1 if e["timing"] == "AMC" else 2),
+                e["symbol"],
+            )
+
+        earnings.sort(key=_er_sort)
+
+        if not events_ok and not earnings_ok:
+            return None
+        prev_fresh = (
+            isinstance(prev_snap, dict)
+            and (prev_ts := normalize_epoch_sec(prev_snap.get("ts"), default=0.0) or 0.0) > 0.0
+            and 0.0 <= (eff_now - prev_ts) <= 86400.0
+        )
+        if prev_fresh and isinstance(prev_snap, dict):
+            if not events_ok and isinstance(prev_snap.get("events"), list):
+                events = list(prev_snap["events"])
+            if not earnings_ok and isinstance(prev_snap.get("earnings"), list):
+                earnings = list(prev_snap["earnings"])
+
+        payload: Dict[str, Any] = {
+            "ts": round(eff_now, 3),
+            "source": "forexfactory+nasdaq",
+            "events_ok": events_ok,
+            "earnings_ok": earnings_ok,
+            "fetched_earnings_dates": target_dates,
+            "events": events,
+            "earnings": earnings,
+        }
+        if persist and cachedb_dir:
+            try:
+                self._persist_cache_json(
+                    str(resolve_cachedb_filepath(os.path.join(cachedb_dir, CACHE_MACRO_CALENDAR_FILENAME))),
+                    payload,
+                    indent=2,
+                )
             except Exception:
                 pass
         return payload
@@ -937,8 +1158,29 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
             persist=persist,
             read_json_fn=read_json_fn,
         )
+        cal_snap, cal_path = self._read_cached_dict(
+            cache_dir, "macro_calendar_files", CACHE_MACRO_CALENDAR_FILENAME, _rj
+        )
+        if allow_network and read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
+            cal_itv_sec = _mss.resolve_derived_telemetry_intervals()["macro_calendar_interval_sec"]
+            cal_ts = normalize_epoch_sec((cal_snap or {}).get("ts"), default=0.0) or 0.0
+            if cal_ts <= 0.0 and cal_path and os.path.exists(cal_path):
+                try:
+                    cal_ts = os.path.getmtime(cal_path)
+                except OSError:
+                    cal_ts = 0.0
+            if not cal_snap or cal_ts <= 0.0 or (now_ts - cal_ts) > cal_itv_sec:
+                if isinstance(
+                    live_cal := collect_macro_calendar_snapshot(
+                        cache_dir, now_ts=now_ts, timeout_sec=3.0, persist=persist
+                    ),
+                    dict,
+                ) and live_cal:
+                    cal_snap = live_cal
         macro_sensors["macro_calendar"] = resolve_macro_economic_calendar(
-            now_ts=now_ts, breaking_news=valid_news or breaking_news
+            now_ts=now_ts,
+            breaking_news=valid_news or breaking_news,
+            calendar_snapshot=cal_snap,
         )
         return macro_sensors, breaking_news
 
@@ -1715,12 +1957,34 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
 
 for _macro_collector_cls in (
     MacroBenchmarksSnapshotCollector,
+    MacroEconomicCalendarCollector,
     MacroAndNewsSensorsCollector,
     InitialPricesAndTrendsCollector,
     PortfolioAndVenueCyclesCollector,
     MarketAndPortfolioSnapshotOrchestrator,
 ):
     TelemetryCollectorFactory.register(_macro_collector_cls.COLLECTOR_ID, _macro_collector_cls)
+
+
+def collect_macro_calendar_snapshot(
+    cache_dir: str = "cachedb",
+    *,
+    now_ts: Optional[float] = None,
+    timeout_sec: float = 5.0,
+    persist: bool = True,
+    fetch_fn: Optional[Callable[..., Any]] = None,
+    tracked_equity_tickers: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Fetch weekly USD macro releases (ForexFactory) and tracked/bellwether corporate earnings (Nasdaq) and persist to cachedb."""
+    return TelemetryCollectorFactory.create("macro_economic_calendar", start_sync=True).collect(
+        cache_dir,
+        "*",
+        now_ts=now_ts,
+        timeout_sec=timeout_sec,
+        persist=persist,
+        fetch_fn=fetch_fn,
+        tracked_equity_tickers=tracked_equity_tickers,
+    )
 
 
 def collect_macro_benchmarks_snapshot(
@@ -1768,12 +2032,14 @@ __all__ = [
     "MACRO_BENCHMARK_SPECS",
     "MacroAndNewsSensorsCollector",
     "MacroBenchmarksSnapshotCollector",
+    "MacroEconomicCalendarCollector",
     "MacroTelemetryCollectorBase",
     "MarketAndPortfolioSnapshotOrchestrator",
     "PortfolioAndVenueCyclesCollector",
     "apply_asset_scope_filter",
     "build_cycle_fallback_prices",
     "collect_macro_benchmarks_snapshot",
+    "collect_macro_calendar_snapshot",
     "compute_cross_asset_regime",
     "compute_deribit_options_surface",
     "compute_equity_macro_regime",
