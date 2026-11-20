@@ -1497,7 +1497,8 @@ def test_af_unix_tick_fanout_delivers_multivenue_ticks_sub_100ms(tmp_path):
 
 def test_coordinator_sub_100ms_tick_wakeup_and_confirm_calibration(tmp_path, monkeypatch):
     """Dirty tick inside the 50ms floor evaluates right at ~50ms (no 30s lost wakeup) while confirm_count stays calibrated."""
-    monkeypatch.setattr(ta.mkt, "market_regime_context", lambda *_a, **_kw: None)
+    monkeypatch.setattr(ta, "mkt", MagicMock(market_regime_context=lambda *_a, **_kw: None))
+    monkeypatch.setattr(ta, "resolve_runtime_market_regime_snapshot", lambda *_a, **_kw: None)
     entries = make_synthetic_price_entries(40, interval_ms=800)
     c24 = _make_cache24_manager("BTCUSDT", entries, str(tmp_path))
     cpm = cm.CacheCurrentPriceManager(

@@ -213,7 +213,10 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
             for s in (getattr(self, "symbols", None) or ())
             if (s_str := clean_scalar_str(s)) is not None
         ]
-        if active_syms:
+        if active_syms and (
+            self._is_canonical_account_cache()
+            or any(casefold_get(cursors, s) is not None for s in active_syms)
+        ):
             vals = [safe_pos_int(casefold_get(cursors, s), default=None) for s in active_syms]
             if any(v is None for v in vals):
                 return version, 0
