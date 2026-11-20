@@ -90,7 +90,7 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
     collect_macro_calendar_snapshot,
 )
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
-from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+from intelligence.sentiment.collectors.microstructure_collector import load_fleet_microstructure_snapshots
 from intelligence.sentiment.collectors.portfolio_collector import (
     VenueTrailingMapsCollector,
     harvest_tradable_positions_and_orders,
@@ -526,17 +526,10 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                     record_nav_history_snapshot(workspace_dir, now_ts=eff_now)
                 except Exception as nav_exc:
                     logger.debug("Skipped NAV history snapshot update: %s", nav_exc)
-            micro_map: Dict[str, Any] = {}
-            enrich_24h_and_microstructure(
+            micro_map = load_fleet_microstructure_snapshots(
                 self.cache_dir,
-                workspace_dir,
-                prices_and_trends,
-                micro_map,
-                {},
-                {},
-                eff_now,
-                allow_network=False,
-                persist=False,
+                symbols=self.symbols,
+                prices_and_trends=prices_and_trends,
             )
             if micro_map:
                 update_microstructure_cycle_deltas(self.cache_dir, micro_map, now_ts=eff_now, persist=True)
@@ -648,6 +641,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
 
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, updating telemetry whose scheduled interval has elapsed."""
+        explicit_now = now is not None
         force, current_ts = normalize_cycle_args(force, now)
         if not getattr(self, "_explicit_symbols", False) and self.symbols == getattr(self, "_auto_detected_symbols", None):
             if detected_syms := detect_active_binance_symbols(self.cache_dir, include_kraken_cache=True):
@@ -665,13 +659,22 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         )
 
         self.write_heartbeat(results)
-        self._active_cycle_ts = current_ts
+        # BY DESIGN: Only pin _active_cycle_ts when a deterministic `now` is supplied; in live daemon mode,
+        # each step resolves wall-clock time so slow cycles never backdate freshly fetched snapshots into [stale].
+        self._active_cycle_ts = current_ts if explicit_now else None
+        live_clock = not explicit_now
+        end_ts = current_ts
         try:
             self._step_external_symbols(
-                current_ts, force, results, bounded=True, on_symbol_done=lambda: self.write_heartbeat(results)
+                current_ts,
+                force,
+                results,
+                bounded=True,
+                on_symbol_done=lambda: self.write_heartbeat(results),
+                live_clock=live_clock,
             )
 
-            eff_mb_itv = self._effective_macro_benchmarks_interval_sec(current_ts)
+            eff_mb_itv = self._effective_macro_benchmarks_interval_sec(current_ts if explicit_now else resolve_now_ts(None))
             scheduled_tasks = (
                 (not self.skip_news, "_last_news_ts", self.news_interval_sec, self.update_news, (force,), 15.0, "news", "news_updated", lambda: self.write_heartbeat(results)),
                 (True, "_last_fear_greed_ts", self.fear_greed_interval_sec, self.update_fear_greed, (force,), 12.0, "fear_greed", "fear_greed_updated", None),
@@ -698,22 +701,26 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                         results=results,
                         result_key=res_key,
                         on_done=on_done_cb,
+                        live_clock=live_clock,
                     )
+            end_ts = current_ts if explicit_now else resolve_now_ts(None)
             last_imp_chk = safe_nonneg_ts(getattr(self, "_last_ai_impulse_check_ts", 0.0), 0.0)
             if (
                 not self.skip_external
                 and _parse_bool_flag(getattr(self, "_live_impulse_wakeup_enabled", False), False)
-                and (last_imp_chk <= 0.0 or not (0.0 < (current_ts - last_imp_chk) < 5.0))
+                and (last_imp_chk <= 0.0 or not (0.0 < (end_ts - last_imp_chk) < 5.0))
             ):
-                self._last_ai_impulse_check_ts = current_ts
-                self.maybe_trigger_kinematic_ai_wakeup(now=current_ts)
+                self._last_ai_impulse_check_ts = end_ts
+                self.maybe_trigger_kinematic_ai_wakeup(now=end_ts)
         finally:
             self._active_cycle_ts = None
 
+        if live_clock:
+            results["ts"] = end_ts
         return finalize_daemon_cycle(
             self,
             results,
-            current_ts=current_ts,
+            current_ts=end_ts,
             force=force,
             logger_inst=logger,
             hb_msg="Global telemetry cycle active: %d symbols monitored (PID=%d)",

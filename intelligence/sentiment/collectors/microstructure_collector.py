@@ -7,7 +7,7 @@ import math
 import os
 import time as _time
 from abc import ABC
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from botcore import (
     clean_scale,
@@ -167,6 +167,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     STALE_SHORT_24H_KEYS,
 )
 from instrument_registry import (
+    canonical_display_symbol,
     casefold_get,
     coalesce_symbol_case_variants,
     discover_hyperliquid_spot,
@@ -875,6 +876,41 @@ def discover_reference_microstructure_symbols(
                         if cand_bd is not None and cand_bd > 0 and all(ebd is None or abs(cand_bd - ebd) > 1.0 for ebd in existing_bds):
                             ref_micro_syms.append(msym)
     return ref_micro_syms
+
+
+def load_fleet_microstructure_snapshots(
+    cache_dir: str,
+    *,
+    symbols: Optional[Sequence[str]] = None,
+    prices_and_trends: Optional[Dict[str, Any]] = None,
+    read_json_fn: Any = None,
+) -> Dict[str, Any]:
+    """Load local orderbook/derivatives/whale snapshots for cycle-delta tracking without 24h/7d archive I/O."""
+    if not cache_dir or not os.path.isdir(cache_dir):
+        return {}
+    _rj = _resolve_read_json_cached(read_json_fn)
+    pt_map = prices_and_trends if isinstance(prices_and_trends, dict) else {}
+    micro_map: Dict[str, Any] = {}
+    seen_upper: set[str] = set()
+    cand_syms: List[str] = []
+    for raw_sym in (*pt_map.keys(), *(symbols or ())):
+        if not isinstance(raw_sym, str) or not raw_sym.strip():
+            continue
+        sym_clean = canonical_display_symbol(raw_sym) or raw_sym.strip()
+        sym_u = sym_clean.upper()
+        if sym_u not in seen_upper:
+            seen_upper.add(sym_u)
+            cand_syms.append(sym_clean)
+    for sym in cand_syms:
+        if m_info := load_symbol_microstructure(cache_dir, sym, _rj):
+            enrich_microstructure_cvd(m_info, casefold_get(pt_map, sym))
+            micro_map[sym] = m_info
+    for ref_sym in discover_reference_microstructure_symbols(cache_dir, micro_map, _rj):
+        if m_info := load_symbol_microstructure(cache_dir, ref_sym, _rj):
+            enrich_microstructure_cvd(m_info, casefold_get(pt_map, ref_sym))
+            micro_map[ref_sym] = m_info
+    coalesce_symbol_case_variants(micro_map, in_place=True)
+    return micro_map
 
 
 def _iter_t212_state_files(workspace_dir: str) -> List[Tuple[str, str]]:
@@ -2300,6 +2336,7 @@ __all__ = [
     "enrich_24h_and_microstructure",
     "ensure_cacheprice_classes_bound",
     "ensure_fresh_symbol_microstructure",
+    "load_fleet_microstructure_snapshots",
     "load_microstructure_cycle_history",
     "load_stitched_7d_ohlc_closes",
     "load_symbol_microstructure",

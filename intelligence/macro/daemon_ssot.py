@@ -359,10 +359,12 @@ def run_scheduled_step(
     results: Optional[Dict[str, Any]] = None,
     result_key: Optional[str] = None,
     on_done: Optional[Callable[[], None]] = None,
+    live_clock: bool = False,
 ) -> bool:
     """Execute ``fn(*fn_args)`` when ``interval_sec`` has elapsed since ``getattr(obj, ts_attr)``, updating timestamp or retry backoff."""
+    step_now = resolve_now_ts(None) if live_clock else current_ts
     last_ts = safe_nonneg_ts(getattr(obj, ts_attr, 0.0), 0.0)
-    if not is_interval_due(current_ts, last_ts, interval_sec, force=force):
+    if not is_interval_due(step_now, last_ts, interval_sec, force=force):
         return False
     noop_attr = f"{ts_attr}_noop"
     try:
@@ -375,14 +377,15 @@ def run_scheduled_step(
         if (bounded and callable(runner))
         else bool(fn(*fn_args))
     )
+    done_ts = resolve_now_ts(None) if live_clock else current_ts
     if ok:
         if isinstance(results, dict) and result_key:
             results[result_key] = True
-        setattr(obj, ts_attr, current_ts)
+        setattr(obj, ts_attr, done_ts)
     elif getattr(obj, noop_attr, False):
-        setattr(obj, ts_attr, current_ts)
+        setattr(obj, ts_attr, done_ts)
     else:
-        setattr(obj, ts_attr, compute_step_retry_ts(last_ts, current_ts, interval_sec))
+        setattr(obj, ts_attr, compute_step_retry_ts(last_ts, done_ts, interval_sec))
     if on_done is not None:
         on_done()
     return ok
@@ -664,6 +667,7 @@ class ExternalTelemetryMixin:
         *,
         bounded: bool = False,
         on_symbol_done: Optional[Callable[[], None]] = None,
+        live_clock: bool = False,
     ) -> None:
         if getattr(self, "skip_external", False):
             return
@@ -679,15 +683,17 @@ class ExternalTelemetryMixin:
                 if ident.is_tokenized_equity and lbl_prefix in ("deriv", "whale"):
                     continue
                 ts_map: Dict[str, float] = getattr(self, ts_attr)
-                if is_interval_due(current_ts, ts_map.get(sym, 0.0), interval_sec, force=force):
+                step_now = resolve_now_ts(None) if live_clock else current_ts
+                if is_interval_due(step_now, ts_map.get(sym, 0.0), interval_sec, force=force):
                     ok = (
                         self._run_step_bounded(fn, sym, timeout_sec=timeout_s, label=f"{lbl_prefix}_{sym}")
                         if bounded
                         else fn(sym)
                     )
+                    done_ts = resolve_now_ts(None) if live_clock else current_ts
                     if ok:
                         results[res_key] += 1
-                        ts_map[sym] = current_ts
+                        ts_map[sym] = done_ts
                     elif bounded:
                         if (
                             lbl_prefix == "ob"
@@ -696,11 +702,11 @@ class ExternalTelemetryMixin:
                                 self.orderbook_collector,
                                 "is_unlisted_xstock_backoff_active",
                                 lambda _s, _n: False,
-                            )(sym, current_ts)
+                            )(sym, done_ts)
                         ):
-                            ts_map[sym] = current_ts
+                            ts_map[sym] = done_ts
                         else:
-                            ts_map[sym] = compute_step_retry_ts(ts_map.get(sym, 0.0), current_ts, interval_sec)
+                            ts_map[sym] = compute_step_retry_ts(ts_map.get(sym, 0.0), done_ts, interval_sec)
             if on_symbol_done is not None:
                 on_symbol_done()
 

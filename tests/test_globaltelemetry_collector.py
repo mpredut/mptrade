@@ -2531,5 +2531,139 @@ def test_xstock_canonical_case_coalescing_adopted_ipo_pnl_and_ob_mid_rounding(tm
     assert k_cyc["subcycle_realized_pnl_usd"] == pytest.approx(17.34)
 
 
+def test_live_cycle_avoids_start_ts_backdating_and_fast_microstructure_deltas(tmp_path, monkeypatch):
+    """Verify live run_cycle(now=None) stamps real step wall-clock timestamps and update_venue_balances skips 24h/7d archive I/O."""
+    from intelligence.macro import daemon_ssot as ds_mod
+    from intelligence.sentiment.collectors import microstructure_collector as mc_mod
+    from intelligence.macro_sentiment_ssot import load_microstructure_cycle_history
+    from state_io import save_json_state
+
+    ws_dir = tmp_path / "ws"
+    cdir = ws_dir / "cachedb"
+    (cdir / "telemetry").mkdir(parents=True)
+    (cdir / "prices").mkdir(parents=True)
+    (cdir / "state").mkdir(parents=True)
+
+    t_now = 1_760_200_000.0
+    save_json_state(
+        str(cdir / "prices" / "cache_current_price.json"),
+        {"items": {"BTCUSDC": 62000.0, "SPCXxUSD": 133.5}},
+    )
+    save_json_state(
+        str(cdir / "telemetry" / "orderbook_depth_BTCUSDC.json"),
+        {"symbol": "BTCUSDC", "mid_price": 62000.0, "imbalance_ratio": 0.61, "ts": t_now},
+    )
+    save_json_state(
+        str(cdir / "telemetry" / "derivatives_telemetry_BTCUSDC.json"),
+        {
+            "symbol": "BTCUSDC",
+            "funding_rate": 0.00002,
+            "open_interest_usd": 5_000_000_000.0,
+            "perp_spot_basis_bps": -4.25,
+            "ts": t_now,
+        },
+    )
+    save_json_state(
+        str(cdir / "telemetry" / "whale_snapshot_BTCUSDC.json"),
+        {
+            "symbol": "BTCUSDC",
+            "top_traders_long_pct": 0.65,
+            "taker_buy_sell_ratio": 0.88,
+            "taker_buy_vol_usd": 12_000_000.0,
+            "taker_sell_vol_usd": 14_000_000.0,
+            "open_interest_usd": 5_000_000_000.0,
+            "ts": t_now,
+        },
+    )
+    save_json_state(
+        str(cdir / "telemetry" / "orderbook_depth_SPCXxUSD.json"),
+        {"symbol": "SPCXxUSD", "mid_price": 133.5, "imbalance_ratio": 0.44, "ts": t_now},
+    )
+
+    # 1. update_venue_balances must load microstructure via fast local loader without touching 24h/7d archive series.
+    def _forbid_archive_load(*_a, **_kw):
+        raise AssertionError("update_venue_balances must not invoke heavy 24h/7d archive loading")
+
+    monkeypatch.setattr(mc_mod, "load_symbol_price_series", _forbid_archive_load)
+    monkeypatch.setattr(mc_mod, "enrich_24h_and_microstructure", _forbid_archive_load)
+
+    col = GlobalTelemetryCollector(
+        symbols=["BTCUSDC", "SPCXxUSD"],
+        cache_dir=str(cdir),
+        skip_news=True,
+        orderbook_interval_sec=15.0,
+        derivatives_interval_sec=30.0,
+        whale_interval_sec=60.0,
+        fear_greed_interval_sec=3600.0,
+        breadth_interval_sec=3600.0,
+        macro_benchmarks_interval_sec=3600.0,
+    )
+    assert col.update_venue_balances(force=True, now=t_now) is True
+    hist = load_microstructure_cycle_history(str(cdir))
+    assert "BTCUSDC" in hist and "SPCXxUSD" in hist
+    btc_rec = hist["BTCUSDC"][-1]
+    assert btc_rec["ob_imbalance"] == pytest.approx(0.61)
+    assert btc_rec["cvd_15m_usd"] == pytest.approx(-2_000_000.0)
+    assert btc_rec["perp_spot_basis_bps"] == pytest.approx(-4.25)
+    assert hist["SPCXxUSD"][-1]["ob_imbalance"] == pytest.approx(0.44)
+
+    # 2. Live run_cycle(now=None) stamps real step wall-clock timestamps instead of backdating to cycle start.
+    clock = [t_now]
+
+    def _live_now(val=None):
+        return float(val) if val is not None else clock[0]
+
+    monkeypatch.setattr(ds_mod, "resolve_now_ts", _live_now)
+    monkeypatch.setattr("intelligence.globaltelemetry_collector.resolve_now_ts", _live_now)
+
+    seen_active_ts = []
+    liq_written_ts = []
+
+    def _fake_ob(sym):
+        seen_active_ts.append((sym, col._active_cycle_ts))
+        clock[0] += 10.0
+        return True
+
+    def _fake_liq(force=False, now=None):
+        liq_written_ts.append((now, col._resolve_step_now(now), clock[0]))
+        clock[0] += 2.0
+        return True
+
+    col.symbols = ["BTCUSDC", "ADAUSD"]
+    col._explicit_symbols = True
+    col._last_fear_greed_ts = t_now + 1000.0
+    col._last_breadth_ts = t_now + 1000.0
+    col._last_macro_benchmarks_ts = t_now + 1000.0
+    col._last_macro_calendar_ts = t_now + 1000.0
+    col._last_pretrade_caches_ts = t_now + 1000.0
+    col._last_venue_balances_ts = t_now + 1000.0
+    monkeypatch.setattr(col, "update_macro_calendar", lambda *_a, **_kw: True)
+    monkeypatch.setattr(col, "update_orderbook", _fake_ob)
+    monkeypatch.setattr(col, "update_derivatives", lambda _s: True)
+    monkeypatch.setattr(col, "update_whale", lambda _s: True)
+    monkeypatch.setattr(col, "_active_liquidation_collectors", lambda: [object()])
+    monkeypatch.setattr(col, "update_realized_liquidations", _fake_liq)
+
+    res_live = col.run_cycle(force=False)
+    assert seen_active_ts == [("BTCUSDC", None), ("ADAUSD", None)]
+    assert col._last_orderbook_ts["BTCUSDC"] == pytest.approx(t_now + 10.0)
+    assert col._last_orderbook_ts["ADAUSD"] == pytest.approx(t_now + 20.0)
+    assert liq_written_ts == [(None, None, t_now + 20.0)]
+    assert col._last_realized_liq_ts == pytest.approx(t_now + 22.0)
+    assert res_live["ts"] == pytest.approx(t_now + 22.0)
+
+    # 3. Deterministic run_cycle(now=t_det) still pins _active_cycle_ts to t_det for replay/test reproducibility.
+    t_det = t_now + 500.0
+    seen_active_ts.clear()
+    liq_written_ts.clear()
+    res_det = col.run_cycle(force=True, now=t_det)
+    assert seen_active_ts == [("BTCUSDC", t_det), ("ADAUSD", t_det)]
+    assert col._last_orderbook_ts["BTCUSDC"] == pytest.approx(t_det)
+    assert col._last_orderbook_ts["ADAUSD"] == pytest.approx(t_det)
+    assert liq_written_ts == [(None, t_det, clock[0] - 2.0)]
+    assert res_det["ts"] == pytest.approx(t_det)
+
+
+
 
 
