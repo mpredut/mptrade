@@ -230,8 +230,10 @@ def _audit_status_event(record, event: str, status, **fields) -> None:
 
 def _prepare_retry_placement_kwargs(r: dict, kwargs: dict, provider_name, now: float) -> tuple[str, float, float, str]:
     kwargs["caller_owns_retry"] = True
-    kwargs["_retry_requested_price"] = r.get("requested_price")
-    kwargs["_retry_price_tolerance"] = oq.RETRY_PRICE_TOL
+    fixed_limit = oq.is_fixed_limit_record(r)
+    if not fixed_limit:
+        kwargs["_retry_requested_price"] = r.get("requested_price")
+        kwargs["_retry_price_tolerance"] = oq.RETRY_PRICE_TOL
     if provider_name is not None:
         kwargs["provider_name"] = provider_name
 
@@ -253,8 +255,8 @@ def _prepare_retry_placement_kwargs(r: dict, kwargs: dict, provider_name, now: f
     retry_stage = "standard"
     eff_kind = clean_scalar_str(r.get("kind")) or clean_scalar_str(kwargs.get("kind")) or ""
     is_replace = "monitor_order_replace" in eff_kind
-    if is_replace:
-        kwargs["wait_for_trend"] = _parse_bool_flag(kwargs.get("wait_for_trend"), True)
+    if is_replace or fixed_limit:
+        kwargs["wait_for_trend"] = _parse_bool_flag(kwargs.get("wait_for_trend"), not fixed_limit)
     else:
         is_stop_expired_timer = (
             eff_kind.upper() == "STOP"
@@ -312,7 +314,7 @@ def process_once(mkt, now=None):
                 quarantined += 1
                 _alert_producer_quarantine(r, reason=q_reason)
                 continue
-        if not oq.is_due(r, now):
+        if not oq.is_due(r, now, poll_interval_sec=WORKER_POLL_SEC):
             continue
         if lifecycle == "accepted":
             to_observe.append(r)
@@ -556,13 +558,18 @@ def process_once(mkt, now=None):
         attempted += 1
         next_attempt_num = safe_int(r.get("attempts"), 0) + 1
         req_qty_before_place = r.get("qty")
+        submit_px = (
+            safe_pos_float(r.get("requested_price"), default=price_f)
+            if oq.is_fixed_limit_record(r)
+            else price
+        )
         try:
             if retry_stage != "standard":
                 print(
                     f"[order_retry] {side_u} {symbol} retrying under Stage {retry_stage.upper()} "
                     f"(age={age_sec / 3600:.1f}h, progress={age_progress * 100:.1f}%)"
                 )
-            order = mkt.place(symbol, r.get("side"), price, r.get("qty"), **kwargs)
+            order = mkt.place(symbol, r.get("side"), submit_px, r.get("qty"), **kwargs)
         except Exception as e:
             print(f"[order_retry] retry {r.get('side')} {symbol} raised ({e}) \u2014 treating it as a failure")
             order = None
@@ -579,7 +586,7 @@ def process_once(mkt, now=None):
                 accepted = True
                 reconciled += 1
         req_audit_kw = {
-            "qty": req_qty_before_place, "price": price, "attempt": next_attempt_num,
+            "qty": req_qty_before_place, "price": submit_px, "attempt": next_attempt_num,
             "retry_stage": retry_stage, "age_progress": round(age_progress, 3),
         }
         if accepted:
@@ -588,9 +595,9 @@ def process_once(mkt, now=None):
             _audit_event(r, "submit_requested", **req_audit_kw)
             _audit_event(
                 r, "submit_accepted",
-                order_id=oq.extract_order_id(order), qty=r.get("qty"), price=price,
+                order_id=oq.extract_order_id(order), qty=r.get("qty"), price=submit_px,
             )
-            print(f"[order_retry] ACCEPTED {r.get('side')} {symbol} @ {price} orderId={oq.extract_order_id(order)}")
+            print(f"[order_retry] ACCEPTED {r.get('side')} {symbol} @ {submit_px} orderId={oq.extract_order_id(order)}")
         else:
             submission_state = outcome_context.get("state") or "unknown"
             refusal_reason = outcome_context.get("reason") or (
@@ -622,7 +629,7 @@ def process_once(mkt, now=None):
                 _audit_event(r, "submit_requested", **req_audit_kw)
                 _audit_event(
                     r, "submit_refused" if submission_state == "refused" else "submit_unknown",
-                    qty=r.get("qty"), price=price,
+                    qty=r.get("qty"), price=submit_px,
                     submission_state=submission_state, failure_reason=refusal_reason,
                 )
 

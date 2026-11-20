@@ -2248,9 +2248,10 @@ def test_coerce_dict_maps_cli_env_path_replay_metrics_peak_scope_and_hl_status_b
     _parse_order_response = hl_client_mod._parse_order_response
 
     # 1. coerce_dict_maps & active_intents.format_summary handle None/non-dict payloads safely
+    from core.math_coercion import coerce_dict_maps as core_coerce_dict_maps
     assert coerce_dict_maps({"a": 1}, None, [1, 2], True) == ({"a": 1}, {}, {}, {})
-    assert mss.coerce_dict_maps({"a": 1}, None, [1, 2], True) == ({"a": 1}, {}, {}, {})
-    assert mss.coerce_dict_maps.__qualname__ == coerce_dict_maps.__qualname__
+    assert core_coerce_dict_maps({"a": 1}, None, [1, 2], True) == ({"a": 1}, {}, {}, {})
+    assert core_coerce_dict_maps.__qualname__ == coerce_dict_maps.__qualname__
     summary_txt = active_intents.format_summary(None)  # type: ignore[arg-type]
     assert "Total active intents:  0" in summary_txt
 
@@ -2330,9 +2331,10 @@ def test_coerce_dict_maps_cli_env_path_replay_metrics_peak_scope_and_hl_status_b
 def test_clean_nonempty_str_t212_fills_guard_inf_scale_rounding_and_daemon_cli_border_cases(monkeypatch, capsys):
     """Verify Wave 12 border cases: clean_nonempty_str, T212 fills/history guards, +inf parsing, IEEE-754 scale_pct rounding, daemon CLI helpers, and sweep footer sanitization."""
 
-    # 1. clean_nonempty_str preserves case while rejecting bool/non-str/blank; re-exported on macro_sentiment_ssot
+    # 1. clean_nonempty_str preserves case while rejecting bool/non-str/blank via canonical cachepaths/botcore SSOT
+    from cachepaths import clean_nonempty_str as cp_clean_nonempty_str
     assert botcore.clean_nonempty_str("  abc_1 ") == "abc_1"
-    assert mss.clean_nonempty_str("  XyZ ") == "XyZ"
+    assert cp_clean_nonempty_str("  XyZ ") == "XyZ"
     for bad in ("", "   ", True, False, 123, None, ["a"]):
         assert botcore.clean_nonempty_str(bad) is None
         assert botcore.clean_upper_token(bad) is None

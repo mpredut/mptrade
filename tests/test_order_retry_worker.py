@@ -1809,3 +1809,50 @@ def test_awaiting_cancel_reconciles_native_replace_by_client_id_and_evicts_super
     assert len(kr_after) == 1
     assert kr_after[0]["lifecycle"] == "submit_pending"
     assert kr_after[0]["submission_state"] == "refused"
+
+
+def test_fixed_limit_record_preserves_limit_price_and_fast_cache_deferral_retry(tmp_path, monkeypatch):
+    """Explicit non-smart LIMIT orders submit at requested_price across spot distance and account_cache_not_fresh retries at poll cadence."""
+    q_file = str(tmp_path / "q.jsonl")
+    l_file = str(tmp_path / "q.lock")
+    monkeypatch.setattr(oq, "QUEUE_FILE", q_file)
+    monkeypatch.setattr(oq, "LOCK_FILE", l_file)
+    monkeypatch.setattr(oq, "RETRY_ENABLED", True)
+    monkeypatch.setattr(oq, "RETRY_INTERVAL_SEC", 300.0)
+    monkeypatch.setattr(oq, "RETRY_TTL_SEC", 86400.0)
+    monkeypatch.setattr(worker, "WORKER_POLL_SEC", 30.0)
+    monkeypatch.setattr(worker.alert, "notify", lambda **kw: None)
+
+    oq.rewrite([])
+    rid = oq.enqueue(
+        "BTCUSDC",
+        "SELL",
+        0.00493,
+        {
+            "market": False,
+            "smart": False,
+            "wait_for_trend": False,
+            "intent_id": "intent_1795154105_sell_btcusdc",
+            "client_order_id": "AI_intent_1795154105_sell_btcusdc",
+        },
+        requested_price=62027.48,
+        failure_reason="account_cache_not_fresh",
+        provider_name="binance",
+        now=1000.0,
+    )
+    rec0 = oq.get(rid)
+    assert oq.is_fixed_limit_record(rec0) is True
+    assert oq.is_due(rec0, now=1029.0, poll_interval_sec=30.0) is False
+    assert oq.is_due(rec0, now=1031.0, poll_interval_sec=30.0) is True
+
+    # Even when spot ($61,873) is >0.20% below the passive maker SELL LIMIT ($62,027.48),
+    # process_once submits at the exact requested_price ($62,027.48) with wait_for_trend=False.
+    mkt_lim = FakeMkt(price=61873.0, succeed=True)
+    stats_lim = worker.process_once(mkt_lim, now=1031.0)
+    assert stats_lim["skipped_price"] == 0
+    assert stats_lim["succeeded"] == 1
+    assert len(mkt_lim.calls) == 1
+    assert mkt_lim.calls[0]["price"] == 62027.48
+    assert mkt_lim.calls[0]["kw"]["wait_for_trend"] is False
+    assert "_retry_requested_price" not in mkt_lim.calls[0]["kw"]
+    assert oq.get(rid)["lifecycle"] == "accepted"

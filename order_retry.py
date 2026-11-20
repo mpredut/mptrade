@@ -26,6 +26,7 @@ from botcore import (
     extract_order_id,
     load_dotenv,
     normalize_side,
+    optional_env,
     required_bool_env,
     required_float_env,
     required_int_env,
@@ -1553,7 +1554,17 @@ def _clean_id_set(items) -> set[str]:
     return {cid for x in seq if (cid := clean_order_id(x))}
 
 
-def is_due(rec, now=None):
+def is_fixed_limit_record(rec) -> bool:
+    """Return whether ``rec`` is an explicit fixed-price non-smart LIMIT order (`market=False, smart=False`)."""
+    if not isinstance(rec, dict) or safe_pos_float(rec.get("requested_price"), default=None) is None:
+        return False
+    pk = rec.get("place_kwargs")
+    if not isinstance(pk, dict) or "market" not in pk or "smart" not in pk:
+        return False
+    return _parse_bool_flag(pk.get("market"), True) is False and _parse_bool_flag(pk.get("smart"), True) is False
+
+
+def is_due(rec, now=None, *, poll_interval_sec=None):
     """Return true once the retry interval has elapsed since creation or last attempt."""
     if not isinstance(rec, dict):
         return False
@@ -1574,7 +1585,18 @@ def is_due(rec, now=None):
         if last_att is None:
             return False
         base = max(last_att, created)
-    return claim_until <= now_f and (now_f - base) >= RETRY_INTERVAL_SEC
+    eff_interval = RETRY_INTERVAL_SEC
+    if lifecycle == "submit_pending" and rec.get("last_failure_reason") in {
+        "account_cache_not_fresh",
+        "account_cache_snapshot_changed",
+    }:
+        eff_poll = (
+            safe_pos_float(poll_interval_sec, default=None)
+            or safe_pos_float(optional_env("RETRY_WORKER_POLL_SEC"), default=RETRY_INTERVAL_SEC)
+            or RETRY_INTERVAL_SEC
+        )
+        eff_interval = min(RETRY_INTERVAL_SEC, eff_poll)
+    return claim_until <= now_f and (now_f - base) >= eff_interval
 
 
 def is_retry_price_favorable(side, current_price, requested_price, tol=None) -> bool:
@@ -1596,6 +1618,8 @@ def price_gate_ok(rec, current_price, tol=None):
     """Return whether the current price is favorable relative to the stored request."""
     if not isinstance(rec, dict):
         return False
+    if is_fixed_limit_record(rec):
+        return safe_pos_float(current_price, default=None) is not None
     return is_retry_price_favorable(rec.get("side"), current_price, rec.get("requested_price"), tol=tol)
 
 
