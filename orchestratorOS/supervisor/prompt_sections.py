@@ -745,7 +745,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 extras.append(f"slopes({s_core}{grad_rec_sfx}{fast_sfx})")
             elif g_parts:
                 extras.append(f"g_coeff({', '.join(g_parts)})")
-        if pinfo.get("vol_1h_pct") is not None:
+        if pinfo.get("vol_1h_pct") is not None and safe_pos_float(pinfo.get("atr_1h_pct"), default=None) is None:
             extras.append(f"vol_1h={pinfo.get('vol_1h_pct')}%")
         if atr_parts := format_atr_parts(pinfo):
             extras.append(f"atr({', '.join(atr_parts)})")

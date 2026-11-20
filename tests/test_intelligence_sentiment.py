@@ -13525,11 +13525,14 @@ def test_faza1_multi_horizon_atr_session_vwap_and_intraday_extremes(tmp_path):
     assert "session_extremes" not in p_sib["BTCEUR"]
 
     # 5. Section 3A & Pretrade telemetry render compact ATR, Session VWAP, and sessions
-    sec_3a = "\n".join(_format_market_prices_section({"BTCUSDC": {"price": 62500.0, **m24_btc}}))
+    sec_3a = "\n".join(_format_market_prices_section({"BTCUSDC": {"price": 62500.0, "vol_1h_pct": 0.91, **m24_btc}}))
     assert "session_vwap=$62,250.00 (+0.40%, z=" in sec_3a
     assert "utc_00)" in sec_3a
     assert "sessions(asia=[61100.0, 62900.0], ldn=" in sec_3a
     assert f"atr(15m={m24_btc['atr_15m_pct']:.2f}%, 1h={m24_btc['atr_1h_pct']:.2f}%, 4h={m24_btc['atr_4h_pct']:.2f}%)" in sec_3a
+    assert "vol_1h=" not in sec_3a
+    sec_3a_no_atr1h = "\n".join(_format_market_prices_section({"BTCUSDC": {"price": 62500.0, "vol_1h_pct": 0.91}}))
+    assert "vol_1h=0.91%" in sec_3a_no_atr1h
 
     pt_ctx = SimpleNamespace(
         cachedb_dir=str(tmp_path),
