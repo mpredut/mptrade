@@ -526,6 +526,8 @@ def _fetch_pillar2_snapshot(
     sym_variants: List[str],
     quote_variants: List[str],
     _rj: Callable[[str], Any],
+    *,
+    now_ts: Optional[float] = None,
 ) -> Any:
     if prefix in (CACHE_WHALE_SNAPSHOT_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX) and resolve_asset_session_policy(symbol).is_tokenized_equity:
         return None
@@ -540,7 +542,12 @@ def _fetch_pillar2_snapshot(
             if isinstance(raw_cdir, str):
                 col_cdir = raw_cdir
         if not isinstance(col_cdir, str) or os.path.abspath(col_cdir) == os.path.abspath(cachedb_dir):
-            snap = fetch_guard_snapshot(col, symbol, allow_network=False)
+            snap = fetch_guard_snapshot(
+                col,
+                symbol,
+                now=now_ts if hasattr(col, "_sync_cache_dir_scope") else None,
+                allow_network=False,
+            )
     except Exception:
         snap = None
 
@@ -720,7 +727,7 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
         ob_snap = f_snap = w_snap = None
         try:
             ob_snap = _fetch_pillar2_snapshot(
-                cachedb_dir, symbol, get_orderbook_collector, CACHE_ORDERBOOK_DEPTH_PREFIX, sym_variants, quote_variants, _rj
+                cachedb_dir, symbol, get_orderbook_collector, CACHE_ORDERBOOK_DEPTH_PREFIX, sym_variants, quote_variants, _rj, now_ts=ctx.now_ts
             )
             if ob_snap is not None:
                 raw_imb = obj_attr(ob_snap, "imbalance_ratio", obj_attr(ob_snap, "ob_imbalance", None))
@@ -773,7 +780,7 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
 
         try:
             f_snap = _fetch_pillar2_snapshot(
-                cachedb_dir, symbol, get_derivatives_collector, CACHE_DERIVATIVES_TELEMETRY_PREFIX, sym_variants, quote_variants, _rj
+                cachedb_dir, symbol, get_derivatives_collector, CACHE_DERIVATIVES_TELEMETRY_PREFIX, sym_variants, quote_variants, _rj, now_ts=ctx.now_ts
             )
             if f_snap is not None:
                 fr_f = safe_float(obj_attr(f_snap, "funding_rate", None), default=None)
@@ -791,7 +798,7 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
 
         try:
             w_snap = _fetch_pillar2_snapshot(
-                cachedb_dir, symbol, get_whale_collector, CACHE_WHALE_SNAPSHOT_PREFIX, sym_variants, quote_variants, _rj
+                cachedb_dir, symbol, get_whale_collector, CACHE_WHALE_SNAPSHOT_PREFIX, sym_variants, quote_variants, _rj, now_ts=ctx.now_ts
             )
             if w_snap is not None:
                 raw_lp = obj_attr(w_snap, "top_traders_long_pct", obj_attr(w_snap, "whale_long_pct", None))

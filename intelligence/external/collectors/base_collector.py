@@ -397,6 +397,16 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         )
         self._cache: Dict[str, tuple[float, Any]] = {}
         self._stale_fallback_symbols: set[str] = set()
+        self._cache_origin_dir: Optional[str] = self._effective_cache_dir()
+
+    def _sync_cache_dir_scope(self) -> Optional[str]:
+        """Clear in-memory snapshots whenever the resolved effective cache_dir changes (e.g. MPTRADE_CACHEDB_DIR switch)."""
+        eff_dir = self._effective_cache_dir()
+        if "_cache_origin_dir" in self.__dict__ and eff_dir != self._cache_origin_dir:
+            self._cache.clear()
+            self._stale_fallback_symbols.clear()
+        self._cache_origin_dir = eff_dir
+        return eff_dir
 
     def _invoke_fetch_with_cache_dir(
         self,
@@ -426,12 +436,13 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         )
         if dir_changed:
             self.cache_dir = override_dir
-            self._cache.clear()
+            self._sync_cache_dir_scope()
         try:
             return fetch_fn(eff_sym, allow_network=allow_network, now=eff_now)
         finally:
             if dir_changed:
                 self.cache_dir = prev_dir
+                self._sync_cache_dir_scope()
 
     def read_snapshot(
         self,
@@ -473,6 +484,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         return sym_clean, list(dict.fromkeys([sym_clean, *raw_vars]))
 
     def _lookup_cached(self, symbol: str, now: float, *, exact_only: bool = False) -> Tuple[Any, Any]:
+        self._sync_cache_dir_scope()
         sym_clean, cands = self._resolve_lookup_candidates(symbol, exact_only=exact_only)
         sym_clean_u = sym_clean.upper()
         first_cached = None
@@ -615,6 +627,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         return call_oi, put_oi, total_opt, oi_shares, oi_usd
 
     def record_snapshot(self, item: Any, save_to_disk: bool = False) -> None:
+        self._sync_cache_dir_scope()
         if isinstance(item, dict):
             item = self._SNAPSHOT_CLS.from_dict(item)
         if item is None or not isinstance(getattr(item, "symbol", None), str) or not item.symbol.strip():

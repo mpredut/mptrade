@@ -2674,6 +2674,170 @@ def test_live_cycle_avoids_start_ts_backdating_and_fast_microstructure_deltas(tm
     assert res_det["ts"] == pytest.approx(t_det)
 
 
+def test_orderbook_shared_deadline_singleton_cache_isolation_and_pre_faza3_seams(tmp_path, monkeypatch):
+    """Verify shared wall-clock timeout budget in OrderbookDepthCollector/MacroBenchmarks, cross-dir cache isolation, and Faza 3 SSOT primitives."""
+    from botcore import resolve_remaining_timeout_sec
+    from intelligence.external.collectors import orderbook_depth_collector as ob_mod
+    from intelligence.sentiment.collectors import macro_telemetry_collector as mtc_mod
+    from providers.ohlc_utils import resolve_yahoo_chart_market_state_and_price
+    from state_io import save_json_state
+
+    # 1. Shared deadline primitive (core/time_market.py)
+    assert resolve_remaining_timeout_sec(None, 4.0) == pytest.approx(4.0)
+    assert resolve_remaining_timeout_sec(100.0, 4.0, min_timeout=2.0, now_mono=90.0) == pytest.approx(4.0)
+    assert resolve_remaining_timeout_sec(100.0, 4.0, min_timeout=2.0, now_mono=97.5) == pytest.approx(2.5)
+    assert resolve_remaining_timeout_sec(100.0, 4.0, min_timeout=2.0, now_mono=98.5) is None
+    assert resolve_remaining_timeout_sec(100.0, 4.0, min_timeout=0.0, now_mono=100.1) is None
+
+    # 2. OrderbookDepthCollector skips slow auxiliary nSigFigs=3 & agg_spot_cvd when remaining budget drops below floor
+    #    while still committing the primary Hyperliquid orderbook with post-fetch wall-clock ts.
+    mono_clock = [1000.0]
+    wall_clock = [1_795_400_000.0]
+    monkeypatch.setattr(ob_mod.time, "monotonic", lambda: mono_clock[0])
+    monkeypatch.setattr("core.time_market._time.monotonic", lambda: mono_clock[0])
+    monkeypatch.setattr(ob_mod, "resolve_now_ts", lambda v=None: float(v) if v is not None else wall_clock[0])
+    monkeypatch.setattr("intelligence.external.collectors.base_collector.resolve_now_ts", lambda v=None: float(v) if v is not None else wall_clock[0])
+
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path / "ob_budget"), cache_ttl_sec=0.0, disk_ttl_sec=0.0, start_sync=True)
+    calls_seen: list[tuple[str, float]] = []
+
+    def _fake_fetch_json_dict(url, label, _sym, *, timeout=5.0, user_agent=""):
+        calls_seen.append((label, float(timeout)))
+        if label == "depth":
+            mono_clock[0] += 5.5
+            wall_clock[0] += 5.5
+            # Narrow 20-level HL book (< +/-0.8% around mid=65.0) triggers nSigFigs extension
+            return {
+                "levels": [
+                    [{"px": f"{64.99 - i * 0.01:.2f}", "sz": "100"} for i in range(20)],
+                    [{"px": f"{65.01 + i * 0.01:.2f}", "sz": "100"} for i in range(20)],
+                ]
+            }
+        if label == "depth_agg" and "nSigFigs=4" in url:
+            mono_clock[0] += 5.1  # 10.6s elapsed out of 12.5s budget -> only 1.9s left (< 2.0s floor)
+            wall_clock[0] += 5.1
+            return {
+                "levels": [
+                    [{"px": "64.40", "sz": "250"}],
+                    [{"px": "65.60", "sz": "250"}],
+                ]
+            }
+        raise AssertionError(f"Unexpected auxiliary call after budget exhaustion: {label} {url}")
+
+    monkeypatch.setattr(ob_col, "_fetch_json_dict", _fake_fetch_json_dict)
+    snap_hl = ob_col.fetch("HYPEUSDC", allow_network=True)
+    assert snap_hl is not None
+    assert snap_hl.mid_price == pytest.approx(65.0)
+    # nSigFigs=4 ran with remaining budget (min(4.0, 7.0) == 4.0), nSigFigs=3 and spot CVD were skipped cleanly
+    assert [lbl for lbl, _ in calls_seen] == ["depth", "depth_agg"]
+    assert calls_seen[1][1] == pytest.approx(4.0)
+    # Post-fetch live timestamp was stamped after HTTP latency (not backdated to pre-fetch start)
+    assert snap_hl.ts == pytest.approx(1_795_400_010.6)
+
+    # 2b. When spot_cvd succeeds but leaves < 2.5s budget, agg_spot_cvd is skipped without dropping local spot_cvd or primary book
+    ob_cvd = OrderbookDepthCollector(cache_dir=str(tmp_path / "ob_agg_skip"), cache_ttl_sec=0.0, disk_ttl_sec=0.0, start_sync=True)
+    cvd_urls_seen: list[str] = []
+    mono_clock[0] = 2000.0
+    wall_clock[0] = 1_795_400_050.0
+
+    def _fake_spot_cvd_payload(url, _body):
+        cvd_urls_seen.append(url)
+        mono_clock[0] += 10.2  # Leaves 2.3s < 2.5s _AGG_CVD_MIN_BUDGET_SEC -> agg_spot_cvd must skip
+        wall_clock[0] += 10.2
+        return [
+            [1_795_399_200_000, "100", "101", "99", "100.5", "500", 1_795_399_260_000, "50000", 10, "350", "35000", "0"]
+        ]
+
+    monkeypatch.setattr(ob_cvd, "_fetch_spot_cvd_payload", _fake_spot_cvd_payload)
+    local_cvd = ob_cvd._resolve_real_spot_cvd_15m(
+        "TAOUSDC",
+        venue="binance",
+        now=wall_clock[0],
+        deadline_mono=mono_clock[0] + ob_cvd._FETCH_DEADLINE_SEC,
+    )
+    assert local_cvd is not None and local_cvd > 0.0
+    assert len(cvd_urls_seen) == 1  # Local spot CVD ran; agg_spot_cvd was cleanly skipped under tight budget
+    assert ("binance", "TAOUSDC") not in ob_cvd._agg_spot_cvd_memo
+
+    # 3. _DiskBackedSymbolCollector clears in-memory cache automatically when MPTRADE_CACHEDB_DIR changes
+    dir_a = tmp_path / "cache_a"
+    dir_b = tmp_path / "cache_b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    t_base = 1_795_400_100.0
+    save_json_state(
+        str(dir_a / "orderbook_depth_BTCUSDC.json"),
+        {"symbol": "BTCUSDC", "mid_price": 71000.0, "best_bid": 70999.0, "best_ask": 71001.0, "bid_depth_usd": 5e5, "ask_depth_usd": 5e5, "imbalance_ratio": 0.5, "ts": t_base},
+    )
+    save_json_state(
+        str(dir_b / "orderbook_depth_BTCUSDC.json"),
+        {"symbol": "BTCUSDC", "mid_price": 62000.0, "best_bid": 61999.0, "best_ask": 62001.0, "bid_depth_usd": 5e5, "ask_depth_usd": 5e5, "imbalance_ratio": 0.5, "ts": t_base - 5.0},
+    )
+    monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(dir_a))
+    iso_col = OrderbookDepthCollector(cache_dir="cachedb", cache_ttl_sec=60.0, disk_ttl_sec=120.0, start_sync=False)
+    s_a = iso_col.fetch("BTCUSDC", allow_network=False, now=t_base + 1.0)
+    assert s_a is not None and s_a.mid_price == pytest.approx(71000.0)
+    monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(dir_b))
+    s_b = iso_col.fetch("BTCUSDC", allow_network=False, now=t_base + 1.0)
+    assert s_b is not None and s_b.mid_price == pytest.approx(62000.0)
+
+    # 4. Pre-Faza-3 SSOT seams: Yahoo extended-hours price/state resolver & MacroTelemetryCollectorBase fresh cache guard
+    st_pre, px_pre, ext_pre = resolve_yahoo_chart_market_state_and_price(
+        {"marketState": "PRE", "regularMarketPrice": 150.0, "preMarketPrice": 154.5, "postMarketPrice": 148.0},
+        now_ts=t_base,
+    )
+    assert (st_pre, px_pre, ext_pre) == ("PRE", 154.5, 154.5)
+
+    st_post, px_post, ext_post = resolve_yahoo_chart_market_state_and_price(
+        {"marketState": "POST", "regularMarketPrice": 150.0, "preMarketPrice": 154.5, "postMarketPrice": 147.25},
+        now_ts=t_base,
+    )
+    assert (st_post, px_post, ext_post) == ("POST", 147.25, 147.25)
+
+    st_inf, px_inf, ext_inf = resolve_yahoo_chart_market_state_and_price(
+        {
+            "hasPrePostMarketData": True,
+            "regularMarketPrice": 200.0,
+            "regularMarketTime": t_base - 1200.0,
+            "currentTradingPeriod": {
+                "pre": {"start": t_base - 30000.0, "end": t_base - 15000.0},
+                "regular": {"start": t_base - 15000.0, "end": t_base - 1200.0},
+                "post": {"start": t_base - 1200.0, "end": t_base + 3600.0},
+            },
+        },
+        pts=[(t_base - 1500.0, 200.0), (t_base - 60.0, 205.5)],
+        now_ts=t_base,
+    )
+    assert (st_inf, px_inf, ext_inf) == ("POST", 205.5, 205.5)
+
+    # MacroTelemetryCollectorBase._read_fresh_cached_snapshot honors skip_if_fresh_sec & health predicate
+    mb_col = MacroBenchmarksSnapshotCollector(start_sync=False)
+    cal_dir = tmp_path / "macro_cal_guard"
+    cal_dir.mkdir()
+    save_json_state(str(cal_dir / "macro_calendar_collect.json"), {"ts": t_base - 300.0, "events_ok": True, "earnings_ok": False})
+    prev_unhealthy, is_fresh_bad = mb_col._read_fresh_cached_snapshot(
+        str(cal_dir),
+        "macro_calendar_files",
+        "macro_calendar_collect.json",
+        now_ts=t_base,
+        skip_if_fresh_sec=1800.0,
+        is_healthy_fn=lambda d: bool(d.get("events_ok") and d.get("earnings_ok")),
+    )
+    assert prev_unhealthy is not None and is_fresh_bad is False
+    save_json_state(str(cal_dir / "macro_calendar_collect.json"), {"ts": t_base - 300.0, "events_ok": True, "earnings_ok": True})
+    prev_ok, is_fresh_ok = mb_col._read_fresh_cached_snapshot(
+        str(cal_dir),
+        "macro_calendar_files",
+        "macro_calendar_collect.json",
+        now_ts=t_base,
+        skip_if_fresh_sec=1800.0,
+        is_healthy_fn=lambda d: bool(d.get("events_ok") and d.get("earnings_ok")),
+    )
+    assert prev_ok is not None and is_fresh_ok is True
+    assert hasattr(mtc_mod.MacroBenchmarksSnapshotCollector, "_FETCH_DEADLINE_SEC")
+
+
+
 
 
 

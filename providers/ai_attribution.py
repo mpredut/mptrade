@@ -69,6 +69,7 @@ _CB_TAG_RE = re.compile(r"^([a-z0-9_]+)")
 _LOG_DAY_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 _LOG_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})")
 _ESCALATE_MODEL_RE = re.compile(r"Escalating reasoning effort to\s+([^\s]+)\s+for high-signal cycle")
+_DELTA_GATE_WAKE_RE = re.compile(r"\[DELTA GATE\]\s+Wake LLM\s+\(([A-Za-z0-9_]+)")
 _AUDIT_SKIP_EVENTS = frozenset({"submit_requested", "submit_refused", "cancel_requested", "cancel_accepted", "cancel_rejected", "status_error"})
 
 
@@ -383,6 +384,7 @@ def summarize_delta_gate_logs(
     llm_cycles = 0
     escalations = 0
     escalated_models: dict[str, int] = {}
+    wake_reasons: dict[str, int] = {}
 
     for line in log_lines:
         if not isinstance(line, str) or not line:
@@ -400,6 +402,10 @@ def summarize_delta_gate_logs(
                     pass
         if "[DELTA GATE] Delta-Gate HOLD carry-forward" in line:
             skips += 1
+        elif m_wake := _DELTA_GATE_WAKE_RE.search(line):
+            w_tag = m_wake.group(1).strip().lower()
+            if w_tag:
+                wake_reasons[w_tag] = wake_reasons.get(w_tag, 0) + 1
         elif "Autonomous AI Supervisor cycle complete:" in line:
             llm_cycles += 1
         elif m_esc := _ESCALATE_MODEL_RE.search(line):
@@ -418,6 +424,7 @@ def summarize_delta_gate_logs(
         "calls_saved_pct": saved_pct,
         "high_effort_escalations": escalations,
         "escalated_models": escalated_models,
+        "wake_reasons": wake_reasons,
         "last_eval_model": clean_scalar_str(ev_map.get("model_used")) or "",
         "last_eval_ts": round(parse_pos_epoch_s(ev_map.get("ts")) or 0.0, 3),
     }
@@ -1015,6 +1022,12 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
             f"high_escalations={safe_nonneg_int(dg.get('high_effort_escalations'), 0)}, "
             f"last_model={dg.get('last_eval_model') or 'n/a'} --"
         )
+        if wake_rs := (dg.get("wake_reasons") if isinstance(dg.get("wake_reasons"), Mapping) else {}):
+            top_wakes = ", ".join(
+                f"{k}={v}" for k, v in sorted(wake_rs.items(), key=lambda kv: (-safe_nonneg_int(kv[1], 0), str(kv[0])))[:6]
+            )
+            if top_wakes:
+                lines.append(f"  Wake reasons: {top_wakes}")
 
     eq = report.get("execution_quality") if isinstance(report.get("execution_quality"), Mapping) else {}
     if eq and (safe_nonneg_int(eq.get("limit_filled"), 0) + safe_nonneg_int(eq.get("market_filled"), 0)) > 0:

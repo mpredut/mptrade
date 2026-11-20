@@ -7,6 +7,7 @@ import glob as _glob
 import logging
 import math
 import os
+import time as _time
 from typing import Any, Callable, Dict, List, Optional
 
 from botcore import (
@@ -24,6 +25,7 @@ from botcore import (
     normalize_epoch_sec,
     resolve_now_ts,
     resolve_patched_attr,
+    resolve_remaining_timeout_sec,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -129,7 +131,10 @@ from providers.intent_state import (
     collect_known_ai_order_ids,
     extract_intent_notional,
 )
-from providers.ohlc_utils import extract_yahoo_chart_result_and_quote
+from providers.ohlc_utils import (
+    extract_yahoo_chart_result_and_quote,
+    resolve_yahoo_chart_market_state_and_price,
+)
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
     read_json_recovering,
@@ -228,12 +233,35 @@ class MacroTelemetryCollectorBase(TelemetryCacheCollectorInterface, ABC):
         """Read the first non-empty dict matching configured cache filenames for ``group_key``."""
         return _read_first_cached_dict(cache_dir, group_key, default_file, read_json_fn)
 
+    def _read_fresh_cached_snapshot(
+        self,
+        cache_dir: str,
+        group_key: str,
+        default_file: str,
+        *,
+        now_ts: float,
+        skip_if_fresh_sec: float = 0.0,
+        read_json_fn: Any = None,
+        is_healthy_fn: Optional[Callable[[Dict[str, Any]], bool]] = None,
+    ) -> tuple[Optional[Dict[str, Any]], bool]:
+        """Read cached snapshot and indicate whether it satisfies ``skip_if_fresh_sec`` and ``is_healthy_fn``."""
+        prev_snap, _ = self._read_cached_dict(cache_dir, group_key, default_file, read_json_fn=read_json_fn)
+        fresh_guard_sec = safe_nonneg_float(skip_if_fresh_sec, 0.0) or 0.0
+        if fresh_guard_sec <= 0.0 or not isinstance(prev_snap, dict):
+            return prev_snap, False
+        if callable(is_healthy_fn) and not is_healthy_fn(prev_snap):
+            return prev_snap, False
+        prev_ts = normalize_epoch_sec(prev_snap.get("ts"), default=0.0) or 0.0
+        return prev_snap, bool(prev_ts > 0.0 and 0.0 <= (now_ts - prev_ts) < fresh_guard_sec)
+
 
 class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
     """Concrete collector (Level 3) fetching SPY/QQQ/ES=F/NQ=F/VIX/DXY/US10Y/IBIT/Deribit DVOL benchmarks."""
 
     cls_name = "MacroBenchmarksSnapshotCollector"
     COLLECTOR_ID = "macro_benchmarks_snapshot"
+    # Shared wall-clock budget strictly below GlobalTelemetryCollector's 15.0s macro_benchmarks step timeout.
+    _FETCH_DEADLINE_SEC = 12.5
 
     def collect(
         self,
@@ -256,13 +284,18 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                 read_json_fn=read_json_fn,
             )[0]
         cache_dir = cachedb_dir
+        explicit_now = now_ts is not None
         eff_now = resolve_now_ts(now_ts)
         _fetch = self._resolve_fetch_fn(fetch_fn)
+        deadline_mono = (_time.monotonic() + self._FETCH_DEADLINE_SEC) if fetch_fn is None else None
         items: Dict[str, Dict[str, Any]] = {}
         for label, yahoo_sym, unit_kind in MACRO_BENCHMARK_SPECS:
+            req_to = resolve_remaining_timeout_sec(deadline_mono, timeout_sec, min_timeout=0.8)
+            if req_to is None:
+                break
             try:
                 url = get_yahoo_chart_url(yahoo_sym)
-                raw = _fetch(url, timeout=timeout_sec, headers={"User-Agent": "Mozilla/5.0"})
+                raw = _fetch(url, timeout=req_to, headers={"User-Agent": "Mozilla/5.0"})
                 res, _, ts_list, q_obj = extract_yahoo_chart_result_and_quote(raw)
                 if res is None:
                     continue
@@ -277,38 +310,7 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                     key=lambda pt: pt[0],
                 )
                 pts_24h = ([p for p in pts if p[0] >= pts[-1][0] - 86400.0] or pts) if pts else []
-                mkt_state = str(meta.get("marketState") or "").strip().upper()
-                reg_time_s = normalize_epoch_sec(meta.get("regularMarketTime"), default=None)
-                if not mkt_state and _parse_bool_flag(meta.get("hasPrePostMarketData"), False) and isinstance(ctp := meta.get("currentTradingPeriod"), dict):
-                    reg_d, pre_d, post_d = coerce_dict_maps(
-                        ctp.get("regular"), ctp.get("pre"), ctp.get("post")
-                    )
-                    r_start = normalize_epoch_sec(reg_d.get("start"), default=None)
-                    r_end = normalize_epoch_sec(reg_d.get("end"), default=None)
-                    pre_start = normalize_epoch_sec(pre_d.get("start"), default=None)
-                    post_end = normalize_epoch_sec(post_d.get("end"), default=None)
-                    bar_ts = pts[-1][0] if pts else None
-                    probe_ts = eff_now if (eff_now > 0.0 and bar_ts is not None and eff_now > bar_ts + 900.0) else (bar_ts or eff_now)
-                    if r_start is not None and r_end is not None and probe_ts > 0.0:
-                        if pre_start is not None and pre_start <= probe_ts < r_start:
-                            mkt_state = "PRE"
-                        elif r_start <= probe_ts <= r_end:
-                            mkt_state = "REGULAR"
-                        elif post_end is not None and r_end < probe_ts <= post_end:
-                            mkt_state = "POST"
-                        else:
-                            mkt_state = "CLOSED"
-                ext_px = None
-                if mkt_state in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT") or not mkt_state:
-                    ext_px = first_pos_float(meta.get("postMarketPrice"), meta.get("preMarketPrice"))
-                    if ext_px is None and reg_time_s is not None and pts and pts[-1][0] > reg_time_s + 60.0:
-                        ext_px = pts[-1][1]
-                px = first_pos_float(
-                    meta.get("fulldayPrice"),
-                    ext_px,
-                    meta.get("regularMarketPrice"),
-                    pts[-1][1] if pts else None,
-                )
+                mkt_state, px, ext_px = resolve_yahoo_chart_market_state_and_price(meta, pts, now_ts=eff_now)
                 if px is None:
                     continue
                 chg_24h = next(
@@ -380,66 +382,74 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
         extra_macro: Dict[str, Any] = {}
         if fetch_fn is None:
             # 1. Coinbase BTC Premium Index (Coinbase BTC-USD vs SSOT cacheManager BTCUSDC / fallback Binance HTTP)
-            try:
-                cb_raw = _fetch(_cfg_str("feeds", "coinbase_btc_ticker_url"), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
-                cb_px = safe_pos_float((cb_raw or {}).get("price") if isinstance(cb_raw, dict) else None, default=None)
-                bn_px = resolve_ssot_price_from_cache("BTCUSDC", cache_dir=cache_dir, max_age_sec=60.0, now_ts=eff_now)
-                if bn_px is None:
-                    bn_raw = _fetch(_cfg_str("feeds", "binance_btc_ticker_url"), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
-                    bn_px = safe_pos_float((bn_raw or {}).get("price") if isinstance(bn_raw, dict) else None, default=None)
-                if cb_px and bn_px and bn_px > 0:
-                    cb_bps = round(((cb_px - bn_px) / bn_px) * 10000.0, 2) + 0.0
-                    extra_macro["coinbase_premium_bps"] = cb_bps
-                    extra_macro["coinbase_premium_regime"] = (
-                        "US_INSTITUTIONAL_BUYING" if cb_bps >= 5.0 else ("US_SPOT_SELLING_PRESSURE" if cb_bps <= -5.0 else "NEUTRAL")
-                    )
-            except Exception:
-                pass
-            # 2. Deribit BTC / ETH Implied Volatility Index (DVOL) & Institutional Options Surface
-            try:
-                end_ms = math.trunc(eff_now * 1000)
-                start_ms = end_ms - 3600 * 1000
-                dvol_tpl = _cfg_str("feeds", "deribit_dvol_url_template")
-                hvol_tpl = _cfg_str("feeds", "deribit_hist_vol_url_template")
-                obook_tpl = _cfg_str("feeds", "deribit_options_book_url_template")
-                for ccy in get_deribit_options_currencies():
-                    d_key = f"{ccy.lower()}_dvol"
-                    d_raw = _fetch(dvol_tpl.format(currency=ccy, start_ms=start_ms, end_ms=end_ms), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
-                    d_data = ((d_raw or {}).get("result") or {}).get("data") if isinstance(d_raw, dict) else None
-                    if isinstance(d_data, list) and d_data and isinstance(d_data[-1], list) and len(d_data[-1]) >= 5:
-                        if (dv := safe_pos_float(d_data[-1][4], default=None)) is not None:
-                            extra_macro[d_key] = round(dv, 2)
-                    rv_val: Optional[float] = None
-                    try:
-                        hv_raw = _fetch(hvol_tpl.format(currency=ccy), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
-                        hv_res = (hv_raw or {}).get("result") if isinstance(hv_raw, dict) else None
-                        if isinstance(hv_res, list) and hv_res and isinstance(hv_res[-1], list) and len(hv_res[-1]) >= 2:
-                            rv_val = safe_pos_float(hv_res[-1][1], default=None)
-                    except Exception:
-                        pass
-                    opt_books_list: Any = None
-                    try:
-                        ob_raw = _fetch(obook_tpl.format(currency=ccy), timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
-                        opt_books_list = (ob_raw or {}).get("result") if isinstance(ob_raw, dict) else None
-                    except Exception:
-                        pass
-                    extra_macro.update(
-                        compute_deribit_options_surface(
-                            opt_books_list,
-                            currency=ccy,
-                            dvol=extra_macro.get(d_key),
-                            rv=rv_val,
+            if (cb_to := resolve_remaining_timeout_sec(deadline_mono, 2.0, min_timeout=1.0)) is not None:
+                try:
+                    cb_raw = _fetch(_cfg_str("feeds", "coinbase_btc_ticker_url"), timeout=cb_to, headers={"User-Agent": "Mozilla/5.0"})
+                    cb_px = safe_pos_float((cb_raw or {}).get("price") if isinstance(cb_raw, dict) else None, default=None)
+                    bn_px = resolve_ssot_price_from_cache("BTCUSDC", cache_dir=cache_dir, max_age_sec=60.0, now_ts=eff_now)
+                    if bn_px is None and (bn_to := resolve_remaining_timeout_sec(deadline_mono, 2.0, min_timeout=0.8)) is not None:
+                        bn_raw = _fetch(_cfg_str("feeds", "binance_btc_ticker_url"), timeout=bn_to, headers={"User-Agent": "Mozilla/5.0"})
+                        bn_px = safe_pos_float((bn_raw or {}).get("price") if isinstance(bn_raw, dict) else None, default=None)
+                    if cb_px and bn_px and bn_px > 0:
+                        cb_bps = round(((cb_px - bn_px) / bn_px) * 10000.0, 2) + 0.0
+                        extra_macro["coinbase_premium_bps"] = cb_bps
+                        extra_macro["coinbase_premium_regime"] = (
+                            "US_INSTITUTIONAL_BUYING" if cb_bps >= 5.0 else ("US_SPOT_SELLING_PRESSURE" if cb_bps <= -5.0 else "NEUTRAL")
                         )
-                    )
-                if "btc_dvol" in extra_macro:
-                    bv = extra_macro["btc_dvol"]
-                    extra_macro["options_vol_regime"] = "HIGH_IV_EVENT_HEDGING" if bv >= 62.0 else ("COMPRESSED_IV" if bv <= 42.0 else "NORMAL_IV")
-            except Exception:
-                pass
+                except Exception:
+                    pass
+            # 2. Deribit BTC / ETH Implied Volatility Index (DVOL) & Institutional Options Surface
+            if resolve_remaining_timeout_sec(deadline_mono, 2.0, min_timeout=1.2) is not None:
+                try:
+                    end_ms = math.trunc(eff_now * 1000)
+                    start_ms = end_ms - 3600 * 1000
+                    dvol_tpl = _cfg_str("feeds", "deribit_dvol_url_template")
+                    hvol_tpl = _cfg_str("feeds", "deribit_hist_vol_url_template")
+                    obook_tpl = _cfg_str("feeds", "deribit_options_book_url_template")
+                    for ccy in get_deribit_options_currencies():
+                        dvol_to = resolve_remaining_timeout_sec(deadline_mono, 2.0, min_timeout=1.0)
+                        if dvol_to is None:
+                            break
+                        d_key = f"{ccy.lower()}_dvol"
+                        d_raw = _fetch(dvol_tpl.format(currency=ccy, start_ms=start_ms, end_ms=end_ms), timeout=dvol_to, headers={"User-Agent": "Mozilla/5.0"})
+                        d_data = ((d_raw or {}).get("result") or {}).get("data") if isinstance(d_raw, dict) else None
+                        if isinstance(d_data, list) and d_data and isinstance(d_data[-1], list) and len(d_data[-1]) >= 5:
+                            if (dv := safe_pos_float(d_data[-1][4], default=None)) is not None:
+                                extra_macro[d_key] = round(dv, 2)
+                        rv_val: Optional[float] = None
+                        if (hv_to := resolve_remaining_timeout_sec(deadline_mono, 2.0, min_timeout=0.8)) is not None:
+                            try:
+                                hv_raw = _fetch(hvol_tpl.format(currency=ccy), timeout=hv_to, headers={"User-Agent": "Mozilla/5.0"})
+                                hv_res = (hv_raw or {}).get("result") if isinstance(hv_raw, dict) else None
+                                if isinstance(hv_res, list) and hv_res and isinstance(hv_res[-1], list) and len(hv_res[-1]) >= 2:
+                                    rv_val = safe_pos_float(hv_res[-1][1], default=None)
+                            except Exception:
+                                pass
+                        opt_books_list: Any = None
+                        if (ob_to := resolve_remaining_timeout_sec(deadline_mono, 2.5, min_timeout=1.0)) is not None:
+                            try:
+                                ob_raw = _fetch(obook_tpl.format(currency=ccy), timeout=ob_to, headers={"User-Agent": "Mozilla/5.0"})
+                                opt_books_list = (ob_raw or {}).get("result") if isinstance(ob_raw, dict) else None
+                            except Exception:
+                                pass
+                        extra_macro.update(
+                            compute_deribit_options_surface(
+                                opt_books_list,
+                                currency=ccy,
+                                dvol=extra_macro.get(d_key),
+                                rv=rv_val,
+                            )
+                        )
+                    if "btc_dvol" in extra_macro:
+                        bv = extra_macro["btc_dvol"]
+                        extra_macro["options_vol_regime"] = "HIGH_IV_EVENT_HEDGING" if bv >= 62.0 else ("COMPRESSED_IV" if bv <= 42.0 else "NORMAL_IV")
+                except Exception:
+                    pass
 
         extra_macro.update(compute_futures_premarket_lead({"items": items}))
+        payload_ts = eff_now if explicit_now else resolve_now_ts(None)
         payload: Dict[str, Any] = {
-            "ts": eff_now,
+            "ts": payload_ts,
             "items": items,
             "equity_regime": compute_equity_macro_regime({"items": items, **extra_macro}),
             **extra_macro,
@@ -488,25 +498,21 @@ class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
         skip_if_fresh_sec: float = 0.0,
         **kwargs: Any,
     ) -> Optional[Dict[str, Any]]:
-        prev_snap, _ = self._read_cached_dict(
+        eff_now = resolve_now_ts(now_ts)
+        prev_snap, is_fresh_cached = self._read_fresh_cached_snapshot(
             cachedb_dir,
             "macro_calendar_files",
             CACHE_MACRO_CALENDAR_FILENAME,
+            now_ts=eff_now,
+            skip_if_fresh_sec=skip_if_fresh_sec,
             read_json_fn=read_json_fn,
+            is_healthy_fn=lambda d: _parse_bool_flag(d.get("events_ok"), False)
+            and _parse_bool_flag(d.get("earnings_ok"), False),
         )
         if not allow_network and fetch_fn is None:
             return prev_snap
-        eff_now = resolve_now_ts(now_ts)
-        fresh_guard_sec = safe_nonneg_float(skip_if_fresh_sec, 0.0) or 0.0
-        if (
-            fresh_guard_sec > 0.0
-            and isinstance(prev_snap, dict)
-            and _parse_bool_flag(prev_snap.get("events_ok"), False)
-            and _parse_bool_flag(prev_snap.get("earnings_ok"), False)
-        ):
-            prev_ts_chk = normalize_epoch_sec(prev_snap.get("ts"), default=0.0) or 0.0
-            if prev_ts_chk > 0.0 and 0.0 <= (eff_now - prev_ts_chk) < fresh_guard_sec:
-                return prev_snap
+        if is_fresh_cached and prev_snap is not None:
+            return prev_snap
         _fetch = self._resolve_fetch_fn(fetch_fn)
         dt_ny = _mss.resolve_secondary_ny_datetime(eff_now)
         tz_ny = dt_ny.tzinfo or timezone.utc

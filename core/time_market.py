@@ -142,6 +142,32 @@ def resolve_now_ms(now_ms: object = None) -> int:
     return parsed if parsed is not None else round(resolve_now_ts() * 1000.0)
 
 
+def resolve_remaining_timeout_sec(
+    deadline_mono: float | None,
+    max_timeout: float,
+    *,
+    min_timeout: float = 0.0,
+    now_mono: float | None = None,
+) -> float | None:
+    """Return remaining seconds until ``deadline_mono`` capped at ``max_timeout``, or ``None`` if below ``min_timeout``."""
+    cap = safe_pos_float(max_timeout, default=None)
+    if cap is None:
+        return None
+    if deadline_mono is None:
+        return cap
+    dl = safe_float(deadline_mono, default=None)
+    if dl is None:
+        return cap
+    cur = safe_float(now_mono, default=None)
+    if cur is None:
+        cur = _time.monotonic()
+    rem = dl - cur
+    floor = safe_nonneg_float(min_timeout, default=0.0) or 0.0
+    if rem <= 0.0 or (floor > 0.0 and rem < floor):
+        return None
+    return min(cap, rem)
+
+
 _TIMESTAMP_KEYS = (
     "timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime",
     "filledAt", "dateExecuted", "dateModified", "createdAt", "dateCreated", "T", "E", "ts", "ts_ms",

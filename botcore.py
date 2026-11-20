@@ -280,6 +280,7 @@ from core.time_market import (  # noqa: E402
     parse_iso_datetime_utc,
     resolve_now_ms,
     resolve_now_ts,
+    resolve_remaining_timeout_sec,
     resolve_sustained_sample_rate,
     safe_nonneg_ts,
     secondsToDays,

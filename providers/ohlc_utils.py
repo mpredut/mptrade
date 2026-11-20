@@ -13,8 +13,10 @@ from botcore import (
     _prices_diverged as _yahoo_bar_prices_diverged,
     clean_scalar_str,
     clean_upper_scalar,
+    coerce_dict_maps,
     exact_int,
     exact_pos_int,
+    first_pos_float,
     normalize_epoch_sec,
     require_finite_float,
     require_int,
@@ -55,6 +57,7 @@ __all__ = [
     "require_ohlc_symbol",
     "require_pos_ohlc_interval",
     "resolve_ohlc_time_window_ms",
+    "resolve_yahoo_chart_market_state_and_price",
     "series_to_historical_points",
     "split_bar_clv_turnover_usd",
     "validate_dataset",
@@ -678,6 +681,62 @@ def extract_yahoo_chart_latest_price(payload: Any, *, decimals: Optional[int] = 
     if val is None:
         return None
     return round(val, dec_i) if dec_i is not None else val
+
+
+def resolve_yahoo_chart_market_state_and_price(
+    meta: Any,
+    pts: Sequence[tuple[float, float]] = (),
+    *,
+    now_ts: Optional[float] = None,
+) -> tuple[str, Optional[float], Optional[float]]:
+    """Resolve ``(market_state, price, extended_price)`` from Yahoo chart ``meta`` and sorted ``(ts_sec, close)`` points."""
+    meta_d = meta if isinstance(meta, Mapping) else {}
+    eff_now = resolve_now_ts(now_ts) if now_ts is not None else 0.0
+    mkt_state = str(meta_d.get("marketState") or "").strip().upper()
+    reg_time_s = normalize_epoch_sec(meta_d.get("regularMarketTime"), default=None)
+    if (
+        not mkt_state
+        and _parse_bool_flag(meta_d.get("hasPrePostMarketData"), False)
+        and isinstance(ctp := meta_d.get("currentTradingPeriod"), Mapping)
+    ):
+        reg_d, pre_d, post_d = coerce_dict_maps(
+            ctp.get("regular"), ctp.get("pre"), ctp.get("post")
+        )
+        r_start = normalize_epoch_sec(reg_d.get("start"), default=None)
+        r_end = normalize_epoch_sec(reg_d.get("end"), default=None)
+        pre_start = normalize_epoch_sec(pre_d.get("start"), default=None)
+        post_end = normalize_epoch_sec(post_d.get("end"), default=None)
+        bar_ts = pts[-1][0] if pts else None
+        probe_ts = (
+            eff_now
+            if (eff_now > 0.0 and bar_ts is not None and eff_now > bar_ts + 900.0)
+            else (bar_ts or eff_now)
+        )
+        if r_start is not None and r_end is not None and probe_ts > 0.0:
+            if pre_start is not None and pre_start <= probe_ts < r_start:
+                mkt_state = "PRE"
+            elif r_start <= probe_ts <= r_end:
+                mkt_state = "REGULAR"
+            elif post_end is not None and r_end < probe_ts <= post_end:
+                mkt_state = "POST"
+            else:
+                mkt_state = "CLOSED"
+    ext_px: Optional[float] = None
+    if mkt_state in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT") or not mkt_state:
+        ext_px = (
+            first_pos_float(meta_d.get("preMarketPrice"), meta_d.get("postMarketPrice"))
+            if mkt_state in ("PRE", "PREPRE")
+            else first_pos_float(meta_d.get("postMarketPrice"), meta_d.get("preMarketPrice"))
+        )
+        if ext_px is None and reg_time_s is not None and pts and pts[-1][0] > reg_time_s + 60.0:
+            ext_px = safe_pos_float(pts[-1][1], default=None)
+    px = first_pos_float(
+        meta_d.get("fulldayPrice"),
+        ext_px,
+        meta_d.get("regularMarketPrice"),
+        pts[-1][1] if pts else None,
+    )
+    return mkt_state, px, ext_px
 
 
 def extract_yahoo_intraday_chart_bars(

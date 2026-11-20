@@ -9,10 +9,20 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import clean_scale, fetch_json_post, lru_dict_put, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import (
+    clean_scale,
+    fetch_json_post,
+    lru_dict_put,
+    resolve_now_ts,
+    resolve_remaining_timeout_sec,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from intelligence.macro_sentiment_ssot import (
     fetch_public_json,
     resolve_derived_telemetry_intervals,
@@ -120,6 +130,10 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
     _DEFAULT_DISK_TTL_SEC = 60.0
     _FALLBACK_CACHE_TTL_SEC = 5.0
     _FALLBACK_DISK_TTL_SEC = 60.0
+    # Shared wall-clock budget per symbol fetch (strictly below daemon_ssot's 15.0s ob_* step timeout).
+    _FETCH_DEADLINE_SEC = 12.5
+    _SUBCALL_MIN_BUDGET_SEC = 2.0
+    _AGG_CVD_MIN_BUDGET_SEC = 2.5
 
     def __init__(
         self,
@@ -139,18 +153,29 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         self._spot_cvd_memo: Dict[Tuple[str, str], Tuple[float, float, Optional[float]]] = {}
         self._agg_spot_cvd_memo: Dict[Tuple[str, str], Tuple[float, Optional[float], Optional[float], str]] = {}
 
-    def _fetch_spot_cvd_payload(self, url: str, post_body: Optional[dict]) -> Any:
+    def _fetch_spot_cvd_payload(self, url: str, post_body: Optional[dict], *, timeout: float = 3.5) -> Any:
+        eff_timeout = safe_pos_float(timeout, default=3.5) or 3.5
         if post_body is not None:
             return fetch_json_post(
                 url,
                 post_body,
-                timeout=3.5,
+                timeout=eff_timeout,
                 headers={"User-Agent": "mptrade-orderbook/1.0"},
             )
-        return fetch_public_json(url, timeout=3.5, user_agent="mptrade-orderbook/1.0")
+        return fetch_public_json(url, timeout=eff_timeout, user_agent="mptrade-orderbook/1.0")
+
+    def _call_spot_cvd_payload(self, url: str, post_body: Optional[dict], timeout: float) -> Any:
+        if "_fetch_spot_cvd_payload" in self.__dict__:
+            return self._fetch_spot_cvd_payload(url, post_body)
+        return self._fetch_spot_cvd_payload(url, post_body, timeout=timeout)
 
     def _resolve_real_spot_cvd_15m(
-        self, symbol: str, *, venue: str, now: float
+        self,
+        symbol: str,
+        *,
+        venue: str,
+        now: float,
+        deadline_mono: Optional[float] = None,
     ) -> Optional[float]:
         """Fetch and memoize real venue-local 15m spot taker CVD & total volume (USD) at ``whale_interval_sec`` cadence."""
         if not venue:
@@ -165,9 +190,12 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         req_spec, extractor = MarketDataProvider.resolve_spot_flow_15m_spec(symbol, venue=venue, now_ts=now)
         if req_spec is None or not callable(extractor):
             return None
+        rem_to = resolve_remaining_timeout_sec(deadline_mono, 3.5, min_timeout=self._SUBCALL_MIN_BUDGET_SEC)
+        if rem_to is None:
+            return cached_cvd[1] if cached_cvd is not None and 0.0 <= (now - cached_cvd[0]) < ttl_sec * 3.0 else None
         url, post_body = req_spec
         try:
-            raw_payload = self._fetch_spot_cvd_payload(url, post_body)
+            raw_payload = self._call_spot_cvd_payload(url, post_body, rem_to)
             flow_res = extractor(raw_payload, since_ts=max(0.0, now - 900.0))
             if isinstance(flow_res, (tuple, list)) and len(flow_res) >= 2:
                 cvd_f = safe_float(flow_res[0], default=None)
@@ -185,6 +213,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                     local_cvd=cvd_f,
                     local_vol=vol_f,
                     ttl_sec=ttl_sec,
+                    deadline_mono=deadline_mono,
                 )
                 return cvd_f
         except Exception as exc:
@@ -201,6 +230,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         local_cvd: float,
         local_vol: Optional[float],
         ttl_sec: float,
+        deadline_mono: Optional[float] = None,
     ) -> Optional[Tuple[float, Optional[float], str]]:
         """Combine venue-local USDC spot flow with deep primary-quote (USDT) spot flow when available."""
         memo_key = (venue, symbol)
@@ -216,8 +246,15 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         agg_url, agg_body = agg_spec
         if agg_url == local_url:
             return None
+        rem_to = resolve_remaining_timeout_sec(deadline_mono, 3.5, min_timeout=self._AGG_CVD_MIN_BUDGET_SEC)
+        if rem_to is None:
+            return (
+                (cached_agg[1], cached_agg[2], cached_agg[3])
+                if cached_agg is not None and cached_agg[1] is not None and 0.0 <= (now - cached_agg[0]) < ttl_sec * 3.0
+                else None
+            )
         try:
-            raw_agg = self._fetch_spot_cvd_payload(agg_url, agg_body)
+            raw_agg = self._call_spot_cvd_payload(agg_url, agg_body, rem_to)
             agg_res = agg_ext(raw_agg, since_ts=max(0.0, now - 900.0))
             if isinstance(agg_res, (tuple, list)) and len(agg_res) >= 2:
                 sib_cvd = safe_float(agg_res[0], default=None)
@@ -261,6 +298,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         now: Optional[float] = None,
     ) -> Optional[OrderbookSnapshot]:
         """Fetch spot depth snapshot from Binance or Kraken public API."""
+        explicit_now = now is not None
         symbol, now, cached, ready, should_fetch = self._prepare_fetch_or_equity(
             symbol,
             allow_network,
@@ -280,6 +318,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         lookup_sym = resolve_binance_lookup_symbol(symbol)
         canon_sym = canonical_symbol_key(symbol)
         query_sym = tok_sym if is_tok_sym else canon_sym
+        deadline_mono = time.monotonic() + self._FETCH_DEADLINE_SEC
         try:
             data = None
             last_err: Optional[Exception] = None
@@ -317,9 +356,12 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 else base_urls
             )
             for url in urls:
+                rem_to = resolve_remaining_timeout_sec(deadline_mono, 4.0, min_timeout=0.8)
+                if rem_to is None:
+                    break
                 try:
                     raw_data = self._fetch_json_dict(
-                        url, "depth", lookup_sym, timeout=4, user_agent="mptrade-orderbook/1.0"
+                        url, "depth", lookup_sym, timeout=rem_to, user_agent="mptrade-orderbook/1.0"
                     )
                     if is_tok_sym and isinstance(raw_data, dict) and raw_data.get("error"):
                         err_txt = " ".join(str(x) for x in (raw_data.get("error") or ()))
@@ -381,21 +423,23 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                     or (len(asks) >= 500 and asks[-1][0] < mid * 1.0105)
                 )
             ):
-                wide_url = cur_pref_url.replace("&limit=500", "&limit=1000")
-                try:
-                    wide_raw = self._fetch_json_dict(
-                        wide_url, "depth_wide", lookup_sym, timeout=4, user_agent="mptrade-orderbook/1.0"
-                    )
-                    wide_book = MarketDataProvider.normalize_orderbook_payload(wide_raw)
-                    if isinstance(wide_book, dict) and wide_book.get("bids") and wide_book.get("asks"):
-                        w_bid, w_ask = round(wide_book["bids"][0][0], 8), round(wide_book["asks"][0][0], 8)
-                        w_mid = safe_pos_float(round((w_bid + w_ask) / 2.0, 8), default=None)
-                        if w_bid > 0 and w_ask >= w_bid and w_mid is not None:
-                            bids, asks = wide_book["bids"], wide_book["asks"]
-                            best_bid, best_ask, mid = w_bid, w_ask, w_mid
-                            self._preferred_url[symbol] = wide_url
-                except Exception:
-                    pass
+                wide_to = resolve_remaining_timeout_sec(deadline_mono, 4.0, min_timeout=self._SUBCALL_MIN_BUDGET_SEC)
+                if wide_to is not None:
+                    wide_url = cur_pref_url.replace("&limit=500", "&limit=1000")
+                    try:
+                        wide_raw = self._fetch_json_dict(
+                            wide_url, "depth_wide", lookup_sym, timeout=wide_to, user_agent="mptrade-orderbook/1.0"
+                        )
+                        wide_book = MarketDataProvider.normalize_orderbook_payload(wide_raw)
+                        if isinstance(wide_book, dict) and wide_book.get("bids") and wide_book.get("asks"):
+                            w_bid, w_ask = round(wide_book["bids"][0][0], 8), round(wide_book["asks"][0][0], 8)
+                            w_mid = safe_pos_float(round((w_bid + w_ask) / 2.0, 8), default=None)
+                            if w_bid > 0 and w_ask >= w_bid and w_mid is not None:
+                                bids, asks = wide_book["bids"], wide_book["asks"]
+                                best_bid, best_ask, mid = w_bid, w_ask, w_mid
+                                self._preferred_url[symbol] = wide_url
+                    except Exception:
+                        pass
 
             # Hyperliquid's default l2Book returns 20 fine tick levels (~0.02% around mid).
             # Extend deeper levels within the +/-1.5% band via aggregated nSigFigs=4 (and nSigFigs=3 if needed) while preserving top-of-book spread.
@@ -407,9 +451,12 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 for sig_figs in (4, 3):
                     if bids[-1][0] <= mid * 0.99 and asks[-1][0] >= mid * 1.01:
                         break
+                    agg_to = resolve_remaining_timeout_sec(deadline_mono, 4.0, min_timeout=self._SUBCALL_MIN_BUDGET_SEC)
+                    if agg_to is None:
+                        break
                     try:
                         deep_raw = self._fetch_json_dict(
-                            f"{hl_book_url}&nSigFigs={sig_figs}", "depth_agg", lookup_sym, timeout=4, user_agent="mptrade-orderbook/1.0"
+                            f"{hl_book_url}&nSigFigs={sig_figs}", "depth_agg", lookup_sym, timeout=agg_to, user_agent="mptrade-orderbook/1.0"
                         )
                         deep_book = MarketDataProvider.normalize_orderbook_payload(deep_raw)
                         if isinstance(deep_book, dict):
@@ -480,7 +527,9 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             eff_spot_venue = reg_venue or MarketDataProvider.resolve_venue_for_orderbook_url(
                 self._preferred_url.get(symbol)
             )
-            real_spot_cvd = self._resolve_real_spot_cvd_15m(query_sym, venue=eff_spot_venue, now=now)
+            real_spot_cvd = self._resolve_real_spot_cvd_15m(
+                query_sym, venue=eff_spot_venue, now=now, deadline_mono=deadline_mono
+            )
             real_spot_vol: Optional[float] = None
             agg_spot_cvd: Optional[float] = None
             agg_spot_vol: Optional[float] = None
@@ -494,6 +543,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                     agg_spot_cvd = safe_float(memo_agg[1], default=None)
                     agg_spot_vol = safe_nonneg_float(memo_agg[2], default=None)
                     agg_spot_src = memo_agg[3] or None
+            snap_ts = now if explicit_now else resolve_now_ts(None)
             snapshot = OrderbookSnapshot(
                 symbol=symbol,
                 mid_price=round(mid, 8),
@@ -504,7 +554,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 largest_bid_wall_price=round(max_bid_px, 8),
                 largest_ask_wall_usd=round(max_ask_usd, 2),
                 largest_ask_wall_price=round(max_ask_px, 8),
-                ts=now,
+                ts=snap_ts,
                 best_bid=round(best_bid, 8),
                 best_ask=round(best_ask, 8),
                 spread_bps=spread_bps,
@@ -518,7 +568,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 agg_spot_vol_15m_usd=agg_spot_vol,
                 agg_spot_cvd_source=agg_spot_src,
             )
-            return self._commit_snapshot(symbol, now, snapshot)
+            return self._commit_snapshot(symbol, snap_ts, snapshot)
         except Exception as e:
             return self._warn_and_fallback_stale(logger, "orderbook depth", symbol, e, cached)
 

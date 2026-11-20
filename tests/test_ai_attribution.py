@@ -440,4 +440,28 @@ def test_ai_attribution_symmetric_sell_trade_plan_calibration():
     assert p_perf["win_rate_pct"] == pytest.approx(50.0)
 
 
+def test_delta_gate_log_summary_tracks_wake_reasons():
+    """Verify summarize_delta_gate_logs and format_ai_attribution_report surface Delta-Gate wake reasons."""
+    from providers.ai_attribution import summarize_delta_gate_logs
+
+    logs = [
+        "2026-11-20 12:00:01 [INFO] [DELTA GATE] Delta-Gate HOLD carry-forward (quiet_flat); redundant LLM call skipped.",
+        "2026-11-20 12:06:01 [INFO] [DELTA GATE] Wake LLM (price_move(HYPEUSDC:0.82%>=0.60%), high_effort=False).",
+        "2026-11-20 12:06:15 [INFO] Autonomous AI Supervisor cycle complete: HOLD",
+        "2026-11-20 12:12:01 [INFO] [DELTA GATE] Wake LLM (open_orders_changed, high_effort=False).",
+        "2026-11-20 12:12:14 [INFO] Autonomous AI Supervisor cycle complete: HOLD",
+        "2026-11-20 12:18:01 [INFO] [DELTA GATE] Wake LLM (price_move(BTCUSDC:0.50%>=0.35%), high_effort=False).",
+        "2026-11-20 12:18:16 [INFO] Autonomous AI Supervisor cycle complete: HOLD",
+    ]
+    dg = summarize_delta_gate_logs(logs)
+    assert dg["delta_gate_skips"] == 1
+    assert dg["llm_cycles_completed"] == 3
+    assert dg["wake_reasons"] == {"price_move": 2, "open_orders_changed": 1}
+
+    rep = evaluate_ai_attribution([], now_ts=1_795_300_000.0, reconciler_log_lines=logs)
+    rendered = format_ai_attribution_report(rep)
+    assert "Wake reasons: price_move=2, open_orders_changed=1" in rendered
+
+
+
 

@@ -486,6 +486,12 @@ class AutonomousAIReconciler:
                     delta_gate_meta=dict(prev_meta),
                 )
                 return self.write_audit_artifact(skip_report, persist_eval=False)
+            elif delta_gate_enabled:
+                logger.info(
+                    "[DELTA GATE] Wake LLM (%s, high_effort=%s).",
+                    gate_reason,
+                    escalate_high_effort,
+                )
 
         plan = self.synthesize_and_diagnose(
             sensors,
