@@ -4,4 +4,5 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HOOK_DIR/.." && pwd)"
 # shellcheck source=../orchestratorOS/lib/env_common.sh
 source "$ROOT/orchestratorOS/lib/env_common.sh"
-exec "$PYTHON_BIN" "$ROOT/verify_tools/translation_audit.py" pre-commit "$@"
+"$PYTHON_BIN" "$ROOT/verify_tools/translation_audit.py" pre-commit "$@"
+exec "$PYTHON_BIN" "$ROOT/verify_tools/ssot_ast_audit.py" pre-commit "$@"

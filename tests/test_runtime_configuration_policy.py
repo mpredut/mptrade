@@ -969,6 +969,84 @@ def test_cachepaths_symbol_case_delegates_to_symbol_api_preserving_dag(tmp_path)
     assert cachepaths.cache_24_price_filename("SPCXXUSD") == "cache_24_price_SPCXxUSD.json"
 
 
+def test_ssot_ast_audit_pre_commit_blocks_manual_parsing_and_allows_ssot_delegation(tmp_path):
+    """Verify verify_tools.ssot_ast_audit blocks manual parsing/venue/IO/re-export violations in pre-commit mode."""
+    from verify_tools import ssot_ast_audit as audit
+
+    # 1. Manual quote/equity suffix parsing, venue branching, raw coercion/IO/env, and f-string assembly are blocked.
+    bad_collector = tmp_path / "intelligence" / "collector_bad.py"
+    bad_collector.parent.mkdir(parents=True, exist_ok=True)
+    bad_collector.write_text(
+        textwrap.dedent(
+            '''
+            import json
+            import os
+
+            def ingest(sym: str, venue: str, raw: str) -> bool:
+                if sym.endswith(("USDT", "USDC")) or sym.endswith("_US_EQ"):
+                    _ = f"{sym}_US_EQ"
+                if venue == "kraken":
+                    _ = float(raw)
+                    _ = os.getenv("FOO")
+                    _ = json.loads("{}")
+                return False
+            '''
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    violations = audit.audit_all_ssot_ast(tmp_path, rel_paths=["intelligence/collector_bad.py"])
+    joined = "\n".join(violations)
+    assert "manual quote .endswith" in joined
+    assert "manual equity .endswith" in joined
+    assert "manual f-string _US_EQ concatenation" in joined
+    assert "hardcoded venue branch 'kraken'" in joined
+    assert "raw float()" in joined
+    assert "os.getenv" in joined
+    assert "raw json.loads" in joined
+    assert audit.cmd_pre_commit(SimpleNamespace(files=["intelligence/collector_bad.py"], root=str(tmp_path))) == 1
+
+    # 2. Transitive re-export imports are caught incrementally without scanning the whole repo.
+    (tmp_path / "canonical_mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "middle_mod.py").write_text("from canonical_mod import VALUE\n", encoding="utf-8")
+    (tmp_path / "consumer_bad.py").write_text("from middle_mod import VALUE\nX = VALUE\n", encoding="utf-8")
+    reexp_violations = audit.audit_all_ssot_ast(tmp_path, rel_paths=["consumer_bad.py"])
+    assert any("non-canonical transitive re-export import from middle_mod" in v for v in reexp_violations)
+    assert audit.cmd_pre_commit(SimpleNamespace(files=["consumer_bad.py"], root=str(tmp_path))) == 1
+
+    # 3. Clean SSOT delegation passes, leaf venue adapters allow venue strings, and tests/ fixtures are skipped.
+    clean_collector = tmp_path / "intelligence" / "collector_ok.py"
+    clean_collector.write_text(
+        textwrap.dedent(
+            """
+            from cachepaths import ensure_equity_suffix, has_equity_suffix, symbol_quote_asset
+
+            def ingest(sym: str) -> str:
+                if symbol_quote_asset(sym) in ("USDT", "USDC") or has_equity_suffix(sym):
+                    return ensure_equity_suffix(sym)
+                return sym
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    leaf_adapter = tmp_path / "providers" / "kraken_provider.py"
+    leaf_adapter.parent.mkdir(parents=True, exist_ok=True)
+    leaf_adapter.write_text('def check(v: str) -> bool:\n    return v == "kraken"\n', encoding="utf-8")
+    test_fixture = tmp_path / "tests" / "test_fixture.py"
+    test_fixture.parent.mkdir(parents=True, exist_ok=True)
+    test_fixture.write_text('def f(s):\n    return s.endswith(("USDT", "USDC"))\n', encoding="utf-8")
+
+    assert (
+        audit.cmd_pre_commit(
+            SimpleNamespace(
+                files=["intelligence/collector_ok.py", "providers/kraken_provider.py", "tests/test_fixture.py"],
+                root=str(tmp_path),
+            )
+        )
+        == 0
+    )
+
+
+
 
 
 

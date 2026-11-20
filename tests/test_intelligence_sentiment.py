@@ -9819,24 +9819,10 @@ def test_equity_suffix_ssot_primitives_and_zero_manual_endswith_ast():
         "NVDAUSD",
     )
 
+    from verify_tools.ssot_ast_audit import audit_equity_suffix_endswith_ast
+
     repo_root = pathlib.Path(__file__).resolve().parent.parent
-    exempt_prefixes = ("tests/", "offline/", ".venv/", "myenv/")
-    violations: list[str] = []
-    for py_file in sorted(repo_root.rglob("*.py")):
-        rel = py_file.relative_to(repo_root).as_posix()
-        if rel == "cachepaths.py" or rel.startswith(exempt_prefixes):
-            continue
-        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=rel)
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "endswith"
-                and node.args
-            ):
-                arg_src = ast.unparse(node.args[0])
-                if '"_EQ"' in arg_src or "'_EQ'" in arg_src or '"_US_EQ"' in arg_src or "'_US_EQ'" in arg_src:
-                    violations.append(f"{rel}:{node.lineno}: .endswith({arg_src})")
+    violations = audit_equity_suffix_endswith_ast(repo_root)
     assert violations == [], f"Manual _EQ/_US_EQ .endswith() found outside cachepaths.py: {violations}"
 
 
