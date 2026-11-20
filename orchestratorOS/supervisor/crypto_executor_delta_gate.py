@@ -20,6 +20,8 @@ from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
 from providers.intent_state import decision_has_cancel_directive
 from providers.intent_telemetry import evaluate_trade_plan_status
 
+_ATR_15M_DELTA_GATE_MULT = 0.75
+
 
 def _extract_delta_gate_latest_fill_ts(portfolio_summary: Mapping[str, Any]) -> float:
     """Extract the newest fill/execution epoch-second timestamp across recent_orders and last_cycle_execution_status."""
@@ -198,11 +200,30 @@ def _evaluate_delta_gate_trade_plans(
     return plan_states, trigger_reason
 
 
+def _collect_delta_gate_atr_15m(prices_and_trends: Any) -> Dict[str, float]:
+    """Collect canonical symbol -> 15m ATR (%) map when Faza 1 ATR telemetry is present."""
+    atr_map: Dict[str, float] = {}
+    if isinstance(prices_and_trends, Mapping):
+        for sym, pinfo in prices_and_trends.items():
+            if not isinstance(pinfo, Mapping):
+                continue
+            sym_raw = str(sym or "").strip()
+            sym_k = canonical_display_symbol(sym_raw) or sym_raw.upper()
+            atr_15m = safe_pos_float(pinfo.get("atr_15m_pct"), default=None)
+            if sym_k and atr_15m is not None:
+                atr_map[sym_k] = atr_15m
+    return atr_map
+
+
 def _compute_max_spot_move(
     eval_prices: Mapping[str, float],
     prev_prices_raw: Any,
-) -> Tuple[float, str, int, Dict[str, float]]:
-    """Compute max cumulative spot move (%) across common symbols since the prior real eval."""
+    *,
+    min_move_pct: float = 0.35,
+    high_move_pct: float = 1.0,
+    atr_15m_by_sym: Optional[Mapping[str, float]] = None,
+) -> Tuple[float, str, float, str, float, float, int, Dict[str, float]]:
+    """Compute raw max spot move and strongest per-symbol ATR-scaled threshold breach since the prior real eval."""
     prev_prices: Dict[str, float] = {}
     if isinstance(prev_prices_raw, Mapping):
         for k, v in prev_prices_raw.items():
@@ -211,8 +232,14 @@ def _compute_max_spot_move(
             px = safe_pos_float(v, default=None)
             if sym_k and px is not None:
                 prev_prices[sym_k] = px
+    atr_map = atr_15m_by_sym if isinstance(atr_15m_by_sym, Mapping) else {}
     max_move_pct = 0.0
     max_move_sym = ""
+    max_move_thresh_pct = min_move_pct
+    breach_sym = ""
+    breach_move_pct = 0.0
+    breach_thresh_pct = min_move_pct
+    best_breach_ratio = 0.0
     common_count = 0
     for sym_u, cur_px in eval_prices.items():
         if sym_u not in prev_prices:
@@ -220,10 +247,33 @@ def _compute_max_spot_move(
         common_count += 1
         base_px = prev_prices[sym_u]
         move_pct = abs((cur_px - base_px) / base_px) * 100.0
+        atr_15m = safe_pos_float(atr_map.get(sym_u), default=None)
+        sym_thresh = (
+            min(high_move_pct, max(min_move_pct, atr_15m * _ATR_15M_DELTA_GATE_MULT))
+            if atr_15m is not None
+            else min_move_pct
+        )
         if move_pct > max_move_pct:
             max_move_pct = move_pct
             max_move_sym = sym_u
-    return max_move_pct, max_move_sym, common_count, prev_prices
+            max_move_thresh_pct = sym_thresh
+        if sym_thresh > 0.0 and move_pct >= sym_thresh:
+            ratio = move_pct / sym_thresh
+            if ratio > best_breach_ratio:
+                best_breach_ratio = ratio
+                breach_sym = sym_u
+                breach_move_pct = move_pct
+                breach_thresh_pct = sym_thresh
+    return (
+        max_move_pct,
+        max_move_sym,
+        max_move_thresh_pct,
+        breach_sym,
+        breach_move_pct,
+        breach_thresh_pct,
+        common_count,
+        prev_prices,
+    )
 
 
 def evaluate_crypto_executor_delta_gate(
@@ -255,7 +305,9 @@ def evaluate_crypto_executor_delta_gate(
 
     ps = getattr(sensors, "portfolio_summary", None)
     ps_map = ps if isinstance(ps, Mapping) else {}
-    eval_prices = _collect_delta_gate_prices(getattr(sensors, "prices_and_trends", None), ps_map)
+    prices_and_trends = getattr(sensors, "prices_and_trends", None)
+    eval_prices = _collect_delta_gate_prices(prices_and_trends, ps_map)
+    atr_15m_by_sym = _collect_delta_gate_atr_15m(prices_and_trends)
 
     sa = getattr(sensors, "sentiment_advisor", None)
     gt = getattr(sensors, "geopolitical_threat", None)
@@ -315,8 +367,21 @@ def evaluate_crypto_executor_delta_gate(
         "plan_states": plan_states,
     }
 
-    max_move_pct, max_move_sym, common_count, prev_prices = _compute_max_spot_move(
-        eval_prices, prev_meta.get("eval_prices")
+    (
+        max_move_pct,
+        _max_move_sym,
+        max_move_thresh_pct,
+        breach_sym,
+        breach_move_pct,
+        breach_thresh_pct,
+        common_count,
+        prev_prices,
+    ) = _compute_max_spot_move(
+        eval_prices,
+        prev_meta.get("eval_prices"),
+        min_move_pct=eff_min_move_pct,
+        high_move_pct=eff_high_move_pct,
+        atr_15m_by_sym=atr_15m_by_sym,
     )
     prev_fill_ts = normalize_epoch_sec(prev_meta.get("latest_fill_ts"), default=0.0, allow_iso=True) or 0.0
     has_new_fill = bool(
@@ -354,8 +419,8 @@ def evaluate_crypto_executor_delta_gate(
         return False, plan_trigger_reason, True, snapshot_meta
     if elapsed_sec >= eff_max_idle_sec:
         return False, f"max_idle_elapsed({elapsed_sec:.0f}s>={eff_max_idle_sec:.0f}s)", escalate_high_effort, snapshot_meta
-    if max_move_pct >= eff_min_move_pct:
-        return False, f"price_move({max_move_sym}:{max_move_pct:.2f}%>={eff_min_move_pct:.2f}%)", escalate_high_effort, snapshot_meta
+    if breach_sym:
+        return False, f"price_move({breach_sym}:{breach_move_pct:.2f}%>={breach_thresh_pct:.2f}%)", escalate_high_effort, snapshot_meta
     if has_new_fill:
         return False, "new_fill", escalate_high_effort, snapshot_meta
 
@@ -381,7 +446,7 @@ def evaluate_crypto_executor_delta_gate(
 
     return (
         True,
-        f"quiet_flat(max_move={max_move_pct:.2f}%<{eff_min_move_pct:.2f}%, idle={elapsed_sec:.0f}s<{eff_max_idle_sec:.0f}s)",
+        f"quiet_flat(max_move={max_move_pct:.2f}%<{max_move_thresh_pct:.2f}%, idle={elapsed_sec:.0f}s<{eff_max_idle_sec:.0f}s)",
         False,
         snapshot_meta,
     )

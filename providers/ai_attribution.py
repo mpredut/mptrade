@@ -97,8 +97,8 @@ def _compute_profit_factor(outcomes: list[dict[str, Any]]) -> Optional[float]:
 
 
 def _summarize_outcomes_bucket(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
-    closed = [o for o in outcomes if o["kind"] != "BUY_MTM"]
-    open_mtm = [o for o in outcomes if o["kind"] == "BUY_MTM"]
+    closed = [o for o in outcomes if not str(o.get("kind") or "").endswith("_MTM")]
+    open_mtm = [o for o in outcomes if str(o.get("kind") or "").endswith("_MTM")]
     wins = sum(1 for o in outcomes if o["net_edge_pct"] > 0.0)
     losses = sum(1 for o in outcomes if o["net_edge_pct"] < 0.0)
     flat = len(outcomes) - wins - losses
@@ -630,40 +630,56 @@ def evaluate_ai_attribution(
             else:
                 pending_sells.setdefault(ikey, []).append(row)
 
+    def _evaluate_open_mtm_row(entry_row: dict[str, Any], side: str) -> Optional[dict[str, Any]]:
+        spot_px = _resolve_live_price_for_symbol(prices_map, entry_row["venue"], entry_row["symbol"])
+        if spot_px is None or spot_px <= 0.0:
+            if entry_row["has_plan"]:
+                plan_status_counts["ACTIVE"] += 1
+            return None
+        plan_st = ""
+        if entry_row["has_plan"]:
+            plan_st = evaluate_trade_plan_status(
+                side, spot_px, entry_row["invalidation_px"], entry_row["target_px"]
+            )
+            plan_status_counts[plan_st] = plan_status_counts.get(plan_st, 0) + 1
+        gross_pct = (
+            ((spot_px - entry_row["px"]) / entry_row["px"]) * 100.0
+            if side == "BUY"
+            else ((entry_row["px"] - spot_px) / entry_row["px"]) * 100.0
+        )
+        rt_bps = entry_row["rt_fee_bps"]
+        net_pct = gross_pct - (rt_bps / 100.0)
+        gross_usd = entry_row["usd"] * (gross_pct / 100.0)
+        fee_usd = entry_row["usd"] * (rt_bps / 10000.0)
+        return {
+            "ts": entry_row["ts"],
+            "kind": f"{side}_MTM",
+            "venue": entry_row["venue"],
+            "symbol": entry_row["symbol"],
+            "model_used": entry_row["model_used"],
+            "matched_usd": entry_row["usd"],
+            "gross_edge_pct": gross_pct,
+            "net_edge_pct": net_pct,
+            "gross_usd": gross_usd,
+            "fee_usd": fee_usd,
+            "net_usd": gross_usd - fee_usd,
+            "has_plan": entry_row["has_plan"],
+            "plan_outcome": plan_st,
+            "override_codes": list(entry_row["override_codes"]),
+        }
+
     for bq in pending_buys.values():
         for buy_row in bq:
-            spot_px = _resolve_live_price_for_symbol(prices_map, buy_row["venue"], buy_row["symbol"])
-            if spot_px is None or spot_px <= 0.0:
-                if buy_row["has_plan"]:
-                    plan_status_counts["ACTIVE"] += 1
+            if (mtm_out := _evaluate_open_mtm_row(buy_row, "BUY")) is not None:
+                outcomes.append(mtm_out)
+
+    planned_sell_mtm_outcomes: list[dict[str, Any]] = []
+    for sq in pending_sells.values():
+        for sell_row in sq:
+            if not sell_row["has_plan"]:
                 continue
-            plan_st = ""
-            if buy_row["has_plan"]:
-                plan_st = evaluate_trade_plan_status(
-                    "BUY", spot_px, buy_row["invalidation_px"], buy_row["target_px"]
-                )
-                plan_status_counts[plan_st] = plan_status_counts.get(plan_st, 0) + 1
-            gross_pct = ((spot_px - buy_row["px"]) / buy_row["px"]) * 100.0
-            rt_bps = buy_row["rt_fee_bps"]
-            net_pct = gross_pct - (rt_bps / 100.0)
-            gross_usd = buy_row["usd"] * (gross_pct / 100.0)
-            fee_usd = buy_row["usd"] * (rt_bps / 10000.0)
-            outcomes.append({
-                "ts": buy_row["ts"],
-                "kind": "BUY_MTM",
-                "venue": buy_row["venue"],
-                "symbol": buy_row["symbol"],
-                "model_used": buy_row["model_used"],
-                "matched_usd": buy_row["usd"],
-                "gross_edge_pct": gross_pct,
-                "net_edge_pct": net_pct,
-                "gross_usd": gross_usd,
-                "fee_usd": fee_usd,
-                "net_usd": gross_usd - fee_usd,
-                "has_plan": buy_row["has_plan"],
-                "plan_outcome": plan_st,
-                "override_codes": list(buy_row["override_codes"]),
-            })
+            if (sell_mtm := _evaluate_open_mtm_row(sell_row, "SELL")) is not None:
+                planned_sell_mtm_outcomes.append(sell_mtm)
 
     # Groupings: by venue, by venue:symbol, by model_used, by overridden guard, by trade plan coverage
     by_venue_rows: dict[str, list[dict[str, Any]]] = {}
@@ -709,7 +725,7 @@ def evaluate_ai_attribution(
 
     planned_filled = sum(1 for r in filled_rows if r["has_plan"])
     unplanned_filled = len(filled_rows) - planned_filled
-    planned_outcomes = [o for o in outcomes if o["has_plan"]]
+    planned_outcomes = [o for o in outcomes if o["has_plan"]] + planned_sell_mtm_outcomes
     unplanned_outcomes = [o for o in outcomes if not o["has_plan"]]
     trade_plan_calibration = {
         "planned_filled": planned_filled,

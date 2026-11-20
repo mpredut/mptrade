@@ -10146,6 +10146,57 @@ def test_advisory_guard_probe_and_scorecard_surfaced_in_section_3c(capsys):
     assert any(f["guard"] == "G_PROF" for f in cli_payload["flags"])
 
 
+def test_crypto_executor_delta_gate_atr_15m_scaling():
+    """Verify per-symbol ATR-15m Delta-Gate threshold scales between min_price_move_pct and high_effort_price_move_pct."""
+    from types import SimpleNamespace
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import evaluate_crypto_executor_delta_gate
+
+    t0 = 1_795_000_000.0
+    prev_hold = {
+        "ts": t0,
+        "mode": "enforce",
+        "model_used": "gemini-4-neon-medium",
+        "market_trading_decisions": [{"decision": "HOLD", "confidence": 0.6}],
+        "delta_gate_meta": {
+            "eval_prices": {"BTCUSDC": 62000.0, "HYPEUSDC": 100.0},
+            "macro_ts": t0 - 600.0,
+            "geo_ts": t0 - 600.0,
+            "latest_fill_ts": 0.0,
+            "open_order_ids": [],
+        },
+    }
+
+    def _sensors(pt):
+        return SimpleNamespace(
+            prices_and_trends=pt,
+            portfolio_summary={"open_limit_orders": [], "recent_orders": {}},
+            sentiment_advisor={"ts": t0 - 600.0},
+            geopolitical_threat={"ts": t0 - 600.0, "threat_level": "LOW", "risk_score": 0.1},
+            source_timestamps={},
+        )
+
+    # 1. Volatile HYPEUSDC (atr_15m=0.80% -> thresh=0.60%) moving 0.45% skips instead of waking on static 0.35%
+    s_quiet = _sensors({"BTCUSDC": {"price": 62062.0, "atr_15m_pct": 0.40}, "HYPEUSDC": {"price": 100.45, "atr_15m_pct": 0.80}})
+    skip, rsn, hi, _ = evaluate_crypto_executor_delta_gate(s_quiet, prev_hold, now_ts=t0 + 360.0)
+    assert skip is True and hi is False and "max_move=0.45%<0.60%" in rsn
+
+    # 2. Same HYPEUSDC moving 0.65% (>= 0.60% ATR threshold) wakes up on medium effort
+    s_wake = _sensors({"BTCUSDC": {"price": 62062.0, "atr_15m_pct": 0.40}, "HYPEUSDC": {"price": 100.65, "atr_15m_pct": 0.80}})
+    skip_w, rsn_w, hi_w, _ = evaluate_crypto_executor_delta_gate(s_wake, prev_hold, now_ts=t0 + 360.0)
+    assert skip_w is False and hi_w is False and "price_move(HYPEUSDC:0.65%>=0.60%)" in rsn_w
+
+    # 3. Tight-ATR BTCUSDC (atr_15m=0.40% -> floor 0.35%) moving 0.40% wakes even while HYPEUSDC (+0.45%) is below its 0.60% threshold
+    s_btc = _sensors({"BTCUSDC": {"price": 62248.0, "atr_15m_pct": 0.40}, "HYPEUSDC": {"price": 100.45, "atr_15m_pct": 0.80}})
+    skip_b, rsn_b, hi_b, _ = evaluate_crypto_executor_delta_gate(s_btc, prev_hold, now_ts=t0 + 360.0)
+    assert skip_b is False and hi_b is False and "price_move(BTCUSDC:0.40%>=0.35%)" in rsn_b
+
+    # 4. Extreme ATR (2.5% -> 1.875% capped at high_effort_price_move_pct=1.0%) still wakes & escalates at 1.05%
+    s_ext = _sensors({"BTCUSDC": {"price": 62000.0, "atr_15m_pct": 0.40}, "HYPEUSDC": {"price": 101.05, "atr_15m_pct": 2.50}})
+    skip_e, rsn_e, hi_e, _ = evaluate_crypto_executor_delta_gate(s_ext, prev_hold, now_ts=t0 + 360.0)
+    assert skip_e is False and hi_e is True and "price_move(HYPEUSDC:1.05%>=1.00%)" in rsn_e
+
+
+
 
 
 

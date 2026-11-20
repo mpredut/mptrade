@@ -369,3 +369,75 @@ def test_execution_audit_monotonic_merge_never_downgrades_fill_on_out_of_order_r
     assert ai_actor["buy_notional_usd"] == pytest.approx(700.0)
 
 
+def test_ai_attribution_symmetric_sell_trade_plan_calibration():
+    """Verify unmatched planned SELL trims are scored in trade_plan_calibration without distorting spot ai_summary."""
+    now_s = 1_795_300_000.0
+    intents = [
+        # Planned SELL hitting lower re-buy target ($184.20) -> TARGET_HIT, positive MTM avoided drawdown
+        {
+            "intent_id": "ai_sell_hit",
+            "timestamp": now_s - 3600.0,
+            "decision": "SELL",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "status": "EXECUTED",
+            "model_used": "gemini-4-neon-medium",
+            "clamped_notional_usd": 600.0,
+            "invalidation_px": 191.5,
+            "target_px": 184.2,
+            "execution_payload": {"orderId": "bn_s1", "status": "FILLED", "executedQty": "3.2", "avg_fill_price": 187.5},
+        },
+        # Planned SELL invalidated by breakout above invalidation_px ($66.40) -> INVALIDATED, negative MTM edge
+        {
+            "intent_id": "ai_sell_inv",
+            "timestamp": now_s - 2400.0,
+            "decision": "SELL",
+            "symbol": "HYPEUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "status": "EXECUTED",
+            "model_used": "gemini-4-neon-high",
+            "clamped_notional_usd": 500.0,
+            "invalidation_px": 66.4,
+            "target_px": 64.2,
+            "execution_payload": {"orderId": "kr_s1", "status": "FILLED", "executedQty": "7.6", "avg_fill_price": 65.45},
+        },
+        # Planned SELL without live price -> counted as ACTIVE
+        {
+            "intent_id": "ai_sell_act",
+            "timestamp": now_s - 1800.0,
+            "decision": "SELL",
+            "symbol": "ADAUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "status": "EXECUTED",
+            "model_used": "gemini-4-neon-medium",
+            "clamped_notional_usd": 300.0,
+            "invalidation_px": 0.16,
+            "target_px": 0.14,
+            "execution_payload": {"orderId": "kr_s2", "status": "FILLED", "executedQty": "2000.0", "avg_fill_price": 0.15},
+        },
+    ]
+    rep = evaluate_ai_attribution(
+        intents,
+        now_ts=now_s,
+        lookback_days=7.0,
+        scope="crypto",
+        live_prices={"TAOUSDC": 183.0, "HYPEUSD": 67.0},
+    )
+    # Spot ai_summary remains untouched by unmatched cash SELL exits
+    assert rep["ai_summary"]["scored"] == 0
+    # trade_plan_calibration scores all 3 planned SELL intents symmetrically
+    plans = rep["trade_plan_calibration"]
+    assert plans["planned_filled"] == 3
+    assert plans["status_counts"] == {"TARGET_HIT": 1, "INVALIDATED": 1, "ACTIVE": 1, "CLOSED_EARLY": 0}
+    p_perf = plans["planned_performance"]
+    assert p_perf["scored"] == 2
+    assert p_perf["closed_trades"] == 0
+    assert p_perf["open_mtm"] == 2
+    assert p_perf["wins"] == 1 and p_perf["losses"] == 1
+    assert p_perf["win_rate_pct"] == pytest.approx(50.0)
+
+
+
