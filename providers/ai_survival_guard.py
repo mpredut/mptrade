@@ -48,6 +48,7 @@ from .order_status_ssot import NON_FILL_ORDER_STATUSES
 _FILLED_VENUE_STATUSES: frozenset[str] = frozenset({"FILLED", "CLOSED", "PARTIALLY_FILLED"})
 _WIN_EDGE_PCT = 0.20
 _LOSS_EDGE_PCT = -0.35
+_OPEN_MTM_LOSS_EDGE_PCT = -1.50
 _EMERGENCY_SELL_EDGE_MULT = 2.5
 _MAX_BOT_FLIP_COOLDOWN_SEC = 1800.0
 _WHIPSAW_WINDOW_SEC = 21600.0
@@ -186,8 +187,8 @@ def evaluate_ai_ping_pong_guard(
     venue: str,
     price: float,
     now_ts: float,
-    flip_cooldown_min: float = 45.0,
-    flip_min_edge_pct: float = 0.90,
+    flip_cooldown_min: float = 30.0,
+    flip_min_edge_pct: float = 0.60,
     max_flips_6h: int = 2,
     spot_price: Optional[float] = None,
     recent_bot_fill: Optional[Mapping[str, Any]] = None,
@@ -211,8 +212,8 @@ def evaluate_ai_ping_pong_guard(
     eff_now = resolve_now_ts(now_ts)
     eff_px = safe_pos_float(price, default=0.0) or 0.0
     eff_spot = safe_pos_float(spot_price, default=eff_px) or eff_px
-    cd_min = safe_nonneg_float(flip_cooldown_min, default=45.0)
-    min_edge = safe_nonneg_float(flip_min_edge_pct, default=0.90)
+    cd_min = safe_nonneg_float(flip_cooldown_min, default=30.0)
+    min_edge = safe_nonneg_float(flip_min_edge_pct, default=0.60)
     cap_flips = safe_nonneg_int(max_flips_6h, default=2)
     emergency_drop_pct = min_edge * _EMERGENCY_SELL_EDGE_MULT
     urgency = clean_upper_scalar(intent.get("urgency")) or "NORMAL"
@@ -367,15 +368,16 @@ def evaluate_ai_decision_scorecard(
     max_loss_streak: int = 3,
     cooldown_hours: float = 4.0,
     lookback_hours: float = 48.0,
-    min_mature_minutes: float = 30.0,
+    min_mature_minutes: float = 60.0,
     scope: str = "all",
 ) -> dict[str, Any]:
     """Deterministically score recent filled ``by=AI`` decisions and compute BUY shadow cooldown state.
 
-    - Closed ``BUY -> SELL`` round-trips score realized price edge.
-    - Closed unmatched ``SELL -> BUY`` reloads score reload timing edge.
-    - Matured open ``BUY`` entries (>= ``min_mature_minutes``) score mark-to-market vs ``live_prices``
-      (and immediately classify as ``LOSS`` if their ``invalidation_px`` is breached).
+    - Closed ``BUY -> SELL`` round-trips score realized price edge (``LOSS`` < -0.35%).
+    - Closed unmatched ``SELL -> BUY`` reloads score reload timing edge (``LOSS`` < -0.35%).
+    - Open ``BUY`` entries score ``LOSS`` immediately when ``invalidation_px`` is breached, or
+      once matured (>= ``min_mature_minutes``, default 60m) if mark-to-market < -1.50% (so
+      normal intraday DCA dip noise above invalidation never triggers false BUY cooldowns).
     - Standalone unmatched ``SELL`` exits (e.g. taking profit on older inventory) are never penalized.
     """
     eff_now = resolve_now_ts(now_ts)
@@ -383,7 +385,7 @@ def evaluate_ai_decision_scorecard(
     streak_cap = safe_nonneg_int(max_loss_streak, default=3)
     cd_hours = safe_nonneg_float(cooldown_hours, default=4.0)
     lb_sec = max(3600.0, (safe_pos_float(lookback_hours, default=48.0) or 48.0) * 3600.0)
-    mature_sec = max(0.0, safe_nonneg_float(min_mature_minutes, default=30.0)) * 60.0
+    mature_sec = max(0.0, safe_nonneg_float(min_mature_minutes, default=60.0)) * 60.0
     prices_map = live_prices if isinstance(live_prices, Mapping) else {}
     items = intents if isinstance(intents, list) else []
 
@@ -443,8 +445,13 @@ def evaluate_ai_decision_scorecard(
 
     filled_rows.sort(key=lambda r: r["ts"])
 
-    def _classify(edge_pct: float, *, invalidated: bool = False) -> str:
-        if invalidated or edge_pct < _LOSS_EDGE_PCT:
+    def _classify(
+        edge_pct: float,
+        *,
+        invalidated: bool = False,
+        loss_threshold: float = _LOSS_EDGE_PCT,
+    ) -> str:
+        if invalidated or edge_pct < loss_threshold:
             return "LOSS"
         if edge_pct > _WIN_EDGE_PCT:
             return "WIN"
@@ -491,22 +498,27 @@ def evaluate_ai_decision_scorecard(
 
     for b_queue in pending_buys.values():
         for buy_row in b_queue:
-            if (eff_now - buy_row["ts"]) < mature_sec:
-                continue
             spot_px = _resolve_live_price_for_symbol(prices_map, buy_row["venue"], buy_row["symbol"])
             if spot_px is None or spot_px <= 0.0:
                 continue
-            edge_pct = ((spot_px - buy_row["px"]) / buy_row["px"]) * 100.0
             plan_st = evaluate_trade_plan_status(
                 "BUY", spot_px, buy_row["invalidation_px"], buy_row["target_px"]
             )
+            is_invalidated = plan_st == "INVALIDATED"
+            if not is_invalidated and (eff_now - buy_row["ts"]) < mature_sec:
+                continue
+            edge_pct = ((spot_px - buy_row["px"]) / buy_row["px"]) * 100.0
             outcomes.append({
                 "ts": buy_row["ts"],
                 "kind": "BUY_MTM",
                 "symbol": buy_row["symbol"],
                 "edge_pct": edge_pct,
                 "usd_impact": buy_row["usd"] * (edge_pct / 100.0),
-                "grade": _classify(edge_pct, invalidated=(plan_st == "INVALIDATED")),
+                "grade": _classify(
+                    edge_pct,
+                    invalidated=is_invalidated,
+                    loss_threshold=_OPEN_MTM_LOSS_EDGE_PCT,
+                ),
             })
 
     if not outcomes:

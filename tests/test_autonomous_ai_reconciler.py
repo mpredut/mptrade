@@ -10095,7 +10095,7 @@ def test_advisory_guard_probe_and_scorecard_surfaced_in_section_3c(capsys):
     })
     assert "taker_ratio=1.14 > 1.11" in whale_line
 
-    # 4. Section 3C + prompt policy surface both AI Decision Scorecard and non-blocking Advisory Guard Probes
+    # 4. Section 3C + prompt policy surface AI Decision Scorecard while avoiding rigid deterministic guard labels in the live prompt
     snap = TelemetrySensorSnapshot(
         prices_and_trends={"TAOUSDC": {"price": 210.0}},
         portfolio_summary={
@@ -10119,10 +10119,11 @@ def test_advisory_guard_probe_and_scorecard_surfaced_in_section_3c(capsys):
         LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0),
         topic_spec("auto_cryptotrade_executor"),
     )
-    assert "verify_tools/probe_order_guards.py" in prompt_txt
     assert "AI Decision Scorecard (48h, n=4): 1W/0S/3L, avg=-1.45%, net=-$195, streak=3L [BUY_SHADOW_COOLDOWN: 3.4h left]" in prompt_txt
-    assert "Advisory Deterministic Guard Probes (Non-Blocking; Inspect & Override Freely):" in prompt_txt
-    assert "[binance] TAOUSDC: BUY=" in prompt_txt
+    assert "ZERO PROFIT OR STRATEGY GUARDS (AI SURVIVAL BREAKERS ONLY)" in prompt_txt
+    assert "Advisory Deterministic Guard Probes" not in prompt_txt
+    assert "verify_tools/probe_order_guards.py" not in prompt_txt
+    assert "[binance] TAOUSDC: BUY=" not in prompt_txt
 
     # 5. CLI verify_tools/probe_order_guards.py prints valid JSON payload
     rc = probe_cli.main(["--venue", "binance", "--symbol", "BTCUSDC", "--side", "BUY", "--price", "70000", "--opposite-fill-px", "69000"])

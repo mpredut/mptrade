@@ -29,9 +29,6 @@ from intelligence.macro_sentiment_ssot import (
     format_interval_sec_label,
     resolve_derived_telemetry_intervals,
 )
-from intelligence.sentiment.evaluators.guard_probe_evaluator import (
-    format_guard_advisory_line,
-)
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_bottom_structure_6h_parts,
     format_equity_macro_regime_line,
@@ -1307,11 +1304,6 @@ def _format_portfolio_section(
             )
     if sc_line := format_ai_decision_scorecard_line(view.get("ai_decision_scorecard")):
         lines.append(f"  * {sc_line}")
-    if guard_probes := view.get("advisory_guard_probes"):
-        lines.append("  * Advisory Deterministic Guard Probes (Non-Blocking; Inspect & Override Freely):")
-        for gp in guard_probes:
-            if gp_line := format_guard_advisory_line(gp):
-                lines.append(gp_line)
     for venue_lbl, venue_id, cyc_items in view["venue_cycles"]:
         lines.append(f"  * {venue_lbl} Active Cycle Cost & Drawdown Anchors:")
         for c_sym, c_data in cyc_items:

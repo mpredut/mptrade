@@ -83,9 +83,6 @@ from intelligence.sentiment.collectors.portfolio_collector import (
     harvest_tradable_positions_and_orders,
     harvest_venue_cycles,
 )
-from intelligence.sentiment.evaluators.guard_probe_evaluator import (
-    summarize_symbol_guard_advisories,
-)
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     apply_asset_scope_filter,
     build_cycle_fallback_prices,
@@ -114,6 +111,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 )
 from instrument_registry import canonical_display_symbol, casefold_get, has_workspace_instrument_sources
 from cacheprice import resolve_ssot_price_from_cache
+from providers.ai_circuit_breaker import parse_intent_circuit_breaker_config
 from providers.ai_survival_guard import evaluate_ai_decision_scorecard
 from providers.intent_telemetry import (
     build_last_cycle_execution_status,
@@ -123,7 +121,6 @@ from providers.intent_telemetry import (
 from providers.intent_state import (
     collect_known_ai_order_ids,
     extract_intent_notional,
-    parse_intent_circuit_breaker_config,
 )
 from providers.ohlc_utils import extract_yahoo_chart_result_and_quote
 from state_io import (
@@ -1079,20 +1076,6 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                     snapshot.portfolio_summary["ai_decision_scorecard"] = ai_scorecard
             except Exception:
                 pass
-
-        try:
-            if guard_advisories := summarize_symbol_guard_advisories(
-                snapshot.portfolio_summary.get("tradable_positions"),
-                snapshot.prices_and_trends,
-                snapshot.microstructure,
-                recent_orders,
-                getattr(snapshot, "geopolitical_threat", None),
-                now_ts=now_ts,
-                scope=scope,
-            ):
-                snapshot.portfolio_summary["advisory_guard_probes"] = guard_advisories
-        except Exception:
-            pass
 
     @staticmethod
     def _apply_macro_scope_and_risk_overlays(

@@ -66,6 +66,20 @@ from intelligence.sentiment.evaluators.guard_probe_evaluator import (
 )
 import notify_engine.alertnotifiers as _alertnotifiers
 from order_lifecycle import restore_cancelled_instrument_orders
+from providers.ai_circuit_breaker import (
+    DEFAULT_FLIP_COOLDOWN_MIN,
+    DEFAULT_FLIP_MIN_EDGE_PCT,
+    DEFAULT_MAX_DAILY_BUY_NOTIONAL_USD,
+    DEFAULT_MAX_DAILY_BUYS_PER_SYMBOL,
+    DEFAULT_MAX_FLIPS_6H,
+    DEFAULT_MAX_HOURLY_REPLACES_PER_SYMBOL,
+    DEFAULT_REPLACE_MIN_PRICE_DELTA_PCT,
+    DEFAULT_SCORECARD_COOLDOWN_HOURS,
+    DEFAULT_SCORECARD_MAX_LOSS_STREAK,
+    DEFAULT_SCORECARD_WINDOW_TRADES,
+    evaluate_ai_intent_circuit_breaker,
+    parse_intent_circuit_breaker_config,
+)
 from providers.ai_survival_guard import (
     evaluate_ai_decision_scorecard,
     evaluate_ai_ping_pong_guard,
@@ -85,10 +99,8 @@ from providers.intent_execution import (
 from providers.intent_state import (
     append_intent_history,
     collect_known_ai_order_ids,
-    evaluate_ai_intent_circuit_breaker,
     extract_intent_cancel_order_ids,
     load_durable_intents_state,
-    parse_intent_circuit_breaker_config,
     parse_intent_gateway_config,
     resolve_hold_cancel_target,
     save_durable_intents_state,
@@ -583,10 +595,10 @@ class AutonomousIntentGateway:
             effective_usd=effective_usd,
             min_notional_usd=self.min_notional_usd,
             now_ts=now_ts,
-            max_daily_buys_per_symbol=getattr(self, "max_daily_buys_per_symbol", 6),
-            max_hourly_replaces_per_symbol=getattr(self, "max_hourly_replaces_per_symbol", 3),
-            replace_min_price_delta_pct=getattr(self, "replace_min_price_delta_pct", 0.50),
-            max_daily_buy_notional_usd=getattr(self, "max_daily_buy_notional_usd", 6000.0),
+            max_daily_buys_per_symbol=getattr(self, "max_daily_buys_per_symbol", DEFAULT_MAX_DAILY_BUYS_PER_SYMBOL),
+            max_hourly_replaces_per_symbol=getattr(self, "max_hourly_replaces_per_symbol", DEFAULT_MAX_HOURLY_REPLACES_PER_SYMBOL),
+            replace_min_price_delta_pct=getattr(self, "replace_min_price_delta_pct", DEFAULT_REPLACE_MIN_PRICE_DELTA_PCT),
+            max_daily_buy_notional_usd=getattr(self, "max_daily_buy_notional_usd", DEFAULT_MAX_DAILY_BUY_NOTIONAL_USD),
         )
         if cb_allowed and cb_reason and cb_usd < effective_usd:
             logger.info(
@@ -623,9 +635,9 @@ class AutonomousIntentGateway:
             venue=venue,
             price=price,
             now_ts=now_ts,
-            flip_cooldown_min=getattr(self, "flip_cooldown_min", 45.0),
-            flip_min_edge_pct=getattr(self, "flip_min_edge_pct", 0.90),
-            max_flips_6h=getattr(self, "max_flips_6h", 2),
+            flip_cooldown_min=getattr(self, "flip_cooldown_min", DEFAULT_FLIP_COOLDOWN_MIN),
+            flip_min_edge_pct=getattr(self, "flip_min_edge_pct", DEFAULT_FLIP_MIN_EDGE_PCT),
+            max_flips_6h=getattr(self, "max_flips_6h", DEFAULT_MAX_FLIPS_6H),
             spot_price=live_spot_px,
             recent_bot_fill=recent_bot_fill,
         )
@@ -639,9 +651,9 @@ class AutonomousIntentGateway:
                 effective_usd,
             )
 
-        sc_win = getattr(self, "scorecard_window_trades", 5)
-        sc_streak = getattr(self, "scorecard_max_loss_streak", 3)
-        sc_cd_h = getattr(self, "scorecard_cooldown_hours", 4.0)
+        sc_win = getattr(self, "scorecard_window_trades", DEFAULT_SCORECARD_WINDOW_TRADES)
+        sc_streak = getattr(self, "scorecard_max_loss_streak", DEFAULT_SCORECARD_MAX_LOSS_STREAK)
+        sc_cd_h = getattr(self, "scorecard_cooldown_hours", DEFAULT_SCORECARD_COOLDOWN_HOURS)
         if decision == "BUY" and sc_win > 0 and sc_streak > 0 and sc_cd_h > 0.0:
             sc_prices = self._load_live_prices_for_scorecard(symbol, venue, live_spot_px)
             sc_scope = "equities" if is_equity_venue_or_suffix(symbol, venue) else "crypto"

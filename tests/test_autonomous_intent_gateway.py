@@ -3058,25 +3058,32 @@ def test_atomic_rollback_restores_canceled_open_orders_when_replacement_fails_or
 
 
 def test_proposal4c_asymmetric_ai_circuit_breaker_and_replace_churn_cap(tmp_path):
-    """Verify 4C asymmetric by=AI circuit-breaker (24h BUY count/notional + 1h micro-replace cap; SELL & HIGH escape)."""
+    """Verify 4C standalone asymmetric by=AI circuit-breaker (24h BUY count/notional + 1h micro-replace cap; SELL & HIGH escape)."""
     from botcore import load_key_value_conf
     from orchestratorTrade.autonomous_intent_gateway import ROOT_DIR as GW_ROOT_DIR
-    from providers.intent_state import (
+    import providers.intent_state as intent_state_mod
+    from providers.ai_circuit_breaker import (
         evaluate_ai_intent_circuit_breaker,
         parse_intent_circuit_breaker_config,
     )
 
-    # 1. Versioned order_guard.conf exposes the 4 circuit-breaker knobs
+    # 0. Strict acyclic decoupling: circuit-breaker SSOT lives in providers.ai_circuit_breaker with zero reverse shims
+    assert not hasattr(intent_state_mod, "evaluate_ai_intent_circuit_breaker")
+    assert not hasattr(intent_state_mod, "parse_intent_circuit_breaker_config")
+
+    # 1. Versioned order_guard.conf exposes the calibrated circuit-breaker and survival knobs
     root_cfg = load_key_value_conf(GW_ROOT_DIR, GW_ROOT_DIR)
     cb_cfg = parse_intent_circuit_breaker_config(root_cfg)
-    assert cb_cfg["max_daily_buys_per_symbol"] == 6
-    assert cb_cfg["max_hourly_replaces_per_symbol"] == 3
-    assert cb_cfg["replace_min_price_delta_pct"] == pytest.approx(0.50)
-    assert cb_cfg["max_daily_buy_notional_usd"] == pytest.approx(6000.0)
+    assert cb_cfg["max_daily_buys_per_symbol"] == 12
+    assert cb_cfg["max_hourly_replaces_per_symbol"] == 6
+    assert cb_cfg["replace_min_price_delta_pct"] == pytest.approx(0.25)
+    assert cb_cfg["max_daily_buy_notional_usd"] == pytest.approx(20000.0)
+    assert cb_cfg["flip_cooldown_min"] == pytest.approx(30.0)
+    assert cb_cfg["flip_min_edge_pct"] == pytest.approx(0.60)
 
     # 2. Pure unit tests on evaluate_ai_intent_circuit_breaker
     now_s = 1_795_000_000.0
-    prior_6_buys = [
+    prior_12_buys = [
         {
             "intent_id": f"buy_{k}",
             "timestamp": now_s - 600.0 * (k + 1),
@@ -3088,11 +3095,11 @@ def test_proposal4c_asymmetric_ai_circuit_breaker_and_replace_churn_cap(tmp_path
             "limit_price": 90000.0,
             "execution_payload": {"orderId": f"ord_{k}", "status": "FILLED", "executedQty": "0.005"},
         }
-        for k in range(6)
+        for k in range(12)
     ]
-    # Add an extra canceled-unfilled AI order -> must NOT count toward 24h BUY count or notional
+    # Relaxed defaults comfortably allow a 7th BUY (6 prior fills + canceled unfilled order must NOT count)
     prior_with_canceled = [
-        *prior_6_buys[:5],
+        *prior_12_buys[:6],
         {
             "intent_id": "canceled_buy",
             "timestamp": now_s - 500.0,
@@ -3105,8 +3112,8 @@ def test_proposal4c_asymmetric_ai_circuit_breaker_and_replace_churn_cap(tmp_path
             "execution_payload": {"orderId": "ord_canceled", "status": "CANCELED", "executedQty": "0.0"},
         },
     ]
-    ok_5, usd_5, rsn_5, m_5 = evaluate_ai_intent_circuit_breaker(
-        {"intent_id": "new_6", "decision": "BUY", "urgency": "NORMAL"},
+    ok_7th, usd_7th, rsn_7th, m_7th = evaluate_ai_intent_circuit_breaker(
+        {"intent_id": "new_7", "decision": "BUY", "urgency": "NORMAL"},
         prior_with_canceled,
         decision="BUY",
         symbol="BTCUSDC",
@@ -3116,13 +3123,13 @@ def test_proposal4c_asymmetric_ai_circuit_breaker_and_replace_churn_cap(tmp_path
         min_notional_usd=10.0,
         now_ts=now_s,
     )
-    assert ok_5 is True and usd_5 == pytest.approx(500.0) and rsn_5 == ""
-    assert m_5["daily_sym_buys"] == 5 and m_5["daily_buy_notional_usd"] == pytest.approx(2500.0)
+    assert ok_7th is True and usd_7th == pytest.approx(500.0) and rsn_7th == ""
+    assert m_7th["daily_sym_buys"] == 6 and m_7th["daily_buy_notional_usd"] == pytest.approx(3000.0)
 
-    # 7th BUY on same symbol blocked by per-symbol 24h BUY cap
-    ok_7, _, rsn_7, _ = evaluate_ai_intent_circuit_breaker(
-        {"intent_id": "new_7", "decision": "BUY", "urgency": "NORMAL"},
-        prior_6_buys,
+    # 13th BUY on same symbol blocked by per-symbol 24h BUY cap (default 12)
+    ok_13, _, rsn_13, _ = evaluate_ai_intent_circuit_breaker(
+        {"intent_id": "new_13", "decision": "BUY", "urgency": "NORMAL"},
+        prior_12_buys,
         decision="BUY",
         symbol="BTCUSDC",
         venue="binance",
@@ -3131,12 +3138,12 @@ def test_proposal4c_asymmetric_ai_circuit_breaker_and_replace_churn_cap(tmp_path
         min_notional_usd=10.0,
         now_ts=now_s,
     )
-    assert ok_7 is False and "ai_daily_buy_count_cap" in rsn_7
+    assert ok_13 is False and "ai_daily_buy_count_cap" in rsn_13
 
     # Asymmetric safety: protective SELL on same symbol is NEVER blocked by BUY cap
     ok_sell, usd_sell, rsn_sell, _ = evaluate_ai_intent_circuit_breaker(
         {"intent_id": "prot_sell", "decision": "SELL", "urgency": "NORMAL"},
-        prior_6_buys,
+        prior_12_buys,
         decision="SELL",
         symbol="BTCUSDC",
         venue="binance",
@@ -3146,6 +3153,33 @@ def test_proposal4c_asymmetric_ai_circuit_breaker_and_replace_churn_cap(tmp_path
         now_ts=now_s,
     )
     assert ok_sell is True and usd_sell == pytest.approx(1500.0) and rsn_sell == ""
+
+    # Relaxed default $20k notional cap allows $6,500 daily BUY without clamping
+    prior_6500 = [
+        {
+            "intent_id": f"big_{k}",
+            "timestamp": now_s - 1000.0 * (k + 1),
+            "decision": "BUY",
+            "symbol": f"SYM{k}USDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 2000.0,
+            "execution_payload": {"orderId": f"big_ord_{k}", "status": "FILLED", "executedQty": "1.0"},
+        }
+        for k in range(3)
+    ]
+    ok_rel, usd_rel, rsn_rel, _ = evaluate_ai_intent_circuit_breaker(
+        {"intent_id": "relaxed_buy", "decision": "BUY", "urgency": "NORMAL"},
+        prior_6500,
+        decision="BUY",
+        symbol="TAOUSDC",
+        venue="binance",
+        price=300.0,
+        effective_usd=500.0,
+        min_notional_usd=10.0,
+        now_ts=now_s,
+    )
+    assert ok_rel is True and usd_rel == pytest.approx(500.0) and rsn_rel == ""
 
     # Global 24h BUY notional cap smoothly clamps remaining headroom, then blocks when exhausted
     prior_5400 = [
@@ -3333,7 +3367,7 @@ def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
 
     now_s = 1_795_100_000.0
 
-    # 1. Rapid opposite-side flip within 45m without edge -> BLOCKED
+    # 1. Rapid opposite-side flip within 30m without edge (< +0.60%) -> BLOCKED
     recent_buy_fill = [
         {
             "intent_id": "ai_b1",
@@ -3353,35 +3387,47 @@ def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
         decision="SELL",
         symbol="BTCUSDC",
         venue="binance",
-        price=70100.0,  # +0.14% < 0.90% min edge
+        price=70100.0,  # +0.14% < 0.60% min edge
         now_ts=now_s,
     )
     assert ok_pp is False and "ai_ping_pong_flip_cooldown" in rsn_pp
     assert m_pp["flip_ref_actor"] == "AI"
 
-    # Favorable take-profit >= 0.90% passes immediately
+    # Calibrated take-profit >= 0.60% passes immediately (e.g. +0.65% on low-fee venues)
     ok_tp, _, _ = evaluate_ai_ping_pong_guard(
         {"intent_id": "cur_s2", "decision": "SELL", "urgency": "NORMAL"},
         recent_buy_fill,
         decision="SELL",
         symbol="BTCUSDC",
         venue="binance",
-        price=70800.0,  # +1.14% >= 0.90%
+        price=70455.0,  # +0.65% >= 0.60%
         now_ts=now_s,
     )
     assert ok_tp is True
 
-    # Formulaic emergency SELL drop (<= -2.25% = -2.5 * 0.90%) passes immediately
+    # Formulaic emergency SELL drop (<= -1.50% = -2.5 * 0.60%) passes immediately
     ok_emg, _, _ = evaluate_ai_ping_pong_guard(
         {"intent_id": "cur_s3", "decision": "SELL", "urgency": "NORMAL"},
         recent_buy_fill,
         decision="SELL",
         symbol="BTCUSDC",
         venue="binance",
-        price=68200.0,  # -2.57% <= -2.25%
+        price=68880.0,  # -1.60% <= -1.50%
         now_ts=now_s,
     )
     assert ok_emg is True
+
+    # After calibrated 30m cooldown elapses (31m), small-edge flip is allowed cleanly
+    ok_cd_exp, _, _ = evaluate_ai_ping_pong_guard(
+        {"intent_id": "cur_s_cd", "decision": "SELL", "urgency": "NORMAL"},
+        recent_buy_fill,
+        decision="SELL",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=70100.0,
+        now_ts=now_s + 1260.0,  # 31m after fill
+    )
+    assert ok_cd_exp is True
 
     # Pre-committed invalidation_px breach bypasses flip cooldown even on small drop (-0.50%)
     plan_buy_fill = [
@@ -3968,4 +4014,74 @@ def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
         allow_disk_cache=False,
     )
     assert p_ref_off["flags"] == []
+
+    # (h) Open BUY_MTM calibration: normal intraday DCA dip (-0.50% above invalidation) NEVER triggers false BUY cooldown,
+    # whereas breaching invalidation_px (even at 20m) or maturing (>= 60m) below -1.50% DOES score LOSS.
+    dca_dip_open = [
+        {
+            "intent_id": f"dca_{k}",
+            "timestamp": now_s - (2700.0 if k == 0 else 5400.0 + k * 600.0),  # 45m (immature) + 90m/100m (matured)
+            "decision": "BUY",
+            "symbol": f"SYMDCA{k}USDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 500.0,
+            "invalidation_px": 97.0,
+            "target_px": 106.0,
+            "execution_payload": {"orderId": f"odca_{k}", "status": "FILLED", "executedQty": "5.0", "avg_fill_price": 100.0},
+        }
+        for k in range(3)
+    ]
+    sc_dca = evaluate_ai_decision_scorecard(
+        dca_dip_open,
+        now_ts=now_s,
+        live_prices={"SYMDCA0USDC": 99.5, "SYMDCA1USDC": 99.5, "SYMDCA2USDC": 99.5},  # -0.50% dip, above 97.0 invalidation
+    )
+    assert sc_dca["count"] == 2  # 45m tranche still immature (< 60m); 90m & 100m tranches matured as SCRATCH
+    assert sc_dca["losses"] == 0 and sc_dca["scratches"] == 2 and sc_dca["buy_shadow_active"] is False
+
+    # Breaching invalidation_px scores LOSS immediately even before 60m maturity (20m old, -0.50% vs 69700 invalidation)
+    inv_open = [
+        {
+            "intent_id": "inv_fast",
+            "timestamp": now_s - 1200.0,  # 20m ago
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 500.0,
+            "invalidation_px": 69700.0,
+            "target_px": 73000.0,
+            "execution_payload": {"orderId": "oinv_fast", "status": "FILLED", "executedQty": "0.007", "avg_fill_price": 70000.0},
+        }
+    ]
+    sc_inv = evaluate_ai_decision_scorecard(inv_open, now_ts=now_s, live_prices={"BTCUSDC": 69650.0})
+    assert sc_inv["count"] == 1 and sc_inv["losses"] == 1 and sc_inv["loss_streak"] == 1
+
+    # Closed realized BUY->SELL round-trip at -0.50% STILL scores LOSS (< -0.35% closed threshold)
+    closed_small_loss = [
+        {
+            "intent_id": "csl_b",
+            "timestamp": now_s - 3600.0,
+            "decision": "BUY",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 500.0,
+            "execution_payload": {"orderId": "ocsl_b", "status": "FILLED", "executedQty": "2.5", "avg_fill_price": 200.0},
+        },
+        {
+            "intent_id": "csl_s",
+            "timestamp": now_s - 1800.0,
+            "decision": "SELL",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 497.5,
+            "execution_payload": {"orderId": "ocsl_s", "status": "FILLED", "executedQty": "2.5", "avg_fill_price": 199.0},
+        },
+    ]
+    sc_csl = evaluate_ai_decision_scorecard(closed_small_loss, now_ts=now_s)
+    assert sc_csl["count"] == 1 and sc_csl["losses"] == 1
+
 
