@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-11-20T00:46:28+00:00",
+    "ts": "2026-11-20T01:46:00+00:00",
     "full_key": "BINANCE_TAO.mt.maxage_days",
     "section": "BINANCE_TAO",
     "key": "mt.maxage_days",
@@ -9,12 +9,12 @@
     "winner_value": 28.0,
     "margin_vs_current": {
       "half1": 702.57,
-      "half2": 215.24
+      "half2": 210.81
     },
     "dev_commit": "3531631f"
   },
   {
-    "ts": "2026-11-20T00:46:28+00:00",
+    "ts": "2026-11-20T01:46:00+00:00",
     "full_key": "BINANCE_ARB.mt.lost",
     "section": "BINANCE_ARB",
     "key": "mt.lost",
@@ -23,7 +23,7 @@
     "winner_value": 3.5,
     "margin_vs_current": {
       "half1": 7.37,
-      "half2": 7.27
+      "half2": 10.88
     },
     "dev_commit": "3531631f"
   }
