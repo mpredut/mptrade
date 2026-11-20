@@ -225,6 +225,14 @@ def _fmt_liq_usd(val: Any) -> str:
     return f"${vf:.0f}"
 
 
+def _fmt_plain_float(val: Any, decimals: int = 8) -> str:
+    """Format small non-zero floats without scientific notation (e.g. 3e-06 -> 0.000003)."""
+    if isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val):
+        if 0.0 < abs(val) < 1e-4:
+            return f"{val:.{decimals}f}".rstrip("0").rstrip(".")
+    return str(val)
+
+
 def _fmt_px(px_f: float, raw_px: Any = None) -> str:
     if px_f >= 1.0:
         if px_f < 1000.0 and abs(px_f - round(px_f, 2)) >= 1e-5:
@@ -1013,18 +1021,26 @@ def _format_microstructure_section(
         eq_zero_fund_3b = sym_is_eq_3b
         oi_15m_v = safe_float(minfo.get("oi_15m_chg_pct"), None)
         oi_15m_sfx = f", oi_15m_chg={oi_15m_v:+.2f}%" if oi_15m_v is not None else ""
-        deriv_oi_sfx = (
-            ""
-            if (sym_is_tok_xstock_3b or (eq_no_oi_3b and eq_zero_fund_3b))
-            else (
-                f", oi_usd={oi_lbl} (cboe_options_oi), oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
-                if eq_zero_fund_3b
-                else (
-                    f", funding={minfo.get('funding_rate')} (pred={minfo.get('pred_funding_rate')}), "
-                    f"oi_usd={oi_lbl}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%{oi_15m_sfx}"
+        if sym_is_tok_xstock_3b or (eq_no_oi_3b and eq_zero_fund_3b):
+            deriv_oi_sfx = ""
+        elif eq_zero_fund_3b:
+            deriv_oi_sfx = f", oi_usd={oi_lbl} (cboe_options_oi), oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
+        else:
+            fr_v = safe_float(minfo.get("funding_rate"), default=None)
+            pfr_v = safe_float(minfo.get("pred_funding_rate"), default=None)
+            has_ann_fund = safe_float(minfo.get("funding_annualized_pct"), default=None) is not None
+            fund_part = ""
+            if has_ann_fund:
+                if fr_v is not None and pfr_v is not None and abs(pfr_v - fr_v) > 1e-7:
+                    fund_part = f", pred_funding_8h={_fmt_plain_float(pfr_v)}"
+            elif fr_v is not None:
+                pred_sfx = (
+                    f" (pred={_fmt_plain_float(pfr_v)})"
+                    if pfr_v is not None and abs(pfr_v - fr_v) > 1e-9
+                    else ""
                 )
-            )
-        )
+                fund_part = f", funding={_fmt_plain_float(fr_v)}{pred_sfx}"
+            deriv_oi_sfx = f"{fund_part}, oi_usd={oi_lbl}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%{oi_15m_sfx}"
         src_age_sfx = _format_3b_source_ages_suffix(
             minfo,
             now_ts=now_ts,
@@ -1113,10 +1129,11 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
     if lim_parts:
         t_extra += f", limits({', '.join(lim_parts)})"
     fb_val, val_usd = pv["free_base"], pv["value_usd"]
+    fb_disp = _fmt_plain_float(fb_val) if fb_val is not None else None
     fb_str = (
-        f"{fb_val} (${val_usd} USD)"
-        if fb_val is not None and val_usd is not None
-        else (f"{fb_val}" if fb_val is not None else "N/A")
+        f"{fb_disp} (${val_usd} USD)"
+        if fb_disp is not None and val_usd is not None
+        else (fb_disp if fb_disp is not None else "N/A")
     )
     if (lb_q := pv["locked_base_qty"]) is not None:
         lb_u = pv["locked_base_usd"]

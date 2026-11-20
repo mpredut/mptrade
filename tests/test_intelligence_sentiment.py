@@ -13206,6 +13206,89 @@ def test_sentiment_advisor_quantitative_prompt_enrichment_geopolitical_context_a
     for stale_geo_tok in ("COUPLED_RISK_ON", "CRYPTO_BULLISH_DECOUPLING", "FUTURES_PREMARKET_GAP_UP", "Cross_Asset"):
         assert stale_geo_tok not in geo_client.last_prompt
 
+    # 7. Section 3B/3C prompt hygiene: deduplicate raw sci-notation funding when funding_ann present,
+    #    format dust free_base without sci-notation, drop raw intent ts when age_h present, and drop [HEALTHY]/[CAUTION] labels
+    from providers.ai_survival_guard import format_ai_decision_scorecard_line
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+
+    sec_3b_clean = "\n".join(
+        _format_microstructure_section(
+            {
+                "BTCUSDC": {
+                    "ob_imbalance": 0.65,
+                    "bid_depth_usd": 5_000_000.0,
+                    "ask_depth_usd": 3_000_000.0,
+                    "funding_rate": -4.24e-06,
+                    "pred_funding_rate": -4.24e-06,
+                    "funding_annualized_pct": -0.5,
+                    "perp_spot_basis_bps": -4.8,
+                    "oi_usd": 5_980_803_551.77,
+                    "oi_1h_chg_pct": -0.54,
+                    "whale_long_pct": 0.645,
+                    "taker_buy_sell_ratio": 1.15,
+                    "taker_buy_vol_usd": 45_000_000.0,
+                    "taker_sell_vol_usd": 39_000_000.0,
+                    "cvd_15m_usd": 6_000_000.0,
+                }
+            },
+            {"BTCUSDC": {"price": 61_678.0}},
+            now_ts=now_s,
+        )
+    )
+    assert "funding_ann=-0.5%" in sec_3b_clean
+    assert "e-06" not in sec_3b_clean
+    assert "(pred=" not in sec_3b_clean
+
+    sc_ok = format_ai_decision_scorecard_line(
+        {"count": 4, "wins": 4, "scratches": 0, "losses": 0, "avg_edge_pct": 2.81, "net_usd": 49.0, "status": "HEALTHY"}
+    )
+    assert sc_ok == "AI Decision Scorecard (48h, n=4): 4W/0S/0L, avg=+2.81%, net=+$49"
+    assert "[HEALTHY]" not in sc_ok
+    sc_cd = format_ai_decision_scorecard_line(
+        {
+            "count": 3, "wins": 0, "scratches": 0, "losses": 3, "avg_edge_pct": -1.5, "net_usd": -120.0,
+            "loss_streak": 3, "status": "BUY_SHADOW_COOLDOWN", "cooldown_remaining_h": 2.4,
+        }
+    )
+    assert "[BUY_SHADOW_COOLDOWN: 2.4h left]" in sc_cd
+
+    sec_3c_clean = "\n".join(
+        _format_portfolio_section(
+            {
+                "tradable_positions": [
+                    {
+                        "venue": "kraken",
+                        "symbol": "TAOUSD",
+                        "base": "TAO",
+                        "quote": "USD",
+                        "free_base": 3e-06,
+                        "value_usd": 0.0,
+                        "free_quote": 4478.99,
+                        "price": 186.4,
+                    }
+                ],
+                "recent_ai_intents": [
+                    {
+                        "decision": "SELL",
+                        "symbol": "TAOUSDC",
+                        "venue": "binance",
+                        "order_type": "LIMIT",
+                        "status": "EXECUTED",
+                        "notional_usd": 450.0,
+                        "ts": 1795158520.6662192,
+                        "venue_status": "FILLED",
+                        "age_h": 2.5,
+                    }
+                ],
+            }
+        )
+    )
+    assert "free_TAO=0.000003 ($0.0 USD)" in sec_3c_clean
+    assert "3e-06" not in sec_3c_clean
+    assert "'ts':" not in sec_3c_clean
+    assert "'age_h': 2.5" in sec_3c_clean
+
+
 
 def test_etapa0_derivatives_short_horizon_deltas_and_rendering(tmp_path):
     """Verify Q1 oi_15m_chg_pct, basis_delta_15m_bps, funding_delta_1h_bps, 90-entry history retention, sibling sync, and rendering."""

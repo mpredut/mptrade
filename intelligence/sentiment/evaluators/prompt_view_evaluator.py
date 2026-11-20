@@ -515,6 +515,8 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                         if oid
                     }
                     it_copy = dict(it)
+                    if it_copy.get("age_h") is not None:
+                        it_copy.pop("ts", None)
                     it_ident = resolve_symbol_identity(it_copy.get("symbol"))
                     if it_ident.is_tokenized_equity and it_ident.display_symbol:
                         it_copy["symbol"] = it_ident.display_symbol
