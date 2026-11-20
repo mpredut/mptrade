@@ -29,7 +29,12 @@ from pricewindow import (
     KalmanTrend as _DefaultKalmanTrend,
 )
 from cachepaths import cache_ohlc_24h_filename, cache_path, canonical_base_asset, resolve_cachedb_filepath
-from instrument_registry import is_equity_symbol, is_symbol_market_open, resolve_symbol_identity
+from instrument_registry import (
+    is_equity_or_tokenized_symbol,
+    is_equity_symbol,
+    is_symbol_market_open,
+    resolve_symbol_identity,
+)
 from providers.ohlc_utils import build_ohlc_row
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
 from intelligence.macro_sentiment_ssot import (
@@ -2209,7 +2214,7 @@ def apply_24h_series_enrichment(
         c1h = safe_float(m24.get("chg_1h_pct"), 0.0)
         if c1h >= 0.25 or c1h <= -0.25:
             entry["trend"] = 1 if c1h >= 0.25 else -1
-    if series_24h and btc_series_24h and not is_eq and canonical_base_asset(sym) != "BTC":
+    if series_24h and btc_series_24h and not is_equity_or_tokenized_symbol(sym) and canonical_base_asset(sym) != "BTC":
         cross_btc = compute_cross_btc_metrics(series_24h, btc_series_24h)
         for ck in ("alt_btc_pos_24h_pct", "alt_btc_dd_24h_high_pct", "alt_btc_bounce_24h_low_pct", "beta_btc_24h", "corr_btc_24h"):
             if cross_btc.get(ck) is not None:

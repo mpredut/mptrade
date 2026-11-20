@@ -28,6 +28,7 @@ from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
     NAV_HISTORY_STATE_FILENAME,
     VENUE_BALANCES_STATE_FILENAME,
+    is_equity_venue,
     resolve_cachedb_filepath,
 )
 from state_io import (
@@ -202,28 +203,77 @@ def append_nav_history_point(
     return cleaned, True
 
 
+def _normalize_nav_scope(scope: Any) -> str:
+    txt = (clean_scalar_str(scope) or "all").lower()
+    if txt in ("equities", "equity"):
+        return "equities"
+    return "crypto" if txt == "crypto" else "all"
+
+
+def _project_nav_point_to_scope(
+    point: Mapping[str, Any],
+    scope_norm: str,
+) -> Optional[tuple[dict[str, Any], bool]]:
+    """Project a normalized NAV point onto ``scope_norm`` ('all', 'crypto', or 'equities').
+
+    Returns ``(projected_point, projected_from_superset)`` or ``None`` when the point has no venues
+    belonging to the requested sub-scope.
+    """
+    if scope_norm == "all":
+        return dict(point), False
+    venues = point.get("venues_usd")
+    if not isinstance(venues, Mapping) or not venues:
+        return None
+    want_eq = scope_norm == "equities"
+    scoped_venues = {
+        vk: round(vv, 2)
+        for vk, vv in venues.items()
+        if is_equity_venue(vk) == want_eq and (safe_pos_float(vv, default=0.0) or 0.0) > 0.0
+    }
+    if not scoped_venues:
+        return None
+    scoped_nav = round(sum(scoped_venues.values()), 2)
+    if scoped_nav <= 0.0:
+        return None
+    projected = dict(point)
+    projected["nav_usd"] = scoped_nav
+    projected["venues_usd"] = scoped_venues
+    was_superset = len(scoped_venues) < len(venues)
+    if was_superset:
+        projected.pop("venue_set_changed", None)
+    return projected, was_superset
+
+
 def evaluate_nav_drawdown_metrics(
     history: list[dict[str, Any]],
     *,
     now_ts: Optional[float] = None,
     current_point: Optional[Mapping[str, Any]] = None,
     cashflow_jump_pct: float = DEFAULT_CASHFLOW_JUMP_PCT,
+    scope: str = "all",
 ) -> dict[str, Any]:
     """Compute cashflow-adjusted daily/24h/7d/30d NAV drawdown and 30d daily Sharpe from NAV history."""
-    points: list[dict[str, Any]] = []
+    scope_norm = _normalize_nav_scope(scope)
+    scoped_points: list[tuple[dict[str, Any], bool]] = []
     for item in (history if isinstance(history, list) else []):
         if (norm_it := _normalize_nav_point(item)) is not None:
-            points.append(norm_it)
-    points.sort(key=lambda r: r["ts"])
+            if (proj := _project_nav_point_to_scope(norm_it, scope_norm)) is not None:
+                scoped_points.append(proj)
+    scoped_points.sort(key=lambda pair: pair[0]["ts"])
 
     cur_norm = _normalize_nav_point(current_point)
-    if cur_norm is not None:
-        if not points or cur_norm["ts"] > points[-1]["ts"]:
-            points.append(cur_norm)
-        elif cur_norm["ts"] == points[-1]["ts"]:
-            points[-1] = cur_norm
+    cur_proj = _project_nav_point_to_scope(cur_norm, scope_norm) if cur_norm is not None else None
+    if cur_proj is not None:
+        if not scoped_points or cur_proj[0]["ts"] > scoped_points[-1][0]["ts"]:
+            scoped_points.append(cur_proj)
+        elif cur_proj[0]["ts"] == scoped_points[-1][0]["ts"]:
+            scoped_points[-1] = cur_proj
 
-    eff_now = resolve_now_ts(now_ts) if now_ts is not None else (points[-1]["ts"] if points else resolve_now_ts(None))
+    eff_now = (
+        resolve_now_ts(now_ts)
+        if now_ts is not None
+        else (scoped_points[-1][0]["ts"] if scoped_points else resolve_now_ts(None))
+    )
     empty: dict[str, Any] = {
         "current_nav_usd": 0.0,
         "utc_day": _utc_day_str(eff_now),
@@ -238,20 +288,36 @@ def evaluate_nav_drawdown_metrics(
         "external_cashflow_events": 0,
         "venues_usd": {},
     }
-    if not points:
+    if not scoped_points:
         return empty
 
     # Build time-weighted cashflow-adjusted index (1.0 at start) so external deposits/withdrawals never distort DD
     adj_series: list[tuple[float, str, float, dict[str, Any]]] = []
     cur_idx = 1.0
     cf_events = 0
-    for i, pt in enumerate(points):
+    thresh = safe_pos_float(cashflow_jump_pct, default=DEFAULT_CASHFLOW_JUMP_PCT) or DEFAULT_CASHFLOW_JUMP_PCT
+    for i, (pt, was_superset) in enumerate(scoped_points):
         if i > 0:
-            prev = points[i - 1]
-            flagged_cf = bool(pt.get("external_cashflow")) or bool(pt.get("venue_set_changed"))
-            if not flagged_cf:
-                det_cf, det_vs, _ = _detect_non_market_step(prev, pt, cashflow_jump_pct=cashflow_jump_pct)
-                flagged_cf = det_cf or det_vs
+            prev, prev_superset = scoped_points[i - 1]
+            if scope_norm == "all":
+                flagged_cf = bool(pt.get("external_cashflow")) or bool(pt.get("venue_set_changed"))
+                if not flagged_cf:
+                    det_cf, det_vs, _ = _detect_non_market_step(prev, pt, cashflow_jump_pct=cashflow_jump_pct)
+                    flagged_cf = det_cf or det_vs
+            else:
+                prev_v = set((prev.get("venues_usd") or {}).keys())
+                cur_v = set((pt.get("venues_usd") or {}).keys())
+                jump_pct = (
+                    (abs(pt["nav_usd"] - prev["nav_usd"]) / prev["nav_usd"]) * 100.0
+                    if prev["nav_usd"] > 0.0
+                    else 0.0
+                )
+                flagged_cf = bool(prev_v and cur_v and prev_v != cur_v) or (
+                    bool(pt.get("external_cashflow")) and jump_pct >= thresh
+                )
+                if not flagged_cf and was_superset == prev_superset:
+                    det_cf, det_vs, _ = _detect_non_market_step(prev, pt, cashflow_jump_pct=cashflow_jump_pct)
+                    flagged_cf = det_cf or det_vs
             if flagged_cf:
                 cf_events += 1
             elif prev["nav_usd"] > 0.0:
@@ -468,15 +534,18 @@ def load_and_evaluate_nav_drawdown(
     *,
     now_ts: Optional[float] = None,
     include_live_point: bool = True,
+    scope: str = "all",
+    current_point: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Read persisted NAV history (plus optional current mark-to-market snapshot) without mutating disk."""
     eff_now = resolve_now_ts(now_ts)
+    scope_norm = _normalize_nav_scope(scope)
     history = load_nav_history_state(workspace_dir)
-    cur_pt: Optional[dict[str, Any]] = None
-    if include_live_point:
+    cur_pt: Optional[Mapping[str, Any]] = current_point
+    if cur_pt is None and include_live_point:
         vb_map, cp_map = _load_workspace_balances_and_prices(workspace_dir)
-        cur_pt = build_nav_history_point(vb_map, live_prices=cp_map, now_ts=eff_now, scope="all")
-    return evaluate_nav_drawdown_metrics(history, now_ts=eff_now, current_point=cur_pt)
+        cur_pt = build_nav_history_point(vb_map, live_prices=cp_map, now_ts=eff_now, scope=scope_norm)
+    return evaluate_nav_drawdown_metrics(history, now_ts=eff_now, current_point=cur_pt, scope=scope_norm)
 
 
 def format_nav_drawdown_summary_line(metrics: Any) -> str:

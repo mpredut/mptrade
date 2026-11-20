@@ -349,3 +349,50 @@ def test_nav_drawdown_resets_daily_dd_after_utc_midnight_when_history_is_from_pr
     assert m_next_day["rolling_24h_drawdown_pct"] == pytest.approx(-6.0, abs=0.05)
 
 
+def test_nav_drawdown_scoped_projection_and_live_point_isolate_crypto_from_equities():
+    """Verify scope='crypto' and scope='equities' project multi-venue NAV history and live points independently."""
+    day0_utc = datetime(2026, 11, 20, 0, 0, 0, tzinfo=timezone.utc).timestamp()
+    hist: list[dict] = []
+    hist, _ = append_nav_history_point(
+        hist,
+        {
+            "ts": day0_utc + 3600.0,
+            "nav_usd": 20000.0,
+            "invested_usd": 14000.0,
+            "free_cash_usd": 6000.0,
+            "venues_usd": {"binance": 10000.0, "kraken": 8000.0, "t212": 2000.0},
+        },
+    )
+    # T212 drops 10% (-$200) while crypto stays flat ($18,000)
+    hist, _ = append_nav_history_point(
+        hist,
+        {
+            "ts": day0_utc + 7200.0,
+            "nav_usd": 19800.0,
+            "invested_usd": 13800.0,
+            "free_cash_usd": 6000.0,
+            "venues_usd": {"binance": 10000.0, "kraken": 8000.0, "t212": 1800.0},
+        },
+    )
+    # Live crypto mark-to-market drops -1.0% ($18,000 -> $17,820) with scoped venues_usd
+    live_crypto_pt = {
+        "ts": day0_utc + 7500.0,
+        "nav_usd": 17820.0,
+        "invested_usd": 11820.0,
+        "free_cash_usd": 6000.0,
+        "venues_usd": {"binance": 9820.0, "kraken": 8000.0},
+    }
+    m_crypto = evaluate_nav_drawdown_metrics(
+        hist, now_ts=day0_utc + 7500.0, current_point=live_crypto_pt, scope="crypto"
+    )
+    assert m_crypto["current_nav_usd"] == pytest.approx(17820.0)
+    assert m_crypto["daily_nav_drawdown_pct"] == pytest.approx(-1.0, abs=0.02)
+    assert set(m_crypto["venues_usd"].keys()) == {"binance", "kraken"}
+
+    m_eq = evaluate_nav_drawdown_metrics(hist, now_ts=day0_utc + 7500.0, scope="equities")
+    assert m_eq["current_nav_usd"] == pytest.approx(1800.0)
+    assert m_eq["daily_nav_drawdown_pct"] == pytest.approx(-10.0, abs=0.05)
+    assert set(m_eq["venues_usd"].keys()) == {"t212"}
+
+
+

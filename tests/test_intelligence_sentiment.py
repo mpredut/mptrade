@@ -14907,6 +14907,123 @@ def test_faza3a_prep_ssot_seams_zero_behavior_change(tmp_path):
     ) == " [PRE, src=yahoo_ext, age=1.0m, ext_vs_rth=+2.15%, t212_close=$140.0]"
 
 
+def test_prompt_telemetry_audit_fixes_low_issues(tmp_path):
+    """Regression coverage for LOW prompt audit fixes (#11 tokenized vs_btc, #12 news path & noise, #13 BNBUSDC fee reserve)."""
+    from intelligence.macro.lexicon_ssot import (
+        has_financial_or_geopolitical_context,
+        is_excluded_reference_news_item,
+        is_off_topic_general_news_title,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions
+    from intelligence.sentiment.evaluators.price_series_evaluator import apply_24h_series_enrichment
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_macro_and_news_section,
+        _format_market_prices_section,
+    )
+    from state_io import atomic_write_json
+
+    t_now = 1_795_180_000.0
+
+    # 11. Tokenized xStocks (SPCXxUSD, ANTxUSD) skip cross-BTC calculation and omit vs_btc / alt_btc_24h in Section 3
+    btc_24h = [[int((t_now - (24 - i) * 3600) * 1000), 60000.0 + i * 50.0] for i in range(25)]
+    spcx_24h = [[int((t_now - (24 - i) * 3600) * 1000), 140.0 + i * 0.2] for i in range(25)]
+    spcx_entry = {"price": 144.8, "chg_15m_pct": 0.1, "chg_1h_pct": 0.3, "chg_24h_pct": 3.4}
+    apply_24h_series_enrichment("SPCXxUSD", spcx_entry, {"chg_24h_pct": 3.4}, spcx_24h, btc_24h)
+    assert "beta_btc_24h" not in spcx_entry
+    assert "corr_btc_24h" not in spcx_entry
+    assert "alt_btc_pos_24h_pct" not in spcx_entry
+
+    sec3_lines = _format_market_prices_section(
+        {
+            "BTCUSDC": {"price": 61200.0, "chg_15m_pct": 0.05, "chg_1h_pct": 0.2, "chg_24h_pct": 2.0},
+            "TAOUSDC": {"price": 185.0, "chg_15m_pct": 0.4, "chg_1h_pct": 1.1, "chg_24h_pct": 4.0, "beta_btc_24h": 1.4, "corr_btc_24h": 0.72},
+            "SPCXxUSD": {"price": 144.8, "chg_15m_pct": 0.1, "chg_1h_pct": 0.3, "chg_24h_pct": 3.4, "beta_btc_24h": 0.9, "corr_btc_24h": 0.5},
+            "ANTxUSD": {"price": 51.0, "chg_15m_pct": -0.2, "chg_1h_pct": -0.5, "chg_24h_pct": -2.0},
+        },
+    )
+    sec3_by_sym = {ln.split(":", 1)[0].replace("* ", "").strip(): ln for ln in sec3_lines if ln.startswith("  * ")}
+    assert "vs_btc(" in sec3_by_sym["TAOUSDC"] and "alt_btc_24h(" in sec3_by_sym["TAOUSDC"]
+    assert "vs_btc(" not in sec3_by_sym["SPCXxUSD"] and "alt_btc_24h(" not in sec3_by_sym["SPCXxUSD"]
+    assert "vs_btc(" not in sec3_by_sym["ANTxUSD"] and "alt_btc_24h(" not in sec3_by_sym["ANTxUSD"]
+
+    # 12. Breaking News Feed path reflects cachedb/macro/news_feed_collect.json and filters personal-finance/fashion/sports-drone noise
+    macro_snap = SimpleNamespace(
+        macro_and_sentiment={},
+        fear_greed=None,
+        market_breadth=None,
+        sentiment_advisor=None,
+        geopolitical_threat=None,
+        portfolio_summary={},
+        breaking_news=[{"title": "Treasury yields fall sharply as investors seek safe havens", "age_min": 5.0}],
+        macro_benchmarks=None,
+        macro_calendar=None,
+    )
+    sec3a_txt = "\n".join(_format_macro_and_news_section(macro_snap, asset_scope="crypto"))
+    assert "cachedb/macro/news_feed_collect.json" in sec3a_txt
+
+    assert is_excluded_reference_news_item(
+        "I’m terrified of a market crash. Should I put $400,000 of my $1 million retirement savings into an annuity?",
+        "MarketWatch",
+        "",
+    )
+    assert is_excluded_reference_news_item(
+        "These 5 defense stocks are drawing millions in insider bets ahead of military-spending boom in 2027",
+        "MarketWatch",
+        "",
+    )
+    drone_sports = "Drone operator removes Man United training footage and issues apology"
+    assert has_financial_or_geopolitical_context(drone_sports) is False
+    assert is_off_topic_general_news_title(drone_sports) is True
+    fashion_fluff = "Rejecting cheap fabrics, higher prices: Why shoppers are asking for better clothes"
+    assert has_financial_or_geopolitical_context(fashion_fluff) is False
+    assert is_off_topic_general_news_title(fashion_fluff) is True
+    # Genuine geopolitical drone strike headlines remain high-relevance financial/geopolitical context
+    assert has_financial_or_geopolitical_context("Iranian drone strike targets Gulf tanker near Strait of Hormuz") is True
+
+    # 13. Non-tradable BNBUSDC fee-reserve fills are excluded from recent_orders unless BNBUSDC is actively configured/tradable
+    cdir = tmp_path / "cachedb"
+    ord_dir = cdir / "orders"
+    ord_dir.mkdir(parents=True, exist_ok=True)
+    orders_payload = {
+        "items": {
+            "BNBUSDC": [
+                {"orderId": 9001, "symbol": "BNBUSDC", "side": "BUY", "status": "FILLED", "price": 620.0, "quantity": 0.32, "timestamp": int((t_now - 3600) * 1000)}
+            ],
+            "BTCUSDC": [
+                {"orderId": 9002, "symbol": "BTCUSDC", "side": "BUY", "status": "FILLED", "price": 61000.0, "quantity": 0.01, "timestamp": int((t_now - 1800) * 1000)}
+            ],
+        }
+    }
+    atomic_write_json(str(ord_dir / "cache_order_binance.json"), orders_payload)
+    res_excl = harvest_recent_orders_and_enrich_positions(
+        str(cdir),
+        inst_by_sym={"BTCUSDC": SimpleNamespace(symbol="BTCUSDC", provider_name="binance")},
+        tradable_positions=[],
+        prices_and_trends={"BTCUSDC": {"price": 61200.0}},
+        kraken_cycles={},
+        hyperliquid_cycles={},
+        t212_cycles={},
+        allow_network=False,
+    )
+    assert "BTCUSDC" in res_excl
+    assert "BNBUSDC" not in res_excl
+
+    # If BNBUSDC IS explicitly configured as a tradable instrument, it must remain visible
+    res_incl = harvest_recent_orders_and_enrich_positions(
+        str(cdir),
+        inst_by_sym={
+            "BTCUSDC": SimpleNamespace(symbol="BTCUSDC", provider_name="binance"),
+            "BNBUSDC": SimpleNamespace(symbol="BNBUSDC", provider_name="binance"),
+        },
+        tradable_positions=[],
+        prices_and_trends={"BTCUSDC": {"price": 61200.0}, "BNBUSDC": {"price": 622.0}},
+        kraken_cycles={},
+        hyperliquid_cycles={},
+        t212_cycles={},
+        allow_network=False,
+    )
+    assert "BNBUSDC" in res_incl
+
 
 
 

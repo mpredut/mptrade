@@ -75,6 +75,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     first_variant_dict,
 )
 from providers.order_status_ssot import is_terminal_audit_status
+from providers.venue_fee_maintenance import BinanceFeeMaintainer
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     apply_cycle_fallback_to_recent_fills,
     clip_open_lots_to_held_qty,
@@ -1814,6 +1815,25 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                         raw_s = str(it_t212.get("symbol") or "").strip().upper()
                         allowed_t212_syms.update(_scoped_sym_variants(raw_s, is_eq=True))
 
+        active_non_eq_syms: set[str] = set()
+        for s_k, iv in (inst_by_sym or {}).items():
+            if not is_equity_venue(getattr(iv, "provider_name", None)):
+                raw_s = str(getattr(iv, "symbol", "") or str(s_k).split(":", 1)[-1]).strip().upper()
+                if raw_s:
+                    active_non_eq_syms.add(raw_s)
+        for pos_it in (tradable_positions or ()):
+            if isinstance(pos_it, dict) and not is_equity_venue(pos_it.get("venue")):
+                if raw_s := str(pos_it.get("symbol") or "").strip().upper():
+                    active_non_eq_syms.add(raw_s)
+        for pt_k in (prices_and_trends or {}):
+            if raw_s := str(pt_k or "").strip().upper():
+                active_non_eq_syms.add(raw_s)
+        for it_any in (ai_intents or ()):
+            if isinstance(it_any, dict) and not is_equity_venue(it_any.get("venue")):
+                if raw_s := str(it_any.get("symbol") or "").strip().upper():
+                    active_non_eq_syms.add(raw_s)
+        fee_reserve_sym = BinanceFeeMaintainer.BNB_SYMBOL.upper()
+
         audit_cache_by_venue: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
         for order_cache_name, cache_venue in _resolve_order_cache_files():
             orders_data = _rj(os.path.join(cache_dir, order_cache_name))
@@ -1827,6 +1847,8 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 for sym, o_list in orders_data["items"].items():
                     sym_u = str(sym or "").strip().upper()
                     if is_equity_venue(cache_venue) and allowed_t212_syms and sym_u not in allowed_t212_syms:
+                        continue
+                    if not is_equity_venue(cache_venue) and sym_u == fee_reserve_sym and sym_u not in active_non_eq_syms:
                         continue
                     merged_o_list = (
                         _merge_audit_orders(o_list, v_audit_map.get(sym_u) or v_audit_map.get(str(sym)) or [])
@@ -1874,6 +1896,8 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 if isinstance(it, dict) and str(it.get("symbol") or "").strip()
             }
             for sym_fb in sorted(set(audit_by_sym.keys()) | intent_syms):
+                if not is_equity_venue(fallback_venue) and sym_fb == fee_reserve_sym and sym_fb not in active_non_eq_syms:
+                    continue
                 if first_variant_dict(venue_recent_orders[fallback_venue], cache_symbol_variants(sym_fb, include_base=True)) is not None:
                     continue
                 o_list = audit_by_sym.get(sym_fb, [])

@@ -19,10 +19,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from botcore import _parse_bool_flag, normalize_epoch_sec, normalize_timestamp_ms, safe_float, safe_int, safe_pos_float
-from cachepaths import (
-    canonical_base_asset,
-    has_equity_suffix,
-)
+from cachepaths import canonical_base_asset
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
 from intelligence.macro_sentiment_ssot import (
     TELEMETRY_SOURCE_STALE_INTERVAL_MULT,
@@ -66,7 +63,7 @@ from intelligence.sentiment.evaluators.prompt_view_evaluator import (
     evaluate_portfolio_prompt_view,
     evaluate_tradable_position_prompt_view,
 )
-from instrument_registry import is_equity_symbol, resolve_symbol_identity
+from instrument_registry import is_equity_or_tokenized_symbol, is_equity_symbol, resolve_symbol_identity
 from providers.ai_survival_guard import format_ai_decision_scorecard_line
 from providers.order_id_context import format_actor_tag
 
@@ -496,7 +493,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
             f"- US Equities, Futures & Macro Rates Benchmarks (SPY / QQQ / ES=F / NQ=F / DXY / US10Y 24h Delta): {mb_bench_line}"
         )
     if breaking_news:
-        lines.append("- Live Breaking News Feed (cachedb/news_feed_collect.json, 1m refresh):")
+        lines.append("- Live Breaking News Feed (cachedb/macro/news_feed_collect.json, 1m refresh):")
         for hn in breaking_news:
             lines.append(f"  * {hn.get('title')}{_age_sfx(hn, parens=True)}")
     return lines
@@ -689,7 +686,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             and pinfo.get("low_24h") is not None
             and (pinfo.get("low_7d"), pinfo.get("high_7d")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
         )
-        is_non_btc_crypto = not has_equity_suffix(sym) and canonical_base_asset(sym) != "BTC"
+        is_non_btc_crypto = not is_equity_or_tokenized_symbol(sym) and canonical_base_asset(sym) != "BTC"
         if is_non_btc_crypto:
             vs_btc_parts: List[str] = []
             if btc_entry:

@@ -1421,10 +1421,22 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             ):
                 if workspace_dir:
                     try:
+                        live_nav_pt: Optional[Dict[str, Any]] = None
+                        if (live_nav_u := safe_pos_float(risk_eng.get("unified_nav_usd"), default=None)) is not None:
+                            live_nav_pt = {
+                                "ts": now_ts,
+                                "nav_usd": live_nav_u,
+                                "invested_usd": safe_nonneg_float(risk_eng.get("invested_exposure_usd"), default=0.0),
+                                "free_cash_usd": safe_nonneg_float(risk_eng.get("global_free_cash_usd"), default=0.0),
+                                "locked_quote_usd": safe_nonneg_float(risk_eng.get("locked_quote_usd"), default=0.0),
+                                "venues_usd": dict(risk_eng.get("venue_nav_breakdown_usd") or {}),
+                            }
                         nav_dd = load_and_evaluate_nav_drawdown(
                             workspace_dir,
                             now_ts=now_ts,
                             include_live_point=False,
+                            scope=scope,
+                            current_point=live_nav_pt,
                         )
                         if nav_dd.get("sample_count", 0) >= 2:
                             risk_eng["daily_nav_drawdown_pct"] = nav_dd["daily_nav_drawdown_pct"]

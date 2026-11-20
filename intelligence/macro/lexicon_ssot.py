@@ -644,7 +644,7 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
 )
 
 _EDITORIAL_CLICKBAIT_OR_ADVICE_RE = re.compile(
-    r"^(?:['\u2018\"].*['\u2019\"]:\s*)?(?:i(?:['\u2019]m|['\u2019]ve|\s+have|\s+am)\s+(?:\d{2}\b|worth\b|retired\b|inheriting\b|saving\b)|we(?:['\u2019]re|['\u2019]ve|\s+have|\s+are)\s+(?:\d{2}\b|in\s+our\b|worth\b|retired\b)|my\s+(?:(?:[\d-]+-year-old|elderly|late|aging)\s+)?(?:husband|wife|spouse|partner|parents|mother|father|brother|sister|son|daughter|adviser|advisor|financial\s+adviser|financial\s+advisor))\b|^['\u2018\"].*['\u2019\"]:\s*(?:i(?:['\u2019]m|['\u2019]ve|\s+have|\s+am)|we(?:['\u2019]re|['\u2019]ve|\s+have|\s+are))\b|^cramer:\s|^prediction:\s|^forget\s+[a-z0-9&-]+\.\s+here['\u2019]?s\b|^why\s+[a-z0-9&-]+\s+stock\s+is\s+(?:up|down|rising|falling|climbing|dropping|soaring|sliding)\s+today\b|^best\s+[a-z0-9-]+\s+dip\s+buys\b|^not\s+[a-z]+\.\s+not\s+[a-z]+\.|^historically\s+(?:bullish|bearish)\s+signal\s+emerges\s+for\b|^etfs\s+(?:bought|sold)\s+\$[\d.]+\s+(?:million|billion)\s+of\b|\([a-z]{2,5}\)\s+(?:adds|buys|sells|trims|sees)\b.*\bon\s+(?:monday|tuesday|wednesday|thursday|friday|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z.]*\s+\d{1,2})\b|\(hint:\s*only\s+\d+\s+is\s+a\s+(?:buy|sell)\)|\bis\s+it\s+(?:time\s+to\s+buy|a\s+bargain\s+or\s+a\s+value\s+trap)\?|\b(?:can i buy a\s+\$?\d|can we afford\s+a\s+\$?\d|how to buy a\s+(?:new\s+|used\s+)?(?:car|home|house)\b|should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:[a-z0-9&-]+\s+){0,3}stocks?\s+to\s+(?:buy|sell|watch|avoid))\b"
+    r"^(?:['\u2018\"].*['\u2019\"]:\s*)?(?:i(?:['\u2019]m|['\u2019]ve|\s+have|\s+am)\s+(?:\d{2}\b|worth\b|retired\b|inheriting\b|saving\b)|we(?:['\u2019]re|['\u2019]ve|\s+have|\s+are)\s+(?:\d{2}\b|in\s+our\b|worth\b|retired\b)|my\s+(?:(?:[\d-]+-year-old|elderly|late|aging)\s+)?(?:husband|wife|spouse|partner|parents|mother|father|brother|sister|son|daughter|adviser|advisor|financial\s+adviser|financial\s+advisor))\b|^['\u2018\"].*['\u2019\"]:\s*(?:i(?:['\u2019]m|['\u2019]ve|\s+have|\s+am)|we(?:['\u2019]re|['\u2019]ve|\s+have|\s+are))\b|^cramer:\s|^prediction:\s|^forget\s+[a-z0-9&-]+\.\s+here['\u2019]?s\b|^why\s+[a-z0-9&-]+\s+stock\s+is\s+(?:up|down|rising|falling|climbing|dropping|soaring|sliding)\s+today\b|^best\s+[a-z0-9-]+\s+dip\s+buys\b|^these\s+\d+\s+(?:[a-z0-9&-]+\s+){0,3}stocks\b|^not\s+[a-z]+\.\s+not\s+[a-z]+\.|^historically\s+(?:bullish|bearish)\s+signal\s+emerges\s+for\b|^etfs\s+(?:bought|sold)\s+\$[\d.]+\s+(?:million|billion)\s+of\b|\([a-z]{2,5}\)\s+(?:adds|buys|sells|trims|sees)\b.*\bon\s+(?:monday|tuesday|wednesday|thursday|friday|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z.]*\s+\d{1,2})\b|\(hint:\s*only\s+\d+\s+is\s+a\s+(?:buy|sell)\)|\bis\s+it\s+(?:time\s+to\s+buy|a\s+bargain\s+or\s+a\s+value\s+trap)\?|\b(?:can i buy a\s+\$?\d|can we afford\s+a\s+\$?\d|how to buy a\s+(?:new\s+|used\s+)?(?:car|home|house)\b|should i (?:stop going|put|invest|move|roll|buy|sell|keep|hold|withdraw|take|retire)\b|into an annuity\b|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:[a-z0-9&-]+\s+){0,3}stocks?\s+to\s+(?:buy|sell|watch|avoid))\b"
 )
 
 
@@ -1259,12 +1259,13 @@ _OFF_TOPIC_TABLOID_WORDS: frozenset[str] = (
     _COMMERCIAL_METAPHOR_WAR_WORDS
     | _HUMAN_INTEREST_WAR_FILLER_WORDS
     | frozenset({
-        "blue", "cards", "celebrity", "cereal", "concert", "dylan", "estate",
-        "exemption", "farmers", "festival", "gift", "governor", "hoax", "hoaxes",
+        "apology", "blue", "cards", "celebrity", "cereal", "clothes", "clothing",
+        "concert", "dylan", "estate", "exemption", "fabric", "fabrics", "farmers",
+        "fashion", "festival", "footage", "gift", "governor", "hoax", "hoaxes",
         "irs", "jailed", "mamdani", "match", "mayor", "movie", "music", "olive",
         "player", "players", "prison", "protest", "protests", "recipe", "recipes",
-        "red", "singer", "song", "storm", "subscriber", "subscribers", "weather",
-        "yacht",
+        "red", "shopper", "shoppers", "singer", "song", "storm", "subscriber",
+        "subscribers", "weather", "yacht",
     })
 )
 
@@ -1319,7 +1320,7 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
     )
     if not matched_fin and not has_multi_theater_geo and not has_eq_entity:
         return False
-    if matched_fin and matched_fin <= {"military", "troops"} and not (words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
+    if matched_fin and matched_fin <= {"military", "troops", "drone", "drones"} and not (words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
         return False
     if matched_fin and matched_fin <= {"attack", "attacks"} and (words & _NON_CRISIS_ATTACK_CONTEXT_WORDS) and not (words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
         return False
@@ -1337,7 +1338,7 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
         words & {"asian", "european", "japanese", "chinese", "british", "german", "emerging", "sector"}
     ):
         return False
-    if matched_fin and matched_fin <= {"price", "prices"} and (words & {"nintendo", "switch", "playstation", "xbox", "console", "ticket", "tickets", "menu", "grocery"}):
+    if matched_fin and matched_fin <= {"price", "prices"} and (words & {"apparel", "clothes", "clothing", "console", "fabric", "fabrics", "fashion", "grocery", "menu", "nintendo", "playstation", "shoes", "shopper", "shoppers", "sneakers", "switch", "ticket", "tickets", "xbox"}):
         return False
     if (
         matched_fin
