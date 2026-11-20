@@ -1151,27 +1151,45 @@ def load_cached_market_breadth_snapshot(
     return None
 
 
+def _load_cached_symbol_telemetry_dict(
+    cache_dir: str,
+    prefix: str,
+    symbols: Optional[Sequence[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Load the freshest cached per-symbol telemetry dict for ``prefix`` from ``cache_dir`` without network I/O."""
+    reader = resolve_read_json_cached()
+    for sym in (parse_symbol_list(symbols) or ["BTCUSDC"]):
+        best_d: Optional[Dict[str, Any]] = None
+        best_ts = -1.0
+        for cand_sym in dict.fromkeys((sym, *cache_symbol_variants(sym))):
+            safe_sym = clean_symbol_key(cand_sym)
+            if safe_sym:
+                cand_d = reader(os.path.join(cache_dir, f"{prefix}{safe_sym}.json"))
+                if isinstance(cand_d, dict) and cand_d:
+                    ts_v = first_epoch_sec(cand_d.get("ts"), cand_d.get("timestamp"), default=0.0, allow_iso=True) or 0.0
+                    if best_d is None or ts_v > best_ts:
+                        best_d, best_ts = cand_d, ts_v
+        if best_d is not None:
+            return best_d
+    return None
+
+
 def load_cached_whale_telemetry(
     cache_dir: str,
     symbols: Optional[Sequence[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Load cached whale positioning snapshot from ``cache_dir`` without network I/O."""
-    reader = resolve_read_json_cached()
     prefix = _cfg_str("cache_files", "whale_snapshot_prefix", "whale_snapshot_")
-    for sym in (parse_symbol_list(symbols) or ["BTCUSDC"]):
-        best_w: Optional[Dict[str, Any]] = None
-        best_ts = -1.0
-        for cand_sym in dict.fromkeys((sym, *cache_symbol_variants(sym))):
-            safe_sym = clean_symbol_key(cand_sym)
-            if safe_sym:
-                cand_w = reader(os.path.join(cache_dir, f"{prefix}{safe_sym}.json"))
-                if isinstance(cand_w, dict) and cand_w:
-                    ts_v = first_epoch_sec(cand_w.get("ts"), cand_w.get("timestamp"), default=0.0, allow_iso=True) or 0.0
-                    if best_w is None or ts_v > best_ts:
-                        best_w, best_ts = cand_w, ts_v
-        if best_w is not None:
-            return best_w
-    return None
+    return _load_cached_symbol_telemetry_dict(cache_dir, prefix, symbols=symbols)
+
+
+def load_cached_derivatives_telemetry(
+    cache_dir: str,
+    symbols: Optional[Sequence[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Load cached derivatives telemetry snapshot (funding_annualized_pct, perp_spot_basis_bps) without network I/O."""
+    prefix = _cfg_str("cache_files", "derivatives_telemetry_prefix", "derivatives_telemetry_")
+    return _load_cached_symbol_telemetry_dict(cache_dir, prefix, symbols=symbols)
 
 
 def _read_and_finalize_cached_eval_dict(

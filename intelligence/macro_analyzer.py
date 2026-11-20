@@ -60,7 +60,9 @@ import intelligence.macro.geopolitical_analyzer as _geo_analyzer
 import intelligence.macro.news_feed_collector as _news_collector
 from intelligence.macro_sentiment_ssot import (
     extract_high_severity_headlines_and_digest,
+    load_cached_derivatives_telemetry,
     load_cached_fear_greed_snapshot,
+    load_cached_geopolitical_eval,
     load_cached_market_breadth_snapshot,
     load_cached_whale_telemetry,
     resolve_derived_telemetry_intervals,
@@ -221,12 +223,18 @@ class MacroAnalyzer:
             fg_snap = load_cached_fear_greed_snapshot(self.cache_dir, now_ts=eval_now)
             mb_snap = load_cached_market_breadth_snapshot(self.cache_dir, now_ts=eval_now)
             whale_data = load_cached_whale_telemetry(self.cache_dir, symbols=self.symbols)
+            deriv_data = load_cached_derivatives_telemetry(self.cache_dir, symbols=self.symbols)
+            geo_ctx = getattr(self.geopolitical_analyzer, "_cached_assessment", None) or load_cached_geopolitical_eval(
+                self.cache_dir
+            )
 
             prev_cached = getattr(self.gemini_advisor, "_cached_assessment", None)
             assessment = self.gemini_advisor.review(
                 fear_greed=fg_snap,
                 breadth=mb_snap,
                 whale_telemetry=whale_data,
+                derivatives_telemetry=deriv_data,
+                geopolitical=geo_ctx,
                 force_refresh=force,
                 **({"now_ts": eval_now} if now is not None else {}),
             )

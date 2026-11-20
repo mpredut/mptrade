@@ -12994,6 +12994,220 @@ def test_ghost_cvd_delta_macro_bar_age_closed_equity_intraday_and_agg_spot_flow(
     assert "agg_spot_cvd_15m=+$120.0K[usdc+usdt, vol=$250.0K]" in sec_3b_arb
 
 
+def test_sentiment_advisor_quantitative_prompt_enrichment_geopolitical_context_and_no_labels(tmp_path):
+    """Verify SentimentAdvisor & MacroAnalyzer prompt quality fixes:
+    - Structured Whales & Derivatives with annualized funding, perp_spot_basis_bps, explicit 15m/cvd_15m, no raw dict/sci-notation/labels
+    - Full quantitative MarketBreadthSnapshot fields (counts, mean, dispersion_std, ETH, ETH/BTC, vol_share) without regime labels
+    - Enriched BTC Intraday Structure (15m/1h/6h/24h, bounce_24h_low, dd_24h_high, VP levels, bottom_6h, hl_vs_prior)
+    - Factual Geopolitical Context (risk_score, age, summary) wired into SentimentAdvisor & MacroAnalyzer without brake labels
+    - Balanced ACCUMULATE guidance and label-free Cross-Asset instructions in SentimentAdvisor & GeopoliticalThreatAnalyzer
+    """
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from intelligence.macro_sentiment_ssot import (
+        MarketBreadthSnapshot,
+        load_cached_derivatives_telemetry,
+    )
+
+    cdir = tmp_path / "cachedb"
+    (cdir / "macro").mkdir(parents=True, exist_ok=True)
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+    now_s = 1_795_167_600.0
+    now_ms = int(now_s * 1000)
+
+    (cdir / "telemetry" / "whale_snapshot_BTCUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "BTCUSDC",
+                "top_traders_long_ratio": 1.8194,
+                "top_traders_long_pct": 0.6453,
+                "taker_buy_sell_ratio": 0.6538,
+                "taker_buy_vol_usd": 43_599_943.94,
+                "taker_sell_vol_usd": 66_683_670.12,
+                "open_interest_usd": 5_965_272_558.644072,
+                "open_interest_1h_change_pct": -0.93,
+                "divergence_regime": "long_unwinding",
+                "ts": now_s - 20.0,
+                "funding_rate": -1.8e-06,
+                "taker_ratio_5m": 0.6361,
+                "taker_ratio_1h": 0.849,
+                "taker_ratio_4h": 1.0186,
+                "cvd_5m_usd": -8_169_535.0,
+                "cvd_1h_usd": -33_507_458.0,
+                "cvd_4h_usd": 17_555_590.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir / "telemetry" / "derivatives_telemetry_BTCUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "BTCUSDC",
+                "funding_rate": -1.8e-06,
+                "open_interest_usd": 5_965_557_327.92,
+                "perp_spot_basis_bps": -4.31,
+                "funding_annualized_pct": -0.2,
+                "ts": now_s - 20.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir / "macro" / "geopolitical_eval.json").write_text(
+        json.dumps(
+            {
+                "threat_level": "ELEVATED",
+                "risk_score": 0.66,
+                "recommended_brake": "DOWNSCALE_50",
+                "headlines_analyzed": 7,
+                "summary": "Missile barrage on Kyiv damaged embassies alongside Houthi attacks in Riyadh.",
+                "ts": now_s - 1800.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir / "macro" / "market_breadth_collect.json").write_text(
+        json.dumps(
+            {
+                "advance_ratio": 0.1186,
+                "advancing_count": 7,
+                "declining_count": 52,
+                "total_count": 59,
+                "median_change_pct": -4.388,
+                "mean_change_pct": -3.448,
+                "dispersion_std": 9.36,
+                "regime": "PANIC_WASHOUT",
+                "eth_price": 1743.71,
+                "eth_chg_24h_pct": -3.41,
+                "eth_btc_ratio": 0.02832,
+                "eth_btc_chg_24h_pct": 0.07,
+                "btc_vol_share_pct": 44.9,
+                "eth_vol_share_pct": 21.72,
+                "alt_vol_share_pct": 33.38,
+                "rotation_regime": "BALANCED_ROTATION",
+                "ts": now_s - 60.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Build 24h BTC series with a clear 6h drawdown (>1.5%), higher 1h low, and multi-horizon moves
+    btc_pts = []
+    for mins_ago in range(24 * 60, -1, -5):
+        tms = now_ms - mins_ago * 60_000
+        if mins_ago > 360:
+            px = 64000.0 - (24 * 60 - mins_ago) * 1.4
+        elif mins_ago > 60:
+            px = 62500.0 if mins_ago >= 300 else (61327.0 if mins_ago == 180 else 61800.0)
+        else:
+            px = 61550.0 if mins_ago == 30 else 61750.0
+        btc_pts.append([tms, px])
+    (cdir / "prices" / "cache_24_price_BTCUSDC.json").write_text(
+        json.dumps({"items": {"BTCUSDC": btc_pts}}),
+        encoding="utf-8",
+    )
+
+    loaded_deriv = load_cached_derivatives_telemetry(str(cdir), symbols=["BTCUSDC"])
+    assert isinstance(loaded_deriv, dict)
+    assert loaded_deriv["perp_spot_basis_bps"] == pytest.approx(-4.31)
+    assert loaded_deriv["funding_annualized_pct"] == pytest.approx(-0.2)
+
+    dummy_client = DummyGeminiClient(
+        {
+            "market_bias": "CAUTION",
+            "risk_level": "HIGH",
+            "confidence": 0.80,
+            "summary": "Bearish macro and derivatives flow.",
+            "key_risks": ["Geopolitical escalation"],
+            "recommended_action": "HOLD",
+        }
+    )
+    ma = MacroAnalyzer(cache_dir=str(cdir), symbols=["BTCUSDC"])
+    ma.sentiment_advisor.gemini_client = dummy_client
+    ma.gemini_advisor = ma.sentiment_advisor
+    assert ma.assess_market_advisor(force=True, now=now_s) is True
+
+    prompt = dummy_client.last_prompt
+    assert prompt
+    # 1. Breadth includes quantitative detail + ETH/BTC + volume shares without heuristic labels
+    assert "11.9% advancing (7/59), median -4.39%, mean -3.45%, dispersion_std 9.36%" in prompt
+    assert "ETH=$1,743.71 (-3.41% 24h), ETH/BTC=0.02832 (+0.07% 24h)" in prompt
+    assert "vol_share(BTC 44.9% / ETH 21.7% / ALT 33.4%)" in prompt
+    assert "PANIC_WASHOUT" not in prompt
+    assert "BALANCED_ROTATION" not in prompt
+
+    # 2. Whales & Derivatives is clean, structured, annualized, with basis + explicit 15m/CVD, no raw dict/sci-notation
+    assert "- Whales & Derivatives: BTCUSDC | OI=$5.97B (-0.93% 1h) | top_long=64.5% (ratio=1.82)" in prompt
+    assert "funding=-0.20% ann | perp_spot_basis=-4.31bps" in prompt
+    assert "5m(tr=0.64, cvd=-$8.17M)" in prompt
+    assert "15m(tr=0.65, cvd=-$23.08M)" in prompt
+    assert "1h(tr=0.85, cvd=-$33.51M)" in prompt
+    assert "4h(tr=1.02, cvd=+$17.56M)" in prompt
+    assert "e-06" not in prompt
+    assert "'ts':" not in prompt
+    assert "long_unwinding" not in prompt
+
+    # 3. Geopolitical Context is present factually without brake/threat directive labels
+    assert "- Geopolitical Context: risk_score=0.66 (age=30m, headlines=7) | summary=Missile barrage on Kyiv" in prompt
+    assert "DOWNSCALE_50" not in prompt
+    assert "ELEVATED" not in prompt
+
+    # 4. BTC Intraday Structure exposes multi-horizon changes, range geometry, VP levels, and bottom_6h + hl_vs_prior
+    assert "- BTC Intraday Structure: price=$61750.00 (15m " in prompt
+    assert ", 1h " in prompt
+    assert ", 6h " in prompt
+    assert "bounce_24h_low=" in prompt
+    assert "dd_24h_high=" in prompt
+    assert "VP(VAL=$" in prompt
+    assert "bottom_6h(prior_6h_low=$61327.00, 1h_low=$61550.00)" in prompt
+    assert "hl_vs_prior=+0.36%" in prompt
+
+    # 5. Balanced framework: no nonexistent fields, no stale heuristic label tokens, no unconditional ACCUMULATE shift
+    for stale_tok in (
+        "advancing_pct",
+        "avg_change_24h_pct",
+        "bounce_from_low_pct",
+        "FUTURES_PREMARKET_GAP_UP",
+        "FUTURES_PREMARKET_GAP_DOWN",
+        "COUPLED_RISK_ON",
+        "CRYPTO_BULLISH_DECOUPLING",
+        "EQUITY_BULLISH_DECOUPLING",
+        "shift recommended_action to 'ACCUMULATE'",
+    ):
+        assert stale_tok not in prompt
+
+    # 6. GeopoliticalThreatAnalyzer prompt also avoids stale heuristic cross-asset regime labels
+    geo_client = DummyGeminiClient(
+        {
+            "threat_level": "NORMAL",
+            "risk_score": 0.15,
+            "summary": "Calm markets.",
+            "recommended_brake": "NONE",
+        }
+    )
+    geo = GeopoliticalThreatAnalyzer(gemini_client=geo_client, state_file=str(cdir / "macro" / "geo_test.json"))
+    geo.assess(
+        {
+            "headlines": [
+                {
+                    "title": "Regional sanctions update reported",
+                    "source": "Reuters",
+                    "published_ts": now_s - 600.0,
+                    "matched_keywords": ["sanctions"],
+                    "is_high_severity": True,
+                }
+            ],
+            "high_severity_count": 1,
+            "has_critical_shock_keywords": False,
+            "ts": now_s,
+        },
+        force_refresh=True,
+        now_ts=now_s,
+    )
+    for stale_geo_tok in ("COUPLED_RISK_ON", "CRYPTO_BULLISH_DECOUPLING", "FUTURES_PREMARKET_GAP_UP", "Cross_Asset"):
+        assert stale_geo_tok not in geo_client.last_prompt
+
+
+
 
 
 
