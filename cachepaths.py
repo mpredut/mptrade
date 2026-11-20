@@ -246,13 +246,14 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "system": {
         "exact": (
-            "fleet_health_status.json", "dev_regression_status.json", "ai_attribution_status.json",
+            "fleet_health_status.json", "dev_regression_status.json",
+            "ai_attribution_status.json", "ai_attribution_30d.json",
             "llm_topic_threads.json", "llm_quota_status.json", "llm_model_catalog.json",
             "notify_queue.json",
             KINEMATIC_IMPULSE_SIGNAL_FILENAME,
         ),
         "prefixes": (
-            "auto_", "fleet_health_status.", "dev_regression_status.", "ai_attribution_status.",
+            "auto_", "fleet_health_status.", "dev_regression_status.", "ai_attribution_",
             "llm_topic_threads.", "llm_quota_status.", "llm_model_catalog.",
             "notify_queue.",
             "kinematic_impulse_signal.",

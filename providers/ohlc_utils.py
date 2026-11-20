@@ -769,13 +769,38 @@ def normalize_yahoo_5d_chart_bars(
 ) -> tuple[list[list[Any]], list[list[Any]], list[list[Any]], bool, bool, float, int]:
     """Parse Yahoo 5d/5m chart payload, prune off-RTH zero-vol tail gaps, slice 24h window, and stitch sub-5m ticks."""
     pts_5d: list[list[Any]] = []
+    def _build_ohlc_row(
+        ts_v: float,
+        c_v: float,
+        vol_v: Optional[float],
+        hi_v: Optional[float] = None,
+        lo_v: Optional[float] = None,
+        op_v: Optional[float] = None,
+        *,
+        include_vol: bool = True,
+    ) -> list[Any]:
+        ts_i = math.trunc(ts_v if ts_v > 1e11 else ts_v * 1000)
+        c_r = round(c_v, 4)
+        if not include_vol and (hi_v is None or lo_v is None or hi_v < lo_v or lo_v <= 0.0):
+            return [ts_i, c_r]
+        row: list[Any] = [ts_i, c_r, safe_nonneg_float(vol_v, 0.0) or 0.0]
+        if hi_v is not None and lo_v is not None and hi_v >= lo_v > 0.0:
+            row.extend((round(hi_v, 4), round(lo_v, 4)))
+            if op_v is not None and op_v > 0.0:
+                row.append(round(op_v, 4))
+        return row
+
     if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
         pts_5d = sorted(
             (
-                (
-                    [math.trunc(ts_f if ts_f > 1e11 else ts_f * 1000), round(px_f, 4), safe_nonneg_float(bar[2], 0.0) or 0.0]
-                    if len(bar) >= 3
-                    else [math.trunc(ts_f if ts_f > 1e11 else ts_f * 1000), round(px_f, 4)]
+                _build_ohlc_row(
+                    ts_f,
+                    px_f,
+                    bar[2] if len(bar) >= 3 else None,
+                    safe_pos_float(bar[3], default=None) if len(bar) >= 5 else None,
+                    safe_pos_float(bar[4], default=None) if len(bar) >= 5 else None,
+                    safe_pos_float(bar[5], default=None) if len(bar) >= 6 else None,
+                    include_vol=len(bar) >= 3,
                 )
                 for bar in chart_res[1]
                 if isinstance(bar, (list, tuple))
@@ -791,15 +816,25 @@ def normalize_yahoo_5d_chart_bars(
         q_obj = q_list[0] if isinstance(q_list, list) and q_list and isinstance(q_list[0], dict) else {}
         raw_vols = q_obj.get("volume")
         vols = raw_vols if isinstance(raw_vols, (list, tuple)) else ()
+        raw_highs = q_obj.get("high")
+        highs = raw_highs if isinstance(raw_highs, (list, tuple)) else ()
+        raw_lows = q_obj.get("low")
+        lows = raw_lows if isinstance(raw_lows, (list, tuple)) else ()
+        raw_opens = q_obj.get("open")
+        opens = raw_opens if isinstance(raw_opens, (list, tuple)) else ()
         ts_seq = chart_res.get("timestamp")
         cl_seq = q_obj.get("close")
         pts_5d = sorted(
             (
-                [
-                    math.trunc(ts_f if ts_f > 1e11 else ts_f * 1000),
-                    round(c_f, 4),
-                    safe_nonneg_float(vols[idx], 0.0) or 0.0 if idx < len(vols) else 0.0,
-                ]
+                _build_ohlc_row(
+                    ts_f,
+                    c_f,
+                    vols[idx] if idx < len(vols) else 0.0,
+                    safe_pos_float(highs[idx], default=None) if idx < len(highs) else None,
+                    safe_pos_float(lows[idx], default=None) if idx < len(lows) else None,
+                    safe_pos_float(opens[idx], default=None) if idx < len(opens) else None,
+                    include_vol=True,
+                )
                 for idx, (ts, c) in enumerate(
                     zip(
                         ts_seq if isinstance(ts_seq, (list, tuple)) else (),

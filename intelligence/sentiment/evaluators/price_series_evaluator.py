@@ -423,7 +423,7 @@ def _resample_ohlc_bars(
     if bucket_ms <= 0.0:
         return []
     has_hl = isinstance(series, (list, tuple)) and any(
-        isinstance(r, (list, tuple)) and len(r) >= 5 for r in series[:8]
+        isinstance(r, (list, tuple)) and len(r) >= 5 for r in series
     )
     bars: List[List[Any]] = []
     if not has_hl:
@@ -646,8 +646,17 @@ def compute_atr_multi_horizon(
     bars_1h = _rollup_ohlc_bars(bars_15m, 4)
     bars_4h = _rollup_ohlc_bars(bars_1h, 4)
     if isinstance(series_7d_ts_px, (list, tuple)) and len(series_7d_ts_px) >= 2:
-        is_compact_4h = len(series_7d_ts_px) <= 60 and all(
-            isinstance(r, (list, tuple)) and len(r) >= 5 for r in series_7d_ts_px[:4]
+        p7_first = parse_ts_px_row(series_7d_ts_px[0])
+        p7_last = parse_ts_px_row(series_7d_ts_px[-1])
+        avg_step_7d_ms = (
+            abs(p7_last[0] - p7_first[0]) / max(1, len(series_7d_ts_px) - 1)
+            if (p7_first is not None and p7_last is not None)
+            else 0.0
+        )
+        is_compact_4h = (
+            len(series_7d_ts_px) <= 60
+            and avg_step_7d_ms >= 2.0 * _MS_1H
+            and all(isinstance(r, (list, tuple)) and len(r) >= 5 for r in series_7d_ts_px[:4])
         )
         if not is_compact_4h:
             bars_1h_7d = _resample_ohlc_bars(series_7d_ts_px, _MS_1H)

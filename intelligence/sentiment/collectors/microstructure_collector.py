@@ -176,6 +176,14 @@ from instrument_registry import (
 from providers import t212_provider as _t212_prov_mod
 from providers.base import MarketDataProvider
 from providers.market_api import api as mkt
+from state_io import (
+    generation_file_lock,
+    read_json_dict,
+    read_json_dict_recovering as _default_read_json_cached,
+    read_json_recovering,
+    read_tail_jsonl_records,
+    save_json_state,
+)
 
 _ORIG_COMPUTE_24H_METRICS = compute_24h_price_metrics
 
@@ -189,14 +197,6 @@ def _call_compute_24h(
     if compute_24h_price_metrics is _ORIG_COMPUTE_24H_METRICS:
         return compute_24h_price_metrics(series, is_equity=is_equity, series_7d_ts_px=series_7d_ts_px) or {}
     return compute_24h_price_metrics(series) or {}
-from state_io import (
-    generation_file_lock,
-    read_json_dict,
-    read_json_dict_recovering as _default_read_json_cached,
-    read_json_recovering,
-    read_tail_jsonl_records,
-    save_json_state,
-)
 
 read_json_cached = _default_read_json_cached
 _FALLBACK_PROVIDER_OHLC_FNS: Dict[str, Any] = {}

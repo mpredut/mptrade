@@ -284,6 +284,7 @@ def test_ai_attribution_workspace_loader_and_cli(tmp_path, capsys):
     from cachepaths import resolve_cache_subdomain
 
     assert resolve_cache_subdomain("ai_attribution_status.json") == "system"
+    assert resolve_cache_subdomain("ai_attribution_30d.json") == "system"
     intents_with_lim = [
         {
             **intents[0],

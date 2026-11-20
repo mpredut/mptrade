@@ -13540,6 +13540,106 @@ def test_faza1_multi_horizon_atr_session_vwap_and_intraday_extremes(tmp_path):
     assert "sessions(asia=[61100.0, 62900.0]" in pt_ctx.telemetry["Session VWAP & Intraday Structure"]
 
 
+def test_faza1_ohlc_hlo_preservation_mixed_stitched_atr_and_typical_vwap():
+    """Verify 6-col [ts, close, vol, high, low, open] preservation, mixed-series resampling, short 5m 7d guard, and HLC/3 VWAP."""
+    from types import SimpleNamespace
+    from providers.ohlc_utils import normalize_yahoo_5d_chart_bars
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        _extract_ohlc_series_points,
+        compute_atr_multi_horizon,
+        compute_session_vwap_metrics,
+    )
+
+    day0_s = datetime(2026, 11, 20, 14, 30, 0, tzinfo=timezone.utc).timestamp()
+    # 1. Yahoo dict payload preserves [ts_ms, close, vol, high, low, open]
+    y_chart = {
+        "timestamp": [day0_s + i * 300.0 for i in range(6)],
+        "indicators": {
+            "quote": [
+                {
+                    "open": [100.0 + i for i in range(6)],
+                    "high": [102.0 + i for i in range(6)],
+                    "low": [98.0 + i for i in range(6)],
+                    "close": [101.0 + i for i in range(6)],
+                    "volume": [1000.0 + i * 100.0 for i in range(6)],
+                }
+            ]
+        },
+        "meta": {"regularMarketPrice": 106.0},
+    }
+    pts_5d, pts_24h, _, _, _, _, _ = normalize_yahoo_5d_chart_bars(y_chart, [], day0_s + 3600.0, eq_rth_open=True)
+    assert len(pts_5d) == 6
+    assert pts_5d[0] == [math.trunc(day0_s * 1000), 101.0, 1000.0, 102.0, 98.0, 100.0]
+    assert len(pts_24h) == 6 and len(pts_24h[-1]) == 6
+
+    # Tuple payload stays 2-col / 3-col backwards-compatible when H/L absent and preserves 6-col when present
+    pts_2c, _, _, _, _, _, _ = normalize_yahoo_5d_chart_bars(
+        ({}, [[day0_s, 101.0], [day0_s + 300.0, 102.0]]), [], day0_s + 600.0
+    )
+    assert pts_2c == [[math.trunc(day0_s * 1000), 101.0], [math.trunc((day0_s + 300.0) * 1000), 102.0]]
+    pts_6c, _, _, _, _, _, _ = normalize_yahoo_5d_chart_bars(
+        ({}, [[day0_s, 101.0, 500.0, 103.0, 99.0, 100.5], [day0_s + 300.0, 102.0, 600.0, 104.0, 100.0, 101.0]]),
+        [],
+        day0_s + 600.0,
+    )
+    assert pts_6c[0] == [math.trunc(day0_s * 1000), 101.0, 500.0, 103.0, 99.0, 100.5]
+
+    # 2. _extract_ohlc_series_points preserves H/L/O from OHLCSeries-like objects
+    ohlc_obj = SimpleNamespace(
+        timestamps=[day0_s, day0_s + 900.0],
+        closes=[100.0, 101.0],
+        volumes=[250.0, 300.0],
+        highs=[103.0, 104.0],
+        lows=[97.0, 98.0],
+        opens=[99.0, 100.0],
+    )
+    extracted = _extract_ohlc_series_points(ohlc_obj, min_ts=day0_s - 60.0)
+    assert extracted[0] == [round(day0_s * 1000.0), 100.0, 250.0, 103.0, 97.0, 99.0]
+    assert extracted[1] == [round((day0_s + 900.0) * 1000.0), 101.0, 300.0, 104.0, 98.0, 100.0]
+
+    # 3. Mixed stitched series (10 leading 2-col rows + 16 trailing 6-col rows) still uses intrabar H/L
+    base_ms = datetime(2026, 11, 20, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+    mixed_rows = [[base_ms + i * 900_000.0, 100.0] for i in range(10)]
+    for j in range(10, 26):
+        # Close stays flat near 100.0 +/- 0.1, but intrabar H/L swings 103.0 / 97.0 (6% range)
+        c_v = 100.1 if j % 2 == 0 else 99.9
+        mixed_rows.append([base_ms + j * 900_000.0, c_v, 100.0, 103.0, 97.0, 100.0])
+    close_only_rows = [[r[0], r[1]] for r in mixed_rows]
+    atr_mixed = compute_atr_multi_horizon(mixed_rows, cur_px=100.0)
+    atr_close_only = compute_atr_multi_horizon(close_only_rows, cur_px=100.0)
+    assert atr_mixed["atr_15m_pct"] > 3.0
+    assert atr_close_only["atr_15m_pct"] < 0.5
+
+    # Short <= 60-bar 5m 6-col series_7d_ts_px is NOT misclassified as compact 4h and contributes to 1h ATR
+    short_5m_7d = [
+        [base_ms - (36 - k) * 300_000.0, 100.0, 50.0, 102.0, 98.0, 100.0]
+        for k in range(36)
+    ]  # 3 hours of 5m bars (36 <= 60, avg step 5m < 2h)
+    short_24h = [
+        [base_ms + k * 900_000.0, 100.0, 50.0, 102.0, 98.0, 100.0]
+        for k in range(16)
+    ]  # 4 hours of 15m bars -> alone only 4 hourly bars (<6), merged with 3h 5m history -> 7 hourly bars -> atr_1h_pct populated!
+    assert "atr_1h_pct" not in compute_atr_multi_horizon(short_24h, cur_px=100.0)
+    atr_with_short_7d = compute_atr_multi_horizon(short_24h, series_7d_ts_px=short_5m_7d, cur_px=100.0)
+    assert atr_with_short_7d["atr_1h_pct"] == pytest.approx(4.0, abs=0.1)
+
+    # 4. Session VWAP uses typical price (H + L + C) / 3 on 5/6-col OHLC rows
+    # Row 0: H=106, L=100, C=100 -> TP=102.0, vol=100
+    # Row 1: H=109, L=103, C=103 -> TP=105.0, vol=300
+    # Expected VWAP = (102*100 + 105*300) / 400 = 104.25
+    vwap_hlc = compute_session_vwap_metrics(
+        [
+            [base_ms + 900_000.0, 100.0, 100.0, 106.0, 100.0, 101.0],
+            [base_ms + 1_800_000.0, 103.0, 300.0, 109.0, 103.0, 104.0],
+        ],
+        is_equity=False,
+        cur_px=104.25,
+    )
+    assert vwap_hlc["session_vwap_px"] == pytest.approx(104.25)
+    assert vwap_hlc["dist_vs_session_vwap_pct"] == pytest.approx(0.0)
+
+
+
 
 
 

@@ -12,5 +12,4 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 */2 * * * * cd $HOME/mptrade && ./offline/runners/run_dev_regression.sh watch >> logs/dev_ci_watcher.log 2>&1
 
 # Read-only AI attribution & NAV drawdown observability strictly on DEV (uses mirrored PROD cachedb/ + logger/)
-35 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh verify_tools/ai_attribution_report.py --days 7 --out-json cachedb/system/ai_attribution_status.json > logs/ai_attribution_7d.log 2>&1
-30 4 * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh verify_tools/ai_attribution_report.py --days 30 > logs/ai_attribution_30d.log 2>&1
+35 * * * * cd $HOME/mptrade && ./offline/runners/run_dev_observability.sh run >> logs/cron_dev_observability.log 2>&1
