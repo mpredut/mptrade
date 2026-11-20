@@ -1350,6 +1350,35 @@ def test_reconcile_from_audit_scans_only_days_since_oldest_pending_intent(tmp_pa
     assert intents[0]["status"] == "EXECUTED"
     assert intents[0]["execution_payload"]["status"] == "FILLED"
 
+    # Abandoned pre-submit PENDING_EXECUTION (>10m old, zero audit events) self-heals to FAILED
+    today_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    (audit_dir / f"execution_audit_{today_day}.jsonl").write_text("", encoding="utf-8")
+    stale_pre_submit = {
+        "intent_id": "intent_abandoned_pre_submit",
+        "timestamp": time.time() - 900.0,
+        "decision": "SELL",
+        "symbol": "BTCUSDC",
+        "venue": "binance",
+        "status": "PENDING_EXECUTION",
+        "execution_payload": None,
+        "history": [],
+    }
+    fresh_pre_submit = {
+        "intent_id": "intent_fresh_pre_submit",
+        "timestamp": time.time() - 30.0,
+        "decision": "SELL",
+        "symbol": "BTCUSDC",
+        "venue": "binance",
+        "status": "PENDING_EXECUTION",
+        "execution_payload": None,
+        "history": [],
+    }
+    mixed_pending = [stale_pre_submit, fresh_pre_submit]
+    assert reconcile_intents_from_execution_audit(mixed_pending, str(audit_dir)) is True
+    assert stale_pre_submit["status"] == "FAILED"
+    assert stale_pre_submit["history"][-1]["action"] == "RECONCILED_ABANDONED_PRE_SUBMIT"
+    assert fresh_pre_submit["status"] == "PENDING_EXECUTION"
+
 
 def test_durable_intent_upserts_from_concurrent_executors_never_drop_intents(tmp_path):
     """Overlapping executors merging intents by id under the cross-process lock never lose each other's records."""

@@ -149,11 +149,14 @@ def _partition_intents_for_audit_reconciliation(
     return failed_by_id, executed_incomplete_by_id, updated
 
 
+_STALE_PENDING_EXECUTION_SEC = 600.0
+
+
 def _scan_matching_audit_records(
     audit_dir: str,
     failed_by_id: dict[str, dict[str, Any]],
     executed_incomplete_by_id: dict[str, dict[str, Any]],
-) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any]]:
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any], set[str], bool]:
     """Scan UTC-day execution audit JSONL logs and collect the most authoritative record per intent ID."""
     pending_ts = [
         ts_i
@@ -168,15 +171,19 @@ def _scan_matching_audit_records(
     matched_records: dict[str, dict[str, Any]] = {}
     matched_exec_records: dict[str, dict[str, Any]] = {}
     submitted_qty_by_id: dict[str, Any] = {}
+    any_audit_seen_ids: set[str] = set()
+    has_audit_files = False
     active_exec_oids: dict[str, Any] = {
         iid_e: extract_order_id(it_e.get("execution_payload"), default=None)
         for iid_e, it_e in executed_incomplete_by_id.items()
     }
     for audit_path in iter_audit_jsonl_paths(audit_dir, min_day=min_day):
+        has_audit_files = True
         for rec in _read_audit_intent_records(audit_path):
             iid = _extract_intent_id(rec)
             if not iid:
                 continue
+            any_audit_seen_ids.add(iid)
             ev = str(rec.get("event") or "")
             if ev in ("submit_accepted", "submit_unknown", "order_recovered") and rec.get("qty") is not None:
                 submitted_qty_by_id[iid] = rec.get("qty")
@@ -232,7 +239,7 @@ def _scan_matching_audit_records(
                         and is_cancel_or_expire_status(v_stat, l_stat)
                     ):
                         matched_exec_records[iid] = rec
-    return matched_records, matched_exec_records, submitted_qty_by_id
+    return matched_records, matched_exec_records, submitted_qty_by_id, any_audit_seen_ids, has_audit_files
 
 
 def _apply_failed_intent_audit_record(
@@ -414,14 +421,34 @@ def reconcile_intents_from_execution_audit(
     if (not failed_by_id and not executed_incomplete_by_id) or not audit_dir or not os.path.isdir(audit_dir):
         return updated
 
-    matched_records, matched_exec_records, submitted_qty_by_id = _scan_matching_audit_records(
-        audit_dir, failed_by_id, executed_incomplete_by_id
+    matched_records, matched_exec_records, submitted_qty_by_id, any_audit_seen_ids, has_audit_files = (
+        _scan_matching_audit_records(audit_dir, failed_by_id, executed_incomplete_by_id)
     )
     for iid_chk, item_chk in executed_incomplete_by_id.items():
         if iid_chk not in matched_exec_records:
             ep_chk = item_chk.get("execution_payload")
             if isinstance(ep_chk, dict) and _parse_bool_flag(ep_chk.get("reconciled_terminal"), False):
                 ep_chk["_ts_backfill_checked"] = True
+
+    if has_audit_files:
+        now_s = time.time()
+        for iid_p, item_p in failed_by_id.items():
+            if (
+                iid_p not in matched_records
+                and iid_p not in any_audit_seen_ids
+                and clean_upper_scalar(item_p.get("status")) == "PENDING_EXECUTION"
+                and not item_p.get("execution_payload")
+                and (ts_p := safe_pos_float(item_p.get("timestamp"), default=0.0) or 0.0) > 0.0
+                and (now_s - ts_p) > _STALE_PENDING_EXECUTION_SEC
+            ):
+                _record_intent_state(
+                    item_p,
+                    "FAILED",
+                    now_s,
+                    action="RECONCILED_ABANDONED_PRE_SUBMIT",
+                    reason="abandoned_pending_execution_no_submit",
+                )
+                updated = True
 
     if not matched_records and not matched_exec_records:
         return updated

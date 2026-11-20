@@ -45,7 +45,6 @@ from state_io import (
 _agy_paths = importlib.import_module("orchestratorOS.agy.paths")
 resolve_agy_bot_bin = _agy_paths.resolve_agy_bot_bin
 resolve_bot_cli_base = _agy_paths.resolve_bot_cli_base
-resolve_ui_cli_base = _agy_paths.resolve_ui_cli_base
 
 _agy_summary_store = importlib.import_module("orchestratorOS.agy.summary_store")
 delete_threads = _agy_summary_store.delete_threads
@@ -395,6 +394,12 @@ class GeminiClient(GeminiQuotaRouterMixin):
                 and not (output and use_topic_session)
             ):
                 self._remove_detached_thread(bot_cli_base, detached_cid)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "One-off thread attempt timed out after %ss for model %s.",
+                one_off_timeout,
+                one_off_model,
+            )
         except Exception as exc:
             logger.warning("One-off thread attempt failed for model %s: %s", one_off_model, exc)
         finally:
@@ -476,6 +481,17 @@ class GeminiClient(GeminiQuotaRouterMixin):
                             restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
                         if self._is_cli_interrupted(c_proc):
                             break
+                    except subprocess.TimeoutExpired:
+                        if not is_mocked and compact_snap is not None:
+                            restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
+                        logger.warning(
+                            "In-place /compact for topic '%s' conversation %s with model %s timed out after %ss.",
+                            topic_key,
+                            turn_cid,
+                            compact_model,
+                            compact_timeout,
+                        )
+                        break
                     except Exception as exc:
                         if not is_mocked and compact_snap is not None:
                             restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
