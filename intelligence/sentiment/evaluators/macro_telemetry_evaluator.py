@@ -14,7 +14,7 @@ from cachepaths import (
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
-from instrument_registry import casefold_get
+from instrument_registry import canonical_display_symbol, casefold_get
 from intelligence.macro.calendar_ssot import (
     parse_cited_cvd_usd,
     parse_cited_taker_ratio,
@@ -66,11 +66,12 @@ def build_cycle_fallback_prices(microstructure: Dict[str, Any], watcher_price_it
                     and (ts_f := normalize_epoch_sec(row[0], default=None)) is not None
                     and (px_f := safe_pos_float(row[1], default=0.0) or 0.0) > 0.0
                 ]
+                m_key = canonical_display_symbol(m_sym) or str(m_sym).upper()
                 if valid_pts:
-                    cycle_fallback_prices.setdefault(str(m_sym).upper(), max(valid_pts, key=lambda pt: pt[0])[1])
+                    cycle_fallback_prices.setdefault(m_key, max(valid_pts, key=lambda pt: pt[0])[1])
                 elif isinstance(m_ser[-1], (list, tuple)) and len(m_ser[-1]) > 1:
                     if (m_px := safe_pos_float(m_ser[-1][1], default=0.0) or 0.0) > 0:
-                        cycle_fallback_prices.setdefault(str(m_sym).upper(), m_px)
+                        cycle_fallback_prices.setdefault(m_key, m_px)
     return cycle_fallback_prices
 
 

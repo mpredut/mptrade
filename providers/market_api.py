@@ -42,7 +42,7 @@ from cachepaths import (
     is_usd_stablecoin_pair,
     normalize_venue_name,
 )
-from instrument_registry import is_equity_symbol, resolve_kraken_tokenized_pair, venue_for_symbol
+from instrument_registry import canonical_display_symbol, is_equity_symbol, resolve_kraken_tokenized_pair, venue_for_symbol
 import pricewindow as pw
 from . import order_id_context as rc
 from .base import MarketDataProvider
@@ -531,7 +531,7 @@ class MarketApi:
         side = self._validate_open_order_side_and_symbol(
             order_type, symbol, provider_name=provider_name
         )
-        sym_clean = symbol.strip().upper()
+        sym_clean = canonical_display_symbol(symbol, venue=provider_name) or symbol.strip().upper()
         try:
             open_list = self.open_orders(sym_clean, provider_name=provider_name)
             return filter_and_normalize_open_orders(

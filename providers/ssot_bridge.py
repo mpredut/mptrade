@@ -31,6 +31,7 @@ from cachepaths import (
     resolve_cachedb_filepath,
     split_symbol_assets,
 )
+from instrument_registry import canonical_display_symbol
 from state_io import read_json_dict_recovering
 
 _LIVE_FETCH_LOCAL = threading.local()
@@ -680,7 +681,7 @@ class ProviderSsotBridgeMixin:
         tm_cls = self._resolve_ssot_trade_cache_cls(symbol, cache_file)
         if tm_cls is None:
             return False
-        sym_key = clean_symbol_key(symbol) or str(symbol).strip().upper()
+        sym_key = canonical_display_symbol(symbol) or clean_symbol_key(symbol) or str(symbol).strip().upper()
         return bool(
             tm_cls.merge_venue_fills_snapshot(
                 cache_file, {sym_key: list(fills or ())}, is_snapshot=True

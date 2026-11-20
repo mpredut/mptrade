@@ -52,6 +52,7 @@ from intelligence.macro_sentiment_ssot import (
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     enrich_macro_benchmarks_live_state,
+    format_bottom_structure_6h_parts,
     format_equity_macro_regime_line,
 )
 from intelligence.external.collectors.base_collector import (
@@ -76,9 +77,6 @@ from intelligence.sentiment.collectors.microstructure_collector import (
 )
 import intelligence.sentiment.collectors.microstructure_collector as _mc_mod
 from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
-from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-    format_bottom_structure_6h_parts,
-)
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     compute_cross_venue_arb_metrics,
     compute_liquidation_clusters,

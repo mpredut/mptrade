@@ -23,7 +23,7 @@ from botcore import (
     safe_nonneg_ts,
     safe_pos_float,
 )
-from cachepaths import CACHE_T_TREND_FILENAME, cache_symbol_variants, clean_symbol_key
+from cachepaths import CACHE_T_TREND_FILENAME, cache_symbol_variants, clean_symbol_key, is_kraken_tokenized_asset
 from instrument_registry import canonical_display_symbol
 import intelligence.daemon as _intel_daemon
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
@@ -84,9 +84,18 @@ def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
     return res
 
 
+def _normalize_cli_symbol(symbol: Any) -> str:
+    raw = "" if isinstance(symbol, bool) or symbol is None else str(symbol).strip()
+    if not raw:
+        return ""
+    if "/" in raw:
+        return raw if is_kraken_tokenized_asset(raw) else raw.upper()
+    return canonical_display_symbol(raw) or raw.upper()
+
+
 def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict[str, Any]:
     """Consolidate full multi-pillar state for a symbol."""
-    symbol = "" if isinstance(symbol, bool) or symbol is None else (canonical_display_symbol(symbol) or str(symbol).strip().upper())
+    symbol = _normalize_cli_symbol(symbol)
     now = time.time()
     result: Dict[str, Any] = {
         "symbol": symbol,
@@ -320,7 +329,7 @@ def main():
         parser.add_argument(flag_name, type=parse_pos_cli_float, default=default_val, help=flag_help)
 
     args = parser.parse_args()
-    symbol = canonical_display_symbol(args.symbol) or args.symbol.strip().upper()
+    symbol = _normalize_cli_symbol(args.symbol)
 
     # 1. Daemon Status Check
     if args.daemon_status:

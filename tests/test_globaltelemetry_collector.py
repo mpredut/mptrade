@@ -2364,6 +2364,13 @@ def test_xstock_canonical_case_coalescing_adopted_ipo_pnl_and_ob_mid_rounding(tm
     ob_col._stale_fallback_symbols.discard("SPCXxUSD")
     kst.update("SPCXXUSD", now_s + 5.0, 145.5)
     assert "SPCXxUSD" in kst._state and "SPCXXUSD" not in kst._state
+    from intelligence.cli import _normalize_cli_symbol
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import build_cycle_fallback_prices
+
+    assert _normalize_cli_symbol("SPCXXUSD") == "SPCXxUSD"
+    assert _normalize_cli_symbol("BTC/USDC") == "BTC/USDC"
+    fb_px = build_cycle_fallback_prices({}, {"SPCXXUSD": [[now_s, 145.25]]})
+    assert fb_px == {"SPCXxUSD": 145.25}
 
     # Initial live_24trend harvest preserves canonical mixed-case xStock keys without creating SPCXXUSD/ANTXUSD duplicates
     from intelligence.sentiment.collectors.macro_telemetry_collector import _harvest_initial_prices_and_trends_impl
