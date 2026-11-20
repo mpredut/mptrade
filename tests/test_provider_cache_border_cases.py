@@ -3863,7 +3863,8 @@ def test_wave23_first_epoch_sec_timestamp_zero_shadow_quota_expiry_and_wf_cli_bo
     bot_cli.mkdir()
     ui_cli.mkdir()
     now_now = time.time()
-    # bot_cli token has nested "expiry_timestamp": "0" trying to mask an expired millisecond timestamp
+    # bot_cli token has nested "expiry_timestamp": "0" trying to mask an expired millisecond timestamp;
+    # ui_cli belongs to a separate human account and must NEVER bleed into bot quota probing.
     atomic_write_text(
         str(bot_cli / "antigravity-oauth-token"),
         json.dumps(
@@ -3877,7 +3878,7 @@ def test_wave23_first_epoch_sec_timestamp_zero_shadow_quota_expiry_and_wf_cli_bo
         str(ui_cli / "antigravity-oauth-token"),
         json.dumps(
             {
-                "token": {"access_token": "tok-fresh-ms", "expiry_timestamp": int((now_now + 3600.0) * 1000)},
+                "token": {"access_token": "tok-ui-other-account", "expiry_timestamp": int((now_now + 3600.0) * 1000)},
             }
         ),
     )
@@ -3890,7 +3891,6 @@ def test_wave23_first_epoch_sec_timestamp_zero_shadow_quota_expiry_and_wf_cli_bo
         staticmethod(lambda: str(tmp_path / "quota_state.json")),
     )
     monkeypatch.setattr(lqr_mod, "resolve_bot_cli_base", lambda: str(bot_cli))
-    monkeypatch.setattr(lqr_mod, "resolve_ui_cli_base", lambda: str(ui_cli))
     monkeypatch.setattr(
         lqr_mod,
         "fetch_json_post",
@@ -3901,6 +3901,21 @@ def test_wave23_first_epoch_sec_timestamp_zero_shadow_quota_expiry_and_wf_cli_bo
                 if "retrieveUserQuota" in url
                 else {"paidTier": {"id": "t1", "availableCredits": []}}
             )
+        ),
+    )
+    expired_snap = lqr_mod.GeminiQuotaRouterMixin.probe_live_model_quota(
+        bot_cli_base=str(bot_cli), force_refresh=True
+    )
+    assert expired_snap is None
+    assert seen_auth == []
+
+    # Fresh millisecond expiry_timestamp on bot_cli succeeds and uses strictly the bot's token.
+    atomic_write_text(
+        str(bot_cli / "antigravity-oauth-token"),
+        json.dumps(
+            {
+                "token": {"access_token": "tok-fresh-ms", "expiry_timestamp": int((now_now + 3600.0) * 1000)},
+            }
         ),
     )
     quota_snap = lqr_mod.GeminiQuotaRouterMixin.probe_live_model_quota(

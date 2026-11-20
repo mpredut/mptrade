@@ -69,6 +69,7 @@ from intelligence.macro_sentiment_ssot import (
 )
 from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
 import notify_engine.alertnotifiers as _alertnotifiers
+from orchestratorOS.agy.paths import resolve_agy_bot_bin
 from providers.intent_state import decision_has_cancel_directive, normalize_trading_decisions
 from state_io import (
     atomic_write_text,
@@ -487,7 +488,14 @@ def audit_llm_model_catalog_and_binaries(
         }
 
     run_fn = runner or subprocess.run
-    agy_bin = shutil.which("agy") or os.path.expanduser("~/.local/bin/agy")
+    bot_bin = ""
+    try:
+        cand = resolve_agy_bot_bin()
+        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+            bot_bin = cand
+    except Exception:
+        bot_bin = ""
+    agy_bin = bot_bin or shutil.which("agy-bot") or shutil.which("agy") or os.path.expanduser("~/.local/bin/agy")
     rclone_home = os.path.expanduser("~/bin/rclone")
     rclone_bin = rclone_home if os.path.isfile(rclone_home) and os.access(rclone_home, os.X_OK) else shutil.which("rclone")
     piactl_bin = shutil.which("piactl")

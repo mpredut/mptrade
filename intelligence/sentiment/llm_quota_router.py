@@ -32,7 +32,6 @@ from state_io import generation_file_lock, read_json_dict, save_json_state
 
 _agy_paths = importlib.import_module("orchestratorOS.agy.paths")
 resolve_bot_cli_base = _agy_paths.resolve_bot_cli_base
-resolve_ui_cli_base = _agy_paths.resolve_ui_cli_base
 
 logger = logging.getLogger("intelligence.sentiment.gemini_client")
 
@@ -46,7 +45,6 @@ _ORIG_GC_DEFAULTS: Dict[str, Any] = {
     "save_json_state": save_json_state,
     "fetch_json_post": fetch_json_post,
     "resolve_bot_cli_base": resolve_bot_cli_base,
-    "resolve_ui_cli_base": resolve_ui_cli_base,
     "QUOTA_API_URL": QUOTA_API_URL,
     "LOAD_ASSIST_API_URL": LOAD_ASSIST_API_URL,
 }
@@ -318,47 +316,34 @@ class GeminiQuotaRouterMixin:
         _save_json_state = _gc_attr("save_json_state", save_json_state)
         _fetch_json_post = _gc_attr("fetch_json_post", fetch_json_post)
         _resolve_bot_cli_base = _gc_attr("resolve_bot_cli_base", resolve_bot_cli_base)
-        _resolve_ui_cli_base = _gc_attr("resolve_ui_cli_base", resolve_ui_cli_base)
         _quota_api_url = _gc_attr("QUOTA_API_URL", QUOTA_API_URL)
         _load_assist_api_url = _gc_attr("LOAD_ASSIST_API_URL", LOAD_ASSIST_API_URL)
 
-        cli_bases = []
-        if bot_cli_base and isinstance(bot_cli_base, str):
-            cli_bases.append(bot_cli_base)
-        for resolved_base in (_resolve_bot_cli_base(), _resolve_ui_cli_base()):
-            if resolved_base and resolved_base not in cli_bases:
-                cli_bases.append(resolved_base)
-
-        valid_tokens: list[tuple[int, float, str]] = []
-        for idx, base_dir in enumerate(cli_bases):
-            tok_path = os.path.join(base_dir, "antigravity-oauth-token")
-            tok_data = _read_json_dict(tok_path, default={})
-            if not tok_data:
-                continue
-            nested_tok = tok_data.get("token") if isinstance(tok_data.get("token"), dict) else {}
-            tok = str(nested_tok.get("access_token") or tok_data.get("access_token") or "").strip()
-            exp_ts = (
-                first_epoch_sec(
-                    nested_tok.get("expiry_timestamp"),
-                    tok_data.get("expiry_timestamp"),
-                    default=0.0,
-                    allow_iso=True,
-                )
-                or 0.0
-            )
-            if tok and (exp_ts <= 0.0 or exp_ts > now + 10.0):
-                valid_tokens.append((idx, exp_ts, tok))
-
+        # Read strictly from the bot's own isolated CLI store so a separate human Web UI
+        # account can never bleed its quota/credits into autonomous bot routing.
+        target_cli_base = (
+            bot_cli_base.strip()
+            if isinstance(bot_cli_base, str) and bot_cli_base.strip()
+            else _resolve_bot_cli_base()
+        )
         access_token = ""
-        if valid_tokens:
-            if bot_cli_base and valid_tokens[0][0] == 0 and valid_tokens[0][1] <= 0.0:
-                access_token = valid_tokens[0][2]
-            else:
-                dated_tokens = [vt for vt in valid_tokens if vt[1] > now + 10.0]
-                if dated_tokens:
-                    access_token = max(dated_tokens, key=lambda vt: (vt[1], -vt[0]))[2]
-                else:
-                    access_token = valid_tokens[0][2]
+        if target_cli_base:
+            tok_path = os.path.join(target_cli_base, "antigravity-oauth-token")
+            tok_data = _read_json_dict(tok_path, default={})
+            if tok_data:
+                nested_tok = tok_data.get("token") if isinstance(tok_data.get("token"), dict) else {}
+                tok = str(nested_tok.get("access_token") or tok_data.get("access_token") or "").strip()
+                exp_ts = (
+                    first_epoch_sec(
+                        nested_tok.get("expiry_timestamp"),
+                        tok_data.get("expiry_timestamp"),
+                        default=0.0,
+                        allow_iso=True,
+                    )
+                    or 0.0
+                )
+                if tok and (exp_ts <= 0.0 or exp_ts > now + 10.0):
+                    access_token = tok
 
         token_fp = hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16] if access_token else ""
 

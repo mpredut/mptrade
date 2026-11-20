@@ -18,6 +18,7 @@ CACHEDB_RSYNC_EXCLUDES=(
 
 BACKUP_META_EXCLUDES=(
     --exclude='.gemini_backup'
+    --exclude='.agy_bot_backup'
     --exclude='.ssh_backup'
     --exclude='.rclone_backup'
     --exclude='.host_secrets'

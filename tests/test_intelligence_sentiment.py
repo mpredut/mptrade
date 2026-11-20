@@ -10034,7 +10034,6 @@ def test_ai_data_coherence_and_quota_fingerprint_fixes(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(GeminiClient, "_get_quota_state_path", staticmethod(lambda: str(q_state_file)))
     monkeypatch.setattr("intelligence.sentiment.llm_quota_router.resolve_bot_cli_base", lambda: str(q_dir))
-    monkeypatch.setattr("intelligence.sentiment.llm_quota_router.resolve_ui_cli_base", lambda: str(q_dir))
     GeminiClient._QUOTA_MEM_CACHE = {}
 
     acct_tier = {"id": "free-tier", "frac": 0.0, "seen_tokens": []}

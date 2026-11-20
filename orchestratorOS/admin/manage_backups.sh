@@ -22,6 +22,14 @@ copy_if_exists() {  # $1=src_dir $2=dst_dir $3...=items
     done
 }
 
+resolve_agy_bot_home() {
+    local raw
+    raw="${AGY_BOT_HOME:-$(env_get AGY_BOT_HOME "$HOME/agy_bot_home")}"
+    raw="${raw//\$HOME/$HOME}"
+    raw="${raw/#\~/$HOME}"
+    echo "${raw:-$HOME/agy_bot_home}"
+}
+
 backup_local() {
     local OUT="${1:-$HOME/$(basename "$ROOT")-secrets-backup}"
     case "$OUT" in "$ROOT"|"$ROOT"/*) echo "❌ destination cannot be inside repo: $OUT"; exit 1;; esac
@@ -36,12 +44,26 @@ backup_local() {
     printf '%s\n' "$LIST" | tar cf - --exclude='*.tmp' --exclude='*.tmp.*' --exclude='*.previous' \
         --warning=no-file-changed --warning=no-file-removed --ignore-failed-read -C "$ROOT" -T - | tar xf - -C "$OUT"
 
-    # Host-level credentials & configs (.gemini, .ssh, .rclone, piatoken.txt)
+    # Host-level credentials & configs (.gemini, isolated agy-bot profile, .ssh, .rclone, piatoken.txt)
     if [ -d "$HOME/.gemini" ]; then
         copy_if_exists "$HOME/.gemini/antigravity-cli" "$OUT/.gemini_backup/antigravity-cli" "${GEMINI_CLI_ITEMS[@]}"
         copy_if_exists "$HOME/.gemini/config" "$OUT/.gemini_backup/config" "${GEMINI_CFG_ITEMS[@]}"
         [ -d "$HOME/.gemini/config/projects" ] && mkdir -p "$OUT/.gemini_backup/config/projects" && \
             cp -a "$HOME/.gemini/config/projects/." "$OUT/.gemini_backup/config/projects/" 2>/dev/null || true
+    fi
+    [ -f "$HOME/.config/antigravity/credential-user-scope" ] && \
+        copy_if_exists "$HOME/.config/antigravity" "$OUT/.gemini_backup/antigravity-config" credential-user-scope
+    local BOT_HOME
+    BOT_HOME="$(resolve_agy_bot_home)"
+    if [ -n "$BOT_HOME" ] && [ "$BOT_HOME" != "$HOME" ] && { [ -d "$BOT_HOME/.gemini" ] || [ -d "$BOT_HOME/.config/antigravity" ]; }; then
+        [ -d "$BOT_HOME/.gemini/antigravity-cli" ] && \
+            copy_if_exists "$BOT_HOME/.gemini/antigravity-cli" "$OUT/.agy_bot_backup/antigravity-cli" "${GEMINI_CLI_ITEMS[@]}"
+        [ -d "$BOT_HOME/.gemini/config" ] && \
+            copy_if_exists "$BOT_HOME/.gemini/config" "$OUT/.agy_bot_backup/config" "${GEMINI_CFG_ITEMS[@]}"
+        [ -d "$BOT_HOME/.gemini/config/projects" ] && mkdir -p "$OUT/.agy_bot_backup/config/projects" && \
+            cp -a "$BOT_HOME/.gemini/config/projects/." "$OUT/.agy_bot_backup/config/projects/" 2>/dev/null || true
+        [ -f "$BOT_HOME/.config/antigravity/credential-user-scope" ] && \
+            copy_if_exists "$BOT_HOME/.config/antigravity" "$OUT/.agy_bot_backup/antigravity-config" credential-user-scope
     fi
     [ -d "$HOME/.ssh" ] && copy_if_exists "$HOME/.ssh" "$OUT/.ssh_backup" "${SSH_BACKUP_ITEMS[@]}" authorized_keys
     [ -f "$HOME/.config/rclone/rclone.conf" ] && copy_if_exists "$HOME/.config/rclone" "$OUT/.rclone_backup" rclone.conf
@@ -133,10 +155,20 @@ restore_backup() {
     unpack_repo_payload "$SECRETS" "$ROOT"
 
     if [ -d "$SECRETS/.gemini_backup" ]; then
-        mkdir -p "$HOME/.gemini/antigravity-cli" "$HOME/.gemini/config"
+        mkdir -p "$HOME/.gemini/antigravity-cli" "$HOME/.gemini/config" "$HOME/.config/antigravity"
         [ -d "$SECRETS/.gemini_backup/antigravity-cli" ] && cp -a "$SECRETS/.gemini_backup/antigravity-cli/." "$HOME/.gemini/antigravity-cli/" 2>/dev/null || true
         [ -d "$SECRETS/.gemini_backup/config" ] && cp -a "$SECRETS/.gemini_backup/config/." "$HOME/.gemini/config/" 2>/dev/null || true
-        chmod 600 "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" 2>/dev/null || true
+        [ -d "$SECRETS/.gemini_backup/antigravity-config" ] && cp -a "$SECRETS/.gemini_backup/antigravity-config/." "$HOME/.config/antigravity/" 2>/dev/null || true
+        chmod 600 "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" "$HOME/.config/antigravity/credential-user-scope" 2>/dev/null || true
+    fi
+    if [ -d "$SECRETS/.agy_bot_backup" ]; then
+        local BOT_HOME
+        BOT_HOME="$(resolve_agy_bot_home)"
+        mkdir -p "$BOT_HOME/.gemini/antigravity-cli" "$BOT_HOME/.gemini/config" "$BOT_HOME/.config/antigravity"
+        [ -d "$SECRETS/.agy_bot_backup/antigravity-cli" ] && cp -a "$SECRETS/.agy_bot_backup/antigravity-cli/." "$BOT_HOME/.gemini/antigravity-cli/" 2>/dev/null || true
+        [ -d "$SECRETS/.agy_bot_backup/config" ] && cp -a "$SECRETS/.agy_bot_backup/config/." "$BOT_HOME/.gemini/config/" 2>/dev/null || true
+        [ -d "$SECRETS/.agy_bot_backup/antigravity-config" ] && cp -a "$SECRETS/.agy_bot_backup/antigravity-config/." "$BOT_HOME/.config/antigravity/" 2>/dev/null || true
+        chmod 600 "$BOT_HOME/.gemini/antigravity-cli/antigravity-oauth-token" "$BOT_HOME/.config/antigravity/credential-user-scope" 2>/dev/null || true
     fi
     if [ -d "$SECRETS/.ssh_backup" ]; then
         copy_if_exists "$SECRETS/.ssh_backup" "$HOME/.ssh" "${SSH_BACKUP_ITEMS[@]}"

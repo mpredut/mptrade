@@ -6041,7 +6041,6 @@ def test_package_a_model_used_shadow_downgrade_rest_tokens_and_paid_vs_flash_quo
     q_state = q_dir / "llm_quota_status.json"
     monkeypatch.setattr(GeminiClient, "_get_quota_state_path", staticmethod(lambda: str(q_state)))
     monkeypatch.setattr("intelligence.sentiment.llm_quota_router.resolve_bot_cli_base", lambda: str(q_dir))
-    monkeypatch.setattr("intelligence.sentiment.llm_quota_router.resolve_ui_cli_base", lambda: str(q_dir))
     GeminiClient._QUOTA_MEM_CACHE = {}
 
     def _mock_iso_post(url, *args, **kwargs):

@@ -1275,9 +1275,39 @@ def test_backup_sync_common_modular_primitives(tmp_path):
         os.path.join(ROOT, "offline", "research", "kraken_continuous_grid", "run_all.sh"),
         os.path.join(ROOT, "systemd", "pia_settings_mtu.sh"),
         os.path.join(ROOT, "systemd", "install_prod.sh"),
+        os.path.join(ROOT, "systemd", "agy-bot"),
     ]
     for script in scripts:
         subprocess.run(["bash", "-n", script], check=True)
+
+    # Verify systemd/agy-bot preserves isolated bot account credentials & scope against newer UI files
+    real_home = tmp_path / "real_home"
+    bot_home = tmp_path / "bot_home"
+    (real_home / ".local" / "bin").mkdir(parents=True)
+    fake_agy = real_home / ".local" / "bin" / "agy"
+    fake_agy.write_text("#!/usr/bin/env bash\necho \"HOME=$HOME\"\n", encoding="utf-8")
+    fake_agy.chmod(0o755)
+    (real_home / ".gemini" / "antigravity-cli").mkdir(parents=True)
+    (real_home / ".gemini" / "config" / "projects").mkdir(parents=True)
+    (real_home / ".config" / "antigravity").mkdir(parents=True)
+    (bot_home / ".gemini" / "antigravity-cli").mkdir(parents=True)
+    (bot_home / ".config" / "antigravity").mkdir(parents=True)
+    (bot_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").write_text('{"acct":"bot"}', encoding="utf-8")
+    (bot_home / ".config" / "antigravity" / "credential-user-scope").write_text("bot-scope", encoding="utf-8")
+    (real_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").write_text('{"acct":"ui"}', encoding="utf-8")
+    (real_home / ".config" / "antigravity" / "credential-user-scope").write_text("ui-scope", encoding="utf-8")
+    (real_home / ".gemini" / "config" / "projects" / "autonommptrade.json").write_text('{"name":"autonommptrade"}', encoding="utf-8")
+    out_bot = subprocess.run(
+        ["bash", os.path.join(ROOT, "systemd", "agy-bot"), "--version"],
+        env={**os.environ, "REAL_HOME": str(real_home), "AGY_BOT_HOME": str(bot_home)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert f"HOME={bot_home}" in out_bot.stdout
+    assert (bot_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").read_text(encoding="utf-8") == '{"acct":"bot"}'
+    assert (bot_home / ".config" / "antigravity" / "credential-user-scope").read_text(encoding="utf-8") == "bot-scope"
+    assert (bot_home / ".gemini" / "config" / "projects" / "autonommptrade.json").is_file()
 
     fake_home = tmp_path / "home"
     src_dir = tmp_path / "src_backup"

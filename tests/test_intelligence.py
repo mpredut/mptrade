@@ -1583,7 +1583,6 @@ def test_iter49_lazy_sentiment_subpackages_gemini_quota_monkeypatch_and_evaluato
     state_file = tmp_path / "llm_quota_status.json"
     monkeypatch.setattr(gc_mod, "cache_path", lambda name: str(state_file))
     monkeypatch.setattr(gc_mod, "resolve_bot_cli_base", lambda: str(cli_dir))
-    monkeypatch.setattr(gc_mod, "resolve_ui_cli_base", lambda: str(cli_dir))
 
     def _fake_read_json(path, default=None):
         if str(path).endswith("antigravity-oauth-token"):
