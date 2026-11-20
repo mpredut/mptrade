@@ -28,6 +28,7 @@ from botcore import (
     is_cache_fresh,
     is_env_defined,
     is_rth_gate_enabled,
+    is_us_extended_hours_open,
     lru_dict_put,
     normalize_epoch_sec,
     resolve_now_ts,
@@ -59,7 +60,10 @@ from intelligence.macro_sentiment_ssot import (
 )
 from cacheprice import resolve_ssot_price_from_cache
 from providers.base import MarketDataProvider
-from providers.ohlc_utils import extract_yahoo_chart_ohlcv_bars
+from providers.ohlc_utils import (
+    extract_yahoo_chart_ohlcv_bars,
+    resolve_yahoo_chart_market_state_and_price,
+)
 from state_io import read_json_dict, read_json_dict_recovering, save_json_state
 
 logger = logging.getLogger("intelligence.external.base_collector")
@@ -694,7 +698,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 and is_rth_gate_enabled(getattr(self, "_enforce_rth_gate", None))
             ):
                 try:
-                    if not is_symbol_market_open(sym_clean, now_f):
+                    if not is_symbol_market_open(sym_clean, now_f) and not is_us_extended_hours_open(now_f):
                         stale_disk = self._load_from_disk(sym_clean, now_f, ignore_ttl=True, exact_only=True)
                         stale_ts = safe_pos_float(getattr(stale_disk, "ts", None), default=0.0) or 0.0
                         stale_sp = safe_pos_float(getattr(stale_disk, "spread_bps", None), default=0.0) or 0.0
@@ -995,8 +999,12 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         except Exception:
             pass
 
-        # 2. Yahoo 5d/5m Intraday OHLCV (volume profile & CLV buy/sell flow)
+        # 2. Yahoo 5d/5m Intraday OHLCV + Extended-Hours Quote (volume profile, CLV flow & PRE/POST live mark)
         bars: List[Tuple[float, float, float, float, float, float]] = []
+        mkt_state = ""
+        reg_close: Optional[float] = None
+        ext_px: Optional[float] = None
+        ext_vs_rth_pct: Optional[float] = None
         try:
             yh = self._fetch_json_dict(
                 _require_feed_str("yahoo_equity_chart_5d_url_template").format(symbol=q_ticker),
@@ -1006,9 +1014,16 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 user_agent="Mozilla/5.0",
             )
             meta, bars = extract_yahoo_chart_ohlcv_bars(yh)
-            if last_px <= 0.0 and isinstance(meta, dict):
-                last_px = safe_pos_float(meta.get("regularMarketPrice"), default=0.0) or 0.0
-            if bars and last_px <= 0.0:
+            pts_c = [(b[0], b[4]) for b in bars]
+            mkt_state, yh_px, ext_px = resolve_yahoo_chart_market_state_and_price(meta, pts_c, now_ts=now)
+            reg_close = safe_pos_float(meta.get("regularMarketPrice") if isinstance(meta, dict) else None, default=None)
+            if mkt_state in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT") and ext_px is not None:
+                last_px = yh_px or ext_px
+                if reg_close is not None and reg_close > 0.0 and abs(last_px - reg_close) / reg_close >= 0.0005:
+                    ext_vs_rth_pct = round(((last_px - reg_close) / reg_close) * 100.0, 2)
+            elif last_px <= 0.0 and yh_px is not None:
+                last_px = yh_px
+            elif bars and last_px <= 0.0:
                 last_px = bars[-1][4]
         except Exception:
             pass
@@ -1026,6 +1041,10 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             "ask_size_sh": ask_size_sh,
             "daily_vol_sh": daily_vol_sh,
             "bars": bars,
+            "market_state": mkt_state,
+            "regular_close_price": reg_close,
+            "extended_price": ext_px,
+            "ext_vs_rth_pct": ext_vs_rth_pct,
             "call_oi": 0.0,
             "put_oi": 0.0,
             "call_vol": 0.0,

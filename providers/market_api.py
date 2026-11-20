@@ -217,10 +217,16 @@ class MarketApi:
         return default
 
     def get_current_price(
-        self, symbol: str, *, provider_name=None,
+        self, symbol: str, *, provider_name=None, prefer_public_extended: bool = False,
     ) -> Optional[float]:
         """Read a quote through explicit venue routing when it is configured."""
-        return self._provider_explicit_or_routed(symbol, provider_name).get_current_price(symbol)
+        provider = self._provider_explicit_or_routed(symbol, provider_name)
+        if _parse_bool_flag(prefer_public_extended, False):
+            pub_fn = getattr(provider, "fetch_public_market_price_usd", None)
+            if callable(pub_fn):
+                if (pub_px := safe_pos_float(pub_fn(symbol), default=None)) is not None:
+                    return pub_px
+        return provider.get_current_price(symbol)
 
     def get_price_history(
         self, symbol: str, lookback_h: float, *, provider_name=None,

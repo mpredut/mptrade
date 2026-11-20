@@ -44,6 +44,7 @@ from providers.ohlc_utils import (
     extract_yahoo_intraday_chart_bars,
     parse_ohlc_interval_minutes,
     require_ohlc_symbol,
+    resolve_yahoo_chart_market_state_and_price,
     validate_dataset,
     validate_ohlc_candle_bar,
 )
@@ -224,16 +225,24 @@ def _ssot_equity_ohlc_closes(sym_u: str) -> list[float]:
 
 def get_price_usd(sym: str) -> float | None:
     """Return current price for NVDA, SPCX, USDRON=X, etc.
-    Prefer fresh SSOT cacheManager equity quotes when active, else Yahoo chart bars."""
+    Prefer fresh SSOT cacheManager equity quotes when active, else Yahoo extended-hours or intraday bars."""
     if (sym_u := _can_use_ssot_equity_cache(sym)) is not None:
         if (ssot_px := _ssot_equity_price_usd(sym_u)) is not None:
             return ssot_px
     meta, bars = _chart(sym)
+    pts = [
+        (b[0], b[1])
+        for b in (bars or ())
+        if isinstance(b, (list, tuple)) and len(b) >= 2
+    ]
+    mkt_state, resolved_px, ext_px = resolve_yahoo_chart_market_state_and_price(
+        meta, pts, now_ts=time.time()
+    )
+    if mkt_state in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT") and ext_px is not None:
+        return resolved_px or ext_px
     if bars:
         return bars[-1][1]
-    if meta:
-        return safe_pos_float(meta.get("regularMarketPrice"), default=None)
-    return None
+    return resolved_px
 
 
 def trend_slope_pct(sym: str, bars: int = 12) -> float | None:

@@ -96,6 +96,7 @@ from instrument_registry import (
     casefold_get,
     resolve_kraken_tokenized_pair,
     resolve_registered_symbol_case,
+    resolve_symbol_market_session,
 )
 import order_retry as _oq
 from providers.base import MarketDataProvider
@@ -965,11 +966,12 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             else (cfg_alloc_px or active_alloc_px or state_alloc_px)
         )
         primary_xpair = listed_pair or f"{underlying}xUSD"
-        live_px = (
+        xpair_px = (
             resolve_symbol_price(primary_xpair, eff_pt)
             or resolve_symbol_price(f"{underlying}xUSD", eff_pt)
-            or resolve_symbol_price(t212_sib, eff_pt)
         )
+        sib_px = resolve_symbol_price(t212_sib, eff_pt)
+        live_px = xpair_px or sib_px
         tp1_a = safe_pos_float(xstock_cfg.get("xstock_tp_alert_pct"), default=None)
         tp2_a = safe_pos_float(xstock_cfg.get("xstock_tp2_alert_pct"), default=None)
         sl_a = safe_pos_float(xstock_cfg.get("xstock_sl_alert_pct"), default=None)
@@ -1033,6 +1035,16 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             xst_summary["live_price"] = round(live_px, 4)
             if alloc_px is not None:
                 xst_summary["pnl_vs_alloc_pct"] = round(((live_px - alloc_px) / alloc_px) * 100.0, 2)
+        if xpair_px > 0 and sib_px > 0:
+            sib_entry = casefold_get(eff_pt, t212_sib)
+            sib_mstate = str(sib_entry.get("market_state") or "").strip().upper() if isinstance(sib_entry, dict) else ""
+            sib_qsrc = str(sib_entry.get("quote_source") or "").strip().lower() if isinstance(sib_entry, dict) else ""
+            if not sib_mstate:
+                sib_mstate = "REGULAR" if sib_qsrc in ("yahoo_rth", "t212_live") else resolve_symbol_market_session(t212_sib)
+            xst_summary["underlying_live_price"] = round(sib_px, 4)
+            if sib_mstate:
+                xst_summary["underlying_session"] = sib_mstate
+            xst_summary["xstock_vs_underlying_pct"] = round(((xpair_px - sib_px) / sib_px) * 100.0, 2)
         if isinstance((sib_cyc := first_variant_dict(eff_t212, (t212_sib, underlying))), dict):
             xst_summary["t212_sibling_cycle"] = {k: v for k, v in sib_cyc.items() if not str(k).startswith("_")}
         return xst_summary

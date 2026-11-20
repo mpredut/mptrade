@@ -14881,7 +14881,7 @@ def test_faza3a_prep_ssot_seams_zero_behavior_change(tmp_path):
     assert extract_yahoo_chart_latest_price(yh_payload) == pytest.approx(139.8)
     assert extract_yahoo_chart_latest_price(yh_payload, include_extended=True, now_ts=ts_pre) == pytest.approx(144.25)
 
-    # 4. Cache24PriceManager & CacheCurrentPriceManager equity session hooks preserve exact current behavior
+    # 4. Cache24PriceManager & CacheCurrentPriceManager Faza 3A extended-hours cadence & CLOSED gate
     p24 = Cache24PriceManager(60, ["NVDA_US_EQ"], str(tmp_path / "p24.json"), data_sync_mode="disk_reader")
     assert p24._resolve_equity_ohlc_refresh_interval_sec("NVDA_US_EQ", ts_rth, row_count=50, has_pos_vol_ohlc=True) == (
         True,
@@ -14889,12 +14889,27 @@ def test_faza3a_prep_ssot_seams_zero_behavior_change(tmp_path):
     )
     assert p24._resolve_equity_ohlc_refresh_interval_sec("NVDA_US_EQ", ts_pre, row_count=50, has_pos_vol_ohlc=True) == (
         False,
+        round(p24.EQUITY_OHLC_RTH_REFRESH_SEC * 2.0, 1),
+    )
+    assert p24._resolve_equity_ohlc_refresh_interval_sec("NVDA_US_EQ", ts_post, row_count=50, has_pos_vol_ohlc=True) == (
+        False,
+        round(p24.EQUITY_OHLC_RTH_REFRESH_SEC * 2.0, 1),
+    )
+    assert p24._resolve_equity_ohlc_refresh_interval_sec("NVDA_US_EQ", ts_night, row_count=50, has_pos_vol_ohlc=True) == (
+        False,
         p24.EQUITY_OHLC_OFF_RTH_REFRESH_SEC,
     )
     cp = CacheCurrentPriceManager(60, ["NVDA_US_EQ"], str(tmp_path / "cp.json"), data_sync_mode="disk_reader")
     cp._enforce_rth_gate = True
-    cp.cache["NVDA_US_EQ"] = [[int(ts_rth * 1000), 140.0]]
+    # Stale cached quote from previous session -> polls during RTH and PRE/POST, stays paused during CLOSED night/weekend
+    cp.cache["NVDA_US_EQ"] = [[int((ts_pre - 3600.0) * 1000), 140.0]]
     assert cp._should_skip_equity_poll_for_session("NVDA_US_EQ", ts_rth) is False
+    assert cp._should_skip_equity_poll_for_session("NVDA_US_EQ", ts_pre) is False
+    assert cp._should_skip_equity_poll_for_session("NVDA_US_EQ", ts_post) is False
+    assert cp._should_skip_equity_poll_for_session("NVDA_US_EQ", ts_night) is True
+    assert cp._should_skip_equity_poll_for_session("NVDA_US_EQ", ts_sat) is True
+    # Fresh extended-hours quote within ext_gap_sec throttles polling until cadence elapses
+    cp.cache["NVDA_US_EQ"] = [[int((ts_pre - 10.0) * 1000), 144.25]]
     assert cp._should_skip_equity_poll_for_session("NVDA_US_EQ", ts_pre) is True
 
     # 5. Equity quote metadata SSOT preserves byte-identical legacy formatting and supports PRE/POST tags
@@ -15025,14 +15040,141 @@ def test_prompt_telemetry_audit_fixes_low_issues(tmp_path):
     assert "BNBUSDC" in res_incl
 
 
+def test_faza3a_extended_hours_equities_live_pricing_and_xstock_basis(tmp_path, monkeypatch):
+    """Verify Faza 3A end-to-end: Yahoo PRE/POST live pricing in market_data, MarketApi, base_collector, microstructure_collector, and KrakenXstocksCollector."""
+    from datetime import datetime
+    from types import SimpleNamespace
+    from botcore import ET
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.sentiment.collectors.microstructure_collector import Fleet24hAndMicrostructureEnricher
+    from intelligence.sentiment.collectors.portfolio_collector import KrakenXstocksCollector
+    from orchestratorOS.supervisor.prompt_sections import _format_market_prices_section
+    from providers.market_api import MarketApi
+    from state_io import save_json_state
 
+    ts_pre = datetime(2026, 11, 18, 7, 30, tzinfo=ET).timestamp()
+    ts_post = datetime(2026, 11, 18, 17, 30, tzinfo=ET).timestamp()
 
+    # 1. 212trading/market_data.get_price_usd returns live PRE/POST extended price over stale RTH bars
+    md_mod = load_venue_modules("212trading", "market_data")
+    monkeypatch.setattr(md_mod, "_can_use_ssot_equity_cache", lambda _sym: None)
+    monkeypatch.setattr(
+        md_mod,
+        "_chart",
+        lambda _sym, **_kw: (
+            {"marketState": "PRE", "regularMarketPrice": 140.0, "preMarketPrice": 145.6},
+            [(int(ts_pre - 40000), 140.0, 5000.0)],
+        ),
+    )
+    assert md_mod.get_price_usd("NVDA") == pytest.approx(145.6)
 
+    # 2. MarketApi.get_current_price(..., prefer_public_extended=True) uses polymorphic fetch_public_market_price_usd
+    class _FakeEqProvider:
+        name = "T212"
+        _ASSET_SCOPE = "equities"
 
+        def supports_symbol(self, _s):
+            return True
 
+        def get_current_price(self, _s):
+            return 140.0  # frozen broker RTH close
 
+        @classmethod
+        def fetch_public_market_price_usd(cls, _s):
+            return 145.6  # live Yahoo PRE quote
 
+    api = MarketApi(providers=[_FakeEqProvider()])
+    assert api.get_current_price("NVDA_US_EQ") == pytest.approx(140.0)
+    assert api.get_current_price("NVDA_US_EQ", prefer_public_extended=True) == pytest.approx(145.6)
 
+    # 3. _DiskBackedSymbolCollector._fetch_equity_market_context captures live POST price & ext_vs_rth_pct
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path / "eq_ctx"), cache_ttl_sec=0.0, disk_ttl_sec=0.0, start_sync=True)
+    ob_col._EQUITY_CTX_MEMO.clear()
 
+    def _fake_eq_fetch(url, label, _sym, *, timeout=2.5, user_agent=""):
+        if label == "nasdaq_quote":
+            return {"data": {"primaryData": {"lastSalePrice": "$140.00", "volume": "50,000,000"}}}
+        if label == "yahoo_chart_5m":
+            return {
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {
+                                "marketState": "POST",
+                                "regularMarketPrice": 140.0,
+                                "postMarketPrice": 147.0,
+                            },
+                            "timestamp": [int(ts_post - 600), int(ts_post - 300)],
+                            "indicators": {
+                                "quote": [
+                                    {
+                                        "open": [146.0, 146.5],
+                                        "high": [146.8, 147.2],
+                                        "low": [145.8, 146.4],
+                                        "close": [146.5, 147.0],
+                                        "volume": [1000, 1200],
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                }
+            }
+        raise AssertionError(f"Unexpected call: {label} {url}")
 
+    monkeypatch.setattr(ob_col, "_fetch_json_dict", _fake_eq_fetch)
+    eq_ctx = ob_col._fetch_equity_market_context("NVDA_US_EQ", ts_post, include_options=False)
+    assert eq_ctx is not None
+    assert eq_ctx["last_price"] == pytest.approx(147.0)
+    assert eq_ctx["market_state"] == "POST"
+    assert eq_ctx["regular_close_price"] == pytest.approx(140.0)
+    assert eq_ctx["extended_price"] == pytest.approx(147.0)
+    assert eq_ctx["ext_vs_rth_pct"] == pytest.approx(5.0)
 
+    # 4. Fleet24hAndMicrostructureEnricher._seed_t212_positions keeps fresher extended-hours cache_current_price
+    #    over older frozen pos:t212 close and renders [PRE, src=yahoo_ext, ..., ext_vs_rth=+4.00%, t212_close=$140.0] in Section 3A
+    pt_map = {"NVDA_US_EQ": {"price": 145.6, "trend": 0, "growth_coefficient": 0.0}}
+    cp_map = {"NVDA_US_EQ": [[int((ts_pre - 30.0) * 1000), 145.6]]}
+    cached_bals = {"pos:t212:NVDA_US_EQ": {"symbol": "NVDA_US_EQ", "free": 2.0, "price": 140.0, "ts": ts_pre - 36000.0}}
+    Fleet24hAndMicrostructureEnricher._seed_t212_positions(
+        "",
+        pt_map,
+        cp_map,
+        {},
+        cached_bals,
+        "",
+        0.0,
+        ts_pre,
+        lambda _p: None,
+        False,
+    )
+    nv_entry = pt_map["NVDA_US_EQ"]
+    assert nv_entry["price"] == pytest.approx(145.6)
+    assert nv_entry["quote_source"] == "yahoo_ext"
+    assert nv_entry["market_state"] == "PRE"
+    assert nv_entry["t212_close_px"] == pytest.approx(140.0)
+    assert nv_entry["ext_vs_rth_pct"] == pytest.approx(4.0)
+    sec3a = "\n".join(_format_market_prices_section(pt_map))
+    assert "[PRE, src=yahoo_ext, age=0.5m, ext_vs_rth=+4.00%, t212_close=$140.0]" in sec3a
+
+    # 5. KrakenXstocksCollector surfaces underlying live PRE/POST price, session, and xstock premium/discount basis
+    k_dir = tmp_path / "kraken_xst"
+    k_dir.mkdir()
+    save_json_state(
+        str(k_dir / "xstock_state.json"),
+        {"known_assets": {"SPCXx": 10.0}, "pair": "SPCXxUSD"},
+    )
+    xst_res = KrakenXstocksCollector(start_sync=False).collect(
+        str(k_dir),
+        kraken_dir=str(k_dir),
+        prices_and_trends={
+            "SPCXxUSD": {"price": 153.0},
+            "SPCX_US_EQ": {"price": 150.0, "market_state": "PRE", "quote_source": "yahoo_ext"},
+        },
+        all_t212_cycles={},
+    )
+    assert xst_res is not None
+    assert xst_res["live_price"] == pytest.approx(153.0)
+    assert xst_res["underlying_live_price"] == pytest.approx(150.0)
+    assert xst_res["underlying_session"] == "PRE"
+    assert xst_res["xstock_vs_underlying_pct"] == pytest.approx(2.0)

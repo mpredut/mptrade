@@ -176,6 +176,7 @@ from instrument_registry import (
     is_symbol_market_open,
     load_registry,
     resolve_symbol_identity,
+    resolve_symbol_market_session,
 )
 from providers import t212_provider as _t212_prov_mod
 from providers.base import MarketDataProvider
@@ -1534,6 +1535,11 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         eff_now: float,
     ) -> None:
         pt_map[sym_k]["quote_source"] = "yahoo_rth" if is_open else "yahoo_ext"
+        eq_sess = resolve_symbol_market_session(sym_k, eff_now)
+        if not is_open and eq_sess in ("PRE", "POST"):
+            pt_map[sym_k]["market_state"] = eq_sess
+        else:
+            pt_map[sym_k].pop("market_state", None)
         if quote_ts_ms > 1e11:
             pt_map[sym_k]["quote_age_min"] = round(max(0.0, eff_now - (quote_ts_ms / 1000.0)) / 60.0, 1)
         # BY DESIGN: During open US RTH, cached pos:t212:* is a slightly older intraday T212 tick, not an RTH close;
@@ -1544,8 +1550,13 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             and abs(px_cur - c_t212) / max(px_cur, c_t212) >= 0.0005
         ):
             pt_map[sym_k]["t212_close_px"] = c_t212
+            if eq_sess in ("PRE", "POST"):
+                pt_map[sym_k]["ext_vs_rth_pct"] = round(((px_cur - c_t212) / c_t212) * 100.0, 2)
+            else:
+                pt_map[sym_k].pop("ext_vs_rth_pct", None)
         else:
             pt_map[sym_k].pop("t212_close_px", None)
+            pt_map[sym_k].pop("ext_vs_rth_pct", None)
 
     @staticmethod
     def _seed_t212_positions(
@@ -1624,6 +1635,33 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 t212_pos_ts[ticker] = bcache_mtime
             t_entry = pt_map.setdefault(ticker, {"price": cached_t212_px, "trend": 0, "growth_coefficient": 0.0})
             cur_t_px = safe_pos_float(t_entry.get("price"), default=0.0) or 0.0
+            cp_ts_s_eq = (cp_pt[0] / 1000.0) if (cp_pt is not None and cp_pt[0] > 1e11) else 0.0
+            t_rth_open = False
+            eq_sess = ""
+            if has_equity_suffix(ticker):
+                try:
+                    t_rth_open = bool(is_symbol_market_open(ticker, eff_now))
+                    eq_sess = resolve_symbol_market_session(ticker, eff_now)
+                except Exception:
+                    t_rth_open = False
+            cp_is_fresher_ext = bool(
+                has_equity_suffix(ticker)
+                and not t_rth_open
+                and eq_sess in ("PRE", "POST")
+                and cp_pt is not None
+                and cp_pt[1] > 0.0
+                and cp_ts_s_eq > (pos_ts_val or 0.0) + 1.0
+            )
+            if cp_is_fresher_ext and cp_pt is not None:
+                ext_live_px = round(cp_pt[1], 4)
+                t_entry["price"] = ext_live_px
+                t_entry["quote_source"] = "yahoo_ext"
+                t_entry["market_state"] = eq_sess
+                t_entry["quote_age_min"] = round(max(0.0, eff_now - cp_ts_s_eq) / 60.0, 1)
+                if cached_t212_px is not None and abs(ext_live_px - cached_t212_px) / max(ext_live_px, cached_t212_px) >= 0.0005:
+                    t_entry["t212_close_px"] = cached_t212_px
+                    t_entry["ext_vs_rth_pct"] = round(((ext_live_px - cached_t212_px) / cached_t212_px) * 100.0, 2)
+                continue
             if cached_t212_px is not None and (
                 ticker not in inst_map
                 or cur_t_px <= 0.0
@@ -1637,11 +1675,6 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 t_entry["price"] = cached_t212_px
                 t212_seeded_from_cache.add(ticker)
             if has_equity_suffix(ticker) and safe_pos_float(t_entry.get("price"), default=0.0):
-                try:
-                    t_rth_open = bool(is_symbol_market_open(ticker, eff_now))
-                except Exception:
-                    t_rth_open = False
-                cp_ts_s_eq = (cp_pt[0] / 1000.0) if (cp_pt is not None and cp_pt[0] > 1e11) else 0.0
                 if (
                     not t_rth_open
                     and cp_pt is not None
@@ -1654,6 +1687,9 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     t212_cached_px[ticker] = cp_close_px
                     t_entry.setdefault("quote_source", "yahoo_ext_cached")
                     t_entry["t212_close_px"] = cp_close_px
+                    if eq_sess in ("PRE", "POST"):
+                        t_entry.setdefault("market_state", eq_sess)
+                        t_entry["ext_vs_rth_pct"] = round(((cached_t212_px - cp_close_px) / cp_close_px) * 100.0, 2)
                 else:
                     t_entry.setdefault("quote_source", "t212_live" if t_rth_open else "t212_rth_close")
                 if (t_ts_v := t212_pos_ts.get(ticker, 0.0)) > 0.0 and 0.0 <= (eff_now - t_ts_v) <= 14 * 86400.0:
@@ -1730,7 +1766,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             try:
                 eq_rth_open = bool(is_symbol_market_open(sym, eff_now))
                 if not eq_rth_open and memo_chart is not None:
-                    memo_ttl_s = 1800.0
+                    memo_ttl_s = 480.0 if resolve_symbol_market_session(sym, eff_now) in ("PRE", "POST") else 1800.0
             except Exception:
                 pass
         memo_chart_fresh = bool(memo_chart is not None and 0.0 <= (eff_now - memo_chart[0]) < memo_ttl_s)

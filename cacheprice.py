@@ -42,6 +42,7 @@ from botcore import (
     extract_timestamp_s,
     is_live_network_backfill_enabled,
     is_rth_gate_enabled,
+    is_us_extended_hours_open,
     is_us_rth_open,
     load_dotenv,
     lru_dict_put,
@@ -504,13 +505,14 @@ class Cache24PriceManager(CachePriceManagerBase):
         row_count: int,
         has_pos_vol_ohlc: bool,
     ) -> tuple[bool, float]:
-        """Return ``(eq_rth_open, min_refresh_interval_sec)`` for an equity 5d/5m OHLC refresh."""
+        """Return ``(eq_rth_open, min_refresh_interval_sec)`` across RTH, extended hours (PRE/POST), and CLOSED."""
         eq_rth_open = bool(is_symbol_market_open(symbol, now_s))
-        min_interval = (
-            self.EQUITY_OHLC_RTH_REFRESH_SEC
-            if (eq_rth_open or row_count < 10 or not has_pos_vol_ohlc)
-            else self.EQUITY_OHLC_OFF_RTH_REFRESH_SEC
-        )
+        if eq_rth_open or row_count < 10 or not has_pos_vol_ohlc:
+            min_interval = self.EQUITY_OHLC_RTH_REFRESH_SEC
+        elif is_us_extended_hours_open(now_s):
+            min_interval = round(self.EQUITY_OHLC_RTH_REFRESH_SEC * 2.0, 1)
+        else:
+            min_interval = self.EQUITY_OHLC_OFF_RTH_REFRESH_SEC
         return eq_rth_open, min_interval
 
     def refresh_equity_ohlc_series(
@@ -1789,21 +1791,35 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         return -5_000.0 <= (eff_now_ms - cur_ts_ms) < (self.ws_timeout_sec_for(symbol) * 1000.0)
 
     def _should_skip_equity_poll_for_session(self, symbol: str, now_s: float) -> bool:
-        """Return True when an equity remote price poll should be skipped under the active session/RTH gate."""
+        """Return True when an equity remote price poll should be skipped under the active session/RTH gate.
+
+        Allows live RTH polling, throttled extended-hours (PRE/POST) polling at ``max(60s, 2 * ws_timeout_sec)``,
+        and pauses polling during CLOSED overnight/weekend windows when a cached quote already exists.
+        """
         if not is_rth_gate_enabled(
             getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
         ):
             return False
         if (last_eb := self._rth_empty_backoff_ts.get(symbol, 0.0)) > 0.0 and 0.0 <= (now_s - last_eb) < 60.0:
             return True
-        if not is_us_rth_open(now_s):
-            with self.lock:
-                existing_entries = self.cache.get(symbol)
-            if (
-                existing_entries
-                and self.extract_price_and_ts(existing_entries)[0] is not None
-            ):
+        if is_us_rth_open(now_s):
+            return False
+        if is_us_extended_hours_open(now_s):
+            ext_gap_sec = max(60.0, round(self.ws_timeout_sec_for(symbol) * 2.0, 1))
+            last_poll = self._last_http_poll_ts_per_symbol.get(symbol, 0.0)
+            if last_poll > 0.0 and 0.0 <= (now_s - last_poll) < ext_gap_sec:
                 return True
+            cur_ts_ms = self._cached_entry_ts_ms(symbol)
+            if cur_ts_ms is not None and -5_000.0 <= (now_s * 1000.0 - cur_ts_ms) < (ext_gap_sec * 1000.0):
+                return True
+            return False
+        with self.lock:
+            existing_entries = self.cache.get(symbol)
+        if (
+            existing_entries
+            and self.extract_price_and_ts(existing_entries)[0] is not None
+        ):
+            return True
         return False
 
     def query_remote_and_update_cache(self):
@@ -1903,13 +1919,30 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
     def get_remote_items(self, symbol, startTime):
         try:
             provider_name = self.provider_name_for(symbol)
+            now_s = _now_time()
+            prefer_ext = bool(
+                self._is_equity_instrument(symbol)
+                and self.market_api is _market_api.api
+                and not is_us_rth_open(now_s)
+                and is_us_extended_hours_open(now_s)
+            )
             with live_price_fetch_context():
                 if provider_name is None:
-                    price = self.market_api.get_current_price(symbol=symbol)
+                    price = (
+                        self.market_api.get_current_price(symbol=symbol, prefer_public_extended=True)
+                        if prefer_ext
+                        else self.market_api.get_current_price(symbol=symbol)
+                    )
                 else:
                     try:
-                        price = self.market_api.get_current_price(
-                            symbol=symbol, provider_name=provider_name
+                        price = (
+                            self.market_api.get_current_price(
+                                symbol=symbol, provider_name=provider_name, prefer_public_extended=True
+                            )
+                            if prefer_ext
+                            else self.market_api.get_current_price(
+                                symbol=symbol, provider_name=provider_name
+                            )
                         )
                     except TypeError:
                         if self.market_api is _market_api.api:
