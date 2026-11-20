@@ -2379,3 +2379,115 @@ def test_multi_venue_liquidations_whale_bar_ts_btc_ob_widen_hl_span_and_agg_spot
     assert arb_snap.agg_spot_vol_15m_usd == pytest.approx(300_006.0)
     assert arb_snap.agg_spot_cvd_source == "usdc+usdt"
 
+
+def test_etapa0_whale_oi_15m_and_cross_venue_agg_spot_cvd_with_negative_cache(tmp_path):
+    """Verify Q1 open_interest_15m_change_pct (0 extra HTTP calls) and Q2 cross-venue agg_spot_cvd_15m + negative cache."""
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.external.collectors.whale_positioning_collector import (
+        WhalePositioningCollector,
+        WhalePositioningSnapshot,
+    )
+
+    now_s = 1_795_100_000.0
+
+    # 1. Q1: WhalePositioningCollector derives 15m OI change from already-fetched 5m OI history (0 extra HTTP calls)
+    w_col = WhalePositioningCollector(cache_dir=str(tmp_path), cache_ttl_sec=0.0)
+    fetched_urls = []
+
+    def _fake_whale(url, label, lookup_sym, **kwargs):
+        fetched_urls.append(url)
+        if "topLongShortPositionRatio" in url:
+            row = {"longShortRatio": "1.5", "longAccount": "0.60"}
+            return row, [row]
+        if "takerlongshortRatio" in url:
+            row = {"buyVol": "120.0", "sellVol": "80.0", "buySellRatio": "1.50", "timestamp": int((now_s - 60) * 1000)}
+            return row, [row]
+        # 13 x 5m bars: oi_rows[0]=600M, oi_rows[-4]=610M, oi_rows[-1]=622.2M (+3.7% 1h, +2.0% 15m)
+        oi_rows = [{"sumOpenInterestValue": "600000000.0", "sumOpenInterest": "10000.0"}]
+        oi_rows.extend({"sumOpenInterestValue": "605000000.0", "sumOpenInterest": "10050.0"} for _ in range(8))
+        oi_rows.append({"sumOpenInterestValue": "610000000.0", "sumOpenInterest": "10100.0"})  # oi_rows[-4]
+        oi_rows.append({"sumOpenInterestValue": "614000000.0", "sumOpenInterest": "10150.0"})
+        oi_rows.append({"sumOpenInterestValue": "618000000.0", "sumOpenInterest": "10200.0"})
+        oi_rows.append({"sumOpenInterestValue": "622200000.0", "sumOpenInterest": "10250.0"})
+        return oi_rows[-1], oi_rows
+
+    w_col._fetch_latest_json_row = _fake_whale
+    w_snap = w_col.fetch("BTCUSDC", allow_network=True, now=now_s)
+    assert w_snap is not None
+    assert len(fetched_urls) == 3
+    assert w_snap.open_interest_1h_change_pct == pytest.approx(3.7)
+    assert w_snap.open_interest_15m_change_pct == pytest.approx(2.0)
+    w_roundtrip = WhalePositioningSnapshot.from_dict(w_snap.to_dict())
+    assert w_roundtrip.open_interest_15m_change_pct == pytest.approx(2.0)
+
+    # 2. Q2a: Kraken ADAUSD combines local Kraken trades with deep Binance ADAUSDT spot flow (kraken+bn_usdt)
+    ada_col = OrderbookDepthCollector(cache_dir=str(tmp_path), cache_ttl_sec=0.0)
+    ada_col._fetch_json_dict = lambda *_a, **_kw: {
+        "result": {
+            "ADAUSD": {
+                "bids": [["0.5000", "20000"], ["0.4950", "20000"]],
+                "asks": [["0.5005", "20000"], ["0.5050", "20000"]],
+            }
+        }
+    }
+
+    def _fake_ada_flow(url, post_body):
+        if "api.kraken.com" in url:
+            # 1 buy ($1,000) and 1 sell ($400) -> local cvd=+$600, vol=$1,400
+            return {
+                "error": [],
+                "result": {
+                    "ADAUSD": [
+                        ["0.50", "2000.0", now_s - 120.0, "b", "m", ""],
+                        ["0.50", "800.0", now_s - 60.0, "s", "m", ""],
+                    ],
+                    "last": "1",
+                },
+            }
+        if "api.binance.com" in url and "symbol=ADAUSDT" in url:
+            # $500k quote vol, $350k taker buy -> cvd=+$200k
+            return [[0, 0, 0, 0, 0, 0, 0, "500000.0", 0, 0, "350000.0"]]
+        return []
+
+    ada_col._fetch_spot_cvd_payload = _fake_ada_flow
+    ada_snap = ada_col.fetch("ADAUSD", allow_network=True, now=now_s)
+    assert ada_snap is not None
+    assert ada_snap.spot_cvd_15m_usd == pytest.approx(600.0)
+    assert ada_snap.spot_vol_15m_usd == pytest.approx(1400.0)
+    assert ada_snap.agg_spot_cvd_15m_usd == pytest.approx(200_600.0)
+    assert ada_snap.agg_spot_vol_15m_usd == pytest.approx(501_400.0)
+    assert ada_snap.agg_spot_cvd_source == "kraken+bn_usdt"
+
+    # 3. Q2b: Hyperliquid HYPEUSDC unlisted on Binance Spot negative-caches for 5x TTL without repeat HTTP retries
+    hl_col = OrderbookDepthCollector(cache_dir=str(tmp_path), cache_ttl_sec=0.0)
+    hl_col._fetch_json_dict = lambda *_a, **_kw: {
+        "levels": [
+            [{"px": "40.00", "sz": "100"}, {"px": "39.50", "sz": "100"}],
+            [{"px": "40.05", "sz": "100"}, {"px": "40.55", "sz": "100"}],
+        ]
+    }
+    bn_hype_calls = []
+
+    def _fake_hype_flow(url, post_body):
+        if "api.hyperliquid.xyz" in url:
+            return [{"o": "39.8", "h": "40.2", "l": "39.7", "c": "40.1", "v": "1000.0"}]
+        if "api.binance.com" in url and "symbol=HYPEUSDT" in url:
+            bn_hype_calls.append(url)
+            raise RuntimeError("HTTP 400 Invalid symbol")
+        return []
+
+    hl_col._fetch_spot_cvd_payload = _fake_hype_flow
+    snap_h1 = hl_col.fetch("HYPEUSDC", allow_network=True, now=now_s)
+    assert snap_h1 is not None
+    assert snap_h1.spot_cvd_15m_usd is not None
+    assert snap_h1.agg_spot_cvd_15m_usd is None
+    assert snap_h1.agg_spot_cvd_source is None
+    assert len(bn_hype_calls) == 1
+
+    # 70s later (>60s local TTL, <300s negative cache TTL): local flow refreshes, Binance HYPEUSDT is NOT retried
+    snap_h2 = hl_col.fetch("HYPEUSDC", allow_network=True, now=now_s + 70.0)
+    assert snap_h2 is not None
+    assert snap_h2.agg_spot_cvd_15m_usd is None
+    assert len(bn_hype_calls) == 1
+
+

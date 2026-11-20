@@ -1636,14 +1636,22 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             fr_base = telemetry.get("Perpetual Funding Rate") or f"{fr_v * 100:+.4f}% (8h)"
             f_ann = safe_float(cur_m_info.get("funding_annualized_pct"), default=None)
             b_bps = safe_float(cur_m_info.get("perp_spot_basis_bps"), default=None)
+            b_d15 = safe_float(cur_m_info.get("basis_delta_15m_bps"), default=None)
+            f_d1h = safe_float(cur_m_info.get("funding_delta_1h_bps"), default=None)
             fr_extras = [
                 x
                 for x in (
                     f"funding_ann={f_ann:+.1f}%"
                     if f_ann is not None and not (is_eq_sym and abs(f_ann) < 1e-9 and abs(fr_v) < 1e-12)
                     else "",
+                    f"fund_d1h={f_d1h:+.2f}bps"
+                    if f_d1h is not None and abs(f_d1h) >= 0.05 and not is_eq_sym
+                    else "",
                     f"perp_basis={b_bps:+.1f}bps"
                     if b_bps is not None and not (is_eq_sym and abs(b_bps) < 1e-9)
+                    else "",
+                    f"basis_d15m={b_d15:+.1f}bps"
+                    if b_d15 is not None and abs(b_d15) >= 0.1 and not is_eq_sym
                     else "",
                 )
                 if x and x.split("=", 1)[0] not in fr_base
@@ -1657,8 +1665,13 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             l1_oi = safe_pos_float(cur_m_info.get("native_l1_oi_usd"), default=0.0) or 0.0
             oi_base = f"${oi_v:,.0f} (l1_oi=${l1_oi / 1e9:.2f}B)" if (l1_oi > 0.0 and abs(l1_oi - oi_v) > 1.0) else f"${oi_v:,.0f}"
             eq_oi_tag = " (Cboe options chain OI)" if is_eq_sym else ""
+            oi_chg_parts: List[str] = []
             if (oi_chg := safe_float(cur_m_info.get("oi_1h_chg_pct"), default=None)) is not None:
-                telemetry["Derivatives Open Interest"] = f"{oi_base}{eq_oi_tag} (1h_chg={oi_chg:+.2f}%)"
+                oi_chg_parts.append(f"1h_chg={oi_chg:+.2f}%")
+            if (oi_15m := safe_float(cur_m_info.get("oi_15m_chg_pct"), default=None)) is not None:
+                oi_chg_parts.append(f"15m_chg={oi_15m:+.2f}%")
+            if oi_chg_parts:
+                telemetry["Derivatives Open Interest"] = f"{oi_base}{eq_oi_tag} ({', '.join(oi_chg_parts)})"
             else:
                 telemetry["Derivatives Open Interest"] = f"{oi_base}{eq_oi_tag}"
 

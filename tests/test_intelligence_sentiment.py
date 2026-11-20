@@ -13207,6 +13207,89 @@ def test_sentiment_advisor_quantitative_prompt_enrichment_geopolitical_context_a
         assert stale_geo_tok not in geo_client.last_prompt
 
 
+def test_etapa0_derivatives_short_horizon_deltas_and_rendering(tmp_path):
+    """Verify Q1 oi_15m_chg_pct, basis_delta_15m_bps, funding_delta_1h_bps, 90-entry history retention, sibling sync, and rendering."""
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import PretradeOrderbookCvdAndLiqStage
+    from intelligence.sentiment.evaluators.microstructure_evaluator import evaluate_microstructure_cycle_deltas
+
+    now_s = 1_795_200_000.0
+
+    # 1. load_symbol_microstructure extracts oi_15m_chg_pct from whale snapshot
+    loaded = load_symbol_microstructure(
+        str(tmp_path),
+        "BTCUSDC",
+        whale={"open_interest_1h_change_pct": 2.4, "open_interest_15m_change_pct": 1.15},
+    )
+    assert loaded["oi_1h_chg_pct"] == pytest.approx(2.4)
+    assert loaded["oi_15m_chg_pct"] == pytest.approx(1.15)
+
+    # 2. evaluate_microstructure_cycle_deltas retains >12 (up to 90) 1m snapshots and computes 15m basis + 1h funding deltas
+    hist_1m = []
+    for mins_ago in range(70, 0, -1):
+        rec = {
+            "ts": now_s - mins_ago * 60.0,
+            "ob_imbalance": 0.52,
+            "cvd_15m_usd": 100_000.0,
+            "whale_long_pct": 0.60,
+            "oi_usd": 5_000_000_000.0,
+            "funding_rate": 0.00005 if mins_ago >= 60 else 0.00010,
+            "perp_spot_basis_bps": 1.0 if mins_ago > 15 else 2.0,
+        }
+        hist_1m.append(rec)
+
+    micro_map = {
+        "BTCUSDC": {
+            "ob_imbalance": 0.58,
+            "bid_depth_usd": 1_000_000.0,
+            "ask_depth_usd": 800_000.0,
+            "cvd_15m_usd": 500_000.0,
+            "whale_long_pct": 0.62,
+            "taker_buy_sell_ratio": 1.25,
+            "oi_usd": 5_100_000_000.0,
+            "oi_1h_chg_pct": 2.4,
+            "oi_15m_chg_pct": 1.15,
+            "funding_rate": 0.00015,
+            "pred_funding_rate": 0.00016,
+            "funding_annualized_pct": 16.4,
+            "perp_spot_basis_bps": 6.5,
+        },
+        "BTCUSD": {
+            "ob_imbalance": 0.54,
+            "bid_depth_usd": 200_000.0,
+            "ask_depth_usd": 180_000.0,
+            "ob_mid_price": 62005.0,
+            "spread_bps": 2.0,
+        },
+    }
+    out_m, out_hist, _ = evaluate_microstructure_cycle_deltas(micro_map, {"BTCUSDC": hist_1m}, now_ts=now_s)
+    assert len(out_hist["BTCUSDC"]) == 71
+    assert out_hist["BTCUSDC"][-1]["funding_rate"] == pytest.approx(0.00015)
+    assert out_hist["BTCUSDC"][-1]["perp_spot_basis_bps"] == pytest.approx(6.5)
+    assert out_m["BTCUSDC"]["basis_delta_15m_bps"] == pytest.approx(4.5)
+    assert out_m["BTCUSDC"]["funding_delta_1h_bps"] == pytest.approx(1.0)
+
+    # 3. Sibling sync propagates oi_15m_chg_pct, basis_delta_15m_bps, and funding_delta_1h_bps to BTCUSD
+    prices_map = {"BTCUSDC": {"price": 62000.0}, "BTCUSD": {"price": 62005.0}}
+    sync_sibling_symbol_telemetry(prices_map, out_m)
+    assert out_m["BTCUSD"]["oi_15m_chg_pct"] == pytest.approx(1.15)
+    assert out_m["BTCUSD"]["basis_delta_15m_bps"] == pytest.approx(4.5)
+    assert out_m["BTCUSD"]["funding_delta_1h_bps"] == pytest.approx(1.0)
+
+    # 4. Section 3B and Pretrade telemetry render compact delta suffixes
+    sec_3b = "\n".join(_format_microstructure_section(out_m, prices_map, now_ts=now_s))
+    assert "perp_basis=+6.5bps(d15m=+4.5bps)" in sec_3b
+    assert "funding_ann=+16.4%(d1h=+1.00bps)" in sec_3b
+    assert "oi_15m_chg=+1.15%" in sec_3b
+
+    pt_tel = {}
+    PretradeOrderbookCvdAndLiqStage._format_derivatives_and_whale_lines(
+        pt_tel, out_m["BTCUSDC"], is_eq_sym=False, is_tok_xstock_pt=False
+    )
+    assert "fund_d1h=+1.00bps" in pt_tel["Perpetual Funding Rate"]
+    assert "basis_d15m=+4.5bps" in pt_tel["Perpetual Funding Rate"]
+    assert "15m_chg=+1.15%" in pt_tel["Derivatives Open Interest"]
+
+
 
 
 

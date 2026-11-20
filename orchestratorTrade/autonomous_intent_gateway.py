@@ -47,6 +47,7 @@ from botcore import (
     is_us_rth_open,
     load_key_value_conf,
     opposite_side,
+    safe_nonneg_float,
     safe_pos_float,
 )
 from cachepaths import (
@@ -118,6 +119,7 @@ from providers.intent_state import (
 from providers.order_id_context import extract_client_order_id, resolve_order_actor
 from providers.order_status_ssot import NON_FILL_ORDER_STATUSES
 from providers.quantity import clamp_notional_to_wallet_balance
+from providers.venue_fee_maintenance import read_persisted_venue_fee_spec
 from state_io import read_json_dict
 
 # Symmetric guard bypass set for autonomous AI orders across both BUY and SELL:
@@ -577,6 +579,25 @@ class AutonomousIntentGateway:
         })
         return intent
 
+    def _resolve_live_round_trip_fee_bps(
+        self,
+        venue: str,
+        symbol: str,
+        *,
+        is_limit: bool,
+        now_ts: float,
+    ) -> Optional[float]:
+        """Resolve live persisted round-trip (2x leg) fee bps when fresh fee state exists; else None."""
+        cache_dir = getattr(self, "cache_dir", "")
+        if not cache_dir:
+            return None
+        spec = read_persisted_venue_fee_spec(venue, symbol, cache_dir=cache_dir, now_ts=now_ts)
+        if not isinstance(spec, dict) or not spec:
+            return None
+        leg_key = "maker_fee_bps" if is_limit else "taker_fee_bps"
+        leg_bps = safe_nonneg_float(spec.get(leg_key), default=None)
+        return round(2.0 * leg_bps, 4) if leg_bps is not None else None
+
     def _evaluate_ai_circuit_breakers_and_survival(
         self,
         inst: Any,
@@ -628,6 +649,9 @@ class AutonomousIntentGateway:
                 effective_usd,
             )
 
+        live_rt_fee_bps = self._resolve_live_round_trip_fee_bps(
+            venue, symbol, is_limit=is_limit, now_ts=now_ts
+        )
         ev_allowed, ev_reason, ev_metrics = evaluate_ai_target_ev_guard(
             intent,
             decision=decision,
@@ -635,6 +659,7 @@ class AutonomousIntentGateway:
             venue=venue,
             price=price,
             target_ev_fee_mult=getattr(self, "target_ev_fee_mult", DEFAULT_TARGET_EV_FEE_MULT),
+            round_trip_fee_bps=live_rt_fee_bps,
         )
         if not ev_allowed:
             return (
@@ -669,6 +694,7 @@ class AutonomousIntentGateway:
             max_flips_6h=getattr(self, "max_flips_6h", DEFAULT_MAX_FLIPS_6H),
             spot_price=live_spot_px,
             recent_bot_fill=recent_bot_fill,
+            round_trip_fee_bps=live_rt_fee_bps,
         )
         if not pp_allowed:
             return (

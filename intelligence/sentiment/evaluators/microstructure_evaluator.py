@@ -887,6 +887,23 @@ def evaluate_microstructure_cycle_deltas(
                 return s
         return None
 
+    def _closest_snap_with_metric(
+        seq: List[Dict[str, Any]],
+        target_age_s: float,
+        min_age_s: float,
+        max_age_s: float,
+        metric_key: str,
+    ) -> Optional[float]:
+        best_val: Optional[float] = None
+        best_err: Optional[float] = None
+        for s in seq:
+            age_s = eff_now - _snap_ts(s)
+            if min_age_s <= age_s <= max_age_s and (v := safe_float(s.get(metric_key), None)) is not None:
+                err = abs(age_s - target_age_s)
+                if best_err is None or err < best_err:
+                    best_err, best_val = err, v
+        return best_val
+
     for msym, minfo in list(microstructure.items()):
         if not isinstance(minfo, dict):
             continue
@@ -895,6 +912,8 @@ def evaluate_microstructure_cycle_deltas(
         cur_wl = clean_scale(minfo.get("whale_long_pct"), default=None, allow_percent=True)
         cur_oi = safe_pos_float(minfo.get("oi_usd"), default=None)
         cur_tr = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=None)
+        cur_fr = safe_float(minfo.get("funding_rate"), None)
+        cur_basis = safe_float(minfo.get("perp_spot_basis_bps"), None)
         cur_bar_ts_ms = normalize_timestamp_ms(
             minfo.get("_taker_bar_ts_ms") or minfo.get("taker_bar_ts_ms"),
             default=None,
@@ -996,6 +1015,14 @@ def evaluate_microstructure_cycle_deltas(
             if cur_tr is not None and (p_tr := safe_pos_float(ref_snap.get("taker_buy_sell_ratio"), default=None)) is not None:
                 delta_d["taker_ratio_delta"] = round(cur_tr - p_tr, 4)
                 delta_d["prev_taker_ratio"] = round(p_tr, 4)
+            if cur_basis is not None and (p_basis := _closest_snap_with_metric(h_list, 900.0, 480.0, 1800.0, "perp_spot_basis_bps")) is not None:
+                b_d15 = round(cur_basis - p_basis, 2) + 0.0
+                delta_d["basis_delta_15m_bps"] = b_d15
+                minfo["basis_delta_15m_bps"] = b_d15
+            if cur_fr is not None and (p_fr := _closest_snap_with_metric(h_list, 3600.0, 2400.0, 5400.0, "funding_rate")) is not None:
+                f_d1h = round((cur_fr - p_fr) * 10000.0, 2) + 0.0
+                delta_d["funding_delta_1h_bps"] = f_d1h
+                minfo["funding_delta_1h_bps"] = f_d1h
             if len(delta_d) > 1:
                 minfo["cycle_delta"] = delta_d
         stale_case_keys = [hk for hk in list(mhist) if hk != canon_msym and str(hk).upper() == canon_msym.upper()]
@@ -1012,15 +1039,17 @@ def evaluate_microstructure_cycle_deltas(
                 ("oi_usd", cur_oi, 2),
                 ("native_l1_oi_usd", cur_l1_oi, 2),
                 ("taker_buy_sell_ratio", cur_tr, 4),
+                ("funding_rate", cur_fr, 6),
+                ("perp_spot_basis_bps", cur_basis, 2),
             ):
                 if v_rec is not None:
                     new_rec[k_rec] = round(v_rec, dec_r)
             if cur_bar_ts_ms is not None:
                 new_rec["taker_bar_ts_ms"] = cur_bar_ts_ms
-            mhist[canon_msym] = [x for x in own_h_list if eff_now - _snap_ts(x) <= 14400.0][-11:] + [new_rec]
+            mhist[canon_msym] = [x for x in own_h_list if eff_now - _snap_ts(x) <= 14400.0][-89:] + [new_rec]
             mhist_dirty = True
         elif stale_case_keys and canon_msym not in mhist and own_h_list:
-            mhist[canon_msym] = [x for x in own_h_list if eff_now - _snap_ts(x) <= 14400.0][-12:]
+            mhist[canon_msym] = [x for x in own_h_list if eff_now - _snap_ts(x) <= 14400.0][-90:]
             mhist_dirty = True
     usd_delta_groups: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
     for msym, minfo in microstructure.items():
@@ -1048,9 +1077,13 @@ def evaluate_microstructure_cycle_deltas(
                 for shared_dk in (
                     "oi_delta_pct", "prev_oi_usd", "cvd_15m_delta_usd", "prev_cvd_15m_usd",
                     "whale_long_delta_pct", "prev_whale_long_pct", "taker_ratio_delta", "prev_taker_ratio",
+                    "basis_delta_15m_bps", "funding_delta_1h_bps",
                 ):
                     if shared_dk in prim_cd:
                         sib_cd[shared_dk] = prim_cd[shared_dk]
+                for shared_mk in ("oi_15m_chg_pct", "basis_delta_15m_bps", "funding_delta_1h_bps"):
+                    if shared_mk in prim_m_d:
+                        sib_m_d[shared_mk] = prim_m_d[shared_mk]
     return microstructure, mhist, mhist_dirty
 
 

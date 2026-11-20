@@ -699,9 +699,13 @@ class ProviderVenueMetadataMixin:
             if prov_cls is None or getattr(prov_cls, "_ASSET_SCOPE", "crypto") != "crypto":
                 return None, None
             req = prov_cls.public_primary_quote_spot_cvd_15m_request(query_sym, now_ts)
-            if req is None:
-                return None, None
-            return req, prov_cls.extract_spot_flow_15m_usd
+            if req is not None:
+                return req, prov_cls.extract_spot_flow_15m_usd
+            if v_norm != "binance" and (bn_cls := cls.resolve_venue_provider_class("binance")) is not None:
+                bn_req = bn_cls.public_primary_quote_spot_cvd_15m_request(query_sym, now_ts)
+                if bn_req is not None:
+                    return bn_req, bn_cls.extract_spot_flow_15m_usd
+            return None, None
         except Exception as exc:
             cls._log_orderbook_provider_error("aggregated spot flow request resolution", v_norm, query_sym, exc)
             return None, None

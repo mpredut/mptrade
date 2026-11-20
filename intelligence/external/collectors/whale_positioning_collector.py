@@ -66,6 +66,7 @@ class WhalePositioningSnapshot:
     cvd_1h_usd: Optional[float] = None
     cvd_4h_usd: Optional[float] = None
     taker_bar_ts_ms: Optional[int] = None
+    open_interest_15m_change_pct: Optional[float] = None
 
     to_dict = asdict
 
@@ -96,6 +97,12 @@ class WhalePositioningSnapshot:
             cvd_1h_usd=safe_float(data.get("cvd_1h_usd"), default=None),
             cvd_4h_usd=safe_float(data.get("cvd_4h_usd"), default=None),
             taker_bar_ts_ms=normalize_timestamp_ms(data.get("taker_bar_ts_ms"), default=None),
+            open_interest_15m_change_pct=safe_float(
+                data.get("open_interest_15m_change_pct")
+                if data.get("open_interest_15m_change_pct") is not None
+                else data.get("oi_15m_chg_pct"),
+                default=None,
+            ),
         )
 
 
@@ -446,6 +453,11 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                     if prev_mark_px > 0.0:
                         price_1h_change_pct = (mark_px - prev_mark_px) / prev_mark_px * 100.0
             oi_change_pct = ((latest_oi_usd - prev_oi_usd) / prev_oi_usd * 100.0) if prev_oi_usd > 0 else 0.0
+            oi_15m_change_pct: Optional[float] = None
+            if len(oi_rows) >= 4:
+                prev_15m_oi = max(0.0, _clean_dict_float(oi_rows[-4], "sumOpenInterestValue", 0.0))
+                if prev_15m_oi > 0.0:
+                    oi_15m_change_pct = round(((latest_oi_usd - prev_15m_oi) / prev_15m_oi) * 100.0, 2) + 0.0
 
             # 4. Classify OI-Price divergence regime
             _, _, prev_reg = self._resolve_previous_whale_state(symbol, now, cached)
@@ -479,6 +491,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                 cvd_1h_usd=cvd_1h,
                 cvd_4h_usd=cvd_4h,
                 taker_bar_ts_ms=taker_bar_ts_ms,
+                open_interest_15m_change_pct=oi_15m_change_pct,
             )
             return self._commit_snapshot(symbol, now, snapshot)
         except Exception as e:

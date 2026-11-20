@@ -137,7 +137,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         self._preferred_url: Dict[str, str] = {}
         self._unlisted_xstock_until: Dict[str, float] = {}
         self._spot_cvd_memo: Dict[Tuple[str, str], Tuple[float, float, Optional[float]]] = {}
-        self._agg_spot_cvd_memo: Dict[Tuple[str, str], Tuple[float, float, Optional[float], str]] = {}
+        self._agg_spot_cvd_memo: Dict[Tuple[str, str], Tuple[float, Optional[float], Optional[float], str]] = {}
 
     def _fetch_spot_cvd_payload(self, url: str, post_body: Optional[dict]) -> Any:
         if post_body is not None:
@@ -205,8 +205,11 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         """Combine venue-local USDC spot flow with deep primary-quote (USDT) spot flow when available."""
         memo_key = (venue, symbol)
         cached_agg = self._agg_spot_cvd_memo.get(memo_key)
-        if cached_agg is not None and 0.0 <= (now - cached_agg[0]) < ttl_sec:
-            return cached_agg[1], cached_agg[2], cached_agg[3]
+        if cached_agg is not None:
+            if cached_agg[1] is None and 0.0 <= (now - cached_agg[0]) < ttl_sec * 5.0:
+                return None
+            if cached_agg[1] is not None and 0.0 <= (now - cached_agg[0]) < ttl_sec:
+                return cached_agg[1], cached_agg[2], cached_agg[3]
         agg_spec, agg_ext = MarketDataProvider.resolve_agg_spot_flow_15m_spec(symbol, venue=venue, now_ts=now)
         if agg_spec is None or not callable(agg_ext):
             return None
@@ -229,14 +232,19 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                     if (local_vol is not None or sib_vol is not None)
                     else None
                 )
-                src_lbl = "usdc+usdt"
+                src_lbl = "usdc+usdt" if venue == "binance" else f"{venue}+bn_usdt"
                 lru_dict_put(self._agg_spot_cvd_memo, memo_key, (now, tot_cvd, tot_vol, src_lbl), 128)
                 return tot_cvd, tot_vol, src_lbl
+            lru_dict_put(self._agg_spot_cvd_memo, memo_key, (now, None, None, ""), 128)
         except Exception as exc:
             logger.debug("Could not fetch aggregated 15m spot CVD for %s on %s: %s", symbol, venue, exc)
+            if cached_agg is None or cached_agg[1] is None:
+                lru_dict_put(self._agg_spot_cvd_memo, memo_key, (now, None, None, ""), 128)
+            elif (now - cached_agg[0]) >= ttl_sec * 3.0:
+                self._agg_spot_cvd_memo.pop(memo_key, None)
         return (
             (cached_agg[1], cached_agg[2], cached_agg[3])
-            if cached_agg is not None and 0.0 <= (now - cached_agg[0]) < ttl_sec * 3.0
+            if cached_agg is not None and cached_agg[1] is not None and 0.0 <= (now - cached_agg[0]) < ttl_sec * 3.0
             else None
         )
 

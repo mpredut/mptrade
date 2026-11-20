@@ -567,7 +567,7 @@ class BinanceProvider(MarketDataProvider):
         if (parsed := cls._parse_non_tokenized_crypto_symbol(symbol)) is None:
             return None
         _, base_asset, quote_asset = parsed
-        if not base_asset or quote_asset != "USDC":
+        if not base_asset or quote_asset == "USDT":
             return None
         usdt_sym = f"{base_asset}USDT"
         return (f"https://api.binance.com/api/v3/klines?symbol={usdt_sym}&interval=5m&limit=3", None)

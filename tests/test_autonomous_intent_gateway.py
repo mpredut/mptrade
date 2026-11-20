@@ -4377,4 +4377,170 @@ def test_passive_limit_fill_reports_zero_limit_slippage_and_separate_arrival_sho
     assert summ[0]["arrival_shortfall_bps"] == pytest.approx(-58.63, abs=0.05)
 
 
+def test_etapa0_gateway_survival_guards_use_persisted_live_venue_fees(tmp_path):
+    """Verify Q3: AutonomousIntentGateway feeds live persisted venue fees into 4B-1 EV and anti-ping-pong guards."""
+    now_s = time.time()
+    (tmp_path / "order_guard.conf").write_text(
+        "autonomous_trading_mode = enforce\n"
+        "autonomous_trading_min_notional_usd = 10.0\n"
+        "autonomous_trading_max_notional_usd = 2000.0\n"
+        "autonomous_trading_min_confidence = 0.85\n"
+        "autonomous_trading_notify = 0\n"
+        "autonomous_trading_target_ev_fee_mult = 2.0\n"
+        "autonomous_trading_flip_cooldown_min = 60.0\n"
+        "autonomous_trading_flip_min_edge_pct = 0.60\n",
+        encoding="utf-8",
+    )
+    fee_state_path = tmp_path / "cachedb" / "state" / "venue_fee_maintenance_state.json"
+    fee_state_path.parent.mkdir(parents=True, exist_ok=True)
+    fee_payload = {
+        "schema_version": 1,
+        "ts": now_s - 60.0,
+        "interval_sec": 14400.0,
+        "state_max_age_sec": 86400.0,
+        "venues": {
+            "kraken": {
+                "ts": now_s - 60.0,
+                "fee_spec": {"fee_tier": "LIVE_VOL", "maker_fee_bps": 22.0, "taker_fee_bps": 38.0},
+            },
+            "binance": {
+                "ts": now_s - 60.0,
+                "fee_spec": {"fee_tier": "VIP0", "maker_fee_bps": 10.0, "taker_fee_bps": 10.0},
+                "by_symbol": {
+                    "BTCUSDC": {"fee_tier": "VIP0_BNB", "maker_fee_bps": 7.5, "taker_fee_bps": 7.12},
+                },
+            },
+        },
+    }
+    fee_state_path.write_text(json.dumps(fee_payload), encoding="utf-8")
+
+    gw = AutonomousIntentGateway(workspace_dir=str(tmp_path))
+
+    tao_inst = MagicMock(symbol="TAOUSD", provider_name="kraken", base="TAO", quote="USD", params={})
+    tao_inst._provider.name = "kraken"
+    tao_inst._provider.get_current_price.return_value = 200.0
+    tao_inst._provider.free_balance.return_value = 2000.0
+    tao_inst.open_orders.return_value = []
+    tao_inst.place.return_value = {"orderId": "kr_ok_1", "status": "NEW", "executedQty": "0.0"}
+
+    btc_inst = MagicMock(symbol="BTCUSDC", provider_name="binance", base="BTC", quote="USDC", params={})
+    btc_inst._provider.name = "binance"
+    btc_inst._provider.get_current_price.return_value = 62000.0
+    btc_inst._provider.free_balance.return_value = 5000.0
+    btc_inst.open_orders.return_value = []
+    btc_inst.place.return_value = {"orderId": "bn_ok_1", "status": "NEW", "executedQty": "0.0"}
+
+    # 1. Kraken live maker=22bps (44bps RT -> 0.88% EV floor) blocks +0.75% target that static 32bps (0.64%) would allow
+    rec_kr_block = gw.submit(
+        {
+            "decision": "BUY",
+            "symbol": "TAOUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 200.0,
+            "target_px": 201.5,  # +0.75% < 0.88%
+            "invalidation_px": 195.0,
+            "confidence": 0.92,
+            "suggested_notional_usd": 300.0,
+            "urgency": "NORMAL",
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"TAOUSD": tao_inst},
+    )
+    assert rec_kr_block["status"] == "REJECTED_AI_CIRCUIT_BREAKER"
+    assert "ai_negative_ev_target" in rec_kr_block["circuit_breaker_reason"]
+    assert "rt_fee=44bps" in rec_kr_block["circuit_breaker_reason"]
+    tao_inst.place.assert_not_called()
+
+    # 2. Binance per-symbol BTCUSDC live maker=7.5bps (15bps RT -> 0.30% EV floor) allows +0.35% target (static 20bps -> 0.40%)
+    rec_bn_ok = gw.submit(
+        {
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 62000.0,
+            "target_px": 62217.0,  # +0.35% >= 0.30%
+            "invalidation_px": 61200.0,
+            "confidence": 0.92,
+            "suggested_notional_usd": 300.0,
+            "urgency": "NORMAL",
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+    assert rec_bn_ok["status"] == "EXECUTED"
+    btc_inst.place.assert_called_once()
+
+    # 3. Anti-ping-pong guard uses live Kraken 44bps RT -> flip min edge 1.08% (blocks +0.90% flip that static 0.84% would pass)
+    gw.save_all_intents([
+        {
+            "intent_id": "prior_kr_buy_1",
+            "timestamp": now_s - 600.0,
+            "decision": "BUY",
+            "symbol": "TAOUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 200.0,
+            "suggested_notional_usd": 300.0,
+            "status": "EXECUTED",
+            "execution_payload": {
+                "orderId": "kr_buy_1",
+                "status": "FILLED",
+                "executedQty": "1.5",
+                "avgPrice": "200.0",
+                "filled_ts": now_s - 500.0,
+            },
+        }
+    ])
+    tao_inst._provider.get_current_price.return_value = 201.8
+    rec_pp_block = gw.submit(
+        {
+            "decision": "SELL",
+            "symbol": "TAOUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 201.8,  # +0.90% < live 1.08% flip edge (static 32bps would be 0.84%)
+            "confidence": 0.92,
+            "suggested_notional_usd": 300.0,
+            "urgency": "NORMAL",
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"TAOUSD": tao_inst},
+    )
+    assert rec_pp_block["status"] == "REJECTED_AI_CIRCUIT_BREAKER"
+    assert "ai_ping_pong" in rec_pp_block["circuit_breaker_reason"]
+    tao_inst.place.assert_not_called()
+
+    # 4. Stale fee state (>state_max_age_sec) falls back cleanly to static defaults (Kraken 32bps -> 0.64% allows +0.75%)
+    gw.save_all_intents([])
+    fee_payload["ts"] = now_s - 10 * 86400.0
+    fee_payload["venues"]["kraken"]["ts"] = now_s - 10 * 86400.0
+    fee_state_path.write_text(json.dumps(fee_payload), encoding="utf-8")
+    tao_inst._provider.get_current_price.return_value = 200.0
+    rec_stale_fallback = gw.submit(
+        {
+            "decision": "BUY",
+            "symbol": "TAOUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 200.0,
+            "target_px": 201.5,  # +0.75% >= static 0.64%
+            "invalidation_px": 195.0,
+            "confidence": 0.92,
+            "suggested_notional_usd": 300.0,
+            "urgency": "NORMAL",
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"TAOUSD": tao_inst},
+    )
+    assert rec_stale_fallback["status"] == "EXECUTED"
+    tao_inst.place.assert_called_once()
+
+
+
 

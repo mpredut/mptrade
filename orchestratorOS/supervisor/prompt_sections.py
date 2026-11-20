@@ -905,9 +905,13 @@ def _format_microstructure_section(
         basis_parts: List[str] = []
         eq_no_oi_3b = sym_no_crypto_perp_3b and (safe_float(minfo.get("oi_usd"), 0.0) or 0.0) <= 0.0
         if not sym_no_crypto_perp_3b and (b_bps := safe_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
-            basis_parts.append(f"perp_basis={b_bps:+.1f}bps")
+            b_d15 = safe_float(minfo.get("basis_delta_15m_bps"), None)
+            b_d15_s = f"(d15m={b_d15:+.1f}bps)" if (b_d15 is not None and abs(b_d15) >= 0.1) else ""
+            basis_parts.append(f"perp_basis={b_bps:+.1f}bps{b_d15_s}")
         if not sym_no_crypto_perp_3b and (f_ann := safe_float(minfo.get("funding_annualized_pct"), None)) is not None:
-            basis_parts.append(f"funding_ann={f_ann:+.1f}%")
+            f_d1h = safe_float(minfo.get("funding_delta_1h_bps"), None)
+            f_d1h_s = f"(d1h={f_d1h:+.2f}bps)" if (f_d1h is not None and abs(f_d1h) >= 0.05) else ""
+            basis_parts.append(f"funding_ann={f_ann:+.1f}%{f_d1h_s}")
         if (arb_bps := safe_float(minfo.get("cross_venue_arb_bps"), None)) is not None and minfo.get("cross_venue_peer"):
             basis_parts.append(f"arb_vs_{minfo['cross_venue_peer']}={arb_bps:+.1f}bps")
             if (net_b := safe_float(minfo.get("net_buy_edge_vs_peer_bps"), None)) is not None and minfo.get("best_buy_venue"):
@@ -1007,6 +1011,8 @@ def _format_microstructure_section(
                 )
             continue
         eq_zero_fund_3b = sym_is_eq_3b
+        oi_15m_v = safe_float(minfo.get("oi_15m_chg_pct"), None)
+        oi_15m_sfx = f", oi_15m_chg={oi_15m_v:+.2f}%" if oi_15m_v is not None else ""
         deriv_oi_sfx = (
             ""
             if (sym_is_tok_xstock_3b or (eq_no_oi_3b and eq_zero_fund_3b))
@@ -1015,7 +1021,7 @@ def _format_microstructure_section(
                 if eq_zero_fund_3b
                 else (
                     f", funding={minfo.get('funding_rate')} (pred={minfo.get('pred_funding_rate')}), "
-                    f"oi_usd={oi_lbl}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
+                    f"oi_usd={oi_lbl}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%{oi_15m_sfx}"
                 )
             )
         )

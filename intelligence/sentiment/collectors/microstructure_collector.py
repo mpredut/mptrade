@@ -623,6 +623,7 @@ def load_symbol_microstructure(
             ("taker_buy_vol_usd", "taker_buy_vol_usd", None),
             ("taker_sell_vol_usd", "taker_sell_vol_usd", None),
             ("oi_1h_chg_pct", "open_interest_1h_change_pct", "oi_1h_chg_pct"),
+            ("oi_15m_chg_pct", "open_interest_15m_change_pct", "oi_15m_chg_pct"),
             ("divergence_regime", "divergence_regime", "div_regime"),
             ("taker_ratio_5m", "taker_ratio_5m", None),
             ("taker_ratio_1h", "taker_ratio_1h", None),
