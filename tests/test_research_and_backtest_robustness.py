@@ -4562,7 +4562,7 @@ def test_batch36b_watchdog_overnight_monitor_agy_store_fix_and_macro_hardening(t
     )
     captured_whale = {}
 
-    def _fake_review(*, fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False, now_ts=None):
+    def _fake_review(*, fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False, now_ts=None, **_kwargs):
         captured_whale["whale"] = whale_telemetry
         return SimpleNamespace(
             market_bias="BULLISH",

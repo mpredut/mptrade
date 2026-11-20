@@ -1225,7 +1225,7 @@ def test_macroanalyzer_string_shadow_notify_previous_fallback_recovery_clock_ske
 
     captured_review = {}
 
-    def _fake_review(fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False, now_ts=None):
+    def _fake_review(fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False, now_ts=None, **_kwargs):
         captured_review["fg"] = fear_greed
         captured_review["mb"] = breadth
         captured_review["whale"] = whale_telemetry
