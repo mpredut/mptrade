@@ -1,7 +1,7 @@
 """Pure deterministic AI trade intent cycle telemetry, fill resolution, and slippage evaluation."""
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from botcore import (
     _parse_bool_flag,
@@ -836,6 +836,104 @@ def evaluate_trade_plan_status(
     return "ACTIVE"
 
 
+def _extract_price_bar_ts_hi_lo(raw_row: Any) -> Optional[tuple[float, float, float, float, bool]]:
+    """Parse canonical OHLC ``[ts, close, vol, high, low, ...]`` or ``[ts, px]`` into ``(ts_s, close, hi, lo, has_hl)``."""
+    if not isinstance(raw_row, (list, tuple)) or len(raw_row) < 2:
+        return None
+    ts_s = _parse_pos_epoch_s(raw_row[0])
+    c_v = safe_pos_float(raw_row[1], default=None)
+    if ts_s is None or c_v is None:
+        return None
+    hi_v = safe_pos_float(raw_row[3], default=None) if len(raw_row) >= 5 else None
+    lo_v = safe_pos_float(raw_row[4], default=None) if len(raw_row) >= 5 else None
+    if hi_v is not None and lo_v is not None and hi_v >= lo_v > 0.0:
+        return ts_s, c_v, max(hi_v, c_v), min(lo_v, c_v), True
+    return ts_s, c_v, c_v, c_v, False
+
+
+def resolve_symbol_price_bars(
+    price_bars_by_symbol: Optional[Mapping[str, Sequence[Any]]],
+    venue: Any,
+    symbol: Any,
+) -> Optional[Sequence[Any]]:
+    """Resolve chronological price/OHLC bars for ``(venue, symbol)`` respecting asset class and quote compatibility."""
+    if not isinstance(price_bars_by_symbol, Mapping) or not price_bars_by_symbol:
+        return None
+    sym = _clean_intent_symbol(symbol)
+    if not sym:
+        return None
+    ven = normalize_venue_name(clean_scalar_str(venue) or "")
+    is_eq = is_equity_venue_or_suffix(sym, ven)
+    raw_cands = cache_symbol_variants(sym, quotes=compatible_quote_suffixes(sym))
+    sym_cands = [sym, *(c for c in filter_candidates_by_asset_class(raw_cands, is_equity=is_eq) if c != sym)]
+    keys: list[str] = []
+    if ven:
+        keys.extend(f"{ven}:{c}" for c in sym_cands)
+    keys.extend(sym_cands)
+    for key in keys:
+        bars = casefold_get(price_bars_by_symbol, key)
+        if isinstance(bars, Sequence) and not isinstance(bars, (str, bytes)) and bars:
+            return bars
+    return None
+
+
+def evaluate_trade_plan_path_status(
+    side: str,
+    spot_px: Optional[float],
+    invalidation_px: Optional[float],
+    target_px: Optional[float],
+    *,
+    start_ts: float = 0.0,
+    end_ts: Optional[float] = None,
+    price_bars: Optional[Sequence[Any]] = None,
+    is_resting: bool = False,
+    check_spot: bool = True,
+) -> str:
+    """Evaluate chronological trade-plan status over ``(start_ts, end_ts]`` bars before checking live ``spot_px``.
+
+    Prevents already-resolved plans from resurrecting as ``ACTIVE`` after price rebounds back into the
+    ``[target_px, invalidation_px]`` band, while avoiding pre-fill wick contamination on bars straddling ``start_ts``.
+    """
+    s_norm = (clean_upper_scalar(side) or "").strip()
+    inv = safe_pos_float(invalidation_px, default=None)
+    tgt = safe_pos_float(target_px, default=None)
+    if s_norm not in ("BUY", "SELL") or (inv is None and tgt is None):
+        return "ACTIVE"
+    if price_bars and not is_resting:
+        parsed: list[tuple[float, float, float, float, bool]] = []
+        for row in price_bars:
+            if (bar := _extract_price_bar_ts_hi_lo(row)) is not None:
+                parsed.append(bar)
+        parsed.sort(key=lambda b: b[0])
+        prev_ts: Optional[float] = None
+        for bt, c_v, hi_v, lo_v, has_hl in parsed:
+            bar_span = 0.0
+            if has_hl:
+                dt_prev = (bt - prev_ts) if (prev_ts is not None and bt > prev_ts) else 300.0
+                bar_span = min(14400.0, max(60.0, dt_prev))
+            prev_ts = bt
+            if start_ts > 0.0 and bt <= start_ts:
+                continue
+            if end_ts is not None and end_ts > 0.0 and bt > end_ts:
+                break
+            use_hl = has_hl and (start_ts <= 0.0 or (bt - bar_span) >= start_ts)
+            eff_hi = hi_v if use_hl else c_v
+            eff_lo = lo_v if use_hl else c_v
+            if s_norm == "BUY":
+                if inv is not None and eff_lo <= inv:
+                    return "INVALIDATED"
+                if tgt is not None and eff_hi >= tgt:
+                    return "TARGET_HIT"
+            else:
+                if inv is not None and eff_hi >= inv:
+                    return "INVALIDATED"
+                if tgt is not None and eff_lo <= tgt:
+                    return "TARGET_HIT"
+    if check_spot:
+        return evaluate_trade_plan_status(s_norm, spot_px, inv, tgt, is_resting=is_resting)
+    return "ACTIVE"
+
+
 def summarize_active_ai_trade_plans(
     intents_data: list[dict[str, Any]],
     scope: str,
@@ -847,6 +945,7 @@ def summarize_active_ai_trade_plans(
     recent_orders: Optional[dict[str, Any]] = None,
     open_orders: Optional[list[dict[str, Any]]] = None,
     verified_open_venues: Optional[set[str]] = None,
+    price_bars_by_symbol: Optional[Mapping[str, Sequence[Any]]] = None,
     max_age_days: float = 14.0,
 ) -> list[dict[str, Any]]:
     """Build compact persistent exit/invalidation memory for active executed/resting AI trade plans.
@@ -961,7 +1060,16 @@ def summarize_active_ai_trade_plans(
                     continue
 
         spot_px = _resolve_spot_px(venue, sym, pos_hit)
-        status = evaluate_trade_plan_status(side, spot_px, inv_px, tgt_px, is_resting=is_resting)
+        sym_bars = resolve_symbol_price_bars(price_bars_by_symbol, venue, sym)
+        status = evaluate_trade_plan_path_status(
+            side,
+            spot_px,
+            inv_px,
+            tgt_px,
+            start_ts=eff_ts,
+            price_bars=sym_bars,
+            is_resting=is_resting,
+        )
         if (
             side == "SELL"
             and not is_resting
@@ -1015,7 +1123,9 @@ __all__ = [
     "_resolve_executed_open_resting_detail",
     "_resolve_intent_execution_details",
     "build_last_cycle_execution_status",
+    "evaluate_trade_plan_path_status",
     "evaluate_trade_plan_status",
+    "resolve_symbol_price_bars",
     "summarize_active_ai_trade_plans",
     "summarize_recent_ai_intents",
 ]

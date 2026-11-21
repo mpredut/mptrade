@@ -265,10 +265,13 @@ def _evaluate_delta_gate_trade_plans(
         inv_px = safe_pos_float(pl.get("invalidation_px"), default=None)
         tgt_px = safe_pos_float(pl.get("target_px"), default=None)
         pl_is_resting = (str(pl.get("order_state") or "").strip().upper() == "RESTING")
-        if spot_px is not None and (inv_px is not None or tgt_px is not None):
+        stored_status = str(pl.get("status") or "").strip().upper()
+        if not pl_is_resting and stored_status in ("INVALIDATED", "TARGET_HIT"):
+            pl_status = stored_status
+        elif spot_px is not None and (inv_px is not None or tgt_px is not None):
             pl_status = evaluate_trade_plan_status(pl_side, spot_px, inv_px, tgt_px, is_resting=pl_is_resting)
         else:
-            pl_status = str(pl.get("status") or "ACTIVE").strip().upper() or "ACTIVE"
+            pl_status = stored_status or "ACTIVE"
         pl_key = f"{pl_ven}:{pl_sym}:{pl_side}"
         _sev = {"ACTIVE": 0, "TARGET_HIT": 1, "INVALIDATED": 2}
         if pl_key not in plan_states or _sev.get(pl_status, 0) > _sev.get(plan_states[pl_key], 0):

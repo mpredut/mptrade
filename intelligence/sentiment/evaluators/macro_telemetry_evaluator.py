@@ -340,6 +340,7 @@ class FuturesPremarketLeadEvaluator(MacroTelemetryEvaluatorBase):
             return {}
         out: Dict[str, Any] = {}
         any_cash_live_trading = False
+        any_fut_closed_or_behind_cash = False
         for lead_key, fut_sym, cash_sym in (("nq_qqq_lead_pct", "NQ=F", "QQQ"), ("es_spy_lead_pct", "ES=F", "SPY")):
             fut, cash = items.get(fut_sym), items.get(cash_sym)
             if not isinstance(fut, dict) or not isinstance(cash, dict):
@@ -350,7 +351,13 @@ class FuturesPremarketLeadEvaluator(MacroTelemetryEvaluatorBase):
             cash_15m = safe_float(cash.get("chg_15m_pct"), default=None)
             fut_ts = safe_pos_float(fut.get("last_bar_ts"), default=None)
             cash_ts = safe_pos_float(cash.get("last_bar_ts"), default=None)
+            fut_state = str(fut.get("market_state") or "").strip().upper()
             cash_state = str(cash.get("market_state") or "").strip().upper()
+            if fut_state == "CLOSED" or (
+                fut_ts is not None and cash_ts is not None and fut_ts <= cash_ts
+            ):
+                any_fut_closed_or_behind_cash = True
+                continue
             cash_has_fresh_intraday = (cash_1h is not None or cash_15m is not None) and not (
                 fut_ts is not None and cash_ts is not None and (fut_ts - cash_ts) > 900.0
             )
@@ -375,7 +382,7 @@ class FuturesPremarketLeadEvaluator(MacroTelemetryEvaluatorBase):
             elif fut_1h is not None and abs(fut_1h) >= 0.25:
                 out[lead_key] = round(fut_1h, 2) + 0.0
         lead_v = out.get("nq_qqq_lead_pct") if out.get("nq_qqq_lead_pct") is not None else out.get("es_spy_lead_pct")
-        if lead_v is None and not any_cash_live_trading:
+        if lead_v is None and not any_cash_live_trading and not any_fut_closed_or_behind_cash:
             lead_v = safe_float(data.get("futures_lead_pct", items.get("futures_lead_pct")), default=None)
         if lead_v is not None and abs(lead_v) >= 0.25:
             out["futures_lead_pct"] = round(lead_v, 2) + 0.0

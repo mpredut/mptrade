@@ -51,7 +51,12 @@ from .intent_state import (
     parse_pos_epoch_s,
     symbols_match_intent_scope_and_quote,
 )
-from .intent_telemetry import _compute_signed_exec_bps, evaluate_trade_plan_status
+from .intent_telemetry import (
+    _compute_signed_exec_bps,
+    evaluate_trade_plan_path_status,
+    evaluate_trade_plan_status,
+    resolve_symbol_price_bars,
+)
 from .order_ohlc_utils import extract_executed_qty
 from .order_status_ssot import (
     ACCEPTED_WORKING_VENUE_STATUSES,
@@ -217,6 +222,7 @@ def match_filled_intent_rows_lifo(
     """Chronologically match filled intent rows LIFO per ``inst_key`` into closed pairs and open queues."""
     sorted_rows = sorted(filled_rows, key=lambda r: r["ts"])
     pending_buys: dict[Any, list[dict[str, Any]]] = {}
+    reloaded_buys: dict[Any, list[dict[str, Any]]] = {}
     pending_sells: dict[Any, list[dict[str, Any]]] = {}
     closed_pairs: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     for row in sorted_rows:
@@ -228,12 +234,17 @@ def match_filled_intent_rows_lifo(
             s_queue = pending_sells.get(ikey)
             if s_queue:
                 closed_pairs.append(("SELL->BUY", s_queue.pop(), row))
+                # A reload BUY on a spot account still opens live long inventory for a subsequent SELL exit
+                # without duplicating open BUY_MTM while still held.
+                reloaded_buys.setdefault(ikey, []).append(row)
             else:
                 pending_buys.setdefault(ikey, []).append(row)
         else:
             b_queue = pending_buys.get(ikey)
             if b_queue:
                 closed_pairs.append(("BUY->SELL", b_queue.pop(), row))
+            elif (rb_queue := reloaded_buys.get(ikey)):
+                closed_pairs.append(("BUY->SELL", rb_queue.pop(), row))
             else:
                 pending_sells.setdefault(ikey, []).append(row)
     open_buys = [row for q in pending_buys.values() for row in q]
@@ -648,6 +659,7 @@ def evaluate_ai_decision_scorecard(
 
     empty_res: dict[str, Any] = {
         "count": 0,
+        "total_outcomes": 0,
         "window_trades": win_n,
         "wins": 0,
         "scratches": 0,
@@ -684,6 +696,8 @@ def evaluate_ai_decision_scorecard(
         if ts_s <= 0.0 or ts_s < cutoff or ts_s > eff_now + 60.0 or px <= 0.0:
             continue
         inv_px, tgt_px = extract_intent_trade_plan_levels(it, side=side, ref_price=px)
+        ot = extract_intent_order_type(it)
+        rt_bps = resolve_venue_round_trip_fee_bps(ven, sym, order_type=ot)
         v_k, b_k, q_k, _ = _intent_venue_symbol_side_key(ven, sym, side)
         filled_rows.append({
             "ts": ts_s,
@@ -691,6 +705,8 @@ def evaluate_ai_decision_scorecard(
             "symbol": sym,
             "inst_key": (v_k, b_k, q_k),
             "side": side,
+            "order_type": ot,
+            "rt_fee_bps": rt_bps,
             "px": px,
             "usd": _extract_intent_notional_usd(it),
             "invalidation_px": inv_px,
@@ -716,7 +732,12 @@ def evaluate_ai_decision_scorecard(
     outcomes: list[dict[str, Any]] = []
 
     for kind, entry_row, exit_row in closed_pairs:
-        edge_pct = compute_signed_price_edge_pct(entry_row["side"], entry_row["px"], exit_row["px"])
+        gross_edge_pct = compute_signed_price_edge_pct(entry_row["side"], entry_row["px"], exit_row["px"])
+        pair_rt_bps = 0.5 * (
+            safe_nonneg_float(entry_row.get("rt_fee_bps"), default=0.0)
+            + safe_nonneg_float(exit_row.get("rt_fee_bps"), default=0.0)
+        )
+        edge_pct = gross_edge_pct - (pair_rt_bps / 100.0)
         matched_usd = resolve_matched_notional_usd(entry_row["usd"], exit_row["usd"])
         outcomes.append({
             "ts": exit_row["ts"],
@@ -737,7 +758,8 @@ def evaluate_ai_decision_scorecard(
         is_invalidated = plan_st == "INVALIDATED"
         if not is_invalidated and (eff_now - buy_row["ts"]) < mature_sec:
             continue
-        edge_pct = compute_signed_price_edge_pct("BUY", buy_row["px"], spot_px)
+        gross_edge_pct = compute_signed_price_edge_pct("BUY", buy_row["px"], spot_px)
+        edge_pct = gross_edge_pct - (safe_nonneg_float(buy_row.get("rt_fee_bps"), default=0.0) / 100.0)
         outcomes.append({
             "ts": buy_row["ts"],
             "kind": "BUY_MTM",
@@ -798,6 +820,7 @@ def evaluate_ai_decision_scorecard(
 
     return {
         "count": len(recent),
+        "total_outcomes": len(outcomes),
         "window_trades": win_n,
         "wins": wins,
         "scratches": scratches,
@@ -821,6 +844,7 @@ def format_ai_decision_scorecard_line(scorecard: Any) -> str:
     cnt = safe_nonneg_int(scorecard.get("count"), default=0)
     if cnt <= 0:
         return ""
+    tot = safe_nonneg_int(scorecard.get("total_outcomes"), default=0)
     w = safe_nonneg_int(scorecard.get("wins"), default=0)
     s = safe_nonneg_int(scorecard.get("scratches"), default=0)
     lo = safe_nonneg_int(scorecard.get("losses"), default=0)
@@ -835,8 +859,9 @@ def format_ai_decision_scorecard_line(scorecard: Any) -> str:
     else:
         tag_sfx = ""
     net_lbl = format_signed_usd(net_u, decimals=0)
+    win_lbl = f"last {cnt}/{tot}" if tot > cnt else f"n={cnt}"
     return (
-        f"AI Decision Scorecard (48h, n={cnt}): "
+        f"AI Decision Scorecard (48h, {win_lbl}): "
         f"{w}W/{s}S/{lo}L, avg={avg_e:+.2f}%, net={net_lbl}{streak_sfx}{tag_sfx}"
     )
 
@@ -989,8 +1014,10 @@ def _is_actionable_filled_trade_plan(
 def evaluate_filled_trade_plans(
     filled_rows: Sequence[Mapping[str, Any]],
     live_prices: Optional[Mapping[str, Any]] = None,
+    *,
+    price_bars_by_symbol: Optional[Mapping[str, Sequence[Any]]] = None,
 ) -> tuple[dict[str, int], dict[str, dict[str, int]], int]:
-    """Evaluate every filled intent with a trade plan against its next opposite-side fill or live spot price."""
+    """Evaluate every filled intent with a trade plan against chronological price bars, subsequent fills, and live spot."""
     prices_map = live_prices if isinstance(live_prices, Mapping) else {}
     empty_side = lambda: {"TARGET_HIT": 0, "INVALIDATED": 0, "CLOSED_EARLY": 0, "ACTIVE": 0}
     status_counts = empty_side()
@@ -1008,8 +1035,27 @@ def evaluate_filled_trade_plans(
             if side_k not in ("BUY", "SELL"):
                 continue
             planned_n += 1
+            sym_bars = resolve_symbol_price_bars(
+                price_bars_by_symbol, row.get("venue"), row.get("symbol")
+            )
+            prev_ts = safe_float(row.get("ts"), default=0.0) or 0.0
             final_st: Optional[str] = None
             for nxt in inst_rows[idx + 1:]:
+                nxt_ts = safe_float(nxt.get("ts"), default=0.0) or 0.0
+                if sym_bars:
+                    path_st = evaluate_trade_plan_path_status(
+                        side_k,
+                        None,
+                        row.get("invalidation_px"),
+                        row.get("target_px"),
+                        start_ts=prev_ts,
+                        end_ts=nxt_ts if nxt_ts > prev_ts else None,
+                        price_bars=sym_bars,
+                        check_spot=False,
+                    )
+                    if path_st in ("TARGET_HIT", "INVALIDATED"):
+                        final_st = path_st
+                        break
                 st_nxt = evaluate_trade_plan_status(
                     side_k, nxt.get("px"), row.get("invalidation_px"), row.get("target_px")
                 )
@@ -1019,17 +1065,22 @@ def evaluate_filled_trade_plans(
                 if normalize_side(nxt.get("side")) != side_k:
                     final_st = "CLOSED_EARLY"
                     break
+                if nxt_ts > prev_ts:
+                    prev_ts = nxt_ts
             if final_st is None:
                 spot_px = _resolve_live_price_for_symbol(
                     prices_map, str(row.get("venue") or ""), str(row.get("symbol") or "")
                 )
-                if spot_px is None or spot_px <= 0.0:
-                    final_st = "ACTIVE"
-                else:
-                    st = evaluate_trade_plan_status(
-                        side_k, spot_px, row.get("invalidation_px"), row.get("target_px")
-                    )
-                    final_st = st if st in ("TARGET_HIT", "INVALIDATED", "ACTIVE") else "ACTIVE"
+                st = evaluate_trade_plan_path_status(
+                    side_k,
+                    spot_px,
+                    row.get("invalidation_px"),
+                    row.get("target_px"),
+                    start_ts=prev_ts,
+                    price_bars=sym_bars,
+                    check_spot=(spot_px is not None and spot_px > 0.0),
+                )
+                final_st = st if st in ("TARGET_HIT", "INVALIDATED", "ACTIVE") else "ACTIVE"
             status_counts[final_st] = status_counts.get(final_st, 0) + 1
             by_side[side_k][final_st] = by_side[side_k].get(final_st, 0) + 1
     return status_counts, by_side, planned_n
@@ -1040,6 +1091,7 @@ def evaluate_ai_calibration_feedback(
     *,
     now_ts: float,
     live_prices: Optional[Mapping[str, Any]] = None,
+    price_bars_by_symbol: Optional[Mapping[str, Sequence[Any]]] = None,
     lookback_days: float = 7.0,
     scope: str = "all",
 ) -> dict[str, Any]:
@@ -1118,7 +1170,9 @@ def evaluate_ai_calibration_feedback(
             "market_slip_bps": mkt_slip,
         })
 
-    status_counts, by_side, planned_filled = evaluate_filled_trade_plans(filled_rows, prices_map)
+    status_counts, by_side, planned_filled = evaluate_filled_trade_plans(
+        filled_rows, prices_map, price_bars_by_symbol=price_bars_by_symbol
+    )
     resolved_n = status_counts["TARGET_HIT"] + status_counts["INVALIDATED"]
     hit_rate = round((status_counts["TARGET_HIT"] / resolved_n) * 100.0, 1) if resolved_n > 0 else None
     by_venue, by_vot = summarize_execution_quality_by_venue_and_order_type(

@@ -2034,6 +2034,31 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     assert globex_lead["futures_lead_regime"] == "FUTURES_PREMARKET_GAP_UP"
     assert "Futures_Lead=+0.85%" in format_macro_benchmarks_summary_line(globex_overnight_mb)
 
+    weekend_closed_futures_mb = {
+        "items": {
+            "SPY": {"price": 656.51, "chg_24h_pct": 0.45, "market_state": "CLOSED", "last_bar_ts": 1_795_222_800},
+            "QQQ": {"price": 566.10, "chg_24h_pct": -0.93, "market_state": "CLOSED", "last_bar_ts": 1_795_222_800},
+            "ES=F": {"price": 6550.25, "chg_24h_pct": -1.10, "chg_1h_pct": -0.75, "market_state": "CLOSED", "last_bar_ts": 1_795_212_000},
+            "NQ=F": {"price": 23060.00, "chg_24h_pct": -2.24, "chg_1h_pct": -1.31, "market_state": "CLOSED", "last_bar_ts": 1_795_212_000},
+        },
+        "futures_lead_pct": -1.31,
+        "futures_lead_regime": "FUTURES_PREMARKET_GAP_DOWN",
+    }
+    assert compute_futures_premarket_lead(weekend_closed_futures_mb) == {}
+    assert "Futures_Lead=" not in format_macro_benchmarks_summary_line(weekend_closed_futures_mb)
+
+    behind_cash_futures_mb = {
+        "items": {
+            "SPY": {"price": 656.51, "chg_24h_pct": 0.45, "market_state": "CLOSED", "last_bar_ts": 1_795_222_800},
+            "QQQ": {"price": 566.10, "chg_24h_pct": -0.93, "market_state": "CLOSED", "last_bar_ts": 1_795_222_800},
+            "ES=F": {"price": 6550.25, "chg_24h_pct": -1.10, "chg_1h_pct": -0.75, "last_bar_ts": 1_795_212_000},
+            "NQ=F": {"price": 23060.00, "chg_24h_pct": -2.24, "chg_1h_pct": -1.31, "last_bar_ts": 1_795_212_000},
+        },
+        "futures_lead_pct": -1.31,
+    }
+    assert compute_futures_premarket_lead(behind_cash_futures_mb) == {}
+    assert "Futures_Lead=" not in format_macro_benchmarks_summary_line(behind_cash_futures_mb)
+
 
 def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path):
     """Verify LLM prose/derivatives bigrams are pruned from dynamic lexicon and non-kinetic war/nuclear/default headlines do not trigger high-severity."""

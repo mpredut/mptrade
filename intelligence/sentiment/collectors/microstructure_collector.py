@@ -1105,10 +1105,10 @@ def upgrade_tpo_vp_from_ohlc(
     inst_by_sym: Optional[Dict[str, Any]] = None,
     cache_dir: Optional[str] = None,
     allow_network: bool = True,
-) -> None:
+) -> List[List[Any]]:
     """Upgrade a TPO volume profile in `m24` to REAL_VOL using 24h OHLC bars when available and non-diverged."""
     if not m24 or m24.get("vp_source") != "TPO":
-        return
+        return []
     policy = resolve_asset_session_policy(sym)
     eff_allow_net = bool(allow_network and (not respect_policy_network_gate or policy.allow_live_vp_ohlc_network))
     if s24_is_live_clock is None:
@@ -1118,7 +1118,7 @@ def upgrade_tpo_vp_from_ohlc(
             or (ob_ts_sec > 0.0 and abs(now_ts - ob_ts_sec) <= 30 * 60.0)
         )
     if not s24_is_live_clock:
-        return
+        return []
     if ohlc_fn is None and eff_allow_net:
         ohlc_fn = resolve_fallback_ohlc_fn(sym, inst_by_sym)
     has_local_ohlc_cache = bool(cache_dir and os.path.isdir(cache_dir))
@@ -1128,7 +1128,7 @@ def upgrade_tpo_vp_from_ohlc(
         or is_offline_disk_cache_enabled()
         or has_local_ohlc_cache
     ):
-        return
+        return []
     try:
         pts_vp = load_stitched_24h_ohlc_points(
             ohlc_fn if eff_allow_net else None,
@@ -1182,8 +1182,37 @@ def upgrade_tpo_vp_from_ohlc(
                             m24.setdefault(vr_k, vr_v)
                     if vwap_vp := compute_session_vwap_metrics(pts_vp, is_equity=policy.is_equity, cur_px=cur_px, now_ts=now_ts):
                         m24.update(vwap_vp)
+                    return list(pts_vp)
     except Exception:
         pass
+    return []
+
+
+def _stitch_symbol_price_path_bars(
+    bars_4h: Optional[list],
+    ohlc_24h: Optional[list],
+    series_24h: Optional[list],
+) -> List[List[Any]]:
+    """Combine older 7d 4h OHLC bars with fine 24h OHLC/tick rows into a single chronological path (0 extra I/O)."""
+    fine: List[List[Any]] = list(ohlc_24h) if ohlc_24h else list(series_24h or ())
+    if ohlc_24h and series_24h:
+        last_ohlc = parse_ts_px_row(ohlc_24h[-1])
+        if last_ohlc is not None:
+            for row in series_24h:
+                pt = parse_ts_px_row(row)
+                if pt is not None and pt[0] > last_ohlc[0]:
+                    fine.append(list(row) if isinstance(row, (list, tuple)) else [pt[0], pt[1]])
+    if not bars_4h:
+        return fine
+    first_fine = parse_ts_px_row(fine[0]) if fine else None
+    older = [
+        list(b)
+        for b in bars_4h
+        if isinstance(b, (list, tuple))
+        and (b_pt := parse_ts_px_row(b)) is not None
+        and (first_fine is None or b_pt[0] < first_fine[0])
+    ]
+    return older + fine
 
 
 class PriceSeriesCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
@@ -1925,6 +1954,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         t212_cached_px: Dict[str, float],
         eff_now: float,
         allow_network: bool,
+        price_path_bars: Optional[Dict[str, List[List[Any]]]] = None,
     ) -> Tuple[list, Optional[Tuple[float, float]], List[float], bool]:
         session_policy = resolve_asset_session_policy(sym)
         is_eq_sym = has_equity_suffix(sym) or session_policy.is_equity
@@ -2065,7 +2095,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                         active_7d_vals = list(vals_7d)
                 except Exception:
                     pass
-        upgrade_tpo_vp_from_ohlc(
+        ohlc_24h_vp = upgrade_tpo_vp_from_ohlc(
             sym,
             m24,
             sym_px_cur,
@@ -2113,6 +2143,9 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             )
             if post_rth_px_override is not None:
                 recalculate_live_price_geometry(pt_map[sym], post_rth_px_override)
+        if price_path_bars is not None:
+            if stitched_path := _stitch_symbol_price_path_bars(bars_4h_sym, ohlc_24h_vp, matched_series_24h):
+                price_path_bars[sym] = stitched_path
         return matched_series_24h, raw_s24_last_pt, active_7d_vals, is_eq_sym
 
     @staticmethod
@@ -2226,6 +2259,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         eff_now: float,
         _rj: Any,
         allow_network: bool,
+        price_path_bars: Optional[Dict[str, List[List[Any]]]] = None,
     ) -> None:
         for msym in discover_reference_microstructure_symbols(cachedb_dir, m_map, _rj):
             if allow_network and "USD" in compatible_quote_suffixes(msym) and _rj in (_default_read_json_cached, read_json_recovering, read_json_cached):
@@ -2320,6 +2354,10 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                             vals_7d = list(vals_7d) + [ref_px]
                         p_ref.update(compute_7d_range_metrics(vals_7d))
                     pt_map[msym] = p_ref
+                    if price_path_bars is not None and msym not in price_path_bars:
+                        ref_4h = LAST_7D_4H_BARS_BY_SYM.get(msym.upper()) if vals_7d else None
+                        if stitched_ref := _stitch_symbol_price_path_bars(ref_4h, None, ser_24h):
+                            price_path_bars[msym] = stitched_ref
             enrich_microstructure_cvd(m_info_ref, p_ref)
             m_info_ref.update(compute_liquidation_clusters(p_ref, m_info_ref, symbol=msym))
             m_map[msym] = m_info_ref
@@ -2338,6 +2376,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         read_json_fn: Any = None,
         allow_network: bool = True,
         persist: bool = True,
+        price_path_bars: Optional[Dict[str, List[List[Any]]]] = None,
         **kwargs: Any,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         pt_map, m_map, cp_map, inst_map = coerce_dict_maps(
@@ -2369,6 +2408,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 t212_cached_px,
                 eff_now,
                 allow_network,
+                price_path_bars=price_path_bars,
             )
             self._reconcile_primary_symbol_microstructure(
                 cachedb_dir,
@@ -2386,7 +2426,16 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 allow_network,
             )
         self._enrich_reference_microstructure_symbols(
-            cachedb_dir, pt_map, m_map, cp_map, inst_map, btc_series_24h, eff_now, _rj, allow_network
+            cachedb_dir,
+            pt_map,
+            m_map,
+            cp_map,
+            inst_map,
+            btc_series_24h,
+            eff_now,
+            _rj,
+            allow_network,
+            price_path_bars=price_path_bars,
         )
         coalesce_symbol_case_variants(pt_map, in_place=True)
         coalesce_symbol_case_variants(m_map, in_place=True)
@@ -2414,6 +2463,7 @@ def enrich_24h_and_microstructure(
     *,
     allow_network: bool = True,
     persist: bool = True,
+    price_path_bars: Optional[Dict[str, List[List[Any]]]] = None,
 ) -> None:
     """Enrich prices_and_trends with 24h/7d metrics, fallback OHLC/Yahoo chart series, and microstructure."""
     TelemetryCollectorFactory.get_fleet_enricher(start_sync=allow_network).collect(
@@ -2428,6 +2478,7 @@ def enrich_24h_and_microstructure(
         read_json_fn=read_json_fn,
         allow_network=allow_network,
         persist=persist,
+        price_path_bars=price_path_bars,
     )
 
 

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import glob
 import os
 import re
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from botcore import (
     BUCHAREST,
@@ -67,7 +67,7 @@ from .intent_state import (
     load_durable_intents_state,
     parse_pos_epoch_s,
 )
-from .intent_telemetry import evaluate_trade_plan_status
+from .intent_telemetry import evaluate_trade_plan_path_status, resolve_symbol_price_bars
 from .nav_drawdown import (
     build_nav_history_point,
     evaluate_nav_drawdown_metrics,
@@ -525,6 +525,7 @@ def evaluate_ai_attribution(
     lookback_days: float = 7.0,
     scope: str = "all",
     live_prices: Optional[Mapping[str, Any]] = None,
+    price_bars_by_symbol: Optional[Mapping[str, Sequence[Any]]] = None,
     audit_records: Optional[list[dict[str, Any]]] = None,
     reconciler_log_lines: Optional[list[str]] = None,
     crypto_eval_state: Optional[Mapping[str, Any]] = None,
@@ -640,18 +641,29 @@ def evaluate_ai_attribution(
 
     closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo(filled_rows)
     outcomes: list[dict[str, Any]] = []
-    plan_status_counts, _, planned_filled = evaluate_filled_trade_plans(filled_rows, prices_map)
+    plan_status_counts, _, planned_filled = evaluate_filled_trade_plans(
+        filled_rows, prices_map, price_bars_by_symbol=price_bars_by_symbol
+    )
 
-    def _record_closed_plan_outcome(entry_row: dict[str, Any], exit_px: float) -> str:
+    def _record_closed_plan_outcome(entry_row: dict[str, Any], exit_row: dict[str, Any]) -> str:
         if not entry_row["has_plan"]:
             return ""
-        st = evaluate_trade_plan_status(
-            entry_row["side"], exit_px, entry_row["invalidation_px"], entry_row["target_px"]
+        sym_bars = resolve_symbol_price_bars(
+            price_bars_by_symbol, entry_row.get("venue"), entry_row.get("symbol")
+        )
+        st = evaluate_trade_plan_path_status(
+            entry_row["side"],
+            exit_row["px"],
+            entry_row["invalidation_px"],
+            entry_row["target_px"],
+            start_ts=safe_float(entry_row.get("ts"), default=0.0) or 0.0,
+            end_ts=safe_float(exit_row.get("ts"), default=0.0) or None,
+            price_bars=sym_bars,
         )
         return st if st in ("TARGET_HIT", "INVALIDATED") else "CLOSED_EARLY"
 
     for kind, entry_row, exit_row in closed_pairs:
-        plan_st = _record_closed_plan_outcome(entry_row, exit_row["px"])
+        plan_st = _record_closed_plan_outcome(entry_row, exit_row)
         outcomes.append(_build_closed_round_trip_outcome(kind, entry_row, exit_row, plan_outcome=plan_st))
 
     def _evaluate_open_mtm_row(entry_row: dict[str, Any], side: str) -> Optional[dict[str, Any]]:
@@ -660,8 +672,16 @@ def evaluate_ai_attribution(
             return None
         plan_st = ""
         if entry_row["has_plan"]:
-            plan_st = evaluate_trade_plan_status(
-                side, spot_px, entry_row["invalidation_px"], entry_row["target_px"]
+            sym_bars = resolve_symbol_price_bars(
+                price_bars_by_symbol, entry_row.get("venue"), entry_row.get("symbol")
+            )
+            plan_st = evaluate_trade_plan_path_status(
+                side,
+                spot_px,
+                entry_row["invalidation_px"],
+                entry_row["target_px"],
+                start_ts=safe_float(entry_row.get("ts"), default=0.0) or 0.0,
+                price_bars=sym_bars,
             )
         gross_pct = compute_signed_price_edge_pct(side, entry_row["px"], spot_px)
         rt_bps = entry_row["rt_fee_bps"]

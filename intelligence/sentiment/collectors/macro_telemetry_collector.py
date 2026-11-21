@@ -1527,6 +1527,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         recent_orders: Any,
         open_orders_list: List[Dict[str, Any]],
         eff_verified_venues: Optional[set[str]],
+        price_bars_by_symbol: Optional[Dict[str, List[List[Any]]]] = None,
     ) -> None:
         if isinstance(intents_data, list) and intents_data:
             if recent_intents_out := summarize_recent_ai_intents(
@@ -1559,6 +1560,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 recent_orders=recent_orders,
                 open_orders=open_orders_list,
                 verified_open_venues=eff_verified_venues,
+                price_bars_by_symbol=price_bars_by_symbol,
             ):
                 snapshot.portfolio_summary["active_ai_trade_plans"] = active_plans_out
             try:
@@ -1582,6 +1584,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                     intents_data,
                     now_ts=now_ts,
                     live_prices=sc_prices,
+                    price_bars_by_symbol=price_bars_by_symbol,
                     lookback_days=7.0,
                     scope=scope,
                 )
@@ -2072,6 +2075,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
 
         _run_enrich_cross_venue_trends()
         cur_p_items = prices_data.get("items", {}) if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict) else {}
+        price_path_bars: Dict[str, List[List[Any]]] = {}
         enrich_24h_and_microstructure(
             cache_dir,
             workspace_dir,
@@ -2083,6 +2087,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             _rj,
             allow_network=allow_network,
             persist=persist,
+            price_path_bars=price_path_bars,
         )
         _run_enrich_cross_venue_trends()
         cycle_history = load_microstructure_cycle_history(cache_dir)
@@ -2143,6 +2148,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             recent_orders=recent_orders,
             open_orders_list=open_orders_list,
             eff_verified_venues=verified_open_venues if has_inst_source else None,
+            price_bars_by_symbol=price_path_bars,
         )
         snapshot.portfolio_summary.update(
             harvest_bot_runtime_states(cache_dir, now_ts, _rj, tradable_positions=snapshot.portfolio_summary.get("tradable_positions"))

@@ -1260,4 +1260,232 @@ def test_crypto_executor_prompt_data_accuracy_guards(tmp_path):
     assert "0bps SELL-only xStocks ANTxUSD and SPCXxUSD" in crypto_prompt
 
 
+def test_critical_path_aware_trade_plans_and_fee_adjusted_reload_scorecard():
+    """Verify path-aware trade plan evaluation/expiry, Delta-Gate status preservation, reload->exit LIFO pairing, net-of-fee scorecard, and last N/M label."""
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import _evaluate_delta_gate_trade_plans
+    from providers.ai_survival_guard import (
+        evaluate_ai_calibration_feedback,
+        evaluate_ai_decision_scorecard,
+        format_ai_decision_scorecard_line,
+        match_filled_intent_rows_lifo,
+    )
+    from providers.intent_state import extract_intent_notional
+    from providers.intent_telemetry import (
+        evaluate_trade_plan_path_status,
+        summarize_active_ai_trade_plans,
+    )
 
+    now_s = 1_795_300_000.0
+
+    # 1. Path-aware status resolves rebound-after-hit plans and avoids pre-fill wick contamination on straddling bars
+    fill_ts = now_s - 29 * 3600.0
+    tao_bars = [
+        [int((fill_ts - 600.0) * 1000), 188.0, 100.0, 195.0, 180.0, 187.5],
+        # Straddling candle covering [fill_ts - 180s, fill_ts + 120s]: pre-fill high 194 > inv 192.5, close 187.0 inside band
+        [int((fill_ts + 120.0) * 1000), 187.0, 120.0, 194.0, 186.0, 188.0],
+        # Subsequent fully post-fill candle drops to 165.42 (<= target 184.2), then rebounds to 186.96
+        [int((fill_ts + 420.0) * 1000), 167.5, 250.0, 187.0, 165.42, 187.0],
+        [int((now_s - 300.0) * 1000), 186.96, 110.0, 187.2, 186.1, 186.5],
+    ]
+    # Straddling bar alone must NOT falsely invalidate on pre-fill wick
+    assert (
+        evaluate_trade_plan_path_status(
+            "SELL",
+            186.96,
+            192.5,
+            184.2,
+            start_ts=fill_ts,
+            price_bars=tao_bars[:2],
+        )
+        == "ACTIVE"
+    )
+    # Full path hits target 184.2 even though live spot rebounded to 186.96
+    assert (
+        evaluate_trade_plan_path_status(
+            "SELL",
+            186.96,
+            192.5,
+            184.2,
+            start_ts=fill_ts,
+            price_bars=tao_bars,
+        )
+        == "TARGET_HIT"
+    )
+
+    # 29h-old flat kraken:TAOUSD SELL plan is pruned once path-resolved to TARGET_HIT (>24h expiry)
+    stale_tao_intents = [
+        {
+            "intent_id": "tao_old_sell",
+            "timestamp": fill_ts,
+            "decision": "SELL",
+            "venue": "kraken",
+            "symbol": "TAOUSD",
+            "order_type": "LIMIT",
+            "limit_price": 187.42,
+            "target_px": 184.2,
+            "invalidation_px": 192.5,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 650.0,
+            "execution_payload": {"order_id": "KR-TAO-1", "status": "FILLED", "avg_fill_price": 187.42, "executedQty": "3.47"},
+        }
+    ]
+    tao_positions = [{"venue": "kraken", "symbol": "TAOUSD", "price": 186.96, "value_usd": 0.0}]
+    plans_without_bars = summarize_active_ai_trade_plans(
+        stale_tao_intents,
+        "crypto",
+        now_s,
+        extract_intent_notional,
+        tradable_positions=tao_positions,
+        prices_and_trends={"TAOUSD": {"price": 186.96}},
+    )
+    assert len(plans_without_bars) == 1 and plans_without_bars[0]["status"] == "ACTIVE"
+    plans_with_bars = summarize_active_ai_trade_plans(
+        stale_tao_intents,
+        "crypto",
+        now_s,
+        extract_intent_notional,
+        tradable_positions=tao_positions,
+        prices_and_trends={"TAOUSD": {"price": 186.96}},
+        price_bars_by_symbol={"TAOUSD": tao_bars},
+    )
+    assert plans_with_bars == []
+
+    # 2. Delta-Gate preserves already path-resolved non-resting status even if spot rebounded into the band
+    dg_states, dg_reason = _evaluate_delta_gate_trade_plans(
+        {
+            "active_ai_trade_plans": [
+                {
+                    "venue": "kraken",
+                    "symbol": "TAOUSD",
+                    "side": "SELL",
+                    "order_state": "FILLED",
+                    "status": "TARGET_HIT",
+                    "target_px": 184.2,
+                    "invalidation_px": 192.5,
+                }
+            ]
+        },
+        {"TAOUSD": 186.96},
+        {"kraken:TAOUSD:SELL": "TARGET_HIT"},
+    )
+    assert dg_states == {"kraken:TAOUSD:SELL": "TARGET_HIT"}
+    assert dg_reason == ""
+
+    # 3. Path-aware calibration & attribution catch intermediate stop-breach (INVALIDATED vs CLOSED_EARLY) and target-hit rebound
+    btc_buy_ts = now_s - 6 * 3600.0
+    btc_sell_ts = now_s - 2 * 3600.0
+    btc_bars = [
+        [int((btc_buy_ts + 300.0) * 1000), 56800.0, 50.0, 57000.0, 56500.0, 56942.0],
+        [int((btc_buy_ts + 1800.0) * 1000), 55400.0, 90.0, 56200.0, 55056.0, 56100.0],
+        [int((btc_sell_ts - 300.0) * 1000), 58200.0, 70.0, 58300.0, 57900.0, 58000.0],
+    ]
+    path_intents = [
+        {
+            "intent_id": "btc_b_path",
+            "timestamp": btc_buy_ts,
+            "decision": "BUY",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "order_type": "LIMIT",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 1000.0,
+            "invalidation_px": 55600.0,
+            "target_px": 59500.0,
+            "execution_payload": {"orderId": "bn_p1", "status": "FILLED", "avg_fill_price": 56942.0, "executedQty": "0.0175"},
+        },
+        {
+            "intent_id": "btc_s_path",
+            "timestamp": btc_sell_ts,
+            "decision": "SELL",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "order_type": "LIMIT",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 1022.0,
+            "execution_payload": {"orderId": "bn_p2", "status": "FILLED", "avg_fill_price": 58210.0, "executedQty": "0.0175"},
+        },
+        stale_tao_intents[0],
+    ]
+    bars_map = {"BTCUSDC": btc_bars, "TAOUSD": tao_bars}
+    cal_path = evaluate_ai_calibration_feedback(
+        path_intents,
+        now_ts=now_s,
+        live_prices={"BTCUSDC": 58210.0, "TAOUSD": 186.96},
+        price_bars_by_symbol=bars_map,
+        lookback_days=7.0,
+        scope="crypto",
+    )
+    assert cal_path["by_side"]["BUY"]["INVALIDATED"] == 1
+    assert cal_path["by_side"]["BUY"]["CLOSED_EARLY"] == 0
+    assert cal_path["by_side"]["SELL"]["TARGET_HIT"] == 1
+    assert cal_path["by_side"]["SELL"]["ACTIVE"] == 0
+    attr_path = evaluate_ai_attribution(
+        path_intents,
+        now_ts=now_s,
+        live_prices={"BTCUSDC": 58210.0, "TAOUSD": 186.96},
+        price_bars_by_symbol=bars_map,
+        lookback_days=7.0,
+        scope="crypto",
+    )
+    assert attr_path["trade_plan_calibration"]["status_counts"] == {
+        "TARGET_HIT": 1,
+        "INVALIDATED": 1,
+        "ACTIVE": 0,
+        "CLOSED_EARLY": 0,
+    }
+
+    # 4. Reload->exit LIFO pairing, fee-adjusted scorecard PnL, and last N/M window label
+    #    - SELL -> BUY (still held) produces only SELL->BUY without duplicate open BUY_MTM
+    held_reload = [
+        {"ts": 10.0, "inst_key": ("binance", "TAO", ("USD",)), "side": "SELL", "px": 187.42, "usd": 600.0},
+        {"ts": 20.0, "inst_key": ("binance", "TAO", ("USD",)), "side": "BUY", "px": 169.50, "usd": 600.0},
+    ]
+    c_held, ob_held, os_held = match_filled_intent_rows_lifo(held_reload)
+    assert len(c_held) == 1 and c_held[0][0] == "SELL->BUY"
+    assert ob_held == [] and os_held == []
+
+    #    - SELL -> BUY -> SELL scores BOTH reload (SELL->BUY) and subsequent stop-loss exit (BUY->SELL)
+    reload_then_stop = [
+        *held_reload,
+        {"ts": 30.0, "inst_key": ("binance", "TAO", ("USD",)), "side": "SELL", "px": 166.00, "usd": 588.0},
+    ]
+    c_stop, ob_stop, os_stop = match_filled_intent_rows_lifo(reload_then_stop)
+    assert [p[0] for p in c_stop] == ["SELL->BUY", "BUY->SELL"]
+    assert c_stop[1][1]["px"] == 169.50 and c_stop[1][2]["px"] == 166.00
+    assert ob_stop == [] and os_stop == []
+
+    #    - Scorecard deducts venue RT fees (marginal +0.15% gross on Binance 20bps RT -> -0.05% net, negative USD)
+    #      and renders `last 5/6` when total_outcomes exceeds window_trades=5
+    sc_intents = [
+        # Outcome 1 (older, dropped from last-5 window): BUY 100 -> SELL 102 (+2.00% gross, +1.80% net)
+        {"intent_id": "s1b", "timestamp": now_s - 20000.0, "decision": "BUY", "venue": "binance", "symbol": "BTCUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 1000.0, "execution_payload": {"orderId": "o1b", "status": "FILLED", "avg_fill_price": 100.0, "executedQty": "10"}},
+        {"intent_id": "s1s", "timestamp": now_s - 19000.0, "decision": "SELL", "venue": "binance", "symbol": "BTCUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 1020.0, "execution_payload": {"orderId": "o1s", "status": "FILLED", "avg_fill_price": 102.0, "executedQty": "10"}},
+        # Outcome 2: BUY 100 -> SELL 100.15 (+0.15% gross on Binance 20bps RT -> -0.05% net, -$0.50 USD!)
+        {"intent_id": "s2b", "timestamp": now_s - 16000.0, "decision": "BUY", "venue": "binance", "symbol": "ETHUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 1000.0, "execution_payload": {"orderId": "o2b", "status": "FILLED", "avg_fill_price": 100.0, "executedQty": "10"}},
+        {"intent_id": "s2s", "timestamp": now_s - 15000.0, "decision": "SELL", "venue": "binance", "symbol": "ETHUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 1001.5, "execution_payload": {"orderId": "o2s", "status": "FILLED", "avg_fill_price": 100.15, "executedQty": "10"}},
+        # Outcomes 3 & 4: SELL@187.42 -> BUY@169.50 (WIN reload) -> SELL@166.00 (LOSS stop-out!)
+        {"intent_id": "s3s1", "timestamp": now_s - 12000.0, "decision": "SELL", "venue": "binance", "symbol": "TAOUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 600.0, "execution_payload": {"orderId": "o3s1", "status": "FILLED", "avg_fill_price": 187.42, "executedQty": "3.2"}},
+        {"intent_id": "s3b1", "timestamp": now_s - 10000.0, "decision": "BUY", "venue": "binance", "symbol": "TAOUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 600.0, "execution_payload": {"orderId": "o3b1", "status": "FILLED", "avg_fill_price": 169.50, "executedQty": "3.54"}},
+        {"intent_id": "s3s2", "timestamp": now_s - 8000.0, "decision": "SELL", "venue": "binance", "symbol": "TAOUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 588.0, "execution_payload": {"orderId": "o3s2", "status": "FILLED", "avg_fill_price": 166.00, "executedQty": "3.54"}},
+        # Outcome 5: BUY 100 -> SELL 99.0 (-1.00% gross, -1.20% net)
+        {"intent_id": "s4b", "timestamp": now_s - 6000.0, "decision": "BUY", "venue": "binance", "symbol": "ARBUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 500.0, "execution_payload": {"orderId": "o4b", "status": "FILLED", "avg_fill_price": 100.0, "executedQty": "5"}},
+        {"intent_id": "s4s", "timestamp": now_s - 4000.0, "decision": "SELL", "venue": "binance", "symbol": "ARBUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 495.0, "execution_payload": {"orderId": "o4s", "status": "FILLED", "avg_fill_price": 99.0, "executedQty": "5"}},
+        # Outcome 6: BUY 50 -> SELL 51 (+2.00% gross, +1.92% net on Hyperliquid 8bps RT)
+        {"intent_id": "s5b", "timestamp": now_s - 3000.0, "decision": "BUY", "venue": "hyperliquid", "symbol": "HYPEUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 500.0, "execution_payload": {"orderId": "o5b", "status": "FILLED", "avg_fill_price": 50.0, "executedQty": "10"}},
+        {"intent_id": "s5s", "timestamp": now_s - 1000.0, "decision": "SELL", "venue": "hyperliquid", "symbol": "HYPEUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 510.0, "execution_payload": {"orderId": "o5s", "status": "FILLED", "avg_fill_price": 51.0, "executedQty": "10"}},
+    ]
+    sc_fee = evaluate_ai_decision_scorecard(sc_intents[2:4], now_ts=now_s, window_trades=5, scope="crypto")
+    assert sc_fee["count"] == 1 and sc_fee["total_outcomes"] == 1
+    assert sc_fee["avg_edge_pct"] == pytest.approx(-0.05, abs=0.01)
+    assert sc_fee["net_usd"] == pytest.approx(-0.5, abs=0.05)
+
+    sc_reload_stop = evaluate_ai_decision_scorecard(sc_intents[4:7], now_ts=now_s, window_trades=5, scope="crypto")
+    assert sc_reload_stop["count"] == 2 and sc_reload_stop["total_outcomes"] == 2
+    assert sc_reload_stop["wins"] == 1 and sc_reload_stop["losses"] == 1 and sc_reload_stop["loss_streak"] == 1
+
+    sc_full = evaluate_ai_decision_scorecard(sc_intents, now_ts=now_s, window_trades=5, scope="crypto")
+    assert sc_full["count"] == 5
+    assert sc_full["total_outcomes"] == 6
+    assert sc_full["wins"] == 2 and sc_full["scratches"] == 1 and sc_full["losses"] == 2
+    sc_line = format_ai_decision_scorecard_line(sc_full)
+    assert sc_line.startswith("AI Decision Scorecard (48h, last 5/6): 2W/1S/2L,")
