@@ -30,6 +30,7 @@ FLEET_PAUSED
 # Runtime databases & caches
 cachedb/
 *.lock
+*.pid
 *.meta
 *.bak*
 *.previous
