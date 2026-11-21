@@ -373,7 +373,12 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                 )
                 tick_step = 10.0 ** (-dec)
                 side_depth_usd = safe_pos_float(m_entry.get(f"{w_pfx}_depth_usd"), default=0.0) or 0.0
-                min_wall_usd = max(2500.0, side_depth_usd * 0.02) if side_depth_usd > 0.0 else 5000.0
+                spot_vol_15m = safe_pos_float(m_entry.get("spot_vol_15m_usd"), default=0.0) or 0.0
+                min_wall_usd = (
+                    max(2500.0, side_depth_usd * 0.08, spot_vol_15m * 0.08)
+                    if (side_depth_usd > 0.0 or spot_vol_15m > 0.0)
+                    else 5000.0
+                )
                 w_px = safe_pos_float(m_entry.get(f"{w_pfx}_wall_px"), default=None)
                 w_usd = safe_pos_float(m_entry.get(f"{w_pfx}_wall_usd"), default=0.0) or 0.0
                 wall_on_side = not spot_px or (w_px >= spot_px * 1.0002 if is_sell else w_px <= spot_px * 0.9998)

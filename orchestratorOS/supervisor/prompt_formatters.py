@@ -152,9 +152,10 @@ def build_supervisor_prompt(
         target_desc = (
             "ALL live tradable US equity shares on 't212' (SPCX_US_EQ, ANT_US_EQ, NVDA_US_EQ, RGNT_US_EQ during US Regular Trading Hours, cross-referencing Kraken 24/7 xStocks SPCXx.T / ANTx.T exposure)"
             if is_equities
-            else "ALL live tradable crypto & 24/7 tokenized xStock pairs (BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSDC intensively on 'hyperliquid'; HYPEUSD, TAOUSD, ADAUSD, plus 0bps xStocks ANTxUSD and SPCXxUSD on 'kraken')"
+            else "ALL live tradable crypto & 24/7 tokenized xStock pairs (BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSDC intensively on 'hyperliquid'; HYPEUSD, TAOUSD, ADAUSD, plus 0bps SELL-only xStocks ANTxUSD and SPCXxUSD on 'kraken')"
         )
         venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
+        venue_list_desc = "`t212`" if is_equities else "`binance`, `kraken`, `hyperliquid`"
         ex_sym = '"NVDA_US_EQ"' if is_equities else '"BTCUSDC"'
         tasks.append(
             f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc}:\n"
@@ -174,7 +175,7 @@ def build_supervisor_prompt(
             "     2) If a bot BOUGHT prematurely or when it should NOT have (confirmed structural breakdown), submit a corrective `SELL` `LIMIT` right at live spot/`best_ask`.\n"
             "     3) Targeting specific orders with `cancel_order_ids: [...]` + `cancel_bot_open_orders: true` / `replace_open_orders: true` cancels only those orders "
             "(standalone `HOLD` cancel requires explicit `cancel_order_ids`; on `BUY`/`SELL` without `cancel_order_ids`, only same-side orders cancel; if cancel fails, replacement aborts).\n"
-            "   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: Decide freely WHEN/WHAT/HOW MUCH/WHICH venue (`binance`, `kraken`, `hyperliquid`, `t212`). "
+            f"   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: Decide freely WHEN/WHAT/HOW MUCH/WHICH venue ({venue_list_desc}). "
             "Cost basis (`avg_buy_px`, `lifo_rem_avg_px`, `open_lifo_lots`) is informational, NEVER a constraint: harvest profitable LIFO tranches or up to `50%\u2013100%` of `value_usd` "
             f"(up to {max_usd:g} USD) at once, OR proactively trim/exit via near-market spot `LIMIT` even at breakeven or below cost basis when breakdown unfolds.\n"
             "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN) & KINEMATICS: Weigh `kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)`, `kalman_vel`, `slopes`, "
@@ -190,7 +191,7 @@ def build_supervisor_prompt(
             "`liq_clusters` (`src=model_est` heuristic bands; prioritize `realized_liq_15m` when present), `book_window` cap tags, per-venue fees/spread/`limits`, and Section 1 cross-asset telemetry "
             "(`SPY/QQQ/ES=F/NQ=F/VIX/DXY/US10Y`, `Futures_Lead`, `IBIT`, `CB_Premium`, `BTC_DVOL/ETH_DVOL`, `Options_Surface` & `ETH_Options`, judging coupled risk-on/off vs cross-asset decoupling directly from the numbers; positive `Skew_25d` = Put_IV - Call_IV > 0 reflects put-buying fear, negative reflects call demand).\n"
             f"   - Emit one entry per actionable instrument in `market_trading_decisions` (`confidence >= {min_conf:g}`, `suggested_notional_usd` between {min_usd:g} and {max_usd:g} USD; "
-            "gateway clamps strictly to free balance with zero artificial cooldowns or dedup locks), or a single `'HOLD'` entry. "
+            "gateway clamps strictly to free balance with zero artificial cooldowns or dedup locks beyond AI survival breakers), or a single `'HOLD'` entry. "
             "On actionable BUY/SELL, set numeric `invalidation_px` (thesis break) and `target_px` (primary objective); active plans persist in Section 3C across compactions."
         )
         schema.append(

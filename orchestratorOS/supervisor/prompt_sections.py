@@ -1030,9 +1030,10 @@ def _format_microstructure_section(
                 cd_sfx = f", cycle_delta({', '.join(cd_parts)})"
         l1_oi_v = safe_float(minfo.get("native_l1_oi_usd"), None)
         oi_v = safe_float(minfo.get("oi_usd"), None)
+        has_distinct_l1_oi = bool(l1_oi_v is not None and oi_v is not None and abs(l1_oi_v - oi_v) > 1.0)
         oi_lbl = (
             f"{minfo.get('oi_usd')} (l1_oi={_fmt_liq_usd(l1_oi_v)})"
-            if (l1_oi_v is not None and oi_v is not None and abs(l1_oi_v - oi_v) > 1.0)
+            if has_distinct_l1_oi
             else f"{minfo.get('oi_usd')}"
         )
         if shared_perp_sym is not None:
@@ -1089,7 +1090,8 @@ def _format_microstructure_section(
                     else ""
                 )
                 fund_part = f", funding={_fmt_plain_float(fr_v)}{pred_sfx}"
-            deriv_oi_sfx = f"{fund_part}, oi_usd={oi_lbl}, oi_1h_chg={oi_1h_lbl}%{oi_15m_sfx}"
+            flow_src_sfx = ", perp_flow_src=bn_perp" if has_distinct_l1_oi else ""
+            deriv_oi_sfx = f"{fund_part}, oi_usd={oi_lbl}, oi_1h_chg={oi_1h_lbl}%{oi_15m_sfx}{flow_src_sfx}"
         src_age_sfx = _format_3b_source_ages_suffix(
             minfo,
             now_ts=now_ts,
@@ -1387,16 +1389,21 @@ def _format_portfolio_section(
         lines.append("  * Active AI Trade Plans (Persistent Exit/Invalidation Memory):")
         for pl in active_plans:
             p_parts: List[str] = []
+            ord_st = str(pl.get("order_state") or "FILLED")
+            is_lim_anc = pl.get("dist_anchor") == "limit" or ord_st.strip().upper() == "RESTING"
+            anc_lbl = "vs_limit" if is_lim_anc else "vs_spot"
             if pl.get("target_px") is not None:
                 td = pl.get("target_dist_pct")
-                td_s = f" ({safe_float(td, 0.0):+.2f}%)" if td is not None else ""
+                td_s = f" ({safe_float(td, 0.0):+.2f}% {anc_lbl})" if td is not None else ""
                 p_parts.append(f"target={pl['target_px']}{td_s}")
             if pl.get("invalidation_px") is not None:
                 id_v = pl.get("invalidation_dist_pct")
-                id_s = f" ({safe_float(id_v, 0.0):+.2f}%)" if id_v is not None else ""
+                id_s = f" ({safe_float(id_v, 0.0):+.2f}% {anc_lbl})" if id_v is not None else ""
                 p_parts.append(f"invalidation={pl['invalidation_px']}{id_s}")
             entry_s = f"@{pl['entry_px']}" if pl.get("entry_px") is not None else ""
-            meta_p = [str(pl.get("order_state") or "FILLED")]
+            meta_p = [ord_st]
+            if not is_lim_anc and pl.get("spot_px") is not None:
+                meta_p.append(f"spot={pl['spot_px']}")
             if pl.get("age_h") is not None:
                 meta_p.append(f"age={pl['age_h']}h")
             lines.append(
@@ -1423,7 +1430,7 @@ def _format_portfolio_section(
             )
         else:
             lines.append(
-                f"  * Kraken Tokenized Equities / xStocks (API-TRADABLE 24/7 on 'kraken' at 0bps maker/taker fee; "
+                f"  * Kraken Tokenized Equities / xStocks (API-TRADABLE 24/7 on 'kraken' at 0bps maker/taker fee [SELL-ONLY EU API]; "
                 f"{xs_pair_lbl} Active Swing Directive{xs_ipo_lbl} & T212 {xs_sib} context): {xs_payload}"
             )
     if view["crypto_bellwethers"]:

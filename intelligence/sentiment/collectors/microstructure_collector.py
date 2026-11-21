@@ -1154,7 +1154,9 @@ def upgrade_tpo_vp_from_ohlc(
                         break
         if len(pts_vp) >= 8 and (pts_vp[-1][0] - pts_vp[0][0]) >= 18 * 3600 * 1000:
             vp_last_px = safe_pos_float(pts_vp[-1][1], default=0.0) or 0.0
-            if cur_px <= 0.0 or (vp_last_px > 0.0 and abs(cur_px - vp_last_px) / max(cur_px, vp_last_px) <= 0.015):
+            vp_tail_fresh = now_ts > 0.0 and abs(now_ts * 1000.0 - pts_vp[-1][0]) <= 1_800_000.0
+            max_vp_div = 0.08 if vp_tail_fresh else 0.015
+            if cur_px <= 0.0 or (vp_last_px > 0.0 and abs(cur_px - vp_last_px) / max(cur_px, vp_last_px) <= max_vp_div):
                 l24_b = safe_pos_float(m24.get("low_24h"), default=None)
                 h24_b = safe_pos_float(m24.get("high_24h"), default=None)
                 vp_pxs = [px_v for p in pts_vp if len(p) >= 2 and (px_v := safe_pos_float(p[1], default=None)) is not None]

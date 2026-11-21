@@ -507,6 +507,90 @@ def format_recent_fill_subcycle_parts(
     return parts
 
 
+def _reconcile_active_cycle_lifo_pnl(
+    fills_or_ro: Dict[str, Any],
+    oldest_active_ts_ms: int,
+    *,
+    last_sell_ts_ms: int = 0,
+) -> None:
+    """Recompute active-cycle ``lifo_realized_pnl_usd`` strictly from sells/lots at or after ``oldest_active_ts_ms``."""
+    if oldest_active_ts_ms <= 0:
+        return
+    sell_matches = fills_or_ro.get("_lifo_sell_matches")
+    if isinstance(sell_matches, list):
+        active_lifo_pnl = sum(
+            pnl
+            for s_ts, l_ts, pnl in sell_matches
+            if (s_ts <= 0 or s_ts >= oldest_active_ts_ms)
+            and (l_ts <= 0 or l_ts >= oldest_active_ts_ms)
+        )
+        fills_or_ro["lifo_realized_pnl_usd"] = (
+            round(active_lifo_pnl, 2) if abs(active_lifo_pnl) >= 0.01 else 0.0
+        )
+    elif last_sell_ts_ms > 0 and oldest_active_ts_ms > last_sell_ts_ms:
+        fills_or_ro["lifo_realized_pnl_usd"] = 0.0
+
+
+def prune_superseded_open_lots_to_held_qty(
+    fills_or_ro: Dict[str, Any],
+    held_qty: float,
+) -> bool:
+    """Prune stale pre-cycle open lots when a newer trailing suffix already matches ``held_qty`` across an intervening sell or >14d gap."""
+    if not isinstance(fills_or_ro, dict) or held_qty <= 1e-8:
+        return False
+    raw_lots = fills_or_ro.get("open_lots") if isinstance(fills_or_ro.get("open_lots"), list) else []
+    if len(raw_lots) < 2:
+        return False
+    sell_ts_vals: List[int] = []
+    ls_obj = fills_or_ro.get("last_sell")
+    ls_ts = (safe_pos_int(ls_obj.get("ts_ms"), default=0) or 0) if isinstance(ls_obj, dict) else 0
+    if ls_ts > 0:
+        sell_ts_vals.append(ls_ts)
+    for rs in (fills_or_ro.get("recent_sells") or ()):
+        if isinstance(rs, dict) and (t_rs := safe_pos_int(rs.get("ts_ms"), default=0) or 0) > 0:
+            sell_ts_vals.append(t_rs)
+    for m_item in (fills_or_ro.get("_lifo_sell_matches") or ()):
+        if isinstance(m_item, (list, tuple)) and len(m_item) >= 1:
+            if (t_m := safe_pos_int(m_item[0], default=0) or 0) > 0:
+                sell_ts_vals.append(t_m)
+    lot_qs = [safe_pos_float(lt.get("qty"), 0.0) or 0.0 if isinstance(lt, dict) else 0.0 for lt in raw_lots]
+    lot_ts = [safe_pos_int(lt.get("ts_ms"), default=0) or 0 if isinstance(lt, dict) else 0 for lt in raw_lots]
+    q_all = sum(lot_qs)
+    err_all = abs(q_all - held_qty)
+    tol = max(1e-4, held_qty * 0.02)
+    suffix_q = 0.0
+    for j in range(len(raw_lots) - 1, 0, -1):
+        suffix_q += lot_qs[j]
+        err_suf = abs(suffix_q - held_qty)
+        if err_suf > tol or err_suf >= err_all:
+            continue
+        oldest_suf_ts = min((t for t in lot_ts[j:] if t > 0), default=0)
+        prev_ts = lot_ts[j - 1]
+        has_intervening_sell = oldest_suf_ts > 0 and any(prev_ts <= st < oldest_suf_ts for st in sell_ts_vals)
+        is_ancient_gap = oldest_suf_ts > 0 and prev_ts > 0 and (oldest_suf_ts - prev_ts) > 14 * 86400 * 1000
+        if not (has_intervening_sell or is_ancient_gap):
+            continue
+        suffix = raw_lots[j:]
+        fills_or_ro["open_lots"] = suffix
+        new_vwap, vwap_q, _ = compute_open_lots_vwap(
+            suffix, held_qty=held_qty, clip_to_held=True, decimals=6
+        )
+        if new_vwap is not None:
+            fills_or_ro["active_avg_buy_px"] = new_vwap
+            fills_or_ro["active_cycle_rem_qty"] = round(vwap_q, 6)
+            all_after_last_sell = ls_ts > 0 and oldest_suf_ts > ls_ts
+            if all_after_last_sell or same_anchor_px(fills_or_ro.get("tactical_avg_buy_px"), new_vwap):
+                fills_or_ro.pop("tactical_avg_buy_px", None)
+            sw_cur = safe_pos_float(fills_or_ro.get("swing_subcycle_avg_px"), default=None)
+            if all_after_last_sell or (
+                sw_cur is not None and abs(sw_cur - new_vwap) / max(new_vwap, 1e-9) < 0.002
+            ):
+                fills_or_ro.pop("swing_subcycle_avg_px", None)
+        _reconcile_active_cycle_lifo_pnl(fills_or_ro, oldest_suf_ts, last_sell_ts_ms=ls_ts)
+        return True
+    return False
+
+
 def reconcile_fresh_lots_vwap(
     fills_or_ro: Dict[str, Any],
     open_lots: Any,
@@ -529,7 +613,6 @@ def reconcile_fresh_lots_vwap(
                 fills_or_ro["active_cycle_rem_qty"] = round(vwap_q, 6)
                 if same_anchor_px(fills_or_ro.get("tactical_avg_buy_px"), fresh_vwap):
                     fills_or_ro.pop("tactical_avg_buy_px", None)
-                sell_matches = fills_or_ro.get("_lifo_sell_matches")
                 oldest_fresh_ts = min(
                     (
                         t
@@ -538,16 +621,7 @@ def reconcile_fresh_lots_vwap(
                     ),
                     default=0,
                 )
-                if oldest_fresh_ts > 0 and isinstance(sell_matches, list):
-                    active_lifo_pnl = sum(
-                        pnl
-                        for s_ts, l_ts, pnl in sell_matches
-                        if (s_ts <= 0 or s_ts >= oldest_fresh_ts)
-                        and (l_ts <= 0 or l_ts >= oldest_fresh_ts)
-                    )
-                    fills_or_ro["lifo_realized_pnl_usd"] = (
-                        round(active_lifo_pnl, 2) if abs(active_lifo_pnl) >= 0.01 else 0.0
-                    )
+                _reconcile_active_cycle_lifo_pnl(fills_or_ro, oldest_fresh_ts)
                 return fresh_vwap, fresh_q
     return None, fresh_q
 
@@ -1719,7 +1793,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
         ):
             pos_px_f = round(cand_px, MarketDataProvider.resolve_venue_position_price_decimals(p_venue))
             pos["price"] = pos_px_f
-            if (fb_val := safe_float(pos.get("free_base"), -1.0)) >= 0:
+            if (fb_val := safe_float(pos.get("free_base") if pos.get("free_base") is not None else pos.get("free_base_qty"), -1.0)) >= 0:
                 pos["value_usd"] = round(fb_val * cand_px, 2)
             if (lb_val := safe_pos_float(pos.get("locked_base_qty"), default=0.0) or 0.0) > 0:
                 pos["locked_base_usd"] = round(lb_val * cand_px, 2)
@@ -1751,23 +1825,9 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
         if is_flat_after_exit:
             reset_flat_position_and_recent_order_state(ro, pos, full_pos_clear=True)
         else:
-            ls_ts_pos = (safe_pos_int(ls.get("ts_ms"), default=0) or 0) if isinstance(ls, dict) else 0
-            raw_lots_pos = ro.get("open_lots") if isinstance(ro.get("open_lots"), list) else []
-            if held_cur > 1e-8 and ls_ts_pos > 0 and raw_lots_pos:
-                post_sell_lots = [
-                    lt for lt in raw_lots_pos
-                    if isinstance(lt, dict) and (safe_pos_int(lt.get("ts_ms"), default=0) or 0) > ls_ts_pos
-                ]
-                if post_sell_lots and len(post_sell_lots) < len(raw_lots_pos):
-                    post_sell_q = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in post_sell_lots)
-                    if abs(post_sell_q - held_cur) <= max(1e-4, held_cur * 0.02):
-                        ro["open_lots"] = post_sell_lots
-                        ro["lifo_realized_pnl_usd"] = 0.0
-                        pos.pop("lifo_realized_pnl_usd", None)
-                        if (ps_vwap := compute_open_lots_vwap(post_sell_lots)[0]) is not None:
-                            ro["active_avg_buy_px"] = ps_vwap
-                            ro.pop("tactical_avg_buy_px", None)
-                            ro.pop("swing_subcycle_avg_px", None)
+            if prune_superseded_open_lots_to_held_qty(ro, held_cur):
+                if abs(safe_float(ro.get("lifo_realized_pnl_usd"), 0.0) or 0.0) < 0.01:
+                    pos.pop("lifo_realized_pnl_usd", None)
             set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", ro.get("active_avg_buy_px"), pos_px_f)
             set_pos_anchor(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct", ro.get("tactical_avg_buy_px"), pos_px_f)
             sw_avg = safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)
@@ -2197,7 +2257,10 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
             pos_px_f = self._refresh_position_spot_price(pos, p_venue, p_sym, p_is_eq, prices_and_trends)
             v_ro_map = venue_recent_orders.get(p_venue, {})
             ro = next((val for cand in p_quote_variants if isinstance((val := casefold_get(v_ro_map, cand)), dict)), None)
-            fb_cur = safe_float(pos.get("free_base"), -1.0)
+            fb_cur = safe_float(
+                pos.get("free_base") if pos.get("free_base") is not None else pos.get("free_base_qty"),
+                -1.0,
+            )
             lb_cur = safe_pos_float(pos.get("locked_base_qty"), default=0.0) or 0.0
             held_cur = (fb_cur + lb_cur) if fb_cur >= 0.0 else (lb_cur if lb_cur > 0.0 else -1.0)
             min_notional_f = max(1.0, first_pos_float(pos.get("exchange_min_notional_usd"), pos.get("min_notional_usd"), default=1.0) or 1.0)

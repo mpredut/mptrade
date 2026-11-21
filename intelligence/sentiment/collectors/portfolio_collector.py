@@ -83,6 +83,7 @@ from intelligence.sentiment.evaluators.portfolio_evaluator import (
     enrich_positions_with_orders_and_cycles,
     extract_symbol_recent_fills,
     parse_venue_cycle_state,
+    prune_superseded_open_lots_to_held_qty,
     reconcile_fresh_lots_vwap,
     reconcile_venue_cycles_with_recent_orders,
     select_fresh_open_lots,
@@ -1705,6 +1706,8 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                     held_cur_f = q_cur
             if held_cur_f > 1e-8:
                 fills["held_qty"] = round(held_cur_f, 6)
+                if prune_superseded_open_lots_to_held_qty(fills, held_cur_f):
+                    open_lots_raw = fills.get("open_lots") if isinstance(fills.get("open_lots"), list) else []
             fresh_lots, _ = select_fresh_open_lots(open_lots_raw, held_qty=held_cur_f)
             if fresh_lots:
                 _, fresh_q = reconcile_fresh_lots_vwap(fills, open_lots_raw, fresh_lots, held_cur_f)

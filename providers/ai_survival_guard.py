@@ -1148,6 +1148,7 @@ def format_ai_calibration_feedback_line(calibration: Any) -> str:
 
     if planned_n > 0:
         side_parts: list[str] = []
+        res_by_side: dict[str, int] = {}
         for sk in ("BUY", "SELL"):
             sc = by_side.get(sk)
             if not isinstance(sc, Mapping):
@@ -1156,11 +1157,18 @@ def format_ai_calibration_feedback_line(calibration: Any) -> str:
             i_n = safe_nonneg_int(sc.get("INVALIDATED"), default=0)
             e_n = safe_nonneg_int(sc.get("CLOSED_EARLY"), default=0)
             a_n = safe_nonneg_int(sc.get("ACTIVE"), default=0)
+            res_by_side[sk] = t_n + i_n
             if (t_n + i_n + e_n + a_n) > 0:
                 side_parts.append(f"{sk}:{t_n}T/{i_n}I/{e_n}E/{a_n}A")
         hit_r = safe_float(calibration.get("resolved_hit_rate_pct"), default=None)
         if hit_r is not None:
-            side_parts.append(f"hit={hit_r:.0f}%")
+            b_res, s_res = res_by_side.get("BUY", 0), res_by_side.get("SELL", 0)
+            only_sfx = (
+                "[SELL_only]"
+                if (s_res > 0 and b_res == 0 and len(side_parts) > 1)
+                else ("[BUY_only]" if (b_res > 0 and s_res == 0 and len(side_parts) > 1) else "")
+            )
+            side_parts.append(f"hit={hit_r:.0f}%{only_sfx}")
         inner = f" ({', '.join(side_parts)})" if side_parts else ""
         segments.append(f"plans={planned_n}{inner}")
 

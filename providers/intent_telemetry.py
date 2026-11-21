@@ -972,9 +972,10 @@ def summarize_active_ai_trade_plans(
             continue
         ident = resolve_symbol_identity(sym)
         disp_sym = ident.display_symbol if (ident.is_tokenized_equity and ident.display_symbol) else sym
+        is_limit_anchor = bool(is_resting and entry_px is not None and entry_px > 0.0)
         dist_anchor = (
             entry_px
-            if (is_resting and entry_px is not None and entry_px > 0.0)
+            if is_limit_anchor
             else (spot_px if (spot_px is not None and spot_px > 0.0) else entry_px)
         )
 
@@ -984,6 +985,7 @@ def summarize_active_ai_trade_plans(
             "side": side,
             "order_state": "RESTING" if is_resting else "FILLED",
             "status": status,
+            "dist_anchor": "limit" if is_limit_anchor else "spot",
         }
         if is_resting and det.get("order_id"):
             plan_rec["order_id"] = str(det["order_id"])

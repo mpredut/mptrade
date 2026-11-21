@@ -1109,3 +1109,155 @@ def test_crypto_executor_prompt_coherence_active_plans_calibration_xstocks_and_d
     assert snap.get("btc_dvol") == pytest.approx(51.4)
 
 
+def test_crypto_executor_prompt_data_accuracy_guards(tmp_path):
+    """Verify prompt data accuracy fixes: plan anchor labels, flow-scaled wall TCA, 5m VP impulse tolerance, one-sided hit tag, L1/proxy OI tag, and crypto venue scope."""
+    import json
+    from types import SimpleNamespace
+    from botcore import topic_spec
+    from intelligence.sentiment.collectors.microstructure_collector import upgrade_tpo_vp_from_ohlc
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import enrich_open_limit_orders_tca
+    from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_microstructure_section,
+        _format_portfolio_section,
+    )
+    from providers.ai_survival_guard import format_ai_calibration_feedback_line
+
+    # 1. Active AI Trade Plans explicitly label vs_spot (+ spot=...) on FILLED vs vs_limit on RESTING
+    sec3c = "\n".join(
+        _format_portfolio_section(
+            {
+                "active_ai_trade_plans": [
+                    {
+                        "venue": "kraken",
+                        "symbol": "TAOUSD",
+                        "side": "SELL",
+                        "order_state": "FILLED",
+                        "dist_anchor": "spot",
+                        "entry_px": 187.42,
+                        "spot_px": 178.38,
+                        "target_px": 184.2,
+                        "target_dist_pct": 3.26,
+                        "invalidation_px": 192.5,
+                        "invalidation_dist_pct": 7.92,
+                        "age_h": 11.2,
+                        "status": "TARGET_HIT",
+                    },
+                    {
+                        "venue": "binance",
+                        "symbol": "BTCUSDC",
+                        "side": "SELL",
+                        "order_state": "RESTING",
+                        "dist_anchor": "limit",
+                        "entry_px": 60050.0,
+                        "spot_px": 59247.69,
+                        "target_px": 58300.0,
+                        "target_dist_pct": -2.91,
+                        "invalidation_px": 61650.0,
+                        "invalidation_dist_pct": 2.66,
+                        "age_h": 0.1,
+                        "status": "ACTIVE",
+                    },
+                ],
+                "kraken_xstocks": {"underlying": "ANT", "t212_sibling": "ANT_US_EQ", "listed_pair": "ANTxUSD"},
+            },
+            asset_scope="crypto",
+        )
+    )
+    assert "SELL@187.42 (FILLED, spot=178.38, age=11.2h): target=184.2 (+3.26% vs_spot)" in sec3c
+    assert "SELL@60050.0 (RESTING, age=0.1h): target=58300.0 (-2.91% vs_limit)" in sec3c
+    assert "API-TRADABLE 24/7 on 'kraken' at 0bps maker/taker fee [SELL-ONLY EU API]" in sec3c
+
+    # 2. OpenLimitOrdersTcaEvaluator ignores sub-8% BTC noise quote ($230K on $4.41M depth / $7.95M 15m vol) while keeping real walls
+    btc_oo = [{"venue": "binance", "symbol": "BTCUSDC", "side": "SELL", "price": 60050.0}]
+    enrich_open_limit_orders_tca(
+        btc_oo,
+        {"BTCUSDC": {"price": 59247.69, "vol_1h_pct": 1.0}},
+        {
+            "BTCUSDC": {
+                "ob_mid_price": 59233.685,
+                "best_bid": 59233.68,
+                "best_ask": 59233.69,
+                "ask_depth_usd": 4_405_564.0,
+                "spot_vol_15m_usd": 7_950_000.0,
+                "ask_wall_px": 59414.34,
+                "ask_wall_usd": 230_840.0,
+            }
+        },
+    )
+    assert "wall_queue_pos" not in btc_oo[0]
+    assert "recommended_front_run_px" not in btc_oo[0]
+
+    # 3. upgrade_tpo_vp_from_ohlc keeps REAL_VOL across +2.2% 5m impulse when OHLC bar tail is fresh (<=30m)
+    now_vp = 1_795_211_000.0
+    ohlc_pts = [
+        [int((now_vp - 20 * 3600 + i * 900) * 1000), 60.0 + (i % 3) * 0.5, 1000.0, 61.5, 59.8, 60.2]
+        for i in range(80)
+    ]
+    (tmp_path / "cache_ohlc_24h_HYPEUSDC.json").write_text(
+        json.dumps({"ts": now_vp - 180.0, "symbol": "HYPEUSDC", "points": ohlc_pts}),
+        encoding="utf-8",
+    )
+    m24_hype = {"vp_source": "TPO", "low_24h": 59.7, "high_24h": 62.5}
+    upgrade_tpo_vp_from_ohlc(
+        "HYPEUSDC",
+        m24_hype,
+        cur_px=61.85,  # +2.23% above last bar close 60.5 -> previously dropped to TPO (>1.5%)
+        now_ts=now_vp,
+        s24_is_live_clock=True,
+        cache_dir=str(tmp_path),
+        allow_network=False,
+    )
+    assert m24_hype["vp_source"] == "REAL_VOL"
+
+    # 4. Calibration line tags one-sided resolved hit rate (hit=95%[SELL_only])
+    cal_line = format_ai_calibration_feedback_line(
+        {
+            "lookback_days": 7.0,
+            "planned_filled": 32,
+            "by_side": {
+                "BUY": {"TARGET_HIT": 0, "INVALIDATED": 0, "CLOSED_EARLY": 3, "ACTIVE": 5},
+                "SELL": {"TARGET_HIT": 19, "INVALIDATED": 1, "CLOSED_EARLY": 0, "ACTIVE": 4},
+            },
+            "resolved_hit_rate_pct": 95.0,
+            "venue_tca": {},
+        }
+    )
+    assert "hit=95%[SELL_only]" in cal_line
+
+    # 5. Section 3B marks perp_flow_src=bn_perp when native L1 OI differs from flow-venue OI
+    sec3b = "\n".join(
+        _format_microstructure_section(
+            {
+                "HYPEUSDC": {
+                    "ob_imbalance": 0.54,
+                    "bid_depth_usd": 8_000_000.0,
+                    "ask_depth_usd": 7_000_000.0,
+                    "whale_long_pct": 0.69,
+                    "taker_buy_sell_ratio": 1.27,
+                    "taker_buy_vol_usd": 2_800_000.0,
+                    "taker_sell_vol_usd": 2_200_000.0,
+                    "oi_usd": 308_802_875.55,
+                    "native_l1_oi_usd": 1_165_366_228.40,
+                    "oi_1h_chg_pct": 0.89,
+                    "funding_annualized_pct": 10.9,
+                }
+            },
+            {"HYPEUSDC": {"price": 61.63}},
+        )
+    )
+    assert "oi_usd=308802875.55 (l1_oi=$1.17B)" in sec3b
+    assert "perp_flow_src=bn_perp" in sec3b
+
+    # 6. Crypto prompt instructions omit 't212' from allowed venues and state SELL-only xStocks
+    crypto_prompt = build_supervisor_prompt(
+        SimpleNamespace(),
+        LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0),
+        topic_spec("auto_cryptotrade_executor"),
+    )
+    assert "WHICH venue (`binance`, `kraken`, `hyperliquid`)." in crypto_prompt
+    assert "0bps SELL-only xStocks ANTxUSD and SPCXxUSD" in crypto_prompt
+
+
+

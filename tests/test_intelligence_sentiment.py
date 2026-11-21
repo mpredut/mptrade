@@ -16625,6 +16625,95 @@ def test_iter8_equity_ext_hours_24h_preservation_and_sudan_news_filter():
     )
 
 
+def test_iter9_prune_superseded_open_lots_after_partial_sell_reconciles_active_lifo_pnl():
+    """Verify partial take-profit sells on an active cycle do not resurrect dead-cycle phantom lots or prior-cycle realized LIFO losses."""
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        SymbolRecentFillsEvaluator,
+        enrich_positions_with_orders_and_cycles,
+    )
+
+    now_ms = 1_795_211_500_000
+    day_ms = 86_400_000
+    # 1. Exact ARBUSDC pattern: ancient dust lots (18d & 4.8d old) left behind by missing older fills,
+    #    followed by prior-cycle exit sells (-$312.61), then fresh cycle buys (2624.6@0.1143 + 5162.1@0.1137),
+    #    and a profitable partial take-profit sell (5096.6@0.1138 -> +$0.51).
+    arb_orders = [
+        {"orderId": "1", "side": "BUY", "price": 0.1595, "executedQty": 84.1, "status": "FILLED", "time": now_ms - 18 * day_ms},
+        {"orderId": "2", "side": "BUY", "price": 0.1357, "executedQty": 27.8, "status": "FILLED", "time": now_ms - 4 * day_ms - 18 * 3600_000},
+        {"orderId": "3", "side": "BUY", "price": 0.1310, "executedQty": 19746.3, "status": "FILLED", "time": now_ms - 2 * day_ms},
+        {"orderId": "4a", "side": "SELL", "price": 0.1180, "executedQty": 15000.0, "status": "FILLED", "time": now_ms - 15 * 3600_000},
+        {"orderId": "4b", "side": "SELL", "price": 0.1180, "executedQty": 4746.3, "status": "FILLED", "time": now_ms - 14 * 3600_000},
+        {"orderId": "5", "side": "BUY", "price": 0.1143, "executedQty": 2624.6, "status": "FILLED", "time": now_ms - 6 * 3600_000},
+        {"orderId": "6", "side": "BUY", "price": 0.1137, "executedQty": 5162.1, "status": "FILLED", "time": now_ms - 5 * 3600_000},
+        {"orderId": "7", "side": "SELL", "price": 0.1138, "executedQty": 5096.6, "status": "FILLED", "time": now_ms - 120_000},
+    ]
+    ev = SymbolRecentFillsEvaluator()
+    arb_ro = ev.evaluate(arb_orders, symbol="ARBUSDC")
+    assert arb_ro is not None
+    # Raw replay still carries ancient L1/L2 dust lots and prior-cycle realized loss
+    assert len(arb_ro["open_lots"]) == 4
+    assert arb_ro["lifo_realized_pnl_usd"] < -200.0
+
+    # 2. Multi-tranche core+tactical position (BTCUSDC-style): older core lots ARE genuinely held
+    #    and must NOT be pruned when newer lots alone do not cover held_qty.
+    btc_orders = [
+        {"orderId": "10", "side": "BUY", "price": 117000.0, "executedQty": 0.015, "status": "FILLED", "time": now_ms - 60 * day_ms},
+        {"orderId": "11", "side": "BUY", "price": 64300.0, "executedQty": 0.023, "status": "FILLED", "time": now_ms - 5 * day_ms},
+        {"orderId": "12", "side": "BUY", "price": 63000.0, "executedQty": 0.010, "status": "FILLED", "time": now_ms - 12 * 3600_000},
+        {"orderId": "13", "side": "SELL", "price": 61500.0, "executedQty": 0.010, "status": "FILLED", "time": now_ms - 7 * 3600_000},
+        {"orderId": "14", "side": "BUY", "price": 59400.0, "executedQty": 0.020, "status": "FILLED", "time": now_ms - 5 * 3600_000},
+        {"orderId": "15", "side": "BUY", "price": 58420.0, "executedQty": 0.010, "status": "FILLED", "time": now_ms - 3 * 3600_000},
+    ]
+    btc_ro = ev.evaluate(btc_orders, symbol="BTCUSDC")
+    assert btc_ro is not None
+
+    positions = [
+        {
+            "venue": "binance",
+            "symbol": "ARBUSDC",
+            "free_base": 91.74511,
+            "free_base_qty": 91.74511,
+            "locked_base_qty": 2601.9,
+            "price": 0.1135,
+            "value_usd": 305.73,
+        },
+        {
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "free_base": 0.033,
+            "free_base_qty": 0.033,
+            "locked_base_qty": 0.020,
+            "price": 58963.0,
+            "value_usd": 3125.04,
+        },
+    ]
+    recent_orders = {"ARBUSDC": arb_ro, "BTCUSDC": btc_ro}
+    enrich_positions_with_orders_and_cycles(
+        positions,
+        {"ARBUSDC": {"price": 0.1135}, "BTCUSDC": {"price": 58963.0}},
+        {},
+        {"binance": recent_orders},
+        recent_orders,
+        {},
+        {},
+        {},
+        {},
+    )
+    arb_pos, btc_pos = positions[0], positions[1]
+    assert len(arb_pos["open_lots"]) == 2
+    assert [lt["entry_px"] for lt in arb_pos["open_lots"]] == [0.1143, 0.1137]
+    assert arb_pos["active_avg_buy_px"] == pytest.approx(0.114285, abs=1e-6)
+    assert arb_pos["lifo_realized_pnl_usd"] == pytest.approx(0.51, abs=0.01)
+    assert recent_orders["ARBUSDC"]["lifo_realized_pnl_usd"] == pytest.approx(0.51, abs=0.01)
+    assert "tactical_avg_buy_px" not in arb_pos
+
+    # BTCUSDC sheds only the ancient 60d phantom lot (0.015), keeping its real 5d core (0.023) + 3h-5h tactical (0.030) = 0.053 BTC
+    assert btc_pos["lifo_realized_pnl_usd"] == pytest.approx(-15.0, abs=0.01)
+    assert btc_pos["tactical_avg_buy_px"] == pytest.approx((0.020 * 59400.0 + 0.010 * 58420.0) / 0.030, abs=0.05)
+    assert sum(lt["qty"] for lt in recent_orders["BTCUSDC"]["open_lots"]) == pytest.approx(0.053, abs=1e-5)
+
+
+
 
 
 
