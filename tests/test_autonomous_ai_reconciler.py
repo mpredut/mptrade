@@ -9335,9 +9335,11 @@ def test_supervisor_run_cycle_uses_passive_read_snapshot_without_mutating_teleme
                 "ts": now_s - 10.0,
             },
             "cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 250.0},
-            "open_orders:binance:BTCUSDC": [],
-            "open_orders_verified_ts:binance": now_s - 10.0,
         },
+    )
+    save_json_state(
+        str(tmp_path / "cachedb" / "orders" / "cache_order_open_binance.json"),
+        {"items": {"BTCUSDC": []}, "fetchtime": {"BTCUSDC": int((now_s - 10.0) * 1000)}, "verified_ts": now_s - 10.0},
     )
     mb_before = mb_path.read_text(encoding="utf-8")
     vb_before = vb_path.read_text(encoding="utf-8")

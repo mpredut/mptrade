@@ -1,13 +1,13 @@
-"""Account domain cache hierarchy, multi-venue trade bridges, and SSOT reader singletons.
+"""Account domain cache hierarchy, multi-venue trade/order bridges, and SSOT reader singletons.
 
 Thematic layout (Sections 1..7):
   1. Level 2 Abstract Base: ``CacheAccountManagerBase(CacheManagerInterface, ABC)``
   2. Trade Fill Cache: ``CacheTradeManager(CacheAccountManagerBase)``
-  3. Order Snapshot Cache: ``CacheOrderManager(CacheAccountManagerBase)``
+  3. Order Snapshot Caches: ``CacheOrderFilledManager`` & ``CacheOrderOpenManager``
   4. Portfolio NAV Archive: ``CacheAssetValueManager(CacheAccountManagerBase)``
   5. Account Reader Synchronization & Daemon Lifecycle (`ensure_account_cache_readers`, `start_account_cache_daemon`)
-  6. Venue Account Trade Bridges (`_AccountTradeBridgeBase`, `_HyperliquidAccountTradeBridge`, `_KrakenAccountTradeBridge`, `_T212AccountTradeBridge`)
-  7. SSOT Singleton Factory Getters (`get_asset_value_manager`, `get_binance_order_manager`, `get_trade_manager`)
+  6. Venue Account Bridges (`_AccountTradeBridgeBase`, `_HyperliquidAccountTradeBridge`, `_KrakenAccountTradeBridge`, `_T212AccountTradeBridge`, `_VenueOpenOrdersBridge`)
+  7. SSOT Singleton Factory Getters (`get_asset_value_manager`, `get_order_filled_manager`, `get_order_open_manager`, `get_trade_manager`)
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from botcore import (
     _parse_bool_flag,
     _ts_ms_to_s,
     clean_order_id,
+    clean_upper_scalar,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
@@ -37,6 +38,7 @@ from botcore import (
     extract_timestamp_ms,
     extract_timestamp_s,
     first_epoch_sec,
+    first_pos_float,
     is_auto_start_websockets_enabled,
     is_live_network_backfill_enabled,
     log,
@@ -44,6 +46,7 @@ from botcore import (
     resolve_now_ms,
     resolve_now_ts,
     resolve_positive_max_age,
+    safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -61,11 +64,18 @@ from cacheInterface import (
 import cacheintegrity as _cache_integrity
 from cachepaths import (
     CACHE_ASSET_VALUE_FILENAME,
-    CACHE_BINANCE_ORDER_FILENAME,
+    CACHE_BINANCE_ORDER_FILLED_FILENAME,
+    CACHE_BINANCE_ORDER_OPEN_FILENAME,
     CACHE_BINANCE_TRADE_FILENAME,
     CACHE_CURRENT_PRICE_FILENAME,
+    CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME,
+    CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME,
     CACHE_HYPERLIQUID_TRADE_FILENAME,
+    CACHE_KRAKEN_ORDER_FILLED_FILENAME,
+    CACHE_KRAKEN_ORDER_OPEN_FILENAME,
     CACHE_KRAKEN_TRADE_FILENAME,
+    CACHE_T212_ORDER_FILLED_FILENAME,
+    CACHE_T212_ORDER_OPEN_FILENAME,
     CACHE_T212_TRADE_FILENAME,
     VENUE_BALANCES_STATE_FILENAME,
     cache_path,
@@ -74,12 +84,24 @@ from cachepaths import (
     clean_scalar_str,
     clean_symbol_key,
     is_primary_stream_venue,
+    legacy_filenames_for,
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
 import instrument_registry as sym
 from instrument_registry import casefold_get
 from providers.base import MarketDataProvider
+from providers.order_id_context import extract_client_order_id
+from providers.order_ohlc_utils import (
+    extract_executed_qty,
+    extract_order_fee,
+    extract_orig_qty,
+)
+from providers.order_status_ssot import (
+    TERMINAL_AUDIT_VENUE_STATUSES,
+    TERMINAL_CANCEL_VENUE_STATUSES,
+    is_open_working_status,
+)
 from providers.portfolio_valuation import compute_venue_nav_breakdown
 from state_io import (
     atomic_text_writer,
@@ -121,11 +143,12 @@ _bapi_ws_bridge = (
 
 
 class CacheAccountManagerBase(CacheManagerInterface, ABC):
-    """Abstract base contract (Level 2) for account-domain caches (``Order``, ``Trade``, ``AssetValue``)."""
+    """Abstract base contract (Level 2) for account-domain caches (``OrderFilled``, ``OrderOpen``, ``Trade``, ``AssetValue``)."""
 
     _default_api_client = api
     _is_trade_account_cache = False
     _is_order_account_cache = False
+    _is_open_order_account_cache = False
     VENUE_FILENAMES: dict[str, str] = {}
 
     @classmethod
@@ -133,6 +156,39 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         """Return the canonical on-disk filename for ``venue``."""
         v_key = normalize_venue_name(venue, default="binance") or "binance"
         return str(cls.VENUE_FILENAMES.get(v_key, cls.DEFAULT_FILENAME) or "")
+
+    @staticmethod
+    def venue_for_symbol(symbol: object, *, default: str = "binance") -> str:
+        """Resolve the configured venue ('binance', 'kraken', 'hyperliquid', 't212') for ``symbol`` via ``instrument_registry``."""
+        try:
+            return sym.venue_for_symbol(symbol, default=default)
+        except Exception:
+            return normalize_venue_name(default, default="binance") or "binance"
+
+    @classmethod
+    def _normalize_venue_arg(
+        cls,
+        venue: Optional[str] = None,
+        filename: Optional[str] = None,
+        symbols=None,
+    ) -> str:
+        v_norm = normalize_venue_name(venue)
+        if v_norm in cls.VENUE_FILENAMES:
+            return v_norm
+        clean_fname = clean_scalar_str(os.fspath(filename)) if isinstance(filename, (str, os.PathLike)) else None
+        base_f = os.path.basename(clean_fname or "").lower()
+        for cand_v, cand_f in cls.VENUE_FILENAMES.items():
+            if base_f == cand_f.lower() or f"_{cand_v}." in base_f:
+                return cand_v
+        if not base_f and symbols:
+            first_sym = (
+                symbols
+                if isinstance(symbols, str)
+                else (next(iter(symbols), None) if isinstance(symbols, (list, tuple, set)) else None)
+            )
+            if clean_scalar_str(first_sym) is not None:
+                return cls.venue_for_symbol(first_sym)
+        return "binance"
     _persisted_data_version = ""
     _persisted_stream_id = ""
     _persisted_revision = 0
@@ -357,6 +413,7 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
 
     def _validate_account_rows_locked(self):
         """Reject any financial row that strict readers could not accept."""
+        strict_int = bool(getattr(self, "_requires_int_order_id", lambda: True)())
         _cache_integrity.validate_account_cache_state(
             cls_name=self.cls_name,
             is_trade_cache=bool(self._is_trade_account_cache),
@@ -365,6 +422,7 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
             fetchtime_per_symbol=self.fetchtime_per_symbol,
             rest_sync_cursor_per_symbol=self._rest_sync_cursor_per_symbol,
             is_valid_item_fn=self._is_valid_item,
+            strict_int_order_id=strict_int,
         )
 
     def _account_reader_reason(self):
@@ -1885,16 +1943,58 @@ class CacheTradeManager(CacheAccountManagerBase):
 
 
 # =============================================================================
-# 3. ORDER SNAPSHOT CACHE: CacheOrderManager
+# 3. ORDER SNAPSHOT CACHES: CacheOrderFilledManager & CacheOrderOpenManager
 # =============================================================================
 
 
-class CacheOrderManager(CacheAccountManagerBase):
-    """Account order aggregate cache (Level 3) backed by versioned JSON snapshots and schema-v2 manifests."""
+_TERMINAL_NON_OPEN_STATUSES = TERMINAL_AUDIT_VENUE_STATUSES | TERMINAL_CANCEL_VENUE_STATUSES
+_OPEN_ORDER_EXEC_KEYS = ("executedQty", "executed_qty", "filledQty", "filled_qty", "filledQuantity", "vol_exec")
+
+
+def _sibling_order_filled_path(trade_cache_file: str, venue: str) -> str:
+    """Resolve the sibling ``cache_order_filled_<venue>.json`` path in the same directory as ``trade_cache_file``."""
+    v_norm = normalize_venue_name(venue, default="binance") or "binance"
+    fname = CacheOrderFilledManager.disk_filename(v_norm)
+    base_dir = os.path.dirname(os.path.abspath(str(trade_cache_file))) if trade_cache_file else ""
+    return os.path.join(base_dir, fname) if base_dir else cache_path(fname)
+
+
+def _merge_optional_order_fee(existing: dict, incoming: dict, merged: dict) -> None:
+    """Accumulate optional ``fee`` and ``feeAsset`` across fills belonging to the same order."""
+    ex_fee = safe_nonneg_float(existing.get("fee"), default=None)
+    in_fee = safe_nonneg_float(incoming.get("fee"), default=None)
+    ex_asset = clean_upper_scalar(existing.get("feeAsset")) or ""
+    in_asset = clean_upper_scalar(incoming.get("feeAsset")) or ""
+    if ex_fee is not None and in_fee is not None:
+        if not ex_asset or not in_asset or ex_asset == in_asset:
+            merged["fee"] = round(ex_fee + in_fee, 10)
+            eff_asset = ex_asset or in_asset
+            if eff_asset:
+                merged["feeAsset"] = eff_asset
+        else:
+            merged["fee"] = ex_fee
+            merged["feeAsset"] = ex_asset
+    elif ex_fee is not None:
+        merged["fee"] = ex_fee
+        if ex_asset:
+            merged["feeAsset"] = ex_asset
+    elif in_fee is not None:
+        merged["fee"] = in_fee
+        if in_asset:
+            merged["feeAsset"] = in_asset
+
+
+class CacheOrderFilledManager(CacheAccountManagerBase):
+    """Cross-venue filled-order aggregate cache (Level 3) backed by JSON snapshots and schema-v2 manifests."""
 
     _is_order_account_cache = True
-    DEFAULT_FILENAME = CACHE_BINANCE_ORDER_FILENAME
-    VENUE_FILENAMES: dict[str, str] = {"binance": CACHE_BINANCE_ORDER_FILENAME}
+    DEFAULT_FILENAME = CACHE_BINANCE_ORDER_FILLED_FILENAME
+    VENUE_FILENAMES: dict[str, str] = {
+        "binance": CACHE_BINANCE_ORDER_FILLED_FILENAME,
+        "kraken": CACHE_KRAKEN_ORDER_FILLED_FILENAME,
+        "hyperliquid": CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME,
+        "t212": CACHE_T212_ORDER_FILLED_FILENAME,
+    }
 
     def __init__(
         self,
@@ -1905,7 +2005,9 @@ class CacheOrderManager(CacheAccountManagerBase):
         read_only=False,
         *,
         data_sync_mode: Optional[str] = None,
+        venue: Optional[str] = None,
     ):
+        self.venue = self._normalize_venue_arg(venue=venue, filename=filename, symbols=symbols)
         super().__init__(
             sync_ts,
             symbols,
@@ -1917,14 +2019,34 @@ class CacheOrderManager(CacheAccountManagerBase):
             data_sync_mode=data_sync_mode,
         )
 
+    def _requires_int_order_id(self) -> bool:
+        return bool(is_primary_stream_venue(getattr(self, "venue", "binance")))
+
+    def _is_canonical_account_cache(self):
+        return self._requires_int_order_id() and super()._is_canonical_account_cache()
+
     @staticmethod
-    def _normalize_fill_id(raw_fill_id) -> Optional[str]:
+    def _normalize_fill_id(raw_fill_id, *, strict_int: bool = True) -> Optional[str]:
         if raw_fill_id is None or isinstance(raw_fill_id, bool):
             return None
         s = str(raw_fill_id).strip()
-        if not s or not s.isascii() or not s.isdigit():
+        if not s:
+            return None
+        if not strict_int:
+            return clean_order_id(s)
+        if not s.isascii() or not s.isdigit():
             return None
         return s.lstrip("0") or "0"
+
+    @staticmethod
+    def _normalize_order_id(raw_order_id, *, strict_int: bool = True) -> Optional[int | str]:
+        if raw_order_id is None or isinstance(raw_order_id, bool):
+            return None
+        if strict_int:
+            return strict_ascii_int(raw_order_id, min_value=1)
+        if isinstance(raw_order_id, int):
+            return str(raw_order_id) if raw_order_id >= 1 else None
+        return clean_order_id(raw_order_id)
 
     def _is_valid_item(self, trade):
         if not isinstance(trade, dict):
@@ -1932,35 +2054,41 @@ class CacheOrderManager(CacheAccountManagerBase):
         required_keys = ("orderId", "price", "quantity", "timestamp", "side")
         if not all(key in trade for key in required_keys):
             return False
+        strict_int = self._requires_int_order_id()
         legacy_cutoff = trade.get("_legacyCoveredThrough")
-        return (
-            strict_ascii_int(trade["orderId"], min_value=1) is not None
-            and safe_pos_float(trade["price"], default=None) is not None
-            and safe_pos_float(trade["quantity"], default=None) is not None
-            and strict_ascii_int(trade["timestamp"], min_value=1) is not None
-            and str(trade["side"]).upper() in ("BUY", "SELL")
-            and (
-                legacy_cutoff is None
-                or strict_ascii_int(legacy_cutoff, min_value=1) is not None
-            )
-            and (
-                "_fillIds" not in trade
-                or (
-                    isinstance(trade["_fillIds"], list)
-                    and len(
-                        {
-                            norm_fid
-                            for fill_id in trade["_fillIds"]
-                            if (norm_fid := self._normalize_fill_id(fill_id)) is not None
-                        }
-                    )
-                    == len(trade["_fillIds"])
-                )
-            )
-        )
+        if self._normalize_order_id(trade["orderId"], strict_int=strict_int) is None:
+            return False
+        if (
+            safe_pos_float(trade["price"], default=None) is None
+            or safe_pos_float(trade["quantity"], default=None) is None
+            or strict_ascii_int(trade["timestamp"], min_value=1) is None
+            or str(trade["side"]).upper() not in ("BUY", "SELL")
+        ):
+            return False
+        if legacy_cutoff is not None and strict_ascii_int(legacy_cutoff, min_value=1) is None:
+            return False
+        for opt_str_key in ("clientOrderId", "status", "type", "feeAsset"):
+            if opt_str_key in trade and trade[opt_str_key] is not None:
+                if isinstance(trade[opt_str_key], bool) or clean_scalar_str(trade[opt_str_key]) is None:
+                    return False
+        if "fee" in trade and trade["fee"] is not None:
+            if isinstance(trade["fee"], bool) or safe_nonneg_float(trade["fee"], default=None) is None:
+                return False
+        if "_fillIds" in trade:
+            raw_fids = trade["_fillIds"]
+            if not isinstance(raw_fids, list):
+                return False
+            norm_fids = {
+                norm_fid
+                for fill_id in raw_fids
+                if (norm_fid := self._normalize_fill_id(fill_id, strict_int=strict_int)) is not None
+            }
+            if len(norm_fids) != len(raw_fids):
+                return False
+        return True
 
     def _load_snapshot_state(self):
-        """Load Order cache state strictly when durable data or metadata exists."""
+        """Load Order snapshot state strictly when durable data or metadata exists."""
         with self._generation_lock():
             loaded = self._load_order_state_generation_locked()
         if not loaded and not self.read_only:
@@ -2140,8 +2268,9 @@ class CacheOrderManager(CacheAccountManagerBase):
 
     def get_remote_items(self, symbol, startTime):
         fills = self._paginate_validated_trades(symbol, startTime, "fill")
-        order_fills = [
-            {
+        order_fills = []
+        for fill in fills:
+            row: dict[str, Any] = {
                 "orderId": fill["orderId"],
                 "price": extract_order_price(fill),
                 "quantity": extract_order_qty(fill),
@@ -2149,16 +2278,22 @@ class CacheOrderManager(CacheAccountManagerBase):
                 "side": extract_order_side(fill),
                 "_fillId": str(fill["id"]),
             }
-            for fill in fills
-        ]
+            if cid := extract_client_order_id(fill, default=""):
+                row["clientOrderId"] = cid
+            if (fee_val := safe_nonneg_float(fill.get("commission"), default=None)) is not None:
+                row["fee"] = fee_val
+            if fee_asset := clean_upper_scalar(fill.get("commissionAsset")):
+                row["feeAsset"] = fee_asset
+            order_fills.append(row)
         print(f"[{self.cls_name}][info] New order fills: {len(order_fills)}")
         return order_fills
 
     def _persist_items(self, symbol, new_items):
-        """Merge each immutable fill exactly once into its order aggregate."""
+        """Merge each immutable fill exactly once into its filled-order aggregate."""
         if not new_items or not (new_items := self._coerce_item_list(new_items)):
             return
         now_ms = math.trunc(_now_time() * 1000)
+        strict_int = self._requires_int_order_id()
         with self.lock:
             bucket = self.cache.setdefault(symbol, [])
             candidate = [dict(item) for item in bucket]
@@ -2174,14 +2309,15 @@ class CacheOrderManager(CacheAccountManagerBase):
                     )
                 ):
                     raise RuntimeError("invalid Order row already in memory")
-                oid_key = str(strict_ascii_int(item["orderId"], default=0, min_value=1) or 0)
+                oid_val = self._normalize_order_id(item["orderId"], strict_int=strict_int)
+                oid_key = str(oid_val)
                 if oid_key in by_id:
                     raise RuntimeError(
                         f"duplicate Order aggregate ID {oid_key} in memory"
                     )
                 by_id[oid_key] = index
                 for existing_fid in item.get("_fillIds", []):
-                    fid_key = self._normalize_fill_id(existing_fid)
+                    fid_key = self._normalize_fill_id(existing_fid, strict_int=strict_int)
                     prev_owner = fill_owners.get(fid_key)
                     if prev_owner is not None and prev_owner != oid_key:
                         raise RuntimeError(
@@ -2200,16 +2336,16 @@ class CacheOrderManager(CacheAccountManagerBase):
                 raw_fill_id = incoming.pop("_fillId", None)
                 fill_id = ""
                 if raw_fill_id is not None:
-                    fill_id = self._normalize_fill_id(raw_fill_id)
+                    fill_id = self._normalize_fill_id(raw_fill_id, strict_int=strict_int)
                     if fill_id is None:
                         raise RuntimeError("invalid incoming Order fill ID")
                 if not self._is_valid_item(incoming):
                     raise RuntimeError("invalid incoming Order row")
-                oid_int = strict_ascii_int(incoming["orderId"], default=0, min_value=1) or 0
+                oid_norm = self._normalize_order_id(incoming["orderId"], strict_int=strict_int)
                 incoming_ts = strict_ascii_int(incoming["timestamp"], default=0, min_value=1) or 0
                 incoming_px = safe_pos_float(incoming["price"], default=0.0) or 0.0
                 incoming_qty = safe_pos_float(incoming["quantity"], default=0.0) or 0.0
-                key = str(oid_int)
+                key = str(oid_norm)
                 if fill_id:
                     prev_owner = fill_owners.get(fill_id)
                     if prev_owner is not None and prev_owner != key:
@@ -2219,11 +2355,19 @@ class CacheOrderManager(CacheAccountManagerBase):
                 existing_index = by_id.get(key)
                 if existing_index is None:
                     by_id[key] = len(candidate)
-                    incoming["orderId"] = oid_int
+                    incoming["orderId"] = oid_norm
                     incoming["price"] = incoming_px
                     incoming["quantity"] = incoming_qty
                     incoming["timestamp"] = incoming_ts
                     incoming["side"] = str(incoming["side"]).upper()
+                    if "fee" in incoming and incoming["fee"] is not None:
+                        incoming["fee"] = safe_nonneg_float(incoming["fee"], default=0.0) or 0.0
+                    if "feeAsset" in incoming and incoming["feeAsset"] is not None:
+                        incoming["feeAsset"] = clean_upper_scalar(incoming["feeAsset"])
+                    if "status" in incoming and incoming["status"] is not None:
+                        incoming["status"] = clean_upper_scalar(incoming["status"])
+                    if "type" in incoming and incoming["type"] is not None:
+                        incoming["type"] = clean_upper_scalar(incoming["type"])
                     if fill_id:
                         incoming["_fillIds"] = [fill_id]
                         fill_owners[fill_id] = key
@@ -2233,7 +2377,7 @@ class CacheOrderManager(CacheAccountManagerBase):
                 existing = candidate[existing_index]
                 existing_ts = strict_ascii_int(existing["timestamp"], default=0, min_value=1) or 0
                 known_fill_id_list = [
-                    self._normalize_fill_id(existing_fill_id)
+                    self._normalize_fill_id(existing_fill_id, strict_int=strict_int)
                     for existing_fill_id in existing.get("_fillIds", [])
                 ]
                 legacy_cutoff = safe_nonneg_int(existing.get("_legacyCoveredThrough"), default=None)
@@ -2241,6 +2385,10 @@ class CacheOrderManager(CacheAccountManagerBase):
                     legacy_cutoff = existing_ts
                 known_fill_ids = {*known_fill_id_list}
                 if fill_id and fill_id in known_fill_ids:
+                    if not existing.get("clientOrderId") and incoming.get("clientOrderId"):
+                        existing["clientOrderId"] = incoming["clientOrderId"]
+                    if not existing.get("status") and incoming.get("status"):
+                        existing["status"] = clean_upper_scalar(incoming["status"])
                     continue
                 if legacy_cutoff is not None and incoming_ts <= legacy_cutoff:
                     continue
@@ -2263,13 +2411,24 @@ class CacheOrderManager(CacheAccountManagerBase):
                 merged.update(incoming)
                 merged.update(
                     {
-                        "orderId": strict_ascii_int(existing["orderId"], default=0, min_value=1) or 0,
+                        "orderId": self._normalize_order_id(existing["orderId"], strict_int=strict_int),
                         "price": round(aggregate_price, 8) or round(aggregate_price, 16),
                         "quantity": round(total_quantity, 8) or round(total_quantity, 16),
                         "timestamp": max(existing_ts, incoming_ts),
                         "side": str(existing["side"]).upper(),
                     }
                 )
+                if cid_keep := existing.get("clientOrderId") or incoming.get("clientOrderId"):
+                    merged["clientOrderId"] = cid_keep
+                if type_keep := clean_upper_scalar(existing.get("type") or incoming.get("type")):
+                    merged["type"] = type_keep
+                in_st = clean_upper_scalar(incoming.get("status"))
+                ex_st = clean_upper_scalar(existing.get("status"))
+                if in_st and (incoming_ts >= existing_ts or not ex_st):
+                    merged["status"] = in_st
+                elif ex_st:
+                    merged["status"] = ex_st
+                _merge_optional_order_fee(existing, incoming, merged)
                 if fill_id:
                     merged["_fillIds"] = list(
                         dict.fromkeys([*known_fill_id_list, fill_id])
@@ -2282,6 +2441,632 @@ class CacheOrderManager(CacheAccountManagerBase):
             if candidate != bucket:
                 self.cache[symbol] = candidate
                 self._advance_symbol_fetchtime_locked(symbol, now_ms)
+
+    @classmethod
+    def aggregate_fills_to_order_rows(
+        cls,
+        fills: Any,
+        *,
+        venue: str = "",
+    ) -> list[dict[str, Any]]:
+        """Aggregate raw venue fills into canonical compact per-order rows for ``CacheOrderFilledManager``."""
+        if not isinstance(fills, (list, tuple)):
+            return []
+        strict_int = bool(is_primary_stream_venue(venue)) if venue else False
+        grouped: dict[str, dict[str, Any]] = {}
+        order_sequence: list[str] = []
+        for raw in fills:
+            if not isinstance(raw, dict):
+                continue
+            raw_oid = (
+                raw.get("orderId")
+                or raw.get("order_id")
+                or raw.get("ordertxid")
+                or raw.get("oid")
+                or extract_order_id(raw, default=None)
+            )
+            oid_norm = cls._normalize_order_id(raw_oid, strict_int=strict_int)
+            if oid_norm is None:
+                continue
+            px = safe_pos_float(extract_order_price(raw, default=None), default=None)
+            qty = safe_pos_float(extract_executed_qty(raw, default=None), default=None) or safe_pos_float(
+                extract_order_qty(raw, default=None), default=None
+            )
+            ts_ms = extract_timestamp_ms(raw, default=None)
+            side = extract_order_side(raw) or normalize_side(raw.get("side"))
+            if px is None or qty is None or ts_ms is None or ts_ms <= 0 or side not in ("BUY", "SELL"):
+                continue
+            oid_key = str(oid_norm)
+            raw_fid = raw.get("id") or raw.get("tid") or raw.get("trade_id") or raw.get("_fillId")
+            fid = cls._normalize_fill_id(raw_fid, strict_int=strict_int)
+            cid = extract_client_order_id(raw, default="")
+            st_u = clean_upper_scalar(raw.get("status"))
+            raw_type = clean_upper_scalar(raw.get("type") or raw.get("orderType"))
+            otype = raw_type if raw_type not in (None, "BUY", "SELL", "B", "S") else None
+            fee_info = extract_order_fee(raw, fill_price=px)
+            fee_val = safe_nonneg_float(fee_info["fee"], default=None) if isinstance(fee_info, dict) else None
+            fee_asset = clean_upper_scalar(fee_info.get("fee_asset")) if isinstance(fee_info, dict) else None
+
+            if oid_key not in grouped:
+                order_sequence.append(oid_key)
+                entry: dict[str, Any] = {
+                    "orderId": oid_norm,
+                    "side": side,
+                    "price": round(px, 8) or round(px, 16),
+                    "quantity": round(qty, 8) or round(qty, 16),
+                    "timestamp": math.trunc(ts_ms),
+                    "status": st_u or "FILLED",
+                }
+                if cid:
+                    entry["clientOrderId"] = cid
+                if otype:
+                    entry["type"] = otype
+                if fee_val is not None:
+                    entry["fee"] = round(fee_val, 10)
+                if fee_asset:
+                    entry["feeAsset"] = fee_asset
+                if fid:
+                    entry["_fillIds"] = [fid]
+                grouped[oid_key] = entry
+                continue
+
+            cur = grouped[oid_key]
+            known_fids = cur.get("_fillIds") or []
+            if fid and fid in known_fids:
+                if cid and not cur.get("clientOrderId"):
+                    cur["clientOrderId"] = cid
+                continue
+            prev_q = safe_pos_float(cur["quantity"], default=0.0) or 0.0
+            prev_px = safe_pos_float(cur["price"], default=0.0) or 0.0
+            tot_q = prev_q + qty
+            vwap = (prev_px * prev_q + px * qty) / tot_q if tot_q > 0.0 else px
+            cur["price"] = round(vwap, 8) or round(vwap, 16)
+            cur["quantity"] = round(tot_q, 8) or round(tot_q, 16)
+            cur["timestamp"] = max(cur["timestamp"], math.trunc(ts_ms))
+            if cid and not cur.get("clientOrderId"):
+                cur["clientOrderId"] = cid
+            if otype and not cur.get("type"):
+                cur["type"] = otype
+            if st_u and (math.trunc(ts_ms) >= cur["timestamp"] or not cur.get("status")):
+                cur["status"] = st_u
+            if fee_val is not None:
+                _merge_optional_order_fee(cur, {"fee": fee_val, "feeAsset": fee_asset}, cur)
+            if fid:
+                cur["_fillIds"] = [*known_fids, fid]
+        rows = [grouped[k] for k in order_sequence]
+        rows.sort(key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")))
+        return rows
+
+    @classmethod
+    def merge_venue_filled_orders_snapshot(
+        cls,
+        cache_file: str,
+        fills_by_symbol: dict,
+        *,
+        venue: str = "",
+        now_ms: Optional[int] = None,
+        is_snapshot: bool = False,
+        touch_symbols=None,
+        touch_create_missing: bool = False,
+        indent: Optional[int] = 1,
+        force_save: bool = False,
+    ) -> dict:
+        """Atomically aggregate and merge per-symbol fills into ``cache_order_filled_<venue>.json``."""
+        target_path = str(cache_file)
+        eff_now_ms = resolve_now_ms(now_ms)
+        strict_int = bool(is_primary_stream_venue(venue)) if venue else False
+        is_snapshot_b = _parse_bool_flag(is_snapshot, False)
+        touch_create_b = _parse_bool_flag(touch_create_missing, False)
+        force_save_b = _parse_bool_flag(force_save, False)
+        with generation_file_lock(target_path):
+            loaded = read_json_dict_recovering(target_path, repair_files=True)
+            if not isinstance(loaded, dict):
+                loaded = {}
+            items = loaded.get("items") if isinstance(loaded.get("items"), dict) else {}
+            ft = loaded.get("fetchtime") if isinstance(loaded.get("fetchtime"), dict) else {}
+            cache_obj = {"items": items, "fetchtime": ft}
+            changed = False
+            for sym_key, raw_rows in (fills_by_symbol or {}).items():
+                if clean_scalar_str(sym_key) is None or not isinstance(raw_rows, (list, tuple)):
+                    continue
+                agg_rows = cls.aggregate_fills_to_order_rows(raw_rows, venue=venue)
+                existing_bucket = items.get(sym_key) if isinstance(items.get(sym_key), list) else []
+                by_oid: dict[str, dict[str, Any]] = {}
+                for ex in existing_bucket:
+                    if isinstance(ex, dict) and (ex_oid := cls._normalize_order_id(ex.get("orderId"), strict_int=strict_int)) is not None:
+                        by_oid[str(ex_oid)] = dict(ex)
+                for inc in agg_rows:
+                    inc_key = str(inc["orderId"])
+                    if inc_key not in by_oid:
+                        by_oid[inc_key] = dict(inc)
+                        continue
+                    ex_row = by_oid[inc_key]
+                    ex_fids = list(ex_row.get("_fillIds") or ())
+                    inc_fids = list(inc.get("_fillIds") or ())
+                    if inc_fids and ex_fids and set(inc_fids).issubset(set(ex_fids)):
+                        if inc.get("clientOrderId") and not ex_row.get("clientOrderId"):
+                            ex_row["clientOrderId"] = inc["clientOrderId"]
+                        if inc.get("status") and not ex_row.get("status"):
+                            ex_row["status"] = inc["status"]
+                        continue
+                    if is_snapshot_b or (inc_fids and ex_fids and set(ex_fids).issubset(set(inc_fids))):
+                        merged_row = dict(ex_row)
+                        merged_row.update(inc)
+                        if ex_row.get("clientOrderId") and not merged_row.get("clientOrderId"):
+                            merged_row["clientOrderId"] = ex_row["clientOrderId"]
+                        by_oid[inc_key] = merged_row
+                    else:
+                        ex_q = safe_pos_float(ex_row.get("quantity"), default=0.0) or 0.0
+                        in_q = safe_pos_float(inc.get("quantity"), default=0.0) or 0.0
+                        if inc_fids and ex_fids and not (set(inc_fids) & set(ex_fids)):
+                            tot_q = ex_q + in_q
+                            ex_px = safe_pos_float(ex_row.get("price"), default=0.0) or 0.0
+                            in_px = safe_pos_float(inc.get("price"), default=0.0) or 0.0
+                            vwap = (ex_px * ex_q + in_px * in_q) / tot_q if tot_q > 0.0 else in_px
+                            merged_row = dict(ex_row)
+                            merged_row.update(inc)
+                            merged_row["price"] = round(vwap, 8) or round(vwap, 16)
+                            merged_row["quantity"] = round(tot_q, 8) or round(tot_q, 16)
+                            merged_row["timestamp"] = max(
+                                safe_nonneg_int(ex_row.get("timestamp"), default=0) or 0,
+                                safe_nonneg_int(inc.get("timestamp"), default=0) or 0,
+                            )
+                            merged_row["_fillIds"] = list(dict.fromkeys([*ex_fids, *inc_fids]))
+                            _merge_optional_order_fee(ex_row, inc, merged_row)
+                            by_oid[inc_key] = merged_row
+                        elif in_q > ex_q + 1e-12 or (
+                            safe_nonneg_int(inc.get("timestamp"), default=0) or 0
+                        ) > (safe_nonneg_int(ex_row.get("timestamp"), default=0) or 0):
+                            merged_row = dict(ex_row)
+                            merged_row.update(inc)
+                            if ex_fids or inc_fids:
+                                merged_row["_fillIds"] = list(dict.fromkeys([*ex_fids, *inc_fids]))
+                            by_oid[inc_key] = merged_row
+                new_bucket = sorted(
+                    by_oid.values(),
+                    key=lambda r: (safe_nonneg_int(r.get("timestamp"), default=0) or 0, str(r.get("orderId") or "")),
+                )
+                if new_bucket != existing_bucket or sym_key not in items:
+                    items[sym_key] = new_bucket
+                    changed = True
+                old_ft = safe_pos_float(ft.get(sym_key), default=None)
+                if old_ft is None or (eff_now_ms - old_ft) >= 60_000:
+                    changed = True
+                ft[sym_key] = eff_now_ms
+            if touch_symbols:
+                for ts_sym in touch_symbols:
+                    if clean_scalar_str(ts_sym) is None:
+                        continue
+                    if ts_sym not in items and touch_create_b:
+                        items[ts_sym] = []
+                        changed = True
+                    if ts_sym in items or touch_create_b:
+                        old_ft = safe_pos_float(ft.get(ts_sym), default=None)
+                        if old_ft is None or (eff_now_ms - old_ft) >= 60_000:
+                            changed = True
+                        ft[ts_sym] = eff_now_ms
+            if changed or is_snapshot_b or force_save_b or not os.path.exists(target_path):
+                save_json_state(target_path, cache_obj, indent=indent)
+            return cache_obj
+
+    @classmethod
+    def touch_venue_filled_orders_snapshot(
+        cls,
+        cache_file: str,
+        now_ms=None,
+        *,
+        symbols=None,
+        create_missing: bool = False,
+        indent: Optional[int] = 1,
+    ) -> bool:
+        """Atomically refresh ``fetchtime`` across active symbols in ``cache_order_filled_<venue>.json``."""
+        if not cache_file:
+            return False
+        target_path = str(cache_file)
+        eff_now_ms = resolve_now_ms(now_ms)
+        create_b = _parse_bool_flag(create_missing, False)
+        try:
+            with generation_file_lock(target_path):
+                if not os.path.exists(target_path) and not create_b:
+                    return False
+                loaded = read_json_dict_recovering(target_path, repair_files=True)
+                if not isinstance(loaded, dict):
+                    loaded = {}
+                items = loaded.get("items") if isinstance(loaded.get("items"), dict) else {}
+                ft = loaded.get("fetchtime") if isinstance(loaded.get("fetchtime"), dict) else {}
+                touched = False
+                for s in (symbols or list(items.keys())):
+                    if clean_scalar_str(s) is None:
+                        continue
+                    if s not in items:
+                        if not create_b:
+                            continue
+                        items[s] = []
+                    ft[s] = eff_now_ms
+                    touched = True
+                if touched:
+                    save_json_state(target_path, {"items": items, "fetchtime": ft}, indent=indent)
+                return touched
+        except Exception:
+            return False
+
+
+class CacheOrderOpenManager(CacheAccountManagerBase):
+    """Cross-venue live open-order cache (Level 3) using replace-all snapshot semantics."""
+
+    _is_open_order_account_cache = True
+    DEFAULT_FILENAME = CACHE_BINANCE_ORDER_OPEN_FILENAME
+    VENUE_FILENAMES: dict[str, str] = {
+        "binance": CACHE_BINANCE_ORDER_OPEN_FILENAME,
+        "kraken": CACHE_KRAKEN_ORDER_OPEN_FILENAME,
+        "hyperliquid": CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME,
+        "t212": CACHE_T212_ORDER_OPEN_FILENAME,
+    }
+
+    def __init__(
+        self,
+        sync_ts,
+        symbols,
+        filename,
+        api_client=None,
+        read_only=False,
+        *,
+        data_sync_mode: Optional[str] = None,
+        venue: Optional[str] = None,
+    ):
+        self.venue = self._normalize_venue_arg(venue=venue, filename=filename, symbols=symbols)
+        self.verified_ts: float = 0.0
+        super().__init__(
+            sync_ts,
+            symbols,
+            filename,
+            append_mode=False,
+            api_client=api_client,
+            append_persist=False,
+            read_only=read_only,
+            data_sync_mode=data_sync_mode,
+        )
+
+    @classmethod
+    def normalize_open_order_row(
+        cls,
+        raw: Any,
+        *,
+        default_status: str = "NEW",
+    ) -> Optional[dict[str, Any]]:
+        """Normalize any venue open-order dict into the compact canonical open-order cache schema."""
+        if not isinstance(raw, dict):
+            return None
+        oid = clean_order_id(extract_order_id(raw, default=None))
+        if not oid:
+            return None
+        raw_status = clean_upper_scalar(raw.get("status")) or ""
+        if raw_status in _TERMINAL_NON_OPEN_STATUSES:
+            return None
+        side = extract_order_side(raw) or normalize_side(raw.get("side"))
+        if side not in ("BUY", "SELL"):
+            return None
+        orig_q = safe_pos_float(
+            extract_orig_qty(raw, default=None), default=None
+        ) or safe_pos_float(extract_order_qty(raw, default=None), default=None)
+        if orig_q is None:
+            return None
+        has_exec_key = any(k in raw for k in _OPEN_ORDER_EXEC_KEYS)
+        exec_q = (
+            safe_nonneg_float(extract_executed_qty(raw, default=0.0), default=0.0) or 0.0
+            if has_exec_key
+            else 0.0
+        )
+        if exec_q > orig_q + 1e-9:
+            return None
+        exec_q = min(exec_q, orig_q)
+        price = safe_nonneg_float(
+            first_pos_float(raw.get("price"), raw.get("limitPrice"), raw.get("px"), default=0.0),
+            default=0.0,
+        ) or 0.0
+        if exec_q > 0.0 and exec_q < orig_q:
+            norm_status = "PARTIALLY_FILLED"
+        elif raw_status and is_open_working_status(raw_status, allow_empty=False):
+            norm_status = raw_status
+        elif raw_status == "PARTIALLY_FILLED":
+            norm_status = "PARTIALLY_FILLED"
+        else:
+            norm_status = clean_upper_scalar(default_status) or "NEW"
+        raw_type = clean_upper_scalar(raw.get("type") or raw.get("order_type") or raw.get("orderType"))
+        otype = raw_type if raw_type not in (None, "BUY", "SELL", "B", "S") else "LIMIT"
+        row: dict[str, Any] = {
+            "orderId": oid,
+            "side": side,
+            "type": otype,
+            "price": price,
+            "origQty": round(orig_q, 8),
+            "executedQty": round(exec_q, 8),
+            "status": norm_status,
+        }
+        if cid := extract_client_order_id(raw, default=""):
+            row["clientOrderId"] = cid
+        ts_ms = extract_timestamp_ms(raw, default=None)
+        if ts_ms is not None and ts_ms > 0:
+            row["timestamp"] = math.trunc(ts_ms)
+        return row
+
+    def _is_valid_item(self, item) -> bool:
+        if not isinstance(item, dict):
+            return False
+        oid = clean_order_id(item.get("orderId"))
+        if not oid:
+            return False
+        side = str(item.get("side") or "").upper()
+        if side not in ("BUY", "SELL"):
+            return False
+        price = safe_nonneg_float(item.get("price"), default=None)
+        orig_q = safe_pos_float(item.get("origQty"), default=None)
+        exec_q = safe_nonneg_float(item.get("executedQty", 0.0), default=None)
+        status_u = clean_upper_scalar(item.get("status")) or ""
+        if (
+            price is None
+            or orig_q is None
+            or exec_q is None
+            or exec_q > orig_q + 1e-9
+            or not status_u
+            or status_u in _TERMINAL_NON_OPEN_STATUSES
+        ):
+            return False
+        if "clientOrderId" in item and item["clientOrderId"] is not None:
+            if isinstance(item["clientOrderId"], bool) or clean_order_id(item["clientOrderId"]) is None:
+                return False
+        if "timestamp" in item and item["timestamp"] is not None:
+            if isinstance(item["timestamp"], bool) or strict_ascii_int(item["timestamp"], min_value=1) is None:
+                return False
+        return True
+
+    def _ensure_account_version(self, required_version: str) -> None:
+        self._reload_snapshot_from_disk()
+
+    def _load_snapshot_state(self):
+        with self._generation_lock():
+            self._load_open_state_generation_locked()
+
+    def _load_open_state_generation_locked(self) -> bool:
+        if not os.path.exists(self.filename) and not os.path.exists(self._previous_generation_path()):
+            return False
+        loaded = read_json_dict_recovering(self.filename, repair_files=not self.read_only)
+        if not isinstance(loaded, dict):
+            return False
+        items = loaded.get("items") if isinstance(loaded.get("items"), dict) else {}
+        ft = loaded.get("fetchtime") if isinstance(loaded.get("fetchtime"), dict) else {}
+        ver_ts = safe_nonneg_float(loaded.get("verified_ts"), default=0.0) or 0.0
+        cleaned_items: dict[str, list[dict[str, Any]]] = {}
+        for s_key, rows in items.items():
+            if clean_scalar_str(s_key) is None or not isinstance(rows, list):
+                continue
+            cleaned_items[s_key] = [
+                norm for r in rows if (norm := self.normalize_open_order_row(r)) is not None
+            ]
+        with self.lock:
+            self.cache = cleaned_items
+            self.fetchtime_per_symbol = {
+                str(k): safe_nonneg_int(v, default=0) or 0
+                for k, v in ft.items()
+                if clean_scalar_str(k) is not None
+            }
+            self.verified_ts = ver_ts
+        return True
+
+    def _reload_snapshot_from_disk(self):
+        try:
+            with self._generation_lock():
+                self._load_open_state_generation_locked()
+        except Exception as exc:
+            print(f"[{self.cls_name}][Error] reload {self.filename}: {exc}")
+
+    def _save_state_to_file_impl(self) -> bool:
+        def _save_locked() -> bool:
+            with self.lock:
+                payload = {
+                    "items": {k: [dict(r) for r in v] for k, v in self.cache.items()},
+                    "fetchtime": dict(self.fetchtime_per_symbol),
+                    "verified_ts": round(self.verified_ts, 3) if self.verified_ts > 0.0 else round(_now_time(), 3),
+                }
+            save_json_state(self.filename, payload, indent=1)
+            return True
+
+        return self._with_generation_lock_bool(_save_locked, "OpenOrder snapshot")
+
+    def _fetch_and_apply_remote_items(self, symbol: str, startTime) -> list:
+        """Always apply replace-all snapshot semantics, including an empty open-order list."""
+        new_items = self.get_remote_items(symbol=symbol, startTime=startTime)
+        if new_items is None:
+            raise RuntimeError(
+                f"{self.cls_name} returned no synchronization result for {symbol}"
+            )
+        self._persist_items(symbol, new_items)
+        return new_items
+
+    def get_remote_items(self, symbol, startTime) -> list[dict[str, Any]]:
+        prov_cls = MarketDataProvider.resolve_venue_provider_class(self.venue)
+        if prov_cls is None:
+            return []
+        raw_orders = prov_cls().open_orders(symbol)
+        if not isinstance(raw_orders, list):
+            raise RuntimeError(f"{self.cls_name}: invalid open_orders payload for {symbol}")
+        return [
+            norm for row in raw_orders if (norm := self.normalize_open_order_row(row)) is not None
+        ]
+
+    def replace_symbol_open_orders(
+        self,
+        symbol: str,
+        orders: Sequence[dict[str, Any]],
+        *,
+        now_ms: Optional[int] = None,
+    ) -> bool:
+        """Atomically replace the open-order list for ``symbol`` in memory (deduplicated by ``orderId``)."""
+        eff_now_ms = resolve_now_ms(now_ms)
+        dedup: dict[str, dict[str, Any]] = {}
+        for row in orders or ():
+            if (norm := self.normalize_open_order_row(row)) is not None:
+                dedup[norm["orderId"]] = norm
+        new_bucket = list(dedup.values())
+        with self.lock:
+            changed = self.cache.get(symbol) != new_bucket
+            self.cache[symbol] = new_bucket
+            self.fetchtime_per_symbol[symbol] = eff_now_ms
+            self.verified_ts = eff_now_ms / 1000.0
+        return changed
+
+    def _persist_items(self, symbol, new_items):
+        self.replace_symbol_open_orders(symbol, new_items or ())
+
+    def apply_ws_order_update(
+        self,
+        symbol: str,
+        action: str,
+        order_item: dict[str, Any],
+        *,
+        now_ms: Optional[int] = None,
+    ) -> bool:
+        """Apply one real-time WS open-order transition (``'upsert'`` or ``'remove'``)."""
+        if not isinstance(order_item, dict) or clean_scalar_str(symbol) is None:
+            return False
+        eff_now_ms = resolve_now_ms(now_ms)
+        oid = clean_order_id(order_item.get("orderId"))
+        if not oid:
+            return False
+        act = (clean_scalar_str(action) or "").lower()
+        with self.lock:
+            bucket = list(self.cache.get(symbol) or ())
+            if act == "remove":
+                filtered = [r for r in bucket if clean_order_id(r.get("orderId")) != oid]
+                if len(filtered) == len(bucket):
+                    return False
+                self.cache[symbol] = filtered
+                self.fetchtime_per_symbol[symbol] = eff_now_ms
+                self.verified_ts = eff_now_ms / 1000.0
+                return True
+            if act == "upsert":
+                norm = self.normalize_open_order_row(order_item)
+                if norm is None:
+                    return False
+                updated = False
+                for idx, existing in enumerate(bucket):
+                    if clean_order_id(existing.get("orderId")) == norm["orderId"]:
+                        if existing == norm:
+                            return False
+                        bucket[idx] = norm
+                        updated = True
+                        break
+                if not updated:
+                    bucket.append(norm)
+                self.cache[symbol] = bucket
+                self.fetchtime_per_symbol[symbol] = eff_now_ms
+                self.verified_ts = eff_now_ms / 1000.0
+                return True
+        return False
+
+    @classmethod
+    def replace_venue_open_orders_snapshot(
+        cls,
+        cache_file: str,
+        orders_by_symbol: dict[str, Sequence[dict[str, Any]]],
+        *,
+        now_ms: Optional[int] = None,
+        verified_ts: Optional[float] = None,
+        indent: Optional[int] = 1,
+    ) -> dict[str, Any]:
+        """Atomically replace per-symbol open orders in ``cache_order_open_<venue>.json`` under ``.generation.lock``."""
+        target_path = str(cache_file)
+        eff_now_ms = resolve_now_ms(now_ms)
+        eff_ver_ts = safe_pos_float(verified_ts, default=None)
+        with generation_file_lock(target_path):
+            loaded = read_json_dict_recovering(target_path, repair_files=True)
+            if not isinstance(loaded, dict):
+                loaded = {}
+            items = loaded.get("items") if isinstance(loaded.get("items"), dict) else {}
+            ft = loaded.get("fetchtime") if isinstance(loaded.get("fetchtime"), dict) else {}
+            prev_ver = safe_nonneg_float(loaded.get("verified_ts"), default=0.0) or 0.0
+            for sym_key, raw_list in (orders_by_symbol or {}).items():
+                if clean_scalar_str(sym_key) is None or not isinstance(raw_list, (list, tuple)):
+                    continue
+                dedup: dict[str, dict[str, Any]] = {}
+                for row in raw_list:
+                    if (norm := cls.normalize_open_order_row(row)) is not None:
+                        dedup[norm["orderId"]] = norm
+                # Remove case-variant duplicate bucket keys before writing the canonical symbol key
+                for stale_k in [k for k in list(items.keys()) if k != sym_key and str(k).upper() == str(sym_key).upper()]:
+                    items.pop(stale_k, None)
+                    ft.pop(stale_k, None)
+                items[sym_key] = list(dedup.values())
+                ft[sym_key] = eff_now_ms
+            out_obj = {
+                "items": items,
+                "fetchtime": ft,
+                "verified_ts": round(eff_ver_ts, 3) if eff_ver_ts is not None else (prev_ver or round(eff_now_ms / 1000.0, 3)),
+            }
+            save_json_state(target_path, out_obj, indent=indent)
+            return out_obj
+
+    @classmethod
+    def read_venue_open_orders_snapshot(
+        cls,
+        cache_file: str,
+        *,
+        read_json_fn=None,
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], float]:
+        """Passively read one venue's open-order snapshot without mutating disk."""
+        resolved = str(resolve_cachedb_filepath(str(cache_file)))
+        if read_json_fn is not None:
+            data = read_json_fn(resolved)
+        else:
+            if not os.path.isfile(resolved):
+                return {}, {}, 0.0
+            data = read_json_dict_recovering(resolved, repair_files=False)
+        if not isinstance(data, dict):
+            return {}, {}, 0.0
+        raw_items = data.get("items") if isinstance(data.get("items"), dict) else {}
+        raw_ft = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
+        items_out: dict[str, list[dict[str, Any]]] = {}
+        for sym_k, rows in raw_items.items():
+            if clean_scalar_str(sym_k) is None or not isinstance(rows, list):
+                continue
+            items_out[sym_k] = [dict(r) for r in rows if isinstance(r, dict)]
+        ft_out = {
+            str(k): safe_nonneg_int(v, default=0) or 0
+            for k, v in raw_ft.items()
+            if clean_scalar_str(k) is not None
+        }
+        ver_ts = safe_nonneg_float(data.get("verified_ts"), default=0.0) or 0.0
+        if ver_ts <= 0.0 and ft_out:
+            max_ft = max(ft_out.values(), default=0)
+            if max_ft > 0:
+                ver_ts = round(max_ft / 1000.0, 3)
+        return items_out, ft_out, ver_ts
+
+    @classmethod
+    def read_all_venues_open_orders(
+        cls,
+        cachedb_dir: str,
+        *,
+        read_json_fn=None,
+    ) -> tuple[list[dict[str, Any]], set[str], dict[str, float]]:
+        """Passively read all venues' ``cache_order_open_<venue>.json`` files."""
+        flat: list[dict[str, Any]] = []
+        covered: set[str] = set()
+        verified_by_venue: dict[str, float] = {}
+        if not cachedb_dir:
+            return flat, covered, verified_by_venue
+        for venue_key, fname in cls.VENUE_FILENAMES.items():
+            cand_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, fname)))
+            items, ft, ver_ts = cls.read_venue_open_orders_snapshot(cand_path, read_json_fn=read_json_fn)
+            if not items and not ft and ver_ts <= 0.0:
+                continue
+            covered.add(venue_key)
+            if ver_ts > 0.0:
+                verified_by_venue[venue_key] = ver_ts
+            for sym_k, rows in items.items():
+                for row in rows:
+                    flat.append({"venue": venue_key, "symbol": str(row.get("symbol") or sym_k), **row})
+        return flat, covered, verified_by_venue
 
 
 # =============================================================================
@@ -2431,13 +3216,13 @@ class CacheAssetValueManager(CacheAccountManagerBase):
 
 
 CacheAccountManagerBase.venue_order_and_trade_cache_contracts = staticmethod(
-    lambda: (
-        *((fname, v_key) for v_key, fname in CacheOrderManager.VENUE_FILENAMES.items()),
-        *(
-            (fname, v_key)
-            for v_key, fname in CacheTradeManager.VENUE_FILENAMES.items()
-            if not fname.lower().endswith(".jsonl")
-        ),
+    lambda: tuple(
+        (fname, v_key) for v_key, fname in CacheOrderFilledManager.VENUE_FILENAMES.items()
+    )
+)
+CacheAccountManagerBase.venue_open_order_cache_contracts = staticmethod(
+    lambda: tuple(
+        (fname, v_key) for v_key, fname in CacheOrderOpenManager.VENUE_FILENAMES.items()
     )
 )
 
@@ -2464,7 +3249,7 @@ def ensure_account_cache_readers(status):
         trade_version = status.trade_cache_version
         if not order_version or not trade_version:
             raise ValueError("health marker has no durable cache versions")
-        getter("BinanceOrder").ensure_persisted_version(order_version)
+        getter("BinanceOrderFilled").ensure_persisted_version(order_version)
         getter("BinanceTrade").ensure_persisted_version(trade_version)
     except ach.AccountCacheNotReady:
         raise
@@ -2483,7 +3268,7 @@ def start_account_cache_daemon(
     ach.enable_writer()
     now_ms = math.trunc(_now_time() * 1000)
     max_age_ms = math.trunc(ach.MAX_AGE_SEC * 1000)
-    for account_cache_name in ("BinanceOrder", "BinanceTrade"):
+    for account_cache_name in ("BinanceOrderFilled", "BinanceTrade"):
         acc_mgr = getter(account_cache_name)
         if isinstance(sync_started_set, set):
             sync_started_set.add(account_cache_name)
@@ -2500,6 +3285,7 @@ def start_account_cache_daemon(
     if is_live_network_backfill_enabled() and is_auto_start_websockets_enabled():
         start_kraken_account_ws_bridge()
         start_t212_account_poll_bridge()
+        start_venue_open_orders_bridge()
 
 
 def disable_account_cache_daemon_writer() -> None:
@@ -2509,8 +3295,8 @@ def disable_account_cache_daemon_writer() -> None:
 
 
 def request_stop_account_ws_streams() -> None:
-    """Signal the account user-data bridges (Binance, Kraken, and T212) to stop."""
-    for bridge in (_bapi_ws_bridge._ws_bridge, _kraken_ws_bridge, _t212_poll_bridge):
+    """Signal the account user-data bridges (Binance, Kraken, T212, and open orders) to stop."""
+    for bridge in (_bapi_ws_bridge._ws_bridge, _kraken_ws_bridge, _t212_poll_bridge, _venue_open_orders_bridge):
         if bridge is not None and hasattr(bridge, "request_stop"):
             try:
                 bridge.request_stop()
@@ -2520,7 +3306,7 @@ def request_stop_account_ws_streams() -> None:
 
 def stop_account_ws_streams(shutdown_deadline: float) -> None:
     """Join the account user-data bridges within ``shutdown_deadline``."""
-    for bridge in (_bapi_ws_bridge._ws_bridge, _kraken_ws_bridge, _t212_poll_bridge):
+    for bridge in (_bapi_ws_bridge._ws_bridge, _kraken_ws_bridge, _t212_poll_bridge, _venue_open_orders_bridge):
         if bridge is not None and hasattr(bridge, "stop"):
             try:
                 bridge.stop(
@@ -2700,13 +3486,25 @@ class _HyperliquidAccountTradeBridge:
         if parsed is None:
             return
         is_snapshot, fills_by_symbol = parsed
+        fills_file = self.resolve_fills_cache_file()
         CacheTradeManager.merge_venue_fills_snapshot(
-            self.resolve_fills_cache_file(),
+            fills_file,
             fills_by_symbol,
             now_ms=ts_ms,
             is_snapshot=is_snapshot,
             touch_symbols=symbols,
         )
+        try:
+            CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+                _sibling_order_filled_path(fills_file, "hyperliquid"),
+                fills_by_symbol,
+                venue="hyperliquid",
+                now_ms=ts_ms,
+                is_snapshot=is_snapshot,
+                touch_symbols=symbols,
+            )
+        except Exception:
+            pass
         if is_snapshot:
             ws_stream._fills_ws_seeded = True
         ws_stream._last_fills_touch_ms = ts_ms
@@ -2721,8 +3519,15 @@ class _HyperliquidAccountTradeBridge:
         try:
             with ws_stream._lock:
                 symbols = ws_stream._symbols
+            fills_file = self.resolve_fills_cache_file()
             CacheTradeManager.touch_venue_fills_snapshot(
-                self.resolve_fills_cache_file(),
+                fills_file,
+                ts_ms,
+                symbols=symbols,
+                create_missing=False,
+            )
+            CacheOrderFilledManager.touch_venue_filled_orders_snapshot(
+                _sibling_order_filled_path(fills_file, "hyperliquid"),
                 ts_ms,
                 symbols=symbols,
                 create_missing=False,
@@ -2786,14 +3591,31 @@ def run_kraken_trade_poll_loop(
         by_sym = kr_prov_cls.fetch_ledger_fills_by_symbol(
             client, pairs=pairs, lookback_sec=lookback_sec
         )
-        return CacheTradeManager._merge_venue_fills_snapshot_locked(
+        eff_ms = resolve_now_ms()
+        merged = CacheTradeManager._merge_venue_fills_snapshot_locked(
             cache_file,
             by_sym,
+            now_ms=eff_ms,
             is_snapshot=True,
             sanitize_venue="kraken",
             indent=1,
             force_save=True,
         )
+        try:
+            CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+                _sibling_order_filled_path(cache_file, "kraken"),
+                by_sym,
+                venue="kraken",
+                now_ms=eff_ms,
+                is_snapshot=True,
+                touch_symbols=pairs,
+                touch_create_missing=True,
+                indent=1,
+                force_save=True,
+            )
+        except Exception:
+            pass
+        return merged
 
     _run_account_trade_poll_loop(
         sync_once_fn=_sync_once,
@@ -2871,6 +3693,20 @@ def run_kraken_trade_ws_loop(
                 indent=1,
                 force_save=True,
             )
+            try:
+                CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+                    _sibling_order_filled_path(cache_file, "kraken"),
+                    by_sym,
+                    venue="kraken",
+                    now_ms=eff_ms,
+                    is_snapshot=False,
+                    touch_symbols=pairs,
+                    touch_create_missing=True,
+                    indent=1,
+                    force_save=True,
+                )
+            except Exception:
+                pass
             last_flush_ms[0] = last_rest_sync_ms[0] = eff_ms
             return merged
         except Exception as exc:
@@ -2932,6 +3768,13 @@ def run_kraken_trade_ws_loop(
                         create_missing=False,
                         indent=1,
                     )
+                    CacheOrderFilledManager.touch_venue_filled_orders_snapshot(
+                        _sibling_order_filled_path(cache_file, "kraken"),
+                        now_ms=now_ms,
+                        symbols=pairs,
+                        create_missing=False,
+                        indent=1,
+                    )
                     last_flush_ms[0] = now_ms
                 should_hb = True
         else:
@@ -2945,6 +3788,19 @@ def run_kraken_trade_ws_loop(
                 sanitize_venue="kraken",
                 indent=1,
             )
+            try:
+                CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+                    _sibling_order_filled_path(cache_file, "kraken"),
+                    fills_by_sym,
+                    venue="kraken",
+                    now_ms=now_ms,
+                    is_snapshot=False,
+                    touch_symbols=pairs,
+                    touch_create_missing=False,
+                    indent=1,
+                )
+            except Exception:
+                pass
             last_flush_ms[0] = now_ms
             should_hb = True
         if should_hb and callable(heartbeat_fn):
@@ -3046,10 +3902,11 @@ def run_t212_trade_poll_loop(
         by_sym = t212_prov_cls.fetch_history_fills_by_symbol(
             client, symbols=symbols, publish_shared_cache=True
         )
-        return CacheTradeManager._merge_venue_fills_snapshot_locked(
+        eff_ms = resolve_now_ms()
+        merged = CacheTradeManager._merge_venue_fills_snapshot_locked(
             cache_file,
             by_sym,
-            now_ms=resolve_now_ms(),
+            now_ms=eff_ms,
             is_snapshot=False,
             touch_symbols=symbols,
             touch_create_missing=True,
@@ -3057,6 +3914,21 @@ def run_t212_trade_poll_loop(
             indent=1,
             force_save=True,
         )
+        try:
+            CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+                _sibling_order_filled_path(cache_file, "t212"),
+                by_sym,
+                venue="t212",
+                now_ms=eff_ms,
+                is_snapshot=False,
+                touch_symbols=symbols,
+                touch_create_missing=True,
+                indent=1,
+                force_save=True,
+            )
+        except Exception:
+            pass
+        return merged
 
     _run_account_trade_poll_loop(
         sync_once_fn=_sync_once,
@@ -3104,10 +3976,69 @@ class _T212AccountTradeBridge(_AccountTradeBridgeBase):
         return self._spawn_bridge_thread(_runner)
 
 
+class _VenueOpenOrdersBridge(_AccountTradeBridgeBase):
+    """Background daemon bridge syncing non-primary venue open orders into ``cache_order_open_<venue>.json``."""
+
+    VENUE_KEY = "multi"
+    VENUE_LABEL = "MultiVenueOpenOrders"
+    LOG_TAG = "open_orders_cache"
+    THREAD_NAME = "VenueOpenOrdersBridge"
+
+    def start(self) -> bool:
+        venues = [
+            v for v in CacheOrderOpenManager.VENUE_FILENAMES
+            if not is_primary_stream_venue(v)
+        ]
+        if not venues:
+            return False
+
+        def _runner() -> None:
+            while not self._stop_event.is_set():
+                now_ms = resolve_now_ms()
+                now_s = now_ms / 1000.0
+                for v_key in venues:
+                    if self._stop_event.is_set():
+                        break
+                    try:
+                        v_syms = list(sym.symbols_for(v_key))
+                        if not v_syms:
+                            continue
+                        prov_cls = MarketDataProvider.resolve_venue_provider_class(v_key)
+                        if prov_cls is None:
+                            continue
+                        prov = prov_cls()
+                        open_by_sym: dict[str, list[dict[str, Any]]] = {}
+                        all_ok = True
+                        for s_item in v_syms:
+                            try:
+                                raw_open = prov.open_orders(s_item)
+                                if isinstance(raw_open, list):
+                                    open_by_sym[s_item] = raw_open
+                                else:
+                                    all_ok = False
+                            except Exception:
+                                all_ok = False
+                        if open_by_sym:
+                            CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+                                cache_path(CacheOrderOpenManager.disk_filename(v_key)),
+                                open_by_sym,
+                                now_ms=now_ms,
+                                verified_ts=now_s if all_ok else None,
+                            )
+                    except Exception as exc:
+                        log(f"[{self.LOG_TAG}] {v_key} sync failed: {exc}")
+                if _wait_or_sleep(self._stop_event, OPEN_ORDER_SYNC_INTERVAL_SEC):
+                    break
+
+        return self._spawn_bridge_thread(_runner)
+
+
 _kraken_ws_bridge: Optional[_KrakenAccountTradeBridge] = None
 _kraken_ws_bridge_lock = threading.Lock()
 _t212_poll_bridge: Optional[_T212AccountTradeBridge] = None
 _t212_poll_bridge_lock = threading.Lock()
+_venue_open_orders_bridge: Optional[_VenueOpenOrdersBridge] = None
+_venue_open_orders_bridge_lock = threading.Lock()
 
 
 def start_kraken_account_ws_bridge() -> Optional[_KrakenAccountTradeBridge]:
@@ -3136,11 +4067,25 @@ def start_t212_account_poll_bridge() -> Optional[_T212AccountTradeBridge]:
         return None
 
 
+def start_venue_open_orders_bridge() -> Optional[_VenueOpenOrdersBridge]:
+    """Idempotently start the cross-venue open-order background bridge inside cacheManager."""
+    global _venue_open_orders_bridge
+    with _venue_open_orders_bridge_lock:
+        if _venue_open_orders_bridge is not None and _venue_open_orders_bridge.is_running:
+            return _venue_open_orders_bridge
+        bridge = _VenueOpenOrdersBridge()
+        if bridge.start():
+            _venue_open_orders_bridge = bridge
+            return bridge
+        return None
+
+
 # =============================================================================
 # 7. SSOT SINGLETON FACTORY GETTERS
 # =============================================================================
 
 ORDER_SYNC_INTERVAL_SEC = 0.4 * 60
+OPEN_ORDER_SYNC_INTERVAL_SEC = 15.0
 TRADE_SYNC_INTERVAL_SEC = 3 * 60
 ASSET_VALUE_SYNC_INTERVAL_SEC = 10 * 60
 _READONLY_ACCOUNT_LOCK = threading.RLock()
@@ -3150,6 +4095,18 @@ _VENUE_TRADE_CACHE_NAMES = {
     "kraken": "KrakenTrade",
     "hyperliquid": "HyperliquidTrade",
     "t212": "T212Trade",
+}
+_VENUE_ORDER_FILLED_CACHE_NAMES = {
+    "binance": "BinanceOrderFilled",
+    "kraken": "KrakenOrderFilled",
+    "hyperliquid": "HyperliquidOrderFilled",
+    "t212": "T212OrderFilled",
+}
+_VENUE_ORDER_OPEN_CACHE_NAMES = {
+    "binance": "BinanceOrderOpen",
+    "kraken": "KrakenOrderOpen",
+    "hyperliquid": "HyperliquidOrderOpen",
+    "t212": "T212OrderOpen",
 }
 
 
@@ -3222,13 +4179,25 @@ def get_asset_value_manager(
 get_asset_value_manager._is_ssot_asset_value_getter = True  # type: ignore[attr-defined]
 
 
-def get_binance_order_manager(
+def get_order_filled_manager(
+    venue: str = "binance",
     symbols=None,
-    filename=CacheOrderManager.DEFAULT_FILENAME,
+    filename=None,
     *,
     data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
-) -> CacheOrderManager:
-    """Return the ``CacheOrderManager`` singleton without importing ``cacheManager`` in read-only consumers."""
+) -> CacheOrderFilledManager:
+    """Return the venue ``CacheOrderFilledManager`` singleton without importing ``cacheManager`` in read-only consumers."""
+    v_norm = (
+        "binance"
+        if (venue is None or (isinstance(venue, str) and not venue.strip()))
+        else normalize_venue_name(venue)
+    )
+    cache_name = _VENUE_ORDER_FILLED_CACHE_NAMES.get(v_norm or "")
+    if cache_name is None:
+        raise ValueError(f"Unsupported filled-order cache venue: {venue!r}")
+    is_non_primary = not is_primary_stream_venue(v_norm)
+    default_fname = CacheOrderFilledManager.disk_filename(v_norm)
+    eff_filename = default_fname if filename is None else filename
     (
         delegated,
         res,
@@ -3237,34 +4206,96 @@ def get_binance_order_manager(
         start_periodic,
         eff_symbols,
     ) = CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
-        "BinanceOrder",
+        cache_name,
         symbols=symbols,
-        default_symbols=lambda: list(sym.symbols),
+        default_symbols=None if is_non_primary else (lambda: list(sym.symbols)),
         data_sync_mode=data_sync_mode,
-        filename=filename,
-        default_filename=CacheOrderManager.DEFAULT_FILENAME,
-        cm_getter_name="get_binance_order_manager",
-        getter_tag="_is_ssot_binance_order_getter",
+        filename=eff_filename,
+        default_filename=default_fname,
+        config_read_only=is_non_primary,
+        cm_getter_name="get_order_filled_manager",
+        getter_tag="_is_ssot_order_filled_getter",
     )
     if delegated:
         return res
-    can_cache = symbols is None and filename == CacheOrderManager.DEFAULT_FILENAME
+    can_cache = symbols is None and eff_filename == default_fname
     is_readonly = not save_state_flag and not start_periodic
     return _get_or_create_readonly_account_reader(
-        "BinanceOrder",
+        cache_name,
         can_reuse_fn=lambda _inst: can_cache and is_readonly,
         can_store=can_cache,
-        builder_fn=lambda: CacheOrderManager(
+        builder_fn=lambda: CacheOrderFilledManager(
             sync_ts=ORDER_SYNC_INTERVAL_SEC,
-            filename=filename,
+            filename=eff_filename,
             symbols=eff_symbols,
-            read_only=is_readonly,
+            read_only=(is_non_primary or is_readonly),
             data_sync_mode=resolved_mode,
+            venue=v_norm,
         ),
     )
 
 
-get_binance_order_manager._is_ssot_binance_order_getter = True  # type: ignore[attr-defined]
+get_order_filled_manager._is_ssot_order_filled_getter = True  # type: ignore[attr-defined]
+
+
+def get_order_open_manager(
+    venue: str = "binance",
+    symbols=None,
+    filename=None,
+    *,
+    data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
+) -> CacheOrderOpenManager:
+    """Return the venue ``CacheOrderOpenManager`` singleton without importing ``cacheManager`` in read-only consumers."""
+    v_norm = (
+        "binance"
+        if (venue is None or (isinstance(venue, str) and not venue.strip()))
+        else normalize_venue_name(venue)
+    )
+    cache_name = _VENUE_ORDER_OPEN_CACHE_NAMES.get(v_norm or "")
+    if cache_name is None:
+        raise ValueError(f"Unsupported open-order cache venue: {venue!r}")
+    is_non_primary = not is_primary_stream_venue(v_norm)
+    default_fname = CacheOrderOpenManager.disk_filename(v_norm)
+    eff_filename = default_fname if filename is None else filename
+    (
+        delegated,
+        res,
+        resolved_mode,
+        save_state_flag,
+        start_periodic,
+        eff_symbols,
+    ) = CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
+        cache_name,
+        symbols=symbols,
+        default_symbols=None if is_non_primary else (lambda: list(sym.symbols)),
+        data_sync_mode=data_sync_mode,
+        filename=eff_filename,
+        default_filename=default_fname,
+        config_read_only=is_non_primary,
+        cm_getter_name="get_order_open_manager",
+        getter_tag="_is_ssot_order_open_getter",
+    )
+    if delegated:
+        return res
+    can_cache = symbols is None and eff_filename == default_fname
+    is_readonly = not save_state_flag and not start_periodic
+    return _get_or_create_readonly_account_reader(
+        cache_name,
+        can_reuse_fn=lambda _inst: can_cache and is_readonly,
+        can_store=can_cache,
+        builder_fn=lambda: CacheOrderOpenManager(
+            sync_ts=OPEN_ORDER_SYNC_INTERVAL_SEC,
+            filename=eff_filename,
+            symbols=eff_symbols,
+            read_only=(is_non_primary or is_readonly),
+            data_sync_mode=resolved_mode,
+            venue=v_norm,
+        ),
+        resync_existing=True,
+    )
+
+
+get_order_open_manager._is_ssot_order_open_getter = True  # type: ignore[attr-defined]
 
 
 def get_trade_manager(

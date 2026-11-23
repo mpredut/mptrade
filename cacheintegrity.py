@@ -550,6 +550,7 @@ def validate_account_cache_state(
     fetchtime_per_symbol: dict[str, Any],
     rest_sync_cursor_per_symbol: dict[str, Any],
     is_valid_item_fn: Callable[[dict[str, Any]], bool],
+    strict_int_order_id: bool = True,
 ) -> None:
     """Reject any in-memory account cache row or timestamp map that strict readers could not accept."""
     normalize_timestamp_map(fetchtime_per_symbol, error_message=f"invalid {cls_name} cache fetchtime")
@@ -572,7 +573,19 @@ def validate_account_cache_state(
             if is_order_cache:
                 if item.get("symbol") is not None and str(item["symbol"]).upper() != symbol.upper():
                     raise ValueError("Order row symbol differs from its bucket")
-                order_id = str(_strict_int_field(item["orderId"]))
+                raw_oid = item["orderId"]
+                if strict_int_order_id:
+                    order_id = str(_strict_int_field(raw_oid))
+                else:
+                    if isinstance(raw_oid, bool) or raw_oid is None:
+                        raise ValueError(f"invalid {cls_name} cache row")
+                    order_id = (
+                        str(_strict_int_field(raw_oid))
+                        if isinstance(raw_oid, int)
+                        else (clean_scalar_str(raw_oid) or "")
+                    )
+                    if not order_id:
+                        raise ValueError(f"invalid {cls_name} cache row")
                 if order_id in order_ids:
                     raise ValueError(f"duplicate Order aggregate ID {order_id}")
                 order_ids.add(order_id)
@@ -580,7 +593,14 @@ def validate_account_cache_state(
                 if not isinstance(raw_fill_ids, (list, tuple)):
                     raise ValueError(f"invalid {cls_name} cache row")
                 for fill_id in raw_fill_ids:
-                    fill_key = str(_strict_int_field(fill_id))
+                    if strict_int_order_id:
+                        fill_key = str(_strict_int_field(fill_id))
+                    else:
+                        if isinstance(fill_id, bool) or fill_id is None:
+                            raise ValueError(f"invalid {cls_name} cache row")
+                        fill_key = clean_scalar_str(str(fill_id)) or ""
+                        if not fill_key:
+                            raise ValueError(f"invalid {cls_name} cache row")
                     previous_order = fill_owners.get(fill_key)
                     if previous_order is not None:
                         raise ValueError(

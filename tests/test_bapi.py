@@ -289,7 +289,7 @@ class TestCachedOrders(unittest.TestCase):
         manager = MagicMock(cache={SYMBOL: []})
         with patch("cacheManager.get_cache_manager", return_value=manager) as get_manager:
             self.assertEqual(bapi_allorders.get_trade_orders("BUY", SYMBOL, 60), [])
-        get_manager.assert_called_once_with("BinanceOrder")
+        get_manager.assert_called_once_with("BinanceOrderFilled")
 
     def test_reader_copies_mutable_order_rows_under_manager_lock(self):
         now_ms = int(time.time() * 1000)

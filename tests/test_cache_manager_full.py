@@ -3,7 +3,7 @@
 Coverage:
   - CacheManagerInterface (via ConcreteTestManager)
   - CacheTradeManager
-  - CacheOrderManager
+  - CacheOrderFilledManager
   - CacheSparsePriceManager (formerly CachePriceManager)
   - Cache24PriceManager
   - CachePriceLongTrendManager
@@ -467,14 +467,14 @@ class TestCacheTradeManager(TempDirTestCase):
 
 
 # ===============================================================================
-# 3. CacheOrderManager
+# 3. CacheOrderFilledManager
 # ===============================================================================
 class TestCacheOrderManager(TempDirTestCase):
 
     def _make(self):
         api_mock = MagicMock()
         fname = _tmp_file(self.tmp, "cache_order.json")
-        return cm.CacheOrderManager(9999, ["BTC"], fname, api_client=api_mock)
+        return cm.CacheOrderFilledManager(9999, ["BTC"], fname, api_client=api_mock)
 
     def test_order_manager_behaviors(self):
         with self.subTest(msg="order_validation"):
@@ -594,7 +594,7 @@ class TestAccountCacheHealthPublication(TempDirTestCase):
 
     def test_order_and_trade_publish_after_complete_persisted_sync(self):
         symbols = ["BTC", "ETH"]
-        for manager_class in (cm.CacheOrderManager, cm.CacheTradeManager):
+        for manager_class in (cm.CacheOrderFilledManager, cm.CacheTradeManager):
             with self.subTest(manager=manager_class.__name__):
                 manager = self._make_manager(manager_class, symbols)
                 query, persist, publish = self._run_one_iteration(
@@ -609,7 +609,7 @@ class TestAccountCacheHealthPublication(TempDirTestCase):
 
     def test_non_publishing_failure_and_skip_scenarios(self):
         with self.subTest("failed remote sync"):
-            manager = self._make_manager(cm.CacheOrderManager, ["BTC"])
+            manager = self._make_manager(cm.CacheOrderFilledManager, ["BTC"])
             query, persist, publish = self._run_one_iteration(
                 manager,
                 canonical_symbols=["BTC"],
@@ -627,7 +627,7 @@ class TestAccountCacheHealthPublication(TempDirTestCase):
             publish.assert_not_called()
 
         with self.subTest("persistence failure"):
-            manager = self._make_manager(cm.CacheOrderManager, ["BTC"])
+            manager = self._make_manager(cm.CacheOrderFilledManager, ["BTC"])
             _, persist, publish = self._run_one_iteration(
                 manager, canonical_symbols=["BTC"], persisted=False)
             persist.assert_called_once_with()
@@ -641,7 +641,7 @@ class TestAccountCacheHealthPublication(TempDirTestCase):
             publish.assert_not_called()
 
         with self.subTest("non polling iteration"):
-            manager = self._make_manager(cm.CacheOrderManager, ["BTC"])
+            manager = self._make_manager(cm.CacheOrderFilledManager, ["BTC"])
             query, persist, publish = self._run_one_iteration(
                 manager, canonical_symbols=["BTC"], should_poll=False)
             query.assert_not_called()
@@ -1358,9 +1358,9 @@ class TestWsHealthFunctions(unittest.TestCase):
 
         with self.subTest("polling fallback policies"):
             cases = (
-                ("ws-mode-off", False, True, "CacheOrderManager"),
+                ("ws-mode-off", False, True, "CacheOrderFilledManager"),
                 ("unmanaged", True, True, "CacheSparsePriceManager"),
-                ("ws-unavailable", True, False, "CacheOrderManager"),
+                ("ws-unavailable", True, False, "CacheOrderFilledManager"),
             )
             try:
                 for label, ws_only, available, manager_name in cases:
@@ -1461,15 +1461,15 @@ class TestCacheFactory(TempDirTestCase):
                 barrier.wait(timeout=2.0)
                 results.append(
                     cm.CacheFactory.get(
-                        "BinanceOrder", symbols=["BTC"], data_sync_mode=sync_mode
+                        "BinanceOrderFilled", symbols=["BTC"], data_sync_mode=sync_mode
                     )
                 )
 
             with patch.object(
-                    cm.CacheOrderManager, "load_state", autospec=True,
+                    cm.CacheOrderFilledManager, "load_state", autospec=True,
                     side_effect=slow_load_state), \
                  patch.object(
-                    cm.CacheOrderManager, "periodic_sync") as periodic:
+                    cm.CacheOrderFilledManager, "periodic_sync") as periodic:
                 threads = [
                     threading.Thread(target=worker, args=("disk_reader",)),
                     threading.Thread(target=worker, args=("live_reader",)),
@@ -1490,10 +1490,10 @@ class TestCacheFactory(TempDirTestCase):
             os.makedirs(empty_dir, exist_ok=True)
             with patch("cachepaths.cache_path", side_effect=lambda f: os.path.join(empty_dir, f)), \
                  patch.object(cm.CacheTradeManager, "query_remote_and_update_cache") as trade_remote, \
-                 patch.object(cm.CacheOrderManager, "query_remote_and_update_cache") as order_remote, \
+                 patch.object(cm.CacheOrderFilledManager, "query_remote_and_update_cache") as order_remote, \
                  patch.object(cm.CacheCurrentPriceManager, "query_remote_and_update_cache") as price_remote:
                 trade_mgr = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"])
-                order_mgr = cm.CacheFactory.get("BinanceOrder", symbols=["BTC"])
+                order_mgr = cm.CacheFactory.get("BinanceOrderFilled", symbols=["BTC"])
                 price_mgr = cm.CacheFactory.get("CurrentPrice", symbols=["BTC"])
                 self.assertTrue(trade_mgr.read_only)
                 self.assertTrue(order_mgr.read_only)
@@ -1505,20 +1505,20 @@ class TestCacheFactory(TempDirTestCase):
 
     def test_failed_sync_start_retry_reuses_published_managers(self):
         """A periodic_sync failure must not make the next call build duplicate managers."""
-        with patch.object(cm.CacheOrderManager, "load_state", return_value=None), \
+        with patch.object(cm.CacheOrderFilledManager, "load_state", return_value=None), \
              patch.object(
-                 cm.CacheOrderManager, "periodic_sync",
+                 cm.CacheOrderFilledManager, "periodic_sync",
                  side_effect=[RuntimeError("can't start new thread"), None],
              ) as periodic:
             with self.assertRaises(RuntimeError):
-                cm.CacheFactory.get("BinanceOrder", symbols=["BTC"], data_sync_mode="live_reader")
-            first = cm.CacheFactory._instances.get("BinanceOrder")
+                cm.CacheFactory.get("BinanceOrderFilled", symbols=["BTC"], data_sync_mode="live_reader")
+            first = cm.CacheFactory._instances.get("BinanceOrderFilled")
             self.assertIsNotNone(first)
-            self.assertNotIn("BinanceOrder", cm.CacheFactory._sync_started)
-            second = cm.CacheFactory.get("BinanceOrder", symbols=["BTC"], data_sync_mode="live_reader")
+            self.assertNotIn("BinanceOrderFilled", cm.CacheFactory._sync_started)
+            second = cm.CacheFactory.get("BinanceOrderFilled", symbols=["BTC"], data_sync_mode="live_reader")
         self.assertIs(first, second)
         self.assertEqual(periodic.call_count, 2)
-        self.assertIn("BinanceOrder", cm.CacheFactory._sync_started)
+        self.assertIn("BinanceOrderFilled", cm.CacheFactory._sync_started)
 
     def test_price_factories_return_per_symbol_managers_and_filenames(self):
         cur_mock = MagicMock()
@@ -1541,7 +1541,7 @@ class TestCacheFactory(TempDirTestCase):
     def test_factory_returns_expected_manager_classes(self):
         cases = (
             ("BinanceTrade", cm.CacheTradeManager),
-            ("BinanceOrder", cm.CacheOrderManager),
+            ("BinanceOrderFilled", cm.CacheOrderFilledManager),
             ("CurrentPrice", cm.CacheCurrentPriceManager),
         )
         with patch("binance_api.bapi_allorders.paginate_my_trades", return_value=[]), \
@@ -2632,10 +2632,10 @@ def test_decoupled_account_and_price_ws_daemon_lifecycle_helpers(monkeypatch):
         ),
         sync_started_set=sync_set,
     )
-    assert sync_set == {"BinanceOrder", "BinanceTrade"}
+    assert sync_set == {"BinanceOrderFilled", "BinanceTrade"}
     assert init_called == [True]
     assert ("enable_writer",) in recorded_syncs
-    assert ("sync", "BinanceOrder", "v-BinanceOrder", now_ms - 1000) in recorded_syncs
+    assert ("sync", "BinanceOrderFilled", "v-BinanceOrderFilled", now_ms - 1000) in recorded_syncs
     assert ("sync", "BinanceTrade", "v-BinanceTrade", now_ms - 1000) in recorded_syncs
 
     bridge_events = []
@@ -2733,7 +2733,8 @@ def test_consumer_safe_defaults_and_auto_resync(tmp_path):
         cm.get_short_trend_manager,
         cm.get_long_trend_manager,
         cm.get_asset_value_manager,
-        cm.get_binance_order_manager,
+        cm.get_order_filled_manager,
+        cm.get_order_open_manager,
         cm.get_trade_manager,
     ):
         params = inspect.signature(fn).parameters

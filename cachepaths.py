@@ -21,7 +21,14 @@ CACHE_LONG_TREND_FILENAME = "cache_long_trend.json"
 CACHE_KALMAN_TREND_FILENAME = "cache_kalman_trend.json"
 CACHE_T_TREND_FILENAME = "cache_T_trend.json"
 PRICE_ANALYSIS_FILENAME = "priceanalysis.json"
-CACHE_BINANCE_ORDER_FILENAME = "cache_order_binance.json"
+CACHE_BINANCE_ORDER_FILLED_FILENAME = "cache_order_filled_binance.json"
+CACHE_KRAKEN_ORDER_FILLED_FILENAME = "cache_order_filled_kraken.json"
+CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME = "cache_order_filled_hyperliquid.json"
+CACHE_T212_ORDER_FILLED_FILENAME = "cache_order_filled_t212.json"
+CACHE_BINANCE_ORDER_OPEN_FILENAME = "cache_order_open_binance.json"
+CACHE_KRAKEN_ORDER_OPEN_FILENAME = "cache_order_open_kraken.json"
+CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME = "cache_order_open_hyperliquid.json"
+CACHE_T212_ORDER_OPEN_FILENAME = "cache_order_open_t212.json"
 CACHE_BINANCE_TRADE_FILENAME = "cache_trade_binance.jsonl"
 CACHE_ACCOUNT_HEALTH_FILENAME = "binance_account_cache_health.json"
 CACHE_ASSET_VALUE_FILENAME = "cache_asset_value.jsonl"
@@ -171,7 +178,7 @@ EXACT_LEGACY_FILENAMES = {
     CACHE_CURRENT_PRICE_FILENAME: ("cache_currentprice.json",),
     CACHE_SHORT_TREND_FILENAME: ("cache_instant_trend.json",),
     CACHE_LONG_TREND_FILENAME: ("cache_price_long_trend.json",),
-    CACHE_BINANCE_ORDER_FILENAME: ("cache_order.json",),
+    CACHE_BINANCE_ORDER_FILLED_FILENAME: ("cache_order_binance.json", "cache_order.json"),
     CACHE_BINANCE_TRADE_FILENAME: ("cache_trade.jsonl",),
     RTRADE_PAIRS_STATE_FILENAME: ("rtrade_pairs.json",),
     AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME: ("autonomous_trade_intents.json",),

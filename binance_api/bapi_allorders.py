@@ -151,7 +151,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     # Consumer processes read the cache written by the dedicated cacheManager process.
     # Starting a second polling loop here duplicates API traffic and mixes cache logs
     # into callers such as order_retry_worker.
-    cache_order_manager = ProviderSsotBridgeMixin.get_ssot_cache_manager("BinanceOrder")
+    cache_order_manager = ProviderSsotBridgeMixin.get_ssot_cache_manager("BinanceOrderFilled")
     return [
         {
             'orderId': order.get("orderId"),
@@ -162,6 +162,31 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
             'time': ts_ms,
             'side': side,
             'isBuyer': side == 'BUY',
+            **(
+                {'clientOrderId': order["clientOrderId"]}
+                if order.get("clientOrderId")
+                else {}
+            ),
+            **(
+                {'status': order["status"]}
+                if order.get("status")
+                else {}
+            ),
+            **(
+                {'type': order["type"]}
+                if order.get("type")
+                else {}
+            ),
+            **(
+                {'fee': order["fee"]}
+                if order.get("fee") is not None
+                else {}
+            ),
+            **(
+                {'feeAsset': order["feeAsset"]}
+                if order.get("feeAsset")
+                else {}
+            ),
         }
         for order, side, ts_ms, px, qty in filter_recent_cached_orders(
             cache_order_manager, order_type, symbol, max_age_seconds

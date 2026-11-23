@@ -51,8 +51,8 @@ HEALTH_PATH = _DEFAULT_HEALTH_PATH
 _PROCESS_IDENTITY_REQUIRED = sys.platform.startswith("linux")
 _DEAD_PROC_STATES = frozenset({"Z", "X", "x"})
 _SYNC_FIELDS = {
-    "BinanceOrder": ("order_sync_at_ms", "order_cache_version"),
-    "CacheOrderManager": ("order_sync_at_ms", "order_cache_version"),
+    "BinanceOrderFilled": ("order_sync_at_ms", "order_cache_version"),
+    "CacheOrderFilledManager": ("order_sync_at_ms", "order_cache_version"),
     "BinanceTrade": ("trade_sync_at_ms", "trade_cache_version"),
     "CacheTradeManager": ("trade_sync_at_ms", "trade_cache_version"),
 }

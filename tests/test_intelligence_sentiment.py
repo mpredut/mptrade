@@ -15590,9 +15590,12 @@ def test_iter3_premarket_lead_rollover_kinematics_impulse_capacity_and_limit_dus
             "effective_max_sell_usd": 0.0,
             "replace_max_buy_usd": 250.0,
         },
-        "open_orders:kraken:ADAUSD": [{"order_id": "OYXYYN-2Z243-T3P6XZ"}],
     }
-    assert _filter_actionable_impulse_symbols(["ADAUSD"], vb_locked_order) == ["ADAUSD"]
+    assert _filter_actionable_impulse_symbols(
+        ["ADAUSD"],
+        vb_locked_order,
+        open_orders=[{"venue": "kraken", "symbol": "ADAUSD", "order_id": "OYXYYN-2Z243-T3P6XZ"}],
+    ) == ["ADAUSD"]
 
     hold_eval_doc = {
         "ts": t_now - 120.0,

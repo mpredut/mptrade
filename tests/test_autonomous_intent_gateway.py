@@ -2014,9 +2014,9 @@ def test_harvest_tradable_positions_preserves_trailing_peak_for_100pct_locked_se
     assert rec_positions_with_oo[0]["step_size"] == pytest.approx(0.001)
     assert rec_positions_with_oo[0]["trailing_peak"] == pytest.approx(440.0)
 
-    # Now clear open_orders in bcache and recover again -> stale locked_* and ghost trailing_peak (since free_base=0) are stripped
-    saved_bcache["open_orders:binance:TAOUSDC"] = []
-    bcache_file.write_text(json.dumps(saved_bcache), encoding="utf-8")
+    # Now clear open_orders in cache_order_open_binance.json and recover again -> stale locked_* and ghost trailing_peak (since free_base=0) are stripped
+    open_file = tmp_path / "cache_order_open_binance.json"
+    open_file.write_text(json.dumps({"items": {"TAOUSDC": []}, "fetchtime": {"TAOUSDC": 1700000000000}, "verified_ts": 1700000000.0}), encoding="utf-8")
     rec_positions_no_oo, _, _, _ = harvest_tradable_positions_and_orders(
         {},
         {"TAOUSDC": {"price": 410.0, "trend": 1, "growth_coefficient": 0.1}},

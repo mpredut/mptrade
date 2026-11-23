@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from binance_api import bapi_ws
 from binance_api.bapi_ws_normalize import (
+    parse_open_order_execution_report,
     parse_order_execution_report,
     parse_trade_execution_report,
 )
@@ -18,11 +19,12 @@ from instrument_registry import casefold_get
 from providers.ssot_bridge import ProviderSsotBridgeMixin
 import log  # noqa: F401 -- keep print behavior aligned with the rest of the runtime
 
-ORDER_CACHE_CLASSES = frozenset({"CacheOrderManager"})
+ORDER_CACHE_CLASSES = frozenset({"CacheOrderFilledManager"})
+OPEN_ORDER_CACHE_CLASSES = frozenset({"CacheOrderOpenManager"})
 TRADE_CACHE_CLASSES = frozenset({"CacheTradeManager"})
 ASSET_VALUE_CACHE_CLASSES = frozenset({"CacheAssetValueManager"})
 WS_MANAGED_CACHE_CLASSES = (
-    ORDER_CACHE_CLASSES | TRADE_CACHE_CLASSES | ASSET_VALUE_CACHE_CLASSES
+    ORDER_CACHE_CLASSES | OPEN_ORDER_CACHE_CLASSES | TRADE_CACHE_CLASSES | ASSET_VALUE_CACHE_CLASSES
 )
 
 # WS-only mode: when True, polling for Order/Trade/AssetValue is paused while WS is healthy.
@@ -72,6 +74,8 @@ def clear_ws_rest_resync_for_manager(cls_name: str) -> None:
     with _ws_health_lock:
         if norm_name in ORDER_CACHE_CLASSES:
             _ws_needs_rest_resync.difference_update(ORDER_CACHE_CLASSES)
+        elif norm_name in OPEN_ORDER_CACHE_CLASSES:
+            _ws_needs_rest_resync.difference_update(OPEN_ORDER_CACHE_CLASSES)
         elif norm_name in TRADE_CACHE_CLASSES:
             _ws_needs_rest_resync.difference_update(TRADE_CACHE_CLASSES)
         elif norm_name in ASSET_VALUE_CACHE_CLASSES:
@@ -143,14 +147,36 @@ def upsert_order_from_execution_report(
     *,
     cache_getter: Callable[..., Any] | None = None,
 ) -> bool:
-    """Normalize and persist an ``executionReport`` fill into the Order cache."""
+    """Normalize and persist an ``executionReport`` fill into the filled-order cache."""
     return _persist_ws_execution_report(
         event,
-        cache_name="BinanceOrder",
+        cache_name="BinanceOrderFilled",
         parser=parse_order_execution_report,
         label="order",
         cache_getter=cache_getter,
     )
+
+
+def apply_open_order_from_execution_report(
+    event: dict[str, Any],
+    *,
+    cache_getter: Callable[..., Any] | None = None,
+) -> bool:
+    """Normalize and apply an ``executionReport`` lifecycle transition into the open-order cache."""
+    parsed = parse_open_order_execution_report(event)
+    if parsed is None:
+        return False
+    symbol, action, item = parsed
+    getter = cache_getter or _default_cache_getter
+    try:
+        cache = getter("BinanceOrderOpen")
+        apply_fn = getattr(cache, "apply_ws_order_update", None)
+        if not callable(apply_fn):
+            return False
+        return bool(apply_fn(symbol, action, item))
+    except Exception as exc:
+        builtins.print(f"[cacheManager][WS] open order report update failed: {exc}")
+        return False
 
 
 def append_trade_from_execution_report(
@@ -189,6 +215,7 @@ def handle_binance_ws_event(
     log_enabled: bool | None = None,
     upsert_order_fn: Callable[[dict[str, Any]], Any] | None = None,
     append_trade_fn: Callable[[dict[str, Any]], Any] | None = None,
+    apply_open_order_fn: Callable[[dict[str, Any]], Any] | None = None,
     persist_fn: Callable[[str], Any] | None = None,
 ) -> None:
     """Dispatch one Binance user-data WebSocket event into the account caches."""
@@ -218,23 +245,40 @@ def handle_binance_ws_event(
                 f"symbol={symbol} orderId={event.get('i')} "
                 f"status={event.get('X')} execType={event.get('x')} side={event.get('S')}"
             )
-        # Derive Order and Trade directly from the WebSocket payload without REST calls.
+        # Derive filled orders, open orders, and trade rows directly from the WebSocket payload without REST calls.
         # REST remains a rare fallback for missing symbols, while fallback polling covers
         # gaps created by WebSocket disconnections.
+        open_res = False
         if symbol:
             order_res = (upsert_order_fn or (lambda ev: upsert_order_from_execution_report(ev, cache_getter=getter)))(event)
             trade_res = (append_trade_fn or (lambda ev: append_trade_from_execution_report(ev, cache_getter=getter)))(event)
-            should_persist = not (order_res is False and trade_res is False)
+            if apply_open_order_fn is not None:
+                open_res = bool(apply_open_order_fn(event))
+            elif upsert_order_fn is None and append_trade_fn is None:
+                open_res = apply_open_order_from_execution_report(event, cache_getter=getter)
+            should_persist = not (order_res is False and trade_res is False and open_res is False)
         else:
-            for cache_name in ("BinanceOrder", "BinanceTrade"):
+            for cache_name in ("BinanceOrderFilled", "BinanceTrade"):
                 getter(cache_name).query_remote_and_update_cache()
+            try:
+                getter("BinanceOrderOpen").query_remote_and_update_cache()
+                open_res = True
+            except Exception:
+                pass
             should_persist = True
         if should_persist:
             if persist_fn is not None:
                 persist_fn(event_type)
             else:
-                getter("BinanceOrder").save_state_to_file_if_enabled()
-                getter("BinanceTrade").save_state_to_file_if_enabled()
+                if not symbol or order_res is not False:
+                    getter("BinanceOrderFilled").save_state_to_file_if_enabled()
+                if not symbol or trade_res is not False:
+                    getter("BinanceTrade").save_state_to_file_if_enabled()
+                if open_res:
+                    try:
+                        getter("BinanceOrderOpen").save_state_to_file_if_enabled()
+                    except Exception:
+                        pass
         return
 
     if event_type in ("balanceUpdate", "outboundAccountPosition"):

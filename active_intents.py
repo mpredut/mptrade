@@ -29,7 +29,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cacheaccount import CacheOrderManager
+from cacheaccount import CacheOrderFilledManager, CacheOrderOpenManager
 from cachepaths import (
     ASSETGUARDIAN_STATE_FILENAME,
     AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
@@ -568,21 +568,26 @@ def _load_cached_order_book_index(
     """Collect read-only resting open orders, covered venues, and explicitly terminal venue order keys."""
     out: list[dict[str, Any]] = []
     seen_keys: set[tuple[str, str]] = set()
-    vb_covered: set[str] = set()
-    oc_covered: set[str] = set()
+    open_covered: set[str] = set()
+    filled_covered: set[str] = set()
     terminal_order_keys: set[tuple[str, str]] = set()
-    oc_open_by_venue: dict[str, list[dict[str, Any]]] = {}
+    filled_open_by_venue: dict[str, list[dict[str, Any]]] = {}
     terminal_venue_statuses = TERMINAL_AUDIT_VENUE_STATUSES | TERMINAL_CANCEL_VENUE_STATUSES
 
-    for venue_key, order_fname in CacheOrderManager.VENUE_FILENAMES.items():
-        oc_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(order_fname))))
+    for venue_key, filled_fname in CacheOrderFilledManager.VENUE_FILENAMES.items():
+        oc_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(filled_fname))))
+        if not os.path.isfile(oc_path):
+            for leg_p in legacy_filenames_for(oc_path):
+                if os.path.isfile(leg_p):
+                    oc_path = leg_p
+                    break
         if not os.path.isfile(oc_path):
             continue
         oc_data = read_json_dict_recovering(oc_path)
         items = oc_data.get("items") if isinstance(oc_data, dict) else None
         if not isinstance(items, dict):
             continue
-        oc_covered.add(venue_key)
+        filled_covered.add(venue_key)
         for k_sym, sym_orders in items.items():
             if isinstance(sym_orders, dict):
                 if extract_order_id(sym_orders, default=None) is not None:
@@ -607,34 +612,31 @@ def _load_cached_order_book_index(
                     continue
                 if not (is_open_working_status(oo_st, allow_empty=True) or oo_st_up == "PARTIALLY_FILLED"):
                     continue
-                oc_open_by_venue.setdefault(venue_key, []).append(
+                filled_open_by_venue.setdefault(venue_key, []).append(
                     {"venue": venue_key, "symbol": str(oo.get("symbol") or k_sym), **oo}
                 )
 
-    vb_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(VENUE_BALANCES_STATE_FILENAME))))
-    if os.path.isfile(vb_path):
-        vb_data = read_json_dict_recovering(vb_path)
-        if isinstance(vb_data, dict):
-            for k, v in vb_data.items():
-                if isinstance(k, str) and k.startswith("open_orders:") and isinstance(v, list):
-                    parts = k.split(":")
-                    raw_v = parts[1] if len(parts) > 1 else ""
-                    venue_k = normalize_venue_name(raw_v) or raw_v
-                    if venue_k:
-                        vb_covered.add(venue_k)
-                    for oo in v:
-                        if isinstance(oo, dict):
-                            oid = clean_order_id(extract_order_id(oo, default=None)) or ""
-                            key_t = (venue_k, oid)
-                            if oid and key_t in terminal_order_keys:
-                                continue
-                            if not oid or key_t not in seen_keys:
-                                if oid:
-                                    seen_keys.add(key_t)
-                                out.append({"venue": venue_k, **oo})
+    for venue_key, open_fname in CacheOrderOpenManager.VENUE_FILENAMES.items():
+        oo_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(open_fname))))
+        items, ft, ver_ts = CacheOrderOpenManager.read_venue_open_orders_snapshot(oo_path)
+        if not items and not ft and ver_ts <= 0.0:
+            continue
+        open_covered.add(venue_key)
+        for k_sym, rows in items.items():
+            for oo in rows:
+                if not isinstance(oo, dict):
+                    continue
+                oid = clean_order_id(extract_order_id(oo, default=None)) or ""
+                key_t = (venue_key, oid)
+                if oid and key_t in terminal_order_keys:
+                    continue
+                if not oid or key_t not in seen_keys:
+                    if oid:
+                        seen_keys.add(key_t)
+                    out.append({"venue": venue_key, "symbol": str(oo.get("symbol") or k_sym), **oo})
 
-    for venue_key, oc_orders in oc_open_by_venue.items():
-        if venue_key in vb_covered:
+    for venue_key, oc_orders in filled_open_by_venue.items():
+        if venue_key in open_covered:
             continue
         for oo in oc_orders:
             oid = clean_order_id(extract_order_id(oo, default=None)) or ""
@@ -644,7 +646,7 @@ def _load_cached_order_book_index(
                     seen_keys.add(key_t)
                 out.append(oo)
 
-    return out, (vb_covered | oc_covered), terminal_order_keys
+    return out, (open_covered | filled_covered), terminal_order_keys
 
 
 def _load_cached_open_orders_and_covered_venues(root: str) -> tuple[list[dict[str, Any]], set[str]]:

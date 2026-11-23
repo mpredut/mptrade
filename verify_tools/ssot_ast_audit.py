@@ -280,7 +280,8 @@ CACHE_PRODUCER_GETTERS = frozenset({
     "get_short_trend_manager",
     "get_long_trend_manager",
     "get_asset_value_manager",
-    "get_binance_order_manager",
+    "get_order_filled_manager",
+    "get_order_open_manager",
     "get_trade_manager",
     "attach_default_price_ws_stream",
 })

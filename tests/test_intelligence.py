@@ -1463,7 +1463,7 @@ def test_iter47_lazy_intelligence_imports_monkeypatch_forwarding_and_strict_int_
         cacheintegrity._strict_int_field("१२३")
     assert cacheintegrity._strict_int_field("42.0") == 42
     cacheintegrity.validate_account_cache_state(
-        cls_name="CacheOrderManager",
+        cls_name="CacheOrderFilledManager",
         is_trade_cache=False,
         is_order_cache=True,
         cache={"BTCUSDC": [{"symbol": "BTCUSDC", "orderId": "42.0", "_fillIds": ["7.0"]}]},
@@ -5117,16 +5117,19 @@ def test_iter86_symbols_facade_config_reload_inspect_fleet_and_kalman_warmstart(
     reloaded_creds = importlib.reload(credentials)
     assert reloaded_creds is sys.modules["credentials"]
 
-    # 3. inspect_prod_fleet merges non-Binance open_orders:* with Binance cache_order.json fallback
+    # 3. inspect_prod_fleet reads cross-venue open orders from cache_order_open_<venue>.json
 
     fake_balances = {
         "cash:binance:USDC": {"free": 500.0, "locked_quote_usd": 100.0},
-        "open_orders:kraken": [],
-        "open_orders:hyperliquid:HYPE": [
-            {"symbol": "HYPE", "side": "S", "limitPx": "25.5", "sz": "2.0", "oid": "hl-1"}
-        ],
     }
-    fake_orders = {
+    fake_hl_open = {
+        "items": {
+            "HYPE": [
+                {"symbol": "HYPE", "side": "S", "limitPx": "25.5", "sz": "2.0", "oid": "hl-1", "status": "NEW"}
+            ]
+        }
+    }
+    fake_bn_open = {
         "items": {
             "BTCUSDC": [
                 {
@@ -5146,7 +5149,11 @@ def test_iter86_symbols_facade_config_reload_inspect_fleet_and_kalman_warmstart(
         lambda p: (
             fake_balances
             if "venue_balances_state.json" in str(p)
-            else (fake_orders if "cache_order_binance.json" in str(p) else {})
+            else (
+                fake_bn_open
+                if "cache_order_open_binance.json" in str(p)
+                else (fake_hl_open if "cache_order_open_hyperliquid.json" in str(p) else {})
+            )
         ),
     )
     fleet_res = inspect_prod_fleet.inspect_fleet(json_output=True)

@@ -793,24 +793,28 @@ def test_active_intents_autonomous_ai_indexing_and_unified_trace(tmp_path):
     ]
     atomic_write_json(str(state_dir / "autonomous_trade_intents_state.json"), ai_intents_payload)
     atomic_write_json(
-        str(state_dir / "venue_balances_state.json"),
+        str(orders_dir / "cache_order_open_kraken.json"),
         {
-            "open_orders:kraken": [
-                {
-                    "orderId": "O7KKV6-45DBY-G5QHOT",
-                    "clientOrderId": krk_cid,
-                    "symbol": "HYPEUSD",
-                    "side": "SELL",
-                    "status": "NEW",
-                    "price": 69.49,
-                    "origQty": 9.35,
-                    "executedQty": 0.0,
-                }
-            ]
+            "items": {
+                "HYPEUSD": [
+                    {
+                        "orderId": "O7KKV6-45DBY-G5QHOT",
+                        "clientOrderId": krk_cid,
+                        "symbol": "HYPEUSD",
+                        "side": "SELL",
+                        "status": "NEW",
+                        "price": 69.49,
+                        "origQty": 9.35,
+                        "executedQty": 0.0,
+                    }
+                ]
+            },
+            "fetchtime": {"HYPEUSD": 1795099237000},
+            "verified_ts": 1795099237.0,
         },
     )
     atomic_write_json(
-        str(orders_dir / "cache_order_binance.json"),
+        str(orders_dir / "cache_order_filled_binance.json"),
         {
             "items": {
                 "BTCUSDC": {
@@ -929,11 +933,15 @@ def test_post_phase4_bugfixes_intent_dedup_symbol_case_sqlite_stderr_and_replay(
     state_dir.mkdir(parents=True)
     orders_dir.mkdir(parents=True)
     atomic_write_json(
-        str(state_dir / "venue_balances_state.json"),
+        str(orders_dir / "cache_order_open_kraken.json"),
         {
-            "open_orders:kraken:SPCXxUSD": [
-                {"orderId": "OMGUV7-LIVE", "symbol": "SPCXxUSD", "side": "SELL", "status": "NEW", "price": 140.88, "origQty": 5.0}
-            ]
+            "items": {
+                "SPCXxUSD": [
+                    {"orderId": "OMGUV7-LIVE", "symbol": "SPCXxUSD", "side": "SELL", "status": "NEW", "price": 140.88, "origQty": 5.0, "executedQty": 0.0}
+                ]
+            },
+            "fetchtime": {"SPCXxUSD": int(now_s * 1000)},
+            "verified_ts": now_s,
         },
     )
     atomic_write_json(

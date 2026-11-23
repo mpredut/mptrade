@@ -2787,20 +2787,24 @@ def test_active_intents_excludes_shadow_paper_state_files_and_orders(tmp_path):
 
 
 def test_active_intents_prunes_freshly_filled_ai_order_despite_stale_venue_balances(tmp_path):
-    # Even when created < 300s ago and venue_balances_state.json still lists an order as NEW,
-    # an explicit FILLED record in cache_order_<venue>.json or order_retry_queue.jsonl prunes it immediately.
+    # Even when created < 300s ago and cache_order_open_<venue>.json still lists an order as NEW,
+    # an explicit FILLED record in cache_order_filled_<venue>.json or order_retry_queue.jsonl prunes it immediately.
     now_s = time.time()
     _write_intent_file(
-        tmp_path / "cachedb/state/venue_balances_state.json",
+        tmp_path / "cachedb/orders/cache_order_open_binance.json",
         {
-            "open_orders:binance:ARBUSDC": [
-                {"order_id": "567351718", "symbol": "ARBUSDC", "side": "SELL", "price": 0.1138, "qty": 5096.6, "status": "NEW"},
-                {"order_id": "567395125", "symbol": "ARBUSDC", "side": "SELL", "price": 0.1153, "qty": 2601.9, "status": "NEW"},
-            ]
+            "items": {
+                "ARBUSDC": [
+                    {"orderId": "567351718", "symbol": "ARBUSDC", "side": "SELL", "price": 0.1138, "origQty": 5096.6, "executedQty": 0.0, "status": "NEW"},
+                    {"orderId": "567395125", "symbol": "ARBUSDC", "side": "SELL", "price": 0.1153, "origQty": 2601.9, "executedQty": 0.0, "status": "NEW"},
+                ]
+            },
+            "fetchtime": {"ARBUSDC": int(now_s * 1000)},
+            "verified_ts": now_s,
         },
     )
     _write_intent_file(
-        tmp_path / "cachedb/orders/cache_order_binance.json",
+        tmp_path / "cachedb/orders/cache_order_filled_binance.json",
         {
             "items": {
                 "ARBUSDC": [

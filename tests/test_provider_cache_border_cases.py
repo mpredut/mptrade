@@ -49,7 +49,7 @@ from botcore import (
 from cacheaccount import (
     CacheAccountManagerBase,
     CacheAssetValueManager,
-    CacheOrderManager,
+    CacheOrderFilledManager,
     CacheTradeManager,
     get_trade_manager,
     start_account_cache_daemon,
@@ -2938,9 +2938,9 @@ def test_wave17_kalman_reset_string_price_short_trend_nan_bool_and_repo_zero_raw
         sw_series, reversal_pct=3.0
     )
 
-    assert CacheOrderManager._normalize_fill_id("00042") == "42"
-    assert CacheOrderManager._normalize_fill_id("0000") == "0"
-    assert CacheOrderManager._normalize_fill_id(True) is None
+    assert CacheOrderFilledManager._normalize_fill_id("00042") == "42"
+    assert CacheOrderFilledManager._normalize_fill_id("0000") == "0"
+    assert CacheOrderFilledManager._normalize_fill_id(True) is None
 
     c_cur = CacheCurrentPriceManager.__new__(CacheCurrentPriceManager)
     c_cur.lock = threading.RLock()
@@ -8121,9 +8121,9 @@ def test_wave46_cachepaths_state_io_cacheintegrity_and_factory_border_cases(monk
     with pytest.raises(ValueError):
         cacheintegrity._validate_order_items_map({"null": []})
     for bad_fills in (None, "12", {1: 2}, True):
-        with pytest.raises(ValueError, match="invalid CacheOrderManager cache row"):
+        with pytest.raises(ValueError, match="invalid CacheOrderFilledManager cache row"):
             cacheintegrity.validate_account_cache_state(
-                cls_name="CacheOrderManager",
+                cls_name="CacheOrderFilledManager",
                 is_trade_cache=False,
                 is_order_cache=True,
                 cache={"BTCUSDC": [{"symbol": "BTCUSDC", "orderId": 10, "_fillIds": bad_fills}]},
@@ -8149,9 +8149,9 @@ def test_wave46_cachepaths_state_io_cacheintegrity_and_factory_border_cases(monk
 
     assert "disk_filename" in CacheAccountManagerBase.__dict__
     assert "disk_filename" not in CacheTradeManager.__dict__
-    assert "disk_filename" not in CacheOrderManager.__dict__
+    assert "disk_filename" not in CacheOrderFilledManager.__dict__
     assert CacheTradeManager.disk_filename("kraken") == "cache_trade_kraken.json"
-    assert CacheOrderManager.disk_filename("binance") == "cache_order_binance.json"
+    assert CacheOrderFilledManager.disk_filename("binance") == "cache_order_filled_binance.json"
     for bad_venue in ("null", "none", True, 123, "unknown_venue"):
         with pytest.raises(ValueError, match="Unsupported trade cache venue"):
             get_trade_manager(bad_venue)  # type: ignore[arg-type]
@@ -8170,7 +8170,7 @@ def test_wave46_cachepaths_state_io_cacheintegrity_and_factory_border_cases(monk
     cm = importlib.import_module("cacheManager")
     for bad_reg in ("", "null", "none", True):
         with pytest.raises(ValueError, match="non-empty string"):
-            cm.CacheFactory.register(bad_reg, CacheOrderManager, sync_ts=60)  # type: ignore[arg-type]
+            cm.CacheFactory.register(bad_reg, CacheOrderFilledManager, sync_ts=60)  # type: ignore[arg-type]
     for bad_get in ("", "null", True, ["unhashable"], {"bad": 1}):
         with pytest.raises(ValueError, match="Unknown cache type"):
             cm.CacheFactory.get(bad_get)

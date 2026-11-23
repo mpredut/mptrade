@@ -759,7 +759,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
             "assert issubclass(cp.CachePriceManagerBase, ci.CacheManagerInterface); "
             "assert issubclass(ct.CacheTrendManagerBase, ci.CacheManagerInterface); "
             "assert issubclass(ca.CacheTradeManager, ca.CacheAccountManagerBase); "
-            "assert issubclass(ca.CacheOrderManager, ca.CacheAccountManagerBase); "
+            "assert issubclass(ca.CacheOrderFilledManager, ca.CacheAccountManagerBase); "
             "assert issubclass(ca.CacheAssetValueManager, ca.CacheAccountManagerBase); "
             "assert issubclass(cp.CacheSparsePriceManager, cp.CachePriceManagerBase); "
             "assert issubclass(cp.Cache24PriceManager, cp.CachePriceManagerBase); "
@@ -1143,12 +1143,12 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertEqual(w.sample_rate_sec, 1.0)
         self.assertEqual(w.get_short_trend()[0], 1)
 
-        # CacheTradeManager and CacheOrderManager reject bool price/qty/time and invalid incoming order rows
+        # CacheTradeManager and CacheOrderFilledManager reject bool price/qty/time and invalid incoming order rows
         valid_trade = {"symbol": "BTCUSDT", "id": 1, "orderId": 10, "price": 60000.0, "qty": 0.1, "time": 1700000000000, "isBuyer": True}
         self.assertTrue(cm.CacheTradeManager._is_valid_item(valid_trade))
         for k in ("price", "qty", "time"):
             self.assertFalse(cm.CacheTradeManager._is_valid_item({**valid_trade, k: True}))
-        order_mgr = cm.CacheOrderManager(60, ["BTCUSDT"], os.path.join(self.tmp, "cache_order_test.json"), read_only=True)
+        order_mgr = cm.CacheOrderFilledManager(60, ["BTCUSDT"], os.path.join(self.tmp, "cache_order_test.json"), read_only=True)
         valid_order = {"orderId": 10, "price": 60000.0, "quantity": 0.1, "timestamp": 1700000000000, "side": "BUY"}
         self.assertTrue(order_mgr._is_valid_item(valid_order))
         for k in ("price", "quantity", "timestamp"):
@@ -1246,13 +1246,13 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         ):
             bapi_ws_bridge.upsert_order_from_execution_report(trade_event)
             bapi_ws_bridge.append_trade_from_execution_report(trade_event)
-            bapi_ws_bridge._default_cache_getter("BinanceOrder")
+            bapi_ws_bridge._default_cache_getter("BinanceOrderFilled")
         self.assertEqual(
             seen_sync_flags,
             [
-                ("BinanceOrder", "disk_reader"),
+                ("BinanceOrderFilled", "disk_reader"),
                 ("BinanceTrade", "disk_reader"),
-                ("BinanceOrder", "disk_reader"),
+                ("BinanceOrderFilled", "disk_reader"),
             ],
         )
 
@@ -1360,7 +1360,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
 
     def test_audit35_order_manager_canonical_ids_and_sub_satoshi_merge(self):
         ord_file = os.path.join(self.tmp, "cache_order_a35.json")
-        om = cm.CacheOrderManager(60, ["BTCUSDT"], ord_file, read_only=True)
+        om = cm.CacheOrderFilledManager(60, ["BTCUSDT"], ord_file, read_only=True)
         # _is_valid_item rejects numerically duplicate _fillIds like ["01", "1"]
         self.assertFalse(
             om._is_valid_item(

@@ -777,7 +777,8 @@ def _shutdown_runtime_threads_after_suite():
 
     forbidden = {
         "BinanceTimeResync", "CacheTradeManager",
-        "CacheOrderManager",
+        "CacheOrderFilledManager",
+        "CacheOrderOpenManager",
         "CacheCurrentPriceManager", "NonBinanceTrendPoller",
         "InstantTrendFullEval", "InstantTrendFlush",
         "ShortTrendFullEval", "ShortTrendFlush",

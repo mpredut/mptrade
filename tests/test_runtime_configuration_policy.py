@@ -322,7 +322,7 @@ class RuntimeImportSafetyTest(unittest.TestCase):
 
             forbidden = {
                 "BinanceTimeResync", "CacheTradeManager",
-                "CacheOrderManager",
+                "CacheOrderFilledManager", "CacheOrderOpenManager",
                 "CacheCurrentPriceManager", "NonBinanceTrendPoller",
                 "InstantTrendFullEval", "InstantTrendFlush",
             }

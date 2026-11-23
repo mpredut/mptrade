@@ -115,7 +115,7 @@ def parse_order_execution_report(
         ts_ms = extract_timestamp_ms(event, default=None)
         if ts_ms is None or ts_ms <= 0:
             ts_ms = fallback_ms
-        order_item = {
+        order_item: dict[str, Any] = {
             "orderId": raw_i,
             # Store one immutable fill. A cumulative Z/z aggregate cannot name all
             # constituent fill IDs after reconnect, so REST backfill could count the
@@ -129,11 +129,90 @@ def parse_order_execution_report(
             "eventType": event.get("x"),
             "_fillId": str(fill_id),
         }
+        cid = extract_client_order_id(event, default="") or clean_order_id(event.get("c"))
+        if cid:
+            order_item["clientOrderId"] = cid
+        order_type = clean_upper_scalar(event.get("o"))
+        if order_type:
+            order_item["type"] = order_type
+        raw_fee = safe_nonneg_float(event.get("n"), default=None)
+        if raw_fee is not None:
+            order_item["fee"] = raw_fee
+        fee_asset = clean_upper_scalar(event.get("N"))
+        if fee_asset:
+            order_item["feeAsset"] = fee_asset
         return symbol, order_item
     except (TypeError, ValueError, OverflowError) as exc:
         builtins.print(
             f"[cacheManager][WS] rejected malformed order report: {exc}"
         )
+        return None
+
+
+_OPEN_ORDER_ACTIVE_STATUSES = frozenset({"NEW", "PARTIALLY_FILLED"})
+_OPEN_ORDER_REMOVE_STATUSES = frozenset({
+    "FILLED",
+    "CANCELED",
+    "CANCELLED",
+    "EXPIRED",
+    "EXPIRED_IN_MATCH",
+    "REJECTED",
+    "REPLACED",
+})
+
+
+def parse_open_order_execution_report(
+    event: dict[str, Any],
+    *,
+    now_ms: int | None = None,
+) -> tuple[str, str, dict[str, Any]] | None:
+    """Normalize a Binance ``executionReport`` into ``(symbol, action, order_item)`` for ``CacheOrderOpenManager``.
+
+    ``action`` is ``'upsert'`` for live resting orders (``NEW`` / ``PARTIALLY_FILLED``)
+    and ``'remove'`` for terminal statuses (``FILLED``, ``CANCELED``, ``EXPIRED``, ``REJECTED``).
+    """
+    if not isinstance(event, dict) or (symbol := clean_upper_scalar(event.get("s"))) is None:
+        return None
+    status_u = clean_upper_scalar(event.get("X")) or ""
+    if status_u not in _OPEN_ORDER_ACTIVE_STATUSES and status_u not in _OPEN_ORDER_REMOVE_STATUSES:
+        return None
+    try:
+        raw_i = _normalize_ws_order_id(event.get("i"), strict_float=True)
+        if raw_i is None:
+            return None
+        oid_str = str(raw_i)
+        if status_u in _OPEN_ORDER_REMOVE_STATUSES:
+            return symbol, "remove", {"orderId": oid_str, "status": status_u}
+        side = extract_order_side(event)
+        if side not in ("BUY", "SELL"):
+            return None
+        orig_qty = safe_pos_float(event.get("q"), default=None)
+        if orig_qty is None:
+            return None
+        exec_qty = safe_nonneg_float(event.get("z"), default=0.0) or 0.0
+        price = safe_nonneg_float(event.get("p"), default=None)
+        if price is None:
+            price = safe_nonneg_float(extract_order_price(event, default=0.0), default=0.0) or 0.0
+        ts_ms = (
+            extract_timestamp_ms({"time": event.get("O")}, default=None)
+            or extract_timestamp_ms(event, default=None)
+            or resolve_now_ms(now_ms)
+        )
+        open_item: dict[str, Any] = {
+            "orderId": oid_str,
+            "side": side,
+            "type": clean_upper_scalar(event.get("o")) or "LIMIT",
+            "price": price,
+            "origQty": orig_qty,
+            "executedQty": min(exec_qty, orig_qty),
+            "status": status_u,
+            "timestamp": math.trunc(ts_ms),
+        }
+        cid = extract_client_order_id(event, default="") or clean_order_id(event.get("c"))
+        if cid:
+            open_item["clientOrderId"] = cid
+        return symbol, "upsert", open_item
+    except (TypeError, ValueError, OverflowError):
         return None
 
 

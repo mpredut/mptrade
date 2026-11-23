@@ -12,7 +12,7 @@ import time
 from cacheaccount import (
     CacheAccountManagerBase,
     CacheAssetValueManager,
-    CacheOrderManager,
+    CacheOrderFilledManager,
     CacheTradeManager,
 )
 from cachepaths import (
@@ -497,7 +497,7 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
     assert os.path.basename(stm_case._live_trend_file("ANTXUSD")) == "live_ANTxUSD.json"
     assert CacheLongTrendManager.disk_filename_for_symbol() == "cache_long_trend.json"
     assert CacheTradeManager.disk_filename_for_symbol() == "cache_trade_binance.jsonl"
-    assert CacheOrderManager.disk_filename_for_symbol() == "cache_order_binance.json"
+    assert CacheOrderFilledManager.disk_filename_for_symbol() == "cache_order_filled_binance.json"
     assert CacheAssetValueManager.disk_filename_for_symbol() == "cache_asset_value.jsonl"
     assert CachePriceManagerBase.extract_jsonl_series_point({"s": "BTCUSDC", "i": [1700000000000, 95000.5]}, {"BTCUSDC"}) == [
         1700000000000,
@@ -760,7 +760,7 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         assert TelemetryCollectorFactory.get_collector(col_cls) is inst
 
     # 3. Cache hierarchy filename & schema contracts are reused
-    assert (CacheOrderManager.DEFAULT_FILENAME, "binance") in _resolve_order_cache_files()
+    assert (CacheOrderFilledManager.DEFAULT_FILENAME, "binance") in _resolve_order_cache_files()
     assert _resolve_order_cache_files() == CacheAccountManagerBase.venue_order_and_trade_cache_contracts()
 
     assert venue_for_symbol("BTCUSDC") == "binance"
@@ -996,11 +996,21 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
             "binance:BTC": 0.25,
             "binance:USDC": 1500.0,
             "cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 1500.0},
-            "open_orders:binance:BTCUSDC": [
-                {"orderId": "ord-1", "symbol": "BTCUSDC", "side": "SELL", "price": 68000.0, "origQty": 0.1}
-            ],
         },
         indent=2,
+    )
+    save_json_state(
+        os.path.join(temp_cache_dir, "cache_order_open_binance.json"),
+        {
+            "items": {
+                "BTCUSDC": [
+                    {"orderId": "ord-1", "symbol": "BTCUSDC", "side": "SELL", "price": 68000.0, "origQty": 0.1, "executedQty": 0.0, "status": "NEW"}
+                ]
+            },
+            "fetchtime": {"BTCUSDC": int(time.time() * 1000)},
+            "verified_ts": time.time(),
+        },
+        indent=1,
     )
 
     # Create dummy instruments whose live provider methods fail if invoked
@@ -1494,8 +1504,13 @@ def test_global_telemetry_collector_publishes_venue_balances_and_cycle_deltas(tm
         bals = json.load(fh)
     assert bals["pos:binance:BTCUSDC"]["free_base"] == pytest.approx(0.25)
     assert bals["cash:binance:USDC"]["free"] == pytest.approx(400.0)
-    assert len(bals["open_orders:binance:BTCUSDC"]) == 1
-    assert bals["open_orders_verified_ts:binance"] == pytest.approx(now_s, abs=5.0)
+    assert not any(k.startswith(("open_orders:", "open_orders_verified_ts:")) for k in bals)
+    open_path = resolve_cachedb_filepath(str(cache_dir / "cache_order_open_binance.json"))
+    assert os.path.exists(open_path)
+    with open(open_path, encoding="utf-8") as fh:
+        open_doc = json.load(fh)
+    assert len(open_doc["items"]["BTCUSDC"]) == 1
+    assert open_doc["verified_ts"] == pytest.approx(now_s, abs=5.0)
 
     mhist_path = resolve_cachedb_filepath(str(cache_dir / "microstructure_cycle_history.json"))
     assert os.path.exists(mhist_path)

@@ -416,7 +416,7 @@ def test_cache_order_on_items_update_routes_through_persist_items(tmp_path):
     order_file = str(tmp_path / "order_on_items.json")
     with open(order_file, "w", encoding="utf-8") as fh:
         json.dump({"items": {sym: []}, "fetchtime": {sym: 1000}}, fh)
-    order_mgr = cm.CacheOrderManager(3600, [sym], order_file)
+    order_mgr = cm.CacheOrderFilledManager(3600, [sym], order_file)
 
     order_mgr.on_items_update(
         sym,
@@ -522,12 +522,12 @@ def test_hyperliquid_strategy_keeps_order_when_cancel_fails(tmp_path):
 def test_cache_manager_polymorphic_update_overloading_and_readonly_safety(tmp_path):
     """Verify update_cache_per_symbol overriding on Order/Trade, CurrentPrice _persist_items overloading, and read-only maintain_append_persist."""
 
-    # 1. CacheOrderManager.update_cache_per_symbol routes through _persist_items and accepts both dict and list
+    # 1. CacheOrderFilledManager.update_cache_per_symbol routes through _persist_items and accepts both dict and list
     sym = "TEST_POLY_ORDER_USDC"
     order_file = str(tmp_path / "order_poly.json")
     with open(order_file, "w", encoding="utf-8") as fh:
         json.dump({"items": {sym: []}, "fetchtime": {sym: 1000}}, fh)
-    order_mgr = cm.CacheOrderManager(3600, [sym], order_file)
+    order_mgr = cm.CacheOrderFilledManager(3600, [sym], order_file)
 
     order_mgr.update_cache_per_symbol(
         sym,

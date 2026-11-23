@@ -115,10 +115,35 @@ load_dotenv()
 logger = logging.getLogger("intelligence.telemetry_collector")
 
 
-def _filter_actionable_impulse_symbols(shocked: List[str], venue_balances: Any) -> List[str]:
+def _filter_actionable_impulse_symbols(
+    shocked: List[str],
+    venue_balances: Any,
+    *,
+    open_orders: Any = None,
+    cache_dir: Optional[str] = None,
+) -> List[str]:
     """Drop shocked symbols whose tracked non-equity venue entries all report zero buy/sell/order capacity."""
     if not shocked or not isinstance(venue_balances, dict) or not venue_balances:
         return list(shocked)
+    open_vs_set: set[Tuple[str, str]] = set()
+    if isinstance(open_orders, list):
+        for oo in open_orders:
+            if isinstance(oo, dict):
+                oo_v = str(oo.get("venue") or "").strip().lower()
+                oo_s = str(oo.get("symbol") or "").strip().upper()
+                if oo_v and oo_s:
+                    open_vs_set.add((oo_v, oo_s))
+    elif cache_dir:
+        try:
+            from cacheaccount import CacheOrderOpenManager
+            oo_rows, _, _ = CacheOrderOpenManager.read_all_venues_open_orders(cache_dir)
+            for oo in oo_rows:
+                oo_v = str(oo.get("venue") or "").strip().lower()
+                oo_s = str(oo.get("symbol") or "").strip().upper()
+                if oo_v and oo_s:
+                    open_vs_set.add((oo_v, oo_s))
+        except Exception:
+            pass
     caps_by_sym: Dict[str, List[Tuple[float, float]]] = {}
     for k, entry in venue_balances.items():
         if not (isinstance(k, str) and k.startswith("pos:") and isinstance(entry, dict)):
@@ -132,8 +157,7 @@ def _filter_actionable_impulse_symbols(shocked: List[str], venue_balances: Any) 
         ms = safe_float(entry.get("effective_max_sell_usd"), default=None)
         rmb = safe_pos_float(entry.get("replace_max_buy_usd"), default=0.0) or 0.0
         rms = safe_pos_float(entry.get("replace_max_sell_usd"), default=0.0) or 0.0
-        oo_list = casefold_get(venue_balances, f"open_orders:{venue}:{sym_raw}") if venue else None
-        has_open = isinstance(oo_list, list) and len(oo_list) > 0
+        has_open = (venue.lower(), sym_k) in open_vs_set
         if mb is None and ms is None and rmb <= 0.0 and rms <= 0.0 and not has_open:
             continue
         eff_buy = max(mb or 0.0, rmb)
@@ -750,7 +774,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             shocked = evaluate_kinematic_impulse_symbols(prices_and_trends, candidate_symbols=cand_syms)
             if shocked:
                 _, vb_doc, _ = load_venue_balances_state(self.cache_dir, read_json_dict_recovering)
-                shocked = _filter_actionable_impulse_symbols(shocked, vb_doc)
+                shocked = _filter_actionable_impulse_symbols(shocked, vb_doc, cache_dir=self.cache_dir)
             if shocked and eval_doc is not None:
                 shocked = _filter_unmoved_since_eval_symbols(
                     shocked,

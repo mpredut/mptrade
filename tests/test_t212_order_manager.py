@@ -8,7 +8,7 @@ import pytest
 
 import account_cache_health as bch
 from binance_api import bapi_ws_bridge as bapi_ws_health
-from cacheaccount import CacheOrderManager
+from cacheaccount import CacheOrderFilledManager
 from tests.conftest import load_venue_modules
 
 order_manager = load_venue_modules("212trading", "order_manager")
@@ -284,10 +284,10 @@ def test_bapi_ws_health_normalizes_whitespace_padded_manager_names_and_class_ite
     bapi_ws_health.mark_ws_available(True)
     bapi_ws_health.mark_ws_event_received()
     bapi_ws_health.mark_ws_unhealthy()
-    assert bapi_ws_health.should_poll_for_manager(" CacheOrderManager ", ws_only_mode=True) is True
+    assert bapi_ws_health.should_poll_for_manager(" CacheOrderFilledManager ", ws_only_mode=True) is True
     bapi_ws_health.mark_ws_event_received()
-    bapi_ws_health.clear_ws_rest_resync_for_manager(" CacheOrderManager ")
-    assert bapi_ws_health.should_poll_for_manager(" CacheOrderManager ", ws_only_mode=True) is False
+    bapi_ws_health.clear_ws_rest_resync_for_manager(" CacheOrderFilledManager ")
+    assert bapi_ws_health.should_poll_for_manager(" CacheOrderFilledManager ", ws_only_mode=True) is False
 
 
 def test_account_cache_health_require_int_accepts_integer_floats_and_normalize_class_name_handles_iter133_s5():
@@ -295,7 +295,7 @@ def test_account_cache_health_require_int_accepts_integer_floats_and_normalize_c
     # 5. account_cache_health.require_int accepts integer floats and normalize_class_name handles class objects
     assert bch.require_int(100.0, "writer_pid", min_value=1) == 100
     assert bch.require_int(0.0, "generation", min_value=0) == 0
-    assert bch.normalize_class_name(CacheOrderManager) == "CacheOrderManager"
+    assert bch.normalize_class_name(CacheOrderFilledManager) == "CacheOrderFilledManager"
 
 
 def test_212trading_order_manager_waiting_with_sentinel_order_id_returns_false_iter153_s1(tmp_path, monkeypatch):

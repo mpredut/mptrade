@@ -449,7 +449,7 @@ class TestCachepaths(TempDirTestCase):
         self.assertEqual(moved["macro"], ["fear_greed_index.json"])
         self.assertEqual(
             sorted(moved["orders"]),
-            ["cache_order_binance.json", "cache_trade_binance.jsonl"],
+            ["cache_order_filled_binance.json", "cache_trade_binance.jsonl"],
         )
         self.assertEqual(
             sorted(moved["system/heartbeat"]),
@@ -459,7 +459,7 @@ class TestCachepaths(TempDirTestCase):
         self.assertTrue((root / "prices" / "cache_current_price.json").exists())
         self.assertTrue((root / "trends" / "cache_short_trend.json").exists())
         self.assertTrue((root / "macro" / "fear_greed_index.json").exists())
-        self.assertTrue((root / "orders" / "cache_order_binance.json").exists())
+        self.assertTrue((root / "orders" / "cache_order_filled_binance.json").exists())
         self.assertTrue((root / "orders" / "cache_trade_binance.jsonl").exists())
         self.assertFalse((root / "orders" / "cache_order.json").exists())
         self.assertFalse((root / "orders" / "cache_trade.jsonl").exists())

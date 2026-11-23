@@ -84,6 +84,8 @@ class ProviderSsotBridgeMixin:
     _ssot_current_price_cls: Any = None
     _ssot_price24_cls: Any = None
     _ssot_trade_cache_cls: Any = None
+    _ssot_order_filled_cache_cls: Any = None
+    _ssot_order_open_cache_cls: Any = None
     _policy_weight_limit_fn: Any = None
     _policy_window_cfg_fn: Any = None
     _policy_window_reference_fn: Any = None
@@ -149,6 +151,8 @@ class ProviderSsotBridgeMixin:
         current_price_cls: Any = None,
         price24_cls: Any = None,
         trade_cache_cls: Any = None,
+        order_filled_cache_cls: Any = None,
+        order_open_cache_cls: Any = None,
     ) -> None:
         """Bind read-only SSOT cache getters and snapshot classes from ``cacheManager`` without upward imports."""
         targets = (cls, ProviderSsotBridgeMixin) if cls is not ProviderSsotBridgeMixin else (cls,)
@@ -167,6 +171,10 @@ class ProviderSsotBridgeMixin:
                 tgt._ssot_price24_cls = price24_cls
             if trade_cache_cls is not None:
                 tgt._ssot_trade_cache_cls = trade_cache_cls
+            if order_filled_cache_cls is not None:
+                tgt._ssot_order_filled_cache_cls = order_filled_cache_cls
+            if order_open_cache_cls is not None:
+                tgt._ssot_order_open_cache_cls = order_open_cache_cls
 
     @classmethod
     def _patched_mdp_attr(cls, attr_name: str) -> Any:

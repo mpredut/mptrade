@@ -71,7 +71,7 @@ from botcore import (
     require_shadow_interval,
     safe_pos_int,
 )
-from cacheManager import CacheCurrentPriceManager, CacheOrderManager, CacheTradeManager
+from cacheManager import CacheCurrentPriceManager, CacheOrderFilledManager, CacheTradeManager
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -2218,7 +2218,7 @@ def test_intelligence_cli_bapi_ws_and_pricefetcher_robustness(tmp_path):
         assert mark_ws_available("false") is False  # type: ignore[arg-type]
         assert mark_ws_available("true") is True  # type: ignore[arg-type]
         assert should_poll_for_manager(
-            "CacheOrderManager",
+            "CacheOrderFilledManager",
             ws_only_mode="false",  # type: ignore[arg-type]
             ws_available="true",  # type: ignore[arg-type]
             ws_is_healthy="true",  # type: ignore[arg-type]
@@ -2398,7 +2398,7 @@ def test_position_exit_manager_rtrade_pair_and_bapi_placeorder_hardening():
 
 
 def test_cache_manager_item_validation_and_kraken_trailing_hardening():
-    """Verify CacheTradeManager, CacheOrderManager, CacheCurrentPriceManager, and KrakenTrailing handle malformed inputs safely."""
+    """Verify CacheTradeManager, CacheOrderFilledManager, CacheCurrentPriceManager, and KrakenTrailing handle malformed inputs safely."""
 
     trade_mgr = object.__new__(CacheTradeManager)
     valid_trade = {
@@ -2415,7 +2415,7 @@ def test_cache_manager_item_validation_and_kraken_trailing_hardening():
     assert trade_mgr._is_valid_item({**valid_trade, "orderId": 202.25}) is False
     assert trade_mgr._is_valid_item({**valid_trade, "time": 1700000000000.5}) is False
 
-    order_mgr = object.__new__(CacheOrderManager)
+    order_mgr = object.__new__(CacheOrderFilledManager)
     valid_order = {
         "orderId": 202,
         "price": 50000.0,

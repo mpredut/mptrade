@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from abc import ABC
 import logging
+import math
 import os
 import re
 import time as _time
@@ -50,6 +51,7 @@ from cachepaths import (
     is_primary_stream_venue,
     is_shadow_or_paper_state_payload,
     iter_venue_cycle_state_files,
+    legacy_filenames_for,
     normalize_venue_name,
     resolve_cachedb_filepath,
     resolve_venue_trailing_state_path,
@@ -130,13 +132,61 @@ def _resolve_order_cache_files() -> Tuple[Tuple[str, str], ...]:
     contracts_fn = getattr(_mc.CacheAccountManagerBase, "venue_order_and_trade_cache_contracts", None)
     if callable(contracts_fn):
         return tuple(contracts_fn())
-    trd_cls = _mc.CacheTradeManager
-    return (
-        (getattr(_mc.CacheOrderManager, "DEFAULT_FILENAME", ""), "binance"),
-        (trd_cls.disk_filename("kraken"), "kraken"),
-        (trd_cls.disk_filename("hyperliquid"), "hyperliquid"),
-        (trd_cls.disk_filename("t212"), "t212"),
-    )
+    ord_cls = _mc.CacheOrderFilledManager
+    return tuple((fname, v_key) for v_key, fname in ord_cls.VENUE_FILENAMES.items())
+
+
+def _read_venue_filled_orders_doc(
+    cachedb_dir: str,
+    order_cache_name: str,
+    cache_venue: str,
+    read_json_fn: Any,
+) -> Any:
+    """Read a venue's filled-order cache snapshot, falling back to legacy order or reference trade cache when absent."""
+    ord_data = read_json_fn(os.path.join(cachedb_dir, order_cache_name))
+    if isinstance(ord_data, dict) and isinstance(ord_data.get("items"), dict) and ord_data.get("items"):
+        return ord_data
+    for leg_name in legacy_filenames_for(order_cache_name):
+        leg_data = read_json_fn(os.path.join(cachedb_dir, leg_name))
+        if isinstance(leg_data, dict) and isinstance(leg_data.get("items"), dict) and leg_data.get("items"):
+            return leg_data
+    trd_cls = getattr(_mc, "CacheTradeManager", None)
+    trd_fname = trd_cls.disk_filename(cache_venue) if trd_cls is not None else ""
+    if trd_fname and not trd_fname.lower().endswith(".jsonl"):
+        trd_data = read_json_fn(os.path.join(cachedb_dir, trd_fname))
+        if isinstance(trd_data, dict) and isinstance(trd_data.get("items"), dict) and trd_data.get("items"):
+            return trd_data
+    return ord_data
+
+
+def _read_cached_open_orders_by_venue_sym(
+    cache_dir: Optional[str],
+    read_json_fn: Any = None,
+) -> Tuple[Dict[Tuple[str, str], List[Dict[str, Any]]], Dict[str, float]]:
+    """Passively read open orders from ``cache_order_open_<venue>.json`` keyed by ``(venue, SYMBOL_UPPER)``."""
+    by_vs: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    verified_by_venue: Dict[str, float] = {}
+    if not cache_dir:
+        return by_vs, verified_by_venue
+    ensure_cacheprice_classes_bound()
+    open_cls = _mc.CacheOrderOpenManager
+    if open_cls is None:
+        return by_vs, verified_by_venue
+    _rj = _resolve_read_json_cached(read_json_fn) if read_json_fn is not None else None
+    for venue_key, fname in open_cls.VENUE_FILENAMES.items():
+        cand_path = os.path.join(cache_dir, fname)
+        items, _, ver_ts = open_cls.read_venue_open_orders_snapshot(cand_path, read_json_fn=_rj)
+        if ver_ts > 0.0:
+            verified_by_venue[venue_key] = ver_ts
+        for sym_k, rows in items.items():
+            if not isinstance(rows, list):
+                continue
+            by_vs[(venue_key, str(sym_k).strip().upper())] = [
+                {"venue": venue_key, "symbol": str(r.get("symbol") or sym_k), **r}
+                for r in rows
+                if isinstance(r, dict)
+            ]
+    return by_vs, verified_by_venue
 
 
 def _iter_audit_dir_file_batches(
@@ -276,21 +326,31 @@ def _resolve_ai_intents_and_known_order_ids(
 def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str, Any]) -> Dict[str, float]:
     """Build order_id / client_order_id -> created_ts (epoch seconds) lookup for resting open orders."""
     out: Dict[str, float] = {}
+
+    def _record_open_rows(rows: Any) -> None:
+        if not isinstance(rows, list):
+            return
+        for oo_prev in rows:
+            if isinstance(oo_prev, dict):
+                c_ts = first_epoch_sec(
+                    oo_prev.get("created_ts"),
+                    oo_prev.get("time"),
+                    oo_prev.get("timestamp"),
+                    extract_timestamp_s(oo_prev),
+                    allow_iso=True,
+                )
+                if c_ts is not None and c_ts > 0.0:
+                    for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
+                        if kv := clean_order_id(oo_prev.get(id_k)):
+                            out.setdefault(kv, c_ts)
+
+    if cache_dir:
+        by_vs, _ = _read_cached_open_orders_by_venue_sym(cache_dir)
+        for oo_rows in by_vs.values():
+            _record_open_rows(oo_rows)
     for k, v in (cached_bals or {}).items():
         if isinstance(k, str) and k.startswith("open_orders:") and isinstance(v, list):
-            for oo_prev in v:
-                if isinstance(oo_prev, dict):
-                    c_ts = first_epoch_sec(
-                        oo_prev.get("created_ts"),
-                        oo_prev.get("time"),
-                        oo_prev.get("timestamp"),
-                        extract_timestamp_s(oo_prev),
-                        allow_iso=True,
-                    )
-                    if c_ts is not None and c_ts > 0.0:
-                        for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
-                            if kv := clean_order_id(oo_prev.get(id_k)):
-                                out.setdefault(kv, c_ts)
+            _record_open_rows(v)
     if not cache_dir:
         return out
     for it in _load_cached_ai_intents_list(cache_dir):
@@ -658,7 +718,7 @@ class PortfolioCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
     """Abstract base contract (Level 2) for account/portfolio domain cache collectors.
 
     Modeled on ``CacheAccountManagerBase(CacheManagerInterface, ABC)``: encapsulates
-    shared order/fill cache bindings (`CacheOrderManager`, `CacheTradeManager`,
+    shared order/fill cache bindings (`CacheOrderFilledManager`, `CacheOrderOpenManager`, `CacheTradeManager`,
     `CacheAssetValueManager`, and execution_audit fallback) and portfolio state readers.
     """
 
@@ -1077,7 +1137,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 base_bals = {
                     k: v
                     for k, v in src_bals.items()
-                    if not (k.startswith("open_orders_verified_ts:") and k.split(":", 1)[1] in failed_open_venues)
+                    if not (isinstance(k, str) and k.startswith(("open_orders:", "open_orders_verified_ts:")))
                     and (k in updated_bals or str(k).upper() not in updated_upper_keys)
                 }
                 merged_bals = {**base_bals, **updated_bals}
@@ -1176,19 +1236,6 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     rec_cash = dict(v)
                     rec_cash.pop("locked_quote_usd", None)
                     venue_quote_cash[f"{c_venue}:{c_asset}"] = rec_cash
-            elif k.startswith("open_orders:") and isinstance(v, list):
-                parts = k.split(":", 2)
-                open_orders_list.extend(
-                    _normalize_open_orders_list(
-                        v,
-                        parts[1] if len(parts) > 1 else "",
-                        parts[2] if len(parts) > 2 else "",
-                        known_ai_order_ids,
-                        audit_origin_map=audit_origin_map,
-                        now_ts=now_ts_oo,
-                        order_ts_map=order_ts_map,
-                    )
-                )
 
     @staticmethod
     def _collect_from_instruments(
@@ -1199,6 +1246,9 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         *,
         cached_bals: Dict[str, Any],
         updated_bals: Dict[str, Any],
+        cached_open_by_vs: Dict[Tuple[str, str], List[Dict[str, Any]]],
+        cached_open_verified_ts: Dict[str, float],
+        updated_open_by_venue: Dict[str, Dict[str, List[Dict[str, Any]]]],
         balance_memo: Dict[tuple[str, str], Optional[float]],
         known_ai_order_ids: set[str],
         audit_origin_map: Dict[str, Any],
@@ -1412,9 +1462,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             )
             updated_bals[pos_bkey_cur] = {**pos_entry, "ts": eff_pos_ts}
 
-            oo_key = f"open_orders:{v_norm}:{sym}"
-            oo_key_alt = f"open_orders:{v_norm}:{sym_u}"
-            cached_oo_list = cached_bals.get(oo_key) if oo_key in cached_bals else cached_bals.get(oo_key_alt)
+            vs_open_key = (v_norm, sym_u)
+            cached_oo_list = cached_open_by_vs.get(vs_open_key)
             if allow_network and callable(open_fn := getattr(inst, "open_orders", None)):
                 sym_open_ok = False
                 try:
@@ -1430,7 +1479,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                             order_ts_map=order_ts_map,
                         )
                         open_orders_list.extend(sym_norm_orders)
-                        updated_bals[oo_key] = sym_norm_orders
+                        updated_open_by_venue.setdefault(v_norm, {})[sym] = list(raw_open)
                 except Exception:
                     sym_open_ok = False
                 if sym_open_ok:
@@ -1448,7 +1497,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                             order_ts_map=order_ts_map,
                         )
                     )
-            elif oo_key in cached_bals or oo_key_alt in cached_bals:
+            elif vs_open_key in cached_open_by_vs:
                 open_orders_list.extend(
                     _normalize_open_orders_list(
                         cached_oo_list,
@@ -1460,7 +1509,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                         order_ts_map=order_ts_map,
                     )
                 )
-                ver_ts = safe_pos_float(cached_bals.get(f"open_orders_verified_ts:{v_norm}"), default=0.0) or 0.0
+                ver_ts = safe_pos_float(cached_open_verified_ts.get(v_norm), default=0.0) or 0.0
                 if ver_ts > 0.0 and 0.0 <= (now_ts_oo - ver_ts) <= 300.0:
                     live_open_ok_venues.add(v_norm)
 
@@ -1493,7 +1542,11 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         balance_memo: Dict[tuple[str, str], Optional[float]] = {}
         _rj_bals = _resolve_read_json_cached()
         bcache_path, cached_bals, _ = load_venue_balances_state(cache_dir, _rj_bals)
+        cached_open_by_vs, cached_open_verified_ts = _read_cached_open_orders_by_venue_sym(
+            cache_dir, read_json_fn=_rj_bals
+        )
         updated_bals: Dict[str, Any] = {}
+        updated_open_by_venue: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
         live_open_ok_venues: set[str] = set()
         failed_open_venues: set[str] = set()
         now_ts_oo = resolve_now_ts(now_ts)
@@ -1512,6 +1565,9 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 trailing_by_venue,
                 cached_bals=cached_bals,
                 updated_bals=updated_bals,
+                cached_open_by_vs=cached_open_by_vs,
+                cached_open_verified_ts=cached_open_verified_ts,
+                updated_open_by_venue=updated_open_by_venue,
                 balance_memo=balance_memo,
                 known_ai_order_ids=known_ai_order_ids,
                 audit_origin_map=audit_origin_map,
@@ -1529,29 +1585,59 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 live_open_ok_venues=live_open_ok_venues,
                 failed_open_venues=failed_open_venues,
             )
-        elif (allow_empty_inst_recovery or not allow_network) and cached_bals:
-            self._recover_from_cached_balances(
-                cached_bals,
-                prices_and_trends,
-                trailing_map,
-                trailing_by_venue,
-                known_ai_order_ids=known_ai_order_ids,
-                audit_origin_map=audit_origin_map,
-                order_ts_map=order_ts_map,
-                now_ts_oo=now_ts_oo,
-                gateway_max_usd=gateway_max_usd,
-                tradable_positions=tradable_positions,
-                open_orders_list=open_orders_list,
-                venue_quote_cash=venue_quote_cash,
-                pending_peaks_by_vs=pending_peaks_by_vs,
-            )
+        elif (allow_empty_inst_recovery or not allow_network) and (cached_bals or cached_open_by_vs):
+            if cached_bals:
+                self._recover_from_cached_balances(
+                    cached_bals,
+                    prices_and_trends,
+                    trailing_map,
+                    trailing_by_venue,
+                    known_ai_order_ids=known_ai_order_ids,
+                    audit_origin_map=audit_origin_map,
+                    order_ts_map=order_ts_map,
+                    now_ts_oo=now_ts_oo,
+                    gateway_max_usd=gateway_max_usd,
+                    tradable_positions=tradable_positions,
+                    open_orders_list=open_orders_list,
+                    venue_quote_cash=venue_quote_cash,
+                    pending_peaks_by_vs=pending_peaks_by_vs,
+                )
+            for (v_k, sym_u_k), oo_rows in cached_open_by_vs.items():
+                open_orders_list.extend(
+                    _normalize_open_orders_list(
+                        oo_rows,
+                        v_k,
+                        sym_u_k,
+                        known_ai_order_ids,
+                        audit_origin_map=audit_origin_map,
+                        now_ts=now_ts_oo,
+                        order_ts_map=order_ts_map,
+                    )
+                )
+                if not allow_network:
+                    ver_ts = safe_pos_float(cached_open_verified_ts.get(v_k), default=0.0) or 0.0
+                    if ver_ts > 0.0 and 0.0 <= (now_ts_oo - ver_ts) <= 300.0:
+                        live_open_ok_venues.add(v_k)
 
         verified_now = live_open_ok_venues - failed_open_venues
         if isinstance(verified_open_venues, set):
             verified_open_venues.update(verified_now)
-        if allow_network:
-            for v_ok in verified_now:
-                updated_bals[f"open_orders_verified_ts:{v_ok}"] = round(now_ts_oo, 3)
+        if allow_network and persist and cache_dir and updated_open_by_venue:
+            ensure_cacheprice_classes_bound()
+            open_cls = _mc.CacheOrderOpenManager
+            if open_cls is not None:
+                now_ms_oo = math.trunc(now_ts_oo * 1000)
+                for v_k, sym_map in updated_open_by_venue.items():
+                    try:
+                        open_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, open_cls.disk_filename(v_k))))
+                        open_cls.replace_venue_open_orders_snapshot(
+                            open_path,
+                            sym_map,
+                            now_ms=now_ms_oo,
+                            verified_ts=round(now_ts_oo, 3) if v_k in verified_now else None,
+                        )
+                    except Exception:
+                        pass
 
         open_orders_list = self._dedup_open_orders(open_orders_list)
         _apply_open_orders_locked_balances(
@@ -1578,7 +1664,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
 
 
 class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
-    """Concrete collector (Level 3) for single-symbol recent fills across `CacheOrderManager` and venue trade caches."""
+    """Concrete collector (Level 3) for single-symbol recent fills across `CacheOrderFilledManager` and venue trade caches."""
 
     cls_name = "SymbolBestRecentFillsCollector"
     COLLECTOR_ID = "portfolio_symbol_recent_fills"
@@ -1614,7 +1700,7 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
             is_eq_cache_v = is_equity_venue(cache_venue)
             if (is_eq_sym and not is_eq_cache_v) or (is_crypto_pair and is_eq_cache_v):
                 continue
-            ord_data = _rj(os.path.join(cachedb_dir, ord_file))
+            ord_data = _read_venue_filled_orders_doc(cachedb_dir, ord_file, cache_venue, _rj)
             o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) and isinstance(ord_data.get("items"), dict) else {}
             matched_cand = next((cand for cand in scoped_variants if casefold_get(o_items, cand)), None)
             orders_for_sym = casefold_get(o_items, matched_cand) if matched_cand else []
@@ -1827,7 +1913,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
 
         audit_cache_by_venue: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
         for order_cache_name, cache_venue in _resolve_order_cache_files():
-            orders_data = _rj(os.path.join(cache_dir, order_cache_name))
+            orders_data = _read_venue_filled_orders_doc(cache_dir, order_cache_name, cache_venue, _rj)
             if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
                 v_ai_intents = _venue_intents(cache_venue)
                 v_audit_map = (

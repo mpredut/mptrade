@@ -62,7 +62,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
                      "fetchtime": {"BTCUSDC": fetchtime}},
                     handle,
                 )
-        return cm.CacheOrderManager(
+        return cm.CacheOrderFilledManager(
             3600, ["BTCUSDC"], path, api_client=cm.api
         )
 
@@ -1142,7 +1142,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
         manager.save_state = True
         self.assertTrue(manager.save_state_to_file())
 
-        reloaded = cm.CacheOrderManager(
+        reloaded = cm.CacheOrderFilledManager(
             3600, ["BTCUSDC"], manager.filename, api_client=cm.api
         )
         reloaded._persist_items("BTCUSDC", [
@@ -1193,7 +1193,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
         }
 
         def manager_for(cache_name, *args, **kwargs):
-            if cache_name == "BinanceOrder":
+            if cache_name == "BinanceOrderFilled":
                 return order_manager
             if cache_name == "BinanceTrade":
                 return trade_manager
@@ -1238,7 +1238,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
             health.enable_writer(path=marker, pid=123, now_ms=1000)
         try:
             self.assertTrue(health.record_successful_sync(
-                "BinanceOrder", "order-v1",
+                "BinanceOrderFilled", "order-v1",
                 now_ms=manager._last_complete_sync_at_ms))
             self.assertTrue(health.record_successful_sync(
                 "BinanceTrade", "trade-v1",
@@ -1262,7 +1262,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
         with patch.object(
                 health, "_pid_started_at_ms", return_value=500):
             health.enable_writer(path=marker, pid=123, now_ms=1000)
-        health.record_successful_sync("BinanceOrder", "order-v1", now_ms=2000)
+        health.record_successful_sync("BinanceOrderFilled", "order-v1", now_ms=2000)
         health.record_successful_sync("BinanceTrade", "trade-v1", now_ms=2000)
         with open(marker, "rb") as handle:
             marker_before = handle.read()
@@ -1359,7 +1359,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
         order_writer = self._order_manager([first_order], now_ms - 5000)
         order_writer.save_state = True
         self.assertTrue(order_writer.save_state_to_file())
-        order_reader = cm.CacheOrderManager(
+        order_reader = cm.CacheOrderFilledManager(
             3600, ["BTCUSDC"], order_writer.filename, api_client=cm.api
         )
 
@@ -1411,10 +1411,10 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
             with open(writer.filename, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle)
             with patch.object(
-                cm.CacheOrderManager, "query_remote_and_update_cache"
+                cm.CacheOrderFilledManager, "query_remote_and_update_cache"
             ) as remote_mock:
                 with self.assertRaises(health.AccountCacheNotReady):
-                    cm.CacheOrderManager(
+                    cm.CacheOrderFilledManager(
                         3600, ["BTCUSDC"], writer.filename, api_client=cm.api
                     )
                 remote_mock.assert_not_called()
@@ -1427,10 +1427,10 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
             with open(writer.filename, "w", encoding="utf-8") as handle:
                 handle.write("{corrupt-json")
             with patch.object(
-                cm.CacheOrderManager, "query_remote_and_update_cache"
+                cm.CacheOrderFilledManager, "query_remote_and_update_cache"
             ) as remote_mock:
                 with self.assertRaises(health.AccountCacheNotReady):
-                    cm.CacheOrderManager(
+                    cm.CacheOrderFilledManager(
                         3600, ["BTCUSDC"], writer.filename, api_client=cm.api
                     )
                 remote_mock.assert_not_called()
@@ -1442,10 +1442,10 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
             self.assertTrue(writer.save_state_to_file())
             os.remove(writer.filename + ".meta")
             with patch.object(
-                cm.CacheOrderManager, "query_remote_and_update_cache"
+                cm.CacheOrderFilledManager, "query_remote_and_update_cache"
             ) as remote_mock:
                 with self.assertRaises(health.AccountCacheNotReady):
-                    cm.CacheOrderManager(
+                    cm.CacheOrderFilledManager(
                         3600, ["BTCUSDC"], writer.filename, api_client=cm.api
                     )
                 remote_mock.assert_not_called()
@@ -1464,13 +1464,13 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
         health_path = os.path.join(self.tmp, "health_gap.json")
 
         with patch.object(
-            cm.CacheOrderManager, "get_remote_items", return_value=[fill_1_order]
+            cm.CacheOrderFilledManager, "get_remote_items", return_value=[fill_1_order]
         ), patch.object(
             cm.CacheTradeManager, "get_remote_items", return_value=[trade_1]
         ), patch.object(
             cm.time, "time", return_value=t0 / 1000.0
         ):
-            order_writer = cm.CacheOrderManager(
+            order_writer = cm.CacheOrderFilledManager(
                 3600, ["BTCUSDC"], order_path, api_client=cm.api
             )
             trade_writer = cm.CacheTradeManager(
@@ -1511,7 +1511,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
         )
 
         # Simulate process restart: reload from disk before any new REST call.
-        restarted_order = cm.CacheOrderManager(
+        restarted_order = cm.CacheOrderFilledManager(
             3600, ["BTCUSDC"], order_path, api_client=cm.api
         )
         restarted_trade = cm.CacheTradeManager(
@@ -1603,10 +1603,10 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
             self.assertFalse(
                 os.path.exists(writer._previous_generation_path())
             )
-            restarted_writer = cm.CacheOrderManager(
+            restarted_writer = cm.CacheOrderFilledManager(
                 3600, ["BTCUSDC"], writer.filename, api_client=cm.api
             )
-            restarted_reader = cm.CacheOrderManager(
+            restarted_reader = cm.CacheOrderFilledManager(
                 3600,
                 ["BTCUSDC"],
                 writer.filename,
@@ -1648,7 +1648,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
                     handle,
                 )
 
-            restarted_reader = cm.CacheOrderManager(
+            restarted_reader = cm.CacheOrderFilledManager(
                 3600,
                 ["BTCUSDC"],
                 writer.filename,
@@ -1663,7 +1663,7 @@ class AccountCacheReaderSyncTest(TempDirTestCase):
                 [int(o["orderId"]) for o in restarted_reader.cache["BTCUSDC"]],
                 [1],
             )
-            restarted_writer = cm.CacheOrderManager(
+            restarted_writer = cm.CacheOrderFilledManager(
                 3600, ["BTCUSDC"], writer.filename, api_client=cm.api
             )
             self.assertFalse(
@@ -1895,11 +1895,11 @@ class AccountCacheReaderConfirmationTest(TempDirTestCase):
 
         with self.subTest("factory_discards_stale_sync_started_when_recreating_popped_instance"):
             cm.CacheFactory.shutdown_all()
-            cm.CacheFactory._sync_started.add("BinanceOrder")
-            with patch.object(cm.CacheOrderManager, "load_state", return_value=None), \
-                 patch.object(cm.CacheOrderManager, "periodic_sync") as periodic:
+            cm.CacheFactory._sync_started.add("BinanceOrderFilled")
+            with patch.object(cm.CacheOrderFilledManager, "load_state", return_value=None), \
+                 patch.object(cm.CacheOrderFilledManager, "periodic_sync") as periodic:
                 mgr = cm.CacheFactory.get(
-                    "BinanceOrder", symbols=["BTC"], data_sync_mode="live_reader"
+                    "BinanceOrderFilled", symbols=["BTC"], data_sync_mode="live_reader"
                 )
                 self.assertEqual(mgr.data_sync_mode, "live_reader")
                 periodic.assert_called_once_with(cm.ORDER_SYNC_INTERVAL_SEC, False)
@@ -1907,7 +1907,7 @@ class AccountCacheReaderConfirmationTest(TempDirTestCase):
 
         with self.subTest("all_leaf_cache_classes_accept_data_sync_mode_and_readonly_preserves_previous"):
             for cls, fname in (
-                (cm.CacheOrderManager, "o.json"),
+                (cm.CacheOrderFilledManager, "o.json"),
                 (cm.CacheAssetValueManager, "av.jsonl"),
                 (cm.CacheSparsePriceManager, "sp.jsonl"),
                 (cm.Cache24PriceManager, "p24.json"),

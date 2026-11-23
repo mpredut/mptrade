@@ -58,7 +58,8 @@ CachePriceManagerBase: Any = None
 CacheSparsePriceManager: Any = None
 CacheShortTrendManager: Any = None
 CacheLongTrendManager: Any = None
-CacheOrderManager: Any = None
+CacheOrderFilledManager: Any = None
+CacheOrderOpenManager: Any = None
 CacheTradeManager: Any = None
 CacheAssetValueManager: Any = None
 CacheAccountManagerBase: Any = None
@@ -66,15 +67,16 @@ CacheAccountManagerBase: Any = None
 
 def ensure_cacheprice_classes_bound() -> None:
     global Cache24PriceManager, Cache365PriceManager, CacheCurrentPriceManager, CachePriceManagerBase, CacheSparsePriceManager
-    global CacheShortTrendManager, CacheLongTrendManager, CacheOrderManager, CacheTradeManager, CacheAssetValueManager
+    global CacheShortTrendManager, CacheLongTrendManager, CacheOrderFilledManager, CacheOrderOpenManager, CacheTradeManager, CacheAssetValueManager
     global CacheAccountManagerBase
-    if Cache24PriceManager is not None and CacheShortTrendManager is not None and CacheOrderManager is not None and CacheAccountManagerBase is not None:
+    if Cache24PriceManager is not None and CacheShortTrendManager is not None and CacheOrderFilledManager is not None and CacheOrderOpenManager is not None and CacheAccountManagerBase is not None:
         return
     load_dotenv()
     from cacheaccount import (
         CacheAccountManagerBase as _CABase,
         CacheAssetValueManager as _CAV,
-        CacheOrderManager as _COrd,
+        CacheOrderFilledManager as _COrdFilled,
+        CacheOrderOpenManager as _COrdOpen,
         CacheTradeManager as _CTrd,
     )
     from cacheprice import (
@@ -100,7 +102,8 @@ def ensure_cacheprice_classes_bound() -> None:
     CacheSparsePriceManager = _CSparse
     CacheShortTrendManager = _CST
     CacheLongTrendManager = _CLT
-    CacheOrderManager = _COrd
+    CacheOrderFilledManager = _COrdFilled
+    CacheOrderOpenManager = _COrdOpen
     CacheTradeManager = _CTrd
     CacheAssetValueManager = _CAV
     CacheAccountManagerBase = _CABase

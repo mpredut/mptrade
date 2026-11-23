@@ -25,8 +25,8 @@ from botcore import (
     is_live_network_backfill_enabled,
     safe_float,
 )
+from cacheaccount import CacheOrderOpenManager
 from cachepaths import (
-    CACHE_BINANCE_ORDER_FILENAME,
     CACHE_CURRENT_PRICE_FILENAME,
     VENUE_BALANCES_STATE_FILENAME,
     cache_path,
@@ -69,11 +69,11 @@ def inspect_fleet(json_output: bool = False):
     balances = raw_balances if isinstance(raw_balances, dict) else {}
     raw_topic = ssh_cat(cache_path("system/llm_topic_threads.json")) or ssh_cat(cache_path("llm_topic_threads.json"))
     topic_data = raw_topic if isinstance(raw_topic, dict) else {}
-    raw_orders = (
-        ssh_cat(cache_path(f"orders/{CACHE_BINANCE_ORDER_FILENAME}"))
-        or ssh_cat(cache_path(CACHE_BINANCE_ORDER_FILENAME))
-    )
-    orders_data = raw_orders if isinstance(raw_orders, dict) else {}
+    open_orders_by_venue: dict[str, dict] = {}
+    for v_key, open_fname in CacheOrderOpenManager.VENUE_FILENAMES.items():
+        raw_oo = ssh_cat(cache_path(f"orders/{open_fname}")) or ssh_cat(cache_path(open_fname))
+        if isinstance(raw_oo, dict):
+            open_orders_by_venue[v_key] = raw_oo
 
     # 1. Balances & Positions
     cash = {k: v for k, v in balances.items() if isinstance(k, str) and k.startswith("cash:") and isinstance(v, dict)}
@@ -100,10 +100,9 @@ def inspect_fleet(json_output: bool = False):
         else ""
     )
 
-    # 3. Active Resting Orders from venue_balances_state (open_orders:*) and cache_order fallback
+    # 3. Active Resting Orders from CacheOrderOpenManager (cache_order_open_<venue>.json)
     active_orders = []
     seen_order_keys: set[tuple[str, str, str]] = set()
-    has_binance_open_orders = False
     def _append_active_order(o: dict, venue: str, sym: str, default_status: object = None) -> None:
         oid = extract_order_id(o)
         if oid:
@@ -120,28 +119,14 @@ def inspect_fleet(json_output: bool = False):
             "status": o.get("status") or default_status,
         })
 
-    open_order_keys = [k for k in balances.keys() if isinstance(k, str) and k.startswith("open_orders:")]
-    for k in open_order_keys:
-        olist = balances.get(k)
-        if isinstance(olist, list):
-            parts = k.split(":", 2)
-            default_venue = (parts[1] if len(parts) > 1 else "binance").strip().lower() or "binance"
-            default_sym = parts[2] if len(parts) > 2 else ""
-            for o in olist:
-                if isinstance(o, dict):
-                    venue = str(o.get("venue") or default_venue).strip().lower() or default_venue
-                    sym = str(o.get("symbol") or default_sym).strip()
-                    if venue == "binance":
-                        has_binance_open_orders = True
-                    _append_active_order(o, venue, sym, "NEW")
-    if not has_binance_open_orders and isinstance(orders_data, dict) and "items" in orders_data:
-        items = orders_data["items"]
+    for v_key, oo_doc in open_orders_by_venue.items():
+        items = oo_doc.get("items") if isinstance(oo_doc, dict) else None
         if isinstance(items, dict):
             for sym, olist in items.items():
                 if isinstance(olist, list):
                     for o in olist:
-                        if isinstance(o, dict) and o.get("status") in ("NEW", "OPEN", "PARTIALLY_FILLED"):
-                            _append_active_order(o, "binance", str(o.get("symbol") or sym).strip())
+                        if isinstance(o, dict):
+                            _append_active_order(o, v_key, str(o.get("symbol") or sym).strip(), "NEW")
 
     # 4. Market Telemetry, Sentiment & Health (Optional Enrichment)
     raw_sentiment = ssh_cat(cache_path("macro/sentiment_eval.json"))

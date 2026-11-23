@@ -3,7 +3,7 @@
 The 3-tier polymorphic cache hierarchy is split across 5 focused modules:
 1. ``cacheInterface.py`` -- Level 1 pure abstract contract: ``CacheManagerInterface(ABC)``
 2. ``cacheaccount.py``   -- Level 2 ``CacheAccountManagerBase(CacheManagerInterface, ABC)``
-                           + Level 3 ``CacheTradeManager``, ``CacheOrderManager``, ``CacheAssetValueManager``
+                           + Level 3 ``CacheTradeManager``, ``CacheOrderFilledManager``, ``CacheOrderOpenManager``, ``CacheAssetValueManager``
 3. ``cacheprice.py``     -- Level 2 ``CachePriceManagerBase(CacheManagerInterface, ABC)``
                            + Level 3 ``CacheSparsePriceManager``, ``Cache24PriceManager``,
                            ``Cache365PriceManager``, ``CacheCurrentPriceManager``
@@ -42,8 +42,10 @@ from cacheaccount import (
     ASSET_VALUE_SYNC_INTERVAL_SEC,
     CacheAccountManagerBase,
     CacheAssetValueManager,
-    CacheOrderManager,
+    CacheOrderFilledManager,
+    CacheOrderOpenManager,
     CacheTradeManager,
+    OPEN_ORDER_SYNC_INTERVAL_SEC,
     ORDER_SYNC_INTERVAL_SEC,
     TRADE_SYNC_INTERVAL_SEC,
     _READONLY_ACCOUNT_READERS,
@@ -54,7 +56,8 @@ from cacheaccount import (
     disable_account_cache_daemon_writer,
     ensure_account_cache_readers,
     get_asset_value_manager,
-    get_binance_order_manager,
+    get_order_filled_manager,
+    get_order_open_manager,
     get_trade_manager,
     request_stop_account_ws_streams,
     start_account_cache_daemon,
@@ -531,9 +534,16 @@ CacheFactory.register(
     sync_ts=lambda: TRADE_SYNC_INTERVAL_SEC,
 )
 CacheFactory.register(
-    "BinanceOrder",
-    CacheOrderManager,
+    "BinanceOrderFilled",
+    CacheOrderFilledManager,
     sync_ts=lambda: ORDER_SYNC_INTERVAL_SEC,
+    venue="binance",
+)
+CacheFactory.register(
+    "BinanceOrderOpen",
+    CacheOrderOpenManager,
+    sync_ts=lambda: OPEN_ORDER_SYNC_INTERVAL_SEC,
+    venue="binance",
 )
 CacheFactory.register(
     "SparsePrice",
@@ -595,6 +605,48 @@ CacheFactory.register(
     stream_format="json",
     read_only=True,
 )
+CacheFactory.register(
+    "KrakenOrderFilled",
+    CacheOrderFilledManager,
+    sync_ts=lambda: ORDER_SYNC_INTERVAL_SEC,
+    venue="kraken",
+    read_only=True,
+)
+CacheFactory.register(
+    "HyperliquidOrderFilled",
+    CacheOrderFilledManager,
+    sync_ts=lambda: ORDER_SYNC_INTERVAL_SEC,
+    venue="hyperliquid",
+    read_only=True,
+)
+CacheFactory.register(
+    "T212OrderFilled",
+    CacheOrderFilledManager,
+    sync_ts=lambda: ORDER_SYNC_INTERVAL_SEC,
+    venue="t212",
+    read_only=True,
+)
+CacheFactory.register(
+    "KrakenOrderOpen",
+    CacheOrderOpenManager,
+    sync_ts=lambda: OPEN_ORDER_SYNC_INTERVAL_SEC,
+    venue="kraken",
+    read_only=True,
+)
+CacheFactory.register(
+    "HyperliquidOrderOpen",
+    CacheOrderOpenManager,
+    sync_ts=lambda: OPEN_ORDER_SYNC_INTERVAL_SEC,
+    venue="hyperliquid",
+    read_only=True,
+)
+CacheFactory.register(
+    "T212OrderOpen",
+    CacheOrderOpenManager,
+    sync_ts=lambda: OPEN_ORDER_SYNC_INTERVAL_SEC,
+    venue="t212",
+    read_only=True,
+)
 
 
 def get_cache_manager(
@@ -636,6 +688,8 @@ if hasattr(MarketDataProvider, "bind_ssot_cache_readers"):
         current_price_cls=CacheCurrentPriceManager,
         price24_cls=Cache24PriceManager,
         trade_cache_cls=CacheTradeManager,
+        order_filled_cache_cls=CacheOrderFilledManager,
+        order_open_cache_cls=CacheOrderOpenManager,
     )
 
 

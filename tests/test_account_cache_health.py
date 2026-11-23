@@ -129,7 +129,7 @@ class BinanceAccountCacheHealthTest(TempDirTestCase):
         )
         self.assertFalse(os.path.exists(self.path))
         self.assertFalse(health.record_persisted_version(
-            "BinanceOrder", "must-not-publish", now_ms=self.NOW_MS + 1))
+            "BinanceOrderFilled", "must-not-publish", now_ms=self.NOW_MS + 1))
 
     def test_dead_writer_takes_precedence_while_initializing(self):
         self._write(self._state(
@@ -180,7 +180,7 @@ class BinanceAccountCacheHealthTest(TempDirTestCase):
         self.assertEqual(initial.reason, "account_cache_initializing")
 
         self.assertTrue(health.record_successful_sync(
-            "BinanceOrder", "order-v2", now_ms=self.NOW_MS + 1_000
+            "BinanceOrderFilled", "order-v2", now_ms=self.NOW_MS + 1_000
         ))
         order_only = health.inspect_health(
             path=self.path,
@@ -224,11 +224,11 @@ class BinanceAccountCacheHealthTest(TempDirTestCase):
     def test_version_only_publication_preserves_rest_sync_time(self):
         self._enable_writer()
         health.record_successful_sync(
-            "BinanceOrder", "order-v1", now_ms=self.NOW_MS + 1_000)
+            "BinanceOrderFilled", "order-v1", now_ms=self.NOW_MS + 1_000)
         health.record_successful_sync(
             "BinanceTrade", "trade-v1", now_ms=self.NOW_MS + 2_000)
         self.assertTrue(health.record_persisted_version(
-            "BinanceOrder", "order-v2", now_ms=self.NOW_MS + 3_000))
+            "BinanceOrderFilled", "order-v2", now_ms=self.NOW_MS + 3_000))
 
         status = health.inspect_health(
             path=self.path,
@@ -244,7 +244,7 @@ class BinanceAccountCacheHealthTest(TempDirTestCase):
     def test_disable_writer_publishes_stopping_state(self):
         self._enable_writer()
         health.record_successful_sync(
-            "BinanceOrder", "order-v1", now_ms=self.NOW_MS + 1_000)
+            "BinanceOrderFilled", "order-v1", now_ms=self.NOW_MS + 1_000)
         health.record_successful_sync(
             "BinanceTrade", "trade-v1", now_ms=self.NOW_MS + 2_000)
         self.assertTrue(health.disable_writer(now_ms=self.NOW_MS + 3_000))
@@ -267,7 +267,7 @@ class BinanceAccountCacheHealthTest(TempDirTestCase):
             self.assertFalse(
                 health.disable_writer(now_ms=self.NOW_MS + 1_000))
         self.assertFalse(health.record_persisted_version(
-            "BinanceOrder", "order-v2", now_ms=self.NOW_MS + 2_000))
+            "BinanceOrderFilled", "order-v2", now_ms=self.NOW_MS + 2_000))
 
 
     def test_writer_process_identity_change_fails_closed(self):
@@ -350,7 +350,7 @@ def test_account_cache_health_accountcachenotready_record_successful_sync_record
     # 1. account_cache_health: AccountCacheNotReady, record_successful_sync, record_persisted_version
     err = health.AccountCacheNotReady(True)
     assert err.reason == "account_cache_not_fresh"
-    assert health.record_successful_sync("BinanceOrder", True) is False
+    assert health.record_successful_sync("BinanceOrderFilled", True) is False
     assert health.record_successful_sync(True, "v1") is False
     assert health.record_persisted_version("BinanceTrade", True) is False
     assert health.record_persisted_version(True, "v1") is False
@@ -385,9 +385,9 @@ def test_persistence_and_cache_layer_dag_and_sibling_purity_ast():
 
 def test_persisted_sync_state_ignores_retired_symbols_and_requires_all_active_symbols():
     """Verify retired symbol cursors (e.g. BNBUSDC) do not block startup seeding while missing active symbols return 0."""
-    from cacheaccount import CacheOrderManager
+    from cacheaccount import CacheOrderFilledManager
 
-    mgr = object.__new__(CacheOrderManager)
+    mgr = object.__new__(CacheOrderFilledManager)
     mgr.symbols = ["BTCUSDC", "TAOUSDC", "ARBUSDC"]
     mgr._persisted_data_version = "snapshot:live_v1"
     mgr._loaded_data_version = ""
