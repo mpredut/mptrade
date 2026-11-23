@@ -51,7 +51,6 @@ from cachepaths import (
     is_primary_stream_venue,
     is_shadow_or_paper_state_payload,
     iter_venue_cycle_state_files,
-    legacy_filenames_for,
     normalize_venue_name,
     resolve_cachedb_filepath,
     resolve_venue_trailing_state_path,
@@ -141,22 +140,20 @@ def _read_venue_filled_orders_doc(
     order_cache_name: str,
     cache_venue: str,
     read_json_fn: Any,
-) -> Any:
-    """Read a venue's filled-order cache snapshot, falling back to legacy order or reference trade cache when absent."""
-    ord_data = read_json_fn(os.path.join(cachedb_dir, order_cache_name))
-    if isinstance(ord_data, dict) and isinstance(ord_data.get("items"), dict) and ord_data.get("items"):
-        return ord_data
-    for leg_name in legacy_filenames_for(order_cache_name):
-        leg_data = read_json_fn(os.path.join(cachedb_dir, leg_name))
-        if isinstance(leg_data, dict) and isinstance(leg_data.get("items"), dict) and leg_data.get("items"):
-            return leg_data
-    trd_cls = getattr(_mc, "CacheTradeManager", None)
-    trd_fname = trd_cls.disk_filename(cache_venue) if trd_cls is not None else ""
-    if trd_fname and not trd_fname.lower().endswith(".jsonl"):
-        trd_data = read_json_fn(os.path.join(cachedb_dir, trd_fname))
-        if isinstance(trd_data, dict) and isinstance(trd_data.get("items"), dict) and trd_data.get("items"):
-            return trd_data
-    return ord_data
+) -> Dict[str, Any]:
+    """Read a venue's filled-order cache snapshot via ``CacheOrderFilledManager``."""
+    ensure_cacheprice_classes_bound()
+    ord_cls = _mc.CacheOrderFilledManager
+    if ord_cls is None:
+        return {}
+    items, ft = ord_cls.read_venue_filled_orders_snapshot(
+        os.path.join(cachedb_dir, order_cache_name),
+        venue=cache_venue,
+        read_json_fn=read_json_fn,
+        allow_legacy=True,
+        allow_trade_fallback=True,
+    )
+    return {"items": items, "fetchtime": ft} if (items or ft) else {}
 
 
 def _read_cached_open_orders_by_venue_sym(

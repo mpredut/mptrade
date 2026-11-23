@@ -2690,6 +2690,115 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
         except Exception:
             return False
 
+    @classmethod
+    def read_venue_filled_orders_snapshot(
+        cls,
+        cache_file: str,
+        *,
+        venue: str = "",
+        read_json_fn=None,
+        allow_legacy: bool = True,
+        allow_trade_fallback: bool = False,
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int]]:
+        """Passively read one venue's filled-order snapshot without mutating disk."""
+        if not cache_file:
+            return {}, {}
+        resolved = str(resolve_cachedb_filepath(str(cache_file)))
+        eff_venue = normalize_venue_name(venue) if venue else None
+        if not eff_venue:
+            base_name = os.path.basename(resolved)
+            eff_venue = next((v_k for v_k, fn in cls.VENUE_FILENAMES.items() if fn == base_name), None)
+
+        candidates: list[str] = []
+
+        def _add_cand(path_str: str) -> None:
+            if path_str and path_str not in candidates:
+                candidates.append(path_str)
+
+        _add_cand(resolved)
+        if _parse_bool_flag(allow_legacy, True):
+            for leg_p in legacy_filenames_for(resolved):
+                _add_cand(str(resolve_cachedb_filepath(leg_p)))
+                _add_cand(leg_p)
+        if _parse_bool_flag(allow_trade_fallback, False) and eff_venue:
+            try:
+                trd_fname = CacheTradeManager.disk_filename(eff_venue)
+            except ValueError:
+                trd_fname = ""
+            if trd_fname and not trd_fname.lower().endswith(".jsonl"):
+                for cand_dir in dict.fromkeys((os.path.dirname(resolved), os.path.dirname(str(cache_file)))):
+                    trd_p = os.path.join(cand_dir, trd_fname) if cand_dir else trd_fname
+                    _add_cand(str(resolve_cachedb_filepath(trd_p)))
+                    _add_cand(trd_p)
+
+        first_valid: Optional[tuple[dict[str, list[dict[str, Any]]], dict[str, int]]] = None
+        for cand_path in candidates:
+            if read_json_fn is not None:
+                data = read_json_fn(cand_path)
+            else:
+                if not os.path.isfile(cand_path):
+                    continue
+                data = read_json_dict_recovering(cand_path, repair_files=False)
+            if not isinstance(data, dict) or not isinstance(data.get("items"), dict):
+                continue
+            raw_items = data["items"]
+            raw_ft = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
+            items_out: dict[str, list[dict[str, Any]]] = {}
+            for sym_k, sym_orders in raw_items.items():
+                if clean_scalar_str(sym_k) is None:
+                    continue
+                if isinstance(sym_orders, list):
+                    items_out[sym_k] = [dict(r) for r in sym_orders if isinstance(r, dict)]
+                elif isinstance(sym_orders, dict):
+                    if extract_order_id(sym_orders, default=None) is not None:
+                        items_out[sym_k] = [dict(sym_orders)]
+                    else:
+                        items_out[sym_k] = [dict(r) for r in sym_orders.values() if isinstance(r, dict)]
+            ft_out = {
+                str(k): safe_nonneg_int(v, default=0) or 0
+                for k, v in raw_ft.items()
+                if clean_scalar_str(k) is not None
+            }
+            if items_out:
+                return items_out, ft_out
+            if first_valid is None:
+                first_valid = (items_out, ft_out)
+        return first_valid if first_valid is not None else ({}, {})
+
+    @classmethod
+    def read_all_venues_filled_orders(
+        cls,
+        cachedb_dir: str,
+        *,
+        read_json_fn=None,
+        allow_legacy: bool = True,
+        allow_trade_fallback: bool = False,
+    ) -> tuple[list[dict[str, Any]], set[str], dict[str, dict[str, int]]]:
+        """Passively read all venues' ``cache_order_filled_<venue>.json`` files."""
+        flat: list[dict[str, Any]] = []
+        covered: set[str] = set()
+        fetchtime_by_venue: dict[str, dict[str, int]] = {}
+        if not cachedb_dir:
+            return flat, covered, fetchtime_by_venue
+        for venue_key, fname in cls.VENUE_FILENAMES.items():
+            cand_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, fname)))
+            items, ft = cls.read_venue_filled_orders_snapshot(
+                cand_path,
+                venue=venue_key,
+                read_json_fn=read_json_fn,
+                allow_legacy=allow_legacy,
+                allow_trade_fallback=allow_trade_fallback,
+            )
+            if not items and not ft:
+                continue
+            covered.add(venue_key)
+            if ft:
+                fetchtime_by_venue[venue_key] = ft
+            for sym_k, rows in items.items():
+                for row in rows:
+                    flat.append({"venue": venue_key, "symbol": str(row.get("symbol") or sym_k), **row})
+        return flat, covered, fetchtime_by_venue
+
 
 class CacheOrderOpenManager(CacheAccountManagerBase):
     """Cross-venue live open-order cache (Level 3) using replace-all snapshot semantics."""

@@ -576,34 +576,16 @@ def _load_cached_order_book_index(
 
     for venue_key, filled_fname in CacheOrderFilledManager.VENUE_FILENAMES.items():
         oc_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(filled_fname))))
-        if not os.path.isfile(oc_path):
-            for leg_p in legacy_filenames_for(oc_path):
-                if os.path.isfile(leg_p):
-                    oc_path = leg_p
-                    break
-        if not os.path.isfile(oc_path):
-            continue
-        oc_data = read_json_dict_recovering(oc_path)
-        items = oc_data.get("items") if isinstance(oc_data, dict) else None
-        if not isinstance(items, dict):
+        items, ft = CacheOrderFilledManager.read_venue_filled_orders_snapshot(oc_path, venue=venue_key)
+        if not items and not ft:
             continue
         filled_covered.add(venue_key)
         for k_sym, sym_orders in items.items():
-            if isinstance(sym_orders, dict):
-                if extract_order_id(sym_orders, default=None) is not None:
-                    iterable: Iterable[Any] = (sym_orders,)
-                else:
-                    iterable = sym_orders.values()
-            elif isinstance(sym_orders, list):
-                iterable = sym_orders
-            else:
-                continue
             latest_by_oid: dict[str, dict[str, Any]] = {}
-            for oo in iterable:
-                if isinstance(oo, dict):
-                    oid = clean_order_id(extract_order_id(oo, default=None)) or ""
-                    if oid:
-                        latest_by_oid[oid] = oo
+            for oo in sym_orders:
+                oid = clean_order_id(extract_order_id(oo, default=None)) or ""
+                if oid:
+                    latest_by_oid[oid] = oo
             for oid, oo in latest_by_oid.items():
                 oo_st = oo.get("status")
                 oo_st_up = clean_upper_scalar(oo_st) or ""

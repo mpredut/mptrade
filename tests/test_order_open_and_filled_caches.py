@@ -397,3 +397,92 @@ def test_portfolio_collector_strips_open_orders_from_venue_balances_and_persists
     assert len(saved_open["items"]["BTCUSDC"]) == 1
     assert saved_open["items"]["BTCUSDC"][0]["orderId"] == "900123"
     assert saved_open["verified_ts"] == pytest.approx(now_s, abs=1.0)
+
+
+def test_order_filled_manager_symmetric_passive_readers_and_fallbacks(tmp_path):
+    orders_dir = tmp_path / "orders"
+    orders_dir.mkdir()
+
+    # 1. Binance legacy cache_order_binance.json fallback + legacy dict-bucket normalization
+    (orders_dir / "cache_order_binance.json").write_text(
+        json.dumps({
+            "items": {
+                "BTCUSDC": {
+                    "101": {
+                        "orderId": 101,
+                        "price": 62000.0,
+                        "quantity": 0.05,
+                        "timestamp": 1700001000000,
+                        "side": "BUY",
+                        "status": "FILLED",
+                    }
+                }
+            },
+            "fetchtime": {"BTCUSDC": 1700001005000},
+        }),
+        encoding="utf-8",
+    )
+    # 2. Kraken canonical cache_order_filled_kraken.json
+    (orders_dir / CACHE_KRAKEN_ORDER_FILLED_FILENAME).write_text(
+        json.dumps({
+            "items": {
+                "ETHUSD": [
+                    {
+                        "orderId": "OKRK-FILLED-1",
+                        "price": 3200.0,
+                        "quantity": 0.5,
+                        "timestamp": 1700002000000,
+                        "side": "SELL",
+                        "status": "FILLED",
+                    }
+                ]
+            },
+            "fetchtime": {"ETHUSD": 1700002005000},
+        }),
+        encoding="utf-8",
+    )
+    # 3. Hyperliquid reference cache_trade_hyperliquid.json fallback (opt-in via allow_trade_fallback=True)
+    (orders_dir / "cache_trade_hyperliquid.json").write_text(
+        json.dumps({
+            "items": {
+                "HYPEUSDC": [
+                    {
+                        "orderId": "HL-99",
+                        "price": 55.0,
+                        "quantity": 2.0,
+                        "timestamp": 1700003000000,
+                        "side": "BUY",
+                    }
+                ]
+            },
+            "fetchtime": {"HYPEUSDC": 1700003005000},
+        }),
+        encoding="utf-8",
+    )
+
+    # Single-venue passive read with legacy fallback
+    bn_items, bn_ft = CacheOrderFilledManager.read_venue_filled_orders_snapshot(
+        str(orders_dir / CACHE_BINANCE_ORDER_FILLED_FILENAME),
+        venue="binance",
+    )
+    assert len(bn_items["BTCUSDC"]) == 1
+    assert bn_items["BTCUSDC"][0]["orderId"] == 101
+    assert bn_ft["BTCUSDC"] == 1700001005000
+    # Passive read must NOT create or migrate the canonical file on disk
+    assert not (orders_dir / CACHE_BINANCE_ORDER_FILLED_FILENAME).exists()
+
+    # Cross-venue passive read without trade fallback covers binance (legacy) + kraken (canonical)
+    flat_no_trd, covered_no_trd, ft_by_venue = CacheOrderFilledManager.read_all_venues_filled_orders(str(tmp_path))
+    assert covered_no_trd == {"binance", "kraken"}
+    assert len(flat_no_trd) == 2
+    assert {r["venue"] for r in flat_no_trd} == {"binance", "kraken"}
+    assert ft_by_venue["kraken"]["ETHUSD"] == 1700002005000
+
+    # Cross-venue passive read with trade fallback also includes hyperliquid reference trade cache
+    flat_with_trd, covered_with_trd, _ = CacheOrderFilledManager.read_all_venues_filled_orders(
+        str(tmp_path),
+        allow_trade_fallback=True,
+    )
+    assert covered_with_trd == {"binance", "kraken", "hyperliquid"}
+    assert len(flat_with_trd) == 3
+    assert any(r["venue"] == "hyperliquid" and r["orderId"] == "HL-99" for r in flat_with_trd)
