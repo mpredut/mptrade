@@ -150,7 +150,7 @@ def build_supervisor_prompt(
     if spec.can_trade:
         is_equities = getattr(spec, "asset_scope", "all") == "equities"
         target_desc = (
-            "ALL live tradable US equity shares on 't212' (SPCX_US_EQ, ANT_US_EQ, NVDA_US_EQ, RGNT_US_EQ during US Regular Trading Hours, cross-referencing Kraken 24/7 xStock SPCXx.T exposure)"
+            "ALL live tradable US equity shares on 't212' (SPCX_US_EQ, NVDA_US_EQ, RGNT_US_EQ during US Regular Trading Hours, cross-referencing Kraken 24/7 xStock SPCXx.T exposure)"
             if is_equities
             else "ALL live tradable crypto & 24/7 tokenized xStock pairs (BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSDC intensively on 'hyperliquid'; HYPEUSD, TAOUSD, ADAUSD, plus 0bps SELL-only xStock SPCXxUSD on 'kraken')"
         )

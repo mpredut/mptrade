@@ -12428,7 +12428,13 @@ def test_telemetry_audit_7_fixes_stale_ob_kinematics_rvol_us_open_ant_realized_l
     from types import SimpleNamespace
     import pricewindow as pw
     from botcore import topic_spec
-    from instrument_registry import discover_tradable_specs, is_equity_symbol, tracked_price_instruments
+    from instrument_registry import (
+        discover_tradable_specs,
+        is_equity_symbol,
+        load_registry,
+        resolve_instrument_spec,
+        tracked_price_instruments,
+    )
     from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
     from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
     from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
@@ -12612,12 +12618,15 @@ def test_telemetry_audit_7_fixes_stale_ob_kinematics_rvol_us_open_ant_realized_l
     assert sent_open_itv == pytest.approx(300.0)
     assert "us_cash_open_volatility_window" in sent_open_reason
 
-    # 5. Official Nasdaq RTH ticker ANT_US_EQ registered as live Trading212 equity & exposed in Cross-Market US Equities Telemetry
+    # 5. Official Nasdaq RTH ticker ANT_US_EQ remains tracked for market/bellwether analysis while blocked from live/AI trading
     all_syms, _, nb_prov = tracked_price_instruments()
     assert "ANT_US_EQ" in all_syms and nb_prov["ANT_US_EQ"] == "t212"
+    assert "ANTxUSD" in all_syms and nb_prov["ANTxUSD"] == "kraken"
     assert is_equity_symbol("ANT_US_EQ") is True
     eq_tradable = discover_tradable_specs(asset_scope="equities", include_closed_rth=True)
-    assert "T212_ANT" in eq_tradable  # Active 212trading/config.ant.env -> live Trading212 equity execution enabled
+    assert "T212_ANT" not in eq_tradable  # Non-tradable (config.ant.env.off + ai.tradable=no): price/bellwether telemetry only
+    assert "T212_SPCX" in eq_tradable
+    assert resolve_instrument_spec("ANT_US_EQ", "t212", load_registry()) is None
     cmc_ant = build_cross_market_context(
         {
             "ANT_US_EQ": {"price": 103.10, "quote_source": "yahoo_rth", "quote_age_min": 0.5, "chg_15m_pct": 0.45, "chg_24h_pct": 24.2},
@@ -16829,6 +16838,159 @@ def test_oauth_access_token_refresh_preserves_alert_cooldown_and_runtime_exhaust
     assert snap_b["buckets"][paid_model] == 1.0
     assert snap_b["runtime_exhausted"] == {}
     assert snap_b["last_alert_tier"] == "ok"
+
+
+def test_va_breakout_hold_duration_and_taker_ratio_cycle_delta() -> None:
+    """Verify symmetric Value-Area breakout hold duration (above_vah/below_val) and deadbanded d_tr cycle_delta."""
+    from intelligence.sentiment.evaluators.microstructure_evaluator import evaluate_microstructure_cycle_deltas
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        compute_va_breakout_hold_min,
+        compute_volume_profile_metrics,
+        format_va_hold_suffix,
+        recalculate_live_price_geometry,
+        restore_rth_metric_anchors,
+    )
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_market_prices_section,
+        _format_microstructure_section,
+    )
+
+    t0_ms = 1_795_000_000_000.0
+    min_ms = 60_000.0
+
+    # 1. Sustained breakout above VAH (35m hold) and symmetric breakdown below VAL (40m hold), zero emission inside VA
+    base_range = [[t0_ms + i * 5.0 * min_ms, 100.0 + (i % 5) * 0.5, 500.0] for i in range(40)]
+    base_range.append([base_range[-1][0] + 5.0 * min_ms, 100.5, 500.0])  # Anchor last base bar strictly inside VA
+    last_base_ms = base_range[-1][0]
+    above_tail = [[last_base_ms + (k + 1) * 5.0 * min_ms, 112.0 + k * 0.2, 50.0] for k in range(8)]
+    vp_above = compute_volume_profile_metrics(base_range + above_tail)
+    assert vp_above["va_regime"] == "ABOVE_VAH"
+    assert vp_above["va_hold_min"] == pytest.approx(35.0)
+    assert format_va_hold_suffix(vp_above) == ", above_vah=35m"
+
+    below_tail = [[last_base_ms + (k + 1) * 5.0 * min_ms, 88.0 - k * 0.2, 50.0] for k in range(9)]
+    vp_below = compute_volume_profile_metrics(base_range + below_tail)
+    assert vp_below["va_regime"] == "BELOW_VAL"
+    assert vp_below["va_hold_min"] == pytest.approx(40.0)
+    assert format_va_hold_suffix(vp_below) == ", below_val=40m"
+
+    inside_tail = [[last_base_ms + (k + 1) * 5.0 * min_ms, 101.0, 50.0] for k in range(4)]
+    vp_inside = compute_volume_profile_metrics(base_range + inside_tail)
+    assert vp_inside["va_regime"] in ("INSIDE_VA_UPPER", "INSIDE_VA_LOWER")
+    assert "va_hold_min" not in vp_inside
+    assert format_va_hold_suffix(vp_inside) == ""
+
+    # 2. Fresh 1-sample breakout yields 0.0m hold; >1h overnight gap stops hold accumulation
+    fresh_pts = [(t0_ms, 100.0), (t0_ms + 20.0 * min_ms, 100.0), (t0_ms + 25.0 * min_ms, 115.0)]
+    assert compute_va_breakout_hold_min(fresh_pts, 98.0, 105.0) == 0.0
+    assert format_va_hold_suffix({"va_regime": "ABOVE_VAH", "va_hold_min": 0.0}) == ", above_vah=0m"
+
+    gapped_pts = [
+        (t0_ms, 100.0),
+        (t0_ms + 10.0 * min_ms, 110.0),
+        (t0_ms + 200.0 * min_ms, 111.0),  # >1h closed-market gap
+        (t0_ms + 215.0 * min_ms, 112.0),
+    ]
+    assert compute_va_breakout_hold_min(gapped_pts, 98.0, 105.0) == pytest.approx(15.0)
+
+    # 3. Live price geometry clears va_hold_min on reversion inside VA, resets to 0.0 on fresh flip, and RTH restore drops stale hold
+    live_entry = {"price": 113.4, **vp_above}
+    recalculate_live_price_geometry(live_entry, vp_above["poc_px"])
+    assert "va_hold_min" not in live_entry
+    recalculate_live_price_geometry(live_entry, vp_above["vah_px"] * 1.02)
+    assert live_entry["va_regime"] == "ABOVE_VAH"
+    assert live_entry["va_hold_min"] == 0.0
+
+    rth_entry = {"price": 113.4, **vp_above}
+    restore_rth_metric_anchors(
+        rth_entry,
+        vp_src={"poc_px": 101.0, "val_px": 99.0, "vah_px": 103.0, "vp_source": "REAL_VOL"},
+        live_px=113.4,
+    )
+    assert "va_hold_min" not in rth_entry
+
+    # 4. Section 3A prompt formatting emits above_vah / below_val conditionally and omits inside VA
+    sec_3a = "\n".join(
+        _format_market_prices_section(
+            {
+                "BTCUSDC": {"price": 113.4, **vp_above},
+                "TAOUSDC": {"price": 86.4, **vp_below},
+                "ARBUSDC": {"price": 101.0, **vp_inside},
+            }
+        )
+    )
+    assert "above_vah=35m" in sec_3a
+    assert "below_val=40m" in sec_3a
+    arb_line = next(ln for ln in sec_3a.splitlines() if "ARBUSDC" in ln)
+    assert "above_vah=" not in arb_line and "below_val=" not in arb_line
+
+    # 5. taker_ratio_delta steps back to prior distinct 5m bar consistently with cvd_15m_delta and applies 0.05 prompt deadband
+    now_s = 1_795_100_000.0
+    bar_prev_ms = int((now_s - 600.0) * 1000)
+    bar_cur_ms = int((now_s - 180.0) * 1000)
+    hist_tr = {
+        "BTCUSDC": [
+            {
+                "ts": now_s - 600.0,
+                "ob_imbalance": 0.48,
+                "cvd_15m_usd": -2_000_000.0,
+                "oi_usd": 5_000_000_000.0,
+                "taker_buy_sell_ratio": 0.82,
+                "taker_bar_ts_ms": bar_prev_ms,
+            },
+            {
+                "ts": now_s - 360.0,
+                "ob_imbalance": 0.51,
+                "cvd_15m_usd": 3_000_000.0,
+                "oi_usd": 5_005_000_000.0,
+                "taker_buy_sell_ratio": 1.18,
+                "taker_bar_ts_ms": bar_cur_ms,
+            },
+        ],
+        "ARBUSDC": [
+            {
+                "ts": now_s - 360.0,
+                "ob_imbalance": 0.50,
+                "cvd_15m_usd": 100_000.0,
+                "oi_usd": 50_000_000.0,
+                "taker_buy_sell_ratio": 1.00,
+                "taker_bar_ts_ms": bar_prev_ms,
+            }
+        ],
+    }
+    micro_tr = {
+        "BTCUSDC": {
+            "ob_imbalance": 0.55,
+            "cvd_15m_usd": 3_005_000.0,
+            "oi_usd": 5_010_000_000.0,
+            "taker_buy_sell_ratio": 1.18,
+            "_taker_bar_ts_ms": bar_cur_ms,
+        },
+        "ARBUSDC": {
+            "ob_imbalance": 0.52,
+            "cvd_15m_usd": 120_000.0,
+            "oi_usd": 50_100_000.0,
+            "taker_buy_sell_ratio": 1.03,  # +0.03 < 0.05 deadband
+            "_taker_bar_ts_ms": bar_cur_ms,
+        },
+    }
+    out_micro_tr, _, _ = evaluate_microstructure_cycle_deltas(micro_tr, hist_tr, now_ts=now_s)
+    assert out_micro_tr["BTCUSDC"]["cycle_delta"]["taker_ratio_delta"] == pytest.approx(0.36)
+    assert out_micro_tr["BTCUSDC"]["cycle_delta"]["cvd_15m_delta_usd"] == pytest.approx(5_005_000.0)
+    assert out_micro_tr["ARBUSDC"]["cycle_delta"]["taker_ratio_delta"] == pytest.approx(0.03)
+
+    sec_3b = "\n".join(
+        _format_microstructure_section(
+            out_micro_tr,
+            {"BTCUSDC": {"price": 62000.0}, "ARBUSDC": {"price": 0.12}},
+            now_ts=now_s,
+        )
+    )
+    btc_3b = next(ln for ln in sec_3b.splitlines() if "BTCUSDC" in ln)
+    arb_3b = next(ln for ln in sec_3b.splitlines() if "ARBUSDC" in ln)
+    assert "d_tr=+0.36" in btc_3b
+    assert "d_tr=" not in arb_3b
+
 
 
 

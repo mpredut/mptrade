@@ -1359,6 +1359,7 @@ def test_xstock_watch_incremental_trade_archive_sync(tmp_path, monkeypatch):
 
 def test_declarative_xstock_role_gating_uppercase_resolution_and_archive_ohlc(tmp_path):
     from instrument_registry import (
+        discover_tradable_specs,
         is_xstock_trading_enabled,
         load_registry,
         resolve_instrument_spec,
@@ -1370,7 +1371,7 @@ def test_declarative_xstock_role_gating_uppercase_resolution_and_archive_ohlc(tm
     from providers.price_poller import KrakenPriceStream
     from state_io import atomic_write_jsonl
 
-    # 1. Live instruments.conf enables SPCXxUSD for AI trading (ai.tradable=yes) while ANTxUSD is disabled
+    # 1. Live instruments.conf enables SPCXxUSD for AI trading (ai.tradable=yes), while ANTxUSD is price/archive-only (ai.tradable=no)
     assert resolve_registered_symbol_case("SPCXXUSD", "kraken") == "SPCXxUSD"
     assert resolve_registered_symbol_case("ANTXUSD", "kraken") == "ANTxUSD"
     assert _resolve_kraken_pair("SPCXXUSD") == ("SPCXxUSD", True)
@@ -1383,6 +1384,9 @@ def test_declarative_xstock_role_gating_uppercase_resolution_and_archive_ohlc(tm
     assert resolve_instrument_spec("SPCXxUSD", "kraken", live_reg) is not None
     assert resolve_instrument_spec("ANTxUSD", "kraken", live_reg) is None
     assert resolve_instrument_spec("AAPLxUSD", "kraken", live_reg) is None
+    crypto_tradable = discover_tradable_specs(asset_scope="crypto")
+    assert "KRAKEN_SPCX" in crypto_tradable
+    assert "KRAKEN_ANT" not in crypto_tradable
 
     # 2. Setting ai.tradable=no and role.mt=no declaratively locks an xStock out of execution
     locked_conf = tmp_path / "instruments_locked.conf"

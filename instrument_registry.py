@@ -326,6 +326,14 @@ def _spec_allows_xstock_trading(spec: object, role: str = "mt") -> bool:
     return bool(isinstance(params, dict) and _parse_bool_flag(params.get("ai.tradable"), False))
 
 
+def _spec_explicitly_blocks_ai_trading(spec: object) -> bool:
+    """Return True when a spec declaratively disables autonomous/AI trading via ``ai.tradable = no``."""
+    params = getattr(spec, "params", None)
+    if not isinstance(params, dict) or "ai.tradable" not in params:
+        return False
+    return not _parse_bool_flag(params.get("ai.tradable"), True)
+
+
 def is_xstock_trading_enabled(symbol: object, *, path=None, role: str = "mt") -> bool:
     """Return True if a tokenized xStock symbol has an explicitly enabled trading role or AI flag in ``instruments.conf``."""
     raw = clean_scalar_str(symbol)
@@ -780,7 +788,15 @@ def discover_tradable_specs(
 
     if scope in ("all", "crypto"):
         for k, item in raw_map.items():
-            if getattr(item, "enabled", True) is not False and not is_equity_venue(_candidate_venue(item)):
+            if (
+                getattr(item, "enabled", True) is not False
+                and not is_equity_venue(_candidate_venue(item))
+                and not _spec_explicitly_blocks_ai_trading(item)
+                and (
+                    not is_readonly_xstock_symbol(_str_attr(item, "symbol"))
+                    or _spec_allows_xstock_trading(item)
+                )
+            ):
                 active_map[k] = item
 
         existing_kraken_syms = _existing_syms("kraken")
@@ -817,16 +833,25 @@ def discover_tradable_specs(
         )
         is_custom_raw_map = not has_ws_conf and bool(raw_map) and set(raw_map.keys()) != default_keys
         for k, item in raw_map.items():
-            if getattr(item, "enabled", True) is not False and is_equity_venue(_candidate_venue(item)):
+            if (
+                getattr(item, "enabled", True) is not False
+                and is_equity_venue(_candidate_venue(item))
+                and not _spec_explicitly_blocks_ai_trading(item)
+            ):
                 if _candidate_symbol_u(item) in discovered_tickers or is_custom_raw_map or (has_ws_conf and not discovered_tickers):
                     active_map[k] = (
                         item.with_execution_policy(live_enabled=True, order_validity="DAY")
                         if isinstance(item, InstrumentSpec)
                         else item
                     )
+        blocked_t212_syms = {
+            _candidate_symbol_u(item)
+            for item in raw_map.values()
+            if is_equity_venue(_candidate_venue(item)) and _spec_explicitly_blocks_ai_trading(item)
+        }
         existing_t212_syms = _existing_syms("t212")
         for inst_name, ticker, base, quote in discovered_t212:
-            if ticker not in existing_t212_syms and _add_spec(
+            if ticker not in existing_t212_syms and ticker not in blocked_t212_syms and _add_spec(
                 inst_name, "t212", ticker, base, quote, live=True, validity="DAY", market_hours="rth"
             ):
                 existing_t212_syms.add(ticker)
@@ -887,6 +912,7 @@ def resolve_instrument_spec(
         item
         for item in instruments_map.values()
         if getattr(item, "enabled", True) is not False
+        and not _spec_explicitly_blocks_ai_trading(item)
         and (not venue_norm or _candidate_venue(item) == venue_norm)
         and (
             req_is_eq is None

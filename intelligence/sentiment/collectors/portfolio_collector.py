@@ -972,7 +972,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             f"(Spot API BUY on tokenized xStocks returns EGeneral:Permission denied; SELL works at 0bps fee) for both "
             f"[auto_cryptotrade_executor] (by=AI) and kraken_bot.py (by=BOT{bot_rule_sfx}). "
             "Synthesize live L2 bid/ask walls, ob_imbalance, and 90s/5m kinematics to harvest profitable SELL tranches "
-            "via 0bps LIMIT orders; do NOT submit Kraken xStock BUY orders (use T212 SPCX_US_EQ / ANT_US_EQ for US equity buys)."
+            "via 0bps LIMIT orders; do NOT submit Kraken xStock BUY orders (use T212 SPCX_US_EQ for US equity buys)."
         )
         ipo_sym_lbl = f"{cfg_underlying}xUSD" if cfg_underlying else ""
         xst_summary: Dict[str, Any] = {
