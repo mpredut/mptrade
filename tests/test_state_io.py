@@ -743,3 +743,158 @@ def test_read_json_dict_cached_inode_invalidation_and_memoized_ssot_price_trend_
             assert h_p is not None and h_p[-1]["price"] == pytest.approx(2.0)
 
 
+def test_cache_freshness_xstock_aliases_passive_read_jsonl_bounds_and_record_cid_ssot(tmp_path):
+    """Verify scoped fetchtime refresh, xStock alias dedup/merge, passive path resolution, JSONL span bounds, and strict record CID SSOT."""
+    import cacheaccount
+    import cachepaths
+    import order_lifecycle
+    import order_retry
+    from providers.order_id_context import record_client_order_id
+
+    now_s = time.time()
+    now_ms = int(now_s * 1000)
+    stale_48h_ms = now_ms - 48 * 3600 * 1000
+
+    # 1. Execution cache freshness: updating HYPEUSD with create_missing=True must NOT refresh 48h-old TAOUSD.
+    kr_file = tmp_path / "cache_trade_kraken.json"
+    save_json_state(
+        str(kr_file),
+        {
+            "items": {
+                "TAOUSD": [{"id": "old-tao", "symbol": "TAOUSD", "time": stale_48h_ms, "price": 300.0, "qty": 1.0}],
+                "HYPEUSD": [],
+            },
+            "fetchtime": {"TAOUSD": stale_48h_ms, "HYPEUSD": stale_48h_ms},
+        },
+    )
+    assert cacheaccount.CacheTradeManager.merge_venue_fills_snapshot(
+        str(kr_file),
+        {"HYPEUSD": [{"id": "new-hype", "symbol": "HYPEUSD", "time": now_ms, "price": 50.0, "qty": 2.0}]},
+        now_ms=now_ms,
+        is_snapshot=False,
+        touch_symbols=["HYPEUSD"],
+        touch_create_missing=True,
+    ) is True
+    after_hype = read_json_dict(str(kr_file))
+    assert after_hype["fetchtime"]["HYPEUSD"] == now_ms
+    assert after_hype["fetchtime"]["TAOUSD"] == stale_48h_ms
+    assert cacheaccount.CacheTradeManager.read_venue_fills_snapshot(
+        "TAOUSD", str(kr_file), max_stale_sec=90.0, candidate_keys=("TAOUSD",)
+    ) is None
+    hype_fills = cacheaccount.CacheTradeManager.read_venue_fills_snapshot(
+        "HYPEUSD", str(kr_file), max_stale_sec=90.0, candidate_keys=("HYPEUSD",)
+    )
+    assert hype_fills is not None and [r["id"] for r in hype_fills] == ["new-hype"]
+
+    # Explicit wildcard '*' still covers all existing keys when create_missing=True,
+    # and respects invalidated keys when create_missing=False.
+    wc_doc = {"items": {"TAOUSD": [], "HYPEUSD": []}, "fetchtime": {"HYPEUSD": stale_48h_ms}}
+    assert cacheaccount.CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
+        wc_doc, now_ms, symbols=["*"], create_missing=False
+    ) is True
+    assert wc_doc["fetchtime"] == {"HYPEUSD": now_ms}
+    assert cacheaccount.CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
+        wc_doc, now_ms + 1000, symbols=["*"], create_missing=True
+    ) is True
+    assert wc_doc["fetchtime"] == {"HYPEUSD": now_ms + 1000, "TAOUSD": now_ms + 1000}
+
+    # 2. Kraken xStock aliases: incremental merge preserves all alias fills, read dedups aliases, snapshot replaces.
+    f1 = {"id": "1", "symbol": "SPCXxUSD", "time": now_ms - 3000, "price": 140.0, "qty": 1.0}
+    f2 = {"id": "2", "symbol": "SPCXXUSD", "time": now_ms - 2000, "price": 141.0, "qty": 1.0}
+    f3 = {"id": "3", "symbol": "SPCXxUSD", "time": now_ms - 1000, "price": 142.0, "qty": 1.0}
+    inc_doc = {
+        "items": {"SPCXxUSD": [dict(f1)], "SPCXXUSD": [dict(f2)]},
+        "fetchtime": {"SPCXxUSD": now_ms - 3000, "SPCXXUSD": now_ms - 2000},
+    }
+    assert cacheaccount.CacheTradeManager.merge_venue_fills_into_dict(
+        inc_doc, {"SPCXxUSD": [dict(f3)]}, now_ms=now_ms, is_snapshot=False
+    ) is True
+    assert list(inc_doc["items"].keys()) == ["SPCXxUSD"]
+    assert [r["id"] for r in inc_doc["items"]["SPCXxUSD"]] == ["1", "2", "3"]
+    assert all(r["symbol"] == "SPCXxUSD" for r in inc_doc["items"]["SPCXxUSD"])
+
+    snap_doc = {
+        "items": {"SPCXxUSD": [dict(f1)], "SPCXXUSD": [dict(f2)]},
+        "fetchtime": {"SPCXxUSD": now_ms - 3000, "SPCXXUSD": now_ms - 2000},
+    }
+    assert cacheaccount.CacheTradeManager.merge_venue_fills_into_dict(
+        snap_doc, {"SPCXxUSD": [dict(f3)]}, now_ms=now_ms, is_snapshot=True
+    ) is True
+    assert list(snap_doc["items"].keys()) == ["SPCXxUSD"]
+    assert [r["id"] for r in snap_doc["items"]["SPCXxUSD"]] == ["3"]
+
+    alias_disk = tmp_path / "alias_kraken.json"
+    alias_disk.write_text(
+        json.dumps(
+            {
+                "items": {"SPCXxUSD": [dict(f1)], "SPCXXUSD": [dict(f1), dict(f2)]},
+                "fetchtime": {"SPCXxUSD": now_ms, "SPCXXUSD": now_ms},
+            }
+        ),
+        encoding="utf-8",
+    )
+    san = cacheaccount.CacheTradeManager.load_sanitized_trade_snapshot(str(alias_disk), venue="kraken")
+    assert list(san["items"].keys()) == ["SPCXxUSD"]
+    assert [r["id"] for r in san["items"]["SPCXxUSD"]] == ["1", "2"]
+    read_alias = cacheaccount.CacheTradeManager.read_venue_fills_snapshot(
+        "SPCXxUSD", str(alias_disk), max_stale_sec=90.0, candidate_keys=("SPCXxUSD", "SPCXXUSD")
+    )
+    assert read_alias is not None and [r["id"] for r in read_alias] == ["1", "2"]
+
+    # 3. Passive read_json_dict(..., repair_files=False) must NOT physically move flat files into orders/.
+    cdb = tmp_path / "cachedb_passive"
+    (cdb / "orders").mkdir(parents=True)
+    flat_kr = cdb / "cache_trade_kraken.json"
+    flat_kr.write_text(json.dumps({"items": {"HYPEUSD": []}, "fetchtime": {"HYPEUSD": now_ms}}), encoding="utf-8")
+    loaded_passive = read_json_dict(str(flat_kr), repair_files=False)
+    assert loaded_passive == {"items": {"HYPEUSD": []}, "fetchtime": {"HYPEUSD": now_ms}}
+    assert flat_kr.is_file()
+    assert not (cdb / "orders" / "cache_trade_kraken.json").exists()
+    assert read_json_dict_cached(str(flat_kr), memo={}) == loaded_passive
+    assert flat_kr.is_file()
+    assert not (cdb / "orders" / "cache_trade_kraken.json").exists()
+    # Explicit producer save or explicit migrate=True moves the file into orders/.
+    migrated_path = cachepaths.resolve_cachedb_filepath(str(flat_kr), migrate=True)
+    assert Path(str(migrated_path)) == cdb / "orders" / "cache_trade_kraken.json"
+    assert (cdb / "orders" / "cache_trade_kraken.json").is_file()
+    assert not flat_kr.exists()
+
+    # 4. read_jsonl_records_since_span enforces exact cutoff window and strict <= max_records cap keeping last row.
+    j_6000 = tmp_path / "dense_6000.jsonl"
+    base_ms = 1_795_000_000_000
+    j_6000.write_text(
+        "\n".join(json.dumps({"s": "BTCUSDC", "i": [base_ms + i * 1000, 90000.0 + i]}) for i in range(6000)) + "\n",
+        encoding="utf-8",
+    )
+    recs_cap = state_io.read_jsonl_records_since_span(str(j_6000), span_ms=10_000_000, max_records=4000)
+    assert len(recs_cap) <= 4000
+    assert recs_cap[-1]["i"][0] == base_ms + 5999 * 1000
+
+    recs_one = state_io.read_jsonl_records_since_span(str(j_6000), span_ms=10_000_000, max_records=1)
+    assert len(recs_one) == 1
+    assert recs_one[0]["i"][0] == base_ms + 5999 * 1000
+
+    j_1500 = tmp_path / "span_1500s.jsonl"
+    j_1500.write_text(
+        "\n".join(json.dumps({"s": "ETHUSDC", "i": [base_ms + i * 1000, 3000.0 + i * 0.1]}) for i in range(1500)) + "\n",
+        encoding="utf-8",
+    )
+    recs_10s = state_io.read_jsonl_records_since_span(str(j_1500), span_ms=10_000, max_records=4000)
+    assert len(recs_10s) == 11
+    assert recs_10s[0]["i"][0] == base_ms + 1489 * 1000
+    assert recs_10s[-1]["i"][0] == base_ms + 1499 * 1000
+    assert (recs_10s[-1]["i"][0] - recs_10s[0]["i"][0]) <= 10_000
+
+    # 5. Single SSOT record_client_order_id keeps strict record['place_kwargs']['client_order_id'] contract.
+    assert order_retry.record_client_order_id is record_client_order_id
+    assert not hasattr(order_lifecycle, "_claim_client_order_id")
+    assert record_client_order_id({"place_kwargs": {"client_order_id": " TA_123 "}}) == "TA_123"
+    assert record_client_order_id({"client_order_id": "LEGACY_TOP_LEVEL"}) is None
+    assert record_client_order_id({"clientOrderId": "LEGACY_CAMEL"}) is None
+    assert record_client_order_id({"place_kwargs": {"clientOrderId": "WRONG_KEY"}}) is None
+    assert record_client_order_id({"place_kwargs": "not-a-dict"}) is None
+    assert record_client_order_id({"place_kwargs": {"client_order_id": True}}) is None
+    assert record_client_order_id({"place_kwargs": {"client_order_id": "nan"}}) is None
+    assert record_client_order_id("not-a-dict") is None
+
+

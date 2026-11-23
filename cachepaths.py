@@ -362,8 +362,13 @@ def resolve_cache_subdomain(name: object) -> str | None:
     return None
 
 
-def resolve_cachedb_filepath(path: object) -> object:
-    """Resolve ``path`` to its thematic ``cachedb/<subdomain>/`` location when active on disk."""
+def resolve_cachedb_filepath(path: object, *, migrate: bool = False) -> object:
+    """Resolve ``path`` to its thematic ``cachedb/<subdomain>/`` location when active on disk.
+
+    Passive by default (``migrate=False``): locates an existing file without mutating disk.
+    Pass ``migrate=True`` from writers/producers or explicit migrations to move flat/legacy
+    files and their sidecars into the active subdomain directory.
+    """
     raw = _clean_path_str(path)
     if not raw:
         return path
@@ -391,7 +396,7 @@ def resolve_cachedb_filepath(path: object) -> object:
     sub_path = os.path.join(sub_dir, rel_item)
     legacy_sys_path = os.path.join(base_dir, "system", rel_item) if sub == "system/heartbeat" else ""
     sub_dir_exists = os.path.isdir(sub_dir)
-    if sub_dir_exists:
+    if sub_dir_exists and _parse_bool_flag(migrate, False):
         for old_p in (flat_path, legacy_sys_path):
             if old_p and os.path.isfile(old_p) and not os.path.exists(sub_path):
                 try:

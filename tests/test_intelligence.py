@@ -5481,14 +5481,18 @@ def test_iter88_cachetrend_adapt_thresholds_compact_repo_rules_whale_delta_4dec_
     assert entry_k["kalman_vel"] == pytest.approx(0.123)
     assert entry_k.get("kalman_vel_std") is not None and entry_k["kalman_vel_std"] < 5.99
 
-    # 5. resolve_cachedb_filepath migrates .previous and .meta sidecars along with the main cache file
+    # 5. resolve_cachedb_filepath is passive by default and migrates .previous/.meta sidecars only with migrate=True
     sub_cdir = tmp_path / "cachedb_sub"
     (sub_cdir / "trends").mkdir(parents=True)
     flat_f = sub_cdir / "cache_short_trend.json"
     flat_f.write_text("{}", encoding="utf-8")
     (sub_cdir / "cache_short_trend.json.previous").write_text('{"prev": 1}', encoding="utf-8")
     (sub_cdir / "cache_short_trend.json.meta").write_text('{"meta": 1}', encoding="utf-8")
-    resolved_p = resolve_cachedb_filepath(str(flat_f))
+    passive_p = resolve_cachedb_filepath(str(flat_f))
+    assert passive_p == str(flat_f)
+    assert flat_f.is_file()
+    assert not (sub_cdir / "trends" / "cache_short_trend.json").exists()
+    resolved_p = resolve_cachedb_filepath(str(flat_f), migrate=True)
     assert str(resolved_p).endswith("trends/cache_short_trend.json")
     assert (sub_cdir / "trends" / "cache_short_trend.json.previous").is_file()
     assert (sub_cdir / "trends" / "cache_short_trend.json.meta").is_file()

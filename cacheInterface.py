@@ -467,6 +467,8 @@ class CacheManagerInterface(ABC):
             self.read_only = _parse_bool_flag(read_only, default=True)
         else:
             self.read_only = _parse_bool_flag(read_only, default=False)
+        if not self.read_only:
+            self.filename = str(cachepaths.resolve_cachedb_filepath(self.filename, migrate=True))
         self._persisted_counts = {}
         self._reader_reload_lock = threading.Lock()
         self._legacy_jsonl_needs_rewrite = False
@@ -598,7 +600,8 @@ class CacheManagerInterface(ABC):
         self._seed_remote_and_persist_if_writable()
 
     def load_state(self):
-        migrate_legacy_filename_if_needed(self.filename)
+        if not self.read_only:
+            migrate_legacy_filename_if_needed(self.filename)
         print(f"[{self.cls_name}][Info] Load state from {self.filename} ...")
         if self.append_persist:
             self._migrate_legacy_json_if_needed()

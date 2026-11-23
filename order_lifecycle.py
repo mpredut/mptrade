@@ -581,13 +581,6 @@ def native_replace_enabled(provider: Any) -> bool:
     return caps.replace_by_order_id and normalize_venue_name(provider) in NATIVE_ORDER_REPLACE_VENUES
 
 
-def _claim_client_order_id(record) -> str | None:
-    if not isinstance(record, dict):
-        return None
-    pk = record.get("place_kwargs")
-    return clean_order_id(pk.get("client_order_id")) if isinstance(pk, dict) else None
-
-
 def _accepted_is_durable(order_retry_module, claim, order) -> bool:
     """Recognize a first attempt that committed before reporting an I/O error."""
     try:
@@ -595,13 +588,13 @@ def _accepted_is_durable(order_retry_module, claim, order) -> bool:
             return False
         claim_id = clean_order_id(claim.get("id"))
         expected_order_id = extract_order_id(order)
-        expected_client_id = _claim_client_order_id(claim)
+        expected_client_id = rc.record_client_order_id(claim)
         if claim_id is None or expected_order_id is None or expected_client_id is None:
             return False
         for record in (order_retry_module.load_all() or ()):
             if not isinstance(record, dict) or clean_order_id(record.get("id")) != claim_id:
                 continue
-            current_client_id = _claim_client_order_id(record)
+            current_client_id = rc.record_client_order_id(record)
             current_order_id = clean_order_id(record.get("order_id"))
             return (
                 str(record.get("lifecycle") or "").strip().lower() == "accepted"
@@ -639,7 +632,7 @@ def complete_accepted_claim(
 
     order_id = extract_order_id(order)
     claim_dict = claim if isinstance(claim, dict) else {}
-    client_order_id = _claim_client_order_id(claim_dict)
+    client_order_id = rc.record_client_order_id(claim_dict)
     owner = ""
     infer_fn = getattr(order_retry_module, "infer_concrete_record_owner", None) or getattr(
         order_retry_module, "infer_record_owner", None

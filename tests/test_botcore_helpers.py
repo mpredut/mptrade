@@ -648,11 +648,14 @@ def test_monitororder_ttl_and_ordered_id_set():
 
 def test_kraken_cache_touch_ws_fetchtimes():
     pairs = KrakenProvider.resolve_cache_daemon_config()["pairs"]
-    cache = {"items": {"TAOUSDC": []}, "fetchtime": {}}
+    covered = pairs[0]
+    cache = {"items": {covered: [], "TAOUSDC": []}, "fetchtime": {"TAOUSDC": 12345}}
     CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(cache, now_ms=1700000000, symbols=pairs, create_missing=True)
-    assert cache["fetchtime"]["TAOUSDC"] == 1700000000
+    assert cache["fetchtime"][covered] == 1700000000
+    assert cache["fetchtime"]["TAOUSDC"] == 12345
     CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(cache, now_ms="invalid", symbols=pairs, create_missing=True)
-    assert cache["fetchtime"]["TAOUSDC"] > 0
+    assert cache["fetchtime"][covered] > 0
+    assert cache["fetchtime"]["TAOUSDC"] == 12345
 
 
 def test_autonomous_intent_gateway_extract_price():

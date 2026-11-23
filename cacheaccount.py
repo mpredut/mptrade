@@ -636,20 +636,15 @@ class CacheTradeManager(CacheAccountManagerBase):
                             row_copy["isBuyer"] = False
                     valid_rows.append(row_copy)
                 valid_rows.sort(key=lambda t: t["time"])
-                k_canon = sym.canonical_display_symbol(k, venue=venue) or str(k)
-                for rc in valid_rows:
-                    if isinstance(rc.get("symbol"), str) and rc["symbol"].upper() == k_canon.upper():
-                        rc["symbol"] = k_canon
-                if k_canon in clean_items:
-                    merged_v = clean_items[k_canon] + valid_rows
-                    merged_v.sort(key=lambda t: t["time"])
-                    clean_items[k_canon] = merged_v
-                else:
-                    clean_items[k_canon] = valid_rows
+                k_canon = cls._canonical_snapshot_symbol(k, venue=venue) or str(k)
+                norm_rows = [cls._normalize_fill_row_symbol(rc, k_canon, venue=venue) for rc in valid_rows]
+                merged_v, _ = cls._merge_fill_rows_by_dedup_key(clean_items.get(k_canon, []), norm_rows)
+                merged_v.sort(key=lambda t: t["time"])
+                clean_items[k_canon] = merged_v
             clean_fetchtime = {}
             for k, v in loaded["fetchtime"].items():
                 v_f = safe_nonneg_float(v, default=None)
-                k_canon_ft = sym.canonical_display_symbol(k, venue=venue) or str(k)
+                k_canon_ft = cls._canonical_snapshot_symbol(k, venue=venue) or str(k)
                 if v_f is not None and (not clean_items or k_canon_ft in clean_items):
                     clean_fetchtime[k_canon_ft] = max(clean_fetchtime.get(k_canon_ft, 0.0), v_f)
             return {
@@ -657,6 +652,57 @@ class CacheTradeManager(CacheAccountManagerBase):
                 "fetchtime": clean_fetchtime,
             }
         return {"items": {}, "fetchtime": {}}
+
+    @classmethod
+    def _canonical_snapshot_symbol(cls, raw_sym: object, *, venue: Optional[str] = None) -> str:
+        """Return canonical display key for a venue trade snapshot symbol."""
+        if not isinstance(raw_sym, str) or isinstance(raw_sym, bool):
+            return ""
+        stripped = raw_sym.strip()
+        if not stripped:
+            return ""
+        return sym.canonical_display_symbol(stripped, venue=venue) or stripped.upper()
+
+    @classmethod
+    def _normalize_fill_row_symbol(
+        cls, row: dict, canon_sym: str, *, venue: Optional[str] = None
+    ) -> dict:
+        rc = dict(row)
+        raw_sym = rc.get("symbol")
+        if isinstance(raw_sym, str) and (
+            raw_sym.upper() == canon_sym.upper()
+            or cls._canonical_snapshot_symbol(raw_sym, venue=venue) == canon_sym
+        ):
+            rc["symbol"] = canon_sym
+        return rc
+
+    @classmethod
+    def _merge_fill_rows_by_dedup_key(
+        cls, base_rows: list, incoming_rows: list
+    ) -> tuple[list[dict], bool]:
+        """Merge ``incoming_rows`` into ``base_rows``, deduplicating by ``fill_dedup_key``."""
+        bucket: list[dict] = []
+        seen_keys: set[tuple] = set()
+        changed = False
+        for row in base_rows:
+            if not isinstance(row, dict):
+                continue
+            dk = cls.fill_dedup_key(row)
+            if dk is not None:
+                if dk in seen_keys:
+                    changed = True
+                    continue
+                seen_keys.add(dk)
+            bucket.append(dict(row))
+        for row in incoming_rows:
+            if not isinstance(row, dict):
+                continue
+            dk = cls.fill_dedup_key(row)
+            if dk is not None and dk not in seen_keys:
+                bucket.append(dict(row))
+                seen_keys.add(dk)
+                changed = True
+        return bucket, changed
 
     @staticmethod
     def fill_dedup_key(row: object) -> Optional[tuple]:
@@ -754,22 +800,39 @@ class CacheTradeManager(CacheAccountManagerBase):
         if max_stale_s is None:
             return None
         sym_clean = clean_symbol_key(symbol) or str(symbol).strip().upper()
-        best_rows: Optional[list[dict]] = None
-        best_rank: Optional[tuple[float, int]] = None
+        grouped_rows: dict[str, list[dict]] = {}
+        grouped_counts: dict[str, int] = {}
+        grouped_ranks: dict[str, tuple[float, int]] = {}
         for key in keys:
             if not isinstance(items.get(key), list):
                 continue
             ft_val = safe_pos_float(casefold_get(ft, key), default=None)
             if ft_val is None or not _is_fresh_obs_ts(_ts_ms_to_s(ft_val), now_s, max_stale_s):
                 continue
+            k_canon = cls._canonical_snapshot_symbol(key) or key.strip().upper()
+            rows_k = (
+                [normalize_fn(t) for t in items[key] if isinstance(t, dict)]
+                if callable(normalize_fn)
+                else [cls._normalize_fill_row_symbol(t, k_canon) for t in items[key] if isinstance(t, dict)]
+            )
+            if k_canon in grouped_rows:
+                merged_rows, _ = cls._merge_fill_rows_by_dedup_key(grouped_rows[k_canon], rows_k)
+                grouped_rows[k_canon] = merged_rows
+                grouped_counts[k_canon] += 1
+            else:
+                grouped_rows[k_canon], _ = cls._merge_fill_rows_by_dedup_key(rows_k, [])
+                grouped_counts[k_canon] = 1
             rank = (_ts_ms_to_s(ft_val), 1 if key.strip().upper() == sym_clean else 0)
-            if best_rank is None or rank > best_rank:
-                best_rank = rank
-                best_rows = (
-                    [normalize_fn(t) for t in items[key] if isinstance(t, dict)]
-                    if callable(normalize_fn)
-                    else [dict(t) for t in items[key] if isinstance(t, dict)]
-                )
+            if k_canon not in grouped_ranks or rank > grouped_ranks[k_canon]:
+                grouped_ranks[k_canon] = rank
+        if not grouped_ranks:
+            return None
+        best_canon = max(grouped_ranks, key=lambda kc: grouped_ranks[kc])
+        best_rows = grouped_rows[best_canon]
+        if grouped_counts[best_canon] > 1 and all(
+            isinstance(r, dict) and "time" in r and "tid" not in r for r in best_rows
+        ):
+            best_rows.sort(key=lambda r: extract_timestamp_ms(r, default=0) or 0)
         return best_rows
 
     @staticmethod
@@ -806,36 +869,57 @@ class CacheTradeManager(CacheAccountManagerBase):
         for sym_raw, new_rows in (fills_by_symbol or {}).items():
             if not isinstance(sym_raw, str) or not isinstance(new_rows, list):
                 continue
-            sym_key = sym.canonical_display_symbol(sym_raw) or sym_raw.strip().upper()
+            sym_key = cls._canonical_snapshot_symbol(sym_raw)
             if not sym_key:
                 continue
-            for alt_k in [ik for ik in list(items) if ik != sym_key and str(ik).upper() == sym_key.upper()]:
-                alt_rows = items.pop(alt_k, None)
-                if isinstance(alt_rows, list) and sym_key not in items:
-                    items[sym_key] = alt_rows
+            alias_rows: list[dict] = []
+            for alt_k in [
+                ik
+                for ik in list(items)
+                if ik != sym_key
+                and (str(ik).upper() == sym_key.upper() or cls._canonical_snapshot_symbol(ik) == sym_key)
+            ]:
+                alt_val = items.pop(alt_k, None)
+                if isinstance(alt_val, list):
+                    alias_rows.extend(
+                        cls._normalize_fill_row_symbol(r, sym_key)
+                        for r in alt_val
+                        if isinstance(r, dict)
+                    )
                 changed = True
-            for alt_fk in [fk for fk in list(ft) if fk != sym_key and str(fk).upper() == sym_key.upper()]:
+            for alt_fk in [
+                fk
+                for fk in list(ft)
+                if fk != sym_key
+                and (str(fk).upper() == sym_key.upper() or cls._canonical_snapshot_symbol(fk) == sym_key)
+            ]:
                 alt_ft = ft.pop(alt_fk, None)
-                if alt_ft is not None and sym_key not in ft:
-                    ft[sym_key] = alt_ft
+                if alt_ft is not None:
+                    cur_ft_f = safe_pos_float(ft.get(sym_key), default=None)
+                    alt_ft_f = safe_pos_float(alt_ft, default=None)
+                    if cur_ft_f is None or (alt_ft_f is not None and alt_ft_f > cur_ft_f):
+                        ft[sym_key] = alt_ft
                 changed = True
-            norm_new_rows = []
-            for r in new_rows:
-                if isinstance(r, dict):
-                    rc = dict(r)
-                    if isinstance(rc.get("symbol"), str) and rc["symbol"].upper() == sym_key.upper():
-                        rc["symbol"] = sym_key
-                    norm_new_rows.append(rc)
-            new_rows = norm_new_rows
+            new_rows = [
+                cls._normalize_fill_row_symbol(r, sym_key)
+                for r in new_rows
+                if isinstance(r, dict)
+            ]
             if is_snapshot_b:
-                clean_rows = [dict(r) for r in new_rows if isinstance(r, dict)]
+                clean_rows = [dict(r) for r in new_rows]
                 if items.get(sym_key) != clean_rows or ft.get(sym_key) != eff_now_ms:
                     changed = True
                 items[sym_key] = clean_rows
                 ft[sym_key] = eff_now_ms
                 continue
             existing = items.get(sym_key)
-            existing_list = existing if isinstance(existing, list) else []
+            existing_list = (
+                [cls._normalize_fill_row_symbol(r, sym_key) for r in existing if isinstance(r, dict)]
+                if isinstance(existing, list)
+                else []
+            )
+            if alias_rows:
+                existing_list.extend(alias_rows)
             has_oid_only = any(
                 isinstance(r, dict) and r.get("id") is None and r.get("tid") is None and extract_order_id(r)
                 for r in new_rows
@@ -861,21 +945,12 @@ class CacheTradeManager(CacheAccountManagerBase):
                 )
                 items[sym_key] = merged
             else:
-                bucket = list(existing_list)
-                seen_keys = {
-                    dk for r in bucket if (dk := cls.fill_dedup_key(r)) is not None
-                }
-                added = False
-                for row in new_rows:
-                    if not isinstance(row, dict):
-                        continue
-                    dk = cls.fill_dedup_key(row)
-                    if dk is not None and dk not in seen_keys:
-                        bucket.append(dict(row))
-                        seen_keys.add(dk)
-                        added = True
-                        changed = True
-                if added and all(isinstance(r, dict) and "time" in r and "tid" not in r for r in bucket):
+                bucket, merged_changed = cls._merge_fill_rows_by_dedup_key(existing_list, new_rows)
+                if merged_changed:
+                    changed = True
+                if (merged_changed or alias_rows) and all(
+                    isinstance(r, dict) and "time" in r and "tid" not in r for r in bucket
+                ):
                     bucket.sort(key=lambda r: extract_timestamp_ms(r, default=0) or 0)
                 items[sym_key] = bucket
             old_ft = safe_pos_float(ft.get(sym_key), default=None)
@@ -1018,20 +1093,35 @@ class CacheTradeManager(CacheAccountManagerBase):
             if isinstance(symbols, str)
             else (symbols if isinstance(symbols, (list, tuple, set, frozenset)) else ())
         )
-        valid_syms = [
-            s_clean
-            for s in raw_syms
-            if isinstance(s, str) and (s_clean := s.strip()) and s_clean != "*"
-        ]
+        has_wildcard = any(isinstance(s, str) and s.strip() == "*" for s in raw_syms)
+        valid_syms: list[str] = []
+        seen_valid: set[str] = set()
+        for s in raw_syms:
+            if not isinstance(s, str) or not (s_clean := s.strip()) or s_clean == "*":
+                continue
+            s_key = s_clean if s_clean in items else (cls._canonical_snapshot_symbol(s_clean) or s_clean)
+            if s_key not in seen_valid:
+                seen_valid.add(s_key)
+                valid_syms.append(s_key)
         if _parse_bool_flag(create_missing, False):
+            changed = False
+            touch_syms = list(items.keys()) if has_wildcard else list(valid_syms)
             for s_sym in valid_syms:
-                items.setdefault(s_sym, [])
-            touch_syms = list(items.keys())
-        else:
-            touch_syms = [
-                s_sym for s_sym in valid_syms
-                if s_sym in ft and s_sym in items and ft.get(s_sym) != resolved_ms
-            ]
+                if s_sym not in items:
+                    items[s_sym] = []
+                    changed = True
+                if has_wildcard and s_sym not in touch_syms:
+                    touch_syms.append(s_sym)
+            for s_sym in touch_syms:
+                if ft.get(s_sym) != resolved_ms:
+                    ft[s_sym] = resolved_ms
+                    changed = True
+            return changed
+        cand_syms = list(items.keys()) if has_wildcard else valid_syms
+        touch_syms = [
+            s_sym for s_sym in cand_syms
+            if s_sym in ft and s_sym in items and ft.get(s_sym) != resolved_ms
+        ]
         for s_sym in touch_syms:
             ft[s_sym] = resolved_ms
         return bool(touch_syms)

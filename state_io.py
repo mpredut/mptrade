@@ -44,14 +44,16 @@ _MISSING = globals().get("_MISSING") or object()
 JSONDecodeError = json.JSONDecodeError
 
 
-def _resolve_target_path(path: Any, *, abspath: bool = False) -> str:
+def _resolve_target_path(path: Any, *, abspath: bool = False, migrate: bool = False) -> str:
     """Validate ``path`` and resolve its canonical ``cachedb/<subdomain>/`` location."""
     if path is None or isinstance(path, (bool, int, float, bytes)):
         raise TypeError("path must be a valid filesystem path")
     raw = os.fspath(path)
     if clean_scalar_str(raw) is None:
         raise ValueError("path must not be empty")
-    resolved = str(resolve_cachedb_filepath(raw))
+    resolved = str(
+        resolve_cachedb_filepath(raw, migrate=True) if migrate else resolve_cachedb_filepath(raw)
+    )
     return os.path.abspath(resolved) if abspath else resolved
 
 
@@ -208,7 +210,7 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
         backup_path = previous_generation_path(target_path)
         if not os.path.exists(target_path) and not os.path.exists(backup_path):
             return default_factory()
-        return read_recovering_previous(target_path, _read_and_validate, backup_path=backup_path)
+        return read_recovering_previous(target_path, _read_and_validate)
     except (OSError, TypeError, ValueError) as exc:
         if fail_closed:
             raise StateReadError(f"invalid {label} state in {path}: {exc}") from exc
@@ -216,7 +218,7 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
 
 
 def _prepare_target_and_dir(path: str) -> tuple[str, str]:
-    destination = _resolve_target_path(path, abspath=True)
+    destination = _resolve_target_path(path, abspath=True, migrate=True)
     directory = os.path.dirname(destination)
     if directory:
         os.makedirs(directory, exist_ok=True)
@@ -331,7 +333,7 @@ def save_json_state(path: str, value: Any, *, indent: int | None = None,
                     allow_nan: bool = False, default: Any = None,
                     write_fn: Callable[..., Any] | None = None) -> Any:
     """Transactionally write JSON state while staging and cleaning up ``<path>.previous``."""
-    target_path = _resolve_target_path(path)
+    target_path = _resolve_target_path(path, migrate=True)
     backup_path = None
     had_prior = os.path.exists(target_path)
     if had_prior:
@@ -562,20 +564,48 @@ def read_jsonl_records_since_span(
         return []
     if not raw_lines:
         return []
-    n_lines = len(raw_lines)
-    if n_lines <= max_rec_i:
-        selected = raw_lines
+    start_idx = len(raw_lines)
+    for idx, raw_bytes in enumerate(raw_lines):
+        try:
+            ts_val = _extract_jsonl_record_ts_ms(_fast_json_loads(raw_bytes))
+        except ValueError:
+            continue
+        if ts_val is not None and ts_val >= cutoff_ms:
+            start_idx = idx
+            break
+    end_idx = len(raw_lines)
+    while end_idx > start_idx:
+        try:
+            tail_ts = _extract_jsonl_record_ts_ms(_fast_json_loads(raw_lines[end_idx - 1]))
+        except ValueError:
+            end_idx -= 1
+            continue
+        if tail_ts is not None and tail_ts >= cutoff_ms:
+            break
+        end_idx -= 1
+    window_lines = raw_lines[start_idx:end_idx]
+    if not window_lines:
+        return []
+    n_win = len(window_lines)
+    if n_win <= max_rec_i:
+        selected = window_lines
+    elif max_rec_i == 1:
+        selected = [window_lines[-1]]
     else:
-        step = max(1, n_lines // max_rec_i)
-        selected = [raw_lines[i] for i in range(0, n_lines, step)]
-        if selected[-1] is not raw_lines[-1]:
-            selected.append(raw_lines[-1])
+        selected = [
+            window_lines[(i * (n_win - 1)) // (max_rec_i - 1)]
+            for i in range(max_rec_i)
+        ]
     out: list[Any] = []
     for raw_bytes in selected:
         try:
-            out.append(_fast_json_loads(raw_bytes))
+            rec = _fast_json_loads(raw_bytes)
         except ValueError:
             continue
+        rec_ts = _extract_jsonl_record_ts_ms(rec)
+        if rec_ts is not None and rec_ts < cutoff_ms:
+            continue
+        out.append(rec)
     return out
 
 
@@ -613,7 +643,7 @@ def truncate_file_bytes(path: str, size: int) -> None:
     size_i = exact_nonneg_int(size, default=None)
     if size_i is None:
         raise ValueError("size must be a non-negative integer")
-    with open(_resolve_target_path(path), "r+b") as handle:
+    with open(_resolve_target_path(path, migrate=True), "r+b") as handle:
         handle.truncate(size_i)
         _flush_and_fsync(handle)
 
@@ -773,7 +803,7 @@ def append_bytes_at_boundary(
     on_rollback_fn: Callable[[int], None] | None = None,
 ) -> tuple[int, int, T]:
     """Durably append bytes starting at ``previous_boundary`` (truncating uncommitted tail bytes first)."""
-    target_path = _resolve_target_path(path)
+    target_path = _resolve_target_path(path, migrate=True)
     initial_size: int | None = None
     try:
         exists = os.path.exists(target_path)
@@ -807,7 +837,7 @@ def append_jsonl_bucket_delta(
     on_rollback_fn: Callable[[int], None] | None = None,
 ) -> dict[str, int]:
     """Durably append unpersisted ``(symbol, item)`` rows to ``path`` and return updated counts."""
-    target_path = _resolve_target_path(path)
+    target_path = _resolve_target_path(path, migrate=True)
     candidate_counts = dict(persisted_counts)
     initial_size: int | None = None
     try:
@@ -950,9 +980,9 @@ def generation_file_lock(
 ) -> Iterator[str]:
     """Acquire a thread-reentrant and cross-process ``flock`` around a read-modify-write state transaction."""
     eff_lock = (
-        _resolve_target_path(lock_path, abspath=True)
+        _resolve_target_path(lock_path, abspath=True, migrate=True)
         if lock_path is not None
-        else os.path.abspath(generation_lock_path(_resolve_target_path(path)))
+        else os.path.abspath(generation_lock_path(_resolve_target_path(path, migrate=True)))
     )
     parent = os.path.dirname(eff_lock)
     if parent:
@@ -1030,7 +1060,7 @@ def commit_file_and_meta(
     on_rollback_error: Callable[[OSError], None] | None = None,
 ) -> bool:
     """Transactionally replace ``path`` and commit its ``.meta`` manifest."""
-    target_path = _resolve_target_path(path)
+    target_path = _resolve_target_path(path, migrate=True)
     if had_prior_file is None:
         had_prior_file = os.path.exists(target_path)
         if had_prior_file and backup_path is None:
@@ -1086,7 +1116,7 @@ def _read_with_policy(
             path, reader_fn, backup_path=backup_path, default=default, repair_files=repair_files
         )
     try:
-        return reader_fn(_resolve_target_path(path))
+        return reader_fn(_resolve_target_path(path, migrate=_parse_bool_flag(repair_files, False)))
     except Exception:
         if default is not _MISSING:
             return default
@@ -1235,9 +1265,11 @@ def read_recovering_previous(
         _invoke = read_fn
     target_backup: str | None = None
     try:
-        target_path = _resolve_target_path(path)
+        target_path = _resolve_target_path(path, migrate=repair)
         target_backup = (
-            _resolve_target_path(backup_path) if backup_path else previous_generation_path(target_path)
+            _resolve_target_path(backup_path, migrate=repair)
+            if backup_path
+            else previous_generation_path(target_path)
         )
         result = _invoke(target_path)
         if repair and os.path.exists(target_backup):

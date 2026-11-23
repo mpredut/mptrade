@@ -43,6 +43,7 @@ from cachepaths import split_symbol_assets
 import order_retry as oq
 from providers.execution_audit import ExecutionAudit
 from providers.market_api import api as mkt, resolve_symbol_provider_name
+from providers.order_id_context import record_client_order_id
 from providers.quantity import resolve_assets
 from state_io import (
     discard_generation_file,
@@ -327,7 +328,7 @@ def _reconcile_live_producer_records(mkt, records, now, stats):
         symbol = r.get("symbol")
         provider_name = _provider_name(mkt, r)
         reconciliation_state, existing_order = _reconcile_client_order(
-            mkt, symbol, oq.record_client_order_id(r), provider_name=provider_name
+            mkt, symbol, record_client_order_id(r), provider_name=provider_name
         )
         if reconciliation_state == _RECONCILE_FOUND:
             if _complete_reconciled_order(
@@ -375,7 +376,7 @@ def _process_awaiting_cancel_claim(mkt, r, symbol, provider_name, now, stats):
         and caps.lookup_by_client_order_id
     ):
         reconciliation_state, existing_order = _reconcile_client_order(
-            mkt, symbol, oq.record_client_order_id(r), provider_name=provider_name
+            mkt, symbol, record_client_order_id(r), provider_name=provider_name
         )
         if reconciliation_state == _RECONCILE_FOUND:
             if _complete_reconciled_order(mkt, r, existing_order, now, provider_name=provider_name):
@@ -503,7 +504,7 @@ def _process_retry_claim(mkt, r, symbol, provider_name, now, stats):
     """Reconcile prior unknown submissions if needed, validate price gate, and submit one retry attempt."""
     raw_pk = r.get("place_kwargs")
     kwargs = dict(raw_pk) if isinstance(raw_pk, dict) else {}
-    client_order_id = oq.record_client_order_id(r)
+    client_order_id = record_client_order_id(r)
     if oq.submission_requires_reconciliation(r):
         reconciliation_state, existing_order = _reconcile_client_order(
             mkt, symbol, client_order_id, provider_name=provider_name

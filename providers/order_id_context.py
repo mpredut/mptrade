@@ -203,6 +203,14 @@ def extract_client_order_id(order: Any, default: Optional[str] = None) -> Option
     return _first_mapped(order, _CLIENT_ORDER_ID_KEYS, clean_order_id, default)
 
 
+def record_client_order_id(record: Any) -> Optional[str]:
+    """Strictly extract normalized ``record['place_kwargs']['client_order_id']`` from an outbox/claim record."""
+    if not isinstance(record, dict):
+        return None
+    place_kw = record.get("place_kwargs")
+    return clean_order_id(place_kw.get("client_order_id")) if isinstance(place_kw, dict) else None
+
+
 def resolve_order_owner(client_order_id: Optional[str]) -> str:
     """Resolve the responsible bot or origin from a venue clientOrderId.
 

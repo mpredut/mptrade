@@ -392,7 +392,8 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     # -- CacheManagerInterface contract methods -------------------------------
     def load_state(self):
         """Hydrate metadata and heal interrupted commits without pre-priming reader memory."""
-        migrate_legacy_filename_if_needed(self.filename)
+        if not self.read_only:
+            migrate_legacy_filename_if_needed(self.filename)
         meta_path = meta_file_path(self.filename)
         if os.path.exists(meta_path):
             try:
@@ -932,7 +933,8 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             if not isinstance(cand, str) or not cand:
                 continue
             cand_file = str(resolve_cachedb_filepath(os.path.join(base_dir, cache_24_price_filename(cand))))
-            migrate_legacy_filename_if_needed(cand_file)
+            if not self.read_only:
+                migrate_legacy_filename_if_needed(cand_file)
             if os.path.exists(cand_file) or os.path.exists(
                 previous_generation_path(cand_file)
             ):

@@ -48,6 +48,7 @@ from providers.base import MarketDataProvider
 from providers.execution_audit import ExecutionAudit, find_order_audit_record
 from providers.order_ohlc_utils import extract_orig_qty
 resolve_order_actor = rc.resolve_order_actor
+record_client_order_id = rc.record_client_order_id
 from providers.strategy_executor import OrderStatus
 from state_io import atomic_write_jsonl, parse_json_payload, parse_proc_stat_fields, read_text_file, read_text_lines
 
@@ -672,23 +673,13 @@ def enqueue_claimed(
     )
 
 
-def _record_client_order_id(rec: object):
-    if not isinstance(rec, dict):
-        return None
-    place_kw = rec.get("place_kwargs")
-    return clean_order_id(place_kw.get("client_order_id")) if isinstance(place_kw, dict) else None
-
-
-record_client_order_id = _record_client_order_id
-
-
 def _matches_exact_claim(record: dict, claim_snapshot: dict, snapshot_client_id: str) -> bool:
     return (
         record.get("id") == claim_snapshot.get("id")
         and record.get("claim_token") == claim_snapshot.get("claim_token")
         and exact_int(record.get("revision"), 0) == exact_int(claim_snapshot.get("claim_revision"), -1)
         and exact_int(record.get("claim_revision"), -1) == exact_int(claim_snapshot.get("claim_revision"), -2)
-        and _record_client_order_id(record) == snapshot_client_id
+        and record_client_order_id(record) == snapshot_client_id
     )
 
 
@@ -717,7 +708,7 @@ def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
     if not isinstance(claim_snapshot, dict):
         return None
     q_val = safe_pos_float(qty, default=None)
-    snapshot_client_id = _record_client_order_id(claim_snapshot)
+    snapshot_client_id = record_client_order_id(claim_snapshot)
     if q_val is None or not snapshot_client_id:
         return None
     with _locked_queue() as existing:
@@ -733,7 +724,7 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
         return None
     now_f = safe_pos_float(time.time() if now is None else now, default=None)
     lease_f = safe_pos_float(RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec, default=None)
-    snapshot_client_id = _record_client_order_id(claim_snapshot)
+    snapshot_client_id = record_client_order_id(claim_snapshot)
     if now_f is None or lease_f is None or not snapshot_client_id:
         return None
     current_pid = os.getpid()
@@ -775,7 +766,7 @@ def _active_order_keys(r: dict) -> tuple[str, ...]:
     lc = _record_lifecycle(r, default="")
     if lc != "accepted" and not (lc == "submit_pending" and r.get("order_id") is None):
         return ()
-    raw_cid = _record_client_order_id(r)
+    raw_cid = record_client_order_id(r)
     native_cid = None
     if raw_cid and (prov_l := (clean_scalar_str(r.get("provider_name")) or "").lower()):
         try:
@@ -1019,7 +1010,7 @@ def _append_order_history(rec, *, observed_at, status=None):
         return
     row = {
         "order_id": str(order_id),
-        "client_order_id": _record_client_order_id(rec),
+        "client_order_id": record_client_order_id(rec),
         "revision": safe_nonneg_int(rec.get("revision"), default=0),
         "observed_at": resolve_now_ts(observed_at),
     }
@@ -1110,7 +1101,7 @@ def complete_claim(
     now = resolve_now_ts(now)
     changed = False
     superseded_target: tuple[str, str, object] | None = None
-    claimed_client_id = _record_client_order_id(claimed)
+    claimed_client_id = record_client_order_id(claimed)
     with _locked_queue() as existing:
         remaining = []
         for rec in existing:
@@ -1119,7 +1110,7 @@ def complete_claim(
                 or rec.get("claim_token") != claimed.get("claim_token")
                 or exact_int(rec.get("revision"), 0) != exact_int(claimed.get("claim_revision"), -1)
                 or claimed_client_id is None
-                or _record_client_order_id(rec) != claimed_client_id
+                or record_client_order_id(rec) != claimed_client_id
             ):
                 remaining.append(rec)
                 continue
@@ -1301,7 +1292,7 @@ def record_outbox_audit(audit, record: dict, event: str, *, default_symbol: str 
     payload = {
         "side": str(record.get("side") or "").lower() or None,
         "kind": record.get("kind") or place_kwargs.get("kind"),
-        "client_order_id": _record_client_order_id(record),
+        "client_order_id": record_client_order_id(record),
         "order_id": record.get("order_id"),
         "revision": record.get("revision"),
         **fields,
@@ -1413,14 +1404,14 @@ def discard_expired(snapshots, now=None):
             continue
         rev = exact_int(snapshot.get("revision"), -1)
         if rev >= 0:
-            key = (snapshot.get("id"), rev, _record_client_order_id(snapshot))
+            key = (snapshot.get("id"), rev, record_client_order_id(snapshot))
             if key[0] and key[2]:
                 exact.add(key)
     if not exact:
         return []
     return _remove_matching_locked(
         lambda record: (
-            (record.get("id"), exact_int(record.get("revision"), 0), _record_client_order_id(record)) in exact
+            (record.get("id"), exact_int(record.get("revision"), 0), record_client_order_id(record)) in exact
             and is_expired(record, now)
         ),
         validate=True,
