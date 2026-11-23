@@ -36,6 +36,9 @@ CACHE_KRAKEN_TRADE_FILENAME = "cache_trade_kraken.json"
 CACHE_HYPERLIQUID_TRADE_FILENAME = "cache_trade_hyperliquid.json"
 CACHE_T212_TRADE_FILENAME = "cache_trade_t212.json"
 ORDER_RETRY_QUEUE_FILENAME = "order_retry_queue.jsonl"
+ORDER_LEDGER_ACTIVE_FILENAME = "orders_active.json"
+ORDER_LEDGER_EVENTS_PREFIX = "order_events_"
+ORDER_LEDGER_CLOSED_PREFIX = "orders_closed_"
 ASSETGUARDIAN_STATE_FILENAME = "assetguardian_state.json"
 AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME = "autonomous_trade_intents_state.json"
 MT_STATE_FILENAME = "mt_state.json"
@@ -243,10 +246,11 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         "suffixes": (),
     },
     "orders": {
-        "exact": ("binance_account_cache_health.json",),
+        "exact": ("binance_account_cache_health.json", ORDER_LEDGER_ACTIVE_FILENAME),
         "prefixes": (
             "cache_order", "cache_trade", "cache_asset_value",
-            "order_retry_", "binance_account_cache_health.",
+            "order_retry_", "orders_active.", ORDER_LEDGER_EVENTS_PREFIX, ORDER_LEDGER_CLOSED_PREFIX,
+            "binance_account_cache_health.",
         ),
         "suffixes": (),
     },
@@ -636,6 +640,39 @@ def cache_path(name: str) -> str:
 
 
 cache_path._is_canonical_cache_path = True  # type: ignore[attr-defined]
+
+
+def _resolve_order_ledger_file(filename: str, cachedb_dir: str | None = None) -> str:
+    """Resolve an order-ledger filename inside ``cachedb_dir`` (or canonical ``cachedb/orders/``)."""
+    base = _clean_path_str(cachedb_dir) if cachedb_dir else ""
+    if base:
+        return str(resolve_cachedb_filepath(os.path.join(base, filename)))
+    return cache_path(filename)
+
+
+def order_ledger_active_path(cachedb_dir: str | None = None) -> str:
+    """Return the canonical path for the materialized active order ledger snapshot."""
+    return _resolve_order_ledger_file(ORDER_LEDGER_ACTIVE_FILENAME, cachedb_dir=cachedb_dir)
+
+
+def order_ledger_events_filename(day_utc: str) -> str:
+    """Return the canonical daily append-only order-events JSONL filename for ``day_utc`` (YYYY-MM-DD)."""
+    return f"{ORDER_LEDGER_EVENTS_PREFIX}{str(day_utc).strip()}.jsonl"
+
+
+def order_ledger_closed_filename(month_utc: str) -> str:
+    """Return the canonical monthly closed-orders archive JSONL filename for ``month_utc`` (YYYY-MM)."""
+    return f"{ORDER_LEDGER_CLOSED_PREFIX}{str(month_utc).strip()}.jsonl"
+
+
+def order_ledger_events_path(day_utc: str, cachedb_dir: str | None = None) -> str:
+    """Return the canonical path for one daily order-events JSONL file."""
+    return _resolve_order_ledger_file(order_ledger_events_filename(day_utc), cachedb_dir=cachedb_dir)
+
+
+def order_ledger_closed_path(month_utc: str, cachedb_dir: str | None = None) -> str:
+    """Return the canonical path for one monthly closed-orders archive JSONL file."""
+    return _resolve_order_ledger_file(order_ledger_closed_filename(month_utc), cachedb_dir=cachedb_dir)
 
 
 CACHE_QUOTE_SUFFIXES: tuple[str, ...] = (

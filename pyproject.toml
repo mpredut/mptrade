@@ -81,6 +81,8 @@ py-modules = [
     "monitororder",
     "monitortrades",
     "order_guard",
+    "order_ledger_reconciler",
+    "order_ledger_worker",
     "order_lifecycle",
     "order_retry",
     "order_retry_worker",

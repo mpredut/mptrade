@@ -1,11 +1,20 @@
-# Centralising OrderLifecycle
+# Centralising OrderLifecycle & Cross-Venue Order Ledger SSoT
 
-**Architecture decision updated:** 2026-10-04
+**Architecture decision updated:** 2026-11-23
 
-This document centralizes order mechanics only. A global/common financial
-ledger, a global/common portfolio-risk coordinator, and semantic intent
-deduplication are not planned. Exact-record idempotency and strategy-owned
-financial state remain required.
+This architecture separates **order execution & traceability** into two strictly decoupled pillars:
+
+1. **External Venue Mirror (`cacheManager` — `CacheOrderOpenManager` & `CacheOrderFilledManager`):**
+   - `cachedb/orders/cache_order_open_<venue>.json` mirrors resting open orders per venue (WS real-time with REST fallback).
+   - `cachedb/orders/cache_order_filled_<venue>.json` mirrors aggregated executed orders per venue (VWAP, quantity, optional fee/feeAsset, `clientOrderId`, `status`).
+   - Knows nothing about local strategy decisions, intents, or guard rejections.
+2. **Internal Cross-Venue Order Ledger SSoT (`providers/order_ledger.py` + `order_ledger_reconciler.py` + `order_ledger_worker.py`):**
+   - File-based, compact, human-inspectable CQRS-lite operational ledger in `cachedb/orders/` (no database):
+     - `order_events_YYYY-MM-DD.jsonl` — multi-producer append-only (`O_APPEND` + `flock`) event journal recording every local order operation and decision across all venues and bots (`INTENT`, `GUARD_BLOCKED`, `SCALED`, `SUBMITTED`, `ACKED`, `SUBMIT_REFUSED`, `SUBMIT_UNKNOWN`, `CANCEL_REQ`, `CANCEL_ACK`, `CANCEL_FAILED`, `STATUS`, `RECOVERED`, plus reconciler transitions).
+     - `orders_active.json` — single-writer materialized active state-machine snapshot (`INTENT`, `SUBMITTED`, `SUBMIT_UNKNOWN`, `OPEN`, `PARTIAL`, `CANCELING`) with `journal_cursor`, reconciled strictly network-free against `CacheOrderOpenManager` and `CacheOrderFilledManager` so it converges continuously toward 1:1 parity with live venue state.
+     - `orders_closed_YYYY-MM.jsonl` — compact 1-line terminal summary archive (`FILLED`, `CANCELED`, `EXPIRED`, `REJECTED`, `REPLACED`, `FAILED`).
+   - Passive consumers read via `OrderLedgerReader` (`orders_active.json` + in-RAM replay of unmaterialized tail lines after `journal_cursor`), yielding 0 ms read-your-own-writes visibility without a proxy daemon SPOF.
+   - Strategy-owned financial state (campaigns, budgets, DCA tiers, exit policy) remains with each strategy, and semantic intent deduplication stays disabled (`RETRY_DEDUP=false`).
 
 ## The current decision
 

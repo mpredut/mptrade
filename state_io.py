@@ -1189,6 +1189,42 @@ def read_jsonl_dicts(path: str, *, strict: bool = False) -> list[dict[str, Any]]
     return list(iter_jsonl_dicts(path, strict=strict))
 
 
+def read_jsonl_dicts_from_offset(path: str, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
+    """Read complete newline-terminated JSON object lines starting at byte ``offset``."""
+    target = _resolve_target_path(path)
+    if not os.path.isfile(target):
+        return [], 0
+    start_off = offset if (isinstance(offset, int) and not isinstance(offset, bool) and offset > 0) else 0
+    records: list[dict[str, Any]] = []
+    try:
+        file_size = os.path.getsize(target)
+        if start_off > file_size:
+            start_off = 0
+        with open(target, "rb") as handle:
+            if start_off:
+                handle.seek(start_off)
+            chunk = handle.read()
+    except OSError:
+        return [], start_off
+    if not chunk:
+        return [], start_off
+    last_nl = chunk.rfind(b"\n")
+    if last_nl < 0:
+        return [], start_off
+    complete = chunk[: last_nl + 1]
+    new_offset = start_off + len(complete)
+    for raw_line in complete.splitlines():
+        if not raw_line.strip():
+            continue
+        try:
+            item = json.loads(raw_line.decode("utf-8", errors="replace"))
+        except (ValueError, TypeError):
+            continue
+        if isinstance(item, dict):
+            records.append(item)
+    return records, new_offset
+
+
 def read_text_file(
     path: str, *, default: Any = _MISSING, encoding: str = "utf-8", errors: str = "strict",
     newline: str | None = None, backup_path: str | None = None,

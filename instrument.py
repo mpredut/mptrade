@@ -51,6 +51,7 @@ from botcore import (
 )
 from providers.market_api import api as _default_api
 from providers.execution_audit import ExecutionAudit
+from providers.order_ledger import OrderEventType, get_default_ledger_writer
 from providers.quantity import (
     check_order_filter_refusal,
     extract_regime_buy_scale,
@@ -711,6 +712,42 @@ class Instrument:
                                 ctx.retry_enqueued = True
             except Exception as _e:  # noqa: BLE001
                 print(f"[{self.symbol}] {ctx.side_u} enqueue retry failed (ignored): {_e}")
+
+        # Record pre-submit guard decisions and non-outbox acceptances into the global Order Ledger SSoT.
+        if ctx.order is None and not ctx.submit_attempted and not ctx.prequeued_intent_id:
+            get_default_ledger_writer().record_event(
+                OrderEventType.GUARD_BLOCKED,
+                venue=self.provider_name,
+                symbol=self.symbol,
+                owner=ctx.caller_module or caller,
+                side=ctx.side_u,
+                market=ctx.is_market,
+                qty=ctx.qty if safe_pos_float(ctx.qty, default=None) is not None else ctx.orig_qty,
+                px=ctx.price if safe_pos_float(ctx.price, default=None) is not None else ctx.orig_price,
+                iid=clean_order_id(ctx.kwargs.get("intent_id")),
+                cid=clean_order_id(ctx.prequeued_client_order_id) or clean_order_id(ctx.kwargs.get("client_order_id")),
+                kind=ctx.order_kind,
+                reason=ctx.reason,
+                deferred=ctx.retry_enqueued,
+                src="instrument_guard",
+            )
+        elif ctx.order is not None and not ctx.prequeued_intent_id and not ctx.caller_owns_retry:
+            get_default_ledger_writer().record_event(
+                OrderEventType.ACKED,
+                venue=self.provider_name,
+                symbol=self.symbol,
+                owner=ctx.caller_module or caller,
+                side=ctx.side_u,
+                market=ctx.is_market,
+                qty=ctx.qty,
+                px=ctx.price,
+                iid=clean_order_id(ctx.kwargs.get("intent_id")),
+                cid=clean_order_id(ctx.kwargs.get("client_order_id")),
+                vid=extract_order_id(ctx.order),
+                kind=ctx.order_kind,
+                vst=ctx.order.get("status") if isinstance(ctx.order, dict) else None,
+                src="instrument_place",
+            )
 
     # -- Provider identity and access. -----------------------------------------
     @property

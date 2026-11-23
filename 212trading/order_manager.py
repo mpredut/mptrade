@@ -41,6 +41,7 @@ ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_broker_li
 from cachepaths import canonical_base_asset, same_canonical_base_asset as _t212_tickers_match  # noqa: E402
 from ipo_common import notify  # noqa: E402
 from notify_engine.alertnotifiers import emit_trade_notification  # noqa: E402
+from providers.order_ledger import OrderEventType, get_default_ledger_writer  # noqa: E402
 from market_data import get_price_usd, get_usd_ron  # noqa: E402
 from state_io import encode_json_payload, load_json_state, save_json_state  # noqa: E402
 from t212_broker_lifecycle import t212_active_order_matches, t212_portfolio_position  # noqa: E402
@@ -497,11 +498,39 @@ def place_order_with_retry(
     _persist_marker(record, marker_path)  # durability boundary before POST
 
     log(f"  [ORDER] LIMIT BUY {ticker}  qty={qty_r}  @ {price_r} USD  validity={validity}")
+    ledger = get_default_ledger_writer()
+    t212_iid = clean_order_id(record.get("intent_id"))
+    ledger.record_event(
+        OrderEventType.SUBMITTED,
+        venue="t212",
+        symbol=ticker,
+        owner="t212_one_shot",
+        side=record.get("side") or "BUY",
+        order_type="LIMIT",
+        qty=qty_r,
+        px=price_r,
+        iid=t212_iid,
+        kind="t212_one_shot",
+        src="t212_order_manager",
+    )
     try:
         status, data = client.place_limit_order(ticker, qty_r, price_r, validity)
     except Exception as exc:  # response may have been lost after venue acceptance
         record["submit_error"] = f"{exc.__class__.__name__}: {exc}"
         _persist_marker(record, marker_path)
+        ledger.record_event(
+            OrderEventType.SUBMIT_UNKNOWN,
+            venue="t212",
+            symbol=ticker,
+            owner="t212_one_shot",
+            side=record.get("side") or "BUY",
+            order_type="LIMIT",
+            qty=qty_r,
+            px=price_r,
+            iid=t212_iid,
+            reason=record["submit_error"],
+            src="t212_order_manager",
+        )
         log(f"  ! [ORDER] ambiguous submit response ({exc}) \u2014 intent stays pending")
         return False
 
@@ -518,6 +547,20 @@ def place_order_with_retry(
             history = list(raw_hist) if isinstance(raw_hist := record.get("venue_order_ids"), (list, tuple)) else []
             record["venue_order_ids"] = history if str(oid) in history else [*history, str(oid)]
         _persist_marker(record, marker_path)
+        ledger.record_event(
+            OrderEventType.SUBMIT_REFUSED if venue_status == "REJECTED" else OrderEventType.ACKED,
+            venue="t212",
+            symbol=ticker,
+            owner="t212_one_shot",
+            side=record.get("side") or "BUY",
+            order_type="LIMIT",
+            qty=qty_r,
+            px=price_r,
+            iid=t212_iid,
+            vid=oid,
+            vst=venue_status or "NEW",
+            src="t212_order_manager",
+        )
         log(f"  [ORDER] submit response: id={oid}  status={venue_status or 'UNKNOWN'}")
         if lifecycle in {"canceled", "expired", "submit_pending"}:
             if lifecycle == "submit_pending":
@@ -532,5 +575,18 @@ def place_order_with_retry(
 
     record["submit_error"] = f"T212 HTTP {status}: {encode_json_payload(data, default=str)[:400]}"
     _persist_marker(record, marker_path)
+    ledger.record_event(
+        OrderEventType.SUBMIT_REFUSED if (safe_int(status, 0) in range(400, 500)) else OrderEventType.SUBMIT_UNKNOWN,
+        venue="t212",
+        symbol=ticker,
+        owner="t212_one_shot",
+        side=record.get("side") or "BUY",
+        order_type="LIMIT",
+        qty=qty_r,
+        px=price_r,
+        iid=t212_iid,
+        reason=record["submit_error"],
+        src="t212_order_manager",
+    )
     log(f"  ! [ORDER] {record['submit_error']} \u2014 non-blocking retry on the next cycle")
     return False

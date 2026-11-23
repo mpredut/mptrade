@@ -64,6 +64,7 @@ from providers.order_id_context import (
     extract_client_order_id,
     resolve_order_actor,
 )
+from providers.order_ledger import OrderLedgerReader
 from providers.order_ohlc_utils import extract_executed_qty, extract_orig_qty
 from providers.order_status_ssot import (
     OPEN_WORKING_OR_EMPTY_VENUE_STATUSES,
@@ -923,7 +924,30 @@ def trace_order_or_intent(
         if actor is None:
             actor = resolve_order_actor(oo_last)
 
-    found = bool(ai_matches or state_matches or outbox_matches or open_matches or audit_events)
+    ledger_trace = OrderLedgerReader(cachedb_dir=os.path.join(abs_root, "cachedb")).trace_order(
+        clean_q, max_event_days=max_audit_days
+    )
+    ledger_order = ledger_trace.get("active_order") or (
+        ledger_trace["closed_orders"][-1] if ledger_trace.get("closed_orders") else None
+    )
+    ledger_events = list(ledger_trace.get("events") or ())
+    for cid_tok in ledger_trace.get("correlated_ids") or ():
+        correlated_lc.add(cid_tok)
+    if isinstance(ledger_order, dict):
+        venue_st = ledger_order.get("vst") or venue_st
+        local_st = local_st or ledger_order.get("state")
+        filled_q = max(filled_q, safe_pos_float(ledger_order.get("fq"), default=0.0) or 0.0)
+        orig_q = orig_q or safe_pos_float(ledger_order.get("qty"), default=None)
+        if actor is None:
+            actor = (
+                resolve_order_actor({"clientOrderId": ledger_order.get("cid")})
+                if ledger_order.get("cid")
+                else ledger_order.get("owner")
+            )
+
+    found = bool(
+        ai_matches or state_matches or outbox_matches or open_matches or audit_events or ledger_order or ledger_events
+    )
     canonical_state = (
         str(
             classify_order_lifecycle_state(
@@ -947,6 +971,8 @@ def trace_order_or_intent(
         "filled_qty": round(filled_q, 8),
         "orig_qty": orig_q,
         "correlated_ids": sorted(correlated_lc),
+        "ledger_order": ledger_order,
+        "ledger_events": ledger_events,
         "ai_intents": ai_matches,
         "state_records": state_matches,
         "outbox_records": outbox_matches,

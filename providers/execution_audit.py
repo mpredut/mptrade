@@ -45,6 +45,7 @@ from .base import MarketDataProvider
 from .intent_state import _extract_intent_id
 from .ohlc_utils import ProviderError, require_pos_ohlc_interval
 from .order_id_context import derive_executor_intent_client_order_id
+from .order_ledger import get_default_ledger_writer
 from .strategy_executor import (
     capture_submission,
     OrderStatus,
@@ -145,6 +146,14 @@ class ExecutionAudit:
                     default=str,
                     flock=True,
                 )
+            get_default_ledger_writer().record_audit_event(
+                str(event),
+                intent_id=str(intent_id),
+                venue=str(venue),
+                symbol=str(symbol),
+                ts=ts,
+                fields=payload,
+            )
             return True
         except Exception as exc:  # noqa: BLE001 - auditing must never stop trading
             print(f"[execution_audit] the write failed: {exc}")

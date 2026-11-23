@@ -46,6 +46,7 @@ from instrument_registry import canonical_display_symbol, is_equity_symbol, reso
 import pricewindow as pw
 from . import order_id_context as rc
 from .base import MarketDataProvider
+from .order_ledger import OrderEventType, get_default_ledger_writer
 from .order_ohlc_utils import (  # noqa: F401
     filter_and_normalize_open_orders,
     iter_expired_open_order_ids,
@@ -509,7 +510,34 @@ class MarketApi:
         provider, method = self._require_reconciliation_method(
             symbol, provider_name, "cancel_by_order_id", "cancel_order"
         )
-        method(symbol, self._clean_order_id_arg(order_id, provider.name))
+        oid_str = self._clean_order_id_arg(order_id, provider.name)
+        ledger = get_default_ledger_writer()
+        ledger.record_event(
+            OrderEventType.CANCEL_REQ,
+            venue=provider.name,
+            symbol=symbol,
+            vid=oid_str,
+            src="market_api",
+        )
+        try:
+            method(symbol, oid_str)
+        except Exception as exc:
+            ledger.record_event(
+                OrderEventType.CANCEL_FAILED,
+                venue=provider.name,
+                symbol=symbol,
+                vid=oid_str,
+                reason=f"{exc.__class__.__name__}: {exc}",
+                src="market_api",
+            )
+            raise
+        ledger.record_event(
+            OrderEventType.CANCEL_ACK,
+            venue=provider.name,
+            symbol=symbol,
+            vid=oid_str,
+            src="market_api",
+        )
 
     def _validate_open_order_side_and_symbol(
         self, order_type: str, symbol: str, *, provider_name=None
