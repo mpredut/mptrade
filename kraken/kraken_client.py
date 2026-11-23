@@ -648,27 +648,51 @@ class KrakenClient:
 
     def funding_withdraw(
         self,
+        asset: str,
         method_id: str,
         address_id: str,
         amount: float,
         *,
+        asset_class: str = "currency",
         fee_included: bool = True,
         withdrawal_fee_token: str | None = None,
+        max_fee: float | None = None,
     ) -> dict:
         """Submit a Funding v1 withdrawal (non-retried POST write)."""
+        asset_s = clean_scalar_str(asset)
         mid = clean_scalar_str(method_id)
         aid = clean_scalar_str(address_id)
-        if not mid or not aid:
-            raise ValueError("Kraken funding_withdraw requires non-empty method_id and address_id")
-        body: dict[str, object] = {
-            "method_id": mid,
-            "address_id": aid,
-            "amount": self._fmt_amount(amount),
+        aclass = clean_scalar_str(asset_class) or "currency"
+        if not asset_s or not mid or not aid:
+            raise ValueError("Kraken funding_withdraw requires non-empty asset, method_id, and address_id")
+        asset_obj = {"class": aclass, "name": asset_s.upper()}
+        fee_obj: dict[str, object] = {
             "fee_included": bool(_parse_bool_flag(fee_included, default=True)),
         }
         tok = clean_scalar_str(withdrawal_fee_token)
         if tok:
-            body["withdrawal_fee_token"] = tok
+            fee_obj["quoted_fee"] = {"token": tok}
+        else:
+            cur_fee: dict[str, object] = {}
+            if max_fee is not None:
+                cur_fee["max_fee"] = {
+                    "asset_amount": {
+                        "asset": asset_obj,
+                        "amount": self._fmt_amount(max_fee, label="max_fee"),
+                    }
+                }
+            fee_obj["current_fee"] = cur_fee
+        body: dict[str, object] = {
+            "scope": {"method_id": mid},
+            "address_id": aid,
+            "amount": {
+                "asset_amount": {
+                    "asset": asset_obj,
+                    "amount": self._fmt_amount(amount),
+                }
+            },
+            "fee": fee_obj,
+        }
         return self._funding_v1("POST", "/funding/v1/withdrawals", payload=body)
 
     def funding_withdrawals(self) -> list[dict]:

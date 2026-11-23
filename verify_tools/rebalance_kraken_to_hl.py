@@ -711,11 +711,13 @@ def plan_and_run_transfer(
     baseline_hl_spot_usdc = snapshot["hyperliquid"]["spot_usdc"]
 
     wres = client.funding_withdraw(
+        cfg.withdraw_asset,
         method_id,
         address_id,
         quoted_gross,
         fee_included=True,
         withdrawal_fee_token=fee_token,
+        max_fee=max_fee,
     )
     withdrawal_id = clean_scalar_str(wres.get("withdrawal_id") or wres.get("id") or wres.get("refid"))
     if not withdrawal_id:

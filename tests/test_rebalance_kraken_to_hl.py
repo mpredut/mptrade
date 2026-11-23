@@ -84,11 +84,18 @@ def test_kraken_client_funding_v1_non_retry_and_list_parsing():
         assert "API-Nonce" in mock_req.call_args.kwargs["headers"]
         assert "API-Sign" in mock_req.call_args.kwargs["headers"]
 
-    # Funding v1 POST withdrawal must NEVER auto-retry on network/5xx error (max_attempts == 1).
+    # Funding v1 POST withdrawal must NEVER auto-retry on network/5xx error (max_attempts == 1)
+    # and must serialize the official nested scope/amount/fee JSON payload.
     with patch("kraken.kraken_client.http_request", return_value=(0, b"")) as mock_req:
         with pytest.raises(Exception):
-            cli.funding_withdraw(_ARB_METHOD_ID, _ADDR_ID, 11.0, fee_included=True, withdrawal_fee_token="tok")
+            cli.funding_withdraw("USDC", _ARB_METHOD_ID, _ADDR_ID, 11.0, fee_included=True, withdrawal_fee_token="tok")
         assert mock_req.call_count == 1
+        sent_body = mock_req.call_args.kwargs["body"].decode("utf-8")
+        assert '"scope":{"method_id":"' + _ARB_METHOD_ID + '"}' in sent_body
+        assert '"address_id":"' + _ADDR_ID + '"' in sent_body
+        assert '"asset":{"class":"currency","name":"USDC"}' in sent_body
+        assert '"quoted_fee":{"token":"tok"}' in sent_body
+        assert '"fee_included":true' in sent_body
 
 
 def test_resolve_verified_withdraw_address_matches_arb_network_and_rejects_mismatches():
@@ -282,5 +289,5 @@ def test_execute_refuses_shortfall_without_convert_flag_and_executes_when_funded
         assert res["arbitrum_arrival"]["arrived"] is True
         assert res["arbitrum_arrival"]["arb_usdc_delta"] == pytest.approx(10.0)
         cli_funded.funding_withdraw.assert_called_once_with(
-            _ARB_METHOD_ID, _ADDR_ID, 11.0, fee_included=True, withdrawal_fee_token="FEE-TOK-123"
+            "USDC", _ARB_METHOD_ID, _ADDR_ID, 11.0, fee_included=True, withdrawal_fee_token="FEE-TOK-123", max_fee=1.25
         )
