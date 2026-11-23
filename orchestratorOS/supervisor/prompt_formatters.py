@@ -152,7 +152,7 @@ def build_supervisor_prompt(
         target_desc = (
             "ALL live tradable US equity shares on 't212' (SPCX_US_EQ, NVDA_US_EQ, RGNT_US_EQ during US Regular Trading Hours, cross-referencing Kraken 24/7 xStock SPCXx.T exposure)"
             if is_equities
-            else "ALL live tradable crypto & 24/7 tokenized xStock pairs (BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSDC intensively on 'hyperliquid'; HYPEUSD, TAOUSD, ADAUSD, plus 0bps SELL-only xStock SPCXxUSD on 'kraken')"
+            else "ALL live tradable crypto & 24/7 tokenized xStock pairs (BTCUSDC, TAOUSDC, ARBUSDC, ADAUSDC on 'binance'; HYPEUSDC intensively on 'hyperliquid'; HYPEUSD plus 0bps SELL-only xStock SPCXxUSD on 'kraken')"
         )
         venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
         venue_list_desc = "`t212`" if is_equities else "`binance`, `kraken`, `hyperliquid`"

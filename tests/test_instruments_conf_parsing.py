@@ -150,14 +150,14 @@ class TestCurrentRegistry(unittest.TestCase):
 
 class TestInstrumentsSingleSource(unittest.TestCase):
     def test_binance_symbols_match_pre_refactor(self):
-        self.assertEqual(registry.binance_symbols(), ["BTCUSDC", "TAOUSDC", "ARBUSDC"])
+        self.assertEqual(registry.binance_symbols(), ["BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"])
 
     def test_trail_pct_map_matches_pre_refactor(self):
         expected = {
             item.symbol: float(item.number("trailing.pct"))
             for item in registry.select_instruments("binance", "trailing").values()
         }
-        self.assertEqual(set(expected), {"BTCUSDC", "TAOUSDC", "ARBUSDC"})
+        self.assertEqual(set(expected), {"BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"})
 
     def test_tradeall_allowlist_matches_pre_refactor(self):
         self.assertEqual(set(registry.symbols_for("binance", "tradeall_fire")), {"BTCUSDC", "TAOUSDC", "ARBUSDC"})
@@ -190,25 +190,25 @@ class TestInstrumentsSingleSource(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_symbols_facade_constants_and_dynamic_lookup(self):
-        self.assertEqual(registry.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC"])
+        self.assertEqual(registry.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"])
         self.assertEqual(registry.symbols_for("binance", "force_sell"), ["BTCUSDC", "TAOUSDC"])
         with self.assertRaises(AttributeError):
             getattr(registry, "nonexistentsymbol")
 
     def test_ownership_inventory_symbols_fallback(self):
         syms, tao = _python_symbols(ROOT)
-        self.assertEqual(syms, ["BTCUSDC", "TAOUSDC", "ARBUSDC"])
+        self.assertEqual(syms, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"])
         self.assertEqual(tao, "TAOUSDC")
 
 
 def test_current_execution_policy_is_preserved(tmp_path):
-    assert registry.symbols_for("binance") == ["BTCUSDC", "TAOUSDC", "ARBUSDC"]
+    assert registry.symbols_for("binance") == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"]
     expected = {
         "tradeall_fire": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "kalman_primary": {"BTCUSDC"},
         "mt": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "assetguardian": {"BTCUSDC", "TAOUSDC", "ARBUSDC"},
-        "archive": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "rtrade": {"TAOUSDC"},
+        "archive": {"BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"}, "rtrade": {"TAOUSDC"},
         "force_sell": {"BTCUSDC", "TAOUSDC"},
-        "trailing": {"BTCUSDC", "TAOUSDC", "ARBUSDC"},
+        "trailing": {"BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"},
     }
     for role, symbols in expected.items():
         assert set(registry.symbols_for("binance", role)) == symbols
@@ -221,24 +221,24 @@ def test_current_execution_policy_is_preserved(tmp_path):
     assert hl_modes == {"HYPEUSDC": "strict"}
     trails = {item.symbol: item.number("trailing.pct") for item in
               registry.select_instruments("binance", "trailing").values()}
-    assert set(trails) == {"BTCUSDC", "TAOUSDC", "ARBUSDC"}
+    assert set(trails) == {"BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"}
     assert all(5.0 <= pct <= 50.0 for pct in trails.values())
     rebuys = {item.symbol: item.rebuy_mode() for item in
               registry.select_instruments("binance", "trailing").values()}
-    assert rebuys == {"BTCUSDC": "on", "TAOUSDC": "on", "ARBUSDC": "auto"}
+    assert rebuys == {"BTCUSDC": "on", "TAOUSDC": "on", "ARBUSDC": "auto", "ADAUSDC": "auto"}
     assert set(registry.select_instruments(role="mt")) == {
         "BINANCE_BTC", "BINANCE_TAO", "BINANCE_ARB", "KRAKEN_HYPE"}
     all_syms, nb_syms, nb_providers = registry.tracked_price_instruments()
     assert all_syms == [
-        "BTCUSDC", "TAOUSDC", "ARBUSDC",
+        "BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC",
         "HYPEUSDC", "HYPEUSD",
         "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ", "ANT_US_EQ",
-        "TAOUSD", "ADAUSD", "SPCXxUSD", "ANTxUSD",
+        "SPCXxUSD", "ANTxUSD",
     ]
     assert nb_syms == [
         "HYPEUSDC", "HYPEUSD",
         "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ", "ANT_US_EQ",
-        "TAOUSD", "ADAUSD", "SPCXxUSD", "ANTxUSD",
+        "SPCXxUSD", "ANTxUSD",
     ]
     assert nb_providers == {
         "HYPEUSDC": "hyperliquid",
@@ -247,8 +247,6 @@ def test_current_execution_policy_is_preserved(tmp_path):
         "NVDA_US_EQ": "t212",
         "RGNT_US_EQ": "t212",
         "ANT_US_EQ": "t212",
-        "TAOUSD": "kraken",
-        "ADAUSD": "kraken",
         "SPCXxUSD": "kraken",
         "ANTxUSD": "kraken",
     }
@@ -262,9 +260,28 @@ def test_current_execution_policy_is_preserved(tmp_path):
     }
     assert krk_trails == {
         "HYPE": ("HYPEUSD", 24.0, "on"),
-        "TAO": ("TAOUSD", 32.0, "on"),
-        "ADA": ("ADAUSD", 35.0, "on"),
     }
+    assert registry.symbols_for("kraken") == ["HYPEUSD", "SPCXxUSD", "ANTxUSD"]
+    # Verify Kraken crypto exclusions (TAOUSD/ADAUSD) cannot leak into AI tradables even if listed in KRAKEN_CACHE_PAIRS.
+    tradable_crypto = registry.discover_tradable_specs(str(ROOT), asset_scope="crypto")
+    assert "BINANCE_ADA" in tradable_crypto and tradable_crypto["BINANCE_ADA"].symbol == "ADAUSDC"
+    assert "KRAKEN_HYPE" in tradable_crypto and tradable_crypto["KRAKEN_HYPE"].symbol == "HYPEUSD"
+    assert "KRAKEN_SPCX" in tradable_crypto and tradable_crypto["KRAKEN_SPCX"].symbol == "SPCXxUSD"
+    assert "KRAKEN_TAO" not in tradable_crypto
+    assert "KRAKEN_ADA" not in tradable_crypto
+    assert "KRAKEN_ANT" not in tradable_crypto
+
+    # Even if kraken/config.env lists disabled/blocked Kraken symbols in KRAKEN_CACHE_PAIRS,
+    # discover_tradable_specs must NOT leak them into AI tradables.
+    ws_krk = tmp_path / "kraken"
+    ws_krk.mkdir(parents=True, exist_ok=True)
+    (ws_krk / "config.env").write_text("KRAKEN_CACHE_PAIRS=HYPEUSD,TAOUSD,ADAUSD\n", encoding="utf-8")
+    (tmp_path / "instruments.conf").write_text((ROOT / "instruments.conf").read_text(encoding="utf-8"), encoding="utf-8")
+    ws_tradable = registry.discover_tradable_specs(str(tmp_path), asset_scope="crypto")
+    assert "KRAKEN_HYPE" in ws_tradable
+    assert "BINANCE_ADA" in ws_tradable
+    assert "KRAKEN_TAO" not in ws_tradable
+    assert "KRAKEN_ADA" not in ws_tradable
     assert registry.is_equity_symbol("SPCX_US_EQ") is True
     assert registry.is_equity_symbol("NVDA_US_EQ") is True
     assert registry.is_equity_symbol("AAPL_EQ") is True

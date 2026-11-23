@@ -313,12 +313,13 @@ class TestRebuyGuardsKraken(_KrakenTrailingBase):
         }
         prices = {"HYPEUSD": 50.0, "TAOUSD": 200.0, "ADAUSD": 0.50}
         c = FakeK(price=50.0, prices=prices, balances=balances)
-        ts = self.ts(c)
-        ts.check_once()  # tracks initial peaks: HYPE=50, TAO=200, ADA=0.50
+        with patch.dict(ts_mod.PAIR_FOR, {"HYPE": "HYPEUSD", "TAO": "TAOUSD", "ADA": "ADAUSD"}, clear=False):
+            ts = self.ts(c)
+            ts.check_once()  # tracks initial peaks: HYPE=50, TAO=200, ADA=0.50
 
-        # Crash TAO by -25% (exceeds 22% trail) while HYPE and ADA stay normal
-        c.prices["TAOUSD"] = 150.0  # -25% from 200
-        ts.check_once()
+            # Crash TAO by -25% (exceeds 22% trail) while HYPE and ADA stay normal
+            c.prices["TAOUSD"] = 150.0  # -25% from 200
+            ts.check_once()
 
         self.assertEqual(len(c.orders), 1)
         self.assertEqual(c.orders[0]["side"], "sell")
@@ -622,7 +623,9 @@ class TestRebuyGuardsKraken(_KrakenTrailingBase):
         _, s_ms, e_ms, to_f = resolve_ohlc_time_window_ms(end_ms=100_000_000, lookback_hours=1, timeout=15)
         self.assertEqual(e_ms - s_ms, 3600 * 1000)
         self.assertEqual(to_f, 15.0)
-        self.assertIsNotNone(MarketDataProvider.resolve_venue_instrument_spec("kraken", "TAOUSD"))
+        self.assertIsNotNone(MarketDataProvider.resolve_venue_instrument_spec("kraken", "HYPEUSD"))
+        self.assertIsNotNone(MarketDataProvider.resolve_venue_instrument_spec("binance", "ADAUSDC"))
+        self.assertIsNone(MarketDataProvider.resolve_venue_instrument_spec("kraken", "TAOUSD"))
         oo_rec = build_open_order_entry(
             {"cl_ord_id": "abc123", "status": "open", "time": 1700000000},
             order_id="O1",

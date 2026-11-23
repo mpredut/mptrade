@@ -758,6 +758,14 @@ def discover_tradable_specs(
     def _existing_syms(prov: str) -> set[str]:
         return {_candidate_symbol_u(item) for item in active_map.values() if _candidate_venue(item) == prov}
 
+    def _blocked_syms(prov: str) -> set[str]:
+        return {
+            _candidate_symbol_u(item)
+            for item in raw_map.values()
+            if _candidate_venue(item) == prov
+            and (getattr(item, "enabled", True) is False or _spec_explicitly_blocks_ai_trading(item))
+        }
+
     def _add_spec(
         name: str,
         prov: str,
@@ -799,10 +807,15 @@ def discover_tradable_specs(
             ):
                 active_map[k] = item
 
+        blocked_kraken_syms = _blocked_syms("kraken")
         existing_kraken_syms = _existing_syms("kraken")
         for pair, base, quote in discover_kraken_cache_pairs(ws_dir):
             inst_key = f"KRAKEN_{base}" if f"KRAKEN_{base}" not in active_map else f"KRAKEN_{pair}"
-            if pair not in existing_kraken_syms and _add_spec(inst_key, "kraken", pair, base, quote):
+            if (
+                pair not in existing_kraken_syms
+                and pair not in blocked_kraken_syms
+                and _add_spec(inst_key, "kraken", pair, base, quote)
+            ):
                 existing_kraken_syms.add(pair)
 
         def _enable_live_spec_if_present(venue_key: str, *symbols: str) -> None:
