@@ -23,7 +23,7 @@ from cachepaths import (
     order_ledger_closed_path,
     order_ledger_events_path,
 )
-from order_ledger_worker import (
+from order_ledger_reconciler_worker import (
     OrderLedgerReconciler,
     derive_intent_stale_sec,
     derive_reconcile_grace_sec,
@@ -435,9 +435,9 @@ def test_formulaic_reconcile_grace_and_day_rollover_cursor(tmp_path):
     assert get_default_ledger_writer() is not None
 
 
-def test_order_ledger_worker_once_cli(tmp_path, monkeypatch):
+def test_order_ledger_reconciler_worker_once_cli(tmp_path, monkeypatch):
     import sys
-    import order_ledger_worker
+    import order_ledger_reconciler_worker
 
     cdb = tmp_path / "cachedb"
     (cdb / "orders").mkdir(parents=True)
@@ -453,9 +453,158 @@ def test_order_ledger_worker_once_cli(tmp_path, monkeypatch):
         iid="worker-cli-1",
         cid="TA_worker_1",
     )
-    monkeypatch.setattr(sys, "argv", ["order_ledger_worker.py", "--once"])
-    assert order_ledger_worker.main() == 0
+    monkeypatch.setattr(sys, "argv", ["order_ledger_reconciler_worker.py", "--once"])
+    assert order_ledger_reconciler_worker.main() == 0
     active_p = order_ledger_active_path(cachedb_dir=str(cdb))
     assert os.path.isfile(active_p)
     doc = json.loads(open(active_p, encoding="utf-8").read())
     assert "binance:iid:worker-cli-1" in doc["orders"]
+
+
+def test_prod_parity_no_stale_open_readoption_clean_owner_and_order_terminal(tmp_path, monkeypatch):
+    """Verify PROD-discovered invariants: no stale-open re-adoption loop, clean owner, order_terminal bridge, no anon guard spam."""
+    cdb = str(tmp_path / "cachedb")
+    orders_dir = tmp_path / "cachedb" / "orders"
+    orders_dir.mkdir(parents=True)
+    monkeypatch.setenv("MPTRADE_CACHEDB_DIR", cdb)
+    t0 = 1_795_448_920.0
+
+    writer = OrderLedgerWriter(cachedb_dir=cdb)
+    reconciler = OrderLedgerReconciler(cachedb_dir=cdb, use_singletons=False, reconcile_grace_sec=30.0)
+    hl_cid = "AI_intent_1795448914_buy_hypeusdc"
+    hl_cloid = derive_venue_128bit_client_order_id("hyperliquid", hl_cid)
+
+    # 1. Wrapper owner='market_api.py' with AI_ cid must resolve to 'ai_executor', never 'market_api_py'.
+    writer.record_event(
+        OrderEventType.SUBMITTED,
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+        ts=t0,
+        owner="market_api.py",
+        side="BUY",
+        qty=8.31,
+        px=66.15,
+        iid="intent_hl_1",
+        cid=hl_cid,
+    )
+    writer.record_event(
+        OrderEventType.ACKED,
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+        ts=t0 + 4.0,
+        iid="intent_hl_1",
+        cid=hl_cid,
+        vid="614160779028",
+    )
+    # Anonymous GUARD_BLOCKED (no iid/cid/vid) must NOT pollute orders_closed archive
+    writer.record_event(
+        OrderEventType.GUARD_BLOCKED,
+        venue="binance",
+        symbol="TAOUSDC",
+        ts=t0 + 5.0,
+        owner="rtrade",
+        side="BUY",
+        qty=2.5,
+        px=195.0,
+        reason="profit_guard",
+        deferred=False,
+    )
+
+    # Fill arrives in CacheOrderFilledManager BEFORE CacheOrderOpenManager drops the order (10s poll lag!)
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(orders_dir / CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME),
+        {
+            "HYPEUSDC": [{
+                "orderId": "614160779028",
+                "clientOrderId": hl_cloid,
+                "side": "BUY",
+                "price": 66.15,
+                "origQty": 8.31,
+                "executedQty": 0.0,
+                "status": "OPEN",
+                "timestamp": int((t0 + 4) * 1000),
+            }]
+        },
+        now_ms=int((t0 + 10) * 1000),
+        verified_ts=t0 + 10.0,
+    )
+    CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        str(orders_dir / CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME),
+        {
+            "HYPEUSDC": [{
+                "orderId": "614160779028",
+                "id": "fill-hl-1",
+                "clientOrderId": hl_cloid,
+                "side": "BUY",
+                "price": 66.15,
+                "quantity": 8.31,
+                "status": "FILLED",
+                "timestamp": int((t0 + 12) * 1000),
+            }]
+        },
+        venue="hyperliquid",
+        now_ms=int((t0 + 12) * 1000),
+        is_snapshot=True,
+    )
+
+    st1 = reconciler.reconcile_once(now_ts=t0 + 13.0)
+    assert st1["reconciled_filled"] == 1
+    assert st1["reconciled_closed"] == 1  # ONLY the real HL order; anonymous GUARD_BLOCKED skipped!
+    assert st1["active_count"] == 0
+
+    # Subsequent passes while open-order cache is STILL stale MUST NOT re-adopt or re-close!
+    st2 = reconciler.reconcile_once(now_ts=t0 + 15.0)
+    st3 = reconciler.reconcile_once(now_ts=t0 + 17.0)
+    assert st2["orphans_adopted"] == 0 and st2["reconciled_filled"] == 0 and st2["reconciled_closed"] == 0
+    assert st3["orphans_adopted"] == 0 and st3["reconciled_filled"] == 0 and st3["reconciled_closed"] == 0
+
+    # Even a fresh reconciler instance (empty RAM memory) seeing stale open + complete fill MUST skip adoption!
+    fresh_rec = OrderLedgerReconciler(cachedb_dir=cdb, use_singletons=False, reconcile_grace_sec=30.0)
+    st4 = fresh_rec.reconcile_once(now_ts=t0 + 19.0)
+    assert st4["orphans_adopted"] == 0 and st4["reconciled_filled"] == 0
+
+    trace = OrderLedgerReader(cachedb_dir=cdb).trace_order("614160779028")
+    assert len(trace["closed_orders"]) == 1
+    assert trace["closed_orders"][0]["owner"] == "ai_executor"
+
+    # 2. ExecutionAudit 'order_terminal' mirrors cleanly into OrderLedger as STATUS -> FILLED
+    audit = ExecutionAudit(directory=str(tmp_path / "audit"))
+    assert audit.record(
+        "order_terminal",
+        intent_id="aud-term-1",
+        venue="binance",
+        symbol="BTCUSDC",
+        order_id="10944715108",
+        client_order_id="AI_aud_term_1",
+        side="buy",
+        filled_qty=0.01283,
+        cost=799.95,
+        status="closed",
+        venue_status="FILLED",
+    )
+    tr_term = OrderLedgerReader(cachedb_dir=cdb).trace_order("10944715108")
+    assert tr_term["found"] is True
+    assert any(e["ev"] == OrderEventType.STATUS.value and e.get("vst") == "FILLED" for e in tr_term["events"])
+
+    # 3. Orphan Hyperliquid order with hex cloid (no prior fill) gets owner='external', NEVER 'alt_0x...'
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(orders_dir / CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME),
+        {
+            "HYPEUSDC": [{
+                "orderId": "999888777",
+                "clientOrderId": "0x99998888777766665555444433332222",
+                "side": "SELL",
+                "price": 75.0,
+                "origQty": 2.0,
+                "executedQty": 0.0,
+                "status": "OPEN",
+                "timestamp": int((t0 + 30) * 1000),
+            }]
+        },
+        now_ms=int((t0 + 30) * 1000),
+        verified_ts=t0 + 30.0,
+    )
+    st5 = reconciler.reconcile_once(now_ts=t0 + 31.0)
+    assert st5["orphans_adopted"] == 1
+    act = OrderLedgerReader(cachedb_dir=cdb).list_active_orders(venue="hyperliquid", apply_tail=False)
+    assert len(act) == 1 and act[0]["owner"] == "external"

@@ -1,17 +1,13 @@
 """Cross-venue, file-based Order Ledger SSoT core (event journal, state machine, passive tail-overlay reader).
 
 Strict Separation of Concerns (SoC):
-- This module is the canonical internal operational memory of all local order decisions,
-  intents, guard outcomes, submits, cancels, and reconciled transitions across all venues.
-- It performs zero exchange network I/O and has zero dependency on ``cacheManager``/``cacheaccount``.
-- Multi-producer callers (bots, ``Instrument.place``, ``AuditedStrategyExecutor``, ``MarketApi``,
-  ``order_retry_worker``, one-shot scripts) append compact immutable JSONL lines via
-  ``OrderLedgerWriter`` (``O_APPEND`` + ``flock``, non-blocking best-effort).
-- Single-writer reconciliation against ``CacheOrderOpenManager`` and ``CacheOrderFilledManager``
-  lives in ``order_ledger_worker.py`` (``OrderLedgerReconciler``), which atomically publishes
-  ``orders_active.json`` and archives terminal rows into ``orders_closed_YYYY-MM.jsonl``.
-- Passive readers use ``OrderLedgerReader`` (``orders_active.json`` + in-RAM replay of any tail
-  lines after ``journal_cursor``) for immediate read-your-own-writes visibility with zero daemon SPOF.
+- Internal operational memory of local order decisions, intents, submits, cancels, and reconciled transitions.
+- Zero exchange network I/O and zero dependency on ``cacheManager``/``cacheaccount``.
+- Multi-producer callers append compact JSONL lines via ``OrderLedgerWriter`` (``O_APPEND`` + ``flock``).
+- Single-writer reconciliation against ``CacheOrderOpenManager`` and ``CacheOrderFilledManager`` lives in
+  ``order_ledger_reconciler_worker.py`` (``OrderLedgerReconciler``), which publishes ``orders_active.json``
+  and archives terminal rows into ``orders_closed_YYYY-MM.jsonl``.
+- Passive readers use ``OrderLedgerReader`` (``orders_active.json`` + in-RAM tail replay after ``journal_cursor``).
 """
 from __future__ import annotations
 
@@ -19,7 +15,6 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 import os
 import threading
-import time
 from typing import Any, Optional, Sequence
 
 from botcore import (
@@ -54,11 +49,7 @@ from providers.order_id_context import (
     extract_client_order_id,
     resolve_order_owner,
 )
-from providers.order_status_ssot import (
-    CANCEL_OR_EXPIRE_VENUE_STATUSES,
-    TERMINAL_AUDIT_VENUE_STATUSES,
-    is_open_working_status,
-)
+from providers.order_status_ssot import CANCEL_OR_EXPIRE_VENUE_STATUSES, is_open_working_status
 from state_io import (
     append_jsonl_record,
     read_json_dict_recovering,
@@ -68,8 +59,19 @@ from state_io import (
 )
 
 ORDER_LEDGER_SCHEMA_VERSION = 1
-
 _EVENT_WRITE_LOCK = threading.Lock()
+_GENERIC_WRAPPER_OWNERS = frozenset({
+    "unspecified",
+    "unknown",
+    "market_api",
+    "market_api_py",
+    "instrument",
+    "instrument_py",
+    "strategy_executor",
+    "strategy_executor_py",
+    "order_retry_worker",
+    "order_retry_worker_py",
+})
 
 
 class OrderLedgerState(StringEnum):
@@ -97,7 +99,6 @@ ACTIVE_LEDGER_STATES: frozenset[str] = frozenset({
     OrderLedgerState.PARTIAL.value,
     OrderLedgerState.CANCELING.value,
 })
-
 TERMINAL_LEDGER_STATES: frozenset[str] = frozenset({
     OrderLedgerState.FILLED.value,
     OrderLedgerState.CANCELED.value,
@@ -142,8 +143,18 @@ _AUDIT_EVENT_TO_LEDGER_EVENT: dict[str, str] = {
     "cancel_accepted": OrderEventType.CANCEL_ACK.value,
     "cancel_rejected": OrderEventType.CANCEL_FAILED.value,
     "order_status": OrderEventType.STATUS.value,
+    "order_terminal": OrderEventType.STATUS.value,
     "order_recovered": OrderEventType.RECOVERED.value,
     "order_reconciled": OrderEventType.RECOVERED.value,
+}
+_DIRECT_TERMINAL_EVENTS: dict[str, str] = {
+    OrderEventType.SUBMIT_REFUSED.value: OrderLedgerState.REJECTED.value,
+    OrderEventType.CANCEL_REQ.value: OrderLedgerState.CANCELING.value,
+    OrderEventType.CANCEL_ACK.value: OrderLedgerState.CANCELED.value,
+    OrderEventType.RECONCILED_FILLED.value: OrderLedgerState.FILLED.value,
+    OrderEventType.RECONCILED_CANCELED.value: OrderLedgerState.CANCELED.value,
+    OrderEventType.RECONCILED_EXPIRED.value: OrderLedgerState.EXPIRED.value,
+    OrderEventType.RECONCILED_FAILED.value: OrderLedgerState.FAILED.value,
 }
 
 
@@ -158,8 +169,7 @@ def utc_month_for_ts(ts: float) -> str:
 
 
 def _norm_venue(raw_venue: object) -> str:
-    norm = normalize_venue_name(raw_venue)
-    if norm:
+    if norm := normalize_venue_name(raw_venue):
         return norm
     clean = clean_scalar_str(raw_venue)
     return clean.lower() if clean else "unknown"
@@ -172,16 +182,21 @@ def _norm_symbol(raw_symbol: object, *, venue: object = None) -> str:
 
 
 def _norm_owner(owner: object = None, *, cid: Optional[str] = None) -> Optional[str]:
+    cid_owner: Optional[str] = None
+    if cid:
+        inferred = resolve_order_owner(cid)
+        if inferred and inferred not in ("unspecified", "unknown") and not inferred.startswith("alt:"):
+            cid_owner = inferred
     clean = clean_scalar_str(owner)
     if clean:
         norm = sanitize_identifier(clean, default="", sep="_", allow_dots_hyphens=False, strip_chars="_").lower()
-        if norm and norm not in {"unspecified", "unknown"}:
-            return norm
-    if cid:
-        inferred = resolve_order_owner(cid)
-        if inferred and inferred != "unspecified":
-            return inferred
-    return None
+        if norm and not norm.startswith("alt_"):
+            if norm not in _GENERIC_WRAPPER_OWNERS:
+                return norm
+            if cid_owner:
+                return cid_owner
+            return None if norm in ("unspecified", "unknown") else norm
+    return cid_owner
 
 
 def _norm_order_type(order_type: object = None, *, market: Any = None) -> Optional[str]:
@@ -190,9 +205,7 @@ def _norm_order_type(order_type: object = None, *, market: Any = None) -> Option
     clean = clean_upper_scalar(order_type)
     if clean and clean not in {"BUY", "SELL", "B", "S"}:
         return clean
-    if market is False:
-        return "LIMIT"
-    return None
+    return "LIMIT" if market is False else None
 
 
 def _clean_reason(raw: object) -> Optional[str]:
@@ -227,59 +240,38 @@ def build_order_event(
     src: object = None,
 ) -> dict[str, Any]:
     """Construct a compact, canonical order-ledger event dict omitting empty/None fields."""
-    eff_ts = round(resolve_now_ts(ts), 3)
-    ev_str = str(ev.value if isinstance(ev, OrderEventType) else ev).strip().upper()
     v_str = _norm_venue(venue)
-    sym_str = _norm_symbol(symbol, venue=v_str)
     cid_clean = clean_order_id(cid)
-    iid_clean = clean_order_id(iid)
-    vid_clean = clean_order_id(vid)
-    owner_clean = _norm_owner(owner, cid=cid_clean)
-    side_clean = normalize_side(side)
-    type_clean = _norm_order_type(order_type, market=market)
-
     payload: dict[str, Any] = {
-        "ts": eff_ts,
-        "ev": ev_str,
+        "ts": round(resolve_now_ts(ts), 3),
+        "ev": str(ev.value if isinstance(ev, OrderEventType) else ev).strip().upper(),
         "v": v_str,
-        "sym": sym_str,
+        "sym": _norm_symbol(symbol, venue=v_str),
     }
-    if owner_clean:
-        payload["owner"] = owner_clean
-    if side_clean:
-        payload["side"] = side_clean
-    if type_clean:
-        payload["type"] = type_clean
-    if (qty_f := safe_pos_float(qty, default=None)) is not None:
-        payload["qty"] = round(qty_f, 8)
-    if (px_f := safe_pos_float(px, default=None)) is not None:
-        payload["px"] = round(px_f, 8)
-    if (fq_f := safe_nonneg_float(fq, default=None)) is not None and fq_f > 0.0:
-        payload["fq"] = round(fq_f, 8)
-    if (avg_f := safe_pos_float(avg_px, default=None)) is not None:
-        payload["avg_px"] = round(avg_f, 8)
-    if (fee_f := safe_nonneg_float(fee, default=None)) is not None and fee_f > 0.0:
-        payload["fee"] = round(fee_f, 8)
-    if fee_asset_clean := clean_upper_scalar(fee_asset):
-        payload["fee_asset"] = fee_asset_clean
-    if (scale_f := safe_pos_float(scale, default=None)) is not None:
-        payload["scale"] = round(scale_f, 6)
-    if iid_clean:
-        payload["iid"] = iid_clean
-    if cid_clean:
-        payload["cid"] = cid_clean
-    if vid_clean:
-        payload["vid"] = vid_clean
-    if kind_clean := clean_scalar_str(kind):
-        payload["kind"] = kind_clean
-    if vst_clean := clean_upper_scalar(vst):
-        payload["vst"] = vst_clean
-    if reason_clean := _clean_reason(reason):
-        payload["reason"] = reason_clean
+    optional_str = (
+        ("owner", _norm_owner(owner, cid=cid_clean)),
+        ("side", normalize_side(side)),
+        ("type", _norm_order_type(order_type, market=market)),
+        ("fee_asset", clean_upper_scalar(fee_asset)),
+        ("iid", clean_order_id(iid)),
+        ("cid", cid_clean),
+        ("vid", clean_order_id(vid)),
+        ("kind", clean_scalar_str(kind)),
+        ("vst", clean_upper_scalar(vst)),
+        ("reason", _clean_reason(reason)),
+        ("src", clean_scalar_str(src)),
+    )
+    for k, val in optional_str:
+        if val:
+            payload[k] = val
+    for k, raw, digits in (("qty", qty, 8), ("px", px, 8), ("avg_px", avg_px, 8), ("scale", scale, 6)):
+        if (val_f := safe_pos_float(raw, default=None)) is not None:
+            payload[k] = round(val_f, digits)
+    for k, raw in (("fq", fq), ("fee", fee)):
+        if (val_f := safe_nonneg_float(raw, default=None)) is not None and val_f > 0.0:
+            payload[k] = round(val_f, 8)
     if deferred is not None:
         payload["deferred"] = _parse_bool_flag(deferred, False)
-    if src_clean := clean_scalar_str(src):
-        payload["src"] = src_clean
     return payload
 
 
@@ -299,23 +291,16 @@ def _canonical_order_key(
     if vid:
         sym_part = _norm_symbol(symbol, venue=venue) if symbol else ""
         return f"{venue}:{sym_part}:vid:{vid}" if sym_part else f"{venue}:vid:{vid}"
-    ts_ms = safe_nonneg_int(ts * 1000.0, default=0) or 0
-    return f"{venue}:anon:{ts_ms}"
+    return f"{venue}:anon:{safe_nonneg_int(ts * 1000.0, default=0) or 0}"
 
 
-def _record_correlatable_ids(rec: dict[str, Any]) -> tuple[set[str], set[str], set[str]]:
-    vids: set[str] = set()
-    cids: set[str] = set()
-    iids: set[str] = set()
-    if vid := clean_order_id(rec.get("vid")):
-        vids.add(vid.lower())
-    if cid := clean_order_id(rec.get("cid")):
-        cids.add(cid.lower())
-        cids.update(all_correlatable_client_order_ids(cid))
-    if iid := clean_order_id(rec.get("iid")):
-        iids.add(iid.lower())
-        cids.update(all_correlatable_client_order_ids(iid))
-    return vids, cids, iids
+def _correlatable_id_set(*cands: Any) -> set[str]:
+    out: set[str] = set()
+    for raw in cands:
+        if clean := clean_order_id(raw):
+            out.add(clean.lower())
+            out.update(all_correlatable_client_order_ids(clean))
+    return out
 
 
 def match_active_order_key(
@@ -330,15 +315,9 @@ def match_active_order_key(
     """Find the existing active-order key on ``venue`` matching ``(symbol, vid)``, correlatable ``cid``, or ``iid``."""
     v_norm = _norm_venue(venue)
     s_norm = _norm_symbol(symbol, venue=v_norm).lower() if symbol else ""
-    q_vid = vid.lower() if (vid := clean_order_id(vid)) else ""
-    q_iid = iid.lower() if (iid := clean_order_id(iid)) else ""
-    q_cids: set[str] = set()
-    if cid_c := clean_order_id(cid):
-        q_cids.add(cid_c.lower())
-        q_cids.update(all_correlatable_client_order_ids(cid_c))
-    if q_iid:
-        q_cids.update(all_correlatable_client_order_ids(q_iid))
-
+    q_vid = vid_c.lower() if (vid_c := clean_order_id(vid)) else ""
+    q_iid = iid_c.lower() if (iid_c := clean_order_id(iid)) else ""
+    q_cids = _correlatable_id_set(cid, iid)
     if not (q_vid or q_iid or q_cids):
         return None
 
@@ -347,60 +326,46 @@ def match_active_order_key(
     for key, rec in orders.items():
         if not isinstance(rec, dict) or _norm_venue(rec.get("v")) != v_norm:
             continue
-        r_vids, r_cids, r_iids = _record_correlatable_ids(rec)
         r_sym = _norm_symbol(rec.get("sym"), venue=v_norm).lower()
-        if q_vid and q_vid in r_vids:
-            if not s_norm or not r_sym or s_norm == r_sym:
-                return key
-        if cid_match is None and q_cids and (q_cids & r_cids):
-            if not s_norm or not r_sym or s_norm == r_sym:
-                cid_match = key
-        if iid_match is None and q_iid and q_iid in r_iids:
+        sym_ok = not s_norm or not r_sym or s_norm == r_sym
+        r_vid = clean_order_id(rec.get("vid"))
+        if q_vid and r_vid and q_vid == r_vid.lower() and sym_ok:
+            return key
+        if cid_match is None and q_cids and sym_ok and (q_cids & _correlatable_id_set(rec.get("cid"), rec.get("iid"))):
+            cid_match = key
+        r_iid = clean_order_id(rec.get("iid"))
+        if iid_match is None and q_iid and r_iid and q_iid == r_iid.lower():
             iid_match = key
     return cid_match or iid_match
 
 
 def _merge_records(primary: dict[str, Any], secondary: dict[str, Any]) -> dict[str, Any]:
     merged = dict(primary)
-    for field in ("iid", "cid", "vid", "owner", "side", "type", "kind", "sym", "fee_asset", "reason", "vst"):
+    for field in ("iid", "cid", "vid", "owner", "side", "type", "kind", "sym", "fee_asset", "reason", "vst", "qty", "px", "avg_px", "fee"):
         if not merged.get(field) and secondary.get(field):
             merged[field] = secondary[field]
-    p_created = safe_pos_float(merged.get("created_ts"), default=None)
-    s_created = safe_pos_float(secondary.get("created_ts"), default=None)
-    if s_created is not None and (p_created is None or s_created < p_created):
-        merged["created_ts"] = s_created
-    p_upd = safe_pos_float(merged.get("updated_ts"), default=0.0) or 0.0
-    s_upd = safe_pos_float(secondary.get("updated_ts"), default=0.0) or 0.0
-    merged["updated_ts"] = max(p_upd, s_upd)
-    for num_k in ("qty", "px", "avg_px", "fee"):
-        if not merged.get(num_k) and secondary.get(num_k):
-            merged[num_k] = secondary[num_k]
-    p_fq = safe_nonneg_float(merged.get("fq"), default=0.0) or 0.0
-    s_fq = safe_nonneg_float(secondary.get("fq"), default=0.0) or 0.0
-    if max(p_fq, s_fq) > 0.0:
-        merged["fq"] = round(max(p_fq, s_fq), 8)
-    merged["events"] = (safe_nonneg_int(merged.get("events"), default=0) or 0) + (
-        safe_nonneg_int(secondary.get("events"), default=0) or 0
+    p_c, s_c = safe_pos_float(merged.get("created_ts"), default=None), safe_pos_float(secondary.get("created_ts"), default=None)
+    if s_c is not None and (p_c is None or s_c < p_c):
+        merged["created_ts"] = s_c
+    merged["updated_ts"] = max(
+        safe_pos_float(merged.get("updated_ts"), default=0.0) or 0.0,
+        safe_pos_float(secondary.get("updated_ts"), default=0.0) or 0.0,
     )
+    max_fq = max(safe_nonneg_float(merged.get("fq"), default=0.0) or 0.0, safe_nonneg_float(secondary.get("fq"), default=0.0) or 0.0)
+    if max_fq > 0.0:
+        merged["fq"] = round(max_fq, 8)
+    merged["events"] = (safe_nonneg_int(merged.get("events"), default=0) or 0) + (safe_nonneg_int(secondary.get("events"), default=0) or 0)
     return merged
 
 
 def _classify_venue_status_transition(
-    vst: Optional[str],
-    *,
-    fq: float,
-    req_qty: Optional[float],
-    current_state: str,
+    vst: Optional[str], *, fq: float, req_qty: Optional[float], current_state: str
 ) -> Optional[str]:
     v_u = clean_upper_scalar(vst) or ""
     if v_u in {"FILLED", "CLOSED"}:
         return OrderLedgerState.FILLED.value
-    if v_u == "REPLACED":
-        return OrderLedgerState.REPLACED.value
-    if v_u == "EXPIRED":
-        return OrderLedgerState.EXPIRED.value
-    if v_u == "REJECTED":
-        return OrderLedgerState.REJECTED.value
+    if v_u in {"REPLACED", "EXPIRED", "REJECTED"}:
+        return v_u
     if v_u in CANCEL_OR_EXPIRE_VENUE_STATUSES:
         return OrderLedgerState.CANCELED.value
     if v_u == "PARTIALLY_FILLED" or (fq > 0.0 and (req_qty is None or fq < req_qty * 0.9999)):
@@ -436,38 +401,24 @@ def apply_order_event(
     closed_out: Optional[list[dict[str, Any]]] = None,
 ) -> Optional[str]:
     """Apply one ledger event to ``orders`` in place; return affected key (or archived key)."""
-    if not isinstance(event, dict):
-        return None
-    ev = clean_upper_scalar(event.get("ev"))
-    if not ev:
+    if not isinstance(event, dict) or not (ev := clean_upper_scalar(event.get("ev"))):
         return None
     venue = _norm_venue(event.get("v"))
     sym = _norm_symbol(event.get("sym"), venue=venue)
     ts = safe_pos_float(event.get("ts"), default=None) or resolve_now_ts()
-    iid = clean_order_id(event.get("iid"))
-    cid = clean_order_id(event.get("cid"))
-    vid = clean_order_id(event.get("vid"))
+    iid, cid, vid = clean_order_id(event.get("iid")), clean_order_id(event.get("cid")), clean_order_id(event.get("vid"))
 
-    # Match existing record; if both vid and iid/cid match different records, merge them cleanly.
     key_vid = match_active_order_key(orders, venue, symbol=sym, vid=vid) if vid else None
     key_id = match_active_order_key(orders, venue, symbol=sym, iid=iid, cid=cid) if (iid or cid) else None
     if key_vid and key_id and key_vid != key_id:
-        primary_k, secondary_k = (key_id, key_vid)
-        orders[primary_k] = _merge_records(orders[primary_k], orders.pop(secondary_k))
-        key = primary_k
+        orders[key_id] = _merge_records(orders[key_id], orders.pop(key_vid))
+        key = key_id
     else:
         key = key_id or key_vid
 
     if key is None:
         key = _canonical_order_key(venue, symbol=sym, iid=iid, cid=cid, vid=vid, ts=ts)
-        rec: dict[str, Any] = {
-            "v": venue,
-            "sym": sym,
-            "state": OrderLedgerState.INTENT.value,
-            "created_ts": round(ts, 3),
-            "updated_ts": round(ts, 3),
-            "events": 0,
-        }
+        rec = {"v": venue, "sym": sym, "state": OrderLedgerState.INTENT.value, "created_ts": round(ts, 3), "updated_ts": round(ts, 3), "events": 0}
         orders[key] = rec
     else:
         rec = orders[key]
@@ -476,137 +427,86 @@ def apply_order_event(
     rec["events"] = (safe_nonneg_int(rec.get("events"), default=0) or 0) + 1
     rec["last_ev"] = ev
 
-    if sym and not rec.get("sym"):
-        rec["sym"] = sym
-    if iid and not rec.get("iid"):
-        rec["iid"] = iid
-    if cid and not rec.get("cid"):
-        rec["cid"] = cid
+    for f_k, f_v in (("sym", sym), ("iid", iid), ("cid", cid), ("side", normalize_side(event.get("side"))), ("type", clean_upper_scalar(event.get("type"))), ("kind", clean_scalar_str(event.get("kind")))):
+        if f_v and not rec.get(f_k):
+            rec[f_k] = f_v
     if vid:
         rec["vid"] = vid
     if (owner := _norm_owner(event.get("owner"), cid=cid or clean_order_id(rec.get("cid")))) and (
-        not rec.get("owner") or rec.get("owner") == "external"
+        not rec.get("owner") or rec.get("owner") in _GENERIC_WRAPPER_OWNERS or rec.get("owner") == "external"
     ):
         rec["owner"] = owner
-    if (side := normalize_side(event.get("side"))) and not rec.get("side"):
-        rec["side"] = side
-    if (otype := clean_upper_scalar(event.get("type"))) and not rec.get("type"):
-        rec["type"] = otype
-    if (kind := clean_scalar_str(event.get("kind"))) and not rec.get("kind"):
-        rec["kind"] = kind
-    if (qty_f := safe_pos_float(event.get("qty"), default=None)) is not None:
-        if ev == OrderEventType.SCALED.value or not rec.get("qty"):
-            rec["qty"] = round(qty_f, 8)
-    if (px_f := safe_pos_float(event.get("px"), default=None)) is not None:
-        if not rec.get("px"):
-            rec["px"] = round(px_f, 8)
-    if (fq_f := safe_nonneg_float(event.get("fq"), default=None)) is not None and fq_f > 0.0:
-        prev_fq = safe_nonneg_float(rec.get("fq"), default=0.0) or 0.0
-        rec["fq"] = round(max(prev_fq, fq_f), 8)
+    if (qty_f := safe_pos_float(event.get("qty"), default=None)) is not None and (ev == OrderEventType.SCALED.value or not rec.get("qty")):
+        rec["qty"] = round(qty_f, 8)
+    if (px_f := safe_pos_float(event.get("px"), default=None)) is not None and not rec.get("px"):
+        rec["px"] = round(px_f, 8)
     if (avg_f := safe_pos_float(event.get("avg_px"), default=None)) is not None:
         rec["avg_px"] = round(avg_f, 8)
-    if (fee_f := safe_nonneg_float(event.get("fee"), default=None)) is not None and fee_f > 0.0:
-        prev_fee = safe_nonneg_float(rec.get("fee"), default=0.0) or 0.0
-        rec["fee"] = round(max(prev_fee, fee_f), 8)
-    if fee_asset := clean_upper_scalar(event.get("fee_asset")):
-        rec["fee_asset"] = fee_asset
-    if vst := clean_upper_scalar(event.get("vst")):
-        rec["vst"] = vst
-    if reason := _clean_reason(event.get("reason")):
-        rec["reason"] = reason
+    for mono_k in ("fq", "fee"):
+        if (val_f := safe_nonneg_float(event.get(mono_k), default=None)) is not None and val_f > 0.0:
+            rec[mono_k] = round(max(safe_nonneg_float(rec.get(mono_k), default=0.0) or 0.0, val_f), 8)
+    for ov_k, ov_v in (("fee_asset", clean_upper_scalar(event.get("fee_asset"))), ("vst", clean_upper_scalar(event.get("vst"))), ("reason", _clean_reason(event.get("reason")))):
+        if ov_v:
+            rec[ov_k] = ov_v
     if "deferred" in event:
         rec["deferred"] = _parse_bool_flag(event.get("deferred"), False)
 
     cur_state = str(rec.get("state") or OrderLedgerState.INTENT.value)
     cur_fq = safe_nonneg_float(rec.get("fq"), default=0.0) or 0.0
     req_qty = safe_pos_float(rec.get("qty"), default=None)
+    live_states = {OrderLedgerState.OPEN.value, OrderLedgerState.PARTIAL.value, OrderLedgerState.CANCELING.value}
 
-    new_state = cur_state
-    if ev == OrderEventType.INTENT.value:
-        if cur_state not in {OrderLedgerState.OPEN.value, OrderLedgerState.PARTIAL.value, OrderLedgerState.CANCELING.value}:
-            new_state = OrderLedgerState.INTENT.value
+    if ev in _DIRECT_TERMINAL_EVENTS:
+        new_state = _DIRECT_TERMINAL_EVENTS[ev]
+    elif ev == OrderEventType.INTENT.value:
+        new_state = cur_state if cur_state in live_states else OrderLedgerState.INTENT.value
     elif ev == OrderEventType.GUARD_BLOCKED.value:
-        if _parse_bool_flag(event.get("deferred"), False):
-            new_state = OrderLedgerState.INTENT.value
-        else:
-            new_state = OrderLedgerState.REJECTED.value
+        new_state = OrderLedgerState.INTENT.value if _parse_bool_flag(event.get("deferred"), False) else OrderLedgerState.REJECTED.value
     elif ev == OrderEventType.SUBMITTED.value:
-        if cur_state not in {OrderLedgerState.OPEN.value, OrderLedgerState.PARTIAL.value, OrderLedgerState.CANCELING.value}:
-            new_state = OrderLedgerState.SUBMITTED.value
-    elif ev == OrderEventType.SUBMIT_REFUSED.value:
-        new_state = OrderLedgerState.REJECTED.value
+        new_state = cur_state if cur_state in live_states else OrderLedgerState.SUBMITTED.value
     elif ev == OrderEventType.SUBMIT_UNKNOWN.value:
-        if cur_state not in {OrderLedgerState.OPEN.value, OrderLedgerState.PARTIAL.value}:
-            new_state = OrderLedgerState.SUBMIT_UNKNOWN.value
+        new_state = cur_state if cur_state in {OrderLedgerState.OPEN.value, OrderLedgerState.PARTIAL.value} else OrderLedgerState.SUBMIT_UNKNOWN.value
     elif ev in {OrderEventType.ACKED.value, OrderEventType.RECOVERED.value}:
-        vst_state = _classify_venue_status_transition(
-            event.get("vst"), fq=cur_fq, req_qty=req_qty, current_state=cur_state
-        )
-        new_state = vst_state or (OrderLedgerState.PARTIAL.value if cur_fq > 0.0 else OrderLedgerState.OPEN.value)
-    elif ev == OrderEventType.CANCEL_REQ.value:
-        new_state = OrderLedgerState.CANCELING.value
-    elif ev == OrderEventType.CANCEL_ACK.value:
-        new_state = OrderLedgerState.CANCELED.value
+        vst_st = _classify_venue_status_transition(event.get("vst"), fq=cur_fq, req_qty=req_qty, current_state=cur_state)
+        new_state = vst_st or (OrderLedgerState.PARTIAL.value if cur_fq > 0.0 else OrderLedgerState.OPEN.value)
     elif ev == OrderEventType.STATUS.value:
-        if vst_state := _classify_venue_status_transition(
-            event.get("vst"), fq=cur_fq, req_qty=req_qty, current_state=cur_state
-        ):
-            new_state = vst_state
+        new_state = _classify_venue_status_transition(event.get("vst"), fq=cur_fq, req_qty=req_qty, current_state=cur_state) or cur_state
     elif ev in {OrderEventType.RECONCILED_OPEN.value, OrderEventType.ORPHAN_ADOPTED.value}:
-        if cur_state != OrderLedgerState.CANCELING.value:
-            new_state = OrderLedgerState.PARTIAL.value if cur_fq > 0.0 else OrderLedgerState.OPEN.value
+        new_state = cur_state if cur_state == OrderLedgerState.CANCELING.value else (OrderLedgerState.PARTIAL.value if cur_fq > 0.0 else OrderLedgerState.OPEN.value)
     elif ev == OrderEventType.RECONCILED_PARTIAL.value:
-        if cur_state != OrderLedgerState.CANCELING.value:
-            new_state = OrderLedgerState.PARTIAL.value
-    elif ev == OrderEventType.RECONCILED_FILLED.value:
-        new_state = OrderLedgerState.FILLED.value
-    elif ev == OrderEventType.RECONCILED_CANCELED.value:
-        new_state = OrderLedgerState.CANCELED.value
-    elif ev == OrderEventType.RECONCILED_EXPIRED.value:
-        new_state = OrderLedgerState.EXPIRED.value
-    elif ev == OrderEventType.RECONCILED_FAILED.value:
-        new_state = OrderLedgerState.FAILED.value
+        new_state = cur_state if cur_state == OrderLedgerState.CANCELING.value else OrderLedgerState.PARTIAL.value
+    else:
+        new_state = cur_state
 
     rec["state"] = new_state
     if new_state in TERMINAL_LEDGER_STATES:
         archived = orders.pop(key, rec)
-        if closed_out is not None:
+        # Never pollute orders_closed_YYYY-MM.jsonl with anonymous pre-submit guard probes lacking any order ID.
+        is_anon_guard_skip = ev == OrderEventType.GUARD_BLOCKED.value and not (archived.get("iid") or archived.get("cid") or archived.get("vid"))
+        if closed_out is not None and not is_anon_guard_skip:
             closed_out.append(make_closed_summary(key, archived, closed_ts=ts))
     return key
-
-
-# =============================================================================
-# 3-Tier Polymorphic Ledger Hierarchy (Interface -> File Base -> Writer/Reader)
-# =============================================================================
 
 
 class OrderLedgerBackendInterface(ABC):
     """Level 1 pure abstract contract for cross-venue order-ledger persistence."""
 
     @abstractmethod
-    def append_event(self, event: dict[str, Any]) -> bool:
-        """Append one immutable transition event to the durable event journal."""
+    def append_event(self, event: dict[str, Any]) -> bool: ...
 
     @abstractmethod
-    def read_active_snapshot(self, *, repair_files: bool = False) -> dict[str, Any]:
-        """Read the materialized active-orders snapshot and journal cursor."""
+    def read_active_snapshot(self, *, repair_files: bool = False) -> dict[str, Any]: ...
 
     @abstractmethod
-    def write_active_snapshot(self, snapshot: dict[str, Any]) -> bool:
-        """Atomically persist the materialized active-orders snapshot."""
+    def write_active_snapshot(self, snapshot: dict[str, Any]) -> bool: ...
 
     @abstractmethod
-    def append_closed_record(self, summary: dict[str, Any]) -> bool:
-        """Append one compact terminal order summary to the closed archive."""
+    def append_closed_record(self, summary: dict[str, Any]) -> bool: ...
 
     @abstractmethod
     def read_events_after_cursor(
-        self,
-        cursor: Optional[dict[str, Any]],
-        *,
-        max_days: int = 2,
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Read all newly appended events strictly after ``cursor`` and return the advanced cursor."""
+        self, cursor: Optional[dict[str, Any]], *, max_days: int = 2
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]: ...
 
 
 class FileOrderLedgerBase(OrderLedgerBackendInterface, ABC):
@@ -621,8 +521,7 @@ class FileOrderLedgerBase(OrderLedgerBackendInterface, ABC):
 
     @property
     def orders_dir(self) -> str:
-        active_p = self.active_path()
-        return os.path.dirname(active_p)
+        return os.path.dirname(self.active_path())
 
     def active_path(self) -> str:
         return order_ledger_active_path(cachedb_dir=self._explicit_cachedb_dir)
@@ -652,69 +551,52 @@ class FileOrderLedgerBase(OrderLedgerBackendInterface, ABC):
     def list_closed_files(self) -> list[str]:
         return self._list_prefixed_jsonl_files(ORDER_LEDGER_CLOSED_PREFIX)
 
-    def append_event(self, event: dict[str, Any]) -> bool:
+    @staticmethod
+    def _empty_snapshot() -> dict[str, Any]:
+        return {
+            "schema_version": ORDER_LEDGER_SCHEMA_VERSION,
+            "updated_ts": 0.0,
+            "journal_cursor": {"file": "", "offset": 0},
+            "venue_verified_ts": {},
+            "orders": {},
+        }
+
+    @staticmethod
+    def _append_jsonl(path: str, record: dict[str, Any], label: str) -> bool:
         try:
-            ts = safe_pos_float(event.get("ts"), default=None) or resolve_now_ts()
-            path = self.events_path(utc_day_for_ts(ts))
             with _EVENT_WRITE_LOCK:
                 append_jsonl_record(
-                    path,
-                    event,
-                    sort_keys=False,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                    allow_nan=False,
-                    default=str,
-                    flock=True,
+                    path, record, sort_keys=False, separators=(",", ":"), ensure_ascii=False, allow_nan=False, default=str, flock=True
                 )
             return True
         except Exception as exc:  # noqa: BLE001 -- ledger append must never block or crash trading
-            print(f"[order_ledger] event append failed: {exc}")
+            print(f"[order_ledger] {label} append failed: {exc}")
             return False
+
+    def append_event(self, event: dict[str, Any]) -> bool:
+        ts = safe_pos_float(event.get("ts"), default=None) or resolve_now_ts()
+        return self._append_jsonl(self.events_path(utc_day_for_ts(ts)), event, "event")
+
+    def append_closed_record(self, summary: dict[str, Any]) -> bool:
+        ts = safe_pos_float(summary.get("closed_ts"), default=None) or resolve_now_ts()
+        return self._append_jsonl(self.closed_path(utc_month_for_ts(ts)), summary, "closed record")
 
     def read_active_snapshot(self, *, repair_files: bool = False) -> dict[str, Any]:
         path = str(resolve_cachedb_filepath(self.active_path()))
         if not os.path.isfile(path):
-            return {
-                "schema_version": ORDER_LEDGER_SCHEMA_VERSION,
-                "updated_ts": 0.0,
-                "journal_cursor": {"file": "", "offset": 0},
-                "venue_verified_ts": {},
-                "orders": {},
-            }
+            return self._empty_snapshot()
         raw = read_json_dict_recovering(path, repair_files=_parse_bool_flag(repair_files, False))
         if not isinstance(raw, dict):
-            return {
-                "schema_version": ORDER_LEDGER_SCHEMA_VERSION,
-                "updated_ts": 0.0,
-                "journal_cursor": {"file": "", "offset": 0},
-                "venue_verified_ts": {},
-                "orders": {},
-            }
+            return self._empty_snapshot()
         raw_orders = raw.get("orders") if isinstance(raw.get("orders"), dict) else {}
-        orders_clean = {
-            str(k): dict(v)
-            for k, v in raw_orders.items()
-            if clean_scalar_str(k) is not None and isinstance(v, dict)
-        }
         cur = raw.get("journal_cursor") if isinstance(raw.get("journal_cursor"), dict) else {}
-        cursor = {
-            "file": clean_scalar_str(cur.get("file")) or "",
-            "offset": safe_nonneg_int(cur.get("offset"), default=0) or 0,
-        }
         raw_ver = raw.get("venue_verified_ts") if isinstance(raw.get("venue_verified_ts"), dict) else {}
-        ver_map = {
-            str(k): safe_nonneg_float(v, default=0.0) or 0.0
-            for k, v in raw_ver.items()
-            if clean_scalar_str(k) is not None
-        }
         return {
-            "schema_version": safe_nonneg_int(raw.get("schema_version"), default=ORDER_LEDGER_SCHEMA_VERSION)
-            or ORDER_LEDGER_SCHEMA_VERSION,
+            "schema_version": safe_nonneg_int(raw.get("schema_version"), default=ORDER_LEDGER_SCHEMA_VERSION) or ORDER_LEDGER_SCHEMA_VERSION,
             "updated_ts": safe_nonneg_float(raw.get("updated_ts"), default=0.0) or 0.0,
-            "journal_cursor": cursor,
-            "venue_verified_ts": ver_map,
-            "orders": orders_clean,
+            "journal_cursor": {"file": clean_scalar_str(cur.get("file")) or "", "offset": safe_nonneg_int(cur.get("offset"), default=0) or 0},
+            "venue_verified_ts": {str(k): safe_nonneg_float(v, default=0.0) or 0.0 for k, v in raw_ver.items() if clean_scalar_str(k) is not None},
+            "orders": {str(k): dict(v) for k, v in raw_orders.items() if clean_scalar_str(k) is not None and isinstance(v, dict)},
         }
 
     def write_active_snapshot(self, snapshot: dict[str, Any]) -> bool:
@@ -725,114 +607,31 @@ class FileOrderLedgerBase(OrderLedgerBackendInterface, ABC):
             print(f"[order_ledger] active snapshot write failed: {exc}")
             return False
 
-    def append_closed_record(self, summary: dict[str, Any]) -> bool:
-        try:
-            ts = safe_pos_float(summary.get("closed_ts"), default=None) or resolve_now_ts()
-            path = self.closed_path(utc_month_for_ts(ts))
-            with _EVENT_WRITE_LOCK:
-                append_jsonl_record(
-                    path,
-                    summary,
-                    sort_keys=False,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                    allow_nan=False,
-                    default=str,
-                    flock=True,
-                )
-            return True
-        except Exception as exc:  # noqa: BLE001
-            print(f"[order_ledger] closed record append failed: {exc}")
-            return False
-
     def read_events_after_cursor(
-        self,
-        cursor: Optional[dict[str, Any]],
-        *,
-        max_days: int = 2,
+        self, cursor: Optional[dict[str, Any]], *, max_days: int = 2
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         files = self.list_event_files()
         cur_file = clean_scalar_str(cursor.get("file")) if isinstance(cursor, dict) else None
         cur_offset = safe_nonneg_int(cursor.get("offset"), default=0) if isinstance(cursor, dict) else 0
         if not files:
             return [], {"file": cur_file or "", "offset": cur_offset or 0}
-
-        if cur_file:
-            target_files = [p for p in files if os.path.basename(p) >= cur_file]
-        else:
-            limit = max(1, safe_nonneg_int(max_days, default=2) or 2)
-            target_files = files[-limit:]
-
+        target_files = [p for p in files if os.path.basename(p) >= cur_file] if cur_file else files[-max(1, safe_nonneg_int(max_days, default=2) or 2):]
         events: list[dict[str, Any]] = []
-        last_file = cur_file or ""
-        last_offset = cur_offset or 0
+        last_file, last_offset = cur_file or "", cur_offset or 0
         for fpath in target_files:
             fname = os.path.basename(fpath)
-            start_off = cur_offset if (cur_file and fname == cur_file) else 0
-            chunk_events, new_off = read_jsonl_dicts_from_offset(fpath, start_off)
-            events.extend(chunk_events)
-            last_file = fname
-            last_offset = new_off
+            chunk, new_off = read_jsonl_dicts_from_offset(fpath, cur_offset if (cur_file and fname == cur_file) else 0)
+            events.extend(chunk)
+            last_file, last_offset = fname, new_off
         return events, {"file": last_file, "offset": last_offset}
 
 
 class OrderLedgerWriter(FileOrderLedgerBase):
     """Level 3 multi-producer best-effort event writer for bots, gateways, and adapters."""
 
-    def record_event(
-        self,
-        ev: str | OrderEventType,
-        *,
-        venue: object,
-        symbol: object,
-        ts: Optional[float] = None,
-        owner: object = None,
-        side: object = None,
-        order_type: object = None,
-        market: Any = None,
-        qty: Any = None,
-        px: Any = None,
-        fq: Any = None,
-        avg_px: Any = None,
-        fee: Any = None,
-        fee_asset: object = None,
-        scale: Any = None,
-        iid: object = None,
-        cid: object = None,
-        vid: object = None,
-        kind: object = None,
-        vst: object = None,
-        reason: object = None,
-        deferred: Optional[bool] = None,
-        src: object = None,
-    ) -> bool:
+    def record_event(self, ev: str | OrderEventType, *, venue: object, symbol: object, **kwargs: Any) -> bool:
         """Build and append one canonical order-lifecycle event."""
-        event = build_order_event(
-            ev,
-            venue=venue,
-            symbol=symbol,
-            ts=ts,
-            owner=owner,
-            side=side,
-            order_type=order_type,
-            market=market,
-            qty=qty,
-            px=px,
-            fq=fq,
-            avg_px=avg_px,
-            fee=fee,
-            fee_asset=fee_asset,
-            scale=scale,
-            iid=iid,
-            cid=cid,
-            vid=vid,
-            kind=kind,
-            vst=vst,
-            reason=reason,
-            deferred=deferred,
-            src=src,
-        )
-        return self.append_event(event)
+        return self.append_event(build_order_event(ev, venue=venue, symbol=symbol, **kwargs))
 
     def record_audit_event(
         self,
@@ -884,25 +683,14 @@ class OrderLedgerReader(FileOrderLedgerBase):
     def load_active_state(self, *, apply_tail: bool = True) -> dict[str, Any]:
         """Load ``orders_active.json`` passively and optionally replay unmaterialized tail events in RAM."""
         snap = self.read_active_snapshot(repair_files=False)
-        orders: dict[str, dict[str, Any]] = snap["orders"]
-        cursor = snap["journal_cursor"]
-        tail_count = 0
+        orders, cursor, tail_count = snap["orders"], snap["journal_cursor"], 0
         if _parse_bool_flag(apply_tail, True):
-            tail_events, adv_cursor = self.read_events_after_cursor(cursor)
+            tail_events, cursor = self.read_events_after_cursor(cursor)
             for ev in tail_events:
-                if clean_upper_scalar(ev.get("src")) == "RECONCILER":
-                    continue
-                apply_order_event(orders, ev)
-                tail_count += 1
-            cursor = adv_cursor
-        return {
-            "schema_version": snap["schema_version"],
-            "updated_ts": snap["updated_ts"],
-            "journal_cursor": cursor,
-            "venue_verified_ts": snap["venue_verified_ts"],
-            "tail_events_applied": tail_count,
-            "orders": orders,
-        }
+                if clean_upper_scalar(ev.get("src")) != "RECONCILER":
+                    apply_order_event(orders, ev)
+                    tail_count += 1
+        return {**snap, "journal_cursor": cursor, "tail_events_applied": tail_count, "orders": orders}
 
     def list_active_orders(
         self,
@@ -914,81 +702,46 @@ class OrderLedgerReader(FileOrderLedgerBase):
     ) -> list[dict[str, Any]]:
         """Return active orders filtered by optional venue, symbol, or owner."""
         state = self.load_active_state(apply_tail=apply_tail)
-        v_filter = _norm_venue(venue) if venue else None
-        sym_filter = _norm_symbol(symbol).upper() if symbol else None
-        owner_filter = _norm_owner(owner) if owner else None
-        rows: list[dict[str, Any]] = []
-        for key, rec in state["orders"].items():
-            if v_filter and _norm_venue(rec.get("v")) != v_filter:
-                continue
-            if sym_filter and _norm_symbol(rec.get("sym")).upper() != sym_filter:
-                continue
-            if owner_filter and _norm_owner(rec.get("owner")) != owner_filter:
-                continue
-            rows.append({"key": key, **rec})
+        v_f = _norm_venue(venue) if venue else None
+        s_f = _norm_symbol(symbol).upper() if symbol else None
+        o_f = _norm_owner(owner) if owner else None
+        rows = [
+            {"key": key, **rec}
+            for key, rec in state["orders"].items()
+            if (not v_f or _norm_venue(rec.get("v")) == v_f)
+            and (not s_f or _norm_symbol(rec.get("sym")).upper() == s_f)
+            and (not o_f or _norm_owner(rec.get("owner")) == o_f)
+        ]
         rows.sort(key=lambda r: (safe_pos_float(r.get("created_ts"), default=0.0) or 0.0, str(r.get("key") or "")))
         return rows
 
     def trace_order(
-        self,
-        query_id: str,
-        *,
-        max_event_days: int = 14,
-        max_closed_months: int = 3,
+        self, query_id: str, *, max_event_days: int = 14, max_closed_months: int = 3
     ) -> dict[str, Any]:
         """Trace an ``intent_id``, ``client_order_id``, or venue ``order_id`` across active, closed, and events."""
         clean_q = clean_order_id(query_id)
         if not clean_q:
-            return {
-                "query_id": "",
-                "found": False,
-                "active_order": None,
-                "closed_orders": [],
-                "events": [],
-                "correlated_ids": [],
-            }
-        correlated: set[str] = {clean_q.lower()} | all_correlatable_client_order_ids(clean_q)
-
-        def _expand(*cands: Any) -> None:
-            for cand in cands:
-                if c := clean_order_id(cand):
-                    correlated.add(c.lower())
-                    correlated.update(all_correlatable_client_order_ids(c))
+            return {"query_id": "", "found": False, "active_order": None, "closed_orders": [], "events": [], "correlated_ids": []}
+        correlated = _correlatable_id_set(clean_q)
 
         def _row_matches(row: dict[str, Any]) -> bool:
             cands = (row.get("iid"), row.get("cid"), row.get("vid"))
-            row_ids: set[str] = set()
-            for c in cands:
-                if clean_c := clean_order_id(c):
-                    row_ids.add(clean_c.lower())
-                    row_ids.update(all_correlatable_client_order_ids(clean_c))
-            if row_ids & correlated:
-                _expand(*cands)
+            if _correlatable_id_set(*cands) & correlated:
+                correlated.update(_correlatable_id_set(*cands))
                 return True
             return False
 
-        active_state = self.load_active_state(apply_tail=True)
-        active_match: Optional[dict[str, Any]] = None
-        for key, rec in active_state["orders"].items():
-            if _row_matches(rec):
-                active_match = {"key": key, **rec}
-                break
-
-        closed_matches: list[dict[str, Any]] = []
-        closed_limit = max(1, safe_nonneg_int(max_closed_months, default=3) or 3)
-        for cpath in self.list_closed_files()[-closed_limit:]:
-            for rec in read_jsonl_dicts(cpath):
-                if _row_matches(rec):
-                    closed_matches.append(rec)
-
-        event_matches: list[dict[str, Any]] = []
-        ev_limit = max(1, safe_nonneg_int(max_event_days, default=14) or 14)
-        for epath in self.list_event_files()[-ev_limit:]:
-            for rec in read_jsonl_dicts(epath):
-                if _row_matches(rec):
-                    event_matches.append(rec)
-        event_matches.sort(key=lambda r: safe_float(r.get("ts"), default=0.0) or 0.0)
-
+        active_match = next(
+            ({"key": k, **r} for k, r in self.load_active_state(apply_tail=True)["orders"].items() if _row_matches(r)),
+            None,
+        )
+        c_lim = max(1, safe_nonneg_int(max_closed_months, default=3) or 3)
+        e_lim = max(1, safe_nonneg_int(max_event_days, default=14) or 14)
+        closed_matches = [r for p in self.list_closed_files()[-c_lim:] for r in read_jsonl_dicts(p) if _row_matches(r)]
+        event_matches = sorted(
+            (r for p in self.list_event_files()[-e_lim:] for r in read_jsonl_dicts(p) if _row_matches(r)),
+            key=lambda r: safe_float(r.get("ts"), default=0.0) or 0.0,
+        )
         return {
             "query_id": clean_q,
             "found": bool(active_match or closed_matches or event_matches),
@@ -1003,7 +756,7 @@ _DEFAULT_LEDGER_WRITER = OrderLedgerWriter()
 
 
 def get_default_ledger_writer() -> OrderLedgerWriter:
-    """Return the shared default multi-producer ``OrderLedgerWriter`` (dynamically tracks ``get_cachedb_dir()``)."""
+    """Return the shared default multi-producer ``OrderLedgerWriter``."""
     return _DEFAULT_LEDGER_WRITER
 
 
@@ -1013,7 +766,4 @@ def ledger_events_tail_for_testing(
     """Read raw event rows from ``order_events_*.jsonl`` (utility for diagnostics and tests)."""
     reader = OrderLedgerReader(cachedb_dir=cachedb_dir)
     paths = [reader.events_path(d) for d in days] if days else reader.list_event_files()
-    out: list[dict[str, Any]] = []
-    for path in paths:
-        out.extend(read_jsonl_dicts(path))
-    return out
+    return [row for path in paths for row in read_jsonl_dicts(path)]

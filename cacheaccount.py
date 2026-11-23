@@ -1963,17 +1963,11 @@ def _merge_optional_order_fee(existing: dict, incoming: dict, merged: dict) -> N
     """Accumulate optional ``fee`` and ``feeAsset`` across fills belonging to the same order."""
     ex_fee = safe_nonneg_float(existing.get("fee"), default=None)
     in_fee = safe_nonneg_float(incoming.get("fee"), default=None)
-    ex_asset = clean_upper_scalar(existing.get("feeAsset")) or ""
-    in_asset = clean_upper_scalar(incoming.get("feeAsset")) or ""
-    if ex_fee is not None and in_fee is not None:
-        if not ex_asset or not in_asset or ex_asset == in_asset:
-            merged["fee"] = round(ex_fee + in_fee, 10)
-            eff_asset = ex_asset or in_asset
-            if eff_asset:
-                merged["feeAsset"] = eff_asset
-        else:
-            merged["fee"] = ex_fee
-            merged["feeAsset"] = ex_asset
+    ex_asset, in_asset = clean_upper_scalar(existing.get("feeAsset")) or "", clean_upper_scalar(incoming.get("feeAsset")) or ""
+    if ex_fee is not None and in_fee is not None and (not ex_asset or not in_asset or ex_asset == in_asset):
+        merged["fee"] = round(ex_fee + in_fee, 10)
+        if eff_asset := (ex_asset or in_asset):
+            merged["feeAsset"] = eff_asset
     elif ex_fee is not None:
         merged["fee"] = ex_fee
         if ex_asset:
@@ -1982,6 +1976,46 @@ def _merge_optional_order_fee(existing: dict, incoming: dict, merged: dict) -> N
         merged["fee"] = in_fee
         if in_asset:
             merged["feeAsset"] = in_asset
+
+
+def _vwap_merge_filled_row(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+    *,
+    oid_norm: Any,
+    existing_ts: int,
+    incoming_ts: int,
+    fill_ids: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Compute a VWAP-merged filled-order aggregate row from ``existing`` and ``incoming``."""
+    ex_q = safe_pos_float(existing.get("quantity"), default=0.0) or 0.0
+    in_q = safe_pos_float(incoming.get("quantity"), default=0.0) or 0.0
+    tot_q = ex_q + in_q
+    ex_px = safe_pos_float(existing.get("price"), default=0.0) or 0.0
+    in_px = safe_pos_float(incoming.get("price"), default=0.0) or 0.0
+    vwap = (ex_px * ex_q + in_px * in_q) / tot_q if tot_q > 0.0 else in_px
+    merged = dict(existing)
+    merged.update(incoming)
+    merged.update({
+        "orderId": oid_norm,
+        "price": round(vwap, 8) or round(vwap, 16),
+        "quantity": round(tot_q, 8) or round(tot_q, 16),
+        "timestamp": max(existing_ts, incoming_ts),
+        "side": str(existing["side"]).upper(),
+    })
+    if cid_keep := existing.get("clientOrderId") or incoming.get("clientOrderId"):
+        merged["clientOrderId"] = cid_keep
+    if type_keep := clean_upper_scalar(existing.get("type") or incoming.get("type")):
+        merged["type"] = type_keep
+    in_st, ex_st = clean_upper_scalar(incoming.get("status")), clean_upper_scalar(existing.get("status"))
+    if in_st and (incoming_ts >= existing_ts or not ex_st):
+        merged["status"] = in_st
+    elif ex_st:
+        merged["status"] = ex_st
+    _merge_optional_order_fee(existing, incoming, merged)
+    if fill_ids:
+        merged["_fillIds"] = list(dict.fromkeys(fill_ids))
+    return merged
 
 
 class CacheOrderFilledManager(CacheAccountManagerBase):
@@ -2399,40 +2433,15 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                     raise RuntimeError(
                         f"{self.cls_name} received conflicting sides for order {key}"
                     )
-                previous_quantity = safe_pos_float(existing["quantity"], default=0.0) or 0.0
-                additional_quantity = incoming_qty
-                total_quantity = previous_quantity + additional_quantity
-                existing_px = safe_pos_float(existing["price"], default=0.0) or 0.0
-                aggregate_price = (
-                    existing_px * previous_quantity
-                    + incoming_px * additional_quantity
-                ) / total_quantity
-                merged = dict(existing)
-                merged.update(incoming)
-                merged.update(
-                    {
-                        "orderId": self._normalize_order_id(existing["orderId"], strict_int=strict_int),
-                        "price": round(aggregate_price, 8) or round(aggregate_price, 16),
-                        "quantity": round(total_quantity, 8) or round(total_quantity, 16),
-                        "timestamp": max(existing_ts, incoming_ts),
-                        "side": str(existing["side"]).upper(),
-                    }
+                merged = _vwap_merge_filled_row(
+                    existing,
+                    {**incoming, "price": incoming_px, "quantity": incoming_qty},
+                    oid_norm=self._normalize_order_id(existing["orderId"], strict_int=strict_int),
+                    existing_ts=existing_ts,
+                    incoming_ts=incoming_ts,
+                    fill_ids=[*known_fill_id_list, fill_id] if fill_id else None,
                 )
-                if cid_keep := existing.get("clientOrderId") or incoming.get("clientOrderId"):
-                    merged["clientOrderId"] = cid_keep
-                if type_keep := clean_upper_scalar(existing.get("type") or incoming.get("type")):
-                    merged["type"] = type_keep
-                in_st = clean_upper_scalar(incoming.get("status"))
-                ex_st = clean_upper_scalar(existing.get("status"))
-                if in_st and (incoming_ts >= existing_ts or not ex_st):
-                    merged["status"] = in_st
-                elif ex_st:
-                    merged["status"] = ex_st
-                _merge_optional_order_fee(existing, incoming, merged)
                 if fill_id:
-                    merged["_fillIds"] = list(
-                        dict.fromkeys([*known_fill_id_list, fill_id])
-                    )
                     fill_owners[fill_id] = key
                 if legacy_cutoff is not None:
                     merged["_legacyCoveredThrough"] = legacy_cutoff
@@ -2599,21 +2608,14 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                         ex_q = safe_pos_float(ex_row.get("quantity"), default=0.0) or 0.0
                         in_q = safe_pos_float(inc.get("quantity"), default=0.0) or 0.0
                         if inc_fids and ex_fids and not (set(inc_fids) & set(ex_fids)):
-                            tot_q = ex_q + in_q
-                            ex_px = safe_pos_float(ex_row.get("price"), default=0.0) or 0.0
-                            in_px = safe_pos_float(inc.get("price"), default=0.0) or 0.0
-                            vwap = (ex_px * ex_q + in_px * in_q) / tot_q if tot_q > 0.0 else in_px
-                            merged_row = dict(ex_row)
-                            merged_row.update(inc)
-                            merged_row["price"] = round(vwap, 8) or round(vwap, 16)
-                            merged_row["quantity"] = round(tot_q, 8) or round(tot_q, 16)
-                            merged_row["timestamp"] = max(
-                                safe_nonneg_int(ex_row.get("timestamp"), default=0) or 0,
-                                safe_nonneg_int(inc.get("timestamp"), default=0) or 0,
+                            by_oid[inc_key] = _vwap_merge_filled_row(
+                                ex_row,
+                                inc,
+                                oid_norm=ex_row["orderId"],
+                                existing_ts=safe_nonneg_int(ex_row.get("timestamp"), default=0) or 0,
+                                incoming_ts=safe_nonneg_int(inc.get("timestamp"), default=0) or 0,
+                                fill_ids=[*ex_fids, *inc_fids],
                             )
-                            merged_row["_fillIds"] = list(dict.fromkeys([*ex_fids, *inc_fids]))
-                            _merge_optional_order_fee(ex_row, inc, merged_row)
-                            by_oid[inc_key] = merged_row
                         elif in_q > ex_q + 1e-12 or (
                             safe_nonneg_int(inc.get("timestamp"), default=0) or 0
                         ) > (safe_nonneg_int(ex_row.get("timestamp"), default=0) or 0):
@@ -4288,42 +4290,39 @@ def get_asset_value_manager(
 get_asset_value_manager._is_ssot_asset_value_getter = True  # type: ignore[attr-defined]
 
 
-def get_order_filled_manager(
-    venue: str = "binance",
-    symbols=None,
-    filename=None,
+def _get_venue_order_cache_manager(
     *,
-    data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
-) -> CacheOrderFilledManager:
-    """Return the venue ``CacheOrderFilledManager`` singleton without importing ``cacheManager`` in read-only consumers."""
-    v_norm = (
-        "binance"
-        if (venue is None or (isinstance(venue, str) and not venue.strip()))
-        else normalize_venue_name(venue)
-    )
-    cache_name = _VENUE_ORDER_FILLED_CACHE_NAMES.get(v_norm or "")
+    venue: str,
+    symbols: Any,
+    filename: Any,
+    data_sync_mode: Optional[str],
+    cache_cls: type[CacheAccountManagerBase],
+    name_map: dict[str, str],
+    sync_interval_sec: float,
+    cm_getter_name: str,
+    getter_tag: str,
+    err_label: str,
+    resync_existing: bool = False,
+) -> Any:
+    v_norm = "binance" if (venue is None or (isinstance(venue, str) and not venue.strip())) else normalize_venue_name(venue)
+    cache_name = name_map.get(v_norm or "")
     if cache_name is None:
-        raise ValueError(f"Unsupported filled-order cache venue: {venue!r}")
+        raise ValueError(f"Unsupported {err_label} cache venue: {venue!r}")
     is_non_primary = not is_primary_stream_venue(v_norm)
-    default_fname = CacheOrderFilledManager.disk_filename(v_norm)
+    default_fname = cache_cls.disk_filename(v_norm)
     eff_filename = default_fname if filename is None else filename
-    (
-        delegated,
-        res,
-        resolved_mode,
-        save_state_flag,
-        start_periodic,
-        eff_symbols,
-    ) = CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
-        cache_name,
-        symbols=symbols,
-        default_symbols=None if is_non_primary else (lambda: list(sym.symbols)),
-        data_sync_mode=data_sync_mode,
-        filename=eff_filename,
-        default_filename=default_fname,
-        config_read_only=is_non_primary,
-        cm_getter_name="get_order_filled_manager",
-        getter_tag="_is_ssot_order_filled_getter",
+    delegated, res, resolved_mode, save_state_flag, start_periodic, eff_symbols = (
+        CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
+            cache_name,
+            symbols=symbols,
+            default_symbols=None if is_non_primary else (lambda: list(sym.symbols)),
+            data_sync_mode=data_sync_mode,
+            filename=eff_filename,
+            default_filename=default_fname,
+            config_read_only=is_non_primary,
+            cm_getter_name=cm_getter_name,
+            getter_tag=getter_tag,
+        )
     )
     if delegated:
         return res
@@ -4333,14 +4332,37 @@ def get_order_filled_manager(
         cache_name,
         can_reuse_fn=lambda _inst: can_cache and is_readonly,
         can_store=can_cache,
-        builder_fn=lambda: CacheOrderFilledManager(
-            sync_ts=ORDER_SYNC_INTERVAL_SEC,
+        builder_fn=lambda: cache_cls(
+            sync_ts=sync_interval_sec,
             filename=eff_filename,
             symbols=eff_symbols,
             read_only=(is_non_primary or is_readonly),
             data_sync_mode=resolved_mode,
             venue=v_norm,
         ),
+        resync_existing=resync_existing,
+    )
+
+
+def get_order_filled_manager(
+    venue: str = "binance",
+    symbols=None,
+    filename=None,
+    *,
+    data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
+) -> CacheOrderFilledManager:
+    """Return the venue ``CacheOrderFilledManager`` singleton without importing ``cacheManager`` in read-only consumers."""
+    return _get_venue_order_cache_manager(
+        venue=venue,
+        symbols=symbols,
+        filename=filename,
+        data_sync_mode=data_sync_mode,
+        cache_cls=CacheOrderFilledManager,
+        name_map=_VENUE_ORDER_FILLED_CACHE_NAMES,
+        sync_interval_sec=ORDER_SYNC_INTERVAL_SEC,
+        cm_getter_name="get_order_filled_manager",
+        getter_tag="_is_ssot_order_filled_getter",
+        err_label="filled-order",
     )
 
 
@@ -4355,51 +4377,17 @@ def get_order_open_manager(
     data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
 ) -> CacheOrderOpenManager:
     """Return the venue ``CacheOrderOpenManager`` singleton without importing ``cacheManager`` in read-only consumers."""
-    v_norm = (
-        "binance"
-        if (venue is None or (isinstance(venue, str) and not venue.strip()))
-        else normalize_venue_name(venue)
-    )
-    cache_name = _VENUE_ORDER_OPEN_CACHE_NAMES.get(v_norm or "")
-    if cache_name is None:
-        raise ValueError(f"Unsupported open-order cache venue: {venue!r}")
-    is_non_primary = not is_primary_stream_venue(v_norm)
-    default_fname = CacheOrderOpenManager.disk_filename(v_norm)
-    eff_filename = default_fname if filename is None else filename
-    (
-        delegated,
-        res,
-        resolved_mode,
-        save_state_flag,
-        start_periodic,
-        eff_symbols,
-    ) = CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
-        cache_name,
+    return _get_venue_order_cache_manager(
+        venue=venue,
         symbols=symbols,
-        default_symbols=None if is_non_primary else (lambda: list(sym.symbols)),
+        filename=filename,
         data_sync_mode=data_sync_mode,
-        filename=eff_filename,
-        default_filename=default_fname,
-        config_read_only=is_non_primary,
+        cache_cls=CacheOrderOpenManager,
+        name_map=_VENUE_ORDER_OPEN_CACHE_NAMES,
+        sync_interval_sec=OPEN_ORDER_SYNC_INTERVAL_SEC,
         cm_getter_name="get_order_open_manager",
         getter_tag="_is_ssot_order_open_getter",
-    )
-    if delegated:
-        return res
-    can_cache = symbols is None and eff_filename == default_fname
-    is_readonly = not save_state_flag and not start_periodic
-    return _get_or_create_readonly_account_reader(
-        cache_name,
-        can_reuse_fn=lambda _inst: can_cache and is_readonly,
-        can_store=can_cache,
-        builder_fn=lambda: CacheOrderOpenManager(
-            sync_ts=OPEN_ORDER_SYNC_INTERVAL_SEC,
-            filename=eff_filename,
-            symbols=eff_symbols,
-            read_only=(is_non_primary or is_readonly),
-            data_sync_mode=resolved_mode,
-            venue=v_norm,
-        ),
+        err_label="open-order",
         resync_existing=True,
     )
 

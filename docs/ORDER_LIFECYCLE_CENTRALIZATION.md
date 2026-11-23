@@ -8,7 +8,7 @@ This architecture separates **order execution & traceability** into two strictly
    - `cachedb/orders/cache_order_open_<venue>.json` mirrors resting open orders per venue (WS real-time with REST fallback).
    - `cachedb/orders/cache_order_filled_<venue>.json` mirrors aggregated executed orders per venue (VWAP, quantity, optional fee/feeAsset, `clientOrderId`, `status`).
    - Knows nothing about local strategy decisions, intents, or guard rejections.
-2. **Internal Cross-Venue Order Ledger SSoT (`providers/order_ledger.py` + `order_ledger_worker.py`):**
+2. **Internal Cross-Venue Order Ledger SSoT (`providers/order_ledger.py` + `order_ledger_reconciler_worker.py`):**
    - File-based, compact, human-inspectable CQRS-lite operational ledger in `cachedb/orders/` (no database):
      - `order_events_YYYY-MM-DD.jsonl` — multi-producer append-only (`O_APPEND` + `flock`) event journal recording every local order operation and decision across all venues and bots (`INTENT`, `GUARD_BLOCKED`, `SCALED`, `SUBMITTED`, `ACKED`, `SUBMIT_REFUSED`, `SUBMIT_UNKNOWN`, `CANCEL_REQ`, `CANCEL_ACK`, `CANCEL_FAILED`, `STATUS`, `RECOVERED`, plus reconciler transitions).
      - `orders_active.json` — single-writer materialized active state-machine snapshot (`INTENT`, `SUBMITTED`, `SUBMIT_UNKNOWN`, `OPEN`, `PARTIAL`, `CANCELING`) with `journal_cursor`, reconciled strictly network-free against `CacheOrderOpenManager` and `CacheOrderFilledManager` so it converges continuously toward 1:1 parity with live venue state.

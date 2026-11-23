@@ -15,6 +15,7 @@ from functools import partial
 import inspect
 import os
 import sys
+import time
 from typing import Optional, List, Callable, Any
 
 from cachepaths import normalize_venue_name
@@ -713,24 +714,37 @@ class Instrument:
             except Exception as _e:  # noqa: BLE001
                 print(f"[{self.symbol}] {ctx.side_u} enqueue retry failed (ignored): {_e}")
 
-        # Record pre-submit guard decisions and non-outbox acceptances into the global Order Ledger SSoT.
+        # Record tracked pre-submit guard blocks (deduped) and non-outbox acceptances into the Order Ledger SSoT.
+        ledger_iid = clean_order_id(ctx.kwargs.get("intent_id"))
+        ledger_cid = clean_order_id(ctx.prequeued_client_order_id) or clean_order_id(ctx.kwargs.get("client_order_id"))
         if ctx.order is None and not ctx.submit_attempted and not ctx.prequeued_intent_id:
-            get_default_ledger_writer().record_event(
-                OrderEventType.GUARD_BLOCKED,
-                venue=self.provider_name,
-                symbol=self.symbol,
-                owner=ctx.caller_module or caller,
-                side=ctx.side_u,
-                market=ctx.is_market,
-                qty=ctx.qty if safe_pos_float(ctx.qty, default=None) is not None else ctx.orig_qty,
-                px=ctx.price if safe_pos_float(ctx.price, default=None) is not None else ctx.orig_price,
-                iid=clean_order_id(ctx.kwargs.get("intent_id")),
-                cid=clean_order_id(ctx.prequeued_client_order_id) or clean_order_id(ctx.kwargs.get("client_order_id")),
-                kind=ctx.order_kind,
-                reason=ctx.reason,
-                deferred=ctx.retry_enqueued,
-                src="instrument_guard",
-            )
+            if ctx.retry_enqueued or ledger_iid or ledger_cid:
+                dedup_key = (str(self.provider_name), str(self.symbol), ledger_iid or ledger_cid or "", str(ctx.reason or ""))
+                now_mono = time.monotonic()
+                dedup_map = getattr(Instrument, "_ledger_guard_block_dedup", None)
+                if dedup_map is None:
+                    dedup_map = {}
+                    Instrument._ledger_guard_block_dedup = dedup_map
+                if (now_mono - dedup_map.get(dedup_key, -1e9)) >= 300.0:
+                    if len(dedup_map) > 512:
+                        dedup_map.clear()
+                    dedup_map[dedup_key] = now_mono
+                    get_default_ledger_writer().record_event(
+                        OrderEventType.GUARD_BLOCKED,
+                        venue=self.provider_name,
+                        symbol=self.symbol,
+                        owner=ctx.caller_module or caller,
+                        side=ctx.side_u,
+                        market=ctx.is_market,
+                        qty=ctx.qty if safe_pos_float(ctx.qty, default=None) is not None else ctx.orig_qty,
+                        px=ctx.price if safe_pos_float(ctx.price, default=None) is not None else ctx.orig_price,
+                        iid=ledger_iid,
+                        cid=ledger_cid,
+                        kind=ctx.order_kind,
+                        reason=ctx.reason,
+                        deferred=ctx.retry_enqueued,
+                        src="instrument_guard",
+                    )
         elif ctx.order is not None and not ctx.prequeued_intent_id and not ctx.caller_owns_retry:
             get_default_ledger_writer().record_event(
                 OrderEventType.ACKED,
@@ -741,8 +755,8 @@ class Instrument:
                 market=ctx.is_market,
                 qty=ctx.qty,
                 px=ctx.price,
-                iid=clean_order_id(ctx.kwargs.get("intent_id")),
-                cid=clean_order_id(ctx.kwargs.get("client_order_id")),
+                iid=ledger_iid,
+                cid=ledger_cid,
                 vid=extract_order_id(ctx.order),
                 kind=ctx.order_kind,
                 vst=ctx.order.get("status") if isinstance(ctx.order, dict) else None,
