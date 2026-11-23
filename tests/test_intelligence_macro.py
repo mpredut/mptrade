@@ -367,6 +367,111 @@ class TestGeopoliticalThreatAnalyzer:
         assert len(calls) == 2
         assert res3 == res2
 
+    def test_repeated_llm_fallback_preserves_prior_normal_assessment_without_false_escalation(self, tmp_path):
+        """Sustained LLM outage over multiple retry windows must keep a valid cached NORMAL instead of escalating to ELEVATED."""
+        state = {"mode": "normal", "calls": 0}
+
+        def scripted_runner(prompt, model, timeout):
+            state["calls"] += 1
+            if state["mode"] == "fail":
+                return None
+            return json.dumps({
+                "threat_level": "NORMAL",
+                "risk_score": 0.10,
+                "summary": "Ongoing conflict headlines are priced in with calm cross-asset markets.",
+                "recommended_brake": "NONE",
+            })
+
+        base_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Google News</title>
+    <item><title>Commentary on ongoing war and sanctions debate</title></item>
+    <item><title>Analysts discuss military strike history and conflict</title></item>
+  </channel>
+</rss>
+"""
+        new_non_acute_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Google News</title>
+    <item><title>Commentary on ongoing war and sanctions debate</title></item>
+    <item><title>Parliament reviews defense war budget and sanctions package</title></item>
+  </channel>
+</rss>
+"""
+        acute_shock_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Google News</title>
+    <item><title>Breaking: Strait of Hormuz closed after sudden missile attack</title></item>
+  </channel>
+</rss>
+"""
+        snap_base = NewsFeedCollector.parse_rss_xml(base_xml)
+        snap_non_acute = NewsFeedCollector.parse_rss_xml(new_non_acute_xml)
+        snap_acute = NewsFeedCollector.parse_rss_xml(acute_shock_xml)
+
+        client = GeminiClient(custom_runner=scripted_runner)
+        analyzer = GeopoliticalThreatAnalyzer(
+            gemini_client=client,
+            cache_ttl_sec=16200.0,
+            fallback_retry_ttl_sec=120.0,
+            state_file=str(tmp_path / "geo_sustained_outage.json"),
+        )
+
+        t0 = 2_100_000.0
+        res_ok = analyzer.assess(snap_base, now_ts=t0)
+        assert state["calls"] == 1
+        assert res_ok.threat_level == "NORMAL"
+        assert res_ok.risk_score == pytest.approx(0.10)
+        assert res_ok.recommended_brake == "NONE"
+        assert res_ok.is_fallback is False
+
+        # Enter sustained LLM outage and advance past cache TTL with a fresh non-acute headline
+        state["mode"] = "fail"
+        res_fb1 = analyzer.assess(snap_non_acute, now_ts=t0 + 16300.0)
+        assert state["calls"] == 2
+        assert res_fb1.threat_level == "NORMAL"
+        assert res_fb1.risk_score == pytest.approx(0.10)
+        assert res_fb1.recommended_brake == "NONE"
+        assert res_fb1.summary == res_ok.summary
+        assert res_fb1.is_fallback is True
+
+        # 2nd and 3rd consecutive retries past 120s fallback TTL must STILL preserve NORMAL (no false ELEVATED 0.70!)
+        res_fb2 = analyzer.assess(snap_non_acute, now_ts=t0 + 16425.0)
+        assert state["calls"] == 3
+        assert res_fb2.threat_level == "NORMAL"
+        assert res_fb2.risk_score == pytest.approx(0.10)
+        assert res_fb2.recommended_brake == "NONE"
+        assert res_fb2.summary == res_ok.summary
+        assert res_fb2.is_fallback is True
+
+        res_fb3 = analyzer.assess(snap_non_acute, now_ts=t0 + 16550.0)
+        assert state["calls"] == 4
+        assert res_fb3.threat_level == "NORMAL"
+        assert res_fb3.risk_score == pytest.approx(0.10)
+        assert res_fb3.recommended_brake == "NONE"
+        assert res_fb3.summary == res_ok.summary
+        assert res_fb3.is_fallback is True
+
+        # Genuine acute shock headline during outage must still escalate immediately to CRITICAL_SHOCK
+        res_acute = analyzer.assess(snap_acute, now_ts=t0 + 16675.0)
+        assert state["calls"] == 5
+        assert res_acute.threat_level == "CRITICAL_SHOCK"
+        assert res_acute.risk_score == pytest.approx(0.90)
+        assert res_acute.recommended_brake == "HARD_VETO_NEW_BUYS"
+        assert res_acute.is_fallback is True
+
+        # Recovery when LLM returns clears is_fallback cleanly
+        state["mode"] = "normal"
+        res_rec = analyzer.assess(snap_non_acute, now_ts=t0 + 16800.0)
+        assert state["calls"] == 6
+        assert res_rec.threat_level == "NORMAL"
+        assert res_rec.recommended_brake == "NONE"
+        assert res_rec.is_fallback is False
+
+
 
 
 class TestGeopoliticalShockGuard:

@@ -16713,6 +16713,125 @@ def test_iter9_prune_superseded_open_lots_after_partial_sell_reconciles_active_l
     assert sum(lt["qty"] for lt in recent_orders["BTCUSDC"]["open_lots"]) == pytest.approx(0.053, abs=1e-5)
 
 
+def test_oauth_access_token_refresh_preserves_alert_cooldown_and_runtime_exhausted(tmp_path, monkeypatch):
+    """Hourly OAuth access_token rotation on the same account must not reset alert cooldown or runtime_exhausted."""
+    import orchestratorOS.lib.watchdog_common as wc_mod
+    from intelligence.sentiment.gemini_client import GeminiClient
+
+    q_dir = tmp_path / "q_refresh"
+    q_dir.mkdir(parents=True, exist_ok=True)
+    tok_file = q_dir / "antigravity-oauth-token"
+    q_state_file = q_dir / "llm_quota_status.json"
+    monkeypatch.setattr(GeminiClient, "_get_quota_state_path", staticmethod(lambda: str(q_state_file)))
+    monkeypatch.setattr("intelligence.sentiment.llm_quota_router.resolve_bot_cli_base", lambda: str(q_dir))
+    monkeypatch.setenv("LLM_QUOTA_ALERT_COOLDOWN_SEC", "14400")
+    GeminiClient._QUOTA_MEM_CACHE = {}
+
+    alerts = []
+    monkeypatch.setattr(wc_mod, "send_ntfy", lambda title, msg, **kw: alerts.append((title, msg)))
+
+    paid_model = os.environ["LLM_DEFAULT_MODEL"].strip()
+    mock_state = {"paid_frac": 0.0, "claude_frac": 0.8, "flash_frac": 1.0, "tier": "g1-pro-tier"}
+
+    def _mock_post(url, *args, **kwargs):
+        if "loadCodeAssist" in url:
+            return {
+                "currentTier": {"id": mock_state["tier"]},
+                "paidTier": {"id": mock_state["tier"], "availableCredits": []},
+            }
+        return {
+            "buckets": [
+                {"modelId": paid_model, "remainingFraction": mock_state["paid_frac"]},
+                {"modelId": "claude-sonnet-4-6-thinking", "remainingFraction": mock_state["claude_frac"]},
+                {"modelId": "gemini-3-flash", "remainingFraction": mock_state["flash_frac"]},
+            ]
+        }
+
+    monkeypatch.setattr("intelligence.sentiment.llm_quota_router.fetch_json_post", _mock_post)
+
+    # 1. Initial exhausted probe on account A sends exactly 1 alert
+    tok_file.write_text(
+        json.dumps({
+            "id_token_email": "bot-acct-a@example.com",
+            "token": {
+                "access_token": "ya29.acctA-hour1",
+                "refresh_token": "1//acctA-refresh",
+                "expires_in": 3599,
+            },
+        }),
+        encoding="utf-8",
+    )
+    snap1 = GeminiClient.probe_live_model_quota(bot_cli_base=str(q_dir), force_refresh=True)
+    assert snap1 is not None
+    assert len(alerts) == 1
+    assert snap1["last_alert_tier"] == "primary_low"
+    fp_a = snap1["oauth_token_fp"]
+    alert_ts_1 = snap1["last_alert_ts"]
+    assert alert_ts_1 > 0.0
+
+    GeminiClient._record_model_quota_exhausted(paid_model, ttl_sec=600.0)
+
+    # 2. Routine hourly access_token refresh on the SAME account must preserve fp, cooldown, and runtime_exhausted
+    tok_file.write_text(
+        json.dumps({
+            "id_token_email": "bot-acct-a@example.com",
+            "token": {
+                "access_token": "ya29.acctA-hour2",
+                "refresh_token": "1//acctA-refresh",
+                "expires_in": 3599,
+            },
+        }),
+        encoding="utf-8",
+    )
+    snap2 = GeminiClient.probe_live_model_quota(bot_cli_base=str(q_dir), force_refresh=True)
+    assert snap2 is not None
+    assert snap2["oauth_token_fp"] == fp_a
+    assert snap2["last_alert_ts"] == pytest.approx(alert_ts_1, abs=1e-6)
+    assert snap2["last_alert_tier"] == "primary_low"
+    assert paid_model in snap2["runtime_exhausted"]
+    assert len(alerts) == 1  # Cooldown respected: no hourly duplicate alert
+
+    # 3. Refresh-token fallback when id_token_email is absent also stays stable across access_token rotation
+    tok_file.write_text(
+        json.dumps({"token": {"access_token": "ya29.rt-hour1", "refresh_token": "1//stable-rt"}}),
+        encoding="utf-8",
+    )
+    snap_rt1 = GeminiClient.probe_live_model_quota(bot_cli_base=str(q_dir), force_refresh=True)
+    assert snap_rt1 is not None
+    tok_file.write_text(
+        json.dumps({"token": {"access_token": "ya29.rt-hour2", "refresh_token": "1//stable-rt"}}),
+        encoding="utf-8",
+    )
+    snap_rt2 = GeminiClient.probe_live_model_quota(bot_cli_base=str(q_dir), force_refresh=True)
+    assert snap_rt2 is not None
+    assert snap_rt2["oauth_token_fp"] == snap_rt1["oauth_token_fp"]
+    assert len(alerts) == 2  # One alert for the account change to rt-only, zero for its hourly refresh
+
+    # 4. Genuine account switch (different id_token_email) invalidates cache immediately and clears runtime_exhausted
+    GeminiClient._record_model_quota_exhausted(paid_model, ttl_sec=600.0)
+    mock_state["paid_frac"] = 1.0
+    mock_state["tier"] = "g1-ultra-tier"
+    tok_file.write_text(
+        json.dumps({
+            "id_token_email": "bot-acct-b@example.com",
+            "token": {
+                "access_token": "ya29.acctB-fresh",
+                "refresh_token": "1//acctB-refresh",
+                "expires_in": 3599,
+            },
+        }),
+        encoding="utf-8",
+    )
+    snap_b = GeminiClient.probe_live_model_quota(bot_cli_base=str(q_dir), force_refresh=False)
+    assert snap_b is not None
+    assert snap_b["oauth_token_fp"] != snap_rt2["oauth_token_fp"]
+    assert snap_b["tier_id"] == "g1-ultra-tier"
+    assert snap_b["buckets"][paid_model] == 1.0
+    assert snap_b["runtime_exhausted"] == {}
+    assert snap_b["last_alert_tier"] == "ok"
+
+
+
 
 
 

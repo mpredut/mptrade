@@ -140,6 +140,26 @@ def resolve_quota_low_warn_fraction(default: float = 0.10) -> float:
     return max(0.0, min(0.5, val if val is not None else default))
 
 
+def _resolve_oauth_account_fp(
+    tok_data: Mapping[str, Any],
+    nested_tok: Mapping[str, Any],
+    access_token: str,
+) -> str:
+    """Return a stable OAuth account fingerprint across hourly access_token refreshes.
+
+    Prefers immutable account identifiers (``id_token_email``, then ``refresh_token``) so
+    routine token rotation does not mimic an account switch and reset alert cooldowns or
+    ``runtime_exhausted`` state; falls back to ``access_token`` when neither is present.
+    """
+    email = str(tok_data.get("id_token_email") or nested_tok.get("id_token_email") or "").strip().lower()
+    if email:
+        identity = f"email:{email}"
+    else:
+        refresh_tok = str(nested_tok.get("refresh_token") or tok_data.get("refresh_token") or "").strip()
+        identity = f"refresh:{refresh_tok}" if refresh_tok else access_token
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16] if identity else ""
+
+
 def resolve_quota_soft_conserve_fraction(default: float = 0.25) -> float:
     """Return clamped ``LLM_QUOTA_SOFT_CONSERVE_FRACTION`` in ``[0.0, 0.8]`` (0.0 disables)."""
     raw = float_env("LLM_QUOTA_SOFT_CONSERVE_FRACTION", default=default)
@@ -496,16 +516,19 @@ class GeminiQuotaRouterMixin:
             else _resolve_bot_cli_base()
         )
         access_token = ""
+        tok_dict: Dict[str, Any] = {}
+        nested_tok: Dict[str, Any] = {}
         if target_cli_base:
             tok_path = os.path.join(target_cli_base, "antigravity-oauth-token")
             tok_data = _read_json_dict(tok_path, default={})
-            if tok_data:
-                nested_tok = tok_data.get("token") if isinstance(tok_data.get("token"), dict) else {}
-                tok = str(nested_tok.get("access_token") or tok_data.get("access_token") or "").strip()
+            if isinstance(tok_data, dict) and tok_data:
+                tok_dict = tok_data
+                nested_tok = tok_dict.get("token") if isinstance(tok_dict.get("token"), dict) else {}
+                tok = str(nested_tok.get("access_token") or tok_dict.get("access_token") or "").strip()
                 exp_ts = (
                     first_epoch_sec(
                         nested_tok.get("expiry_timestamp"),
-                        tok_data.get("expiry_timestamp"),
+                        tok_dict.get("expiry_timestamp"),
                         default=0.0,
                         allow_iso=True,
                     )
@@ -514,7 +537,7 @@ class GeminiQuotaRouterMixin:
                 if tok and (exp_ts <= 0.0 or exp_ts > now + 10.0):
                     access_token = tok
 
-        token_fp = hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16] if access_token else ""
+        token_fp = _resolve_oauth_account_fp(tok_dict, nested_tok, access_token) if access_token else ""
 
         with cls._QUOTA_LOCK:
             for is_disk in (False, True):

@@ -69,6 +69,17 @@ class GeopoliticalThreatAssessment:
     is_fallback: bool = False
 
 
+_KEYWORD_FALLBACK_SUMMARY_PREFIX = "Automated keyword detection triggered "
+
+
+def _is_synthetic_keyword_fallback(assessment: Optional[GeopoliticalThreatAssessment]) -> bool:
+    """Return True when an assessment was synthesized by keyword fallback rather than a real evaluation."""
+    if assessment is None:
+        return False
+    summary_lc = str(assessment.summary or "").strip().lower()
+    return summary_lc.startswith(_KEYWORD_FALLBACK_SUMMARY_PREFIX.lower()) or "llm fallback" in summary_lc
+
+
 class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
     """Evaluates breaking macro headlines through a multi-stage filter: keyword screening + Gemini LLM."""
 
@@ -417,7 +428,11 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
                 cache_dir=state_cache_dir,
                 now_ts=now,
             )
-            if self._cached_assessment is not None and not self._cached_assessment.is_fallback and not has_acute_phrase:
+            if (
+                self._cached_assessment is not None
+                and not _is_synthetic_keyword_fallback(self._cached_assessment)
+                and not has_acute_phrase
+            ):
                 return self._commit_assessment(
                     GeopoliticalThreatAssessment(
                         threat_level=self._cached_assessment.threat_level,
@@ -437,7 +452,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
                 GeopoliticalThreatAssessment(
                     threat_level=level,
                     risk_score=0.7 if level == "ELEVATED" else 0.9,
-                    summary=f"Automated keyword detection triggered {level} during LLM fallback.",
+                    summary=f"{_KEYWORD_FALLBACK_SUMMARY_PREFIX}{level} during LLM fallback.",
                     recommended_brake="HARD_VETO_NEW_BUYS" if level == "CRITICAL_SHOCK" else "DOWNSCALE_50",
                     headlines_analyzed=len(high_sev),
                     ts=now,
