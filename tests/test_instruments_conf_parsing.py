@@ -215,6 +215,10 @@ def test_current_execution_policy_is_preserved(tmp_path):
     modes = {item.symbol: item.setting("tradeall.kalman_mode") for item in
              registry.select_instruments("binance", "tradeall_fire").values()}
     assert modes == {"BTCUSDC": "strict", "TAOUSDC": "strict", "ARBUSDC": "strict"}
+    assert set(registry.symbols_for("hyperliquid", "tradeall_fire")) == {"HYPEUSDC"}
+    hl_modes = {item.symbol: item.setting("tradeall.kalman_mode") for item in
+                registry.select_instruments("hyperliquid", "tradeall_fire").values()}
+    assert hl_modes == {"HYPEUSDC": "strict"}
     trails = {item.symbol: item.number("trailing.pct") for item in
               registry.select_instruments("binance", "trailing").values()}
     assert set(trails) == {"BTCUSDC", "TAOUSDC", "ARBUSDC"}
