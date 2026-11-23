@@ -1023,7 +1023,8 @@ def evaluate_microstructure_cycle_deltas(
                 delta_d["ob_imbalance_delta"] = round(cur_ob - p_ob, 4)
                 delta_d["prev_ob_imbalance"] = round(p_ob, 4)
             ref_cvd_raw = safe_float(ref_snap.get("cvd_15m_usd"), None)
-            if cur_cvd is not None and _is_same_cvd_source_bar(cur_bar_ts_ms, cur_tr, cur_cvd, ref_snap):
+            same_taker_bar = _is_same_cvd_source_bar(cur_bar_ts_ms, cur_tr, cur_cvd, ref_snap)
+            if cur_cvd is not None and same_taker_bar:
                 p_cvd = cur_cvd
                 for cand in reversed(h_list):
                     if not isinstance(cand, dict):
@@ -1087,7 +1088,26 @@ def evaluate_microstructure_cycle_deltas(
                 if abs(oi_d_pct) <= 80.0:
                     delta_d["oi_delta_pct"] = oi_d_pct
                     delta_d["prev_oi_usd"] = round(eff_p_oi, 2)
-            if cur_tr is not None and (p_tr := safe_pos_float(ref_snap.get("taker_buy_sell_ratio"), default=None)) is not None:
+            ref_tr_raw = safe_pos_float(ref_snap.get("taker_buy_sell_ratio"), default=None)
+            if cur_tr is not None and same_taker_bar:
+                p_tr = cur_tr
+                for cand in reversed(h_list):
+                    if not isinstance(cand, dict):
+                        continue
+                    cand_ts = normalize_epoch_sec(cand.get("ts"), default=0.0) or 0.0
+                    if cand_ts > 0.0 and 180.0 <= (eff_now - cand_ts) <= 900.0:
+                        if _is_same_cvd_source_bar(cur_bar_ts_ms, cur_tr, cur_cvd, cand):
+                            continue
+                        cand_tr = safe_pos_float(cand.get("taker_buy_sell_ratio"), default=None)
+                        if cand_tr is not None and abs(cur_tr - cand_tr) >= 1e-4:
+                            p_tr = cand_tr
+                            break
+            else:
+                p_tr = _resolve_non_static_prev_metric(
+                    h_list, eff_now, "taker_buy_sell_ratio", cur_tr, ref_tr_raw,
+                    static_tol=1e-4, min_diff=0.005,
+                )
+            if cur_tr is not None and p_tr is not None:
                 delta_d["taker_ratio_delta"] = round(cur_tr - p_tr, 4)
                 delta_d["prev_taker_ratio"] = round(p_tr, 4)
             if cur_basis is not None and (p_basis := _closest_snap_with_metric(h_list, 900.0, 480.0, 1800.0, "perp_spot_basis_bps")) is not None:
@@ -1188,7 +1208,7 @@ def update_microstructure_cycle_deltas(
 _SIBLING_VP_KEYS: frozenset[str] = frozenset({
     "sec_poc_px", "hvn2_px", "lvn_px", "profile_shape",
     "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct",
-    "val_dist_pct", "va_pos_pct", "va_regime", "vp_source",
+    "val_dist_pct", "va_pos_pct", "va_regime", "va_hold_min", "vp_source",
 })
 _SIBLING_BOTTOM_KEYS: frozenset[str] = frozenset({
     "bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px",
@@ -1484,7 +1504,7 @@ def sync_sibling_symbol_telemetry(
         "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct", "recent_tape_15m",
         "swing_low_px", "swing_high_px", "major_swing_low_px",
         "rally_from_swing_low_pct", "pullback_from_swing_high_pct", "rally_from_major_low_pct",
-        "poc_px", "sec_poc_px", "hvn2_px", "lvn_px", "profile_shape", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime", "vp_source",
+        "poc_px", "sec_poc_px", "hvn2_px", "lvn_px", "profile_shape", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime", "va_hold_min", "vp_source",
         "session_vwap_px", "dist_vs_session_vwap_pct", "session_vwap_sigma_pct", "session_vwap_z", "session_vwap_anchor", "session_extremes",
         "bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px", "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct",
     }

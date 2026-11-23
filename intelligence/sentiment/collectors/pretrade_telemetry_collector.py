@@ -128,6 +128,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     format_multi_window_slopes_core,
     format_session_extremes_parts,
     format_session_vwap_summary,
+    format_va_hold_suffix,
     is_unseeded_kalman_state,
     recalculate_live_price_geometry,
     apply_24h_series_enrichment,
@@ -1199,7 +1200,7 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
                 f"POC=${m24.get('poc_px')} ({safe_float(m24.get('poc_dist_pct'), 0.0):+.2f}%){sec_poc_s}{lvn_s}, "
                 f"VAL=${m24.get('val_px')} ({safe_float(m24.get('val_dist_pct'), 0.0):+.2f}%), "
                 f"VAH=${m24.get('vah_px')} ({safe_float(m24.get('vah_dist_pct'), 0.0):+.2f}%), "
-                f"va_pos={m24.get('va_pos_pct')}%{vp_src_s}"
+                f"va_pos={m24.get('va_pos_pct')}%{format_va_hold_suffix(m24)}{vp_src_s}"
             )
 
         if atr_parts := format_atr_parts(m24):

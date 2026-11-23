@@ -117,6 +117,55 @@ def build_vp_position_dict(cur_px: float, poc_px: float, val_px: float, vah_px: 
     }
 
 
+def compute_va_breakout_hold_min(
+    ts_px_pts: List[Tuple[float, float]],
+    val_px: float,
+    vah_px: float,
+    *,
+    max_gap_ms: float = 3_600_000.0,
+) -> Optional[float]:
+    """Compute continuous hold duration (minutes) outside Value Area (symmetric above VAH / below VAL)."""
+    if not ts_px_pts or len(ts_px_pts) < 2 or val_px <= 0.0 or vah_px <= val_px:
+        return None
+    t_now, cur_px = ts_px_pts[-1]
+    if (t_now - ts_px_pts[0][0]) < 900_000.0:
+        return None
+    is_above = cur_px > vah_px
+    is_below = cur_px < val_px
+    if not (is_above or is_below):
+        return None
+    hold_start_ms = t_now
+    for idx in range(len(ts_px_pts) - 2, -1, -1):
+        t_i, px_i = ts_px_pts[idx]
+        if (ts_px_pts[idx + 1][0] - t_i) > max_gap_ms:
+            break
+        if (px_i > vah_px) if is_above else (px_i < val_px):
+            hold_start_ms = t_i
+        else:
+            break
+    return round(max(0.0, (t_now - hold_start_ms) / 60_000.0), 1) + 0.0
+
+
+def format_va_hold_suffix(entry: Any, *, va_regime: Optional[str] = None) -> str:
+    """Format compact symmetric Value-Area breakout hold tag (', above_vah=35m' / ', below_val=35m', or '')."""
+    if not isinstance(entry, dict):
+        return ""
+    eff_reg = str(va_regime if va_regime is not None else entry.get("va_regime") or "").strip().upper()
+    if eff_reg not in ("ABOVE_VAH", "BELOW_VAL"):
+        return ""
+    hold_min = safe_nonneg_float(entry.get("va_hold_min"), default=None)
+    if hold_min is None:
+        return ""
+    if hold_min < 0.5:
+        dur_s = "0m"
+    elif hold_min < 10.0:
+        dur_s = f"{hold_min:.1f}".rstrip("0").rstrip(".") + "m"
+    else:
+        dur_s = f"{round(hold_min)}m"
+    tag = "above_vah" if eff_reg == "ABOVE_VAH" else "below_val"
+    return f", {tag}={dur_s}"
+
+
 def compute_horizon_range_dict(cur_px: float, low_px: float, high_px: float, suffix: str) -> Dict[str, Any]:
     """Build low/high range geometry (`dd_<sfx>_high_pct`, `bounce_<sfx>_low_pct`, `span_<sfx>_pct`, `pos_<sfx>_pct`)."""
     out: Dict[str, Any] = {f"low_{suffix}": low_px, f"high_{suffix}": high_px}
@@ -147,11 +196,13 @@ def compute_volume_profile_metrics(
             if (precleaned_ts_px is not None and _TWO_COL_TS_PX_IDS.get(id(precleaned_ts_px)) is precleaned_ts_px)
             else any(not isinstance(r, (list, tuple)) or len(r) != 2 for r in series)
         )
+        hold_ts_px: Optional[List[Tuple[float, float]]] = None
         if not has_vol_or_scalar:
             ts_px_pts = precleaned_ts_px if precleaned_ts_px is not None else _extract_sorted_ts_px(series)
             n_pts = len(ts_px_pts)
             if n_pts < 4:
                 return {}
+            hold_ts_px = ts_px_pts
             has_real_vol = False
             if n_pts > 4000:
                 step = max(1, n_pts // 2000)
@@ -187,6 +238,7 @@ def compute_volume_profile_metrics(
                         clean_rows.append(s_rows[idx])
                     clean_rows.append(s_rows[-1])
                     s_rows = clean_rows
+                hold_ts_px = [(t_ms, px_f) for t_ms, px_f, _ in s_rows]
                 raw_pairs = [(px_f, vol_w) for _, px_f, vol_w in s_rows]
             else:
                 raw_pairs = [(px_f, 0.0) for px_f in scalar_rows]
@@ -349,6 +401,8 @@ def compute_volume_profile_metrics(
             "profile_shape": profile_shape,
             **build_vp_position_dict(cur_px, poc_px, val_px, vah_px),
         }
+        if hold_ts_px and (va_hold_min := compute_va_breakout_hold_min(hold_ts_px, val_px, vah_px)) is not None:
+            out_vp["va_hold_min"] = va_hold_min
         if hvn2_px is not None:
             out_vp["hvn2_px"] = hvn2_px
             out_vp["sec_poc_px"] = hvn2_px
@@ -2031,7 +2085,13 @@ def recalculate_anchor_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> No
         return
     poc_v, val_v, vah_v = (safe_pos_float(pinfo.get(k), default=0.0) or 0.0 for k in ("poc_px", "val_px", "vah_px"))
     if poc_v > 0.0 and val_v > 0.0 and vah_v > val_v:
+        prev_va_regime = pinfo.get("va_regime")
         pinfo.update(build_vp_position_dict(p_cur, poc_v, val_v, vah_v))
+        new_va_regime = pinfo.get("va_regime")
+        if new_va_regime not in ("ABOVE_VAH", "BELOW_VAL"):
+            pinfo.pop("va_hold_min", None)
+        elif prev_va_regime is not None and prev_va_regime != new_va_regime:
+            pinfo["va_hold_min"] = 0.0
     if (vwap_v := safe_pos_float(pinfo.get("session_vwap_px"), default=None)) is not None:
         pinfo["dist_vs_session_vwap_pct"] = pct_delta(p_cur, vwap_v)
         if (sig_pct_v := safe_pos_float(pinfo.get("session_vwap_sigma_pct"), default=None)) is not None:
@@ -2084,6 +2144,8 @@ def restore_rth_metric_anchors(
     eff_px = safe_pos_float(live_px, default=None)
     if eff_px is not None:
         recalculate_anchor_price_geometry(m24, eff_px)
+    if isinstance(vp_src, dict) and vp_src:
+        m24.pop("va_hold_min", None)
 
 
 def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None:

@@ -11,6 +11,7 @@ Intentional prompt compression & cycle-boundary invariants (BY DESIGN -- DO NOT 
 - `last_cycle_execution_status` (Section 3C): Emitted when recent (`<=60m`) executions/fills/rejections or newly resting (`<=30m`) orders exist; omitted when idle or when all `OPEN_RESTING`/`PARTIALLY_FILLED` orders are `>30m` old and already displayed in `open_limit_orders`.
 - `equity_bellwethers` on `scope="crypto"` (Section 3C): Micro-cap `RGNT_US_EQ` is omitted when major US tech/AI bellwethers (`NVDA_US_EQ`, `SPCX_US_EQ`) are present, and `t212_cycle` is omitted on `scope="crypto"` because `SPCX_US_EQ`'s cycle is already shown in `kraken_xstocks.t212_sibling_cycle` and `auto_cryptotrade_executor` cannot trade T212 shares (full cycles remain on `scope="equities"` and `scope="all"`).
 - `last_exit_kind` & `realized_pnl` across cycle boundaries (Section 3C): A prior cycle's exit label (e.g. `SL`) is never reclassified against a newer cycle's re-entry cost (`last_sell_ts < entry_ts`), and multi-cycle cumulative PnL (`cum_cycles`) is preserved alongside active `subcycle` PnL.
+- `above_vah` / `below_val` (Section 3) & `d_tr` (Section 3B): Value-Area breakout hold duration is emitted conditionally only when price is outside `[VAL, VAH]`, and `d_tr` (`taker_ratio_delta`) is emitted only when `|d_tr| >= 0.05` so quiet cycles incur zero prompt token bloat.
 """
 
 import math
@@ -57,6 +58,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     format_session_extremes_parts,
     format_session_vwap_summary,
     format_slope_val as _fmt_slope_val,
+    format_va_hold_suffix,
     round_opt_px,
 )
 from intelligence.sentiment.evaluators.prompt_view_evaluator import (
@@ -688,12 +690,13 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             sec_poc_val = pinfo.get("sec_poc_px") if pinfo.get("sec_poc_px") is not None else pinfo.get("hvn2_px")
             sec_poc_sfx = f", sec_POC={sec_poc_val}" if sec_poc_val is not None else ""
             lvn_sfx = f", LVN={pinfo.get('lvn_px')}" if pinfo.get("lvn_px") is not None else ""
+            va_hold_sfx = format_va_hold_suffix(pinfo, va_regime=fb_vp.get("va_regime") or pinfo.get("va_regime"))
             vp_src_sfx = f", vp_source={pinfo['vp_source']}" if pinfo.get("vp_source") else ""
             extras.append(
                 f"vol_profile(POC={pinfo.get('poc_px')}[{poc_d:+.2f}%]{sec_poc_sfx}{lvn_sfx}, "
                 f"VAL={pinfo.get('val_px')}[{val_d:+.2f}%], "
                 f"VAH={pinfo.get('vah_px')}[{vah_d:+.2f}%], "
-                f"va_pos={va_pos}%{vp_src_sfx})"
+                f"va_pos={va_pos}%{va_hold_sfx}{vp_src_sfx})"
             )
         if sv_summary := format_session_vwap_summary(pinfo, cur_px=px_f, fmt_px_fn=_fmt_px):
             extras.append(f"session_vwap={sv_summary}")
@@ -1022,6 +1025,8 @@ def _format_microstructure_section(
                 cd_parts.append(f"d_ob={d_ob:+.3f}")
             if (d_cvd := safe_float(cd_map.get("cvd_15m_delta_usd"), None)) is not None and abs(d_cvd) >= 1.0:
                 cd_parts.append(f"d_cvd={_fmt_signed_usd(d_cvd)}")
+            if (d_tr := safe_float(cd_map.get("taker_ratio_delta"), None)) is not None and abs(d_tr) >= 0.05:
+                cd_parts.append(f"d_tr={d_tr:+.2f}")
             if (d_wl := safe_float(cd_map.get("whale_long_delta_pct"), None)) is not None and abs(d_wl) >= 0.005:
                 cd_parts.append(f"d_whale_long={d_wl:+.2f}%")
             if (d_oi := safe_float(cd_map.get("oi_delta_pct"), None)) is not None and abs(d_oi) >= 0.005:
