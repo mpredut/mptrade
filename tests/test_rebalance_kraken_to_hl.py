@@ -1,4 +1,4 @@
-"""Tests for Kraken transfer credentials, KrakenClient withdrawal endpoints, and rebalance_kraken_to_hl."""
+"""Tests for Kraken transfer credentials, KrakenClient Funding v1 endpoints, and rebalance_kraken_to_hl."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -11,6 +11,10 @@ from verify_tools import rebalance_kraken_to_hl as reb
 
 _WALLET = "0xBf48fd0c624c1ab06FDc87F919C0A9108bD90233"
 _OTHER_WALLET = "0x1111111111111111111111111111111111111111"
+_ARB_METHOD_ID = "5fe7fe84-0626-4828-8d7f-c0a26b435003"
+_ARB_NETWORK_ID = "bc7562cf-1e51-4308-b52b-d062aaa6aa3b"
+_OTHER_NETWORK_ID = "b81dfccc-4c32-4272-b4cd-26e1ac5ee3a5"
+_ADDR_ID = "ABDCNZB-O5YPH-VHIPLQ"
 
 
 def _make_cfg(**overrides) -> reb.RebalanceConfig:
@@ -45,19 +49,17 @@ def test_kraken_transfer_credential_profile_is_isolated_from_bot():
     assert pair.secret == "ts"
     assert pair.profile == "Kraken TRANSFER"
 
-    # Never fall back to BOT keys when TRANSFER keys are missing.
     with pytest.raises(credentials.CredentialProfileMissingError):
         credentials.kraken_credentials(
             "transfer",
             values={"KRAKEN_API_KEY_BOT": "bk", "KRAKEN_API_SECRET_BOT": "bs"},
         )
 
-    # Partial TRANSFER profile fails fast.
     with pytest.raises(credentials.CredentialConfigurationError):
         credentials.kraken_credentials("transfer", values={"KRAKEN_API_KEY_TRANSFER": "only_key"})
 
 
-def test_kraken_client_withdraw_write_guard_and_list_parsing():
+def test_kraken_client_funding_v1_non_retry_and_list_parsing():
     assert "Withdraw" in _WRITE_METHODS
     assert "WithdrawCancel" in _WRITE_METHODS
 
@@ -68,35 +70,50 @@ def test_kraken_client_withdraw_write_guard_and_list_parsing():
         {"method": "Arbitrum One Network - Native", "asset": "USDC"}
     ]
 
-    with patch("kraken.kraken_client.http_post_form", return_value=(200, list_body)) as mock_post:
-        methods = cli.withdraw_methods("usdc")
-        assert len(methods) == 1
-        assert methods[0]["method"] == "Arbitrum One Network - Native"
-        assert mock_post.call_count == 1
+    addr_body = (
+        b'{"addresses":[{"address_id":"ABDCNZB-O5YPH-VHIPLQ",'
+        b'"scope":{"network_id":"bc7562cf-1e51-4308-b52b-d062aaa6aa3b"},'
+        b'"address_details":{"crypto":{"address":"0xbf48fd0c624c1ab06fdc87f919c0a9108bd90233"}},'
+        b'"name":"hyperliquid","verified":true}]}'
+    )
+    with patch("kraken.kraken_client.http_request", return_value=(200, addr_body)) as mock_req:
+        addrs = cli.funding_addresses()
+        assert len(addrs) == 1
+        assert addrs[0]["name"] == "hyperliquid"
+        assert mock_req.call_count == 1
+        assert "API-Nonce" in mock_req.call_args.kwargs["headers"]
+        assert "API-Sign" in mock_req.call_args.kwargs["headers"]
 
-    # Withdraw must NEVER auto-retry on transient network failure (max_attempts == 1).
-    with patch("kraken.kraken_client.http_post_form", return_value=(0, b"")) as mock_post:
+    # Funding v1 POST withdrawal must NEVER auto-retry on network/5xx error (max_attempts == 1).
+    with patch("kraken.kraken_client.http_request", return_value=(0, b"")) as mock_req:
         with pytest.raises(Exception):
-            cli.withdraw("USDC", "HL_ARB_MAIN", 11.0, address=_WALLET, max_fee=1.25)
-        assert mock_post.call_count == 1
+            cli.funding_withdraw(_ARB_METHOD_ID, _ADDR_ID, 11.0, fee_included=True, withdrawal_fee_token="tok")
+        assert mock_req.call_count == 1
 
 
-def test_resolve_verified_withdraw_address_rejects_usdce_and_mismatches():
+def test_resolve_verified_withdraw_address_matches_arb_network_and_rejects_mismatches():
     cfg = _make_cfg()
+    method_row = {
+        "asset": "USDC",
+        "method": "Arbitrum One Network - Native",
+        "method_id": _ARB_METHOD_ID,
+        "network_id": _ARB_NETWORK_ID,
+    }
 
-    # Rejects bridged USDC.e ("Arbitrum One Network" without " - Native")
-    with pytest.raises(ValueError, match="USDC.e"):
+    # Rejects wrong network_id (e.g. HyperEVM address saved under "HL")
+    with pytest.raises(ValueError, match="does not match"):
         reb.resolve_verified_withdraw_address(
             [
                 {
-                    "asset": "USDC",
-                    "method": "Arbitrum One Network",
-                    "address": _WALLET,
-                    "key": "wrong_bridged",
+                    "address_id": "AB44EMJ-AADVH-NYVBPJ",
+                    "name": "HL",
+                    "scope": {"network_id": _OTHER_NETWORK_ID},
+                    "address_details": {"crypto": {"address": _WALLET}},
                     "verified": True,
                 }
             ],
             cfg,
+            method_row=method_row,
         )
 
     # Rejects unverified address
@@ -104,14 +121,15 @@ def test_resolve_verified_withdraw_address_rejects_usdce_and_mismatches():
         reb.resolve_verified_withdraw_address(
             [
                 {
-                    "asset": "USDC",
-                    "method": "Arbitrum One Network - Native",
-                    "address": _WALLET,
-                    "key": "unverified_hl",
+                    "address_id": _ADDR_ID,
+                    "name": "hyperliquid",
+                    "scope": {"network_id": _ARB_NETWORK_ID},
+                    "address_details": {"crypto": {"address": _WALLET}},
                     "verified": False,
                 }
             ],
             cfg,
+            method_row=method_row,
         )
 
     # Rejects wrong destination wallet
@@ -119,37 +137,40 @@ def test_resolve_verified_withdraw_address_rejects_usdce_and_mismatches():
         reb.resolve_verified_withdraw_address(
             [
                 {
-                    "asset": "USDC",
-                    "method": "Arbitrum One Network - Native",
-                    "address": _OTHER_WALLET,
-                    "key": "other_wallet",
+                    "address_id": _ADDR_ID,
+                    "name": "other",
+                    "scope": {"network_id": _ARB_NETWORK_ID},
+                    "address_details": {"crypto": {"address": _OTHER_WALLET}},
                     "verified": True,
                 }
             ],
             cfg,
+            method_row=method_row,
         )
 
-    # Accepts exact verified Native Arbitrum One USDC address (case-insensitive hex match)
+    # Auto-selects the exact Arbitrum One address ("hyperliquid") while ignoring other-network "HL"
     chosen = reb.resolve_verified_withdraw_address(
         [
             {
-                "asset": "USDC",
-                "method": "Arbitrum One Network",
-                "address": _WALLET,
-                "key": "bridged_ignored",
+                "address_id": "AB44EMJ-AADVH-NYVBPJ",
+                "name": "HL",
+                "scope": {"network_id": _OTHER_NETWORK_ID},
+                "address_details": {"crypto": {"address": _WALLET.lower()}},
                 "verified": True,
             },
             {
-                "asset": "USDC",
-                "method": "Arbitrum One Network - Native",
-                "address": _WALLET.lower(),
-                "key": "HL_ARB_MAIN",
+                "address_id": _ADDR_ID,
+                "name": "hyperliquid",
+                "scope": {"network_id": _ARB_NETWORK_ID},
+                "address_details": {"crypto": {"address": _WALLET.lower()}},
                 "verified": True,
             },
         ],
         cfg,
+        method_row=method_row,
     )
-    assert chosen["key"] == "HL_ARB_MAIN"
+    assert chosen["name"] == "hyperliquid"
+    assert chosen["address_id"] == _ADDR_ID
 
 
 def _mock_client(*, zusd: float = 6400.0, usdc: float = 20.0, fee: float = 1.0) -> MagicMock:
@@ -159,33 +180,47 @@ def _mock_client(*, zusd: float = 6400.0, usdc: float = 20.0, fee: float = 1.0) 
         {
             "asset": "USDC",
             "method": "Arbitrum One Network - Native",
+            "method_id": _ARB_METHOD_ID,
+            "network_id": _ARB_NETWORK_ID,
             "network": "Arbitrum One (USDC)",
             "minimum": "4.00",
             "fee": {"asset": "USDC", "fee": str(fee)},
+            "limits": [
+                {"limit_type": "amount", "limits": {"86400": {"remaining": "500000.0"}}}
+            ],
         }
     ]
-    cli.withdraw_addresses.return_value = [
+    cli.funding_addresses.return_value = [
         {
-            "asset": "USDC",
-            "method": "Arbitrum One Network - Native",
-            "address": _WALLET,
-            "key": "HL_ARB_MAIN",
+            "address_id": _ADDR_ID,
+            "name": "hyperliquid",
+            "scope": {"network_id": _ARB_NETWORK_ID},
+            "address_details": {"crypto": {"address": _WALLET.lower()}},
             "verified": True,
-        }
+        },
+        {
+            "address_id": "AB44EMJ-AADVH-NYVBPJ",
+            "name": "HL",
+            "scope": {"network_id": _OTHER_NETWORK_ID},
+            "address_details": {"crypto": {"address": _WALLET.lower()}},
+            "verified": True,
+        },
     ]
 
-    def _winfo(asset, key, amount):
+    def _quote(method_id, amount, *, fee_included=True):
+        net = amount - fee if fee_included else amount
+        gross = amount if fee_included else amount + fee
         return {
-            "method": "Arbitrum One Network - Native",
-            "limit": "500000.0",
-            "amount": f"{amount - fee:.4f}",
-            "fee": f"{fee:.4f}",
+            "fee": {"asset": {"name": "USDC"}, "amount": f"{fee:.8f}"},
+            "gross_amount": {"asset": {"name": "USDC"}, "amount": f"{gross:.8f}"},
+            "net_amount": {"asset": {"name": "USDC"}, "amount": f"{net:.8f}"},
+            "withdrawal_fee_token": "FEE-TOK-123",
         }
 
-    cli.withdraw_info.side_effect = _winfo
-    cli.withdraw.return_value = {"refid": "REF-TEST-123"}
-    cli.withdraw_status.return_value = [
-        {"refid": "REF-TEST-123", "status": "Success", "txid": "0xarbtx123"}
+    cli.funding_fee_quote.side_effect = _quote
+    cli.funding_withdraw.return_value = {"withdrawal_id": "WD-TEST-123"}
+    cli.funding_withdrawals.return_value = [
+        {"withdrawal_id": "WD-TEST-123", "status": "success", "onchain_transaction": "0xarbtx123"}
     ]
     return cli
 
@@ -202,15 +237,15 @@ def test_plan_and_run_dry_run_and_min_net_guard():
             return_value={"spot_usdc": 54.0, "spot_hype": 15.9, "perp_equity_usd": 0.0, "perp_withdrawable_usd": 0.0},
         ),
     ):
-        # Dry-run never invokes withdraw or add_order
         res = reb.plan_and_run_transfer(cli, cfg, amount_usdc=11.0, execute=False)
         assert res["mode"] == "dry_run"
         assert res["plan"]["net_arbitrum_usdc"] == pytest.approx(10.0)
-        assert res["plan"]["withdraw_key"] == "HL_ARB_MAIN"
-        cli.withdraw.assert_not_called()
+        assert res["plan"]["withdraw_name"] == "hyperliquid"
+        assert res["plan"]["address_id"] == _ADDR_ID
+        assert res["plan"]["method_id"] == _ARB_METHOD_ID
+        cli.funding_withdraw.assert_not_called()
         cli.add_order.assert_not_called()
 
-        # Net receipt below 6.0 USDC (Bridge2 < 5 USDC loss trap) is blocked
         with pytest.raises(ValueError, match="KRAKEN_HL_MIN_NET_USDC"):
             reb.plan_and_run_transfer(cli, cfg, amount_usdc=5.5, execute=False)
 
@@ -229,7 +264,7 @@ def test_execute_refuses_shortfall_without_convert_flag_and_executes_when_funded
     ):
         with pytest.raises(ValueError, match="Kraken UI Convert"):
             reb.plan_and_run_transfer(cli_short, cfg, amount_usdc=11.0, execute=True, convert_usd=False)
-        cli_short.withdraw.assert_not_called()
+        cli_short.funding_withdraw.assert_not_called()
 
     cli_funded = _mock_client(zusd=6400.0, usdc=25.0, fee=1.0)
     arb_seq = [{"eth": 0.0012, "usdc": 0.0}, {"eth": 0.0012, "usdc": 10.0}]
@@ -243,9 +278,9 @@ def test_execute_refuses_shortfall_without_convert_flag_and_executes_when_funded
     ):
         res = reb.plan_and_run_transfer(cli_funded, cfg, amount_usdc=11.0, execute=True, wait_arb=True)
         assert res["mode"] == "executed"
-        assert res["refid"] == "REF-TEST-123"
+        assert res["withdrawal_id"] == "WD-TEST-123"
         assert res["arbitrum_arrival"]["arrived"] is True
         assert res["arbitrum_arrival"]["arb_usdc_delta"] == pytest.approx(10.0)
-        cli_funded.withdraw.assert_called_once_with(
-            "USDC", "HL_ARB_MAIN", 11.0, address=_WALLET, max_fee=1.25
+        cli_funded.funding_withdraw.assert_called_once_with(
+            _ARB_METHOD_ID, _ADDR_ID, 11.0, fee_included=True, withdrawal_fee_token="FEE-TOK-123"
         )

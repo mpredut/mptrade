@@ -259,21 +259,32 @@ def select_native_arbitrum_method(methods: list[dict[str, Any]], cfg: RebalanceC
     return None
 
 
+def _extract_funding_crypto_address(row: dict[str, Any]) -> str | None:
+    details = row.get("address_details")
+    if isinstance(details, dict):
+        crypto = details.get("crypto")
+        if isinstance(crypto, dict):
+            return clean_scalar_str(crypto.get("address"))
+    return clean_scalar_str(row.get("address"))
+
+
 def resolve_verified_withdraw_address(
     addresses: list[dict[str, Any]],
     cfg: RebalanceConfig,
     *,
+    method_row: dict[str, Any] | None = None,
     requested_key: str | None = None,
 ) -> dict[str, Any]:
-    """Fail-closed resolution of a verified Kraken whitelisted address for Native Arbitrum USDC.
+    """Fail-closed resolution of a verified Kraken Funding v1 address for Native Arbitrum USDC.
 
-    Explicitly rejects bridged ``Arbitrum One Network`` (USDC.e), unverified entries,
-    and any address not matching ``cfg.target_address``.
+    Requires ``verified=True``, exact ``target_address`` match, and scope matching the
+    resolved Native Arbitrum One ``method_id`` or ``network_id`` (explicitly rejecting
+    wrong networks or unverified entries).
     """
-    wanted_asset = cfg.withdraw_asset.upper()
-    wanted_method = cfg.withdraw_method.strip().lower()
     wanted_addr = cfg.target_address.lower()
     key_filter = clean_scalar_str(requested_key or cfg.configured_withdraw_key)
+    req_method_id = clean_scalar_str((method_row or {}).get("method_id"))
+    req_network_id = clean_scalar_str((method_row or {}).get("network_id"))
 
     exact_matches: list[dict[str, Any]] = []
     near_mismatches: list[str] = []
@@ -281,47 +292,69 @@ def resolve_verified_withdraw_address(
     for row in addresses:
         if not isinstance(row, dict):
             continue
-        r_asset = clean_upper_scalar(row.get("asset")) or ""
-        r_method = clean_scalar_str(row.get("method")) or ""
-        r_addr = clean_scalar_str(row.get("address")) or ""
-        r_key = clean_scalar_str(row.get("key")) or ""
+        r_name = clean_scalar_str(row.get("name") or row.get("key")) or ""
+        r_addr_id = clean_scalar_str(row.get("address_id") or row.get("key")) or ""
+        r_addr = _extract_funding_crypto_address(row) or ""
         r_verified = bool(row.get("verified") is True)
+        scope = row.get("scope") if isinstance(row.get("scope"), dict) else {}
+        s_net_id = clean_scalar_str(scope.get("network_id"))
+        s_meth_id = clean_scalar_str(scope.get("method_id"))
 
-        if key_filter and r_key != key_filter:
+        if key_filter and key_filter not in {r_name, r_addr_id}:
             continue
-        if r_asset != wanted_asset:
+        if not r_addr:
             if key_filter:
-                near_mismatches.append(f"key={r_key!r} has asset={r_asset!r} (expected {wanted_asset!r})")
+                near_mismatches.append(f"name={r_name!r} is not a crypto address")
             continue
-        if r_method.lower() != wanted_method:
-            near_mismatches.append(
-                f"key={r_key!r} uses method={r_method!r} (REJECTED: expected exact {cfg.withdraw_method!r}; "
-                f"never use bridged USDC.e for Hyperliquid)"
-            )
+
+        scope_ok = False
+        if req_method_id and s_meth_id:
+            scope_ok = s_meth_id == req_method_id
+        elif req_network_id and s_net_id:
+            scope_ok = s_net_id == req_network_id
+        elif not scope and clean_scalar_str(row.get("method")):
+            scope_ok = (clean_scalar_str(row.get("method")) or "").lower() == cfg.withdraw_method.strip().lower()
+
+        if not scope_ok:
+            if key_filter or r_addr.lower() == wanted_addr:
+                near_mismatches.append(
+                    f"name={r_name!r} (id={r_addr_id}) has scope={scope!r} "
+                    f"(does not match {cfg.withdraw_method!r} method_id={req_method_id} network_id={req_network_id})"
+                )
             continue
         if r_addr.lower() != wanted_addr:
             near_mismatches.append(
-                f"key={r_key!r} points to {r_addr!r} (expected Hyperliquid wallet {cfg.target_address!r})"
+                f"name={r_name!r} (id={r_addr_id}) points to {r_addr!r} "
+                f"(expected Hyperliquid wallet {cfg.target_address!r})"
             )
             continue
         if not r_verified:
-            near_mismatches.append(f"key={r_key!r} is NOT email-verified yet on Kraken")
+            near_mismatches.append(f"name={r_name!r} (id={r_addr_id}) is NOT email-verified yet on Kraken")
             continue
-        exact_matches.append(row)
+        exact_matches.append(
+            {
+                "name": r_name,
+                "address_id": r_addr_id,
+                "address": r_addr,
+                "method_id": req_method_id,
+                "network_id": req_network_id,
+                "verified": True,
+                "raw": row,
+            }
+        )
 
     if len(exact_matches) == 1:
         return exact_matches[0]
     if len(exact_matches) > 1:
-        keys_str = ", ".join(repr(m.get("key")) for m in exact_matches)
+        keys_str = ", ".join(f"{m['name']!r} ({m['address_id']})" for m in exact_matches)
         raise ValueError(
-            f"Multiple verified {cfg.withdraw_method!r} keys match {cfg.target_address}: {keys_str}. "
-            f"Pass --withdraw-key <name> or set KRAKEN_HL_ARB_WITHDRAW_KEY in kraken/.env."
+            f"Multiple verified {cfg.withdraw_method!r} addresses match {cfg.target_address}: {keys_str}. "
+            f"Pass --withdraw-key <name_or_id> or set KRAKEN_HL_ARB_WITHDRAW_KEY in kraken/.env."
         )
-    detail = "; ".join(near_mismatches) if near_mismatches else "no USDC Arbitrum One Native address whitelisted yet"
+    detail = "; ".join(near_mismatches) if near_mismatches else "no Arbitrum One Native USDC address saved yet"
     raise ValueError(
         f"No verified Kraken withdrawal address matches {cfg.target_address} on {cfg.withdraw_method!r} ({detail}). "
-        f"In Kraken UI -> Security -> Withdrawal Addresses, add {cfg.target_address} under asset USDC and network "
-        f"'{cfg.withdraw_method}' (Arbitrum One Native USDC, NOT USDC.e), confirm the email, then re-run."
+        f"In Kraken Pro -> Portfolio -> Withdraw -> USDC -> Arbitrum One, add {cfg.target_address}, confirm email, then re-run."
     )
 
 
@@ -384,40 +417,40 @@ def convert_usd_to_usdc_on_kraken(
 def wait_for_arbitrum_arrival(
     client: Any,
     cfg: RebalanceConfig,
-    refid: str,
+    withdrawal_id: str,
     baseline_arb_usdc: float,
     expected_net_usdc: float,
 ) -> dict[str, Any]:
-    """Poll Kraken WithdrawStatus and Arbitrum One USDC balance until arrival."""
+    """Poll Kraken Funding v1 withdrawals and Arbitrum One USDC balance until arrival."""
     deadline = time.monotonic() + cfg.poll_timeout_sec
     target_arb_usdc = baseline_arb_usdc + max(0.0, expected_net_usdc - 0.01)
-    last_k_status = "Unknown"
+    last_k_status = "unknown"
     chain_txid: str | None = None
 
     while time.monotonic() <= deadline:
         try:
-            rows = client.withdraw_status(cfg.withdraw_asset)
+            rows = client.funding_withdrawals()
             for row in rows:
-                if clean_scalar_str(row.get("refid")) == refid:
+                if clean_scalar_str(row.get("withdrawal_id") or row.get("refid")) == withdrawal_id:
                     last_k_status = clean_scalar_str(row.get("status")) or last_k_status
-                    chain_txid = clean_scalar_str(row.get("txid")) or chain_txid
+                    chain_txid = clean_scalar_str(row.get("onchain_transaction") or row.get("txid")) or chain_txid
                     break
         except Exception as exc:  # noqa: BLE001
-            print(f"[WARN] WithdrawStatus poll failed: {exc}", flush=True)
+            print(f"[WARN] funding_withdrawals poll failed: {exc}", flush=True)
 
         arb = fetch_arbitrum_balances(cfg, cfg.target_address)
         delta = arb["usdc"] - baseline_arb_usdc
         print(
-            f"[WAIT-ARB] refid={refid} kraken_status={last_k_status} txid={chain_txid or '-'} "
+            f"[WAIT-ARB] withdrawal_id={withdrawal_id} kraken_status={last_k_status} txid={chain_txid or '-'} "
             f"arb_usdc={arb['usdc']:.4f} (+{delta:.4f} / expected {expected_net_usdc:.4f})",
             flush=True,
         )
-        if last_k_status.lower() in {"canceled", "failure", "failed"}:
-            raise RuntimeError(f"Kraken withdrawal {refid} failed with status={last_k_status}")
+        if last_k_status.lower() in {"canceled", "cancelled", "failure", "failed"}:
+            raise RuntimeError(f"Kraken withdrawal {withdrawal_id} failed with status={last_k_status}")
         if arb["usdc"] >= target_arb_usdc:
             return {
                 "arrived": True,
-                "refid": refid,
+                "withdrawal_id": withdrawal_id,
                 "kraken_status": last_k_status,
                 "arb_txid": chain_txid,
                 "arb_usdc_before": baseline_arb_usdc,
@@ -428,7 +461,7 @@ def wait_for_arbitrum_arrival(
 
     return {
         "arrived": False,
-        "refid": refid,
+        "withdrawal_id": withdrawal_id,
         "kraken_status": last_k_status,
         "arb_txid": chain_txid,
         "arb_usdc_before": baseline_arb_usdc,
@@ -461,29 +494,54 @@ def watch_hyperliquid_spot_arrival(
     return {"arrived_hl_spot": False, **hl}
 
 
+def _extract_method_remaining_limit(method_row: dict[str, Any] | None) -> float | None:
+    if not isinstance(method_row, dict):
+        return None
+    for lim in method_row.get("limits") or ():
+        if not isinstance(lim, dict) or lim.get("limit_type") != "amount":
+            continue
+        windows = lim.get("limits")
+        if isinstance(windows, dict):
+            for win in windows.values():
+                if isinstance(win, dict):
+                    rem = safe_nonneg_float(win.get("remaining"), default=None)
+                    if rem is not None:
+                        return rem
+    return None
+
+
 def build_status_snapshot(client: Any, cfg: RebalanceConfig, *, requested_key: str | None = None) -> dict[str, Any]:
     """Collect a read-only snapshot across Kraken, Arbitrum One, and Hyperliquid."""
     cash = extract_kraken_cash(client.balance())
     methods = client.withdraw_methods(cfg.withdraw_asset)
     method_row = select_native_arbitrum_method(methods, cfg)
-    addresses = client.withdraw_addresses(cfg.withdraw_asset)
+    addresses = client.funding_addresses()
     arb = fetch_arbitrum_balances(cfg, cfg.target_address)
     hl = fetch_hyperliquid_balances(cfg, cfg.target_address)
 
     resolved_addr: dict[str, Any] | None = None
     addr_error: str | None = None
-    try:
-        resolved_addr = resolve_verified_withdraw_address(addresses, cfg, requested_key=requested_key)
-    except ValueError as exc:
-        addr_error = str(exc)
+    if method_row is None:
+        addr_error = f"Kraken WithdrawMethods did not return {cfg.withdraw_method!r} for {cfg.withdraw_asset}"
+    else:
+        try:
+            resolved_addr = resolve_verified_withdraw_address(
+                addresses, cfg, method_row=method_row, requested_key=requested_key
+            )
+        except ValueError as exc:
+            addr_error = str(exc)
 
     method_fee = None
     method_min = None
+    method_id = None
+    network_id = None
     if isinstance(method_row, dict):
         fee_obj = method_row.get("fee")
         if isinstance(fee_obj, dict):
             method_fee = safe_nonneg_float(fee_obj.get("fee"), default=None)
         method_min = safe_pos_float(method_row.get("minimum"), default=None)
+        method_id = clean_scalar_str(method_row.get("method_id"))
+        network_id = clean_scalar_str(method_row.get("network_id"))
 
     return {
         "target_address": cfg.target_address,
@@ -492,15 +550,19 @@ def build_status_snapshot(client: Any, cfg: RebalanceConfig, *, requested_key: s
         "kraken_cash": cash,
         "kraken_method": {
             "found": method_row is not None,
+            "method_id": method_id,
+            "network_id": network_id,
             "fee_usdc": method_fee,
             "minimum_usdc": method_min,
+            "remaining_limit_usdc": _extract_method_remaining_limit(method_row),
             "network": method_row.get("network") if isinstance(method_row, dict) else None,
         },
         "kraken_whitelisted_address": {
             "ready": resolved_addr is not None,
-            "key": resolved_addr.get("key") if resolved_addr else None,
+            "name": resolved_addr.get("name") if resolved_addr else None,
+            "address_id": resolved_addr.get("address_id") if resolved_addr else None,
             "address": resolved_addr.get("address") if resolved_addr else None,
-            "method": resolved_addr.get("method") if resolved_addr else None,
+            "method": cfg.withdraw_method if resolved_addr else None,
             "verified": resolved_addr.get("verified") if resolved_addr else False,
             "error": addr_error,
         },
@@ -511,6 +573,15 @@ def build_status_snapshot(client: Any, cfg: RebalanceConfig, *, requested_key: s
         },
         "hyperliquid": hl,
     }
+
+
+def _nested_amount(obj: Any, key: str) -> float | None:
+    if not isinstance(obj, dict):
+        return None
+    sub = obj.get(key)
+    if isinstance(sub, dict):
+        return safe_nonneg_float(sub.get("amount"), default=None)
+    return safe_nonneg_float(sub, default=None)
 
 
 def plan_and_run_transfer(
@@ -551,30 +622,32 @@ def plan_and_run_transfer(
     if not snapshot["kraken_whitelisted_address"]["ready"]:
         raise ValueError(snapshot["kraken_whitelisted_address"]["error"])
 
-    withdraw_key = str(snapshot["kraken_whitelisted_address"]["key"])
+    method_id = str(snapshot["kraken_method"]["method_id"])
+    address_id = str(snapshot["kraken_whitelisted_address"]["address_id"])
+    withdraw_name = str(snapshot["kraken_whitelisted_address"]["name"])
     if not snapshot["arbitrum_one"]["gas_ok"]:
         raise ValueError(
             f"Arbitrum One wallet {cfg.target_address} has only {snapshot['arbitrum_one']['eth']:.6f} ETH "
             f"(minimum required gas: {cfg.min_arb_eth_gas} ETH)"
         )
 
-    winfo = client.withdraw_info(cfg.withdraw_asset, withdraw_key, gross_usdc)
-    fee_usdc = safe_nonneg_float(winfo.get("fee"), default=None)
-    net_usdc = safe_nonneg_float(winfo.get("amount"), default=None)
-    limit_usdc = safe_nonneg_float(winfo.get("limit"), default=None)
-    if fee_usdc is None or net_usdc is None:
-        raise RuntimeError(f"Unexpected Kraken WithdrawInfo response: {winfo!r}")
+    quote = client.funding_fee_quote(method_id, gross_usdc, fee_included=True)
+    fee_usdc = _nested_amount(quote, "fee")
+    net_usdc = _nested_amount(quote, "net_amount")
+    quoted_gross = _nested_amount(quote, "gross_amount")
+    fee_token = clean_scalar_str(quote.get("withdrawal_fee_token"))
+    if fee_usdc is None or net_usdc is None or quoted_gross is None:
+        raise RuntimeError(f"Unexpected Kraken Funding v1 fee quote response: {quote!r}")
 
     if net_usdc < cfg.min_net_usdc:
         raise ValueError(
-            f"Net USDC receipt ({net_usdc:.4f} USDC = {gross_usdc:.4f} - {fee_usdc:.4f} fee) is below "
+            f"Net USDC receipt ({net_usdc:.4f} USDC = {quoted_gross:.4f} - {fee_usdc:.4f} fee) is below "
             f"KRAKEN_HL_MIN_NET_USDC={cfg.min_net_usdc:.2f} (Hyperliquid Bridge2 permanently loses deposits < 5 USDC)."
         )
+    limit_usdc = snapshot["kraken_method"].get("remaining_limit_usdc")
     if limit_usdc is not None and gross_usdc > limit_usdc:
         raise ValueError(f"Requested {gross_usdc:.4f} USDC exceeds Kraken remaining withdrawal limit {limit_usdc:.4f}")
 
-    shortfall_usdc = round(max(0.0, gross_usdc - cash["usdc"]), 4)
-    est_convert_fee_usd = round(shortfall_usdc * 0.002, 4) if shortfall_usdc > 0.0 else 0.0
     max_fee = (
         safe_pos_float(max_fee_override, default=None)
         if max_fee_override is not None
@@ -582,13 +655,20 @@ def plan_and_run_transfer(
     )
     if max_fee is None:
         raise ValueError(f"Invalid --max-fee: {max_fee_override!r}")
+    if fee_usdc > max_fee:
+        raise ValueError(f"Live Kraken fee {fee_usdc:.4f} USDC exceeds --max-fee cap {max_fee:.4f} USDC")
+
+    shortfall_usdc = round(max(0.0, quoted_gross - cash["usdc"]), 4)
+    est_convert_fee_usd = round(shortfall_usdc * 0.002, 4) if shortfall_usdc > 0.0 else 0.0
 
     plan = {
-        "gross_usdc": gross_usdc,
+        "gross_usdc": quoted_gross,
         "fee_usdc": fee_usdc,
         "net_arbitrum_usdc": net_usdc,
         "max_fee_usdc": max_fee,
-        "withdraw_key": withdraw_key,
+        "withdraw_name": withdraw_name,
+        "address_id": address_id,
+        "method_id": method_id,
         "withdraw_method": cfg.withdraw_method,
         "target_address": cfg.target_address,
         "kraken_usdc_available": cash["usdc"],
@@ -607,7 +687,7 @@ def plan_and_run_transfer(
             )
         if not convert_usd and execute:
             raise ValueError(
-                f"Kraken has {cash['usdc']:.4f} USDC vs {gross_usdc:.4f} requested (shortfall {shortfall_usdc:.4f} USDC). "
+                f"Kraken has {cash['usdc']:.4f} USDC vs {quoted_gross:.4f} requested (shortfall {shortfall_usdc:.4f} USDC). "
                 f"Convert USD -> USDC 1:1 with 0% fee in Kraken UI Convert (saves ~${est_convert_fee_usd:.2f}), "
                 f"or re-run with --convert-usd to buy on Kraken Spot USDCUSD (~20 bps fee)."
             )
@@ -617,37 +697,36 @@ def plan_and_run_transfer(
 
     conversion_result: dict[str, Any] | None = None
     if shortfall_usdc > 0.0 and convert_usd:
-        # Include 0.25% buffer for Kraken Spot USDCUSD fee so post-fee USDC covers gross_usdc.
         order_usdc = round(max(_USDCUSD_MIN_ORDER, shortfall_usdc * 1.0025), 4)
         conversion_result = convert_usd_to_usdc_on_kraken(
             client, order_usdc, market_order=market_convert
         )
         post_cash = extract_kraken_cash(client.balance())
-        if post_cash["usdc"] + 1e-6 < gross_usdc:
+        if post_cash["usdc"] + 1e-6 < quoted_gross:
             raise RuntimeError(
-                f"Post-conversion USDC balance ({post_cash['usdc']:.4f}) still below gross_usdc ({gross_usdc:.4f})"
+                f"Post-conversion USDC balance ({post_cash['usdc']:.4f}) still below gross_usdc ({quoted_gross:.4f})"
             )
 
     baseline_arb_usdc = snapshot["arbitrum_one"]["usdc"]
     baseline_hl_spot_usdc = snapshot["hyperliquid"]["spot_usdc"]
 
-    wres = client.withdraw(
-        cfg.withdraw_asset,
-        withdraw_key,
-        gross_usdc,
-        address=cfg.target_address,
-        max_fee=max_fee,
+    wres = client.funding_withdraw(
+        method_id,
+        address_id,
+        quoted_gross,
+        fee_included=True,
+        withdrawal_fee_token=fee_token,
     )
-    refid = clean_scalar_str(wres.get("refid"))
-    if not refid:
-        raise RuntimeError(f"Kraken Withdraw did not return a refid: {wres!r}")
+    withdrawal_id = clean_scalar_str(wres.get("withdrawal_id") or wres.get("id") or wres.get("refid"))
+    if not withdrawal_id:
+        raise RuntimeError(f"Kraken Funding v1 withdrawal did not return a withdrawal_id: {wres!r}")
 
     out: dict[str, Any] = {
         "mode": "executed",
         "plan": plan,
         "conversion": conversion_result,
         "withdraw_response": wres,
-        "refid": refid,
+        "withdrawal_id": withdrawal_id,
         "next_steps": [
             f"1. Open https://app.hyperliquid.xyz connected with wallet {cfg.target_address}",
             f"2. Click Deposit -> Network: Arbitrum -> Native USDC -> Amount: ~{net_usdc:.2f} USDC (sign in wallet)",
@@ -656,7 +735,7 @@ def plan_and_run_transfer(
     }
 
     if wait_arb:
-        arb_res = wait_for_arbitrum_arrival(client, cfg, refid, baseline_arb_usdc, net_usdc)
+        arb_res = wait_for_arbitrum_arrival(client, cfg, withdrawal_id, baseline_arb_usdc, net_usdc)
         out["arbitrum_arrival"] = arb_res
         if send_notify and arb_res.get("arrived"):
             alert.notify(
@@ -698,7 +777,7 @@ def _print_human_report(result: dict[str, Any]) -> None:
             f"(fee={km['fee_usdc']} USDC, min={km['minimum_usdc']} USDC, network={km['network']})"
         )
         if ka["ready"]:
-            print(f"  Whitelisted address : READY key={ka['key']!r} -> {ka['address']} (verified=True)")
+            print(f"  Whitelisted address : READY name={ka['name']!r} (id={ka['address_id']}) -> {ka['address']} (verified=True)")
         else:
             print(f"  Whitelisted address : NOT READY -- {ka['error']}")
         print(
@@ -718,7 +797,10 @@ def _print_human_report(result: dict[str, Any]) -> None:
             f"  Gross withdraw      : {plan['gross_usdc']:.4f} USDC -> fee={plan['fee_usdc']:.4f} USDC "
             f"(max_fee={plan['max_fee_usdc']:.4f}) -> Net Arbitrum={plan['net_arbitrum_usdc']:.4f} USDC"
         )
-        print(f"  Destination key     : {plan['withdraw_key']!r} ({plan['withdraw_method']}) -> {plan['target_address']}")
+        print(
+            f"  Destination         : {plan['withdraw_name']!r} (address_id={plan['address_id']}) "
+            f"via {plan['withdraw_method']} (method_id={plan['method_id']}) -> {plan['target_address']}"
+        )
         if plan["usdc_shortfall"] > 0.0:
             if plan["convert_usd_enabled"]:
                 print(
@@ -733,7 +815,7 @@ def _print_human_report(result: dict[str, Any]) -> None:
                 )
 
     if mode == "executed":
-        print(f"  Kraken refid        : {result.get('refid')}")
+        print(f"  Kraken withdrawal   : {result.get('withdrawal_id')}")
         if result.get("conversion"):
             print(f"  Spot conversion     : {result['conversion']}")
         if result.get("arbitrum_arrival"):

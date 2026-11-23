@@ -40,6 +40,7 @@ from botcore import (
     exact_pos_int,
     http_get,
     http_post_form,
+    http_request,
     log,
     normalize_side,
     safe_nonneg_float,
@@ -48,7 +49,7 @@ from botcore import (
 from instrument_registry import resolve_kraken_tokenized_pair
 from providers.ohlc_utils import extract_kraken_ohlc_rows, require_ohlc_symbol
 from providers.order_ohlc_utils import get_cached_pair_info as _get_cached_pair_info
-from state_io import parse_json_payload
+from state_io import encode_json_payload, parse_json_payload
 from credentials import kraken_credentials
 
 API_URL = "https://api.kraken.com"
@@ -559,6 +560,122 @@ class KrakenClient:
                 params["method"] = method_s
         res = self._private("WithdrawStatus", params, fresh=True, allow_list=True)
         return [row for row in res if isinstance(row, dict)] if isinstance(res, list) else []
+
+    # ----- FUNDING v1 API (/funding/v1/...) -----------------------------------
+    @staticmethod
+    def _funding_signature(uri_path: str, nonce: str, body_bytes: bytes, secret: str) -> str:
+        sha = hashlib.sha256(nonce.encode("utf-8") + body_bytes).digest()
+        mac = hmac.new(base64.b64decode(secret), uri_path.encode("utf-8") + sha, hashlib.sha512)
+        return base64.b64encode(mac.digest()).decode()
+
+    def _funding_v1(
+        self,
+        http_method: str,
+        path: str,
+        *,
+        params: dict[str, str] | None = None,
+        payload: dict | None = None,
+    ) -> dict:
+        if not self.api_key or not self.api_secret:
+            raise KrakenError("Missing Kraken keys (check KRAKEN_API_KEY_TRANSFER in kraken/.env)")
+        verb = http_method.strip().upper()
+        is_write = verb != "GET"
+        qs = urllib.parse.urlencode(params) if params else ""
+        uri_path = f"{path}?{qs}" if qs else path
+        body_bytes = (
+            encode_json_payload(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if payload is not None
+            else b""
+        )
+        max_attempts = 1 if is_write else 3
+        last_err: Exception | None = None
+        for attempt in range(max_attempts):
+            nonce = str(time.time_ns())
+            headers = {
+                "API-Key": self.api_key,
+                "API-Nonce": nonce,
+                "API-Sign": self._funding_signature(uri_path, nonce, body_bytes, self.api_secret),
+            }
+            if payload is not None:
+                headers["Content-Type"] = "application/json"
+            status, resp_body = http_request(
+                verb,
+                API_URL + uri_path,
+                headers=headers,
+                body=body_bytes if payload is not None else None,
+            )
+            if not status:
+                last_err = KrakenError(f"network error in {verb} {path} (HTTP 0)")
+                if is_write or attempt >= max_attempts - 1:
+                    raise last_err
+                time.sleep(0.15 * (attempt + 1))
+                continue
+            try:
+                parsed = parse_json_payload(resp_body or b"{}")
+            except ValueError:
+                raise KrakenError(f"invalid Funding v1 response in {verb} {path} (HTTP {status})")
+            if 200 <= status < 300:
+                if is_write:
+                    with _CACHE_LOCK:
+                        for k in [k for k in _CACHE if k[0] in _INVALIDATE_ON_WRITE]:
+                            _CACHE.pop(k, None)
+                return parsed if isinstance(parsed, dict) else {}
+            title = parsed.get("title") if isinstance(parsed, dict) else None
+            err_type = parsed.get("type") if isinstance(parsed, dict) else None
+            detail = f"{title} ({err_type})" if title or err_type else resp_body.decode("utf-8", errors="replace")[:200]
+            last_err = KrakenError(f"Funding v1 {verb} {path} HTTP {status}: {detail}")
+            if is_write or status < 500 or attempt >= max_attempts - 1:
+                raise last_err
+            time.sleep(0.15 * (attempt + 1))
+        raise last_err or KrakenError(f"Funding v1 {verb} {path} failed")
+
+    def funding_addresses(self) -> list[dict]:
+        """List saved Funding v1 withdrawal addresses (including modern multi-network address book)."""
+        res = self._funding_v1("GET", "/funding/v1/addresses")
+        rows = res.get("addresses") if isinstance(res, dict) else None
+        return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+    def funding_fee_quote(self, method_id: str, amount: float, *, fee_included: bool = True) -> dict:
+        """Quote live Kraken withdrawal fee, gross/net amounts, and ``withdrawal_fee_token``."""
+        mid = clean_scalar_str(method_id)
+        if not mid:
+            raise ValueError(f"invalid Kraken method_id: {method_id!r}")
+        params = {
+            "amount": self._fmt_amount(amount),
+            "fee_included": "true" if _parse_bool_flag(fee_included, default=True) else "false",
+        }
+        return self._funding_v1("GET", f"/funding/v1/fees/{mid}", params=params)
+
+    def funding_withdraw(
+        self,
+        method_id: str,
+        address_id: str,
+        amount: float,
+        *,
+        fee_included: bool = True,
+        withdrawal_fee_token: str | None = None,
+    ) -> dict:
+        """Submit a Funding v1 withdrawal (non-retried POST write)."""
+        mid = clean_scalar_str(method_id)
+        aid = clean_scalar_str(address_id)
+        if not mid or not aid:
+            raise ValueError("Kraken funding_withdraw requires non-empty method_id and address_id")
+        body: dict[str, object] = {
+            "method_id": mid,
+            "address_id": aid,
+            "amount": self._fmt_amount(amount),
+            "fee_included": bool(_parse_bool_flag(fee_included, default=True)),
+        }
+        tok = clean_scalar_str(withdrawal_fee_token)
+        if tok:
+            body["withdrawal_fee_token"] = tok
+        return self._funding_v1("POST", "/funding/v1/withdrawals", payload=body)
+
+    def funding_withdrawals(self) -> list[dict]:
+        """List recent Funding v1 withdrawals with status and on-chain txid."""
+        res = self._funding_v1("GET", "/funding/v1/withdrawals")
+        rows = res.get("withdrawals") if isinstance(res, dict) else None
+        return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
 # ---------------------------------------------------------------------------
