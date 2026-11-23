@@ -180,6 +180,29 @@ _TRAILING_NON_NEW_EVENTS: frozenset[str] = frozenset({
 })
 
 
+_LOCAL_PRESUBMIT_REFUSAL_TOKENS: tuple[str, ...] = (
+    "trend_deferred",
+    "profit_guard",
+    "insufficient_funds",
+    "qty_zero",
+    "aborted_by_caller",
+    "pre_submit_refused",
+    "cooldown",
+    "wait_for_trend",
+    "circuit_breaker",
+    "trading_disabled",
+    "execution_disabled",
+    "guard",
+    "shadow",
+    "deferred",
+)
+
+
+def _is_local_presubmit_refusal(reason: object) -> bool:
+    txt = (clean_scalar_str(reason) or "").lower()
+    return bool(txt) and any(tok in txt for tok in _LOCAL_PRESUBMIT_REFUSAL_TOKENS)
+
+
 def closed_order_tokens(
     venue: object,
     *,
@@ -541,10 +564,16 @@ def apply_order_event(
     rec["state"] = new_state
     if new_state in TERMINAL_LEDGER_STATES:
         archived = orders.pop(key, rec)
-        # Only archive real orders that crossed the submission/venue boundary; pre-submit guard blocks
-        # and unsubmitted expired intents stay traceable in order_events_YYYY-MM-DD.jsonl only.
+        # Only archive real orders that crossed the venue boundary; pre-submit guard blocks,
+        # local outbox guard deferrals (trend_deferred/profit_guard), and unsubmitted intents
+        # stay traceable in order_events_YYYY-MM-DD.jsonl only.
         crossed_submit = bool(archived.get("submitted") or archived.get("vid"))
-        if closed_out is not None and crossed_submit:
+        is_local_refusal = (
+            ev == OrderEventType.SUBMIT_REFUSED.value
+            and not archived.get("vid")
+            and _is_local_presubmit_refusal(archived.get("reason"))
+        )
+        if closed_out is not None and crossed_submit and not is_local_refusal:
             closed_out.append(make_closed_summary(key, archived, closed_ts=ts))
     return key
 

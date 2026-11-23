@@ -684,3 +684,24 @@ def test_prod_parity_no_stale_open_readoption_clean_owner_and_order_terminal(tmp
     by_sym = kp.open_orders_by_symbol(["HYPEUSD", "TAOUSD", "ADAUSD", "SPCXxUSD"])
     assert fake_cli.open_orders.call_count == 1
     assert len(by_sym["HYPEUSD"]) == 1 and len(by_sym["TAOUSD"]) == 1 and by_sym["ADAUSD"] == [] and by_sym["SPCXxUSD"] == []
+
+    # 8. Outbox local pre-submit guard refusal (trend_deferred / profit_guard) stays in events ONLY, never orders_closed;
+    #    real venue rejection (HTTP 400 / exchange error) DOES enter orders_closed.
+    writer.record_event(OrderEventType.SUBMITTED, venue="binance", symbol="BTCUSDC", ts=t0 + 310.0, iid="outbox-local-1", cid="TA_OR_local_1", side="BUY", qty=0.1, px=61600.0)
+    writer.record_event(OrderEventType.SUBMIT_REFUSED, venue="binance", symbol="BTCUSDC", ts=t0 + 310.1, iid="outbox-local-1", cid="TA_OR_local_1", reason="trend_deferred")
+    writer.record_event(OrderEventType.SUBMITTED, venue="t212", symbol="NVDA_US_EQ", ts=t0 + 311.0, iid="t212-rej-1", side="BUY", qty=1.0, px=165.0)
+    writer.record_event(OrderEventType.SUBMIT_REFUSED, venue="t212", symbol="NVDA_US_EQ", ts=t0 + 311.1, iid="t212-rej-1", reason="T212 HTTP 400: insufficient buying power")
+    st_ref = reconciler.reconcile_once(now_ts=t0 + 312.0)
+    assert st_ref["reconciled_closed"] == 1  # ONLY the genuine T212 HTTP 400 rejection!
+    assert OrderLedgerReader(cachedb_dir=cdb).trace_order("outbox-local-1")["closed_orders"] == []
+    assert len(OrderLedgerReader(cachedb_dir=cdb).trace_order("t212-rej-1")["closed_orders"]) == 1
+
+    # 9. KrakenClient._private must NEVER tight-retry 'EAPI:Rate limit exceeded' (single attempt, immediate raise)
+    from kraken import kraken_client
+
+    kcli = kraken_client.KrakenClient("k", "c2VjcmV0")
+    calls = []
+    with patch.object(kraken_client, "http_post_form", side_effect=lambda *_a, **_kw: calls.append(1) or (200, '{"error":["EAPI:Rate limit exceeded"]}')):
+        with pytest.raises(kraken_client.KrakenError, match="Rate limit"):
+            kcli._private("Ledgers", {"start": 0}, fresh=True)
+    assert len(calls) == 1

@@ -178,8 +178,6 @@ class KrakenClient:
                             tok in err_s
                             for tok in (
                                 "Invalid nonce",
-                                "Rate limit",
-                                "Temporary lockout",
                                 "Service:Unavailable",
                                 "Service:Busy",
                                 "EService:",

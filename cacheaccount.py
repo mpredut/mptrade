@@ -3781,11 +3781,33 @@ def run_kraken_trade_ws_loop(
 
     last_flush_ms = [0]
     last_rest_sync_ms = [0]
+    # While ownTrades WS is live, periodic REST Ledgers reconciliation only needs a 5-min safety net (10x less rate-limit cost).
     rest_sync_interval_ms = math.trunc(
-        max(30.0, safe_pos_float(poll_interval, default=30.0) or 30.0) * 1000
+        max(300.0, safe_pos_float(poll_interval, default=30.0) or 30.0) * 1000
     )
     if callable(heartbeat_fn):
         heartbeat_fn(force=True)
+
+    backoff_base = max(5.0, safe_pos_float(backoff_init, default=5.0) or 5.0)
+    backoff_cap = max(backoff_base, safe_pos_float(backoff_max, default=120.0) or 120.0)
+    rate_limit_cap = max(backoff_cap, 960.0)  # Exceed Kraken's 15-min lockout window so recovery is automatic
+    backoff_cur = [backoff_base]
+    ws_subscribed = [False]
+    last_err_text = [""]
+
+    def _is_rate_limit_err(err_msg: object) -> bool:
+        txt = str(err_msg or "").lower()
+        return ("rate limit" in txt) or ("temporary lockout" in txt)
+
+    def _bump_backoff(err_msg: object = "") -> None:
+        txt = str(err_msg or "").lower()
+        if _is_rate_limit_err(txt):
+            # Escalate quickly (30 -> 90 -> 270 -> 960s) to clear Kraken's 15-min penalty without extending it.
+            backoff_cur[0] = min(rate_limit_cap, max(30.0, backoff_cur[0] * 3.0))
+        elif "invalid nonce" in txt:
+            backoff_cur[0] = min(backoff_cap, max(15.0, backoff_cur[0] * 2.0))
+        else:
+            backoff_cur[0] = min(backoff_cap, max(5.0, backoff_cur[0] * 1.5))
 
     def _merge_rest(err_label: Optional[str] = None, *, now_ms: Optional[int] = None) -> Optional[dict]:
         try:
@@ -3821,29 +3843,30 @@ def run_kraken_trade_ws_loop(
             last_flush_ms[0] = last_rest_sync_ms[0] = eff_ms
             return merged
         except Exception as exc:
+            last_err_text[0] = str(exc)
             if err_label is None:
                 raise
             log(f"[kraken_cache][ws] {err_label}: {exc}")
             return None
 
-    _merge_rest("REST seed failed")
-
-    backoff_cur = [max(5.0, safe_pos_float(backoff_init, default=5.0) or 5.0)]
-    backoff_cap = max(backoff_cur[0], safe_pos_float(backoff_max, default=120.0) or 120.0)
-
-    def _bump_backoff(err_msg: object = "") -> None:
-        txt = str(err_msg or "").lower()
-        if "rate limit" in txt or "invalid nonce" in txt:
-            backoff_cur[0] = min(backoff_cap, max(30.0, backoff_cur[0] * 2.0))
-        else:
-            backoff_cur[0] = min(backoff_cap, max(5.0, backoff_cur[0] * 1.5))
+    # Initial REST seed: if rate-limited, defer WS token call until backoff clears instead of double-hitting Kraken.
+    seed_ok = _merge_rest("REST seed failed") is not None
+    if not seed_ok and _is_rate_limit_err(last_err_text[0]):
+        _bump_backoff(last_err_text[0])
+        log(f"[kraken_cache][ws] rate-limited on seed; cooling down {backoff_cur[0]:g}s before WS connect")
+        if _wait_or_sleep(stop_event, backoff_cur[0]):
+            return
 
     def on_open(ws) -> None:
         try:
             ws.send(kr_prov_cls.build_ws_own_trades_subscription(client))
-            backoff_cur[0] = max(5.0, safe_pos_float(backoff_init, default=5.0) or 5.0)
+            ws_subscribed[0] = True
+            backoff_cur[0] = backoff_base
+            last_err_text[0] = ""
             log("[kraken_cache][ws] subscribed ownTrades")
         except Exception as exc:
+            ws_subscribed[0] = False
+            last_err_text[0] = str(exc)
             _bump_backoff(exc)
             log(f"[kraken_cache][ws] subscribe failed: {exc}")
             try:
@@ -3931,10 +3954,14 @@ def run_kraken_trade_ws_loop(
         if should_hb and callable(heartbeat_fn):
             heartbeat_fn()
 
-    def on_error(_ws, err) -> None:
+    def on_error(ws, err) -> None:
+        err_s = str(err or "")
+        if not getattr(ws, "keep_running", True) and "'NoneType' object has no attribute 'sock'" in err_s:
+            return
         log(f"[kraken_cache][ws] error: {err}")
 
     while not (stop_event is not None and stop_event.is_set()):
+        ws_subscribed[0] = False
         try:
             ws = websocket.WebSocketApp(
                 resolved_ws_url,
@@ -3952,16 +3979,21 @@ def run_kraken_trade_ws_loop(
                 ws_holder[0] = None
         if stop_event is not None and stop_event.is_set():
             break
+        had_session = ws_subscribed[0]
         wait_s = backoff_cur[0]
-        _bump_backoff()
+        if had_session:
+            backoff_cur[0] = backoff_base
+        else:
+            _bump_backoff(last_err_text[0])
         log(f"[kraken_cache][ws] disconnected; reconnect in {wait_s:g}s")
         if callable(heartbeat_fn):
             heartbeat_fn()
         if _wait_or_sleep(stop_event, wait_s):
             break
-        if (resolve_now_ms() - last_rest_sync_ms[0]) >= rest_sync_interval_ms:
+        # Only run REST Ledgers catch-up after an active WS session dropped (never stack Ledgers before GetWebSocketsToken when rate-limited).
+        if had_session and (resolve_now_ms() - last_rest_sync_ms[0]) >= rest_sync_interval_ms:
             if _merge_rest("REST resync after disconnect failed") is None:
-                _bump_backoff("rate limit")
+                _bump_backoff(last_err_text[0] or "rate limit")
 
 
 class _KrakenAccountTradeBridge(_AccountTradeBridgeBase):
