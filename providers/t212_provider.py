@@ -17,7 +17,7 @@ import math
 import os
 import threading
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
 from botcore import (
     SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
@@ -781,21 +781,26 @@ class T212Provider(MarketDataProvider):
             )
         self._invalidate_fills_cache(symbol)
 
-    def open_orders(self, symbol: str) -> List[dict]:
-        """Return active open orders on Trading 212 matching ``symbol``."""
-        if (sym_clean := clean_scalar_str(symbol)) is None:
-            return []
+    def open_orders_by_symbol(self, symbols: Sequence[str]) -> dict[str, List[dict]]:
+        """Fetch all Trading 212 active orders in ONE API call and bucket by requested ``symbols``."""
+        sym_list = [clean_s for s in (symbols or ()) if (clean_s := clean_scalar_str(s)) is not None]
+        if not sym_list:
+            return {}
+        buckets: dict[str, List[dict]] = {s: [] for s in sym_list}
         try:
             cli = self._client()
             list_fn = getattr(cli, "list_active_orders", None)
             if not callable(list_fn):
-                return []
+                return buckets
             raw_orders = list_fn()
             if not isinstance(raw_orders, list):
-                raise ProviderError(f"open_orders({symbol}): active orders unavailable")
-            out: List[dict] = []
+                raise ProviderError("open_orders: active orders unavailable")
             for o in raw_orders:
-                if not isinstance(o, dict) or not _t212_tickers_match(_order_ticker(o), sym_clean):
+                if not isinstance(o, dict):
+                    continue
+                ticker = _order_ticker(o)
+                matched = [s for s in sym_list if _t212_tickers_match(ticker, s)]
+                if not matched:
                     continue
                 status_u = clean_upper_scalar(o.get("status")) or "NEW"
                 if status_u in _STATUS_MAP:
@@ -806,27 +811,34 @@ class T212Provider(MarketDataProvider):
                 oid = extract_order_id(o)
                 if oid is None:
                     continue
-                out.append(
-                    build_open_order_entry(
-                        o,
-                        order_id=oid,
-                        side=side,
-                        price=px,
-                        orig_qty=abs(raw_qty),
-                        executed_qty=abs(safe_float(raw_exec_qty, default=0.0)),
-                        status=status_u,
-                        extra={
-                            "id": oid,
-                            "symbol": sym_clean.upper(),
-                            "type": clean_upper_scalar(o.get("type")) or "LIMIT",
-                        },
+                for sym_clean in matched:
+                    buckets[sym_clean].append(
+                        build_open_order_entry(
+                            o,
+                            order_id=oid,
+                            side=side,
+                            price=px,
+                            orig_qty=abs(raw_qty),
+                            executed_qty=abs(safe_float(raw_exec_qty, default=0.0)),
+                            status=status_u,
+                            extra={
+                                "id": oid,
+                                "symbol": sym_clean.upper(),
+                                "type": clean_upper_scalar(o.get("type")) or "LIMIT",
+                            },
+                        )
                     )
-                )
-            return out
+            return buckets
         except ProviderError:
             raise
         except Exception as exc:
-            raise ProviderError(f"open_orders({symbol}): {exc}") from exc
+            raise ProviderError(f"open_orders({sym_list[0]}): {exc}") from exc
+
+    def open_orders(self, symbol: str) -> List[dict]:
+        """Return active open orders on Trading 212 matching ``symbol``."""
+        if (sym_clean := clean_scalar_str(symbol)) is None:
+            return []
+        return self.open_orders_by_symbol([sym_clean]).get(sym_clean, [])
 
     def fetch_intraday_chart(
         self,

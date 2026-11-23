@@ -56,6 +56,7 @@ from providers.order_ledger import (
     TERMINAL_LEDGER_STATES,
     apply_order_event,
     build_order_event,
+    closed_order_tokens,
     make_closed_summary,
     match_active_order_key,
 )
@@ -107,7 +108,31 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
         self.reconcile_grace_sec = safe_pos_float(reconcile_grace_sec, default=None) or derive_reconcile_grace_sec()
         self.intent_stale_sec = safe_pos_float(intent_stale_sec, default=None) or derive_intent_stale_sec()
         self._file_sigs: dict[str, tuple[int, int]] = {}
-        self._recently_closed_vids: dict[tuple[str, str, str], float] = {}
+
+    @staticmethod
+    def _update_recently_closed(
+        recently_closed: dict[str, float],
+        summaries: list[dict[str, Any]],
+        eff_now: float,
+        *,
+        ttl_sec: float = 86400.0,
+        max_entries: int = 512,
+    ) -> dict[str, float]:
+        cutoff = eff_now - ttl_sec
+        pruned = {k: ts_v for k, ts_v in recently_closed.items() if ts_v >= cutoff}
+        for row in summaries:
+            for tok in closed_order_tokens(
+                row.get("v"),
+                symbol=row.get("sym"),
+                vid=row.get("vid"),
+                iid=row.get("iid"),
+                cid=row.get("cid"),
+            ):
+                pruned[tok] = round(eff_now, 3)
+        if len(pruned) > max_entries:
+            keep = sorted(pruned.items(), key=lambda kv: kv[1], reverse=True)[:max_entries]
+            pruned = dict(keep)
+        return pruned
 
     def _reload_singleton_if_changed(self, mgr: Any) -> None:
         fname = getattr(mgr, "filename", None)
@@ -229,17 +254,6 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
         fill_vst = clean_upper_scalar(fill_row.get("status"))
         return (not resting_now) or fill_vst == "FILLED" or (req_qty is not None and fill_qty >= req_qty * 0.9999)
 
-    def _remember_closed(self, summaries: list[dict[str, Any]], eff_now: float) -> None:
-        ttl = max(90.0, 2.0 * self.reconcile_grace_sec)
-        cutoff = eff_now - ttl
-        for k_old in [k for k, ts_v in self._recently_closed_vids.items() if ts_v < cutoff]:
-            self._recently_closed_vids.pop(k_old, None)
-        for row in summaries:
-            if vid := clean_order_id(row.get("vid")):
-                v_k = normalize_venue_name(row.get("v")) or str(row.get("v") or "").lower()
-                _, s_lc = _norm_sym_lc(row.get("sym"), v_k)
-                self._recently_closed_vids[(v_k, s_lc, vid.lower())] = eff_now
-
     def reconcile_once(self, *, now_ts: Optional[float] = None) -> dict[str, int]:
         """Execute one locked, network-free reconciliation pass and persist updated state."""
         eff_now = resolve_now_ts(now_ts)
@@ -250,20 +264,24 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
             orders: dict[str, dict[str, Any]] = snap["orders"]
             cursor: dict[str, Any] = snap["journal_cursor"]
             venue_verified_ts: dict[str, float] = dict(snap["venue_verified_ts"])
+            recently_closed: dict[str, float] = self._update_recently_closed(dict(snap.get("recently_closed") or {}), [], eff_now)
             newly_closed: list[dict[str, Any]] = []
             reconciler_events: list[dict[str, Any]] = []
 
             def _emit(ev_type: str, **kw: Any) -> Optional[str]:
                 ev_obj = build_order_event(ev_type, ts=eff_now, src="reconciler", **kw)
                 reconciler_events.append(ev_obj)
-                return apply_order_event(orders, ev_obj, closed_out=newly_closed)
+                return apply_order_event(orders, ev_obj, closed_out=newly_closed, recently_closed=recently_closed)
 
-            # 1. Replay producer events strictly after journal_cursor.
+            # 1. Replay producer events strictly after journal_cursor (suppressing late events for already-closed orders).
             new_events, cursor = self.read_events_after_cursor(cursor)
             for ev in new_events:
                 if clean_upper_scalar(ev.get("src")) != "RECONCILER":
-                    apply_order_event(orders, ev, closed_out=newly_closed)
-                    stats["events_applied"] += 1
+                    before_n = len(newly_closed)
+                    if apply_order_event(orders, ev, closed_out=newly_closed, recently_closed=recently_closed) is not None:
+                        stats["events_applied"] += 1
+                    if len(newly_closed) > before_n:
+                        recently_closed = self._update_recently_closed(recently_closed, newly_closed[before_n:], eff_now)
 
             # 2. Read live open and filled snapshots across all venues (100% network-free) and index fills first.
             open_by_venue: dict[str, dict[str, list[dict[str, Any]]]] = {}
@@ -275,7 +293,6 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                     venue_verified_ts[venue_key] = max(venue_verified_ts.get(venue_key, 0.0), ver_ts)
                 filled_by_venue[venue_key] = self._read_venue_filled_snapshot(venue_key)
             filled_by_sym_vid, filled_by_vid_any, filled_by_cid = self._index_filled_rows(filled_by_venue)
-            self._remember_closed(newly_closed, eff_now)
 
             # 3. Reconcile resting venue open orders against active ledger records.
             seen_open_keys: set[str] = set()
@@ -320,7 +337,8 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                                 stats["reconciled_open"] += 1
                         else:
                             # Skip re-adopting stale open-cache entries that already completed or just closed.
-                            if (venue_key, sym_lc, oid.lower()) in self._recently_closed_vids:
+                            vid_tok = f"{venue_key}:{sym_lc}:vid:{oid.lower()}" if sym_lc else f"{venue_key}:vid:{oid.lower()}"
+                            if vid_tok in recently_closed:
                                 continue
                             prior_fill = self._find_matching_fill(
                                 {"v": venue_key, "sym": sym_norm, "vid": oid, "cid": cid},
@@ -428,15 +446,16 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                         reason=close_reason,
                     )
 
-            # 6. Persist reconciler events, archive terminal rows, remember recently closed VIDs, and publish snapshot.
+            # 6. Persist reconciler events, archive terminal rows, persist recently_closed, and publish snapshot.
             for rev in reconciler_events:
                 self.append_event(rev)
-            self._remember_closed(newly_closed, eff_now)
+            for k_rem in [k for k, v in orders.items() if str(v.get("state") or "") in TERMINAL_LEDGER_STATES]:
+                rem = orders.pop(k_rem)
+                if rem.get("submitted") or rem.get("vid"):
+                    newly_closed.append(make_closed_summary(k_rem, rem, closed_ts=eff_now))
+            recently_closed = self._update_recently_closed(recently_closed, newly_closed, eff_now)
             for summary in newly_closed:
                 self.append_closed_record(summary)
-                stats["reconciled_closed"] += 1
-            for k_rem in [k for k, v in orders.items() if str(v.get("state") or "") in TERMINAL_LEDGER_STATES]:
-                self.append_closed_record(make_closed_summary(k_rem, orders.pop(k_rem), closed_ts=eff_now))
                 stats["reconciled_closed"] += 1
 
             stats["active_count"] = len(orders)
@@ -445,6 +464,7 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                 "updated_ts": round(eff_now, 3),
                 "journal_cursor": cursor,
                 "venue_verified_ts": {k: round(v, 3) for k, v in sorted(venue_verified_ts.items())},
+                "recently_closed": recently_closed,
                 "orders": orders,
             })
 

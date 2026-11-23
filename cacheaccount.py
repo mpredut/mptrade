@@ -3828,14 +3828,28 @@ def run_kraken_trade_ws_loop(
 
     _merge_rest("REST seed failed")
 
+    backoff_cur = [max(5.0, safe_pos_float(backoff_init, default=5.0) or 5.0)]
+    backoff_cap = max(backoff_cur[0], safe_pos_float(backoff_max, default=120.0) or 120.0)
+
+    def _bump_backoff(err_msg: object = "") -> None:
+        txt = str(err_msg or "").lower()
+        if "rate limit" in txt or "invalid nonce" in txt:
+            backoff_cur[0] = min(backoff_cap, max(30.0, backoff_cur[0] * 2.0))
+        else:
+            backoff_cur[0] = min(backoff_cap, max(5.0, backoff_cur[0] * 1.5))
+
     def on_open(ws) -> None:
         try:
             ws.send(kr_prov_cls.build_ws_own_trades_subscription(client))
+            backoff_cur[0] = max(5.0, safe_pos_float(backoff_init, default=5.0) or 5.0)
             log("[kraken_cache][ws] subscribed ownTrades")
         except Exception as exc:
+            _bump_backoff(exc)
             log(f"[kraken_cache][ws] subscribe failed: {exc}")
             try:
-                ws.close()
+                ws.keep_running = False
+                if getattr(ws, "sock", None) is not None:
+                    ws.close()
             except Exception:
                 pass
 
@@ -3938,12 +3952,16 @@ def run_kraken_trade_ws_loop(
                 ws_holder[0] = None
         if stop_event is not None and stop_event.is_set():
             break
-        log("[kraken_cache][ws] disconnected; reconnect in 5s")
+        wait_s = backoff_cur[0]
+        _bump_backoff()
+        log(f"[kraken_cache][ws] disconnected; reconnect in {wait_s:g}s")
         if callable(heartbeat_fn):
             heartbeat_fn()
-        if _wait_or_sleep(stop_event, 5.0):
+        if _wait_or_sleep(stop_event, wait_s):
             break
-        _merge_rest("REST resync after disconnect failed")
+        if (resolve_now_ms() - last_rest_sync_ms[0]) >= rest_sync_interval_ms:
+            if _merge_rest("REST resync after disconnect failed") is None:
+                _bump_backoff("rate limit")
 
 
 class _KrakenAccountTradeBridge(_AccountTradeBridgeBase):
@@ -4120,15 +4138,19 @@ class _VenueOpenOrdersBridge(_AccountTradeBridgeBase):
                         prov = prov_cls()
                         open_by_sym: dict[str, list[dict[str, Any]]] = {}
                         all_ok = True
-                        for s_item in v_syms:
-                            try:
-                                raw_open = prov.open_orders(s_item)
-                                if isinstance(raw_open, list):
-                                    open_by_sym[s_item] = raw_open
-                                else:
-                                    all_ok = False
-                            except Exception:
+                        try:
+                            batch = prov.open_orders_by_symbol(v_syms)
+                            if isinstance(batch, dict):
+                                for s_item in v_syms:
+                                    raw_open = batch.get(s_item)
+                                    if isinstance(raw_open, list):
+                                        open_by_sym[s_item] = raw_open
+                                    else:
+                                        all_ok = False
+                            else:
                                 all_ok = False
+                        except Exception:
+                            all_ok = False
                         if open_by_sym:
                             CacheOrderOpenManager.replace_venue_open_orders_snapshot(
                                 cache_path(CacheOrderOpenManager.disk_filename(v_key)),

@@ -18,7 +18,7 @@ import os
 import re
 import threading
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
 from botcore import (
     clean_order_id,
@@ -497,41 +497,50 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         except Exception as e:  # noqa: BLE001
             return self._log_provider_balance_error("Kraken", "balance", asset, e)
 
-    def open_orders(self, symbol: str) -> List[dict]:
-        """Return a strict Binance-shaped snapshot of active Kraken orders."""
-        raw_orders = self._query_with_bot_fallback(lambda cli: cli.open_orders(), f"open_orders({symbol})")
+    def open_orders_by_symbol(self, symbols: Sequence[str]) -> dict[str, List[dict]]:
+        """Fetch all Kraken open orders in ONE private API call and bucket by requested ``symbols``."""
+        sym_list = [s for s in (symbols or ()) if clean_scalar_str(s)]
+        if not sym_list:
+            return {}
+        label = ",".join(sym_list[:3]) + ("..." if len(sym_list) > 3 else "")
+        raw_orders = self._query_with_bot_fallback(lambda cli: cli.open_orders(), f"open_orders({label})")
         if not isinstance(raw_orders, dict):
-            raise ProviderError(f"open_orders({symbol}): invalid Kraken payload")
+            raise ProviderError(f"open_orders({label}): invalid Kraken payload")
 
-        normalized = []
+        buckets: dict[str, List[dict]] = {s: [] for s in sym_list}
         for order_id, raw in raw_orders.items():
-            clean_oid = require_clean_order_id(order_id, f"open_orders({symbol}) {order_id}", str_only=True)
+            clean_oid = require_clean_order_id(order_id, f"open_orders({label}) {order_id}", str_only=True)
             if not isinstance(raw, dict):
-                raise ProviderError(f"open_orders({symbol}): order {order_id} is invalid")
+                raise ProviderError(f"open_orders({label}): order {order_id} is invalid")
             description = raw.get("descr") or {}
             if not isinstance(description, dict):
-                raise ProviderError(f"open_orders({symbol}): invalid description for order {order_id}")
+                raise ProviderError(f"open_orders({label}): invalid description for order {order_id}")
             pair = clean_scalar_str(description.get("pair")) or clean_scalar_str(raw.get("pair")) or ""
             if not pair:
-                raise ProviderError(f"open_orders({symbol}): order {order_id} without a pair")
-            if not kraken_pair_matches(symbol, pair):
+                raise ProviderError(f"open_orders({label}): order {order_id} without a pair")
+            matched_syms = [s for s in sym_list if kraken_pair_matches(s, pair)]
+            if not matched_syms:
                 continue
             side = normalize_side(description.get("type") or raw.get("type"))
             if side not in {"BUY", "SELL"}:
-                raise ProviderError(f"open_orders({symbol}): an invalid side for {order_id}")
+                raise ProviderError(f"open_orders({matched_syms[0]}): an invalid side for {order_id}")
             raw_px = description.get("price") if description.get("price") is not None else raw.get("price", 0.0)
             price = safe_nonneg_float(raw_px, default=None)
             original_qty = safe_pos_float(raw.get("vol"), default=None)
             executed_qty = safe_nonneg_float(raw.get("vol_exec") if raw.get("vol_exec") is not None else 0.0, default=None)
             if price is None or original_qty is None or executed_qty is None or executed_qty > original_qty:
-                raise ProviderError(f"open_orders({symbol}): invalid quantities/price for {order_id}")
-            normalized.append(
-                build_open_order_entry(
-                    raw, order_id=clean_oid, side=side, price=price,
-                    orig_qty=original_qty, executed_qty=executed_qty, default_status="OPEN",
-                )
+                raise ProviderError(f"open_orders({matched_syms[0]}): invalid quantities/price for {order_id}")
+            entry = build_open_order_entry(
+                raw, order_id=clean_oid, side=side, price=price,
+                orig_qty=original_qty, executed_qty=executed_qty, default_status="OPEN",
             )
-        return normalized
+            for s in matched_syms:
+                buckets[s].append(dict(entry))
+        return buckets
+
+    def open_orders(self, symbol: str) -> List[dict]:
+        """Return a strict Binance-shaped snapshot of active Kraken orders."""
+        return self.open_orders_by_symbol([symbol]).get(symbol, [])
 
     _REMOTE_TRADES_CLIENT_ATTR = "_private"
     _VALIDATE_REMOTE_TRADES_SYMBOL = False

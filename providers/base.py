@@ -7,7 +7,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
 from botcore import (  # noqa: F401
     ClosedPriceSeries,
@@ -347,6 +347,10 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
 
     def open_orders(self, symbol: str) -> List[dict]:
         return []
+
+    def open_orders_by_symbol(self, symbols: Sequence[str]) -> dict[str, List[dict]]:
+        """Fetch active open orders for ``symbols``; venues with account-wide endpoints override for 1 API call."""
+        return {s: self.open_orders(s) for s in symbols}
 
     def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
         """Return explicitly supported strict lifecycle operations."""

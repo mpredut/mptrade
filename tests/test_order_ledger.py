@@ -222,11 +222,16 @@ def test_reconciler_converges_open_partial_filled_canceled_failed_and_orphans_cr
     )
 
     # First pass at t0 + 6s (before 30s grace): bn-iid-1 -> PARTIAL (vid=9001), hl-iid-1 -> OPEN (vid=88001),
-    # orphan 9999 adopted (owner=manual), kr-iid-lost still SUBMIT_UNKNOWN (within grace), blocked archived.
+    # orphan 9999 adopted (owner=manual), kr-iid-lost still SUBMIT_UNKNOWN (within grace);
+    # pre-submit GUARD_BLOCKED (never submitted) stays traceable in events only, NOT in orders_closed.
     st1 = reconciler.reconcile_once(now_ts=t0 + 6.0)
     assert st1["orphans_adopted"] == 1
     assert st1["reconciled_open"] == 2
-    assert st1["reconciled_closed"] == 1  # bn-iid-blocked
+    assert st1["reconciled_closed"] == 0  # pre-submit GUARD_BLOCKED is never archived as a closed order
+    blocked_trace = reader.trace_order("bn-iid-blocked")
+    assert blocked_trace["found"] is True
+    assert blocked_trace["closed_orders"] == []
+    assert any(e["ev"] == OrderEventType.GUARD_BLOCKED.value for e in blocked_trace["events"])
 
     active1 = {r["key"]: r for r in reader.list_active_orders(apply_tail=False)}
     assert active1["binance:iid:bn-iid-1"]["state"] == OrderLedgerState.PARTIAL.value
@@ -567,8 +572,65 @@ def test_prod_parity_no_stale_open_readoption_clean_owner_and_order_terminal(tmp
     assert len(trace["closed_orders"]) == 1
     assert trace["closed_orders"][0]["owner"] == "ai_executor"
 
-    # 2. ExecutionAudit 'order_terminal' mirrors cleanly into OrderLedger as STATUS -> FILLED
+    # 2. Late ExecutionAudit 'order_terminal' arriving AFTER reconciler already closed the order
+    #    must NOT resurrect the order or append a duplicate row into orders_closed_YYYY-MM.jsonl!
     audit = ExecutionAudit(directory=str(tmp_path / "audit"))
+    assert audit.record(
+        "order_terminal",
+        intent_id="intent_hl_1",
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+        order_id="614160779028",
+        client_order_id=hl_cid,
+        side="buy",
+        filled_qty=8.31,
+        cost=549.7065,
+        status="closed",
+        venue_status="FILLED",
+    )
+    st_late = fresh_rec.reconcile_once(now_ts=t0 + 25.0)
+    assert st_late["reconciled_closed"] == 0 and st_late["active_count"] == 0
+    assert len(OrderLedgerReader(cachedb_dir=cdb).trace_order("614160779028")["closed_orders"]) == 1
+
+    # 3. Unsubmitted tracked GUARD_BLOCKED (even with iid + cid) & unsubmitted stale INTENT never enter orders_closed
+    writer.record_event(
+        OrderEventType.GUARD_BLOCKED,
+        venue="binance",
+        symbol="TAOUSDC",
+        ts=t0 + 26.0,
+        owner="ai_executor",
+        side="SELL",
+        qty=4.18,
+        px=195.2,
+        iid="intent_unsubmitted_guard",
+        cid="AI_intent_unsubmitted_guard",
+        reason="insufficient_funds",
+        deferred=False,
+    )
+    writer.record_event(
+        OrderEventType.INTENT,
+        venue="binance",
+        symbol="TAOUSDC",
+        ts=t0 + 26.0,
+        owner="tradeall",
+        side="BUY",
+        qty=1.0,
+        px=190.0,
+        iid="intent_unsubmitted_stale",
+    )
+    st_unsub = reconciler.reconcile_once(now_ts=t0 + 300.0)
+    assert st_unsub["reconciled_closed"] == 0 and st_unsub["active_count"] == 0
+    assert OrderLedgerReader(cachedb_dir=cdb).trace_order("intent_unsubmitted_guard")["closed_orders"] == []
+    assert OrderLedgerReader(cachedb_dir=cdb).trace_order("intent_unsubmitted_stale")["closed_orders"] == []
+
+    # 4. CANCEL_FAILED reverts CANCELING back to OPEN so a transient network error never strands CANCELING
+    writer.record_event(OrderEventType.ACKED, venue="binance", symbol="BTCUSDC", ts=t0 + 301.0, iid="cf-1", vid="55501", side="BUY", qty=0.01, px=62000.0)
+    writer.record_event(OrderEventType.CANCEL_REQ, venue="binance", symbol="BTCUSDC", ts=t0 + 302.0, vid="55501")
+    writer.record_event(OrderEventType.CANCEL_FAILED, venue="binance", symbol="BTCUSDC", ts=t0 + 303.0, vid="55501", reason="ReadTimeout")
+    act_cf = OrderLedgerReader(cachedb_dir=cdb).list_active_orders(venue="binance", apply_tail=True)
+    assert len(act_cf) == 1 and act_cf[0]["state"] == OrderLedgerState.OPEN.value
+
+    # 5. ExecutionAudit 'order_terminal' for an unclosed order mirrors cleanly into OrderLedger as STATUS -> FILLED
     assert audit.record(
         "order_terminal",
         intent_id="aud-term-1",
@@ -586,7 +648,7 @@ def test_prod_parity_no_stale_open_readoption_clean_owner_and_order_terminal(tmp
     assert tr_term["found"] is True
     assert any(e["ev"] == OrderEventType.STATUS.value and e.get("vst") == "FILLED" for e in tr_term["events"])
 
-    # 3. Orphan Hyperliquid order with hex cloid (no prior fill) gets owner='external', NEVER 'alt_0x...'
+    # 6. Orphan Hyperliquid order with hex cloid (no prior fill) gets owner='external', NEVER 'alt_0x...'
     CacheOrderOpenManager.replace_venue_open_orders_snapshot(
         str(orders_dir / CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME),
         {
@@ -598,13 +660,27 @@ def test_prod_parity_no_stale_open_readoption_clean_owner_and_order_terminal(tmp
                 "origQty": 2.0,
                 "executedQty": 0.0,
                 "status": "OPEN",
-                "timestamp": int((t0 + 30) * 1000),
+                "timestamp": int((t0 + 305) * 1000),
             }]
         },
-        now_ms=int((t0 + 30) * 1000),
-        verified_ts=t0 + 30.0,
+        now_ms=int((t0 + 305) * 1000),
+        verified_ts=t0 + 305.0,
     )
-    st5 = reconciler.reconcile_once(now_ts=t0 + 31.0)
+    st5 = reconciler.reconcile_once(now_ts=t0 + 306.0)
     assert st5["orphans_adopted"] == 1
     act = OrderLedgerReader(cachedb_dir=cdb).list_active_orders(venue="hyperliquid", apply_tail=False)
     assert len(act) == 1 and act[0]["owner"] == "external"
+
+    # 7. KrakenProvider.open_orders_by_symbol fetches ALL pairs in ONE single private API call
+    from providers.kraken_provider import KrakenProvider
+
+    kp = KrakenProvider()
+    fake_cli = MagicMock()
+    fake_cli.open_orders.return_value = {
+        "OKRK-1": {"descr": {"pair": "HYPEUSD", "type": "buy", "price": "60.0"}, "vol": "2.0", "vol_exec": "0.0"},
+        "OKRK-2": {"descr": {"pair": "TAOUSD", "type": "sell", "price": "210.0"}, "vol": "1.0", "vol_exec": "0.0"},
+    }
+    kp._query_with_bot_fallback = lambda fn, _lbl: fn(fake_cli)
+    by_sym = kp.open_orders_by_symbol(["HYPEUSD", "TAOUSD", "ADAUSD", "SPCXxUSD"])
+    assert fake_cli.open_orders.call_count == 1
+    assert len(by_sym["HYPEUSD"]) == 1 and len(by_sym["TAOUSD"]) == 1 and by_sym["ADAUSD"] == [] and by_sym["SPCXxUSD"] == []

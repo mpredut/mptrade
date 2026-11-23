@@ -156,6 +156,50 @@ _DIRECT_TERMINAL_EVENTS: dict[str, str] = {
     OrderEventType.RECONCILED_EXPIRED.value: OrderLedgerState.EXPIRED.value,
     OrderEventType.RECONCILED_FAILED.value: OrderLedgerState.FAILED.value,
 }
+_SUBMISSION_PROOF_EVENTS: frozenset[str] = frozenset({
+    OrderEventType.SUBMITTED.value,
+    OrderEventType.ACKED.value,
+    OrderEventType.SUBMIT_REFUSED.value,
+    OrderEventType.SUBMIT_UNKNOWN.value,
+    OrderEventType.CANCEL_REQ.value,
+    OrderEventType.CANCEL_ACK.value,
+    OrderEventType.STATUS.value,
+    OrderEventType.RECOVERED.value,
+    OrderEventType.RECONCILED_OPEN.value,
+    OrderEventType.RECONCILED_PARTIAL.value,
+    OrderEventType.RECONCILED_FILLED.value,
+    OrderEventType.ORPHAN_ADOPTED.value,
+})
+_TRAILING_NON_NEW_EVENTS: frozenset[str] = frozenset({
+    OrderEventType.ACKED.value,
+    OrderEventType.STATUS.value,
+    OrderEventType.CANCEL_REQ.value,
+    OrderEventType.CANCEL_ACK.value,
+    OrderEventType.CANCEL_FAILED.value,
+    OrderEventType.RECOVERED.value,
+})
+
+
+def closed_order_tokens(
+    venue: object,
+    *,
+    symbol: object = None,
+    vid: object = None,
+    iid: object = None,
+    cid: object = None,
+) -> list[str]:
+    """Return normalized deduplication tokens for a closed order across ``(venue, sym, vid)``, ``iid``, and ``cid``."""
+    v_norm = _norm_venue(venue)
+    s_lc = _norm_symbol(symbol, venue=v_norm).lower() if symbol else ""
+    tokens: list[str] = []
+    if vid_c := clean_order_id(vid):
+        tokens.append(f"{v_norm}:{s_lc}:vid:{vid_c.lower()}" if s_lc else f"{v_norm}:vid:{vid_c.lower()}")
+    if iid_c := clean_order_id(iid):
+        tokens.append(f"{v_norm}:iid:{iid_c.lower()}")
+    if cid_c := clean_order_id(cid):
+        for tok in _correlatable_id_set(cid_c):
+            tokens.append(f"{v_norm}:cid:{tok}")
+    return tokens
 
 
 def utc_day_for_ts(ts: float) -> str:
@@ -399,6 +443,7 @@ def apply_order_event(
     event: dict[str, Any],
     *,
     closed_out: Optional[list[dict[str, Any]]] = None,
+    recently_closed: Optional[dict[str, float]] = None,
 ) -> Optional[str]:
     """Apply one ledger event to ``orders`` in place; return affected key (or archived key)."""
     if not isinstance(event, dict) or not (ev := clean_upper_scalar(event.get("ev"))):
@@ -417,6 +462,14 @@ def apply_order_event(
         key = key_id or key_vid
 
     if key is None:
+        # Ignore late trailing updates (e.g. ExecutionAudit order_terminal arriving after reconciler already closed the order).
+        if (
+            ev in _TRAILING_NON_NEW_EVENTS
+            and isinstance(recently_closed, dict)
+            and recently_closed
+            and any(tok in recently_closed for tok in closed_order_tokens(venue, symbol=sym, vid=vid, iid=iid, cid=cid))
+        ):
+            return None
         key = _canonical_order_key(venue, symbol=sym, iid=iid, cid=cid, vid=vid, ts=ts)
         rec = {"v": venue, "sym": sym, "state": OrderLedgerState.INTENT.value, "created_ts": round(ts, 3), "updated_ts": round(ts, 3), "events": 0}
         orders[key] = rec
@@ -426,6 +479,8 @@ def apply_order_event(
     rec["updated_ts"] = round(max(safe_pos_float(rec.get("updated_ts"), default=0.0) or 0.0, ts), 3)
     rec["events"] = (safe_nonneg_int(rec.get("events"), default=0) or 0) + 1
     rec["last_ev"] = ev
+    if vid or ev in _SUBMISSION_PROOF_EVENTS:
+        rec["submitted"] = True
 
     for f_k, f_v in (("sym", sym), ("iid", iid), ("cid", cid), ("side", normalize_side(event.get("side"))), ("type", clean_upper_scalar(event.get("type"))), ("kind", clean_scalar_str(event.get("kind")))):
         if f_v and not rec.get(f_k):
@@ -469,6 +524,11 @@ def apply_order_event(
     elif ev in {OrderEventType.ACKED.value, OrderEventType.RECOVERED.value}:
         vst_st = _classify_venue_status_transition(event.get("vst"), fq=cur_fq, req_qty=req_qty, current_state=cur_state)
         new_state = vst_st or (OrderLedgerState.PARTIAL.value if cur_fq > 0.0 else OrderLedgerState.OPEN.value)
+    elif ev == OrderEventType.CANCEL_FAILED.value:
+        if cur_state == OrderLedgerState.CANCELING.value:
+            new_state = OrderLedgerState.PARTIAL.value if cur_fq > 0.0 else (OrderLedgerState.OPEN.value if rec.get("vid") else cur_state)
+        else:
+            new_state = cur_state
     elif ev == OrderEventType.STATUS.value:
         new_state = _classify_venue_status_transition(event.get("vst"), fq=cur_fq, req_qty=req_qty, current_state=cur_state) or cur_state
     elif ev in {OrderEventType.RECONCILED_OPEN.value, OrderEventType.ORPHAN_ADOPTED.value}:
@@ -481,9 +541,10 @@ def apply_order_event(
     rec["state"] = new_state
     if new_state in TERMINAL_LEDGER_STATES:
         archived = orders.pop(key, rec)
-        # Never pollute orders_closed_YYYY-MM.jsonl with anonymous pre-submit guard probes lacking any order ID.
-        is_anon_guard_skip = ev == OrderEventType.GUARD_BLOCKED.value and not (archived.get("iid") or archived.get("cid") or archived.get("vid"))
-        if closed_out is not None and not is_anon_guard_skip:
+        # Only archive real orders that crossed the submission/venue boundary; pre-submit guard blocks
+        # and unsubmitted expired intents stay traceable in order_events_YYYY-MM-DD.jsonl only.
+        crossed_submit = bool(archived.get("submitted") or archived.get("vid"))
+        if closed_out is not None and crossed_submit:
             closed_out.append(make_closed_summary(key, archived, closed_ts=ts))
     return key
 
@@ -558,6 +619,7 @@ class FileOrderLedgerBase(OrderLedgerBackendInterface, ABC):
             "updated_ts": 0.0,
             "journal_cursor": {"file": "", "offset": 0},
             "venue_verified_ts": {},
+            "recently_closed": {},
             "orders": {},
         }
 
@@ -591,11 +653,13 @@ class FileOrderLedgerBase(OrderLedgerBackendInterface, ABC):
         raw_orders = raw.get("orders") if isinstance(raw.get("orders"), dict) else {}
         cur = raw.get("journal_cursor") if isinstance(raw.get("journal_cursor"), dict) else {}
         raw_ver = raw.get("venue_verified_ts") if isinstance(raw.get("venue_verified_ts"), dict) else {}
+        raw_rc = raw.get("recently_closed") if isinstance(raw.get("recently_closed"), dict) else {}
         return {
             "schema_version": safe_nonneg_int(raw.get("schema_version"), default=ORDER_LEDGER_SCHEMA_VERSION) or ORDER_LEDGER_SCHEMA_VERSION,
             "updated_ts": safe_nonneg_float(raw.get("updated_ts"), default=0.0) or 0.0,
             "journal_cursor": {"file": clean_scalar_str(cur.get("file")) or "", "offset": safe_nonneg_int(cur.get("offset"), default=0) or 0},
             "venue_verified_ts": {str(k): safe_nonneg_float(v, default=0.0) or 0.0 for k, v in raw_ver.items() if clean_scalar_str(k) is not None},
+            "recently_closed": {str(k): safe_nonneg_float(v, default=0.0) or 0.0 for k, v in raw_rc.items() if clean_scalar_str(k) is not None},
             "orders": {str(k): dict(v) for k, v in raw_orders.items() if clean_scalar_str(k) is not None and isinstance(v, dict)},
         }
 
@@ -683,12 +747,12 @@ class OrderLedgerReader(FileOrderLedgerBase):
     def load_active_state(self, *, apply_tail: bool = True) -> dict[str, Any]:
         """Load ``orders_active.json`` passively and optionally replay unmaterialized tail events in RAM."""
         snap = self.read_active_snapshot(repair_files=False)
-        orders, cursor, tail_count = snap["orders"], snap["journal_cursor"], 0
+        orders, cursor, recently_closed, tail_count = snap["orders"], snap["journal_cursor"], snap["recently_closed"], 0
         if _parse_bool_flag(apply_tail, True):
             tail_events, cursor = self.read_events_after_cursor(cursor)
             for ev in tail_events:
                 if clean_upper_scalar(ev.get("src")) != "RECONCILER":
-                    apply_order_event(orders, ev)
+                    apply_order_event(orders, ev, recently_closed=recently_closed)
                     tail_count += 1
         return {**snap, "journal_cursor": cursor, "tail_events_applied": tail_count, "orders": orders}
 
