@@ -747,7 +747,8 @@ def plan_and_run_transfer(
                     f"(txid={arb_res.get('arb_txid') or 'pending'}).\n"
                     f"Next: app.hyperliquid.xyz -> Deposit (Arbitrum USDC) -> Transfer (Perp to Spot)."
                 ),
-                tags="moneybag",
+                source="rebalance_kraken_to_hl",
+                symbol="HYPEUSDC",
             )
     if watch_hl:
         hl_res = watch_hyperliquid_spot_arrival(cfg, baseline_hl_spot_usdc, net_usdc)
@@ -756,7 +757,8 @@ def plan_and_run_transfer(
             alert.notify(
                 f"Hyperliquid Spot USDC credited (+{hl_res['spot_usdc_delta']:.2f} USDC)",
                 f"Hyperliquid Spot USDC balance is now {hl_res['spot_usdc']:.2f} USDC on {cfg.target_address}.",
-                tags="white_check_mark",
+                source="rebalance_kraken_to_hl",
+                symbol="HYPEUSDC",
             )
 
     return out

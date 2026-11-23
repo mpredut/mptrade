@@ -282,8 +282,11 @@ def test_execute_refuses_shortfall_without_convert_flag_and_executes_when_funded
             "fetch_hyperliquid_balances",
             return_value={"spot_usdc": 54.0, "spot_hype": 15.9, "perp_equity_usd": 0.0, "perp_withdrawable_usd": 0.0},
         ),
+        patch.object(reb.alert, "notify") as mock_notify,
     ):
-        res = reb.plan_and_run_transfer(cli_funded, cfg, amount_usdc=11.0, execute=True, wait_arb=True)
+        res = reb.plan_and_run_transfer(
+            cli_funded, cfg, amount_usdc=11.0, execute=True, wait_arb=True, send_notify=True
+        )
         assert res["mode"] == "executed"
         assert res["withdrawal_id"] == "WD-TEST-123"
         assert res["arbitrum_arrival"]["arrived"] is True
@@ -291,3 +294,5 @@ def test_execute_refuses_shortfall_without_convert_flag_and_executes_when_funded
         cli_funded.funding_withdraw.assert_called_once_with(
             "USDC", _ARB_METHOD_ID, _ADDR_ID, 11.0, fee_included=True, withdrawal_fee_token="FEE-TOK-123", max_fee=1.25
         )
+        mock_notify.assert_called_once()
+        assert mock_notify.call_args.kwargs == {"source": "rebalance_kraken_to_hl", "symbol": "HYPEUSDC"}
