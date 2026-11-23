@@ -1257,7 +1257,7 @@ def test_crypto_executor_prompt_data_accuracy_guards(tmp_path):
         topic_spec("auto_cryptotrade_executor"),
     )
     assert "WHICH venue (`binance`, `kraken`, `hyperliquid`)." in crypto_prompt
-    assert "0bps SELL-only xStocks ANTxUSD and SPCXxUSD" in crypto_prompt
+    assert "0bps SELL-only xStock SPCXxUSD" in crypto_prompt
 
 
 def test_critical_path_aware_trade_plans_and_fee_adjusted_reload_scorecard():

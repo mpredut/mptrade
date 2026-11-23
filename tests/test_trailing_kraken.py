@@ -1117,7 +1117,11 @@ def test_kraken_tokenized_asset_routing_and_spv_pair_matching(monkeypatch):
 def test_xstock_watch_ledger_alloc_price_and_regex_target_sync():
     import re
     cfg = parse_dotenv(os.path.join(_KRAKEN_DIR, "config.env"))
-    rx = cfg["XSTOCK_REGEX"]
+    # Live config disables pending ANTx IPO target while preserving active SPCXxUSD supervision.
+    assert cfg.get("XSTOCK_REGEX", "") == ""
+    assert "SPCXxUSD" in cfg.get("XSTOCK_ACTIVE_PAIRS", "")
+
+    rx = r"^(?:ANTx|ANTSPV)(?:[./]|USD|EUR|$)"
     for hit in ("ANTx.T", "ANTx", "ANTxUSD", "ANTx/USD", "ANTSPVUSD"):
         assert re.search(rx, hit, re.I), f"expected {hit} to match {rx}"
     for miss in ("MANTRA", "MANTRAUSD", "ANTOx", "ANTOxUSD", "ANTOSPV", "SPCXx.T"):
@@ -1139,6 +1143,25 @@ def test_xstock_watch_ledger_alloc_price_and_regex_target_sync():
     assert st["pair"] is None
     assert st["alerted_tp"] is False
     assert st["known_assets"] == {"SPCXx.T": 15.74, "HYPE": 26.32}
+
+    # Empty XSTOCK_REGEX clears stale ANTx target/bot_pid state while preserving known_assets.
+    st_ant = {
+        "known_assets": {"ANTx.T": 0.001, "SPCXx.T": 1e-6},
+        "allocated": {"asset": "ANTx.T", "qty": 0.531, "alloc_price": 87.1499},
+        "pair": "ANTxUSD",
+        "alerted_pair": True,
+        "alerted_tp": True,
+        "alerted_tp2": True,
+        "alerted_sl": False,
+        "bot_pid": 86652,
+        "alerted_need_price": False,
+    }
+    assert xw.sync_target_regex(st_ant, "") is True
+    assert st_ant["allocated"] is None
+    assert st_ant["pair"] is None
+    assert st_ant["bot_pid"] is None
+    assert st_ant["known_assets"] == {"ANTx.T": 0.001, "SPCXx.T": 1e-6}
+    assert xw.sync_target_regex(st_ant, "") is False
 
     # Reservation-only ledger (before allocation settles) must return None
     pre_cli = SimpleNamespace(
@@ -1347,18 +1370,18 @@ def test_declarative_xstock_role_gating_uppercase_resolution_and_archive_ohlc(tm
     from providers.price_poller import KrakenPriceStream
     from state_io import atomic_write_jsonl
 
-    # 1. Live instruments.conf enables SPCXxUSD & ANTxUSD for AI trading (ai.tradable=yes) while keeping role.mt=no
+    # 1. Live instruments.conf enables SPCXxUSD for AI trading (ai.tradable=yes) while ANTxUSD is disabled
     assert resolve_registered_symbol_case("SPCXXUSD", "kraken") == "SPCXxUSD"
     assert resolve_registered_symbol_case("ANTXUSD", "kraken") == "ANTxUSD"
     assert _resolve_kraken_pair("SPCXXUSD") == ("SPCXxUSD", True)
     assert _resolve_kraken_pair("ANTXUSD") == ("ANTxUSD", True)
     assert is_xstock_trading_enabled("SPCXxUSD") is True
-    assert is_xstock_trading_enabled("ANTxUSD") is True
+    assert is_xstock_trading_enabled("ANTxUSD") is False
     assert is_xstock_trading_enabled("AAPLxUSD") is False
     assert symbols_for("kraken", "mt") == ["HYPEUSD"]
     live_reg = load_registry()
     assert resolve_instrument_spec("SPCXxUSD", "kraken", live_reg) is not None
-    assert resolve_instrument_spec("ANTxUSD", "kraken", live_reg) is not None
+    assert resolve_instrument_spec("ANTxUSD", "kraken", live_reg) is None
     assert resolve_instrument_spec("AAPLxUSD", "kraken", live_reg) is None
 
     # 2. Setting ai.tradable=no and role.mt=no declaratively locks an xStock out of execution

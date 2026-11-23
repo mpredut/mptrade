@@ -184,6 +184,22 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
 
         # SERVER / DEADMAN
         self.assertEqual(_topic_for_category("Config Reloaded", "orchestrator"), "ntfy-server-test")
+        self.assertEqual(
+            _topic_for_category("🤖 BOT RESTARTED (was down) on SPCXxUSD (adopt @ 141.75)", "xstock-watch"),
+            "ntfy-server-test",
+        )
+        self.assertEqual(
+            _topic_for_category("🤖 BOT AUTO-STARTED on SPCXxUSD (adopt @ 141.75)", "xstock-watch"),
+            "ntfy-server-test",
+        )
+        self.assertEqual(
+            _topic_for_category("Fleet restarted (mptrade)", "orchestrator"),
+            "ntfy-server-test",
+        )
+        self.assertEqual(
+            _topic_for_category("🤖 BOT RESTARTED FAILED on SPCXxUSD", "xstock-watch"),
+            "ntfy-error-test",
+        )
 
         # ERROR
         self.assertEqual(_topic_for_category("ORDER FAILED", "kraken"), "ntfy-error-test")

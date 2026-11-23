@@ -244,17 +244,27 @@ def sync_configured_archives(client: KrakenClient, st: dict) -> None:
 
 
 def sync_target_regex(st: dict, rx: str) -> bool:
-    """Clear stale allocation/pair state from a previous IPO when XSTOCK_REGEX changes."""
-    if not isinstance(st, dict) or not rx or isinstance(rx, bool):
+    """Clear stale allocation/pair state from a previous IPO when XSTOCK_REGEX changes or is disabled."""
+    if not isinstance(st, dict) or isinstance(rx, bool):
         return False
+    rx_clean = clean_scalar_str(rx) or ""
     alloc = st.get("allocated")
     alloc_asset = alloc.get("asset") if isinstance(alloc, dict) else None
     cur_pair = st.get("pair")
-    stale_alloc = isinstance(alloc_asset, str) and alloc_asset and not re.search(rx, alloc_asset, re.I)
-    stale_pair = isinstance(cur_pair, str) and cur_pair and not re.search(rx, cur_pair, re.I)
+    cur_pid = st.get("bot_pid")
+    if not rx_clean:
+        if not (alloc_asset or cur_pair or cur_pid):
+            return False
+        log(f"  [reset] clearing xStock target state (asset={alloc_asset}, pair={cur_pair}) because XSTOCK_REGEX is empty")
+        for key, val in _default_state().items():
+            if key != "known_assets":
+                st[key] = val
+        return True
+    stale_alloc = isinstance(alloc_asset, str) and alloc_asset and not re.search(rx_clean, alloc_asset, re.I)
+    stale_pair = isinstance(cur_pair, str) and cur_pair and not re.search(rx_clean, cur_pair, re.I)
     if not (stale_alloc or stale_pair):
         return False
-    log(f"  [reset] clearing previous xStock target state (asset={alloc_asset}, pair={cur_pair}) for regex={rx}")
+    log(f"  [reset] clearing previous xStock target state (asset={alloc_asset}, pair={cur_pair}) for regex={rx_clean}")
     for key, val in _default_state().items():
         if key != "known_assets":
             st[key] = val
@@ -404,21 +414,22 @@ def check_balance(client: KrakenClient, st: dict, rx: str, desktop: bool) -> Non
         st["known_assets"] = assets
         log(f"  initial balance snapshot: {len(assets)} assets ({', '.join(sorted(assets))})")
         return
-    for a, q in assets.items():
-        if a in st["known_assets"]:
-            continue
-        if re.search(rx, a, re.I):
-            st["allocated"] = {"asset": a, "qty": q, "ts": time.time()}
-            log(f"  \U0001f3af ALLOCATION DETECTED: {a} = {q}")
-            notify(title=f"\U0001f3af xStock ALLOCATION: {a} = {q}",
-                   body=f"{a} appeared in the Kraken account (quantity {q}). "
-                        f"Allocation cost will be resolved automatically from Ledger (or XSTOCK_ALLOC_PRICE).",
-                   source="xstock-watch", desktop=desktop, email=True)
-        else:
-            log(f"  \u2139 new asset in account: {a} = {q}")
-            notify(title=f"\u2139 New asset in Kraken account: {a} = {q}",
-                   body="Check whether the xStock allocation sits under a different code than expected.",
-                   source="xstock-watch", desktop=desktop, email=True)
+    if rx:
+        for a, q in assets.items():
+            if a in st["known_assets"]:
+                continue
+            if re.search(rx, a, re.I):
+                st["allocated"] = {"asset": a, "qty": q, "ts": time.time()}
+                log(f"  \U0001f3af ALLOCATION DETECTED: {a} = {q}")
+                notify(title=f"\U0001f3af xStock ALLOCATION: {a} = {q}",
+                       body=f"{a} appeared in the Kraken account (quantity {q}). "
+                            f"Allocation cost will be resolved automatically from Ledger (or XSTOCK_ALLOC_PRICE).",
+                       source="xstock-watch", desktop=desktop, email=True)
+            else:
+                log(f"  \u2139 new asset in account: {a} = {q}")
+                notify(title=f"\u2139 New asset in Kraken account: {a} = {q}",
+                       body="Check whether the xStock allocation sits under a different code than expected.",
+                       source="xstock-watch", desktop=desktop, email=True)
     st["known_assets"].update(assets)
     for prev_a in list(st["known_assets"]):
         if prev_a in bal and prev_a not in assets:
@@ -433,6 +444,8 @@ def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,
     If several pairs match (for example, SPCXx/USD and SPCXx/EUR), prefer the
     one whose quote currency matches ``quote``.
     """
+    if not rx:
+        return
     try:
         base_pairs = client.asset_pairs()
         pairs = dict(base_pairs) if isinstance(base_pairs, dict) else base_pairs
@@ -798,12 +811,12 @@ def main() -> int:
     if not args.status and not args.trial:
         single_instance("kraken_xstock_watch")
 
-    rx = required_env("XSTOCK_REGEX")
+    rx = optional_env("XSTOCK_REGEX") or ""
     quote = required_env("XSTOCK_QUOTE")
     alloc_price = required_float_env("XSTOCK_ALLOC_PRICE")
     tp_pct = required_float_env("XSTOCK_TP_ALERT_PCT")
     sl_pct = required_float_env("XSTOCK_SL_ALERT_PCT")
-    yahoo_sym = required_env("XSTOCK_YAHOO")
+    yahoo_sym = optional_env("XSTOCK_YAHOO") or ""
 
     client = build_kraken_client(KrakenClient, kraken_credentials, "bot")
     if args.trial:
@@ -826,9 +839,9 @@ def main() -> int:
         return 0
 
     log("=== xStock watcher started ===")
-    log(f"    regex      : {rx}")
+    log(f"    regex      : {rx or '(disabled - active pairs only)'}")
     log(f"    allocation : {alloc_price if alloc_price > 0 else 'auto-resolved from Kraken Ledger'}")
-    log(f"    alerts     : +{tp_pct}% / -{sl_pct}%  (price: Kraken or Yahoo {yahoo_sym})")
+    log(f"    alerts     : +{tp_pct}% / -{sl_pct}%  (price: Kraken{f' or Yahoo {yahoo_sym}' if yahoo_sym else ''})")
     log(f"    interval   : {args.interval} min")
     beats = 0
     sleep_sec = max(1.0, safe_pos_float(args.interval, default=1.0) * 60.0)
