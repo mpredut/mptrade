@@ -904,7 +904,15 @@ def load_config():
 
     env_trade = os.environ.get("TRADE_ENABLED")
     if env_trade is not None and env_trade.strip() != "":
-        new_config["trade_enabled"] = _parse_bool_flag(env_trade, default=True)
+        if _is_unmodified_root_key("TRADE_ENABLED"):
+            if "trade_enabled" in new_config:
+                _set_dotenv_env_key(
+                    "TRADE_ENABLED",
+                    "true" if new_config["trade_enabled"] else "false",
+                    is_root=True,
+                )
+        else:
+            new_config["trade_enabled"] = _parse_bool_flag(env_trade, default=True)
     new_config.setdefault("trade_enabled", True)
 
     _CONFIG_MTIME = (_file_mtime(env_p), _file_mtime(txt_p))

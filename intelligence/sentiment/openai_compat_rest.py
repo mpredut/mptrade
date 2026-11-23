@@ -29,6 +29,7 @@ OPENAI_COMPAT_MODEL_PREFIX: str = "openai_compat:"
 DEFAULT_OPENAI_COMPAT_MAX_TOKENS: int = 4096
 DEFAULT_OPENAI_COMPAT_TEMPERATURE: float = 0.2
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_UNCLOSED_THINK_RE = re.compile(r"<think>.*$", re.DOTALL | re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -141,13 +142,22 @@ def resolve_openai_compat_config(
     )
 
 
-def extract_openai_compat_text(resp_data: Any) -> str:
-    """Extract assistant response text from an OpenAI Chat Completions JSON payload."""
+def extract_openai_compat_text(resp_data: Any, *, require_complete: bool = False) -> str:
+    """Extract final assistant response text from an OpenAI Chat Completions JSON payload.
+
+    Strips reasoning blocks (closed ``<think>...</think>`` and unclosed ``<think>...`` tails)
+    without falling back to intermediate thinking content. When ``require_complete=True``,
+    rejects responses truncated by token limit (``finish_reason == "length"``).
+    """
     if not isinstance(resp_data, dict):
         return ""
     choices = resp_data.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         return ""
+    if _parse_bool_flag(require_complete, False):
+        finish_reason = (clean_scalar_str(choices[0].get("finish_reason")) or "").lower()
+        if finish_reason == "length":
+            return ""
     msg = choices[0].get("message")
     if not isinstance(msg, dict):
         return ""
@@ -167,8 +177,9 @@ def extract_openai_compat_text(resp_data: Any) -> str:
         text = "\n".join(parts).strip()
     if not text:
         return ""
-    stripped_think = _THINK_BLOCK_RE.sub("", text).strip()
-    return stripped_think if stripped_think else text
+    stripped_think = _THINK_BLOCK_RE.sub("", text)
+    stripped_think = _UNCLOSED_THINK_RE.sub("", stripped_think).strip()
+    return stripped_think
 
 
 def query_openai_compat_chat(
@@ -214,7 +225,7 @@ def query_openai_compat_chat(
             body["response_format"] = {"type": "json_object"}
         try:
             resp_data = eff_post(config.url, body, timeout=eff_timeout, headers=headers)
-            text = extract_openai_compat_text(resp_data)
+            text = extract_openai_compat_text(resp_data, require_complete=require_json)
             if not text:
                 logger.warning(
                     "OpenAI-compatible REST endpoint returned empty content for model '%s'; trying next.",

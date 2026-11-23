@@ -23,7 +23,7 @@ from cachepaths import (
     order_ledger_closed_path,
     order_ledger_events_path,
 )
-from order_ledger_reconciler import (
+from order_ledger_worker import (
     OrderLedgerReconciler,
     derive_intent_stale_sec,
     derive_reconcile_grace_sec,

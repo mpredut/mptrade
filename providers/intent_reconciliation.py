@@ -156,7 +156,7 @@ def _scan_matching_audit_records(
     audit_dir: str,
     failed_by_id: dict[str, dict[str, Any]],
     executed_incomplete_by_id: dict[str, dict[str, Any]],
-) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any], set[str], bool]:
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any], set[str], dict[str, dict[str, Any]], bool]:
     """Scan UTC-day execution audit JSONL logs and collect the most authoritative record per intent ID."""
     pending_ts = [
         ts_i
@@ -172,6 +172,7 @@ def _scan_matching_audit_records(
     matched_exec_records: dict[str, dict[str, Any]] = {}
     submitted_qty_by_id: dict[str, Any] = {}
     any_audit_seen_ids: set[str] = set()
+    submit_requested_by_id: dict[str, dict[str, Any]] = {}
     has_audit_files = False
     active_exec_oids: dict[str, Any] = {
         iid_e: extract_order_id(it_e.get("execution_payload"), default=None)
@@ -185,6 +186,11 @@ def _scan_matching_audit_records(
                 continue
             any_audit_seen_ids.add(iid)
             ev = str(rec.get("event") or "")
+            if ev == "submit_requested":
+                submit_requested_by_id[iid] = rec
+                if rec.get("qty") is not None and iid not in submitted_qty_by_id:
+                    submitted_qty_by_id[iid] = rec.get("qty")
+                continue
             if ev in ("submit_accepted", "submit_unknown", "order_recovered") and rec.get("qty") is not None:
                 submitted_qty_by_id[iid] = rec.get("qty")
             if iid in failed_by_id:
@@ -239,7 +245,7 @@ def _scan_matching_audit_records(
                         and is_cancel_or_expire_status(v_stat, l_stat)
                     ):
                         matched_exec_records[iid] = rec
-    return matched_records, matched_exec_records, submitted_qty_by_id, any_audit_seen_ids, has_audit_files
+    return matched_records, matched_exec_records, submitted_qty_by_id, any_audit_seen_ids, submit_requested_by_id, has_audit_files
 
 
 def _apply_failed_intent_audit_record(
@@ -421,7 +427,7 @@ def reconcile_intents_from_execution_audit(
     if (not failed_by_id and not executed_incomplete_by_id) or not audit_dir or not os.path.isdir(audit_dir):
         return updated
 
-    matched_records, matched_exec_records, submitted_qty_by_id, any_audit_seen_ids, has_audit_files = (
+    matched_records, matched_exec_records, submitted_qty_by_id, any_audit_seen_ids, submit_requested_by_id, has_audit_files = (
         _scan_matching_audit_records(audit_dir, failed_by_id, executed_incomplete_by_id)
     )
     for iid_chk, item_chk in executed_incomplete_by_id.items():
@@ -435,20 +441,45 @@ def reconcile_intents_from_execution_audit(
         for iid_p, item_p in failed_by_id.items():
             if (
                 iid_p not in matched_records
-                and iid_p not in any_audit_seen_ids
                 and clean_upper_scalar(item_p.get("status")) == "PENDING_EXECUTION"
                 and not item_p.get("execution_payload")
                 and (ts_p := safe_pos_float(item_p.get("timestamp"), default=0.0) or 0.0) > 0.0
                 and (now_s - ts_p) > _STALE_PENDING_EXECUTION_SEC
             ):
-                _record_intent_state(
-                    item_p,
-                    "FAILED",
-                    now_s,
-                    action="RECONCILED_ABANDONED_PRE_SUBMIT",
-                    reason="abandoned_pending_execution_no_submit",
-                )
-                updated = True
+                if iid_p in submit_requested_by_id:
+                    req_rec = submit_requested_by_id[iid_p]
+                    exec_payload: dict[str, Any] = {
+                        "symbol": _clean_intent_symbol(req_rec.get("symbol")) or _clean_intent_symbol(item_p.get("symbol")) or None,
+                        "side": extract_intent_side(req_rec) or extract_intent_side(item_p) or "",
+                        "executedQty": "",
+                        "cummulativeQuoteQty": "",
+                        "status": "UNKNOWN",
+                        "submission_state": "unknown",
+                        "reconciled_from_audit": True,
+                    }
+                    if req_rec.get("qty") is not None:
+                        exec_payload["origQty"] = str(req_rec.get("qty"))
+                    if cid_req := clean_order_id(req_rec.get("client_order_id")):
+                        exec_payload["clientOrderId"] = cid_req
+                    item_p["execution_payload"] = exec_payload
+                    _record_intent_state(
+                        item_p,
+                        "SUBMIT_UNKNOWN",
+                        now_s,
+                        action="RECONCILED_SUBMIT_REQUESTED_UNKNOWN",
+                        reason="submit_requested_unconfirmed_requires_client_id_reconcile",
+                        payload=exec_payload,
+                    )
+                    updated = True
+                elif iid_p not in any_audit_seen_ids:
+                    _record_intent_state(
+                        item_p,
+                        "FAILED",
+                        now_s,
+                        action="RECONCILED_ABANDONED_PRE_SUBMIT",
+                        reason="abandoned_pending_execution_no_submit",
+                    )
+                    updated = True
 
     if not matched_records and not matched_exec_records:
         return updated

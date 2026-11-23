@@ -563,15 +563,22 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
     }
 
 
+def _order_key_tuple(venue: Any, symbol: Any, oid: Any) -> tuple[str, str, str]:
+    v_k = str(normalize_venue_name(str(venue)) or venue or "").strip().lower()
+    sym_c = (_canonical_symbol(symbol) or "").lower()
+    oid_c = clean_order_id(oid) or ""
+    return (v_k, sym_c, oid_c)
+
+
 def _load_cached_order_book_index(
     root: str,
-) -> tuple[list[dict[str, Any]], set[str], set[tuple[str, str]]]:
+) -> tuple[list[dict[str, Any]], set[str], set[tuple[str, str, str]]]:
     """Collect read-only resting open orders, covered venues, and explicitly terminal venue order keys."""
     out: list[dict[str, Any]] = []
-    seen_keys: set[tuple[str, str]] = set()
+    seen_keys: set[tuple[str, str, str]] = set()
     open_covered: set[str] = set()
     filled_covered: set[str] = set()
-    terminal_order_keys: set[tuple[str, str]] = set()
+    terminal_order_keys: set[tuple[str, str, str]] = set()
     filled_open_by_venue: dict[str, list[dict[str, Any]]] = {}
     terminal_venue_statuses = TERMINAL_AUDIT_VENUE_STATUSES | TERMINAL_CANCEL_VENUE_STATUSES
 
@@ -588,15 +595,16 @@ def _load_cached_order_book_index(
                 if oid:
                     latest_by_oid[oid] = oo
             for oid, oo in latest_by_oid.items():
+                oo_sym = str(oo.get("symbol") or k_sym)
                 oo_st = oo.get("status")
                 oo_st_up = clean_upper_scalar(oo_st) or ""
                 if oo_st_up and oo_st_up in terminal_venue_statuses:
-                    terminal_order_keys.add((venue_key, oid))
+                    terminal_order_keys.add(_order_key_tuple(venue_key, oo_sym, oid))
                     continue
                 if not (is_open_working_status(oo_st, allow_empty=True) or oo_st_up == "PARTIALLY_FILLED"):
                     continue
                 filled_open_by_venue.setdefault(venue_key, []).append(
-                    {"venue": venue_key, "symbol": str(oo.get("symbol") or k_sym), **oo}
+                    {"venue": venue_key, "symbol": oo_sym, **oo}
                 )
 
     for venue_key, open_fname in CacheOrderOpenManager.VENUE_FILENAMES.items():
@@ -610,20 +618,21 @@ def _load_cached_order_book_index(
                 if not isinstance(oo, dict):
                     continue
                 oid = clean_order_id(extract_order_id(oo, default=None)) or ""
-                key_t = (venue_key, oid)
+                oo_sym = str(oo.get("symbol") or k_sym)
+                key_t = _order_key_tuple(venue_key, oo_sym, oid)
                 if oid and key_t in terminal_order_keys:
                     continue
                 if not oid or key_t not in seen_keys:
                     if oid:
                         seen_keys.add(key_t)
-                    out.append({"venue": venue_key, "symbol": str(oo.get("symbol") or k_sym), **oo})
+                    out.append({"venue": venue_key, "symbol": oo_sym, **oo})
 
     for venue_key, oc_orders in filled_open_by_venue.items():
         if venue_key in open_covered:
             continue
         for oo in oc_orders:
             oid = clean_order_id(extract_order_id(oo, default=None)) or ""
-            key_t = (venue_key, oid)
+            key_t = _order_key_tuple(venue_key, oo.get("symbol"), oid)
             if not oid or key_t not in seen_keys:
                 if oid:
                     seen_keys.add(key_t)
@@ -643,10 +652,10 @@ def _load_cached_open_orders(root: str) -> list[dict[str, Any]]:
     return _load_cached_order_book_index(root)[0]
 
 
-def _collect_terminal_outbox_keys(root: str) -> tuple[set[str], set[tuple[str, str]]]:
-    """Return terminal intent_ids and (venue, order_id) pairs recorded in order_retry_queue.jsonl."""
+def _collect_terminal_outbox_keys(root: str) -> tuple[set[str], set[tuple[str, str, str]]]:
+    """Return terminal intent_ids and ``(venue, symbol, order_id)`` tuples recorded in order_retry_queue.jsonl."""
     term_iids: set[str] = set()
-    term_oids: set[tuple[str, str]] = set()
+    term_oids: set[tuple[str, str, str]] = set()
     for path in _iter_resolved_source_paths(root, DEFAULT_SOURCES[0]):
         try:
             records = _read(path, json_lines=True)
@@ -673,9 +682,9 @@ def _collect_terminal_outbox_keys(root: str) -> tuple[set[str], set[tuple[str, s
             if iid := clean_order_id(_first(rec, "intent_id")):
                 term_iids.add(iid)
             raw_v = _first(rec, "provider_name", "venue")
-            v_k = str(normalize_venue_name(str(raw_v)) or raw_v or "").strip().lower()
-            if v_k and (oid := clean_order_id(_first(rec, "order_id", "id", "txid"))):
-                term_oids.add((v_k, oid))
+            raw_s = _first(rec, "symbol", "pair", "ticker")
+            if raw_v and (oid := clean_order_id(_first(rec, "order_id", "id", "txid"))):
+                term_oids.add(_order_key_tuple(raw_v, raw_s, oid))
     return term_iids, term_oids
 
 
@@ -685,17 +694,16 @@ def _prune_and_deduplicate_active_intents(intents: list[dict[str, Any]], root: s
         return []
     now_s = resolve_now_ts(None)
     open_orders, covered_venues, terminal_order_keys = _load_cached_order_book_index(root)
-    live_open_oids: dict[str, set[str]] = {}
+    live_open_keys: set[tuple[str, str, str]] = set()
     for oo in open_orders:
-        v_oo = str(oo.get("venue") or "").strip().lower()
         if oid_oo := clean_order_id(extract_order_id(oo, default=None)):
-            live_open_oids.setdefault(v_oo, set()).add(oid_oo)
+            live_open_keys.add(_order_key_tuple(oo.get("venue"), oo.get("symbol"), oid_oo))
 
     outbox_rows = [r for r in intents if r.get("owner") == "global_outbox"]
     primary_rows = [r for r in intents if r.get("owner") != "global_outbox"]
     outbox_iids = {r["intent_id"] for r in outbox_rows if r.get("intent_id")}
     outbox_oids = {
-        (str(r.get("venue") or "").strip().lower(), oid_r)
+        _order_key_tuple(r.get("venue"), r.get("symbol"), oid_r)
         for r in outbox_rows
         if (oid_r := clean_order_id(r.get("order_id")))
     }
@@ -709,25 +717,26 @@ def _prune_and_deduplicate_active_intents(intents: list[dict[str, Any]], root: s
         if row.get("owner") == "autonomous_ai":
             v_k = str(row.get("venue") or "").strip().lower()
             oid_k = clean_order_id(row.get("order_id"))
-            v_open_set = live_open_oids.get(v_k, set())
-            if (oid_k and (v_k, oid_k) in eff_terminal_oids) or (
-                row.get("intent_id") in eff_terminal_iids and (not oid_k or oid_k not in v_open_set)
+            row_key = _order_key_tuple(v_k, row.get("symbol"), oid_k) if oid_k else None
+            is_live_open = bool(row_key and row_key in live_open_keys)
+            if (row_key and row_key in eff_terminal_oids) or (
+                row.get("intent_id") in eff_terminal_iids and not is_live_open
             ):
                 continue
             if created_ts_s is not None:
                 age_s = max(0.0, now_s - created_ts_s)
                 st_lc = str(row.get("status") or "").strip().lower()
                 if st_lc in {"pending", "pending_execution", "submit_unknown"} and age_s > 3600.0:
-                    if row["intent_id"] not in outbox_iids and (not oid_k or oid_k not in v_open_set):
+                    if row["intent_id"] not in outbox_iids and not is_live_open:
                         continue
-                elif age_s > 300.0 and oid_k and v_k in covered_venues:
-                    if oid_k not in v_open_set and (v_k, oid_k) not in outbox_oids:
+                elif age_s > 300.0 and row_key and v_k in covered_venues:
+                    if not is_live_open and row_key not in outbox_oids:
                         continue
         kept_primary.append(row)
 
     primary_iids = {r["intent_id"] for r in kept_primary if r.get("intent_id")}
     primary_oids = {
-        (str(r.get("venue") or "").strip().lower(), oid_p)
+        _order_key_tuple(r.get("venue"), r.get("symbol"), oid_p)
         for r in kept_primary
         if (oid_p := clean_order_id(r.get("order_id")))
     }
@@ -737,7 +746,7 @@ def _prune_and_deduplicate_active_intents(intents: list[dict[str, Any]], root: s
         if r.get("intent_id") not in primary_iids
         and not (
             (oid_o := clean_order_id(r.get("order_id")))
-            and (str(r.get("venue") or "").strip().lower(), oid_o) in primary_oids
+            and _order_key_tuple(r.get("venue"), r.get("symbol"), oid_o) in primary_oids
         )
     ]
     return kept_primary + kept_outbox

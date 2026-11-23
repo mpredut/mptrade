@@ -1476,6 +1476,8 @@ def test_kraken_amend_order_and_provider_replace_order(monkeypatch, tmp_path):
 
     def _mock_private(ep, data=None, fresh=False):
         priv_calls.append((ep, dict(data or {})))
+        if ep == "QueryOrders":
+            return {"O-TXID-1": {"status": "open", "vol": "2.0", "vol_exec": "0.0", "cost": "0.0", "fee": "0.0"}}
         return {"amend_id": "OA-KRK-1"}
 
     monkeypatch.setattr(kcli, "_private", _mock_private)
@@ -1508,6 +1510,11 @@ def test_kraken_amend_order_and_provider_replace_order(monkeypatch, tmp_path):
         "amended_in_place": True,
     }
     assert "HYPEUSD" not in json.loads(fills_cache.read_text(encoding="utf-8")).get("fetchtime", {})
+
+    # Guard-approved qty differing from resting remaining volume (0.5 vs 2.0) MUST refuse price-only amend.
+    with pytest.raises(SubmissionRefused) as exc_qty:
+        kp.replace_order("HYPEUSD", "O-TXID-1", "SELL", 25.68, 0.5, post_only=True)
+    assert exc_qty.value.reason == "replace_not_attempted"
 
     # Not live or venue error -> SubmissionRefused("replace_not_attempted").
     kp_dry = KrakenProvider(client=kcli, live_enabled=False)

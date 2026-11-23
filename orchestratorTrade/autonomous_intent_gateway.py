@@ -289,7 +289,8 @@ class AutonomousIntentGateway:
             return None
         if not isinstance(raw_orders, list) or not raw_orders:
             return None
-        known_ai_oids = collect_known_ai_order_ids(all_intents)
+        inst_venue = getattr(inst, "provider_name", None)
+        known_ai_oids = collect_known_ai_order_ids(all_intents, venue=inst_venue, symbol=inst.symbol)
         latest: Optional[Dict[str, Any]] = None
         for ord_item in raw_orders:
             if not isinstance(ord_item, dict):
@@ -300,7 +301,7 @@ class AutonomousIntentGateway:
             ord_st = clean_upper_scalar(ord_item.get("status")) or ""
             if ord_st in NON_FILL_ORDER_STATUSES:
                 continue
-            if resolve_order_actor(ord_item, known_ai_order_ids=known_ai_oids) != "BOT":
+            if resolve_order_actor(ord_item, known_ai_order_ids=known_ai_oids, venue=inst_venue, symbol=inst.symbol) != "BOT":
                 continue
             ts_s = extract_timestamp_s(ord_item, default=0.0) or 0.0
             px_f = extract_order_price(ord_item, default=0.0) or 0.0

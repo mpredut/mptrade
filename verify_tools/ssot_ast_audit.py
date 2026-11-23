@@ -152,7 +152,6 @@ FORBIDDEN_PROVIDER_BASE_IMPORTS = frozenset({
     "order_guard",
     "guard_hierarchy",
     "llm_order_guard",
-    "order_ledger_reconciler",
     "order_ledger_worker",
     "order_lifecycle",
     "order_retry",
@@ -204,7 +203,6 @@ FORBIDDEN_PROVIDER_UPWARD = frozenset({
     "order_guard",
     "guard_hierarchy",
     "llm_order_guard",
-    "order_ledger_reconciler",
     "order_ledger_worker",
     "order_lifecycle",
     "order_retry",
@@ -243,7 +241,6 @@ FORBIDDEN_TRANSPORT_PROVIDER_TARGETS = frozenset({
 ORDER_GATEWAY_MODULES = frozenset({
     "instrument.py",
     "order_guard.py",
-    "order_ledger_reconciler.py",
     "order_ledger_worker.py",
     "order_lifecycle.py",
     "order_retry.py",

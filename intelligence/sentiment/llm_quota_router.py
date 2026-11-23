@@ -65,9 +65,21 @@ _EFFORT_SUFFIXES: tuple[str, ...] = ("-xhigh", "-high", "-medium", "-low")
 _FLASH_EFFORT_SUFFIXES: tuple[str, ...] = ("-high", "-medium", "-low")
 
 
+def normalize_model_identity(model_name: Any) -> str:
+    """Return canonical lowercase model leaf slug stripped of transport/vendor prefixes (e.g. ``openai_compat:google/``)."""
+    if not isinstance(model_name, str) or not model_name.strip():
+        return ""
+    low = model_name.strip().lower()
+    if low.startswith("openai_compat:"):
+        low = low[len("openai_compat:") :].strip()
+    if "/" in low:
+        low = low.rsplit("/", 1)[-1].strip()
+    return low
+
+
 def model_family_base(model_name: str) -> str:
     """Strip standard effort suffixes (-xhigh/-high/-medium/-low) to obtain the canonical model family."""
-    cleaned = model_name.strip().lower() if isinstance(model_name, str) else ""
+    cleaned = normalize_model_identity(model_name)
     for suffix in _EFFORT_SUFFIXES:
         if cleaned.endswith(suffix):
             return cleaned[: -len(suffix)]
@@ -76,29 +88,27 @@ def model_family_base(model_name: str) -> str:
 
 def is_gemini_flash_model(model_name: str) -> bool:
     """Return True for Gemini Flash family slugs (eligible on both paid and free-tier pools)."""
-    low = model_name.strip().lower() if isinstance(model_name, str) else ""
+    low = normalize_model_identity(model_name)
     return low.startswith("gemini-") and "flash" in low
 
 
 def is_gemini_paid_model(model_name: str) -> bool:
     """Return True for non-Flash paid Gemini family slugs (e.g. Neon, Carbon, Pro, future series)."""
-    low = model_name.strip().lower() if isinstance(model_name, str) else ""
+    low = normalize_model_identity(model_name)
     return low.startswith("gemini-") and not is_gemini_flash_model(low)
 
 
 def is_claude_model(model_name: str) -> bool:
     """Return True for Anthropic Claude model slugs."""
-    low = model_name.strip().lower() if isinstance(model_name, str) else ""
+    low = normalize_model_identity(model_name)
     return low.startswith("claude-")
 
 
 def is_degraded_trading_model(model_name: Any) -> bool:
     """Return True for low-effort, Flash, or legacy REST models unsuitable for live enforce trading."""
-    if not isinstance(model_name, str) or not model_name.strip():
+    low = normalize_model_identity(model_name)
+    if not low:
         return False
-    low = model_name.strip().lower()
-    if low.startswith("openai_compat:"):
-        low = low[len("openai_compat:") :].strip()
     return (
         low.endswith("-low")
         or is_gemini_flash_model(low)

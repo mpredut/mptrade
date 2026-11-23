@@ -216,39 +216,134 @@ def resolve_matched_notional_usd(entry_usd: float, exit_usd: float) -> float:
     return min(e_u, x_u) if (e_u > 0.0 and x_u > 0.0) else max(e_u, x_u)
 
 
+def _extract_lifo_row_qty(row: dict[str, Any]) -> tuple[float, bool]:
+    """Return ``(positive_qty, has_explicit_qty)`` for a filled LIFO lot row."""
+    if (q_exp := safe_pos_float(row.get("qty"), default=None)) is not None:
+        return q_exp, True
+    if (q_fill := safe_pos_float(row.get("filled_qty"), default=None)) is not None:
+        return q_fill, True
+    px = safe_pos_float(row.get("px") if row.get("px") is not None else row.get("price"), default=None)
+    usd = safe_pos_float(row.get("usd") if row.get("usd") is not None else row.get("cost_usd"), default=None)
+    if px is not None and usd is not None:
+        return usd / px, False
+    return 0.0, False
+
+
+def _slice_lifo_row(row: dict[str, Any], matched_qty: float, total_qty: float) -> dict[str, Any]:
+    """Return a proportional slice of ``row`` carrying ``matched_qty`` and scaled ``usd``/``cost_usd``."""
+    sliced = dict(row)
+    if total_qty <= 0.0 or matched_qty >= total_qty - 1e-12:
+        if total_qty > 0.0:
+            sliced["qty"] = total_qty
+        return sliced
+    ratio = matched_qty / total_qty
+    sliced["qty"] = matched_qty
+    if (usd_v := safe_pos_float(row.get("usd"), default=None)) is not None:
+        sliced["usd"] = usd_v * ratio
+    if (cost_v := safe_pos_float(row.get("cost_usd"), default=None)) is not None:
+        sliced["cost_usd"] = cost_v * ratio
+    return sliced
+
+
 def match_filled_intent_rows_lifo(
     filled_rows: Sequence[dict[str, Any]],
 ) -> tuple[list[tuple[str, dict[str, Any], dict[str, Any]]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Chronologically match filled intent rows LIFO per ``inst_key`` into closed pairs and open queues."""
+    """Chronologically match filled rows LIFO per ``inst_key``, consuming executed qty and retaining lot remainders."""
     sorted_rows = sorted(filled_rows, key=lambda r: r["ts"])
-    pending_buys: dict[Any, list[dict[str, Any]]] = {}
-    reloaded_buys: dict[Any, list[dict[str, Any]]] = {}
-    pending_sells: dict[Any, list[dict[str, Any]]] = {}
+    # Each stack item is [row_dict, remaining_qty, original_qty, has_explicit_qty].
+    pending_buys: dict[Any, list[list[Any]]] = {}
+    reloaded_buys: dict[Any, list[list[Any]]] = {}
+    pending_sells: dict[Any, list[list[Any]]] = {}
     closed_pairs: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+
+    def _dust_eps(orig_a: float, orig_b: float, explicit_a: bool, explicit_b: bool) -> float:
+        if explicit_a and explicit_b:
+            return 1e-9
+        return max(1e-9, 0.01 * max(orig_a, orig_b, 1e-9))
+
+    def _consume_stack(
+        stack: list[list[Any]],
+        incoming: dict[str, Any],
+        rem_qty: float,
+        orig_in_qty: float,
+        in_explicit: bool,
+        pair_kind: str,
+    ) -> float:
+        while stack and rem_qty > 1e-12:
+            top = stack[-1]
+            lot_row, lot_rem, lot_orig, lot_exp = top[0], top[1], top[2], top[3]
+            if lot_orig <= 0.0 or orig_in_qty <= 0.0:
+                stack.pop()
+                closed_pairs.append((pair_kind, dict(lot_row), dict(incoming)))
+                return 0.0
+            if (not lot_exp) and (not in_explicit):
+                lot_px = safe_pos_float(
+                    lot_row.get("px") if lot_row.get("px") is not None else lot_row.get("price"),
+                    default=0.0,
+                ) or 0.0
+                in_px = safe_pos_float(
+                    incoming.get("px") if incoming.get("px") is not None else incoming.get("price"),
+                    default=0.0,
+                ) or 0.0
+                lot_rem_usd = lot_rem * lot_px
+                in_rem_usd = rem_qty * in_px
+                max_u = max(lot_rem_usd, in_rem_usd)
+                if max_u > 0.0 and abs(lot_rem_usd - in_rem_usd) / max_u <= 0.05:
+                    stack.pop()
+                    entry_slice = _slice_lifo_row(lot_row, lot_rem, lot_orig)
+                    exit_slice = _slice_lifo_row(incoming, rem_qty, orig_in_qty)
+                    closed_pairs.append((pair_kind, entry_slice, exit_slice))
+                    return 0.0
+            eps = _dust_eps(lot_orig, orig_in_qty, lot_exp, in_explicit)
+            matched_q = min(lot_rem, rem_qty)
+            entry_slice = _slice_lifo_row(lot_row, matched_q, lot_orig)
+            exit_slice = _slice_lifo_row(incoming, matched_q, orig_in_qty)
+            closed_pairs.append((pair_kind, entry_slice, exit_slice))
+            lot_rem -= matched_q
+            rem_qty -= matched_q
+            if lot_rem <= eps:
+                stack.pop()
+            else:
+                top[1] = lot_rem
+            if rem_qty <= eps:
+                rem_qty = 0.0
+                break
+        return rem_qty
+
     for row in sorted_rows:
         side = normalize_side(row.get("side"))
         if side not in ("BUY", "SELL"):
             continue
         ikey = row["inst_key"]
+        row_qty, row_exp = _extract_lifo_row_qty(row)
         if side == "BUY":
             s_queue = pending_sells.get(ikey)
             if s_queue:
-                closed_pairs.append(("SELL->BUY", s_queue.pop(), row))
-                # A reload BUY on a spot account still opens live long inventory for a subsequent SELL exit
-                # without duplicating open BUY_MTM while still held.
-                reloaded_buys.setdefault(ikey, []).append(row)
+                top_s_usd = safe_pos_float(s_queue[-1][0].get("usd"), default=0.0) or 0.0
+                in_usd = safe_pos_float(row.get("usd"), default=0.0) or 0.0
+                rem_after = _consume_stack(s_queue, row, row_qty, row_qty, row_exp, "SELL->BUY")
+                # A spot reload BUY closes the SELL->BUY leg and opens live long inventory in
+                # reloaded_buys without duplicating open BUY_MTM while still held.
+                is_notional_reload = top_s_usd > 0.0 and in_usd <= top_s_usd * 1.05
+                if rem_after <= 1e-12 or is_notional_reload:
+                    reloaded_buys.setdefault(ikey, []).append([row, row_qty, row_qty, row_exp])
+                else:
+                    reloaded_buys.setdefault(ikey, []).append([row, row_qty - rem_after, row_qty, row_exp])
+                    pending_buys.setdefault(ikey, []).append([row, rem_after, row_qty, row_exp])
             else:
-                pending_buys.setdefault(ikey, []).append(row)
+                pending_buys.setdefault(ikey, []).append([row, row_qty, row_qty, row_exp])
         else:
+            rem_sell = row_qty
             b_queue = pending_buys.get(ikey)
             if b_queue:
-                closed_pairs.append(("BUY->SELL", b_queue.pop(), row))
-            elif (rb_queue := reloaded_buys.get(ikey)):
-                closed_pairs.append(("BUY->SELL", rb_queue.pop(), row))
-            else:
-                pending_sells.setdefault(ikey, []).append(row)
-    open_buys = [row for q in pending_buys.values() for row in q]
-    open_sells = [row for q in pending_sells.values() for row in q]
+                rem_sell = _consume_stack(b_queue, row, rem_sell, row_qty, row_exp, "BUY->SELL")
+            if rem_sell > 1e-12 and (rb_queue := reloaded_buys.get(ikey)):
+                rem_sell = _consume_stack(rb_queue, row, rem_sell, row_qty, row_exp, "BUY->SELL")
+            if rem_sell > 1e-12 or (row_qty <= 0.0 and not b_queue and not reloaded_buys.get(ikey)):
+                pending_sells.setdefault(ikey, []).append([row, rem_sell, row_qty, row_exp])
+
+    open_buys = [_slice_lifo_row(it[0], it[1], it[2]) for q in pending_buys.values() for it in q]
+    open_sells = [_slice_lifo_row(it[0], it[1], it[2]) for q in pending_sells.values() for it in q]
     return closed_pairs, open_buys, open_sells
 
 
@@ -699,6 +794,12 @@ def evaluate_ai_decision_scorecard(
         ot = extract_intent_order_type(it)
         rt_bps = resolve_venue_round_trip_fee_bps(ven, sym, order_type=ot)
         v_k, b_k, q_k, _ = _intent_venue_symbol_side_key(ven, sym, side)
+        exec_payload = it.get("execution_payload")
+        exec_qty = (
+            safe_pos_float(extract_executed_qty(exec_payload, default=0.0), default=None)
+            if isinstance(exec_payload, Mapping)
+            else None
+        )
         filled_rows.append({
             "ts": ts_s,
             "venue": ven,
@@ -708,6 +809,7 @@ def evaluate_ai_decision_scorecard(
             "order_type": ot,
             "rt_fee_bps": rt_bps,
             "px": px,
+            "qty": exec_qty,
             "usd": _extract_intent_notional_usd(it),
             "invalidation_px": inv_px,
             "target_px": tgt_px,

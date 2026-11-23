@@ -1452,6 +1452,8 @@ class Instrument:
             provider_kwargs["cache_permit"] = ctx.cache_permit
         if ctx.smart and ctx.defers_smart_cancel:
             provider_kwargs["_cancel_opposite_requested_price"] = ctx.orig_price
+        if ctx.native_replace_oid and safe_pos_float(ctx.orig_qty, default=None) is not None:
+            provider_kwargs.setdefault("replaces_qty", ctx.orig_qty)
         dispatch = (
             partial(self._provider.replace_order, self.symbol, ctx.native_replace_oid)
             if ctx.native_replace_oid

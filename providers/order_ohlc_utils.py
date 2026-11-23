@@ -350,7 +350,13 @@ def normalize_open_order(
         or (cand_type if (cand_type and cand_type.upper() not in ("BUY", "SELL", "B", "S")) else None)
         or "LIMIT"
     )
-    actor, mod, rule = resolve_order_origin(order, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map)
+    actor, mod, rule = resolve_order_origin(
+        order,
+        known_ai_order_ids=known_ai_order_ids,
+        audit_origin_map=audit_origin_map,
+        venue=venue or None,
+        symbol=symbol or None,
+    )
     sym_out = clean_scalar_str(symbol) or (clean_upper_scalar(order.get("symbol")) or "")
     rec = {
         "venue": clean_scalar_str(venue) or "",

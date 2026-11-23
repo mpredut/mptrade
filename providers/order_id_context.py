@@ -1,5 +1,6 @@
 """Cross-venue clientOrderId process-lineage, bot-prefix, actor-attribution, and venue-CID SSOT."""
 
+from dataclasses import dataclass
 import hashlib
 import importlib
 import itertools
@@ -20,7 +21,8 @@ from botcore import (
     safe_nonneg_int,
     sanitize_identifier,
 )
-from cachepaths import normalize_venue_name
+from cachepaths import clean_symbol_key, normalize_venue_name
+from instrument_registry import canonical_display_symbol
 from .ohlc_utils import ProviderError
 
 CLIENT_ORDER_ID_MAX_LEN = 36
@@ -405,7 +407,133 @@ def _resolve_known_ai_id_sets(
     return pair
 
 
-def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = None) -> str:
+@dataclass(frozen=True, slots=True)
+class OrderKey:
+    """Canonical cross-venue order identity scoped by ``(venue, canonical_symbol, order_id, account)``."""
+
+    venue: str
+    symbol: str
+    order_id: str
+    account: str = ""
+
+
+def _norm_order_key_venue(raw: Any) -> str:
+    if raw is None or isinstance(raw, bool):
+        return ""
+    norm = normalize_venue_name(raw)
+    if norm:
+        return norm
+    clean = clean_scalar_str(raw)
+    return clean.lower() if clean else ""
+
+
+def _norm_order_key_symbol(raw: Any, *, venue: str = "") -> str:
+    if raw is None or isinstance(raw, bool):
+        return ""
+    disp = canonical_display_symbol(raw, venue=venue or None) or clean_symbol_key(raw)
+    return disp.lower() if disp else ""
+
+
+def _norm_order_key_account(raw: Any) -> str:
+    clean = clean_scalar_str(raw)
+    return clean.lower() if clean else ""
+
+
+def make_order_key(
+    venue: Any,
+    symbol: Any,
+    order_id: Any,
+    *,
+    account: Any = "",
+) -> Optional[OrderKey]:
+    """Build a normalized ``OrderKey`` or return ``None`` when ``order_id`` is invalid."""
+    oid = clean_order_id(order_id)
+    if not oid:
+        return None
+    v_norm = _norm_order_key_venue(venue)
+    s_norm = _norm_order_key_symbol(symbol, venue=v_norm)
+    a_norm = _norm_order_key_account(account)
+    return OrderKey(venue=v_norm, symbol=s_norm, order_id=oid.lower(), account=a_norm)
+
+
+class ScopedOrderIdSet(set):
+    """``set[str]`` subclass retaining ``OrderKey`` scoping to prevent cross-venue/symbol ID collisions."""
+
+    def __init__(self, initial: Iterable[str] = ()):
+        super().__init__()
+        self.scoped_keys: set[OrderKey] = set()
+        self.unscoped_ids: set[str] = set()
+        for item in initial:
+            self.add_unscoped(item)
+
+    def add_unscoped(self, raw_id: Any) -> None:
+        if cid := clean_order_id(raw_id):
+            super().add(cid)
+            self.unscoped_ids.add(cid.lower())
+
+    def add_scoped(
+        self,
+        raw_id: Any,
+        *,
+        venue: Any = "",
+        symbol: Any = "",
+        account: Any = "",
+    ) -> None:
+        cid = clean_order_id(raw_id)
+        if not cid:
+            return
+        super().add(cid)
+        v_norm = _norm_order_key_venue(venue)
+        s_norm = _norm_order_key_symbol(symbol, venue=v_norm)
+        a_norm = _norm_order_key_account(account)
+        if v_norm or s_norm or a_norm:
+            self.scoped_keys.add(OrderKey(venue=v_norm, symbol=s_norm, order_id=cid.lower(), account=a_norm))
+        else:
+            self.unscoped_ids.add(cid.lower())
+
+    def matches(
+        self,
+        oid: Any = None,
+        cid: Any = None,
+        *,
+        venue: Any = "",
+        symbol: Any = "",
+        account: Any = "",
+    ) -> bool:
+        cands = [tok.lower() for raw in (oid, cid) if (tok := clean_order_id(raw))]
+        if not cands:
+            return False
+        if any(tok in self.unscoped_ids for tok in cands):
+            return True
+        if not self.scoped_keys:
+            return False
+        v_norm = _norm_order_key_venue(venue)
+        s_norm = _norm_order_key_symbol(symbol, venue=v_norm)
+        a_norm = _norm_order_key_account(account)
+        for tok in cands:
+            if (v_norm or s_norm) and OrderKey(v_norm, s_norm, tok, a_norm) in self.scoped_keys:
+                return True
+            for key in self.scoped_keys:
+                if key.order_id != tok:
+                    continue
+                if v_norm and key.venue and key.venue != v_norm:
+                    continue
+                if s_norm and key.symbol and key.symbol != s_norm:
+                    continue
+                if a_norm and key.account and key.account != a_norm:
+                    continue
+                return True
+        return False
+
+
+def resolve_order_actor(
+    order: Any,
+    known_ai_order_ids: Optional[set[str]] = None,
+    *,
+    venue: Any = None,
+    symbol: Any = None,
+    account: Any = None,
+) -> str:
     """Classify an order or fill record as placed by ``'AI'`` (autonomous executor) or ``'BOT'`` (deterministic fleet)."""
     if not isinstance(order, dict):
         return "BOT"
@@ -418,6 +546,15 @@ def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = Non
     oid = extract_order_id(order, default="")
     if not oid and not raw_cid:
         return "BOT"
+    if isinstance(known_ai_order_ids, ScopedOrderIdSet):
+        eff_venue = venue if venue is not None else (
+            order.get("venue") or order.get("provider_name") or order.get("provider") or ""
+        )
+        eff_symbol = symbol if symbol is not None else (order.get("symbol") or order.get("pair") or "")
+        eff_account = account if account is not None else (order.get("account_ref") or order.get("account") or "")
+        return "AI" if known_ai_order_ids.matches(
+            oid, raw_cid, venue=eff_venue, symbol=eff_symbol, account=eff_account
+        ) else "BOT"
     if isinstance(known_ai_order_ids, (set, frozenset)) and oid and str(oid) in known_ai_order_ids:
         return "AI"
     exact_ids, lower_ids = _resolve_known_ai_id_sets(known_ai_order_ids)
@@ -432,9 +569,15 @@ def resolve_order_origin(
     order: Any,
     known_ai_order_ids: Optional[set[str]] = None,
     audit_origin_map: Optional[dict[str, tuple[Optional[str], Optional[str]]]] = None,
+    *,
+    venue: Any = None,
+    symbol: Any = None,
+    account: Any = None,
 ) -> tuple[str, Optional[str], Optional[str]]:
     """Resolve ``(actor, module, rule)`` for an order or fill record."""
-    actor = resolve_order_actor(order, known_ai_order_ids)
+    actor = resolve_order_actor(
+        order, known_ai_order_ids, venue=venue, symbol=symbol, account=account
+    )
     if actor == "AI" or not isinstance(order, dict):
         return actor, None, None
 

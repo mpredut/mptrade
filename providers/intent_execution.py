@@ -492,7 +492,11 @@ def cancel_existing_ai_open_orders(
         }
     else:
         excluded = set()
-    ai_oids = collect_known_ai_order_ids(intents, known_ai_order_ids)
+    inst_venue = getattr(inst, "provider_name", None)
+    inst_sym = getattr(inst, "symbol", None)
+    ai_oids = collect_known_ai_order_ids(
+        intents, known_ai_order_ids, venue=inst_venue, symbol=inst_sym
+    )
     try:
         raw_open = open_fn()
     except Exception as e:
@@ -502,29 +506,36 @@ def cancel_existing_ai_open_orders(
             log.debug("Open order scan failed before replacement: %s", e)
         raw_open = None
 
+    def _explicit_parent_refs_lc(raw_order: dict[str, Any]) -> set[str]:
+        refs: set[str] = set()
+        for pk in ("replaces_order_id", "replaced_order_id", "parent_order_id", "parent_client_order_id", "origClientOrderId"):
+            if p_val := clean_order_id(raw_order.get(pk)):
+                refs.add(p_val.lower())
+        return refs
+
     matched_targets_lc: set[str] = set()
     seen_cancel_refs: set[str] = set()
     pending_cancels: list[tuple[str, bool, str, dict[str, Any]]] = []
-    mo_fallback_cancels: list[tuple[str, bool, str, dict[str, Any]]] = []
+    linked_replacement_cancels: list[tuple[str, bool, str, dict[str, Any], set[str]]] = []
     for oo, oo_side, oid in _iter_matching_open_orders(raw_open, want_side, any_side=eff_any_side):
         coid = extract_client_order_id(oo)
         if (oid and str(oid) in excluded) or (coid and str(coid) in excluded):
             continue
-        is_ai_order = resolve_order_actor(oo, ai_oids) == "AI"
+        is_ai_order = resolve_order_actor(oo, ai_oids, venue=inst_venue, symbol=inst_sym) == "AI"
         cancel_ref = str(oid or coid or "")
         if targeted is not None:
             oid_hit = bool(oid and (str(oid) in targeted or str(oid).lower() in targeted_lc))
             coid_hit = bool(coid and (str(coid) in targeted or str(coid).lower() in targeted_lc))
             if not (oid_hit or coid_hit):
+                parent_refs = _explicit_parent_refs_lc(oo)
                 if (
                     include_bots
                     and not is_ai_order
-                    and bool(want_side)
-                    and oo_side == want_side
-                    and (clean_upper_scalar(coid) or "").startswith("MO_")
+                    and parent_refs
+                    and (parent_refs & targeted_lc)
                     and cancel_ref
                 ):
-                    mo_fallback_cancels.append((cancel_ref, False, oo_side or side, oo))
+                    linked_replacement_cancels.append((cancel_ref, False, oo_side or side, oo, parent_refs))
                 continue
             if oid_hit:
                 matched_targets_lc.add(str(oid).lower())
@@ -564,23 +575,19 @@ def cancel_existing_ai_open_orders(
         if failed_order_ids:
             return canceled_ids
 
-    if (
-        targeted
-        and include_bots
-        and mo_fallback_cancels
-        and any(
-            t.lower() not in matched_targets_lc
-            and t not in excluded
-            and t not in ai_oids
-            and not t.upper().startswith("AI_")
+    if targeted and include_bots and linked_replacement_cancels:
+        missing_targets_lc = {
+            t.lower()
             for t in targeted
-        )
-        and not any(not is_ai for _, is_ai, _, _ in pending_cancels)
-    ):
-        for item in mo_fallback_cancels:
-            if item[0] not in seen_cancel_refs:
-                seen_cancel_refs.add(item[0])
-                pending_cancels.append(item)
+            if t.lower() not in matched_targets_lc
+            and t not in excluded
+            and not t.upper().startswith("AI_")
+        }
+        if missing_targets_lc:
+            for cancel_ref, is_ai_f, eff_side, raw_oo, p_refs in linked_replacement_cancels:
+                if (p_refs & missing_targets_lc) and cancel_ref not in seen_cancel_refs:
+                    seen_cancel_refs.add(cancel_ref)
+                    pending_cancels.append((cancel_ref, is_ai_f, eff_side, raw_oo))
 
     for cancel_ref, is_ai_order, eff_oo_side, raw_oo in pending_cancels:
         try:
@@ -663,7 +670,11 @@ def find_duplicate_ai_open_limit_order(
         raw_open = open_fn()
         if not isinstance(raw_open, list):
             return None
-        ai_oids = collect_known_ai_order_ids(intents, known_ai_order_ids)
+        inst_venue = getattr(inst, "provider_name", None)
+        inst_sym = getattr(inst, "symbol", None)
+        ai_oids = collect_known_ai_order_ids(
+            intents, known_ai_order_ids, venue=inst_venue, symbol=inst_sym
+        )
         if isinstance(intents, dict):
             intents = intents.get("intents")
         intent_notional_by_id: dict[str, tuple[float, float]] = {}
@@ -686,7 +697,7 @@ def find_duplicate_ai_open_limit_order(
                         intent_notional_by_id[k] = (p_sug, p_clamp)
                         intent_notional_by_id[k.lower()] = (p_sug, p_clamp)
         for oo, _oo_side, oid in _iter_matching_open_orders(raw_open, want_side):
-            if resolve_order_actor(oo, ai_oids) != "AI":
+            if resolve_order_actor(oo, ai_oids, venue=inst_venue, symbol=inst_sym) != "AI":
                 continue
             if extract_executed_qty(oo) > 0:
                 continue

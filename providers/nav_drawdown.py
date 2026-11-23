@@ -97,6 +97,8 @@ def _normalize_nav_point(raw: Any) -> Optional[dict[str, Any]]:
         pt["external_cashflow"] = True
         if (cf_d := safe_float(raw.get("cashflow_delta_usd"), default=None)) is not None:
             pt["cashflow_delta_usd"] = round(cf_d, 2)
+    if (conf_cf := safe_float(raw.get("confirmed_cashflow_usd"), default=None)) is not None and abs(conf_cf) > 0.0:
+        pt["confirmed_cashflow_usd"] = round(conf_cf, 2)
     if _parse_bool_flag(raw.get("venue_set_changed"), False):
         pt["venue_set_changed"] = True
     return pt
@@ -108,7 +110,12 @@ def _detect_non_market_step(
     *,
     cashflow_jump_pct: float = DEFAULT_CASHFLOW_JUMP_PCT,
 ) -> tuple[bool, bool, float]:
-    """Return ``(is_external_cashflow, is_venue_set_change, delta_nav_usd)`` for a single NAV interval."""
+    """Return ``(is_external_cashflow, is_venue_set_change, delta_nav_usd)`` for a single NAV interval.
+
+    Honors explicit ``confirmed_cashflow_usd`` when supplied. Otherwise applies a conservation
+    bound requiring ``delta_cash`` to explain the NAV step without a large opposing rotation into
+    ``invested_usd`` (so a large BUY followed by a market drop is never misclassified as a withdrawal).
+    """
     prev_nav = safe_pos_float(prev.get("nav_usd"), default=0.0) or 0.0
     cur_nav = safe_pos_float(cur.get("nav_usd"), default=0.0) or 0.0
     if prev_nav <= 0.0 or cur_nav <= 0.0:
@@ -119,13 +126,20 @@ def _detect_non_market_step(
     if prev_v and cur_v and prev_v != cur_v:
         return False, True, delta_nav
 
+    if (conf_cf := safe_float(cur.get("confirmed_cashflow_usd"), default=None)) is not None and abs(conf_cf) > 0.0:
+        return True, False, conf_cf
+
     jump_pct = (abs(delta_nav) / prev_nav) * 100.0
     thresh = safe_pos_float(cashflow_jump_pct, default=DEFAULT_CASHFLOW_JUMP_PCT) or DEFAULT_CASHFLOW_JUMP_PCT
     if jump_pct < thresh:
         return False, False, delta_nav
 
     delta_cash = _extract_point_cash_usd(cur) - _extract_point_cash_usd(prev)
-    if (delta_cash * delta_nav) > 0.0 and abs(delta_cash) >= _CASHFLOW_CASH_SHARE_MIN * abs(delta_nav):
+    cash_share_max = 2.0 - _CASHFLOW_CASH_SHARE_MIN
+    if (
+        (delta_cash * delta_nav) > 0.0
+        and _CASHFLOW_CASH_SHARE_MIN * abs(delta_nav) <= abs(delta_cash) <= cash_share_max * abs(delta_nav)
+    ):
         return True, False, delta_nav
     return False, False, delta_nav
 

@@ -612,6 +612,8 @@ def _dispatch_native_or_cancel_replace(
         except Exception as exc:  # noqa: BLE001
             native_order = None
             native_outcome.update(state="unknown", reason=f"replacement_exception:{exc}")
+        lookup_confirmed_absent = False
+        lookup_error: Optional[Exception] = None
         if native_order is None and native_outcome.get("state") != "refused":
             try:
                 found = mkt.order_by_client_id(
@@ -619,8 +621,10 @@ def _dispatch_native_or_cancel_replace(
                 )
                 if isinstance(found, dict) and extract_order_id(found) is not None:
                     native_order = found
-            except Exception:
-                pass
+                elif found is None:
+                    lookup_confirmed_absent = True
+            except Exception as exc:  # noqa: BLE001
+                lookup_error = exc
         if native_order:
             eff_qty = (
                 quantity
@@ -645,6 +649,24 @@ def _dispatch_native_or_cancel_replace(
             return
         native_reason = clean_scalar_str(native_outcome.get("reason")) or ""
         native_refused = native_outcome.get("state") == "refused"
+        if not native_refused and not lookup_confirmed_absent:
+            # Ambiguous native replacement without confirmed absence of the child order:
+            # defer to outbox reconciliation by client_order_id instead of risking a duplicate submit.
+            unk_reason = native_reason or (
+                f"native_replace_lookup_error:{lookup_error}" if lookup_error else "native_replace_unknown"
+            )
+            order_retry.complete_claim(
+                replacement_claim,
+                "failure",
+                failure_reason=unk_reason,
+                submission_state="unknown",
+            )
+            print(
+                f"The native {order_type} replacement for order {order_id} returned an ambiguous "
+                f"outcome ({unk_reason}); reconciling child client_order_id={client_order_id} "
+                "before any further submission."
+            )
+            return
         if native_refused and native_reason not in {"replace_not_attempted", "replace_cancel_only"}:
             order_retry.complete_claim(replacement_claim, "success")
             print(

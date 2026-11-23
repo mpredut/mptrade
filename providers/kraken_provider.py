@@ -885,14 +885,36 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         self._invalidate_fills_cache(symbol)
 
     def replace_order(self, symbol: str, order_id: str, side: str, price: float, qty: float, **kwargs):
-        """Atomically amend a resting Kraken limit order's price in place via AmendOrder."""
-        _ = qty
+        """Atomically amend a resting Kraken limit order's price in place via AmendOrder.
+
+        Price-only AmendOrder is permitted only when the guard-approved ``qty`` matches
+        the resting order's remaining volume; otherwise refuses with ``replace_not_attempted``
+        so callers fall back to cancel + place with the approved quantity.
+        """
         if not self.execution_enabled() or resolve_market_flag(**kwargs):
             raise SubmissionRefused("replace_not_attempted")
         clean_txid = clean_order_id(order_id)
         s_norm = normalize_side(side)
         px_f = safe_pos_float(price, default=None)
-        if not clean_txid or s_norm not in {"BUY", "SELL"} or px_f is None:
+        qty_f = safe_pos_float(qty, default=None)
+        if not clean_txid or s_norm not in {"BUY", "SELL"} or px_f is None or qty_f is None:
+            raise SubmissionRefused("replace_not_attempted")
+        remaining_qty = safe_pos_float(
+            kwargs.get("replaces_qty") if kwargs.get("replaces_qty") is not None else kwargs.get("expected_qty"),
+            default=None,
+        )
+        if remaining_qty is None:
+            try:
+                cur_st = self.order_status(symbol, clean_txid)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[Kraken] replace_order {symbol} {clean_txid} status check failed: {exc}")
+                raise SubmissionRefused("replace_not_attempted") from exc
+            orig_q = safe_pos_float(getattr(cur_st, "orig_qty", None), default=None)
+            filled_q = safe_nonneg_float(getattr(cur_st, "filled_qty", 0.0), default=0.0) or 0.0
+            if orig_q is None:
+                raise SubmissionRefused("replace_not_attempted")
+            remaining_qty = max(0.0, orig_q - filled_q)
+        if remaining_qty <= 0.0 or abs(qty_f - remaining_qty) > max(1e-8, 1e-6 * max(qty_f, remaining_qty)):
             raise SubmissionRefused("replace_not_attempted")
         post_only = _parse_bool_flag(kwargs.get("post_only"), True)
         try:

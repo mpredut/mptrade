@@ -8,7 +8,7 @@ Strict Separation of Concerns (SoC):
   ``order_retry_worker``, one-shot scripts) append compact immutable JSONL lines via
   ``OrderLedgerWriter`` (``O_APPEND`` + ``flock``, non-blocking best-effort).
 - Single-writer reconciliation against ``CacheOrderOpenManager`` and ``CacheOrderFilledManager``
-  lives in ``order_ledger_reconciler.py`` (``OrderLedgerReconciler``), which atomically publishes
+  lives in ``order_ledger_worker.py`` (``OrderLedgerReconciler``), which atomically publishes
   ``orders_active.json`` and archives terminal rows into ``orders_closed_YYYY-MM.jsonl``.
 - Passive readers use ``OrderLedgerReader`` (``orders_active.json`` + in-RAM replay of any tail
   lines after ``journal_cursor``) for immediate read-your-own-writes visibility with zero daemon SPOF.
@@ -283,13 +283,22 @@ def build_order_event(
     return payload
 
 
-def _canonical_order_key(venue: str, *, iid: Optional[str], cid: Optional[str], vid: Optional[str], ts: float) -> str:
+def _canonical_order_key(
+    venue: str,
+    *,
+    symbol: Optional[str] = None,
+    iid: Optional[str] = None,
+    cid: Optional[str] = None,
+    vid: Optional[str] = None,
+    ts: float = 0.0,
+) -> str:
     if iid:
         return f"{venue}:iid:{iid}"
     if cid:
         return f"{venue}:cid:{cid}"
     if vid:
-        return f"{venue}:vid:{vid}"
+        sym_part = _norm_symbol(symbol, venue=venue) if symbol else ""
+        return f"{venue}:{sym_part}:vid:{vid}" if sym_part else f"{venue}:vid:{vid}"
     ts_ms = safe_nonneg_int(ts * 1000.0, default=0) or 0
     return f"{venue}:anon:{ts_ms}"
 
@@ -313,12 +322,14 @@ def match_active_order_key(
     orders: dict[str, dict[str, Any]],
     venue: str,
     *,
+    symbol: Optional[str] = None,
     iid: Optional[str] = None,
     cid: Optional[str] = None,
     vid: Optional[str] = None,
 ) -> Optional[str]:
-    """Find the existing active-order key on ``venue`` matching ``vid``, correlatable ``cid``, or ``iid``."""
+    """Find the existing active-order key on ``venue`` matching ``(symbol, vid)``, correlatable ``cid``, or ``iid``."""
     v_norm = _norm_venue(venue)
+    s_norm = _norm_symbol(symbol, venue=v_norm).lower() if symbol else ""
     q_vid = vid.lower() if (vid := clean_order_id(vid)) else ""
     q_iid = iid.lower() if (iid := clean_order_id(iid)) else ""
     q_cids: set[str] = set()
@@ -337,10 +348,13 @@ def match_active_order_key(
         if not isinstance(rec, dict) or _norm_venue(rec.get("v")) != v_norm:
             continue
         r_vids, r_cids, r_iids = _record_correlatable_ids(rec)
+        r_sym = _norm_symbol(rec.get("sym"), venue=v_norm).lower()
         if q_vid and q_vid in r_vids:
-            return key
+            if not s_norm or not r_sym or s_norm == r_sym:
+                return key
         if cid_match is None and q_cids and (q_cids & r_cids):
-            cid_match = key
+            if not s_norm or not r_sym or s_norm == r_sym:
+                cid_match = key
         if iid_match is None and q_iid and q_iid in r_iids:
             iid_match = key
     return cid_match or iid_match
@@ -435,8 +449,8 @@ def apply_order_event(
     vid = clean_order_id(event.get("vid"))
 
     # Match existing record; if both vid and iid/cid match different records, merge them cleanly.
-    key_vid = match_active_order_key(orders, venue, vid=vid) if vid else None
-    key_id = match_active_order_key(orders, venue, iid=iid, cid=cid) if (iid or cid) else None
+    key_vid = match_active_order_key(orders, venue, symbol=sym, vid=vid) if vid else None
+    key_id = match_active_order_key(orders, venue, symbol=sym, iid=iid, cid=cid) if (iid or cid) else None
     if key_vid and key_id and key_vid != key_id:
         primary_k, secondary_k = (key_id, key_vid)
         orders[primary_k] = _merge_records(orders[primary_k], orders.pop(secondary_k))
@@ -445,7 +459,7 @@ def apply_order_event(
         key = key_id or key_vid
 
     if key is None:
-        key = _canonical_order_key(venue, iid=iid, cid=cid, vid=vid, ts=ts)
+        key = _canonical_order_key(venue, symbol=sym, iid=iid, cid=cid, vid=vid, ts=ts)
         rec: dict[str, Any] = {
             "v": venue,
             "sym": sym,

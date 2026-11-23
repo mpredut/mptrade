@@ -38,9 +38,10 @@ from cachepaths import (
     same_canonical_base_asset,
     symbol_quote_asset,
 )
-from instrument_registry import resolve_symbol_identity
-from state_io import generation_lock_path, load_json_state, save_json_state
+from instrument_registry import canonical_display_symbol, resolve_symbol_identity
+from state_io import StateReadError, generation_lock_path, load_json_state, save_json_state
 from .order_id_context import (
+    ScopedOrderIdSet,
     all_venue_native_client_order_ids,
     derive_ai_intent_client_order_id,
     extract_client_order_id,
@@ -137,23 +138,59 @@ def _intent_order_ids(item: dict[str, Any]) -> set[str]:
 def collect_known_ai_order_ids(
     intents: Any,
     initial_ids: Optional[set[str]] = None,
-) -> set[str]:
-    """Collect venue order IDs (``execution_payload`` / ``history``) and venue-native AI client IDs across intents."""
-    ai_oids: set[str] = set()
-    if isinstance(initial_ids, str):
+    *,
+    venue: Any = None,
+    symbol: Any = None,
+    account: Any = None,
+) -> ScopedOrderIdSet:
+    """Collect venue- and symbol-scoped AI order IDs and client IDs across intents."""
+    ai_oids = ScopedOrderIdSet()
+    want_v = normalize_venue_name(venue) if venue else ""
+    want_s = (canonical_display_symbol(symbol, venue=want_v or None) or "").lower() if symbol else ""
+    want_a = (clean_scalar_str(account) or "").lower() if account else ""
+
+    if isinstance(initial_ids, ScopedOrderIdSet):
+        for k in initial_ids.scoped_keys:
+            if want_v and k.venue and k.venue != want_v:
+                continue
+            if want_s and k.symbol and k.symbol != want_s:
+                continue
+            if want_a and k.account and k.account != want_a:
+                continue
+            ai_oids.add_scoped(k.order_id, venue=k.venue, symbol=k.symbol, account=k.account)
+        for u_id in initial_ids.unscoped_ids:
+            ai_oids.add_unscoped(u_id)
+    elif isinstance(initial_ids, str):
         if clean_s := clean_order_id(initial_ids):
-            ai_oids.add(clean_s)
+            if want_v or want_s or want_a:
+                ai_oids.add_scoped(clean_s, venue=want_v, symbol=want_s, account=want_a)
+            else:
+                ai_oids.add_unscoped(clean_s)
     elif initial_ids is not None and not isinstance(initial_ids, (bool, bytes, dict)) and hasattr(initial_ids, "__iter__"):
         for item_id in initial_ids:
             if clean_s := clean_order_id(item_id):
-                ai_oids.add(clean_s)
+                if want_v or want_s or want_a:
+                    ai_oids.add_scoped(clean_s, venue=want_v, symbol=want_s, account=want_a)
+                else:
+                    ai_oids.add_unscoped(clean_s)
     if isinstance(intents, dict):
         intents = intents.get("intents")
     if not isinstance(intents, list):
         return ai_oids
     for item in intents:
-        if isinstance(item, dict):
-            ai_oids.update(_intent_order_ids(item))
+        if not isinstance(item, dict):
+            continue
+        item_v = normalize_venue_name(item.get("venue") or item.get("provider_name") or item.get("provider")) or ""
+        item_s = (canonical_display_symbol(item.get("symbol"), venue=item_v or None) or "").lower()
+        item_a = (clean_scalar_str(item.get("account_ref") or item.get("account")) or "").lower()
+        if want_v and item_v and item_v != want_v:
+            continue
+        if want_s and item_s and item_s != want_s:
+            continue
+        if want_a and item_a and item_a != want_a:
+            continue
+        for oid_tok in _intent_order_ids(item):
+            ai_oids.add_scoped(oid_tok, venue=item_v, symbol=item_s, account=item_a)
     return ai_oids
 
 
@@ -713,15 +750,22 @@ def load_durable_intents_state(
     reconcile_fn: Optional[Callable[[list[dict[str, Any]]], Any]] = None,
     *,
     read_only: bool = False,
+    fail_closed: Optional[bool] = None,
 ) -> list[dict[str, Any]]:
-    """Load all trade intents from the durable JSON queue with `.previous` crash recovery."""
+    """Load all trade intents from the durable JSON queue with `.previous` crash recovery.
+
+    Empty initialization is allowed when the file is absent. When an existing queue file is
+    truncated or corrupt without a recoverable ``.previous`` backup, writable loads fail closed
+    (raising ``StateReadError``) so a subsequent upsert cannot wipe existing intents.
+    """
     is_ro = _parse_bool_flag(read_only, False)
+    eff_fail_closed = (not is_ro) if fail_closed is None else _parse_bool_flag(fail_closed, not is_ro)
     lock_cm = nullcontext() if is_ro else durable_intents_lock(intents_file)
     with lock_cm:
         data = load_json_state(
             intents_file,
             default_factory=list,
-            fail_closed=False,
+            fail_closed=eff_fail_closed,
             label="autonomous_trade_intents",
             root_type=list,
             repair_files=not is_ro,
@@ -761,7 +805,14 @@ def upsert_durable_intent(
         return False
     iid = _extract_intent_id(intent)
     with durable_intents_lock(intents_file):
-        intents = load_durable_intents_state(intents_file, reconcile_fn=reconcile_fn)
+        try:
+            intents = load_durable_intents_state(
+                intents_file, reconcile_fn=reconcile_fn, fail_closed=True
+            )
+        except StateReadError as exc:
+            if log:
+                log.error("Refusing to overwrite corrupt intents queue %s: %s", intents_file, exc)
+            return False
         idx = next(
             (k for k in range(len(intents) - 1, -1, -1) if iid and _extract_intent_id(intents[k]) == iid),
             None,

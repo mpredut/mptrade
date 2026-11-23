@@ -497,6 +497,7 @@ def _extract_audit_fill_metrics(
 _AUDIT_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _AUDIT_OWNER_EVENTS = frozenset({"submit_accepted", "order_terminal", "order_terminal_retry"})
 _AUDIT_RECONCILE_EVENTS = frozenset({
+    "submit_requested",
     "submit_accepted",
     "submit_unknown",
     "order_recovered",

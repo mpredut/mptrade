@@ -2644,14 +2644,20 @@ def test_explicit_cancel_order_ids_and_abort_replacement_on_cancel_failure(temp_
     btc_inst.cancel_order.assert_not_called()
     btc_inst.place.assert_not_called()
 
-    # 7. When monitororder reprices a targeted bot order (old ID canceled with 0 fill, new MO_ order open),
-    #    cancel_existing_ai_open_orders cancels the repriced MO_ bot order and unlocks balance.
+    # 7. When monitororder reprices a targeted bot order (old ID canceled with 0 fill, new MO_ order open with
+    #    explicit parent-child link), cancel_existing_ai_open_orders cancels the linked replacement and unlocks balance.
     btc_inst.place.reset_mock()
     btc_inst.cancel_order.reset_mock()
     btc_inst.order_status.side_effect = None
     btc_inst.order_status.return_value = SimpleNamespace(status="canceled", filled_qty=0.0, side="SELL")
     btc_inst.open_orders.return_value = [
-        {"orderId": "10863524639", "clientOrderId": "MO_TA_OR_4a2f467af57547fb972a2277_0", "side": "SELL", "price": "64802.1"},
+        {
+            "orderId": "10863524639",
+            "clientOrderId": "MO_TA_OR_4a2f467af57547fb972a2277_0",
+            "replaces_order_id": "10863498235",
+            "side": "SELL",
+            "price": "64802.1",
+        },
     ]
     with patch.object(gw, "_dispatch_notify", return_value=True):
         rec_repriced = gw.submit({

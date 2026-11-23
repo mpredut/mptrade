@@ -74,7 +74,8 @@ from .nav_drawdown import (
     format_nav_drawdown_summary_line,
     load_nav_history_state,
 )
-from .order_id_context import resolve_order_owner
+from .order_id_context import resolve_order_actor, resolve_order_owner
+from .order_ohlc_utils import extract_executed_qty
 from .venue_fee_maintenance import read_persisted_venue_fee_spec
 
 _GUARD_CODE_RE = re.compile(r"^([A-Za-z0-9_]+)")
@@ -249,8 +250,8 @@ def _evaluate_execution_audit_actors(
     fee_resolver: Optional[Callable[[str, str, str], Optional[float]]] = None,
 ) -> dict[str, Any]:
     """Deduplicate multi-venue execution_audit JSONL events into filled orders and compare AI vs BOT vs MANUAL."""
-    orders: dict[tuple[str, str], dict[str, Any]] = {}
-    intent_to_key: dict[str, tuple[str, str]] = {}
+    orders: dict[tuple[str, str, str], dict[str, Any]] = {}
+    intent_to_key: dict[str, tuple[str, str, str]] = {}
 
     for rec in audit_records:
         if not isinstance(rec, dict):
@@ -269,9 +270,10 @@ def _evaluate_execution_audit_actors(
             continue
         oid = clean_order_id(rec.get("order_id")) or ""
         iid = _extract_intent_id(rec) or ""
-        key: Optional[tuple[str, str]] = None
+        sym_lc = sym.lower()
+        key: Optional[tuple[str, str, str]] = None
         if oid:
-            key = (ven, oid)
+            key = (ven, sym_lc, oid)
             if iid:
                 prev_key = intent_to_key.get(iid)
                 if prev_key is not None and prev_key != key and prev_key in orders:
@@ -279,7 +281,7 @@ def _evaluate_execution_audit_actors(
                     _merge_audit_order_entry(orders.setdefault(key, {}), merged)
                 intent_to_key[iid] = key
         elif iid:
-            key = intent_to_key.get(iid) or (ven, f"intent:{iid}")
+            key = intent_to_key.get(iid) or (ven, sym_lc, f"intent:{iid}")
             intent_to_key[iid] = key
         if key is None:
             continue
@@ -343,7 +345,17 @@ def _evaluate_execution_audit_actors(
         oid = entry["order_id"]
         cid = entry["client_order_id"]
         owner = resolve_order_owner(cid) if cid else ""
-        if owner == "ai_executor" or (oid and oid in known_ai_order_ids) or (cid and cid in known_ai_order_ids):
+        is_ai = (
+            owner == "ai_executor"
+            or resolve_order_actor(
+                {"orderId": oid, "clientOrderId": cid},
+                known_ai_order_ids,
+                venue=entry["venue"],
+                symbol=entry["symbol"],
+            )
+            == "AI"
+        )
+        if is_ai:
             actor = "AI"
             owner = "ai_executor"
         elif owner == "manual":
@@ -364,6 +376,9 @@ def _evaluate_execution_audit_actors(
         filled_entries.append({
             **entry,
             "price": px,
+            "px": px,
+            "qty": qty if qty > 0.0 else (cost / px),
+            "usd": cost,
             "cost_usd": cost,
             "actor": actor,
             "owner": owner,
@@ -375,8 +390,7 @@ def _evaluate_execution_audit_actors(
 
     def _aggregate(group_field: str) -> dict[str, dict[str, Any]]:
         buckets: dict[str, dict[str, Any]] = {}
-        pending_b: dict[tuple[str, str, str, tuple[str, ...]], list[dict[str, Any]]] = {}
-        pending_s: dict[tuple[str, str, str, tuple[str, ...]], list[dict[str, Any]]] = {}
+        lifo_inputs: list[dict[str, Any]] = []
 
         for row in filled_entries:
             g_name = str(row[group_field])
@@ -403,29 +417,19 @@ def _evaluate_execution_audit_actors(
                 b["sell_notional_usd"] += row["cost_usd"]
 
             v_k, base_k, q_k, _ = _intent_venue_symbol_side_key(row["venue"], row["symbol"], row["side"])
-            pkey = (g_name, v_k, base_k, q_k)
-            if row["side"] == "BUY":
-                sq = pending_s.get(pkey)
-                if sq:
-                    prev_s = sq.pop()
-                    matched_usd = min(prev_s["cost_usd"], row["cost_usd"])
-                    gross_pct = ((prev_s["price"] - row["price"]) / prev_s["price"]) * 100.0
-                    rt_bps = prev_s["leg_fee_bps"] + row["leg_fee_bps"]
-                    b["matched_round_trips"] += 1
-                    b["realized_net_usd"] += matched_usd * ((gross_pct - rt_bps / 100.0) / 100.0)
-                else:
-                    pending_b.setdefault(pkey, []).append(row)
-            else:
-                bq = pending_b.get(pkey)
-                if bq:
-                    prev_b = bq.pop()
-                    matched_usd = min(prev_b["cost_usd"], row["cost_usd"])
-                    gross_pct = ((row["price"] - prev_b["price"]) / prev_b["price"]) * 100.0
-                    rt_bps = prev_b["leg_fee_bps"] + row["leg_fee_bps"]
-                    b["matched_round_trips"] += 1
-                    b["realized_net_usd"] += matched_usd * ((gross_pct - rt_bps / 100.0) / 100.0)
-                else:
-                    pending_s.setdefault(pkey, []).append(row)
+            lifo_inputs.append({**row, "inst_key": (g_name, v_k, base_k, q_k), "_group": g_name})
+
+        # Reuse the canonical partial-lot LIFO matcher so AI and non-AI attribution share one contract.
+        closed_pairs, _, _ = match_filled_intent_rows_lifo(lifo_inputs)
+        for _kind, entry_row, exit_row in closed_pairs:
+            b = buckets[entry_row["_group"]]
+            gross_pct = compute_signed_price_edge_pct(entry_row["side"], entry_row["px"], exit_row["px"])
+            rt_bps = entry_row["leg_fee_bps"] + exit_row["leg_fee_bps"]
+            entry_usd = safe_pos_float(entry_row.get("usd"), default=0.0) or 0.0
+            exit_usd = safe_pos_float(exit_row.get("usd"), default=0.0) or 0.0
+            matched_usd = entry_usd if entry_usd > 0.0 else resolve_matched_notional_usd(entry_usd, exit_usd)
+            b["matched_round_trips"] += 1
+            b["realized_net_usd"] += matched_usd * ((gross_pct - rt_bps / 100.0) / 100.0)
 
         out: dict[str, dict[str, Any]] = {}
         for g_name, b in sorted(buckets.items()):
@@ -616,6 +620,12 @@ def evaluate_ai_attribution(
             override_intent_counts[code] = override_intent_counts.get(code, 0) + 1
 
         v_k, b_k, q_k, _ = _intent_venue_symbol_side_key(ven, sym, side)
+        exec_payload = it.get("execution_payload")
+        exec_qty = (
+            safe_pos_float(extract_executed_qty(exec_payload, default=0.0), default=None)
+            if isinstance(exec_payload, Mapping)
+            else None
+        )
         filled_rows.append({
             "intent_id": _extract_intent_id(it),
             "order_id": extract_intent_primary_order_id(it, default="", include_top_level=True),
@@ -626,6 +636,7 @@ def evaluate_ai_attribution(
             "side": side,
             "order_type": ot,
             "px": px,
+            "qty": exec_qty,
             "usd": _extract_intent_notional_usd(it),
             "leg_fee_bps": rt_bps / 2.0,
             "rt_fee_bps": rt_bps,
