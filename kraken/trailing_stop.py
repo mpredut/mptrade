@@ -439,7 +439,7 @@ class KrakenTrailing(TrailingAdapterBase):
         )
 
     def print_status(self) -> None:
-        state = self.core.load()
+        state = self.core.load(read_only=True)
         trail_map = self._module_attr("TRAIL_PCT")
         rows = (
             list(trail_map.items())

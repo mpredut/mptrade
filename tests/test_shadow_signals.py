@@ -565,3 +565,59 @@ def test_kalman_state_tracker_read_only_seeds_passively_and_never_writes_disk_or
     assert prev_file.exists()
     assert state_file.read_text(encoding="utf-8") == "{corrupt"
 
+
+def test_kalman_state_tracker_coalesces_xstock_case_aliases_without_dropping_seeded_state(tmp_path):
+    """KalmanStateTracker coalesces SPCXxUSD/SPCXXUSD aliases on load, update, and write without losing newer seeded state."""
+    state_file = tmp_path / "cache_kalman_trend.json"
+    older_unseeded = {
+        "kalman_trend": 0,
+        "kalman_vel": 0.0,
+        "kalman_vel_std": 6.0,
+        "ts": 1000.0,
+        "price": 50.0,
+    }
+    newer_seeded = {
+        "kalman_trend": 1,
+        "kalman_vel": 0.45,
+        "kalman_vel_std": 0.2,
+        "ts": 1500.0,
+        "price": 52.0,
+    }
+    state_file.write_text(
+        json.dumps({"SPCXxUSD": older_unseeded, "SPCXXUSD": newer_seeded}),
+        encoding="utf-8",
+    )
+
+    sim_now = [1505.0]
+    tracker = KalmanStateTracker(
+        state_path=str(state_file),
+        now_fn=lambda: sim_now[0],
+        compute_vol=False,
+        state_min_interval=0.0,
+    )
+    # __init__ must coalesce both aliases under canonical storage_key and retain the newer seeded state.
+    assert list(tracker._state.keys()) == ["SPCXxUSD"]
+    assert tracker._state["SPCXxUSD"]["ts"] == 1500.0
+    assert tracker._state["SPCXxUSD"]["kalman_trend"] == 1
+    assert tracker.current_trend("SPCXXUSD") == (1, 5.0)
+
+    # Injecting a competing case-alias in memory must merge on update() rather than silently dropping the newer entry.
+    tracker._state["SPCXxUSD"] = dict(older_unseeded)
+    tracker._state["SPCXXUSD"] = dict(newer_seeded)
+    tracker.update("SPCXXUSD", float("nan"), 52.0)
+    assert list(tracker._state.keys()) == ["SPCXxUSD"]
+    assert tracker._state["SPCXxUSD"]["ts"] == 1500.0
+    assert tracker._state["SPCXxUSD"]["kalman_trend"] == 1
+
+    # _write_state must also canonicalize disk alias keys rather than leaving duplicate casing keys.
+    state_file.write_text(
+        json.dumps({"SPCXXUSD": {**newer_seeded, "ts": 1600.0, "kalman_trend": -1}}),
+        encoding="utf-8",
+    )
+    tracker._write_state(1605.0)
+    persisted = json.loads(state_file.read_text(encoding="utf-8"))
+    assert list(persisted.keys()) == ["SPCXxUSD"]
+    assert persisted["SPCXxUSD"]["ts"] == 1600.0
+    assert persisted["SPCXxUSD"]["kalman_trend"] == -1
+
+

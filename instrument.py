@@ -1270,10 +1270,7 @@ class Instrument:
                     )
                     if not isinstance(ctx.prequeued_claim, dict):
                         raise RuntimeError("the intent cannot be read back after persisting")
-                    raw_pk = ctx.prequeued_claim.get("place_kwargs")
-                    ctx.prequeued_client_order_id = (
-                        clean_order_id(raw_pk.get("client_order_id")) if isinstance(raw_pk, dict) else None
-                    )
+                    ctx.prequeued_client_order_id = order_id_context.record_client_order_id(ctx.prequeued_claim)
                     if not ctx.prequeued_client_order_id:
                         raise RuntimeError("the persisted intent has no client_order_id")
                     ctx.kwargs["client_order_id"] = ctx.prequeued_client_order_id
@@ -1290,10 +1287,7 @@ class Instrument:
 
         if isinstance(ctx.prequeued_claim, dict):
             ctx.prequeued_record_id = ctx.prequeued_claim.get("id")
-            raw_pk = ctx.prequeued_claim.get("place_kwargs")
-            ctx.prequeued_client_order_id = (
-                clean_order_id(raw_pk.get("client_order_id")) if isinstance(raw_pk, dict) else None
-            )
+            ctx.prequeued_client_order_id = order_id_context.record_client_order_id(ctx.prequeued_claim)
             ctx.prequeued_intent_id = clean_order_id(ctx.prequeued_claim.get("intent_id"))
 
         if ctx.prequeued_intent_id and not ctx.caller_owns_retry:

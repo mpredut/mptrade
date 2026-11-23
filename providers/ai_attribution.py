@@ -865,7 +865,7 @@ def load_and_evaluate_ai_attribution(
     max_day = datetime.fromtimestamp(eff_now + 86400.0, timezone.utc).strftime("%Y-%m-%d")
 
     intents_path = _workspace_cachedb_path(workspace_dir, AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME)
-    intents = load_durable_intents_state(intents_path)
+    intents = load_durable_intents_state(intents_path, read_only=True)
     live_prices = _load_live_prices_from_workspace(workspace_dir)
 
     audit_dir = os.path.join(workspace_dir, "logger", "execution_audit")

@@ -815,6 +815,7 @@ class Cache24PriceManager(CachePriceManagerBase):
         """Persist 24h OHLCV series into ``cache_24_price_<SYM>.json`` and ``.meta`` transactionally under ``.generation.lock``."""
         if not target_path or not points:
             return
+        target_path = str(resolve_cachedb_filepath(target_path, migrate=True))
         os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
         with FileLock(generation_lock_path(target_path)):
             disk_obj = (
@@ -1112,10 +1113,19 @@ class Cache365PriceManager(Cache24PriceManager):
         """Load only a recent working set; the JSONL file remains the full archive."""
         with self.lock:
             self.cache = {}
-            self._ensure_file_or_restore_previous_locked()
-            if os.path.exists(self.filename):
+            backup_path = (
+                self._previous_generation_path()
+                if self.read_only
+                else self._ensure_file_or_restore_previous_locked()
+            )
+            source_path = (
+                self.filename
+                if os.path.exists(self.filename)
+                else (backup_path if self.read_only and os.path.exists(backup_path) else None)
+            )
+            if source_path is not None:
                 for raw_line in read_tail_lines(
-                    self.filename, CM_LONG_ARCHIVE_MEMORY_ROWS
+                    source_path, CM_LONG_ARCHIVE_MEMORY_ROWS
                 ):
                     rec = parse_json_payload(raw_line, default=None)
                     if (

@@ -201,10 +201,11 @@ class TrailingCore:
         self.item_isolation = _parse_bool_flag(item_isolation, default=True)
 
     # -- state (peak per key) -------------------------------------------------
-    def load(self) -> dict:
+    def load(self, *, read_only: bool = False) -> dict:
         loaded = load_json_state(
             self.state_file, default_factory=dict, fail_closed=self.enabled,
             label="live trailing" if self.enabled else "paper trailing",
+            repair_files=not _parse_bool_flag(read_only, default=False),
         )
         if not isinstance(loaded, dict):
             if self.enabled:
@@ -1013,7 +1014,7 @@ class TrailingAdapterBase:
         self.core.check_once()
 
     def print_status(self) -> None:
-        state = self.core.load()
+        state = self.core.load(read_only=True)
         for s, _asset, _pair, tr in self.assets():
             st = casefold_get(state, s, {}) if isinstance(state, dict) else {}
             if not isinstance(st, dict):

@@ -898,3 +898,176 @@ def test_cache_freshness_xstock_aliases_passive_read_jsonl_bounds_and_record_cid
     assert record_client_order_id("not-a-dict") is None
 
 
+def test_phase2_passive_readers_lock_alignment_and_trade_alias_coalescing(tmp_path):
+    """Verify repo-wide passive read-only guarantees, lock-vs-migration alignment, and non-append Trade alias coalescing."""
+    import cacheaccount
+    import cacheprice
+    import order_retry_worker
+    import rtrade_pair_store
+    import trailing_core
+    from providers import intent_state, venue_fee_maintenance
+
+    # 1. load_json_state(..., repair_files=False) recovers .previous passively without moving flat files or mutating disk.
+    cdb = tmp_path / "cachedb_ro"
+    (cdb / "state").mkdir(parents=True)
+    flat_state = cdb / "trailing_state.json"
+    flat_prev = Path(previous_generation_path(str(flat_state)))
+    flat_state.write_text("{corrupt", encoding="utf-8")
+    flat_prev.write_text(json.dumps({"BTC": {"peak": 123.0}}), encoding="utf-8")
+
+    recovered = state_io.load_json_state(
+        str(flat_state),
+        default_factory=dict,
+        fail_closed=True,
+        label="trailing",
+        repair_files=False,
+    )
+    assert recovered == {"BTC": {"peak": 123.0}}
+    assert flat_state.read_text(encoding="utf-8") == "{corrupt"
+    assert flat_prev.is_file()
+    assert not (cdb / "state" / "trailing_state.json").exists()
+
+    # TrailingCore.load(read_only=True) stays completely passive.
+    core = trailing_core.TrailingCore(
+        None,
+        log=lambda *_: None,
+        enabled=True,
+        state_file=str(flat_state),
+        min_notional=10.0,
+        rebuy_enabled=False,
+        rebuy_bounce_pct=0.0,
+        rebuy_skip_if_trend_down=False,
+    )
+    assert core.load(read_only=True) == {"BTC": {"peak": 123.0}}
+    assert flat_state.read_text(encoding="utf-8") == "{corrupt"
+    assert flat_prev.is_file()
+    assert not (cdb / "state" / "trailing_state.json").exists()
+
+    # 2. load_durable_intents_state(..., read_only=True) does not lock, migrate, or repair disk.
+    flat_intents = cdb / "autonomous_trade_intents.json"
+    flat_intents_prev = Path(previous_generation_path(str(flat_intents)))
+    flat_intents.write_text("{corrupt", encoding="utf-8")
+    flat_intents_prev.write_text(json.dumps([{"intent_id": "i1"}]), encoding="utf-8")
+    ro_intents = intent_state.load_durable_intents_state(str(flat_intents), read_only=True)
+    assert ro_intents == [{"intent_id": "i1"}]
+    assert flat_intents.read_text(encoding="utf-8") == "{corrupt"
+    assert flat_intents_prev.is_file()
+    assert not (cdb / "state" / "autonomous_trade_intents.json").exists()
+    assert not Path(state_io.generation_lock_path(str(flat_intents))).exists()
+
+    # Writable durable_intents_lock migrates flat file into state/ BEFORE locking so lock and file share state/.
+    with intent_state.durable_intents_lock(str(flat_intents)):
+        assert (cdb / "state" / "autonomous_trade_intents.json").is_file()
+        assert not flat_intents.exists()
+        assert Path(state_io.generation_lock_path(str(cdb / "state" / "autonomous_trade_intents.json"))).is_file()
+        assert not Path(state_io.generation_lock_path(str(flat_intents))).exists()
+
+    # 3. RTradePairStore.mutate migrates flat file before locking; dry_run fee maintenance stays passive.
+    flat_rtrade = cdb / "rtrade_pairs.json"
+    flat_rtrade.write_text(json.dumps({"version": 1, "pairs": {}}), encoding="utf-8")
+    store = rtrade_pair_store.RTradePairStore(str(flat_rtrade))
+    assert store.active("BTCUSDC") == []
+    assert flat_rtrade.is_file()
+    assert not (cdb / "state" / "rtrade_pairs.json").exists()
+    store.mutate(lambda pairs: True)
+    assert (cdb / "state" / "rtrade_pairs.json").is_file()
+    assert not flat_rtrade.exists()
+    assert (cdb / "state" / "rtrade_pairs.json.lock").is_file()
+
+    flat_fee = cdb / "venue_fee_maintenance_state.json"
+    flat_fee_prev = Path(previous_generation_path(str(flat_fee)))
+    flat_fee.write_text("{corrupt", encoding="utf-8")
+    flat_fee_prev.write_text(json.dumps({"last_run_ts": 100.0, "venues": {}}), encoding="utf-8")
+    fee_res = venue_fee_maintenance.run_venue_fee_maintenance(
+        venues=[],
+        force=False,
+        dry_run=True,
+        cache_dir=str(cdb),
+        cfg_map={
+            "FEE_MAINTENANCE_ENABLED": "true",
+            "FEE_MAINTENANCE_INTERVAL_SEC": "3600",
+            "BINANCE_BNB_RESERVE_MIN_USDC": "5.0",
+            "BINANCE_BNB_RESERVE_TARGET_USDC": "15.0",
+            "BINANCE_BNB_MIN_FREE_USDC": "25.0",
+            "BINANCE_BNB_ORDER_STALE_SEC": "600",
+            "KRAKEN_IDLE_USDC_ALERT_MIN": "50.0",
+            "KRAKEN_IDLE_USDC_ALERT_COOLDOWN_SEC": "3600",
+        },
+        now_ts=120.0,
+    )
+    assert fee_res["status"] == "not_due"
+    assert flat_fee.read_text(encoding="utf-8") == "{corrupt"
+    assert flat_fee_prev.is_file()
+    assert not (cdb / "state" / "venue_fee_maintenance_state.json").exists()
+
+    # IncidentDigest.collect migrates flat orders/ file before acquiring its lock.
+    (cdb / "orders").mkdir(parents=True)
+    flat_digest = cdb / "order_retry_digest.json"
+    flat_digest.write_text(json.dumps({"version": 1, "groups": {}}), encoding="utf-8")
+    digest = order_retry_worker.IncidentDigest(str(flat_digest), 300.0)
+    due = digest.collect(
+        [{"labels": {"symbol": "BTCUSDC"}, "quantity": 1.0, "sample_id": "s1"}],
+        now=1000.0,
+    )
+    assert len(due) == 1
+    assert (cdb / "orders" / "order_retry_digest.json").is_file()
+    assert (cdb / "orders" / "order_retry_digest.json.lock").is_file()
+    assert not flat_digest.exists()
+
+    # 4. Cache365PriceManager(read_only=True) recovers .previous in memory without restoring on disk.
+    p365 = tmp_path / "cache_365_price_BTCUSDC.jsonl"
+    p365_prev = Path(previous_generation_path(str(p365)))
+    p365_prev.write_text(json.dumps({"s": "BTCUSDC", "i": [1_795_000_000_000, 95000.0]}) + "\n", encoding="utf-8")
+    mgr365 = cacheprice.Cache365PriceManager(
+        3600, ["BTCUSDC"], str(p365), api_client=None, read_only=True
+    )
+    assert mgr365.cache.get("BTCUSDC") == [[1_795_000_000_000, 95000.0]]
+    assert not p365.exists()
+    assert p365_prev.is_file()
+
+    # 5. CacheTradeManager(read_only=True) must NOT migrate legacy .json -> .jsonl on disk.
+    legacy_trade_jsonl = tmp_path / "cache_trade.jsonl"
+    legacy_trade_json = tmp_path / "cache_trade.json"
+    legacy_trade_json.write_text(
+        json.dumps({"items": {"BTCUSDC": []}, "fetchtime": {"BTCUSDC": 1000}}),
+        encoding="utf-8",
+    )
+    ro_trade = cacheaccount.CacheTradeManager(
+        3600, ["BTCUSDC"], str(legacy_trade_jsonl), api_client=None, read_only=True
+    )
+    assert ro_trade.read_only is True
+    assert not legacy_trade_jsonl.exists()
+    assert not Path(state_io.meta_file_path(str(legacy_trade_jsonl))).exists()
+
+    # 6. CacheTradeManager._persist_items (append_persist=False) coalesces xStock case aliases.
+    now_ms = int(time.time() * 1000)
+    kr_snap = tmp_path / "cache_trade_kraken_mgr.json"
+    kr_mgr = cacheaccount.CacheTradeManager(
+        3600, ["SPCXxUSD"], str(kr_snap), api_client=None, read_only=True, venue="kraken", append_persist=False
+    )
+    f1 = {"symbol": "SPCXxUSD", "id": "1", "orderId": "O1", "price": 10.0, "qty": 1.0, "time": now_ms - 3000, "isBuyer": True}
+    f2 = {"symbol": "SPCXXUSD", "id": "2", "orderId": "O2", "price": 11.0, "qty": 1.0, "time": now_ms - 2000, "isBuyer": True}
+    f3 = {"symbol": "SPCXXUSD", "id": "3", "orderId": "O3", "price": 12.0, "qty": 1.0, "time": now_ms - 1000, "isBuyer": True}
+    kr_mgr.cache = {"SPCXxUSD": [dict(f1)], "SPCXXUSD": [dict(f2)]}
+    kr_mgr.fetchtime_per_symbol = {"SPCXxUSD": now_ms - 5000, "SPCXXUSD": now_ms - 1000}
+    kr_mgr._persist_items("SPCXXUSD", [dict(f3)])
+    assert list(kr_mgr.cache.keys()) == ["SPCXxUSD"]
+    assert [r["id"] for r in kr_mgr.cache["SPCXxUSD"]] == ["1", "2", "3"]
+    assert all(r["symbol"] == "SPCXxUSD" for r in kr_mgr.cache["SPCXxUSD"])
+    assert "SPCXXUSD" not in kr_mgr.fetchtime_per_symbol
+
+    # 7. order_retry_worker._format_record_context uses strict record_client_order_id fallback.
+    fmt = order_retry_worker._format_record_context(
+        {
+            "symbol": "BTCUSDC",
+            "side": "BUY",
+            "qty": 0.1,
+            "requested_price": 50000.0,
+            "id": "rec_fallback_1",
+            "place_kwargs": {"client_order_id": "   "},
+        }
+    )
+    assert "ID: rec_fallback_1" in fmt
+
+
+

@@ -107,14 +107,21 @@ def load_fee_maintenance_config(cfg_map: Optional[Dict[str, Any]] = None) -> Dic
     }
 
 
-def resolve_fee_maintenance_state_path(cache_dir: Optional[str] = None) -> str:
+def resolve_fee_maintenance_state_path(
+    cache_dir: Optional[str] = None, *, migrate: bool = False
+) -> str:
     """Resolve the canonical cachedb/state/venue_fee_maintenance_state.json path."""
     if cache_dir and (clean_dir := clean_scalar_str(cache_dir)):
-        resolved = str(resolve_cachedb_filepath(os.path.join(clean_dir, VENUE_FEE_MAINTENANCE_STATE_FILENAME)))
+        resolved = str(
+            resolve_cachedb_filepath(
+                os.path.join(clean_dir, VENUE_FEE_MAINTENANCE_STATE_FILENAME),
+                migrate=migrate,
+            )
+        )
         if os.path.exists(resolved):
             return resolved
         return os.path.join(clean_dir, "state", VENUE_FEE_MAINTENANCE_STATE_FILENAME)
-    return str(cache_path(VENUE_FEE_MAINTENANCE_STATE_FILENAME))
+    return str(resolve_cachedb_filepath(cache_path(VENUE_FEE_MAINTENANCE_STATE_FILENAME), migrate=migrate))
 
 
 class VenueFeeMaintainerInterface(ABC):
@@ -725,7 +732,7 @@ def read_persisted_venue_fee_spec(
     if m_cls is not None and (sym_override := m_cls.static_symbol_fee_override(symbol)):
         return sym_override
     state_path = resolve_fee_maintenance_state_path(cache_dir)
-    payload = read_json_dict(state_path, default={})
+    payload = read_json_dict(state_path, default={}, recover_previous=True)
     if not isinstance(payload, dict) or not payload:
         return {}
     venues_map = payload.get("venues")
@@ -791,12 +798,15 @@ def run_venue_fee_maintenance(
     if not cfg["enabled"] and not _parse_bool_flag(force, False):
         return {"status": "disabled", "ts": round(eff_now, 3), "venues": {}, "events": []}
 
-    state_path = resolve_fee_maintenance_state_path(cache_dir)
+    dry_run_b = _parse_bool_flag(dry_run, False)
+    state_path = resolve_fee_maintenance_state_path(cache_dir, migrate=not dry_run_b)
     os.makedirs(os.path.dirname(state_path), exist_ok=True)
     lock_path = f"{state_path}.lock"
 
     with FileLock(lock_path):
-        prev_state = read_json_dict(state_path, default={}, repair_files=True)
+        prev_state = read_json_dict(
+            state_path, default={}, recover_previous=True, repair_files=not dry_run_b
+        )
         if not isinstance(prev_state, dict):
             prev_state = {}
         last_run_ts = safe_nonneg_float(prev_state.get("last_run_ts"), default=0.0) or 0.0

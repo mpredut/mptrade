@@ -1675,10 +1675,9 @@ def discard_superseded_symbol_records(
         rec_side = normalize_side(rec.get("side"))
         if not any_side_b and rec_side != want_side_u:
             continue
-        rec_kw = rec.get("place_kwargs") if isinstance(rec.get("place_kwargs"), dict) else {}
         rec_probe = {
             "orderId": rec_oid,
-            "clientOrderId": clean_order_id(rec_kw.get("client_order_id")) or clean_order_id(rec.get("prefix")) or "",
+            "clientOrderId": record_client_order_id(rec) or clean_order_id(rec.get("prefix")) or "",
             "intent_id": clean_order_id(rec.get("intent_id")) or "",
         }
         is_ai_rec = resolve_order_actor(rec_probe, ai_oids) == "AI"

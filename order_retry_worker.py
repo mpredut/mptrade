@@ -39,7 +39,7 @@ from botcore import (
     split_csv,
     touch_module_heartbeat,
 )
-from cachepaths import split_symbol_assets
+from cachepaths import resolve_cachedb_filepath, split_symbol_assets
 import order_retry as oq
 from providers.execution_audit import ExecutionAudit
 from providers.market_api import api as mkt, resolve_symbol_provider_name
@@ -752,9 +752,12 @@ def _format_record_context(rec, *, include_lease=False):
         if lease_str != "N/A":
             time_parts.append(f"Lease expired: {lease_str}")
     time_line = " | ".join(time_parts) + f" ({attempts} attempts, reason={last_reason})"
-    raw_place_kw = rec.get("place_kwargs")
-    place_kw = raw_place_kw if isinstance(raw_place_kw, dict) else {}
-    client_order_id = place_kw.get("client_order_id") or rec.get("order_id") or rec.get("id") or "N/A"
+    client_order_id = (
+        record_client_order_id(rec)
+        or clean_order_id(rec.get("order_id"))
+        or clean_order_id(rec.get("id"))
+        or "N/A"
+    )
     owner = _concrete_record_owner(rec)
     owner_part = f" \u00b7 {owner}" if owner else ""
     return (
@@ -886,12 +889,14 @@ class IncidentDigest:
         if now_f is None:
             raise ValueError("digest time must be finite and positive")
         now = now_f
-        if not events and not os.path.exists(self.path) and not os.path.exists(previous_generation_path(self.path)):
+        passive_path = str(resolve_cachedb_filepath(self.path))
+        if not events and not os.path.exists(passive_path) and not os.path.exists(previous_generation_path(passive_path)):
             return []
-        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
-        with FileLock(self.path + ".lock"):
+        target_path = str(resolve_cachedb_filepath(self.path, migrate=True))
+        os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
+        with FileLock(target_path + ".lock"):
             state = load_json_state(
-                self.path, default_factory=lambda: {"version": 1, "groups": {}},
+                target_path, default_factory=lambda: {"version": 1, "groups": {}},
                 fail_closed=True, label="notification digest",
             )
             if state.get("version") != 1 or not isinstance(state.get("groups"), dict):
@@ -973,9 +978,9 @@ class IncidentDigest:
                     )
                     changed = True
             if not groups:
-                discard_generation_file(self.path, include_previous=True)
+                discard_generation_file(target_path, include_previous=True)
             elif changed:
-                save_json_state(self.path, state, separators=(",", ":"))
+                save_json_state(target_path, state, separators=(",", ":"))
             return due
 
 

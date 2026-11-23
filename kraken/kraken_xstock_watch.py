@@ -103,12 +103,13 @@ def _clean_state_scalar(val: object) -> str | None:
     return clean_scalar_str(str(val))
 
 
-def _load_state() -> dict:
+def _load_state(*, read_only: bool = False) -> dict:
     path = _state_file()
     raw = load_json_state(
         path,
         default_factory=_default_state,
         fail_closed=True, label="Kraken xStock watcher",
+        repair_files=not _parse_bool_flag(read_only, False),
     )
     merged = _default_state()
     if isinstance(raw, dict):
@@ -807,7 +808,7 @@ def main() -> int:
     client = build_kraken_client(KrakenClient, kraken_credentials, "bot")
     if args.trial:
         return run_trial(client, args.desktop)
-    st = _load_state()
+    st = _load_state(read_only=_parse_bool_flag(args.status, False))
     if sync_target_regex(st, rx) and not args.status:
         _save_state(st)
 

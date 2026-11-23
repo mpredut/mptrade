@@ -1254,6 +1254,8 @@ class CacheTradeManager(CacheAccountManagerBase):
 
     def _migrate_legacy_json_if_needed(self):
         """Migrate legacy ``.json`` Trade cache under the generation lock."""
+        if self.read_only:
+            return
         with self._generation_lock():
             return self._migrate_legacy_json_generation_locked()
 
@@ -1264,7 +1266,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 self._load_versioned_account_meta(optional=False)
                 or (_ for _ in ()).throw(ValueError("versioned Trade metadata was not created"))
             ),
-            skip_if_read_only=False,
+            skip_if_read_only=True,
             read_json_fn=read_json_dict,
         )
 
@@ -1711,27 +1713,55 @@ class CacheTradeManager(CacheAccountManagerBase):
             if not new_items:
                 return
             new_items = self._coerce_item_list(new_items)
+            target_sym = self._canonical_snapshot_symbol(symbol, venue=self.venue) or symbol
             with self.lock:
-                bucket = self.cache.setdefault(symbol, [])
+                alias_keys = [
+                    k for k in list(self.cache.keys())
+                    if k != target_sym
+                    and (
+                        str(k).upper() == str(target_sym).upper()
+                        or self._canonical_snapshot_symbol(k, venue=self.venue) == target_sym
+                    )
+                ]
+                seed_rows: list = list(self.cache.get(target_sym) or ())
+                coalesced_alias = False
+                for ak in alias_keys:
+                    seed_rows.extend(self.cache.pop(ak, ()) or ())
+                    coalesced_alias = True
+                for ft_map in (self.fetchtime_per_symbol, self._rest_sync_cursor_per_symbol):
+                    for ak in [
+                        k for k in list(ft_map.keys())
+                        if k != target_sym
+                        and (
+                            str(k).upper() == str(target_sym).upper()
+                            or self._canonical_snapshot_symbol(k, venue=self.venue) == target_sym
+                        )
+                    ]:
+                        ft_val = safe_nonneg_int(ft_map.pop(ak, None), default=None)
+                        if ft_val is not None:
+                            cur_ft = safe_nonneg_int(ft_map.get(target_sym), default=0) or 0
+                            ft_map[target_sym] = max(cur_ft, ft_val)
                 by_key: dict[tuple, dict] = {}
-                for item in bucket:
+                for item in seed_rows:
                     if isinstance(item, dict):
-                        k = self.fill_dedup_key(item) or ("idx", len(by_key))
-                        by_key[k] = item
-                changed = False
+                        norm_item = self._normalize_fill_row_symbol(item, target_sym, venue=self.venue)
+                        k = self.fill_dedup_key(norm_item) or ("idx", len(by_key))
+                        by_key.setdefault(k, norm_item)
+                changed = coalesced_alias
                 for item in new_items:
                     if not isinstance(item, dict) or (extract_order_price(item, default=None) is None and safe_pos_float(item.get("price"), default=None) is None):
                         continue
-                    k = self.fill_dedup_key(item) or ("idx", len(by_key))
-                    if by_key.get(k) != item:
-                        by_key[k] = dict(item)
+                    norm_item = self._normalize_fill_row_symbol(item, target_sym, venue=self.venue)
+                    k = self.fill_dedup_key(norm_item) or ("idx", len(by_key))
+                    if by_key.get(k) != norm_item:
+                        by_key[k] = norm_item
                         changed = True
                 if changed:
-                    self.cache[symbol] = sorted(
+                    self.cache[target_sym] = sorted(
                         by_key.values(),
                         key=lambda r: (extract_timestamp_ms(r, default=0) or 0, str(r.get("id") or r.get("orderId") or "")),
                     )
-                    self._advance_symbol_fetchtime_locked(symbol)
+                    self._advance_symbol_fetchtime_locked(target_sym)
             return
         if not new_items:
             return

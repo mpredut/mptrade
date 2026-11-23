@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import lru_cache
 from typing import Any, Callable, Mapping, Optional
 
@@ -689,7 +689,7 @@ def durable_intents_lock(intents_file: str):
     raw_p = clean_scalar_str(os.fspath(intents_file)) if isinstance(intents_file, (str, os.PathLike)) else None
     if raw_p is None:
         raise ValueError(f"Invalid durable intents_file: {intents_file!r}")
-    key = generation_lock_path(str(resolve_cachedb_filepath(raw_p)))
+    key = generation_lock_path(str(resolve_cachedb_filepath(raw_p, migrate=True)))
     depths = getattr(_INTENTS_LOCK_LOCAL, "depths", None)
     if depths is None:
         depths = _INTENTS_LOCK_LOCAL.depths = {}
@@ -711,15 +711,20 @@ def durable_intents_lock(intents_file: str):
 def load_durable_intents_state(
     intents_file: str,
     reconcile_fn: Optional[Callable[[list[dict[str, Any]]], Any]] = None,
+    *,
+    read_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Load all trade intents from the durable JSON queue with `.previous` crash recovery."""
-    with durable_intents_lock(intents_file):
+    is_ro = _parse_bool_flag(read_only, False)
+    lock_cm = nullcontext() if is_ro else durable_intents_lock(intents_file)
+    with lock_cm:
         data = load_json_state(
             intents_file,
             default_factory=list,
             fail_closed=False,
             label="autonomous_trade_intents",
             root_type=list,
+            repair_files=not is_ro,
         )
         items = [item for item in data if isinstance(item, dict)]
         if callable(reconcile_fn):

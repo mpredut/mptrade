@@ -511,13 +511,7 @@ def _lease_replacement_and_preflight(
         )
         return None
     replacement_claim = claimed[0]
-    raw_place_kw = (
-        replacement_claim.get("place_kwargs")
-        if isinstance(replacement_claim, dict)
-        else None
-    )
-    place_kw = raw_place_kw if isinstance(raw_place_kw, dict) else {}
-    client_order_id = clean_order_id_str(place_kw.get("client_order_id")) or None
+    client_order_id = rc.record_client_order_id(replacement_claim)
     if not client_order_id:
         order_retry.complete_claim(replacement_claim, "success")
         print(

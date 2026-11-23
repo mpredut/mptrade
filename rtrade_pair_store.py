@@ -204,21 +204,21 @@ class RTradePairStore:
             self._mem_data = parse_json_payload(encode_json_payload(data))
             return
         atomic_write_json(
-            str(resolve_cachedb_filepath(self.path)),
+            str(resolve_cachedb_filepath(self.path, migrate=True)),
             data,
             sort_keys=True,
             separators=(",", ":"),
         )
 
-    def _resolved_lock_path(self):
+    def _resolved_lock_path(self, *, migrate: bool = False):
         if not self.lock_path:
             return None
         if self.path and self.lock_path == f"{self.path}.lock":
-            return f"{resolve_cachedb_filepath(self.path)}.lock"
-        return str(resolve_cachedb_filepath(self.lock_path))
+            return f"{resolve_cachedb_filepath(self.path, migrate=migrate)}.lock"
+        return str(resolve_cachedb_filepath(self.lock_path, migrate=migrate))
 
     def mutate(self, fn):
-        resolved_lock = self._resolved_lock_path()
+        resolved_lock = self._resolved_lock_path(migrate=True)
         with (FileLock(resolved_lock) if resolved_lock else self._mem_lock):
             data = self._read()
             pairs = data["pairs"]

@@ -2001,7 +2001,12 @@ class KalmanStateTracker:
                     repair_files=not self.read_only,
                 )
                 if isinstance(loaded, dict):
-                    self._state = dict(loaded["items"]) if isinstance(loaded.get("items"), dict) and set(loaded.keys()) <= _ENVELOPE_KEYS else loaded
+                    raw_loaded = (
+                        dict(loaded["items"])
+                        if isinstance(loaded.get("items"), dict) and set(loaded.keys()) <= _ENVELOPE_KEYS
+                        else loaded
+                    )
+                    self._state = self._coalesce_state_map(raw_loaded)
             except Exception as e:  # noqa: BLE001
                 print(f"[shadow_signals] error loading initial kalman state: {e}")
         self._last_state_write = 0.0
@@ -2011,6 +2016,42 @@ class KalmanStateTracker:
         self._fed_prices: dict = {}    # Fed prices for step-scale epsilon.
         self._last_vol_time: dict = {}  # Throttling for 1h volatility computation.
         self._last_vol_fields: dict = {}
+
+    @staticmethod
+    def _canonical_state_key(raw_sym: object) -> str:
+        s_strip = raw_sym.strip() if isinstance(raw_sym, str) else ""
+        if not s_strip:
+            return ""
+        return resolve_symbol_identity(s_strip).storage_key or s_strip.upper()
+
+    @staticmethod
+    def _merge_state_entry(cur_v: Optional[dict], cand_v: dict) -> dict:
+        if not isinstance(cur_v, dict):
+            return dict(cand_v)
+        cur_ts = safe_nonneg_ts(cur_v.get("ts"), 0.0)
+        cand_ts = safe_nonneg_ts(cand_v.get("ts"), 0.0)
+        cur_unseeded = (
+            safe_nonneg_float(cur_v.get("kalman_vel_std"), 6.0) >= 5.99
+            and abs(safe_float(cur_v.get("kalman_vel"), 0.0)) < 1e-12
+        )
+        cand_seeded = safe_nonneg_float(cand_v.get("kalman_vel_std"), 6.0) < 5.99
+        if cand_ts > cur_ts:
+            if cand_seeded or cur_unseeded:
+                return dict(cand_v)
+            return {**cand_v, **{fk: cur_v[fk] for fk in _KALMAN_KEYS if fk in cur_v}}
+        if cur_unseeded and cand_seeded:
+            return {**cur_v, **{fk: cand_v[fk] for fk in _KALMAN_KEYS if fk in cand_v}}
+        return cur_v
+
+    @classmethod
+    def _coalesce_state_map(cls, raw_map: dict) -> dict:
+        coalesced: dict = {}
+        for k, v in raw_map.items():
+            if not isinstance(v, dict):
+                continue
+            canon_k = cls._canonical_state_key(k) or str(k)
+            coalesced[canon_k] = cls._merge_state_entry(coalesced.get(canon_k), v)
+        return coalesced
 
     def _write_state(self, now: float) -> None:
         if self.read_only or not self.state_path:
@@ -2026,7 +2067,7 @@ class KalmanStateTracker:
                 return
             try:
                 with generation_file_lock(self.state_path):
-                    merged = dict(self._state)
+                    merged = self._coalesce_state_map(self._state)
                     if os.path.exists(self.state_path) or os.path.exists(previous_generation_path(self.state_path)):
                         existing = read_json_dict(
                             self.state_path,
@@ -2039,26 +2080,9 @@ class KalmanStateTracker:
                             for k, v in unwrapped.items():
                                 if not isinstance(v, dict):
                                     continue
-                                eff_k = next((mk for mk in merged if str(mk).upper() == str(k).upper()), k)
-                                cur_v = merged.get(eff_k)
-                                if cur_v is None:
-                                    merged[eff_k] = v
-                                    continue
-                                cur_ts = safe_nonneg_ts(cur_v.get("ts"), 0.0)
-                                disk_ts = safe_nonneg_ts(v.get("ts"), 0.0)
-                                cur_unseeded = (
-                                    safe_nonneg_float(cur_v.get("kalman_vel_std"), 6.0) >= 5.99
-                                    and abs(safe_float(cur_v.get("kalman_vel"), 0.0)) < 1e-12
-                                )
-                                disk_seeded = safe_nonneg_float(v.get("kalman_vel_std"), 6.0) < 5.99
-                                if disk_ts > cur_ts:
-                                    if disk_seeded or cur_unseeded:
-                                        merged[eff_k] = v
-                                    else:
-                                        merged[eff_k] = {**v, **{fk: cur_v[fk] for fk in _KALMAN_KEYS if fk in cur_v}}
-                                elif cur_unseeded and disk_seeded:
-                                    merged[eff_k] = {**cur_v, **{fk: v[fk] for fk in _KALMAN_KEYS if fk in v}}
-                            self._state = merged
+                                eff_k = self._canonical_state_key(k) or str(k)
+                                merged[eff_k] = self._merge_state_entry(merged.get(eff_k), v)
+                    self._state = merged
                     save_json_state(self.state_path, merged)
                     self._last_state_write = now
                     self._last_written_count = len(merged)
@@ -2117,13 +2141,12 @@ class KalmanStateTracker:
         # Feed only at KALMAN_SAMPLE_SEC and reuse fields between feeds so the
         # snapshot remains populated.
         with self._lock:
-            s_strip = symbol.strip() if isinstance(symbol, str) else ""
-            norm_sym = (resolve_symbol_identity(s_strip).storage_key or s_strip.upper()) if s_strip else ""
+            norm_sym = self._canonical_state_key(symbol)
             if norm_sym:
                 for alt_k in [k for k in list(self._state) if k != norm_sym and str(k).upper() == norm_sym.upper()]:
                     val_sym = self._state.pop(alt_k, None)
-                    if norm_sym not in self._state and val_sym is not None:
-                        self._state[norm_sym] = val_sym
+                    if isinstance(val_sym, dict):
+                        self._state[norm_sym] = self._merge_state_entry(self._state.get(norm_sym), val_sym)
             symbol = norm_sym
             if (
                 not symbol
