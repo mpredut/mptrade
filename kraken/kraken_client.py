@@ -70,7 +70,7 @@ _READ_TTL = {                     # seconds; unlisted methods are not cached (e.
     "Ticker": 3.0, "AssetPairs": 3600.0, "OHLC": 900.0,
     "Balance": 15.0, "BalanceEx": 15.0, "TradesHistory": 20.0, "ClosedOrders": 20.0, "OpenOrders": 5.0,
 }
-_WRITE_METHODS = ("AddOrder", "AmendOrder", "CancelOrder", "CancelAll")
+_WRITE_METHODS = ("AddOrder", "AmendOrder", "CancelOrder", "CancelAll", "Withdraw", "WithdrawCancel")
 _INVALIDATE_ON_WRITE = ("Balance", "BalanceEx", "TradesHistory", "ClosedOrders", "OpenOrders")
 
 
@@ -146,9 +146,16 @@ class KrakenClient:
         mac = hmac.new(base64.b64decode(secret), message, hashlib.sha512)
         return base64.b64encode(mac.digest()).decode()
 
-    def _private(self, method: str, data: dict | None = None, fresh: bool = False) -> dict:
+    def _private(
+        self,
+        method: str,
+        data: dict | None = None,
+        fresh: bool = False,
+        *,
+        allow_list: bool = False,
+    ) -> dict | list:
         if not self.api_key or not self.api_secret:
-            raise KrakenError("Missing Kraken keys (check KRAKEN_API_KEY_BOT/_TRAIL/_CACHE in kraken/.env)")
+            raise KrakenError("Missing Kraken keys (check KRAKEN_API_KEY_BOT/_TRAIL/_CACHE/_TRANSFER in kraken/.env)")
         data = dict(data or {})
         ttl = _read_ttl(method, data)
         fresh_flag = _parse_bool_flag(fresh, default=False)
@@ -169,7 +176,7 @@ class KrakenClient:
             status, body = http_post_form(API_URL + urlpath, data, headers=headers)
             if status and body:
                 try:
-                    result = self._parse(status, body)
+                    result = self._parse(status, body, allow_list=allow_list)
                     break
                 except KrakenError as e:
                     err_s = str(e)
@@ -192,7 +199,7 @@ class KrakenClient:
             time.sleep(0.15 * (attempt + 1))
         if ttl and result:
             _cache_put(method, data, ttl, result)
-        if method in _WRITE_METHODS:                # AddOrder/CancelOrder changed account state
+        if method in _WRITE_METHODS:                # AddOrder/CancelOrder/Withdraw changed account state
             with _CACHE_LOCK:
                 for k in [k for k in _CACHE if k[0] in _INVALIDATE_ON_WRITE]:
                     _CACHE.pop(k, None)
@@ -222,7 +229,7 @@ class KrakenClient:
         return result
 
     @staticmethod
-    def _parse(status: int, body: bytes) -> dict:
+    def _parse(status: int, body: bytes, *, allow_list: bool = False) -> dict | list:
         try:
             payload = parse_json_payload(body or b"{}")
         except ValueError:
@@ -232,7 +239,9 @@ class KrakenClient:
         if payload.get("error"):
             err_val = payload["error"]
             raise KrakenError(", ".join(str(x) for x in err_val) if isinstance(err_val, (list, tuple)) else str(err_val))
-        res = payload.get("result", {})
+        res = payload.get("result", [] if allow_list else {})
+        if allow_list:
+            return res if isinstance(res, list) else []
         return res if isinstance(res, dict) else {}
 
     # ----- PUBLIC --------------------------------------------------------------
@@ -462,6 +471,94 @@ class KrakenClient:
 
     open_orders = bind_attr_call("_private_dict_field", "OpenOrders", "open")
     closed_orders = bind_attr_call("_private_dict_field", "ClosedOrders", "closed")
+
+    # ----- FUNDING / WITHDRAWALS ----------------------------------------------
+    @staticmethod
+    def _fmt_amount(amount: float, label: str = "amount") -> str:
+        amt_f = safe_pos_float(amount, default=None)
+        if amt_f is None:
+            raise ValueError(f"invalid Kraken {label}: {amount!r}")
+        return f"{amt_f:.8f}".rstrip("0").rstrip(".") or "0"
+
+    def withdraw_methods(self, asset: str) -> list[dict]:
+        """List supported Kraken withdrawal networks/fees for ``asset``."""
+        asset_s = clean_scalar_str(asset)
+        if not asset_s:
+            raise ValueError(f"invalid Kraken asset: {asset!r}")
+        res = self._private("WithdrawMethods", {"asset": asset_s.upper()}, fresh=True, allow_list=True)
+        return [row for row in res if isinstance(row, dict)] if isinstance(res, list) else []
+
+    def withdraw_addresses(self, asset: str | None = None, *, method: str | None = None) -> list[dict]:
+        """List pre-whitelisted Kraken withdrawal addresses."""
+        params: dict[str, str] = {}
+        if asset is not None:
+            asset_s = clean_scalar_str(asset)
+            if not asset_s:
+                raise ValueError(f"invalid Kraken asset: {asset!r}")
+            params["asset"] = asset_s.upper()
+        if method is not None:
+            method_s = clean_scalar_str(method)
+            if method_s:
+                params["method"] = method_s
+        res = self._private("WithdrawAddresses", params, fresh=True, allow_list=True)
+        return [row for row in res if isinstance(row, dict)] if isinstance(res, list) else []
+
+    def withdraw_info(self, asset: str, key: str, amount: float) -> dict:
+        """Query live Kraken withdrawal fee, limit, and net receive amount without withdrawing."""
+        asset_s = clean_scalar_str(asset)
+        key_s = clean_scalar_str(key)
+        if not asset_s or not key_s:
+            raise ValueError("Kraken withdraw_info requires non-empty asset and withdrawal key")
+        data = {
+            "asset": asset_s.upper(),
+            "key": key_s,
+            "amount": self._fmt_amount(amount),
+        }
+        res = self._private("WithdrawInfo", data, fresh=True)
+        return res if isinstance(res, dict) else {}
+
+    def withdraw(
+        self,
+        asset: str,
+        key: str,
+        amount: float,
+        *,
+        address: str | None = None,
+        max_fee: float | None = None,
+    ) -> dict:
+        """Submit a real Kraken withdrawal to a pre-whitelisted ``key`` (non-retried write)."""
+        asset_s = clean_scalar_str(asset)
+        key_s = clean_scalar_str(key)
+        if not asset_s or not key_s:
+            raise ValueError("Kraken withdraw requires non-empty asset and withdrawal key")
+        data: dict[str, str] = {
+            "asset": asset_s.upper(),
+            "key": key_s,
+            "amount": self._fmt_amount(amount),
+        }
+        if address is not None:
+            addr_s = clean_scalar_str(address)
+            if not addr_s:
+                raise ValueError(f"invalid Kraken withdrawal address: {address!r}")
+            data["address"] = addr_s
+        if max_fee is not None:
+            data["max_fee"] = self._fmt_amount(max_fee, label="max_fee")
+        res = self._private("Withdraw", data, fresh=True)
+        return res if isinstance(res, dict) else {}
+
+    def withdraw_status(self, asset: str | None = None, *, method: str | None = None) -> list[dict]:
+        """Fetch recent Kraken withdrawal statuses and on-chain txids."""
+        params: dict[str, str] = {}
+        if asset is not None:
+            asset_s = clean_scalar_str(asset)
+            if asset_s:
+                params["asset"] = asset_s.upper()
+        if method is not None:
+            method_s = clean_scalar_str(method)
+            if method_s:
+                params["method"] = method_s
+        res = self._private("WithdrawStatus", params, fresh=True, allow_list=True)
+        return [row for row in res if isinstance(row, dict)] if isinstance(res, list) else []
 
 
 # ---------------------------------------------------------------------------
