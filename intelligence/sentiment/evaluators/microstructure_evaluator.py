@@ -1477,6 +1477,8 @@ def enrich_cross_venue_trends(
                         and not _prices_diverged(sym_px_cur, vals[-1])
                     ):
                         entry["chg_7d_pct"] = pct_delta(sym_px_cur, vals[0])
+                        entry.pop("is_partial_7d", None)
+                        entry.pop("span_7d_hours", None)
                     entry.pop("_partial_7d_span_ms", None)
                     continue
                 for k_7d_opt in ("major_swing_low_px", "rally_from_major_low_pct", "recent_swings_7d", "avg_swing_amp_7d_pct"):
@@ -1484,8 +1486,16 @@ def enrich_cross_venue_trends(
                 entry.update(compute_7d_range_metrics(vals, decimals=dec_7d))
                 if 0.0 <= w_span_ms < 5 * 86400 * 1000:
                     entry["_partial_7d_span_ms"] = w_span_ms
+                    if not is_eq_w7 and w_span_ms > 0.0 and w0 is not None and w0[0] > 1e11:
+                        entry["is_partial_7d"] = True
+                        entry["span_7d_hours"] = round(w_span_ms / 3600000.0, 1)
+                    else:
+                        entry.pop("is_partial_7d", None)
+                        entry.pop("span_7d_hours", None)
                 else:
                     entry.pop("_partial_7d_span_ms", None)
+                    entry.pop("is_partial_7d", None)
+                    entry.pop("span_7d_hours", None)
                 break
 
 

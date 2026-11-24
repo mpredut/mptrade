@@ -1554,14 +1554,15 @@ def _format_single_asset_etf_flow(asset_u: str, entry: Dict[str, Any]) -> str:
         meta_parts.append(f"5d={format_compact_usd(s5_usd, signed=True)}")
     elif (s5_m := safe_float(entry.get("sum_5d_musd"), default=None)) is not None:
         meta_parts.append(f"5d={format_compact_usd(s5_m * 1_000_000.0, signed=True)}")
+    is_partial_f = _parse_bool_flag(entry.get("is_partial"), False)
+    rep = safe_int(entry.get("reported_issuers"), 0)
+    tot = safe_int(entry.get("total_issuers"), 0)
+    is_minority_partial = bool(is_partial_f and tot > 0 and rep * 2 < tot)
     streak_i = safe_int(entry.get("streak_days"), 0)
-    if streak_i != 0:
+    if streak_i != 0 and not is_minority_partial:
         meta_parts.append(f"streak={streak_i:+d}d")
-    if _parse_bool_flag(entry.get("is_partial"), False):
-        rep = safe_int(entry.get("reported_issuers"), 0)
-        tot = safe_int(entry.get("total_issuers"), 0)
-        if tot > 0:
-            meta_parts.append(f"partial={rep}/{tot}")
+    if is_partial_f and tot > 0:
+        meta_parts.append(f"partial={rep}/{tot}")
     meta_sfx = f" ({', '.join(meta_parts)})" if meta_parts else ""
     return f"{hdr}: {format_compact_usd(net_usd, signed=True)}{issuer_sfx}{meta_sfx}"
 

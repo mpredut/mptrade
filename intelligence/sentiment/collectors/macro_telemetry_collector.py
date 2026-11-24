@@ -1285,12 +1285,17 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                     "Calm geopolitical and energy climate. No systemic shock detected.",
                     "",
                 )
-            elif (
-                all_valid_digest_aged_90m
-                and str(gt_cur.get("threat_level") or "").upper() in ("ELEVATED", "CRITICAL_SHOCK")
+            elif all_valid_digest_aged_90m and (
+                str(gt_cur.get("threat_level") or "").upper() in ("ELEVATED", "CRITICAL_SHOCK")
+                or gt_age_min >= 90.0
             ):
+                is_elev = str(gt_cur.get("threat_level") or "").upper() in ("ELEVATED", "CRITICAL_SHOCK")
                 _reset_and_persist_normal_geopolitical_eval(
-                    "Geopolitical threat de-escalated to NORMAL: no fresh high-severity macro headlines in the last 90 minutes.",
+                    (
+                        "Geopolitical threat de-escalated to NORMAL: no fresh high-severity macro headlines in the last 90 minutes."
+                        if is_elev
+                        else "Calm geopolitical and energy climate: no fresh high-severity macro headlines in the last 90 minutes."
+                    ),
                     " | ".join(valid_digest_titles[:12]),
                 )
         if (

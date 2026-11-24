@@ -480,10 +480,25 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
     )
     if not gt_summary or gt_summary == ".":
         gt_summary = gt_summary_raw
+    gt_age_m = safe_float(gt.get("age_min"), None) if isinstance(gt, dict) else None
+    gt_sum_low = gt_summary.lower()
+    gt_stale_ctx_note = (
+        "historical_eval_gt_90m_verify_live_section1"
+        if (
+            isinstance(gt, dict)
+            and gt_age_m is not None
+            and gt_age_m >= 90.0
+            and not gt.get("live_deescalation_note")
+            and not gt.get("live_unassessed_high_sev_note")
+            and any(tok in gt_sum_low for tok in ("90-minute window", "spy", "qqq", "vix", "past 15 minutes", "1h)"))
+        )
+        else ""
+    )
     gt_line = (
         f"risk_score={gt.get('risk_score', 'N/A')}{_age_sfx(gt)}"
         + (f" | live_deescalation={gt.get('live_deescalation_note')}" if gt.get("live_deescalation_note") else "")
         + (f" | live_unassessed={gt.get('live_unassessed_high_sev_note')}" if gt.get("live_unassessed_high_sev_note") else "")
+        + (f" | shield_note={gt_stale_ctx_note}" if gt_stale_ctx_note else "")
         + f" | summary={gt_summary}"
         if gt else "None"
     )

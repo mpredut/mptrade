@@ -2988,3 +2988,119 @@ def test_cycle1_geo_unassessed_plans_and_news_clickbait_fixes(tmp_path):
     assert not is_excluded_reference_news_item(
         "US regional banks slide after Fed warns on commercial real estate exposure"
     )
+
+
+def test_cycle2_watcher_partial_7d_etf_partial_streak_and_geo_stale_summary(tmp_path):
+    """Verify Cycle 2 live PROD prompt audit fixes: watcher partial-7d flag, minority-partial ETF streak suppression, and stale Geo Shield summary handling."""
+    from types import SimpleNamespace
+
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MacroAndNewsSensorsCollector
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import format_etf_flows_summary_line
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_macro_and_news_section,
+        _format_market_prices_section,
+    )
+
+    now_s = 1_795_564_000.0
+    now_ms = int(now_s * 1000.0)
+
+    # --- C2.1: enrich_cross_venue_trends flags partial (<5d) crypto watcher series so Section 3 suppresses bogus 7d / vs_btc(7d) ---
+    ada_watcher_27h = [
+        [now_ms - int(27.3 * 3600 * 1000), 0.1480],
+        [now_ms - int(12.0 * 3600 * 1000), 0.1507],
+        [now_ms - int(4.0 * 3600 * 1000), 0.1424],
+        [now_ms, 0.14405],
+    ]
+    btc_watcher_7d = [
+        [now_ms - int(7.0 * 86400 * 1000), 64860.0],
+        [now_ms - int(3.0 * 86400 * 1000), 55381.95],
+        [now_ms, 59711.62],
+    ]
+    pt_map = {
+        "ADAUSDC": {"price": 0.14405, "chg_24h_pct": -2.60, "low_24h": 0.1424, "high_24h": 0.1507},
+        "BTCUSDC": {"price": 59711.62, "chg_24h_pct": -2.36, "low_24h": 59206.06, "high_24h": 61605.205},
+    }
+    enrich_cross_venue_trends(
+        pt_map,
+        {},
+        {},
+        {},
+        {},
+        {},
+        {"ADAUSDC": ada_watcher_27h, "BTCUSDC": btc_watcher_7d},
+        allow_network=False,
+    )
+    assert pt_map["ADAUSDC"].get("is_partial_7d") is True
+    assert pt_map["ADAUSDC"].get("span_7d_hours") == pytest.approx(27.3, abs=0.2)
+    assert pt_map["BTCUSDC"].get("is_partial_7d") is None
+    sec3_txt = "\n".join(_format_market_prices_section(pt_map))
+    ada_line = next(l for l in sec3_txt.splitlines() if "ADAUSDC:" in l)
+    assert "7d=" not in ada_line
+    assert "7d_range=" not in ada_line
+    assert "vs_btc(" not in ada_line or "7d=" not in ada_line.split("vs_btc(", 1)[1].split(")", 1)[0]
+
+    # --- C2.2: Suppress bogus streak=+1d on minority-partial (<50% issuers) ETF flow rows while keeping majority partial (2/3) ---
+    etf_minor_partial = {
+        "assets": {
+            "BTC": {
+                "latest_date": "2026-11-24",
+                "latest_net_flow_usd": 4_000_000.0,
+                "top_issuers_musd": {"BTC": 4.0},
+                "sum_5d_usd": -2_123_700_000.0,
+                "streak_days": 1,
+                "is_partial": True,
+                "reported_issuers": 2,
+                "total_issuers": 12,
+            },
+            "ETH": {
+                "latest_date": "2026-11-24",
+                "latest_net_flow_usd": -129_400_000.0,
+                "top_issuers_musd": {"ETHA": -124.2, "ETHE": -5.2},
+                "sum_5d_usd": -357_000_000.0,
+                "streak_days": -2,
+                "is_partial": True,
+                "reported_issuers": 2,
+                "total_issuers": 3,
+            },
+        }
+    }
+    etf_line = format_etf_flows_summary_line(etf_minor_partial)
+    btc_seg = etf_line.split("|")[0]
+    eth_seg = etf_line.split("|")[1]
+    assert "partial=2/12" in btc_seg
+    assert "streak=" not in btc_seg
+    assert "partial=2/3" in eth_seg
+    assert "streak=-2d" in eth_seg
+
+    # --- C2.3: Stale >=90m NORMAL Geo Threat Shield summary resets when digest aged >90m, or flags live_section1 warning ---
+    gt_aged_normal = {
+        "threat_level": "NORMAL",
+        "risk_score": 0.2,
+        "summary": "The sole headline within the 90-minute window is a routine visit; SPY (+0.37% 1h), QQQ (+0.41% 1h), VIX falling.",
+        "ts": now_s - 9700.0,
+        "age_min": 162.0,
+        "headlines_digest": "Ukraine says attack on Russian ships in Libya was self-defence",
+    }
+    sec1_warn = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(geopolitical_threat=dict(gt_aged_normal)),
+            asset_scope="crypto",
+        )
+    )
+    assert "shield_note=historical_eval_gt_90m_verify_live_section1" in sec1_warn
+
+    gt_reset_target = dict(gt_aged_normal)
+    MacroAndNewsSensorsCollector._reconcile_geopolitical_deescalation(
+        gt_reset_target,
+        [{"title": "Routine corporate earnings wrap", "is_high_severity": False, "first_seen_ts": now_s - 600.0}],
+        [{"title": "Routine corporate earnings wrap", "is_high_severity": False, "age_min": 10.0}],
+        {"ukraine says attack on russian ships in libya was self-defence"},
+        cache_dir=str(tmp_path),
+        now_ts=now_s,
+        allow_network=False,
+        persist=False,
+        read_json_fn=None,
+    )
+    assert "no fresh high-severity macro headlines in the last 90 minutes" in gt_reset_target["summary"].lower()
+    assert gt_reset_target["age_min"] == 0.0
