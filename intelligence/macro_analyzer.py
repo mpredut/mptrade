@@ -132,6 +132,18 @@ class MacroAnalyzer:
         )
         self._last_macro_llm_ts = self._last_notified_geo_ts = cached_geo_ts
         self._last_advisor_ts = self._last_notified_advisor_ts = cached_adv_ts
+        cached_geo_obj = getattr(self.geopolitical_analyzer, "_cached_assessment", None)
+        cached_adv_obj = getattr(self.sentiment_advisor, "_cached_assessment", None)
+        self._last_notified_geo_headline = (
+            f"{obj_attr(cached_geo_obj, 'recommended_brake')} ({obj_attr(cached_geo_obj, 'threat_level')})"
+            if cached_geo_obj is not None and cached_geo_ts > 0.0
+            else ""
+        )
+        self._last_notified_advisor_headline = (
+            f"{obj_attr(cached_adv_obj, 'recommended_action')} ({obj_attr(cached_adv_obj, 'market_bias')})"
+            if cached_adv_obj is not None and cached_adv_ts > 0.0
+            else ""
+        )
         self._last_thread_prune_ts = self._last_stdout_hb_ts = 0.0
         self._last_fg_value: Optional[int] = None
         self._last_advance_ratio: Optional[float] = None
@@ -146,6 +158,7 @@ class MacroAnalyzer:
         self,
         *,
         ts_attr: str,
+        headline_attr: str = "",
         assessment_ts: float,
         eval_now: float,
         eff_interval_sec: float,
@@ -156,23 +169,32 @@ class MacroAnalyzer:
         headline_suffix: str,
         body: str,
         skip_notify: bool = False,
+        unchanged_repeat_sec: float = 21600.0,
     ) -> None:
         last_notif = safe_nonneg_ts(getattr(self, ts_attr, 0.0), 0.0)
         assessment_ts = safe_nonneg_ts(assessment_ts, eval_now) or eval_now
         is_fresh = assessment_ts > last_notif or (eval_now < last_notif)
         elapsed = eval_now - last_notif
         min_itv = min(eff_interval_sec if eff_interval_sec > 0 else fallback_interval_sec, 3600.0)
-        if not is_fresh or skip_notify or not (force or not (0.0 <= elapsed < min_itv)):
+        prev_headline = str(getattr(self, headline_attr, "") or "").strip() if headline_attr else ""
+        cur_headline = str(headline_suffix or "").strip()
+        regime_changed = bool(not prev_headline or cur_headline != prev_headline)
+        req_interval = min_itv if regime_changed else max(min_itv, unchanged_repeat_sec)
+        if not is_fresh or skip_notify or not (force or not (0.0 <= elapsed < req_interval)):
             return
         if self.shadow_notify:
             try:
                 tag = topic_spec(topic_id).bracket_tag
                 _alertnotifiers.notify(title=f"{icon} {tag} {headline_suffix}", body=body, source="macro_shadow", symbol="GLOBAL")
                 setattr(self, ts_attr, assessment_ts)
+                if headline_attr:
+                    setattr(self, headline_attr, cur_headline)
             except Exception as exc:
                 logger.debug("Failed sending %s notification: %s", topic_id, exc)
         else:
             setattr(self, ts_attr, assessment_ts)
+            if headline_attr:
+                setattr(self, headline_attr, cur_headline)
 
     def assess_geopolitical_threat(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Evaluate macro headlines and publish geopolitical threat assessment."""
@@ -194,8 +216,14 @@ class MacroAnalyzer:
                 )
                 threat_str = (assessment.threat_level or "NORMAL").upper()
                 icon = "\U0001f6d1" if "CRITICAL" in threat_str else ("\U0001f6e1" if "ELEVATED" in threat_str else "\U0001f30d")
+                geo_unchanged_sec = (
+                    10800.0
+                    if ("CRITICAL" in threat_str or "ELEVATED" in threat_str)
+                    else 43200.0
+                )
                 self._maybe_notify_assessment(
                     ts_attr="_last_notified_geo_ts",
+                    headline_attr="_last_notified_geo_headline",
                     assessment_ts=assessment.ts,
                     eval_now=eval_now,
                     eff_interval_sec=getattr(self, "_effective_geo_interval_sec", self.macro_llm_interval_sec),
@@ -209,6 +237,7 @@ class MacroAnalyzer:
                         f"{assessment.summary}"
                     ),
                     skip_notify=_parse_bool_flag(getattr(assessment, "is_fallback", False), False),
+                    unchanged_repeat_sec=geo_unchanged_sec,
                 )
                 return True
         except Exception as e:
@@ -264,8 +293,10 @@ class MacroAnalyzer:
                 )
                 bias_str = (assessment.market_bias or "NEUTRAL").upper()
                 icon = "\U0001f7e2" if "BULL" in bias_str else ("\U0001f534" if "BEAR" in bias_str else "\U0001f9ed")
+                adv_unchanged_sec = 10800.0 if "BEAR" in bias_str else 21600.0
                 self._maybe_notify_assessment(
                     ts_attr="_last_notified_advisor_ts",
+                    headline_attr="_last_notified_advisor_headline",
                     assessment_ts=assessment.ts,
                     eval_now=eval_now,
                     eff_interval_sec=getattr(self, "_effective_advisor_interval_sec", self.advisor_interval_sec),
@@ -279,6 +310,7 @@ class MacroAnalyzer:
                         f"{assessment.summary}"
                     ),
                     skip_notify=stale_cached_fallback,
+                    unchanged_repeat_sec=adv_unchanged_sec,
                 )
                 return True
         except Exception as e:

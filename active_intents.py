@@ -63,6 +63,7 @@ from providers.order_id_context import (
     all_correlatable_client_order_ids,
     extract_client_order_id,
     resolve_order_actor,
+    resolve_order_owner,
 )
 from providers.order_ledger import OrderLedgerReader
 from providers.order_ohlc_utils import extract_executed_qty, extract_orig_qty
@@ -893,6 +894,26 @@ def trace_order_or_intent(
     orig_q: float | None = None
     actor: str | None = None
 
+    def _resolve_trace_actor(
+        order_obj: dict[str, Any] | None = None,
+        *,
+        cid_val: Any = None,
+        owner_val: Any = None,
+    ) -> str | None:
+        eff_cid = clean_order_id(cid_val) or (
+            extract_client_order_id(order_obj, default=None) if isinstance(order_obj, dict) else None
+        )
+        eff_owner = (clean_scalar_str(owner_val) or "").lower() or (
+            resolve_order_owner(eff_cid).lower() if eff_cid else ""
+        )
+        if eff_owner == "manual":
+            return "MANUAL"
+        if isinstance(order_obj, dict):
+            return resolve_order_actor(order_obj)
+        if eff_cid:
+            return resolve_order_actor({"clientOrderId": eff_cid})
+        return clean_scalar_str(owner_val)
+
     if ai_matches:
         actor = "AI"
         latest_ai = ai_matches[-1]
@@ -909,7 +930,7 @@ def trace_order_or_intent(
         filled_q = max(filled_q, safe_pos_float(st_last.get("executed_qty"), default=0.0) or 0.0)
         orig_q = orig_q or safe_pos_float(st_last.get("requested_qty"), default=None)
         if actor is None:
-            actor = resolve_order_actor({"clientOrderId": st_last.get("client_order_id")}) if st_last.get("client_order_id") else st_last.get("owner")
+            actor = _resolve_trace_actor(cid_val=st_last.get("client_order_id"), owner_val=st_last.get("owner"))
     if outbox_matches:
         ob_last = outbox_matches[-1]
         local_st = local_st or ob_last.get("lifecycle")
@@ -917,7 +938,7 @@ def trace_order_or_intent(
         orig_q = orig_q or safe_pos_float(ob_last.get("qty"), default=None)
         if actor is None:
             pkw = ob_last.get("place_kwargs") if isinstance(ob_last.get("place_kwargs"), dict) else {}
-            actor = resolve_order_actor({"clientOrderId": pkw.get("client_order_id")})
+            actor = _resolve_trace_actor(cid_val=pkw.get("client_order_id"), owner_val=pkw.get("parent_owner"))
     if audit_events:
         au_last = audit_events[-1]
         venue_st = au_last.get("venue_status") or venue_st
@@ -926,7 +947,7 @@ def trace_order_or_intent(
         filled_q = max(filled_q, safe_pos_float(au_last.get("filled_qty"), default=0.0) or 0.0)
         orig_q = orig_q or safe_pos_float(au_last.get("qty"), default=None)
         if actor is None and au_last.get("client_order_id"):
-            actor = resolve_order_actor({"clientOrderId": au_last.get("client_order_id")})
+            actor = _resolve_trace_actor(cid_val=au_last.get("client_order_id"), owner_val=au_last.get("owner"))
     if open_matches:
         oo_last = open_matches[-1]
         venue_st = oo_last.get("status") or venue_st or "OPEN"
@@ -934,7 +955,7 @@ def trace_order_or_intent(
         if (oq_oo := extract_orig_qty(oo_last, default=0.0)) > 0.0:
             orig_q = orig_q or oq_oo
         if actor is None:
-            actor = resolve_order_actor(oo_last)
+            actor = _resolve_trace_actor(oo_last)
 
     ledger_trace = ledger_reader.trace_order(
         clean_q, max_event_days=max_audit_days
@@ -951,11 +972,7 @@ def trace_order_or_intent(
         filled_q = max(filled_q, safe_pos_float(ledger_order.get("fq"), default=0.0) or 0.0)
         orig_q = orig_q or safe_pos_float(ledger_order.get("qty"), default=None)
         if actor is None:
-            actor = (
-                resolve_order_actor({"clientOrderId": ledger_order.get("cid")})
-                if ledger_order.get("cid")
-                else ledger_order.get("owner")
-            )
+            actor = _resolve_trace_actor(cid_val=ledger_order.get("cid"), owner_val=ledger_order.get("owner"))
 
     found = bool(
         ai_matches or state_matches or outbox_matches or open_matches or audit_events or ledger_order or ledger_events

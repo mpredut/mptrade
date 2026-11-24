@@ -16,8 +16,7 @@ from tests.conftest import TempDirTestCase
 class MonitorOrderPreflightTest(TempDirTestCase):
     def setUp(self):
         super().setUp()
-        monitororder.initial_sell_prices.clear()
-        monitororder.initial_buy_prices.clear()
+        monitororder.reset_monitororder_state_for_test()
         self._old_queue_file = monitororder.order_retry.QUEUE_FILE
         self._old_queue_lock = monitororder.order_retry.LOCK_FILE
         self._old_retry_enabled = monitororder.order_retry.RETRY_ENABLED
@@ -36,8 +35,7 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         self._native_replace_patcher.start()
 
     def tearDown(self):
-        monitororder.initial_sell_prices.clear()
-        monitororder.initial_buy_prices.clear()
+        monitororder.reset_monitororder_state_for_test()
         monitororder.order_retry.QUEUE_FILE = self._old_queue_file
         monitororder.order_retry.LOCK_FILE = self._old_queue_lock
         monitororder.order_retry.RETRY_ENABLED = self._old_retry_enabled
@@ -52,6 +50,7 @@ class MonitorOrderPreflightTest(TempDirTestCase):
             ("metadata-failure", ProviderError("rules unavailable")),
         ):
             with self.subTest(label=label):
+                monitororder.reset_monitororder_state_for_test()
                 monitororder.order_retry.rewrite([])
                 self.filter_check.reset_mock()
                 self.filter_check.side_effect = None
@@ -130,6 +129,7 @@ class MonitorOrderPreflightTest(TempDirTestCase):
                 ("unexpected-error", RuntimeError("preflight failed")),
                 ("missing-permit", None)):
             with self.subTest(label=label):
+                monitororder.reset_monitororder_state_for_test()
                 if os.path.exists(monitororder.order_retry.QUEUE_FILE):
                     os.unlink(monitororder.order_retry.QUEUE_FILE)
                 orders = {101: {"price": 100.0, "quantity": 2.0}}

@@ -1099,3 +1099,151 @@ def test_late_fill_supersedes_premature_canceled_and_closed_archives_survive_eve
     recs, has_ledger = reader.iter_audit_compat_records(min_day=day_str, max_day=day_str)
     assert has_ledger is True
     assert any(r.get("order_id") == "999001" and r.get("filled_qty") == pytest.approx(1.0) for r in recs)
+
+
+def test_section_c_monitororder_cooldown_manual_trace_actor_and_macro_ntfy_dedup(tmp_path):
+    """Verify C1 (monitororder refusal cooldown), C2 (Kraken WS async REST sync), C3 (MANUAL trace actor), and C4 (macro ntfy stance dedup)."""
+    import sys
+    import threading
+    from types import SimpleNamespace
+    import active_intents
+    import cacheaccount
+    import monitororder
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisorAssessment
+
+    # C1: monitororder applies 300s backoff on policy refusal and 30s on transient refusal.
+    monitororder.reset_monitororder_state_for_test()
+    t0 = 1_795_560_000.0
+    monitororder._record_reprice_refusal_cooldown("568296122", "qty_zero_after_policy", now_ts=t0)
+    cd_pol = monitororder._active_reprice_refusal_cooldown("568296122", now_ts=t0 + 60.0)
+    assert cd_pol is not None and cd_pol[0] == pytest.approx(240.0) and cd_pol[1] == "qty_zero_after_policy"
+    assert monitororder._active_reprice_refusal_cooldown("568296122", now_ts=t0 + 301.0) is None
+
+    monitororder._record_reprice_refusal_cooldown("568296123", "account_cache_not_fresh", now_ts=t0)
+    cd_tr = monitororder._active_reprice_refusal_cooldown("568296123", now_ts=t0 + 10.0)
+    assert cd_tr is not None and cd_tr[0] == pytest.approx(20.0)
+    assert monitororder._active_reprice_refusal_cooldown("568296123", now_ts=t0 + 31.0) is None
+    monitororder.reset_monitororder_state_for_test()
+
+    # C2: Kraken WS loop uses ping_interval=30, ping_timeout=20 and dispatches periodic REST Ledgers sync off the WS reader thread.
+    ws_params: dict = {}
+    rest_thread_names: list[str] = []
+    rest_done = threading.Event()
+    stop_ev = threading.Event()
+
+    clock_ms = [1_000_000]
+
+    class _FakeWsApp:
+        def __init__(self, url, on_open=None, on_message=None, on_error=None):
+            self.on_open = on_open
+            self.on_message = on_message
+            self.on_error = on_error
+
+        def send(self, _msg):
+            pass
+
+        def run_forever(self, **kwargs):
+            ws_params.update(kwargs)
+            self.on_open(self)
+            clock_ms[0] = 1_400_000
+            # Trigger periodic REST sync inside keepalive message; on_message must return immediately without blocking.
+            self.on_message(self, '{"event":"heartbeat"}')
+            rest_done.wait(timeout=3.0)
+            stop_ev.set()
+
+    class _FakeKrakenProv:
+        PRIVATE_WS_URL = "wss://fake"
+
+        @staticmethod
+        def fetch_ledger_fills_by_symbol(_client, *, pairs, lookback_sec):
+            rest_thread_names.append(threading.current_thread().name)
+            if len(rest_thread_names) >= 2:
+                rest_done.set()
+            return {"HYPEUSD": []}
+
+        @staticmethod
+        def build_ws_own_trades_subscription(_client):
+            return '{"event":"subscribe"}'
+
+        @staticmethod
+        def extract_ws_own_trades(_data, *, pairs):
+            return None
+
+        @staticmethod
+        def classify_ws_control_event(_data):
+            return "keepalive", ""
+
+    kr_cache = tmp_path / "cachedb" / "orders" / "cache_trade_kraken.json"
+    kr_cache.parent.mkdir(parents=True, exist_ok=True)
+    with patch.object(cacheaccount.MarketDataProvider, "resolve_venue_provider_class", return_value=_FakeKrakenProv), \
+         patch.dict(sys.modules, {"websocket": SimpleNamespace(WebSocketApp=_FakeWsApp)}), \
+         patch.object(cacheaccount, "resolve_now_ms", side_effect=lambda v=None: v if v is not None else clock_ms[0]):
+        cacheaccount.run_kraken_trade_ws_loop(
+            object(),
+            cache_file=str(kr_cache),
+            pairs=["HYPEUSD"],
+            poll_interval=30.0,
+            backoff_init=5.0,
+            backoff_max=60.0,
+            lookback_sec=3600.0,
+            stop_event=stop_ev,
+        )
+    assert ws_params.get("ping_interval") == 30 and ws_params.get("ping_timeout") == 20
+    assert "kraken-ws-rest-sync" in rest_thread_names
+
+    # C3: trace_order_or_intent resolves MANUAL actor for Binance Android manual orders (and_*).
+    ws_dir = tmp_path / "trace_ws"
+    cdb_dir = ws_dir / "cachedb"
+    writer = OrderLedgerWriter(cachedb_dir=str(cdb_dir))
+    reconciler = OrderLedgerReconciler(cachedb_dir=str(cdb_dir), use_singletons=False, reconcile_grace_sec=30.0)
+    writer.record_event(
+        OrderEventType.ORPHAN_ADOPTED,
+        venue="binance",
+        symbol="TAOUSDC",
+        ts=t0,
+        owner="manual",
+        side="BUY",
+        order_type="LIMIT",
+        qty=11.0,
+        px=174.2,
+        cid="and_6cacf9b64fd049878f47206773d2f93b",
+        vid="729245677",
+        vst="NEW",
+    )
+    reconciler.reconcile_once(now_ts=t0 + 5.0)
+    tr = active_intents.trace_order_or_intent("729245677", root=str(ws_dir))
+    assert tr["found"] is True
+    assert tr["actor"] == "MANUAL"
+
+    # C4: MacroAnalyzer suppresses repeated ntfy alerts when stance/regime is unchanged, but notifies immediately on change.
+    ma_dir = tmp_path / "macro_cache"
+    ma_dir.mkdir(parents=True, exist_ok=True)
+    analyzer = MacroAnalyzer(cache_dir=str(ma_dir), advisor_interval_sec=1800.0, macro_llm_interval_sec=3600.0)
+    analyzer.shadow_notify = True
+    adv1 = SentimentAdvisorAssessment("CAUTION", "MODERATE", 0.7, "Steady.", [], "HOLD", ts=t0)
+    adv2_same = SentimentAdvisorAssessment("CAUTION", "MODERATE", 0.72, "Still steady.", [], "HOLD", ts=t0 + 3700.0)
+    adv3_chg = SentimentAdvisorAssessment("BEARISH", "HIGH", 0.85, "Risk-off shift.", [], "DEFENSIVE", ts=t0 + 5500.0)
+    geo1 = GeopoliticalThreatAssessment("NORMAL", 0.1, "Calm.", "NONE", 3, ts=t0, is_fallback=False)
+    geo2_same = GeopoliticalThreatAssessment("NORMAL", 0.12, "Still calm.", "NONE", 3, ts=t0 + 7200.0, is_fallback=False)
+    geo3_chg = GeopoliticalThreatAssessment("ELEVATED", 0.65, "Escalation.", "DOWNSCALE_50", 5, ts=t0 + 9000.0, is_fallback=False)
+
+    with patch("notify_engine.alertnotifiers.notify") as mock_notify:
+        with patch.object(analyzer.sentiment_advisor, "review", return_value=adv1):
+            analyzer.assess_market_advisor(force=False, now=t0)
+        with patch.object(analyzer.sentiment_advisor, "review", return_value=adv2_same):
+            analyzer.assess_market_advisor(force=False, now=t0 + 3700.0)
+        assert mock_notify.call_count == 1  # Unchanged HOLD (CAUTION) after 1h suppressed!
+        with patch.object(analyzer.sentiment_advisor, "review", return_value=adv3_chg):
+            analyzer.assess_market_advisor(force=False, now=t0 + 5500.0)
+        assert mock_notify.call_count == 2  # Genuine shift to DEFENSIVE (BEARISH) notified immediately!
+
+        with patch.object(analyzer.geopolitical_analyzer, "assess", return_value=geo1):
+            analyzer.assess_geopolitical_threat(force=False, now=t0)
+        with patch.object(analyzer.geopolitical_analyzer, "assess", return_value=geo2_same):
+            analyzer.assess_geopolitical_threat(force=False, now=t0 + 7200.0)
+        assert mock_notify.call_count == 3  # Unchanged NONE (NORMAL) after 2h suppressed!
+        with patch.object(analyzer.geopolitical_analyzer, "assess", return_value=geo3_chg):
+            analyzer.assess_geopolitical_threat(force=False, now=t0 + 9000.0)
+        assert mock_notify.call_count == 4  # Escalation to DOWNSCALE_50 (ELEVATED) notified immediately!

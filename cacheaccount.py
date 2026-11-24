@@ -3965,6 +3965,8 @@ def run_kraken_trade_ws_loop(
     backoff_cur = [backoff_base]
     ws_subscribed = [False]
     last_err_text = [""]
+    rest_sync_lock = threading.Lock()
+    rest_sync_in_flight = [False]
 
     def _is_rate_limit_err(err_msg: object) -> bool:
         txt = str(err_msg or "").lower()
@@ -4065,21 +4067,31 @@ def run_kraken_trade_ws_loop(
                     pass
                 return
             if kind == "keepalive" and (now_ms - last_flush_ms[0]) >= 15_000:
-                rest_synced = False
+                launched_async = False
                 if (now_ms - last_rest_sync_ms[0]) >= rest_sync_interval_ms:
-                    try:
-                        merged = _merge_rest(now_ms=now_ms)
-                        if merged is not None:
-                            rest_synced = True
-                            log(
-                                f"[kraken_cache][ws] {sum(len(v) for v in merged['items'].values())} fills "
-                                f"for {list(merged['items'].keys())}"
-                            )
-                    except Exception as exc:
-                        log(
-                            f"[kraken_cache][ws] periodic REST Ledgers sync failed: {exc}"
-                        )
-                if not rest_synced and last_rest_sync_ms[0] > 0:
+                    with rest_sync_lock:
+                        if not rest_sync_in_flight[0]:
+                            rest_sync_in_flight[0] = True
+                            launched_async = True
+                    if launched_async:
+                        # Run periodic REST Ledgers reconciliation off the WS reader thread so slow HTTP calls
+                        # never starve RFC6455 ping/pong handling and trigger spurious ping/pong timeouts.
+                        def _bg_rest_sync(sync_ms: int = now_ms) -> None:
+                            try:
+                                merged = _merge_rest(now_ms=sync_ms)
+                                if merged is not None:
+                                    log(
+                                        f"[kraken_cache][ws] {sum(len(v) for v in merged['items'].values())} fills "
+                                        f"for {list(merged['items'].keys())}"
+                                    )
+                            except Exception as exc:
+                                log(f"[kraken_cache][ws] periodic REST Ledgers sync failed: {exc}")
+                            finally:
+                                with rest_sync_lock:
+                                    rest_sync_in_flight[0] = False
+
+                        threading.Thread(target=_bg_rest_sync, name="kraken-ws-rest-sync", daemon=True).start()
+                if not launched_async and last_rest_sync_ms[0] > 0:
                     CacheTradeManager.touch_venue_fills_snapshot(
                         cache_file,
                         now_ms=now_ms,
@@ -4094,7 +4106,7 @@ def run_kraken_trade_ws_loop(
                         create_missing=False,
                         indent=1,
                     )
-                    last_flush_ms[0] = now_ms
+                last_flush_ms[0] = now_ms
                 should_hb = True
         else:
             CacheTradeManager._merge_venue_fills_snapshot_locked(
@@ -4142,7 +4154,7 @@ def run_kraken_trade_ws_loop(
             )
             if isinstance(ws_holder, list) and ws_holder:
                 ws_holder[0] = ws
-            ws.run_forever(ping_interval=20, ping_timeout=10)
+            ws.run_forever(ping_interval=30, ping_timeout=20)
         except Exception as exc:
             log(f"[kraken_cache][ws] run_forever: {exc}")
         finally:
