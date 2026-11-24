@@ -397,6 +397,7 @@ def _finalize_sorted_ts_px(
     *,
     all_two_col: bool,
 ) -> List[Tuple[float, float]]:
+    pts = filter_isolated_ts_px_outliers(pts)
     if (
         len(pts) >= 10
         and 0.0 < (pts[-1][0] - pts[-2][0]) < 295000.0
@@ -501,7 +502,6 @@ def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
             pts = [(t_v, p_v) for t_v, p_v, _ in pts_vol]
     elif not is_sorted:
         pts.sort(key=lambda x: x[0])
-    pts = filter_isolated_ts_px_outliers(pts)
     return _finalize_sorted_ts_px(series, pts, mkey, all_two_col=all_two_col)
 
 

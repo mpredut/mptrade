@@ -26,6 +26,7 @@ from botcore import (
 from pricewindow import (
     adaptive_thresholds,
     calculate_volatility_1h,
+    filter_isolated_price_points,
     KalmanTrend as _DefaultKalmanTrend,
 )
 from cachepaths import cache_ohlc_24h_filename, cache_path, canonical_base_asset, resolve_cachedb_filepath
@@ -1244,13 +1245,23 @@ def _extract_ordered_prices(series_or_vals: Any) -> list[float]:
         elif not isinstance(item, (list, tuple)) and (v := safe_pos_float(item, default=0.0) or 0.0) > 0.0:
             scalars.append(v)
     if timed and not scalars:
-        return [px for _, px in sorted(timed, key=lambda x: x[0])]
+        cleaned_timed = filter_isolated_price_points(
+            sorted(timed, key=lambda x: x[0]), spike_ratio=2.5, edge_ratio=2.5
+        )
+        return [px for _, px in cleaned_timed]
     if scalars and not timed:
-        return scalars
-    return [
+        cleaned_sc = filter_isolated_price_points(
+            [(idx * 1.0, px) for idx, px in enumerate(scalars)], spike_ratio=2.5, edge_ratio=2.5
+        )
+        return [px for _, px in cleaned_sc]
+    raw_vals = [
         v for item in series_or_vals
         if (v := safe_pos_float(item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else item, default=0.0) or 0.0) > 0.0
     ]
+    cleaned_raw = filter_isolated_price_points(
+        [(idx * 1.0, px) for idx, px in enumerate(raw_vals)], spike_ratio=2.5, edge_ratio=2.5
+    )
+    return [px for _, px in cleaned_raw]
 
 
 def compute_swing_wave_metrics(
@@ -2942,9 +2953,11 @@ def normalize_and_dedup_24h_series(series_24h: list, symbol: str, *, is_market_o
             filtered_24h.append(cur_d)
         filtered_24h.append(dedup_24h[-1])
         dedup_24h = strip_off_rth_flat_poller_tail(filtered_24h, symbol, is_market_open_fn=is_market_open_fn)
+        dedup_24h = filter_isolated_price_points(dedup_24h)
     elif not has_any_vol and len(dedup_24h) >= 2:
+        dedup_24h = filter_isolated_price_points(dedup_24h)
         mkey = _series_memo_key(dedup_24h)
-        if mkey is not None:
+        if mkey is not None and len(dedup_24h) >= 2:
             _finalize_sorted_ts_px(
                 dedup_24h,
                 [(r[0] * 1.0, r[1] * 1.0) for r in dedup_24h],

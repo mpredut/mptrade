@@ -1163,7 +1163,11 @@ def test_p0_intelligence_24h_metrics_and_cache24_filter_isolated_cross_symbol_ou
         build_cycle_fallback_prices,
         enrich_macro_benchmarks_live_state,
     )
-    from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        compute_24h_price_metrics,
+        compute_7d_range_metrics,
+        normalize_and_dedup_24h_series,
+    )
 
     t0 = 1_795_504_000_000
     arb_series = [
@@ -1174,10 +1178,18 @@ def test_p0_intelligence_24h_metrics_and_cache24_filter_isolated_cross_symbol_ou
         [t0 + 124_000, 0.1150],
         [t0 + 180_000, 0.1142],
     ]
-    arb_m = compute_24h_price_metrics(arb_series)
+    # Exact production path: normalize_and_dedup_24h_series pre-populates _SORTED_TS_PX_MEMO!
+    arb_norm = normalize_and_dedup_24h_series(arb_series, "ARBUSDC")
+    assert all(pt[1] < 1.0 for pt in arb_norm)
+    arb_m = compute_24h_price_metrics(arb_norm)
     assert arb_m["high_24h"] == pytest.approx(0.1160)
     assert arb_m["low_24h"] == pytest.approx(0.1142)
     assert abs(arb_m["dd_24h_high_pct"]) < 5.0
+
+    # Also protect 7d range / swing-wave scalar lists against extreme cross-symbol spikes
+    arb_7d = compute_7d_range_metrics([0.110, 0.115, 0.114, 189.7, 0.113, 0.112])
+    assert arb_7d["high_7d"] == pytest.approx(0.115)
+    assert arb_7d["low_7d"] == pytest.approx(0.110)
 
     btc_series = [
         [t0, 61000.0],
@@ -1188,7 +1200,9 @@ def test_p0_intelligence_24h_metrics_and_cache24_filter_isolated_cross_symbol_ou
         [t0 + 124_000, 60450.0],
         [t0 + 180_000, 60300.0],
     ]
-    btc_m = compute_24h_price_metrics(btc_series)
+    btc_norm = normalize_and_dedup_24h_series(btc_series, "BTCUSDC")
+    assert all(pt[1] > 50000.0 for pt in btc_norm)
+    btc_m = compute_24h_price_metrics(btc_norm)
     assert btc_m["low_24h"] == pytest.approx(60300.0)
     assert btc_m["high_24h"] == pytest.approx(61000.0)
 
