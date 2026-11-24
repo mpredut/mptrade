@@ -135,10 +135,48 @@ def same_file(a: str, b: str) -> bool:
         return False
 
 
+_BACKUP_STAMP_RE = re.compile(r"^\d{8}_\d{6}$")
+_DEFAULT_BACKUP_KEEP_COUNT = 5
+
+
 def backup_file(path: str, stamp: str) -> None:
     dst = os.path.join(BACKUPS, stamp)
     os.makedirs(dst, exist_ok=True)
     shutil.copy2(path, os.path.join(dst, os.path.basename(path)))
+
+
+def prune_old_backups(backups_dir: str | None = None, *, keep_count: int | None = None) -> int:
+    """Keep only the newest timestamped backup snapshots in ``~/agy_store_fix_backups`` to bound disk growth."""
+    root = backups_dir or BACKUPS
+    if not os.path.isdir(root):
+        return 0
+    if keep_count is None:
+        raw_keep = optional_env("AGY_STORE_BACKUP_KEEP_COUNT")
+        parsed = exact_nonneg_int(raw_keep, default=None) if raw_keep is not None else None
+        eff_keep = parsed if parsed is not None else _DEFAULT_BACKUP_KEEP_COUNT
+    else:
+        eff_keep = exact_nonneg_int(keep_count, default=_DEFAULT_BACKUP_KEEP_COUNT)
+        if eff_keep is None:
+            eff_keep = _DEFAULT_BACKUP_KEEP_COUNT
+    try:
+        stamps = sorted(
+            (
+                name
+                for name in os.listdir(root)
+                if _BACKUP_STAMP_RE.match(name) and os.path.isdir(os.path.join(root, name))
+            ),
+            reverse=True,
+        )
+    except OSError:
+        return 0
+    removed = 0
+    for stale in stamps[eff_keep:]:
+        try:
+            shutil.rmtree(os.path.join(root, stale), ignore_errors=True)
+            removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 # ---------------------------------------------------------------- pre
@@ -312,6 +350,9 @@ def mode_pre(force: bool = False) -> int:
                     shutil.move(ann_path, os.path.join(orphan_ann_dir, ann_name))
                 except OSError:
                     pass
+    pruned_backups = prune_old_backups()
+    if pruned_backups:
+        log.info("pre: pruned %d stale backup dir(s) from %s", pruned_backups, BACKUPS)
     log.info("pre: moved=%d unlinked=%d deleted=%d diverged=%d skipped=%d rows_fixed=%d visible_files=%d webrtc_mesh=%s",
              moved, unlinked, deleted, diverged, skipped, rows_fixed, len(mt), mesh_state)
     return 0

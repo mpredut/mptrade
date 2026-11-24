@@ -2279,13 +2279,13 @@ def test_impulse_eval_gap_configurable_are_close_and_zero_benefit_triggers(tmp_p
     assert derive_xhigh_model_from_high("gemini-4-neon-high", "custom-xhigh") == "custom-xhigh"
 
     assert is_extreme_stakes_delta_gate_wakeup("trade_plan_invalidated(BTCUSDC)") is True
+    assert is_extreme_stakes_delta_gate_wakeup("new_fill") is True
     assert is_extreme_stakes_delta_gate_wakeup("geo_update", sensors=fresh_crit_s, prev_eval=prev_normal) is True
     for non_extreme in (
         "open_order_stale_or_far",
         "open_order_wall_trapped",
         "focus_symbols(TAOUSDC)",
         "price_move(TAOUSDC:2.5%>=0.6%)",
-        "new_fill",
         "trade_plan_target_hit(BTCUSDC)",
     ):
         assert is_extreme_stakes_delta_gate_wakeup(non_extreme) is False
@@ -2328,5 +2328,26 @@ def test_impulse_eval_gap_configurable_are_close_and_zero_benefit_triggers(tmp_p
         escalate_xhigh=True,
         now_ts=t0,
     ) == ("gemini-4-neon-high", "escalate_high_effort")
+
+    # 5. agy_store_fix.prune_old_backups caps unbounded timestamped backup growth while preserving custom dirs
+    from orchestratorOS.admin import agy_store_fix as asf
+
+    bk_root = tmp_path / "agy_store_fix_backups"
+    for ts_name in (
+        "20261112_091209",
+        "20261113_100000",
+        "20261114_110000",
+        "20261115_120000",
+        "20261123_130000",
+        "20261124_140000",
+        "20261124_213206",
+    ):
+        d = bk_root / ts_name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "dummy.db").write_text("x", encoding="utf-8")
+    (bk_root / "manual_keep").mkdir(parents=True, exist_ok=True)
+    assert asf.prune_old_backups(str(bk_root), keep_count=3) == 4
+    remaining = sorted(p.name for p in bk_root.iterdir())
+    assert remaining == ["20261123_130000", "20261124_140000", "20261124_213206", "manual_keep"]
 
 

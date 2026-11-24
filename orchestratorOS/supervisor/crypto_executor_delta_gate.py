@@ -150,14 +150,18 @@ def is_extreme_stakes_delta_gate_wakeup(
     prev_eval: Optional[Mapping[str, Any]] = None,
 ) -> bool:
     """Return True ONLY for ultra-rare extreme-complexity catalysts warranting ``-xhigh`` reasoning:
-    active trade-plan invalidation (thesis break vs stop-hunt) or unacknowledged critical geopolitical shock."""
+    active trade-plan invalidation (thesis break vs stop-hunt), new real fill (next-cycle planning),
+    or unacknowledged critical geopolitical shock."""
     reason_lc = str(gate_reason or "").strip().lower()
-    if reason_lc.startswith("trade_plan_invalidated"):
+    if reason_lc.startswith(("trade_plan_invalidated", "new_fill")):
         return True
     if sensors is not None:
         gt = getattr(sensors, "geopolitical_threat", None)
         src_ts = getattr(sensors, "source_timestamps", None)
         if _has_unacknowledged_geo_shock(gt, prev_eval, src_ts_map=src_ts if isinstance(src_ts, Mapping) else None):
+            return True
+        ps = getattr(sensors, "portfolio_summary", None)
+        if isinstance(ps, Mapping) and prev_eval is not None and _has_new_fill_since_prev(ps, prev_eval):
             return True
     return False
 
