@@ -299,6 +299,9 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
                 norm = self._normalize_title(h.title) if h else ""
                 if not (h and norm):
                     continue
+                if not h.is_high_severity and not h.matched_keywords:
+                    if fresh_kws := match_high_severity_keywords(h.title, cache_dir=self._CacheDirOrNone(), now_ts=now):
+                        h = replace(h, matched_keywords=fresh_kws, is_high_severity=True)
                 pub_ts = self._parse_recent_pub_date_ts(h.pub_date, now)
                 ts = self._resolve_non_backdated_ts(raw_ts, pub_ts)
                 if ts <= 0.0:

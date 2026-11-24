@@ -2805,3 +2805,186 @@ def test_crypto_prompt_medium_minor_audit_fixes_2_1_to_2_4():
     assert "for low maker fees" not in rules_txt
     assert "capture bid-ask spread and lower execution cost" in rules_txt
     assert "negative bps = favorable price improvement" in rules_txt
+
+
+def test_cycle1_geo_unassessed_plans_and_news_clickbait_fixes(tmp_path):
+    """Verify Cycle 1 live PROD prompt audit fixes: geo unassessed/surge, superseded SELL plans, and clickbait filter."""
+    import json
+    from types import SimpleNamespace
+
+    from intelligence.macro.calendar_ssot import compute_dynamic_geopolitical_interval
+    from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MacroAndNewsSensorsCollector
+    from orchestratorOS.supervisor.prompt_sections import _format_macro_and_news_section
+    from providers.intent_state import extract_intent_notional
+    from providers.intent_telemetry import summarize_active_ai_trade_plans
+
+    now_s = 1_795_561_200.0  # 2026-11-25 01:00 EET
+
+    # --- C1.1: 2 genuinely new fresh high-severity headlines wake Geo Threat Shield (45m vs 4.5h) ---
+    prev_dig = "Libya's Haftar visits Turkiye days after Ukraine hits Russian warship"
+    snap_two = {
+        "headlines": [
+            {
+                "title": "Russian jets spark air raid alert in South Korea",
+                "source": "Al Jazeera",
+                "is_high_severity": True,
+                "first_seen_ts": now_s - 3900.0,
+            },
+            {
+                "title": "11 injured in Houthi drone attack on Riyadh tower, Saudi civil defence says",
+                "source": "Al Jazeera",
+                "is_high_severity": True,
+                "first_seen_ts": now_s - 2800.0,
+            },
+        ],
+        "high_severity_count": 2,
+        "has_critical_shock_keywords": False,
+    }
+    itv_2, rsn_2 = compute_dynamic_geopolitical_interval(
+        base_interval_sec=16200.0,
+        last_eval_ts=now_s - 6900.0,
+        now_ts=now_s,
+        cached_assessment={"threat_level": "NORMAL", "is_fallback": False},
+        news_snapshot=snap_two,
+        headlines_changed=True,
+        last_headlines_digest=prev_dig,
+    )
+    assert itv_2 == 2700.0
+    assert rsn_2 == "high_severity_headline_surge_2"
+
+    # --- C1.2: Geo Threat Shield annotates unassessed fresh (<90m) high-sev headlines arriving after shield ts ---
+    gt_cur = {
+        "threat_level": "NORMAL",
+        "risk_score": 0.2,
+        "summary": "The sole headline within the 90-minute window is a routine diplomatic visit.",
+        "ts": now_s - 6900.0,
+        "age_min": 115.0,
+        "headlines_digest": prev_dig,
+    }
+    valid_news = [
+        {
+            "title": "11 injured in Houthi drone attack on Riyadh tower, Saudi civil defence says - Al Jazeera",
+            "is_high_severity": True,
+            "first_seen_ts": now_s - 2800.0,
+        }
+    ]
+    MacroAndNewsSensorsCollector._reconcile_geopolitical_deescalation(
+        gt_cur,
+        valid_news,
+        [{"title": valid_news[0]["title"], "is_high_severity": True, "age_min": 46.7}],
+        set(),
+        cache_dir=str(tmp_path),
+        now_ts=now_s,
+        allow_network=False,
+        persist=False,
+        read_json_fn=None,
+    )
+    assert "UNASSESSED_FRESH_HIGH_SEV" in gt_cur.get("live_unassessed_high_sev_note", "")
+    sec1_gt = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(geopolitical_threat=gt_cur),
+            asset_scope="crypto",
+        )
+    )
+    assert "live_unassessed=UNASSESSED_FRESH_HIGH_SEV" in sec1_gt
+
+    # --- C1.3: NewsFeedCollector._load_history upgrades cached missed headlines on lexicon refresh ---
+    hist_p = tmp_path / "news_feed_collect.json"
+    hist_p.write_text(
+        json.dumps([
+            {
+                "title": "Eleven hurt in second Houthi strike within days on Riyadh's tallest tower - Reuters",
+                "source": "Reuters",
+                "pub_date": "Tue, 24 Nov 2026 20:42:15 GMT",
+                "url": "https://example.com/reuters-riyadh",
+                "matched_keywords": [],
+                "is_high_severity": False,
+                "first_seen_ts": now_s - 5000.0,
+            }
+        ]),
+        encoding="utf-8",
+    )
+    nfc = NewsFeedCollector(history_file=str(hist_p))
+    nfc._load_history(now_ts=now_s)
+    snap_loaded = nfc.get_pool_snapshot(now_ts=now_s)
+    assert len(snap_loaded.headlines) == 1
+    assert snap_loaded.headlines[0].is_high_severity is True
+    assert "houthi strike" in snap_loaded.headlines[0].matched_keywords
+
+    # --- C1.4: Superseded FILLED SELL plans dropped once newer RESTING BUY plan or newer BUY fill exists ---
+    intents_sup = [
+        {
+            "status": "EXECUTED",
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "decision": "SELL",
+            "order_type": "LIMIT",
+            "timestamp": now_s - 18.8 * 3600.0,
+            "target_px": 62.9,
+            "invalidation_px": 64.1,
+            "execution_payload": {"status": "FILLED", "price": 63.55, "filled_qty": 11.22},
+        },
+        {
+            "status": "EXECUTED",
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "decision": "BUY",
+            "order_type": "LIMIT",
+            "timestamp": now_s - 2.4 * 3600.0,
+            "limit_price": 58.45,
+            "target_px": 60.35,
+            "invalidation_px": 56.85,
+            "execution_payload": {"status": "OPEN", "order_id": "615579321222", "price": 58.45},
+        },
+        {
+            "status": "EXECUTED",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "decision": "SELL",
+            "order_type": "LIMIT",
+            "timestamp": now_s - 20.8 * 3600.0,
+            "target_px": 60150.0,
+            "invalidation_px": 61180.0,
+            "execution_payload": {"status": "FILLED", "price": 60792.2, "filled_qty": 0.0296},
+        },
+    ]
+    open_orders_sup = [
+        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "side": "BUY", "order_id": "615579321222", "price": 58.45, "status": "NEW"}
+    ]
+    pos_sup = [
+        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "price": 60.29, "value_usd": 0.11, "effective_max_buy_usd": 2000.0},
+        {"venue": "binance", "symbol": "BTCUSDC", "price": 59902.2, "value_usd": 1504.59, "effective_max_buy_usd": 2000.0},
+    ]
+    ro_sup = {
+        "BTCUSDC": {
+            "last_buy": {"price": 60076.8, "ts_ms": int((now_s - 14.4 * 3600.0) * 1000.0)},
+        }
+    }
+    sup_plans = summarize_active_ai_trade_plans(
+        intents_sup,
+        "crypto",
+        now_s,
+        extract_intent_notional,
+        tradable_positions=pos_sup,
+        open_orders=open_orders_sup,
+        recent_orders=ro_sup,
+    )
+    assert [(p["symbol"], p["side"], p["order_state"]) for p in sup_plans] == [
+        ("HYPEUSDC", "BUY", "RESTING")
+    ]
+
+    # --- C1.5: Consumer personal-finance / health lifestyle clickbait excluded from breaking news ---
+    assert is_excluded_reference_news_item(
+        "How to get your paycheck up to 2 days early: 14 banks with early direct deposit"
+    )
+    assert is_excluded_reference_news_item(
+        "Feeling tired and losing your hair? You might have low iron — even if you’ve tested ‘normal’ before."
+    )
+    assert is_excluded_reference_news_item(
+        "Many people overlook this crucial piece of retirement planning — and it isn’t money"
+    )
+    assert not is_excluded_reference_news_item(
+        "US regional banks slide after Fed warns on commercial real estate exposure"
+    )

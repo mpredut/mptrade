@@ -483,6 +483,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
     gt_line = (
         f"risk_score={gt.get('risk_score', 'N/A')}{_age_sfx(gt)}"
         + (f" | live_deescalation={gt.get('live_deescalation_note')}" if gt.get("live_deescalation_note") else "")
+        + (f" | live_unassessed={gt.get('live_unassessed_high_sev_note')}" if gt.get("live_unassessed_high_sev_note") else "")
         + f" | summary={gt_summary}"
         if gt else "None"
     )

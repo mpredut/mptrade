@@ -1399,7 +1399,7 @@ def compute_dynamic_geopolitical_interval(
             return min(base, min_geo_itv * 2.0), "critical_shock_active_monitoring_30m"
         if threat_level == "ELEVATED":
             return min(base, min_geo_itv * 4.0), "elevated_threat_new_headlines_1h"
-        if new_high_sev_count >= 3:
+        if new_high_sev_count >= 2:
             return min(base, cp_cooldown_itv), f"high_severity_headline_surge_{new_high_sev_count}"
         crossed_cp = did_cross_session_checkpoint(last_eval_ts, ts, min_cooldown_sec=cp_cooldown_itv)
         if crossed_cp is not None:

@@ -1318,6 +1318,34 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                 f"Geopolitical threat level {str(gt_cur.get('threat_level') or 'NORMAL').upper()}: "
                 f"monitoring {len(fresh_hs_news)} fresh high-severity macro headline(s) (<90m old); no acute systemic shock brake triggered."
             )
+        gt_ts_f = safe_pos_float(gt_cur.get("ts"), default=0.0) or 0.0
+        if gt_ts_f > 0.0 and valid_news:
+            gt_dig_s = str(gt_cur.get("headlines_digest") or "").strip()
+            gt_dig_low = gt_dig_s.lower()
+            gt_dig_titles = split_headlines_digest(gt_dig_s) if gt_dig_s else []
+            fresh_unassessed_hs: List[Dict[str, Any]] = []
+            for n in valid_news:
+                if not _parse_bool_flag(n.get("is_high_severity"), False):
+                    continue
+                n_ts = safe_pos_float(n.get("first_seen_ts"), default=0.0) or 0.0
+                if n_ts <= gt_ts_f or (now_ts - n_ts) >= 5400.0:
+                    continue
+                n_title = str(n.get("title") or "").strip()
+                if not n_title:
+                    continue
+                n_clean = _strip_headline_publisher_suffix(n_title).strip()
+                if n_title.lower() in gt_dig_low or (n_clean and n_clean.lower() in gt_dig_low):
+                    continue
+                if gt_dig_titles and any(headlines_are_semantic_duplicates(n_title, dt) for dt in gt_dig_titles):
+                    continue
+                fresh_unassessed_hs.append(n)
+            if fresh_unassessed_hs:
+                first_unassessed = _strip_headline_publisher_suffix(
+                    str(fresh_unassessed_hs[0].get("title") or "")
+                ).strip()
+                gt_cur["live_unassessed_high_sev_note"] = (
+                    f"UNASSESSED_FRESH_HIGH_SEV ({len(fresh_unassessed_hs)} headline(s) arrived after shield eval: {first_unassessed[:90]})"
+                )
 
     def collect(
         self,

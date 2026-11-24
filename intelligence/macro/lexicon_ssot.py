@@ -643,6 +643,11 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "what is your number?",
     "is a bet on ",
     "meet the winners of",
+    "early direct deposit",
+    "get your paycheck",
+    "piece of retirement planning",
+    "losing your hair",
+    "you might have low iron",
 )
 
 _EDITORIAL_CLICKBAIT_OR_ADVICE_RE = re.compile(

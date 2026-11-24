@@ -985,6 +985,23 @@ def summarize_active_ai_trade_plans(
     plans_rev: list[dict[str, Any]] = []
     seen_inst_keys: set[tuple[str, str, tuple[str, ...]]] = set()
     seen_resting_keys: set[tuple[str, str, tuple[str, ...], str, str]] = set()
+    seen_resting_buy_inst_keys: set[tuple[str, str, tuple[str, ...]]] = set()
+    ro_map = recent_orders if isinstance(recent_orders, dict) else {}
+
+    def _has_newer_buy_fill(ven: str, sym_s: str, after_ts: float) -> bool:
+        if not ro_map or after_ts <= 0.0:
+            return False
+        for cand in (sym_s, *cache_symbol_variants(sym_s, include_base=True)):
+            ro_entry = casefold_get(ro_map, cand)
+            if not isinstance(ro_entry, dict):
+                continue
+            lb_entry = ro_entry.get("last_buy")
+            if not isinstance(lb_entry, dict):
+                continue
+            lb_ts_s = _parse_pos_epoch_s(lb_entry.get("ts_ms") or lb_entry.get("ts"))
+            if lb_ts_s is not None and lb_ts_s > after_ts + 1.0:
+                return True
+        return False
     _non_active_exec_statuses = (
         "CANCELED",
         "CANCELLED",
@@ -1052,12 +1069,22 @@ def summarize_active_ai_trade_plans(
             )
             if held_usd < 5.0:
                 continue
-        if side == "SELL" and not is_resting and isinstance(pos_hit, dict):
-            if "effective_max_buy_usd" in pos_hit or "effective_max_sell_usd" in pos_hit:
-                mb_u = safe_pos_float(pos_hit.get("effective_max_buy_usd"), default=0.0) or 0.0
-                rmb_u = safe_pos_float(pos_hit.get("replace_max_buy_usd"), default=0.0) or 0.0
-                if mb_u <= 0.0 and rmb_u <= 0.0:
+        if side == "SELL" and not is_resting:
+            if inst_key in seen_resting_buy_inst_keys:
+                continue
+            if isinstance(pos_hit, dict):
+                if "effective_max_buy_usd" in pos_hit or "effective_max_sell_usd" in pos_hit:
+                    mb_u = safe_pos_float(pos_hit.get("effective_max_buy_usd"), default=0.0) or 0.0
+                    rmb_u = safe_pos_float(pos_hit.get("replace_max_buy_usd"), default=0.0) or 0.0
+                    if mb_u <= 0.0 and rmb_u <= 0.0:
+                        continue
+                held_usd_s = (safe_float(pos_hit.get("value_usd"), 0.0) or 0.0) + (
+                    safe_float(pos_hit.get("locked_base_usd"), 0.0) or 0.0
+                )
+                if held_usd_s >= 5.0 and _has_newer_buy_fill(venue, sym, eff_ts):
                     continue
+        if side == "BUY" and is_resting:
+            seen_resting_buy_inst_keys.add(inst_key)
 
         spot_px = _resolve_spot_px(venue, sym, pos_hit)
         sym_bars = resolve_symbol_price_bars(price_bars_by_symbol, venue, sym)

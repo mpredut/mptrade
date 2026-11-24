@@ -1436,7 +1436,7 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         snap_synd = NewsFeedCollector.parse_rss_xml(syndicated_xml, now_ts=t0 + 200.0, cache_dir=str(tmp_path))
         assert snap_synd is not None
         assert snap_synd.total_fetched == 2
-        assert snap_synd.high_severity_count == 1
+        assert snap_synd.high_severity_count == 2
         synd_titles = [h.title for h in snap_synd.headlines]
         assert "Russian bombing kills 26 people at Ukraine aid centre, Kyiv says" in synd_titles
         assert "Russian bombing kills 26 people at Ukraine aid centre, Kyiv says - BBC" not in synd_titles
@@ -1447,7 +1447,7 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         )
         agg_synd = synd_collector._aggregate(snap_synd, now=t0 + 200.0)
         assert agg_synd.total_fetched == 2
-        assert agg_synd.high_severity_count == 1
+        assert agg_synd.high_severity_count == 2
         lex_after_synd = load_dynamic_lexicon(cache_dir=str(tmp_path), now_ts=t0 + 200.0)["high_severity_terms"]
         for noise_bg in (
             "conducts defensive",
