@@ -5,6 +5,7 @@ import os
 import hashlib
 import math
 import signal
+import statistics
 import threading
 import time
 
@@ -408,6 +409,115 @@ def _log_symbol_and_return(symbol: str, message: str, ret_val=False):
     return ret_val
 
 
+_WINDOW_OUTLIER_NEIGHBOR_AGREE_RATIO = 1.20
+_WINDOW_OUTLIER_SPIKE_RATIO = 1.35
+_WINDOW_OUTLIER_MEDIAN_RATIO = 2.5
+_WINDOW_OUTLIER_CORROBORATE_RATIO = 1.25
+_CORRUPT_PEAK_IN_WINDOW_RATIO = 1.5
+_CORRUPT_PEAK_EXTREME_RATIO = 10.0
+
+
+def _filter_isolated_price_outliers(rows: list[dict]) -> tuple[list[dict], int]:
+    """Remove isolated single-tick spikes and uncorroborated extreme outliers from rolling prices."""
+    if len(rows) < 3:
+        return list(rows), 0
+    ordered = sorted(rows, key=lambda row: row["timestamp"])
+    n = len(ordered)
+    drop_idx: set[int] = set()
+    for i in range(1, n - 1):
+        prev_px = ordered[i - 1]["price"]
+        cur_px = ordered[i]["price"]
+        next_px = ordered[i + 1]["price"]
+        lo_nb = min(prev_px, next_px)
+        hi_nb = max(prev_px, next_px)
+        if lo_nb > 0.0 and (hi_nb / lo_nb) <= _WINDOW_OUTLIER_NEIGHBOR_AGREE_RATIO:
+            if cur_px > hi_nb * _WINDOW_OUTLIER_SPIKE_RATIO or cur_px < lo_nb / _WINDOW_OUTLIER_SPIKE_RATIO:
+                drop_idx.add(i)
+    kept = [row for i, row in enumerate(ordered) if i not in drop_idx]
+    removed = len(drop_idx)
+    if len(kept) >= 5:
+        med_px = statistics.median(row["price"] for row in kept)
+        if med_px > 0.0:
+            extreme_indices = [
+                i for i, row in enumerate(kept)
+                if max(row["price"] / med_px, med_px / row["price"]) > _WINDOW_OUTLIER_MEDIAN_RATIO
+            ]
+            if extreme_indices:
+                final_drop: set[int] = set()
+                for idx in extreme_indices:
+                    px = kept[idx]["price"]
+                    corroborated = 0
+                    for j, other in enumerate(kept):
+                        if j == idx:
+                            continue
+                        o_px = other["price"]
+                        if max(o_px / px, px / o_px) <= _WINDOW_OUTLIER_CORROBORATE_RATIO:
+                            corroborated += 1
+                            if corroborated >= 2:
+                                break
+                    if corroborated < 2:
+                        final_drop.add(idx)
+                if final_drop:
+                    kept = [row for i, row in enumerate(kept) if i not in final_drop]
+                    removed += len(final_drop)
+    return kept, removed
+
+
+def _is_corrupted_buy_peak(
+    stored_peak,
+    stored_peak_ts,
+    window_max_price,
+    current_price=None,
+    *,
+    window_start_ts=None,
+    now_ts=None,
+) -> bool:
+    """Return True when a persisted BUY campaign peak_price is clearly contaminated."""
+    sp = _finite_float(stored_peak, positive=True)
+    wm = _finite_float(window_max_price, positive=True)
+    if sp is None or wm is None:
+        return False
+    cp = _finite_float(current_price, positive=True)
+    anchor = max(wm, cp) if cp is not None else wm
+    if sp > anchor * _CORRUPT_PEAK_EXTREME_RATIO:
+        return True
+    pts = _finite_float(stored_peak_ts, positive=True)
+    w_start = _finite_float(window_start_ts, positive=True)
+    eff_now = _finite_float(now_ts, positive=True) or (time.time() * 1.0)
+    if pts is not None and w_start is not None and w_start <= pts <= eff_now + 60.0:
+        if sp > wm * _CORRUPT_PEAK_IN_WINDOW_RATIO:
+            return True
+    return False
+
+
+def _is_corrupted_sell_trough(
+    stored_trough,
+    stored_trough_ts,
+    window_min_price,
+    current_price=None,
+    *,
+    window_start_ts=None,
+    now_ts=None,
+) -> bool:
+    """Return True when a persisted SELL campaign trough_price is clearly contaminated."""
+    st = _finite_float(stored_trough, positive=True)
+    wmin = _finite_float(window_min_price, positive=True)
+    if st is None or wmin is None:
+        return False
+    cp = _finite_float(current_price, positive=True)
+    lo_anchor = min(wmin, cp) if cp is not None else wmin
+    hi_anchor = max(wmin, cp) if cp is not None else wmin
+    if st < lo_anchor / _CORRUPT_PEAK_EXTREME_RATIO or st > hi_anchor * _CORRUPT_PEAK_EXTREME_RATIO:
+        return True
+    tts = _finite_float(stored_trough_ts, positive=True)
+    w_start = _finite_float(window_start_ts, positive=True)
+    eff_now = _finite_float(now_ts, positive=True) or (time.time() * 1.0)
+    if tts is not None and w_start is not None and w_start <= tts <= eff_now + 60.0:
+        if st < wmin / _CORRUPT_PEAK_IN_WINDOW_RATIO:
+            return True
+    return False
+
+
 def _get_symbol_window_extrema(symbol, current_price,
                                minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     """Return validated per-symbol price minimum/maximum for the rolling window."""
@@ -419,15 +529,52 @@ def _get_symbol_window_extrema(symbol, current_price,
     now_ts = time.time() * 1.0
     target_ts = now_ts - minutes_back * 60.0
 
+    cached_normalized = []
+    cached_seen = set()
+    for raw in _read_symbol_price_rows(symbol):
+        parsed = _price_row(raw)
+        if parsed is None:
+            continue
+        timestamp, price = parsed
+        if not target_ts <= timestamp <= now_ts:
+            continue
+        key = (timestamp, price)
+        if key not in cached_seen:
+            cached_seen.add(key)
+            cached_normalized.append({"timestamp": timestamp, "price": price})
+
+    if len(cached_normalized) >= 5:
+        clean_cached, _ = _filter_isolated_price_outliers(cached_normalized)
+        if len(clean_cached) >= 5:
+            hist_med = statistics.median(row["price"] for row in clean_cached)
+            recent_tail = clean_cached[-5:]
+            recent_matches = sum(
+                1 for row in recent_tail
+                if max(row["price"] / current_price, current_price / row["price"])
+                <= _WINDOW_OUTLIER_CORROBORATE_RATIO
+            )
+            if (
+                hist_med > 0.0
+                and max(current_price / hist_med, hist_med / current_price)
+                > _WINDOW_OUTLIER_MEDIAN_RATIO
+                and recent_matches < 2
+            ):
+                return _log_symbol_and_return(
+                    symbol,
+                    f"Current price {current_price:.8f} rejected as outlier vs rolling median "
+                    f"{hist_med:.8f}; skip evaluation.",
+                    None,
+                )
+
     local = _local_price_samples.setdefault(symbol, [])
     local.append([now_ts, current_price])
     local[:] = [row for row in local
                 if (parsed := _price_row(row)) is not None
                 and target_ts <= parsed[0] <= now_ts]
 
-    normalized = []
-    seen = set()
-    for raw in _read_symbol_price_rows(symbol) + list(local):
+    normalized = list(cached_normalized)
+    seen = set(cached_seen)
+    for raw in list(local):
         parsed = _price_row(raw)
         if parsed is None:
             continue
@@ -438,6 +585,13 @@ def _get_symbol_window_extrema(symbol, current_price,
         if key not in seen:
             seen.add(key)
             normalized.append({"timestamp": timestamp, "price": price})
+
+    normalized, removed_outliers = _filter_isolated_price_outliers(normalized)
+    if removed_outliers > 0:
+        print(
+            f"[WARNING] [{symbol}] Filtered {removed_outliers} isolated price outlier(s) "
+            f"from rolling window."
+        )
 
     print(f"[DEBUG] {symbol} candidate price rows: {len(normalized)}")
     if len(normalized) < 2:
@@ -982,6 +1136,19 @@ def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash,
     if (peak_price is None or peak_ts is None
             or _finite_float(free_cash, positive=True) is None):
         return None, state
+    if (
+        state
+        and stored_peak is not None
+        and not _has_pending_campaign(state)
+        and _is_corrupted_buy_peak(stored_peak, state.get("peak_ts"), peak_price)
+    ):
+        print(
+            f"[WARNING] [{symbol}] Resetting corrupted BUY campaign peak_price={stored_peak:.8f} "
+            f"(validated window max={peak_price:.8f})."
+        )
+        _save_symbol_campaign(symbol, "buy", {})
+        state = {}
+        stored_peak = None
     if not state:
         state = {
             "peak_price": peak_price,
@@ -1534,6 +1701,17 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         if trough_price is None or trough_ts is None or initial_qty is None:
             print(f"[{symbol}] Invalid SELL campaign; clear without submitting.")
             return _reset_sell_campaign(None)
+        min_row_px = _finite_float((minimum_row or {}).get("price"), positive=True)
+        if (
+            min_row_px is not None
+            and not _has_pending_campaign(state)
+            and _is_corrupted_sell_trough(trough_price, trough_ts, min_row_px, current_price)
+        ):
+            print(
+                f"[WARNING] [{symbol}] Resetting corrupted SELL campaign trough_price={trough_price:.8f} "
+                f"(validated window_min={min_row_px:.8f}, current={current_price:.8f})."
+            )
+            return _reset_sell_campaign(None)
         growth = ((current_price - trough_price) / trough_price) * 100.0
         if growth <= SELL_REARM_GROWTH_PERCENT:
             print(
@@ -1776,7 +1954,46 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     rolling_growth_percent = ((current_price - minimum_price) / minimum_price) * 100.0
     drawdown_percent = ((current_price - maximum_price) / maximum_price) * 100.0
     evaluation["drawdown"] = drawdown_percent
-    if drawdown_percent > -RECOVERY_RESET_PERCENT and _symbol_campaign(symbol, "buy"):
+    existing_buy_campaign = _symbol_campaign(symbol, "buy")
+    existing_sell_campaign = _symbol_campaign(symbol, "sell")
+    eval_now_ts = time.time() * 1.0
+    eff_min_back = _finite_float(minutes_back, positive=True) or (
+        safe_pos_float(ASSET_REFERENCE_MINUTES_BACK_DEFAULT, default=1440.0) or 1440.0
+    )
+    window_start_ts = eval_now_ts - eff_min_back * 60.0
+    if existing_buy_campaign and not _has_pending_campaign(existing_buy_campaign):
+        if _is_corrupted_buy_peak(
+            existing_buy_campaign.get("peak_price"),
+            existing_buy_campaign.get("peak_ts"),
+            maximum_price,
+            current_price,
+            window_start_ts=window_start_ts,
+            now_ts=eval_now_ts,
+        ):
+            print(
+                f"[WARNING] [{symbol}] Auto-healing corrupted persisted BUY campaign "
+                f"(peak_price={existing_buy_campaign.get('peak_price')}, "
+                f"validated window_max={maximum_price:.8f}, current={current_price:.8f})."
+            )
+            _save_symbol_campaign(symbol, "buy", {})
+            existing_buy_campaign = {}
+    if existing_sell_campaign and not _has_pending_campaign(existing_sell_campaign):
+        if _is_corrupted_sell_trough(
+            existing_sell_campaign.get("trough_price"),
+            existing_sell_campaign.get("trough_ts"),
+            minimum_price,
+            current_price,
+            window_start_ts=window_start_ts,
+            now_ts=eval_now_ts,
+        ):
+            print(
+                f"[WARNING] [{symbol}] Auto-healing corrupted persisted SELL campaign "
+                f"(trough_price={existing_sell_campaign.get('trough_price')}, "
+                f"validated window_min={minimum_price:.8f}, current={current_price:.8f})."
+            )
+            _save_symbol_campaign(symbol, "sell", {})
+            existing_sell_campaign = {}
+    if drawdown_percent > -RECOVERY_RESET_PERCENT and existing_buy_campaign:
         print(f"[{symbol}] Drawdown recovered below {RECOVERY_RESET_PERCENT:.2f}%; rearm BUY campaign.")
         _save_symbol_campaign(symbol, "buy", {})
 

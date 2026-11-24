@@ -195,6 +195,13 @@ class BinancePriceStream(PublicPriceStreamBase):
             if not isinstance(symbol, str) or not symbol.strip():
                 raise ValueError(f"invalid ticker symbol: {symbol!r}")
             symbol = symbol.strip().upper()
+            raw_stream = envelope.get("stream")
+            if isinstance(raw_stream, str) and "@" in raw_stream:
+                stream_sym = raw_stream.split("@", 1)[0].strip().upper()
+                if stream_sym and stream_sym != symbol:
+                    raise ValueError(
+                        f"WS stream/symbol mismatch: stream={raw_stream!r} data.s={symbol!r}"
+                    )
             price = safe_pos_float(data["c"], default=None)
             if price is None:
                 raise ValueError(f"invalid ticker price: {data['c']!r}")

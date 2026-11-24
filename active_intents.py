@@ -601,7 +601,7 @@ def _load_cached_order_book_index(
                 if oo_st_up and oo_st_up in terminal_venue_statuses:
                     terminal_order_keys.add(_order_key_tuple(venue_key, oo_sym, oid))
                     continue
-                if not (is_open_working_status(oo_st, allow_empty=True) or oo_st_up == "PARTIALLY_FILLED"):
+                if not (is_open_working_status(oo_st, allow_empty=False) or oo_st_up == "PARTIALLY_FILLED"):
                     continue
                 filled_open_by_venue.setdefault(venue_key, []).append(
                     {"venue": venue_key, "symbol": oo_sym, **oo}

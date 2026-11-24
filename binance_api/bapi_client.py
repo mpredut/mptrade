@@ -2,7 +2,10 @@
 import math
 import time
 import threading
+from urllib.parse import urlencode
+import weakref
 
+import requests
 from binance.client import Client
 from botcore import _parse_bool_flag, exact_pos_int, safe_nonneg_float
 import credentials as _credentials
@@ -55,6 +58,132 @@ def sync_time(safety_margin_ms=TIME_SAFETY_MARGIN_MS):
     except Exception as e:
         print("[bapi_client] sync_time failed:", e)
         return None
+
+
+def _install_threadsafe_request(cl):
+    """Eliminate python-binance's shared ``self.response`` and ``self.session`` races across threads.
+
+    ``python-binance``'s stock ``Client._request`` assigns ``self.response = ...`` on the shared
+    client instance and then calls ``self._handle_response(self.response)``. Under concurrent
+    requests (e.g., ``CPFallbackFetch`` price fallback workers or ``BinanceTimeResync``), one
+    thread can overwrite ``self.response`` before another thread parses it, returning another
+    symbol's payload (such as TAOUSDC's price on an ARBUSDC ticker call). Each worker thread also
+    gets its own ``requests.Session`` cloned with identical headers and retry policy.
+    """
+    if getattr(cl, "_threadsafe_request_installed", False):
+        return
+    if not callable(getattr(cl, "_get_request_kwargs", None)) or not callable(
+        getattr(cl, "_handle_response", None)
+    ):
+        return
+
+    owner_tid = threading.get_ident()
+    tls = threading.local()
+    sessions_lock = threading.Lock()
+    thread_sessions: dict[int, requests.Session] = {}
+
+    def _close_and_forget_session(sess_id: int, sess_obj: requests.Session) -> None:
+        with sessions_lock:
+            thread_sessions.pop(sess_id, None)
+        try:
+            sess_obj.close()
+        except Exception:
+            pass
+
+    def _get_thread_session():
+        base_sess = getattr(cl, "session", None)
+        if not isinstance(base_sess, requests.Session) or threading.get_ident() == owner_tid:
+            return base_sess
+        base_id = id(base_sess)
+        local_sess = getattr(tls, "session", None)
+        if local_sess is not None and getattr(tls, "base_session_id", None) == base_id:
+            return local_sess
+        new_sess = requests.Session()
+        new_sess.headers.update(base_sess.headers)
+        mount_connect_retry(
+            new_sess,
+            attempts=3,
+            backoff=1.0,
+            read=3,
+            status_forcelist=[429, 500, 502, 503, 504],
+            raise_on_status=True,
+        )
+        tls.session = new_sess
+        tls.base_session_id = base_id
+        sess_id = id(new_sess)
+        with sessions_lock:
+            thread_sessions[sess_id] = new_sess
+        try:
+            weakref.finalize(
+                threading.current_thread(), _close_and_forget_session, sess_id, new_sess
+            )
+        except TypeError:
+            pass
+        return new_sess
+
+    def _threadsafe_request(method, uri, signed, force_params=False, **kwargs):
+        headers = {}
+        method_s = str(method).lower()
+        if method_s in ("post", "put", "delete"):
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+        req_in = dict(kwargs)
+        if "data" in req_in:
+            raw_data = req_in["data"]
+            if isinstance(raw_data, dict):
+                copied_data = dict(raw_data)
+                if "headers" in copied_data:
+                    extra_headers = copied_data.pop("headers")
+                    if isinstance(extra_headers, dict):
+                        headers.update(extra_headers)
+                req_in["data"] = copied_data
+
+        req_kwargs = cl._get_request_kwargs(method_s, signed, force_params, **req_in)
+        data = req_kwargs.pop("data", None)
+
+        if signed and getattr(cl, "PRIVATE_KEY", None) and data:
+            dict_data = Client.convert_to_dict(data)
+            signature = dict_data.pop("signature", None)
+            if signature:
+                data = f"{urlencode(dict_data)}&signature={signature}"
+
+        session = _get_thread_session()
+        resp = getattr(session, method_s)(uri, headers=headers, data=data, **req_kwargs)
+        tls.response = resp
+
+        if getattr(cl, "verbose", False) and hasattr(cl, "logger"):
+            cl.logger.debug(
+                "\nRequest: %s %s\nRequestHeaders: %s\nRequestBody: %s\nResponse: %s\nResponseHeaders: %s\nResponseBody: %s",
+                method_s.upper(),
+                uri,
+                headers,
+                data,
+                getattr(resp, "status_code", None),
+                dict(getattr(resp, "headers", {}) or {}),
+                resp.text[:1000] if getattr(resp, "text", None) else None,
+            )
+
+        return cl._handle_response(resp)
+
+    orig_close = getattr(cl, "close_connection", None)
+
+    def _close_all_connections():
+        with sessions_lock:
+            to_close = list(thread_sessions.values())
+            thread_sessions.clear()
+        for sess in to_close:
+            try:
+                sess.close()
+            except Exception:
+                pass
+        if callable(orig_close):
+            return orig_close()
+        return None
+
+    cl._tls = tls
+    cl._request = _threadsafe_request
+    cl.close_connection = _close_all_connections
+    cl._threadsafe_request_installed = True
 
 
 def _install_recvwindow_retry(cl):
@@ -189,6 +318,7 @@ def getClient():
                                        status_forcelist=[429, 500, 502, 503, 504],
                                        raise_on_status=True):
                 print("[bapi_client] _install_retry: adapter mount failed (timeout still guards)")
+            _install_threadsafe_request(cl)  # Isolate per-thread HTTP sessions & local response objects.
             _install_recvwindow_retry(cl)  # Re-sync and re-sign once on -1021 recvWindow rejection.
             _install_post_only_limit_maker(cl)  # Default limit orders to LIMIT_MAKER (Post-Only).
             _client = cl

@@ -884,6 +884,27 @@ def _read_properties_file(path: str) -> dict:
     return parse_dotenv(path, coerce_bools=True)
 
 
+def _parse_strict_trade_enabled(val: Any) -> Optional[bool]:
+    """Strictly parse trade_enabled flag; return None on invalid/unrecognized values."""
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, int):
+        return bool(val) if val in (0, 1) else None
+    if isinstance(val, float):
+        if val == 1.0:
+            return True
+        if val == 0.0:
+            return False
+        return None
+    if isinstance(val, str):
+        s = val.split("#", 1)[0].split(";", 1)[0].strip().strip("\"'").strip().lower()
+        if s in {"1", "1.0", "true", "yes", "on", "t", "da"}:
+            return True
+        if s in {"0", "0.0", "false", "no", "off", "f", "nu"}:
+            return False
+    return None
+
+
 def load_config():
     """Load configuration from config.env (and legacy config.txt if present) and refresh cache."""
     global config_cache, _CONFIG_MTIME, _CONFIG_LAST_CHECK
@@ -891,16 +912,35 @@ def load_config():
     txt_p = str(_bc_attr("CONFIG_TXT_PATH", CONFIG_TXT_PATH))
     new_config: dict = {}
 
+    prev_cache = _bc_attr("config_cache", config_cache)
+    prev_trade_enabled = prev_cache.get("trade_enabled") if isinstance(prev_cache, dict) else None
+
+    raw_trade_val = None
+    has_trade_key = False
     for path, allow_other in ((env_p, False), (txt_p, True)):
         for k, v in _read_properties_file(path).items():
             if not isinstance(k, str):
                 continue
             kl = k.lower()
             if kl == "trade_enabled":
-                if str(v).strip() != "":
-                    new_config["trade_enabled"] = _parse_bool_flag(v, default=True)
+                has_trade_key = True
+                raw_trade_val = v
             elif allow_other:
                 new_config[kl] = v
+
+    if has_trade_key:
+        parsed_trade = _parse_strict_trade_enabled(raw_trade_val)
+        if parsed_trade is not None:
+            new_config["trade_enabled"] = parsed_trade
+        else:
+            # On invalid reload (e.g. 'flase'), preserve previous disable if stopped or fail closed, report error
+            print(f"[config] ERROR: Invalid trade_enabled value {raw_trade_val!r} in config file. Failing safe.", file=sys.stderr)
+            new_config["trade_enabled"] = False if prev_trade_enabled is False else False
+    elif prev_trade_enabled is False:
+        # Key removed starting from stopped (false): keep stopped! Only re-enable on explicit valid value
+        new_config["trade_enabled"] = False
+    else:
+        new_config.setdefault("trade_enabled", True)
 
     env_trade = os.environ.get("TRADE_ENABLED")
     if env_trade is not None and env_trade.strip() != "":
@@ -912,7 +952,13 @@ def load_config():
                     is_root=True,
                 )
         else:
-            new_config["trade_enabled"] = _parse_bool_flag(env_trade, default=True)
+            parsed_env_trade = _parse_strict_trade_enabled(env_trade)
+            if parsed_env_trade is not None:
+                new_config["trade_enabled"] = parsed_env_trade
+            else:
+                print(f"[config] ERROR: Invalid TRADE_ENABLED in env: {env_trade!r}. Failing safe.", file=sys.stderr)
+                new_config["trade_enabled"] = False
+
     new_config.setdefault("trade_enabled", True)
 
     _CONFIG_MTIME = (_file_mtime(env_p), _file_mtime(txt_p))
@@ -934,7 +980,10 @@ def is_trade_enabled() -> bool:
             load_config()
     cur_cache = _bc_attr("config_cache", config_cache)
     eff_cache = cur_cache if isinstance(cur_cache, dict) else config_cache
-    return _parse_bool_flag(eff_cache.get("trade_enabled", True), default=True)
+    if "trade_enabled" not in eff_cache:
+        return True
+    parsed = _parse_strict_trade_enabled(eff_cache.get("trade_enabled"))
+    return bool(parsed) if parsed is not None else False
 
 
 load_config()

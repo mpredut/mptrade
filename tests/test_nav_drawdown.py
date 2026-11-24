@@ -70,10 +70,17 @@ def test_nav_drawdown_config_and_cashflow_immune_metrics():
     )
     assert ok_dup is False and len(hist) == 1
 
-    # Withdrawal -$2,000 cash (-10% NAV)
+    # Confirmed withdrawal -$2,000 cash (-10% NAV)
     hist, ok_wd = append_nav_history_point(
         hist,
-        {"ts": day0_utc + 3600.0, "nav_usd": 18000.0, "invested_usd": 14000.0, "free_cash_usd": 4000.0, "venues_usd": {"binance": 10000.0, "kraken": 5500.0, "t212": 2500.0}},
+        {
+            "ts": day0_utc + 3600.0,
+            "nav_usd": 18000.0,
+            "invested_usd": 14000.0,
+            "free_cash_usd": 4000.0,
+            "venues_usd": {"binance": 10000.0, "kraken": 5500.0, "t212": 2500.0},
+            "confirmed_cashflow_usd": -2000.0,
+        },
     )
     assert ok_wd is True and hist[-1].get("external_cashflow") is True
     m_after_wd = evaluate_nav_drawdown_metrics(hist, now_ts=day0_utc + 3600.0)
@@ -81,10 +88,17 @@ def test_nav_drawdown_config_and_cashflow_immune_metrics():
     assert m_after_wd["daily_nav_return_pct"] == pytest.approx(0.0)
     assert m_after_wd["external_cashflow_events"] == 1
 
-    # Deposit +$4,000 cash (+22.2% NAV)
+    # Confirmed deposit +$4,000 cash (+22.2% NAV)
     hist, _ = append_nav_history_point(
         hist,
-        {"ts": day0_utc + 7200.0, "nav_usd": 22000.0, "invested_usd": 14000.0, "free_cash_usd": 8000.0, "venues_usd": {"binance": 14000.0, "kraken": 5500.0, "t212": 2500.0}},
+        {
+            "ts": day0_utc + 7200.0,
+            "nav_usd": 22000.0,
+            "invested_usd": 14000.0,
+            "free_cash_usd": 8000.0,
+            "venues_usd": {"binance": 14000.0, "kraken": 5500.0, "t212": 2500.0},
+            "confirmed_cashflow_usd": 4000.0,
+        },
     )
     assert hist[-1].get("external_cashflow") is True
     m_after_dep = evaluate_nav_drawdown_metrics(hist, now_ts=day0_utc + 7200.0)

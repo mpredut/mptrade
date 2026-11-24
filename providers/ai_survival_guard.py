@@ -840,7 +840,9 @@ def evaluate_ai_decision_scorecard(
             + safe_nonneg_float(exit_row.get("rt_fee_bps"), default=0.0)
         )
         edge_pct = gross_edge_pct - (pair_rt_bps / 100.0)
-        matched_usd = resolve_matched_notional_usd(entry_row["usd"], exit_row["usd"])
+        entry_usd = safe_pos_float(entry_row.get("usd"), default=0.0) or 0.0
+        exit_usd = safe_pos_float(exit_row.get("usd"), default=0.0) or 0.0
+        matched_usd = entry_usd if entry_usd > 0.0 else resolve_matched_notional_usd(entry_usd, exit_usd)
         outcomes.append({
             "ts": exit_row["ts"],
             "kind": kind,

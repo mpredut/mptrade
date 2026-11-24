@@ -198,7 +198,9 @@ def _build_closed_round_trip_outcome(
     gross_pct = compute_signed_price_edge_pct(entry_row["side"], entry_row["px"], exit_row["px"])
     rt_bps = entry_row["leg_fee_bps"] + exit_row["leg_fee_bps"]
     net_pct = gross_pct - (rt_bps / 100.0)
-    matched_usd = resolve_matched_notional_usd(entry_row["usd"], exit_row["usd"])
+    entry_usd = safe_pos_float(entry_row.get("usd"), default=0.0) or 0.0
+    exit_usd = safe_pos_float(exit_row.get("usd"), default=0.0) or 0.0
+    matched_usd = entry_usd if entry_usd > 0.0 else resolve_matched_notional_usd(entry_usd, exit_usd)
     gross_usd = matched_usd * (gross_pct / 100.0)
     fee_usd = matched_usd * (rt_bps / 10000.0)
     return {

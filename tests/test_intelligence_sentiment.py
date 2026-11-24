@@ -1980,10 +1980,14 @@ def test_patch_uniqueness_and_news_semantic_cleanup_and_position_pct_fallback(tm
 def test_telemetry_deep_bug_hunt_fixes_a_through_g():
     """Verify fixes for Bugs A-G discovered in live supervisor prompt telemetry audit."""
 
-    # Bug A: detect_active_binance_symbols includes TAOUSD alongside TAOUSDC when configured on Kraken
+    # Bug A: detect_active_binance_symbols keeps enabled cross-venue same-base pairs (HYPEUSD alongside HYPEUSDC)
+    # and Binance ADAUSDC/TAOUSDC, while excluding disabled Kraken pairs (TAOUSD)
     active_syms = detect_active_binance_symbols(include_kraken_cache=True)
-    assert "TAOUSD" in active_syms
+    assert "TAOUSDC" in active_syms
+    assert "ADAUSDC" in active_syms
+    assert "HYPEUSDC" in active_syms
     assert "HYPEUSD" in active_syms
+    assert "TAOUSD" not in active_syms
 
     # Bug B: Midterm election 'inflation' liveblog does not trigger tomorrow's CPI/NFP release confirmation
     now_tue = float(datetime(2026, 11, 3, 20, 26, 0, tzinfo=timezone.utc).timestamp())

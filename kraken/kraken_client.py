@@ -85,10 +85,19 @@ def _read_ttl(method: str, params: dict) -> float | None:
     return min(ttl_f, max(3.0, interval * 30.0))
 
 
-def _cache_get(method: str, params: dict):
+def _cache_key(method: str, params: dict, client_id: str = "") -> tuple:
+    params_key = tuple(sorted((str(k), str(v)) for k, v in params.items() if k != "nonce"))
+    # Keep public cache keys as canonical 2-tuples so get_cached_pair_info() continues to work verbatim;
+    # scope private method cache entries by client identity so distinct credentials never collide.
+    if client_id:
+        return (method, client_id, params_key)
+    return (method, params_key)
+
+
+def _cache_get(method: str, params: dict, client_id: str = ""):
     with _CACHE_LOCK:
         now = time.time()
-        key = (method, tuple(sorted((str(k), str(v)) for k, v in params.items() if k != "nonce")))
+        key = _cache_key(method, params, client_id=client_id)
         hit = _CACHE.get(key)
         if hit and hit[0] > now:
             return True, hit[1]
@@ -96,7 +105,7 @@ def _cache_get(method: str, params: dict):
     return False, None
 
 
-def _cache_put(method: str, params: dict, ttl: float, result) -> None:
+def _cache_put(method: str, params: dict, ttl: float, result, client_id: str = "") -> None:
     with _CACHE_LOCK:
         now = time.time()
         for key in [key for key, value in _CACHE.items() if value[0] <= now]:
@@ -104,7 +113,7 @@ def _cache_put(method: str, params: dict, ttl: float, result) -> None:
         if len(_CACHE) >= _CACHE_MAX:
             oldest = min(_CACHE, key=lambda key: _CACHE[key][0])
             _CACHE.pop(oldest, None)
-        _CACHE[(method, tuple(sorted((str(k), str(v)) for k, v in params.items() if k != "nonce")))] = (now + ttl, result)
+        _CACHE[_cache_key(method, params, client_id=client_id)] = (now + ttl, result)
 
 
 def get_cached_pair_info(candidates, cache_dict: dict | None = None) -> dict | None:
@@ -147,6 +156,10 @@ class KrakenClient:
         mac = hmac.new(base64.b64decode(secret), message, hashlib.sha512)
         return base64.b64encode(mac.digest()).decode()
 
+    def _private_cache_scope(self) -> str:
+        raw = f"{self.api_key}\x00{self.api_secret}".encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()[:16]
+
     def _private(
         self,
         method: str,
@@ -160,8 +173,9 @@ class KrakenClient:
         data = dict(data or {})
         ttl = _read_ttl(method, data)
         fresh_flag = _parse_bool_flag(fresh, default=False)
+        client_scope = self._private_cache_scope()
         if ttl and not fresh_flag:                  # serve a cacheable read from a fresh cache entry
-            ok, val = _cache_get(method, data)
+            ok, val = _cache_get(method, data, client_id=client_scope)
             if ok:
                 return val
         urlpath = f"/0/private/{method}"
@@ -199,7 +213,7 @@ class KrakenClient:
                 raise KrakenError(f"network error/empty response in {method} (HTTP {status})")
             time.sleep(0.15 * (attempt + 1))
         if ttl and result:
-            _cache_put(method, data, ttl, result)
+            _cache_put(method, data, ttl, result, client_id=client_scope)
         if method in _WRITE_METHODS:                # AddOrder/CancelOrder/Withdraw changed account state
             with _CACHE_LOCK:
                 for k in [k for k in _CACHE if k[0] in _INVALIDATE_ON_WRITE]:

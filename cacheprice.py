@@ -1421,6 +1421,14 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
     FREQ_WINDOW_SEC = 60
     DEFAULT_FILENAME = CACHE_CURRENT_PRICE_FILENAME
     _flush_before_poll = True
+    # Quarantine impossible single-tick price jumps (e.g. cross-symbol leaks or exchange glitches)
+    # until corroborated by a second independent tick within OUTLIER_CONFIRM_WINDOW_MS.
+    OUTLIER_SHORT_WINDOW_MS = 60_000
+    OUTLIER_SHORT_MAX_RATIO = 2.0
+    OUTLIER_MEDIUM_WINDOW_MS = 1_800_000
+    OUTLIER_MEDIUM_MAX_RATIO = 3.0
+    OUTLIER_CONFIRM_WINDOW_MS = 30_000
+    OUTLIER_CONFIRM_TOLERANCE = 1.25
 
     def __init__(
         self,
@@ -1447,6 +1455,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._empty_http_backoff_ts: dict[str, float] = {}
         self._empty_http_streaks: dict[str, int] = {}
         self._last_http_poll_ts_per_symbol: dict[str, float] = {}
+        self._pending_price_outliers: dict[str, tuple[int, float]] = {}
+        self._price_anchor_confirmations: dict[str, int] = {}
         self._fallback_pool_lock = threading.Lock()
         self._fallback_pool: Optional[_futures.ThreadPoolExecutor] = None
         self._first_sleep = True
@@ -1469,6 +1479,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         )
         self._provider_names = {}
         self.bind_providers(provider_names)
+        file_existed_before_init = bool(filename and os.path.exists(filename))
         super().__init__(
             sync_ts,
             symbols,
@@ -1478,6 +1489,13 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             read_only=read_only,
             data_sync_mode=data_sync_mode,
         )
+        if file_existed_before_init:
+            with self.lock:
+                for sym_k, rows in self.cache.items():
+                    if self.extract_price_and_ts(rows)[0] is not None:
+                        self._price_anchor_confirmations[sym_k] = max(
+                            self._price_anchor_confirmations.get(sym_k, 0), 2
+                        )
         self.attach_ws_manager(ws_manager)
 
     @property
@@ -1580,6 +1598,59 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             ts_val = _now_time()
         self._ws_last_event_ts_per_symbol[symbol] = ts_val
 
+    def _check_price_outlier_locked(
+        self, symbol: str, ts_val: int, price_val: float
+    ) -> Optional[tuple[float, float, int]]:
+        """Quarantine an unconfirmed single-tick price jump vs an established cached quote.
+
+        Returns ``(prev_px, ratio, dt_ms)`` when the tick must be rejected, or ``None``
+        when the tick is normal, replaces an unconfirmed 1-tick cold-start seed, or is
+        corroborated by a second distinct tick.
+        """
+        pending_map = getattr(self, "_pending_price_outliers", None)
+        if pending_map is None:
+            pending_map = {}
+            self._pending_price_outliers = pending_map
+        conf_map = getattr(self, "_price_anchor_confirmations", None)
+        if conf_map is None:
+            conf_map = {}
+            self._price_anchor_confirmations = conf_map
+        prev_px, prev_ts_ms = self.extract_price_and_ts(self.cache.get(symbol))
+        if prev_px is None or prev_ts_ms is None or prev_px <= 0.0:
+            pending_map.pop(symbol, None)
+            conf_map[symbol] = 1
+            return None
+        dt_ms = ts_val - prev_ts_ms
+        ratio = max(price_val / prev_px, prev_px / price_val)
+        if -5_000 <= dt_ms <= self.OUTLIER_SHORT_WINDOW_MS:
+            max_ratio = self.OUTLIER_SHORT_MAX_RATIO
+        elif self.OUTLIER_SHORT_WINDOW_MS < dt_ms <= self.OUTLIER_MEDIUM_WINDOW_MS:
+            max_ratio = self.OUTLIER_MEDIUM_MAX_RATIO
+        else:
+            max_ratio = None
+        if max_ratio is None or ratio <= max_ratio:
+            pending_map.pop(symbol, None)
+            conf_map[symbol] = 1 if max_ratio is None else min(conf_map.get(symbol, 1) + 1, 10)
+            return None
+        # Do not let a single uncorroborated cold-start seed permanently block the first real tick.
+        if conf_map.get(symbol, 0) < 2:
+            pending_map.pop(symbol, None)
+            conf_map[symbol] = 1
+            return None
+        pending = pending_map.get(symbol)
+        if pending is not None:
+            p_ts, p_px = pending
+            if (
+                0 < (ts_val - p_ts) <= self.OUTLIER_CONFIRM_WINDOW_MS
+                and p_px > 0.0
+                and max(price_val / p_px, p_px / price_val) <= self.OUTLIER_CONFIRM_TOLERANCE
+            ):
+                pending_map.pop(symbol, None)
+                conf_map[symbol] = 2
+                return None
+        pending_map[symbol] = (ts_val, price_val)
+        return prev_px, ratio, dt_ms
+
     def push_price(
         self, symbol: str, price: float, ts_ms: Optional[int] = None
     ) -> None:
@@ -1596,13 +1667,23 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._ensure_fetchtimes_initialized()
         now = _now_time()
         cutoff = now - self.FREQ_WINDOW_SEC
+        rejected_outlier = None
         with self.lock:
-            self._empty_http_backoff_ts.pop(symbol, None)
-            self._empty_http_streaks.pop(symbol, None)
-            dq = self._update_timestamps[symbol]
-            dq.append(now)
-            while dq and dq[0] < cutoff:
-                dq.popleft()
+            rejected_outlier = self._check_price_outlier_locked(symbol, ts_val, price_val)
+            if rejected_outlier is None:
+                self._empty_http_backoff_ts.pop(symbol, None)
+                self._empty_http_streaks.pop(symbol, None)
+                dq = self._update_timestamps[symbol]
+                dq.append(now)
+                while dq and dq[0] < cutoff:
+                    dq.popleft()
+        if rejected_outlier is not None:
+            prev_px, ratio, dt_ms = rejected_outlier
+            builtins.print(
+                f"[{self.cls_name}][OUTLIER_REJECT] {symbol}: rejected unconfirmed tick "
+                f"{price_val} vs prev {prev_px} (ratio={ratio:.2f}x, dt={dt_ms}ms)"
+            )
+            return
         self.update_cache_per_symbol(symbol, [[ts_val, price_val]])
         if self._tick_ipc_clients:
             self._broadcast_tick_ipc(symbol, ts_val, price_val)

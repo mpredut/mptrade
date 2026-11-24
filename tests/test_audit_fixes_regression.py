@@ -14,6 +14,9 @@ from cacheaccount import CacheOrderFilledManager, CacheOrderOpenManager
 from cachepaths import (
     CACHE_BINANCE_ORDER_FILLED_FILENAME,
     CACHE_BINANCE_ORDER_OPEN_FILENAME,
+    CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME,
+    CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME,
+    CACHE_KRAKEN_ORDER_OPEN_FILENAME,
 )
 from core import config as cfg
 from intelligence.sentiment.llm_quota_router import is_degraded_trading_model, normalize_model_identity
@@ -22,10 +25,11 @@ from intelligence.sentiment.openai_compat_rest import (
     extract_openai_compat_text,
     query_openai_compat_chat,
 )
+from kraken import kraken_client as kc
 import monitororder
 from order_ledger_reconciler_worker import OrderLedgerReconciler
 from providers.ai_attribution import _evaluate_execution_audit_actors, evaluate_ai_attribution
-from providers.ai_survival_guard import match_filled_intent_rows_lifo
+from providers.ai_survival_guard import evaluate_ai_decision_scorecard, match_filled_intent_rows_lifo
 from providers.execution_audit import ExecutionAudit
 from providers.intent_execution import cancel_existing_ai_open_orders
 from providers.intent_reconciliation import reconcile_intents_from_execution_audit
@@ -400,3 +404,747 @@ def test_p2_nav_drawdown_never_hides_market_loss_after_large_buy():
     metrics = evaluate_nav_drawdown_metrics(hist, now_ts=t0 + 3600.0)
     assert metrics["external_cashflow_events"] == 0
     assert metrics["daily_nav_drawdown_pct"] == pytest.approx(-6.0, abs=0.05)
+
+
+def test_p2_ai_attribution_symmetrical_loss_matches_non_ai():
+    """Bug audit: BUY 10x100, SELL 1x90, SELL 9x80 without fees MUST report exact -$190 across AI and non-AI paths."""
+    now_s = time.time()
+    intents = [
+        {"intent_id": "b1", "timestamp": now_s - 300, "decision": "BUY", "venue": "binance", "symbol": "ETHUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 1000.0, "execution_payload": {"orderId": "1", "status": "FILLED", "avg_fill_price": 100.0, "executedQty": "10"}},
+        {"intent_id": "s1", "timestamp": now_s - 200, "decision": "SELL", "venue": "binance", "symbol": "ETHUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 90.0, "execution_payload": {"orderId": "2", "status": "FILLED", "avg_fill_price": 90.0, "executedQty": "1"}},
+        {"intent_id": "s2", "timestamp": now_s - 100, "decision": "SELL", "venue": "binance", "symbol": "ETHUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 720.0, "execution_payload": {"orderId": "3", "status": "FILLED", "avg_fill_price": 80.0, "executedQty": "9"}},
+    ]
+    report = evaluate_ai_attribution(
+        intents,
+        now_ts=now_s,
+        fee_resolver=lambda *_a: 0.0,
+    )
+    assert report["ai_summary"]["realized_gross_usd"] == pytest.approx(-190.0)
+    assert report["ai_summary"]["realized_net_usd"] == pytest.approx(-190.0)
+
+    # AI Survival Guard scorecard also computes exact -$190 impact (zero fees)
+    with patch("providers.ai_survival_guard.resolve_venue_round_trip_fee_bps", return_value=0.0):
+        scorecard = evaluate_ai_decision_scorecard(intents, now_ts=now_s)
+    assert scorecard["net_usd"] == pytest.approx(-190.0)
+
+    # Non-AI fleet audit comparison
+    audit_recs = [
+        {"event": "order_status", "ts": now_s - 300, "intent_id": "bot-b1", "venue": "binance", "symbol": "ETHUSDC", "order_id": "101", "client_order_id": "TA_101", "side": "buy", "status": "closed", "venue_status": "FILLED", "filled_qty": 10.0, "price": 100.0, "cost": 1000.0},
+        {"event": "order_status", "ts": now_s - 200, "intent_id": "bot-s1", "venue": "binance", "symbol": "ETHUSDC", "order_id": "102", "client_order_id": "TA_102", "side": "sell", "status": "closed", "venue_status": "FILLED", "filled_qty": 1.0, "price": 90.0, "cost": 90.0},
+        {"event": "order_status", "ts": now_s - 100, "intent_id": "bot-s2", "venue": "binance", "symbol": "ETHUSDC", "order_id": "103", "client_order_id": "TA_103", "side": "sell", "status": "closed", "venue_status": "FILLED", "filled_qty": 9.0, "price": 80.0, "cost": 720.0},
+    ]
+    cmp_rep = _evaluate_execution_audit_actors(
+        audit_recs,
+        known_ai_order_ids=set(),
+        cutoff_ts=now_s - 86400.0,
+        eff_now=now_s + 10.0,
+        scope="all",
+        fee_resolver=lambda *_a: 0.0,
+    )
+    assert cmp_rep["by_actor"]["BOT"]["realized_net_usd"] == pytest.approx(-190.0)
+
+
+def test_p2_nav_drawdown_small_buy_and_loss_or_confirmed_withdrawal():
+    """With $600 buy + $600 market loss (delta_cash == delta_nav == -600, delta_inv == 0), NAV 10k -> 9.4k MUST score -6% DD.
+    With $100 confirmed withdrawal + $500 loss, return MUST score -5% DD (only confirmed cashflow removed)."""
+    t0 = 1_770_000_000.0
+    # Exact accounting identity: start (nav=10k, inv=5k, cash=5k) -> buy $600 (inv=5.6k, cash=4.4k)
+    # -> market drops $600 (inv=5k, cash=4.4k, nav=9.4k): delta_cash=-600, delta_nav=-600, delta_inv=0!
+    hist: list[dict] = []
+    hist, _ = append_nav_history_point(
+        hist,
+        {"ts": t0, "nav_usd": 10000.0, "invested_usd": 5000.0, "free_cash_usd": 5000.0, "venues_usd": {"binance": 10000.0}},
+    )
+    hist, _ = append_nav_history_point(
+        hist,
+        {"ts": t0 + 3600.0, "nav_usd": 9400.0, "invested_usd": 5000.0, "free_cash_usd": 4400.0, "venues_usd": {"binance": 9400.0}},
+    )
+    assert not hist[-1].get("external_cashflow")
+    m1 = evaluate_nav_drawdown_metrics(hist, now_ts=t0 + 3600.0)
+    assert m1["external_cashflow_events"] == 0
+    assert m1["daily_nav_drawdown_pct"] == pytest.approx(-6.0, abs=0.05)
+
+    # Confirmed withdrawal of only $100, while NAV dropped from 10k to 9.4k ($500 market loss)
+    hist2: list[dict] = []
+    hist2, _ = append_nav_history_point(
+        hist2,
+        {"ts": t0, "nav_usd": 10000.0, "invested_usd": 5000.0, "free_cash_usd": 5000.0, "venues_usd": {"binance": 10000.0}},
+    )
+    hist2, _ = append_nav_history_point(
+        hist2,
+        {
+            "ts": t0 + 3600.0,
+            "nav_usd": 9400.0,
+            "invested_usd": 4500.0,
+            "free_cash_usd": 4900.0,
+            "venues_usd": {"binance": 9400.0},
+            "confirmed_cashflow_usd": -100.0,
+        },
+    )
+    m2 = evaluate_nav_drawdown_metrics(hist2, now_ts=t0 + 3600.0)
+    assert m2["external_cashflow_events"] == 1
+    assert m2["daily_nav_drawdown_pct"] == pytest.approx(-5.0, abs=0.05)
+
+
+def test_p1_trade_enabled_typo_and_key_removal_fail_closed(tmp_path, monkeypatch):
+    """Starting from TRADE_ENABLED=false, both a typo ('flase') and removing the key MUST keep trading disabled."""
+    cfg_file = tmp_path / "config.env"
+    txt_file = tmp_path / "config.txt"
+    cfg_file.write_text("TRADE_ENABLED=false\n", encoding="utf-8")
+
+    import botcore
+
+    monkeypatch.delenv("TRADE_ENABLED", raising=False)
+    monkeypatch.setattr(cfg, "CONFIG_ENV_PATH", str(cfg_file))
+    monkeypatch.setattr(cfg, "CONFIG_TXT_PATH", str(txt_file))
+    monkeypatch.setattr(cfg, "_ROOT_CONFIG_PATH", str(cfg_file))
+    monkeypatch.setattr(botcore, "CONFIG_ENV_PATH", str(cfg_file), raising=False)
+    monkeypatch.setattr(botcore, "CONFIG_TXT_PATH", str(txt_file), raising=False)
+    monkeypatch.setattr(botcore, "_ROOT_CONFIG_PATH", str(cfg_file), raising=False)
+    monkeypatch.setattr(cfg, "_ROOT_CONFIG_KEYS", set())
+    monkeypatch.setattr(cfg, "_ROOT_CONFIG_VALUES", {})
+
+    cfg.load_dotenv(str(cfg_file))
+    cfg.load_config()
+    assert cfg.is_trade_enabled() is False
+
+    # Typo 'flase' fails closed
+    cfg_file.write_text("TRADE_ENABLED=flase\n", encoding="utf-8")
+    cfg.load_config()
+    assert cfg.is_trade_enabled() is False
+
+    # Removing key while stopped preserves stopped state
+    cfg_file.write_text("# comment only\n", encoding="utf-8")
+    cfg.load_config()
+    assert cfg.is_trade_enabled() is False
+
+    # Explicit valid true re-enables
+    cfg_file.write_text("TRADE_ENABLED=true\n", encoding="utf-8")
+    cfg.load_config()
+    assert cfg.is_trade_enabled() is True
+
+    # Invalid external env override also fails closed even when previously true
+    monkeypatch.setenv("TRADE_ENABLED", "flase")
+    cfg.load_config()
+    assert cfg.is_trade_enabled() is False
+
+
+def test_p1_kraken_private_cache_isolated_per_client_and_public_pair_info_intact():
+    """Two KrakenClient instances with distinct credentials must NOT share private Balance cache;
+    public AssetPairs cache must still satisfy get_cached_pair_info()."""
+    kc._CACHE.clear()
+    c1 = kc.KrakenClient("key_alpha", "c2VjcmV0X2FscGhh")
+    c2 = kc.KrakenClient("key_beta", "c2VjcmV0X2JldGE=")
+    calls: list[str] = []
+
+    def _fake_post(_url, _data, headers=None, **_kw):
+        k = (headers or {}).get("API-Key", "")
+        calls.append(k)
+        if k == "key_alpha":
+            return 200, b'{"error":[],"result":{"USDC":"100.0"}}'
+        return 200, b'{"error":[],"result":{"USDC":"7.0"}}'
+
+    with patch.object(kc, "http_post_form", side_effect=_fake_post):
+        b1 = c1.balance()
+        b2 = c2.balance()
+        # Second calls hit per-client cache cleanly
+        b1_cached = c1.balance()
+        b2_cached = c2.balance()
+    assert b1 == {"USDC": "100.0"} and b1_cached == {"USDC": "100.0"}
+    assert b2 == {"USDC": "7.0"} and b2_cached == {"USDC": "7.0"}
+    assert calls == ["key_alpha", "key_beta"]
+
+    # Public AssetPairs cache stays 2-tuple compatible with get_cached_pair_info()
+    with patch.object(
+        kc,
+        "http_get",
+        return_value=(200, b'{"error":[],"result":{"HYPEUSD":{"fees_maker":[[0,0.12]],"lot_decimals":2}}}'),
+    ):
+        c1.asset_pairs()
+    pinfo = kc.get_cached_pair_info(["HYPEUSD"])
+    assert isinstance(pinfo, dict) and pinfo.get("lot_decimals") == 2
+    kc._CACHE.clear()
+
+
+def test_p1_hyperliquid_fill_separates_qty_from_status_partial_full_and_cancel(tmp_path):
+    """Audit #1: Raw Hyperliquid fills without status must NOT synthesize FILLED; ledger must handle
+    partial-still-active, full-fill, and cancel-after-partial accurately in one classifier."""
+    cdb = tmp_path / "cachedb"
+    orders_dir = cdb / "orders"
+    orders_dir.mkdir(parents=True)
+    t0 = 1_795_500_000.0
+
+    writer = OrderLedgerWriter(cachedb_dir=cdb)
+    reconciler = OrderLedgerReconciler(cachedb_dir=cdb, use_singletons=False, reconcile_grace_sec=10.0)
+    reader = OrderLedgerReader(cachedb_dir=cdb)
+
+    # 1. Place Hyperliquid order of qty=10.0; 2.0 fills while 8.0 stays resting in open book
+    writer.record_event(
+        OrderEventType.ACKED,
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+        ts=t0,
+        iid="hl-part-1",
+        vid="HL-10",
+        side="BUY",
+        qty=10.0,
+        px=60.0,
+    )
+    hl_open_path = str(orders_dir / CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME)
+    hl_fill_path = str(orders_dir / CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME)
+
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        hl_open_path,
+        {
+            "HYPEUSDC": [{
+                "orderId": "HL-10",
+                "side": "BUY",
+                "price": 60.0,
+                "origQty": 10.0,
+                "executedQty": 2.0,
+                "status": "OPEN",
+                "timestamp": int(t0 * 1000),
+            }]
+        },
+        now_ms=int((t0 + 2) * 1000),
+        verified_ts=t0 + 2.0,
+    )
+    doc1 = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        hl_fill_path,
+        {
+            "HYPEUSDC": [{
+                "oid": "HL-10",
+                "tid": "f1",
+                "side": "B",
+                "px": "60.0",
+                "sz": "2.0",
+                "time": int((t0 + 2) * 1000),
+            }]
+        },
+        venue="hyperliquid",
+        now_ms=int((t0 + 2) * 1000),
+    )
+    # Cache MUST NOT fabricate status="FILLED" for raw execution fills!
+    row1 = doc1["items"]["HYPEUSDC"][0]
+    assert row1["quantity"] == pytest.approx(2.0)
+    assert "status" not in row1
+
+    st1 = reconciler.reconcile_once(now_ts=t0 + 3.0)
+    assert st1["reconciled_filled"] == 0 and st1["reconciled_closed"] == 0 and st1["active_count"] == 1
+    act1 = reader.list_active_orders(venue="hyperliquid", apply_tail=False)
+    assert len(act1) == 1 and act1[0]["state"] == OrderLedgerState.PARTIAL.value
+    assert act1[0]["fq"] == pytest.approx(2.0)
+
+    # 2. Remaining 8.0 fills -> cumulative qty == 10.0 closes as FILLED even if open cache still lags!
+    CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        hl_fill_path,
+        {
+            "HYPEUSDC": [{
+                "oid": "HL-10",
+                "tid": "f2",
+                "side": "B",
+                "px": "60.5",
+                "sz": "8.0",
+                "time": int((t0 + 4) * 1000),
+            }]
+        },
+        venue="hyperliquid",
+        now_ms=int((t0 + 4) * 1000),
+    )
+    st2 = reconciler.reconcile_once(now_ts=t0 + 5.0)
+    assert st2["reconciled_filled"] == 1 and st2["reconciled_closed"] == 1 and st2["active_count"] == 0
+    tr_full = reader.trace_order("HL-10")
+    assert len(tr_full["closed_orders"]) == 1
+    assert tr_full["closed_orders"][0]["state"] == OrderLedgerState.FILLED.value
+    assert tr_full["closed_orders"][0]["fq"] == pytest.approx(10.0)
+
+    # 3. Partial fill (2/10) followed by cancel (absent from freshly verified HYPEUSDC snapshot past grace) -> CANCELED!
+    writer.record_event(
+        OrderEventType.ACKED,
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+        ts=t0 + 20.0,
+        iid="hl-cancel-after-partial",
+        vid="HL-20",
+        side="BUY",
+        qty=10.0,
+        px=59.0,
+    )
+    CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        hl_fill_path,
+        {
+            "HYPEUSDC": [{
+                "oid": "HL-20",
+                "tid": "f20",
+                "side": "B",
+                "px": "59.0",
+                "sz": "2.0",
+                "time": int((t0 + 21) * 1000),
+            }]
+        },
+        venue="hyperliquid",
+        now_ms=int((t0 + 21) * 1000),
+    )
+    # Even with an older snapshot (t0 + 2.0 < created_ts t0 + 20.0), partial fill stays PARTIAL
+    st3 = reconciler.reconcile_once(now_ts=t0 + 22.0)
+    assert st3["reconciled_filled"] == 0 and st3["active_count"] == 1
+    assert reader.list_active_orders(venue="hyperliquid", apply_tail=False)[0]["state"] == OrderLedgerState.PARTIAL.value
+
+    # Now fresh complete open snapshot covering HYPEUSDC: [] arrives past 10s grace -> closes as CANCELED (fq=2.0)
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        hl_open_path,
+        {"HYPEUSDC": []},
+        now_ms=int((t0 + 40) * 1000),
+        verified_ts=t0 + 40.0,
+    )
+    st4 = reconciler.reconcile_once(now_ts=t0 + 40.0)
+    assert st4["reconciled_filled"] == 0 and st4["reconciled_closed"] == 1 and st4["active_count"] == 0
+    tr_can = reader.trace_order("HL-20")
+    assert len(tr_can["closed_orders"]) == 1
+    assert tr_can["closed_orders"][0]["state"] == OrderLedgerState.CANCELED.value
+    assert tr_can["closed_orders"][0]["fq"] == pytest.approx(2.0)
+
+
+def test_p1_absence_closing_requires_verified_symbol_snapshot_not_partial_or_ws(tmp_path):
+    """Audit #2: Publishing empty SPCXxUSD or WS single-symbol deltas must NEVER close an omitted HYPEUSD order."""
+    cdb = tmp_path / "cachedb"
+    orders_dir = cdb / "orders"
+    orders_dir.mkdir(parents=True)
+    t0 = 1_795_510_000.0
+
+    writer = OrderLedgerWriter(cachedb_dir=cdb)
+    reconciler = OrderLedgerReconciler(cachedb_dir=cdb, use_singletons=False, reconcile_grace_sec=10.0)
+    reader = OrderLedgerReader(cachedb_dir=cdb)
+
+    writer.record_event(OrderEventType.ACKED, venue="kraken", symbol="HYPEUSD", ts=t0, iid="kr-hype-1", vid="OKRK-H1", side="BUY", qty=2.0, px=60.0)
+    writer.record_event(OrderEventType.ACKED, venue="kraken", symbol="SPCXxUSD", ts=t0, iid="kr-spcx-1", vid="OKRK-S1", side="BUY", qty=1.0, px=140.0)
+
+    kr_open_path = str(orders_dir / CACHE_KRAKEN_ORDER_OPEN_FILENAME)
+    # 1. First partial refresh publishes ONLY empty SPCXxUSD with verified_ts=None
+    snap1 = CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        kr_open_path,
+        {"SPCXxUSD": []},
+        now_ms=int((t0 + 25) * 1000),
+        verified_ts=None,
+    )
+    assert snap1["verified_ts"] is None
+    assert "SPCXxUSD" in snap1["symbol_verified_ts"]
+    assert "HYPEUSD" not in snap1["symbol_verified_ts"]
+
+    reconciler.reconcile_once(now_ts=t0 + 25.0)
+    active = {r["vid"]: r for r in reader.list_active_orders(venue="kraken", apply_tail=False)}
+    # SPCXxUSD was explicitly verified empty past grace -> CANCELED; omitted HYPEUSD stays ACTIVE!
+    assert "OKRK-S1" not in active
+    assert "OKRK-H1" in active and active["OKRK-H1"]["state"] == OrderLedgerState.OPEN.value
+
+    # 2. Even if a caller passes verified_ts on a snapshot that omits HYPEUSD, HYPEUSD MUST remain ACTIVE
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        kr_open_path,
+        {"SPCXxUSD": []},
+        now_ms=int((t0 + 50) * 1000),
+        verified_ts=t0 + 50.0,
+    )
+    reconciler.reconcile_once(now_ts=t0 + 50.0)
+    active2 = {r["vid"]: r for r in reader.list_active_orders(venue="kraken", apply_tail=False)}
+    assert "OKRK-H1" in active2
+
+    # 3. Single-order WebSocket updates must NEVER advance verified_ts or symbol_verified_ts
+    bn_open_path = str(orders_dir / CACHE_BINANCE_ORDER_OPEN_FILENAME)
+    open_mgr = CacheOrderOpenManager(15.0, ["BTCUSDC", "ETHUSDC"], bn_open_path, read_only=False, venue="binance")
+    open_mgr.apply_ws_order_update(
+        "BTCUSDC",
+        "upsert",
+        {"orderId": "111", "side": "BUY", "price": 65000.0, "origQty": 0.01, "executedQty": 0.0, "status": "NEW"},
+        now_ms=int((t0 + 60) * 1000),
+    )
+    assert open_mgr.verified_ts == 0.0
+    assert open_mgr.symbol_verified_ts == {}
+    assert open_mgr.save_state_to_file() is True
+    saved_bn = json.loads((orders_dir / CACHE_BINANCE_ORDER_OPEN_FILENAME).read_text(encoding="utf-8"))
+    assert saved_bn["verified_ts"] is None and saved_bn["symbol_verified_ts"] == {}
+
+    # 4. Once a complete snapshot explicitly covers HYPEUSD: [], HYPEUSD cleanly closes as CANCELED
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        kr_open_path,
+        {"HYPEUSD": []},
+        now_ms=int((t0 + 80) * 1000),
+        verified_ts=t0 + 80.0,
+    )
+    reconciler.reconcile_once(now_ts=t0 + 80.0)
+    assert reader.list_active_orders(venue="kraken", apply_tail=False) == []
+    assert reader.trace_order("OKRK-H1")["closed_orders"][0]["state"] == OrderLedgerState.CANCELED.value
+
+
+def test_p1_unified_journal_replay_utc_rollover_and_terminal_suppression_parity(tmp_path):
+    """Audit #3: Late events on previous UTC day after rollover must be read, and ACKED -> FILLED -> OPEN
+    must yield identical empty active state in BOTH OrderLedgerReader and OrderLedgerReconciler."""
+    cdb = tmp_path / "cachedb"
+    (cdb / "orders").mkdir(parents=True)
+    writer = OrderLedgerWriter(cachedb_dir=cdb)
+    reconciler = OrderLedgerReconciler(cachedb_dir=cdb, use_singletons=False, reconcile_grace_sec=30.0)
+    reader = OrderLedgerReader(cachedb_dir=cdb)
+
+    # UTC day boundary: 2026-11-23T23:59:50Z and 2026-11-24T00:00:05Z
+    day1_ts = 1_795_478_390.0  # 2026-11-23 23:59:50 UTC
+    day2_ts = day1_ts + 15.0   # 2026-11-24 00:00:05 UTC
+
+    writer.record_event(OrderEventType.ACKED, venue="binance", symbol="BTCUSDC", ts=day1_ts, iid="d1-1", vid="D1-1", side="BUY", qty=0.01, px=60000.0)
+    reconciler.reconcile_once(now_ts=day1_ts + 1.0)
+    writer.record_event(OrderEventType.ACKED, venue="binance", symbol="ETHUSDC", ts=day2_ts, iid="d2-1", vid="D2-1", side="BUY", qty=0.1, px=3000.0)
+    reconciler.reconcile_once(now_ts=day2_ts + 1.0)
+
+    # Now append a late event to Day 1 AFTER cursor moved to Day 2
+    writer.record_event(OrderEventType.ACKED, venue="binance", symbol="SOLUSDC", ts=day1_ts + 9.0, iid="d1-late", vid="D1-LATE", side="BUY", qty=1.0, px=150.0)
+    tail_vids = {r["vid"] for r in reader.list_active_orders(apply_tail=True)}
+    assert "D1-LATE" in tail_vids
+
+    reconciler.reconcile_once(now_ts=day2_ts + 2.0)
+    persisted_vids = {r["vid"] for r in reader.list_active_orders(apply_tail=False)}
+    assert "D1-LATE" in persisted_vids
+
+    # Same-day sequence ACKED -> STATUS(FILLED) -> STATUS(OPEN) MUST yield identical state in reader and reconciler
+    writer.record_event(OrderEventType.ACKED, venue="binance", symbol="TAOUSDC", ts=day2_ts + 10.0, iid="seq-1", vid="SEQ-1", side="BUY", qty=1.0, px=200.0)
+    writer.record_event(OrderEventType.STATUS, venue="binance", symbol="TAOUSDC", ts=day2_ts + 11.0, iid="seq-1", vid="SEQ-1", vst="FILLED", fq=1.0)
+    writer.record_event(OrderEventType.STATUS, venue="binance", symbol="TAOUSDC", ts=day2_ts + 12.0, iid="seq-1", vid="SEQ-1", vst="OPEN")
+
+    reader_active_vids = {r["vid"] for r in reader.list_active_orders(apply_tail=True)}
+    assert "SEQ-1" not in reader_active_vids
+
+    reconciler.reconcile_once(now_ts=day2_ts + 13.0)
+    reconciler_active_vids = {r["vid"] for r in reader.list_active_orders(apply_tail=False)}
+    assert reader_active_vids == reconciler_active_vids
+    assert "SEQ-1" not in reconciler_active_vids
+
+
+def test_p2_filled_cache_overlapping_batches_and_backfill_preserve_exact_qty_and_vwap(tmp_path):
+    """Overlapping fill batches [1,2] and [2,3] (prices 20, 30, 40; qty 1 each) MUST yield qty=3 @ VWAP 30."""
+    cache_path = str(tmp_path / CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME)
+    f1 = {"oid": "O-OV", "tid": "1", "side": "B", "px": "20.0", "sz": "1.0", "time": 1700000001000}
+    f2 = {"oid": "O-OV", "tid": "2", "side": "B", "px": "30.0", "sz": "1.0", "time": 1700000002000}
+    f3 = {"oid": "O-OV", "tid": "3", "side": "B", "px": "40.0", "sz": "1.0", "time": 1700000003000}
+
+    CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        cache_path, {"HYPEUSDC": [f1, f2]}, venue="hyperliquid", now_ms=1700000005000
+    )
+    doc = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        cache_path, {"HYPEUSDC": [f2, f3]}, venue="hyperliquid", now_ms=1700000006000
+    )
+    row = doc["items"]["HYPEUSDC"][0]
+    assert row["quantity"] == pytest.approx(3.0)
+    assert row["price"] == pytest.approx(30.0)
+    assert row["_fillIds"] == ["1", "2", "3"]
+
+    # Also verify a legacy cache corrupted by pre-aggregated overlaps WITHOUT _fills is rebuilt by a full backfill snapshot
+    legacy_path = str(tmp_path / "legacy_filled_hl.json")
+    (tmp_path / "legacy_filled_hl.json").write_text(
+        json.dumps({
+            "items": {
+                "HYPEUSDC": [{
+                    "orderId": "O-OV",
+                    "side": "BUY",
+                    "price": 35.0,
+                    "quantity": 2.0,
+                    "timestamp": 1700000003000,
+                    "_fillIds": ["1", "2", "3"],
+                }]
+            },
+            "fetchtime": {"HYPEUSDC": 1700000004000},
+        }),
+        encoding="utf-8",
+    )
+    rebuilt = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        legacy_path, {"HYPEUSDC": [f1, f2, f3]}, venue="hyperliquid", now_ms=1700000009000, is_snapshot=True
+    )
+    r_row = rebuilt["items"]["HYPEUSDC"][0]
+    assert r_row["quantity"] == pytest.approx(3.0)
+    assert r_row["price"] == pytest.approx(30.0)
+    assert r_row["_fillIds"] == ["1", "2", "3"]
+
+
+def test_p0_bapi_client_threadsafe_request_prevents_cross_symbol_response_race(monkeypatch):
+    """Incident 2026-11-24: python-binance's shared ``self.response`` caused concurrent ARBUSDC/TAOUSDC
+    REST ticker polls to swap payloads. Verify ``_install_threadsafe_request`` + ``bapi.update_price``
+    + ``BinancePriceStream`` eliminate cross-symbol contamination."""
+    import concurrent.futures
+    import threading
+    from binance.client import Client
+    from binance_api import bapi, bapi_client, bapi_ws
+
+    cl = Client("", "", ping=False)
+    bapi_client._install_threadsafe_request(cl)
+    bapi_client._install_recvwindow_retry(cl)
+
+    barrier = threading.Barrier(4)
+    prices_by_sym = {
+        "ARBUSDC": "0.11520000",
+        "TAOUSDC": "189.70000000",
+        "ADAUSDC": "0.31200000",
+        "BTCUSDC": "61250.00000000",
+    }
+
+    class _FakeResp:
+        def __init__(self, sym: str):
+            self.status_code = 200
+            self.headers = {}
+            self.text = json.dumps({"symbol": sym, "price": prices_by_sym[sym]})
+
+        def json(self):
+            return json.loads(self.text)
+
+    class _FakeSession:
+        def get(self, uri, **kwargs):
+            params = str(kwargs.get("params") or "")
+            sym = params.split("symbol=", 1)[1].split("&", 1)[0]
+            barrier.wait(timeout=5.0)
+            return _FakeResp(sym)
+
+        def close(self):
+            return None
+
+    cl.session = _FakeSession()
+
+    for _ in range(15):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futs = {sym: pool.submit(cl.get_symbol_ticker, symbol=sym) for sym in prices_by_sym}
+            for sym, fut in futs.items():
+                res = fut.result(timeout=5.0)
+                assert res["symbol"] == sym
+                assert res["price"] == prices_by_sym[sym]
+
+    # Defense-in-depth: bapi.update_price and _get_symbol_price_safe MUST reject mismatched response symbol
+    fake_cli = SimpleNamespace(
+        get_symbol_ticker=lambda symbol: {"symbol": "TAOUSDC", "price": "189.70000000"}
+    )
+    monkeypatch.setattr(bapi, "client", fake_cli)
+    assert bapi.update_price("ARBUSDC") is None
+    assert bapi._get_symbol_price_safe("ARBUSDC") is None
+    assert bapi.update_price("TAOUSDC") == pytest.approx(189.7)
+
+    # Defense-in-depth: BinancePriceStream._process_message drops mismatched stream vs data.s
+    stream = bapi_ws.BinancePriceStream(symbols=["ARBUSDC", "TAOUSDC"])
+    received = []
+    stream.subscribe(SimpleNamespace(on_items_update=lambda s, items: received.append((s, items))))
+    stream._process_message(
+        json.dumps({"stream": "arbusdc@ticker", "data": {"s": "TAOUSDC", "c": "189.7", "E": 1795504766434}})
+    )
+    assert received == []
+    stream._process_message(
+        json.dumps({"stream": "arbusdc@ticker", "data": {"s": "ARBUSDC", "c": "0.1152", "E": 1795504766435}})
+    )
+    assert len(received) == 1 and received[0][0] == "ARBUSDC" and received[0][1][0][1] == pytest.approx(0.1152)
+
+
+def test_p0_cache_current_price_quarantines_single_tick_outlier_and_allows_confirmed_move(tmp_path):
+    """Incident 2026-11-24 Layer 2: CacheCurrentPriceManager rejects an unconfirmed single-tick spike
+    (0.1152 -> 189.7) without broadcasting to Cache24PriceManager, while accepting a 2-tick confirmed move."""
+    from cacheprice import CacheCurrentPriceManager
+
+    cpm = CacheCurrentPriceManager(
+        sync_ts=1.0,
+        symbols=["ARBUSDC"],
+        filename=str(tmp_path / "cache_current_price.json"),
+        read_only=True,
+        data_sync_mode=CacheCurrentPriceManager.MODE_DISK_READER,
+    )
+    forwarded = []
+    cpm.subscribe_price(SimpleNamespace(on_price_update=lambda s, ts, px: forwarded.append((s, ts, px))))
+
+    t0_ms = 1_795_504_763_000
+    # Establish a 2-tick baseline (matching steady-state live operation)
+    cpm.push_price("ARBUSDC", 0.1151, ts_ms=t0_ms)
+    cpm.push_price("ARBUSDC", 0.1152, ts_ms=t0_ms + 1_641)
+    # Single corrupt cross-symbol tick 1.8s later -> MUST be quarantined and never broadcast
+    cpm.push_price("ARBUSDC", 189.7, ts_ms=t0_ms + 3_434)
+    assert cpm.extract_price_and_ts(cpm.cache.get("ARBUSDC"))[0] == pytest.approx(0.1152)
+    assert len(forwarded) == 2
+
+    # Normal tick arrives 1.1s later -> clears quarantine and updates cleanly
+    cpm.push_price("ARBUSDC", 0.1150, ts_ms=t0_ms + 4_590)
+    assert cpm.extract_price_and_ts(cpm.cache.get("ARBUSDC"))[0] == pytest.approx(0.1150)
+    assert len(forwarded) == 3
+
+    # Genuine re-denomination / confirmed move (2 distinct corroborating ticks within 30s) -> accepted on 2nd tick
+    cpm.push_price("ARBUSDC", 1.150, ts_ms=t0_ms + 6_000)
+    assert cpm.extract_price_and_ts(cpm.cache.get("ARBUSDC"))[0] == pytest.approx(0.1150)
+    cpm.push_price("ARBUSDC", 1.152, ts_ms=t0_ms + 7_500)
+    assert cpm.extract_price_and_ts(cpm.cache.get("ARBUSDC"))[0] == pytest.approx(1.152)
+    assert len(forwarded) == 4
+
+
+def test_p0_assetguardian_filters_189_7_outlier_and_autoheals_corrupted_state(monkeypatch):
+    """Incident 2026-11-24 Layer 3: AssetGuardian ignores an isolated 189.7 tick in cache_24_price_ARBUSDC,
+    rejects a corrupt live current_price, and auto-heals a previously poisoned peak_price=189.7 state."""
+    import assetguardian as ag
+
+    now = 1_795_505_000.0
+    rows = [
+        [(now - 600) * 1000, 0.1160],
+        [(now - 500) * 1000, 0.1158],
+        [(now - 400) * 1000, 0.1155],
+        [(now - 300) * 1000, 0.1152],
+        [(now - 298) * 1000, 189.7],  # exact live corrupt tick
+        [(now - 297) * 1000, 0.1150],
+        [(now - 100) * 1000, 0.1149],
+    ]
+    ag._local_price_samples["ARBUSDC"] = []
+    monkeypatch.setattr(ag, "_read_symbol_price_rows", lambda _sym: rows)
+    monkeypatch.setattr(ag.time, "time", lambda: now)
+
+    extrema = ag._get_symbol_window_extrema("ARBUSDC", 0.1148, 1440)
+    assert extrema is not None
+    minimum, maximum = extrema
+    assert minimum["price"] == pytest.approx(0.1148)
+    assert maximum["price"] == pytest.approx(0.1160)
+
+    # Corrupt live current_price=189.7 against ~0.115 rolling median must be refused fail-closed
+    assert ag._get_symbol_window_extrema("ARBUSDC", 189.7, 1440) is None
+
+    # Auto-heal poisoned assetguardian_state.json (peak_price=189.7) during evaluate_symbol
+    class _MemState:
+        def __init__(self, initial):
+            self.value = initial
+            self.path = None
+
+        def load(self):
+            return json.loads(json.dumps(self.value))
+
+        def save(self, val):
+            self.value = json.loads(json.dumps(val))
+
+    poisoned_state = _MemState(
+        {
+            "version": 3,
+            "symbols": {
+                "ARBUSDC": {
+                    "buy": {
+                        "peak_price": 189.7,
+                        "peak_ts": now - 298.0,
+                        "initial_cash": 16250.0,
+                        "completed_tiers": [7.0, 10.0, 14.0],
+                        "spent_quote_by_tier": {"7": 531.0, "10": 2850.0, "14": 4754.0},
+                        "total_spent_quote": 8135.0,
+                        "attempts_by_tier": {"7": 1, "10": 1, "14": 1},
+                        "terminal_orders": [],
+                    }
+                }
+            },
+        }
+    )
+    provider = SimpleNamespace(free_balance=lambda _asset: 0.0, open_orders=lambda _sym: [])
+    buy_called = []
+    monkeypatch.setattr(ag, "STATE", poisoned_state)
+    monkeypatch.setattr(ag.api, "get_current_price", lambda _sym: 0.1110)  # -4.3% vs 0.1160 (above -2.5% reset, below -7% buy)
+    monkeypatch.setattr(ag.mkt, "provider_by_name", lambda _name: provider)
+    monkeypatch.setattr(ag, "buy_with_all_cash", lambda **kw: buy_called.append(kw))
+    monkeypatch.setattr(ag, "_cycle_portfolio_growth_percent", lambda **_kw: None)
+    monkeypatch.setattr(ag, "_cycle_p3b_sentiment", lambda: None)
+
+    assert ag.evaluate_symbol("ARBUSDC") is False
+    assert buy_called == []
+    assert poisoned_state.value["symbols"].get("ARBUSDC", {}).get("buy", {}) == {}
+
+    # Also verify symmetric SELL trough auto-heal (reproducing live BTCUSDC trough_price=0.1461 incident)
+    btc_rows = [
+        [(now - 600) * 1000, 61000.0],
+        [(now - 500) * 1000, 60800.0],
+        [(now - 400) * 1000, 60600.0],
+        [(now - 300) * 1000, 60400.0],
+        [(now - 298) * 1000, 0.1461],  # corrupt cross-symbol trough tick
+        [(now - 297) * 1000, 60350.0],
+        [(now - 100) * 1000, 60500.0],
+    ]
+    ag._local_price_samples["BTCUSDC"] = []
+    monkeypatch.setattr(ag, "_read_symbol_price_rows", lambda _sym: btc_rows)
+    poisoned_sell = _MemState(
+        {
+            "version": 3,
+            "symbols": {
+                "BTCUSDC": {
+                    "sell": {
+                        "trough_price": 0.1461,
+                        "trough_ts": now - 298.0,
+                        "initial_qty": 0.025,
+                        "completed_tiers": [],
+                        "filled_qty_by_tier": {},
+                        "total_filled_qty": 0.0,
+                        "attempts_by_tier": {"9": 1},
+                        "terminal_orders": [],
+                    }
+                }
+            },
+        }
+    )
+    sell_called = []
+    monkeypatch.setattr(ag, "STATE", poisoned_sell)
+    monkeypatch.setattr(ag.api, "get_current_price", lambda _sym: 60550.0)
+    monkeypatch.setattr(
+        ag.mkt,
+        "provider_by_name",
+        lambda _name: SimpleNamespace(free_balance=lambda _asset: 0.025, open_orders=lambda _sym: []),
+    )
+    monkeypatch.setattr(ag, "sell_asset", lambda *a, **kw: sell_called.append((a, kw)))
+    assert ag.evaluate_symbol("BTCUSDC") is False
+    assert sell_called == []
+    assert poisoned_sell.value["symbols"].get("BTCUSDC", {}).get("sell", {}) == {}
+
+
+def test_p2_order_ledger_expires_anonymous_and_stale_deferred_intents(tmp_path):
+    """Anonymous deferred=True GUARD_BLOCKED intents (no iid/cid/vid) must expire after intent_stale_sec,
+    and named deferred intents must expire after deferred_intent_stale_sec without polluting orders_closed."""
+    cdb = tmp_path / "cachedb"
+    (cdb / "orders").mkdir(parents=True)
+    writer = OrderLedgerWriter(cachedb_dir=cdb)
+    reader = OrderLedgerReader(cachedb_dir=cdb)
+    reconciler = OrderLedgerReconciler(
+        cachedb_dir=cdb,
+        use_singletons=False,
+        reconcile_grace_sec=30.0,
+        intent_stale_sec=120.0,
+        deferred_intent_stale_sec=600.0,
+    )
+    t0 = 1_795_456_238.0
+
+    # 1. Anonymous deferred GUARD_BLOCKED (exact live failure mode)
+    writer.record_event(
+        OrderEventType.GUARD_BLOCKED,
+        venue="binance",
+        symbol="BTCUSDC",
+        ts=t0,
+        owner="tradeall",
+        side="BUY",
+        qty=0.13594,
+        px=61460.22,
+        reason="profit_guard",
+        deferred=True,
+    )
+    # 2. Named deferred GUARD_BLOCKED (with outbox iid)
+    writer.record_event(
+        OrderEventType.GUARD_BLOCKED,
+        venue="binance",
+        symbol="ARBUSDC",
+        ts=t0,
+        owner="tradeall",
+        side="BUY",
+        qty=2602.6,
+        px=0.1143,
+        iid="outbox-arb-1",
+        reason="profit_guard",
+        deferred=True,
+    )
+
+    # At t0 + 30s (< intent_stale_sec): both remain active
+    reconciler.reconcile_once(now_ts=t0 + 30.0)
+    assert len(reader.list_active_orders(apply_tail=False)) == 2
+
+    # At t0 + 180s (> intent_stale_sec, < deferred_intent_stale_sec): anonymous expires, named stays
+    reconciler.reconcile_once(now_ts=t0 + 180.0)
+    active_mid = reader.list_active_orders(apply_tail=True)
+    assert len(active_mid) == 1
+    assert active_mid[0]["iid"] == "outbox-arb-1"
+
+    # At t0 + 700s (> deferred_intent_stale_sec): named deferred intent also expires cleanly
+    reconciler.reconcile_once(now_ts=t0 + 700.0)
+    assert reader.list_active_orders(apply_tail=True) == []
+    assert reader.list_active_orders(apply_tail=False) == []
+    assert reader.list_closed_files() == []
+    assert reader.trace_order("outbox-arb-1")["closed_orders"] == []

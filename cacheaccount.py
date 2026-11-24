@@ -2452,70 +2452,126 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                 self._advance_symbol_fetchtime_locked(symbol, now_ms)
 
     @classmethod
+    def _extract_compact_fill_record(
+        cls,
+        raw: Any,
+        *,
+        strict_int: bool,
+    ) -> Optional[dict[str, Any]]:
+        """Normalize one raw venue fill into a compact canonical fill dict for exact deduplicated aggregation."""
+        if not isinstance(raw, dict):
+            return None
+        raw_oid = (
+            raw.get("orderId")
+            or raw.get("order_id")
+            or raw.get("ordertxid")
+            or raw.get("oid")
+            or extract_order_id(raw, default=None)
+        )
+        oid_norm = cls._normalize_order_id(raw_oid, strict_int=strict_int)
+        if oid_norm is None:
+            return None
+        px = safe_pos_float(extract_order_price(raw, default=None), default=None)
+        qty = safe_pos_float(extract_executed_qty(raw, default=None), default=None) or safe_pos_float(
+            extract_order_qty(raw, default=None), default=None
+        )
+        ts_ms = extract_timestamp_ms(raw, default=None)
+        side = extract_order_side(raw) or normalize_side(raw.get("side"))
+        if px is None or qty is None or ts_ms is None or ts_ms <= 0 or side not in ("BUY", "SELL"):
+            return None
+        raw_fid = raw.get("id") or raw.get("tid") or raw.get("trade_id") or raw.get("_fillId")
+        fid = cls._normalize_fill_id(raw_fid, strict_int=strict_int)
+        cid = extract_client_order_id(raw, default="")
+        st_u = clean_upper_scalar(raw.get("status"))
+        raw_type = clean_upper_scalar(raw.get("type") or raw.get("orderType"))
+        otype = raw_type if raw_type not in (None, "BUY", "SELL", "B", "S") else None
+        fee_info = extract_order_fee(raw, fill_price=px)
+        fee_val = safe_nonneg_float(fee_info["fee"], default=None) if isinstance(fee_info, dict) else None
+        fee_asset = clean_upper_scalar(fee_info.get("fee_asset")) if isinstance(fee_info, dict) else None
+        rec: dict[str, Any] = {
+            "orderId": oid_norm,
+            "side": side,
+            "price": round(px, 8) or round(px, 16),
+            "quantity": round(qty, 8) or round(qty, 16),
+            "timestamp": math.trunc(ts_ms),
+        }
+        if fid:
+            rec["_fillId"] = fid
+        if cid:
+            rec["clientOrderId"] = cid
+        if st_u:
+            rec["status"] = st_u
+        if otype:
+            rec["type"] = otype
+        if fee_val is not None:
+            rec["fee"] = round(fee_val, 10)
+        if fee_asset:
+            rec["feeAsset"] = fee_asset
+        return rec
+
+    @classmethod
     def aggregate_fills_to_order_rows(
         cls,
         fills: Any,
         *,
         venue: str = "",
     ) -> list[dict[str, Any]]:
-        """Aggregate raw venue fills into canonical compact per-order rows for ``CacheOrderFilledManager``."""
+        """Aggregate raw venue fills into canonical compact per-order rows for ``CacheOrderFilledManager``.
+
+        Preserves executed quantity and only records ``status`` when explicitly provided by the venue
+        (never synthesizes ``FILLED`` for raw execution fills that do not carry an order status).
+        """
         if not isinstance(fills, (list, tuple)):
             return []
         strict_int = bool(is_primary_stream_venue(venue)) if venue else False
         grouped: dict[str, dict[str, Any]] = {}
         order_sequence: list[str] = []
         for raw in fills:
-            if not isinstance(raw, dict):
+            rec = cls._extract_compact_fill_record(raw, strict_int=strict_int)
+            if rec is None:
                 continue
-            raw_oid = (
-                raw.get("orderId")
-                or raw.get("order_id")
-                or raw.get("ordertxid")
-                or raw.get("oid")
-                or extract_order_id(raw, default=None)
-            )
-            oid_norm = cls._normalize_order_id(raw_oid, strict_int=strict_int)
-            if oid_norm is None:
-                continue
-            px = safe_pos_float(extract_order_price(raw, default=None), default=None)
-            qty = safe_pos_float(extract_executed_qty(raw, default=None), default=None) or safe_pos_float(
-                extract_order_qty(raw, default=None), default=None
-            )
-            ts_ms = extract_timestamp_ms(raw, default=None)
-            side = extract_order_side(raw) or normalize_side(raw.get("side"))
-            if px is None or qty is None or ts_ms is None or ts_ms <= 0 or side not in ("BUY", "SELL"):
-                continue
+            oid_norm = rec["orderId"]
             oid_key = str(oid_norm)
-            raw_fid = raw.get("id") or raw.get("tid") or raw.get("trade_id") or raw.get("_fillId")
-            fid = cls._normalize_fill_id(raw_fid, strict_int=strict_int)
-            cid = extract_client_order_id(raw, default="")
-            st_u = clean_upper_scalar(raw.get("status"))
-            raw_type = clean_upper_scalar(raw.get("type") or raw.get("orderType"))
-            otype = raw_type if raw_type not in (None, "BUY", "SELL", "B", "S") else None
-            fee_info = extract_order_fee(raw, fill_price=px)
-            fee_val = safe_nonneg_float(fee_info["fee"], default=None) if isinstance(fee_info, dict) else None
-            fee_asset = clean_upper_scalar(fee_info.get("fee_asset")) if isinstance(fee_info, dict) else None
+            px = rec["price"]
+            qty = rec["quantity"]
+            ts_ms = rec["timestamp"]
+            side = rec["side"]
+            fid = rec.get("_fillId")
+            cid = rec.get("clientOrderId")
+            st_u = rec.get("status")
+            otype = rec.get("type")
+            fee_val = rec.get("fee")
+            fee_asset = rec.get("feeAsset")
 
             if oid_key not in grouped:
                 order_sequence.append(oid_key)
                 entry: dict[str, Any] = {
                     "orderId": oid_norm,
                     "side": side,
-                    "price": round(px, 8) or round(px, 16),
-                    "quantity": round(qty, 8) or round(qty, 16),
-                    "timestamp": math.trunc(ts_ms),
-                    "status": st_u or "FILLED",
+                    "price": px,
+                    "quantity": qty,
+                    "timestamp": ts_ms,
                 }
+                if st_u:
+                    entry["status"] = st_u
                 if cid:
                     entry["clientOrderId"] = cid
                 if otype:
                     entry["type"] = otype
                 if fee_val is not None:
-                    entry["fee"] = round(fee_val, 10)
+                    entry["fee"] = fee_val
                 if fee_asset:
                     entry["feeAsset"] = fee_asset
                 if fid:
                     entry["_fillIds"] = [fid]
+                elif isinstance(raw, dict) and isinstance(raw.get("_fillIds"), list):
+                    norm_fids = [
+                        nf
+                        for x in raw["_fillIds"]
+                        if (nf := cls._normalize_fill_id(x, strict_int=strict_int)) is not None
+                    ]
+                    if norm_fids:
+                        entry["_fillIds"] = list(dict.fromkeys(norm_fids))
                 grouped[oid_key] = entry
                 continue
 
@@ -2524,6 +2580,8 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
             if fid and fid in known_fids:
                 if cid and not cur.get("clientOrderId"):
                     cur["clientOrderId"] = cid
+                if st_u and not cur.get("status"):
+                    cur["status"] = st_u
                 continue
             prev_q = safe_pos_float(cur["quantity"], default=0.0) or 0.0
             prev_px = safe_pos_float(cur["price"], default=0.0) or 0.0
@@ -2531,12 +2589,12 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
             vwap = (prev_px * prev_q + px * qty) / tot_q if tot_q > 0.0 else px
             cur["price"] = round(vwap, 8) or round(vwap, 16)
             cur["quantity"] = round(tot_q, 8) or round(tot_q, 16)
-            cur["timestamp"] = max(cur["timestamp"], math.trunc(ts_ms))
+            cur["timestamp"] = max(cur["timestamp"], ts_ms)
             if cid and not cur.get("clientOrderId"):
                 cur["clientOrderId"] = cid
             if otype and not cur.get("type"):
                 cur["type"] = otype
-            if st_u and (math.trunc(ts_ms) >= cur["timestamp"] or not cur.get("status")):
+            if st_u and (ts_ms >= cur["timestamp"] or not cur.get("status")):
                 cur["status"] = st_u
             if fee_val is not None:
                 _merge_optional_order_fee(cur, {"fee": fee_val, "feeAsset": fee_asset}, cur)
@@ -2578,31 +2636,81 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
             for sym_key, raw_rows in (fills_by_symbol or {}).items():
                 if clean_scalar_str(sym_key) is None or not isinstance(raw_rows, (list, tuple)):
                     continue
-                agg_rows = cls.aggregate_fills_to_order_rows(raw_rows, venue=venue)
                 existing_bucket = items.get(sym_key) if isinstance(items.get(sym_key), list) else []
                 by_oid: dict[str, dict[str, Any]] = {}
                 for ex in existing_bucket:
                     if isinstance(ex, dict) and (ex_oid := cls._normalize_order_id(ex.get("orderId"), strict_int=strict_int)) is not None:
                         by_oid[str(ex_oid)] = dict(ex)
+
+                # Extract compact individual raw fills (keyed by oid -> fid -> compact fill) so
+                # overlapping batches (e.g. [1,2] then [2,3]) deduplicate before aggregating qty/VWAP.
+                raw_by_oid: dict[str, dict[str, dict[str, Any]]] = {}
+                for r in raw_rows:
+                    compact = cls._extract_compact_fill_record(r, strict_int=strict_int)
+                    if compact is not None and (fid := compact.get("_fillId")):
+                        raw_by_oid.setdefault(str(compact["orderId"]), {})[str(fid)] = compact
+
+                merged_from_fills: set[str] = set()
+                for oid_str, new_fills in raw_by_oid.items():
+                    if oid_str not in by_oid:
+                        continue
+                    ex_row = by_oid[oid_str]
+                    ex_fids = list(ex_row.get("_fillIds") or ())
+                    ex_fills_raw = ex_row.get("_fills") if isinstance(ex_row.get("_fills"), dict) else (
+                        ex_row.get("_rawFills") if isinstance(ex_row.get("_rawFills"), dict) else None
+                    )
+                    can_union_ex = (
+                        isinstance(ex_fills_raw, dict)
+                        and bool(ex_fills_raw)
+                        and (not ex_fids or set(ex_fids).issubset(set(ex_fills_raw.keys())))
+                    )
+                    can_snapshot_rebuild = (
+                        is_snapshot_b and (not ex_fids or set(ex_fids).issubset(set(new_fills.keys())))
+                    )
+                    if can_union_ex or can_snapshot_rebuild:
+                        merged_fills = ({**ex_fills_raw, **new_fills} if can_union_ex else dict(new_fills))
+                        re_aggs = cls.aggregate_fills_to_order_rows(list(merged_fills.values()), venue=venue)
+                        if re_aggs:
+                            merged_order = re_aggs[0]
+                            merged_order["_fills"] = merged_fills
+                            if ex_row.get("clientOrderId") and not merged_order.get("clientOrderId"):
+                                merged_order["clientOrderId"] = ex_row["clientOrderId"]
+                            if ex_row.get("type") and not merged_order.get("type"):
+                                merged_order["type"] = ex_row["type"]
+                            by_oid[oid_str] = merged_order
+                            merged_from_fills.add(oid_str)
+
+                agg_rows = cls.aggregate_fills_to_order_rows(raw_rows, venue=venue)
                 for inc in agg_rows:
                     inc_key = str(inc["orderId"])
+                    if inc_key in merged_from_fills:
+                        continue
                     if inc_key not in by_oid:
-                        by_oid[inc_key] = dict(inc)
+                        new_entry = dict(inc)
+                        inc_fids = list(new_entry.get("_fillIds") or ())
+                        if inc_key in raw_by_oid and inc_fids and set(inc_fids).issubset(set(raw_by_oid[inc_key].keys())):
+                            new_entry["_fills"] = dict(raw_by_oid[inc_key])
+                        by_oid[inc_key] = new_entry
                         continue
                     ex_row = by_oid[inc_key]
                     ex_fids = list(ex_row.get("_fillIds") or ())
                     inc_fids = list(inc.get("_fillIds") or ())
-                    if inc_fids and ex_fids and set(inc_fids).issubset(set(ex_fids)):
+                    if not is_snapshot_b and inc_fids and ex_fids and set(inc_fids).issubset(set(ex_fids)):
                         if inc.get("clientOrderId") and not ex_row.get("clientOrderId"):
                             ex_row["clientOrderId"] = inc["clientOrderId"]
                         if inc.get("status") and not ex_row.get("status"):
                             ex_row["status"] = inc["status"]
                         continue
-                    if is_snapshot_b or (inc_fids and ex_fids and set(ex_fids).issubset(set(inc_fids))):
+                    if (
+                        (is_snapshot_b and (not ex_fids or not inc_fids or set(ex_fids).issubset(set(inc_fids))))
+                        or (inc_fids and ex_fids and set(ex_fids).issubset(set(inc_fids)))
+                    ):
                         merged_row = dict(ex_row)
                         merged_row.update(inc)
                         if ex_row.get("clientOrderId") and not merged_row.get("clientOrderId"):
                             merged_row["clientOrderId"] = ex_row["clientOrderId"]
+                        if inc_key in raw_by_oid and inc_fids and set(inc_fids).issubset(set(raw_by_oid[inc_key].keys())):
+                            merged_row["_fills"] = dict(raw_by_oid[inc_key])
                         by_oid[inc_key] = merged_row
                     else:
                         ex_q = safe_pos_float(ex_row.get("quantity"), default=0.0) or 0.0
@@ -2827,6 +2935,7 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
     ):
         self.venue = self._normalize_venue_arg(venue=venue, filename=filename, symbols=symbols)
         self.verified_ts: float = 0.0
+        self.symbol_verified_ts: dict[str, float] = {}
         super().__init__(
             sync_ts,
             symbols,
@@ -2954,15 +3063,43 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
             cleaned_items[s_key] = [
                 norm for r in rows if (norm := self.normalize_open_order_row(r)) is not None
             ]
+        ft_clean = {
+            str(k): safe_nonneg_int(v, default=0) or 0
+            for k, v in ft.items()
+            if clean_scalar_str(k) is not None
+        }
+        sym_ver = self._parse_symbol_verified_ts(loaded, cleaned_items, ft_clean, ver_ts)
         with self.lock:
             self.cache = cleaned_items
-            self.fetchtime_per_symbol = {
-                str(k): safe_nonneg_int(v, default=0) or 0
-                for k, v in ft.items()
-                if clean_scalar_str(k) is not None
-            }
+            self.fetchtime_per_symbol = ft_clean
             self.verified_ts = ver_ts
+            self.symbol_verified_ts = sym_ver
         return True
+
+    @staticmethod
+    def _parse_symbol_verified_ts(
+        loaded: dict[str, Any],
+        items: dict[str, list[dict[str, Any]]],
+        ft_map: dict[str, int],
+        ver_ts: float,
+    ) -> dict[str, float]:
+        """Extract per-symbol complete-snapshot verification timestamps (distinct from omitted symbols)."""
+        if isinstance(loaded.get("symbol_verified_ts"), dict):
+            out: dict[str, float] = {}
+            for k, v in loaded["symbol_verified_ts"].items():
+                if clean_scalar_str(k) is not None and (v_f := safe_pos_float(v, default=None)) is not None:
+                    out[str(k)] = round(v_f, 3)
+            return out
+        # Legacy snapshot compatibility: only symbols explicitly present in ``items`` (including verified
+        # empty lists ``[]``) were covered by the snapshot; omitted symbols remain unverified.
+        inferred: dict[str, float] = {}
+        for sym_k in items.keys():
+            ft_ms = ft_map.get(sym_k, 0)
+            if ft_ms > 0:
+                inferred[sym_k] = round(ft_ms / 1000.0, 3)
+            elif ver_ts > 0.0:
+                inferred[sym_k] = round(ver_ts, 3)
+        return inferred
 
     def _reload_snapshot_from_disk(self):
         try:
@@ -2977,7 +3114,10 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
                 payload = {
                     "items": {k: [dict(r) for r in v] for k, v in self.cache.items()},
                     "fetchtime": dict(self.fetchtime_per_symbol),
-                    "verified_ts": round(self.verified_ts, 3) if self.verified_ts > 0.0 else round(_now_time(), 3),
+                    "symbol_verified_ts": {
+                        k: round(v, 3) for k, v in sorted(self.symbol_verified_ts.items()) if v > 0.0
+                    },
+                    "verified_ts": round(self.verified_ts, 3) if self.verified_ts > 0.0 else None,
                 }
             save_json_state(self.filename, payload, indent=1)
             return True
@@ -3012,7 +3152,10 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
         *,
         now_ms: Optional[int] = None,
     ) -> bool:
-        """Atomically replace the open-order list for ``symbol`` in memory (deduplicated by ``orderId``)."""
+        """Atomically replace the open-order list for ``symbol`` in memory (deduplicated by ``orderId``).
+
+        Advances only ``symbol_verified_ts[symbol]`` -- never advances the venue-wide ``verified_ts``.
+        """
         eff_now_ms = resolve_now_ms(now_ms)
         dedup: dict[str, dict[str, Any]] = {}
         for row in orders or ():
@@ -3023,7 +3166,7 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
             changed = self.cache.get(symbol) != new_bucket
             self.cache[symbol] = new_bucket
             self.fetchtime_per_symbol[symbol] = eff_now_ms
-            self.verified_ts = eff_now_ms / 1000.0
+            self.symbol_verified_ts[symbol] = round(eff_now_ms / 1000.0, 3)
         return changed
 
     def _persist_items(self, symbol, new_items):
@@ -3037,7 +3180,11 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
         *,
         now_ms: Optional[int] = None,
     ) -> bool:
-        """Apply one real-time WS open-order transition (``'upsert'`` or ``'remove'``)."""
+        """Apply one real-time WS open-order transition (``'upsert'`` or ``'remove'``).
+
+        Single-order WS deltas are NOT complete book snapshots, so they must NEVER advance
+        either venue-wide ``verified_ts`` or per-symbol ``symbol_verified_ts``.
+        """
         if not isinstance(order_item, dict) or clean_scalar_str(symbol) is None:
             return False
         eff_now_ms = resolve_now_ms(now_ms)
@@ -3053,7 +3200,6 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
                     return False
                 self.cache[symbol] = filtered
                 self.fetchtime_per_symbol[symbol] = eff_now_ms
-                self.verified_ts = eff_now_ms / 1000.0
                 return True
             if act == "upsert":
                 norm = self.normalize_open_order_row(order_item)
@@ -3071,7 +3217,6 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
                     bucket.append(norm)
                 self.cache[symbol] = bucket
                 self.fetchtime_per_symbol[symbol] = eff_now_ms
-                self.verified_ts = eff_now_ms / 1000.0
                 return True
         return False
 
@@ -3085,10 +3230,17 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
         verified_ts: Optional[float] = None,
         indent: Optional[int] = 1,
     ) -> dict[str, Any]:
-        """Atomically replace per-symbol open orders in ``cache_order_open_<venue>.json`` under ``.generation.lock``."""
+        """Atomically replace per-symbol open orders in ``cache_order_open_<venue>.json`` under ``.generation.lock``.
+
+        Each symbol present in ``orders_by_symbol`` (including a verified empty list ``[]``) receives an
+        updated ``symbol_verified_ts[sym]`` entry. Omitted symbols retain their prior state and verification
+        timestamp (distinct from verified empty). Venue-wide ``verified_ts`` is updated only when explicitly
+        provided by a full-venue snapshot caller.
+        """
         target_path = str(cache_file)
         eff_now_ms = resolve_now_ms(now_ms)
         eff_ver_ts = safe_pos_float(verified_ts, default=None)
+        sym_snap_ts = round(eff_ver_ts if eff_ver_ts is not None else (eff_now_ms / 1000.0), 3)
         with generation_file_lock(target_path):
             loaded = read_json_dict_recovering(target_path, repair_files=True)
             if not isinstance(loaded, dict):
@@ -3096,6 +3248,12 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
             items = loaded.get("items") if isinstance(loaded.get("items"), dict) else {}
             ft = loaded.get("fetchtime") if isinstance(loaded.get("fetchtime"), dict) else {}
             prev_ver = safe_nonneg_float(loaded.get("verified_ts"), default=0.0) or 0.0
+            ft_prev = {
+                str(k): safe_nonneg_int(v, default=0) or 0
+                for k, v in ft.items()
+                if clean_scalar_str(k) is not None
+            }
+            sym_ver = cls._parse_symbol_verified_ts(loaded, items, ft_prev, prev_ver)
             for sym_key, raw_list in (orders_by_symbol or {}).items():
                 if clean_scalar_str(sym_key) is None or not isinstance(raw_list, (list, tuple)):
                     continue
@@ -3107,33 +3265,36 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
                 for stale_k in [k for k in list(items.keys()) if k != sym_key and str(k).upper() == str(sym_key).upper()]:
                     items.pop(stale_k, None)
                     ft.pop(stale_k, None)
+                    sym_ver.pop(stale_k, None)
                 items[sym_key] = list(dedup.values())
                 ft[sym_key] = eff_now_ms
+                sym_ver[sym_key] = sym_snap_ts
             out_obj = {
                 "items": items,
                 "fetchtime": ft,
-                "verified_ts": round(eff_ver_ts, 3) if eff_ver_ts is not None else (prev_ver or round(eff_now_ms / 1000.0, 3)),
+                "symbol_verified_ts": sym_ver,
+                "verified_ts": round(eff_ver_ts, 3) if eff_ver_ts is not None else (round(prev_ver, 3) if prev_ver > 0 else None),
             }
             save_json_state(target_path, out_obj, indent=indent)
             return out_obj
 
     @classmethod
-    def read_venue_open_orders_snapshot(
+    def read_venue_open_orders_snapshot_detailed(
         cls,
         cache_file: str,
         *,
         read_json_fn=None,
-    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], float]:
-        """Passively read one venue's open-order snapshot without mutating disk."""
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], float, dict[str, float]]:
+        """Passively read one venue's open-order snapshot including per-symbol verified complete-snapshot timestamps."""
         resolved = str(resolve_cachedb_filepath(str(cache_file)))
         if read_json_fn is not None:
             data = read_json_fn(resolved)
         else:
             if not os.path.isfile(resolved):
-                return {}, {}, 0.0
+                return {}, {}, 0.0, {}
             data = read_json_dict_recovering(resolved, repair_files=False)
         if not isinstance(data, dict):
-            return {}, {}, 0.0
+            return {}, {}, 0.0, {}
         raw_items = data.get("items") if isinstance(data.get("items"), dict) else {}
         raw_ft = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
         items_out: dict[str, list[dict[str, Any]]] = {}
@@ -3147,10 +3308,20 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
             if clean_scalar_str(k) is not None
         }
         ver_ts = safe_nonneg_float(data.get("verified_ts"), default=0.0) or 0.0
-        if ver_ts <= 0.0 and ft_out:
-            max_ft = max(ft_out.values(), default=0)
-            if max_ft > 0:
-                ver_ts = round(max_ft / 1000.0, 3)
+        sym_ver = cls._parse_symbol_verified_ts(data, items_out, ft_out, ver_ts)
+        return items_out, ft_out, ver_ts, sym_ver
+
+    @classmethod
+    def read_venue_open_orders_snapshot(
+        cls,
+        cache_file: str,
+        *,
+        read_json_fn=None,
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], float]:
+        """Passively read one venue's open-order snapshot without mutating disk."""
+        items_out, ft_out, ver_ts, _ = cls.read_venue_open_orders_snapshot_detailed(
+            cache_file, read_json_fn=read_json_fn
+        )
         return items_out, ft_out, ver_ts
 
     @classmethod

@@ -223,7 +223,9 @@ class BinanceFeeMaintainer(VenueFeeMaintainerBase):
         if callable(ob_fn):
             try:
                 ob = ob_fn(symbol=cls.BNB_SYMBOL)
-                if isinstance(ob, dict):
+                if isinstance(ob, dict) and (
+                    "symbol" not in ob or clean_upper_scalar(ob.get("symbol")) == cls.BNB_SYMBOL
+                ):
                     bid_px = safe_pos_float(ob.get("bidPrice"), default=None)
             except Exception:
                 bid_px = None
@@ -231,7 +233,9 @@ class BinanceFeeMaintainer(VenueFeeMaintainerBase):
             tk_fn = getattr(cli, "get_symbol_ticker", None)
             if callable(tk_fn):
                 tk = tk_fn(symbol=cls.BNB_SYMBOL)
-                if isinstance(tk, dict):
+                if isinstance(tk, dict) and (
+                    "symbol" not in tk or clean_upper_scalar(tk.get("symbol")) == cls.BNB_SYMBOL
+                ):
                     bid_px = safe_pos_float(tk.get("price"), default=None)
         if bid_px is None:
             raise RuntimeError("BNBUSDC passive bid price unavailable from Binance")

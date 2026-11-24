@@ -49,6 +49,7 @@ from botcore import (  # noqa: E402
     clean_upper_scalar,
     load_env_stack,
     optional_env,
+    parse_cli_float,
     parse_dotenv,
     required_float_env,
     safe_nonneg_float,
@@ -61,7 +62,11 @@ from providers.kraken_provider import KrakenProvider  # noqa: E402
 from state_io import encode_json_payload  # noqa: E402
 
 _EVM_ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+_EVM_TX_HASH_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 _ERC20_BALANCE_OF_SELECTOR = "0x70a08231"
+_ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+_KRAKEN_SETTLED_STATUSES = frozenset({"settled", "success", "confirmed", "complete"})
+_KRAKEN_FAILED_STATUSES = frozenset({"canceled", "cancelled", "failure", "failed"})
 _USDC_DECIMALS_DIVISOR = 1_000_000.0
 _ETH_DECIMALS_DIVISOR = 1_000_000_000_000_000_000.0
 _DEFAULT_FEE_CUSHION_USDC = 0.25
@@ -414,6 +419,61 @@ def convert_usd_to_usdc_on_kraken(
     )
 
 
+def verify_arbitrum_usdc_transfer_tx(
+    cfg: RebalanceConfig,
+    txid: str,
+    *,
+    target_address: str,
+    min_usdc: float,
+) -> dict[str, Any]:
+    """Verify via Arbitrum JSON-RPC ``eth_getTransactionReceipt`` that ``txid`` delivered native USDC to ``target_address``."""
+    addr = validate_evm_address(target_address, label="Arbitrum address")
+    tx_clean = clean_scalar_str(txid) or ""
+    if not _EVM_TX_HASH_RE.fullmatch(tx_clean):
+        return {"confirmed": False, "reverted": False, "received_usdc": 0.0, "block_number": None}
+    rpc_headers = {"User-Agent": "mptrade-rebalance/1.0"}
+    resp = fetch_json_post(
+        cfg.arb_rpc_url,
+        {"jsonrpc": "2.0", "id": 3, "method": "eth_getTransactionReceipt", "params": [tx_clean]},
+        timeout=10.0,
+        headers=rpc_headers,
+    )
+    if not isinstance(resp, dict) or "result" not in resp:
+        raise RuntimeError(f"Arbitrum eth_getTransactionReceipt failed for {tx_clean}: {resp!r}")
+    receipt = resp["result"]
+    if not isinstance(receipt, dict):
+        return {"confirmed": False, "reverted": False, "received_usdc": 0.0, "block_number": None}
+    raw_st = receipt.get("status")
+    st_int = _hex_to_nonneg_int(raw_st) if raw_st is not None else 0
+    blk = _hex_to_nonneg_int(receipt["blockNumber"]) if receipt.get("blockNumber") else None
+    if st_int == 0:
+        return {"confirmed": False, "reverted": True, "received_usdc": 0.0, "block_number": blk}
+    want_contract = cfg.arb_usdc_contract.lower()
+    want_to_suffix = addr[2:].lower()
+    received_usdc = 0.0
+    for log_row in receipt.get("logs") or ():
+        if not isinstance(log_row, dict):
+            continue
+        if (clean_scalar_str(log_row.get("address")) or "").lower() != want_contract:
+            continue
+        topics = log_row.get("topics")
+        if not isinstance(topics, list) or len(topics) < 3:
+            continue
+        if (clean_scalar_str(topics[0]) or "").lower() != _ERC20_TRANSFER_TOPIC:
+            continue
+        to_topic = (clean_scalar_str(topics[2]) or "").lower()
+        if not to_topic.endswith(want_to_suffix):
+            continue
+        received_usdc += _hex_to_nonneg_int(log_row.get("data")) / _USDC_DECIMALS_DIVISOR
+    received_usdc = round(received_usdc, 6)
+    return {
+        "confirmed": received_usdc >= max(0.0, min_usdc),
+        "reverted": False,
+        "received_usdc": received_usdc,
+        "block_number": blk,
+    }
+
+
 def wait_for_arbitrum_arrival(
     client: Any,
     cfg: RebalanceConfig,
@@ -421,11 +481,25 @@ def wait_for_arbitrum_arrival(
     baseline_arb_usdc: float,
     expected_net_usdc: float,
 ) -> dict[str, Any]:
-    """Poll Kraken Funding v1 withdrawals and Arbitrum One USDC balance until arrival."""
+    """Poll Kraken Funding v1 withdrawals and Arbitrum One until the withdrawal transaction itself is confirmed.
+
+    Explicitly tracks three distinct stages:
+      - ``withdrawal_accepted``: Kraken accepted ``withdrawal_id``.
+      - ``transaction_confirmed``: the withdrawal's associated transaction is confirmed (via Arbitrum
+        ``eth_getTransactionReceipt`` ERC-20 ``Transfer`` log when an EVM tx hash is available, or
+        Kraken settled status + txid for non-EVM/simulated references).
+      - ``balance_observed``: diagnostic flag showing whether wallet USDC balance increased by the
+        expected net amount (NEVER sufficient alone to confirm arrival while withdrawal is pending).
+    """
     deadline = time.monotonic() + cfg.poll_timeout_sec
-    target_arb_usdc = baseline_arb_usdc + max(0.0, expected_net_usdc - 0.01)
+    min_expected = max(0.0, expected_net_usdc - 0.01)
+    target_arb_usdc = baseline_arb_usdc + min_expected
     last_k_status = "unknown"
     chain_txid: str | None = None
+    last_arb_usdc: float = baseline_arb_usdc
+    balance_observed = False
+    transaction_confirmed = False
+    tx_received_usdc: float | None = None
 
     while time.monotonic() <= deadline:
         try:
@@ -436,36 +510,90 @@ def wait_for_arbitrum_arrival(
                     chain_txid = clean_scalar_str(row.get("onchain_transaction") or row.get("txid")) or chain_txid
                     break
         except Exception as exc:  # noqa: BLE001
-            print(f"[WARN] funding_withdrawals poll failed: {exc}", flush=True)
+            print(f"[WARN] funding_withdrawals poll failed: {exc}", file=sys.stderr, flush=True)
 
         arb = fetch_arbitrum_balances(cfg, cfg.target_address)
-        delta = arb["usdc"] - baseline_arb_usdc
+        last_arb_usdc = arb["usdc"]
+        delta = last_arb_usdc - baseline_arb_usdc
+        balance_observed = last_arb_usdc >= target_arb_usdc
+
+        if last_k_status.lower() in _KRAKEN_FAILED_STATUSES:
+            raise RuntimeError(f"Kraken withdrawal {withdrawal_id} failed with status={last_k_status}")
+
+        has_txid = bool(chain_txid and chain_txid != "-")
+        k_settled = last_k_status.lower() in _KRAKEN_SETTLED_STATUSES
+        is_evm_tx_hash = bool(has_txid and chain_txid and _EVM_TX_HASH_RE.fullmatch(chain_txid))
+
+        if is_evm_tx_hash and chain_txid:
+            try:
+                tx_check = verify_arbitrum_usdc_transfer_tx(
+                    cfg,
+                    chain_txid,
+                    target_address=cfg.target_address,
+                    min_usdc=min_expected,
+                )
+                if tx_check["reverted"]:
+                    raise RuntimeError(f"Arbitrum transaction {chain_txid} reverted on-chain")
+                if tx_check["confirmed"]:
+                    transaction_confirmed = True
+                    tx_received_usdc = tx_check["received_usdc"]
+            except RuntimeError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                print(f"[WARN] Arbitrum tx receipt poll failed for {chain_txid}: {exc}", file=sys.stderr, flush=True)
+        elif has_txid and k_settled:
+            # Non-64-hex reference / simulated txid: requires BOTH Kraken settled status AND txid AND observed balance.
+            transaction_confirmed = balance_observed
+
         print(
             f"[WAIT-ARB] withdrawal_id={withdrawal_id} kraken_status={last_k_status} txid={chain_txid or '-'} "
-            f"arb_usdc={arb['usdc']:.4f} (+{delta:.4f} / expected {expected_net_usdc:.4f})",
+            f"tx_confirmed={transaction_confirmed} balance_observed={balance_observed} "
+            f"arb_usdc={last_arb_usdc:.4f} (+{delta:.4f} / expected {expected_net_usdc:.4f})",
+            file=sys.stderr,
             flush=True,
         )
-        if last_k_status.lower() in {"canceled", "cancelled", "failure", "failed"}:
-            raise RuntimeError(f"Kraken withdrawal {withdrawal_id} failed with status={last_k_status}")
-        if arb["usdc"] >= target_arb_usdc:
+
+        if transaction_confirmed:
+            stages = {
+                "withdrawal_accepted": True,
+                "transaction_confirmed": True,
+                "balance_observed": balance_observed,
+            }
             return {
                 "arrived": True,
+                "status": "arrived",
                 "withdrawal_id": withdrawal_id,
                 "kraken_status": last_k_status,
                 "arb_txid": chain_txid,
+                "tx_usdc_amount": tx_received_usdc,
+                "stages": stages,
                 "arb_usdc_before": baseline_arb_usdc,
-                "arb_usdc_after": arb["usdc"],
+                "arb_usdc_after": last_arb_usdc,
                 "arb_usdc_delta": round(delta, 6),
             }
         time.sleep(cfg.poll_interval_sec)
 
+    try:
+        last_arb_usdc = fetch_arbitrum_balances(cfg, cfg.target_address)["usdc"]
+        balance_observed = last_arb_usdc >= target_arb_usdc
+    except Exception:  # noqa: BLE001
+        pass
+    delta = last_arb_usdc - baseline_arb_usdc
     return {
         "arrived": False,
+        "status": "withdrawal_accepted_monitoring_incomplete",
         "withdrawal_id": withdrawal_id,
         "kraken_status": last_k_status,
         "arb_txid": chain_txid,
+        "tx_usdc_amount": tx_received_usdc,
+        "stages": {
+            "withdrawal_accepted": True,
+            "transaction_confirmed": False,
+            "balance_observed": balance_observed,
+        },
         "arb_usdc_before": baseline_arb_usdc,
-        "arb_usdc_after": fetch_arbitrum_balances(cfg, cfg.target_address)["usdc"],
+        "arb_usdc_after": last_arb_usdc,
+        "arb_usdc_delta": round(delta, 6),
     }
 
 
@@ -723,12 +851,23 @@ def plan_and_run_transfer(
     if not withdrawal_id:
         raise RuntimeError(f"Kraken Funding v1 withdrawal did not return a withdrawal_id: {wres!r}")
 
+    # Immediately preserve and emit withdrawal_id on stderr (never polluting --json stdout)
+    # so any subsequent monitoring error cannot obscure the accepted withdrawal or prompt re-submission.
+    print(f"[KRAKEN WITHDRAWAL ACCEPTED] withdrawal_id={withdrawal_id}", file=sys.stderr, flush=True)
+
     out: dict[str, Any] = {
         "mode": "executed",
+        "status": "withdrawal_accepted",
         "plan": plan,
         "conversion": conversion_result,
         "withdraw_response": wres,
         "withdrawal_id": withdrawal_id,
+        "stages": {
+            "withdrawal_accepted": True,
+            "transaction_confirmed": False,
+            "balance_observed": False,
+        },
+        "resume_command": f"verify_tools/rebalance_kraken_to_hl.py --withdrawal-id {withdrawal_id}",
         "next_steps": [
             f"1. Open https://app.hyperliquid.xyz connected with wallet {cfg.target_address}",
             f"2. Click Deposit -> Network: Arbitrum -> Native USDC -> Amount: ~{net_usdc:.2f} USDC (sign in wallet)",
@@ -737,30 +876,166 @@ def plan_and_run_transfer(
     }
 
     if wait_arb:
-        arb_res = wait_for_arbitrum_arrival(client, cfg, withdrawal_id, baseline_arb_usdc, net_usdc)
-        out["arbitrum_arrival"] = arb_res
-        if send_notify and arb_res.get("arrived"):
-            alert.notify(
-                f"Kraken -> Arbitrum USDC arrived (+{arb_res['arb_usdc_delta']:.2f} USDC)",
-                (
-                    f"Wallet {cfg.target_address} received +{arb_res['arb_usdc_delta']:.2f} native USDC on Arbitrum One "
-                    f"(txid={arb_res.get('arb_txid') or 'pending'}).\n"
-                    f"Next: app.hyperliquid.xyz -> Deposit (Arbitrum USDC) -> Transfer (Perp to Spot)."
-                ),
-                source="rebalance_kraken_to_hl",
-                symbol="HYPEUSDC",
+        try:
+            arb_res = wait_for_arbitrum_arrival(client, cfg, withdrawal_id, baseline_arb_usdc, net_usdc)
+            out["arbitrum_arrival"] = arb_res
+            out["stages"] = dict(arb_res.get("stages") or out["stages"])
+            if arb_res.get("arrived"):
+                out["status"] = "arrived"
+                if send_notify:
+                    confirmed_amt = arb_res.get("tx_usdc_amount") or arb_res.get("arb_usdc_delta") or net_usdc
+                    alert.notify(
+                        f"Kraken -> Arbitrum USDC arrived (+{confirmed_amt:.2f} USDC)",
+                        (
+                            f"Wallet {cfg.target_address} received +{confirmed_amt:.2f} native USDC on Arbitrum One "
+                            f"(withdrawal_id={withdrawal_id}, txid={arb_res.get('arb_txid')}).\n"
+                            f"Next: app.hyperliquid.xyz -> Deposit (Arbitrum USDC) -> Transfer (Perp to Spot)."
+                        ),
+                        source="rebalance_kraken_to_hl",
+                        symbol="HYPEUSDC",
+                    )
+            else:
+                out["status"] = "withdrawal_accepted_monitoring_incomplete"
+        except Exception as exc:  # noqa: BLE001
+            out["status"] = "withdrawal_accepted_monitoring_incomplete"
+            out["arbitrum_arrival"] = {
+                "arrived": False,
+                "status": "withdrawal_accepted_monitoring_incomplete",
+                "withdrawal_id": withdrawal_id,
+                "stages": dict(out["stages"]),
+                "error": str(exc),
+            }
+            print(
+                f"[WARN] Withdrawal accepted ({withdrawal_id}), monitoring incomplete: {exc}. "
+                f"Resume with --withdrawal-id {withdrawal_id}",
+                file=sys.stderr,
+                flush=True,
             )
     if watch_hl:
-        hl_res = watch_hyperliquid_spot_arrival(cfg, baseline_hl_spot_usdc, net_usdc)
-        out["hyperliquid_arrival"] = hl_res
-        if send_notify and hl_res.get("arrived_hl_spot"):
-            alert.notify(
-                f"Hyperliquid Spot USDC credited (+{hl_res['spot_usdc_delta']:.2f} USDC)",
-                f"Hyperliquid Spot USDC balance is now {hl_res['spot_usdc']:.2f} USDC on {cfg.target_address}.",
-                source="rebalance_kraken_to_hl",
-                symbol="HYPEUSDC",
+        try:
+            hl_res = watch_hyperliquid_spot_arrival(cfg, baseline_hl_spot_usdc, net_usdc)
+            out["hyperliquid_arrival"] = hl_res
+            if send_notify and hl_res.get("arrived_hl_spot"):
+                alert.notify(
+                    f"Hyperliquid Spot USDC credited (+{hl_res['spot_usdc_delta']:.2f} USDC)",
+                    f"Hyperliquid Spot USDC balance is now {hl_res['spot_usdc']:.2f} USDC on {cfg.target_address}.",
+                    source="rebalance_kraken_to_hl",
+                    symbol="HYPEUSDC",
+                )
+        except Exception as exc:  # noqa: BLE001
+            out["status"] = "withdrawal_accepted_monitoring_incomplete"
+            out["hyperliquid_arrival"] = {
+                "arrived_hl_spot": False,
+                "status": "withdrawal_accepted_monitoring_incomplete",
+                "withdrawal_id": withdrawal_id,
+                "error": str(exc),
+            }
+            print(
+                f"[WARN] Withdrawal accepted ({withdrawal_id}), Hyperliquid monitoring incomplete: {exc}",
+                file=sys.stderr,
+                flush=True,
             )
 
+    return out
+
+
+def resume_withdrawal_monitoring(
+    client: Any,
+    cfg: RebalanceConfig,
+    withdrawal_id: str,
+    *,
+    expected_net_usdc: float | None = None,
+    baseline_arb_usdc: float | None = None,
+    watch_hl: bool = False,
+    send_notify: bool = False,
+) -> dict[str, Any]:
+    """Resume arrival monitoring for an already-accepted Kraken ``withdrawal_id`` without re-submitting."""
+    wid = clean_scalar_str(withdrawal_id)
+    if not wid:
+        raise ValueError("withdrawal_id must be non-empty")
+
+    inferred_net = safe_pos_float(expected_net_usdc, default=None)
+    if inferred_net is None:
+        try:
+            for row in client.funding_withdrawals():
+                if clean_scalar_str(row.get("withdrawal_id") or row.get("refid")) == wid:
+                    amt_obj = row.get("net_amount") or row.get("amount")
+                    raw_amt = amt_obj.get("amount") if isinstance(amt_obj, dict) else amt_obj
+                    inferred_net = safe_pos_float(raw_amt, default=None)
+                    break
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] Unable to look up amount for withdrawal {wid}: {exc}", file=sys.stderr, flush=True)
+    eff_net = inferred_net if inferred_net is not None else cfg.min_net_usdc
+
+    out: dict[str, Any] = {
+        "mode": "resumed",
+        "status": "withdrawal_accepted",
+        "withdrawal_id": wid,
+        "expected_net_usdc": round(eff_net, 6),
+        "stages": {
+            "withdrawal_accepted": True,
+            "transaction_confirmed": False,
+            "balance_observed": False,
+        },
+        "resume_command": f"verify_tools/rebalance_kraken_to_hl.py --withdrawal-id {wid}",
+    }
+
+    try:
+        eff_base_arb = (
+            safe_nonneg_float(baseline_arb_usdc, default=0.0) or 0.0
+            if baseline_arb_usdc is not None
+            else fetch_arbitrum_balances(cfg, cfg.target_address)["usdc"]
+        )
+        arb_res = wait_for_arbitrum_arrival(client, cfg, wid, eff_base_arb, eff_net)
+        out["arbitrum_arrival"] = arb_res
+        out["stages"] = dict(arb_res.get("stages") or out["stages"])
+        if arb_res.get("arrived"):
+            out["status"] = "arrived"
+            if send_notify:
+                confirmed_amt = arb_res.get("tx_usdc_amount") or arb_res.get("arb_usdc_delta") or eff_net
+                alert.notify(
+                    f"Kraken -> Arbitrum USDC arrived (+{confirmed_amt:.2f} USDC)",
+                    (
+                        f"Wallet {cfg.target_address} received +{confirmed_amt:.2f} native USDC on Arbitrum One "
+                        f"(withdrawal_id={wid}, txid={arb_res.get('arb_txid')}).\n"
+                        f"Next: app.hyperliquid.xyz -> Deposit (Arbitrum USDC) -> Transfer (Perp to Spot)."
+                    ),
+                    source="rebalance_kraken_to_hl",
+                    symbol="HYPEUSDC",
+                )
+        else:
+            out["status"] = "withdrawal_accepted_monitoring_incomplete"
+    except Exception as exc:  # noqa: BLE001
+        out["status"] = "withdrawal_accepted_monitoring_incomplete"
+        out["arbitrum_arrival"] = {
+            "arrived": False,
+            "status": "withdrawal_accepted_monitoring_incomplete",
+            "withdrawal_id": wid,
+            "stages": dict(out["stages"]),
+            "error": str(exc),
+        }
+        print(f"[WARN] Resumed monitoring incomplete for {wid}: {exc}", file=sys.stderr, flush=True)
+
+    if watch_hl:
+        try:
+            base_hl = fetch_hyperliquid_balances(cfg, cfg.target_address)["spot_usdc"]
+            hl_res = watch_hyperliquid_spot_arrival(cfg, base_hl, eff_net)
+            out["hyperliquid_arrival"] = hl_res
+            if send_notify and hl_res.get("arrived_hl_spot"):
+                alert.notify(
+                    f"Hyperliquid Spot USDC credited (+{hl_res['spot_usdc_delta']:.2f} USDC)",
+                    f"Hyperliquid Spot USDC balance is now {hl_res['spot_usdc']:.2f} USDC on {cfg.target_address}.",
+                    source="rebalance_kraken_to_hl",
+                    symbol="HYPEUSDC",
+                )
+        except Exception as exc:  # noqa: BLE001
+            out["status"] = "withdrawal_accepted_monitoring_incomplete"
+            out["hyperliquid_arrival"] = {
+                "arrived_hl_spot": False,
+                "status": "withdrawal_accepted_monitoring_incomplete",
+                "withdrawal_id": wid,
+                "error": str(exc),
+            }
     return out
 
 
@@ -818,33 +1093,46 @@ def _print_human_report(result: dict[str, Any]) -> None:
                     f"or pass --convert-usd."
                 )
 
-    if mode == "executed":
+    if mode in {"executed", "resumed"}:
         print(f"  Kraken withdrawal   : {result.get('withdrawal_id')}")
+        if result.get("status"):
+            print(f"  Transfer status     : {result['status']}")
+        if result.get("stages"):
+            print(f"  Transfer stages     : {result['stages']}")
         if result.get("conversion"):
             print(f"  Spot conversion     : {result['conversion']}")
         if result.get("arbitrum_arrival"):
             print(f"  Arbitrum arrival    : {result['arbitrum_arrival']}")
         if result.get("hyperliquid_arrival"):
             print(f"  Hyperliquid arrival : {result['hyperliquid_arrival']}")
-        print("\n=== Next Steps (2 clicks in Hyperliquid UI, signed by your wallet) ===")
-        for step in result.get("next_steps") or ():
-            print(f"  {step}")
+        if result.get("status") == "withdrawal_accepted_monitoring_incomplete" and result.get("resume_command"):
+            print(f"  Resume command      : {result['resume_command']}")
+        if result.get("next_steps"):
+            print("\n=== Next Steps (2 clicks in Hyperliquid UI, signed by your wallet) ===")
+            for step in result.get("next_steps") or ():
+                print(f"  {step}")
 
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Variant-A capital transfer tool: Kraken -> Arbitrum One -> Hyperliquid Spot (dry-run by default)."
     )
-    p.add_argument("--amount", type=float, default=None, help="Gross USDC amount to withdraw from Kraken.")
+    p.add_argument("--amount", type=parse_cli_float, default=None, help="Gross USDC amount to withdraw from Kraken.")
     p.add_argument(
         "--fraction",
-        type=float,
+        type=parse_cli_float,
         default=None,
         help="Fraction of total Kraken USD+USDC cash to move (e.g. 0.5 for half).",
     )
+    p.add_argument(
+        "--withdrawal-id",
+        type=str,
+        default=None,
+        help="Resume arrival verification for an already-accepted Kraken withdrawal_id (never submits a new withdrawal).",
+    )
     p.add_argument("--withdraw-key", type=str, default=None, help="Kraken whitelisted withdrawal key label.")
     p.add_argument("--to-address", type=str, default=None, help="Override target EVM address (defaults to HL_ACCOUNT_ADDRESS).")
-    p.add_argument("--max-fee", type=float, default=None, help="Maximum Kraken withdrawal fee cap in USDC.")
+    p.add_argument("--max-fee", type=parse_cli_float, default=None, help="Maximum Kraken withdrawal fee cap in USDC.")
     p.add_argument(
         "--convert-usd",
         action="store_true",
@@ -876,32 +1164,43 @@ def main(argv: list[str] | None = None) -> int:
         )
         creds = kraken_credentials("transfer")
         client = KrakenProvider.build_client(creds.key, creds.secret)
-        res = plan_and_run_transfer(
-            client,
-            cfg,
-            amount_usdc=args.amount,
-            fraction=args.fraction,
-            requested_key=args.withdraw_key,
-            convert_usd=bool(args.convert_usd),
-            market_convert=bool(args.market_convert),
-            max_fee_override=args.max_fee,
-            execute=bool(args.execute),
-            wait_arb=not bool(args.no_wait),
-            watch_hl=bool(args.watch_hl),
-            send_notify=bool(args.notify),
-        )
+        if args.withdrawal_id:
+            res = resume_withdrawal_monitoring(
+                client,
+                cfg,
+                args.withdrawal_id,
+                expected_net_usdc=args.amount,
+                watch_hl=bool(args.watch_hl),
+                send_notify=bool(args.notify),
+            )
+        else:
+            res = plan_and_run_transfer(
+                client,
+                cfg,
+                amount_usdc=args.amount,
+                fraction=args.fraction,
+                requested_key=args.withdraw_key,
+                convert_usd=bool(args.convert_usd),
+                market_convert=bool(args.market_convert),
+                max_fee_override=args.max_fee,
+                execute=bool(args.execute),
+                wait_arb=not bool(args.no_wait),
+                watch_hl=bool(args.watch_hl),
+                send_notify=bool(args.notify),
+            )
     except Exception as exc:  # noqa: BLE001
         if args.json:
-            print(encode_json_payload({"ok": False, "error": str(exc)}, indent=2))
+            sys.stdout.write(encode_json_payload({"ok": False, "error": str(exc)}, indent=2) + "\n")
         else:
             print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
 
+    monitoring_incomplete = res.get("status") == "withdrawal_accepted_monitoring_incomplete"
     if args.json:
-        print(encode_json_payload({"ok": True, **res}, indent=2))
+        sys.stdout.write(encode_json_payload({"ok": not monitoring_incomplete, **res}, indent=2) + "\n")
     else:
         _print_human_report(res)
-    return 0
+    return 2 if monitoring_incomplete else 0
 
 
 if __name__ == "__main__":

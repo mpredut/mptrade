@@ -305,6 +305,7 @@ def build_order_event(
     reason: object = None,
     deferred: Optional[bool] = None,
     src: object = None,
+    key: object = None,
 ) -> dict[str, Any]:
     """Construct a compact, canonical order-ledger event dict omitting empty/None fields."""
     v_str = _norm_venue(venue)
@@ -327,6 +328,7 @@ def build_order_event(
         ("vst", clean_upper_scalar(vst)),
         ("reason", _clean_reason(reason)),
         ("src", clean_scalar_str(src)),
+        ("key", clean_scalar_str(key)),
     )
     for k, val in optional_str:
         if val:
@@ -483,6 +485,10 @@ def apply_order_event(
         key = key_id
     else:
         key = key_id or key_vid
+    if key is None:
+        raw_ev_key = clean_scalar_str(event.get("key"))
+        if raw_ev_key and raw_ev_key in orders:
+            key = raw_ev_key
 
     if key is None:
         # Ignore late trailing updates (e.g. ExecutionAudit order_terminal arriving after reconciler already closed the order).
@@ -578,6 +584,67 @@ def apply_order_event(
     return key
 
 
+def update_recently_closed(
+    recently_closed: dict[str, float],
+    summaries: Sequence[dict[str, Any]],
+    eff_now: Optional[float] = None,
+    *,
+    ttl_sec: float = 86400.0,
+    max_entries: int = 512,
+    prune: bool = True,
+) -> dict[str, float]:
+    """Update deduplication tokens for recently closed orders (shared by reader and reconciler)."""
+    if prune and eff_now is not None and eff_now > 0.0:
+        cutoff = eff_now - ttl_sec
+        pruned = {k: ts_v for k, ts_v in recently_closed.items() if ts_v >= cutoff}
+    else:
+        pruned = dict(recently_closed)
+    for row in summaries:
+        if not isinstance(row, dict):
+            continue
+        row_ts = safe_pos_float(row.get("closed_ts"), default=None) or eff_now or resolve_now_ts()
+        for tok in closed_order_tokens(
+            row.get("v"),
+            symbol=row.get("sym"),
+            vid=row.get("vid"),
+            iid=row.get("iid"),
+            cid=row.get("cid"),
+        ):
+            pruned[tok] = round(max(pruned.get(tok, 0.0), row_ts), 3)
+    if len(pruned) > max_entries:
+        keep = sorted(pruned.items(), key=lambda kv: kv[1], reverse=True)[:max_entries]
+        pruned = dict(keep)
+    return pruned
+
+
+def replay_producer_events(
+    orders: dict[str, dict[str, Any]],
+    events: Sequence[dict[str, Any]],
+    *,
+    recently_closed: dict[str, float],
+    closed_out: Optional[list[dict[str, Any]]] = None,
+    eff_now: Optional[float] = None,
+    prune_recently_closed: bool = True,
+) -> tuple[int, dict[str, float]]:
+    """Apply producer events in order while keeping ``recently_closed`` strictly synchronized.
+
+    Single Source of Truth used by both ``OrderLedgerReader.load_active_state`` and
+    ``OrderLedgerReconciler.reconcile_once`` so identical event streams always yield identical active state.
+    """
+    rc = update_recently_closed(recently_closed, (), eff_now, prune=prune_recently_closed)
+    applied = 0
+    sink = closed_out if closed_out is not None else []
+    for ev in events:
+        if not isinstance(ev, dict) or clean_upper_scalar(ev.get("src")) == "RECONCILER":
+            continue
+        before_n = len(sink)
+        if apply_order_event(orders, ev, closed_out=sink, recently_closed=rc) is not None:
+            applied += 1
+        if len(sink) > before_n:
+            rc = update_recently_closed(rc, sink[before_n:], eff_now, prune=prune_recently_closed)
+    return applied, rc
+
+
 class OrderLedgerBackendInterface(ABC):
     """Level 1 pure abstract contract for cross-venue order-ledger persistence."""
 
@@ -646,8 +713,9 @@ class FileOrderLedgerBase(OrderLedgerBackendInterface, ABC):
         return {
             "schema_version": ORDER_LEDGER_SCHEMA_VERSION,
             "updated_ts": 0.0,
-            "journal_cursor": {"file": "", "offset": 0},
+            "journal_cursor": {"file": "", "offset": 0, "offsets": {}},
             "venue_verified_ts": {},
+            "symbol_verified_ts": {},
             "recently_closed": {},
             "orders": {},
         }
@@ -682,12 +750,26 @@ class FileOrderLedgerBase(OrderLedgerBackendInterface, ABC):
         raw_orders = raw.get("orders") if isinstance(raw.get("orders"), dict) else {}
         cur = raw.get("journal_cursor") if isinstance(raw.get("journal_cursor"), dict) else {}
         raw_ver = raw.get("venue_verified_ts") if isinstance(raw.get("venue_verified_ts"), dict) else {}
+        raw_sym_ver = raw.get("symbol_verified_ts") if isinstance(raw.get("symbol_verified_ts"), dict) else {}
         raw_rc = raw.get("recently_closed") if isinstance(raw.get("recently_closed"), dict) else {}
+        cur_file = clean_scalar_str(cur.get("file")) or ""
+        cur_off = safe_nonneg_int(cur.get("offset"), default=0) or 0
+        norm_cursor: dict[str, Any] = {"file": cur_file, "offset": cur_off}
+        if isinstance(cur.get("offsets"), dict):
+            norm_offsets = {
+                str(k): safe_nonneg_int(v, default=0) or 0
+                for k, v in cur["offsets"].items()
+                if clean_scalar_str(k) is not None
+            }
+            if cur_file and cur_file not in norm_offsets:
+                norm_offsets[cur_file] = cur_off
+            norm_cursor["offsets"] = norm_offsets
         return {
             "schema_version": safe_nonneg_int(raw.get("schema_version"), default=ORDER_LEDGER_SCHEMA_VERSION) or ORDER_LEDGER_SCHEMA_VERSION,
             "updated_ts": safe_nonneg_float(raw.get("updated_ts"), default=0.0) or 0.0,
-            "journal_cursor": {"file": clean_scalar_str(cur.get("file")) or "", "offset": safe_nonneg_int(cur.get("offset"), default=0) or 0},
+            "journal_cursor": norm_cursor,
             "venue_verified_ts": {str(k): safe_nonneg_float(v, default=0.0) or 0.0 for k, v in raw_ver.items() if clean_scalar_str(k) is not None},
+            "symbol_verified_ts": {str(k): safe_nonneg_float(v, default=0.0) or 0.0 for k, v in raw_sym_ver.items() if clean_scalar_str(k) is not None},
             "recently_closed": {str(k): safe_nonneg_float(v, default=0.0) or 0.0 for k, v in raw_rc.items() if clean_scalar_str(k) is not None},
             "orders": {str(k): dict(v) for k, v in raw_orders.items() if clean_scalar_str(k) is not None and isinstance(v, dict)},
         }
@@ -703,20 +785,67 @@ class FileOrderLedgerBase(OrderLedgerBackendInterface, ABC):
     def read_events_after_cursor(
         self, cursor: Optional[dict[str, Any]], *, max_days: int = 2
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Read unread journal records across all eligible UTC-day files using per-file byte offsets."""
         files = self.list_event_files()
         cur_file = clean_scalar_str(cursor.get("file")) if isinstance(cursor, dict) else None
         cur_offset = safe_nonneg_int(cursor.get("offset"), default=0) if isinstance(cursor, dict) else 0
+        raw_offsets = cursor.get("offsets") if isinstance(cursor, dict) else None
+        has_offsets_map = isinstance(raw_offsets, dict)
+        offsets: dict[str, int] = (
+            {
+                str(k): safe_nonneg_int(v, default=0) or 0
+                for k, v in raw_offsets.items()
+                if clean_scalar_str(k) is not None
+            }
+            if has_offsets_map
+            else ({cur_file: cur_offset} if cur_file else {})
+        )
         if not files:
-            return [], {"file": cur_file or "", "offset": cur_offset or 0}
-        target_files = [p for p in files if os.path.basename(p) >= cur_file] if cur_file else files[-max(1, safe_nonneg_int(max_days, default=2) or 2):]
+            return [], {"file": cur_file or "", "offset": cur_offset or 0, "offsets": offsets}
+
+        window = max(1, safe_nonneg_int(max_days, default=2) or 2)
+        recent_files = files[-window:]
+        recent_names = {os.path.basename(p) for p in recent_files}
+        eligible_files = [
+            p
+            for p in files
+            if (
+                (fn := os.path.basename(p)) in recent_names
+                or fn in offsets
+                or (cur_file and fn >= cur_file)
+            )
+        ]
+
         events: list[dict[str, Any]] = []
+        updated_offsets: dict[str, int] = dict(offsets)
         last_file, last_offset = cur_file or "", cur_offset or 0
-        for fpath in target_files:
+        for fpath in eligible_files:
             fname = os.path.basename(fpath)
-            chunk, new_off = read_jsonl_dicts_from_offset(fpath, cur_offset if (cur_file and fname == cur_file) else 0)
+            if fname in offsets:
+                start_off = offsets[fname]
+            elif (not has_offsets_map) and cur_file and fname < cur_file:
+                # Upgrading from legacy single-file cursor: baseline older day file at current EOF
+                # so already-processed history is not replayed, while future late writes ARE captured.
+                try:
+                    updated_offsets[fname] = os.path.getsize(fpath)
+                except OSError:
+                    updated_offsets[fname] = 0
+                continue
+            else:
+                start_off = 0
+            chunk, new_off = read_jsonl_dicts_from_offset(fpath, start_off)
             events.extend(chunk)
-            last_file, last_offset = fname, new_off
-        return events, {"file": last_file, "offset": last_offset}
+            updated_offsets[fname] = new_off
+            if not last_file or fname >= last_file:
+                last_file, last_offset = fname, new_off
+
+        # Retain offsets for the active rollover window (recent_names) so cursor stays bounded.
+        pruned_offsets = {
+            fname: off
+            for fname, off in sorted(updated_offsets.items())
+            if fname in recent_names or (last_file and fname >= last_file)
+        }
+        return events, {"file": last_file, "offset": last_offset, "offsets": pruned_offsets}
 
 
 class OrderLedgerWriter(FileOrderLedgerBase):
@@ -776,14 +905,24 @@ class OrderLedgerReader(FileOrderLedgerBase):
     def load_active_state(self, *, apply_tail: bool = True) -> dict[str, Any]:
         """Load ``orders_active.json`` passively and optionally replay unmaterialized tail events in RAM."""
         snap = self.read_active_snapshot(repair_files=False)
-        orders, cursor, recently_closed, tail_count = snap["orders"], snap["journal_cursor"], snap["recently_closed"], 0
+        orders, cursor, recently_closed, tail_count = snap["orders"], snap["journal_cursor"], dict(snap["recently_closed"]), 0
         if _parse_bool_flag(apply_tail, True):
             tail_events, cursor = self.read_events_after_cursor(cursor)
-            for ev in tail_events:
-                if clean_upper_scalar(ev.get("src")) != "RECONCILER":
-                    apply_order_event(orders, ev, recently_closed=recently_closed)
-                    tail_count += 1
-        return {**snap, "journal_cursor": cursor, "tail_events_applied": tail_count, "orders": orders}
+            tail_count, recently_closed = replay_producer_events(
+                orders,
+                tail_events,
+                recently_closed=recently_closed,
+                closed_out=None,
+                eff_now=snap.get("updated_ts") or None,
+                prune_recently_closed=False,
+            )
+        return {
+            **snap,
+            "journal_cursor": cursor,
+            "recently_closed": recently_closed,
+            "tail_events_applied": tail_count,
+            "orders": orders,
+        }
 
     def list_active_orders(
         self,

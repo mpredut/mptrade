@@ -110,12 +110,13 @@ def _detect_non_market_step(
     *,
     cashflow_jump_pct: float = DEFAULT_CASHFLOW_JUMP_PCT,
 ) -> tuple[bool, bool, float]:
-    """Return ``(is_external_cashflow, is_venue_set_change, delta_nav_usd)`` for a single NAV interval.
+    """Return ``(is_external_cashflow, is_venue_set_change, cashflow_or_delta_usd)`` for a single NAV interval.
 
-    Honors explicit ``confirmed_cashflow_usd`` when supplied. Otherwise applies a conservation
-    bound requiring ``delta_cash`` to explain the NAV step without a large opposing rotation into
-    ``invested_usd`` (so a large BUY followed by a market drop is never misclassified as a withdrawal).
+    Only explicit ``confirmed_cashflow_usd`` proves an external deposit/withdrawal; an unconfirmed
+    cash delta close to the NAV delta is mathematically indistinguishable from buying an asset and
+    suffering an equal mark-to-market loss, so it is NEVER classified as an external cashflow.
     """
+    _ = cashflow_jump_pct  # retained in signature for backward compatibility
     prev_nav = safe_pos_float(prev.get("nav_usd"), default=0.0) or 0.0
     cur_nav = safe_pos_float(cur.get("nav_usd"), default=0.0) or 0.0
     if prev_nav <= 0.0 or cur_nav <= 0.0:
@@ -129,18 +130,6 @@ def _detect_non_market_step(
     if (conf_cf := safe_float(cur.get("confirmed_cashflow_usd"), default=None)) is not None and abs(conf_cf) > 0.0:
         return True, False, conf_cf
 
-    jump_pct = (abs(delta_nav) / prev_nav) * 100.0
-    thresh = safe_pos_float(cashflow_jump_pct, default=DEFAULT_CASHFLOW_JUMP_PCT) or DEFAULT_CASHFLOW_JUMP_PCT
-    if jump_pct < thresh:
-        return False, False, delta_nav
-
-    delta_cash = _extract_point_cash_usd(cur) - _extract_point_cash_usd(prev)
-    cash_share_max = 2.0 - _CASHFLOW_CASH_SHARE_MIN
-    if (
-        (delta_cash * delta_nav) > 0.0
-        and _CASHFLOW_CASH_SHARE_MIN * abs(delta_nav) <= abs(delta_cash) <= cash_share_max * abs(delta_nav)
-    ):
-        return True, False, delta_nav
     return False, False, delta_nav
 
 
@@ -309,31 +298,28 @@ def evaluate_nav_drawdown_metrics(
     adj_series: list[tuple[float, str, float, dict[str, Any]]] = []
     cur_idx = 1.0
     cf_events = 0
-    thresh = safe_pos_float(cashflow_jump_pct, default=DEFAULT_CASHFLOW_JUMP_PCT) or DEFAULT_CASHFLOW_JUMP_PCT
     for i, (pt, was_superset) in enumerate(scoped_points):
         if i > 0:
             prev, prev_superset = scoped_points[i - 1]
-            if scope_norm == "all":
-                flagged_cf = bool(pt.get("external_cashflow")) or bool(pt.get("venue_set_changed"))
-                if not flagged_cf:
-                    det_cf, det_vs, _ = _detect_non_market_step(prev, pt, cashflow_jump_pct=cashflow_jump_pct)
-                    flagged_cf = det_cf or det_vs
-            else:
-                prev_v = set((prev.get("venues_usd") or {}).keys())
-                cur_v = set((pt.get("venues_usd") or {}).keys())
-                jump_pct = (
-                    (abs(pt["nav_usd"] - prev["nav_usd"]) / prev["nav_usd"]) * 100.0
-                    if prev["nav_usd"] > 0.0
-                    else 0.0
-                )
-                flagged_cf = bool(prev_v and cur_v and prev_v != cur_v) or (
-                    bool(pt.get("external_cashflow")) and jump_pct >= thresh
-                )
-                if not flagged_cf and was_superset == prev_superset:
-                    det_cf, det_vs, _ = _detect_non_market_step(prev, pt, cashflow_jump_pct=cashflow_jump_pct)
-                    flagged_cf = det_cf or det_vs
-            if flagged_cf:
+            prev_v = set((prev.get("venues_usd") or {}).keys())
+            cur_v = set((pt.get("venues_usd") or {}).keys())
+            is_vs_change = bool(prev_v and cur_v and prev_v != cur_v) or (
+                scope_norm == "all" and bool(pt.get("venue_set_changed"))
+            )
+            conf_cf = safe_float(pt.get("confirmed_cashflow_usd"), default=None)
+            has_conf_cf = (
+                conf_cf is not None
+                and abs(conf_cf) > 0.0
+                and (scope_norm == "all" or not was_superset)
+            )
+            if is_vs_change:
                 cf_events += 1
+            elif has_conf_cf and prev["nav_usd"] > 0.0:
+                cf_events += 1
+                # Deduct ONLY the confirmed external cashflow amount from return calculation:
+                # portfolio return across the step is (NAV_cur - confirmed_cashflow) / NAV_prev.
+                mkt_nav_cur = max(0.0, pt["nav_usd"] - conf_cf)
+                cur_idx *= mkt_nav_cur / prev["nav_usd"]
             elif prev["nav_usd"] > 0.0:
                 cur_idx *= pt["nav_usd"] / prev["nav_usd"]
         adj_series.append((pt["ts"], _utc_day_str(pt["ts"]), cur_idx, pt))

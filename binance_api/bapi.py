@@ -53,7 +53,15 @@ def update_price(symbol):
         return None
     try:
         ticker = client.get_symbol_ticker(symbol=symbol)
-        raw_px = ticker["price"] if isinstance(ticker, dict) else None
+        if not isinstance(ticker, dict):
+            raise ValueError(f"invalid ticker payload: {ticker!r}")
+        if "symbol" in ticker:
+            resp_sym = clean_upper_scalar(ticker.get("symbol"))
+            if resp_sym != symbol:
+                raise ValueError(
+                    f"ticker symbol mismatch: requested {symbol}, got {ticker.get('symbol')!r}"
+                )
+        raw_px = ticker.get("price")
         price = safe_pos_float(raw_px, default=None)
         if price is None:
             raise ValueError(f"invalid ticker price: {raw_px!r}")
@@ -223,8 +231,15 @@ _asset_value_cache_lock = threading.Lock()
 
 def _get_symbol_price_safe(symbol):
     try:
-        ticker = client.get_symbol_ticker(symbol=symbol)
-        raw_px = (ticker or {}).get("price") if isinstance(ticker, dict) else None
+        sym_u = clean_upper_scalar(symbol)
+        if sym_u is None:
+            return None
+        ticker = client.get_symbol_ticker(symbol=sym_u)
+        if not isinstance(ticker, dict):
+            return None
+        if "symbol" in ticker and clean_upper_scalar(ticker.get("symbol")) != sym_u:
+            return None
+        raw_px = ticker.get("price")
         return safe_pos_float(raw_px, default=None)
     except Exception:
         return None

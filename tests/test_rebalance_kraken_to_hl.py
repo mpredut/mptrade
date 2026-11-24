@@ -296,3 +296,147 @@ def test_execute_refuses_shortfall_without_convert_flag_and_executes_when_funded
         )
         mock_notify.assert_called_once()
         assert mock_notify.call_args.kwargs == {"source": "rebalance_kraken_to_hl", "symbol": "HYPEUSDC"}
+
+
+def test_wait_for_arbitrum_arrival_requires_tx_confirmation_not_independent_balance_jump():
+    """Audit #4: Pending Kraken withdrawal with no txid + independent +10 USDC balance jump MUST NOT
+    set arrived=True or trigger arrival notification; confirmation requires the withdrawal's transaction."""
+    cfg = _make_cfg(poll_interval_sec=0.005, poll_timeout_sec=0.02)
+    cli = _mock_client(zusd=6400.0, usdc=25.0, fee=1.0)
+    cli.funding_withdrawals.return_value = [
+        {"withdrawal_id": "WD-PEND-1", "status": "pending", "onchain_transaction": None}
+    ]
+    cli.funding_withdraw.return_value = {"withdrawal_id": "WD-PEND-1"}
+
+    # Balance independently jumps from 100 -> 110 USDC while Kraken withdrawal is still pending without txid
+    arb_seq = [{"eth": 0.0012, "usdc": 100.0}] + [{"eth": 0.0012, "usdc": 110.0}] * 10
+    with (
+        patch.object(reb, "fetch_arbitrum_balances", side_effect=arb_seq),
+        patch.object(
+            reb,
+            "fetch_hyperliquid_balances",
+            return_value={"spot_usdc": 54.0, "spot_hype": 15.9, "perp_equity_usd": 0.0, "perp_withdrawable_usd": 0.0},
+        ),
+        patch.object(reb.alert, "notify") as mock_notify,
+    ):
+        res = reb.plan_and_run_transfer(
+            cli, cfg, amount_usdc=11.0, execute=True, wait_arb=True, send_notify=True
+        )
+    assert res["withdrawal_id"] == "WD-PEND-1"
+    assert res["status"] == "withdrawal_accepted_monitoring_incomplete"
+    assert res["arbitrum_arrival"]["arrived"] is False
+    assert res["arbitrum_arrival"]["stages"] == {
+        "withdrawal_accepted": True,
+        "transaction_confirmed": False,
+        "balance_observed": True,
+    }
+    assert res["arbitrum_arrival"]["arb_usdc_delta"] == pytest.approx(10.0)
+    mock_notify.assert_not_called()
+
+    # With a 66-char EVM tx hash, arrival confirms ONLY once eth_getTransactionReceipt confirms the USDC Transfer log
+    tx_hash = "0x" + "ab" * 32
+    cli.funding_withdrawals.return_value = [
+        {"withdrawal_id": "WD-EVM-1", "status": "success", "onchain_transaction": tx_hash}
+    ]
+    to_topic = "0x" + "0" * 24 + _WALLET[2:].lower()
+    usdc_10_hex = "0x" + format(10_000_000, "064x")
+    receipt_seq = [
+        {"jsonrpc": "2.0", "id": 3, "result": None},  # poll 1: tx not mined yet
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": {
+                "status": "0x1",
+                "blockNumber": "0x10",
+                "logs": [
+                    {
+                        "address": cfg.arb_usdc_contract,
+                        "topics": [reb._ERC20_TRANSFER_TOPIC, "0x" + "0" * 64, to_topic],
+                        "data": usdc_10_hex,
+                    }
+                ],
+            },
+        },
+    ]
+    cfg_long = _make_cfg(poll_interval_sec=0.005, poll_timeout_sec=0.5)
+    with (
+        patch.object(reb, "fetch_arbitrum_balances", return_value={"eth": 0.0012, "usdc": 110.0}),
+        patch.object(reb, "fetch_json_post", side_effect=receipt_seq),
+    ):
+        arr = reb.wait_for_arbitrum_arrival(cli, cfg_long, "WD-EVM-1", 100.0, 10.0)
+    assert arr["arrived"] is True
+    assert arr["arb_txid"] == tx_hash
+    assert arr["tx_usdc_amount"] == pytest.approx(10.0)
+    assert arr["stages"] == {
+        "withdrawal_accepted": True,
+        "transaction_confirmed": True,
+        "balance_observed": True,
+    }
+
+
+def test_rpc_error_after_withdrawal_preserves_id_and_cli_resume_avoids_duplicate_withdraw(capsys):
+    """P1 Rebalance Resumption: RPC failure after Kraken accepts withdrawal MUST return withdrawal_id
+    in monitoring_incomplete state; resuming with --withdrawal-id MUST NEVER call funding_withdraw twice."""
+    import json
+
+    cfg = _make_cfg(poll_interval_sec=0.005, poll_timeout_sec=0.2)
+    cli = _mock_client(zusd=6400.0, usdc=25.0, fee=1.0)
+    cli.funding_withdraw.return_value = {"withdrawal_id": "WD-RESUME-42"}
+    cli.funding_withdrawals.return_value = [
+        {"withdrawal_id": "WD-RESUME-42", "status": "success", "onchain_transaction": "0xarbtx42", "net_amount": {"amount": "10.0"}}
+    ]
+
+    # 1. Execute: snapshot RPC succeeds, withdrawal accepted, then first monitoring RPC raises
+    arb_calls = [
+        {"eth": 0.0012, "usdc": 100.0},
+        RuntimeError("Arbitrum RPC timeout"),
+    ]
+
+    def _arb_side_effect(*_a, **_kw):
+        nxt = arb_calls.pop(0)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt
+
+    fake_creds = MagicMock(key="tk", secret="ts")
+    with (
+        patch.object(reb, "load_rebalance_config", return_value=cfg),
+        patch.object(reb, "kraken_credentials", return_value=fake_creds),
+        patch.object(reb.KrakenProvider, "build_client", return_value=cli),
+        patch.object(reb, "fetch_arbitrum_balances", side_effect=_arb_side_effect),
+        patch.object(
+            reb,
+            "fetch_hyperliquid_balances",
+            return_value={"spot_usdc": 54.0, "spot_hype": 15.9, "perp_equity_usd": 0.0, "perp_withdrawable_usd": 0.0},
+        ),
+    ):
+        rc1 = reb.main(["--amount", "11", "--execute", "--json"])
+    cap1 = capsys.readouterr()
+    assert rc1 == 2
+    payload1 = json.loads(cap1.out)
+    assert payload1["ok"] is False
+    assert payload1["withdrawal_id"] == "WD-RESUME-42"
+    assert payload1["status"] == "withdrawal_accepted_monitoring_incomplete"
+    assert payload1["stages"]["withdrawal_accepted"] is True
+    assert payload1["stages"]["transaction_confirmed"] is False
+    assert cli.funding_withdraw.call_count == 1
+
+    # 2. Resume monitoring by --withdrawal-id: verifies arrival WITHOUT submitting another withdrawal
+    with (
+        patch.object(reb, "load_rebalance_config", return_value=cfg),
+        patch.object(reb, "kraken_credentials", return_value=fake_creds),
+        patch.object(reb.KrakenProvider, "build_client", return_value=cli),
+        patch.object(reb, "fetch_arbitrum_balances", side_effect=[{"eth": 0.0012, "usdc": 100.0}, {"eth": 0.0012, "usdc": 110.0}]),
+        patch.object(reb.alert, "notify") as mock_notify,
+    ):
+        rc2 = reb.main(["--withdrawal-id", "WD-RESUME-42", "--notify", "--json"])
+    cap2 = capsys.readouterr()
+    assert rc2 == 0
+    payload2 = json.loads(cap2.out)
+    assert payload2["ok"] is True
+    assert payload2["mode"] == "resumed"
+    assert payload2["withdrawal_id"] == "WD-RESUME-42"
+    assert payload2["status"] == "arrived"
+    assert payload2["arbitrum_arrival"]["arrived"] is True
+    assert cli.funding_withdraw.call_count == 1  # NEVER called a second time!
+    mock_notify.assert_called_once()

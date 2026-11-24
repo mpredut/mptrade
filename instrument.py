@@ -697,7 +697,7 @@ class Instrument:
                             except Exception:  # noqa: BLE001
                                 ref_price = None
                             self._apply_outbox_lineage_prefix(ctx.retry_kwargs, ctx.kwargs)
-                            if order_retry.enqueue(
+                            enqueued_res = order_retry.enqueue(
                                 self.symbol,
                                 ctx.side_u,
                                 queue_qty,
@@ -709,13 +709,28 @@ class Instrument:
                                 intent_id=ctx.kwargs.get("intent_id"),
                                 kind=ctx.order_kind,
                                 ttl_sec=ctx.kwargs.get("ttl_sec"),
-                            ):
+                            )
+                            if enqueued_res:
                                 ctx.retry_enqueued = True
+                                if isinstance(enqueued_res, dict):
+                                    ctx.enqueued_intent_id = clean_order_id(
+                                        enqueued_res.get("intent_id")
+                                    ) or (
+                                        f"outbox-{rec_id}"
+                                        if (rec_id := clean_order_id(enqueued_res.get("id")))
+                                        else None
+                                    )
+                                elif not isinstance(enqueued_res, bool) and (
+                                    rec_id := clean_order_id(enqueued_res)
+                                ):
+                                    ctx.enqueued_intent_id = f"outbox-{rec_id}"
             except Exception as _e:  # noqa: BLE001
                 print(f"[{self.symbol}] {ctx.side_u} enqueue retry failed (ignored): {_e}")
 
         # Record tracked pre-submit guard blocks (deduped) and non-outbox acceptances into the Order Ledger SSoT.
-        ledger_iid = clean_order_id(ctx.kwargs.get("intent_id"))
+        ledger_iid = clean_order_id(ctx.kwargs.get("intent_id")) or clean_order_id(
+            getattr(ctx, "enqueued_intent_id", None)
+        )
         ledger_cid = clean_order_id(ctx.prequeued_client_order_id) or clean_order_id(ctx.kwargs.get("client_order_id"))
         if ctx.order is None and not ctx.submit_attempted and not ctx.prequeued_intent_id:
             if ctx.retry_enqueued or ledger_iid or ledger_cid:

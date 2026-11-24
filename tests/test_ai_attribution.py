@@ -170,22 +170,22 @@ def test_ai_attribution_pure_evaluation_and_override_audit():
 
     # Fee-adjusted PnL math:
     # - BTCUSDC Binance: +2.00% gross on $1000 = +$20.00 minus 20bps ($2.00) = +$18.00 net
-    # - HYPEUSDC HL: -2.00% gross on $490 = -$9.80 minus 8bps ($0.392) = -$10.192 net
+    # - HYPEUSDC HL: -2.00% gross on $500 (entry basis) = -$10.00 minus 8bps ($0.40) = -$10.40 net
     # - SPCXxUSD Kraken xStock open MTM: +2.00% gross on $400 = +$8.00 minus 0bps ($0.00) = +$8.00 net
     ai_sum = rep["ai_summary"]
     assert ai_sum["closed_trades"] == 2
     assert ai_sum["open_mtm"] == 1
     assert ai_sum["wins"] == 2 and ai_sum["losses"] == 1
-    assert ai_sum["realized_gross_usd"] == pytest.approx(10.20, abs=0.05)
-    assert ai_sum["realized_net_usd"] == pytest.approx(7.81, abs=0.05)
+    assert ai_sum["realized_gross_usd"] == pytest.approx(10.00, abs=0.05)
+    assert ai_sum["realized_net_usd"] == pytest.approx(7.60, abs=0.05)
     assert ai_sum["open_mtm_net_usd"] == pytest.approx(8.00, abs=0.05)
-    assert ai_sum["total_net_usd"] == pytest.approx(15.81, abs=0.05)
-    assert ai_sum["profit_factor"] == pytest.approx((18.0 + 8.0) / 10.192, abs=0.05)
+    assert ai_sum["total_net_usd"] == pytest.approx(15.60, abs=0.05)
+    assert ai_sum["profit_factor"] == pytest.approx((18.0 + 8.0) / 10.40, abs=0.05)
 
     # Breakdown by model_used
     by_m = rep["ai_by_model"]
     assert by_m["gemini-4-neon-high"]["realized_net_usd"] == pytest.approx(18.00, abs=0.05)
-    assert by_m["gemini-4-neon-medium"]["realized_net_usd"] == pytest.approx(-10.19, abs=0.05)
+    assert by_m["gemini-4-neon-medium"]["realized_net_usd"] == pytest.approx(-10.40, abs=0.05)
     assert by_m["claude-sonnet-5-5-medium"]["open_mtm_net_usd"] == pytest.approx(8.00, abs=0.05)
 
     # Advisory guard override audit: G_PROF scored ONLY on the BTCUSDC BUY entry (AI_RIGHT=1, GUARD_RIGHT=0),
@@ -194,7 +194,7 @@ def test_ai_attribution_pure_evaluation_and_override_audit():
     assert ov["G_PROF"]["ai_right"] == 1 and ov["G_PROF"]["guard_right"] == 0
     assert ov["G_PROF"]["net_usd"] == pytest.approx(18.00, abs=0.05)
     assert ov["GI_WHALE"]["ai_right"] == 0 and ov["GI_WHALE"]["guard_right"] == 1
-    assert ov["GI_WHALE"]["net_usd"] == pytest.approx(-10.19, abs=0.05)
+    assert ov["GI_WHALE"]["net_usd"] == pytest.approx(-10.40, abs=0.05)
 
     # 4A Trade Plan Calibration
     plans = rep["trade_plan_calibration"]
