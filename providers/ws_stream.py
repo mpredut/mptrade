@@ -6,7 +6,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from typing import Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, Optional, Set
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 
@@ -15,17 +15,24 @@ try:
 except ImportError:  # pragma: no cover
     _uvloop = None
 
+try:
+    import websockets as _websockets
+except ImportError:  # pragma: no cover
+    _websockets = None
+
 from botcore import (
     _parse_bool_flag,
     async_interruptible_sleep,
     clean_scalar_str,
     clean_upper_scalar,
     is_worker_thread_alive,
+    resolve_now_ts,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_int,
     set_stop_event,
 )
+from state_io import parse_json_payload
 
 
 def mount_connect_retry(
@@ -300,3 +307,120 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
     def running_symbols(self) -> Set[str]:
         with self._lock:
             return set(self._subscribed)
+
+
+class JsonPublicWsStreamBase(AsyncReconnectStreamBase):
+    """Shared Level-2 base for stateless public JSON WebSocket streams (connect, subscribe, ping, freshness)."""
+
+    _default_thread_name = "PublicJsonWS"
+
+    def __init__(self, *, app_ping_interval_sec: float = 0.0):
+        super().__init__()
+        self._state_lock = threading.Lock()
+        self._last_msg_ts: float = 0.0
+        self._connected: bool = False
+        self._disconnected_since_ts: float = 0.0
+        self._app_ping_interval_sec: float = (
+            safe_nonneg_float(app_ping_interval_sec, default=0.0) or 0.0
+        )
+
+    @abstractmethod
+    def _resolve_ws_url(self) -> Optional[str]:
+        """Return the target public WebSocket URL or ``None`` if nothing is configured to stream."""
+
+    def _build_subscribe_payloads(self) -> tuple[str, ...]:
+        """Return zero or more JSON subscribe frames sent immediately after connecting."""
+        return ()
+
+    def _app_ping_payload(self) -> Optional[str]:
+        """Return optional application-level ping frame sent every ``_app_ping_interval_sec``."""
+        return None
+
+    @abstractmethod
+    def _handle_payload(self, payload: Any, now_ts: float) -> bool:
+        """Process a decoded JSON WebSocket payload; return True when domain state updated."""
+
+    def ingest_raw_message(self, raw: Any, *, now_ts: Optional[float] = None) -> bool:
+        """Decode one raw JSON WebSocket message and dispatch to ``_handle_payload``."""
+        if not raw:
+            return False
+        payload = parse_json_payload(raw, default=None) if isinstance(raw, (str, bytes)) else raw
+        if payload is None:
+            return False
+        eff_now = resolve_now_ts(now_ts)
+        updated = False
+        try:
+            updated = bool(self._handle_payload(payload, eff_now))
+        except Exception as exc:
+            _ws_logger.debug("%s payload error: %s", self.__class__.__name__, exc)
+            return False
+        with self._state_lock:
+            self._last_msg_ts = eff_now
+            self._disconnected_since_ts = 0.0
+        return updated
+
+    def last_message_ts(self) -> float:
+        with self._state_lock:
+            return self._last_msg_ts
+
+    def is_connected(self) -> bool:
+        with self._state_lock:
+            return self._connected
+
+    def is_fresh(self, max_age_sec: float, *, now: Optional[float] = None) -> bool:
+        """Return True when the stream has received a message within ``max_age_sec`` and is not disconnected."""
+        max_age = safe_nonneg_float(max_age_sec, default=0.0) or 0.0
+        if max_age <= 0.0:
+            return False
+        eff_now = resolve_now_ts(now)
+        with self._state_lock:
+            if self._disconnected_since_ts > 0.0 and not self._connected:
+                return False
+            last_ts = self._last_msg_ts
+        return last_ts > 0.0 and 0.0 <= (eff_now - last_ts) <= max_age
+
+    def _on_session_end(self, exc: Optional[Exception]) -> None:
+        _ = exc
+        with self._state_lock:
+            self._connected = False
+            self._disconnected_since_ts = time.time()
+
+    async def _connect_and_run(self) -> None:
+        if _websockets is None:
+            _ws_logger.warning("%s: websockets package unavailable", self.__class__.__name__)
+            self._stop_event.set()
+            return
+        ws_url = clean_scalar_str(self._resolve_ws_url())
+        if not ws_url:
+            await self._interruptible_sleep(5.0)
+            return
+        async with _websockets.connect(
+            ws_url,
+            ping_interval=WS_PING_INTERVAL,
+            ping_timeout=WS_PING_TIMEOUT,
+            close_timeout=WS_CLOSE_TIMEOUT,
+        ) as ws:
+            for sub_msg in self._build_subscribe_payloads():
+                if sub_msg:
+                    await ws.send(sub_msg)
+            with self._state_lock:
+                self._connected = True
+                self._disconnected_since_ts = 0.0
+            last_ping = time.monotonic()
+            ping_payload = self._app_ping_payload() if self._app_ping_interval_sec > 0.0 else None
+            while not self._stop_event.is_set():
+                if ping_payload and (time.monotonic() - last_ping) >= self._app_ping_interval_sec:
+                    try:
+                        await ws.send(ping_payload)
+                    except Exception:
+                        break
+                    last_ping = time.monotonic()
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
+                except asyncio.TimeoutError:
+                    continue
+                except _websockets.exceptions.ConnectionClosed:
+                    break
+                except Exception:
+                    continue
+                self.ingest_raw_message(raw)

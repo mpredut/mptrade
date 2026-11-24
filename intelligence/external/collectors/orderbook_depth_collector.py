@@ -34,6 +34,7 @@ from cachepaths import (
 )
 from instrument_registry import resolve_symbol_identity, venue_for_symbol
 from providers.base import MarketDataProvider
+from providers.venue_ws_protocols import BinancePublicWsMixin
 
 logger = logging.getLogger("intelligence.external.orderbook_depth")
 
@@ -178,6 +179,10 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             return self._fetch_spot_cvd_payload(url, post_body)
         return self._fetch_spot_cvd_payload(url, post_body, timeout=timeout)
 
+    @staticmethod
+    def _extract_binance_kline_5m_symbol(url: str) -> Optional[str]:
+        return BinancePublicWsMixin.extract_kline_5m_symbol_from_url(url)
+
     def _resolve_real_spot_cvd_15m(
         self,
         symbol: str,
@@ -186,18 +191,41 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         now: float,
         deadline_mono: Optional[float] = None,
     ) -> Optional[float]:
-        """Fetch and memoize real venue-local 15m spot taker CVD & total volume (USD) at ``whale_interval_sec`` cadence."""
+        """Fetch and memoize real venue-local 15m spot taker CVD & total volume (USD) via live WS or REST fallback."""
         if not venue:
             return None
         if "_fetch_json_dict" in self.__dict__ and "_fetch_spot_cvd_payload" not in self.__dict__:
             return None
         memo_key = (venue, symbol)
         ttl_sec = safe_pos_float(resolve_derived_telemetry_intervals().get("whale_interval_sec"), 60.0) or 60.0
+        req_spec, extractor = MarketDataProvider.resolve_spot_flow_15m_spec(symbol, venue=venue, now_ts=now)
+        ws_hub = getattr(self, "ws_hub", None)
+        bn_kline_sym = (
+            self._extract_binance_kline_5m_symbol(req_spec[0])
+            if (ws_hub is not None and req_spec is not None)
+            else None
+        )
+        if ws_hub is not None and bn_kline_sym and req_spec is not None:
+            ws_flow = ws_hub.get_binance_spot_flow_15m(bn_kline_sym, now=now)
+            if ws_flow is not None:
+                cvd_f, vol_f = ws_flow
+                with self._get_ob_state_lock():
+                    lru_dict_put(self._spot_cvd_memo, memo_key, (now, cvd_f, vol_f), 128)
+                self._resolve_agg_spot_cvd_15m(
+                    symbol,
+                    venue=venue,
+                    now=now,
+                    local_url=req_spec[0],
+                    local_cvd=cvd_f,
+                    local_vol=vol_f,
+                    ttl_sec=ttl_sec,
+                    deadline_mono=deadline_mono,
+                )
+                return cvd_f
         with self._get_ob_state_lock():
             cached_cvd = self._spot_cvd_memo.get(memo_key)
         if cached_cvd is not None and 0.0 <= (now - cached_cvd[0]) < ttl_sec:
             return cached_cvd[1]
-        req_spec, extractor = MarketDataProvider.resolve_spot_flow_15m_spec(symbol, venue=venue, now_ts=now)
         if req_spec is None or not callable(extractor):
             return None
         rem_to = resolve_remaining_timeout_sec(deadline_mono, 3.5, min_timeout=self._SUBCALL_MIN_BUDGET_SEC)
@@ -206,6 +234,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         url, post_body = req_spec
         try:
             raw_payload = self._call_spot_cvd_payload(url, post_body, rem_to)
+            if ws_hub is not None and bn_kline_sym and isinstance(raw_payload, list):
+                ws_hub.seed_binance_spot_bars(bn_kline_sym, raw_payload, now=now)
             flow_res = extractor(raw_payload, since_ts=max(0.0, now - 900.0))
             if isinstance(flow_res, (tuple, list)) and len(flow_res) >= 2:
                 cvd_f = safe_float(flow_res[0], default=None)
@@ -245,6 +275,24 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
     ) -> Optional[Tuple[float, Optional[float], str]]:
         """Combine venue-local USDC spot flow with deep primary-quote (USDT) spot flow when available."""
         memo_key = (venue, symbol)
+        agg_spec, agg_ext = MarketDataProvider.resolve_agg_spot_flow_15m_spec(symbol, venue=venue, now_ts=now)
+        ws_hub = getattr(self, "ws_hub", None)
+        agg_bn_sym = (
+            self._extract_binance_kline_5m_symbol(agg_spec[0])
+            if (ws_hub is not None and agg_spec is not None and agg_spec[0] != local_url)
+            else None
+        )
+        if ws_hub is not None and agg_bn_sym and agg_spec is not None:
+            ws_agg = ws_hub.get_binance_spot_flow_15m(agg_bn_sym, now=now)
+            if ws_agg is not None:
+                sib_cvd, sib_vol = ws_agg
+                tot_cvd = round(local_cvd + sib_cvd, 0)
+                tot_vol = round((local_vol or 0.0) + sib_vol, 0)
+                agg_venue = MarketDataProvider.resolve_venue_for_orderbook_url(agg_spec[0])
+                src_lbl = "usdc+usdt" if agg_venue == venue else f"{venue}+bn_usdt"
+                with self._get_ob_state_lock():
+                    lru_dict_put(self._agg_spot_cvd_memo, memo_key, (now, tot_cvd, tot_vol, src_lbl), 128)
+                return tot_cvd, tot_vol, src_lbl
         with self._get_ob_state_lock():
             cached_agg = self._agg_spot_cvd_memo.get(memo_key)
         if cached_agg is not None:
@@ -252,7 +300,6 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 return None
             if cached_agg[1] is not None and 0.0 <= (now - cached_agg[0]) < ttl_sec:
                 return cached_agg[1], cached_agg[2], cached_agg[3]
-        agg_spec, agg_ext = MarketDataProvider.resolve_agg_spot_flow_15m_spec(symbol, venue=venue, now_ts=now)
         if agg_spec is None or not callable(agg_ext):
             return None
         agg_url, agg_body = agg_spec
@@ -267,6 +314,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             )
         try:
             raw_agg = self._call_spot_cvd_payload(agg_url, agg_body, rem_to)
+            if ws_hub is not None and agg_bn_sym and isinstance(raw_agg, list):
+                ws_hub.seed_binance_spot_bars(agg_bn_sym, raw_agg, now=now)
             agg_res = agg_ext(raw_agg, since_ts=max(0.0, now - 900.0))
             if isinstance(agg_res, (tuple, list)) and len(agg_res) >= 2:
                 sib_cvd = safe_float(agg_res[0], default=None)

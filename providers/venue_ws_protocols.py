@@ -11,7 +11,8 @@ from abc import ABC
 import math
 import os
 import time
-from typing import List, Optional, Sequence
+import urllib.parse
+from typing import Any, List, Optional, Sequence
 
 from botcore import (
     _parse_bool_flag,
@@ -19,6 +20,7 @@ from botcore import (
     clean_order_id,
     clean_scalar_str,
     clean_upper_scalar,
+    exact_pos_int,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
@@ -47,6 +49,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEFAULT_HL_DIR = os.path.join(_REPO_ROOT, "hyperliquid")
 
 __all__ = [
+    "BinancePublicWsMixin",
     "HyperliquidWsMixin",
     "KrakenWsLedgerMixin",
     "VenueWsProtocolInterface",
@@ -569,3 +572,170 @@ class HyperliquidWsMixin(VenueWsProtocolInterface):
             if is_snapshot or sym_fills:
                 fills_by_symbol[s_sym] = sym_fills
         return is_snapshot, fills_by_symbol
+
+    @classmethod
+    def build_ws_ping_payload(cls) -> str:
+        """Encode the Hyperliquid application-level WebSocket ping frame."""
+        return cls.encode_ws_frame({"method": "ping"})
+
+    @classmethod
+    def build_ws_active_asset_ctx_subscriptions(
+        cls, coins: Sequence[str]
+    ) -> tuple[str, ...]:
+        """Encode Hyperliquid public ``activeAssetCtx`` WebSocket subscriptions per base coin."""
+        frames: list[str] = []
+        seen: set[str] = set()
+        for raw_c in cls._iter_symbol_items(coins):
+            coin = canonical_base_asset(raw_c) or raw_c.strip().upper()
+            if not coin or coin in seen:
+                continue
+            seen.add(coin)
+            frames.append(
+                cls.encode_ws_frame(
+                    {
+                        "method": "subscribe",
+                        "subscription": {"type": "activeAssetCtx", "coin": coin},
+                    }
+                )
+            )
+        return tuple(frames)
+
+    @classmethod
+    def extract_ws_active_asset_ctx(
+        cls, envelope: object
+    ) -> Optional[tuple[str, dict[str, Any]]]:
+        """Extract ``(coin, normalized_ctx)`` from a Hyperliquid ``activeAssetCtx`` WS envelope."""
+        if not isinstance(envelope, dict) or envelope.get("channel") != "activeAssetCtx":
+            return None
+        data = envelope.get("data")
+        if not isinstance(data, dict):
+            return None
+        coin = clean_upper_scalar(data.get("coin"))
+        ctx = data.get("ctx")
+        if not coin or not isinstance(ctx, dict):
+            return None
+        mark_px = safe_pos_float(ctx.get("markPx"), default=None)
+        oracle_px = safe_pos_float(ctx.get("oraclePx"), default=None)
+        if mark_px is None and oracle_px is None:
+            return None
+        funding = safe_float(ctx.get("funding"), default=0.0)
+        oi = safe_nonneg_float(ctx.get("openInterest"), default=0.0)
+        return (
+            coin,
+            {
+                "funding": 0.0 if funding is None else funding,
+                "openInterest": 0.0 if oi is None else oi,
+                "markPx": mark_px if mark_px is not None else (oracle_px or 0.0),
+                "oraclePx": oracle_px if oracle_px is not None else (mark_px or 0.0),
+            },
+        )
+
+
+class BinancePublicWsMixin(VenueWsProtocolInterface):
+    """Level-2 Binance Spot & USD-M Futures public WebSocket framing and telemetry stream parsing."""
+
+    PUBLIC_WS_URL: str = "wss://stream.binance.com:9443/stream"
+    SPOT_WS_URL: str = "wss://stream.binance.com:9443/stream"
+    FUTURES_WS_URL: str = "wss://fstream.binance.com/stream"
+
+    @classmethod
+    def build_ws_combined_stream_url(
+        cls, base_url: str, stream_names: Sequence[str]
+    ) -> Optional[str]:
+        """Join unique Binance combined-stream paths onto ``base_url``."""
+        base_s = clean_scalar_str(base_url)
+        if not base_s:
+            return None
+        cleaned = list(dict.fromkeys(s for s in cls._iter_symbol_items(stream_names) if s))
+        if not cleaned:
+            return None
+        return f"{base_s}?streams={'/'.join(cleaned)}"
+
+    @classmethod
+    def build_ws_mark_price_url(
+        cls, symbols: Sequence[str], *, interval_sec: int = 1
+    ) -> Optional[str]:
+        """Build Binance USD-M Futures ``@markPrice@1s`` (or ``@3s``) combined stream URL."""
+        suffix = "@markPrice@1s" if exact_pos_int(interval_sec, default=1) == 1 else "@markPrice"
+        streams: list[str] = []
+        seen: set[str] = set()
+        for raw_s in cls._iter_symbol_items(symbols):
+            sym_l = (clean_symbol_key(raw_s) or raw_s.strip()).lower()
+            if sym_l and sym_l not in seen:
+                seen.add(sym_l)
+                streams.append(f"{sym_l}{suffix}")
+        return cls.build_ws_combined_stream_url(cls.FUTURES_WS_URL, streams)
+
+    @classmethod
+    def build_ws_spot_kline_5m_url(cls, symbols: Sequence[str]) -> Optional[str]:
+        """Build Binance Spot ``@kline_5m`` combined stream URL for live 15m Spot CVD buckets."""
+        streams: list[str] = []
+        seen: set[str] = set()
+        for raw_s in cls._iter_symbol_items(symbols):
+            sym_l = (clean_symbol_key(raw_s) or raw_s.strip()).lower()
+            if sym_l and sym_l not in seen:
+                seen.add(sym_l)
+                streams.append(f"{sym_l}@kline_5m")
+        return cls.build_ws_combined_stream_url(cls.SPOT_WS_URL, streams)
+
+    @staticmethod
+    def _unwrap_combined_data(envelope: object) -> Optional[dict[str, Any]]:
+        if not isinstance(envelope, dict):
+            return None
+        inner = envelope.get("data")
+        if isinstance(inner, dict):
+            return inner
+        return envelope
+
+    @classmethod
+    def extract_ws_mark_price(cls, envelope: object) -> Optional[dict[str, Any]]:
+        """Parse a Binance Futures ``markPriceUpdate`` frame into normalized derivatives fields."""
+        data = cls._unwrap_combined_data(envelope)
+        if not isinstance(data, dict) or data.get("e") != "markPriceUpdate":
+            return None
+        sym = clean_upper_scalar(data.get("s"))
+        mark_px = safe_pos_float(data.get("p"), default=None)
+        if not sym or mark_px is None:
+            return None
+        index_px = safe_nonneg_float(data.get("i"), default=0.0)
+        funding_rate = safe_float(data.get("r"), default=0.0)
+        next_ms = exact_pos_int(data.get("T"), default=0) or 0
+        return {
+            "symbol": sym,
+            "mark_price": mark_px,
+            "index_price": 0.0 if index_px is None else index_px,
+            "funding_rate": 0.0 if funding_rate is None else funding_rate,
+            "next_funding_time_ms": next_ms,
+        }
+
+    @classmethod
+    def extract_kline_5m_symbol_from_url(cls, url: object) -> Optional[str]:
+        """Extract uppercase Binance Spot symbol from a ``/api/v3/klines?symbol=...&interval=5m`` URL."""
+        if not isinstance(url, str) or "api.binance.com/api/v3/klines" not in url:
+            return None
+        try:
+            q_params = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+        except Exception:
+            return None
+        if q_params.get("interval") != "5m":
+            return None
+        return clean_upper_scalar(q_params.get("symbol"))
+
+    @classmethod
+    def extract_ws_kline_5m_flow(
+        cls, envelope: object
+    ) -> Optional[tuple[str, int, float, float]]:
+        """Parse a Binance Spot ``kline`` (5m) frame into ``(symbol, open_time_ms, total_quote_usd, buy_quote_usd)``."""
+        data = cls._unwrap_combined_data(envelope)
+        if not isinstance(data, dict) or data.get("e") != "kline":
+            return None
+        kline = data.get("k")
+        if not isinstance(kline, dict) or clean_scalar_str(kline.get("i")) != "5m":
+            return None
+        sym = clean_upper_scalar(kline.get("s") or data.get("s"))
+        open_ms = exact_pos_int(kline.get("t"), default=None)
+        tot_q = safe_nonneg_float(kline.get("q"), default=None)
+        buy_q = safe_nonneg_float(kline.get("Q"), default=None)
+        if not sym or open_ms is None or tot_q is None or buy_q is None:
+            return None
+        return sym, open_ms, tot_q, min(tot_q, buy_q)

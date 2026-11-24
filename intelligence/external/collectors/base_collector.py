@@ -407,6 +407,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         self._stale_fallback_symbols: set[str] = set()
         self._cache_origin_dir: Optional[str] = self._effective_cache_dir()
         self._cache_lock = threading.RLock()
+        self.ws_hub: Optional[Any] = None
 
     def _get_cache_lock(self) -> threading.RLock:
         lock = getattr(self, "_cache_lock", None)

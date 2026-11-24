@@ -62,6 +62,7 @@ from intelligence.external.collectors.bybit_liquidations_collector import (
     LiquidationCollectorBase,
     OkxLiquidationCollector,
 )
+from intelligence.external.collectors.telemetry_ws_streams import TelemetryWsHub
 from intelligence.macro.daemon_ssot import (
     ExternalTelemetryMixin,
     add_external_telemetry_cli_args,
@@ -377,6 +378,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.bybit_liq_collector: Optional[BybitLiquidationCollector] = None
         self.binance_liq_collector: Optional[BinanceFuturesLiquidationCollector] = None
         self.okx_liq_collector: Optional[OkxLiquidationCollector] = None
+        self.telemetry_ws_hub: Optional[TelemetryWsHub] = None
         self._last_realized_liq_ts: float = 0.0
         self.news_collector = NewsFeedCollector(
             cache_ttl_sec=max(30.0, self.news_interval_sec * 0.5),
@@ -1026,6 +1028,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
 
     def write_heartbeat(self, status: Dict[str, Any]) -> None:
         """Write heartbeat metadata atomically to cachedb, with fallback to direct touch/write."""
+        ws_hub = getattr(self, "telemetry_ws_hub", None)
+        extra_hb = {"ws_streams": ws_hub.status()} if ws_hub is not None else None
         write_daemon_heartbeat(
             self.heartbeat_path,
             status,
@@ -1042,12 +1046,20 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 "etf_flows": getattr(self, "etf_flows_interval_sec", None),
                 "venue_balances": getattr(self, "venue_balances_interval_sec", None),
             },
+            extra=extra_hb,
             logger_inst=logger,
         )
 
     def start(self, poll_interval_sec: float = 1.0) -> None:
         """Run the main telemetry collection loop continuously."""
         self._live_impulse_wakeup_enabled = bool_env("AI_IMPULSE_TRIGGER_ENABLED", True)
+        if not self.skip_external and bool_env("TELEMETRY_WS_ENABLED", True) and self.telemetry_ws_hub is None:
+            try:
+                self.telemetry_ws_hub = TelemetryWsHub(self.symbols).start()
+                self.orderbook_collector.ws_hub = self.telemetry_ws_hub
+                self.derivatives_collector.ws_hub = self.telemetry_ws_hub
+            except Exception as exc:
+                logger.debug("Could not start TelemetryWsHub: %s", exc)
         if not self.skip_external and bool_env("REALIZED_LIQUIDATIONS_WS_ENABLED", True):
             perp_syms = self._realized_liquidation_perp_symbols()
             if perp_syms:
@@ -1076,6 +1088,11 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 reraise_initial_exit=True,
             )
         finally:
+            if self.telemetry_ws_hub is not None:
+                try:
+                    self.telemetry_ws_hub.stop(timeout=3.0)
+                except Exception:
+                    pass
             for col in self._active_liquidation_collectors():
                 try:
                     col.stop(timeout=3.0)

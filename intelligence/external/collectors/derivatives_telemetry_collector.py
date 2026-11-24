@@ -79,8 +79,11 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
     _SKIP_TOKENIZED_XSTOCKS = True
 
     def _fetch_hyperliquid_derivatives(self, symbol: str, now: float) -> Optional[DerivativesTelemetry]:
-        """Fetch native funding rate and open interest from Hyperliquid L1 metaAndAssetCtxs."""
-        ctx = self._fetch_hyperliquid_asset_ctx(symbol, timeout=4.0)
+        """Fetch native funding rate and open interest from Hyperliquid L1 WS cache or REST metaAndAssetCtxs."""
+        ws_hub = getattr(self, "ws_hub", None)
+        ctx = ws_hub.get_hyperliquid_asset_ctx(symbol, now=now) if ws_hub is not None else None
+        if not isinstance(ctx, dict):
+            ctx = self._fetch_hyperliquid_asset_ctx(symbol, timeout=4.0)
         if not isinstance(ctx, dict):
             return None
         funding_rate = _clean_dict_float(ctx, "funding", 0.0)
@@ -162,20 +165,27 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         # Use USDT-perp pair as proxy for non-USDT quotes
         lookup_sym = resolve_binance_lookup_symbol(symbol)
         try:
-            # 1. Premium index endpoint (funding rate)
-            url_fund = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={lookup_sym}"
-            data_fund = self._fetch_json_dict(url_fund, "premiumIndex", lookup_sym)
+            # 1. Mark/index price & funding rate (0 ms from live WS markPrice stream when fresh, else REST premiumIndex)
+            ws_hub = getattr(self, "ws_hub", None)
+            ws_mp = ws_hub.get_binance_mark_price(lookup_sym, now=now) if ws_hub is not None else None
+            if isinstance(ws_mp, dict):
+                funding_rate = _clean_dict_float(ws_mp, "funding_rate", 0.0)
+                next_funding = funding_rate
+                mark_price = max(0.0, _clean_dict_float(ws_mp, "mark_price", 0.0))
+                index_price = max(0.0, _clean_dict_float(ws_mp, "index_price", 0.0))
+            else:
+                url_fund = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={lookup_sym}"
+                data_fund = self._fetch_json_dict(url_fund, "premiumIndex", lookup_sym)
+                funding_rate = _clean_dict_float(data_fund, "lastFundingRate", 0.0)
+                next_funding = _clean_dict_float(data_fund, "nextFundingRate", funding_rate)
+                mark_price = max(0.0, _clean_dict_float(data_fund, "markPrice", 0.0))
+                index_price = max(0.0, _clean_dict_float(data_fund, "indexPrice", 0.0))
 
-            funding_rate = _clean_dict_float(data_fund, "lastFundingRate", 0.0)
-            next_funding = _clean_dict_float(data_fund, "nextFundingRate", funding_rate)
-
-            # 2. Open interest endpoint
+            # 2. Open interest endpoint (REST-only on Binance Futures)
             url_oi = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={lookup_sym}"
             data_oi = self._fetch_json_dict(url_oi, "openInterest", lookup_sym)
 
             oi = max(0.0, _clean_dict_float(data_oi, "openInterest", 0.0))
-            mark_price = max(0.0, _clean_dict_float(data_fund, "markPrice", 0.0))
-            index_price = max(0.0, _clean_dict_float(data_fund, "indexPrice", 0.0))
             if index_price <= 0.0:
                 ssot_px = self._resolve_ssot_price(symbol, now=now)
                 index_price = ssot_px if (ssot_px is not None and ssot_px > 0.0) else mark_price
