@@ -502,10 +502,15 @@ class AutonomousAIReconciler:
         escalate_high_effort = False
         urgent_escalation = False
         delta_gate_meta: Dict[str, Any] = {}
-        if resolved_topic == "auto_cryptotrade_executor":
+        if resolved_topic in ("auto_cryptotrade_executor", "auto_sharetrade_executor"):
             delta_gate_enabled = bool_env("AI_DELTA_GATE_ENABLED", True)
             derived_itvs = resolve_derived_telemetry_intervals()
-            exec_interval_sec = safe_pos_float(derived_itvs.get("crypto_executor_interval_sec"), default=360.0) or 360.0
+            is_share_exec = resolved_topic == "auto_sharetrade_executor"
+            exec_interval_sec = (
+                safe_pos_float(derived_itvs.get("share_executor_interval_sec"), default=1800.0) or 1800.0
+                if is_share_exec
+                else (safe_pos_float(derived_itvs.get("crypto_executor_interval_sec"), default=360.0) or 360.0)
+            )
             max_idle_mult = safe_pos_float(optional_env("AI_DELTA_GATE_MAX_IDLE_MULT", ""), default=3.0) or 3.0
             max_idle_sec = exec_interval_sec * max_idle_mult
             min_move_pct = safe_pos_float(optional_env("AI_DELTA_GATE_MIN_PRICE_MOVE_PCT", ""), default=0.35) or 0.35

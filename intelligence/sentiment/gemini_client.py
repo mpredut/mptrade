@@ -70,7 +70,6 @@ format_topic_turn_header = _agy_topics.format_topic_turn_header
 get_topic_slow_rotation_count = _agy_topics.get_topic_slow_rotation_count
 is_topic_resume_warm = _agy_topics.is_topic_resume_warm
 prepare_topic_session = _agy_topics.prepare_topic_session
-record_topic_resume_timeout = _agy_topics.record_topic_resume_timeout
 record_topic_slow_rotation = _agy_topics.record_topic_slow_rotation
 record_topic_turn = _agy_topics.record_topic_turn
 
@@ -88,7 +87,6 @@ _ORIG_SUBPROCESS_RUN = subprocess.run
 _ORIG_URLOPEN = urllib.request.urlopen
 _ORIG_FETCH_JSON_POST = fetch_json_post
 _ORIG_PREPARE_TOPIC_SESSION = prepare_topic_session
-_ORIG_RECORD_TOPIC_RESUME_TIMEOUT = record_topic_resume_timeout
 _ORIG_RECORD_TOPIC_SLOW_ROTATION = record_topic_slow_rotation
 _ORIG_PROBE_LIVE_MODEL_QUOTA_FUNC = getattr(
     GeminiQuotaRouterMixin.probe_live_model_quota, "__func__", GeminiQuotaRouterMixin.probe_live_model_quota
@@ -482,6 +480,51 @@ class GeminiClient(GeminiQuotaRouterMixin):
         except OSError:
             return set()
 
+    def _run_validated_cli_attempt(
+        self,
+        *,
+        resume: Optional[str],
+        prompt_text: str,
+        call_timeout: float,
+        cli_model: str,
+        bot_cli_base: str,
+        run_env: dict[str, str],
+        is_mocked: bool,
+        require_json: bool,
+        allow_soft_extend: bool = False,
+        label: str = "agy CLI",
+    ) -> tuple[subprocess.CompletedProcess, Optional[str], Optional[str], bool, bool]:
+        """Execute one CLI attempt, parse payload, and validate JSON contract.
+
+        Returns ``(proc, output, cid, exceeded_soft_timeout, non_json_rejected)``.
+        """
+        exec_kwargs: Dict[str, Any] = {}
+        if allow_soft_extend and not is_mocked:
+            exec_kwargs["allow_soft_extend"] = True
+        proc = self._execute_cli(
+            resume,
+            prompt_text,
+            call_timeout,
+            cli_model,
+            bot_cli_base,
+            run_env,
+            is_mocked,
+            **exec_kwargs,
+        )
+        exceeded_soft = bool(getattr(self._JSON_MODE_LOCAL, "exceeded_soft_timeout", False))
+        output, turn_cid = self._parse_cli_payload(proc)
+        non_json = False
+        if require_json and isinstance(output, str) and extract_json_object(output) is None:
+            logger.warning(
+                "%s with model '%s' returned non-JSON output (%s); trying fallback.",
+                label,
+                cli_model,
+                output.strip()[:160],
+            )
+            output = None
+            non_json = True
+        return proc, output, turn_cid, exceeded_soft, non_json
+
     def _attempt_detached_one_off_thread(
         self,
         *,
@@ -521,18 +564,18 @@ class GeminiClient(GeminiQuotaRouterMixin):
         pre_cids = self._list_conversation_cids(bot_cli_base) if not is_mocked else set()
         output, detached_cid = None, None
         try:
-            proc = self._execute_cli(
-                None, fallback_prompt, one_off_timeout, one_off_model,
-                bot_cli_base, run_env, is_mocked
+            _, output, detached_cid, _, _ = self._run_validated_cli_attempt(
+                resume=None,
+                prompt_text=fallback_prompt,
+                call_timeout=one_off_timeout,
+                cli_model=one_off_model,
+                bot_cli_base=bot_cli_base,
+                run_env=run_env,
+                is_mocked=is_mocked,
+                require_json=require_json,
+                allow_soft_extend=False,
+                label="agy CLI one-off thread",
             )
-            output, detached_cid = self._parse_cli_payload(proc)
-            if require_json and isinstance(output, str) and extract_json_object(output) is None:
-                logger.warning(
-                    "agy CLI one-off thread with model '%s' returned non-JSON output (%s); trying fallback.",
-                    one_off_model,
-                    output.strip()[:160],
-                )
-                output = None
             if (
                 detached_cid
                 and detached_cid != session.conversation_id
@@ -859,8 +902,6 @@ class GeminiClient(GeminiQuotaRouterMixin):
                     and topic_key
                     and (
                         not is_mocked
-                        or hasattr(record_topic_resume_timeout, "_mock_name")
-                        or record_topic_resume_timeout is not _ORIG_RECORD_TOPIC_RESUME_TIMEOUT
                         or hasattr(record_topic_slow_rotation, "_mock_name")
                         or record_topic_slow_rotation is not _ORIG_RECORD_TOPIC_SLOW_ROTATION
                     )
@@ -925,17 +966,19 @@ class GeminiClient(GeminiQuotaRouterMixin):
                 )
                 if eff_conv_id is None:
                     tried_detached_models.add(model_candidate)
+                non_json_rejected = False
                 try:
-                    exec_kwargs: Dict[str, Any] = {}
-                    if use_topic_session and not resume_abandoned and not is_mocked:
-                        exec_kwargs["allow_soft_extend"] = True
-                    proc = self._execute_cli(
-                        eff_conv_id, eff_prompt, eff_timeout, model_candidate,
-                        bot_cli_base, run_env, is_mocked,
-                        **exec_kwargs,
+                    proc, output, turn_cid, exceeded_soft_timeout, non_json_rejected = self._run_validated_cli_attempt(
+                        resume=eff_conv_id,
+                        prompt_text=eff_prompt,
+                        call_timeout=eff_timeout,
+                        cli_model=model_candidate,
+                        bot_cli_base=bot_cli_base,
+                        run_env=run_env,
+                        is_mocked=is_mocked,
+                        require_json=require_json,
+                        allow_soft_extend=(use_topic_session and not resume_abandoned),
                     )
-                    exceeded_soft_timeout = bool(getattr(self._JSON_MODE_LOCAL, "exceeded_soft_timeout", False))
-                    output, turn_cid = self._parse_cli_payload(proc)
                     if resume_abandoned and output and use_topic_session and turn_cid:
                         replaced_conversation = turn_cid != session.conversation_id
                 except subprocess.TimeoutExpired:
@@ -974,12 +1017,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                     )
                     continue
 
-                if require_json and isinstance(output, str) and extract_json_object(output) is None:
-                    logger.warning(
-                        "agy CLI with model '%s' returned non-JSON output (%s); rolling back and trying fallback.",
-                        model_candidate,
-                        output.strip()[:160],
-                    )
+                if non_json_rejected:
                     self._rollback_cli_attempt(
                         bot_cli_base, eff_conv_id, conv_snapshot if eff_conv_id else None, pre_attempt_cids, is_mocked
                     )

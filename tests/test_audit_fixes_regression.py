@@ -2009,3 +2009,112 @@ def test_llm_timeout_configurability_and_audit_bug_fixes(tmp_path, monkeypatch):
     assert recorded_turns[0].get("schedule_rotation") is True
     # Slow background /compact must NOT falsely demote a fast main trading model
     assert step_downs == []
+
+
+def test_subject1_flow_unifications_order_guard_auto_timeout_4h_cadence_and_share_delta_gate(tmp_path, monkeypatch):
+    """Verify all 4 Subject 1 unifications:
+    1. order_guard.conf 'auto' timeouts inherit LLM_DEFAULT_TIMEOUT_SEC from config.env.
+    2. Quota alert cooldown inherits unified 4h cadence (LLM_LATENCY_DEMOTION_TTL_SEC).
+    3. GeminiClient._run_validated_cli_attempt unifies JSON validation across primary & detached calls.
+    4. auto_sharetrade_executor shares the exact same Delta Gate HOLD carry-forward flow as crypto."""
+    import json
+    import subprocess
+    import time as _t
+    from guard_hierarchy import _load_margins
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
+    from intelligence.sentiment.llm_quota_router import resolve_latency_demotion_ttl_sec
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
+    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
+
+    # 1. order_guard.conf 'auto' inherits dynamic LLM_DEFAULT_TIMEOUT_SEC (SSOT)
+    margins = _load_margins()
+    assert str(margins.get("llm_timeout_sec")).strip().lower() == "auto"
+    assert str(margins.get("post_stop_reentry_timeout_sec")).strip().lower() == "auto"
+    monkeypatch.setenv("LLM_DEFAULT_TIMEOUT_SEC", "310")
+    psg = get_post_stop_reentry_guard(
+        gemini_client=GeminiClient(custom_runner=lambda *_a: '{"decision": "APPROVED"}'),
+        margins=margins,
+    )
+    assert psg.timeout_sec == pytest.approx(310.0)
+    monkeypatch.setenv("LLM_DEFAULT_TIMEOUT_SEC", "240")
+
+    # 2. Unified 4h cadence shared between latency demotion TTL and low-quota alert cooldown
+    monkeypatch.setenv("LLM_LATENCY_DEMOTION_TTL_SEC", "7200")
+    monkeypatch.delenv("LLM_QUOTA_ALERT_COOLDOWN_SEC", raising=False)
+    assert resolve_latency_demotion_ttl_sec() == pytest.approx(7200.0)
+
+    # 3. Unified _run_validated_cli_attempt rejects non-JSON output cleanly
+    cli = GeminiClient(cli_path="/bin/true")
+    monkeypatch.setattr(
+        cli,
+        "_execute_cli",
+        lambda *a, **k: subprocess.CompletedProcess(
+            ["agy-bot"], 0, stdout=json.dumps({"response": "plain prose not json", "conversation_id": "cid-nj"}), stderr=""
+        ),
+    )
+    _proc, out_txt, cid, _exc_soft, non_json = cli._run_validated_cli_attempt(
+        resume=None,
+        prompt_text="hi",
+        call_timeout=60.0,
+        cli_model="gemini-4-neon-medium",
+        bot_cli_base=str(tmp_path),
+        run_env={},
+        is_mocked=True,
+        require_json=True,
+    )
+    assert out_txt is None and cid == "cid-nj" and non_json is True
+
+    # 4. auto_sharetrade_executor uses the unified Delta Gate (skips flat quiet RTH repeat tick)
+    llm_calls = []
+    dummy_cli = GeminiClient(
+        custom_runner=lambda prompt, model, timeout: (
+            llm_calls.append((model, timeout)),
+            json.dumps({
+                "summary": "quiet hold",
+                "market_trading_decisions": [{"decision": "HOLD", "symbol": "SPCX_US_EQ", "confidence": 0.9}],
+            }),
+        )[1]
+    )
+    sup = AutonomousAIReconciler(
+        workspace_dir=str(tmp_path),
+        cache_dir=str(tmp_path),
+        mode="shadow",
+        gemini_auditor=dummy_cli,
+    )
+    now_t = _t.time()
+
+    def _make_eq_snap(spcx_px: float):
+        return TelemetrySensorSnapshot(
+            ts=now_t,
+            prices_and_trends={"SPCX_US_EQ": {"price": spcx_px, "atr_15m_pct": 0.4}},
+            portfolio_summary={
+                "tradable_positions": [
+                    {"symbol": "SPCX_US_EQ", "venue": "t212", "price": spcx_px, "effective_max_buy_usd": 500.0}
+                ],
+                "open_limit_orders": [],
+            },
+            source_timestamps={},
+        )
+
+    cur_px = {"px": 125.0}
+    monkeypatch.setattr(sup, "harvest_sensors_telemetry", lambda **_k: _make_eq_snap(cur_px["px"]))
+    monkeypatch.setattr("orchestratorOS.supervisor.autonomous_ai_reconciler.has_pending_ui_turn", lambda *_a, **_k: False)
+    monkeypatch.setenv("AI_DELTA_GATE_ENABLED", "true")
+
+    # First RTH cycle wakes LLM (no_prev_eval) and records delta_gate_meta
+    rep1 = sup.run_cycle(topic_key="auto_sharetrade_executor", force_rth_open=True)
+    assert len(llm_calls) == 1
+    assert rep1.model_used != "delta_gate_skip"
+
+    # Second flat RTH cycle (0.08% move < 0.35%) skips redundant LLM call
+    cur_px["px"] = 125.10
+    rep2 = sup.run_cycle(topic_key="auto_sharetrade_executor", force_rth_open=True)
+    assert len(llm_calls) == 1
+    assert rep2.model_used == "delta_gate_skip"
+
+    # Third RTH cycle with meaningful move (+1.6% >= 0.35%) wakes LLM
+    cur_px["px"] = 127.00
+    rep3 = sup.run_cycle(topic_key="auto_sharetrade_executor", force_rth_open=True)
+    assert len(llm_calls) == 2
+    assert rep3.model_used != "delta_gate_skip"

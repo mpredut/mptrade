@@ -1109,8 +1109,9 @@ class GeminiQuotaRouterMixin:
         if not isinstance(buckets, dict) or not buckets:
             return
         warn_threshold = resolve_quota_low_warn_fraction(default=0.10)
+        default_cd = resolve_latency_demotion_ttl_sec()
         cooldown_sec = max(
-            300.0, safe_float(float_env("LLM_QUOTA_ALERT_COOLDOWN_SEC", default=14400.0), 14400.0)
+            300.0, safe_float(float_env("LLM_QUOTA_ALERT_COOLDOWN_SEC", default=default_cd), default_cd)
         )
 
         paid_gemini_models, flash_gemini_models, claude_models = cls._resolve_model_pools()

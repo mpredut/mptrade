@@ -585,3 +585,6 @@ def evaluate_crypto_executor_delta_gate(
         False,
         snapshot_meta,
     )
+
+
+evaluate_trade_executor_delta_gate = evaluate_crypto_executor_delta_gate
