@@ -45,7 +45,7 @@ from .base import MarketDataProvider
 from .intent_state import _extract_intent_id
 from .ohlc_utils import ProviderError, require_pos_ohlc_interval
 from .order_id_context import derive_executor_intent_client_order_id
-from .order_ledger import get_default_ledger_writer
+from .order_ledger import OrderLedgerReader, get_default_ledger_writer, ledger_row_to_audit_record
 from .strategy_executor import (
     capture_submission,
     OrderStatus,
@@ -566,18 +566,55 @@ def find_order_audit_record(
     symbol: Any = None,
     event_ts_s: Optional[float] = None,
     audit_dir: Optional[str] = None,
+    cachedb_dir: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """Return the most recent execution-audit record matching ``order_id`` or ``client_order_id``."""
+    """Return the most recent order-lifecycle record matching ``order_id`` or ``client_order_id`` (OrderLedger first, ExecutionAudit fallback)."""
     target_oid = clean_order_id(order_id)
     target_cid = clean_order_id(client_order_id)
     if not target_oid and not target_cid:
         return None
+    target_sym = canonical_symbol_key(symbol) if symbol and not isinstance(symbol, bool) else ""
+    ref_ts = safe_pos_float(event_ts_s, default=None)
+
+    # 1. Primary SSoT: query OrderLedgerReader when cachedb_dir is explicit or default audit_dir is used.
+    raw_cdb = clean_scalar_str(os.fspath(cachedb_dir)) if isinstance(cachedb_dir, (str, os.PathLike)) else None
+    if raw_cdb is not None or audit_dir is None:
+        reader = OrderLedgerReader(cachedb_dir=raw_cdb)
+        trace = reader.trace_order(target_oid or target_cid or "", max_event_days=7, max_closed_months=2)
+        if trace.get("found"):
+            candidates: list[tuple[dict[str, Any], bool]] = []
+            if isinstance(act := trace.get("active_order"), dict):
+                candidates.append((act, False))
+            for cl_row in reversed(trace.get("closed_orders") or ()):
+                if isinstance(cl_row, dict):
+                    candidates.append((cl_row, True))
+            for ev_row in reversed(trace.get("events") or ()):
+                if isinstance(ev_row, dict):
+                    candidates.append((ev_row, False))
+            for row, is_cl in candidates:
+                adapted = ledger_row_to_audit_record(row, is_closed=is_cl)
+                if adapted is None and not is_cl:
+                    # Active snapshot rows carry state rather than ev; synthesize an order_status record.
+                    st_u = clean_upper_scalar(row.get("state")) or "OPEN"
+                    adapted = ledger_row_to_audit_record({**row, "ev": "STATUS", "vst": row.get("vst") or st_u}, is_closed=False)
+                if not isinstance(adapted, dict):
+                    continue
+                if target_sym:
+                    rec_sym = canonical_symbol_key(adapted.get("symbol"))
+                    if rec_sym and rec_sym != target_sym:
+                        continue
+                if ref_ts is not None and ref_ts > 0.0:
+                    rec_ts = safe_pos_float(adapted.get("ts"), default=None)
+                    if rec_ts is not None and abs(rec_ts - ref_ts) > 6 * 86400.0:
+                        continue
+                if adapted.get("client_order_id") or adapted.get("kind") or adapted.get("intent_id"):
+                    return adapted
+
+    # 2. Legacy fallback: scan execution_audit_*.jsonl for pre-ledger history or explicit audit_dir tests.
     raw_dir = clean_scalar_str(os.fspath(audit_dir)) if isinstance(audit_dir, (str, os.PathLike)) else None
     eff_dir = raw_dir or clean_scalar_str(optional_env("EXECUTION_AUDIT_DIR")) or _DEFAULT_AUDIT_DIR
     if not os.path.isdir(eff_dir):
         return None
-    target_sym = canonical_symbol_key(symbol) if symbol and not isinstance(symbol, bool) else ""
-    ref_ts = safe_pos_float(event_ts_s, default=None)
     min_day = max_day = ""
     if ref_ts is not None and ref_ts > 0.0:
         min_day = datetime.fromtimestamp(max(0.0, ref_ts - 5 * 86400.0), timezone.utc).strftime("%Y-%m-%d")

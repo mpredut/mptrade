@@ -198,9 +198,10 @@ class AutonomousIntentGateway:
         return load_durable_intents_state(self.intents_file, reconcile_fn=self.reconcile_intents)
 
     def reconcile_intents(self, intents: List[Dict[str, Any]]) -> bool:
-        """Reconciles FAILED/PENDING/PENDING_EXECUTION/SUBMIT_UNKNOWN and incomplete EXECUTED intents against execution_audit_*.jsonl."""
+        """Reconciles FAILED/PENDING/PENDING_EXECUTION/SUBMIT_UNKNOWN and incomplete EXECUTED intents against OrderLedger (with legacy execution_audit fallback)."""
         audit_dir = os.path.join(self.workspace_dir, "logger", "execution_audit")
-        updated = reconcile_intents_from_execution_audit(intents, audit_dir)
+        cachedb_dir = os.path.join(self.workspace_dir, "cachedb")
+        updated = reconcile_intents_from_execution_audit(intents, audit_dir, cachedb_dir=cachedb_dir)
         if updated:
             self.save_all_intents(intents)
         return updated

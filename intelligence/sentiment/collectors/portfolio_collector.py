@@ -76,6 +76,7 @@ from intelligence.sentiment.collectors.microstructure_collector import (
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     first_variant_dict,
 )
+from providers.order_ledger import OrderLedgerReader
 from providers.order_status_ssot import is_terminal_audit_status
 from providers.venue_fee_maintenance import BinanceFeeMaintainer
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
@@ -385,9 +386,14 @@ def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str,
 
 
 def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str], Optional[str]]]:
-    """Load recent orderId/clientOrderId -> (module, rule) mappings from execution_audit jsonl logs."""
-    out: Dict[str, tuple[Optional[str], Optional[str]]] = {}
+    """Load recent orderId/clientOrderId -> (module, rule) mappings from OrderLedger first, with ExecutionAudit fallback."""
+    out: Dict[str, tuple[Optional[str], Optional[str]]] = (
+        OrderLedgerReader(cachedb_dir=cache_dir).load_recent_order_origins(max_days=3)
+        if cache_dir
+        else {}
+    )
     for files in _iter_audit_dir_file_batches(cache_dir, max_files=2, newest_first=True):
+        found_legacy = False
         for fpath in files:
             for rec in read_tail_jsonl_dicts(fpath, limit=None, max_bytes=1024 * 1024):
                 _, mod, rule = resolve_order_origin(rec)
@@ -397,6 +403,7 @@ def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str],
                         if kv := str(rec.get(k) or "").strip():
                             prev_mod, prev_rule = out.get(kv, (None, None))
                             out[kv] = (prev_mod or mod, prev_rule or rule)
+                            found_legacy = True
                             if k in ("client_order_id", "clientOrderId") and v_norm:
                                 try:
                                     if nat_kv := derive_venue_128bit_client_order_id(v_norm, kv):
@@ -404,16 +411,18 @@ def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str],
                                         out[nat_kv] = (p_m or mod, p_r or rule)
                                 except Exception:
                                     pass
-        if out:
+        if found_legacy:
             break
     return out
 
 
 def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Dict[str, Any]]]:
-    """Synthesize deduplicated per-symbol filled order lists from execution_audit_*.jsonl for venues lacking a disk order cache."""
+    """Synthesize deduplicated per-symbol filled order lists from OrderLedger first, falling back to execution_audit_*.jsonl."""
     by_sym: Dict[str, List[Dict[str, Any]]] = {}
     if not cache_dir:
         return by_sym
+    if ledger_by_sym := OrderLedgerReader(cachedb_dir=cache_dir).load_terminal_filled_orders(venue):
+        return ledger_by_sym
     v_target = normalize_venue_name(venue)
     for audit_files in _iter_audit_dir_file_batches(cache_dir, max_files=10, newest_first=False):
         try:

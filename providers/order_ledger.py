@@ -46,10 +46,16 @@ from cachepaths import (
 from instrument_registry import canonical_display_symbol
 from providers.order_id_context import (
     all_correlatable_client_order_ids,
+    derive_venue_128bit_client_order_id,
     extract_client_order_id,
+    resolve_order_origin,
     resolve_order_owner,
 )
-from providers.order_status_ssot import CANCEL_OR_EXPIRE_VENUE_STATUSES, is_open_working_status
+from providers.order_status_ssot import (
+    CANCEL_OR_EXPIRE_VENUE_STATUSES,
+    TERMINAL_AUDIT_VENUE_STATUSES,
+    is_open_working_status,
+)
 from state_io import (
     append_jsonl_record,
     read_json_dict_recovering,
@@ -899,6 +905,142 @@ class OrderLedgerWriter(FileOrderLedgerBase):
         )
 
 
+_USD_FEE_ASSETS: frozenset[str] = frozenset({"", "USD", "USDC", "USDT", "ZUSD"})
+
+
+def ledger_row_to_audit_record(
+    row: dict[str, Any], *, is_closed: bool = False
+) -> Optional[dict[str, Any]]:
+    """Adapt one ``order_events`` or ``orders_closed`` ledger row into the canonical audit-record schema."""
+    if not isinstance(row, dict):
+        return None
+    ts_val = safe_pos_float(row.get("closed_ts") if is_closed else row.get("ts"), default=None)
+    if ts_val is None:
+        ts_val = safe_pos_float(row.get("updated_ts") or row.get("created_ts"), default=None)
+    if ts_val is None:
+        return None
+
+    venue = _norm_venue(row.get("v"))
+    sym = _norm_symbol(row.get("sym"), venue=venue)
+    if not sym:
+        return None
+
+    ev_out: Optional[str] = None
+    status_out: Optional[str] = None
+    vst_out = clean_upper_scalar(row.get("vst"))
+    if is_closed:
+        st = clean_upper_scalar(row.get("state")) or ""
+        if st == OrderLedgerState.FILLED.value:
+            ev_out, status_out, vst_out = "order_terminal", "closed", vst_out or "FILLED"
+        elif st == OrderLedgerState.CANCELED.value:
+            ev_out, status_out, vst_out = "order_terminal", "canceled", vst_out or "CANCELED"
+        elif st == OrderLedgerState.EXPIRED.value:
+            ev_out, status_out, vst_out = "order_terminal", "expired", vst_out or "EXPIRED"
+        elif st == OrderLedgerState.REPLACED.value:
+            ev_out, status_out, vst_out = "order_terminal", "canceled", vst_out or "REPLACED"
+        elif st == OrderLedgerState.REJECTED.value:
+            ev_out, status_out, vst_out = "submit_refused", "refused", vst_out or "REJECTED"
+        elif st == OrderLedgerState.FAILED.value:
+            ev_out, status_out = "submit_unknown", "unknown"
+        else:
+            return None
+    else:
+        ev = clean_upper_scalar(row.get("ev")) or ""
+        if ev in {OrderEventType.INTENT.value, OrderEventType.GUARD_BLOCKED.value}:
+            return None
+        if ev == OrderEventType.SUBMITTED.value:
+            ev_out = "submit_requested"
+        elif ev == OrderEventType.ACKED.value:
+            ev_out = "submit_accepted"
+        elif ev == OrderEventType.SUBMIT_REFUSED.value:
+            ev_out, status_out = "submit_refused", "refused"
+        elif ev == OrderEventType.SUBMIT_UNKNOWN.value:
+            ev_out, status_out = "submit_unknown", "unknown"
+        elif ev == OrderEventType.SCALED.value:
+            ev_out = "submit_scaled"
+        elif ev == OrderEventType.CANCEL_REQ.value:
+            ev_out = "cancel_requested"
+        elif ev == OrderEventType.CANCEL_ACK.value:
+            ev_out, status_out, vst_out = "cancel_accepted", "canceled", vst_out or "CANCELED"
+        elif ev == OrderEventType.CANCEL_FAILED.value:
+            ev_out = "cancel_rejected"
+        elif ev == OrderEventType.RECOVERED.value:
+            ev_out = "order_recovered"
+        elif ev == OrderEventType.STATUS.value:
+            is_term_vst = bool(vst_out and (vst_out in TERMINAL_AUDIT_VENUE_STATUSES or vst_out in CANCEL_OR_EXPIRE_VENUE_STATUSES))
+            ev_out = "order_terminal" if is_term_vst else "order_status"
+            if vst_out in {"FILLED", "CLOSED"}:
+                status_out = "closed"
+            elif vst_out in CANCEL_OR_EXPIRE_VENUE_STATUSES:
+                status_out = "expired" if vst_out == "EXPIRED" else "canceled"
+            else:
+                status_out = "open"
+        elif ev == OrderEventType.RECONCILED_FILLED.value:
+            ev_out, status_out, vst_out = "order_terminal", "closed", vst_out or "FILLED"
+        elif ev == OrderEventType.RECONCILED_CANCELED.value:
+            ev_out, status_out, vst_out = "order_terminal", "canceled", vst_out or "CANCELED"
+        elif ev == OrderEventType.RECONCILED_EXPIRED.value:
+            ev_out, status_out, vst_out = "order_terminal", "expired", vst_out or "EXPIRED"
+        elif ev == OrderEventType.RECONCILED_FAILED.value:
+            ev_out, status_out = "submit_unknown", "unknown"
+        elif ev == OrderEventType.RECONCILED_PARTIAL.value:
+            ev_out, status_out, vst_out = "order_status", "open", vst_out or "PARTIALLY_FILLED"
+        elif ev in {OrderEventType.RECONCILED_OPEN.value, OrderEventType.ORPHAN_ADOPTED.value}:
+            ev_out, status_out, vst_out = "order_status", "open", vst_out or "OPEN"
+        else:
+            return None
+
+    out: dict[str, Any] = {
+        "ts": ts_val,
+        "event": ev_out,
+        "venue": venue,
+        "symbol": sym,
+    }
+    if iid := clean_order_id(row.get("iid")):
+        out["intent_id"] = iid
+    if vid := clean_order_id(row.get("vid")):
+        out["order_id"] = vid
+    if cid := clean_order_id(row.get("cid")):
+        out["client_order_id"] = cid
+    if side := normalize_side(row.get("side")):
+        out["side"] = side.lower()
+    otype = clean_upper_scalar(row.get("type"))
+    if otype == "MARKET":
+        out["market"] = True
+    elif otype == "LIMIT":
+        out["market"] = False
+    if owner := clean_scalar_str(row.get("owner")):
+        out["owner"] = owner
+    if kind := clean_scalar_str(row.get("kind")):
+        out["kind"] = kind
+    if (qty_f := safe_pos_float(row.get("qty"), default=None)) is not None:
+        out["qty"] = qty_f
+    px_f = safe_pos_float(row.get("avg_px"), default=None) or safe_pos_float(row.get("px"), default=None)
+    if px_f is not None:
+        out["price"] = px_f
+    fq_f = safe_nonneg_float(row.get("fq"), default=None)
+    if fq_f is not None and fq_f > 0.0:
+        out["filled_qty"] = fq_f
+        if px_f is not None:
+            out["cost"] = round(fq_f * px_f, 8)
+    fee_f = safe_nonneg_float(row.get("fee"), default=None)
+    fee_asset = clean_upper_scalar(row.get("fee_asset")) or ""
+    if fee_f is not None and fee_f > 0.0:
+        if fee_asset in _USD_FEE_ASSETS:
+            out["fee"] = fee_f
+        else:
+            out["fee_native"] = fee_f
+    if fee_asset:
+        out["fee_asset"] = fee_asset
+    if status_out:
+        out["status"] = status_out
+    if vst_out:
+        out["venue_status"] = vst_out
+    if reason := clean_scalar_str(row.get("reason")):
+        out["reason"] = reason
+    return out
+
+
 class OrderLedgerReader(FileOrderLedgerBase):
     """Level 3 passive read-only query/tracer with 0ms tail-overlay consistency."""
 
@@ -982,6 +1124,147 @@ class OrderLedgerReader(FileOrderLedgerBase):
             "events": event_matches,
             "correlated_ids": sorted(correlated),
         }
+
+    @staticmethod
+    def _event_file_day(path: str) -> str:
+        fname = os.path.basename(path)
+        if fname.startswith(ORDER_LEDGER_EVENTS_PREFIX) and fname.endswith(".jsonl"):
+            return fname[len(ORDER_LEDGER_EVENTS_PREFIX) : -len(".jsonl")]
+        return ""
+
+    def earliest_event_day(self) -> str:
+        """Return earliest UTC day ``YYYY-MM-DD`` present in ``order_events_*.jsonl``, or ``''``."""
+        for fpath in self.list_event_files():
+            if day := self._event_file_day(fpath):
+                return day
+        return ""
+
+    def iter_audit_compat_records(
+        self,
+        *,
+        min_day: str = "",
+        max_day: str = "",
+        max_days: Optional[int] = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Read ``order_events_*.jsonl`` within ``[min_day, max_day]`` adapted to the ExecutionAudit record schema."""
+        all_files = self.list_event_files()
+        if not all_files:
+            return [], False
+        selected: list[str] = []
+        for fpath in all_files:
+            fday = self._event_file_day(fpath)
+            if fday:
+                if min_day and fday < min_day:
+                    continue
+                if max_day and fday > max_day:
+                    continue
+            selected.append(fpath)
+        if max_days is not None and not min_day and not max_day:
+            selected = selected[-max(1, safe_nonneg_int(max_days, default=1) or 1) :]
+        out: list[dict[str, Any]] = []
+        for fpath in selected:
+            for row in read_jsonl_dicts(fpath):
+                if adapted := ledger_row_to_audit_record(row, is_closed=False):
+                    out.append(adapted)
+        return out, True
+
+    def load_recent_order_origins(
+        self, *, max_days: int = 3
+    ) -> dict[str, tuple[Optional[str], Optional[str]]]:
+        """Load recent ``order_id``/``client_order_id`` -> ``(module, rule)`` mappings from the Order Ledger."""
+        out: dict[str, tuple[Optional[str], Optional[str]]] = {}
+
+        def _ingest(rec: dict[str, Any]) -> None:
+            if not isinstance(rec, dict):
+                return
+            probe = {
+                "orderId": rec.get("vid"),
+                "clientOrderId": rec.get("cid"),
+                "module": rec.get("owner"),
+                "kind": rec.get("kind"),
+            }
+            _, mod, rule = resolve_order_origin(probe)
+            if not mod and (owner_s := clean_scalar_str(rec.get("owner"))):
+                if owner_s.lower() not in {"external", "unspecified", "unknown", "ai_executor"}:
+                    mod = owner_s.lower()
+            if not rule and (kind_s := clean_scalar_str(rec.get("kind"))):
+                rule = kind_s
+            if not (mod or rule):
+                return
+            v_norm = normalize_venue_name(rec.get("v"))
+            for key_name in ("vid", "cid"):
+                if kv := clean_order_id(rec.get(key_name)):
+                    prev_m, prev_r = out.get(kv, (None, None))
+                    out[kv] = (prev_m or mod, prev_r or rule)
+                    if key_name == "cid" and v_norm:
+                        try:
+                            if nat_kv := derive_venue_128bit_client_order_id(v_norm, kv):
+                                pm, pr = out.get(nat_kv, (None, None))
+                                out[nat_kv] = (pm or mod, pr or rule)
+                        except Exception:
+                            pass
+
+        for rec in self.load_active_state(apply_tail=False)["orders"].values():
+            _ingest(rec)
+        for cpath in reversed(self.list_closed_files()[-2:]):
+            for rec in reversed(read_jsonl_dicts(cpath)):
+                _ingest(rec)
+        ev_limit = max(1, safe_nonneg_int(max_days, default=3) or 3)
+        for epath in reversed(self.list_event_files()[-ev_limit:]):
+            for rec in reversed(read_jsonl_dicts(epath)):
+                _ingest(rec)
+        return out
+
+    def load_terminal_filled_orders(
+        self, venue: str, *, max_months: int = 2
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Load deduplicated per-symbol filled terminal orders for ``venue`` from ``orders_closed_*.jsonl``."""
+        by_sym: dict[str, list[dict[str, Any]]] = {}
+        v_target = _norm_venue(venue)
+        if not v_target or v_target == "unknown":
+            return by_sym
+        m_limit = max(1, safe_nonneg_int(max_months, default=2) or 2)
+        idx_by_oid: dict[tuple[str, str], int] = {}
+        for cpath in self.list_closed_files()[-m_limit:]:
+            for row in read_jsonl_dicts(cpath):
+                if not isinstance(row, dict) or _norm_venue(row.get("v")) != v_target:
+                    continue
+                fq = safe_pos_float(row.get("fq"), default=0.0) or 0.0
+                if fq <= 0.0:
+                    continue
+                sym_t = _norm_symbol(row.get("sym"), venue=v_target).upper()
+                px_f = safe_pos_float(row.get("avg_px"), default=None) or safe_pos_float(row.get("px"), default=None)
+                ts_s = safe_pos_float(row.get("closed_ts") or row.get("created_ts"), default=0.0) or 0.0
+                side_t = normalize_side(row.get("side"))
+                if not (sym_t and px_f is not None and px_f > 0.0 and ts_s > 0.0 and side_t in ("BUY", "SELL")):
+                    continue
+                oid_s = clean_order_id(row.get("vid")) or ""
+                cid_val = clean_order_id(row.get("cid"))
+                row_d = {
+                    "symbol": sym_t,
+                    "orderId": oid_s or None,
+                    "clientOrderId": cid_val,
+                    "side": side_t,
+                    "price": px_f,
+                    "qty": fq,
+                    "executedQty": fq,
+                    "timestamp": round(ts_s * 1000.0),
+                    "status": "FILLED",
+                }
+                dedup_k = oid_s or (cid_val or "")
+                sym_list = by_sym.setdefault(sym_t, [])
+                if dedup_k and (sym_t, dedup_k) in idx_by_oid:
+                    existing = sym_list[idx_by_oid[(sym_t, dedup_k)]]
+                    new_q = max(safe_pos_float(existing.get("qty"), default=0.0) or 0.0, fq)
+                    existing["qty"] = existing["executedQty"] = new_q
+                    existing["price"] = px_f
+                    if cid_val and not existing.get("clientOrderId"):
+                        existing["clientOrderId"] = cid_val
+                else:
+                    if dedup_k:
+                        idx_by_oid[(sym_t, dedup_k)] = len(sym_list)
+                    sym_list.append(row_d)
+        return by_sym
 
 
 _DEFAULT_LEDGER_WRITER = OrderLedgerWriter()

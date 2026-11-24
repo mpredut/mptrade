@@ -35,6 +35,7 @@ from .intent_telemetry import (  # noqa: F401
     build_last_cycle_execution_status,
     summarize_recent_ai_intents,
 )
+from .order_ledger import OrderLedgerReader
 from .order_ohlc_utils import extract_executed_qty
 from .order_status_ssot import (
     ACCEPTED_WORKING_VENUE_STATUSES,
@@ -152,12 +153,27 @@ def _partition_intents_for_audit_reconciliation(
 _STALE_PENDING_EXECUTION_SEC = 600.0
 
 
+def _resolve_sibling_cachedb_dir(audit_dir: str, cachedb_dir: Any = None) -> str:
+    """Resolve an explicit ``cachedb_dir`` or workspace sibling ``cachedb`` when ``audit_dir`` is ``<ws>/logger/execution_audit``."""
+    if isinstance(cachedb_dir, (str, os.PathLike)) and (clean_c := clean_scalar_str(os.fspath(cachedb_dir))):
+        return clean_c
+    if audit_dir:
+        norm_a = os.path.normpath(os.fspath(audit_dir))
+        if os.path.basename(norm_a) == "execution_audit" and os.path.basename(os.path.dirname(norm_a)) == "logger":
+            sib = os.path.join(os.path.dirname(os.path.dirname(norm_a)), "cachedb")
+            if os.path.isdir(sib):
+                return sib
+    return ""
+
+
 def _scan_matching_audit_records(
     audit_dir: str,
     failed_by_id: dict[str, dict[str, Any]],
     executed_incomplete_by_id: dict[str, dict[str, Any]],
+    *,
+    cachedb_dir: Any = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any], set[str], dict[str, dict[str, Any]], bool]:
-    """Scan UTC-day execution audit JSONL logs and collect the most authoritative record per intent ID."""
+    """Scan OrderLedger (primary SSoT) and pre-ledger execution audit JSONL logs to collect authoritative records per intent ID."""
     pending_ts = [
         ts_i
         for it in (*failed_by_id.values(), *executed_incomplete_by_id.values())
@@ -178,9 +194,32 @@ def _scan_matching_audit_records(
         iid_e: extract_order_id(it_e.get("execution_payload"), default=None)
         for iid_e, it_e in executed_incomplete_by_id.items()
     }
-    for audit_path in iter_audit_jsonl_paths(audit_dir, min_day=min_day):
+
+    record_batches: list[list[dict[str, Any]]] = []
+    eff_cachedb = _resolve_sibling_cachedb_dir(audit_dir, cachedb_dir)
+    ledger_records: list[dict[str, Any]] = []
+    has_ledger = False
+    earliest_ledger_day = ""
+    if eff_cachedb:
+        ledger_reader = OrderLedgerReader(cachedb_dir=eff_cachedb)
+        ledger_records, has_ledger = ledger_reader.iter_audit_compat_records(min_day=min_day)
+        earliest_ledger_day = ledger_reader.earliest_event_day() if has_ledger else ""
+    if has_ledger and earliest_ledger_day:
         has_audit_files = True
-        for rec in _read_audit_intent_records(audit_path):
+        for audit_path in iter_audit_jsonl_paths(audit_dir, min_day=min_day):
+            base = os.path.basename(audit_path)
+            fday = base[len("execution_audit_") : -len(".jsonl")] if base.startswith("execution_audit_") and base.endswith(".jsonl") else ""
+            if fday and fday < earliest_ledger_day:
+                record_batches.append(_read_audit_intent_records(audit_path))
+        if ledger_records:
+            record_batches.append(ledger_records)
+    else:
+        for audit_path in iter_audit_jsonl_paths(audit_dir, min_day=min_day):
+            has_audit_files = True
+            record_batches.append(_read_audit_intent_records(audit_path))
+
+    for batch in record_batches:
+        for rec in batch:
             iid = _extract_intent_id(rec)
             if not iid:
                 continue
@@ -421,14 +460,18 @@ def _apply_executed_intent_audit_record(
 def reconcile_intents_from_execution_audit(
     intents: list[dict[str, Any]],
     audit_dir: str,
+    *,
+    cachedb_dir: Any = None,
 ) -> bool:
-    """Reconcile FAILED/PENDING/PENDING_EXECUTION/SUBMIT_UNKNOWN intents and enrich incomplete EXECUTED intents from execution_audit_*.jsonl."""
+    """Reconcile FAILED/PENDING/PENDING_EXECUTION/SUBMIT_UNKNOWN intents and enrich incomplete EXECUTED intents from OrderLedger (with legacy execution_audit fallback)."""
     failed_by_id, executed_incomplete_by_id, updated = _partition_intents_for_audit_reconciliation(intents)
-    if (not failed_by_id and not executed_incomplete_by_id) or not audit_dir or not os.path.isdir(audit_dir):
+    eff_cachedb = _resolve_sibling_cachedb_dir(audit_dir, cachedb_dir)
+    has_audit_dir = bool(audit_dir and os.path.isdir(audit_dir))
+    if (not failed_by_id and not executed_incomplete_by_id) or (not has_audit_dir and not eff_cachedb):
         return updated
 
     matched_records, matched_exec_records, submitted_qty_by_id, any_audit_seen_ids, submit_requested_by_id, has_audit_files = (
-        _scan_matching_audit_records(audit_dir, failed_by_id, executed_incomplete_by_id)
+        _scan_matching_audit_records(audit_dir, failed_by_id, executed_incomplete_by_id, cachedb_dir=eff_cachedb)
     )
     for iid_chk, item_chk in executed_incomplete_by_id.items():
         if iid_chk not in matched_exec_records:

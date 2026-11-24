@@ -705,3 +705,194 @@ def test_prod_parity_no_stale_open_readoption_clean_owner_and_order_terminal(tmp
         with pytest.raises(kraken_client.KrakenError, match="Rate limit"):
             kcli._private("Ledgers", {"start": 0}, fresh=True)
     assert len(calls) == 1
+
+
+def test_migrated_audit_readers_use_order_ledger_first_with_legacy_fallback(tmp_path):
+    """Verify all 4 migrated ExecutionAudit readers operate purely from OrderLedger and stitch pre-ledger history cleanly."""
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        _load_audit_terminal_orders,
+        _load_recent_audit_origins,
+    )
+    from providers.ai_attribution import load_and_evaluate_ai_attribution
+    from providers.execution_audit import find_order_audit_record
+    from providers.intent_reconciliation import reconcile_intents_from_execution_audit
+
+    ws_dir = tmp_path / "ws"
+    cdb_dir = ws_dir / "cachedb"
+    orders_dir = cdb_dir / "orders"
+    state_dir = cdb_dir / "state"
+    audit_dir = ws_dir / "logger" / "execution_audit"
+    orders_dir.mkdir(parents=True)
+    state_dir.mkdir(parents=True)
+    audit_dir.mkdir(parents=True)
+
+    # Day 1 = historical pre-ledger ExecutionAudit only; Day 2 = OrderLedger SSoT!
+    day1_ts = 1_795_200_000.0  # 2026-11-20 UTC
+    day2_ts = day1_ts + 2 * 86400.0  # 2026-11-22 UTC
+    day1_str = utc_day_for_ts(day1_ts)
+
+    # Seed Day 1 legacy execution_audit (1 historical BOT BUY on ETHUSDC)
+    (audit_dir / f"execution_audit_{day1_str}.jsonl").write_text(
+        json.dumps({
+            "ts": day1_ts,
+            "event": "order_terminal",
+            "intent_id": "legacy-bot-buy-1",
+            "venue": "binance",
+            "symbol": "ETHUSDC",
+            "order_id": "70001",
+            "client_order_id": "TA_legacy_1",
+            "side": "buy",
+            "filled_qty": 2.0,
+            "price": 3000.0,
+            "cost": 6000.0,
+            "status": "closed",
+            "venue_status": "FILLED",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    writer = OrderLedgerWriter(cachedb_dir=str(cdb_dir))
+    reconciler = OrderLedgerReconciler(cachedb_dir=str(cdb_dir), use_singletons=False, reconcile_grace_sec=30.0)
+
+    # Day 2 OrderLedger records (ZERO Day 2 execution_audit files exist!):
+    # A. BOT SELL closing Day 1 ETHUSDC BUY with native BNB fee (must NOT be misread as USD!)
+    writer.record_event(
+        OrderEventType.SUBMITTED,
+        venue="binance",
+        symbol="ETHUSDC",
+        ts=day2_ts,
+        owner="tradeall",
+        side="SELL",
+        order_type="LIMIT",
+        qty=2.0,
+        px=3100.0,
+        iid="led-bot-sell-1",
+        cid="TA_led_sell_1",
+        kind="trend_take_profit",
+    )
+    writer.record_event(
+        OrderEventType.RECONCILED_FILLED,
+        venue="binance",
+        symbol="ETHUSDC",
+        ts=day2_ts + 5.0,
+        owner="tradeall",
+        side="SELL",
+        order_type="LIMIT",
+        qty=2.0,
+        px=3100.0,
+        fq=2.0,
+        avg_px=3100.0,
+        fee=0.005,
+        fee_asset="BNB",
+        iid="led-bot-sell-1",
+        cid="TA_led_sell_1",
+        vid="70002",
+        vst="FILLED",
+        src="manual_test",
+    )
+
+    # B. Hyperliquid AI BUY filled (with 128-bit derived cloid) + pending intent with submit_requested only
+    hl_cid = "AI_hl_migrated_1"
+    hl_cloid = derive_venue_128bit_client_order_id("hyperliquid", hl_cid)
+    writer.record_event(
+        OrderEventType.SUBMITTED,
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+        ts=day2_ts + 10.0,
+        owner="ai_executor",
+        side="BUY",
+        order_type="LIMIT",
+        qty=5.0,
+        px=60.0,
+        iid="ai-hl-1",
+        cid=hl_cid,
+        kind="ai_entry",
+    )
+    writer.record_event(
+        OrderEventType.STATUS,
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+        ts=day2_ts + 20.0,
+        owner="ai_executor",
+        side="BUY",
+        order_type="LIMIT",
+        qty=5.0,
+        px=60.0,
+        fq=5.0,
+        avg_px=60.0,
+        fee=0.12,
+        fee_asset="USDC",
+        iid="ai-hl-1",
+        cid=hl_cid,
+        vid="81001",
+        vst="FILLED",
+    )
+    writer.record_event(
+        OrderEventType.SUBMITTED,
+        venue="binance",
+        symbol="BTCUSDC",
+        ts=day2_ts + 30.0,
+        owner="ai_executor",
+        side="BUY",
+        order_type="LIMIT",
+        qty=0.01,
+        px=62000.0,
+        iid="ai-pend-led",
+        cid="AI_pend_led",
+    )
+    reconciler.reconcile_once(now_ts=day2_ts + 40.0)
+
+    # 1. find_order_audit_record resolves purely from OrderLedger (no Day 2 execution_audit file)
+    found = find_order_audit_record("70002", symbol="ETHUSDC", cachedb_dir=str(cdb_dir))
+    assert found is not None
+    assert found["client_order_id"] == "TA_led_sell_1"
+    assert found["kind"] == "trend_take_profit"
+    assert "fee" not in found and found.get("fee_native") == pytest.approx(0.005)  # BNB fee not misread as USD!
+
+    # 2. portfolio_collector helpers resolve origins (including HL cloid) & filled terminal orders purely from OrderLedger
+    origins = _load_recent_audit_origins(str(cdb_dir))
+    assert origins.get("70002") == ("tradeall", "trend_take_profit")
+    assert origins.get("TA_led_sell_1") == ("tradeall", "trend_take_profit")
+    assert hl_cloid in origins and origins[hl_cloid][1] == "ai_entry"
+
+    hl_terms = _load_audit_terminal_orders(str(cdb_dir), "hyperliquid")
+    assert "HYPEUSDC" in hl_terms and len(hl_terms["HYPEUSDC"]) == 1
+    assert hl_terms["HYPEUSDC"][0]["orderId"] == "81001"
+    assert hl_terms["HYPEUSDC"][0]["executedQty"] == pytest.approx(5.0)
+
+    # 3. load_and_evaluate_ai_attribution stitches Day 1 ExecutionAudit + Day 2 OrderLedger with zero double-count
+    (state_dir / "autonomous_trade_intents_state.json").write_text("[]", encoding="utf-8")
+    attr_rep = load_and_evaluate_ai_attribution(str(ws_dir), lookback_days=7.0, now_ts=day2_ts + 60.0)
+    bot_cmp = attr_rep["execution_audit_ai_vs_bot"]["by_actor"]["BOT"]
+    assert bot_cmp["filled_orders"] == 2  # Day 1 BUY (legacy audit) + Day 2 SELL (OrderLedger)
+    assert bot_cmp["matched_round_trips"] == 1
+    assert bot_cmp["realized_net_usd"] > 180.0  # +$200 gross minus realistic ~20bps RT fee (NOT broken BNB fee)
+    assert attr_rep["execution_audit_ai_vs_bot"]["by_actor"]["AI"]["filled_orders"] == 1
+
+    # 4. reconcile_intents_from_execution_audit reconciles both FILLED and PENDING_EXECUTION purely from OrderLedger
+    intents_to_rec = [
+        {
+            "intent_id": "ai-hl-1",
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "decision": "BUY",
+            "status": "FAILED",
+            "timestamp": day2_ts + 5.0,
+        },
+        {
+            "intent_id": "ai-pend-led",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "decision": "BUY",
+            "status": "PENDING_EXECUTION",
+            "timestamp": day2_ts - 1000.0,
+        },
+    ]
+    changed = reconcile_intents_from_execution_audit(
+        intents_to_rec, str(tmp_path / "nonexistent_audit_dir"), cachedb_dir=str(cdb_dir)
+    )
+    assert changed is True
+    assert intents_to_rec[0]["status"] == "EXECUTED"
+    assert intents_to_rec[0]["execution_payload"]["orderId"] == "81001"
+    assert intents_to_rec[1]["status"] == "SUBMIT_UNKNOWN"
+    assert intents_to_rec[1]["execution_payload"]["clientOrderId"] == "AI_pend_led"

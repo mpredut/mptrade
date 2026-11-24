@@ -75,6 +75,7 @@ from .nav_drawdown import (
     load_nav_history_state,
 )
 from .order_id_context import resolve_order_actor, resolve_order_owner
+from .order_ledger import OrderLedgerReader
 from .order_ohlc_utils import extract_executed_qty
 from .venue_fee_maintenance import read_persisted_venue_fee_spec
 
@@ -881,10 +882,23 @@ def load_and_evaluate_ai_attribution(
     intents = load_durable_intents_state(intents_path, read_only=True)
     live_prices = _load_live_prices_from_workspace(workspace_dir)
 
+    cache_dir = os.path.join(workspace_dir, "cachedb")
     audit_dir = os.path.join(workspace_dir, "logger", "execution_audit")
+    ledger_reader = OrderLedgerReader(cachedb_dir=cache_dir)
+    ledger_records, has_ledger = ledger_reader.iter_audit_compat_records(min_day=min_day, max_day=max_day)
+    earliest_ledger_day = ledger_reader.earliest_event_day() if has_ledger else ""
     audit_records: list[dict[str, Any]] = []
-    for ap in iter_audit_jsonl_paths(audit_dir, min_day=min_day, max_day=max_day):
-        audit_records.extend(read_jsonl_dicts(ap))
+    if has_ledger and earliest_ledger_day:
+        # Stitch strictly pre-ledger historical days from legacy execution_audit_*.jsonl, then use OrderLedger SSoT.
+        for ap in iter_audit_jsonl_paths(audit_dir, min_day=min_day, max_day=max_day):
+            base = os.path.basename(ap)
+            fday = base[len("execution_audit_") : -len(".jsonl")] if base.startswith("execution_audit_") and base.endswith(".jsonl") else ""
+            if fday and fday < earliest_ledger_day:
+                audit_records.extend(read_jsonl_dicts(ap))
+        audit_records.extend(ledger_records)
+    else:
+        for ap in iter_audit_jsonl_paths(audit_dir, min_day=min_day, max_day=max_day):
+            audit_records.extend(read_jsonl_dicts(ap))
 
     log_lines = _load_reconciler_log_lines(workspace_dir, min_day=min_day, max_day=max_day)
     eval_path = _workspace_cachedb_path(workspace_dir, "auto_cryptotrade_executor_eval.json")
@@ -893,7 +907,6 @@ def load_and_evaluate_ai_attribution(
     vb_path = _workspace_cachedb_path(workspace_dir, VENUE_BALANCES_STATE_FILENAME)
     vb_state = read_json_dict(vb_path, default={})
     cur_nav_pt = build_nav_history_point(vb_state, live_prices=live_prices, now_ts=eff_now, scope="all")
-    cache_dir = os.path.join(workspace_dir, "cachedb")
 
     def _persisted_rt_fee_bps(venue: str, symbol: str, order_type: str) -> Optional[float]:
         spec = read_persisted_venue_fee_spec(venue, symbol, cache_dir=cache_dir, now_ts=eff_now)
