@@ -437,6 +437,7 @@ class Instrument:
         ctx.bypassed_guards = order_guard.resolve_effective_bypass_guards(
             ctx.v_norm, bypass_guards=bypass_guards_raw, inst_bypass=inst_bypass_raw
         )
+        ctx.is_monitor_replace = "monitor_order_replace" in (clean_scalar_str(order_kind) or "")
         ctx.bypass_all = "all" in ctx.bypassed_guards
         ctx.bypass_profit_guard = "profit_guard" in ctx.bypassed_guards or ctx.bypass_all
         ctx.bypass_math_ref = (
@@ -462,6 +463,7 @@ class Instrument:
             and not ctx.bypass_profit_guard
             and ctx.side_u != "SELL"
             and ctx.caller_module != "assetguardian"
+            and not ctx.is_monitor_replace
         ):
             ctx.bypass_quantity_policy = False
             revoke_guard_bypass(ctx.bypassed_guards, "G_QLIMIT1")
@@ -514,7 +516,6 @@ class Instrument:
         cas_f = safe_pos_float(kwargs.pop("applied_scale", None), default=None)
         ctx.caller_applied_scale = cas_f if (cas_f is not None and cas_f < 1.0) else 1.0
         ctx.applied_scale = ctx.caller_applied_scale
-        ctx.is_monitor_replace = "monitor_order_replace" in (clean_scalar_str(order_kind) or "")
         if ctx.is_monitor_replace:
             ctx.bypassed_guards.add("gllm1")
         ctx.profit_margin = safe_float(caller_profit_margin, default=None)

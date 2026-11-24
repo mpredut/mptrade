@@ -145,46 +145,72 @@ initial_buy_prices = OrderedDict()
 _notified_placed_order_ids = OrderedIdSet()
 _notified_expired_order_ids = OrderedIdSet()
 _derived_replacement_order_ids = OrderedIdSet()
-_reprice_refusal_cooldowns: OrderedDict[str, tuple[float, str]] = OrderedDict()
+_reprice_refusal_cooldowns: OrderedDict[str, tuple[float, str, str]] = OrderedDict()
 _SYMBOL_TICK_SIZE_CACHE: dict[str, float] = {}
 _monitororder_initialized = False
 
-_POLICY_REFUSAL_COOLDOWN_SEC = 300.0
-_TRANSIENT_REFUSAL_COOLDOWN_SEC = 30.0
-_POLICY_REFUSAL_REASON_TOKENS = (
+_STRUCTURAL_REFUSAL_COOLDOWN_SEC = 900.0   # 15 min: quota, balance, exchange filter, or disabled execution
+_MARKET_GUARD_REFUSAL_COOLDOWN_SEC = 120.0 # 2 min: trend/profit/intelligence guard deferral
+_TRANSIENT_REFUSAL_COOLDOWN_SEC = 30.0     # 30 s: stale cache, snapshot changed, short cooldown
+_STRUCTURAL_REFUSAL_TOKENS = (
     "qty_zero",
-    "below_min_notional",
-    "insufficient_funds",
     "weight_policy_",
-    "profit_guard",
-    "trend_deferred",
+    "policy_unavailable",
+    "insufficient_funds",
+    "balance_unavailable",
+    "below_min_notional",
     "filter_lot_size",
     "filter_refused",
+    "execution_disabled",
+    "trading_disabled",
+    "circuit_breaker",
+)
+_MARKET_GUARD_REFUSAL_TOKENS = (
+    "profit_guard",
+    "trend_deferred",
+    "medium_trend_deferred",
+    "wait_for_trend",
+    "intelligence",
+    "guard",
 )
 
 
-def _record_reprice_refusal_cooldown(oid_str: str, reason: object, *, now_ts: float | None = None) -> None:
-    if not oid_str:
-        return
+def classify_reprice_refusal_cooldown(reason: object) -> tuple[float, str]:
+    """Map a reprice refusal reason to ``(cooldown_sec, tier_label)``."""
+    reason_lc = (clean_scalar_str(reason) or "").lower()
+    if any(tok in reason_lc for tok in _STRUCTURAL_REFUSAL_TOKENS):
+        return _STRUCTURAL_REFUSAL_COOLDOWN_SEC, "quota_or_structural"
+    if any(tok in reason_lc for tok in _MARKET_GUARD_REFUSAL_TOKENS):
+        return _MARKET_GUARD_REFUSAL_COOLDOWN_SEC, "market_guard"
+    return _TRANSIENT_REFUSAL_COOLDOWN_SEC, "transient"
+
+
+def _record_reprice_refusal_cooldown(
+    oid_str: str, reason: object, *, now_ts: float | None = None
+) -> tuple[float, str]:
     reason_s = clean_scalar_str(reason) or "refused"
-    reason_lc = reason_s.lower()
-    cooldown_sec = (
-        _POLICY_REFUSAL_COOLDOWN_SEC
-        if any(tok in reason_lc for tok in _POLICY_REFUSAL_REASON_TOKENS)
-        else _TRANSIENT_REFUSAL_COOLDOWN_SEC
-    )
-    eff_now = time.time() if now_ts is None else now_ts
-    lru_dict_put(_reprice_refusal_cooldowns, oid_str, (eff_now + cooldown_sec, reason_s), MAX_TRACKED_ORDER_IDS)
+    cooldown_sec, tier = classify_reprice_refusal_cooldown(reason_s)
+    if oid_str:
+        eff_now = time.time() if now_ts is None else now_ts
+        lru_dict_put(
+            _reprice_refusal_cooldowns,
+            oid_str,
+            (eff_now + cooldown_sec, reason_s, tier),
+            MAX_TRACKED_ORDER_IDS,
+        )
+    return cooldown_sec, tier
 
 
-def _active_reprice_refusal_cooldown(oid_str: str, *, now_ts: float | None = None) -> tuple[float, str] | None:
+def _active_reprice_refusal_cooldown(
+    oid_str: str, *, now_ts: float | None = None
+) -> tuple[float, str, str] | None:
     entry = _reprice_refusal_cooldowns.get(oid_str)
     if entry is None:
         return None
-    until_ts, reason_s = entry
+    until_ts, reason_s, tier = entry
     eff_now = time.time() if now_ts is None else now_ts
     if eff_now < until_ts:
-        return until_ts - eff_now, reason_s
+        return until_ts - eff_now, reason_s, tier
     _reprice_refusal_cooldowns.pop(oid_str, None)
     return None
 
@@ -595,10 +621,10 @@ def _lease_replacement_and_preflight(
     except Exception as exc:  # noqa: BLE001
         order_retry.complete_claim(replacement_claim, "success")
         refusal_reason = getattr(exc, "reason", str(exc))
-        _record_reprice_refusal_cooldown(oid_str, refusal_reason)
+        cd_sec, cd_tier = _record_reprice_refusal_cooldown(oid_str, refusal_reason)
         print(
             f"The {order_type} replacement was refused before cancellation: "
-            f"{refusal_reason}. The existing order remains active."
+            f"{refusal_reason} (tier={cd_tier}, cooldown={cd_sec:.0f}s). The existing order remains active."
         )
         return None
     return replacement_claim, client_order_id, cache_permit, preflight_qty
@@ -713,10 +739,10 @@ def _dispatch_native_or_cancel_replace(
             return
         if native_refused and native_reason not in {"replace_not_attempted", "replace_cancel_only"}:
             order_retry.complete_claim(replacement_claim, "success")
-            _record_reprice_refusal_cooldown(oid_str, native_reason or "refused")
+            cd_sec, cd_tier = _record_reprice_refusal_cooldown(oid_str, native_reason or "refused")
             print(
                 f"The {order_type} replacement was refused before cancellation: "
-                f"{native_reason or 'refused'}. The existing order remains active."
+                f"{native_reason or 'refused'} (tier={cd_tier}, cooldown={cd_sec:.0f}s). The existing order remains active."
             )
             return
         native_cancel_only = native_reason == "replace_cancel_only"
@@ -927,7 +953,7 @@ def monitor_open_orders_by_type(
             custom_ttl_map, accepted_owner_map
         )
 
-    replace_bypass_guards = ["G_PROF", "GT_S", "GLLM1"]
+    replace_bypass_guards = ["G_PROF", "GT_S", "GLLM1", "G_QLIMIT1"]
     replace_wait_for_trend = False
 
     for order_id in list(orders.keys()):
@@ -988,9 +1014,10 @@ def monitor_open_orders_by_type(
             continue
 
         if (cooldown_info := _active_reprice_refusal_cooldown(oid_str)) is not None:
-            rem_s, prev_reason = cooldown_info
+            rem_s, prev_reason, prev_tier = cooldown_info
             print(
-                f"[MONITORORDER] Order {order_id} reprice cooling down ({rem_s:.0f}s left after {prev_reason}); skipping."
+                f"[MONITORORDER] Order {order_id} reprice cooling down "
+                f"({rem_s:.0f}s left, tier={prev_tier}, reason={prev_reason}); skipping."
             )
             continue
 

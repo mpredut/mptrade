@@ -1113,19 +1113,51 @@ def test_section_c_monitororder_cooldown_manual_trace_actor_and_macro_ntfy_dedup
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisorAssessment
 
-    # C1: monitororder applies 300s backoff on policy refusal and 30s on transient refusal.
+    # C1: monitororder classifies refusal cooldowns into 3 tiers (900s quota/structural, 120s market guard, 30s transient)
+    # and Instrument.place honors G_QLIMIT1 bypass on BUY for monitor_order_replace without weakening normal BUY guards.
     monitororder.reset_monitororder_state_for_test()
     t0 = 1_795_560_000.0
     monitororder._record_reprice_refusal_cooldown("568296122", "qty_zero_after_policy", now_ts=t0)
     cd_pol = monitororder._active_reprice_refusal_cooldown("568296122", now_ts=t0 + 60.0)
-    assert cd_pol is not None and cd_pol[0] == pytest.approx(240.0) and cd_pol[1] == "qty_zero_after_policy"
-    assert monitororder._active_reprice_refusal_cooldown("568296122", now_ts=t0 + 301.0) is None
+    assert cd_pol is not None and cd_pol[0] == pytest.approx(840.0) and cd_pol[1] == "qty_zero_after_policy" and cd_pol[2] == "quota_or_structural"
+    assert monitororder._active_reprice_refusal_cooldown("568296122", now_ts=t0 + 901.0) is None
+
+    monitororder._record_reprice_refusal_cooldown("568296124", "trend_deferred", now_ts=t0)
+    cd_mkt = monitororder._active_reprice_refusal_cooldown("568296124", now_ts=t0 + 20.0)
+    assert cd_mkt is not None and cd_mkt[0] == pytest.approx(100.0) and cd_mkt[2] == "market_guard"
+    assert monitororder._active_reprice_refusal_cooldown("568296124", now_ts=t0 + 121.0) is None
 
     monitororder._record_reprice_refusal_cooldown("568296123", "account_cache_not_fresh", now_ts=t0)
     cd_tr = monitororder._active_reprice_refusal_cooldown("568296123", now_ts=t0 + 10.0)
-    assert cd_tr is not None and cd_tr[0] == pytest.approx(20.0)
+    assert cd_tr is not None and cd_tr[0] == pytest.approx(20.0) and cd_tr[2] == "transient"
     assert monitororder._active_reprice_refusal_cooldown("568296123", now_ts=t0 + 31.0) is None
     monitororder.reset_monitororder_state_for_test()
+
+    # Verify Instrument._init_and_gate_pre_pipeline preserves G_QLIMIT1 bypass on BUY for monitor_order_replace only.
+    from instrument import Instrument
+
+    fake_prov = SimpleNamespace(
+        name="Binance",
+        execution_enabled=True,
+        validate_symbol=lambda _s: None,
+        requires_cache_permit=lambda: False,
+        defers_smart_cancellation=lambda: False,
+        supports_business_minimum=lambda: True,
+        supports_post_only=lambda: False,
+        supports_order_validity=lambda: False,
+        guards_internally=lambda: False,
+    )
+    inst = Instrument("ARBUSDC", "ARBUSDC", "Binance", api=SimpleNamespace(provider_by_name=lambda _n: fake_prov))
+    ctx_rep, err_rep = inst._init_and_gate_pre_pipeline(
+        "BUY", 0.1095, 1805.0,
+        {"kind": "monitor_order_replace", "bypass_guards": ["G_PROF", "GT_S", "GLLM1", "G_QLIMIT1"], "replaces_order_id": "568296122"},
+    )
+    assert err_rep is None and ctx_rep is not None and ctx_rep.bypass_quantity_policy is True
+    ctx_new, err_new = inst._init_and_gate_pre_pipeline(
+        "BUY", 0.1095, 1805.0,
+        {"kind": "entry", "bypass_guards": ["G_QLIMIT1"]},
+    )
+    assert err_new is None and ctx_new is not None and ctx_new.bypass_quantity_policy is False
 
     # C2: Kraken WS loop uses ping_interval=30, ping_timeout=20 and dispatches periodic REST Ledgers sync off the WS reader thread.
     ws_params: dict = {}
