@@ -1277,9 +1277,15 @@ def test_cache24_jsonl_append_migration_compaction_and_staggered_cron(tmp_path, 
 
 
 def test_price_analysis_cpu_throttling_and_low_priority_background_jobs(monkeypatch):
-    """Verify priceAnalysis skips unchanged SparsePrice series, throttles PNG redraws to 15m (redrawing on flip),
-    idempotently raises niceness, and background crons/procs.conf run with nice/ionice."""
+    """Verify priceAnalysis disables PNG writes by default (PRICEANALYSIS_DRAW_PLOTS=false), skips unchanged
+    SparsePrice series, optionally throttles PNG redraws when enabled, idempotently raises niceness,
+    and background crons/procs.conf run with nice/ionice."""
     import priceAnalysis as pa
+
+    # 0. PNG plot drawing is opt-in and disabled by default in config.env and module flag
+    repo_root = Path(__file__).resolve().parents[1]
+    assert pa.PRICEANALYSIS_DRAW_PLOTS is False
+    assert "PRICEANALYSIS_DRAW_PLOTS=false" in (repo_root / "config.env").read_text(encoding="utf-8")
 
     # 1. _ensure_min_niceness is idempotent (computes delta, never double-adds)
     nice_state = [0]
@@ -1293,12 +1299,7 @@ def test_price_analysis_cpu_throttling_and_low_priority_background_jobs(monkeypa
     assert pa._ensure_min_niceness(10) == 10
     assert nice_state[0] == 10
 
-    # 2. run_price_analysis_cycle:
-    #    - cycle 1 (t=1000): computes & draws (draw=True)
-    #    - cycle 2 (t=1060, same sig): skips recompute completely (0 calls!)
-    #    - cycle 3 (t=1180, new SparsePrice tick, same direction): recomputes with draw=False (no Matplotlib PNG!)
-    #    - cycle 4 (t=1360, new SparsePrice tick, direction flips up->down): immediately redraws with draw=True!
-    #    - cycle 5 (t=2300, >=900s elapsed, same sig): periodic refresh & draw=True
+    # 2a. Default mode (PRICEANALYSIS_DRAW_PLOTS=False): NEVER draws PNGs, even on first cycle, flip, or 15m refresh
     sig_cur = [(100, 1_760_000_000_000, 60000.0)]
     dir_cur = ["up"]
     calls: list[tuple[str, bool]] = []
@@ -1316,29 +1317,47 @@ def test_price_analysis_cpu_throttling_and_low_priority_background_jobs(monkeypa
         }
 
     monkeypatch.setattr(pa, "getTrendLongTerm_fixed", _fake_trend)
-    state: dict = {}
+    state_off: dict = {}
 
-    r1 = pa.run_price_analysis_cycle(["BTCUSDC"], state, now_ts=1000.0, inter_symbol_yield_sec=0.0)
-    assert calls == [("BTCUSDC", True)] and r1["BTCUSDC"]["direction"] == "up"
+    r1 = pa.run_price_analysis_cycle(["BTCUSDC"], state_off, now_ts=1000.0, inter_symbol_yield_sec=0.0)
+    assert calls == [("BTCUSDC", False)] and r1["BTCUSDC"]["direction"] == "up"
 
-    r2 = pa.run_price_analysis_cycle(["BTCUSDC"], state, now_ts=1060.0, inter_symbol_yield_sec=0.0)
-    assert calls == [("BTCUSDC", True)] and r2["BTCUSDC"]["timestamp"] == 1060
+    r2 = pa.run_price_analysis_cycle(["BTCUSDC"], state_off, now_ts=1060.0, inter_symbol_yield_sec=0.0)
+    assert calls == [("BTCUSDC", False)] and r2["BTCUSDC"]["timestamp"] == 1060
+
+    sig_cur[0] = (101, 1_760_000_180_000, 59500.0)
+    dir_cur[0] = "down"
+    r3 = pa.run_price_analysis_cycle(["BTCUSDC"], state_off, now_ts=1180.0, inter_symbol_yield_sec=0.0)
+    assert calls == [("BTCUSDC", False), ("BTCUSDC", False)] and r3["BTCUSDC"]["direction"] == "down"
+
+    pa.run_price_analysis_cycle(["BTCUSDC"], state_off, now_ts=2300.0, inter_symbol_yield_sec=0.0)
+    assert calls == [("BTCUSDC", False), ("BTCUSDC", False), ("BTCUSDC", False)]
+
+    # 2b. Opt-in PNG drawing (draw_plots=True): throttles PNG redraws to 15m and redraws immediately on direction flip
+    calls.clear()
+    sig_cur[0] = (100, 1_760_000_000_000, 60000.0)
+    dir_cur[0] = "up"
+    state_on: dict = {}
+
+    pa.run_price_analysis_cycle(["BTCUSDC"], state_on, now_ts=1000.0, draw_plots=True, inter_symbol_yield_sec=0.0)
+    assert calls == [("BTCUSDC", True)]
+
+    pa.run_price_analysis_cycle(["BTCUSDC"], state_on, now_ts=1060.0, draw_plots=True, inter_symbol_yield_sec=0.0)
+    assert calls == [("BTCUSDC", True)]
 
     sig_cur[0] = (101, 1_760_000_180_000, 60050.0)
-    pa.run_price_analysis_cycle(["BTCUSDC"], state, now_ts=1180.0, inter_symbol_yield_sec=0.0)
+    pa.run_price_analysis_cycle(["BTCUSDC"], state_on, now_ts=1180.0, draw_plots=True, inter_symbol_yield_sec=0.0)
     assert calls == [("BTCUSDC", True), ("BTCUSDC", False)]
 
     sig_cur[0] = (102, 1_760_000_360_000, 59500.0)
     dir_cur[0] = "down"
-    r4 = pa.run_price_analysis_cycle(["BTCUSDC"], state, now_ts=1360.0, inter_symbol_yield_sec=0.0)
+    pa.run_price_analysis_cycle(["BTCUSDC"], state_on, now_ts=1360.0, draw_plots=True, inter_symbol_yield_sec=0.0)
     assert calls == [("BTCUSDC", True), ("BTCUSDC", False), ("BTCUSDC", False), ("BTCUSDC", True)]
-    assert r4["BTCUSDC"]["direction"] == "down"
 
-    pa.run_price_analysis_cycle(["BTCUSDC"], state, now_ts=2300.0, inter_symbol_yield_sec=0.0)
+    pa.run_price_analysis_cycle(["BTCUSDC"], state_on, now_ts=2300.0, draw_plots=True, inter_symbol_yield_sec=0.0)
     assert calls[-1] == ("BTCUSDC", True)
 
     # 3. procs.conf & crontab.prod.txt apply nice/ionice to heavy background jobs while keeping trade executors at normal priority
-    repo_root = Path(__file__).resolve().parents[1]
     procs_txt = (repo_root / "procs.conf").read_text(encoding="utf-8")
     pa_rows = [ln for ln in procs_txt.splitlines() if ln.startswith("priceAnalysis.py|")]
     assert len(pa_rows) == 1 and "nice -n 10 ionice -c3 python priceAnalysis.py" in pa_rows[0]

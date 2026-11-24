@@ -10,6 +10,7 @@ import numpy as np
 # Local imports.
 from botcore import (
     _parse_bool_flag,
+    bool_env,
     is_live_network_backfill_enabled,
     load_dotenv,
     lru_dict_put,
@@ -62,9 +63,10 @@ load_dotenv()
 #   ... finally: shm.close(); shm.unlink()        # At shutdown.
 # ------------------------------------------------------------------------------
 
-# Debug tracing for weight zones and slope tuning is off by default to keep fleet
-# logs clean. Enable PRICEANALYSIS_DEBUG when tuning.
+# Debug tracing and PNG plot generation are off by default to keep fleet logs
+# clean and avoid Matplotlib CPU/RSS overhead. Enable via config.env when needed.
 _DEBUG = required_bool_env("PRICEANALYSIS_DEBUG")
+PRICEANALYSIS_DRAW_PLOTS = bool_env("PRICEANALYSIS_DRAW_PLOTS", default=False)
 PRICEANALYSIS_DRAW_MAX_POINTS = required_int_env("PRICEANALYSIS_DRAW_MAX_POINTS")
 
 
@@ -251,7 +253,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
                            min_consecutive_blocks: int = 3,
                            noise_tolerance: int = 2,  # Allow two noise blocks.
                            lookback_days: int = 30,
-                           draw: bool = True,
+                           draw: Optional[bool] = None,
                            min_points_per_window: int = MIN_POINTS_PER_WINDOW,
                            detection_lag_hours: float = 48.0,
                            mk_alpha: float = 0.05) -> Optional[dict]:
@@ -355,7 +357,8 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
           f"Duration: {format_duration(dur)} ({dur/86400:.1f} days)")
     print(f"{'='*60}\n")
 
-    if _parse_bool_flag(draw, True):
+    eff_draw = PRICEANALYSIS_DRAW_PLOTS if draw is None else _parse_bool_flag(draw, False)
+    if eff_draw:
         drawPriceLst(timestamps, prices, res['blocks'], symbol, direction, dur / 3600.0)
 
     est_future_h = estimate_remaining_trend_hours(dur / 3600.0, symbol=symbol, allow_network=True)
@@ -467,14 +470,16 @@ def run_price_analysis_cycle(
     state: Optional[dict] = None,
     *,
     now_ts: Optional[float] = None,
+    draw_plots: Optional[bool] = None,
     draw_interval_sec: float = DRAW_PLOT_INTERVAL_SEC,
     max_skip_sec: float = MAX_SKIP_RECOMPUTE_SEC,
     inter_symbol_yield_sec: float = 0.05,
 ) -> dict:
-    """Compute long-term trends for ``symbols`` while skipping unchanged series and throttling PNG redraws."""
+    """Compute long-term trends for ``symbols`` while skipping unchanged series and optionally throttling PNG redraws."""
     eff_now = safe_pos_float(now_ts, default=None)
     if eff_now is None:
         eff_now = time.time()
+    eff_draw_enabled = PRICEANALYSIS_DRAW_PLOTS if draw_plots is None else _parse_bool_flag(draw_plots, False)
     eff_draw_itv = safe_pos_float(draw_interval_sec, default=DRAW_PLOT_INTERVAL_SEC) or DRAW_PLOT_INTERVAL_SEC
     eff_skip_cap = safe_pos_float(max_skip_sec, default=MAX_SKIP_RECOMPUTE_SEC) or MAX_SKIP_RECOMPUTE_SEC
     eff_yield = safe_pos_float(inter_symbol_yield_sec, default=0.0) or 0.0
@@ -491,7 +496,7 @@ def run_price_analysis_cycle(
         prev_sig = sigs.get(symbol)
         prev_comp_ts = safe_pos_float(last_compute.get(symbol), default=0.0) or 0.0
         prev_draw_ts = safe_pos_float(last_draw.get(symbol), default=0.0) or 0.0
-        due_draw = (prev_draw_ts <= 0.0) or (eff_now - prev_draw_ts) >= eff_draw_itv
+        due_draw = eff_draw_enabled and ((prev_draw_ts <= 0.0) or (eff_now - prev_draw_ts) >= eff_draw_itv)
         due_refresh = (prev_comp_ts <= 0.0) or (eff_now - prev_comp_ts) >= eff_skip_cap
         unchanged = (
             sig is not None
@@ -519,7 +524,7 @@ def run_price_analysis_cycle(
             draw=due_draw,
         )
         new_dir = res.get("direction") if isinstance(res, dict) else None
-        if not due_draw and prev_dir is not None and new_dir is not None and new_dir != prev_dir:
+        if eff_draw_enabled and not due_draw and prev_dir is not None and new_dir is not None and new_dir != prev_dir:
             res = getTrendLongTerm_fixed(
                 symbol,
                 window_hours=16,
