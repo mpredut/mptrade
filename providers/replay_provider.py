@@ -34,6 +34,7 @@ from botcore import (
     temporary_environ,
 )
 from cachepaths import canonical_base_asset, legacy_filenames_for
+from pricewindow import filter_isolated_price_points
 from state_io import iter_jsonl_dicts
 from .base import MarketDataProvider
 from .quantity import resolve_base_asset
@@ -121,6 +122,7 @@ def load_price_series(
         if ts_ms_f is not None and px_val is not None:
             out.append((ts_ms_f / 1000.0, px_val))
     out.sort(key=lambda x: x[0])
+    out = filter_isolated_price_points(out)
     return out[-max_n:] if max_n is not None else out
 
 

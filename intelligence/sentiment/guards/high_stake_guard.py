@@ -153,14 +153,14 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
     cls_name = "PreTradeLLMGuardBase"
     GUARD_NAME: str = "PreTradeLLMGuard"
     TOPIC_KEY: str = "guard_high_stake"
-    DEFAULT_TIMEOUT_SEC: float = 120.0
+    DEFAULT_TIMEOUT_SEC: float = 140.0
     DEFAULT_FALLBACK: str = "allow"
     DEFAULT_CACHE_TTL_SEC: float = DEFAULT_LLM_GUARD_CACHE_TTL_SEC
 
     def __init__(
         self,
         gemini_client: Optional[GeminiClient] = None,
-        timeout_sec: float = 120.0,
+        timeout_sec: float = 140.0,
         fallback_action: str = "allow",
         mode: str = "enforce",
         notify_enabled: bool = True,
@@ -501,7 +501,7 @@ class HighStakeGuard(PreTradeLLMGuardBase):
         gemini_client: Optional[GeminiClient] = None,
         min_notional_eur: Optional[float] = None,
         min_notional_usd: Optional[float] = None,
-        timeout_sec: float = 120.0,
+        timeout_sec: float = 140.0,
         fallback_action: str = "allow",
         mode: str = "enforce",
         notify_enabled: bool = True,

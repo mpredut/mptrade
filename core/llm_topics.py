@@ -39,7 +39,7 @@ class TopicSpec:
     can_trade: bool = False
     can_self_heal: bool = False
     asset_scope: str = "all"
-    default_timeout_sec: float = 120.0
+    default_timeout_sec: float = 140.0
     model_env_key: str | None = None
     override_env_key: str | None = None
 
@@ -90,7 +90,7 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
         "\U0001f3af [auto_cryptotrade_executor] Autonomous Crypto Trade Decisions (Binance/Kraken/HL 6m)",
         can_trade=True,
         asset_scope="crypto",
-        default_timeout_sec=120.0,
+        default_timeout_sec=140.0,
         model_env_key="LLM_DEFAULT_MODEL",
         override_env_key="LLM_TOPIC_MODEL_AUTO_CRYPTOTRADE_EXECUTOR",
     ),
@@ -98,31 +98,31 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
         "\U0001f4c8 [auto_sharetrade_executor] Autonomous Share Trade Decisions (Trading212 RTH 30m)",
         can_trade=True,
         asset_scope="equities",
-        default_timeout_sec=120.0,
+        default_timeout_sec=140.0,
         model_env_key="LLM_HIGH_STAKE_MODEL",
         override_env_key="LLM_TOPIC_MODEL_AUTO_SHARETRADE_EXECUTOR",
     ),
     "macro_geopolitical": TopicSpec(
         "\U0001f30d [auto_macro_geopolitical] Geopolitical Crisis & Breaking News Brake",
-        default_timeout_sec=120.0,
+        default_timeout_sec=140.0,
         model_env_key="LLM_LOW_STAKE_MODEL",
         override_env_key="LLM_TOPIC_MODEL_MACRO_GEOPOLITICAL",
     ),
     "macro_sentiment": TopicSpec(
         "\U0001f9ed [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)",
-        default_timeout_sec=120.0,
+        default_timeout_sec=140.0,
         model_env_key="LLM_HIGH_STAKE_MODEL",
         override_env_key="LLM_TOPIC_MODEL_MACRO_SENTIMENT",
     ),
     "guard_high_stake": TopicSpec(
         "\U0001f6e1 [auto_guard_large_order] Pre-Trade Veto for Large Orders (>=700 EUR)",
-        default_timeout_sec=120.0,
+        default_timeout_sec=140.0,
         model_env_key="LLM_HIGH_STAKE_MODEL",
         override_env_key="LLM_TOPIC_MODEL_GUARD_HIGH_STAKE",
     ),
     "guard_post_stop": TopicSpec(
         "\U0001f6e1 [auto_guard_post_stop] Pre-Trade Veto for Post-Stop Re-Buy Bounce",
-        default_timeout_sec=120.0,
+        default_timeout_sec=140.0,
         model_env_key="LLM_DEFAULT_MODEL",
         override_env_key="LLM_TOPIC_MODEL_GUARD_POST_STOP",
     ),

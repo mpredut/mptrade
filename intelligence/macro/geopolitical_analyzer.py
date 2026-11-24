@@ -420,7 +420,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         resp = self._query_topic(
             prompt,
             subtitle=lead_headline,
-            timeout_sec=120.0,
+            timeout_sec=140.0,
         )
         if not resp or not isinstance(resp, dict):
             has_acute_phrase = has_acute_shock_keywords(

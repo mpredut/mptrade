@@ -151,7 +151,7 @@ def evaluate_high_stake_order_guard(
                 obj_attr(regime_context, "resolved_duration_sec"),
                 default=None,
             )
-        timeout_sec = safe_pos_float(margins.get("llm_timeout_sec"), 120.0)
+        timeout_sec = safe_pos_float(margins.get("llm_timeout_sec"), 140.0)
         fallback = (clean_scalar_str(margins.get("llm_fallback")) or "allow").lower()
         llm_guard = _high_stake_guard.HighStakeGuard(
             min_notional_eur=min_notional,

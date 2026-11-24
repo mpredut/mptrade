@@ -1241,6 +1241,14 @@ def read_text_file(
     )
 
 
+def iter_text_lines(
+    path: str, *, encoding: str = "utf-8", errors: str = "strict",
+) -> Iterator[str]:
+    """Stream raw text lines (with trailing newlines preserved) from ``path`` in O(1) memory."""
+    with open(_resolve_target_path(path), "r", encoding=encoding, errors=errors) as handle:
+        yield from handle
+
+
 def read_text_lines(
     path: str, *, strip: bool = False, skip_empty: bool = False, keepends: bool = False,
     encoding: str = "utf-8", errors: str = "strict",

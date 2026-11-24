@@ -84,9 +84,13 @@ if [ "$local_sha" != "$remote_sha" ]; then
         exit 0
     fi
     [ "$AUTODEPLOY_MODE" = shadow ] && shadow_report_and_exit "pull + restart python_orchestrator.service"
-    if ! g pull --ff-only --quiet origin "$BRANCH" 2>/dev/null; then
-        log "git pull --ff-only failed"
-        alert "autodeploy FAILED ($(hostname))" "git pull --ff-only origin/$BRANCH failed; fleet NOT restarted." "high" "$(ntfy_error_topic)"
+    pull_err="$(g pull --ff-only --quiet origin "$BRANCH" 2>&1)"
+    pull_rc=$?
+    if [ "$pull_rc" -ne 0 ]; then
+        pull_reason="$(printf '%s' "$pull_err" | tr '\r\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' | cut -c1-300)"
+        [ -n "$pull_reason" ] || pull_reason="exit code $pull_rc"
+        log "git pull --ff-only failed: $pull_reason"
+        alert "autodeploy FAILED ($(hostname))" "git pull --ff-only origin/$BRANCH failed ($pull_reason); fleet NOT restarted." "high" "$(ntfy_error_topic)"
         exit 0
     fi
     g ls-files --stage 2>/dev/null | awk '$1 == "100755" {print $4}' | while IFS= read -r _f; do

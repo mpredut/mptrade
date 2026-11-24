@@ -48,6 +48,7 @@ from botcore import (
     temporary_environ,
 )
 from cachepaths import cache_symbol_variants, get_cachedb_dir, resolve_cachedb_filepath
+from pricewindow import filter_isolated_price_arrays
 from state_io import atomic_write_bytes, read_jsonl_dicts
 from strategies.replay_metrics import validate_bt_cli_token
 
@@ -122,7 +123,7 @@ def load_series(sym):
         except OSError:
             is_fresh_npz = False
         if is_fresh_npz and (valid := _extract_valid_npz_arrays(npz_target)) is not None:
-            return valid
+            return filter_isolated_price_arrays(valid[0], valid[1])
 
     valid_syms = set(sym_cands) | {sym}
     for r in read_jsonl_dicts(jsonl_path):
@@ -137,7 +138,7 @@ def load_series(sym):
     o = np.argsort(ts, kind="stable")
     ts, px = ts[o], px[o]
     keep = np.concatenate(([True], np.diff(ts) > 0))
-    ts, px = ts[keep], px[keep]
+    ts, px = filter_isolated_price_arrays(ts[keep], px[keep])
     buf = io.BytesIO()
     np.savez(buf, ts=ts, px=px)
     atomic_write_bytes(npz_target, buf.getvalue())

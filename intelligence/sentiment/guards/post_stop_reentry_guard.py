@@ -52,7 +52,7 @@ import notify_engine.alertnotifiers as _alertnotifiers
 
 logger = logging.getLogger("intelligence.sentiment.guards.post_stop_reentry_guard")
 
-DEFAULT_TIMEOUT_SEC = 120.0
+DEFAULT_TIMEOUT_SEC = 140.0
 DEFAULT_FALLBACK = "allow"
 _POST_STOP_DECISION_CACHE: Dict[Tuple[str, float, int], Tuple[float, GuardDecision]] = {}
 _POST_STOP_NOTIFY_CACHE: Dict[Tuple[str, str], float] = {}

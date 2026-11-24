@@ -63,6 +63,7 @@ format_topic_history_prefix = _agy_topics.format_topic_history_prefix
 format_topic_turn_header = _agy_topics.format_topic_turn_header
 is_topic_resume_warm = _agy_topics.is_topic_resume_warm
 prepare_topic_session = _agy_topics.prepare_topic_session
+record_topic_resume_timeout = _agy_topics.record_topic_resume_timeout
 record_topic_turn = _agy_topics.record_topic_turn
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -79,6 +80,7 @@ _ORIG_SUBPROCESS_RUN = subprocess.run
 _ORIG_URLOPEN = urllib.request.urlopen
 _ORIG_FETCH_JSON_POST = fetch_json_post
 _ORIG_PREPARE_TOPIC_SESSION = prepare_topic_session
+_ORIG_RECORD_TOPIC_RESUME_TIMEOUT = record_topic_resume_timeout
 _ORIG_PROBE_LIVE_MODEL_QUOTA_FUNC = getattr(
     GeminiQuotaRouterMixin.probe_live_model_quota, "__func__", GeminiQuotaRouterMixin.probe_live_model_quota
 )
@@ -486,7 +488,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         try:
             compacted_ok = False
             if session.compact and turn_cid and not replaced_conversation:
-                compact_timeout = max(timeout_sec, 120.0)
+                compact_timeout = max(timeout_sec, 140.0)
                 compact_snap = (
                     snapshot_conversation_state(bot_cli_base, turn_cid)
                     if not is_mocked
@@ -674,6 +676,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                 return fp
 
             resume_abandoned = False
+            had_resume_timeout = False
             tried_detached_models: set[str] = set()
             exhausted_in_call: set[str] = set()
 
@@ -737,6 +740,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                         )
                         continue
                     resume_timed_out = True
+                    had_resume_timeout = True
                     resume_abandoned = True
                     logger.warning(
                         "Resuming topic '%s' conversation %s timed out after %ss; falling back to one-off thread.",
@@ -868,6 +872,25 @@ class GeminiClient(GeminiQuotaRouterMixin):
                     proc.returncode if proc is not None else "timeout",
                     (proc.stderr or "").strip()[:200] if proc is not None else "",
                 )
+            if (
+                had_resume_timeout
+                and use_topic_session
+                and topic_key
+                and session.conversation_id
+                and (
+                    not is_mocked
+                    or hasattr(record_topic_resume_timeout, "_mock_name")
+                    or record_topic_resume_timeout is not _ORIG_RECORD_TOPIC_RESUME_TIMEOUT
+                )
+            ):
+                try:
+                    record_topic_resume_timeout(
+                        topic_key,
+                        session.conversation_id,
+                        cli_base=bot_cli_base,
+                    )
+                except Exception as exc:
+                    logger.debug("Failed recording topic resume timeout for %s: %s", topic_key, exc)
         except subprocess.TimeoutExpired:
             logger.warning("Gemini query timed out after %s seconds", timeout_sec)
             return True, None
@@ -1246,7 +1269,7 @@ def query_topic_json(
     thread_title = f"{base_title} \u2014 {sub}" if sub else base_title
     default_timeout = safe_pos_float(
         getattr(spec, "default_timeout_sec", None),
-        120.0 if getattr(spec, "can_self_heal", False) else 90.0,
+        140.0 if getattr(spec, "can_self_heal", False) else 90.0,
     )
     eff_timeout = safe_pos_float(timeout_sec, default_timeout)
     call_kwargs: Dict[str, Any] = {

@@ -52,7 +52,7 @@ def filter_isolated_price_points(
     pts: list,
     *,
     neighbor_agree_ratio: float = 1.20,
-    spike_ratio: float = 1.35,
+    spike_ratio: float = 1.5,
     edge_ratio: float = 2.5,
 ) -> list:
     """Drop isolated 1-tick spikes (and 2-tick extreme bursts) from ascending ``(ts, px)`` or ``[ts, px]`` sequences.
@@ -104,6 +104,55 @@ def filter_isolated_price_points(
             if p_last > t_hi * edge_ratio or p_last < t_lo / edge_ratio:
                 kept = kept[:-1]
     return kept
+
+
+def filter_isolated_price_arrays(
+    ts,
+    px,
+    *,
+    neighbor_agree_ratio: float = 1.20,
+    spike_ratio: float = 1.5,
+    edge_ratio: float = 2.5,
+):
+    """Vectorized NumPy counterpart of ``filter_isolated_price_points`` for large dense 365d archives."""
+    n = len(px)
+    if n < 3 or np is None:
+        return ts, px
+    keep = np.ones(n, dtype=bool)
+    p_prev = px[:-2]
+    p_cur = px[1:-1]
+    p_next = px[2:]
+    lo_nb = np.minimum(p_prev, p_next)
+    hi_nb = np.maximum(p_prev, p_next)
+    agree = (lo_nb > 0.0) & ((hi_nb / np.where(lo_nb > 0.0, lo_nb, 1.0)) <= neighbor_agree_ratio)
+    bad_mid = agree & ((p_cur > hi_nb * spike_ratio) | (p_cur < lo_nb / spike_ratio))
+    keep[1:-1] &= ~bad_mid
+    if n >= 4:
+        p_l = px[:-3]
+        p_r = px[3:]
+        lo2 = np.minimum(p_l, p_r)
+        hi2 = np.maximum(p_l, p_r)
+        agree2 = (lo2 > 0.0) & ((hi2 / np.where(lo2 > 0.0, lo2, 1.0)) <= neighbor_agree_ratio)
+        b1 = (px[1:-2] > hi2 * edge_ratio) | (px[1:-2] < lo2 / edge_ratio)
+        b2 = (px[2:-1] > hi2 * edge_ratio) | (px[2:-1] < lo2 / edge_ratio)
+        burst2 = agree2 & b1 & b2
+        if np.any(burst2):
+            keep[1:-2] &= ~burst2
+            keep[2:-1] &= ~burst2
+    if not np.all(keep):
+        ts = ts[keep]
+        px = px[keep]
+    if len(px) >= 5:
+        h_lo, h_hi = np.min(px[1:4]).item(), np.max(px[1:4]).item()
+        if h_lo > 0.0 and (h_hi / h_lo) <= neighbor_agree_ratio:
+            if px[0] > h_hi * edge_ratio or px[0] < h_lo / edge_ratio:
+                ts, px = ts[1:], px[1:]
+    if len(px) >= 5:
+        t_lo, t_hi = np.min(px[-4:-1]).item(), np.max(px[-4:-1]).item()
+        if t_lo > 0.0 and (t_hi / t_lo) <= neighbor_agree_ratio:
+            if px[-1] > t_hi * edge_ratio or px[-1] < t_lo / edge_ratio:
+                ts, px = ts[:-1], px[:-1]
+    return ts, px
 
 # -- Window constants ----------------------------------------------------------
 DEFAULT_SAMPLE_RATE_SEC = 0.8     # Nominal fallback sampling rate.

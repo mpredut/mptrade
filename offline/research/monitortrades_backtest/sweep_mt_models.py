@@ -274,7 +274,7 @@ def load_fresh_365_npz_arrays(sym: str) -> tuple[np.ndarray, np.ndarray] | None:
                     valid_mask = np.isfinite(ts_arr) & np.isfinite(px_arr) & (px_arr > 0.0)
                     if not np.any(valid_mask):
                         return None
-                    return ts_arr[valid_mask], px_arr[valid_mask]
+                    return pw.filter_isolated_price_arrays(ts_arr[valid_mask], px_arr[valid_mask])
         except (OSError, ValueError, KeyError, TypeError, EOFError, zipfile.BadZipFile):
             pass
     return None

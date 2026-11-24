@@ -26,6 +26,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import CACHE_365_PRICE_PREFIX, cache_path
+from pricewindow import filter_isolated_price_points
 from instrument_registry import resolve_kraken_tokenized_pair
 from providers.ohlc_utils import (
     extract_kraken_ohlc_rows,
@@ -107,7 +108,7 @@ def load_archive_ohlc_candles(
     path = archive_path or cache_path(f"{CACHE_365_PRICE_PREFIX}{pair}.jsonl")
     if not os.path.exists(path):
         raise FileNotFoundError(f"local tick archive not found: {path}")
-    buckets: dict[int, list[float]] = {}
+    raw_pts: list[tuple[int, float]] = []
     for rec in iter_jsonl_dicts(path):
         item = rec.get("i")
         if not isinstance(item, (list, tuple)) or len(item) < 2:
@@ -116,6 +117,10 @@ def load_archive_ohlc_candles(
         px = safe_pos_float(item[1], default=None)
         if ts_ms is None or ts_ms <= 0 or px is None:
             continue
+        raw_pts.append((ts_ms, px))
+    raw_pts.sort(key=lambda pt: pt[0])
+    buckets: dict[int, list[float]] = {}
+    for ts_ms, px in filter_isolated_price_points(raw_pts):
         b_key = (ts_ms // bucket_ms) * bucket_ms
         bar = buckets.get(b_key)
         if bar is None:

@@ -37,6 +37,7 @@ from botcore import lru_dict_put, normalize_side, resolve_now_ts, safe_int, safe
 from providers.replay_provider import SimClock, backtest_isolation_context  # noqa: F401
 from state_io import append_text_line, atomic_write_json, iter_jsonl_dicts, read_json_dict
 from cachepaths import cache_path, cache_symbol_variants, legacy_filenames_for, migrate_legacy_filename_if_needed
+from pricewindow import filter_isolated_price_points
 from instrument_registry import casefold_get
 from offline.backtests.evaluation import parse_cli_float
 from offline.research.monitortrades_backtest.replay_trend_source import (  # noqa: E402
@@ -281,22 +282,22 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
 
     sym_variants = set(cache_symbol_variants(symbol, include_original=True))
     if sig[1] > _MAX_CACHEABLE_FILE_BYTES:
-        yield from (
-            (ts, price)
+        sliced = [
+            parsed
             for rec in iter_jsonl_dicts(path)
             if rec.get("s") in sym_variants and (parsed := _parse_tick_pair(rec.get("i"))) is not None
-            for ts, price in (parsed,)
-            if (start_ts is None or ts >= start_ts) and (end_ts is None or ts <= end_ts)
-        )
+            if (start_ts is None or parsed[0] >= start_ts) and (end_ts is None or parsed[0] <= end_ts)
+        ]
+        yield from filter_isolated_price_points(sliced)
         return
 
     full_ticks = _FILE_TICKS_CACHE.get(file_key)
     if full_ticks is None:
-        full_ticks = [
+        full_ticks = filter_isolated_price_points([
             parsed
             for rec in iter_jsonl_dicts(path)
             if rec.get("s") in sym_variants and (parsed := _parse_tick_pair(rec.get("i"))) is not None
-        ]
+        ])
         if len(full_ticks) <= _MAX_CACHEABLE_TICKS:
             lru_dict_put(_FILE_TICKS_CACHE, file_key, full_ticks, max_entries=4)
 
@@ -347,11 +348,12 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
             if isinstance(cand_val, list) and cand_val:
                 entries = cand_val
                 break
-    for entry in entries:
-        parsed = _parse_tick_pair(entry)
-        if parsed is None:
-            continue
-        ts, price = parsed
+    parsed_entries = [
+        parsed
+        for entry in entries
+        if (parsed := _parse_tick_pair(entry)) is not None
+    ]
+    for ts, price in filter_isolated_price_points(parsed_entries):
         if start_ts is not None and ts < start_ts:
             continue
         if end_ts is not None and ts > end_ts:

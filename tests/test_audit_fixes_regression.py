@@ -1404,3 +1404,106 @@ def test_p1_hl_client_force_timeout_isolates_per_thread_sessions_and_kraken_matc
         "ETHUSD": {"c": ["3000.0"]},
     }
     assert kc.ticker("HYPEUSD") is None
+
+
+def test_llm_timeout_140s_topic_auto_rotation_and_archive_sanitizers(tmp_path):
+    """Verify 140s LLM topic timeouts, 2-consecutive-timeout thread rotation, NumPy/replay/Kraken
+    archive outlier filters, and streaming JSONL archive sanitizer."""
+    import json
+    import os
+    import subprocess
+    import numpy as np
+    from core.llm_topics import topic_spec
+    from orchestratorOS.agy import topics as agy_topics
+    from pricewindow import filter_isolated_price_arrays
+    from providers.replay_provider import load_price_series
+    from kraken.market_data import load_archive_ohlc_candles
+    from verify_tools.sanitize_price_archives import sanitize_jsonl_price_archive
+
+    # 1. Topic timeout defaults bumped from 120s -> 140s (repair stays 240s)
+    for k in (
+        "auto_cryptotrade_executor",
+        "auto_sharetrade_executor",
+        "macro_geopolitical",
+        "macro_sentiment",
+        "guard_high_stake",
+        "guard_post_stop",
+    ):
+        assert topic_spec(k).default_timeout_sec == pytest.approx(140.0)
+    assert topic_spec("auto_technical_repair").default_timeout_sec == pytest.approx(240.0)
+
+    # 2. Consecutive resume timeouts auto-rotate the stuck conversation while preserving rolling_history
+    reg_path = str(tmp_path / "llm_topic_threads.json")
+    bot_base = str(tmp_path / "agy_base")
+    (tmp_path / "llm_topic_threads.json").write_text(
+        json.dumps(
+            {
+                "auto_cryptotrade_executor": {
+                    "topic_key": "auto_cryptotrade_executor",
+                    "conversation_id": "cid-stuck-1",
+                    "turn_count": 5,
+                    "rolling_history": [{"utc": "2026-11-24 16:00 UTC", "summary": "decision=HOLD"}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert agy_topics.record_topic_resume_timeout(
+        "auto_cryptotrade_executor", "cid-stuck-1", cli_base=bot_base, registry_path=reg_path, max_consecutive_timeouts=2
+    ) is False
+    reg1 = json.loads((tmp_path / "llm_topic_threads.json").read_text(encoding="utf-8"))
+    assert reg1["auto_cryptotrade_executor"]["conversation_id"] == "cid-stuck-1"
+    assert reg1["auto_cryptotrade_executor"]["consecutive_resume_timeouts"] == 1
+
+    assert agy_topics.record_topic_resume_timeout(
+        "auto_cryptotrade_executor", "cid-stuck-1", cli_base=bot_base, registry_path=reg_path, max_consecutive_timeouts=2
+    ) is True
+    reg2 = json.loads((tmp_path / "llm_topic_threads.json").read_text(encoding="utf-8"))
+    assert reg2["auto_cryptotrade_executor"]["conversation_id"] is None
+    assert reg2["auto_cryptotrade_executor"]["consecutive_resume_timeouts"] == 0
+    assert reg2["auto_cryptotrade_executor"]["needs_full_prompt"] is True
+    assert len(reg2["auto_cryptotrade_executor"]["rolling_history"]) == 1
+
+    # 3. Vectorized NumPy array filter removes isolated 189.7 & 0.1461 spikes
+    ts_arr = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float64)
+    px_arr = np.array([0.115, 0.1152, 189.7, 0.1150, 0.1148], dtype=np.float64)
+    ts_c, px_c = filter_isolated_price_arrays(ts_arr, px_arr)
+    assert len(px_c) == 4 and float(np.max(px_c)) < 1.0
+
+    # 4. Replay loader, Kraken OHLC archive loader, and streaming JSONL archive sanitizer
+    t0 = 1_795_504_760_000
+    jsonl_path = tmp_path / "cache_365_price_ARBUSDC.jsonl"
+    npz_path = tmp_path / "cache_365_price_ARBUSDC.npz"
+    npz_path.write_bytes(b"stale-npz")
+    rows = [
+        {"s": "ARBUSDC", "i": [t0, 0.1150]},
+        {"s": "ARBUSDC", "i": [t0 + 1_000, 0.1152]},
+        {"s": "ARBUSDC", "i": [t0 + 2_000, 189.7]},
+        {"s": "ARBUSDC", "i": [t0 + 3_000, 0.1150]},
+        {"s": "ARBUSDC", "i": [t0 + 4_000, 0.1149]},
+        {"s": "ARBUSDC", "i": [t0 + 65_000, 0.1148]},
+    ]
+    jsonl_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+    # Read-side guards drop 189.7 even before disk sanitization
+    replay_ser = load_price_series(str(jsonl_path), "ARBUSDC")
+    assert len(replay_ser) == 5 and all(px < 1.0 for _, px in replay_ser)
+
+    ohlc_bars = load_archive_ohlc_candles("HYPEUSD", 1, drop_incomplete=True, archive_path=str(jsonl_path))
+    assert len(ohlc_bars) >= 1 and all(b["high"] < 1.0 for b in ohlc_bars)
+
+    # Dry-run detects line 3 without rewriting; apply removes line 3 and deletes stale .npz
+    dry = sanitize_jsonl_price_archive(str(jsonl_path), dry_run=True)
+    assert len(dry["outliers"]) == 1 and dry["outliers"][0]["line_no"] == 3 and not dry["rewritten"]
+    assert npz_path.exists()
+
+    applied = sanitize_jsonl_price_archive(str(jsonl_path), dry_run=False)
+    assert applied["rewritten"] is True and applied["removed_npz"] is True
+    assert not npz_path.exists()
+    after_lines = [json.loads(l) for l in jsonl_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(after_lines) == 5 and all(r["i"][1] < 1.0 for r in after_lines)
+
+    # 5. manage_gitautodeploy.sh passes bash -n syntax check
+    sh_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "orchestratorOS", "admin", "manage_gitautodeploy.sh")
+    proc = subprocess.run(["bash", "-n", sh_path], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr

@@ -281,7 +281,53 @@ def _rotate_topic_conversation(
     entry["conversation_id"] = new_cid
     entry["compacted_at_step"] = 0
     entry["needs_full_prompt"] = True
+    entry["consecutive_resume_timeouts"] = 0
     entry["rotation_count"] = safe_nonneg_int(entry.get("rotation_count"), 0) + 1
+
+
+def record_topic_resume_timeout(
+    topic_key: str,
+    conversation_id: Optional[str] = None,
+    *,
+    cli_base: Optional[str] = None,
+    registry_path: Optional[str] = None,
+    max_consecutive_timeouts: int = 2,
+) -> bool:
+    """Increment consecutive resume-timeout counter and rotate the topic thread once the threshold is reached.
+
+    Returns True when the topic conversation was rotated to a fresh thread (preserving rolling memory).
+    """
+    topic_spec(topic_key)
+    resolved, base = canonical_topic_key(topic_key), resolve_bot_cli_base(cli_base)
+    max_to = exact_pos_int(max_consecutive_timeouts, default=2) or 2
+    target_cid = conversation_id.strip() if isinstance(conversation_id, str) and conversation_id.strip() else None
+    reg_path = get_topic_registry_path(registry_path)
+    with generation_file_lock(reg_path):
+        _, reg, entry = _load_topic_entry(resolved, registry_path, repair_files=True)
+        if entry is None:
+            return False
+        raw_cid = entry.get("conversation_id")
+        cur_cid = raw_cid.strip() if isinstance(raw_cid, str) and raw_cid.strip() else None
+        if not cur_cid or (target_cid is not None and cur_cid != target_cid):
+            return False
+        count = safe_nonneg_int(entry.get("consecutive_resume_timeouts"), 0) + 1
+        rotated = False
+        if count >= max_to:
+            logger.warning(
+                "Topic '%s' conversation %s hit %d consecutive resume timeouts (limit=%d); rotating to a fresh thread.",
+                resolved,
+                cur_cid,
+                count,
+                max_to,
+            )
+            _rotate_topic_conversation(base, entry, cur_cid, None)
+            rotated = True
+        else:
+            entry["consecutive_resume_timeouts"] = count
+        entry["updated_ts"] = datetime.now(timezone.utc).timestamp()
+        reg[resolved] = entry
+        save_topic_registry(reg, registry_path)
+    return rotated
 
 
 def prepare_topic_session(
@@ -548,6 +594,7 @@ def record_topic_turn(
                 else:
                     entry["needs_full_prompt"] = False
         entry["topic_key"] = resolved
+        entry["consecutive_resume_timeouts"] = 0
         entry["turn_count"] = safe_nonneg_int(entry.get("turn_count"), 0) + 1
         entry["updated_ts"] = datetime.now(timezone.utc).timestamp()
         entry["title"] = spec.title
