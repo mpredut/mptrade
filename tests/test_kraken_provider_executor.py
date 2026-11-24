@@ -1526,3 +1526,64 @@ def test_kraken_amend_order_and_provider_replace_order(monkeypatch, tmp_path):
     with pytest.raises(SubmissionRefused) as exc_err:
         kp.replace_order("HYPEUSD", "O-TXID-1", "SELL", 25.68, 2.0)
     assert exc_err.value.reason == "replace_not_attempted"
+
+
+def test_kraken_private_nonce_cross_process_lock_and_monotonic_sequence(tmp_path, monkeypatch):
+    """Verify KrakenClient serializes private nonce+HTTP dispatch per API key and enforces strict monotonicity."""
+    import base64
+    import threading
+    import time
+    from kraken import kraken_client as kc_mod
+
+    lock_path = tmp_path / ".kraken_nonce_test.lock"
+    secret_b64 = base64.b64encode(b"supersecretkey123456").decode("ascii")
+    cli_a = kc_mod.KrakenClient("shared_key_alpha", secret_b64)
+    cli_b = kc_mod.KrakenClient("shared_key_alpha", secret_b64)
+    for c in (cli_a, cli_b):
+        c._enable_nonce_file_lock = True
+        c._nonce_lock_path_override = str(lock_path)
+
+    # Pin time.time_ns() constant to prove strict monotonic increment even within the same ns
+    monkeypatch.setattr(kc_mod.time, "time_ns", lambda: 1_760_000_000_000_000_000)
+
+    state_lock = threading.Lock()
+    in_flight = 0
+    max_in_flight = 0
+    seen_nonces: list[int] = []
+
+    def _fake_post(_url, data, headers=None):
+        nonlocal in_flight, max_in_flight
+        with state_lock:
+            in_flight += 1
+            if in_flight > max_in_flight:
+                max_in_flight = in_flight
+            seen_nonces.append(int(data["nonce"]))
+        time.sleep(0.03)
+        with state_lock:
+            in_flight -= 1
+        return 200, json.dumps({"error": [], "result": {"ZUSD": "100.0"}}).encode("utf-8")
+
+    monkeypatch.setattr(kc_mod, "http_post_form", _fake_post)
+
+    errors: list[Exception] = []
+
+    def _worker(cli):
+        try:
+            res = cli._private("Balance", fresh=True)
+            assert res == {"ZUSD": "100.0"}
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker, args=(cli_a if i % 2 == 0 else cli_b,)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+
+    assert not errors
+    assert max_in_flight == 1
+    assert len(seen_nonces) == 4
+    assert seen_nonces == sorted(seen_nonces)
+    assert len(set(seen_nonces)) == 4
+    assert lock_path.exists()
+

@@ -1070,4 +1070,58 @@ def test_phase2_passive_readers_lock_alignment_and_trade_alias_coalescing(tmp_pa
     assert "ID: rec_fallback_1" in fmt
 
 
+def test_atomic_write_json_fsync_flag_and_ephemeral_telemetry_collector(tmp_path, monkeypatch):
+    """Verify atomic_write_json(fsync=False) skips os.fsync while preserving POSIX atomicity,
+    and ephemeral telemetry collectors default to fsync=False while honoring monkeypatched save_json_state."""
+    from intelligence.external.collectors import base_collector as bc_mod
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
+
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+
+    # 1. Default fsync=True calls os.fsync
+    durable_path = tmp_path / "durable.json"
+    state_io.atomic_write_json(str(durable_path), {"ok": True}, indent=2)
+    assert json.loads(durable_path.read_text(encoding="utf-8")) == {"ok": True}
+    assert len(fsync_calls) >= 1
+
+    # 2. fsync=False writes atomically with zero os.fsync calls
+    fsync_calls.clear()
+    fast_path = tmp_path / "ephemeral.json"
+    state_io.atomic_write_json(str(fast_path), {"fast": 1}, indent=2, fsync=False)
+    assert json.loads(fast_path.read_text(encoding="utf-8")) == {"fast": 1}
+    assert fsync_calls == []
+
+    # 3. _DiskBackedSymbolCollector._save_to_disk uses fsync=False and creates no .previous staging
+    col = OrderbookDepthCollector(cache_dir=str(tmp_path), start_sync=False)
+    snap = OrderbookSnapshot(
+        symbol="BTCUSDC",
+        mid_price=70000.0,
+        bid_depth_usd=100000.0,
+        ask_depth_usd=100000.0,
+        imbalance_ratio=0.5,
+        largest_bid_wall_usd=25000.0,
+        largest_bid_wall_price=69990.0,
+        largest_ask_wall_usd=25000.0,
+        largest_ask_wall_price=70010.0,
+        ts=1_760_000_000.0,
+        best_bid=69999.0,
+        best_ask=70001.0,
+        spread_bps=0.29,
+    )
+    col._save_to_disk(snap)
+    assert fsync_calls == []
+    assert not list(tmp_path.rglob("*.previous"))
+    saved_file = tmp_path / "orderbook_depth_BTCUSDC.json"
+    assert saved_file.exists()
+    assert json.loads(saved_file.read_text(encoding="utf-8"))["symbol"] == "BTCUSDC"
+
+    # 4. Monkeypatching save_json_state on base_collector still intercepts collector saves
+    patched_calls: list[str] = []
+    monkeypatch.setattr(bc_mod, "save_json_state", lambda p, d, **_kw: patched_calls.append(p))
+    col._save_to_disk(snap)
+    assert len(patched_calls) == 1
+
+
+
 

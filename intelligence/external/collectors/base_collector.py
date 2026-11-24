@@ -65,7 +65,7 @@ from providers.ohlc_utils import (
     extract_yahoo_chart_ohlcv_bars,
     resolve_yahoo_chart_market_state_and_price,
 )
-from state_io import read_json_dict, read_json_dict_recovering, save_json_state
+from state_io import atomic_write_json, read_json_dict, read_json_dict_recovering, save_json_state
 
 logger = logging.getLogger("intelligence.external.base_collector")
 
@@ -567,11 +567,19 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 logger.debug("Failed loading %s snapshot from %s: %s", self._DISK_FILE_PREFIX, p, e)
         return None
 
+    def _write_disk_json(self, path: str, payload: Dict[str, Any]) -> None:
+        save_fn = _resolve_module_fn(self, "save_json_state", save_json_state)
+        if save_fn is not _ORIG_MODULE_FNS["save_json_state"]:
+            save_fn(path, payload, indent=2)
+            return
+        # Ephemeral high-frequency telemetry snapshots (15s-60s cadence) remain 100%
+        # POSIX-atomic (tmp + os.replace) without ext4 fsync/jbd2 stalls or .previous churn.
+        atomic_write_json(path, payload, indent=2, fsync=False)
+
     def _save_to_disk(self, snapshot: Any) -> None:
         if p := telemetry_cache_file_path(self.cache_dir, self._DISK_FILE_PREFIX, snapshot.symbol):
             try:
-                save_fn = _resolve_module_fn(self, "save_json_state", save_json_state)
-                save_fn(p, snapshot.to_dict(), indent=2)
+                self._write_disk_json(p, snapshot.to_dict())
             except Exception as e:
                 logger.debug("Failed writing %s snapshot to %s: %s", self._DISK_FILE_PREFIX, p, e)
 
@@ -674,8 +682,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             if snap_ts > cur_ts + 5.0 and hasattr(snapshot, "to_dict"):
                 d_copy = dict(snapshot.to_dict())
                 d_copy["symbol"] = sym_clean
-                save_fn = _resolve_module_fn(self, "save_json_state", save_json_state)
-                save_fn(p_exact, d_copy, indent=2)
+                self._write_disk_json(p_exact, d_copy)
         except Exception:
             pass
 

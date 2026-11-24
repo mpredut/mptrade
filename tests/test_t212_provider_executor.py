@@ -1560,3 +1560,81 @@ def test_t212_passive_get_orders_preserves_persisted_fills_after_invalidation_an
         cli.refresh_order_history(max_age_sec=6.0, publish_cache=True, sync_trade_cache=False)
     assert mock_get.call_count == 1
     assert write_calls == [("_hist_cache", False)]
+
+
+def test_t212_soft_invalidation_preserves_429_fallback_and_cross_process_pacing(tmp_path, monkeypatch):
+    """Verify soft cache invalidation enforces cross-process http_ts pacing and preserves 429 fallback data."""
+    shared_file = str(tmp_path / ".t212_shared_cache_pacing.json")
+    now_t = [1_760_000_000.0]
+    sleeps: list[float] = []
+    http_calls: list[str] = []
+
+    monkeypatch.setattr(t212_client.time, "time", lambda: now_t[0])
+
+    def _fake_sleep(sec: float) -> None:
+        sleeps.append(sec)
+        now_t[0] += sec
+
+    monkeypatch.setattr(t212_client.time, "sleep", _fake_sleep)
+
+    pf_v1 = [{"ticker": "NVDA_US_EQ", "quantity": 1.0, "currentPrice": 200.0}]
+    pf_v2 = [{"ticker": "NVDA_US_EQ", "quantity": 2.0, "currentPrice": 201.0}]
+    responses = [
+        (200, json.dumps(pf_v1).encode("utf-8")),
+        (200, json.dumps(pf_v2).encode("utf-8")),
+        (429, b"rate limit"),
+    ]
+
+    def _fake_http_get(url, headers=None):
+        http_calls.append(url)
+        return responses.pop(0)
+
+    monkeypatch.setattr(t212_client, "http_get", _fake_http_get)
+
+    producer = t212_client.T212Client(
+        "k_pace", "s_pace", "live",
+        min_gap_sec=0.0, order_min_gap_sec=2.1, portfolio_ttl_sec=6.0,
+        shared_cache_path=shared_file, enable_shared_disk_cache=True,
+    )
+    assert producer.get_portfolio() == pf_v1
+    assert len(http_calls) == 1
+
+    # Soft-invalidate 1.0s after fetch (simulating order placement)
+    now_t[0] += 1.0
+    producer._invalidate_order_caches()
+    disk = json.loads((tmp_path / ".t212_shared_cache_pacing.json").read_text(encoding="utf-8"))
+    assert disk["_pf_cache"]["invalidated"] is True
+    assert disk["_pf_cache"]["data"] == pf_v1
+    assert disk["_pf_cache"]["http_ts"] == 1_760_000_000.0
+
+    # Another process fetches immediately -> must wait remaining ~4.2s of 5.2s endpoint window, then refresh
+    consumer = t212_client.T212Client(
+        "k_pace", "s_pace", "live",
+        min_gap_sec=0.0, order_min_gap_sec=2.1, portfolio_ttl_sec=6.0,
+        shared_cache_path=shared_file, enable_shared_disk_cache=True,
+    )
+    assert consumer.get_portfolio() == pf_v2
+    assert len(http_calls) == 2
+    assert any(4.0 <= s <= 4.3 for s in sleeps)
+
+    # Invalidate again; if upstream still returns 429, fallback serves pf_v2 and prevents immediate 429 storm
+    now_t[0] += 6.0
+    producer._invalidate_order_caches()
+    consumer2 = t212_client.T212Client(
+        "k_pace", "s_pace", "live",
+        min_gap_sec=0.0, order_min_gap_sec=2.1, portfolio_ttl_sec=6.0,
+        shared_cache_path=shared_file, enable_shared_disk_cache=True,
+    )
+    assert consumer2.get_portfolio() == pf_v2
+    assert len(http_calls) == 3
+
+    # Third process arriving 1s later reuses 429 cooldown fallback with zero extra HTTP calls
+    now_t[0] += 1.0
+    consumer3 = t212_client.T212Client(
+        "k_pace", "s_pace", "live",
+        min_gap_sec=0.0, order_min_gap_sec=2.1, portfolio_ttl_sec=6.0,
+        shared_cache_path=shared_file, enable_shared_disk_cache=True,
+    )
+    assert consumer3.get_portfolio() == pf_v2
+    assert len(http_calls) == 3
+

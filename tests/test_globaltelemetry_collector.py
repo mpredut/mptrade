@@ -3098,6 +3098,56 @@ def test_per_venue_concurrency_caps_orderbook_thread_safety_and_pretrade_btc_ded
     assert set(calls_list) >= {"ETHUSDC", "SOLUSDC", "ADAUSDC", "ARBUSDC", "BTCUSDC"}
 
 
+def test_step_external_symbols_anti_starvation_refreshes_ob_during_slow_whale(tmp_path, monkeypatch):
+    """Verify a slow whale tier exceeding orderbook_interval_sec triggers an interleaved ob refresh."""
+    from intelligence.macro import daemon_ssot as ds_mod
+
+    clock = [10_000.0]
+    monkeypatch.setattr(ds_mod, "resolve_now_ts", lambda _now=None: clock[0])
+
+    col = GlobalTelemetryCollector(
+        symbols=["BTCUSDC", "ETHUSDC"],
+        cache_dir=str(tmp_path),
+        orderbook_interval_sec=15.0,
+        derivatives_interval_sec=60.0,
+        whale_interval_sec=60.0,
+        skip_news=True,
+    )
+    events: list[tuple[str, str, float]] = []
+
+    def _fake_ob(sym: str) -> bool:
+        events.append(("ob", sym, clock[0]))
+        return True
+
+    def _fake_deriv(sym: str) -> bool:
+        events.append(("deriv", sym, clock[0]))
+        return True
+
+    def _fake_whale(sym: str) -> bool:
+        events.append(("whale", sym, clock[0]))
+        if sym == "BTCUSDC":
+            # Simulate an 18s slow whale fetch exceeding orderbook_interval_sec=15s
+            clock[0] += 18.0
+        return True
+
+    monkeypatch.setattr(col, "update_orderbook", _fake_ob)
+    monkeypatch.setattr(col, "update_derivatives", _fake_deriv)
+    monkeypatch.setattr(col, "update_whale", _fake_whale)
+
+    results = col._new_external_cycle_results(clock[0])
+    col._step_external_symbols(clock[0], force=False, results=results, bounded=False, live_clock=True)
+
+    # Initial ob (2) + anti-starvation interleaved ob refresh after slow BTCUSDC whale (2) = 4
+    assert results["orderbook_updated"] == 4
+    assert results["derivatives_updated"] == 2
+    assert results["whale_updated"] == 2
+    # Confirm the anti-starvation ob refresh ran BEFORE ETHUSDC whale
+    eth_whale_idx = next(i for i, e in enumerate(events) if e[0] == "whale" and e[1] == "ETHUSDC")
+    ob_events_before_eth_whale = [e for e in events[:eth_whale_idx] if e[0] == "ob"]
+    assert len(ob_events_before_eth_whale) == 4
+
+
+
 
 
 

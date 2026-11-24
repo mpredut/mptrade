@@ -64,6 +64,15 @@ DEMO_BASE = "https://demo.trading212.com/api/v0"
 
 _BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0"
 
+# Cross-process minimum spacing between live HTTP GETs per T212 account endpoint
+# (portfolio & orders are limited to ~1 req / 5s, cash ~1 req / 2s, history ~6 req / min).
+_SHARED_ENDPOINT_MIN_GAP_SEC = {
+    "_pf_cache": 5.2,
+    "_ord_cache": 5.2,
+    "_cash_cache": 2.2,
+    "_hist_cache": 6.0,
+}
+
 
 class T212Client:
     def __init__(self, api_key: str, api_secret: str | None = None, env: str | None = None,
@@ -177,9 +186,12 @@ class T212Client:
             return f"{base_path[:-5]}_instruments.json"
         return f"{base_path}.instruments"
 
-    def _read_shared_cache(self, attr: str, max_age_sec: float) -> tuple[bool, list | dict | None, float]:
+    def _read_shared_cache(
+        self, attr: str, max_age_sec: float, *, allow_invalidated: bool = False
+    ) -> tuple[bool, list | dict | None, float]:
         if not self._shared_cache_enabled() or max_age_sec <= 0.0:
             return False, None, 0.0
+        allow_inv = _parse_bool_flag(allow_invalidated, default=False)
         paths = (
             (self._instr_shared_cache_path(), self._shared_cache_path)
             if attr == "_instr_cache"
@@ -196,12 +208,13 @@ class T212Client:
                 entry = payload.get(attr)
                 if not isinstance(entry, dict):
                     continue
+                is_invalidated = _parse_bool_flag(entry.get("invalidated"), default=False)
                 ts = safe_pos_float(entry.get("ts"), default=None)
                 data = entry.get("data")
                 if ts is None or not isinstance(data, (list, dict)):
                     continue
                 age = now_ts - ts
-                if 0.0 <= age < max_age_sec:
+                if (not is_invalidated or allow_inv) and 0.0 <= age < max_age_sec:
                     return True, data, age
                 fail_ts = safe_pos_float(entry.get("fail_ts"), default=None)
                 if fail_ts is not None:
@@ -213,19 +226,48 @@ class T212Client:
                 pass
         return False, None, 0.0
 
+    def _pace_shared_endpoint_locked(self, attr: str) -> None:
+        """Enforce cross-process per-endpoint HTTP spacing using preserved ``http_ts``."""
+        if not self._shared_cache_enabled() or attr == "_instr_cache":
+            return
+        base_gap = max(self._order_min_gap, self._min_gap)
+        if base_gap <= 0.0:
+            return
+        ep_target = _SHARED_ENDPOINT_MIN_GAP_SEC.get(attr, base_gap)
+        eff_gap = max(base_gap, min(ep_target, self._pf_ttl) if self._pf_ttl > 0.0 else base_gap)
+        try:
+            payload = read_json_dict(self._shared_cache_path, default=None)
+            if not isinstance(payload, dict):
+                return
+            entry = payload.get(attr)
+            if not isinstance(entry, dict):
+                return
+            last_http_ts = safe_pos_float(entry.get("http_ts") or entry.get("ts"), default=None)
+            if last_http_ts is None:
+                return
+            wait = eff_gap - (time.time() - last_http_ts)
+            if 0.0 < wait <= eff_gap:
+                time.sleep(wait)
+        except Exception:
+            pass
+
     def _record_shared_cache_fail(self, attr: str) -> None:
         if not self._shared_cache_enabled() or attr == "_instr_cache":
             return
+        now_ts = time.time()
         try:
             with self._shared_cache_file_lock():
-                payload = read_json_dict(self._shared_cache_path, default=None)
+                payload = read_json_dict(self._shared_cache_path, default={})
                 if not isinstance(payload, dict):
-                    return
+                    payload = {}
                 entry = payload.get(attr)
-                if not isinstance(entry, dict) or not isinstance(entry.get("data"), (list, dict)):
-                    return
-                entry["fail_ts"] = time.time()
-                atomic_write_json(self._shared_cache_path, payload)
+                if not isinstance(entry, dict):
+                    entry = {}
+                    payload[attr] = entry
+                entry["http_ts"] = now_ts
+                if isinstance(entry.get("data"), (list, dict)):
+                    entry["fail_ts"] = now_ts
+                atomic_write_json(self._shared_cache_path, payload, fsync=False)
         except Exception:
             pass
 
@@ -241,7 +283,7 @@ class T212Client:
                 if instr_path:
                     abs_p = os.path.abspath(instr_path)
                     cleanup_stale_staging_siblings(os.path.dirname(abs_p), f".{os.path.basename(abs_p)}.", suffix=".tmp")
-                atomic_write_json(instr_path, {"_instr_cache": {"ts": now_ts, "data": data}})
+                atomic_write_json(instr_path, {"_instr_cache": {"ts": now_ts, "data": data}}, fsync=False)
                 return
             with self._shared_cache_file_lock():
                 if self._shared_cache_path:
@@ -255,11 +297,11 @@ class T212Client:
                     instr_path = self._instr_shared_cache_path()
                     if instr_path and not os.path.exists(instr_path):
                         try:
-                            atomic_write_json(instr_path, {"_instr_cache": legacy_instr})
+                            atomic_write_json(instr_path, {"_instr_cache": legacy_instr}, fsync=False)
                         except Exception:
                             pass
-                payload[attr] = {"ts": now_ts, "data": data}
-                atomic_write_json(self._shared_cache_path, payload)
+                payload[attr] = {"ts": now_ts, "http_ts": now_ts, "data": data}
+                atomic_write_json(self._shared_cache_path, payload, fsync=False)
             if attr == "_hist_cache" and isinstance(data, list) and _parse_bool_flag(sync_trade_cache, default=True):
                 self._sync_trade_cache(data)
         except Exception:
@@ -271,24 +313,50 @@ class T212Client:
         with self._lock:
             self._backoff_until = max(self._backoff_until, time.monotonic() + wait_sec)
 
-    def _invalidate_order_caches_locked(self) -> None:
+    def _invalidate_order_caches_memory_locked(self) -> None:
         for attr in ("_ord_cache", "_pf_cache", "_cash_cache", "_hist_cache"):
             setattr(self, attr, None)
             self._fetch_fail.pop(attr, None)
         self._hist_cache_shared_published = False
         self._hist_cache_trades_synced = False
-        if self._shared_cache_enabled():
-            try:
-                with self._shared_cache_file_lock():
-                    payload = read_json_dict(self._shared_cache_path, default=None)
-                    if isinstance(payload, dict) and "_instr_cache" in payload:
-                        instr_path = self._instr_shared_cache_path()
-                        if instr_path and not os.path.exists(instr_path):
-                            atomic_write_json(instr_path, {"_instr_cache": payload["_instr_cache"]})
-                    if os.path.exists(self._shared_cache_path):
-                        os.remove(self._shared_cache_path)
-            except Exception:
-                pass
+
+    def _invalidate_order_caches_disk(self) -> None:
+        """Soft-invalidate shared disk entries so callers refresh fresh post-order state
+        while preserving ``data`` (for HTTP 429 fallback) and ``http_ts`` (for cross-process pacing)."""
+        if not self._shared_cache_enabled():
+            return
+        try:
+            with self._shared_cache_file_lock():
+                payload = read_json_dict(self._shared_cache_path, default=None)
+                if not isinstance(payload, dict):
+                    return
+                legacy_instr = payload.pop("_instr_cache", None)
+                if isinstance(legacy_instr, dict):
+                    instr_path = self._instr_shared_cache_path()
+                    if instr_path and not os.path.exists(instr_path):
+                        atomic_write_json(instr_path, {"_instr_cache": legacy_instr}, fsync=False)
+                changed = legacy_instr is not None
+                for attr in ("_ord_cache", "_pf_cache", "_cash_cache", "_hist_cache"):
+                    entry = payload.get(attr)
+                    if isinstance(entry, dict):
+                        entry["invalidated"] = True
+                        entry.pop("fail_ts", None)
+                        if "http_ts" not in entry and entry.get("ts") is not None:
+                            entry["http_ts"] = entry["ts"]
+                        changed = True
+                if changed:
+                    atomic_write_json(self._shared_cache_path, payload, fsync=False)
+        except Exception:
+            pass
+
+    def _invalidate_order_caches_locked(self) -> None:
+        self._invalidate_order_caches_memory_locked()
+        self._invalidate_order_caches_disk()
+
+    def _invalidate_order_caches(self) -> None:
+        with self._lock:
+            self._invalidate_order_caches_memory_locked()
+        self._invalidate_order_caches_disk()
 
     def _pace(self, endpoint_key: str | None = None) -> None:
         """Enforce at least ``_min_gap`` seconds between calls across all threads,
@@ -375,8 +443,7 @@ class T212Client:
         # from tracking. On 429, keep the cache intact to avoid an immediate cascading
         # rate limit on subsequent active orders reads.
         if status != 429:
-            with self._lock:
-                self._invalidate_order_caches_locked()
+            self._invalidate_order_caches()
         return status, data
 
     def place_limit_order(
@@ -487,7 +554,9 @@ class T212Client:
                     if not matches:
                         items = self._fetch_order_history_locked(publish_cache=False)
                         if items is None:
-                            s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache("_hist_cache", 600.0)
+                            s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache(
+                                "_hist_cache", 600.0, allow_invalidated=True
+                            )
                             if s_fb_hit and isinstance(s_fb_val, list):
                                 self._record_shared_cache_fail("_hist_cache")
                                 matches = extract_broker_history_matches(s_fb_val, target_oid)
@@ -524,12 +593,14 @@ class T212Client:
         self, *, publish_cache: bool = False, sync_trade_cache: bool = True
     ) -> list | None:
         """Fetch latest 50 order history entries under ``_fetch_lock`` and persist caches only when ``publish_cache=True``."""
+        self._pace_shared_endpoint_locked("_hist_cache")
         status, body = http_get(
             f"{self.base}/equity/history/orders?limit=50",
             headers=self._headers("_hist_cache"),
         )
         if status == 429:
             self.notify_rate_limit(max(5.0, self._pf_ttl))
+            self._record_shared_cache_fail("_hist_cache")
         if status != 200 or not body:
             return self._record_read_fail("order history", status, "_hist_cache")
         try:
@@ -681,8 +752,7 @@ class T212Client:
         if not ok:
             log(f"  ! [T212] cancel order {target_oid} -> HTTP {status}")
         if status != 429:
-            with self._lock:
-                self._invalidate_order_caches_locked()
+            self._invalidate_order_caches()
         return ok
 
     def _log_read_fail(self, what: str, status: int) -> None:
@@ -751,9 +821,12 @@ class T212Client:
                         setattr(self, attr, (time.monotonic() - s_age, s_val))
                         self._fetch_fail.pop(attr, None)
                     return s_val
+                self._pace_shared_endpoint_locked(attr)
                 status, body = http_get(f"{self.base}{path}", headers=self._headers(attr))
                 if status != 200 or not body:
-                    s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache(attr, stale_limit)
+                    s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache(
+                        attr, stale_limit, allow_invalidated=True
+                    )
                     if s_fb_hit and isinstance(s_fb_val, expect_type):
                         self._record_shared_cache_fail(attr)
                         with self._lock:
@@ -761,6 +834,7 @@ class T212Client:
                             self._fetch_fail[attr] = time.monotonic()
                         return s_fb_val
                     if status == 429:
+                        self._record_shared_cache_fail(attr)
                         self.notify_rate_limit(max(5.0, self._pf_ttl))
                     self._record_read_fail(what, status, attr)
                     with self._lock:

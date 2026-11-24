@@ -6733,10 +6733,26 @@ def test_t212_client_cross_process_shared_disk_cache(tmp_path, monkeypatch):
     assert consumer2.get_portfolio() == [{"ticker": "NVDA_US_EQ", "quantity": 0.21, "currentPrice": 202.35}]
     assert consumer2.list_active_orders() == [{"id": 991, "ticker": "SPCX_US_EQ", "quantity": 1.0, "limitPrice": 135.0}]
 
-    # 4. Cache invalidation removes the shared disk cache file
+    # 4. Cache invalidation soft-marks entries (forcing fresh fetch on next read)
+    # while preserving stale fallback data and http_ts for HTTP 429 recovery/pacing
     with producer._lock:
         producer._invalidate_order_caches_locked()
-    assert not os.path.exists(shared_file)
+    assert os.path.exists(shared_file)
+    with open(shared_file, "r", encoding="utf-8") as fh:
+        inv_payload = json.load(fh)
+    assert inv_payload["_pf_cache"]["invalidated"] is True
+    assert inv_payload["_ord_cache"]["invalidated"] is True
+    monkeypatch.setattr(t212_mod, "http_get", _fake_http_get)
+    http_before = len(http_calls)
+    assert producer.get_portfolio() == [{"ticker": "NVDA_US_EQ", "quantity": 0.21, "currentPrice": 202.35}]
+    assert len(http_calls) == http_before + 1
+    with producer._lock:
+        producer._invalidate_order_caches_locked()
+    monkeypatch.setattr(t212_mod, "http_get", lambda url, headers=None: (429, b"rate limit"))
+    consumer3 = T212Client("test_key", "test_sec", "live", min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0)
+    consumer3._shared_cache_path = shared_file
+    consumer3._enable_shared_disk_cache = True
+    assert consumer3.get_portfolio() == [{"ticker": "NVDA_US_EQ", "quantity": 0.21, "currentPrice": 202.35}]
 
 
 def test_reconcile_executed_intents_from_audit_and_kraken_t212_fill_attribution(tmp_path):

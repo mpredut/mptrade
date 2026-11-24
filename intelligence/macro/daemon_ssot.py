@@ -734,11 +734,17 @@ class ExternalTelemetryMixin:
         tier_filter = set(tiers) if tiers is not None else None
         steps = tuple(s for s in all_steps if tier_filter is None or s[5] in tier_filter)
         idents = [(sym, resolve_symbol_identity(sym)) for sym in getattr(self, "symbols", ())]
+        ob_step = next((s for s in steps if s[5] == "ob"), None)
+        last_ob_sweep_ts = resolve_now_ts(None) if live_clock else current_ts
         # Cadence-first sweep (all ob -> all deriv -> all whale) prevents tail-symbol orderbooks
         # from starving behind slow earlier-symbol whale HTTP calls. When bounded=True (live daemon),
         # poll due symbols within each tier concurrently (capped at 5 workers) so 15+ symbols finish
-        # in ~2-5s instead of 30-50s sequential waves.
-        for res_key, ts_attr, interval_sec, fn, timeout_s, lbl_prefix in steps:
+        # in ~2-5s instead of 30-50s sequential waves. If a slow deriv/whale wave exceeds
+        # orderbook_interval_sec, interleave a quick due-ob pass so orderbook_depth never stalls >30s.
+
+        def _run_tier(step_spec: Tuple[Any, ...], *, tier_force: bool) -> None:
+            nonlocal last_ob_sweep_ts
+            res_key, ts_attr, interval_sec, fn, timeout_s, lbl_prefix = step_spec
             ts_map: Dict[str, float] = getattr(self, ts_attr)
             due_items: List[Tuple[str, Any]] = []
             for sym, ident in idents:
@@ -746,10 +752,12 @@ class ExternalTelemetryMixin:
                 if ident.is_tokenized_equity and lbl_prefix in ("deriv", "whale"):
                     continue
                 step_now = resolve_now_ts(None) if live_clock else current_ts
-                if is_interval_due(step_now, ts_map.get(sym, 0.0), interval_sec, force=force):
+                if is_interval_due(step_now, ts_map.get(sym, 0.0), interval_sec, force=tier_force):
                     due_items.append((sym, ident))
             if not due_items:
-                continue
+                if lbl_prefix == "ob" and live_clock:
+                    last_ob_sweep_ts = resolve_now_ts(None)
+                return
 
             def _record_outcome(sym_r: str, ident_r: Any, ok_r: bool) -> None:
                 done_ts = resolve_now_ts(None) if live_clock else current_ts
@@ -771,6 +779,15 @@ class ExternalTelemetryMixin:
                         ts_map[sym_r] = compute_step_retry_ts(ts_map.get(sym_r, 0.0), done_ts, interval_sec)
                 if on_symbol_done is not None:
                     on_symbol_done()
+
+            def _maybe_refresh_due_ob() -> None:
+                nonlocal last_ob_sweep_ts
+                if not live_clock or ob_step is None or lbl_prefix == "ob":
+                    return
+                now_chk = resolve_now_ts(None)
+                if (now_chk - last_ob_sweep_ts) >= self.orderbook_interval_sec:
+                    last_ob_sweep_ts = now_chk
+                    _run_tier(ob_step, tier_force=False)
 
             if bounded and live_clock and len(due_items) > 1:
                 ordered_due = interleave_items_by_venue(
@@ -808,6 +825,7 @@ class ExternalTelemetryMixin:
                         except Exception:
                             ok_r = False
                         _record_outcome(sym_r, ident_r, ok_r)
+                        _maybe_refresh_due_ob()
             else:
                 for sym, ident in due_items:
                     ok = (
@@ -816,6 +834,14 @@ class ExternalTelemetryMixin:
                         else fn(sym)
                     )
                     _record_outcome(sym, ident, bool(ok))
+                    _maybe_refresh_due_ob()
+            if lbl_prefix == "ob" and live_clock:
+                last_ob_sweep_ts = resolve_now_ts(None)
+            else:
+                _maybe_refresh_due_ob()
+
+        for step_spec in steps:
+            _run_tier(step_spec, tier_force=force)
 
     def _fetch_and_log(self, collector: Any, symbol: str, err_label: str, fmt_msg: str, *attr_specs: Any) -> bool:
         log = getattr(self, "_telemetry_logger", logger)

@@ -15,6 +15,7 @@ See the self-test at the end of the file, validated against Kraken's documentati
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import os
@@ -31,6 +32,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (
+    FileLock,
     _parse_bool_flag,
     bind_attr_call,
     clamp_price_to_bbo_mid,
@@ -41,6 +43,7 @@ from botcore import (
     http_get,
     http_post_form,
     http_request,
+    is_shared_disk_cache_enabled,
     log,
     normalize_side,
     safe_nonneg_float,
@@ -74,6 +77,9 @@ _READ_TTL = {                     # seconds; unlisted methods are not cached (e.
 }
 _WRITE_METHODS = ("AddOrder", "AmendOrder", "CancelOrder", "CancelAll", "Withdraw", "WithdrawCancel")
 _INVALIDATE_ON_WRITE = ("Balance", "BalanceEx", "TradesHistory", "ClosedOrders", "OpenOrders")
+_NONCE_STATE_LOCK = threading.Lock()
+_NONCE_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_LAST_NONCE_BY_KEY: dict[str, int] = {}
 
 
 def _read_ttl(method: str, params: dict) -> float | None:
@@ -161,6 +167,62 @@ class KrakenClient:
         raw = f"{self.api_key}\x00{self.api_secret}".encode("utf-8")
         return hashlib.sha256(raw).hexdigest()[:16]
 
+    def _nonce_key_hash(self) -> str:
+        return hashlib.sha256(self.api_key.encode("utf-8", errors="ignore")).hexdigest()[:10]
+
+    def _nonce_lock_path(self) -> str:
+        override = getattr(self, "_nonce_lock_path_override", None)
+        if isinstance(override, str) and override.strip():
+            return override.strip()
+        return os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            f".kraken_nonce_{self._nonce_key_hash()}.lock",
+        )
+
+    def _next_nonce_str(self) -> str:
+        key_hash = self._nonce_key_hash()
+        with _NONCE_STATE_LOCK:
+            now_ns = time.time_ns()
+            prev = _LAST_NONCE_BY_KEY.get(key_hash, 0)
+            nonce = now_ns if now_ns > prev else prev + 1
+            _LAST_NONCE_BY_KEY[key_hash] = nonce
+            return str(nonce)
+
+    @contextlib.contextmanager
+    def _private_nonce_lock(self):
+        """Serialize private nonce signing + HTTP dispatch per API key across threads and processes."""
+        key_hash = self._nonce_key_hash()
+        with _NONCE_STATE_LOCK:
+            tlock = _NONCE_THREAD_LOCKS.get(key_hash)
+            if tlock is None:
+                tlock = threading.Lock()
+                _NONCE_THREAD_LOCKS[key_hash] = tlock
+        use_file_lock = getattr(self, "_enable_nonce_file_lock", None)
+        if use_file_lock is None:
+            use_file_lock = is_shared_disk_cache_enabled()
+        with tlock:
+            if not use_file_lock:
+                yield
+                return
+            lock_cm = FileLock(
+                self._nonce_lock_path(),
+                timeout=15.0,
+                poll_interval=0.02,
+                raise_on_timeout=False,
+            )
+            entered = False
+            try:
+                lock_cm.__enter__()
+                entered = True
+            except Exception:
+                entered = False
+            try:
+                yield
+            finally:
+                if entered:
+                    with contextlib.suppress(Exception):
+                        lock_cm.__exit__(None, None, None)
+
     def _private(
         self,
         method: str,
@@ -184,12 +246,13 @@ class KrakenClient:
         max_attempts = 3 if method not in _WRITE_METHODS else 1
         result = None
         for attempt in range(max_attempts):
-            data["nonce"] = str(time.time_ns())
-            headers = {
-                "API-Key": self.api_key,
-                "API-Sign": self._signature(urlpath, data, self.api_secret),
-            }
-            status, body = http_post_form(API_URL + urlpath, data, headers=headers)
+            with self._private_nonce_lock():
+                data["nonce"] = self._next_nonce_str()
+                headers = {
+                    "API-Key": self.api_key,
+                    "API-Sign": self._signature(urlpath, data, self.api_secret),
+                }
+                status, body = http_post_form(API_URL + urlpath, data, headers=headers)
             if status and body:
                 try:
                     result = self._parse(status, body, allow_list=allow_list)
@@ -613,20 +676,21 @@ class KrakenClient:
         max_attempts = 1 if is_write else 3
         last_err: Exception | None = None
         for attempt in range(max_attempts):
-            nonce = str(time.time_ns())
-            headers = {
-                "API-Key": self.api_key,
-                "API-Nonce": nonce,
-                "API-Sign": self._funding_signature(uri_path, nonce, body_bytes, self.api_secret),
-            }
-            if payload is not None:
-                headers["Content-Type"] = "application/json"
-            status, resp_body = http_request(
-                verb,
-                API_URL + uri_path,
-                headers=headers,
-                body=body_bytes if payload is not None else None,
-            )
+            with self._private_nonce_lock():
+                nonce = self._next_nonce_str()
+                headers = {
+                    "API-Key": self.api_key,
+                    "API-Nonce": nonce,
+                    "API-Sign": self._funding_signature(uri_path, nonce, body_bytes, self.api_secret),
+                }
+                if payload is not None:
+                    headers["Content-Type"] = "application/json"
+                status, resp_body = http_request(
+                    verb,
+                    API_URL + uri_path,
+                    headers=headers,
+                    body=body_bytes if payload is not None else None,
+                )
             if not status:
                 last_err = KrakenError(f"network error in {verb} {path} (HTTP 0)")
                 if is_write or attempt >= max_attempts - 1:

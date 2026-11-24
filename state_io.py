@@ -234,20 +234,25 @@ def _flush_and_fsync(handle: Any) -> None:
 
 @contextlib.contextmanager
 def _atomic_stream_writer(
-    path: str, mode: str, *, preserve_mode: bool = False, **open_kwargs: Any,
+    path: str, mode: str, *, preserve_mode: bool = False, fsync: bool = True, **open_kwargs: Any,
 ) -> Iterator[Any]:
     destination, directory = _prepare_target_and_dir(path)
+    do_fsync = _parse_bool_flag(fsync, True)
     prefix = f".{os.path.basename(destination)}."
     fd, temporary = tempfile.mkstemp(dir=directory, prefix=prefix, suffix=".tmp")
     handle = os.fdopen(fd, mode, **open_kwargs)
     try:
         yield handle
-        _flush_and_fsync(handle)
+        if do_fsync:
+            _flush_and_fsync(handle)
+        else:
+            handle.flush()
         handle.close()
         if preserve_mode and os.path.exists(destination):
             shutil.copymode(destination, temporary)
         os.replace(temporary, destination)
-        _fsync_parent_directory(destination)
+        if do_fsync:
+            _fsync_parent_directory(destination)
     except BaseException as exc:
         handle.close()
         discard_generation_file(temporary)
@@ -260,10 +265,12 @@ def _atomic_stream_writer(
 
 def atomic_text_writer(path: str, *, encoding: str = "utf-8",
                        newline: str | None = None,
-                       preserve_mode: bool = False) -> contextlib.AbstractContextManager[Any]:
+                       preserve_mode: bool = False,
+                       fsync: bool = True) -> contextlib.AbstractContextManager[Any]:
     """Yield a text handle and atomically publish it only after a successful write."""
     return _atomic_stream_writer(
         path, "w", preserve_mode=_parse_bool_flag(preserve_mode, False),
+        fsync=_parse_bool_flag(fsync, True),
         encoding=encoding, newline=newline,
     )
 
@@ -285,21 +292,25 @@ def open_binary_read_file(path: str | os.PathLike[str]) -> Any:
 
 
 def atomic_write_text(path: str, content: str, *, encoding: str = "utf-8",
-                      newline: str | None = None, preserve_mode: bool = False) -> None:
+                      newline: str | None = None, preserve_mode: bool = False,
+                      fsync: bool = True) -> None:
     """Write text ``content`` to ``path`` atomically through ``atomic_text_writer``."""
-    with atomic_text_writer(path, encoding=encoding, newline=newline, preserve_mode=preserve_mode) as handle:
+    with atomic_text_writer(
+        path, encoding=encoding, newline=newline, preserve_mode=preserve_mode, fsync=fsync
+    ) as handle:
         handle.write(str(content))
 
 
 def atomic_write_json(path: str, value: Any, *, indent: int | None = None,
                       sort_keys: bool = False, separators=None, ensure_ascii: bool = True,
-                      allow_nan: bool = False, default: Any = None) -> None:
+                      allow_nan: bool = False, default: Any = None,
+                      fsync: bool = True) -> None:
     """Serialize JSON through ``atomic_text_writer``."""
     kwargs = _json_dump_kwargs(
         indent=indent, sort_keys=sort_keys, separators=separators,
         ensure_ascii=ensure_ascii, allow_nan=allow_nan, default=default,
     )
-    with atomic_text_writer(path) as handle:
+    with atomic_text_writer(path, fsync=fsync) as handle:
         json.dump(value, handle, **kwargs)
 
 
