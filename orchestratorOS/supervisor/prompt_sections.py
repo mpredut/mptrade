@@ -295,8 +295,13 @@ def _format_macro_calendar_line(mc: Any) -> Optional[str]:
     if mc.get("next_fomc_date"):
         mc_parts.append(f'next_fomc_date="{mc.get("next_fomc_date")}"')
     if mc.get("upcoming_windows"):
-        up_lbl = "upcoming" if is_confirmed_macro else "routine_session_transitions"
-        mc_parts.append(f'{up_lbl}={mc.get("upcoming_windows")}')
+        up_wins = mc.get("upcoming_windows")
+        has_macro_in_upcoming = isinstance(up_wins, list) and any(
+            isinstance(w, str) and ("[HIGH]" in w or "[MEDIUM]" in w)
+            for w in up_wins
+        )
+        up_lbl = "upcoming" if (is_confirmed_macro or has_macro_in_upcoming) else "routine_session_transitions"
+        mc_parts.append(f'{up_lbl}={up_wins}')
     if _parse_bool_flag(mc.get("pre_event_risk_window"), False) and mc.get("pre_event_risk_reason"):
         mc_parts.append(f'PRE_EVENT_RISK="{mc.get("pre_event_risk_reason")}"')
     if isinstance(conf_today := mc.get("confirmed_events_today"), list) and conf_today:

@@ -591,8 +591,13 @@ def compute_liquidation_clusters(
         long_share = min(0.75, max(0.25, 0.50 + (raw_ls - 0.58) * 0.65))
     else:
         long_share = 0.50
-    funding = safe_float(minfo.get("funding_rate"), default=0.0) or 0.0
-    eff_long_share = min(0.80, max(0.20, long_share + max(-0.25, min(0.25, funding * 1500.0)) * 0.45))
+    funding_ann = safe_float(minfo.get("funding_annualized_pct"), default=None)
+    if funding_ann is not None:
+        # Normalize any venue funding cadence (e.g. Hyperliquid 1h vs Binance 8h) to canonical 8h-equivalent rate
+        funding_8h = funding_ann / 109500.0
+    else:
+        funding_8h = safe_float(minfo.get("funding_rate"), default=0.0) or 0.0
+    eff_long_share = min(0.80, max(0.20, long_share + max(-0.25, min(0.25, funding_8h * 1500.0)) * 0.45))
     eff_short_share = 1.0 - eff_long_share
 
     vol_1h = max(0.35, min(6.0, safe_pos_float(p_dict.get("vol_1h_pct"), default=1.2) or 1.2))

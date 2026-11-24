@@ -253,7 +253,7 @@ class BinanceSpotKline5mStream(JsonPublicWsStreamBase):
         *,
         now: Optional[float] = None,
     ) -> int:
-        """Seed 5m buckets from a REST ``/api/v3/klines?interval=5m&limit=3`` response without regressing newer WS bars."""
+        """Seed 5m buckets from a REST ``/api/v3/klines?interval=5m&limit=4`` response without regressing newer WS bars."""
         sym = (clean_symbol_key(symbol) or "").upper()
         if not sym or not isinstance(raw_klines, list):
             return 0
@@ -281,7 +281,7 @@ class BinanceSpotKline5mStream(JsonPublicWsStreamBase):
         now: Optional[float] = None,
         max_age_sec: float = 30.0,
     ) -> Optional[Tuple[float, float]]:
-        """Return ``(spot_cvd_15m_usd, spot_vol_15m_usd)`` from 3 contiguous live 5m bars, else ``None``."""
+        """Return ``(spot_cvd_15m_usd, spot_vol_15m_usd)`` from live 5m bars (prorated 4-bar 15m window when 4 contiguous bars exist, else 3-bar fallback), else ``None``."""
         sym = (clean_symbol_key(symbol) or "").upper()
         if not sym:
             return None
@@ -299,19 +299,26 @@ class BinanceSpotKline5mStream(JsonPublicWsStreamBase):
             bucket = self._bars.get(sym)
             if not bucket or len(bucket) < 3:
                 return None
-            latest_keys = sorted(bucket)[-3:]
+            latest_keys = sorted(bucket)[-4:]
             bars = [(k, bucket[k][0], bucket[k][1]) for k in latest_keys]
 
-        # Enforce strict 5m contiguity (detects VPN disconnect gaps > 5m and triggers clean REST re-seed)
-        if (bars[1][0] - bars[0][0]) != _KLINE_5M_STEP_MS or (bars[2][0] - bars[1][0]) != _KLINE_5M_STEP_MS:
+        bars3 = bars[-3:]
+        # Enforce strict 5m contiguity on the latest 3 bars (detects VPN disconnect gaps > 5m and triggers clean REST re-seed)
+        if (bars3[1][0] - bars3[0][0]) != _KLINE_5M_STEP_MS or (bars3[2][0] - bars3[1][0]) != _KLINE_5M_STEP_MS:
             return None
         now_ms = eff_now * 1000.0
-        newest_lag_ms = now_ms - bars[2][0]
+        newest_lag_ms = now_ms - bars3[2][0]
         if newest_lag_ms < -60_000.0 or newest_lag_ms > _KLINE_5M_FRESH_LAG_MS:
             return None
 
-        tot_quote = sum(b[1] for b in bars)
-        buy_quote = sum(min(b[1], b[2]) for b in bars)
+        tot_quote = sum(b[1] for b in bars3)
+        buy_quote = sum(min(b[1], b[2]) for b in bars3)
+        if len(bars) == 4 and (bars[1][0] - bars[0][0]) == _KLINE_5M_STEP_MS:
+            # Prorate the oldest 5m bar to match exact 15m rolling overlap (eliminates 10m..15m sawtooth bias).
+            elapsed_ms = max(0.0, min(_KLINE_5M_STEP_MS, newest_lag_ms))
+            w0 = (_KLINE_5M_STEP_MS - elapsed_ms) / _KLINE_5M_STEP_MS
+            tot_quote += w0 * bars[0][1]
+            buy_quote += w0 * min(bars[0][1], bars[0][2])
         return round(2.0 * buy_quote - tot_quote, 0), round(tot_quote, 0)
 
     def status(self, *, now: Optional[float] = None) -> Dict[str, Any]:

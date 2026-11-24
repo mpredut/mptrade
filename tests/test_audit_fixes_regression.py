@@ -2623,3 +2623,185 @@ def test_crypto_prompt_critical_data_audit_fixes_1_to_6(tmp_path):
     assert snap_rev2.headlines[0].first_seen_ts == pytest.approx(pub_s)
 
 
+
+
+def test_crypto_prompt_medium_minor_audit_fixes_2_1_to_2_4():
+    """Verify medium/minor live crypto executor prompt audit fixes 2.1 through 2.4."""
+    from types import SimpleNamespace
+
+    from intelligence.external.collectors.telemetry_ws_streams import BinanceSpotKline5mStream
+    from intelligence.sentiment.evaluators.microstructure_evaluator import compute_liquidation_clusters
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import PortfolioPromptViewEvaluator
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_macro_and_news_section,
+        _format_tradable_position_line,
+    )
+    from providers.binance_provider import BinanceProvider
+
+    # --- 2.1 Binance 15m rolling spot flow window (REST limit=4 + WS 4-bar proration parity) ---
+    req_usdc = BinanceProvider.public_spot_cvd_15m_request("BTCUSDC", now_ts=1_795_560_000.0)
+    req_usdt = BinanceProvider.public_primary_quote_spot_cvd_15m_request("BTCUSDC", now_ts=1_795_560_000.0)
+    assert req_usdc is not None and "interval=5m&limit=4" in req_usdc[0]
+    assert req_usdt is not None and "interval=5m&limit=4" in req_usdt[0]
+
+    t0_ms = 1_795_559_100_000  # 15m before t3
+    t1_ms = t0_ms + 300_000
+    t2_ms = t1_ms + 300_000
+    t3_ms = t2_ms + 300_000
+    # 44s into the live 5m bar t3: exact rolling 15m window overlaps 256/300 of bar t0 + full t1, t2 + live t3
+    now_s = (t3_ms + 44_000) / 1000.0
+    since_s = now_s - 900.0
+    raw_4 = [
+        [t0_ms, "1", "1", "1", "1", "1", t0_ms + 299_999, "1000000", 10, "1", "600000", "0"],
+        [t1_ms, "1", "1", "1", "1", "1", t1_ms + 299_999, "1000000", 10, "1", "550000", "0"],
+        [t2_ms, "1", "1", "1", "1", "1", t2_ms + 299_999, "1000000", 10, "1", "500000", "0"],
+        [t3_ms, "1", "1", "1", "1", "1", t3_ms + 299_999, "146667", 10, "1", "88000", "0"],
+    ]
+    rest_flow = BinanceProvider.extract_spot_flow_15m_usd(raw_4, since_ts=since_s)
+    assert rest_flow is not None
+    # True 15m total volume is ~3.0M (not ~2.15M 10m44s sawtooth drop)
+    assert rest_flow[1] == pytest.approx(3_000_000.0, abs=10.0)
+    # Bit-for-bit parity with live WS 5m kline stream
+    ws_kline = BinanceSpotKline5mStream(["BTCUSDC"])
+    ws_kline._connected = True
+    ws_kline._last_msg_ts = now_s
+    assert ws_kline.seed_from_rest_klines("BTCUSDC", raw_4, now=now_s) == 4
+    ws_flow = ws_kline.get_spot_flow_15m("BTCUSDC", now=now_s)
+    assert ws_flow == rest_flow
+    # Legacy 3-bar / since_ts=0 compatibility preserved
+    legacy_3 = BinanceProvider.extract_spot_flow_15m_usd(raw_4[-3:], since_ts=0.0)
+    assert legacy_3 == (129_333.0, 2_146_667.0)
+
+    # --- 2.2 Hyperliquid 1h funding normalized to 8h-equivalent in compute_liquidation_clusters ---
+    base_minfo = {"oi_usd": 100_000_000.0, "whale_long_pct": 58.0}
+    p_dict = {"price": 100.0, "vol_1h_pct": 1.5}
+    # Both venues express identical +10.95% annualized funding: Binance 8h=0.0001, Hyperliquid 1h=0.0000125
+    bn_liq = compute_liquidation_clusters(
+        p_dict,
+        {**base_minfo, "funding_rate": 0.0001, "funding_annualized_pct": 10.95},
+    )
+    hl_liq = compute_liquidation_clusters(
+        p_dict,
+        {**base_minfo, "funding_rate": 0.0000125, "funding_annualized_pct": 10.95},
+    )
+    hl_unnorm = compute_liquidation_clusters(
+        p_dict,
+        {**base_minfo, "funding_rate": 0.0000125},
+    )
+    assert hl_liq["long_liq_usd"] == bn_liq["long_liq_usd"]
+    assert hl_liq["short_liq_usd"] == bn_liq["short_liq_usd"]
+    assert hl_liq["long_liq_usd"] > hl_unnorm["long_liq_usd"]
+
+    # --- 2.3 Flat/dust positions drop misleading pnl_vs_last_buy & dust zero-cost cycles omitted ---
+    flat_dust_pos = {
+        "venue": "binance",
+        "symbol": "TAOUSDC",
+        "base": "TAO",
+        "quote": "USDC",
+        "price": 179.46,
+        "free_base": 0.004569,
+        "value_usd": 0.82,
+        "free_quote": 500.0,
+        "active_avg_buy_px": None,
+        "last_buy_px": 182.9,
+        "pnl_vs_last_buy_pct": -1.88,
+        "last_sell_px": 184.7,
+        "chg_vs_last_sell_pct": -2.84,
+        "open_lots": [],
+    }
+    flat_line = _format_tradable_position_line(flat_dust_pos)
+    assert "chg_vs_last_buy=-1.88%, lot_harvested" in flat_line
+    assert "pnl_vs_last_buy=" not in flat_line
+
+    active_pos = {
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "base": "BTC",
+        "quote": "USDC",
+        "price": 69000.0,
+        "free_base": 0.05,
+        "value_usd": 3450.0,
+        "free_quote": 500.0,
+        "active_avg_buy_px": 70000.0,
+        "last_buy_px": 69500.0,
+        "open_lots": [{"qty": 0.05, "entry_px": 69500.0}],
+    }
+    active_line = _format_tradable_position_line(active_pos)
+    assert "pnl_vs_last_buy=-0.72%" in active_line
+
+    pv_eval = PortfolioPromptViewEvaluator().evaluate(
+        {
+            "tradable_positions": [
+                {"venue": "kraken", "symbol": "HYPEUSD", "price": 27.68, "free_base": 0.002591, "value_usd": 0.07},
+                {"venue": "hyperliquid", "symbol": "HYPEUSDC", "price": 27.68, "free_base": 0.001755, "value_usd": 0.05},
+                {"venue": "kraken", "symbol": "SOLUSD", "price": 86.0, "free_base": 10.0, "value_usd": 860.0},
+            ],
+            "kraken_cycles": {
+                "HYPEUSD": {"qty": 0.002591, "cost_usd": 0.0, "avg_cost_px": None},
+                "SOLUSD": {"qty": 10.0, "cost_usd": 850.0, "avg_cost_px": 85.0},
+            },
+            "hyperliquid_cycles": {
+                "HYPEUSDC": {"qty": 0.001755, "cost_usd": 0.0, "avg_cost_px": None},
+            },
+        },
+        asset_scope="crypto",
+    )
+    kept_cycles = {
+        (vid, c_sym)
+        for _, vid, items in pv_eval["venue_cycles"]
+        for c_sym, _ in items
+    }
+    assert ("kraken", "SOLUSD") in kept_cycles
+    assert ("kraken", "HYPEUSD") not in kept_cycles
+    assert ("hyperliquid", "HYPEUSDC") not in kept_cycles
+
+    # --- 2.4 Macro calendar upcoming label + LIMIT spread/fee & calibration arr/slip sign clarity ---
+    sec1_macro = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(
+                macro_calendar={
+                    "session_label": "ASIA_SESSION",
+                    "next_high_impact_event": "US Equity Market Open (09:30 ET) [in 13.7h]",
+                    "macro_release_confirmed": False,
+                    "fomc_today": False,
+                    "upcoming_windows": [
+                        "US Equity Market Open (09:30 ET) (in 13.7h)",
+                        "Core PCE Price Index m/m [HIGH] (in 12.7h)",
+                    ],
+                }
+            ),
+            asset_scope="crypto",
+        )
+    )
+    assert "upcoming=[" in sec1_macro
+    assert "routine_session_transitions=" not in sec1_macro
+
+    sec1_routine = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(
+                macro_calendar={
+                    "session_label": "ASIA_SESSION",
+                    "next_high_impact_event": "US Equity Market Open (09:30 ET) [in 13.7h]",
+                    "macro_release_confirmed": False,
+                    "fomc_today": False,
+                    "upcoming_windows": [
+                        "US Equity Market Open (09:30 ET) (in 13.7h)",
+                        "US Equity Market Close (16:00 ET) (in 20.2h)",
+                    ],
+                }
+            ),
+            asset_scope="crypto",
+        )
+    )
+    assert "routine_session_transitions=[" in sec1_routine
+
+    rules_txt = build_supervisor_prompt(
+        SimpleNamespace(),
+        {},
+        topic_key="auto_cryptotrade_executor",
+        max_usd=1000.0,
+    )
+    assert "for low maker fees" not in rules_txt
+    assert "capture bid-ask spread and lower execution cost" in rules_txt
+    assert "negative bps = favorable price improvement" in rules_txt

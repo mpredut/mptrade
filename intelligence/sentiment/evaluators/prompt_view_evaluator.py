@@ -9,7 +9,7 @@ from __future__ import annotations
 from abc import ABC
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag, safe_float, safe_pos_float
+from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -548,6 +548,24 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
         p_map = pos if isinstance(pos, dict) else {}
         px_f = safe_float(p_map.get("price"), 0.0)
         avg_buy_f = safe_float(p_map.get("active_avg_buy_px"), None)
+        fb_f = safe_nonneg_float(p_map.get("free_base"), default=None)
+        lb_f = safe_nonneg_float(p_map.get("locked_base_qty"), default=0.0) or 0.0
+        val_usd_f = safe_nonneg_float(p_map.get("value_usd"), default=None)
+        if val_usd_f is None and fb_f is not None and px_f > 0.0:
+            val_usd_f = fb_f * px_f
+        total_held_usd = (
+            (val_usd_f + (lb_f * px_f if px_f > 0.0 else 0.0))
+            if val_usd_f is not None
+            else ((fb_f + lb_f) * px_f if (fb_f is not None and px_f > 0.0) else None)
+        )
+        # Flat or sub-$2 dust position with no active cost basis or locked base:
+        # historical buy anchors reflect closed/harvested lots rather than open position PnL.
+        is_flat_dust_pos = bool(
+            total_held_usd is not None
+            and total_held_usd < 2.0
+            and lb_f <= 1e-12
+            and avg_buy_f is None
+        )
         lot_base_lbl = p_map.get("base") or canonical_base_asset(str(p_map.get("symbol") or "")) or "BASE"
         anchors: List[Dict[str, Any]] = []
         for px_k, lbl, pct_lbl, pct_k, dedup_keys in (
@@ -580,17 +598,27 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                 lot_harvested = bool(
                     px_k == "last_buy_px"
                     and pct_val is not None
-                    and isinstance(open_lots_chk := p_map.get("open_lots"), list)
-                    and len(open_lots_chk) > 0
-                    and not any(
-                        isinstance(lt, dict) and same_anchor_px(p_map.get("last_buy_px"), lt.get("entry_px"))
-                        for lt in open_lots_chk
+                    and (
+                        is_flat_dust_pos
+                        or (
+                            isinstance(open_lots_chk := p_map.get("open_lots"), list)
+                            and len(open_lots_chk) > 0
+                            and not any(
+                                isinstance(lt, dict) and same_anchor_px(p_map.get("last_buy_px"), lt.get("entry_px"))
+                                for lt in open_lots_chk
+                            )
+                        )
                     )
+                )
+                eff_pct_lbl = (
+                    "chg_vs_lowest_buy"
+                    if (is_flat_dust_pos and px_k == "lowest_buy_px")
+                    else pct_lbl
                 )
                 anchors.append({
                     "lbl": lbl,
                     "px": p_map.get(px_k),
-                    "pct_lbl": pct_lbl,
+                    "pct_lbl": eff_pct_lbl,
                     "pct_val": pct_val,
                     "lot_harvested": lot_harvested,
                 })
@@ -796,16 +824,33 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                 if isinstance(c_data, dict):
                     c_up = str(c_sym).strip().upper()
                     c_key = clean_symbol_key(c_sym) or ""
+                    c_qty = safe_nonneg_float(c_data.get("qty"), default=0.0) or 0.0
+                    c_cost = safe_nonneg_float(c_data.get("cost_usd"), default=0.0) or 0.0
+                    c_avg = safe_pos_float(c_data.get("avg_cost_px"), default=None)
+                    c_spot = (
+                        safe_pos_float(c_data.get("_spot_px"), default=None)
+                        or pos_px_by_vs.get((venue_id, c_up), pos_px_by_vs.get(("", c_up)))
+                    )
+                    c_val_usd = (c_qty * c_spot) if (c_spot is not None and c_spot > 0.0) else None
                     if (
                         obs_only_syms
                         and (c_up in obs_only_syms or (c_key and c_key in obs_only_syms))
-                        and (safe_float(c_data.get("qty"), 0.0) or 0.0) <= 1e-12
-                        and (safe_float(c_data.get("cost_usd"), 0.0) or 0.0) <= 1e-9
+                        and c_qty <= 1e-12
+                        and c_cost <= 1e-9
+                    ):
+                        continue
+                    # Omit flat or sub-$2 dust cycles with no active cost basis or resting orders
+                    # so "Active Cycle Cost & Drawdown Anchors" only reports live inventory cycles.
+                    if (
+                        c_cost <= 1e-9
+                        and c_avg is None
+                        and not c_data.get("resting_orders")
+                        and (c_qty <= 1e-12 or (c_val_usd is not None and c_val_usd < 2.0))
                     ):
                         continue
                     c_data = _with_subcycle_pnl(c_data, venue_id, c_up)
-                    if c_data.get("_spot_px") is None and (sp_px := pos_px_by_vs.get((venue_id, c_up), pos_px_by_vs.get(("", c_up)))) is not None:
-                        c_data = {**c_data, "_spot_px": sp_px}
+                    if c_data.get("_spot_px") is None and c_spot is not None:
+                        c_data = {**c_data, "_spot_px": c_spot}
                     if c_data.get("_open_lots") is None and (ol_sym := pos_open_lots_by_vs.get((venue_id, c_up), pos_open_lots_by_vs.get(("", c_up)))) is not None:
                         c_data = {**c_data, "_open_lots": ol_sym}
                 cyc_items.append((c_sym, c_data))

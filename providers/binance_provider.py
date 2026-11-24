@@ -554,7 +554,7 @@ class BinanceProvider(MarketDataProvider):
             else resolve_binance_lookup_symbol(symbol)
         )
         return (
-            (f"https://api.binance.com/api/v3/klines?symbol={spot_sym}&interval=5m&limit=3", None)
+            (f"https://api.binance.com/api/v3/klines?symbol={spot_sym}&interval=5m&limit=4", None)
             if spot_sym
             else None
         )
@@ -570,30 +570,46 @@ class BinanceProvider(MarketDataProvider):
         if not base_asset or quote_asset == "USDT":
             return None
         usdt_sym = f"{base_asset}USDT"
-        return (f"https://api.binance.com/api/v3/klines?symbol={usdt_sym}&interval=5m&limit=3", None)
+        return (f"https://api.binance.com/api/v3/klines?symbol={usdt_sym}&interval=5m&limit=4", None)
 
     @classmethod
     def extract_spot_flow_15m_usd(
         cls, raw_data: Any, *, since_ts: float = 0.0
     ) -> Optional[tuple[float, Optional[float]]]:
-        _ = since_ts
         if not isinstance(raw_data, list) or not raw_data:
             return None
-        tot_quote = 0.0
-        buy_quote = 0.0
-        valid_bars = 0
-        for row in raw_data[-3:]:
+        bars: list[tuple[Optional[int], float, float]] = []
+        for row in raw_data[-4:]:
             if not isinstance(row, (list, tuple)) or len(row) < 11:
                 continue
             q_vol = safe_nonneg_float(row[7], default=None)
             tb_q_vol = safe_nonneg_float(row[10], default=None)
             if q_vol is None or tb_q_vol is None:
                 continue
-            tot_quote += q_vol
-            buy_quote += min(q_vol, tb_q_vol)
-            valid_bars += 1
-        if valid_bars == 0:
+            open_ms = exact_pos_int(row[0], default=None)
+            bars.append((open_ms, q_vol, min(q_vol, tb_q_vol)))
+        if not bars:
             return None
+        if (
+            len(bars) == 4
+            and since_ts > 0.0
+            and (t0 := bars[0][0]) is not None
+            and (t1 := bars[1][0]) is not None
+            and (t2 := bars[2][0]) is not None
+            and (t3 := bars[3][0]) is not None
+            and (t1 - t0) == 300_000
+            and (t2 - t1) == 300_000
+            and (t3 - t2) == 300_000
+        ):
+            # Prorate the oldest 5m bar to its exact overlap with [since_ts, now] so the
+            # rolling 15m flow window stays a true 15m instead of oscillating 10m..15m.
+            w0 = max(0.0, min(1.0, (t0 + 300_000.0 - since_ts * 1000.0) / 300_000.0))
+            tot_quote = w0 * bars[0][1] + bars[1][1] + bars[2][1] + bars[3][1]
+            buy_quote = w0 * bars[0][2] + bars[1][2] + bars[2][2] + bars[3][2]
+        else:
+            tail = bars[-3:]
+            tot_quote = sum(b[1] for b in tail)
+            buy_quote = sum(b[2] for b in tail)
         return round(2.0 * buy_quote - tot_quote, 0), round(tot_quote, 0)
 
     @classmethod
