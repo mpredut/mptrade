@@ -88,6 +88,8 @@ from providers.ai_circuit_breaker import (
     DEFAULT_SCORECARD_WINDOW_TRADES,
     DEFAULT_TARGET_EV_FEE_MULT,
     DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS,
+    DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
+    DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
     DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
     DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
     DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
@@ -211,6 +213,8 @@ class AutonomousIntentGateway:
         self.xstock_sell_min_target_drop_pct: float = cb_cfg["xstock_sell_min_target_drop_pct"]
         self.xstock_sell_min_confidence: float = cb_cfg["xstock_sell_min_confidence"]
         self.xstock_sell_cooldown_hours: float = cb_cfg["xstock_sell_cooldown_hours"]
+        self.xstock_sell_crash_min_target_drop_pct: float = cb_cfg["xstock_sell_crash_min_target_drop_pct"]
+        self.xstock_sell_crash_min_confidence: float = cb_cfg["xstock_sell_crash_min_confidence"]
 
     def load_all_intents(self) -> List[Dict[str, Any]]:
         """Loads all intents from the durable JSON queue with `.previous` crash recovery."""
@@ -770,6 +774,16 @@ class AutonomousIntentGateway:
                 min_target_drop_pct=getattr(self, "xstock_sell_min_target_drop_pct", DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT),
                 min_confidence=getattr(self, "xstock_sell_min_confidence", DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE),
                 cooldown_hours=getattr(self, "xstock_sell_cooldown_hours", DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS),
+                crash_min_target_drop_pct=getattr(
+                    self,
+                    "xstock_sell_crash_min_target_drop_pct",
+                    DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
+                ),
+                crash_min_confidence=getattr(
+                    self,
+                    "xstock_sell_crash_min_confidence",
+                    DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
+                ),
             )
             if not xs_allowed:
                 return (

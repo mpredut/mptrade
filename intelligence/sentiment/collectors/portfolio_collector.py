@@ -105,6 +105,8 @@ from instrument_registry import (
 )
 import order_retry as _oq
 from providers.ai_circuit_breaker import (
+    DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
+    DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
     DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
     DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
     parse_intent_circuit_breaker_config,
@@ -1127,6 +1129,14 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             xs_cb.get("xstock_sell_min_target_drop_pct"),
             default=DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
         )
+        xs_crash_drop_pct = safe_nonneg_float(
+            xs_cb.get("xstock_sell_crash_min_target_drop_pct"),
+            default=DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
+        )
+        xs_crash_conf = safe_nonneg_float(
+            xs_cb.get("xstock_sell_crash_min_confidence"),
+            default=DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
+        )
         hold_meta_parts = [p for p in (f"{primary_hold_qty:g} {primary_hold_tok}" if primary_hold_qty > 0 else "", f"cost ${alloc_px:g}" if alloc_px else "", "0bps maker/taker fee") if p]
         bot_rule_parts = [p for p in (f"TP +{bot_tp:g}%" if bot_tp else "", f"Trail {bot_trail:g}%" if bot_trail else "", f"DCA -{bot_dca:g}%" if bot_dca else "") if p]
         bot_rule_sfx = f" ({' / '.join(bot_rule_parts)})" if bot_rule_parts else ""
@@ -1135,14 +1145,20 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             if bot_observe_only
             else f"kraken_bot.py (by=BOT{bot_rule_sfx})"
         )
+        crash_clause = (
+            f"; OR (B) Imminent-crash capital preservation (allowed below +{xs_min_profit_pct:g}% / at a loss ONLY to stop severe crashes): "
+            f"requires urgency=HIGH, confidence >= {xs_crash_conf:g}, and explicit target_px >= {xs_crash_drop_pct:g}% below sell price"
+            if xs_crash_drop_pct > 0.0
+            else ""
+        )
         active_directive = (
             f"{primary_xpair} ({', '.join(hold_meta_parts)}): LONG-TERM INVESTMENT -- SELL-ONLY ON KRAKEN EU "
             f"(Spot API BUY on tokenized xStocks returns EGeneral:Permission denied; API SELL is 0bps, BUT manual rebuy on Kraken carries a HEAVY re-entry commission/spread and the owner cannot re-enter quickly; "
-            f"{bot_mode_desc}). Default posture is HOLD. Sell RARELY via 0bps LIMIT (owner gets emailed automatically to rebuy manually) ONLY when BOTH: "
-            f"(1) unrealized profit > +{xs_min_profit_pct:g}% above active cost basis (gateway minimum >= +{xs_min_profit_pct:g}%), AND "
-            f"(2) HIGH-CONVICTION multi-day decline thesis (minimum 1-2+ days expected drop, explicit target_px >= {xs_min_drop_pct:g}% below sell price) "
-            f"large enough to clearly overcome the heavy manual rebuy fee/spread and leave net upside. NEVER scalp on 90s/5m kinematics, "
-            f"NEVER sell at breakeven or a loss, and do NOT submit Kraken xStock BUY orders (use T212 {t212_sib} for US equity buys)."
+            f"{bot_mode_desc}). Default posture is HOLD. Sell RARELY via 0bps LIMIT (owner gets emailed automatically to rebuy manually) ONLY when: "
+            f"(A) Profit-taking: unrealized profit > +{xs_min_profit_pct:g}% above active cost basis (gateway minimum >= +{xs_min_profit_pct:g}%) AND "
+            f"HIGH-CONVICTION multi-day decline thesis (minimum 1-2+ days expected drop, explicit target_px >= {xs_min_drop_pct:g}% below sell price) "
+            f"large enough to clearly overcome the heavy manual rebuy fee/spread{crash_clause}. NEVER scalp on 90s/5m kinematics or shallow dips, "
+            f"and do NOT submit Kraken xStock BUY orders (use T212 {t212_sib} for US equity buys)."
         )
         ipo_sym_lbl = f"{cfg_underlying}xUSD" if (ipo_watch_active and cfg_underlying) else ""
         xst_summary: Dict[str, Any] = {

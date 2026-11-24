@@ -39,6 +39,8 @@ from .ai_circuit_breaker import (
     DEFAULT_SCORECARD_WINDOW_TRADES,
     DEFAULT_TARGET_EV_FEE_MULT,
     DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS,
+    DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
+    DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
     DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
     DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
     DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
@@ -548,13 +550,18 @@ def evaluate_ai_tokenized_equity_sell_guard(
     min_target_drop_pct: float = DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
     min_confidence: float = DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
     cooldown_hours: float = DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS,
+    crash_min_target_drop_pct: float = DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
+    crash_min_confidence: float = DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Enforce long-term holding discipline on SELL-only tokenized equities (e.g. Kraken EU xStocks).
 
-    Because EU Spot API cannot BUY tokenized equities and the owner must manually log in to rebuy,
-    exits must be rare and require BOTH significant unrealized profit above active cost basis AND a
-    high-conviction multi-day (1-2+ day) downside thesis represented by an explicit ``target_px``.
-    Urgency ``HIGH`` does NOT bypass this guard so intraday panic dips cannot liquidate long-term stock holdings.
+    Because EU Spot API cannot BUY tokenized equities and the owner must manually log in to rebuy
+    with heavy re-entry fees/spread, exits must be rare and satisfy EITHER:
+      (A) Profit-taking: unrealized profit >= ``min_profit_pct`` above active cost basis AND a
+          high-conviction multi-day (1-2+ day) downside ``target_px`` >= ``min_target_drop_pct`` lower; OR
+      (B) Imminent-crash capital preservation: ``urgency == "HIGH"`` AND ``confidence >= crash_min_confidence``
+          AND an explicit crash ``target_px`` >= ``crash_min_target_drop_pct`` below sell price (bypassing the
+          profit floor to stop severe losses while still enforcing the 24h sell cooldown).
     """
     side = normalize_side(decision) or extract_intent_side(intent)
     if side != "SELL":
@@ -568,6 +575,13 @@ def evaluate_ai_tokenized_equity_sell_guard(
     req_drop_pct = safe_nonneg_float(min_target_drop_pct, default=DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT)
     req_conf = safe_nonneg_float(min_confidence, default=DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE)
     req_cd_h = safe_nonneg_float(cooldown_hours, default=DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS)
+    req_crash_drop_pct = safe_nonneg_float(
+        crash_min_target_drop_pct, default=DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT
+    )
+    req_crash_conf = max(
+        req_conf,
+        safe_nonneg_float(crash_min_confidence, default=DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE),
+    )
     if req_profit_pct <= 0.0 and req_drop_pct <= 0.0 and req_conf <= 0.0 and req_cd_h <= 0.0:
         return True, "", {}
 
@@ -575,14 +589,34 @@ def evaluate_ai_tokenized_equity_sell_guard(
     eff_conf = safe_nonneg_float(confidence, default=0.0)
     eff_now = resolve_now_ts(now_ts)
     eff_cost = safe_pos_float(cost_basis_px, default=None)
+    urgency_u = clean_upper_scalar(intent.get("urgency")) if isinstance(intent, dict) else None
+    _, tgt_px = extract_intent_trade_plan_levels(intent, side="SELL", ref_price=eff_px) if eff_px > 0.0 else (None, None)
+    drop_pct = (((eff_px - tgt_px) / eff_px) * 100.0) if (tgt_px is not None and eff_px > 0.0) else None
     metrics: dict[str, Any] = {
         "xstock_sell_min_profit_pct": req_profit_pct,
         "xstock_sell_min_target_drop_pct": req_drop_pct,
         "xstock_sell_min_confidence": req_conf,
         "xstock_sell_cooldown_hours": req_cd_h,
+        "xstock_sell_crash_min_target_drop_pct": req_crash_drop_pct,
+        "xstock_sell_crash_min_confidence": req_crash_conf,
     }
     if eff_cost is not None:
         metrics["xstock_cost_basis_px"] = round(eff_cost, 6)
+        if eff_px > 0.0:
+            metrics["xstock_profit_pct"] = round(((eff_px - eff_cost) / eff_cost) * 100.0, 3)
+    if tgt_px is not None and drop_pct is not None:
+        metrics["target_px"] = tgt_px
+        metrics["xstock_target_drop_pct"] = round(drop_pct, 3)
+
+    is_imminent_crash_exit = bool(
+        req_crash_drop_pct > 0.0
+        and urgency_u == "HIGH"
+        and eff_conf >= req_crash_conf - 1e-9
+        and drop_pct is not None
+        and drop_pct >= req_crash_drop_pct - 1e-9
+    )
+    if is_imminent_crash_exit:
+        metrics["xstock_crash_protection_exit"] = True
 
     if req_conf > 0.0 and eff_conf < req_conf - 1e-9:
         return (
@@ -591,48 +625,45 @@ def evaluate_ai_tokenized_equity_sell_guard(
             metrics,
         )
 
-    if req_profit_pct > 0.0:
-        if eff_cost is None or eff_px <= 0.0:
-            return (
-                False,
-                f"ai_xstock_longterm_missing_cost_basis({sym}@{ven}:cannot verify >={req_profit_pct:g}% profit)",
-                metrics,
-            )
-        profit_pct = ((eff_px - eff_cost) / eff_cost) * 100.0
-        metrics["xstock_profit_pct"] = round(profit_pct, 3)
-        if profit_pct < req_profit_pct - 1e-9:
-            return (
-                False,
-                (
-                    f"ai_xstock_longterm_min_profit({sym}@{ven}:px={eff_px:g} vs cost={eff_cost:g}, "
-                    f"profit={profit_pct:+.2f}%<+{req_profit_pct:g}%)"
-                ),
-                metrics,
-            )
+    if not is_imminent_crash_exit:
+        if req_profit_pct > 0.0:
+            if eff_cost is None or eff_px <= 0.0:
+                return (
+                    False,
+                    f"ai_xstock_longterm_missing_cost_basis({sym}@{ven}:cannot verify >={req_profit_pct:g}% profit)",
+                    metrics,
+                )
+            profit_pct = ((eff_px - eff_cost) / eff_cost) * 100.0
+            metrics["xstock_profit_pct"] = round(profit_pct, 3)
+            if profit_pct < req_profit_pct - 1e-9:
+                return (
+                    False,
+                    (
+                        f"ai_xstock_longterm_min_profit({sym}@{ven}:px={eff_px:g} vs cost={eff_cost:g}, "
+                        f"profit={profit_pct:+.2f}%<+{req_profit_pct:g}%)"
+                    ),
+                    metrics,
+                )
 
-    if req_drop_pct > 0.0 and eff_px > 0.0:
-        _, tgt_px = extract_intent_trade_plan_levels(intent, side="SELL", ref_price=eff_px)
-        if tgt_px is None:
-            return (
-                False,
-                (
-                    f"ai_xstock_longterm_missing_target_px({sym}@{ven}:requires explicit multi-day "
-                    f"target_px >= {req_drop_pct:g}% below sell price)"
-                ),
-                metrics,
-            )
-        drop_pct = ((eff_px - tgt_px) / eff_px) * 100.0
-        metrics["target_px"] = tgt_px
-        metrics["xstock_target_drop_pct"] = round(drop_pct, 3)
-        if drop_pct < req_drop_pct - 1e-9:
-            return (
-                False,
-                (
-                    f"ai_xstock_longterm_min_target_drop({sym}@{ven}:target={tgt_px:g}, "
-                    f"drop={drop_pct:.2f}%<{req_drop_pct:g}% multi-day floor)"
-                ),
-                metrics,
-            )
+        if req_drop_pct > 0.0 and eff_px > 0.0:
+            if tgt_px is None or drop_pct is None:
+                return (
+                    False,
+                    (
+                        f"ai_xstock_longterm_missing_target_px({sym}@{ven}:requires explicit multi-day "
+                        f"target_px >= {req_drop_pct:g}% below sell price)"
+                    ),
+                    metrics,
+                )
+            if drop_pct < req_drop_pct - 1e-9:
+                return (
+                    False,
+                    (
+                        f"ai_xstock_longterm_min_target_drop({sym}@{ven}:target={tgt_px:g}, "
+                        f"drop={drop_pct:.2f}%<{req_drop_pct:g}% multi-day floor)"
+                    ),
+                    metrics,
+                )
 
     if req_cd_h > 0.0:
         cur_iid = _extract_intent_id(intent)

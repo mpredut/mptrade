@@ -55,6 +55,8 @@ DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT: float = 6.0
 DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT: float = 4.0
 DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE: float = 0.90
 DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS: float = 24.0
+DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT: float = 8.0
+DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE: float = 0.92
 
 
 def parse_intent_circuit_breaker_config(conf: dict[str, str]) -> dict[str, Any]:
@@ -128,6 +130,14 @@ def parse_intent_circuit_breaker_config(conf: dict[str, str]) -> dict[str, Any]:
         "xstock_sell_cooldown_hours": safe_nonneg_float(
             cfg.get("autonomous_trading_xstock_sell_cooldown_hours"),
             default=DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS,
+        ),
+        "xstock_sell_crash_min_target_drop_pct": safe_nonneg_float(
+            cfg.get("autonomous_trading_xstock_sell_crash_min_target_drop_pct"),
+            default=DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
+        ),
+        "xstock_sell_crash_min_confidence": safe_nonneg_float(
+            cfg.get("autonomous_trading_xstock_sell_crash_min_confidence"),
+            default=DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
         ),
     }
 

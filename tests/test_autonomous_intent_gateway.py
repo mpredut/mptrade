@@ -4682,9 +4682,9 @@ def test_tokenized_equity_longterm_sell_survival_guard_and_gateway(tmp_path):
     now_s = 1_795_530_000.0
     cost_px = 134.844
 
-    # 1. Blocks SELL at a loss or small profit (+4.9% < +6.0%), even when urgency == "HIGH"
-    ok_loss, rsn_loss, _ = evaluate_ai_tokenized_equity_sell_guard(
-        {"decision": "SELL", "urgency": "HIGH", "target_px": 115.0},
+    # 1. Blocks routine SELL at a loss or small profit (+4.9% < +6.0%), including HIGH urgency with shallow drop (< 8%)
+    ok_loss_norm, rsn_loss_norm, _ = evaluate_ai_tokenized_equity_sell_guard(
+        {"decision": "SELL", "urgency": "NORMAL", "target_px": 115.0},
         [],
         decision="SELL",
         symbol="SPCXxUSD",
@@ -4694,10 +4694,23 @@ def test_tokenized_equity_longterm_sell_survival_guard_and_gateway(tmp_path):
         now_ts=now_s,
         cost_basis_px=cost_px,
     )
-    assert ok_loss is False and "ai_xstock_longterm_min_profit" in rsn_loss
+    assert ok_loss_norm is False and "ai_xstock_longterm_min_profit" in rsn_loss_norm
+
+    ok_loss_shallow, rsn_loss_shallow, _ = evaluate_ai_tokenized_equity_sell_guard(
+        {"decision": "SELL", "urgency": "HIGH", "target_px": 122.0},  # -6.15% < 8.0% crash floor
+        [],
+        decision="SELL",
+        symbol="SPCXxUSD",
+        venue="kraken",
+        price=130.0,
+        confidence=0.96,
+        now_ts=now_s,
+        cost_basis_px=cost_px,
+    )
+    assert ok_loss_shallow is False and "ai_xstock_longterm_min_profit" in rsn_loss_shallow
 
     ok_small, rsn_small, _ = evaluate_ai_tokenized_equity_sell_guard(
-        {"decision": "SELL", "urgency": "HIGH", "target_px": 130.0},
+        {"decision": "SELL", "urgency": "HIGH", "target_px": 131.0},  # -7.42% < 8.0% crash floor
         [],
         decision="SELL",
         symbol="SPCXxUSD",
@@ -4708,6 +4721,35 @@ def test_tokenized_equity_longterm_sell_survival_guard_and_gateway(tmp_path):
         cost_basis_px=cost_px,
     )
     assert ok_small is False and "ai_xstock_longterm_min_profit" in rsn_small
+
+    # 1b. Allows imminent-crash capital-preservation SELL even at a loss ONLY when urgency=HIGH, conf>=0.92, target drop>=8%, and cooldown clear
+    ok_crash_lowconf, rsn_crash_lowconf, _ = evaluate_ai_tokenized_equity_sell_guard(
+        {"decision": "SELL", "urgency": "HIGH", "target_px": 115.0},  # -11.54% >= 8.0%
+        [],
+        decision="SELL",
+        symbol="SPCXxUSD",
+        venue="kraken",
+        price=130.0,
+        confidence=0.90,  # < 0.92 crash floor
+        now_ts=now_s,
+        cost_basis_px=cost_px,
+    )
+    assert ok_crash_lowconf is False and "ai_xstock_longterm_min_profit" in rsn_crash_lowconf
+
+    ok_crash, rsn_crash, m_crash = evaluate_ai_tokenized_equity_sell_guard(
+        {"decision": "SELL", "urgency": "HIGH", "target_px": 115.0},  # -11.54% >= 8.0%
+        [],
+        decision="SELL",
+        symbol="SPCXxUSD",
+        venue="kraken",
+        price=130.0,
+        confidence=0.94,
+        now_ts=now_s,
+        cost_basis_px=cost_px,
+    )
+    assert ok_crash is True and rsn_crash == ""
+    assert m_crash.get("xstock_crash_protection_exit") is True
+    assert m_crash["xstock_target_drop_pct"] >= 8.0
 
     # 2. Fail-closed when active cost basis is unavailable
     ok_nocost, rsn_nocost, _ = evaluate_ai_tokenized_equity_sell_guard(
@@ -4864,6 +4906,27 @@ def test_tokenized_equity_longterm_sell_survival_guard_and_gateway(tmp_path):
     assert res_blk["status"] == "REJECTED_AI_CIRCUIT_BREAKER"
     assert "ai_xstock_longterm_min_profit" in str(res_blk["history"][-1].get("reason") or "")
     assert place_calls == []
+
+    # 8. End-to-end AutonomousIntentGateway permits imminent-crash SELL below cost basis on urgency=HIGH + conf>=0.92 + drop>=8%
+    spcx_inst._provider.get_current_price.return_value = 127.0
+    res_crash = gw.submit(
+        {
+            "decision": "SELL",
+            "symbol": "SPCXxUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 127.0,  # -5.8% loss, but imminent crash target_px=114 (-10.2% >= 8.0%)
+            "target_px": 114.0,
+            "confidence": 0.94,
+            "urgency": "HIGH",
+            "suggested_notional_usd": 1000.0,
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"SPCXxUSD": spcx_inst},
+    )
+    assert res_crash["status"] == "EXECUTED"
+    assert len(place_calls) == 1
 
 
 

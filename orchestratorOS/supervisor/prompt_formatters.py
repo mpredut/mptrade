@@ -41,6 +41,8 @@ from orchestratorOS.supervisor.prompt_sections import (
     _format_sre_and_fleet_section,
 )
 from providers.ai_circuit_breaker import (
+    DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
+    DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
     DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
     DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
     parse_intent_circuit_breaker_config,
@@ -49,8 +51,8 @@ from providers.ai_circuit_breaker import (
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _resolve_xstock_sell_prompt_thresholds(workspace_dir: Optional[str] = None) -> Tuple[float, float]:
-    """Read SELL-only tokenized equity profit/drop thresholds from order_guard.conf SSOT."""
+def _resolve_xstock_sell_prompt_thresholds(workspace_dir: Optional[str] = None) -> Tuple[float, float, float, float]:
+    """Read SELL-only tokenized equity profit/drop/crash thresholds from order_guard.conf SSOT."""
     ws = workspace_dir or _ROOT_DIR
     try:
         conf = load_key_value_conf(ws, _ROOT_DIR)
@@ -61,9 +63,22 @@ def _resolve_xstock_sell_prompt_thresholds(workspace_dir: Optional[str] = None) 
                 cb_cfg.get("xstock_sell_min_target_drop_pct"),
                 default=DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
             ),
+            safe_nonneg_float(
+                cb_cfg.get("xstock_sell_crash_min_target_drop_pct"),
+                default=DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
+            ),
+            safe_nonneg_float(
+                cb_cfg.get("xstock_sell_crash_min_confidence"),
+                default=DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
+            ),
         )
     except Exception:
-        return DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT, DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT
+        return (
+            DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
+            DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
+            DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
+            DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
+        )
 
 
 def _build_dynamic_target_desc(
@@ -228,17 +243,18 @@ def build_supervisor_prompt(
         schema.append(
             '  "summary": "1-2 sentence executive assessment of multi-coin market posture and trading decisions"'
         )
-    xs_min_profit_pct, xs_min_drop_pct = _resolve_xstock_sell_prompt_thresholds()
+    xs_min_profit_pct, xs_min_drop_pct, xs_crash_drop_pct, xs_crash_conf = _resolve_xstock_sell_prompt_thresholds()
     xs_target_lbl = "tokenized xStocks"
     is_equities = getattr(spec, "asset_scope", "all") == "equities"
     if spec.can_trade:
         target_desc, xs_target_lbl = _build_dynamic_target_desc(is_equities)
+        xs_crash_sfx = f", OR imminent crash `urgency=HIGH` `target_px` >={xs_crash_drop_pct:g}% lower" if xs_crash_drop_pct > 0 else ""
         xs_exception_sfx = (
             ""
             if is_equities
             else (
-                f" (EXCEPTION: SELL-only Kraken {xs_target_lbl} = long-term `HOLD`, heavy manual rebuy fee/spread; "
-                f"sell rarely ONLY on >+{xs_min_profit_pct:g}% profit + 1-2d+ drop, `target_px` >={xs_min_drop_pct:g}% lower; emailed to rebuy manually)"
+                f" (EXCEPTION: SELL-only Kraken {xs_target_lbl} = long-term `HOLD`, heavy manual rebuy fee; "
+                f"sell rarely on >+{xs_min_profit_pct:g}% profit + `target_px` >={xs_min_drop_pct:g}% lower{xs_crash_sfx}; emailed)"
             )
         )
         venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
@@ -290,12 +306,17 @@ def build_supervisor_prompt(
         )
 
     if compact_rules and not spec.can_self_heal:
+        compact_crash_sfx = (
+            f", OR imminent crash (`urgency=HIGH`, `conf>={xs_crash_conf:g}`, `target_px` >={xs_crash_drop_pct:g}% lower)"
+            if xs_crash_drop_pct > 0
+            else ""
+        )
         compact_xs_sfx = (
             ""
             if is_equities
             else (
                 f"; remember SELL-only Kraken {xs_target_lbl} = long-term HOLD with heavy manual rebuy fee: "
-                f"sell rarely ONLY on >+{xs_min_profit_pct:g}% profit AND 1-2+ day downside with `target_px` >={xs_min_drop_pct:g}% lower"
+                f"sell rarely on >+{xs_min_profit_pct:g}% profit + `target_px` >={xs_min_drop_pct:g}% lower (1-2d+ drop){compact_crash_sfx}"
             )
         )
         compact_prefix = (
