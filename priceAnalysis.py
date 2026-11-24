@@ -413,8 +413,138 @@ def write_all_trends(all_trends, filename=None):
 
 
 UPDATE_AND_REFRESH_TREND = 60 * 1  # One minute.
+DRAW_PLOT_INTERVAL_SEC = 15 * 60   # Redraw Matplotlib PNGs every 15m (or immediately on direction flip).
+MAX_SKIP_RECOMPUTE_SEC = 15 * 60   # Safety recompute floor even if SparsePrice had no new tick.
+PRICEANALYSIS_TARGET_NICE = 10
+
+
+def _ensure_min_niceness(target_nice: int = PRICEANALYSIS_TARGET_NICE) -> int:
+    """Raise process niceness to at least ``target_nice`` (lower CPU priority) idempotently."""
+    target = safe_int(target_nice, default=PRICEANALYSIS_TARGET_NICE)
+    if target <= 0 or not hasattr(os, "nice"):
+        return 0
+    try:
+        cur = os.nice(0)
+        if cur < target:
+            return os.nice(target - cur)
+        return cur
+    except OSError:
+        return 0
+
+
+def _series_signature_for(symbol: str) -> Optional[Tuple[int, int, float]]:
+    """Return a cheap ``(len, last_ts, last_px)`` signature after syncing SparsePrice metadata."""
+    if price_cache_manager is None:
+        return None
+    manager = casefold_get(price_cache_manager, symbol)
+    if manager is None:
+        return None
+    if hasattr(manager, "resync_mem_file"):
+        manager.resync_mem_file()
+    lock = getattr(manager, "lock", None)
+    if lock is not None:
+        with lock:
+            raw = casefold_get(manager.cache, symbol, None)
+            if not isinstance(raw, list) or not raw:
+                return (0, 0, 0.0)
+            cnt = len(raw)
+            last_item = raw[-1]
+    else:
+        raw = casefold_get(manager.cache, symbol, None)
+        if not isinstance(raw, list) or not raw:
+            return (0, 0, 0.0)
+        cnt = len(raw)
+        last_item = raw[-1]
+    if isinstance(last_item, (list, tuple)) and len(last_item) >= 2:
+        l_ts = safe_pos_int(last_item[0], default=0) or 0
+        l_px = safe_pos_float(last_item[1], default=0.0) or 0.0
+        return (cnt, l_ts, l_px)
+    return (cnt, 0, 0.0)
+
+
+def run_price_analysis_cycle(
+    symbols,
+    state: Optional[dict] = None,
+    *,
+    now_ts: Optional[float] = None,
+    draw_interval_sec: float = DRAW_PLOT_INTERVAL_SEC,
+    max_skip_sec: float = MAX_SKIP_RECOMPUTE_SEC,
+    inter_symbol_yield_sec: float = 0.05,
+) -> dict:
+    """Compute long-term trends for ``symbols`` while skipping unchanged series and throttling PNG redraws."""
+    eff_now = safe_pos_float(now_ts, default=None)
+    if eff_now is None:
+        eff_now = time.time()
+    eff_draw_itv = safe_pos_float(draw_interval_sec, default=DRAW_PLOT_INTERVAL_SEC) or DRAW_PLOT_INTERVAL_SEC
+    eff_skip_cap = safe_pos_float(max_skip_sec, default=MAX_SKIP_RECOMPUTE_SEC) or MAX_SKIP_RECOMPUTE_SEC
+    eff_yield = safe_pos_float(inter_symbol_yield_sec, default=0.0) or 0.0
+    st = state if isinstance(state, dict) else {}
+    sigs: dict = st.setdefault("sigs", {})
+    trends_cache: dict = st.setdefault("trends", {})
+    last_compute: dict = st.setdefault("last_compute_ts", {})
+    last_draw: dict = st.setdefault("last_draw_ts", {})
+
+    all_trends = {}
+    for symbol in symbols:
+        sig = _series_signature_for(symbol) if priceLstFor is _ORIG_PRICE_LST_FOR else None
+        prev_trend = trends_cache.get(symbol)
+        prev_sig = sigs.get(symbol)
+        prev_comp_ts = safe_pos_float(last_compute.get(symbol), default=0.0) or 0.0
+        prev_draw_ts = safe_pos_float(last_draw.get(symbol), default=0.0) or 0.0
+        due_draw = (prev_draw_ts <= 0.0) or (eff_now - prev_draw_ts) >= eff_draw_itv
+        due_refresh = (prev_comp_ts <= 0.0) or (eff_now - prev_comp_ts) >= eff_skip_cap
+        unchanged = (
+            sig is not None
+            and prev_sig is not None
+            and sig == prev_sig
+            and isinstance(prev_trend, dict)
+            and not due_draw
+            and not due_refresh
+        )
+        if unchanged:
+            reused = dict(prev_trend)
+            reused["timestamp"] = math.trunc(eff_now)
+            all_trends[symbol] = reused
+            trends_cache[symbol] = reused
+            continue
+
+        prev_dir = prev_trend.get("direction") if isinstance(prev_trend, dict) else None
+        res = getTrendLongTerm_fixed(
+            symbol,
+            window_hours=16,
+            step_hours=8,
+            min_consecutive_blocks=3,
+            noise_tolerance=2,  # Allow two UP blocks within a DOWN trend.
+            lookback_days=30,
+            draw=due_draw,
+        )
+        new_dir = res.get("direction") if isinstance(res, dict) else None
+        if not due_draw and prev_dir is not None and new_dir is not None and new_dir != prev_dir:
+            res = getTrendLongTerm_fixed(
+                symbol,
+                window_hours=16,
+                step_hours=8,
+                min_consecutive_blocks=3,
+                noise_tolerance=2,
+                lookback_days=30,
+                draw=True,
+            )
+            due_draw = True
+        all_trends[symbol] = res
+        trends_cache[symbol] = res
+        if sig is not None:
+            sigs[symbol] = sig
+        last_compute[symbol] = eff_now
+        if due_draw and isinstance(res, dict):
+            last_draw[symbol] = eff_now
+        if eff_yield > 0.0:
+            time.sleep(eff_yield)
+    return all_trends
+
+
 if __name__ == "__main__":
     import psutil
+    _ensure_min_niceness(PRICEANALYSIS_TARGET_NICE)
     symbols, _nb_syms, _nb_providers = tracked_price_instruments()
     build_price_cache_manager(symbols=symbols, provider_names=_nb_providers or None)
     touch_module_heartbeat(
@@ -424,21 +554,14 @@ if __name__ == "__main__":
         symbols=list(symbols),
         intervals={"refresh_trend": UPDATE_AND_REFRESH_TREND},
     )
+    cycle_state: dict = {}
     try:
         while True:
             process = psutil.Process(os.getpid())
             print("Memory used (MB):", process.memory_info().rss / 1024**2)
-            
-            all_trends = {}
-            for symbol in symbols:
-                all_trends[symbol] = getTrendLongTerm_fixed(symbol,
-                                            window_hours=16,
-                                            step_hours=8,
-                                            min_consecutive_blocks=3,
-                                            noise_tolerance=2,  # Allow two UP blocks within a DOWN trend.
-                                            lookback_days=30,
-                                            draw=True)
-            write_all_trends(all_trends);
+
+            all_trends = run_price_analysis_cycle(symbols, cycle_state)
+            write_all_trends(all_trends)
             touch_module_heartbeat(
                 "priceAnalysis",
                 interval_sec=30.0,

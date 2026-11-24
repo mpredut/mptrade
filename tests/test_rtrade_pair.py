@@ -1135,7 +1135,8 @@ class RTradeHeartbeatTest(TempDirTestCase):
             for row in (_RTRADE_ROOT / "procs.conf").read_text(encoding="utf-8").splitlines()
             if row.strip() and not row.strip().startswith("#")
         ]
-        self.assertGreaterEqual(len(rows), 17)
+        # 16 active supervised rows after retiring observe-only kraken_bot & xstock_watch
+        self.assertGreaterEqual(len(rows), 16)
         for row in rows:
             parts = row.split("|")
             self.assertEqual(len(parts), 7, f"Malformed procs.conf row: {row}")

@@ -1,29 +1,29 @@
 # Production crontab template for the configured trading account.
 SHELL=/bin/bash
 
-17 * * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_logs.sh >> logs/manage_logs.log 2>&1
+17 * * * * cd $HOME/mptrade && nice -n 15 ionice -c3 ./orchestratorOS/admin/manage_logs.sh >> logs/manage_logs.log 2>&1
 8,23,38,53 * * * * cd $HOME/mptrade && /usr/bin/timeout --signal=TERM --kill-after=5s 90s ./orchestratorOS/run_python.sh 212trading/price_alert.py RGNT --below 4 >> 212trading/price_alert.log 2>&1
-4,19,34,49 * * * * cd $HOME/mptrade && /usr/bin/timeout --signal=TERM --kill-after=5s 90s ./orchestratorOS/run_python.sh verify_tools/check_cache_coherence.py >> logs/cache_coherence.log 2>&1
-25 3 * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_backups.sh remote >> logs/manage_backups.log 2>&1
+4,19,34,49 * * * * cd $HOME/mptrade && /usr/bin/timeout --signal=TERM --kill-after=5s 90s nice -n 15 ./orchestratorOS/run_python.sh verify_tools/check_cache_coherence.py >> logs/cache_coherence.log 2>&1
+25 3 * * * cd $HOME/mptrade && nice -n 15 ionice -c3 ./orchestratorOS/admin/manage_backups.sh remote >> logs/manage_backups.log 2>&1
 1,16,31,46 * * * * cd $HOME/mptrade && ./orchestratorOS/livecheck/deadman_switch.sh > logs/deadman.log 2>&1
-11 * * * * cd $HOME/mptrade && ./offline/runners/sync_cache_to.sh dev >> logs/refresh_dev.log 2>&1
-22 2,14 * * * cd $HOME/mptrade && ./offline/runners/run_backtest_cycle.sh remote >> logs/backtest_cycle.log 2>&1
+11 * * * * cd $HOME/mptrade && nice -n 15 ionice -c3 ./offline/runners/sync_cache_to.sh dev >> logs/refresh_dev.log 2>&1
+22 2,14 * * * cd $HOME/mptrade && nice -n 15 ./offline/runners/run_backtest_cycle.sh remote >> logs/backtest_cycle.log 2>&1
 # NOTE: kraken/shadow_live.py and hyperliquid/shadow_longterm.py (read-only paper forward-tests) run on DEV (systemd/crontab.dev.txt).
-9,29,49 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.portfolio_snapshot.lock /usr/bin/timeout --signal=TERM --kill-after=5s 90s ./orchestratorOS/run_python.sh verify_tools/portfolio_snapshot.py --alert --json >> logs/portfolio_snapshot.jsonl 2>/dev/null
+9,29,49 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.portfolio_snapshot.lock /usr/bin/timeout --signal=TERM --kill-after=5s 90s nice -n 15 ./orchestratorOS/run_python.sh verify_tools/portfolio_snapshot.py --alert --json >> logs/portfolio_snapshot.jsonl 2>/dev/null
 2-57/5 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh orchestratorOS/livecheck/os_resources_watchdog.py >> logs/os_resources_watchdog.log 2>&1
 */2 * * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh watchdog >> logs/manage_agy.log 2>&1
 # Idle-gated UI daemon sync (12m = 2x auto_cryptotrade_executor SSOT cadence): surfaces mirrored topic turns into the Web UI daemon when idle
-5-53/12 * * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
+5-53/12 * * * * cd $HOME/mptrade && nice -n 15 ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
 
 # Weekly agy CLI auto-update (Sunday 04:15; daemon restart is deferred automatically while interactive chats are active)
-15 4 * * 0 cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh cron-update >> logs/manage_agy.log 2>&1
+15 4 * * 0 cd $HOME/mptrade && nice -n 15 ./orchestratorOS/admin/manage_agy.sh cron-update >> logs/manage_agy.log 2>&1
 
 # 4-hour venue fee hygiene & Binance BNB reserve maintenance (<100 USDC -> 200 USDC LIMIT_MAKER)
 12 */4 * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.venue_fee_maintenance.lock /usr/bin/timeout 90 ./orchestratorOS/run_python.sh orchestratorOS/admin/maintain_venue_fees.py >> logs/venue_fee_maintenance.log 2>&1
 # 4-hour LLM model catalog, OAuth token/credit probe & primary-model latency recovery monitor
 18 */4 * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.llm_model_monitor.lock /usr/bin/timeout 120 ./orchestratorOS/run_python.sh orchestratorOS/admin/monitor_llm_models.py >> logs/llm_model_monitor.log 2>&1
 # Nightly technical audit + verified self-heal on the permanent auto_technical_repair thread (never trades)
-35 3 * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_technical_repair.lock /usr/bin/timeout 780 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_technical_repair >> logs/auto_technical_repair.log 2>&1; ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
+35 3 * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_technical_repair.lock /usr/bin/timeout 780 nice -n 10 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_technical_repair >> logs/auto_technical_repair.log 2>&1; nice -n 15 ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
 # 6-min 24/7 crypto trade executor on the permanent auto_cryptotrade_executor thread (Binance, Kraken, Hyperliquid)
 */6 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_cryptotrade_executor.lock /usr/bin/timeout 780 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_cryptotrade_executor >> logs/auto_trade_executor.log 2>&1
 # 30-min staggered US RTH share trade executor on the permanent auto_sharetrade_executor thread (Trading212 SPCX, NVDA, RGNT)

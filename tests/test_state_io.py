@@ -1276,6 +1276,82 @@ def test_cache24_jsonl_append_migration_compaction_and_staggered_cron(tmp_path, 
     assert "for sub in shadow_live hyperliquid_shadow" not in sync_sh_txt
 
 
+def test_price_analysis_cpu_throttling_and_low_priority_background_jobs(monkeypatch):
+    """Verify priceAnalysis skips unchanged SparsePrice series, throttles PNG redraws to 15m (redrawing on flip),
+    idempotently raises niceness, and background crons/procs.conf run with nice/ionice."""
+    import priceAnalysis as pa
+
+    # 1. _ensure_min_niceness is idempotent (computes delta, never double-adds)
+    nice_state = [0]
+
+    def _fake_nice(inc: int) -> int:
+        nice_state[0] += inc
+        return nice_state[0]
+
+    monkeypatch.setattr(pa.os, "nice", _fake_nice)
+    assert pa._ensure_min_niceness(10) == 10
+    assert pa._ensure_min_niceness(10) == 10
+    assert nice_state[0] == 10
+
+    # 2. run_price_analysis_cycle:
+    #    - cycle 1 (t=1000): computes & draws (draw=True)
+    #    - cycle 2 (t=1060, same sig): skips recompute completely (0 calls!)
+    #    - cycle 3 (t=1180, new SparsePrice tick, same direction): recomputes with draw=False (no Matplotlib PNG!)
+    #    - cycle 4 (t=1360, new SparsePrice tick, direction flips up->down): immediately redraws with draw=True!
+    #    - cycle 5 (t=2300, >=900s elapsed, same sig): periodic refresh & draw=True
+    sig_cur = [(100, 1_760_000_000_000, 60000.0)]
+    dir_cur = ["up"]
+    calls: list[tuple[str, bool]] = []
+
+    monkeypatch.setattr(pa, "_series_signature_for", lambda _s: sig_cur[0])
+
+    def _fake_trend(sym, **kw):
+        calls.append((sym, bool(kw.get("draw"))))
+        return {
+            "timestamp": 1000,
+            "direction": dir_cur[0],
+            "start_timestamp": 900.0,
+            "duration_seconds": 100.0,
+            "estimated_future_hours": 10.0,
+        }
+
+    monkeypatch.setattr(pa, "getTrendLongTerm_fixed", _fake_trend)
+    state: dict = {}
+
+    r1 = pa.run_price_analysis_cycle(["BTCUSDC"], state, now_ts=1000.0, inter_symbol_yield_sec=0.0)
+    assert calls == [("BTCUSDC", True)] and r1["BTCUSDC"]["direction"] == "up"
+
+    r2 = pa.run_price_analysis_cycle(["BTCUSDC"], state, now_ts=1060.0, inter_symbol_yield_sec=0.0)
+    assert calls == [("BTCUSDC", True)] and r2["BTCUSDC"]["timestamp"] == 1060
+
+    sig_cur[0] = (101, 1_760_000_180_000, 60050.0)
+    pa.run_price_analysis_cycle(["BTCUSDC"], state, now_ts=1180.0, inter_symbol_yield_sec=0.0)
+    assert calls == [("BTCUSDC", True), ("BTCUSDC", False)]
+
+    sig_cur[0] = (102, 1_760_000_360_000, 59500.0)
+    dir_cur[0] = "down"
+    r4 = pa.run_price_analysis_cycle(["BTCUSDC"], state, now_ts=1360.0, inter_symbol_yield_sec=0.0)
+    assert calls == [("BTCUSDC", True), ("BTCUSDC", False), ("BTCUSDC", False), ("BTCUSDC", True)]
+    assert r4["BTCUSDC"]["direction"] == "down"
+
+    pa.run_price_analysis_cycle(["BTCUSDC"], state, now_ts=2300.0, inter_symbol_yield_sec=0.0)
+    assert calls[-1] == ("BTCUSDC", True)
+
+    # 3. procs.conf & crontab.prod.txt apply nice/ionice to heavy background jobs while keeping trade executors at normal priority
+    repo_root = Path(__file__).resolve().parents[1]
+    procs_txt = (repo_root / "procs.conf").read_text(encoding="utf-8")
+    pa_rows = [ln for ln in procs_txt.splitlines() if ln.startswith("priceAnalysis.py|")]
+    assert len(pa_rows) == 1 and "nice -n 10 ionice -c3 python priceAnalysis.py" in pa_rows[0]
+    cron_txt = (repo_root / "systemd/crontab.prod.txt").read_text(encoding="utf-8")
+    for bg_tok in ("manage_logs.sh", "manage_backups.sh", "sync_cache_to.sh dev", "check_cache_coherence.py", "portfolio_snapshot.py"):
+        line = next(ln for ln in cron_txt.splitlines() if bg_tok in ln and not ln.strip().startswith("#"))
+        assert "nice -n 15" in line
+    for exec_tok in ("--topic-key auto_cryptotrade_executor", "--topic-key auto_sharetrade_executor"):
+        line = next(ln for ln in cron_txt.splitlines() if exec_tok in ln and not ln.strip().startswith("#"))
+        assert "nice -n" not in line
+
+
+
 
 
 
