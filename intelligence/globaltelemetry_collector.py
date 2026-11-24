@@ -54,6 +54,7 @@ from cachepaths import (
     is_equity_venue,
     resolve_cachedb_filepath,
     resolve_workspace_dir_from_cachedb,
+    telemetry_cache_file_path,
 )
 from intelligence.external.collectors.base_collector import collector_used_stale_fallback
 from intelligence.external.collectors.bybit_liquidations_collector import (
@@ -1050,9 +1051,44 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             logger_inst=logger,
         )
 
+    def prune_disabled_symbol_telemetry_files(self) -> int:
+        """Remove stale orphan telemetry snapshots for registry-disabled symbols not monitored by this collector."""
+        if not self.cache_dir:
+            return 0
+        workspace_dir = resolve_workspace_dir_from_cachedb(self.cache_dir)
+        disabled_syms = disabled_registry_symbols(workspace_dir) if workspace_dir else disabled_registry_symbols()
+        if not disabled_syms:
+            return 0
+        active_upper = {
+            str(s).strip().upper()
+            for s in (self.symbols or ())
+            if isinstance(s, str) and s.strip()
+        }
+        removed = 0
+        for sym in sorted(disabled_syms):
+            sym_clean = str(sym or "").strip()
+            if not sym_clean or sym_clean.upper() in active_upper:
+                continue
+            for prefix in ("orderbook_depth", "derivatives_telemetry", "whale_snapshot"):
+                p = telemetry_cache_file_path(self.cache_dir, prefix, sym_clean)
+                if not p:
+                    continue
+                for target in (p, f"{p}.previous"):
+                    try:
+                        if os.path.isfile(target):
+                            os.remove(target)
+                            removed += 1
+                    except OSError:
+                        pass
+        if removed:
+            logger.info("Pruned %d stale telemetry file(s) for disabled registry symbols.", removed)
+        return removed
+
     def start(self, poll_interval_sec: float = 1.0) -> None:
         """Run the main telemetry collection loop continuously."""
         self._live_impulse_wakeup_enabled = bool_env("AI_IMPULSE_TRIGGER_ENABLED", True)
+        if not self.skip_external:
+            self.prune_disabled_symbol_telemetry_files()
         if not self.skip_external and bool_env("TELEMETRY_WS_ENABLED", True) and self.telemetry_ws_hub is None:
             try:
                 self.telemetry_ws_hub = TelemetryWsHub(self.symbols).start()

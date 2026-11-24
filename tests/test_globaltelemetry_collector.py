@@ -3147,6 +3147,34 @@ def test_step_external_symbols_anti_starvation_refreshes_ob_during_slow_whale(tm
     assert len(ob_events_before_eth_whale) == 4
 
 
+def test_prune_disabled_symbol_telemetry_files_removes_only_disabled_orphans(tmp_path, monkeypatch):
+    """Verify startup cleanup removes stale telemetry files for disabled symbols without touching active or non-telemetry files."""
+    import intelligence.globaltelemetry_collector as gtc_mod
+
+    cache_dir = tmp_path / "cachedb"
+    tel_dir = cache_dir / "telemetry"
+    tel_dir.mkdir(parents=True, exist_ok=True)
+    for pref in ("orderbook_depth", "derivatives_telemetry", "whale_snapshot"):
+        (tel_dir / f"{pref}_ADAUSD.json").write_text("{}", encoding="utf-8")
+        (tel_dir / f"{pref}_TAOUSD.json").write_text("{}", encoding="utf-8")
+        (tel_dir / f"{pref}_BTCUSDC.json").write_text("{}", encoding="utf-8")
+    (tel_dir / "orderbook_depth_ADAUSD.json.previous").write_text("{}", encoding="utf-8")
+    keep_non_tel = cache_dir / "cache_current_price.json"
+    keep_non_tel.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(gtc_mod, "disabled_registry_symbols", lambda *_a, **_kw: frozenset({"ADAUSD", "TAOUSD"}))
+    col = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=str(cache_dir), skip_news=True)
+    removed = col.prune_disabled_symbol_telemetry_files()
+    assert removed == 7
+    for pref in ("orderbook_depth", "derivatives_telemetry", "whale_snapshot"):
+        assert not (tel_dir / f"{pref}_ADAUSD.json").exists()
+        assert not (tel_dir / f"{pref}_TAOUSD.json").exists()
+        assert (tel_dir / f"{pref}_BTCUSDC.json").exists()
+    assert not (tel_dir / "orderbook_depth_ADAUSD.json.previous").exists()
+    assert keep_non_tel.exists()
+
+
+
 
 
 

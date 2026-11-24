@@ -94,8 +94,10 @@ from notify_engine import mailer as _mailer_init  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _isolate_cachedb_dir(tmp_path, monkeypatch):
-    """Keep every test isolated from live/rsynced cachedb state files and reset injected runtime services."""
+    """Keep every test isolated from live/rsynced cachedb and notification state files and reset runtime services."""
     monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path / "cachedb"))
+    monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(tmp_path / "notification_delivery_state.json"))
+    monkeypatch.setenv("NOTIFICATION_QUEUE_FILE", str(tmp_path / "notify_queue.json"))
     _botcore_init.configure_runtime_services(
         clock_fn=None,
         sleep_fn=None,
