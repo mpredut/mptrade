@@ -1638,3 +1638,38 @@ def test_t212_soft_invalidation_preserves_429_fallback_and_cross_process_pacing(
     assert consumer3.get_portfolio() == pf_v2
     assert len(http_calls) == 3
 
+
+def test_t212_pace_sleep_does_not_block_ram_cache_peek(monkeypatch):
+    """Verify T212Client._pace sleeps under _pace_lock without blocking _peek_cached or notify_rate_limit on _lock."""
+    import threading
+
+    cli = t212_client.T212Client(
+        "k_lock", "s_lock", "live",
+        min_gap_sec=0.5, order_min_gap_sec=0.5, portfolio_ttl_sec=6.0,
+        enable_shared_disk_cache=False,
+    )
+    cli._pf_cache = (time.monotonic(), [{"ticker": "NVDA_US_EQ", "quantity": 1.0}])
+    cli.notify_rate_limit(2.0)
+
+    sleep_entered = threading.Event()
+    release_sleep = threading.Event()
+
+    def _blocking_sleep(_sec: float) -> None:
+        sleep_entered.set()
+        assert release_sleep.wait(timeout=3.0)
+
+    monkeypatch.setattr(t212_client.time, "sleep", _blocking_sleep)
+
+    t_pace = threading.Thread(target=cli._pace, args=("_pf_cache",), daemon=True)
+    t_pace.start()
+    try:
+        assert sleep_entered.wait(timeout=2.0)
+        # While _pace is blocked inside time.sleep, RAM cache reads and rate-limit updates must not block
+        hit, val = cli._peek_cached("_pf_cache", 6.0)
+        assert hit is True and val == [{"ticker": "NVDA_US_EQ", "quantity": 1.0}]
+        cli.notify_rate_limit(2.5)
+    finally:
+        release_sleep.set()
+        t_pace.join(timeout=2.0)
+
+

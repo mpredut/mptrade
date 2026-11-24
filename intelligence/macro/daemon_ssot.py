@@ -317,6 +317,7 @@ def write_daemon_heartbeat_files(
     payload: Dict[str, Any],
     *,
     use_save_json_state: bool = False,
+    fsync: bool = True,
     logger_inst: Optional[logging.Logger] = None,
 ) -> None:
     """Atomically write daemon heartbeat JSON to ``paths`` with direct-write fallback."""
@@ -330,19 +331,27 @@ def write_daemon_heartbeat_files(
             log.debug("Failed writing daemon heartbeat: %s", exc)
         return
 
+    do_fsync = _parse_bool_flag(fsync, True)
     _atomic_write = _resolve_daemon_helper("atomic_write_json", atomic_write_json, _default_atomic_write_json)
     _discard_gen = _resolve_daemon_helper(
         "discard_generation_file", discard_generation_file, _default_discard_generation_file
     )
+
+    def _write_one(target: str) -> None:
+        if _atomic_write is _default_atomic_write_json:
+            _atomic_write(target, payload, indent=2, fsync=do_fsync)
+        else:
+            _atomic_write(target, payload, indent=2)
+
     for raw_target in paths:
         hb_target = str(resolve_cachedb_filepath(raw_target))
         try:
-            _atomic_write(hb_target, payload, indent=2)
+            _write_one(hb_target)
         except Exception as exc:
             log.warning("Primary atomic heartbeat write failed for %s: %s; attempting fallback", hb_target, exc)
             try:
                 _discard_gen(hb_target)
-                _atomic_write(hb_target, payload, indent=2)
+                _write_one(hb_target)
             except Exception as fallback_err:
                 log.error("Fallback heartbeat write failed for %s: %s", hb_target, fallback_err)
 
@@ -355,6 +364,7 @@ def write_daemon_heartbeat(
     intervals: Optional[Dict[str, Any]] = None,
     extra: Optional[Dict[str, Any]] = None,
     use_save_json_state: bool = False,
+    fsync: bool = True,
     logger_inst: Optional[logging.Logger] = None,
 ) -> Dict[str, Any]:
     """Build canonical heartbeat payload via ``botcore.build_heartbeat_payload`` and persist atomically."""
@@ -368,6 +378,7 @@ def write_daemon_heartbeat(
         (heartbeat_path,),
         payload,
         use_save_json_state=use_save_json_state,
+        fsync=fsync,
         logger_inst=logger_inst,
     )
     return payload

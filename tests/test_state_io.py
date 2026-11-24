@@ -1123,5 +1123,54 @@ def test_atomic_write_json_fsync_flag_and_ephemeral_telemetry_collector(tmp_path
     assert len(patched_calls) == 1
 
 
+def test_cache24_and_current_price_write_compact_json_without_fsync(tmp_path, monkeypatch):
+    """Verify Cache24PriceManager and CacheCurrentPriceManager persist compact JSON with zero fsync calls,
+    while default commit_file_and_meta(fsync=True) remains fully fsync-durable."""
+    import cacheprice
+
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+
+    # 1. Default commit_file_and_meta(fsync=True) still calls os.fsync
+    durable_target = tmp_path / "durable_account.json"
+    assert state_io.commit_file_and_meta(
+        str(durable_target),
+        lambda: state_io.atomic_write_json(str(durable_target), {"orders": [1]}),
+        lambda: (state_io.write_meta_json(str(durable_target), {"max_ts": 1}), True)[1],
+    )
+    assert len(fsync_calls) >= 2
+
+    # 2. Cache24PriceManager saves compact JSON (no indent newlines) with 0 fsync calls
+    fsync_calls.clear()
+    now_ms = int(time.time() * 1000)
+    c24_path = tmp_path / "cache_24_price_BTCUSDC.json"
+    mgr24 = cacheprice.Cache24PriceManager(30, ["BTCUSDC"], str(c24_path), api_client=None, read_only=False)
+    mgr24.cache = {"BTCUSDC": [[now_ms - 1000, 60000.0], [now_ms, 60010.0]]}
+    mgr24.fetchtime_per_symbol = {"BTCUSDC": now_ms}
+    assert mgr24.save_state_to_file() is True
+    assert fsync_calls == []
+    raw_24 = c24_path.read_text(encoding="utf-8")
+    assert "\n" not in raw_24
+    assert json.loads(raw_24)["items"]["BTCUSDC"][-1][1] == 60010.0
+
+    # Second save (with existing file -> triggers stage_previous_generation(fsync=False)) ALSO uses 0 fsync
+    mgr24.cache["BTCUSDC"].append([now_ms + 1000, 60020.0])
+    mgr24.fetchtime_per_symbol["BTCUSDC"] = now_ms + 1000
+    assert mgr24.save_state_to_file() is True
+    assert fsync_calls == []
+
+    # 3. CacheCurrentPriceManager saves compact JSON with 0 fsync calls
+    cp_path = tmp_path / "cache_current_price.json"
+    cpm = cacheprice.CacheCurrentPriceManager(5, ["BTCUSDC"], str(cp_path), api_client=None, read_only=False)
+    cpm.on_items_update("BTCUSDC", [[now_ms + 2000, 60030.0]])
+    assert cpm.save_state_to_file() is True
+    assert fsync_calls == []
+    raw_cp = cp_path.read_text(encoding="utf-8")
+    assert "\n" not in raw_cp
+    assert json.loads(raw_cp)["items"]["BTCUSDC"] == [[now_ms + 2000, 60030.0]]
+    cpm.shutdown(timeout=1.0)
+
+
+
 
 

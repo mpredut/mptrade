@@ -97,6 +97,7 @@ class T212Client:
         # A shared client may serve one thread per asset. Serialize and space calls
         # to avoid T212 rate limits; T212_MIN_GAP_SEC sets the minimum gap.
         self._lock = threading.Lock()
+        self._pace_lock = threading.Lock()
         self._order_lock = threading.Lock()
         self._last = 0.0
         self._last_order = 0.0
@@ -361,11 +362,14 @@ class T212Client:
     def _pace(self, endpoint_key: str | None = None) -> None:
         """Enforce at least ``_min_gap`` seconds between calls across all threads,
         per-endpoint ``_order_min_gap`` when ``endpoint_key`` is given, and respect
-        rate limit backoff if any recent call returned HTTP 429."""
-        with self._lock:
+        rate limit backoff without holding ``self._lock`` across ``time.sleep``."""
+        pace_lock = getattr(self, "_pace_lock", None) or self._lock
+        with pace_lock:
             now = time.monotonic()
+            with self._lock:
+                backoff_until = self._backoff_until
             gap_wait = self._min_gap - (now - self._last)
-            backoff_wait = self._backoff_until - now
+            backoff_wait = backoff_until - now
             ep_wait = 0.0
             last_attr_map = getattr(self, "_last_attr_fetch", None)
             min_ep_gap = safe_nonneg_float(getattr(self, "_order_min_gap", 0.0), default=0.0)

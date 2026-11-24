@@ -805,7 +805,10 @@ class CacheManagerInterface(ABC):
             )
             payload["saved_at"] = math.trunc(_now_time() * 1000)
             write_json_fn = _cm_override("atomic_write_json", atomic_write_json)
-            write_json_fn(meta_file_path(self.filename), payload)
+            if write_json_fn is atomic_write_json:
+                write_json_fn(meta_file_path(self.filename), payload, fsync=self._SNAPSHOT_FSYNC)
+            else:
+                write_json_fn(meta_file_path(self.filename), payload)
             return True
         except Exception as e:
             return self._log_cache_file_error("metadata", e)
@@ -816,6 +819,8 @@ class CacheManagerInterface(ABC):
         print(f"[{self.cls_name}][Error] {label} {self.filename}{suffix}: {exc}")
         return False
 
+    _SNAPSHOT_COMPACT_JSON: bool = False
+    _SNAPSHOT_FSYNC: bool = True
     _HIGH_FREQ_LOG_INTERVAL_SEC: float = 30.0
 
     def _should_emit_throttled_info_log(self, symbol: Optional[str] = None) -> bool:
@@ -868,6 +873,7 @@ class CacheManagerInterface(ABC):
                 f"[{self.cls_name}][Error] could not restore the prior "
                 f"generation for {self.filename}: {rollback_error}"
             ),
+            fsync=self._SNAPSHOT_FSYNC,
         )
 
     def save_state_to_file_if_enabled(self):
@@ -922,9 +928,27 @@ class CacheManagerInterface(ABC):
                 "rest_sync_cursor": metadata["rest_sync_cursor"],
             }
             write_json_fn = _cm_override("atomic_write_json", atomic_write_json)
+
+            def _write_snapshot():
+                if write_json_fn is atomic_write_json:
+                    if self._SNAPSHOT_COMPACT_JSON:
+                        return write_json_fn(
+                            self.filename,
+                            payload,
+                            separators=(",", ":"),
+                            fsync=self._SNAPSHOT_FSYNC,
+                        )
+                    return write_json_fn(
+                        self.filename,
+                        payload,
+                        indent=1,
+                        fsync=self._SNAPSHOT_FSYNC,
+                    )
+                return write_json_fn(self.filename, payload, indent=1)
+
             with self._generation_lock():
                 if not self._commit_file_and_meta_locked(
-                    lambda: write_json_fn(self.filename, payload, indent=1),
+                    _write_snapshot,
                     metadata,
                 ):
                     return False

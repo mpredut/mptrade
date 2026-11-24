@@ -117,7 +117,9 @@ from intelligence.sentiment.collectors.portfolio_collector import (
 )
 from intelligence.sentiment.collectors.pretrade_telemetry_collector import refresh_pretrade_telemetry_caches
 from intelligence.sentiment.evaluators.microstructure_evaluator import update_microstructure_cycle_deltas
-from state_io import open_append_text_file, read_json_dict_recovering, save_json_state
+from state_io import atomic_write_json, open_append_text_file, read_json_dict_recovering, save_json_state
+
+_ORIG_SAVE_JSON_STATE = save_json_state
 
 load_dotenv()
 
@@ -439,6 +441,14 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             logger.warning("Failed updating RSS news feed: %s", e)
         return False
 
+    @staticmethod
+    def _write_ephemeral_json(path: str, payload: Dict[str, Any]) -> None:
+        """Persist ephemeral public telemetry snapshots atomically without ext4 fsync stalls."""
+        if save_json_state is not _ORIG_SAVE_JSON_STATE:
+            save_json_state(path, payload, indent=2)
+            return
+        atomic_write_json(path, payload, indent=2, fsync=False)
+
     def update_fear_greed(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch Crypto Fear & Greed Index and persist snapshot to cachedb/."""
         try:
@@ -447,7 +457,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 now_val = resolve_now_ts(eff_now)
                 idx_ts = safe_nonneg_ts(getattr(snap, "timestamp", None), now_val) or now_val
                 fetch_ts = safe_pos_float(getattr(self.fear_greed_collector, "_last_fetch_ts", None), default=None) or now_val
-                save_json_state(
+                self._write_ephemeral_json(
                     os.path.join(self.cache_dir, CACHE_FEAR_GREED_FILENAME),
                     {
                         "value": snap.value,
@@ -460,7 +470,6 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                         "index_timestamp": idx_ts,
                         "ts": fetch_ts,
                     },
-                    indent=2,
                 )
                 logger.debug("Fear & Greed index updated: %d (%s)", snap.value, snap.classification)
                 return True
@@ -474,7 +483,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             breadth, eff_now = self._fetch_fresh_collector_snapshot(self.breadth_collector, force=force, now=now)
             if breadth:
                 mb_payload = serialize_market_breadth_snapshot(breadth, now_ts=eff_now)
-                save_json_state(os.path.join(self.cache_dir, CACHE_MARKET_BREADTH_FILENAME), mb_payload, indent=2)
+                self._write_ephemeral_json(os.path.join(self.cache_dir, CACHE_MARKET_BREADTH_FILENAME), mb_payload)
                 logger.debug("Market breadth updated: %.1f%% advancing", breadth.advance_ratio * 100)
                 return True
         except Exception as e:
@@ -566,7 +575,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 "symbols": items,
             }
             out_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, CACHE_REALIZED_LIQUIDATIONS_FILENAME)))
-            save_json_state(out_path, payload, indent=2)
+            self._write_ephemeral_json(out_path, payload)
             return True
         except Exception as e:
             logger.debug("Failed persisting realized liquidations snapshot: %s", e)
@@ -1048,6 +1057,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 "venue_balances": getattr(self, "venue_balances_interval_sec", None),
             },
             extra=extra_hb,
+            fsync=False,
             logger_inst=logger,
         )
 

@@ -381,3 +381,35 @@ def test_ws_pong_does_not_mask_staleness_silent_socket_reconnects_and_whale_uses
     assert hl_rest_called[0] is False
     assert snap.open_interest_usd == pytest.approx(6_000_000.0)
     assert snap.funding_rate == pytest.approx(0.000025)
+
+
+def test_public_price_stream_stale_reconnect_watchdog(monkeypatch):
+    """Verify BinancePriceStream, HyperliquidPriceStream, and KrakenPriceStream expose silent-socket stale reconnect."""
+    import asyncio
+    from binance_api import bapi_ws
+    from providers import price_poller as pp_mod
+
+    bn = bapi_ws.BinancePriceStream(["BTCUSDC"])
+    hl = pp_mod.HyperliquidPriceStream(["HYPEUSDC"])
+    kr = pp_mod.KrakenPriceStream(["HYPEUSD"])
+    assert bn._stale_reconnect_sec == 120.0
+    assert hl._stale_reconnect_sec == 120.0
+    assert kr._stale_reconnect_sec == 300.0
+
+    # Silent recv loop exits quickly once stale_reconnect_sec elapses without price frames
+    class _SilentWs:
+        async def recv(self):
+            await asyncio.sleep(5.0)
+            return "{}"
+
+    bn_fast = bapi_ws.BinancePriceStream(["BTCUSDC"], stale_reconnect_sec=0.06)
+    monkeypatch.setattr(bapi_ws, "WS_RECV_TIMEOUT", 0.02)
+    t0 = time.monotonic()
+    asyncio.run(bn_fast._recv_loop(_SilentWs()))
+    elapsed = time.monotonic() - t0
+    assert 0.05 <= elapsed < 2.0
+
+    # Receiving a price tick resets the silent-socket timer
+    bn_fast._notify_subscribers("BTCUSDC", [[int(time.time() * 1000), 60000.0]])
+    assert bn_fast._is_price_stream_stale(t0) is False
+

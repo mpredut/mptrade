@@ -418,6 +418,8 @@ class Cache24PriceManager(CachePriceManagerBase):
     FILE_PREFIX = CACHE_24_PRICE_PREFIX
     FILE_EXT = "json"
     _filter_fetchtimes_to_symbols = True
+    _SNAPSHOT_COMPACT_JSON = True
+    _SNAPSHOT_FSYNC = False
     EQUITY_OHLC_RTH_REFRESH_SEC = 240.0
     EQUITY_OHLC_OFF_RTH_REFRESH_SEC = 1800.0
 
@@ -875,13 +877,14 @@ class Cache24PriceManager(CachePriceManagerBase):
             }
 
             def _write_meta_ok() -> bool:
-                write_meta_json(target_path, meta_payload)
+                write_meta_json(target_path, meta_payload, fsync=False)
                 return True
 
             commit_file_and_meta(
                 target_path,
-                lambda: atomic_write_json(target_path, payload, indent=1),
+                lambda: atomic_write_json(target_path, payload, separators=(",", ":"), fsync=False),
                 _write_meta_ok,
+                fsync=False,
             )
 
     @staticmethod
@@ -1423,6 +1426,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
     WS_TIMEOUT_SEC = PRICE_WS_TIMEOUT_SEC
     STALE_THRESHOLD_MS = PRICE_FRESHNESS_MAX_AGE_MS
     FREQ_WINDOW_SEC = 60
+    _SNAPSHOT_COMPACT_JSON = True
+    _SNAPSHOT_FSYNC = False
     DEFAULT_FILENAME = CACHE_CURRENT_PRICE_FILENAME
     _flush_before_poll = True
     # Quarantine impossible single-tick price jumps (e.g. cross-symbol leaks or exchange glitches)
@@ -1775,6 +1780,13 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                     "fetchtime": meta_snap["fetchtime"],
                     "rest_sync_cursor": meta_snap["rest_sync_cursor"],
                 }
+                if write_json_fn is atomic_write_json:
+                    return write_json_fn(
+                        self.filename,
+                        payload,
+                        separators=(",", ":"),
+                        fsync=self._SNAPSHOT_FSYNC,
+                    )
                 return write_json_fn(self.filename, payload, indent=1)
 
             if not self._commit_file_and_meta_locked(

@@ -80,8 +80,8 @@ class BinancePriceStream(PublicPriceStreamBase):
 
     _MAX_STREAMS = WS_MAX_STREAMS
 
-    def __init__(self, symbols: Optional[list] = None):
-        super().__init__(symbols=symbols)
+    def __init__(self, symbols: Optional[list] = None, *, stale_reconnect_sec: float = 120.0):
+        super().__init__(symbols=symbols, stale_reconnect_sec=stale_reconnect_sec)
         self._cmd_queue: Optional[asyncio.Queue] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._req_id = 0
@@ -144,11 +144,18 @@ class BinancePriceStream(PublicPriceStreamBase):
                     logger.warning("Session task ended with: %s", exc)
 
     async def _recv_loop(self, ws) -> None:
+        session_start = time.monotonic()
         while not self._stop_event.is_set():
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
                 self._process_message(raw)
             except asyncio.TimeoutError:
+                if self._is_price_stream_stale(session_start):
+                    logger.warning(
+                        "BinancePriceStream silent for %.0fs without ticker data; forcing reconnect",
+                        self._stale_reconnect_sec,
+                    )
+                    break
                 continue
             except websockets.exceptions.ConnectionClosed:
                 logger.info("Connection closed by server, reconnecting...")

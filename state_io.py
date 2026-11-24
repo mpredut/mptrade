@@ -121,23 +121,27 @@ def cleanup_stale_staging_siblings(
         pass
 
 
-def durable_replace_file(source: str, destination: str) -> None:
-    """Atomically replace ``destination`` and durably publish the new entry."""
+def durable_replace_file(source: str, destination: str, *, fsync: bool = True) -> None:
+    """Atomically replace ``destination`` and optionally durably fsync the new entry."""
     source = os.path.abspath(os.fspath(source))
     destination = os.path.abspath(os.fspath(destination))
+    do_fsync = _parse_bool_flag(fsync, True)
     os.makedirs(os.path.dirname(destination), exist_ok=True)
-    with open(source, "rb") as handle:
-        os.fsync(handle.fileno())
+    if do_fsync:
+        with open(source, "rb") as handle:
+            os.fsync(handle.fileno())
     os.replace(source, destination)
     if source != destination and os.path.exists(source):
         os.remove(source)
-    _fsync_parent_directory(destination)
+    if do_fsync:
+        _fsync_parent_directory(destination)
 
 
-def atomic_snapshot_file(source: str, destination: str) -> None:
+def atomic_snapshot_file(source: str, destination: str, *, fsync: bool = True) -> None:
     """Atomically preserve one immutable file generation at ``destination``."""
     source = os.path.abspath(os.fspath(source))
     destination = os.path.abspath(os.fspath(destination))
+    do_fsync = _parse_bool_flag(fsync, True)
     directory = os.path.dirname(destination)
     os.makedirs(directory, exist_ok=True)
     prefix = f".{os.path.basename(destination)}."
@@ -148,9 +152,10 @@ def atomic_snapshot_file(source: str, destination: str) -> None:
             os.link(source, staged)
         except OSError:
             shutil.copyfile(source, staged)
-            with open(staged, "rb") as handle:
-                os.fsync(handle.fileno())
-        durable_replace_file(staged, destination)
+            if do_fsync:
+                with open(staged, "rb") as handle:
+                    os.fsync(handle.fileno())
+        durable_replace_file(staged, destination, fsync=do_fsync)
     finally:
         shutil.rmtree(staging_directory, ignore_errors=True)
         cleanup_stale_staging_siblings(
@@ -1050,10 +1055,12 @@ def discard_generation_file(
             pass
 
 
-def stage_previous_generation(path: str, *, backup_path: str | None = None) -> str:
+def stage_previous_generation(
+    path: str, *, backup_path: str | None = None, fsync: bool = True,
+) -> str:
     """Snapshot the currently certified ``path`` at ``backup_path`` (default ``.previous``)."""
     target_backup = backup_path or previous_generation_path(path)
-    atomic_snapshot_file(path, target_backup)
+    atomic_snapshot_file(path, target_backup, fsync=fsync)
     return target_backup
 
 
@@ -1062,23 +1069,29 @@ def restore_previous_generation(path: str, *, backup_path: str | None = None) ->
     durable_replace_file(backup_path or previous_generation_path(path), path)
 
 
-def write_meta_json(path: str, payload: dict[str, Any]) -> None:
+def write_meta_json(path: str, payload: dict[str, Any], *, fsync: bool = True) -> None:
     """Atomically write ``payload`` to ``<path>.meta``."""
-    atomic_write_json(meta_file_path(path), payload)
+    atomic_write_json(meta_file_path(path), payload, fsync=fsync)
 
 
 def commit_file_and_meta(
     path: str, write_data_fn: Callable[[], Any], write_meta_fn: Callable[[], bool], *,
     backup_path: str | None = None, had_prior_file: bool | None = None,
     on_rollback_error: Callable[[OSError], None] | None = None,
+    fsync: bool = True,
 ) -> bool:
     """Transactionally replace ``path`` and commit its ``.meta`` manifest."""
     target_path = _resolve_target_path(path, migrate=True)
+    do_fsync = _parse_bool_flag(fsync, True)
     if had_prior_file is None:
         had_prior_file = os.path.exists(target_path)
         if had_prior_file and backup_path is None:
             try:
-                backup_path = stage_previous_generation(target_path)
+                backup_path = (
+                    stage_previous_generation(target_path)
+                    if do_fsync
+                    else stage_previous_generation(target_path, fsync=False)
+                )
             except FileNotFoundError:
                 backup_path = None
                 had_prior_file = os.path.exists(target_path)

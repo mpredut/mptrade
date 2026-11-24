@@ -93,13 +93,19 @@ class VenuePriceStreamBase(PublicPriceStreamBase, ABC):
 
     _VENUE_NAME: str = ""
 
-    def __init__(self, symbols=None, *, ws_url: Optional[str] = None):
+    def __init__(
+        self,
+        symbols=None,
+        *,
+        ws_url: Optional[str] = None,
+        stale_reconnect_sec: float = 0.0,
+    ):
         prov_cls = (
             MarketDataProvider.resolve_venue_provider_class(self._VENUE_NAME)
             if self._VENUE_NAME
             else None
         )
-        super().__init__(symbols=symbols)
+        super().__init__(symbols=symbols, stale_reconnect_sec=stale_reconnect_sec)
         self._prov_cls = prov_cls
         self.ws_url = clean_scalar_str(ws_url) or getattr(prov_cls, "PUBLIC_WS_URL", "")
         self._last_emit_ts_ms: dict[str, int] = {}
@@ -151,6 +157,7 @@ class VenuePriceStreamBase(PublicPriceStreamBase, ABC):
             ts_ms = safe_pos_int(items[-1][0], default=None)
             px = safe_pos_float(items[-1][1], default=None)
         with self._lock:
+            self._last_price_mono = time.monotonic()
             subscribers = list(self._subscribers)
             if ts_ms is not None and px is not None:
                 prev_ts = self._last_emit_ts_ms.get(symbol)
@@ -197,12 +204,15 @@ class VenuePriceStreamBase(PublicPriceStreamBase, ABC):
             for extra_msg in self._build_extra_subscribe_payloads():
                 if extra_msg:
                     await ws.send(extra_msg)
+            session_start = time.monotonic()
             while not self._stop_event.is_set():
                 try:
                     self._process_message(
                         await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
                     )
                 except asyncio.TimeoutError:
+                    if self._is_price_stream_stale(session_start):
+                        break
                     continue
                 except _websockets.exceptions.ConnectionClosed:
                     break
@@ -240,9 +250,10 @@ class HyperliquidPriceStream(VenuePriceStreamBase):
         *,
         market_api=None,
         ws_url: Optional[str] = None,
+        stale_reconnect_sec: float = 120.0,
         **extension_kwargs,
     ):
-        super().__init__(symbols=symbols, ws_url=ws_url)
+        super().__init__(symbols=symbols, ws_url=ws_url, stale_reconnect_sec=stale_reconnect_sec)
         self.market_api = market_api
         self._resolved_spot_keys: dict[str, tuple[str, ...]] = {}
         for hook in getattr(self, "_stream_init_hooks", ()):
@@ -310,8 +321,14 @@ class KrakenPriceStream(VenuePriceStreamBase):
 
     _VENUE_NAME = "kraken"
 
-    def __init__(self, symbols=None, *, ws_url: Optional[str] = None):
-        super().__init__(symbols=symbols, ws_url=ws_url)
+    def __init__(
+        self,
+        symbols=None,
+        *,
+        ws_url: Optional[str] = None,
+        stale_reconnect_sec: float = 300.0,
+    ):
+        super().__init__(symbols=symbols, ws_url=ws_url, stale_reconnect_sec=stale_reconnect_sec)
         self._ws_pairs: list[str] = []
         self._pair_to_symbol: dict[str, str] = {}
         for s_sym in self._symbols:

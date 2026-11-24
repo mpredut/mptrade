@@ -3174,6 +3174,33 @@ def test_prune_disabled_symbol_telemetry_files_removes_only_disabled_orphans(tmp
     assert keep_non_tel.exists()
 
 
+def test_globaltelemetry_ephemeral_heartbeat_and_macro_skip_fsync(tmp_path, monkeypatch):
+    """Verify GlobalTelemetryCollector writes ephemeral heartbeat, fear_greed, and market_breadth without fsync."""
+    from types import SimpleNamespace
+
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+
+    col = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=str(tmp_path), skip_news=True)
+    col.write_heartbeat({"status": "alive", "ts": 1_760_000_000.0})
+    assert fsync_calls == []
+    assert os.path.isfile(col.heartbeat_path)
+
+    fg_snap = SimpleNamespace(
+        value=42,
+        classification="Fear",
+        historical_values=[40, 42],
+        trend_7d_change=2,
+        is_extreme_fear=False,
+        is_extreme_greed=False,
+        timestamp=1_760_000_000.0,
+    )
+    monkeypatch.setattr(col, "_fetch_fresh_collector_snapshot", lambda _c, **_kw: (fg_snap, 1_760_000_000.0))
+    assert col.update_fear_greed(force=True, now=1_760_000_000.0) is True
+    assert fsync_calls == []
+
+
+
 
 
 

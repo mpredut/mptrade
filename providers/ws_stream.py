@@ -229,12 +229,16 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
             return None
         return clean_upper_scalar(raw.replace("/", ""))
 
-    def __init__(self, symbols: Optional[list] = None):
+    def __init__(self, symbols: Optional[list] = None, *, stale_reconnect_sec: float = 0.0):
         super().__init__()
         self._prices: Dict[str, float] = {}
         self._subscribed: Set[str] = set()
         self._lock = threading.Lock()
         self._subscribers = []
+        self._stale_reconnect_sec: float = (
+            safe_nonneg_float(stale_reconnect_sec, default=0.0) or 0.0
+        )
+        self._last_price_mono: float = 0.0
         if isinstance(symbols, str):
             raw_syms = [symbols]
         elif symbols is None or isinstance(symbols, (bool, bytes, dict)) or not isinstance(symbols, Iterable):
@@ -259,8 +263,23 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
             if subscriber in self._subscribers:
                 self._subscribers.remove(subscriber)
 
+    def _mark_price_data_received(self) -> None:
+        with self._lock:
+            self._last_price_mono = time.monotonic()
+
+    def _is_price_stream_stale(self, session_start_mono: float) -> bool:
+        limit = safe_nonneg_float(getattr(self, "_stale_reconnect_sec", 0.0), default=0.0) or 0.0
+        if limit <= 0.0:
+            return False
+        with self._lock:
+            if not self._subscribed:
+                return False
+            last_mono = max(self._last_price_mono, session_start_mono)
+        return (time.monotonic() - last_mono) >= limit
+
     def _notify_subscribers(self, symbol: str, items) -> None:
         with self._lock:
+            self._last_price_mono = time.monotonic()
             subscribers = list(self._subscribers)
         for sub in subscribers:
             try:
