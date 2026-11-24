@@ -437,7 +437,12 @@ def prepare_topic_session(
             compacted_at = safe_nonneg_int(entry.get("compacted_at_step"), 0)
             if compacted_at > step_count:
                 compacted_at = 0
-            return TopicSession(cid, "", (step_count - compacted_at) >= compact_steps_i)
+            hist_prefix = (
+                format_topic_history_prefix(resolved, registry_path)
+                if _parse_bool_flag(entry.get("needs_history_sync"), False)
+                else ""
+            )
+            return TopicSession(cid, hist_prefix, (step_count - compacted_at) >= compact_steps_i)
         reg_path = get_topic_registry_path(registry_path)
         with generation_file_lock(reg_path):
             _, reg, fresh_entry = _load_topic_entry(
@@ -674,6 +679,7 @@ def record_topic_turn(
             _, step_count, _ = get_thread_step_count(active_cid, base)
             entry["step_count"] = step_count
             if active_cid == clean_cid:
+                entry["needs_history_sync"] = False
                 if compacted:
                     entry["compacted_at_step"] = step_count
                     entry["compaction_count"] = safe_nonneg_int(entry.get("compaction_count"), 0) + 1
@@ -682,6 +688,7 @@ def record_topic_turn(
                     entry["needs_full_prompt"] = False
             elif _parse_bool_flag(mark_needs_full_prompt, False):
                 entry["needs_full_prompt"] = True
+                entry["needs_history_sync"] = True
         entry["topic_key"] = resolved
         entry["consecutive_resume_timeouts"] = 0
         if _parse_bool_flag(schedule_rotation, False):

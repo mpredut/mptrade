@@ -1085,9 +1085,11 @@ def test_order_actor_resolution_and_recent_fills_tagging():
     # SD_<32hex> is the generic intent cid of deterministic bots (Binance trailing_stop / spot_engine), never AI
     assert resolve_order_actor({"cloid": "SD_a1b2c3d4e5f60718293a4b5c6d7e8f90"}) == "BOT"
     assert resolve_order_origin({"clientOrderId": "SD_a1b2c3d4e5f60718293a4b5c6d7e8f90"})[:2] == ("BOT", "trailing")
-    # monitororder replacements of manual orders and venue-native manual orders keep manual attribution
-    assert resolve_order_origin({"clientOrderId": "MO_MN_OR_MainThread_1A2B"})[:2] == ("BOT", "manual")
-    assert resolve_order_origin({"clientOrderId": "web_8f2c1d9e"})[:2] == ("BOT", "manual")
+    # monitororder replacements of manual orders and venue-native manual orders classify as MANUAL with manual module
+    assert resolve_order_origin({"clientOrderId": "MO_MN_OR_MainThread_1A2B"})[:2] == ("MANUAL", "manual")
+    assert resolve_order_origin({"clientOrderId": "web_8f2c1d9e"})[:2] == ("MANUAL", "manual")
+    assert resolve_order_origin({"clientOrderId": "and_8f2c1d9e"})[:2] == ("MANUAL", "manual")
+    assert resolve_order_actor({"clientOrderId": "and_8f2c1d9e"}) == "MANUAL"
     assert resolve_order_actor({"cloid": "sd_manual_1"}) == "BOT"
     assert resolve_order_actor({"userref": "AI_KRAKEN"}) == "AI"
     assert resolve_order_actor({"orderId": 999}, known_ai_order_ids={"999"}) == "AI"
@@ -1115,9 +1117,10 @@ def test_order_actor_resolution_and_recent_fills_tagging():
     assert norm_ai["actor"] == "AI"
     assert norm_ai["clientOrderId"] == "AI_99"
     assert norm_ai["client_order_id"] == "AI_99"
-    norm_bot = normalize_open_order({"orderId": "xyz", "clientOrderId": "web_1", "price": 100, "origQty": 1}, venue="BINANCE", symbol="BTCUSDC")
-    assert norm_bot["actor"] == "BOT"
-    assert norm_bot["clientOrderId"] == "web_1"
+    norm_manual = normalize_open_order({"orderId": "xyz", "clientOrderId": "web_1", "price": 100, "origQty": 1}, venue="BINANCE", symbol="BTCUSDC")
+    assert norm_manual["actor"] == "MANUAL"
+    assert norm_manual["module"] == "manual"
+    assert norm_manual["clientOrderId"] == "web_1"
 
     # 5. extract_symbol_recent_fills tagging
     orders = [
@@ -5736,7 +5739,10 @@ def test_bugs_96_to_98_breadth_base_dedup_multi_venue_orderbook_isolation_and_sl
     ]
     mb_snap = MarketBreadthCollector.parse_tickers(tickers, min_volume_usd=5_000_000.0, now_ts=1793845000.0)
     assert mb_snap is not None
-    assert [g[0] for g in mb_snap.top_gainers] == ["INJUSDT", "ZECUSDC", "SOLUSDT"]
+    assert mb_snap.total_count == 7
+    assert mb_snap.advancing_count == 4
+    assert mb_snap.declining_count == 3
+    assert [g[0] for g in mb_snap.top_gainers] == ["INJUSDT", "ZECUSDT", "SOLUSDT"]
     assert [l[0] for l in mb_snap.top_losers] == ["HUMAUSDT", "TRUMPUSDT", "BMTUSDT"]
 
     # Also verify harvest_macro_and_news_sensors deduplicates cached market_breadth_collect.json top_gainers/top_losers
@@ -17301,7 +17307,7 @@ def test_openai_compat_soft_conserve_stateless_topics_reversible_fallback_and_me
     from types import SimpleNamespace
     import intelligence.sentiment.gemini_client as gc_mod
     from intelligence.sentiment.openai_compat_rest import extract_openai_compat_text
-    from orchestratorOS.agy.topics import load_topic_registry, record_topic_turn
+    from orchestratorOS.agy.topics import load_topic_registry, prepare_topic_session, record_topic_turn
 
     reg_path = tmp_path / "topic_registry.json"
     monkeypatch.setenv("LLM_TOPIC_REGISTRY_PATH", str(reg_path))
@@ -17395,7 +17401,26 @@ def test_openai_compat_soft_conserve_stateless_topics_reversible_fallback_and_me
     macro_entry = reg_after["macro_sentiment"]
     assert macro_entry["conversation_id"] == "cid-existing-macro"
     assert macro_entry["needs_full_prompt"] is True
+    assert macro_entry["needs_history_sync"] is True
     assert any("via_glm_5_4" in str(h.get("summary") or "") for h in macro_entry["rolling_history"])
+
+    # 2b. When agy resumes cid-existing-macro after GLM turns, prepare_topic_session injects rolling_history
+    #     containing GLM's decision, and the subsequent agy turn clears needs_history_sync back to False.
+    import orchestratorOS.agy.topics as agy_topics_mod
+    monkeypatch.setattr(agy_topics_mod, "sync_topic_thread_from_ui", lambda *_a, **_kw: None)
+    monkeypatch.setattr(agy_topics_mod, "get_thread_step_count", lambda *_a, **_kw: (True, 4, "IDLE"))
+    sess_after_glm = prepare_topic_session("macro_sentiment", registry_path=str(reg_path))
+    assert sess_after_glm.conversation_id == "cid-existing-macro"
+    assert "via_glm_5_4" in sess_after_glm.history_prefix
+    record_topic_turn(
+        "macro_sentiment",
+        "cid-existing-macro",
+        '{"market_bias": "NEUTRAL", "summary": "agy_resumed_clean"}',
+        registry_path=str(reg_path),
+    )
+    sess_after_agy = prepare_topic_session("macro_sentiment", registry_path=str(reg_path))
+    assert sess_after_agy.conversation_id == "cid-existing-macro"
+    assert sess_after_agy.history_prefix == ""
 
     # 3. auto_technical_repair (can_self_heal=True) is NEVER shifted to openai_compat even at 20% quota
     posted.clear()
