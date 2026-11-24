@@ -274,6 +274,25 @@ def evaluate_model_quota_escalation_allowed(
     return True, rem, eff_thresh
 
 
+def derive_xhigh_model_from_high(
+    high_model: str,
+    explicit_override: Optional[str] = None,
+) -> str:
+    """Derive the ``-xhigh`` sibling for paid Gemini high-stake models without hardcoding model generations."""
+    ov = explicit_override.strip() if isinstance(explicit_override, str) else ""
+    if ov:
+        return ov
+    clean_hi = high_model.strip() if isinstance(high_model, str) else ""
+    if not clean_hi:
+        return ""
+    low_hi = clean_hi.lower()
+    if low_hi.endswith("-xhigh"):
+        return clean_hi
+    if low_hi.endswith("-high") and is_gemini_paid_model(clean_hi):
+        return f"{model_family_base(clean_hi)}-xhigh"
+    return ""
+
+
 def resolve_crypto_executor_model_override(
     quota_snapshot: Optional[Mapping[str, Any]],
     *,
@@ -282,13 +301,19 @@ def resolve_crypto_executor_model_override(
     fallback_models: Iterable[str] = (),
     escalate_high_effort: bool = False,
     urgent_escalation: bool = False,
+    xhigh_model: str = "",
+    escalate_xhigh: bool = False,
     low_warn_fraction: Optional[float] = None,
     soft_conserve_fraction: Optional[float] = None,
     now_ts: Optional[float] = None,
 ) -> tuple[Optional[str], str]:
-    """Select quota-aware model override for ``auto_cryptotrade_executor``.
+    """Select quota-aware model override for autonomous trading executors.
 
     Returns ``(model_override, decision_reason)``:
+    - Extreme-stakes catalysts (``escalate_xhigh``: ``trade_plan_invalidated`` or critical geo shock):
+      escalates to ``xhigh_model`` ONLY when quota is above the soft-conserve band (or top-up credits
+      exist) and ``xhigh_model`` is neither latency-demoted nor runtime-exhausted; otherwise falls
+      through cleanly to normal ``-high`` routing.
     - Hard low quota (``<= low_warn``): suppresses ``-high`` escalation even on urgent signals.
     - Soft conservation band (``low_warn < rem <= soft_conserve``): suppresses routine ``-high``
       escalation (preserving ``-high`` for urgent catalysts like ``focus_symbols``, fills,
@@ -308,6 +333,7 @@ def resolve_crypto_executor_model_override(
     )
     eff_soft = max(eff_soft_raw, eff_low) if eff_soft_raw > 0.0 else 0.0
     clean_high = high_model.strip() if isinstance(high_model, str) else ""
+    clean_xhigh = xhigh_model.strip() if isinstance(xhigh_model, str) else ""
     clean_def = default_model.strip() if isinstance(default_model, str) else ""
     q_snap = quota_snapshot if isinstance(quota_snapshot, Mapping) else {}
     q_buckets = q_snap.get("buckets") if isinstance(q_snap.get("buckets"), Mapping) else {}
@@ -315,6 +341,18 @@ def resolve_crypto_executor_model_override(
     rt_ex = q_snap.get("runtime_exhausted") if isinstance(q_snap.get("runtime_exhausted"), Mapping) else {}
     eff_now = safe_pos_float(now_ts, default=None) or time.time()
     lat_demoted = _active_latency_demotions(q_snap, eff_now)
+
+    if escalate_xhigh and clean_xhigh and not is_degraded_trading_model(clean_xhigh):
+        if (
+            clean_xhigh.lower() not in lat_demoted
+            and not _is_model_runtime_exhausted(rt_ex, clean_xhigh, eff_now)
+        ):
+            xh_min_frac = eff_soft if eff_soft > 0.0 else eff_low
+            xh_ok, _, _ = evaluate_model_quota_escalation_allowed(
+                q_snap, clean_xhigh, min_remaining_fraction=xh_min_frac
+            )
+            if xh_ok:
+                return clean_xhigh, "escalate_xhigh_effort"
 
     if escalate_high_effort and clean_high:
         if (dem_hi := lat_demoted.get(clean_high.lower())) is not None:

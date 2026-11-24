@@ -2266,3 +2266,67 @@ def test_impulse_eval_gap_configurable_are_close_and_zero_benefit_triggers(tmp_p
     skip_c, rsn_c, hi_c, _ = evaluate_crypto_executor_delta_gate(fresh_crit_s, prev_normal, now_ts=t0 + 360.0)
     assert (skip_c, rsn_c, hi_c) == (False, "geo_update", True)
 
+    # 4. Ultra-rare extreme-stakes catalysts (CRITICAL_SHOCK geo crisis & trade_plan_invalidated) escalate to -xhigh
+    #    ONLY when quota > soft_conserve & not latency-demoted; routine high triggers stay on -high
+    from intelligence.sentiment.llm_quota_router import (
+        derive_xhigh_model_from_high,
+        resolve_crypto_executor_model_override,
+    )
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import is_extreme_stakes_delta_gate_wakeup
+
+    assert derive_xhigh_model_from_high("gemini-4-neon-high") == "gemini-4-neon-xhigh"
+    assert derive_xhigh_model_from_high("claude-sonnet-5-5-high") == ""
+    assert derive_xhigh_model_from_high("gemini-4-neon-high", "custom-xhigh") == "custom-xhigh"
+
+    assert is_extreme_stakes_delta_gate_wakeup("trade_plan_invalidated(BTCUSDC)") is True
+    assert is_extreme_stakes_delta_gate_wakeup("geo_update", sensors=fresh_crit_s, prev_eval=prev_normal) is True
+    for non_extreme in (
+        "open_order_stale_or_far",
+        "open_order_wall_trapped",
+        "focus_symbols(TAOUSDC)",
+        "price_move(TAOUSDC:2.5%>=0.6%)",
+        "new_fill",
+        "trade_plan_target_hit(BTCUSDC)",
+    ):
+        assert is_extreme_stakes_delta_gate_wakeup(non_extreme) is False
+
+    healthy_q = {"available_credits": 0.0, "buckets": {"gemini-4-neon-xhigh": 0.60, "gemini-4-neon-high": 0.60, "gemini-4-neon-medium": 0.60}}
+    low_conserve_q = {"available_credits": 0.0, "buckets": {"gemini-4-neon-xhigh": 0.20, "gemini-4-neon-high": 0.20, "gemini-4-neon-medium": 0.20}}
+    demoted_q = {
+        **healthy_q,
+        "latency_demoted_models": {"gemini-4-neon-xhigh": {"fallback_model": "gemini-4-neon-high", "restore_after_ts": t0 + 3600.0}},
+    }
+    assert resolve_crypto_executor_model_override(
+        healthy_q,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        xhigh_model="gemini-4-neon-xhigh",
+        escalate_high_effort=True,
+        urgent_escalation=True,
+        escalate_xhigh=True,
+        now_ts=t0,
+    ) == ("gemini-4-neon-xhigh", "escalate_xhigh_effort")
+    # Quota <= soft_conserve (20% <= 25%) steps down from xhigh to high (preserves urgent high, avoids draining on xhigh)
+    assert resolve_crypto_executor_model_override(
+        low_conserve_q,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        xhigh_model="gemini-4-neon-xhigh",
+        escalate_high_effort=True,
+        urgent_escalation=True,
+        escalate_xhigh=True,
+        now_ts=t0,
+    ) == ("gemini-4-neon-high", "escalate_high_effort")
+    # Latency-demoted xhigh also gracefully steps down to high
+    assert resolve_crypto_executor_model_override(
+        demoted_q,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        xhigh_model="gemini-4-neon-xhigh",
+        escalate_high_effort=True,
+        urgent_escalation=True,
+        escalate_xhigh=True,
+        now_ts=t0,
+    ) == ("gemini-4-neon-high", "escalate_high_effort")
+
+

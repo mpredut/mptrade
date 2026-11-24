@@ -143,6 +143,25 @@ def is_urgent_delta_gate_wakeup(
     return False
 
 
+def is_extreme_stakes_delta_gate_wakeup(
+    gate_reason: str = "",
+    *,
+    sensors: Any = None,
+    prev_eval: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    """Return True ONLY for ultra-rare extreme-complexity catalysts warranting ``-xhigh`` reasoning:
+    active trade-plan invalidation (thesis break vs stop-hunt) or unacknowledged critical geopolitical shock."""
+    reason_lc = str(gate_reason or "").strip().lower()
+    if reason_lc.startswith("trade_plan_invalidated"):
+        return True
+    if sensors is not None:
+        gt = getattr(sensors, "geopolitical_threat", None)
+        src_ts = getattr(sensors, "source_timestamps", None)
+        if _has_unacknowledged_geo_shock(gt, prev_eval, src_ts_map=src_ts if isinstance(src_ts, Mapping) else None):
+            return True
+    return False
+
+
 def _extract_delta_gate_latest_fill_ts(portfolio_summary: Mapping[str, Any]) -> float:
     """Extract the newest fill/execution epoch-second timestamp across recent_orders and last_cycle_execution_status."""
     latest = 0.0

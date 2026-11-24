@@ -49,13 +49,17 @@ from intelligence.macro_sentiment_ssot import (
     resolve_derived_telemetry_intervals,
 )
 from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
-from intelligence.sentiment.llm_quota_router import resolve_crypto_executor_model_override
+from intelligence.sentiment.llm_quota_router import (
+    derive_xhigh_model_from_high,
+    resolve_crypto_executor_model_override,
+)
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     MarketAndPortfolioSnapshotOrchestrator,
 )
 from orchestratorOS.agy.topics import has_pending_ui_turn
 from orchestratorOS.supervisor.crypto_executor_delta_gate import (
     evaluate_crypto_executor_delta_gate,
+    is_extreme_stakes_delta_gate_wakeup,
     is_urgent_delta_gate_wakeup,
 )
 from state_io import read_json_recovering
@@ -257,6 +261,7 @@ class AutonomousAIReconciler:
         topic_key: str,
         escalate_high_effort: bool = False,
         urgent_escalation: Optional[bool] = None,
+        extreme_escalation: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Feeds topic-appropriate telemetry to Gemini; the topic spec bounds both prompt scope and side effects."""
         spec = topic_spec(topic_key)
@@ -303,6 +308,11 @@ class AutonomousAIReconciler:
             if urgent_escalation is not None
             else is_urgent_delta_gate_wakeup("", focus_symbols=focus_symbols, sensors=sensors)
         )
+        effective_extreme = (
+            _parse_bool_flag(extreme_escalation, False)
+            if extreme_escalation is not None
+            else is_extreme_stakes_delta_gate_wakeup("", sensors=sensors)
+        )
         topic_override_key = getattr(spec, "override_env_key", None) or ""
         if (
             resolved_topic in ("auto_cryptotrade_executor", "auto_sharetrade_executor")
@@ -310,16 +320,28 @@ class AutonomousAIReconciler:
             and not getattr(self.gemini_auditor, "_explicit_model", False)
         ):
             high_model = (optional_env("LLM_HIGH_STAKE_MODEL", "") or "").strip()
+            xhigh_model = derive_xhigh_model_from_high(
+                high_model,
+                optional_env("LLM_XHIGH_STAKE_MODEL", ""),
+            )
             q_snap = self._load_cached_quota_snapshot()
             model_override, route_reason = resolve_crypto_executor_model_override(
                 q_snap,
                 high_model=high_model,
                 default_model=str(getattr(self.gemini_auditor, "model", "") or ""),
                 fallback_models=getattr(self.gemini_auditor, "fallback_models", ()) or (),
-                escalate_high_effort=effective_escalate,
-                urgent_escalation=effective_urgent,
+                escalate_high_effort=effective_escalate or effective_extreme,
+                urgent_escalation=effective_urgent or effective_extreme,
+                xhigh_model=xhigh_model,
+                escalate_xhigh=effective_extreme,
             )
-            if route_reason == "escalate_high_effort" and model_override:
+            if route_reason == "escalate_xhigh_effort" and model_override:
+                logger.info(
+                    "[%s] Escalating reasoning effort to %s for extreme-stakes catalyst.",
+                    resolved_topic,
+                    model_override,
+                )
+            elif route_reason == "escalate_high_effort" and model_override:
                 logger.info(
                     "[%s] Escalating reasoning effort to %s for high-signal cycle.",
                     resolved_topic,
@@ -503,6 +525,7 @@ class AutonomousAIReconciler:
         resolved_topic = canonical_topic_key(topic_key)
         escalate_high_effort = False
         urgent_escalation = False
+        extreme_escalation = False
         delta_gate_meta: Dict[str, Any] = {}
         if resolved_topic in ("auto_cryptotrade_executor", "auto_sharetrade_executor"):
             delta_gate_enabled = bool_env("AI_DELTA_GATE_ENABLED", True)
@@ -547,6 +570,11 @@ class AutonomousAIReconciler:
                 sensors=sensors,
                 prev_eval=prev_eval,
             )
+            extreme_escalation = is_extreme_stakes_delta_gate_wakeup(
+                gate_reason,
+                sensors=sensors,
+                prev_eval=prev_eval,
+            )
             if delta_gate_enabled and should_skip_llm:
                 prev_meta = prev_eval.get("delta_gate_meta") if isinstance(prev_eval.get("delta_gate_meta"), dict) else {}
                 skip_summary = f"Delta-Gate HOLD carry-forward ({gate_reason}); redundant LLM call skipped."
@@ -567,9 +595,10 @@ class AutonomousAIReconciler:
                 return self.write_audit_artifact(skip_report, persist_eval=False)
             elif delta_gate_enabled:
                 logger.info(
-                    "[DELTA GATE] Wake LLM (%s, high_effort=%s).",
+                    "[DELTA GATE] Wake LLM (%s, high_effort=%s%s).",
                     gate_reason,
                     escalate_high_effort,
+                    ", xhigh_effort=True" if extreme_escalation else "",
                 )
 
         plan = self.synthesize_and_diagnose(
@@ -579,6 +608,7 @@ class AutonomousAIReconciler:
             topic_key=topic_key,
             escalate_high_effort=escalate_high_effort,
             urgent_escalation=urgent_escalation,
+            extreme_escalation=extreme_escalation,
         )
         cat_audit = (
             sensors.system_and_vpn.get("llm_catalog_audit")
