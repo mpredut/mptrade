@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "ts": "2026-11-24T03:41:58+00:00",
+    "full_key": "BINANCE_ARB.mt.lost",
+    "section": "BINANCE_ARB",
+    "key": "mt.lost",
+    "symbol": "ARBUSDC",
+    "current_on_dev": 3.8399,
+    "winner_value": 3.5,
+    "margin_vs_current": {
+      "half1": 1.08,
+      "half2": 2.59
+    },
+    "dev_commit": "b0b05ccb"
+  }
+]
