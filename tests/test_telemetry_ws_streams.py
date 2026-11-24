@@ -309,3 +309,75 @@ def test_telemetry_ws_streams_concurrent_stress():
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(_worker, range(8)))
     assert errs == []
+
+
+def test_ws_pong_does_not_mask_staleness_silent_socket_reconnects_and_whale_uses_ws_hub(tmp_path, monkeypatch):
+    """Verify non-data frames (pong) do not refresh last_message_ts, silent sockets break for reconnect, and WhalePositioningCollector uses ws_hub."""
+    import asyncio
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
+    import providers.ws_stream as ws_mod
+
+    # 1. Pong / control frames must NOT update last_message_ts
+    hl_st = HyperliquidAssetCtxStream(["HYPE"])
+    t0 = 1_760_030_000.0
+    assert hl_st.ingest_raw_message({"channel": "pong"}, now_ts=t0) is False
+    assert hl_st.last_message_ts() == 0.0
+    assert hl_st.ingest_raw_message(
+        {"channel": "activeAssetCtx", "data": {"coin": "HYPE", "ctx": {"funding": "0.00001", "openInterest": "2000", "markPx": "60.0", "oraclePx": "60.0"}}},
+        now_ts=t0 + 1.0,
+    ) is True
+    assert hl_st.last_message_ts() == pytest.approx(t0 + 1.0)
+    assert hl_st.ingest_raw_message({"channel": "pong"}, now_ts=t0 + 50.0) is False
+    assert hl_st.last_message_ts() == pytest.approx(t0 + 1.0)
+
+    # 2. Silent zombie socket breaks cleanly out of _connect_and_run once stale_reconnect_sec elapses
+    class _SilentFakeWs:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def send(self, _msg):
+            return None
+
+        async def recv(self):
+            await asyncio.sleep(0.05)
+            raise asyncio.TimeoutError()
+
+    class _FakeWsLib:
+        class exceptions:
+            ConnectionClosed = RuntimeError
+
+        @staticmethod
+        def connect(*_a, **_kw):
+            return _SilentFakeWs()
+
+    monkeypatch.setattr(ws_mod, "_websockets", _FakeWsLib)
+    monkeypatch.setattr(ws_mod, "WS_RECV_TIMEOUT", 0.02)
+    silent_st = BinanceFuturesMarkPriceStream(["BTCUSDT"], stale_reconnect_sec=0.08)
+    t_start = time.monotonic()
+    asyncio.run(silent_st._connect_and_run())
+    elapsed = time.monotonic() - t_start
+    assert 0.06 <= elapsed < 2.0
+
+    # 3. WhalePositioningCollector uses HyperliquidAssetCtxStream from ws_hub with 0 REST metaAndAssetCtxs calls
+    hub = TelemetryWsHub(["HYPEUSDC"])
+    hub.hl_asset_ctx_stream.ingest_raw_message(
+        {"channel": "activeAssetCtx", "data": {"coin": "HYPE", "ctx": {"funding": "0.000025", "openInterest": "100000.0", "markPx": "60.0", "oraclePx": "60.0"}}},
+        now_ts=t0,
+    )
+    wh_col = WhalePositioningCollector(cache_dir=str(tmp_path), start_sync=True)
+    wh_col.ws_hub = hub
+    monkeypatch.setattr(
+        wh_col,
+        "_fetch_json_dict",
+        lambda url, label, *_a, **_kw: {"result_list": [{"px": "60.0", "sz": "10.0", "side": "B", "time": int(t0 * 1000)}]} if label == "recentTrades" else {},
+    )
+    hl_rest_called = [False]
+    monkeypatch.setattr(wh_col, "_fetch_hyperliquid_asset_ctx", lambda *_a, **_kw: hl_rest_called.__setitem__(0, True) or None)
+    snap = wh_col._fetch_hyperliquid_whale_fallback("HYPEUSDC", 0.0, t0 + 2.0, None)
+    assert snap is not None
+    assert hl_rest_called[0] is False
+    assert snap.open_interest_usd == pytest.approx(6_000_000.0)
+    assert snap.funding_rate == pytest.approx(0.000025)

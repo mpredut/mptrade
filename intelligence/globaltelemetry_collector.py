@@ -1058,6 +1058,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 self.telemetry_ws_hub = TelemetryWsHub(self.symbols).start()
                 self.orderbook_collector.ws_hub = self.telemetry_ws_hub
                 self.derivatives_collector.ws_hub = self.telemetry_ws_hub
+                self.whale_collector.ws_hub = self.telemetry_ws_hub
             except Exception as exc:
                 logger.debug("Could not start TelemetryWsHub: %s", exc)
         if not self.skip_external and bool_env("REALIZED_LIQUIDATIONS_WS_ENABLED", True):

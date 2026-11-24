@@ -563,7 +563,10 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         oi_usd = 0.0
         funding_rate = self._resolve_cached_funding_rate(symbol, now=now)
         try:
-            ctx = self._fetch_hyperliquid_asset_ctx(symbol, timeout=4.0)
+            ws_hub = getattr(self, "ws_hub", None)
+            ctx = ws_hub.get_hyperliquid_asset_ctx(symbol, now=now) if ws_hub is not None else None
+            if not isinstance(ctx, dict):
+                ctx = self._fetch_hyperliquid_asset_ctx(symbol, timeout=4.0)
             if isinstance(ctx, dict):
                 oi_c = max(0.0, _clean_dict_float(ctx, "openInterest", 0.0))
                 m_px = max(0.0, _clean_dict_float(ctx, "markPx", 0.0, "oraclePx"))

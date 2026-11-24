@@ -41,8 +41,8 @@ class BinanceFuturesMarkPriceStream(JsonPublicWsStreamBase):
 
     _default_thread_name = "BinanceMarkPriceWS"
 
-    def __init__(self, symbols: Sequence[str]) -> None:
-        super().__init__()
+    def __init__(self, symbols: Sequence[str], *, stale_reconnect_sec: float = 60.0) -> None:
+        super().__init__(stale_reconnect_sec=stale_reconnect_sec)
         self._symbols: Tuple[str, ...] = tuple(
             dict.fromkeys(
                 s
@@ -118,8 +118,17 @@ class HyperliquidAssetCtxStream(JsonPublicWsStreamBase):
 
     _default_thread_name = "HyperliquidAssetCtxWS"
 
-    def __init__(self, coins: Sequence[str], *, app_ping_interval_sec: float = 45.0) -> None:
-        super().__init__(app_ping_interval_sec=app_ping_interval_sec)
+    def __init__(
+        self,
+        coins: Sequence[str],
+        *,
+        app_ping_interval_sec: float = 45.0,
+        stale_reconnect_sec: float = 120.0,
+    ) -> None:
+        super().__init__(
+            app_ping_interval_sec=app_ping_interval_sec,
+            stale_reconnect_sec=stale_reconnect_sec,
+        )
         self._coins: Tuple[str, ...] = tuple(
             dict.fromkeys(
                 c
@@ -191,8 +200,8 @@ class BinanceSpotKline5mStream(JsonPublicWsStreamBase):
 
     _default_thread_name = "BinanceSpotKline5mWS"
 
-    def __init__(self, symbols: Sequence[str]) -> None:
-        super().__init__()
+    def __init__(self, symbols: Sequence[str], *, stale_reconnect_sec: float = 90.0) -> None:
+        super().__init__(stale_reconnect_sec=stale_reconnect_sec)
         self._symbols: Tuple[str, ...] = tuple(
             dict.fromkeys(
                 s

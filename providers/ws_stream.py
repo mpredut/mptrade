@@ -314,7 +314,12 @@ class JsonPublicWsStreamBase(AsyncReconnectStreamBase):
 
     _default_thread_name = "PublicJsonWS"
 
-    def __init__(self, *, app_ping_interval_sec: float = 0.0):
+    def __init__(
+        self,
+        *,
+        app_ping_interval_sec: float = 0.0,
+        stale_reconnect_sec: float = 0.0,
+    ):
         super().__init__()
         self._state_lock = threading.Lock()
         self._last_msg_ts: float = 0.0
@@ -322,6 +327,9 @@ class JsonPublicWsStreamBase(AsyncReconnectStreamBase):
         self._disconnected_since_ts: float = 0.0
         self._app_ping_interval_sec: float = (
             safe_nonneg_float(app_ping_interval_sec, default=0.0) or 0.0
+        )
+        self._stale_reconnect_sec: float = (
+            safe_nonneg_float(stale_reconnect_sec, default=0.0) or 0.0
         )
 
     @abstractmethod
@@ -354,9 +362,10 @@ class JsonPublicWsStreamBase(AsyncReconnectStreamBase):
         except Exception as exc:
             _ws_logger.debug("%s payload error: %s", self.__class__.__name__, exc)
             return False
-        with self._state_lock:
-            self._last_msg_ts = eff_now
-            self._disconnected_since_ts = 0.0
+        if updated:
+            with self._state_lock:
+                self._last_msg_ts = eff_now
+                self._disconnected_since_ts = 0.0
         return updated
 
     def last_message_ts(self) -> float:
@@ -407,14 +416,23 @@ class JsonPublicWsStreamBase(AsyncReconnectStreamBase):
                 self._connected = True
                 self._disconnected_since_ts = 0.0
             last_ping = time.monotonic()
+            last_data_mono = last_ping
             ping_payload = self._app_ping_payload() if self._app_ping_interval_sec > 0.0 else None
             while not self._stop_event.is_set():
-                if ping_payload and (time.monotonic() - last_ping) >= self._app_ping_interval_sec:
+                now_mono = time.monotonic()
+                if self._stale_reconnect_sec > 0.0 and (now_mono - last_data_mono) >= self._stale_reconnect_sec:
+                    _ws_logger.warning(
+                        "%s silent for %.0fs (no data frames); reconnecting...",
+                        self.__class__.__name__,
+                        now_mono - last_data_mono,
+                    )
+                    break
+                if ping_payload and (now_mono - last_ping) >= self._app_ping_interval_sec:
                     try:
                         await ws.send(ping_payload)
                     except Exception:
                         break
-                    last_ping = time.monotonic()
+                    last_ping = now_mono
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
                 except asyncio.TimeoutError:
@@ -423,4 +441,5 @@ class JsonPublicWsStreamBase(AsyncReconnectStreamBase):
                     break
                 except Exception:
                     continue
-                self.ingest_raw_message(raw)
+                if self.ingest_raw_message(raw):
+                    last_data_mono = time.monotonic()
