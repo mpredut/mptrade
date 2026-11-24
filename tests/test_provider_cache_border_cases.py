@@ -4929,7 +4929,7 @@ def test_wave29_ssot_price_candidates_t212_peek_lexicon_and_border_cases(tmp_pat
     assert cachepaths.ensure_equity_suffix("  NVDA_US_EQ  ") == "NVDA_US_EQ"
     assert cachepaths.ensure_equity_suffix("  VODl_EQ  ") == "VODl_EQ"
     assert cachepaths.ensure_equity_suffix("BTCUSDC", is_equity="false") == "BTCUSDC"
-    assert cachepaths.cache_24_price_filename(True) == "cache_24_price_.json"
+    assert cachepaths.cache_24_price_filename(True) == "cache_24_price_.jsonl"
     assert cachepaths.cache_365_price_filename(False) == "cache_365_price_.jsonl"
     assert cachepaths.cache_sparse_price_filename(True) == "cache_sparse_price_.jsonl"
 
@@ -8069,7 +8069,7 @@ def test_wave46_cachepaths_state_io_cacheintegrity_and_factory_border_cases(monk
         assert cachepaths.clean_symbol_key(bad_sym) == ""
         assert cachepaths.normalize_cache_base_asset(bad_sym) == ""
         assert cachepaths.split_symbol_assets(bad_sym) is None
-        assert cachepaths.cache_24_price_filename(bad_sym) == "cache_24_price_.json"
+        assert cachepaths.cache_24_price_filename(bad_sym) == "cache_24_price_.jsonl"
         assert cachepaths.cache_sparse_price_filename(bad_sym) == "cache_sparse_price_.jsonl"
         assert cachepaths.cache_365_price_filename(bad_sym, ext="null") == "cache_365_price_.jsonl"
         assert cachepaths.cache_ohlc_24h_filename(bad_sym) == "cache_ohlc_24h_.json"

@@ -46,7 +46,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     TelemetryEvaluatorFactory,
     TelemetryEvaluatorInterface,
 )
-from state_io import read_json_recovering
+from state_io import read_json_recovering, read_jsonl_or_json_dict_cached
 
 
 MACRO_BENCHMARK_SPECS: tuple[tuple[str, str, str], ...] = get_macro_benchmark_specs()
@@ -1200,6 +1200,8 @@ def enrich_macro_benchmarks_live_state(
         btc_chg = btc_chg_24h_pct
         if btc_chg is None and cache_dir:
             for fn in (
+                "cache_24_price_BTCUSDC.jsonl",
+                "cache_24_price_BTCUSDT.jsonl",
                 "24price_BTCUSDC.json",
                 "cache_24_price_BTCUSDC.json",
                 "24price_BTCUSDT.json",
@@ -1210,7 +1212,11 @@ def enrich_macro_benchmarks_live_state(
                 fpath = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn)))
                 if not os.path.exists(fpath):
                     continue
-                raw = read_json_recovering(fpath, default=None)
+                raw = (
+                    read_jsonl_or_json_dict_cached(fpath)
+                    if fpath.endswith(".jsonl")
+                    else read_json_recovering(fpath, default=None)
+                )
                 rows = lookup_symbol_cache_items(raw, "BTCUSDC", require_list=True, unwrap_items=True)
                 if not isinstance(rows, list) or len(rows) < 2:
                     continue

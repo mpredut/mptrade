@@ -197,6 +197,7 @@ from state_io import (
     read_json_dict,
     read_json_dict_recovering as _default_read_json_cached,
     read_json_recovering,
+    read_jsonl_or_json_dict_cached,
     read_jsonl_records_since_span,
     read_tail_jsonl_records,
     save_json_state,
@@ -541,7 +542,7 @@ def resolve_cached_btc_24h_change_pct(
     btc_24h_files = dict.fromkeys(
         fn
         for s in ("BTCUSDC", "BTCUSDT")
-        for base_fn in (Cache24PriceManager.disk_filename_for_symbol(s),)
+        for base_fn in (Cache24PriceManager.disk_filename_for_symbol(s), f"cache_24_price_{s}.json")
         for fn in (*legacy_filenames_for(base_fn), base_fn)
     )
     if not any(
@@ -1353,6 +1354,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                 stat_list = _stat_candidate_price_files(
                     cachedb_dir,
                     *(Cache24PriceManager.disk_filename_for_symbol(c) for c in cands),
+                    *(f"cache_24_price_{c}.json" for c in cands),
                     *(cache_ohlc_24h_filename(c) for c in cands),
                     *(CacheSparsePriceManager.disk_filename_for_symbol(c) for c in cands),
                     *(Cache365PriceManager.disk_filename_for_symbol(c) for c in cands),
@@ -1387,10 +1389,19 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         series_24h: list = []
         span_24h_ms = 0.0
         for cand in cands:
-            for p24_path in _candidate_cache_paths(cachedb_dir, Cache24PriceManager.disk_filename_for_symbol(cand)):
+            for p24_path in _candidate_cache_paths(
+                cachedb_dir,
+                Cache24PriceManager.disk_filename_for_symbol(cand),
+                f"cache_24_price_{cand}.json",
+            ):
                 if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                     continue
-                raw_ser = _extract_cached_items_series(_rj(p24_path), cands)
+                p24_obj = (
+                    read_jsonl_or_json_dict_cached(p24_path)
+                    if (is_default_rj and p24_path.endswith(".jsonl"))
+                    else _rj(p24_path)
+                )
+                raw_ser = _extract_cached_items_series(p24_obj, cands)
                 if len(raw_ser) >= 2:
                     raw_ser = sort_ts_rows(raw_ser)
                     r0, r1 = parse_ts_px_row(raw_ser[0]), parse_ts_px_row(raw_ser[-1])

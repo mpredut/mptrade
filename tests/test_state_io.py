@@ -1171,6 +1171,101 @@ def test_cache24_and_current_price_write_compact_json_without_fsync(tmp_path, mo
     cpm.shutdown(timeout=1.0)
 
 
+def test_cache24_jsonl_append_migration_compaction_and_staggered_cron(tmp_path, monkeypatch):
+    """Verify Cache24PriceManager .jsonl legacy migration, append-only delta writes (0 fsync),
+    periodic rolling-24h compaction, dual readers, low-priority rsync scripts, and staggered crontab."""
+    import subprocess
+    import cacheprice
+    import cachetrend
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
+
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+
+    prices_dir = tmp_path / "prices"
+    prices_dir.mkdir(parents=True, exist_ok=True)
+    now_s = time.time()
+    now_ms = int(now_s * 1000)
+
+    # 1. Seed legacy cache_24_price_BTCUSDC.json -> Cache24PriceManager(.jsonl) auto-migrates on load_state()
+    legacy_json = prices_dir / "cache_24_price_BTCUSDC.json"
+    jsonl_path = prices_dir / "cache_24_price_BTCUSDC.jsonl"
+    seed_pts = [[now_ms - (30 - i) * 60_000, 60000.0 + i] for i in range(30)]
+    legacy_json.write_text(
+        json.dumps({"items": {"BTCUSDC": seed_pts}, "fetchtime": {"BTCUSDC": seed_pts[-1][0]}}),
+        encoding="utf-8",
+    )
+
+    mgr = cacheprice.Cache24PriceManager(30, ["BTCUSDC"], str(jsonl_path), api_client=None, read_only=False)
+    assert mgr.append_persist is True
+    mgr.load_state()
+    assert jsonl_path.exists()
+    assert fsync_calls == []
+    lines_after_migrate = jsonl_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines_after_migrate) == 30
+
+    # 2. New ticks append only delta lines without rewriting the whole file (compact_jsonl not called!)
+    compact_calls: list[int] = []
+    orig_compact = mgr.compact_jsonl
+
+    def _spy_compact():
+        compact_calls.append(1)
+        return orig_compact()
+
+    monkeypatch.setattr(mgr, "compact_jsonl", _spy_compact)
+    size_before = jsonl_path.stat().st_size
+    mgr.on_price_update("BTCUSDC", now_ms - 10_000, 60100.0)
+    mgr.on_price_update("BTCUSDC", now_ms - 5_000, 60105.0)
+    assert mgr.save_state_to_file() is True
+    assert compact_calls == []
+    assert fsync_calls == []
+    assert jsonl_path.stat().st_size > size_before
+    assert len(jsonl_path.read_text(encoding="utf-8").splitlines()) == 32
+
+    # 3. Trimming expired >24h rows from memory adjusts _persisted_counts without forcing immediate rewrite,
+    #    then triggers compaction once COMPACT_INTERVAL_SEC elapses.
+    old_ts = now_ms - (25 * 3600 * 1000)
+    mgr.cache["BTCUSDC"].insert(0, [old_ts, 59000.0])
+    mgr._persisted_counts["BTCUSDC"] += 1
+    mgr._trim_old_data("BTCUSDC", min_batch=1)
+    assert mgr._jsonl_trimmed_disk_rows == 1
+    assert mgr._should_compact_before_append_locked() is False
+    mgr._last_24h_compact_mono -= (mgr.COMPACT_INTERVAL_SEC + 10.0)
+    assert mgr._should_compact_before_append_locked() is True
+    assert mgr.save_state_to_file() is True
+    assert len(compact_calls) == 1
+    assert mgr._jsonl_trimmed_disk_rows == 0
+    assert fsync_calls == []
+
+    # 4. All major consumers read cache_24_price_BTCUSDC.jsonl seamlessly (even if legacy .json is absent)
+    legacy_json.unlink()
+    cacheprice._SSOT_24PRICE_DISK_MEMO.clear()
+    cacheprice._SSOT_24PRICE_PARSED_MEMO.clear()
+    hist = cacheprice.Cache24PriceManager.read_ssot_price_history(("BTCUSDC",), 0.25, custom_dir=str(tmp_path))
+    assert hist is not None and hist[-1]["price"] == pytest.approx(60105.0)
+    stm = cachetrend.CacheShortTrendManager(symbols=["BTCUSDC"], filename=str(tmp_path / "cache_short_trend.json"), read_only=True)
+    disk_entries = stm._load_disk_cache24_entries("BTCUSDC")
+    assert disk_entries and disk_entries[-1][1] == pytest.approx(60105.0)
+    ser_24h, _ = load_symbol_price_series(str(tmp_path), "BTCUSDC", include_7d=False)
+    assert ser_24h and ser_24h[-1][1] == pytest.approx(60105.0)
+
+    # 5. Low-priority rsync scripts pass bash -n and crontab.prod.txt runs sync_cache_to at 60m staggered minute 11
+    repo_root = Path(__file__).resolve().parents[1]
+    for sh_rel in ("orchestratorOS/lib/backup_sync_common.sh", "offline/runners/sync_cache_to.sh"):
+        sh_path = repo_root / sh_rel
+        assert subprocess.run(["bash", "-n", str(sh_path)], capture_output=True, text=True, check=False).returncode == 0
+    assert "_low_prio_cmd" in (repo_root / "orchestratorOS/lib/backup_sync_common.sh").read_text(encoding="utf-8")
+    cron_lines = [
+        ln.strip()
+        for ln in (repo_root / "systemd/crontab.prod.txt").read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.strip().startswith("#") and "=" not in ln.split()[0]
+    ]
+    sync_lines = [ln for ln in cron_lines if "sync_cache_to.sh dev" in ln]
+    assert len(sync_lines) == 1 and sync_lines[0].startswith("11 * * * * ")
+    assert not any(ln.startswith(("*/15 ", "*/20 ", "*/30 ", "*/5 ", "0 ")) for ln in cron_lines)
+
+
+
 
 
 

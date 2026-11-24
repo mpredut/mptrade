@@ -476,7 +476,7 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
     assert loader.price_sparse_cls is CacheSparsePriceManager
     assert loader.current_price_cls is CacheCurrentPriceManager
     assert Cache365PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_365_price_BTCUSDC.jsonl"
-    assert Cache24PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_24_price_BTCUSDC.json"
+    assert Cache24PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_24_price_BTCUSDC.jsonl"
     assert CacheSparsePriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_sparse_price_BTCUSDC.jsonl"
     assert CacheCurrentPriceManager.disk_filename_for_symbol() == "cache_current_price.json"
 
@@ -485,7 +485,7 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
     assert CacheShortTrendManager.live_window_relpath_for_symbol("SPCXxUSD").replace("\\", "/") == "24trend/live_SPCXxUSD.json"
     assert CacheShortTrendManager.live_window_relpath_for_symbol("SPCXXUSD").replace("\\", "/") == "24trend/live_SPCXxUSD.json"
     assert CacheShortTrendManager.live_window_relpath_for_symbol("ANTXUSD").replace("\\", "/") == "24trend/live_ANTxUSD.json"
-    assert Cache24PriceManager.disk_filename_for_symbol("SPCXXUSD") == "cache_24_price_SPCXxUSD.json"
+    assert Cache24PriceManager.disk_filename_for_symbol("SPCXXUSD") == "cache_24_price_SPCXxUSD.jsonl"
     assert Cache365PriceManager.disk_filename_for_symbol("ANTXUSD") == "cache_365_price_ANTxUSD.jsonl"
     assert CacheSparsePriceManager.disk_filename_for_symbol("SPCXXUSD") == "cache_sparse_price_SPCXxUSD.jsonl"
     stm_case = CacheShortTrendManager(
@@ -833,7 +833,7 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
     assert CacheLongTrendManager.DEFAULT_FILENAME == "cache_long_trend.json"
     assert CacheLongTrendManager.SOURCE_ANALYSIS_FILENAME == "priceanalysis.json"
     assert CacheLongTrendManager.T_TREND_FILENAME == "cache_T_trend.json"
-    assert Cache24PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_24_price_BTCUSDC.json"
+    assert Cache24PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_24_price_BTCUSDC.jsonl"
     assert Cache365PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_365_price_BTCUSDC.jsonl"
     assert CacheSparsePriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_sparse_price_BTCUSDC.jsonl"
 

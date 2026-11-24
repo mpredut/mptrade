@@ -897,7 +897,7 @@ def test_cachepaths_symbol_case_delegates_to_symbol_api_preserving_dag(tmp_path)
     assert "import instrument_registry" not in cp_src
     assert "from instrument_registry" not in cp_src
 
-    assert cachepaths.cache_24_price_filename("SPCXXUSD") == "cache_24_price_SPCXxUSD.json"
+    assert cachepaths.cache_24_price_filename("SPCXXUSD") == "cache_24_price_SPCXxUSD.jsonl"
     assert cachepaths.cache_365_price_filename("ANTXUSD") == "cache_365_price_ANTxUSD.jsonl"
     assert cachepaths.cache_sparse_price_filename("spcxxusd") == "cache_sparse_price_SPCXxUSD.jsonl"
     assert cachepaths.cache_ohlc_24h_filename("SPCXXUSD") == "cache_ohlc_24h_SPCXxUSD.json"
@@ -911,7 +911,7 @@ def test_cachepaths_symbol_case_delegates_to_symbol_api_preserving_dag(tmp_path)
     import importlib
 
     importlib.reload(cachepaths)
-    assert cachepaths.cache_24_price_filename("SPCXXUSD") == "cache_24_price_SPCXxUSD.json"
+    assert cachepaths.cache_24_price_filename("SPCXXUSD") == "cache_24_price_SPCXxUSD.jsonl"
 
 
 def test_ssot_ast_audit_pre_commit_blocks_manual_parsing_and_allows_ssot_delegation(tmp_path):

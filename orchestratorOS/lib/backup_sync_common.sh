@@ -65,10 +65,18 @@ rclone_cmd() {
     "$bin" --contimeout 15s --timeout 120s --retries 3 --low-level-retries 5 "$@"
 }
 
+_low_prio_cmd() {
+    if command -v ionice >/dev/null 2>&1; then
+        ionice -c3 nice -n 19 "$@"
+    else
+        nice -n 19 "$@"
+    fi
+}
+
 rsync_cachedb() {  # $1=src $2=dst [extra_rsync_args...]
     local src="$1" dst="$2" rc=0
     shift 2
-    rsync -a --info=stats1 "${CACHEDB_RSYNC_EXCLUDES[@]}" "$@" "$src" "$dst" 2>&1 || rc=$?
+    _low_prio_cmd rsync -a --info=stats1 "${CACHEDB_RSYNC_EXCLUDES[@]}" "$@" "$src" "$dst" 2>&1 || rc=$?
     if [ "$rc" != 0 ] && [ "$rc" != 23 ] && [ "$rc" != 24 ]; then
         echo "[rsync_cachedb] ERROR: rsync ($src -> $dst) failed with code $rc" >&2
         return "$rc"

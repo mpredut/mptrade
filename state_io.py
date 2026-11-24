@@ -853,9 +853,11 @@ def append_jsonl_bucket_delta(
     persisted_counts: dict[str, int],
     *,
     on_rollback_fn: Callable[[int], None] | None = None,
+    fsync: bool = True,
 ) -> dict[str, int]:
-    """Durably append unpersisted ``(symbol, item)`` rows to ``path`` and return updated counts."""
+    """Append unpersisted ``(symbol, item)`` rows to ``path`` and return updated counts."""
     target_path = _resolve_target_path(path, migrate=True)
+    do_fsync = _parse_bool_flag(fsync, True)
     candidate_counts = dict(persisted_counts)
     initial_size: int | None = None
     try:
@@ -868,7 +870,10 @@ def append_jsonl_bucket_delta(
                 for item in items[start:]:
                     handle.write(format_jsonl_bucket_line(symbol, item))
                 candidate_counts[symbol] = len(items)
-            _flush_and_fsync(handle)
+            if do_fsync:
+                _flush_and_fsync(handle)
+            else:
+                handle.flush()
         return candidate_counts
     except BaseException:
         if initial_size is not None:
@@ -1442,6 +1447,64 @@ def read_json_dict_cached(
             cache_store.pop(old_key, None)
         return res
     return None
+
+
+def _looks_like_jsonl_bucket_file(path: str) -> bool:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for raw in handle:
+                s = raw.strip()
+                if s:
+                    return s.startswith('{"s":') or s.startswith('{"s" :')
+    except OSError:
+        pass
+    return False
+
+
+def read_jsonl_or_json_dict_cached(
+    path: str | os.PathLike[str],
+    memo: dict[str, tuple[tuple, dict[str, Any]]] | None = None,
+    *, max_entries: int = 32,
+) -> dict[str, Any] | None:
+    """Stat-memoized reader supporting both JSONL bucket files (``{'s', 'i'}``) and legacy JSON dicts."""
+    try:
+        resolved = _resolve_target_path(path)
+    except Exception:
+        return None
+    if not resolved.endswith(".jsonl") or not is_state_io_dict_reader_unpatched():
+        return read_json_dict_cached(path, memo, max_entries=max_entries)
+    backup_path = previous_generation_path(resolved)
+    st_main, st_bak = _stat_sig(resolved), _stat_sig(backup_path)
+    if st_main is None and st_bak is None:
+        return None
+    cache_store = _JSON_DICT_MEMO if memo is None else memo
+    sig = (st_main, st_bak, read_recovering_previous, json.load, "jsonl")
+    cached = cache_store.get(resolved)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+    eff_src = resolved if st_main is not None else backup_path
+    if not _looks_like_jsonl_bucket_file(eff_src):
+        return read_json_dict_cached(resolved, memo, max_entries=max_entries)
+    bucket_map: dict[str, list[Any]] = {}
+    for cand_src in ((resolved, backup_path) if st_main is not None else (backup_path,)):
+        if not cand_src or not os.path.exists(cand_src):
+            continue
+        try:
+            parsed_map, _ = read_jsonl_bucket_map(cand_src)
+            if parsed_map:
+                bucket_map = parsed_map
+                break
+        except Exception:
+            continue
+    if not bucket_map:
+        return None
+    res: dict[str, Any] = {"items": bucket_map}
+    if resolved in cache_store:
+        cache_store.pop(resolved, None)
+    cache_store[resolved] = (sig, res)
+    for old_key in list(cache_store)[: max(0, len(cache_store) - max_entries)]:
+        cache_store.pop(old_key, None)
+    return res
 
 
 _ORIG_READ_JSON_DICT_RECOVERING = read_json_dict_recovering

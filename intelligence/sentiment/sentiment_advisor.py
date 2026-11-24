@@ -428,6 +428,8 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                         f"price_24h_{ccy}USDT.json",
                         _mc.Cache24PriceManager.disk_filename_for_symbol(f"{ccy}USDC"),
                         _mc.Cache24PriceManager.disk_filename_for_symbol(f"{ccy}USDT"),
+                        f"cache_24_price_{ccy}USDC.json",
+                        f"cache_24_price_{ccy}USDT.json",
                     )
                 ):
                     continue

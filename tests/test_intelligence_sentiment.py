@@ -12162,7 +12162,7 @@ def test_phase1_symbol_identity_3tier_asset_policy_and_spot_ob_reconciler_ssot()
     xstock_cands = id_xstock.candidate_cache_symbols()
     assert "SPCXxUSD" in xstock_cands
     assert price_cache_filename_variants("SPCXxUSD", cache_ohlc_24h_filename)[0] == "cache_ohlc_24h_SPCXxUSD.json"
-    assert price_cache_filename_variants("SPCXxUSD", cache_24_price_filename)[0] == "cache_24_price_SPCXxUSD.json"
+    assert price_cache_filename_variants("SPCXxUSD", cache_24_price_filename)[0] == "cache_24_price_SPCXxUSD.jsonl"
 
     id_eq = resolve_symbol_identity("NVDA_US_EQ")
     assert id_eq.asset_class == "rth_equity" and id_eq.is_rth_equity and not id_eq.has_crypto_perpetuals and id_eq.uses_equity_risk_priors

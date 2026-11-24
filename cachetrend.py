@@ -80,6 +80,7 @@ from state_io import (
     read_json_dict,
     read_json_dict_cached,
     read_json_dict_recovering,
+    read_jsonl_or_json_dict_cached,
     read_recovering_previous,
     save_json_state,
 )
@@ -925,21 +926,26 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         return ft, gc, sf, gr, eps, sample_rate
 
     def _load_disk_cache24_entries(self, symbol):
-        """Load raw [ts_ms, price] entries from cachedb/cache_24_price_<symbol>.json if present."""
+        """Load raw [ts_ms, price] entries from cachedb/cache_24_price_<symbol>.jsonl (or legacy .json) if present."""
         base_dir = cachedb_root_for_file(self.filename)
         c24_file = None
         matched_sym = symbol
         for cand in _short_trend_symbol_variants(symbol):
             if not isinstance(cand, str) or not cand:
                 continue
-            cand_file = str(resolve_cachedb_filepath(os.path.join(base_dir, cache_24_price_filename(cand))))
-            if not self.read_only:
-                migrate_legacy_filename_if_needed(cand_file)
-            if os.path.exists(cand_file) or os.path.exists(
-                previous_generation_path(cand_file)
-            ):
-                c24_file = cand_file
-                matched_sym = cand
+            for ext_c in (".jsonl", ".json"):
+                cand_file = str(
+                    resolve_cachedb_filepath(os.path.join(base_dir, cache_24_price_filename(cand, ext=ext_c)))
+                )
+                if ext_c == ".json" and not self.read_only:
+                    migrate_legacy_filename_if_needed(cand_file)
+                if os.path.exists(cand_file) or os.path.exists(
+                    previous_generation_path(cand_file)
+                ):
+                    c24_file = cand_file
+                    matched_sym = cand
+                    break
+            if c24_file is not None:
                 break
         if c24_file is None:
             return []
@@ -953,8 +959,12 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                         return cached[1]
 
             def _read_c24(candidate_path):
-                raw = read_json_dict(candidate_path)
-                items_map = raw.get("items")
+                raw = (
+                    read_jsonl_or_json_dict_cached(candidate_path)
+                    if candidate_path.endswith(".jsonl")
+                    else read_json_dict(candidate_path)
+                )
+                items_map = raw.get("items") if isinstance(raw, dict) else None
                 if not isinstance(items_map, dict):
                     raise ValueError("Cache24 items must be a dict")
                 items = casefold_get(items_map, matched_sym)

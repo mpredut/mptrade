@@ -325,12 +325,16 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
     if filename:
         path = filename
     else:
-        path = cache_path(f"cache_24_price_{symbol}.json")
-        migrate_legacy_filename_if_needed(path)
-        if not os.path.exists(path) and not os.path.exists(f"{path}.previous"):
-            alt_jsonl = _resolve_existing_cache_file(cache_path(f"cache_365_price_{symbol}.jsonl"))
-            if os.path.exists(alt_jsonl):
-                path = alt_jsonl
+        path_jsonl = cache_path(f"cache_24_price_{symbol}.jsonl")
+        if os.path.exists(path_jsonl) or os.path.exists(f"{path_jsonl}.previous"):
+            path = path_jsonl
+        else:
+            path = cache_path(f"cache_24_price_{symbol}.json")
+            migrate_legacy_filename_if_needed(path)
+            if not os.path.exists(path) and not os.path.exists(f"{path}.previous"):
+                alt_jsonl = _resolve_existing_cache_file(cache_path(f"cache_365_price_{symbol}.jsonl"))
+                if os.path.exists(alt_jsonl):
+                    path = alt_jsonl
     if str(path).endswith(".jsonl"):
         path = _resolve_existing_cache_file(path)
         if not os.path.exists(path):

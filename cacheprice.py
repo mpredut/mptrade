@@ -132,6 +132,7 @@ from state_io import (
     read_json_dict,
     read_json_dict_cached,
     read_json_dict_recovering,
+    read_jsonl_or_json_dict_cached,
     read_tail_complete_lines_text,
     read_tail_lines,
     save_json_state,
@@ -416,10 +417,13 @@ class Cache24PriceManager(CachePriceManagerBase):
 
     KEEP_HOURS = 24
     FILE_PREFIX = CACHE_24_PRICE_PREFIX
-    FILE_EXT = "json"
+    FILE_EXT = "jsonl"
     _filter_fetchtimes_to_symbols = True
+    _ENABLE_EQUITY_OHLC_REFRESH = True
     _SNAPSHOT_COMPACT_JSON = True
     _SNAPSHOT_FSYNC = False
+    COMPACT_INTERVAL_SEC = 1800.0
+    COMPACT_TRIMMED_ROWS_THRESHOLD = 4000
     EQUITY_OHLC_RTH_REFRESH_SEC = 240.0
     EQUITY_OHLC_OFF_RTH_REFRESH_SEC = 1800.0
 
@@ -431,17 +435,27 @@ class Cache24PriceManager(CachePriceManagerBase):
         api_client=None,
         read_only=False,
         *,
+        append_persist: Optional[bool] = None,
         current_price_getter=None,
         current_price_mgr=None,
         data_sync_mode: Optional[str] = None,
     ):
         self._last_eq_ohlc_refresh_ts: dict[str, float] = {}
+        self._last_24h_compact_mono: float = _monotonic_time()
+        self._jsonl_trimmed_disk_rows: int = 0
+        self._jsonl_needs_compact: bool = False
+        eff_append_persist = (
+            _parse_bool_flag(append_persist, default=False)
+            if append_persist is not None
+            else str(filename or "").strip().lower().endswith(".jsonl")
+        )
         super().__init__(
             sync_ts,
             symbols,
             filename,
             append_mode=True,
             api_client=api_client,
+            append_persist=eff_append_persist,
             read_only=read_only,
             current_price_getter=current_price_getter,
             current_price_mgr=current_price_mgr,
@@ -520,6 +534,92 @@ class Cache24PriceManager(CachePriceManagerBase):
             min_interval = self.EQUITY_OHLC_OFF_RTH_REFRESH_SEC
         return eq_rth_open, min_interval
 
+    def _should_compact_before_append_locked(self) -> bool:
+        if not self.append_persist:
+            return False
+        if getattr(self, "_jsonl_needs_compact", False):
+            return True
+        if super()._should_compact_before_append_locked():
+            return True
+        trimmed = getattr(self, "_jsonl_trimmed_disk_rows", 0)
+        if trimmed <= 0:
+            return False
+        if trimmed >= self.COMPACT_TRIMMED_ROWS_THRESHOLD:
+            return True
+        return (_monotonic_time() - getattr(self, "_last_24h_compact_mono", 0.0)) >= self.COMPACT_INTERVAL_SEC
+
+    def compact_jsonl(self):
+        if not self.append_persist:
+            return False
+        if self._filter_fetchtimes_to_symbols:
+            self._filter_maps_to_configured_symbols_locked()
+        for s_trim in list(self.symbols):
+            self._trim_old_data(s_trim, min_batch=1)
+        ok = super().compact_jsonl()
+        if ok:
+            self._last_24h_compact_mono = _monotonic_time()
+            self._jsonl_trimmed_disk_rows = 0
+            self._jsonl_needs_compact = False
+        return ok
+
+    def _legacy_json_path(self) -> Optional[str]:
+        if self.append_persist and isinstance(self.filename, str) and self.filename.endswith(".jsonl"):
+            return self.filename[:-1]
+        return None
+
+    def _persisted_max_ts(self):
+        ts = super()._persisted_max_ts()
+        if ts > 0 or not self.append_persist or os.path.exists(self.filename):
+            return ts
+        legacy = self._legacy_json_path()
+        if legacy:
+            try:
+                meta = read_json_dict(meta_file_path(legacy))
+                if isinstance(meta, dict):
+                    return safe_pos_int(meta.get("max_ts", 0), default=0) or 0
+            except Exception:
+                pass
+        return 0
+
+    def _load_jsonl(self):
+        if (
+            self.read_only
+            and not os.path.exists(self.filename)
+            and not os.path.exists(self._previous_generation_path())
+        ):
+            legacy = self._legacy_json_path()
+            legacy_bak = previous_generation_path(legacy) if legacy else ""
+            if legacy and (os.path.exists(legacy) or (legacy_bak and os.path.exists(legacy_bak))):
+                try:
+                    data = read_json_dict(
+                        legacy,
+                        backup_path=legacy_bak,
+                        recover_previous=True,
+                        repair_files=False,
+                    )
+                    if isinstance(data, dict):
+                        with self.lock:
+                            items = data.get("items", {})
+                            if isinstance(items, dict):
+                                self.cache = self._filter_reloaded_items_locked(items)
+                            self._hydrate_fetchtimes_from_mapping_locked(
+                                data, filter_symbols=self._filter_fetchtimes_to_symbols
+                            )
+                            self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
+                            self._last_disk_sync_max_ts = max(
+                                self._persisted_max_ts(), self._mem_max_ts()
+                            )
+                        return
+                except Exception:
+                    pass
+        super()._load_jsonl()
+        with self.lock:
+            self.cache = self._filter_reloaded_items_locked(self.cache)
+            self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
+            self._last_disk_sync_max_ts = max(
+                self._persisted_max_ts(), self._mem_max_ts()
+            )
+
     def refresh_equity_ohlc_series(
         self,
         *,
@@ -527,7 +627,7 @@ class Cache24PriceManager(CachePriceManagerBase):
         force: bool = False,
     ) -> bool:
         """Refresh 5d/5m OHLCV bars in ``cacheManager`` for equity symbols and publish ``cache_ohlc_24h_<SYM>.json`` + ``365Price`` seed."""
-        if self.read_only or self.append_persist:
+        if self.read_only or not self._ENABLE_EQUITY_OHLC_REFRESH:
             return False
         eq_symbols = [s for s in self.symbols if is_equity_symbol(s)]
         if not eq_symbols:
@@ -590,6 +690,8 @@ class Cache24PriceManager(CachePriceManagerBase):
                     self._rest_sync_cursor_per_symbol[sym_eq] = (
                         safe_pos_int(self._rest_sync_cursor_per_symbol.get(sym_eq), default=new_ft) or new_ft
                     )
+                    if self.append_persist:
+                        self._jsonl_needs_compact = True
                 self._trim_old_data(sym_eq)
                 if base_cachedb:
                     try:
@@ -619,7 +721,7 @@ class Cache24PriceManager(CachePriceManagerBase):
         return any_refreshed
 
     def _persist_periodic_state(self, sync_complete):
-        if self.save_state and not self.append_persist:
+        if self.save_state and self._ENABLE_EQUITY_OHLC_REFRESH:
             with self.lock:
                 self._drain_deferred_price_ticks_locked()
                 persisted_max_ts = self._persisted_max_ts()
@@ -787,6 +889,13 @@ class Cache24PriceManager(CachePriceManagerBase):
                 idx = min(idx, max(0, len(entries) - 288))
             if idx >= eff_batch:
                 self.cache[symbol] = entries[idx:]
+                if self.append_persist:
+                    self._persisted_counts[symbol] = max(
+                        0, self._persisted_counts.get(symbol, 0) - idx
+                    )
+                    self._jsonl_trimmed_disk_rows = (
+                        getattr(self, "_jsonl_trimmed_disk_rows", 0) + idx
+                    )
 
     def get_recent_entries(self, symbol: str, last_seconds: float) -> list:
         """Return ``[timestamp_ms, price]`` entries from the latest interval."""
@@ -823,15 +932,15 @@ class Cache24PriceManager(CachePriceManagerBase):
         target_path = str(resolve_cachedb_filepath(target_path, migrate=True))
         os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
         with FileLock(generation_lock_path(target_path)):
-            disk_obj = (
-                existing_obj
-                if isinstance(existing_obj, dict)
-                else (
-                    read_json_dict(target_path, recover_previous=True, repair_files=True)
-                    if (os.path.exists(target_path) or os.path.exists(previous_generation_path(target_path)))
-                    else {}
-                )
-            )
+            is_jsonl = target_path.lower().endswith(".jsonl")
+            if isinstance(existing_obj, dict):
+                disk_obj = existing_obj
+            elif is_jsonl:
+                disk_obj = read_jsonl_or_json_dict_cached(target_path, _SSOT_24PRICE_DISK_MEMO) or {}
+            elif os.path.exists(target_path) or os.path.exists(previous_generation_path(target_path)):
+                disk_obj = read_json_dict(target_path, recover_previous=True, repair_files=True)
+            else:
+                disk_obj = {}
             now_ms = math.trunc(now_ts * 1000)
             last_pt_ts = (
                 safe_pos_int(points[-1][0], default=now_ms) or now_ms
@@ -880,9 +989,17 @@ class Cache24PriceManager(CachePriceManagerBase):
                 write_meta_json(target_path, meta_payload, fsync=False)
                 return True
 
+            def _write_data_file() -> None:
+                if is_jsonl:
+                    with atomic_text_writer(target_path, fsync=False) as f_out:
+                        for pt in points:
+                            f_out.write(format_jsonl_bucket_line(symbol, pt))
+                else:
+                    atomic_write_json(target_path, payload, separators=(",", ":"), fsync=False)
+
             commit_file_and_meta(
                 target_path,
-                lambda: atomic_write_json(target_path, payload, separators=(",", ":"), fsync=False),
+                _write_data_file,
                 _write_meta_ok,
                 fsync=False,
             )
@@ -895,7 +1012,7 @@ class Cache24PriceManager(CachePriceManagerBase):
         candidates: Optional[tuple[str, ...] | list[str]] = None,
         allow_single_item_fallback: bool = False,
     ) -> tuple[Optional[dict], Optional[list]]:
-        """Read raw 24-hour price entries for ``cand`` from ``c24_path`` (including ``.previous`` recovery)."""
+        """Read raw 24-hour price entries for ``cand`` from ``c24_path`` (supports ``.jsonl`` and legacy ``.json`` + ``.previous``)."""
         if not c24_path:
             return None, None
         use_cached_reader = (
@@ -904,11 +1021,26 @@ class Cache24PriceManager(CachePriceManagerBase):
             and read_json_dict_cached is _ORIG_READ_JSON_DICT_CACHED
             and is_state_io_dict_reader_unpatched()
         )
-        raw = (
-            read_json_dict_cached(c24_path, _SSOT_24PRICE_DISK_MEMO, max_entries=_SSOT_24PRICE_MAX_ENTRIES)
-            if use_cached_reader
-            else read_json_dict_recovering(c24_path, default=None)
-        )
+        if not use_cached_reader:
+            raw = read_json_dict_recovering(c24_path, default=None)
+            if not isinstance(raw, dict) and c24_path.endswith(".jsonl"):
+                raw = read_json_dict_recovering(c24_path[:-1], default=None)
+        else:
+            cand_paths: list[str] = []
+            if c24_path.endswith(".jsonl"):
+                cand_paths.extend((c24_path, c24_path[:-1]))
+            elif c24_path.endswith(".json"):
+                cand_paths.extend((c24_path + "l", c24_path))
+            else:
+                cand_paths.append(c24_path)
+            raw = None
+            for cp in cand_paths:
+                loaded = read_jsonl_or_json_dict_cached(
+                    cp, _SSOT_24PRICE_DISK_MEMO, max_entries=_SSOT_24PRICE_MAX_ENTRIES
+                )
+                if isinstance(loaded, dict):
+                    raw = loaded
+                    break
         if not isinstance(raw, dict):
             return None, None
         items = raw.get("items")
@@ -1060,6 +1192,8 @@ class Cache365PriceManager(Cache24PriceManager):
     LONG_TRIM_INTERVAL_SEC = 24 * 3600
     FILE_PREFIX = CACHE_365_PRICE_PREFIX
     FILE_EXT = "jsonl"
+    _ENABLE_EQUITY_OHLC_REFRESH = False
+    _SNAPSHOT_FSYNC = True
 
     @classmethod
     def seed_initial_archive_if_missing(cls, target_path: str, symbol: str, points: list) -> bool:

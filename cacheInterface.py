@@ -1077,14 +1077,28 @@ class CacheManagerInterface(ABC):
                 if self._should_compact_before_append_locked():
                     return self.compact_jsonl()
                 previous_counts = dict(self._persisted_counts)
-                candidate_counts = append_jsonl_bucket_delta(
-                    self.filename,
-                    self.cache,
-                    previous_counts,
-                    on_rollback_fn=self._truncate_failed_jsonl_append,
-                )
+                if self._SNAPSHOT_FSYNC:
+                    candidate_counts = append_jsonl_bucket_delta(
+                        self.filename,
+                        self.cache,
+                        previous_counts,
+                        on_rollback_fn=self._truncate_failed_jsonl_append,
+                    )
+                else:
+                    candidate_counts = append_jsonl_bucket_delta(
+                        self.filename,
+                        self.cache,
+                        previous_counts,
+                        on_rollback_fn=self._truncate_failed_jsonl_append,
+                        fsync=False,
+                    )
                 self._persisted_counts = candidate_counts
-                return self._write_meta(self._build_basic_meta_locked(candidate_counts))
+                ok_meta = self._write_meta(self._build_basic_meta_locked(candidate_counts))
+                if ok_meta:
+                    self._last_disk_sync_max_ts = max(
+                        self._persisted_max_ts(), self._mem_max_ts()
+                    )
+                return ok_meta
         except Exception as e:
             self._persisted_counts = previous_counts
             return self._log_cache_file_error("append JSONL", e)
@@ -1179,7 +1193,12 @@ class CacheManagerInterface(ABC):
                 metadata = self._build_basic_meta_locked()
 
                 def _write_compacted():
-                    with atomic_text_writer(self.filename) as f:
+                    writer_cm = (
+                        atomic_text_writer(self.filename)
+                        if self._SNAPSHOT_FSYNC
+                        else atomic_text_writer(self.filename, fsync=False)
+                    )
+                    with writer_cm as f:
                         for symbol, items in self.cache.items():
                             for item in items:
                                 f.write(format_jsonl_bucket_line(symbol, item))
@@ -1188,6 +1207,9 @@ class CacheManagerInterface(ABC):
                     self._restore_memory_state_locked(original_state)
                     return False
                 self._persisted_counts = dict(metadata["counts"])
+                self._last_disk_sync_max_ts = max(
+                    self._persisted_max_ts(), self._mem_max_ts()
+                )
                 return True
         except Exception as e:
             self._restore_memory_state_locked(original_state)

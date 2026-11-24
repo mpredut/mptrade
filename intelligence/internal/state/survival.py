@@ -68,7 +68,13 @@ from instrument_registry import is_equity_symbol, resolve_kraken_tokenized_pair
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_latest_long_trend_value
 from pricewindow import filter_isolated_price_points
 import providers.market_api as _market_api_mod
-from state_io import generation_file_lock, read_json_dict, read_json_dict_cached, save_json_state
+from state_io import (
+    generation_file_lock,
+    read_json_dict,
+    read_json_dict_cached,
+    read_jsonl_or_json_dict_cached,
+    save_json_state,
+)
 
 _DEFAULT_T_CACHE_FILE = cache_path(CACHE_T_TREND_FILENAME)
 T_CACHE_FILE = _DEFAULT_T_CACHE_FILE
@@ -1011,13 +1017,18 @@ def _read_cached_price_history(
         return (ts_sec, px) if (ts_sec is not None and px is not None) else None
 
     p24_paths = list(dict.fromkeys(
-        str(resolve_cachedb_filepath(os.path.join(cachedb_dir, cache_24_price_filename(cand))))
+        str(resolve_cachedb_filepath(os.path.join(cachedb_dir, cache_24_price_filename(cand, ext=ext_c))))
         for cand in cand_symbols
         if "/" not in cand and ("_" not in cand or has_equity_suffix(cand))
+        for ext_c in (".jsonl", ".json")
     ))
     watcher_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME)))
     for p_path in (*p24_paths, watcher_path):
-        data = read_json_dict_cached(p_path, _JSON_RECOVERING_MEMO, max_entries=32)
+        data = (
+            read_jsonl_or_json_dict_cached(p_path, _JSON_RECOVERING_MEMO, max_entries=32)
+            if p_path.endswith(".jsonl")
+            else read_json_dict_cached(p_path, _JSON_RECOVERING_MEMO, max_entries=32)
+        )
         if not isinstance(data, (dict, list)):
             continue
         try:

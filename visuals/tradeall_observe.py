@@ -305,7 +305,10 @@ def load_price_series_live(symbol, days_back, include_history=True):
         p_val = safe_pos_float(p, default=None)
         if t_val is not None and p_val is not None:
             points[math.trunc(t_val)] = p_val
-    _ingest_cachedb_points(points, _load_cachedb_price_entries(cache_24_price_filename(symbol), symbol))
+    c24_entries = _load_cachedb_price_entries(cache_24_price_filename(symbol), symbol)
+    if not c24_entries:
+        c24_entries = _load_cachedb_price_entries(cache_24_price_filename(symbol, ext=".json"), symbol)
+    _ingest_cachedb_points(points, c24_entries)
     ts_sorted = sorted(points)
     return ts_sorted, [points[t] for t in ts_sorted]
 

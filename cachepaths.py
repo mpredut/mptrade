@@ -70,7 +70,7 @@ CACHE_GEOPOLITICAL_EVAL_FILENAME = "geopolitical_eval.json"
 CACHE_SPARSE_PRICE_PREFIX = "cache_sparse_price_"
 CACHE_SPARSE_PRICE_EXT = ".jsonl"
 CACHE_24_PRICE_PREFIX = "cache_24_price_"
-CACHE_24_PRICE_EXT = ".json"
+CACHE_24_PRICE_EXT = ".jsonl"
 CACHE_365_PRICE_PREFIX = "cache_365_price_"
 CACHE_365_PRICE_EXT = ".jsonl"
 CACHE_OHLC_24H_PREFIX = "cache_ohlc_24h_"
@@ -146,9 +146,10 @@ def cache_sparse_price_filename(symbol: object, *, preserve_case: bool = False) 
     return f"{CACHE_SPARSE_PRICE_PREFIX}{_clean_cache_symbol(symbol, preserve_case=preserve_case)}{CACHE_SPARSE_PRICE_EXT}"
 
 
-def cache_24_price_filename(symbol: object, *, preserve_case: bool = False) -> str:
-    """Return canonical on-disk filename for a 24h dense price series (`cache_24_price_<SYM>.json`)."""
-    return f"{CACHE_24_PRICE_PREFIX}{_clean_cache_symbol(symbol, preserve_case=preserve_case)}{CACHE_24_PRICE_EXT}"
+def cache_24_price_filename(symbol: object, *, ext: str = CACHE_24_PRICE_EXT, preserve_case: bool = False) -> str:
+    """Return canonical on-disk filename for a 24h dense price series (`cache_24_price_<SYM>.jsonl`)."""
+    eff_ext = clean_scalar_str(ext) or CACHE_24_PRICE_EXT
+    return f"{CACHE_24_PRICE_PREFIX}{_clean_cache_symbol(symbol, preserve_case=preserve_case)}{eff_ext}"
 
 
 def cache_365_price_filename(symbol: object, *, ext: str = CACHE_365_PRICE_EXT, preserve_case: bool = False) -> str:
