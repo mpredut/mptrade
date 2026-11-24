@@ -2138,14 +2138,26 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     else (ro.get("lifo_realized_pnl_usd") if isinstance(ro, dict) else None),
                     default=None,
                 )
+                cyc_rpnl_p = safe_float(cyc.get("realized_pnl_usd"), default=0.0) or 0.0
+                flat_loss_tp_mismatch = bool(
+                    is_flat_balance
+                    and in_cycle_sell_verified
+                    and ref_sell_avg is None
+                    and pre_sell_buy_px_p is not None
+                    and pre_sell_buy_px_p > 0.0
+                    and str(cyc.get("last_exit_kind") or "").strip().upper() == "TP"
+                    and new_cyc_sell < pre_sell_buy_px_p * 0.995
+                    and (lifo_pnl_p < 0.0 if lifo_pnl_p is not None else cyc_rpnl_p < 0.0)
+                )
+                eff_ref_sell_avg = pre_sell_buy_px_p if flat_loss_tp_mismatch else ref_sell_avg
                 new_exit_k = classify_reconciled_cycle_exit_kind(
                     cyc.get("last_exit_kind"),
                     new_cyc_sell,
-                    ref_sell_avg,
+                    eff_ref_sell_avg,
                     sell_from_prior_cycle=sell_from_prior_cycle,
                     allow_stop_upgrade=sell_changed or in_cycle_sell_verified,
                     allow_scratch_stop_reclassify=sell_changed,
-                    allow_loss_reclassify=sell_changed,
+                    allow_loss_reclassify=sell_changed or flat_loss_tp_mismatch,
                     lifo_pnl_usd=lifo_pnl_p,
                     pre_sell_buy_px=pre_sell_buy_px_p,
                 )

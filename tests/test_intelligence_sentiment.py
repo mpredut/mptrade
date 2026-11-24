@@ -17196,6 +17196,66 @@ def test_disabled_registry_symbols_xstock_longterm_cost_and_partial_24h_vp(tmp_p
     t212_syms_in_view = [s for _, vid, items in pv_obs["venue_cycles"] if vid == "t212" for s, _ in items]
     assert t212_syms_in_view == ["SPCX_US_EQ"]
 
+    # 3d. Flat observe-only symbols (ANTxUSD) omit stale Last Action lines from Section 3C, while closed-cycle loss
+    # exits on T212 (e.g. NVDA_US_EQ sold at $156.15 vs $164.94 buy, realized_pnl < 0) reclassify bogus TP -> REDUCE.
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+    sec3c_lines = "\n".join(
+        _format_portfolio_section(
+            {
+                "tradable_positions": [
+                    {"venue": "binance", "symbol": "BTCUSDC", "free_base": 0.02, "free_quote": 1000.0, "price": 60000.0}
+                ],
+                "recent_orders": {
+                    "ANTxUSD": {"last_action_side": "SELL", "last_action_actor": "AI", "last_sell": {"qty": 0.26, "price": 98.48, "ts_ms": int((now_s - 400000.0) * 1000)}},
+                    "BTCUSDC": {"last_action_side": "BUY", "last_action_actor": "AI", "last_buy": {"qty": 0.02, "price": 60000.0, "ts_ms": int((now_s - 600.0) * 1000)}},
+                },
+            },
+            asset_scope="crypto",
+        )
+    )
+    assert "BTCUSDC Last Action=" in sec3c_lines
+    assert "ANTxUSD Last Action=" not in sec3c_lines
+
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        harvest_recent_orders_and_enrich_positions,
+    )
+    t212_cache_dir = tmp_path / "t212_loss_exit"
+    t212_cache_dir.mkdir(parents=True, exist_ok=True)
+    (t212_cache_dir / "cache_trade_t212.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "NVDA_US_EQ": [
+                        {"symbol": "NVDA_US_EQ", "orderId": "B_NVDA", "price": 164.94, "qty": 1.09, "time": int((now_s - 86400.0) * 1000), "side": "BUY"},
+                        {"symbol": "NVDA_US_EQ", "orderId": "S_NVDA", "price": 156.15, "qty": 1.09, "time": int((now_s - 3600.0) * 1000), "side": "SELL"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    nvda_cyc = parse_venue_cycle_state(
+        {
+            "qty": 0.0,
+            "cost_usd": 0.0,
+            "entry_price": None,
+            "last_buy_price": None,
+            "last_sell_price": 156.15,
+            "last_sell_ts": now_s - 3600.0,
+            "last_exit_kind": "TP",
+            "realized_net_usd": -29.26,
+        },
+        "NVDA_US_EQ",
+        {"NVDA_US_EQ": {"price": 153.0}},
+        include_meta=True,
+    )
+    t212_cycs = {"NVDA_US_EQ": nvda_cyc}
+    t212_pos = [{"venue": "t212", "symbol": "NVDA_US_EQ", "base": "NVDA_US_EQ", "quote": "USD", "price": 153.0, "free_base": 0.0, "free_quote": 579.0}]
+    harvest_recent_orders_and_enrich_positions(
+        str(t212_cache_dir), {}, t212_pos, {"NVDA_US_EQ": {"price": 153.0}}, {}, {}, t212_cycs
+    )
+    assert t212_cycs["NVDA_US_EQ"]["last_exit_kind"] == "REDUCE"
+
     # 4. Partial local 24h tick history (<22h) still upgrades TPO -> REAL_VOL when overlap matches
     ohlc_pts = []
     for h in range(24):

@@ -239,6 +239,11 @@ class Strategy(T212BrokerLifecycleMixin):
         self._cancel_all_orders()
         saved_orders = list(self.s.get("orders") or [])
         saved_pending_submit = self.s.get("pending_submit") if keep_pending_submit else None
+        prev_qty = safe_pos_float(self.s.get("qty"), 0.0) or 0.0
+        prev_cost = safe_pos_float(self.s.get("cost_usd"), 0.0) or 0.0
+        prev_avg = (prev_cost / prev_qty) if (prev_qty > 0.0 and prev_cost > 0.0) else (
+            first_pos_float(self.s.get("entry_price"), self.s.get("last_buy_price"), default=0.0) or 0.0
+        )
         norm_exit_kind = str(exit_kind or "").strip().upper()
         was_sl = bool(
             self._state_flag("sl_pending")
@@ -251,7 +256,8 @@ class Strategy(T212BrokerLifecycleMixin):
             **({"pending_submit": saved_pending_submit} if keep_pending_submit else {}),
         )
         exit_px = first_pos_float(exit_price) or safe_nonneg_float(exit_price, 0.0) or 0.0
-        seed_kind = "STOP" if was_sl else ("REDUCE" if norm_exit_kind == "REDUCE" else "TP")
+        inferred_loss_reduce = bool(not norm_exit_kind and prev_avg > 0.0 and 0.0 < exit_px < prev_avg * 0.995)
+        seed_kind = "STOP" if was_sl else ("REDUCE" if (norm_exit_kind == "REDUCE" or inferred_loss_reduce) else "TP")
         self._seed_post_exit_anchors(
             exit_px, seed_kind, self._now(), include_sl_low=False
         )

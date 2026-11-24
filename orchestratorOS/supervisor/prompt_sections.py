@@ -1475,8 +1475,36 @@ def _format_portfolio_section(
     if ps.get("hyperliquid_readonly"):
         lines.append(f"  * Hyperliquid Spot/Perp Equity Summary: {ps['hyperliquid_readonly']}")
     now_ms = math.trunc(time.time() * 1000)
+    obs_only_syms = observe_only_registry_symbols()
+    active_pos_syms = {
+        k
+        for p in (view.get("tradable_positions") or ())
+        if isinstance(p, dict)
+        for k in (
+            str(p.get("symbol") or "").strip().upper(),
+            clean_symbol_key(p.get("symbol")) or "",
+        )
+        if k
+    }
+    for _, _, cyc_items in (view.get("venue_cycles") or ()):
+        for c_sym, _ in cyc_items:
+            c_u = str(c_sym or "").strip().upper()
+            c_k = clean_symbol_key(c_sym) or ""
+            if c_u:
+                active_pos_syms.add(c_u)
+            if c_k:
+                active_pos_syms.add(c_k)
     for sym, oinfo in sorted((ps.get("recent_orders") or {}).items()):
         if isinstance(oinfo, dict):
+            s_u = str(sym or "").strip().upper()
+            s_k = clean_symbol_key(sym) or ""
+            if (
+                obs_only_syms
+                and (s_u in obs_only_syms or (s_k and s_k in obs_only_syms))
+                and s_u not in active_pos_syms
+                and (not s_k or s_k not in active_pos_syms)
+            ):
+                continue
             lines.append(_format_recent_order_line(sym, oinfo, now_ms))
     if view["clean_last_cycle_execution_status"]:
         lines.append(
