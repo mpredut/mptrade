@@ -10809,3 +10809,37 @@ def test_quota_soft_conserve_openai_compat_routing_and_threshold_bounds(tmp_path
     assert captured_calls[-1]["model"] == "openai_compat:glm-5.4"
     assert captured_calls[-1]["allow_cli_fallback"] is True
     assert rec._last_model_used == "openai_compat:glm-5.4"
+
+    # 7. _load_cached_quota_snapshot honors checked_ts with now_ts in live unmocked mode (skips fresh, refreshes stale)
+    import orchestratorOS.supervisor.autonomous_ai_reconciler as rec_mod
+
+    probe_calls = []
+
+    class _ProbingAuditor(_MockAuditor):
+        def probe_live_model_quota(self):
+            probe_calls.append(1)
+            return {"checked_ts": time.time(), "available_credits": 0.0, "buckets": {"gemini-4-neon-medium": 1.0}}
+
+    rec_live = AutonomousAIReconciler(
+        workspace_dir=str(tmp_path),
+        cache_dir=str(tmp_path / "cachedb"),
+        mode="shadow",
+        gemini_auditor=_ProbingAuditor(),
+        notify_enabled=False,
+    )
+    monkeypatch.setattr(rec_mod, "is_unmocked_llm_query_allowed", lambda *_a, **_kw: True)
+    (sys_dir / "llm_quota_status.json").write_text(
+        json.dumps({"checked_ts": time.time(), "available_credits": 0.0, "buckets": {"gemini-4-neon-medium": 0.22}}),
+        encoding="utf-8",
+    )
+    fresh_snap = rec_live._load_cached_quota_snapshot()
+    assert fresh_snap["buckets"]["gemini-4-neon-medium"] == pytest.approx(0.22)
+    assert len(probe_calls) == 0
+
+    (sys_dir / "llm_quota_status.json").write_text(
+        json.dumps({"checked_ts": time.time() - 600.0, "available_credits": 0.0, "buckets": {"gemini-4-neon-medium": 0.22}}),
+        encoding="utf-8",
+    )
+    refreshed_snap = rec_live._load_cached_quota_snapshot()
+    assert refreshed_snap["buckets"]["gemini-4-neon-medium"] == pytest.approx(1.0)
+    assert len(probe_calls) == 1

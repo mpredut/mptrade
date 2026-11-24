@@ -260,7 +260,8 @@ class AutonomousAIReconciler:
         probe_fn = getattr(self.gemini_auditor, "probe_live_model_quota", None)
         if callable(probe_fn) and is_unmocked_llm_query_allowed():
             ttl_sec = max(30.0, float_env("LLM_QUOTA_CACHE_TTL_SEC", default=30.0) or 30.0)
-            if not raw or not is_cache_fresh(raw.get("ts"), ttl_sec=ttl_sec):
+            quota_ts = raw.get("checked_ts") if raw.get("checked_ts") is not None else raw.get("ts")
+            if not raw or not is_cache_fresh(quota_ts, time.time(), ttl_sec=ttl_sec):
                 try:
                     live = probe_fn()
                     if isinstance(live, dict) and live:
