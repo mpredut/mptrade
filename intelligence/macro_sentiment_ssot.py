@@ -731,7 +731,10 @@ def resolve_derived_telemetry_intervals(
         "ai_impulse_cooldown_sec": _sec("ai_impulse_cooldown_mult", 5.0 / 12.0),
         "ai_impulse_post_cron_guard_sec": _sec("ai_impulse_post_cron_guard_mult", 1.0 / 18.0),
         "ai_impulse_pre_cron_guard_sec": _sec("ai_impulse_pre_cron_guard_mult", 1.0 / 8.0),
-        "ai_impulse_min_eval_gap_sec": _sec("ai_impulse_min_eval_gap_mult", 13.0 / 72.0),
+        "ai_impulse_min_eval_gap_sec": _sec(
+            "ai_impulse_min_eval_gap_mult",
+            _parse_cfg_ratio(_raw_interval("ai_impulse_cooldown_mult"), 5.0 / 12.0),
+        ),
         "ai_impulse_exec_timeout_sec": max(
             _sec("ai_impulse_exec_timeout_mult", 13.0 / 6.0, "ai_impulse_exec_timeout_sec"),
             round(llm_hard_timeout + 60.0, 6),

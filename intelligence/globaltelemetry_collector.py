@@ -25,6 +25,7 @@ if _ROOT_DIR not in sys.path:
 
 from botcore import (
     _parse_bool_flag,
+    are_close,
     bool_env,
     load_dotenv,
     normalize_epoch_sec,
@@ -230,7 +231,7 @@ def _filter_unmoved_since_eval_symbols(
             if atr_15m is not None
             else eff_min_move
         )
-        if prev_px is not None and cur_px is not None and abs((cur_px - prev_px) / prev_px) * 100.0 < sym_thresh:
+        if prev_px is not None and cur_px is not None and are_close(cur_px, prev_px, tolerance_percent=sym_thresh):
             continue
         out.append(sym)
     return out
@@ -342,7 +343,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.ai_impulse_cooldown_sec = derived["ai_impulse_cooldown_sec"]
         self.ai_impulse_post_cron_guard_sec = derived["ai_impulse_post_cron_guard_sec"]
         self.ai_impulse_pre_cron_guard_sec = derived["ai_impulse_pre_cron_guard_sec"]
-        self.ai_impulse_min_eval_gap_sec = derived["ai_impulse_min_eval_gap_sec"]
+        self._derived_ai_impulse_min_eval_gap_sec = derived["ai_impulse_min_eval_gap_sec"]
+        self.ai_impulse_min_eval_gap_sec = self._derived_ai_impulse_min_eval_gap_sec
         self.ai_impulse_exec_timeout_sec = derived["ai_impulse_exec_timeout_sec"]
         default_news_itv = (
             derived["news_interval_sec"]
@@ -755,11 +757,22 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 raw_eval_doc = read_json_dict_recovering(eval_path)
                 if isinstance(raw_eval_doc, dict):
                     eval_doc = raw_eval_doc
-                    raw_doc_ts = eval_doc.get("ts") if eval_doc.get("ts") is not None else eval_doc.get("evaluated_at_ts")
-                    doc_ts = normalize_epoch_sec(raw_doc_ts, default=0.0, allow_iso=True) or 0.0
-                    if 0.0 < doc_ts <= eff_now + 5.0:
-                        last_eval_ts = max(last_eval_ts, doc_ts)
-            min_eval_gap_sec = safe_pos_float(getattr(self, "ai_impulse_min_eval_gap_sec", None), 65.0)
+                    for raw_ts_cand in (
+                        eval_doc.get("completed_ts"),
+                        eval_doc.get("ts"),
+                        eval_doc.get("evaluated_at_ts"),
+                    ):
+                        doc_ts = normalize_epoch_sec(raw_ts_cand, default=0.0, allow_iso=True) or 0.0
+                        if 0.0 < doc_ts <= eff_now + 5.0:
+                            last_eval_ts = max(last_eval_ts, doc_ts)
+            raw_inst_gap = safe_pos_float(getattr(self, "ai_impulse_min_eval_gap_sec", None), default=None)
+            derived_gap = safe_pos_float(getattr(self, "_derived_ai_impulse_min_eval_gap_sec", None), default=None)
+            default_eval_gap = (
+                raw_inst_gap
+                if (raw_inst_gap is not None and (derived_gap is None or raw_inst_gap != derived_gap))
+                else cooldown_sec
+            )
+            min_eval_gap_sec = pos_float_env("AI_IMPULSE_MIN_EVAL_GAP_SEC", default_eval_gap)
             if last_eval_ts > 0.0 and 0.0 <= (eff_now - last_eval_ts) < min_eval_gap_sec:
                 return None
             st_doc = read_json_dict_recovering(

@@ -122,6 +122,7 @@ class SupervisorAuditReport:
     notification_sent: bool = False
     model_used: str = ""
     delta_gate_meta: Dict[str, Any] = field(default_factory=dict)
+    completed_ts: Optional[float] = None
 
 
 class AutonomousAIReconciler:
@@ -662,6 +663,7 @@ class AutonomousAIReconciler:
             tests_passed=tests_passed,
             model_used=model_used,
             delta_gate_meta=delta_gate_meta if self._last_query_succeeded else {},
+            completed_ts=time.time(),
         )
         # SRE/system/bot-error notifications (ntfy-server / ntfy-error) belong strictly to auto_technical_repair
         # (spec.can_self_heal); trade notifications are dispatched by AutonomousIntentGateway to ntfy-trade.

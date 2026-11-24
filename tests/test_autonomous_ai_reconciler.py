@@ -9691,6 +9691,7 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
     )
     assert evaluate_crypto_executor_delta_gate(geo_crit_low_score, prev_hold, now_ts=t0 + 360.0)[:3] == (False, "geo_update", True)
 
+    # Resting LIMIT approaching fill (<=0.50% from spot) is the intended outcome and must NOT wake the LLM (0% conversion noise)
     prev_with_order = {**prev_hold, "delta_gate_meta": {**prev_hold["delta_gate_meta"], "open_order_ids": ["ord-1"]}}
     near_fill_s = SimpleNamespace(
         **{
@@ -9701,7 +9702,7 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
             },
         }
     )
-    assert evaluate_crypto_executor_delta_gate(near_fill_s, prev_with_order, now_ts=t0 + 360.0)[:2] == (False, "open_order_near_fill")
+    assert evaluate_crypto_executor_delta_gate(near_fill_s, prev_with_order, now_ts=t0 + 360.0)[0] is True
 
     wall_trapped_s = SimpleNamespace(
         **{
@@ -9751,10 +9752,51 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
     )
     skip_dp, _, _, dp_meta = evaluate_crypto_executor_delta_gate(deep_passive_s, prev_with_order, now_ts=t0 + 360.0)
     assert skip_dp is True and dp_meta["order_attention_flags"] == {}
-    assert evaluate_crypto_executor_delta_gate(near_fill_s, prev_ack_wall, now_ts=t0 + 360.0)[:2] == (
-        False,
-        "open_order_near_fill",
+    assert evaluate_crypto_executor_delta_gate(near_fill_s, prev_ack_wall, now_ts=t0 + 360.0)[0] is True
+
+    # Identical-verdict macro_update / geo_update refreshes do NOT wake the LLM, whereas real verdict shifts DO wake it
+    prev_with_verdicts = {
+        **prev_hold,
+        "delta_gate_meta": {
+            **prev_hold["delta_gate_meta"],
+            "macro_verdict": "CAUTION|HIGH|HOLD|COUPLED_RISK_OFF",
+            "geo_verdict": "NORMAL|NONE",
+        },
+    }
+    same_macro_s = SimpleNamespace(
+        **{
+            **base_sensors.__dict__,
+            "sentiment_advisor": {
+                "ts": t0 + 180.0,
+                "market_bias": "CAUTION",
+                "risk_level": "HIGH",
+                "recommended_action": "HOLD",
+                "cross_asset_regime": "COUPLED_RISK_OFF",
+            },
+            "geopolitical_threat": {"ts": t0 + 180.0, "threat_level": "NORMAL", "recommended_brake": "NONE", "risk_score": 0.15},
+        }
     )
+    assert evaluate_crypto_executor_delta_gate(same_macro_s, prev_with_verdicts, now_ts=t0 + 360.0)[0] is True
+    changed_macro_s = SimpleNamespace(
+        **{
+            **same_macro_s.__dict__,
+            "sentiment_advisor": {
+                "ts": t0 + 180.0,
+                "market_bias": "BEARISH",
+                "risk_level": "EXTREME",
+                "recommended_action": "DEFENSIVE",
+                "cross_asset_regime": "COUPLED_RISK_OFF",
+            },
+        }
+    )
+    assert evaluate_crypto_executor_delta_gate(changed_macro_s, prev_with_verdicts, now_ts=t0 + 360.0)[:2] == (False, "macro_update")
+    changed_geo_s = SimpleNamespace(
+        **{
+            **same_macro_s.__dict__,
+            "geopolitical_threat": {"ts": t0 + 180.0, "threat_level": "ELEVATED", "recommended_brake": "DOWNSCALE_50", "risk_score": 0.55},
+        }
+    )
+    assert evaluate_crypto_executor_delta_gate(changed_geo_s, prev_with_verdicts, now_ts=t0 + 360.0)[:2] == (False, "geo_update")
 
     assert evaluate_crypto_executor_delta_gate(base_sensors, prev_hold, now_ts=t0 + 360.0, ui_turn_pending=True)[:2] == (False, "ui_turn_pending")
     skip_foc, rsn_foc, hi_foc, _ = evaluate_crypto_executor_delta_gate(

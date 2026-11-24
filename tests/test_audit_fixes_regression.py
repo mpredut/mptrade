@@ -2118,3 +2118,127 @@ def test_subject1_flow_unifications_order_guard_auto_timeout_4h_cadence_and_shar
     rep3 = sup.run_cycle(topic_key="auto_sharetrade_executor", force_rth_open=True)
     assert len(llm_calls) == 2
     assert rep3.model_used != "delta_gate_skip"
+    assert rep1.completed_ts is not None and rep1.completed_ts >= rep1.ts
+
+
+def test_impulse_eval_gap_configurable_are_close_and_zero_benefit_triggers(tmp_path, monkeypatch):
+    """Verify:
+    1. ai_impulse_min_eval_gap_sec is no longer hardcoded to 65s; it derives from AI_IMPULSE_COOLDOWN_SEC (150s = 2.5m)
+       and respects completed_ts (eval finish timestamp) plus optional AI_IMPULSE_MIN_EVAL_GAP_SEC env override.
+    2. _filter_unmoved_since_eval_symbols & Delta Gate use botcore.are_close / diff_percent symmetrically.
+    3. Zero-benefit noise wakeups (open_order_near_fill, identical-verdict macro_update & geo_update) skip cleanly
+       while preserving immediate wakeups on real verdict changes and critical geo shocks."""
+    import os
+    from pathlib import Path
+    from types import SimpleNamespace
+    import cachepaths
+    import state_io
+    from intelligence import globaltelemetry_collector as gtc_mod
+    from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import evaluate_crypto_executor_delta_gate
+
+    # 1. Derived default matches ai_impulse_cooldown_sec (150s), NOT hardcoded 65s
+    derived = resolve_derived_telemetry_intervals()
+    assert derived["ai_impulse_min_eval_gap_sec"] == pytest.approx(derived["ai_impulse_cooldown_sec"])
+    assert derived["ai_impulse_min_eval_gap_sec"] == pytest.approx(150.0)
+
+    cdb_dir = tmp_path / "cachedb"
+    (cdb_dir / "state").mkdir(parents=True, exist_ok=True)
+    (cdb_dir / "prices").mkdir(parents=True, exist_ok=True)
+    (cdb_dir / "system").mkdir(parents=True, exist_ok=True)
+    eval_now = 1_795_540_000.0 + 180.0  # mid-cycle (outside post/pre cron guards)
+    state_io.save_json_state(
+        str(cdb_dir / "prices" / "cache_current_price.json"),
+        {"items": {"TAOUSDC": [int(eval_now * 1000), 205.0]}},
+    )
+    state_io.save_json_state(
+        str(cdb_dir / "prices" / "cache_short_trend.json"),
+        {"items": {"TAOUSDC": {"vel_90s_pct": 1.2, "vel_5m_pct": 1.6, "accel_pct": 0.6, "price": 205.0, "ts": eval_now}}},
+    )
+    eval_file = Path(cachepaths.resolve_cachedb_filepath(str(cdb_dir / "auto_cryptotrade_executor_eval.json")))
+    eval_file.parent.mkdir(parents=True, exist_ok=True)
+    old_mtime = eval_now - 300.0
+    # Eval started 220s ago, but FINISHED 90s ago (completed_ts) -> < 150s cooldown MUST suppress impulse!
+    state_io.save_json_state(
+        str(eval_file),
+        {"ts": eval_now - 220.0, "completed_ts": eval_now - 90.0, "delta_gate_meta": {"eval_prices": {"TAOUSDC": 200.0}}},
+    )
+    os.utime(str(eval_file), (old_mtime, old_mtime))
+
+    popen_calls = []
+    monkeypatch.setattr(gtc_mod.subprocess, "Popen", lambda cmd, **kw: popen_calls.append(cmd) or SimpleNamespace(pid=99))
+    monkeypatch.setattr(gtc_mod.os.path, "isfile", lambda _p: True)
+    monkeypatch.setattr(gtc_mod, "evaluate_kinematic_impulse_symbols", lambda *_a, **_k: ["TAOUSDC"])
+    monkeypatch.setattr(gtc_mod, "_filter_actionable_impulse_symbols", lambda syms, *_a, **_k: list(syms))
+
+    gtc = gtc_mod.GlobalTelemetryCollector(cache_dir=str(cdb_dir), symbols=["TAOUSDC"], skip_news=True, skip_external=True)
+    monkeypatch.setenv("AI_IMPULSE_TRIGGER_ENABLED", "true")
+    monkeypatch.setenv("AI_IMPULSE_COOLDOWN_SEC", "150")
+    monkeypatch.delenv("AI_IMPULSE_MIN_EVAL_GAP_SEC", raising=False)
+
+    # 90s after completed_ts (< 150s) -> suppressed!
+    assert gtc.maybe_trigger_kinematic_ai_wakeup(now=eval_now) is None
+    assert popen_calls == []
+
+    # Override AI_IMPULSE_MIN_EVAL_GAP_SEC=60 -> now 90s >= 60s triggers immediately (fully configurable!)
+    monkeypatch.setenv("AI_IMPULSE_MIN_EVAL_GAP_SEC", "60")
+    assert gtc.maybe_trigger_kinematic_ai_wakeup(now=eval_now) == ["TAOUSDC"]
+    assert len(popen_calls) == 1
+
+    # With default AI_IMPULSE_COOLDOWN_SEC=150 (no gap override), 160s after completed_ts triggers cleanly
+    monkeypatch.delenv("AI_IMPULSE_MIN_EVAL_GAP_SEC", raising=False)
+    gtc._last_ai_impulse_ts = 0.0
+    sig_file = cdb_dir / "system" / "kinematic_impulse_signal.json"
+    if sig_file.exists():
+        sig_file.unlink()
+    state_io.save_json_state(
+        str(eval_file),
+        {"ts": eval_now - 240.0, "completed_ts": eval_now - 160.0, "delta_gate_meta": {"eval_prices": {"TAOUSDC": 200.0}}},
+    )
+    os.utime(str(eval_file), (old_mtime, old_mtime))
+    assert gtc.maybe_trigger_kinematic_ai_wakeup(now=eval_now) == ["TAOUSDC"]
+    assert len(popen_calls) == 2
+
+    # 2. _filter_unmoved_since_eval_symbols uses are_close cleanly
+    kept_moved = gtc_mod._filter_unmoved_since_eval_symbols(
+        ["BTCUSDC", "TAOUSDC"],
+        {"BTCUSDC": {"price": 90100.0}, "TAOUSDC": {"price": 202.0}},
+        {"ts": eval_now - 200.0, "delta_gate_meta": {"eval_prices": {"BTCUSDC": 90000.0, "TAOUSDC": 200.0}}},
+        eff_now=eval_now,
+        max_idle_sec=1080.0,
+        min_move_pct=0.35,
+    )
+    assert kept_moved == ["TAOUSDC"]
+
+    # 3. Delta Gate preserves urgent CRITICAL_SHOCK geo_update even if verdict strings match, while skipping identical NORMAL|NONE
+    t0 = 1_795_540_000.0
+    prev_normal = {
+        "ts": t0,
+        "mode": "enforce",
+        "model_used": "gemini-4-neon-medium",
+        "market_trading_decisions": [{"decision": "HOLD", "confidence": 0.5}],
+        "delta_gate_meta": {
+            "eval_prices": {"BTCUSDC": 90000.0},
+            "macro_ts": t0 - 300.0,
+            "macro_verdict": "CAUTION|HIGH|HOLD|COUPLED_RISK_OFF",
+            "geo_ts": t0 - 300.0,
+            "geo_verdict": "NORMAL|NONE",
+            "latest_fill_ts": 0.0,
+            "open_order_ids": [],
+        },
+    }
+    fresh_crit_s = SimpleNamespace(
+        prices_and_trends={"BTCUSDC": {"price": 90050.0}},
+        portfolio_summary={"open_limit_orders": [], "recent_orders": {}},
+        sentiment_advisor={
+            "ts": t0 + 120.0,
+            "market_bias": "CAUTION",
+            "risk_level": "HIGH",
+            "recommended_action": "HOLD",
+            "cross_asset_regime": "COUPLED_RISK_OFF",
+        },
+        geopolitical_threat={"ts": t0 + 120.0, "threat_level": "CRITICAL_SHOCK", "recommended_brake": "HARD_VETO_NEW_BUYS", "risk_score": 0.85},
+    )
+    skip_c, rsn_c, hi_c, _ = evaluate_crypto_executor_delta_gate(fresh_crit_s, prev_normal, now_ts=t0 + 360.0)
+    assert (skip_c, rsn_c, hi_c) == (False, "geo_update", True)
+

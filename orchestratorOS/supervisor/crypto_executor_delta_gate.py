@@ -6,12 +6,14 @@ from typing import Any, Collection, Dict, List, Mapping, Optional, Sequence, Tup
 
 from botcore import (
     _parse_bool_flag,
+    are_close,
     extract_order_id,
     first_epoch_sec,
     normalize_epoch_sec,
     parse_symbol_list,
     safe_float,
     safe_pos_float,
+    value_diff_to_percent,
 )
 from cachepaths import clean_symbol_key, normalize_venue_name
 from instrument_registry import (
@@ -33,6 +35,31 @@ def _is_geopolitical_shock(gt: Any) -> bool:
     geo_level = normalize_threat_level(gt.get("threat_level"))
     geo_score = safe_float(gt.get("risk_score"), default=0.0)
     return bool(geo_level == "CRITICAL_SHOCK" or (geo_score is not None and geo_score >= 0.70))
+
+
+def _extract_macro_verdict_sig(sa: Any) -> str:
+    """Return canonical verdict signature for macro sentiment so identical-verdict refreshes do not wake crypto LLM."""
+    if not isinstance(sa, Mapping):
+        return ""
+    parts = [
+        str(sa.get(k) or "").strip().upper()
+        for k in ("market_bias", "risk_level", "recommended_action", "cross_asset_regime")
+    ]
+    if not any(parts):
+        return ""
+    return "|".join(parts)
+
+
+def _extract_geo_verdict_sig(gt: Any) -> str:
+    """Return canonical verdict signature for geopolitical threat so routine identical NORMAL/NONE polls do not wake LLM."""
+    if not isinstance(gt, Mapping):
+        return ""
+    raw_lvl = str(gt.get("threat_level") or "").strip()
+    raw_brk = str(gt.get("recommended_brake") or "").strip().upper()
+    if not raw_lvl and not raw_brk:
+        return ""
+    norm_lvl = normalize_threat_level(raw_lvl) if raw_lvl else ""
+    return f"{norm_lvl}|{raw_brk}"
 
 
 def _extract_delta_gate_geo_ts(gt: Any, src_ts_map: Optional[Mapping[str, Any]] = None) -> float:
@@ -221,9 +248,6 @@ def _collect_open_order_attention(
         if st == "PARTIALLY_FILLED" or filled_q > 0.0:
             cur_flag = f"open_order_partial_fill:{round(filled_q, 8)}"
             cur_reason = "open_order_partial_fill"
-        elif dist_pct is not None and abs(dist_pct) <= 0.50:
-            cur_flag = "open_order_near_fill"
-            cur_reason = "open_order_near_fill"
         elif (fill_prob is not None and fill_prob <= 5.0) or (dist_pct is not None and abs(dist_pct) > 4.0):
             cur_flag = "open_order_stale_or_far"
             cur_reason = "open_order_stale_or_far"
@@ -394,7 +418,7 @@ def _compute_max_spot_move(
         if _is_ignored_delta_gate_symbol(sym_u, ignored_syms):
             continue
         base_px = prev_prices[sym_u]
-        move_pct = abs((cur_px - base_px) / base_px) * 100.0
+        move_pct = abs(value_diff_to_percent(base_px, cur_px))
         atr_15m = safe_pos_float(atr_map.get(sym_u), default=None)
         sym_thresh = (
             min(high_move_pct, max(min_move_pct, atr_15m * _ATR_15M_DELTA_GATE_MULT))
@@ -405,7 +429,7 @@ def _compute_max_spot_move(
             max_move_pct = move_pct
             max_move_sym = sym_u
             max_move_thresh_pct = sym_thresh
-        if sym_thresh > 0.0 and move_pct >= sym_thresh:
+        if sym_thresh > 0.0 and not are_close(cur_px, base_px, tolerance_percent=sym_thresh):
             ratio = move_pct / sym_thresh
             if ratio > best_breach_ratio:
                 best_breach_ratio = ratio
@@ -443,8 +467,8 @@ def evaluate_crypto_executor_delta_gate(
     - previous real eval was a healthy non-degraded pure ``HOLD`` with a valid price baseline;
     - elapsed time since last real eval is ``< max_idle_sec``;
     - cumulative max spot move across all tracked pairs since last real eval is ``< min_price_move_pct``;
-    - no new fills, no macro/geopolitical assessment updates, and no open-order changes or
-      near-fill / stale / wall-trapped / partially-filled open limit orders require attention.
+    - no new fills, no macro/geopolitical verdict changes, and no open-order changes or
+      stale / wall-trapped / partially-filled open limit orders require attention.
     """
     eff_min_move_pct = safe_pos_float(min_price_move_pct, default=0.35) or 0.35
     eff_max_idle_sec = safe_pos_float(max_idle_sec, default=1080.0) or 1080.0
@@ -498,10 +522,14 @@ def evaluate_crypto_executor_delta_gate(
         ps_map, eval_prices, prev_plan_states, unactionable_syms=unactionable_syms
     )
 
+    macro_verdict = _extract_macro_verdict_sig(sa)
+    geo_verdict = _extract_geo_verdict_sig(gt)
     snapshot_meta: Dict[str, Any] = {
         "eval_prices": eval_prices,
         "macro_ts": round(macro_ts, 3),
+        "macro_verdict": macro_verdict,
         "geo_ts": round(geo_ts, 3),
+        "geo_verdict": geo_verdict,
         "latest_fill_ts": round(latest_fill_ts, 3),
         "open_order_ids": open_order_ids,
         "order_attention_flags": order_attention_flags,
@@ -560,18 +588,22 @@ def evaluate_crypto_executor_delta_gate(
         return False, "new_fill", escalate_high_effort, snapshot_meta
 
     prev_macro_ts = normalize_epoch_sec(prev_meta.get("macro_ts"), default=0.0, allow_iso=True) or 0.0
+    prev_macro_verdict = str(prev_meta.get("macro_verdict") or "").strip().upper()
     if macro_ts > 0.0 and (
         (prev_macro_ts > 0.0 and macro_ts > prev_macro_ts + 0.5)
         or (prev_macro_ts <= 0.0 and macro_ts > prev_ts + 0.5)
     ):
-        return False, "macro_update", escalate_high_effort, snapshot_meta
+        if not macro_verdict or not prev_macro_verdict or macro_verdict != prev_macro_verdict:
+            return False, "macro_update", escalate_high_effort, snapshot_meta
 
     prev_geo_ts = normalize_epoch_sec(prev_meta.get("geo_ts"), default=0.0, allow_iso=True) or 0.0
+    prev_geo_verdict = str(prev_meta.get("geo_verdict") or "").strip().upper()
     if geo_ts > 0.0 and (
         (prev_geo_ts > 0.0 and geo_ts > prev_geo_ts + 0.5)
         or (prev_geo_ts <= 0.0 and geo_ts > prev_ts + 0.5)
     ):
-        return False, "geo_update", escalate_high_effort, snapshot_meta
+        if geo_shock or not geo_verdict or not prev_geo_verdict or geo_verdict != prev_geo_verdict:
+            return False, "geo_update", escalate_high_effort, snapshot_meta
 
     prev_oids = sorted({str(x).strip() for x in (prev_meta.get("open_order_ids") or []) if str(x).strip()})
     if open_order_ids != prev_oids:
