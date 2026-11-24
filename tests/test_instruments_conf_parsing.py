@@ -326,6 +326,18 @@ def test_current_execution_policy_is_preserved(tmp_path):
     )
     assert [n for n, _ in enabled_t212] == ["spcx"]
     assert skipped_t212 == [("nvda", "NVDA_US_EQ")]
+
+    # Observe-only mode (enabled = yes + ai.tradable = no): collected by telemetry and tagged [OBSERVE-ONLY] in Section 3A
+    obs_syms = registry.observe_only_registry_symbols(str(ROOT))
+    assert "ANTXUSD" in obs_syms
+    assert "ANT_US_EQ" in obs_syms
+    assert "BTCUSDC" not in obs_syms
+    assert "SPCXXUSD" not in obs_syms
+    from orchestratorOS.supervisor.prompt_sections import _format_market_prices_section
+    sec3a_lines = "\n".join(_format_market_prices_section({"BTCUSDC": {"price": 75000.0}, "ANTxUSD": {"price": 82.0}}))
+    assert "  * ANTxUSD: Price=$82.00 [OBSERVE-ONLY]" in sec3a_lines
+    assert "  * BTCUSDC: Price=$75,000.00" in sec3a_lines
+    assert "BTCUSDC: Price=$75,000.00 [OBSERVE-ONLY]" not in sec3a_lines
     assert registry.is_equity_symbol("SPCX_US_EQ") is True
     assert registry.is_equity_symbol("NVDA_US_EQ") is True
     assert registry.is_equity_symbol("AAPL_EQ") is True

@@ -317,6 +317,40 @@ def disabled_registry_symbols(workspace_dir: str | Path | None = None, *, path=N
     return frozenset(disabled_keys - enabled_keys)
 
 
+def observe_only_registry_symbols(workspace_dir: str | Path | None = None, *, path=None) -> frozenset[str]:
+    """Return uppercase symbols enabled for data/telemetry observation (`enabled = yes`, `ai.tradable = no`) and not AI-tradable elsewhere.
+
+    These instruments are collected by cacheManager, priceAnalysis, and globaltelemetry_collector and included
+    in AI market telemetry as reference context, while blocked from order execution.
+    """
+    target_path = path
+    if target_path is None and workspace_dir is not None:
+        ws_str = clean_scalar_str(os.fspath(workspace_dir)) if isinstance(workspace_dir, (str, Path)) else None
+        if not ws_str:
+            return frozenset()
+        ws_conf = os.path.join(ws_str, "instruments.conf")
+        if not os.path.isfile(ws_conf):
+            return frozenset()
+        target_path = ws_conf
+    try:
+        _, reg = _load_registry_cached(target_path)
+    except Exception:
+        return frozenset()
+    tradable_keys: set[str] = set()
+    observe_keys: set[str] = set()
+    for spec in reg.values():
+        if not spec.enabled:
+            continue
+        sym_u = clean_upper_scalar(spec.symbol) or ""
+        sym_k = clean_symbol_key(spec.symbol) or ""
+        keys = {k for k in (sym_u, sym_k) if k}
+        if _spec_explicitly_blocks_ai_trading(spec):
+            observe_keys.update(keys)
+        else:
+            tradable_keys.update(keys)
+    return frozenset(observe_keys - tradable_keys)
+
+
 def resolve_registered_symbol_case(symbol: object, provider: str | None = None, *, path=None) -> str:
     """Return the exact-case ``spec.symbol`` from ``instruments.conf`` when registered (e.g. ``SPCXXUSD`` -> ``SPCXxUSD``)."""
     raw = clean_scalar_str(symbol)

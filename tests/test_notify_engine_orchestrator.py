@@ -1512,7 +1512,7 @@ class EmailMirrorTest(TempDirTestCase):
             os.environ,
             {
                 "NTFY_TOPIC_SERVER": "t-server",
-                "NOTIFICATION_EMAIL_SELL_BASES": "SPCX",
+                "NOTIFICATION_EMAIL_SELL_BASES": "",
                 "NOTIFICATION_EMAIL_SELL_XSTOCKS": "true",
             },
         ):
@@ -1533,15 +1533,15 @@ class EmailMirrorTest(TempDirTestCase):
                     self.server._send_ntfy(title, "routine detail", "default", "t-server")
             self.assertEqual(self.sent, [])
 
-            # Live SELL alerts on ANY tokenized xStock (regardless of ticker) or SPCX_US_EQ trigger email;
-            # BUY/EXPIRED/REFUSED or regular crypto SELL do NOT.
+            # Live SELL alerts on ANY Kraken tokenized xStock (regardless of ticker) trigger email;
+            # automated T212 equity sells (SPCX_US_EQ), BUY/EXPIRED/REFUSED, and regular crypto SELL do NOT.
             self.assertTrue(should_email_trade_sell_alert("PLACED SELL SPCX@145.00 ~1450 $~ [kraken:auto_cryptotrade_executor]", "SPCXxUSD", "llm_trader"))
             self.assertTrue(should_email_trade_sell_alert("FILLED SELL SPCX@145.00 ~1450 $~ [kraken:kraken_bot]", "SPCXxUSD", "kraken"))
             self.assertTrue(should_email_trade_sell_alert("PLACED SELL ANT@95.00 ~950 $~ [kraken:auto_cryptotrade_executor]", "ANTxUSD", "llm_trader"))
             self.assertTrue(should_email_trade_sell_alert("FILLED SELL AAPL@250.00 ~1250 $~ [kraken:kraken_bot]", "AAPLxUSD", "kraken"))
             self.assertTrue(should_email_trade_sell_alert("FILLED SELL NVDA@190.00 ~950 $~ [kraken:kraken_bot]", "NVDAxEUR", "kraken"))
             self.assertTrue(should_email_trade_sell_alert("PLACED SELL TSLAxUSD@310.00 ~1550 $~ [kraken]", "", "kraken"))
-            self.assertTrue(should_email_trade_sell_alert("FILLED SELL SPCX@145.00 ~1450 $~ [t212:t212_bot]", "SPCX_US_EQ", "T212"))
+            self.assertFalse(should_email_trade_sell_alert("FILLED SELL SPCX@145.00 ~1450 $~ [t212:t212_bot]", "SPCX_US_EQ", "T212"))
             self.assertFalse(should_email_trade_sell_alert("FILLED BUY ANT@95.00 ~950 $~ [kraken:kraken_bot]", "ANTxUSD", "kraken"))
             self.assertFalse(should_email_trade_sell_alert("FILLED BUY SPCX@134.84 ~3300 $~ [t212:t212_bot]", "SPCX_US_EQ", "T212"))
             self.assertFalse(should_email_trade_sell_alert("EXPIRED SELL ANT@95.00 ~950 $~ [kraken:auto_cryptotrade_executor]", "ANTxUSD", "llm_trader"))

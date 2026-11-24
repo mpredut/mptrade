@@ -17098,7 +17098,7 @@ def test_disabled_registry_symbols_xstock_longterm_cost_and_partial_24h_vp(tmp_p
     )
     (tmp_path / "order_guard.conf").write_text(
         "autonomous_trading_xstock_sell_min_profit_pct = 6.0\n"
-        "autonomous_trading_xstock_sell_min_target_drop_pct = 3.0\n",
+        "autonomous_trading_xstock_sell_min_target_drop_pct = 4.0\n",
         encoding="utf-8",
     )
     (krk_dir / ".xstock_state.json").write_text(
@@ -17118,7 +17118,8 @@ def test_disabled_registry_symbols_xstock_longterm_cost_and_partial_24h_vp(tmp_p
     assert "LONG-TERM INVESTMENT" in xs["active_swing_directive"]
     assert "OBSERVE-ONLY" in xs["active_swing_directive"]
     assert "+6%" in xs["active_swing_directive"]
-    assert "3%" in xs["active_swing_directive"]
+    assert "4%" in xs["active_swing_directive"]
+    assert "HEAVY re-entry commission" in xs["active_swing_directive"]
     assert "tp1_alert_pct" not in xs
     assert "watched_ipo_playbook" not in xs
     assert "watched_ipo_underlying" not in xs

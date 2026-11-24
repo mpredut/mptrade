@@ -20,7 +20,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from botcore import _parse_bool_flag, normalize_epoch_sec, normalize_timestamp_ms, safe_float, safe_int, safe_pos_float
-from cachepaths import canonical_base_asset
+from cachepaths import canonical_base_asset, clean_symbol_key
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
 from intelligence.macro_sentiment_ssot import (
     TELEMETRY_SOURCE_STALE_INTERVAL_MULT,
@@ -67,7 +67,12 @@ from intelligence.sentiment.evaluators.prompt_view_evaluator import (
     evaluate_portfolio_prompt_view,
     evaluate_tradable_position_prompt_view,
 )
-from instrument_registry import is_equity_or_tokenized_symbol, is_equity_symbol, resolve_symbol_identity
+from instrument_registry import (
+    is_equity_or_tokenized_symbol,
+    is_equity_symbol,
+    observe_only_registry_symbols,
+    resolve_symbol_identity,
+)
 from providers.ai_survival_guard import (
     format_ai_calibration_feedback_line,
     format_ai_decision_scorecard_line,
@@ -631,11 +636,15 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
     """Format Section 3A (Live Market Prices, Multi-Horizon Trends & 24h/7d Evolution)."""
     view = evaluate_market_prices_prompt_view(prices_and_trends)
     btc_entry = view["btc_entry"]
+    obs_syms = observe_only_registry_symbols()
     lines = ["\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION (ALL COINS):"]
     for sym, pinfo, sib_specs in view["rows"]:
         px = pinfo.get("price")
         px_f = safe_float(px, 0.0)
         px_str = _fmt_px(px_f, px)
+        sym_u = str(sym or "").strip().upper()
+        sym_k = clean_symbol_key(sym) or ""
+        obs_lbl = " [OBSERVE-ONLY]" if (obs_syms and (sym_u in obs_syms or (sym_k and sym_k in obs_syms))) else ""
         sib_lbl = ""
         if sib_specs:
             sib_parts: List[str] = []
@@ -823,7 +832,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 extras.append("long_trend=NEUTRAL")
         eq_qmeta_sfx = format_equity_quote_meta_suffix(pinfo) if is_equity_symbol(sym) else ""
         extra_str = f" | {' | '.join(extras)}" if extras else ""
-        lines.append(f"  * {sym}{sib_lbl}: Price={px_str}{eq_qmeta_sfx}{extra_str}")
+        lines.append(f"  * {sym}{sib_lbl}: Price={px_str}{obs_lbl}{eq_qmeta_sfx}{extra_str}")
     return lines
 
 

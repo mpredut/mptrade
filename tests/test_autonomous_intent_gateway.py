@@ -4723,7 +4723,7 @@ def test_tokenized_equity_longterm_sell_survival_guard_and_gateway(tmp_path):
     )
     assert ok_nocost is False and "ai_xstock_longterm_missing_cost_basis" in rsn_nocost
 
-    # 3. Blocks when profit >= +6% but target_px is missing or drop < 3% (intraday scalp, not 1-2+ day decline)
+    # 3. Blocks when profit >= +6% but target_px is missing or drop < 4% (insufficient to clear heavy manual rebuy commission)
     ok_notgt, rsn_notgt, _ = evaluate_ai_tokenized_equity_sell_guard(
         {"decision": "SELL", "urgency": "NORMAL"},
         [],
@@ -4738,7 +4738,7 @@ def test_tokenized_equity_longterm_sell_survival_guard_and_gateway(tmp_path):
     assert ok_notgt is False and "ai_xstock_longterm_missing_target_px" in rsn_notgt
 
     ok_shallow, rsn_shallow, _ = evaluate_ai_tokenized_equity_sell_guard(
-        {"decision": "SELL", "urgency": "NORMAL", "target_px": 142.5},  # -1.72% < 3.0%
+        {"decision": "SELL", "urgency": "NORMAL", "target_px": 141.0},  # -2.76% < 4.0%
         [],
         decision="SELL",
         symbol="SPCXxUSD",
@@ -4752,7 +4752,7 @@ def test_tokenized_equity_longterm_sell_survival_guard_and_gateway(tmp_path):
 
     # 4. Blocks low confidence (< 0.90) and repeat SELL within 24h cooldown
     ok_conf, rsn_conf, _ = evaluate_ai_tokenized_equity_sell_guard(
-        {"decision": "SELL", "urgency": "NORMAL", "target_px": 139.0},
+        {"decision": "SELL", "urgency": "NORMAL", "target_px": 138.0},
         [],
         decision="SELL",
         symbol="SPCXxUSD",
@@ -4775,7 +4775,7 @@ def test_tokenized_equity_longterm_sell_survival_guard_and_gateway(tmp_path):
         "execution_payload": {"orderId": "ok1", "status": "FILLED", "executedQty": "5.0", "avg_fill_price": 144.5},
     }]
     ok_cd, rsn_cd, _ = evaluate_ai_tokenized_equity_sell_guard(
-        {"intent_id": "xs_new_sell", "decision": "SELL", "urgency": "NORMAL", "target_px": 139.0},
+        {"intent_id": "xs_new_sell", "decision": "SELL", "urgency": "NORMAL", "target_px": 138.0},
         prior_sell,
         decision="SELL",
         symbol="SPCXxUSD",
@@ -4787,9 +4787,9 @@ def test_tokenized_equity_longterm_sell_survival_guard_and_gateway(tmp_path):
     )
     assert ok_cd is False and "ai_xstock_longterm_sell_cooldown" in rsn_cd
 
-    # 5. Allows SELL when profit > +6%, target drop >= 3%, confidence >= 0.90, and cooldown clear
+    # 5. Allows SELL when profit > +6%, target drop >= 4%, confidence >= 0.90, and cooldown clear
     ok_pass, rsn_pass, m_pass = evaluate_ai_tokenized_equity_sell_guard(
-        {"decision": "SELL", "urgency": "NORMAL", "target_px": 139.0},  # -4.14% drop
+        {"decision": "SELL", "urgency": "NORMAL", "target_px": 138.0},  # -4.83% drop
         [],
         decision="SELL",
         symbol="SPCXxUSD",
@@ -4801,7 +4801,7 @@ def test_tokenized_equity_longterm_sell_survival_guard_and_gateway(tmp_path):
     )
     assert ok_pass is True and rsn_pass == ""
     assert m_pass["xstock_profit_pct"] > 6.0
-    assert m_pass["xstock_target_drop_pct"] > 3.0
+    assert m_pass["xstock_target_drop_pct"] > 4.0
 
     # 6. Never affects regular crypto or RTH equities
     ok_btc, _, _ = evaluate_ai_tokenized_equity_sell_guard(
@@ -4831,7 +4831,7 @@ def test_tokenized_equity_longterm_sell_survival_guard_and_gateway(tmp_path):
         "autonomous_trading_min_confidence = 0.85\n"
         "autonomous_trading_notify = 0\n"
         "autonomous_trading_xstock_sell_min_profit_pct = 6.0\n"
-        "autonomous_trading_xstock_sell_min_target_drop_pct = 3.0\n"
+        "autonomous_trading_xstock_sell_min_target_drop_pct = 4.0\n"
         "autonomous_trading_xstock_sell_min_confidence = 0.90\n"
         "autonomous_trading_xstock_sell_cooldown_hours = 24.0\n",
         encoding="utf-8",

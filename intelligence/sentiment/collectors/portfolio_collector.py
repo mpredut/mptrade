@@ -1087,11 +1087,11 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         )
         active_directive = (
             f"{primary_xpair} ({', '.join(hold_meta_parts)}): LONG-TERM INVESTMENT -- SELL-ONLY ON KRAKEN EU "
-            f"(Spot API BUY on tokenized xStocks returns EGeneral:Permission denied; owner must manually log in to rebuy and cannot re-enter quickly; "
-            f"{bot_mode_desc}). Default posture is HOLD. Consider selling via 0bps LIMIT (owner gets emailed automatically to rebuy manually) ONLY when BOTH: "
+            f"(Spot API BUY on tokenized xStocks returns EGeneral:Permission denied; API SELL is 0bps, BUT manual rebuy on Kraken carries a HEAVY re-entry commission/spread and the owner cannot re-enter quickly; "
+            f"{bot_mode_desc}). Default posture is HOLD. Sell RARELY via 0bps LIMIT (owner gets emailed automatically to rebuy manually) ONLY when BOTH: "
             f"(1) unrealized profit > +{xs_min_profit_pct:g}% above active cost basis (gateway minimum >= +{xs_min_profit_pct:g}%), AND "
             f"(2) HIGH-CONVICTION multi-day decline thesis (minimum 1-2+ days expected drop, explicit target_px >= {xs_min_drop_pct:g}% below sell price) "
-            f"so the owner has time to rebuy manually at a meaningfully lower level. NEVER scalp on 90s/5m kinematics, "
+            f"large enough to clearly overcome the heavy manual rebuy fee/spread and leave net upside. NEVER scalp on 90s/5m kinematics, "
             f"NEVER sell at breakeven or a loss, and do NOT submit Kraken xStock BUY orders (use T212 {t212_sib} for US equity buys)."
         )
         ipo_sym_lbl = f"{cfg_underlying}xUSD" if (ipo_watch_active and cfg_underlying) else ""
