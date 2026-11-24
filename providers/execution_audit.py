@@ -613,7 +613,7 @@ def find_order_audit_record(
                         continue
                 if adapted.get("client_order_id") or adapted.get("kind") or adapted.get("intent_id"):
                     return adapted
-        if audit_dir is None and reader.list_event_files():
+        if audit_dir is None and (reader.list_event_files() or reader.list_closed_files()):
             # Production OrderLedger SSoT is populated (including backfilled history); skip legacy audit scan.
             return None
 

@@ -160,7 +160,7 @@ def build_supervisor_prompt(
         tasks.append(
             f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc}:\n"
             "   - FULL ACCESS TO EVERYTHING IN `cachedb/` AS A DECISION INFORMATION SOURCE: Telemetry below is a compact dashboard; "
-            "you have unrestricted read access to `cachedb/`, `logger/execution_audit/`, `logs/`, and `providers.market_api` for deeper verification.\n"
+            "you have unrestricted read access to `cachedb/` (including `cachedb/orders/` Order Ledger SSoT), `logs/`, and `providers.market_api` for deeper verification.\n"
             "   - ZERO PROFIT OR STRATEGY GUARDS (AI SURVIVAL BREAKERS ONLY): Maximize risk-adjusted net NAV (after venue fees). All deterministic order_guard gates "
             "(G_PROF, GO1, GT_*, G_QLIMIT*, GI_*, GLLM*) are BYPASSED symmetrically on BUY and SELL. Deterministic bots and configs "
             "continue working in parallel in the system and can be consulted by you on demand as advisory references only--ZERO obligation to follow them. "

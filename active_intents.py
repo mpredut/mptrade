@@ -875,7 +875,7 @@ def trace_order_or_intent(
     )
     audit_events: list[dict[str, Any]] = []
     # Skip legacy execution_audit JSONL scan in production once OrderLedger is populated (unless audit_dir is explicitly passed).
-    should_scan_legacy_audit = bool(audit_dir) or not ledger_reader.list_event_files()
+    should_scan_legacy_audit = bool(audit_dir) or not (ledger_reader.list_event_files() or ledger_reader.list_closed_files())
     if should_scan_legacy_audit and os.path.isdir(eff_audit_dir):
         for audit_path in iter_audit_jsonl_paths(eff_audit_dir, unbounded_limit=max_audit_days):
             for rec in read_jsonl_dicts(audit_path):

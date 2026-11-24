@@ -998,3 +998,104 @@ def test_execution_audit_prod_mode_writes_only_order_ledger_and_6h_recently_clos
         eff_now=now_t,
     )
     assert "old" not in pruned and "fresh" in pruned
+
+
+def test_late_fill_supersedes_premature_canceled_and_closed_archives_survive_event_pruning(tmp_path):
+    """Late authoritative FILLED updates are never dropped after premature CANCELED, and >60d attribution survives event pruning."""
+    from providers.order_ledger import apply_order_event, update_recently_closed
+
+    cdb_dir = tmp_path / "cachedb"
+    writer = OrderLedgerWriter(cachedb_dir=str(cdb_dir))
+    reconciler = OrderLedgerReconciler(cachedb_dir=str(cdb_dir), use_singletons=False, reconcile_grace_sec=30.0)
+    t0 = 1_795_457_276.0
+
+    # 1. Simulate premature RECONCILED_CANCELED (absent_from_verified_open_book) followed 112s later by authoritative FILLED.
+    orders: dict = {}
+    closed_rows: list = []
+    rc: dict = {}
+    apply_order_event(
+        orders,
+        {"ts": t0, "ev": "ACKED", "v": "binance", "sym": "ARBUSDC", "iid": "iid-arb-1", "cid": "AI_arb_1", "vid": "568040423", "side": "SELL", "qty": 4634.3, "px": 0.1153},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    )
+    apply_order_event(
+        orders,
+        {"ts": t0 + 100.0, "ev": "RECONCILED_CANCELED", "v": "binance", "sym": "ARBUSDC", "iid": "iid-arb-1", "cid": "AI_arb_1", "vid": "568040423", "reason": "absent_from_verified_open_book"},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    )
+    assert len(closed_rows) == 1 and closed_rows[0]["state"] == "CANCELED"
+    rc = update_recently_closed(rc, closed_rows, eff_now=t0 + 100.0)
+
+    # Late STATUS NEW (non-fill) is still ignored cleanly.
+    assert (
+        apply_order_event(
+            orders,
+            {"ts": t0 + 150.0, "ev": "STATUS", "v": "binance", "sym": "ARBUSDC", "iid": "iid-arb-1", "cid": "AI_arb_1", "vid": "568040423", "vst": "NEW"},
+            closed_out=closed_rows,
+            recently_closed=rc,
+        )
+        is None
+    )
+
+    # Late authoritative STATUS vst=FILLED MUST NOT be dropped; it archives a FILLED record!
+    apply_order_event(
+        orders,
+        {"ts": t0 + 212.0, "ev": "STATUS", "v": "binance", "sym": "ARBUSDC", "iid": "iid-arb-1", "cid": "AI_arb_1", "vid": "568040423", "side": "SELL", "vst": "FILLED", "fq": 4634.3, "avg_px": 0.1153, "fee": 0.40},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    )
+    assert len(closed_rows) == 2 and closed_rows[1]["state"] == "FILLED" and closed_rows[1]["fq"] == pytest.approx(4634.3)
+    rc = update_recently_closed(rc, closed_rows[1:], eff_now=t0 + 212.0)
+
+    # Duplicate FILLED arriving AFTER the authoritative FILLED IS ignored.
+    assert (
+        apply_order_event(
+            orders,
+            {"ts": t0 + 220.0, "ev": "STATUS", "v": "binance", "sym": "ARBUSDC", "iid": "iid-arb-1", "cid": "AI_arb_1", "vid": "568040423", "vst": "FILLED", "fq": 4634.3, "avg_px": 0.1153},
+            closed_out=closed_rows,
+            recently_closed=rc,
+        )
+        is None
+    )
+
+    # 2. iter_audit_compat_records still serves permanent orders_closed_*.jsonl even after aged order_events_*.jsonl are pruned (>60d).
+    writer.record_event(
+        OrderEventType.SUBMITTED,
+        venue="binance",
+        symbol="ETHUSDC",
+        ts=t0,
+        owner="ai_executor",
+        side="BUY",
+        qty=1.0,
+        px=3000.0,
+        iid="old-eth-1",
+        cid="AI_old_eth_1",
+    )
+    writer.record_event(
+        OrderEventType.STATUS,
+        venue="binance",
+        symbol="ETHUSDC",
+        ts=t0 + 5.0,
+        owner="ai_executor",
+        side="BUY",
+        qty=1.0,
+        px=3000.0,
+        fq=1.0,
+        avg_px=3000.0,
+        iid="old-eth-1",
+        cid="AI_old_eth_1",
+        vid="999001",
+        vst="FILLED",
+    )
+    reconciler.reconcile_once(now_ts=t0 + 10.0)
+    reader = OrderLedgerReader(cachedb_dir=str(cdb_dir))
+    for ev_file in reader.list_event_files():
+        os.unlink(ev_file)
+    assert not reader.list_event_files() and len(reader.list_closed_files()) == 1
+
+    day_str = utc_day_for_ts(t0)
+    recs, has_ledger = reader.iter_audit_compat_records(min_day=day_str, max_day=day_str)
+    assert has_ledger is True
+    assert any(r.get("order_id") == "999001" and r.get("filled_qty") == pytest.approx(1.0) for r in recs)

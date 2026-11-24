@@ -505,14 +505,19 @@ def apply_order_event(
             key = raw_ev_key
 
     if key is None:
-        # Ignore late trailing updates (e.g. ExecutionAudit order_terminal arriving after reconciler already closed the order).
-        if (
-            ev in _TRAILING_NON_NEW_EVENTS
-            and isinstance(recently_closed, dict)
-            and recently_closed
-            and any(tok in recently_closed for tok in closed_order_tokens(venue, symbol=sym, vid=vid, iid=iid, cid=cid))
-        ):
-            return None
+        # Ignore late trailing updates after an order already closed, EXCEPT allow an authoritative
+        # FILLED update to supersede an earlier non-fill closure (e.g. absent_from_verified_open_book CANCELED).
+        if ev in _TRAILING_NON_NEW_EVENTS and isinstance(recently_closed, dict) and recently_closed:
+            ev_toks = closed_order_tokens(venue, symbol=sym, vid=vid, iid=iid, cid=cid)
+            is_fill_upgrade = (
+                (safe_nonneg_float(event.get("fq"), default=0.0) or 0.0) > 0.0
+                or clean_upper_scalar(event.get("vst")) in {"FILLED", "CLOSED"}
+            )
+            if is_fill_upgrade:
+                if any(f"filled:{tok}" in recently_closed for tok in ev_toks):
+                    return None
+            elif any(tok in recently_closed for tok in ev_toks):
+                return None
         key = _canonical_order_key(venue, symbol=sym, iid=iid, cid=cid, vid=vid, ts=ts)
         rec = {"v": venue, "sym": sym, "state": OrderLedgerState.INTENT.value, "created_ts": round(ts, 3), "updated_ts": round(ts, 3), "events": 0}
         orders[key] = rec
@@ -617,6 +622,10 @@ def update_recently_closed(
         if not isinstance(row, dict):
             continue
         row_ts = safe_pos_float(row.get("closed_ts"), default=None) or eff_now or resolve_now_ts()
+        is_filled_row = (
+            clean_upper_scalar(row.get("state")) == OrderLedgerState.FILLED.value
+            or (safe_nonneg_float(row.get("fq"), default=0.0) or 0.0) > 0.0
+        )
         for tok in closed_order_tokens(
             row.get("v"),
             symbol=row.get("sym"),
@@ -625,6 +634,9 @@ def update_recently_closed(
             cid=row.get("cid"),
         ):
             pruned[tok] = round(max(pruned.get(tok, 0.0), row_ts), 3)
+            if is_filled_row:
+                f_tok = f"filled:{tok}"
+                pruned[f_tok] = round(max(pruned.get(f_tok, 0.0), row_ts), 3)
     if len(pruned) > max_entries:
         keep = sorted(pruned.items(), key=lambda kv: kv[1], reverse=True)[:max_entries]
         pruned = dict(keep)
@@ -1162,12 +1174,35 @@ class OrderLedgerReader(FileOrderLedgerBase):
         max_day: str = "",
         max_days: Optional[int] = None,
     ) -> tuple[list[dict[str, Any]], bool]:
-        """Read ``order_events_*.jsonl`` within ``[min_day, max_day]`` adapted to the ExecutionAudit record schema."""
-        all_files = self.list_event_files()
-        if not all_files:
+        """Read permanent ``orders_closed_*.jsonl`` plus ``order_events_*.jsonl`` within ``[min_day, max_day]``."""
+        all_event_files = self.list_event_files()
+        all_closed_files = self.list_closed_files()
+        if not all_event_files and not all_closed_files:
             return [], False
+
+        out: list[dict[str, Any]] = []
+        min_month = min_day[:7] if len(min_day) >= 7 else ""
+        max_month = max_day[:7] if len(max_day) >= 7 else ""
+        closed_files = all_closed_files[-2:] if (max_days is not None and not min_day and not max_day) else all_closed_files
+        for cpath in closed_files:
+            base = os.path.basename(cpath)
+            cmonth = base[len("orders_closed_") : -len(".jsonl")] if base.startswith("orders_closed_") and base.endswith(".jsonl") else ""
+            if cmonth:
+                if min_month and cmonth < min_month:
+                    continue
+                if max_month and cmonth > max_month:
+                    continue
+            for row in read_jsonl_dicts(cpath):
+                row_ts = safe_pos_float(row.get("closed_ts") or row.get("created_ts"), default=None)
+                if row_ts is not None and (min_day or max_day):
+                    row_day = utc_day_for_ts(row_ts)
+                    if (min_day and row_day < min_day) or (max_day and row_day > max_day):
+                        continue
+                if adapted := ledger_row_to_audit_record(row, is_closed=True):
+                    out.append(adapted)
+
         selected: list[str] = []
-        for fpath in all_files:
+        for fpath in all_event_files:
             fday = self._event_file_day(fpath)
             if fday:
                 if min_day and fday < min_day:
@@ -1177,7 +1212,6 @@ class OrderLedgerReader(FileOrderLedgerBase):
             selected.append(fpath)
         if max_days is not None and not min_day and not max_day:
             selected = selected[-max(1, safe_nonneg_int(max_days, default=1) or 1) :]
-        out: list[dict[str, Any]] = []
         for fpath in selected:
             for row in read_jsonl_dicts(fpath):
                 if adapted := ledger_row_to_audit_record(row, is_closed=False):
