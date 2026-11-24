@@ -21,6 +21,7 @@ from botcore import (
     is_unmocked_llm_query_allowed,
     normalize_epoch_sec,
     optional_env,
+    resolve_llm_timeout_sec,
     resolve_patched_attr,
     safe_float,
     safe_nonneg_int,
@@ -1053,7 +1054,7 @@ class GeminiQuotaRouterMixin:
             return
         unrec = _parse_bool_flag(model_unrecognized, False)
         now = time.time()
-        default_ttl = safe_pos_float(float_env("LLM_RUNTIME_EXHAUSTED_TTL_SEC", default=120.0), default=120.0)
+        default_ttl = max(60.0, resolve_llm_timeout_sec() / 2.0)
         eff_ttl = safe_pos_float(ttl_sec, default=default_ttl) if ttl_sec is not None else default_ttl
         exp_until = now + max(15.0, eff_ttl)
         state_path, _read_json_dict, _save_json_state = (

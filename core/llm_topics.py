@@ -67,6 +67,12 @@ def resolve_llm_soft_extend_mult(default: float = 3.0) -> float:
     return max(1.0, raw_val) if raw_val is not None else fallback
 
 
+def resolve_llm_hard_timeout_sec(soft_timeout_sec: float | None = None) -> float:
+    """Return extended hard LLM timeout ``T_soft * LLM_SOFT_TIMEOUT_EXTEND_MULT`` (default 240 * 3 = 720s)."""
+    t_soft = safe_pos_float(soft_timeout_sec, default=None) or resolve_llm_timeout_sec()
+    return t_soft * resolve_llm_soft_extend_mult(3.0)
+
+
 _BRACKET_TAG_RE = re.compile(r"(\[[^\]]+\])")
 _NTFY_PREFIX_RE = re.compile(r"^([^\[]*\[[^\]]+\])")
 
@@ -136,7 +142,7 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
         base_timeout_sec=240.0,
         model_env_key="LLM_HIGH_STAKE_MODEL",
         override_env_key="LLM_TOPIC_MODEL_AUTO_TECHNICAL_REPAIR",
-        timeout_env_key="LLM_REPAIR_TIMEOUT_SEC",
+        timeout_env_key="LLM_DEFAULT_TIMEOUT_SEC",
         timeout_override_env_key="LLM_TOPIC_TIMEOUT_AUTO_TECHNICAL_REPAIR",
     ),
     "auto_cryptotrade_executor": TopicSpec(

@@ -1704,13 +1704,16 @@ def test_llm_timeout_configurability_and_audit_bug_fixes(tmp_path, monkeypatch):
     from orchestratorOS.agy import topics as agy_topics
     from orchestratorOS.lib import watchdog_common
 
-    # 1. Dynamic timeout configurability without code changes
+    # 1. Dynamic timeout configurability from 4 core anchors + per-topic override (zero redundant keys)
     monkeypatch.setenv("LLM_DEFAULT_TIMEOUT_SEC", "300")
     monkeypatch.setenv("LLM_TOPIC_TIMEOUT_AUTO_CRYPTOTRADE_EXECUTOR", "195")
-    monkeypatch.setenv("LLM_REPAIR_TIMEOUT_SEC", "360")
     assert topic_spec("auto_sharetrade_executor").default_timeout_sec == pytest.approx(300.0)
+    assert topic_spec("auto_technical_repair").default_timeout_sec == pytest.approx(300.0)
     assert topic_spec("auto_cryptotrade_executor").default_timeout_sec == pytest.approx(195.0)
+    monkeypatch.setenv("LLM_TOPIC_TIMEOUT_AUTO_TECHNICAL_REPAIR", "360")
     assert topic_spec("auto_technical_repair").default_timeout_sec == pytest.approx(360.0)
+    # Outer impulse timeout derives automatically from T_soft * M_ext + 60 (300 * 3 + 60 = 960s)
+    assert resolve_derived_telemetry_intervals(executor_interval_sec=360.0)["ai_impulse_exec_timeout_sec"] >= 960.0
     observed_to = []
     dummy_cli = GeminiClient(custom_runner=lambda _p, _m, t: (observed_to.append(t), '{"ok": true}')[1])
     assert HighStakeGuard(gemini_client=dummy_cli).timeout_sec == pytest.approx(300.0)
@@ -1718,8 +1721,8 @@ def test_llm_timeout_configurability_and_audit_bug_fixes(tmp_path, monkeypatch):
     query_topic_json(dummy_cli, "macro_sentiment", "ping")
     assert observed_to == [pytest.approx(300.0)]
     monkeypatch.delenv("LLM_TOPIC_TIMEOUT_AUTO_CRYPTOTRADE_EXECUTOR", raising=False)
+    monkeypatch.delenv("LLM_TOPIC_TIMEOUT_AUTO_TECHNICAL_REPAIR", raising=False)
     monkeypatch.setenv("LLM_DEFAULT_TIMEOUT_SEC", "240")
-    monkeypatch.setenv("LLM_REPAIR_TIMEOUT_SEC", "240")
 
     # 2. Bug Fix #1: BaseException during extended wait kills & reaps child process cleanly
     killed_flags = []
@@ -1950,7 +1953,7 @@ def test_llm_timeout_configurability_and_audit_bug_fixes(tmp_path, monkeypatch):
     )
     assert "latency_demoted_models" not in snap_restored
 
-    # 5. Bug Fix #4: Outer timeout alignment (>= 240s * 3 = 720s)
+    # 5. Bug Fix #4: Outer timeout alignment (>= 240s * 3 = 720s) + unified /compact soft-extend flow
     derived = resolve_derived_telemetry_intervals(executor_interval_sec=360.0)
     assert derived["ai_impulse_exec_timeout_sec"] >= 780.0
     cron_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "systemd", "crontab.prod.txt")
@@ -1959,3 +1962,50 @@ def test_llm_timeout_configurability_and_audit_bug_fixes(tmp_path, monkeypatch):
         matching = [ln for ln in cron_txt.splitlines() if f"--topic-key {job_key}" in ln]
         assert len(matching) == 1
         assert "/usr/bin/timeout 780 " in matching[0]
+
+    # 6. /compact uses the exact same soft-extend flow without killing and schedules next-turn rotation when slow
+    compact_calls = []
+    recorded_turns = []
+    step_downs = []
+    cli_c = GeminiClient(cli_path="/bin/true")
+
+    def _slow_compact_exec(resume, text, call_timeout, cli_model, *a, **kw):
+        compact_calls.append((call_timeout, kw))
+        cli_c._JSON_MODE_LOCAL.exceeded_soft_timeout = True
+        return subprocess.CompletedProcess(
+            args=["agy-bot"],
+            returncode=0,
+            stdout=json.dumps({"response": "COMPACT_OK", "conversation_id": resume}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(cli_c, "_execute_cli", _slow_compact_exec)
+    monkeypatch.setattr(cli_c, "_maybe_step_down_after_slow_rotations", lambda **kw: step_downs.append(kw))
+    monkeypatch.setattr(gc_mod, "snapshot_conversation_state", lambda *_a, **_k: None)
+    monkeypatch.setattr(gc_mod, "record_topic_turn", lambda **kw: recorded_turns.append(kw))
+    cli_c._finalize_topic_turn(
+        topic_key="auto_cryptotrade_executor",
+        session=agy_topics.TopicSession("cid-c1", "", True),
+        turn_cid="cid-c1",
+        output='{"decision": "HOLD"}',
+        replaced_conversation=False,
+        timeout_sec=120.0,
+        models_to_try=["gemini-4-neon-medium"],
+        attempt_idx=0,
+        enable_pre_quota=False,
+        bot_cli_base=bot_base,
+        run_env={},
+        is_mocked=False,
+        include_repo_rules=False,
+        topic_lock=None,
+        schedule_rotation=False,
+        effective_model_used="gemini-4-neon-medium",
+    )
+    assert len(compact_calls) == 1
+    assert compact_calls[0][0] == pytest.approx(240.0)
+    assert compact_calls[0][1].get("allow_soft_extend") is True
+    assert len(recorded_turns) == 1
+    assert recorded_turns[0].get("compacted") is True
+    assert recorded_turns[0].get("schedule_rotation") is True
+    # Slow background /compact must NOT falsely demote a fast main trading model
+    assert step_downs == []

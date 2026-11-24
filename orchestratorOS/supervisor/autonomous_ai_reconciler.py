@@ -345,10 +345,7 @@ class AutonomousAIReconciler:
                     route_reason,
                 )
 
-        call_timeout = safe_pos_float(getattr(spec, "default_timeout_sec", None), default=None) or resolve_llm_timeout_sec(
-            "LLM_REPAIR_TIMEOUT_SEC" if spec.can_self_heal else "LLM_DEFAULT_TIMEOUT_SEC",
-            240.0,
-        )
+        call_timeout = safe_pos_float(getattr(spec, "default_timeout_sec", None), default=None) or resolve_llm_timeout_sec()
         now_ts_str = time.strftime("%Y-%m-%d %H:%M:%S %Z").strip()
         self._last_model_used = ""
         self._last_query_succeeded = False

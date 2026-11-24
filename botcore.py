@@ -354,6 +354,7 @@ from core.llm_topics import (  # noqa: E402
     TOPIC_SPECS,
     TopicSpec,
     canonical_topic_key,
+    resolve_llm_hard_timeout_sec,
     resolve_llm_soft_extend_mult,
     resolve_llm_timeout_sec,
     topic_spec,

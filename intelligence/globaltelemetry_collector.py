@@ -30,6 +30,7 @@ from botcore import (
     normalize_epoch_sec,
     parse_symbol_list,
     pos_float_env,
+    resolve_llm_hard_timeout_sec,
     resolve_now_ts,
     safe_float,
     safe_int,
@@ -813,7 +814,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 {"ts": eff_now, "symbols": shocked},
                 indent=2,
             )
-            fallback_exec_timeout = pos_float_env("AI_IMPULSE_EXEC_TIMEOUT_SEC", 780.0)
+            fallback_exec_timeout = resolve_llm_hard_timeout_sec() + 60.0
             exec_timeout_sec = str(
                 max(
                     30,

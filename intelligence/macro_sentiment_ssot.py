@@ -125,6 +125,7 @@ from botcore import (
     optional_env,
     parse_symbol_list,
     pos_float_env,
+    resolve_llm_hard_timeout_sec,
     resolve_now_ts,
     resolve_patched_attr,
     safe_float,
@@ -670,13 +671,14 @@ def resolve_derived_telemetry_intervals(
         config_path=config_path,
         crontab_path=crontab_path,
     )
+    llm_hard_timeout = round(resolve_llm_hard_timeout_sec(), 6)
     cfg_str_fn = _resolve_macro_cfg_attr("_cfg_str", _cfg_str)
     cfg_obj = None
-    cache_key: Optional[Tuple[float, int]] = None
+    cache_key: Optional[Tuple[float, int, float]] = None
     if cfg_str_fn is _ORIG_MACRO_CFG_ATTRS["_cfg_str"]:
         loader = _resolve_macro_cfg_attr("load_macro_intelligence_config", load_macro_intelligence_config)
         cfg_obj = loader(config_path)
-        cache_key = (exec_sec, id(cfg_obj))
+        cache_key = (exec_sec, id(cfg_obj), llm_hard_timeout)
         cached = _DERIVED_INTERVALS_CACHE.get(cache_key)
         if cached is not None and cached[0] is cfg_obj:
             return dict(cached[1])
@@ -730,9 +732,9 @@ def resolve_derived_telemetry_intervals(
         "ai_impulse_post_cron_guard_sec": _sec("ai_impulse_post_cron_guard_mult", 1.0 / 18.0),
         "ai_impulse_pre_cron_guard_sec": _sec("ai_impulse_pre_cron_guard_mult", 1.0 / 8.0),
         "ai_impulse_min_eval_gap_sec": _sec("ai_impulse_min_eval_gap_mult", 13.0 / 72.0),
-        "ai_impulse_exec_timeout_sec": (
-            safe_pos_float(optional_env("AI_IMPULSE_EXEC_TIMEOUT_SEC", ""), default=None)
-            or _sec("ai_impulse_exec_timeout_mult", 13.0 / 6.0, "ai_impulse_exec_timeout_sec")
+        "ai_impulse_exec_timeout_sec": max(
+            _sec("ai_impulse_exec_timeout_mult", 13.0 / 6.0, "ai_impulse_exec_timeout_sec"),
+            round(llm_hard_timeout + 60.0, 6),
         ),
     }
     if cache_key is not None and cfg_obj is not None:
