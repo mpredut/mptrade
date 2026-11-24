@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KRAKEN_DIR = os.path.join(ROOT, "kraken")
+CACHEDB_DIR = os.path.join(ROOT, "cachedb")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
@@ -30,10 +31,13 @@ from botcore import (  # noqa: E402
     parse_iso_datetime_utc,
     required_float_env,
     safe_float,
+    safe_nonneg_float,
 )
+from intelligence.macro_sentiment_ssot import load_venue_balances_state  # noqa: E402
 from instrument_registry import select_instruments  # noqa: E402
 from notify_engine import alertnotifiers as _alertnotifiers  # noqa: E402
 from providers.market_api import api as mkt  # noqa: E402
+from providers.quantity import resolve_kraken_trade_cache_position  # noqa: E402
 from state_io import encode_json_payload, read_json_dict, save_json_state  # noqa: E402
 from strategies.state_store import state_path_for  # noqa: E402
 
@@ -63,19 +67,45 @@ def _kraken_price(pair: str):
         return None
 
 
+def _live_kraken_held_qty(vb_state: dict, pair: str, base_label: str) -> float | None:
+    if not isinstance(vb_state, dict) or not vb_state:
+        return None
+    pos_entry = vb_state.get(f"pos:kraken:{pair}")
+    if isinstance(pos_entry, dict):
+        if (q := safe_nonneg_float(pos_entry.get("free_base"), default=None)) is not None:
+            return q
+    for key in (f"kraken:{base_label}", f"kraken:{base_label.upper()}"):
+        val = vb_state.get(key)
+        if not isinstance(val, (dict, list, bool)):
+            if (q := safe_nonneg_float(val, default=None)) is not None:
+                return q
+    return None
+
+
 def kraken_rows() -> list[dict]:
     rows = []
+    _, vb_state, _ = load_venue_balances_state(CACHEDB_DIR)
     for pair, label, paper in KRAKEN_PAIRS:
+        live_qty = _live_kraken_held_qty(vb_state, pair, label)
+        cache_pos = resolve_kraken_trade_cache_position(pair, CACHEDB_DIR, held_qty=live_qty)
         s = _load_state(pair)
-        if s is None:
+        if cache_pos is None and s is None:
             continue
-        qty = safe_float(s.get("qty"))
-        cost = safe_float(s.get("cost"))
+        if isinstance(cache_pos, dict):
+            qty = safe_float(cache_pos.get("qty"), 0.0)
+            cost = safe_float(cache_pos.get("cost"), 0.0)
+            realized_net = safe_float(cache_pos.get("realized_net"), 0.0)
+            spent = safe_float(cache_pos.get("spent"), 0.0)
+        else:
+            qty = safe_float(s.get("qty"), 0.0)
+            cost = safe_float(s.get("cost"), 0.0)
+            realized_net = safe_float(s.get("realized_net"), 0.0)
+            spent = safe_float(s.get("spent"), 0.0)
         px = safe_float(_kraken_price(pair), 0.0)
-        upnl = (px - cost / qty) * qty if qty > 1e-12 and px > 0 else 0.0
+        upnl = (px - cost / qty) * qty if qty > 1e-12 and cost > 0.0 and px > 0 else 0.0
         # Unrealised drawdown as a % of cost (this triggers the risk alert).
         dd_pct = (upnl / cost * 100.0) if cost > 1e-9 else 0.0
-        raw_orders = s.get("orders")
+        raw_orders = s.get("orders") if isinstance(s, dict) else None
         open_orders_cnt = len(raw_orders) if isinstance(raw_orders, (list, tuple, dict)) else 0
         rows.append({
             "engine": f"Kraken {label}" + (" (paper)" if paper else ""),
@@ -84,11 +114,11 @@ def kraken_rows() -> list[dict]:
             "value_usd": round(qty * px, 2),
             "cost": round(cost, 2),
             "dd_pct": round(dd_pct, 2),
-            "realized_net": round(safe_float(s.get("realized_net")), 2),
+            "realized_net": round(realized_net, 2),
             "unrealized": round(upnl, 2),
-            "spent": round(safe_float(s.get("spent")), 0),
-            "cycle": s.get("cycle"),
-            "dca_buys": s.get("dca_buys"),
+            "spent": round(spent, 0),
+            "cycle": s.get("cycle") if isinstance(s, dict) else None,
+            "dca_buys": s.get("dca_buys") if isinstance(s, dict) else None,
             "open_orders": open_orders_cnt,
         })
     return rows

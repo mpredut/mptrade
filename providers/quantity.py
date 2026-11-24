@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 import logging
 import math
+import os
 import time
 from typing import Any, Callable, Optional, Tuple
 
@@ -25,7 +26,16 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import _LEGACY_KRAKEN_X_BASES, has_equity_suffix, is_kraken_tokenized_asset, normalize_venue_name
+from cachepaths import (
+    CACHE_KRAKEN_TRADE_FILENAME,
+    _LEGACY_KRAKEN_X_BASES,
+    has_equity_suffix,
+    is_kraken_tokenized_asset,
+    normalize_venue_name,
+    resolve_cachedb_filepath,
+    split_symbol_assets,
+)
+from state_io import read_json_dict
 from .order_id_context import resolve_venue_provider_class
 from .order_ohlc_utils import extract_order_fee
 
@@ -151,6 +161,184 @@ def compute_fills_cost_basis(
         )
     )
     return remaining_average_cost(normalized, held_qty)
+
+
+def summarize_fills_position_and_cost(
+    rows: Any,
+    *,
+    base_asset: str = "",
+    quote_asset: str = "",
+    held_qty: Optional[float] = None,
+) -> Optional[dict[str, Any]]:
+    """Reconstruct open moving-average cost basis, remaining qty, and realized PnL from chronological fills.
+
+    Unlike strict ``remaining_average_cost``, sells that liquidate pre-window inventory (when tracked
+    qty is already 0) are skipped without aborting, so rolling trade caches such as
+    ``cachedb/orders/cache_trade_kraken.json`` yield accurate live cost basis after prior cycles close.
+    """
+    if not isinstance(rows, (list, tuple)) or not rows:
+        return None
+    normalized: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for idx, r in enumerate(rows):
+        if not isinstance(r, dict):
+            continue
+        ts_ms = extract_timestamp_ms(r, default=0) or 0
+        px = extract_order_price(r, default=0.0) or 0.0
+        qty_f = extract_order_qty(r, default=0.0) or 0.0
+        side = extract_order_side(r)
+        if ts_ms <= 0 or px <= 0.0 or qty_f <= 0.0 or side not in ("BUY", "SELL"):
+            continue
+        raw_id = next(
+            (v for k in ("id", "tid", "tradeId", "ordertxid", "orderId", "order_id", "txid", "oid") if (v := r.get(k)) is not None),
+            None,
+        )
+        fill_id = clean_order_id_str(raw_id) or f"row_{idx}_{ts_ms}"
+        if fill_id in seen_ids:
+            continue
+        seen_ids.add(fill_id)
+        fee_info = extract_order_fee(
+            r,
+            base_asset=base_asset,
+            quote_asset=quote_asset,
+            fill_price=px,
+            require_explicit_asset=False,
+        )
+        base_fee = fee_info["base_fee"] if isinstance(fee_info, dict) else 0.0
+        quote_fee = fee_info["quote_fee"] if isinstance(fee_info, dict) else 0.0
+        normalized.append({
+            "id": fill_id,
+            "timestamp": ts_ms,
+            "qty": qty_f,
+            "price": px,
+            "side": side,
+            "base_fee": base_fee,
+            "quote_fee": quote_fee,
+        })
+    if not normalized:
+        return None
+    normalized.sort(
+        key=lambda item: (
+            safe_int(item.get("timestamp"), default=0),
+            0 if (id_int := safe_int(item.get("id"), default=None)) is not None else 1,
+            f"{id_int:020d}"
+            if id_int is not None
+            else (str(item.get("id") or "") if not isinstance(item.get("id"), bool) else ""),
+        )
+    )
+    qty = 0.0
+    cost = 0.0
+    spent = 0.0
+    realized_net = 0.0
+    entry_price: Optional[float] = None
+    last_buy_price: Optional[float] = None
+    entry_ts_ms = 0
+    for item in normalized:
+        amount = item["qty"]
+        price = item["price"]
+        base_fee = item["base_fee"]
+        quote_fee = item["quote_fee"]
+        if item["side"] == "BUY":
+            net_added = amount - base_fee
+            if net_added <= 0.0:
+                continue
+            if qty <= 1e-9:
+                entry_price = price
+                entry_ts_ms = safe_int(item["timestamp"], default=0)
+            qty += net_added
+            leg_cost = amount * price + quote_fee
+            cost += leg_cost
+            spent += leg_cost
+            last_buy_price = price
+        else:
+            if qty <= 1e-9:
+                continue
+            removed = amount + base_fee
+            matched = min(qty, removed)
+            avg_before = cost / qty if qty > 0.0 else 0.0
+            realized_net += matched * (price - avg_before) - quote_fee
+            remaining = max(0.0, qty - removed)
+            if remaining <= 1e-9:
+                qty = 0.0
+                cost = 0.0
+                entry_price = None
+                entry_ts_ms = 0
+            else:
+                cost *= remaining / qty
+                qty = remaining
+    avg_cost_px = safe_pos_float(cost / qty, default=None) if (qty > 1e-9 and cost > 0.0) else None
+    held_f = safe_nonneg_float(held_qty, default=None) if held_qty is not None else None
+    if held_f is not None:
+        if held_f <= 1e-9:
+            return {
+                "qty": 0.0,
+                "net_fills_qty": round(qty, 8),
+                "cost": 0.0,
+                "avg_cost_px": None,
+                "realized_net": realized_net,
+                "spent": spent,
+                "entry_price": None,
+                "last_buy_price": last_buy_price,
+                "entry_ts_ms": 0,
+                "fills_count": len(normalized),
+            }
+        eff_qty = held_f
+        eff_cost = (avg_cost_px * eff_qty) if avg_cost_px is not None else 0.0
+    else:
+        eff_qty = qty
+        eff_cost = cost
+    return {
+        "qty": eff_qty,
+        "net_fills_qty": qty,
+        "cost": eff_cost,
+        "avg_cost_px": avg_cost_px,
+        "realized_net": realized_net,
+        "spent": spent,
+        "entry_price": entry_price,
+        "last_buy_price": last_buy_price,
+        "entry_ts_ms": entry_ts_ms,
+        "fills_count": len(normalized),
+    }
+
+
+def resolve_kraken_trade_cache_position(
+    symbol: str,
+    cachedb_dir: str,
+    *,
+    held_qty: Optional[float] = None,
+    read_json_fn: Any = None,
+) -> Optional[dict[str, Any]]:
+    """Resolve live Kraken position/cost-basis summary from ``cachedb/orders/cache_trade_kraken.json``."""
+    sym_s = clean_scalar_str(symbol) or ""
+    if not sym_s or not cachedb_dir:
+        return None
+    cache_file = resolve_cachedb_filepath(os.path.join(cachedb_dir, CACHE_KRAKEN_TRADE_FILENAME))
+    if not os.path.isfile(cache_file):
+        return None
+    payload = read_json_fn(cache_file) if callable(read_json_fn) else read_json_dict(cache_file, default=None)
+    if not isinstance(payload, dict):
+        return None
+    items = payload.get("items")
+    if not isinstance(items, dict) or not items:
+        return None
+    sym_cf = sym_s.casefold()
+    rows = items.get(sym_s)
+    matched_sym = sym_s
+    if not isinstance(rows, list):
+        for k, v in items.items():
+            if isinstance(v, list) and str(k or "").strip().casefold() == sym_cf:
+                rows = v
+                matched_sym = str(k).strip()
+                break
+    if not isinstance(rows, list) or not rows:
+        return None
+    base_asset, quote_asset = split_symbol_assets(matched_sym)
+    return summarize_fills_position_and_cost(
+        rows,
+        base_asset=base_asset or "",
+        quote_asset=quote_asset or "",
+        held_qty=held_qty,
+    )
 
 
 @dataclass(frozen=True)

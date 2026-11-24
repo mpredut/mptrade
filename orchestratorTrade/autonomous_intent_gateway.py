@@ -134,7 +134,7 @@ from providers.intent_state import (
 )
 from providers.order_id_context import extract_client_order_id, resolve_order_actor
 from providers.order_status_ssot import NON_FILL_ORDER_STATUSES
-from providers.quantity import clamp_notional_to_wallet_balance
+from providers.quantity import clamp_notional_to_wallet_balance, resolve_kraken_trade_cache_position
 from providers.venue_fee_maintenance import read_persisted_venue_fee_spec
 from state_io import read_json_dict
 
@@ -348,7 +348,7 @@ class AutonomousIntentGateway:
         )
 
     def _resolve_tokenized_equity_cost_basis(self, venue: str, symbol: str) -> Optional[float]:
-        """Resolve active unit cost basis for a tokenized equity from its venue cycle state or active-pair config."""
+        """Resolve active unit cost basis for a tokenized equity from trade-cache fills, falling back to venue cycle state or config."""
         ven = normalize_venue_name(venue) or ""
         rel_dir = VENUE_RUNTIME_DIR_MAP.get(ven, ven)
         if not rel_dir:
@@ -356,7 +356,19 @@ class AutonomousIntentGateway:
         venue_dir = os.path.join(self.workspace_dir, rel_dir)
         ident = resolve_symbol_identity(symbol, venue=ven)
         wire_sym = ident.wire_symbol or ident.display_symbol or str(symbol or "").strip()
-        for cand_sym in dict.fromkeys((wire_sym, str(symbol or "").strip(), wire_sym.upper())):
+        cand_syms = tuple(dict.fromkeys((wire_sym, str(symbol or "").strip(), wire_sym.upper())))
+        if resolve_kraken_tokenized_pair(wire_sym)[1] and self.cache_dir:
+            for cand_sym in cand_syms:
+                if not cand_sym:
+                    continue
+                cache_pos = resolve_kraken_trade_cache_position(cand_sym, self.cache_dir)
+                if (
+                    isinstance(cache_pos, dict)
+                    and (safe_nonneg_float(cache_pos.get("net_fills_qty"), default=0.0) or 0.0) > 1e-6
+                    and (cache_px := safe_pos_float(cache_pos.get("avg_cost_px"), default=None)) is not None
+                ):
+                    return cache_px
+        for cand_sym in cand_syms:
             if not cand_sym:
                 continue
             st_path = os.path.join(venue_dir, f".state_{cand_sym}.json")

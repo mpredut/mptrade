@@ -1120,9 +1120,9 @@ def test_kraken_tokenized_asset_routing_and_spv_pair_matching(monkeypatch):
 def test_xstock_watch_ledger_alloc_price_and_regex_target_sync():
     import re
     cfg = parse_dotenv(os.path.join(_KRAKEN_DIR, "config.env"))
-    # Live config disables pending ANTx IPO target while preserving active SPCXxUSD supervision.
+    # Live config disables both pending IPO regex and retired secondary active-pair bot supervision.
     assert cfg.get("XSTOCK_REGEX", "") == ""
-    assert "SPCXxUSD" in cfg.get("XSTOCK_ACTIVE_PAIRS", "")
+    assert cfg.get("XSTOCK_ACTIVE_PAIRS", "") == ""
 
     rx = r"^(?:ANTx|ANTSPV)(?:[./]|USD|EUR|$)"
     for hit in ("ANTx.T", "ANTx", "ANTxUSD", "ANTx/USD", "ANTSPVUSD"):
@@ -1359,21 +1359,9 @@ def test_xstock_watch_incremental_trade_archive_sync(tmp_path, monkeypatch):
     assert spcx_meta["kraken_trades_since_ns"] == "1794990060000000000"
     assert ("SPCXxUSD", "1794990000000000000") in seen_calls
 
-    # 2. ensure_active_xstock_bots honors instruments.conf enabled = no (does not spawn disabled xStock bots)
-    (tmp_path / "instruments.conf").write_text(
-        "[KRAKEN_SPCX]\nprovider = kraken\nsymbol = SPCXxUSD\nbase = SPCXx\nquote = USD\n"
-        "enabled = no\nisolation = own_ledger\nmarket_hours = 24x7\n"
-        "role.mt = no\nrole.tradeall_fire = no\nrole.kalman_primary = no\n"
-        "role.trailing = no\nrole.assetguardian = no\nrole.archive = no\n"
-        "role.rtrade = no\nrole.force_sell = no\n",
-        encoding="utf-8",
-    )
-    spawned_pairs = []
-    monkeypatch.setenv("XSTOCK_AUTOSTART", "true")
-    monkeypatch.setenv("XSTOCK_ACTIVE_PAIRS", "SPCXxUSD:141.75")
-    monkeypatch.setattr(xw_fresh, "_spawn_xstock_bot", lambda pair, *a, **kw: spawned_pairs.append(pair))
-    xw_fresh.ensure_active_xstock_bots(workspace_dir=str(tmp_path))
-    assert spawned_pairs == []
+    # 2. Secondary active-pair supervision role was retired from kraken_xstock_watch (strict IPO watcher only)
+    assert not hasattr(xw_fresh, "ensure_active_xstock_bots")
+    assert not hasattr(xw_fresh, "_ACTIVE_CHILD_PIDS")
 
 
 def test_declarative_xstock_role_gating_uppercase_resolution_and_archive_ohlc(tmp_path):
@@ -1823,4 +1811,139 @@ def test_antx_ipo_post_exit_dust_reconcile_zero_known_assets_and_sell_sweep(tmp_
     )
     assert "TP +9% / Trail 3%" in xs_no_dca["active_swing_directive"]
     assert "DCA -" not in xs_no_dca["active_swing_directive"]
+
+
+def test_subiect2_kraken_bots_retired_and_trade_cache_ssot_cost_basis(tmp_path, monkeypatch):
+    """Verify Subiect 2 end-to-end:
+    1. Live procs.conf retires both kraken_bot.py (Kraken-HYPE) and kraken_xstock_watch.py (xStock-watch),
+       while preserving kraken/trailing_stop.py (Kraken-trailing).
+    2. Live kraken/config.env keeps XSTOCK_ACTIVE_PAIRS and XSTOCK_REGEX empty and ownership_inventory has zero conflicts.
+    3. providers.quantity.resolve_kraken_trade_cache_position accurately reconstructs live SPCXxUSD cost basis
+       even with pre-window prior-cycle sells and immediately updates average cost upon a new manual rebuy.
+    4. AutonomousIntentGateway, KrakenXstocksCollector, and verify_tools/portfolio_snapshot all resolve live
+       SPCXxUSD holdings/cost basis directly from cacheManager files with ZERO .state_*.json or xstock_state.json files."""
+    import json
+    from pathlib import Path
+    from botcore import parse_procs_manifest
+    from intelligence.sentiment.collectors.portfolio_collector import KrakenXstocksCollector
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+    from providers.quantity import resolve_kraken_trade_cache_position
+    from verify_tools import ownership_inventory as oi
+    from verify_tools import portfolio_snapshot as ps
+
+    repo_root = os.path.dirname(_KRAKEN_DIR)
+    active_procs = parse_procs_manifest(repo_root, roles=("bot", "fleet"))
+    active_patterns = {p["pattern"] for p in active_procs}
+    active_labels = {p["name"] for p in active_procs}
+    assert "kraken_bot.py$" not in active_patterns
+    assert "kraken_bot.py" not in active_patterns
+    assert "kraken_xstock_watch.py" not in active_patterns
+    assert "Kraken-HYPE" not in active_labels
+    assert "xStock-watch" not in active_labels
+    assert "kraken/trailing_stop.py" in active_patterns
+    assert "Kraken-trailing" in active_labels
+
+    # Ownership inventory confirms kraken-spot-dca is retired (configured=False, live_enabled=False) with zero conflicts/kraken overlaps
+    owners = oi.build_inventory(Path(repo_root), commands=[])
+    kraken_dca = [o for o in owners if o.owner_id == "kraken-spot-dca"]
+    assert len(kraken_dca) == 1
+    assert kraken_dca[0].configured is False
+    assert kraken_dca[0].live_enabled is False
+    overlaps = oi.find_overlaps(owners)
+    assert [ov for ov in overlaps if ov.get("severity") != "info"] == []
+    assert [ov for ov in overlaps if ov.get("venue") == "kraken"] == []
+
+    # Build an isolated workspace with NO .state_*.json and NO xstock_state.json, only cacheManager files
+    ws = tmp_path / "ws"
+    cdir = ws / "cachedb"
+    (cdir / "orders").mkdir(parents=True, exist_ok=True)
+    (cdir / "state").mkdir(parents=True, exist_ok=True)
+    kdir = ws / "kraken"
+    kdir.mkdir(parents=True, exist_ok=True)
+    (kdir / "config.env").write_text(
+        "XSTOCK_REGEX=\nXSTOCK_YAHOO=\nXSTOCK_ACTIVE_PAIRS=\nXSTOCK_BOT_OBSERVE_ONLY=true\n",
+        encoding="utf-8",
+    )
+    (ws / "order_guard.conf").write_text(
+        "autonomous_trading_xstock_sell_min_profit_pct = 6.0\n"
+        "autonomous_trading_xstock_sell_min_target_drop_pct = 4.0\n",
+        encoding="utf-8",
+    )
+
+    # Exact production-shaped SPCXxUSD fills: 3 prior-cycle sells, 1 manual EU buy, 3 partial sells
+    spcx_fills = [
+        {"id": "T_OLD_1", "side": "SELL", "price": 144.89, "qty": 5.52143, "fee": 0.0, "timestamp": 1795054452963},
+        {"id": "T_OLD_2", "side": "SELL", "price": 132.18, "qty": 5.256176, "fee": 0.0, "timestamp": 1795175726468},
+        {"id": "T_OLD_3", "side": "SELL", "price": 130.07, "qty": 4.968943, "fee": 0.0, "timestamp": 1795178813038},
+        {"id": "T_BUY_1", "side": "BUY", "price": 134.84400571199208, "qty": 24.472723, "fee": 0.0, "timestamp": 1795530909957},
+        {"id": "T_SELL_1", "side": "SELL", "price": 125.64, "qty": 1.984, "fee": 0.0, "timestamp": 1795534195773},
+        {"id": "T_SELL_2", "side": "SELL", "price": 125.64, "qty": 1.984, "fee": 0.0, "timestamp": 1795534201199},
+        {"id": "T_SELL_3", "side": "SELL", "price": 125.64, "qty": 8.368835, "fee": 0.0, "timestamp": 1795534203055},
+    ]
+    hype_fills = [
+        {"id": "H_B1", "side": "BUY", "price": 60.0, "qty": 5.0, "fee": 0.6, "timestamp": 1795100000000},
+        {"id": "H_S1", "side": "SELL", "price": 65.0, "qty": 5.0, "fee": 0.65, "timestamp": 1795150000000},
+    ]
+    trade_cache_file = cdir / "orders" / "cache_trade_kraken.json"
+    trade_cache_file.write_text(
+        json.dumps({"items": {"SPCXxUSD": spcx_fills, "HYPEUSD": hype_fills}, "fetchtime": 1795543676.0}),
+        encoding="utf-8",
+    )
+    (cdir / "state" / "venue_balances_state.json").write_text(
+        json.dumps({
+            "kraken:SPCXx": 12.135889,
+            "kraken:HYPE": 0.0,
+            "kraken:ANTx": 0.001387,
+            "pos:kraken:SPCXxUSD": {"venue": "kraken", "symbol": "SPCXxUSD", "base": "SPCXx", "free_base": 12.135889, "price": 126.9},
+            "pos:kraken:HYPEUSD": {"venue": "kraken", "symbol": "HYPEUSD", "base": "HYPE", "free_base": 0.0, "price": 60.85},
+        }),
+        encoding="utf-8",
+    )
+
+    # 3. SSOT helper exact cost basis + realized PnL
+    pos = resolve_kraken_trade_cache_position("SPCXxUSD", str(cdir), held_qty=12.135889)
+    assert pos is not None
+    assert pos["net_fills_qty"] == pytest.approx(12.135888, abs=1e-6)
+    assert pos["qty"] == pytest.approx(12.135889, abs=1e-6)
+    assert pos["avg_cost_px"] == pytest.approx(134.84400571, rel=1e-6)
+    assert pos["cost"] == pytest.approx(12.135889 * 134.84400571, rel=1e-5)
+
+    # 4. AutonomousIntentGateway resolves SPCXxUSD cost basis purely from cache_trade_kraken.json
+    gw = AutonomousIntentGateway(workspace_dir=str(ws), mode="shadow", notify_enabled=False)
+    assert gw._resolve_tokenized_equity_cost_basis("kraken", "SPCXxUSD") == pytest.approx(134.84400571, rel=1e-6)
+
+    # 5. KrakenXstocksCollector resolves holdings, listed_pair, alloc_price & PnL purely from cacheManager files
+    xs = KrakenXstocksCollector(start_sync=False).collect(
+        str(cdir),
+        kraken_dir=str(kdir),
+        prices_and_trends={"SPCXxUSD": {"price": 126.90}, "ANTxUSD": {"price": 92.73}},
+    )
+    assert xs is not None
+    assert xs["underlying"] == "SPCX"
+    assert xs["listed_pair"] == "SPCXxUSD"
+    assert xs["holdings"] == {"SPCXx": pytest.approx(12.135889, abs=1e-6)}
+    assert xs["alloc_price"] == pytest.approx(134.84400571, rel=1e-6)
+    assert xs["pnl_vs_alloc_pct"] == pytest.approx(((126.90 - 134.84400571) / 134.84400571) * 100.0, abs=0.05)
+    assert "OBSERVE-ONLY" in xs["active_swing_directive"]
+
+    # 6. Subsequent manual EU rebuy immediately updates avg cost everywhere without restarting or running kraken_bot
+    spcx_fills.append({"id": "T_BUY_2", "side": "BUY", "price": 120.0, "qty": 10.0, "fee": 0.0, "timestamp": 1795550000000})
+    trade_cache_file.write_text(
+        json.dumps({"items": {"SPCXxUSD": spcx_fills, "HYPEUSD": hype_fills}, "fetchtime": 1795550010.0}),
+        encoding="utf-8",
+    )
+    expected_new_avg = (12.135888 * 134.84400571199208 + 10.0 * 120.0) / (12.135888 + 10.0)
+    assert gw._resolve_tokenized_equity_cost_basis("kraken", "SPCXxUSD") == pytest.approx(expected_new_avg, rel=1e-6)
+
+    # 7. portfolio_snapshot.kraken_rows() works directly from cache_trade_kraken.json + venue_balances_state.json
+    monkeypatch.setattr(ps, "CACHEDB_DIR", str(cdir))
+    monkeypatch.setattr(ps, "KRAKEN_DIR", str(kdir))
+    monkeypatch.setattr(ps, "KRAKEN_PAIRS", [("HYPEUSD", "HYPE", False), ("SPCXxUSD", "SPCXx", False)])
+    monkeypatch.setattr(ps, "_kraken_price", lambda pair: 60.85 if pair == "HYPEUSD" else 126.90)
+    rows = {r["engine"]: r for r in ps.kraken_rows()}
+    assert "Kraken HYPE" in rows and rows["Kraken HYPE"]["qty"] == 0.0
+    assert rows["Kraken HYPE"]["realized_net"] == pytest.approx(23.75, abs=0.02)
+    assert "Kraken SPCXx" in rows and rows["Kraken SPCXx"]["qty"] == pytest.approx(12.135889, abs=1e-6)
+    assert rows["Kraken SPCXx"]["cost"] == pytest.approx(12.135889 * expected_new_avg, abs=0.1)
+
 

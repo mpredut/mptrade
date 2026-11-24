@@ -2133,13 +2133,13 @@ def test_watch_trade_decisions_position_handles_buy_orders_with_missing_none_ite
     assert last_buy_w == pytest.approx(120.0)
 
 
-def test_ci_regression_and_bot_restart_never_email_and_xstock_clean_restart_is_silent(tmp_path, monkeypatch):
+def test_ci_regression_and_bot_restart_never_email_and_xstock_supervisor_retired(tmp_path, monkeypatch):
     """Verify:
     1. DEV CI/CLI Regression FAILED and all BOT/FLEET/SERVICE RESTART subjects NEVER send emails
        (via send_email, mailer CLI, or NotificationServer even if routed to an error topic).
     2. offline/runners/run_dev_regression.sh routes DEV CI Regression FAILED to ntfy_server_topic.
-    3. kraken_xstock_watch.ensure_active_xstock_bots suppresses false 'was down' alerts on clean
-       deploy/startup restarts and emits a clear plain-language alert only on mid-run unexpected exit."""
+    3. kraken_xstock_watch no longer acts as a secondary active-pair supervisor, and its IPO
+       maybe_start_bot path always notifies with email=False."""
     import json
     import subprocess
     from kraken import kraken_xstock_watch as kxw
@@ -2194,45 +2194,22 @@ def test_ci_regression_and_bot_restart_never_email_and_xstock_clean_restart_is_s
     assert len(fail_lines) == 1 and '"$(ntfy_server_topic)"' in fail_lines[0]
     assert subprocess.run(["bash", "-n", reg_sh], capture_output=True, text=True, check=False).returncode == 0
 
-    # 3. kraken_xstock_watch: silent on clean deploy/startup restart; clear notice on unexpected mid-run crash
+    # 3. kraken_xstock_watch secondary supervisor role is retired; IPO autostart notifies with email=False
+    assert not hasattr(kxw, "ensure_active_xstock_bots")
     monkeypatch.setattr(kxw, "_HERE", str(tmp_path))
     monkeypatch.setenv("XSTOCK_AUTOSTART", "true")
-    monkeypatch.setenv("XSTOCK_ACTIVE_PAIRS", "SPCXxUSD:141.75")
     monkeypatch.setenv("XSTOCK_BOT_PAPER", "false")
-    monkeypatch.setattr(kxw, "disabled_registry_symbols", lambda *_a, **_k: set())
-    monkeypatch.setattr(kxw, "resolve_registered_symbol_case", lambda pair, *_a, **_k: pair)
     monkeypatch.setattr(kxw, "_bot_alive", lambda _pid: False)
     monkeypatch.setattr(kxw, "_build_xstock_bot_env", lambda *_a, **_k: {})
 
-    fake_pid = {"n": 50000}
-
     class _FakeProc:
-        def __init__(self, *_a, **_k):
-            fake_pid["n"] += 1
-            self.pid = fake_pid["n"]
+        pid = 50001
 
-    monkeypatch.setattr(kxw.subprocess, "Popen", _FakeProc)
+    monkeypatch.setattr(kxw.subprocess, "Popen", lambda *_a, **_k: _FakeProc())
     sent_notifs = []
     monkeypatch.setattr(kxw, "notify", lambda **kw: sent_notifs.append(kw))
-
-    pid_file = tmp_path / ".xstock_bot_SPCXxUSD.pid"
-    pid_file.write_text(
-        json.dumps({"pair": "SPCXxUSD", "pid": 44444, "alloc_price": 141.75, "clean_shutdown": True}),
-        encoding="utf-8",
-    )
-    # 3a. Clean deploy restart (clean_shutdown=True) -> spawns silently without false 'was down' alert
-    kxw.ensure_active_xstock_bots(workspace_dir=str(tmp_path), startup=True)
-    assert sent_notifs == []
-    pid_after = json.loads(pid_file.read_text(encoding="utf-8"))
-    assert pid_after["pid"] == 50001 and pid_after["clean_shutdown"] is False
-
-    # 3b. Startup pass right after systemd kill (even without clean_shutdown flag) -> silent startup
-    kxw.ensure_active_xstock_bots(workspace_dir=str(tmp_path), startup=True)
-    assert sent_notifs == []
-
-    # 3c. Mid-run unexpected exit (startup=False, clean_shutdown=False) -> clear plain-language alert, email=False
-    kxw.ensure_active_xstock_bots(workspace_dir=str(tmp_path), startup=False)
+    st_ipo = {"allocated": {"asset": "NEWx.T", "qty": 5.0}, "pair": "NEWxUSD", "bot_pid": None}
+    kxw.maybe_start_bot(st_ipo, 100.0, desktop=False)
+    assert st_ipo["bot_pid"] == 50001
     assert len(sent_notifs) == 1
-    assert "unexpected exit" in sent_notifs[0]["title"].lower()
-    assert "exited unexpectedly" in sent_notifs[0]["body"]
     assert sent_notifs[0]["email"] is False

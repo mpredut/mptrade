@@ -57,7 +57,7 @@ from botcore import (
     temporary_environ,
     touch_module_heartbeat,
 )
-from cachepaths import CACHE_365_PRICE_PREFIX, cache_path, canonical_base_asset, clean_symbol_key
+from cachepaths import CACHE_365_PRICE_PREFIX, cache_path, canonical_base_asset
 from cacheprice import Cache365PriceManager
 from providers.ohlc_utils import extract_yahoo_chart_latest_price
 from strategies.spot_engine import state_path_for
@@ -77,8 +77,6 @@ from state_io import (
 from credentials import kraken_credentials
 from instrument_registry import (
     casefold_get,
-    disabled_registry_symbols,
-    resolve_registered_symbol_case,
     symbols_for,
 )
 from trailing_core import add_once_status_cli_args
@@ -632,26 +630,6 @@ def _build_xstock_bot_env(
     return env
 
 
-_ACTIVE_CHILD_PIDS: dict[str, tuple[int, str, float]] = {}
-
-
-def _mark_and_stop_active_xstock_children() -> None:
-    """Record clean shutdown in active xStock pid files and terminate child bots gracefully on SIGTERM/SIGINT."""
-    for pair, (pid, pid_file, cost_f) in list(_ACTIVE_CHILD_PIDS.items()):
-        try:
-            save_json_state(
-                pid_file,
-                {"pair": pair, "pid": pid, "alloc_price": cost_f, "clean_shutdown": True},
-            )
-        except Exception:
-            pass
-        if (clean_pid := _clean_pid(pid)) is not None:
-            try:
-                os.kill(clean_pid, signal.SIGTERM)
-            except OSError:
-                pass
-
-
 def _spawn_xstock_bot(pair: str, alloc_price: float, log_path: str, *, relaunch: bool, desktop: bool,
                       body_prefix: str, err_prefix: str, symbol_label: str | None = None,
                       ipo_mode: bool = True, on_started=None, send_notification: bool = True,
@@ -699,58 +677,6 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
         body_prefix="kraken_bot manages the allocation: TP/trailing exit",
         err_prefix="cannot start the bot", on_started=lambda pid: st.__setitem__("bot_pid", pid),
     )
-
-
-def ensure_active_xstock_bots(desktop: bool = False, *, workspace_dir: str | None = None, startup: bool = False) -> None:
-    """Supervise configured already-listed xStock bots (``XSTOCK_ACTIVE_PAIRS=PAIR:COST,...``)."""
-    if not required_bool_env("XSTOCK_AUTOSTART"):
-        return
-    disabled_syms = disabled_registry_symbols(workspace_dir or _ROOT)
-    for spec in split_csv(optional_env("XSTOCK_ACTIVE_PAIRS")):
-        if ":" not in spec:
-            continue
-        raw_pair, raw_cost = spec.split(":", 1)
-        pair_raw, cost_f = clean_scalar_str(raw_pair), safe_pos_float(raw_cost, None)
-        if not pair_raw or cost_f is None:
-            continue
-        pair = resolve_registered_symbol_case(pair_raw, "kraken") or pair_raw
-        pair_k = clean_symbol_key(pair)
-        if pair.upper() in disabled_syms or (pair_k and pair_k in disabled_syms):
-            log(f"  - skipping active xStock bot {pair}: disabled in instruments.conf")
-            continue
-        pid_file = os.path.join(_HERE, f".xstock_bot_{pair}.pid")
-        pid_doc = read_json_dict(pid_file, default={}) if os.path.exists(pid_file) else {}
-        prev_pid = _clean_pid(pid_doc.get("pid"))
-        was_clean_shutdown = _parse_bool_flag(pid_doc.get("clean_shutdown"), False)
-        if _bot_alive(prev_pid):
-            _ACTIVE_CHILD_PIDS[pair] = (prev_pid, pid_file, cost_f)
-            continue
-        is_planned_startup = bool(startup) or was_clean_shutdown
-        unexpected_relaunch = (prev_pid is not None) and (not is_planned_startup)
-        if unexpected_relaunch:
-            body_prefix = (
-                f"Kraken observe-only monitor bot for {pair} (previous pid {prev_pid}) "
-                f"exited unexpectedly while running and was restarted. "
-                f"Trading on {pair} remains managed by auto_cryptotrade_executor"
-            )
-        else:
-            body_prefix = (
-                f"Kraken observe-only monitor bot for {pair} started cleanly alongside AI executor"
-            )
-
-        def _record_started(pid: int, pf: str = pid_file, p: str = pair, cf: float = cost_f) -> None:
-            _ACTIVE_CHILD_PIDS[p] = (pid, pf, cf)
-            save_json_state(pf, {"pair": p, "pid": pid, "alloc_price": cf, "clean_shutdown": False})
-
-        _spawn_xstock_bot(
-            pair, cost_f, os.path.join(_HERE, f"xstock_bot_{pair}.log"),
-            relaunch=unexpected_relaunch, desktop=desktop, symbol_label=pair,
-            ipo_mode=False,
-            body_prefix=body_prefix,
-            err_prefix=f"cannot start active xStock bot {pair}",
-            on_started=_record_started,
-            send_notification=unexpected_relaunch,
-        )
 
 
 # -- end-to-end trial ---------------------------------------------------------
@@ -893,7 +819,7 @@ def main() -> int:
         return 0
 
     log("=== xStock watcher started ===")
-    log(f"    regex      : {rx or '(disabled - active pairs only)'}")
+    log(f"    regex      : {rx or '(idle - no pending IPO target)'}")
     log(f"    allocation : {alloc_price if alloc_price > 0 else 'auto-resolved from Kraken Ledger'}")
     log(f"    alerts     : +{tp_pct}% / -{sl_pct}%  (price: Kraken{f' or Yahoo {yahoo_sym}' if yahoo_sym else ''})")
     log(f"    interval   : {args.interval} min")
@@ -921,10 +847,8 @@ def main() -> int:
                 check_levels(client, st, eff_alloc_price, tp_pct, sl_pct, yahoo_sym, args.desktop)
                 maybe_start_bot(st, eff_alloc_price, args.desktop)
             sync_configured_archives(client, st)
-            ensure_active_xstock_bots(args.desktop, startup=(beats == 0))
             _save_state(st)
         except KeyboardInterrupt:
-            _mark_and_stop_active_xstock_children()
             return 0
         except Exception as e:  # noqa: BLE001 -- resilience: retry network/DNS failures
             log(f"  ! cycle failed ({e.__class__.__name__}: {e}) \u2014 retrying on the next one")
@@ -937,9 +861,7 @@ def main() -> int:
         try:
             time.sleep(sleep_sec)
         except KeyboardInterrupt:
-            _mark_and_stop_active_xstock_children()
             return 0
-    _mark_and_stop_active_xstock_children()
     return 0
 
 

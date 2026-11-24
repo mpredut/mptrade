@@ -19,6 +19,7 @@ from botcore import (
 )
 from providers.market_api import api as mkt
 from providers.order_id_context import resolve_order_owner
+from providers.quantity import resolve_kraken_trade_cache_position
 from instrument_registry import symbols_for
 from state_io import read_json_dict
 
@@ -118,18 +119,27 @@ def main():
         except Exception as e:
             print(f"{'Binance '+sym:<22} ERROR: {e}")
 
-    # Kraken HYPE (kraken_bot)
+    # Kraken HYPE (trade cache SSOT, legacy .state_HYPEUSD.json fallback)
     try:
-        k = read_json_dict(os.path.join(ROOT, "kraken/.state_HYPEUSD.json"), default=None, recover_previous=True)
+        k_pos = resolve_kraken_trade_cache_position("HYPEUSD", os.path.join(ROOT, "cachedb"))
+        k = (
+            k_pos
+            if isinstance(k_pos, dict)
+            else read_json_dict(os.path.join(ROOT, "kraken/.state_HYPEUSD.json"), default=None, recover_previous=True)
+        )
         if not isinstance(k, dict):
-            raise FileNotFoundError("kraken/.state_HYPEUSD.json missing or invalid")
-        hy = 54.77  # Latest price from trail_k.
+            raise FileNotFoundError("cache_trade_kraken.json and kraken/.state_HYPEUSD.json missing or invalid")
+        try:
+            hy = safe_pos_float(mkt.get_current_price("HYPEUSD", provider_name="kraken"), default=54.77) or 54.77
+        except Exception:
+            hy = 54.77
         k_qty = safe_float(k.get("qty"), 0.0)
         k_cost = safe_float(k.get("cost"), 0.0)
         kr = safe_float(k.get("realized_net"), 0.0)
-        ku = (k_qty * hy - k_cost) if k_qty > 1e-9 else 0.0
+        ku = (k_qty * hy - k_cost) if (k_qty > 1e-9 and k_cost > 0.0) else 0.0
         tot_r += kr; tot_u += ku
-        print(f"{'Kraken HYPE (bot)':<22}{kr:>+11.2f}{ku:>+12.2f}{k_qty:>10.4f}  (avg cost {k_cost/k_qty if k_qty else 0:.2f}, cur ~{hy})")
+        src_lbl = "Kraken HYPE (cache)" if isinstance(k_pos, dict) else "Kraken HYPE (bot)"
+        print(f"{src_lbl:<22}{kr:>+11.2f}{ku:>+12.2f}{k_qty:>10.4f}  (avg cost {k_cost/k_qty if k_qty else 0:.2f}, cur ~{hy:.2f})")
     except Exception as e:
         print(f"{'Kraken HYPE':<22} ERROR: {e}")
 

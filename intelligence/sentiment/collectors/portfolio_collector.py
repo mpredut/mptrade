@@ -114,7 +114,7 @@ from providers.execution_audit import _extract_audit_fill_metrics
 from providers.order_id_context import derive_venue_128bit_client_order_id, resolve_order_origin
 from providers.order_ohlc_utils import normalize_open_order
 from providers.intent_state import collect_known_ai_order_ids, intent_venue_client_order_ids
-from providers.quantity import resolve_assets, venue_fee_cap_quantity
+from providers.quantity import resolve_assets, resolve_kraken_trade_cache_position, venue_fee_cap_quantity
 from state_io import (
     generation_file_lock,
     read_json_dict,
@@ -905,18 +905,47 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         eff_pt = prices_and_trends or {}
         eff_t212 = all_t212_cycles or {}
         _rj = _resolve_read_json_cached(read_json_fn)
+        eff_cachedb = cachedb_dir
+        if eff_k_dir and eff_cachedb == eff_k_dir:
+            sibling_cachedb = os.path.join(os.path.dirname(os.path.normpath(eff_k_dir)), "cachedb")
+            if os.path.isdir(sibling_cachedb):
+                eff_cachedb = sibling_cachedb
+        live_bal_assets: Dict[str, float] = {}
+        live_pos_pairs: Dict[str, str] = {}
+        if eff_cachedb and os.path.isdir(eff_cachedb):
+            _, vb_state, _ = load_venue_balances_state(eff_cachedb, _rj)
+            if isinstance(vb_state, dict) and vb_state:
+                for bk, bv in vb_state.items():
+                    if bk.startswith("pos:kraken:") and isinstance(bv, dict):
+                        b_asset = str(bv.get("base") or "").strip()
+                        b_qty = safe_nonneg_float(bv.get("free_base"), default=None)
+                        b_sym = str(bv.get("symbol") or bk[len("pos:kraken:") :]).strip()
+                        if b_asset and b_qty is not None:
+                            live_bal_assets[b_asset] = b_qty
+                            if b_sym:
+                                norm_b, is_tok = resolve_kraken_tokenized_pair(b_sym)
+                                if is_tok and norm_b:
+                                    live_pos_pairs[canonical_base_asset(norm_b)] = norm_b
+                    elif bk.startswith("kraken:") and not isinstance(bv, (dict, list, bool)):
+                        b_asset = bk[len("kraken:") :].strip()
+                        b_qty = safe_nonneg_float(bv, default=None)
+                        if b_asset and b_qty is not None and b_asset not in live_bal_assets:
+                            live_bal_assets[b_asset] = b_qty
         cand_paths = [
             p for p in (os.path.join(eff_k_dir, "xstock_state.json"), os.path.join(eff_k_dir, ".xstock_state.json"))
             if os.path.exists(p)
         ]
-        if not cand_paths:
-            return None
-        xst_path = max(cand_paths, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0.0)
-        xst_data = _rj(xst_path)
-        if not isinstance(xst_data, dict):
+        xst_data: Dict[str, Any] = {}
+        if cand_paths:
+            xst_path = max(cand_paths, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0.0)
+            raw_xst = _rj(xst_path)
+            if isinstance(raw_xst, dict):
+                xst_data = raw_xst
+        if not xst_data and not live_bal_assets:
             return None
         xstock_cfg = load_key_value_conf(eff_k_dir, root_dir=eff_k_dir)
-        known_assets = xst_data.get("known_assets") if isinstance(xst_data.get("known_assets"), dict) else {}
+        state_known_assets = xst_data.get("known_assets") if isinstance(xst_data.get("known_assets"), dict) else {}
+        known_assets = live_bal_assets if live_bal_assets else state_known_assets
         x_regex = (xstock_cfg.get("xstock_regex") or "").strip()
         def _holding_underlying(token: str) -> str:
             tok_norm, _ = resolve_kraken_tokenized_pair(token.strip())
@@ -996,10 +1025,19 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             return None
         t212_sib = ensure_equity_suffix(underlying)
         active_pair_entry = active_pair_by_underlying.get(underlying)
+        default_xpair = f"{underlying}xUSD"
+        inferred_listed_pair = (
+            live_pos_pairs.get(underlying)
+            or (default_xpair if resolve_symbol_price(default_xpair, eff_pt) > 0.0 else None)
+        )
         listed_pair = (
             state_listed_pair
             if (state_listed_pair and pair_underlying == underlying)
-            else (active_pair_entry[0] if active_pair_entry else (state_listed_pair if not held_underlyings else None))
+            else (
+                active_pair_entry[0]
+                if active_pair_entry
+                else (inferred_listed_pair if held_underlyings else state_listed_pair)
+            )
         )
         cfg_alloc_px = safe_pos_float(xstock_cfg.get("xstock_alloc_price"), default=None)
         state_alloc_px = safe_pos_float(alloc_info.get("alloc_price"), default=None) if isinstance(alloc_info, dict) else None
@@ -1009,19 +1047,31 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             if (cfg_underlying and cfg_underlying != underlying)
             else (cfg_alloc_px or active_alloc_px or state_alloc_px)
         )
-        primary_xpair = listed_pair or f"{underlying}xUSD"
+        primary_xpair = listed_pair or default_xpair
         primary_hold_tok, primary_hold_qty = next(
             ((hk, hq) for hk, hq in x_holdings.items() if holdings_by_underlying.get(hk) == underlying),
             ("", 0.0),
         )
         active_cycle_cost_px: Optional[float] = None
         if primary_hold_qty > 1e-4:
-            cyc_map = kraken_cycles if isinstance(kraken_cycles, dict) else {}
-            cyc_entry = casefold_get(cyc_map, primary_xpair) or casefold_get(cyc_map, f"{underlying}xUSD")
-            if isinstance(cyc_entry, dict) and (safe_nonneg_float(cyc_entry.get("qty"), default=0.0) or 0.0) > 1e-4:
-                active_cycle_cost_px = first_pos_float(
-                    cyc_entry.get("avg_cost_px"), cyc_entry.get("entry_price"), cyc_entry.get("last_buy_price")
+            if eff_cachedb:
+                cache_pos = resolve_kraken_trade_cache_position(
+                    primary_xpair,
+                    eff_cachedb,
+                    held_qty=primary_hold_qty,
+                    read_json_fn=_rj,
                 )
+                if isinstance(cache_pos, dict):
+                    if listed_pair is None and (cache_pos.get("fills_count") or 0) > 0:
+                        listed_pair = primary_xpair
+                    active_cycle_cost_px = safe_pos_float(cache_pos.get("avg_cost_px"), default=None)
+            if active_cycle_cost_px is None:
+                cyc_map = kraken_cycles if isinstance(kraken_cycles, dict) else {}
+                cyc_entry = casefold_get(cyc_map, primary_xpair) or casefold_get(cyc_map, default_xpair)
+                if isinstance(cyc_entry, dict) and (safe_nonneg_float(cyc_entry.get("qty"), default=0.0) or 0.0) > 1e-4:
+                    active_cycle_cost_px = first_pos_float(
+                        cyc_entry.get("avg_cost_px"), cyc_entry.get("entry_price"), cyc_entry.get("last_buy_price")
+                    )
             if active_cycle_cost_px is None and eff_k_dir:
                 st_pair_path = os.path.join(eff_k_dir, f".state_{primary_xpair}.json")
                 if os.path.exists(st_pair_path) and isinstance(st_pair_d := _rj(st_pair_path), dict):
@@ -1081,7 +1131,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         bot_rule_parts = [p for p in (f"TP +{bot_tp:g}%" if bot_tp else "", f"Trail {bot_trail:g}%" if bot_trail else "", f"DCA -{bot_dca:g}%" if bot_dca else "") if p]
         bot_rule_sfx = f" ({' / '.join(bot_rule_parts)})" if bot_rule_parts else ""
         bot_mode_desc = (
-            "kraken_bot.py is OBSERVE-ONLY (reconciles manual buys/state; places NO automatic orders)"
+            "kraken_bot.py is OBSERVE-ONLY / retired (cost basis tracked from cacheManager fills; places NO automatic orders)"
             if bot_observe_only
             else f"kraken_bot.py (by=BOT{bot_rule_sfx})"
         )
@@ -2289,10 +2339,11 @@ def harvest_kraken_xstocks(
     read_json_fn: Any = None,
     *,
     kraken_cycles: Optional[Dict[str, Any]] = None,
+    cachedb_dir: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Harvest Kraken read-only xStocks holdings and link to Trading212 sibling cycle."""
     return TelemetryCollectorFactory.create("portfolio_kraken_xstocks").collect(
-        kraken_dir,
+        cachedb_dir or kraken_dir,
         "*",
         kraken_dir=kraken_dir,
         prices_and_trends=prices_and_trends,

@@ -1505,7 +1505,10 @@ class PortfolioAndVenueCyclesCollector(MacroTelemetryCollectorBase):
         t212_cycles = all_t212_cycles
         if has_active_t212 and t212_cycles:
             eff_ps["t212_cycles"] = t212_cycles
-        if xst_summary := harvest_kraken_xstocks(os.path.join(workspace_dir, "kraken"), eff_pt, all_t212_cycles, _rj):
+        if xst_summary := harvest_kraken_xstocks(
+            os.path.join(workspace_dir, "kraken"), eff_pt, all_t212_cycles, _rj,
+            kraken_cycles=kraken_cycles, cachedb_dir=cachedb_dir,
+        ):
             eff_ps["kraken_xstocks"] = xst_summary
         if cross_market_ctx := build_cross_market_context(eff_pt, eff_ms, all_t212_cycles):
             eff_ps["cross_market_context"] = cross_market_ctx
@@ -2151,6 +2154,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 t212_cycles,
                 _rj,
                 kraken_cycles=kraken_cycles,
+                cachedb_dir=cache_dir,
             ):
                 snapshot.portfolio_summary["kraken_xstocks"] = xst_summary
             if cross_market_ctx := build_cross_market_context(
