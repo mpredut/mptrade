@@ -17296,6 +17296,145 @@ def test_disabled_registry_symbols_xstock_longterm_cost_and_partial_24h_vp(tmp_p
     assert "session_vwap_px" in m24_partial or "poc_px" in m24_partial
 
 
+def test_openai_compat_soft_conserve_stateless_topics_reversible_fallback_and_memory(tmp_path, monkeypatch):
+    """Verify <=25% stateless-topic GLM routing, auto_technical_repair exclusion, reversible agy fallback, and rolling_history continuity."""
+    from types import SimpleNamespace
+    import intelligence.sentiment.gemini_client as gc_mod
+    from intelligence.sentiment.openai_compat_rest import extract_openai_compat_text
+    from orchestratorOS.agy.topics import load_topic_registry, record_topic_turn
+
+    reg_path = tmp_path / "topic_registry.json"
+    monkeypatch.setenv("LLM_TOPIC_REGISTRY_PATH", str(reg_path))
+    monkeypatch.setenv("OPENAI_COMPAT_FALLBACK_URL", "https://api.z.ai/api/coding/paas/v4")
+    monkeypatch.setenv("OPENAI_COMPAT_FALLBACK_API_KEY", "sk-zai-coding-test")
+    monkeypatch.setenv("OPENAI_COMPAT_FALLBACK_MODEL", "glm-5.4,glm-5.3")
+    monkeypatch.setenv("LLM_QUOTA_SOFT_CONSERVE_FRACTION", "0.25")
+    monkeypatch.delenv("LLM_TOPIC_MODEL_MACRO_SENTIMENT", raising=False)
+
+    # Seed existing agy thread in topic registry so we verify rolling_history injection + needs_full_prompt=True
+    record_topic_turn(
+        "macro_sentiment",
+        "cid-existing-macro",
+        '{"market_bias": "NEUTRAL", "summary": "prior agy decision"}',
+        registry_path=str(reg_path),
+    )
+
+    # 1. Z.ai reasoning_content format: reads content cleanly and ignores reasoning_content; rejects length truncation
+    assert extract_openai_compat_text(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": '{"market_bias":"BULLISH","summary":"glm ok"}',
+                        "reasoning_content": "Internal reasoning chain mentioning BEARISH",
+                    },
+                }
+            ]
+        },
+        require_complete=True,
+    ) == '{"market_bias":"BULLISH","summary":"glm ok"}'
+
+    posted = []
+    cli_calls = []
+    oai_should_fail = {"flag": False}
+
+    def _fake_post(url, payload, *, timeout=5.0, headers=None):
+        posted.append((url, payload))
+        if oai_should_fail["flag"]:
+            raise RuntimeError("Z.ai 503 temporary outage")
+        return {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": '{"market_bias":"BULLISH","summary":"via_glm_5_4"}',
+                        "reasoning_content": "chain of thought",
+                    },
+                }
+            ]
+        }
+
+    def _fake_cli(self, resume, text, call_timeout, cli_model, *args, **kwargs):
+        cli_calls.append(cli_model)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"response": '{"market_bias":"NEUTRAL","summary":"via_agy_fallback"}', "conversation_id": "cid-existing-macro"}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(gc_mod, "fetch_json_post", _fake_post)
+    client = gc_mod.GeminiClient(cli_path="/bin/sh", project_id="mptrade")
+    monkeypatch.setattr(client, "_execute_cli", _fake_cli.__get__(client, gc_mod.GeminiClient))
+    monkeypatch.setattr(
+        client,
+        "probe_live_model_quota",
+        lambda **_kw: {
+            "available_credits": 0.0,
+            "buckets": {
+                "gemini-4-neon-xhigh": 0.20,
+                "gemini-4-neon-high": 0.20,
+                "gemini-4-neon-medium": 0.20,
+                "gemini-4-neon-low": 0.20,
+            },
+        },
+    )
+
+    # 2. Stateless topic (macro_sentiment) at 20% <= 25% routes automatically to glm-5.4, injects rolling_history,
+    #    records the GLM decision, and marks needs_full_prompt=True while keeping existing agy conversation_id intact.
+    res_macro = client.query_topic_json("macro_sentiment", "Evaluate macro regime")
+    assert res_macro == {"market_bias": "BULLISH", "summary": "via_glm_5_4"}
+    assert client.last_model_used == "openai_compat:glm-5.4"
+    assert len(cli_calls) == 0
+    assert posted[-1][0] == "https://api.z.ai/api/coding/paas/v4/chat/completions"
+    assert posted[-1][1]["model"] == "glm-5.4"
+    assert "prior agy decision" in posted[-1][1]["messages"][0]["content"]
+    reg_after = load_topic_registry(str(reg_path))
+    macro_entry = reg_after["macro_sentiment"]
+    assert macro_entry["conversation_id"] == "cid-existing-macro"
+    assert macro_entry["needs_full_prompt"] is True
+    assert any("via_glm_5_4" in str(h.get("summary") or "") for h in macro_entry["rolling_history"])
+
+    # 3. auto_technical_repair (can_self_heal=True) is NEVER shifted to openai_compat even at 20% quota
+    posted.clear()
+    cli_calls.clear()
+    res_repair = client.query_topic_json("auto_technical_repair", "Audit fleet")
+    assert res_repair == {"market_bias": "NEUTRAL", "summary": "via_agy_fallback"}
+    assert len(posted) == 0
+    assert len(cli_calls) == 1
+
+    # 4. Reversible safety net: when Z.ai fails transiently on allow_cli_fallback=True (executor soft-conserve)
+    #    OR on stateless topic soft-conserve, GeminiClient falls back cleanly to agy CLI without double-hitting Z.ai
+    oai_should_fail["flag"] = True
+    posted.clear()
+    cli_calls.clear()
+    res_rev_exec = client.query_topic_json(
+        "auto_cryptotrade_executor",
+        "Evaluate BTC",
+        model="openai_compat:glm-5.4",
+        allow_cli_fallback=True,
+    )
+    assert res_rev_exec == {"market_bias": "NEUTRAL", "summary": "via_agy_fallback"}
+    assert [p[1]["model"] for p in posted] == ["glm-5.4", "glm-5.3"]
+    assert cli_calls == ["gemini-4-neon-medium"]
+
+    posted.clear()
+    cli_calls.clear()
+    res_rev_macro = client.query_topic_json("macro_sentiment", "Evaluate macro during Z.ai outage")
+    assert res_rev_macro == {"market_bias": "NEUTRAL", "summary": "via_agy_fallback"}
+    assert [p[1]["model"] for p in posted] == ["glm-5.4", "glm-5.3"]
+    assert cli_calls == ["gemini-4-neon-high"]
+
+    # 5. Explicit A/B override (allow_cli_fallback=False) still does NOT fall back to agy CLI
+    posted.clear()
+    cli_calls.clear()
+    res_strict = client.query_json("Direct A/B test", model="openai_compat:glm-5.4")
+    assert res_strict is None
+    assert len(cli_calls) == 0
+
+
 
 
 

@@ -29,6 +29,11 @@ from botcore import (
 )
 from cachepaths import LLM_QUOTA_STATUS_FILENAME, cache_path
 from core.llm_topics import resolve_configured_llm_models
+from intelligence.sentiment.openai_compat_rest import (
+    format_openai_compat_model_id,
+    resolve_openai_compat_config,
+    strip_openai_compat_prefix,
+)
 from state_io import generation_file_lock, read_json_dict, save_json_state
 
 _agy_paths = importlib.import_module("orchestratorOS.agy.paths")
@@ -113,8 +118,28 @@ def is_degraded_trading_model(model_name: Any) -> bool:
     return (
         low.endswith("-low")
         or is_gemini_flash_model(low)
+        or low.endswith(("-flash", "-flashx"))
+        or "-flash-" in low
         or low.startswith(("gemini-2.5", "gemini-2.0", "gemini-1.5"))
     )
+
+
+def resolve_configured_openai_compat_model(
+    *,
+    url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    models: Optional[str | tuple[str, ...] | list[str]] = None,
+    allow_degraded: bool = False,
+) -> str:
+    """Return canonical ``openai_compat:<slug>`` for the first eligible configured REST fallback model, or ``""``."""
+    cfg = resolve_openai_compat_config(url=url, api_key=api_key, models=models)
+    if cfg is None or not cfg.models:
+        return ""
+    allow_deg = _parse_bool_flag(allow_degraded, False)
+    for slug in cfg.models:
+        if slug and (allow_deg or not is_degraded_trading_model(slug)):
+            return format_openai_compat_model_id(slug)
+    return ""
 
 
 def _expand_family_variants(
@@ -303,6 +328,7 @@ def resolve_crypto_executor_model_override(
     urgent_escalation: bool = False,
     xhigh_model: str = "",
     escalate_xhigh: bool = False,
+    openai_compat_model: str = "",
     low_warn_fraction: Optional[float] = None,
     soft_conserve_fraction: Optional[float] = None,
     now_ts: Optional[float] = None,
@@ -310,15 +336,16 @@ def resolve_crypto_executor_model_override(
     """Select quota-aware model override for autonomous trading executors.
 
     Returns ``(model_override, decision_reason)``:
-    - Extreme-stakes catalysts (``escalate_xhigh``: ``trade_plan_invalidated`` or critical geo shock):
-      escalates to ``xhigh_model`` ONLY when quota is above the soft-conserve band (or top-up credits
-      exist) and ``xhigh_model`` is neither latency-demoted nor runtime-exhausted; otherwise falls
-      through cleanly to normal ``-high`` routing.
-    - Hard low quota (``<= low_warn``): suppresses ``-high`` escalation even on urgent signals.
-    - Soft conservation band (``low_warn < rem <= soft_conserve``): suppresses routine ``-high``
-      escalation (preserving ``-high`` for urgent catalysts like ``focus_symbols``, fills,
-      trade-plan triggers, or critical geo shocks), and on routine non-escalated cycles routes
-      to the first healthy paid cross-family fallback (e.g. Claude ``>= 50%``).
+    - Extreme-stakes catalysts (``escalate_xhigh``: ``trade_plan_invalidated``, ``new_fill``, or
+      critical geo shock): escalates to ``xhigh_model`` ONLY when quota is above the soft-conserve
+      band (or top-up credits exist) and ``xhigh_model`` is neither latency-demoted nor
+      runtime-exhausted; otherwise falls through cleanly to normal ``-high`` routing.
+    - Hard low quota (``<= low_warn``, default 10%): shifts ALL cycles (including urgent catalysts)
+      to ``openai_compat_model`` when configured, or suppresses ``-high`` escalation otherwise.
+    - Soft conservation band (``low_warn < rem <= soft_conserve``, default 10%-25%): preserves
+      ``-high`` on primary Gemini for urgent/extreme catalysts while shifting routine cycles (both
+      routine ``-medium`` and non-urgent high-effort signals) to ``openai_compat_model`` when
+      configured, else to the first healthy paid cross-family ``agy`` fallback.
     - Top-up credits (``available_credits > 0``) or missing quota cache never throttle routing.
     """
     eff_low = (
@@ -335,6 +362,13 @@ def resolve_crypto_executor_model_override(
     clean_high = high_model.strip() if isinstance(high_model, str) else ""
     clean_xhigh = xhigh_model.strip() if isinstance(xhigh_model, str) else ""
     clean_def = default_model.strip() if isinstance(default_model, str) else ""
+    raw_oai = openai_compat_model.strip() if isinstance(openai_compat_model, str) else ""
+    clean_oai = ""
+    if raw_oai:
+        is_oai, oai_slug = strip_openai_compat_prefix(raw_oai)
+        cand_oai = format_openai_compat_model_id(oai_slug) if (is_oai or oai_slug) else ""
+        if cand_oai and not is_degraded_trading_model(cand_oai):
+            clean_oai = cand_oai
     q_snap = quota_snapshot if isinstance(quota_snapshot, Mapping) else {}
     q_buckets = q_snap.get("buckets") if isinstance(q_snap.get("buckets"), Mapping) else {}
     q_cred = safe_float(q_snap.get("available_credits"), default=0.0) or 0.0
@@ -366,6 +400,11 @@ def resolve_crypto_executor_model_override(
             q_snap, clean_high, min_remaining_fraction=eff_low
         )
         if not low_ok and high_rem is not None:
+            if clean_oai:
+                return (
+                    clean_oai,
+                    f"soft_conserve_fallback({clean_high}:{high_rem * 100.0:.1f}%<={eff_low * 100.0:.1f}%->{clean_oai})",
+                )
             return (
                 None,
                 f"suppress_low_quota({clean_high}:{high_rem * 100.0:.1f}%<={eff_low * 100.0:.1f}%)",
@@ -375,6 +414,11 @@ def resolve_crypto_executor_model_override(
                 q_snap, clean_high, min_remaining_fraction=eff_soft
             )
             if not soft_ok and soft_rem is not None:
+                if clean_oai:
+                    return (
+                        clean_oai,
+                        f"soft_conserve_fallback({clean_high}:{soft_rem * 100.0:.1f}%<={eff_soft * 100.0:.1f}%->{clean_oai})",
+                    )
                 return (
                     None,
                     f"suppress_soft_conserve({clean_high}:{soft_rem * 100.0:.1f}%<={eff_soft * 100.0:.1f}%)",
@@ -390,7 +434,12 @@ def resolve_crypto_executor_model_override(
     if not escalate_high_effort and eff_soft > 0.0 and q_cred <= 0.0 and clean_def and q_buckets:
         def_rem = _lookup_bucket_remaining(q_buckets, clean_def)
         if def_rem is not None and def_rem <= eff_soft:
-            healthy_alt_min = max(eff_soft * 2.0, 0.50)
+            if clean_oai:
+                return (
+                    clean_oai,
+                    f"soft_conserve_fallback({clean_def}:{def_rem * 100.0:.1f}%<={eff_soft * 100.0:.1f}%->{clean_oai})",
+                )
+            healthy_alt_min = min(0.80, max(0.30, def_rem + 0.15))
             def_fam = model_family_base(clean_def)
             fb_iter = () if isinstance(fallback_models, (str, bytes)) else fallback_models
             for raw_fb in fb_iter:
@@ -407,6 +456,45 @@ def resolve_crypto_executor_model_override(
                         fb,
                         f"soft_conserve_fallback({clean_def}:{def_rem * 100.0:.1f}%<={eff_soft * 100.0:.1f}%->{fb}:{fb_rem * 100.0:.1f}%)",
                     )
+    return None, ""
+
+
+def resolve_stateless_topic_soft_conserve_model(
+    quota_snapshot: Optional[Mapping[str, Any]],
+    *,
+    selected_model: str,
+    openai_compat_model: str,
+    soft_conserve_fraction: Optional[float] = None,
+) -> tuple[Optional[str], str]:
+    """Shift non-self-heal stateless topics (macro/guard) to ``openai_compat_model`` when Gemini quota <= soft_conserve."""
+    clean_sel = selected_model.strip() if isinstance(selected_model, str) else ""
+    if not clean_sel or strip_openai_compat_prefix(clean_sel)[0]:
+        return None, ""
+    raw_oai = openai_compat_model.strip() if isinstance(openai_compat_model, str) else ""
+    if not raw_oai:
+        return None, ""
+    is_oai, oai_slug = strip_openai_compat_prefix(raw_oai)
+    clean_oai = format_openai_compat_model_id(oai_slug) if (is_oai or oai_slug) else ""
+    if not clean_oai or is_degraded_trading_model(clean_oai):
+        return None, ""
+    eff_soft = (
+        resolve_quota_soft_conserve_fraction()
+        if soft_conserve_fraction is None
+        else max(0.0, min(0.8, safe_float(soft_conserve_fraction, 0.25)))
+    )
+    if eff_soft <= 0.0:
+        return None, ""
+    q_snap = quota_snapshot if isinstance(quota_snapshot, Mapping) else {}
+    q_buckets = q_snap.get("buckets") if isinstance(q_snap.get("buckets"), Mapping) else {}
+    q_cred = safe_float(q_snap.get("available_credits"), default=0.0) or 0.0
+    if q_cred > 0.0 or not q_buckets:
+        return None, ""
+    rem = _lookup_bucket_remaining(q_buckets, clean_sel)
+    if rem is not None and rem <= eff_soft:
+        return (
+            clean_oai,
+            f"soft_conserve_fallback({clean_sel}:{rem * 100.0:.1f}%<={eff_soft * 100.0:.1f}%->{clean_oai})",
+        )
     return None, ""
 
 

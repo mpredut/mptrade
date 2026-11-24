@@ -30,6 +30,9 @@ from botcore import (
     bool_env,
     canonical_topic_key,
     disable_auto_start_websockets_default,
+    float_env,
+    is_cache_fresh,
+    is_unmocked_llm_query_allowed,
     is_us_rth_open,
     load_dotenv,
     load_key_value_conf,
@@ -51,8 +54,10 @@ from intelligence.macro_sentiment_ssot import (
 from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
 from intelligence.sentiment.llm_quota_router import (
     derive_xhigh_model_from_high,
+    resolve_configured_openai_compat_model,
     resolve_crypto_executor_model_override,
 )
+from intelligence.sentiment.openai_compat_rest import strip_openai_compat_prefix
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     MarketAndPortfolioSnapshotOrchestrator,
 )
@@ -245,12 +250,24 @@ class AutonomousAIReconciler:
         return harvest_log_anomalies_from_dirs(self.logs_dirs, hours)
 
     def _load_cached_quota_snapshot(self) -> Dict[str, Any]:
-        """Read cached ``llm_quota_status.json`` from ``self.cache_dir`` honoring subdomain routing."""
+        """Read cached ``llm_quota_status.json`` from ``self.cache_dir`` and refresh when stale in live runtime."""
         quota_path = _resolve_topic_cache_path(self.cache_dir, LLM_QUOTA_STATUS_FILENAME)
-        if not (os.path.exists(quota_path) or os.path.exists(f"{quota_path}.previous")):
-            return {}
-        raw = read_json_recovering(quota_path, default={})
-        return raw if isinstance(raw, dict) else {}
+        raw: Dict[str, Any] = {}
+        if os.path.exists(quota_path) or os.path.exists(f"{quota_path}.previous"):
+            loaded = read_json_recovering(quota_path, default={})
+            if isinstance(loaded, dict):
+                raw = loaded
+        probe_fn = getattr(self.gemini_auditor, "probe_live_model_quota", None)
+        if callable(probe_fn) and is_unmocked_llm_query_allowed():
+            ttl_sec = max(30.0, float_env("LLM_QUOTA_CACHE_TTL_SEC", default=30.0) or 30.0)
+            if not raw or not is_cache_fresh(raw.get("ts"), ttl_sec=ttl_sec):
+                try:
+                    live = probe_fn()
+                    if isinstance(live, dict) and live:
+                        return live
+                except Exception as exc:
+                    logger.debug("Live quota refresh skipped; using cached snapshot: %s", exc)
+        return raw
 
     def synthesize_and_diagnose(
         self,
@@ -299,6 +316,7 @@ class AutonomousAIReconciler:
             )
 
         model_override: Optional[str] = None
+        allow_cli_fallback = False
         effective_escalate = _parse_bool_flag(escalate_high_effort, False) or bool(
             focus_symbols and parse_symbol_list(focus_symbols)
         )
@@ -324,6 +342,7 @@ class AutonomousAIReconciler:
                 high_model,
                 optional_env("LLM_XHIGH_STAKE_MODEL", ""),
             )
+            oai_compat_model = resolve_configured_openai_compat_model()
             q_snap = self._load_cached_quota_snapshot()
             model_override, route_reason = resolve_crypto_executor_model_override(
                 q_snap,
@@ -334,7 +353,14 @@ class AutonomousAIReconciler:
                 urgent_escalation=effective_urgent or effective_extreme,
                 xhigh_model=xhigh_model,
                 escalate_xhigh=effective_extreme,
+                openai_compat_model=oai_compat_model,
             )
+            if (
+                route_reason.startswith("soft_conserve_fallback(")
+                and model_override
+                and strip_openai_compat_prefix(model_override)[0]
+            ):
+                allow_cli_fallback = True
             if route_reason == "escalate_xhigh_effort" and model_override:
                 logger.info(
                     "[%s] Escalating reasoning effort to %s for extreme-stakes catalyst.",
@@ -379,6 +405,8 @@ class AutonomousAIReconciler:
         }
         if model_override:
             query_kwargs["model"] = model_override
+        if allow_cli_fallback:
+            query_kwargs["allow_cli_fallback"] = True
         if resume_prompt:
             query_kwargs["resume_prompt"] = resume_prompt
         resp = query_topic_json(

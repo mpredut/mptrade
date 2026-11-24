@@ -664,6 +664,7 @@ def test_faza4_per_venue_order_type_tca_fill_rate_and_quota_logs():
         "2026-11-20 12:00:01 [INFO] [auto_cryptotrade_executor] Escalating reasoning effort to gemini-4-neon-high for high-signal cycle.",
         "2026-11-20 12:06:01 [INFO] [auto_cryptotrade_executor] Suppressing high-effort escalation to gemini-4-neon-high (suppress_soft_conserve(gemini-4-neon-high:22.0%<=25.0%)).",
         "2026-11-20 12:12:01 [INFO] [auto_cryptotrade_executor] Quota soft-conserve routing routine cycle to claude-sonnet-5-5-medium (soft_conserve_fallback(gemini-4-neon-medium:21.0%<=25.0%->claude-sonnet-5-5-medium:99.0%)).",
+        "2026-11-20 12:18:01 [INFO] [auto_cryptotrade_executor] Quota soft-conserve routing routine cycle to openai_compat:glm-5.4 (soft_conserve_fallback(gemini-4-neon-medium:20.0%<=25.0%->openai_compat:glm-5.4)).",
         "2026-11-20 12:12:15 [INFO] Autonomous AI Supervisor cycle complete: HOLD",
     ]
     rep = evaluate_ai_attribution(intents, now_ts=now_s, lookback_days=7.0, scope="crypto", reconciler_log_lines=logs)
@@ -690,14 +691,14 @@ def test_faza4_per_venue_order_type_tca_fill_rate_and_quota_logs():
     dg = rep["delta_gate_efficiency"]
     assert dg["high_effort_escalations"] == 1
     assert dg["quota_escalation_suppressions"] == 1
-    assert dg["quota_soft_conserve_shifts"] == 1
-    assert dg["soft_shift_models"] == {"claude-sonnet-5-5-medium": 1}
+    assert dg["quota_soft_conserve_shifts"] == 2
+    assert dg["soft_shift_models"] == {"claude-sonnet-5-5-medium": 1, "openai_compat:glm-5.4": 1}
 
     rendered = format_ai_attribution_report(rep)
     assert "Execution TCA by Venue:OrderType" in rendered
     assert "binance:LIMIT" in rendered and "hyperliquid:MARKET" in rendered and "kraken:LIMIT" in rendered
     assert "fill_rate=33.3%" in rendered
-    assert "quota_suppressed=1, soft_shifts=1" in rendered
+    assert "quota_suppressed=1, soft_shifts=2" in rendered
 
 
 def test_faza4_closed_loop_calibration_feedback_and_section_3c_prompt():

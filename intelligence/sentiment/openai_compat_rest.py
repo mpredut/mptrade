@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import logging
 import re
 from typing import Any, Callable, Iterable, Optional
+from urllib.parse import urlparse
 
 from botcore import (
     _parse_bool_flag,
@@ -92,6 +93,15 @@ def _normalize_models_tuple(raw_models: Any) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _is_local_openai_compat_url(url: str) -> bool:
+    """Return True for loopback endpoints (e.g. local Ollama/vLLM) that may operate without an API key."""
+    try:
+        host = (urlparse(url).hostname or "").strip().lower()
+    except Exception:
+        return False
+    return host in ("localhost", "127.0.0.1", "::1")
+
+
 def resolve_openai_compat_config(
     *,
     url: Optional[str] = None,
@@ -113,6 +123,8 @@ def resolve_openai_compat_config(
         else optional_env("OPENAI_COMPAT_FALLBACK_API_KEY", "")
     )
     eff_key = clean_scalar_str(raw_key) or None
+    if not eff_key and not _is_local_openai_compat_url(eff_url):
+        return None
     eff_models = _normalize_models_tuple(
         models if models is not None else optional_env("OPENAI_COMPAT_FALLBACK_MODEL", "")
     )

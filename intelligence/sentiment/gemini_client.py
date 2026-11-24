@@ -40,6 +40,8 @@ from intelligence.sentiment.llm_quota_router import (
     GeminiQuotaRouterMixin,
     canonical_rest_model,
     is_degraded_trading_model,
+    resolve_configured_openai_compat_model,
+    resolve_stateless_topic_soft_conserve_model,
 )
 from intelligence.sentiment.openai_compat_rest import (
     query_openai_compat_chat,
@@ -88,6 +90,8 @@ _ORIG_URLOPEN = urllib.request.urlopen
 _ORIG_FETCH_JSON_POST = fetch_json_post
 _ORIG_PREPARE_TOPIC_SESSION = prepare_topic_session
 _ORIG_RECORD_TOPIC_SLOW_ROTATION = record_topic_slow_rotation
+_ORIG_RECORD_TOPIC_TURN = record_topic_turn
+_ORIG_FORMAT_TOPIC_HISTORY_PREFIX = format_topic_history_prefix
 _ORIG_PROBE_LIVE_MODEL_QUOTA_FUNC = getattr(
     GeminiQuotaRouterMixin.probe_live_model_quota, "__func__", GeminiQuotaRouterMixin.probe_live_model_quota
 )
@@ -1184,6 +1188,95 @@ class GeminiClient(GeminiQuotaRouterMixin):
         )
         return text
 
+    def _resolve_quota_snapshot_for_soft_conserve(self, *, allow_unmocked: bool) -> Dict[str, Any]:
+        """Return live-refreshed (when unmocked/patched) or cached quota snapshot for soft-conserve routing."""
+        pre_quota_fn = getattr(self.probe_live_model_quota, "__func__", self.probe_live_model_quota)
+        pre_quota_mocked = (
+            hasattr(self.probe_live_model_quota, "_mock_name")
+            or "probe_live_model_quota" in self.__dict__
+            or pre_quota_fn is not _ORIG_PROBE_LIVE_MODEL_QUOTA_FUNC
+        )
+        if allow_unmocked or pre_quota_mocked:
+            try:
+                live = self.probe_live_model_quota()
+                if isinstance(live, dict) and live:
+                    return live
+            except Exception as exc:
+                logger.debug("Soft-conserve quota probe skipped: %s", exc)
+        if isinstance(self._QUOTA_MEM_CACHE, dict) and self._QUOTA_MEM_CACHE:
+            return dict(self._QUOTA_MEM_CACHE)
+        try:
+            disk = read_json_dict(self._get_quota_state_path(), default={})
+            if isinstance(disk, dict) and disk:
+                return disk
+        except Exception:
+            pass
+        return {}
+
+    def _query_openai_compat_topic(
+        self,
+        prompt: str,
+        *,
+        selected_model: str = "",
+        explicit_model: str = "",
+        timeout_sec: float,
+        cache_ttl_sec: float,
+        now: float,
+        require_json: bool,
+        topic_key: Optional[str] = None,
+        allow_unmocked: bool = False,
+    ) -> Optional[str]:
+        """Run an OpenAI-compatible REST turn with topic rolling_history prefix and memory continuity."""
+        eff_prompt = prompt
+        has_isolated_registry = bool((optional_env("LLM_TOPIC_REGISTRY_PATH", "") or "").strip())
+        hist_mocked = (
+            hasattr(format_topic_history_prefix, "_mock_name")
+            or format_topic_history_prefix is not _ORIG_FORMAT_TOPIC_HISTORY_PREFIX
+        )
+        if topic_key and "[TOPIC MEMORY" not in prompt and (allow_unmocked or has_isolated_registry or hist_mocked):
+            try:
+                hist_prefix = format_topic_history_prefix(topic_key)
+                if hist_prefix:
+                    eff_prompt = f"{hist_prefix}{prompt}"
+            except Exception as exc:
+                logger.debug("Failed loading topic history prefix for %s: %s", topic_key, exc)
+
+        out_text = self._query_openai_compat_fallback(
+            eff_prompt,
+            selected_model=selected_model,
+            explicit_model=explicit_model,
+            timeout_sec=timeout_sec,
+            cache_ttl_sec=cache_ttl_sec,
+            now=now,
+            require_json=require_json,
+        )
+        if not out_text:
+            return None
+        if eff_prompt != prompt:
+            self._cache_put(
+                selected_model or self.last_model_used or "",
+                prompt,
+                now=now,
+                text=out_text,
+                model_used=self.last_model_used,
+                cache_ttl_sec=cache_ttl_sec,
+            )
+        rec_mocked = (
+            hasattr(record_topic_turn, "_mock_name")
+            or record_topic_turn is not _ORIG_RECORD_TOPIC_TURN
+        )
+        if topic_key and (allow_unmocked or has_isolated_registry or rec_mocked):
+            try:
+                record_topic_turn(
+                    topic_key=topic_key,
+                    conversation_id=None,
+                    response_text=out_text,
+                    mark_needs_full_prompt=True,
+                )
+            except Exception as exc:
+                logger.debug("Failed recording OpenAI-compat topic turn for %s: %s", topic_key, exc)
+        return out_text
+
     def _query_rest_fallback(
         self,
         prompt: str,
@@ -1254,6 +1347,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         topic_key: Optional[str] = None,
         conversation_id: Optional[str] = None,
         resume_prompt: Optional[str] = None,
+        allow_cli_fallback: bool = False,
     ) -> Optional[str]:
         """Query Gemini with a prompt and return the text response."""
         self.last_model_used = None
@@ -1262,16 +1356,21 @@ class GeminiClient(GeminiQuotaRouterMixin):
         now = time.time()
         explicit_call_model = model.strip() if isinstance(model, str) and model.strip() else None
         topic_preferred_model: Optional[str] = None
+        topic_explicit_override = False
         include_repo_rules = False
         if topic_key:
             try:
                 spec_obj = topic_spec(topic_key)
                 include_repo_rules = bool(getattr(spec_obj, "can_self_heal", False))
+                ov_key = getattr(spec_obj, "override_env_key", None) or ""
+                if ov_key and (optional_env(ov_key, "") or "").strip():
+                    topic_explicit_override = True
                 if not explicit_call_model and not getattr(self, "_explicit_model", False):
                     topic_preferred_model = spec_obj.preferred_model
             except Exception:
                 topic_preferred_model = None
-        selected_model = explicit_call_model or topic_preferred_model or self.model
+        base_cli_model = topic_preferred_model or self.model
+        selected_model = explicit_call_model or base_cli_model
         timeout_sec = safe_pos_float(timeout_sec, 15.0)
         cache_ttl_sec = safe_pos_float(cache_ttl_sec, 0.0)
         require_json = bool(getattr(self._JSON_MODE_LOCAL, "require_json", False))
@@ -1330,11 +1429,14 @@ class GeminiClient(GeminiQuotaRouterMixin):
             logger.debug("%s", "Gemini LLM external query suppressed by runtime policy.")
             return None
 
-        # 1b. Direct OpenAI-compatible REST routing when explicitly targeted (e.g. "openai_compat:glm-5.3")
+        # 1b. Direct OpenAI-compatible REST routing when explicitly targeted (e.g. "openai_compat:glm-5.4")
+        #     or delegated via soft-conserve (allow_cli_fallback=True falls back cleanly to agy CLI on failure).
+        tried_openai_compat = False
         is_explicit_openai, explicit_openai_slug = strip_openai_compat_prefix(selected_model)
         if is_explicit_openai:
             if allow_unmocked or rest_mocked:
-                return self._query_openai_compat_fallback(
+                tried_openai_compat = True
+                if openai_direct_out := self._query_openai_compat_topic(
                     prompt,
                     selected_model=selected_model,
                     explicit_model=explicit_openai_slug,
@@ -1342,8 +1444,73 @@ class GeminiClient(GeminiQuotaRouterMixin):
                     cache_ttl_sec=cache_ttl_sec,
                     now=now,
                     require_json=require_json,
+                    topic_key=topic_key,
+                    allow_unmocked=allow_unmocked,
+                ):
+                    return openai_direct_out
+                if allow_cli_fallback:
+                    logger.warning(
+                        "Soft-conserve OpenAI-compatible route '%s' failed for topic '%s'; falling back to agy CLI model '%s'.",
+                        selected_model,
+                        topic_key or "detached",
+                        base_cli_model,
+                    )
+                    selected_model = base_cli_model
+                else:
+                    return None
+            else:
+                return None
+
+        # 1c. Automatic <=25% quota soft-conservation for non-self-heal stateless topics (macro/guard).
+        #     Self-healing topics (auto_technical_repair) and explicit per-call/per-topic overrides are never shifted.
+        if (
+            not tried_openai_compat
+            and topic_key
+            and not include_repo_rules
+            and not explicit_call_model
+            and not getattr(self, "_explicit_model", False)
+            and not topic_explicit_override
+            and (allow_unmocked or rest_mocked)
+        ):
+            oai_soft_model = resolve_configured_openai_compat_model(
+                url=self._openai_compat_url,
+                api_key=self._openai_compat_api_key,
+                models=self._openai_compat_models,
+            )
+            if oai_soft_model:
+                q_snap = self._resolve_quota_snapshot_for_soft_conserve(allow_unmocked=allow_unmocked)
+                oai_override, oai_reason = resolve_stateless_topic_soft_conserve_model(
+                    q_snap,
+                    selected_model=selected_model,
+                    openai_compat_model=oai_soft_model,
                 )
-            return None
+                if oai_override:
+                    _, oai_slug = strip_openai_compat_prefix(oai_override)
+                    logger.info(
+                        "[%s] Quota soft-conserve routing topic to %s (%s).",
+                        topic_key,
+                        oai_override,
+                        oai_reason,
+                    )
+                    tried_openai_compat = True
+                    if openai_soft_out := self._query_openai_compat_topic(
+                        prompt,
+                        selected_model=oai_override,
+                        explicit_model=oai_slug,
+                        timeout_sec=timeout_sec,
+                        cache_ttl_sec=cache_ttl_sec,
+                        now=now,
+                        require_json=require_json,
+                        topic_key=topic_key,
+                        allow_unmocked=allow_unmocked,
+                    ):
+                        return openai_soft_out
+                    logger.warning(
+                        "Soft-conserve OpenAI-compatible route '%s' failed for topic '%s'; falling back to agy CLI model '%s'.",
+                        oai_override,
+                        topic_key,
+                        selected_model,
+                    )
 
         # 2. Local authenticated CLI runner (subscription mode)
         if self.cli_path and os.path.exists(self.cli_path) and (allow_unmocked or cli_mocked):
@@ -1365,14 +1532,16 @@ class GeminiClient(GeminiQuotaRouterMixin):
                 return cli_out
 
         # 3a. Optional OpenAI-compatible REST resilience fallback (configured via OPENAI_COMPAT_FALLBACK_*)
-        if allow_unmocked or rest_mocked:
-            if openai_out := self._query_openai_compat_fallback(
+        if not tried_openai_compat and (allow_unmocked or rest_mocked):
+            if openai_out := self._query_openai_compat_topic(
                 prompt,
                 selected_model=selected_model,
                 timeout_sec=timeout_sec,
                 cache_ttl_sec=cache_ttl_sec,
                 now=now,
                 require_json=require_json,
+                topic_key=topic_key,
+                allow_unmocked=allow_unmocked,
             ):
                 return openai_out
 
@@ -1438,6 +1607,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         topic_key: Optional[str] = None,
         conversation_id: Optional[str] = None,
         resume_prompt: Optional[str] = None,
+        allow_cli_fallback: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Query Gemini and parse the response strictly as a JSON object."""
         self._JSON_MODE_LOCAL.require_json = True
@@ -1451,6 +1621,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                 topic_key=topic_key,
                 conversation_id=conversation_id,
                 resume_prompt=resume_prompt,
+                allow_cli_fallback=allow_cli_fallback,
             )
         finally:
             self._JSON_MODE_LOCAL.require_json = False
@@ -1475,6 +1646,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         conversation_id: Optional[str] = None,
         model: Optional[str] = None,
         resume_prompt: Optional[str] = None,
+        allow_cli_fallback: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Query a registered topic (`TOPICS[topic_key]`) and return a validated JSON dictionary."""
         return query_topic_json(
@@ -1487,6 +1659,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
             conversation_id=conversation_id,
             model=model,
             resume_prompt=resume_prompt,
+            allow_cli_fallback=allow_cli_fallback,
         )
 
 
@@ -1501,6 +1674,7 @@ def query_topic_json(
     conversation_id: Optional[str] = None,
     model: Optional[str] = None,
     resume_prompt: Optional[str] = None,
+    allow_cli_fallback: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Shared topic-aware JSON query dispatcher resolving title and timeout from ``topic_spec(topic_key)``."""
     if client is None:
@@ -1527,5 +1701,7 @@ def query_topic_json(
         call_kwargs["model"] = model.strip()
     if isinstance(resume_prompt, str) and resume_prompt.strip():
         call_kwargs["resume_prompt"] = resume_prompt
+    if allow_cli_fallback:
+        call_kwargs["allow_cli_fallback"] = True
     resp = client.query_json(prompt, **call_kwargs)
     return resp if isinstance(resp, dict) and resp else None

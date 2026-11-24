@@ -10639,3 +10639,173 @@ def test_acknowledged_geo_shock_and_vol_scaled_impulse_filter_do_not_over_escala
     gtc._active_cycle_ts = None
     assert gtc.maybe_trigger_kinematic_ai_wakeup(now=t0 + 160.0) is None
     assert gtc._last_ai_impulse_ts == pytest.approx(t0 + 100.0)
+
+
+def test_quota_soft_conserve_openai_compat_routing_and_threshold_bounds(tmp_path, monkeypatch):
+    """Verify <=25% / <=10% Z.ai GLM soft-conserve routing, remote-key gating, Flash exclusion, and healthy_alt_min fix."""
+    from intelligence.sentiment.llm_quota_router import (
+        is_degraded_trading_model,
+        resolve_configured_openai_compat_model,
+        resolve_crypto_executor_model_override,
+    )
+    from intelligence.sentiment.openai_compat_rest import resolve_openai_compat_config
+
+    # 1. Remote URL without API key stays dormant; loopback URL without key stays allowed; Flash models skipped
+    monkeypatch.setenv("OPENAI_COMPAT_FALLBACK_URL", "https://api.z.ai/api/coding/paas/v4")
+    monkeypatch.setenv("OPENAI_COMPAT_FALLBACK_MODEL", "glm-4.7-flash,glm-5.4,glm-5.3")
+    monkeypatch.delenv("OPENAI_COMPAT_FALLBACK_API_KEY", raising=False)
+    assert resolve_openai_compat_config() is None
+    assert resolve_configured_openai_compat_model() == ""
+    assert resolve_openai_compat_config(url="http://127.0.0.1:11434/v1", models="glm-5.4") is not None
+
+    monkeypatch.setenv("OPENAI_COMPAT_FALLBACK_API_KEY", "sk-zai-coding-test")
+    assert is_degraded_trading_model("openai_compat:glm-4.7-flash") is True
+    assert is_degraded_trading_model("openai_compat:glm-5.3-flash") is True
+    assert is_degraded_trading_model("openai_compat:glm-5.4") is False
+    assert resolve_configured_openai_compat_model() == "openai_compat:glm-5.4"
+
+    fallbacks = ("gemini-4-neon-medium", "claude-sonnet-5-5-medium")
+    healthy_snap = {
+        "available_credits": 0.0,
+        "buckets": {
+            "gemini-4-neon-xhigh": 0.60,
+            "gemini-4-neon-high": 0.60,
+            "gemini-4-neon-medium": 0.60,
+            "claude-sonnet-5-5-medium": 1.0,
+        },
+    }
+    soft_snap = {
+        "available_credits": 0.0,
+        "buckets": {
+            "gemini-4-neon-xhigh": 0.20,
+            "gemini-4-neon-high": 0.20,
+            "gemini-4-neon-medium": 0.20,
+            "claude-sonnet-5-5-medium": 0.99,
+        },
+    }
+    low_snap = {
+        "available_credits": 0.0,
+        "buckets": {
+            "gemini-4-neon-xhigh": 0.08,
+            "gemini-4-neon-high": 0.08,
+            "gemini-4-neon-medium": 0.08,
+            "claude-sonnet-5-5-medium": 0.99,
+        },
+    }
+
+    # 2. >25% Gemini: never shifts to openai_compat (stays on Gemini -xhigh / -high / default -medium)
+    assert resolve_crypto_executor_model_override(
+        healthy_snap,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        xhigh_model="gemini-4-neon-xhigh",
+        escalate_high_effort=True,
+        urgent_escalation=True,
+        escalate_xhigh=True,
+        openai_compat_model="openai_compat:glm-5.4",
+    ) == ("gemini-4-neon-xhigh", "escalate_xhigh_effort")
+    assert resolve_crypto_executor_model_override(
+        healthy_snap,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        fallback_models=fallbacks,
+        escalate_high_effort=False,
+        openai_compat_model="openai_compat:glm-5.4",
+    ) == (None, "")
+
+    # 3. 10%-25% soft-conserve: urgent/extreme stays on Gemini -high (-xhigh suppressed); routine high & medium shift to GLM
+    assert resolve_crypto_executor_model_override(
+        soft_snap,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        xhigh_model="gemini-4-neon-xhigh",
+        escalate_high_effort=True,
+        urgent_escalation=True,
+        escalate_xhigh=True,
+        openai_compat_model="openai_compat:glm-5.4",
+    ) == ("gemini-4-neon-high", "escalate_high_effort")
+    ov_rhi, rsn_rhi = resolve_crypto_executor_model_override(
+        soft_snap,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        escalate_high_effort=True,
+        urgent_escalation=False,
+        openai_compat_model="openai_compat:glm-5.4",
+    )
+    assert ov_rhi == "openai_compat:glm-5.4" and rsn_rhi.startswith("soft_conserve_fallback(")
+    ov_rmed, rsn_rmed = resolve_crypto_executor_model_override(
+        soft_snap,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        fallback_models=fallbacks,
+        escalate_high_effort=False,
+        openai_compat_model="openai_compat:glm-5.4",
+    )
+    assert ov_rmed == "openai_compat:glm-5.4" and rsn_rmed.startswith("soft_conserve_fallback(")
+
+    # 4. <=10% hard low quota: even urgent/extreme catalysts shift to openai_compat:glm-5.4
+    ov_low_urg, rsn_low_urg = resolve_crypto_executor_model_override(
+        low_snap,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        xhigh_model="gemini-4-neon-xhigh",
+        escalate_high_effort=True,
+        urgent_escalation=True,
+        escalate_xhigh=True,
+        openai_compat_model="openai_compat:glm-5.4",
+    )
+    assert ov_low_urg == "openai_compat:glm-5.4" and rsn_low_urg.startswith("soft_conserve_fallback(")
+
+    # 5. Fixed healthy_alt_min bound works even when soft_conserve_fraction >= 0.50 without openai_compat
+    high_band_snap = {
+        "available_credits": 0.0,
+        "buckets": {"gemini-4-neon-medium": 0.45, "claude-sonnet-5-5-medium": 0.90},
+    }
+    ov_hb, rsn_hb = resolve_crypto_executor_model_override(
+        high_band_snap,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        fallback_models=fallbacks,
+        escalate_high_effort=False,
+        soft_conserve_fraction=0.50,
+    )
+    assert ov_hb == "claude-sonnet-5-5-medium" and rsn_hb.startswith("soft_conserve_fallback(")
+
+    # 6. End-to-end AutonomousAIReconciler passes model='openai_compat:glm-5.4' and allow_cli_fallback=True
+    sys_dir = tmp_path / "cachedb" / "system"
+    sys_dir.mkdir(parents=True, exist_ok=True)
+    (sys_dir / "llm_quota_status.json").write_text(json.dumps(soft_snap), encoding="utf-8")
+    monkeypatch.delenv("LLM_TOPIC_MODEL_AUTO_CRYPTOTRADE_EXECUTOR", raising=False)
+    monkeypatch.setenv("LLM_HIGH_STAKE_MODEL", "gemini-4-neon-high")
+    captured_calls = []
+
+    class _MockAuditor:
+        _explicit_model = False
+        model = "gemini-4-neon-medium"
+        fallback_models = fallbacks
+        last_model_used = "openai_compat:glm-5.4"
+
+        def query_json(self, prompt, **kwargs):
+            captured_calls.append(kwargs)
+            return {"summary": "HOLD", "market_trading_decisions": [{"decision": "HOLD", "confidence": 0.0, "thesis": "flat"}]}
+
+    rec = AutonomousAIReconciler(
+        workspace_dir=str(tmp_path),
+        cache_dir=str(tmp_path / "cachedb"),
+        mode="shadow",
+        gemini_auditor=_MockAuditor(),
+        notify_enabled=False,
+    )
+    sensors = SimpleNamespace(
+        prices_and_trends={"BTCUSDC": {"price": 70000.0}},
+        portfolio_summary={"positions": []},
+        microstructure={},
+        geopolitical_threat={},
+        sentiment_advisor={},
+        source_timestamps={},
+    )
+    logs = LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0)
+    rec.synthesize_and_diagnose(sensors, logs, topic_key="auto_cryptotrade_executor", escalate_high_effort=False)
+    assert captured_calls[-1]["model"] == "openai_compat:glm-5.4"
+    assert captured_calls[-1]["allow_cli_fallback"] is True
+    assert rec._last_model_used == "openai_compat:glm-5.4"

@@ -634,6 +634,7 @@ def record_topic_turn(
     replace_conversation: bool = False,
     schedule_rotation: bool = False,
     count_slow_rotation: bool = False,
+    mark_needs_full_prompt: bool = False,
 ) -> None:
     """Update the topic registry after a completed turn and mirror the thread into the Web UI store.
 
@@ -679,6 +680,8 @@ def record_topic_turn(
                     entry["needs_full_prompt"] = True
                 else:
                     entry["needs_full_prompt"] = False
+            elif _parse_bool_flag(mark_needs_full_prompt, False):
+                entry["needs_full_prompt"] = True
         entry["topic_key"] = resolved
         entry["consecutive_resume_timeouts"] = 0
         if _parse_bool_flag(schedule_rotation, False):
@@ -721,7 +724,7 @@ def record_topic_turn(
             entry["rolling_history"] = []
         reg[resolved] = entry
         save_topic_registry(reg, registry_path)
-    if active_cid:
+    if active_cid and (clean_cid is not None or not _parse_bool_flag(mark_needs_full_prompt, False)):
         try:
             bot_row = read_summary_row(base, active_cid)
             if bot_row is not None:
