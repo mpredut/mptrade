@@ -8,9 +8,8 @@ SHELL=/bin/bash
 1,16,31,46 * * * * cd $HOME/mptrade && ./orchestratorOS/livecheck/deadman_switch.sh > logs/deadman.log 2>&1
 11 * * * * cd $HOME/mptrade && ./offline/runners/sync_cache_to.sh dev >> logs/refresh_dev.log 2>&1
 22 2,14 * * * cd $HOME/mptrade && ./offline/runners/run_backtest_cycle.sh remote >> logs/backtest_cycle.log 2>&1
-7 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh kraken/shadow_live.py --interval 240 >> logs/shadow_live.log 2>&1
+# NOTE: kraken/shadow_live.py and hyperliquid/shadow_longterm.py (read-only paper forward-tests) run on DEV (systemd/crontab.dev.txt).
 9,29,49 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.portfolio_snapshot.lock /usr/bin/timeout --signal=TERM --kill-after=5s 90s ./orchestratorOS/run_python.sh verify_tools/portfolio_snapshot.py --alert --json >> logs/portfolio_snapshot.jsonl 2>/dev/null
-27 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh hyperliquid/shadow_longterm.py --quiet >> logs/hyperliquid_shadow.log 2>&1
 2-57/5 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh orchestratorOS/livecheck/os_resources_watchdog.py >> logs/os_resources_watchdog.log 2>&1
 */2 * * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh watchdog >> logs/manage_agy.log 2>&1
 # Idle-gated UI daemon sync (12m = 2x auto_cryptotrade_executor SSOT cadence): surfaces mirrored topic turns into the Web UI daemon when idle

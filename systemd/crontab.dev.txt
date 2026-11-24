@@ -13,3 +13,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Read-only AI attribution & NAV drawdown observability strictly on DEV (uses mirrored PROD cachedb/ + logger/)
 35 * * * * cd $HOME/mptrade && ./offline/runners/run_dev_observability.sh run >> logs/cron_dev_observability.log 2>&1
+
+# Read-only paper forward-tests (moved off PROD; use public Kraken/Hyperliquid candles and local logs/)
+7 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.shadow_live.lock /usr/bin/timeout --signal=TERM --kill-after=5s 180s nice -n 15 ./orchestratorOS/run_python.sh kraken/shadow_live.py --interval 240 >> logs/shadow_live.log 2>&1
+27 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.hyperliquid_shadow.lock /usr/bin/timeout --signal=TERM --kill-after=5s 180s nice -n 15 ./orchestratorOS/run_python.sh hyperliquid/shadow_longterm.py --quiet >> logs/hyperliquid_shadow.log 2>&1

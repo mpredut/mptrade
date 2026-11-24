@@ -39,16 +39,8 @@ sync_to_dev() {
         --exclude 'ai_attribution_status.json' \
         --exclude 'ai_attribution_30d.json' \
         -e "ssh -o BatchMode=yes -p $DEV_PORT" | sed 's/^/  /'
-    local sub
-    for sub in shadow_live hyperliquid_shadow; do
-        if [ -d "$ROOT/logs/$sub" ]; then
-            _low_prio_cmd rsync -az --prune-empty-dirs \
-                --rsync-path="mkdir -p $DEV_PATH/logs/$sub && rsync" \
-                --include='*.ohlc.json' --include='*.warmup.json' --include='*.anchor' --include='*.jsonl' --exclude='*' \
-                "$ROOT/logs/$sub/" "$DEV_USER@$DEV_HOST:$DEV_PATH/logs/$sub/" \
-                -e "ssh -o BatchMode=yes -p $DEV_PORT" 2>/dev/null || true
-        fi
-    done
+    # NOTE: logs/shadow_live and logs/hyperliquid_shadow are now owned and generated directly on DEV
+    # (see systemd/crontab.dev.txt); do not overwrite them from PROD during rsync.
     if [ -d "$ROOT/logger/execution_audit" ]; then
         _low_prio_cmd rsync -az --prune-empty-dirs \
             --rsync-path="mkdir -p $DEV_PATH/logger/execution_audit && rsync" \

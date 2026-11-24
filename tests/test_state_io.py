@@ -1263,6 +1263,17 @@ def test_cache24_jsonl_append_migration_compaction_and_staggered_cron(tmp_path, 
     sync_lines = [ln for ln in cron_lines if "sync_cache_to.sh dev" in ln]
     assert len(sync_lines) == 1 and sync_lines[0].startswith("11 * * * * ")
     assert not any(ln.startswith(("*/15 ", "*/20 ", "*/30 ", "*/5 ", "0 ")) for ln in cron_lines)
+    # Shadow forward-tests run on DEV (crontab.dev.txt), not PROD, and sync_cache_to.sh does not overwrite DEV shadow logs
+    assert not any("shadow_live.py" in ln or "shadow_longterm.py" in ln for ln in cron_lines)
+    dev_cron_lines = [
+        ln.strip()
+        for ln in (repo_root / "systemd/crontab.dev.txt").read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.strip().startswith("#") and "=" not in ln.split()[0]
+    ]
+    assert any("kraken/shadow_live.py" in ln for ln in dev_cron_lines)
+    assert any("hyperliquid/shadow_longterm.py" in ln for ln in dev_cron_lines)
+    sync_sh_txt = (repo_root / "offline/runners/sync_cache_to.sh").read_text(encoding="utf-8")
+    assert "for sub in shadow_live hyperliquid_shadow" not in sync_sh_txt
 
 
 
