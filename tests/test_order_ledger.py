@@ -726,10 +726,11 @@ def test_migrated_audit_readers_use_order_ledger_first_with_legacy_fallback(tmp_
     state_dir.mkdir(parents=True)
     audit_dir.mkdir(parents=True)
 
-    # Day 1 = historical pre-ledger ExecutionAudit only; Day 2 = OrderLedger SSoT!
+    # Day 1 = historical pre-ledger ExecutionAudit only; Day 2 = boundary day (pre-ledger morning + OrderLedger afternoon)!
     day1_ts = 1_795_200_000.0  # 2026-11-20 UTC
-    day2_ts = day1_ts + 2 * 86400.0  # 2026-11-22 UTC
+    day2_ts = day1_ts + 2 * 86400.0 + 36000.0  # 2026-11-22 afternoon UTC
     day1_str = utc_day_for_ts(day1_ts)
+    day2_str = utc_day_for_ts(day2_ts)
 
     # Seed Day 1 legacy execution_audit (1 historical BOT BUY on ETHUSDC)
     (audit_dir / f"execution_audit_{day1_str}.jsonl").write_text(
@@ -745,6 +746,40 @@ def test_migrated_audit_readers_use_order_ledger_first_with_legacy_fallback(tmp_
             "filled_qty": 2.0,
             "price": 3000.0,
             "cost": 6000.0,
+            "status": "closed",
+            "venue_status": "FILLED",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    # Seed Day 2 boundary execution_audit: ONE pre-ledger morning AI BUY (MUST be kept!) + ONE post-ledger duplicate (MUST NOT double-count!)
+    (audit_dir / f"execution_audit_{day2_str}.jsonl").write_text(
+        json.dumps({
+            "ts": day2_ts - 7200.0,
+            "event": "order_terminal",
+            "intent_id": "ai-morning-pre-ledger",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "order_id": "70000",
+            "client_order_id": "AI_morning_pre_ledger",
+            "side": "buy",
+            "filled_qty": 0.01,
+            "price": 61000.0,
+            "cost": 610.0,
+            "status": "closed",
+            "venue_status": "FILLED",
+        }) + "\n"
+        + json.dumps({
+            "ts": day2_ts + 25.0,
+            "event": "order_terminal",
+            "intent_id": "ai-hl-1",
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "order_id": "81001",
+            "client_order_id": "AI_hl_migrated_1",
+            "side": "buy",
+            "filled_qty": 5.0,
+            "price": 60.0,
+            "cost": 300.0,
             "status": "closed",
             "venue_status": "FILLED",
         }) + "\n",
@@ -860,14 +895,14 @@ def test_migrated_audit_readers_use_order_ledger_first_with_legacy_fallback(tmp_
     assert hl_terms["HYPEUSDC"][0]["orderId"] == "81001"
     assert hl_terms["HYPEUSDC"][0]["executedQty"] == pytest.approx(5.0)
 
-    # 3. load_and_evaluate_ai_attribution stitches Day 1 ExecutionAudit + Day 2 OrderLedger with zero double-count
+    # 3. load_and_evaluate_ai_attribution stitches Day 1 + Day 2 morning pre-ledger + Day 2 OrderLedger with zero double-count
     (state_dir / "autonomous_trade_intents_state.json").write_text("[]", encoding="utf-8")
     attr_rep = load_and_evaluate_ai_attribution(str(ws_dir), lookback_days=7.0, now_ts=day2_ts + 60.0)
     bot_cmp = attr_rep["execution_audit_ai_vs_bot"]["by_actor"]["BOT"]
     assert bot_cmp["filled_orders"] == 2  # Day 1 BUY (legacy audit) + Day 2 SELL (OrderLedger)
     assert bot_cmp["matched_round_trips"] == 1
     assert bot_cmp["realized_net_usd"] > 180.0  # +$200 gross minus realistic ~20bps RT fee (NOT broken BNB fee)
-    assert attr_rep["execution_audit_ai_vs_bot"]["by_actor"]["AI"]["filled_orders"] == 1
+    assert attr_rep["execution_audit_ai_vs_bot"]["by_actor"]["AI"]["filled_orders"] == 2  # Day 2 morning pre-ledger + Day 2 HL OrderLedger (no dup!)
 
     # 4. reconcile_intents_from_execution_audit reconciles both FILLED and PENDING_EXECUTION purely from OrderLedger
     intents_to_rec = [

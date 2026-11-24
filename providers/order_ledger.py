@@ -1139,6 +1139,14 @@ class OrderLedgerReader(FileOrderLedgerBase):
                 return day
         return ""
 
+    def earliest_event_ts(self) -> float:
+        """Return earliest positive epoch timestamp present in the first ``order_events_*.jsonl`` file, or ``0.0``."""
+        for fpath in self.list_event_files():
+            for row in read_jsonl_dicts(fpath):
+                if (ts_v := safe_pos_float(row.get("ts"), default=None)) is not None:
+                    return ts_v
+        return 0.0
+
     def iter_audit_compat_records(
         self,
         *,
