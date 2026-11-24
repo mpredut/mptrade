@@ -17138,17 +17138,30 @@ def test_disabled_registry_symbols_xstock_longterm_cost_and_partial_24h_vp(tmp_p
     assert ro_xs["last_action_actor"] == "MANUAL"
     assert ro_xs["last_buy"]["actor"] == "MANUAL"
 
-    # 3b. Real Kraken filled BUY order on SELL-only tokenized equity (no bot/AI origin) also resolves actor="MANUAL"
+    # 3b. Real Kraken filled BUY order on SELL-only tokenized equity (no bot/AI origin) also resolves actor="MANUAL",
+    # and subsumed child trade-ID rows (_fillIds inside parent O... order) are never double-counted in LIFO PnL/open_lots!
     from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
     fills_xs = extract_symbol_recent_fills(
         [
-            {"orderId": "TSR6LOW-BZ47F-UY2BAV", "side": "BUY", "price": 134.844006, "executedQty": 24.472723, "timestamp": int((now_s - 600) * 1000)},
+            {"orderId": "TSR6LOW-BZ47F-UY2BAV", "_fillIds": ["TSR6LOW-BZ47F-UY2BAV"], "side": "BUY", "price": 134.844006, "quantity": 24.472723, "timestamp": int((now_s - 600) * 1000)},
+            {"orderId": "TAIDKY-CX6QX-MQEL6T", "_fillIds": ["TAIDKY-CX6QX-MQEL6T"], "side": "SELL", "price": 125.64002, "quantity": 1.984, "timestamp": int((now_s - 310) * 1000)},
+            {"orderId": "TJJTVY-32PLJ-DY7QOY", "_fillIds": ["TJJTVY-32PLJ-DY7QOY"], "side": "SELL", "price": 125.64002, "quantity": 1.984, "timestamp": int((now_s - 305) * 1000)},
+            {"orderId": "OFMFTT-JDI7H-72NOAO", "_fillIds": ["TAIDKY-CX6QX-MQEL6T", "TJJTVY-32PLJ-DY7QOY", "TAVULX-HCEZI-BUXGTE"], "side": "SELL", "price": 125.64, "quantity": 12.336835, "timestamp": int((now_s - 300) * 1000)},
+            {"orderId": "TAVULX-HCEZI-BUXGTE", "_fillIds": ["TAVULX-HCEZI-BUXGTE"], "side": "SELL", "price": 125.639996, "quantity": 8.368835, "timestamp": int((now_s - 300) * 1000)},
         ],
+        known_ai_order_ids={"OFMFTT-JDI7H-72NOAO"},
         symbol="SPCXxUSD",
     )
     assert fills_xs is not None
-    assert fills_xs["last_action_actor"] == "MANUAL"
+    assert fills_xs["last_action_side"] == "SELL"
+    assert fills_xs["last_action_actor"] == "AI"
     assert fills_xs["last_buy"]["actor"] == "MANUAL"
+    assert fills_xs["last_sell"]["actor"] == "AI"
+    assert fills_xs["last_sell"]["qty"] == pytest.approx(12.336835)
+    assert len(fills_xs["recent_sells"]) == 1
+    assert len(fills_xs["open_lots"]) == 1
+    assert fills_xs["open_lots"][0]["qty"] == pytest.approx(12.135888, abs=1e-4)
+    assert fills_xs["lifo_realized_pnl_usd"] == pytest.approx(-113.55, abs=0.2)
 
     # 3c. Observe-only symbols (ANTxUSD) never trigger Delta Gate wakeups or high-effort model escalations,
     # and completely empty observe-only venue cycles (ANT_US_EQ) are omitted from Section 3C anchors.

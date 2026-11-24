@@ -230,9 +230,17 @@ def build_supervisor_prompt(
         )
     xs_min_profit_pct, xs_min_drop_pct = _resolve_xstock_sell_prompt_thresholds()
     xs_target_lbl = "tokenized xStocks"
+    is_equities = getattr(spec, "asset_scope", "all") == "equities"
     if spec.can_trade:
-        is_equities = getattr(spec, "asset_scope", "all") == "equities"
         target_desc, xs_target_lbl = _build_dynamic_target_desc(is_equities)
+        xs_exception_sfx = (
+            ""
+            if is_equities
+            else (
+                f" (EXCEPTION: SELL-only Kraken {xs_target_lbl} = long-term `HOLD`, heavy manual rebuy fee/spread; "
+                f"sell rarely ONLY on >+{xs_min_profit_pct:g}% profit + 1-2d+ drop, `target_px` >={xs_min_drop_pct:g}% lower; emailed to rebuy manually)"
+            )
+        )
         venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
         venue_list_desc = "`t212`" if is_equities else "`binance`, `kraken`, `hyperliquid`"
         ex_sym = '"NVDA_US_EQ"' if is_equities else '"BTCUSDC"'
@@ -256,8 +264,7 @@ def build_supervisor_prompt(
             "(standalone `HOLD` cancel requires explicit `cancel_order_ids`; on `BUY`/`SELL` without `cancel_order_ids`, only same-side orders cancel; if cancel fails, replacement aborts).\n"
             f"   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: Decide freely WHEN/WHAT/HOW MUCH/WHICH venue ({venue_list_desc}). "
             "Cost basis (`avg_buy_px`, `lifo_rem_avg_px`, `open_lifo_lots`) is informational, NEVER a constraint on 2-way pairs: harvest profitable LIFO tranches or up to `50%\u2013100%` of `value_usd` "
-            f"(up to {max_usd:g} USD), OR trim/exit via near-market `LIMIT` even at breakeven or below cost basis on breakdown "
-            f"(EXCEPTION: SELL-only Kraken {xs_target_lbl} = long-term `HOLD`, heavy manual rebuy fee/spread; sell rarely ONLY on >+{xs_min_profit_pct:g}% profit + 1-2d+ drop, `target_px` >={xs_min_drop_pct:g}% lower; emailed to rebuy manually).\n"
+            f"(up to {max_usd:g} USD), OR trim/exit via near-market `LIMIT` even at breakeven or below cost basis on breakdown{xs_exception_sfx}.\n"
             "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN) & KINEMATICS: Weigh `kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)`, `kalman_vel`, `slopes`, "
             "`bottom_6h`, `vs_btc`, `cvd_5m`/`cvd_15m`, `spot_cvd_15m` (`[real_spot]` observed vs `[est:ob+15m]` proxy\u2014never double-count proxy alongside `ob_imbalance`), "
             "`spot_vol_15m`/`spot_vol_1h` & `rvol_15m`/`rvol_1h` (volume expansion vs noise), `taker_ratio`, and L2 walls. Scale in on confirmed downside deceleration + absorption; "
@@ -283,12 +290,19 @@ def build_supervisor_prompt(
         )
 
     if compact_rules and not spec.can_self_heal:
+        compact_xs_sfx = (
+            ""
+            if is_equities
+            else (
+                f"; remember SELL-only Kraken {xs_target_lbl} = long-term HOLD with heavy manual rebuy fee: "
+                f"sell rarely ONLY on >+{xs_min_profit_pct:g}% profit AND 1-2+ day downside with `target_px` >={xs_min_drop_pct:g}% lower"
+            )
+        )
         compact_prefix = (
             "CONTINUATION TURN (ACTIVE THREAD POLICY APPLIES):\n"
             "- Apply all quantitative trading, spot maker-LIMIT execution, active orderbook management, and "
             "`by=BOT` vs `by=AI` supervisory rules established earlier in this thread (unrestricted read access to "
-            f"`cachedb/`, zero deterministic guards, `confidence >= {min_conf:g}`, notional {min_usd:g}-{max_usd:g} USD; "
-            f"remember SELL-only Kraken {xs_target_lbl} = long-term HOLD with heavy manual rebuy fee: sell rarely ONLY on >+{xs_min_profit_pct:g}% profit AND 1-2+ day downside with `target_px` >={xs_min_drop_pct:g}% lower).\n"
+            f"`cachedb/`, zero deterministic guards, `confidence >= {min_conf:g}`, notional {min_usd:g}-{max_usd:g} USD{compact_xs_sfx}).\n"
             "- Honor any user chat instructions, price targets, overrides, or questions earlier in this thread with highest priority.\n"
             "- Format your response in TWO parts:\n"
             "  1) A concise Markdown report in **Romanian** with the cycle timestamp header (`### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`): "

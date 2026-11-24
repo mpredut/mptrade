@@ -814,7 +814,7 @@ def resolve_macro_economic_calendar(
         )
         inline_parts = [_format_confirmed_event_inline(e) for e in grp[:2]]
         if len(grp) > 2:
-            inline_parts.append(f"+{len(grp) - 2} more")
+            inline_parts.append(f"{len(grp) - 2} more")
         grp_desc = " + ".join(inline_parts)
         grp_code = "US_FOMC_FED_WINDOW" if any(e.get("category") == "fomc" for e in grp) else "CONFIRMED_MACRO_RELEASE"
         if -20.0 <= delta_min <= 0.0 and active_window is None:

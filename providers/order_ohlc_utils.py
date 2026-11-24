@@ -413,6 +413,22 @@ def aggregate_fills_by_order_id(
     if side is not None:
         if isinstance(side, bool) or not (want := normalize_side(side)):
             return []
+    subsumed_fill_keys: set[tuple[str, str]] = set()
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        p_oid = _first_mapped(r, _PARENT_ORDER_ID_KEYS, clean_order_id)
+        r_side = extract_order_side(r) or normalize_side(r.get("side"))
+        if not (p_oid and r_side):
+            continue
+        raw_fids = r.get("_fillIds")
+        fid_iter = raw_fids if isinstance(raw_fids, (list, tuple, set, frozenset)) else ()
+        if not fid_iter and isinstance(r.get("_fills"), dict):
+            fid_iter = r["_fills"].keys()
+        for raw_fid in fid_iter:
+            fid = clean_order_id(raw_fid)
+            if fid and fid != p_oid:
+                subsumed_fill_keys.add((fid, r_side))
     out: List[dict] = []
     grouped: dict[tuple[str, str], dict] = {}
     for r in rows:
@@ -420,6 +436,8 @@ def aggregate_fills_by_order_id(
             continue
         parent_oid = _first_mapped(r, _PARENT_ORDER_ID_KEYS, clean_order_id)
         norm = normalize_order(r)
+        if parent_oid and (parent_oid, norm["side"]) in subsumed_fill_keys:
+            continue
         ts_ms = norm["timestamp"]
         if cutoff_ms is not None:
             cutoff_f = safe_float(cutoff_ms, default=None)

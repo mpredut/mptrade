@@ -801,9 +801,6 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                         and (c_up in obs_only_syms or (c_key and c_key in obs_only_syms))
                         and (safe_float(c_data.get("qty"), 0.0) or 0.0) <= 1e-12
                         and (safe_float(c_data.get("cost_usd"), 0.0) or 0.0) <= 1e-9
-                        and c_data.get("last_buy_price") is None
-                        and c_data.get("last_sell_price") is None
-                        and abs(safe_float(c_data.get("realized_pnl_usd"), 0.0) or 0.0) < 0.01
                     ):
                         continue
                     c_data = _with_subcycle_pnl(c_data, venue_id, c_up)
@@ -823,7 +820,7 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                 if isinstance(xs.get("holdings"), dict):
                     xs["holdings"] = {hk: hv for hk, hv in xs["holdings"].items() if safe_float(hv, 0.0) >= 1e-4}
                 if scope_s in ("equities", "equity"):
-                    for eq_irr_k in ("watched_ipo_underlying", "watched_ipo_alerts"):
+                    for eq_irr_k in ("watched_ipo_underlying", "watched_ipo_alerts", "active_swing_directive"):
                         xs.pop(eq_irr_k, None)
                 t212_cycs_map = ps.get("t212_cycles") if isinstance(ps.get("t212_cycles"), dict) else {}
 
