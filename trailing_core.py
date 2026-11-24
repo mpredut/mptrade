@@ -176,6 +176,9 @@ def should_sell(current: float, peak: float, trail_pct: float) -> bool:
 
 
 class TrailingCore:
+    OUTLIER_MAX_JUMP_RATIO = 2.5
+    OUTLIER_CONFIRM_TOLERANCE = 1.25
+
     def __init__(self, adapter, *, log, enabled, state_file, min_notional,
                  rebuy_enabled, rebuy_bounce_pct, rebuy_skip_if_trend_down,
                  sell_skip_if_trend_up=False, sell_trend_defer_max_sec=420.0,
@@ -199,6 +202,8 @@ class TrailingCore:
         # on error, log without saving and retry next time. This preserves each provider's
         # original error-handling structure.
         self.item_isolation = _parse_bool_flag(item_isolation, default=True)
+        self._last_observed_price: dict[str, float] = {}
+        self._pending_price_outliers: dict[str, float] = {}
 
     # -- state (peak per key) -------------------------------------------------
     def load(self, *, read_only: bool = False) -> dict:
@@ -426,6 +431,44 @@ class TrailingCore:
             self.a.log_dry_rebuy(key, asset, pair, qty, price, rb)
             return
 
+    def _is_unconfirmed_price_outlier(self, key: str, asset: str, price: float, existing_st: object) -> bool:
+        """Quarantine impossible single-tick jumps (>2.5x or <0.4x) until confirmed by a second tick."""
+        last_map = getattr(self, "_last_observed_price", None)
+        if last_map is None:
+            last_map = {}
+            self._last_observed_price = last_map
+        pending_map = getattr(self, "_pending_price_outliers", None)
+        if pending_map is None:
+            pending_map = {}
+            self._pending_price_outliers = pending_map
+
+        ref_px = safe_pos_float(last_map.get(key), default=None)
+        if ref_px is None and isinstance(existing_st, dict) and not _parse_bool_flag(existing_st.get("is_flat"), default=False):
+            ref_px = safe_pos_float(existing_st.get("peak"), default=None)
+        if ref_px is None:
+            pending_map.pop(key, None)
+            last_map[key] = price
+            return False
+
+        ratio = max(price / ref_px, ref_px / price)
+        if ratio <= self.OUTLIER_MAX_JUMP_RATIO:
+            pending_map.pop(key, None)
+            last_map[key] = price
+            return False
+
+        pending_px = safe_pos_float(pending_map.get(key), default=None)
+        if pending_px is not None and max(price / pending_px, pending_px / price) <= self.OUTLIER_CONFIRM_TOLERANCE:
+            pending_map.pop(key, None)
+            last_map[key] = price
+            return False
+
+        pending_map[key] = price
+        self.log(
+            f"  ! [TRAIL] {asset}: quarantined unconfirmed outlier price {price:.6g} vs ref "
+            f"{ref_px:.6g} (ratio={ratio:.2f}x); awaiting confirmation"
+        )
+        return True
+
     # -- one asset ------------------------------------------------------------
     def _process(self, key, asset, pair, trail, state) -> None:
         trail_f = safe_pos_float(trail, default=None)
@@ -436,6 +479,9 @@ class TrailingCore:
         raw_price = self.a.price(pair)
         price = safe_pos_float(raw_price, default=None)
         if price is None:
+            return
+        existing_st = state.get(key) if isinstance(state, dict) else None
+        if self._is_unconfirmed_price_outlier(key, asset, price, existing_st):
             return
         is_new = key not in state or not isinstance(state.get(key), dict)
         if is_new:

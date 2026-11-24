@@ -18,7 +18,11 @@ from __future__ import annotations
 import math
 import os
 import sys
+import threading
 import time
+import weakref
+
+import requests
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -146,27 +150,53 @@ def _parse_order_response(res: object, *, include_avg_px: bool = False) -> tuple
 
 
 def _force_timeout(api_obj, seconds: float = 30.0) -> None:
-    """Force a default timeout on the API object's requests session.
+    """Force a default timeout and per-thread ``requests.Session`` isolation on ``api_obj``.
+
     The HL SDK does not set a read timeout, so a request on a dead keep-alive
-    connection could otherwise block the process indefinitely without an error."""
+    connection could otherwise block the process indefinitely without an error.
+    Sharing one ``requests.Session`` across concurrent cacheManager/telemetry
+    worker threads is also not guaranteed thread-safe; worker threads therefore
+    receive their own cloned ``requests.Session`` with identical headers, retry
+    policy, and automatic ``weakref.finalize`` cleanup on thread exit.
+    """
     try:
-        # The current Hyperliquid SDK explicitly calls
-        # ``session.post(..., timeout=self.timeout)``. Its default is None, so a
-        # simple setdefault had no effect because the key already existed and
-        # requests remained deadline-free. Set the SDK attribute as well, and
-        # have the wrapper explicitly replace timeout=None.
         if getattr(api_obj, "timeout", None) is None:
             api_obj.timeout = seconds
         sess = api_obj.session
+        owner_tid = threading.get_ident()
+        tls = threading.local()
         orig = sess.request
+        base_is_real_sess = isinstance(sess, requests.Session)
+
+        def _close_sess(sess_obj: requests.Session) -> None:
+            try:
+                sess_obj.close()
+            except Exception:
+                pass
+
+        def _get_worker_request_fn():
+            if not base_is_real_sess or threading.get_ident() == owner_tid:
+                return orig
+            local_sess = getattr(tls, "session", None)
+            if local_sess is None:
+                local_sess = requests.Session()
+                local_sess.headers.update(sess.headers)
+                mount_connect_retry(local_sess)
+                tls.session = local_sess
+                try:
+                    weakref.finalize(threading.current_thread(), _close_sess, local_sess)
+                except TypeError:
+                    pass
+            return local_sess.request
 
         def _req(*a, **kw):
             if kw.get("timeout") is None:
                 kw["timeout"] = seconds
             url = str(a[1] if len(a) > 1 else kw.get("url") or "")
             is_info_query = url.rstrip("/").endswith("/info")
+            req_fn = _get_worker_request_fn()
             for attempt in range(3 if is_info_query else 1):
-                resp = orig(*a, **kw)
+                resp = req_fn(*a, **kw)
                 status_code = getattr(resp, "status_code", None)
                 if not is_info_query or status_code not in (429, 500, 502, 503, 504) or attempt >= 2:
                     return resp

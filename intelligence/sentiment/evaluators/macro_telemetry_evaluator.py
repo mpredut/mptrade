@@ -33,6 +33,7 @@ from botcore import (
     safe_pos_float,
 )
 from providers.portfolio_valuation import compute_venue_nav_breakdown
+from pricewindow import filter_isolated_price_points
 import intelligence.macro_sentiment_ssot as _mss
 from intelligence.macro_sentiment_ssot import (
     get_cross_asset_regimes,
@@ -73,7 +74,9 @@ def build_cycle_fallback_prices(microstructure: Dict[str, Any], watcher_price_it
                 ]
                 m_key = canonical_display_symbol(m_sym) or str(m_sym).upper()
                 if valid_pts:
-                    cycle_fallback_prices.setdefault(m_key, max(valid_pts, key=lambda pt: pt[0])[1])
+                    valid_pts.sort(key=lambda pt: pt[0])
+                    valid_pts = filter_isolated_price_points(valid_pts) or valid_pts
+                    cycle_fallback_prices.setdefault(m_key, valid_pts[-1][1])
                 elif isinstance(m_ser[-1], (list, tuple)) and len(m_ser[-1]) > 1:
                     if (m_px := safe_pos_float(m_ser[-1][1], default=0.0) or 0.0) > 0:
                         cycle_fallback_prices.setdefault(m_key, m_px)
@@ -1220,6 +1223,9 @@ def enrich_macro_benchmarks_live_state(
                 ]
                 if len(pts) >= 2:
                     pts.sort(key=lambda x: x[0])
+                    pts = filter_isolated_price_points(pts)
+                    if len(pts) < 2:
+                        continue
                     cutoff = pts[-1][0] - 86400.0 * 1000.0
                     win = [p for p in pts if p[0] >= cutoff] or pts
                     if len(win) < 2:

@@ -46,6 +46,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from cachepaths import kraken_pair_matches
 from instrument_registry import resolve_kraken_tokenized_pair
 from providers.ohlc_utils import extract_kraken_ohlc_rows, require_ohlc_symbol
 from providers.order_ohlc_utils import get_cached_pair_info as _get_cached_pair_info
@@ -274,7 +275,15 @@ class KrakenClient:
         if is_tok:
             params["aclass_base" if method == "AssetPairs" else "asset_class"] = "tokenized_asset"
         res = self._public(method, params)
-        return next((v for v in res.values() if isinstance(v, dict)), None) if res else None
+        if not res:
+            return None
+        for k, v in res.items():
+            if isinstance(v, dict) and kraken_pair_matches(k, eff_pair):
+                return v
+        if len(res) == 1:
+            only_val = next(iter(res.values()))
+            return only_val if isinstance(only_val, dict) else None
+        return None
 
     pair_info = bind_attr_call("_public_first_dict", "AssetPairs")
 

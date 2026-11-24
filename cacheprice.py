@@ -66,6 +66,7 @@ from cacheInterface import (
     _norm_symbol_keys,
     _now_time,
 )
+from pricewindow import filter_isolated_price_points
 from cachepaths import (
     CACHE_24_PRICE_PREFIX,
     CACHE_365_PRICE_PREFIX,
@@ -314,6 +315,8 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
                     return parsed
             return None
         return _finalize_point(None, extract_current_price_item(entry))
+
+    filter_isolated_price_points = staticmethod(filter_isolated_price_points)
 
     def rebuild_fetchtimes(self):
         return self._rebuild_symbol_entry_fetchtimes()
@@ -1010,6 +1013,7 @@ class Cache24PriceManager(CachePriceManagerBase):
                             valid.append(pt)
                     if not is_sorted:
                         valid.sort(key=_SSOT_PT_TS_KEY)
+                    valid = cls.filter_isolated_price_points(valid)
                     if use_default_parser:
                         lru_dict_put(
                             _SSOT_24PRICE_PARSED_MEMO,

@@ -188,6 +188,7 @@ from cachepaths import (
     is_kraken_tokenized_asset,
     resolve_cachedb_filepath,
 )
+from pricewindow import filter_isolated_price_points
 from instrument_registry import casefold_get, symbols_for
 from state_io import (
     read_json_dict_recovering as _default_read_json_dict_recovering,
@@ -422,6 +423,9 @@ def _finalize_sorted_ts_px(
     return pts
 
 
+filter_isolated_ts_px_outliers = filter_isolated_price_points
+
+
 def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
     if not isinstance(series, list) or not series:
         return []
@@ -497,6 +501,7 @@ def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
             pts = [(t_v, p_v) for t_v, p_v, _ in pts_vol]
     elif not is_sorted:
         pts.sort(key=lambda x: x[0])
+    pts = filter_isolated_ts_px_outliers(pts)
     return _finalize_sorted_ts_px(series, pts, mkey, all_two_col=all_two_col)
 
 

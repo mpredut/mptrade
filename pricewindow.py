@@ -47,6 +47,64 @@ from botcore import (
 from cachepaths import canonical_base_asset, canonical_symbol_key
 from instrument_registry import load_registry
 
+
+def filter_isolated_price_points(
+    pts: list,
+    *,
+    neighbor_agree_ratio: float = 1.20,
+    spike_ratio: float = 1.35,
+    edge_ratio: float = 2.5,
+) -> list:
+    """Drop isolated 1-tick spikes (and 2-tick extreme bursts) from ascending ``(ts, px)`` or ``[ts, px]`` sequences.
+
+    Protects 24h range/ATR/short-trend/parabolic-surge readers against cross-symbol single-tick
+    leaks (e.g. ARBUSDC=189.7 or BTCUSDC=0.1461) without filtering genuine sustained market moves.
+    """
+    n = len(pts)
+    if n < 3:
+        return pts
+    drop: set[int] = set()
+    for i in range(1, n - 1):
+        p_prev = pts[i - 1][1]
+        p_cur = pts[i][1]
+        p_next = pts[i + 1][1]
+        lo_nb = p_prev if p_prev <= p_next else p_next
+        hi_nb = p_next if p_prev <= p_next else p_prev
+        if lo_nb > 0.0 and (hi_nb / lo_nb) <= neighbor_agree_ratio:
+            if p_cur > hi_nb * spike_ratio or p_cur < lo_nb / spike_ratio:
+                drop.add(i)
+    # Also drop rare 2-tick consecutive extreme cross-symbol bursts (> edge_ratio) bracketed by agreeing neighbors.
+    for i in range(1, n - 2):
+        if i in drop or (i + 1) in drop:
+            continue
+        p_left = pts[i - 1][1]
+        p_right = pts[i + 2][1]
+        lo_nb = p_left if p_left <= p_right else p_right
+        hi_nb = p_right if p_left <= p_right else p_left
+        if lo_nb > 0.0 and (hi_nb / lo_nb) <= neighbor_agree_ratio:
+            p1, p2 = pts[i][1], pts[i + 1][1]
+            if (p1 > hi_nb * edge_ratio or p1 < lo_nb / edge_ratio) and (
+                p2 > hi_nb * edge_ratio or p2 < lo_nb / edge_ratio
+            ):
+                drop.add(i)
+                drop.add(i + 1)
+    kept = [pt for i, pt in enumerate(pts) if i not in drop] if drop else list(pts)
+    if len(kept) >= 5:
+        head_nbs = (kept[1][1], kept[2][1], kept[3][1])
+        h_lo, h_hi = min(head_nbs), max(head_nbs)
+        if h_lo > 0.0 and (h_hi / h_lo) <= neighbor_agree_ratio:
+            p0 = kept[0][1]
+            if p0 > h_hi * edge_ratio or p0 < h_lo / edge_ratio:
+                kept = kept[1:]
+    if len(kept) >= 5:
+        tail_nbs = (kept[-4][1], kept[-3][1], kept[-2][1])
+        t_lo, t_hi = min(tail_nbs), max(tail_nbs)
+        if t_lo > 0.0 and (t_hi / t_lo) <= neighbor_agree_ratio:
+            p_last = kept[-1][1]
+            if p_last > t_hi * edge_ratio or p_last < t_lo / edge_ratio:
+                kept = kept[:-1]
+    return kept
+
 # -- Window constants ----------------------------------------------------------
 DEFAULT_SAMPLE_RATE_SEC = 0.8     # Nominal fallback sampling rate.
 RECENT_GRADIENT_SECONDS = 60.0    # Recent-momentum window in seconds (for primary 222s window).

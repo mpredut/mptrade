@@ -974,7 +974,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     price_val = safe_pos_float(entry[1], default=None)
                     if ts_val is not None and price_val is not None:
                         valid_entries.append([ts_val, price_val])
-                return valid_entries
+                return pw.filter_isolated_price_points(valid_entries)
 
             entries = read_recovering_previous(
                 c24_file, _read_c24, backup_path=backup_path, repair_files=False

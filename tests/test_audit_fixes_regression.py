@@ -1148,3 +1148,245 @@ def test_p2_order_ledger_expires_anonymous_and_stale_deferred_intents(tmp_path):
     assert reader.list_active_orders(apply_tail=False) == []
     assert reader.list_closed_files() == []
     assert reader.trace_order("outbox-arb-1")["closed_orders"] == []
+
+
+def test_p0_intelligence_24h_metrics_and_cache24_filter_isolated_cross_symbol_outliers(tmp_path, monkeypatch):
+    """Sweep fix: intelligence compute_24h_price_metrics, Cache24PriceManager, CacheShortTrendManager,
+    survival.get_recent_price_history, and macro_telemetry_evaluator must drop isolated cross-symbol
+    outliers (ARBUSDC 189.7 and BTCUSDC 0.1461) including 2-tick bursts."""
+    import json
+    import threading
+    from cacheprice import CachePriceManagerBase
+    from cachetrend import CacheShortTrendManager
+    from intelligence.internal.state import survival as _survival
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        build_cycle_fallback_prices,
+        enrich_macro_benchmarks_live_state,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
+
+    t0 = 1_795_504_000_000
+    arb_series = [
+        [t0, 0.1160],
+        [t0 + 60_000, 0.1155],
+        [t0 + 120_000, 0.1152],
+        [t0 + 122_000, 189.7],   # corrupt single tick
+        [t0 + 124_000, 0.1150],
+        [t0 + 180_000, 0.1142],
+    ]
+    arb_m = compute_24h_price_metrics(arb_series)
+    assert arb_m["high_24h"] == pytest.approx(0.1160)
+    assert arb_m["low_24h"] == pytest.approx(0.1142)
+    assert abs(arb_m["dd_24h_high_pct"]) < 5.0
+
+    btc_series = [
+        [t0, 61000.0],
+        [t0 + 60_000, 60800.0],
+        [t0 + 120_000, 60500.0],
+        [t0 + 122_000, 0.1461],  # corrupt 2-tick burst
+        [t0 + 123_000, 0.1461],
+        [t0 + 124_000, 60450.0],
+        [t0 + 180_000, 60300.0],
+    ]
+    btc_m = compute_24h_price_metrics(btc_series)
+    assert btc_m["low_24h"] == pytest.approx(60300.0)
+    assert btc_m["high_24h"] == pytest.approx(61000.0)
+
+    cleaned = CachePriceManagerBase.filter_isolated_price_points(btc_series)
+    assert len(cleaned) == 5
+    assert all(pt[1] > 50000.0 for pt in cleaned)
+
+    # CacheShortTrendManager._load_disk_cache24_entries + survival.get_recent_price_history + macro_telemetry_evaluator
+    prices_dir = tmp_path / "prices"
+    prices_dir.mkdir(parents=True, exist_ok=True)
+    btc_edge_series = [
+        [t0 - 120_000, 60000.0],
+        [t0 - 60_000, 60100.0],
+        [t0, 60200.0],
+        [t0 + 60_000, 60300.0],
+        [t0 + 120_000, 0.1461],  # corrupt trailing edge tick
+    ]
+    (prices_dir / "cache_24_price_BTCUSDC.json").write_text(
+        json.dumps({"items": {"BTCUSDC": btc_edge_series}}), encoding="utf-8"
+    )
+    stm = CacheShortTrendManager.__new__(CacheShortTrendManager)
+    stm._lock = threading.Lock()
+    stm._disk_c24_cache = {}
+    stm.filename = str(tmp_path / "cache_short_trend.json")
+    stm.read_only = True
+    disk_entries = stm._load_disk_cache24_entries("BTCUSDC")
+    assert len(disk_entries) == 4
+    assert all(pt[1] > 50000.0 for pt in disk_entries)
+
+    monkeypatch.setattr(_survival, "get_cachedb_dir", lambda: str(tmp_path))
+    hist = _survival._read_cached_price_history("BTCUSDC", window_seconds=3600.0, now=(t0 + 180_000) / 1000.0)
+    assert hist is not None and len(hist) == 4
+    assert all(px > 50000.0 for _, px in hist)
+
+    fallback_pxs = build_cycle_fallback_prices({}, {"BTCUSDC": btc_edge_series})
+    assert fallback_pxs["BTCUSDC"] == pytest.approx(60300.0)
+
+    enriched = enrich_macro_benchmarks_live_state({"items": {}}, cache_dir=str(tmp_path), force_recompute=True)
+    assert isinstance(enriched, dict)
+    assert enriched.get("cross_asset_regime") in ("CONVERGENT", "DIVERGENT", "NEUTRAL", "DECOUPLED", "RISK_ON", "RISK_OFF", "UNKNOWN", None) or isinstance(enriched.get("cross_asset_regime"), str)
+
+
+def test_p0_trailing_core_quarantines_single_tick_spike_and_flash_crash_without_dumping(tmp_path):
+    """Sweep fix: TrailingCore (Binance & Kraken crash circuit breaker) must quarantine an unconfirmed
+    single-tick spike (189.7 -> would poison peak) or flash-drop (0.1461 -> would force-sell BTC),
+    while still triggering immediately on real <= -60% drops and confirming sustained 2-tick moves."""
+    from trailing_core import TrailingCore
+
+    class _FakeAdapter:
+        def __init__(self, px: float):
+            self.px = px
+            self.sells = []
+            self.unlocks = 0
+
+        def begin_tick(self):
+            return True
+
+        def assets(self):
+            return [("BTCUSDC", "BTC", "BTCUSDC", 13.375)]
+
+        def free_qty(self, _asset):
+            return 0.05
+
+        def total_qty(self, _asset):
+            return 0.05
+
+        def price(self, _pair):
+            return self.px
+
+        def trend(self, _pair):
+            return 0.0
+
+        def unlock_qty(self, _pair):
+            self.unlocks += 1
+            return True
+
+        def reconcile_pending(self, _pending, _persist):
+            raise AssertionError("unexpected pending reconcile")
+
+        def execute_sell(self, key, asset, pair, qty, price, peak, trail, _persist):
+            self.sells.append((pair, qty, price, peak))
+            return SimpleNamespace(outcome="submitted")
+
+        def log_hold(self, *_a):
+            pass
+
+        def log_item_error(self, _k, exc):
+            raise exc
+
+    state_file = str(tmp_path / "trailing_state.json")
+    adapter = _FakeAdapter(61000.0)
+    core = TrailingCore(
+        adapter,
+        log=lambda _m: None,
+        enabled=True,
+        state_file=state_file,
+        min_notional=11.0,
+        rebuy_enabled=False,
+        rebuy_bounce_pct=2.0,
+        rebuy_skip_if_trend_down=False,
+        min_profit_pct=0.0,
+    )
+    # 1. Establish normal BTC peak at 61,000
+    core.check_once()
+    assert core.load()["BTCUSDC"]["peak"] == pytest.approx(61000.0)
+
+    # 2. Single bogus low tick 0.1461 (ratio 417,522x) -> MUST be quarantined; NO unlock, NO sell!
+    adapter.px = 0.1461
+    core.check_once()
+    assert adapter.unlocks == 0
+    assert adapter.sells == []
+
+    # 3. Single bogus spike tick 200,000 (ratio 3.28x) -> MUST be quarantined; peak stays 61,000!
+    adapter.px = 200000.0
+    core.check_once()
+    assert core.load()["BTCUSDC"]["peak"] == pytest.approx(61000.0)
+
+    # 4. Normal tick 60,500 clears quarantine
+    adapter.px = 60500.0
+    core.check_once()
+    assert adapter.sells == []
+
+    # 5. Genuine crash -15% (51,850, ratio 1.17x <= 2.5x) -> triggers IMMEDIATELY on tick 1!
+    adapter.px = 51850.0
+    core.check_once()
+    assert len(adapter.sells) == 1
+    assert adapter.sells[0][2] == pytest.approx(51850.0)
+
+
+def test_p1_hl_client_force_timeout_isolates_per_thread_sessions_and_kraken_matches_pair(monkeypatch):
+    """Sweep fix: Hyperliquid _force_timeout isolates per-thread requests.Session for concurrent
+    workers, and KrakenClient._public_first_dict selects the matching pair key in multi-key payloads."""
+    import concurrent.futures
+    import importlib.util
+    import os
+    import threading
+    import requests
+    from kraken.kraken_client import KrakenClient
+
+    hl_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid", "hl_client.py")
+    spec = importlib.util.spec_from_file_location("_local_hl_client", hl_path)
+    hl_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hl_mod)
+    _force_timeout = hl_mod._force_timeout
+
+    class _FakeApi:
+        def __init__(self):
+            self.timeout = None
+            self.session = requests.Session()
+            self.session.headers["X-Test"] = "ok"
+
+    captured = []
+    cap_lock = threading.Lock()
+    barrier = threading.Barrier(3)
+
+    def _fake_session_request(self_sess, method, url, **kw):
+        with cap_lock:
+            captured.append((threading.get_ident(), id(self_sess), self_sess.headers.get("X-Test"), kw.get("timeout")))
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(requests.Session, "request", _fake_session_request)
+
+    api_obj = _FakeApi()
+    main_sess_id = id(api_obj.session)
+    _force_timeout(api_obj, seconds=7.5)
+    assert api_obj.timeout == pytest.approx(7.5)
+
+    # Main thread uses original session with enforced timeout
+    api_obj.session.request("POST", "https://api.hyperliquid.xyz/info")
+
+    def _worker(_idx):
+        barrier.wait(timeout=5.0)
+        api_obj.session.request("POST", "https://api.hyperliquid.xyz/info")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        list(pool.map(_worker, range(3)))
+
+    api_obj.session.close()
+    assert len(captured) == 4
+    # Main thread hit original session; each worker got its own distinct session with cloned headers & timeout
+    main_rows = [r for r in captured if r[0] == threading.get_ident()]
+    worker_rows = [r for r in captured if r[0] != threading.get_ident()]
+    assert len(main_rows) == 1 and main_rows[0][1] == main_sess_id and main_rows[0][3] == pytest.approx(7.5)
+    assert len(worker_rows) == 3
+    worker_sess_ids = {r[1] for r in worker_rows}
+    assert len(worker_sess_ids) == 3
+    assert main_sess_id not in worker_sess_ids
+    assert all(r[2] == "ok" and r[3] == pytest.approx(7.5) for r in worker_rows)
+
+    # KrakenClient._public_first_dict must select the matching pair when payload has >1 key
+    kc = KrakenClient()
+    kc._public = lambda _method, _params: {
+        "BTCUSD": {"c": ["60000.0"]},
+        "HYPEUSD": {"c": ["62.5"]},
+    }
+    assert kc.ticker("HYPEUSD") == {"c": ["62.5"]}
+    kc._public = lambda _method, _params: {
+        "BTCUSD": {"c": ["60000.0"]},
+        "ETHUSD": {"c": ["3000.0"]},
+    }
+    assert kc.ticker("HYPEUSD") is None
