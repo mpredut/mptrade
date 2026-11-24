@@ -386,12 +386,12 @@ def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str,
 
 
 def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str], Optional[str]]]:
-    """Load recent orderId/clientOrderId -> (module, rule) mappings from OrderLedger first, with ExecutionAudit fallback."""
-    out: Dict[str, tuple[Optional[str], Optional[str]]] = (
-        OrderLedgerReader(cachedb_dir=cache_dir).load_recent_order_origins(max_days=3)
-        if cache_dir
-        else {}
-    )
+    """Load recent orderId/clientOrderId -> (module, rule) mappings from OrderLedger SSoT (legacy fallback only when ledger absent)."""
+    if cache_dir:
+        ledger_reader = OrderLedgerReader(cachedb_dir=cache_dir)
+        if ledger_reader.list_event_files() or ledger_reader.list_closed_files():
+            return ledger_reader.load_recent_order_origins(max_days=3)
+    out: Dict[str, tuple[Optional[str], Optional[str]]] = {}
     for files in _iter_audit_dir_file_batches(cache_dir, max_files=2, newest_first=True):
         found_legacy = False
         for fpath in files:
@@ -417,12 +417,13 @@ def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str],
 
 
 def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Dict[str, Any]]]:
-    """Synthesize deduplicated per-symbol filled order lists from OrderLedger first, falling back to execution_audit_*.jsonl."""
+    """Synthesize deduplicated per-symbol filled order lists from OrderLedger SSoT (legacy fallback only when ledger absent)."""
     by_sym: Dict[str, List[Dict[str, Any]]] = {}
     if not cache_dir:
         return by_sym
-    if ledger_by_sym := OrderLedgerReader(cachedb_dir=cache_dir).load_terminal_filled_orders(venue):
-        return ledger_by_sym
+    ledger_reader = OrderLedgerReader(cachedb_dir=cache_dir)
+    if ledger_reader.list_closed_files():
+        return ledger_reader.load_terminal_filled_orders(venue)
     v_target = normalize_venue_name(venue)
     for audit_files in _iter_audit_dir_file_batches(cache_dir, max_files=10, newest_first=False):
         try:

@@ -199,27 +199,10 @@ def _scan_matching_audit_records(
     eff_cachedb = _resolve_sibling_cachedb_dir(audit_dir, cachedb_dir)
     ledger_records: list[dict[str, Any]] = []
     has_ledger = False
-    earliest_ledger_day = ""
-    earliest_ledger_ts = 0.0
     if eff_cachedb:
-        ledger_reader = OrderLedgerReader(cachedb_dir=eff_cachedb)
-        ledger_records, has_ledger = ledger_reader.iter_audit_compat_records(min_day=min_day)
-        earliest_ledger_day = ledger_reader.earliest_event_day() if has_ledger else ""
-        earliest_ledger_ts = ledger_reader.earliest_event_ts() if has_ledger else 0.0
-    if has_ledger and earliest_ledger_day:
+        ledger_records, has_ledger = OrderLedgerReader(cachedb_dir=eff_cachedb).iter_audit_compat_records(min_day=min_day)
+    if has_ledger:
         has_audit_files = True
-        for audit_path in iter_audit_jsonl_paths(audit_dir, min_day=min_day):
-            base = os.path.basename(audit_path)
-            fday = base[len("execution_audit_") : -len(".jsonl")] if base.startswith("execution_audit_") and base.endswith(".jsonl") else ""
-            if fday and fday < earliest_ledger_day:
-                record_batches.append(_read_audit_intent_records(audit_path))
-            elif fday == earliest_ledger_day and earliest_ledger_ts > 0.0:
-                pre_cut = [
-                    r for r in _read_audit_intent_records(audit_path)
-                    if (ts_r := safe_pos_float(r.get("ts"), default=0.0) or 0.0) > 0.0 and ts_r < earliest_ledger_ts
-                ]
-                if pre_cut:
-                    record_batches.append(pre_cut)
         if ledger_records:
             record_batches.append(ledger_records)
     else:

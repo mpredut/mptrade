@@ -87,6 +87,12 @@ if [ -d "$LOGGER_DIR" ]; then
         [ -d "$run_dir" ] && find "$run_dir" -mindepth 1 -maxdepth 1 -mtime +"$BACKTEST_RETENTION_DAYS" -exec rm -rf {} + 2>/dev/null || true
     done
 
+    ORDER_EVENTS_RETENTION_DAYS="${ORDER_EVENTS_DELETE_AFTER_DAYS:-60}"
+    if [ -d "$ROOT/cachedb/orders" ]; then
+        # Prune aged daily order_events_*.jsonl journals while permanently retaining monthly orders_closed_*.jsonl & orders_active.json.
+        find "$ROOT/cachedb/orders" -maxdepth 1 -name "order_events_*.jsonl" -mtime +"$ORDER_EVENTS_RETENTION_DAYS" -print0 | xargs -0 -r rm -f
+    fi
+
     find /tmp -maxdepth 1 -user "$(id -un)" \( -name "tmp*" -o -name "pytest-of-*" -o -name "binance-tests-*" -o -name "mptrade-tests-*" -o -name "rtrade-*" -o -name "test_reentry_state_*" \) -mtime +1 -exec rm -rf {} + 2>/dev/null || true
     echo "  after retention:  $(du -sh "$LOGGER_DIR" 2>/dev/null | cut -f1)"
 fi

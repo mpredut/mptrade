@@ -103,21 +103,24 @@ _DEFAULT_AUDIT_DIR = os.path.join(
 
 
 class ExecutionAudit:
-    """Best-effort JSONL writer shared by Kraken, T212, HL, and Binance."""
+    """Best-effort lifecycle audit bridge writing into the canonical Order Ledger SSoT.
+
+    Legacy ``execution_audit_*.jsonl`` file writes are kept only when an explicit ``directory``
+    or ``EXECUTION_AUDIT_DIR`` override is supplied (isolated tests / legacy tools); production
+    writes directly to ``OrderLedgerWriter`` with zero duplicate disk I/O.
+    """
 
     def __init__(self, directory: Optional[str] = None,
                  clock: Callable[[], float] = time.time):
         raw_dir = clean_scalar_str(os.fspath(directory)) if isinstance(directory, (str, os.PathLike)) else None
-        self.directory = raw_dir or clean_scalar_str(optional_env("EXECUTION_AUDIT_DIR")) or _DEFAULT_AUDIT_DIR
+        env_dir = clean_scalar_str(optional_env("EXECUTION_AUDIT_DIR"))
+        self.directory = raw_dir or env_dir or _DEFAULT_AUDIT_DIR
+        self._write_legacy_file = bool(raw_dir is not None or env_dir is not None)
         self._clock = clock
 
     def record(self, event: str, *, intent_id: str, venue: str, symbol: str,
                **fields) -> bool:
-        """Append one serialized event; return ``False`` when audit is unavailable.
-
-        The process lock and Linux ``flock`` prevent interleaved writers, but the
-        append is not fsynced and therefore is not a durability boundary.
-        """
+        """Append one serialized lifecycle event to OrderLedger (and legacy JSONL only when explicitly configured)."""
         try:
             ts_val = safe_pos_float(self._clock(), None)
             ts = ts_val if (ts_val is not None and ts_val < 32503680000) else time.time()
@@ -133,19 +136,20 @@ class ExecutionAudit:
                 cleaned = _json_safe_value(value)
                 if cleaned is not None:
                     payload[key] = cleaned
-            day = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
-            path = os.path.join(self.directory, f"execution_audit_{day}.jsonl")
-            with _WRITE_LOCK:
-                append_jsonl_record(
-                    path,
-                    payload,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                    allow_nan=False,
-                    default=str,
-                    flock=True,
-                )
+            if self._write_legacy_file:
+                day = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
+                path = os.path.join(self.directory, f"execution_audit_{day}.jsonl")
+                with _WRITE_LOCK:
+                    append_jsonl_record(
+                        path,
+                        payload,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                        allow_nan=False,
+                        default=str,
+                        flock=True,
+                    )
             get_default_ledger_writer().record_audit_event(
                 str(event),
                 intent_id=str(intent_id),
@@ -609,8 +613,11 @@ def find_order_audit_record(
                         continue
                 if adapted.get("client_order_id") or adapted.get("kind") or adapted.get("intent_id"):
                     return adapted
+        if audit_dir is None and reader.list_event_files():
+            # Production OrderLedger SSoT is populated (including backfilled history); skip legacy audit scan.
+            return None
 
-    # 2. Legacy fallback: scan execution_audit_*.jsonl for pre-ledger history or explicit audit_dir tests.
+    # 2. Explicit audit_dir / test fallback: scan execution_audit_*.jsonl only when audit_dir is given or ledger is absent.
     raw_dir = clean_scalar_str(os.fspath(audit_dir)) if isinstance(audit_dir, (str, os.PathLike)) else None
     eff_dir = raw_dir or clean_scalar_str(optional_env("EXECUTION_AUDIT_DIR")) or _DEFAULT_AUDIT_DIR
     if not os.path.isdir(eff_dir):

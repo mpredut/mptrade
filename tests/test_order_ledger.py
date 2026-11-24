@@ -877,12 +877,39 @@ def test_migrated_audit_readers_use_order_ledger_first_with_legacy_fallback(tmp_
     )
     reconciler.reconcile_once(now_ts=day2_ts + 40.0)
 
-    # 1. find_order_audit_record resolves purely from OrderLedger (no Day 2 execution_audit file)
+    # Backfill Day 1 + Day 2 morning legacy execution_audit into OrderLedger, verify idempotency, then delete legacy audit_dir!
+    import shutil
+    from verify_tools.backfill_order_ledger_from_audit import backfill_order_ledger_from_audit
+
+    dry_stats = backfill_order_ledger_from_audit(str(audit_dir), str(cdb_dir), dry_run=True)
+    assert dry_stats["events_converted"] == 2  # Day 1 BUY + Day 2 morning AI BUY (post-live duplicate excluded)
+    assert dry_stats["closed_rows_planned"] == 2
+
+    bf_stats = backfill_order_ledger_from_audit(str(audit_dir), str(cdb_dir))
+    assert bf_stats["event_days_written"] == 2
+    assert bf_stats["boundary_day_prepended"] == 1
+    assert bf_stats["closed_rows_added"] == 2
+
+    # Idempotency: second run writes zero files and adds zero closed rows.
+    bf_again = backfill_order_ledger_from_audit(str(audit_dir), str(cdb_dir))
+    assert bf_again["event_days_written"] == 0
+    assert bf_again["closed_rows_added"] == 0
+
+    # Cursor offset on boundary day was shifted cleanly so reconciler does NOT replay backfilled events.
+    rec_after = reconciler.reconcile_once(now_ts=day2_ts + 50.0)
+    assert rec_after["events_applied"] == 0
+
+    # Remove legacy execution_audit directory completely: ALL migrated readers must work 100% from OrderLedger!
+    shutil.rmtree(audit_dir)
+
+    # 1. find_order_audit_record resolves both live and backfilled orders purely from OrderLedger
     found = find_order_audit_record("70002", symbol="ETHUSDC", cachedb_dir=str(cdb_dir))
     assert found is not None
     assert found["client_order_id"] == "TA_led_sell_1"
     assert found["kind"] == "trend_take_profit"
     assert "fee" not in found and found.get("fee_native") == pytest.approx(0.005)  # BNB fee not misread as USD!
+    found_bf = find_order_audit_record("70001", symbol="ETHUSDC", cachedb_dir=str(cdb_dir))
+    assert found_bf is not None and found_bf["client_order_id"] == "TA_legacy_1"
 
     # 2. portfolio_collector helpers resolve origins (including HL cloid) & filled terminal orders purely from OrderLedger
     origins = _load_recent_audit_origins(str(cdb_dir))
@@ -895,14 +922,14 @@ def test_migrated_audit_readers_use_order_ledger_first_with_legacy_fallback(tmp_
     assert hl_terms["HYPEUSDC"][0]["orderId"] == "81001"
     assert hl_terms["HYPEUSDC"][0]["executedQty"] == pytest.approx(5.0)
 
-    # 3. load_and_evaluate_ai_attribution stitches Day 1 + Day 2 morning pre-ledger + Day 2 OrderLedger with zero double-count
+    # 3. load_and_evaluate_ai_attribution reads backfilled Day 1 + Day 2 morning + live Day 2 purely from OrderLedger
     (state_dir / "autonomous_trade_intents_state.json").write_text("[]", encoding="utf-8")
     attr_rep = load_and_evaluate_ai_attribution(str(ws_dir), lookback_days=7.0, now_ts=day2_ts + 60.0)
     bot_cmp = attr_rep["execution_audit_ai_vs_bot"]["by_actor"]["BOT"]
-    assert bot_cmp["filled_orders"] == 2  # Day 1 BUY (legacy audit) + Day 2 SELL (OrderLedger)
+    assert bot_cmp["filled_orders"] == 2  # Backfilled Day 1 BUY + live Day 2 SELL
     assert bot_cmp["matched_round_trips"] == 1
     assert bot_cmp["realized_net_usd"] > 180.0  # +$200 gross minus realistic ~20bps RT fee (NOT broken BNB fee)
-    assert attr_rep["execution_audit_ai_vs_bot"]["by_actor"]["AI"]["filled_orders"] == 2  # Day 2 morning pre-ledger + Day 2 HL OrderLedger (no dup!)
+    assert attr_rep["execution_audit_ai_vs_bot"]["by_actor"]["AI"]["filled_orders"] == 2  # Backfilled Day 2 morning + live Day 2 HL
 
     # 4. reconcile_intents_from_execution_audit reconciles both FILLED and PENDING_EXECUTION purely from OrderLedger
     intents_to_rec = [
@@ -931,3 +958,43 @@ def test_migrated_audit_readers_use_order_ledger_first_with_legacy_fallback(tmp_
     assert intents_to_rec[0]["execution_payload"]["orderId"] == "81001"
     assert intents_to_rec[1]["status"] == "SUBMIT_UNKNOWN"
     assert intents_to_rec[1]["execution_payload"]["clientOrderId"] == "AI_pend_led"
+
+
+def test_execution_audit_prod_mode_writes_only_order_ledger_and_6h_recently_closed_ttl(tmp_path, monkeypatch):
+    """Production ExecutionAudit() writes exclusively to OrderLedger (no dual JSONL), and recently_closed prunes at 6h."""
+    from providers import execution_audit as ea_mod
+    from providers.order_ledger import update_recently_closed
+
+    monkeypatch.delenv("EXECUTION_AUDIT_DIR", raising=False)
+    monkeypatch.setenv("CACHEDB_DIR", str(tmp_path / "cachedb"))
+    fake_default_audit = tmp_path / "default_legacy_audit"
+    monkeypatch.setattr(ea_mod, "_DEFAULT_AUDIT_DIR", str(fake_default_audit))
+
+    prod_audit = ea_mod.ExecutionAudit()
+    prod_audit.record(
+        "submit_requested",
+        intent_id="prod-only-1",
+        venue="binance",
+        symbol="ETHUSDC",
+        side="BUY",
+        qty=0.5,
+        price=3000.0,
+    )
+    assert not fake_default_audit.exists()
+    reader = OrderLedgerReader(cachedb_dir=str(tmp_path / "cachedb"))
+    assert len(reader.list_event_files()) == 1
+
+    # Explicit directory still writes legacy JSONL for isolated test suites.
+    explicit_dir = tmp_path / "explicit_audit"
+    test_audit = ea_mod.ExecutionAudit(directory=str(explicit_dir))
+    test_audit.record("submit_requested", intent_id="test-only-1", venue="binance", symbol="ETHUSDC", side="BUY", qty=0.2)
+    assert any(p.name.startswith("execution_audit_") for p in explicit_dir.iterdir())
+
+    # Default recently_closed TTL is 6 hours (21600s).
+    now_t = 1_795_500_000.0
+    pruned = update_recently_closed(
+        {"old": now_t - 22_000.0, "fresh": now_t - 3_600.0},
+        (),
+        eff_now=now_t,
+    )
+    assert "old" not in pruned and "fresh" in pruned

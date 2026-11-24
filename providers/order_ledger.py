@@ -143,6 +143,7 @@ _AUDIT_EVENT_TO_LEDGER_EVENT: dict[str, str] = {
     "submit_requested": OrderEventType.SUBMITTED.value,
     "submit_accepted": OrderEventType.ACKED.value,
     "submit_refused": OrderEventType.SUBMIT_REFUSED.value,
+    "submit_rejected": OrderEventType.SUBMIT_REFUSED.value,
     "submit_unknown": OrderEventType.SUBMIT_UNKNOWN.value,
     "submit_scaled": OrderEventType.SCALED.value,
     "cancel_requested": OrderEventType.CANCEL_REQ.value,
@@ -150,6 +151,7 @@ _AUDIT_EVENT_TO_LEDGER_EVENT: dict[str, str] = {
     "cancel_rejected": OrderEventType.CANCEL_FAILED.value,
     "order_status": OrderEventType.STATUS.value,
     "order_terminal": OrderEventType.STATUS.value,
+    "order_terminal_retry": OrderEventType.STATUS.value,
     "order_recovered": OrderEventType.RECOVERED.value,
     "order_reconciled": OrderEventType.RECOVERED.value,
 }
@@ -201,6 +203,12 @@ _LOCAL_PRESUBMIT_REFUSAL_TOKENS: tuple[str, ...] = (
     "guard",
     "shadow",
     "deferred",
+    "account_cache_",
+    "weight_policy_",
+    "below_min_notional",
+    "recent_transaction",
+    "filter_lot_size",
+    "filter_refused",
 )
 
 
@@ -595,7 +603,7 @@ def update_recently_closed(
     summaries: Sequence[dict[str, Any]],
     eff_now: Optional[float] = None,
     *,
-    ttl_sec: float = 86400.0,
+    ttl_sec: float = 21600.0,
     max_entries: int = 512,
     prune: bool = True,
 ) -> dict[str, float]:
@@ -641,7 +649,7 @@ def replay_producer_events(
     applied = 0
     sink = closed_out if closed_out is not None else []
     for ev in events:
-        if not isinstance(ev, dict) or clean_upper_scalar(ev.get("src")) == "RECONCILER":
+        if not isinstance(ev, dict) or clean_upper_scalar(ev.get("src")) in {"RECONCILER", "AUDIT_BACKFILL"}:
             continue
         before_n = len(sink)
         if apply_order_event(orders, ev, closed_out=sink, recently_closed=rc) is not None:

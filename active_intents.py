@@ -867,13 +867,16 @@ def trace_order_or_intent(
             open_matches.append(oo)
             _expand_ids(oo_oid, oo_cid)
 
+    ledger_reader = OrderLedgerReader(cachedb_dir=os.path.join(abs_root, "cachedb"))
     eff_audit_dir = (
         clean_scalar_str(audit_dir)
         or clean_scalar_str(optional_env("EXECUTION_AUDIT_DIR"))
         or os.path.join(abs_root, "logger", "execution_audit")
     )
     audit_events: list[dict[str, Any]] = []
-    if os.path.isdir(eff_audit_dir):
+    # Skip legacy execution_audit JSONL scan in production once OrderLedger is populated (unless audit_dir is explicitly passed).
+    should_scan_legacy_audit = bool(audit_dir) or not ledger_reader.list_event_files()
+    if should_scan_legacy_audit and os.path.isdir(eff_audit_dir):
         for audit_path in iter_audit_jsonl_paths(eff_audit_dir, unbounded_limit=max_audit_days):
             for rec in read_jsonl_dicts(audit_path):
                 rec_cands = (rec.get("intent_id"), rec.get("order_id"), rec.get("client_order_id"))
@@ -933,7 +936,7 @@ def trace_order_or_intent(
         if actor is None:
             actor = resolve_order_actor(oo_last)
 
-    ledger_trace = OrderLedgerReader(cachedb_dir=os.path.join(abs_root, "cachedb")).trace_order(
+    ledger_trace = ledger_reader.trace_order(
         clean_q, max_event_days=max_audit_days
     )
     ledger_order = ledger_trace.get("active_order") or (

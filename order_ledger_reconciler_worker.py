@@ -126,7 +126,7 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
         summaries: list[dict[str, Any]],
         eff_now: float,
         *,
-        ttl_sec: float = 86400.0,
+        ttl_sec: float = 21600.0,
         max_entries: int = 512,
     ) -> dict[str, float]:
         return update_recently_closed(
