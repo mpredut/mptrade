@@ -97,6 +97,7 @@ from providers.ai_circuit_breaker import (
     parse_intent_circuit_breaker_config,
 )
 from providers.ai_survival_guard import (
+    build_persisted_round_trip_fee_resolver,
     evaluate_ai_decision_scorecard,
     evaluate_ai_ping_pong_guard,
     evaluate_ai_target_ev_guard,
@@ -836,6 +837,9 @@ class AutonomousIntentGateway:
         if decision == "BUY" and sc_win > 0 and sc_streak > 0 and sc_cd_h > 0.0:
             sc_prices = self._load_live_prices_for_scorecard(symbol, venue, live_spot_px)
             sc_scope = "equities" if is_equity_venue_or_suffix(symbol, venue) else "crypto"
+            sc_fee_resolver = build_persisted_round_trip_fee_resolver(
+                getattr(self, "cache_dir", None), now_ts=now_ts
+            )
             scorecard = evaluate_ai_decision_scorecard(
                 all_intents,
                 now_ts=now_ts,
@@ -844,6 +848,7 @@ class AutonomousIntentGateway:
                 max_loss_streak=sc_streak,
                 cooldown_hours=sc_cd_h,
                 scope=sc_scope,
+                fee_resolver=sc_fee_resolver,
             )
             if scorecard.get("buy_shadow_active"):
                 sc_reason = str(scorecard.get("reason") or "ai_scorecard_buy_shadow_cooldown")

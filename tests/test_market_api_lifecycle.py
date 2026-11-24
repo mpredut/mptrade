@@ -1441,7 +1441,8 @@ def test_order_id_context_and_broker_history_soc_split():
     assert oic.resolve_order_origin({"clientOrderId": "TO_GRID_12345678"}) == ("BOT", "tradeall", "GRID")
     assert oic.resolve_order_origin({"clientOrderId": "AGS999"}) == ("BOT", "assetguardian", "SL_PROTECT")
     assert oic.resolve_order_origin({"clientOrderId": "AGB999"}) == ("BOT", "assetguardian", "BUY_TIER")
-    assert oic.resolve_order_origin({"clientOrderId": "and_abc"}) == ("BOT", "manual", None)
+    assert oic.resolve_order_origin({"clientOrderId": "and_abc"}) == ("MANUAL", "manual", None)
+    assert oic.format_actor_tag("MANUAL", "manual", None) == "MANUAL"
     assert oic.format_actor_tag("BOT", "trailing", "EXIT") == "BOT(module=trailing, rule=EXIT)"
 
 

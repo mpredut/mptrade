@@ -526,6 +526,48 @@ class ScopedOrderIdSet(set):
         return False
 
 
+_MANUAL_BOT_CID_PREFIXES: tuple[str, ...] = tuple(
+    _pfx for _pfx, _owner, _tel_mod, _mode in _SORTED_BOT_CID_SPECS if _owner == "manual" or _tel_mod == "manual"
+)
+
+
+def _matches_bot_cid_spec(cid_up: str, pfx: str, mode: str) -> bool:
+    if mode == "stem":
+        return cid_up.startswith(pfx)
+    if mode == "prefix_only":
+        return cid_up.startswith(f"{pfx}_")
+    return cid_up == pfx or cid_up.startswith((f"{pfx}_", f"{pfx}-"))
+
+
+def _is_manual_cid(raw_cid: str) -> bool:
+    if not raw_cid:
+        return False
+    if raw_cid.lower().startswith(MANUAL_CID_PREFIXES):
+        return True
+    cid_up = raw_cid.upper()
+    return any(_matches_bot_cid_spec(cid_up, pfx, "token") for pfx in _MANUAL_BOT_CID_PREFIXES)
+
+
+def _matches_non_manual_bot_cid(raw_cid: str) -> bool:
+    if not raw_cid:
+        return False
+    cid_up = raw_cid.upper()
+    return any(
+        _matches_bot_cid_spec(cid_up, pfx, mode)
+        for pfx, owner, tel_mod, mode in _SORTED_BOT_CID_SPECS
+        if owner != "manual" and tel_mod != "manual" and owner != "ai_executor"
+    )
+
+
+def _is_manual_order(order: dict[str, Any], raw_cid: str) -> bool:
+    if _is_manual_cid(raw_cid):
+        return True
+    if raw_cid and _matches_non_manual_bot_cid(raw_cid):
+        return False
+    raw_mod = _first_mapped(order, ("owner", "module", "origin_module", "bot", "caller"), clean_scalar_str)
+    return bool(raw_mod and raw_mod.lower() == "manual")
+
+
 def resolve_order_actor(
     order: Any,
     known_ai_order_ids: Optional[set[str]] = None,
@@ -534,35 +576,38 @@ def resolve_order_actor(
     symbol: Any = None,
     account: Any = None,
 ) -> str:
-    """Classify an order or fill record as placed by ``'AI'`` (autonomous executor) or ``'BOT'`` (deterministic fleet)."""
+    """Classify an order or fill record as placed by ``'AI'``, ``'MANUAL'``, or ``'BOT'`` (deterministic fleet)."""
     if not isinstance(order, dict):
         return "BOT"
     explicit = clean_upper_scalar(order.get("actor")) or ""
-    if explicit in ("AI", "BOT"):
+    if explicit in ("AI", "BOT", "MANUAL"):
         return explicit
-    raw_cid = (extract_client_order_id(order, default="") or "").upper()
-    if raw_cid.startswith(("AI_", "MO_AI_")):
+    raw_cid = extract_client_order_id(order, default="") or ""
+    raw_cid_up = raw_cid.upper()
+    if raw_cid_up.startswith(("AI_", "MO_AI_")):
         return "AI"
     oid = extract_order_id(order, default="")
     if not oid and not raw_cid:
-        return "BOT"
+        return "MANUAL" if _is_manual_order(order, "") else "BOT"
     if isinstance(known_ai_order_ids, ScopedOrderIdSet):
         eff_venue = venue if venue is not None else (
             order.get("venue") or order.get("provider_name") or order.get("provider") or ""
         )
         eff_symbol = symbol if symbol is not None else (order.get("symbol") or order.get("pair") or "")
         eff_account = account if account is not None else (order.get("account_ref") or order.get("account") or "")
-        return "AI" if known_ai_order_ids.matches(
-            oid, raw_cid, venue=eff_venue, symbol=eff_symbol, account=eff_account
-        ) else "BOT"
+        if known_ai_order_ids.matches(
+            oid, raw_cid_up, venue=eff_venue, symbol=eff_symbol, account=eff_account
+        ):
+            return "AI"
+        return "MANUAL" if _is_manual_order(order, raw_cid) else "BOT"
     if isinstance(known_ai_order_ids, (set, frozenset)) and oid and str(oid) in known_ai_order_ids:
         return "AI"
     exact_ids, lower_ids = _resolve_known_ai_id_sets(known_ai_order_ids)
     if oid and exact_ids and (str(oid) in exact_ids or str(oid).lower() in lower_ids):
         return "AI"
-    if raw_cid and lower_ids and raw_cid.lower() in lower_ids:
+    if raw_cid_up and lower_ids and raw_cid_up.lower() in lower_ids:
         return "AI"
-    return "BOT"
+    return "MANUAL" if _is_manual_order(order, raw_cid) else "BOT"
 
 
 def resolve_order_origin(
@@ -599,15 +644,7 @@ def resolve_order_origin(
     if raw_cid:
         cid_up = raw_cid.upper()
         for pfx, _owner, bot_name, mode in _SORTED_BOT_CID_SPECS:
-            if bot_name is not None and (
-                cid_up.startswith(pfx)
-                if mode == "stem"
-                else (
-                    cid_up.startswith(f"{pfx}_")
-                    if mode == "prefix_only"
-                    else (cid_up == pfx or cid_up.startswith((f"{pfx}_", f"{pfx}-")))
-                )
-            ):
+            if bot_name is not None and _matches_bot_cid_spec(cid_up, pfx, mode):
                 mod = mod or bot_name
                 if not rule:
                     if mode == "stem":
@@ -626,6 +663,8 @@ def resolve_order_origin(
                 break
         if mod is None and raw_cid.lower().startswith(MANUAL_CID_PREFIXES):
             mod = "manual"
+    if actor == "MANUAL" or (mod is not None and mod.lower() == "manual"):
+        return "MANUAL", mod or "manual", rule
     return "BOT", mod, rule
 
 

@@ -377,9 +377,9 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
             eth_c = f" ({safe_float(mb.get('eth_chg_24h_pct'), 0.0):+.2f}% 24h)" if mb.get("eth_chg_24h_pct") is not None else ""
             mb_rot_parts.append(f"ETH=${mb.get('eth_price')}{eth_c}")
         if mb.get("btc_vol_share_pct") is not None:
-            mb_rot_parts.append(f"BTCDOM={mb.get('btc_vol_share_pct')}%")
+            mb_rot_parts.append(f"BTC_vol_share={mb.get('btc_vol_share_pct')}%")
         if mb.get("alt_vol_share_pct") is not None:
-            mb_rot_parts.append(f"TOTAL3_share={mb.get('alt_vol_share_pct')}%")
+            mb_rot_parts.append(f"Alt_vol_share={mb.get('alt_vol_share_pct')}%")
     mb_line = (
         f"advance_ratio={mb.get('advance_ratio', 'N/A')}, "
         f"median_chg={mb.get('median_change_pct', 'N/A')}%, "
@@ -712,7 +712,9 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
         if sess_parts := format_session_extremes_parts(pinfo):
             extras.append(f"sessions({', '.join(sess_parts)})")
 
-        is_sub24h_dup_7d = (
+        span_7d_h = safe_pos_float(pinfo.get("span_7d_hours"), default=None)
+        is_partial_7d = bool(pinfo.get("is_partial_7d")) or (span_7d_h is not None and span_7d_h < 120.0)
+        is_sub24h_dup_7d = is_partial_7d or (
             "chg_24h_pct" not in pinfo
             and pinfo.get("low_24h") is not None
             and (pinfo.get("low_7d"), pinfo.get("high_7d")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
@@ -764,7 +766,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 f"7d={safe_float(pinfo.get('chg_7d_pct'), 0.0):+.2f}% "
                 f"{_format_horizon_range(pinfo, px_f, '7d')}"
             )
-        is_dup_swing = (
+        is_dup_swing = is_partial_7d or (
             is_sub24h_dup_7d
             and not pinfo.get("recent_swings_7d")
             and (pinfo.get("swing_low_px"), pinfo.get("swing_high_px")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))

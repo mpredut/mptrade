@@ -6,7 +6,7 @@ and order_guard.conf thresholds in 0 ms with zero network calls or extra disk st
 """
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from botcore import (
     _parse_bool_flag,
@@ -82,6 +82,8 @@ _REFERENCE_RT_FEE_BPS = 20.0
 _MIN_FLIP_EDGE_FLOOR_PCT = 0.15
 _MIN_TARGET_EV_FLOOR_PCT = 0.10
 _RESTING_UNFILLED_GRACE_SEC = 3600.0
+_LIFO_REMAINDER_DUST_USD = 2.0
+_LIFO_REMAINDER_DUST_MAX_FRAC = 0.05
 
 
 def _is_terminal_or_stale_unfilled_intent(
@@ -267,6 +269,26 @@ def match_filled_intent_rows_lifo(
             return 1e-9
         return max(1e-9, 0.01 * max(orig_a, orig_b, 1e-9))
 
+    def _is_dust_remainder(rem_q: float, orig_q: float, row_obj: Mapping[str, Any], eps: float) -> bool:
+        if rem_q <= eps:
+            return True
+        if orig_q > 0.0 and (rem_q / orig_q) <= _LIFO_REMAINDER_DUST_MAX_FRAC:
+            px_v = safe_pos_float(
+                row_obj.get("px") if row_obj.get("px") is not None else row_obj.get("price"),
+                default=0.0,
+            ) or 0.0
+            if px_v > 0.0:
+                rem_usd = rem_q * px_v
+            else:
+                orig_usd = safe_pos_float(
+                    row_obj.get("usd") if row_obj.get("usd") is not None else row_obj.get("cost_usd"),
+                    default=0.0,
+                ) or 0.0
+                rem_usd = orig_usd * (rem_q / orig_q) if orig_usd > 0.0 else 0.0
+            if 0.0 < rem_usd < _LIFO_REMAINDER_DUST_USD:
+                return True
+        return False
+
     def _consume_stack(
         stack: list[list[Any]],
         incoming: dict[str, Any],
@@ -307,11 +329,11 @@ def match_filled_intent_rows_lifo(
             closed_pairs.append((pair_kind, entry_slice, exit_slice))
             lot_rem -= matched_q
             rem_qty -= matched_q
-            if lot_rem <= eps:
+            if _is_dust_remainder(lot_rem, lot_orig, lot_row, eps):
                 stack.pop()
             else:
                 top[1] = lot_rem
-            if rem_qty <= eps:
+            if _is_dust_remainder(rem_qty, orig_in_qty, incoming, eps):
                 rem_qty = 0.0
                 break
         return rem_qty
@@ -328,6 +350,8 @@ def match_filled_intent_rows_lifo(
                 top_s_usd = safe_pos_float(s_queue[-1][0].get("usd"), default=0.0) or 0.0
                 in_usd = safe_pos_float(row.get("usd"), default=0.0) or 0.0
                 rem_after = _consume_stack(s_queue, row, row_qty, row_qty, row_exp, "SELL->BUY")
+                if rem_after > 0.0 and _is_dust_remainder(rem_after, row_qty, row, 1e-12):
+                    rem_after = 0.0
                 # A spot reload BUY closes the SELL->BUY leg and opens live long inventory in
                 # reloaded_buys without duplicating open BUY_MTM while still held.
                 is_notional_reload = top_s_usd > 0.0 and in_usd <= top_s_usd * 1.05
@@ -345,6 +369,8 @@ def match_filled_intent_rows_lifo(
                 rem_sell = _consume_stack(b_queue, row, rem_sell, row_qty, row_exp, "BUY->SELL")
             if rem_sell > 1e-12 and (rb_queue := reloaded_buys.get(ikey)):
                 rem_sell = _consume_stack(rb_queue, row, rem_sell, row_qty, row_exp, "BUY->SELL")
+            if rem_sell > 0.0 and _is_dust_remainder(rem_sell, row_qty, row, 1e-12):
+                rem_sell = 0.0
             if rem_sell > 1e-12 or (row_qty <= 0.0 and not b_queue and not reloaded_buys.get(ikey)):
                 pending_sells.setdefault(ikey, []).append([row, rem_sell, row_qty, row_exp])
 
@@ -441,6 +467,46 @@ def resolve_venue_round_trip_fee_bps(
     ot = clean_upper_scalar(order_type) or "LIMIT"
     leg_bps = safe_nonneg_float(taker_bps if ot == "MARKET" else maker_bps, default=10.0)
     return round(2.0 * leg_bps, 4)
+
+
+def build_persisted_round_trip_fee_resolver(
+    cache_dir: Optional[str],
+    *,
+    now_ts: Optional[float] = None,
+) -> Optional[Callable[[str, str, str], Optional[float]]]:
+    """Build a memoized ``(venue, symbol, order_type) -> round_trip_fee_bps`` resolver from persisted fee state."""
+    cdir = clean_scalar_str(cache_dir)
+    if not cdir:
+        return None
+    from .venue_fee_maintenance import read_persisted_venue_fee_spec
+
+    eff_now = resolve_now_ts(now_ts)
+    memo: dict[tuple[str, str, str], Optional[float]] = {}
+
+    def _resolve(venue: str, symbol: str, order_type: str = "LIMIT") -> Optional[float]:
+        ven = normalize_venue_name(clean_scalar_str(venue) or "")
+        sym = (clean_scalar_str(symbol) or "").upper()
+        ot = clean_upper_scalar(order_type) or "LIMIT"
+        key = (ven, sym, ot)
+        if key in memo:
+            return memo[key]
+        res: Optional[float] = None
+        try:
+            spec = read_persisted_venue_fee_spec(ven, sym, cache_dir=cdir, now_ts=eff_now)
+            if isinstance(spec, Mapping) and spec:
+                leg_keys = ("taker_fee_bps", "taker_bps") if ot == "MARKET" else ("maker_fee_bps", "maker_bps")
+                leg_bps = next(
+                    (v for lk in leg_keys if (v := safe_nonneg_float(spec.get(lk), default=None)) is not None),
+                    None,
+                )
+                if leg_bps is not None:
+                    res = round(2.0 * leg_bps, 4)
+        except Exception:
+            res = None
+        memo[key] = res
+        return res
+
+    return _resolve
 
 
 def resolve_venue_flip_min_edge_pct(
@@ -901,6 +967,7 @@ def evaluate_ai_decision_scorecard(
     lookback_hours: float = 48.0,
     min_mature_minutes: float = 60.0,
     scope: str = "all",
+    fee_resolver: Optional[Callable[[str, str, str], Optional[float]]] = None,
 ) -> dict[str, Any]:
     """Deterministically score recent filled ``by=AI`` decisions and compute BUY shadow cooldown state.
 
@@ -960,7 +1027,8 @@ def evaluate_ai_decision_scorecard(
             continue
         inv_px, tgt_px = extract_intent_trade_plan_levels(it, side=side, ref_price=px)
         ot = extract_intent_order_type(it)
-        rt_bps = resolve_venue_round_trip_fee_bps(ven, sym, order_type=ot)
+        live_rt = fee_resolver(ven, sym, ot) if callable(fee_resolver) else None
+        rt_bps = resolve_venue_round_trip_fee_bps(ven, sym, order_type=ot, round_trip_fee_bps=live_rt)
         v_k, b_k, q_k, _ = _intent_venue_symbol_side_key(ven, sym, side)
         exec_payload = it.get("execution_payload")
         exec_qty = (
@@ -1534,6 +1602,7 @@ def format_ai_calibration_feedback_line(calibration: Any) -> str:
 
 __all__ = [
     "build_intent_live_price_map",
+    "build_persisted_round_trip_fee_resolver",
     "compute_signed_price_edge_pct",
     "evaluate_ai_calibration_feedback",
     "evaluate_ai_decision_scorecard",

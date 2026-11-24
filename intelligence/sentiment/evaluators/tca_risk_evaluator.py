@@ -677,10 +677,15 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
         )
 
         def _extract_bellwether_horizons(pinfo: Dict[str, Any], *, drop_zero_kalman: bool = False) -> Tuple[Dict[str, Any], bool]:
+            s7_h = safe_pos_float(pinfo.get("span_7d_hours"), default=None)
             dup_7d = (
-                "chg_24h_pct" not in pinfo
-                and pinfo.get("low_24h") is not None
-                and (pinfo.get("low_7d"), pinfo.get("high_7d")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
+                bool(pinfo.get("is_partial_7d"))
+                or (s7_h is not None and s7_h < 120.0)
+                or (
+                    "chg_24h_pct" not in pinfo
+                    and pinfo.get("low_24h") is not None
+                    and (pinfo.get("low_7d"), pinfo.get("high_7d")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
+                )
             )
             fields = {
                 k: (

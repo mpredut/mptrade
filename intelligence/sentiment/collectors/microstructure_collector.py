@@ -1353,7 +1353,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                 stat_list = _stat_candidate_price_files(
                     cachedb_dir,
                     *(Cache24PriceManager.disk_filename_for_symbol(c) for c in cands),
-                    *((cache_ohlc_24h_filename(c) for c in cands) if is_eq_sym else ()),
+                    *(cache_ohlc_24h_filename(c) for c in cands),
                     *(CacheSparsePriceManager.disk_filename_for_symbol(c) for c in cands),
                     *(Cache365PriceManager.disk_filename_for_symbol(c) for c in cands),
                     *(f"cache_365_price_{c}.json" for c in cands),
@@ -1391,19 +1391,22 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                 if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                     continue
                 raw_ser = _extract_cached_items_series(_rj(p24_path), cands)
-                if is_eq_sym_load and len(raw_ser) >= 2:
+                if len(raw_ser) >= 2:
                     raw_ser = sort_ts_rows(raw_ser)
-                    for ohlc24_path in _candidate_cache_paths(cachedb_dir, cache_ohlc_24h_filename(cand)):
-                        if not os.path.exists(ohlc24_path):
-                            continue
-                        ohlc24_obj = _rj(ohlc24_path)
-                        ohlc24_pts = (
-                            ohlc24_obj.get("points")
-                            if isinstance(ohlc24_obj, dict) and isinstance(ohlc24_obj.get("points"), list)
-                            else _extract_cached_items_series(ohlc24_obj, cands)
-                        )
-                        raw_ser = session_policy.merge_ohlc24_into_raw_series(raw_ser, ohlc24_pts or [])
-                        break
+                    r0, r1 = parse_ts_px_row(raw_ser[0]), parse_ts_px_row(raw_ser[-1])
+                    raw_span_ms = max(0.0, r1[0] - r0[0]) if (r0 and r1) else 0.0
+                    if is_eq_sym_load or raw_span_ms < 22 * 3600 * 1000:
+                        for ohlc24_path in _candidate_cache_paths(cachedb_dir, cache_ohlc_24h_filename(cand)):
+                            if not os.path.exists(ohlc24_path):
+                                continue
+                            ohlc24_obj = _rj(ohlc24_path)
+                            ohlc24_pts = (
+                                ohlc24_obj.get("points")
+                                if isinstance(ohlc24_obj, dict) and isinstance(ohlc24_obj.get("points"), list)
+                                else _extract_cached_items_series(ohlc24_obj, cands)
+                            )
+                            raw_ser = session_policy.merge_ohlc24_into_raw_series(raw_ser, ohlc24_pts or [])
+                            break
                 ser = session_policy.clean_raw_24h_series(raw_ser, symbol)
                 if len(ser) >= 2:
                     series_24h = (
@@ -2117,8 +2120,16 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             active_7d_vals = list(arch_vals_7d)
             if 0.0 <= arch_span_7d_ms < 5 * 86400 * 1000:
                 pt_map[sym]["_partial_7d_span_ms"] = arch_span_7d_ms
+                if not is_eq_sym and arch_span_7d_ms > 0.0:
+                    pt_map[sym]["is_partial_7d"] = True
+                    pt_map[sym]["span_7d_hours"] = round(arch_span_7d_ms / 3600000.0, 1)
+                else:
+                    pt_map[sym].pop("is_partial_7d", None)
+                    pt_map[sym].pop("span_7d_hours", None)
             else:
                 pt_map[sym].pop("_partial_7d_span_ms", None)
+                pt_map[sym].pop("is_partial_7d", None)
+                pt_map[sym].pop("span_7d_hours", None)
         ohlc_fn = resolve_fallback_ohlc_fn(sym, inst_map) if allow_network else None
         s24_is_live_clock = (
             raw_s24_last_ts_ms <= 0.0
@@ -2153,6 +2164,8 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                             pt_map[sym].pop(k_7d_opt, None)
                         pt_map[sym].update(compute_7d_range_metrics(vals_7d))
                         pt_map[sym].pop("_partial_7d_span_ms", None)
+                        pt_map[sym].pop("is_partial_7d", None)
+                        pt_map[sym].pop("span_7d_hours", None)
                         active_7d_vals = list(vals_7d)
                 except Exception:
                     pass

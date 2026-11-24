@@ -1285,11 +1285,15 @@ def headline_effective_ts(h: Any, now: float) -> float:
         obj_attr(h, "first_seen_ts", None) or obj_attr(h, "published_ts", None),
         0.0,
     )
-    if ts_val <= 0.0:
+    pub_raw = obj_attr(h, "pub_date", None)
+    pub_ts: Optional[float] = None
+    if isinstance(pub_raw, str) and pub_raw.strip():
         NewsFeedCollector = importlib.import_module("intelligence.macro.news_feed_collector").NewsFeedCollector
-
-        pub_ts = NewsFeedCollector._parse_recent_pub_date_ts(obj_attr(h, "pub_date", None), now)
+        pub_ts = NewsFeedCollector._parse_recent_pub_date_ts(pub_raw, now)
+    if ts_val <= 0.0:
         ts_val = pub_ts if pub_ts is not None else 0.0
+    elif pub_ts is not None and pub_ts > ts_val + 1800.0:
+        ts_val = pub_ts
     if ts_val <= 0.0:
         age_f = parse_headline_age_minutes(h)
         if age_f is not None:

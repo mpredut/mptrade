@@ -140,6 +140,7 @@ from cacheprice import resolve_ssot_price_from_cache
 from providers.ai_circuit_breaker import parse_intent_circuit_breaker_config
 from providers.ai_survival_guard import (
     build_intent_live_price_map,
+    build_persisted_round_trip_fee_resolver,
     evaluate_ai_calibration_feedback,
     evaluate_ai_decision_scorecard,
 )
@@ -1545,6 +1546,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         open_orders_list: List[Dict[str, Any]],
         eff_verified_venues: Optional[set[str]],
         price_bars_by_symbol: Optional[Dict[str, List[List[Any]]]] = None,
+        cache_dir: str = "",
     ) -> None:
         if isinstance(intents_data, list) and intents_data:
             if recent_intents_out := summarize_recent_ai_intents(
@@ -1586,6 +1588,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                     snapshot.prices_and_trends,
                     snapshot.portfolio_summary.get("tradable_positions"),
                 )
+                sc_fee_resolver = build_persisted_round_trip_fee_resolver(cache_dir or None, now_ts=now_ts)
                 ai_scorecard = evaluate_ai_decision_scorecard(
                     intents_data,
                     now_ts=now_ts,
@@ -1594,6 +1597,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                     max_loss_streak=cb_cfg["scorecard_max_loss_streak"],
                     cooldown_hours=cb_cfg["scorecard_cooldown_hours"],
                     scope=scope,
+                    fee_resolver=sc_fee_resolver,
                 )
                 if ai_scorecard.get("count", 0) > 0:
                     snapshot.portfolio_summary["ai_decision_scorecard"] = ai_scorecard
@@ -2179,6 +2183,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             open_orders_list=open_orders_list,
             eff_verified_venues=verified_open_venues if has_inst_source else None,
             price_bars_by_symbol=price_path_bars,
+            cache_dir=cache_dir,
         )
         snapshot.portfolio_summary.update(
             harvest_bot_runtime_states(cache_dir, now_ts, _rj, tradable_positions=snapshot.portfolio_summary.get("tradable_positions"))

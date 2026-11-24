@@ -135,12 +135,26 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
             return ""
         return _WS_COLLAPSE_RE.sub(" ", _strip_headline_publisher_suffix(title).strip().lower())
 
+    _MAX_PUB_BACKDATE_SKEW_SEC = 1800.0
+    _SEMANTIC_DUP_MAX_GAP_SEC = 3600.0
+
+    @classmethod
+    def _resolve_non_backdated_ts(cls, raw_ts: float, pub_ts: Optional[float]) -> float:
+        """Resolve effective timestamp without pinning a fresh pub_date to an impossibly earlier first_seen_ts."""
+        if pub_ts is None:
+            return raw_ts
+        if raw_ts <= 0.0 or pub_ts > raw_ts + cls._MAX_PUB_BACKDATE_SKEW_SEC:
+            return pub_ts
+        return min(raw_ts, pub_ts)
+
     def _merge_same_norm_headlines(
         self,
         cand_h: NewsHeadline,
         cand_ts: float,
         existing_h: NewsHeadline,
         existing_ts: float,
+        *,
+        now: Optional[float] = None,
     ) -> Tuple[float, NewsHeadline]:
         """Merge two headlines with the same normalized title, preferring clean un-suffixed titles and preserving earliest ts."""
         merged_ts = min(cand_ts, existing_ts)
@@ -149,6 +163,11 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         cand_clean = bool(cand_title) and _strip_headline_publisher_suffix(cand_title) == cand_title.strip()
         exist_clean = bool(exist_title) and _strip_headline_publisher_suffix(exist_title) == exist_title.strip()
         primary, secondary = (cand_h, existing_h) if (cand_clean and not exist_clean) else (existing_h, cand_h)
+        prim_pub = self._parse_recent_pub_date_ts(
+            getattr(primary, "pub_date", "") or getattr(secondary, "pub_date", ""),
+            now if now is not None else max(cand_ts, existing_ts),
+        )
+        merged_ts = self._resolve_non_backdated_ts(merged_ts, prim_pub)
         merged_kws = tuple(
             dict.fromkeys([*(getattr(primary, "matched_keywords", ()) or ()), *(getattr(secondary, "matched_keywords", ()) or ())])
         )
@@ -170,11 +189,24 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
             ),
         )
 
-    def _find_semantic_duplicate_key(self, cand_title: str, pool: Dict[str, Tuple[float, NewsHeadline]]) -> Optional[str]:
+    def _find_semantic_duplicate_key(
+        self,
+        cand_title: str,
+        pool: Dict[str, Tuple[float, NewsHeadline]],
+        *,
+        cand_ts: Optional[float] = None,
+    ) -> Optional[str]:
         """Find an existing pool key whose headline is a syndicated semantic rewrite of ``cand_title``."""
         if not cand_title:
             return None
-        for exist_norm, (_, exist_h) in pool.items():
+        for exist_norm, (exist_ts, exist_h) in pool.items():
+            if (
+                cand_ts is not None
+                and cand_ts > 0.0
+                and exist_ts > 0.0
+                and abs(cand_ts - exist_ts) > self._SEMANTIC_DUP_MAX_GAP_SEC
+            ):
+                continue
             if headlines_are_semantic_duplicates(cand_title, getattr(exist_h, "title", "")):
                 return exist_norm
         return None
@@ -268,7 +300,7 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
                 if not (h and norm):
                     continue
                 pub_ts = self._parse_recent_pub_date_ts(h.pub_date, now)
-                ts = min(raw_ts, pub_ts) if (raw_ts > 0.0 and pub_ts is not None) else (pub_ts if pub_ts is not None else raw_ts)
+                ts = self._resolve_non_backdated_ts(raw_ts, pub_ts)
                 if ts <= 0.0:
                     continue
                 if 0.0 <= (now - ts) < retention_sec:
@@ -380,7 +412,10 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
                         replace_on_tie=replace_on_tie,
                     ):
                         self._aggregated_pool.pop(old_norm, None)
-                        eff_ts = merged_ts
+                        cand_pub_r = self._parse_recent_pub_date_ts(getattr(h_obj, "pub_date", ""), now)
+                        exist_pub_r = self._parse_recent_pub_date_ts(getattr(old_h, "pub_date", ""), now)
+                        if not (cand_pub_r is not None and (exist_pub_r is None or cand_pub_r > exist_pub_r + 60.0)):
+                            eff_ts = merged_ts
                     else:
                         self._aggregated_pool[old_norm] = (
                             merged_ts,
@@ -398,11 +433,11 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
             sem_key = (
                 norm
                 if norm in self._aggregated_pool
-                else self._find_semantic_duplicate_key(h_obj.title, self._aggregated_pool)
+                else self._find_semantic_duplicate_key(h_obj.title, self._aggregated_pool, cand_ts=eff_ts)
             )
             if sem_key is not None:
                 old_ts, old_h = self._aggregated_pool[sem_key]
-                merged_ts, merged_h = self._merge_same_norm_headlines(h_obj, eff_ts, old_h, old_ts)
+                merged_ts, merged_h = self._merge_same_norm_headlines(h_obj, eff_ts, old_h, old_ts, now=now)
                 self._aggregated_pool[sem_key] = (merged_ts, merged_h)
                 self._seen_first_ts[sem_key] = min(self._seen_first_ts.get(sem_key, merged_ts), merged_ts)
                 self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, merged_ts), merged_ts)
@@ -441,14 +476,15 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
                     if prev_seen is not None
                     else (pub_ts if pub_ts is not None else (h_fs_ts if h_fs_ts is not None else now))
                 )
-                if pub_ts is not None and pub_ts < eff_ts:
-                    eff_ts = pub_ts
                 if h_fs_ts is not None and h_fs_ts < eff_ts:
                     eff_ts = h_fs_ts
+                eff_ts = self._resolve_non_backdated_ts(eff_ts, pub_ts)
                 if norm in self._aggregated_pool:
                     old_ts, old_h = self._aggregated_pool[norm]
-                    merged_ts, merged_h = self._merge_same_norm_headlines(h_obj, eff_ts, old_h, old_ts)
-                    self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, merged_ts), merged_ts)
+                    merged_ts, merged_h = self._merge_same_norm_headlines(h_obj, eff_ts, old_h, old_ts, now=now)
+                    self._seen_first_ts[norm] = self._resolve_non_backdated_ts(
+                        min(self._seen_first_ts.get(norm, merged_ts), merged_ts), pub_ts
+                    )
                     if 0.0 <= (now - merged_ts) < self.rolling_window_sec:
                         self._aggregated_pool[norm] = (merged_ts, merged_h)
                     continue
@@ -475,8 +511,10 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
                 continue
             ts_val, h_item = safe_float(v[0], 0.0), v[1]
             pub_ts = self._parse_recent_pub_date_ts(getattr(h_item, "pub_date", ""), now)
-            eff_ts = min(ts_val, pub_ts) if pub_ts is not None else ts_val
-            self._seen_first_ts[k] = min(self._seen_first_ts.get(k, eff_ts), eff_ts)
+            eff_ts = self._resolve_non_backdated_ts(ts_val, pub_ts)
+            self._seen_first_ts[k] = self._resolve_non_backdated_ts(
+                min(self._seen_first_ts.get(k, eff_ts), eff_ts), pub_ts
+            )
             if eff_ts >= cutoff:
                 canon_url = canonical_article_url(getattr(h_item, "url", ""))
                 if canon_url and canon_url in url_to_key:
@@ -485,18 +523,29 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
                     merged_ts = min(eff_ts, prev_ts)
                     if self._prefer_newer_url_revision(h_item, ts_val, prev_h, prev_ts, now):
                         cleaned_pool.pop(prev_k, None)
-                        eff_ts = merged_ts
-                        self._seen_first_ts[k] = min(self._seen_first_ts.get(k, eff_ts), eff_ts)
+                        exist_pub_r = self._parse_recent_pub_date_ts(getattr(prev_h, "pub_date", ""), now)
+                        if not (pub_ts is not None and (exist_pub_r is None or pub_ts > exist_pub_r + 60.0)):
+                            eff_ts = merged_ts
+                        self._seen_first_ts[k] = self._resolve_non_backdated_ts(
+                            min(self._seen_first_ts.get(k, eff_ts), eff_ts), pub_ts
+                        )
                         url_to_key[canon_url] = k
-                        cleaned_pool[k] = (eff_ts, h_item)
+                        cleaned_pool[k] = (
+                            eff_ts,
+                            replace(h_item, first_seen_ts=eff_ts * 1.0)
+                            if isinstance(h_item, NewsHeadline) and eff_ts > 0.0
+                            else h_item,
+                        )
                     else:
                         cleaned_pool[prev_k] = (merged_ts, prev_h)
                         self._seen_first_ts[prev_k] = min(self._seen_first_ts.get(prev_k, merged_ts), merged_ts)
                     continue
-                sem_k = self._find_semantic_duplicate_key(getattr(h_item, "title", ""), cleaned_pool)
+                sem_k = self._find_semantic_duplicate_key(
+                    getattr(h_item, "title", ""), cleaned_pool, cand_ts=eff_ts
+                )
                 if sem_k is not None:
                     prev_ts, prev_h = cleaned_pool[sem_k]
-                    merged_ts, merged_h = self._merge_same_norm_headlines(h_item, eff_ts, prev_h, prev_ts)
+                    merged_ts, merged_h = self._merge_same_norm_headlines(h_item, eff_ts, prev_h, prev_ts, now=now)
                     cleaned_pool[sem_k] = (merged_ts, merged_h)
                     self._seen_first_ts[sem_k] = min(self._seen_first_ts.get(sem_k, merged_ts), merged_ts)
                     self._seen_first_ts[k] = min(self._seen_first_ts.get(k, merged_ts), merged_ts)

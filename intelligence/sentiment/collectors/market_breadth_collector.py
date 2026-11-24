@@ -68,7 +68,7 @@ class MarketBreadthCollector(CachedHttpJsonCollector, TelemetryCacheCollectorInt
             if len(tickers) >= 100
             else set()
         )
-        rows: List[Tuple[str, float, float]] = []
+        by_base: Dict[str, Tuple[str, float, float, float]] = {}
         btc_px: Optional[float] = None
         btc_chg: Optional[float] = None
         eth_px: Optional[float] = None
@@ -136,8 +136,18 @@ class MarketBreadthCollector(CachedHttpJsonCollector, TelemetryCacheCollectorInt
                 if quote_vol is not None and quote_vol > 0.0:
                     eth_vol_usd += quote_vol
             if quote_vol is not None and change_pct is not None and quote_vol >= min_vol:
-                rows.append((symbol, change_pct, quote_vol))
+                prev_b = by_base.get(base_sym)
+                if prev_b is None:
+                    by_base[base_sym] = (symbol, change_pct, quote_vol, quote_vol)
+                else:
+                    best_sym, best_chg, best_qv, tot_qv = prev_b
+                    if quote_vol > best_qv:
+                        best_sym, best_chg, best_qv = symbol, change_pct, quote_vol
+                    by_base[base_sym] = (best_sym, best_chg, best_qv, tot_qv + quote_vol)
 
+        rows: List[Tuple[str, float, float]] = [
+            (sym_b, chg_b, tot_qv_b) for sym_b, chg_b, _, tot_qv_b in by_base.values()
+        ]
         if len(rows) < 5:
             return None
 

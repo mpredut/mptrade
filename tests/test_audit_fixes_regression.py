@@ -56,8 +56,8 @@ def test_p1_cross_venue_order_id_collision_never_cancels_manual_binance_order():
         }
     ]
     scoped_all = collect_known_ai_order_ids(intents)
-    # Same numeric ID on Binance must stay BOT, never AI
-    assert resolve_order_actor({"orderId": "42", "clientOrderId": "web_manual_42"}, scoped_all, venue="binance", symbol="BTCUSDC") == "BOT"
+    # Same numeric ID on Binance manual order must classify as MANUAL, never AI
+    assert resolve_order_actor({"orderId": "42", "clientOrderId": "web_manual_42"}, scoped_all, venue="binance", symbol="BTCUSDC") == "MANUAL"
     # Same venue + symbol matches AI
     assert resolve_order_actor({"orderId": "42"}, scoped_all, venue="kraken", symbol="HYPEUSD") == "AI"
     # Same venue, DIFFERENT symbol on Binance-like venues must stay BOT
@@ -2349,5 +2349,277 @@ def test_impulse_eval_gap_configurable_are_close_and_zero_benefit_triggers(tmp_p
     assert asf.prune_old_backups(str(bk_root), keep_count=3) == 4
     remaining = sorted(p.name for p in bk_root.iterdir())
     assert remaining == ["20261123_130000", "20261124_140000", "20261124_213206", "manual_keep"]
+
+
+def test_crypto_prompt_critical_data_audit_fixes_1_to_6(tmp_path):
+    """Regression suite for the 6 critical/high crypto prompt data correctness fixes:
+    1.1 Manual orders classify as actor='MANUAL' (never 'BOT') while remaining cancellable via include_bot_orders=True.
+    1.2 Newly added crypto symbols merge fresh cache_ohlc_24h into series_24h so 24h_range matches vol_profile/vwap.
+    1.3 Partial (<5d) crypto 7d archives flag is_partial_7d and suppress bogus 7d / vs_btc(7d) in prompt & bellwethers.
+    1.4 LIFO scorecard drops sub-$2 dust remainders (no phantom WIN/LOSS or OPEN_BUY) and uses persisted live venue fees.
+    1.5 MarketBreadth deduplicates multi-quote pairs by canonical base asset and prompts use BTC_vol_share / Alt_vol_share.
+    1.6 Geopolitical news matching catches kinetic strikes / air raids and prevents/recovers backdated first_seen_ts.
+    """
+    from intelligence.macro.calendar_ssot import headline_effective_ts
+    from intelligence.macro.lexicon_ssot import match_high_severity_keywords
+    from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsHeadline
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        enrich_24h_and_microstructure,
+        load_symbol_price_series,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_macro_and_news_section,
+        _format_market_prices_section,
+    )
+    from providers.ai_survival_guard import build_persisted_round_trip_fee_resolver
+    from providers.intent_execution import cancel_existing_ai_open_orders
+    from providers.order_id_context import format_actor_tag, resolve_order_origin
+
+    # --- 1.1 Manual order classification & AI intervention compatibility ---
+    for cid in ("and_729245677", "ios_9911", "web_568296122", "MO_MN_OR_MainThread_1A2B"):
+        act, mod, _ = resolve_order_origin({"orderId": "10", "clientOrderId": cid})
+        assert act == "MANUAL"
+        assert mod == "manual"
+        assert format_actor_tag(act, mod, None) == "MANUAL"
+    assert resolve_order_actor({"clientOrderId": "TA_grid_1"}) == "BOT"
+    assert resolve_order_actor({"clientOrderId": "sd_manual_1"}) == "BOT"
+    assert resolve_order_actor({"clientOrderId": "AI_intent_1"}) == "AI"
+
+    manual_oo = {"orderId": "729245677", "clientOrderId": "and_729245677", "side": "BUY", "price": "174.2", "origQty": "2.0"}
+    inst_keep = SimpleNamespace(
+        provider_name="binance",
+        symbol="TAOUSDC",
+        open_orders=MagicMock(return_value=[manual_oo]),
+        cancel_order=MagicMock(return_value=True),
+    )
+    assert cancel_existing_ai_open_orders(inst_keep, "BUY", set(), include_bot_orders=False) == []
+    assert inst_keep.cancel_order.call_count == 0
+    assert cancel_existing_ai_open_orders(inst_keep, "BUY", set(), include_bot_orders=True) == ["729245677"]
+    assert inst_keep.cancel_order.call_count == 1
+
+    # --- 1.2 & 1.3 Crypto cache_ohlc_24h merge & partial (<5d) 7d suppression ---
+    cdir = tmp_path / "cachedb"
+    pdir = cdir / "prices"
+    pdir.mkdir(parents=True, exist_ok=True)
+    now_s = 1_795_558_000.0
+    now_ms = int(now_s * 1000)
+
+    # ETHUSDC: only 6h in cache_24_price ([1665, 1687]), full 22h in cache_ohlc_24h ([1665, 1717.73])
+    eth_24 = [[now_ms - (6 - i) * 3600_000, 1665.0 + i * 3.5] for i in range(7)]
+    eth_ohlc = (
+        [[now_ms - (22 - i) * 3600_000, 1717.73 - i * 3.0, 5000.0, 1718.0 - i * 3.0, 1715.0 - i * 3.0] for i in range(16)]
+        + [[now_ms - (6 - i) * 3600_000, 1665.0 + i * 3.5, 5000.0, 1666.0 + i * 3.5, 1664.0 + i * 3.5] for i in range(7)]
+    )
+    (pdir / "cache_24_price_ETHUSDC.json").write_text(json.dumps({"items": {"ETHUSDC": eth_24}}), encoding="utf-8")
+    (pdir / "cache_ohlc_24h_ETHUSDC.json").write_text(
+        json.dumps({"ts": now_s, "symbol": "ETHUSDC", "points": eth_ohlc}), encoding="utf-8"
+    )
+    # ADAUSDC: ~25h in cache_24 and cache_365 (not 7 days!)
+    ada_pts = [[now_ms - (25 - i) * 3600_000, 0.1500 - i * 0.0002] for i in range(26)]
+    (pdir / "cache_24_price_ADAUSDC.json").write_text(json.dumps({"items": {"ADAUSDC": ada_pts[-24:]}}), encoding="utf-8")
+    (pdir / "cache_365_price_ADAUSDC.jsonl").write_text(
+        "\n".join(json.dumps({"s": "ADAUSDC", "i": pt}) for pt in ada_pts) + "\n", encoding="utf-8"
+    )
+    # BTCUSDC: full 7d archive
+    btc_pts = [[now_ms - (7 - i) * 86400_000, 64000.0 - i * 600.0] for i in range(8)]
+    (pdir / "cache_24_price_BTCUSDC.json").write_text(
+        json.dumps({"items": {"BTCUSDC": [[now_ms - 24 * 3600_000, 60800.0], [now_ms, 59800.0]]}}), encoding="utf-8"
+    )
+    (pdir / "cache_365_price_BTCUSDC.jsonl").write_text(
+        "\n".join(json.dumps({"s": "BTCUSDC", "i": pt}) for pt in btc_pts) + "\n", encoding="utf-8"
+    )
+
+    s24_eth, _ = load_symbol_price_series(str(cdir), "ETHUSDC", include_7d=True)
+    assert max(p[1] for p in s24_eth) == pytest.approx(1717.73)
+
+    pt_map = {
+        "BTCUSDC": {"price": 59800.0},
+        "ETHUSDC": {"price": 1686.0},
+        "ADAUSDC": {"price": 0.1450},
+    }
+    enrich_24h_and_microstructure(str(cdir), str(tmp_path), pt_map, {}, {}, {}, now_ts=now_s, allow_network=False)
+    assert pt_map["ETHUSDC"]["high_24h"] == pytest.approx(1717.73)
+    assert pt_map["ETHUSDC"]["pos_24h_pct"] < 45.0
+    assert pt_map["ADAUSDC"].get("is_partial_7d") is True
+    assert pt_map["ADAUSDC"].get("span_7d_hours") == pytest.approx(25.0, abs=0.5)
+    assert pt_map["BTCUSDC"].get("is_partial_7d") is None
+
+    prompt_prices = "\n".join(_format_market_prices_section(pt_map))
+    ada_prompt_line = next(l for l in prompt_prices.splitlines() if "ADAUSDC:" in l)
+    btc_prompt_line = next(l for l in prompt_prices.splitlines() if "BTCUSDC:" in l)
+    assert "7d=" not in ada_prompt_line
+    assert "7d_range=" not in ada_prompt_line
+    assert "7d=" in btc_prompt_line
+    cm = build_cross_market_context(pt_map, {}, {})
+    assert "chg_7d_pct" not in cm["crypto_bellwethers"]["ADA"]
+    assert "chg_7d_pct" in cm["crypto_bellwethers"]["BTC"]
+
+    # --- 1.4 LIFO dust remainder filtering & persisted live venue fees ---
+    # BUY 4.4121 TAO @ 187.80 ($828.59), SELL 4.4089 TAO @ 187.80 ($827.99) -> $0.60 dust remainder must be discarded
+    # Next BUY 3.0 TAO @ 180.0, SELL 3.0 TAO @ 190.0 -> must NOT emit a separate $0.60 slice
+    dust_rows = [
+        {"ts": 100.0, "inst_key": ("binance", "TAO", ("USD",)), "side": "BUY", "px": 187.8, "qty": 4.4121, "usd": 828.59},
+        {"ts": 200.0, "inst_key": ("binance", "TAO", ("USD",)), "side": "SELL", "px": 187.8, "qty": 4.4089, "usd": 827.99},
+        {"ts": 300.0, "inst_key": ("binance", "TAO", ("USD",)), "side": "BUY", "px": 180.0, "qty": 3.0, "usd": 540.0},
+        {"ts": 400.0, "inst_key": ("binance", "TAO", ("USD",)), "side": "SELL", "px": 190.0, "qty": 3.0, "usd": 570.0},
+    ]
+    c_pairs, ob_rem, os_rem = match_filled_intent_rows_lifo(dust_rows)
+    assert len(c_pairs) == 2
+    assert ob_rem == [] and os_rem == []
+
+    # Persisted VIP0_BNB 7.5bps maker -> 15.0bps round-trip fee applied in scorecard
+    fee_dir = tmp_path / "fee_cache"
+    (fee_dir / "state").mkdir(parents=True, exist_ok=True)
+    (fee_dir / "state" / "venue_fee_maintenance_state.json").write_text(
+        json.dumps({
+            "ts": now_s,
+            "interval_sec": 14400.0,
+            "venues": {
+                "binance": {
+                    "ts": now_s,
+                    "fee_spec": {"fee_tier": "VIP0_BNB", "maker_fee_bps": 7.5, "taker_fee_bps": 7.12},
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+    fee_res = build_persisted_round_trip_fee_resolver(str(fee_dir), now_ts=now_s)
+    assert fee_res is not None
+    assert fee_res("binance", "TAOUSDC", "LIMIT") == pytest.approx(15.0)
+    assert fee_res("binance", "TAOUSDC", "MARKET") == pytest.approx(14.24)
+    sc_intents = [
+        {"intent_id": "b1", "timestamp": now_s - 600, "decision": "BUY", "venue": "binance", "symbol": "TAOUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 1000.0, "execution_payload": {"orderId": "1", "status": "FILLED", "avg_fill_price": 100.0, "executedQty": "10.005"}},
+        {"intent_id": "s1", "timestamp": now_s - 300, "decision": "SELL", "venue": "binance", "symbol": "TAOUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 1010.0, "execution_payload": {"orderId": "2", "status": "FILLED", "avg_fill_price": 101.0, "executedQty": "10.0"}},
+    ]
+    sc_live = evaluate_ai_decision_scorecard(sc_intents, now_ts=now_s, scope="crypto", fee_resolver=fee_res)
+    # Gross +1.00% minus 0.15% live VIP0_BNB RT fee = +0.85% (not +0.80% static 20bps), and 0.005 ($0.50) dust left no OPEN_BUY
+    assert sc_live["total_outcomes"] == 1
+    assert sc_live["avg_edge_pct"] == pytest.approx(0.85, abs=0.01)
+
+    # --- 1.5 MarketBreadth per-base dedup & accurate BTC_vol_share / Alt_vol_share labels ---
+    dup_tickers = [
+        {"symbol": "BTCUSDT", "lastPrice": "60000", "priceChangePercent": "-2.0", "quoteVolume": "300000000"},
+        {"symbol": "BTCUSDC", "lastPrice": "60000", "priceChangePercent": "-2.1", "quoteVolume": "150000000"},
+        {"symbol": "BTCFDUSD", "lastPrice": "60000", "priceChangePercent": "-2.0", "quoteVolume": "50000000"},
+        {"symbol": "ETHUSDT", "lastPrice": "1700", "priceChangePercent": "-2.5", "quoteVolume": "200000000"},
+        {"symbol": "ETHUSDC", "lastPrice": "1700", "priceChangePercent": "-2.4", "quoteVolume": "50000000"},
+        {"symbol": "PEPEUSDT", "lastPrice": "0.00001", "priceChangePercent": "+5.0", "quoteVolume": "100000000"},
+        {"symbol": "PEPEUSDC", "lastPrice": "0.00001", "priceChangePercent": "+5.2", "quoteVolume": "30000000"},
+        {"symbol": "SOLUSDT", "lastPrice": "70", "priceChangePercent": "-3.0", "quoteVolume": "80000000"},
+        {"symbol": "XRPUSDT", "lastPrice": "1.5", "priceChangePercent": "-1.5", "quoteVolume": "40000000"},
+    ]
+    mb_dedup = MarketBreadthCollector.parse_tickers(dup_tickers, min_volume_usd=5_000_000.0, now_ts=now_s)
+    assert mb_dedup is not None
+    assert mb_dedup.total_count == 5
+    assert mb_dedup.advancing_count == 1
+    assert mb_dedup.declining_count == 4
+    assert mb_dedup.btc_vol_share_pct == pytest.approx(50.0)
+    assert mb_dedup.alt_vol_share_pct == pytest.approx(25.0)
+    sec1_mb = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(
+                market_breadth={
+                    "advance_ratio": mb_dedup.advance_ratio,
+                    "median_change_pct": mb_dedup.median_change_pct,
+                    "mean_change_pct": mb_dedup.mean_change_pct,
+                    "dispersion_std": mb_dedup.dispersion_std,
+                    "advancing": mb_dedup.advancing_count,
+                    "total_symbols": mb_dedup.total_count,
+                    "btc_vol_share_pct": mb_dedup.btc_vol_share_pct,
+                    "alt_vol_share_pct": mb_dedup.alt_vol_share_pct,
+                }
+            ),
+            asset_scope="crypto",
+        )
+    )
+    assert "BTC_vol_share=50.0%" in sec1_mb
+    assert "Alt_vol_share=25.0%" in sec1_mb
+    assert "BTCDOM=" not in sec1_mb
+    assert "TOTAL3_share=" not in sec1_mb
+
+    # --- 1.6 Geopolitical kinetic keywords & non-backdated first_seen_ts ---
+    assert "houthi strike" in match_high_severity_keywords(
+        "Eleven hurt in second Houthi strike within days on Riyadh's tallest tower - Reuters"
+    )
+    assert "air raid" in match_high_severity_keywords(
+        "Russian jets spark air raid alert in South Korea"
+    )
+    assert match_high_severity_keywords("Rail workers threaten union strike over contract dispute") == ()
+
+    # Corrupted backdated first_seen_ts (2.7h earlier than pub_date) recovers cleanly to pub_date
+    pub_s = 1_795_555_995.0  # Tue, 24 Nov 2026 21:33:15 GMT
+    bad_first_seen = 1_795_546_160.0  # Tue, 24 Nov 2026 18:49:20 GMT
+    hist_f = tmp_path / "news_feed_collect.json"
+    hist_f.write_text(
+        json.dumps([
+            {
+                "title": "11 injured in Houthi drone attack on Riyadh tower, Saudi civil defence says - Al Jazeera",
+                "source": "Al Jazeera",
+                "pub_date": "Tue, 24 Nov 2026 21:33:15 GMT",
+                "url": "https://example.com/aj-riyadh",
+                "matched_keywords": ["attack", "drone attack"],
+                "is_high_severity": True,
+                "first_seen_ts": bad_first_seen,
+            }
+        ]),
+        encoding="utf-8",
+    )
+    nfc = NewsFeedCollector(history_file=str(hist_f))
+    nfc._load_history(now_ts=pub_s + 500.0)
+    snap_nf = nfc.get_pool_snapshot(now_ts=pub_s + 500.0)
+    assert len(snap_nf.headlines) == 1
+    assert snap_nf.headlines[0].first_seen_ts == pytest.approx(pub_s)
+    assert headline_effective_ts(
+        NewsHeadline(
+            title="11 injured in Houthi drone attack on Riyadh tower",
+            source="Al Jazeera",
+            pub_date="Tue, 24 Nov 2026 21:33:15 GMT",
+            url="https://example.com/aj-riyadh",
+            matched_keywords=("drone attack",),
+            is_high_severity=True,
+            first_seen_ts=bad_first_seen,
+        ),
+        pub_s + 500.0,
+    ) == pytest.approx(pub_s)
+
+    # Newer canonical URL revision with newer pub_date must NOT be backdated to the earlier live-blog stub
+    nfc_rev = NewsFeedCollector(history_file=str(tmp_path / "news_rev.json"))
+    snap_rev = nfc_rev._aggregate(
+        SimpleNamespace(
+            headlines=[
+                NewsHeadline(
+                    title="Smoke reported near Riyadh commercial district",
+                    source="Al Jazeera",
+                    pub_date="Tue, 24 Nov 2026 18:49:20 GMT",
+                    url="https://example.com/liveblog",
+                    matched_keywords=(),
+                    is_high_severity=False,
+                    first_seen_ts=bad_first_seen,
+                )
+            ]
+        ),
+        now=pub_s + 500.0,
+    )
+    assert len(snap_rev.headlines) == 1
+    snap_rev2 = nfc_rev._aggregate(
+        SimpleNamespace(
+            headlines=[
+                NewsHeadline(
+                    title="11 injured in Houthi drone attack on Riyadh tower",
+                    source="Al Jazeera",
+                    pub_date="Tue, 24 Nov 2026 21:33:15 GMT",
+                    url="https://example.com/liveblog",
+                    matched_keywords=("drone attack", "attack"),
+                    is_high_severity=True,
+                    first_seen_ts=pub_s,
+                )
+            ]
+        ),
+        now=pub_s + 500.0,
+    )
+    assert len(snap_rev2.headlines) == 1
+    assert snap_rev2.headlines[0].first_seen_ts == pytest.approx(pub_s)
 
 

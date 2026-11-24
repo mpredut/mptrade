@@ -1302,9 +1302,9 @@ _PARTISAN_MARKET_CONTEXT_WHITELIST: frozenset[str] = (
 )
 
 _MAJOR_GEOPOLITICAL_THEATER_WORDS: frozenset[str] = frozenset({
-    "china", "chinese", "europe", "gaza", "hormuz", "iran", "iranian", "israel",
+    "china", "chinese", "europe", "gaza", "hormuz", "houthi", "houthis", "iran", "iranian", "israel",
     "israeli", "korea", "korean", "lebanon", "middle", "nato", "pentagon",
-    "russia", "russian", "saudi", "syria", "taiwan", "tehran", "ukraine",
+    "riyadh", "russia", "russian", "saudi", "syria", "taiwan", "tehran", "ukraine",
     "ukrainian", "yemen",
 })
 

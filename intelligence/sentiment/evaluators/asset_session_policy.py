@@ -202,7 +202,33 @@ class Continuous24x7SessionPolicy(AssetSessionPolicy):
         return sort_ts_rows(rows)
 
     def merge_ohlc24_into_raw_series(self, raw_ser: list, ohlc24_pts: list) -> list:
-        return prepend_older_non_diverged_points(raw_ser, ohlc24_pts)
+        if not raw_ser or not ohlc24_pts:
+            return raw_ser
+        ordered_raw = sort_ts_rows(raw_ser)
+        cur_p0 = parse_ts_px_row(ordered_raw[0])
+        cur_p1 = parse_ts_px_row(ordered_raw[-1])
+        if cur_p0 is None or cur_p1 is None:
+            return raw_ser
+        ohlc_2col: list[list[float]] = []
+        for row in sort_ts_rows(ohlc24_pts):
+            if (pt := parse_ts_px_row(row)) is not None:
+                ohlc_2col.append([pt[0], pt[1]])
+        if len(ohlc_2col) < 2:
+            return raw_ser
+        ohlc_last = ohlc_2col[-1]
+        if (
+            (cur_p1[0] - ohlc_last[0]) > 2 * 3600 * 1000
+            or ohlc_last[0] > cur_p1[0] + 15 * 60 * 1000
+            or _prices_diverged(ohlc_last[1], cur_p1[1], threshold=self.price_divergence_threshold)
+        ):
+            return raw_ser
+        win_start_ms = cur_p1[0] - 86_400_000.0
+        older_pts = [pt for pt in ohlc_2col if win_start_ms <= pt[0] < cur_p0[0]]
+        if not older_pts:
+            return raw_ser
+        if _prices_diverged(older_pts[-1][1], cur_p0[1], threshold=self.price_divergence_threshold):
+            return raw_ser
+        return older_pts + ordered_raw
 
     def evaluate_post_rth_override(
         self,

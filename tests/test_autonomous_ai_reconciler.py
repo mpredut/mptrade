@@ -8225,8 +8225,8 @@ def test_audit_remediations_a_through_g_and_crypto_completeness(tmp_path, monkey
     )
     sec_1 = "\n".join(_format_macro_and_news_section(snap_macro))
     assert "ETH/BTC=" in sec_1
-    assert "BTCDOM=50.0%" in sec_1
-    assert "TOTAL3_share=25.0%" in sec_1
+    assert "BTC_vol_share=50.0%" in sec_1
+    assert "Alt_vol_share=25.0%" in sec_1
     assert "live_btc_flow_delta=(live_btc_taker_ratio=1.7456, cvd_15m=+$26,570,000)" in sec_1
 
     # --- F. Open LIMIT Order Age Normalization ---

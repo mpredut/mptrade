@@ -1369,6 +1369,7 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
                     m7d = m7d_w
                     partial_w_7d_span = 0.0 <= w_span_7d < 5 * 86400 * 1000
                     break
+        stitched_7d_ok = False
         if (
             allow_network
             and not is_eq
@@ -1389,6 +1390,7 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
                         if len(vals_7d_ohlc) >= 2 and (not m7d or len(vals_7d_ohlc) >= 24):
                             if m7d_ohlc := compute_7d_range_metrics(vals_7d_ohlc, decimals=6):
                                 m7d = m7d_ohlc
+                                stitched_7d_ok = True
             except Exception:
                 pass
         if m7d:
@@ -1401,14 +1403,20 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
                 or not (_prices_diverged(cur_px_est, low_7d_v, threshold=eq_div_thr) and _prices_diverged(cur_px_est, high_7d_v, threshold=eq_div_thr))
             ):
                 recalculate_live_price_geometry(m7d, cur_px_est)
-        is_sub24h_dup_7d = (
+        arch_span_7d_eff = LAST_7D_SPAN_MS_BY_SYM.get(str(symbol).strip().upper(), 0.0)
+        is_partial_7d_pt = (
+            not is_eq
+            and not stitched_7d_ok
+            and (partial_w_7d_span or (0.0 < arch_span_7d_eff < 5 * 86400 * 1000))
+        )
+        same_24h_7d_bounds = (
             bool(m24)
-            and "chg_24h_pct" not in m24
             and m24.get("low_24h") is not None
             and (m7d.get("low_7d"), m7d.get("high_7d")) == (m24.get("low_24h"), m24.get("high_24h"))
         )
+        is_sub24h_dup_7d = same_24h_7d_bounds and (is_partial_7d_pt or "chg_24h_pct" not in m24)
         if m7d and not is_sub24h_dup_7d:
-            if canonical_base_asset(symbol) != "BTC" and not is_eq:
+            if canonical_base_asset(symbol) != "BTC" and not is_eq and not is_partial_7d_pt:
                 if not btc_vals_7d and not btc_m24:
                     _, btc_vals_7d = load_symbol_price_series(
                         cachedb_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=True
