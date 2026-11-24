@@ -150,7 +150,10 @@ class TestCurrentRegistry(unittest.TestCase):
 
 class TestInstrumentsSingleSource(unittest.TestCase):
     def test_binance_symbols_match_pre_refactor(self):
-        self.assertEqual(registry.binance_symbols(), ["BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"])
+        self.assertEqual(
+            registry.binance_symbols(),
+            ["BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC", "ETHUSDC", "SOLUSDC"],
+        )
 
     def test_trail_pct_map_matches_pre_refactor(self):
         expected = {
@@ -190,23 +193,28 @@ class TestInstrumentsSingleSource(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_symbols_facade_constants_and_dynamic_lookup(self):
-        self.assertEqual(registry.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"])
+        self.assertEqual(
+            registry.symbols,
+            ["BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC", "ETHUSDC", "SOLUSDC"],
+        )
         self.assertEqual(registry.symbols_for("binance", "force_sell"), ["BTCUSDC", "TAOUSDC"])
         with self.assertRaises(AttributeError):
             getattr(registry, "nonexistentsymbol")
 
     def test_ownership_inventory_symbols_fallback(self):
         syms, tao = _python_symbols(ROOT)
-        self.assertEqual(syms, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"])
+        self.assertEqual(syms, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC", "ETHUSDC", "SOLUSDC"])
         self.assertEqual(tao, "TAOUSDC")
 
 
 def test_current_execution_policy_is_preserved(tmp_path):
-    assert registry.symbols_for("binance") == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"]
+    assert registry.symbols_for("binance") == [
+        "BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC", "ETHUSDC", "SOLUSDC",
+    ]
     expected = {
         "tradeall_fire": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "kalman_primary": {"BTCUSDC"},
         "mt": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "assetguardian": {"BTCUSDC", "TAOUSDC", "ARBUSDC"},
-        "archive": {"BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"}, "rtrade": {"TAOUSDC"},
+        "archive": {"BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC", "ETHUSDC", "SOLUSDC"}, "rtrade": {"TAOUSDC"},
         "force_sell": {"BTCUSDC", "TAOUSDC"},
         "trailing": {"BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"},
     }
@@ -230,14 +238,14 @@ def test_current_execution_policy_is_preserved(tmp_path):
         "BINANCE_BTC", "BINANCE_TAO", "BINANCE_ARB", "KRAKEN_HYPE"}
     all_syms, nb_syms, nb_providers = registry.tracked_price_instruments()
     assert all_syms == [
-        "BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC",
+        "BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC", "ETHUSDC", "SOLUSDC",
         "HYPEUSDC", "HYPEUSD",
-        "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ", "ANT_US_EQ",
+        "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ", "ANT_US_EQ", "AMD_US_EQ",
         "SPCXxUSD", "ANTxUSD",
     ]
     assert nb_syms == [
         "HYPEUSDC", "HYPEUSD",
-        "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ", "ANT_US_EQ",
+        "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ", "ANT_US_EQ", "AMD_US_EQ",
         "SPCXxUSD", "ANTxUSD",
     ]
     assert nb_providers == {
@@ -247,6 +255,7 @@ def test_current_execution_policy_is_preserved(tmp_path):
         "NVDA_US_EQ": "t212",
         "RGNT_US_EQ": "t212",
         "ANT_US_EQ": "t212",
+        "AMD_US_EQ": "t212",
         "SPCXxUSD": "kraken",
         "ANTxUSD": "kraken",
     }
@@ -262,7 +271,7 @@ def test_current_execution_policy_is_preserved(tmp_path):
         "HYPE": ("HYPEUSD", 24.0, "on"),
     }
     assert registry.symbols_for("kraken") == ["HYPEUSD", "SPCXxUSD", "ANTxUSD"]
-    # Verify Kraken crypto exclusions (TAOUSD/ADAUSD) cannot leak into AI tradables even if listed in KRAKEN_CACHE_PAIRS.
+    # Verify Kraken crypto exclusions (TAOUSD/ADAUSD) and observe-only leaders (ETHUSDC/SOLUSDC/AMD_US_EQ) cannot leak into AI tradables.
     tradable_crypto = registry.discover_tradable_specs(str(ROOT), asset_scope="crypto")
     assert "BINANCE_ADA" in tradable_crypto and tradable_crypto["BINANCE_ADA"].symbol == "ADAUSDC"
     assert "KRAKEN_HYPE" in tradable_crypto and tradable_crypto["KRAKEN_HYPE"].symbol == "HYPEUSD"
@@ -270,6 +279,11 @@ def test_current_execution_policy_is_preserved(tmp_path):
     assert "KRAKEN_TAO" not in tradable_crypto
     assert "KRAKEN_ADA" not in tradable_crypto
     assert "KRAKEN_ANT" not in tradable_crypto
+    assert "BINANCE_ETH" not in tradable_crypto
+    assert "BINANCE_SOL" not in tradable_crypto
+    tradable_eq = registry.discover_tradable_specs(str(ROOT), asset_scope="equities", include_closed_rth=True)
+    assert "T212_AMD" not in tradable_eq
+    assert "T212_ANT" not in tradable_eq
 
     # Even if kraken/config.env, hyperliquid/config.env, or 212trading/config.*.env exist for symbols
     # disabled via enabled = no in instruments.conf, discover_tradable_specs and t212_bot must honor instruments.conf.
@@ -331,11 +345,27 @@ def test_current_execution_policy_is_preserved(tmp_path):
     obs_syms = registry.observe_only_registry_symbols(str(ROOT))
     assert "ANTXUSD" in obs_syms
     assert "ANT_US_EQ" in obs_syms
+    assert "AMD_US_EQ" in obs_syms
+    assert "ETHUSDC" in obs_syms
+    assert "SOLUSDC" in obs_syms
     assert "BTCUSDC" not in obs_syms
     assert "SPCXXUSD" not in obs_syms
     from orchestratorOS.supervisor.prompt_sections import _format_market_prices_section
-    sec3a_lines = "\n".join(_format_market_prices_section({"BTCUSDC": {"price": 75000.0}, "ANTxUSD": {"price": 82.0}}))
+    sec3a_lines = "\n".join(
+        _format_market_prices_section(
+            {
+                "BTCUSDC": {"price": 75000.0},
+                "ETHUSDC": {"price": 2300.0},
+                "SOLUSDC": {"price": 120.0},
+                "AMD_US_EQ": {"price": 165.0},
+                "ANTxUSD": {"price": 82.0},
+            }
+        )
+    )
     assert "  * ANTxUSD: Price=$82.00 [OBSERVE-ONLY]" in sec3a_lines
+    assert "  * ETHUSDC: Price=$2,300.00 [OBSERVE-ONLY]" in sec3a_lines
+    assert "  * SOLUSDC: Price=$120.00 [OBSERVE-ONLY]" in sec3a_lines
+    assert "  * AMD_US_EQ: Price=$165.00 [OBSERVE-ONLY]" in sec3a_lines
     assert "  * BTCUSDC: Price=$75,000.00" in sec3a_lines
     assert "BTCUSDC: Price=$75,000.00 [OBSERVE-ONLY]" not in sec3a_lines
     assert registry.is_equity_symbol("SPCX_US_EQ") is True
