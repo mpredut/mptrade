@@ -17138,6 +17138,51 @@ def test_disabled_registry_symbols_xstock_longterm_cost_and_partial_24h_vp(tmp_p
     assert ro_xs["last_action_actor"] == "MANUAL"
     assert ro_xs["last_buy"]["actor"] == "MANUAL"
 
+    # 3b. Real Kraken filled BUY order on SELL-only tokenized equity (no bot/AI origin) also resolves actor="MANUAL"
+    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
+    fills_xs = extract_symbol_recent_fills(
+        [
+            {"orderId": "TSR6LOW-BZ47F-UY2BAV", "side": "BUY", "price": 134.844006, "executedQty": 24.472723, "timestamp": int((now_s - 600) * 1000)},
+        ],
+        symbol="SPCXxUSD",
+    )
+    assert fills_xs is not None
+    assert fills_xs["last_action_actor"] == "MANUAL"
+    assert fills_xs["last_buy"]["actor"] == "MANUAL"
+
+    # 3c. Observe-only symbols (ANTxUSD) never trigger Delta Gate wakeups or high-effort model escalations,
+    # and completely empty observe-only venue cycles (ANT_US_EQ) are omitted from Section 3C anchors.
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import evaluate_crypto_executor_delta_gate
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import evaluate_portfolio_prompt_view
+    dg_skip, dg_reason, dg_hi, _ = evaluate_crypto_executor_delta_gate(
+        SimpleNamespace(
+            prices_and_trends={"BTCUSDC": {"price": 59500.0}, "ANTxUSD": {"price": 79.0}},
+            portfolio_summary={"tradable_positions": [{"venue": "binance", "symbol": "BTCUSDC", "effective_max_buy_usd": 2000.0, "effective_max_sell_usd": 1000.0}]},
+            sentiment_advisor=None,
+            geopolitical_threat=None,
+            source_timestamps={},
+        ),
+        {
+            "ts": now_s - 360.0,
+            "market_trading_decision": {"decision": "HOLD"},
+            "delta_gate_meta": {"eval_prices": {"BTCUSDC": 59510.0, "ANTxUSD": 77.0}},
+        },
+        now_ts=now_s,
+    )
+    assert dg_skip is True, (dg_skip, dg_reason, dg_hi)
+    assert dg_hi is False
+    pv_obs = evaluate_portfolio_prompt_view(
+        {
+            "t212_cycles": {
+                "ANT_US_EQ": {"qty": 0.0, "cost_usd": 0.0, "last_buy_price": None, "last_sell_price": None, "realized_pnl_usd": 0.0},
+                "SPCX_US_EQ": {"qty": 4.44, "cost_usd": 635.94, "avg_cost_px": 143.13},
+            }
+        },
+        asset_scope="equities",
+    )
+    t212_syms_in_view = [s for _, vid, items in pv_obs["venue_cycles"] if vid == "t212" for s, _ in items]
+    assert t212_syms_in_view == ["SPCX_US_EQ"]
+
     # 4. Partial local 24h tick history (<22h) still upgrades TPO -> REAL_VOL when overlap matches
     ohlc_pts = []
     for h in range(24):

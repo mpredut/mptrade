@@ -996,17 +996,27 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                 ai_oids_frozen = frozenset(ai_oids)
                 ai_oids_len = len(ai_oids)
             act_v, mod_v, rule_v = resolve_order_origin(o, ai_oids_frozen, audit_origin_map)
-            if act_v == "BOT" and not (mod_v or rule_v or o.get("clientOrderId") or o.get("client_order_id")) and parsed_ai_intents:
-                if _matches_ai_intent(o):
+            if act_v == "BOT" and not (mod_v or rule_v or o.get("clientOrderId") or o.get("client_order_id")):
+                if parsed_ai_intents and _matches_ai_intent(o):
                     act_v = "AI"
+                elif (
+                    extract_order_side(o) == "BUY"
+                    and resolve_symbol_identity(o.get("symbol") or o.get("pair") or fallback_sym).is_tokenized_equity
+                ):
+                    act_v = "MANUAL"
             if oid_v := extract_order_id(o, default=""):
                 oid_str = str(oid_v)
                 if act_v == "AI":
                     ai_oids.add(oid_str)
                 prev = origin_by_oid.get(oid_str)
-                if prev is None or (not prev[1] and mod_v) or (not prev[2] and rule_v) or act_v == "AI":
+                if prev is None or (not prev[1] and mod_v) or (not prev[2] and rule_v) or act_v in ("AI", "MANUAL"):
+                    eff_act = (
+                        "AI"
+                        if (act_v == "AI" or (prev and prev[0] == "AI"))
+                        else ("MANUAL" if (act_v == "MANUAL" or (prev and prev[0] == "MANUAL")) else "BOT")
+                    )
                     origin_by_oid[oid_str] = (
-                        "AI" if (act_v == "AI" or (prev and prev[0] == "AI")) else "BOT",
+                        eff_act,
                         mod_v or (prev[1] if prev else None),
                         rule_v or (prev[2] if prev else None),
                     )
@@ -1282,7 +1292,11 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                 or origin_by_side_ts.get(side_ts_k)
                 or resolve_order_origin(o, ai_oids, audit_origin_map)
             )
-            return ("AI", None, None, "AI") if act == "AI" else ("BOT", mod, rule, format_actor_tag("BOT", mod, rule))
+            if act == "AI":
+                return ("AI", None, None, "AI")
+            if act == "MANUAL":
+                return ("MANUAL", None, None, "MANUAL")
+            return ("BOT", mod, rule, format_actor_tag("BOT", mod, rule))
 
         chron = [
             o for _, o in sorted(enumerate(valid), key=lambda item: (extract_timestamp_ms(item[1], default=0) or 0, item[0]))

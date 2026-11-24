@@ -13,8 +13,12 @@ from botcore import (
     safe_float,
     safe_pos_float,
 )
-from cachepaths import normalize_venue_name
-from instrument_registry import canonical_display_symbol
+from cachepaths import clean_symbol_key, normalize_venue_name
+from instrument_registry import (
+    canonical_display_symbol,
+    disabled_registry_symbols,
+    observe_only_registry_symbols,
+)
 from intelligence.macro_sentiment_ssot import normalize_threat_level
 from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
 from providers.intent_state import decision_has_cancel_directive, eval_doc_was_actionable
@@ -278,7 +282,7 @@ def _evaluate_delta_gate_trade_plans(
             plan_states[pl_key] = pl_status
         if (
             not trigger_reason
-            and pl_sym not in ignored_syms
+            and not _is_ignored_delta_gate_symbol(pl_sym, ignored_syms)
             and pl_status in ("INVALIDATED", "TARGET_HIT")
             and prev_plan_states.get(pl_key) != pl_status
         ):
@@ -301,11 +305,26 @@ def _collect_delta_gate_atr_15m(prices_and_trends: Any) -> Dict[str, float]:
     return atr_map
 
 
+def _is_ignored_delta_gate_symbol(sym_u: str, ignored_syms: Collection[str]) -> bool:
+    if not ignored_syms or not sym_u:
+        return False
+    if sym_u in ignored_syms or sym_u.upper() in ignored_syms:
+        return True
+    sym_k = clean_symbol_key(sym_u) or ""
+    return bool(sym_k and sym_k in ignored_syms)
+
+
 def _resolve_unactionable_delta_gate_symbols(ps_map: Mapping[str, Any]) -> set[str]:
-    """Return canonical symbols whose tracked positions all report zero buy/sell/replace capacity and zero open orders."""
+    """Return canonical symbols that are observe-only/disabled or whose tracked positions all have zero trade capacity."""
+    non_tradable: set[str] = set()
+    for raw_s in observe_only_registry_symbols() | disabled_registry_symbols():
+        if raw_s:
+            non_tradable.add(raw_s)
+            if canon := canonical_display_symbol(raw_s):
+                non_tradable.add(canon)
     raw_positions = ps_map.get("tradable_positions")
     if not isinstance(raw_positions, list) or not raw_positions:
-        return set()
+        return non_tradable
     raw_open = ps_map.get("open_limit_orders")
     if not isinstance(raw_open, list):
         raw_open = ps_map.get("open_orders") if isinstance(ps_map.get("open_orders"), list) else []
@@ -336,7 +355,8 @@ def _resolve_unactionable_delta_gate_symbols(ps_map: Mapping[str, Any]) -> set[s
         rms = safe_pos_float(pos.get("replace_max_sell_usd"), default=0.0) or 0.0
         if mb > 0.0 or ms > 0.0 or rmb > 0.0 or rms > 0.0 or sym_k in open_syms:
             actionable_syms.add(sym_k)
-    return seen_syms - actionable_syms
+    act_keys = {k for s in actionable_syms for k in (s, s.upper(), clean_symbol_key(s) or "") if k}
+    return (seen_syms - actionable_syms) | (non_tradable - act_keys)
 
 
 def _compute_max_spot_move(
@@ -371,7 +391,7 @@ def _compute_max_spot_move(
         if sym_u not in prev_prices:
             continue
         common_count += 1
-        if sym_u in ignored_syms:
+        if _is_ignored_delta_gate_symbol(sym_u, ignored_syms):
             continue
         base_px = prev_prices[sym_u]
         move_pct = abs((cur_px - base_px) / base_px) * 100.0

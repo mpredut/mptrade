@@ -85,8 +85,10 @@ from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
 from instrument_registry import (
     canonical_display_symbol,
     casefold_get,
+    disabled_registry_symbols,
     has_workspace_instrument_sources,
     is_equity_symbol,
+    observe_only_registry_symbols,
     resolve_symbol_identity,
 )
 from providers.base import MarketDataProvider
@@ -770,8 +772,21 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 prices_data=cp_doc,
                 trends_data=st_doc,
             )
+            workspace_dir = resolve_workspace_dir_from_cachedb(self.cache_dir)
+            non_tradable_syms = (
+                observe_only_registry_symbols(workspace_dir) | disabled_registry_symbols(workspace_dir)
+                if workspace_dir
+                else frozenset()
+            )
             cand_syms = self.symbols if (self.symbols or getattr(self, "_explicit_symbols", False)) else None
             shocked = evaluate_kinematic_impulse_symbols(prices_and_trends, candidate_symbols=cand_syms)
+            if shocked and non_tradable_syms:
+                shocked = [
+                    s
+                    for s in shocked
+                    if s.upper() not in non_tradable_syms
+                    and (clean_symbol_key(s) or "") not in non_tradable_syms
+                ]
             if shocked:
                 _, vb_doc, _ = load_venue_balances_state(self.cache_dir, read_json_dict_recovering)
                 shocked = _filter_actionable_impulse_symbols(shocked, vb_doc, cache_dir=self.cache_dir)
@@ -787,7 +802,6 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 )
             if not shocked:
                 return None
-            workspace_dir = resolve_workspace_dir_from_cachedb(self.cache_dir)
             runner_sh = os.path.join(workspace_dir, "orchestratorOS", "run_python.sh")
             flock_bin = "/usr/bin/flock"
             timeout_bin = "/usr/bin/timeout"

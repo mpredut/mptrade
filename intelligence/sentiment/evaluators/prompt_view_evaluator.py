@@ -13,6 +13,7 @@ from botcore import _parse_bool_flag, safe_float, safe_pos_float
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
+    clean_symbol_key,
     compatible_quote_suffixes,
     ensure_equity_suffix,
     has_equity_suffix,
@@ -53,6 +54,7 @@ from instrument_registry import (
     coalesce_symbol_case_variants,
     is_equity_or_tokenized_symbol,
     is_equity_symbol,
+    observe_only_registry_symbols,
     resolve_symbol_identity,
 )
 from providers.order_status_ssot import (
@@ -780,6 +782,7 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
             lp = pos_lifo_pnl_by_vs.get((venue_k, sym_u), pos_lifo_pnl_by_vs.get(("", sym_u)))
             return compute_cycle_subcycle_realized_pnl_view(cyc_d, lp, include_cum=include_cum)
 
+        obs_only_syms = observe_only_registry_symbols()
         venue_cycles: List[Tuple[str, str, List[Tuple[str, Any]]]] = []
         for cyc_key, venue_lbl, venue_id in (
             ("kraken_cycles", "Kraken", "kraken"),
@@ -792,13 +795,25 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
             for c_sym, c_data in sorted(ps[cyc_key].items()):
                 if isinstance(c_data, dict):
                     c_up = str(c_sym).strip().upper()
+                    c_key = clean_symbol_key(c_sym) or ""
+                    if (
+                        obs_only_syms
+                        and (c_up in obs_only_syms or (c_key and c_key in obs_only_syms))
+                        and (safe_float(c_data.get("qty"), 0.0) or 0.0) <= 1e-12
+                        and (safe_float(c_data.get("cost_usd"), 0.0) or 0.0) <= 1e-9
+                        and c_data.get("last_buy_price") is None
+                        and c_data.get("last_sell_price") is None
+                        and abs(safe_float(c_data.get("realized_pnl_usd"), 0.0) or 0.0) < 0.01
+                    ):
+                        continue
                     c_data = _with_subcycle_pnl(c_data, venue_id, c_up)
                     if c_data.get("_spot_px") is None and (sp_px := pos_px_by_vs.get((venue_id, c_up), pos_px_by_vs.get(("", c_up)))) is not None:
                         c_data = {**c_data, "_spot_px": sp_px}
                     if c_data.get("_open_lots") is None and (ol_sym := pos_open_lots_by_vs.get((venue_id, c_up), pos_open_lots_by_vs.get(("", c_up)))) is not None:
                         c_data = {**c_data, "_open_lots": ol_sym}
                 cyc_items.append((c_sym, c_data))
-            venue_cycles.append((venue_lbl, venue_id, cyc_items))
+            if cyc_items:
+                venue_cycles.append((venue_lbl, venue_id, cyc_items))
 
         xs_view: Optional[Dict[str, Any]] = None
         if ps.get("kraken_xstocks"):

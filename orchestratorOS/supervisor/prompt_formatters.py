@@ -86,7 +86,7 @@ def _build_dynamic_target_desc(
         is_xs = is_kraken_tokenized_asset(sym)
         if is_xs and sym not in xstock_syms:
             xstock_syms.append(sym)
-        lbl = f"{sym} [0bps SELL-only xStock]" if (not is_equities and is_xs) else sym
+        lbl = f"0bps SELL-only xStock {sym}" if (not is_equities and is_xs) else sym
         bucket = by_venue.setdefault(prov, [])
         if lbl not in bucket:
             bucket.append(lbl)
