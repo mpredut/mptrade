@@ -919,10 +919,13 @@ class GeminiClient(GeminiQuotaRouterMixin):
                 if eff_conv_id is None:
                     tried_detached_models.add(model_candidate)
                 try:
+                    exec_kwargs: Dict[str, Any] = {}
+                    if use_topic_session and not resume_abandoned and not is_mocked:
+                        exec_kwargs["allow_soft_extend"] = True
                     proc = self._execute_cli(
                         eff_conv_id, eff_prompt, eff_timeout, model_candidate,
                         bot_cli_base, run_env, is_mocked,
-                        allow_soft_extend=(use_topic_session and not resume_abandoned),
+                        **exec_kwargs,
                     )
                     exceeded_soft_timeout = bool(getattr(self._JSON_MODE_LOCAL, "exceeded_soft_timeout", False))
                     output, turn_cid = self._parse_cli_payload(proc)

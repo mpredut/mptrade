@@ -36,6 +36,7 @@ from notify_engine.alertnotifiers import (
     _GATE_ACCEPTED_REASONS,
     _external_notifications_disabled,
     is_email_mirrored,
+    is_email_suppressed_subject,
     pass_common_gate,
     sanitize_single_line,
 )
@@ -90,10 +91,13 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
     _LAST_ERROR_IS_AUTH = False
     if _external_notifications_disabled():
         return True
+    subject = sanitize_single_line(subject, "Alert")
+    if is_email_suppressed_subject(subject):
+        logging.info(f"Email suppressed by subject policy (push-only): {subject}")
+        return True
     cfg = _config()
     if cfg is None:
         return False
-    subject = sanitize_single_line(subject, "Alert")
     body = "" if isinstance(body, bool) else str(body or "")
     if isinstance(dedup, str) and not dedup.strip():
         dedup_flag = False
@@ -134,6 +138,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("body", nargs="?", default="")
     args = parser.parse_args(argv)
     load_env_stack()
+    if is_email_suppressed_subject(args.subject):
+        return 0
     if args.topic is not None and not is_email_mirrored(args.topic):
         return 0
     return 0 if send_email(args.subject, args.body) else 1

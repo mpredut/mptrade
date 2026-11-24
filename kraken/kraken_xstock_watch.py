@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -631,9 +632,30 @@ def _build_xstock_bot_env(
     return env
 
 
+_ACTIVE_CHILD_PIDS: dict[str, tuple[int, str, float]] = {}
+
+
+def _mark_and_stop_active_xstock_children() -> None:
+    """Record clean shutdown in active xStock pid files and terminate child bots gracefully on SIGTERM/SIGINT."""
+    for pair, (pid, pid_file, cost_f) in list(_ACTIVE_CHILD_PIDS.items()):
+        try:
+            save_json_state(
+                pid_file,
+                {"pair": pair, "pid": pid, "alloc_price": cost_f, "clean_shutdown": True},
+            )
+        except Exception:
+            pass
+        if (clean_pid := _clean_pid(pid)) is not None:
+            try:
+                os.kill(clean_pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+
 def _spawn_xstock_bot(pair: str, alloc_price: float, log_path: str, *, relaunch: bool, desktop: bool,
                       body_prefix: str, err_prefix: str, symbol_label: str | None = None,
-                      ipo_mode: bool = True, on_started=None) -> int | None:
+                      ipo_mode: bool = True, on_started=None, send_notification: bool = True,
+                      title_override: str | None = None) -> int | None:
     env = _build_xstock_bot_env(alloc_price, symbol_label=symbol_label, ipo_mode=ipo_mode)
     cmd = [sys.executable, BOT_SCRIPT, "--pair", pair, *(["--paper"] if required_bool_env("XSTOCK_BOT_PAPER") else [])]
     try:
@@ -644,11 +666,12 @@ def _spawn_xstock_bot(pair: str, alloc_price: float, log_path: str, *, relaunch:
         return None
     if callable(on_started):
         on_started(proc.pid)
-    verb = "RESTARTED (was down)" if relaunch else "AUTO-STARTED"
+    verb = "RESTARTED (unexpected exit)" if relaunch else "AUTO-STARTED"
     log(f"  \U0001f916 BOT {verb}: pid {proc.pid}  pair {pair}  adopt @ {alloc_price}  (log: {log_path})")
-    notify(title=f"\U0001f916 BOT {verb} on {pair} (adopt @ {alloc_price})",
-           body=f"{body_prefix}. pid {proc.pid}, log {log_path}",
-           source="xstock-watch", price=alloc_price, desktop=desktop, email=False)
+    if send_notification:
+        notify(title=title_override or f"\U0001f916 BOT {verb} on {pair} (adopt @ {alloc_price})",
+               body=f"{body_prefix}. pid {proc.pid}, log {log_path}",
+               source="xstock-watch", price=alloc_price, desktop=desktop, email=False)
     return proc.pid
 
 
@@ -678,7 +701,7 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
     )
 
 
-def ensure_active_xstock_bots(desktop: bool = False, *, workspace_dir: str | None = None) -> None:
+def ensure_active_xstock_bots(desktop: bool = False, *, workspace_dir: str | None = None, startup: bool = False) -> None:
     """Supervise configured already-listed xStock bots (``XSTOCK_ACTIVE_PAIRS=PAIR:COST,...``)."""
     if not required_bool_env("XSTOCK_AUTOSTART"):
         return
@@ -696,16 +719,37 @@ def ensure_active_xstock_bots(desktop: bool = False, *, workspace_dir: str | Non
             log(f"  - skipping active xStock bot {pair}: disabled in instruments.conf")
             continue
         pid_file = os.path.join(_HERE, f".xstock_bot_{pair}.pid")
-        prev_pid = _clean_pid(read_json_dict(pid_file, default={}).get("pid")) if os.path.exists(pid_file) else None
+        pid_doc = read_json_dict(pid_file, default={}) if os.path.exists(pid_file) else {}
+        prev_pid = _clean_pid(pid_doc.get("pid"))
+        was_clean_shutdown = _parse_bool_flag(pid_doc.get("clean_shutdown"), False)
         if _bot_alive(prev_pid):
+            _ACTIVE_CHILD_PIDS[pair] = (prev_pid, pid_file, cost_f)
             continue
+        is_planned_startup = bool(startup) or was_clean_shutdown
+        unexpected_relaunch = (prev_pid is not None) and (not is_planned_startup)
+        if unexpected_relaunch:
+            body_prefix = (
+                f"Kraken observe-only monitor bot for {pair} (previous pid {prev_pid}) "
+                f"exited unexpectedly while running and was restarted. "
+                f"Trading on {pair} remains managed by auto_cryptotrade_executor"
+            )
+        else:
+            body_prefix = (
+                f"Kraken observe-only monitor bot for {pair} started cleanly alongside AI executor"
+            )
+
+        def _record_started(pid: int, pf: str = pid_file, p: str = pair, cf: float = cost_f) -> None:
+            _ACTIVE_CHILD_PIDS[p] = (pid, pf, cf)
+            save_json_state(pf, {"pair": p, "pid": pid, "alloc_price": cf, "clean_shutdown": False})
+
         _spawn_xstock_bot(
             pair, cost_f, os.path.join(_HERE, f"xstock_bot_{pair}.log"),
-            relaunch=prev_pid is not None, desktop=desktop, symbol_label=pair,
+            relaunch=unexpected_relaunch, desktop=desktop, symbol_label=pair,
             ipo_mode=False,
-            body_prefix=f"kraken_bot active alongside AI executor on {pair}",
+            body_prefix=body_prefix,
             err_prefix=f"cannot start active xStock bot {pair}",
-            on_started=lambda pid, pf=pid_file, p=pair, cf=cost_f: save_json_state(pf, {"pair": p, "pid": pid, "alloc_price": cf}),
+            on_started=_record_started,
+            send_notification=unexpected_relaunch,
         )
 
 
@@ -855,9 +899,20 @@ def main() -> int:
     log(f"    interval   : {args.interval} min")
     beats = 0
     sleep_sec = max(1.0, safe_pos_float(args.interval, default=1.0) * 60.0)
+    shutdown_flag = {"stop": False}
+
+    def _on_shutdown_signal(_signum, _frame):
+        shutdown_flag["stop"] = True
+        raise KeyboardInterrupt
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _on_shutdown_signal)
+        except Exception:
+            pass
     if not args.once:
         touch_module_heartbeat("xStock-watch", interval_sec=30.0, force=True, intervals={"check_sec": sleep_sec})
-    while True:
+    while not shutdown_flag["stop"]:
         try:
             check_balance(client, st, rx, args.desktop)
             if rx:
@@ -866,9 +921,10 @@ def main() -> int:
                 check_levels(client, st, eff_alloc_price, tp_pct, sl_pct, yahoo_sym, args.desktop)
                 maybe_start_bot(st, eff_alloc_price, args.desktop)
             sync_configured_archives(client, st)
-            ensure_active_xstock_bots(args.desktop)
+            ensure_active_xstock_bots(args.desktop, startup=(beats == 0))
             _save_state(st)
         except KeyboardInterrupt:
+            _mark_and_stop_active_xstock_children()
             return 0
         except Exception as e:  # noqa: BLE001 -- resilience: retry network/DNS failures
             log(f"  ! cycle failed ({e.__class__.__name__}: {e}) \u2014 retrying on the next one")
@@ -878,7 +934,13 @@ def main() -> int:
         touch_module_heartbeat("xStock-watch", interval_sec=30.0, status={"beats": beats}, intervals={"check_sec": sleep_sec})
         sys.stdout.write("." if beats % 60 else ".\n")
         sys.stdout.flush()
-        time.sleep(sleep_sec)
+        try:
+            time.sleep(sleep_sec)
+        except KeyboardInterrupt:
+            _mark_and_stop_active_xstock_children()
+            return 0
+    _mark_and_stop_active_xstock_children()
+    return 0
 
 
 if __name__ == "__main__":

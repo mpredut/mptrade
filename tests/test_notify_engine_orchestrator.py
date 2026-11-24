@@ -2131,3 +2131,108 @@ def test_watch_trade_decisions_position_handles_buy_orders_with_missing_none_ite
     assert net_w == pytest.approx(2.0)
     assert n_sells_w == 0
     assert last_buy_w == pytest.approx(120.0)
+
+
+def test_ci_regression_and_bot_restart_never_email_and_xstock_clean_restart_is_silent(tmp_path, monkeypatch):
+    """Verify:
+    1. DEV CI/CLI Regression FAILED and all BOT/FLEET/SERVICE RESTART subjects NEVER send emails
+       (via send_email, mailer CLI, or NotificationServer even if routed to an error topic).
+    2. offline/runners/run_dev_regression.sh routes DEV CI Regression FAILED to ntfy_server_topic.
+    3. kraken_xstock_watch.ensure_active_xstock_bots suppresses false 'was down' alerts on clean
+       deploy/startup restarts and emits a clear plain-language alert only on mid-run unexpected exit."""
+    import json
+    import subprocess
+    from kraken import kraken_xstock_watch as kxw
+    from notify_engine import alertnotifiers as an, mailer, server as ns
+
+    # 1. Subject-level email suppression blocks CI regression and bot/fleet restarts across all entry points
+    smtp_sent = []
+    monkeypatch.setattr(mailer, "_smtp_send", lambda msg, cfg: smtp_sent.append(msg))
+    monkeypatch.setenv("DISABLE_EXTERNAL_NOTIFICATIONS", "0")
+    monkeypatch.setenv("SMTP_USERNAME", "bot@example.com")
+    monkeypatch.setenv("SMTP_PASSWORD", "secret")
+    monkeypatch.setenv("ALERT_TO_EMAIL", "owner@example.com")
+    monkeypatch.setenv("NTFY_TOPIC_ERROR", "ntfy-error-test")
+    monkeypatch.setenv("NTFY_TOPIC_SERVER", "ntfy-server-test")
+
+    suppressed_subjects = (
+        "DEV CI Regression FAILED",
+        "DEV CLI Regression FAILED",
+        "[xStock-watch] \U0001f916 BOT RESTARTED (was down) on SPCXxUSD (adopt @ 141.75)",
+        "\U0001f916 BOT RESTARTED on SPCXxUSD (unexpected exit)",
+        "\U0001f916 BOT RESTARTED FAILED on SPCXxUSD",
+        "\U0001f916 BOT AUTO-STARTED on SPCXxUSD (adopt @ 141.75)",
+        "Fleet restarted (trading)",
+        "Service restarted",
+    )
+    for subj in suppressed_subjects:
+        assert an.is_email_suppressed_subject(subj) is True
+        assert mailer.send_email(subj, "body detail", dedup=False) is True
+        assert mailer.main(["--topic", "ntfy-error-test", subj, "body detail"]) == 0
+    assert smtp_sent == []
+
+    # True critical errors still email normally
+    assert an.is_email_suppressed_subject("ORDER FAILED: BUY BTCUSDC") is False
+    assert mailer.send_email("ORDER FAILED: BUY BTCUSDC", "exchange error", dedup=False) is True
+    assert len(smtp_sent) == 1
+
+    # NotificationServer also respects skip_email from orchestrated intents & subject suppression
+    srv = ns.NotificationServer()
+    emailed = []
+    monkeypatch.setattr(srv, "_send_email", lambda s, m, *a, **k: emailed.append((s, m)) or True)
+    monkeypatch.setattr(ns, "http_requests_post", lambda *a, **k: SimpleNamespace(status_code=200))
+    srv._send_ntfy("DEV CI Regression FAILED", "commit abc failed", "high", "ntfy-error-test")
+    srv._send_ntfy("\U0001f916 BOT RESTARTED on SPCXxUSD (unexpected exit)", "detail", "high", "ntfy-error-test")
+    assert emailed == []
+
+    # 2. run_dev_regression.sh routes failure notification to $(ntfy_server_topic) and passes bash -n
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    reg_sh = os.path.join(repo_root, "offline", "runners", "run_dev_regression.sh")
+    reg_txt = open(reg_sh, encoding="utf-8").read()
+    assert '"DEV CI Regression FAILED"' in reg_txt
+    fail_lines = [ln for ln in reg_txt.splitlines() if '"DEV CI Regression FAILED"' in ln]
+    assert len(fail_lines) == 1 and '"$(ntfy_server_topic)"' in fail_lines[0]
+    assert subprocess.run(["bash", "-n", reg_sh], capture_output=True, text=True, check=False).returncode == 0
+
+    # 3. kraken_xstock_watch: silent on clean deploy/startup restart; clear notice on unexpected mid-run crash
+    monkeypatch.setattr(kxw, "_HERE", str(tmp_path))
+    monkeypatch.setenv("XSTOCK_AUTOSTART", "true")
+    monkeypatch.setenv("XSTOCK_ACTIVE_PAIRS", "SPCXxUSD:141.75")
+    monkeypatch.setenv("XSTOCK_BOT_PAPER", "false")
+    monkeypatch.setattr(kxw, "disabled_registry_symbols", lambda *_a, **_k: set())
+    monkeypatch.setattr(kxw, "resolve_registered_symbol_case", lambda pair, *_a, **_k: pair)
+    monkeypatch.setattr(kxw, "_bot_alive", lambda _pid: False)
+    monkeypatch.setattr(kxw, "_build_xstock_bot_env", lambda *_a, **_k: {})
+
+    fake_pid = {"n": 50000}
+
+    class _FakeProc:
+        def __init__(self, *_a, **_k):
+            fake_pid["n"] += 1
+            self.pid = fake_pid["n"]
+
+    monkeypatch.setattr(kxw.subprocess, "Popen", _FakeProc)
+    sent_notifs = []
+    monkeypatch.setattr(kxw, "notify", lambda **kw: sent_notifs.append(kw))
+
+    pid_file = tmp_path / ".xstock_bot_SPCXxUSD.pid"
+    pid_file.write_text(
+        json.dumps({"pair": "SPCXxUSD", "pid": 44444, "alloc_price": 141.75, "clean_shutdown": True}),
+        encoding="utf-8",
+    )
+    # 3a. Clean deploy restart (clean_shutdown=True) -> spawns silently without false 'was down' alert
+    kxw.ensure_active_xstock_bots(workspace_dir=str(tmp_path), startup=True)
+    assert sent_notifs == []
+    pid_after = json.loads(pid_file.read_text(encoding="utf-8"))
+    assert pid_after["pid"] == 50001 and pid_after["clean_shutdown"] is False
+
+    # 3b. Startup pass right after systemd kill (even without clean_shutdown flag) -> silent startup
+    kxw.ensure_active_xstock_bots(workspace_dir=str(tmp_path), startup=True)
+    assert sent_notifs == []
+
+    # 3c. Mid-run unexpected exit (startup=False, clean_shutdown=False) -> clear plain-language alert, email=False
+    kxw.ensure_active_xstock_bots(workspace_dir=str(tmp_path), startup=False)
+    assert len(sent_notifs) == 1
+    assert "unexpected exit" in sent_notifs[0]["title"].lower()
+    assert "exited unexpectedly" in sent_notifs[0]["body"]
+    assert sent_notifs[0]["email"] is False

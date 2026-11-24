@@ -1449,6 +1449,28 @@ def _topic_for_category(title: str, source: str) -> str:
 
 EMAIL_MIRRORED_CATEGORIES = ("ERROR", "DEADMAN")
 
+_EMAIL_SUPPRESSED_SUBJECT_MARKERS = (
+    "DEV CI REGRESSION",
+    "DEV CLI REGRESSION",
+    "BOT RESTARTED",
+    "BOT RESTART",
+    "BOT AUTO-STARTED",
+    "FLEET RESTARTED",
+    "SERVICE RESTARTED",
+    "PROCESS RESTARTED",
+    "DAEMON RESTARTED",
+)
+
+
+def is_email_suppressed_subject(subject: str | None) -> bool:
+    """Return True for CI regression or routine bot/fleet restart subjects that must stay push-only (never emailed)."""
+    if not subject or not isinstance(subject, str):
+        return False
+    s = subject.strip().upper()
+    if not s:
+        return False
+    return any(m in s for m in _EMAIL_SUPPRESSED_SUBJECT_MARKERS)
+
 
 def is_email_mirrored(topic: str | None) -> bool:
     if not topic or not isinstance(topic, str) or not topic.strip():
@@ -1527,6 +1549,8 @@ def notify(title: str, body: str, source: str, symbol: str,
     alert = make_bot_event_alert(title, body, source, symbol)
     if _is_orchestrated():
         intent: dict[str, Any] = {"__orchestrator_intent__": "ntfy_webhook", "alerts": [alert]}
+        if email is False:
+            intent["skip_email"] = True
         if _AUTO_TOPIC_TAG_RE.search(str(title or "")):
             urgent = _alerts_are_urgent([alert])
             intent.update({
@@ -1537,11 +1561,11 @@ def notify(title: str, body: str, source: str, symbol: str,
             })
         _emit_orchestrator_intent(intent)
     else:
-        _get_notification_server().dispatch_alerts([alert])
+        _get_notification_server().dispatch_alerts([alert], skip_email=(email is False))
     force_email = _parse_bool_flag(email, False) or (
         email is not False and should_email_trade_sell_alert(title, symbol, source)
     )
-    if force_email:
+    if force_email and not is_email_suppressed_subject(title):
         if not is_email_mirrored(_topic_for_category(title, source)):
             AlertNotifier.send_email_batch([alert], subject=title)
 

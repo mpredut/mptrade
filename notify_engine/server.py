@@ -37,6 +37,7 @@ from notify_engine.alertnotifiers import (
     AlertNotifier,
     format_ntfy_url,
     is_email_mirrored,
+    is_email_suppressed_subject,
     is_fake_alert_text,
     make_bot_event_alert,
     pass_common_gate,
@@ -212,6 +213,7 @@ class NotificationServer:
             getattr(_GATED_DISPATCH_TLS, "last_gate_reason", reason) not in _GATE_SUPPRESSED_REASONS
             and not skip_email
             and is_email_mirrored(topic)
+            and not is_email_suppressed_subject(title)
         ):
             self._send_email(title, body)
         return None
@@ -243,12 +245,13 @@ class NotificationServer:
         alerts: list | None = None,
         *,
         urgent: bool = False,
+        skip_email: bool = False,
     ) -> bool:
-        gated = self._apply_ntfy_gate(title, body, priority, topic, alerts, urgent=urgent)
+        gated = self._apply_ntfy_gate(title, body, priority, topic, alerts, urgent=urgent, skip_email=skip_email)
         if gated is None:
             return getattr(_GATED_DISPATCH_TLS, "last_gate_reason", "") in _GATE_ACCEPTED_REASONS
         out_title, out_body, out_prio, out_topic = gated
-        with self._gated_dispatch_scope(orig_email=(title, body)):
+        with self._gated_dispatch_scope(orig_email=(title, body), skip_email=skip_email):
             return self._send_ntfy(out_title, out_body, out_prio, out_topic)
 
     def flush_pending_bulk(self, *, now: float | None = None, force: bool = False) -> bool:
@@ -306,7 +309,8 @@ class NotificationServer:
             and is_email_mirrored(topic_str)
         ):
             em_title, em_body = getattr(_GATED_DISPATCH_TLS, "orig_email", None) or (raw_title, raw_message)
-            self._send_email(em_title, em_body)
+            if not is_email_suppressed_subject(em_title):
+                self._send_email(em_title, em_body)
         
         url = format_ntfy_url(topic_str)
         if not url:
@@ -357,7 +361,7 @@ class NotificationServer:
             self._enqueue_payload("email", {"subject": subject, "message": message})
         return ok
 
-    def dispatch_alerts(self, alerts: list, webhook_url: str = None, bot_name: str = "") -> bool:
+    def dispatch_alerts(self, alerts: list, webhook_url: str = None, bot_name: str = "", *, skip_email: bool = False) -> bool:
         if not isinstance(alerts, (list, tuple)) or not alerts:
             return False
         bot_name = _clean_str(bot_name)
@@ -463,6 +467,7 @@ class NotificationServer:
             topic,
             alerts=alerts,
             urgent=urgent,
+            skip_email=skip_email,
         )
 
     @staticmethod
@@ -512,6 +517,7 @@ class NotificationServer:
                 payload = decode_embedded_json_dict(line, anchor="__orchestrator_intent__")
                 intent = payload.get("__orchestrator_intent__") if payload else None
                 if intent == "ntfy_webhook":
+                    intent_skip_email = bool(payload.get("skip_email"))
                     # Direct retry or pre-formatted [auto_...] topic payload
                     if "title" in payload:
                         t_val = _clean_str(payload.get("title"), "Alert", strip=True)
@@ -525,13 +531,14 @@ class NotificationServer:
                             top_val,
                             alerts=payload.get("alerts"),
                             urgent=(p_val == "urgent"),
+                            skip_email=intent_skip_email,
                         )
                         return
 
                     # Standard alert formatting
                     alerts = payload.get("alerts", [])
                     webhook_url = payload.get("webhook_url")
-                    self.dispatch_alerts(alerts, webhook_url=webhook_url, bot_name=bot_name)
+                    self.dispatch_alerts(alerts, webhook_url=webhook_url, bot_name=bot_name, skip_email=intent_skip_email)
 
                 elif intent == "email":
                     # Same schema as the retry queue; rendered by AlertNotifier.send_email_batch.

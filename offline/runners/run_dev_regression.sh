@@ -208,7 +208,7 @@ EOF
     rm -f "$LOG_FILE.run"
     if [ "$rc" -ne 0 ]; then
         echo "[dev_regression $(date '+%F %T')] FAILED on commit $commit_short ($rc)" | tee -a "$LOG_FILE" >&2
-        send_os_ntfy "DEV CI Regression FAILED" "Commit $commit_short failed: $commit_msg (exit code: $rc). Duration: ${duration}s.${failed_tests:+ Failed: $failed_tests}" "high" || true
+        send_os_ntfy "DEV CI Regression FAILED" "Commit $commit_short failed: $commit_msg (exit code: $rc). Duration: ${duration}s.${failed_tests:+ Failed: $failed_tests}" "high" "$(ntfy_server_topic)" || true
     else
         echo "[dev_regression $(date '+%F %T')] PASSED on commit $commit_short in ${duration}s" | tee -a "$LOG_FILE"
         [ "$prev_status" = "FAILED" ] && send_os_ntfy "DEV CI Regression RECOVERED" "Commit $commit_short passed all tests: $commit_msg. Duration: ${duration}s." "default" "$(ntfy_server_topic)" || true
