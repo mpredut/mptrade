@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 import importlib
 import inspect
@@ -681,39 +682,71 @@ class ExternalTelemetryMixin:
         steps = tuple(s for s in all_steps if tier_filter is None or s[5] in tier_filter)
         idents = [(sym, resolve_symbol_identity(sym)) for sym in getattr(self, "symbols", ())]
         # Cadence-first sweep (all ob -> all deriv -> all whale) prevents tail-symbol orderbooks
-        # from starving behind slow earlier-symbol whale HTTP calls.
+        # from starving behind slow earlier-symbol whale HTTP calls. When bounded=True (live daemon),
+        # poll due symbols within each tier concurrently (capped at 5 workers) so 15+ symbols finish
+        # in ~2-5s instead of 30-50s sequential waves.
         for res_key, ts_attr, interval_sec, fn, timeout_s, lbl_prefix in steps:
             ts_map: Dict[str, float] = getattr(self, ts_attr)
+            due_items: List[Tuple[str, Any]] = []
             for sym, ident in idents:
                 # BY DESIGN: Spot tokenized equities have no crypto perpetual derivatives/whale L/S; skip instead of 0.25x retry spinning.
                 if ident.is_tokenized_equity and lbl_prefix in ("deriv", "whale"):
                     continue
                 step_now = resolve_now_ts(None) if live_clock else current_ts
                 if is_interval_due(step_now, ts_map.get(sym, 0.0), interval_sec, force=force):
+                    due_items.append((sym, ident))
+            if not due_items:
+                continue
+
+            def _record_outcome(sym_r: str, ident_r: Any, ok_r: bool) -> None:
+                done_ts = resolve_now_ts(None) if live_clock else current_ts
+                if ok_r:
+                    results[res_key] += 1
+                    ts_map[sym_r] = done_ts
+                elif bounded:
+                    if (
+                        lbl_prefix == "ob"
+                        and ident_r.is_tokenized_equity
+                        and getattr(
+                            self.orderbook_collector,
+                            "is_unlisted_xstock_backoff_active",
+                            lambda _s, _n: False,
+                        )(sym_r, done_ts)
+                    ):
+                        ts_map[sym_r] = done_ts
+                    else:
+                        ts_map[sym_r] = compute_step_retry_ts(ts_map.get(sym_r, 0.0), done_ts, interval_sec)
+                if on_symbol_done is not None:
+                    on_symbol_done()
+
+            if bounded and live_clock and len(due_items) > 1:
+                max_workers = min(5, len(due_items))
+                with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"tel-{lbl_prefix}") as pool:
+                    fut_map = {
+                        pool.submit(
+                            self._run_step_bounded,
+                            fn,
+                            sym,
+                            timeout_sec=timeout_s,
+                            label=f"{lbl_prefix}_{sym}",
+                        ): (sym, ident)
+                        for sym, ident in due_items
+                    }
+                    for fut in as_completed(fut_map):
+                        sym_r, ident_r = fut_map[fut]
+                        try:
+                            ok_r = bool(fut.result())
+                        except Exception:
+                            ok_r = False
+                        _record_outcome(sym_r, ident_r, ok_r)
+            else:
+                for sym, ident in due_items:
                     ok = (
                         self._run_step_bounded(fn, sym, timeout_sec=timeout_s, label=f"{lbl_prefix}_{sym}")
                         if bounded
                         else fn(sym)
                     )
-                    done_ts = resolve_now_ts(None) if live_clock else current_ts
-                    if ok:
-                        results[res_key] += 1
-                        ts_map[sym] = done_ts
-                    elif bounded:
-                        if (
-                            lbl_prefix == "ob"
-                            and ident.is_tokenized_equity
-                            and getattr(
-                                self.orderbook_collector,
-                                "is_unlisted_xstock_backoff_active",
-                                lambda _s, _n: False,
-                            )(sym, done_ts)
-                        ):
-                            ts_map[sym] = done_ts
-                        else:
-                            ts_map[sym] = compute_step_retry_ts(ts_map.get(sym, 0.0), done_ts, interval_sec)
-                    if on_symbol_done is not None:
-                        on_symbol_done()
+                    _record_outcome(sym, ident, bool(ok))
 
     def _fetch_and_log(self, collector: Any, symbol: str, err_label: str, fmt_msg: str, *attr_specs: Any) -> bool:
         log = getattr(self, "_telemetry_logger", logger)

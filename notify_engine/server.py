@@ -213,7 +213,7 @@ class NotificationServer:
             getattr(_GATED_DISPATCH_TLS, "last_gate_reason", reason) not in _GATE_SUPPRESSED_REASONS
             and not skip_email
             and is_email_mirrored(topic)
-            and not is_email_suppressed_subject(title)
+            and not is_email_suppressed_subject(title, body)
         ):
             self._send_email(title, body)
         return None
@@ -309,7 +309,7 @@ class NotificationServer:
             and is_email_mirrored(topic_str)
         ):
             em_title, em_body = getattr(_GATED_DISPATCH_TLS, "orig_email", None) or (raw_title, raw_message)
-            if not is_email_suppressed_subject(em_title):
+            if not is_email_suppressed_subject(em_title, em_body):
                 self._send_email(em_title, em_body)
         
         url = format_ntfy_url(topic_str)

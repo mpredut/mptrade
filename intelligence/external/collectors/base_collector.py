@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import urllib.parse
@@ -402,15 +403,24 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         self._cache: Dict[str, tuple[float, Any]] = {}
         self._stale_fallback_symbols: set[str] = set()
         self._cache_origin_dir: Optional[str] = self._effective_cache_dir()
+        self._cache_lock = threading.RLock()
+
+    def _get_cache_lock(self) -> threading.RLock:
+        lock = getattr(self, "_cache_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._cache_lock = lock
+        return lock
 
     def _sync_cache_dir_scope(self) -> Optional[str]:
         """Clear in-memory snapshots whenever the resolved effective cache_dir changes (e.g. MPTRADE_CACHEDB_DIR switch)."""
-        eff_dir = self._effective_cache_dir()
-        if "_cache_origin_dir" in self.__dict__ and eff_dir != self._cache_origin_dir:
-            self._cache.clear()
-            self._stale_fallback_symbols.clear()
-        self._cache_origin_dir = eff_dir
-        return eff_dir
+        with self._get_cache_lock():
+            eff_dir = self._effective_cache_dir()
+            if "_cache_origin_dir" in self.__dict__ and eff_dir != self._cache_origin_dir:
+                self._cache.clear()
+                self._stale_fallback_symbols.clear()
+            self._cache_origin_dir = eff_dir
+            return eff_dir
 
     def _invoke_fetch_with_cache_dir(
         self,
@@ -488,23 +498,24 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         return sym_clean, list(dict.fromkeys([sym_clean, *raw_vars]))
 
     def _lookup_cached(self, symbol: str, now: float, *, exact_only: bool = False) -> Tuple[Any, Any]:
-        self._sync_cache_dir_scope()
-        sym_clean, cands = self._resolve_lookup_candidates(symbol, exact_only=exact_only)
-        sym_clean_u = sym_clean.upper()
-        first_cached = None
-        for c in cands:
-            if c not in self._cache:
-                continue
-            entry = self._cache[c]
-            snap_obj = entry[1] if isinstance(entry, tuple) and len(entry) >= 2 else entry
-            if exact_only and str(getattr(snap_obj, "symbol", "") or "").strip().upper() != sym_clean_u:
-                continue
-            if first_cached is None:
-                first_cached = entry
-            c_ts = entry[0] if isinstance(entry, tuple) and len(entry) >= 2 else getattr(entry, "ts", None)
-            if is_cache_fresh(c_ts, now, self.cache_ttl_sec):
-                return entry, snap_obj
-        return first_cached, None
+        with self._get_cache_lock():
+            self._sync_cache_dir_scope()
+            sym_clean, cands = self._resolve_lookup_candidates(symbol, exact_only=exact_only)
+            sym_clean_u = sym_clean.upper()
+            first_cached = None
+            for c in cands:
+                if c not in self._cache:
+                    continue
+                entry = self._cache[c]
+                snap_obj = entry[1] if isinstance(entry, tuple) and len(entry) >= 2 else entry
+                if exact_only and str(getattr(snap_obj, "symbol", "") or "").strip().upper() != sym_clean_u:
+                    continue
+                if first_cached is None:
+                    first_cached = entry
+                c_ts = entry[0] if isinstance(entry, tuple) and len(entry) >= 2 else getattr(entry, "ts", None)
+                if is_cache_fresh(c_ts, now, self.cache_ttl_sec):
+                    return entry, snap_obj
+            return first_cached, None
 
     def _read_disk_json(self, path: str) -> Optional[Dict[str, Any]]:
         read_fn = _resolve_module_fn(self, "read_json_dict", read_json_dict)
@@ -538,10 +549,11 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                         and (safe_pos_float(getattr(snapshot, "spread_bps", None), default=0.0) or 0.0) > 200.0
                     ):
                         continue
-                    if snap_sym:
-                        self._cache[snap_sym] = (snapshot.ts, snapshot)
-                    if not exact_only or snap_sym.upper() == sym_clean_u:
-                        self._cache[sym_clean] = (snapshot.ts, snapshot)
+                    with self._get_cache_lock():
+                        if snap_sym:
+                            self._cache[snap_sym] = (snapshot.ts, snapshot)
+                        if not exact_only or snap_sym.upper() == sym_clean_u:
+                            self._cache[sym_clean] = (snapshot.ts, snapshot)
                     return snapshot
                 if ignore_ttl_b:
                     return snapshot
@@ -578,9 +590,10 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         else:
             res = self._load_from_disk(symbol, 0.0, ignore_ttl=True, exact_only=self._is_exact_venue_symbol(sym_clean))
         if res is not None and sym_clean:
-            stale_set = getattr(self, "_stale_fallback_symbols", None)
-            if isinstance(stale_set, set):
-                stale_set.add(sym_clean)
+            with self._get_cache_lock():
+                stale_set = getattr(self, "_stale_fallback_symbols", None)
+                if isinstance(stale_set, set):
+                    stale_set.add(sym_clean)
         return res
 
     def _warn_and_fallback_stale(
@@ -638,7 +651,8 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             return
         ts_val = safe_pos_float(getattr(item, "ts", None), default=None) or time.time()
         cache_k = canonical_display_symbol(item.symbol) or item.symbol.strip().upper()
-        self._cache[cache_k] = (ts_val, item)
+        with self._get_cache_lock():
+            self._cache[cache_k] = (ts_val, item)
         if _parse_bool_flag(save_to_disk, default=False):
             self._save_to_disk(item)
 
@@ -674,9 +688,10 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         # short-circuit before memory/disk/base-variant lookup so stale/foreign snapshots never leak in.
         if self._SKIP_TOKENIZED_XSTOCKS and resolve_symbol_identity(sym_clean).is_tokenized_equity:
             return None, 0.0, None, None, False
-        stale_set = getattr(self, "_stale_fallback_symbols", None)
-        if isinstance(stale_set, set):
-            stale_set.discard(sym_clean)
+        with self._get_cache_lock():
+            stale_set = getattr(self, "_stale_fallback_symbols", None)
+            if isinstance(stale_set, set):
+                stale_set.discard(sym_clean)
         now_f = resolve_now_ts(now)
         if allow_network is None:
             allow_net_bool = (
@@ -723,7 +738,8 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                             and not (allow_net_bool and stale_whale_legacy)
                             and (self._DISK_FILE_PREFIX != "orderbook_depth" or stale_sp <= 200.0)
                         ):
-                            self._cache[sym_clean] = (now_f, stale_disk)
+                            with self._get_cache_lock():
+                                self._cache[sym_clean] = (now_f, stale_disk)
                             return sym_clean, now_f, cached_ex, stale_disk, False
                 except Exception:
                     pass
@@ -742,7 +758,8 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         return sym_clean, now_f, cached, None, allow_net_bool
 
     def _commit_snapshot(self, symbol: str, now: float, snapshot: Any) -> Any:
-        self._cache[symbol] = (now, snapshot)
+        with self._get_cache_lock():
+            self._cache[symbol] = (now, snapshot)
         self._save_to_disk(snapshot)
         return snapshot
 
@@ -853,7 +870,18 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
     _EQUITY_CTX_MEMO: Dict[str, Tuple[float, Optional[Dict[str, Any]]]] = {}
     _EQUITY_OPTIONS_MEMO: Dict[str, Tuple[float, Tuple[float, float, float, float]]] = {}
     _EQUITY_NO_OPTIONS_TS: Dict[str, float] = {}
+    _EQUITY_MEMO_LOCK = threading.RLock()
+    _EQUITY_TICKER_LOCKS: Dict[str, threading.RLock] = {}
     _OPT_OCC_RE = re.compile(r"\d{6}([CP])\d{8}$")
+
+    @classmethod
+    def _equity_ticker_lock(cls, ticker: str) -> threading.RLock:
+        with cls._EQUITY_MEMO_LOCK:
+            lk = cls._EQUITY_TICKER_LOCKS.get(ticker)
+            if lk is None:
+                lk = threading.RLock()
+                cls._EQUITY_TICKER_LOCKS[ticker] = lk
+            return lk
 
     def _populate_equity_options_context(
         self,
@@ -862,18 +890,21 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         now: float,
         *,
         timeout: float = 2.5,
-        opt_memo_ttl: float = 60.0,
+        opt_memo_ttl: float = 180.0,
         no_options_ttl: float = 1800.0,
+        allow_cboe_fetch: bool = True,
     ) -> None:
-        cached_opt = self._EQUITY_OPTIONS_MEMO.get(ticker)
+        with self._EQUITY_MEMO_LOCK:
+            cached_opt = self._EQUITY_OPTIONS_MEMO.get(ticker)
         if cached_opt is not None and 0.0 <= (now - cached_opt[0]) < opt_memo_ttl:
             c_oi, p_oi, c_vol, p_vol = cached_opt[1]
             ctx_out.update(call_oi=c_oi, put_oi=p_oi, call_vol=c_vol, put_vol=p_vol, _options_loaded=True)
             return
 
         call_oi = put_oi = call_vol = put_vol = 0.0
-        no_opt_ts = self._EQUITY_NO_OPTIONS_TS.get(ticker, 0.0)
-        if not (no_opt_ts > 0.0 and 0.0 <= (now - no_opt_ts) < no_options_ttl):
+        with self._EQUITY_MEMO_LOCK:
+            no_opt_ts = self._EQUITY_NO_OPTIONS_TS.get(ticker, 0.0)
+        if allow_cboe_fetch and not (no_opt_ts > 0.0 and 0.0 <= (now - no_opt_ts) < no_options_ttl):
             cboe_paths = (
                 (f"_{ticker}.json", f"{ticker}.json")
                 if ticker in _require_feed_csv("cboe_index_tickers")
@@ -910,11 +941,14 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                         break
                 except Exception:
                     continue
-            if not found_opts:
-                lru_dict_put(self._EQUITY_NO_OPTIONS_TS, ticker, now, 64)
-            else:
-                self._EQUITY_NO_OPTIONS_TS.pop(ticker, None)
-                lru_dict_put(self._EQUITY_OPTIONS_MEMO, ticker, (now, (call_oi, put_oi, call_vol, put_vol)), 32)
+            with self._EQUITY_MEMO_LOCK:
+                if not found_opts:
+                    lru_dict_put(self._EQUITY_NO_OPTIONS_TS, ticker, now, 64)
+                else:
+                    self._EQUITY_NO_OPTIONS_TS.pop(ticker, None)
+                    lru_dict_put(self._EQUITY_OPTIONS_MEMO, ticker, (now, (call_oi, put_oi, call_vol, put_vol)), 32)
+        elif not allow_cboe_fetch and cached_opt is not None:
+            call_oi, put_oi, call_vol, put_vol = cached_opt[1]
 
         ctx_out.update(call_oi=call_oi, put_oi=put_oi, call_vol=call_vol, put_vol=put_vol, _options_loaded=True)
 
@@ -931,139 +965,176 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         if not ticker:
             return None
         derived_intervals = resolve_derived_telemetry_intervals()
-        pos_memo_ttl = derived_intervals.get("derivatives_interval_sec", 30.0)
-        if resolve_symbol_market_session(symbol, now) in ("PRE", "POST"):
-            pos_memo_ttl = max(pos_memo_ttl * 4.0, 120.0)
+        eq_session = resolve_symbol_market_session(symbol, now)
+        is_ext_session = eq_session in ("PRE", "POST")
+        ob_itv = derived_intervals.get("orderbook_interval_sec", 15.0)
+        pos_memo_ttl = max(120.0, derived_intervals.get("derivatives_interval_sec", 30.0) * 4.0) if is_ext_session else max(8.0, ob_itv * 0.8)
+        bars_memo_ttl = max(180.0, derived_intervals.get("whale_interval_sec", 60.0) * 3.0) if is_ext_session else max(60.0, derived_intervals.get("whale_interval_sec", 60.0))
         neg_memo_ttl = derived_intervals.get("whale_interval_sec", 60.0)
+        opt_memo_ttl = max(180.0, neg_memo_ttl * 3.0)
         no_options_ttl = derived_intervals.get("share_executor_interval_sec", 1800.0)
-        cached_ctx = self._EQUITY_CTX_MEMO.get(ticker)
-        if cached_ctx is not None:
-            memo_ttl = neg_memo_ttl if cached_ctx[1] is None else pos_memo_ttl
-            if 0.0 <= (now - cached_ctx[0]) < memo_ttl:
-                if cached_ctx[1] is not None and include_options and not cached_ctx[1].get("_options_loaded"):
-                    self._populate_equity_options_context(
+        allow_cboe_fetch = (eq_session == "REGULAR") or not is_rth_gate_enabled(getattr(self, "_enforce_rth_gate", None))
+
+        with self._equity_ticker_lock(ticker):
+            with self._EQUITY_MEMO_LOCK:
+                cached_ctx = self._EQUITY_CTX_MEMO.get(ticker)
+            if cached_ctx is not None:
+                memo_ttl = neg_memo_ttl if cached_ctx[1] is None else pos_memo_ttl
+                if 0.0 <= (now - cached_ctx[0]) < memo_ttl:
+                    if cached_ctx[1] is not None and include_options and not cached_ctx[1].get("_options_loaded"):
+                        self._populate_equity_options_context(
+                            ticker,
+                            cached_ctx[1],
+                            now,
+                            timeout=timeout,
+                            opt_memo_ttl=opt_memo_ttl,
+                            no_options_ttl=no_options_ttl,
+                            allow_cboe_fetch=allow_cboe_fetch,
+                        )
+                    return cached_ctx[1]
+
+            def _parse_num(val: Any) -> Optional[float]:
+                if val is None or isinstance(val, bool):
+                    return None
+                if isinstance(val, (int, float)):
+                    return safe_pos_float(val, default=None)
+                s = str(val).strip().replace("$", "").replace(",", "")
+                if not s or s.upper() in ("N/A", "NA", "NONE", "-"):
+                    return None
+                if "x" in s.lower():
+                    parts = [p.strip() for p in s.lower().split("x") if p.strip()]
+                    if len(parts) == 2:
+                        a, b = safe_pos_float(parts[0], default=None), safe_pos_float(parts[1], default=None)
+                        if a is not None and b is not None:
+                            return a * b
+                return safe_pos_float(s, default=None)
+
+            last_px = self._resolve_ssot_price(symbol, max_age_sec=86400.0, now=now) or 0.0
+            best_bid = 0.0
+            best_ask = 0.0
+            bid_size_sh = 0.0
+            ask_size_sh = 0.0
+            daily_vol_sh = 0.0
+
+            # 1. Nasdaq Public Quote API (L1 top-of-book & daily volume)
+            q_ticker = urllib.parse.quote(str(ticker or "").strip())
+            try:
+                nq = self._fetch_json_dict(
+                    _require_feed_str("nasdaq_equity_quote_url_template").format(symbol=q_ticker),
+                    "nasdaq_quote",
+                    ticker,
+                    timeout=timeout,
+                    user_agent="Mozilla/5.0",
+                )
+                pdata = ((nq.get("data") or {}).get("primaryData") if isinstance(nq, dict) else None) or {}
+                if isinstance(pdata, dict):
+                    if (lp := _parse_num(pdata.get("lastSalePrice"))) is not None:
+                        last_px = lp
+                    if (bp := _parse_num(pdata.get("bidPrice"))) is not None:
+                        best_bid = bp
+                    if (ap := _parse_num(pdata.get("askPrice"))) is not None:
+                        best_ask = ap
+                    if (bs := _parse_num(pdata.get("bidSize"))) is not None:
+                        bid_size_sh = bs
+                    if (as_ := _parse_num(pdata.get("askSize"))) is not None:
+                        ask_size_sh = as_
+                    if (dv := _parse_num(pdata.get("volume"))) is not None:
+                        daily_vol_sh = dv
+            except Exception:
+                pass
+
+            # 2. Yahoo 5d/5m Intraday OHLCV + Extended-Hours Quote (reused within bars_memo_ttl while L1 quote refreshes faster)
+            prev_ctx = cached_ctx[1] if (cached_ctx is not None and isinstance(cached_ctx[1], dict)) else None
+            prev_bars_ts = safe_pos_float(prev_ctx.get("_bars_ts") if prev_ctx else None, default=0.0) or 0.0
+            reuse_bars = bool(
+                prev_ctx is not None
+                and prev_ctx.get("bars")
+                and prev_bars_ts > 0.0
+                and 0.0 <= (now - prev_bars_ts) < bars_memo_ttl
+            )
+            bars: List[Tuple[float, float, float, float, float, float]] = []
+            mkt_state = ""
+            reg_close: Optional[float] = None
+            ext_px: Optional[float] = None
+            ext_vs_rth_pct: Optional[float] = None
+            bars_ts_out = now
+            if reuse_bars and prev_ctx is not None:
+                bars = list(prev_ctx.get("bars") or ())
+                mkt_state = str(prev_ctx.get("market_state") or "")
+                reg_close = prev_ctx.get("regular_close_price")
+                ext_px = prev_ctx.get("extended_price")
+                ext_vs_rth_pct = prev_ctx.get("ext_vs_rth_pct")
+                bars_ts_out = prev_bars_ts
+                if last_px <= 0.0 and bars:
+                    last_px = bars[-1][4]
+            else:
+                try:
+                    yh = self._fetch_json_dict(
+                        _require_feed_str("yahoo_equity_chart_5d_url_template").format(symbol=q_ticker),
+                        "yahoo_chart_5m",
                         ticker,
-                        cached_ctx[1],
-                        now,
                         timeout=timeout,
-                        opt_memo_ttl=neg_memo_ttl,
-                        no_options_ttl=no_options_ttl,
+                        user_agent="Mozilla/5.0",
                     )
-                return cached_ctx[1]
+                    meta, bars = extract_yahoo_chart_ohlcv_bars(yh)
+                    pts_c = [(b[0], b[4]) for b in bars]
+                    mkt_state, yh_px, ext_px = resolve_yahoo_chart_market_state_and_price(meta, pts_c, now_ts=now)
+                    reg_close = safe_pos_float(meta.get("regularMarketPrice") if isinstance(meta, dict) else None, default=None)
+                    if mkt_state in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT") and ext_px is not None:
+                        last_px = yh_px or ext_px
+                        if reg_close is not None and reg_close > 0.0 and abs(last_px - reg_close) / reg_close >= 0.0005:
+                            ext_vs_rth_pct = round(((last_px - reg_close) / reg_close) * 100.0, 2)
+                    elif last_px <= 0.0 and yh_px is not None:
+                        last_px = yh_px
+                    elif bars and last_px <= 0.0:
+                        last_px = bars[-1][4]
+                except Exception:
+                    if prev_ctx is not None and prev_ctx.get("bars"):
+                        bars = list(prev_ctx.get("bars") or ())
+                        mkt_state = str(prev_ctx.get("market_state") or "")
+                        reg_close = prev_ctx.get("regular_close_price")
+                        ext_px = prev_ctx.get("extended_price")
+                        ext_vs_rth_pct = prev_ctx.get("ext_vs_rth_pct")
+                        bars_ts_out = prev_bars_ts
 
-        def _parse_num(val: Any) -> Optional[float]:
-            if val is None or isinstance(val, bool):
+            if last_px <= 0.0 and not bars:
+                with self._EQUITY_MEMO_LOCK:
+                    lru_dict_put(self._EQUITY_CTX_MEMO, ticker, (now, None), 32)
                 return None
-            if isinstance(val, (int, float)):
-                return safe_pos_float(val, default=None)
-            s = str(val).strip().replace("$", "").replace(",", "")
-            if not s or s.upper() in ("N/A", "NA", "NONE", "-"):
-                return None
-            if "x" in s.lower():
-                parts = [p.strip() for p in s.lower().split("x") if p.strip()]
-                if len(parts) == 2:
-                    a, b = safe_pos_float(parts[0], default=None), safe_pos_float(parts[1], default=None)
-                    if a is not None and b is not None:
-                        return a * b
-            return safe_pos_float(s, default=None)
 
-        last_px = self._resolve_ssot_price(symbol, max_age_sec=86400.0, now=now) or 0.0
-        best_bid = 0.0
-        best_ask = 0.0
-        bid_size_sh = 0.0
-        ask_size_sh = 0.0
-        daily_vol_sh = 0.0
-
-        # 1. Nasdaq Public Quote API (L1 top-of-book & daily volume)
-        q_ticker = urllib.parse.quote(str(ticker or "").strip())
-        try:
-            nq = self._fetch_json_dict(
-                _require_feed_str("nasdaq_equity_quote_url_template").format(symbol=q_ticker),
-                "nasdaq_quote",
-                ticker,
-                timeout=timeout,
-                user_agent="Mozilla/5.0",
-            )
-            pdata = ((nq.get("data") or {}).get("primaryData") if isinstance(nq, dict) else None) or {}
-            if isinstance(pdata, dict):
-                if (lp := _parse_num(pdata.get("lastSalePrice"))) is not None:
-                    last_px = lp
-                if (bp := _parse_num(pdata.get("bidPrice"))) is not None:
-                    best_bid = bp
-                if (ap := _parse_num(pdata.get("askPrice"))) is not None:
-                    best_ask = ap
-                if (bs := _parse_num(pdata.get("bidSize"))) is not None:
-                    bid_size_sh = bs
-                if (as_ := _parse_num(pdata.get("askSize"))) is not None:
-                    ask_size_sh = as_
-                if (dv := _parse_num(pdata.get("volume"))) is not None:
-                    daily_vol_sh = dv
-        except Exception:
-            pass
-
-        # 2. Yahoo 5d/5m Intraday OHLCV + Extended-Hours Quote (volume profile, CLV flow & PRE/POST live mark)
-        bars: List[Tuple[float, float, float, float, float, float]] = []
-        mkt_state = ""
-        reg_close: Optional[float] = None
-        ext_px: Optional[float] = None
-        ext_vs_rth_pct: Optional[float] = None
-        try:
-            yh = self._fetch_json_dict(
-                _require_feed_str("yahoo_equity_chart_5d_url_template").format(symbol=q_ticker),
-                "yahoo_chart_5m",
-                ticker,
-                timeout=timeout,
-                user_agent="Mozilla/5.0",
-            )
-            meta, bars = extract_yahoo_chart_ohlcv_bars(yh)
-            pts_c = [(b[0], b[4]) for b in bars]
-            mkt_state, yh_px, ext_px = resolve_yahoo_chart_market_state_and_price(meta, pts_c, now_ts=now)
-            reg_close = safe_pos_float(meta.get("regularMarketPrice") if isinstance(meta, dict) else None, default=None)
-            if mkt_state in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT") and ext_px is not None:
-                last_px = yh_px or ext_px
-                if reg_close is not None and reg_close > 0.0 and abs(last_px - reg_close) / reg_close >= 0.0005:
-                    ext_vs_rth_pct = round(((last_px - reg_close) / reg_close) * 100.0, 2)
-            elif last_px <= 0.0 and yh_px is not None:
-                last_px = yh_px
-            elif bars and last_px <= 0.0:
-                last_px = bars[-1][4]
-        except Exception:
-            pass
-
-        if last_px <= 0.0 and not bars:
-            lru_dict_put(self._EQUITY_CTX_MEMO, ticker, (now, None), 32)
-            return None
-
-        ctx_out: Dict[str, Any] = {
-            "ticker": ticker,
-            "last_price": last_px,
-            "best_bid": best_bid,
-            "best_ask": best_ask,
-            "bid_size_sh": bid_size_sh,
-            "ask_size_sh": ask_size_sh,
-            "daily_vol_sh": daily_vol_sh,
-            "bars": bars,
-            "market_state": mkt_state,
-            "regular_close_price": reg_close,
-            "extended_price": ext_px,
-            "ext_vs_rth_pct": ext_vs_rth_pct,
-            "call_oi": 0.0,
-            "put_oi": 0.0,
-            "call_vol": 0.0,
-            "put_vol": 0.0,
-            "_options_loaded": False,
-        }
-        lru_dict_put(self._EQUITY_CTX_MEMO, ticker, (now, ctx_out), 32)
-        if include_options:
-            self._populate_equity_options_context(
-                ticker,
-                ctx_out,
-                now,
-                timeout=timeout,
-                opt_memo_ttl=neg_memo_ttl,
-                no_options_ttl=no_options_ttl,
-            )
-        return ctx_out
+            ctx_out: Dict[str, Any] = {
+                "ticker": ticker,
+                "last_price": last_px,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "bid_size_sh": bid_size_sh,
+                "ask_size_sh": ask_size_sh,
+                "daily_vol_sh": daily_vol_sh,
+                "bars": bars,
+                "_bars_ts": bars_ts_out,
+                "market_state": mkt_state,
+                "regular_close_price": reg_close,
+                "extended_price": ext_px,
+                "ext_vs_rth_pct": ext_vs_rth_pct,
+                "call_oi": 0.0,
+                "put_oi": 0.0,
+                "call_vol": 0.0,
+                "put_vol": 0.0,
+                "_options_loaded": False,
+            }
+            with self._EQUITY_MEMO_LOCK:
+                lru_dict_put(self._EQUITY_CTX_MEMO, ticker, (now, ctx_out), 32)
+            if include_options:
+                self._populate_equity_options_context(
+                    ticker,
+                    ctx_out,
+                    now,
+                    timeout=timeout,
+                    opt_memo_ttl=opt_memo_ttl,
+                    no_options_ttl=no_options_ttl,
+                    allow_cboe_fetch=allow_cboe_fetch,
+                )
+            return ctx_out
 
     def _resolve_equity_context_bars_and_price(
         self,

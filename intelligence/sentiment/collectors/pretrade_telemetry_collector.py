@@ -139,7 +139,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     load_stitched_24h_ohlc_points,
     STALE_SHORT_24H_KEYS,
 )
-from instrument_registry import casefold_get, is_equity_symbol, is_symbol_market_open, resolve_symbol_identity, venue_for_symbol
+from instrument_registry import casefold_get, disabled_registry_symbols, is_equity_symbol, is_symbol_market_open, resolve_symbol_identity, venue_for_symbol
 from providers.base import MarketDataProvider
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
@@ -485,10 +485,11 @@ def _ensure_fresh_pretrade_microstructure(
     refresh_cands = list(quote_variants)
     if not is_eq_sym and canonical_base_asset(symbol) != "BTC" and "BTCUSDC" not in refresh_cands:
         refresh_cands.append("BTCUSDC")
+    disabled_syms = disabled_registry_symbols()
     refreshed_any = False
     for cand_m in refresh_cands:
         cand_mu = str(cand_m or "").strip().upper()
-        if not cand_mu:
+        if not cand_mu or cand_mu in disabled_syms:
             continue
         has_existing_m = any(
             os.path.exists(str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"{pfx_m}{cand_mu}.json"))))
@@ -2340,7 +2341,7 @@ def refresh_pretrade_telemetry_caches(
     _rj = _resolve_read_json_cached()
     sym_raw = str(symbol or "").strip()
     is_eq_sym = False
-    if sym_raw:
+    if sym_raw and sym_raw.upper() not in disabled_registry_symbols():
         session_policy = orchestrator.resolve_session_policy(sym_raw)
         sym_quotes = compatible_quote_suffixes(sym_raw)
         is_usd_sym = "USD" in sym_quotes

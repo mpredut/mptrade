@@ -92,7 +92,7 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
     if _external_notifications_disabled():
         return True
     subject = sanitize_single_line(subject, "Alert")
-    if is_email_suppressed_subject(subject):
+    if is_email_suppressed_subject(subject, body):
         logging.info(f"Email suppressed by subject policy (push-only): {subject}")
         return True
     cfg = _config()
@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("body", nargs="?", default="")
     args = parser.parse_args(argv)
     load_env_stack()
-    if is_email_suppressed_subject(args.subject):
+    if is_email_suppressed_subject(args.subject, args.body):
         return 0
     if args.topic is not None and not is_email_mirrored(args.topic):
         return 0

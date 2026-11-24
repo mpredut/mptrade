@@ -2176,6 +2176,15 @@ def test_ci_regression_and_bot_restart_never_email_and_xstock_supervisor_retired
     assert mailer.send_email("ORDER FAILED: BUY BTCUSDC", "exchange error", dedup=False) is True
     assert len(smtp_sent) == 1
 
+    # Static-IP VPN recoveries (dedicated-* / Frankfurt / Belgium) stay push-only; non-static fallback IP still emails
+    assert an.is_email_suppressed_subject("PIA VPN: Recovered", "PIA VPN is healthy again (Region: dedicated-de-frankfurt, IP: 1.2.3.4).") is True
+    assert an.is_email_suppressed_subject("PIA VPN: Restored to Primary DIP", "Successfully restored connection to Frankfurt Dedicated IP.") is True
+    assert an.is_email_suppressed_subject("PIA VPN: Recovered", "PIA VPN is healthy again (Region: de-berlin, IP: 5.6.7.8).") is False
+    assert mailer.send_email("PIA VPN: Recovered", "PIA VPN is healthy again (Region: dedicated-de-frankfurt, IP: 1.2.3.4).", dedup=False) is True
+    assert len(smtp_sent) == 1
+    assert mailer.send_email("PIA VPN: Recovered", "PIA VPN is healthy again (Region: de-berlin, IP: 5.6.7.8).", dedup=False) is True
+    assert len(smtp_sent) == 2
+
     # NotificationServer also respects skip_email from orchestrated intents & subject suppression
     srv = ns.NotificationServer()
     emailed = []

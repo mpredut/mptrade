@@ -1461,15 +1461,33 @@ _EMAIL_SUPPRESSED_SUBJECT_MARKERS = (
     "DAEMON RESTARTED",
 )
 
+_VPN_RECOVERED_SUBJECT_MARKERS = (
+    "PIA VPN: RECOVERED",
+    "PIA VPN: RESTORED TO PRIMARY DIP",
+    "PIA VPN: RECONNECTED AFTER COOLDOWN",
+)
 
-def is_email_suppressed_subject(subject: str | None) -> bool:
-    """Return True for CI regression or routine bot/fleet restart subjects that must stay push-only (never emailed)."""
+_VPN_STATIC_IP_BODY_MARKERS = (
+    "DEDICATED-",
+    "FRANKFURT",
+    "BELGIUM",
+)
+
+
+def is_email_suppressed_subject(subject: str | None, body: str | None = None) -> bool:
+    """Return True for CI regression, routine bot/fleet restarts, or static-IP VPN recoveries (push-only)."""
     if not subject or not isinstance(subject, str):
         return False
     s = subject.strip().upper()
     if not s:
         return False
-    return any(m in s for m in _EMAIL_SUPPRESSED_SUBJECT_MARKERS)
+    if any(m in s for m in _EMAIL_SUPPRESSED_SUBJECT_MARKERS):
+        return True
+    if any(m in s for m in _VPN_RECOVERED_SUBJECT_MARKERS):
+        b = str(body or "").strip().upper()
+        if not b or any(m in b for m in _VPN_STATIC_IP_BODY_MARKERS):
+            return True
+    return False
 
 
 def is_email_mirrored(topic: str | None) -> bool:
@@ -1565,7 +1583,7 @@ def notify(title: str, body: str, source: str, symbol: str,
     force_email = _parse_bool_flag(email, False) or (
         email is not False and should_email_trade_sell_alert(title, symbol, source)
     )
-    if force_email and not is_email_suppressed_subject(title):
+    if force_email and not is_email_suppressed_subject(title, body):
         if not is_email_mirrored(_topic_for_category(title, source)):
             AlertNotifier.send_email_batch([alert], subject=title)
 

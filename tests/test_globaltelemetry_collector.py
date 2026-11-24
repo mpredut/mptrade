@@ -2901,6 +2901,101 @@ def test_step_external_symbols_cadence_first_and_slow_task_interleave(tmp_path, 
     assert ("ob", "deriv") in step_calls[1:]
 
 
+def test_parallel_live_tier_poll_equity_bars_reuse_and_disabled_pretrade_skip(tmp_path, monkeypatch):
+    """Verify concurrent live-clock tier polling, decoupled equity L1/bars TTL, and disabled-symbol skip in pretrade refresh."""
+    import threading
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    import intelligence.sentiment.collectors.pretrade_telemetry_collector as ptc_mod
+
+    # 1. Parallel live-clock sweep executes multiple due symbols concurrently and records all outcomes cleanly
+    col = GlobalTelemetryCollector(
+        symbols=["BTCUSDC", "ETHUSDC", "SOLUSDC", "AMD_US_EQ"],
+        cache_dir=str(tmp_path),
+        orderbook_interval_sec=15.0,
+        derivatives_interval_sec=30.0,
+        whale_interval_sec=60.0,
+        skip_news=True,
+        skip_external=False,
+    )
+    barrier = threading.Barrier(4, timeout=3.0)
+    seen_syms: set[str] = set()
+    seen_lock = threading.Lock()
+    hb_count = [0]
+
+    def _par_ob(sym: str) -> bool:
+        barrier.wait()
+        with seen_lock:
+            seen_syms.add(sym)
+        return True
+
+    monkeypatch.setattr(col, "update_orderbook", _par_ob)
+    monkeypatch.setattr(col, "_run_step_bounded", lambda fn, sym, **_kw: fn(sym))
+    res_par = col._new_external_cycle_results(time.time())
+    col._step_external_symbols(
+        time.time(),
+        True,
+        res_par,
+        bounded=True,
+        live_clock=True,
+        tiers=("ob",),
+        on_symbol_done=lambda: hb_count.__setitem__(0, hb_count[0] + 1),
+    )
+    assert seen_syms == {"BTCUSDC", "ETHUSDC", "SOLUSDC", "AMD_US_EQ"}
+    assert res_par["orderbook_updated"] == 4
+    assert hb_count[0] == 4
+
+    # 2. Equity L1 quote refreshes after ~12s while Yahoo 5d/5m bars are reused for 60s
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path), start_sync=True)
+    ob_col._EQUITY_CTX_MEMO.pop("AMD", None)
+    ob_col._EQUITY_OPTIONS_MEMO.pop("AMD", None)
+    ob_col._EQUITY_NO_OPTIONS_TS.pop("AMD", None)
+    http_calls = []
+
+    def _fake_fetch_json(url, label, lookup_sym, **_kw):
+        http_calls.append(label)
+        if label == "nasdaq_quote":
+            px = "410.50" if http_calls.count("nasdaq_quote") == 1 else "411.25"
+            return {"data": {"primaryData": {"lastSalePrice": f"${px}", "bidPrice": f"${px}", "askPrice": f"${px}", "bidSize": "100", "askSize": "100", "volume": "1000000"}}}
+        if label == "yahoo_chart_5m":
+            return {
+                "chart": {
+                    "result": [{
+                        "meta": {"regularMarketPrice": 410.50, "marketState": "REGULAR"},
+                        "timestamp": [1_795_540_000, 1_795_540_300],
+                        "indicators": {"quote": [{"open": [410.0, 410.2], "high": [411.0, 411.1], "low": [409.5, 410.0], "close": [410.2, 410.5], "volume": [50000, 60000]}]},
+                    }]
+                }
+            }
+        return {}
+
+    monkeypatch.setattr(ob_col, "_fetch_json_dict", _fake_fetch_json)
+    monkeypatch.setattr("intelligence.external.collectors.base_collector.resolve_symbol_market_session", lambda _s, _n: "REGULAR")
+    t0 = 1_795_540_500.0
+    ctx1 = ob_col._fetch_equity_market_context("AMD_US_EQ", t0, include_options=False)
+    assert ctx1 is not None and ctx1["last_price"] == pytest.approx(410.50)
+    assert http_calls == ["nasdaq_quote", "yahoo_chart_5m"]
+    # 20s later (> 12s L1 TTL, < 60s bars TTL): refreshes Nasdaq L1 without hitting Yahoo 5m bars again
+    ctx2 = ob_col._fetch_equity_market_context("AMD_US_EQ", t0 + 20.0, include_options=False)
+    assert ctx2 is not None and ctx2["last_price"] == pytest.approx(411.25)
+    assert len(ctx2["bars"]) == 2
+    assert http_calls == ["nasdaq_quote", "yahoo_chart_5m", "nasdaq_quote"]
+
+    # 3. _ensure_fresh_pretrade_microstructure skips disabled registry symbols (TAOUSD/ADAUSD) even if old disk files exist
+    tel_dir = tmp_path / "telemetry"
+    tel_dir.mkdir(parents=True, exist_ok=True)
+    for sym_f in ("TAOUSDC", "TAOUSD", "ADAUSD"):
+        (tel_dir / f"orderbook_depth_{sym_f}.json").write_text("{}", encoding="utf-8")
+    refreshed_syms = []
+    monkeypatch.setattr(ptc_mod, "ensure_fresh_symbol_microstructure", lambda _cd, s, **_kw: (refreshed_syms.append(s), True)[1])
+    monkeypatch.setattr(ptc_mod, "is_live_network_backfill_enabled", lambda: True)
+    monkeypatch.setattr(ptc_mod, "disabled_registry_symbols", lambda: frozenset({"TAOUSD", "ADAUSD"}))
+    ok_ref = ptc_mod._ensure_fresh_pretrade_microstructure(
+        str(tmp_path), "TAOUSDC", ["TAOUSDC", "TAOUSD", "ADAUSD"], True, False, ptc_mod._default_read_json_cached, allow_network=True
+    )
+    assert ok_ref is True
+    assert refreshed_syms == ["TAOUSDC"]
+
+
 
 
 

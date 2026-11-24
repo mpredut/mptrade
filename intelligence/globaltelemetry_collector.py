@@ -643,19 +643,34 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         )
 
     def update_pretrade_caches(self, force: bool = False, now: Optional[float] = None) -> bool:
-        """Producer refresh of pre-trade caches (per-symbol microstructure and once-per-round T212 position prices)."""
+        """Producer refresh of pre-trade caches (per-symbol microstructure concurrently and once-per-round T212 position prices)."""
         try:
             eff_now = resolve_now_ts(self._resolve_step_now(now))
             any_refreshed = False
-            for sym in list(self.symbols):
-                status = refresh_pretrade_telemetry_caches(
-                    sym,
+            syms_list = list(self.symbols)
+
+            def _refresh_one(sym_i: str) -> bool:
+                st = refresh_pretrade_telemetry_caches(
+                    sym_i,
                     cachedb_dir=self.cache_dir,
                     now_ts=eff_now,
                     include_t212_portfolio=False,
                 )
-                if any(status.values()):
-                    any_refreshed = True
+                return bool(any(st.values()))
+
+            if now is None and self._active_cycle_ts is None and len(syms_list) > 1:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                with ThreadPoolExecutor(max_workers=min(4, len(syms_list)), thread_name_prefix="pretrade") as pool:
+                    for fut in as_completed(pool.submit(_refresh_one, s) for s in syms_list):
+                        try:
+                            if fut.result():
+                                any_refreshed = True
+                        except Exception:
+                            pass
+            else:
+                for sym in syms_list:
+                    if _refresh_one(sym):
+                        any_refreshed = True
             portfolio_status = refresh_pretrade_telemetry_caches(
                 "",
                 cachedb_dir=self.cache_dir,
