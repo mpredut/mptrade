@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 import time as _time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -466,6 +467,9 @@ def _scope_symbol_variants(
 _ORIG_ENSURE_FRESH_SYMBOL_MICROSTRUCTURE = ensure_fresh_symbol_microstructure
 
 
+_PRETRADE_CLAIM_LOCK = threading.Lock()
+
+
 def _ensure_fresh_pretrade_microstructure(
     cachedb_dir: str,
     symbol: str,
@@ -475,6 +479,7 @@ def _ensure_fresh_pretrade_microstructure(
     _rj: Callable[[str], Any],
     *,
     allow_network: Optional[bool] = False,
+    claimed_symbols: Optional[set[str]] = None,
 ) -> bool:
     is_monkeypatched = ensure_fresh_symbol_microstructure is not _ORIG_ENSURE_FRESH_SYMBOL_MICROSTRUCTURE
     can_refresh = (allow_network is True and is_live_network_backfill_enabled()) or (
@@ -491,6 +496,11 @@ def _ensure_fresh_pretrade_microstructure(
         cand_mu = str(cand_m or "").strip().upper()
         if not cand_mu or cand_mu in disabled_syms:
             continue
+        if claimed_symbols is not None:
+            with _PRETRADE_CLAIM_LOCK:
+                if cand_mu in claimed_symbols:
+                    continue
+                claimed_symbols.add(cand_mu)
         has_existing_m = any(
             os.path.exists(str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"{pfx_m}{cand_mu}.json"))))
             for pfx_m in (CACHE_ORDERBOOK_DEPTH_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX, CACHE_WHALE_SNAPSHOT_PREFIX)
@@ -2327,6 +2337,7 @@ def refresh_pretrade_telemetry_caches(
     *,
     now_ts: Optional[float] = None,
     include_t212_portfolio: bool = True,
+    claimed_symbols: Optional[set[str]] = None,
 ) -> Dict[str, bool]:
     """Producer-only function refreshing pre-trade caches (microstructure and T212 position prices; equity OHLCV series is owned by cacheManager)."""
     orchestrator = TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator, start_sync=True)
@@ -2350,7 +2361,14 @@ def refresh_pretrade_telemetry_caches(
         try:
             status["microstructure_refreshed"] = bool(
                 _ensure_fresh_pretrade_microstructure(
-                    cachedb_dir, sym_raw, quote_variants, is_usd_sym, is_eq_sym, _rj, allow_network=True
+                    cachedb_dir,
+                    sym_raw,
+                    quote_variants,
+                    is_usd_sym,
+                    is_eq_sym,
+                    _rj,
+                    allow_network=True,
+                    claimed_symbols=claimed_symbols,
                 )
             )
         except Exception:

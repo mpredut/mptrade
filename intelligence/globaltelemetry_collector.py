@@ -67,8 +67,11 @@ from intelligence.macro.daemon_ssot import (
     add_external_telemetry_cli_args,
     detect_active_binance_symbols,
     finalize_daemon_cycle,
+    interleave_items_by_venue,
     normalize_cycle_args,
     parse_and_configure_daemon_cli,
+    resolve_telemetry_venue_bucket,
+    resolve_telemetry_venue_concurrency_limit,
     run_daemon_cli_once_or_start,
     run_daemon_loop,
     run_scheduled_step,
@@ -400,6 +403,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self._last_ai_impulse_ts: float = 0.0
         self._last_ai_impulse_check_ts: float = 0.0
         self._live_impulse_wakeup_enabled: bool = False
+        self._active_cycle_ts: Optional[float] = None
 
         self.heartbeat_path = os.path.join(self.cache_dir, "globaltelemetry_collector.heartbeat")
 
@@ -643,11 +647,12 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         )
 
     def update_pretrade_caches(self, force: bool = False, now: Optional[float] = None) -> bool:
-        """Producer refresh of pre-trade caches (per-symbol microstructure concurrently and once-per-round T212 position prices)."""
+        """Producer refresh of pre-trade caches (venue-capped concurrent microstructure and once-per-round T212 position prices)."""
         try:
             eff_now = resolve_now_ts(self._resolve_step_now(now))
             any_refreshed = False
             syms_list = list(self.symbols)
+            claimed_syms: set[str] = set()
 
             def _refresh_one(sym_i: str) -> bool:
                 st = refresh_pretrade_telemetry_caches(
@@ -655,13 +660,29 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                     cachedb_dir=self.cache_dir,
                     now_ts=eff_now,
                     include_t212_portfolio=False,
+                    claimed_symbols=claimed_syms,
                 )
                 return bool(any(st.values()))
 
-            if now is None and self._active_cycle_ts is None and len(syms_list) > 1:
+            if now is None and getattr(self, "_active_cycle_ts", None) is None and len(syms_list) > 1:
                 from concurrent.futures import ThreadPoolExecutor, as_completed
-                with ThreadPoolExecutor(max_workers=min(4, len(syms_list)), thread_name_prefix="pretrade") as pool:
-                    for fut in as_completed(pool.submit(_refresh_one, s) for s in syms_list):
+                import threading
+
+                ordered_syms = interleave_items_by_venue(syms_list, resolve_telemetry_venue_bucket)
+                venue_sems: Dict[str, threading.BoundedSemaphore] = {}
+                for s_item in ordered_syms:
+                    bkt = resolve_telemetry_venue_bucket(s_item)
+                    if bkt not in venue_sems:
+                        venue_sems[bkt] = threading.BoundedSemaphore(
+                            resolve_telemetry_venue_concurrency_limit(bkt)
+                        )
+
+                def _refresh_capped(sym_c: str) -> bool:
+                    with venue_sems[resolve_telemetry_venue_bucket(sym_c)]:
+                        return _refresh_one(sym_c)
+
+                with ThreadPoolExecutor(max_workers=min(4, len(ordered_syms)), thread_name_prefix="pretrade") as pool:
+                    for fut in as_completed(pool.submit(_refresh_capped, s) for s in ordered_syms):
                         try:
                             if fut.result():
                                 any_refreshed = True

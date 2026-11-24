@@ -2634,14 +2634,20 @@ def test_live_cycle_avoids_start_ts_backdating_and_fast_microstructure_deltas(tm
     seen_active_ts = []
     liq_written_ts = []
 
+    import threading as _th
+
+    clock_lock = _th.Lock()
+
     def _fake_ob(sym):
-        seen_active_ts.append((sym, col._active_cycle_ts))
-        clock[0] += 10.0
+        with clock_lock:
+            seen_active_ts.append((sym, col._active_cycle_ts))
+            clock[0] += 10.0
         return True
 
     def _fake_liq(force=False, now=None):
-        liq_written_ts.append((now, col._resolve_step_now(now), clock[0]))
-        clock[0] += 2.0
+        with clock_lock:
+            liq_written_ts.append((now, col._resolve_step_now(now), clock[0]))
+            clock[0] += 2.0
         return True
 
     col.symbols = ["BTCUSDC", "ADAUSD"]
@@ -2666,18 +2672,17 @@ def test_live_cycle_avoids_start_ts_backdating_and_fast_microstructure_deltas(tm
     monkeypatch.setattr(col, "write_heartbeat", lambda st: (hb_ts_log.append(st.get("ts")), orig_write_hb(st)))
 
     res_live = col.run_cycle(force=False)
-    assert seen_active_ts == [("BTCUSDC", None), ("ADAUSD", None)]
-    assert col._last_orderbook_ts["BTCUSDC"] == pytest.approx(t_now + 10.0)
-    assert col._last_orderbook_ts["ADAUSD"] == pytest.approx(t_now + 20.0)
+    assert set(seen_active_ts) == {("BTCUSDC", None), ("ADAUSD", None)}
+    assert len(seen_active_ts) == 2
+    assert t_now + 10.0 <= col._last_orderbook_ts["BTCUSDC"] <= t_now + 20.0
+    assert t_now + 10.0 <= col._last_orderbook_ts["ADAUSD"] <= t_now + 20.0
     assert liq_written_ts == [(None, None, t_now + 20.0)]
     assert col._last_realized_liq_ts == pytest.approx(t_now + 22.0)
     assert res_live["ts"] == pytest.approx(t_now + 22.0)
-    assert hb_ts_log == [
-        pytest.approx(t_now),
-        pytest.approx(t_now + 10.0),
-        pytest.approx(t_now + 20.0),
-        pytest.approx(t_now + 22.0),
-    ]
+    assert hb_ts_log[0] == pytest.approx(t_now)
+    assert hb_ts_log[-1] == pytest.approx(t_now + 22.0)
+    assert len(hb_ts_log) in (3, 4)
+    assert all(hb_ts_log[i] < hb_ts_log[i + 1] for i in range(len(hb_ts_log) - 1))
 
     # 3. Deterministic run_cycle(now=t_det) still pins _active_cycle_ts to t_det for replay/test reproducibility.
     t_det = t_now + 500.0
@@ -2994,6 +2999,103 @@ def test_parallel_live_tier_poll_equity_bars_reuse_and_disabled_pretrade_skip(tm
     )
     assert ok_ref is True
     assert refreshed_syms == ["TAOUSDC"]
+
+
+def test_per_venue_concurrency_caps_orderbook_thread_safety_and_pretrade_btc_dedup(tmp_path, monkeypatch):
+    """Verify per-venue semaphores cap concurrent US equity REST calls at <=2, OrderbookDepthCollector memos stay thread-safe, and update_pretrade_caches deduplicates BTCUSDC."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.macro.daemon_ssot import interleave_items_by_venue, resolve_telemetry_venue_bucket
+    import intelligence.sentiment.collectors.pretrade_telemetry_collector as ptc_mod
+
+    # 1. Round-robin venue interleaving spreads adjacent equities/venues so worker pools do not hammer one provider
+    mixed = ["BTCUSDC", "ETHUSDC", "SOLUSDC", "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ", "SPCXxUSD"]
+    interleaved = interleave_items_by_venue(mixed, resolve_telemetry_venue_bucket)
+    assert len(interleaved) == len(mixed)
+    assert set(interleaved) == set(mixed)
+    assert resolve_telemetry_venue_bucket(interleaved[0]) != resolve_telemetry_venue_bucket(interleaved[1])
+
+    # 2. Five adjacent US equities run in live parallel sweep must NEVER exceed 2 simultaneous in-flight calls
+    eq_syms = ["SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ", "ANT_US_EQ", "AMD_US_EQ"]
+    col = GlobalTelemetryCollector(
+        symbols=eq_syms,
+        cache_dir=str(tmp_path),
+        orderbook_interval_sec=15.0,
+        skip_news=True,
+        skip_external=False,
+    )
+    in_flight = [0]
+    max_in_flight = [0]
+    cnt_lock = threading.Lock()
+
+    def _slow_eq_ob(_sym: str) -> bool:
+        with cnt_lock:
+            in_flight[0] += 1
+            max_in_flight[0] = max(max_in_flight[0], in_flight[0])
+        time.sleep(0.05)
+        with cnt_lock:
+            in_flight[0] -= 1
+        return True
+
+    monkeypatch.setattr(col, "update_orderbook", _slow_eq_ob)
+    monkeypatch.setattr(col, "_run_step_bounded", lambda fn, sym, **_kw: fn(sym))
+    res_eq = col._new_external_cycle_results(time.time())
+    col._step_external_symbols(time.time(), True, res_eq, bounded=True, live_clock=True, tiers=("ob",))
+    assert res_eq["orderbook_updated"] == 5
+    assert max_in_flight[0] == 2
+
+    # 3. OrderbookDepthCollector internal memo dicts withstand concurrent reads/writes/evictions across 8 threads
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path), start_sync=True)
+    monkeypatch.setattr(
+        ob_col,
+        "_fetch_spot_cvd_payload",
+        lambda url, _body, timeout=3.5: [{"q": "10", "p": "100", "m": False, "T": int(time.time() * 1000)}],
+    )
+    errors = []
+
+    def _stress_worker(idx: int) -> None:
+        try:
+            for j in range(25):
+                sym_s = f"SYM{idx}_{j}USDC"
+                with ob_col._get_ob_state_lock():
+                    ob_col._preferred_url[sym_s] = f"https://api.binance.com/api/v3/depth?symbol={sym_s}"
+                    ob_col._unlisted_xstock_until[sym_s] = 12345.0
+                ob_col._resolve_real_spot_cvd_15m(sym_s, venue="binance", now=time.time() + j)
+        except Exception as exc:
+            errors.append(exc)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(_stress_worker, range(8)))
+    assert errors == []
+
+    # 4. update_pretrade_caches deduplicates shared BTCUSDC anchor across concurrent crypto workers
+    tel_dir = tmp_path / "telemetry"
+    tel_dir.mkdir(parents=True, exist_ok=True)
+    for s_f in ("BTCUSDC", "ETHUSDC", "SOLUSDC", "ADAUSDC", "ARBUSDC"):
+        (tel_dir / f"orderbook_depth_{s_f}.json").write_text("{}", encoding="utf-8")
+    calls_list: list[str] = []
+    calls_lock = threading.Lock()
+
+    def _track_fresh(_cd: str, s: str, **_kw):
+        time.sleep(0.02)
+        with calls_lock:
+            calls_list.append(s)
+        return True
+
+    monkeypatch.setattr(ptc_mod, "ensure_fresh_symbol_microstructure", _track_fresh)
+    monkeypatch.setattr(ptc_mod, "is_live_network_backfill_enabled", lambda: True)
+    monkeypatch.setattr(ptc_mod, "disabled_registry_symbols", lambda: frozenset())
+    monkeypatch.setattr(ptc_mod, "load_stitched_24h_ohlc_points", lambda *_a, **_kw: [])
+    col_pt = GlobalTelemetryCollector(
+        symbols=["ETHUSDC", "SOLUSDC", "ADAUSDC", "ARBUSDC"],
+        cache_dir=str(tmp_path),
+        skip_news=True,
+        skip_external=True,
+    )
+    assert col_pt.update_pretrade_caches() is True
+    assert calls_list.count("BTCUSDC") == 1
+    assert set(calls_list) >= {"ETHUSDC", "SOLUSDC", "ADAUSDC", "ARBUSDC", "BTCUSDC"}
 
 
 

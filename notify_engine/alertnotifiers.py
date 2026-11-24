@@ -1469,8 +1469,7 @@ _VPN_RECOVERED_SUBJECT_MARKERS = (
 
 _VPN_STATIC_IP_BODY_MARKERS = (
     "DEDICATED-",
-    "FRANKFURT",
-    "BELGIUM",
+    "DEDICATED IP",
 )
 
 
@@ -1485,7 +1484,7 @@ def is_email_suppressed_subject(subject: str | None, body: str | None = None) ->
         return True
     if any(m in s for m in _VPN_RECOVERED_SUBJECT_MARKERS):
         b = str(body or "").strip().upper()
-        if not b or any(m in b for m in _VPN_STATIC_IP_BODY_MARKERS):
+        if b and any(m in b for m in _VPN_STATIC_IP_BODY_MARKERS):
             return True
     return False
 

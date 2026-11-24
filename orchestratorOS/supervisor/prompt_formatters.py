@@ -248,7 +248,11 @@ def build_supervisor_prompt(
     is_equities = getattr(spec, "asset_scope", "all") == "equities"
     if spec.can_trade:
         target_desc, xs_target_lbl = _build_dynamic_target_desc(is_equities)
-        xs_crash_sfx = f", OR imminent crash `urgency=HIGH` `target_px` >={xs_crash_drop_pct:g}% lower" if xs_crash_drop_pct > 0 else ""
+        xs_crash_sfx = (
+            f", OR imminent crash `urgency=HIGH` `conf>={xs_crash_conf:g}` `target_px` >={xs_crash_drop_pct:g}% lower"
+            if xs_crash_drop_pct > 0
+            else ""
+        )
         xs_exception_sfx = (
             ""
             if is_equities

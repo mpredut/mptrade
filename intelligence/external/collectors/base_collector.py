@@ -348,6 +348,8 @@ class TelemetryCollectorFactory(LazyPluginRegistryFactory):
             return collector_cls(start_sync=sync_flag, **kwargs)
         return cls.get_collector(collector_cls, start_sync=start_sync)
 
+    _FACTORY_LOCK = threading.RLock()
+
     @classmethod
     def get_collector(
         cls,
@@ -357,11 +359,12 @@ class TelemetryCollectorFactory(LazyPluginRegistryFactory):
     ) -> Any:
         sync_flag = _parse_bool_flag(start_sync, default=False)
         key = f"{collector_cls.__name__}:producer" if sync_flag else collector_cls.__name__
-        inst = cls._instances.get(key)
-        if inst is None:
-            inst = collector_cls(start_sync=sync_flag)
-            cls._instances[key] = inst
-        return inst
+        with cls._FACTORY_LOCK:
+            inst = cls._instances.get(key)
+            if inst is None:
+                inst = collector_cls(start_sync=sync_flag)
+                cls._instances[key] = inst
+            return inst
 
     get_price_series_loader = LazyPluginRegistryFactory.bind_creator("price_series_loader")
     get_fleet_enricher = LazyPluginRegistryFactory.bind_creator("fleet_24h_and_microstructure")
@@ -448,13 +451,15 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             and override_dir != "cachedb"
             and str(override_dir) != str(prev_dir or "")
         )
-        if dir_changed:
+        if not dir_changed:
+            return fetch_fn(eff_sym, allow_network=allow_network, now=eff_now)
+        with self._get_cache_lock():
+            prev_dir = self.cache_dir
             self.cache_dir = override_dir
             self._sync_cache_dir_scope()
-        try:
-            return fetch_fn(eff_sym, allow_network=allow_network, now=eff_now)
-        finally:
-            if dir_changed:
+            try:
+                return fetch_fn(eff_sym, allow_network=allow_network, now=eff_now)
+            finally:
                 self.cache_dir = prev_dir
                 self._sync_cache_dir_scope()
 
@@ -1174,6 +1179,7 @@ _READONLY_COLLECTOR_SINGLETONS: Dict[str, Any] = {
     "_orderbook_collector": None,
     "_derivatives_collector": None,
 }
+_READONLY_COLLECTOR_LOCK = threading.RLock()
 _ORIG_COLLECTOR_GETTERS: Dict[str, Any] = {}
 
 
@@ -1184,27 +1190,28 @@ def _resolve_readonly_collector(
     cls_name: str,
 ) -> Any:
     """Resolve a read-only collector singleton while honoring ``external_order_guard`` overrides."""
-    eog_mod = sys.modules.get("external_order_guard")
-    if eog_mod is not None:
-        orig_getter = _ORIG_COLLECTOR_GETTERS.get(getter_name)
-        patched_getter = eog_mod.__dict__.get(getter_name)
-        if callable(patched_getter) and patched_getter is not orig_getter:
-            return patched_getter()
-        if attr_name in eog_mod.__dict__:
-            cur = eog_mod.__dict__.get(attr_name)
+    with _READONLY_COLLECTOR_LOCK:
+        eog_mod = sys.modules.get("external_order_guard")
+        if eog_mod is not None:
+            orig_getter = _ORIG_COLLECTOR_GETTERS.get(getter_name)
+            patched_getter = eog_mod.__dict__.get(getter_name)
+            if callable(patched_getter) and patched_getter is not orig_getter:
+                return patched_getter()
+            if attr_name in eog_mod.__dict__:
+                cur = eog_mod.__dict__.get(attr_name)
+                if cur is not None:
+                    return cur
+        else:
+            cur = _READONLY_COLLECTOR_SINGLETONS.get(attr_name)
             if cur is not None:
                 return cur
-    else:
-        cur = _READONLY_COLLECTOR_SINGLETONS.get(attr_name)
-        if cur is not None:
-            return cur
 
-    cls_obj = getattr(importlib.import_module(module_path), cls_name)
-    cur = cls_obj(start_sync=False)
-    _READONLY_COLLECTOR_SINGLETONS[attr_name] = cur
-    if eog_mod is not None:
-        setattr(eog_mod, attr_name, cur)
-    return cur
+        cls_obj = getattr(importlib.import_module(module_path), cls_name)
+        cur = cls_obj(start_sync=False)
+        _READONLY_COLLECTOR_SINGLETONS[attr_name] = cur
+        if eog_mod is not None:
+            setattr(eog_mod, attr_name, cur)
+        return cur
 
 
 get_whale_collector = partial(

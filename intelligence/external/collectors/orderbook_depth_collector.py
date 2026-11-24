@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -152,6 +153,14 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         self._unlisted_xstock_until: Dict[str, float] = {}
         self._spot_cvd_memo: Dict[Tuple[str, str], Tuple[float, float, Optional[float]]] = {}
         self._agg_spot_cvd_memo: Dict[Tuple[str, str], Tuple[float, Optional[float], Optional[float], str]] = {}
+        self._ob_state_lock = threading.RLock()
+
+    def _get_ob_state_lock(self) -> threading.RLock:
+        lock = getattr(self, "_ob_state_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._ob_state_lock = lock
+        return lock
 
     def _fetch_spot_cvd_payload(self, url: str, post_body: Optional[dict], *, timeout: float = 3.5) -> Any:
         eff_timeout = safe_pos_float(timeout, default=3.5) or 3.5
@@ -184,7 +193,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             return None
         memo_key = (venue, symbol)
         ttl_sec = safe_pos_float(resolve_derived_telemetry_intervals().get("whale_interval_sec"), 60.0) or 60.0
-        cached_cvd = self._spot_cvd_memo.get(memo_key)
+        with self._get_ob_state_lock():
+            cached_cvd = self._spot_cvd_memo.get(memo_key)
         if cached_cvd is not None and 0.0 <= (now - cached_cvd[0]) < ttl_sec:
             return cached_cvd[1]
         req_spec, extractor = MarketDataProvider.resolve_spot_flow_15m_spec(symbol, venue=venue, now_ts=now)
@@ -204,7 +214,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 cvd_f = safe_float(flow_res, default=None)
                 vol_f = None
             if cvd_f is not None:
-                lru_dict_put(self._spot_cvd_memo, memo_key, (now, cvd_f, vol_f), 128)
+                with self._get_ob_state_lock():
+                    lru_dict_put(self._spot_cvd_memo, memo_key, (now, cvd_f, vol_f), 128)
                 self._resolve_agg_spot_cvd_15m(
                     symbol,
                     venue=venue,
@@ -234,7 +245,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
     ) -> Optional[Tuple[float, Optional[float], str]]:
         """Combine venue-local USDC spot flow with deep primary-quote (USDT) spot flow when available."""
         memo_key = (venue, symbol)
-        cached_agg = self._agg_spot_cvd_memo.get(memo_key)
+        with self._get_ob_state_lock():
+            cached_agg = self._agg_spot_cvd_memo.get(memo_key)
         if cached_agg is not None:
             if cached_agg[1] is None and 0.0 <= (now - cached_agg[0]) < ttl_sec * 5.0:
                 return None
@@ -271,15 +283,18 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 )
                 agg_venue = MarketDataProvider.resolve_venue_for_orderbook_url(agg_url)
                 src_lbl = "usdc+usdt" if agg_venue == venue else f"{venue}+bn_usdt"
-                lru_dict_put(self._agg_spot_cvd_memo, memo_key, (now, tot_cvd, tot_vol, src_lbl), 128)
+                with self._get_ob_state_lock():
+                    lru_dict_put(self._agg_spot_cvd_memo, memo_key, (now, tot_cvd, tot_vol, src_lbl), 128)
                 return tot_cvd, tot_vol, src_lbl
-            lru_dict_put(self._agg_spot_cvd_memo, memo_key, (now, None, None, ""), 128)
+            with self._get_ob_state_lock():
+                lru_dict_put(self._agg_spot_cvd_memo, memo_key, (now, None, None, ""), 128)
         except Exception as exc:
             logger.debug("Could not fetch aggregated 15m spot CVD for %s on %s: %s", symbol, venue, exc)
-            if cached_agg is None or cached_agg[1] is None:
-                lru_dict_put(self._agg_spot_cvd_memo, memo_key, (now, None, None, ""), 128)
-            elif (now - cached_agg[0]) >= ttl_sec * 3.0:
-                self._agg_spot_cvd_memo.pop(memo_key, None)
+            with self._get_ob_state_lock():
+                if cached_agg is None or cached_agg[1] is None:
+                    lru_dict_put(self._agg_spot_cvd_memo, memo_key, (now, None, None, ""), 128)
+                elif (now - cached_agg[0]) >= ttl_sec * 3.0:
+                    self._agg_spot_cvd_memo.pop(memo_key, None)
         return (
             (cached_agg[1], cached_agg[2], cached_agg[3])
             if cached_agg is not None and cached_agg[1] is not None and 0.0 <= (now - cached_agg[0]) < ttl_sec * 3.0
@@ -289,7 +304,9 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
     def is_unlisted_xstock_backoff_active(self, symbol: str, now: float) -> bool:
         """Return True when ``symbol`` is a pre-IPO/empty Kraken tokenized pair within its quiet backoff window."""
         ident = resolve_symbol_identity(symbol)
-        return bool(ident.is_tokenized_equity and now < self._unlisted_xstock_until.get(ident.wire_symbol, 0.0))
+        with self._get_ob_state_lock():
+            until_ts = self._unlisted_xstock_until.get(ident.wire_symbol, 0.0)
+        return bool(ident.is_tokenized_equity and now < until_ts)
 
     def fetch(
         self,
@@ -312,7 +329,9 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
 
         ident = resolve_symbol_identity(symbol)
         tok_sym, is_tok_sym = ident.wire_symbol, ident.is_tokenized_equity
-        if is_tok_sym and now < self._unlisted_xstock_until.get(tok_sym, 0.0):
+        with self._get_ob_state_lock():
+            unlisted_until = self._unlisted_xstock_until.get(tok_sym, 0.0)
+        if is_tok_sym and now < unlisted_until:
             return self._fallback_stale(symbol, cached)
 
         lookup_sym = resolve_binance_lookup_symbol(symbol)
@@ -332,7 +351,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 venue=reg_venue,
                 multi_venue=bool(reg_venue) or _is_multi_venue_base(query_sym),
             )
-            pref_url = self._preferred_url.get(symbol)
+            with self._get_ob_state_lock():
+                pref_url = self._preferred_url.get(symbol)
             pref_matches_base = bool(
                 pref_url
                 and (
@@ -368,7 +388,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                         if "Invalid arguments" in err_txt or "Unknown asset pair" in err_txt:
                             # BY DESIGN: Pre-IPO watchlisted xStocks (e.g. ANTxUSD) are not yet listed on Kraken;
                             # back off quietly for 5m instead of spamming WARNING logs every telemetry tick.
-                            self._unlisted_xstock_until[tok_sym] = now + 300.0
+                            with self._get_ob_state_lock():
+                                self._unlisted_xstock_until[tok_sym] = now + 300.0
                             return self._fallback_stale(symbol, cached)
                     normalized_book = MarketDataProvider.normalize_orderbook_payload(raw_data)
                     if normalized_book is None:
@@ -389,11 +410,13 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                         ):
                             # BY DESIGN: Pre-IPO Kraken tokenized pairs (e.g. ANTxUSD) return an empty result book
                             # ({'asks': [], 'bids': []}) before trading opens; back off 5m without WARNING spam.
-                            self._unlisted_xstock_until[tok_sym] = now + 300.0
+                            with self._get_ob_state_lock():
+                                self._unlisted_xstock_until[tok_sym] = now + 300.0
                             return self._fallback_stale(symbol, cached)
                         raise ValueError(f"Empty or malformed depth payload for {symbol}")
                     data = normalized_book
-                    self._preferred_url[symbol] = url
+                    with self._get_ob_state_lock():
+                        self._preferred_url[symbol] = url
                     break
                 except Exception as url_exc:
                     last_err = url_exc
@@ -414,7 +437,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
 
             # Auto-widen Binance Spot limit=500 -> limit=1000 when tight-tick books (e.g. BTCUSDC) saturate
             # 500 levels before reaching +/-1.05%, keeping thin pairs at lighter weight while uncovering +/-1% depth.
-            cur_pref_url = self._preferred_url.get(symbol) or ""
+            with self._get_ob_state_lock():
+                cur_pref_url = self._preferred_url.get(symbol) or ""
             if (
                 "api.binance.com/api/v3/depth" in cur_pref_url
                 and "&limit=500" in cur_pref_url
@@ -437,7 +461,9 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                             if w_bid > 0 and w_ask >= w_bid and w_mid is not None:
                                 bids, asks = wide_book["bids"], wide_book["asks"]
                                 best_bid, best_ask, mid = w_bid, w_ask, w_mid
-                                self._preferred_url[symbol] = wide_url
+                                cur_pref_url = wide_url
+                                with self._get_ob_state_lock():
+                                    self._preferred_url[symbol] = wide_url
                     except Exception:
                         pass
 
@@ -445,7 +471,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             # Extend deeper levels within the +/-1.5% band via aggregated nSigFigs=4 (and nSigFigs=3 if needed) while preserving top-of-book spread.
             if (
                 hl_book_url
-                and self._preferred_url.get(symbol) == hl_book_url
+                and cur_pref_url == hl_book_url
                 and (bids[-1][0] > mid * 0.992 or asks[-1][0] < mid * 1.008)
             ):
                 for sig_figs in (4, 3):
@@ -510,7 +536,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             imbalance = bid_depth_usd / total_depth if total_depth > 0 else 0.5
             spread_bps = round_spread_bps(best_bid=best_bid, best_ask=best_ask, mid_price=mid) or 0.0
             book_span_pct = 0.0
-            is_hl_book = bool(hl_book_url and self._preferred_url.get(symbol) == hl_book_url)
+            is_hl_book = bool(hl_book_url and cur_pref_url == hl_book_url)
             min_cap_levels = 20 if is_hl_book else 100
             if mid > 0:
                 capped_spans = [
@@ -525,7 +551,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                     book_span_pct = round(min(*capped_spans, self.depth_band_pct), 3)
 
             eff_spot_venue = reg_venue or MarketDataProvider.resolve_venue_for_orderbook_url(
-                self._preferred_url.get(symbol)
+                cur_pref_url or None
             )
             real_spot_cvd = self._resolve_real_spot_cvd_15m(
                 query_sym, venue=eff_spot_venue, now=now, deadline_mono=deadline_mono
@@ -535,10 +561,11 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             agg_spot_vol: Optional[float] = None
             agg_spot_src: Optional[str] = None
             if real_spot_cvd is not None and eff_spot_venue:
-                memo_flow = self._spot_cvd_memo.get((eff_spot_venue, query_sym))
+                with self._get_ob_state_lock():
+                    memo_flow = self._spot_cvd_memo.get((eff_spot_venue, query_sym))
+                    memo_agg = self._agg_spot_cvd_memo.get((eff_spot_venue, query_sym))
                 if isinstance(memo_flow, tuple) and len(memo_flow) >= 3:
                     real_spot_vol = safe_nonneg_float(memo_flow[2], default=None)
-                memo_agg = self._agg_spot_cvd_memo.get((eff_spot_venue, query_sym))
                 if isinstance(memo_agg, tuple) and len(memo_agg) >= 4:
                     agg_spot_cvd = safe_float(memo_agg[1], default=None)
                     agg_spot_vol = safe_nonneg_float(memo_agg[2], default=None)

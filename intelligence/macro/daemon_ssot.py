@@ -51,6 +51,7 @@ from instrument_registry import (
     is_equity_symbol,
     resolve_symbol_identity,
     tracked_price_instruments,
+    venue_for_symbol,
 )
 from intelligence.external.collectors.base_collector import (
     SyncModeMixin,
@@ -82,6 +83,58 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 
 _ACTIVE_BOUNDED_STEPS: Dict[str, threading.Thread] = {}
 _ACTIVE_BOUNDED_LOCK = threading.Lock()
+
+# Per-provider/venue concurrency caps for parallel REST telemetry polling (prevents 429 bursts,
+# especially when multiple US equities sit adjacent in the symbol list and hit Yahoo/Nasdaq/CBOE).
+_VENUE_POLL_CONCURRENCY_LIMITS: Dict[str, int] = {
+    "binance": 4,
+    "hyperliquid": 3,
+    "kraken": 2,
+    "t212": 2,
+    "equity": 2,
+    "default": 2,
+}
+
+
+def resolve_telemetry_venue_bucket(symbol: str, ident: Any = None) -> str:
+    """Map ``symbol`` to its rate-limit provider/venue concurrency bucket."""
+    if is_equity_symbol(symbol) or (ident is not None and bool(getattr(ident, "is_rth_equity", False))):
+        return "equity"
+    ven = (venue_for_symbol(symbol, default="") or "").strip().lower()
+    if ven in _VENUE_POLL_CONCURRENCY_LIMITS:
+        return ven
+    if ident is not None and bool(getattr(ident, "is_tokenized_equity", False)):
+        return "kraken"
+    return "default"
+
+
+def resolve_telemetry_venue_concurrency_limit(bucket: str) -> int:
+    """Return max simultaneous in-flight REST requests allowed for ``bucket``."""
+    return exact_pos_int(
+        _VENUE_POLL_CONCURRENCY_LIMITS.get(bucket),
+        default=_VENUE_POLL_CONCURRENCY_LIMITS["default"],
+    ) or 2
+
+
+def interleave_items_by_venue(items: Sequence[Any], bucket_fn: Callable[[Any], str]) -> List[Any]:
+    """Round-robin interleave items across venue buckets so global worker pools stay busy without hammering one venue."""
+    buckets: Dict[str, List[Any]] = {}
+    for item in items:
+        b = bucket_fn(item)
+        buckets.setdefault(b, []).append(item)
+    out: List[Any] = []
+    bucket_lists = list(buckets.values())
+    idx = 0
+    while True:
+        added = False
+        for bl in bucket_lists:
+            if idx < len(bl):
+                out.append(bl[idx])
+                added = True
+        if not added:
+            break
+        idx += 1
+    return out
 
 
 def _resolve_daemon_helper(
@@ -720,17 +773,33 @@ class ExternalTelemetryMixin:
                     on_symbol_done()
 
             if bounded and live_clock and len(due_items) > 1:
-                max_workers = min(5, len(due_items))
+                ordered_due = interleave_items_by_venue(
+                    due_items,
+                    lambda pair: resolve_telemetry_venue_bucket(pair[0], pair[1]),
+                )
+                venue_sems: Dict[str, threading.BoundedSemaphore] = {}
+                for sym_s, ident_s in ordered_due:
+                    bkt = resolve_telemetry_venue_bucket(sym_s, ident_s)
+                    if bkt not in venue_sems:
+                        venue_sems[bkt] = threading.BoundedSemaphore(
+                            resolve_telemetry_venue_concurrency_limit(bkt)
+                        )
+
+                def _run_capped_step(sym_c: str, ident_c: Any) -> bool:
+                    bkt_c = resolve_telemetry_venue_bucket(sym_c, ident_c)
+                    with venue_sems[bkt_c]:
+                        return self._run_step_bounded(
+                            fn,
+                            sym_c,
+                            timeout_sec=timeout_s,
+                            label=f"{lbl_prefix}_{sym_c}",
+                        )
+
+                max_workers = min(5, len(ordered_due))
                 with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"tel-{lbl_prefix}") as pool:
                     fut_map = {
-                        pool.submit(
-                            self._run_step_bounded,
-                            fn,
-                            sym,
-                            timeout_sec=timeout_s,
-                            label=f"{lbl_prefix}_{sym}",
-                        ): (sym, ident)
-                        for sym, ident in due_items
+                        pool.submit(_run_capped_step, sym, ident): (sym, ident)
+                        for sym, ident in ordered_due
                     }
                     for fut in as_completed(fut_map):
                         sym_r, ident_r = fut_map[fut]

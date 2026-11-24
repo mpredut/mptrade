@@ -5,6 +5,7 @@ import glob as _glob
 import logging
 import math
 import os
+import threading
 import time as _time
 from abc import ABC
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -65,53 +66,59 @@ CacheAssetValueManager: Any = None
 CacheAccountManagerBase: Any = None
 
 
+_CACHEPRICE_BIND_LOCK = threading.RLock()
+
+
 def ensure_cacheprice_classes_bound() -> None:
     global Cache24PriceManager, Cache365PriceManager, CacheCurrentPriceManager, CachePriceManagerBase, CacheSparsePriceManager
     global CacheShortTrendManager, CacheLongTrendManager, CacheOrderFilledManager, CacheOrderOpenManager, CacheTradeManager, CacheAssetValueManager
     global CacheAccountManagerBase
     if Cache24PriceManager is not None and CacheShortTrendManager is not None and CacheOrderFilledManager is not None and CacheOrderOpenManager is not None and CacheAccountManagerBase is not None:
         return
-    load_dotenv()
-    from cacheaccount import (
-        CacheAccountManagerBase as _CABase,
-        CacheAssetValueManager as _CAV,
-        CacheOrderFilledManager as _COrdFilled,
-        CacheOrderOpenManager as _COrdOpen,
-        CacheTradeManager as _CTrd,
-    )
-    from cacheprice import (
-        Cache24PriceManager as _C24,
-        Cache365PriceManager as _C365,
-        CacheCurrentPriceManager as _CCP,
-        CachePriceManagerBase as _CPBase,
-        CacheSparsePriceManager as _CSparse,
-    )
-    try:
-        from cachetrend import (
-            CacheLongTrendManager as _CLT,
-            CacheShortTrendManager as _CST,
+    with _CACHEPRICE_BIND_LOCK:
+        if Cache24PriceManager is not None and CacheShortTrendManager is not None and CacheOrderFilledManager is not None and CacheOrderOpenManager is not None and CacheAccountManagerBase is not None:
+            return
+        load_dotenv()
+        from cacheaccount import (
+            CacheAccountManagerBase as _CABase,
+            CacheAssetValueManager as _CAV,
+            CacheOrderFilledManager as _COrdFilled,
+            CacheOrderOpenManager as _COrdOpen,
+            CacheTradeManager as _CTrd,
         )
-    except ImportError:
-        _CLT = None
-        _CST = None
+        from cacheprice import (
+            Cache24PriceManager as _C24,
+            Cache365PriceManager as _C365,
+            CacheCurrentPriceManager as _CCP,
+            CachePriceManagerBase as _CPBase,
+            CacheSparsePriceManager as _CSparse,
+        )
+        try:
+            from cachetrend import (
+                CacheLongTrendManager as _CLT,
+                CacheShortTrendManager as _CST,
+            )
+        except ImportError:
+            _CLT = None
+            _CST = None
 
-    Cache24PriceManager = _C24
-    Cache365PriceManager = _C365
-    CacheCurrentPriceManager = _CCP
-    CachePriceManagerBase = _CPBase
-    CacheSparsePriceManager = _CSparse
-    CacheShortTrendManager = _CST
-    CacheLongTrendManager = _CLT
-    CacheOrderFilledManager = _COrdFilled
-    CacheOrderOpenManager = _COrdOpen
-    CacheTradeManager = _CTrd
-    CacheAssetValueManager = _CAV
-    CacheAccountManagerBase = _CABase
-    if "CompositeSymbolPriceSeriesLoader" in globals():
-        CompositeSymbolPriceSeriesLoader.price_24_cls = _C24
-        CompositeSymbolPriceSeriesLoader.price_365_cls = _C365
-        CompositeSymbolPriceSeriesLoader.price_sparse_cls = _CSparse
-        CompositeSymbolPriceSeriesLoader.current_price_cls = _CCP
+        Cache24PriceManager = _C24
+        Cache365PriceManager = _C365
+        CacheCurrentPriceManager = _CCP
+        CachePriceManagerBase = _CPBase
+        CacheSparsePriceManager = _CSparse
+        CacheShortTrendManager = _CST
+        CacheLongTrendManager = _CLT
+        CacheOrderFilledManager = _COrdFilled
+        CacheOrderOpenManager = _COrdOpen
+        CacheTradeManager = _CTrd
+        CacheAssetValueManager = _CAV
+        CacheAccountManagerBase = _CABase
+        if "CompositeSymbolPriceSeriesLoader" in globals():
+            CompositeSymbolPriceSeriesLoader.price_24_cls = _C24
+            CompositeSymbolPriceSeriesLoader.price_365_cls = _C365
+            CompositeSymbolPriceSeriesLoader.price_sparse_cls = _CSparse
+            CompositeSymbolPriceSeriesLoader.current_price_cls = _CCP
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
     TelemetryCollectorFactory,
@@ -215,6 +222,7 @@ def _call_compute_24h(
     return compute_24h_price_metrics(series) or {}
 
 read_json_cached = _default_read_json_cached
+_MEMO_LOCK = threading.RLock()
 _FALLBACK_PROVIDER_OHLC_FNS: Dict[str, Any] = {}
 _FALLBACK_OHLC_SERIES_CACHE: Dict[Tuple[str, Any, str, int], Tuple[float, Any, Any]] = {}
 _PRICE_SERIES_MEMO: Dict[Tuple[str, str, bool, Tuple[str, ...]], Tuple[Any, list, list, float]] = {}
@@ -265,20 +273,23 @@ def _wrap_cached_ohlc_fn(
 
     def _cached_ohlc(s_arg: str, interval_min: int) -> Any:
         nonlocal resolved_fn
-        if resolved_fn is None and is_factory and callable(raw_fn_or_factory):
-            resolved_fn = raw_fn_or_factory()
-        fn = resolved_fn
+        with _MEMO_LOCK:
+            if resolved_fn is None and is_factory and callable(raw_fn_or_factory):
+                resolved_fn = raw_fn_or_factory()
+            fn = resolved_fn
         if not callable(fn):
             return None
         fn_id, fn_anchor = callable_identity_anchor(fn)
         ck = (prov_key, fn_id, clean_upper_scalar(s_arg) or "", safe_pos_int(interval_min, default=1) or 1)
         now_s = _time.time()
-        hit = _FALLBACK_OHLC_SERIES_CACHE.get(ck)
+        with _MEMO_LOCK:
+            hit = _FALLBACK_OHLC_SERIES_CACHE.get(ck)
         if hit is not None and len(hit) >= 3 and same_callable_anchor(hit[2], fn_anchor) and 0.0 <= (now_s - hit[0]) < ttl_sec:
             return hit[1]
         res = fn(s_arg, interval_min)
         if res is not None and getattr(res, "closes", None):
-            lru_dict_put(_FALLBACK_OHLC_SERIES_CACHE, ck, (now_s, res, fn_anchor), 128)
+            with _MEMO_LOCK:
+                lru_dict_put(_FALLBACK_OHLC_SERIES_CACHE, ck, (now_s, res, fn_anchor), 128)
         return res
 
     return _cached_ohlc
@@ -300,14 +311,17 @@ def resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = N
     if callable(ohlc_fn) or not is_live_network_backfill_enabled():
         return ohlc_fn if callable(ohlc_fn) else None
     try:
-        if routed_key and routed_key not in _FALLBACK_PROVIDER_OHLC_FNS:
-            _FALLBACK_PROVIDER_OHLC_FNS[routed_key] = _wrap_cached_ohlc_fn(
-                routed_key,
-                lambda pk=routed_key: getattr(mkt.provider_by_name(pk), "ohlc_series", None),
-                is_factory=True,
-            )
-        if routed_key and callable(cached_fn := _FALLBACK_PROVIDER_OHLC_FNS.get(routed_key)):
-            return cached_fn
+        if routed_key:
+            with _MEMO_LOCK:
+                if routed_key not in _FALLBACK_PROVIDER_OHLC_FNS:
+                    _FALLBACK_PROVIDER_OHLC_FNS[routed_key] = _wrap_cached_ohlc_fn(
+                        routed_key,
+                        lambda pk=routed_key: getattr(mkt.provider_by_name(pk), "ohlc_series", None),
+                        is_factory=True,
+                    )
+                cached_fn = _FALLBACK_PROVIDER_OHLC_FNS.get(routed_key)
+            if callable(cached_fn):
+                return cached_fn
     except Exception:
         pass
     return None
@@ -420,7 +434,8 @@ def _stat_candidate_price_files(cachedb_dir: str, *basenames: str) -> List[Tuple
                 _append_file_stat(stat_list, cand_sp)
         return stat_list
     rel_key = (basenames, has_sub_dir)
-    rel_cands = _REL_CANDIDATE_FILENAME_MEMO.get(rel_key)
+    with _MEMO_LOCK:
+        rel_cands = _REL_CANDIDATE_FILENAME_MEMO.get(rel_key)
     if rel_cands is None:
         built: List[Tuple[bool, str]] = []
         for bn in basenames:
@@ -431,10 +446,11 @@ def _stat_candidate_price_files(cachedb_dir: str, *basenames: str) -> List[Tuple
                 built.append((is_sub, fname))
                 if Cache24PriceManager.FILE_PREFIX in fname:
                     built.append((is_sub, fname + ".previous"))
-        if len(_REL_CANDIDATE_FILENAME_MEMO) > 256:
-            _REL_CANDIDATE_FILENAME_MEMO.clear()
         rel_cands = tuple(built)
-        _REL_CANDIDATE_FILENAME_MEMO[rel_key] = rel_cands
+        with _MEMO_LOCK:
+            if len(_REL_CANDIDATE_FILENAME_MEMO) > 256:
+                _REL_CANDIDATE_FILENAME_MEMO.clear()
+            _REL_CANDIDATE_FILENAME_MEMO[rel_key] = rel_cands
     for is_sub, fname in rel_cands:
         if fname in (sub_entries if is_sub else flat_entries):
             _append_file_stat(stat_list, os.path.join(sub_dir if is_sub else base_dir, fname))
@@ -468,7 +484,9 @@ def _read_archive_series_file(
                 key_budget = -round(span_ms) if use_span_seek and span_ms is not None else max_b
                 arch_key = (os.path.abspath(arch_path), key_budget, cands_upper_tup)
                 arch_sig = (ast.st_mtime_ns, ast.st_size)
-                if (hit_arch := _ARCH_FILE_MEMO.get(arch_key)) is not None and hit_arch[0] == arch_sig:
+                with _MEMO_LOCK:
+                    hit_arch = _ARCH_FILE_MEMO.get(arch_key)
+                if hit_arch is not None and hit_arch[0] == arch_sig:
                     return [list(r) for r in hit_arch[1]]
         except OSError:
             arch_key = None
@@ -486,7 +504,8 @@ def _read_archive_series_file(
         parsed_rows = sort_ts_rows(parsed_rows)
         res_arch = parsed_rows if len(parsed_rows) >= 2 else []
         if arch_key is not None and arch_sig is not None and res_arch:
-            lru_dict_put(_ARCH_FILE_MEMO, arch_key, (arch_sig, [list(r) for r in res_arch]), 128)
+            with _MEMO_LOCK:
+                lru_dict_put(_ARCH_FILE_MEMO, arch_key, (arch_sig, [list(r) for r in res_arch]), 128)
         return res_arch
     except Exception:
         return []
@@ -1285,7 +1304,8 @@ class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
                 interval="5m",
             )
             if is_live_network_backfill_enabled():
-                lru_dict_put(EQ_YAHOO_CHART_MEMO, symbol, (eff_now, chart_res), 16)
+                with _MEMO_LOCK:
+                    lru_dict_put(EQ_YAHOO_CHART_MEMO, symbol, (eff_now, chart_res), 16)
         return normalize_yahoo_5d_chart_bars(chart_res, raw_s24, eff_now, eq_rth_open=eq_rth_open)
 
 
@@ -1349,15 +1369,17 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                         elif ci is not None:
                             cur_list.append((c, extract_current_price_item(ci)))
                 memo_file_sig, memo_cur_sig = tuple(stat_list), tuple(cur_list)
-                cached_entry = _PRICE_SERIES_MEMO.get(memo_key)
+                with _MEMO_LOCK:
+                    cached_entry = _PRICE_SERIES_MEMO.get(memo_key)
                 if cached_entry is not None and cached_entry[0] == memo_file_sig and cached_entry[1] == memo_cur_sig:
-                    LAST_7D_SPAN_MS_BY_SYM[sym_u] = cached_entry[4]
-                    lru_dict_put(
-                        LAST_7D_4H_BARS_BY_SYM,
-                        sym_u,
-                        list(cached_entry[5]) if len(cached_entry) >= 6 else [],
-                        128,
-                    )
+                    with _MEMO_LOCK:
+                        LAST_7D_SPAN_MS_BY_SYM[sym_u] = cached_entry[4]
+                        lru_dict_put(
+                            LAST_7D_4H_BARS_BY_SYM,
+                            sym_u,
+                            list(cached_entry[5]) if len(cached_entry) >= 6 else [],
+                            128,
+                        )
                     return list(cached_entry[2]), list(cached_entry[3])
             except Exception:
                 memo_key = None
@@ -1478,9 +1500,10 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         series_24h, vals_7d, arch_7d_end_ts, arch_7d_span_ms = extract_archive_24h_and_7d_slices(
             archive_pts, sparse_7d_pts, watcher_7d_pts, series_24h, symbol, need_24h_supplement, watcher_cutoff_24h
         )
-        LAST_7D_SPAN_MS_BY_SYM[sym_u] = arch_7d_span_ms
         bars_4h_7d = build_compact_4h_ohlc_bars(archive_pts, sparse_7d_pts, watcher_7d_pts)
-        lru_dict_put(LAST_7D_4H_BARS_BY_SYM, sym_u, bars_4h_7d, 128)
+        with _MEMO_LOCK:
+            LAST_7D_SPAN_MS_BY_SYM[sym_u] = arch_7d_span_ms
+            lru_dict_put(LAST_7D_4H_BARS_BY_SYM, sym_u, bars_4h_7d, 128)
         if isinstance(current_price_items, dict) and current_price_items:
             last_24_pt = parse_ts_px_row(series_24h[-1]) if series_24h else None
             for cand in cands:
@@ -1528,19 +1551,20 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         vals_7d = append_newer_24h_to_7d_vals(vals_7d, series_24h, arch_7d_end_ts)
 
         if memo_key is not None:
-            lru_dict_put(
-                _PRICE_SERIES_MEMO,
-                memo_key,
-                (
-                    memo_file_sig,
-                    memo_cur_sig,
-                    list(series_24h),
-                    list(vals_7d),
-                    arch_7d_span_ms,
-                    list(bars_4h_7d),
-                ),
-                128,
-            )
+            with _MEMO_LOCK:
+                lru_dict_put(
+                    _PRICE_SERIES_MEMO,
+                    memo_key,
+                    (
+                        memo_file_sig,
+                        memo_cur_sig,
+                        list(series_24h),
+                        list(vals_7d),
+                        arch_7d_span_ms,
+                        list(bars_4h_7d),
+                    ),
+                    128,
+                )
         return series_24h, vals_7d
 
 
@@ -1846,7 +1870,11 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             if cachedb_dir and is_eq_sym
             else ""
         )
-        memo_chart = EQ_YAHOO_CHART_MEMO.get(sym) if (is_eq_sym and is_live_network_backfill_enabled()) else None
+        if is_eq_sym and is_live_network_backfill_enabled():
+            with _MEMO_LOCK:
+                memo_chart = EQ_YAHOO_CHART_MEMO.get(sym)
+        else:
+            memo_chart = None
         memo_ttl_s = 240.0
         eq_rth_open = False
         if is_eq_sym:
@@ -2055,7 +2083,11 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         s24_p0 = parse_ts_px_row(matched_series_24h[0]) if len(matched_series_24h) >= 2 else None
         s24_p1 = parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
         span_24h_ms = max(0.0, s24_p1[0] - s24_p0[0]) if (s24_p0 and s24_p1) else 0.0
-        bars_4h_sym = LAST_7D_4H_BARS_BY_SYM.get(sym.upper()) if arch_vals_7d else None
+        if arch_vals_7d:
+            with _MEMO_LOCK:
+                bars_4h_sym = LAST_7D_4H_BARS_BY_SYM.get(sym.upper())
+        else:
+            bars_4h_sym = None
         m24: Dict[str, Any] = (
             _call_compute_24h(matched_series_24h, is_equity=is_eq_sym, series_7d_ts_px=bars_4h_sym, now_ts=eff_now)
             if matched_series_24h
@@ -2390,7 +2422,11 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                         p_ref.update(compute_7d_range_metrics(vals_7d))
                     pt_map[msym] = p_ref
                     if price_path_bars is not None and msym not in price_path_bars:
-                        ref_4h = LAST_7D_4H_BARS_BY_SYM.get(msym.upper()) if vals_7d else None
+                        if vals_7d:
+                            with _MEMO_LOCK:
+                                ref_4h = LAST_7D_4H_BARS_BY_SYM.get(msym.upper())
+                        else:
+                            ref_4h = None
                         if stitched_ref := _stitch_symbol_price_path_bars(ref_4h, None, ser_24h):
                             price_path_bars[msym] = stitched_ref
             enrich_microstructure_cvd(m_info_ref, p_ref)
