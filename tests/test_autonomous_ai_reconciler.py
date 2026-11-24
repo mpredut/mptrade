@@ -5674,13 +5674,13 @@ def test_per_topic_neon_high_vs_medium_vs_low_routing_and_120s_timeouts():
     assert repair_spec.preferred_model.endswith("-xhigh")
     assert repair_spec.default_timeout_sec == 240.0
 
-    for high_topic in ("guard_high_stake", "auto_sharetrade_executor", "macro_sentiment"):
+    for high_topic in ("guard_high_stake", "macro_sentiment"):
         spec = topic_spec(high_topic)
         assert spec.preferred_model == cfg_high
         assert spec.default_timeout_sec == 240.0
 
-    # 2. Crypto executor and post-stop guard use LLM_DEFAULT_MODEL and 240.0s timeout
-    for med_120_topic in ("auto_cryptotrade_executor", "guard_post_stop"):
+    # 2. Crypto/share executors (dynamic medium base -> high on strong signals) and post-stop guard use LLM_DEFAULT_MODEL
+    for med_120_topic in ("auto_cryptotrade_executor", "auto_sharetrade_executor", "guard_post_stop"):
         spec = topic_spec(med_120_topic)
         assert spec.preferred_model == cfg_med
         assert spec.default_timeout_sec == 240.0
@@ -5772,7 +5772,7 @@ def test_config_only_llm_model_migration_and_catalog_audit_auto_update(tmp_path,
 
     assert topic_spec("auto_technical_repair").preferred_model == "gemini-5-aurora-xhigh"
     assert topic_spec("auto_cryptotrade_executor").preferred_model == "gemini-5-aurora-medium"
-    assert topic_spec("auto_sharetrade_executor").preferred_model == "gemini-5-aurora-xhigh"
+    assert topic_spec("auto_sharetrade_executor").preferred_model == "gemini-5-aurora-medium"
     assert topic_spec("macro_sentiment").preferred_model == "gemini-5-aurora-xhigh"
     assert topic_spec("macro_geopolitical").preferred_model == "gemini-5-aurora-low"
     assert topic_spec("guard_post_stop").preferred_model == "gemini-5-aurora-high"

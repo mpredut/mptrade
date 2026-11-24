@@ -391,8 +391,8 @@ def _compute_max_spot_move(
     high_move_pct: float = 1.0,
     atr_15m_by_sym: Optional[Mapping[str, float]] = None,
     unactionable_syms: Optional[Collection[str]] = None,
-) -> Tuple[float, str, float, str, float, float, int, Dict[str, float]]:
-    """Compute raw max spot move and strongest per-symbol ATR-scaled threshold breach since the prior real eval."""
+) -> Tuple[float, str, float, str, float, float, int, Dict[str, float], bool]:
+    """Compute raw max spot move, strongest ATR-scaled wakeup breach, and high-effort breach via ``are_close``."""
     prev_prices: Dict[str, float] = {}
     if isinstance(prev_prices_raw, Mapping):
         for k, v in prev_prices_raw.items():
@@ -410,6 +410,7 @@ def _compute_max_spot_move(
     breach_move_pct = 0.0
     breach_thresh_pct = min_move_pct
     best_breach_ratio = 0.0
+    high_effort_breach = False
     common_count = 0
     for sym_u, cur_px in eval_prices.items():
         if sym_u not in prev_prices:
@@ -429,6 +430,8 @@ def _compute_max_spot_move(
             max_move_pct = move_pct
             max_move_sym = sym_u
             max_move_thresh_pct = sym_thresh
+        if high_move_pct > 0.0 and not are_close(cur_px, base_px, tolerance_percent=high_move_pct):
+            high_effort_breach = True
         if sym_thresh > 0.0 and not are_close(cur_px, base_px, tolerance_percent=sym_thresh):
             ratio = move_pct / sym_thresh
             if ratio > best_breach_ratio:
@@ -445,6 +448,7 @@ def _compute_max_spot_move(
         breach_thresh_pct,
         common_count,
         prev_prices,
+        high_effort_breach,
     )
 
 
@@ -545,6 +549,7 @@ def evaluate_crypto_executor_delta_gate(
         breach_thresh_pct,
         common_count,
         prev_prices,
+        high_effort_breach,
     ) = _compute_max_spot_move(
         eval_prices,
         prev_meta.get("eval_prices"),
@@ -558,7 +563,7 @@ def evaluate_crypto_executor_delta_gate(
     clean_focus = parse_symbol_list(focus_symbols) if focus_symbols else []
     escalate_high_effort = bool(
         clean_focus
-        or max_move_pct >= eff_high_move_pct
+        or high_effort_breach
         or has_new_fill
         or geo_shock
         or plan_trigger_reason

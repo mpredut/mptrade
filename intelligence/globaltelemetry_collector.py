@@ -847,8 +847,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                     eval_doc,
                     eff_now=eff_now,
                     max_idle_sec=cycle_sec * pos_float_env("AI_DELTA_GATE_MAX_IDLE_MULT", 3.0),
-                    min_move_pct=pos_float_env("AI_DELTA_GATE_MIN_PRICE_MOVE_PCT", 0.35),
-                    high_move_pct=pos_float_env("AI_HIGH_EFFORT_PRICE_MOVE_PCT", 1.0),
+                    min_move_pct=pos_float_env("AI_DELTA_GATE_MIN_PRICE_MOVE_PCT", 0.45),
+                    high_move_pct=pos_float_env("AI_HIGH_EFFORT_PRICE_MOVE_PCT", 1.25),
                 )
             if not shocked:
                 return None

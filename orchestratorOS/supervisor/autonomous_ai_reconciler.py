@@ -303,9 +303,10 @@ class AutonomousAIReconciler:
             if urgent_escalation is not None
             else is_urgent_delta_gate_wakeup("", focus_symbols=focus_symbols, sensors=sensors)
         )
+        topic_override_key = getattr(spec, "override_env_key", None) or ""
         if (
-            resolved_topic == "auto_cryptotrade_executor"
-            and not (optional_env("LLM_TOPIC_MODEL_AUTO_CRYPTOTRADE_EXECUTOR", "") or "").strip()
+            resolved_topic in ("auto_cryptotrade_executor", "auto_sharetrade_executor")
+            and not (topic_override_key and (optional_env(topic_override_key, "") or "").strip())
             and not getattr(self.gemini_auditor, "_explicit_model", False)
         ):
             high_model = (optional_env("LLM_HIGH_STAKE_MODEL", "") or "").strip()
@@ -514,8 +515,8 @@ class AutonomousAIReconciler:
             )
             max_idle_mult = safe_pos_float(optional_env("AI_DELTA_GATE_MAX_IDLE_MULT", ""), default=3.0) or 3.0
             max_idle_sec = exec_interval_sec * max_idle_mult
-            min_move_pct = safe_pos_float(optional_env("AI_DELTA_GATE_MIN_PRICE_MOVE_PCT", ""), default=0.35) or 0.35
-            high_effort_move_pct = safe_pos_float(optional_env("AI_HIGH_EFFORT_PRICE_MOVE_PCT", ""), default=1.0) or 1.0
+            min_move_pct = safe_pos_float(optional_env("AI_DELTA_GATE_MIN_PRICE_MOVE_PCT", ""), default=0.45) or 0.45
+            high_effort_move_pct = safe_pos_float(optional_env("AI_HIGH_EFFORT_PRICE_MOVE_PCT", ""), default=1.25) or 1.25
             _read_json = _resolve_repair_json_reader(read_json_recovering)
             eval_disk_path = _resolve_topic_cache_path(self.cache_dir, f"{topic_key}_eval.json")
             prev_eval_raw = (

@@ -1823,8 +1823,8 @@ def persist_supervisor_audit_artifact(
     """Persist full SupervisorAuditReport dict and heartbeat JSON to disk in cachedb/.
 
     When ``persist_eval=False`` (used by Delta-Gate no-op skips), only ``heartbeat_file`` is
-    refreshed so ``state_file`` retains the exact ``ts``/``mtime`` and price baseline of the
-    last genuine LLM evaluation (preventing 65s impulse-trigger suppression).
+    refreshed so ``state_file`` retains the exact ``ts``/``completed_ts``/``mtime`` and price baseline
+    of the last genuine LLM evaluation (preventing AI_IMPULSE_MIN_EVAL_GAP_SEC impulse-trigger suppression).
     """
     try:
         os.makedirs(cache_dir, exist_ok=True)

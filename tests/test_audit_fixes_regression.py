@@ -2102,22 +2102,38 @@ def test_subject1_flow_unifications_order_guard_auto_timeout_4h_cadence_and_shar
     monkeypatch.setattr("orchestratorOS.supervisor.autonomous_ai_reconciler.has_pending_ui_turn", lambda *_a, **_k: False)
     monkeypatch.setenv("AI_DELTA_GATE_ENABLED", "true")
 
-    # First RTH cycle wakes LLM (no_prev_eval) and records delta_gate_meta
+    # First RTH cycle wakes LLM (no_prev_eval, calm -> medium default model, no high-effort override)
+    monkeypatch.setenv("LLM_DEFAULT_MODEL", "gemini-4-neon-medium")
+    monkeypatch.setenv("LLM_HIGH_STAKE_MODEL", "gemini-4-neon-high")
+    monkeypatch.delenv("LLM_TOPIC_MODEL_AUTO_SHARETRADE_EXECUTOR", raising=False)
+    sup.gemini_auditor._explicit_model = False
+    sup.gemini_auditor.model = "gemini-4-neon-medium"
+    sup.gemini_auditor.fallback_models = ("gemini-4-neon-medium", "claude-sonnet-5-5-medium")
+
     rep1 = sup.run_cycle(topic_key="auto_sharetrade_executor", force_rth_open=True)
     assert len(llm_calls) == 1
     assert rep1.model_used != "delta_gate_skip"
+    assert llm_calls[-1][0] == "gemini-4-neon-medium"  # calm cycle uses LLM_DEFAULT_MODEL (-medium)
 
-    # Second flat RTH cycle (0.08% move < 0.35%) skips redundant LLM call
+    # Second flat RTH cycle (0.08% move <= 0.45%) skips redundant LLM call
     cur_px["px"] = 125.10
     rep2 = sup.run_cycle(topic_key="auto_sharetrade_executor", force_rth_open=True)
     assert len(llm_calls) == 1
     assert rep2.model_used == "delta_gate_skip"
 
-    # Third RTH cycle with meaningful move (+1.6% >= 0.35%) wakes LLM
-    cur_px["px"] = 127.00
+    # Third RTH cycle with moderate move (+0.72%, >0.45% and <=1.25%) wakes LLM on -medium (no high-effort escalation)
+    cur_px["px"] = 125.90
     rep3 = sup.run_cycle(topic_key="auto_sharetrade_executor", force_rth_open=True)
     assert len(llm_calls) == 2
     assert rep3.model_used != "delta_gate_skip"
+    assert llm_calls[-1][0] == "gemini-4-neon-medium"
+
+    # Fourth RTH cycle with strong move (+1.67% > 1.25% via are_close) wakes LLM AND escalates to LLM_HIGH_STAKE_MODEL (-high)
+    cur_px["px"] = 128.00
+    rep4 = sup.run_cycle(topic_key="auto_sharetrade_executor", force_rth_open=True)
+    assert len(llm_calls) == 3
+    assert rep4.model_used != "delta_gate_skip"
+    assert llm_calls[-1][0] == "gemini-4-neon-high"
     assert rep1.completed_ts is not None and rep1.completed_ts >= rep1.ts
 
 
@@ -2137,7 +2153,15 @@ def test_impulse_eval_gap_configurable_are_close_and_zero_benefit_triggers(tmp_p
     from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
     from orchestratorOS.supervisor.crypto_executor_delta_gate import evaluate_crypto_executor_delta_gate
 
-    # 1. Derived default matches ai_impulse_cooldown_sec (150s), NOT hardcoded 65s
+    # 1. Config.env exposes explicit AI_IMPULSE_COOLDOWN_SEC=120, AI_IMPULSE_MIN_EVAL_GAP_SEC=120,
+    #    AI_DELTA_GATE_MIN_PRICE_MOVE_PCT=0.45, AI_HIGH_EFFORT_PRICE_MOVE_PCT=1.25; derived gap matches cooldown (not 65s)
+    from botcore import parse_dotenv
+    root_cfg = parse_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.env"))
+    assert root_cfg.get("AI_IMPULSE_COOLDOWN_SEC") == "120"
+    assert root_cfg.get("AI_IMPULSE_MIN_EVAL_GAP_SEC") == "120"
+    assert root_cfg.get("AI_DELTA_GATE_MIN_PRICE_MOVE_PCT") == "0.45"
+    assert root_cfg.get("AI_HIGH_EFFORT_PRICE_MOVE_PCT") == "1.25"
+
     derived = resolve_derived_telemetry_intervals()
     assert derived["ai_impulse_min_eval_gap_sec"] == pytest.approx(derived["ai_impulse_cooldown_sec"])
     assert derived["ai_impulse_min_eval_gap_sec"] == pytest.approx(150.0)
