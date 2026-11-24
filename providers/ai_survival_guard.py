@@ -38,6 +38,10 @@ from .ai_circuit_breaker import (
     DEFAULT_SCORECARD_MAX_LOSS_STREAK,
     DEFAULT_SCORECARD_WINDOW_TRADES,
     DEFAULT_TARGET_EV_FEE_MULT,
+    DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS,
+    DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
+    DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
+    DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
 )
 from .intent_state import (
     _extract_intent_id,
@@ -526,6 +530,139 @@ def evaluate_ai_target_ev_guard(
             ),
             metrics,
         )
+    return True, "", metrics
+
+
+def evaluate_ai_tokenized_equity_sell_guard(
+    intent: dict[str, Any],
+    existing_intents: list[dict[str, Any]],
+    *,
+    decision: str,
+    symbol: str,
+    venue: str,
+    price: float,
+    confidence: float,
+    now_ts: float,
+    cost_basis_px: Optional[float] = None,
+    min_profit_pct: float = DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
+    min_target_drop_pct: float = DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
+    min_confidence: float = DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
+    cooldown_hours: float = DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS,
+) -> tuple[bool, str, dict[str, Any]]:
+    """Enforce long-term holding discipline on SELL-only tokenized equities (e.g. Kraken EU xStocks).
+
+    Because EU Spot API cannot BUY tokenized equities and the owner must manually log in to rebuy,
+    exits must be rare and require BOTH significant unrealized profit above active cost basis AND a
+    high-conviction multi-day (1-2+ day) downside thesis represented by an explicit ``target_px``.
+    Urgency ``HIGH`` does NOT bypass this guard so intraday panic dips cannot liquidate long-term stock holdings.
+    """
+    side = normalize_side(decision) or extract_intent_side(intent)
+    if side != "SELL":
+        return True, "", {}
+    ven = normalize_venue_name(clean_scalar_str(venue) or "")
+    sym = clean_scalar_str(symbol) or ""
+    if not (ven and sym and ProviderVenueMetadataMixin.supports_tokenized_assets(ven) and resolve_symbol_identity(sym).is_tokenized_equity):
+        return True, "", {}
+
+    req_profit_pct = safe_nonneg_float(min_profit_pct, default=DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT)
+    req_drop_pct = safe_nonneg_float(min_target_drop_pct, default=DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT)
+    req_conf = safe_nonneg_float(min_confidence, default=DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE)
+    req_cd_h = safe_nonneg_float(cooldown_hours, default=DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS)
+    if req_profit_pct <= 0.0 and req_drop_pct <= 0.0 and req_conf <= 0.0 and req_cd_h <= 0.0:
+        return True, "", {}
+
+    eff_px = safe_pos_float(price, default=0.0) or 0.0
+    eff_conf = safe_nonneg_float(confidence, default=0.0)
+    eff_now = resolve_now_ts(now_ts)
+    eff_cost = safe_pos_float(cost_basis_px, default=None)
+    metrics: dict[str, Any] = {
+        "xstock_sell_min_profit_pct": req_profit_pct,
+        "xstock_sell_min_target_drop_pct": req_drop_pct,
+        "xstock_sell_min_confidence": req_conf,
+        "xstock_sell_cooldown_hours": req_cd_h,
+    }
+    if eff_cost is not None:
+        metrics["xstock_cost_basis_px"] = round(eff_cost, 6)
+
+    if req_conf > 0.0 and eff_conf < req_conf - 1e-9:
+        return (
+            False,
+            f"ai_xstock_longterm_low_confidence({sym}@{ven}:conf={eff_conf:.2f}<{req_conf:.2f})",
+            metrics,
+        )
+
+    if req_profit_pct > 0.0:
+        if eff_cost is None or eff_px <= 0.0:
+            return (
+                False,
+                f"ai_xstock_longterm_missing_cost_basis({sym}@{ven}:cannot verify >={req_profit_pct:g}% profit)",
+                metrics,
+            )
+        profit_pct = ((eff_px - eff_cost) / eff_cost) * 100.0
+        metrics["xstock_profit_pct"] = round(profit_pct, 3)
+        if profit_pct < req_profit_pct - 1e-9:
+            return (
+                False,
+                (
+                    f"ai_xstock_longterm_min_profit({sym}@{ven}:px={eff_px:g} vs cost={eff_cost:g}, "
+                    f"profit={profit_pct:+.2f}%<+{req_profit_pct:g}%)"
+                ),
+                metrics,
+            )
+
+    if req_drop_pct > 0.0 and eff_px > 0.0:
+        _, tgt_px = extract_intent_trade_plan_levels(intent, side="SELL", ref_price=eff_px)
+        if tgt_px is None:
+            return (
+                False,
+                (
+                    f"ai_xstock_longterm_missing_target_px({sym}@{ven}:requires explicit multi-day "
+                    f"target_px >= {req_drop_pct:g}% below sell price)"
+                ),
+                metrics,
+            )
+        drop_pct = ((eff_px - tgt_px) / eff_px) * 100.0
+        metrics["target_px"] = tgt_px
+        metrics["xstock_target_drop_pct"] = round(drop_pct, 3)
+        if drop_pct < req_drop_pct - 1e-9:
+            return (
+                False,
+                (
+                    f"ai_xstock_longterm_min_target_drop({sym}@{ven}:target={tgt_px:g}, "
+                    f"drop={drop_pct:.2f}%<{req_drop_pct:g}% multi-day floor)"
+                ),
+                metrics,
+            )
+
+    if req_cd_h > 0.0:
+        cur_iid = _extract_intent_id(intent)
+        items = existing_intents if isinstance(existing_intents, list) else []
+        canceled_oids = _collect_canceled_order_ids(items, exclude_iid=cur_iid)
+        cd_sec = req_cd_h * 3600.0
+        latest_sell_ts = 0.0
+        for it in items:
+            if not isinstance(it, dict) or (cur_iid and _extract_intent_id(it) == cur_iid):
+                continue
+            if not _is_filled_ai_intent(it, canceled_oids):
+                continue
+            if extract_intent_side(it) != "SELL":
+                continue
+            if not symbols_match_intent_scope_and_quote(
+                it.get("symbol"), sym, venue_a=it.get("venue"), venue_b=ven
+            ):
+                continue
+            ts_s = _extract_intent_exec_ts(it)
+            if 0.0 < ts_s <= eff_now + 60.0 and ts_s > latest_sell_ts:
+                latest_sell_ts = ts_s
+        if latest_sell_ts > 0.0 and (eff_now - latest_sell_ts) < cd_sec:
+            elapsed_h = max(0.0, (eff_now - latest_sell_ts) / 3600.0)
+            metrics["xstock_sell_elapsed_hours"] = round(elapsed_h, 2)
+            return (
+                False,
+                f"ai_xstock_longterm_sell_cooldown({sym}@{ven}:dt={elapsed_h:.1f}h<{req_cd_h:g}h)",
+                metrics,
+            )
+
     return True, "", metrics
 
 
@@ -1371,6 +1508,7 @@ __all__ = [
     "evaluate_ai_decision_scorecard",
     "evaluate_ai_ping_pong_guard",
     "evaluate_ai_target_ev_guard",
+    "evaluate_ai_tokenized_equity_sell_guard",
     "evaluate_filled_trade_plans",
     "extract_fill_execution_slippage",
     "extract_live_prices_from_cache_payload",

@@ -54,7 +54,7 @@ send_os_ntfy() {
     if [ -z "$topic" ]; then
         case "$title" in
             *FAILED*|*ERROR*|*CRITICAL*|*DOWN*|*DEAD*) topic="$(ntfy_error_topic)" ;;
-            autodeploy*|*Deadman*|*"Server Status"*) topic="$(ntfy_server_topic)" ;;
+            autodeploy*|*Deadman*|*"Server Status"*|*RECOVERED*|*Recovered*|*RESTORED*|*Restored*|*REPAIRED*|*Repaired*|*RESTARTED*|*Restarted*|*"Reset OK"*|*Reconnected*|*"Attempting Reconnect"*) topic="$(ntfy_server_topic)" ;;
             *) topic="$(ntfy_error_topic)" ;;
         esac
     fi

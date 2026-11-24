@@ -36,10 +36,11 @@ def save_state(state_file, state):
         print(f"[watchdog] cannot write state: {e}")
 
 
-def send_ntfy(title, message):
-    # watchdog = ERROR category -> prefer dedicated topic; fallback to PHONE_ALERT_URL
+def send_ntfy(title, message, *, topic_env_key="NTFY_TOPIC_ERROR"):
+    # Default ERROR category -> prefer dedicated topic; fallback to NTFY_TOPIC_ERROR / PHONE_ALERT_URL
     url = (
-        format_ntfy_url(optional_env("NTFY_TOPIC_ERROR"))
+        format_ntfy_url(optional_env(topic_env_key))
+        or format_ntfy_url(optional_env("NTFY_TOPIC_ERROR"))
         or format_ntfy_url(optional_env("PHONE_ALERT_URL"))
         or None
     )

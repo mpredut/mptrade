@@ -93,7 +93,8 @@ check_resolved_cpu() {
         log "systemd-resolved CPU high: ${cpu}% (${count}/${PIA_RESOLVED_CPU_CONSECUTIVE})"
         if [ "$count" -ge "$PIA_RESOLVED_CPU_CONSECUTIVE" ]; then
             alert "DNS resolver restarted ($(hostname))" \
-                "systemd-resolved stayed above ${PIA_RESOLVED_CPU_THRESHOLD}% CPU for $count checks (last ${cpu}%). Restarting it before DNS stalls the trading fleet."
+                "systemd-resolved stayed above ${PIA_RESOLVED_CPU_THRESHOLD}% CPU for $count checks (last ${cpu}%). Restarting it before DNS stalls the trading fleet." \
+                "$(ntfy_server_topic)"
             systemctl restart systemd-resolved.service
             sleep 3
             printf '0\n' > "$count_file"
@@ -111,13 +112,14 @@ check_resolved_cpu() {
 # ===== ALERTS =============================================================
 ntfy_push() {
     net_raw_ok || return 1
-    local topic; topic=$(ntfy_error_topic)
+    local topic="${3:-$(ntfy_error_topic)}"
     [ -z "$topic" ] && return 1
     send_os_ntfy "$1" "$2" default "$topic"
 }
 
 alert() {
-    if ntfy_push "$1" "$2"; then
+    local topic="${3:-$(ntfy_error_topic)}"
+    if ntfy_push "$1" "$2" "$topic"; then
         log "alert sent: $1"
     else
         local spool_body="${2//$'\n'/ | }"
@@ -343,10 +345,12 @@ if vpn_healthy && [ "$FORCE" = 0 ] && check_resolved_cpu; then
         [[ "${outage_ts:-}" =~ ^[0-9]+$ ]] || outage_ts=$(date +%s)
         mins=$(( ( $(date +%s) - outage_ts ) / 60 ))
         rm -f "$OUTAGE_MARK"
+        cur_reg=$(pia get region 2>/dev/null | tr -d '\r')
         alert "PIA restored ($(hostname))" \
 "The tunnel works again after ${mins} min of downtime.
-VPN IP: $(pia get vpnip) | region: $(pia get region)
-Check the fleet: systemctl is-active python_orchestrator.service ."
+VPN IP: $(pia get vpnip) | region: ${cur_reg}
+Check the fleet: systemctl is-active python_orchestrator.service ." \
+            "$(pia_region_alert_topic "$cur_reg")"
     fi
     pia_state=$(systemctl show -p ActiveState --value pia.service 2>/dev/null || echo "")
     if systemctl is-enabled --quiet pia.service 2>/dev/null \
@@ -364,7 +368,8 @@ Check the fleet: systemctl is-active python_orchestrator.service ."
         log "python_orchestrator.service enabled but inactive while PIA is healthy -> starting it"
         systemctl start python_orchestrator.service >/dev/null 2>&1
         alert "Fleet restarted ($(hostname))" \
-"PIA is healthy but python_orchestrator.service was down; the watchdog restarted it. Touch FLEET_PAUSED to pause this."
+"PIA is healthy but python_orchestrator.service was down; the watchdog restarted it. Touch FLEET_PAUSED to pause this." \
+            "$(ntfy_server_topic)"
     fi
     log "OK (tun0 + HTTPS through the tunnel), region=$(pia get region) vpnip=$(pia get vpnip)"
     exit 0
@@ -427,11 +432,13 @@ for rung in $LADDER; do
         [[ "${outage_ts:-}" =~ ^[0-9]+$ ]] || outage_ts=$(date +%s)
         mins=$(( ( $(date +%s) - outage_ts ) / 60 ))
         rm -f "$OUTAGE_MARK" "$BACKOFF_FILE"
-        log "RECOVERED at $rung (vpnip=$(pia get vpnip))"
+        cur_reg=$(pia get region 2>/dev/null | tr -d '\r')
+        log "RECOVERED at $rung (vpnip=$(pia get vpnip) region=${cur_reg})"
         alert "PIA repaired automatically ($(hostname))" \
 "The tunnel was restored by $rung after ~${mins} min of downtime.
-VPN IP: $(pia get vpnip) | region: $(pia get region)
-If the region is NOT the dedicated one, Binance will return -2015 until the DIP token is restored."
+VPN IP: $(pia get vpnip) | region: ${cur_reg}
+If the region is NOT the dedicated one, Binance will return -2015 until the DIP token is restored." \
+            "$(pia_region_alert_topic "$cur_reg")"
         systemctl reset-failed pia.service >/dev/null 2>&1
         systemctl start pia.service        >/dev/null 2>&1
         if [ ! -e "$ROOT/FLEET_PAUSED" ]; then

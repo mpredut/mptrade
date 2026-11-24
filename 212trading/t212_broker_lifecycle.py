@@ -901,8 +901,11 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
         )
         if cycle_closed:
             exit_kind = (pending_for_fill or {}).get("kind") if isinstance(pending_for_fill, dict) else None
+            exit_px = first_pos_float(self.s.get("last_sell_price"), price) or price
+            if exit_kind is None and prev_avg and prev_avg > 0 and exit_px < prev_avg * 0.995:
+                exit_kind = "REDUCE"
             self._close_cycle(
-                first_pos_float(self.s.get("last_sell_price"), price) or price,
+                exit_px,
                 keep_pending_submit=True,
                 exit_kind=exit_kind,
             )

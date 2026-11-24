@@ -643,7 +643,7 @@ def _spawn_xstock_bot(pair: str, alloc_price: float, log_path: str, *, relaunch:
     log(f"  \U0001f916 BOT {verb}: pid {proc.pid}  pair {pair}  adopt @ {alloc_price}  (log: {log_path})")
     notify(title=f"\U0001f916 BOT {verb} on {pair} (adopt @ {alloc_price})",
            body=f"{body_prefix}. pid {proc.pid}, log {log_path}",
-           source="xstock-watch", price=alloc_price, desktop=desktop, email=True)
+           source="xstock-watch", price=alloc_price, desktop=desktop, email=False)
     return proc.pid
 
 

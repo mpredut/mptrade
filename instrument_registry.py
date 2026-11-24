@@ -285,6 +285,38 @@ def symbols_for(provider=None, role=None, *, path=None):
     return [spec.symbol for spec in select_instruments(provider, role, path=path).values()]
 
 
+def disabled_registry_symbols(workspace_dir: str | Path | None = None, *, path=None) -> frozenset[str]:
+    """Return uppercase symbols explicitly disabled (`enabled = no`) in `instruments.conf` and not enabled elsewhere.
+
+    When `workspace_dir` is provided and does not contain its own `instruments.conf` (e.g. isolated test
+    temp workspaces), returns an empty set rather than leaking the repository root registry.
+    """
+    target_path = path
+    if target_path is None and workspace_dir is not None:
+        ws_str = clean_scalar_str(os.fspath(workspace_dir)) if isinstance(workspace_dir, (str, Path)) else None
+        if not ws_str:
+            return frozenset()
+        ws_conf = os.path.join(ws_str, "instruments.conf")
+        if not os.path.isfile(ws_conf):
+            return frozenset()
+        target_path = ws_conf
+    try:
+        _, reg = _load_registry_cached(target_path)
+    except Exception:
+        return frozenset()
+    enabled_keys: set[str] = set()
+    disabled_keys: set[str] = set()
+    for spec in reg.values():
+        sym_u = clean_upper_scalar(spec.symbol) or ""
+        sym_k = clean_symbol_key(spec.symbol) or ""
+        keys = {k for k in (sym_u, sym_k) if k}
+        if spec.enabled:
+            enabled_keys.update(keys)
+        else:
+            disabled_keys.update(keys)
+    return frozenset(disabled_keys - enabled_keys)
+
+
 def resolve_registered_symbol_case(symbol: object, provider: str | None = None, *, path=None) -> str:
     """Return the exact-case ``spec.symbol`` from ``instruments.conf`` when registered (e.g. ``SPCXXUSD`` -> ``SPCXxUSD``)."""
     raw = clean_scalar_str(symbol)

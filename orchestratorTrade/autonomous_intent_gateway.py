@@ -42,17 +42,21 @@ from botcore import (
     extract_order_id,
     extract_order_price,
     extract_timestamp_s,
+    first_pos_float,
     format_notify_price,
     is_us_rth_open,
     load_key_value_conf,
     opposite_side,
     safe_nonneg_float,
     safe_pos_float,
+    split_csv,
 )
 from cachepaths import (
     AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
     CACHE_CURRENT_PRICE_FILENAME,
+    VENUE_RUNTIME_DIR_MAP,
     is_equity_venue_or_suffix,
+    normalize_venue_name,
     resolve_cachedb_filepath,
 )
 from instrument import (
@@ -60,7 +64,12 @@ from instrument import (
     resolve_instrument_live_price,
     resolve_tradable_instrument,
 )
-from instrument_registry import discover_tradable_specs, resolve_instrument_spec
+from instrument_registry import (
+    discover_tradable_specs,
+    resolve_instrument_spec,
+    resolve_kraken_tokenized_pair,
+    resolve_symbol_identity,
+)
 from intelligence.sentiment.evaluators.guard_probe_evaluator import (
     probe_deterministic_guards,
 )
@@ -78,6 +87,10 @@ from providers.ai_circuit_breaker import (
     DEFAULT_SCORECARD_MAX_LOSS_STREAK,
     DEFAULT_SCORECARD_WINDOW_TRADES,
     DEFAULT_TARGET_EV_FEE_MULT,
+    DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS,
+    DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
+    DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
+    DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
     evaluate_ai_intent_circuit_breaker,
     parse_intent_circuit_breaker_config,
 )
@@ -85,8 +98,10 @@ from providers.ai_survival_guard import (
     evaluate_ai_decision_scorecard,
     evaluate_ai_ping_pong_guard,
     evaluate_ai_target_ev_guard,
+    evaluate_ai_tokenized_equity_sell_guard,
     extract_live_prices_from_cache_payload,
 )
+from providers.venue_metadata import ProviderVenueMetadataMixin
 from providers.nav_drawdown import (
     DEFAULT_DAILY_NAV_DD_LIMIT_PCT,
     DEFAULT_DAILY_NAV_DD_MODE,
@@ -192,6 +207,10 @@ class AutonomousIntentGateway:
         self.scorecard_cooldown_hours: float = cb_cfg["scorecard_cooldown_hours"]
         self.daily_nav_dd_mode: str = cb_cfg["daily_nav_dd_mode"]
         self.daily_nav_dd_limit_pct: float = cb_cfg["daily_nav_dd_limit_pct"]
+        self.xstock_sell_min_profit_pct: float = cb_cfg["xstock_sell_min_profit_pct"]
+        self.xstock_sell_min_target_drop_pct: float = cb_cfg["xstock_sell_min_target_drop_pct"]
+        self.xstock_sell_min_confidence: float = cb_cfg["xstock_sell_min_confidence"]
+        self.xstock_sell_cooldown_hours: float = cb_cfg["xstock_sell_cooldown_hours"]
 
     def load_all_intents(self) -> List[Dict[str, Any]]:
         """Loads all intents from the durable JSON queue with `.previous` crash recovery."""
@@ -327,6 +346,40 @@ class AutonomousIntentGateway:
             desired_usd,
             min_notional_usd=self.min_notional_usd,
         )
+
+    def _resolve_tokenized_equity_cost_basis(self, venue: str, symbol: str) -> Optional[float]:
+        """Resolve active unit cost basis for a tokenized equity from its venue cycle state or active-pair config."""
+        ven = normalize_venue_name(venue) or ""
+        rel_dir = VENUE_RUNTIME_DIR_MAP.get(ven, ven)
+        if not rel_dir:
+            return None
+        venue_dir = os.path.join(self.workspace_dir, rel_dir)
+        ident = resolve_symbol_identity(symbol, venue=ven)
+        wire_sym = ident.wire_symbol or ident.display_symbol or str(symbol or "").strip()
+        for cand_sym in dict.fromkeys((wire_sym, str(symbol or "").strip(), wire_sym.upper())):
+            if not cand_sym:
+                continue
+            st_path = os.path.join(venue_dir, f".state_{cand_sym}.json")
+            if os.path.isfile(st_path):
+                st_data = read_json_dict(st_path, default={}, recover_previous=True)
+                qty_f = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0
+                cost_f = safe_nonneg_float(st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost"), default=0.0) or 0.0
+                if qty_f > 1e-6:
+                    px_v = first_pos_float(
+                        (cost_f / qty_f) if cost_f > 0.0 else None,
+                        st_data.get("entry_price"),
+                        st_data.get("last_buy_price"),
+                    )
+                    if px_v is not None:
+                        return px_v
+        cfg_map = load_key_value_conf(venue_dir, root_dir=venue_dir)
+        for raw_spec in split_csv(cfg_map.get("xstock_active_pairs") or ""):
+            raw_p, _, raw_c = raw_spec.partition(":")
+            norm_p = resolve_kraken_tokenized_pair(raw_p.strip())[0] if raw_p.strip() else ""
+            if norm_p and norm_p.upper() == wire_sym.upper():
+                if (cfg_px := safe_pos_float(raw_c, default=None)) is not None:
+                    return cfg_px
+        return None
 
     def _dispatch_notify(self, title: str, body: str, symbol: str) -> bool:
         """Dispatches an alert notification via notify_engine."""
@@ -684,6 +737,37 @@ class AutonomousIntentGateway:
                 ),
                 effective_usd,
             )
+
+        if (
+            decision == "SELL"
+            and ProviderVenueMetadataMixin.supports_tokenized_assets(venue)
+            and resolve_symbol_identity(symbol, venue=venue).is_tokenized_equity
+        ):
+            tok_cost_px = self._resolve_tokenized_equity_cost_basis(venue, symbol)
+            xs_allowed, xs_reason, xs_metrics = evaluate_ai_tokenized_equity_sell_guard(
+                intent,
+                all_intents,
+                decision=decision,
+                symbol=symbol,
+                venue=venue,
+                price=price,
+                confidence=confidence,
+                now_ts=now_ts,
+                cost_basis_px=tok_cost_px,
+                min_profit_pct=getattr(self, "xstock_sell_min_profit_pct", DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT),
+                min_target_drop_pct=getattr(self, "xstock_sell_min_target_drop_pct", DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT),
+                min_confidence=getattr(self, "xstock_sell_min_confidence", DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE),
+                cooldown_hours=getattr(self, "xstock_sell_cooldown_hours", DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS),
+            )
+            if not xs_allowed:
+                return (
+                    self._block_by_circuit_breaker(
+                        inst, intent, mode=mode, decision=decision, price=price, effective_usd=effective_usd,
+                        confidence=confidence, thesis=thesis, trade_tag=trade_tag, now_ts=now_ts,
+                        is_limit=is_limit, reason_str=xs_reason, metrics_dict=xs_metrics,
+                    ),
+                    effective_usd,
+                )
 
         live_spot_px = price
         if is_limit:

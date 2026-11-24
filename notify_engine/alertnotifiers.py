@@ -50,6 +50,7 @@ from botcore import (
     safe_int,
     safe_nonneg_int,
     safe_pos_float,
+    split_csv,
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -1349,10 +1350,14 @@ _OPS_MARKERS = (*_PRIMARY_ERROR_MARKERS, *_BILINGUAL_ERROR_MARKERS, "MANUAL")
 _EXPLICIT_ERROR_MARKERS = (*_PRIMARY_ERROR_MARKERS, *_BILINGUAL_ERROR_MARKERS, "CRASH")
 _SERVER_MARKERS = (
     "CONFIG RELOAD", "CONFIG CHANGED", "CONFIG PROPOSAL", "PILOT BACKTEST", "BACKTEST:",
-    "SERVER STATUS", "SERVER DOWN", "DEADMAN",
+    "SERVER STATUS", "AUTODEPLOY",
     "BOT RESTARTED", "BOT AUTO-STARTED", "FLEET RESTARTED", "SERVICE RESTARTED",
     "PROCESS RESTARTED", "DAEMON RESTARTED", "DNS RESOLVER RESTARTED",
+    "ZOMBIE BOT TERMINATED", "PROCESS RESOURCE USAGE RECOVERED",
 )
+_DEADMAN_MARKERS = ("SERVER DOWN", "DEADMAN")
+_NON_LIVE_SELL_MARKERS = ("EXPIRED", "CANCEL", "SHADOW", "REFUSED", "BLOCKED", "SKIPPED", "WOULD ")
+_WORD_SELL_RE = re.compile(r"\bSELL\b", re.IGNORECASE)
 _PRICE_ALERT_SOURCES = ("coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier")
 _NOTIFICATION_SERVER_CLS: Any = None
 
@@ -1385,7 +1390,11 @@ def _clean_str(val: Any, default: str = "", *, strip: bool = False) -> str:
 
 def resolve_topic(category: str) -> str:
     cat = _clean_str(category, strip=True).upper()
-    if cat in ("SERVER", "SERVER_STATE", "SERVER_STATUS", "DEADMAN"):
+    if cat == "DEADMAN":
+        if not optional_env("NTFY_TOPIC_DEADMAN") and not optional_env("NTFY_TOPIC_ERROR"):
+            load_env_stack()
+        return optional_env("NTFY_TOPIC_DEADMAN") or required_env("NTFY_TOPIC_ERROR")
+    if cat in ("SERVER", "SERVER_STATE", "SERVER_STATUS"):
         cat = "SERVER"
     key = f"NTFY_TOPIC_{cat}"
     if not optional_env(key):
@@ -1403,12 +1412,16 @@ def _category_for_title_and_source(title: str, source: str) -> str:
         return "SERVER"
     if "MACRO" in t or "macro" in s or "geopolitical" in s:
         return "MACRO"
-    if any(m in t_no_owner for m in _PRIMARY_ERROR_MARKERS) or "watchdog" in s:
+    if any(m in t_no_owner for m in _DEADMAN_MARKERS) or "deadman" in s:
+        return "DEADMAN"
+    if any(m in t_no_owner for m in _PRIMARY_ERROR_MARKERS):
+        return "ERROR"
+    if any(m in t_no_owner for m in _SERVER_MARKERS) or "scheduled_pilot" in s:
+        return "SERVER"
+    if "watchdog" in s:
         return "ERROR"
     if any(m in t_no_owner for m in _GUARD_MARKERS) or any(m in s for m in ("guard", "trail", "assetguardian", "stop")):
         return "GUARD"
-    if any(m in t_no_owner for m in _SERVER_MARKERS) or "deadman" in s or "scheduled_pilot" in s:
-        return "SERVER"
 
     has_trade_marker = any(m in t_no_owner for m in _TRADE_MARKERS) or s in ("tradeall", "rtrade", "monitororder")
     has_explicit_error = any(m in t_no_owner for m in _EXPLICIT_ERROR_MARKERS) or "watchdog" in s
@@ -1433,7 +1446,7 @@ def _topic_for_category(title: str, source: str) -> str:
     return resolve_topic(cat)
 
 
-EMAIL_MIRRORED_CATEGORIES = ("ERROR", "DEADMAN", "SERVER")
+EMAIL_MIRRORED_CATEGORIES = ("ERROR", "DEADMAN")
 
 
 def is_email_mirrored(topic: str | None) -> bool:
@@ -1447,8 +1460,37 @@ def is_email_mirrored(topic: str | None) -> bool:
     }
     topics.discard("")
     if not topics:
-        topics.update({"ntfy-error-1978", "ntfy-server-1978"})
+        topics.update({"ntfy-error-1978"})
     return _canonical_topic_key(topic) in topics
+
+
+def should_email_trade_sell_alert(title: str, symbol: str = "", source: str = "") -> bool:
+    """Return True when a live SELL trade notification matches a base asset in ``NOTIFICATION_EMAIL_SELL_BASES``."""
+    raw_bases = optional_env("NOTIFICATION_EMAIL_SELL_BASES")
+    if not raw_bases and not optional_env("NTFY_TOPIC_ERROR"):
+        load_env_stack()
+        raw_bases = optional_env("NOTIFICATION_EMAIL_SELL_BASES")
+    bases = {
+        canonical_base_asset(b) or str(b).strip().upper()
+        for b in split_csv(raw_bases or "")
+        if str(b).strip()
+    }
+    bases.discard("")
+    if not bases:
+        return False
+    t_clean = strip_owner_tags(_clean_str(title)).upper()
+    if not t_clean or not _WORD_SELL_RE.search(t_clean):
+        return False
+    if any(m in t_clean for m in _NON_LIVE_SELL_MARKERS):
+        return False
+    if _category_for_title_and_source(title, source) != "TRADES":
+        return False
+    sym_s = _clean_str(symbol, strip=True)
+    if sym_s:
+        sym_base = canonical_base_asset(sym_s) or sym_s.upper()
+        if sym_base in bases:
+            return True
+    return any(re.search(rf"\b{re.escape(b)}(?:X?USD[CT]?|_US_EQ)?\b", t_clean) for b in bases)
 
 
 def notify(title: str, body: str, source: str, symbol: str,
@@ -1457,7 +1499,8 @@ def notify(title: str, body: str, source: str, symbol: str,
     """Shared bot-event notifier: ntfy (routed by category) plus optional email.
 
     ERROR-category events reach email automatically through the server's topic mirror
-    (notify_engine.mailer). ``email=True`` forces a copy for any other category.
+    (notify_engine.mailer). ``email=True`` or a SELL matching ``NOTIFICATION_EMAIL_SELL_BASES``
+    forces a copy for any other category.
     """
     if _external_notifications_disabled():
         return
@@ -1477,7 +1520,10 @@ def notify(title: str, body: str, source: str, symbol: str,
         _emit_orchestrator_intent(intent)
     else:
         _get_notification_server().dispatch_alerts([alert])
-    if _parse_bool_flag(email, False):
+    force_email = _parse_bool_flag(email, False) or (
+        email is not False and should_email_trade_sell_alert(title, symbol, source)
+    )
+    if force_email:
         if not is_email_mirrored(_topic_for_category(title, source)):
             AlertNotifier.send_email_batch([alert], subject=title)
 

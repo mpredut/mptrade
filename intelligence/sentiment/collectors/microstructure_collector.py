@@ -174,6 +174,7 @@ from instrument_registry import (
     canonical_display_symbol,
     casefold_get,
     coalesce_symbol_case_variants,
+    disabled_registry_symbols,
     discover_hyperliquid_spot,
     is_equity_symbol,
     is_symbol_market_open,
@@ -877,6 +878,8 @@ def discover_reference_microstructure_symbols(
     if not cache_dir or not os.path.isdir(cache_dir):
         return []
     _rj = _resolve_read_json_cached(read_json_fn)
+    ws_dir = os.path.dirname(os.path.abspath(str(cache_dir).rstrip("/\\")))
+    disabled_syms = disabled_registry_symbols(ws_dir) if ws_dir else frozenset()
     covered_micro_bases = {
         canonical_base_asset(k)
         for k in microstructure
@@ -891,6 +894,8 @@ def discover_reference_microstructure_symbols(
                 if (
                     msym
                     and raw_msym.isalnum()
+                    and raw_msym not in disabled_syms
+                    and msym.upper() not in disabled_syms
                     and not has_equity_suffix(msym)
                     and msym not in microstructure
                     and raw_msym not in microstructure
@@ -1108,6 +1113,7 @@ def upgrade_tpo_vp_from_ohlc(
     inst_by_sym: Optional[Dict[str, Any]] = None,
     cache_dir: Optional[str] = None,
     allow_network: bool = True,
+    series_24h_start_ms: Optional[float] = None,
 ) -> List[List[Any]]:
     """Upgrade a TPO volume profile in `m24` to REAL_VOL using 24h OHLC bars when available and non-diverged."""
     if not m24 or m24.get("vp_source") != "TPO":
@@ -1163,16 +1169,36 @@ def upgrade_tpo_vp_from_ohlc(
                 l24_b = safe_pos_float(m24.get("low_24h"), default=None)
                 h24_b = safe_pos_float(m24.get("high_24h"), default=None)
                 vp_pxs = [px_v for p in pts_vp if len(p) >= 2 and (px_v := safe_pos_float(p[1], default=None)) is not None]
+                partial_local_24h = bool(
+                    series_24h_start_ms is not None
+                    and series_24h_start_ms > 0.0
+                    and now_ts > 0.0
+                    and (now_ts * 1000.0 - series_24h_start_ms) < 22 * 3_600_000.0
+                )
+                overlap_pxs = (
+                    [
+                        px_v
+                        for p in pts_vp
+                        if len(p) >= 2
+                        and p[0] >= series_24h_start_ms - 3_600_000.0
+                        and (px_v := safe_pos_float(p[1], default=None)) is not None
+                    ]
+                    if partial_local_24h
+                    else vp_pxs
+                )
+                check_pxs = overlap_pxs or vp_pxs
                 if (
                     l24_b is None
                     or h24_b is None
-                    or (vp_pxs and min(vp_pxs) >= l24_b * 0.985 and max(vp_pxs) <= h24_b * 1.015)
+                    or (check_pxs and min(check_pxs) >= l24_b * 0.985 and max(check_pxs) <= h24_b * 1.015)
                 ):
                     if l24_b is not None and h24_b is not None:
+                        eff_l24 = min(l24_b, min(vp_pxs)) if (partial_local_24h and vp_pxs) else l24_b
+                        eff_h24 = max(h24_b, max(vp_pxs)) if (partial_local_24h and vp_pxs) else h24_b
                         pts_vp = [
                             clamped_r
                             for p in pts_vp
-                            if (clamped_r := normalize_ohlc_row(p, clamp_bounds=(l24_b, h24_b))) is not None
+                            if (clamped_r := normalize_ohlc_row(p, clamp_bounds=(eff_l24, eff_h24))) is not None
                         ]
                     if cur_px > 0:
                         pts_vp.append([math.trunc(now_ts * 1000), cur_px, 0.0])
@@ -2098,6 +2124,11 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                         active_7d_vals = list(vals_7d)
                 except Exception:
                     pass
+        s24_start_ms = (
+            safe_pos_float(matched_series_24h[0][0], default=None)
+            if matched_series_24h and isinstance(matched_series_24h[0], (list, tuple)) and len(matched_series_24h[0]) >= 1
+            else None
+        )
         ohlc_24h_vp = upgrade_tpo_vp_from_ohlc(
             sym,
             m24,
@@ -2108,6 +2139,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             inst_by_sym=inst_map,
             cache_dir=cachedb_dir,
             allow_network=allow_network,
+            series_24h_start_ms=s24_start_ms,
         )
         pt_map[sym].pop("_partial_7d_span_ms", None)
         if allow_network:

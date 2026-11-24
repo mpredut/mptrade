@@ -1499,6 +1499,75 @@ class EmailMirrorTest(TempDirTestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertIn("SERVER DOWN", self.sent[0][0]["Subject"])
 
+    def test_server_topic_is_push_only_and_spcx_sell_emails(self):
+        """Verify non-critical SERVER notifications skip email, while live SPCX SELL alerts trigger email."""
+        from notify_engine.alertnotifiers import (
+            EMAIL_MIRRORED_CATEGORIES,
+            is_email_mirrored,
+            should_email_trade_sell_alert,
+        )
+
+        self.assertEqual(EMAIL_MIRRORED_CATEGORIES, ("ERROR", "DEADMAN"))
+        with patch.dict(os.environ, {"NTFY_TOPIC_SERVER": "t-server", "NOTIFICATION_EMAIL_SELL_BASES": "SPCX"}):
+            self.assertFalse(is_email_mirrored("t-server"))
+            self.assertTrue(is_email_mirrored("t-error"))
+            self.assertTrue(is_email_mirrored("t-deadman"))
+
+            # Routine SERVER events (autodeploy, bot restart, fleet restart, zombie restart) do NOT email
+            with patch("requests.post", return_value=_WatchdogResp()):
+                for title, src in (
+                    ("autodeploy (trading)", "os_notify"),
+                    ("\U0001f916 BOT RESTARTED (was down) on SPCXxUSD (adopt @ 141.75)", "xstock-watch"),
+                    ("Fleet restarted (trading)", "orchestrator"),
+                    ("Zombie Bot Terminated: globaltelemetry_collector", "orchestrator"),
+                    ("Process resource usage recovered", "os_resources_watchdog"),
+                ):
+                    self.assertEqual(_category_for_title_and_source(title, src), "SERVER")
+                    self.server._send_ntfy(title, "routine detail", "default", "t-server")
+            self.assertEqual(self.sent, [])
+
+            # Live SPCX SELL alerts trigger email, whereas BUY/EXPIRED/REFUSED/BTC SELL do not
+            self.assertTrue(should_email_trade_sell_alert("PLACED SELL SPCX@155.00 ~1550 $~ [kraken:auto_cryptotrade_executor]", "SPCXxUSD", "llm_trader"))
+            self.assertTrue(should_email_trade_sell_alert("FILLED SELL SPCX@155.00 ~1550 $~ [kraken:kraken_bot]", "SPCXxUSD", "kraken"))
+            self.assertTrue(should_email_trade_sell_alert("FILLED SELL SPCX@155.00 ~1550 $~ [t212:t212_bot]", "SPCX_US_EQ", "T212"))
+            self.assertFalse(should_email_trade_sell_alert("FILLED BUY SPCX@134.84 ~3300 $~ [t212:t212_bot]", "SPCX_US_EQ", "T212"))
+            self.assertFalse(should_email_trade_sell_alert("EXPIRED SELL SPCX@155.00 ~1550 $~ [kraken:auto_cryptotrade_executor]", "SPCXxUSD", "llm_trader"))
+            self.assertFalse(should_email_trade_sell_alert("REFUSED SELL SPCX@155.00 [kraken:auto_cryptotrade_executor]", "SPCXxUSD", "llm_trader"))
+            self.assertFalse(should_email_trade_sell_alert("FILLED SELL BTC@80000 ~800 $~ [binance:tradeall]", "BTCUSDC", "monitortrades"))
+
+            with patch("requests.post", return_value=_WatchdogResp()):
+                notify(
+                    title="PLACED SELL SPCX@155.00 ~1550 $~ [kraken:auto_cryptotrade_executor]",
+                    body="~1550.00 USD \u00b7 LIMIT (qty: 10, order: O1)",
+                    source="llm_trader",
+                    symbol="SPCXxUSD",
+                )
+            self.assertEqual(len(self.sent), 1)
+            self.assertIn("PLACED SELL SPCX@155.00", self.sent[0][0]["Subject"])
+
+        # Verify pia_common.sh::pia_region_alert_topic routes dedicated IPs to SERVER and dynamic/empty to ERROR
+        res_bash = subprocess.run(
+            [
+                "bash",
+                "-c",
+                (
+                    f"source '{ROOT_DIR}/orchestratorOS/lib/pia_common.sh' && "
+                    "srv=$(ntfy_server_topic) && err=$(ntfy_error_topic) && "
+                    "echo \"$(pia_region_alert_topic dedicated-de-frankfurt-1.2.3.4)|"
+                    "$(pia_region_alert_topic dedicated-belgium-5.6.7.8)|"
+                    "$(pia_region_alert_topic de-frankfurt)|"
+                    "$(pia_region_alert_topic '')==${srv}|${srv}|${err}|${err}\""
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        lhs, rhs = res_bash.stdout.strip().split("==", 1)
+        self.assertEqual(lhs, rhs)
+        parts = lhs.split("|")
+        self.assertNotEqual(parts[0], parts[2])
+
     def test_owner_tag_stripping_and_refused_guard_classification(self):
 
         self.assertEqual(strip_owner_tags("🎉 BUY BTCUSDC [ai_executor]"), "🎉 BUY BTCUSDC ")

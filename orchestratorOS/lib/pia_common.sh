@@ -160,3 +160,10 @@ pia_preferred_dedicated_region() {
   done
   return 1
 }
+
+pia_region_alert_topic() {
+  case "${1:-}" in
+    dedicated-*) ntfy_server_topic ;;
+    *) ntfy_error_topic ;;
+  esac
+}

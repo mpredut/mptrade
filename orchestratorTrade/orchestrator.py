@@ -589,8 +589,8 @@ class BotManager:
                                     self.server._send_ntfy(
                                         zombie_title,
                                         alert_body,
-                                        "urgent",
-                                        self.server._resolve_topic("ERROR")
+                                        "high",
+                                        self.server._resolve_topic("SERVER")
                                     )
                                 asyncio.create_task(self.stop_bot(name))
             await asyncio.sleep(2)

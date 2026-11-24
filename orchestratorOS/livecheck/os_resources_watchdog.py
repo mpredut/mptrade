@@ -221,18 +221,24 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
 
     if offenders:
         lines = []
+        needs_error_email = False
         for proc, reasons, checks in offenders:
             restarted = _restart_managed(proc, state, now)
+            if restarted is not True:
+                needs_error_email = True
             action = ("automatic restart requested" if restarted is True else
                       "automatic restart failed" if restarted is False else
                       "alert only (unmanaged process or restart safety limit)")
             lines.append(f"PID {proc.get('pid', '?')} \u2014 {', '.join(reasons)} for at least "
                          f"{checks * CHECK_INTERVAL_MIN:.0f} min \u2014 {action} \u2014 {proc.get('command', '?')}")
         wc.save_state(STATE_FILE, state)
-        wc.send_ntfy("High sustained process resource usage", "\n".join(lines))
+        if needs_error_email:
+            wc.send_ntfy("High sustained process resource usage", "\n".join(lines))
+        else:
+            wc.send_ntfy("High sustained process resource usage", "\n".join(lines), topic_env_key="NTFY_TOPIC_SERVER")
     if recovered:
         lines = [f"PID {proc.get('pid', '?')} \u2014 {proc.get('command', '?')}" for proc in recovered]
-        wc.send_ntfy("Process resource usage recovered", "\n".join(lines))
+        wc.send_ntfy("Process resource usage recovered", "\n".join(lines), topic_env_key="NTFY_TOPIC_SERVER")
     if not offenders and not recovered:
         print(f"[resources] OK \u2014 sampled {len(processes)} processes")
     return bool(offenders or recovered)

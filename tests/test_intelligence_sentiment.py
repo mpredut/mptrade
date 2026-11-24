@@ -16999,6 +16999,155 @@ def test_va_breakout_hold_duration_and_taker_ratio_cycle_delta() -> None:
     assert "d_tr=" not in arb_3b
 
 
+def test_disabled_registry_symbols_xstock_longterm_cost_and_partial_24h_vp(tmp_path):
+    """Verify disabled instruments exclusion, SPCXxUSD live cycle cost/MANUAL actor/long-term directive, and partial-24h VP upgrade."""
+    from instrument_registry import disabled_registry_symbols
+    from intelligence.sentiment.collectors.macro_telemetry_collector import (
+        MarketAndPortfolioSnapshotOrchestrator,
+        _harvest_initial_prices_and_trends_impl,
+    )
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        discover_reference_microstructure_symbols,
+        upgrade_tpo_vp_from_ohlc,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        KrakenXstocksCollector,
+        RecentOrdersAndPositionEnricherCollector,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        apply_cycle_fallback_to_recent_fills,
+        parse_venue_cycle_state,
+    )
+    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
+
+    ws = tmp_path
+    cdir = ws / "cachedb"
+    tel_dir = cdir / "telemetry"
+    ord_dir = cdir / "orders"
+    krk_dir = ws / "kraken"
+    for d in (tel_dir, ord_dir, krk_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    (ws / "instruments.conf").write_text(
+        "[BINANCE_ADA]\nprovider = binance\nsymbol = ADAUSDC\nbase = ADA\nquote = USDC\n"
+        "enabled = yes\nisolation = own_ledger\nmarket_hours = 24x7\n"
+        "role.mt = yes\nrole.tradeall_fire = no\nrole.kalman_primary = no\n"
+        "role.trailing = no\nrole.assetguardian = no\nrole.archive = yes\nrole.rtrade = no\nrole.force_sell = no\n\n"
+        "[KRAKEN_ADA]\nprovider = kraken\nsymbol = ADAUSD\nbase = ADA\nquote = USD\n"
+        "enabled = no\nisolation = own_ledger\nmarket_hours = 24x7\n"
+        "role.mt = no\nrole.tradeall_fire = no\nrole.kalman_primary = no\n"
+        "role.trailing = no\nrole.assetguardian = no\nrole.archive = no\nrole.rtrade = no\nrole.force_sell = no\n",
+        encoding="utf-8",
+    )
+    assert "ADAUSD" in disabled_registry_symbols(ws)
+    assert "ADAUSDC" not in disabled_registry_symbols(ws)
+
+    now_s = 1_795_530_000.0
+    prices_doc = {
+        "items": {
+            "ADAUSDC": [[int((now_s - 2.0) * 1000), 0.151]],
+            "ADAUSD": [[int((now_s - 65_000.0) * 1000), 0.148]],
+        }
+    }
+    pt = _harvest_initial_prices_and_trends_impl(str(cdir), prices_doc, {}, workspace_dir=str(ws))
+    assert "ADAUSDC" in pt and "ADAUSD" not in pt
+
+    (tel_dir / "orderbook_depth_ADAUSD.json").write_text(
+        json.dumps({"symbol": "ADAUSD", "bid_depth_usd": 5000.0, "timestamp": now_s - 200.0}),
+        encoding="utf-8",
+    )
+    ref_syms = discover_reference_microstructure_symbols(str(cdir), {"ADAUSDC": {"bid_depth_usd": 50_000.0}})
+    assert "ADAUSD" not in ref_syms
+
+    snap = TelemetrySensorSnapshot()
+    snap.prices_and_trends = dict(pt)
+    snap.microstructure = {}
+    MarketAndPortfolioSnapshotOrchestrator._stamp_snapshot_domain_timestamps(
+        snap,
+        scope="crypto",
+        allow_network=False,
+        persist=False,
+        now_ts=now_s,
+        cache_dir=str(cdir),
+        read_json_fn=lambda _p: None,
+        macro_sensors={},
+        prices_data=prices_doc,
+        cur_p_items=prices_doc["items"],
+        trends_data={},
+        inst_by_sym={},
+        t212_cycles={},
+    )
+    assert snap.source_ages_sec.get("prices_newest", 999.0) < 10.0
+    assert snap.source_ages_sec.get("prices_oldest", 0.0) < 10.0
+
+    (ord_dir / "cache_orders_filled_kraken.json").write_text(
+        json.dumps({"items": {"ADAUSD": [{"orderId": "k1", "side": "SELL", "price": 0.148, "executedQty": 100.0, "timestamp": int((now_s - 70000) * 1000)}]}}),
+        encoding="utf-8",
+    )
+    ro_out = RecentOrdersAndPositionEnricherCollector(start_sync=False).collect(
+        str(cdir), inst_by_sym={}, tradable_positions=[], prices_and_trends=pt, allow_network=False
+    )
+    assert "ADAUSD" not in ro_out
+
+    # 2. KrakenXstocksCollector prefers live active cycle cost ($134.844) over static alloc ($141.75) and reflects OBSERVE_ONLY + long-term policy
+    (krk_dir / "config.env").write_text(
+        "XSTOCK_ACTIVE_PAIRS=SPCXxUSD:141.75\nXSTOCK_BOT_OBSERVE_ONLY=true\nXSTOCK_BOT_TP_PCT=9.0\n",
+        encoding="utf-8",
+    )
+    (krk_dir / ".xstock_state.json").write_text(
+        json.dumps({"known_assets": {"SPCXx.T": 24.472724}, "pair": "SPCXxUSD"}),
+        encoding="utf-8",
+    )
+    (krk_dir / ".state_SPCXxUSD.json").write_text(
+        json.dumps({"qty": 24.472724, "cost": 3300.0, "entry_price": 134.844006, "entry_ts": now_s - 300.0, "adopted": True}),
+        encoding="utf-8",
+    )
+    xs = KrakenXstocksCollector(start_sync=False).collect(
+        str(cdir), kraken_dir=str(krk_dir), prices_and_trends={"SPCXxUSD": {"price": 129.58}}
+    )
+    assert xs is not None
+    assert xs["alloc_price"] == pytest.approx(134.844006, rel=1e-4)
+    assert xs["pnl_vs_alloc_pct"] == pytest.approx(((129.58 - 134.844006) / 134.844006) * 100.0, abs=0.05)
+    assert "LONG-TERM INVESTMENT" in xs["active_swing_directive"]
+    assert "OBSERVE-ONLY" in xs["active_swing_directive"]
+
+    # 3. Adopted / SELL-only tokenized equity BUY fallback sets actor="MANUAL" (not "BOT")
+    parsed_cyc = parse_venue_cycle_state(
+        {"qty": 24.472724, "cost": 3300.0, "entry_price": 134.844006, "entry_ts": now_s - 300.0, "adopted": True},
+        "SPCXxUSD",
+        {"SPCXxUSD": {"price": 129.58}},
+        include_meta=True,
+    )
+    assert parsed_cyc.get("_adopted") is True
+    ro_xs = apply_cycle_fallback_to_recent_fills("kraken", parsed_cyc, True, None, symbol="SPCXxUSD")
+    assert ro_xs is not None
+    assert ro_xs["last_action_actor"] == "MANUAL"
+    assert ro_xs["last_buy"]["actor"] == "MANUAL"
+
+    # 4. Partial local 24h tick history (<22h) still upgrades TPO -> REAL_VOL when overlap matches
+    ohlc_pts = []
+    for h in range(24):
+        ts_ms = int((now_s - (23 - h) * 3600.0) * 1000)
+        px = 0.1547 if h < 4 else 0.1495
+        ohlc_pts.append([ts_ms, px, 10000.0, px * 1.002, px * 0.998, px])
+    (cdir / "cache_ohlc_24h_ADAUSDC.json").write_text(json.dumps({"points": ohlc_pts}), encoding="utf-8")
+    m24_partial = {"vp_source": "TPO", "low_24h": 0.1470, "high_24h": 0.1507}
+    upgraded = upgrade_tpo_vp_from_ohlc(
+        "ADAUSDC",
+        m24_partial,
+        0.1495,
+        now_s,
+        s24_is_live_clock=True,
+        cache_dir=str(cdir),
+        allow_network=False,
+        series_24h_start_ms=(now_s - 18.0 * 3600.0) * 1000.0,
+    )
+    assert len(upgraded) >= 24
+    assert m24_partial["vp_source"] == "REAL_VOL"
+    assert "session_vwap_px" in m24_partial or "poc_px" in m24_partial
+
+
+
 
 
 

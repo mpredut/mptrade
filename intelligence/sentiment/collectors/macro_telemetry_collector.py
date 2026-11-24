@@ -130,7 +130,12 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     apply_live_24trend_windows,
     apply_short_trend_item,
 )
-from instrument_registry import canonical_display_symbol, casefold_get, has_workspace_instrument_sources
+from instrument_registry import (
+    canonical_display_symbol,
+    casefold_get,
+    disabled_registry_symbols,
+    has_workspace_instrument_sources,
+)
 from cacheprice import resolve_ssot_price_from_cache
 from providers.ai_circuit_breaker import parse_intent_circuit_breaker_config
 from providers.ai_survival_guard import (
@@ -191,19 +196,28 @@ def _read_first_cached_dict(
 
 
 def _harvest_initial_prices_and_trends_impl(
-    cache_dir: str, prices_data: Any, trends_data: Any, read_json_fn: Any = None,
+    cache_dir: str, prices_data: Any, trends_data: Any, read_json_fn: Any = None, *, workspace_dir: str = "",
 ) -> Dict[str, Dict[str, Any]]:
     """Build initial prices_and_trends map from cache_current_price, cache_short_trend, and 24trend/live_*.json."""
     _rj = read_json_fn or read_json_cached
+    eff_ws = workspace_dir or (os.path.dirname(os.path.abspath(str(cache_dir).rstrip("/\\"))) if cache_dir else "")
+    disabled_syms = disabled_registry_symbols(eff_ws) if eff_ws else frozenset()
+
+    def _is_disabled(raw_s: Any) -> bool:
+        if not disabled_syms:
+            return False
+        s_u = str(raw_s or "").strip().upper()
+        return bool(s_u and s_u in disabled_syms)
+
     prices_and_trends: Dict[str, Dict[str, Any]] = {}
     price_map: Dict[str, float] = {
         sym: px_val for sym, item in (prices_data.get("items", {}) if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict) else {}).items()
-        if (px_val := extract_current_price_item(item)) is not None
+        if not _is_disabled(sym) and (px_val := extract_current_price_item(item)) is not None
     }
     if isinstance(trends_data, dict):
         trends_items = trends_data.get("items") if isinstance(trends_data.get("items"), dict) else trends_data
         for sym, tinfo in trends_items.items():
-            if sym not in ("items", "fetchtime", "rest_sync_cursor", "metadata", "counts") and isinstance(tinfo, dict):
+            if sym not in ("items", "fetchtime", "rest_sync_cursor", "metadata", "counts") and isinstance(tinfo, dict) and not _is_disabled(sym):
                 entry: Dict[str, Any] = {}
                 apply_short_trend_item(entry, tinfo, fallback_price=price_map.get(sym))
                 prices_and_trends[sym] = entry
@@ -220,7 +234,7 @@ def _harvest_initial_prices_and_trends_impl(
         for lt_path in sorted(_glob.glob(os.path.join(live_24trend_dir, f"{lw_prefix}*{lw_ext}"))):
             raw_sym = os.path.basename(lt_path)[len(lw_prefix) : -len(lw_ext)]
             sym = canonical_display_symbol(raw_sym) or raw_sym.upper()
-            if sym and isinstance(lt_win := _rj(lt_path), dict):
+            if sym and not _is_disabled(sym) and not _is_disabled(raw_sym) and isinstance(lt_win := _rj(lt_path), dict):
                 apply_live_24trend_windows(prices_and_trends.setdefault(sym, {}), lt_win, fallback_price=price_map.get(sym))
     return prices_and_trends
 
@@ -1701,6 +1715,8 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             if str(k).strip()
         }
         _meta_keys_up = {"TS", "TIMESTAMP", "UPDATED_AT", "ITEMS", "FETCHTIME", "DYNAMIC"}
+        eff_ws_ts = os.path.dirname(os.path.abspath(str(cache_dir).rstrip("/\\"))) if cache_dir else ""
+        disabled_ts_syms = disabled_registry_symbols(eff_ws_ts) if eff_ws_ts else frozenset()
 
         def _is_eq_sym(sym_up: str) -> bool:
             return has_equity_suffix(sym_up) or sym_up in t212_sym_set
@@ -1708,6 +1724,8 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         def _sym_in_scope(sym_key: Any) -> bool:
             k_up = str(sym_key or "").strip().upper()
             if not k_up or k_up in _meta_keys_up:
+                return False
+            if k_up in disabled_ts_syms and k_up not in scoped_pt_syms:
                 return False
             if scope_norm in ("equities", "crypto") and _is_eq_sym(k_up) != (scope_norm == "equities"):
                 return False
@@ -1996,7 +2014,9 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         )
         long_items = long_trends_data.get("items", {}) if isinstance(long_trends_data, dict) else {}
         t_trend_map = t_trend_data if isinstance(t_trend_data, dict) else {}
-        snapshot.prices_and_trends = _harvest_initial_prices_and_trends_impl(cache_dir, prices_data, trends_data, _rj)
+        snapshot.prices_and_trends = _harvest_initial_prices_and_trends_impl(
+            cache_dir, prices_data, trends_data, _rj, workspace_dir=workspace_dir
+        )
 
         intents_data = None
         if callable(load_intents_fn := getattr(intent_gateway, "load_all_intents", None)):
@@ -2125,7 +2145,13 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             allow_network=allow_network,
         )
         if t212_cycles:
-            if xst_summary := harvest_kraken_xstocks(os.path.join(workspace_dir, "kraken"), snapshot.prices_and_trends, t212_cycles, _rj):
+            if xst_summary := harvest_kraken_xstocks(
+                os.path.join(workspace_dir, "kraken"),
+                snapshot.prices_and_trends,
+                t212_cycles,
+                _rj,
+                kraken_cycles=kraken_cycles,
+            ):
                 snapshot.portfolio_summary["kraken_xstocks"] = xst_summary
             if cross_market_ctx := build_cross_market_context(
                 snapshot.prices_and_trends,

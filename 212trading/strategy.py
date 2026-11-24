@@ -239,10 +239,11 @@ class Strategy(T212BrokerLifecycleMixin):
         self._cancel_all_orders()
         saved_orders = list(self.s.get("orders") or [])
         saved_pending_submit = self.s.get("pending_submit") if keep_pending_submit else None
+        norm_exit_kind = str(exit_kind or "").strip().upper()
         was_sl = bool(
             self._state_flag("sl_pending")
             or self._state_flag("sl_pending_exit")
-            or str(exit_kind or "").strip().upper() in {"SL", "TR", "STOP"}
+            or norm_exit_kind in {"SL", "TR", "STOP"}
         )
         nxt = self._reset_cycle_state(
             ("realized_pnl_usd", "realized_net_usd", "fees_usd"),
@@ -250,8 +251,9 @@ class Strategy(T212BrokerLifecycleMixin):
             **({"pending_submit": saved_pending_submit} if keep_pending_submit else {}),
         )
         exit_px = first_pos_float(exit_price) or safe_nonneg_float(exit_price, 0.0) or 0.0
+        seed_kind = "STOP" if was_sl else ("REDUCE" if norm_exit_kind == "REDUCE" else "TP")
         self._seed_post_exit_anchors(
-            exit_px, "STOP" if was_sl else "TP", self._now(), include_sl_low=False
+            exit_px, seed_kind, self._now(), include_sl_low=False
         )
         if was_sl and self.p.sl_rebuy_enabled:
             self.s["sl_rebuy"] = {"low": exit_px, "sell_price": exit_px}

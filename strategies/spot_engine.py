@@ -39,7 +39,7 @@ from .base_spot_mixin import (
     load_common_mhdpa_env,
     sanitize_common_spot_state,
 )
-from cachepaths import normalize_venue_name, resolve_venue_runtime_dir
+from cachepaths import is_kraken_tokenized_asset, normalize_venue_name, resolve_venue_runtime_dir
 from .state_store import (
     state_path_for as _shared_state_path_for,
 )
@@ -1464,6 +1464,19 @@ class Strategy(BaseSpotMixin):
                 prev_cost = safe_nonneg_float(self.s.get("cost")) or 0.0
                 prev_avg = (prev_cost / held) if (held > 0 and prev_cost > 0) else 0.0
                 inferred_exit_kind = "SL" if (prev_avg > 0 and price < prev_avg) else "TP"
+                if (
+                    is_kraken_tokenized_asset(self.pair)
+                    and not self.dry_run
+                    and held * price >= 5.0
+                ):
+                    self._emit_trade(
+                        "FILLED",
+                        "SELL",
+                        format_price_log(price),
+                        held,
+                        price,
+                        detail=f"external/AI close (avg {format_price_log(prev_avg or price)})",
+                    )
                 if self._in_ipo_lifecycle():
                     self.s["ipo_peak"] = max(
                         safe_pos_float(self.s.get("ipo_peak"), 0.0) or 0.0,
@@ -1488,6 +1501,20 @@ class Strategy(BaseSpotMixin):
                 f"  ! [STRAT] LEDGER RECONCILE: state qty={held:.{self.vol_dec}f} -> "
                 f"available {base}={ledger_qty:.{self.vol_dec}f}; synchronizing state"
             )
+            sold_ext = held - ledger_qty
+            if (
+                is_kraken_tokenized_asset(self.pair)
+                and not self.dry_run
+                and sold_ext * price >= 5.0
+            ):
+                self._emit_trade(
+                    "FILLED",
+                    "SELL",
+                    format_price_log(price),
+                    sold_ext,
+                    price,
+                    detail=f"external/AI partial sell (rem {ledger_qty:.{self.vol_dec}f})",
+                )
             ratio = ledger_qty / held if held > 0 else 1.0
             self.s["qty"] = ledger_qty
             self.s["cost"] = (safe_nonneg_float(self.s.get("cost"), default=0.0) or 0.0) * ratio

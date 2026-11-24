@@ -19,7 +19,7 @@ LOCK_FILE="${XDG_RUNTIME_DIR}/manage_agy.lock"
 UPDATE_PENDING_FILE="${XDG_RUNTIME_DIR}/agy_update_restart_pending"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [manage_agy] $*"; }
-send_alert() { [ "${AGY_SUPPRESS_ALERTS:-0}" = "1" ] && return 0; send_os_ntfy "AGY Manager ($(hostname))" "$1" default || true; }
+send_alert() { [ "${AGY_SUPPRESS_ALERTS:-0}" = "1" ] && return 0; send_os_ntfy "AGY Manager ($(hostname))" "$1" "${2:-default}" "${3:-$(ntfy_server_topic)}" || true; }
 
 AGY_BIN="$(command -v agy || true)"
 [ -z "$AGY_BIN" ] && [ -x "$HOME/.local/bin/agy" ] && AGY_BIN="$HOME/.local/bin/agy"
@@ -184,7 +184,7 @@ do_watchdog() {
             send_alert "Antigravity remote-control daemon was found down and successfully revived as '${INSTANCE_NAME}'."
         else
             log "ERROR: Failed to recover daemon. Output: ${start_out_single}" >&2
-            send_alert "CRITICAL: Failed to revive Antigravity daemon (${INSTANCE_NAME}) on $(hostname)."
+            send_alert "CRITICAL: Failed to revive Antigravity daemon (${INSTANCE_NAME}) on $(hostname)." "high" "$(ntfy_error_topic)"
             exit 2
         fi
     elif is_tunnel_stuck; then

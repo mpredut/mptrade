@@ -51,6 +51,10 @@ DEFAULT_MAX_FLIPS_6H: int = 2
 DEFAULT_SCORECARD_WINDOW_TRADES: int = 5
 DEFAULT_SCORECARD_MAX_LOSS_STREAK: int = 3
 DEFAULT_SCORECARD_COOLDOWN_HOURS: float = 4.0
+DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT: float = 12.0
+DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT: float = 5.0
+DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE: float = 0.92
+DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS: float = 24.0
 
 
 def parse_intent_circuit_breaker_config(conf: dict[str, str]) -> dict[str, Any]:
@@ -108,6 +112,22 @@ def parse_intent_circuit_breaker_config(conf: dict[str, str]) -> dict[str, Any]:
         "daily_nav_dd_limit_pct": safe_nonneg_float(
             cfg.get("autonomous_trading_daily_nav_dd_limit_pct"),
             default=DEFAULT_DAILY_NAV_DD_LIMIT_PCT,
+        ),
+        "xstock_sell_min_profit_pct": safe_nonneg_float(
+            cfg.get("autonomous_trading_xstock_sell_min_profit_pct"),
+            default=DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
+        ),
+        "xstock_sell_min_target_drop_pct": safe_nonneg_float(
+            cfg.get("autonomous_trading_xstock_sell_min_target_drop_pct"),
+            default=DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
+        ),
+        "xstock_sell_min_confidence": safe_nonneg_float(
+            cfg.get("autonomous_trading_xstock_sell_min_confidence"),
+            default=DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
+        ),
+        "xstock_sell_cooldown_hours": safe_nonneg_float(
+            cfg.get("autonomous_trading_xstock_sell_cooldown_hours"),
+            default=DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS,
         ),
     }
 
@@ -292,6 +312,10 @@ __all__ = [
     "DEFAULT_SCORECARD_MAX_LOSS_STREAK",
     "DEFAULT_SCORECARD_WINDOW_TRADES",
     "DEFAULT_TARGET_EV_FEE_MULT",
+    "DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS",
+    "DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE",
+    "DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT",
+    "DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT",
     "evaluate_ai_intent_circuit_breaker",
     "parse_intent_circuit_breaker_config",
 ]

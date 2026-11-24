@@ -21,6 +21,7 @@ from cachepaths import (
 from cacheprice import Cache365PriceManager, CacheSparsePriceManager
 from state_io import read_tail_jsonl_records
 from botcore import (
+    _parse_bool_flag,
     coerce_dict_maps,
     extract_order_id,
     extract_order_price,
@@ -46,7 +47,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, resolve_symbol_identity
 from providers.base import MarketDataProvider
 from providers.order_id_context import (
     format_actor_tag,
@@ -144,9 +145,21 @@ def apply_cycle_fallback_to_recent_fills(
     enrich_all_venues: bool = False,
     cyc_lb_ts: Optional[int] = None,
     cyc_ls_ts: Optional[int] = None,
+    symbol: str = "",
 ) -> Optional[Dict[str, Any]]:
     """Synthesize or enrich a recent-fills dict from `.state_*.json` cycle anchors."""
     is_eq_v = is_equity_venue(venue)
+    is_sell_only_tok = bool(
+        symbol
+        and venue
+        and MarketDataProvider.supports_tokenized_assets(venue)
+        and resolve_symbol_identity(symbol, venue=venue).is_tokenized_equity
+    )
+    is_manual_buy = bool(
+        is_sell_only_tok
+        or (_parse_bool_flag(cyc.get("_adopted"), False) and safe_nonneg_int(cyc.get("dca_buys"), default=0) == 0)
+    )
+    buy_actor = "MANUAL" if is_manual_buy else "BOT"
     cyc_avg = first_pos_float(cyc.get("avg_cost_px"), cyc.get("entry_price"), default=0.0) or 0.0
     cyc_lb = first_pos_float(cyc.get("last_buy_price"), cyc.get("entry_price"))
     cyc_ls = safe_pos_float(cyc.get("last_sell_price"), default=None)
@@ -158,11 +171,13 @@ def apply_cycle_fallback_to_recent_fills(
         and can_create
         and (cyc_lb is not None or cyc_ls is not None or cyc_avg > 0)
     ):
+        init_side = "BUY" if cyc_has_open_qty else ("SELL" if cyc_ls is not None else "BUY")
+        init_actor = buy_actor if init_side == "BUY" else "BOT"
         fills = {
             "venue": venue,
-            "last_action_side": "BUY" if cyc_has_open_qty else ("SELL" if cyc_ls is not None else "BUY"),
-            "last_action_actor": "BOT",
-            "last_action_actor_tag": "BOT",
+            "last_action_side": init_side,
+            "last_action_actor": init_actor,
+            "last_action_actor_tag": init_actor,
             "last_buy": None,
             "last_sell": None,
             "active_avg_buy_px": None,
@@ -185,7 +200,7 @@ def apply_cycle_fallback_to_recent_fills(
                 fills["tactical_avg_buy_px"] = round(prev_act_avg, 6)
             fills["active_avg_buy_px"] = round(cyc_avg, 6)
         if (is_eq_v or created_ro or enrich_all_venues) and fills.get("last_buy") is None and cyc_lb is not None:
-            lb_d: Dict[str, Any] = {"price": cyc_lb, "actor": "BOT", "actor_tag": "BOT"}
+            lb_d: Dict[str, Any] = {"price": cyc_lb, "actor": buy_actor, "actor_tag": buy_actor}
             if eff_lb_ts is not None:
                 lb_d["ts_ms"] = eff_lb_ts
             if enrich_all_venues or not fills.get("recent_buys"):
@@ -228,6 +243,7 @@ def _populate_cycle_fallback_recent_order(
         can_create=bool(can_create_ro),
         cyc_lb_ts=cyc_sell_ts_map.get((f"{p_venue}:entry", p_sym)),
         cyc_ls_ts=cyc_sell_ts_map.get((p_venue, p_sym)),
+        symbol=p_sym,
     )
     if was_missing and isinstance(ro, dict):
         v_ro_map[p_sym] = ro
@@ -813,6 +829,8 @@ class VenueCycleStateEvaluator(PortfolioEvaluatorBase):
             for src_k, dst_k in (("entry_ts", "_entry_ts_ms"), ("last_sell_ts", "_last_sell_ts_ms")):
                 if (ts_ms := normalize_timestamp_ms(st_data.get(src_k), default=None)) is not None:
                     cyc_entry[dst_k] = ts_ms
+            if _parse_bool_flag(st_data.get("adopted"), False):
+                cyc_entry["_adopted"] = True
         return cyc_entry
 
 

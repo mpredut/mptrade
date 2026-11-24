@@ -98,6 +98,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
 from instrument_registry import (
     canonical_display_symbol,
     casefold_get,
+    disabled_registry_symbols,
     resolve_kraken_tokenized_pair,
     resolve_registered_symbol_case,
     resolve_symbol_market_session,
@@ -891,6 +892,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         kraken_dir: str = "",
         prices_and_trends: Optional[Dict[str, Any]] = None,
         all_t212_cycles: Optional[Dict[str, Any]] = None,
+        kraken_cycles: Optional[Dict[str, Any]] = None,
         read_json_fn: Any = None,
         **kwargs: Any,
     ) -> Optional[Dict[str, Any]]:
@@ -997,12 +999,36 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         cfg_alloc_px = safe_pos_float(xstock_cfg.get("xstock_alloc_price"), default=None)
         state_alloc_px = safe_pos_float(alloc_info.get("alloc_price"), default=None) if isinstance(alloc_info, dict) else None
         active_alloc_px = active_pair_entry[1] if active_pair_entry else None
-        alloc_px = (
+        static_alloc_px = (
             (active_alloc_px or cfg_alloc_px or state_alloc_px)
             if (cfg_underlying and cfg_underlying != underlying)
             else (cfg_alloc_px or active_alloc_px or state_alloc_px)
         )
         primary_xpair = listed_pair or f"{underlying}xUSD"
+        primary_hold_tok, primary_hold_qty = next(
+            ((hk, hq) for hk, hq in x_holdings.items() if holdings_by_underlying.get(hk) == underlying),
+            ("", 0.0),
+        )
+        active_cycle_cost_px: Optional[float] = None
+        if primary_hold_qty > 1e-4:
+            cyc_map = kraken_cycles if isinstance(kraken_cycles, dict) else {}
+            cyc_entry = casefold_get(cyc_map, primary_xpair) or casefold_get(cyc_map, f"{underlying}xUSD")
+            if isinstance(cyc_entry, dict) and (safe_nonneg_float(cyc_entry.get("qty"), default=0.0) or 0.0) > 1e-4:
+                active_cycle_cost_px = first_pos_float(
+                    cyc_entry.get("avg_cost_px"), cyc_entry.get("entry_price"), cyc_entry.get("last_buy_price")
+                )
+            if active_cycle_cost_px is None and eff_k_dir:
+                st_pair_path = os.path.join(eff_k_dir, f".state_{primary_xpair}.json")
+                if os.path.exists(st_pair_path) and isinstance(st_pair_d := _rj(st_pair_path), dict):
+                    st_q = safe_nonneg_float(st_pair_d.get("qty"), default=0.0) or 0.0
+                    st_c = safe_nonneg_float(st_pair_d.get("cost"), default=0.0) or 0.0
+                    if st_q > 1e-4:
+                        active_cycle_cost_px = first_pos_float(
+                            (st_c / st_q) if st_c > 0.0 else None,
+                            st_pair_d.get("entry_price"),
+                            st_pair_d.get("last_buy_price"),
+                        )
+        alloc_px = active_cycle_cost_px or static_alloc_px
         xpair_px = (
             resolve_symbol_price(primary_xpair, eff_pt)
             or resolve_symbol_price(f"{underlying}xUSD", eff_pt)
@@ -1023,23 +1049,27 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             )
             if v is not None
         }
-        primary_hold_tok, primary_hold_qty = next(
-            ((hk, hq) for hk, hq in x_holdings.items() if holdings_by_underlying.get(hk) == underlying),
-            ("", 0.0),
-        )
+        bot_observe_only = _parse_bool_flag(xstock_cfg.get("xstock_bot_observe_only"), False)
         bot_tp = safe_pos_float(xstock_cfg.get("xstock_bot_tp_pct"), default=None)
         bot_trail = safe_pos_float(xstock_cfg.get("xstock_bot_tp_trail_pct"), default=None)
         max_dca_cfg = safe_nonneg_float(xstock_cfg.get("xstock_bot_max_dca_buys"), default=1.0) or 0.0
         bot_dca = safe_pos_float(xstock_cfg.get("xstock_bot_dca_drop_pct"), default=None) if max_dca_cfg > 0 else None
-        hold_meta_parts = [p for p in (f"{primary_hold_qty:g} {primary_hold_tok}" if primary_hold_qty > 0 else "", f"alloc ${alloc_px:g}" if alloc_px else "", "0bps maker/taker fee") if p]
+        hold_meta_parts = [p for p in (f"{primary_hold_qty:g} {primary_hold_tok}" if primary_hold_qty > 0 else "", f"cost ${alloc_px:g}" if alloc_px else "", "0bps maker/taker fee") if p]
         bot_rule_parts = [p for p in (f"TP +{bot_tp:g}%" if bot_tp else "", f"Trail {bot_trail:g}%" if bot_trail else "", f"DCA -{bot_dca:g}%" if bot_dca else "") if p]
         bot_rule_sfx = f" ({' / '.join(bot_rule_parts)})" if bot_rule_parts else ""
+        bot_mode_desc = (
+            "kraken_bot.py is OBSERVE-ONLY (reconciles manual buys/state; places NO automatic orders)"
+            if bot_observe_only
+            else f"kraken_bot.py (by=BOT{bot_rule_sfx})"
+        )
         active_directive = (
-            f"{primary_xpair} ({', '.join(hold_meta_parts)}): LIVE SELL-ONLY EXIT TRADING ENABLED on Kraken EU "
-            f"(Spot API BUY on tokenized xStocks returns EGeneral:Permission denied; SELL works at 0bps fee) for both "
-            f"[auto_cryptotrade_executor] (by=AI) and kraken_bot.py (by=BOT{bot_rule_sfx}). "
-            "Synthesize live L2 bid/ask walls, ob_imbalance, and 90s/5m kinematics to harvest profitable SELL tranches "
-            "via 0bps LIMIT orders; do NOT submit Kraken xStock BUY orders (use T212 SPCX_US_EQ for US equity buys)."
+            f"{primary_xpair} ({', '.join(hold_meta_parts)}): LONG-TERM INVESTMENT -- SELL-ONLY ON KRAKEN EU "
+            f"(Spot API BUY on tokenized xStocks returns EGeneral:Permission denied; owner must manually log in to rebuy and cannot re-enter quickly; "
+            f"{bot_mode_desc}). Default posture is HOLD. Sell RARELY via 0bps LIMIT ONLY when BOTH: "
+            f"(1) SIGNIFICANT unrealized profit above active cost basis (>= +12% gateway minimum), AND "
+            f"(2) HIGH-CONVICTION multi-day decline thesis (minimum 1-2+ days expected drop, explicit target_px >= 5% below sell price) "
+            f"so the owner has time to rebuy manually at a meaningfully lower level. NEVER scalp on 90s/5m kinematics, "
+            f"NEVER sell at breakeven or a loss, and do NOT submit Kraken xStock BUY orders (use T212 {t212_sib} for US equity buys)."
         )
         ipo_sym_lbl = f"{cfg_underlying}xUSD" if cfg_underlying else ""
         xst_summary: Dict[str, Any] = {
@@ -1788,6 +1818,7 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                         cyc_qty > 1e-8,
                         fills,
                         enrich_all_venues=True,
+                        symbol=sym_upper,
                     )
         if isinstance(fills, dict) and isinstance(open_lots_raw := fills.get("open_lots"), list) and open_lots_raw:
             held_cur_f = -1.0
@@ -1917,6 +1948,22 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 if raw_s := str(it_any.get("symbol") or "").strip().upper():
                     active_non_eq_syms.add(raw_s)
         fee_reserve_sym = BinanceFeeMaintainer.BNB_SYMBOL.upper()
+        ws_dir_ro = resolve_workspace_dir_from_cachedb(cache_dir) if cache_dir else ""
+        disabled_ro_syms = disabled_registry_symbols(ws_dir_ro) if ws_dir_ro else frozenset()
+        held_or_inst_syms: set[str] = {
+            str(getattr(iv, "symbol", "") or str(s_k).split(":", 1)[-1]).strip().upper()
+            for s_k, iv in (inst_by_sym or {}).items()
+            if str(getattr(iv, "symbol", "") or str(s_k).split(":", 1)[-1]).strip()
+        } | {
+            str(pos_it.get("symbol") or "").strip().upper()
+            for pos_it in (tradable_positions or ())
+            if isinstance(pos_it, dict)
+            and str(pos_it.get("symbol") or "").strip()
+            and (
+                (safe_nonneg_float(pos_it.get("free_base"), default=0.0) or 0.0)
+                + (safe_nonneg_float(pos_it.get("locked_base_qty"), default=0.0) or 0.0)
+            ) > 1e-8
+        }
 
         audit_cache_by_venue: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
         for order_cache_name, cache_venue in _resolve_order_cache_files():
@@ -1930,6 +1977,8 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 )
                 for sym, o_list in orders_data["items"].items():
                     sym_u = str(sym or "").strip().upper()
+                    if sym_u in disabled_ro_syms and sym_u not in held_or_inst_syms:
+                        continue
                     if is_equity_venue(cache_venue) and allowed_t212_syms and sym_u not in allowed_t212_syms:
                         continue
                     if not is_equity_venue(cache_venue) and sym_u == fee_reserve_sym and sym_u not in active_non_eq_syms:
@@ -1980,6 +2029,8 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 if isinstance(it, dict) and str(it.get("symbol") or "").strip()
             }
             for sym_fb in sorted(set(audit_by_sym.keys()) | intent_syms):
+                if sym_fb in disabled_ro_syms and sym_fb not in held_or_inst_syms:
+                    continue
                 if not is_equity_venue(fallback_venue) and sym_fb == fee_reserve_sym and sym_fb not in active_non_eq_syms:
                     continue
                 if first_variant_dict(venue_recent_orders[fallback_venue], cache_symbol_variants(sym_fb, include_base=True)) is not None:
@@ -2209,6 +2260,8 @@ def harvest_kraken_xstocks(
     prices_and_trends: Dict[str, Any],
     all_t212_cycles: Dict[str, Any],
     read_json_fn: Any = None,
+    *,
+    kraken_cycles: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Harvest Kraken read-only xStocks holdings and link to Trading212 sibling cycle."""
     return TelemetryCollectorFactory.create("portfolio_kraken_xstocks").collect(
@@ -2217,6 +2270,7 @@ def harvest_kraken_xstocks(
         kraken_dir=kraken_dir,
         prices_and_trends=prices_and_trends,
         all_t212_cycles=all_t212_cycles,
+        kraken_cycles=kraken_cycles,
         read_json_fn=read_json_fn,
     )
 

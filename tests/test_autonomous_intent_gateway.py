@@ -4675,6 +4675,198 @@ def test_pre_cancel_submit_cache_gate_and_rollback_stale_cache_retry(temp_worksp
     assert restored_out[0]["actor"] == "AI"
 
 
+def test_tokenized_equity_longterm_sell_survival_guard_and_gateway(tmp_path):
+    """Verify SELL-only tokenized equity (SPCXxUSD) long-term holding survival guard blocks premature/panic exits and allows high-conviction multi-day profit exits."""
+    from providers.ai_survival_guard import evaluate_ai_tokenized_equity_sell_guard
+
+    now_s = 1_795_530_000.0
+    cost_px = 134.844
+
+    # 1. Blocks SELL at a loss or small profit (+5% < +12%), even when urgency == "HIGH"
+    ok_loss, rsn_loss, _ = evaluate_ai_tokenized_equity_sell_guard(
+        {"decision": "SELL", "urgency": "HIGH", "target_px": 115.0},
+        [],
+        decision="SELL",
+        symbol="SPCXxUSD",
+        venue="kraken",
+        price=130.0,
+        confidence=0.96,
+        now_ts=now_s,
+        cost_basis_px=cost_px,
+    )
+    assert ok_loss is False and "ai_xstock_longterm_min_profit" in rsn_loss
+
+    ok_small, rsn_small, _ = evaluate_ai_tokenized_equity_sell_guard(
+        {"decision": "SELL", "urgency": "HIGH", "target_px": 130.0},
+        [],
+        decision="SELL",
+        symbol="SPCXxUSD",
+        venue="kraken",
+        price=141.5,  # +4.9% < +12%
+        confidence=0.95,
+        now_ts=now_s,
+        cost_basis_px=cost_px,
+    )
+    assert ok_small is False and "ai_xstock_longterm_min_profit" in rsn_small
+
+    # 2. Fail-closed when active cost basis is unavailable
+    ok_nocost, rsn_nocost, _ = evaluate_ai_tokenized_equity_sell_guard(
+        {"decision": "SELL", "urgency": "NORMAL", "target_px": 140.0},
+        [],
+        decision="SELL",
+        symbol="SPCXxUSD",
+        venue="kraken",
+        price=160.0,
+        confidence=0.95,
+        now_ts=now_s,
+        cost_basis_px=None,
+    )
+    assert ok_nocost is False and "ai_xstock_longterm_missing_cost_basis" in rsn_nocost
+
+    # 3. Blocks when profit >= +12% but target_px is missing or drop < 5% (intraday scalp, not 1-2+ day decline)
+    ok_notgt, rsn_notgt, _ = evaluate_ai_tokenized_equity_sell_guard(
+        {"decision": "SELL", "urgency": "NORMAL"},
+        [],
+        decision="SELL",
+        symbol="SPCXxUSD",
+        venue="kraken",
+        price=155.0,  # +14.9%
+        confidence=0.95,
+        now_ts=now_s,
+        cost_basis_px=cost_px,
+    )
+    assert ok_notgt is False and "ai_xstock_longterm_missing_target_px" in rsn_notgt
+
+    ok_shallow, rsn_shallow, _ = evaluate_ai_tokenized_equity_sell_guard(
+        {"decision": "SELL", "urgency": "NORMAL", "target_px": 151.0},  # -2.58% < 5%
+        [],
+        decision="SELL",
+        symbol="SPCXxUSD",
+        venue="kraken",
+        price=155.0,
+        confidence=0.95,
+        now_ts=now_s,
+        cost_basis_px=cost_px,
+    )
+    assert ok_shallow is False and "ai_xstock_longterm_min_target_drop" in rsn_shallow
+
+    # 4. Blocks low confidence (< 0.92) and repeat SELL within 24h cooldown
+    ok_conf, rsn_conf, _ = evaluate_ai_tokenized_equity_sell_guard(
+        {"decision": "SELL", "urgency": "NORMAL", "target_px": 144.0},
+        [],
+        decision="SELL",
+        symbol="SPCXxUSD",
+        venue="kraken",
+        price=155.0,
+        confidence=0.88,
+        now_ts=now_s,
+        cost_basis_px=cost_px,
+    )
+    assert ok_conf is False and "ai_xstock_longterm_low_confidence" in rsn_conf
+
+    prior_sell = [{
+        "intent_id": "xs_prev_sell",
+        "timestamp": now_s - 6 * 3600.0,
+        "decision": "SELL",
+        "symbol": "SPCXxUSD",
+        "venue": "kraken",
+        "order_type": "LIMIT",
+        "status": "EXECUTED",
+        "execution_payload": {"orderId": "ok1", "status": "FILLED", "executedQty": "5.0", "avg_fill_price": 154.0},
+    }]
+    ok_cd, rsn_cd, _ = evaluate_ai_tokenized_equity_sell_guard(
+        {"intent_id": "xs_new_sell", "decision": "SELL", "urgency": "NORMAL", "target_px": 144.0},
+        prior_sell,
+        decision="SELL",
+        symbol="SPCXxUSD",
+        venue="kraken",
+        price=155.0,
+        confidence=0.94,
+        now_ts=now_s,
+        cost_basis_px=cost_px,
+    )
+    assert ok_cd is False and "ai_xstock_longterm_sell_cooldown" in rsn_cd
+
+    # 5. Allows SELL when profit >= +12%, target drop >= 5%, confidence >= 0.92, and cooldown clear
+    ok_pass, rsn_pass, m_pass = evaluate_ai_tokenized_equity_sell_guard(
+        {"decision": "SELL", "urgency": "NORMAL", "target_px": 144.0},  # -7.1% drop
+        [],
+        decision="SELL",
+        symbol="SPCXxUSD",
+        venue="kraken",
+        price=155.0,  # +14.95% profit
+        confidence=0.94,
+        now_ts=now_s,
+        cost_basis_px=cost_px,
+    )
+    assert ok_pass is True and rsn_pass == ""
+    assert m_pass["xstock_profit_pct"] > 14.0
+    assert m_pass["xstock_target_drop_pct"] > 7.0
+
+    # 6. Never affects regular crypto or RTH equities
+    ok_btc, _, _ = evaluate_ai_tokenized_equity_sell_guard(
+        {"decision": "SELL", "urgency": "NORMAL"},
+        [],
+        decision="SELL",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=60000.0,
+        confidence=0.86,
+        now_ts=now_s,
+        cost_basis_px=70000.0,
+    )
+    assert ok_btc is True
+
+    # 7. End-to-end AutonomousIntentGateway blocks premature SPCXxUSD SELL using kraken/.state_SPCXxUSD.json
+    krk_dir = tmp_path / "kraken"
+    krk_dir.mkdir(parents=True, exist_ok=True)
+    (krk_dir / ".state_SPCXxUSD.json").write_text(
+        json.dumps({"qty": 24.47, "cost": 3300.0, "entry_price": 134.844}),
+        encoding="utf-8",
+    )
+    (tmp_path / "order_guard.conf").write_text(
+        "autonomous_trading_mode = enforce\n"
+        "autonomous_trading_min_notional_usd = 10.0\n"
+        "autonomous_trading_max_notional_usd = 2000.0\n"
+        "autonomous_trading_min_confidence = 0.85\n"
+        "autonomous_trading_notify = 0\n"
+        "autonomous_trading_xstock_sell_min_profit_pct = 12.0\n"
+        "autonomous_trading_xstock_sell_min_target_drop_pct = 5.0\n"
+        "autonomous_trading_xstock_sell_min_confidence = 0.92\n"
+        "autonomous_trading_xstock_sell_cooldown_hours = 24.0\n",
+        encoding="utf-8",
+    )
+    gw = AutonomousIntentGateway(workspace_dir=str(tmp_path))
+    place_calls = []
+    spcx_inst = MagicMock(symbol="SPCXxUSD", provider_name="kraken", base="SPCXx", quote="USD", params={})
+    spcx_inst._provider.name = "kraken"
+    spcx_inst._provider.get_current_price.return_value = 140.0
+    spcx_inst._provider.free_balance.return_value = 24.47
+    spcx_inst.open_orders.return_value = []
+    spcx_inst.place.side_effect = lambda **kw: place_calls.append(kw) or {"orderId": "xs_ok_1", "status": "NEW"}
+
+    res_blk = gw.submit(
+        {
+            "decision": "SELL",
+            "symbol": "SPCXxUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 140.0,  # +3.8% < +12%
+            "target_px": 130.0,
+            "confidence": 0.95,
+            "urgency": "HIGH",
+            "suggested_notional_usd": 1000.0,
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"SPCXxUSD": spcx_inst},
+    )
+    assert res_blk["status"] == "REJECTED_AI_CIRCUIT_BREAKER"
+    assert "ai_xstock_longterm_min_profit" in str(res_blk["history"][-1].get("reason") or "")
+    assert place_calls == []
+
+
+
 
 
 

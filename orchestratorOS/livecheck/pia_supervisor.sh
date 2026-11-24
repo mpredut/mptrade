@@ -30,7 +30,7 @@ REG_DED_DE=""
 REG_DED_BE=""
 REG_DYN_DE="de-frankfurt"
 
-send_ntfy() { send_os_ntfy "$1" "$2" "${3:-default}" & }
+send_ntfy() { send_os_ntfy "$1" "$2" "${3:-default}" "${4:-$(ntfy_server_topic)}" & }
 isp_healthy() { curl -4 -s -m 5 -o /dev/null https://api.binance.com/api/v3/time 2>/dev/null; }
 
 prewarm_dns() {
@@ -115,13 +115,13 @@ connect_to_region() {
     return 1
 }
 
-try_fallback_switch() {  # $1=region $2=desc $3=fail_title $4=fail_body $5=ok_title
-    local reg="$1" desc="$2" fail_title="$3" fail_body="$4" ok_title="$5"
+try_fallback_switch() {  # $1=region $2=desc $3=fail_title $4=fail_body $5=ok_title [$6=topic]
+    local reg="$1" desc="$2" fail_title="$3" fail_body="$4" ok_title="$5" topic="${6:-$(ntfy_server_topic)}"
     [ -n "$reg" ] || return 1
     echo "$fail_body"
-    send_ntfy "$fail_title" "$fail_body" "high"
+    send_ntfy "$fail_title" "$fail_body" "high" "$topic"
     if connect_to_region "$reg" "$desc"; then
-        send_ntfy "$ok_title" "Successfully connected to $desc ($reg, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
+        send_ntfy "$ok_title" "Successfully connected to $desc ($reg, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default" "$topic"
         failures=0
         current_cooldown_sec="$BACKOFF_MIN_SEC"
         current_restore_interval="$RESTORE_INTERVAL"
@@ -155,10 +155,10 @@ establish_vpn_tunnel() {
     fi
     try_fallback_switch "$REG_DED_BE" "Belgium Dedicated IP" \
         "PIA VPN: Frankfurt DIP Failed" "Frankfurt Dedicated IP failed. Falling back to Belgium Dedicated IP ($REG_DED_BE)..." \
-        "PIA VPN: Connected on Belgium DIP" && return 0
+        "PIA VPN: Connected on Belgium DIP" "$(ntfy_server_topic)" && return 0
     try_fallback_switch "$REG_DYN_DE" "Dynamic Frankfurt" \
         "PIA VPN: Dedicated IPs Failed" "Dedicated IP failed. Falling back to Dynamic Frankfurt ($REG_DYN_DE)..." \
-        "PIA VPN: Connected on Dynamic" && return 0
+        "PIA VPN: Connected on Dynamic" "$(ntfy_error_topic)" && return 0
 
     echo "All PIA regions failed (Frankfurt DIP, Belgium DIP, Dynamic Frankfurt)."
     return 1
@@ -173,11 +173,11 @@ enter_isp_cooldown() {
     if isp_healthy; then
         echo "Direct Romanian ISP uplink is healthy. Fleet operating on direct IP."
         send_ntfy "PIA VPN Down -> Direct ISP Fallback (${current_cooldown_sec}s)" \
-            "PIA VPN failed ($reason). Tunnel disconnected. Fleet operating directly via Romanian ISP for a ${current_cooldown_sec}s cooldown." "urgent"
+            "PIA VPN failed ($reason). Tunnel disconnected. Fleet operating directly via Romanian ISP for a ${current_cooldown_sec}s cooldown." "urgent" "$(ntfy_error_topic)"
     else
         echo "WARNING: Direct ISP uplink also unreachable or experiencing network issues."
         send_ntfy "Network Outage: PIA & ISP Down" \
-            "Both PIA and direct ISP uplink probe failed ($reason). Cooldown: ${current_cooldown_sec}s." "urgent"
+            "Both PIA and direct ISP uplink probe failed ($reason). Cooldown: ${current_cooldown_sec}s." "urgent" "$(ntfy_error_topic)"
     fi
     local elapsed=0
     echo "Entering Romanian ISP cooldown mode for ${current_cooldown_sec}s..."
@@ -186,7 +186,7 @@ enter_isp_cooldown() {
     done
     echo "Cooldown period (${current_cooldown_sec}s) elapsed. Attempting recovery reconnect..."
     send_ntfy "PIA VPN: Attempting Reconnect" \
-        "Cooldown (${current_cooldown_sec}s) elapsed. Attempting PIA recovery across fallback ladder..." "default"
+        "Cooldown (${current_cooldown_sec}s) elapsed. Attempting PIA recovery across fallback ladder..." "default" "$(ntfy_server_topic)"
 }
 
 # --- Diagnostic / Manual Tool Mode (strictly read-only) ---
@@ -283,7 +283,8 @@ while true; do
     if vpn_healthy; then
         if [ "$failures" -gt 0 ]; then
             echo "PIA recovered after $failures failed probes"
-            send_ntfy "PIA VPN: Recovered" "PIA VPN is healthy again (Region: $(pia get region 2>/dev/null | tr -d '\r'), IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
+            rec_reg=$(pia get region 2>/dev/null | tr -d '\r')
+            send_ntfy "PIA VPN: Recovered" "PIA VPN is healthy again (Region: ${rec_reg}, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default" "$(pia_region_alert_topic "$rec_reg")"
         fi
         failures=0
         current_cooldown_sec="$BACKOFF_MIN_SEC"
@@ -347,17 +348,17 @@ while true; do
             if [ "$recovered" -eq 0 ]; then
                 try_fallback_switch "$REG_DED_BE" "Belgium Dedicated IP" \
                     "PIA VPN: Frankfurt DIP Failing" "Dedicated Frankfurt IP failed $failures probes. Falling back to Belgium Dedicated IP ($REG_DED_BE)..." \
-                    "PIA VPN: Switched to Belgium DIP" && recovered=1
+                    "PIA VPN: Switched to Belgium DIP" "$(ntfy_server_topic)" && recovered=1
             fi
             if [ "$recovered" -eq 0 ]; then
                 try_fallback_switch "$REG_DYN_DE" "Dynamic Frankfurt" \
                     "PIA VPN: Dedicated IP Failing" "Dedicated IP failed $failures probes. Falling back to Dynamic Frankfurt ($REG_DYN_DE)..." \
-                    "PIA VPN: Switched to Dynamic Frankfurt" && recovered=1
+                    "PIA VPN: Switched to Dynamic Frankfurt" "$(ntfy_error_topic)" && recovered=1
             fi
         elif [ -n "$REG_DED_BE" ] && [ "$current_reg" = "$REG_DED_BE" ]; then
             try_fallback_switch "$REG_DYN_DE" "Dynamic Frankfurt" \
                 "PIA VPN: Belgium DIP Failing" "Belgium Dedicated IP failed $failures probes. Falling back to Dynamic Frankfurt ($REG_DYN_DE)..." \
-                "PIA VPN: Switched to Dynamic Frankfurt" && recovered=1
+                "PIA VPN: Switched to Dynamic Frankfurt" "$(ntfy_error_topic)" && recovered=1
         fi
 
         [ "$recovered" -eq 1 ] && continue
@@ -365,7 +366,8 @@ while true; do
         enter_isp_cooldown "PIA failed $failures probes on region ${current_reg:-unknown}"
         if establish_vpn_tunnel; then
             echo "PIA successfully reconnected after cooldown! (IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))"
-            send_ntfy "PIA VPN: Reconnected After Cooldown" "PIA reconnected successfully (Region: $(pia get region 2>/dev/null | tr -d '\r'), IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
+            rec_reg=$(pia get region 2>/dev/null | tr -d '\r')
+            send_ntfy "PIA VPN: Reconnected After Cooldown" "PIA reconnected successfully (Region: ${rec_reg}, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default" "$(pia_region_alert_topic "$rec_reg")"
             current_cooldown_sec="$BACKOFF_MIN_SEC"
             failures=0
             last_restore_attempt=$(date +%s)
