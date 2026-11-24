@@ -840,7 +840,11 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
 
                 sib_sym_u = str(xs.get("t212_sibling") or "").strip().upper()
                 if isinstance(xs.get("t212_sibling_cycle"), dict):
-                    xs["t212_sibling_cycle"] = _norm_t212_sib_cycle(xs["t212_sibling_cycle"], sib_sym_u)
+                    has_sib_t212_line = bool(sib_sym_u and isinstance(casefold_get(t212_cycs_map, sib_sym_u), dict))
+                    if scope_s in ("equities", "equity") and has_sib_t212_line:
+                        xs.pop("t212_sibling_cycle", None)
+                    else:
+                        xs["t212_sibling_cycle"] = _norm_t212_sib_cycle(xs["t212_sibling_cycle"], sib_sym_u)
                 if scope_s == "crypto":
                     eq_bw_src = (
                         ps["cross_market_context"].get("equity_bellwethers")

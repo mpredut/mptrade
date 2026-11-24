@@ -11666,6 +11666,23 @@ def test_item_3_4_realized_pnl_flat_cleanup_and_sibling_cum_symmetry():
     assert "'cum_realized_pnl_usd'" not in sec_all
     assert "'subcycle_realized_pnl_usd'" not in sec_all
 
+    sec_eq = "\n".join(
+        _format_portfolio_section(
+            {
+                "t212_cycles": {"SPCX_US_EQ": dict(sib_cycle)},
+                "kraken_xstocks": {
+                    "underlying": "SPCX",
+                    "listed_pair": "SPCXxUSD",
+                    "t212_sibling": "SPCX_US_EQ",
+                    "t212_sibling_cycle": dict(sib_cycle),
+                },
+            },
+            "equities",
+        )
+    )
+    assert "SPCX_US_EQ: qty=3.262965" in sec_eq
+    assert "'t212_sibling_cycle'" not in sec_eq
+
     # 3. build_cross_market_context preserves distinct cum_realized_pnl_usd / zero subcycle_realized_pnl_usd on equity_bellwethers.
     cmc = build_cross_market_context(
         {"SPCX_US_EQ": {"price": 143.11}, "RGNT_US_EQ": {"price": 1.15}},
