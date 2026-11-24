@@ -924,7 +924,7 @@ class CachedTopicAssessmentAgent(SyncModeMixin):
         prompt: str,
         *,
         subtitle: Optional[str] = None,
-        timeout_sec: float = 120.0,
+        timeout_sec: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         _default_query_topic_json = importlib.import_module("intelligence.sentiment.gemini_client").query_topic_json
 

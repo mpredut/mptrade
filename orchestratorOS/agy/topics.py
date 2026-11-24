@@ -633,6 +633,7 @@ def record_topic_turn(
     registry_path: Optional[str] = None,
     replace_conversation: bool = False,
     schedule_rotation: bool = False,
+    count_slow_rotation: bool = False,
 ) -> None:
     """Update the topic registry after a completed turn and mirror the thread into the Web UI store.
 
@@ -682,6 +683,9 @@ def record_topic_turn(
         entry["consecutive_resume_timeouts"] = 0
         if _parse_bool_flag(schedule_rotation, False):
             entry["pending_rotation"] = True
+            entry["consecutive_slow_rotations"] = safe_nonneg_int(entry.get("consecutive_slow_rotations"), 0) + 1
+        elif _parse_bool_flag(count_slow_rotation, False):
+            entry["pending_rotation"] = False
             entry["consecutive_slow_rotations"] = safe_nonneg_int(entry.get("consecutive_slow_rotations"), 0) + 1
         else:
             entry["pending_rotation"] = False

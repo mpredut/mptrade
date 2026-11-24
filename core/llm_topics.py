@@ -6,6 +6,10 @@ import os
 import re
 from typing import Any, Mapping
 
+from cachepaths import safe_pos_float
+
+
+DEFAULT_LLM_TIMEOUT_SEC: float = 240.0
 
 LLM_CONFIG_ENV_KEYS: tuple[str, ...] = (
     "LLM_DEFAULT_MODEL",
@@ -27,6 +31,42 @@ def _ensure_llm_env_loaded(env_key: str) -> None:
         pass
 
 
+def resolve_llm_timeout_sec(
+    env_key: str | None = "LLM_DEFAULT_TIMEOUT_SEC",
+    default: float = DEFAULT_LLM_TIMEOUT_SEC,
+    *,
+    override_env_key: str | None = None,
+) -> float:
+    """Resolve a positive LLM timeout (seconds) from env / config.env with safe fallback."""
+    fallback = safe_pos_float(default, DEFAULT_LLM_TIMEOUT_SEC)
+    if override_env_key:
+        ov_val = safe_pos_float(os.environ.get(override_env_key), default=None)
+        if ov_val is not None:
+            return ov_val
+    if env_key:
+        raw_val = safe_pos_float(os.environ.get(env_key), default=None)
+        if raw_val is None:
+            _ensure_llm_env_loaded(env_key)
+            if override_env_key:
+                ov_val = safe_pos_float(os.environ.get(override_env_key), default=None)
+                if ov_val is not None:
+                    return ov_val
+            raw_val = safe_pos_float(os.environ.get(env_key), default=None)
+        if raw_val is not None:
+            return raw_val
+    return fallback
+
+
+def resolve_llm_soft_extend_mult(default: float = 3.0) -> float:
+    """Return bounded ``LLM_SOFT_TIMEOUT_EXTEND_MULT`` (>= 1.0, default 3.0)."""
+    fallback = max(1.0, safe_pos_float(default, 3.0))
+    raw_val = safe_pos_float(os.environ.get("LLM_SOFT_TIMEOUT_EXTEND_MULT"), default=None)
+    if raw_val is None:
+        _ensure_llm_env_loaded("LLM_SOFT_TIMEOUT_EXTEND_MULT")
+        raw_val = safe_pos_float(os.environ.get("LLM_SOFT_TIMEOUT_EXTEND_MULT"), default=None)
+    return max(1.0, raw_val) if raw_val is not None else fallback
+
+
 _BRACKET_TAG_RE = re.compile(r"(\[[^\]]+\])")
 _NTFY_PREFIX_RE = re.compile(r"^([^\[]*\[[^\]]+\])")
 
@@ -39,9 +79,20 @@ class TopicSpec:
     can_trade: bool = False
     can_self_heal: bool = False
     asset_scope: str = "all"
-    default_timeout_sec: float = 140.0
+    base_timeout_sec: float = DEFAULT_LLM_TIMEOUT_SEC
     model_env_key: str | None = None
     override_env_key: str | None = None
+    timeout_env_key: str | None = "LLM_DEFAULT_TIMEOUT_SEC"
+    timeout_override_env_key: str | None = None
+
+    @property
+    def default_timeout_sec(self) -> float:
+        """Dynamic soft timeout (seconds) resolved from per-topic env -> global env -> base fallback."""
+        return resolve_llm_timeout_sec(
+            self.timeout_env_key,
+            self.base_timeout_sec,
+            override_env_key=self.timeout_override_env_key,
+        )
 
     @property
     def preferred_model(self) -> str | None:
@@ -82,49 +133,63 @@ TOPIC_SPECS: dict[str, TopicSpec] = {
     "auto_technical_repair": TopicSpec(
         "\U0001f6e0 [auto_technical_repair] System Audit & Code Self-Heal (03:35)",
         can_self_heal=True,
-        default_timeout_sec=240.0,
+        base_timeout_sec=240.0,
         model_env_key="LLM_HIGH_STAKE_MODEL",
         override_env_key="LLM_TOPIC_MODEL_AUTO_TECHNICAL_REPAIR",
+        timeout_env_key="LLM_REPAIR_TIMEOUT_SEC",
+        timeout_override_env_key="LLM_TOPIC_TIMEOUT_AUTO_TECHNICAL_REPAIR",
     ),
     "auto_cryptotrade_executor": TopicSpec(
         "\U0001f3af [auto_cryptotrade_executor] Autonomous Crypto Trade Decisions (Binance/Kraken/HL 6m)",
         can_trade=True,
         asset_scope="crypto",
-        default_timeout_sec=140.0,
+        base_timeout_sec=240.0,
         model_env_key="LLM_DEFAULT_MODEL",
         override_env_key="LLM_TOPIC_MODEL_AUTO_CRYPTOTRADE_EXECUTOR",
+        timeout_env_key="LLM_DEFAULT_TIMEOUT_SEC",
+        timeout_override_env_key="LLM_TOPIC_TIMEOUT_AUTO_CRYPTOTRADE_EXECUTOR",
     ),
     "auto_sharetrade_executor": TopicSpec(
         "\U0001f4c8 [auto_sharetrade_executor] Autonomous Share Trade Decisions (Trading212 RTH 30m)",
         can_trade=True,
         asset_scope="equities",
-        default_timeout_sec=140.0,
+        base_timeout_sec=240.0,
         model_env_key="LLM_HIGH_STAKE_MODEL",
         override_env_key="LLM_TOPIC_MODEL_AUTO_SHARETRADE_EXECUTOR",
+        timeout_env_key="LLM_DEFAULT_TIMEOUT_SEC",
+        timeout_override_env_key="LLM_TOPIC_TIMEOUT_AUTO_SHARETRADE_EXECUTOR",
     ),
     "macro_geopolitical": TopicSpec(
         "\U0001f30d [auto_macro_geopolitical] Geopolitical Crisis & Breaking News Brake",
-        default_timeout_sec=140.0,
+        base_timeout_sec=240.0,
         model_env_key="LLM_LOW_STAKE_MODEL",
         override_env_key="LLM_TOPIC_MODEL_MACRO_GEOPOLITICAL",
+        timeout_env_key="LLM_DEFAULT_TIMEOUT_SEC",
+        timeout_override_env_key="LLM_TOPIC_TIMEOUT_MACRO_GEOPOLITICAL",
     ),
     "macro_sentiment": TopicSpec(
         "\U0001f9ed [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)",
-        default_timeout_sec=140.0,
+        base_timeout_sec=240.0,
         model_env_key="LLM_HIGH_STAKE_MODEL",
         override_env_key="LLM_TOPIC_MODEL_MACRO_SENTIMENT",
+        timeout_env_key="LLM_DEFAULT_TIMEOUT_SEC",
+        timeout_override_env_key="LLM_TOPIC_TIMEOUT_MACRO_SENTIMENT",
     ),
     "guard_high_stake": TopicSpec(
         "\U0001f6e1 [auto_guard_large_order] Pre-Trade Veto for Large Orders (>=700 EUR)",
-        default_timeout_sec=140.0,
+        base_timeout_sec=240.0,
         model_env_key="LLM_HIGH_STAKE_MODEL",
         override_env_key="LLM_TOPIC_MODEL_GUARD_HIGH_STAKE",
+        timeout_env_key="LLM_DEFAULT_TIMEOUT_SEC",
+        timeout_override_env_key="LLM_TOPIC_TIMEOUT_GUARD_HIGH_STAKE",
     ),
     "guard_post_stop": TopicSpec(
         "\U0001f6e1 [auto_guard_post_stop] Pre-Trade Veto for Post-Stop Re-Buy Bounce",
-        default_timeout_sec=140.0,
+        base_timeout_sec=240.0,
         model_env_key="LLM_DEFAULT_MODEL",
         override_env_key="LLM_TOPIC_MODEL_GUARD_POST_STOP",
+        timeout_env_key="LLM_DEFAULT_TIMEOUT_SEC",
+        timeout_override_env_key="LLM_TOPIC_TIMEOUT_GUARD_POST_STOP",
     ),
 }
 

@@ -813,8 +813,15 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 {"ts": eff_now, "symbols": shocked},
                 indent=2,
             )
+            fallback_exec_timeout = pos_float_env("AI_IMPULSE_EXEC_TIMEOUT_SEC", 780.0)
             exec_timeout_sec = str(
-                max(30, safe_pos_int(round(safe_pos_float(getattr(self, "ai_impulse_exec_timeout_sec", None), 480.0)), default=480))
+                max(
+                    30,
+                    safe_pos_int(
+                        round(safe_pos_float(getattr(self, "ai_impulse_exec_timeout_sec", None), fallback_exec_timeout)),
+                        default=safe_pos_int(round(fallback_exec_timeout), default=780),
+                    ),
+                )
             )
             log_path = os.path.join(workspace_dir, "logs", "auto_trade_executor.log")
             out_fh = open_append_text_file(log_path)

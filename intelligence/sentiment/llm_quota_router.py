@@ -542,6 +542,7 @@ class GeminiQuotaRouterMixin:
         bot_cli_base: Optional[str] = None,
         *,
         force_refresh: bool = False,
+        restore_expired_demotions: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """Query Cloud Code internal quota & credits endpoints (~200ms) with short TTL cache.
 
@@ -710,14 +711,25 @@ class GeminiQuotaRouterMixin:
             expired_demoted: list[tuple[str, Dict[str, Any]]] = []
             prev_demoted = prev.get("latency_demoted_models")
             if same_oauth_account and isinstance(prev_demoted, dict):
+                warn_thr = resolve_quota_low_warn_fraction(default=0.10)
                 for m_name, info in prev_demoted.items():
                     if not isinstance(m_name, str) or not isinstance(info, dict):
                         continue
                     restore_ts = safe_float(info.get("restore_after_ts"), 0.0) or 0.0
-                    if restore_ts > now:
+                    if restore_ts > now or not _parse_bool_flag(restore_expired_demotions, True):
                         latency_demoted[m_name] = dict(info)
                     else:
-                        expired_demoted.append((m_name, dict(info)))
+                        not_exhausted = not _is_model_runtime_exhausted(runtime_exhausted, m_name, now)
+                        rem_frac = _lookup_bucket_remaining(buckets, m_name)
+                        quota_healthy = (
+                            available_credits > 0.0
+                            or not buckets
+                            or (rem_frac is not None and rem_frac > warn_thr)
+                        )
+                        if not_exhausted and quota_healthy:
+                            expired_demoted.append((m_name, dict(info)))
+                        else:
+                            latency_demoted[m_name] = dict(info)
 
             snapshot: Dict[str, Any] = {
                 "checked_ts": now,
@@ -1029,7 +1041,7 @@ class GeminiQuotaRouterMixin:
     def _record_model_quota_exhausted(
         cls,
         model_name: str,
-        ttl_sec: float = 120.0,
+        ttl_sec: Optional[float] = None,
         *,
         model_unrecognized: bool = False,
     ) -> None:
@@ -1041,7 +1053,9 @@ class GeminiQuotaRouterMixin:
             return
         unrec = _parse_bool_flag(model_unrecognized, False)
         now = time.time()
-        exp_until = now + max(15.0, safe_pos_float(ttl_sec, default=120.0))
+        default_ttl = safe_pos_float(float_env("LLM_RUNTIME_EXHAUSTED_TTL_SEC", default=120.0), default=120.0)
+        eff_ttl = safe_pos_float(ttl_sec, default=default_ttl) if ttl_sec is not None else default_ttl
+        exp_until = now + max(15.0, eff_ttl)
         state_path, _read_json_dict, _save_json_state = (
             cls._get_quota_state_path(),
             _gc_attr("read_json_dict", read_json_dict),

@@ -52,7 +52,7 @@ import notify_engine.alertnotifiers as _alertnotifiers
 
 logger = logging.getLogger("intelligence.sentiment.guards.post_stop_reentry_guard")
 
-DEFAULT_TIMEOUT_SEC = 140.0
+DEFAULT_TIMEOUT_SEC = 240.0
 DEFAULT_FALLBACK = "allow"
 _POST_STOP_DECISION_CACHE: Dict[Tuple[str, float, int], Tuple[float, GuardDecision]] = {}
 _POST_STOP_NOTIFY_CACHE: Dict[Tuple[str, str], float] = {}
@@ -78,7 +78,7 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
     def __init__(
         self,
         gemini_client: Optional[GeminiClient] = None,
-        timeout_sec: float = DEFAULT_TIMEOUT_SEC,
+        timeout_sec: Optional[float] = None,
         fallback_action: str = DEFAULT_FALLBACK,
         mode: str = "enforce",
         notify_enabled: bool = True,
@@ -253,7 +253,10 @@ def get_post_stop_reentry_guard(
     raw_fb = m.get("post_stop_reentry_fallback", DEFAULT_FALLBACK)
     raw_notify = m.get("post_stop_reentry_notify")
     cfg = {
-        "timeout_sec": safe_pos_float(m.get("post_stop_reentry_timeout_sec"), DEFAULT_TIMEOUT_SEC),
+        "timeout_sec": safe_pos_float(
+            m.get("post_stop_reentry_timeout_sec"),
+            topic_spec("guard_post_stop").default_timeout_sec,
+        ),
         "fallback_action": str(raw_fb if raw_fb is not None and not isinstance(raw_fb, bool) else DEFAULT_FALLBACK).strip().lower() or DEFAULT_FALLBACK,
         "mode": resolve_hierarchical_guard_mode(m, "post_stop_reentry_mode", "llm_guard_mode", default="enforce"),
         "notify_enabled": True if raw_notify is None else _parse_bool_flag(raw_notify, default=False),

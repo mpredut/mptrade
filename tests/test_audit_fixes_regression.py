@@ -1420,7 +1420,7 @@ def test_llm_timeout_140s_topic_auto_rotation_and_archive_sanitizers(tmp_path):
     from kraken.market_data import load_archive_ohlc_candles
     from verify_tools.sanitize_price_archives import sanitize_jsonl_price_archive
 
-    # 1. Topic timeout defaults bumped from 120s -> 140s (repair stays 240s)
+    # 1. Topic timeout defaults configurable via LLM_DEFAULT_TIMEOUT_SEC (default 240s)
     for k in (
         "auto_cryptotrade_executor",
         "auto_sharetrade_executor",
@@ -1429,7 +1429,7 @@ def test_llm_timeout_140s_topic_auto_rotation_and_archive_sanitizers(tmp_path):
         "guard_high_stake",
         "guard_post_stop",
     ):
-        assert topic_spec(k).default_timeout_sec == pytest.approx(140.0)
+        assert topic_spec(k).default_timeout_sec == pytest.approx(240.0)
     assert topic_spec("auto_technical_repair").default_timeout_sec == pytest.approx(240.0)
 
     # 2. Consecutive resume timeouts auto-rotate the stuck conversation while preserving rolling_history
@@ -1682,3 +1682,280 @@ def test_llm_soft_timeout_extends_without_kill_rotates_next_turn_demotes_and_4h_
         snap_after,
     )
     assert restored_order[0] == "gemini-4-neon-high"
+
+
+def test_llm_timeout_configurability_and_audit_bug_fixes(tmp_path, monkeypatch):
+    """Verify configurable LLM timeout SSOT and all 4 audit fixes:
+    1. Dynamic env configurability for global, repair, and per-topic timeouts (default 240s).
+    2. BaseException (KeyboardInterrupt/SIGTERM) kills & reaps Popen child during soft-extended wait.
+    3. Hard timeout on a fresh rotated thread (conversation_id=None) AND primary timeout rescued by
+       a faster fallback BOTH increment consecutive_slow_rotations and trigger latency step-down.
+    4. Expired latency demotion in probe_live_model_quota is NOT restored when quota is 0%/exhausted,
+       and outer timeouts (ai_impulse_exec_timeout_sec & crontab.prod.txt) cover 240s * 3 = 720s."""
+    import json
+    import os
+    import subprocess
+    import time as _t
+    from botcore import topic_spec
+    from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
+    from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
+    from orchestratorOS.agy import topics as agy_topics
+    from orchestratorOS.lib import watchdog_common
+
+    # 1. Dynamic timeout configurability without code changes
+    monkeypatch.setenv("LLM_DEFAULT_TIMEOUT_SEC", "300")
+    monkeypatch.setenv("LLM_TOPIC_TIMEOUT_AUTO_CRYPTOTRADE_EXECUTOR", "195")
+    monkeypatch.setenv("LLM_REPAIR_TIMEOUT_SEC", "360")
+    assert topic_spec("auto_sharetrade_executor").default_timeout_sec == pytest.approx(300.0)
+    assert topic_spec("auto_cryptotrade_executor").default_timeout_sec == pytest.approx(195.0)
+    assert topic_spec("auto_technical_repair").default_timeout_sec == pytest.approx(360.0)
+    observed_to = []
+    dummy_cli = GeminiClient(custom_runner=lambda _p, _m, t: (observed_to.append(t), '{"ok": true}')[1])
+    assert HighStakeGuard(gemini_client=dummy_cli).timeout_sec == pytest.approx(300.0)
+    assert PostStopReentryGuard(gemini_client=dummy_cli, notify_enabled=False).timeout_sec == pytest.approx(300.0)
+    query_topic_json(dummy_cli, "macro_sentiment", "ping")
+    assert observed_to == [pytest.approx(300.0)]
+    monkeypatch.delenv("LLM_TOPIC_TIMEOUT_AUTO_CRYPTOTRADE_EXECUTOR", raising=False)
+    monkeypatch.setenv("LLM_DEFAULT_TIMEOUT_SEC", "240")
+    monkeypatch.setenv("LLM_REPAIR_TIMEOUT_SEC", "240")
+
+    # 2. Bug Fix #1: BaseException during extended wait kills & reaps child process cleanly
+    killed_flags = []
+
+    class _InterruptedPopen:
+        def __init__(self, cmd, **_kw):
+            self.cmd = cmd
+            self.returncode = None
+            self.killed = False
+            self.waited = False
+            self.calls = 0
+            killed_flags.append(self)
+
+        def communicate(self, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise subprocess.TimeoutExpired(self.cmd, timeout)
+            raise KeyboardInterrupt("outer SIGTERM/SIGINT")
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            self.waited = True
+            return -9
+
+    monkeypatch.setattr(subprocess, "Popen", _InterruptedPopen)
+    with pytest.raises(KeyboardInterrupt):
+        GeminiClient._run_subprocess_with_soft_extend(
+            ["agy-bot", "--model", "gemini-4-neon-high"],
+            soft_timeout=240.0,
+            extend_mult=3.0,
+            run_env={},
+            exec_cwd=None,
+            cli_model="gemini-4-neon-high",
+            resume="cid-int-1",
+        )
+    assert len(killed_flags) == 1
+    assert killed_flags[0].killed is True
+    assert killed_flags[0].waited is True
+
+    # 3. Bug Fix #2 & #2b: Fresh rotated thread hard timeout + fallback-rescued timeout count slow rotations
+    reg_path = str(tmp_path / "llm_topic_threads.json")
+    bot_base = str(tmp_path / "agy_base")
+    (tmp_path / "agy_base" / "conversations").mkdir(parents=True, exist_ok=True)
+    quota_path = str(tmp_path / "llm_quota_status.json")
+    monkeypatch.setattr(agy_topics, "get_topic_registry_path", lambda p=None: p or reg_path)
+    monkeypatch.setattr(GeminiClient, "_get_quota_state_path", classmethod(lambda cls: quota_path))
+    monkeypatch.setattr(GeminiClient, "_QUOTA_MEM_CACHE", {})
+    monkeypatch.setenv("LLM_SLOW_ROTATIONS_FOR_FALLBACK", "2")
+    monkeypatch.setenv("LLM_FORCE_QUOTA_ALERT_TEST", "1")
+    sent_alerts = []
+    monkeypatch.setattr(
+        watchdog_common,
+        "send_ntfy",
+        lambda title, msg, **kw: (sent_alerts.append((title, msg, kw)), True)[1],
+    )
+    monkeypatch.setattr(agy_topics, "get_thread_step_count", lambda cid, base: (True, 4, "IDLE"))
+    monkeypatch.setattr(agy_topics, "sync_topic_thread_from_ui", lambda *_a, **_k: None)
+    monkeypatch.setattr(agy_topics, "mirror_topic_thread_to_ui", lambda *_a, **_k: None)
+    monkeypatch.setattr(agy_topics, "read_summary_row", lambda *_a, **_k: None)
+    monkeypatch.setattr(agy_topics, "write_annotation_title", lambda *_a, **_k: None)
+    monkeypatch.setattr(agy_topics, "delete_threads", lambda *_a, **_k: None)
+
+    now_t = _t.time()
+    (tmp_path / "llm_quota_status.json").write_text(
+        json.dumps(
+            {
+                "checked_ts": now_t,
+                "available_credits": 10.0,
+                "buckets": {
+                    "gemini-4-neon-high": 0.90,
+                    "gemini-4-neon-medium": 0.90,
+                    "claude-sonnet-5-5-medium": 1.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Seed 1 prior slow rotation and fresh rotated thread (conversation_id=None)
+    (tmp_path / "llm_topic_threads.json").write_text(
+        json.dumps(
+            {
+                "auto_sharetrade_executor": {
+                    "topic_key": "auto_sharetrade_executor",
+                    "conversation_id": None,
+                    "consecutive_slow_rotations": 1,
+                    "turn_count": 3,
+                    "rolling_history": [{"utc": "2026-11-24 18:00 UTC", "summary": "decision=HOLD"}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    import intelligence.sentiment.gemini_client as gc_mod
+    monkeypatch.setattr(gc_mod, "resolve_bot_cli_base", lambda *_a, **_k: bot_base)
+    monkeypatch.setattr(gc_mod, "prepare_topic_session", lambda tk, cli_base=None: agy_topics.TopicSession(None, "", False))
+    monkeypatch.setattr(
+        gc_mod,
+        "record_topic_slow_rotation",
+        lambda tk, cid=None, **kw: agy_topics.record_topic_slow_rotation(tk, cid, registry_path=reg_path, **kw),
+    )
+    monkeypatch.setattr(
+        gc_mod,
+        "record_topic_turn",
+        lambda *a, **kw: agy_topics.record_topic_turn(*a, registry_path=reg_path, **kw),
+    )
+    monkeypatch.setattr(
+        gc_mod,
+        "get_topic_slow_rotation_count",
+        lambda tk: agy_topics.get_topic_slow_rotation_count(tk, registry_path=reg_path),
+    )
+
+    cli = GeminiClient(cli_path="/bin/true")
+    monkeypatch.setattr(cli, "probe_live_model_quota", lambda **_k: json.loads((tmp_path / "llm_quota_status.json").read_text(encoding="utf-8")))
+
+    # Primary model times out on fresh thread (cid=None), faster fallback succeeds -> must increment count to 2 & demote primary!
+    def _timeout_primary_then_ok_fallback(resume, text, call_timeout, cli_model, *args, **kwargs):
+        if cli_model == "gemini-4-neon-high":
+            raise subprocess.TimeoutExpired(["agy-bot"], call_timeout)
+        return subprocess.CompletedProcess(
+            args=["agy-bot"],
+            returncode=0,
+            stdout=json.dumps({"response": '{"decision": "HOLD"}', "conversation_id": "cid-fresh-fb"}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(cli, "_execute_cli", _timeout_primary_then_ok_fallback)
+    out = cli.query_json("evaluate shares", topic_key="auto_sharetrade_executor", model="gemini-4-neon-high", timeout_sec=240.0)
+    assert out == {"decision": "HOLD"}
+    assert agy_topics.get_topic_slow_rotation_count("auto_sharetrade_executor", registry_path=reg_path) == 2
+    q_after_fb = json.loads((tmp_path / "llm_quota_status.json").read_text(encoding="utf-8"))
+    assert "gemini-4-neon-high" in (q_after_fb.get("latency_demoted_models") or {})
+    assert any("gemini-4-neon-high -> gemini-4-neon-medium" in t for t, _, _ in sent_alerts)
+
+    # Also verify all-candidates hard timeout on fresh thread (cid=None) increments slow rotation counter
+    (tmp_path / "llm_topic_threads.json").write_text(
+        json.dumps(
+            {
+                "auto_cryptotrade_executor": {
+                    "topic_key": "auto_cryptotrade_executor",
+                    "conversation_id": None,
+                    "consecutive_slow_rotations": 0,
+                    "turn_count": 1,
+                    "rolling_history": [],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli,
+        "_execute_cli",
+        lambda resume, text, call_timeout, cli_model, *a, **k: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(["agy-bot"], call_timeout)
+        ),
+    )
+    res_none = cli.query_json("evaluate crypto", topic_key="auto_cryptotrade_executor", model="gemini-4-neon-medium", timeout_sec=240.0)
+    assert res_none is None
+    assert agy_topics.get_topic_slow_rotation_count("auto_cryptotrade_executor", registry_path=reg_path) == 1
+
+    # 4. Bug Fix #3: probe_live_model_quota must NOT restore expired latency demotion when quota == 0.0
+    tok_dir = tmp_path / "bot_tok_base"
+    tok_dir.mkdir(parents=True, exist_ok=True)
+    (tok_dir / "antigravity-oauth-token").write_text(
+        json.dumps({"access_token": "tok-1", "id_token_email": "bot@example.com"}),
+        encoding="utf-8",
+    )
+    q_zero_path = str(tmp_path / "llm_quota_zero.json")
+    monkeypatch.setattr(GeminiClient, "_get_quota_state_path", classmethod(lambda cls: q_zero_path))
+    monkeypatch.setattr(GeminiClient, "_QUOTA_MEM_CACHE", {})
+    # Write an EXPIRED demotion (restore_after_ts in the past)
+    (tmp_path / "llm_quota_zero.json").write_text(
+        json.dumps(
+            {
+                "checked_ts": now_t - 20000.0,
+                "available_credits": 0.0,
+                "buckets": {"gemini-4-neon-high": 0.0, "gemini-4-neon-medium": 0.90},
+                "latency_demoted_models": {
+                    "gemini-4-neon-high": {
+                        "fallback_model": "gemini-4-neon-medium",
+                        "demoted_ts": now_t - 20000.0,
+                        "restore_after_ts": now_t - 100.0,
+                        "topic": "auto_sharetrade_executor",
+                        "slow_rotations": 2,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _fake_fetch(url, payload=None, headers=None, timeout=None):
+        if "loadCodeAssist" in url:
+            return {"paidTier": {"id": "pro", "availableCredits": []}}
+        return {
+            "buckets": [
+                {"modelId": "gemini-4-neon-high", "remainingFraction": 0.0},
+                {"modelId": "gemini-4-neon-medium", "remainingFraction": 0.95},
+                {"modelId": "claude-sonnet-5-5-medium", "remainingFraction": 1.0},
+            ]
+        }
+
+    monkeypatch.setattr(gc_mod, "fetch_json_post", _fake_fetch)
+    snap_zero = GeminiClient.probe_live_model_quota(bot_cli_base=str(tok_dir), force_refresh=True)
+    assert isinstance(snap_zero, dict)
+    assert "gemini-4-neon-high" in (snap_zero.get("latency_demoted_models") or {})
+
+    # Once quota recovers (> 0.10), expired demotion IS restored (unless restore_expired_demotions=False)
+    def _fake_fetch_healthy(url, payload=None, headers=None, timeout=None):
+        if "loadCodeAssist" in url:
+            return {"paidTier": {"id": "pro", "availableCredits": []}}
+        return {
+            "buckets": [
+                {"modelId": "gemini-4-neon-high", "remainingFraction": 0.85},
+                {"modelId": "gemini-4-neon-medium", "remainingFraction": 0.95},
+            ]
+        }
+
+    monkeypatch.setattr(gc_mod, "fetch_json_post", _fake_fetch_healthy)
+    snap_deferred = GeminiClient.probe_live_model_quota(
+        bot_cli_base=str(tok_dir), force_refresh=True, restore_expired_demotions=False
+    )
+    assert "gemini-4-neon-high" in (snap_deferred.get("latency_demoted_models") or {})
+    snap_restored = GeminiClient.probe_live_model_quota(
+        bot_cli_base=str(tok_dir), force_refresh=True, restore_expired_demotions=True
+    )
+    assert "latency_demoted_models" not in snap_restored
+
+    # 5. Bug Fix #4: Outer timeout alignment (>= 240s * 3 = 720s)
+    derived = resolve_derived_telemetry_intervals(executor_interval_sec=360.0)
+    assert derived["ai_impulse_exec_timeout_sec"] >= 780.0
+    cron_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "systemd", "crontab.prod.txt")
+    cron_txt = open(cron_path, encoding="utf-8").read()
+    for job_key in ("auto_technical_repair", "auto_cryptotrade_executor", "auto_sharetrade_executor"):
+        matching = [ln for ln in cron_txt.splitlines() if f"--topic-key {job_key}" in ln]
+        assert len(matching) == 1
+        assert "/usr/bin/timeout 780 " in matching[0]

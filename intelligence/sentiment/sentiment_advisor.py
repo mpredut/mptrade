@@ -542,7 +542,6 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
         resp = self._query_topic(
             prompt,
             subtitle=fg_label,
-            timeout_sec=140.0,
         )
         if not resp or not isinstance(resp, dict):
             return self._cached_assessment

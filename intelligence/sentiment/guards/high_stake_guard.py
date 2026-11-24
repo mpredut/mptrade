@@ -19,6 +19,7 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    topic_spec,
 )
 from cachepaths import clean_symbol_key, has_equity_suffix, is_eur_pair, is_usdc_pair
 from intelligence.internal.guards.guard_decision import (
@@ -153,14 +154,14 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
     cls_name = "PreTradeLLMGuardBase"
     GUARD_NAME: str = "PreTradeLLMGuard"
     TOPIC_KEY: str = "guard_high_stake"
-    DEFAULT_TIMEOUT_SEC: float = 140.0
+    DEFAULT_TIMEOUT_SEC: float = 240.0
     DEFAULT_FALLBACK: str = "allow"
     DEFAULT_CACHE_TTL_SEC: float = DEFAULT_LLM_GUARD_CACHE_TTL_SEC
 
     def __init__(
         self,
         gemini_client: Optional[GeminiClient] = None,
-        timeout_sec: float = 140.0,
+        timeout_sec: Optional[float] = None,
         fallback_action: str = "allow",
         mode: str = "enforce",
         notify_enabled: bool = True,
@@ -172,7 +173,8 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
         super().__init__()
         self._explicit_client = gemini_client is not None
         self.gemini_client = gemini_client or GeminiClient()
-        self.timeout_sec = safe_pos_float(timeout_sec, self.DEFAULT_TIMEOUT_SEC)
+        default_to = topic_spec(self.TOPIC_KEY).default_timeout_sec if self.TOPIC_KEY else self.DEFAULT_TIMEOUT_SEC
+        self.timeout_sec = safe_pos_float(timeout_sec, default_to)
         self.fallback_action = str(fallback_action or self.DEFAULT_FALLBACK).strip().lower()
         self.mode = normalize_guard_mode(mode, default="enforce")
         self.notify_enabled = _parse_bool_flag(notify_enabled)
@@ -501,7 +503,7 @@ class HighStakeGuard(PreTradeLLMGuardBase):
         gemini_client: Optional[GeminiClient] = None,
         min_notional_eur: Optional[float] = None,
         min_notional_usd: Optional[float] = None,
-        timeout_sec: float = 140.0,
+        timeout_sec: Optional[float] = None,
         fallback_action: str = "allow",
         mode: str = "enforce",
         notify_enabled: bool = True,

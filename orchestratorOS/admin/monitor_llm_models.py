@@ -18,7 +18,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import add_store_true_cli_args, load_dotenv
+from botcore import add_store_true_cli_args, load_dotenv, pos_float_env
 from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.lib.technical_repair_ssot import audit_llm_model_catalog_and_binaries
 
@@ -31,10 +31,14 @@ def run_llm_model_monitor(
 ) -> dict[str, Any]:
     """Run one 4-hour LLM quota/token/model check and restore healthy latency-demoted models."""
     load_dotenv()
-    quota_snap = GeminiClient.probe_live_model_quota(force_refresh=force_refresh)
+    monitor_interval_sec = pos_float_env("LLM_MODEL_MONITOR_INTERVAL_SEC", 14400.0)
+    quota_snap = GeminiClient.probe_live_model_quota(
+        force_refresh=force_refresh,
+        restore_expired_demotions=False,
+    )
     catalog_audit = audit_llm_model_catalog_and_binaries(
         workspace_dir,
-        min_interval_sec=14400.0,
+        min_interval_sec=monitor_interval_sec,
         force_refresh=force_refresh,
         persist=True,
     )

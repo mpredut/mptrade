@@ -344,7 +344,7 @@ class TestGeopoliticalThreatAnalyzer:
         t0 = 2_000_000.0
         res1 = analyzer.assess(snap, now_ts=t0)
         assert len(calls) == 1
-        assert calls[0] == 140.0
+        assert calls[0] == 240.0
         # Generic war mentions without acute shock phrases must not trigger CRITICAL_SHOCK
         assert res1.threat_level == "ELEVATED"
         assert res1.recommended_brake == "DOWNSCALE_50"

@@ -1475,7 +1475,7 @@ def test_unified_ai_agent_base_classes_and_query_topic_json():
     _, kw = spy.calls[0]
     assert kw["topic_key"] == "guard_high_stake"
     assert "BUY BTCUSDC €1,000.00" in kw["thread_title"]
-    assert kw["timeout_sec"] == 140.0
+    assert kw["timeout_sec"] == 240.0
     assert query_topic_json(None, "guard_high_stake", "noop") is None
 
 

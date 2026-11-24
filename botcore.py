@@ -349,10 +349,13 @@ from core.heartbeat_runtime import (  # noqa: E402
     touch_module_heartbeat,
 )
 from core.llm_topics import (  # noqa: E402
+    DEFAULT_LLM_TIMEOUT_SEC,
     TOPIC_ALIASES,
     TOPIC_SPECS,
     TopicSpec,
     canonical_topic_key,
+    resolve_llm_soft_extend_mult,
+    resolve_llm_timeout_sec,
     topic_spec,
 )
 

@@ -25,6 +25,8 @@ from botcore import (
     load_dotenv,
     optional_env,
     required_env,
+    resolve_llm_soft_extend_mult,
+    resolve_llm_timeout_sec,
     safe_float,
     safe_pos_float,
     safe_pos_int,
@@ -207,28 +209,46 @@ class GeminiClient(GeminiQuotaRouterMixin):
             cwd=exec_cwd,
         )
         exceeded_soft = False
+        reaped = False
         try:
-            stdout, stderr = proc.communicate(timeout=soft_timeout)
-        except subprocess.TimeoutExpired:
-            exceeded_soft = True
-            extra_wait = max(1.0, hard_timeout - soft_timeout)
-            if hard_timeout <= soft_timeout + 1e-6:
-                proc.kill()
-                proc.communicate()
-                raise
-            logger.warning(
-                "agy CLI (model=%s, conv=%s) exceeded soft timeout %.0fs; NOT killing \u2014 extending wait up to %.0fs so execution finishes cleanly and scheduling thread rotation for next turn.",
-                cli_model,
-                resume or "new",
-                soft_timeout,
-                hard_timeout,
-            )
             try:
-                stdout, stderr = proc.communicate(timeout=extra_wait)
+                stdout, stderr = proc.communicate(timeout=soft_timeout)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
-                raise subprocess.TimeoutExpired(cmd, hard_timeout)
+                exceeded_soft = True
+                extra_wait = max(1.0, hard_timeout - soft_timeout)
+                if hard_timeout <= soft_timeout + 1e-6:
+                    proc.kill()
+                    proc.communicate()
+                    reaped = True
+                    raise
+                logger.warning(
+                    "agy CLI (model=%s, conv=%s) exceeded soft timeout %.0fs; NOT killing -- extending wait up to %.0fs so execution finishes cleanly and scheduling thread rotation for next turn.",
+                    cli_model,
+                    resume or "new",
+                    soft_timeout,
+                    hard_timeout,
+                )
+                try:
+                    stdout, stderr = proc.communicate(timeout=extra_wait)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.communicate()
+                    reaped = True
+                    raise subprocess.TimeoutExpired(cmd, hard_timeout)
+        except BaseException:
+            if not reaped:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(proc, "wait"):
+                        proc.wait(timeout=5.0)
+                    else:
+                        proc.communicate()
+                except Exception:
+                    pass
+            raise
         return (
             subprocess.CompletedProcess(
                 args=cmd,
@@ -276,11 +296,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
             return subprocess.run(cmd, capture_output=True, text=True, timeout=call_timeout,
                                   check=False, env=run_env)
         exec_cwd = _ROOT_DIR if (use_repo_rules and os.path.isdir(_ROOT_DIR)) else bot_cli_base
-        extend_mult = (
-            max(1.0, safe_float(float_env("LLM_SOFT_TIMEOUT_EXTEND_MULT", default=3.0), 3.0) or 3.0)
-            if allow_soft_extend
-            else 1.0
-        )
+        extend_mult = resolve_llm_soft_extend_mult(3.0) if allow_soft_extend else 1.0
         effective_max_wait = call_timeout * extend_mult
         lock_path = os.path.join(bot_cli_base, ".agy_bot_cli.lock")
         lock_wait = max(90.0, effective_max_wait) if call_timeout >= 30.0 else min(call_timeout * 0.5, 5.0)
@@ -494,9 +510,10 @@ class GeminiClient(GeminiQuotaRouterMixin):
             )
             else model_candidate
         )
+        one_off_cap = resolve_llm_timeout_sec("LLM_ONE_OFF_FALLBACK_TIMEOUT_SEC", 75.0)
         one_off_timeout = (
-            min(timeout_sec, 75.0)
-            if (resume_timed_out and timeout_sec > 75.0)
+            min(timeout_sec, one_off_cap)
+            if (resume_timed_out and timeout_sec > one_off_cap)
             else timeout_sec
         )
         tried_detached_models.add(one_off_model)
@@ -607,6 +624,8 @@ class GeminiClient(GeminiQuotaRouterMixin):
         topic_lock: Optional[threading.Lock],
         release_lock: bool = False,
         schedule_rotation: bool = False,
+        count_slow_rotation: bool = False,
+        timed_out_model: str = "",
         effective_model_used: str = "",
     ) -> None:
         """Optionally run in-place /compact on a completed topic turn and record turn metadata."""
@@ -615,7 +634,8 @@ class GeminiClient(GeminiQuotaRouterMixin):
         try:
             compacted_ok = False
             if session.compact and turn_cid and not replaced_conversation and not schedule_rotation:
-                compact_timeout = max(timeout_sec, 140.0)
+                compact_min = resolve_llm_timeout_sec("LLM_COMPACT_TIMEOUT_MIN_SEC", 240.0)
+                compact_timeout = max(timeout_sec, compact_min)
                 compact_snap = (
                     snapshot_conversation_state(bot_cli_base, turn_cid)
                     if not is_mocked
@@ -693,12 +713,18 @@ class GeminiClient(GeminiQuotaRouterMixin):
                     record_kwargs["replace_conversation"] = True
                 if schedule_rotation:
                     record_kwargs["schedule_rotation"] = True
+                elif count_slow_rotation:
+                    record_kwargs["count_slow_rotation"] = True
                 record_topic_turn(**record_kwargs)
-                if schedule_rotation and topic_key:
+                if (schedule_rotation or count_slow_rotation) and topic_key:
                     slow_cnt = get_topic_slow_rotation_count(topic_key)
                     self._maybe_step_down_after_slow_rotations(
                         topic_key=topic_key,
-                        slow_model=effective_model_used or (models_to_try[attempt_idx] if attempt_idx < len(models_to_try) else ""),
+                        slow_model=(
+                            timed_out_model
+                            or effective_model_used
+                            or (models_to_try[attempt_idx] if attempt_idx < len(models_to_try) else "")
+                        ),
                         models_to_try=models_to_try,
                         slow_count=slow_cnt,
                     )
@@ -814,8 +840,44 @@ class GeminiClient(GeminiQuotaRouterMixin):
 
             resume_abandoned = False
             had_resume_timeout = False
+            timed_out_models: list[str] = []
             tried_detached_models: set[str] = set()
             exhausted_in_call: set[str] = set()
+            abandoned_resume_cap = resolve_llm_timeout_sec("LLM_ABANDONED_RESUME_TIMEOUT_SEC", 45.0)
+
+            def _record_hard_timeout_slow_rotation() -> None:
+                if not (
+                    (had_resume_timeout or timed_out_models)
+                    and use_topic_session
+                    and topic_key
+                    and (
+                        not is_mocked
+                        or hasattr(record_topic_resume_timeout, "_mock_name")
+                        or record_topic_resume_timeout is not _ORIG_RECORD_TOPIC_RESUME_TIMEOUT
+                        or hasattr(record_topic_slow_rotation, "_mock_name")
+                        or record_topic_slow_rotation is not _ORIG_RECORD_TOPIC_SLOW_ROTATION
+                    )
+                ):
+                    return
+                try:
+                    slow_cnt = record_topic_slow_rotation(
+                        topic_key,
+                        session.conversation_id,
+                        cli_base=bot_cli_base,
+                        rotate_immediately=True,
+                    )
+                    self._maybe_step_down_after_slow_rotations(
+                        topic_key=topic_key,
+                        slow_model=(
+                            timed_out_models[0]
+                            if timed_out_models
+                            else (models_to_try[0] if models_to_try else selected_model)
+                        ),
+                        models_to_try=models_to_try,
+                        slow_count=slow_cnt,
+                    )
+                except Exception as exc:
+                    logger.debug("Failed recording topic slow rotation for %s: %s", topic_key, exc)
 
             for attempt_idx, model_candidate in enumerate(models_to_try):
                 if resume_abandoned and model_candidate in tried_detached_models:
@@ -845,8 +907,8 @@ class GeminiClient(GeminiQuotaRouterMixin):
                 eff_conv_id = None if resume_abandoned else session.conversation_id
                 eff_prompt = _resolve_detached_topic_prompt() if resume_abandoned else cli_prompt
                 eff_timeout = (
-                    min(timeout_sec, 45.0)
-                    if (resume_abandoned and timeout_sec > 45.0)
+                    min(timeout_sec, abandoned_resume_cap)
+                    if (resume_abandoned and timeout_sec > abandoned_resume_cap)
                     else timeout_sec
                 )
                 pre_attempt_cids = (
@@ -868,6 +930,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                         replaced_conversation = turn_cid != session.conversation_id
                 except subprocess.TimeoutExpired:
                     exceeded_soft_timeout = False
+                    timed_out_models.append(model_candidate)
                     self._rollback_cli_attempt(
                         bot_cli_base, eff_conv_id, conv_snapshot if eff_conv_id else None, pre_attempt_cids, is_mocked
                     )
@@ -966,6 +1029,8 @@ class GeminiClient(GeminiQuotaRouterMixin):
                         cache_ttl_sec=cache_ttl_sec,
                     )
                     if use_topic_session:
+                        sched_rot = bool(exceeded_soft_timeout and not replaced_conversation)
+                        count_slow = bool(timed_out_models and not sched_rot)
                         finalize_kwargs = dict(
                             topic_key=topic_key,
                             session=session,
@@ -981,10 +1046,12 @@ class GeminiClient(GeminiQuotaRouterMixin):
                             is_mocked=is_mocked,
                             include_repo_rules=include_repo_rules,
                             topic_lock=topic_lock,
-                            schedule_rotation=bool(exceeded_soft_timeout and not replaced_conversation),
+                            schedule_rotation=sched_rot,
+                            count_slow_rotation=count_slow,
+                            timed_out_model=(timed_out_models[0] if timed_out_models else ""),
                             effective_model_used=effective_model_used,
                         )
-                        if session.compact and turn_cid and not is_mocked and not exceeded_soft_timeout:
+                        if session.compact and turn_cid and not is_mocked and not sched_rot and not count_slow:
                             topic_lock_transferred = True
                             threading.Thread(
                                 target=self._finalize_topic_turn,
@@ -1016,35 +1083,9 @@ class GeminiClient(GeminiQuotaRouterMixin):
                     proc.returncode if proc is not None else "timeout",
                     (proc.stderr or "").strip()[:200] if proc is not None else "",
                 )
-            if (
-                had_resume_timeout
-                and use_topic_session
-                and topic_key
-                and session.conversation_id
-                and (
-                    not is_mocked
-                    or hasattr(record_topic_resume_timeout, "_mock_name")
-                    or record_topic_resume_timeout is not _ORIG_RECORD_TOPIC_RESUME_TIMEOUT
-                    or hasattr(record_topic_slow_rotation, "_mock_name")
-                    or record_topic_slow_rotation is not _ORIG_RECORD_TOPIC_SLOW_ROTATION
-                )
-            ):
-                try:
-                    slow_cnt = record_topic_slow_rotation(
-                        topic_key,
-                        session.conversation_id,
-                        cli_base=bot_cli_base,
-                        rotate_immediately=True,
-                    )
-                    self._maybe_step_down_after_slow_rotations(
-                        topic_key=topic_key,
-                        slow_model=models_to_try[0] if models_to_try else selected_model,
-                        models_to_try=models_to_try,
-                        slow_count=slow_cnt,
-                    )
-                except Exception as exc:
-                    logger.debug("Failed recording topic slow rotation for %s: %s", topic_key, exc)
+            _record_hard_timeout_slow_rotation()
         except subprocess.TimeoutExpired:
+            _record_hard_timeout_slow_rotation()
             logger.warning("Gemini query timed out after %s seconds", timeout_sec)
             return True, None
         except Exception as e:
@@ -1422,7 +1463,10 @@ def query_topic_json(
     thread_title = f"{base_title} \u2014 {sub}" if sub else base_title
     default_timeout = safe_pos_float(
         getattr(spec, "default_timeout_sec", None),
-        140.0 if getattr(spec, "can_self_heal", False) else 90.0,
+        resolve_llm_timeout_sec(
+            "LLM_REPAIR_TIMEOUT_SEC" if getattr(spec, "can_self_heal", False) else "LLM_DEFAULT_TIMEOUT_SEC",
+            240.0,
+        ),
     )
     eff_timeout = safe_pos_float(timeout_sec, default_timeout)
     call_kwargs: Dict[str, Any] = {

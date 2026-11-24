@@ -5677,18 +5677,18 @@ def test_per_topic_neon_high_vs_medium_vs_low_routing_and_120s_timeouts():
     for high_topic in ("guard_high_stake", "auto_sharetrade_executor", "macro_sentiment"):
         spec = topic_spec(high_topic)
         assert spec.preferred_model == cfg_high
-        assert spec.default_timeout_sec == 140.0
+        assert spec.default_timeout_sec == 240.0
 
-    # 2. Crypto executor and post-stop guard use LLM_DEFAULT_MODEL and 140.0s timeout
+    # 2. Crypto executor and post-stop guard use LLM_DEFAULT_MODEL and 240.0s timeout
     for med_120_topic in ("auto_cryptotrade_executor", "guard_post_stop"):
         spec = topic_spec(med_120_topic)
         assert spec.preferred_model == cfg_med
-        assert spec.default_timeout_sec == 140.0
+        assert spec.default_timeout_sec == 240.0
 
-    # 3. RSS news triage (macro_geopolitical) uses LLM_LOW_STAKE_MODEL and 140.0s timeout
+    # 3. RSS news triage (macro_geopolitical) uses LLM_LOW_STAKE_MODEL and 240.0s timeout
     geo_spec = topic_spec("macro_geopolitical")
     assert geo_spec.preferred_model == cfg_low
-    assert geo_spec.default_timeout_sec == 140.0
+    assert geo_spec.default_timeout_sec == 240.0
 
     # 4. Weak -low and Flash models are permanently excluded from LLM_FALLBACK_MODELS
     assert cfg_fbs == [cfg_med, "claude-sonnet-5-5-medium"]
@@ -5740,8 +5740,8 @@ def test_per_topic_neon_high_vs_medium_vs_low_routing_and_120s_timeouts():
     assert observed["model"] == cfg_med
     assert observed["timeout"] == 90.0
 
-    assert HighStakeGuard(gemini_client=client).timeout_sec == 140.0
-    assert PostStopReentryGuard(gemini_client=client, notify_enabled=False).timeout_sec == 140.0
+    assert HighStakeGuard(gemini_client=client).timeout_sec == 240.0
+    assert PostStopReentryGuard(gemini_client=client, notify_enabled=False).timeout_sec == 240.0
 
 
 def test_config_only_llm_model_migration_and_catalog_audit_auto_update(tmp_path, monkeypatch):
