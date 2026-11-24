@@ -636,7 +636,7 @@ class BinancePublicWsMixin(VenueWsProtocolInterface):
 
     PUBLIC_WS_URL: str = "wss://stream.binance.com:9443/stream"
     SPOT_WS_URL: str = "wss://stream.binance.com:9443/stream"
-    FUTURES_WS_URL: str = "wss://fstream.binance.com/stream"
+    FUTURES_WS_URL: str = "wss://fstream.binance.com/market/stream"
 
     @classmethod
     def build_ws_combined_stream_url(

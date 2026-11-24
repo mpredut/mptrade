@@ -23,7 +23,7 @@ from state_io import encode_json_payload, read_json_dict
 def test_binance_and_hyperliquid_ws_protocol_parsers_and_url_builders():
     """Verify stateless URL builders, subscribe payloads, and payload parsers in providers/venue_ws_protocols.py."""
     mp_url = BinancePublicWsMixin.build_ws_mark_price_url(["BTCUSDT", "btcusdt", "ETHUSDT"], interval_sec=1)
-    assert mp_url == "wss://fstream.binance.com/stream?streams=btcusdt@markPrice@1s/ethusdt@markPrice@1s"
+    assert mp_url == "wss://fstream.binance.com/market/stream?streams=btcusdt@markPrice@1s/ethusdt@markPrice@1s"
 
     kl_url = BinancePublicWsMixin.build_ws_spot_kline_5m_url(["BTCUSDC", "BTCUSDT", "btcusdc"])
     assert kl_url == "wss://stream.binance.com:9443/stream?streams=btcusdc@kline_5m/btcusdt@kline_5m"
