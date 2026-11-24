@@ -857,8 +857,11 @@ def discover_tradable_specs(
                     if isinstance(item, InstrumentSpec):
                         active_map[k] = item.with_execution_policy(live_enabled=True)
 
+        blocked_hl_syms = _blocked_syms("hyperliquid")
         existing_hl_syms = _existing_syms("hyperliquid")
         for pair, base, quote in discover_hyperliquid_spot(ws_dir):
+            if pair in blocked_hl_syms or base in blocked_hl_syms:
+                continue
             if (
                 pair not in existing_hl_syms
                 and base not in existing_hl_syms
@@ -892,7 +895,8 @@ def discover_tradable_specs(
         blocked_t212_syms = {
             _candidate_symbol_u(item)
             for item in raw_map.values()
-            if is_equity_venue(_candidate_venue(item)) and _spec_explicitly_blocks_ai_trading(item)
+            if is_equity_venue(_candidate_venue(item))
+            and (getattr(item, "enabled", True) is False or _spec_explicitly_blocks_ai_trading(item))
         }
         existing_t212_syms = _existing_syms("t212")
         for inst_name, ticker, base, quote in discovered_t212:

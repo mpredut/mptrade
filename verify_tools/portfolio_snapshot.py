@@ -31,6 +31,7 @@ from botcore import (  # noqa: E402
     required_float_env,
     safe_float,
 )
+from instrument_registry import select_instruments  # noqa: E402
 from notify_engine import alertnotifiers as _alertnotifiers  # noqa: E402
 from providers.market_api import api as mkt  # noqa: E402
 from state_io import encode_json_payload, read_json_dict, save_json_state  # noqa: E402
@@ -43,8 +44,11 @@ def _policy_float(key: str) -> float:
     value = optional_env(key) or _ROOT_CONFIG.get(key)
     return required_float_env(key, {key: value})
 
-# Monitored Kraken pairs (pair -> label, is_paper).
-KRAKEN_PAIRS = [("HYPEUSD", "HYPE", False), ("TAOUSD", "TAO", False), ("ADAUSD", "ADA", True)]
+# Monitored Kraken pairs derived dynamically from instruments.conf SSOT (enabled Kraken instruments).
+KRAKEN_PAIRS = [
+    (spec.symbol, spec.base, False)
+    for spec in select_instruments("kraken", only_enabled=True).values()
+] or [("HYPEUSD", "HYPE", False)]
 
 
 def _load_state(pair: str) -> dict | None:

@@ -17089,13 +17089,20 @@ def test_disabled_registry_symbols_xstock_longterm_cost_and_partial_24h_vp(tmp_p
     )
     assert "ADAUSD" not in ro_out
 
-    # 2. KrakenXstocksCollector prefers live active cycle cost ($134.844) over static alloc ($141.75) and reflects OBSERVE_ONLY + long-term policy
+    # 2. KrakenXstocksCollector prefers live active cycle cost ($134.844) over static alloc ($141.75),
+    # reflects OBSERVE_ONLY + dynamic order_guard.conf 6% threshold, and isolates dormant IPO fields when XSTOCK_REGEX/XSTOCK_YAHOO are empty
     (krk_dir / "config.env").write_text(
-        "XSTOCK_ACTIVE_PAIRS=SPCXxUSD:141.75\nXSTOCK_BOT_OBSERVE_ONLY=true\nXSTOCK_BOT_TP_PCT=9.0\n",
+        "XSTOCK_REGEX=\nXSTOCK_YAHOO=\nXSTOCK_ACTIVE_PAIRS=SPCXxUSD:141.75\nXSTOCK_BOT_OBSERVE_ONLY=true\n"
+        "XSTOCK_BOT_TP_PCT=9.0\nXSTOCK_TP_ALERT_PCT=10\nXSTOCK_TP2_ALERT_PCT=16\nXSTOCK_SL_ALERT_PCT=12\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "order_guard.conf").write_text(
+        "autonomous_trading_xstock_sell_min_profit_pct = 6.0\n"
+        "autonomous_trading_xstock_sell_min_target_drop_pct = 3.0\n",
         encoding="utf-8",
     )
     (krk_dir / ".xstock_state.json").write_text(
-        json.dumps({"known_assets": {"SPCXx.T": 24.472724}, "pair": "SPCXxUSD"}),
+        json.dumps({"known_assets": {"SPCXx.T": 24.472724}, "pair": "SPCXxUSD", "allocated": {"asset": "SPCXx.T", "qty": 4.27}}),
         encoding="utf-8",
     )
     (krk_dir / ".state_SPCXxUSD.json").write_text(
@@ -17110,6 +17117,12 @@ def test_disabled_registry_symbols_xstock_longterm_cost_and_partial_24h_vp(tmp_p
     assert xs["pnl_vs_alloc_pct"] == pytest.approx(((129.58 - 134.844006) / 134.844006) * 100.0, abs=0.05)
     assert "LONG-TERM INVESTMENT" in xs["active_swing_directive"]
     assert "OBSERVE-ONLY" in xs["active_swing_directive"]
+    assert "+6%" in xs["active_swing_directive"]
+    assert "3%" in xs["active_swing_directive"]
+    assert "tp1_alert_pct" not in xs
+    assert "watched_ipo_playbook" not in xs
+    assert "watched_ipo_underlying" not in xs
+    assert xs["allocated"] is None
 
     # 3. Adopted / SELL-only tokenized equity BUY fallback sets actor="MANUAL" (not "BOT")
     parsed_cyc = parse_venue_cycle_state(

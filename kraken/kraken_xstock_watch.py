@@ -56,7 +56,7 @@ from botcore import (
     temporary_environ,
     touch_module_heartbeat,
 )
-from cachepaths import CACHE_365_PRICE_PREFIX, cache_path, canonical_base_asset
+from cachepaths import CACHE_365_PRICE_PREFIX, cache_path, canonical_base_asset, clean_symbol_key
 from cacheprice import Cache365PriceManager
 from providers.ohlc_utils import extract_yahoo_chart_latest_price
 from strategies.spot_engine import state_path_for
@@ -74,7 +74,12 @@ from state_io import (
     write_meta_json,
 )
 from credentials import kraken_credentials
-from instrument_registry import casefold_get, resolve_registered_symbol_case, symbols_for
+from instrument_registry import (
+    casefold_get,
+    disabled_registry_symbols,
+    resolve_registered_symbol_case,
+    symbols_for,
+)
 from trailing_core import add_once_status_cli_args
 
 
@@ -673,10 +678,11 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
     )
 
 
-def ensure_active_xstock_bots(desktop: bool = False) -> None:
+def ensure_active_xstock_bots(desktop: bool = False, *, workspace_dir: str | None = None) -> None:
     """Supervise configured already-listed xStock bots (``XSTOCK_ACTIVE_PAIRS=PAIR:COST,...``)."""
     if not required_bool_env("XSTOCK_AUTOSTART"):
         return
+    disabled_syms = disabled_registry_symbols(workspace_dir or _ROOT)
     for spec in split_csv(optional_env("XSTOCK_ACTIVE_PAIRS")):
         if ":" not in spec:
             continue
@@ -685,6 +691,10 @@ def ensure_active_xstock_bots(desktop: bool = False) -> None:
         if not pair_raw or cost_f is None:
             continue
         pair = resolve_registered_symbol_case(pair_raw, "kraken") or pair_raw
+        pair_k = clean_symbol_key(pair)
+        if pair.upper() in disabled_syms or (pair_k and pair_k in disabled_syms):
+            log(f"  - skipping active xStock bot {pair}: disabled in instruments.conf")
+            continue
         pid_file = os.path.join(_HERE, f".xstock_bot_{pair}.pid")
         prev_pid = _clean_pid(read_json_dict(pid_file, default={}).get("pid")) if os.path.exists(pid_file) else None
         if _bot_alive(prev_pid):
@@ -850,11 +860,12 @@ def main() -> int:
     while True:
         try:
             check_balance(client, st, rx, args.desktop)
-            check_pairs(client, st, rx, args.desktop, quote)
+            if rx:
+                check_pairs(client, st, rx, args.desktop, quote)
+                eff_alloc_price = resolve_alloc_price(client, st, alloc_price, args.desktop)
+                check_levels(client, st, eff_alloc_price, tp_pct, sl_pct, yahoo_sym, args.desktop)
+                maybe_start_bot(st, eff_alloc_price, args.desktop)
             sync_configured_archives(client, st)
-            eff_alloc_price = resolve_alloc_price(client, st, alloc_price, args.desktop)
-            check_levels(client, st, eff_alloc_price, tp_pct, sl_pct, yahoo_sym, args.desktop)
-            maybe_start_bot(st, eff_alloc_price, args.desktop)
             ensure_active_xstock_bots(args.desktop)
             _save_state(st)
         except KeyboardInterrupt:

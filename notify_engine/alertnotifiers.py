@@ -18,6 +18,7 @@ from cachepaths import (
     clean_upper_scalar,
     has_equity_suffix,
     is_equity_venue_or_suffix,
+    is_kraken_tokenized_asset,
     normalize_venue_name,
     split_symbol_assets,
     venue_default_quote_asset,
@@ -1464,21 +1465,33 @@ def is_email_mirrored(topic: str | None) -> bool:
     return _canonical_topic_key(topic) in topics
 
 
+_XSTOCK_TITLE_TOKEN_RE = re.compile(r"\b[A-Z][A-Z0-9]{0,9}x(?:USD|EUR|USDC|USDT|\.T)\b")
+
+
 def should_email_trade_sell_alert(title: str, symbol: str = "", source: str = "") -> bool:
-    """Return True when a live SELL trade notification matches a base asset in ``NOTIFICATION_EMAIL_SELL_BASES``."""
+    """Return True when a live SELL trade notification should also be mirrored to email.
+
+    Matches either any tokenized xStock SELL (regardless of ticker/coin) when
+    ``NOTIFICATION_EMAIL_SELL_XSTOCKS`` is enabled, or any live SELL whose canonical
+    base asset appears in ``NOTIFICATION_EMAIL_SELL_BASES``.
+    """
     raw_bases = optional_env("NOTIFICATION_EMAIL_SELL_BASES")
-    if not raw_bases and not optional_env("NTFY_TOPIC_ERROR"):
+    raw_xstocks = optional_env("NOTIFICATION_EMAIL_SELL_XSTOCKS")
+    if not raw_bases and not raw_xstocks and not optional_env("NTFY_TOPIC_ERROR"):
         load_env_stack()
         raw_bases = optional_env("NOTIFICATION_EMAIL_SELL_BASES")
+        raw_xstocks = optional_env("NOTIFICATION_EMAIL_SELL_XSTOCKS")
     bases = {
         canonical_base_asset(b) or str(b).strip().upper()
         for b in split_csv(raw_bases or "")
         if str(b).strip()
     }
     bases.discard("")
-    if not bases:
+    email_xstocks = _parse_bool_flag(raw_xstocks, False)
+    if not bases and not email_xstocks:
         return False
-    t_clean = strip_owner_tags(_clean_str(title)).upper()
+    raw_title_no_owner = strip_owner_tags(_clean_str(title))
+    t_clean = raw_title_no_owner.upper()
     if not t_clean or not _WORD_SELL_RE.search(t_clean):
         return False
     if any(m in t_clean for m in _NON_LIVE_SELL_MARKERS):
@@ -1486,7 +1499,12 @@ def should_email_trade_sell_alert(title: str, symbol: str = "", source: str = ""
     if _category_for_title_and_source(title, source) != "TRADES":
         return False
     sym_s = _clean_str(symbol, strip=True)
-    if sym_s:
+    if email_xstocks:
+        if sym_s and is_kraken_tokenized_asset(sym_s):
+            return True
+        if _XSTOCK_TITLE_TOKEN_RE.search(raw_title_no_owner):
+            return True
+    if sym_s and bases:
         sym_base = canonical_base_asset(sym_s) or sym_s.upper()
         if sym_base in bases:
             return True
@@ -1499,8 +1517,8 @@ def notify(title: str, body: str, source: str, symbol: str,
     """Shared bot-event notifier: ntfy (routed by category) plus optional email.
 
     ERROR-category events reach email automatically through the server's topic mirror
-    (notify_engine.mailer). ``email=True`` or a SELL matching ``NOTIFICATION_EMAIL_SELL_BASES``
-    forces a copy for any other category.
+    (notify_engine.mailer). ``email=True`` or a SELL matching ``NOTIFICATION_EMAIL_SELL_XSTOCKS``
+    / ``NOTIFICATION_EMAIL_SELL_BASES`` forces a copy for any other category.
     """
     if _external_notifications_disabled():
         return

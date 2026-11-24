@@ -1359,6 +1359,22 @@ def test_xstock_watch_incremental_trade_archive_sync(tmp_path, monkeypatch):
     assert spcx_meta["kraken_trades_since_ns"] == "1794990060000000000"
     assert ("SPCXxUSD", "1794990000000000000") in seen_calls
 
+    # 2. ensure_active_xstock_bots honors instruments.conf enabled = no (does not spawn disabled xStock bots)
+    (tmp_path / "instruments.conf").write_text(
+        "[KRAKEN_SPCX]\nprovider = kraken\nsymbol = SPCXxUSD\nbase = SPCXx\nquote = USD\n"
+        "enabled = no\nisolation = own_ledger\nmarket_hours = 24x7\n"
+        "role.mt = no\nrole.tradeall_fire = no\nrole.kalman_primary = no\n"
+        "role.trailing = no\nrole.assetguardian = no\nrole.archive = no\n"
+        "role.rtrade = no\nrole.force_sell = no\n",
+        encoding="utf-8",
+    )
+    spawned_pairs = []
+    monkeypatch.setenv("XSTOCK_AUTOSTART", "true")
+    monkeypatch.setenv("XSTOCK_ACTIVE_PAIRS", "SPCXxUSD:141.75")
+    monkeypatch.setattr(xw_fresh, "_spawn_xstock_bot", lambda pair, *a, **kw: spawned_pairs.append(pair))
+    xw_fresh.ensure_active_xstock_bots(workspace_dir=str(tmp_path))
+    assert spawned_pairs == []
+
 
 def test_declarative_xstock_role_gating_uppercase_resolution_and_archive_ohlc(tmp_path):
     from instrument_registry import (

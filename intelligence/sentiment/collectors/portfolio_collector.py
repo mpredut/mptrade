@@ -104,6 +104,11 @@ from instrument_registry import (
     resolve_symbol_market_session,
 )
 import order_retry as _oq
+from providers.ai_circuit_breaker import (
+    DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
+    DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
+    parse_intent_circuit_breaker_config,
+)
 from providers.base import MarketDataProvider
 from providers.execution_audit import _extract_audit_fill_metrics
 from providers.order_id_context import derive_venue_128bit_client_order_id, resolve_order_origin
@@ -1038,6 +1043,9 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         tp1_a = safe_pos_float(xstock_cfg.get("xstock_tp_alert_pct"), default=None)
         tp2_a = safe_pos_float(xstock_cfg.get("xstock_tp2_alert_pct"), default=None)
         sl_a = safe_pos_float(xstock_cfg.get("xstock_sl_alert_pct"), default=None)
+        ipo_watch_active = bool(x_regex or cfg_underlying)
+        if not ipo_watch_active and (x_holdings or active_pair_by_underlying):
+            alloc_info = None
         has_distinct_watched_ipo = bool(cfg_underlying and cfg_underlying != underlying)
         ipo_alerts = {
             k: v
@@ -1054,6 +1062,21 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         bot_trail = safe_pos_float(xstock_cfg.get("xstock_bot_tp_trail_pct"), default=None)
         max_dca_cfg = safe_nonneg_float(xstock_cfg.get("xstock_bot_max_dca_buys"), default=1.0) or 0.0
         bot_dca = safe_pos_float(xstock_cfg.get("xstock_bot_dca_drop_pct"), default=None) if max_dca_cfg > 0 else None
+        ws_root_dir = os.path.dirname(eff_k_dir) if eff_k_dir else ""
+        guard_conf = (
+            load_key_value_conf(ws_root_dir, ws_root_dir)
+            if ws_root_dir and os.path.isfile(os.path.join(ws_root_dir, "order_guard.conf"))
+            else {}
+        )
+        xs_cb = parse_intent_circuit_breaker_config(guard_conf)
+        xs_min_profit_pct = safe_nonneg_float(
+            xs_cb.get("xstock_sell_min_profit_pct"),
+            default=DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
+        )
+        xs_min_drop_pct = safe_nonneg_float(
+            xs_cb.get("xstock_sell_min_target_drop_pct"),
+            default=DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
+        )
         hold_meta_parts = [p for p in (f"{primary_hold_qty:g} {primary_hold_tok}" if primary_hold_qty > 0 else "", f"cost ${alloc_px:g}" if alloc_px else "", "0bps maker/taker fee") if p]
         bot_rule_parts = [p for p in (f"TP +{bot_tp:g}%" if bot_tp else "", f"Trail {bot_trail:g}%" if bot_trail else "", f"DCA -{bot_dca:g}%" if bot_dca else "") if p]
         bot_rule_sfx = f" ({' / '.join(bot_rule_parts)})" if bot_rule_parts else ""
@@ -1065,25 +1088,29 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         active_directive = (
             f"{primary_xpair} ({', '.join(hold_meta_parts)}): LONG-TERM INVESTMENT -- SELL-ONLY ON KRAKEN EU "
             f"(Spot API BUY on tokenized xStocks returns EGeneral:Permission denied; owner must manually log in to rebuy and cannot re-enter quickly; "
-            f"{bot_mode_desc}). Default posture is HOLD. Sell RARELY via 0bps LIMIT ONLY when BOTH: "
-            f"(1) SIGNIFICANT unrealized profit above active cost basis (>= +12% gateway minimum), AND "
-            f"(2) HIGH-CONVICTION multi-day decline thesis (minimum 1-2+ days expected drop, explicit target_px >= 5% below sell price) "
+            f"{bot_mode_desc}). Default posture is HOLD. Consider selling via 0bps LIMIT (owner gets emailed automatically to rebuy manually) ONLY when BOTH: "
+            f"(1) unrealized profit > +{xs_min_profit_pct:g}% above active cost basis (gateway minimum >= +{xs_min_profit_pct:g}%), AND "
+            f"(2) HIGH-CONVICTION multi-day decline thesis (minimum 1-2+ days expected drop, explicit target_px >= {xs_min_drop_pct:g}% below sell price) "
             f"so the owner has time to rebuy manually at a meaningfully lower level. NEVER scalp on 90s/5m kinematics, "
             f"NEVER sell at breakeven or a loss, and do NOT submit Kraken xStock BUY orders (use T212 {t212_sib} for US equity buys)."
         )
-        ipo_sym_lbl = f"{cfg_underlying}xUSD" if cfg_underlying else ""
+        ipo_sym_lbl = f"{cfg_underlying}xUSD" if (ipo_watch_active and cfg_underlying) else ""
         xst_summary: Dict[str, Any] = {
             "underlying": underlying,
             "t212_sibling": t212_sib,
             "holdings": x_holdings,
             **({"holdings_underlying_map": holdings_by_underlying} if len(held_underlyings) > 1 else {}),
-            **({"watched_ipo_underlying": cfg_underlying} if has_distinct_watched_ipo else {}),
-            **({"watched_ipo_alerts": ipo_alerts} if (has_distinct_watched_ipo and ipo_alerts) else {}),
+            **({"watched_ipo_underlying": cfg_underlying} if (ipo_watch_active and has_distinct_watched_ipo) else {}),
+            **({"watched_ipo_alerts": ipo_alerts} if (ipo_watch_active and has_distinct_watched_ipo and ipo_alerts) else {}),
             "allocated": alloc_info,
             "listed_pair": listed_pair,
             "alloc_price": alloc_px,
             "fee_bps": 0,
-            **({} if has_distinct_watched_ipo else {"tp1_alert_pct": tp1_a, "tp2_alert_pct": tp2_a, "sl_alert_pct": sl_a}),
+            **(
+                {"tp1_alert_pct": tp1_a, "tp2_alert_pct": tp2_a, "sl_alert_pct": sl_a}
+                if (ipo_watch_active and not has_distinct_watched_ipo)
+                else {}
+            ),
             "active_swing_directive": active_directive,
             **(
                 {

@@ -7,11 +7,21 @@ Section-level and line-level formatters live in `orchestratorOS.supervisor.promp
 """
 
 from datetime import datetime
+import os
 import time
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from botcore import is_us_rth_open, parse_symbol_list, safe_pos_float, topic_spec
+from botcore import (
+    is_us_rth_open,
+    load_key_value_conf,
+    parse_symbol_list,
+    safe_nonneg_float,
+    safe_pos_float,
+    topic_spec,
+)
+from cachepaths import is_kraken_tokenized_asset
+from instrument_registry import discover_tradable_specs
 from intelligence.macro_sentiment_ssot import (
     CRYPTO_ONLY_MACRO_SENSOR_KEYS,
     format_telemetry_domain_age_tag,
@@ -30,6 +40,77 @@ from orchestratorOS.supervisor.prompt_sections import (
     _format_portfolio_section,
     _format_sre_and_fleet_section,
 )
+from providers.ai_circuit_breaker import (
+    DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
+    DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
+    parse_intent_circuit_breaker_config,
+)
+
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _resolve_xstock_sell_prompt_thresholds(workspace_dir: Optional[str] = None) -> Tuple[float, float]:
+    """Read SELL-only tokenized equity profit/drop thresholds from order_guard.conf SSOT."""
+    ws = workspace_dir or _ROOT_DIR
+    try:
+        conf = load_key_value_conf(ws, _ROOT_DIR)
+        cb_cfg = parse_intent_circuit_breaker_config(conf)
+        return (
+            safe_nonneg_float(cb_cfg.get("xstock_sell_min_profit_pct"), default=DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT),
+            safe_nonneg_float(
+                cb_cfg.get("xstock_sell_min_target_drop_pct"),
+                default=DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
+            ),
+        )
+    except Exception:
+        return DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT, DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT
+
+
+def _build_dynamic_target_desc(
+    is_equities: bool, *, workspace_dir: Optional[str] = None
+) -> Tuple[str, str]:
+    """Format active tradable instruments per venue dynamically from instruments.conf SSOT."""
+    ws = workspace_dir or _ROOT_DIR
+    scope = "equities" if is_equities else "crypto"
+    try:
+        specs = discover_tradable_specs(ws, asset_scope=scope, include_closed_rth=True)
+    except Exception:
+        specs = {}
+    by_venue: Dict[str, List[str]] = {}
+    xstock_syms: List[str] = []
+    for item in specs.values():
+        prov = str(getattr(item, "provider", "") or "").strip().lower()
+        sym = str(getattr(item, "symbol", "") or "").strip()
+        if not (prov and sym):
+            continue
+        is_xs = is_kraken_tokenized_asset(sym)
+        if is_xs and sym not in xstock_syms:
+            xstock_syms.append(sym)
+        lbl = f"{sym} [0bps SELL-only xStock]" if (not is_equities and is_xs) else sym
+        bucket = by_venue.setdefault(prov, [])
+        if lbl not in bucket:
+            bucket.append(lbl)
+
+    if is_equities:
+        eq_syms = [s for syms in by_venue.values() for s in syms]
+        eq_list = ", ".join(eq_syms) if eq_syms else "enabled T212 US equities"
+        return (
+            f"ALL live tradable US equity shares on 't212' ({eq_list} during US Regular Trading Hours, "
+            "cross-referencing Kraken 24/7 xStock exposure)",
+            "xStocks",
+        )
+    venue_parts = [f"{', '.join(syms)} on '{prov}'" for prov, syms in by_venue.items() if syms]
+    target_desc = (
+        f"ALL live tradable crypto & 24/7 tokenized xStock pairs ({'; '.join(venue_parts)})"
+        if venue_parts
+        else "ALL live tradable crypto & 24/7 tokenized xStock pairs configured in instruments.conf"
+    )
+    xs_lbl = (
+        ", ".join(f"`{s}`" for s in xstock_syms)
+        if xstock_syms
+        else "tokenized xStocks"
+    )
+    return target_desc, xs_lbl
 
 
 def build_supervisor_prompt(
@@ -147,13 +228,11 @@ def build_supervisor_prompt(
         schema.append(
             '  "summary": "1-2 sentence executive assessment of multi-coin market posture and trading decisions"'
         )
+    xs_min_profit_pct, xs_min_drop_pct = _resolve_xstock_sell_prompt_thresholds()
+    xs_target_lbl = "tokenized xStocks"
     if spec.can_trade:
         is_equities = getattr(spec, "asset_scope", "all") == "equities"
-        target_desc = (
-            "ALL live tradable US equity shares on 't212' (SPCX_US_EQ, NVDA_US_EQ, RGNT_US_EQ during US Regular Trading Hours, cross-referencing Kraken 24/7 xStock SPCXx.T exposure)"
-            if is_equities
-            else "ALL live tradable crypto & 24/7 tokenized xStock pairs (BTCUSDC, TAOUSDC, ARBUSDC, ADAUSDC on 'binance'; HYPEUSDC intensively on 'hyperliquid'; HYPEUSD plus 0bps SELL-only xStock SPCXxUSD on 'kraken')"
-        )
+        target_desc, xs_target_lbl = _build_dynamic_target_desc(is_equities)
         venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
         venue_list_desc = "`t212`" if is_equities else "`binance`, `kraken`, `hyperliquid`"
         ex_sym = '"NVDA_US_EQ"' if is_equities else '"BTCUSDC"'
@@ -178,7 +257,7 @@ def build_supervisor_prompt(
             f"   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: Decide freely WHEN/WHAT/HOW MUCH/WHICH venue ({venue_list_desc}). "
             "Cost basis (`avg_buy_px`, `lifo_rem_avg_px`, `open_lifo_lots`) is informational, NEVER a constraint on 2-way pairs: harvest profitable LIFO tranches or up to `50%\u2013100%` of `value_usd` "
             f"(up to {max_usd:g} USD), OR trim/exit via near-market `LIMIT` even at breakeven or below cost basis on breakdown "
-            "(EXCEPTION: SELL-only Kraken `SPCXxUSD` = long-term `HOLD`; sell rarely ONLY on >=+12% profit + 1-2d+ drop, `target_px` >=5% lower).\n"
+            f"(EXCEPTION: SELL-only Kraken {xs_target_lbl} = long-term `HOLD`; consider selling ONLY on >+{xs_min_profit_pct:g}% profit + 1-2d+ drop, `target_px` >={xs_min_drop_pct:g}% lower; owner is emailed to rebuy manually).\n"
             "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN) & KINEMATICS: Weigh `kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)`, `kalman_vel`, `slopes`, "
             "`bottom_6h`, `vs_btc`, `cvd_5m`/`cvd_15m`, `spot_cvd_15m` (`[real_spot]` observed vs `[est:ob+15m]` proxy\u2014never double-count proxy alongside `ob_imbalance`), "
             "`spot_vol_15m`/`spot_vol_1h` & `rvol_15m`/`rvol_1h` (volume expansion vs noise), `taker_ratio`, and L2 walls. Scale in on confirmed downside deceleration + absorption; "
@@ -209,7 +288,7 @@ def build_supervisor_prompt(
             "- Apply all quantitative trading, spot maker-LIMIT execution, active orderbook management, and "
             "`by=BOT` vs `by=AI` supervisory rules established earlier in this thread (unrestricted read access to "
             f"`cachedb/`, zero deterministic guards, `confidence >= {min_conf:g}`, notional {min_usd:g}-{max_usd:g} USD; "
-            "remember SELL-only Kraken `SPCXxUSD` is a long-term holding: HOLD by default, sell rarely ONLY on >=+12% profit AND high-conviction 1-2+ day downside with `target_px` >=5% lower).\n"
+            f"remember SELL-only Kraken {xs_target_lbl} = long-term HOLD: consider selling ONLY on >+{xs_min_profit_pct:g}% profit AND 1-2+ day downside with `target_px` >={xs_min_drop_pct:g}% lower).\n"
             "- Honor any user chat instructions, price targets, overrides, or questions earlier in this thread with highest priority.\n"
             "- Format your response in TWO parts:\n"
             "  1) A concise Markdown report in **Romanian** with the cycle timestamp header (`### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`): "

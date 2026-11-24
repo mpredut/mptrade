@@ -271,17 +271,61 @@ def test_current_execution_policy_is_preserved(tmp_path):
     assert "KRAKEN_ADA" not in tradable_crypto
     assert "KRAKEN_ANT" not in tradable_crypto
 
-    # Even if kraken/config.env lists disabled/blocked Kraken symbols in KRAKEN_CACHE_PAIRS,
-    # discover_tradable_specs must NOT leak them into AI tradables.
+    # Even if kraken/config.env, hyperliquid/config.env, or 212trading/config.*.env exist for symbols
+    # disabled via enabled = no in instruments.conf, discover_tradable_specs and t212_bot must honor instruments.conf.
     ws_krk = tmp_path / "kraken"
     ws_krk.mkdir(parents=True, exist_ok=True)
     (ws_krk / "config.env").write_text("KRAKEN_CACHE_PAIRS=HYPEUSD,TAOUSD,ADAUSD\n", encoding="utf-8")
-    (tmp_path / "instruments.conf").write_text((ROOT / "instruments.conf").read_text(encoding="utf-8"), encoding="utf-8")
+    ws_hl = tmp_path / "hyperliquid"
+    ws_hl.mkdir(parents=True, exist_ok=True)
+    (ws_hl / "config.env").write_text("HL_LIVE_ORDERS=true\nHL_SPOT_TOKEN=HYPE\n", encoding="utf-8")
+    ws_t212 = tmp_path / "212trading"
+    ws_t212.mkdir(parents=True, exist_ok=True)
+    (ws_t212 / "config.nvda.env").write_text("T212_TICKER=NVDA_US_EQ\n", encoding="utf-8")
+    (ws_t212 / "config.spcx.env").write_text("T212_TICKER=SPCX_US_EQ\n", encoding="utf-8")
+    raw_inst_txt = (ROOT / "instruments.conf").read_text(encoding="utf-8")
+    (tmp_path / "instruments.conf").write_text(raw_inst_txt, encoding="utf-8")
     ws_tradable = registry.discover_tradable_specs(str(tmp_path), asset_scope="crypto")
     assert "KRAKEN_HYPE" in ws_tradable
     assert "BINANCE_ADA" in ws_tradable
     assert "KRAKEN_TAO" not in ws_tradable
     assert "KRAKEN_ADA" not in ws_tradable
+
+    # Disabling HYPERLIQUID_HYPE and T212_NVDA in instruments.conf blocks discovery across crypto, equities, and t212_bot.
+    import re
+    dis_txt = re.sub(
+        r"(\[HYPERLIQUID_HYPE\][\s\S]*?\benabled\s*=\s*)yes",
+        r"\1no",
+        raw_inst_txt,
+        count=1,
+    )
+    dis_txt = re.sub(
+        r"(\[T212_NVDA\][\s\S]*?\benabled\s*=\s*)yes",
+        r"\1no",
+        dis_txt,
+        count=1,
+    )
+    assert dis_txt != raw_inst_txt
+    ws_dis = tmp_path / "ws_disabled"
+    ws_dis.mkdir(parents=True, exist_ok=True)
+    (ws_dis / "hyperliquid").mkdir(parents=True, exist_ok=True)
+    (ws_dis / "hyperliquid" / "config.env").write_text("HL_LIVE_ORDERS=true\nHL_SPOT_TOKEN=HYPE\n", encoding="utf-8")
+    (ws_dis / "212trading").mkdir(parents=True, exist_ok=True)
+    (ws_dis / "212trading" / "config.nvda.env").write_text("T212_TICKER=NVDA_US_EQ\n", encoding="utf-8")
+    (ws_dis / "212trading" / "config.spcx.env").write_text("T212_TICKER=SPCX_US_EQ\n", encoding="utf-8")
+    (ws_dis / "instruments.conf").write_text(dis_txt, encoding="utf-8")
+    ws_crypto_dis = registry.discover_tradable_specs(str(ws_dis), asset_scope="crypto")
+    assert "HYPERLIQUID_HYPE" not in ws_crypto_dis
+    ws_eq_dis = registry.discover_tradable_specs(str(ws_dis), asset_scope="equities", include_closed_rth=True)
+    assert "T212_SPCX" in ws_eq_dis
+    assert "T212_NVDA" not in ws_eq_dis
+    from botcore import load_local_module
+    t212_bot_mod = load_local_module(str(ROOT / "212trading"), "t212_bot")
+    enabled_t212, skipped_t212 = t212_bot_mod.filter_enabled_assets(
+        t212_bot_mod.discover_assets(str(ws_dis / "212trading")), workspace_dir=str(ws_dis)
+    )
+    assert [n for n, _ in enabled_t212] == ["spcx"]
+    assert skipped_t212 == [("nvda", "NVDA_US_EQ")]
     assert registry.is_equity_symbol("SPCX_US_EQ") is True
     assert registry.is_equity_symbol("NVDA_US_EQ") is True
     assert registry.is_equity_symbol("AAPL_EQ") is True

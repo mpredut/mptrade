@@ -45,7 +45,9 @@ from botcore import (  # noqa: E402
     touch_module_heartbeat,
 )
 ensure_local_module_priority(_HERE, "ipo_common", "listing_watcher", "strategy", "t212_client")
+from cachepaths import clean_symbol_key  # noqa: E402
 from credentials import t212_credentials  # noqa: E402
+from instrument_registry import disabled_registry_symbols  # noqa: E402
 from ipo_common import build_t212_client_from_env, load_t212_environment, notify, parse_t212_cli_args  # noqa: E402
 from listing_watcher import verify_instrument_isin, wait_for_launch  # noqa: E402
 from providers.order_ohlc_utils import format_strategy_execution_mode  # noqa: E402
@@ -63,6 +65,27 @@ def discover_assets(cfg_dir: str) -> list[tuple[str, str]]:
         name = os.path.basename(p)[len("config."):-len(".env")]
         out.append((name, p))
     return out
+
+
+def filter_enabled_assets(
+    assets: list[tuple[str, str]], *, workspace_dir: str | None = None
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Split discovered T212 config assets into (enabled, skipped_disabled) using instruments.conf SSOT."""
+    ws_dir = workspace_dir or _ROOT_DIR
+    disabled_syms = disabled_registry_symbols(ws_dir)
+    if not disabled_syms:
+        return list(assets), []
+    enabled_out: list[tuple[str, str]] = []
+    skipped_out: list[tuple[str, str]] = []
+    for name, path in assets:
+        cfg = parse_dotenv(path)
+        ticker = (optional_env("T212_TICKER", "", env=cfg) or "").strip().upper()
+        ticker_k = clean_symbol_key(ticker) if ticker else ""
+        if ticker and (ticker in disabled_syms or (ticker_k and ticker_k in disabled_syms)):
+            skipped_out.append((name, ticker))
+        else:
+            enabled_out.append((name, path))
+    return enabled_out, skipped_out
 
 
 def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_wait: bool) -> None:
@@ -130,8 +153,12 @@ def main() -> int:
     if args.only:
         only_cf = args.only.strip().casefold()
         assets = [(n, p) for (n, p) in assets if n.casefold() == only_cf]
+    else:
+        assets, skipped_disabled = filter_enabled_assets(assets, workspace_dir=_ROOT_DIR)
+        for skipped_name, skipped_ticker in skipped_disabled:
+            log(f"  - [{skipped_name}] {skipped_ticker} disabled in instruments.conf -- skipping")
     if not assets:
-        log(f"! no config.*.env found in {cfg_dir}" + (f" for '{args.only}'" if args.only else ""))
+        log(f"! no enabled config.*.env found in {cfg_dir}" + (f" for '{args.only}'" if args.only else ""))
         return 1
 
     if args.list:

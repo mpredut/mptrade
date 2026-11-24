@@ -87,8 +87,10 @@ def inspect_crypto_prompt(workspace_dir: str = ".") -> Dict[str, Any]:
     nan_count = len(re.findall(r"\bnan\b|\bNaN\b", prompt))
     stale_count = len(re.findall(r"\[stale\]|STALE_FROZEN|\[ob_stale\]", prompt))
 
-    # Check for specific expected indicators
-    expected_symbols = ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSDC", "HYPEUSD", "ADAUSD", "TAOUSD", "SPCXxUSD", "ANTxUSD"]
+    # Check for specific expected indicators derived dynamically from instruments.conf SSOT
+    from instrument_registry import is_equity_symbol, tracked_price_instruments
+    all_tracked, _, _ = tracked_price_instruments()
+    expected_symbols = [sym for sym in all_tracked if not is_equity_symbol(sym)]
     found_symbols = {sym: (sym in prompt) for sym in expected_symbols}
 
     key_features = {
