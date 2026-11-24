@@ -11,7 +11,7 @@ import logging
 import os
 import re
 import sys
-from typing import Any, Dict, NamedTuple, Optional, Set
+from typing import Any, Dict, Iterable, NamedTuple, Optional, Set
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT_DIR not in sys.path:
@@ -281,8 +281,83 @@ def _rotate_topic_conversation(
     entry["conversation_id"] = new_cid
     entry["compacted_at_step"] = 0
     entry["needs_full_prompt"] = True
+    entry["pending_rotation"] = False
     entry["consecutive_resume_timeouts"] = 0
     entry["rotation_count"] = safe_nonneg_int(entry.get("rotation_count"), 0) + 1
+
+
+def record_topic_slow_rotation(
+    topic_key: str,
+    conversation_id: Optional[str] = None,
+    *,
+    cli_base: Optional[str] = None,
+    registry_path: Optional[str] = None,
+    rotate_immediately: bool = False,
+) -> int:
+    """Mark a topic thread as slow (schedule rotation on next turn or rotate now) and return consecutive slow count."""
+    topic_spec(topic_key)
+    resolved, base = canonical_topic_key(topic_key), resolve_bot_cli_base(cli_base)
+    target_cid = conversation_id.strip() if isinstance(conversation_id, str) and conversation_id.strip() else None
+    reg_path = get_topic_registry_path(registry_path)
+    with generation_file_lock(reg_path):
+        _, reg, entry = _load_topic_entry(resolved, registry_path, repair_files=True)
+        if entry is None:
+            entry = {"topic_key": resolved, "turn_count": 0, "rolling_history": []}
+        raw_cid = entry.get("conversation_id")
+        cur_cid = raw_cid.strip() if isinstance(raw_cid, str) and raw_cid.strip() else None
+        count = safe_nonneg_int(entry.get("consecutive_slow_rotations"), 0) + 1
+        if _parse_bool_flag(rotate_immediately, False) and cur_cid and (target_cid is None or cur_cid == target_cid):
+            _rotate_topic_conversation(base, entry, cur_cid, None)
+        else:
+            entry["pending_rotation"] = True
+        entry["consecutive_slow_rotations"] = count
+        entry["updated_ts"] = datetime.now(timezone.utc).timestamp()
+        reg[resolved] = entry
+        save_topic_registry(reg, registry_path)
+    return count
+
+
+def get_topic_slow_rotation_count(
+    topic_key: str,
+    *,
+    registry_path: Optional[str] = None,
+) -> int:
+    """Return current ``consecutive_slow_rotations`` count for ``topic_key``."""
+    resolved = canonical_topic_key(topic_key)
+    _, _, entry = _load_topic_entry(resolved, registry_path)
+    if entry is None:
+        return 0
+    return safe_nonneg_int(entry.get("consecutive_slow_rotations"), 0)
+
+
+def reset_topic_slow_rotations(
+    topic_keys: Optional[Iterable[str]] = None,
+    *,
+    registry_path: Optional[str] = None,
+) -> int:
+    """Reset ``consecutive_slow_rotations`` to 0 for given topics (or all topics when ``topic_keys`` is None)."""
+    reg_path = get_topic_registry_path(registry_path)
+    target_set = (
+        {canonical_topic_key(k) for k in topic_keys if isinstance(k, str) and k.strip()}
+        if topic_keys is not None
+        else None
+    )
+    reset_count = 0
+    with generation_file_lock(reg_path):
+        reg = load_topic_registry(registry_path, repair_files=True)
+        changed = False
+        for k, entry in reg.items():
+            if not isinstance(entry, dict):
+                continue
+            if target_set is not None and k not in target_set:
+                continue
+            if safe_nonneg_int(entry.get("consecutive_slow_rotations"), 0) > 0:
+                entry["consecutive_slow_rotations"] = 0
+                changed = True
+                reset_count += 1
+        if changed:
+            save_topic_registry(reg, registry_path)
+    return reset_count
 
 
 def record_topic_resume_timeout(
@@ -355,9 +430,10 @@ def prepare_topic_session(
     raw_cid = entry.get("conversation_id")
     cid = raw_cid.strip() if isinstance(raw_cid, str) else ""
     if cid:
+        pending_rot = _parse_bool_flag(entry.get("pending_rotation"), False)
         sync_topic_thread_from_ui(cid, bot_cli_base=base)
         exists, step_count, _ = get_thread_step_count(cid, base)
-        if exists and (max_steps_i <= 0 or step_count < max_steps_i):
+        if exists and not pending_rot and (max_steps_i <= 0 or step_count < max_steps_i):
             compacted_at = safe_nonneg_int(entry.get("compacted_at_step"), 0)
             if compacted_at > step_count:
                 compacted_at = 0
@@ -369,13 +445,20 @@ def prepare_topic_session(
             )
             eff_entry = fresh_entry if fresh_entry is not None else entry
             if exists:
-                logger.info(
-                    "Topic '%s' conversation %s reached %d steps (max %d); rotating to a fresh thread with rolling memory.",
-                    resolved,
-                    cid,
-                    step_count,
-                    max_steps_i,
-                )
+                if pending_rot:
+                    logger.info(
+                        "Topic '%s' conversation %s had pending rotation from prior slow turn; rotating to a fresh thread with rolling memory.",
+                        resolved,
+                        cid,
+                    )
+                else:
+                    logger.info(
+                        "Topic '%s' conversation %s reached %d steps (max %d); rotating to a fresh thread with rolling memory.",
+                        resolved,
+                        cid,
+                        step_count,
+                        max_steps_i,
+                    )
                 _rotate_topic_conversation(base, eff_entry, cid, None)
             else:
                 # Runtime resilience: the permanent thread vanished from the store; recreate it once with memory.
@@ -383,6 +466,7 @@ def prepare_topic_session(
                 eff_entry["conversation_id"] = None
                 eff_entry["compacted_at_step"] = 0
                 eff_entry["needs_full_prompt"] = True
+                eff_entry["pending_rotation"] = False
             reg[resolved] = eff_entry
             save_topic_registry(reg, registry_path)
 
@@ -548,6 +632,7 @@ def record_topic_turn(
     max_history_entries: Optional[int] = None,
     registry_path: Optional[str] = None,
     replace_conversation: bool = False,
+    schedule_rotation: bool = False,
 ) -> None:
     """Update the topic registry after a completed turn and mirror the thread into the Web UI store.
 
@@ -595,6 +680,12 @@ def record_topic_turn(
                     entry["needs_full_prompt"] = False
         entry["topic_key"] = resolved
         entry["consecutive_resume_timeouts"] = 0
+        if _parse_bool_flag(schedule_rotation, False):
+            entry["pending_rotation"] = True
+            entry["consecutive_slow_rotations"] = safe_nonneg_int(entry.get("consecutive_slow_rotations"), 0) + 1
+        else:
+            entry["pending_rotation"] = False
+            entry["consecutive_slow_rotations"] = 0
         entry["turn_count"] = safe_nonneg_int(entry.get("turn_count"), 0) + 1
         entry["updated_ts"] = datetime.now(timezone.utc).timestamp()
         entry["title"] = spec.title

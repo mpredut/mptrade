@@ -336,9 +336,16 @@ class AutonomousAIReconciler:
                     model_override,
                     route_reason,
                 )
+            elif route_reason.startswith("latency_demoted_fallback(") and model_override:
+                logger.info(
+                    "[%s] Latency fallback routing cycle to faster model %s (%s).",
+                    resolved_topic,
+                    model_override,
+                    route_reason,
+                )
 
         call_timeout = safe_pos_float(getattr(spec, "default_timeout_sec", None), default=None) or (
-            120.0 if spec.can_self_heal else 90.0
+            140.0 if spec.can_self_heal else 90.0
         )
         now_ts_str = time.strftime("%Y-%m-%d %H:%M:%S %Z").strip()
         self._last_model_used = ""

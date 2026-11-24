@@ -730,7 +730,7 @@ def resolve_derived_telemetry_intervals(
         "ai_impulse_post_cron_guard_sec": _sec("ai_impulse_post_cron_guard_mult", 1.0 / 18.0),
         "ai_impulse_pre_cron_guard_sec": _sec("ai_impulse_pre_cron_guard_mult", 1.0 / 8.0),
         "ai_impulse_min_eval_gap_sec": _sec("ai_impulse_min_eval_gap_mult", 13.0 / 72.0),
-        "ai_impulse_exec_timeout_sec": _sec("ai_impulse_exec_timeout_mult", 0.75),
+        "ai_impulse_exec_timeout_sec": _sec("ai_impulse_exec_timeout_mult", 4.0 / 3.0),
     }
     if cache_key is not None and cfg_obj is not None:
         lru_dict_put(_DERIVED_INTERVALS_CACHE, cache_key, (cfg_obj, out), 16)

@@ -177,6 +177,33 @@ def resolve_quota_soft_conserve_fraction(default: float = 0.25) -> float:
     return max(0.0, min(0.8, val if val is not None else default))
 
 
+def resolve_latency_demotion_ttl_sec(default: float = 14400.0) -> float:
+    """Return bounded ``LLM_LATENCY_DEMOTION_TTL_SEC`` (default 14400s = 4 hours)."""
+    raw = float_env("LLM_LATENCY_DEMOTION_TTL_SEC", default=default)
+    val = safe_pos_float(raw, default)
+    return max(300.0, val if val is not None else default)
+
+
+def _active_latency_demotions(
+    quota_snapshot: Optional[Mapping[str, Any]],
+    now_ts: float,
+) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(quota_snapshot, Mapping):
+        return {}
+    raw_map = quota_snapshot.get("latency_demoted_models")
+    if not isinstance(raw_map, Mapping):
+        return {}
+    active: Dict[str, Dict[str, Any]] = {}
+    for model_k, info in raw_map.items():
+        if not isinstance(model_k, str) or not model_k.strip() or not isinstance(info, Mapping):
+            continue
+        fb = str(info.get("fallback_model") or "").strip()
+        restore_ts = safe_float(info.get("restore_after_ts"), 0.0) or 0.0
+        if fb and restore_ts > now_ts:
+            active[model_k.strip().lower()] = dict(info)
+    return active
+
+
 def _lookup_bucket_remaining(buckets: Mapping[str, Any], model_name: str) -> Optional[float]:
     cleaned = model_name.strip() if isinstance(model_name, str) else ""
     if not cleaned or not isinstance(buckets, Mapping):
@@ -286,8 +313,16 @@ def resolve_crypto_executor_model_override(
     q_cred = safe_float(q_snap.get("available_credits"), default=0.0) or 0.0
     rt_ex = q_snap.get("runtime_exhausted") if isinstance(q_snap.get("runtime_exhausted"), Mapping) else {}
     eff_now = safe_pos_float(now_ts, default=None) or time.time()
+    lat_demoted = _active_latency_demotions(q_snap, eff_now)
 
     if escalate_high_effort and clean_high:
+        if (dem_hi := lat_demoted.get(clean_high.lower())) is not None:
+            fb_hi = str(dem_hi.get("fallback_model") or "").strip()
+            if fb_hi and not is_degraded_trading_model(fb_hi):
+                return (
+                    (None if fb_hi.lower() == clean_def.lower() else fb_hi),
+                    f"suppress_latency_demoted({clean_high}->{fb_hi})",
+                )
         low_ok, high_rem, _ = evaluate_model_quota_escalation_allowed(
             q_snap, clean_high, min_remaining_fraction=eff_low
         )
@@ -306,6 +341,12 @@ def resolve_crypto_executor_model_override(
                     f"suppress_soft_conserve({clean_high}:{soft_rem * 100.0:.1f}%<={eff_soft * 100.0:.1f}%)",
                 )
         return clean_high, "escalate_high_effort"
+
+    if clean_def and (dem_def := lat_demoted.get(clean_def.lower())) is not None:
+        fb_def = str(dem_def.get("fallback_model") or "").strip()
+        if fb_def and fb_def.lower() != clean_def.lower() and not is_degraded_trading_model(fb_def):
+            if not _is_model_runtime_exhausted(rt_ex, fb_def, eff_now):
+                return fb_def, f"latency_demoted_fallback({clean_def}->{fb_def})"
 
     if not escalate_high_effort and eff_soft > 0.0 and q_cred <= 0.0 and clean_def and q_buckets:
         def_rem = _lookup_bucket_remaining(q_buckets, clean_def)
@@ -665,6 +706,19 @@ class GeminiQuotaRouterMixin:
                     if exp_ts > now:
                         runtime_exhausted[str(m_name)] = exp_ts
 
+            latency_demoted: Dict[str, Dict[str, Any]] = {}
+            expired_demoted: list[tuple[str, Dict[str, Any]]] = []
+            prev_demoted = prev.get("latency_demoted_models")
+            if same_oauth_account and isinstance(prev_demoted, dict):
+                for m_name, info in prev_demoted.items():
+                    if not isinstance(m_name, str) or not isinstance(info, dict):
+                        continue
+                    restore_ts = safe_float(info.get("restore_after_ts"), 0.0) or 0.0
+                    if restore_ts > now:
+                        latency_demoted[m_name] = dict(info)
+                    else:
+                        expired_demoted.append((m_name, dict(info)))
+
             snapshot: Dict[str, Any] = {
                 "checked_ts": now,
                 "oauth_token_fp": token_fp,
@@ -675,8 +729,12 @@ class GeminiQuotaRouterMixin:
                 "last_alert_ts": safe_float(prev.get("last_alert_ts"), 0.0) if same_oauth_account else 0.0,
                 "last_alert_tier": str(prev.get("last_alert_tier") or "ok") if same_oauth_account else "ok",
             }
+            if latency_demoted:
+                snapshot["latency_demoted_models"] = latency_demoted
             cls._cache_and_save_quota_state_locked(state_path, snapshot, _save_json_state)
 
+        if expired_demoted:
+            cls._finalize_restored_latency_demotions(expired_demoted, notify=True)
         cls._maybe_notify_low_quota(snapshot)
         return snapshot
 
@@ -699,6 +757,45 @@ class GeminiQuotaRouterMixin:
             pass
 
     @classmethod
+    def apply_latency_demotions(
+        cls,
+        candidates: list[str],
+        quota_snapshot: Optional[Mapping[str, Any]],
+        *,
+        now_ts: Optional[float] = None,
+    ) -> list[str]:
+        """Reorder ``candidates`` so active latency-demoted models step down behind their faster fallback."""
+        if not candidates or not isinstance(quota_snapshot, Mapping):
+            return list(candidates)
+        eff_now = safe_pos_float(now_ts, default=None) or time.time()
+        demoted = _active_latency_demotions(quota_snapshot, eff_now)
+        if not demoted:
+            return list(candidates)
+        reordered = list(candidates)
+        seen_demoted: set[str] = set()
+        for slow_k, info in demoted.items():
+            fb = str(info.get("fallback_model") or "").strip()
+            if not fb:
+                continue
+            lows = [m.strip().lower() for m in reordered]
+            if slow_k not in lows or slow_k in seen_demoted:
+                continue
+            seen_demoted.add(slow_k)
+            slow_idx = lows.index(slow_k)
+            slow_orig = reordered[slow_idx]
+            fb_lc = fb.lower()
+            if fb_lc in lows:
+                fb_idx = lows.index(fb_lc)
+                if fb_idx > slow_idx:
+                    fb_orig = reordered.pop(fb_idx)
+                    reordered.insert(slow_idx, fb_orig)
+            else:
+                reordered.insert(slow_idx, fb)
+            # Move demoted slow model to the tail as last-resort backup
+            reordered = [m for m in reordered if m.strip().lower() != slow_k] + [slow_orig]
+        return reordered
+
+    @classmethod
     def filter_models_with_confirmed_credits(
         cls,
         candidates: list[str],
@@ -707,12 +804,13 @@ class GeminiQuotaRouterMixin:
         """Filter candidate models so only models with confirmed quota or top-up credits are called."""
         if not candidates or not isinstance(quota_snapshot, dict):
             return list(candidates)
+        ordered = cls.apply_latency_demotions(candidates, quota_snapshot)
         buckets = quota_snapshot.get("buckets")
         if not isinstance(buckets, dict):
-            return list(candidates)
+            return ordered
         available_credits = safe_float(quota_snapshot.get("available_credits"), 0.0)
         if not buckets and available_credits <= 0.0:
-            return list(candidates)
+            return ordered
 
         now = time.time()
         runtime_exhausted = (
@@ -722,7 +820,7 @@ class GeminiQuotaRouterMixin:
         )
 
         confirmed: list[str] = []
-        for m in candidates:
+        for m in ordered:
             exp_ts = safe_float(runtime_exhausted.get(m), 0.0)
             if exp_ts > now and available_credits <= 0.0:
                 continue
@@ -730,8 +828,202 @@ class GeminiQuotaRouterMixin:
                 confirmed.append(m)
         if confirmed:
             return confirmed
-        non_exhausted = [m for m in candidates if safe_float(runtime_exhausted.get(m), 0.0) <= now]
-        return non_exhausted or list(candidates)
+        non_exhausted = [m for m in ordered if safe_float(runtime_exhausted.get(m), 0.0) <= now]
+        return non_exhausted or ordered
+
+    @classmethod
+    def _send_llm_routing_ntfy(cls, title: str, msg: str, *, topic_env_key: str = "NTFY_TOPIC_ERROR") -> bool:
+        try:
+            watchdog_common = importlib.import_module("orchestratorOS.lib.watchdog_common")
+        except Exception:
+            return False
+        ntfy_mocked = (
+            hasattr(watchdog_common.send_ntfy, "_mock_name")
+            or getattr(watchdog_common.send_ntfy, "__module__", "") != "orchestratorOS.lib.watchdog_common"
+        )
+        if (
+            not is_unmocked_llm_query_allowed()
+            and not ntfy_mocked
+            and not bool_env("LLM_FORCE_QUOTA_ALERT_TEST", default=False)
+        ):
+            return False
+        try:
+            return bool(watchdog_common.send_ntfy(title, msg, topic_env_key=topic_env_key))
+        except TypeError:
+            try:
+                return bool(watchdog_common.send_ntfy(title, msg))
+            except Exception:
+                return False
+        except Exception as exc:
+            logger.debug("Failed sending LLM routing NTFY alert: %s", exc)
+            return False
+
+    @classmethod
+    def record_model_latency_demotion(
+        cls,
+        slow_model: str,
+        fallback_model: str,
+        *,
+        topic_key: str = "",
+        slow_rotations: int = 2,
+        ttl_sec: Optional[float] = None,
+        notify: bool = True,
+        now_ts: Optional[float] = None,
+    ) -> bool:
+        """Persist latency step-down from ``slow_model`` to ``fallback_model`` and notify."""
+        clean_slow = slow_model.strip() if isinstance(slow_model, str) else ""
+        clean_fb = fallback_model.strip() if isinstance(fallback_model, str) else ""
+        if not clean_slow or not clean_fb or clean_slow.lower() == clean_fb.lower():
+            return False
+        now = safe_pos_float(now_ts, default=None) or time.time()
+        eff_ttl = (
+            resolve_latency_demotion_ttl_sec()
+            if ttl_sec is None
+            else max(60.0, safe_pos_float(ttl_sec, default=14400.0) or 14400.0)
+        )
+        state_path, _read_json_dict, _save_json_state = (
+            cls._get_quota_state_path(),
+            _gc_attr("read_json_dict", read_json_dict),
+            _gc_attr("save_json_state", save_json_state),
+        )
+        already_active = False
+        with cls._quota_state_rmw_lock(state_path, _save_json_state):
+            data = _read_json_dict(state_path, default={})
+            if not isinstance(data, dict):
+                data = {}
+            demoted = data.get("latency_demoted_models")
+            if not isinstance(demoted, dict):
+                demoted = {}
+            existing = demoted.get(clean_slow)
+            if (
+                isinstance(existing, dict)
+                and str(existing.get("fallback_model") or "").strip().lower() == clean_fb.lower()
+                and (safe_float(existing.get("restore_after_ts"), 0.0) or 0.0) > now
+            ):
+                already_active = True
+            demoted[clean_slow] = {
+                "fallback_model": clean_fb,
+                "demoted_ts": now,
+                "restore_after_ts": now + eff_ttl,
+                "topic": str(topic_key or "").strip(),
+                "slow_rotations": safe_nonneg_int(slow_rotations, 2),
+            }
+            data["latency_demoted_models"] = demoted
+            data.setdefault("checked_ts", now)
+            cls._cache_and_save_quota_state_locked(state_path, data, _save_json_state)
+
+        logger.warning(
+            "LLM latency fallback activated for topic '%s': stepping down %s -> %s after %d consecutive slow rotations (auto-restore in %.1fh or next 4h model monitor).",
+            topic_key or "global",
+            clean_slow,
+            clean_fb,
+            safe_nonneg_int(slow_rotations, 2),
+            eff_ttl / 3600.0,
+        )
+        if notify and not already_active:
+            title = f"\u26a0\ufe0f AI LLM Latency Fallback: {clean_slow} -> {clean_fb}"
+            msg = (
+                f"Topic '{topic_key or 'llm'}' experienced {safe_nonneg_int(slow_rotations, 2)} consecutive slow thread rotations "
+                f"on {clean_slow}. Stepping down to faster model {clean_fb} automatically. "
+                f"The 4-hour model/quota monitor will verify tokens, credits, and availability to restore {clean_slow}."
+            )
+            cls._send_llm_routing_ntfy(title, msg, topic_env_key="NTFY_TOPIC_ERROR")
+        return True
+
+    @classmethod
+    def _finalize_restored_latency_demotions(
+        cls,
+        restored_items: list[tuple[str, Dict[str, Any]]],
+        *,
+        notify: bool = True,
+    ) -> None:
+        if not restored_items:
+            return
+        topics_to_reset = [
+            str(info.get("topic") or "").strip()
+            for _, info in restored_items
+            if isinstance(info, dict) and str(info.get("topic") or "").strip()
+        ]
+        try:
+            agy_topics = importlib.import_module("orchestratorOS.agy.topics")
+            agy_topics.reset_topic_slow_rotations(topics_to_reset or None)
+        except Exception:
+            pass
+        models_str = ", ".join(m for m, _ in restored_items)
+        logger.info("Restored latency-demoted LLM model(s) to primary priority: %s", models_str)
+        if notify:
+            title = f"\u2705 AI LLM Primary Model Restored: {models_str}"
+            msg = (
+                f"4-hour model/quota monitor confirmed healthy tokens, credits, and model availability. "
+                f"Restored primary model(s): {models_str} (consecutive slow rotation counters reset)."
+            )
+            cls._send_llm_routing_ntfy(title, msg, topic_env_key="NTFY_TOPIC_SERVER")
+
+    @classmethod
+    def maybe_restore_latency_demoted_models(
+        cls,
+        quota_snapshot: Optional[Mapping[str, Any]] = None,
+        *,
+        available_models: Optional[Iterable[str]] = None,
+        force: bool = False,
+        notify: bool = True,
+        now_ts: Optional[float] = None,
+    ) -> list[str]:
+        """Restore latency-demoted models when TTL elapsed (or ``force=True`` during 4h monitor) and quota/availability are healthy."""
+        now = safe_pos_float(now_ts, default=None) or time.time()
+        avail_set = (
+            {str(m).strip().lower() for m in available_models if isinstance(m, str) and m.strip()}
+            if available_models is not None
+            else None
+        )
+        warn_thr = resolve_quota_low_warn_fraction(default=0.10)
+        state_path, _read_json_dict, _save_json_state = (
+            cls._get_quota_state_path(),
+            _gc_attr("read_json_dict", read_json_dict),
+            _gc_attr("save_json_state", save_json_state),
+        )
+        restored_items: list[tuple[str, Dict[str, Any]]] = []
+        with cls._quota_state_rmw_lock(state_path, _save_json_state):
+            data = _read_json_dict(state_path, default={})
+            if not isinstance(data, dict):
+                return []
+            demoted = data.get("latency_demoted_models")
+            if not isinstance(demoted, dict) or not demoted:
+                return []
+            eff_snap = quota_snapshot if isinstance(quota_snapshot, Mapping) else data
+            buckets = eff_snap.get("buckets") if isinstance(eff_snap.get("buckets"), Mapping) else {}
+            avail_credits = safe_float(eff_snap.get("available_credits"), 0.0) or 0.0
+            rt_ex = eff_snap.get("runtime_exhausted") if isinstance(eff_snap.get("runtime_exhausted"), Mapping) else {}
+
+            remaining: Dict[str, Dict[str, Any]] = {}
+            for m_name, info in demoted.items():
+                if not isinstance(m_name, str) or not isinstance(info, dict):
+                    continue
+                restore_ts = safe_float(info.get("restore_after_ts"), 0.0) or 0.0
+                due = bool(force) or restore_ts <= now
+                is_avail = avail_set is None or m_name.strip().lower() in avail_set
+                not_exhausted = not _is_model_runtime_exhausted(rt_ex, m_name, now)
+                rem_frac = _lookup_bucket_remaining(buckets, m_name)
+                quota_healthy = (
+                    avail_credits > 0.0
+                    or not buckets
+                    or (rem_frac is not None and rem_frac > warn_thr)
+                )
+                if due and is_avail and not_exhausted and quota_healthy:
+                    restored_items.append((m_name, dict(info)))
+                else:
+                    remaining[m_name] = dict(info)
+
+            if restored_items:
+                if remaining:
+                    data["latency_demoted_models"] = remaining
+                else:
+                    data.pop("latency_demoted_models", None)
+                cls._cache_and_save_quota_state_locked(state_path, data, _save_json_state)
+
+        if restored_items:
+            cls._finalize_restored_latency_demotions(restored_items, notify=notify)
+        return [m for m, _ in restored_items]
 
     @classmethod
     def _record_model_quota_exhausted(

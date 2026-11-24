@@ -1507,3 +1507,178 @@ def test_llm_timeout_140s_topic_auto_rotation_and_archive_sanitizers(tmp_path):
     sh_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "orchestratorOS", "admin", "manage_gitautodeploy.sh")
     proc = subprocess.run(["bash", "-n", sh_path], capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
+
+
+def test_llm_soft_timeout_extends_without_kill_rotates_next_turn_demotes_and_4h_monitor_restores(tmp_path, monkeypatch):
+    """Verify full slow-turn lifecycle:
+    1. Soft timeout (140s) does NOT kill CLI; extends wait up to 3x (420s) and uses its completed output.
+    2. Schedules thread rotation for the NEXT turn (preserving rolling_history).
+    3. After 2 consecutive slow rotations, steps down to faster fallback model and sends notification.
+    4. 4-hour model/token/credit monitor verifies quota+availability and restores the best primary model."""
+    import json
+    import subprocess
+    import time as _t
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from intelligence.sentiment.llm_quota_router import resolve_crypto_executor_model_override
+    from orchestratorOS.agy import topics as agy_topics
+    from orchestratorOS.lib import watchdog_common
+    from orchestratorOS.admin import monitor_llm_models
+
+    # 1. Soft timeout extends wait up to 3x WITHOUT killing the running Popen process
+    popen_calls = []
+
+    class _SlowThenOkPopen:
+        def __init__(self, cmd, **_kw):
+            self.cmd = cmd
+            self.returncode = 0
+            self.killed = False
+            self.timeouts_seen = []
+            popen_calls.append(self)
+
+        def communicate(self, timeout=None):
+            self.timeouts_seen.append(timeout)
+            if len(self.timeouts_seen) == 1:
+                raise subprocess.TimeoutExpired(self.cmd, timeout)
+            return json.dumps({"response": '{"decision": "HOLD"}', "conversation_id": "cid-slow-1"}), ""
+
+        def kill(self):
+            self.killed = True
+
+    monkeypatch.setattr(subprocess, "Popen", _SlowThenOkPopen)
+    completed, exceeded = GeminiClient._run_subprocess_with_soft_extend(
+        ["agy-bot", "--model", "gemini-4-neon-high"],
+        soft_timeout=140.0,
+        extend_mult=3.0,
+        run_env={},
+        exec_cwd=None,
+        cli_model="gemini-4-neon-high",
+        resume="cid-slow-1",
+    )
+    assert exceeded is True
+    assert completed.returncode == 0
+    assert "HOLD" in completed.stdout
+    assert len(popen_calls) == 1
+    assert popen_calls[0].killed is False
+    assert popen_calls[0].timeouts_seen == [pytest.approx(140.0), pytest.approx(280.0)]
+
+    # 2. Slow turn schedules next-turn rotation while preserving rolling_history
+    reg_path = str(tmp_path / "llm_topic_threads.json")
+    bot_base = str(tmp_path / "agy_base")
+    (tmp_path / "agy_base" / "conversations").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(agy_topics, "get_thread_step_count", lambda cid, base: (cid == "cid-slow-1", 10, "IDLE"))
+    monkeypatch.setattr(agy_topics, "sync_topic_thread_from_ui", lambda *_a, **_k: None)
+    monkeypatch.setattr(agy_topics, "mirror_topic_thread_to_ui", lambda *_a, **_k: None)
+    monkeypatch.setattr(agy_topics, "read_summary_row", lambda *_a, **_k: None)
+    monkeypatch.setattr(agy_topics, "write_annotation_title", lambda *_a, **_k: None)
+    monkeypatch.setattr(agy_topics, "delete_threads", lambda *_a, **_k: None)
+
+    agy_topics.record_topic_turn(
+        "auto_cryptotrade_executor",
+        "cid-slow-1",
+        '{"decision": "HOLD", "summary": "slow completed turn"}',
+        cli_base=bot_base,
+        registry_path=reg_path,
+        schedule_rotation=True,
+    )
+    assert agy_topics.get_topic_slow_rotation_count("auto_cryptotrade_executor", registry_path=reg_path) == 1
+    # Next iteration prepare_topic_session rotates to a fresh thread carrying rolling_history
+    sess_next = agy_topics.prepare_topic_session(
+        "auto_cryptotrade_executor", cli_base=bot_base, compact_steps=18, registry_path=reg_path
+    )
+    assert sess_next.conversation_id is None
+    assert "slow completed turn" in sess_next.history_prefix
+
+    # Second consecutive slow turn on fresh thread triggers count == 2
+    slow_cnt2 = agy_topics.record_topic_slow_rotation(
+        "auto_cryptotrade_executor", "cid-slow-2", cli_base=bot_base, registry_path=reg_path
+    )
+    assert slow_cnt2 == 2
+
+    # 3. Latency step-down demotes slow model behind faster fallback and sends notification
+    quota_path = str(tmp_path / "llm_quota_status.json")
+    monkeypatch.setattr(GeminiClient, "_get_quota_state_path", classmethod(lambda cls: quota_path))
+    monkeypatch.setattr(GeminiClient, "_QUOTA_MEM_CACHE", {})
+    sent_alerts = []
+    monkeypatch.setattr(
+        watchdog_common,
+        "send_ntfy",
+        lambda title, msg, **kw: (sent_alerts.append((title, msg, kw)), True)[1],
+    )
+    monkeypatch.setenv("LLM_FORCE_QUOTA_ALERT_TEST", "1")
+
+    now_t = _t.time()
+    (tmp_path / "llm_quota_status.json").write_text(
+        json.dumps(
+            {
+                "checked_ts": now_t,
+                "available_credits": 20.0,
+                "buckets": {
+                    "gemini-4-neon-high": 0.90,
+                    "gemini-4-neon-medium": 0.90,
+                    "claude-sonnet-5-5-medium": 1.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert GeminiClient.record_model_latency_demotion(
+        "gemini-4-neon-high",
+        "gemini-4-neon-medium",
+        topic_key="auto_cryptotrade_executor",
+        slow_rotations=2,
+        ttl_sec=14400.0,
+        notify=True,
+        now_ts=now_t,
+    ) is True
+    assert len(sent_alerts) == 1
+    assert "gemini-4-neon-high -> gemini-4-neon-medium" in sent_alerts[0][0]
+
+    snap_demoted = json.loads((tmp_path / "llm_quota_status.json").read_text(encoding="utf-8"))
+    ordered = GeminiClient.filter_models_with_confirmed_credits(
+        ["gemini-4-neon-high", "gemini-4-neon-medium", "claude-sonnet-5-5-medium"],
+        snap_demoted,
+    )
+    assert ordered[0] == "gemini-4-neon-medium"
+    assert ordered[-1] == "gemini-4-neon-high"
+
+    ov_model, ov_reason = resolve_crypto_executor_model_override(
+        snap_demoted,
+        high_model="gemini-4-neon-high",
+        default_model="gemini-4-neon-medium",
+        fallback_models=("gemini-4-neon-medium", "claude-sonnet-5-5-medium"),
+        escalate_high_effort=True,
+        urgent_escalation=True,
+        now_ts=now_t + 60.0,
+    )
+    assert ov_model is None
+    assert "suppress_latency_demoted" in ov_reason
+
+    # 4. 4-hour model monitor verifies quota & available models and restores primary model
+    monkeypatch.setattr(agy_topics, "get_topic_registry_path", lambda p=None: p or reg_path)
+    monkeypatch.setattr(
+        GeminiClient,
+        "probe_live_model_quota",
+        classmethod(lambda cls, **kw: snap_demoted),
+    )
+    monkeypatch.setattr(
+        monitor_llm_models,
+        "audit_llm_model_catalog_and_binaries",
+        lambda *_a, **_k: {
+            "agy_models_ok": True,
+            "available_models": ["gemini-4-neon-high", "gemini-4-neon-medium", "claude-sonnet-5-5-medium"],
+            "missing_configured_models": [],
+        },
+    )
+    mon_res = monitor_llm_models.run_llm_model_monitor(str(tmp_path), force_refresh=True, notify=True)
+    assert mon_res["restored_models"] == ["gemini-4-neon-high"]
+    assert agy_topics.get_topic_slow_rotation_count("auto_cryptotrade_executor", registry_path=reg_path) == 0
+    assert len(sent_alerts) == 2
+    assert "Restored" in sent_alerts[1][0]
+
+    snap_after = json.loads((tmp_path / "llm_quota_status.json").read_text(encoding="utf-8"))
+    assert "latency_demoted_models" not in snap_after
+    restored_order = GeminiClient.filter_models_with_confirmed_credits(
+        ["gemini-4-neon-high", "gemini-4-neon-medium", "claude-sonnet-5-5-medium"],
+        snap_after,
+    )
+    assert restored_order[0] == "gemini-4-neon-high"
