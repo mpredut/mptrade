@@ -313,6 +313,11 @@ def _detect_macro_calendar_headlines(breaking_news: Optional[Sequence[Any]]) -> 
                 and not _MACRO_DATA_ANCHOR_RE.search(low_t)
             ):
                 continue
+            if matched_kws == ["powell"] and not re.search(
+                r"\b(?:fed|fomc|federal\s+reserve|jerome|chair(?:man)?|central\s+bank|monetary|policy|rate|rates|inflation|cut|cuts|hike|hikes|yield|yields|recession|economy|testimony|speech|remarks|hawkish|dovish|jackson\s+hole)\b",
+                low_t,
+            ):
+                continue
             detected.append(title)
     return detected
 

@@ -6435,5 +6435,120 @@ def test_twin_bug_elimination_and_by_construction_refactors(tmp_path):
     assert "oi_15m_chg=+0.00%" in sec3b_oi and "oi_15m_chg=-0.00%" not in sec3b_oi
 
 
+def test_cycle12_premarket_overnight_gap_15m_macro_bar_age_short_trends_and_powell_clickbait(tmp_path):
+    """Cycle 12 US Pre-Market open (11:00 EET / 04:00 EST) audit fixes:
+    1. compute_24h_price_metrics must not mislabel an 8h overnight close gap as chg_15m_pct /
+       chg_30m_pct / chg_1h_pct / chg_3h_pct when pre-market has only been open for 3 minutes.
+    2. MacroBenchmarksCollector uses fresh Yahoo preMarketTime for bar_age_min (while still gating
+       15m/1h deltas on chart bar freshness) and format_macro_benchmarks_summary renders >=60m as hours.
+    3. Equities domain age threshold for short_trends aligns with equity price polling (~180s), so
+       live 40s PRE-market short_trends is not falsely tagged [market_closed].
+    4. _detect_macro_calendar_headlines requires Fed/monetary context for solo 'powell' matches
+       (excluding Nvidia exec Kimberly Powell) and lexicon filters 'N Reason(s) to Buy' + affair gossip.
+    """
+    from datetime import datetime, timezone
+    from intelligence.macro.calendar_ssot import _detect_macro_calendar_headlines
+    from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
+    from intelligence.macro_sentiment_ssot import (
+        format_telemetry_domain_age_tag,
+        resolve_telemetry_domain_stale_thresholds_sec,
+    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MacroBenchmarksSnapshotCollector
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import format_macro_benchmarks_summary_line
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
+
+    # C12.1: 4 minutes into US Pre-Market after 8h overnight gap (NVDA_US_EQ 00:59:59 -> 09:01..09:04 UTC)
+    t_pre_now = datetime(2026, 11, 25, 9, 4, 4, tzinfo=timezone.utc).timestamp()
+    t_post_close = datetime(2026, 11, 25, 0, 59, 59, tzinfo=timezone.utc).timestamp()
+    nvda_series = [
+        [int((t_pre_now - 24 * 3600.0) * 1000), 159.40],
+        [int((t_pre_now - 12 * 3600.0) * 1000), 154.64],
+        [int((t_post_close - 600.0) * 1000), 151.85],
+        [int((t_post_close - 300.0) * 1000), 151.88],
+        [int((t_post_close - 180.0) * 1000), 151.89],
+        [int((t_post_close - 120.0) * 1000), 151.88],
+        [int((t_post_close - 60.0) * 1000), 151.90],
+        [int(t_post_close * 1000), 151.9531],
+        # 8h overnight gap -> live PRE ticks
+        [int((t_pre_now - 184.0) * 1000), 148.72],
+        [int((t_pre_now - 123.0) * 1000), 148.70],
+        [int((t_pre_now - 62.0) * 1000), 148.28],
+        [int(t_pre_now * 1000), 148.75],
+    ]
+    m24_pre = compute_24h_price_metrics(nvda_series, is_equity=True, now_ts=t_pre_now)
+    assert "chg_15m_pct" not in m24_pre
+    assert "chg_30m_pct" not in m24_pre
+    assert "chg_1h_pct" not in m24_pre
+    assert "chg_3h_pct" not in m24_pre
+    assert m24_pre["chg_1m_pct"] == pytest.approx(((148.75 - 148.28) / 148.28) * 100.0, abs=0.05)
+    assert m24_pre["chg_3m_pct"] == pytest.approx(((148.75 - 148.72) / 148.72) * 100.0, abs=0.05)
+    assert "chg_12h_pct" in m24_pre and "chg_24h_pct" in m24_pre
+
+    # C12.2a: Formatter renders >=60m bar_age in hours even when market_state == 'PRE' (never '490m')
+    mb_fmt = format_macro_benchmarks_summary_line(
+        {"items": {"SPY": {"price": 712.91, "chg_24h_pct": -0.79, "market_state": "PRE", "bar_age_min": 490.0}}},
+        include_crypto=False,
+    )
+    assert "bar_age=8.2h" in mb_fmt and "bar_age=490m" not in mb_fmt
+
+    # C12.2b: Collector uses Yahoo preMarketTime for bar_age_min while blocking stale 8h chart bars from 15m/1h
+    stale_bar_ts = t_pre_now - 490.0 * 60.0
+    yahoo_spy = {
+        "chart": {
+            "result": [
+                {
+                    "meta": {
+                        "marketState": "PRE",
+                        "preMarketPrice": 712.91,
+                        "preMarketTime": int(t_pre_now - 30.0),
+                        "regularMarketPrice": 710.49,
+                        "previousClose": 718.58,
+                    },
+                    "timestamp": [int(stale_bar_ts - 3600.0), int(stale_bar_ts - 900.0), int(stale_bar_ts)],
+                    "indicators": {"quote": [{"close": [715.0, 711.0, 710.49]}]},
+                }
+            ]
+        }
+    }
+    mb_res = MacroBenchmarksSnapshotCollector(start_sync=False).collect(
+        str(tmp_path),
+        now_ts=t_pre_now,
+        persist=False,
+        fetch_fn=lambda url, **_kw: yahoo_spy if "SPY" in url else None,
+    )
+    assert mb_res is not None
+    spy_entry = mb_res["items"]["SPY"]
+    assert spy_entry["market_state"] == "PRE"
+    assert spy_entry["bar_age_min"] <= 1.0
+    assert "chg_15m_pct" not in spy_entry and "chg_1h_pct" not in spy_entry
+
+    # C12.3: Equities short_trends threshold matches equity price polling (40s PRE quote is NOT [market_closed])
+    eq_thrs = resolve_telemetry_domain_stale_thresholds_sec("equities")
+    assert eq_thrs["short_trends"] >= eq_thrs["prices_newest"]
+    assert format_telemetry_domain_age_tag("short_trends", 40.0, asset_scope="equities", us_rth_open=False) == ""
+    assert format_telemetry_domain_age_tag("short_trends", 5000.0, asset_scope="equities", us_rth_open=False) == "[market_closed]"
+
+    # C12.4: Solo 'powell' in _detect_macro_calendar_headlines excludes non-Fed Kimberly Powell; preserves Fed Chair
+    cal_hits = _detect_macro_calendar_headlines(
+        [
+            "Will Nvidia Exec Kimberly Powell Leave? Crypto Bettors Weigh Exit Odds Amid Alleged Jensen Huang Affair",
+            "Powell signals Fed may pause rate cuts amid sticky inflation",
+            "Stock futures slip as traders await key inflation report",
+        ]
+    )
+    assert all("Kimberly Powell" not in h for h in cal_hits)
+    assert any("Powell signals Fed" in h for h in cal_hits)
+    assert any("inflation report" in h for h in cal_hits)
+
+    # C12.5: Clickbait & tabloid affair headlines excluded; genuine equity news preserved
+    assert is_excluded_reference_news_item("1 Reason to Buy AMD Stock Before 2027")
+    assert is_excluded_reference_news_item(
+        "Will Nvidia Exec Kimberly Powell Leave? Crypto Bettors Weigh Exit Odds Amid Alleged Jensen Huang Affair"
+    )
+    assert not is_excluded_reference_news_item(
+        "Nvidia cuts revenue guidance as US tightens AI chip export curbs"
+    )
+
+
 
 

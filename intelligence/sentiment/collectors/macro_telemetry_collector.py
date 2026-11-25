@@ -442,13 +442,25 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                     item_entry["globex_session_chg_pct"] = globex_session_chg
                 if len(pts) >= 2:
                     last_bar_ts = pts[-1][0]
-                    item_entry["last_bar_ts"] = math.trunc(last_bar_ts)
-                    bar_age_s = max(0.0, eff_now - last_bar_ts) if eff_now > 0.0 else 0.0
+                    raw_quote_ts = (
+                        first_pos_float(meta.get("preMarketTime"), meta.get("postMarketTime"))
+                        if ext_px is not None and mkt_state in ("PRE", "PREPRE")
+                        else (
+                            first_pos_float(meta.get("postMarketTime"), meta.get("preMarketTime"))
+                            if ext_px is not None and mkt_state in ("POST", "POSTPOST")
+                            else None
+                        )
+                    )
+                    quote_ts_meta = normalize_epoch_sec(raw_quote_ts, default=None) if raw_quote_ts is not None else None
+                    eff_quote_ts = max(last_bar_ts, quote_ts_meta) if quote_ts_meta is not None else last_bar_ts
+                    item_entry["last_bar_ts"] = math.trunc(eff_quote_ts)
+                    chart_bar_age_s = max(0.0, eff_now - last_bar_ts) if eff_now > 0.0 else 0.0
+                    bar_age_s = max(0.0, eff_now - eff_quote_ts) if eff_now > 0.0 else 0.0
                     if eff_now > 0.0:
                         item_entry["bar_age_min"] = round(bar_age_s / 60.0, 1)
                     if not mkt_state and eff_now > 0.0 and bar_age_s > 2700.0:
                         mkt_state = "CLOSED"
-                    if mkt_state != "CLOSED" and (eff_now <= 0.0 or bar_age_s <= 2700.0):
+                    if mkt_state != "CLOSED" and (eff_now <= 0.0 or chart_bar_age_s <= 2700.0):
                         prior_pts = pts[:-1]
                         for target_sec, key_name in ((3600.0, "chg_1h_pct"), (900.0, "chg_15m_pct")):
                             target_ts = last_bar_ts - target_sec

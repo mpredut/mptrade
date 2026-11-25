@@ -899,7 +899,7 @@ def resolve_telemetry_domain_stale_thresholds_sec(
         "orderbook_newest": max(whale_itv * mult, ob_itv * 6.0) if is_eq else ob_itv * mult,
         # BY DESIGN: Sequential multi-symbol L2 polling adds ~10-15s cycle jitter; keep 60s (4x 15s) floor on crypto oldest.
         "orderbook_oldest": max(whale_itv * mult, ob_itv * 6.0) if is_eq else max(whale_itv, ob_itv * 4.0),
-        "short_trends": short_trend_max * mult,
+        "short_trends": max(whale_itv * 3.0, ob_itv * 6.0, short_trend_max * mult) if is_eq else short_trend_max * mult,
         "venue_balances": (derived["share_executor_interval_sec"] if is_eq else derived["crypto_executor_interval_sec"]) * mult,
         "fear_greed": derived["fear_greed_interval_sec"] * mult,
         "market_breadth": derived["breadth_interval_sec"] * mult,

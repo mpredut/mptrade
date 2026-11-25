@@ -1160,7 +1160,7 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
         if m_state and m_state != "REGULAR":
             d_parts.append(m_state.lower())
         if bar_age_min is not None:
-            if m_state == "CLOSED" and bar_age_min >= 60.0:
+            if bar_age_min >= 60.0:
                 d_parts.append(f"bar_age={bar_age_min / 60.0:.1f}h")
             elif bar_age_min >= 5.0:
                 d_parts.append(f"bar_age={bar_age_min:.0f}m")

@@ -1093,7 +1093,13 @@ def compute_24h_price_metrics(
                             break
                     if fwd_pt is not None and fwd_pt[1] > 0:
                         tms, p_ref, valid_back = fwd_pt[0], fwd_pt[1], True
-                    elif has_overnight_gap and p_ref > 0 and tms not in seen_sample_tms:
+                    elif (
+                        has_overnight_gap
+                        and mins >= 60.0
+                        and p_ref > 0
+                        and tms not in seen_sample_tms
+                        and (now_ms - tms) <= max(mins * 2.5, 180.0) * 60000.0
+                    ):
                         valid_back = True
             if valid_back:
                 if tms is not None:
