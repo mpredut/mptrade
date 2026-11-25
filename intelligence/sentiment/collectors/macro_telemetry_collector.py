@@ -2128,7 +2128,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         trailing_map, trailing_by_venue = VenueTrailingMapsCollector().collect(
             cache_dir, "*", workspace_dir=workspace_dir, read_json_fn=_rj
         )
-        long_items = long_trends_data.get("items", {}) if isinstance(long_trends_data, dict) else {}
+        long_items = long_trends_data if isinstance(long_trends_data, dict) else {}
         t_trend_map = t_trend_data if isinstance(t_trend_data, dict) else {}
         snapshot.prices_and_trends = _harvest_initial_prices_and_trends_impl(
             cache_dir, prices_data, trends_data, _rj, workspace_dir=workspace_dir

@@ -297,6 +297,8 @@ def _format_macro_calendar_line(mc: Any) -> Optional[str]:
         f'session="{mc.get("session_label")}"',
         f'{ev_lbl}="{mc.get("next_high_impact_event")}"',
     ]
+    if mc.get("us_market_holiday"):
+        mc_parts.append(f'us_market_holiday="{mc.get("us_market_holiday")} (US markets closed)"')
     if _parse_bool_flag(mc.get("active_release_window"), False) and mc.get("next_scheduled_event"):
         mc_parts.append(f'next_scheduled="{mc.get("next_scheduled_event")}"')
     if mc.get("fomc_today") is not None:
@@ -1515,9 +1517,10 @@ def _format_portfolio_section(
         k
         for p in (view.get("tradable_positions") or ())
         if isinstance(p, dict)
+        for p_sym in (p.get("disp_symbol") or p.get("symbol"),)
         for k in (
-            str(p.get("symbol") or "").strip().upper(),
-            clean_symbol_key(p.get("symbol")) or "",
+            str(p_sym or "").strip().upper(),
+            clean_symbol_key(p_sym) or "",
         )
         if k
     }

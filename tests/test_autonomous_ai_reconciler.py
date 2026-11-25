@@ -2638,10 +2638,10 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
     assert "slopes(90s=+0.00092, 3.7m=+0.00064, 15m=+0.00045, 2.5h=+0.00021, grad_rec=+0.0012, grad_fast=+0.0018/eps=0.0004)" in prompt_out
     assert "g_coeff(" not in prompt_out
     assert "vol_1h=0.85%" in prompt_out
-    assert "FULL ACCESS TO EVERYTHING IN `cachedb/` AS A DECISION INFORMATION SOURCE" in prompt_out
+    assert "FULL READ ACCESS TO `cachedb/` & `statedb/`" in prompt_out
     assert "UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING" in prompt_out
     assert "50%–100%` of `value_usd`" in prompt_out
-    assert "continue working in parallel in the system and can be consulted by you on demand" in prompt_out
+    assert "Deterministic bots/configs run in parallel as optional advisory references only" in prompt_out
     assert "providers.market_api" in prompt_out
     assert "cachedb_catalog" not in prompt_out
     assert "STRONG_SELL_HARVEST_ZONE" not in prompt_out

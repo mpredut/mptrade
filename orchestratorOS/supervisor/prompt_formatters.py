@@ -313,8 +313,9 @@ def build_supervisor_prompt(
         )
         tasks.append(
             f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc}:\n"
-            "   - FULL READ ACCESS TO `cachedb/`: Telemetry below is a compact dashboard; "
-            "you have unrestricted read access to `cachedb/` (incl. `cachedb/orders/` Order Ledger SSoT), `logs/`, and `providers.market_api` for deeper verification.\n"
+            "   - FULL READ ACCESS TO `cachedb/` & `statedb/`: Telemetry below is a compact dashboard; "
+            "you have unrestricted read access to `cachedb/` (incl. `cachedb/account/` balances/fills/orders), "
+            "`statedb/` (incl. `statedb/orders/` Order Ledger SSoT), `logs/`, and `providers.market_api` for deeper verification.\n"
             "   - ZERO PROFIT OR STRATEGY GUARDS (AI SURVIVAL BREAKERS ONLY): Maximize risk-adjusted net NAV (after venue fees). All deterministic order_guard gates "
             "(G_PROF, GO1, GT_*, G_QLIMIT*, GI_*, GLLM*) are BYPASSED symmetrically on BUY and SELL. Deterministic bots/configs run in parallel as optional advisory references only--ZERO obligation to follow them. "
             "Only AI-specific survival circuit breakers "
@@ -367,7 +368,7 @@ def build_supervisor_prompt(
             "CONTINUATION TURN (ACTIVE THREAD POLICY APPLIES):\n"
             "- Apply all quantitative trading, spot maker-LIMIT execution, active orderbook management, and "
             "`by=BOT` vs `by=AI` supervisory rules established earlier in this thread (unrestricted read access to "
-            f"`cachedb/`, zero deterministic guards, `confidence >= {min_conf:g}`, notional {min_usd:g}-{max_usd:g} USD{compact_xs_sfx}).\n"
+            f"`cachedb/` & `statedb/`, zero deterministic guards, `confidence >= {min_conf:g}`, notional {min_usd:g}-{max_usd:g} USD{compact_xs_sfx}).\n"
             "- Honor any user chat instructions, price targets, overrides, or questions earlier in this thread with highest priority.\n"
             "- Format your response in TWO parts:\n"
             "  1) A concise Markdown report in **Romanian** with the cycle timestamp header (`### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`): "

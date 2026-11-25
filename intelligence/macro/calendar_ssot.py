@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import importlib
 import re
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -14,6 +14,7 @@ from botcore import (
     _parse_bool_flag,
     clean_scale,
     exact_int,
+    is_us_market_holiday,
     normalize_epoch_sec,
     obj_attr,
     obj_float,
@@ -24,6 +25,7 @@ from botcore import (
     safe_nonneg_ts,
     safe_pos_float,
     split_csv,
+    us_market_holiday_name,
 )
 from cachepaths import canonical_base_asset
 
@@ -339,9 +341,11 @@ def _collect_routine_session_windows(
     macro_release_confirmed: bool,
     has_fomc_headline: bool,
     skip_slot_fn: Optional[Callable[[str, str, float], bool]] = None,
+    today_ny_date: Optional[date] = None,
 ) -> Tuple[Optional[str], bool, List[Tuple[float, str, str, str, bool]]]:
     """Build active/upcoming weekday session transition windows over the next 4 calendar days."""
     tz_abbr = dt_eet.strftime("%Z") or "EET"
+    eff_ny_today = today_ny_date if today_ny_date is not None else dt_eet.date()
     active_window: Optional[str] = None
     active_window_is_high_impact: bool = False
     upcoming: List[Tuple[float, str, str, str, bool]] = []
@@ -350,8 +354,11 @@ def _collect_routine_session_windows(
         if cand_date.weekday() >= 5:
             continue
         cand_iso = cand_date.isoformat()
-        cand_is_fomc = cand_iso in fomc_dates or (day_offset == 0 and has_fomc_headline)
+        cand_is_us_holiday = is_us_market_holiday(cand_date)
+        cand_is_fomc = cand_iso in fomc_dates or (cand_date == eff_ny_today and has_fomc_headline)
         for hh, mm, code, desc in windows:
+            if cand_is_us_holiday and code.startswith("US_"):
+                continue
             ev_dt = datetime(cand_date.year, cand_date.month, cand_date.day, hh, mm, tzinfo=dt_eet.tzinfo)
             ev_ts = ev_dt.timestamp()
             if callable(skip_slot_fn) and skip_slot_fn(cand_iso, code, ev_ts):
@@ -359,7 +366,7 @@ def _collect_routine_session_windows(
             if code == "US_FOMC_FED_WINDOW":
                 is_confirmed_win = cand_is_fomc
             elif code in routine_labels:
-                is_confirmed_win = (day_offset == 0) and macro_release_confirmed
+                is_confirmed_win = (cand_date == eff_ny_today) and macro_release_confirmed
             else:
                 is_confirmed_win = False
             eff_desc = desc if is_confirmed_win else routine_labels.get(code, desc)
@@ -844,15 +851,28 @@ def resolve_macro_economic_calendar(
             return True
         return code in routine_labels and any(abs(ev_ts - c_ts) <= 300.0 for c_ts in confirmed_slot_ts_list)
 
+    snap_ts_raw = (
+        normalize_epoch_sec(calendar_snapshot.get("ts"), default=0.0) or 0.0
+        if isinstance(calendar_snapshot, Mapping)
+        else 0.0
+    )
+    has_authoritative_live_calendar = has_live_feed or (
+        isinstance(calendar_snapshot, Mapping)
+        and (snap_ts_raw <= 0.0 or (ts - snap_ts_raw) <= (72.0 * 3600.0))
+        and _parse_bool_flag(calendar_snapshot.get("events_ok"), False)
+    )
+    routine_macro_confirmed = bool(live_macro_prints) if has_authoritative_live_calendar else headline_macro_confirmed
+
     routine_active, routine_active_high, routine_upcoming = _collect_routine_session_windows(
         ts,
         dt_eet,
         windows=windows,
         routine_labels=routine_labels,
         fomc_dates=fomc_dates,
-        macro_release_confirmed=headline_macro_confirmed,
+        macro_release_confirmed=routine_macro_confirmed,
         has_fomc_headline=has_fomc_headline,
         skip_slot_fn=_skip_replaced_routine_slot,
+        today_ny_date=dt_ny.date(),
     )
     if active_window is None and routine_active is not None:
         active_window = routine_active
@@ -880,12 +900,14 @@ def resolve_macro_economic_calendar(
         else ("static_schedule" if merged_events else "session_only")
     )
 
+    us_holiday_today = us_market_holiday_name(dt_ny.date())
     return {
         "session_key": session_ctx.session_key,
         "session_label": session_ctx.session_label,
         "eet_time": session_ctx.eet_time_str,
         "ny_time": session_ctx.ny_time_str,
         "is_weekend": session_ctx.is_weekend,
+        "us_market_holiday": us_holiday_today,
         "macro_release_confirmed": macro_release_confirmed,
         "fomc_today": is_fomc_today,
         "next_fomc_date": next_fomc_date,

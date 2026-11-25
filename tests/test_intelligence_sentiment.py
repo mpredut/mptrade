@@ -18014,6 +18014,130 @@ def test_stages_1_to_3_ssot_capabilities_windows_and_prompt_view_normalization()
     assert m24_out["chg_24h_pct"] == pytest.approx(15.62)
 
 
+def test_crypto_prompt_audit_fixes_long_trend_calendar_holidays_and_ledger_path():
+    """Verify fixes for zombie sibling long_trend, US holiday & headline calendar false-positives, and statedb/orders prompt path."""
+    from datetime import date, datetime, timezone
+
+    from botcore import (
+        ET,
+        is_us_market_holiday,
+        is_us_rth_open,
+        resolve_us_equity_session_state,
+        topic_spec,
+        us_market_holiday_name,
+    )
+    from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
+    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
+    from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from orchestratorOS.supervisor.prompt_sections import _format_macro_calendar_line
+
+    # 1. Stale/disabled sibling long_trend entries (e.g. retired Kraken ADAUSD/TAOUSD) must never override fresh neutral ADAUSDC/TAOUSDC
+    now_t = 1_795_645_400.0
+    stale_t = now_t - 50.0 * 3600.0
+    pt_lt = {
+        "ADAUSDC": {"price": 0.1456},
+        "TAOUSDC": {"price": 181.8},
+        "BTCUSDC": {"price": 60100.0},
+    }
+    long_trends_raw = {
+        "items": {
+            "ADAUSDC": [None],
+            "TAOUSDC": [None],
+            "BTCUSDC": [None],
+            "ADAUSD": [{"timestamp": stale_t, "direction": "up", "duration_seconds": 403200.0, "estimated_future_hours": 49.0}],
+            "TAOUSD": [{"timestamp": stale_t, "direction": "up", "duration_seconds": 403200.0, "estimated_future_hours": 47.4}],
+            "BTCUSDT": [{"timestamp": stale_t, "direction": "up", "duration_seconds": 300000.0, "estimated_future_hours": 30.0}],
+        },
+        "fetchtime": {
+            "ADAUSDC": int(now_t * 1000),
+            "TAOUSDC": int(now_t * 1000),
+            "BTCUSDC": int(now_t * 1000),
+            "ADAUSD": int(stale_t * 1000),
+            "TAOUSD": int(stale_t * 1000),
+            "BTCUSDT": int(stale_t * 1000),
+        },
+    }
+    # Live priceanalysis.json has no root "timestamp" key; fresh active equity timestamp anchors its recency
+    pa_raw = {
+        "ADAUSDC": None,
+        "TAOUSDC": None,
+        "BTCUSDC": None,
+        "NVDA_US_EQ": {"timestamp": now_t, "direction": "down", "duration_seconds": 374258.0, "estimated_future_hours": 86.4},
+    }
+    enrich_cross_venue_trends(pt_lt, {}, {}, long_trends_raw, pa_raw, {}, {})
+    for sym_chk in ("ADAUSDC", "TAOUSDC", "BTCUSDC"):
+        assert "long_trend_dir" not in pt_lt[sym_chk], f"Stale sibling leaked into {sym_chk}"
+        assert pt_lt[sym_chk].get("long_trend_neutral") is True
+
+    # 2. Algorithmic NYSE full-day holiday SSOT covers 2026 holidays and closes US equity session
+    assert us_market_holiday_name(date(2026, 11, 26)) == "Thanksgiving Day"
+    assert us_market_holiday_name(date(2026, 7, 3)) == "Independence Day"
+    assert us_market_holiday_name(date(2026, 4, 3)) == "Good Friday"
+    assert us_market_holiday_name(date(2026, 6, 19)) == "Juneteenth National Independence Day"
+    assert us_market_holiday_name(date(2026, 12, 25)) == "Christmas Day"
+    assert is_us_market_holiday(date(2026, 11, 25)) is False
+    ts_thanksgiving_rth = datetime(2026, 11, 26, 11, 30, tzinfo=ET).timestamp()
+    assert resolve_us_equity_session_state(ts_thanksgiving_rth) == "CLOSED"
+    assert is_us_rth_open(ts_thanksgiving_rth) is False
+
+    # 3. Economic calendar skips US windows on Thanksgiving & blocks retrospective inflation headlines when live calendar is authoritative
+    ts_eet_thanksgiving_midnight = datetime(2026, 11, 25, 22, 17, tzinfo=timezone.utc).timestamp()  # 2026-11-26 00:17 EET
+    cal_snap_empty_thu = {
+        "ts": ts_eet_thanksgiving_midnight,
+        "events_ok": True,
+        "events": [
+            {
+                "ts": datetime(2026, 11, 25, 13, 30, tzinfo=timezone.utc).timestamp(),
+                "date_iso": "2026-11-25",
+                "ny_time": "08:30",
+                "title": "Core PCE Price Index m/m",
+                "impact": "HIGH",
+            }
+        ],
+    }
+    retro_headlines = [
+        "10-year Treasury yield slides despite sticky inflation data as investors buy bonds for protection",
+        "The Fed says inflation hasn't gotten any better ahead of its key December vote to raise rates",
+    ]
+    cal_tg = resolve_macro_economic_calendar(
+        now_ts=ts_eet_thanksgiving_midnight,
+        breaking_news=retro_headlines,
+        calendar_snapshot=cal_snap_empty_thu,
+    )
+    assert all("CPI / PPI / NFP" not in w for w in cal_tg["upcoming_windows"])
+    assert all("Wall Street Cash Open (09:30 EST) at 16:30" not in w for w in cal_tg["upcoming_windows"])
+    assert any("European Frankfurt/London Institutional Open at 08:00 EET" in w for w in cal_tg["upcoming_windows"])
+
+    cal_tg_ny = resolve_macro_economic_calendar(now_ts=ts_thanksgiving_rth, calendar_snapshot=cal_snap_empty_thu)
+    assert cal_tg_ny["us_market_holiday"] == "Thanksgiving Day"
+    tg_line = _format_macro_calendar_line(cal_tg_ny) or ""
+    assert 'us_market_holiday="Thanksgiving Day (US markets closed)"' in tg_line
+
+    # Non-holiday weekday with authoritative live calendar (0 events today) keeps 15:30 EET routine despite retrospective inflation news
+    ts_reg_wed = datetime(2026, 11, 18, 10, 0, tzinfo=timezone.utc).timestamp()  # 12:00 EET / 05:00 EST
+    cal_reg = resolve_macro_economic_calendar(
+        now_ts=ts_reg_wed,
+        breaking_news=retro_headlines,
+        calendar_snapshot={"ts": ts_reg_wed, "events_ok": True, "events": []},
+    )
+    assert all("CPI / PPI / NFP" not in w for w in cal_reg["upcoming_windows"])
+    assert any("Pre-Market Macro & Treasury Liquidity Window" in w for w in cal_reg["upcoming_windows"])
+
+    # 4. Prompt instructions point to real statedb/orders/ & cachedb/account/ paths instead of non-existent cachedb/orders/
+    spec = topic_spec("auto_cryptotrade_executor")
+    prompt_txt = build_supervisor_prompt(
+        TelemetrySensorSnapshot(),
+        LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0),
+        spec,
+        compact_rules=False,
+    )
+    assert "cachedb/orders/" not in prompt_txt
+    assert "statedb/orders/" in prompt_txt
+    assert "cachedb/account/" in prompt_txt
+
+
+
 
 
 

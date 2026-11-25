@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, time as dt_time, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from functools import lru_cache
 import sys
 import threading
@@ -38,6 +38,75 @@ def _active_clock_fn() -> object:
     return None
 
 
+@lru_cache(maxsize=32)
+def _us_market_holidays_for_year(year: int) -> dict[date, str]:
+    """Return observed NYSE full-day market holidays for ``year`` mapped to holiday names."""
+
+    def _nth_weekday(month: int, weekday: int, n: int) -> date:
+        first = date(year, month, 1)
+        offset = (weekday - first.weekday()) % 7
+        return first + timedelta(days=offset + 7 * (n - 1))
+
+    def _last_weekday(month: int, weekday: int) -> date:
+        nxt = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+        last = nxt - timedelta(days=1)
+        return last - timedelta(days=(last.weekday() - weekday) % 7)
+
+    def _observed(d: date, *, allow_prev_year_friday: bool = True) -> date | None:
+        if d.weekday() == 5:
+            if not allow_prev_year_friday and d.month == 1 and d.day == 1:
+                return None
+            return d - timedelta(days=1)
+        if d.weekday() == 6:
+            return d + timedelta(days=1)
+        return d
+
+    # Anonymous Gregorian Easter algorithm (Meeus/Jones/Butcher) for Good Friday
+    a = year % 19
+    b, c = divmod(year, 100)
+    d_q, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d_q - g + 15) % 30
+    i_q, k = divmod(c, 4)
+    l_v = (32 + 2 * e + 2 * i_q - h - k) % 7
+    m = (a + 11 * h + 22 * l_v) // 451
+    e_month, e_rem = divmod(h + l_v - 7 * m + 114, 31)
+    good_friday = date(year, e_month, e_rem + 1) - timedelta(days=2)
+
+    holidays: dict[date, str] = {}
+    for raw_d, name, allow_prev in (
+        (date(year, 1, 1), "New Year's Day", False),
+        (date(year, 7, 4), "Independence Day", True),
+        (date(year, 12, 25), "Christmas Day", True),
+    ):
+        if (obs := _observed(raw_d, allow_prev_year_friday=allow_prev)) is not None:
+            holidays[obs] = name
+    if year >= 2022:
+        if (obs := _observed(date(year, 6, 19))) is not None:
+            holidays[obs] = "Juneteenth National Independence Day"
+    holidays[_nth_weekday(1, 0, 3)] = "Martin Luther King Jr. Day"
+    holidays[_nth_weekday(2, 0, 3)] = "Washington's Birthday"
+    holidays[good_friday] = "Good Friday"
+    holidays[_last_weekday(5, 0)] = "Memorial Day"
+    holidays[_nth_weekday(9, 0, 1)] = "Labor Day"
+    holidays[_nth_weekday(11, 3, 4)] = "Thanksgiving Day"
+    return holidays
+
+
+def us_market_holiday_name(day: date | datetime) -> str | None:
+    """Return the NYSE full-day holiday name for ``day`` (in ET date), or ``None`` if not a holiday."""
+    d = day.date() if isinstance(day, datetime) else day
+    if not isinstance(d, date):
+        return None
+    return _us_market_holidays_for_year(d.year).get(d)
+
+
+def is_us_market_holiday(day: date | datetime) -> bool:
+    """Return True when ``day`` is an observed NYSE full-day market holiday."""
+    return us_market_holiday_name(day) is not None
+
+
 def resolve_us_equity_session_state(now_ts: float | None = None) -> str:
     """Return canonical US equity session state ('PRE', 'REGULAR', 'POST', or 'CLOSED') in America/New_York."""
     ts = resolve_now_ts(now_ts)
@@ -45,7 +114,7 @@ def resolve_us_equity_session_state(now_ts: float | None = None) -> str:
         ny_dt = datetime.fromtimestamp(ts, tz=ET)
     except (ValueError, OverflowError, OSError):
         ny_dt = datetime.fromtimestamp(_time.time(), tz=ET)
-    if ny_dt.weekday() >= 5:
+    if ny_dt.weekday() >= 5 or is_us_market_holiday(ny_dt.date()):
         return "CLOSED"
     t_ny = ny_dt.time()
     if US_EQUITY_RTH_OPEN_ET <= t_ny < US_EQUITY_RTH_CLOSE_ET:

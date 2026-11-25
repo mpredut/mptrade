@@ -33,7 +33,7 @@ from cachepaths import (
 from intelligence.external.collectors.base_collector import round_spread_bps
 from pricewindow import adaptive_thresholds
 from providers.base import MarketDataProvider
-from intelligence.internal.state.survival import estimate_remaining_trend_hours
+from intelligence.internal.state.survival import estimate_remaining_trend_hours, is_t_cache_entry_fresh
 from intelligence.macro_sentiment_ssot import (
     scan_latest_long_trend_value,
     parse_ts_px_row,
@@ -53,6 +53,7 @@ from instrument_registry import (
     canonical_display_symbol,
     casefold_get,
     coalesce_symbol_case_variants,
+    disabled_registry_symbols,
     is_equity_or_tokenized_symbol,
     resolve_symbol_identity,
 )
@@ -1306,26 +1307,62 @@ def enrich_cross_venue_trends(
     allow_net_flag = None if allow_network is None else _parse_bool_flag(allow_network, False)
     trends_items_map, pa_map = _unwrap_items_dict(trends_data), _unwrap_items_dict(priceanalysis_data)
     long_map = _unwrap_items_dict(long_items)
-    pa_root_ts = safe_pos_float(priceanalysis_data.get("timestamp") if isinstance(priceanalysis_data, dict) else None, default=0.0) or 0.0
+    pa_root_ts = (
+        safe_pos_float(priceanalysis_data.get("timestamp") if isinstance(priceanalysis_data, dict) else None, default=0.0)
+        or max(
+            (
+                safe_pos_float(v.get("timestamp"), default=0.0) or 0.0
+                for v in pa_map.values()
+                if isinstance(v, dict)
+            ),
+            default=0.0,
+        )
+    )
     lt_root_ts = safe_pos_float(long_items.get("timestamp") if isinstance(long_items, dict) else None, default=0.0) or 0.0
+    lt_fetch_map = (
+        long_items.get("fetchtime")
+        if isinstance(long_items, dict) and isinstance(long_items.get("fetchtime"), dict)
+        else {}
+    )
     pa_cf_keys = {k.casefold(): k for k in pa_map if isinstance(k, str)}
     lt_cf_keys = {k.casefold(): k for k in long_map if isinstance(k, str)}
+    disabled_syms = disabled_registry_symbols()
 
     def _resolve_source_long_trend(
-        src_map: Dict[str, Any], cf_keys: Dict[str, str], cands: Tuple[str, ...], root_ts: float
+        src_map: Dict[str, Any],
+        cf_keys: Dict[str, str],
+        cands: Tuple[str, ...],
+        root_ts: float,
+        *,
+        fetchtimes: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Optional[Dict[str, Any]], bool, float]:
         if not src_map:
             return None, False, 0.0
+        exact_cf = cands[0].casefold() if cands and isinstance(cands[0], str) else ""
+        ft_map = fetchtimes if isinstance(fetchtimes, dict) else {}
+        ft_cf = {k.casefold(): k for k in ft_map if isinstance(k, str)}
         saw_neutral = False
+        neutral_ts = root_ts
         for ck in cands:
             if not ck or not isinstance(ck, str):
+                continue
+            is_exact = ck.casefold() == exact_cf
+            if not is_exact and disabled_syms and ck.upper() in disabled_syms:
                 continue
             real_k = ck if ck in src_map else cf_keys.get(ck.casefold())
             if real_k is None:
                 continue
+            ft_k = real_k if real_k in ft_map else ft_cf.get(real_k.casefold())
+            key_ft = (
+                normalize_epoch_sec(ft_map.get(ft_k), default=0.0) or 0.0
+                if ft_k is not None
+                else 0.0
+            )
             raw_val = src_map[real_k]
             if raw_val is None or (isinstance(raw_val, list) and raw_val and raw_val[-1] is None):
                 saw_neutral = True
+                if is_exact and key_ft > neutral_ts:
+                    neutral_ts = key_ft
                 continue
             parsed = scan_latest_long_trend_value(
                 raw_val,
@@ -1334,8 +1371,10 @@ def enrich_cross_venue_trends(
             )
             if isinstance(parsed, dict):
                 item_ts = safe_pos_float(parsed.get("timestamp"), default=root_ts) or root_ts
+                if not is_exact and saw_neutral and neutral_ts > 0.0 and (item_ts <= 0.0 or neutral_ts - item_ts > 300.0):
+                    continue
                 return parsed, False, item_ts
-        return None, saw_neutral, root_ts
+        return None, saw_neutral, neutral_ts
 
     for sym, entry in list((prices_and_trends if isinstance(prices_and_trends, dict) else {}).items()):
         if not isinstance(entry, dict):
@@ -1410,7 +1449,9 @@ def enrich_cross_venue_trends(
                 entry["adapt_dca_pct"] = calc_dca
 
         pa_obj, pa_neutral, pa_item_ts = _resolve_source_long_trend(pa_map, pa_cf_keys, cand_keys, pa_root_ts)
-        lt_val, lt_neutral, lt_item_ts = _resolve_source_long_trend(long_map, lt_cf_keys, cand_keys, lt_root_ts)
+        lt_val, lt_neutral, lt_item_ts = _resolve_source_long_trend(
+            long_map, lt_cf_keys, cand_keys, lt_root_ts, fetchtimes=lt_fetch_map
+        )
         if isinstance(pa_obj, dict) and isinstance(lt_val, dict):
             lt_obj: Optional[Dict[str, Any]] = pa_obj if pa_item_ts >= lt_item_ts else lt_val
         elif isinstance(pa_obj, dict):
@@ -1439,12 +1480,14 @@ def enrich_cross_venue_trends(
             if pa_neutral or lt_neutral or (any_neutral_regime and not has_equity_suffix(sym)):
                 entry["long_trend_neutral"] = True
         tt_p_cont: Optional[Dict[str, Any]] = None
-        if isinstance(t_trend_map, dict) and isinstance(tt := first_variant_dict(t_trend_map, cand_keys), dict):
+        tt = first_variant_dict(t_trend_map, cand_keys) if isinstance(t_trend_map, dict) else None
+        if isinstance(tt, dict):
             entry["weibull_median_d"], entry["weibull_p90_d"] = tt.get("median_d"), tt.get("p90_d")
             tt_p_cont = tt.get("p_cont") if isinstance(tt.get("p_cont"), dict) else None
-        elif (
-            callable(estimate_t_fn)
-            and entry.get("weibull_median_d") is None
+        if (
+            not (isinstance(tt, dict) and is_t_cache_entry_fresh(tt, missing_ts_is_fresh=True))
+            and callable(estimate_t_fn)
+            and (entry.get("weibull_median_d") is None or isinstance(tt, dict))
             and not has_equity_suffix(sym)
             and allow_net_flag is not False
         ):
