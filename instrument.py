@@ -96,6 +96,11 @@ def _is_aborted(cb: Any) -> bool:
     return _eval_callable_bool_gate(cb, missing_default=False)
 
 
+_SELL_FAIL_OPEN_CACHE_REASONS = frozenset(
+    {"account_cache_not_fresh", "account_cache_snapshot_changed"}
+)
+
+
 @dataclass(slots=True)
 class _PlaceContext:
     """Mutable pipeline state carrier for a single ``Instrument.place()`` execution."""
@@ -869,10 +874,24 @@ class Instrument:
         if ctx.requires_permit and ctx.cache_permit is None:
             prepare_order_state = getattr(self._provider, "prepare_order_state", None)
             if not callable(prepare_order_state):
-                raise SubmissionRefused("account_cache_not_fresh")
-            ctx.guarded_order_state = prepare_order_state()
-            if ctx.guarded_order_state is None:
-                raise SubmissionRefused("account_cache_not_fresh")
+                if ctx.side_u != "SELL":
+                    raise SubmissionRefused("account_cache_not_fresh")
+            else:
+                try:
+                    ctx.guarded_order_state = prepare_order_state()
+                except SubmissionRefused as exc:
+                    if ctx.side_u == "SELL" and exc.reason in _SELL_FAIL_OPEN_CACHE_REASONS:
+                        print(f"[{self.symbol}] SELL failing OPEN on {exc.reason} so exit is not trapped")
+                        ctx.guarded_order_state = None
+                    else:
+                        raise
+                else:
+                    if ctx.guarded_order_state is None and ctx.side_u != "SELL":
+                        raise SubmissionRefused("account_cache_not_fresh")
+        if not ctx.requires_permit:
+            venue_cache_gate = getattr(self._provider, "require_account_cache_fresh_for_submit", None)
+            if callable(venue_cache_gate):
+                venue_cache_gate(self.symbol, ctx.side_u)
         if not ctx.requires_permit and callable(ctx.preflight_order):
             defers_qty = self._provider_bool_cap("defers_preflight_quantity", fallback_base=True)
             preflight_qty = None if defers_qty else ctx.qty
@@ -1381,12 +1400,20 @@ class Instrument:
 
         ctx.permit_requested_price = None if ctx.is_market else ctx.orig_price
         if ctx.requires_permit and ctx.cache_permit is None:
-            ctx.cache_permit = self._acquire_fresh_cache_permit(ctx)
-            ctx.permit_requested_price = None if ctx.is_market else ctx.price
-            validate_order_state = getattr(self._provider, "validate_order_state", None)
-            if not callable(validate_order_state):
-                raise SubmissionRefused("account_cache_not_fresh")
-            validate_order_state(ctx.guarded_order_state)
+            try:
+                ctx.cache_permit = self._acquire_fresh_cache_permit(ctx)
+                ctx.permit_requested_price = None if ctx.is_market else ctx.price
+                validate_order_state = getattr(self._provider, "validate_order_state", None)
+                if not callable(validate_order_state):
+                    raise SubmissionRefused("account_cache_not_fresh")
+                if ctx.guarded_order_state is not None:
+                    validate_order_state(ctx.guarded_order_state)
+            except SubmissionRefused as exc:
+                if ctx.side_u == "SELL" and exc.reason in _SELL_FAIL_OPEN_CACHE_REASONS:
+                    print(f"[{self.symbol}] SELL failing OPEN on {exc.reason} so exit is not trapped")
+                    ctx.cache_permit = None
+                else:
+                    raise
         return True
 
     def _revalidate_and_submit_to_venue(self, ctx: _PlaceContext):
@@ -1441,7 +1468,14 @@ class Instrument:
                             and not ctx.caller_supplied_cache_permit
                             and callable(ctx.preflight_order)
                         ):
-                            ctx.cache_permit = self._acquire_fresh_cache_permit(ctx)
+                            try:
+                                ctx.cache_permit = self._acquire_fresh_cache_permit(ctx)
+                            except SubmissionRefused as exc:
+                                if ctx.side_u == "SELL" and exc.reason in _SELL_FAIL_OPEN_CACHE_REASONS:
+                                    print(f"[{self.symbol}] SELL failing OPEN on {exc.reason} so exit is not trapped")
+                                    ctx.cache_permit = None
+                                else:
+                                    raise
                         if ctx.prequeued_claim is not None:
                             ctx.prequeued_claim = self._sync_claimed_qty(
                                 ctx.prequeued_claim, ctx.qty, ctx.applied_scale

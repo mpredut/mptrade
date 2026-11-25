@@ -503,7 +503,7 @@ class AutonomousIntentGateway:
         intents: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[bool, List[str]]:
         if intent is not None:
-            cache_ok, cache_reason = ensure_submit_account_cache_ready(inst)
+            cache_ok, cache_reason = ensure_submit_account_cache_ready(inst, side=decision)
             if not cache_ok:
                 sym_lbl = str(getattr(inst, "symbol", "") or intent.get("symbol") or "")
                 logger.warning(

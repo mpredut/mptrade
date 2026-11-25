@@ -140,11 +140,17 @@ def record_shadow_intent_observation(
 def ensure_submit_account_cache_ready(
     inst: Any,
     *,
+    side: Optional[str] = None,
     max_retries: int = 3,
     retry_delay_sec: Optional[float] = None,
     sleep_fn: Optional[Callable[[float], Any]] = None,
 ) -> tuple[bool, str]:
-    """Verify provider account-cache permit readiness before canceling prior live open orders."""
+    """Verify provider account-cache readiness before canceling prior live open orders on BUY.
+
+    SELL exits fail open on stale account cache across all venues so protective exits are never trapped.
+    """
+    if normalize_side(side) == "SELL":
+        return True, ""
     prov = getattr(inst, "_provider", None)
     req_fn = getattr(inst, "_provider_bool_cap", None)
     if (
@@ -152,18 +158,28 @@ def ensure_submit_account_cache_ready(
         or hasattr(prov, "_mock_name")
         or not callable(req_fn)
         or hasattr(req_fn, "_mock_name")
-        or req_fn("requires_cache_permit") is not True
     ):
         return True, ""
-    prepare_order_state = getattr(prov, "prepare_order_state", None)
-    if not callable(prepare_order_state) or hasattr(prepare_order_state, "_mock_name"):
-        return False, "account_cache_not_fresh"
+    needs_permit = req_fn("requires_cache_permit") is True
+    needs_venue_health = (not needs_permit) and (req_fn("enforces_venue_account_cache_health") is True)
+    if not needs_permit and not needs_venue_health:
+        return True, ""
+    if needs_permit:
+        check_fn = getattr(prov, "prepare_order_state", None)
+        if not callable(check_fn) or hasattr(check_fn, "_mock_name"):
+            return False, "account_cache_not_fresh"
+    else:
+        gate_fn = getattr(prov, "require_account_cache_fresh_for_submit", None)
+        if not callable(gate_fn) or hasattr(gate_fn, "_mock_name"):
+            return True, ""
+        sym = str(getattr(inst, "symbol", "") or "")
+        check_fn = lambda: (gate_fn(sym, "BUY"), True)[1]
     eff_sleep = sleep_fn if callable(sleep_fn) else time.sleep
     delay = get_stale_cache_retry_delay_sec(retry_delay_sec)
     attempts = max(1, (safe_nonneg_int(max_retries, default=3) or 0) + 1)
     for idx in range(attempts):
         try:
-            if prepare_order_state() is not None:
+            if check_fn() is not None:
                 return True, ""
         except Exception:
             pass

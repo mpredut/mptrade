@@ -4619,8 +4619,8 @@ def test_pre_cancel_submit_cache_gate_and_rollback_stale_cache_retry(temp_worksp
         open_orders=lambda: [
             {
                 "orderId": "727100712",
-                "clientOrderId": "AI_prior_tao_sell",
-                "side": "SELL",
+                "clientOrderId": "AI_prior_tao_buy",
+                "side": "BUY",
                 "price": "188.80",
                 "origQty": "3.1493",
                 "executedQty": "0.0",
@@ -4630,9 +4630,10 @@ def test_pre_cancel_submit_cache_gate_and_rollback_stale_cache_retry(temp_worksp
         place=lambda **kw: place_calls.append(kw) or {"orderId": "new_1"},
     )
 
+    # BUY with replace_open_orders=True must fail closed before canceling prior live BUY orders
     res = gw.submit(
         {
-            "decision": "SELL",
+            "decision": "BUY",
             "symbol": "TAOUSDC",
             "venue": "binance",
             "order_type": "LIMIT",
@@ -4649,6 +4650,9 @@ def test_pre_cancel_submit_cache_gate_and_rollback_stale_cache_retry(temp_worksp
     assert res["history"][-1]["reason"] == "account_cache_not_fresh"
     assert canceled_calls == []
     assert place_calls == []
+
+    # SELL exits fail OPEN on stale account cache so protective exits are never trapped
+    assert ie_mod.ensure_submit_account_cache_ready(tao_inst, side="SELL") == (True, "")
 
     # Atomic rollback retries transient account_cache_not_fresh and restores the canceled order
     rb_attempts = []

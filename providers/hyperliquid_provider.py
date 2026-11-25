@@ -145,6 +145,7 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
     _PUBLIC_ORDERBOOK_HOST = "hyperliquid.xyz"
     _DEFAULT_QUOTE_ASSET = "USDC"
     _DEFERS_PREFLIGHT_QUANTITY = True
+    _ENFORCE_VENUE_ACCOUNT_CACHE_HEALTH = True
     _SUPPORTS_POST_ONLY = True
     _DEFAULT_FEE_SPEC = ("SPOT_TIER0", 4.0, 7.0, 10.0)
     _PREFER_STATIC_TICK_SIZE = True
@@ -640,6 +641,7 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
     ) -> tuple[bool, Any, Any, Optional[str]]:
         if not self._client_tried and not self._env_loaded:
             self._load_env()
+        self.require_account_cache_fresh_for_submit(symbol, "BUY" if is_buy else "SELL")
         cloid = (
             self.derive_client_order_id(client_order_id)
             if client_order_id is not None

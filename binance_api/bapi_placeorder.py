@@ -368,7 +368,7 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
         cancel_price = safe_pos_float(cancel_opposite_requested_price, default=None)
         if cancel_price is None:
             raise SubmissionRefused("invalid_opposing_cancel_request")
-        if cache_permit is None:
+        if cache_permit is None and side != "SELL":
             raise SubmissionRefused("account_cache_not_fresh")
 
     target_client = api_client or client
@@ -391,7 +391,18 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
     if cache_permit is None:
         if side not in {"BUY", "SELL"} or not cfg.is_trade_enabled():
             return None
-        require_account_cache_for_submit()
+        if side == "SELL":
+            try:
+                require_account_cache_for_submit()
+            except SubmissionRefused as exc:
+                if exc.reason != "account_cache_not_fresh":
+                    raise
+                print(
+                    f"[BINANCE][GUARD] SELL {symbol} failing OPEN on stale account cache "
+                    "so exit is not trapped"
+                )
+        else:
+            require_account_cache_for_submit()
     else:
         _consume_account_cache_submit_permit(
             cache_permit, symbol=symbol, side=side, qty=qty,

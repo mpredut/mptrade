@@ -9,6 +9,10 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, List, Optional, Sequence
 
+from account_cache_health import (
+    DEFAULT_REQUIRED_VENUE_STREAMS,
+    require_fresh_venue_account_cache,
+)
 from botcore import (  # noqa: F401
     ClosedPriceSeries,
     _parse_bool_flag,
@@ -35,8 +39,11 @@ from botcore import (  # noqa: F401
     safe_nonneg_int,
     safe_pos_float,
 )
+from cacheintegrity import AccountCacheNotReady
 from cachepaths import (  # noqa: F401
     cache_path,
+    is_equity_venue,
+    normalize_venue_name,
     split_symbol_assets,
 )
 import instrument_registry as _default_ir  # noqa: F401
@@ -132,6 +139,7 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         ...
 
     _REQUIRES_CACHE_PERMIT: bool = False
+    _ENFORCE_VENUE_ACCOUNT_CACHE_HEALTH: bool = False
     _DEFERS_SMART_CANCELLATION: bool = False
     _SUPPORTS_BUSINESS_MINIMUM: bool = False
     _SUPPORTS_ORDER_VALIDITY: bool = False
@@ -391,6 +399,41 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         """Validate venue state and optionally return opaque submit authorization."""
         return None
 
+    def require_account_cache_fresh_for_submit(
+        self,
+        symbol: str,
+        side: str,
+        *,
+        allow_when_shared_cache_disabled: bool = True,
+    ) -> Optional[Any]:
+        """Enforce fail-closed account-cache freshness on BUY; fail OPEN on SELL so exits are never trapped."""
+        if not self.enforces_venue_account_cache_health():
+            return None
+        if allow_when_shared_cache_disabled and not is_shared_disk_cache_enabled():
+            return None
+        v_norm = normalize_venue_name(self.name, default="")
+        if not v_norm:
+            return None
+        side_u = normalize_side(side)
+        if side_u not in {"BUY", "SELL"}:
+            return None
+        req_streams = (
+            ("filled_orders", "open_orders", "balances")
+            if (not is_equity_venue(v_norm) or _default_ir.is_symbol_market_open(symbol))
+            else DEFAULT_REQUIRED_VENUE_STREAMS
+        )
+        try:
+            return require_fresh_venue_account_cache(v_norm, required_streams=req_streams)
+        except AccountCacheNotReady as exc:
+            if side_u == "SELL":
+                print(
+                    f"[{v_norm.upper()}][GUARD] SELL {symbol} failing OPEN on stale account cache "
+                    f"({exc.reason}) so exit is not trapped"
+                )
+                return None
+            print(f"[{v_norm.upper()}][GUARD] BUY {symbol} refused: {exc.reason}")
+            raise SubmissionRefused("account_cache_not_fresh") from exc
+
     @classmethod
     def _venue_live_orders_enabled(cls) -> bool:
         """Return whether the venue-level live-order config gate is enabled."""
@@ -558,6 +601,9 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         return bool(_parse_bool_flag(MarketDataProvider._resolve_provider_attr(self, attr, False), False))
 
     requires_cache_permit = bind_attr_call("_provider_bool_attr", "_REQUIRES_CACHE_PERMIT")
+    enforces_venue_account_cache_health = bind_attr_call(
+        "_provider_bool_attr", "_ENFORCE_VENUE_ACCOUNT_CACHE_HEALTH"
+    )
     defers_smart_cancellation = bind_attr_call("_provider_bool_attr", "_DEFERS_SMART_CANCELLATION")
     supports_business_minimum = bind_attr_call("_provider_bool_attr", "_SUPPORTS_BUSINESS_MINIMUM")
     supports_order_validity = bind_attr_call("_provider_bool_attr", "_SUPPORTS_ORDER_VALIDITY")

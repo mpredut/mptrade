@@ -120,6 +120,7 @@ class T212Provider(MarketDataProvider):
     _MERGES_AUDIT_TERMINAL_ORDERS = True
     _POSITION_PRICE_DECIMALS = 4
     _SUPPORTS_ORDER_VALIDITY = True
+    _ENFORCE_VENUE_ACCOUNT_CACHE_HEALTH = True
     _STRATEGY_HEARTBEAT_NAME = "T212-bot"
     _SSOT_PRICE_MAX_AGE_SEC = SHORT_TREND_FRESHNESS_MAX_AGE_SEC
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_T212_TRADE_FILENAME
@@ -716,6 +717,7 @@ class T212Provider(MarketDataProvider):
         caller: str,
     ) -> tuple[Any, Optional[str]]:
         rounded_qty = self._round_required_qty(symbol, qty, caller)
+        self.require_account_cache_fresh_for_submit(symbol, side)
         try:
             send_kw: dict[str, Any] = {"market": is_market}
             if order_validity is not None:

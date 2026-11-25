@@ -172,6 +172,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
     _CLIENT_CLASS_NAME = "KrakenClient"
     _PUBLIC_ORDERBOOK_HOST = "kraken.com"
     _DEFERS_PREFLIGHT_QUANTITY = True
+    _ENFORCE_VENUE_ACCOUNT_CACHE_HEALTH = True
     _DEFAULT_FEE_SPEC = ("PRO_TIER0", 16.0, 26.0, 1.0)
     _HISTORICAL_OHLC_PRIORITY = 2
     _SUPPORTS_TOKENIZED_ASSETS = True
@@ -748,6 +749,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             raise SubmissionRefused(
                 f"{symbol}: Kraken EU tokenized xStock pairs are sell-only via Spot API (use T212 for equity BUY)"
             )
+        self.require_account_cache_fresh_for_submit(symbol, s_norm)
         if s_norm == "BUY" and split_kraken_pair(symbol)[1] == "USD":
             try:
                 cli = self._client()

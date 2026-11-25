@@ -303,3 +303,17 @@ class BinanceSubmitGuardTest(unittest.TestCase):
                         api_client=self.client, **options)
         self.client.order_limit_buy.assert_not_called()
         self.client.order_market_buy.assert_not_called()
+
+    def test_stale_cache_fails_open_for_sell_exits(self):
+        self.client.order_limit_sell.return_value = {"orderId": 3}
+        self.client.order_market_sell.return_value = {"orderId": 4}
+        lim = placeorder._submit_binance_order(
+            "SELL", "BTCUSDC", 0.01, price=100.0, market=False,
+            api_client=self.client)
+        mkt = placeorder._submit_binance_order(
+            "SELL", "BTCUSDC", 0.01, market=True,
+            api_client=self.client)
+        self.assertEqual(lim["orderId"], 3)
+        self.assertEqual(mkt["orderId"], 4)
+        self.client.order_limit_sell.assert_called_once()
+        self.client.order_market_sell.assert_called_once()

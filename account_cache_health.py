@@ -721,3 +721,11 @@ def require_fresh_account_cache(**kwargs) -> CacheHealthStatus:
     if not status.ready:
         raise AccountCacheNotReady(status.reason)
     return status
+
+
+def require_fresh_venue_account_cache(venue: str, **kwargs) -> VenueCacheHealthStatus:
+    """Return fresh multi-venue status or raise a definitive pre-submit refusal."""
+    status = inspect_venue_health(venue, **kwargs)
+    if not status.ready:
+        raise AccountCacheNotReady(status.reason)
+    return status

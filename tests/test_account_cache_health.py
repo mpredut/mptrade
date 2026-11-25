@@ -721,4 +721,141 @@ def test_etapa3b_multi_venue_health_snapshot_coherence_and_fleet_inspection(tmp_
     assert fleet_res["account_cache_health"]["t212"]["balances_age_sec"] == pytest.approx(7200.0)
 
 
+def test_multi_venue_pre_submit_gate_blocks_buy_and_fails_open_on_sell(tmp_path, monkeypatch):
+    """Pre-submit account-cache gate fails closed on BUY across kraken/hyperliquid/t212 and fails open on SELL across all 4 venues."""
+    import botcore
+    import instrument_registry as ir
+    from instrument import Instrument
+    from providers.base import MarketDataProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.strategy_executor import SubmissionRefused
+    from providers.t212_provider import T212Provider
+    from tests.conftest import SingleProviderApi
+
+    # 1. Verify opt-in flags on concrete providers
+    kr = KrakenProvider()
+    hl = HyperliquidProvider(token="HYPE")
+    t212 = T212Provider()
+    assert kr.enforces_venue_account_cache_health() is True
+    assert hl.enforces_venue_account_cache_health() is True
+    assert t212.enforces_venue_account_cache_health() is True
+
+    # 2. With shared disk cache enabled + stale/missing health marker:
+    #    BUY fails closed with SubmissionRefused("account_cache_not_fresh"),
+    #    SELL fails OPEN (returns None without raising) on kraken, hyperliquid, t212.
+    botcore.configure_runtime_services(allow_shared_disk_cache=True)
+    missing_marker = str(tmp_path / "missing_health.json")
+    monkeypatch.setattr(health, "HEALTH_PATH", missing_marker)
+
+    for prov, sym_name in ((kr, "HYPEUSD"), (hl, "HYPEUSDC"), (t212, "NVDA_US_EQ")):
+        with pytest.raises(SubmissionRefused, match="account_cache_not_fresh"):
+            prov.require_account_cache_fresh_for_submit(sym_name, "BUY")
+        assert prov.require_account_cache_fresh_for_submit(sym_name, "SELL") is None
+
+    # 3. With fresh health marker: BUY passes for crypto venues and RTH-aware t212 (balances stale outside RTH OK, stale during RTH blocked)
+    marker = str(tmp_path / "cache_account_health.json")
+    now_ms = 1_900_000_000_000
+    started_ms = now_ms - 10_000
+    health_payload = {
+        "schema_version": health.SCHEMA_VERSION,
+        "writer_pid": 4321,
+        "writer_started_at_ms": started_ms,
+        "published_at_ms": now_ms - 500,
+        "generation": 4,
+        "stopping": False,
+        "order_sync_at_ms": now_ms - 1_000,
+        "order_cache_version": "bn-v1",
+        "venues": {
+            "kraken": {
+                "filled_orders_sync_at_ms": now_ms - 1_000,
+                "open_orders_sync_at_ms": now_ms - 1_000,
+                "balances_sync_at_ms": now_ms - 1_000,
+            },
+            "hyperliquid": {
+                "filled_orders_sync_at_ms": now_ms - 1_000,
+                "open_orders_sync_at_ms": now_ms - 1_000,
+                "balances_sync_at_ms": now_ms - 1_000,
+            },
+            "t212": {
+                "filled_orders_sync_at_ms": now_ms - 1_000,
+                "open_orders_sync_at_ms": now_ms - 1_000,
+                "balances_sync_at_ms": now_ms - 7_200_000,  # stale outside US RTH
+            },
+        },
+    }
+    Path(marker).write_text(json.dumps(health_payload), encoding="utf-8")
+    monkeypatch.setattr(health, "HEALTH_PATH", marker)
+    monkeypatch.setattr(health, "resolve_now_ms", lambda v=None: now_ms if v is None else v)
+    monkeypatch.setattr(health, "_pid_is_alive", lambda _pid: True)
+    monkeypatch.setattr(health, "_pid_started_at_ms", lambda _pid: started_ms)
+
+    assert kr.require_account_cache_fresh_for_submit("HYPEUSD", "BUY").ready is True
+    assert hl.require_account_cache_fresh_for_submit("HYPEUSDC", "BUY").ready is True
+
+    # T212 outside US RTH: stale balances allowed while filled/open are fresh
+    monkeypatch.setattr(ir, "is_symbol_market_open", lambda _s, _n=None: False)
+    assert t212.require_account_cache_fresh_for_submit("NVDA_US_EQ", "BUY").ready is True
+
+    # T212 during US RTH: stale balances blocks BUY but still fails open on SELL
+    monkeypatch.setattr(ir, "is_symbol_market_open", lambda _s, _n=None: True)
+    with pytest.raises(SubmissionRefused, match="account_cache_not_fresh"):
+        t212.require_account_cache_fresh_for_submit("NVDA_US_EQ", "BUY")
+    assert t212.require_account_cache_fresh_for_submit("NVDA_US_EQ", "SELL") is None
+
+    # 4. Instrument.place() on Binance (requires_cache_permit=True) fails closed on BUY and fails OPEN on SELL when cache is stale
+    class _StaleBinanceLikeProvider(MarketDataProvider):
+        _REQUIRES_CACHE_PERMIT = True
+
+        def __init__(self):
+            self.placed = []
+
+        @property
+        def name(self):
+            return "Binance"
+
+        def supports_symbol(self, symbol):
+            return symbol == "BTCUSDC"
+
+        def get_current_price(self, symbol):
+            return 60000.0
+
+        def free_balance(self, asset):
+            return 1000.0
+
+        def prepare_order_state(self):
+            raise SubmissionRefused("account_cache_not_fresh")
+
+        def preflight_order(self, symbol, side, qty, price=None, *, market=False, kind=None):
+            raise SubmissionRefused("account_cache_not_fresh")
+
+        def place_order(self, symbol, side, price, qty, **kwargs):
+            self.placed.append((symbol, side, price, qty, kwargs.get("cache_permit")))
+            return {"orderId": "exit-ok"}
+
+    bn_prov = _StaleBinanceLikeProvider()
+    bn_inst = Instrument(
+        name="BTC", symbol="BTCUSDC", provider="binance", base="BTC", quote="USDC",
+        api=SingleProviderApi(bn_prov),
+    )
+    buy_ctx = {}
+    assert bn_inst.place(
+        "BUY", 60000.0, 0.01, smart=False, wait_for_trend=False,
+        caller_owns_retry=True, bypass_guards={"all"}, _outcome_context=buy_ctx,
+    ) is None
+    assert buy_ctx.get("reason") == "account_cache_not_fresh"
+    assert bn_prov.placed == []
+
+    sell_ctx = {}
+    sell_res = bn_inst.place(
+        "SELL", 60000.0, 0.01, smart=False, wait_for_trend=False,
+        caller_owns_retry=True, bypass_guards={"all"}, _outcome_context=sell_ctx,
+    )
+    assert sell_res == {"orderId": "exit-ok"}
+    assert len(bn_prov.placed) == 1
+    assert bn_prov.placed[0][1] == "SELL"
+    assert bn_prov.placed[0][4] is None
+
+
+
 
