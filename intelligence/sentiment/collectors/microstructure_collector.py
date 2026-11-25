@@ -2348,10 +2348,24 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         if is_eq_sym and not pt_map[sym].get("quote_source"):
             cp_raw_eq = casefold_get(cp_map, sym) if isinstance(cp_map, dict) else None
             cp_pt_eq = parse_ts_px_row(cp_raw_eq[-1]) if isinstance(cp_raw_eq, list) and cp_raw_eq else None
-            q_pt_eq = (
-                cp_pt_eq
-                if (cp_pt_eq is not None and cp_pt_eq[0] > 1e11)
-                else (raw_s24_last_pt if (raw_s24_last_pt is not None and raw_s24_last_pt[0] > 1e11) else None)
+            q_pt_eq = next(
+                (
+                    pt_cand
+                    for pt_cand in (
+                        cp_pt_eq,
+                        raw_s24_last_pt if post_rth_px_override is None else None,
+                    )
+                    if pt_cand is not None
+                    and pt_cand[0] > 1e11
+                    and (
+                        sym_px_cur <= 0.0
+                        or (
+                            pt_cand[1] > 0.0
+                            and abs(sym_px_cur - pt_cand[1]) / max(sym_px_cur, pt_cand[1]) <= 0.0005
+                        )
+                    )
+                ),
+                None,
             )
             if q_pt_eq is not None:
                 q_ts_s_eq = q_pt_eq[0] / 1000.0

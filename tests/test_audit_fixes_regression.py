@@ -3742,6 +3742,28 @@ def test_cycle4_equity_post_close_provenance_kinematics_and_partial_7d(tmp_path)
     assert "chg_15m_pct" not in closed_entry and "chg_1h_pct" not in closed_entry
     assert "chg_15m_pct" not in closed_m24 and "chg_24h_pct" in closed_m24
 
+    # --- C4.5: Live post-RTH price overriding stale cache_current_price / 24h tail must NOT inherit stale quote_age_min ---
+    pt_amd_live = {"AMD_US_EQ": {"price": 409.50, "trend": 0, "growth_coefficient": 0.0}}
+    Fleet24hAndMicrostructureEnricher._enrich_primary_symbol_series(
+        str(cdir),
+        "",
+        "AMD_US_EQ",
+        pt_amd_live,
+        cp_amd,
+        {},
+        [],
+        [],
+        set(),
+        {},
+        {},
+        ts_closed_now,
+        False,
+    )
+    amd_live_e = pt_amd_live["AMD_US_EQ"]
+    assert "quote_source" not in amd_live_e
+    assert "quote_age_min" not in amd_live_e
+    assert "chg_15m_pct" in amd_live_e and "chg_1h_pct" in amd_live_e
+
 
 def test_cycle5_upgrade_tpo_vp_preserves_va_hold_min_across_zero_vol_tail_gap(tmp_path):
     """Cycle 5 overnight audit fix:
