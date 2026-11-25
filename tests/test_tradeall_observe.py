@@ -104,6 +104,20 @@ def test_price_sampling_uses_fresher_ts_fast_when_ts_is_unchanged(tmp_path, monk
     ]
 
 
+def test_price_sampling_skips_corrupt_timestamp_instead_of_fabricating_now(tmp_path, monkeypatch):
+    cache_path = tmp_path / "cache_short_trend.json"
+    logger_dir = tmp_path / "logger"
+    monkeypatch.setattr(observe, "CACHE_TREND_PATH", str(cache_path))
+    monkeypatch.setattr(observe, "LOGGER_DIR", str(logger_dir))
+
+    cache_path.write_text(
+        json.dumps({"BTCUSDC": {"ts": "corrupt", "current_price": 42.5}}),
+        encoding="utf-8",
+    )
+    observe.sample_current_prices(["BTCUSDC"])
+    assert not logger_dir.exists()
+
+
 def test_history_tail_keeps_first_record_when_file_is_smaller_than_tail(tmp_path, monkeypatch):
     cachedb = tmp_path / "cachedb"
     cachedb.mkdir(parents=True, exist_ok=True)

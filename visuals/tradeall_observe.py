@@ -237,7 +237,8 @@ def sample_current_prices(symbols):
         if not isinstance(entry, dict) or "current_price" not in entry:
             continue
         raw_px = entry["current_price"]
-        sample_ts = _entry_latest_ts(entry, default=time.time())
+        has_ts_key = "ts" in entry or "ts_fast" in entry
+        sample_ts = _entry_latest_ts(entry, default=None if has_ts_key else time.time())
         px_val = safe_pos_float(raw_px, default=None)
         if sample_ts is None or px_val is None:
             continue
@@ -304,13 +305,13 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=None):
     path = str(resolve_cachedb_filepath(os.path.join(get_cachedb_dir(), filename)))
     if not os.path.exists(path):
         return []
-    if filename.endswith(".jsonl"):
+    if str(filename).endswith(".jsonl"):
         eff_max_bytes = (
             max_bytes
             if max_bytes is not None
             else (
                 CACHE24_TAIL_MAX_BYTES
-                if str(filename).startswith(CACHE_24_PRICE_PREFIX)
+                if os.path.basename(str(filename)).startswith(CACHE_24_PRICE_PREFIX)
                 else DEFAULT_HISTORY_TAIL_MAX_BYTES
             )
         )
@@ -957,12 +958,12 @@ def main():
     if args.symbols is None:
         symbols = _resolve_default_symbols()
     elif args.symbols.strip().lower() == "all":
-        symbols = tracked_price_instruments()[0]
+        symbols = list(dict.fromkeys(tracked_price_instruments()[0]))
     else:
-        symbols = [
+        symbols = list(dict.fromkeys(
             resolve_registered_symbol_case(s)
             for s in split_csv(args.symbols)
-        ]
+        ))
 
     if args.backtest_dir and frame_hours is not None:
         directory = os.path.abspath(args.backtest_dir)
@@ -1108,6 +1109,8 @@ setInterval(function() {{
                 write_html(
                     symbols, live_minutes=live_minutes, active_summary=active_summary, refresh_ms=html_refresh_ms,
                 )
+            trend_snapshot = read_json_dict(CACHE_TREND_PATH, default={}, recover_previous=True)
+            kalman_snapshot = read_json_dict(get_kalman_state_path(), default={}, recover_previous=True)
             for symbol in symbols:
                 try:
                     chart_specs = [
@@ -1136,14 +1139,11 @@ setInterval(function() {{
                             )
                         )
                     render_symbol_charts_live(symbol, chart_specs, window_end=cycle_start)
-                    entry = _lookup_symbol_dict(read_json_dict(CACHE_TREND_PATH, default={}, recover_previous=True), symbol)
+                    entry = _lookup_symbol_dict(trend_snapshot, symbol)
                     if isinstance(entry, dict) and entry:
-                        try:
-                            sh = _lookup_symbol_dict(read_json_dict(get_kalman_state_path(), default={}, recover_previous=True), symbol)
-                            if isinstance(sh, dict) and sh:
-                                entry = {**entry, **{k: v for k, v in sh.items() if k not in ("ts", "price")}}
-                        except Exception:
-                            pass
+                        sh = _lookup_symbol_dict(kalman_snapshot, symbol)
+                        if isinstance(sh, dict) and sh:
+                            entry = {**entry, **{k: v for k, v in sh.items() if k not in ("ts", "price")}}
                         latest_ts = _entry_latest_ts(entry, default=0.0) or 0.0
                         age = max(0.0, time.time() - latest_ts)
                         pending_info = None
