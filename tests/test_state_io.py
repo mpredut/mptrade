@@ -2732,8 +2732,8 @@ def test_compact_price_series_3col_5col_cache24_short_trend_and_assetguardian_fa
     st_p = tmp_path / "cache_short_trend.json"
     stm = cachetrend.CacheShortTrendManager(symbols=["BTCUSDC"], filename=str(st_p), read_only=True)
     stm._cache24_managers = {"BTCUSDC": reader}
-    out_w = stm.get_short_trends_for_windows("BTCUSDC", [300.0], now_ts=(now_ms + 1000) / 1000.0)
-    assert "300s" in out_w and out_w["300s"]["n_samples"] == 10
+    out_w = stm.get_short_trend_for_window("BTCUSDC", 300.0, now=(now_ms + 1000) / 1000.0)
+    assert isinstance(out_w, dict) and out_w["n_samples"] == 10
 
 
 
