@@ -28,10 +28,14 @@ from botcore import (
 from cacheaccount import CacheOrderOpenManager
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
+    LLM_TOPIC_THREADS_FILENAME,
+    PORTFOLIO_POSITIONS_STATE_FILENAME,
     VENUE_BALANCES_STATE_FILENAME,
     cache_path,
 )
 from providers.order_ohlc_utils import extract_orig_qty
+from providers.portfolio_state_store import VENUE_BALANCE_CACHE_FILENAMES
+from providers.portfolio_valuation import compose_unified_portfolio_state
 from state_io import encode_json_payload, parse_json_payload, read_json_file
 
 
@@ -47,6 +51,9 @@ def _to_prod_remote_path(path: str) -> str:
     if "/cachedb/" in norm:
         tail = norm.split("/cachedb/", 1)[1]
         return f"{_PROD_ROOT}/cachedb/{tail}"
+    if "/statedb/" in norm:
+        tail = norm.split("/statedb/", 1)[1]
+        return f"{_PROD_ROOT}/statedb/{tail}"
     return path
 
 
@@ -65,17 +72,37 @@ def ssh_cat(remote_path: str) -> dict | list | str | None:
 
 
 def inspect_fleet(json_output: bool = False):
-    raw_balances = (
-        ssh_cat(f"statedb/portfolio/{VENUE_BALANCES_STATE_FILENAME}")
-        or ssh_cat(f"statedb/state/{VENUE_BALANCES_STATE_FILENAME}")
-        or ssh_cat(cache_path(f"state/{VENUE_BALANCES_STATE_FILENAME}"))
-        or ssh_cat(cache_path(VENUE_BALANCES_STATE_FILENAME))
+    bal_caches: dict[str, dict] = {}
+    for v_key, bal_fname in VENUE_BALANCE_CACHE_FILENAMES.items():
+        raw_bc = (
+            ssh_cat(cache_path(f"account/{bal_fname}"))
+            or ssh_cat(cache_path(f"orders/{bal_fname}"))
+            or ssh_cat(cache_path(bal_fname))
+        )
+        if isinstance(raw_bc, dict) and isinstance(raw_bc.get("items"), dict) and raw_bc.get("items"):
+            bal_caches[v_key] = raw_bc
+    raw_positions = (
+        ssh_cat(f"statedb/portfolio/{PORTFOLIO_POSITIONS_STATE_FILENAME}")
+        or ssh_cat(cache_path(f"portfolio/{PORTFOLIO_POSITIONS_STATE_FILENAME}"))
+        or ssh_cat(cache_path(f"state/{PORTFOLIO_POSITIONS_STATE_FILENAME}"))
+        or ssh_cat(cache_path(PORTFOLIO_POSITIONS_STATE_FILENAME))
     )
-    balances = raw_balances if isinstance(raw_balances, dict) else {}
+    pos_state = raw_positions if isinstance(raw_positions, dict) else {}
+    if bal_caches or pos_state:
+        balances = compose_unified_portfolio_state(bal_caches, pos_state)
+    else:
+        raw_balances = (
+            ssh_cat(f"statedb/portfolio/{VENUE_BALANCES_STATE_FILENAME}")
+            or ssh_cat(cache_path(f"portfolio/{VENUE_BALANCES_STATE_FILENAME}"))
+            or ssh_cat(cache_path(f"state/{VENUE_BALANCES_STATE_FILENAME}"))
+            or ssh_cat(cache_path(VENUE_BALANCES_STATE_FILENAME))
+        )
+        balances = raw_balances if isinstance(raw_balances, dict) else {}
     raw_topic = (
-        ssh_cat("statedb/llm/llm_topic_threads.json")
-        or ssh_cat(cache_path("system/llm_topic_threads.json"))
-        or ssh_cat(cache_path("llm_topic_threads.json"))
+        ssh_cat(f"statedb/llm/{LLM_TOPIC_THREADS_FILENAME}")
+        or ssh_cat(cache_path(f"llm/{LLM_TOPIC_THREADS_FILENAME}"))
+        or ssh_cat(cache_path(f"system/{LLM_TOPIC_THREADS_FILENAME}"))
+        or ssh_cat(cache_path(LLM_TOPIC_THREADS_FILENAME))
     )
     topic_data = raw_topic if isinstance(raw_topic, dict) else {}
     open_orders_by_venue: dict[str, dict] = {}

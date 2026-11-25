@@ -4984,7 +4984,10 @@ def test_iter85_package_h_alias_reload_inspect_prod_fleet_and_pretrade_eq_slopes
     assert out_json["total_locked_assets_usd"] == pytest.approx(24.5)
     assert out_json["unified_nav_usd"] == pytest.approx(375.0)
     assert out_json["topic_state"]["latest_summary"] == ""
-    assert all("/home/predut/mptrade/cachedb/" in c[-1] for c in captured_cmds)
+    assert all(
+        ("/home/predut/mptrade/cachedb/" in c[-1] or "/home/predut/mptrade/statedb/" in c[-1])
+        for c in captured_cmds
+    )
 
     # 3. collect_pretrade_telemetry prunes stale 3.7m slope on post-RTH equities without price override,
     #    and recomputes negative slopes/kalman when post-RTH price diverged by >0.5%

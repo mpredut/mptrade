@@ -235,10 +235,6 @@ class CacheLongTrendManager(CacheTrendManagerBase):
         default_root = os.path.dirname(os.path.abspath(__file__))
         if os.path.abspath(config_root) == os.path.abspath(default_root):
             trend_filename = cache_path(self.SOURCE_ANALYSIS_FILENAME)
-            if not os.path.exists(trend_filename) and not os.path.exists(previous_generation_path(trend_filename)):
-                legacy_root_pa = os.path.join(config_root, self.SOURCE_ANALYSIS_FILENAME)
-                if os.path.exists(legacy_root_pa) or os.path.exists(previous_generation_path(legacy_root_pa)):
-                    trend_filename = legacy_root_pa
         else:
             trend_filename = os.path.join(config_root, self.SOURCE_ANALYSIS_FILENAME)
         if not os.path.exists(trend_filename) and not os.path.exists(previous_generation_path(trend_filename)):

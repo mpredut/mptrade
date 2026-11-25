@@ -42,7 +42,6 @@ from cachepaths import (
     is_shadow_or_paper_order_id,
     is_shadow_or_paper_state_filename,
     is_shadow_or_paper_state_payload,
-    legacy_filenames_for,
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
@@ -503,11 +502,6 @@ def _iter_resolved_source_paths(root: str, spec: StateSource) -> list[str]:
     if not matched_paths and is_cachedb_relpath(spec.pattern):
         resolved_pat = str(resolve_cachedb_filepath(os.path.join(root, spec.pattern)))
         matched_paths = sorted(glob.glob(resolved_pat))
-        if not matched_paths:
-            for leg_p in legacy_filenames_for(resolved_pat):
-                matched_paths = sorted(glob.glob(leg_p))
-                if matched_paths:
-                    break
     return [
         p
         for p in matched_paths

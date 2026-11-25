@@ -54,7 +54,6 @@ from cachepaths import (
     cache_24_price_filename,
     cache_path,
     ensure_quote_suffix,
-    legacy_filenames_for,
     resolve_cachedb_filepath,
 )
 
@@ -437,11 +436,10 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                 cand_24h_files = dict.fromkeys(
                     fn
                     for sym_p in (usdc_pair, usdt_pair)
-                    for base_fn in (
+                    for fn in (
                         _mc.Cache24PriceManager.disk_filename_for_symbol(sym_p),
                         cache_24_price_filename(sym_p, ext=".json"),
                     )
-                    for fn in (*legacy_filenames_for(base_fn), base_fn)
                 )
                 if not any(
                     os.path.exists(str(resolve_cachedb_filepath(os.path.join(cache_dir, fn))))

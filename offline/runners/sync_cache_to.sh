@@ -39,6 +39,15 @@ sync_to_dev() {
         --exclude 'ai_attribution_status.json' \
         --exclude 'ai_attribution_30d.json' \
         -e "ssh -o BatchMode=yes -p $DEV_PORT" | sed 's/^/  /'
+    if [ -d "$ROOT/statedb" ]; then
+        echo "[sync_cache_to:dev $(date '+%F %T')] data: rsync statedb/ prod -> dev"
+        rsync_cachedb "$ROOT/statedb/" "$DEV_USER@$DEV_HOST:$DEV_PATH/statedb/" \
+            --rsync-path="mkdir -p $DEV_PATH/statedb && rsync" \
+            -e "ssh -o BatchMode=yes -p $DEV_PORT" | sed 's/^/  /'
+    fi
+    local rpath
+    rpath="$(dev_remote_path_expr)"
+    dev_ssh "cd \"$rpath\" && (myenv/bin/python -c 'from cachepaths import organize_cachedb_subdomains; organize_cachedb_subdomains()' 2>/dev/null || python3 -c 'from cachepaths import organize_cachedb_subdomains; organize_cachedb_subdomains()' 2>/dev/null || true)" || true
     # NOTE: logs/shadow_live and logs/hyperliquid_shadow are now owned and generated directly on DEV
     # (see systemd/crontab.dev.txt); do not overwrite them from PROD during rsync.
     if [ -d "$ROOT/logger/execution_audit" ]; then
@@ -71,6 +80,7 @@ sync_to_wsl() {
     local backup_tar="${BACKUP_TAR:-$HOME/mptrade-secrets-backup.tar.gz}"
     local backup_dir="${BACKUP_DIR:-$HOME/mptrade-secrets-backup}"
     local prod_src="${PROD_CACHEDB_SRC:-mptrade-prod:/home/predut/mptrade/cachedb/}"
+    local prod_statedb_src="${PROD_STATEDB_SRC:-mptrade-prod:/home/predut/mptrade/statedb/}"
     local dev_src="${DEV_CACHEDB_SRC:-mptrade-dev:/home/predut/mptrade/cachedb/}"
     local wsl_lock="${SYNC_CACHE_WSL_LOCK:-/tmp/sync_cache_wsl.lock}"
     exec 9>"$wsl_lock"
@@ -93,6 +103,10 @@ sync_to_wsl() {
         synced_any=1
     else
         echo "[sync_cache_to:wsl $(date '+%F %T')] WARN: rsync from $prod_src failed" >&2
+    fi
+    if ssh -o BatchMode=yes -o ConnectTimeout=5 mptrade-prod "[ -d /home/predut/mptrade/statedb ]" 2>/dev/null; then
+        mkdir -p "$ROOT/statedb"
+        rsync_cachedb "$prod_statedb_src" "$ROOT/statedb/" -e "$SSH_FAST" || true
     fi
 
     echo "[sync_cache_to:wsl $(date '+%F %T')] rsync *.npz and dev_regression_status.json from $dev_src -> $ROOT/cachedb/"

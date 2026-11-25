@@ -189,7 +189,6 @@ from cachepaths import (
     clean_symbol_key,
     compatible_quote_suffixes,
     is_kraken_tokenized_asset,
-    legacy_filenames_for,
     resolve_cachedb_filepath,
 )
 from pricewindow import filter_isolated_price_points
@@ -1570,19 +1569,12 @@ def load_cached_btc_24h_change_pct(cache_dir: Optional[str]) -> Optional[float]:
         return None
     btc_24h_cands = dict.fromkeys(
         (
-            *(
-                fn
-                for sym_p in ("BTCUSDC", "BTCUSDT")
-                for base_fn in (
-                    cache_24_price_filename(sym_p),
-                    cache_24_price_filename(sym_p, ext=".json"),
-                )
-                for fn in (base_fn, *legacy_filenames_for(base_fn))
-            ),
-            "24price_BTCUSDC.json",
-            "24price_BTCUSDT.json",
-            "24price.json",
-            "cache_24_price.json",
+            fn
+            for sym_p in ("BTCUSDC", "BTCUSDT")
+            for fn in (
+                cache_24_price_filename(sym_p),
+                cache_24_price_filename(sym_p, ext=".json"),
+            )
         )
     )
     for fn in btc_24h_cands:

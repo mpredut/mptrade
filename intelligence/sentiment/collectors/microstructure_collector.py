@@ -53,7 +53,6 @@ from cachepaths import (
     is_equity_venue,
     is_fiat_usd_pair,
     is_shadow_or_paper_state_filename,
-    legacy_filenames_for,
     normalize_venue_name,
     price_cache_filename_variants,
     resolve_cache_dir_path,
@@ -408,12 +407,7 @@ _REL_CANDIDATE_FILENAME_MEMO: Dict[Tuple[Tuple[str, ...], bool], Tuple[Tuple[boo
 
 
 def _candidate_cache_paths(cachedb_dir: str, *basenames: str) -> list[str]:
-    return [
-        p
-        for bn in basenames
-        for full_p in (str(resolve_cachedb_filepath(os.path.join(cachedb_dir, bn))),)
-        for p in (full_p, *legacy_filenames_for(full_p))
-    ]
+    return [str(resolve_cachedb_filepath(os.path.join(cachedb_dir, bn))) for bn in basenames]
 
 
 def _append_file_stat(stat_list: List[Tuple[str, int, int]], cand_sp: str) -> None:
@@ -459,13 +453,12 @@ def _stat_candidate_price_files(cachedb_dir: str, *basenames: str) -> List[Tuple
     if rel_cands is None:
         built: List[Tuple[bool, str]] = []
         for bn in basenames:
-            rel_full = os.path.join("prices", bn) if has_sub_dir else bn
-            for rel_p in (rel_full, *legacy_filenames_for(rel_full)):
-                is_sub = rel_p.replace("\\", "/").startswith("prices/")
-                fname = os.path.basename(rel_p)
-                built.append((is_sub, fname))
-                if Cache24PriceManager.FILE_PREFIX in fname:
-                    built.append((is_sub, fname + ".previous"))
+            rel_p = os.path.join("prices", bn) if has_sub_dir else bn
+            is_sub = rel_p.replace("\\", "/").startswith("prices/")
+            fname = os.path.basename(rel_p)
+            built.append((is_sub, fname))
+            if Cache24PriceManager.FILE_PREFIX in fname:
+                built.append((is_sub, fname + ".previous"))
         rel_cands = tuple(built)
         with _MEMO_LOCK:
             if len(_REL_CANDIDATE_FILENAME_MEMO) > 256:
@@ -563,8 +556,7 @@ def resolve_cached_btc_24h_change_pct(
     btc_24h_files = dict.fromkeys(
         fn
         for s in ("BTCUSDC", "BTCUSDT")
-        for base_fn in (Cache24PriceManager.disk_filename_for_symbol(s), cache_24_price_filename(s, ext=".json"))
-        for fn in (*legacy_filenames_for(base_fn), base_fn)
+        for fn in (Cache24PriceManager.disk_filename_for_symbol(s), cache_24_price_filename(s, ext=".json"))
     )
     if not any(
         os.path.exists(str(resolve_cachedb_filepath(os.path.join(cache_dir, fn))))
