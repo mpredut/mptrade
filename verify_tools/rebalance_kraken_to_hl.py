@@ -461,7 +461,7 @@ def verify_arbitrum_usdc_transfer_tx(
         if (clean_scalar_str(topics[0]) or "").lower() != _ERC20_TRANSFER_TOPIC:
             continue
         to_topic = (clean_scalar_str(topics[2]) or "").lower()
-        if not to_topic.endswith(want_to_suffix):
+        if to_topic != f"0x{'0' * 24}{want_to_suffix}":
             continue
         received_usdc += _hex_to_nonneg_int(log_row.get("data")) / _USDC_DECIMALS_DIVISOR
     received_usdc = round(received_usdc, 6)

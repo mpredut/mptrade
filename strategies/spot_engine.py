@@ -1999,6 +1999,7 @@ class Strategy(BaseSpotMixin):
                     [(round(sr.tp_price(avg, first_pct), self.price_dec), safe_held, first_tr)]
                     if safe_held >= self.ordermin else []
                 )
+                sized_by_slot = {0: desired[0]} if desired else {}
             else:
                 desired = [
                     val for slot_i, val in sorted(sized_by_slot.items())

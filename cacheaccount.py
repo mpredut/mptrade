@@ -2047,6 +2047,38 @@ def _merge_optional_order_fee(existing: dict, incoming: dict, merged: dict) -> N
             merged["feeAsset"] = in_asset
 
 
+_TERMINAL_FILL_ROW_STATUSES: frozenset[str] = frozenset({
+    "FILLED",
+    "CLOSED",
+    "CANCELED",
+    "CANCELLED",
+    "EXPIRED",
+    "EXPIRED_IN_MATCH",
+    "REJECTED",
+    "REPLACED",
+})
+
+
+def _merge_fill_row_status(
+    existing_st: Optional[str],
+    incoming_st: Optional[str],
+    *,
+    incoming_ts: int,
+    existing_ts: int,
+) -> Optional[str]:
+    ex_st = clean_upper_scalar(existing_st)
+    in_st = clean_upper_scalar(incoming_st)
+    if not in_st:
+        return ex_st
+    if not ex_st:
+        return in_st
+    if ex_st in _TERMINAL_FILL_ROW_STATUSES and in_st not in _TERMINAL_FILL_ROW_STATUSES:
+        return ex_st
+    if in_st in _TERMINAL_FILL_ROW_STATUSES and ex_st not in _TERMINAL_FILL_ROW_STATUSES:
+        return in_st
+    return in_st if incoming_ts >= existing_ts else ex_st
+
+
 def _vwap_merge_filled_row(
     existing: dict[str, Any],
     incoming: dict[str, Any],
@@ -2076,11 +2108,10 @@ def _vwap_merge_filled_row(
         merged["clientOrderId"] = cid_keep
     if type_keep := clean_upper_scalar(existing.get("type") or incoming.get("type")):
         merged["type"] = type_keep
-    in_st, ex_st = clean_upper_scalar(incoming.get("status")), clean_upper_scalar(existing.get("status"))
-    if in_st and (incoming_ts >= existing_ts or not ex_st):
-        merged["status"] = in_st
-    elif ex_st:
-        merged["status"] = ex_st
+    if merged_st := _merge_fill_row_status(
+        existing.get("status"), incoming.get("status"), incoming_ts=incoming_ts, existing_ts=existing_ts
+    ):
+        merged["status"] = merged_st
     _merge_optional_order_fee(existing, incoming, merged)
     if fill_ids:
         merged["_fillIds"] = list(dict.fromkeys(fill_ids))
@@ -2659,13 +2690,16 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
             vwap = (prev_px * prev_q + px * qty) / tot_q if tot_q > 0.0 else px
             cur["price"] = round(vwap, 8) or round(vwap, 16)
             cur["quantity"] = round(tot_q, 8) or round(tot_q, 16)
-            cur["timestamp"] = max(cur["timestamp"], ts_ms)
+            prev_ts = cur["timestamp"]
+            cur["timestamp"] = max(prev_ts, ts_ms)
             if cid and not cur.get("clientOrderId"):
                 cur["clientOrderId"] = cid
             if otype and not cur.get("type"):
                 cur["type"] = otype
-            if st_u and (ts_ms >= cur["timestamp"] or not cur.get("status")):
-                cur["status"] = st_u
+            if merged_st := _merge_fill_row_status(
+                cur.get("status"), st_u, incoming_ts=ts_ms, existing_ts=prev_ts
+            ):
+                cur["status"] = merged_st
             if fee_val is not None:
                 _merge_optional_order_fee(cur, {"fee": fee_val, "feeAsset": fee_asset}, cur)
             if fid:

@@ -1137,6 +1137,10 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
                     f"order_status({order_id}): invalid order status ({raw_status})"
                 )
             venue_status = clean_scalar_str(raw_venue_status) or ""
+            if not venue_status:
+                raise ProviderError(
+                    f"order_status({order_id}): missing or empty order status ({raw_status})"
+                )
             venue_status_lc = venue_status.lower()
             order_payload = status_payload.get("order")
             if not isinstance(order_payload, dict):

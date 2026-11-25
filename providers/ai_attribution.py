@@ -323,11 +323,14 @@ def _evaluate_execution_audit_actors(
             entry["price"] = f_px
         if is_fill:
             entry["is_fill"] = True
-            if f_q is not None and f_q > entry["filled_qty"]:
+            prev_fq = entry["filled_qty"]
+            if f_q is not None and f_q > prev_fq:
                 entry["filled_qty"] = f_q
             if cost_f is not None and cost_f > entry["cost_usd"]:
                 entry["cost_usd"] = cost_f
-            if f_px is not None and f_px > 0.0:
+            if f_px is not None and f_px > 0.0 and (
+                entry["price"] <= 0.0 or (f_q is not None and f_q >= prev_fq - 1e-12)
+            ):
                 entry["price"] = f_px
             if (fee_f := safe_nonneg_float(rec.get("fee"), default=0.0)) > entry["fee_usd"]:
                 entry["fee_usd"] = fee_f

@@ -398,6 +398,13 @@ def test_wait_for_arbitrum_arrival_requires_tx_confirmation_not_independent_bala
         "balance_observed": True,
     }
 
+    # Receipt Transfer log with non-zero upper bytes in topics[2] (malformed ABI topic) MUST NOT confirm
+    bad_topic_receipt = _usdc_receipt_resp(cfg, 10.0)
+    bad_topic_receipt["result"]["logs"][0]["topics"][2] = "0x" + "ff" * 12 + _WALLET[2:].lower()
+    with patch.object(reb, "fetch_json_post", return_value=bad_topic_receipt):
+        chk_bad_topic = reb.verify_arbitrum_usdc_transfer_tx(cfg, tx_hash, target_address=_WALLET, min_usdc=9.99)
+    assert chk_bad_topic["confirmed"] is False and chk_bad_topic["received_usdc"] == 0.0
+
 
 def test_rpc_error_after_withdrawal_preserves_id_and_cli_resume_avoids_duplicate_withdraw(capsys):
     """P1 Rebalance Resumption: RPC failure after Kraken accepts withdrawal MUST return withdrawal_id

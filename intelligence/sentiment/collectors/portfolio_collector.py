@@ -168,22 +168,26 @@ def _read_venue_filled_orders_doc(
 def _read_cached_open_orders_by_venue_sym(
     cache_dir: Optional[str],
     read_json_fn: Any = None,
-) -> Tuple[Dict[Tuple[str, str], List[Dict[str, Any]]], Dict[str, float]]:
+) -> Tuple[Dict[Tuple[str, str], List[Dict[str, Any]]], Dict[str, float], Dict[Tuple[str, str], float]]:
     """Passively read open orders from ``cache_order_open_<venue>.json`` keyed by ``(venue, SYMBOL_UPPER)``."""
     by_vs: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     verified_by_venue: Dict[str, float] = {}
+    verified_by_vs: Dict[Tuple[str, str], float] = {}
     if not cache_dir:
-        return by_vs, verified_by_venue
+        return by_vs, verified_by_venue, verified_by_vs
     ensure_cacheprice_classes_bound()
     open_cls = _mc.CacheOrderOpenManager
     if open_cls is None:
-        return by_vs, verified_by_venue
+        return by_vs, verified_by_venue, verified_by_vs
     _rj = _resolve_read_json_cached(read_json_fn) if read_json_fn is not None else None
     for venue_key, fname in open_cls.VENUE_FILENAMES.items():
         cand_path = os.path.join(cache_dir, fname)
-        items, _, ver_ts = open_cls.read_venue_open_orders_snapshot(cand_path, read_json_fn=_rj)
+        items, _, ver_ts, sym_ver = open_cls.read_venue_open_orders_snapshot_detailed(cand_path, read_json_fn=_rj)
         if ver_ts > 0.0:
             verified_by_venue[venue_key] = ver_ts
+        for sym_k, s_ts in sym_ver.items():
+            if s_ts > 0.0:
+                verified_by_vs[(venue_key, str(sym_k).strip().upper())] = s_ts
         for sym_k, rows in items.items():
             if not isinstance(rows, list):
                 continue
@@ -192,7 +196,7 @@ def _read_cached_open_orders_by_venue_sym(
                 for r in rows
                 if isinstance(r, dict)
             ]
-    return by_vs, verified_by_venue
+    return by_vs, verified_by_venue, verified_by_vs
 
 
 def _iter_audit_dir_file_batches(
@@ -351,7 +355,7 @@ def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str,
                             out.setdefault(kv, c_ts)
 
     if cache_dir:
-        by_vs, _ = _read_cached_open_orders_by_venue_sym(cache_dir)
+        by_vs, _, _ = _read_cached_open_orders_by_venue_sym(cache_dir)
         for oo_rows in by_vs.values():
             _record_open_rows(oo_rows)
     for k, v in (cached_bals or {}).items():
@@ -698,6 +702,8 @@ def _apply_open_orders_locked_balances(
     locked_quote_by_vs: Dict[tuple[str, str], float] = {}
     locked_base_by_vs: Dict[tuple[str, str], float] = {}
     pre_bal_locked_by_va: Dict[tuple[str, str], float] = {}
+    pre_bal_locked_quote_by_vs: Dict[tuple[str, str], float] = {}
+    pre_bal_locked_base_by_vs: Dict[tuple[str, str], float] = {}
     for oo_item in open_orders_list:
         if not isinstance(oo_item, dict):
             continue
@@ -750,20 +756,22 @@ def _apply_open_orders_locked_balances(
             q_ts = q_obs[1] if q_obs is not None else None
             if explicit_oo_ts is not None and q_ts is not None and explicit_oo_ts > q_ts + 0.5:
                 pre_bal_locked_by_va[(oo_v, oo_q_u)] = pre_bal_locked_by_va.get((oo_v, oo_q_u), 0.0) + locked_notional
+                pre_bal_locked_quote_by_vs[(oo_v, oo_pos_sym)] = pre_bal_locked_quote_by_vs.get((oo_v, oo_pos_sym), 0.0) + locked_notional
         elif oo_side == "SELL":
             locked_base_by_vs[(oo_v, oo_pos_sym)] = locked_base_by_vs.get((oo_v, oo_pos_sym), 0.0) + oo_rem
             b_obs = shared_obs_by_va.get((oo_v, oo_b_u)) if oo_b_u else None
             b_ts = b_obs[1] if b_obs is not None else None
             if explicit_oo_ts is not None and b_ts is not None and explicit_oo_ts > b_ts + 0.5:
                 pre_bal_locked_by_va[(oo_v, oo_b_u)] = pre_bal_locked_by_va.get((oo_v, oo_b_u), 0.0) + oo_rem
+                pre_bal_locked_base_by_vs[(oo_v, oo_pos_sym)] = pre_bal_locked_base_by_vs.get((oo_v, oo_pos_sym), 0.0) + oo_rem
 
     adjusted_free_by_va: Dict[tuple[str, str], float] = {}
     for va_key, pre_locked in pre_bal_locked_by_va.items():
         if pre_locked > 0.0 and (obs_va := shared_obs_by_va.get(va_key)) is not None:
             adjusted_free_by_va[va_key] = max(0.0, obs_va[0] - pre_locked)
 
-    # Apply synthetic pre-balance deductions to runtime/prompt views ONLY; keep persisted ``updated_bals`` raw.
-    _ = updated_bals
+    # Apply synthetic pre-balance deductions to runtime/prompt views ONLY; keep persisted ``updated_bals``
+    # free balances raw while persisting venue-reflected locked balances & trailing peaks for Unified NAV.
     for cash_val in venue_quote_cash.values():
         if isinstance(cash_val, dict):
             for ts_k in _INTERNAL_BALANCE_TS_KEYS:
@@ -775,6 +783,11 @@ def _apply_open_orders_locked_balances(
                 cash_val["free"] = round(raw_c_obs[0], 2)
             if (lq_val := locked_quote_by_vq.get((cv_norm, cq_u), 0.0)) > 0.0:
                 cash_val["locked_quote_usd"] = round(lq_val, 2)
+                pers_cash_lq = max(0.0, lq_val - pre_bal_locked_by_va.get((cv_norm, cq_u), 0.0))
+                if pers_cash_lq > 1e-6:
+                    cash_bkey = f"cash:{cv_norm}:{cq_u}"
+                    if cash_bkey in updated_bals and isinstance(updated_bals[cash_bkey], dict):
+                        updated_bals[cash_bkey] = {**updated_bals[cash_bkey], "locked_quote_usd": round(pers_cash_lq, 2)}
 
     for pos_entry in tradable_positions:
         for ts_k in _INTERNAL_BALANCE_TS_KEYS:
@@ -849,6 +862,22 @@ def _apply_open_orders_locked_balances(
                 if px_pos <= 0.0 or held_total * px_pos >= min_not_pos:
                     pos_entry["trailing_peak"] = pend_peak[0]
                     pos_entry["dd_from_peak_pct"] = pend_peak[1]
+            pos_bkey = f"pos:{p_v_norm}:{p_sym_raw}" if f"pos:{p_v_norm}:{p_sym_raw}" in updated_bals else f"pos:{p_v_norm}:{p_sym_u}"
+            if pos_bkey in updated_bals and isinstance(updated_bals[pos_bkey], dict):
+                pers_pos = dict(updated_bals[pos_bkey])
+                pers_lq = max(0.0, lq_pos - pre_bal_locked_quote_by_vs.get((p_v_norm, p_sym_u), 0.0))
+                pers_lb = max(0.0, lb_pos - pre_bal_locked_base_by_vs.get((p_v_norm, p_sym_u), 0.0))
+                if pers_lq > 1e-6:
+                    pers_pos["locked_quote_usd"] = round(pers_lq, 2)
+                if pers_lb > 1e-12:
+                    pers_pos["locked_base_qty"] = round(pers_lb, 8)
+                    if px_pos > 0.0:
+                        pers_pos["locked_base_usd"] = round(pers_lb * px_pos, 2)
+                if "trailing_peak" in pos_entry:
+                    pers_pos["trailing_peak"] = pos_entry["trailing_peak"]
+                    if "dd_from_peak_pct" in pos_entry:
+                        pers_pos["dd_from_peak_pct"] = pos_entry["dd_from_peak_pct"]
+                updated_bals[pos_bkey] = pers_pos
 
 
 def _merge_audit_orders(primary_list: Any, audit_list: Any) -> List[Dict[str, Any]]:
@@ -1575,6 +1604,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         updated_bals: Dict[str, Any],
         cached_open_by_vs: Dict[Tuple[str, str], List[Dict[str, Any]]],
         cached_open_verified_ts: Dict[str, float],
+        cached_open_sym_verified_ts: Dict[Tuple[str, str], float],
         updated_open_by_venue: Dict[str, Dict[str, List[Dict[str, Any]]]],
         balance_memo: Dict[tuple[str, str], Optional[float]],
         known_ai_order_ids: set[str],
@@ -1592,6 +1622,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         pending_peaks_by_vs: Dict[tuple[str, str], tuple[float, Optional[float]]],
         live_open_ok_venues: set[str],
         failed_open_venues: set[str],
+        live_open_ok_symbols: set[Tuple[str, str]],
+        failed_open_symbols: set[Tuple[str, str]],
     ) -> None:
         cached_obs_by_va = _build_cached_balance_index(cached_bals)
         balance_ts_memo: Dict[tuple[str, str], Optional[float]] = {}
@@ -1834,8 +1866,10 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     sym_open_ok = False
                 if sym_open_ok:
                     live_open_ok_venues.add(v_norm)
+                    live_open_ok_symbols.add(vs_open_key)
                 else:
                     failed_open_venues.add(v_norm)
+                    failed_open_symbols.add(vs_open_key)
                     open_orders_list.extend(
                         _normalize_open_orders_list(
                             cached_oo_list,
@@ -1847,18 +1881,22 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                             order_ts_map=order_ts_map,
                         )
                     )
-            elif vs_open_key in cached_open_by_vs:
-                open_orders_list.extend(
-                    _normalize_open_orders_list(
-                        cached_oo_list,
-                        venue,
-                        sym,
-                        known_ai_order_ids,
-                        audit_origin_map=audit_origin_map,
-                        now_ts=now_ts_oo,
-                        order_ts_map=order_ts_map,
+            elif vs_open_key in cached_open_by_vs or vs_open_key in cached_open_sym_verified_ts:
+                if vs_open_key in cached_open_by_vs:
+                    open_orders_list.extend(
+                        _normalize_open_orders_list(
+                            cached_oo_list,
+                            venue,
+                            sym,
+                            known_ai_order_ids,
+                            audit_origin_map=audit_origin_map,
+                            now_ts=now_ts_oo,
+                            order_ts_map=order_ts_map,
+                        )
                     )
-                )
+                sym_ver_ts = safe_pos_float(cached_open_sym_verified_ts.get(vs_open_key), default=0.0) or 0.0
+                if sym_ver_ts > 0.0 and 0.0 <= (now_ts_oo - sym_ver_ts) <= 300.0:
+                    live_open_ok_symbols.add(vs_open_key)
                 ver_ts = safe_pos_float(cached_open_verified_ts.get(v_norm), default=0.0) or 0.0
                 if ver_ts > 0.0 and 0.0 <= (now_ts_oo - ver_ts) <= 300.0:
                     live_open_ok_venues.add(v_norm)
@@ -1875,6 +1913,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         known_ai_order_ids: Optional[set[str]] = None,
         gateway_max_usd: float = 2000.0,
         verified_open_venues: Optional[set[str]] = None,
+        verified_open_symbols: Optional[set[Tuple[str, str]]] = None,
         allow_empty_inst_recovery: bool = False,
         allow_network: bool = True,
         persist: bool = True,
@@ -1892,13 +1931,15 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         balance_memo: Dict[tuple[str, str], Optional[float]] = {}
         _rj_bals = _resolve_read_json_cached()
         bcache_path, cached_bals, _ = load_venue_balances_state(cache_dir, _rj_bals)
-        cached_open_by_vs, cached_open_verified_ts = _read_cached_open_orders_by_venue_sym(
+        cached_open_by_vs, cached_open_verified_ts, cached_open_sym_verified_ts = _read_cached_open_orders_by_venue_sym(
             cache_dir, read_json_fn=_rj_bals
         )
         updated_bals: Dict[str, Any] = {}
         updated_open_by_venue: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
         live_open_ok_venues: set[str] = set()
         failed_open_venues: set[str] = set()
+        live_open_ok_symbols: set[Tuple[str, str]] = set()
+        failed_open_symbols: set[Tuple[str, str]] = set()
         now_ts_oo = resolve_now_ts(now_ts)
         order_ts_map = _load_open_order_timestamps(cache_dir, cached_bals)
         audit_origin_map = _load_recent_audit_origins(cache_dir) if cache_dir else {}
@@ -1917,6 +1958,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 updated_bals=updated_bals,
                 cached_open_by_vs=cached_open_by_vs,
                 cached_open_verified_ts=cached_open_verified_ts,
+                cached_open_sym_verified_ts=cached_open_sym_verified_ts,
                 updated_open_by_venue=updated_open_by_venue,
                 balance_memo=balance_memo,
                 known_ai_order_ids=known_ai_order_ids,
@@ -1934,8 +1976,12 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 pending_peaks_by_vs=pending_peaks_by_vs,
                 live_open_ok_venues=live_open_ok_venues,
                 failed_open_venues=failed_open_venues,
+                live_open_ok_symbols=live_open_ok_symbols,
+                failed_open_symbols=failed_open_symbols,
             )
-        elif (allow_empty_inst_recovery or not allow_network) and (cached_bals or cached_open_by_vs):
+        elif (allow_empty_inst_recovery or not allow_network) and (
+            cached_bals or cached_open_by_vs or cached_open_sym_verified_ts
+        ):
             if cached_bals:
                 self._recover_from_cached_balances(
                     cached_bals,
@@ -1968,10 +2014,17 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     ver_ts = safe_pos_float(cached_open_verified_ts.get(v_k), default=0.0) or 0.0
                     if ver_ts > 0.0 and 0.0 <= (now_ts_oo - ver_ts) <= 300.0:
                         live_open_ok_venues.add(v_k)
+            if not allow_network:
+                for (v_k, sym_u_k), sym_ver_ts in cached_open_sym_verified_ts.items():
+                    if sym_ver_ts > 0.0 and 0.0 <= (now_ts_oo - sym_ver_ts) <= 300.0:
+                        live_open_ok_symbols.add((v_k, sym_u_k))
 
         verified_now = live_open_ok_venues - failed_open_venues
+        verified_symbols_now = live_open_ok_symbols - failed_open_symbols
         if isinstance(verified_open_venues, set):
             verified_open_venues.update(verified_now)
+        if isinstance(verified_open_symbols, set):
+            verified_open_symbols.update(verified_symbols_now)
         if allow_network and persist and cache_dir and updated_open_by_venue:
             ensure_cacheprice_classes_bound()
             open_cls = _mc.CacheOrderOpenManager
@@ -1980,11 +2033,18 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 for v_k, sym_map in updated_open_by_venue.items():
                     try:
                         open_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, open_cls.disk_filename(v_k))))
+                        updated_syms_u = {str(s).strip().upper() for s in sym_map.keys()}
+                        existing_syms_u = {
+                            s_u for (ev, s_u) in cached_open_by_vs.keys() if ev == v_k
+                        } | {
+                            s_u for (ev, s_u) in cached_open_sym_verified_ts.keys() if ev == v_k
+                        }
+                        covers_known_venue_syms = not (existing_syms_u - updated_syms_u)
                         open_cls.replace_venue_open_orders_snapshot(
                             open_path,
                             sym_map,
                             now_ms=now_ms_oo,
-                            verified_ts=round(now_ts_oo, 3) if v_k in verified_now else None,
+                            verified_ts=round(now_ts_oo, 3) if (v_k in verified_now and covers_known_venue_syms) else None,
                         )
                     except Exception:
                         pass
@@ -2607,6 +2667,7 @@ def harvest_tradable_positions_and_orders(
     gateway_max_usd: float = 2000.0,
     cache_dir: Optional[str] = None,
     verified_open_venues: Optional[set[str]] = None,
+    verified_open_symbols: Optional[set[Tuple[str, str]]] = None,
     allow_empty_inst_recovery: bool = False,
     allow_network: bool = True,
     persist: bool = True,
@@ -2624,6 +2685,7 @@ def harvest_tradable_positions_and_orders(
         known_ai_order_ids=known_ai_order_ids,
         gateway_max_usd=gateway_max_usd,
         verified_open_venues=verified_open_venues,
+        verified_open_symbols=verified_open_symbols,
         allow_empty_inst_recovery=allow_empty_inst_recovery,
         allow_network=allow_network,
         persist=persist,

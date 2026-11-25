@@ -2191,6 +2191,81 @@ def test_compact_price_series_and_bounded_sparse_cache_parity(tmp_path, monkeypa
     assert res_fast["duration_seconds"] == pytest.approx(res_legacy["duration_seconds"], rel=1e-9)
 
 
+def test_jsonl_unterminated_eof_parity_and_corrupt_utf8_previous_recovery(tmp_path):
+    """Audit #4 + Cycle 2/3/5: Both JSONL offset readers withhold valid unterminated EOF lines until '\\n',
+    and JSONL cached/read-only/producer loaders recover cleanly from corrupt UTF-8 primary files and .previous."""
+    import cacheprice
+
+    now_ms = int(time.time() * 1000)
+
+    # 1. Valid JSON line without trailing '\n': both bucket-map and dict offset readers keep cursor before it
+    j_eof = tmp_path / "eof_parity.jsonl"
+    complete_line = json.dumps({"s": "BTCUSDC", "i": [now_ms - 2000, 60000.0]}, separators=(",", ":")) + "\n"
+    unterminated_valid = json.dumps({"s": "BTCUSDC", "i": [now_ms - 1000, 60050.0]}, separators=(",", ":"))
+    j_eof.write_bytes((complete_line + unterminated_valid).encode("utf-8"))
+
+    bmap0, bad0, off0, di0, anc0, inc0 = state_io.read_jsonl_bucket_map_from_offset(str(j_eof), start_offset=0)
+    dicts0, doff0 = state_io.read_jsonl_dicts_from_offset(str(j_eof), 0)
+    expected_off = len(complete_line.encode("utf-8"))
+    assert off0 == expected_off and doff0 == expected_off
+    assert bad0 is True and inc0 is False
+    assert bmap0["BTCUSDC"] == [[now_ms - 2000, 60000.0]]
+    assert len(dicts0) == 1
+
+    bmap_wait, bad_wait, off_wait, _di_w, _anc_w, inc_wait = state_io.read_jsonl_bucket_map_from_offset(
+        str(j_eof), start_offset=off0, expected_dev_ino=di0, expected_anchor=anc0
+    )
+    dicts_wait, doff_wait = state_io.read_jsonl_dicts_from_offset(str(j_eof), doff0)
+    assert inc_wait is True and bad_wait is False
+    assert bmap_wait == {} and off_wait == expected_off
+    assert dicts_wait == [] and doff_wait == expected_off
+
+    with open(j_eof, "ab") as fh:
+        fh.write(b"\n")
+    bmap1, bad1, off1, _di1, _anc1, inc1 = state_io.read_jsonl_bucket_map_from_offset(
+        str(j_eof), start_offset=off0, expected_dev_ino=di0, expected_anchor=anc0
+    )
+    dicts1, doff1 = state_io.read_jsonl_dicts_from_offset(str(j_eof), doff0)
+    assert inc1 is True and bad1 is False
+    assert bmap1["BTCUSDC"] == [[now_ms - 1000, 60050.0]]
+    assert len(dicts1) == 1 and dicts1[0]["i"] == [now_ms - 1000, 60050.0]
+    assert off1 == doff1 == j_eof.stat().st_size
+
+    # 2. Invalid UTF-8 primary .jsonl + valid .jsonl.previous -> recovers cleanly in BOTH state_io and Cache24PriceManager(read_only=True/False)
+    corrupt_p = tmp_path / "cache_24_price_ETHUSDC.jsonl"
+    prev_p = Path(previous_generation_path(str(corrupt_p)))
+    corrupt_p.write_bytes(b"\xff\xfe\x80\x81\n")
+    prev_p.write_text(
+        json.dumps({"s": "ETHUSDC", "i": [now_ms - 5000, 3100.0]}, separators=(",", ":")) + "\n"
+        + json.dumps({"s": "ETHUSDC", "i": [now_ms - 4000, 3105.0]}, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    memo: dict = {}
+    recovered = state_io.read_jsonl_or_json_dict_cached(str(corrupt_p), memo)
+    assert recovered is not None
+    assert recovered["items"]["ETHUSDC"] == [[now_ms - 5000, 3100.0], [now_ms - 4000, 3105.0]]
+
+    ro_mgr = cacheprice.Cache24PriceManager(30, ["ETHUSDC"], str(corrupt_p), api_client=None, read_only=True)
+    assert ro_mgr.cache["ETHUSDC"] == [[now_ms - 5000, 3100.0], [now_ms - 4000, 3105.0]]
+
+    rw_mgr = cacheprice.Cache24PriceManager(
+        30, ["ETHUSDC"], str(corrupt_p), api_client=None, read_only=False, append_persist=True
+    )
+    assert rw_mgr.cache["ETHUSDC"] == [[now_ms - 5000, 3100.0], [now_ms - 4000, 3105.0]]
+    assert rw_mgr._legacy_jsonl_needs_rewrite is True
+    assert prev_p.exists()
+
+    # 3. Corrupt UTF-8 line 1 followed by valid JSONL lines (no .previous) recovers valid rows cleanly
+    corrupt_head = tmp_path / "cache_24_price_SOLUSDC.jsonl"
+    corrupt_head.write_bytes(
+        b"\xff\xfe\x80garbage\n"
+        + (json.dumps({"s": "SOLUSDC", "i": [now_ms - 3000, 150.0]}, separators=(",", ":")) + "\n").encode("utf-8")
+    )
+    bmap_direct, had_bad_direct = state_io.read_jsonl_bucket_map(str(corrupt_head))
+    assert had_bad_direct is True and bmap_direct == {"SOLUSDC": [[now_ms - 3000, 150.0]]}
+    rec_head = state_io.read_jsonl_or_json_dict_cached(str(corrupt_head), {})
+    assert rec_head is not None and rec_head["items"] == {"SOLUSDC": [[now_ms - 3000, 150.0]]}
+
 
 
 

@@ -1579,6 +1579,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         recent_orders: Any,
         open_orders_list: List[Dict[str, Any]],
         eff_verified_venues: Optional[set[str]],
+        eff_verified_symbols: Optional[set[tuple[str, str]]] = None,
         price_bars_by_symbol: Optional[Dict[str, List[List[Any]]]] = None,
         cache_dir: str = "",
     ) -> None:
@@ -1591,6 +1592,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 recent_orders=recent_orders,
                 open_orders=open_orders_list,
                 verified_open_venues=eff_verified_venues,
+                verified_open_symbols=eff_verified_symbols,
             ):
                 snapshot.portfolio_summary["recent_ai_intents"] = recent_intents_out
             if (last_exec_status := build_last_cycle_execution_status(
@@ -1601,6 +1603,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 recent_orders=recent_orders,
                 open_orders=open_orders_list,
                 verified_open_venues=eff_verified_venues,
+                verified_open_symbols=eff_verified_symbols,
             )) is not None:
                 snapshot.portfolio_summary["last_cycle_execution_status"] = last_exec_status
             if active_plans_out := summarize_active_ai_trade_plans(
@@ -1613,6 +1616,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 recent_orders=recent_orders,
                 open_orders=open_orders_list,
                 verified_open_venues=eff_verified_venues,
+                verified_open_symbols=eff_verified_symbols,
                 price_bars_by_symbol=price_bars_by_symbol,
             ):
                 snapshot.portfolio_summary["active_ai_trade_plans"] = active_plans_out
@@ -2076,6 +2080,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
 
         tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = [], [], {}, {}
         verified_open_venues: set[str] = set()
+        verified_open_symbols: set[tuple[str, str]] = set()
         load_tradable_fn = getattr(intent_gateway, "load_tradable_instruments", None)
         has_inst_source = has_workspace_instrument_sources(workspace_dir, asset_scope=scope)
         should_harvest = False
@@ -2104,6 +2109,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 inst_map, snapshot.prices_and_trends, trailing_map, trailing_by_venue,
                 known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd, cache_dir=cache_dir,
                 verified_open_venues=verified_open_venues,
+                verified_open_symbols=verified_open_symbols,
                 allow_empty_inst_recovery=allow_empty_recovery,
                 allow_network=allow_network,
                 persist=harvest_persist,
@@ -2215,7 +2221,8 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             workspace_dir=workspace_dir,
             recent_orders=recent_orders,
             open_orders_list=open_orders_list,
-            eff_verified_venues=verified_open_venues if has_inst_source else None,
+            eff_verified_venues=verified_open_venues if (has_inst_source or should_harvest) else None,
+            eff_verified_symbols=verified_open_symbols if (has_inst_source or should_harvest) else None,
             price_bars_by_symbol=price_path_bars,
             cache_dir=cache_dir,
         )

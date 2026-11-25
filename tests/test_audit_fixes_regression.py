@@ -4939,3 +4939,963 @@ def test_cycle11_24h_ohlc_kline_limits_replace_fallback_sre_filter_and_closed_eq
     eq_pol.prune_stale_short_metrics(live_entry, live_m24, [], now_s, has_series_tail=False)
     assert live_entry["va_hold_min"] == pytest.approx(25.0)
     assert live_m24["va_hold_min"] == pytest.approx(25.0)
+
+
+def test_audit_ac628e45_ledger_terminal_closure_coverage_and_legacy_fill_fixes(tmp_path):
+    """Regression suite for post-ac628e45 audit Cycles 1-3 + Cycle 7:
+    1) CANCELED(fq=2/10) allows late authoritative FILLED(10/10); CANCELED(fq=0) never resurrects on late PARTIALLY_FILLED;
+    2) Unified (venue, symbol) coverage & partial-fill parity in active_intents + legacy fetchtime provenance + legacy partial FILLED row;
+    3) Monotonic cid/cloid orphan suppression, fill-status merge, chronological iter_audit_compat_records, intent reconciliation & AI attribution price preservation."""
+    from providers.ai_attribution import _evaluate_execution_audit_actors
+    from providers.intent_reconciliation import reconcile_intents_from_execution_audit
+    from providers.order_id_context import derive_venue_128bit_client_order_id
+    from providers.order_ledger import apply_order_event, update_recently_closed
+
+    t0 = 1_795_570_000.0
+
+    # --- #1A: CANCELED with partial fill (2/10) must NOT drop late authoritative FILLED (10/10) ---
+    orders: dict = {}
+    closed_rows: list = []
+    rc: dict = {}
+    apply_order_event(
+        orders,
+        {"ts": t0, "ev": "ACKED", "v": "hyperliquid", "sym": "HYPEUSDC", "iid": "iid-p1", "vid": "HL-100", "side": "BUY", "qty": 10.0, "px": 60.0},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    )
+    apply_order_event(
+        orders,
+        {"ts": t0 + 5.0, "ev": "RECONCILED_PARTIAL", "v": "hyperliquid", "sym": "HYPEUSDC", "iid": "iid-p1", "vid": "HL-100", "fq": 2.0, "avg_px": 60.0},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    )
+    apply_order_event(
+        orders,
+        {"ts": t0 + 50.0, "ev": "RECONCILED_CANCELED", "v": "hyperliquid", "sym": "HYPEUSDC", "iid": "iid-p1", "vid": "HL-100", "reason": "absent_from_verified_open_book"},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    )
+    assert len(closed_rows) == 1 and closed_rows[0]["state"] == "CANCELED" and closed_rows[0]["fq"] == pytest.approx(2.0)
+    rc = update_recently_closed(rc, closed_rows, eff_now=t0 + 50.0)
+
+    res_sup = apply_order_event(
+        orders,
+        {"ts": t0 + 70.0, "ev": "STATUS", "v": "hyperliquid", "sym": "HYPEUSDC", "iid": "iid-p1", "vid": "HL-100", "vst": "FILLED", "fq": 10.0, "avg_px": 60.1},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    )
+    assert res_sup is not None and orders == {}
+    assert len(closed_rows) == 2 and closed_rows[1]["state"] == "FILLED" and closed_rows[1]["fq"] == pytest.approx(10.0)
+    rc = update_recently_closed(rc, closed_rows[1:], eff_now=t0 + 70.0)
+
+    assert apply_order_event(
+        orders,
+        {"ts": t0 + 80.0, "ev": "STATUS", "v": "hyperliquid", "sym": "HYPEUSDC", "iid": "iid-p1", "vid": "HL-100", "vst": "FILLED", "fq": 10.0},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    ) is None
+
+    # --- #1B: CANCELED with zero filled must NEVER be resurrected into active orders by late PARTIALLY_FILLED ---
+    apply_order_event(
+        orders,
+        {"ts": t0 + 100.0, "ev": "ACKED", "v": "binance", "sym": "BTCUSDC", "iid": "iid-c0", "vid": "BN-200", "side": "BUY", "qty": 1.0, "px": 60000.0},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    )
+    apply_order_event(
+        orders,
+        {"ts": t0 + 110.0, "ev": "CANCEL_ACK", "v": "binance", "sym": "BTCUSDC", "iid": "iid-c0", "vid": "BN-200"},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    )
+    rc = update_recently_closed(rc, closed_rows[-1:], eff_now=t0 + 110.0)
+    assert orders == {}
+    apply_order_event(
+        orders,
+        {"ts": t0 + 120.0, "ev": "STATUS", "v": "binance", "sym": "BTCUSDC", "iid": "iid-c0", "vid": "BN-200", "vst": "PARTIALLY_FILLED", "fq": 0.2, "qty": 1.0},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    )
+    assert orders == {}
+    assert closed_rows[-1]["state"] == "CANCELED" and closed_rows[-1]["fq"] == pytest.approx(0.2)
+    rc = update_recently_closed(rc, closed_rows[-1:], eff_now=t0 + 120.0)
+    assert apply_order_event(
+        orders,
+        {"ts": t0 + 125.0, "ev": "STATUS", "v": "binance", "sym": "BTCUSDC", "iid": "iid-c0", "vid": "BN-200", "vst": "PARTIALLY_FILLED", "fq": 0.2, "qty": 1.0},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    ) is None
+    assert orders == {}
+
+    # --- #2A: active_intents uses per-(venue, symbol) verified snapshot coverage, matching OrderLedger ---
+    ws = tmp_path / "ws_cov"
+    orders_dir = ws / "cachedb" / "orders"
+    state_dir = ws / "cachedb" / "state"
+    orders_dir.mkdir(parents=True)
+    state_dir.mkdir(parents=True)
+    now_s = time.time()
+
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(orders_dir / CACHE_KRAKEN_ORDER_OPEN_FILENAME),
+        {"SPCXxUSD": []},
+        now_ms=int(now_s * 1000),
+        verified_ts=None,
+    )
+    (state_dir / "autonomous_trade_intents_state.json").write_text(
+        json.dumps([
+            {
+                "intent_id": "ai-kr-hype",
+                "venue": "kraken",
+                "symbol": "HYPEUSD",
+                "side": "BUY",
+                "order_type": "LIMIT",
+                "requested_qty": 2.0,
+                "requested_price": 60.0,
+                "timestamp": now_s - 600.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "OKRK-HYPE-LIVE", "status": "OPEN"},
+            },
+            {
+                "intent_id": "ai-kr-spcx",
+                "venue": "kraken",
+                "symbol": "SPCXxUSD",
+                "side": "BUY",
+                "order_type": "LIMIT",
+                "requested_qty": 1.0,
+                "requested_price": 140.0,
+                "timestamp": now_s - 600.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "OKRK-SPCX-GONE", "status": "OPEN"},
+            },
+        ]),
+        encoding="utf-8",
+    )
+    idx = active_intents.build_active_intent_index(str(ws))
+    assert [it["intent_id"] for it in idx["intents"]] == ["ai-kr-hype"]
+
+    # --- #2B: Legacy open-order cache without symbol_verified_ts must NOT treat WS-ambiguous fetchtime as snapshot proof ---
+    legacy_ws_only = orders_dir / CACHE_BINANCE_ORDER_OPEN_FILENAME
+    legacy_ws_only.write_text(
+        json.dumps({
+            "items": {"BTCUSDC": []},
+            "fetchtime": {"BTCUSDC": int(now_s * 1000)},
+            "verified_ts": None,
+        }),
+        encoding="utf-8",
+    )
+    _, _, v_ts_ws, sym_ver_ws = CacheOrderOpenManager.read_venue_open_orders_snapshot_detailed(str(legacy_ws_only))
+    assert v_ts_ws == 0.0 and sym_ver_ws == {}
+
+    legacy_with_ver = tmp_path / "legacy_verified_open.json"
+    legacy_with_ver.write_text(
+        json.dumps({
+            "items": {"BTCUSDC": []},
+            "fetchtime": {"BTCUSDC": int((t0 + 200.0) * 1000)},
+            "verified_ts": t0 + 100.0,
+        }),
+        encoding="utf-8",
+    )
+    _, _, v_ts_leg, sym_ver_leg = CacheOrderOpenManager.read_venue_open_orders_snapshot_detailed(str(legacy_with_ver))
+    assert v_ts_leg == pytest.approx(t0 + 100.0)
+    assert sym_ver_leg == {"BTCUSDC": pytest.approx(t0 + 100.0)}
+
+    # --- #2C: Legacy partial fill (2/10) tagged status=FILLED stays PARTIAL with normalized PARTIALLY_FILLED vst ---
+    cdb_f = tmp_path / "cdb_legacy_fill"
+    (cdb_f / "orders").mkdir(parents=True)
+    writer = OrderLedgerWriter(cachedb_dir=str(cdb_f))
+    reconciler = OrderLedgerReconciler(cachedb_dir=str(cdb_f), use_singletons=False, reconcile_grace_sec=10.0)
+    reader = OrderLedgerReader(cachedb_dir=str(cdb_f))
+
+    writer.record_event(
+        OrderEventType.ACKED,
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+        ts=t0,
+        iid="hl-leg-partial",
+        vid="HL-LEG-1",
+        side="BUY",
+        qty=10.0,
+        px=58.0,
+    )
+    (cdb_f / "orders" / CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME).write_text(
+        json.dumps({
+            "items": {
+                "HYPEUSDC": [{
+                    "orderId": "HL-LEG-1",
+                    "side": "BUY",
+                    "price": 58.0,
+                    "quantity": 2.0,
+                    "timestamp": int((t0 + 2.0) * 1000),
+                    "status": "FILLED",
+                }]
+            },
+            "fetchtime": {"HYPEUSDC": int((t0 + 2.0) * 1000)},
+        }),
+        encoding="utf-8",
+    )
+    st_p = reconciler.reconcile_once(now_ts=t0 + 5.0)
+    assert st_p["reconciled_filled"] == 0 and st_p["reconciled_closed"] == 0 and st_p["active_count"] == 1
+    act_rows = reader.list_active_orders(venue="hyperliquid", apply_tail=False)
+    assert len(act_rows) == 1
+    assert act_rows[0]["state"] == OrderLedgerState.PARTIAL.value
+    assert act_rows[0]["fq"] == pytest.approx(2.0)
+    assert act_rows[0]["vst"] == "PARTIALLY_FILLED"
+
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(cdb_f / "orders" / CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME),
+        {"HYPEUSDC": []},
+        now_ms=int((t0 + 30.0) * 1000),
+        verified_ts=t0 + 30.0,
+    )
+    st_c = reconciler.reconcile_once(now_ts=t0 + 30.0)
+    assert st_c["reconciled_filled"] == 0 and st_c["reconciled_closed"] == 1 and st_c["active_count"] == 0
+    tr = reader.trace_order("HL-LEG-1")
+    assert len(tr["closed_orders"]) == 1
+    assert tr["closed_orders"][0]["state"] == OrderLedgerState.CANCELED.value
+    assert tr["closed_orders"][0]["fq"] == pytest.approx(2.0)
+
+    # --- Cycle 2: active_intents partial-fill parity, cid/cloid orphan suppression, and fill-status merge ---
+    ws_p = tmp_path / "ws_partial_parity"
+    (ws_p / "cachedb" / "orders").mkdir(parents=True)
+    (ws_p / "cachedb" / "state").mkdir(parents=True)
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(ws_p / "cachedb" / "orders" / CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME),
+        {
+            "HYPEUSDC": [{
+                "orderId": "HL-PART-9",
+                "side": "BUY",
+                "price": 58.0,
+                "origQty": 10.0,
+                "executedQty": 2.0,
+                "status": "PARTIALLY_FILLED",
+                "timestamp": int(now_s * 1000),
+            }]
+        },
+        now_ms=int(now_s * 1000),
+        verified_ts=now_s,
+    )
+    (ws_p / "cachedb" / "orders" / CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME).write_text(
+        json.dumps({
+            "items": {
+                "HYPEUSDC": [
+                    {"orderId": "HL-PART-9", "side": "BUY", "price": 58.0, "quantity": 2.0, "timestamp": int(now_s * 1000), "status": "FILLED"},
+                    {"orderId": "HL-FULL-9", "side": "BUY", "price": 58.0, "quantity": 10.0, "timestamp": int(now_s * 1000), "status": "FILLED"},
+                ]
+            },
+            "fetchtime": {"HYPEUSDC": int(now_s * 1000)},
+        }),
+        encoding="utf-8",
+    )
+    (ws_p / "cachedb" / "state" / "autonomous_trade_intents_state.json").write_text(
+        json.dumps([
+            {
+                "intent_id": "ai-hl-part-9",
+                "venue": "hyperliquid",
+                "symbol": "HYPEUSDC",
+                "side": "BUY",
+                "order_type": "LIMIT",
+                "requested_qty": 10.0,
+                "requested_price": 58.0,
+                "timestamp": now_s - 60.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "HL-PART-9", "status": "PARTIALLY_FILLED"},
+            },
+            {
+                "intent_id": "ai-hl-full-9",
+                "venue": "hyperliquid",
+                "symbol": "HYPEUSDC",
+                "side": "BUY",
+                "order_type": "LIMIT",
+                "requested_qty": 10.0,
+                "requested_price": 58.0,
+                "timestamp": now_s - 60.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "HL-FULL-9", "status": "NEW"},
+            },
+        ]),
+        encoding="utf-8",
+    )
+    assert [it["intent_id"] for it in active_intents.build_active_intent_index(str(ws_p))["intents"]] == ["ai-hl-part-9"]
+
+    cdb_cid = tmp_path / "cdb_cid_suppress"
+    (cdb_cid / "orders").mkdir(parents=True)
+    w_cid = OrderLedgerWriter(cachedb_dir=str(cdb_cid))
+    r_cid = OrderLedgerReconciler(cachedb_dir=str(cdb_cid), use_singletons=False, reconcile_grace_sec=10.0)
+    hl_cid_closed = "AI_hl_closed_cid_only"
+    hl_cloid_closed = derive_venue_128bit_client_order_id("hyperliquid", hl_cid_closed)
+    w_cid.record_event(OrderEventType.SUBMITTED, venue="hyperliquid", symbol="HYPEUSDC", ts=t0, iid="iid-cid-1", cid=hl_cid_closed, side="BUY", qty=5.0, px=60.0)
+    w_cid.record_event(OrderEventType.CANCEL_ACK, venue="hyperliquid", symbol="HYPEUSDC", ts=t0 + 2.0, iid="iid-cid-1", cid=hl_cid_closed)
+    assert r_cid.reconcile_once(now_ts=t0 + 3.0)["reconciled_closed"] == 1
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(cdb_cid / "orders" / CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME),
+        {"HYPEUSDC": [{"orderId": "HL-STALE-CID-77", "clientOrderId": hl_cloid_closed, "side": "BUY", "price": 60.0, "origQty": 5.0, "executedQty": 0.0, "status": "OPEN", "timestamp": int(t0 * 1000)}]},
+        now_ms=int((t0 + 4.0) * 1000),
+        verified_ts=t0 + 4.0,
+    )
+    st_cid2 = r_cid.reconcile_once(now_ts=t0 + 5.0)
+    assert st_cid2["orphans_adopted"] == 0 and st_cid2["active_count"] == 0
+
+    agg_rows = CacheOrderFilledManager.aggregate_fills_to_order_rows(
+        [
+            {"orderId": 4242, "id": "2", "side": "BUY", "price": 100.0, "quantity": 6.0, "timestamp": 1700000000000, "status": "FILLED"},
+            {"orderId": 4242, "id": "1", "side": "BUY", "price": 99.0, "quantity": 4.0, "timestamp": 1700000000000, "status": "PARTIALLY_FILLED"},
+        ],
+        venue="binance",
+    )
+    assert len(agg_rows) == 1 and agg_rows[0]["quantity"] == pytest.approx(10.0) and agg_rows[0]["status"] == "FILLED"
+
+    # --- Cycle 3: Chronological iter_audit_compat_records + monotonic intent reconciliation & AI attribution price ---
+    cdb_sup = tmp_path / "cdb_sup_compat"
+    (cdb_sup / "orders").mkdir(parents=True)
+    w_sup = OrderLedgerWriter(cachedb_dir=str(cdb_sup))
+    rec_sup = OrderLedgerReconciler(cachedb_dir=str(cdb_sup), use_singletons=False, reconcile_grace_sec=10.0)
+    w_sup.record_event(OrderEventType.ACKED, venue="hyperliquid", symbol="HYPEUSDC", ts=t0, iid="ai-sup-1", cid="AI_sup_1", vid="HL-SUP-1", side="BUY", qty=10.0, px=60.0)
+    w_sup.record_event(OrderEventType.STATUS, venue="hyperliquid", symbol="HYPEUSDC", ts=t0 + 5.0, iid="ai-sup-1", cid="AI_sup_1", vid="HL-SUP-1", side="BUY", vst="CANCELED", fq=2.0, avg_px=58.0)
+    rec_sup.reconcile_once(now_ts=t0 + 6.0)
+    w_sup.record_event(OrderEventType.STATUS, venue="hyperliquid", symbol="HYPEUSDC", ts=t0 + 20.0, iid="ai-sup-1", cid="AI_sup_1", vid="HL-SUP-1", side="BUY", vst="FILLED", fq=10.0, avg_px=60.5)
+    rec_sup.reconcile_once(now_ts=t0 + 21.0)
+
+    compat_recs, has_led = OrderLedgerReader(cachedb_dir=str(cdb_sup)).iter_audit_compat_records()
+    assert has_led is True
+    ts_list = [r["ts"] for r in compat_recs]
+    assert ts_list == sorted(ts_list)
+
+    ai_intents = [{
+        "intent_id": "ai-sup-1",
+        "venue": "hyperliquid",
+        "symbol": "HYPEUSDC",
+        "decision": "BUY",
+        "status": "EXECUTED",
+        "timestamp": t0,
+        "execution_payload": {"orderId": "HL-SUP-1", "status": "NEW"},
+    }]
+    assert reconcile_intents_from_execution_audit(ai_intents, str(tmp_path / "no_audit"), cachedb_dir=str(cdb_sup)) is True
+    assert ai_intents[0]["execution_payload"]["status"] == "FILLED"
+    assert float(ai_intents[0]["execution_payload"]["executedQty"]) == pytest.approx(10.0)
+
+    out_of_order_recs = [
+        {"ts": t0 + 20.0, "event": "order_terminal", "venue": "hyperliquid", "symbol": "HYPEUSDC", "order_id": "HL-SUP-1", "client_order_id": "AI_sup_1", "side": "buy", "filled_qty": 10.0, "price": 60.5, "cost": 605.0, "status": "closed", "venue_status": "FILLED"},
+        {"ts": t0 + 5.0, "event": "order_status", "venue": "hyperliquid", "symbol": "HYPEUSDC", "order_id": "HL-SUP-1", "client_order_id": "AI_sup_1", "side": "buy", "filled_qty": 2.0, "price": 58.0, "cost": 116.0, "status": "open", "venue_status": "PARTIALLY_FILLED"},
+        {"ts": t0 + 40.0, "event": "order_terminal", "venue": "hyperliquid", "symbol": "HYPEUSDC", "order_id": "HL-SUP-2", "client_order_id": "AI_sup_2", "side": "sell", "filled_qty": 10.0, "price": 60.5, "cost": 605.0, "status": "closed", "venue_status": "FILLED"},
+    ]
+    eval_res = _evaluate_execution_audit_actors(
+        out_of_order_recs,
+        known_ai_order_ids=set(),
+        cutoff_ts=t0 - 10.0,
+        eff_now=t0 + 100.0,
+        scope="crypto",
+    )
+    assert eval_res["by_actor"]["AI"]["realized_net_usd"] <= 0.0
+
+
+def test_audit_cycle4_per_symbol_open_verification_and_partial_fill_telemetry(tmp_path):
+    """Cycle 4 + Cycle 7 regressions:
+    1. Partial-symbol open-order harvest must not stamp venue-wide verified_ts over omitted cached symbols
+       or cause intent_telemetry to mark unqueried same-venue resting LIMIT orders as CANCELED_OR_EXPIRED.
+    2. Passive (allow_network=False) harvest must populate verified_open_symbols strictly from symbol_verified_ts.
+    3. _resolve_intent_execution_details must keep strict partial fills (2/10, venue_st=NEW) as PARTIALLY_FILLED
+       when open snapshot is missing, and advance PARTIALLY_FILLED (2/10) to FILLED (10/10) on exact order_id full fill.
+    4. _build_cached_balance_index must enforce atomic timestamp precedence regardless of dict iteration order.
+    """
+    from cachepaths import CACHE_KRAKEN_ORDER_OPEN_FILENAME
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        TradablePositionsAndOrdersCollector,
+        _build_cached_balance_index,
+    )
+    from providers.intent_telemetry import _resolve_intent_execution_details, summarize_recent_ai_intents
+
+    now_s = 1795200000.0
+    orders_dir = tmp_path / "orders"
+    state_dir = tmp_path / "state"
+    orders_dir.mkdir(parents=True)
+    state_dir.mkdir(parents=True)
+    (state_dir / "venue_balances_state.json").write_text("{}", encoding="utf-8")
+
+    krk_open_path = orders_dir / CACHE_KRAKEN_ORDER_OPEN_FILENAME
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(krk_open_path),
+        {
+            "HYPEUSD": [{
+                "orderId": "OKRK-HYPE-LIVE",
+                "side": "SELL",
+                "price": 93.85,
+                "origQty": 4.8,
+                "executedQty": 0.0,
+                "status": "OPEN",
+                "timestamp": int((now_s - 7200.0) * 1000),
+            }]
+        },
+        now_ms=int((now_s - 600.0) * 1000),
+        verified_ts=now_s - 600.0,
+    )
+
+    fake_prov = SimpleNamespace(
+        free_balance=lambda _a: 100.0,
+        get_current_price=lambda _s: 140.0,
+        usd_cash_breakdown=lambda: {"ZUSD": 100.0},
+    )
+    spcx_inst = SimpleNamespace(
+        symbol="SPCXxUSD",
+        provider_name="kraken",
+        base="SPCXx",
+        quote="USD",
+        params={},
+        _provider=fake_prov,
+        open_orders=lambda: [],
+    )
+    collector = TradablePositionsAndOrdersCollector()
+    ver_venues: set[str] = set()
+    ver_syms: set[tuple[str, str]] = set()
+    collector.collect(
+        str(tmp_path),
+        inst_map={"KRK_SPCX": spcx_inst},
+        prices_and_trends={"SPCXxUSD": {"price": 140.0, "trend": 0, "growth_coefficient": 0.0}},
+        verified_open_venues=ver_venues,
+        verified_open_symbols=ver_syms,
+        allow_network=True,
+        persist=True,
+        force_persist=True,
+        now_ts=now_s,
+    )
+    assert ver_venues == {"kraken"}
+    assert ver_syms == {("kraken", "SPCXXUSD")}
+
+    saved = json.loads(krk_open_path.read_text(encoding="utf-8"))
+    assert saved["verified_ts"] == pytest.approx(now_s - 600.0, abs=1.0)
+    assert saved["symbol_verified_ts"]["SPCXxUSD"] == pytest.approx(now_s, abs=1.0)
+    assert saved["symbol_verified_ts"]["HYPEUSD"] == pytest.approx(now_s - 600.0, abs=1.0)
+
+    ver_venues_off: set[str] = set()
+    ver_syms_off: set[tuple[str, str]] = set()
+    collector.collect(
+        str(tmp_path),
+        inst_map={},
+        prices_and_trends={},
+        verified_open_venues=ver_venues_off,
+        verified_open_symbols=ver_syms_off,
+        allow_empty_inst_recovery=True,
+        allow_network=False,
+        persist=False,
+        now_ts=now_s + 5.0,
+    )
+    assert ver_venues_off == set()
+    assert ver_syms_off == {("kraken", "SPCXXUSD")}
+
+    intents = [
+        {
+            "intent_id": "ai-krk-hype-resting",
+            "timestamp": now_s - 7200.0,
+            "decision": "SELL",
+            "symbol": "HYPEUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 93.85,
+            "suggested_notional_usd": 450.0,
+            "status": "EXECUTED",
+            "execution_payload": {"txid": ["OKRK-HYPE-LIVE"], "descr": {"order": "sell"}},
+        },
+        {
+            "intent_id": "ai-krk-spcx-gone",
+            "timestamp": now_s - 7200.0,
+            "decision": "BUY",
+            "symbol": "SPCXxUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 140.0,
+            "suggested_notional_usd": 140.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "OKRK-SPCX-GONE", "status": "OPEN"},
+        },
+    ]
+    summary = summarize_recent_ai_intents(
+        intents,
+        "all",
+        now_s,
+        lambda d, default=None: d.get("suggested_notional_usd", default),
+        recent_orders={},
+        open_orders=[],
+        verified_open_venues={"kraken"},
+        verified_open_symbols={("kraken", "SPCXXUSD")},
+    )
+    by_sym = {row["symbol"]: row for row in summary}
+    assert by_sym["HYPEUSD"]["venue_status"] == "OPEN"
+    assert by_sym["SPCXxUSD"]["venue_status"] == "CANCELED_OR_EXPIRED"
+
+    partial_intent = {
+        "intent_id": "ai-hl-partial-2of10",
+        "timestamp": now_s - 120.0,
+        "decision": "BUY",
+        "symbol": "HYPEUSDC",
+        "venue": "hyperliquid",
+        "order_type": "LIMIT",
+        "limit_price": 60.0,
+        "suggested_notional_usd": 600.0,
+        "status": "EXECUTED",
+        "execution_payload": {"orderId": "HL-P1", "origQty": "10.0", "executedQty": "0.0", "status": "NEW"},
+    }
+    det_partial = _resolve_intent_execution_details(
+        partial_intent,
+        now_s,
+        lambda d, default=None: d.get("suggested_notional_usd", default),
+        recent_orders={
+            "hyperliquid:HYPEUSDC": {
+                "venue": "hyperliquid",
+                "last_buy": {"order_id": "HL-P1", "qty": 2.0, "price": 59.5, "ts_ms": int((now_s - 60.0) * 1000), "actor": "AI"},
+            }
+        },
+        open_orders=[],
+        verified_open_symbols=set(),
+    )
+    assert det_partial["exec_status"] == "PARTIALLY_FILLED"
+    assert det_partial["venue_status"] == "PARTIALLY_FILLED"
+    assert det_partial["filled_qty"] == pytest.approx(2.0)
+
+    partial_saved_intent = {
+        **partial_intent,
+        "execution_payload": {
+            "orderId": "HL-P1",
+            "origQty": "10.0",
+            "executedQty": "2.0",
+            "price": "59.5",
+            "status": "PARTIALLY_FILLED",
+        },
+    }
+    det_full = _resolve_intent_execution_details(
+        partial_saved_intent,
+        now_s,
+        lambda d, default=None: d.get("suggested_notional_usd", default),
+        recent_orders={
+            "hyperliquid:HYPEUSDC": {
+                "venue": "hyperliquid",
+                "last_buy": {"order_id": "HL-P1", "qty": 10.0, "price": 60.0, "ts_ms": int((now_s - 10.0) * 1000), "actor": "AI"},
+            }
+        },
+        open_orders=[],
+        verified_open_symbols={("hyperliquid", "HYPEUSDC")},
+    )
+    assert det_full["exec_status"] == "FILLED"
+    assert det_full["venue_status"] == "FILLED"
+    assert det_full["filled_qty"] == pytest.approx(10.0)
+    assert det_full["fill_px"] == pytest.approx(60.0)
+
+    det_no_oid = _resolve_intent_execution_details(
+        partial_saved_intent,
+        now_s,
+        lambda d, default=None: d.get("suggested_notional_usd", default),
+        recent_orders={
+            "hyperliquid:HYPEUSDC": {
+                "venue": "hyperliquid",
+                "last_buy": {"qty": 10.0, "price": 61.0, "ts_ms": int((now_s - 10.0) * 1000), "actor": "AI"},
+            }
+        },
+        open_orders=[],
+        verified_open_symbols=set(),
+    )
+    assert det_no_oid["exec_status"] == "PARTIALLY_FILLED"
+    assert det_no_oid["filled_qty"] == pytest.approx(2.0)
+
+    bals_new_first = {
+        "pos:binance:BTCUSDC": {"venue": "binance", "symbol": "BTCUSDC", "base": "BTC", "quote": "USDC", "free_base": 0.5, "free_quote": 500.0, "ts": now_s - 10.0},
+        "pos:binance:ETHUSDC": {"venue": "binance", "symbol": "ETHUSDC", "base": "ETH", "quote": "USDC", "free_base": 2.0, "free_quote": 100.0, "ts": now_s - 1000.0},
+        "pos:binance:BTCUSDT": {"venue": "binance", "symbol": "BTCUSDT", "base": "BTC", "quote": "USDT", "free_base": 0.1, "free_quote": 50.0, "ts": now_s - 1000.0},
+        "cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 100.0, "ts": now_s - 1000.0},
+    }
+    obs_a = _build_cached_balance_index(bals_new_first)
+    assert obs_a[("binance", "USDC")][0] == pytest.approx(500.0)
+    assert obs_a[("binance", "USDC")][1] == pytest.approx(now_s - 10.0)
+    assert obs_a[("binance", "BTC")][0] == pytest.approx(0.5)
+    assert obs_a[("binance", "BTC")][1] == pytest.approx(now_s - 10.0)
+
+    bals_old_first = dict(reversed(list(bals_new_first.items())))
+    obs_b = _build_cached_balance_index(bals_old_first)
+    assert obs_b[("binance", "USDC")][0] == pytest.approx(500.0)
+    assert obs_b[("binance", "BTC")][0] == pytest.approx(0.5)
+    assert obs_b[("binance", "USDC")][1] == pytest.approx(now_s - 10.0)
+
+    bals_fresh_cash = {**bals_new_first, "cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 750.0, "ts": now_s}}
+    obs_c = _build_cached_balance_index(bals_fresh_cash)
+    assert obs_c[("binance", "USDC")][0] == pytest.approx(750.0)
+    assert obs_c[("binance", "USDC")][1] == pytest.approx(now_s)
+
+
+def test_audit_cycle5_hl_empty_status_fail_closed_and_ledger_cid_fallback(tmp_path, monkeypatch):
+    """Cycle 5 regressions:
+    1. HyperliquidProvider.order_status must raise ProviderError on missing/empty venue status
+       instead of silently normalizing it to terminal 'canceled'.
+    2. find_order_audit_record must fall back to client_order_id when order_id misses in OrderLedger.
+    """
+    from providers.execution_audit import find_order_audit_record
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.ohlc_utils import ProviderError
+
+    monkeypatch.setenv("HL_ACCOUNT_ADDRESS", "0xabc123")
+    for bad_status in (None, "", "   ", "null"):
+        hl_info = SimpleNamespace(
+            query_order_by_oid=lambda _addr, _oid, _bs=bad_status: {
+                "status": "order",
+                "order": {
+                    "status": _bs,
+                    "order": {"oid": 888, "origSz": "2.0", "sz": "2.0"},
+                },
+            },
+            user_fills=lambda _addr: [],
+        )
+        hl_cli = SimpleNamespace(
+            info=hl_info,
+            account_address="0xabc123",
+            resolve_spot_pair=lambda _tok: "@107",
+            spot_mid=lambda _pair: 50.0,
+        )
+        hl = HyperliquidProvider(token="HYPE", live_enabled=False, client=hl_cli)
+        with pytest.raises(ProviderError, match="missing or empty order status"):
+            hl.order_status("HYPEUSDC", "888")
+
+    cdb = tmp_path / "cdb_cid_fallback"
+    (cdb / "orders").mkdir(parents=True)
+    now_s = 1795300000.0
+    writer = OrderLedgerWriter(cachedb_dir=str(cdb))
+    writer.record_event(
+        OrderEventType.SUBMITTED,
+        venue="binance",
+        symbol="BTCUSDC",
+        ts=now_s,
+        iid="dca-intent-99",
+        cid="DCA_1795300000_abcd",
+        side="BUY",
+        qty=0.05,
+        px=65000.0,
+        owner="spot_dca",
+        kind="dca_buy",
+    )
+    found = find_order_audit_record(
+        "999888777",
+        "DCA_1795300000_abcd",
+        symbol="BTCUSDC",
+        event_ts_s=now_s + 5.0,
+        cachedb_dir=str(cdb),
+    )
+    assert found is not None
+    assert found["client_order_id"] == "DCA_1795300000_abcd"
+    assert found["intent_id"] == "dca-intent-99"
+    assert found["kind"] == "dca_buy"
+
+
+def test_audit_cycle8_to_11_execution_guards_status_ssot_spot_tranche_and_ag_preempt(tmp_path, monkeypatch):
+    """Cycles 8-11 regressions:
+    1. Targeted replacement (verify_not_filled=True) fails closed on transient order_status errors,
+       while permitting replacement on definitive OrderNotFound.
+    2. Resuming PENDING_EXECUTION defers safely on order_by_client_id lookup error.
+    3. BinanceProvider.order_status fails closed on missing/empty/unknown status and maps PENDING_CANCEL -> open.
+    4. order_retry_worker & monitororder share SSOT is_confirmed_cancel_order_status (ARCHIVED_CANCELED,
+       userCanceled, marginCanceled, scheduledCancel, iocCancel allowed; REJECTED & PENDING_CANCEL blocked).
+    5. spot_engine._dispatch_take_profit actually places the collapsed single TP order when multi-tranche
+       splits fall below ordermin (instead of iterating un-collapsed sized_by_slot and placing 0 orders).
+    6. monitortrades._is_pending_exit_active immediately clears dead pending exits on Binance EXPIRED_IN_MATCH
+       / ARCHIVED_CANCELED and Hyperliquid marginCanceled / iocCancel / minTradeNtlRejected.
+    7. assetguardian.evaluate_symbol restores preempted BUY orders if post-preemption free_balance raises.
+    8. order_ledger.resolve_late_closed_event_state never upgrades strictly partial RECONCILED_PARTIAL or
+       legacy vst='FILLED' (2/10) to terminal FILLED.
+    """
+    from unittest.mock import MagicMock
+
+    import assetguardian as ag
+    import monitortrades as mt
+    import order_retry as oq
+    import order_retry_worker as worker
+    from providers import binance_provider as bp_mod
+    from providers.binance_provider import BinanceProvider
+    from providers.intent_execution import cancel_existing_ai_open_orders, reconcile_open_intent_by_client_id
+    from providers.ohlc_utils import ProviderError
+    from providers.order_ledger import OrderLedgerState, resolve_late_closed_event_state
+    from providers.order_status_ssot import is_confirmed_cancel_order_status, is_terminal_non_fill_venue_status
+    from providers.strategy_executor import OrderNotFound, OrderStatus, PairPrecision
+    from strategies.spot_engine import StratParams, Strategy
+
+    # 1. verify_not_filled=True fail-closed on transient ProviderError, open on OrderNotFound
+    inst_err = SimpleNamespace(
+        provider_name="binance",
+        symbol="BTCUSDC",
+        open_orders=MagicMock(return_value=[]),
+        cancel_order=MagicMock(return_value=True),
+        order_status=MagicMock(side_effect=ProviderError("502 Bad Gateway")),
+    )
+    failed_ids: list[str] = []
+    cancel_existing_ai_open_orders(
+        inst_err, "BUY", include_bot_orders=True, target_order_ids=["oid-race-1"],
+        verify_not_filled=True, failed_order_ids=failed_ids,
+    )
+    assert failed_ids == ["oid-race-1"]
+
+    inst_404 = SimpleNamespace(
+        provider_name="t212",
+        symbol="NVDA_US_EQ",
+        open_orders=MagicMock(return_value=[]),
+        cancel_order=MagicMock(return_value=True),
+        order_status=MagicMock(side_effect=OrderNotFound("definitively absent")),
+    )
+    failed_404: list[str] = []
+    cancel_existing_ai_open_orders(
+        inst_404, "BUY", include_bot_orders=True, target_order_ids=["oid-gone-404"],
+        verify_not_filled=True, failed_order_ids=failed_404,
+    )
+    assert failed_404 == []
+
+    # 2. Resumed PENDING_EXECUTION defers safely on order_by_client_id error
+    inst_resume = SimpleNamespace(
+        provider_name="binance",
+        symbol="BTCUSDC",
+        open_orders=MagicMock(return_value=[]),
+        order_by_client_id=MagicMock(side_effect=ProviderError("timeout")),
+    )
+    resumed_intent = {
+        "intent_id": "intent_1795400001_buy_btcusdc",
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "status": "PENDING_EXECUTION",
+        "history": [],
+    }
+    assert reconcile_open_intent_by_client_id(inst_resume, resumed_intent, 1795400010.0) is True
+    assert resumed_intent["status"] == "PENDING_EXECUTION"
+    assert resumed_intent["history"][-1]["action"] == "RECONCILE_DEFERRED_LOOKUP_ERROR"
+
+    # 3. BinanceProvider.order_status fails closed on missing/empty/unknown status; PENDING_CANCEL -> open
+    fake_bapi = SimpleNamespace(
+        client=SimpleNamespace(
+            get_order=MagicMock(return_value={}),
+            get_my_trades=MagicMock(return_value=[]),
+            get_symbol_info=MagicMock(return_value={"baseAsset": "BTC", "quoteAsset": "USDC"}),
+        )
+    )
+    monkeypatch.setattr(bp_mod, "_get_bapi", lambda: fake_bapi)
+    bp = BinanceProvider(live_enabled=False)
+    for bad_payload in ({}, {"status": ""}, {"status": "null"}, {"status": "BOGUS_STATE"}):
+        fake_bapi.client.get_order.return_value = bad_payload
+        with pytest.raises(ProviderError, match="unknown or empty Binance status"):
+            bp.order_status("BTCUSDC", "42")
+
+    fake_bapi.client.get_order.return_value = {
+        "status": "PENDING_CANCEL", "executedQty": "0", "cummulativeQuoteQty": "0", "origQty": "1.0",
+    }
+    st_pc = bp.order_status("BTCUSDC", "42")
+    assert st_pc.status == "open" and st_pc.venue_status == "PENDING_CANCEL"
+
+    # 4. Unified SSOT cancel/non-fill predicates across order_retry_worker and monitororder
+    assert is_confirmed_cancel_order_status(OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="scheduledCancel"))
+    assert is_confirmed_cancel_order_status(OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="iocCancel"))
+    assert not is_confirmed_cancel_order_status(OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="PENDING_CANCEL"))
+    assert not is_confirmed_cancel_order_status(OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="badAloPxRejected"))
+    assert not is_terminal_non_fill_venue_status("PENDING_CANCEL")
+    assert is_terminal_non_fill_venue_status("EXPIRED_IN_MATCH")
+    assert is_terminal_non_fill_venue_status("marginCanceled")
+    assert is_terminal_non_fill_venue_status("iocCancel")
+    assert is_terminal_non_fill_venue_status("minTradeNtlRejected")
+
+    q_file = str(tmp_path / "q_c8.jsonl")
+    l_file = str(tmp_path / "q_c8.lock")
+    monkeypatch.setattr(oq, "QUEUE_FILE", q_file)
+    monkeypatch.setattr(oq, "LOCK_FILE", l_file)
+    monkeypatch.setattr(oq, "RETRY_ENABLED", True)
+    monkeypatch.setattr(oq, "RETRY_INTERVAL_SEC", 1.0)
+    monkeypatch.setattr(oq, "RETRY_TTL_SEC", 86400.0)
+    monkeypatch.setattr(worker, "WORKER_POLL_SEC", 1.0)
+    monkeypatch.setattr(worker.alert, "notify", lambda **kw: None)
+
+    for v_status, expect_activated in (
+        ("ARCHIVED_CANCELED", True),
+        ("userCanceled", True),
+        ("marginCanceled", True),
+        ("scheduledCancel", True),
+        ("REJECTED", False),
+    ):
+        oq.rewrite([])
+        oq.enqueue(
+            "BTCUSDC", "SELL", 1.5, {"smart": False}, requested_price=101.0, now=1000.0,
+            lifecycle="awaiting_cancel", replaces_order_id="old-c8", replaces_original_qty=1.5,
+        )
+        fake_mkt = SimpleNamespace(
+            order_status=lambda _s, _oid, provider_name=None, _vs=v_status: OrderStatus(
+                "canceled", 0.0, 0.0, 0.0, venue_status=_vs, orig_qty=1.5
+            ),
+            reconciliation_capabilities=lambda *_a, **_kw: None,
+        )
+        worker.process_once(fake_mkt, now=1400.0)
+        rows = oq.load_all()
+        if expect_activated:
+            assert len(rows) == 1 and rows[0]["lifecycle"] == "submit_pending", v_status
+        else:
+            assert rows == [], v_status
+
+    for v_status, expect_place in (("ARCHIVED_CANCELED", True), ("userCanceled", True), ("REJECTED", False)):
+        oq.rewrite([])
+        rep_id = oq.enqueue(
+            "BTCUSDC", "SELL", 1.0, {"smart": False}, requested_price=105.0, now=1000.0,
+            lifecycle="awaiting_cancel", replaces_order_id="old-mo-c9", replaces_original_qty=1.0,
+        )
+        rep_claim = oq.claim([rep_id], now=1000.0, lease_sec=60.0)[0]
+        fake_mo_mkt = MagicMock()
+        fake_mo_mkt.order_status.return_value = OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status=v_status, orig_qty=1.0)
+        fake_mo_mkt.place.return_value = {"orderId": "new-mo-99"}
+        fake_mo_api = MagicMock()
+        fake_mo_api.cancel_order.return_value = True
+        with monkeypatch.context() as mp:
+            mp.setattr(monitororder, "mkt", fake_mo_mkt)
+            mp.setattr(monitororder, "api", fake_mo_api)
+            mp.setattr(monitororder, "_native_replace_enabled_for", lambda _s, _p: False)
+            monitororder._dispatch_native_or_cancel_replace(
+                symbol="BTCUSDC", order_type="SELL", order_id="old-mo-c9", oid_str="old-mo-c9",
+                price="100", price_f=100.0, new_price=105.0, quantity=1.0, original_quantity=1.0,
+                provider_name="binance", replacement_claim=rep_claim,
+                client_order_id=oq.record_client_order_id(rep_claim), cache_permit=None,
+                preflight_qty=1.0, replace_bypass_guards=[], replace_wait_for_trend=False,
+                orders={}, initial_prices={},
+            )
+        assert fake_mo_mkt.place.call_count == (1 if expect_place else 0), v_status
+
+    # 5. spot_engine multi-tranche collapse below ordermin places the single collapsed TP order
+    fake_cli = SimpleNamespace(
+        pair_precision=lambda _pair: PairPrecision(price_decimals=2, volume_decimals=4, order_min=0.01, base_asset="BTC"),
+    )
+    params = StratParams(
+        currency="USDC", entry_amount=100.0, entry_discount_pct=0.2, dca_amount=50.0,
+        dca_drop_pct=2.0, check_minutes=5.0, takeprofit_pct=5.0, max_budget=500.0,
+        max_dca_buys=2, enable_takeprofit=True, order_ttl_min=60.0,
+        tp_tranches=[(4.0, 34.0), (8.0, 33.0), (12.0, 33.0)],
+    )
+    strat = Strategy(
+        fake_cli,
+        "BTCUSDC",
+        params,
+        dry_run=True,
+        replay_mode=True,
+        state_dir=str(tmp_path / "spot_state"),
+        initial_state={"qty": 0.015, "cost": 1500.0, "spent": 1500.0, "entry_price": 100000.0, "last_buy_price": 100000.0},
+    )
+    strat._dispatch_take_profit(price=100000.0, avg=100000.0, held=0.015)
+    sell_orders = [o for o in strat.s["orders"] if o["side"] == "sell"]
+    assert len(sell_orders) == 1
+    assert sell_orders[0]["vol"] == pytest.approx(strat._dust_safe_qty(0.015))
+    assert sell_orders[0]["price"] == pytest.approx(104000.0)
+
+    # 6. monitortrades._is_pending_exit_active immediately clears Binance EXPIRED_IN_MATCH & HL *Canceled/*Cancel/*Rejected
+    with monkeypatch.context() as mp:
+        mp.setattr(mt, "_MT_PERSISTENCE_ENABLED", False)
+        for dead_st in ("EXPIRED_IN_MATCH", "ARCHIVED_CANCELED", "marginCanceled", "iocCancel", "minTradeNtlRejected"):
+            mt._PENDING_STOP_EXIT.clear()
+            mt._PENDING_STOP_EXIT["HYPEUSDC"] = {"time": 1000.0, "client_order_id": "SL_cid_1", "kind": "STOP"}
+            inst_hl = SimpleNamespace(
+                symbol="HYPEUSDC",
+                _provider=SimpleNamespace(order_by_client_id=lambda _s, _c, _st=dead_st: {"orderId": "88", "status": _st}),
+                open_orders=lambda: [],
+            )
+            assert mt._is_pending_exit_active("HYPEUSDC", inst_hl, 2.0, 0.1, 1005.0, current_price=50.0) is False, dead_st
+            assert "HYPEUSDC" not in mt._PENDING_STOP_EXIT, dead_st
+
+        # Non-terminal PENDING_CANCEL stays deferred
+        mt._PENDING_STOP_EXIT["HYPEUSDC"] = {"time": 1000.0, "client_order_id": "SL_cid_2", "kind": "STOP"}
+        inst_pc = SimpleNamespace(
+            symbol="HYPEUSDC",
+            _provider=SimpleNamespace(order_by_client_id=lambda _s, _c: {"orderId": "89", "status": "PENDING_CANCEL"}),
+            open_orders=lambda: [],
+        )
+        assert mt._is_pending_exit_active("HYPEUSDC", inst_pc, 2.0, 0.1, 1005.0, current_price=50.0) is True
+        mt._PENDING_STOP_EXIT.clear()
+
+    # 7. assetguardian.evaluate_symbol restores preempted BUY orders if post-preemption free_balance raises
+    restored_calls: list[tuple[str, list, str]] = []
+    bal_calls = {"n": 0}
+
+    def _flaky_free_balance(asset):
+        if asset == "USDC":
+            bal_calls["n"] += 1
+            if bal_calls["n"] == 1:
+                return 0.0
+            raise RuntimeError("transient 502 after preemption")
+        return 0.0
+
+    fake_ag_prov = SimpleNamespace(
+        free_balance=_flaky_free_balance,
+        open_orders=lambda _sym: [{"orderId": "RT-1", "clientOrderId": "RT_abc", "side": "BUY", "price": "90.0", "origQty": "1.0", "executedQty": "0.0"}],
+    )
+    with monkeypatch.context() as mp:
+        ag_sym = ag.TRACKED_SYMBOLS[0]
+        mp.setattr(ag, "STATE", ag.AssetGuardianState(path=str(tmp_path / "ag_state.json")))
+        mp.setattr(ag.api, "get_current_price", lambda _s: 70.0)
+        mp.setattr(ag, "_get_symbol_window_extrema", lambda _s, _p, minutes_back=None: ({"timestamp": 1000.0, "price": 70.0}, {"timestamp": 1000.0, "price": 100.0}))
+        mp.setattr(ag.mkt, "provider_by_name", lambda _v: fake_ag_prov)
+        mp.setattr(ag, "_cycle_portfolio_growth_percent", lambda minutes_back=None: None)
+        mp.setattr(ag, "_cycle_p3b_sentiment", lambda: None)
+        mp.setattr(ag, "_is_short_trend_waiting", lambda _s, _side: False)
+        mp.setattr(ag, "has_preemptible_open_orders", lambda *_a, **_kw: True)
+
+        def _fake_preempt(_prov, _sym, _side, _owner, *, cancel_fn, canceled_orders_out, resolve_retry_fn):
+            canceled_orders_out.append({"orderId": "RT-1", "side": "BUY", "price": "90.0", "origQty": "1.0"})
+            return 1
+
+        mp.setattr(ag, "preempt_lower_priority_open_orders", _fake_preempt)
+        mp.setattr(ag, "_restore_preempted_orders", lambda sym, ords, reason: restored_calls.append((sym, list(ords), reason)) or len(ords))
+        assert ag.evaluate_symbol(ag_sym) is False
+        assert len(restored_calls) == 1
+        assert restored_calls[0][1][0]["orderId"] == "RT-1"
+        assert restored_calls[0][2] == "assetguardian_buy_no_cash"
+
+    # 8. resolve_late_closed_event_state never upgrades strictly partial RECONCILED_PARTIAL or legacy vst='FILLED' (2/10) to FILLED
+    toks = ["hyperliquid:hypeusdc:vid:hl-p99"]
+    rc_zero = {toks[0]: 1000.0}
+    rc_part = {toks[0]: 1000.0, f"partial:{toks[0]}": 1000.0}
+    ev_leg_part = {"ev": "STATUS", "vst": "FILLED", "fq": 2.0, "qty": 10.0}
+    assert resolve_late_closed_event_state(ev_leg_part, "STATUS", ev_toks=toks, recently_closed=rc_zero) == OrderLedgerState.CANCELED.value
+    assert resolve_late_closed_event_state(ev_leg_part, "STATUS", ev_toks=toks, recently_closed=rc_part) is None
+    ev_rec_part = {"ev": "RECONCILED_PARTIAL", "vst": "FILLED", "fq": 2.0, "qty": 10.0}
+    assert resolve_late_closed_event_state(ev_rec_part, "RECONCILED_PARTIAL", ev_toks=toks, recently_closed=rc_zero) == OrderLedgerState.CANCELED.value
+    assert resolve_late_closed_event_state(ev_rec_part, "RECONCILED_PARTIAL", ev_toks=toks, recently_closed=rc_part) is None
+
+    # 9. portfolio_collector persists venue-reflected locked balances for Unified NAV while keeping
+    #    raw free balances unmutated and never double-counting pre-balance synthetic deductions
+    from intelligence.sentiment.collectors.portfolio_collector import TradablePositionsAndOrdersCollector
+    from providers.portfolio_valuation import compute_venue_nav_breakdown
+
+    cdir_nav = tmp_path / "cachedb_nav_locks"
+    (cdir_nav / "state").mkdir(parents=True)
+    (cdir_nav / "orders").mkdir(parents=True)
+    vb_nav = cdir_nav / "state" / "venue_balances_state.json"
+    now_nav = 1_795_700_000.0
+    bal_old = now_nav - 60.0
+    vb_nav.write_text(
+        json.dumps({
+            "pos:binance:ARBUSDC": {"venue": "binance", "symbol": "ARBUSDC", "base": "ARB", "quote": "USDC", "price": 1.0, "free_base": 0.0, "free_quote": 100.0, "ts": bal_old},
+            "cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 100.0, "ts": bal_old},
+        }),
+        encoding="utf-8",
+    )
+    inst_nav = {
+        "ARBUSDC": SimpleNamespace(
+            symbol="ARBUSDC",
+            provider_name="binance",
+            base="ARB",
+            quote="USDC",
+            params={},
+            _provider=SimpleNamespace(free_balance=lambda _a: None),
+            open_orders=lambda: [
+                {"orderId": "OLD-B", "symbol": "ARBUSDC", "side": "BUY", "type": "LIMIT", "price": "1.0", "origQty": "40.0", "executedQty": "0.0", "status": "NEW", "time": int((bal_old - 30.0) * 1000)},
+                {"orderId": "NEW-B", "symbol": "ARBUSDC", "side": "BUY", "type": "LIMIT", "price": "1.0", "origQty": "25.0", "executedQty": "0.0", "status": "NEW", "time": int((now_nav - 10.0) * 1000)},
+            ],
+        )
+    }
+    _, _, vcash_nav, _ = TradablePositionsAndOrdersCollector(start_sync=False).collect(
+        str(cdir_nav),
+        inst_map=inst_nav,
+        prices_and_trends={"ARBUSDC": {"price": 1.0}},
+        allow_network=True,
+        persist=True,
+        force_persist=True,
+        now_ts=now_nav,
+    )
+    assert vcash_nav["binance:USDC"]["free"] == pytest.approx(75.0)
+    assert vcash_nav["binance:USDC"]["locked_quote_usd"] == pytest.approx(65.0)
+    saved_nav = json.loads(vb_nav.read_text(encoding="utf-8"))
+    assert saved_nav["cash:binance:USDC"]["free"] == pytest.approx(100.0)
+    assert saved_nav["cash:binance:USDC"]["locked_quote_usd"] == pytest.approx(40.0)
+    nav_eval = compute_venue_nav_breakdown(venue_balances_state=saved_nav, live_prices={"ARBUSDC": 1.0})
+    assert nav_eval["portfolio_total_usd"] == pytest.approx(140.0)
+
+

@@ -1626,11 +1626,25 @@ def read_json_dict_cached(
 
 def _looks_like_jsonl_bucket_file(path: str) -> bool:
     try:
+        checked = 0
         with open(path, "rb") as handle:
             for raw in handle:
                 s = raw.strip()
-                if s:
-                    return s.startswith(b'{"s":') or s.startswith(b'{"s" :')
+                if not s:
+                    continue
+                if s.startswith(b'{"s":') or s.startswith(b'{"s" :'):
+                    return True
+                if checked == 0 and (
+                    s == b"{"
+                    or s.startswith(b'{"items":')
+                    or s.startswith(b'{"items" :')
+                    or s.startswith(b'{"fetchtime":')
+                    or s.startswith(b'{"fetchtime" :')
+                ):
+                    return False
+                checked += 1
+                if checked >= 8:
+                    break
     except OSError:
         pass
     return False

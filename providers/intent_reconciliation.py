@@ -73,6 +73,38 @@ def _is_terminal_fill_record(rec: dict[str, Any]) -> bool:
     return is_term
 
 
+def _fill_record_rank(rec: dict[str, Any]) -> tuple[int, int, float, float]:
+    """Monotonic preference rank for competing fill audit records: (is_full_filled, is_terminal, filled_qty, ts)."""
+    v_stat, l_stat, _, f_q, *_, is_fill = _extract_audit_fill_metrics(rec)
+    if not is_fill:
+        return (0, 0, 0.0, 0.0)
+    norm_st, is_term = _classify_audit_fill_state(str(rec.get("event") or ""), v_stat, l_stat)
+    fq_val = safe_pos_float(f_q, default=0.0) or 0.0
+    ts_val = safe_pos_float(rec.get("ts"), default=0.0) or 0.0
+    return (1 if norm_st == "FILLED" else 0, 1 if is_term else 0, fq_val, ts_val)
+
+
+def _should_replace_fill_record(prev: dict[str, Any] | None, rec: dict[str, Any]) -> bool:
+    """Return True when ``rec`` should supersede ``prev`` without downgrading terminal status or fill qty."""
+    if prev is None:
+        return True
+    p_full, p_term, p_fq, p_ts = _fill_record_rank(prev)
+    r_full, r_term, r_fq, r_ts = _fill_record_rank(rec)
+    if p_full and not r_full and r_fq <= p_fq + 1e-12:
+        return False
+    if p_term and not r_term and r_fq <= p_fq + 1e-12:
+        return False
+    if p_term and r_fq < p_fq - 1e-12:
+        return False
+    if r_full != p_full:
+        return r_full > p_full
+    if r_term != p_term:
+        return r_term > p_term
+    if abs(r_fq - p_fq) > 1e-12:
+        return r_fq > p_fq
+    return r_ts >= p_ts
+
+
 def _partition_intents_for_audit_reconciliation(
     intents: list[dict[str, Any]],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], bool]:
@@ -236,14 +268,14 @@ def _scan_matching_audit_records(
                 elif ev == "order_status":
                     *_, is_fill = _extract_audit_fill_metrics(rec)
                     if is_fill:
-                        if prev is None or not _is_terminal_fill_record(prev):
+                        if _should_replace_fill_record(prev, rec):
                             matched_records[iid] = rec
                     elif prev is None or str(prev.get("event") or "") == "submit_unknown":
                         matched_records[iid] = rec
                 elif ev in ("order_terminal", "order_terminal_retry"):
                     v_stat, l_stat, *_, is_fill = _extract_audit_fill_metrics(rec)
                     if is_fill:
-                        if prev is None or not _is_terminal_fill_record(prev) or _is_terminal_fill_record(rec):
+                        if _should_replace_fill_record(prev, rec):
                             matched_records[iid] = rec
                     elif not prev_is_fill and is_cancel_or_expire_status(v_stat, l_stat):
                         prev_oid = clean_order_id(prev.get("order_id")) if prev is not None else None
@@ -268,7 +300,7 @@ def _scan_matching_audit_records(
                         continue
                     v_stat, l_stat, *_, is_fill = _extract_audit_fill_metrics(rec)
                     if is_fill:
-                        if prev_exec is None or not _is_terminal_fill_record(prev_exec) or _is_terminal_fill_record(rec):
+                        if _should_replace_fill_record(prev_exec, rec):
                             matched_exec_records[iid] = rec
                     elif (
                         ev in ("order_terminal", "order_terminal_retry")

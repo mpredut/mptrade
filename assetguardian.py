@@ -2239,7 +2239,11 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         return False
     print(f"[{symbol}] Drawdown threshold reached ({drawdown_percent:.4f}% <= -{first_buy_trigger:.4f}%). Checking staged BUY...")
     _, quote_asset = resolve_assets(symbol)
-    free_cash = _finite_float(provider.free_balance(quote_asset), positive=True) if provider else None
+    try:
+        free_cash = _finite_float(provider.free_balance(quote_asset), positive=True) if provider else None
+    except Exception as exc:
+        print(f"[{symbol}] BUY balance unavailable; skip BUY fail-closed: {exc}")
+        free_cash = None
     preempted_buy_orders: list[dict] = []
     if provider is not None:
         existing_buy = _symbol_campaign(symbol, "buy")
@@ -2274,7 +2278,11 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
                 canceled_orders_out=preempted_buy_orders,
                 resolve_retry_fn=resolve_accepted_order,
             ):
-                free_cash = _finite_float(provider.free_balance(quote_asset), positive=True)
+                try:
+                    free_cash = _finite_float(provider.free_balance(quote_asset), positive=True)
+                except Exception as exc:
+                    print(f"[{symbol}] BUY balance refresh failed after preemption; restoring orders: {exc}")
+                    free_cash = None
     if free_cash is None:
         _restore_preempted_orders(symbol, preempted_buy_orders, "assetguardian_buy_no_cash")
         return _log_symbol_and_return(symbol, f"No valid {quote_asset} balance for staged BUY.")

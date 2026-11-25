@@ -515,12 +515,18 @@ def resolve_late_closed_event_state(
         return None
     ev_fq = safe_nonneg_float(event.get("fq"), default=0.0) or 0.0
     ev_qty = safe_pos_float(event.get("qty"), default=None)
-    cand_state = _DIRECT_TERMINAL_EVENTS.get(ev) or _classify_venue_status_transition(
-        event.get("vst"),
-        fq=ev_fq,
-        req_qty=ev_qty,
-        current_state=OrderLedgerState.OPEN.value,
-    )
+    qty_strictly_partial = ev_fq > 0.0 and ev_qty is not None and ev_fq < ev_qty * 0.9999
+    if ev == OrderEventType.RECONCILED_PARTIAL.value:
+        cand_state: Optional[str] = OrderLedgerState.PARTIAL.value
+    else:
+        cand_state = _DIRECT_TERMINAL_EVENTS.get(ev) or _classify_venue_status_transition(
+            event.get("vst"),
+            fq=ev_fq,
+            req_qty=ev_qty,
+            current_state=OrderLedgerState.OPEN.value,
+        )
+        if cand_state == OrderLedgerState.FILLED.value and qty_strictly_partial:
+            cand_state = OrderLedgerState.PARTIAL.value
     is_full_fill = (
         cand_state == OrderLedgerState.FILLED.value
         or (ev_fq > 0.0 and ev_qty is not None and ev_fq >= ev_qty * 0.9999)
@@ -1259,7 +1265,7 @@ class OrderLedgerReader(FileOrderLedgerBase):
         if not all_event_files and not all_closed_files:
             return [], False
 
-        out: list[dict[str, Any]] = []
+        tagged: list[tuple[float, int, dict[str, Any]]] = []
         min_month = min_day[:7] if len(min_day) >= 7 else ""
         max_month = max_day[:7] if len(max_day) >= 7 else ""
         closed_files = all_closed_files[-2:] if (max_days is not None and not min_day and not max_day) else all_closed_files
@@ -1278,7 +1284,7 @@ class OrderLedgerReader(FileOrderLedgerBase):
                     if (min_day and row_day < min_day) or (max_day and row_day > max_day):
                         continue
                 if adapted := ledger_row_to_audit_record(row, is_closed=True):
-                    out.append(adapted)
+                    tagged.append((safe_float(adapted.get("ts"), default=0.0) or 0.0, 1, adapted))
 
         selected: list[str] = []
         for fpath in all_event_files:
@@ -1294,8 +1300,11 @@ class OrderLedgerReader(FileOrderLedgerBase):
         for fpath in selected:
             for row in read_jsonl_dicts(fpath):
                 if adapted := ledger_row_to_audit_record(row, is_closed=False):
-                    out.append(adapted)
-        return out, True
+                    tagged.append((safe_float(adapted.get("ts"), default=0.0) or 0.0, 0, adapted))
+        # Preserve chronological audit order (events before closed summaries at equal timestamps)
+        # so downstream reconcilers/attribution never let earlier events clobber terminal fills.
+        tagged.sort(key=lambda item: (item[0], item[1]))
+        return [item[2] for item in tagged], True
 
     def load_recent_order_origins(
         self, *, max_days: int = 3
@@ -1384,9 +1393,10 @@ class OrderLedgerReader(FileOrderLedgerBase):
                 sym_list = by_sym.setdefault(sym_t, [])
                 if dedup_k and (sym_t, dedup_k) in idx_by_oid:
                     existing = sym_list[idx_by_oid[(sym_t, dedup_k)]]
-                    new_q = max(safe_pos_float(existing.get("qty"), default=0.0) or 0.0, fq)
-                    existing["qty"] = existing["executedQty"] = new_q
-                    existing["price"] = px_f
+                    prev_q = safe_pos_float(existing.get("qty"), default=0.0) or 0.0
+                    if fq >= prev_q - 1e-12:
+                        existing["qty"] = existing["executedQty"] = max(prev_q, fq)
+                        existing["price"] = px_f
                     if cid_val and not existing.get("clientOrderId"):
                         existing["clientOrderId"] = cid_val
                 else:

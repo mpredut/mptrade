@@ -584,8 +584,10 @@ def find_order_audit_record(
     raw_cdb = clean_scalar_str(os.fspath(cachedb_dir)) if isinstance(cachedb_dir, (str, os.PathLike)) else None
     if raw_cdb is not None or audit_dir is None:
         reader = OrderLedgerReader(cachedb_dir=raw_cdb)
-        trace = reader.trace_order(target_oid or target_cid or "", max_event_days=7, max_closed_months=2)
-        if trace.get("found"):
+        for q_id in dict.fromkeys(q for q in (target_oid, target_cid) if q):
+            trace = reader.trace_order(q_id, max_event_days=7, max_closed_months=2)
+            if not trace.get("found"):
+                continue
             candidates: list[tuple[dict[str, Any], bool]] = []
             if isinstance(act := trace.get("active_order"), dict):
                 candidates.append((act, False))

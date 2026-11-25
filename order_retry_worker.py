@@ -44,6 +44,7 @@ import order_retry as oq
 from providers.execution_audit import ExecutionAudit
 from providers.market_api import api as mkt, resolve_symbol_provider_name
 from providers.order_id_context import record_client_order_id
+from providers.order_status_ssot import is_confirmed_cancel_order_status
 from providers.quantity import resolve_assets
 from state_io import (
     discard_generation_file,
@@ -402,7 +403,7 @@ def _process_awaiting_cancel_claim(mkt, r, symbol, provider_name, now, stats):
     if status is None:
         return
     venue_status = str(status.venue_status or "").upper()
-    if venue_status in {"CANCELED", "CANCELLED"}:
+    if is_confirmed_cancel_order_status(status):
         replacement_qty = oq.compute_replacement_qty(r.get("replaces_original_qty"), status)
         activation = oq.activate_claimed_replacement(r, replacement_qty, now)
         if activation == "activated":

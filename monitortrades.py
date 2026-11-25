@@ -49,6 +49,7 @@ import order_retry
 import pricewindow as pw
 from providers.base import MarketDataProvider
 from providers.order_id_context import extract_client_order_id
+from providers.order_status_ssot import is_open_working_status, is_terminal_non_fill_venue_status
 from providers.market_api import api as mkt, resolve_symbol_provider_name
 apitrades = mkt
 from providers.quantity import check_order_filter_refusal, resolve_assets
@@ -746,14 +747,16 @@ def _is_pending_exit_active(
         try:
             found = prov.order_by_client_id(symbol, p_cid)
             if found and extract_order_id(found, default=None):
-                st = str(found.get("status") or "").upper()
+                st = str(found.get("status") or "").strip().upper()
                 if st in ("FILLED", "CLOSED", "RESOLVED"):
                     print(f"[{symbol}] Pending Stop-Loss {p_cid} resolved filled on venue.")
                     _resolve_exit(symbol, inst)
                     return True
-                if st in ("NEW", "OPEN", "PARTIALLY_FILLED", "PENDING", "WORKING", "RESTING"):
+                if st in ("PARTIALLY_FILLED", "PENDING_CANCEL", "PENDING_NEW") or is_open_working_status(
+                    st, allow_empty=False
+                ):
                     active_sell_exists = True
-                elif st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED"):
+                elif is_terminal_non_fill_venue_status(st):
                     print(f"[{symbol}] Pending exit {p_cid} terminal on venue ({st}) \u2014 clearing stale intent for fresh retry.")
                     _restore_pending_exit_state(symbol, pending_stop, clear_pending=True)
                     return False

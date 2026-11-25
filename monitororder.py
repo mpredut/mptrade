@@ -17,6 +17,7 @@ from providers.market_api import (  # Single guarded proxy (Instrument.place).
 )
 api = mkt
 from providers.ohlc_utils import ProviderError
+from providers.order_status_ssot import is_confirmed_cancel_order_status
 from providers.strategy_executor import SubmissionRefused
 import order_retry
 import order_lifecycle
@@ -780,7 +781,7 @@ def _dispatch_native_or_cancel_replace(
         )
         return
     venue_status = str(status.venue_status or "").upper()
-    if venue_status in {"CANCELED", "CANCELLED"}:
+    if is_confirmed_cancel_order_status(status):
         if not cancel_confirmed:
             print(
                 f"Order {order_id} is confirmed canceled after the cancel "

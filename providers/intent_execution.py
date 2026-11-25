@@ -50,6 +50,7 @@ from .order_ohlc_utils import (
 )
 from .order_status_ssot import is_active_or_filled_status
 from .quantity import _floor_qty_decimals, round_provider_qty
+from .strategy_executor import OrderNotFound
 
 
 def resolve_intent_topic_tag(intent: dict[str, Any], venue: str) -> str:
@@ -402,7 +403,9 @@ def _is_unconfigured_mock_callable(fn: Any) -> bool:
     )
 
 
-def _call_inst_or_provider_order_lookup(inst: Any, method_name: str, order_ref: str) -> Any:
+def _call_inst_or_provider_order_lookup(
+    inst: Any, method_name: str, order_ref: str, *, raise_on_error: bool = False
+) -> Any:
     sym = clean_scalar_str(getattr(inst, "symbol", None)) or ""
     inst_fn = getattr(inst, method_name, None)
     prov = getattr(inst, "_provider", None)
@@ -413,15 +416,28 @@ def _call_inst_or_provider_order_lookup(inst: Any, method_name: str, order_ref: 
         if sym and callable(prov_fn) and not _is_unconfigured_mock_callable(prov_fn):
             return prov_fn(sym, str(order_ref))
     except Exception:
+        if raise_on_error:
+            raise
         return None
     return None
 
 
 def _missing_target_order_blocks_replacement(
-    inst: Any, order_id: str, *, want_side: Optional[str] = None
+    inst: Any,
+    order_id: str,
+    *,
+    want_side: Optional[str] = None,
+    fail_closed_on_error: bool = False,
 ) -> bool:
-    """Return True when a targeted same-side order absent from ``open_orders()`` already executed or remains active."""
-    st = _call_inst_or_provider_order_lookup(inst, "order_status", order_id)
+    """Return True when a targeted same-side order absent from ``open_orders()`` already executed, remains active, or cannot be verified."""
+    try:
+        st = _call_inst_or_provider_order_lookup(
+            inst, "order_status", order_id, raise_on_error=fail_closed_on_error
+        )
+    except OrderNotFound:
+        return False
+    except Exception:
+        return bool(fail_closed_on_error)
     if st is None:
         return False
     if want_side in ("BUY", "SELL"):
@@ -434,7 +450,7 @@ def _missing_target_order_blocks_replacement(
             return False
     st_lc = (clean_scalar_str(st.get("status") if isinstance(st, dict) else getattr(st, "status", None)) or "").lower()
     if not st_lc:
-        return False
+        return bool(fail_closed_on_error)
     raw_fq = st.get("filled_qty") if isinstance(st, dict) else getattr(st, "filled_qty", 0.0)
     return is_active_or_filled_status(st_lc, raw_fq)
 
@@ -565,7 +581,9 @@ def cancel_existing_ai_open_orders(
         for t_oid in sorted(targeted):
             if t_oid.lower() in matched_targets_lc or t_oid in excluded:
                 continue
-            if _missing_target_order_blocks_replacement(inst, t_oid, want_side=want_side):
+            if _missing_target_order_blocks_replacement(
+                inst, t_oid, want_side=want_side, fail_closed_on_error=True
+            ):
                 failed_order_ids.append(t_oid)
                 if log:
                     log.warning(
@@ -904,12 +922,19 @@ def reconcile_open_intent_by_client_id(
             )
         return True
 
+    open_lookup_failed = False
     open_fn = getattr(inst, "open_orders", None)
     if callable(open_fn) and not _is_unconfigured_mock_callable(open_fn):
         try:
             raw_open = open_fn()
-        except Exception:
+        except Exception as exc:
             raw_open = None
+            open_lookup_failed = True
+            if log:
+                log.warning(
+                    "[INTENT GATEWAY] open_orders() failed while reconciling resumed intent on %s: %s",
+                    getattr(inst, "symbol", ""), exc,
+                )
         if isinstance(raw_open, list):
             for oo in raw_open:
                 if order_matches_intent_client_id(oo, intent, expected_cids=expected_cids):
@@ -918,9 +943,46 @@ def reconcile_open_intent_by_client_id(
 
     base_cid = ai_intent_client_order_id(_extract_intent_id(intent))
     if not base_cid:
+        if open_lookup_failed:
+            append_intent_history(intent, {
+                "ts": now_ts,
+                "action": "RECONCILE_DEFERRED_LOOKUP_ERROR",
+                "reason": "open_orders_lookup_failed",
+            })
+            return True
         return False
-    found = _call_inst_or_provider_order_lookup(inst, "order_by_client_id", base_cid)
+
+    has_cid_lookup = any(
+        callable(fn) and not _is_unconfigured_mock_callable(fn)
+        for fn in (
+            getattr(inst, "order_by_client_id", None),
+            getattr(getattr(inst, "_provider", None), "order_by_client_id", None),
+        )
+    )
+    try:
+        found = _call_inst_or_provider_order_lookup(
+            inst, "order_by_client_id", base_cid, raise_on_error=True
+        )
+    except Exception as exc:
+        if log:
+            log.warning(
+                "[INTENT GATEWAY] Deferring resumed intent on %s; order_by_client_id(%s) failed: %s",
+                getattr(inst, "symbol", ""), base_cid, exc,
+            )
+        append_intent_history(intent, {
+            "ts": now_ts,
+            "action": "RECONCILE_DEFERRED_LOOKUP_ERROR",
+            "reason": f"order_by_client_id_failed:{exc}",
+        })
+        return True
     if not isinstance(found, dict):
+        if open_lookup_failed and not has_cid_lookup:
+            append_intent_history(intent, {
+                "ts": now_ts,
+                "action": "RECONCILE_DEFERRED_LOOKUP_ERROR",
+                "reason": "open_orders_lookup_failed",
+            })
+            return True
         return False
     oid_str = extract_order_id(found, default="")
     if not oid_str:

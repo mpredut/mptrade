@@ -1277,11 +1277,18 @@ class CacheManagerInterface(ABC):
                     if (not had_invalid_line and dev_ino is not None and next_offset > 0)
                     else None
                 )
+                if not inc_used and not self.cache and os.path.exists(backup_path):
+                    self.cache, had_invalid_line = read_jsonl_bucket_map(backup_path)
+                    self._jsonl_tail_state = None
             else:
                 self.cache = {}
                 self._jsonl_tail_state = None
                 if os.path.exists(self.filename):
                     self.cache, had_invalid_line = read_jsonl_bucket_map(self.filename)
+                    if not self.cache and had_invalid_line and os.path.exists(backup_path):
+                        prev_cache, _ = read_jsonl_bucket_map(backup_path)
+                        if prev_cache:
+                            self.cache = prev_cache
                 elif self.read_only and os.path.exists(backup_path):
                     self.cache, had_invalid_line = read_jsonl_bucket_map(backup_path)
             self._legacy_jsonl_needs_rewrite = had_invalid_line

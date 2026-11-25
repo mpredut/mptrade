@@ -175,12 +175,20 @@ def _match_intent_recent_fill(
             break
     if not isinstance(last_fill, dict):
         return fill_px, filled_qty, 0
-    if fill_px is None or (venue_st in UNFILLED_ORDER_STATUSES and filled_qty <= 0):
-        fill_px = safe_pos_float(last_fill.get("price"), default=fill_px)
+    exact_oid_match = bool(order_id is not None and clean_order_id(last_fill.get("order_id")) == str(order_id))
+    cand_qty = safe_pos_float(last_fill.get("qty"), default=0.0) or 0.0
     if filled_qty <= 0:
-        filled_qty = safe_pos_float(last_fill.get("qty"), default=0.0) or 0.0
-    matched_fill_ts_ms = normalize_timestamp_ms(last_fill.get("ts_ms"), default=0) or 0
-    return fill_px, filled_qty, matched_fill_ts_ms
+        if fill_px is None or venue_st in UNFILLED_ORDER_STATUSES:
+            fill_px = safe_pos_float(last_fill.get("price"), default=fill_px)
+        filled_qty = cand_qty
+        matched_fill_ts_ms = normalize_timestamp_ms(last_fill.get("ts_ms"), default=0) or 0
+        return fill_px, filled_qty, matched_fill_ts_ms
+    if exact_oid_match and cand_qty > filled_qty + 1e-12:
+        fill_px = safe_pos_float(last_fill.get("price"), default=fill_px)
+        filled_qty = cand_qty
+        matched_fill_ts_ms = normalize_timestamp_ms(last_fill.get("ts_ms"), default=0) or 0
+        return fill_px, filled_qty, matched_fill_ts_ms
+    return fill_px, filled_qty, 0
 
 
 def _compute_signed_exec_bps(side: str, fill_px: float, anchor_px: float) -> float:
@@ -334,6 +342,7 @@ def _resolve_intent_execution_details(
     recent_orders: Optional[dict[str, Any]] = None,
     open_orders: Optional[list[dict[str, Any]]] = None,
     verified_open_venues: Optional[set[str]] = None,
+    verified_open_symbols: Optional[Any] = None,
 ) -> dict[str, Any]:
     """Resolve fill price, filled quantity, execution status, and slippage (bps) for an intent."""
     raw_i_venue = clean_scalar_str(i.get("venue"))
@@ -430,14 +439,31 @@ def _resolve_intent_execution_details(
         and (venue_st in UNFILLED_ORDER_STATUSES or not venue_st)
         and filled_qty <= 0
     )
-    venue_open_verified = (
-        verified_open_venues is None
-        or (
-            bool(venue)
-            and isinstance(verified_open_venues, (set, frozenset, list, tuple))
-            and normalize_venue_name(venue) in verified_open_venues
+    if verified_open_symbols is not None:
+        venue_norm = normalize_venue_name(venue) if venue else ""
+        venue_open_verified = bool(
+            venue_norm
+            and symbol
+            and isinstance(verified_open_symbols, (set, frozenset, list, tuple))
+            and any(
+                isinstance(entry, (tuple, list))
+                and len(entry) == 2
+                and normalize_venue_name(clean_scalar_str(entry[0]) or "") == venue_norm
+                and symbols_match_intent_scope_and_quote(
+                    entry[1], symbol, venue_a=entry[0], venue_b=venue_norm
+                )
+                for entry in verified_open_symbols
+            )
         )
-    )
+    else:
+        venue_open_verified = (
+            verified_open_venues is None
+            or (
+                bool(venue)
+                and isinstance(verified_open_venues, (set, frozenset, list, tuple))
+                and normalize_venue_name(venue) in verified_open_venues
+            )
+        )
     if (
         is_unfilled_resting_limit
         and matched_open is None
@@ -447,6 +473,22 @@ def _resolve_intent_execution_details(
         and (resolve_now_ts(now_ts) - ts_val) > MarketDataProvider.resolve_unfilled_order_cancel_grace_sec()
     ):
         venue_st = "CANCELED_OR_EXPIRED"
+    elif (
+        matched_open is None
+        and venue_st == "PARTIALLY_FILLED"
+        and orig_qty is not None
+        and orig_qty > 0.0
+        and filled_qty >= orig_qty * 0.9999
+    ):
+        venue_st = "FILLED"
+    elif (
+        filled_qty > 0.0
+        and orig_qty is not None
+        and orig_qty > 0.0
+        and filled_qty < orig_qty * 0.9999
+        and venue_st not in ("FILLED", "CLOSED", *TERMINAL_CANCEL_VENUE_STATUSES)
+    ):
+        venue_st = "PARTIALLY_FILLED"
 
     exec_status, venue_st, fill_px, ref_px, slippage_bps, arrival_shortfall_bps = _classify_intent_exec_status_and_slippage(
         i,
@@ -569,6 +611,7 @@ def _resolve_executed_open_resting_detail(
     recent_orders: Optional[dict[str, Any]] = None,
     open_orders: Optional[list[dict[str, Any]]] = None,
     verified_open_venues: Optional[set[str]] = None,
+    verified_open_symbols: Optional[Any] = None,
 ) -> Optional[dict[str, Any]]:
     if str(intent_obj.get("status") or "").strip().upper() != "EXECUTED":
         return None
@@ -579,6 +622,7 @@ def _resolve_executed_open_resting_detail(
         recent_orders=recent_orders,
         open_orders=open_orders,
         verified_open_venues=verified_open_venues,
+        verified_open_symbols=verified_open_symbols,
     )
     return det if _is_open_resting_detail(det) else None
 
@@ -592,6 +636,7 @@ def summarize_recent_ai_intents(
     recent_orders: Optional[dict[str, Any]] = None,
     open_orders: Optional[list[dict[str, Any]]] = None,
     verified_open_venues: Optional[set[str]] = None,
+    verified_open_symbols: Optional[Any] = None,
 ) -> list[dict[str, Any]]:
     """Summarize the most recent AI trade intents filtered by asset scope."""
     scoped_intents = _filter_intents_by_scope(intents_data, scope)
@@ -638,6 +683,7 @@ def summarize_recent_ai_intents(
             recent_orders=recent_orders,
             open_orders=open_orders,
             verified_open_venues=verified_open_venues,
+            verified_open_symbols=verified_open_symbols,
         )
         sym_side_key = _intent_venue_symbol_side_key(det.get("venue"), det.get("symbol"), det.get("side"))
         if (
@@ -674,6 +720,7 @@ def summarize_recent_ai_intents(
                 recent_orders=recent_orders,
                 open_orders=open_orders,
                 verified_open_venues=verified_open_venues,
+                verified_open_symbols=verified_open_symbols,
             )
             if det is not None and (det["order_id"] is None or str(det["order_id"]) not in seen_oids):
                 if det["order_id"] is not None:
@@ -693,6 +740,7 @@ def build_last_cycle_execution_status(
     recent_orders: Optional[dict[str, Any]] = None,
     open_orders: Optional[list[dict[str, Any]]] = None,
     verified_open_venues: Optional[set[str]] = None,
+    verified_open_symbols: Optional[Any] = None,
 ) -> Optional[Any]:
     """Build closed-loop mathematical fill confirmation (fill_px, slippage_bps, status) for the last cycle's intent(s)."""
     scoped_intents = _filter_intents_by_scope(intents_data, scope)
@@ -758,6 +806,7 @@ def build_last_cycle_execution_status(
             recent_orders=recent_orders,
             open_orders=open_orders,
             verified_open_venues=verified_open_venues,
+            verified_open_symbols=verified_open_symbols,
         )
         eff_ts_det = safe_pos_float(det.get("fill_ts_val"), default=None) or det["ts_val"]
         if (
@@ -787,6 +836,7 @@ def build_last_cycle_execution_status(
                 recent_orders=recent_orders,
                 open_orders=open_orders,
                 verified_open_venues=verified_open_venues,
+                verified_open_symbols=verified_open_symbols,
             )
             if det is None:
                 continue
@@ -945,6 +995,7 @@ def summarize_active_ai_trade_plans(
     recent_orders: Optional[dict[str, Any]] = None,
     open_orders: Optional[list[dict[str, Any]]] = None,
     verified_open_venues: Optional[set[str]] = None,
+    verified_open_symbols: Optional[Any] = None,
     price_bars_by_symbol: Optional[Mapping[str, Sequence[Any]]] = None,
     max_age_days: float = 14.0,
 ) -> list[dict[str, Any]]:
@@ -1026,6 +1077,7 @@ def summarize_active_ai_trade_plans(
             recent_orders=recent_orders,
             open_orders=open_orders,
             verified_open_venues=verified_open_venues,
+            verified_open_symbols=verified_open_symbols,
         )
         side = det.get("side") or ""
         if side not in ("BUY", "SELL"):

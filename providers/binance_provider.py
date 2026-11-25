@@ -789,18 +789,24 @@ class BinanceProvider(MarketDataProvider):
         st_map = {
             "FILLED": "closed",
             "CANCELED": "canceled",
+            "CANCELLED": "canceled",
             "EXPIRED": "expired",
             "EXPIRED_IN_MATCH": "expired",
             "REJECTED": "canceled",
             "NEW": "open",
             "PARTIALLY_FILLED": "open",
+            "PENDING_CANCEL": "open",
+            "PENDING_NEW": "open",
         }
         raw_venue_status = o.get("status")
         if isinstance(raw_venue_status, bool):
             raise ProviderError(f"order_status({order_id}): invalid order status")
         venue_status = clean_upper_scalar(raw_venue_status) or ""
+        norm_status = st_map.get(venue_status)
+        if norm_status is None:
+            raise ProviderError(f"order_status({order_id}): unknown or empty Binance status {venue_status!r}")
         return OrderStatus(
-            status=st_map.get(venue_status, "open"),
+            status=norm_status,
             filled_qty=executed_qty,
             cost=cost_val,
             fee=fee,

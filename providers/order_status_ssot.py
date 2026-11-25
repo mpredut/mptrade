@@ -205,6 +205,30 @@ def is_terminal_audit_status(venue_status: object, local_status: object = None) 
     )
 
 
+def is_confirmed_cancel_order_status(status: object) -> bool:
+    """Return True when an ``OrderStatus`` proves a venue cancellation (excluding rejections/pending)."""
+    v_u = _norm_upper_status(getattr(status, "venue_status", None))
+    if v_u in {"CANCELED", "CANCELLED", "ARCHIVED_CANCELED"}:
+        return True
+    s_lc = _norm_lower_status(getattr(status, "status", None))
+    return bool(
+        s_lc == "canceled"
+        and (v_u.endswith("CANCELED") or v_u.endswith("CANCELLED") or v_u.endswith("CANCEL"))
+        and "REJECT" not in v_u
+        and "PENDING" not in v_u
+    )
+
+
+def is_terminal_non_fill_venue_status(status: object) -> bool:
+    """Return True when a raw venue status string proves a terminal cancel, expiry, or rejection."""
+    v_u = _norm_upper_status(status)
+    if not v_u or "PENDING" in v_u:
+        return False
+    if v_u in TERMINAL_CANCEL_VENUE_STATUSES or v_u in {"ARCHIVED_CANCELED", "EXPIRED_IN_MATCH"}:
+        return True
+    return v_u.endswith(("CANCELED", "CANCELLED", "CANCEL", "EXPIRED", "REJECTED"))
+
+
 def classify_order_lifecycle_state(
     venue_status: object = None,
     local_status: object = None,

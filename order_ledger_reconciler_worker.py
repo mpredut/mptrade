@@ -64,6 +64,7 @@ from providers.order_ledger import (
     apply_order_event,
     build_order_event,
     classify_fill_evidence_state,
+    closed_order_tokens,
     make_closed_summary,
     match_active_order_key,
     replay_producer_events,
@@ -440,9 +441,11 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                                 )
                                 stats["reconciled_open"] += 1
                         else:
-                            # Skip re-adopting stale open-cache entries that already completed or just closed.
-                            vid_tok = f"{venue_key}:{sym_lc}:vid:{oid.lower()}" if sym_lc else f"{venue_key}:vid:{oid.lower()}"
-                            if vid_tok in recently_closed:
+                            # Skip re-adopting stale open-cache entries that already completed or just closed (vid or cid/cloid).
+                            if any(
+                                tok in recently_closed
+                                for tok in closed_order_tokens(venue_key, symbol=sym_norm, vid=oid, cid=cid)
+                            ):
                                 continue
                             prior_fill = self._find_matching_fill(
                                 {"v": venue_key, "sym": sym_norm, "vid": oid, "cid": cid},
@@ -550,9 +553,15 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                         **common_fill_kw,
                     )
                 elif fill_qty > (safe_nonneg_float(rec.get("fq"), default=0.0) or 0.0) + 1e-12:
+                    raw_fill_vst = clean_upper_scalar(fill_row.get("status"))
+                    partial_vst = (
+                        raw_fill_vst
+                        if raw_fill_vst and raw_fill_vst not in {"FILLED", "CLOSED"}
+                        else "PARTIALLY_FILLED"
+                    )
                     _emit(
                         OrderEventType.RECONCILED_PARTIAL.value,
-                        vst=clean_upper_scalar(fill_row.get("status")) or "PARTIALLY_FILLED",
+                        vst=partial_vst,
                         **common_fill_kw,
                     )
 
