@@ -264,6 +264,35 @@ def match_filled_intent_rows_lifo(
     reloaded_buys: dict[Any, list[list[Any]]] = {}
     pending_sells: dict[Any, list[list[Any]]] = {}
     closed_pairs: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    pair_idx_by_src: dict[tuple[str, int, int], tuple[int, float, float, float, float]] = {}
+
+    def _record_closed_pair(
+        pair_kind: str,
+        lot_row: dict[str, Any],
+        lot_matched_q: float,
+        lot_orig: float,
+        incoming: dict[str, Any],
+        in_matched_q: float,
+        in_orig: float,
+    ) -> None:
+        # Coalesce split slices of the exact same entry/exit fills (e.g. a reload BUY split across
+        # pending_buys + reloaded_buys and later closed by a single SELL) into one closed trade.
+        src_key = (pair_kind, id(lot_row), id(incoming))
+        if (prev := pair_idx_by_src.get(src_key)) is not None:
+            idx, prev_lot_q, prev_lot_orig, prev_in_q, prev_in_orig = prev
+            new_lot_q = min(prev_lot_orig, prev_lot_q + lot_matched_q)
+            new_in_q = min(prev_in_orig, prev_in_q + in_matched_q)
+            closed_pairs[idx] = (
+                pair_kind,
+                _slice_lifo_row(lot_row, new_lot_q, prev_lot_orig),
+                _slice_lifo_row(incoming, new_in_q, prev_in_orig),
+            )
+            pair_idx_by_src[src_key] = (idx, new_lot_q, prev_lot_orig, new_in_q, prev_in_orig)
+            return
+        pair_idx_by_src[src_key] = (len(closed_pairs), lot_matched_q, lot_orig, in_matched_q, in_orig)
+        closed_pairs.append(
+            (pair_kind, _slice_lifo_row(lot_row, lot_matched_q, lot_orig), _slice_lifo_row(incoming, in_matched_q, in_orig))
+        )
 
     def _dust_eps(orig_a: float, orig_b: float, explicit_a: bool, explicit_b: bool) -> float:
         if explicit_a and explicit_b:
@@ -319,15 +348,11 @@ def match_filled_intent_rows_lifo(
                 max_u = max(lot_rem_usd, in_rem_usd)
                 if max_u > 0.0 and abs(lot_rem_usd - in_rem_usd) / max_u <= 0.05:
                     stack.pop()
-                    entry_slice = _slice_lifo_row(lot_row, lot_rem, lot_orig)
-                    exit_slice = _slice_lifo_row(incoming, rem_qty, orig_in_qty)
-                    closed_pairs.append((pair_kind, entry_slice, exit_slice))
+                    _record_closed_pair(pair_kind, lot_row, lot_rem, lot_orig, incoming, rem_qty, orig_in_qty)
                     return 0.0
             eps = _dust_eps(lot_orig, orig_in_qty, lot_exp, in_explicit)
             matched_q = min(lot_rem, rem_qty)
-            entry_slice = _slice_lifo_row(lot_row, matched_q, lot_orig)
-            exit_slice = _slice_lifo_row(incoming, matched_q, orig_in_qty)
-            closed_pairs.append((pair_kind, entry_slice, exit_slice))
+            _record_closed_pair(pair_kind, lot_row, matched_q, lot_orig, incoming, matched_q, orig_in_qty)
             lot_rem -= matched_q
             rem_qty -= matched_q
             if _is_dust_remainder(lot_rem, lot_orig, lot_row, eps):

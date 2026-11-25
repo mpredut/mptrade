@@ -412,4 +412,106 @@ def test_nav_drawdown_scoped_projection_and_live_point_isolate_crypto_from_equit
     assert set(m_eq["venues_usd"].keys()) == {"t212"}
 
 
+def test_compute_venue_nav_breakdown_prefers_fresh_quote_variant_over_stale_retired_pair():
+    """Verify retired stale TAOUSD (2d old) is ignored when fresh TAOUSDC exists in cache_current_price."""
+    from providers.portfolio_valuation import compute_venue_nav_breakdown
+
+    now_s = 1_795_631_300.0
+    nav = compute_venue_nav_breakdown(
+        venue_balance_caches={
+            "binance": {
+                "venue": "binance",
+                "items": {
+                    "USDC": {"free": "1000.0", "locked": "0.0"},
+                    "TAO": {"free": "4.0", "locked": "0.0"},
+                },
+            }
+        },
+        live_prices={
+            "items": {
+                "TAOUSD": [[int((now_s - 172_800.0) * 1000), 191.50]],
+                "TAOUSDC": [[int((now_s - 2.0) * 1000), 173.70]],
+            }
+        },
+        scope="crypto",
+    )
+    assert nav["venues_usd"]["binance"] == pytest.approx(1000.0 + round(4.0 * 173.70, 2), abs=0.05)
+    assert nav["portfolio_total_usd"] == pytest.approx(1000.0 + round(4.0 * 173.70, 2), abs=0.05)
+
+
+def test_macro_snapshot_nav_dd_includes_live_bnb_reserve_parity(tmp_path):
+    """Verify PortfolioAndVenueCyclesCollector uses live BNB qty and _finalize_snapshot matches nav_history BNB parity."""
+    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
+    from intelligence.sentiment.collectors.macro_telemetry_collector import (
+        MarketAndPortfolioSnapshotOrchestrator,
+        PortfolioAndVenueCyclesCollector,
+    )
+    from providers.portfolio_state_store import resolve_venue_balance_cache_path
+    from providers.venue_fee_maintenance import resolve_fee_schedule_cache_path
+    from state_io import atomic_write_json
+    from state_stores.nav_history_state import NavHistoryStateStore
+
+    now_s = datetime(2026, 11, 25, 18, 0, 0, tzinfo=timezone.utc).timestamp()
+    cdir = tmp_path / "cachedb"
+    atomic_write_json(
+        resolve_fee_schedule_cache_path(str(cdir)),
+        {"venues": {"binance": {"held_bnb_usdc": 111.13, "bnb_price_usdc": 540.0}}},
+    )
+    atomic_write_json(
+        resolve_venue_balance_cache_path(str(cdir), "binance"),
+        {"venue": "binance", "items": {"BNB": {"free": "0.20", "locked": "0.0"}}},
+    )
+    ps: dict = {}
+    PortfolioAndVenueCyclesCollector(start_sync=False).collect(
+        str(cdir), workspace_dir=str(tmp_path), portfolio_summary=ps, now_ts=now_s
+    )
+    # 0.20 BNB * $540 = $108.00 (live balance cache beats stale 4h $111.13 fee-schedule snapshot)
+    assert ps["binance_bnb_fee_reserve_usdc"] == pytest.approx(108.0)
+
+    # Seed nav_history_state.json including $108 BNB inside Binance ($10,108 total)
+    atomic_write_json(
+        NavHistoryStateStore.resolve_workspace_path(str(tmp_path)),
+        {
+            "points": [
+                {
+                    "ts": now_s - 3600.0,
+                    "nav_usd": 10108.0,
+                    "invested_usd": 5000.0,
+                    "free_cash_usd": 5000.0,
+                    "venues_usd": {"binance": 10108.0},
+                },
+                {
+                    "ts": now_s - 1800.0,
+                    "nav_usd": 10108.0,
+                    "invested_usd": 5000.0,
+                    "free_cash_usd": 5000.0,
+                    "venues_usd": {"binance": 10108.0},
+                },
+            ]
+        },
+    )
+    snap = TelemetrySensorSnapshot(
+        portfolio_summary={
+            "binance_bnb_fee_reserve_usdc": 108.0,
+            "tradable_positions": [
+                {"venue": "binance", "symbol": "BTCUSDC", "free_base": 0.1, "price": 50000.0, "value_usd": 5000.0}
+            ],
+            "venue_quote_cash": {"binance:USDC": {"venue": "binance", "asset": "USDC", "free": 5000.0}},
+        },
+        prices_and_trends={"BTCUSDC": {"price": 50000.0, "vol_1h_pct": 1.0}},
+    )
+    MarketAndPortfolioSnapshotOrchestrator._apply_macro_scope_and_risk_overlays(
+        snap,
+        scope="crypto",
+        now_ts=now_s,
+        inst_by_sym={},
+        t212_cycles=None,
+        workspace_dir=str(tmp_path),
+    )
+    risk_eng = snap.portfolio_summary["portfolio_risk_engine"]
+    # Without BNB parity this would show -1.07%; with BNB parity it is 0.0%.
+    assert risk_eng["daily_nav_drawdown_pct"] == pytest.approx(0.0, abs=0.02)
+
+
+
 

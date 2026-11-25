@@ -177,6 +177,12 @@ class MarketBreadthCollector(CachedHttpJsonCollector, TelemetryCacheCollectorInt
 
         median_change = safe_float(statistics.median(changes), default=0.0) or 0.0
         mean_change = safe_float(statistics.fmean(changes), default=0.0) or 0.0
+        trim_n = max(1, total // 10) if total >= 10 else 0
+        trimmed_mean = (
+            round(safe_float(statistics.fmean(changes[trim_n:-trim_n]), default=mean_change) or 0.0, 3)
+            if trim_n > 0 and (total - 2 * trim_n) >= 3
+            else None
+        )
         dispersion_std = (safe_float(statistics.pstdev(changes), default=0.0) or 0.0) if total > 1 else 0.0
 
         if advance_ratio <= 0.20 and median_change <= -4.0:
@@ -252,6 +258,7 @@ class MarketBreadthCollector(CachedHttpJsonCollector, TelemetryCacheCollectorInt
             eth_vol_share_pct=eth_share,
             alt_vol_share_pct=alt_share,
             rotation_regime=rotation_regime,
+            trimmed_mean_change_pct=trimmed_mean,
         )
 
     def _parse_fetched_payload(self, data: Any, now: float) -> Optional[MarketBreadthSnapshot]:

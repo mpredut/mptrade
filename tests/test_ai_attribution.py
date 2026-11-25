@@ -1490,3 +1490,41 @@ def test_critical_path_aware_trade_plans_and_fee_adjusted_reload_scorecard():
     assert sc_full["wins"] == 2 and sc_full["scratches"] == 1 and sc_full["losses"] == 2
     sc_line = format_ai_decision_scorecard_line(sc_full)
     assert sc_line.startswith("AI Decision Scorecard (48h, last 5/6): 2W/1S/2L,")
+
+    # 5. Oversized reload BUY split across reloaded_buys + pending_buys and closed by 1 SELL coalesces into ONE BUY->SELL
+    split_reload_exit = [
+        {"ts": 100.0, "inst_key": ("hyperliquid", "HYPE", ("USD",)), "side": "SELL", "px": 63.0, "qty": 2.919, "usd": 183.90},
+        {"ts": 200.0, "inst_key": ("hyperliquid", "HYPE", ("USD",)), "side": "BUY", "px": 62.35, "qty": 11.158, "usd": 695.70},
+        {"ts": 300.0, "inst_key": ("hyperliquid", "HYPE", ("USD",)), "side": "SELL", "px": 63.55, "qty": 11.158, "usd": 709.09},
+    ]
+    c_split, ob_split, os_split = match_filled_intent_rows_lifo(split_reload_exit)
+    assert [p[0] for p in c_split] == ["SELL->BUY", "BUY->SELL"]
+    assert c_split[1][1]["qty"] == pytest.approx(11.158, abs=1e-4)
+    assert c_split[1][2]["usd"] == pytest.approx(709.09, abs=0.05)
+    assert ob_split == [] and os_split == []
+
+    # 6. Deep-book BTC ask wall ($360.7K at $60,100) is detected ahead of SELL @ $60,180
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import enrich_open_limit_orders_tca
+
+    btc_orders = [
+        {"venue": "binance", "symbol": "BTCUSDC", "side": "SELL", "price": 60180.0, "notional_usd": 2000.0}
+    ]
+    enrich_open_limit_orders_tca(
+        btc_orders,
+        {"BTCUSDC": {"price": 59950.0, "vol_1h_pct": 0.9}},
+        {
+            "BTCUSDC": {
+                "best_bid": 59949.0,
+                "best_ask": 59951.0,
+                "spread_bps": 0.3,
+                "ask_depth_usd": 4_756_000.0,
+                "spot_vol_15m_usd": 3_962_000.0,
+                "ask_wall_px": 60100.0,
+                "ask_wall_usd": 360_700.0,
+            }
+        },
+        now_ts=now_s,
+    )
+    assert btc_orders[0]["wall_queue_pos"] == "BEHIND_ASK_WALL"
+    assert btc_orders[0]["recommended_front_run_px"] is not None
+    assert btc_orders[0]["recommended_front_run_px"] < 60100.0

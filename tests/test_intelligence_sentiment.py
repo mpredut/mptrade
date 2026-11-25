@@ -17471,6 +17471,185 @@ def test_openai_compat_soft_conserve_stateless_topics_reversible_fallback_and_me
     assert len(cli_calls) == 0
 
 
+def test_crypto_executor_prompt_telemetry_audit_fixes(tmp_path):
+    """Regression suite for crypto executor prompt telemetry audit: HL L1 priority, 8h-eq funding delta, arb sync, domain ages, major_high, xStock beta, and trimmed breadth mean."""
+    from intelligence.macro_sentiment_ssot import (
+        MarketBreadthSnapshot,
+        TelemetrySensorSnapshot,
+        load_cached_market_breadth_snapshot,
+        resolve_telemetry_domain_stale_thresholds_sec,
+        serialize_market_breadth_snapshot,
+    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MarketAndPortfolioSnapshotOrchestrator
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        MicrostructureCycleDeltaEvaluator,
+        compute_cross_venue_arb_metrics,
+        reconcile_sibling_flow_and_liq_regimes,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        apply_24h_series_enrichment,
+        compute_swing_wave_metrics,
+        recalculate_live_price_geometry,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import compute_enterprise_portfolio_risk_metrics
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_macro_and_news_section,
+        _format_market_prices_section,
+    )
+    from state_io import atomic_write_json
+
+    now_s = 1_795_631_400.0
+
+    # 1. Sibling perp reconciliation preserves native HL L1 (HYPEUSDC) even when Binance fallback (HYPEUSD) has newer _deriv_ts
+    micro_sib = {
+        "HYPEUSDC": {
+            "ob_mid_price": 60.32,
+            "oi_usd": 420_000_000.0,
+            "native_l1_oi_usd": 1_130_000_000.0,
+            "funding_rate": 0.0000125,
+            "funding_annualized_pct": 10.95,
+            "_deriv_ts": now_s - 5.0,
+            "bid_depth_usd": 500_000.0,
+            "ask_depth_usd": 500_000.0,
+        },
+        "HYPEUSD": {
+            "ob_mid_price": 60.33,
+            "oi_usd": 420_500_000.0,
+            "funding_rate": 0.00005,
+            "funding_annualized_pct": 5.475,
+            "_deriv_ts": now_s - 1.0,
+            "bid_depth_usd": 100_000.0,
+            "ask_depth_usd": 100_000.0,
+        },
+    }
+    reconcile_sibling_flow_and_liq_regimes(micro_sib, {"HYPEUSDC": {"price": 60.32}, "HYPEUSD": {"price": 60.33}})
+    assert micro_sib["HYPEUSDC"]["funding_rate"] == pytest.approx(0.0000125)
+    assert micro_sib["HYPEUSD"]["funding_rate"] == pytest.approx(0.0000125)
+    assert micro_sib["HYPEUSD"]["native_l1_oi_usd"] == pytest.approx(1_130_000_000.0)
+
+    # 2. MicrostructureCycleDeltaEvaluator normalizes funding_delta_1h_bps to canonical 8h-equivalent bps across 1h HL & 8h Binance
+    hist: dict = {
+        "HYPEUSDC": [
+            {"ts": now_s - 3600.0, "funding_rate": 0.0000125, "native_l1_oi_usd": 1_100_000_000.0, "oi_usd": 420_000_000.0},
+            {"ts": now_s - 300.0, "funding_rate": 0.0000205, "native_l1_oi_usd": 1_130_000_000.0, "oi_usd": 420_000_000.0},
+        ],
+        "HYPEUSD": [
+            # Historical Binance 8h fallback (5.475% ann = 0.50 bps/8h) -> current HL 1h (10.95% ann = 1.00 bps/8h)
+            {"ts": now_s - 3600.0, "funding_rate": 0.00005, "oi_usd": 420_000_000.0},
+            {"ts": now_s - 300.0, "funding_rate": 0.0000125, "funding_annualized_pct": 10.95, "native_l1_oi_usd": 1_130_000_000.0, "oi_usd": 420_000_000.0},
+        ],
+    }
+    micro_delta = {
+        "HYPEUSDC": {
+            "funding_rate": 0.0000205,
+            "funding_annualized_pct": round(0.0000205 * 24 * 365 * 100, 4),
+            "native_l1_oi_usd": 1_130_000_000.0,
+            "oi_usd": 420_000_000.0,
+        },
+        "HYPEUSD": {
+            "funding_rate": 0.0000125,
+            "funding_annualized_pct": 10.95,
+            "native_l1_oi_usd": 1_130_000_000.0,
+            "oi_usd": 420_000_000.0,
+        },
+    }
+    MicrostructureCycleDeltaEvaluator().evaluate(micro_delta, history=hist, now_ts=now_s)
+    # 1h rise of +0.08bps on HL = +0.64bps in canonical 8h-equivalent units!
+    assert micro_delta["HYPEUSDC"]["funding_delta_1h_bps"] == pytest.approx(0.64, abs=0.02)
+    assert hist["HYPEUSDC"][-1]["funding_annualized_pct"] == pytest.approx(round(0.0000205 * 24 * 365 * 100, 4), abs=0.01)
+
+    # 3. Cross-venue arb uses synchronized live spot prices when OB timestamps are skewed (>2s apart)
+    arb_micro = {
+        "HYPEUSDC": {"venue": "hyperliquid", "ob_mid_price": 60.312, "_ob_raw_ts": now_s - 2.0, "spread_bps": 1.0},
+        "HYPEUSD": {"venue": "kraken", "ob_mid_price": 60.295, "_ob_raw_ts": now_s - 14.0, "spread_bps": 2.0},
+    }
+    arb_pt = {"HYPEUSDC": {"price": 60.32}, "HYPEUSD": {"price": 60.33}}
+    compute_cross_venue_arb_metrics(
+        "HYPEUSDC", arb_micro["HYPEUSDC"], arb_pt["HYPEUSDC"], arb_micro, arb_pt, now_ts=now_s
+    )
+    # Spot says HYPEUSDC ($60.32) is cheaper than HYPEUSD ($60.33) -> negative arb_bps (~ -1.7 bps)
+    assert arb_micro["HYPEUSDC"]["cross_venue_arb_bps"] < 0.0
+    assert arb_micro["HYPEUSDC"]["cross_venue_arb_bps"] == pytest.approx(-1.7, abs=0.2)
+
+    # 4. Section 0 domain ages emit derivatives_oldest & whale_oldest in crypto scope and thresholds exist
+    thrs = resolve_telemetry_domain_stale_thresholds_sec("crypto")
+    assert thrs["derivatives_oldest"] > 0.0 and thrs["whale_oldest"] > 0.0
+    cdir = tmp_path / "cachedb"
+    atomic_write_json(str(cdir / "prices" / "cache_current_price.json"), {"items": {"BTCUSDC": [[int((now_s - 1.0) * 1000), 60000.0]]}})
+    atomic_write_json(
+        str(cdir / "state" / "venue_balances_state.json"),
+        {"open_orders_verified_ts:binance": now_s - 5.0, "pos:binance:BTCUSDC": {"venue": "binance", "symbol": "BTCUSDC", "free_base": 0.1, "price": 60000.0, "ts": now_s - 5.0}},
+    )
+    snap_dom = TelemetrySensorSnapshot(
+        microstructure={"BTCUSDC": {"ob_mid_price": 60000.0, "_ob_raw_ts": now_s - 4.0, "_deriv_ts": now_s - 18.0, "_whale_ts": now_s - 122.0}}
+    )
+    res_dom = MarketAndPortfolioSnapshotOrchestrator(start_sync=False).collect(
+        str(cdir), "*", snapshot=snap_dom, workspace_dir=str(tmp_path), scope="crypto", now_ts=now_s, allow_network=False, persist=False
+    )
+    assert res_dom.source_ages_sec["derivatives_oldest"] == pytest.approx(18.0)
+    assert res_dom.source_ages_sec["whale_oldest"] == pytest.approx(122.0)
+
+    # 5. Symmetric major_swing_high_px in compute_swing_wave_metrics, recalculate_live_price_geometry, and prompt rendering
+    sw_up_pb = compute_swing_wave_metrics([1.30, 1.36, 1.17, 1.25, 1.24])
+    assert sw_up_pb["swing_high_px"] == pytest.approx(1.25)
+    assert sw_up_pb["major_swing_high_px"] == pytest.approx(1.36)
+    assert sw_up_pb["pullback_from_major_high_pct"] == pytest.approx(round((1.24 / 1.36 - 1.0) * 100.0, 2))
+    recalculate_live_price_geometry(sw_up_pb, 1.23)
+    assert sw_up_pb["major_swing_high_px"] == pytest.approx(1.36)
+    assert sw_up_pb["pullback_from_major_high_pct"] == pytest.approx(round((1.23 / 1.36 - 1.0) * 100.0, 2))
+    mkt_lines = "\n".join(_format_market_prices_section({"SOLUSDC": {"price": 1.23, "low_24h": 1.17, "high_24h": 1.25, **sw_up_pb}}))
+    assert "major_high=1.36(pb=" in mkt_lines
+
+    # 6. Empirical _risk_beta_btc_24h / _risk_corr_btc_24h computed for 24/7 tokenized xStocks (SPCXxUSD)
+    #    without exposing Section 3 beta_btc_24h / alt_btc_24h, and consumed by EnterprisePortfolioRiskEvaluator
+    btc_s = [[int((now_s - (24 - i) * 1800) * 1000), 60000.0 + (i % 5) * 400.0 + i * 50.0] for i in range(25)]
+    spcx_s = [[int((now_s - (24 - i) * 1800) * 1000), 140.0 + (i % 5) * 0.5 + i * 0.05] for i in range(25)]
+    spcx_entry: dict = {"price": spcx_s[-1][1], "vol_1h_pct": 0.8}
+    apply_24h_series_enrichment("SPCXxUSD", spcx_entry, {"chg_24h_pct": 1.0}, spcx_s, btc_s)
+    assert spcx_entry.get("_risk_beta_btc_24h") is not None
+    assert spcx_entry.get("_risk_corr_btc_24h") is not None
+    assert "beta_btc_24h" not in spcx_entry
+    assert "alt_btc_pos_24h_pct" not in spcx_entry
+    risk_xst = compute_enterprise_portfolio_risk_metrics(
+        {
+            "tradable_positions": [
+                {"venue": "kraken", "symbol": "SPCXxUSD", "free_base": 10.0, "price": spcx_s[-1][1], "value_usd": round(10.0 * spcx_s[-1][1], 2)}
+            ],
+            "venue_quote_cash": {"kraken:USD": {"venue": "kraken", "asset": "USD", "free": 1000.0}},
+        },
+        {"SPCXxUSD": spcx_entry},
+        {},
+    )
+    assert risk_xst["corr_vs_btc_24h"]["SPCXx"] == pytest.approx(spcx_entry["_risk_corr_btc_24h"])
+    assert risk_xst["corr_vs_btc_24h"]["SPCXx"] != pytest.approx(0.30)
+    eq_entry: dict = {"price": spcx_s[-1][1]}
+    apply_24h_series_enrichment("NVDA_US_EQ", eq_entry, {"chg_24h_pct": 1.0}, spcx_s, btc_s)
+    assert "_risk_beta_btc_24h" not in eq_entry and "beta_btc_24h" not in eq_entry
+
+    # 7. Outlier-resistant MarketBreadthSnapshot.trimmed_mean_change_pct round-trip & prompt rendering
+    tickers = [
+        {"symbol": f"COIN{i}USDT", "priceChangePercent": str(c), "quoteVolume": "20000000", "lastPrice": "10.0"}
+        for i, c in enumerate(
+            [-4.0, -3.0, -1.5, -1.0, -0.5, 0.1, 0.2, 0.4, 0.5, 0.7, 0.8, 1.0, 1.1, 1.2, 1.4, 1.5, 1.8, 2.0, 65.0, 75.0]
+        )
+    ]
+    mb_snap = MarketBreadthCollector.parse_tickers(tickers, min_volume_usd=5_000_000.0, now_ts=now_s)
+    assert mb_snap is not None
+    assert mb_snap.mean_change_pct > 5.0
+    assert mb_snap.trimmed_mean_change_pct is not None
+    assert abs(mb_snap.trimmed_mean_change_pct - mb_snap.median_change_pct) < 1.0
+    mb_dict = serialize_market_breadth_snapshot(mb_snap, now_ts=now_s)
+    assert mb_dict["trimmed_mean_change_pct"] == pytest.approx(mb_snap.trimmed_mean_change_pct)
+    atomic_write_json(str(cdir / "macro" / "market_breadth_collect.json"), mb_dict)
+    mb_loaded = load_cached_market_breadth_snapshot(str(cdir), now_ts=now_s)
+    assert isinstance(mb_loaded, MarketBreadthSnapshot)
+    assert mb_loaded.trimmed_mean_change_pct == pytest.approx(mb_snap.trimmed_mean_change_pct)
+    sec1 = "\n".join(_format_macro_and_news_section(TelemetrySensorSnapshot(market_breadth=mb_dict), asset_scope="crypto"))
+    assert f"(trimmed={mb_snap.trimmed_mean_change_pct}%)" in sec1
+
+
+
 
 
 

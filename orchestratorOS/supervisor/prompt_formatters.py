@@ -162,7 +162,7 @@ def build_supervisor_prompt(
     eval_now_ts = safe_pos_float(getattr(sensors, "evaluated_at_ts", None), default=None)
     spec_scope_norm = str(getattr(spec, "asset_scope", "all") or "all").strip().lower()
     skip_domain_keys = (
-        CRYPTO_ONLY_MACRO_SENSOR_KEYS
+        CRYPTO_ONLY_MACRO_SENSOR_KEYS | {"derivatives_oldest", "whale_oldest"}
         if spec_scope_norm in ("equities", "equity")
         else frozenset()
     )

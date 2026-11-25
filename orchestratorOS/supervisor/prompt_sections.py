@@ -393,10 +393,15 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
             mb_rot_parts.append(f"BTC_vol_share={mb.get('btc_vol_share_pct')}%")
         if mb.get("alt_vol_share_pct") is not None:
             mb_rot_parts.append(f"Alt_vol_share={mb.get('alt_vol_share_pct')}%")
+    mb_trim_sfx = ""
+    if mb and (mb_tm := safe_float(mb.get("trimmed_mean_change_pct"), None)) is not None:
+        mb_mn = safe_float(mb.get("mean_change_pct"), None)
+        if mb_mn is None or abs(mb_mn - mb_tm) >= 1.0:
+            mb_trim_sfx = f" (trimmed={mb_tm}%)"
     mb_line = (
         f"advance_ratio={mb.get('advance_ratio', 'N/A')}, "
         f"median_chg={mb.get('median_change_pct', 'N/A')}%, "
-        f"mean_chg={mb.get('mean_change_pct', 'N/A')}%, disp_std={mb.get('dispersion_std', 'N/A')}, "
+        f"mean_chg={mb.get('mean_change_pct', 'N/A')}%{mb_trim_sfx}, disp_std={mb.get('dispersion_std', 'N/A')}, "
         f"advancing={mb.get('advancing', 'N/A')}/{mb.get('total_symbols', 'N/A')}"
         + (f", {', '.join(mb_rot_parts)}" if mb_rot_parts else "")
         + (f", top_gainers={mb_gainers}" if mb_gainers else "")
@@ -802,12 +807,18 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
         if pinfo.get("swing_low_px") is not None and pinfo.get("swing_high_px") is not None and not is_dup_swing:
             sw_ral = safe_float(pinfo.get("rally_from_swing_low_pct"), 0.0)
             sw_pb = safe_float(pinfo.get("pullback_from_swing_high_pct"), 0.0)
-            maj_sfx = (
-                f", major_low={pinfo.get('major_swing_low_px')}"
-                f"(rally={fmt_signed(pinfo.get('rally_from_major_low_pct'))}%)"
-                if pinfo.get("rally_from_major_low_pct") is not None and pinfo.get("major_swing_low_px") is not None
-                else ""
-            )
+            maj_parts: List[str] = []
+            if pinfo.get("rally_from_major_low_pct") is not None and pinfo.get("major_swing_low_px") is not None:
+                maj_parts.append(
+                    f"major_low={pinfo.get('major_swing_low_px')}"
+                    f"(rally={fmt_signed(pinfo.get('rally_from_major_low_pct'))}%)"
+                )
+            if pinfo.get("pullback_from_major_high_pct") is not None and pinfo.get("major_swing_high_px") is not None:
+                maj_parts.append(
+                    f"major_high={pinfo.get('major_swing_high_px')}"
+                    f"(pb={fmt_signed(pinfo.get('pullback_from_major_high_pct'))}%)"
+                )
+            maj_sfx = f", {', '.join(maj_parts)}" if maj_parts else ""
             hist_sfx = ""
             if isinstance(pinfo.get("recent_swings_7d"), list) and pinfo["recent_swings_7d"]:
                 amp_s = (

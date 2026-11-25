@@ -375,7 +375,7 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                 side_depth_usd = safe_pos_float(m_entry.get(f"{w_pfx}_depth_usd"), default=0.0) or 0.0
                 spot_vol_15m = safe_pos_float(m_entry.get("spot_vol_15m_usd"), default=0.0) or 0.0
                 min_wall_usd = (
-                    max(2500.0, side_depth_usd * 0.08, spot_vol_15m * 0.08)
+                    max(2500.0, min(300_000.0, max(side_depth_usd * 0.07, spot_vol_15m * 0.05)))
                     if (side_depth_usd > 0.0 or spot_vol_15m > 0.0)
                     else 5000.0
                 )
@@ -520,8 +520,14 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
                             if isinstance(v_d := casefold_get(prices_and_trends, c), dict) and v_d.get(m_key) is not None:
                                 return v_d.get(m_key)
                     return None
-                beta_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("beta_btc_24h"), default=(0.35 if is_eq_like else 1.15))
-                raw_corr_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("corr_btc_24h"), default=(0.30 if is_eq_like else 0.78))
+                beta_raw = _resolve_p_metric("beta_btc_24h")
+                if beta_raw is None:
+                    beta_raw = _resolve_p_metric("_risk_beta_btc_24h")
+                beta_v = 1.0 if base == "BTC" else safe_float(beta_raw, default=(0.35 if is_eq_like else 1.15))
+                corr_raw = _resolve_p_metric("corr_btc_24h")
+                if corr_raw is None:
+                    corr_raw = _resolve_p_metric("_risk_corr_btc_24h")
+                raw_corr_v = 1.0 if base == "BTC" else safe_float(corr_raw, default=(0.30 if is_eq_like else 0.78))
                 if 1.0 < abs(raw_corr_v) <= 100.0:
                     raw_corr_v = raw_corr_v / 100.0
                 corr_v = max(-1.0, min(1.0, raw_corr_v))

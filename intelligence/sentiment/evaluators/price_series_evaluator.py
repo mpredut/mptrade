@@ -1359,15 +1359,16 @@ def compute_swing_wave_metrics(
 
     swing_legs_pct = [pct_delta(p1[2], p0[2]) for p0, p1 in zip(chain, chain[1:]) if p0[2] > 0]
     major_low_px: Optional[float] = None
+    major_high_px: Optional[float] = None
     if direction == 1 and pivots:
         swing_low_px, swing_high_px = pivots[-1][2], max(hi_px, cur_v)
-        if (
-            len(pivots) >= 2
-            and pivots[-2][0] == "HIGH"
-            and pivots[-2][2] > swing_high_px
-            and abs(cur_v - swing_high_px) / max(cur_v, 1e-12) < 5e-4
-        ):
-            swing_high_px = pivots[-2][2]
+        if len(pivots) >= 2 and pivots[-2][0] == "HIGH" and pivots[-2][2] > swing_high_px:
+            if abs(cur_v - swing_high_px) / max(cur_v, 1e-12) < 5e-4:
+                swing_high_px = pivots[-2][2]
+                if len(pivots) >= 4 and pivots[-4][0] == "HIGH" and pivots[-4][2] > swing_high_px:
+                    major_high_px = pivots[-4][2]
+            else:
+                major_high_px = pivots[-2][2]
         if len(pivots) >= 3 and pivots[-3][0] == "LOW" and pivots[-3][2] < swing_low_px:
             major_low_px = pivots[-3][2]
     elif direction == -1 and pivots:
@@ -1379,12 +1380,15 @@ def compute_swing_wave_metrics(
                     major_low_px = pivots[-4][2]
             else:
                 major_low_px = pivots[-2][2]
+        if len(pivots) >= 3 and pivots[-3][0] == "HIGH" and pivots[-3][2] > swing_high_px:
+            major_high_px = pivots[-3][2]
     else:
         swing_low_px, swing_high_px = min(vals), max(vals)
 
     rally_pct = pct_delta(cur_v, swing_low_px) if swing_low_px > 0 else 0.0
     pullback_pct = pct_delta(cur_v, swing_high_px) if swing_high_px > 0 else 0.0
     major_rally_pct = pct_delta(cur_v, major_low_px) if major_low_px and major_low_px > 0 else None
+    major_pullback_pct = pct_delta(cur_v, major_high_px) if major_high_px and major_high_px > 0 else None
     eff_dec = decimals if decimals is not None else 6
     out: Dict[str, Any] = {
         "swing_low_px": round(swing_low_px, eff_dec),
@@ -1395,6 +1399,9 @@ def compute_swing_wave_metrics(
     if major_rally_pct is not None and major_low_px is not None and major_rally_pct > rally_pct:
         out["major_swing_low_px"] = round(major_low_px, eff_dec)
         out["rally_from_major_low_pct"] = major_rally_pct
+    if major_pullback_pct is not None and major_high_px is not None and major_pullback_pct < pullback_pct:
+        out["major_swing_high_px"] = round(major_high_px, eff_dec)
+        out["pullback_from_major_high_pct"] = major_pullback_pct
     if swing_legs_pct:
         out["recent_swings_7d"] = [f"{fmt_signed(x, 1)}%" for x in swing_legs_pct[-5:]]
         out["avg_swing_amp_7d_pct"] = round(sum(abs(x) for x in swing_legs_pct) / len(swing_legs_pct), 2)
@@ -2030,6 +2037,29 @@ def _reconcile_major_swing_low(
         target_dict.pop(k, None)
 
 
+def _reconcile_major_swing_high(
+    target_dict: Dict[str, Any], p_cur: float, h24: Optional[float], decimals: int
+) -> None:
+    maj_hi = safe_pos_float(target_dict.get("major_swing_high_px"), default=None)
+    if maj_hi is None or maj_hi <= 0.0:
+        return
+    maj_hi_new = round(max(maj_hi, p_cur, *([h24] if h24 is not None else [])), decimals)
+    eff_sw_hi = safe_pos_float(target_dict.get("swing_high_px"), default=None)
+    promote_to_swing = (
+        eff_sw_hi is not None
+        and maj_hi_new > eff_sw_hi + 1e-9
+        and abs(p_cur - eff_sw_hi) / max(p_cur, 1e-12) < 5e-4
+    )
+    if eff_sw_hi is None or (maj_hi_new > eff_sw_hi + 1e-9 and not promote_to_swing):
+        target_dict["major_swing_high_px"] = maj_hi_new
+        target_dict["pullback_from_major_high_pct"] = pct_delta(p_cur, maj_hi_new)
+        return
+    if promote_to_swing:
+        target_dict.update(swing_high_px=maj_hi_new, pullback_from_swing_high_pct=pct_delta(p_cur, maj_hi_new))
+    for k in ("major_swing_high_px", "pullback_from_major_high_pct"):
+        target_dict.pop(k, None)
+
+
 def recalculate_anchor_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None:
     """Align Volume Profile and Session VWAP relative distances and z-score to live price ``p_cur``."""
     if not isinstance(pinfo, dict) or p_cur <= 0.0:
@@ -2154,6 +2184,7 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
         if sw_hi_new > 0.0:
             pinfo["pullback_from_swing_high_pct"] = pct_delta(p_cur, sw_hi_new)
     _reconcile_major_swing_low(pinfo, p_cur, l24, 6)
+    _reconcile_major_swing_high(pinfo, p_cur, h24, 6)
     r1h_lo = safe_pos_float(pinfo.get("recent_1h_low_px"), default=None)
     p6h_lo = safe_pos_float(pinfo.get("prior_6h_low_px"), default=None)
     if r1h_lo is not None and p6h_lo is not None and p6h_lo > 0.0:
@@ -2286,15 +2317,21 @@ def apply_24h_series_enrichment(
                 if sw_hi_n > 0.0:
                     entry["pullback_from_swing_high_pct"] = pct_delta(cur_e_px, sw_hi_n)
             _reconcile_major_swing_low(entry, cur_e_px, l24_e, eff_dec_7d)
+            _reconcile_major_swing_high(entry, cur_e_px, h24_e, eff_dec_7d)
     if entry.get("trend", 0) == 0 and "chg_1h_pct" in m24:
         c1h = safe_float(m24.get("chg_1h_pct"), 0.0)
         if c1h >= 0.25 or c1h <= -0.25:
             entry["trend"] = 1 if c1h >= 0.25 else -1
-    if series_24h and btc_series_24h and not is_equity_or_tokenized_symbol(sym) and canonical_base_asset(sym) != "BTC":
+    if series_24h and btc_series_24h and not is_equity_symbol(sym) and canonical_base_asset(sym) != "BTC":
         cross_btc = compute_cross_btc_metrics(series_24h, btc_series_24h)
-        for ck in ("alt_btc_pos_24h_pct", "alt_btc_dd_24h_high_pct", "alt_btc_bounce_24h_low_pct", "beta_btc_24h", "corr_btc_24h"):
-            if cross_btc.get(ck) is not None:
-                entry[ck] = cross_btc[ck]
+        if is_equity_or_tokenized_symbol(sym):
+            for src_k, dst_k in (("beta_btc_24h", "_risk_beta_btc_24h"), ("corr_btc_24h", "_risk_corr_btc_24h")):
+                if cross_btc.get(src_k) is not None:
+                    entry[dst_k] = cross_btc[src_k]
+        else:
+            for ck in ("alt_btc_pos_24h_pct", "alt_btc_dd_24h_high_pct", "alt_btc_bounce_24h_low_pct", "beta_btc_24h", "corr_btc_24h"):
+                if cross_btc.get(ck) is not None:
+                    entry[ck] = cross_btc[ck]
     k_cur_vel = safe_float(entry.get("kalman_vel"), default=None)
     k_cur_std = safe_float(entry.get("kalman_vel_std"), default=None)
     unseeded_kalman = is_unseeded_kalman_state(entry, treat_none_as_unseeded=True)

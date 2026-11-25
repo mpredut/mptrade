@@ -106,6 +106,7 @@ class MarketBreadthSnapshot:
     eth_vol_share_pct: Optional[float] = None
     alt_vol_share_pct: Optional[float] = None
     rotation_regime: Optional[str] = None
+    trimmed_mean_change_pct: Optional[float] = None
 
     def to_cache_dict(self, now_ts: Optional[float] = None) -> Dict[str, Any]:
         """Serialize this snapshot into the canonical `market_breadth_collect.json` dictionary."""
@@ -793,6 +794,7 @@ _BREADTH_ROTATION_FIELDS: Tuple[str, ...] = (
     "eth_vol_share_pct",
     "alt_vol_share_pct",
     "rotation_regime",
+    "trimmed_mean_change_pct",
 )
 
 
@@ -915,6 +917,8 @@ def resolve_telemetry_domain_stale_thresholds_sec(
         "orderbook_newest": max(whale_itv * mult, ob_itv * 6.0) if is_eq else ob_itv * mult,
         # BY DESIGN: Sequential multi-symbol L2 polling adds ~10-15s cycle jitter; keep 60s (4x 15s) floor on crypto oldest.
         "orderbook_oldest": max(whale_itv * mult, ob_itv * 6.0) if is_eq else max(whale_itv, ob_itv * 4.0),
+        "derivatives_oldest": deriv_itv * mult,
+        "whale_oldest": max(whale_itv * mult, 180.0),
         "short_trends": max(whale_itv * 3.0, ob_itv * 6.0, short_trend_max * mult) if is_eq else short_trend_max * mult,
         "venue_balances": (derived["share_executor_interval_sec"] if is_eq else derived["crypto_executor_interval_sec"]) * mult,
         "fear_greed": derived["fear_greed_interval_sec"] * mult,
@@ -1389,6 +1393,7 @@ def load_cached_market_breadth_snapshot(
                 eth_vol_share_pct=safe_float(mb_data.get("eth_vol_share_pct"), None),
                 alt_vol_share_pct=safe_float(mb_data.get("alt_vol_share_pct"), None),
                 rotation_regime=rot_reg,
+                trimmed_mean_change_pct=safe_float(mb_data.get("trimmed_mean_change_pct"), None),
             )
         except Exception as mb_err:
             logger.debug("Failed loading market breadth from %s: %s", mb_path, mb_err)

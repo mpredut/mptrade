@@ -78,7 +78,7 @@ _FLOW_HORIZON_SPECS: Tuple[Tuple[str, str, str], ...] = (
     ("4h", "taker_ratio_4h", "cvd_4h_usd"),
 )
 _SHARED_PERP_DERIV_KEYS: Tuple[str, ...] = (
-    "oi_usd", "oi_1h_chg_pct", "mark_price", "index_price",
+    "oi_usd", "native_l1_oi_usd", "oi_1h_chg_pct", "mark_price", "index_price",
     "perp_spot_basis_bps", "funding_rate", "pred_funding_rate",
     "predicted_funding_rate", "funding_annualized_pct", "_deriv_ts",
 )
@@ -790,9 +790,16 @@ def compute_cross_venue_arb_metrics(
     if not isinstance(minfo, dict) or not isinstance(microstructure, dict):
         return
     prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
-    own_px = safe_pos_float(minfo.get("ob_mid_price"), default=None) or safe_pos_float((p_match or {}).get("price") if isinstance(p_match, dict) else None, default=None)
-    if not (own_px and own_px > 0.0 and is_usd_compatible_pair(msym)):
+    own_ob_px = safe_pos_float(minfo.get("ob_mid_price"), default=None)
+    own_spot_px = safe_pos_float((p_match or {}).get("price") if isinstance(p_match, dict) else None, default=None)
+    own_px_default = own_ob_px or own_spot_px
+    if not (own_px_default and own_px_default > 0.0 and is_usd_compatible_pair(msym)):
         return
+    own_ob_ts = normalize_epoch_sec(
+        minfo.get("_ob_raw_ts") if minfo.get("_ob_raw_ts") is not None else minfo.get("_ob_ts"),
+        default=None,
+    )
+    eff_now_arb = normalize_epoch_sec(now_ts, default=None)
     mbase = canonical_base_asset(msym)
     msym_is_eq = has_equity_suffix(msym)
     own_v, own_maker, own_taker, own_hsp = _infer_symbol_venue_and_fees_bps(
@@ -817,10 +824,25 @@ def compute_cross_venue_arb_metrics(
         if peer_v == own_v:
             continue
         peer_p_dict = casefold_get(prices_and_trends, peer_sym)
-        peer_px = (
-            safe_pos_float(peer_m.get("ob_mid_price"), default=None)
-            or safe_pos_float(peer_p_dict.get("price") if isinstance(peer_p_dict, dict) else None, default=None)
+        peer_ob_px = safe_pos_float(peer_m.get("ob_mid_price"), default=None)
+        peer_spot_px = safe_pos_float(peer_p_dict.get("price") if isinstance(peer_p_dict, dict) else None, default=None)
+        peer_ob_ts = normalize_epoch_sec(
+            peer_m.get("_ob_raw_ts") if peer_m.get("_ob_raw_ts") is not None else peer_m.get("_ob_ts"),
+            default=None,
         )
+        ob_skewed = (
+            own_ob_ts is not None
+            and peer_ob_ts is not None
+            and abs(own_ob_ts - peer_ob_ts) > 2.0
+        ) or (
+            eff_now_arb is not None
+            and any(t is not None and (eff_now_arb - t) > 10.0 for t in (own_ob_ts, peer_ob_ts))
+        )
+        if ob_skewed and own_spot_px and peer_spot_px:
+            own_px, peer_px = own_spot_px, peer_spot_px
+        else:
+            own_px = own_px_default
+            peer_px = peer_ob_px or peer_spot_px
         if peer_px and peer_px > 0.0 and not _prices_diverged(own_px, peer_px):
             arb_bps = round(((own_px - peer_px) / peer_px) * 10000.0, 1)
             minfo["cross_venue_peer"] = peer_sym
@@ -990,6 +1012,7 @@ def evaluate_microstructure_cycle_deltas(
         cur_oi = safe_pos_float(minfo.get("oi_usd"), default=None)
         cur_tr = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=None)
         cur_fr = safe_float(minfo.get("funding_rate"), None)
+        cur_fr_ann = safe_float(minfo.get("funding_annualized_pct"), None)
         cur_basis = safe_float(minfo.get("perp_spot_basis_bps"), None)
         if (
             has_equity_suffix(msym)
@@ -1125,10 +1148,37 @@ def evaluate_microstructure_cycle_deltas(
                 b_d15 = round(cur_basis - p_basis, 2) + 0.0
                 delta_d["basis_delta_15m_bps"] = b_d15
                 minfo["basis_delta_15m_bps"] = b_d15
-            if cur_fr is not None and (p_fr := _closest_snap_with_metric(h_list, 3600.0, 2400.0, 5400.0, "funding_rate")) is not None:
-                f_d1h = round((cur_fr - p_fr) * 10000.0, 2) + 0.0
-                delta_d["funding_delta_1h_bps"] = f_d1h
-                minfo["funding_delta_1h_bps"] = f_d1h
+            def _funding_to_8h_bps(fr_v: Any, fr_ann_v: Any, l1_oi_v: Any) -> Optional[float]:
+                ann_f = safe_float(fr_ann_v, None)
+                if ann_f is not None:
+                    # 8h-equivalent funding in bps: annualized_pct / (3 * 365 / 100) = annualized_pct / 10.95.
+                    return ann_f / 10.95
+                fr_f = safe_float(fr_v, None)
+                if fr_f is None:
+                    return None
+                has_l1 = (safe_pos_float(l1_oi_v, default=0.0) or 0.0) > 0.0
+                return fr_f * 10000.0 * (8.0 if has_l1 else 1.0)
+
+            cur_fr_8h_bps = _funding_to_8h_bps(cur_fr, cur_fr_ann, minfo.get("native_l1_oi_usd"))
+            if cur_fr_8h_bps is not None:
+                best_fr_bps: Optional[float] = None
+                best_fr_err: Optional[float] = None
+                for s_fr in h_list:
+                    age_s = eff_now - _snap_ts(s_fr)
+                    if 2400.0 <= age_s <= 5400.0:
+                        cand_fr_bps = _funding_to_8h_bps(
+                            s_fr.get("funding_rate"),
+                            s_fr.get("funding_annualized_pct"),
+                            s_fr.get("native_l1_oi_usd"),
+                        )
+                        if cand_fr_bps is not None:
+                            err_fr = abs(age_s - 3600.0)
+                            if best_fr_err is None or err_fr < best_fr_err:
+                                best_fr_err, best_fr_bps = err_fr, cand_fr_bps
+                if best_fr_bps is not None:
+                    f_d1h = round(cur_fr_8h_bps - best_fr_bps, 2) + 0.0
+                    delta_d["funding_delta_1h_bps"] = f_d1h
+                    minfo["funding_delta_1h_bps"] = f_d1h
             if len(delta_d) > 1:
                 minfo["cycle_delta"] = delta_d
         stale_case_keys = [hk for hk in list(mhist) if hk != canon_msym and str(hk).upper() == canon_msym.upper()]
@@ -1146,6 +1196,7 @@ def evaluate_microstructure_cycle_deltas(
                 ("native_l1_oi_usd", cur_l1_oi, 2),
                 ("taker_buy_sell_ratio", cur_tr, 4),
                 ("funding_rate", cur_fr, 6),
+                ("funding_annualized_pct", cur_fr_ann, 4),
                 ("perp_spot_basis_bps", cur_basis, 2),
             ):
                 if v_rec is not None:
@@ -1665,9 +1716,14 @@ def reconcile_sibling_flow_and_liq_regimes(
         if len(same_perp_pre) >= 2:
             deriv_src_sym, deriv_src_m = max(
                 same_perp_pre,
-                key=lambda kv: (safe_pos_float(kv[1].get("_deriv_ts"), default=0.0) or 0.0, 1 if kv[0] == prim_sym else 0),
+                key=lambda kv: (
+                    1 if (safe_pos_float(kv[1].get("native_l1_oi_usd"), default=0.0) or 0.0) > 0.0 else 0,
+                    safe_pos_float(kv[1].get("_deriv_ts"), default=0.0) or 0.0,
+                    1 if kv[0] == prim_sym else 0,
+                ),
             )
             deriv_src_ts = safe_pos_float(deriv_src_m.get("_deriv_ts"), default=0.0) or 0.0
+            deriv_src_has_l1 = (safe_pos_float(deriv_src_m.get("native_l1_oi_usd"), default=0.0) or 0.0) > 0.0
             whale_cands = [
                 (s, m)
                 for s, m in same_perp_pre
@@ -1685,7 +1741,11 @@ def reconcile_sibling_flow_and_liq_regimes(
             for s_k, m_s in same_perp_pre:
                 re_enrich_perp = False
                 own_deriv_ts = safe_pos_float(m_s.get("_deriv_ts"), default=0.0) or 0.0
-                if s_k != deriv_src_sym and deriv_src_ts > own_deriv_ts:
+                own_has_l1 = (safe_pos_float(m_s.get("native_l1_oi_usd"), default=0.0) or 0.0) > 0.0
+                if s_k != deriv_src_sym and (
+                    (deriv_src_has_l1 and not own_has_l1)
+                    or (deriv_src_has_l1 == own_has_l1 and deriv_src_ts > own_deriv_ts)
+                ):
                     for dk in _SHARED_PERP_DERIV_KEYS:
                         if deriv_src_m.get(dk) is not None:
                             m_s[dk] = deriv_src_m[dk]

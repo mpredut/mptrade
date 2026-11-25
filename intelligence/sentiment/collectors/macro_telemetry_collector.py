@@ -45,6 +45,7 @@ from cachepaths import (
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
+from providers.portfolio_state_store import resolve_venue_balance_cache_path
 from providers.venue_fee_maintenance import read_persisted_venue_fee_schedule
 from state_stores.cache_T_trend import CacheTTrendStore
 from intelligence.internal.state import survival as _surv_mod
@@ -1501,6 +1502,11 @@ class InitialPricesAndTrendsCollector(MacroTelemetryCollectorBase):
         )
 
 
+_VENUE_FEE_RESERVE_SPECS: tuple[tuple[str, str, str, str, str], ...] = (
+    ("binance", "binance_bnb_fee_reserve_usdc", "BNB", "held_bnb_usdc", "bnb_price_usdc"),
+)
+
+
 class PortfolioAndVenueCyclesCollector(MacroTelemetryCollectorBase):
     """Concrete collector (Level 3) harvesting CacheAssetValueManager summary, venue cycles, Kraken xStocks, and cross-market context."""
 
@@ -1533,9 +1539,27 @@ class PortfolioAndVenueCyclesCollector(MacroTelemetryCollectorBase):
         if av_summary := av_cls.extract_asset_value_summary(last_av, now_ts=now_ts):
             eff_ps.update(av_summary)
         fee_st = read_persisted_venue_fee_schedule(cachedb_dir, read_json_fn=_rj)
-        if isinstance(fee_st, dict) and isinstance(bn_fee_st := (fee_st.get("venues") or {}).get("binance"), dict):
-            if (bnb_usdc := safe_pos_float(bn_fee_st.get("held_bnb_usdc"), default=None)) is not None:
-                eff_ps["binance_bnb_fee_reserve_usdc"] = round(bnb_usdc, 2)
+        if isinstance(fee_st, dict) and isinstance(fee_venues := fee_st.get("venues"), dict):
+            for fee_venue, ps_key, asset_k, held_usd_k, px_k in _VENUE_FEE_RESERVE_SPECS:
+                if not isinstance(v_fee_st := fee_venues.get(fee_venue), dict):
+                    continue
+                res_usdc = safe_pos_float(v_fee_st.get(held_usd_k), default=None)
+                if (res_px := safe_pos_float(v_fee_st.get(px_k), default=None)) is not None:
+                    v_bal_path = resolve_venue_balance_cache_path(cachedb_dir, fee_venue)
+                    v_bal_doc = _rj(v_bal_path) if v_bal_path else None
+                    v_items = (
+                        v_bal_doc.get("items")
+                        if isinstance(v_bal_doc, dict) and isinstance(v_bal_doc.get("items"), dict)
+                        else {}
+                    )
+                    if isinstance(res_row := v_items.get(asset_k), dict):
+                        res_qty = (safe_nonneg_float(res_row.get("free"), 0.0) or 0.0) + (
+                            safe_nonneg_float(res_row.get("locked"), 0.0) or 0.0
+                        )
+                        if res_qty > 0.0:
+                            res_usdc = res_qty * res_px
+                if res_usdc is not None:
+                    eff_ps[ps_key] = round(res_usdc, 2)
 
         kraken_cycles, hyperliquid_cycles, all_t212_cycles = harvest_venue_cycles(
             workspace_dir, eff_pt, build_cycle_fallback_prices(eff_ms, watcher_price_items), _rj,
@@ -1721,13 +1745,31 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                     try:
                         live_nav_pt: Optional[Dict[str, Any]] = None
                         if (live_nav_u := safe_pos_float(risk_eng.get("unified_nav_usd"), default=None)) is not None:
+                            live_venues = dict(risk_eng.get("venue_nav_breakdown_usd") or {})
+                            if str(scope or "all").strip().lower() not in ("equities", "equity"):
+                                t_pos_list = snapshot.portfolio_summary.get("tradable_positions") or ()
+                                for fee_venue, ps_key, asset_k, _, _ in _VENUE_FEE_RESERVE_SPECS:
+                                    res_u = safe_pos_float(snapshot.portfolio_summary.get(ps_key), default=None)
+                                    if res_u is None or fee_venue not in live_venues:
+                                        continue
+                                    has_res_pos = any(
+                                        isinstance(p, dict)
+                                        and normalize_venue_name(p.get("venue")) == fee_venue
+                                        and canonical_base_asset(p.get("symbol") or p.get("base") or "") == asset_k
+                                        for p in t_pos_list
+                                    )
+                                    if not has_res_pos:
+                                        live_venues[fee_venue] = round(
+                                            (safe_nonneg_float(live_venues.get(fee_venue), 0.0) or 0.0) + res_u, 2
+                                        )
+                                        live_nav_u = round(live_nav_u + res_u, 2)
                             live_nav_pt = {
                                 "ts": now_ts,
                                 "nav_usd": live_nav_u,
                                 "invested_usd": safe_nonneg_float(risk_eng.get("invested_exposure_usd"), default=0.0),
                                 "free_cash_usd": safe_nonneg_float(risk_eng.get("global_free_cash_usd"), default=0.0),
                                 "locked_quote_usd": safe_nonneg_float(risk_eng.get("locked_quote_usd"), default=0.0),
-                                "venues_usd": dict(risk_eng.get("venue_nav_breakdown_usd") or {}),
+                                "venues_usd": live_venues,
                             }
                         nav_dd = load_and_evaluate_nav_drawdown(
                             workspace_dir,
@@ -1914,7 +1956,9 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                     c.upper() in inst_ob_syms for c in cache_symbol_variants(sym_up, include_base=False)
                 )
 
-            def _collect_deduped_ob_ts(*, exclude_eq: bool = False, active_only: bool = True) -> List[float]:
+            def _collect_deduped_micro_ts(
+                ts_keys: tuple[str, ...], *, exclude_eq: bool = False, active_only: bool = True
+            ) -> List[float]:
                 by_sym: Dict[str, float] = {}
                 for mk, mv in micro_snap.items():
                     k_up = str(mk or "").strip().upper()
@@ -1924,19 +1968,20 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                         continue
                     if not isinstance(mv, dict):
                         continue
-                    raw_ob_t = mv.get("_ob_raw_ts") if mv.get("_ob_raw_ts") is not None else mv.get("_ob_ts")
-                    ts_ob = normalize_epoch_sec(raw_ob_t, default=None)
-                    if ts_ob is not None and ts_ob > 0.0:
-                        by_sym[k_up] = max(by_sym.get(k_up, 0.0), ts_ob)
+                    raw_t = next((mv.get(tk) for tk in ts_keys if mv.get(tk) is not None), None)
+                    ts_m = normalize_epoch_sec(raw_t, default=None)
+                    if ts_m is not None and ts_m > 0.0:
+                        by_sym[k_up] = max(by_sym.get(k_up, 0.0), ts_m)
                 return list(by_sym.values())
 
-            ob_item_ts = _collect_deduped_ob_ts(active_only=True) or _collect_deduped_ob_ts(active_only=False)
+            ob_keys = ("_ob_raw_ts", "_ob_ts")
+            ob_item_ts = _collect_deduped_micro_ts(ob_keys, active_only=True) or _collect_deduped_micro_ts(ob_keys, active_only=False)
             if ob_item_ts:
                 domain_ts["orderbook_newest"] = max(ob_item_ts)
                 ob_oldest_pool = (
                     (
-                        _collect_deduped_ob_ts(exclude_eq=True, active_only=True)
-                        or _collect_deduped_ob_ts(exclude_eq=True, active_only=False)
+                        _collect_deduped_micro_ts(ob_keys, exclude_eq=True, active_only=True)
+                        or _collect_deduped_micro_ts(ob_keys, exclude_eq=True, active_only=False)
                         or ob_item_ts
                     )
                     if (scope_norm == "all" and not us_rth_open)
@@ -1944,6 +1989,13 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 )
                 if len(ob_oldest_pool) > 1:
                     domain_ts["orderbook_oldest"] = min(ob_oldest_pool)
+            if scope_norm != "equities":
+                deriv_ts_vals = _collect_deduped_micro_ts(("_deriv_ts",), exclude_eq=True, active_only=True)
+                if deriv_ts_vals:
+                    domain_ts["derivatives_oldest"] = min(deriv_ts_vals)
+                whale_ts_vals = _collect_deduped_micro_ts(("_whale_ts",), exclude_eq=True, active_only=True)
+                if whale_ts_vals:
+                    domain_ts["whale_oldest"] = min(whale_ts_vals)
         st_items_d = trends_data.get("items") if isinstance(trends_data, dict) and isinstance(trends_data.get("items"), dict) else trends_data
         st_ts_vals, st_top_ts = _collect_scoped_map_timestamps(
             st_items_d,

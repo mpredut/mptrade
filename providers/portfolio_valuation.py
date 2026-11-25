@@ -21,7 +21,11 @@ from cachepaths import (
     safe_pos_float,
 )
 from core.math_coercion import first_pos_float
-from core.time_market import extract_current_price_item, normalize_epoch_sec
+from core.time_market import (
+    extract_current_price_item,
+    extract_current_price_timestamp_sec,
+    normalize_epoch_sec,
+)
 from instrument_registry import canonical_balance_asset_key, canonical_display_symbol
 
 
@@ -474,11 +478,22 @@ def compute_venue_nav_breakdown(
         if isinstance(live_prices, dict) and isinstance(live_prices.get("items"), dict)
         else (live_prices if isinstance(live_prices, dict) else {})
     )
-    live_px_map = {
-        (canonical_display_symbol(raw_k) or raw_k.strip().upper()): px
-        for raw_k, raw_v in live_src.items()
-        if isinstance(raw_k, str) and raw_k.strip() and (px := extract_current_price_item(raw_v)) is not None
-    }
+    live_ft = (
+        live_prices.get("fetchtime")
+        if isinstance(live_prices, dict) and isinstance(live_prices.get("fetchtime"), dict)
+        else {}
+    )
+    live_px_map: dict[str, float] = {}
+    live_px_ts_map: dict[str, Optional[float]] = {}
+    for raw_k, raw_v in live_src.items():
+        if not (isinstance(raw_k, str) and raw_k.strip()):
+            continue
+        if (px := extract_current_price_item(raw_v)) is None:
+            continue
+        canon_k = canonical_display_symbol(raw_k) or raw_k.strip().upper()
+        ts_v, ts_ok = extract_current_price_timestamp_sec(raw_v, live_ft.get(raw_k))
+        live_px_map[canon_k] = px
+        live_px_ts_map[canon_k] = ts_v if (ts_ok and ts_v > 0.0) else None
 
     disk_pos_rows: list[dict] = []
     disk_cash_items: list[tuple[str, object]] = []
@@ -607,15 +622,30 @@ def compute_venue_nav_breakdown(
             sym_u = canonical_display_symbol(sym_raw_g, venue=v_name) or sym_raw_g.upper()
             live_px: float | None = None
             if live_px_map and sym_u:
-                if sym_u in live_px_map:
-                    live_px = live_px_map[sym_u]
-                elif not has_equity_suffix(sym_u):
+                if has_equity_suffix(sym_u):
+                    live_px = live_px_map.get(sym_u)
+                else:
+                    cand_keys: list[str] = [sym_u]
                     for cand in cache_symbol_variants(sym_u, quotes=compatible_quote_suffixes(sym_u)):
                         if isinstance(cand, str) and not has_equity_suffix(cand):
                             cand_k = canonical_display_symbol(cand, venue=v_name) or cand.upper()
-                            if cand_k in live_px_map:
-                                live_px = live_px_map[cand_k]
-                                break
+                            if cand_k not in cand_keys:
+                                cand_keys.append(cand_k)
+                    matched_cands = [
+                        (ck, live_px_map[ck], live_px_ts_map.get(ck))
+                        for ck in cand_keys
+                        if ck in live_px_map
+                    ]
+                    if len(matched_cands) == 1:
+                        live_px = matched_cands[0][1]
+                    elif matched_cands:
+                        ts_cands = [c for c in matched_cands if c[2] is not None]
+                        if ts_cands:
+                            max_cand_ts = max(c[2] for c in ts_cands if c[2] is not None)
+                            pool = [c for c in ts_cands if c[2] is not None and (max_cand_ts - c[2]) <= 600.0]
+                        else:
+                            pool = matched_cands
+                        live_px = pool[0][1]
             if live_px is not None and (
                 fb_live := safe_nonneg_float(gp.get("free_base"), None)
             ) is not None:
