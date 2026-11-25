@@ -1212,12 +1212,17 @@ class AutonomousIntentGateway:
         last_hist = (res_intent.get("history") or [{}])[-1] if isinstance(res_intent.get("history"), list) else {}
         if (
             canceled_order_snapshots
-            and guard_allowed
-            and res_intent.get("status") == "FAILED"
             and not res_intent.get("execution_payload")
-            and last_hist.get("category") != "deferred"
-            and last_hist.get("submission_state") != "unknown"
-            and last_hist.get("reason") != "submit_ambiguous"
+            and (
+                (not guard_allowed and res_intent.get("status") == "BLOCKED_BY_GUARD")
+                or (
+                    guard_allowed
+                    and res_intent.get("status") == "FAILED"
+                    and last_hist.get("category") != "deferred"
+                    and last_hist.get("submission_state") != "unknown"
+                    and last_hist.get("reason") != "submit_ambiguous"
+                )
+            )
         ):
             self._rollback_canceled_orders(
                 inst,

@@ -5899,3 +5899,179 @@ def test_audit_cycle8_to_11_execution_guards_status_ssot_spot_tranche_and_ag_pre
     assert nav_eval["portfolio_total_usd"] == pytest.approx(140.0)
 
 
+def test_cycle12_place_context_slot_gateway_blocked_rollback_and_atomic_retry_discard(tmp_path, monkeypatch):
+    """Verify Cycle 12 fixes:
+    1. Instrument._PlaceContext declares `enqueued_intent_id` slot so guard-blocked retry enqueue links OrderLedger `iid` without AttributeError.
+    2. AutonomousIntentGateway rolls back canceled prior resting orders when replacement is BLOCKED_BY_GUARD (e.g., transient balance unavailability).
+    3. order_retry.discard_refused_intent_records & discard_superseded_symbol_records remove atomically under lock and protect in-flight/ambiguous records.
+    """
+    from unittest.mock import MagicMock
+    import instrument as inst_mod
+    import order_retry as oq
+    import state_io
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+
+    # 1. _PlaceContext accepts enqueued_intent_id and Instrument._finalize_place_outcome records it into OrderLedger
+    ctx = inst_mod._PlaceContext(
+        side_u="BUY", price=100.0, qty=1.0, orig_price=100.0, orig_qty=1.0, kwargs={}
+    )
+    ctx.reason = "trend_deferred"
+    ctx.enqueued_intent_id = "outbox-test-1"
+    assert ctx.enqueued_intent_id == "outbox-test-1"
+
+    recorded_ledger_events: list[dict] = []
+    fake_writer = SimpleNamespace(record_event=lambda ev_type, **kw: recorded_ledger_events.append({"ev": ev_type, **kw}))
+    monkeypatch.setattr(inst_mod, "get_default_ledger_writer", lambda: fake_writer)
+    monkeypatch.setattr(oq, "RETRY_ENABLED", True)
+    monkeypatch.setattr(oq, "enqueue", lambda *a, **kw: {"id": "rec999", "intent_id": "outbox-rec999"})
+    monkeypatch.setattr(inst_mod.Instrument, "_ledger_guard_block_dedup", {}, raising=False)
+
+    fake_inst = inst_mod.Instrument.__new__(inst_mod.Instrument)
+    fake_inst.symbol = "BTCUSDC"
+    fake_inst.provider_name = "binance"
+    fake_inst._provider = SimpleNamespace(get_current_price=lambda _s: 100.0)
+
+    ctx2 = inst_mod._PlaceContext(
+        side_u="BUY", price=100.0, qty=1.0, orig_price=100.0, orig_qty=1.0, kwargs={}
+    )
+    ctx2.reason = "trend_deferred"
+    fake_inst._finalize_place_outcome(ctx2, caller="test_cycle12.py")
+    assert ctx2.retry_enqueued is True
+    assert ctx2.enqueued_intent_id == "outbox-rec999"
+    assert len(recorded_ledger_events) == 1
+    assert recorded_ledger_events[0]["iid"] == "outbox-rec999"
+
+    # 2. AutonomousIntentGateway rolls back canceled prior resting order when post-cancel balance check yields BLOCKED_BY_GUARD
+    ws_dir = tmp_path / "gw_ws"
+    (ws_dir / "cachedb").mkdir(parents=True)
+    gw = AutonomousIntentGateway(
+        workspace_dir=str(ws_dir),
+        mode="enforce",
+        min_confidence=0.80,
+        max_notional_usd=500.0,
+        notify_enabled=False,
+    )
+    place_calls: list[dict] = []
+    open_list = [
+        {
+            "orderId": "ai_sell_1",
+            "clientOrderId": "AI_sell_cid_1",
+            "side": "SELL",
+            "price": "50.0",
+            "origQty": "2.0",
+            "executedQty": "0.0",
+            "status": "NEW",
+        }
+    ]
+
+    def _mock_cancel(oid):
+        open_list[:] = [o for o in open_list if o["orderId"] != oid]
+        return True
+
+    def _mock_place(**kw):
+        place_calls.append(kw)
+        return {"orderId": "restored_sell_1", "status": "NEW"}
+
+    mock_inst = SimpleNamespace(
+        symbol="HYPEUSD",
+        provider_name="kraken",
+        base="HYPE",
+        quote="USD",
+        _provider=SimpleNamespace(
+            name="Kraken",
+            free_balance=lambda _a: 0.0,
+            get_current_price=lambda _s: 50.0,
+            get_orders=lambda *_a, **_k: [],
+            order_status=lambda _s, _oid: SimpleNamespace(status="canceled", filled_qty=0.0),
+        ),
+        open_orders=lambda: list(open_list),
+        cancel_order=MagicMock(side_effect=_mock_cancel),
+        place=MagicMock(side_effect=_mock_place),
+    )
+    res_blocked = gw.process_intent(
+        {
+            "intent_id": "intent_c12_blocked_rb",
+            "decision": "SELL",
+            "symbol": "HYPEUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 55.0,
+            "reference_price": 50.0,
+            "confidence": 0.92,
+            "suggested_notional_usd": 100.0,
+            "replace_open_orders": True,
+            "thesis": "Replace resting sell higher",
+        },
+        instruments_map={"KRAKEN_HYPE": mock_inst},
+        mode="enforce",
+    )
+    assert res_blocked["status"] == "BLOCKED_BY_GUARD"
+    assert res_blocked["canceled_prior_open_orders"] == ["ai_sell_1"]
+    assert res_blocked["restored_prior_open_orders"] == 1
+    assert len(place_calls) == 1
+    assert place_calls[0]["side"] == "SELL"
+    assert place_calls[0]["price"] == pytest.approx(50.0)
+    assert place_calls[0]["qty"] == pytest.approx(2.0)
+
+    # 3. order_retry atomic discard protects in-flight/ambiguous records and ignores accepted records
+    q_file = tmp_path / "retry_c12.jsonl"
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(q_file))
+    monkeypatch.setattr(oq, "LOCK_FILE", str(tmp_path / "retry_c12.lock"))
+    state_io.atomic_write_jsonl(
+        str(q_file),
+        [
+            {
+                "id": "rec-refused",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 0.01,
+                "created_ts": 1000.0,
+                "lifecycle": "submit_pending",
+                "submission_state": "refused",
+                "intent_id": "AI_c12_1",
+                "place_kwargs": {"client_order_id": "AI_c12_1_cid"},
+            },
+            {
+                "id": "rec-unknown",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 0.01,
+                "created_ts": 1000.0,
+                "lifecycle": "submit_pending",
+                "submission_state": "unknown",
+                "last_failure_reason": "submit_ambiguous",
+                "intent_id": "AI_c12_2",
+                "place_kwargs": {"client_order_id": "AI_c12_2_cid"},
+            },
+            {
+                "id": "rec-producer",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 0.01,
+                "created_ts": 1000.0,
+                "lifecycle": "submit_pending",
+                "submission_state": "producer_claimed",
+                "intent_id": "AI_c12_3",
+                "place_kwargs": {"client_order_id": "AI_c12_3_cid"},
+            },
+            {
+                "id": "rec-accepted-refused-stale",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 0.01,
+                "created_ts": 1000.0,
+                "lifecycle": "accepted",
+                "order_id": "999001",
+                "submission_state": "refused",
+                "intent_id": "AI_c12_acc",
+                "place_kwargs": {"client_order_id": "AI_c12_acc_cid"},
+            },
+        ],
+    )
+    assert oq.discard_superseded_symbol_records("BTCUSDC", "BUY", include_bot_orders=True) == ["rec-refused"]
+    assert oq.discard_refused_intent_records("AI_c12_acc") == []
+    remaining_ids = [r["id"] for r in oq.load_all()]
+    assert remaining_ids == ["rec-unknown", "rec-producer", "rec-accepted-refused-stale"]
+
+
+

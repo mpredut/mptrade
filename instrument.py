@@ -156,6 +156,7 @@ class _PlaceContext:
     prequeued_record_id: Any = None
     prequeued_client_order_id: Any = None
     prequeued_intent_id: Any = None
+    enqueued_intent_id: Optional[str] = None
     permit_requested_price: Any = None
     native_replace_oid: Optional[str] = None
     native_replace_locked_balance: float = 0.0

@@ -1615,21 +1615,20 @@ def price_gate_ok(rec, current_price, tol=None):
 
 
 def discard_refused_intent_records(intent_id: str) -> list[str]:
-    """Discard queued records matching ``intent_id`` whose ``submission_state`` is ``refused``."""
+    """Atomically discard queued ``submit_pending`` records matching ``intent_id`` whose ``submission_state`` is ``refused``."""
     iid_str = clean_order_id(intent_id)
     if not iid_str:
         return []
-    rm_ids = [
-        rid
-        for r in load_all()
-        if isinstance(r, dict)
-        and clean_order_id(r.get("intent_id")) == iid_str
-        and (clean_scalar_str(r.get("submission_state")) or "").lower() == "refused"
-        and (rid := clean_order_id(r.get("id")))
-    ]
-    if rm_ids:
-        discard(rm_ids)
-    return rm_ids
+    removed = _remove_matching_locked(
+        lambda rec: (
+            isinstance(rec, dict)
+            and clean_order_id(rec.get("id")) is not None
+            and clean_order_id(rec.get("intent_id")) == iid_str
+            and _record_lifecycle(rec) == "submit_pending"
+            and (clean_scalar_str(rec.get("submission_state")) or "").lower() == "refused"
+        )
+    )
+    return [rid for rec in removed if (rid := clean_order_id(rec.get("id")))]
 
 
 def discard_superseded_symbol_records(
@@ -1642,7 +1641,7 @@ def discard_superseded_symbol_records(
     any_side: bool = False,
     cancel_fn_is_mock: bool = False,
 ) -> list[str]:
-    """Discard superseded ``submit_pending`` / ``awaiting_cancel`` retry records for ``symbol``."""
+    """Atomically discard superseded ``submit_pending`` / ``awaiting_cancel`` retry records for ``symbol``."""
     sym_str = _canonical_queue_symbol(symbol)
     if not sym_str:
         return []
@@ -1658,35 +1657,36 @@ def discard_superseded_symbol_records(
         return []
     canceled_set = _clean_id_set(canceled_ids)
     ai_oids = _clean_id_set(ai_order_ids)
-    to_discard: list[str] = []
-    for rec in load_all():
+
+    def _matches_superseded(rec: object) -> bool:
         if not isinstance(rec, dict) or _canonical_queue_symbol(rec.get("symbol")) != sym_str:
-            continue
-        rec_id = clean_order_id(rec.get("id"))
-        if not rec_id:
-            continue
+            return False
+        if not clean_order_id(rec.get("id")):
+            return False
         rec_oid = clean_order_id(rec.get("order_id")) or ""
         if rec_oid and rec_oid in canceled_set:
-            to_discard.append(rec_id)
-            continue
+            return True
         lc = _record_lifecycle(rec)
         if lc not in ("submit_pending", "awaiting_cancel"):
-            continue
+            return False
+        if lc == "submit_pending":
+            sub_st = (clean_scalar_str(rec.get("submission_state")) or "").lower()
+            fail_r = (clean_scalar_str(rec.get("last_failure_reason")) or "").lower()
+            if sub_st in {"producer_claimed", "unknown"} or fail_r in {"submit_ambiguous", "response_without_order_id"}:
+                return False
         rec_side = normalize_side(rec.get("side"))
         if not any_side_b and rec_side != want_side_u:
-            continue
+            return False
         rec_probe = {
             "orderId": rec_oid,
             "clientOrderId": record_client_order_id(rec) or clean_order_id(rec.get("prefix")) or "",
             "intent_id": clean_order_id(rec.get("intent_id")) or "",
         }
         is_ai_rec = resolve_order_actor(rec_probe, ai_oids) == "AI"
-        if not is_ai_rec and not include_bots_b:
-            continue
-        to_discard.append(rec_id)
-    if to_discard:
-        discard(to_discard)
-    return to_discard
+        return bool(is_ai_rec or include_bots_b)
+
+    removed = _remove_matching_locked(_matches_superseded)
+    return [rid for rec in removed if (rid := clean_order_id(rec.get("id")))]
 
 
 MarketDataProvider.bind_order_retry_hooks(
