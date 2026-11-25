@@ -6074,4 +6074,70 @@ def test_cycle12_place_context_slot_gateway_blocked_rollback_and_atomic_retry_di
     assert remaining_ids == ["rec-unknown", "rec-producer", "rec-accepted-refused-stale"]
 
 
+def test_cycle13_reconciler_loads_list_root_ai_intents_and_enrich_preserves_terminal_cancel(tmp_path):
+    """Verify Cycle 13 fixes on top of upstream be5aff4d:
+    1. OrderLedgerReconciler._load_known_ai_order_ids_lc reads production list-rooted autonomous_trade_intents.json
+       (and recovers .previous) so Hyperliquid AI orders adopt with owner='ai_executor' instead of 'external'.
+    2. cacheaccount._enrich_filled_row_metadata preserves terminal CANCELED/EXPIRED partial-fill status against PARTIALLY_FILLED.
+    """
+    from cacheaccount import CacheOrderOpenManager, _enrich_filled_row_metadata
+    from cachepaths import AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME, CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME
+    from order_ledger_reconciler_worker import OrderLedgerReconciler
+    from providers.order_id_context import derive_venue_128bit_client_order_id
+    from providers.order_ledger import OrderLedgerReader
+
+    cdb = tmp_path / "cachedb_c13"
+    (cdb / "state").mkdir(parents=True)
+    (cdb / "orders").mkdir(parents=True)
+
+    t0 = 1_795_800_000.0
+    known_cid = "AI_intent_1795800000_buy_hypeusdc"
+    known_cloid = derive_venue_128bit_client_order_id("hyperliquid", known_cid)
+    # Write the real production format: top-level JSON list (as saved by save_durable_intents_state)
+    (cdb / "state" / AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME).write_text(
+        json.dumps([
+            {
+                "intent_id": "intent_1795800000_buy_hypeusdc",
+                "venue": "hyperliquid",
+                "symbol": "HYPEUSDC",
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "880001", "status": "OPEN"},
+            }
+        ]),
+        encoding="utf-8",
+    )
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(cdb / "orders" / CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME),
+        {
+            "HYPEUSDC": [
+                {
+                    "orderId": "880001",
+                    "clientOrderId": known_cloid,
+                    "side": "BUY",
+                    "price": 58.0,
+                    "origQty": 5.0,
+                    "executedQty": 0.0,
+                    "status": "OPEN",
+                    "timestamp": int(t0 * 1000),
+                }
+            ]
+        },
+        now_ms=int((t0 + 2) * 1000),
+        verified_ts=t0 + 2.0,
+    )
+    rec = OrderLedgerReconciler(cachedb_dir=str(cdb), use_singletons=False, reconcile_grace_sec=30.0)
+    rec.reconcile_once(now_ts=t0 + 3.0)
+    active = OrderLedgerReader(cachedb_dir=str(cdb)).list_active_orders(apply_tail=False)
+    by_vid = {r["vid"]: r for r in active}
+    assert by_vid["880001"]["owner"] == "ai_executor"
+
+    # 2. _enrich_filled_row_metadata upgrades PARTIALLY_FILLED -> CANCELED and never downgrades CANCELED -> PARTIALLY_FILLED
+    row_part = {"orderId": "10", "status": "PARTIALLY_FILLED"}
+    assert _enrich_filled_row_metadata(row_part, {"orderId": "10", "status": "CANCELED"}) is True
+    assert row_part["status"] == "CANCELED"
+    assert _enrich_filled_row_metadata(row_part, {"orderId": "10", "status": "PARTIALLY_FILLED"}) is False
+    assert row_part["status"] == "CANCELED"
+
+
+
 

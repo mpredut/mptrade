@@ -71,7 +71,7 @@ from providers.order_ledger import (
     update_recently_closed,
 )
 from providers.order_ohlc_utils import extract_executed_qty, extract_orig_qty
-from state_io import encode_json_payload, generation_file_lock, read_json_dict
+from state_io import encode_json_payload, generation_file_lock, read_json_recovering
 
 
 def derive_reconcile_grace_sec(open_sync_interval_sec: float = OPEN_ORDER_SYNC_INTERVAL_SEC) -> float:
@@ -318,10 +318,10 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
         )
         for path in candidates:
             resolved = str(resolve_cachedb_filepath(path))
-            if not os.path.isfile(resolved):
+            if not (os.path.isfile(resolved) or os.path.isfile(f"{resolved}.previous")):
                 continue
-            payload = read_json_dict(resolved, default=None)
-            if isinstance(payload, dict):
+            payload = read_json_recovering(resolved, default=None)
+            if isinstance(payload, (list, dict)):
                 return {tok.lower() for tok in collect_known_ai_order_ids(payload) if tok}
         return set()
 

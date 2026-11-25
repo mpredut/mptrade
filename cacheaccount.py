@@ -1959,6 +1959,18 @@ def _sibling_order_filled_path(trade_cache_file: str, venue: str) -> str:
     return os.path.join(base_dir, fname) if base_dir else cache_path(fname)
 
 
+_TERMINAL_FILL_ROW_STATUSES: frozenset[str] = frozenset({
+    "FILLED",
+    "CLOSED",
+    "CANCELED",
+    "CANCELLED",
+    "EXPIRED",
+    "EXPIRED_IN_MATCH",
+    "REJECTED",
+    "REPLACED",
+})
+
+
 def _enrich_filled_row_metadata(
     existing: dict[str, Any],
     incoming: dict[str, Any],
@@ -1976,7 +1988,7 @@ def _enrich_filled_row_metadata(
         changed = True
     in_st = clean_upper_scalar(incoming.get("status"))
     ex_st = clean_upper_scalar(existing.get("status"))
-    if in_st and (not ex_st or (ex_st == "PARTIALLY_FILLED" and in_st == "FILLED")):
+    if in_st and (not ex_st or (ex_st not in _TERMINAL_FILL_ROW_STATUSES and in_st in _TERMINAL_FILL_ROW_STATUSES)):
         existing["status"] = in_st
         changed = True
     in_asset = clean_upper_scalar(incoming.get("feeAsset"))
@@ -2045,18 +2057,6 @@ def _merge_optional_order_fee(existing: dict, incoming: dict, merged: dict) -> N
         merged["fee"] = in_fee
         if in_asset:
             merged["feeAsset"] = in_asset
-
-
-_TERMINAL_FILL_ROW_STATUSES: frozenset[str] = frozenset({
-    "FILLED",
-    "CLOSED",
-    "CANCELED",
-    "CANCELLED",
-    "EXPIRED",
-    "EXPIRED_IN_MATCH",
-    "REJECTED",
-    "REPLACED",
-})
 
 
 def _merge_fill_row_status(
