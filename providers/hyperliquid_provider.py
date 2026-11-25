@@ -969,7 +969,7 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
         self.validate_symbol(symbol)
         interval = require_pos_ohlc_interval(symbol, interval_min)
         client, pair, _ = self._require_hl_client_and_pair(f"ohlc_series({symbol})")
-        lookback_h = max(1, (90 * interval) // 60)
+        lookback_h = max(25, (90 * interval) // 60) if interval in (5, 15) else max(1, (90 * interval) // 60)
         try:
             raw_candles = client.candles(pair, candle_interval(interval), lookback_h)
             return ClosedPriceSeries.from_raw_candles(

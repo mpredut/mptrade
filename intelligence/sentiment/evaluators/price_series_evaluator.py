@@ -2641,6 +2641,7 @@ CLOSED_EQUITY_INTRADAY_KEYS: Tuple[str, ...] = (
     "chg_15m_pct",
     "chg_30m_pct",
     "chg_1h_pct",
+    "va_hold_min",
 )
 CLOSED_EQUITY_QUOTE_AGE_MIN: float = 30.0
 _SHORT_SLOPE_OVERRIDE_KEYS: Tuple[str, ...] = (

@@ -1115,6 +1115,7 @@ _LOG_SUPERVISOR_SUMMARY_RE = re.compile(
     r"curl:\s*\(22\).*returned error:\s*429|deadman:\s*(?:curl ERROR after retries|ntfy rate-limited)|"
     r"In-place /compact for topic .* failed:|"
     r"the historical price reference was explicitly bypassed;|"
+    r"BLOCKED \(pre-submit\):\s*(?:replace_not_attempted|replace_cancel_only)\b|"
     r"\[<stdin>:\d+\])",
     re.IGNORECASE,
 )

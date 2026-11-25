@@ -33,7 +33,7 @@ import instrument_registry as sym_reg
 from instrument_registry import casefold_get, venue_for_symbol
 
 from .base import MarketDataProvider
-from .ohlc_utils import candle_interval, candles_to_historical_points, ProviderError
+from .ohlc_utils import candle_interval, candles_to_historical_points, ProviderError, require_pos_ohlc_interval
 from .order_ohlc_utils import (
     build_open_order_entry,
     extract_order_fee,
@@ -630,14 +630,18 @@ class BinanceProvider(MarketDataProvider):
         )
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
-        iv = candle_interval(interval_min)
+        interval_i = require_pos_ohlc_interval(symbol, interval_min)
+        iv = candle_interval(interval_i)
+        # Cover a full 24h+ window for 5m/15m queries so 24h Volume Profile and 24h price-delta
+        # stitching do not truncate at 22.33h (90 x 15m).
+        kline_limit = max(91, min(300, (1500 // interval_i) + 2)) if interval_i in (5, 15) else 91
         try:
-            klines = _get_bapi().client.get_klines(symbol=symbol, interval=iv, limit=91)
+            klines = _get_bapi().client.get_klines(symbol=symbol, interval=iv, limit=kline_limit)
         except Exception as exc:
             raise ProviderError(f"ohlc_series({symbol}): {exc}") from exc
         return ClosedPriceSeries.from_raw_candles(
             klines,
-            interval_min,
+            interval_i,
             lambda item: item[4] if isinstance(item, (list, tuple)) and len(item) >= 5 else None,
             lambda item: item[6] if isinstance(item, (list, tuple)) and len(item) > 6 else None,
             lambda item: item[5] if isinstance(item, (list, tuple)) and len(item) > 5 else None,

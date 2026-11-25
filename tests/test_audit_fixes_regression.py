@@ -4838,3 +4838,104 @@ def test_cycle10_deribit_0dte_skew_exclusion_kinematics_signed_zero_and_nk_sanct
     assert match_high_severity_keywords(
         "Swiss freeze Russian bank assets under expanded EU sanctions"
     )
+
+
+def test_cycle11_24h_ohlc_kline_limits_replace_fallback_sre_filter_and_closed_equity_va_hold(tmp_path, monkeypatch):
+    """Cycle 11 audit fixes:
+    1. BinanceProvider.ohlc_series & HyperliquidProvider.ohlc_series request full >=24h windows
+       for 5m/15m queries (limit=300/102 on Binance, lookback_h=25 on Hyperliquid) instead of
+       truncating 24h OHLC/Volume Profile at 22.33h (90 x 15m).
+    2. SRE log anomaly harvester ignores benign monitororder native-replace fallback lines
+       ('BLOCKED (pre-submit): replace_not_attempted' / 'replace_cancel_only') while still
+       catching real pre-submit execution errors.
+    3. EquityRthSessionPolicy strips stale/synthetic overnight va_hold_min ('below_val=0m')
+       on closed US equities (quote_age_min > 30m) while preserving live RTH/EXT hold duration.
+    """
+    from types import SimpleNamespace
+    import providers.binance_provider as bn_mod
+    from providers.binance_provider import BinanceProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+    from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
+
+    # C11.1a: BinanceProvider.ohlc_series requests >=24h for 5m (limit=300) and 15m (limit=102), keeps 91 for 60m
+    bn_calls = []
+    raw_k = [
+        [1700000000000, "100.0", "101.0", "99.0", "100.5", "10.0", 1700000300000],
+        [1700000300000, "100.5", "102.0", "100.0", "101.0", "12.0", 1700000600000],
+    ]
+
+    def _fake_get_klines(*, symbol, interval, limit):
+        bn_calls.append((symbol, interval, limit))
+        return raw_k
+
+    monkeypatch.setattr(bn_mod, "_get_bapi", lambda: SimpleNamespace(client=SimpleNamespace(get_klines=_fake_get_klines)))
+    bp = BinanceProvider()
+    bp.ohlc_series("ETHUSDC", 5)
+    bp.ohlc_series("ETHUSDC", 15)
+    bp.ohlc_series("ETHUSDC", 60)
+    assert bn_calls == [
+        ("ETHUSDC", "5m", 300),
+        ("ETHUSDC", "15m", 102),
+        ("ETHUSDC", "1h", 91),
+    ]
+
+    # C11.1b: HyperliquidProvider.ohlc_series requests >=24h lookback (25h) for 5m and 15m, keeps 90h for 60m
+    hl_calls = []
+    hl_raw = [
+        {"o": "58.0", "h": "59.0", "l": "57.5", "c": "58.5", "v": "100.0", "T": 1700000300000},
+        {"o": "58.5", "h": "59.2", "l": "58.0", "c": "58.8", "v": "120.0", "T": 1700000600000},
+    ]
+    hp = HyperliquidProvider()
+    monkeypatch.setattr(
+        hp,
+        "_require_hl_client_and_pair",
+        lambda _c: (
+            SimpleNamespace(candles=lambda pair, iv, lh: (hl_calls.append((pair, iv, lh)) or hl_raw)),
+            "HYPE/USDC",
+            None,
+        ),
+    )
+    hp.ohlc_series("HYPEUSDC", 5)
+    hp.ohlc_series("HYPEUSDC", 15)
+    hp.ohlc_series("HYPEUSDC", 60)
+    assert hl_calls == [
+        ("HYPE/USDC", "5m", 25),
+        ("HYPE/USDC", "15m", 25),
+        ("HYPE/USDC", "1h", 90),
+    ]
+
+    # C11.2: Benign monitororder native-replace fallbacks are not counted as SRE errors; real blocks still are
+    ldir = tmp_path / "logs_c11"
+    ldir.mkdir(parents=True)
+    now_hms = time.strftime("%H:%M:%S")
+    (ldir / "monitororder_2026-11-25.log").write_text(
+        f"{now_hms} Trying to place BUY TAOUSDC qty 11.0375 at price 174.3\n"
+        f"{now_hms} [TAOUSDC] BUY BLOCKED (pre-submit): replace_not_attempted\n"
+        f"{now_hms} [TAOUSDC] SELL BLOCKED (pre-submit): replace_cancel_only\n"
+        f"{now_hms} The order with ID 729450583 was cancelled.\n",
+        encoding="utf-8",
+    )
+    anom_clean = harvest_log_anomalies_from_dirs([str(ldir)], 1.0)
+    assert anom_clean.error_count == 0
+
+    (ldir / "monitororder_2026-11-25.log").write_text(
+        f"{now_hms} [TAOUSDC] BUY BLOCKED (pre-submit): execution_gate_unavailable (db timeout)\n",
+        encoding="utf-8",
+    )
+    anom_real = harvest_log_anomalies_from_dirs([str(ldir)], 1.0)
+    assert anom_real.error_count == 1
+
+    # C11.3: Closed overnight equity strips synthetic va_hold_min ('below_val=0m'), live equity preserves it
+    eq_pol = resolve_asset_session_policy("RGNT_US_EQ")
+    now_s = time.time()
+    closed_entry = {"price": 0.7939, "quote_age_min": 411.3, "va_regime": "BELOW_VAL", "va_hold_min": 0.0}
+    closed_m24 = {"va_regime": "BELOW_VAL", "va_hold_min": 0.0, "chg_24h_pct": -6.37}
+    eq_pol.prune_stale_short_metrics(closed_entry, closed_m24, [], now_s, has_series_tail=False)
+    assert "va_hold_min" not in closed_entry and "va_hold_min" not in closed_m24
+
+    live_entry = {"price": 0.7939, "quote_age_min": 2.0, "va_regime": "BELOW_VAL", "va_hold_min": 25.0}
+    live_m24 = {"va_regime": "BELOW_VAL", "va_hold_min": 25.0, "chg_1m_pct": -0.1, "chg_24h_pct": -6.37}
+    eq_pol.prune_stale_short_metrics(live_entry, live_m24, [], now_s, has_series_tail=False)
+    assert live_entry["va_hold_min"] == pytest.approx(25.0)
+    assert live_m24["va_hold_min"] == pytest.approx(25.0)
