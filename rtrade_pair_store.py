@@ -351,13 +351,22 @@ class RTradePairStore:
 
         def op(pairs):
             now = time.time()
+            changed = False
             for pid_clean, state, terminal_b in normalized:
                 rec = pairs[pid_clean]
+                new_phase = state.get("phase")
+                if (
+                    rec.get("state") == state
+                    and rec.get("phase") == new_phase
+                    and rec.get("terminal") == terminal_b
+                ):
+                    continue
                 rec["state"] = state
-                rec["phase"] = state.get("phase")
+                rec["phase"] = new_phase
                 rec["terminal"] = terminal_b
                 rec["updated_ts"] = now
-            return True
+                changed = True
+            return changed
 
         self.mutate(op)
 

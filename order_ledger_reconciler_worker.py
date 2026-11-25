@@ -42,7 +42,7 @@ from cacheaccount import (
     get_order_filled_manager,
     get_order_open_manager,
 )
-from cachepaths import clean_symbol_key, normalize_venue_name
+from cachepaths import clean_symbol_key, normalize_venue_name, resolve_cachedb_filepath
 from instrument_registry import canonical_display_symbol
 from providers.order_id_context import (
     all_correlatable_client_order_ids,
@@ -64,7 +64,7 @@ from providers.order_ledger import (
 )
 from providers.order_ohlc_utils import extract_executed_qty, extract_orig_qty
 from providers.order_status_ssot import CANCEL_OR_EXPIRE_VENUE_STATUSES, is_open_working_status
-from state_io import generation_file_lock
+from state_io import encode_json_payload, generation_file_lock
 
 
 def derive_reconcile_grace_sec(open_sync_interval_sec: float = OPEN_ORDER_SYNC_INTERVAL_SEC) -> float:
@@ -335,6 +335,22 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
             venue_verified_ts: dict[str, float] = dict(snap["venue_verified_ts"])
             symbol_verified_ts: dict[str, float] = dict(snap.get("symbol_verified_ts") or {})
             recently_closed: dict[str, float] = dict(snap.get("recently_closed") or {})
+            active_file_exists = os.path.isfile(str(resolve_cachedb_filepath(self.active_path())))
+            prev_core_sig = (
+                encode_json_payload(
+                    {
+                        "schema_version": snap["schema_version"],
+                        "journal_cursor": cursor,
+                        "venue_verified_ts": {k: round(v, 3) for k, v in sorted(venue_verified_ts.items())},
+                        "symbol_verified_ts": {k: round(v, 3) for k, v in sorted(symbol_verified_ts.items())},
+                        "recently_closed": recently_closed,
+                        "orders": orders,
+                    },
+                    sort_keys=True,
+                )
+                if active_file_exists
+                else None
+            )
             newly_closed: list[dict[str, Any]] = []
             reconciler_events: list[dict[str, Any]] = []
 
@@ -599,15 +615,25 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                 stats["reconciled_closed"] += 1
 
             stats["active_count"] = len(orders)
-            self.write_active_snapshot({
+            next_core = {
                 "schema_version": ORDER_LEDGER_SCHEMA_VERSION,
-                "updated_ts": round(eff_now, 3),
                 "journal_cursor": cursor,
                 "venue_verified_ts": {k: round(v, 3) for k, v in sorted(venue_verified_ts.items())},
                 "symbol_verified_ts": {k: round(v, 3) for k, v in sorted(symbol_verified_ts.items())},
                 "recently_closed": recently_closed,
                 "orders": orders,
-            })
+            }
+            next_core_sig = encode_json_payload(next_core, sort_keys=True) if active_file_exists else None
+            if (not active_file_exists) or next_core_sig != prev_core_sig or reconciler_events or newly_closed:
+                self.write_active_snapshot({
+                    "schema_version": ORDER_LEDGER_SCHEMA_VERSION,
+                    "updated_ts": round(eff_now, 3),
+                    "journal_cursor": cursor,
+                    "venue_verified_ts": next_core["venue_verified_ts"],
+                    "symbol_verified_ts": next_core["symbol_verified_ts"],
+                    "recently_closed": recently_closed,
+                    "orders": orders,
+                })
 
         return stats
 

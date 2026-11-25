@@ -1606,6 +1606,75 @@ def test_fleet_wide_ephemeral_no_fsync_and_incremental_jsonl_cached_readers(tmp_
     assert "nice -n" not in ci_ln
 
 
+def test_order_ledger_and_rtrade_pair_store_skip_redundant_noop_fsync_writes(tmp_path, monkeypatch):
+    """Verify OrderLedgerReconciler and RTradePairStore skip redundant disk/fsync writes when state is unchanged
+    while preserving immediate durable fsync writes on real state transitions."""
+    import order_ledger_reconciler_worker as olw
+    import rtrade_pair_store
+
+    # 1. OrderLedgerReconciler writes on initial creation and on real changes, skipping no-op polls
+    cdb = tmp_path / "cachedb"
+    (cdb / "orders").mkdir(parents=True, exist_ok=True)
+    rec = olw.OrderLedgerReconciler(cachedb_dir=str(cdb), use_singletons=False)
+    write_calls: list[dict] = []
+    orig_write = rec.write_active_snapshot
+
+    def _spy_write(snap):
+        write_calls.append(dict(snap))
+        return orig_write(snap)
+
+    monkeypatch.setattr(rec, "write_active_snapshot", _spy_write)
+    rec.reconcile_once(now_ts=1_795_000_000.0)
+    assert len(write_calls) == 1
+
+    # Second identical no-op pass (different wall clock now_ts, zero events/venue changes) -> 0 writes!
+    rec.reconcile_once(now_ts=1_795_000_002.0)
+    assert len(write_calls) == 1
+
+    # Real event appended -> triggers immediate durable write!
+    rec.append_event(
+        olw.build_order_event(
+            olw.OrderEventType.INTENT.value,
+            ts=1_795_000_004.0,
+            src="test",
+            venue="binance",
+            symbol="BTCUSDC",
+            owner="tradeall",
+            side="BUY",
+            order_type="LIMIT",
+            qty=0.01,
+            px=60000.0,
+            iid="iid_dirty_test_1",
+        )
+    )
+    rec.reconcile_once(now_ts=1_795_000_005.0)
+    assert len(write_calls) == 2
+
+    # Subsequent identical pass -> 0 writes again!
+    rec.reconcile_once(now_ts=1_795_000_007.0)
+    assert len(write_calls) == 2
+
+    # 2. RTradePairStore.checkpoint_many skips fsync write when state/phase/terminal is unchanged
+    store_path = tmp_path / "rtrade_pairs.json"
+    store = rtrade_pair_store.RTradePairStore(str(store_path))
+    store.intent("p1", "BUY", 100.0, 1.0, "CID_P1", symbol="TAOUSDC", start_side="BUY")
+    st_quoting = {"pair_id": "p1", "qty": 1.0, "start_side": "BUY", "phase": "quoting", "tickets": []}
+
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+
+    store.checkpoint_many([("p1", st_quoting, False)])
+    assert len(fsync_calls) >= 1
+
+    fsync_calls.clear()
+    store.checkpoint_many([("p1", dict(st_quoting), False)])
+    assert fsync_calls == []
+
+    # Phase transition -> immediate durable fsync write
+    store.checkpoint_many([("p1", {"pair_id": "p1", "phase": "complete"}, True)])
+    assert len(fsync_calls) >= 1
+
+
 
 
 
