@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import logging
 from abc import ABC
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from botcore import (
     clean_scale,
     coerce_dict_maps,
-    is_live_network_backfill_enabled,
     normalize_epoch_sec,
     normalize_timestamp_ms,
     resolve_now_ts,
@@ -31,10 +30,8 @@ from cachepaths import (
 from intelligence.external.collectors.base_collector import round_spread_bps
 from pricewindow import adaptive_thresholds
 from providers.base import MarketDataProvider
-from intelligence.internal.state import survival as _surv_mod
+from intelligence.internal.state.survival import estimate_remaining_trend_hours
 from intelligence.macro_sentiment_ssot import (
-    load_microstructure_cycle_history,
-    save_microstructure_cycle_history,
     scan_latest_long_trend_value,
     parse_ts_px_row,
 )
@@ -1187,29 +1184,6 @@ def evaluate_microstructure_cycle_deltas(
     return microstructure, mhist, mhist_dirty
 
 
-def update_microstructure_cycle_deltas(
-    cache_dir: Optional[str],
-    microstructure: Dict[str, Any],
-    *,
-    now_ts: Optional[float] = None,
-    persist: bool = True,
-    history: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Load cycle history via collector, evaluate rolling `cycle_delta` metrics in-memory, and optionally persist."""
-    if not isinstance(microstructure, dict) or not microstructure:
-        return history if isinstance(history, dict) else {}
-    if isinstance(history, dict):
-        mhist = history
-    elif cache_dir:
-        mhist = load_microstructure_cycle_history(cache_dir)
-    else:
-        return {}
-    _, mhist, mhist_dirty = evaluate_microstructure_cycle_deltas(microstructure, mhist, now_ts=now_ts)
-    if persist and mhist_dirty and cache_dir:
-        save_microstructure_cycle_history(cache_dir, mhist)
-    return mhist
-
-
 _SIBLING_VP_KEYS: frozenset[str] = frozenset({
     "sec_poc_px", "hvn2_px", "lvn_px", "profile_shape",
     "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct",
@@ -1263,6 +1237,7 @@ def enrich_cross_venue_trends(
     watcher_price_items: Any,
     *,
     allow_network: Optional[bool] = None,
+    estimate_t_fn: Optional[Callable[[str], Any]] = None,
 ) -> None:
     """Enrich every symbol with cross-venue short slopes, Kalman velocity, long trend, Weibull, and 7d range."""
     def _unwrap_items_dict(raw: Any) -> Dict[str, Any]:
@@ -1410,21 +1385,17 @@ def enrich_cross_venue_trends(
             entry["weibull_median_d"], entry["weibull_p90_d"] = tt.get("median_d"), tt.get("p90_d")
             tt_p_cont = tt.get("p_cont") if isinstance(tt.get("p_cont"), dict) else None
         elif (
-            entry.get("weibull_median_d") is None
+            callable(estimate_t_fn)
+            and entry.get("weibull_median_d") is None
             and not has_equity_suffix(sym)
             and allow_net_flag is not False
         ):
             try:
-                is_est_patched = (
-                    getattr(_surv_mod, "estimate_T", None) is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
-                    or getattr(_surv_mod, "fetch_klines", None) is not getattr(_surv_mod, "_ORIG_FETCH_KLINES", None)
-                )
-                if (bool(allow_net_flag) and is_live_network_backfill_enabled()) or is_est_patched:
-                    if isinstance(est_tt := _surv_mod.estimate_T(sym), dict) and est_tt.get("median_d") is not None:
-                        entry["weibull_median_d"], entry["weibull_p90_d"] = est_tt.get("median_d"), est_tt.get("p90_d")
-                        tt_p_cont = est_tt.get("p_cont") if isinstance(est_tt.get("p_cont"), dict) else None
-                        if isinstance(t_trend_map, dict):
-                            t_trend_map[sym] = est_tt
+                if isinstance(est_tt := estimate_t_fn(sym), dict) and est_tt.get("median_d") is not None:
+                    entry["weibull_median_d"], entry["weibull_p90_d"] = est_tt.get("median_d"), est_tt.get("p90_d")
+                    tt_p_cont = est_tt.get("p_cont") if isinstance(est_tt.get("p_cont"), dict) else None
+                    if isinstance(t_trend_map, dict):
+                        t_trend_map[sym] = est_tt
             except Exception:
                 pass
         cur_est_rem = safe_float(entry.get("long_trend_est_rem_hours"), default=None)
@@ -1434,7 +1405,7 @@ def enrich_cross_venue_trends(
             and (w_p90 := safe_pos_float(entry.get("weibull_p90_d"), default=None)) is not None
             and (cur_est_rem is None or abs(cur_est_rem - lt_h * 0.5) <= 0.15)
         ):
-            entry["long_trend_est_rem_hours"] = _surv_mod.estimate_remaining_trend_hours(
+            entry["long_trend_est_rem_hours"] = estimate_remaining_trend_hours(
                 lt_h, median_d=w_med, p90_d=w_p90, p_cont=tt_p_cont
             )
         if isinstance(watcher_price_items, dict):
@@ -1505,10 +1476,10 @@ def sync_sibling_symbol_telemetry(
     *,
     cache_dir: Optional[str] = None,
     now_ts: Optional[float] = None,
-    persist_cycle_deltas: bool = True,
+    persist_cycle_deltas: bool = False,
     cycle_history: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Symmetric cross-venue & sibling symbol synchronization across Binance, Kraken, Hyperliquid, and T212/xStocks."""
+    """Pure in-memory cross-venue & sibling symbol synchronization (no disk persistence; collectors own state I/O)."""
     if not isinstance(prices_and_trends, dict):
         prices_and_trends = {}
     if not isinstance(microstructure, dict):
@@ -1627,16 +1598,9 @@ def sync_sibling_symbol_telemetry(
         )
 
     reconcile_sibling_flow_and_liq_regimes(microstructure, prices_and_trends)
-    if isinstance(cycle_history, dict) and not persist_cycle_deltas:
-        MicrostructureCycleDeltaEvaluator().evaluate(microstructure, history=cycle_history, now_ts=now_ts)
-        return cycle_history
-    return update_microstructure_cycle_deltas(
-        cache_dir,
-        microstructure,
-        now_ts=now_ts,
-        persist=persist_cycle_deltas,
-        history=cycle_history,
-    )
+    eff_hist = cycle_history if isinstance(cycle_history, dict) else {}
+    MicrostructureCycleDeltaEvaluator().evaluate(microstructure, history=eff_hist, now_ts=now_ts)
+    return eff_hist
 
 
 def reconcile_sibling_flow_and_liq_regimes(
@@ -2263,6 +2227,5 @@ __all__ = [
     "select_reconciled_spot_or_ob_price",
     "should_rescale_usd_sibling_walls",
     "sync_sibling_symbol_telemetry",
-    "update_microstructure_cycle_deltas",
 ]
 

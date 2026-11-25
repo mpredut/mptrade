@@ -1716,7 +1716,7 @@ def test_hoisted_patch_seams_symbol_csv_and_observe_cli_border_cases(
 ) -> None:
     """Verify hoisted module-level patch seams, SSOT CSV/symbol parsing, and tradeall_observe CLI bounds."""
 
-    # 1. microstructure_evaluator.enrich_cross_venue_trends honors survival.estimate_T monkeypatches
+    # 1. microstructure_evaluator.enrich_cross_venue_trends honors injected estimate_t_fn without implicit disk/network I/O
     called_est: list[str] = []
     monkeypatch.setattr(
         surv_mod,
@@ -1734,6 +1734,7 @@ def test_hoisted_patch_seams_symbol_csv_and_observe_cli_border_cases(
         t_map,
         None,
         allow_network=True,
+        estimate_t_fn=surv_mod.estimate_T,
     )
     assert called_est == ["BTCUSDC"]
     assert price_map["BTCUSDC"]["weibull_median_d"] == 4.0

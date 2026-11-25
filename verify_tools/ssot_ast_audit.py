@@ -260,6 +260,7 @@ FORBIDDEN_PURE_VALUATION_IMPORTS = frozenset({
     "state_io",
     "state_stores",
 })
+FORBIDDEN_EVALUATOR_IMPORTS = FORBIDDEN_PURE_VALUATION_IMPORTS | frozenset({"cacheprice"})
 EVALUATOR_FORBIDDEN_WRITE_FNS = frozenset({
     "save_json_state",
     "save_json_file",
@@ -272,7 +273,16 @@ EVALUATOR_FORBIDDEN_WRITE_FNS = frozenset({
     "atomic_text_writer",
     "generation_transaction",
     "generation_file_lock",
+    "estimate_T",
 })
+EVALUATOR_FORBIDDEN_WRITE_PREFIXES = (
+    "save_",
+    "write_",
+    "persist_",
+    "upsert_",
+    "append_jsonl",
+    "atomic_write",
+)
 FORBIDDEN_PROVIDER_UPWARD = frozenset({
     "cacheInterface",
     "cacheaccount",
@@ -436,7 +446,7 @@ STATE_FILE_OWNER_MAP: dict[str, frozenset[str]] = {
     "CACHE_T212_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_state_store.py"}),
 }
 STATE_FILE_LITERAL_TO_CONST: dict[str, str] = {
-    **{spec.filename: spec.const_name for spec in CRITICAL_STATE_SPECS},
+    **{spec.filename.lower(): spec.const_name for spec in CRITICAL_STATE_SPECS},
     "autonomous_order_intents_state.json": "AUTO_ORDER_INTENTS_STATE_FILENAME",
     "autonomous_trade_intents_state.json": "AUTO_ORDER_INTENTS_STATE_FILENAME",
     "autonomous_trade_intents.json": "AUTO_ORDER_INTENTS_STATE_FILENAME",
@@ -1233,6 +1243,11 @@ def audit_layer_dag_ast(
                     "(delegate persistence to providers/portfolio_state_store.py, cacheprice.py, or state_stores/)"
                 )
         if rel.startswith(EVALUATOR_CLOCK_GUARDED_PREFIX):
+            if eval_io_leak := sorted(roots & FORBIDDEN_EVALUATOR_IMPORTS):
+                violations.append(
+                    f"{rel}: stateless evaluator must not import direct disk/state I/O modules {eval_io_leak} "
+                    "(delegate I/O to intelligence/macro_sentiment_ssot.py, collectors/, or state_stores/)"
+                )
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call):
                     fn_nm = (
@@ -1240,10 +1255,12 @@ def audit_layer_dag_ast(
                         if isinstance(node.func, ast.Name)
                         else (node.func.attr if isinstance(node.func, ast.Attribute) else "")
                     )
-                    if fn_nm in EVALUATOR_FORBIDDEN_WRITE_FNS:
+                    if fn_nm in EVALUATOR_FORBIDDEN_WRITE_FNS or fn_nm.lower().startswith(
+                        EVALUATOR_FORBIDDEN_WRITE_PREFIXES
+                    ):
                         violations.append(
                             f"{rel}:{node.lineno}: stateless evaluator must not call disk writer {fn_nm}() "
-                            "(delegate persistence to Layer 3 cache manager or state_stores/)"
+                            "(delegate persistence to Layer 3 cache manager, collectors/, or state_stores/)"
                         )
         if rel.startswith("intelligence/"):
             for node in ast.walk(tree):

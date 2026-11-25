@@ -179,6 +179,9 @@ from cachepaths import (
     CACHE_MACRO_CALENDAR_FILENAME,
     CACHE_MARKET_BREADTH_FILENAME,
     CACHE_SENTIMENT_EVAL_FILENAME,
+    MICROSTRUCTURE_CYCLE_HISTORY_FILENAME,
+    cache_24_price_filename,
+    cache_path,
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
@@ -186,6 +189,7 @@ from cachepaths import (
     clean_symbol_key,
     compatible_quote_suffixes,
     is_kraken_tokenized_asset,
+    legacy_filenames_for,
     resolve_cachedb_filepath,
 )
 from pricewindow import filter_isolated_price_points
@@ -198,12 +202,17 @@ from providers.portfolio_state_store import (
 )
 from instrument_registry import casefold_get, symbols_for
 from state_io import (
+    cachedb_exists,
+    read_json_dict,
     read_json_dict_recovering as _default_read_json_dict_recovering,
     read_json_file,
     read_json_recovering as _default_read_json_recovering,
+    read_jsonl_or_json_dict_cached,
+    read_tail_jsonl_records,
     read_text_lines,
     save_json_state as _default_save_json_state,
 )
+from state_stores.microstructure_cycle_history import MicrostructureCycleHistoryStore
 
 save_json_state = _default_save_json_state
 read_json_dict_recovering = _default_read_json_dict_recovering
@@ -1503,7 +1512,7 @@ def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
 def _resolve_microstructure_cycle_history_path(cache_dir: Optional[str]) -> Optional[str]:
     if not cache_dir:
         return None
-    mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "microstructure_cycle_history.json")))
+    mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, MICROSTRUCTURE_CYCLE_HISTORY_FILENAME)))
     abs_mhist = os.path.abspath(mhist_path)
     try:
         is_repo_cachedb = os.path.commonpath([abs_mhist, _REPO_CACHEDB_DIR]) == _REPO_CACHEDB_DIR
@@ -1519,34 +1528,156 @@ def load_microstructure_cycle_history(
     *,
     read_json_fn: Any = None,
 ) -> Dict[str, Any]:
-    """Load rolling microstructure cycle history from `microstructure_cycle_history.json`."""
+    """Load rolling microstructure cycle history via ``MicrostructureCycleHistoryStore``."""
     mhist_path = _resolve_microstructure_cycle_history_path(cache_dir)
-    if not mhist_path or not os.path.exists(mhist_path):
+    if not mhist_path:
         return {}
-    rj = read_json_fn if callable(read_json_fn) else read_json_file
-    try:
-        raw_mh = rj(mhist_path, default={})
-    except TypeError:
-        raw_mh = rj(mhist_path)
-    return dict(raw_mh) if isinstance(raw_mh, dict) else {}
+    return MicrostructureCycleHistoryStore.load_path(mhist_path, read_json_fn=read_json_fn)
 
 
 def save_microstructure_cycle_history(
     cache_dir: Optional[str],
     history: Dict[str, Any],
 ) -> bool:
-    """Persist rolling microstructure cycle history to `microstructure_cycle_history.json`."""
+    """Persist rolling microstructure cycle history atomically via ``MicrostructureCycleHistoryStore``."""
     if not isinstance(history, dict):
         return False
     mhist_path = _resolve_microstructure_cycle_history_path(cache_dir)
     if not mhist_path:
         return False
     try:
-        os.makedirs(os.path.dirname(os.path.abspath(mhist_path)), exist_ok=True)
-        save_json_state(mhist_path, history, indent=2)
-        return True
+        return MicrostructureCycleHistoryStore.upsert_history_locked(mhist_path, history, indent=2)
     except Exception:
         return False
+
+
+def load_cached_geopolitical_raw_dict() -> Optional[Dict[str, Any]]:
+    """Read raw cached geopolitical assessment dict from default ``cachedb`` passively (0 ms)."""
+    try:
+        p = cache_path(CACHE_GEOPOLITICAL_EVAL_FILENAME)
+        if p and cachedb_exists(p, include_previous=True):
+            data = read_json_dict(p, default=None, recover_previous=True)
+            if isinstance(data, dict) and data:
+                return data
+    except Exception:
+        pass
+    return None
+
+
+def load_cached_btc_24h_change_pct(cache_dir: Optional[str]) -> Optional[float]:
+    """Compute cached 24h BTC percentage change from local ``cache_24_price`` files without network I/O."""
+    if not cache_dir:
+        return None
+    btc_24h_cands = dict.fromkeys(
+        (
+            *(
+                fn
+                for sym_p in ("BTCUSDC", "BTCUSDT")
+                for base_fn in (
+                    cache_24_price_filename(sym_p),
+                    cache_24_price_filename(sym_p, ext=".json"),
+                )
+                for fn in (base_fn, *legacy_filenames_for(base_fn))
+            ),
+            "24price_BTCUSDC.json",
+            "24price_BTCUSDT.json",
+            "24price.json",
+            "cache_24_price.json",
+        )
+    )
+    for fn in btc_24h_cands:
+        fpath = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn)))
+        if not os.path.exists(fpath):
+            continue
+        raw = (
+            read_jsonl_or_json_dict_cached(fpath)
+            if fpath.endswith(".jsonl")
+            else _default_read_json_recovering(fpath, default=None)
+        )
+        rows = lookup_symbol_cache_items(raw, "BTCUSDC", require_list=True, unwrap_items=True)
+        if not isinstance(rows, list) or len(rows) < 2:
+            continue
+        pts: List[Tuple[float, float]] = []
+        prev_t_btc = -1.0
+        btc_sorted = True
+        pos_inf = math.inf
+        for r in rows:
+            rt = type(r)
+            if (rt is list or rt is tuple) and len(r) >= 2:
+                t_raw, p_raw = r[0], r[1]
+                tt, pt_t = type(t_raw), type(p_raw)
+                if tt is int and pt_t is float:
+                    if t_raw > 0 and 0.0 < p_raw < pos_inf:
+                        t_ms = t_raw * 1000.0 if t_raw < 1e11 else t_raw * 1.0
+                        if t_ms < prev_t_btc:
+                            btc_sorted = False
+                        prev_t_btc = t_ms
+                        pts.append((t_ms, p_raw))
+                    continue
+                if (tt is float or tt is int) and (pt_t is float or pt_t is int):
+                    if 0.0 < t_raw < pos_inf and 0.0 < p_raw < pos_inf:
+                        t_ms = t_raw * 1000.0 if t_raw < 1e11 else t_raw * 1.0
+                        if t_ms < prev_t_btc:
+                            btc_sorted = False
+                        prev_t_btc = t_ms
+                        pts.append((t_ms, p_raw * 1.0))
+                    continue
+            if isinstance(r, (list, tuple)) and len(r) >= 2:
+                tf = safe_pos_float(r[0], 0.0)
+                pf = safe_pos_float(r[1], 0.0)
+                if tf > 0.0 and pf > 0.0:
+                    t_ms = tf * 1000.0 if tf < 1e11 else tf
+                    if t_ms < prev_t_btc:
+                        btc_sorted = False
+                    prev_t_btc = t_ms
+                    pts.append((t_ms, pf))
+        if len(pts) >= 2:
+            if not btc_sorted:
+                pts.sort(key=lambda x: x[0])
+            pts = filter_isolated_price_points(pts)
+            if len(pts) < 2:
+                continue
+            cutoff = pts[-1][0] - 86400.0 * 1000.0
+            win = [p for p in pts if p[0] >= cutoff] or pts
+            if len(win) < 2:
+                win = pts
+            p0, p1 = win[0][1], win[-1][1]
+            if p0 > 0.0 and abs(chg := round((p1 - p0) / p0 * 100.0, 2) + 0.0) > 1e-6:
+                return chg
+    return None
+
+
+def scan_cached_price_archive_high_since(
+    cache_dir: Optional[str],
+    symbols: Sequence[str],
+    oldest_ts_ms: int,
+    *,
+    baseline_high: float = 0.0,
+) -> float:
+    """Scan local 365d/sparse JSONL price archives passively for the highest price since ``oldest_ts_ms``."""
+    best_high = safe_nonneg_float(baseline_high, 0.0) or 0.0
+    if not cache_dir or oldest_ts_ms <= 0 or not symbols:
+        return best_high
+    from cacheprice import Cache365PriceManager, CacheSparsePriceManager
+    for cand in dict.fromkeys(symbols):
+        if not cand:
+            continue
+        for mgr_cls in (Cache365PriceManager, CacheSparsePriceManager):
+            arch_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, mgr_cls.disk_filename_for_symbol(cand))))
+            if not os.path.exists(arch_path):
+                continue
+            try:
+                for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=512 * 1024):
+                    pt = mgr_cls.extract_jsonl_series_point(rec)
+                    if pt is not None and len(pt) >= 2:
+                        t_f = safe_pos_float(pt[0], default=0.0) or 0.0
+                        p_f = safe_pos_float(pt[1], default=0.0) or 0.0
+                        t_ms = math.trunc(t_f * 1000.0 if 0.0 < t_f < 1e11 else t_f)
+                        if t_ms >= oldest_ts_ms and p_f > best_high:
+                            best_high = p_f
+            except Exception:
+                pass
+    return best_high
 
 
 def lookup_symbol_cache_items(

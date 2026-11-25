@@ -7834,8 +7834,8 @@ def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
         audit_state_file_owners_ast,
     )
 
-    # 1. Exact 1:1 registry symmetry across all 13 critical state files
-    assert len(CRITICAL_STATE_SPECS) == 13
+    # 1. Exact 1:1 registry symmetry across all 17 critical state files
+    assert len(CRITICAL_STATE_SPECS) == 17
     for spec in CRITICAL_STATE_SPECS:
         assert spec.owner_module == f"state_stores/{Path(spec.filename).stem}.py"
         assert spec.store_class == expected_store_class_name(spec.filename)
@@ -9046,6 +9046,98 @@ def test_cycle18_xstock_no_negative_zero_and_personal_finance_affiliate_news_fil
         url="https://www.cnbc.com/2026/11/25/pce-inflation.html",
     ) is False
     assert has_financial_or_geopolitical_context("Personal loan delinquencies rise to five-year high") is True
+
+
+def test_point3_1to1_stores_locked_merges_and_zero_io_evaluators(tmp_path: Any) -> None:
+    """Verify 4 new 1:1 state stores (locked read-merge-write) and 100% zero-I/O evaluator purity."""
+    from state_stores import (
+        CacheTTrendStore,
+        MicrostructureCycleHistoryStore,
+        OrderRetryQuarantineAlertsStore,
+        OrdersActiveStore,
+    )
+    from verify_tools.ssot_ast_audit import (
+        audit_layer_dag_ast,
+        audit_state_file_owners_ast,
+    )
+
+    cdb = tmp_path / "cachedb"
+    (cdb / "telemetry").mkdir(parents=True)
+    (cdb / "orders").mkdir(parents=True)
+    (cdb / "trends").mkdir(parents=True)
+
+    # 1. MicrostructureCycleHistoryStore merges overlapping multi-writer symbol updates without lost updates
+    mh_path = MicrostructureCycleHistoryStore.resolve_path(str(cdb))
+    assert MicrostructureCycleHistoryStore.upsert_history_locked(
+        mh_path,
+        {"BTCUSDC": [{"ts": 1000.0, "ob_imbalance": 0.55}], "ETHUSDC": [{"ts": 1000.0, "ob_imbalance": 0.45}]},
+    )
+    # Second overlapping writer has stale snapshot without ETHUSDC and adds new BTCUSDC ts + SOLUSDC
+    assert MicrostructureCycleHistoryStore.upsert_history_locked(
+        mh_path,
+        {"BTCUSDC": [{"ts": 1300.0, "ob_imbalance": 0.62}], "SOLUSDC": [{"ts": 1300.0, "ob_imbalance": 0.70}]},
+    )
+    merged_mh = MicrostructureCycleHistoryStore.load_path(mh_path)
+    assert [r["ts"] for r in merged_mh["BTCUSDC"]] == [1000.0, 1300.0]
+    assert len(merged_mh["ETHUSDC"]) == 1
+    assert len(merged_mh["SOLUSDC"]) == 1
+
+    # 2. OrderRetryQuarantineAlertsStore preserves sibling keys atomically under lock
+    qa_path = OrderRetryQuarantineAlertsStore.resolve_path(str(cdb))
+    assert OrderRetryQuarantineAlertsStore.save_key_locked(qa_path, "alerted_ids", [("o1", "err1")])
+    assert OrderRetryQuarantineAlertsStore.save_key_locked(qa_path, "quarantined_ids", [("o2", "err2")])
+    assert OrderRetryQuarantineAlertsStore.load_key(qa_path, "alerted_ids") == [("o1", "err1")]
+    assert OrderRetryQuarantineAlertsStore.load_key(qa_path, "quarantined_ids") == [("o2", "err2")]
+    assert OrderRetryQuarantineAlertsStore.clear_key_locked(qa_path, "alerted_ids") is True
+    assert OrderRetryQuarantineAlertsStore.load_key(qa_path, "alerted_ids") == []
+    assert OrderRetryQuarantineAlertsStore.load_key(qa_path, "quarantined_ids") == [("o2", "err2")]
+
+    # 3. OrdersActiveStore round-trip
+    oa_path = OrdersActiveStore.resolve_path(str(cdb))
+    assert OrdersActiveStore.write_snapshot(oa_path, {"schema_version": 1, "active_orders": [{"order_id": "123"}]})
+    oa_loaded = OrdersActiveStore.read_raw_snapshot(oa_path)
+    assert isinstance(oa_loaded, dict) and oa_loaded["active_orders"][0]["order_id"] == "123"
+
+    # 4. CacheTTrendStore locked merge + positive-n preservation
+    tt_path = CacheTTrendStore.resolve_path(str(cdb))
+    assert CacheTTrendStore.upsert_entry_locked(tt_path, "BTCUSDC", {"T": 8.5, "n": 24, "median_d": 4.2})
+    assert CacheTTrendStore.upsert_entry_locked(tt_path, "ETHUSDC", {"T": 6.0, "n": 18, "median_d": 3.1})
+    # n=0 write must NOT overwrite an existing n>0 entry
+    assert CacheTTrendStore.upsert_entry_locked(tt_path, "BTCUSDC", {"T": 1.0, "n": 0, "median_d": 0.5}) is False
+    tt_loaded = CacheTTrendStore.read_from_cachedb(str(cdb))
+    assert tt_loaded["BTCUSDC"]["n"] == 24
+    assert tt_loaded["ETHUSDC"]["n"] == 18
+
+    # 5. AST static enforcement: synthetic evaluator direct I/O, wrapper write, and estimate_T leaks are blocked
+    fake_root = tmp_path / "ast_sandbox"
+    ev_dir = fake_root / "intelligence" / "sentiment" / "evaluators"
+    ev_dir.mkdir(parents=True)
+    bad_ev = ev_dir / "bad_evaluator.py"
+    bad_ev.write_text(
+        "import os\n"
+        "def run():\n"
+        "    save_microstructure_cycle_history('/tmp', {})\n"
+        "    estimate_T('BTCUSDC')\n",
+        encoding="utf-8",
+    )
+    ev_errs = audit_layer_dag_ast(fake_root, rel_paths=["intelligence/sentiment/evaluators/bad_evaluator.py"])
+    assert any("direct disk/state I/O" in e and "os" in e for e in ev_errs)
+    assert any("save_microstructure_cycle_history" in e for e in ev_errs)
+    assert any("estimate_T" in e for e in ev_errs)
+
+    # 6. AST static enforcement: raw writes to the 4 new critical state files outside their 1:1 stores are blocked
+    bad_writer = fake_root / "rogue_writer.py"
+    bad_writer.write_text(
+        "from state_io import save_json_state\n"
+        "def leak():\n"
+        "    save_json_state('cachedb/telemetry/microstructure_cycle_history.json', {})\n"
+        "    save_json_state('cachedb/orders/order_retry_quarantine_alerts.json', {})\n"
+        "    save_json_state('cachedb/orders/orders_active.json', {})\n"
+        "    save_json_state('cachedb/trends/cache_T_trend.json', {})\n",
+        encoding="utf-8",
+    )
+    owner_errs = audit_state_file_owners_ast(fake_root, rel_paths=["rogue_writer.py"])
+    assert len(owner_errs) == 4
 
 
 

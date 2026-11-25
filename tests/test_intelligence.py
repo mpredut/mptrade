@@ -184,6 +184,7 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     enrich_24h_and_microstructure,
     load_symbol_microstructure,
     load_symbol_price_series,
+    update_microstructure_cycle_deltas,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
     _apply_open_orders_locked_balances,
@@ -220,7 +221,6 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     extract_bbo_and_mid,
     reconcile_sibling_flow_and_liq_regimes,
     sync_sibling_symbol_telemetry,
-    update_microstructure_cycle_deltas,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     _populate_cycle_fallback_recent_order,

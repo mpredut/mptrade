@@ -60,12 +60,10 @@ from providers.order_status_ssot import (
 )
 from state_io import (
     append_jsonl_record,
-    cachedb_exists,
-    read_json_dict_recovering,
     read_jsonl_dicts,
     read_jsonl_dicts_from_offset,
-    save_json_state,
 )
+from state_stores.orders_active import OrdersActiveStore
 
 ORDER_LEDGER_SCHEMA_VERSION = 1
 _EVENT_WRITE_LOCK = threading.Lock()
@@ -844,10 +842,7 @@ class FileOrderLedgerBase(OrderLedgerBackendInterface, ABC):
         return self._append_jsonl(self.closed_path(utc_month_for_ts(ts)), summary, "closed record")
 
     def read_active_snapshot(self, *, repair_files: bool = False) -> dict[str, Any]:
-        path = str(resolve_cachedb_filepath(self.active_path()))
-        if not cachedb_exists(path, include_previous=True):
-            return self._empty_snapshot()
-        raw = read_json_dict_recovering(path, repair_files=_parse_bool_flag(repair_files, False))
+        raw = OrdersActiveStore.read_raw_snapshot(self.active_path(), repair_files=_parse_bool_flag(repair_files, False))
         if not isinstance(raw, dict):
             return self._empty_snapshot()
         raw_orders = raw.get("orders") if isinstance(raw.get("orders"), dict) else {}
@@ -879,8 +874,7 @@ class FileOrderLedgerBase(OrderLedgerBackendInterface, ABC):
 
     def write_active_snapshot(self, snapshot: dict[str, Any]) -> bool:
         try:
-            save_json_state(self.active_path(), snapshot, indent=1, sort_keys=False)
-            return True
+            return OrdersActiveStore.write_snapshot(self.active_path(), snapshot, indent=1)
         except Exception as exc:  # noqa: BLE001
             print(f"[order_ledger] active snapshot write failed: {exc}")
             return False

@@ -5,20 +5,16 @@ from abc import ABC
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 import math
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import (
     CACHE_MACRO_BENCHMARKS_FILENAME,
     VENUE_RUNTIME_DIR_MAP,
-    cache_24_price_filename,
     cache_symbol_variants,
     canonical_base_asset,
     has_equity_suffix,
     is_equity_venue,
-    legacy_filenames_for,
     normalize_venue_name,
-    resolve_cachedb_filepath,
 )
 from instrument_registry import canonical_display_symbol, casefold_get, resolve_symbol_identity
 from intelligence.macro.calendar_ssot import (
@@ -43,14 +39,12 @@ from intelligence.macro_sentiment_ssot import (
     get_cross_asset_regimes,
     get_deribit_options_currencies,
     get_macro_benchmark_specs,
-    lookup_symbol_cache_items,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import extract_bbo_and_mid
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     TelemetryEvaluatorFactory,
     TelemetryEvaluatorInterface,
 )
-from state_io import read_json_recovering, read_jsonl_or_json_dict_cached
 
 
 MACRO_BENCHMARK_SPECS: tuple[tuple[str, str, str], ...] = get_macro_benchmark_specs()
@@ -1247,83 +1241,7 @@ def enrich_macro_benchmarks_live_state(
             out["equity_regime"] = compute_equity_macro_regime(out)
         btc_chg = btc_chg_24h_pct
         if btc_chg is None and cache_dir:
-            btc_24h_cands = dict.fromkeys(
-                (
-                    *(
-                        fn
-                        for sym_p in ("BTCUSDC", "BTCUSDT")
-                        for base_fn in (
-                            cache_24_price_filename(sym_p),
-                            cache_24_price_filename(sym_p, ext=".json"),
-                        )
-                        for fn in (base_fn, *legacy_filenames_for(base_fn))
-                    ),
-                    "24price_BTCUSDC.json",
-                    "24price_BTCUSDT.json",
-                    "24price.json",
-                    "cache_24_price.json",
-                )
-            )
-            for fn in btc_24h_cands:
-                fpath = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn)))
-                if not os.path.exists(fpath):
-                    continue
-                raw = (
-                    read_jsonl_or_json_dict_cached(fpath)
-                    if fpath.endswith(".jsonl")
-                    else read_json_recovering(fpath, default=None)
-                )
-                rows = lookup_symbol_cache_items(raw, "BTCUSDC", require_list=True, unwrap_items=True)
-                if not isinstance(rows, list) or len(rows) < 2:
-                    continue
-                pts: List[Tuple[float, float]] = []
-                prev_t_btc = -1.0
-                btc_sorted = True
-                pos_inf = math.inf
-                for r in rows:
-                    rt = type(r)
-                    if (rt is list or rt is tuple) and len(r) >= 2:
-                        t_raw, p_raw = r[0], r[1]
-                        tt, pt_t = type(t_raw), type(p_raw)
-                        if tt is int and pt_t is float:
-                            if t_raw > 0 and 0.0 < p_raw < pos_inf:
-                                t_ms = t_raw * 1000.0 if t_raw < 1e11 else t_raw * 1.0
-                                if t_ms < prev_t_btc:
-                                    btc_sorted = False
-                                prev_t_btc = t_ms
-                                pts.append((t_ms, p_raw))
-                            continue
-                        if (tt is float or tt is int) and (pt_t is float or pt_t is int):
-                            if 0.0 < t_raw < pos_inf and 0.0 < p_raw < pos_inf:
-                                t_ms = t_raw * 1000.0 if t_raw < 1e11 else t_raw * 1.0
-                                if t_ms < prev_t_btc:
-                                    btc_sorted = False
-                                prev_t_btc = t_ms
-                                pts.append((t_ms, p_raw * 1.0))
-                            continue
-                    if isinstance(r, (list, tuple)) and len(r) >= 2:
-                        tf = safe_pos_float(r[0], 0.0)
-                        pf = safe_pos_float(r[1], 0.0)
-                        if tf > 0.0 and pf > 0.0:
-                            t_ms = tf * 1000.0 if tf < 1e11 else tf
-                            if t_ms < prev_t_btc:
-                                btc_sorted = False
-                            prev_t_btc = t_ms
-                            pts.append((t_ms, pf))
-                if len(pts) >= 2:
-                    if not btc_sorted:
-                        pts.sort(key=lambda x: x[0])
-                    pts = filter_isolated_price_points(pts)
-                    if len(pts) < 2:
-                        continue
-                    cutoff = pts[-1][0] - 86400.0 * 1000.0
-                    win = [p for p in pts if p[0] >= cutoff] or pts
-                    if len(win) < 2:
-                        win = pts
-                    p0, p1 = win[0][1], win[-1][1]
-                    if p0 > 0.0 and abs(chg := round((p1 - p0) / p0 * 100.0, 2) + 0.0) > 1e-6:
-                        btc_chg = chg
-                        break
+            btc_chg = _mss.load_cached_btc_24h_change_pct(cache_dir)
         if (
             force_recompute
             or lead_changed

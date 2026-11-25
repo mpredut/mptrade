@@ -69,12 +69,10 @@ from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_la
 from pricewindow import filter_isolated_price_points
 import providers.market_api as _market_api_mod
 from state_io import (
-    generation_file_lock,
-    read_json_dict,
     read_json_dict_cached,
     read_jsonl_or_json_dict_cached,
-    save_json_state,
 )
+from state_stores.cache_T_trend import CacheTTrendStore
 
 _DEFAULT_T_CACHE_FILE = cache_path(CACHE_T_TREND_FILENAME)
 T_CACHE_FILE = _DEFAULT_T_CACHE_FILE
@@ -338,7 +336,7 @@ def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
 def get_cached_t_entry(symbol: str) -> Optional[dict]:
     """Read and look up the cached T entry for ``symbol`` from disk in 0 ms."""
     try:
-        data = read_json_dict_cached(_effective_t_cache_file(), _T_CACHE_FILE_MEMO, max_entries=16)
+        data = CacheTTrendStore.read_cached_dict(_effective_t_cache_file(), _T_CACHE_FILE_MEMO, max_entries=16)
         if isinstance(data, dict):
             ent = _lookup_t_cache_entry(data, symbol)
             if isinstance(ent, dict):
@@ -390,8 +388,7 @@ def estimate_T(
     if not isinstance(symbol, str) or not symbol.strip():
         return fallback_res
     t_cache_path = _effective_t_cache_file()
-    loaded_cache = read_json_dict_cached(t_cache_path, _T_CACHE_FILE_MEMO, max_entries=16)
-    cache = dict(loaded_cache) if isinstance(loaded_cache, dict) else {}
+    cache = CacheTTrendStore.read_cached_dict(t_cache_path, _T_CACHE_FILE_MEMO, max_entries=16)
 
     ent = _lookup_t_cache_entry(cache, symbol)
     if ent:
@@ -449,16 +446,10 @@ def estimate_T(
         isinstance(ent, dict) and (safe_pos_float(ent.get("n"), default=0.0) or 0.0) > 0
     ):
         try:
-            with generation_file_lock(t_cache_path):
-                disk_cache = read_json_dict(t_cache_path, default=None, recover_previous=True, repair_files=True)
-                merged_cache = dict(disk_cache) if isinstance(disk_cache, dict) else dict(cache)
-                disk_ent = merged_cache.get(cache_key)
-                if res_has_n or not (
-                    isinstance(disk_ent, dict) and (safe_pos_float(disk_ent.get("n"), default=0.0) or 0.0) > 0
-                ):
-                    merged_cache[cache_key] = res
-                    save_json_state(t_cache_path, merged_cache, indent=2)
-                    _T_CACHE_FILE_MEMO.clear()
+            if CacheTTrendStore.upsert_entry_locked(
+                t_cache_path, cache_key, res, fallback_cache=cache, indent=2
+            ):
+                _T_CACHE_FILE_MEMO.clear()
         except OSError:
             pass
     return res

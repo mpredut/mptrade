@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from abc import ABC
 import math
-import os
 import time as _time
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -15,11 +14,9 @@ from cachepaths import (
     is_equity_venue,
     is_equity_venue_or_suffix,
     normalize_venue_name,
-    resolve_cachedb_filepath,
     uses_cycle_state_files,
 )
-from cacheprice import Cache365PriceManager, CacheSparsePriceManager
-from state_io import read_tail_jsonl_records
+from intelligence.macro_sentiment_ssot import scan_cached_price_archive_high_since
 from botcore import (
     _parse_bool_flag,
     coerce_dict_maps,
@@ -685,22 +682,12 @@ def _resolve_cycle_high_since(
     best_high = safe_pos_float(pt_entry.get("high_24h") if isinstance(pt_entry, dict) else None, default=0.0) or 0.0
     eff_now_ms = now_ms if (now_ms is not None and now_ms > 0) else math.trunc(resolve_now_ts(None) * 1000)
     if cache_dir and oldest_ts_ms > 0 and (eff_now_ms - oldest_ts_ms) > 24 * 3600 * 1000:
-        for cand in dict.fromkeys(cands):
-            for mgr_cls in (Cache365PriceManager, CacheSparsePriceManager):
-                arch_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, mgr_cls.disk_filename_for_symbol(cand))))
-                if not os.path.exists(arch_path):
-                    continue
-                try:
-                    for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=512 * 1024):
-                        pt = mgr_cls.extract_jsonl_series_point(rec)
-                        if pt is not None and len(pt) >= 2:
-                            t_f = safe_pos_float(pt[0], default=0.0) or 0.0
-                            p_f = safe_pos_float(pt[1], default=0.0) or 0.0
-                            t_ms = math.trunc(t_f * 1000.0 if 0.0 < t_f < 1e11 else t_f)
-                            if t_ms >= oldest_ts_ms and p_f > best_high:
-                                best_high = p_f
-                except Exception:
-                    pass
+        best_high = scan_cached_price_archive_high_since(
+            cache_dir,
+            cands,
+            oldest_ts_ms,
+            baseline_high=best_high,
+        )
     if memo is not None:
         memo[(sym_u, oldest_ts_ms)] = best_high
     return best_high

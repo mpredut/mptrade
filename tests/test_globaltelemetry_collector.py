@@ -100,6 +100,7 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     MicrostructureCacheCollectorBase,
     PriceSeriesCacheCollectorBase,
     SymbolMicrostructureSnapshotCollector,
+    update_microstructure_cycle_deltas,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
     BotRuntimeStatesCollector,
@@ -140,7 +141,6 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     OrderbookCvdFlowEvaluator,
     SiblingSymbolTelemetrySyncEvaluator,
     enrich_cross_venue_trends,
-    update_microstructure_cycle_deltas,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     PortfolioEvaluatorBase,

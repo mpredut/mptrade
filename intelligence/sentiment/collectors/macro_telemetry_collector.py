@@ -46,6 +46,8 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 from providers.venue_fee_maintenance import read_persisted_venue_fee_schedule
+from state_stores.cache_T_trend import CacheTTrendStore
+from intelligence.internal.state import survival as _surv_mod
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
 from intelligence.macro.lexicon_ssot import (
     _strip_headline_publisher_suffix,
@@ -2063,7 +2065,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         trends_data = _rj(os.path.join(cache_dir, _mc.CacheShortTrendManager.DEFAULT_FILENAME))
         long_trends_data = _rj(os.path.join(cache_dir, _mc.CacheLongTrendManager.DEFAULT_FILENAME))
         priceanalysis_data = _rj(os.path.join(cache_dir, _mc.CacheLongTrendManager.SOURCE_ANALYSIS_FILENAME))
-        t_trend_data = _rj(os.path.join(cache_dir, _mc.CacheLongTrendManager.T_TREND_FILENAME))
+        t_trend_data = CacheTTrendStore.read_from_cachedb(cache_dir, read_json_fn=_rj)
         kalman_data = _rj(os.path.join(cache_dir, _mc.CacheShortTrendManager.KALMAN_TREND_FILENAME))
         watcher_all_price_data = _rj(os.path.join(cache_dir, CACHE_WATCHER_ALL_PRICE_FILENAME))
         trailing_map, trailing_by_venue = VenueTrailingMapsCollector().collect(
@@ -2141,6 +2143,18 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         watcher_price_items = watcher_all_price_data.get("items", {}) if isinstance(watcher_all_price_data, dict) else {}
 
         def _run_enrich_cross_venue_trends() -> None:
+            est_t_fn = (
+                _surv_mod.estimate_T
+                if (
+                    allow_network
+                    and (
+                        is_live_network_backfill_enabled()
+                        or getattr(_surv_mod, "estimate_T", None) is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
+                        or getattr(_surv_mod, "fetch_klines", None) is not getattr(_surv_mod, "_ORIG_FETCH_KLINES", None)
+                    )
+                )
+                else None
+            )
             enrich_cross_venue_trends(
                 snapshot.prices_and_trends,
                 trends_data,
@@ -2150,6 +2164,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 t_trend_map,
                 watcher_price_items,
                 allow_network=False if not allow_network else None,
+                estimate_t_fn=est_t_fn,
             )
 
         _run_enrich_cross_venue_trends()

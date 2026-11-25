@@ -153,6 +153,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     first_variant_dict,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
+    evaluate_microstructure_cycle_deltas,
     reconcile_spot_and_orderbook_microstructure,
     rescale_orderbook_walls_to_price,
     should_rescale_usd_sibling_walls,
@@ -3122,6 +3123,29 @@ def enrich_24h_and_microstructure(
     )
 
 
+def update_microstructure_cycle_deltas(
+    cache_dir: Optional[str],
+    microstructure: Dict[str, Any],
+    *,
+    now_ts: Optional[float] = None,
+    persist: bool = True,
+    history: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Load cycle history via SSOT store, evaluate rolling ``cycle_delta`` metrics in-memory, and optionally persist."""
+    if not isinstance(microstructure, dict) or not microstructure:
+        return history if isinstance(history, dict) else {}
+    if isinstance(history, dict):
+        mhist = history
+    elif cache_dir:
+        mhist = load_microstructure_cycle_history(cache_dir)
+    else:
+        return {}
+    _, mhist, mhist_dirty = evaluate_microstructure_cycle_deltas(microstructure, mhist, now_ts=now_ts)
+    if persist and mhist_dirty and cache_dir:
+        save_microstructure_cycle_history(cache_dir, mhist)
+    return mhist
+
+
 __all__ = [
     "CompositeSymbolPriceSeriesLoader",
     "EQ_YAHOO_CHART_MEMO",
@@ -3146,5 +3170,6 @@ __all__ = [
     "resolve_fallback_ohlc_fn",
     "resolve_live_24trend_current_price",
     "save_microstructure_cycle_history",
+    "update_microstructure_cycle_deltas",
     "upgrade_tpo_vp_from_ohlc",
 ]

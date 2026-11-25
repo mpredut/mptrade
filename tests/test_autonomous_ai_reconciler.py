@@ -8293,12 +8293,13 @@ def test_audit_remediations_a_through_g_and_crypto_completeness(tmp_path, monkey
         "HYPEUSDC": {"price": 86.41, "chg_15m_pct": 0.25},
         "HYPEUSD": {"price": 86.40, "chg_15m_pct": 0.20},
     }
-    sync_sibling_symbol_telemetry(pt_g, micro_g, cache_dir=str(cache_dir), now_ts=1000.0)
+    hist_g: dict[str, Any] = {}
+    sync_sibling_symbol_telemetry(pt_g, micro_g, cache_dir=str(cache_dir), now_ts=1000.0, cycle_history=hist_g)
     micro_g["HYPEUSDC"]["ob_imbalance"] = 0.64
     micro_g["HYPEUSDC"]["cvd_15m_usd"] = 850000.0
     micro_g["HYPEUSDC"]["taker_buy_vol_usd"] = 2850000.0
     micro_g["HYPEUSDC"]["taker_sell_vol_usd"] = 2000000.0
-    sync_sibling_symbol_telemetry(pt_g, micro_g, cache_dir=str(cache_dir), now_ts=1600.0)
+    sync_sibling_symbol_telemetry(pt_g, micro_g, cache_dir=str(cache_dir), now_ts=1600.0, cycle_history=hist_g)
     assert "cycle_delta" in micro_g["HYPEUSDC"]
     sec_3b = "\n".join(_format_microstructure_section(micro_g, pt_g))
     assert "* HYPEUSDC:" in sec_3b

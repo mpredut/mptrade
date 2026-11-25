@@ -39,7 +39,7 @@ from botcore import (
     split_csv,
     touch_module_heartbeat,
 )
-from cachepaths import resolve_cachedb_filepath, split_symbol_assets
+from cachepaths import ORDER_RETRY_QUARANTINE_ALERTS_FILENAME, resolve_cachedb_filepath, split_symbol_assets
 from instrument_registry import resolve_symbol_identity
 import order_retry as oq
 from providers.execution_audit import ExecutionAudit
@@ -54,6 +54,7 @@ from state_io import (
     previous_generation_path,
     save_json_state,
 )
+from state_stores.order_retry_quarantine_alerts import OrderRetryQuarantineAlertsStore
 
 WORKER_POLL_SEC = required_float_env("RETRY_WORKER_POLL_SEC")
 if WORKER_POLL_SEC <= 0:
@@ -78,23 +79,15 @@ class _PersistentQuarantineSet(set):
         self._loaded_path: str | None = None
 
     def _path(self) -> str:
-        return oq.resolve_queue_sidecar_path("order_retry_quarantine_alerts.json")
+        return oq.resolve_queue_sidecar_path(ORDER_RETRY_QUARANTINE_ALERTS_FILENAME)
 
     def sync_from_disk(self) -> None:
         path = self._path()
         if self._loaded_path == path:
             return
         self._loaded_path = path
-        try:
-            data = load_json_state(path, default_factory=dict, fail_closed=False, label="quarantine alerts")
-            if isinstance(data, dict):
-                items = data.get(self._key, [])
-                if isinstance(items, list):
-                    for item in items:
-                        if isinstance(item, list):
-                            super().add(tuple(item))
-        except Exception:
-            pass
+        for item in OrderRetryQuarantineAlertsStore.load_key(path, self._key):
+            super().add(item)
 
     def __contains__(self, element) -> bool:
         self.sync_from_disk()
@@ -105,31 +98,17 @@ class _PersistentQuarantineSet(set):
         super().add(element)
         path = self._loaded_path = self._path()
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            loaded = load_json_state(path, default_factory=dict, fail_closed=False, label="quarantine alerts")
-            data = dict(loaded) if isinstance(loaded, dict) else {}
-            data[self._key] = [
-                list(x) if isinstance(x, tuple) else [x]
-                for x in sorted(
-                    self,
-                    key=lambda item: tuple(str(e) for e in item) if isinstance(item, tuple) else (str(item),),
-                )
-            ]
-            save_json_state(path, data, separators=(",", ":"), skip_if_unchanged=True)
+            OrderRetryQuarantineAlertsStore.save_key_locked(path, self._key, self)
         except Exception:
             pass
 
     def clear(self) -> None:
         super().clear()
         path = self._loaded_path = self._path()
-        if os.path.exists(path) or os.path.exists(previous_generation_path(path)):
-            try:
-                loaded = load_json_state(path, default_factory=dict, fail_closed=False, label="quarantine alerts")
-                if isinstance(loaded, dict) and self._key in loaded:
-                    loaded.pop(self._key, None)
-                    save_json_state(path, loaded, separators=(",", ":"), skip_if_unchanged=True)
-            except Exception:
-                pass
+        try:
+            OrderRetryQuarantineAlertsStore.clear_key_locked(path, self._key)
+        except Exception:
+            pass
 
 
 _ALERTED_QUEUE_CORRUPTIONS = set()

@@ -43,6 +43,7 @@ CACHE_KRAKEN_TRADE_FILENAME = "cache_trade_kraken.json"
 CACHE_HYPERLIQUID_TRADE_FILENAME = "cache_trade_hyperliquid.json"
 CACHE_T212_TRADE_FILENAME = "cache_trade_t212.json"
 ORDER_RETRY_QUEUE_FILENAME = "order_retry_queue.jsonl"
+ORDER_RETRY_QUARANTINE_ALERTS_FILENAME = "order_retry_quarantine_alerts.json"
 ORDER_LEDGER_ACTIVE_FILENAME = "orders_active.json"
 ORDER_LEDGER_EVENTS_PREFIX = "order_events_"
 ORDER_LEDGER_CLOSED_PREFIX = "orders_closed_"
@@ -69,6 +70,7 @@ NOTIFY_QUEUE_FILENAME = "notify_queue.json"
 CACHE_ORDERBOOK_DEPTH_PREFIX = "orderbook_depth_"
 CACHE_DERIVATIVES_TELEMETRY_PREFIX = "derivatives_telemetry_"
 CACHE_WHALE_SNAPSHOT_PREFIX = "whale_snapshot_"
+MICROSTRUCTURE_CYCLE_HISTORY_FILENAME = "microstructure_cycle_history.json"
 CACHE_REALIZED_LIQUIDATIONS_FILENAME = "realized_liquidations.json"
 CACHE_FEAR_GREED_FILENAME = "fear_greed_collect.json"
 CACHE_MARKET_BREADTH_FILENAME = "market_breadth_collect.json"
@@ -244,8 +246,8 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "telemetry": {
         "exact": (
-            "microstructure_cycle_history.json",
-            "realized_liquidations.json",
+            MICROSTRUCTURE_CYCLE_HISTORY_FILENAME,
+            CACHE_REALIZED_LIQUIDATIONS_FILENAME,
             KINEMATIC_IMPULSE_SIGNAL_FILENAME,
         ),
         "prefixes": (
@@ -319,6 +321,7 @@ STATEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         "exact": (
             ORDER_LEDGER_ACTIVE_FILENAME,
             ORDER_RETRY_QUEUE_FILENAME,
+            ORDER_RETRY_QUARANTINE_ALERTS_FILENAME,
             AUTO_ORDER_INTENTS_STATE_FILENAME,
             "autonomous_order_intents_state.json",
             "autonomous_trade_intents_state.json",

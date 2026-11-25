@@ -112,13 +112,15 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
     collect_spot_etf_flows_snapshot,
 )
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
-from intelligence.sentiment.collectors.microstructure_collector import load_fleet_microstructure_snapshots
+from intelligence.sentiment.collectors.microstructure_collector import (
+    load_fleet_microstructure_snapshots,
+    update_microstructure_cycle_deltas,
+)
 from intelligence.sentiment.collectors.portfolio_collector import (
     VenueTrailingMapsCollector,
     harvest_tradable_positions_and_orders,
 )
 from intelligence.sentiment.collectors.pretrade_telemetry_collector import refresh_pretrade_telemetry_caches
-from intelligence.sentiment.evaluators.microstructure_evaluator import update_microstructure_cycle_deltas
 from state_io import atomic_write_json, cachedb_exists, open_append_text_file, read_json_dict_recovering, save_json_state
 
 _ORIG_SAVE_JSON_STATE = save_json_state

@@ -6,7 +6,6 @@ execution or emitting side-effect alerts, so the AI can consciously heed or over
 """
 from __future__ import annotations
 
-import os
 from typing import Any, Mapping, Optional
 
 from botcore import (
@@ -23,7 +22,6 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
-    cache_path,
     cache_symbol_variants,
     is_equity_venue_or_suffix,
     matches_asset_scope,
@@ -53,7 +51,7 @@ from intelligence.internal.state.survival import (
     resolve_cached_gaussian_horizon,
 )
 from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
-from state_io import cachedb_exists, read_json_dict
+from intelligence.macro_sentiment_ssot import load_cached_geopolitical_raw_dict
 
 
 def _safe_load_margins(margins: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
@@ -139,18 +137,6 @@ def _lookup_symbol_entry(mapping: Any, venue: str, symbol: str) -> Optional[dict
         hit = casefold_get(mapping, key)
         if isinstance(hit, dict):
             return hit
-    return None
-
-
-def _read_local_geo_assessment() -> Optional[dict[str, Any]]:
-    try:
-        p = cache_path("geopolitical_eval.json")
-        if p and cachedb_exists(p, include_previous=True):
-            data = read_json_dict(p, default=None, recover_previous=True)
-            if isinstance(data, dict) and data:
-                return data
-    except Exception:
-        pass
     return None
 
 
@@ -364,7 +350,7 @@ def probe_deterministic_guards(
     if intel_master_on and _mode_enabled(m, "geopolitical_guard_mode"):
         geo_assess = geopolitical_assessment
         if geo_assess is None and allow_disk_cache:
-            geo_assess = _read_local_geo_assessment()
+            geo_assess = load_cached_geopolitical_raw_dict()
         if geo_assess is not None and _is_snapshot_fresh(geo_assess, ("ts", "timestamp"), eff_now, 86400.0):
             try:
                 g_dec = GeopoliticalShockGuard().check(sym_s, side_u, geo_assess)
