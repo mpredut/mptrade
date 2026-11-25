@@ -132,6 +132,7 @@ from state_io import (
     read_json_dict,
     read_json_dict_cached,
     read_json_dict_recovering,
+    read_jsonl_bucket_map,
     read_jsonl_bucket_map_from_offset,
     read_jsonl_or_json_dict_cached,
     read_tail_complete_lines_text,
@@ -757,19 +758,33 @@ class Cache24PriceManager(CachePriceManagerBase):
         if not os.path.exists(self.filename) and not os.path.exists(backup_path):
             return
         try:
-            data = read_json_dict(
-                self.filename, backup_path=backup_path, recover_previous=True
-            )
-            disk_items = (
-                data.get("items")
-                if isinstance(data, dict) and isinstance(data.get("items"), dict)
-                else {}
-            )
-            disk_ft = (
-                data.get("fetchtime")
-                if isinstance(data, dict) and isinstance(data.get("fetchtime"), dict)
-                else {}
-            )
+            if self.append_persist or str(self.filename or "").lower().endswith(".jsonl"):
+                src_path = self.filename if os.path.exists(self.filename) else backup_path
+                disk_items, _ = read_jsonl_bucket_map(src_path)
+                if not disk_items and src_path != backup_path and os.path.exists(backup_path):
+                    disk_items, _ = read_jsonl_bucket_map(backup_path)
+                meta_p = meta_file_path(self.filename)
+                meta_doc = read_json_dict(meta_p, default={}) if os.path.exists(meta_p) else {}
+                disk_ft = (
+                    meta_doc.get("fetchtime")
+                    if isinstance(meta_doc, dict) and isinstance(meta_doc.get("fetchtime"), dict)
+                    else {}
+                )
+            else:
+                data = read_json_dict(
+                    self.filename, backup_path=backup_path, recover_previous=True
+                )
+                disk_items = (
+                    data.get("items")
+                    if isinstance(data, dict) and isinstance(data.get("items"), dict)
+                    else {}
+                )
+                disk_ft = (
+                    data.get("fetchtime")
+                    if isinstance(data, dict) and isinstance(data.get("fetchtime"), dict)
+                    else {}
+                )
+            merged_any = False
             for s in list(self.symbols):
                 disk_rows = disk_items.get(s)
                 if not isinstance(disk_rows, list) or not any(
@@ -780,11 +795,14 @@ class Cache24PriceManager(CachePriceManagerBase):
                 ):
                     continue
                 self._merge_ohlc_rows_locked(s, disk_rows)
+                merged_any = True
                 ft_cand = safe_pos_int(disk_ft.get(s), default=0) or 0
                 if ft_cand > safe_nonneg_int(self.fetchtime_per_symbol.get(s), default=0):
                     self.fetchtime_per_symbol[s] = ft_cand
                 if hasattr(self, "_trim_old_data"):
                     self._trim_old_data(s)
+            if merged_any and self.append_persist:
+                self._jsonl_needs_compact = True
         except Exception as exc:
             print(f"[{self.cls_name}][Error] merge disk OHLC {self.filename}: {exc}")
 

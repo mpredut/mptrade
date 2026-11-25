@@ -68,7 +68,7 @@ from botcore import (
     touch_module_heartbeat,
     validate_required_env_keys,
 )
-from cachepaths import ASSETGUARDIAN_STATE_FILENAME, cache_path, resolve_cachedb_filepath
+from cachepaths import ASSETGUARDIAN_STATE_FILENAME, cache_path, cachedb_root_for_file, resolve_cachedb_filepath
 load_root_config()
 
 REQUIRED_CONFIG_KEYS = (
@@ -820,7 +820,8 @@ def _read_p3b_sentiment(path=None, now_ts=None):
         state_path = getattr(STATE, "path", None)
         if not state_path:
             return None
-        cache_dir = os.path.dirname(os.path.abspath(state_path))
+        abs_state = os.path.abspath(state_path)
+        cache_dir = cachedb_root_for_file(abs_state) or os.path.dirname(abs_state)
         data = load_cached_sentiment_advisor_eval(cache_dir)
     else:
         data = read_json_dict(path, default=None, recover_previous=True)

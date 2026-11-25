@@ -1918,6 +1918,96 @@ def test_harvest_hotpath_optimizations_parity(tmp_path, monkeypatch):
     assert all(b["actor"] == "AI" for b in fills_res["recent_buys"])
 
 
+def test_assetguardian_p3b_subdomain_and_jsonl_generation_lock_ohlc_merge(tmp_path, monkeypatch):
+    """Verify 3 live bugfixes:
+    1) AssetGuardian._read_p3b_sentiment resolves cachedb/macro/sentiment_eval.json when STATE.path is under cachedb/state/;
+    2) CacheManagerInterface._save_jsonl_append & compact_jsonl serialize under _generation_lock();
+    3) Cache24PriceManager (.jsonl) preserves externally persisted 3-col OHLCV bars when live ticks also advance."""
+    import contextlib
+    import assetguardian as ag
+    import cacheprice
+
+    # 1. AssetGuardian P3B reads cachedb/macro/sentiment_eval.json even when STATE.path lives in cachedb/state/
+    cdb = tmp_path / "cachedb"
+    (cdb / "state").mkdir(parents=True)
+    (cdb / "macro").mkdir(parents=True)
+    now_s = time.time()
+    (cdb / "macro" / "sentiment_eval.json").write_text(
+        json.dumps(
+            {
+                "market_bias": "BEARISH",
+                "risk_level": "HIGH",
+                "recommended_action": "DEFENSIVE",
+                "confidence": 0.85,
+                "ts": now_s - 60.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ag, "STATE", ag.AssetGuardianState(path=str(cdb / "state" / "assetguardian_state.json")))
+    p3b = ag._read_p3b_sentiment(now_ts=now_s)
+    assert p3b is not None
+    assert p3b["recommended_action"] == "DEFENSIVE"
+    assert p3b["market_bias"] == "BEARISH"
+    assert p3b["confidence"] == pytest.approx(0.85)
+    sell_mult, buy_mult, ass = ag._p3b_threshold_multipliers(assessment=p3b, bypass_guards=set())
+    assert ass is not None and sell_mult < 1.0 and buy_mult > 1.0
+
+    # 2 & 3. Cache24PriceManager (.jsonl) uses _generation_lock on append+compact and merges external 3-col OHLCV bars
+    (cdb / "prices").mkdir(parents=True)
+    p24 = cdb / "prices" / "cache_24_price_NVDA_US_EQ.jsonl"
+    now_ms = int(now_s * 1000)
+    mgr = cacheprice.Cache24PriceManager(
+        30,
+        ["NVDA_US_EQ"],
+        str(p24),
+        api_client=None,
+        read_only=False,
+        append_persist=True,
+    )
+    mgr.cache["NVDA_US_EQ"] = [[now_ms - 600_000, 140.0]]
+    mgr.fetchtime_per_symbol["NVDA_US_EQ"] = now_ms - 600_000
+    mgr._rest_sync_cursor_per_symbol["NVDA_US_EQ"] = now_ms - 600_000
+
+    lock_events: list[str] = []
+    orig_gen_lock = mgr._generation_lock
+
+    @contextlib.contextmanager
+    def _tracking_lock():
+        lock_events.append("enter")
+        with orig_gen_lock():
+            yield
+        lock_events.append("exit")
+
+    monkeypatch.setattr(mgr, "_generation_lock", _tracking_lock)
+    assert mgr.save_state_to_file() is True
+    assert lock_events.count("enter") >= 1 and lock_events.count("enter") == lock_events.count("exit")
+
+    # External writer persists 3-col OHLCV bars with newer timestamp than last_disk_sync_max_ts
+    ohlc_pts = [
+        [now_ms - 600_000, 140.0, 1500.0, 141.0, 139.5],
+        [now_ms - 300_000, 141.5, 2200.0, 142.0, 140.5],
+    ]
+    cacheprice.Cache24PriceManager.persist_external_ohlc_series(
+        str(p24), "NVDA_US_EQ", ohlc_pts, now_ts=(now_ms - 100_000) / 1000.0
+    )
+
+    # Concurrent live tick arrives in memory (newer than external write)
+    mgr.cache["NVDA_US_EQ"].append([now_ms, 142.2])
+    mgr.fetchtime_per_symbol["NVDA_US_EQ"] = now_ms
+    lock_events.clear()
+    assert mgr.save_state_to_file() is True
+    assert lock_events.count("enter") >= 2 and lock_events.count("enter") == lock_events.count("exit")
+
+    # Verify disk JSONL retained BOTH the externally written 3-col OHLCV bars AND the new live tick!
+    reloaded, had_bad = state_io.read_jsonl_bucket_map(str(p24))
+    assert had_bad is False
+    rows = reloaded["NVDA_US_EQ"]
+    assert any(len(r) >= 3 and r[2] == pytest.approx(2200.0) for r in rows), f"lost OHLCV bars: {rows}"
+    assert rows[-1] == [now_ms, 142.2]
+
+
+
 
 
 

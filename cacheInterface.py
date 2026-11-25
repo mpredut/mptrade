@@ -1072,37 +1072,59 @@ class CacheManagerInterface(ABC):
         return self._migrate_legacy_json_with_compactor(self.compact_jsonl)
 
     def _save_jsonl_append(self):
-        """Append only items added since the last flush without rewriting the file."""
-        previous_counts = {}
+        """Append only items added since the last flush under the generation lock."""
+        previous_counts = None
+        need_compact = False
         try:
             with self.lock:
                 if self._should_compact_before_append_locked():
                     return self.compact_jsonl()
-                previous_counts = dict(self._persisted_counts)
-                if self._SNAPSHOT_FSYNC:
-                    candidate_counts = append_jsonl_bucket_delta(
-                        self.filename,
-                        self.cache,
-                        previous_counts,
-                        on_rollback_fn=self._truncate_failed_jsonl_append,
-                    )
-                else:
-                    candidate_counts = append_jsonl_bucket_delta(
-                        self.filename,
-                        self.cache,
-                        previous_counts,
-                        on_rollback_fn=self._truncate_failed_jsonl_append,
-                        fsync=False,
-                    )
-                self._persisted_counts = candidate_counts
-                ok_meta = self._write_meta(self._build_basic_meta_locked(candidate_counts))
-                if ok_meta:
-                    self._last_disk_sync_max_ts = max(
-                        self._persisted_max_ts(), self._mem_max_ts()
-                    )
-                return ok_meta
+                with self._generation_lock():
+                    persisted_max_ts = self._persisted_max_ts()
+                    if persisted_max_ts > self._mem_max_ts():
+                        builtins.print(
+                            f"[{self.cls_name}][resync] file newer than memory -> "
+                            f"refusing to overwrite with stale data ({self.filename})"
+                        )
+                        self._on_stale_memory_detected_locked()
+                        return False
+                    if (
+                        persisted_max_ts > self._last_disk_sync_max_ts
+                        and self._mem_max_ts() > self._last_disk_sync_max_ts
+                    ):
+                        self._before_snapshot_commit_locked(persisted_max_ts)
+                        if self._should_compact_before_append_locked():
+                            need_compact = True
+                    if not need_compact:
+                        previous_counts = dict(self._persisted_counts)
+                        if self._SNAPSHOT_FSYNC:
+                            candidate_counts = append_jsonl_bucket_delta(
+                                self.filename,
+                                self.cache,
+                                previous_counts,
+                                on_rollback_fn=self._truncate_failed_jsonl_append,
+                            )
+                        else:
+                            candidate_counts = append_jsonl_bucket_delta(
+                                self.filename,
+                                self.cache,
+                                previous_counts,
+                                on_rollback_fn=self._truncate_failed_jsonl_append,
+                                fsync=False,
+                            )
+                        self._persisted_counts = candidate_counts
+                        ok_meta = self._write_meta(self._build_basic_meta_locked(candidate_counts))
+                        if ok_meta:
+                            self._last_disk_sync_max_ts = max(
+                                self._persisted_max_ts(), self._mem_max_ts()
+                            )
+                        return ok_meta
+                if need_compact:
+                    return self.compact_jsonl()
+                return False
         except Exception as e:
-            self._persisted_counts = previous_counts
+            if previous_counts is not None:
+                self._persisted_counts = previous_counts
             return self._log_cache_file_error("append JSONL", e)
 
     def _truncate_failed_jsonl_append(self, initial_size):
@@ -1235,9 +1257,10 @@ class CacheManagerInterface(ABC):
                             for item in items:
                                 f.write(format_jsonl_bucket_line(symbol, item))
 
-                if not self._commit_file_and_meta_locked(_write_compacted, metadata):
-                    self._restore_memory_state_locked(original_state)
-                    return False
+                with self._generation_lock():
+                    if not self._commit_file_and_meta_locked(_write_compacted, metadata):
+                        self._restore_memory_state_locked(original_state)
+                        return False
                 self._persisted_counts = dict(metadata["counts"])
                 self._last_disk_sync_max_ts = max(
                     self._persisted_max_ts(), self._mem_max_ts()

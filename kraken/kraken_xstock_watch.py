@@ -66,6 +66,7 @@ from kraken.kraken_client import KrakenClient, KrakenError
 from kraken.market_data import is_pair_status_tradable
 from state_io import (
     append_jsonl_bucket_delta,
+    generation_file_lock,
     load_json_state,
     meta_file_path,
     open_append_text_file,
@@ -205,21 +206,22 @@ def sync_trade_archive(client: KrakenClient, pair: str, *, max_pages: int = 3) -
     if not new_items:
         return 0
     new_items.sort(key=lambda item: item[0])
-    append_jsonl_bucket_delta(target_path, {sym_key: new_items}, {sym_key: 0})
-    first_ts = prev_min_ts if prev_min_ts > 0 else new_items[0][0]
-    last_ts = max(prev_max_ts, new_items[-1][0])
-    total_count = prev_count + len(new_items)
-    write_meta_json(
-        target_path,
-        {
-            "fetchtime": {sym_key: last_ts},
-            "rest_sync_cursor": {sym_key: first_ts},
-            "counts": {sym_key: total_count},
-            "max_ts": last_ts,
-            "kraken_trades_since_ns": cur_since,
-            "saved_at": resolve_now_ms(),
-        },
-    )
+    with generation_file_lock(target_path):
+        append_jsonl_bucket_delta(target_path, {sym_key: new_items}, {sym_key: 0})
+        first_ts = prev_min_ts if prev_min_ts > 0 else new_items[0][0]
+        last_ts = max(prev_max_ts, new_items[-1][0])
+        total_count = prev_count + len(new_items)
+        write_meta_json(
+            target_path,
+            {
+                "fetchtime": {sym_key: last_ts},
+                "rest_sync_cursor": {sym_key: first_ts},
+                "counts": {sym_key: total_count},
+                "max_ts": last_ts,
+                "kraken_trades_since_ns": cur_since,
+                "saved_at": resolve_now_ms(),
+            },
+        )
     return len(new_items)
 
 
