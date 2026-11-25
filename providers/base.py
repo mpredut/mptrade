@@ -198,6 +198,21 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         free_v = self.free_balance(asset)
         return (free_v, None) if free_v is not None else None
 
+    def all_free_and_locked_balances(
+        self, assets: Optional[Sequence[str]] = None
+    ) -> Optional[dict[str, tuple[float, Optional[float]]]]:
+        """Return ``{asset: (free, locked)}`` across venue assets in one batch query when supported."""
+        req = [clean_scalar_str(a) for a in (assets or ())]
+        req_clean = [a for a in req if a]
+        if not req_clean:
+            return None
+        out: dict[str, tuple[float, Optional[float]]] = {}
+        for asset in req_clean:
+            pair = self.free_and_locked_balance(asset)
+            if pair is not None:
+                out[asset] = pair
+        return out if out else None
+
     def _require_submitted_order_id(
         self,
         symbol: str,

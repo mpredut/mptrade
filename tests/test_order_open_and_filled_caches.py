@@ -386,8 +386,15 @@ def test_portfolio_collector_strips_open_orders_from_venue_balances_and_persists
     assert len(open_orders) == 1
     assert open_orders[0]["order_id"] == "900123"
 
-    # venue_balances_state.json must NOT contain any open_orders:* or open_orders_verified_ts:* keys
-    saved_vb = json.loads(vb_path.read_text(encoding="utf-8"))
+    # Split persisted files & unified reader must NOT contain any open_orders:* or open_orders_verified_ts:* keys
+    from providers.portfolio_valuation import load_venue_balances_state_dict
+
+    bal_cache_path = orders_dir / "cache_balance_binance.json"
+    pos_state_path = state_dir / "portfolio_positions_state.json"
+    assert bal_cache_path.is_file() and pos_state_path.is_file()
+    saved_pos = json.loads(pos_state_path.read_text(encoding="utf-8"))
+    assert all(k.startswith("pos:") for k in saved_pos)
+    saved_vb = load_venue_balances_state_dict(str(tmp_path))
     assert not any(k.startswith(("open_orders:", "open_orders_verified_ts:")) for k in saved_vb)
 
     # cache_order_open_binance.json must contain the live open order

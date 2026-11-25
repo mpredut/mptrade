@@ -286,6 +286,7 @@ CACHE_PRODUCER_GETTERS = frozenset({
     "get_asset_value_manager",
     "get_order_filled_manager",
     "get_order_open_manager",
+    "get_balance_manager",
     "get_trade_manager",
     "attach_default_price_ws_stream",
 })
@@ -314,12 +315,21 @@ SIGNED_ZERO_EXTRA_FILES = frozenset({
 })
 _RAW_SIGNED_FLOAT_SPEC_RE = re.compile(r"\+[\d,]*\.\d+f")
 VENUE_BALANCES_STATE_OWNER_FILE = "providers/portfolio_valuation.py"
-VENUE_BALANCES_STATE_OWNER_FN = "upsert_venue_balances_snapshot"
+VENUE_BALANCES_STATE_OWNER_FNS = frozenset({
+    "upsert_venue_balances_snapshot",
+    "upsert_portfolio_positions_snapshot",
+})
+VENUE_BALANCE_CACHE_OWNER_FILE = "cacheaccount.py"
+VENUE_BALANCE_CACHE_OWNER_FN = "replace_venue_balances_snapshot"
 VENUE_BALANCES_STATE_PRODUCER_FILES = frozenset({
     "providers/portfolio_valuation.py",
     "intelligence/sentiment/collectors/portfolio_collector.py",
 })
-_VENUE_BALANCES_WRITE_PATH_RE = re.compile(r"(?:venue_balances_state|VENUE_BALANCES_STATE_FILENAME|\bbcache_path\b)")
+_VENUE_BALANCES_WRITE_PATH_RE = re.compile(
+    r"(?:venue_balances_state|VENUE_BALANCES_STATE_FILENAME|"
+    r"portfolio_positions_state|PORTFOLIO_POSITIONS_STATE_FILENAME|"
+    r"cache_balance_|CACHE_[A-Z0-9_]+_BALANCE_FILENAME|\bbcache_path\b|\bpos_path\b)"
+)
 _VENUE_BALANCES_WRITER_FNS = frozenset({
     "save_json_state",
     "save_json_file",
@@ -331,12 +341,22 @@ _VENUE_BALANCES_WRITER_FNS = frozenset({
 STATE_FILE_OWNER_MAP: dict[str, frozenset[str]] = {
     "AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME": frozenset({"providers/intent_state.py"}),
     "ORDER_RETRY_QUEUE_FILENAME": frozenset({"order_retry.py"}),
+    "PORTFOLIO_POSITIONS_STATE_FILENAME": frozenset({"providers/portfolio_valuation.py"}),
     "VENUE_BALANCES_STATE_FILENAME": frozenset({"providers/portfolio_valuation.py"}),
+    "CACHE_BINANCE_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_valuation.py"}),
+    "CACHE_KRAKEN_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_valuation.py"}),
+    "CACHE_HYPERLIQUID_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_valuation.py"}),
+    "CACHE_T212_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_valuation.py"}),
 }
 STATE_FILE_LITERAL_TO_CONST: dict[str, str] = {
     "autonomous_trade_intents_state.json": "AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME",
     "order_retry_queue.jsonl": "ORDER_RETRY_QUEUE_FILENAME",
+    "portfolio_positions_state.json": "PORTFOLIO_POSITIONS_STATE_FILENAME",
     "venue_balances_state.json": "VENUE_BALANCES_STATE_FILENAME",
+    "cache_balance_binance.json": "CACHE_BINANCE_BALANCE_FILENAME",
+    "cache_balance_kraken.json": "CACHE_KRAKEN_BALANCE_FILENAME",
+    "cache_balance_hyperliquid.json": "CACHE_HYPERLIQUID_BALANCE_FILENAME",
+    "cache_balance_t212.json": "CACHE_T212_BALANCE_FILENAME",
 }
 STATE_RAW_IO_READERS: frozenset[str] = frozenset({
     "read_json_dict",
@@ -1832,8 +1852,9 @@ _FINANCIAL_CRITICAL_PATH_RE = re.compile(
     r"(?:ORDER_LEDGER_|orders_active|order_events_|orders_closed_|"
     r"RTRADE_PAIRS_|rtrade_pairs|ASSETGUARDIAN_STATE_|assetguardian_state|"
     r"AUTONOMOUS_TRADE_INTENTS_|autonomous_trade_intents|"
-    r"CACHE_[A-Z0-9_]*ORDER_|cache_order_|CACHE_[A-Z0-9_]*TRADE_|cache_trade_|"
+    r"CACHE_[A-Z0-9_]*ORDER_|cache_order_|CACHE_[A-Z0-9_]*BALANCE_|cache_balance_|CACHE_[A-Z0-9_]*TRADE_|cache_trade_|"
     r"ORDER_RETRY_QUEUE_|order_retry_queue|VENUE_BALANCES_STATE_|venue_balances_state|"
+    r"PORTFOLIO_POSITIONS_STATE_|portfolio_positions_state|"
     r"NAV_HISTORY_STATE_|nav_history_state|SMART_STOP_LOSS_STATE_|smart_stop_loss_state|"
     r"TRAILING_STATE_|trailing_state|MT_STATE_|mt_state)",
     re.I,
@@ -1938,8 +1959,8 @@ def audit_venue_balances_single_writer_ast(
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 cur_fn = node.name
             is_owner = (
-                rel_s == VENUE_BALANCES_STATE_OWNER_FILE
-                and cur_fn == VENUE_BALANCES_STATE_OWNER_FN
+                (rel_s == VENUE_BALANCES_STATE_OWNER_FILE and cur_fn in VENUE_BALANCES_STATE_OWNER_FNS)
+                or (rel_s == VENUE_BALANCE_CACHE_OWNER_FILE and cur_fn == VENUE_BALANCE_CACHE_OWNER_FN)
             )
             if isinstance(node, ast.Call) and node.args:
                 wname = _writer_call_name(node)
@@ -1947,15 +1968,15 @@ def audit_venue_balances_single_writer_ast(
                     arg0_s = ast.unparse(node.args[0])
                     if _VENUE_BALANCES_WRITE_PATH_RE.search(arg0_s):
                         violations.append(
-                            f"{rel_s}:{node.lineno}: direct write to venue_balances_state via "
-                            f"{wname}({arg0_s[:80]}, ...) outside {VENUE_BALANCES_STATE_OWNER_FN}"
+                            f"{rel_s}:{node.lineno}: direct write to balance/position state via "
+                            f"{wname}({arg0_s[:80]}, ...) outside canonical owners"
                         )
                 elif (
-                    wname == VENUE_BALANCES_STATE_OWNER_FN
+                    wname in VENUE_BALANCES_STATE_OWNER_FNS
                     and rel_s not in VENUE_BALANCES_STATE_PRODUCER_FILES
                 ):
                     violations.append(
-                        f"{rel_s}:{node.lineno}: forbidden producer call {VENUE_BALANCES_STATE_OWNER_FN}() "
+                        f"{rel_s}:{node.lineno}: forbidden producer call {wname}() "
                         f"outside {sorted(VENUE_BALANCES_STATE_PRODUCER_FILES)}"
                     )
             for child in ast.iter_child_nodes(node):

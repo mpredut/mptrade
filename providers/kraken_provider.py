@@ -536,6 +536,63 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         pair = self.free_and_locked_balance(asset)
         return pair[0] if pair is not None else None
 
+    def all_free_and_locked_balances(
+        self, assets: Optional[Sequence[str]] = None
+    ) -> Optional[dict[str, tuple[float, Optional[float]]]]:
+        """Fetch all requested and held Kraken ``(free, hold_trade)`` balances in one ``BalanceEx`` call."""
+        try:
+            bal = self._query_with_bot_fallback(self._available_balances_from_client)
+            if not isinstance(bal, dict):
+                return None
+            has_ex_payload = any(isinstance(v, dict) for v in bal.values())
+            out: dict[str, tuple[float, Optional[float]]] = {}
+            total_usd = 0.0
+            total_hold = 0.0
+            all_holds_known = has_ex_payload
+            any_usd = False
+            for _label, keys in self._USD_EQUIVALENT_BUCKETS:
+                found, val, hold_v = self._lookup_balance_candidates_with_hold(bal, keys)
+                if found:
+                    if val is None:
+                        return None
+                    any_usd = True
+                    total_usd += val
+                    if hold_v is None:
+                        all_holds_known = False
+                    else:
+                        total_hold += hold_v
+            if any_usd or any((clean_upper_scalar(a) or "") in {"USD", "ZUSD", "XUSD"} for a in (assets or ())):
+                out["USD"] = (total_usd, total_hold if all_holds_known else None)
+            usd_bucket_keys = {k.upper() for _, keys in self._USD_EQUIVALENT_BUCKETS for k in keys}
+            for req_a in (assets or ()):
+                req_s = clean_scalar_str(req_a)
+                if not req_s:
+                    continue
+                req_u = req_s.upper()
+                if req_u in {"USD", "ZUSD", "XUSD"}:
+                    continue
+                candidates = _kraken_balance_asset_candidates(req_s)
+                found, val, hold_v = self._lookup_balance_candidates_with_hold(bal, candidates)
+                if found and val is not None:
+                    out[req_s] = (val, hold_v)
+                elif not found:
+                    out[req_s] = (0.0, 0.0 if has_ex_payload else None)
+            seen_u = {k.upper() for k in out}
+            for raw_k, raw_v in bal.items():
+                if not isinstance(raw_k, str) or raw_k.upper() in usd_bucket_keys:
+                    continue
+                canon_k = canonical_base_asset(raw_k) or raw_k.strip()
+                if not canon_k or canon_k.upper() in seen_u:
+                    continue
+                found, val, hold_v = self._lookup_balance_candidates_with_hold(bal, (raw_k,))
+                if found and val is not None and (val > 0.0 or (hold_v is not None and hold_v > 0.0)):
+                    out[canon_k] = (val, hold_v)
+                    seen_u.add(canon_k.upper())
+            return out
+        except Exception as e:  # noqa: BLE001
+            self._log_provider_balance_error("Kraken", "all_balances", "*", e)
+            return None
+
     def open_orders_by_symbol(self, symbols: Sequence[str]) -> dict[str, List[dict]]:
         """Fetch all Kraken open orders in ONE private API call and bucket by requested ``symbols``."""
         sym_list = [s for s in (symbols or ()) if clean_scalar_str(s)]

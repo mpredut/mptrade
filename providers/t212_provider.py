@@ -509,6 +509,69 @@ class T212Provider(MarketDataProvider):
         pair = self.free_and_locked_balance(asset)
         return pair[0] if pair is not None else None
 
+    def all_free_and_locked_balances(
+        self, assets: Optional[Sequence[str]] = None
+    ) -> Optional[dict[str, tuple[float, Optional[float]]]]:
+        """Fetch Trading 212 USD cash and all held equity positions with open SELL locks in batch."""
+        out: dict[str, tuple[float, Optional[float]]] = {}
+        any_ok = False
+        usd_pair = self.free_and_locked_balance("USD")
+        if usd_pair is not None:
+            out["USD"] = usd_pair
+            any_ok = True
+        try:
+            positions = self._client().get_portfolio()
+        except Exception as e:  # noqa: BLE001
+            self._log_provider_balance_error("T212", "all_balances", "*", e)
+            positions = None
+        if isinstance(positions, list):
+            any_ok = True
+            held_qty: dict[str, float] = {}
+            for row in positions:
+                if not isinstance(row, dict):
+                    continue
+                ticker_u = clean_upper_scalar(row.get("ticker"))
+                qty_v = safe_nonneg_float(row.get("quantity"), default=None)
+                if ticker_u and qty_v is not None and qty_v > 0.0:
+                    held_qty[ticker_u] = qty_v
+            req_tickers = [
+                a_u
+                for a in (assets or ())
+                if (a_u := clean_upper_scalar(a)) is not None and a_u not in {"USD", "RON", "EUR"}
+            ]
+            all_tickers = list(dict.fromkeys([*held_qty.keys(), *req_tickers]))
+            open_sell_by_ticker: dict[str, float] = {}
+            open_orders_ok = False
+            if all_tickers:
+                try:
+                    oo_map = self.open_orders_by_symbol(all_tickers)
+                    if isinstance(oo_map, dict):
+                        for t_k, rows in oo_map.items():
+                            t_u = clean_upper_scalar(t_k)
+                            if not t_u or not isinstance(rows, list):
+                                continue
+                            sell_q = 0.0
+                            for o in rows:
+                                if isinstance(o, dict) and o.get("side") == "SELL":
+                                    orig = safe_float(o.get("origQty"), default=0.0) or 0.0
+                                    exec_q = safe_float(o.get("executedQty"), default=0.0) or 0.0
+                                    sell_q += max(0.0, orig - exec_q)
+                            open_sell_by_ticker[t_u] = round(sell_q, 6)
+                        open_orders_ok = True
+                except Exception as e:  # noqa: BLE001
+                    print(f"[T212] all_balances open_orders check: {e}")
+            for t_u in all_tickers:
+                tot_q = held_qty.get(t_u, 0.0)
+                if tot_q <= 0.0:
+                    out[t_u] = (0.0, 0.0)
+                    continue
+                sell_q = open_sell_by_ticker.get(t_u, 0.0)
+                out[t_u] = (
+                    max(0.0, round(tot_q - sell_q, 6)),
+                    (sell_q if open_orders_ok else None),
+                )
+        return out if any_ok else None
+
     def get_orders(
         self,
         symbol: str,

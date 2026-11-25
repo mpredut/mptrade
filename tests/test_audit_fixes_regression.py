@@ -4467,8 +4467,16 @@ def test_p1_p2_audit_balance_obs_ledger_quote_clock_fixes(tmp_path):
     assert tpos_c1[0]["free_quote"] == pytest.approx(75.0)
     assert vcash_c1["binance:USDC"]["free"] == pytest.approx(75.0)
     assert vcash_c1["binance:USDC"]["locked_quote_usd"] == pytest.approx(25.0)
-    # Persisted snapshot MUST keep raw 100.0 (NOT synthetic 75.0) and preserve bal_ts!
-    saved_vb1 = json.loads(vb_path1.read_text(encoding="utf-8"))
+    # Persisted split snapshots MUST keep raw 100.0 (NOT synthetic 75.0) and preserve bal_ts!
+    from providers.portfolio_valuation import load_venue_balances_state_dict as _load_vb_split
+
+    bal_bin1 = json.loads((cdir1 / "orders" / "cache_balance_binance.json").read_text(encoding="utf-8"))
+    assert bal_bin1["items"]["USDC"]["free"] == pytest.approx(100.0)
+    assert bal_bin1["items"]["USDC"]["ts"] == pytest.approx(bal_ts)
+    pos_st1 = json.loads((cdir1 / "state" / "portfolio_positions_state.json").read_text(encoding="utf-8"))
+    assert pos_st1["pos:binance:ARBUSDC"]["free_quote"] == pytest.approx(100.0)
+    assert pos_st1["pos:binance:ARBUSDC"]["quote_bal_ts"] == pytest.approx(bal_ts)
+    saved_vb1 = _load_vb_split(str(cdir1))
     assert saved_vb1["cash:binance:USDC"]["free"] == pytest.approx(100.0)
     assert saved_vb1["cash:binance:USDC"]["ts"] == pytest.approx(bal_ts)
     assert saved_vb1["pos:binance:ARBUSDC"]["free_quote"] == pytest.approx(100.0)
@@ -5902,10 +5910,24 @@ def test_audit_cycle8_to_11_execution_guards_status_ssot_spot_tranche_and_ag_pre
     )
     assert vcash_nav["binance:USDC"]["free"] == pytest.approx(75.0)
     assert vcash_nav["binance:USDC"]["locked_quote_usd"] == pytest.approx(65.0)
-    saved_nav = json.loads(vb_nav.read_text(encoding="utf-8"))
+    # Persisted cleanly into Layer 3 cache_balance_binance.json (raw balances) + Layer 5 portfolio_positions_state.json (pos:* only)
+    bal_bin = json.loads((cdir_nav / "orders" / "cache_balance_binance.json").read_text(encoding="utf-8"))
+    assert bal_bin["items"]["USDC"]["free"] == pytest.approx(100.0)
+    assert bal_bin["items"]["USDC"]["locked"] == pytest.approx(40.0)
+    pos_state_nav = json.loads((cdir_nav / "state" / "portfolio_positions_state.json").read_text(encoding="utf-8"))
+    assert "pos:binance:ARBUSDC" in pos_state_nav
+    assert all(k.startswith("pos:") for k in pos_state_nav)
+    from providers.portfolio_valuation import load_venue_balance_caches, load_venue_balances_state_dict
+
+    bal_caches_nav = load_venue_balance_caches(str(cdir_nav))
+    saved_nav = load_venue_balances_state_dict(str(cdir_nav))
     assert saved_nav["cash:binance:USDC"]["free"] == pytest.approx(100.0)
     assert saved_nav["cash:binance:USDC"]["locked_quote_usd"] == pytest.approx(40.0)
-    nav_eval = compute_venue_nav_breakdown(venue_balances_state=saved_nav, live_prices={"ARBUSDC": 1.0})
+    nav_eval = compute_venue_nav_breakdown(
+        venue_balance_caches=bal_caches_nav,
+        venue_balances_state=saved_nav,
+        live_prices={"ARBUSDC": 1.0},
+    )
     assert nav_eval["portfolio_total_usd"] == pytest.approx(140.0)
 
 
@@ -7577,6 +7599,211 @@ def test_post_7fc3348e_edge_case_hardening(tmp_path):
     )
     assert updated_bals["cash:binance:USDC"]["locked_quote_usd"] == pytest.approx(500.0)
     assert updated_bals["pos:binance:USDCUSDT"]["locked_base_qty"] == pytest.approx(200.0)
+
+
+def test_layer3_cache_balance_manager_eliminates_inversion_and_splits_positions_state(tmp_path, monkeypatch):
+    """Verify the clean 2-domain split eliminating the Layer 3 -> Layer 5 inversion:
+    1. Provider batch API all_free_and_locked_balances across Binance, Kraken, Hyperliquid, and T212.
+    2. CacheBalanceManager (Layer 3) persists pure {free, locked, ts} + breakdown into orders/cache_balance_<venue>.json
+       with verified full-venue replacement vs partial merge semantics, registered in CacheFactory & get_balance_manager.
+    3. CacheAssetValueManager computes multi-venue NAV purely from Layer 3 cache_balance_<venue>.json + cache_current_price.json
+       with ZERO venue_balances_state.json or portfolio_positions_state.json present.
+    4. providers.nav_drawdown.record_nav_history_snapshot computes Unified NAV purely from Layer 3 cache_balance_<venue>.json.
+    5. upsert_portfolio_positions_snapshot strictly persists ONLY pos:* derived snapshots (never raw cash/scalar/breakdown)
+       and load_venue_balances_state_dict cleanly composes both domains.
+    """
+    import sys
+    import binance_api.bapi as bapi_mod
+    import cacheManager as cm_mod
+    from cacheaccount import CacheAssetValueManager, CacheBalanceManager, get_balance_manager
+    from cachepaths import (
+        CACHE_BINANCE_BALANCE_FILENAME,
+        CACHE_HYPERLIQUID_BALANCE_FILENAME,
+        CACHE_KRAKEN_BALANCE_FILENAME,
+        CACHE_T212_BALANCE_FILENAME,
+        DurabilityTier,
+        PORTFOLIO_POSITIONS_STATE_FILENAME,
+        resolve_durability_policy,
+    )
+    from providers.binance_provider import BinanceProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.nav_drawdown import record_nav_history_snapshot
+    from providers.portfolio_valuation import (
+        INTERNAL_BALANCE_SCRATCH_KEYS,
+        load_portfolio_positions_state_dict,
+        load_venue_balance_caches,
+        load_venue_balances_state_dict,
+        upsert_portfolio_positions_snapshot,
+    )
+    from providers.t212_provider import T212Provider
+
+    now_s = 1_795_800_000.0
+
+    # 0. Durability policy & CacheFactory registration
+    for fname in (
+        CACHE_BINANCE_BALANCE_FILENAME,
+        CACHE_KRAKEN_BALANCE_FILENAME,
+        CACHE_HYPERLIQUID_BALANCE_FILENAME,
+        CACHE_T212_BALANCE_FILENAME,
+        PORTFOLIO_POSITIONS_STATE_FILENAME,
+    ):
+        assert resolve_durability_policy(fname).tier == DurabilityTier.FINANCIAL_CRITICAL
+    for cname in ("BinanceBalance", "KrakenBalance", "HyperliquidBalance", "T212Balance"):
+        assert cname in cm_mod.CacheFactory._CONFIG
+
+    # 1. Batch all_free_and_locked_balances across all 4 venues
+    monkeypatch.setattr(
+        bapi_mod,
+        "get_account_assets_balances",
+        lambda raise_errors=False: [
+            {"asset": "USDC", "free": 1500.0, "locked": 250.0, "total": 1750.0},
+            {"asset": "BTC", "free": 0.05, "locked": 0.01, "total": 0.06},
+        ],
+    )
+    bn_all = BinanceProvider().all_free_and_locked_balances(["BTC", "USDC", "ARB"])
+    assert bn_all == {"USDC": (1500.0, 250.0), "BTC": (0.05, 0.01), "ARB": (0.0, 0.0)}
+
+    kr_p = KrakenProvider(
+        client=SimpleNamespace(
+            balance_ex=lambda: {
+                "ZUSD": {"balance": "600.0", "hold_trade": "100.0"},
+                "USDC": {"balance": "400.0", "hold_trade": "0.0"},
+                "HYPE": {"balance": "10.0", "hold_trade": "2.0"},
+            }
+        )
+    )
+    kr_all = kr_p.all_free_and_locked_balances(["HYPE", "USD"])
+    assert kr_all["USD"] == pytest.approx((900.0, 100.0))
+    assert kr_all["HYPE"] == pytest.approx((8.0, 2.0))
+
+    monkeypatch.setenv("HL_ACCOUNT_ADDRESS", "0xabc123")
+    hl_p = HyperliquidProvider(
+        token="HYPE",
+        client=SimpleNamespace(
+            info=SimpleNamespace(
+                spot_user_state=lambda _addr: {
+                    "balances": [
+                        {"coin": "USDC", "total": "500.0", "hold": "50.0"},
+                        {"coin": "HYPE", "total": "4.0", "hold": "1.0"},
+                    ]
+                }
+            )
+        ),
+    )
+    hl_all = hl_p.all_free_and_locked_balances(["HYPE", "USDC"])
+    assert hl_all == {"USDC": (450.0, 50.0), "HYPE": (3.0, 1.0)}
+
+    t212_p = T212Provider()
+    monkeypatch.setattr(
+        t212_p,
+        "_client",
+        lambda: SimpleNamespace(
+            get_cash=lambda: {"free": 460.0, "blocked": 92.0},
+            get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "quantity": 5.0}],
+        ),
+    )
+    monkeypatch.setattr(
+        t212_p,
+        "open_orders_by_symbol",
+        lambda _syms: {"NVDA_US_EQ": [{"side": "SELL", "origQty": 1.5, "executedQty": 0.5}]},
+    )
+    monkeypatch.setitem(sys.modules, "212trading.market_data", SimpleNamespace(get_usd_ron=lambda: 4.6))
+    t212_all = t212_p.all_free_and_locked_balances(["NVDA_US_EQ", "USD"])
+    assert t212_all["USD"] == pytest.approx((100.0, 20.0))
+    assert t212_all["NVDA_US_EQ"] == pytest.approx((4.0, 1.0))
+
+    # 2. CacheBalanceManager write/read + verified full-venue replacement vs partial merge
+    ws_dir = tmp_path / "ws_split"
+    cdb = ws_dir / "cachedb"
+    (cdb / "orders").mkdir(parents=True)
+    (cdb / "prices").mkdir(parents=True)
+    kr_bal_path = cdb / "orders" / CACHE_KRAKEN_BALANCE_FILENAME
+    t212_bal_path = cdb / "orders" / CACHE_T212_BALANCE_FILENAME
+    CacheBalanceManager.replace_venue_balances_snapshot(
+        str(kr_bal_path),
+        {"USD": (500.0, 100.0), "HYPE": (8.0, 2.0), "GHOST": (1.0, 0.0)},
+        venue="kraken",
+        now_s=now_s - 60.0,
+        verified_ts=now_s - 60.0,
+        breakdown={"USD": {"USD": 200.0, "USDC": 300.0}},
+    )
+    # Full-venue verified replace drops sold-out GHOST cleanly while preserving breakdown when omitted
+    CacheBalanceManager.replace_venue_balances_snapshot(
+        str(kr_bal_path),
+        {"USD": (500.0, 100.0), "HYPE": (8.0, 2.0)},
+        venue="kraken",
+        now_s=now_s,
+        verified_ts=now_s,
+    )
+    kr_mgr = get_balance_manager(venue="kraken", filename=str(kr_bal_path))
+    assert kr_mgr.get_balance("GHOST") is None
+    assert kr_mgr.get_balance("USD")["free"] == pytest.approx(500.0)
+    assert kr_mgr.get_balance("USD")["locked"] == pytest.approx(100.0)
+    assert kr_mgr.get_breakdown("USD") == {"USD": 200.0, "USDC": 300.0}
+
+    CacheBalanceManager.replace_venue_balances_snapshot(
+        str(t212_bal_path),
+        {"USD": (100.0, 20.0), "NVDA_US_EQ": (4.0, 1.0)},
+        venue="t212",
+        now_s=now_s,
+        verified_ts=now_s,
+    )
+    # Live prices in Layer 3 cache_current_price.json ONLY (ZERO venue_balances_state.json or portfolio_positions_state.json!)
+    (cdb / "prices" / "cache_current_price.json").write_text(
+        json.dumps({"items": {"HYPEUSD": [[int(now_s * 1000), 50.0]], "NVDA_US_EQ": [[int(now_s * 1000), 200.0]]}}),
+        encoding="utf-8",
+    )
+
+    # 3. CacheAssetValueManager computes multi-venue NAV strictly from Layer 3 caches (ZERO Layer 5 dependency!)
+    api_mock = MagicMock()
+    api_mock.get_total_assets_value_usdc.return_value = 2000.0
+    av_mgr = CacheAssetValueManager(9999, ["TOTAL"], str(cdb / "orders" / "cache_asset_value.jsonl"), api_client=api_mock)
+    av_items = av_mgr.get_remote_items("TOTAL", 0)
+    assert len(av_items) == 1
+    # Kraken: $500 free + $100 locked USD + (8+2)*$50 HYPE = $1100; T212: $100+$20 USD + (4+1)*$200 NVDA = $1120
+    assert av_items[0]["venues_usd"] == {"binance": 2000.0, "kraken": 1100.0, "t212": 1120.0}
+    assert av_items[0]["portfolio_total_usd"] == pytest.approx(4220.0)
+
+    # 4. providers.nav_drawdown.record_nav_history_snapshot works purely from Layer 3 balance caches
+    nav_m = record_nav_history_snapshot(str(ws_dir), now_ts=now_s)
+    assert nav_m["current_nav_usd"] == pytest.approx(2220.0)
+
+    # 5. upsert_portfolio_positions_snapshot writes ONLY pos:* keys and strips internal scratch keys; unified loader composes cleanly
+    pos_path = cdb / "state" / PORTFOLIO_POSITIONS_STATE_FILENAME
+    assert upsert_portfolio_positions_snapshot(
+        str(pos_path),
+        {
+            "cash:kraken:USD": {"venue": "kraken", "asset": "USD", "free": 9999.0},
+            "kraken:USD": 9999.0,
+            "breakdown:kraken:USD": {"USD": 9999.0},
+            "pos:kraken:HYPEUSD": {
+                "venue": "kraken",
+                "symbol": "HYPEUSD",
+                "base": "HYPE",
+                "quote": "USD",
+                "free_base": 1.0,  # older balance -> Layer 3 cache_balance_kraken.json (8.0 free, 2.0 locked) wins!
+                "free_quote": 10.0,
+                "price": 50.0,
+                "trailing_peak": 55.0,
+                "ts": now_s - 300.0,
+                "_prev_locked_base_qty": 99.0,
+            },
+        },
+    ) is True
+    pos_disk = load_portfolio_positions_state_dict(str(cdb))
+    assert list(pos_disk.keys()) == ["pos:kraken:HYPEUSD"]
+    for sk in INTERNAL_BALANCE_SCRATCH_KEYS:
+        assert sk not in pos_disk["pos:kraken:HYPEUSD"]
+    assert set(load_venue_balance_caches(str(cdb)).keys()) == {"kraken", "t212"}
+    unified = load_venue_balances_state_dict(str(cdb))
+    assert unified["cash:kraken:USD"]["free"] == pytest.approx(500.0)
+    assert unified["cash:kraken:USD"]["locked_quote_usd"] == pytest.approx(100.0)
+    assert unified["breakdown:kraken:USD"] == {"USD": 200.0, "USDC": 300.0}
+    assert unified["pos:kraken:HYPEUSD"]["trailing_peak"] == pytest.approx(55.0)
+    assert unified["pos:kraken:HYPEUSD"]["free_base"] == pytest.approx(8.0)
+    assert unified["pos:kraken:HYPEUSD"]["locked_base_qty"] == pytest.approx(2.0)
+
 
 
 

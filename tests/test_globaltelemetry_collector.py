@@ -1498,10 +1498,21 @@ def test_global_telemetry_collector_publishes_venue_balances_and_cycle_deltas(tm
         res = collector.run_cycle(force=True, now=now_s)
 
     assert res["venue_balances_updated"] is True
-    bcache_path = resolve_cachedb_filepath(str(cache_dir / "venue_balances_state.json"))
-    assert os.path.exists(bcache_path)
-    with open(bcache_path, encoding="utf-8") as fh:
-        bals = json.load(fh)
+    bal_path = resolve_cachedb_filepath(str(cache_dir / "cache_balance_binance.json"))
+    pos_path = resolve_cachedb_filepath(str(cache_dir / "portfolio_positions_state.json"))
+    assert os.path.exists(bal_path)
+    assert os.path.exists(pos_path)
+    with open(bal_path, encoding="utf-8") as fh:
+        bal_doc = json.load(fh)
+    assert bal_doc["items"]["BTC"]["free"] == pytest.approx(0.25)
+    assert bal_doc["items"]["USDC"]["free"] == pytest.approx(400.0)
+    with open(pos_path, encoding="utf-8") as fh:
+        pos_doc = json.load(fh)
+    assert pos_doc["pos:binance:BTCUSDC"]["free_base"] == pytest.approx(0.25)
+    assert all(k.startswith("pos:") for k in pos_doc)
+    from providers.portfolio_valuation import load_venue_balances_state_dict as _load_vb_gtc
+
+    bals = _load_vb_gtc(str(cache_dir))
     assert bals["pos:binance:BTCUSDC"]["free_base"] == pytest.approx(0.25)
     assert bals["cash:binance:USDC"]["free"] == pytest.approx(400.0)
     assert not any(k.startswith(("open_orders:", "open_orders_verified_ts:")) for k in bals)

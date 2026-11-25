@@ -36,7 +36,11 @@ from state_io import (
     read_json_dict,
     save_json_state,
 )
-from .portfolio_valuation import compute_venue_nav_breakdown, load_venue_balances_state_dict
+from .portfolio_valuation import (
+    compute_venue_nav_breakdown,
+    load_venue_balance_caches,
+    load_venue_balances_state_dict,
+)
 
 DEFAULT_DAILY_NAV_DD_MODE: str = "shadow"
 DEFAULT_DAILY_NAV_DD_LIMIT_PCT: float = 5.0
@@ -136,15 +140,19 @@ def _detect_non_market_step(
 def build_nav_history_point(
     venue_balances_state: Any,
     *,
+    venue_balance_caches: Any = None,
     live_prices: Any = None,
     now_ts: Optional[float] = None,
     scope: str = "all",
 ) -> Optional[dict[str, Any]]:
-    """Build a canonical multi-venue NAV point from ``venue_balances_state`` via ``compute_venue_nav_breakdown``."""
-    if not isinstance(venue_balances_state, Mapping) or not venue_balances_state:
+    """Build a canonical multi-venue NAV point from Layer 3 balance caches (and/or legacy state) via ``compute_venue_nav_breakdown``."""
+    has_caches = isinstance(venue_balance_caches, Mapping) and bool(venue_balance_caches)
+    has_state = isinstance(venue_balances_state, Mapping) and bool(venue_balances_state)
+    if not has_caches and not has_state:
         return None
     nav = compute_venue_nav_breakdown(
-        venue_balances_state=dict(venue_balances_state),
+        venue_balance_caches=dict(venue_balance_caches) if has_caches else None,
+        venue_balances_state=dict(venue_balances_state) if has_state else None,
         live_prices=live_prices,
         scope=scope,
     )
@@ -468,18 +476,22 @@ def load_nav_history_state(workspace_dir: str) -> list[dict[str, Any]]:
     return out
 
 
-def _load_workspace_balances_and_prices(workspace_dir: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def _load_workspace_balances_and_prices(
+    workspace_dir: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     cache_dir = os.path.join(workspace_dir, "cachedb")
+    bal_caches = load_venue_balance_caches(cache_dir)
     vb = load_venue_balances_state_dict(cache_dir)
     cp_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, CACHE_CURRENT_PRICE_FILENAME)))
     cp = read_json_dict(cp_path, default={})
-    return vb, (cp if isinstance(cp, dict) else {})
+    return bal_caches, vb, (cp if isinstance(cp, dict) else {})
 
 
 def record_nav_history_snapshot(
     workspace_dir: str,
     *,
     venue_balances_state: Optional[Mapping[str, Any]] = None,
+    venue_balance_caches: Optional[Mapping[str, Any]] = None,
     live_prices: Optional[Mapping[str, Any]] = None,
     now_ts: Optional[float] = None,
     min_interval_sec: float = DEFAULT_NAV_SAMPLE_INTERVAL_SEC,
@@ -489,15 +501,23 @@ def record_nav_history_snapshot(
     """Transactionally sample and persist one Unified NAV point and return evaluated drawdown metrics."""
     eff_now = resolve_now_ts(now_ts)
     vb_map = venue_balances_state
+    bc_map = venue_balance_caches
     cp_map = live_prices
-    if vb_map is None or cp_map is None:
-        disk_vb, disk_cp = _load_workspace_balances_and_prices(workspace_dir)
-        if vb_map is None:
+    if (vb_map is None and bc_map is None) or cp_map is None:
+        disk_bc, disk_vb, disk_cp = _load_workspace_balances_and_prices(workspace_dir)
+        if bc_map is None and vb_map is None:
+            bc_map = disk_bc
             vb_map = disk_vb
         if cp_map is None:
             cp_map = disk_cp
 
-    point = build_nav_history_point(vb_map, live_prices=cp_map, now_ts=eff_now, scope="all")
+    point = build_nav_history_point(
+        vb_map,
+        venue_balance_caches=bc_map,
+        live_prices=cp_map,
+        now_ts=eff_now,
+        scope="all",
+    )
     nav_path = _nav_history_filepath(workspace_dir)
     if point is None:
         return evaluate_nav_drawdown_metrics(load_nav_history_state(workspace_dir), now_ts=eff_now)
@@ -543,8 +563,14 @@ def load_and_evaluate_nav_drawdown(
     history = load_nav_history_state(workspace_dir)
     cur_pt: Optional[Mapping[str, Any]] = current_point
     if cur_pt is None and include_live_point:
-        vb_map, cp_map = _load_workspace_balances_and_prices(workspace_dir)
-        cur_pt = build_nav_history_point(vb_map, live_prices=cp_map, now_ts=eff_now, scope=scope_norm)
+        bc_map, vb_map, cp_map = _load_workspace_balances_and_prices(workspace_dir)
+        cur_pt = build_nav_history_point(
+            vb_map,
+            venue_balance_caches=bc_map,
+            live_prices=cp_map,
+            now_ts=eff_now,
+            scope=scope_norm,
+        )
     return evaluate_nav_drawdown_metrics(history, now_ts=eff_now, current_point=cur_pt, scope=scope_norm)
 
 

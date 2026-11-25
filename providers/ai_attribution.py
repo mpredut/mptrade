@@ -34,7 +34,7 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 from state_io import read_json_dict, read_jsonl_dicts, read_text_lines
-from .portfolio_valuation import load_venue_balances_state_dict
+from .portfolio_valuation import load_venue_balance_caches, load_venue_balances_state_dict
 from .ai_survival_guard import (
     _collect_canceled_order_ids,
     _extract_intent_exec_price,
@@ -903,8 +903,15 @@ def load_and_evaluate_ai_attribution(
     eval_path = _workspace_cachedb_path(workspace_dir, "auto_cryptotrade_executor_eval.json")
     crypto_eval = read_json_dict(eval_path, default={})
     nav_history = load_nav_history_state(workspace_dir)
+    bal_caches = load_venue_balance_caches(cache_dir)
     vb_state = load_venue_balances_state_dict(cache_dir)
-    cur_nav_pt = build_nav_history_point(vb_state, live_prices=live_prices, now_ts=eff_now, scope="all")
+    cur_nav_pt = build_nav_history_point(
+        vb_state,
+        venue_balance_caches=bal_caches,
+        live_prices=live_prices,
+        now_ts=eff_now,
+        scope="all",
+    )
 
     def _persisted_rt_fee_bps(venue: str, symbol: str, order_type: str) -> Optional[float]:
         spec = read_persisted_venue_fee_spec(venue, symbol, cache_dir=cache_dir, now_ts=eff_now)

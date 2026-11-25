@@ -4,7 +4,7 @@ import importlib
 import math
 import sys
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
 import account_cache_health as health
 import botcore as cfg
@@ -205,6 +205,33 @@ class BinanceProvider(MarketDataProvider):
             return fl_fn(asset)
         free_v = self.free_balance(asset)
         return (free_v, None) if free_v is not None else None
+
+    def all_free_and_locked_balances(
+        self, assets: Optional[Sequence[str]] = None
+    ) -> Optional[dict[str, tuple[float, Optional[float]]]]:
+        """Fetch all Binance spot ``(free, locked)`` balances in one ``get_account()`` call."""
+        bapi = _get_bapi()
+        get_all = getattr(bapi, "get_account_assets_balances", None)
+        if callable(get_all):
+            try:
+                rows = get_all(raise_errors=True)
+                if isinstance(rows, list):
+                    out: dict[str, tuple[float, Optional[float]]] = {}
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        asset_u = clean_upper_scalar(row.get("asset"))
+                        free_v = safe_nonneg_float(row.get("free"), default=None)
+                        locked_v = safe_nonneg_float(row.get("locked"), default=None)
+                        if asset_u and free_v is not None and locked_v is not None and (free_v > 0.0 or locked_v > 0.0):
+                            out[asset_u] = (free_v, locked_v)
+                    for req_a in (assets or ()):
+                        if (req_u := clean_upper_scalar(req_a)) is not None and req_u not in out:
+                            out[req_u] = (0.0, 0.0)
+                    return out
+            except Exception:
+                pass
+        return super().all_free_and_locked_balances(assets)
 
     @classmethod
     def fetch_remote_trades_with_client(

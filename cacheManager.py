@@ -40,8 +40,10 @@ from cacheInterface import (
 from cachepaths import CACHE_SHORT_TREND_FILENAME
 from cacheaccount import (
     ASSET_VALUE_SYNC_INTERVAL_SEC,
+    BALANCE_SYNC_INTERVAL_SEC,
     CacheAccountManagerBase,
     CacheAssetValueManager,
+    CacheBalanceManager,
     CacheOrderFilledManager,
     CacheOrderOpenManager,
     CacheTradeManager,
@@ -56,6 +58,7 @@ from cacheaccount import (
     disable_account_cache_daemon_writer,
     ensure_account_cache_readers,
     get_asset_value_manager,
+    get_balance_manager,
     get_order_filled_manager,
     get_order_open_manager,
     get_trade_manager,
@@ -644,6 +647,34 @@ CacheFactory.register(
     "T212OrderOpen",
     CacheOrderOpenManager,
     sync_ts=lambda: OPEN_ORDER_SYNC_INTERVAL_SEC,
+    venue="t212",
+    read_only=True,
+)
+CacheFactory.register(
+    "BinanceBalance",
+    CacheBalanceManager,
+    sync_ts=lambda: BALANCE_SYNC_INTERVAL_SEC,
+    venue="binance",
+    read_only=True,
+)
+CacheFactory.register(
+    "KrakenBalance",
+    CacheBalanceManager,
+    sync_ts=lambda: BALANCE_SYNC_INTERVAL_SEC,
+    venue="kraken",
+    read_only=True,
+)
+CacheFactory.register(
+    "HyperliquidBalance",
+    CacheBalanceManager,
+    sync_ts=lambda: BALANCE_SYNC_INTERVAL_SEC,
+    venue="hyperliquid",
+    read_only=True,
+)
+CacheFactory.register(
+    "T212Balance",
+    CacheBalanceManager,
+    sync_ts=lambda: BALANCE_SYNC_INTERVAL_SEC,
     venue="t212",
     read_only=True,
 )

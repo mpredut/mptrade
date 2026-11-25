@@ -1094,8 +1094,9 @@ def test_pre_commit_gate_runs_all_deterministic_checks_and_blocks_violations(tmp
     assert gate.cmd_pre_commit(SimpleNamespace(files=bad_files, root=str(tmp_path), min_score=2)) == 1
     # Calling the typed producer API from a non-producer module is also blocked by venue_balances_single_writer_ast.
     (tmp_path / "rogue_producer.py").write_text(
-        "from providers.portfolio_valuation import upsert_venue_balances_snapshot\n"
+        "from providers.portfolio_valuation import upsert_portfolio_positions_snapshot, upsert_venue_balances_snapshot\n"
         "def write(p: str):\n"
+        "    upsert_portfolio_positions_snapshot(p, {'pos:binance:BTCUSDC': {'free_base': 1.0}})\n"
         "    return upsert_venue_balances_snapshot(p, {'cash:binance:USDC': {'free': 1.0}})\n",
         encoding="utf-8",
     )
@@ -1106,7 +1107,9 @@ def test_pre_commit_gate_runs_all_deterministic_checks_and_blocks_violations(tmp
         python_rels=("rogue_producer.py",),
         explicit_files=True,
     )
-    assert "venue_balances_single_writer_ast" in gate.run_gates(rogue_ctx)
+    rogue_failures = gate.run_gates(rogue_ctx)
+    assert "venue_balances_single_writer_ast" in rogue_failures
+    assert len(rogue_failures["venue_balances_single_writer_ast"]) >= 2
 
     # Clean staged files across shell, JSON, TOML, and SSOT-delegating Python pass with exit code 0.
     (tmp_path / "ok.sh").write_text("#!/usr/bin/env bash\nset -euo pipefail\necho ok\n", encoding="utf-8")

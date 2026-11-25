@@ -44,6 +44,7 @@ from botcore import (
     is_auto_start_websockets_enabled,
     is_live_network_backfill_enabled,
     log,
+    normalize_epoch_sec,
     normalize_side,
     resolve_now_ms,
     resolve_now_ts,
@@ -66,16 +67,20 @@ from cacheInterface import (
 import cacheintegrity as _cache_integrity
 from cachepaths import (
     CACHE_ASSET_VALUE_FILENAME,
+    CACHE_BINANCE_BALANCE_FILENAME,
     CACHE_BINANCE_ORDER_FILLED_FILENAME,
     CACHE_BINANCE_ORDER_OPEN_FILENAME,
     CACHE_BINANCE_TRADE_FILENAME,
     CACHE_CURRENT_PRICE_FILENAME,
+    CACHE_HYPERLIQUID_BALANCE_FILENAME,
     CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME,
     CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME,
     CACHE_HYPERLIQUID_TRADE_FILENAME,
+    CACHE_KRAKEN_BALANCE_FILENAME,
     CACHE_KRAKEN_ORDER_FILLED_FILENAME,
     CACHE_KRAKEN_ORDER_OPEN_FILENAME,
     CACHE_KRAKEN_TRADE_FILENAME,
+    CACHE_T212_BALANCE_FILENAME,
     CACHE_T212_ORDER_FILLED_FILENAME,
     CACHE_T212_ORDER_OPEN_FILENAME,
     CACHE_T212_TRADE_FILENAME,
@@ -85,13 +90,15 @@ from cachepaths import (
     cachedb_root_for_file,
     clean_scalar_str,
     clean_symbol_key,
+    is_equity_venue,
     is_primary_stream_venue,
     legacy_filenames_for,
     normalize_venue_name,
     resolve_cachedb_filepath,
+    split_symbol_assets,
 )
 import instrument_registry as sym
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, is_symbol_market_open
 from providers.base import MarketDataProvider
 from providers.order_id_context import extract_client_order_id
 from providers.order_ledger import (
@@ -111,7 +118,11 @@ from providers.order_status_ssot import (
     is_open_working_status,
     merge_monotonic_fill_row_status,
 )
-from providers.portfolio_valuation import compute_venue_nav_breakdown, load_venue_balances_state_dict
+from providers.portfolio_valuation import (
+    compute_venue_nav_breakdown,
+    load_venue_balance_caches,
+    load_venue_balances_state_dict,
+)
 from state_io import (
     atomic_text_writer,
     atomic_write_json,
@@ -3782,6 +3793,257 @@ CacheOrderOpenManager.load_unified_evidence = staticmethod(load_unified_order_bo
 
 
 # =============================================================================
+# 3B. ACCOUNT BALANCE SNAPSHOT CACHE: CacheBalanceManager
+# =============================================================================
+
+
+class CacheBalanceManager(CacheAccountManagerBase):
+    """Cross-venue raw spot account balance cache (Level 3) backed by ``cache_balance_<venue>.json``."""
+
+    _is_balance_account_cache = True
+    DEFAULT_FILENAME = CACHE_BINANCE_BALANCE_FILENAME
+    VENUE_FILENAMES: dict[str, str] = {
+        "binance": CACHE_BINANCE_BALANCE_FILENAME,
+        "kraken": CACHE_KRAKEN_BALANCE_FILENAME,
+        "hyperliquid": CACHE_HYPERLIQUID_BALANCE_FILENAME,
+        "t212": CACHE_T212_BALANCE_FILENAME,
+    }
+
+    def __init__(
+        self,
+        sync_ts,
+        symbols,
+        filename,
+        api_client=None,
+        read_only=False,
+        *,
+        data_sync_mode: Optional[str] = None,
+        venue: Optional[str] = None,
+    ):
+        self.venue = self._normalize_venue_arg(venue=venue, filename=filename, symbols=symbols)
+        self.verified_ts: float = 0.0
+        self.breakdown: dict[str, dict[str, float]] = {}
+        super().__init__(
+            sync_ts,
+            symbols,
+            filename,
+            append_mode=False,
+            api_client=api_client,
+            append_persist=False,
+            read_only=read_only,
+            data_sync_mode=data_sync_mode,
+        )
+
+    @classmethod
+    def normalize_balance_entry(
+        cls,
+        raw: Any,
+        *,
+        default_ts: Optional[float] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Normalize a raw balance tuple/mapping into ``{"free", "locked", "ts"}``."""
+        free_v: Optional[float] = None
+        locked_v: Optional[float] = None
+        entry_ts: Optional[float] = None
+        if isinstance(raw, (tuple, list)) and len(raw) >= 1:
+            free_v = safe_nonneg_float(raw[0], default=None)
+            if len(raw) >= 2 and raw[1] is not None:
+                locked_v = safe_nonneg_float(raw[1], default=None)
+            if len(raw) >= 3 and raw[2] is not None:
+                entry_ts = normalize_epoch_sec(raw[2], default=None)
+        elif isinstance(raw, Mapping):
+            free_v = safe_nonneg_float(raw.get("free"), default=None)
+            if raw.get("locked") is not None:
+                locked_v = safe_nonneg_float(raw.get("locked"), default=None)
+            entry_ts = normalize_epoch_sec(raw.get("ts"), default=None)
+        elif isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            free_v = safe_nonneg_float(raw, default=None)
+        if free_v is None:
+            return None
+        eff_ts = entry_ts or normalize_epoch_sec(default_ts, default=None)
+        row: dict[str, Any] = {
+            "free": round(free_v, 8),
+            "locked": round(locked_v, 8) if locked_v is not None else None,
+        }
+        if eff_ts is not None and eff_ts > 0.0:
+            row["ts"] = round(eff_ts, 3)
+        return row
+
+    def _is_valid_item(self, item) -> bool:
+        return self.normalize_balance_entry(item) is not None
+
+    def _ensure_account_version(self, required_version: str) -> None:
+        self._load_snapshot_state()
+
+    def _load_snapshot_state(self) -> None:
+        with self._generation_lock():
+            if not os.path.exists(self.filename) and not os.path.exists(self._previous_generation_path()):
+                return
+            loaded = read_json_dict_recovering(self.filename, repair_files=not self.read_only)
+            if not isinstance(loaded, dict):
+                return
+            doc_ts = normalize_epoch_sec(loaded.get("verified_ts") or loaded.get("ts"), default=None)
+            raw_items = loaded.get("items") if isinstance(loaded.get("items"), dict) else {}
+            cleaned: dict[str, list[dict[str, Any]]] = {}
+            for a_k, a_val in raw_items.items():
+                a_clean = clean_scalar_str(a_k)
+                if not a_clean:
+                    continue
+                if (norm := self.normalize_balance_entry(a_val, default_ts=doc_ts)) is not None:
+                    cleaned[a_clean.upper()] = [norm]
+            raw_bd = loaded.get("breakdown") if isinstance(loaded.get("breakdown"), dict) else {}
+            clean_bd: dict[str, dict[str, float]] = {}
+            for q_k, q_map in raw_bd.items():
+                q_u = clean_upper_scalar(q_k)
+                if not q_u or not isinstance(q_map, Mapping):
+                    continue
+                bd_vals = {
+                    str(bk): val_f
+                    for bk, bv in q_map.items()
+                    if clean_scalar_str(bk) is not None and (val_f := safe_nonneg_float(bv, default=None)) is not None
+                }
+                if bd_vals:
+                    clean_bd[q_u] = bd_vals
+            with self.lock:
+                self.cache = cleaned
+                self.verified_ts = safe_nonneg_float(loaded.get("verified_ts"), default=0.0) or 0.0
+                self.breakdown = clean_bd
+
+    def get_remote_items(self, symbol, startTime) -> list[dict[str, Any]]:
+        return []
+
+    def get_balance(self, asset: str) -> Optional[dict[str, Any]]:
+        """Return latest cached ``{"free", "locked", "ts"}`` dict for ``asset``."""
+        a_u = clean_upper_scalar(asset)
+        if not a_u:
+            return None
+        self.resync_mem_file()
+        with self.lock:
+            rows = self.cache.get(a_u)
+            return dict(rows[0]) if rows else None
+
+    def get_all_balances(self) -> dict[str, dict[str, Any]]:
+        """Return shallow copy of all cached ``asset -> {"free", "locked", "ts"}`` entries."""
+        self.resync_mem_file()
+        with self.lock:
+            return {a_k: dict(rows[0]) for a_k, rows in self.cache.items() if rows}
+
+    def get_breakdown(self, quote_asset: str = "USD") -> dict[str, float]:
+        """Return quote currency breakdown map (e.g. Kraken USD/USDC/USDG) if cached."""
+        q_u = clean_upper_scalar(quote_asset) or "USD"
+        self.resync_mem_file()
+        with self.lock:
+            return dict(self.breakdown.get(q_u) or {})
+
+    @classmethod
+    def replace_venue_balances_snapshot(
+        cls,
+        cache_file: str,
+        balances_by_asset: Mapping[str, Any],
+        *,
+        venue: Optional[str] = None,
+        now_s: Optional[float] = None,
+        verified_ts: Optional[float] = None,
+        breakdown: Optional[Mapping[str, Mapping[str, Any]]] = None,
+        indent: Optional[int] = 1,
+    ) -> dict[str, Any]:
+        """Atomically persist one venue's raw account balances into ``cache_balance_<venue>.json`` under ``.generation.lock``.
+
+        When ``verified_ts`` is provided (full-venue snapshot from ``all_free_and_locked_balances``), ``items`` is
+        replaced wholesale so sold-out assets cannot linger as stale ghosts. When ``verified_ts`` is ``None``
+        (partial per-asset refresh), provided assets merge cleanly into existing ``items``.
+        """
+        target_path = str(cache_file)
+        eff_now_s = resolve_now_ts(now_s)
+        eff_ver_ts = safe_pos_float(verified_ts, default=None)
+        v_norm = normalize_venue_name(venue) or cls._normalize_venue_arg(venue=venue, filename=target_path)
+        with generation_transaction(target_path) as target_path:
+            loaded = read_json_dict_recovering(target_path, repair_files=True)
+            if not isinstance(loaded, dict):
+                loaded = {}
+            prev_items = loaded.get("items") if isinstance(loaded.get("items"), dict) else {}
+            prev_ver = safe_nonneg_float(loaded.get("verified_ts"), default=0.0) or 0.0
+            prev_bd = loaded.get("breakdown") if isinstance(loaded.get("breakdown"), dict) else {}
+
+            items_out: dict[str, dict[str, Any]] = {}
+            if eff_ver_ts is None:
+                for pk, pv in prev_items.items():
+                    if (pk_c := clean_scalar_str(pk)) is not None and (norm_p := cls.normalize_balance_entry(pv)) is not None:
+                        items_out[pk_c.upper()] = norm_p
+            for asset_k, raw_entry in (balances_by_asset or {}).items():
+                if (ak_c := clean_scalar_str(asset_k)) is None:
+                    continue
+                if (norm := cls.normalize_balance_entry(raw_entry, default_ts=eff_now_s)) is not None:
+                    items_out[ak_c.upper()] = norm
+
+            bd_out: dict[str, dict[str, float]] = {}
+            bd_src = breakdown if isinstance(breakdown, Mapping) else prev_bd
+            for q_k, q_map in bd_src.items():
+                q_u = clean_upper_scalar(q_k)
+                if not q_u or not isinstance(q_map, Mapping):
+                    continue
+                clean_q = {
+                    str(bk): round(val_f, 4)
+                    for bk, bv in q_map.items()
+                    if clean_scalar_str(bk) is not None and (val_f := safe_nonneg_float(bv, default=None)) is not None
+                }
+                if clean_q:
+                    bd_out[q_u] = clean_q
+
+            out_obj: dict[str, Any] = {
+                "venue": v_norm,
+                "ts": round(eff_now_s, 3),
+                "verified_ts": round(eff_ver_ts, 3) if eff_ver_ts is not None else (round(prev_ver, 3) if prev_ver > 0 else None),
+                "items": items_out,
+            }
+            if bd_out:
+                out_obj["breakdown"] = bd_out
+            save_json_state(target_path, out_obj, indent=indent, skip_if_unchanged=True)
+            return out_obj
+
+    @classmethod
+    def read_venue_balances_snapshot(
+        cls,
+        cache_file: str,
+        *,
+        read_json_fn=None,
+    ) -> tuple[dict[str, dict[str, Any]], float, dict[str, dict[str, float]]]:
+        """Passively read one venue's ``cache_balance_<venue>.json`` snapshot."""
+        resolved = str(resolve_cachedb_filepath(str(cache_file)))
+        if read_json_fn is not None:
+            data = read_json_fn(resolved)
+        else:
+            if not (os.path.isfile(resolved) or os.path.isfile(f"{resolved}.previous")):
+                return {}, 0.0, {}
+            data = read_json_dict_recovering(resolved, repair_files=False)
+        if not isinstance(data, dict):
+            return {}, 0.0, {}
+        doc_ts = normalize_epoch_sec(data.get("verified_ts") or data.get("ts"), default=None)
+        raw_items = data.get("items") if isinstance(data.get("items"), dict) else {}
+        items_out: dict[str, dict[str, Any]] = {}
+        for a_k, a_val in raw_items.items():
+            if (ak_c := clean_scalar_str(a_k)) is None:
+                continue
+            if (norm := cls.normalize_balance_entry(a_val, default_ts=doc_ts)) is not None:
+                items_out[ak_c.upper()] = norm
+        ver_ts = safe_nonneg_float(data.get("verified_ts"), default=0.0) or 0.0
+        raw_bd = data.get("breakdown") if isinstance(data.get("breakdown"), dict) else {}
+        bd_out: dict[str, dict[str, float]] = {}
+        for q_k, q_map in raw_bd.items():
+            q_u = clean_upper_scalar(q_k)
+            if not q_u or not isinstance(q_map, Mapping):
+                continue
+            clean_q = {
+                str(bk): val_f
+                for bk, bv in q_map.items()
+                if clean_scalar_str(bk) is not None and (val_f := safe_nonneg_float(bv, default=None)) is not None
+            }
+            if clean_q:
+                bd_out[q_u] = clean_q
+        return items_out, ver_ts, bd_out
+
+
+# =============================================================================
 # 4. PORTFOLIO NAV ARCHIVE: CacheAssetValueManager
 # =============================================================================
 
@@ -3884,8 +4146,14 @@ class CacheAssetValueManager(CacheAccountManagerBase):
         venues_usd: dict[str, float] = {}
         try:
             cache_root = cachedb_root_for_file(os.path.abspath(str(self.filename or "")))
-            vb_data = load_venue_balances_state_dict(cache_root, use_cache=True)
-            if isinstance(vb_data, dict) and vb_data:
+            bal_caches = load_venue_balance_caches(cache_root, use_cache=True)
+            non_primary_venues = {v for v in CacheBalanceManager.VENUE_FILENAMES if not is_primary_stream_venue(v)}
+            vb_data = (
+                {}
+                if non_primary_venues.issubset(set(bal_caches))
+                else load_venue_balances_state_dict(cache_root, use_cache=True)
+            )
+            if bal_caches or (isinstance(vb_data, dict) and vb_data):
                 live_cp_data = None
                 cp_default_filename = CACHE_CURRENT_PRICE_FILENAME
                 for cp_cand in (
@@ -3896,6 +4164,7 @@ class CacheAssetValueManager(CacheAccountManagerBase):
                     if isinstance(live_cp_data, dict) and live_cp_data:
                         break
                 nav = compute_venue_nav_breakdown(
+                    venue_balance_caches=bal_caches,
                     venue_balances_state=vb_data,
                     live_prices=live_cp_data,
                     exclude_venues=("binance",),
@@ -3989,6 +4258,7 @@ def start_account_cache_daemon(
         start_kraken_account_ws_bridge()
         start_t212_account_poll_bridge()
         start_venue_open_orders_bridge()
+        start_venue_balances_bridge()
 
 
 def disable_account_cache_daemon_writer() -> None:
@@ -3998,8 +4268,14 @@ def disable_account_cache_daemon_writer() -> None:
 
 
 def request_stop_account_ws_streams() -> None:
-    """Signal the account user-data bridges (Binance, Kraken, T212, and open orders) to stop."""
-    for bridge in (_bapi_ws_bridge._ws_bridge, _kraken_ws_bridge, _t212_poll_bridge, _venue_open_orders_bridge):
+    """Signal the account user-data bridges (Binance, Kraken, T212, open orders, and balances) to stop."""
+    for bridge in (
+        _bapi_ws_bridge._ws_bridge,
+        _kraken_ws_bridge,
+        _t212_poll_bridge,
+        _venue_open_orders_bridge,
+        _venue_balances_bridge,
+    ):
         if bridge is not None and hasattr(bridge, "request_stop"):
             try:
                 bridge.request_stop()
@@ -4009,7 +4285,13 @@ def request_stop_account_ws_streams() -> None:
 
 def stop_account_ws_streams(shutdown_deadline: float) -> None:
     """Join the account user-data bridges within ``shutdown_deadline``."""
-    for bridge in (_bapi_ws_bridge._ws_bridge, _kraken_ws_bridge, _t212_poll_bridge, _venue_open_orders_bridge):
+    for bridge in (
+        _bapi_ws_bridge._ws_bridge,
+        _kraken_ws_bridge,
+        _t212_poll_bridge,
+        _venue_open_orders_bridge,
+        _venue_balances_bridge,
+    ):
         if bridge is not None and hasattr(bridge, "stop"):
             try:
                 bridge.stop(
@@ -4802,12 +5084,105 @@ class _VenueOpenOrdersBridge(_AccountTradeBridgeBase):
         return self._spawn_bridge_thread(_runner)
 
 
+class _VenueBalancesBridge(_AccountTradeBridgeBase):
+    """Background daemon bridge syncing multi-venue raw account balances into ``cache_balance_<venue>.json``."""
+
+    VENUE_KEY = "multi"
+    VENUE_LABEL = "MultiVenueBalances"
+    LOG_TAG = "balances_cache"
+    THREAD_NAME = "VenueBalancesBridge"
+
+    @staticmethod
+    def _venue_requested_assets(v_key: str) -> list[str]:
+        v_syms = list(sym.symbols_for(v_key))
+        assets: list[str] = []
+        seen: set[str] = set()
+        for s_item in v_syms:
+            if is_equity_venue(v_key):
+                s_u = clean_upper_scalar(s_item)
+                if s_u and s_u not in seen:
+                    seen.add(s_u)
+                    assets.append(s_u)
+                if "USD" not in seen:
+                    seen.add("USD")
+                    assets.append("USD")
+            else:
+                b_a, q_a = split_symbol_assets(s_item)
+                for part in (b_a, q_a):
+                    p_c = clean_scalar_str(part)
+                    if p_c and p_c.upper() not in seen:
+                        seen.add(p_c.upper())
+                        assets.append(p_c)
+        return assets
+
+    def sync_venue_once(self, v_key: str, *, now_s: Optional[float] = None) -> bool:
+        """Fetch one venue's atomic ``(free, locked)`` balances in batch and persist ``cache_balance_<venue>.json``."""
+        eff_now = resolve_now_ts(now_s)
+        prov_cls = MarketDataProvider.resolve_venue_provider_class(v_key)
+        if prov_cls is None:
+            return False
+        req_assets = self._venue_requested_assets(v_key)
+        if not req_assets:
+            return False
+        prov = prov_cls()
+        batch = prov.all_free_and_locked_balances(req_assets)
+        if not isinstance(batch, dict) or not batch:
+            return False
+        breakdown: Optional[dict[str, dict[str, float]]] = None
+        bd_fn = getattr(prov, "usd_cash_breakdown", None)
+        if callable(bd_fn):
+            try:
+                raw_bd = bd_fn()
+                if isinstance(raw_bd, dict) and raw_bd:
+                    breakdown = {"USD": raw_bd}
+            except Exception:
+                pass
+        CacheBalanceManager.replace_venue_balances_snapshot(
+            cache_path(CacheBalanceManager.disk_filename(v_key)),
+            batch,
+            venue=v_key,
+            now_s=eff_now,
+            verified_ts=eff_now,
+            breakdown=breakdown,
+        )
+        return True
+
+    def start(self) -> bool:
+        venues = list(CacheBalanceManager.VENUE_FILENAMES.keys())
+        if not venues:
+            return False
+
+        def _runner() -> None:
+            seeded_equity_venues: set[str] = set()
+            while not self._stop_event.is_set():
+                now_s = resolve_now_ts()
+                for v_key in venues:
+                    if self._stop_event.is_set():
+                        break
+                    try:
+                        if is_equity_venue(v_key) and v_key in seeded_equity_venues:
+                            v_syms = list(sym.symbols_for(v_key))
+                            probe_sym = v_syms[0] if v_syms else "NVDA_US_EQ"
+                            if not is_symbol_market_open(probe_sym, now_s):
+                                continue
+                        if self.sync_venue_once(v_key, now_s=now_s) and is_equity_venue(v_key):
+                            seeded_equity_venues.add(v_key)
+                    except Exception as exc:
+                        log(f"[{self.LOG_TAG}] {v_key} sync failed: {exc}")
+                if _wait_or_sleep(self._stop_event, BALANCE_SYNC_INTERVAL_SEC):
+                    break
+
+        return self._spawn_bridge_thread(_runner)
+
+
 _kraken_ws_bridge: Optional[_KrakenAccountTradeBridge] = None
 _kraken_ws_bridge_lock = threading.Lock()
 _t212_poll_bridge: Optional[_T212AccountTradeBridge] = None
 _t212_poll_bridge_lock = threading.Lock()
 _venue_open_orders_bridge: Optional[_VenueOpenOrdersBridge] = None
 _venue_open_orders_bridge_lock = threading.Lock()
+_venue_balances_bridge: Optional[_VenueBalancesBridge] = None
+_venue_balances_bridge_lock = threading.Lock()
 
 
 def start_kraken_account_ws_bridge() -> Optional[_KrakenAccountTradeBridge]:
@@ -4849,12 +5224,26 @@ def start_venue_open_orders_bridge() -> Optional[_VenueOpenOrdersBridge]:
         return None
 
 
+def start_venue_balances_bridge() -> Optional[_VenueBalancesBridge]:
+    """Idempotently start the multi-venue account balances background bridge inside cacheManager."""
+    global _venue_balances_bridge
+    with _venue_balances_bridge_lock:
+        if _venue_balances_bridge is not None and _venue_balances_bridge.is_running:
+            return _venue_balances_bridge
+        bridge = _VenueBalancesBridge()
+        if bridge.start():
+            _venue_balances_bridge = bridge
+            return bridge
+        return None
+
+
 # =============================================================================
 # 7. SSOT SINGLETON FACTORY GETTERS
 # =============================================================================
 
 ORDER_SYNC_INTERVAL_SEC = 0.4 * 60
 OPEN_ORDER_SYNC_INTERVAL_SEC = 15.0
+BALANCE_SYNC_INTERVAL_SEC = 60.0
 TRADE_SYNC_INTERVAL_SEC = 3 * 60
 ASSET_VALUE_SYNC_INTERVAL_SEC = 10 * 60
 _READONLY_ACCOUNT_LOCK = threading.RLock()
@@ -4876,6 +5265,12 @@ _VENUE_ORDER_OPEN_CACHE_NAMES = {
     "kraken": "KrakenOrderOpen",
     "hyperliquid": "HyperliquidOrderOpen",
     "t212": "T212OrderOpen",
+}
+_VENUE_BALANCE_CACHE_NAMES = {
+    "binance": "BinanceBalance",
+    "kraken": "KrakenBalance",
+    "hyperliquid": "HyperliquidBalance",
+    "t212": "T212Balance",
 }
 
 
@@ -5051,6 +5446,60 @@ def get_order_open_manager(
 
 
 get_order_open_manager._is_ssot_order_open_getter = True  # type: ignore[attr-defined]
+
+
+def get_balance_manager(
+    venue: str = "binance",
+    symbols=None,
+    filename=None,
+    *,
+    data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
+) -> CacheBalanceManager:
+    """Return the venue ``CacheBalanceManager`` singleton without importing ``cacheManager`` in read-only consumers."""
+    v_norm = (
+        "binance"
+        if (venue is None or (isinstance(venue, str) and not venue.strip()))
+        else normalize_venue_name(venue)
+    )
+    cache_name = _VENUE_BALANCE_CACHE_NAMES.get(v_norm or "")
+    if cache_name is None:
+        raise ValueError(f"Unsupported balance cache venue: {venue!r}")
+    default_fname = CacheBalanceManager.disk_filename(v_norm)
+    eff_filename = default_fname if filename is None else filename
+    delegated, res, resolved_mode, save_state_flag, start_periodic, eff_symbols = (
+        CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
+            cache_name,
+            symbols=symbols,
+            default_symbols=None,
+            data_sync_mode=data_sync_mode,
+            filename=eff_filename,
+            default_filename=default_fname,
+            config_read_only=True,
+            cm_getter_name="get_balance_manager",
+            getter_tag="_is_ssot_balance_getter",
+        )
+    )
+    if delegated:
+        return res
+    can_cache = symbols is None and eff_filename == default_fname
+    is_readonly = not save_state_flag and not start_periodic
+    return _get_or_create_readonly_account_reader(
+        cache_name,
+        can_reuse_fn=lambda _inst: can_cache and is_readonly,
+        can_store=can_cache,
+        builder_fn=lambda: CacheBalanceManager(
+            sync_ts=BALANCE_SYNC_INTERVAL_SEC,
+            filename=eff_filename,
+            symbols=eff_symbols,
+            read_only=True,
+            data_sync_mode=resolved_mode,
+            venue=v_norm,
+        ),
+        resync_existing=True,
+    )
+
+
+get_balance_manager._is_ssot_balance_getter = True  # type: ignore[attr-defined]
 
 
 def get_trade_manager(

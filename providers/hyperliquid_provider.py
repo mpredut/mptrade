@@ -22,7 +22,7 @@ import re
 import sys
 import threading
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
 from botcore import (
     clean_scalar_str,
@@ -428,6 +428,47 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
         """Return available spot balance as total minus hold for supported assets."""
         pair = self.free_and_locked_balance(asset)
         return pair[0] if pair is not None else None
+
+    def all_free_and_locked_balances(
+        self, assets: Optional[Sequence[str]] = None
+    ) -> Optional[dict[str, tuple[float, Optional[float]]]]:
+        """Fetch all Hyperliquid spot ``(free, hold)`` balances in one ``spot_user_state`` call."""
+        if (c := self._hl()) is None:
+            return None
+        try:
+            addr = self._env_account_address()
+            if not addr:
+                return None
+            user_state = _call_hl_info_read(c.info.spot_user_state, addr)
+            if not isinstance(user_state, dict):
+                return None
+            balances = user_state.get("balances")
+            if not isinstance(balances, list):
+                return None
+            out: dict[str, tuple[float, Optional[float]]] = {}
+            for b in balances:
+                if not isinstance(b, dict):
+                    continue
+                coin_u = clean_upper_scalar(b.get("coin"))
+                total = safe_nonneg_float(b.get("total"), default=None)
+                hold = safe_nonneg_float(b.get("hold"), default=None)
+                if coin_u and total is not None and hold is not None and (total > 0.0 or hold > 0.0):
+                    out[coin_u] = (max(total - hold, 0.0), hold)
+            for req_a in (assets or ()):
+                req_u = clean_upper_scalar(req_a)
+                if not req_u or req_u in out:
+                    continue
+                canon = canonical_base_asset(req_u) if req_u not in {"USDC", "USDT", "USD"} else None
+                if canon and canon in out:
+                    out[req_u] = out[canon]
+                else:
+                    out[req_u] = (0.0, 0.0)
+            return out
+        except Exception as e:  # noqa: BLE001
+            self._log_provider_balance_error(
+                "HL", "all_balances", "*", e, fmt="[{tag}] {label}({asset}) failed: {exc}"
+            )
+            return None
 
     def _require_hl_client_and_pair(
         self,

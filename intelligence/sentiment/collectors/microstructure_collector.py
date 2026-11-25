@@ -62,6 +62,7 @@ CacheShortTrendManager: Any = None
 CacheLongTrendManager: Any = None
 CacheOrderFilledManager: Any = None
 CacheOrderOpenManager: Any = None
+CacheBalanceManager: Any = None
 CacheTradeManager: Any = None
 CacheAssetValueManager: Any = None
 CacheAccountManagerBase: Any = None
@@ -72,17 +73,18 @@ _CACHEPRICE_BIND_LOCK = threading.RLock()
 
 def ensure_cacheprice_classes_bound() -> None:
     global Cache24PriceManager, Cache365PriceManager, CacheCurrentPriceManager, CachePriceManagerBase, CacheSparsePriceManager
-    global CacheShortTrendManager, CacheLongTrendManager, CacheOrderFilledManager, CacheOrderOpenManager, CacheTradeManager, CacheAssetValueManager
+    global CacheShortTrendManager, CacheLongTrendManager, CacheOrderFilledManager, CacheOrderOpenManager, CacheBalanceManager, CacheTradeManager, CacheAssetValueManager
     global CacheAccountManagerBase
-    if Cache24PriceManager is not None and CacheShortTrendManager is not None and CacheOrderFilledManager is not None and CacheOrderOpenManager is not None and CacheAccountManagerBase is not None:
+    if Cache24PriceManager is not None and CacheShortTrendManager is not None and CacheOrderFilledManager is not None and CacheOrderOpenManager is not None and CacheBalanceManager is not None and CacheAccountManagerBase is not None:
         return
     with _CACHEPRICE_BIND_LOCK:
-        if Cache24PriceManager is not None and CacheShortTrendManager is not None and CacheOrderFilledManager is not None and CacheOrderOpenManager is not None and CacheAccountManagerBase is not None:
+        if Cache24PriceManager is not None and CacheShortTrendManager is not None and CacheOrderFilledManager is not None and CacheOrderOpenManager is not None and CacheBalanceManager is not None and CacheAccountManagerBase is not None:
             return
         load_dotenv()
         from cacheaccount import (
             CacheAccountManagerBase as _CABase,
             CacheAssetValueManager as _CAV,
+            CacheBalanceManager as _CBal,
             CacheOrderFilledManager as _COrdFilled,
             CacheOrderOpenManager as _COrdOpen,
             CacheTradeManager as _CTrd,
@@ -112,6 +114,7 @@ def ensure_cacheprice_classes_bound() -> None:
         CacheLongTrendManager = _CLT
         CacheOrderFilledManager = _COrdFilled
         CacheOrderOpenManager = _COrdOpen
+        CacheBalanceManager = _CBal
         CacheTradeManager = _CTrd
         CacheAssetValueManager = _CAV
         CacheAccountManagerBase = _CABase

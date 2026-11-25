@@ -31,6 +31,10 @@ CACHE_BINANCE_ORDER_OPEN_FILENAME = "cache_order_open_binance.json"
 CACHE_KRAKEN_ORDER_OPEN_FILENAME = "cache_order_open_kraken.json"
 CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME = "cache_order_open_hyperliquid.json"
 CACHE_T212_ORDER_OPEN_FILENAME = "cache_order_open_t212.json"
+CACHE_BINANCE_BALANCE_FILENAME = "cache_balance_binance.json"
+CACHE_KRAKEN_BALANCE_FILENAME = "cache_balance_kraken.json"
+CACHE_HYPERLIQUID_BALANCE_FILENAME = "cache_balance_hyperliquid.json"
+CACHE_T212_BALANCE_FILENAME = "cache_balance_t212.json"
 CACHE_BINANCE_TRADE_FILENAME = "cache_trade_binance.jsonl"
 CACHE_ACCOUNT_HEALTH_FILENAME = "binance_account_cache_health.json"
 CACHE_ASSET_VALUE_FILENAME = "cache_asset_value.jsonl"
@@ -48,6 +52,7 @@ RTRADE_PAIRS_STATE_FILENAME = "rtrade_pairs_state.json"
 SMART_STOP_LOSS_STATE_FILENAME = "smart_stop_loss_state.json"
 TRAILING_STATE_FILENAME = "trailing_state.json"
 NAV_HISTORY_STATE_FILENAME = "nav_history_state.json"
+PORTFOLIO_POSITIONS_STATE_FILENAME = "portfolio_positions_state.json"
 VENUE_BALANCES_STATE_FILENAME = "venue_balances_state.json"
 VENUE_FEE_MAINTENANCE_STATE_FILENAME = "venue_fee_maintenance_state.json"
 KINEMATIC_IMPULSE_SIGNAL_FILENAME = "kinematic_impulse_signal.json"
@@ -251,7 +256,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     "orders": {
         "exact": ("binance_account_cache_health.json", ORDER_LEDGER_ACTIVE_FILENAME),
         "prefixes": (
-            "cache_order", "cache_trade", "cache_asset_value",
+            "cache_order", "cache_balance", "cache_trade", "cache_asset_value",
             "order_retry_", "orders_active.", ORDER_LEDGER_EVENTS_PREFIX, ORDER_LEDGER_CLOSED_PREFIX,
             "binance_account_cache_health.",
         ),
@@ -262,11 +267,13 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             ASSETGUARDIAN_STATE_FILENAME, MT_STATE_FILENAME, TRAILING_STATE_FILENAME,
             SMART_STOP_LOSS_STATE_FILENAME, RTRADE_PAIRS_STATE_FILENAME,
             AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME, NAV_HISTORY_STATE_FILENAME,
+            PORTFOLIO_POSITIONS_STATE_FILENAME,
             VENUE_BALANCES_STATE_FILENAME, VENUE_FEE_MAINTENANCE_STATE_FILENAME,
         ),
         "prefixes": (
             "assetguardian_state", "rtrade_pairs", "mt_state.", "trailing_state.",
             "smart_stop_loss_state.", "autonomous_trade_intents", "nav_history_state",
+            "portfolio_positions_state",
             "venue_balances_state", "venue_fee_maintenance_state",
         ),
         "suffixes": ("_state.json",),

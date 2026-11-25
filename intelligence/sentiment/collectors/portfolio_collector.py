@@ -126,8 +126,10 @@ from providers.portfolio_valuation import (
     build_cached_balance_observations,
     extract_position_held_qty,
     merge_balance_observation,
+    resolve_portfolio_positions_state_path,
+    resolve_venue_balance_cache_path,
     strip_internal_balance_scratch_keys,
-    upsert_venue_balances_snapshot,
+    upsert_portfolio_positions_snapshot,
 )
 from providers.quantity import resolve_assets, resolve_kraken_trade_cache_position, venue_fee_cap_quantity
 from state_io import (
@@ -1426,17 +1428,106 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
 
     @staticmethod
     def _persist_venue_balances_locked(
-        bcache_path: str,
+        cache_dir: str,
         cached_bals: Dict[str, Any],
         updated_bals: Dict[str, Any],
         failed_open_venues: set[str],
         *,
+        now_ts: Optional[float] = None,
         rj_bals: Any,
     ) -> None:
         try:
+            eff_now = resolve_now_ts(now_ts)
             read_disk = rj_bals in (_default_read_json_cached, read_json_recovering, read_json_cached)
-            upsert_venue_balances_snapshot(
-                bcache_path,
+
+            # 1. Layer 3 raw account balances -> cachedb/orders/cache_balance_<venue>.json (CacheBalanceManager)
+            per_venue_assets: Dict[str, Dict[str, Dict[str, Any]]] = {}
+            per_venue_bd: Dict[str, Dict[str, Dict[str, float]]] = {}
+            for k, v in updated_bals.items():
+                if not isinstance(k, str):
+                    continue
+                if k.startswith("cash:") and isinstance(v, dict):
+                    parts = k.split(":", 2)
+                    v_n = normalize_venue_name(v.get("venue") or (parts[1] if len(parts) > 1 else ""))
+                    a_u = str(v.get("asset") or (parts[2] if len(parts) > 2 else "")).strip().upper()
+                    free_v = safe_nonneg_float(v.get("free"), default=None)
+                    if v_n and a_u and free_v is not None:
+                        locked_q = safe_nonneg_float(v.get("locked_quote_usd"), default=0.0) or 0.0
+                        c_ts = normalize_epoch_sec(v.get("ts"), default=None) or eff_now
+                        per_venue_assets.setdefault(v_n, {})[a_u] = {
+                            "free": free_v,
+                            "locked": locked_q,
+                            "ts": c_ts,
+                        }
+                elif k.startswith("breakdown:") and isinstance(v, dict):
+                    parts = k.split(":", 2)
+                    v_n = normalize_venue_name(parts[1] if len(parts) > 1 else "")
+                    q_u = str(parts[2] if len(parts) > 2 else "USD").strip().upper() or "USD"
+                    if v_n and v:
+                        per_venue_bd.setdefault(v_n, {})[q_u] = dict(v)
+                elif k.startswith("pos:") and isinstance(v, dict):
+                    parts = k.split(":", 2)
+                    v_n = normalize_venue_name(v.get("venue") or (parts[1] if len(parts) > 1 else ""))
+                    if not v_n:
+                        continue
+                    p_sym = str(v.get("symbol") or (parts[2] if len(parts) > 2 else "")).strip()
+                    res_b, res_q = resolve_assets(p_sym, v.get("base"), v.get("quote"))
+                    b_u = str(res_b or "").strip().upper()
+                    q_u = str(res_q or "").strip().upper()
+                    pos_ts = normalize_epoch_sec(v.get("ts"), default=None) or eff_now
+                    fb_v = safe_nonneg_float(v.get("free_base"), default=None)
+                    if b_u and fb_v is not None:
+                        lb_v = safe_nonneg_float(v.get("locked_base_qty"), default=0.0) or 0.0
+                        b_ts = normalize_epoch_sec(v.get("base_bal_ts"), default=None) or pos_ts
+                        per_venue_assets.setdefault(v_n, {})[b_u] = {
+                            "free": fb_v,
+                            "locked": lb_v,
+                            "ts": b_ts,
+                        }
+                    fq_v = safe_nonneg_float(v.get("free_quote"), default=None)
+                    if q_u and fq_v is not None and q_u not in per_venue_assets.get(v_n, {}):
+                        q_ts = normalize_epoch_sec(v.get("quote_bal_ts"), default=None) or pos_ts
+                        lq_v = safe_nonneg_float(v.get("locked_quote_usd"), default=None)
+                        per_venue_assets.setdefault(v_n, {})[q_u] = {
+                            "free": fq_v,
+                            "locked": lq_v,
+                            "ts": q_ts,
+                        }
+                elif ":" in k and not k.startswith(("open_orders:", "open_orders_verified_ts:")):
+                    raw_v, raw_a = k.split(":", 1)
+                    if ":" not in raw_a:
+                        v_n = normalize_venue_name(raw_v)
+                        a_u = raw_a.strip().upper()
+                        free_v = safe_nonneg_float(v, default=None)
+                        if v_n and a_u and free_v is not None and a_u not in per_venue_assets.get(v_n, {}):
+                            per_venue_assets.setdefault(v_n, {})[a_u] = {
+                                "free": free_v,
+                                "locked": None,
+                                "ts": eff_now,
+                            }
+
+            if per_venue_assets or per_venue_bd:
+                ensure_cacheprice_classes_bound()
+                bal_cls = _mc.CacheBalanceManager
+                if bal_cls is not None:
+                    for v_n in sorted(set(per_venue_assets) | set(per_venue_bd)):
+                        if (bal_path := resolve_venue_balance_cache_path(cache_dir, v_n)) is None:
+                            continue
+                        try:
+                            bal_cls.replace_venue_balances_snapshot(
+                                bal_path,
+                                per_venue_assets.get(v_n) or {},
+                                venue=v_n,
+                                now_s=eff_now,
+                                breakdown=per_venue_bd.get(v_n),
+                            )
+                        except Exception:
+                            pass
+
+            # 2. Layer 5 derived position snapshots (pos:* ONLY) -> cachedb/state/portfolio_positions_state.json
+            pos_path = resolve_portfolio_positions_state_path(cache_dir)
+            upsert_portfolio_positions_snapshot(
+                pos_path,
                 updated_bals,
                 fallback_state=cached_bals,
                 read_disk=read_disk,
@@ -2101,11 +2192,13 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             cache_dir=cache_dir,
         )
 
-        if persist and allow_network and bcache_path and updated_bals and (
-            _parse_bool_flag(force_persist, False) or is_live_network_backfill_enabled() or os.path.exists(bcache_path)
+        if persist and allow_network and cache_dir and updated_bals and (
+            _parse_bool_flag(force_persist, False)
+            or is_live_network_backfill_enabled()
+            or (bcache_path and os.path.exists(bcache_path))
         ):
             self._persist_venue_balances_locked(
-                bcache_path, cached_bals, updated_bals, failed_open_venues, rj_bals=_rj_bals
+                cache_dir, cached_bals, updated_bals, failed_open_venues, now_ts=now_ts_oo, rj_bals=_rj_bals
             )
 
         return tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym

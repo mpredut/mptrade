@@ -190,7 +190,10 @@ from cachepaths import (
 )
 from pricewindow import filter_isolated_price_points
 from providers.portfolio_valuation import (
+    VENUE_BALANCE_CACHE_FILENAMES,
     load_venue_balances_state_dict,
+    resolve_portfolio_positions_state_path,
+    resolve_venue_balance_cache_path,
     resolve_venue_balances_state_path,
 )
 from instrument_registry import casefold_get, symbols_for
@@ -1257,23 +1260,33 @@ def read_first_cached_dict(
 def load_venue_balances_state(
     cache_dir: Optional[str], read_json_fn: Any = None, *, require_exists: bool = True
 ) -> Tuple[Optional[str], Dict[str, Any], float]:
-    """Resolve and load ``venue_balances_state.json`` via ``providers.portfolio_valuation`` SSOT."""
+    """Resolve and load unified portfolio balances/positions via ``providers.portfolio_valuation`` SSOT."""
     if not cache_dir:
         return None, {}, 0.0
-    bcache_path = resolve_venue_balances_state_path(cache_dir)
-    exists = os.path.exists(bcache_path)
-    if require_exists and not exists:
-        return bcache_path, {}, 0.0
+    pos_path = resolve_portfolio_positions_state_path(cache_dir)
+    legacy_path = resolve_venue_balances_state_path(cache_dir)
+    bal_paths = [
+        p
+        for v in VENUE_BALANCE_CACHE_FILENAMES
+        if (p := resolve_venue_balance_cache_path(cache_dir, v))
+    ]
+    probe_paths = [pos_path, *bal_paths, legacy_path]
+    existing_paths = [p for p in probe_paths if os.path.exists(p)]
+    primary_path = existing_paths[0] if existing_paths else pos_path
+    if require_exists and not existing_paths:
+        return primary_path, {}, 0.0
     raw_cb = load_venue_balances_state_dict(
         cache_dir,
         read_json_fn=resolve_read_json_cached(read_json_fn),
         require_exists=False,
     )
-    try:
-        bcache_mtime = os.path.getmtime(bcache_path) if exists else 0.0
-    except OSError:
-        bcache_mtime = 0.0
-    return bcache_path, raw_cb, bcache_mtime
+    bcache_mtime = 0.0
+    for ep in existing_paths:
+        try:
+            bcache_mtime = max(bcache_mtime, os.path.getmtime(ep))
+        except OSError:
+            pass
+    return primary_path, raw_cb, bcache_mtime
 
 
 def _clean_nonbool_str(val: Any, default: str = "") -> str:
