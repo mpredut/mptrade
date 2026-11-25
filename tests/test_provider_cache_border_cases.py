@@ -5743,7 +5743,7 @@ def test_wave31_kinematic_ssot_and_impulse_border_cases(tmp_path, monkeypatch):
     gtc.symbols = ["NVDA_US_EQ"]
     gtc._explicit_symbols = True
 
-    with temporary_environ({"AI_IMPULSE_TRIGGER_ENABLED": "true"}):
+    with temporary_environ({"AI_IMPULSE_TRIGGER_ENABLED": "true", "AI_IMPULSE_REQUIRE_ACTIVE_CRON": "false"}):
         # Millisecond eval_doc ts (20s ago < 65s min_eval_gap_sec) suppresses duplicate wakeup.
         assert gtc.maybe_trigger_kinematic_ai_wakeup(now=eval_now) is None
         assert popen_calls == []

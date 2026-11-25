@@ -3200,6 +3200,67 @@ def test_globaltelemetry_ephemeral_heartbeat_and_macro_skip_fsync(tmp_path, monk
     assert fsync_calls == []
 
 
+def test_ai_impulse_wakeup_host_guard_blocks_non_executor_hosts_and_disabled_trade(tmp_path, monkeypatch):
+    """Fail-closed guard prevents DEV/WSL telemetry hosts from spawning live auto_cryptotrade_executor runs."""
+    from types import SimpleNamespace
+    import intelligence.globaltelemetry_collector as gtc_mod
+
+    # 1. Crontab parser recognizes only active uncommented auto_cryptotrade_executor entries.
+    assert gtc_mod._crontab_has_active_crypto_executor("") is False
+    assert gtc_mod._crontab_has_active_crypto_executor(
+        "# */6 * * * * cd $HOME/mptrade && autonomous_ai_reconciler.py --topic-key auto_cryptotrade_executor\n"
+    ) is False
+    assert gtc_mod._crontab_has_active_crypto_executor(
+        "*/2 * * * * cd $HOME/mptrade && ./offline/runners/run_dev_regression.sh watch\n"
+    ) is False
+    assert gtc_mod._crontab_has_active_crypto_executor(
+        "*/6 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_cryptotrade_executor.lock "
+        "/usr/bin/timeout 780 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py "
+        "--topic-key auto_cryptotrade_executor >> logs/auto_trade_executor.log 2>&1\n"
+    ) is True
+
+    # 2. _host_schedules_crypto_executor_cron fails closed on missing/empty crontab and caches result.
+    gtc_mod._CRON_SCHEDULE_CACHE.update({"ts": 0.0, "scheduled": False})
+    monkeypatch.setattr(
+        gtc_mod.subprocess,
+        "run",
+        lambda *_a, **_k: SimpleNamespace(returncode=1, stdout="", stderr="no crontab"),
+    )
+    assert gtc_mod._host_schedules_crypto_executor_cron(now_ts=1_795_500_000.0) is False
+
+    # 3. Full wakeup gate blocks when TRADE_ENABLED=false OR host has no active executor cron (WSL/DEV),
+    #    even if AI_IMPULSE_TRIGGER_ENABLED=true and a kinematic shock is present.
+    cdb = tmp_path / "cachedb"
+    cdb.mkdir(parents=True, exist_ok=True)
+    popen_calls = []
+    monkeypatch.setattr(gtc_mod.subprocess, "Popen", lambda cmd, **kw: popen_calls.append(cmd) or SimpleNamespace(pid=42))
+    monkeypatch.setattr(gtc_mod.os.path, "isfile", lambda _p: True)
+    monkeypatch.setattr(gtc_mod, "evaluate_kinematic_impulse_symbols", lambda *_a, **_k: ["HYPEUSDC"])
+    monkeypatch.setattr(gtc_mod, "_filter_actionable_impulse_symbols", lambda syms, *_a, **_k: list(syms))
+
+    gtc = gtc_mod.GlobalTelemetryCollector(cache_dir=str(cdb), symbols=["HYPEUSDC"], skip_news=True, skip_external=True)
+    mid_ts = 1_795_500_000.0 - (1_795_500_000.0 % 360.0) + 120.0
+
+    # Non-executor host (DEV / WSL): blocked even when AI_IMPULSE_TRIGGER_ENABLED=true and TRADE_ENABLED=true
+    monkeypatch.setenv("AI_IMPULSE_TRIGGER_ENABLED", "true")
+    monkeypatch.setenv("AI_IMPULSE_REQUIRE_ACTIVE_CRON", "true")
+    monkeypatch.setattr(gtc_mod, "is_trade_enabled", lambda: True)
+    monkeypatch.setattr(gtc_mod, "_host_schedules_crypto_executor_cron", lambda **_kw: False)
+    assert gtc.maybe_trigger_kinematic_ai_wakeup(now=mid_ts) is None
+    assert popen_calls == []
+
+    # TRADE_ENABLED=false: blocked even if host crontab schedules auto_cryptotrade_executor
+    monkeypatch.setattr(gtc_mod, "is_trade_enabled", lambda: False)
+    monkeypatch.setattr(gtc_mod, "_host_schedules_crypto_executor_cron", lambda **_kw: True)
+    assert gtc.maybe_trigger_kinematic_ai_wakeup(now=mid_ts) is None
+    assert popen_calls == []
+
+    # All 3 gates satisfied (PROD): allowed and spawns wakeup
+    monkeypatch.setattr(gtc_mod, "is_trade_enabled", lambda: True)
+    assert gtc.maybe_trigger_kinematic_ai_wakeup(now=mid_ts) == ["HYPEUSDC"]
+    assert len(popen_calls) == 1
+
+
 
 
 

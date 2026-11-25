@@ -10242,6 +10242,7 @@ def test_kinematic_velocity_acceleration_and_impulse_wakeup(tmp_path, monkeypatc
         encoding="utf-8",
     )
     monkeypatch.setenv("AI_IMPULSE_TRIGGER_ENABLED", "true")
+    monkeypatch.setenv("AI_IMPULSE_REQUIRE_ACTIVE_CRON", "false")
     monkeypatch.setenv("AI_IMPULSE_COOLDOWN_SEC", "150")
     orig_isfile = os.path.isfile
     monkeypatch.setattr(

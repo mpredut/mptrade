@@ -27,6 +27,7 @@ from botcore import (
     _parse_bool_flag,
     are_close,
     bool_env,
+    is_trade_enabled,
     load_dotenv,
     normalize_epoch_sec,
     parse_symbol_list,
@@ -322,6 +323,62 @@ def evaluate_kinematic_impulse_symbols(
         if prev is None or q_idx < prev[0]:
             best_by_base[base] = (q_idx, sym)
     return sorted(sym for _, sym in best_by_base.values())
+
+
+_CRON_SCHEDULE_CACHE: Dict[str, Any] = {"ts": 0.0, "scheduled": False}
+_CRON_SCHEDULE_CACHE_TTL_SEC = 300.0
+
+
+def _crontab_has_active_crypto_executor(crontab_text: str) -> bool:
+    """Return True iff an uncommented crontab entry schedules ``auto_cryptotrade_executor``."""
+    for raw_line in (crontab_text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "autonomous_ai_reconciler.py" in line and "auto_cryptotrade_executor" in line:
+            return True
+    return False
+
+
+def _host_schedules_crypto_executor_cron(*, now_ts: Optional[float] = None) -> bool:
+    """Fail-closed check that this host's active user crontab schedules ``auto_cryptotrade_executor``.
+
+    Prevents telemetry-only hosts (DEV, WSL, research workstations) from spontaneously spawning
+    live mid-cycle ``auto_cryptotrade_executor`` executions even if ``config.env`` and ``.env``
+    secrets are mirrored from PROD.
+    """
+    eff_now = resolve_now_ts(now_ts)
+    cached_ts = safe_nonneg_ts(_CRON_SCHEDULE_CACHE.get("ts"), 0.0)
+    if cached_ts > 0.0 and 0.0 <= (eff_now - cached_ts) < _CRON_SCHEDULE_CACHE_TTL_SEC:
+        return bool(_CRON_SCHEDULE_CACHE.get("scheduled"))
+    scheduled = False
+    crontab_bin = "/usr/bin/crontab" if os.path.isfile("/usr/bin/crontab") else "crontab"
+    try:
+        proc = subprocess.run(
+            [crontab_bin, "-l"],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=False,
+        )
+        if proc.returncode == 0:
+            scheduled = _crontab_has_active_crypto_executor(proc.stdout)
+    except Exception:
+        scheduled = False
+    _CRON_SCHEDULE_CACHE["ts"] = eff_now
+    _CRON_SCHEDULE_CACHE["scheduled"] = scheduled
+    return scheduled
+
+
+def _is_host_authorized_for_ai_impulse_wakeup(*, now_ts: Optional[float] = None) -> Tuple[bool, str]:
+    """Return ``(authorized, reason)`` gating mid-cycle ``auto_cryptotrade_executor`` impulse wakeups."""
+    if not bool_env("AI_IMPULSE_TRIGGER_ENABLED", False):
+        return False, "trigger_disabled"
+    if not is_trade_enabled():
+        return False, "trade_disabled"
+    if bool_env("AI_IMPULSE_REQUIRE_ACTIVE_CRON", True) and not _host_schedules_crypto_executor_cron(now_ts=now_ts):
+        return False, "no_active_executor_cron_on_host"
+    return True, "ok"
 
 
 class GlobalTelemetryCollector(ExternalTelemetryMixin):
@@ -771,9 +828,15 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
     def maybe_trigger_kinematic_ai_wakeup(self, now: Optional[float] = None) -> Optional[List[str]]:
         """Spawn a non-blocking flock-guarded crypto AI evaluation on acute mid-cycle kinematic price shocks."""
         try:
-            if not bool_env("AI_IMPULSE_TRIGGER_ENABLED", True):
-                return None
             eff_now = resolve_now_ts(self._resolve_step_now(now))
+            authorized, auth_reason = _is_host_authorized_for_ai_impulse_wakeup(now_ts=eff_now)
+            if not authorized:
+                if auth_reason == "no_active_executor_cron_on_host" and not getattr(self, "_logged_impulse_host_disabled", False):
+                    self._logged_impulse_host_disabled = True
+                    logger.info(
+                        "[IMPULSE WAKEUP] Suppressed on this host: active user crontab does not schedule auto_cryptotrade_executor"
+                    )
+                return None
             cycle_sec = safe_pos_float(getattr(self, "crypto_executor_interval_sec", None), 360.0)
             cooldown_sec = pos_float_env(
                 "AI_IMPULSE_COOLDOWN_SEC",
@@ -1096,7 +1159,13 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
 
     def start(self, poll_interval_sec: float = 1.0) -> None:
         """Run the main telemetry collection loop continuously."""
-        self._live_impulse_wakeup_enabled = bool_env("AI_IMPULSE_TRIGGER_ENABLED", True)
+        auth_ok, auth_reason = _is_host_authorized_for_ai_impulse_wakeup()
+        self._live_impulse_wakeup_enabled = auth_ok
+        if not auth_ok and auth_reason == "no_active_executor_cron_on_host":
+            self._logged_impulse_host_disabled = True
+            logger.info(
+                "[IMPULSE WAKEUP] Disabled on this host at startup: active user crontab does not schedule auto_cryptotrade_executor"
+            )
         if not self.skip_external:
             self.prune_disabled_symbol_telemetry_files()
         if not self.skip_external and bool_env("TELEMETRY_WS_ENABLED", True) and self.telemetry_ws_hub is None:

@@ -10653,6 +10653,7 @@ def test_acknowledged_geo_shock_and_vol_scaled_impulse_filter_do_not_over_escala
     gtc.ai_impulse_cooldown_sec = 150.0
     gtc._last_ai_impulse_ts = 0.0
     gtc._active_cycle_ts = None
+    monkeypatch.setenv("AI_IMPULSE_REQUIRE_ACTIVE_CRON", "false")
     assert gtc.maybe_trigger_kinematic_ai_wakeup(now=t0 + 160.0) is None
     assert gtc._last_ai_impulse_ts == pytest.approx(t0 + 100.0)
 
