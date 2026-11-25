@@ -540,6 +540,21 @@ class CompactPriceSeries(MutableSequence):
         self._extra = None
         self._monotonic = True
 
+    def prune_older_than(self, cutoff_ms: int) -> int:
+        """Drop all points with timestamp strictly below ``cutoff_ms`` in-place; return removed count."""
+        if not self._ts:
+            return 0
+        if self._monotonic:
+            return self.trim_head(self.bisect_left_ts(cutoff_ms))
+        before = len(self._ts)
+        kept = CompactPriceSeries(it for it in self if it[0] >= cutoff_ms)
+        removed = before - len(kept)
+        if removed > 0:
+            self._ts, self._px = kept._ts, kept._px
+            self._vol, self._extra = kept._vol, kept._extra
+            self._monotonic = kept._monotonic
+        return removed
+
     def last_pair(self) -> Optional[tuple[int, float]]:
         return (self._ts[-1], self._px[-1]) if self._ts else None
 
@@ -1034,9 +1049,26 @@ class CacheBoundedJsonlArchiveMixin:
 
     def maintain_append_persist(self):
         """Stream-prune the full multi-year disk archive without holding ``self.lock`` during disk I/O."""
-        if not self.save_state or not os.path.exists(self.filename):
-            return False
         cutoff_ms = math.trunc((_now_time() - self.RETENTION_DAYS * 86400) * 1000)
+        if not self.save_state:
+            pruned = False
+            with self.lock:
+                for sym_k, bucket in list(self.cache.items()):
+                    if isinstance(bucket, CompactPriceSeries):
+                        if bucket.prune_older_than(cutoff_ms) > 0:
+                            pruned = True
+                    elif self._is_bucket_seq(bucket):
+                        kept = [it for it in bucket if self._entry_timestamp_ms(it) >= cutoff_ms]
+                        if len(kept) != len(bucket):
+                            self.cache[sym_k] = kept
+                            pruned = True
+                    if sym_k in self._persisted_counts:
+                        self._persisted_counts[sym_k] = min(
+                            self._persisted_counts[sym_k], len(self.cache[sym_k])
+                        )
+            return pruned
+        if not os.path.exists(self.filename):
+            return False
         changed = False
         backup_path = None
         original_state = None

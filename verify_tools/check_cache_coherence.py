@@ -5,10 +5,17 @@
 import os
 import sys
 import time
+from typing import Optional
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+from account_cache_health import (  # noqa: E402
+    DEFAULT_REQUIRED_VENUE_STREAMS,
+    MAX_AGE_SEC as ACCOUNT_CACHE_MAX_AGE_SEC,
+    SUPPORTED_HEALTH_VENUES,
+    inspect_all_venues_health,
+)
 from botcore import (  # noqa: E402
     PRICE_FRESHNESS_MAX_AGE_SEC,
     SHORT_TREND_FRESHNESS_MAX_AGE_SEC,
@@ -20,20 +27,47 @@ from botcore import (  # noqa: E402
     summarize_current_price_cache_freshness,
 )
 from cachepaths import (  # noqa: E402
+    CACHE_ACCOUNT_HEALTH_FILENAME,
     CACHE_CURRENT_PRICE_FILENAME,
     CACHE_SHORT_TREND_FILENAME,
     cache_symbol_variants,
     has_equity_suffix,
+    is_equity_venue,
     is_primary_stream_venue,
 )
 from instrument_registry import casefold_get, is_symbol_market_open, select_instruments, symbols_for  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
 
-CACHEDB = os.path.join(ROOT, "cachedb")
+_DEFAULT_CACHEDB = os.path.join(ROOT, "cachedb")
+CACHEDB = _DEFAULT_CACHEDB
 SHORT_TREND_STALE_S = SHORT_TREND_FRESHNESS_MAX_AGE_SEC
 CURRENT_PRICE_STALE_S = PRICE_FRESHNESS_MAX_AGE_SEC
 STALE_S = SHORT_TREND_STALE_S
 CURRENT_PRICE_STREAM_STALE_S = CURRENT_PRICE_STALE_S
+
+
+def _resolve_account_health_path() -> Optional[str]:
+    for cand in (
+        os.path.join(CACHEDB, "account", CACHE_ACCOUNT_HEALTH_FILENAME),
+        os.path.join(CACHEDB, CACHE_ACCOUNT_HEALTH_FILENAME),
+    ):
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def _required_venue_streams(venue: str, now_s: float) -> tuple[str, ...]:
+    """Require balances alongside fills/open-orders when a venue's market is open."""
+    if not is_equity_venue(venue):
+        return ("filled_orders", "open_orders", "balances")
+    v_syms = list(symbols_for(venue))
+    if not v_syms or any(is_symbol_market_open(s, now_s) for s in v_syms):
+        return ("filled_orders", "open_orders", "balances")
+    return DEFAULT_REQUIRED_VENUE_STREAMS
+
+
+def _fmt_age(val: Optional[float]) -> str:
+    return "n/a" if val is None else f"{val:.1f}s"
 
 
 def expected_symbols():
@@ -162,6 +196,30 @@ def main() -> int:
                 f"   STREAM     freshest_age={freshest:.2f}s -> STALE "
                 f"(>={stream_ceil:.1f}s SSOT freshness threshold)"
             )
+
+    # 3. multi-venue account cache health
+    health_path = _resolve_account_health_path()
+    if health_path is not None:
+        req_by_venue = {v: _required_venue_streams(v, now) for v in SUPPORTED_HEALTH_VENUES}
+        venue_health = inspect_all_venues_health(
+            path=health_path,
+            now_ms=round(now * 1000),
+            required_streams_by_venue=req_by_venue,
+        )
+        print(f"-- {CACHE_ACCOUNT_HEALTH_FILENAME} (max_age<{ACCOUNT_CACHE_MAX_AGE_SEC:.0f}s):")
+        for v_key, st in venue_health.items():
+            if not st.ready:
+                problems.append(f"account_health {v_key} {st.reason}")
+            print(
+                f"   {v_key:12} filled={_fmt_age(st.filled_orders_age_sec):>7} "
+                f"open={_fmt_age(st.open_orders_age_sec):>7} "
+                f"bal={_fmt_age(st.balances_age_sec):>7} "
+                f"trades={_fmt_age(st.trades_age_sec):>7} "
+                f"-> {'OK' if st.ready else f'FAIL ({st.reason})'}"
+            )
+    elif os.path.abspath(CACHEDB) == os.path.abspath(_DEFAULT_CACHEDB):
+        problems.append("account_health MISSING")
+        print(f"-- {CACHE_ACCOUNT_HEALTH_FILENAME}: MISSING")
 
     if problems:
         print(f"\nPROBLEMS ({len(problems)}): {problems}")

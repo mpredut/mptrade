@@ -621,15 +621,21 @@ def test_cache_manager_polymorphic_update_overloading_and_readonly_safety(tmp_pa
 
     # 4. Read-only consumer (save_state=False) maintain_append_persist prunes memory without modifying disk
     sparse_file = str(tmp_path / "sparse_ro.jsonl")
+    fresh_ts_ms = int(time.time() * 1000)
     with open(sparse_file, "w", encoding="utf-8") as fh:
         fh.write(json.dumps({"s": "BTCUSDC", "i": [1000, 10.0]}) + "\n")
     sparse_ro = cm.CacheSparsePriceManager(60, ["BTCUSDC"], sparse_file)
     sparse_ro.save_state = False
-    sparse_ro.maintain_append_persist()
+    assert sparse_ro.maintain_append_persist() is True
     assert sparse_ro.cache.get("BTCUSDC") == []
     with open(sparse_file, "r", encoding="utf-8") as fh:
         disk_lines = [line.strip() for line in fh if line.strip()]
     assert len(disk_lines) == 1
+
+    # Non-monotonic CompactPriceSeries drops expired points while retaining fresh points in-place
+    sparse_ro.cache["BTCUSDC"].extend([[fresh_ts_ms, 50000.0], [1000, 10.0], [fresh_ts_ms - 500, 49900.0]])
+    assert sparse_ro.maintain_append_persist() is True
+    assert sparse_ro.cache["BTCUSDC"] == [[fresh_ts_ms, 50000.0], [fresh_ts_ms - 500, 49900.0]]
 
 
 

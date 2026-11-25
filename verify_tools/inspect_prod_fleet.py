@@ -12,11 +12,17 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
+from account_cache_health import (
+    DEFAULT_REQUIRED_VENUE_STREAMS,
+    SUPPORTED_HEALTH_VENUES,
+    inspect_all_venues_health_snapshot,
+)
 from botcore import (
     extract_current_price_item,
     extract_order_id,
@@ -27,12 +33,15 @@ from botcore import (
 )
 from cacheaccount import CacheOrderOpenManager
 from cachepaths import (
+    CACHE_ACCOUNT_HEALTH_FILENAME,
     CACHE_CURRENT_PRICE_FILENAME,
     LLM_TOPIC_THREADS_FILENAME,
     PORTFOLIO_POSITIONS_STATE_FILENAME,
     VENUE_BALANCES_STATE_FILENAME,
     cache_path,
+    is_equity_venue,
 )
+from instrument_registry import is_symbol_market_open, symbols_for
 from providers.order_ohlc_utils import extract_orig_qty
 from providers.portfolio_state_store import VENUE_BALANCE_CACHE_FILENAMES
 from providers.portfolio_valuation import compose_unified_portfolio_state
@@ -175,6 +184,38 @@ def inspect_fleet(json_output: bool = False):
     breadth_data = raw_breadth if isinstance(raw_breadth, dict) else {}
     raw_health = ssh_cat(cache_path("system/fleet_health_status.json"))
     health_data = raw_health if isinstance(raw_health, dict) else {}
+    raw_acct_health = (
+        ssh_cat(cache_path(f"account/{CACHE_ACCOUNT_HEALTH_FILENAME}"))
+        or ssh_cat(cache_path(CACHE_ACCOUNT_HEALTH_FILENAME))
+    )
+    acct_health_summary: dict[str, dict] = {}
+    if isinstance(raw_acct_health, dict) and raw_acct_health:
+        now_s = time.time()
+        req_by_venue = {}
+        for v_key in SUPPORTED_HEALTH_VENUES:
+            if not is_equity_venue(v_key):
+                req_by_venue[v_key] = ("filled_orders", "open_orders", "balances")
+            else:
+                v_syms = list(symbols_for(v_key))
+                req_by_venue[v_key] = (
+                    ("filled_orders", "open_orders", "balances")
+                    if (not v_syms or any(is_symbol_market_open(s, now_s) for s in v_syms))
+                    else DEFAULT_REQUIRED_VENUE_STREAMS
+                )
+        acct_statuses = inspect_all_venues_health_snapshot(
+            raw_acct_health,
+            now_ms=round(now_s * 1000),
+            required_streams_by_venue=req_by_venue,
+        )
+        for v_key, st in acct_statuses.items():
+            acct_health_summary[v_key] = {
+                "ready": st.ready,
+                "reason": st.reason,
+                "filled_orders_age_sec": round(st.filled_orders_age_sec, 1) if st.filled_orders_age_sec is not None else None,
+                "open_orders_age_sec": round(st.open_orders_age_sec, 1) if st.open_orders_age_sec is not None else None,
+                "balances_age_sec": round(st.balances_age_sec, 1) if st.balances_age_sec is not None else None,
+                "trades_age_sec": round(st.trades_age_sec, 1) if st.trades_age_sec is not None else None,
+            }
     raw_prices = ssh_cat(cache_path(f"prices/{CACHE_CURRENT_PRICE_FILENAME}")) or ssh_cat(cache_path(CACHE_CURRENT_PRICE_FILENAME))
     prices_data = raw_prices.get("items", {}) if isinstance(raw_prices, dict) and isinstance(raw_prices.get("items"), dict) else {}
 
@@ -247,6 +288,8 @@ def inspect_fleet(json_output: bool = False):
             "total_processes": health_data.get("total_processes"),
             "stale_processes": health_data.get("stale_processes"),
         }
+    if acct_health_summary:
+        result["account_cache_health"] = acct_health_summary
 
     if json_output:
         sys.stdout.write(encode_json_payload(result, indent=2) + "\n")
@@ -315,6 +358,16 @@ def inspect_fleet(json_output: bool = False):
             print(f"  Breadth: {snap.get('advancing_pct', 0)*100:.1f}% advancing | Regime={breadth_data.get('regime')}")
         if health_data:
             print(f"  Fleet Health: {health_data.get('running_processes')}/{health_data.get('total_processes')} processes running | Healthy={health_data.get('fleet_healthy')}")
+
+    if acct_health_summary:
+        print("\n=== ACCOUNT CACHE HEALTH ===")
+        for v_key, st in acct_health_summary.items():
+            f_age = f"{st['filled_orders_age_sec']:.1f}s" if st.get("filled_orders_age_sec") is not None else "n/a"
+            o_age = f"{st['open_orders_age_sec']:.1f}s" if st.get("open_orders_age_sec") is not None else "n/a"
+            b_age = f"{st['balances_age_sec']:.1f}s" if st.get("balances_age_sec") is not None else "n/a"
+            t_age = f"{st['trades_age_sec']:.1f}s" if st.get("trades_age_sec") is not None else "n/a"
+            status_lbl = "READY" if st.get("ready") else f"FAIL ({st.get('reason')})"
+            print(f"  {v_key:12} {status_lbl} | filled={f_age} open={o_age} bal={b_age} trades={t_age}")
 
 
 

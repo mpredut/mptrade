@@ -2,8 +2,10 @@
 # manage_backups.sh -- Unified script for backup and disaster recovery.
 # Usage:
 #   ./manage_backups.sh local                     # Create a local full DR backup of secrets, state, and cachedb
-#   ./manage_backups.sh remote                    # Create local full DR backup + upload raw price-only archive to Storj
+#   ./manage_backups.sh remote                    # Local full DR backup + upload price archive & encrypted statedb to Storj
+#   ./manage_backups.sh backup-state              # Build & upload encrypted statedb archive only to Storj
 #   ./manage_backups.sh pull-prices               # Download and unpack raw price-only archive from Storj into cachedb/
+#   ./manage_backups.sh pull-state                # Download, decrypt, and unpack statedb archive from Storj into statedb/
 #   ./manage_backups.sh restore <secrets_folder>  # Rebuild the machine using a backup folder or tarball
 
 set -uo pipefail
@@ -98,6 +100,91 @@ backup_price_data_only() {
     echo "=== PRICE-ONLY archive: $(printf '%s\n' "$PRICE_FILES" | wc -l) raw price files -> $PRICE_TAR ==="
 }
 
+resolve_state_backup_passphrase() {
+    printf '%s' "${STATEDB_BACKUP_PASSPHRASE:-$(env_get STATEDB_BACKUP_PASSPHRASE)}"
+}
+
+_rclone_prune_dated() {  # $1=remote_dir $2=include_glob $3=keep_count
+    local remote="$1" pattern="$2" keep="$3" old_files old_f
+    old_files="$(rclone_cmd lsf "$remote" --include "$pattern" 2>/dev/null | sort -r | tail -n +"$((keep + 1))" || true)"
+    while IFS= read -r old_f; do
+        [ -n "$old_f" ] && rclone_cmd deletefile "${remote}${old_f}" 2>/dev/null || true
+    done <<< "$old_files"
+}
+
+backup_state_data_encrypted() {
+    local STATE_ENC="${1:-$HOME/mptrade-statedb.tar.gz.enc}"
+    local pass tmp_enc
+    pass="$(resolve_state_backup_passphrase)"
+    [ -n "$pass" ] || { echo "ERROR: STATEDB_BACKUP_PASSPHRASE is required in .env for encrypted statedb backup" >&2; return 1; }
+    command -v openssl >/dev/null 2>&1 || { echo "ERROR: openssl is missing" >&2; return 1; }
+    [ -d "$ROOT/statedb" ] || { echo "ERROR: statedb/ directory not found in $ROOT" >&2; return 1; }
+
+    cd "$ROOT"
+    local STATE_FILES
+    STATE_FILES="$(find statedb -type f ! -name '*.tmp' ! -name '*.tmp.*' ! -name '*.previous' ! -name '*.previous.*' ! -name '*.lock' | sort)"
+    [ -n "$STATE_FILES" ] || { echo "ERROR: no state files found in statedb/" >&2; return 1; }
+
+    tmp_enc="${STATE_ENC}.tmp.$$"
+    printf '%s\n' "$STATE_FILES" \
+        | tar czf - --warning=no-file-changed --warning=no-file-removed --ignore-failed-read -C "$ROOT" -T - \
+        | _STATEDB_ENC_PASS="$pass" openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt -pass env:_STATEDB_ENC_PASS -out "$tmp_enc"
+    local ps=("${PIPESTATUS[@]}")
+    local tar_rc="${ps[1]:-1}" enc_rc="${ps[2]:-1}"
+    if [ "$tar_rc" -gt 1 ] || [ "$enc_rc" -ne 0 ] || [ ! -s "$tmp_enc" ]; then
+        rm -f "$tmp_enc"
+        echo "ERROR: failed to build encrypted statedb archive (tar_rc=$tar_rc, enc_rc=$enc_rc)" >&2
+        return 1
+    fi
+    chmod 600 "$tmp_enc"
+    mv -f "$tmp_enc" "$STATE_ENC"
+    echo "=== ENCRYPTED STATE archive: $(printf '%s\n' "$STATE_FILES" | wc -l) files -> $STATE_ENC ($(du -h "$STATE_ENC" | cut -f1)) ==="
+}
+
+upload_state_data_encrypted() {
+    ensure_rclone_storj_config
+    local REMOTE="${STORJ_STATE_REMOTE:-${RCLONE_REMOTE:-storj:${STORJ_BUCKET_RESOLVED:-mptrade-price-data}/}}"
+    local STATE_NAME="${STATE_BACKUP_NAME:-mptrade-statedb}"
+    local STATE_ENC="$HOME/${STATE_NAME}.tar.gz.enc"
+    local DATED_NAME="${STATE_NAME}-$(date +%Y%m%d).tar.gz.enc"
+    local KEEP="${BACKUP_KEEP:-7}"
+
+    backup_state_data_encrypted "$STATE_ENC" || return 1
+    [[ "$REMOTE" == storj:* ]] && rclone_cmd mkdir "${REMOTE%/}" 2>/dev/null || true
+    rclone_cmd copyto "$STATE_ENC" "${REMOTE}${STATE_NAME}.tar.gz.enc" --transfers 1 || return 1
+    echo "$(date '+%F %T') OK remote encrypted state upload -> ${REMOTE}${STATE_NAME}.tar.gz.enc"
+    rclone_cmd copyto "$STATE_ENC" "${REMOTE}${DATED_NAME}" --transfers 1 || return 1
+    echo "$(date '+%F %T') OK remote dated encrypted state upload -> ${REMOTE}${DATED_NAME}"
+    _rclone_prune_dated "$REMOTE" "${STATE_NAME}-????????.tar.gz.enc" "$KEEP"
+}
+
+pull_remote_state_data() {
+    ensure_rclone_storj_config
+    local pass
+    pass="$(resolve_state_backup_passphrase)"
+    [ -n "$pass" ] || { echo "ERROR: STATEDB_BACKUP_PASSPHRASE is required in .env to decrypt statedb backup" >&2; return 1; }
+    command -v openssl >/dev/null 2>&1 || { echo "ERROR: openssl is missing" >&2; return 1; }
+
+    local REMOTE="${STORJ_STATE_REMOTE:-${RCLONE_REMOTE:-storj:${STORJ_BUCKET_RESOLVED:-mptrade-price-data}/}}"
+    local STATE_NAME="${STATE_BACKUP_NAME:-mptrade-statedb}"
+    local STATE_ENC="$HOME/${STATE_NAME}.tar.gz.enc"
+    local TARGET_ROOT="${1:-$ROOT}"
+
+    echo "$(date '+%F %T') === pull_remote_state_data from ${REMOTE}${STATE_NAME}.tar.gz.enc ==="
+    rclone_cmd copyto "${REMOTE}${STATE_NAME}.tar.gz.enc" "$STATE_ENC" --transfers 1 || return 1
+    [ -f "$STATE_ENC" ] || { echo "ERROR: failed to download $STATE_ENC from Storj" >&2; return 1; }
+    chmod 600 "$STATE_ENC" 2>/dev/null || true
+    mkdir -p "$TARGET_ROOT/statedb"
+    _STATEDB_ENC_PASS="$pass" openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass env:_STATEDB_ENC_PASS -in "$STATE_ENC" \
+        | tar xzf - -C "$TARGET_ROOT"
+    local ps=("${PIPESTATUS[@]}")
+    if [ "${ps[0]:-1}" -ne 0 ] || [ "${ps[1]:-1}" -ne 0 ]; then
+        echo "ERROR: failed to decrypt or extract $STATE_ENC (dec_rc=${ps[0]:-1}, tar_rc=${ps[1]:-1})" >&2
+        return 1
+    fi
+    echo "$(date '+%F %T') OK restored decrypted statedb archive into $TARGET_ROOT/statedb"
+}
+
 backup_remote() {
     ensure_rclone_storj_config
     local REMOTE="${RCLONE_REMOTE:-storj:${STORJ_BUCKET_RESOLVED:-mptrade-price-data}/}"
@@ -105,8 +192,9 @@ backup_remote() {
     local PRICE_NAME="${PRICE_BACKUP_NAME:-mptrade-price-data}"
     local PRICE_TAR="$HOME/${PRICE_NAME}.tar.gz"
     local DATED_NAME="${PRICE_NAME}-$(date +%Y%m%d).tar.gz"
+    local KEEP="${BACKUP_KEEP:-7}"
 
-    echo "$(date '+%F %T') === backup_remote (local full DR + Storj raw price data only) ==="
+    echo "$(date '+%F %T') === backup_remote (local full DR + Storj price archive + encrypted statedb) ==="
     backup_local "$HOME/$LOCAL_BACKUP_NAME"
     backup_price_data_only "$PRICE_TAR"
 
@@ -115,12 +203,15 @@ backup_remote() {
     echo "$(date '+%F %T') ✔ remote price upload -> ${REMOTE}${PRICE_NAME}.tar.gz"
     rclone_cmd copyto "$PRICE_TAR" "${REMOTE}${DATED_NAME}" --transfers 1
     echo "$(date '+%F %T') ✔ remote dated price upload -> ${REMOTE}${DATED_NAME}"
+    _rclone_prune_dated "$REMOTE" "${PRICE_NAME}-????????.tar.gz" "$KEEP"
 
-    local KEEP="${BACKUP_KEEP:-7}" old_files
-    old_files="$(rclone_cmd lsf "$REMOTE" --include "${PRICE_NAME}-????????.tar.gz" 2>/dev/null | sort -r | tail -n +"$((KEEP + 1))" || true)"
-    while IFS= read -r old_f; do
-        [ -n "$old_f" ] && rclone_cmd deletefile "${REMOTE}${old_f}" 2>/dev/null || true
-    done <<< "$old_files"
+    if [ -d "$ROOT/statedb" ]; then
+        if [ -n "$(resolve_state_backup_passphrase)" ]; then
+            upload_state_data_encrypted || echo "$(date '+%F %T') WARN: encrypted statedb Storj upload failed" >&2
+        else
+            echo "$(date '+%F %T') WARN: STATEDB_BACKUP_PASSPHRASE not set in .env -- skipping encrypted statedb Storj upload"
+        fi
+    fi
 }
 
 pull_remote_price_data() {
@@ -189,6 +280,10 @@ restore_backup() {
         echo "    ! 365d price archives missing locally; attempting pull from Storj..."
         pull_remote_price_data || echo "    ! Storj price pull skipped or unavailable"
     fi
+    if [ -z "$(find "$ROOT/statedb" -type f -print -quit 2>/dev/null)" ] && [ -n "$(resolve_state_backup_passphrase)" ]; then
+        echo "    ! statedb missing locally; attempting encrypted pull from Storj..."
+        pull_remote_state_data "$ROOT" || echo "    ! Storj encrypted statedb pull skipped or unavailable"
+    fi
 
     echo "--- [2/5] venv + dependencies ---"
     local VENV_DIR="$ROOT/${VENV:-myenv}"
@@ -216,7 +311,9 @@ restore_backup() {
 case "$cmd" in
     local) backup_local "$@" ;;
     remote) backup_remote "$@" ;;
+    backup-state) upload_state_data_encrypted "$@" ;;
     pull-prices) pull_remote_price_data "$@" ;;
+    pull-state) pull_remote_state_data "$@" ;;
     restore) restore_backup "$@" ;;
-    *) echo "Usage: $0 {local|remote|pull-prices|restore}"; exit 1 ;;
+    *) echo "Usage: $0 {local|remote|backup-state|pull-prices|pull-state|restore}"; exit 1 ;;
 esac

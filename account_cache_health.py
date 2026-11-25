@@ -16,7 +16,7 @@ import math
 import os
 import sys
 import threading
-from typing import Callable, Iterable, Optional
+from typing import Callable, Iterable, Mapping, Optional
 
 from botcore import (
     _parse_bool_flag,
@@ -335,13 +335,13 @@ def _pid_is_alive(pid: int) -> bool:
     return fields[0] not in _DEAD_PROC_STATES
 
 
-def _read_health_envelope(
-    path: Optional[str] = None,
+def _validate_health_envelope(
+    state: object,
 ) -> tuple[Optional[dict], Optional[tuple[int, int, int, bool]], str]:
-    """Read and validate the shared writer envelope from ``cache_account_health.json``."""
+    """Validate the shared writer envelope fields of a decoded health snapshot."""
+    if not isinstance(state, dict):
+        return None, None, "account_cache_health_invalid"
     try:
-        eff_path = _resolve_health_path(path)
-        state = read_json_dict(eff_path)
         if state.get("schema_version") != SCHEMA_VERSION:
             return None, None, "account_cache_schema_mismatch"
 
@@ -353,10 +353,22 @@ def _read_health_envelope(
         if not isinstance(stopping, bool):
             raise ValueError("invalid stopping")
         return state, (writer_pid, writer_started_ms, generation, stopping), ""
+    except (TypeError, ValueError):
+        return None, None, "account_cache_health_invalid"
+
+
+def _read_health_envelope(
+    path: Optional[str] = None,
+) -> tuple[Optional[dict], Optional[tuple[int, int, int, bool]], str]:
+    """Read and validate the shared writer envelope from ``cache_account_health.json``."""
+    try:
+        eff_path = _resolve_health_path(path)
+        state = read_json_dict(eff_path)
     except FileNotFoundError:
         return None, None, "account_cache_health_missing"
     except (OSError, TypeError, ValueError):
         return None, None, "account_cache_health_invalid"
+    return _validate_health_envelope(state)
 
 
 def _check_writer_liveness(
@@ -364,13 +376,15 @@ def _check_writer_liveness(
     writer_started_ms: int,
     stopping: bool,
     *,
-    pid_is_alive: Callable[[int], bool] = _pid_is_alive,
-    pid_started_at_ms: Callable[[int], Optional[int]] = _pid_started_at_ms,
+    pid_is_alive: Optional[Callable[[int], bool]] = None,
+    pid_started_at_ms: Optional[Callable[[int], Optional[int]]] = None,
 ) -> str:
     """Verify the sole writer PID is still running, identical, and not stopping."""
-    if not pid_is_alive(writer_pid):
+    alive_fn = _pid_is_alive if pid_is_alive is None else pid_is_alive
+    start_fn = _pid_started_at_ms if pid_started_at_ms is None else pid_started_at_ms
+    if not alive_fn(writer_pid):
         return "account_cache_writer_not_running"
-    observed_start_ms = pid_started_at_ms(writer_pid)
+    observed_start_ms = start_fn(writer_pid)
     if _PROCESS_IDENTITY_REQUIRED and observed_start_ms is None:
         return "account_cache_writer_identity_unavailable"
     if observed_start_ms is not None and abs(observed_start_ms - writer_started_ms) > 2_000:
@@ -385,8 +399,8 @@ def inspect_health(
     path: Optional[str] = None,
     now_ms: Optional[int] = None,
     max_age_sec: float = MAX_AGE_SEC,
-    pid_is_alive: Callable[[int], bool] = _pid_is_alive,
-    pid_started_at_ms: Callable[[int], Optional[int]] = _pid_started_at_ms,
+    pid_is_alive: Optional[Callable[[int], bool]] = None,
+    pid_started_at_ms: Optional[Callable[[int], Optional[int]]] = None,
     future_tolerance_sec: float = 5.0,
 ) -> CacheHealthStatus:
     """Validate the shared Binance snapshot without trusting mtime or defaults."""
@@ -549,8 +563,8 @@ def inspect_venue_health(
     now_ms: Optional[int] = None,
     max_age_sec: float = MAX_AGE_SEC,
     required_streams: Iterable[str] = DEFAULT_REQUIRED_VENUE_STREAMS,
-    pid_is_alive: Callable[[int], bool] = _pid_is_alive,
-    pid_started_at_ms: Callable[[int], Optional[int]] = _pid_started_at_ms,
+    pid_is_alive: Optional[Callable[[int], bool]] = None,
+    pid_started_at_ms: Optional[Callable[[int], Optional[int]]] = None,
     future_tolerance_sec: float = 5.0,
 ) -> VenueCacheHealthStatus:
     """Validate account-cache freshness for one venue (``binance``, ``kraken``, ``hyperliquid``, ``t212``)."""
@@ -584,6 +598,49 @@ def inspect_venue_health(
     )
 
 
+def _resolve_requested_venues(venues: Iterable[str]) -> list[str]:
+    requested: list[str] = []
+    for raw_v in venues or ():
+        v_key = _normalize_health_venue(raw_v) or str(raw_v or "")
+        if v_key and v_key not in requested:
+            requested.append(v_key)
+    return requested
+
+
+def _evaluate_requested_venues(
+    requested: list[str],
+    state: dict,
+    generation: int,
+    *,
+    now_ms: Optional[int],
+    max_age_sec: float,
+    required_streams: Iterable[str],
+    required_streams_by_venue: Optional[Mapping[str, Iterable[str]]],
+    future_tolerance_sec: float,
+) -> dict[str, VenueCacheHealthStatus]:
+    results: dict[str, VenueCacheHealthStatus] = {}
+    for v_key in requested:
+        v_norm = _normalize_health_venue(v_key)
+        if v_norm is None:
+            results[v_key] = VenueCacheHealthStatus(v_key, False, "account_cache_unknown_venue")
+        else:
+            v_req = (
+                required_streams_by_venue.get(v_norm, required_streams)
+                if isinstance(required_streams_by_venue, Mapping)
+                else required_streams
+            )
+            results[v_norm] = _evaluate_venue_health(
+                v_norm,
+                state,
+                generation,
+                now_ms=now_ms,
+                max_age_sec=max_age_sec,
+                required_streams=v_req,
+                future_tolerance_sec=future_tolerance_sec,
+            )
+    return results
+
+
 def inspect_all_venues_health(
     *,
     venues: Iterable[str] = SUPPORTED_HEALTH_VENUES,
@@ -591,16 +648,13 @@ def inspect_all_venues_health(
     now_ms: Optional[int] = None,
     max_age_sec: float = MAX_AGE_SEC,
     required_streams: Iterable[str] = DEFAULT_REQUIRED_VENUE_STREAMS,
-    pid_is_alive: Callable[[int], bool] = _pid_is_alive,
-    pid_started_at_ms: Callable[[int], Optional[int]] = _pid_started_at_ms,
+    required_streams_by_venue: Optional[Mapping[str, Iterable[str]]] = None,
+    pid_is_alive: Optional[Callable[[int], bool]] = None,
+    pid_started_at_ms: Optional[Callable[[int], Optional[int]]] = None,
     future_tolerance_sec: float = 5.0,
 ) -> dict[str, VenueCacheHealthStatus]:
     """Validate account-cache freshness across all requested venues in a single snapshot read."""
-    requested: list[str] = []
-    for raw_v in venues or ():
-        v_key = _normalize_health_venue(raw_v) or str(raw_v or "")
-        if v_key and v_key not in requested:
-            requested.append(v_key)
+    requested = _resolve_requested_venues(venues)
 
     state, envelope, err = _read_health_envelope(path)
     if err or state is None or envelope is None:
@@ -618,22 +672,47 @@ def inspect_all_venues_health(
     if liveness_err:
         return {v: VenueCacheHealthStatus(v, False, liveness_err) for v in requested}
 
-    results: dict[str, VenueCacheHealthStatus] = {}
-    for v_key in requested:
-        v_norm = _normalize_health_venue(v_key)
-        if v_norm is None:
-            results[v_key] = VenueCacheHealthStatus(v_key, False, "account_cache_unknown_venue")
-        else:
-            results[v_norm] = _evaluate_venue_health(
-                v_norm,
-                state,
-                generation,
-                now_ms=now_ms,
-                max_age_sec=max_age_sec,
-                required_streams=required_streams,
-                future_tolerance_sec=future_tolerance_sec,
-            )
-    return results
+    return _evaluate_requested_venues(
+        requested,
+        state,
+        generation,
+        now_ms=now_ms,
+        max_age_sec=max_age_sec,
+        required_streams=required_streams,
+        required_streams_by_venue=required_streams_by_venue,
+        future_tolerance_sec=future_tolerance_sec,
+    )
+
+
+def inspect_all_venues_health_snapshot(
+    state: object,
+    *,
+    venues: Iterable[str] = SUPPORTED_HEALTH_VENUES,
+    now_ms: Optional[int] = None,
+    max_age_sec: float = MAX_AGE_SEC,
+    required_streams: Iterable[str] = DEFAULT_REQUIRED_VENUE_STREAMS,
+    required_streams_by_venue: Optional[Mapping[str, Iterable[str]]] = None,
+    future_tolerance_sec: float = 5.0,
+) -> dict[str, VenueCacheHealthStatus]:
+    """Evaluate a decoded remote health snapshot across venues without local PID checks."""
+    requested = _resolve_requested_venues(venues)
+    valid_state, envelope, err = _validate_health_envelope(state)
+    if err or valid_state is None or envelope is None:
+        reason = err or "account_cache_health_invalid"
+        return {v: VenueCacheHealthStatus(v, False, reason) for v in requested}
+    _, _, generation, stopping = envelope
+    if stopping:
+        return {v: VenueCacheHealthStatus(v, False, "account_cache_writer_stopping") for v in requested}
+    return _evaluate_requested_venues(
+        requested,
+        valid_state,
+        generation,
+        now_ms=now_ms,
+        max_age_sec=max_age_sec,
+        required_streams=required_streams,
+        required_streams_by_venue=required_streams_by_venue,
+        future_tolerance_sec=future_tolerance_sec,
+    )
 
 
 def require_fresh_account_cache(**kwargs) -> CacheHealthStatus:

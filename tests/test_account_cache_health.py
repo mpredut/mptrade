@@ -614,3 +614,111 @@ def test_cacheaccount_bridges_publish_multi_venue_health_etapa3(tmp_path, monkey
     assert ("binance", "open_orders", 1_700_000_001_234) in recorded
 
 
+def test_etapa3b_multi_venue_health_snapshot_coherence_and_fleet_inspection(tmp_path, monkeypatch):
+    """Etapa 3B: remote snapshot evaluation, check_cache_coherence RTH-aware venue checks, and inspect_prod_fleet."""
+    from verify_tools import check_cache_coherence as ccc
+    from verify_tools import inspect_prod_fleet
+
+    now_s = 1_700_258_400.0  # Friday 22:00 UTC (outside US RTH)
+    now_ms = round(now_s * 1000)
+    started_ms = now_ms - 60_000
+
+    # 1. Pure snapshot evaluator (no local PID checks): respects required_streams_by_venue & stopping
+    snapshot = {
+        "schema_version": health.SCHEMA_VERSION,
+        "writer_pid": 999999,
+        "writer_started_at_ms": started_ms,
+        "published_at_ms": now_ms - 1_000,
+        "generation": 5,
+        "stopping": False,
+        "order_sync_at_ms": now_ms - 5_000,
+        "order_cache_version": "bn-v1",
+        "venues": {
+            "binance": {
+                "filled_orders_sync_at_ms": now_ms - 5_000,
+                "open_orders_sync_at_ms": now_ms - 4_000,
+                "balances_sync_at_ms": now_ms - 6_000,
+                "trades_sync_at_ms": now_ms - 8_000,
+            },
+            "kraken": {
+                "filled_orders_sync_at_ms": now_ms - 5_000,
+                "open_orders_sync_at_ms": now_ms - 4_000,
+                "balances_sync_at_ms": now_ms - 6_000,
+            },
+            "hyperliquid": {
+                "filled_orders_sync_at_ms": now_ms - 5_000,
+                "open_orders_sync_at_ms": now_ms - 4_000,
+                "balances_sync_at_ms": now_ms - 6_000,
+            },
+            "t212": {
+                "filled_orders_sync_at_ms": now_ms - 10_000,
+                "open_orders_sync_at_ms": now_ms - 10_000,
+                "balances_sync_at_ms": now_ms - 7_200_000,  # 2h stale after US close
+            },
+        },
+    }
+    snap_res = health.inspect_all_venues_health_snapshot(
+        snapshot,
+        now_ms=now_ms,
+        max_age_sec=600,
+        required_streams_by_venue={
+            "binance": ("filled_orders", "open_orders", "balances"),
+            "kraken": ("filled_orders", "open_orders", "balances"),
+            "hyperliquid": ("filled_orders", "open_orders", "balances"),
+            "t212": ("filled_orders", "open_orders"),
+        },
+    )
+    assert all(st.ready for st in snap_res.values()), snap_res
+    assert snap_res["t212"].balances_age_sec == pytest.approx(7200.0)
+
+    stopping_res = health.inspect_all_venues_health_snapshot(
+        {**snapshot, "stopping": True},
+        now_ms=now_ms,
+        max_age_sec=600,
+    )
+    assert all((not st.ready and st.reason == "account_cache_writer_stopping") for st in stopping_res.values())
+
+    # 2. check_cache_coherence validates account/cache_account_health.json across all 4 venues (RTH-aware for t212)
+    coh_dir = tmp_path / "coh"
+    (coh_dir / "account").mkdir(parents=True)
+    (coh_dir / "cache_short_trend.json").write_text(
+        json.dumps({"items": {"BTCUSDC": {"ts": now_s - 2.0, "current_price": 95000.0, "gradient_recent": 0.01}}}),
+        encoding="utf-8",
+    )
+    (coh_dir / "cache_current_price.json").write_text(
+        json.dumps({"items": {"BTCUSDC": [[(now_s - 1.0) * 1000.0, 95000.0]]}}),
+        encoding="utf-8",
+    )
+    health_file = coh_dir / "account" / "cache_account_health.json"
+    health_file.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    monkeypatch.setattr(ccc, "CACHEDB", str(coh_dir))
+    monkeypatch.setattr(ccc, "expected_symbols", lambda: ["BTCUSDC"])
+    monkeypatch.setattr(ccc.time, "time", lambda: now_s)
+    monkeypatch.setattr(health, "_pid_is_alive", lambda _pid: True)
+    monkeypatch.setattr(health, "_pid_started_at_ms", lambda _pid: started_ms)
+    # Outside US RTH: stale t212 balances does not fail coherence while filled/open are fresh.
+    assert ccc.main() == 0
+
+    # Stale kraken balances fails coherence immediately.
+    stale_kr = json.loads(json.dumps(snapshot))
+    stale_kr["venues"]["kraken"]["balances_sync_at_ms"] = now_ms - 900_000
+    health_file.write_text(json.dumps(stale_kr), encoding="utf-8")
+    assert ccc.main() == 1
+
+    # 3. inspect_prod_fleet exposes account_cache_health from remote SSH snapshot without local PID dependency
+    monkeypatch.setattr(inspect_prod_fleet.time, "time", lambda: now_s)
+    monkeypatch.setattr(
+        inspect_prod_fleet,
+        "ssh_cat",
+        lambda p: snapshot if "cache_account_health.json" in str(p) else {},
+    )
+    fleet_res = inspect_prod_fleet.inspect_fleet(json_output=True)
+    assert "account_cache_health" in fleet_res
+    assert set(fleet_res["account_cache_health"].keys()) == {"binance", "kraken", "hyperliquid", "t212"}
+    assert all(v["ready"] is True for v in fleet_res["account_cache_health"].values())
+    assert fleet_res["account_cache_health"]["binance"]["filled_orders_age_sec"] == pytest.approx(5.0)
+    assert fleet_res["account_cache_health"]["t212"]["balances_age_sec"] == pytest.approx(7200.0)
+
+
+

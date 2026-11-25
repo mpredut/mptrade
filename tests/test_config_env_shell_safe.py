@@ -1580,6 +1580,165 @@ send_os_ntfy "PIA VPN: Restored to Primary DIP" "Frankfurt DIP back" "default" "
     assert "PIA VPN: Restored to Primary DIP" in sent_titles
 
 
+def test_manage_backups_encrypted_statedb_and_manage_logs_statedb_retention(tmp_path):
+    """Verify encrypted statedb Storj round-trip + fail-closed passphrase checks and statedb/orders retention."""
+    fake_root = tmp_path / "repo"
+    fake_home = tmp_path / "home"
+    fake_remote = tmp_path / "remote_storj"
+    fake_restore_root = tmp_path / "restore_target"
+    for d in (
+        fake_root / "statedb" / "orders",
+        fake_root / "statedb" / "portfolio",
+        fake_root / "logger",
+        fake_home,
+        fake_remote,
+        fake_restore_root,
+    ):
+        d.mkdir(parents=True, exist_ok=True)
+
+    # Seed statedb files plus transient staging files that must be excluded from backup
+    (fake_root / "statedb" / "portfolio" / "portfolio_positions_state.json").write_text(
+        '{"pos:binance:BTCUSDC":{"qty":0.1}}\n', encoding="utf-8"
+    )
+    (fake_root / "statedb" / "orders" / "orders_active.json").write_text('{"active":[]}\n', encoding="utf-8")
+    (fake_root / "statedb" / "orders" / "orders_active.json.tmp").write_text("transient", encoding="utf-8")
+    (fake_root / "statedb" / "orders" / "orders_active.json.lock").write_text("", encoding="utf-8")
+    (fake_root / ".env").write_text("", encoding="utf-8")
+
+    # Local fake rclone supporting mkdir, copyto, lsf --include, deletefile
+    fake_rclone = tmp_path / "fake_rclone.sh"
+    fake_rclone.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --contimeout|--timeout|--retries|--low-level-retries) shift 2 ;;
+        *) break ;;
+    esac
+done
+cmd="$1"; shift
+case "$cmd" in
+    mkdir) mkdir -p "$1" ;;
+    copyto) cp -f "$1" "$2" ;;
+    lsf)
+        dir="$1"; shift
+        pat="*"
+        if [ "${1:-}" = "--include" ]; then pat="$2"; fi
+        (cd "$dir" && for f in $pat; do [ -e "$f" ] && printf '%s\\n' "$f"; done)
+        ;;
+    deletefile) rm -f "$1" ;;
+    *) exit 2 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_rclone.chmod(0o755)
+
+    backup_script = os.path.join(ROOT, "orchestratorOS", "admin", "manage_backups.sh")
+    base_env = {
+        **os.environ,
+        "REPO_ROOT": str(fake_root),
+        "ROOT": str(fake_root),
+        "HOME": str(fake_home),
+        "RCLONE": str(fake_rclone),
+        "STORJ_STATE_REMOTE": str(fake_remote) + "/",
+        "BACKUP_KEEP": "2",
+    }
+    base_env.pop("STATEDB_BACKUP_PASSPHRASE", None)
+
+    # 1. Missing passphrase must fail closed
+    fail_missing = subprocess.run(
+        ["bash", backup_script, "backup-state"],
+        env=base_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert fail_missing.returncode != 0
+    assert "STATEDB_BACKUP_PASSPHRASE" in fail_missing.stderr
+
+    # 2. Seed two older dated archives to verify pruning keeps BACKUP_KEEP=2
+    (fake_remote / "mptrade-statedb-20250101.tar.gz.enc").write_bytes(b"old1")
+    (fake_remote / "mptrade-statedb-20250102.tar.gz.enc").write_bytes(b"old2")
+
+    # 3. Encrypted upload succeeds and produces OpenSSL Salted ciphertext (not plaintext gzip)
+    ok_env = {**base_env, "STATEDB_BACKUP_PASSPHRASE": "unit-test-passphrase-xyz-999"}
+    up = subprocess.run(
+        ["bash", backup_script, "backup-state"],
+        env=ok_env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert "OK remote encrypted state upload" in up.stdout
+    enc_latest = fake_remote / "mptrade-statedb.tar.gz.enc"
+    assert enc_latest.is_file()
+    raw_enc = enc_latest.read_bytes()
+    assert raw_enc.startswith(b"Salted__")
+    assert b"portfolio_positions_state" not in raw_enc
+    # Oldest dated archive pruned (kept today + 20250102)
+    assert not (fake_remote / "mptrade-statedb-20250101.tar.gz.enc").exists()
+    assert (fake_remote / "mptrade-statedb-20250102.tar.gz.enc").exists()
+
+    # 4. Wrong passphrase fails closed during pull-state
+    bad_pull = subprocess.run(
+        ["bash", backup_script, "pull-state", str(fake_restore_root)],
+        env={**base_env, "STATEDB_BACKUP_PASSPHRASE": "wrong-passphrase"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert bad_pull.returncode != 0
+
+    # 5. Correct passphrase restores statedb/ identically and excludes .tmp/.lock files
+    good_pull = subprocess.run(
+        ["bash", backup_script, "pull-state", str(fake_restore_root)],
+        env=ok_env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert "OK restored decrypted statedb archive" in good_pull.stdout
+    assert (fake_restore_root / "statedb" / "portfolio" / "portfolio_positions_state.json").read_text(
+        encoding="utf-8"
+    ) == '{"pos:binance:BTCUSDC":{"qty":0.1}}\n'
+    assert (fake_restore_root / "statedb" / "orders" / "orders_active.json").is_file()
+    assert not (fake_restore_root / "statedb" / "orders" / "orders_active.json.tmp").exists()
+    assert not (fake_restore_root / "statedb" / "orders" / "orders_active.json.lock").exists()
+
+    # 6. manage_logs.sh prunes aged order_events_*.jsonl inside statedb/orders/ while retaining recent & closed files
+    old_ev = fake_root / "statedb" / "orders" / "order_events_2024-01-01.jsonl"
+    new_ev = fake_root / "statedb" / "orders" / "order_events_2026-11-25.jsonl"
+    closed_f = fake_root / "statedb" / "orders" / "orders_closed_2024-01.jsonl"
+    for f in (old_ev, new_ev, closed_f):
+        f.write_text('{"ok":true}\n', encoding="utf-8")
+    old_ts = 1_700_000_000  # >180 days in the past
+    os.utime(old_ev, (old_ts, old_ts))
+    os.utime(closed_f, (old_ts, old_ts))
+
+    manage_logs_script = os.path.join(ROOT, "orchestratorOS", "admin", "manage_logs.sh")
+    subprocess.run(
+        ["bash", manage_logs_script],
+        env={
+            **os.environ,
+            "REPO_ROOT": str(fake_root),
+            "ROOT": str(fake_root),
+            "ORDER_EVENTS_DELETE_AFTER_DAYS": "180",
+        },
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=True,
+    )
+    assert not old_ev.exists()
+    assert new_ev.exists()
+    assert closed_f.exists()
+    assert (fake_root / "statedb" / "orders" / "orders_active.json").exists()
+
+
+
 
 
 
