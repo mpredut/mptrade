@@ -32,13 +32,16 @@ from botcore import (
     _prices_diverged,
 )
 from cachepaths import (
+    CACHE_CURRENT_PRICE_FILENAME,
     CACHE_DERIVATIVES_TELEMETRY_PREFIX,
     cache_ohlc_24h_filename,
+    cache_path,
     CACHE_ORDERBOOK_DEPTH_PREFIX,
     CACHE_REALIZED_LIQUIDATIONS_FILENAME,
     cache_symbol_variants,
     CACHE_WATCHER_ALL_PRICE_FILENAME,
     CACHE_WHALE_SNAPSHOT_PREFIX,
+    cachedb_root_for_file,
     canonical_base_asset,
     clean_symbol_key,
     clean_upper_scalar,
@@ -181,9 +184,9 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     round_opt_px,
     sort_ts_rows,
     apply_24h_series_enrichment,
+    _extract_ohlc_series_points,
     LAST_7D_4H_BARS_BY_SYM,
     LAST_7D_SPAN_MS_BY_SYM,
-    load_stitched_24h_ohlc_points,
     _SHORT_SLOPE_OVERRIDE_KEYS,
     STALE_SHORT_24H_KEYS,
 )
@@ -1002,6 +1005,192 @@ _LAST_T212_PORTFOLIO_POLL_TS: float = 0.0
 _ORIG_IS_SYMBOL_MARKET_OPEN = is_symbol_market_open
 
 
+_OHLC_24H_DISK_MEMO: Dict[str, Tuple[Tuple[int, int], List[List[Any]]]] = {}
+_LAST_OHLC_WRITER_ID_BY_PATH: Dict[str, Any] = {}
+
+
+def load_stitched_24h_ohlc_points(
+    ohlc_fn: Any,
+    sym: str,
+    cutoff_24h: float,
+    *,
+    require_positive_volume: bool = False,
+    cache_dir: Optional[str] = None,
+    now_ts: Optional[float] = None,
+) -> List[List[Any]]:
+    """Load 5m OHLC points since `cutoff_24h` (Layer 3 cache-first; persists via `Cache24PriceManager.save_ohlc_24h_snapshot`)."""
+    allow_offline_disk = is_offline_disk_cache_enabled()
+    sym_raw_s = "" if isinstance(sym, bool) else str(sym or "").strip()
+    sym_u = sym_raw_s.upper()
+    ident_sym = resolve_symbol_identity(sym_raw_s) if sym_raw_s else None
+    sym_canon = (
+        ident_sym.display_symbol
+        if (ident_sym is not None and ident_sym.is_tokenized_equity and ident_sym.display_symbol)
+        else sym_u
+    )
+    cutoff_ms = (normalize_epoch_sec(cutoff_24h, default=0.0, allow_zero=True) or 0.0) * 1000.0
+    cpath = ""
+    disk_fallback_pts: List[List[Any]] = []
+    _, writer_anchor = callable_identity_anchor(ohlc_fn) if callable(ohlc_fn) else (None, None)
+    if sym_canon and sym_canon.replace("_", "").isalnum():
+        try:
+            fname = cache_ohlc_24h_filename(sym_canon)
+            cpath = (
+                str(resolve_cachedb_filepath(os.path.join(cache_dir, fname)))
+                if cache_dir
+                else str(cache_path(fname))
+            )
+            read_cpath = cpath
+            if not os.path.exists(read_cpath) and sym_canon != sym_u:
+                alt_fname = cache_ohlc_24h_filename(sym_u, preserve_case=True)
+                alt_cpath = (
+                    str(resolve_cachedb_filepath(os.path.join(cache_dir, alt_fname)))
+                    if cache_dir
+                    else str(cache_path(alt_fname))
+                )
+                if os.path.exists(alt_cpath):
+                    read_cpath = alt_cpath
+            can_read_disk = (
+                not callable(ohlc_fn)
+                or allow_offline_disk
+                or is_live_network_backfill_enabled()
+                or (
+                    (prev_writer := _LAST_OHLC_WRITER_ID_BY_PATH.get(read_cpath)) is not None
+                    and same_callable_anchor(prev_writer, writer_anchor)
+                )
+            )
+            if can_read_disk:
+                st = os.stat(read_cpath)
+                age_s = resolve_now_ts(now_ts) - st.st_mtime
+                max_disk_age = 7200.0 if allow_offline_disk else 3600.0
+                if 0.0 <= age_s < max_disk_age:
+                    file_sig = (st.st_mtime_ns, st.st_size)
+                    cached_ohlc = _OHLC_24H_DISK_MEMO.get(read_cpath)
+                    raw_pts = cached_ohlc[1] if (cached_ohlc is not None and cached_ohlc[0] == file_sig) else None
+                    if raw_pts is None:
+                        d_obj = read_json_recovering(read_cpath)
+                        cand_pts = d_obj.get("points") if isinstance(d_obj, dict) else d_obj
+                        if isinstance(cand_pts, list):
+                            raw_pts = [
+                                list(p)
+                                for p in cand_pts
+                                if isinstance(p, (list, tuple)) and len(p) >= 2 and (safe_pos_float(p[1], 0.0) or 0.0) > 0.0
+                            ]
+                            lru_dict_put(_OHLC_24H_DISK_MEMO, read_cpath, (file_sig, raw_pts), 64)
+                    if raw_pts:
+                        filt = [
+                            list(p)
+                            for p in raw_pts
+                            if safe_float(p[0], default=-1e18) >= cutoff_ms - 300000.0
+                            and (not require_positive_volume or (len(p) >= 3 and (safe_pos_float(p[2], 0.0) or 0.0) > 0.0))
+                        ]
+                        if len(filt) >= 8 and (filt[-1][0] - filt[0][0]) >= 18 * 3600 * 1000:
+                            fresh_ttl = 180.0 + (sum(ord(ch) for ch in sym_u) % 5) * 30.0
+                            if age_s < fresh_ttl or allow_offline_disk or not callable(ohlc_fn):
+                                return filt
+                            disk_fallback_pts = filt
+        except Exception:
+            pass
+    if not callable(ohlc_fn):
+        return disk_fallback_pts
+    pts_all = _extract_ohlc_series_points(ohlc_fn(sym, 5), min_ts=cutoff_24h, require_positive_volume=False)
+    pts_eff = [p for p in pts_all if len(p) >= 3 and (safe_pos_float(p[2], 0.0) or 0.0) > 0.0] if require_positive_volume else pts_all
+    if not pts_eff or (pts_eff[-1][0] - pts_eff[0][0]) < 18 * 3600 * 1000:
+        first_s5_ts = (pts_eff[0][0] / 1000.0 - 300.0) if pts_eff else math.inf
+        older_15 = _extract_ohlc_series_points(
+            ohlc_fn(sym, 15), min_ts=cutoff_24h, max_ts=first_s5_ts, require_positive_volume=False
+        )
+        pts_all = older_15 + pts_all
+    if cpath and len(pts_all) >= 8 and (pts_all[-1][0] - pts_all[0][0]) >= 18 * 3600 * 1000:
+        try:
+            ensure_cacheprice_classes_bound()
+            if Cache24PriceManager is not None and Cache24PriceManager.save_ohlc_24h_snapshot(
+                cpath,
+                sym_canon,
+                pts_all,
+                now_ts=now_ts,
+                preserve_fresh_equity_sec=240.0,
+            ):
+                resolved_cpath = str(resolve_cachedb_filepath(cpath))
+                st_new = os.stat(resolved_cpath)
+                lru_dict_put(
+                    _OHLC_24H_DISK_MEMO,
+                    cpath,
+                    ((st_new.st_mtime_ns, st_new.st_size), [list(p) for p in pts_all]),
+                    64,
+                )
+                if len(_LAST_OHLC_WRITER_ID_BY_PATH) >= 64:
+                    _LAST_OHLC_WRITER_ID_BY_PATH.clear()
+                _LAST_OHLC_WRITER_ID_BY_PATH[cpath] = writer_anchor
+        except Exception:
+            pass
+    res_pts = (
+        [list(p) for p in pts_all if len(p) >= 3 and (safe_pos_float(p[2], 0.0) or 0.0) > 0.0]
+        if require_positive_volume
+        else pts_all
+    )
+    if (len(res_pts) < 8 or (res_pts[-1][0] - res_pts[0][0]) < 18 * 3600 * 1000) and disk_fallback_pts:
+        return disk_fallback_pts
+    return res_pts
+
+
+def _extract_fresh_layer3_t212_prices(
+    bcache_path: str,
+    tickers: Sequence[str],
+    now_ts: float,
+    max_age_sec: float,
+) -> Dict[str, Tuple[float, float]]:
+    """Read fresh Layer 3 ``prices/cache_current_price.json`` marks for T212 tickers (0 ms, zero network)."""
+    out: Dict[str, Tuple[float, float]] = {}
+    if not bcache_path or not tickers:
+        return out
+    cdb_root = cachedb_root_for_file(bcache_path)
+    if not cdb_root:
+        return out
+    cp_candidates = list(
+        dict.fromkeys((
+            str(resolve_cachedb_filepath(os.path.join(cdb_root, CACHE_CURRENT_PRICE_FILENAME))),
+            os.path.join(cdb_root, "prices", CACHE_CURRENT_PRICE_FILENAME),
+            os.path.join(cdb_root, CACHE_CURRENT_PRICE_FILENAME),
+        ))
+    )
+    cp_doc: Optional[Dict[str, Any]] = None
+    for cp_cand in cp_candidates:
+        if os.path.exists(cp_cand):
+            raw_cp = read_json_dict(cp_cand, default=None, recover_previous=True)
+            if isinstance(raw_cp, dict) and raw_cp:
+                cp_doc = raw_cp
+                break
+    if not isinstance(cp_doc, dict):
+        return out
+    items_map = cp_doc.get("items") if isinstance(cp_doc.get("items"), dict) else cp_doc
+    ft_map = cp_doc.get("fetchtime") if isinstance(cp_doc.get("fetchtime"), dict) else {}
+    doc_ts = normalize_epoch_sec(cp_doc.get("ts"), default=None)
+    for tkr in tickers:
+        tkr_u = str(tkr or "").strip().upper()
+        if not tkr_u:
+            continue
+        raw_item = casefold_get(items_map, tkr_u)
+        px_v = extract_current_price_item(raw_item)
+        if px_v is None or px_v <= 0.0:
+            continue
+        ft_ts = normalize_epoch_sec(casefold_get(ft_map, tkr_u), default=None)
+        item_ts: Optional[float] = None
+        if isinstance(raw_item, list) and raw_item:
+            last_el = raw_item[-1]
+            if isinstance(last_el, (list, tuple)) and len(last_el) >= 2:
+                item_ts = normalize_epoch_sec(last_el[0], default=None)
+            elif len(raw_item) >= 2 and isinstance(raw_item[0], (int, float)):
+                item_ts = normalize_epoch_sec(raw_item[0], default=None)
+        eff_ts = max(
+            (t for t in (ft_ts, item_ts, doc_ts) if t is not None and t > 0.0),
+            default=None,
+        )
+        if eff_ts is not None and 0.0 <= (now_ts - eff_ts) < max_age_sec:
+            out[tkr_u] = (px_v, eff_ts)
+    return out
+
+
 def refresh_stale_t212_cached_positions(
     cached_bals: Dict[str, Any],
     bcache_path: Optional[str],
@@ -1009,7 +1198,7 @@ def refresh_stale_t212_cached_positions(
     *,
     max_age_sec: float = 180.0,
 ) -> bool:
-    """Refresh stale (`>= max_age_sec`) `pos:t212:*` prices in-memory inside `cached_bals` (never writes venue_balances_state.json)."""
+    """Refresh stale (`>= max_age_sec`) `pos:t212:*` prices in-memory (Layer 3 cache-first, public T212Provider fallback)."""
     global _LAST_T212_PORTFOLIO_POLL_TS
     if (
         not isinstance(cached_bals, dict)
@@ -1017,92 +1206,128 @@ def refresh_stale_t212_cached_positions(
         or not os.path.exists(bcache_path)
     ):
         return False
+    t212_entries: List[Tuple[str, str, Dict[str, Any], float]] = []
+    for bkey, bval in cached_bals.items():
+        if not (isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(bval, dict)):
+            continue
+        rticker = str(bval.get("symbol") or bkey.split(":", 2)[-1]).strip().upper()
+        if not rticker:
+            continue
+        prev_ts = normalize_epoch_sec(bval.get("ts"), default=0.0) or 0.0
+        t212_entries.append((bkey, rticker, bval, prev_ts))
+    if not t212_entries:
+        return False
+    min_t212_ts = min(entry[3] for entry in t212_entries)
+    max_t212_ts = max(entry[3] for entry in t212_entries)
+    if max_t212_ts <= 0.0:
+        return False
+
+    def _update_t212_pos_price(
+        c_pos: Dict[str, Any],
+        cur_px: float,
+        *,
+        ts_missing: bool,
+        new_ts: float,
+    ) -> bool:
+        prev_c_px = safe_pos_float(c_pos.get("price"), default=None)
+        prev_c_ts = normalize_epoch_sec(c_pos.get("ts"), default=0.0) or 0.0
+        new_c_px = round(cur_px, 4)
+        is_stale_ts = prev_c_ts <= 0.0 or not (0.0 <= (now_ts - prev_c_ts) < max_age_sec)
+        if prev_c_px is None or abs(new_c_px - round(prev_c_px, 4)) >= 1e-4 or ts_missing or is_stale_ts:
+            c_pos["price"] = new_c_px
+            reprice_position_balance_fields(c_pos, cur_px)
+            if prev_c_ts > 0.0:
+                c_pos.setdefault("base_bal_ts", round(prev_c_ts, 3))
+                c_pos.setdefault("quote_bal_ts", round(prev_c_ts, 3))
+            c_pos["ts"] = new_ts
+            return True
+        return False
+
+    # Stage 1: Layer 3 cache-first refresh from cachedb/prices/cache_current_price.json (0 ms, zero REST).
+    t212_dirty = False
+    refreshed_tickers: set[str] = set()
+    stale_tickers = [
+        rticker
+        for _, rticker, _, prev_ts in t212_entries
+        if prev_ts <= 0.0 or not (0.0 <= (now_ts - prev_ts) < max_age_sec)
+    ]
+    if stale_tickers:
+        l3_marks = _extract_fresh_layer3_t212_prices(bcache_path, stale_tickers, now_ts, max_age_sec)
+        for _, rticker, c_pos, prev_ts in t212_entries:
+            if (l3_hit := l3_marks.get(rticker)) is None:
+                continue
+            px_l3, ts_l3 = l3_hit
+            if prev_ts <= 0.0 or ts_l3 >= prev_ts:
+                if _update_t212_pos_price(c_pos, px_l3, ts_missing=prev_ts <= 0.0, new_ts=round(ts_l3, 3)):
+                    t212_dirty = True
+                refreshed_tickers.add(rticker)
+    remaining_stale = [
+        (bkey, rticker, c_pos, prev_ts)
+        for bkey, rticker, c_pos, prev_ts in t212_entries
+        if rticker not in refreshed_tickers
+        and (prev_ts <= 0.0 or not (0.0 <= (now_ts - prev_ts) < max_age_sec))
+    ]
+    if not remaining_stale:
+        return t212_dirty
+
+    # Stage 2: Live fallback via public T212Provider.portfolio_mark_prices() (only during RTH & when unthrottled).
     try:
         is_real_t212 = getattr(_t212_prov_mod.T212Provider, "__module__", "") == "providers.t212_provider"
     except Exception:
         is_real_t212 = False
     if not is_live_network_backfill_enabled() and is_real_t212:
-        return False
+        return t212_dirty
     if is_real_t212 or is_symbol_market_open is not _ORIG_IS_SYMBOL_MARKET_OPEN:
         try:
-            probe_sym = next(
-                (
-                    str(bval.get("symbol") or bkey.split(":", 2)[-1]).strip().upper()
-                    for bkey, bval in cached_bals.items()
-                    if isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(bval, dict)
-                ),
-                "NVDA_US_EQ",
-            )
-            if not is_symbol_market_open(probe_sym or "NVDA_US_EQ", now_ts):
-                return False
+            probe_sym = remaining_stale[0][1] or "NVDA_US_EQ"
+            if not is_symbol_market_open(probe_sym, now_ts):
+                return t212_dirty
         except Exception:
             pass
-    t212_ts_vals = [
-        normalize_epoch_sec(bval.get("ts"), default=0.0) or 0.0
-        for bkey, bval in cached_bals.items()
-        if isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(bval, dict)
-    ]
-    if not t212_ts_vals:
-        return False
-    min_t212_ts = min(t212_ts_vals)
-    max_t212_ts = max(t212_ts_vals)
-    if max_t212_ts <= 0.0 or 0.0 <= (now_ts - max(min_t212_ts, _LAST_T212_PORTFOLIO_POLL_TS)) < max_age_sec:
-        return False
+    if 0.0 <= (now_ts - max(min_t212_ts, _LAST_T212_PORTFOLIO_POLL_TS)) < max_age_sec:
+        return t212_dirty
     try:
         _LAST_T212_PORTFOLIO_POLL_TS = now_ts
+        mark_map: Dict[str, float] = {}
         try:
-            t212_rows = _t212_prov_mod.T212Provider()._client().get_portfolio()
+            prov_obj = _t212_prov_mod.T212Provider()
+            mark_fn = getattr(prov_obj, "portfolio_mark_prices", None)
+            if callable(mark_fn):
+                raw_marks = mark_fn()
+                if isinstance(raw_marks, dict):
+                    mark_map = {
+                        str(k).strip().upper(): px_m
+                        for k, v in raw_marks.items()
+                        if str(k or "").strip() and (px_m := safe_pos_float(v, default=None)) is not None
+                    }
         except Exception:
-            t212_rows = []
-        if not isinstance(t212_rows, list):
-            t212_rows = []
-        t212_dirty = False
-        seen_portfolio_tickers: set[str] = set()
-
-        def _update_t212_pos_price(c_pos: Dict[str, Any], cur_px: float, *, ts_missing: bool) -> bool:
-            prev_c_px = safe_pos_float(c_pos.get("price"), default=None)
-            prev_c_ts = normalize_epoch_sec(c_pos.get("ts"), default=0.0) or 0.0
-            new_c_px = round(cur_px, 4)
-            is_stale_ts = prev_c_ts <= 0.0 or not (0.0 <= (now_ts - prev_c_ts) < max_age_sec)
-            if prev_c_px is None or abs(new_c_px - round(prev_c_px, 4)) >= 1e-4 or ts_missing or is_stale_ts:
-                c_pos["price"] = new_c_px
-                reprice_position_balance_fields(c_pos, cur_px)
-                if prev_c_ts > 0.0:
-                    c_pos.setdefault("base_bal_ts", round(prev_c_ts, 3))
-                    c_pos.setdefault("quote_bal_ts", round(prev_c_ts, 3))
-                c_pos["ts"] = now_ts
-                return True
-            return False
-
-        for row in t212_rows:
-            if not isinstance(row, dict):
-                continue
-            rticker = str(row.get("ticker") or "").strip().upper()
-            if rticker:
-                seen_portfolio_tickers.add(rticker)
-            cur_px_r = safe_pos_float(row.get("currentPrice"), default=None)
+            mark_map = {}
+        seen_portfolio_tickers: set[str] = set(refreshed_tickers)
+        for rticker, cur_px_r in mark_map.items():
+            seen_portfolio_tickers.add(rticker)
             tkey = f"pos:t212:{rticker}"
-            if rticker and cur_px_r is not None and isinstance(c_pos := cached_bals.get(tkey), dict):
-                if _update_t212_pos_price(c_pos, cur_px_r, ts_missing=safe_pos_float(c_pos.get("ts"), default=None) is None):
+            if isinstance(c_pos := cached_bals.get(tkey), dict):
+                if _update_t212_pos_price(
+                    c_pos,
+                    cur_px_r,
+                    ts_missing=safe_pos_float(c_pos.get("ts"), default=None) is None,
+                    new_ts=now_ts,
+                ):
                     t212_dirty = True
-        for bkey, c_pos in list(cached_bals.items()):
-            if not (isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(c_pos, dict)):
-                continue
-            rticker = str(c_pos.get("symbol") or bkey.split(":", 2)[-1]).strip().upper()
-            if not rticker or rticker in seen_portfolio_tickers:
-                continue
-            prev_c_ts = normalize_epoch_sec(c_pos.get("ts"), default=0.0) or 0.0
-            if prev_c_ts > 0.0 and 0.0 <= (now_ts - prev_c_ts) < max_age_sec:
+        for _, rticker, c_pos, prev_c_ts in remaining_stale:
+            if rticker in seen_portfolio_tickers:
                 continue
             try:
                 cur_px_fb = MarketDataProvider.resolve_venue_public_price_usd("t212", rticker)
-                if cur_px_fb is not None and _update_t212_pos_price(c_pos, cur_px_fb, ts_missing=prev_c_ts <= 0.0):
+                if cur_px_fb is not None and _update_t212_pos_price(
+                    c_pos, cur_px_fb, ts_missing=prev_c_ts <= 0.0, new_ts=now_ts
+                ):
                     t212_dirty = True
             except Exception:
                 pass
         return t212_dirty
     except Exception:
-        return False
+        return t212_dirty
 
 
 def upgrade_tpo_vp_from_ohlc(
@@ -2903,6 +3128,7 @@ __all__ = [
     "ensure_fresh_symbol_microstructure",
     "load_fleet_microstructure_snapshots",
     "load_microstructure_cycle_history",
+    "load_stitched_24h_ohlc_points",
     "load_stitched_7d_ohlc_closes",
     "load_symbol_microstructure",
     "load_symbol_price_series",

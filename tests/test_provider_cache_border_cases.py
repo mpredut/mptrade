@@ -4643,13 +4643,15 @@ def test_wave27_price_poller_deadlines_canonical_imports_and_border_cases(tmp_pa
     assert parse_nonneg_order_field("   ", allow_empty_str="false") is None
     assert parse_nonneg_order_field("", allow_empty_str="true") == 0.0
 
-    # 5. price_series_evaluator preserves epoch-0 points when cutoff_ms <= 300000 and clamps invalid num_bins
+    # 5. load_stitched_24h_ohlc_points preserves epoch-0 points when cutoff_ms <= 300000 and clamps invalid num_bins
+    import intelligence.sentiment.collectors.microstructure_collector as _mc_ohlc_bc
+
     ohlc_dir = tmp_path / "ohlc24"
     ohlc_dir.mkdir()
     ohlc_file = ohlc_dir / "cache_ohlc_24h_BTCUSDC.json"
     pts_zero = [[i * 3 * 3600 * 1000, 100.0 + i, 10.0] for i in range(9)]
     state_io.save_json_state(str(ohlc_file), {"points": pts_zero})
-    loaded_pts = pse_mod.load_stitched_24h_ohlc_points(
+    loaded_pts = _mc_ohlc_bc.load_stitched_24h_ohlc_points(
         None,
         "BTCUSDC",
         cutoff_24h=0.0,
@@ -5161,11 +5163,13 @@ def test_wave29_ssot_price_candidates_t212_peek_lexicon_and_border_cases(tmp_pat
     assert recorded_syncs == []
 
     # Corrupted future equity OHLC ts on disk does not block stitched 24h recovery write
+    import intelligence.sentiment.collectors.microstructure_collector as _mc_ohlc_fut
+
     ohlc_fut_dir = tmp_path / "ohlc_fut"
     ohlc_fut_dir.mkdir()
     ohlc_fut_file = cachepaths.resolve_cachedb_filepath(str(ohlc_fut_dir / "cache_ohlc_24h_NVDA_US_EQ.json"))
     state_io.save_json_state(str(ohlc_fut_file), {"ts": real_now + 86400.0, "symbol": "NVDA_US_EQ", "points": []})
-    stitched = pse_mod.load_stitched_24h_ohlc_points(
+    stitched = _mc_ohlc_fut.load_stitched_24h_ohlc_points(
         lambda _s, _iv: SimpleNamespace(
             timestamps=[real_now - (20 - i) * 3600.0 for i in range(21)],
             closes=[120.0 + i * 0.5 for i in range(21)],
@@ -8593,16 +8597,16 @@ def test_wave49_callable_anchor_id_memos_and_equity_suffix_ssot(tmp_path, monkey
     assert len(bm_calls) == 1
 
     # 3. load_stitched_24h_ohlc_points anchors writer callable in _LAST_OHLC_WRITER_ID_BY_PATH so new transient lambdas never read stale disk points.
-    monkeypatch.setattr(pse_mod, "is_offline_disk_cache_enabled", lambda: False)
-    monkeypatch.setattr(pse_mod, "is_live_network_backfill_enabled", lambda: False)
-    pse_mod._OHLC_24H_DISK_MEMO.clear()
-    pse_mod._LAST_OHLC_WRITER_ID_BY_PATH.clear()
+    monkeypatch.setattr(mc_mod, "is_offline_disk_cache_enabled", lambda: False)
+    monkeypatch.setattr(mc_mod, "is_live_network_backfill_enabled", lambda: False)
+    mc_mod._OHLC_24H_DISK_MEMO.clear()
+    mc_mod._LAST_OHLC_WRITER_ID_BY_PATH.clear()
     t0 = 1_750_000_000.0
     ts_list = [t0 - (20 - i) * 3600.0 for i in range(21)]
 
     def _run_transient_stitch(px: float):
         fn = lambda _sym, _iv: SimpleNamespace(timestamps=ts_list, closes=[px] * len(ts_list), volumes=[10.0] * len(ts_list))
-        return pse_mod.load_stitched_24h_ohlc_points(fn, "BTCUSDC", t0 - 86400.0, cache_dir=str(tmp_path))
+        return mc_mod.load_stitched_24h_ohlc_points(fn, "BTCUSDC", t0 - 86400.0, cache_dir=str(tmp_path))
 
     pts_first = _run_transient_stitch(50_000.0)
     pts_second = _run_transient_stitch(60_000.0)

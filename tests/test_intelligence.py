@@ -7079,9 +7079,11 @@ def test_iter20_price_series_memo_and_fallback_ohlc_provider_cache(tmp_path, mon
 def test_iter21_ohlc_24h_disk_cache_news_macro_relevance_and_dated_log_dedup(tmp_path, monkeypatch):
 
     # 1. Discrepancy BR: load_stitched_24h_ohlc_points persists and serves a 240s on-disk 24h OHLC cache
+    import intelligence.sentiment.collectors.microstructure_collector as mc_ohlc
+
     cdir_ohlc = tmp_path / "ohlc_cache_dir"
     cdir_ohlc.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(pse, "cache_path", lambda name: cdir_ohlc / name)
+    monkeypatch.setattr(mc_ohlc, "cache_path", lambda name: cdir_ohlc / name)
     now_s = time.time()
     base_ts = int(now_s - 20 * 3600)
     ohlc_calls = []
@@ -7094,12 +7096,12 @@ def test_iter21_ohlc_24h_disk_cache_news_macro_relevance_and_dated_log_dedup(tmp
             volumes=[15.0 + i for i in range(41)],
         )
 
-    pts1 = pse.load_stitched_24h_ohlc_points(_mock_ohlc_fn, "TAOUSD", now_s - 86400.0, require_positive_volume=True)
+    pts1 = mc_ohlc.load_stitched_24h_ohlc_points(_mock_ohlc_fn, "TAOUSD", now_s - 86400.0, require_positive_volume=True)
     assert len(pts1) == 41 and len(ohlc_calls) == 1
     assert (cdir_ohlc / "cache_ohlc_24h_TAOUSD.json").exists()
     # Second call (even with a non-callable ohlc_fn or in a fresh process) hits the disk cache without calling ohlc_fn
-    pse._OHLC_24H_DISK_MEMO.clear()
-    pts2 = pse.load_stitched_24h_ohlc_points(None, "TAOUSD", now_s - 86400.0, require_positive_volume=True)
+    mc_ohlc._OHLC_24H_DISK_MEMO.clear()
+    pts2 = mc_ohlc.load_stitched_24h_ohlc_points(None, "TAOUSD", now_s - 86400.0, require_positive_volume=True)
     assert len(pts2) == 41 and len(ohlc_calls) == 1
 
     # 2. Discrepancy BS: Breaking News Feed ranks financial/macro/geopolitical context above non-macro/tabloid filler

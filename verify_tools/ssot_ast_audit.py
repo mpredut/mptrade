@@ -228,7 +228,10 @@ PROVIDER_NON_FACADE_MODULES = frozenset({
     "providers/portfolio_state_store.py",
     "providers/portfolio_valuation.py",
 })
-PURE_VALUATION_MODULES = frozenset({"providers/portfolio_valuation.py"})
+PURE_VALUATION_MODULES = frozenset({
+    "providers/portfolio_valuation.py",
+    "intelligence/sentiment/evaluators/price_series_evaluator.py",
+})
 FORBIDDEN_PURE_VALUATION_IMPORTS = frozenset({
     "os",
     "pathlib",
@@ -237,6 +240,19 @@ FORBIDDEN_PURE_VALUATION_IMPORTS = frozenset({
     "tempfile",
     "state_io",
     "state_stores",
+})
+EVALUATOR_FORBIDDEN_WRITE_FNS = frozenset({
+    "save_json_state",
+    "save_json_file",
+    "write_json_file",
+    "atomic_write_json",
+    "atomic_write_jsonl",
+    "append_jsonl_record",
+    "write_text_file",
+    "write_bytes_file",
+    "atomic_text_writer",
+    "generation_transaction",
+    "generation_file_lock",
 })
 FORBIDDEN_PROVIDER_UPWARD = frozenset({
     "cacheInterface",
@@ -403,6 +419,13 @@ STATE_FILE_LITERAL_TO_CONST: dict[str, str] = {
     "cache_balance_kraken.json": "CACHE_KRAKEN_BALANCE_FILENAME",
     "cache_balance_hyperliquid.json": "CACHE_HYPERLIQUID_BALANCE_FILENAME",
     "cache_balance_t212.json": "CACHE_T212_BALANCE_FILENAME",
+}
+STATE_WRITE_ONLY_OWNER_MAP: dict[str, frozenset[str]] = {
+    "CACHE_OHLC_24H_PREFIX": frozenset({"cacheprice.py"}),
+    "cache_ohlc_24h_filename": frozenset({"cacheprice.py"}),
+}
+STATE_WRITE_ONLY_LITERAL_TO_CONST: dict[str, str] = {
+    "cache_ohlc_24h_": "CACHE_OHLC_24H_PREFIX",
 }
 STATE_RAW_IO_READERS: frozenset[str] = frozenset({
     "read_json_dict",
@@ -1172,8 +1195,28 @@ def audit_layer_dag_ast(
             if io_leak := sorted(roots & FORBIDDEN_PURE_VALUATION_IMPORTS):
                 violations.append(
                     f"{rel}: pure valuation module must not import disk/state I/O modules {io_leak} "
-                    "(delegate persistence to providers/portfolio_state_store.py or state_stores/)"
+                    "(delegate persistence to providers/portfolio_state_store.py, cacheprice.py, or state_stores/)"
                 )
+        if rel.startswith(EVALUATOR_CLOCK_GUARDED_PREFIX):
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    fn_nm = (
+                        node.func.id
+                        if isinstance(node.func, ast.Name)
+                        else (node.func.attr if isinstance(node.func, ast.Attribute) else "")
+                    )
+                    if fn_nm in EVALUATOR_FORBIDDEN_WRITE_FNS:
+                        violations.append(
+                            f"{rel}:{node.lineno}: stateless evaluator must not call disk writer {fn_nm}() "
+                            "(delegate persistence to Layer 3 cache manager or state_stores/)"
+                        )
+        if rel.startswith("intelligence/"):
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and node.attr == "_client":
+                    violations.append(
+                        f"{rel}:{node.lineno}: private provider ._client access in intelligence/ "
+                        "(delegate through a public provider facade method)"
+                    )
         if rel == "providers/market_api.py":
             if leak := sorted(roots & (FORBIDDEN_PROVIDER_UPWARD - {"market_regime"})):
                 violations.append(f"{rel}: MarketApi upward DAG leak {leak}")
@@ -2205,7 +2248,7 @@ def audit_state_file_owners_ast(
             return found
         for sub in ast.walk(expr):
             if isinstance(sub, ast.Name):
-                if sub.id in STATE_FILE_OWNER_MAP:
+                if sub.id in STATE_FILE_OWNER_MAP or sub.id in STATE_WRITE_ONLY_OWNER_MAP:
                     found.add(sub.id)
                 elif sub.id in tainted:
                     found.update(tainted[sub.id])
@@ -2213,6 +2256,9 @@ def audit_state_file_owners_ast(
                 low = sub.value.strip().lower()
                 for lit_fname, const_name in STATE_FILE_LITERAL_TO_CONST.items():
                     if lit_fname in low:
+                        found.add(const_name)
+                for lit_pref, const_name in STATE_WRITE_ONLY_LITERAL_TO_CONST.items():
+                    if lit_pref in low:
                         found.add(const_name)
         return found
 
@@ -2272,7 +2318,12 @@ def audit_state_file_owners_ast(
                         hit_consts.update(_expr_state_consts(kw.value, tainted))
                     io_kind = "write" if fn_name in STATE_RAW_IO_WRITERS else "read"
                     for const_name in sorted(hit_consts):
-                        owners = STATE_FILE_OWNER_MAP[const_name]
+                        if const_name in STATE_FILE_OWNER_MAP:
+                            owners = STATE_FILE_OWNER_MAP[const_name]
+                        elif io_kind == "write" and const_name in STATE_WRITE_ONLY_OWNER_MAP:
+                            owners = STATE_WRITE_ONLY_OWNER_MAP[const_name]
+                        else:
+                            continue
                         if rel_s not in owners:
                             violations.append(
                                 f"{rel_s}:{node.lineno}: direct raw {io_kind} of {const_name} via {fn_name}() "

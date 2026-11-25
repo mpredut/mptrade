@@ -2195,13 +2195,10 @@ def test_reverify_pass2_stale_microstructure_news_fallback_and_cross_quote_ages(
     t212_poll_count = 0
 
     class _StubT212Provider:
-        def _client(self):
-            def _get_portfolio():
-                nonlocal t212_poll_count
-                t212_poll_count += 1
-                return [{"ticker": "RGNT_US_EQ", "currentPrice": 1.22}]
-
-            return SimpleNamespace(get_portfolio=_get_portfolio)
+        def portfolio_mark_prices(self):
+            nonlocal t212_poll_count
+            t212_poll_count += 1
+            return {"RGNT_US_EQ": 1.22}
 
     monkeypatch.setattr(mc_mod._t212_prov_mod, "T212Provider", _StubT212Provider)
     monkeypatch.setattr(mc_mod, "_LAST_T212_PORTFOLIO_POLL_TS", 0.0)

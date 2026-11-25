@@ -802,13 +802,9 @@ def test_secondary_writers_and_t212_ssot_market_data(tmp_path, monkeypatch):
     updated_disk["pos:kraken:TAOUSD"] = {"symbol": "TAOUSD", "free": 1.5, "price": 400.0, "ts": now_s - 5.0}
     save_json_state(str(bals_file), updated_disk, indent=2)
 
-    class _FakeT212Client:
-        def get_portfolio(self):
-            return [{"ticker": "NVDA_US_EQ", "currentPrice": 135.25}]
-
     class _FakeT212Provider:
-        def _client(self):
-            return _FakeT212Client()
+        def portfolio_mark_prices(self):
+            return {"NVDA_US_EQ": 135.25}
 
     monkeypatch.setattr(mc._t212_prov_mod, "T212Provider", _FakeT212Provider)
     monkeypatch.setattr(mc, "_LAST_T212_PORTFOLIO_POLL_TS", 0.0)
@@ -838,9 +834,9 @@ def test_secondary_writers_and_t212_ssot_market_data(tmp_path, monkeypatch):
     eq_ohlc_path = cdir_eq / "prices" / "cache_ohlc_24h_NVDA_US_EQ.json"
     cm_pts = [[int((now_s - (24 - i) * 3600) * 1000), 130.0 + i * 0.25, 1000.0] for i in range(25)]
     save_json_state(str(eq_ohlc_path), {"ts": now_s - 30.0, "symbol": "NVDA_US_EQ", "points": cm_pts})
-    pse._OHLC_24H_DISK_MEMO.clear()
+    mc._OHLC_24H_DISK_MEMO.clear()
     # Even if forced to fetch (e.g. cold reader memo bypassed), writer check preserves fresh (<240s) equity OHLCV.
-    loaded_eq = pse.load_stitched_24h_ohlc_points(
+    loaded_eq = mc.load_stitched_24h_ohlc_points(
         None, "NVDA_US_EQ", now_s - 86400.0, cache_dir=str(cdir_eq)
     )
     assert len(loaded_eq) == len(cm_pts)
@@ -853,7 +849,7 @@ def test_secondary_writers_and_t212_ssot_market_data(tmp_path, monkeypatch):
         save_json_state(str(race_path), {"ts": time.time(), "symbol": "NVDA_US_EQ", "points": cm_pts})
         return [[int((now_s - (24 - i) * 3600) * 1000), 999.0, 500.0] for i in range(25)]
 
-    pse.load_stitched_24h_ohlc_points(_racing_ohlc_fn, "NVDA_US_EQ", now_s - 86400.0, cache_dir=str(stale_check_cdir))
+    mc.load_stitched_24h_ohlc_points(_racing_ohlc_fn, "NVDA_US_EQ", now_s - 86400.0, cache_dir=str(stale_check_cdir))
     saved_race = json.loads(race_path.read_text(encoding="utf-8"))
     assert saved_race["points"][0][1] == 130.0
 

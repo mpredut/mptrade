@@ -223,6 +223,25 @@ class T212Provider(MarketDataProvider):
                 raise ProviderError(f"portfolio({symbol}): {e}") from e
             return self._log_provider_balance_error("T212", "portfolio", symbol, e)
 
+    def portfolio_mark_prices(self) -> dict[str, float]:
+        """Return positive mark prices ``{TICKER_UPPER: price_usd}`` for currently held T212 portfolio positions."""
+        try:
+            rows = self._client().get_portfolio()
+        except Exception as exc:  # noqa: BLE001
+            self._log_provider_balance_error("T212", "portfolio_prices", "*", exc)
+            return {}
+        if not isinstance(rows, list):
+            return {}
+        out: dict[str, float] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ticker_u = clean_upper_scalar(row.get("ticker"))
+            px_v = safe_pos_float(row.get("currentPrice"), default=None)
+            if ticker_u and px_v is not None:
+                out[ticker_u] = px_v
+        return out
+
     # -- Market data. ----------------------------------------------------------
     @classmethod
     def fetch_public_market_price_usd(cls, symbol: str) -> Optional[float]:

@@ -1442,6 +1442,36 @@ class Cache24PriceManager(CachePriceManagerBase):
                 self._persisted_max_ts(), self._mem_max_ts()
             )
 
+    @classmethod
+    def save_ohlc_24h_snapshot(
+        cls,
+        cpath: str,
+        symbol: str,
+        points: Sequence[Any],
+        *,
+        now_ts: Optional[float] = None,
+        preserve_fresh_equity_sec: float = 0.0,
+    ) -> bool:
+        """Canonical single-owner locked writer for Layer 3 ``prices/cache_ohlc_24h_<SYM>.json``."""
+        if not cpath or not symbol:
+            return False
+        pts_list = [list(p) for p in points] if points else []
+        if not pts_list:
+            return False
+        sym_clean = str(symbol).strip()
+        sym_u = sym_clean.upper()
+        with generation_transaction(cpath) as target_path:
+            now_w = resolve_now_ts(now_ts)
+            if preserve_fresh_equity_sec > 0.0 and is_equity_symbol(sym_u):
+                cur_disk = read_json_dict(target_path, default=None, repair_files=True)
+                cur_ts = normalize_epoch_sec(
+                    cur_disk.get("ts") if isinstance(cur_disk, dict) else None, default=None
+                )
+                if cur_ts is not None and -5.0 <= (now_w - cur_ts) < preserve_fresh_equity_sec:
+                    return False
+            save_json_state(target_path, {"ts": now_w, "symbol": sym_clean, "points": pts_list})
+            return True
+
     def refresh_equity_ohlc_series(
         self,
         *,
@@ -1526,11 +1556,7 @@ class Cache24PriceManager(CachePriceManagerBase):
                 if base_cachedb:
                     try:
                         ohlc24_raw = os.path.join(base_cachedb, cache_ohlc_24h_filename(sym_eq))
-                        with generation_transaction(ohlc24_raw) as ohlc24_target:
-                            save_json_state(
-                                ohlc24_target,
-                                {"ts": eff_now, "symbol": sym_eq, "points": eff_pts},
-                            )
+                        self.save_ohlc_24h_snapshot(ohlc24_raw, sym_eq, eff_pts, now_ts=eff_now)
                     except Exception as exc:
                         print(f"[{self.cls_name}][Error] save cache_ohlc_24h {sym_eq}: {exc}")
                 any_refreshed = True

@@ -6390,7 +6390,7 @@ def test_twin_bug_elimination_and_by_construction_refactors(tmp_path):
     fake_t212_cls = type(
         "FakeT212Provider",
         (),
-        {"_client": lambda self: SimpleNamespace(get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "currentPrice": 152.5}])},
+        {"portfolio_mark_prices": lambda self: {"NVDA_US_EQ": 152.5}},
     )
     with (
         mock.patch.object(mc_mod._t212_prov_mod, "T212Provider", fake_t212_cls),
@@ -7378,10 +7378,9 @@ def test_free_balance_ssot_refactor_atomic_locked_xstock_reconcile_and_t212_repr
     vb_t212_p.write_text(json.dumps(cached_t212), encoding="utf-8")
     import intelligence.sentiment.collectors.microstructure_collector as _mc_mod
     import providers.t212_provider as _t212_mod
-    fake_t212_cli = SimpleNamespace(get_portfolio=lambda: [{"ticker": "SPCX_US_EQ", "currentPrice": 130.0}])
     class _FakeT212Prov:
-        def _client(self):
-            return fake_t212_cli
+        def portfolio_mark_prices(self):
+            return {"SPCX_US_EQ": 130.0}
     monkeypatch.setattr(_t212_mod, "T212Provider", _FakeT212Prov)
     monkeypatch.setattr(_mc_mod, "_LAST_T212_PORTFOLIO_POLL_TS", 0.0)
     assert refresh_stale_t212_cached_positions(cached_t212, str(vb_t212_p), now_s) is True
@@ -8330,6 +8329,142 @@ def test_cycle16_unmatched_cycle_pos_peak_scope_parity_and_equity_quote_provenan
     assert pt_end2end["AMD_US_EQ"]["market_state"] == "PRE"
     assert pt_end2end["AMD_US_EQ"]["quote_age_min"] == pytest.approx(0.2, abs=0.1)
 
+
+def test_evaluator_write_purity_ohlc_single_writer_and_t212_cache_first(tmp_path, monkeypatch):
+    """Verify Priority 1 + Priority 4 structural safeguards:
+    1. price_series_evaluator.py is 100% pure zero-I/O, all evaluators/*.py forbid disk writes,
+       cache_ohlc_24h_* has a single canonical locked writer (Cache24PriceManager.save_ohlc_24h_snapshot),
+       and intelligence/ forbids private ._client provider bypasses (all enforced statically via AST).
+    2. T212Provider.portfolio_mark_prices() exposes a clean public price facade.
+    3. refresh_stale_t212_cached_positions serves fresh Layer 3 prices/cache_current_price.json
+       with ZERO T212 REST calls, and falls back to T212Provider.portfolio_mark_prices() when stale/missing.
+    """
+    from pathlib import Path
+    from cacheprice import Cache24PriceManager
+    import intelligence.sentiment.collectors.microstructure_collector as mc_mod
+    from providers.t212_provider import T212Provider
+    from verify_tools.ssot_ast_audit import audit_layer_dag_ast, audit_state_file_owners_ast
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    # 1. Positive + negative AST checks
+    assert audit_layer_dag_ast(repo_root, rel_paths=["intelligence/sentiment/evaluators/price_series_evaluator.py"]) == []
+    assert audit_layer_dag_ast(repo_root, rel_paths=["intelligence/sentiment/collectors/microstructure_collector.py"]) == []
+    assert audit_state_file_owners_ast(repo_root, rel_paths=["cacheprice.py", "intelligence/sentiment/collectors/microstructure_collector.py"]) == []
+
+    synth = tmp_path / "synth_p14"
+    (synth / "intelligence" / "sentiment" / "evaluators").mkdir(parents=True)
+    (synth / "intelligence" / "sentiment" / "collectors").mkdir(parents=True)
+    (synth / "intelligence" / "sentiment" / "evaluators" / "price_series_evaluator.py").write_text(
+        "import os\nfrom state_io import save_json_state\n"
+        "def bad(p):\n    save_json_state(p, {})\n",
+        encoding="utf-8",
+    )
+    (synth / "intelligence" / "sentiment" / "collectors" / "rogue_col.py").write_text(
+        "from cachepaths import cache_ohlc_24h_filename\n"
+        "from state_io import save_json_state\n"
+        "def bad(prov, sym):\n"
+        "    _ = prov._client()\n"
+        "    p = cache_ohlc_24h_filename(sym)\n"
+        "    save_json_state(p, {'points': []})\n",
+        encoding="utf-8",
+    )
+    dag_bad = audit_layer_dag_ast(
+        synth,
+        rel_paths=[
+            "intelligence/sentiment/evaluators/price_series_evaluator.py",
+            "intelligence/sentiment/collectors/rogue_col.py",
+        ],
+    )
+    assert any("pure valuation module must not import disk/state I/O modules" in v for v in dag_bad)
+    assert any("stateless evaluator must not call disk writer save_json_state()" in v for v in dag_bad)
+    assert any("private provider ._client access in intelligence/" in v for v in dag_bad)
+    own_bad = audit_state_file_owners_ast(synth, rel_paths=["intelligence/sentiment/collectors/rogue_col.py"])
+    assert any("direct raw write of cache_ohlc_24h_filename via save_json_state()" in v for v in own_bad)
+
+    # 2. Cache24PriceManager.save_ohlc_24h_snapshot preserves fresh equity OHLCV under lock
+    now_s = 1_795_950_000.0
+    cdb = tmp_path / "cachedb"
+    (cdb / "prices").mkdir(parents=True)
+    (cdb / "state").mkdir(parents=True)
+    ohlc_p = cdb / "prices" / "cache_ohlc_24h_NVDA_US_EQ.json"
+    pts_cm = [[int((now_s - (24 - i) * 3600) * 1000), 140.0 + i * 0.1, 100.0] for i in range(25)]
+    pts_fb = [[int((now_s - (24 - i) * 3600) * 1000), 999.0, 100.0] for i in range(25)]
+    assert Cache24PriceManager.save_ohlc_24h_snapshot(str(ohlc_p), "NVDA_US_EQ", pts_cm, now_ts=now_s - 20.0) is True
+    assert (
+        Cache24PriceManager.save_ohlc_24h_snapshot(
+            str(ohlc_p), "NVDA_US_EQ", pts_fb, now_ts=now_s, preserve_fresh_equity_sec=240.0
+        )
+        is False
+    )
+    assert json.loads(ohlc_p.read_text(encoding="utf-8"))["points"][0][1] == pytest.approx(140.0)
+
+    # 3. T212Provider.portfolio_mark_prices() public facade
+    t212_p = T212Provider()
+    monkeypatch.setattr(
+        t212_p,
+        "_client",
+        lambda: SimpleNamespace(
+            get_portfolio=lambda: [
+                {"ticker": "nvda_us_eq", "currentPrice": 144.5},
+                {"ticker": "BAD_EQ", "currentPrice": 0.0},
+            ]
+        ),
+    )
+    assert t212_p.portfolio_mark_prices() == {"NVDA_US_EQ": 144.5}
+
+    # 4. refresh_stale_t212_cached_positions: Layer 3 cache_current_price.json cache-first (0 REST), then fallback when stale
+    vb_path = cdb / "state" / "portfolio_positions_state.json"
+    old_bal_ts = now_s - 600.0
+    cached_bals = {
+        "pos:t212:NVDA_US_EQ": {
+            "venue": "t212",
+            "symbol": "NVDA_US_EQ",
+            "free_base": 2.0,
+            "price": 130.0,
+            "value_usd": 260.0,
+            "ts": old_bal_ts,
+        }
+    }
+    vb_path.write_text(json.dumps(cached_bals), encoding="utf-8")
+    cp_path = cdb / "prices" / "cache_current_price.json"
+    cp_path.write_text(
+        json.dumps(
+            {
+                "ts": now_s - 15.0,
+                "items": {"NVDA_US_EQ": [[int((now_s - 15.0) * 1000), 146.25]]},
+                "fetchtime": {"NVDA_US_EQ": int((now_s - 15.0) * 1000)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    rest_calls = {"t212": 0}
+
+    class _CountingT212Provider:
+        def portfolio_mark_prices(self):
+            rest_calls["t212"] += 1
+            return {"NVDA_US_EQ": 149.0}
+
+    monkeypatch.setattr(mc_mod._t212_prov_mod, "T212Provider", _CountingT212Provider)
+    monkeypatch.setattr(mc_mod, "_LAST_T212_PORTFOLIO_POLL_TS", 0.0)
+    monkeypatch.setattr(mc_mod, "is_symbol_market_open", lambda _sym, _ts=None: True)
+
+    assert mc_mod.refresh_stale_t212_cached_positions(cached_bals, str(vb_path), now_s, max_age_sec=180.0) is True
+    assert rest_calls["t212"] == 0
+    assert cached_bals["pos:t212:NVDA_US_EQ"]["price"] == pytest.approx(146.25)
+    assert cached_bals["pos:t212:NVDA_US_EQ"]["value_usd"] == pytest.approx(292.5)
+    assert cached_bals["pos:t212:NVDA_US_EQ"]["base_bal_ts"] == pytest.approx(old_bal_ts)
+
+    # Now make cache_current_price.json stale (>180s) -> falls back cleanly to public portfolio_mark_prices()
+    cp_path.write_text(
+        json.dumps({"ts": now_s - 900.0, "items": {"NVDA_US_EQ": [[int((now_s - 900.0) * 1000), 146.25]]}}),
+        encoding="utf-8",
+    )
+    cached_bals["pos:t212:NVDA_US_EQ"]["ts"] = now_s - 600.0
+    assert mc_mod.refresh_stale_t212_cached_positions(cached_bals, str(vb_path), now_s, max_age_sec=180.0) is True
+    assert rest_calls["t212"] == 1
+    assert cached_bals["pos:t212:NVDA_US_EQ"]["price"] == pytest.approx(149.0)
+    assert cached_bals["pos:t212:NVDA_US_EQ"]["value_usd"] == pytest.approx(298.0)
 
 
 
