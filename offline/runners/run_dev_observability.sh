@@ -10,10 +10,10 @@ RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$RUNNER_DIR/load_dev_backtest_env.sh"
 cd "$ROOT"
 
-mkdir -p "$ROOT/logs" "$ROOT/cachedb/system"
+mkdir -p "$ROOT/logs" "$ROOT/cachedb/llm"
 LOCK="${DEV_OBSERVABILITY_LOCK:-/tmp/dev_ai_observability.lock}"
-STATUS_7D="$ROOT/cachedb/system/ai_attribution_status.json"
-STATUS_30D="$ROOT/cachedb/system/ai_attribution_30d.json"
+STATUS_7D="$ROOT/cachedb/llm/ai_attribution_status.json"
+STATUS_30D="$ROOT/cachedb/llm/ai_attribution_30d.json"
 LOG_7D="$ROOT/logs/ai_attribution_7d.log"
 LOG_30D="$ROOT/logs/ai_attribution_30d.log"
 
@@ -61,7 +61,7 @@ do_check() {
     local scp_base fetched=0
     scp_base="$(dev_remote_scp_prefix)"
     if scp -o BatchMode=yes -o ConnectTimeout=4 -P "$DEV_PORT" \
-        "$scp_base/cachedb/system/$remote_name" "$target_file" >/dev/null 2>&1; then
+        "$scp_base/cachedb/llm/$remote_name" "$target_file" >/dev/null 2>&1; then
         fetched=1
     fi
     if [ ! -f "$target_file" ]; then

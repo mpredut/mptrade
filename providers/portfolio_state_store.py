@@ -11,7 +11,7 @@ Pure in-memory accounting, deduplication, and multi-venue NAV math live exclusiv
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Collection, Mapping, Optional
 
 from cachepaths import (
     CACHE_BINANCE_BALANCE_FILENAME,
@@ -116,6 +116,7 @@ def upsert_portfolio_positions_snapshot(
     updated_positions: Mapping[str, Any],
     *,
     fallback_state: Optional[Mapping[str, Any]] = None,
+    drop_symbols: Optional[Collection[str]] = None,
     read_disk: bool = True,
     save_fn: Optional[Callable[..., Any]] = None,
     indent: int = 2,
@@ -125,6 +126,7 @@ def upsert_portfolio_positions_snapshot(
         pos_path,
         updated_positions,
         fallback_state=fallback_state,
+        drop_symbols=drop_symbols,
         read_disk=read_disk,
         save_fn=save_fn,
         indent=indent,

@@ -78,7 +78,11 @@ os.environ["NOTIFICATION_QUEUE_FILE"] = os.path.join(
 _cachedb_tmp = tempfile.TemporaryDirectory(
     prefix="mptrade-tests-cachedb-",
 )
+_statedb_tmp = tempfile.TemporaryDirectory(
+    prefix="mptrade-tests-statedb-",
+)
 os.environ["MPTRADE_CACHEDB_DIR"] = _cachedb_tmp.name
+os.environ["MPTRADE_STATEDB_DIR"] = _statedb_tmp.name
 
 _t212_cfg_tmp = tempfile.TemporaryDirectory(
     prefix="mptrade-tests-t212-cfg-",
@@ -94,8 +98,9 @@ from notify_engine import mailer as _mailer_init  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _isolate_cachedb_dir(tmp_path, monkeypatch):
-    """Keep every test isolated from live/rsynced cachedb and notification state files and reset runtime services."""
+    """Keep every test isolated from live/rsynced cachedb, statedb, and notification state files and reset runtime services."""
     monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path / "cachedb"))
+    monkeypatch.setenv("MPTRADE_STATEDB_DIR", str(tmp_path / "statedb"))
     monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(tmp_path / "notification_delivery_state.json"))
     monkeypatch.setenv("NOTIFICATION_QUEUE_FILE", str(tmp_path / "notify_queue.json"))
     monkeypatch.delenv("OPENAI_COMPAT_FALLBACK_API_KEY", raising=False)

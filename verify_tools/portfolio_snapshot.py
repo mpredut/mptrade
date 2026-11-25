@@ -11,6 +11,7 @@ total. It touches nothing.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import sys
 from datetime import datetime, timezone
@@ -21,28 +22,29 @@ CACHEDB_DIR = os.path.join(ROOT, "cachedb")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-from botcore import (  # noqa: E402
-    _parse_bool_flag,
-    add_store_true_cli_args,
-    http_request,
-    is_live_network_backfill_enabled,
-    optional_env,
-    parse_dotenv,
-    parse_iso_datetime_utc,
-    required_float_env,
-    safe_float,
-    safe_nonneg_float,
-    safe_pos_float,
-)
-from intelligence.macro_sentiment_ssot import load_venue_balances_state  # noqa: E402
-from instrument_registry import select_instruments  # noqa: E402
-from notify_engine import alertnotifiers as _alertnotifiers  # noqa: E402
-from providers.market_api import api as mkt  # noqa: E402
-from providers.portfolio_state_store import (  # noqa: E402
-    load_venue_balance_caches,
-    resolve_kraken_trade_cache_position,
-)
-from state_io import encode_json_payload, read_json_dict, save_json_state  # noqa: E402
+with contextlib.redirect_stdout(sys.stderr):
+    from botcore import (  # noqa: E402
+        _parse_bool_flag,
+        add_store_true_cli_args,
+        http_request,
+        is_live_network_backfill_enabled,
+        optional_env,
+        parse_dotenv,
+        parse_iso_datetime_utc,
+        required_float_env,
+        safe_float,
+        safe_nonneg_float,
+        safe_pos_float,
+    )
+    from intelligence.macro_sentiment_ssot import load_venue_balances_state  # noqa: E402
+    from instrument_registry import select_instruments  # noqa: E402
+    from notify_engine import alertnotifiers as _alertnotifiers  # noqa: E402
+    from providers.market_api import api as mkt  # noqa: E402
+    from providers.portfolio_state_store import (  # noqa: E402
+        load_venue_balance_caches,
+        resolve_kraken_trade_cache_position,
+    )
+    from state_io import encode_json_payload, read_json_dict, save_json_state  # noqa: E402
 from strategies.state_store import state_path_for  # noqa: E402
 
 _ROOT_CONFIG = parse_dotenv(os.path.join(ROOT, "config.env"))
@@ -269,21 +271,25 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    kr = kraken_rows()
-    hl = hl_row()
-    real_total = sum(safe_float(r.get("realized_net"), 0.0) for r in kr if isinstance(r, dict) and not _parse_bool_flag(r.get("paper"), False))
-    upnl_total = sum(safe_float(r.get("unrealized"), 0.0) for r in kr if isinstance(r, dict) and not _parse_bool_flag(r.get("paper"), False))
-    snap = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "kraken": kr, "hl": hl,
-            "kraken_real_realized_net": round(real_total, 2),
-            "kraken_real_unrealized": round(upnl_total, 2)}
+    stdout_guard = contextlib.redirect_stdout(sys.stderr) if args.json else contextlib.nullcontext()
+    with stdout_guard:
+        kr = kraken_rows()
+        hl = hl_row()
+        real_total = sum(safe_float(r.get("realized_net"), 0.0) for r in kr if isinstance(r, dict) and not _parse_bool_flag(r.get("paper"), False))
+        upnl_total = sum(safe_float(r.get("unrealized"), 0.0) for r in kr if isinstance(r, dict) and not _parse_bool_flag(r.get("paper"), False))
+        snap = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "kraken": kr, "hl": hl,
+                "kraken_real_realized_net": round(real_total, 2),
+                "kraken_real_unrealized": round(upnl_total, 2)}
 
-    if args.alert:
-        fired = run_alerts(kr)
-        snap["alerts_fired"] = fired
+        if args.alert:
+            fired = run_alerts(kr)
+            snap["alerts_fired"] = fired
 
     if args.json:
-        print(encode_json_payload(snap))
+        # Write raw JSONL directly to stdout so log.py's timestamped builtins.print never corrupts JSONL records.
+        sys.stdout.write(encode_json_payload(snap) + "\n")
+        sys.stdout.flush()
         return 0
 
     if args.alert:

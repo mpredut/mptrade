@@ -834,3 +834,79 @@ def test_structural_7d_wave_evaluator_and_sibling_pred_funding_sync():
     reconcile_sibling_flow_and_liq_regimes(micro, {"BTCUSDC": {"price": 60000.0}, "BTCUSDT": {"price": 60000.0}})
     assert micro["BTCUSDT"]["funding_rate"] == micro["BTCUSDC"]["funding_rate"]
     assert micro["BTCUSDT"]["pred_funding_rate"] == micro["BTCUSDC"]["pred_funding_rate"]
+
+
+def test_portfolio_positions_prunes_disabled_and_observe_only_symbols(tmp_path):
+    """PortfolioPositionsStateStore.upsert_locked prunes dropped symbols while preserving closed-RTH tradable equities."""
+    from providers.portfolio_state_store import load_portfolio_positions_state_dict, upsert_portfolio_positions_snapshot
+
+    cdb = tmp_path / "cachedb"
+    pos_path = tmp_path / "statedb" / "portfolio" / "portfolio_positions_state.json"
+    pos_path.parent.mkdir(parents=True, exist_ok=True)
+    seed = {
+        "pos:binance:BTCUSDC": {"venue": "binance", "symbol": "BTCUSDC", "free_base": 0.01, "value_usd": 600.0},
+        "pos:kraken:ADAUSD": {"venue": "kraken", "symbol": "ADAUSD", "free_base": 1.0, "value_usd": 0.15},
+        "pos:kraken:ANTxUSD": {"venue": "kraken", "symbol": "ANTxUSD", "free_base": 0.01, "value_usd": 0.9},
+        "pos:t212:NVDA_US_EQ": {"venue": "t212", "symbol": "NVDA_US_EQ", "free_base": 1.5, "value_usd": 220.0},
+    }
+    assert upsert_portfolio_positions_snapshot(str(pos_path), seed) is True
+    assert upsert_portfolio_positions_snapshot(
+        str(pos_path),
+        {"pos:binance:BTCUSDC": {"venue": "binance", "symbol": "BTCUSDC", "free_base": 0.02, "value_usd": 1200.0}},
+        drop_symbols={"ADAUSD", "TAOUSD", "ANTXUSD", "ANT_US_EQ"},
+    ) is True
+    loaded = load_portfolio_positions_state_dict(str(cdb))
+    assert "pos:binance:BTCUSDC" in loaded
+    assert "pos:t212:NVDA_US_EQ" in loaded
+    assert "pos:kraken:ADAUSD" not in loaded
+    assert "pos:kraken:ANTxUSD" not in loaded
+
+
+def test_survival_and_microstructure_refresh_expired_t_trend_entries(monkeypatch):
+    """Expired cache_T_trend entries (>7d TTL) trigger estimate_T refresh when allow_network=True; synthetic entries without ts stay untouched."""
+    from intelligence.internal.state import survival as surv
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends
+
+    now_s = 1_795_645_000.0
+    stale_ent = {"T": 7, "n": 180, "median_d": 3.0, "p90_d": 6.5, "ts": now_s - 10.0 * 86400.0}
+    fresh_ent = {"T": 9, "n": 200, "median_d": 3.4, "p90_d": 7.2, "ts": now_s - 60.0}
+    assert surv.is_t_cache_entry_fresh(stale_ent, now_ts=now_s) is False
+    assert surv.is_t_cache_entry_fresh(fresh_ent, now_ts=now_s) is True
+    assert surv.is_t_cache_entry_fresh({"median_d": 3.0, "p90_d": 6.5}, missing_ts_is_fresh=True, now_ts=now_s) is True
+
+    calls: list[str] = []
+
+    def _fake_est(sym: str) -> dict:
+        calls.append(sym)
+        return dict(fresh_ent)
+
+    monkeypatch.setattr(surv, "get_cached_t_entry", lambda _s: dict(stale_ent))
+    monkeypatch.setattr(surv, "estimate_T", _fake_est)
+    surv._ON_DEMAND_T_MISS_TS.clear()
+
+    m = surv.get_trend_survival_metrics("BTCUSDC", trend_duration_seconds=3600.0, allow_network=True)
+    assert calls == ["BTCUSDC"]
+    assert m["p90_days"] == 7.2
+
+    calls.clear()
+    pt = {"BTCUSDC": {"price": 60000.0}, "ETHUSDC": {"price": 1700.0}}
+    t_map = {"BTCUSDC": dict(stale_ent), "ETHUSDC": {"median_d": 2.5, "p90_d": 5.5}}
+    enrich_cross_venue_trends(pt, {}, {}, {}, {}, t_map, {}, allow_network=True, estimate_t_fn=_fake_est)
+    assert calls == ["BTCUSDC"]
+    assert pt["BTCUSDC"]["weibull_p90_d"] == 7.2
+    assert pt["ETHUSDC"]["weibull_p90_d"] == 5.5
+
+
+def test_portfolio_snapshot_json_emits_single_valid_json_line(monkeypatch, capsys):
+    """verify_tools/portfolio_snapshot.py --json emits strictly valid JSON without timestamp prefix or dotenv noise."""
+    import verify_tools.portfolio_snapshot as ps_mod
+
+    monkeypatch.setattr(ps_mod, "kraken_rows", lambda: [{"engine": "Kraken HYPE", "paper": False, "qty": 0.0, "value_usd": 0.0, "realized_net": 1.0, "unrealized": 0.0}])
+    monkeypatch.setattr(ps_mod, "hl_row", lambda: {"engine": "HL HYPE (long-hold)", "qty": 0.0, "value_usd": 0.0, "cash_usd": 100.0})
+    monkeypatch.setattr(sys, "argv", ["portfolio_snapshot.py", "--json"])
+    assert ps_mod.main() == 0
+    out_lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    assert len(out_lines) == 1
+    parsed = json.loads(out_lines[0])
+    assert parsed["kraken_real_realized_net"] == 1.0
+    assert parsed["hl"]["cash_usd"] == 100.0

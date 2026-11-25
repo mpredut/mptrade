@@ -327,6 +327,25 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
 
 
 _T_CACHE_FILE_MEMO: dict = {}
+DEFAULT_T_CACHE_TTL_DAYS: float = 7.0
+
+
+def is_t_cache_entry_fresh(
+    entry: Any,
+    *,
+    ttl_days: float = DEFAULT_T_CACHE_TTL_DAYS,
+    now_ts: Optional[float] = None,
+    missing_ts_is_fresh: bool = False,
+) -> bool:
+    """Return True when a ``cache_T_trend.json`` entry is within its ``ttl_days`` freshness window."""
+    if not isinstance(entry, dict):
+        return False
+    ts_val = normalize_epoch_sec(entry.get("ts"), default=None)
+    if ts_val is None or ts_val <= 0.0:
+        return bool(missing_ts_is_fresh) and ("ts" not in entry or entry.get("ts") is None)
+    ttl_f = safe_pos_float(ttl_days, default=DEFAULT_T_CACHE_TTL_DAYS) or DEFAULT_T_CACHE_TTL_DAYS
+    eff_now = resolve_now_ts(now_ts)
+    return -60.0 <= (eff_now - ts_val) < ttl_f * 86400.0
 
 
 def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
@@ -392,12 +411,8 @@ def estimate_T(
     cache = CacheTTrendStore.read_cached_dict(t_cache_path, _T_CACHE_FILE_MEMO, max_entries=16)
 
     ent = _lookup_t_cache_entry(cache, symbol)
-    if ent:
-        ts_val = normalize_epoch_sec(ent.get("ts"), default=None)
-        if ts_val is not None:
-            now_curr = time.time()
-            if -60.0 <= (now_curr - ts_val) < ttl_f * 86400.0:
-                return ent
+    if ent and is_t_cache_entry_fresh(ent, ttl_days=ttl_f):
+        return ent
 
     sym_u = symbol.upper().strip()
     is_eq = is_equity_symbol(sym_u)
@@ -483,7 +498,10 @@ def get_trend_survival_metrics(
     cached_entry = get_cached_t_entry(symbol)
     if cached_entry:
         _apply_entry(cached_entry)
-    elif _parse_bool_flag(allow_network, False):
+    if (
+        (not cached_entry or not is_t_cache_entry_fresh(cached_entry, missing_ts_is_fresh=True))
+        and _parse_bool_flag(allow_network, False)
+    ):
         sym_key = str(symbol or "").strip().upper()
         now_s = time.time()
         last_miss = _ON_DEMAND_T_MISS_TS.get(sym_key, 0.0)
@@ -491,7 +509,7 @@ def get_trend_survival_metrics(
             try:
                 _est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)
                 est = _est_fn(symbol)
-                if est:
+                if est and (not cached_entry or is_t_cache_entry_fresh(est, missing_ts_is_fresh=True)):
                     _ON_DEMAND_T_MISS_TS.pop(sym_key, None)
                     _apply_entry(est, require_n=True)
                 elif sym_key:
@@ -539,7 +557,7 @@ def estimate_remaining_trend_hours(
             or _resolve_facade_attr("fetch_klines", fetch_klines, _ORIG_FETCH_KLINES) is not _ORIG_FETCH_KLINES
         )
         if (
-            cached_ent is None
+            (cached_ent is None or not is_t_cache_entry_fresh(cached_ent, missing_ts_is_fresh=True))
             and (_parse_bool_flag(allow_network, False) or is_est_patched)
             and (is_live_network_backfill_enabled() or is_est_patched)
         ):
@@ -547,14 +565,14 @@ def estimate_remaining_trend_hours(
             now_s = time.time()
             if (now_s - _ON_DEMAND_T_MISS_TS.get(sym_key, 0.0)) >= _ON_DEMAND_T_MISS_TTL_SEC or is_est_patched:
                 try:
-                    cached_ent = _est_fn(symbol)
-                    if cached_ent is None:
-                        lru_dict_put(_ON_DEMAND_T_MISS_TS, sym_key, now_s, 128)
-                    else:
+                    refreshed = _est_fn(symbol)
+                    if refreshed and (cached_ent is None or is_t_cache_entry_fresh(refreshed, missing_ts_is_fresh=True)):
+                        cached_ent = refreshed
                         _ON_DEMAND_T_MISS_TS.pop(sym_key, None)
+                    else:
+                        lru_dict_put(_ON_DEMAND_T_MISS_TS, sym_key, now_s, 128)
                 except Exception:
                     lru_dict_put(_ON_DEMAND_T_MISS_TS, sym_key, now_s, 128)
-                    cached_ent = None
         if isinstance(cached_ent, dict):
             if med_f is None:
                 med_f = safe_pos_float(cached_ent.get("median_d"), default=None)

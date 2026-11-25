@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Collection, Mapping, Optional
 
 from cachepaths import PORTFOLIO_POSITIONS_STATE_FILENAME
 from state_io import generation_file_lock, read_json_dict, save_json_state
@@ -45,6 +45,7 @@ class PortfolioPositionsStateStore(StateStoreBase):
         updated_positions: Mapping[str, Any],
         *,
         fallback_state: Optional[Mapping[str, Any]] = None,
+        drop_symbols: Optional[Collection[str]] = None,
         read_disk: bool = True,
         save_fn: Optional[Callable[..., Any]] = None,
         indent: int = 2,
@@ -82,12 +83,22 @@ class PortfolioPositionsStateStore(StateStoreBase):
                     if isinstance(k, str) and k.startswith("pos:") and isinstance(v, Mapping)
                 }
             )
-            updated_upper = {k.upper() for k in pos_updates}
-            base_pos = {
-                k: v
-                for k, v in src_pos.items()
-                if k in pos_updates or k.upper() not in updated_upper
+            drop_upper = {
+                str(s).strip().upper()
+                for s in (drop_symbols or ())
+                if isinstance(s, str) and str(s).strip()
             }
+            updated_upper = {k.upper() for k in pos_updates}
+            base_pos: dict[str, Any] = {}
+            for k, v in src_pos.items():
+                if k not in pos_updates and k.upper() in updated_upper:
+                    continue
+                if drop_upper and k not in pos_updates:
+                    sym_k = k.split(":", 2)[2].strip().upper() if k.count(":") >= 2 else ""
+                    sym_v = str(v.get("symbol") or "").strip().upper() if isinstance(v, Mapping) else ""
+                    if (sym_k and sym_k in drop_upper) or (sym_v and sym_v in drop_upper):
+                        continue
+                base_pos[k] = v
             merged_raw = {**base_pos, **pos_updates}
             sanitized = sanitize_balance_state_payload(merged_raw, prev_state=src_pos)
             should_write = (

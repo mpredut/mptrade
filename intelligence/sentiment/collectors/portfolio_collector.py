@@ -1668,12 +1668,13 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                         except Exception:
                             pass
 
-            # 2. Layer 5 derived position snapshots (pos:* ONLY) -> cachedb/state/portfolio_positions_state.json
+            # 2. Layer 5 derived position snapshots (pos:* ONLY) -> statedb/portfolio/portfolio_positions_state.json
             pos_path = resolve_portfolio_positions_state_path(cache_dir)
             upsert_portfolio_positions_snapshot(
                 pos_path,
                 updated_bals,
                 fallback_state=cached_bals,
+                drop_symbols=_resolve_non_tradable_registry_symbols(cache_dir),
                 read_disk=read_disk,
                 save_fn=resolve_save_json_state(local_fn=save_json_state),
             )
