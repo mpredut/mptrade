@@ -164,13 +164,19 @@ def resolve_fee_schedule_cache_path(
     return CacheFeeScheduleStore.resolve_schedule_path(cache_dir, migrate=migrate)
 
 
+def _clean_cache_dir(cache_dir: Optional[str | os.PathLike[str]]) -> Optional[str]:
+    if not cache_dir:
+        return None
+    return clean_scalar_str(os.fspath(cache_dir) if isinstance(cache_dir, os.PathLike) else cache_dir)
+
+
 def read_persisted_venue_fee_schedule(
-    cache_dir: Optional[str] = None,
+    cache_dir: Optional[str | os.PathLike[str]] = None,
     *,
     read_json_fn: Optional[Callable[[str], Any]] = None,
 ) -> Dict[str, Any]:
     """Read exchange-truth fee schedule & BNB reserve cache via ``CacheFeeScheduleStore`` with legacy fallback."""
-    if not cache_dir or not (clean_dir := clean_scalar_str(cache_dir)):
+    if not (clean_dir := _clean_cache_dir(cache_dir)):
         return {}
     sched = CacheFeeScheduleStore.read_schedule(clean_dir, read_json_fn=read_json_fn)
     if sched:
@@ -775,23 +781,19 @@ class T212FeeMaintainer(VenueFeeMaintainerBase):
         }
 
 
-def read_persisted_venue_fee_spec(
+def _extract_venue_fee_spec_from_schedule(
+    payload: Any,
     venue: str,
     symbol: str = "",
     *,
-    cache_dir: Optional[str] = None,
-    now_ts: Optional[float] = None,
+    eff_now: float,
 ) -> Dict[str, Any]:
-    """Read live persisted fee tier and maker/taker bps when an explicit cache_dir is provided."""
-    if not cache_dir or not clean_scalar_str(cache_dir):
-        return {}
     v_norm = normalize_venue_name(venue)
     if not v_norm:
         return {}
     m_cls = VENUE_FEE_MAINTAINER_REGISTRY.get(v_norm)
     if m_cls is not None and (sym_override := m_cls.static_symbol_fee_override(symbol)):
         return sym_override
-    payload = read_persisted_venue_fee_schedule(cache_dir)
     if not isinstance(payload, dict) or not payload:
         return {}
     venues_map = payload.get("venues")
@@ -804,7 +806,6 @@ def read_persisted_venue_fee_spec(
     if max_age_sec is None:
         iv_sec = safe_pos_float(payload.get("interval_sec"), default=14400.0) or 14400.0
         max_age_sec = iv_sec * 6.0
-    eff_now = resolve_now_ts(now_ts)
     entry_ts = safe_pos_float(v_entry.get("ts"), default=safe_pos_float(payload.get("ts"), default=None))
     if not is_cache_fresh(entry_ts, eff_now, max_age_sec):
         return {}
@@ -829,28 +830,45 @@ def read_persisted_venue_fee_spec(
     return out
 
 
+def read_persisted_venue_fee_spec(
+    venue: str,
+    symbol: str = "",
+    *,
+    cache_dir: Optional[str | os.PathLike[str]] = None,
+    now_ts: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Read live persisted fee tier and maker/taker bps when an explicit cache_dir is provided."""
+    cdir = _clean_cache_dir(cache_dir)
+    if not cdir:
+        return {}
+    v_norm = normalize_venue_name(venue)
+    if not v_norm:
+        return {}
+    m_cls = VENUE_FEE_MAINTAINER_REGISTRY.get(v_norm)
+    if m_cls is not None and (sym_override := m_cls.static_symbol_fee_override(symbol)):
+        return sym_override
+    payload = read_persisted_venue_fee_schedule(cdir)
+    return _extract_venue_fee_spec_from_schedule(payload, v_norm, symbol, eff_now=resolve_now_ts(now_ts))
+
+
 def build_persisted_venue_fee_resolver(
-    cache_dir: Optional[str],
+    cache_dir: Optional[str | os.PathLike[str]],
     *,
     now_ts: Optional[float] = None,
 ) -> Optional[Callable[[str, str], Dict[str, Any]]]:
-    """Build a memoized ``(venue, symbol) -> fee_spec`` resolver from persisted ``cache_fee_schedule.json``."""
-    cdir = clean_scalar_str(cache_dir)
+    """Preload persisted ``cache_fee_schedule.json`` once and return a pure memoized ``(venue, symbol) -> fee_spec`` resolver."""
+    cdir = _clean_cache_dir(cache_dir)
     if not cdir:
         return None
-    eff_now: Optional[float] = safe_nonneg_float(now_ts, default=None) if now_ts is not None else None
+    payload = read_persisted_venue_fee_schedule(cdir)
+    eff_now = resolve_now_ts(now_ts)
     memo: dict[tuple[str, str], Dict[str, Any]] = {}
 
     def _resolve(venue: str, symbol: str = "") -> Dict[str, Any]:
-        nonlocal eff_now
-        if eff_now is None:
-            eff_now = resolve_now_ts(None)
-        key = (normalize_venue_name(venue), (clean_scalar_str(symbol) or "").upper())
-        if key in memo:
-            return memo[key]
-        res = read_persisted_venue_fee_spec(venue, symbol, cache_dir=cdir, now_ts=eff_now)
-        memo[key] = res
-        return res
+        key = (normalize_venue_name(venue), clean_scalar_str(symbol) or "")
+        if key not in memo:
+            memo[key] = _extract_venue_fee_spec_from_schedule(payload, venue, symbol, eff_now=eff_now)
+        return dict(memo[key])
 
     return _resolve
 

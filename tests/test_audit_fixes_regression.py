@@ -9589,7 +9589,8 @@ def test_storage_root_separation_20_1to1_stores_and_pure_indirect_evaluator_guar
         "    scan_cached_price_archive_high_since(cdir, [], 0)\n"
         "    read_first_cached_dict(cdir, 'k', 'f.json')\n"
         "    read_persisted_venue_fee_spec('binance', 'BTCUSDC', cache_dir=cdir)\n"
-        "    read_persisted_venue_fee_schedule(cdir)\n",
+        "    read_persisted_venue_fee_schedule(cdir)\n"
+        "    build_persisted_venue_fee_resolver(cdir)\n",
         encoding="utf-8",
     )
     ev_errs = audit_layer_dag_ast(fake_root, rel_paths=["intelligence/sentiment/evaluators/bad_indirect_evaluator.py"])
@@ -9598,6 +9599,7 @@ def test_storage_root_separation_20_1to1_stores_and_pure_indirect_evaluator_guar
     assert any("read_first_cached_dict" in e for e in ev_errs)
     assert any("read_persisted_venue_fee_spec" in e for e in ev_errs)
     assert any("read_persisted_venue_fee_schedule" in e for e in ev_errs)
+    assert any("build_persisted_venue_fee_resolver" in e for e in ev_errs)
 
     (fake_root / "rogue_20.py").write_text(
         "from state_io import save_json_state\n"

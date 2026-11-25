@@ -296,11 +296,13 @@ EVALUATOR_FORBIDDEN_INDIRECT_READ_PREFIXES = (
     "load_cached_",
     "scan_cached_",
     "read_persisted_",
+    "build_persisted_",
 )
 EVALUATOR_FORBIDDEN_INDIRECT_READ_FNS = frozenset({
     "read_first_cached_dict",
     "read_persisted_venue_fee_spec",
     "read_persisted_venue_fee_schedule",
+    "build_persisted_venue_fee_resolver",
 })
 FORBIDDEN_PROVIDER_UPWARD = frozenset({
     "cacheInterface",
