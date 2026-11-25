@@ -237,7 +237,52 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         self._loaded_counts = {}
         self._account_cache_dirty = False
         self._last_complete_sync_at_ms = 0
+        self._persisted_ts_stat_cache: Optional[tuple[tuple[int, int, int, int], int]] = None
         super().__init__(*args, **kwargs)
+
+    @staticmethod
+    def _scalar_ts_to_ms(raw: Any) -> int:
+        """Convert an epoch-seconds (or epoch-ms) scalar timestamp to milliseconds."""
+        val = safe_pos_float(raw, default=None)
+        if val is None:
+            return 0
+        return math.trunc(val * 1000.0) if val < 10_000_000_000.0 else math.trunc(val)
+
+    def _persisted_max_ts(self) -> int:
+        """Return on-disk freshness (ms), falling back to sidecar-less JSON snapshots with ``os.stat`` caching."""
+        meta_ts = super()._persisted_max_ts()
+        if meta_ts > 0 or self.append_persist or not os.path.exists(self.filename):
+            return meta_ts
+        try:
+            st = os.stat(self.filename)
+            sig = (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
+            cached = getattr(self, "_persisted_ts_stat_cache", None)
+            if cached is not None and cached[0] == sig:
+                return cached[1]
+            data = read_json_dict(self.filename)
+            if not isinstance(data, dict):
+                return meta_ts
+            best_ms = meta_ts
+            # ``fetchtime`` values are already in milliseconds (including synthetic test ms like 1000).
+            ft_map = data.get("fetchtime")
+            if isinstance(ft_map, dict):
+                for v in ft_map.values():
+                    if (fv := safe_pos_float(v, default=None)) is not None:
+                        if (v_ms := math.trunc(fv)) > best_ms:
+                            best_ms = v_ms
+            # ``symbol_verified_ts``, ``verified_ts``, and ``ts`` are epoch seconds.
+            sym_ver = data.get("symbol_verified_ts")
+            if isinstance(sym_ver, dict):
+                for v in sym_ver.values():
+                    if (v_ms := self._scalar_ts_to_ms(v)) > best_ms:
+                        best_ms = v_ms
+            for scalar_key in ("verified_ts", "ts"):
+                if (v_ms := self._scalar_ts_to_ms(data.get(scalar_key))) > best_ms:
+                    best_ms = v_ms
+            self._persisted_ts_stat_cache = (sig, best_ms)
+            return best_ms
+        except Exception:
+            return meta_ts
 
     def _is_account_cache(self):
         return bool(self._is_trade_account_cache or self._is_order_account_cache)
@@ -1305,25 +1350,6 @@ class CacheTradeManager(CacheAccountManagerBase):
     @staticmethod
     def _is_valid_item(trade):
         return CacheAccountManagerBase._is_valid_trade_fill_row(trade)
-
-    def _persisted_max_ts(self) -> float:
-        meta_ts = super()._persisted_max_ts()
-        if self.append_persist or not os.path.exists(self.filename):
-            return meta_ts
-        try:
-            data = read_json_dict(self.filename)
-            ft = data.get("fetchtime") if isinstance(data, dict) else None
-            if isinstance(ft, dict) and ft:
-                vals = [
-                    fv
-                    for v in ft.values()
-                    if (fv := safe_nonneg_float(v, default=None)) is not None
-                ]
-                if vals:
-                    return max(meta_ts, max(vals))
-        except Exception:
-            pass
-        return meta_ts
 
     def _save_state_to_file_impl(self) -> bool:
         if self.append_persist:
@@ -3314,6 +3340,16 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
             inferred[sym_k] = round(sym_ts, 3)
         return inferred
 
+    def _mem_max_ts(self) -> int:
+        best = super()._mem_max_ts()
+        best = max(best, self._scalar_ts_to_ms(getattr(self, "verified_ts", 0.0)))
+        sym_ver = getattr(self, "symbol_verified_ts", None)
+        if isinstance(sym_ver, dict):
+            for v in sym_ver.values():
+                if (v_ms := self._scalar_ts_to_ms(v)) > best:
+                    best = v_ms
+        return best
+
     def _reload_snapshot_from_disk(self):
         try:
             with self._generation_lock():
@@ -3822,6 +3858,7 @@ class CacheBalanceManager(CacheAccountManagerBase):
     ):
         self.venue = self._normalize_venue_arg(venue=venue, filename=filename, symbols=symbols)
         self.verified_ts: float = 0.0
+        self._doc_ts_ms: int = 0
         self.breakdown: dict[str, dict[str, float]] = {}
         super().__init__(
             sync_ts,
@@ -3883,6 +3920,10 @@ class CacheBalanceManager(CacheAccountManagerBase):
             if not isinstance(loaded, dict):
                 return
             doc_ts = normalize_epoch_sec(loaded.get("verified_ts") or loaded.get("ts"), default=None)
+            doc_max_ms = max(
+                self._scalar_ts_to_ms(loaded.get("ts")),
+                self._scalar_ts_to_ms(loaded.get("verified_ts")),
+            )
             raw_items = loaded.get("items") if isinstance(loaded.get("items"), dict) else {}
             cleaned: dict[str, list[dict[str, Any]]] = {}
             for a_k, a_val in raw_items.items():
@@ -3907,7 +3948,17 @@ class CacheBalanceManager(CacheAccountManagerBase):
             with self.lock:
                 self.cache = cleaned
                 self.verified_ts = safe_nonneg_float(loaded.get("verified_ts"), default=0.0) or 0.0
+                self._doc_ts_ms = doc_max_ms
                 self.breakdown = clean_bd
+
+    def _mem_max_ts(self) -> int:
+        return max(super()._mem_max_ts(), getattr(self, "_doc_ts_ms", 0))
+
+    def _reload_snapshot_from_disk(self) -> None:
+        try:
+            self._load_snapshot_state()
+        except Exception as exc:
+            print(f"[{self.cls_name}][Error] reload {self.filename}: {exc}")
 
     def get_remote_items(self, symbol, startTime) -> list[dict[str, Any]]:
         return []

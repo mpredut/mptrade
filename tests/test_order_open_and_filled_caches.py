@@ -418,6 +418,92 @@ def test_kraken_poll_loop_preserves_older_fills_outside_lookback_window(tmp_path
     assert [r["orderId"] for r in fi_after["items"]["HYPEUSD"]] == ["oid_old", "oid_new"]
 
 
+def test_sidecarless_account_caches_resync_from_disk_and_never_corrupt_balance_cache(tmp_path):
+    """Regression: CacheBalanceManager, CacheOrderOpenManager, and non-Binance CacheOrderFilledManager
+    persist JSON without a .meta sidecar; resync_mem_file() must detect newer disk snapshots via
+    CacheAccountManagerBase._persisted_max_ts() and reload cleanly (no NO-OP, no KeyError: 0)."""
+    import cacheaccount
+
+    t1_s = 1_795_000_000.0
+    t2_s = t1_s + 30.0
+    t1_ms = int(t1_s * 1000)
+    t2_ms = int(t2_s * 1000)
+
+    # 1. CacheBalanceManager: resyncs updated balances on get_balance()/get_all_balances() without KeyError
+    bal_p = tmp_path / "cache_balance_kraken.json"
+    cacheaccount.CacheBalanceManager.replace_venue_balances_snapshot(
+        str(bal_p),
+        {"USD": (1000.0, 0.0), "SPCXx": (5.0, 0.0)},
+        venue="kraken",
+        now_s=t1_s,
+        verified_ts=t1_s,
+        breakdown={"USD": {"USD": 1000.0}},
+    )
+    bal_mgr = cacheaccount.CacheBalanceManager(60, None, str(bal_p), read_only=True, venue="kraken")
+    assert bal_mgr._persisted_max_ts() == t1_ms
+    assert bal_mgr._mem_max_ts() == t1_ms
+    assert bal_mgr.get_balance("USD")["free"] == pytest.approx(1000.0)
+
+    # Update disk after reader is instantiated -> get_balance()/get_breakdown() must auto-reload cleanly
+    cacheaccount.CacheBalanceManager.replace_venue_balances_snapshot(
+        str(bal_p),
+        {"USD": (1250.5, 50.0), "SPCXx": (12.0, 0.0)},
+        venue="kraken",
+        now_s=t2_s,
+        verified_ts=t2_s,
+        breakdown={"USD": {"USD": 1250.5}},
+    )
+    assert bal_mgr._persisted_max_ts() == t2_ms
+    assert bal_mgr.get_balance("USD")["free"] == pytest.approx(1250.5)
+    assert bal_mgr.get_balance("SPCXx")["free"] == pytest.approx(12.0)
+    assert bal_mgr.get_breakdown("USD") == {"USD": 1250.5}
+    assert bal_mgr.get_all_balances()["USD"]["locked"] == pytest.approx(50.0)
+
+    # 2. CacheOrderOpenManager: resync_mem_file() reloads new open orders across venues without .meta
+    open_p = tmp_path / "cache_order_open_hyperliquid.json"
+    cacheaccount.CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(open_p),
+        {"HYPEUSDC": [{"orderId": "101", "side": "BUY", "price": 50.0, "origQty": 2.0, "status": "OPEN", "timestamp": t1_ms}]},
+        now_ms=t1_ms,
+        verified_ts=t1_s,
+    )
+    open_mgr = cacheaccount.CacheOrderOpenManager(30, None, str(open_p), read_only=True, venue="hyperliquid")
+    assert open_mgr._persisted_max_ts() == t1_ms
+    assert [r["orderId"] for r in open_mgr.cache["HYPEUSDC"]] == ["101"]
+
+    cacheaccount.CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(open_p),
+        {"HYPEUSDC": [{"orderId": "202", "side": "SELL", "price": 60.0, "origQty": 3.0, "status": "OPEN", "timestamp": t2_ms}]},
+        now_ms=t2_ms,
+        verified_ts=t2_s,
+    )
+    open_mgr.resync_mem_file()
+    assert [r["orderId"] for r in open_mgr.cache["HYPEUSDC"]] == ["202"]
+
+    # 3. Non-Binance CacheOrderFilledManager: resync_mem_file() reloads new fills without .meta
+    filled_p = tmp_path / "cache_order_filled_kraken.json"
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        str(filled_p),
+        {"HYPEUSD": [{"id": "f1", "orderId": "o1", "side": "BUY", "price": 50.0, "qty": 1.0, "time": t1_ms}]},
+        venue="kraken",
+        now_ms=t1_ms,
+        is_snapshot=False,
+    )
+    filled_mgr = cacheaccount.CacheOrderFilledManager(60, None, str(filled_p), read_only=True, venue="kraken")
+    assert filled_mgr._persisted_max_ts() == t1_ms
+    assert [r["orderId"] for r in filled_mgr.cache["HYPEUSD"]] == ["o1"]
+
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        str(filled_p),
+        {"HYPEUSD": [{"id": "f2", "orderId": "o2", "side": "SELL", "price": 55.0, "qty": 1.0, "time": t2_ms}]},
+        venue="kraken",
+        now_ms=t2_ms,
+        is_snapshot=False,
+    )
+    filled_mgr.resync_mem_file()
+    assert [r["orderId"] for r in filled_mgr.cache["HYPEUSD"]] == ["o1", "o2"]
+
+
 def test_portfolio_collector_strips_open_orders_from_venue_balances_and_persists_to_order_open_cache(tmp_path):
     now_s = time.time()
     state_dir = tmp_path / "state"
