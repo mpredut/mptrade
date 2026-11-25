@@ -1161,6 +1161,30 @@ def check_math_profit_reference(
         )
         dyn_hours = dyn_window_s / 3600.0
         pos_window_ref = safe_pos_float(window_ref, default=None)
+        if pos_window_ref is None and hasattr(provider, "get_orders"):
+            try:
+                recent = provider.get_orders(symbol, opp_side, dyn_window_s)
+            except (ProviderError, Exception) as exc:
+                print(f"[GUARD] {side} {symbol}: dynamic window history unavailable ({exc}) -> BLOCKED")
+                return False
+            if recent is None:
+                print(f"[GUARD] {side} {symbol}: dynamic window history unavailable -> BLOCKED")
+                return False
+            pos_window_ref = _resolve_window_ref_from_orders(
+                provider, symbol, side, dyn_window_s, recent, eff_mode="strict"
+            )
+            if pos_window_ref is not None:
+                diff = profit_diff_pct(side, px_val, pos_window_ref)
+                if diff < prof_pct:
+                    print(
+                        f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
+                        f"found recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}%, threshold {prof_pct}%\n"
+                        f"Percentage difference ({diff:.2f}%) below threshold {prof_pct}%. The {side} order is BLOCKED."
+                    )
+                    return False
+                print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
+                      f"recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}% >= {prof_pct}%. Permitted.")
+                return True
         if pos_window_ref is not None:
             diff = profit_diff_pct(side, px_val, pos_window_ref)
             if diff < prof_pct:

@@ -455,8 +455,12 @@ class T212Provider(MarketDataProvider):
                 cached = self._fills_from_cache(symbol)
                 if cached is not None:
                     return cached
-        except Exception:
-            pass
+        except Exception as exc:
+            if allow_cache_fallback and cache_file:
+                cached = self._fills_from_cache(symbol)
+                if cached is not None:
+                    return cached
+            raise ProviderError(f"T212 fills unavailable for {symbol}: {exc}") from exc
         return []
 
     # -- Account. --------------------------------------------------------------

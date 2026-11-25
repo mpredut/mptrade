@@ -90,10 +90,12 @@ def _has_unacknowledged_geo_shock(
     if not isinstance(prev_eval, Mapping) or not prev_eval:
         return True
     eff_geo_ts = _extract_delta_gate_geo_ts(gt, src_ts_map) if geo_ts is None else geo_ts
-    if eff_geo_ts <= 0.0:
-        return True
-    prev_ts = normalize_epoch_sec(prev_eval.get("ts"), default=0.0, allow_iso=True) or 0.0
     prev_meta = prev_eval.get("delta_gate_meta") if isinstance(prev_eval.get("delta_gate_meta"), Mapping) else {}
+    if eff_geo_ts <= 0.0:
+        cur_verdict = _extract_geo_verdict_sig(gt)
+        prev_verdict = str(prev_meta.get("geo_verdict") or "").strip().upper()
+        return bool(not prev_verdict or cur_verdict != prev_verdict)
+    prev_ts = normalize_epoch_sec(prev_eval.get("ts"), default=0.0, allow_iso=True) or 0.0
     prev_geo_ts = normalize_epoch_sec(prev_meta.get("geo_ts"), default=0.0, allow_iso=True) or 0.0
     if prev_geo_ts > 0.0:
         return eff_geo_ts > prev_geo_ts + 0.5
@@ -119,6 +121,30 @@ def _has_new_fill_since_prev(
     )
 
 
+def _has_unacknowledged_trade_plan_invalidation(
+    sensors: Any,
+    prev_eval: Optional[Mapping[str, Any]],
+) -> bool:
+    ps = getattr(sensors, "portfolio_summary", None)
+    if not isinstance(ps, Mapping) or prev_eval is None:
+        return False
+    prev_meta = (
+        prev_eval.get("delta_gate_meta")
+        if isinstance(prev_eval.get("delta_gate_meta"), Mapping)
+        else {}
+    )
+    prev_plan_raw = prev_meta.get("plan_states")
+    prev_plans: Dict[str, str] = (
+        {str(k): str(v).strip().upper() for k, v in prev_plan_raw.items() if str(k).strip()}
+        if isinstance(prev_plan_raw, Mapping)
+        else {}
+    )
+    eval_prices = _collect_delta_gate_prices(getattr(sensors, "prices_and_trends", None), ps)
+    unact = _resolve_unactionable_delta_gate_symbols(ps)
+    _, plan_trig = _evaluate_delta_gate_trade_plans(ps, eval_prices, prev_plans, unactionable_syms=unact)
+    return str(plan_trig or "").strip().lower().startswith("trade_plan_invalidated")
+
+
 def is_urgent_delta_gate_wakeup(
     gate_reason: str = "",
     *,
@@ -139,6 +165,8 @@ def is_urgent_delta_gate_wakeup(
             return True
         ps = getattr(sensors, "portfolio_summary", None)
         if isinstance(ps, Mapping) and prev_eval is not None and _has_new_fill_since_prev(ps, prev_eval):
+            return True
+        if _has_unacknowledged_trade_plan_invalidation(sensors, prev_eval):
             return True
     return False
 
@@ -162,6 +190,8 @@ def is_extreme_stakes_delta_gate_wakeup(
             return True
         ps = getattr(sensors, "portfolio_summary", None)
         if isinstance(ps, Mapping) and prev_eval is not None and _has_new_fill_since_prev(ps, prev_eval):
+            return True
+        if _has_unacknowledged_trade_plan_invalidation(sensors, prev_eval):
             return True
     return False
 
@@ -626,12 +656,15 @@ def evaluate_crypto_executor_delta_gate(
 
     prev_geo_ts = normalize_epoch_sec(prev_meta.get("geo_ts"), default=0.0, allow_iso=True) or 0.0
     prev_geo_verdict = str(prev_meta.get("geo_verdict") or "").strip().upper()
-    if geo_ts > 0.0 and (
-        (prev_geo_ts > 0.0 and geo_ts > prev_geo_ts + 0.5)
-        or (prev_geo_ts <= 0.0 and geo_ts > prev_ts + 0.5)
+    if geo_shock or (
+        geo_ts > 0.0
+        and (
+            (prev_geo_ts > 0.0 and geo_ts > prev_geo_ts + 0.5)
+            or (prev_geo_ts <= 0.0 and geo_ts > prev_ts + 0.5)
+        )
+        and (not geo_verdict or not prev_geo_verdict or geo_verdict != prev_geo_verdict)
     ):
-        if geo_shock or not geo_verdict or not prev_geo_verdict or geo_verdict != prev_geo_verdict:
-            return False, "geo_update", escalate_high_effort, snapshot_meta
+        return False, "geo_update", escalate_high_effort, snapshot_meta
 
     prev_oids = sorted({str(x).strip() for x in (prev_meta.get("open_order_ids") or []) if str(x).strip()})
     if open_order_ids != prev_oids:

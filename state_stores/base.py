@@ -89,6 +89,11 @@ class StateStoreBase:
         return list(dict.fromkeys(cands))
 
     @classmethod
+    def _resolve_disk_path(cls, path: str) -> str:
+        """Resolve an explicit path through canonical cachedb/statedb subdomain routing."""
+        return str(resolve_cachedb_filepath(path)) if path else ""
+
+    @classmethod
     def has_disk_file(cls, path: str) -> bool:
         """Return True when ``path`` or its crash-recovery ``.previous`` backup exists."""
         return bool(path and (os.path.exists(path) or os.path.exists(f"{path}.previous")))
@@ -121,6 +126,9 @@ class StateStoreBase:
                 if not has_file:
                     continue
                 raw = read_json_dict_cached(cand)
+                if isinstance(raw, dict):
+                    return raw
+                continue
             else:
                 if not has_file:
                     continue

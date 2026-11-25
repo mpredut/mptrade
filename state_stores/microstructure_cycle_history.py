@@ -62,7 +62,8 @@ class MicrostructureCycleHistoryStore(StateStoreBase):
         read_json_fn: Optional[Callable[..., Any]] = None,
     ) -> dict[str, Any]:
         """Read ``microstructure_cycle_history.json`` from an explicit resolved path."""
-        if not mhist_path or not cls.has_disk_file(mhist_path):
+        resolved_path = cls._resolve_disk_path(mhist_path)
+        if not resolved_path or not cls.has_disk_file(resolved_path):
             return {}
         if callable(read_json_fn):
             try:
@@ -70,10 +71,10 @@ class MicrostructureCycleHistoryStore(StateStoreBase):
             except TypeError:
                 raw = read_json_fn(mhist_path)
             return dict(raw) if isinstance(raw, dict) else {}
-        raw_d = read_json_dict(mhist_path, default=None, recover_previous=True)
+        raw_d = read_json_dict(resolved_path, default=None, recover_previous=True)
         if isinstance(raw_d, dict):
             return dict(raw_d)
-        raw_fb = read_json_file(mhist_path, default={})
+        raw_fb = read_json_file(resolved_path, default={})
         return dict(raw_fb) if isinstance(raw_fb, dict) else {}
 
     @classmethod
@@ -89,6 +90,7 @@ class MicrostructureCycleHistoryStore(StateStoreBase):
         """Atomically merge per-symbol cycle history updates under ``generation_file_lock`` (prevents lost updates)."""
         if not mhist_path or not isinstance(updates, Mapping):
             return False
+        mhist_path = cls._resolve_disk_path(mhist_path)
         os.makedirs(os.path.dirname(os.path.abspath(mhist_path)), exist_ok=True)
         with generation_file_lock(mhist_path):
             disk_exists = cls.has_disk_file(mhist_path)

@@ -664,8 +664,14 @@ def compute_venue_nav_breakdown(
                 lb_live := safe_pos_float(gp.get("locked_base_qty"), None)
             ) is not None:
                 locked_usd = round(lb_live * live_px, 2)
+            elif (lb_usd := safe_nonneg_float(gp.get("locked_base_usd"), None)) is not None:
+                locked_usd = lb_usd
             else:
-                locked_usd = safe_nonneg_float(gp.get("locked_base_usd"), 0.0) or 0.0
+                locked_usd = round(
+                    (safe_pos_float(gp.get("locked_base_qty"), 0.0) or 0.0)
+                    * (safe_pos_float(gp.get("price"), 0.0) or 0.0),
+                    2,
+                )
             locked_by_sym[s_g] = max(locked_by_sym.get(s_g, 0.0), locked_usd)
         val_u = free_val_u + sum(locked_by_sym.values())
         venue_pos_usd[v_name] = venue_pos_usd.get(v_name, 0.0) + val_u

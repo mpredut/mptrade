@@ -3125,26 +3125,21 @@ class Structural7dWaveEvaluator(PriceSeriesEvaluatorBase):
         now_ts: Optional[float] = None,
         cur_px: Optional[float] = None,
         decimals: Optional[int] = None,
+        alt_series: Optional[List[Any]] = None,
+        btc_series: Optional[List[Any]] = None,
         btc_m24: Optional[Dict[str, Any]] = None,
         sym_m24: Optional[Dict[str, Any]] = None,
-        btc_vals_7d: Optional[List[float]] = None,
+        btc_vals_7d: Optional[List[Any]] = None,
         btc_cur_px: Optional[float] = None,
         symbol: str = "",
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        del now_ts, cur_px, btc_m24, sym_m24, btc_cur_px, kwargs
         out = compute_7d_range_metrics(data, decimals=decimals)
-        if symbol and (btc_m24 or btc_vals_7d):
-            out.update(
-                compute_cross_btc_metrics(
-                    symbol,
-                    sym_m24 or {},
-                    btc_m24 or {},
-                    sym_vals_7d=data if isinstance(data, list) else None,
-                    btc_vals_7d=btc_vals_7d,
-                    sym_cur_px=cur_px,
-                    btc_cur_px=btc_cur_px,
-                )
-            )
+        eff_alt = alt_series if isinstance(alt_series, list) else (data if isinstance(data, list) else None)
+        eff_btc = btc_series if isinstance(btc_series, list) else (btc_vals_7d if isinstance(btc_vals_7d, list) else None)
+        if symbol and eff_alt and eff_btc:
+            out.update(compute_cross_btc_metrics(eff_alt, eff_btc))
         return out
 
 

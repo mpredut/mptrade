@@ -463,16 +463,37 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
     def _lookup_balance_candidates_with_hold(
         bal: dict, candidates: tuple[str, ...] | List[str]
     ) -> tuple[bool, Optional[float], Optional[float]]:
+        matched_keys: list[str] = []
+        seen_raw: set[str] = set()
         for key in candidates:
-            if key in bal:
-                free_v, hold_v = KrakenProvider._parse_balance_free_and_hold(bal[key])
-                return True, free_v, hold_v
-        for key in candidates:
-            raw_val = casefold_get(bal, key, _MISSING)
-            if raw_val is not _MISSING:
-                free_v, hold_v = KrakenProvider._parse_balance_free_and_hold(raw_val)
-                return True, free_v, hold_v
-        return False, 0.0, None
+            if key in bal and key not in seen_raw:
+                seen_raw.add(key)
+                matched_keys.append(key)
+        if candidates:
+            bal_cf: dict[str, list[str]] = {}
+            for raw_k in bal:
+                if isinstance(raw_k, str):
+                    bal_cf.setdefault(raw_k.casefold(), []).append(raw_k)
+            for key in candidates:
+                for raw_k in bal_cf.get(key.casefold(), ()):
+                    if raw_k not in seen_raw:
+                        seen_raw.add(raw_k)
+                        matched_keys.append(raw_k)
+        if not matched_keys:
+            return False, 0.0, None
+        total_free = 0.0
+        total_hold = 0.0
+        all_holds_known = True
+        for raw_k in matched_keys:
+            free_v, hold_v = KrakenProvider._parse_balance_free_and_hold(bal[raw_k])
+            if free_v is None:
+                return True, None, None
+            total_free += free_v
+            if hold_v is None:
+                all_holds_known = False
+            else:
+                total_hold += hold_v
+        return True, total_free, (total_hold if all_holds_known else None)
 
     @staticmethod
     def _lookup_balance_candidates(bal: dict, candidates: tuple[str, ...] | List[str]) -> tuple[bool, Optional[float]]:
@@ -594,12 +615,10 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 found, val, hold_v = self._lookup_balance_candidates_with_hold(bal, candidates)
                 if found and val is not None:
                     out[req_key] = (val, hold_v)
-                    matched_raw = next((c for c in candidates if c in bal), None)
-                    if matched_raw is not None:
-                        seen_raw_u.add(matched_raw.upper())
-                    else:
-                        cand_u = {c.upper() for c in candidates}
-                        seen_raw_u.update(k.upper() for k in bal if isinstance(k, str) and k.upper() in cand_u)
+                    cand_cf = {c.casefold() for c in candidates}
+                    seen_raw_u.update(
+                        k.upper() for k in bal if isinstance(k, str) and k.casefold() in cand_cf
+                    )
                 elif not found:
                     out[req_key] = (0.0, 0.0 if has_ex_payload else None)
             seen_u = {k.upper() for k in out}
@@ -681,12 +700,13 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 if start_ms > 0.0
                 else None
             ) or (now_s - 14 * 86400.0)
+            req_pair = canonical_display_symbol(symbol, venue="kraken") or clean_scalar_str(symbol) or sym_u
             by_sym = self.fetch_ledger_fills_by_symbol(
                 client,
-                pairs=[sym_u],
+                pairs=[req_pair],
                 lookback_sec=max(60.0, now_s - start_sec),
             )
-            return casefold_get(by_sym, sym_u)
+            return casefold_get(by_sym, req_pair)
         self.validate_symbol(symbol)
         return self._invoke_fills_from_api(symbol, publish_cache=False)
 

@@ -704,12 +704,17 @@ class Instrument:
                             except Exception:  # noqa: BLE001
                                 ref_price = None
                             self._apply_outbox_lineage_prefix(ctx.retry_kwargs, ctx.kwargs)
+                            eff_req_price = (
+                                ctx.orig_price
+                                if ctx.orig_price is not None
+                                else (ctx.quantity_price if ctx.quantity_price is not None else ref_price)
+                            )
                             enqueued_res = order_retry.enqueue(
                                 self.symbol,
                                 ctx.side_u,
                                 queue_qty,
                                 ctx.retry_kwargs,
-                                requested_price=ctx.orig_price,
+                                requested_price=eff_req_price,
                                 ref_price=ref_price,
                                 failure_reason=ctx.reason,
                                 provider_name=self.provider_name,
@@ -1349,13 +1354,15 @@ class Instrument:
                     if 0.0 < eff_scale < 1.0:
                         prequeue_kwargs["applied_scale"] = eff_scale
                     self._apply_outbox_lineage_prefix(prequeue_kwargs, ctx.kwargs)
+                    eff_req_price = ctx.orig_price if ctx.orig_price is not None else ctx.quantity_price
+                    eff_ref_price = ctx.price if ctx.price is not None else ctx.quantity_price
                     ctx.prequeued_claim = order_retry.enqueue_claimed(
                         self.symbol,
                         ctx.side_u,
                         ctx.qty,
                         prequeue_kwargs,
-                        requested_price=ctx.orig_price,
-                        ref_price=ctx.price,
+                        requested_price=eff_req_price,
+                        ref_price=eff_ref_price,
                         failure_reason="submit_pending",
                         provider_name=self.provider_name,
                         intent_id=ctx.kwargs.get("intent_id"),

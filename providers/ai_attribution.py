@@ -212,12 +212,13 @@ def _merge_audit_order_entry(dst: dict[str, Any], src: dict[str, Any]) -> None:
         dst["order_type"] = "MARKET"
     if src.get("ts", 0.0) > dst.get("ts", 0.0):
         dst["ts"] = src["ts"]
+    dst_was_fill = bool(dst.get("is_fill"))
     if src.get("is_fill"):
         dst["is_fill"] = True
     for num_k in ("filled_qty", "cost_usd", "fee_usd"):
         if src.get(num_k, 0.0) > dst.get(num_k, 0.0):
             dst[num_k] = src[num_k]
-    if src.get("price", 0.0) > 0.0 and (dst.get("price", 0.0) <= 0.0 or (src.get("is_fill") and not dst.get("is_fill"))):
+    if src.get("price", 0.0) > 0.0 and (dst.get("price", 0.0) <= 0.0 or (src.get("is_fill") and not dst_was_fill)):
         dst["price"] = src["price"]
 
 

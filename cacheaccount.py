@@ -2869,7 +2869,7 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                         ex_q = safe_pos_float(ex_row.get("quantity"), default=0.0) or 0.0
                         in_q = safe_pos_float(inc.get("quantity"), default=0.0) or 0.0
                         if inc_fids and ex_fids and not (set(inc_fids) & set(ex_fids)):
-                            by_oid[inc_key] = _vwap_merge_filled_row(
+                            merged_disjoint = _vwap_merge_filled_row(
                                 ex_row,
                                 inc,
                                 oid_norm=ex_row["orderId"],
@@ -2877,6 +2877,29 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                                 incoming_ts=safe_nonneg_int(inc.get("timestamp"), default=0) or 0,
                                 fill_ids=[*ex_fids, *inc_fids],
                             )
+                            merged_disjoint.pop("_fills", None)
+                            merged_disjoint.pop("_rawFills", None)
+                            by_oid[inc_key] = merged_disjoint
+                        elif inc_key in raw_by_oid and ex_fids and (
+                            unseen_fills := [
+                                f for fid, f in raw_by_oid[inc_key].items() if fid not in set(ex_fids)
+                            ]
+                        ):
+                            unseen_aggs = cls.aggregate_fills_to_order_rows(unseen_fills, venue=venue)
+                            if unseen_aggs:
+                                merged_partial = _vwap_merge_filled_row(
+                                    ex_row,
+                                    unseen_aggs[0],
+                                    oid_norm=ex_row["orderId"],
+                                    existing_ts=safe_nonneg_int(ex_row.get("timestamp"), default=0) or 0,
+                                    incoming_ts=safe_nonneg_int(unseen_aggs[0].get("timestamp"), default=0) or 0,
+                                    fill_ids=[*ex_fids, *inc_fids],
+                                )
+                                merged_partial.pop("_fills", None)
+                                merged_partial.pop("_rawFills", None)
+                                by_oid[inc_key] = merged_partial
+                            else:
+                                _enrich_filled_row_metadata(ex_row, inc, allow_fee_upgrade=False)
                         elif in_q > ex_q + 1e-12 or (
                             safe_nonneg_int(inc.get("timestamp"), default=0) or 0
                         ) > (safe_nonneg_int(ex_row.get("timestamp"), default=0) or 0):
@@ -4769,6 +4792,8 @@ def run_kraken_trade_ws_loop(
 
     last_flush_ms = [0]
     last_rest_sync_ms = [0]
+    next_rest_sync_ms = [0]
+    rest_backoff_sec = [0.0]
     # While ownTrades WS is live, periodic REST Ledgers reconciliation only needs a 5-min safety net (10x less rate-limit cost).
     rest_sync_interval_ms = math.trunc(
         max(300.0, safe_pos_float(poll_interval, default=30.0) or 30.0) * 1000
@@ -4798,6 +4823,14 @@ def run_kraken_trade_ws_loop(
             backoff_cur[0] = min(backoff_cap, max(15.0, backoff_cur[0] * 2.0))
         else:
             backoff_cur[0] = min(backoff_cap, max(5.0, backoff_cur[0] * 1.5))
+
+    def _bump_rest_sync_backoff(err_msg: object = "") -> float:
+        if _is_rate_limit_err(err_msg):
+            rest_backoff_sec[0] = min(rate_limit_cap, max(30.0, rest_backoff_sec[0] * 3.0))
+        else:
+            rest_backoff_sec[0] = min(60.0, max(15.0, rest_backoff_sec[0] * 2.0))
+        next_rest_sync_ms[0] = resolve_now_ms() + math.trunc(rest_backoff_sec[0] * 1000)
+        return rest_backoff_sec[0]
 
     def _merge_rest(err_label: Optional[str] = None, *, now_ms: Optional[int] = None) -> Optional[dict]:
         try:
@@ -4833,6 +4866,8 @@ def run_kraken_trade_ws_loop(
                 pass
             _record_venue_health_sync("kraken", "trades", now_ms=eff_ms)
             last_flush_ms[0] = last_rest_sync_ms[0] = eff_ms
+            rest_backoff_sec[0] = 0.0
+            next_rest_sync_ms[0] = 0
             return merged
         except Exception as exc:
             last_err_text[0] = str(exc)
@@ -4848,6 +4883,8 @@ def run_kraken_trade_ws_loop(
         log(f"[kraken_cache][ws] rate-limited on seed; cooling down {backoff_cur[0]:g}s before WS connect")
         if _wait_or_sleep(stop_event, backoff_cur[0]):
             return
+    elif not seed_ok:
+        _bump_rest_sync_backoff(last_err_text[0])
 
     def on_open(ws) -> None:
         try:
@@ -4887,7 +4924,7 @@ def run_kraken_trade_ws_loop(
                 return
             if kind == "keepalive" and (now_ms - last_flush_ms[0]) >= 15_000:
                 launched_async = False
-                if (now_ms - last_rest_sync_ms[0]) >= rest_sync_interval_ms:
+                if (now_ms - last_rest_sync_ms[0]) >= rest_sync_interval_ms and now_ms >= next_rest_sync_ms[0]:
                     with rest_sync_lock:
                         if not rest_sync_in_flight[0]:
                             rest_sync_in_flight[0] = True
@@ -4904,7 +4941,11 @@ def run_kraken_trade_ws_loop(
                                         f"for {list(merged['items'].keys())}"
                                     )
                             except Exception as exc:
-                                log(f"[kraken_cache][ws] periodic REST Ledgers sync failed: {exc}")
+                                delay_s = _bump_rest_sync_backoff(exc)
+                                log(
+                                    f"[kraken_cache][ws] periodic REST Ledgers sync failed: {exc} "
+                                    f"(backing off {delay_s:g}s)"
+                                )
                             finally:
                                 with rest_sync_lock:
                                     rest_sync_in_flight[0] = False

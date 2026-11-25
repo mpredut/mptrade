@@ -987,70 +987,70 @@ class CacheManagerInterface(ABC):
                 self._log_cache_file_error("post-save hook", post_err)
 
     def _save_state_to_file_impl(self) -> bool:
-        with self.lock:
-            self._before_state_persist_locked()
-            persisted_max_ts = self._persisted_max_ts()
-            pre_commit_merged = False
-            if (
-                not self.append_persist
-                and self._mem_max_ts() > self._last_disk_sync_max_ts
-            ):
-                self._before_snapshot_commit_locked(persisted_max_ts)
-                pre_commit_merged = True
-            if persisted_max_ts > self._mem_max_ts():
-                builtins.print(
-                    f"[{self.cls_name}][resync] file newer than memory -> "
-                    f"refusing to overwrite with stale data ({self.filename})"
-                )
-                self._on_stale_memory_detected_locked()
-                return False
-            if self.append_persist:
-                return self._save_jsonl_append()
-            if not pre_commit_merged:
-                self._before_snapshot_commit_locked(persisted_max_ts)
-            metadata = self._build_basic_meta_locked(sanitize_cursor=True)
-            serializable_items = {
-                k: (
-                    list(v)
-                    if self._is_bucket_seq(v) and not isinstance(v, list)
-                    else v
-                )
-                for k, v in self.cache.items()
-            }
-            payload = {
-                "items": serializable_items,
-                "fetchtime": metadata["fetchtime"],
-                "rest_sync_cursor": metadata["rest_sync_cursor"],
-            }
-            write_json_fn = _cm_override("atomic_write_json", atomic_write_json)
+        with self._generation_lock():
+            with self.lock:
+                self._before_state_persist_locked()
+                persisted_max_ts = self._persisted_max_ts()
+                pre_commit_merged = False
+                if (
+                    not self.append_persist
+                    and self._mem_max_ts() > self._last_disk_sync_max_ts
+                ):
+                    self._before_snapshot_commit_locked(persisted_max_ts)
+                    pre_commit_merged = True
+                if persisted_max_ts > self._mem_max_ts():
+                    builtins.print(
+                        f"[{self.cls_name}][resync] file newer than memory -> "
+                        f"refusing to overwrite with stale data ({self.filename})"
+                    )
+                    self._on_stale_memory_detected_locked()
+                    return False
+                if self.append_persist:
+                    return self._save_jsonl_append()
+                if not pre_commit_merged:
+                    self._before_snapshot_commit_locked(persisted_max_ts)
+                metadata = self._build_basic_meta_locked(sanitize_cursor=True)
+                serializable_items = {
+                    k: (
+                        list(v)
+                        if self._is_bucket_seq(v) and not isinstance(v, list)
+                        else v
+                    )
+                    for k, v in self.cache.items()
+                }
+                payload = {
+                    "items": serializable_items,
+                    "fetchtime": metadata["fetchtime"],
+                    "rest_sync_cursor": metadata["rest_sync_cursor"],
+                }
+                write_json_fn = _cm_override("atomic_write_json", atomic_write_json)
 
-            def _write_snapshot():
-                if write_json_fn is atomic_write_json:
-                    if self._SNAPSHOT_COMPACT_JSON:
+                def _write_snapshot():
+                    if write_json_fn is atomic_write_json:
+                        if self._SNAPSHOT_COMPACT_JSON:
+                            return write_json_fn(
+                                self.filename,
+                                payload,
+                                separators=(",", ":"),
+                                fsync=self._SNAPSHOT_FSYNC,
+                            )
                         return write_json_fn(
                             self.filename,
                             payload,
-                            separators=(",", ":"),
+                            indent=1,
                             fsync=self._SNAPSHOT_FSYNC,
                         )
-                    return write_json_fn(
-                        self.filename,
-                        payload,
-                        indent=1,
-                        fsync=self._SNAPSHOT_FSYNC,
-                    )
-                return write_json_fn(self.filename, payload, indent=1)
+                    return write_json_fn(self.filename, payload, indent=1)
 
-            with self._generation_lock():
                 if not self._commit_file_and_meta_locked(
                     _write_snapshot,
                     metadata,
                 ):
                     return False
-            self._last_disk_sync_max_ts = max(
-                self._persisted_max_ts(), self._mem_max_ts()
-            )
-            return self._log_cache_saved_ok()
+                self._last_disk_sync_max_ts = max(
+                    self._persisted_max_ts(), self._mem_max_ts()
+                )
+                return self._log_cache_saved_ok()
 
     def _with_generation_lock_bool(
         self, fn, label: str, *, mark_rewrite_on_error: bool = False
@@ -1169,10 +1169,10 @@ class CacheManagerInterface(ABC):
         previous_counts = None
         need_compact = False
         try:
-            with self.lock:
-                if self._should_compact_before_append_locked():
-                    return self.compact_jsonl()
-                with self._generation_lock():
+            with self._generation_lock():
+                with self.lock:
+                    if self._should_compact_before_append_locked():
+                        return self.compact_jsonl()
                     persisted_max_ts = self._persisted_max_ts()
                     if persisted_max_ts > self._mem_max_ts():
                         builtins.print(
@@ -1212,9 +1212,9 @@ class CacheManagerInterface(ABC):
                                 self._persisted_max_ts(), self._mem_max_ts()
                             )
                         return ok_meta
-                if need_compact:
-                    return self.compact_jsonl()
-                return False
+                    if need_compact:
+                        return self.compact_jsonl()
+                    return False
         except Exception as e:
             if previous_counts is not None:
                 self._persisted_counts = previous_counts
@@ -1335,40 +1335,40 @@ class CacheManagerInterface(ABC):
             return False
         original_state = None
         try:
-            with self.lock:
-                original_state = self._snapshot_memory_state_locked()
-                for symbol, items in list(self.cache.items()):
-                    seen = set()
-                    deduped = self._new_symbol_bucket(symbol)
-                    for item in items:
-                        k = canonical_json_key(item)
-                        if k not in seen:
-                            seen.add(k)
-                            deduped.append(item)
-                    self.cache[symbol] = deduped
-                metadata = self._build_basic_meta_locked()
+            with self._generation_lock():
+                with self.lock:
+                    original_state = self._snapshot_memory_state_locked()
+                    for symbol, items in list(self.cache.items()):
+                        seen = set()
+                        deduped = self._new_symbol_bucket(symbol)
+                        for item in items:
+                            k = canonical_json_key(item)
+                            if k not in seen:
+                                seen.add(k)
+                                deduped.append(item)
+                        self.cache[symbol] = deduped
+                    metadata = self._build_basic_meta_locked()
 
-                def _write_compacted():
-                    writer_cm = (
-                        atomic_text_writer(self.filename)
-                        if self._SNAPSHOT_FSYNC
-                        else atomic_text_writer(self.filename, fsync=False)
-                    )
-                    with writer_cm as f:
-                        for symbol, items in self.cache.items():
-                            for item in items:
-                                f.write(format_jsonl_bucket_line(symbol, item))
+                    def _write_compacted():
+                        writer_cm = (
+                            atomic_text_writer(self.filename)
+                            if self._SNAPSHOT_FSYNC
+                            else atomic_text_writer(self.filename, fsync=False)
+                        )
+                        with writer_cm as f:
+                            for symbol, items in self.cache.items():
+                                for item in items:
+                                    f.write(format_jsonl_bucket_line(symbol, item))
 
-                with self._generation_lock():
                     if not self._commit_file_and_meta_locked(_write_compacted, metadata):
                         self._restore_memory_state_locked(original_state)
                         return False
-                self._persisted_counts = dict(metadata["counts"])
-                self._legacy_jsonl_needs_rewrite = False
-                self._last_disk_sync_max_ts = max(
-                    self._persisted_max_ts(), self._mem_max_ts()
-                )
-                return True
+                    self._persisted_counts = dict(metadata["counts"])
+                    self._legacy_jsonl_needs_rewrite = False
+                    self._last_disk_sync_max_ts = max(
+                        self._persisted_max_ts(), self._mem_max_ts()
+                    )
+                    return True
         except Exception as e:
             self._restore_memory_state_locked(original_state)
             return self._log_cache_file_error("compact JSONL", e)
@@ -1468,26 +1468,27 @@ class CacheManagerInterface(ABC):
 
     def _rotate_keep_latest(self):
         """Archive the current file and retain each symbol's latest configured fraction."""
-        with self.lock:
-            archive = self._archive_snapshot_path()
-            try:
-                self._snapshot_file_to(archive)
-            except OSError as e:
-                return self._log_tagged_false("maintain", f"archiving failed: {e}")
-            original_state = self._snapshot_memory_state_locked()
-            self._trim_cache_to_keep_fraction_locked()
-            self._persisted_counts = {}
-            try:
-                compacted = bool(self.compact_jsonl())
-            except Exception as e:
-                builtins.print(
-                    f"[{self.cls_name}][maintain] rotation compaction failed: {e}"
-                )
-                compacted = False
-            if not compacted:
-                self._restore_memory_state_locked(original_state)
-                return self._restore_archive_after_failed_rotation_locked(archive)
-            return self._finalize_rotation(archive)
+        with self._generation_lock():
+            with self.lock:
+                archive = self._archive_snapshot_path()
+                try:
+                    self._snapshot_file_to(archive)
+                except OSError as e:
+                    return self._log_tagged_false("maintain", f"archiving failed: {e}")
+                original_state = self._snapshot_memory_state_locked()
+                self._trim_cache_to_keep_fraction_locked()
+                self._persisted_counts = {}
+                try:
+                    compacted = bool(self.compact_jsonl())
+                except Exception as e:
+                    builtins.print(
+                        f"[{self.cls_name}][maintain] rotation compaction failed: {e}"
+                    )
+                    compacted = False
+                if not compacted:
+                    self._restore_memory_state_locked(original_state)
+                    return self._restore_archive_after_failed_rotation_locked(archive)
+                return self._finalize_rotation(archive)
 
     @abstractmethod
     def get_remote_items(self, symbol, startTime):

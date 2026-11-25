@@ -1,4 +1,5 @@
 # new_coins_discovery.py
+import threading
 import time
 import requests
 import pandas as pd
@@ -304,7 +305,7 @@ class CoinMarketCapSource(PricedNewCoinsSource):
                 params=params,
             )
             if isinstance(data, dict) and isinstance(data.get('data'), list):
-                self._cache = []
+                new_cache: List[Dict] = []
                 for coin in data['data']:
                     if not isinstance(coin, dict):
                         continue
@@ -319,7 +320,7 @@ class CoinMarketCapSource(PricedNewCoinsSource):
                             added_dt = pd.to_datetime(raw_date) if raw_date else None
                         except Exception:
                             added_dt = None
-                        self._cache.append({
+                        new_cache.append({
                             "symbol": symbol,
                             "name": name,
                             "added_at": added_dt,
@@ -332,6 +333,7 @@ class CoinMarketCapSource(PricedNewCoinsSource):
                             "slug": slug,
                             "url": f"https://coinmarketcap.com/currencies/{slug}/" if slug else ""
                         })
+                self._cache = new_cache
                 self._record_refresh_complete("CMC", f"Loaded {len(self._cache)} coins")
         except Exception as e:
             print(f"[CMC Source] Error: {e}")
@@ -448,7 +450,7 @@ class DexScreenerSource(InformationalNewCoinsSource):
                 response = self._http_get("https://api.dexscreener.com/token-profiles/latest", timeout=15)
             if response.status_code == 200:
                 data = response.json()
-                self._cache = []
+                new_cache: List[Dict] = []
                 profiles = (
                     data.get('profiles', [])
                     if isinstance(data, dict)
@@ -468,13 +470,14 @@ class DexScreenerSource(InformationalNewCoinsSource):
                             if safe_pos_float(listed_at, default=None) is not None
                             else None
                         )
-                        self._cache.append({
+                        new_cache.append({
                             "symbol": symbol, "name": name, "added_at": added_time,
                             "source": self.get_name(), "chain": chain, "token_address": token_address,
                             "price": None, "volume_24h": None, "market_cap": None,
                             "change_24h": None, "change_7d": None,
                             "url": f"https://dexscreener.com/{chain}/{token_address}" if token_address else None
                         })
+                self._cache = new_cache
                 print(f"[DexScreener Source] Found {len(self._cache)} tokens")
             else:
                 self._cache = []
@@ -497,6 +500,7 @@ class NewCoinsMonitor:
         self.all_new_coins: Dict[str, List[Dict]] = {}
         self.all_symbols: Set[str] = set()
         self.alert_callbacks: List[Callable] = []
+        self._lock = threading.RLock()
         self._running = False
         self._thread = None
         self.refresh()
@@ -504,10 +508,10 @@ class NewCoinsMonitor:
     def refresh(self, refresh_sources: bool = False):
         if _parse_bool_flag(refresh_sources, False):
             self.factory.refresh_all()
-        self.all_new_coins = self.factory.get_all_new_coins(NEW_COINS_AGE_DAYS)
-        self.all_symbols = set()
-        print(f"[NewCoinsMonitor] Refreshed new coins from sources: {', '.join(self.all_new_coins.keys())}")
-        for source_name, coins in self.all_new_coins.items():
+        new_coins = self.factory.get_all_new_coins(NEW_COINS_AGE_DAYS)
+        new_symbols: Set[str] = set()
+        print(f"[NewCoinsMonitor] Refreshed new coins from sources: {', '.join(new_coins.keys())}")
+        for source_name, coins in new_coins.items():
             if not isinstance(coins, (list, tuple)):
                 continue
             for coin in coins:
@@ -516,10 +520,13 @@ class NewCoinsMonitor:
                 raw_symbol = coin.get('symbol')
                 symbol = str(raw_symbol).strip().upper() if isinstance(raw_symbol, str) else ""
                 if symbol and is_trackable_symbol(symbol, name=str(coin.get('name') or ''), slug=str(coin.get('slug') or '')):
-                    self.all_symbols.add(symbol)
+                    new_symbols.add(symbol)
                 else:
                     print(f"[NewCoinsMonitor] Ignored invalid symbol: {raw_symbol} (from {source_name})")
                     continue
+        with self._lock:
+            self.all_new_coins = new_coins
+            self.all_symbols = new_symbols
 
     def source_has_price(self, source_name: object) -> bool:
         fac = getattr(self, "factory", None)
@@ -587,12 +594,16 @@ class NewCoinsMonitor:
             print("[NewCoinsMonitor] Only CoinMarketCap coins will be auto-added (they include price data)")
             while self._running:
                 try:
-                    old_symbols = self.all_symbols.copy()
+                    with self._lock:
+                        old_symbols = set(self.all_symbols)
                     self.refresh(refresh_sources=True)
-                    new_symbols = self.all_symbols - old_symbols
+                    with self._lock:
+                        cur_symbols = set(self.all_symbols)
+                        cur_new_coins = dict(self.all_new_coins)
+                    new_symbols = cur_symbols - old_symbols
                     if new_symbols:
                         print(f"[NewCoinsMonitor] New symbols detected: {new_symbols}")
-                        for source_name, coins in self.all_new_coins.items():
+                        for source_name, coins in cur_new_coins.items():
                             if not isinstance(coins, (list, tuple)):
                                 continue
                             new_from_source = [

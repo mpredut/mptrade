@@ -31,6 +31,7 @@ from cachepaths import (  # noqa: E402
     CACHE_CURRENT_PRICE_FILENAME,
     CACHE_SHORT_TREND_FILENAME,
     cache_symbol_variants,
+    get_cachedb_dir,
     has_equity_suffix,
     is_equity_venue,
     is_primary_stream_venue,
@@ -46,10 +47,17 @@ STALE_S = SHORT_TREND_STALE_S
 CURRENT_PRICE_STREAM_STALE_S = CURRENT_PRICE_STALE_S
 
 
+def _effective_cachedb_dir() -> str:
+    if os.path.abspath(CACHEDB) == os.path.abspath(_DEFAULT_CACHEDB):
+        return get_cachedb_dir()
+    return CACHEDB
+
+
 def _resolve_account_health_path() -> Optional[str]:
+    base_dir = _effective_cachedb_dir()
     for cand in (
-        os.path.join(CACHEDB, "account", CACHE_ACCOUNT_HEALTH_FILENAME),
-        os.path.join(CACHEDB, CACHE_ACCOUNT_HEALTH_FILENAME),
+        os.path.join(base_dir, "account", CACHE_ACCOUNT_HEALTH_FILENAME),
+        os.path.join(base_dir, CACHE_ACCOUNT_HEALTH_FILENAME),
     ):
         if os.path.isfile(cand):
             return cand
@@ -217,7 +225,7 @@ def main() -> int:
                 f"trades={_fmt_age(st.trades_age_sec):>7} "
                 f"-> {'OK' if st.ready else f'FAIL ({st.reason})'}"
             )
-    elif os.path.abspath(CACHEDB) == os.path.abspath(_DEFAULT_CACHEDB):
+    elif os.path.abspath(_effective_cachedb_dir()) == os.path.abspath(_DEFAULT_CACHEDB):
         problems.append("account_health MISSING")
         print(f"-- {CACHE_ACCOUNT_HEALTH_FILENAME}: MISSING")
 

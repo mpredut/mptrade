@@ -395,13 +395,15 @@ def _safe_to_evict_for_capacity(rec):
 
 
 def _shift_ttl_after_deferral(rec: dict, previous_reason, next_reason, prev_attempts: int, prev_last_ts, now: float) -> None:
+    def_since = safe_pos_float(rec.pop("deferred_since_ts", None), default=None)
     if is_non_failure_deferral(previous_reason) and not is_non_failure_deferral(next_reason):
         if prev_attempts == 0:
             rec["ttl_started_ts"] = now
         else:
             ttl_ts = safe_pos_float(rec.get("ttl_started_ts"), default=None)
-            if prev_last_ts is not None and ttl_ts is not None and now > prev_last_ts >= ttl_ts:
-                rec["ttl_started_ts"] = ttl_ts + (now - prev_last_ts)
+            anchor_ts = def_since if def_since is not None else prev_last_ts
+            if anchor_ts is not None and ttl_ts is not None and now > anchor_ts >= ttl_ts:
+                rec["ttl_started_ts"] = ttl_ts + (now - anchor_ts)
 
 
 def _sanitize_place_kwargs(place_kwargs) -> dict:
@@ -1213,8 +1215,13 @@ def complete_claim(
                 )
                 rec["last_failure_reason"] = next_reason
             elif outcome == "deferred":
+                prev_last_ts = safe_pos_float(rec.get("last_attempt_ts"), default=None)
+                if safe_pos_float(rec.get("deferred_since_ts"), default=None) is None:
+                    rec["deferred_since_ts"] = prev_last_ts if prev_last_ts is not None else now
                 rec["last_attempt_ts"] = now
                 rec["last_failure_reason"] = str(failure_reason)
+            if outcome != "deferred":
+                rec.pop("deferred_since_ts", None)
             if submission_state is not None:
                 rec["submission_state"] = submission_state
                 _set_safe_to_discard(rec, submission_state == "refused")
@@ -1639,7 +1646,8 @@ def price_gate_ok(rec, current_price, tol=None):
         return False
     if is_fixed_limit_record(rec):
         return safe_pos_float(current_price, default=None) is not None
-    return is_retry_price_favorable(rec.get("side"), current_price, rec.get("requested_price"), tol=tol)
+    req_px = rec.get("requested_price") if rec.get("requested_price") is not None else rec.get("ref_price")
+    return is_retry_price_favorable(rec.get("side"), current_price, req_px, tol=tol)
 
 
 def discard_refused_intent_records(intent_id: str) -> list[str]:

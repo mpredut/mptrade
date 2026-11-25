@@ -1081,10 +1081,9 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
         except Exception as e:  # noqa: BLE001
             raise ProviderError(f"submit_order({symbol}): {e}") from e
         if not ok or not clean_oid:
-            # ``spot_order`` returned a synchronous venue rejection, proving that
-            # no order was accepted. Mark it definitive so durable lifecycle state
-            # does not wait forever for a CLOID that cannot exist.
-            raise SubmissionRefused(f"submit_order({symbol}) rejected: {msg}")
+            if not ok and self._is_definitive_refusal(msg):
+                raise SubmissionRefused(f"submit_order({symbol}) rejected: {msg}")
+            raise ProviderError(f"submit_order({symbol}) uncertain outcome: {msg}")
         return clean_oid
 
     def preflight_order(self, symbol: str, side: str, qty: float,

@@ -966,9 +966,16 @@ class GeminiQuotaRouterMixin:
             if isinstance(quota_snapshot.get("runtime_exhausted"), dict)
             else {}
         )
+        runtime_unrecognized = (
+            quota_snapshot.get("runtime_unrecognized")
+            if isinstance(quota_snapshot.get("runtime_unrecognized"), dict)
+            else {}
+        )
 
         confirmed: list[str] = []
         for m in ordered:
+            if safe_float(runtime_unrecognized.get(m), 0.0) > now:
+                continue
             exp_ts = safe_float(runtime_exhausted.get(m), 0.0)
             if exp_ts > now and available_credits <= 0.0:
                 continue
@@ -976,7 +983,12 @@ class GeminiQuotaRouterMixin:
                 confirmed.append(m)
         if confirmed:
             return confirmed
-        non_exhausted = [m for m in ordered if safe_float(runtime_exhausted.get(m), 0.0) <= now]
+        non_exhausted = [
+            m
+            for m in ordered
+            if safe_float(runtime_unrecognized.get(m), 0.0) <= now
+            and safe_float(runtime_exhausted.get(m), 0.0) <= now
+        ]
         return non_exhausted or ordered
 
     @classmethod
@@ -1227,6 +1239,13 @@ class GeminiQuotaRouterMixin:
             data["runtime_exhausted"] = runtime_exhausted
             data.setdefault("checked_ts", now)
             if unrec:
+                runtime_unrecognized = (
+                    data.get("runtime_unrecognized")
+                    if isinstance(data.get("runtime_unrecognized"), dict)
+                    else {}
+                )
+                runtime_unrecognized[cleaned] = exp_until
+                data["runtime_unrecognized"] = runtime_unrecognized
                 data.setdefault("available_credits", 0.0)
             else:
                 data["available_credits"] = 0.0

@@ -382,6 +382,7 @@ class BinanceFeeMaintainer(VenueFeeMaintainerBase):
 
         spot_bnb_burn: Optional[bool] = None
         bnb_burn_error: Optional[str] = None
+        bnb_burn_alert_fired = False
         get_burn_fn = getattr(cli, "get_bnb_burn_spot_margin", None)
         if callable(get_burn_fn):
             try:
@@ -418,6 +419,7 @@ class BinanceFeeMaintainer(VenueFeeMaintainerBase):
                             "body": f"Could not query/toggle spotBNBBurn via API ({bnb_burn_error}). Verify 'Use BNB to pay fees' in Binance UI.",
                         }
                     )
+                    bnb_burn_alert_fired = True
 
         bnb_free, bnb_locked, free_usdc = self._extract_bnb_and_usdc(cli.get_account())
         total_bnb = bnb_free + bnb_locked
@@ -606,7 +608,10 @@ class BinanceFeeMaintainer(VenueFeeMaintainerBase):
             out["canceled_stale_ids"] = canceled_stale_ids
         if bnb_burn_error:
             out["bnb_burn_error"] = bnb_burn_error
-            out["last_bnb_burn_error_ts"] = round(now_ts, 3)
+            if bnb_burn_alert_fired and not dry_run:
+                out["last_bnb_burn_error_ts"] = round(now_ts, 3)
+            elif prev_venue_state.get("last_bnb_burn_error_ts"):
+                out["last_bnb_burn_error_ts"] = prev_venue_state["last_bnb_burn_error_ts"]
         elif prev_venue_state.get("last_bnb_burn_error_ts"):
             out["last_bnb_burn_error_ts"] = prev_venue_state["last_bnb_burn_error_ts"]
         return out
@@ -903,7 +908,17 @@ def run_venue_fee_maintenance(
 
     dry_run_b = _parse_bool_flag(dry_run, False)
     with VenueFeeMaintenanceStateStore.locked_read_for_update(cache_dir, dry_run=dry_run_b) as (state_path, prev_state):
-        prev_sched = read_persisted_venue_fee_schedule(cache_dir)
+        sched_path = resolve_fee_schedule_cache_path(cache_dir)
+        prev_sched = (
+            read_persisted_venue_fee_schedule(cache_dir)
+            if cache_dir
+            else (
+                CacheFeeScheduleStore.read_file_dict(sched_path, default=None, recover_previous=True)
+                or prev_state
+            )
+        )
+        if not isinstance(prev_sched, dict):
+            prev_sched = {}
         prev_sched_venues = prev_sched.get("venues") if isinstance(prev_sched.get("venues"), dict) else {}
         prev_workflow_venues = prev_state.get("venues") if isinstance(prev_state.get("venues"), dict) else {}
 

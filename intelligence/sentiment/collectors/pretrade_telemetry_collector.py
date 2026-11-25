@@ -509,7 +509,8 @@ def _ensure_fresh_pretrade_microstructure(
     disabled_syms = disabled_registry_symbols()
     refreshed_any = False
     for cand_m in refresh_cands:
-        cand_mu = str(cand_m or "").strip().upper()
+        cand_raw = str(cand_m or "").strip()
+        cand_mu = cand_raw.upper()
         if not cand_mu or cand_mu in disabled_syms:
             continue
         if claimed_symbols is not None:
@@ -517,14 +518,20 @@ def _ensure_fresh_pretrade_microstructure(
                 if cand_mu in claimed_symbols:
                     continue
                 claimed_symbols.add(cand_mu)
+        ident_m = resolve_symbol_identity(cand_raw)
+        cand_disk = (
+            ident_m.storage_key
+            if (ident_m.is_tokenized_equity or ident_m.is_rth_equity) and ident_m.storage_key
+            else cand_mu
+        )
         has_existing_m = any(
-            os.path.exists(str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"{pfx_m}{cand_mu}.json"))))
+            os.path.exists(str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"{pfx_m}{cand_disk}.json"))))
             for pfx_m in (CACHE_ORDERBOOK_DEPTH_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX, CACHE_WHALE_SNAPSHOT_PREFIX)
         )
         if has_existing_m:
             res = ensure_fresh_symbol_microstructure(
                 cachedb_dir,
-                cand_mu,
+                cand_disk,
                 max_age_ob_sec=180.0,
                 max_age_whale_sec=360.0,
                 include_derivatives=True,

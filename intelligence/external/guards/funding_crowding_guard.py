@@ -15,6 +15,8 @@ from botcore import (
     safe_float,
     safe_pos_float,
 )
+from instrument_registry import venue_for_symbol
+from providers.base import MarketDataProvider
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
@@ -57,7 +59,17 @@ class FundingCrowdingGuard(OrderGuardEvaluatorBase):
     def _evaluate_external_snapshot(
         self, side_norm: str, telemetry: DerivativesTelemetry
     ) -> GuardDecision:
-        fr = safe_float(obj_attr(telemetry, "funding_rate"), default=0.0) or 0.0
+        raw_fr = safe_float(obj_attr(telemetry, "funding_rate"), default=0.0) or 0.0
+        ann_pct = safe_float(obj_attr(telemetry, "funding_annualized_pct"), default=None)
+        if ann_pct is not None and (ann_pct != 0.0 or raw_fr == 0.0):
+            # Normalize to 8h-equivalent rate: annualized_pct / (3 * 365 * 100)
+            fr = ann_pct / (3.0 * 365.0 * 100.0)
+        else:
+            sym = obj_attr(telemetry, "symbol") or ""
+            has_l1 = (safe_pos_float(obj_attr(telemetry, "native_l1_oi_usd"), default=0.0) or 0.0) > 0.0
+            if not has_l1 and isinstance(sym, str) and sym.strip():
+                has_l1 = MarketDataProvider.has_native_l1_derivatives(venue_for_symbol(sym))
+            fr = raw_fr * 8.0 if has_l1 else raw_fr
         reason = (
             f"long_crowding_extreme (funding_rate={fr*100:.3f}% >= {self.max_long_funding_rate*100:.3f}%)"
             if side_norm == "BUY" and fr >= self.max_long_funding_rate

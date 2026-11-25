@@ -39,9 +39,10 @@ class LlmQuotaStatusStore(StateStoreBase):
         default: Any = None,
     ) -> dict[str, Any]:
         """Passively read ``llm_quota_status.json`` with ``.previous`` recovery (returns dict or empty dict)."""
-        if not quota_path or not cls.has_disk_file(quota_path):
+        resolved_path = cls._resolve_disk_path(quota_path)
+        if not resolved_path or not cls.has_disk_file(resolved_path):
             return dict(default) if isinstance(default, Mapping) else {}
-        loaded = read_json_recovering(quota_path, default=default if default is not None else {})
+        loaded = read_json_recovering(resolved_path, default=default if default is not None else {})
         return dict(loaded) if isinstance(loaded, dict) else {}
 
     @classmethod

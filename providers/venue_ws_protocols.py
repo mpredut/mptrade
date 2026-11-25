@@ -99,7 +99,8 @@ class KrakenWsLedgerMixin(VenueWsProtocolInterface):
     @classmethod
     def match_configured_pair(cls, symbol: object, *, pairs=None) -> Optional[str]:
         """Resolve a raw or WS Kraken pair to its configured ``pairs`` entry (or canonical key if ``'*'`` is enabled)."""
-        if (raw := clean_upper_scalar(symbol)) is None:
+        sym_s = clean_scalar_str(symbol)
+        if sym_s is None or (raw := clean_upper_scalar(sym_s)) is None:
             return None
         if pairs is not None:
             norm_pairs = cls._iter_symbol_items(pairs)
@@ -110,6 +111,9 @@ class KrakenWsLedgerMixin(VenueWsProtocolInterface):
                     if configured.upper() == raw or kraken_pair_matches(configured, raw):
                         return configured
                 return None
+        tok_pair, is_tok = resolve_kraken_tokenized_pair(sym_s)
+        if is_tok and tok_pair:
+            return tok_pair
         return kraken_pair_key(raw) or raw
 
     @staticmethod

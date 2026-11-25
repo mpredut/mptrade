@@ -214,7 +214,8 @@ def _prepare_retry_placement_kwargs(r: dict, kwargs: dict, provider_name, now: f
     kwargs["caller_owns_retry"] = True
     fixed_limit = oq.is_fixed_limit_record(r)
     if not fixed_limit:
-        kwargs["_retry_requested_price"] = r.get("requested_price")
+        req_px = r.get("requested_price") if r.get("requested_price") is not None else r.get("ref_price")
+        kwargs["_retry_requested_price"] = req_px
         kwargs["_retry_price_tolerance"] = oq.RETRY_PRICE_TOL
     if provider_name is not None:
         kwargs["provider_name"] = provider_name

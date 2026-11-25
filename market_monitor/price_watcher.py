@@ -165,8 +165,6 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
     factory = NewCoinsFactory(enabled_sources=sources or ENABLED_SOURCES, cmc_api_key=CMC_API_KEY)
     new_coins_checker = NewCoinsMonitor(cachePriceAll, factory=factory)
     new_coins_checker.alert_callbacks.append(_on_new_coin_alerts)
-    new_coins_checker.start_monitoring(interval_seconds=interval_seconds)
-    print(f"New coin checker started! Active sources: {factory.get_available_sources()}")
 
     print("\nPerforming initial new coin discovery...")
     new_coins_checker.refresh()
@@ -174,7 +172,7 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
     auto_added_count = 0
     max_new_i = safe_int(max_new_coins, default=None) if isinstance(max_new_coins, (int, float)) else None
     eff_max_new = max(0, max_new_i) if max_new_i is not None else MAX_NEW_COINS_TO_TRACK
-    for source_name, coins in new_coins_checker.all_new_coins.items():
+    for source_name, coins in list(new_coins_checker.all_new_coins.items()):
         if new_coins_checker.source_has_price(source_name):
             for coin in coins[:eff_max_new]:
                 if new_coins_checker.add_new_coin_to_watchlist(coin):
@@ -190,6 +188,9 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
         print(f"{auto_added_count} new coins auto-added to watchlist from CoinMarketCap")
     else:
         print("No new coins with price were found on CoinMarketCap")
+
+    new_coins_checker.start_monitoring(interval_seconds=interval_seconds)
+    print(f"New coin checker started! Active sources: {factory.get_available_sources()}")
 
     print(f"\n{'=' * 70}\nSTATUS REPORT\n{'=' * 70}")
     if hasattr(cachePriceAll, 'original_symbols'):

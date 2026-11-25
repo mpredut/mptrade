@@ -971,10 +971,12 @@ def load_config():
 
 def is_trade_enabled() -> bool:
     """Return whether cached ``trade_enabled`` is true (with on-demand mtime hot-reload every 5s)."""
+    global _CONFIG_LAST_CHECK
     env_p = str(_bc_attr("CONFIG_ENV_PATH", CONFIG_ENV_PATH))
     txt_p = str(_bc_attr("CONFIG_TXT_PATH", CONFIG_TXT_PATH))
     now_ts = _time.time()
     if not (0.0 <= (now_ts - _CONFIG_LAST_CHECK) < 5.0):
+        _CONFIG_LAST_CHECK = now_ts
         cur_mtime = (_file_mtime(env_p), _file_mtime(txt_p))
         if cur_mtime != _CONFIG_MTIME:
             load_config()

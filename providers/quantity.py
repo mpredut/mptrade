@@ -257,8 +257,9 @@ def summarize_fills_position_and_cost(
             removed = amount + base_fee
             matched = min(qty, removed)
             avg_before = cost / qty if qty > 0.0 else 0.0
+            matched_sold = matched * (amount / removed) if removed > 0.0 else 0.0
             matched_quote_fee = quote_fee * (matched / removed) if removed > 0.0 else 0.0
-            realized_net += matched * (price - avg_before) - matched_quote_fee
+            realized_net += (matched_sold * price - matched * avg_before) - matched_quote_fee
             remaining = max(0.0, qty - removed)
             if remaining <= 1e-9:
                 qty = 0.0

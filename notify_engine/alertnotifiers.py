@@ -1375,8 +1375,9 @@ def _get_notification_server() -> Any:
         return srv_mod.NotificationServer()
     if _NOTIFICATION_SERVER_CLS is None:
         srv_mod = load_local_module(
-            "notify_engine.server",
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py"),
+            os.path.dirname(os.path.abspath(__file__)),
+            "server",
+            module_key="notify_engine.server",
         )
         _NOTIFICATION_SERVER_CLS = getattr(srv_mod, "NotificationServer", None)
     return _NOTIFICATION_SERVER_CLS()

@@ -62,13 +62,14 @@ class OrderRetryQuarantineAlertsStore(StateStoreBase):
     @classmethod
     def clear_key_locked(cls, path: str, key: str) -> bool:
         """Remove ``key`` atomically under ``generation_file_lock`` while preserving sibling keys."""
-        if not path or not key or not cls.has_disk_file(path):
+        resolved_path = cls._resolve_disk_path(path)
+        if not resolved_path or not key or not cls.has_disk_file(resolved_path):
             return False
-        with generation_file_lock(path):
-            loaded = load_json_state(path, default_factory=dict, fail_closed=False, label="quarantine alerts")
+        with generation_file_lock(resolved_path):
+            loaded = load_json_state(resolved_path, default_factory=dict, fail_closed=False, label="quarantine alerts")
             if isinstance(loaded, dict) and key in loaded:
                 data = dict(loaded)
                 data.pop(key, None)
-                save_json_state(path, data, separators=(",", ":"), skip_if_unchanged=True)
+                save_json_state(resolved_path, data, separators=(",", ":"), skip_if_unchanged=True)
                 return True
         return False

@@ -30,7 +30,7 @@ from cachepaths import (
     matches_asset_scope,
     normalize_venue_name,
 )
-from instrument_registry import casefold_get, resolve_symbol_identity
+from instrument_registry import canonical_display_symbol, casefold_get, resolve_symbol_identity
 from .ai_circuit_breaker import (
     DEFAULT_FLIP_COOLDOWN_MIN,
     DEFAULT_FLIP_MIN_EDGE_PCT,
@@ -373,14 +373,22 @@ def match_filled_intent_rows_lifo(
         if side == "BUY":
             s_queue = pending_sells.get(ikey)
             if s_queue:
-                top_s_usd = safe_pos_float(s_queue[-1][0].get("usd"), default=0.0) or 0.0
+                def _stack_rem_usd(queue: list[list[Any]]) -> float:
+                    return sum(
+                        (safe_pos_float(it[0].get("usd"), default=0.0) or 0.0) * (it[1] / it[2])
+                        for it in queue
+                        if it[2] > 0.0
+                    )
+
+                rem_sell_usd_before = _stack_rem_usd(s_queue)
                 in_usd = safe_pos_float(row.get("usd"), default=0.0) or 0.0
                 rem_after = _consume_stack(s_queue, row, row_qty, row_qty, row_exp, "SELL->BUY")
+                consumed_sell_usd = max(0.0, rem_sell_usd_before - _stack_rem_usd(s_queue))
                 if rem_after > 0.0 and _is_dust_remainder(rem_after, row_qty, row, 1e-12):
                     rem_after = 0.0
                 # A spot reload BUY closes the SELL->BUY leg and opens live long inventory in
                 # reloaded_buys without duplicating open BUY_MTM while still held.
-                is_notional_reload = top_s_usd > 0.0 and in_usd <= top_s_usd * 1.05
+                is_notional_reload = consumed_sell_usd > 0.0 and in_usd <= consumed_sell_usd * 1.05
                 if rem_after <= 1e-12 or is_notional_reload:
                     reloaded_buys.setdefault(ikey, []).append([row, row_qty, row_qty, row_exp])
                 else:
@@ -594,7 +602,7 @@ def build_persisted_round_trip_fee_resolver(
 
     def _resolve(venue: str, symbol: str, order_type: str = "LIMIT") -> Optional[float]:
         ven = normalize_venue_name(clean_scalar_str(venue) or "")
-        sym = (clean_scalar_str(symbol) or "").upper()
+        sym = canonical_display_symbol(symbol, venue=ven or None) or clean_scalar_str(symbol) or ""
         ot = clean_upper_scalar(order_type) or "LIMIT"
         key = (ven, sym, ot)
         if key in memo:

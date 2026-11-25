@@ -59,11 +59,12 @@ class PortfolioPositionsStateStore(StateStoreBase):
         }
         if not pos_updates:
             return False
-        os.makedirs(os.path.dirname(os.path.abspath(pos_path)), exist_ok=True)
-        with generation_file_lock(pos_path):
-            disk_exists = cls.has_disk_file(pos_path)
+        resolved_path = cls._resolve_disk_path(pos_path)
+        os.makedirs(os.path.dirname(os.path.abspath(resolved_path)), exist_ok=True)
+        with generation_file_lock(resolved_path):
+            disk_exists = cls.has_disk_file(resolved_path)
             disk_raw = (
-                read_json_dict(pos_path, default=None, recover_previous=True, repair_files=True)
+                read_json_dict(resolved_path, default=None, recover_previous=True, repair_files=True)
                 if (read_disk and disk_exists)
                 else None
             )
@@ -92,10 +93,12 @@ class PortfolioPositionsStateStore(StateStoreBase):
             should_write = (
                 (sanitized != disk_dict)
                 if disk_dict is not None
-                else (sanitized != src_pos or (bool(sanitized) and not os.path.exists(pos_path)))
+                else (sanitized != src_pos or (bool(sanitized) and not os.path.exists(resolved_path)))
             )
             if not should_write:
                 return False
-            writer = save_fn if callable(save_fn) else save_json_state
-            writer(pos_path, sanitized, indent=indent)
+            if callable(save_fn):
+                save_fn(pos_path, sanitized, indent=indent)
+            else:
+                save_json_state(resolved_path, sanitized, indent=indent)
             return True

@@ -15,6 +15,7 @@ from botcore import (
     safe_float,
 )
 from cachepaths import canonical_symbol_key
+from instrument_registry import resolve_symbol_identity
 
 _MISSING = object()
 
@@ -56,8 +57,13 @@ def resolve_hierarchical_guard_mode(
 
 
 def clean_guard_symbol_key(symbol: Any) -> str:
-    """Return uppercase symbol stripped of '/', '-', '_'."""
-    return canonical_symbol_key(symbol) if isinstance(symbol, str) else ""
+    """Return canonical guard key preserving mixed-case Kraken xStocks and RTH equity tickers."""
+    if not isinstance(symbol, str):
+        return ""
+    ident = resolve_symbol_identity(symbol)
+    if (ident.is_tokenized_equity or ident.is_rth_equity) and ident.storage_key:
+        return ident.storage_key
+    return canonical_symbol_key(symbol)
 
 
 def fetch_guard_snapshot(

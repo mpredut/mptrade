@@ -101,11 +101,12 @@ class VenueBalancesStateStore(StateStoreBase):
         """Single canonical locked producer writer for ``venue_balances_state.json``."""
         if not bcache_path or not isinstance(updated_bals, Mapping) or not updated_bals:
             return False
-        os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
-        with generation_file_lock(bcache_path):
-            disk_exists = cls.has_disk_file(bcache_path)
+        resolved_path = cls._resolve_disk_path(bcache_path)
+        os.makedirs(os.path.dirname(os.path.abspath(resolved_path)), exist_ok=True)
+        with generation_file_lock(resolved_path):
+            disk_exists = cls.has_disk_file(resolved_path)
             disk_bals = (
-                read_json_dict(bcache_path, default=None, recover_previous=True, repair_files=True)
+                read_json_dict(resolved_path, default=None, recover_previous=True, repair_files=True)
                 if (read_disk and disk_exists)
                 else None
             )
@@ -127,10 +128,12 @@ class VenueBalancesStateStore(StateStoreBase):
             should_write = (
                 (sanitized != disk_dict)
                 if disk_dict is not None
-                else (sanitized != src_bals or (bool(sanitized) and not os.path.exists(bcache_path)))
+                else (sanitized != src_bals or (bool(sanitized) and not os.path.exists(resolved_path)))
             )
             if not should_write:
                 return False
-            writer = save_fn if callable(save_fn) else save_json_state
-            writer(bcache_path, sanitized, indent=indent)
+            if callable(save_fn):
+                save_fn(bcache_path, sanitized, indent=indent)
+            else:
+                save_json_state(resolved_path, sanitized, indent=indent)
             return True
