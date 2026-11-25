@@ -2814,3 +2814,108 @@ def test_jsonl_nul_corruption_auto_heals_on_next_flush_and_restores_incremental_
     sp_mgr._legacy_jsonl_needs_rewrite = True
     assert sp_mgr._should_compact_before_append_locked() is False
 
+
+def test_previous_recovery_no_short_circuit_repair_implies_recover_and_nav_bnb_pricing(tmp_path):
+    """Verify three structural fixes:
+    1) Missing primary + valid .previous recovers cleanly (no os.path.isfile short-circuit) across
+       OrderLedgerReader.read_active_snapshot, CacheOrderFilledManager, and CacheOrderOpenManager;
+    2) state_io.read_json_dict(..., repair_files=True) structurally implies recover_previous=True;
+    3) nav_history_store prices Binance fee-reserve BNB from venue_fee_maintenance_state.json when
+       BNBUSDC is absent from cache_current_price.json (eliminating fake BNB top-up drawdown)."""
+    import cacheaccount
+    from providers.nav_history_store import _load_workspace_balances_and_prices, record_nav_history_snapshot
+    from providers.order_ledger import OrderLedgerReader
+
+    now_s = time.time()
+    now_ms = int(now_s * 1000)
+    orders_dir = tmp_path / "cachedb" / "orders"
+    state_dir = tmp_path / "cachedb" / "state"
+    prices_dir = tmp_path / "cachedb" / "prices"
+    orders_dir.mkdir(parents=True)
+    state_dir.mkdir(parents=True)
+    prices_dir.mkdir(parents=True)
+
+    # 1a. OrderLedgerReader.read_active_snapshot recovers orders_active.json.previous when primary is missing
+    active_p = orders_dir / "orders_active.json"
+    active_prev = Path(state_io.previous_generation_path(str(active_p)))
+    active_prev.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "updated_ts": now_s,
+            "journal_cursor": {"file": "order_events_2026-11-25.jsonl", "offset": 128, "offsets": {"order_events_2026-11-25.jsonl": 128}},
+            "venue_verified_ts": {"binance": now_s},
+            "symbol_verified_ts": {"binance:btcusdc": now_s},
+            "recently_closed": {},
+            "orders": {"o1": {"venue": "binance", "symbol": "BTCUSDC", "state": "OPEN"}},
+        }),
+        encoding="utf-8",
+    )
+    snap_ro = OrderLedgerReader(cachedb_dir=str(tmp_path / "cachedb")).read_active_snapshot(repair_files=False)
+    assert "o1" in snap_ro["orders"] and snap_ro["journal_cursor"]["offset"] == 128
+    assert not active_p.exists() and active_prev.exists()  # passive reader did not mutate disk
+
+    # 1b. CacheOrderFilledManager read & touch recover .previous when primary is missing
+    filled_p = orders_dir / "cache_order_filled_kraken.json"
+    filled_prev = Path(state_io.previous_generation_path(str(filled_p)))
+    filled_prev.write_text(
+        json.dumps({
+            "items": {"HYPEUSD": [{"orderId": "kr1", "side": "BUY", "price": 55.0, "quantity": 2.0, "timestamp": now_ms - 5000}]},
+            "fetchtime": {"HYPEUSD": now_ms - 5000},
+        }),
+        encoding="utf-8",
+    )
+    f_items, f_ft = cacheaccount.CacheOrderFilledManager.read_venue_filled_orders_snapshot(str(filled_p), venue="kraken")
+    assert len(f_items.get("HYPEUSD", [])) == 1 and f_items["HYPEUSD"][0]["orderId"] == "kr1"
+    assert f_ft.get("HYPEUSD") == now_ms - 5000
+    assert cacheaccount.CacheOrderFilledManager.touch_venue_filled_orders_snapshot(
+        str(filled_p), now_ms=now_ms, symbols=["HYPEUSD"], create_missing=False
+    ) is True
+    assert filled_p.exists()
+
+    # 1c. CacheOrderOpenManager.read_venue_open_orders_snapshot_detailed recovers .previous when primary is missing
+    open_p = orders_dir / "cache_order_open_hyperliquid.json"
+    open_prev = Path(state_io.previous_generation_path(str(open_p)))
+    open_prev.write_text(
+        json.dumps({
+            "items": {"HYPEUSDC": [{"orderId": "hl99", "side": "BUY", "price": 50.0, "origQty": 3.0, "status": "OPEN", "timestamp": now_ms}]},
+            "fetchtime": {"HYPEUSDC": now_ms},
+            "verified_ts": now_s,
+            "symbol_verified_ts": {"HYPEUSDC": now_s},
+        }),
+        encoding="utf-8",
+    )
+    o_items, _, o_ver, o_sym_ver = cacheaccount.CacheOrderOpenManager.read_venue_open_orders_snapshot_detailed(str(open_p))
+    assert len(o_items.get("HYPEUSDC", [])) == 1 and o_items["HYPEUSDC"][0]["orderId"] == "hl99"
+    assert o_ver == pytest.approx(now_s, rel=1e-3) and "HYPEUSDC" in o_sym_ver
+
+    # 2. read_json_dict(..., repair_files=True) structurally implies recover_previous=True
+    rep_p = state_dir / "repair_implies_recover.json"
+    rep_prev = Path(state_io.previous_generation_path(str(rep_p)))
+    rep_prev.write_text(json.dumps({"ok": True, "v": 42}), encoding="utf-8")
+    recovered_doc = state_io.read_json_dict(str(rep_p), default=None, repair_files=True)
+    assert recovered_doc == {"ok": True, "v": 42}
+    assert rep_p.exists() and not rep_prev.exists()
+
+    # 3. nav_history_store seeds BNB fee-reserve price from venue_fee_maintenance_state.json
+    cacheaccount.CacheBalanceManager.replace_venue_balances_snapshot(
+        str(orders_dir / "cache_balance_binance.json"),
+        {"USDC": (1000.0, 0.0), "BNB": (0.2, 0.0)},
+        venue="binance",
+        now_s=now_s,
+        verified_ts=now_s,
+    )
+    (prices_dir / "cache_current_price.json").write_text(
+        json.dumps({"items": {"BTCUSDC": [[now_ms, 60000.0]]}}),
+        encoding="utf-8",
+    )
+    (state_dir / "venue_fee_maintenance_state.json").write_text(
+        json.dumps({"ts": now_s, "venues": {"binance": {"ts": now_s, "bnb_price_usdc": 550.0}}}),
+        encoding="utf-8",
+    )
+    _, _, cp_seeded = _load_workspace_balances_and_prices(str(tmp_path))
+    assert "BNBUSDC" in cp_seeded["items"] and cp_seeded["items"]["BNBUSDC"][0][1] == pytest.approx(550.0)
+    dd = record_nav_history_snapshot(str(tmp_path), now_ts=now_s)
+    # 1000 USDC + 0.2 BNB * 550 = 1110.0 USD (BNB reserve included!)
+    assert dd["current_nav_usd"] == pytest.approx(1110.0, abs=0.05)
+
+

@@ -209,6 +209,7 @@ from providers import t212_provider as _t212_prov_mod
 from providers.base import MarketDataProvider
 from providers.market_api import api as mkt
 from state_io import (
+    cachedb_exists,
     generation_file_lock,
     read_json_dict,
     read_json_dict_recovering as _default_read_json_cached,
@@ -1159,7 +1160,7 @@ def _extract_fresh_layer3_t212_prices(
     )
     cp_doc: Optional[Dict[str, Any]] = None
     for cp_cand in cp_candidates:
-        if os.path.exists(cp_cand):
+        if cachedb_exists(cp_cand, include_previous=True):
             raw_cp = read_json_dict(cp_cand, default=None, recover_previous=True)
             if isinstance(raw_cp, dict) and raw_cp:
                 cp_doc = raw_cp
@@ -1388,7 +1389,7 @@ def upgrade_tpo_vp_from_ohlc(
                 sym, cache_ohlc_24h_filename, *ident.candidate_cache_symbols(include_base=False)
             ):
                 p_vp = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn_vp)))
-                if os.path.exists(p_vp) and isinstance(d_vp := read_json_recovering(p_vp), dict) and isinstance(d_vp.get("points"), list):
+                if cachedb_exists(p_vp, include_previous=True) and isinstance(d_vp := read_json_recovering(p_vp), dict) and isinstance(d_vp.get("points"), list):
                     cand_vp = [
                         row_vp
                         for r in d_vp["points"]
@@ -1464,7 +1465,7 @@ def upgrade_tpo_vp_from_ohlc(
                                     sym, cache_ohlc_24h_filename, *ident_h.candidate_cache_symbols(include_base=False)
                                 ):
                                     p_h = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn_h)))
-                                    if os.path.exists(p_h) and isinstance(d_h := read_json_recovering(p_h), dict) and isinstance(d_h.get("points"), list):
+                                    if cachedb_exists(p_h, include_previous=True) and isinstance(d_h := read_json_recovering(p_h), dict) and isinstance(d_h.get("points"), list):
                                         raw_ohlc_disk_pts = d_h["points"]
                                         break
                             if partial_local_24h and raw_ohlc_disk_pts:

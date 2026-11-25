@@ -126,6 +126,7 @@ from providers.portfolio_valuation import compute_venue_nav_breakdown
 from state_io import (
     atomic_text_writer,
     atomic_write_json,
+    cachedb_exists,
     discard_generation_file,
     generation_transaction,
     meta_file_path,
@@ -2931,7 +2932,7 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
         create_b = _parse_bool_flag(create_missing, False)
         try:
             with generation_transaction(target_path) as resolved_target:
-                if not os.path.exists(resolved_target) and not create_b:
+                if not cachedb_exists(resolved_target, include_previous=True) and not create_b:
                     return False
                 loaded = read_json_dict_recovering(resolved_target, repair_files=True)
                 if not isinstance(loaded, dict):
@@ -2998,7 +2999,7 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
             if read_json_fn is not None:
                 data = read_json_fn(cand_path)
             else:
-                if not os.path.isfile(cand_path):
+                if not cachedb_exists(cand_path, include_previous=True):
                     continue
                 data = read_json_dict_recovering(cand_path, repair_files=False)
             if not isinstance(data, dict) or not isinstance(data.get("items"), dict):
@@ -3539,7 +3540,7 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
         if read_json_fn is not None:
             data = read_json_fn(resolved)
         else:
-            if not os.path.isfile(resolved):
+            if not cachedb_exists(resolved, include_previous=True):
                 return {}, {}, 0.0, {}
             data = read_json_dict_recovering(resolved, repair_files=False)
         if not isinstance(data, dict):
@@ -5471,6 +5472,7 @@ def get_order_filled_manager(
         cm_getter_name="get_order_filled_manager",
         getter_tag="_is_ssot_order_filled_getter",
         err_label="filled-order",
+        resync_existing=True,
     )
 
 
@@ -5603,6 +5605,7 @@ def get_trade_manager(
             venue=v_norm,
             stream_format="json" if is_non_binance else "jsonl",
         ),
+        resync_existing=True,
     )
 
 

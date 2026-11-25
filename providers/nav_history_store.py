@@ -6,13 +6,20 @@ to ``providers/portfolio_state_store.py`` + ``state_io``. Pure drawdown/Sharpe m
 """
 from __future__ import annotations
 
+import math
 import os
 from typing import Any, Mapping, Optional
 
-from botcore import resolve_now_ts
-from cachepaths import CACHE_CURRENT_PRICE_FILENAME, resolve_cachedb_filepath
+from botcore import resolve_now_ts, safe_pos_float
+from cachepaths import (
+    CACHE_CURRENT_PRICE_FILENAME,
+    canonical_base_asset,
+    ensure_quote_suffix,
+    resolve_cachedb_filepath,
+)
 from state_io import read_json_dict
 from state_stores.nav_history_state import NavHistoryStateStore
+from state_stores.venue_fee_maintenance_state import VenueFeeMaintenanceStateStore
 
 from .nav_drawdown import (
     DEFAULT_CASHFLOW_JUMP_PCT,
@@ -52,8 +59,33 @@ def _load_workspace_balances_and_prices(
     bal_caches = load_venue_balance_caches(cache_dir)
     vb = load_venue_balances_state_dict(cache_dir)
     cp_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, CACHE_CURRENT_PRICE_FILENAME)))
-    cp = read_json_dict(cp_path, default={})
-    return bal_caches, vb, (cp if isinstance(cp, dict) else {})
+    cp = read_json_dict(cp_path, default={}, recover_previous=True)
+    cp_out = dict(cp) if isinstance(cp, dict) else {}
+    # Seed Binance fee-reserve BNB price from venue_fee_maintenance_state.json when BNB is not tracked
+    # in cache_current_price.json so automatic BNB fee top-ups from USDC never look like NAV drawdown.
+    try:
+        items_view = cp_out.get("items") if isinstance(cp_out.get("items"), dict) else cp_out
+        if not any(isinstance(k, str) and canonical_base_asset(k) == "BNB" for k in items_view):
+            fee_state = VenueFeeMaintenanceStateStore.read_state(cache_dir)
+            bn_fee = (fee_state.get("venues") or {}).get("binance") if isinstance(fee_state, dict) else None
+            bnb_px = safe_pos_float(bn_fee.get("bnb_price_usdc") if isinstance(bn_fee, dict) else None, default=None)
+            if bnb_px is not None:
+                bnb_ts_s = safe_pos_float(
+                    (bn_fee.get("ts") if isinstance(bn_fee, dict) else None)
+                    or (fee_state.get("ts") if isinstance(fee_state, dict) else None),
+                    default=None,
+                ) or resolve_now_ts()
+                bnb_ts_ms = math.trunc(bnb_ts_s * 1000.0)
+                bnb_sym = ensure_quote_suffix("BNB", "USDC")
+                if isinstance(cp_out.get("items"), dict):
+                    items_copy = dict(cp_out["items"])
+                    items_copy[bnb_sym] = [[bnb_ts_ms, bnb_px]]
+                    cp_out["items"] = items_copy
+                else:
+                    cp_out[bnb_sym] = [[bnb_ts_ms, bnb_px]]
+    except Exception:
+        pass
+    return bal_caches, vb, cp_out
 
 
 def record_nav_history_snapshot(

@@ -23,7 +23,7 @@ from intelligence.macro_sentiment_ssot import (
     _cfg_int,
     _cfg_str,
 )
-from state_io import generation_file_lock, read_json_dict, read_json_dict_cached, save_json_state
+from state_io import cachedb_exists, generation_file_lock, read_json_dict, read_json_dict_cached, save_json_state
 
 logger = logging.getLogger(__name__)
 
@@ -900,7 +900,7 @@ def update_dynamic_lexicon(
     stopwords = _get_stopwords_set()
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with generation_file_lock(path):
-        raw = read_json_dict(path, default=None, repair_files=True) if os.path.exists(path) else None
+        raw = read_json_dict(path, default=None, recover_previous=True, repair_files=True) if cachedb_exists(path, include_previous=True) else None
         existing_entries, sig_to_key, changed = _extract_valid_dynamic_entries(
             raw.get("entries") if isinstance(raw, dict) else None, now, ttl, stopwords
         )
@@ -942,10 +942,10 @@ def demote_dynamic_acute_terms(
 ) -> bool:
     """Demote dynamically discovered ``acute`` terms to ``high`` once threat is not CRITICAL_SHOCK."""
     now, ttl, path = _resolve_dynamic_lexicon_context(cache_dir, now_ts)
-    if not os.path.exists(path):
+    if not cachedb_exists(path, include_previous=True):
         return False
     with generation_file_lock(path):
-        raw = read_json_dict(path, default=None, repair_files=True)
+        raw = read_json_dict(path, default=None, recover_previous=True, repair_files=True)
         if not isinstance(raw, dict) or not isinstance(raw.get("entries"), dict):
             return False
 

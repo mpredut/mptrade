@@ -42,7 +42,7 @@ from botcore import (  # noqa: E402
     safe_pos_float,
 )
 from intelligence.internal.state.persistence import detect_long_term_trend as _root_detect_long_term_trend  # noqa: E402
-from state_io import read_json_dict  # noqa: E402
+from state_io import cachedb_exists, previous_generation_path, read_json_dict  # noqa: E402
 
 _common_mod = load_local_module(_HERE, "common")
 _hl_signals_env = _common_mod.load_hl_default_env
@@ -193,7 +193,7 @@ def _builtin_trend(client, coin: str) -> dict:
 
 
 def _file_signal(path: str) -> dict:
-    if not path or isinstance(path, bool) or not str(path).strip() or not os.path.isfile(str(path)):
+    if not path or isinstance(path, bool) or not str(path).strip() or not cachedb_exists(str(path), include_previous=True):
         return {**NEUTRAL, "source": "file(missing)"}
     try:
         d = read_json_dict(str(path), recover_previous=True)
@@ -208,7 +208,8 @@ def _file_signal(path: str) -> dict:
         if has_explicit_ts:
             return {**NEUTRAL, "source": "file(expired)"}
         try:
-            ts_f = normalize_epoch_sec(os.path.getmtime(str(path)), default=0.0) or 0.0
+            stat_path = str(path) if os.path.exists(str(path)) else previous_generation_path(str(path))
+            ts_f = normalize_epoch_sec(os.path.getmtime(stat_path), default=0.0) or 0.0
         except OSError:
             return {**NEUTRAL, "source": "file(expired)"}
     else:

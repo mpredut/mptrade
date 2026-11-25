@@ -450,7 +450,7 @@ def estimate_T(
     ):
         try:
             with generation_file_lock(t_cache_path):
-                disk_cache = read_json_dict(t_cache_path, default=None, repair_files=True)
+                disk_cache = read_json_dict(t_cache_path, default=None, recover_previous=True, repair_files=True)
                 merged_cache = dict(disk_cache) if isinstance(disk_cache, dict) else dict(cache)
                 disk_ent = merged_cache.get(cache_key)
                 if res_has_n or not (

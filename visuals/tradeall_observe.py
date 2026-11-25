@@ -60,6 +60,7 @@ from state_io import (
     append_text_line,
     atomic_file_path,
     atomic_write_text,
+    cachedb_exists,
     open_binary_read_file,
     parse_json_payload,
     read_json_dict,
@@ -232,7 +233,7 @@ def _resolve_default_symbols():
 
 def sample_current_prices(symbols, *, snapshot=None):
     if snapshot is None:
-        if not os.path.exists(CACHE_TREND_PATH):
+        if not cachedb_exists(CACHE_TREND_PATH, include_previous=True):
             return
         try:
             snapshot = read_json_dict(CACHE_TREND_PATH, recover_previous=True)

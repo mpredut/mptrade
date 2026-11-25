@@ -142,7 +142,7 @@ from providers.order_status_ssot import NON_FILL_ORDER_STATUSES
 from providers.portfolio_state_store import resolve_kraken_trade_cache_position
 from providers.quantity import clamp_notional_to_wallet_balance
 from providers.venue_fee_maintenance import read_persisted_venue_fee_spec
-from state_io import read_json_dict
+from state_io import cachedb_exists, read_json_dict
 
 # Symmetric guard bypass set for autonomous AI orders across both BUY and SELL:
 # Trade thesis, profit/loss protection, multi-tranche scaling, trend timing, microstructure, and
@@ -285,7 +285,7 @@ class AutonomousIntentGateway:
         prices: Dict[str, float] = {}
         try:
             cp_path = resolve_cachedb_filepath(os.path.join(self.cache_dir, CACHE_CURRENT_PRICE_FILENAME))
-            if cp_path and os.path.exists(cp_path):
+            if cp_path and cachedb_exists(cp_path, include_previous=True):
                 data = read_json_dict(cp_path, default=None, recover_previous=True)
                 prices = extract_live_prices_from_cache_payload(data)
         except Exception:
@@ -380,7 +380,7 @@ class AutonomousIntentGateway:
             if not cand_sym:
                 continue
             st_path = os.path.join(venue_dir, f".state_{cand_sym}.json")
-            if os.path.isfile(st_path):
+            if cachedb_exists(st_path, include_previous=True):
                 st_data = read_json_dict(st_path, default={}, recover_previous=True)
                 qty_f = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0
                 cost_f = safe_nonneg_float(st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost"), default=0.0) or 0.0

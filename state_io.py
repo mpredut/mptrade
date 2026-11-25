@@ -65,9 +65,9 @@ def cachedb_exists(path: Any, *, include_previous: bool = True) -> bool:
         resolved = _resolve_target_path(path)
     except (TypeError, ValueError):
         return False
-    if os.path.exists(resolved):
+    if os.path.isfile(resolved):
         return True
-    if include_previous and os.path.exists(previous_generation_path(resolved)):
+    if include_previous and os.path.isfile(previous_generation_path(resolved)):
         return True
     return False
 
@@ -1428,12 +1428,13 @@ def _read_with_policy(
     default: Any = _MISSING, backup_path: str | None = None,
     recover_previous: bool = False, repair_files: bool = False,
 ) -> T | Any:
-    if recover_previous:
+    eff_repair = _parse_bool_flag(repair_files, False)
+    if _parse_bool_flag(recover_previous, False) or eff_repair:
         return read_recovering_previous(
-            path, reader_fn, backup_path=backup_path, default=default, repair_files=repair_files
+            path, reader_fn, backup_path=backup_path, default=default, repair_files=eff_repair
         )
     try:
-        return reader_fn(_resolve_target_path(path, migrate=_parse_bool_flag(repair_files, False)))
+        return reader_fn(_resolve_target_path(path, migrate=False))
     except Exception:
         if default is not _MISSING:
             return default

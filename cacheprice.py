@@ -1463,7 +1463,7 @@ class Cache24PriceManager(CachePriceManagerBase):
         with generation_transaction(cpath) as target_path:
             now_w = resolve_now_ts(now_ts)
             if preserve_fresh_equity_sec > 0.0 and is_equity_symbol(sym_u):
-                cur_disk = read_json_dict(target_path, default=None, repair_files=True)
+                cur_disk = read_json_dict_recovering(target_path, default=None, repair_files=True)
                 cur_ts = normalize_epoch_sec(
                     cur_disk.get("ts") if isinstance(cur_disk, dict) else None, default=None
                 )

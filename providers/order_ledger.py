@@ -60,6 +60,7 @@ from providers.order_status_ssot import (
 )
 from state_io import (
     append_jsonl_record,
+    cachedb_exists,
     read_json_dict_recovering,
     read_jsonl_dicts,
     read_jsonl_dicts_from_offset,
@@ -844,7 +845,7 @@ class FileOrderLedgerBase(OrderLedgerBackendInterface, ABC):
 
     def read_active_snapshot(self, *, repair_files: bool = False) -> dict[str, Any]:
         path = str(resolve_cachedb_filepath(self.active_path()))
-        if not os.path.isfile(path):
+        if not cachedb_exists(path, include_previous=True):
             return self._empty_snapshot()
         raw = read_json_dict_recovering(path, repair_files=_parse_bool_flag(repair_files, False))
         if not isinstance(raw, dict):

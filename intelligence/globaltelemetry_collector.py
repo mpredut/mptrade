@@ -119,7 +119,7 @@ from intelligence.sentiment.collectors.portfolio_collector import (
 )
 from intelligence.sentiment.collectors.pretrade_telemetry_collector import refresh_pretrade_telemetry_caches
 from intelligence.sentiment.evaluators.microstructure_evaluator import update_microstructure_cycle_deltas
-from state_io import atomic_write_json, open_append_text_file, read_json_dict_recovering, save_json_state
+from state_io import atomic_write_json, cachedb_exists, open_append_text_file, read_json_dict_recovering, save_json_state
 
 _ORIG_SAVE_JSON_STATE = save_json_state
 
@@ -844,7 +844,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 safe_pos_float(getattr(self, "ai_impulse_cooldown_sec", None), 150.0),
             )
             sig_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, KINEMATIC_IMPULSE_SIGNAL_FILENAME)))
-            if self._last_ai_impulse_ts <= 0.0 and os.path.exists(sig_path):
+            if self._last_ai_impulse_ts <= 0.0 and cachedb_exists(sig_path, include_previous=True):
                 sig_doc = read_json_dict_recovering(sig_path)
                 sig_ts = normalize_epoch_sec(sig_doc.get("ts") if isinstance(sig_doc, dict) else None, default=0.0, allow_iso=True) or 0.0
                 if 0.0 < sig_ts <= eff_now + 5.0:

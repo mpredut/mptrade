@@ -53,7 +53,7 @@ from intelligence.internal.state.survival import (
     resolve_cached_gaussian_horizon,
 )
 from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
-from state_io import read_json_dict
+from state_io import cachedb_exists, read_json_dict
 
 
 def _safe_load_margins(margins: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
@@ -145,7 +145,7 @@ def _lookup_symbol_entry(mapping: Any, venue: str, symbol: str) -> Optional[dict
 def _read_local_geo_assessment() -> Optional[dict[str, Any]]:
     try:
         p = cache_path("geopolitical_eval.json")
-        if p and os.path.exists(p):
+        if p and cachedb_exists(p, include_previous=True):
             data = read_json_dict(p, default=None, recover_previous=True)
             if isinstance(data, dict) and data:
                 return data
