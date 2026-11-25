@@ -268,19 +268,22 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
         allowed_symbols_upper: Optional[set[str]] = None,
     ) -> Optional[list]:
         """Parse one ``{"s": symbol, "i": [ts_ms, price, ...]}`` or ``[ts_ms, price]`` JSONL price archive record."""
-        if isinstance(rec, dict):
-            rec_s = rec.get("s")
-            if (
-                isinstance(rec_s, str)
-                and rec_s.strip()
-                and allowed_symbols_upper
-                and rec_s.strip().upper() not in allowed_symbols_upper
-            ):
-                return None
+        if type(rec) is dict or isinstance(rec, dict):
+            if allowed_symbols_upper:
+                rec_s = rec.get("s")
+                if type(rec_s) is str:
+                    if rec_s not in allowed_symbols_upper:
+                        stripped_s = rec_s.strip()
+                        if stripped_s and stripped_s.upper() not in allowed_symbols_upper:
+                            return None
+                elif isinstance(rec_s, str):
+                    stripped_s = rec_s.strip()
+                    if stripped_s and stripped_s.upper() not in allowed_symbols_upper:
+                        return None
             item = rec.get("i")
         else:
             item = rec if isinstance(rec, list) else None
-        if isinstance(item, (list, tuple)) and len(item) >= 2:
+        if (type(item) is list or isinstance(item, (list, tuple))) and len(item) >= 2:
             return [item[0], item[1]]
         return None
 

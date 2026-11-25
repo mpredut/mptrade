@@ -4,6 +4,7 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from html.parser import HTMLParser
+import math
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1220,15 +1221,43 @@ def enrich_macro_benchmarks_live_state(
                 rows = lookup_symbol_cache_items(raw, "BTCUSDC", require_list=True, unwrap_items=True)
                 if not isinstance(rows, list) or len(rows) < 2:
                     continue
-                pts = [
-                    (tf * 1000.0 if tf < 1e11 else tf, pf)
-                    for r in rows
-                    if isinstance(r, (list, tuple)) and len(r) >= 2
-                    and (tf := safe_pos_float(r[0], 0.0)) > 0.0
-                    and (pf := safe_pos_float(r[1], 0.0)) > 0.0
-                ]
+                pts: List[Tuple[float, float]] = []
+                prev_t_btc = -1.0
+                btc_sorted = True
+                pos_inf = math.inf
+                for r in rows:
+                    rt = type(r)
+                    if (rt is list or rt is tuple) and len(r) >= 2:
+                        t_raw, p_raw = r[0], r[1]
+                        tt, pt_t = type(t_raw), type(p_raw)
+                        if tt is int and pt_t is float:
+                            if t_raw > 0 and 0.0 < p_raw < pos_inf:
+                                t_ms = t_raw * 1000.0 if t_raw < 1e11 else t_raw * 1.0
+                                if t_ms < prev_t_btc:
+                                    btc_sorted = False
+                                prev_t_btc = t_ms
+                                pts.append((t_ms, p_raw))
+                            continue
+                        if (tt is float or tt is int) and (pt_t is float or pt_t is int):
+                            if 0.0 < t_raw < pos_inf and 0.0 < p_raw < pos_inf:
+                                t_ms = t_raw * 1000.0 if t_raw < 1e11 else t_raw * 1.0
+                                if t_ms < prev_t_btc:
+                                    btc_sorted = False
+                                prev_t_btc = t_ms
+                                pts.append((t_ms, p_raw * 1.0))
+                            continue
+                    if isinstance(r, (list, tuple)) and len(r) >= 2:
+                        tf = safe_pos_float(r[0], 0.0)
+                        pf = safe_pos_float(r[1], 0.0)
+                        if tf > 0.0 and pf > 0.0:
+                            t_ms = tf * 1000.0 if tf < 1e11 else tf
+                            if t_ms < prev_t_btc:
+                                btc_sorted = False
+                            prev_t_btc = t_ms
+                            pts.append((t_ms, pf))
                 if len(pts) >= 2:
-                    pts.sort(key=lambda x: x[0])
+                    if not btc_sorted:
+                        pts.sort(key=lambda x: x[0])
                     pts = filter_isolated_price_points(pts)
                     if len(pts) < 2:
                         continue

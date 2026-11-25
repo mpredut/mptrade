@@ -63,32 +63,68 @@ def filter_isolated_price_points(
     n = len(pts)
     if n < 3:
         return pts
-    drop: set[int] = set()
-    for i in range(1, n - 1):
-        p_prev = pts[i - 1][1]
-        p_cur = pts[i][1]
-        p_next = pts[i + 1][1]
-        lo_nb = p_prev if p_prev <= p_next else p_next
-        hi_nb = p_next if p_prev <= p_next else p_prev
-        if lo_nb > 0.0 and (hi_nb / lo_nb) <= neighbor_agree_ratio:
-            if p_cur > hi_nb * spike_ratio or p_cur < lo_nb / spike_ratio:
-                drop.add(i)
-    # Also drop rare 2-tick consecutive extreme cross-symbol bursts (> edge_ratio) bracketed by agreeing neighbors.
-    for i in range(1, n - 2):
-        if i in drop or (i + 1) in drop:
-            continue
-        p_left = pts[i - 1][1]
-        p_right = pts[i + 2][1]
-        lo_nb = p_left if p_left <= p_right else p_right
-        hi_nb = p_right if p_left <= p_right else p_left
-        if lo_nb > 0.0 and (hi_nb / lo_nb) <= neighbor_agree_ratio:
-            p1, p2 = pts[i][1], pts[i + 1][1]
-            if (p1 > hi_nb * edge_ratio or p1 < lo_nb / edge_ratio) and (
-                p2 > hi_nb * edge_ratio or p2 < lo_nb / edge_ratio
-            ):
-                drop.add(i)
-                drop.add(i + 1)
-    kept = [pt for i, pt in enumerate(pts) if i not in drop] if drop else list(pts)
+    kept: Optional[list] = None
+    if n >= 256 and np is not None:
+        try:
+            px = np.fromiter((p[1] for p in pts), dtype=np.float64, count=n)
+        except (TypeError, ValueError):
+            px = None
+        if px is not None:
+            keep = np.ones(n, dtype=bool)
+            p_prev = px[:-2]
+            p_cur = px[1:-1]
+            p_next = px[2:]
+            lo_nb = np.minimum(p_prev, p_next)
+            hi_nb = np.maximum(p_prev, p_next)
+            safe_lo = np.where(lo_nb > 0.0, lo_nb, 1.0)
+            agree = (lo_nb > 0.0) & ((hi_nb / safe_lo) <= neighbor_agree_ratio)
+            bad_mid = agree & ((p_cur > hi_nb * spike_ratio) | (p_cur < lo_nb / spike_ratio))
+            if np.any(bad_mid):
+                keep[1:-1] &= ~bad_mid
+            if n >= 4:
+                p_l = px[:-3]
+                p_r = px[3:]
+                lo2 = np.minimum(p_l, p_r)
+                hi2 = np.maximum(p_l, p_r)
+                safe_lo2 = np.where(lo2 > 0.0, lo2, 1.0)
+                agree2 = (lo2 > 0.0) & ((hi2 / safe_lo2) <= neighbor_agree_ratio)
+                b1 = (px[1:-2] > hi2 * edge_ratio) | (px[1:-2] < lo2 / edge_ratio)
+                b2 = (px[2:-1] > hi2 * edge_ratio) | (px[2:-1] < lo2 / edge_ratio)
+                burst2 = agree2 & b1 & b2 & keep[1:-2] & keep[2:-1]
+                if np.any(burst2):
+                    for idx_b in np.flatnonzero(burst2).tolist():
+                        i_b = idx_b + 1
+                        if keep[i_b] and keep[i_b + 1]:
+                            keep[i_b] = False
+                            keep[i_b + 1] = False
+            kept = list(pts) if np.all(keep) else [pt for pt, k in zip(pts, keep.tolist()) if k]
+    if kept is None:
+        drop: set[int] = set()
+        for i in range(1, n - 1):
+            p_prev = pts[i - 1][1]
+            p_cur = pts[i][1]
+            p_next = pts[i + 1][1]
+            lo_nb = p_prev if p_prev <= p_next else p_next
+            hi_nb = p_next if p_prev <= p_next else p_prev
+            if lo_nb > 0.0 and (hi_nb / lo_nb) <= neighbor_agree_ratio:
+                if p_cur > hi_nb * spike_ratio or p_cur < lo_nb / spike_ratio:
+                    drop.add(i)
+        # Also drop rare 2-tick consecutive extreme cross-symbol bursts (> edge_ratio) bracketed by agreeing neighbors.
+        for i in range(1, n - 2):
+            if i in drop or (i + 1) in drop:
+                continue
+            p_left = pts[i - 1][1]
+            p_right = pts[i + 2][1]
+            lo_nb = p_left if p_left <= p_right else p_right
+            hi_nb = p_right if p_left <= p_right else p_left
+            if lo_nb > 0.0 and (hi_nb / lo_nb) <= neighbor_agree_ratio:
+                p1, p2 = pts[i][1], pts[i + 1][1]
+                if (p1 > hi_nb * edge_ratio or p1 < lo_nb / edge_ratio) and (
+                    p2 > hi_nb * edge_ratio or p2 < lo_nb / edge_ratio
+                ):
+                    drop.add(i)
+                    drop.add(i + 1)
+        kept = [pt for i, pt in enumerate(pts) if i not in drop] if drop else list(pts)
     if len(kept) >= 5:
         head_nbs = (kept[1][1], kept[2][1], kept[3][1])
         h_lo, h_hi = min(head_nbs), max(head_nbs)

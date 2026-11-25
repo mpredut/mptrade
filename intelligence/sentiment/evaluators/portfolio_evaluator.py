@@ -956,13 +956,22 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
         if not valid:
             return valid, ai_oids, {}, {}
 
+        parsed_ai_by_side: Dict[str, List[tuple[str, str, float, float, str]]] = {}
+        for p_item in parsed_ai_intents:
+            parsed_ai_by_side.setdefault(p_item[1], []).append(p_item)
+
         def _matches_ai_intent(o_dict: Dict[str, Any]) -> bool:
             o_side = extract_order_side(o_dict)
+            side_intents = parsed_ai_by_side.get(o_side)
+            if not side_intents:
+                return False
             o_ts_s = (extract_timestamp_ms(o_dict, default=0) or 0) / 1000.0
+            if o_ts_s <= 0.0:
+                return False
             o_qty = extract_executed_qty(o_dict, default=0.0) or 0.0
             o_sym = str(o_dict.get("symbol") or o_dict.get("pair") or fallback_sym).strip().upper()
-            for i_sym, i_side, i_ts_s, i_qty, i_otype in parsed_ai_intents:
-                if i_side != o_side or o_ts_s <= 0.0 or o_ts_s < i_ts_s - 5.0:
+            for i_sym, _i_side, i_ts_s, i_qty, i_otype in side_intents:
+                if o_ts_s < i_ts_s - 5.0:
                     continue
                 if i_sym and o_sym and not symbols_match_intent_scope_and_quote(i_sym, o_sym):
                     continue
@@ -1027,34 +1036,47 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
             valid = aggregate_fills_by_order_id(valid) or valid
 
         if parsed_ai_intents:
+            unattr_by_side: Dict[str, List[tuple[Dict[str, Any], str, Any, float, str, float]]] = {}
             for o in valid:
                 oid_k = str(extract_order_id(o, default="") or "")
-                side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
+                o_side = extract_order_side(o)
+                o_ts_raw = extract_timestamp_ms(o, default=None)
+                side_ts_k = (o_side, o_ts_raw)
                 cur_act, cur_mod, cur_rule = origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k) or ("BOT", None, None)
-                if cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")) and _matches_ai_intent(o):
-                    _mark_ai_origin(o)
-            for i_sym, i_side, i_ts_s, i_qty, _ in parsed_ai_intents:
-                if i_qty <= 0.0:
-                    continue
-                cands: List[tuple[Dict[str, Any], float]] = []
-                for o in valid:
-                    if extract_order_side(o) != i_side:
-                        continue
-                    o_ts_s = (extract_timestamp_ms(o, default=0) or 0) / 1000.0
-                    if o_ts_s <= 0.0 or o_ts_s < i_ts_s - 5.0 or o_ts_s > i_ts_s + 86400.0:
-                        continue
-                    o_sym = str(o.get("symbol") or o.get("pair") or fallback_sym).strip().upper()
-                    if i_sym and o_sym and not symbols_match_intent_scope_and_quote(i_sym, o_sym):
-                        continue
-                    oid_k = str(extract_order_id(o, default="") or "")
-                    side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
-                    cur_act, cur_mod, cur_rule = origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k) or ("BOT", None, None)
-                    if cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")):
+                if cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")):
+                    if _matches_ai_intent(o):
+                        _mark_ai_origin(o)
+                    elif o_ts_raw is not None and o_ts_raw > 0:
                         if (o_q := extract_executed_qty(o, default=0.0) or 0.0) > 0.0:
+                            o_sym = str(o.get("symbol") or o.get("pair") or fallback_sym).strip().upper()
+                            unattr_by_side.setdefault(o_side, []).append(
+                                (o, oid_k, o_ts_raw, o_ts_raw / 1000.0, o_sym, o_q)
+                            )
+            if unattr_by_side:
+                for i_sym, i_side, i_ts_s, i_qty, _ in parsed_ai_intents:
+                    if i_qty <= 0.0:
+                        continue
+                    side_pool = unattr_by_side.get(i_side)
+                    if not side_pool:
+                        continue
+                    cands: List[tuple[Dict[str, Any], float]] = []
+                    lo_ts_s = i_ts_s - 5.0
+                    hi_ts_s = i_ts_s + 86400.0
+                    for o, oid_k, o_ts_raw, o_ts_s, o_sym, o_q in side_pool:
+                        if o_ts_s < lo_ts_s or o_ts_s > hi_ts_s:
+                            continue
+                        if i_sym and o_sym and not symbols_match_intent_scope_and_quote(i_sym, o_sym):
+                            continue
+                        cur_act, cur_mod, cur_rule = (
+                            origin_by_oid.get(oid_k)
+                            or origin_by_side_ts.get((i_side, o_ts_raw))
+                            or ("BOT", None, None)
+                        )
+                        if cur_act == "BOT" and not (cur_mod or cur_rule):
                             cands.append((o, o_q))
-                if len(cands) > 1 and abs(sum(q for _, q in cands) - i_qty) <= max(1e-5, i_qty * 0.01):
-                    for o_cand, _ in cands:
-                        _mark_ai_origin(o_cand)
+                    if len(cands) > 1 and abs(sum(q for _, q in cands) - i_qty) <= max(1e-5, i_qty * 0.01):
+                        for o_cand, _ in cands:
+                            _mark_ai_origin(o_cand)
         return valid, ai_oids, origin_by_oid, origin_by_side_ts
 
     @staticmethod

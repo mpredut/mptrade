@@ -1799,6 +1799,126 @@ def test_adversarial_audit_bugfixes_regression(tmp_path, monkeypatch):
     assert len(none_calls) == 2  # safety refresh after >=900s!
 
 
+def test_harvest_hotpath_optimizations_parity(tmp_path, monkeypatch):
+    """Verify exact parity & edge cases for autonomous_ai_reconciler harvest hotpath optimizations:
+    1) state_io read_jsonl_bucket_map / read_jsonl_bucket_map_from_offset (orjson bytes + symbol cache + NaN + partial EOF);
+    2) pricewindow.filter_isolated_price_points NumPy (>=256) vs pure-Python bit-exact parity;
+    3) price_series_evaluator VWAP/RVOL/OHLC/sort_ts_rows/normalize_and_dedup_24h_series;
+    4) portfolio_evaluator split-fill AI intent attribution without O(M*N) scans."""
+    import math
+    import pricewindow as pw
+    import intelligence.macro_sentiment_ssot as mss
+    import intelligence.sentiment.evaluators.price_series_evaluator as pse
+    import intelligence.sentiment.evaluators.portfolio_evaluator as pe
+
+    # 1. Fast JSONL bucket map reader: repeated symbol, whitespace alias, symbol switch, blank/leading-ws, NaN, bad & partial EOF
+    jf = tmp_path / "fast_bucket.jsonl"
+    now_ms = 1_795_000_000_000
+    lines = [
+        json.dumps({"s": "BTCUSDC", "i": [now_ms, 90000.0]}, separators=(",", ":")) + "\n",
+        json.dumps({"s": "BTCUSDC", "i": [now_ms + 1000, 90001.0]}, separators=(",", ":")) + "\n",
+        "   \n",
+        "  " + json.dumps({"s": " BTCUSDC ", "i": [now_ms + 2000, 90002.0]}, separators=(",", ":")) + "\n",
+        json.dumps({"s": "ETHUSDC", "i": [now_ms + 3000, 3000.0]}, separators=(",", ":")) + "\n",
+        '{"s":"ETHUSDC","i":[1795000004000,NaN]}\n',
+        "{not_valid_json\n",
+    ]
+    tail_full = json.dumps({"s": "BTCUSDC", "i": [now_ms + 5000, 90005.0]}, separators=(",", ":"))
+    jf.write_bytes(("".join(lines) + tail_full[:10]).encode("utf-8"))
+
+    bmap, had_bad, off, dev_ino, anc, inc = state_io.read_jsonl_bucket_map_from_offset(str(jf), start_offset=0)
+    assert had_bad is True and inc is False
+    assert len(bmap["BTCUSDC"]) == 3 and bmap["BTCUSDC"][-1] == [now_ms + 2000, 90002.0]
+    assert len(bmap["ETHUSDC"]) == 2 and math.isnan(bmap["ETHUSDC"][1][1])
+    assert off == len("".join(lines).encode("utf-8"))
+
+    with open(jf, "ab") as fh:
+        fh.write((tail_full[10:] + "\n").encode("utf-8"))
+    bmap_inc, bad_inc, _off2, _di2, _anc2, inc2 = state_io.read_jsonl_bucket_map_from_offset(
+        str(jf), start_offset=off, expected_dev_ino=dev_ino, expected_anchor=anc
+    )
+    assert bad_inc is False and inc2 is True
+    assert bmap_inc == {"BTCUSDC": [[now_ms + 5000, 90005.0]]}
+
+    full_map, full_bad = state_io.read_jsonl_bucket_map(str(jf))
+    assert full_bad is True and len(full_map["BTCUSDC"]) == 4 and len(full_map["ETHUSDC"]) == 2
+
+    # 2. filter_isolated_price_points NumPy path (>=256) matches pure-Python path bit-for-bit
+    pts_big = [[now_ms + k * 1000, 100.0 + (k % 5) * 0.1] for k in range(320)]
+    pts_big[0][1] = 500.0          # head outlier
+    pts_big[20][1] = 500.0         # 1-tick high spike
+    pts_big[40][1] = 10.0          # 1-tick low spike
+    pts_big[80][1] = 400.0         # 2-tick burst
+    pts_big[81][1] = 400.0
+    pts_big[120][1] = 400.0        # 3-tick overlapping burst check
+    pts_big[121][1] = 400.0
+    pts_big[122][1] = 400.0
+    pts_big[160][1] = 400.0        # 1-tick spike followed by moderate value
+    pts_big[161][1] = 101.0
+    pts_big[-1][1] = 10.0          # tail outlier
+    res_np = pw.filter_isolated_price_points(pts_big)
+    monkeypatch.setattr(pw, "np", None)
+    res_py = pw.filter_isolated_price_points(pts_big)
+    monkeypatch.undo()
+    assert res_np == res_py
+    kept_ts = {p[0] for p in res_np}
+    for bad_idx in (0, 20, 40, 80, 81, 160, 319):
+        assert pts_big[bad_idx][0] not in kept_ts
+
+    # 3. sort_ts_rows + normalize_and_dedup_24h_series + VWAP/RVOL/OHLC 2-col fast paths & mixed tie-breaker
+    raw_unsorted = [
+        [now_ms + 1000, 100.0, 5.0],
+        [now_ms + 1000, 101.0],
+        [now_ms, 99.0],
+        [now_ms + 2000, 102.0],
+    ]
+    norm_u = pse.normalize_and_dedup_24h_series(raw_unsorted, "BTCUSDC")
+    assert norm_u == [[float(now_ms), 99.0], [float(now_ms + 1000), 101.0, 5.0], [float(now_ms + 2000), 102.0]]
+
+    ser_2col = [[now_ms + k * 60_000, 100.0 + k * 0.1] for k in range(30)]
+    norm_2col = pse.normalize_and_dedup_24h_series(ser_2col, "BTCUSDC")
+    clean_pts = mss._extract_sorted_ts_px(norm_2col)
+    assert mss._TWO_COL_TS_PX_IDS.get(id(clean_pts)) is clean_pts
+    assert pse.compute_session_vwap_metrics(norm_2col, precleaned_ts_px=clean_pts) == {}
+    assert pse.compute_volume_rvol_metrics(norm_2col, precleaned_ts_px=clean_pts) == {}
+    bars_fast = pse._resample_ohlc_bars(norm_2col, 900_000.0, precleaned_ts_px=clean_pts)
+    bars_slow = pse._resample_ohlc_bars(norm_2col, 900_000.0)
+    assert bars_fast == bars_slow and len(bars_fast) >= 2
+
+    # Mixed 2-col and 3-col VWAP: later 2-col row at same max timestamp still determines last_any_px
+    day0_ms = (now_ms // 86_400_000) * 86_400_000 + 3_600_000
+    mixed_vwap = [
+        [day0_ms, 100.0, 10.0],
+        [day0_ms + 60_000, 110.0, 10.0],
+        [day0_ms + 60_000, 120.0],  # tied max ts, 2-col -> eff_px must be 120.0 when cur_px=None
+    ]
+    vw = pse.compute_session_vwap_metrics(mixed_vwap, is_equity=False, cur_px=None)
+    assert vw["session_vwap_px"] == pytest.approx(105.0)
+    assert vw["dist_vs_session_vwap_pct"] == pytest.approx(round(((120.0 / 105.0) - 1.0) * 100.0, 2))
+
+    # 4. portfolio_evaluator split-fill attribution still tags unattributed child fills as AI
+    t_base_s = 1_795_000_100.0
+    orders = [
+        {"symbol": "BTCUSDC", "orderId": "F1", "side": "BUY", "price": 90000.0, "executedQty": 0.4, "timestamp": int((t_base_s + 5) * 1000), "status": "FILLED"},
+        {"symbol": "BTCUSDC", "orderId": "F2", "side": "BUY", "price": 90010.0, "executedQty": 0.6, "timestamp": int((t_base_s + 10) * 1000), "status": "FILLED"},
+    ]
+    intents = [
+        {
+            "intent_id": "int_split_1",
+            "status": "EXECUTED",
+            "symbol": "BTCUSDC",
+            "decision": "BUY",
+            "ts": t_base_s,
+            "execution_payload": {"origQty": 1.0, "status": "NEW"},
+        }
+    ]
+    fills_res = pe.extract_symbol_recent_fills(orders, ai_intents=intents, symbol="BTCUSDC")
+    assert fills_res is not None
+    assert fills_res["last_action_actor"] == "AI"
+    assert all(b["actor"] == "AI" for b in fills_res["recent_buys"])
+
+
+
 
 
 

@@ -150,7 +150,10 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
 )
 from providers.ohlc_utils import normalize_ohlc_row, normalize_yahoo_5d_chart_bars
-from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
+from intelligence.sentiment.evaluators.asset_session_policy import (
+    Continuous24x7SessionPolicy,
+    resolve_asset_session_policy,
+)
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     append_newer_24h_to_7d_vals,
     build_compact_4h_ohlc_bars,
@@ -1402,8 +1405,10 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                     else _rj(p24_path)
                 )
                 raw_ser = _extract_cached_items_series(p24_obj, cands)
+                raw_sorted_clean = False
                 if len(raw_ser) >= 2:
                     raw_ser = sort_ts_rows(raw_ser)
+                    raw_sorted_clean = True
                     r0, r1 = parse_ts_px_row(raw_ser[0]), parse_ts_px_row(raw_ser[-1])
                     raw_span_ms = max(0.0, r1[0] - r0[0]) if (r0 and r1) else 0.0
                     if is_eq_sym_load or raw_span_ms < 22 * 3600 * 1000:
@@ -1417,8 +1422,18 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                                 else _extract_cached_items_series(ohlc24_obj, cands)
                             )
                             raw_ser = session_policy.merge_ohlc24_into_raw_series(raw_ser, ohlc24_pts or [])
+                            raw_sorted_clean = False
                             break
-                ser = session_policy.clean_raw_24h_series(raw_ser, symbol)
+                ser = (
+                    raw_ser
+                    if (
+                        raw_sorted_clean
+                        and not is_eq_sym_load
+                        and type(session_policy).clean_raw_24h_series
+                        is Continuous24x7SessionPolicy.clean_raw_24h_series
+                    )
+                    else session_policy.clean_raw_24h_series(raw_ser, symbol)
+                )
                 if len(ser) >= 2:
                     series_24h = (
                         list(ser)

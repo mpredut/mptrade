@@ -677,8 +677,15 @@ def read_tail_jsonl_records(
 ) -> list[Any]:
     """Read and parse JSON lines from the tail of a JSONL file."""
     out: list[Any] = []
+    loads_orjson = _orjson.loads if (_orjson is not None and json.loads is _ORIG_JSON_LOADS) else None
     for raw_bytes in read_tail_lines(path, limit, chunk_size=chunk_size, max_bytes=max_bytes):
         try:
+            if loads_orjson is not None:
+                try:
+                    out.append(loads_orjson(raw_bytes))
+                    continue
+                except Exception:
+                    pass
             out.append(_fast_json_loads(raw_bytes))
         except ValueError:
             continue
@@ -935,17 +942,67 @@ def read_jsonl_bucket_map(path: str) -> tuple[dict[str, list[Any]], bool]:
     target_path = _resolve_target_path(path)
     cache: dict[str, list[Any]] = {}
     had_invalid_line = False
+    last_raw_sym: str | None = None
+    last_bucket: list[Any] | None = None
+    loads_orjson = _orjson.loads if (_orjson is not None and json.loads is _ORIG_JSON_LOADS) else None
+    if loads_orjson is not None and open is _ORIG_OPEN:
+        with open(target_path, "rb") as handle:
+            for raw_b in handle:
+                if raw_b[0] != 123 and not raw_b.strip():
+                    continue
+                try:
+                    try:
+                        rec = loads_orjson(raw_b)
+                    except Exception:
+                        rec = _fast_json_loads(raw_b.decode("utf-8"))
+                    if type(rec) is not dict and not isinstance(rec, dict):
+                        raise ValueError("invalid JSONL record")
+                    raw_sym = rec.get("s")
+                    item = rec.get("i")
+                    if item is None:
+                        raise ValueError("invalid JSONL record")
+                    if type(raw_sym) is str and raw_sym == last_raw_sym and last_bucket is not None:
+                        last_bucket.append(item)
+                    else:
+                        sym = clean_scalar_str(raw_sym)
+                        if sym is None:
+                            raise ValueError("invalid JSONL record")
+                        bucket = cache.get(sym)
+                        if bucket is None:
+                            bucket = []
+                            cache[sym] = bucket
+                        bucket.append(item)
+                        if type(raw_sym) is str:
+                            last_raw_sym = raw_sym
+                            last_bucket = bucket
+                except Exception:
+                    had_invalid_line = True
+                    continue
+        return cache, had_invalid_line
     with open(target_path, "r", encoding="utf-8") as handle:
         for raw in filter(None, map(str.strip, handle)):
             try:
                 rec = _fast_json_loads(raw)
-                if (
-                    not isinstance(rec, dict)
-                    or (sym := clean_scalar_str(rec.get("s"))) is None
-                    or rec.get("i") is None
-                ):
+                if type(rec) is not dict and not isinstance(rec, dict):
                     raise ValueError("invalid JSONL record")
-                cache.setdefault(sym, []).append(rec["i"])
+                raw_sym = rec.get("s")
+                item = rec.get("i")
+                if item is None:
+                    raise ValueError("invalid JSONL record")
+                if type(raw_sym) is str and raw_sym == last_raw_sym and last_bucket is not None:
+                    last_bucket.append(item)
+                else:
+                    sym = clean_scalar_str(raw_sym)
+                    if sym is None:
+                        raise ValueError("invalid JSONL record")
+                    bucket = cache.get(sym)
+                    if bucket is None:
+                        bucket = []
+                        cache[sym] = bucket
+                    bucket.append(item)
+                    if type(raw_sym) is str:
+                        last_raw_sym = raw_sym
+                        last_bucket = bucket
             except Exception:
                 had_invalid_line = True
                 continue
@@ -969,6 +1026,9 @@ def read_jsonl_bucket_map_from_offset(
     target_path = _resolve_target_path(path)
     cache: dict[str, list[Any]] = {}
     had_invalid_line = False
+    loads_orjson = _orjson.loads if (_orjson is not None and json.loads is _ORIG_JSON_LOADS) else None
+    last_raw_sym: str | None = None
+    last_bucket: list[Any] | None = None
     with open(target_path, "rb") as handle:
         st = os.fstat(handle.fileno())
         dev_ino = (st.st_dev, st.st_ino)
@@ -996,24 +1056,40 @@ def read_jsonl_bucket_map_from_offset(
         else:
             next_offset = start_offset
 
-        while True:
-            raw_b = handle.readline()
-            if not raw_b:
-                break
-            stripped = raw_b.strip()
-            if not stripped:
-                next_offset = handle.tell()
+        for raw_b in handle:
+            line_len = len(raw_b)
+            if raw_b[0] != 123 and not raw_b.strip():
+                next_offset += line_len
                 continue
             try:
-                rec = _fast_json_loads(stripped.decode("utf-8"))
-                if (
-                    not isinstance(rec, dict)
-                    or (sym := clean_scalar_str(rec.get("s"))) is None
-                    or rec.get("i") is None
-                ):
+                if loads_orjson is not None:
+                    try:
+                        rec = loads_orjson(raw_b)
+                    except Exception:
+                        rec = _fast_json_loads(raw_b.decode("utf-8"))
+                else:
+                    rec = _fast_json_loads(raw_b.decode("utf-8"))
+                if type(rec) is not dict and not isinstance(rec, dict):
                     raise ValueError("invalid JSONL record")
-                cache.setdefault(sym, []).append(rec["i"])
-                next_offset = handle.tell()
+                raw_sym = rec.get("s")
+                item = rec.get("i")
+                if item is None:
+                    raise ValueError("invalid JSONL record")
+                if type(raw_sym) is str and raw_sym == last_raw_sym and last_bucket is not None:
+                    last_bucket.append(item)
+                else:
+                    sym = clean_scalar_str(raw_sym)
+                    if sym is None:
+                        raise ValueError("invalid JSONL record")
+                    bucket = cache.get(sym)
+                    if bucket is None:
+                        bucket = []
+                        cache[sym] = bucket
+                    bucket.append(item)
+                    if type(raw_sym) is str:
+                        last_raw_sym = raw_sym
+                        last_bucket = bucket
+                next_offset += line_len
             except Exception:
                 if not raw_b.endswith(b"\n"):
                     # In-flight partial append at EOF: stop before this line without advancing cursor.
@@ -1021,7 +1097,7 @@ def read_jsonl_bucket_map_from_offset(
                         had_invalid_line = True
                     break
                 had_invalid_line = True
-                next_offset = handle.tell()
+                next_offset += line_len
 
         new_anchor = b""
         if next_offset > 0:

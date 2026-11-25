@@ -64,6 +64,7 @@ _MS_15M = 900_000.0
 _MS_1H = 3_600_000.0
 _MS_4H = 14_400_000.0
 _MS_1D = 86_400_000.0
+_POS_INF = math.inf
 
 
 def round_opt_px(val: Any, decimals: int = 6) -> Optional[float]:
@@ -421,13 +422,17 @@ def compute_volume_rvol_metrics(
     series: list,
     *,
     now_ts: Optional[float] = None,
+    precleaned_ts_px: Optional[List[Tuple[float, float]]] = None,
 ) -> Dict[str, float]:
     """Compute 15m/1h spot USD turnover and relative volume (RVOL vs 24h average) from 3-col `[ts_ms, px, vol]` bars."""
     if not isinstance(series, (list, tuple)) or len(series) < 3:
         return {}
+    if precleaned_ts_px is not None and _TWO_COL_TS_PX_IDS.get(id(precleaned_ts_px)) is precleaned_ts_px:
+        return {}
     bars: List[Tuple[float, float, float]] = []
     for row in series:
-        if not isinstance(row, (list, tuple)) or len(row) < 3:
+        rt = type(row)
+        if (rt is not list and rt is not tuple and not isinstance(row, (list, tuple))) or len(row) < 3:
             continue
         pt = parse_ts_px_row(row)
         vol_v = safe_nonneg_float(row[2], default=None)
@@ -492,6 +497,9 @@ def compute_volume_rvol_metrics(
     return out
 
 
+_ORIG_COMPUTE_RVOL_METRICS = compute_volume_rvol_metrics
+
+
 def _resample_ohlc_bars(
     series: Any,
     bucket_ms: float,
@@ -501,22 +509,29 @@ def _resample_ohlc_bars(
     """Aggregate sorted price or OHLCV rows into ``[bar_key, open, high, low, close, first_ts, last_ts, count]`` bars."""
     if bucket_ms <= 0.0:
         return []
-    has_hl = isinstance(series, (list, tuple)) and any(
-        isinstance(r, (list, tuple)) and len(r) >= 5 for r in series
+    has_hl = (
+        False
+        if (precleaned_ts_px is not None and _TWO_COL_TS_PX_IDS.get(id(precleaned_ts_px)) is precleaned_ts_px)
+        else (
+            isinstance(series, (list, tuple))
+            and any(isinstance(r, (list, tuple)) and len(r) >= 5 for r in series)
+        )
     )
     bars: List[List[Any]] = []
+    _floor = math.floor
     if not has_hl:
         pts = (
             precleaned_ts_px
             if precleaned_ts_px is not None
             else (_extract_sorted_ts_px(series) if isinstance(series, (list, tuple)) else [])
         )
+        cur: Optional[List[Any]] = None
+        cur_key: Optional[int] = None
         for ts_ms, px in pts:
             if px <= 0.0:
                 continue
-            b_key = math.floor(ts_ms / bucket_ms)
-            if bars and bars[-1][0] == b_key:
-                cur = bars[-1]
+            b_key = _floor(ts_ms / bucket_ms)
+            if cur is not None and cur_key == b_key:
                 if px > cur[2]:
                     cur[2] = px
                 elif px < cur[3]:
@@ -525,7 +540,9 @@ def _resample_ohlc_bars(
                 cur[6] = ts_ms
                 cur[7] += 1
             else:
-                bars.append([b_key, px, px, px, px, ts_ms, ts_ms, 1])
+                cur = [b_key, px, px, px, px, ts_ms, ts_ms, 1]
+                cur_key = b_key
+                bars.append(cur)
         return bars
 
     parsed_hl: List[Tuple[float, float, float, float, float]] = []
@@ -763,15 +780,22 @@ def compute_session_vwap_metrics(
     cur_px: Optional[float] = None,
     decimals: Optional[int] = None,
     now_ts: Optional[float] = None,
+    precleaned_ts_px: Optional[List[Tuple[float, float]]] = None,
 ) -> Dict[str, Any]:
     """Compute volume-weighted Session VWAP anchored to 00:00 UTC (crypto) or 09:30 NY RTH (US equities)."""
     if not isinstance(series_with_vol, (list, tuple)) or len(series_with_vol) < 2:
         return {}
+    if precleaned_ts_px is not None and _TWO_COL_TS_PX_IDS.get(id(precleaned_ts_px)) is precleaned_ts_px:
+        return {}
     pos_bars: List[Tuple[float, float, float]] = []
     max_any_ts = 0.0
     last_any_px: Optional[float] = None
+    has_short_rows = False
     for row in series_with_vol:
-        if not isinstance(row, (list, tuple)) or len(row) < 2:
+        rt = type(row)
+        if (rt is not list and rt is not tuple and not isinstance(row, (list, tuple))) or len(row) < 3:
+            if (rt is list or rt is tuple or isinstance(row, (list, tuple))) and len(row) == 2:
+                has_short_rows = True
             continue
         pt = parse_ts_px_row(row)
         if pt is None:
@@ -780,8 +804,6 @@ def compute_session_vwap_metrics(
         if ts_ms >= max_any_ts:
             max_any_ts = ts_ms
             last_any_px = close_px
-        if len(row) < 3:
-            continue
         vol_v = safe_pos_float(row[2], default=None)
         if vol_v is None:
             continue
@@ -794,6 +816,13 @@ def compute_session_vwap_metrics(
         pos_bars.append((ts_ms, tp_px, vol_v))
     if len(pos_bars) < 2:
         return {}
+    if has_short_rows:
+        max_any_ts = 0.0
+        last_any_px = None
+        for row in series_with_vol:
+            if (pt := parse_ts_px_row(row)) is not None and pt[0] >= max_any_ts:
+                max_any_ts = pt[0]
+                last_any_px = pt[1]
     pos_bars.sort(key=itemgetter(0))
 
     if is_equity:
@@ -858,6 +887,9 @@ def compute_session_vwap_metrics(
         out["session_vwap_sigma_pct"] = round((sigma / vwap) * 100.0, 2) + 0.0
         out["session_vwap_z"] = round((eff_px - vwap) / sigma, 2) + 0.0
     return out
+
+
+_ORIG_COMPUTE_VWAP_METRICS = compute_session_vwap_metrics
 
 
 def compute_intraday_session_extremes(
@@ -1143,7 +1175,11 @@ def compute_24h_price_metrics(
             else compute_volume_profile_metrics(series)
         )
         out.update(vp_metrics)
-        if vol_rvol := compute_volume_rvol_metrics(series, now_ts=now_ts):
+        if vol_rvol := (
+            compute_volume_rvol_metrics(series, now_ts=now_ts, precleaned_ts_px=clean_series)
+            if compute_volume_rvol_metrics is _ORIG_COMPUTE_RVOL_METRICS
+            else compute_volume_rvol_metrics(series, now_ts=now_ts)
+        ):
             out.update(vol_rvol)
         bars_15m = _resample_ohlc_bars(series, _MS_15M, precleaned_ts_px=clean_series)
         if atr_m := compute_atr_multi_horizon(
@@ -1155,7 +1191,13 @@ def compute_24h_price_metrics(
             precomputed_bars_15m=bars_15m,
         ):
             out.update(atr_m)
-        if vwap_m := compute_session_vwap_metrics(series, is_equity=is_equity, cur_px=cur_px, now_ts=now_ts):
+        if vwap_m := (
+            compute_session_vwap_metrics(
+                series, is_equity=is_equity, cur_px=cur_px, now_ts=now_ts, precleaned_ts_px=clean_series
+            )
+            if compute_session_vwap_metrics is _ORIG_COMPUTE_VWAP_METRICS
+            else compute_session_vwap_metrics(series, is_equity=is_equity, cur_px=cur_px, now_ts=now_ts)
+        ):
             out.update(vwap_m)
         if sess_m := compute_intraday_session_extremes(
             series,
@@ -2617,12 +2659,35 @@ def sort_ts_rows(rows: list) -> list:
     if len(rows) < 2:
         return rows
     prev_t = -1.0
+    pos_inf = _POS_INF
     for r in rows:
+        rt = type(r)
+        if (rt is list or rt is tuple) and len(r) >= 2:
+            t, p = r[0], r[1]
+            tt, pt_t = type(t), type(p)
+            if tt is int and pt_t is float:
+                if t > 0 and 0.0 < p < pos_inf:
+                    t_ms = t * 1000.0 if t < 1e11 else t * 1.0
+                    if t_ms < prev_t:
+                        keyed = [(p_r[0], r_item) for r_item in rows if (p_r := parse_ts_px_row(r_item)) is not None]
+                        keyed.sort(key=_PT_TS_KEY)
+                        return [r_item for _, r_item in keyed]
+                    prev_t = t_ms
+                continue
+            if (tt is float or tt is int) and (pt_t is float or pt_t is int):
+                if 0.0 < t < pos_inf and 0.0 < p < pos_inf:
+                    t_ms = t * 1000.0 if t < 1e11 else t * 1.0
+                    if t_ms < prev_t:
+                        keyed = [(p_r[0], r_item) for r_item in rows if (p_r := parse_ts_px_row(r_item)) is not None]
+                        keyed.sort(key=_PT_TS_KEY)
+                        return [r_item for _, r_item in keyed]
+                    prev_t = t_ms
+                continue
         pt = parse_ts_px_row(r)
         if pt is not None:
             if pt[0] < prev_t:
-                keyed = [(p[0], r_item) for r_item in rows if (p := parse_ts_px_row(r_item)) is not None]
-                keyed.sort(key=lambda x: x[0])
+                keyed = [(p_r[0], r_item) for r_item in rows if (p_r := parse_ts_px_row(r_item)) is not None]
+                keyed.sort(key=_PT_TS_KEY)
                 return [r_item for _, r_item in keyed]
             prev_t = pt[0]
     return rows
@@ -2905,28 +2970,88 @@ def normalize_and_dedup_24h_series(series_24h: list, symbol: str, *, is_market_o
     """Normalize, sort, deduplicate, filter zero-volume spikes, and strip off-RTH flat tails on 24h series."""
     if not series_24h:
         return []
-    cleaned_24h = []
+    cleaned_24h: list = []
     prev_t, is_sorted, has_any_vol = -1.0, True, False
+    pos_inf = _POS_INF
     for row in series_24h:
+        rt = type(row)
+        if (rt is list or rt is tuple) and len(row) == 2:
+            t, p = row[0], row[1]
+            tt, pt_t = type(t), type(p)
+            if tt is int and pt_t is float:
+                if t > 0 and 0.0 < p < pos_inf:
+                    t_ms = t * 1000.0 if t < 1e11 else t * 1.0
+                    if is_sorted:
+                        if t_ms > prev_t:
+                            cleaned_24h.append([t_ms, p])
+                            prev_t = t_ms
+                        elif t_ms == prev_t:
+                            last_c = cleaned_24h[-1]
+                            cleaned_24h[-1] = [t_ms, p, last_c[2]] if len(last_c) >= 3 else [t_ms, p]
+                        else:
+                            is_sorted = False
+                            cleaned_24h.append([t_ms, p])
+                    else:
+                        cleaned_24h.append([t_ms, p])
+                continue
+            if (tt is float or tt is int) and (pt_t is float or pt_t is int):
+                if 0.0 < t < pos_inf and 0.0 < p < pos_inf:
+                    t_ms = t * 1000.0 if t < 1e11 else t * 1.0
+                    p_f = p * 1.0
+                    if is_sorted:
+                        if t_ms > prev_t:
+                            cleaned_24h.append([t_ms, p_f])
+                            prev_t = t_ms
+                        elif t_ms == prev_t:
+                            last_c = cleaned_24h[-1]
+                            cleaned_24h[-1] = [t_ms, p_f, last_c[2]] if len(last_c) >= 3 else [t_ms, p_f]
+                        else:
+                            is_sorted = False
+                            cleaned_24h.append([t_ms, p_f])
+                    else:
+                        cleaned_24h.append([t_ms, p_f])
+                continue
         if (pt := parse_ts_px_row(row)) is not None:
-            is_sorted = is_sorted and pt[0] >= prev_t
-            prev_t = pt[0]
+            t_ms, p_f = pt
             vol_v = safe_pos_float(row[2], default=None) if len(row) >= 3 else None
             if vol_v is not None:
                 has_any_vol = True
-                cleaned_24h.append([pt[0], pt[1], vol_v])
+                item_c = [t_ms, p_f, vol_v]
             else:
-                cleaned_24h.append([pt[0], pt[1]])
-    if not is_sorted:
-        cleaned_24h.sort(key=lambda x: x[0])
+                item_c = [t_ms, p_f]
+            if is_sorted:
+                if t_ms > prev_t:
+                    cleaned_24h.append(item_c)
+                    prev_t = t_ms
+                elif t_ms == prev_t:
+                    last_c = cleaned_24h[-1]
+                    cleaned_24h[-1] = (
+                        [t_ms, p_f, last_c[2]]
+                        if (len(item_c) < 3 and len(last_c) >= 3)
+                        else item_c
+                    )
+                else:
+                    is_sorted = False
+                    cleaned_24h.append(item_c)
+            else:
+                cleaned_24h.append(item_c)
     if len(cleaned_24h) < 2:
         return []
-    dedup_24h = [cleaned_24h[0]]
-    for pt in cleaned_24h[1:]:
-        if pt[0] > dedup_24h[-1][0]:
-            dedup_24h.append(pt)
-        else:
-            dedup_24h[-1] = [pt[0], pt[1], dedup_24h[-1][2]] if (len(pt) < 3 and len(dedup_24h[-1]) >= 3) else pt
+    if is_sorted:
+        dedup_24h = cleaned_24h
+    else:
+        cleaned_24h.sort(key=_PT_TS_KEY)
+        dedup_24h = [cleaned_24h[0]]
+        for idx_c in range(1, len(cleaned_24h)):
+            pt_c = cleaned_24h[idx_c]
+            if pt_c[0] > dedup_24h[-1][0]:
+                dedup_24h.append(pt_c)
+            else:
+                dedup_24h[-1] = (
+                    [pt_c[0], pt_c[1], dedup_24h[-1][2]]
+                    if (len(pt_c) < 3 and len(dedup_24h[-1]) >= 3)
+                    else pt_c
+                )
     _has_pos_vol_24h = lambda row_d: len(row_d) >= 3 and (safe_pos_float(row_d[2], default=0.0) or 0.0) > 0.0
     if has_any_vol and len(dedup_24h) >= 3 and any(_has_pos_vol_24h(p) for p in dedup_24h):
         filtered_24h = [dedup_24h[0]]
@@ -2960,9 +3085,10 @@ def normalize_and_dedup_24h_series(series_24h: list, symbol: str, *, is_market_o
         if mkey is not None and len(dedup_24h) >= 2:
             _finalize_sorted_ts_px(
                 dedup_24h,
-                [(r[0] * 1.0, r[1] * 1.0) for r in dedup_24h],
+                [(r[0], r[1]) for r in dedup_24h],
                 mkey,
                 all_two_col=True,
+                skip_outlier_filter=True,
             )
     return dedup_24h if len(dedup_24h) >= 2 else []
 
