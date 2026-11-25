@@ -16,10 +16,18 @@ Intentional prompt compression & cycle-boundary invariants (BY DESIGN -- DO NOT 
 
 import math
 import re
-import time
 from typing import Any, Dict, List, Optional
 
-from botcore import _parse_bool_flag, fmt_signed, normalize_epoch_sec, normalize_timestamp_ms, safe_float, safe_int, safe_pos_float
+from botcore import (
+    _parse_bool_flag,
+    fmt_signed,
+    normalize_epoch_sec,
+    normalize_timestamp_ms,
+    resolve_now_ts,
+    safe_float,
+    safe_int,
+    safe_pos_float,
+)
 from cachepaths import canonical_base_asset, clean_symbol_key
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
 from intelligence.macro_sentiment_ssot import (
@@ -867,7 +875,7 @@ def _format_3b_source_ages_suffix(
     include_deriv: bool = True,
 ) -> str:
     explicit_now = safe_pos_float(now_ts, default=None)
-    ref_now = explicit_now if explicit_now is not None else time.time()
+    ref_now = resolve_now_ts(explicit_now)
     specs = (
         (("ob", "_ob_raw_ts", intervals["orderbook_interval_sec"]),)
         if ob_only
@@ -926,7 +934,7 @@ def _format_microstructure_section(
         shared_perp_sym = row["shared_perp_sym"]
 
         sym_3b_lbl = f"{sym} ({', '.join(sib_3b)})" if sib_3b else sym
-        ref_now_3b = safe_pos_float(now_ts, default=None) or time.time()
+        ref_now_3b = resolve_now_ts(now_ts)
         raw_ob_t_3b = minfo.get("_ob_raw_ts") if minfo.get("_ob_raw_ts") is not None else minfo.get("_ob_ts")
         ob_t_3b = normalize_epoch_sec(raw_ob_t_3b, default=0.0) or 0.0
         ob_age_3b = (ref_now_3b - ob_t_3b) if ob_t_3b > 0.0 else None
@@ -1311,6 +1319,7 @@ def _format_portfolio_section(
     *,
     max_usd: float = 2000.0,
     include_macro_benchmarks: bool = True,
+    now_ts: Optional[float] = None,
 ) -> List[str]:
     """Format Section 3C (Spot Wallet Balances, Tradable Positions, Cycle Cost Anchors & Last Fills)."""
     scope_s = str(asset_scope or "all").strip().lower() if isinstance(asset_scope, str) else "all"
@@ -1493,7 +1502,7 @@ def _format_portfolio_section(
         )
     if ps.get("hyperliquid_readonly"):
         lines.append(f"  * Hyperliquid Spot/Perp Equity Summary: {ps['hyperliquid_readonly']}")
-    now_ms = math.trunc(time.time() * 1000)
+    now_ms = math.trunc(resolve_now_ts(now_ts) * 1000)
     obs_only_syms = observe_only_registry_symbols()
     active_pos_syms = {
         k

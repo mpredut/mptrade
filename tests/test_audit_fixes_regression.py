@@ -225,6 +225,10 @@ def test_p1_trade_enabled_hot_reload_turns_false_despite_root_loaded_environ(tmp
     monkeypatch.setattr(botcore, "_ROOT_CONFIG_PATH", str(cfg_file), raising=False)
     monkeypatch.setattr(cfg, "_ROOT_CONFIG_KEYS", set())
     monkeypatch.setattr(cfg, "_ROOT_CONFIG_VALUES", {})
+    monkeypatch.setattr(cfg, "config_cache", dict(cfg.config_cache))
+    monkeypatch.setattr(botcore, "config_cache", dict(cfg.config_cache), raising=False)
+    monkeypatch.setattr(cfg, "_CONFIG_MTIME", cfg._CONFIG_MTIME)
+    monkeypatch.setattr(cfg, "_CONFIG_LAST_CHECK", cfg._CONFIG_LAST_CHECK)
 
     cfg.load_dotenv(str(cfg_file))
     cfg.load_config()
@@ -503,6 +507,10 @@ def test_p1_trade_enabled_typo_and_key_removal_fail_closed(tmp_path, monkeypatch
     monkeypatch.setattr(botcore, "_ROOT_CONFIG_PATH", str(cfg_file), raising=False)
     monkeypatch.setattr(cfg, "_ROOT_CONFIG_KEYS", set())
     monkeypatch.setattr(cfg, "_ROOT_CONFIG_VALUES", {})
+    monkeypatch.setattr(cfg, "config_cache", dict(cfg.config_cache))
+    monkeypatch.setattr(botcore, "config_cache", dict(cfg.config_cache), raising=False)
+    monkeypatch.setattr(cfg, "_CONFIG_MTIME", cfg._CONFIG_MTIME)
+    monkeypatch.setattr(cfg, "_CONFIG_LAST_CHECK", cfg._CONFIG_LAST_CHECK)
 
     cfg.load_dotenv(str(cfg_file))
     cfg.load_config()
@@ -2196,6 +2204,7 @@ def test_impulse_eval_gap_configurable_are_close_and_zero_benefit_triggers(tmp_p
     monkeypatch.setattr(gtc_mod, "_filter_actionable_impulse_symbols", lambda syms, *_a, **_k: list(syms))
 
     gtc = gtc_mod.GlobalTelemetryCollector(cache_dir=str(cdb_dir), symbols=["TAOUSDC"], skip_news=True, skip_external=True)
+    monkeypatch.setattr(gtc_mod, "is_trade_enabled", lambda: True)
     monkeypatch.setenv("AI_IMPULSE_TRIGGER_ENABLED", "true")
     monkeypatch.setenv("AI_IMPULSE_REQUIRE_ACTIVE_CRON", "false")
     monkeypatch.setenv("AI_IMPULSE_COOLDOWN_SEC", "150")
@@ -6516,6 +6525,68 @@ def test_structural_ssot_primitives_fmt_signed_unified_book_and_balance_view(tmp
     for k_int in _INTERNAL_BALANCE_TS_KEYS:
         assert k_int not in pos_list[0]
         assert k_int not in cash_map["binance:USDC"]
+
+    # 4. update_venue_balances_state_locked strips internal scratch keys and protects balance ts on price-only updates
+    from intelligence.macro_sentiment_ssot import update_venue_balances_state_locked
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+    from providers.nav_drawdown import format_nav_drawdown_summary_line
+
+    vb_sw_path = tmp_path / "state" / "venue_balances_state.json"
+    t_bal = now_s - 600.0
+    assert update_venue_balances_state_locked(
+        str(vb_sw_path),
+        lambda _s, _d: {
+            "pos:t212:AMD_US_EQ": {
+                "venue": "t212",
+                "symbol": "AMD_US_EQ",
+                "price": 200.0,
+                "free_base": 3.0,
+                "free_quote": 500.0,
+                "ts": t_bal,
+                "_base_balance_ts": t_bal,
+            }
+        },
+    ) is True
+    saved_v1 = json.loads(vb_sw_path.read_text(encoding="utf-8"))
+    assert "_base_balance_ts" not in saved_v1["pos:t212:AMD_US_EQ"]
+    # Price-only bump WITHOUT explicit base_bal_ts/quote_bal_ts MUST automatically preserve t_bal
+    assert update_venue_balances_state_locked(
+        str(vb_sw_path),
+        lambda s, _d: {**s, "pos:t212:AMD_US_EQ": {**s["pos:t212:AMD_US_EQ"], "price": 205.0, "ts": now_s}},
+    ) is True
+    saved_v2 = json.loads(vb_sw_path.read_text(encoding="utf-8"))
+    assert saved_v2["pos:t212:AMD_US_EQ"]["price"] == pytest.approx(205.0)
+    assert saved_v2["pos:t212:AMD_US_EQ"]["ts"] == pytest.approx(now_s)
+    assert saved_v2["pos:t212:AMD_US_EQ"]["base_bal_ts"] == pytest.approx(t_bal)
+    assert saved_v2["pos:t212:AMD_US_EQ"]["quote_bal_ts"] == pytest.approx(t_bal)
+
+    # 5. _format_portfolio_section honors explicit now_ts (zero wall-clock drift on recent order ages)
+    ps_replay = {
+        "recent_orders": {
+            "ARBUSDC": {
+                "last_action_side": "BUY",
+                "last_buy": {"price": 1.0, "qty": 10.0, "ts_ms": int((now_s - 3600.0) * 1000)},
+            }
+        }
+    }
+    with patch("core.time_market._time.time", return_value=now_s + 50 * 86400.0):
+        sec3c_replay = "\n".join(_format_portfolio_section(ps_replay, now_ts=now_s))
+    assert "age=1.0h" in sec3c_replay
+
+    # 6. providers/nav_drawdown normalizes -0.004 to +0.00% (never -0.00%)
+    dd_line = format_nav_drawdown_summary_line(
+        {
+            "current_nav_usd": 1000.0,
+            "sample_count": 5,
+            "days_covered": 2.0,
+            "daily_nav_return_pct": -0.004,
+            "daily_nav_drawdown_pct": -0.004,
+            "rolling_24h_drawdown_pct": -0.004,
+            "max_drawdown_7d_pct": -0.004,
+            "max_drawdown_30d_pct": -0.004,
+        }
+    )
+    assert "-0.00%" not in dd_line and "day_ret=+0.00%" in dd_line
 
 
 def test_cycle12_premarket_overnight_gap_15m_macro_bar_age_short_trends_and_powell_clickbait(tmp_path):

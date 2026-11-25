@@ -205,6 +205,7 @@ def build_supervisor_prompt(
                 getattr(spec, "asset_scope", "all"),
                 max_usd=max_usd,
                 include_macro_benchmarks=False,
+                now_ts=eval_now_ts,
             )
         )
     if not is_pure_sre and focus_symbols:

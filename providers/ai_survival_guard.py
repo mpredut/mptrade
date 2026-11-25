@@ -16,6 +16,7 @@ from botcore import (
     extract_current_price_item,
     extract_order_price,
     first_pos_float,
+    fmt_signed,
     normalize_side,
     opposite_side,
     resolve_now_ts,
@@ -706,7 +707,7 @@ def evaluate_ai_tokenized_equity_sell_guard(
                     False,
                     (
                         f"ai_xstock_longterm_min_profit({sym}@{ven}:px={eff_px:g} vs cost={eff_cost:g}, "
-                        f"profit={profit_pct:+.2f}%<+{req_profit_pct:g}%)"
+                        f"profit={fmt_signed(profit_pct, 2)}%<+{req_profit_pct:g}%)"
                     ),
                     metrics,
                 )
@@ -930,7 +931,7 @@ def evaluate_ai_ping_pong_guard(
         metrics["flip_ref_actor"] = ref_opp_actor
         has_valid_edge = fav_pct is not None and fav_pct >= min_edge
         if not has_valid_edge and not is_emergency_sell:
-            fav_lbl = f"{fav_pct:+.2f}%" if fav_pct is not None else "n/a"
+            fav_lbl = f"{fmt_signed(fav_pct, 2)}%" if fav_pct is not None else "n/a"
             return (
                 False,
                 (
@@ -1202,7 +1203,7 @@ def format_ai_decision_scorecard_line(scorecard: Any) -> str:
     win_lbl = f"last {cnt}/{tot}" if tot > cnt else f"n={cnt}"
     return (
         f"AI Decision Scorecard (48h, {win_lbl}): "
-        f"{w}W/{s}S/{lo}L, avg={avg_e:+.2f}%, net={net_lbl}{streak_sfx}{tag_sfx}"
+        f"{w}W/{s}S/{lo}L, avg={fmt_signed(avg_e, 2)}%, net={net_lbl}{streak_sfx}{tag_sfx}"
     )
 
 
@@ -1582,13 +1583,13 @@ def format_ai_calibration_feedback_line(calibration: Any) -> str:
             lim_s = safe_float(vt.get("avg_limit_slippage_bps"), default=None)
             arr_s = safe_float(vt.get("avg_arrival_shortfall_bps"), default=None)
             if lim_s is not None:
-                lim_hdr += f" slip={lim_s:+.1f}bps"
+                lim_hdr += f" slip={fmt_signed(lim_s, 1)}bps"
             if arr_s is not None:
-                lim_hdr += f" arr={arr_s:+.1f}bps"
+                lim_hdr += f" arr={fmt_signed(arr_s, 1)}bps"
             v_bits.append(lim_hdr)
         if mkt_f > 0:
             mkt_s = safe_float(vt.get("avg_market_slippage_bps"), default=None)
-            mkt_hdr = f"MKT {mkt_f}" + (f" slip={mkt_s:+.1f}bps" if mkt_s is not None else "")
+            mkt_hdr = f"MKT {mkt_f}" + (f" slip={fmt_signed(mkt_s, 1)}bps" if mkt_s is not None else "")
             v_bits.append(mkt_hdr)
         if v_bits:
             venue_parts.append(f"{ven}: {' | '.join(v_bits)}")

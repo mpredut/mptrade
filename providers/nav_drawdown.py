@@ -17,6 +17,7 @@ from typing import Any, Mapping, Optional
 from botcore import (
     _parse_bool_flag,
     clean_scalar_str,
+    fmt_signed,
     normalize_side,
     resolve_now_ts,
     safe_float,
@@ -561,11 +562,11 @@ def format_nav_drawdown_summary_line(metrics: Any) -> str:
     return (
         f"Unified NAV=${nav_u:,.2f} (samples={safe_nonneg_int(metrics.get('sample_count'), 0)}, "
         f"span={safe_nonneg_float(metrics.get('days_covered'), 0.0):.1f}d): "
-        f"day_ret={(safe_float(metrics.get('daily_nav_return_pct'), 0.0) or 0.0):+.2f}%, "
-        f"day_dd={(safe_float(metrics.get('daily_nav_drawdown_pct'), 0.0) or 0.0):+.2f}%, "
-        f"24h_dd={(safe_float(metrics.get('rolling_24h_drawdown_pct'), 0.0) or 0.0):+.2f}%, "
-        f"7d_maxdd={(safe_float(metrics.get('max_drawdown_7d_pct'), 0.0) or 0.0):+.2f}%, "
-        f"30d_maxdd={(safe_float(metrics.get('max_drawdown_30d_pct'), 0.0) or 0.0):+.2f}%, "
+        f"day_ret={fmt_signed(safe_float(metrics.get('daily_nav_return_pct'), 0.0) or 0.0, 2)}%, "
+        f"day_dd={fmt_signed(safe_float(metrics.get('daily_nav_drawdown_pct'), 0.0) or 0.0, 2)}%, "
+        f"24h_dd={fmt_signed(safe_float(metrics.get('rolling_24h_drawdown_pct'), 0.0) or 0.0, 2)}%, "
+        f"7d_maxdd={fmt_signed(safe_float(metrics.get('max_drawdown_7d_pct'), 0.0) or 0.0, 2)}%, "
+        f"30d_maxdd={fmt_signed(safe_float(metrics.get('max_drawdown_30d_pct'), 0.0) or 0.0, 2)}%, "
         f"sharpe_30d={sh_s}, cashflow_adj={cf_n}"
     )
 

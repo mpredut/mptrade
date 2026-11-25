@@ -137,6 +137,7 @@ from intelligence.macro_sentiment_ssot import (
     resolve_read_json_cached,
     same_callable_anchor,
     save_microstructure_cycle_history,
+    update_venue_balances_state_locked,
     parse_ts_px_row,
     _extract_sorted_ts_px,
 )
@@ -288,7 +289,7 @@ def _wrap_cached_ohlc_fn(
             return None
         fn_id, fn_anchor = callable_identity_anchor(fn)
         ck = (prov_key, fn_id, clean_upper_scalar(s_arg) or "", safe_pos_int(interval_min, default=1) or 1)
-        now_s = _time.time()
+        now_s = resolve_now_ts(None)
         with _MEMO_LOCK:
             hit = _FALLBACK_OHLC_SERIES_CACHE.get(ck)
         if hit is not None and len(hit) >= 3 and same_callable_anchor(hit[2], fn_anchor) and 0.0 <= (now_s - hit[0]) < ttl_sec:
@@ -1105,11 +1106,11 @@ def refresh_stale_t212_cached_positions(
             except Exception:
                 pass
         if t212_dirty and bcache_path:
-            os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
-            with generation_file_lock(bcache_path):
-                disk_bals = read_json_dict(bcache_path, default=None, repair_files=True) if os.path.exists(bcache_path) else None
-                target_bals = dict(disk_bals) if isinstance(disk_bals, dict) else dict(cached_bals)
-                wrote_any = not isinstance(disk_bals, dict)
+            def _merge_t212_prices(
+                src_bals: Dict[str, Any], disk_bals: Optional[Dict[str, Any]]
+            ) -> Optional[Dict[str, Any]]:
+                target_bals = dict(src_bals)
+                wrote_any = disk_bals is None
                 for tkey in touched_keys:
                     new_entry = cached_bals.get(tkey)
                     if not isinstance(new_entry, dict):
@@ -1121,8 +1122,14 @@ def refresh_stale_t212_cached_positions(
                         merged_entry.update(new_entry)
                         target_bals[tkey] = merged_entry
                         wrote_any = True
-                if wrote_any:
-                    save_json_state(bcache_path, target_bals, indent=2)
+                return target_bals if wrote_any else None
+
+            update_venue_balances_state_locked(
+                bcache_path,
+                _merge_t212_prices,
+                fallback_state=cached_bals,
+                save_fn=save_json_state,
+            )
         return t212_dirty
     except Exception:
         return False

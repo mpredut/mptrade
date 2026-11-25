@@ -18,6 +18,7 @@ from botcore import (
     clean_order_id,
     clean_scalar_str,
     clean_upper_scalar,
+    fmt_signed,
     normalize_side,
     resolve_now_ts,
     safe_float,
@@ -176,14 +177,14 @@ def format_execution_quality_parts(eq: Mapping[str, Any]) -> list[str]:
     parts = [
         f"LIMIT(n={lim_n}"
         + (f", fill_rate={fill_rate:.1f}%" if (lim_unf > 0 and fill_rate is not None) else "")
-        + (f", slip={lim_s:+.1f}bps" if lim_s is not None else "")
-        + (f", arrival_sf={arr_s:+.1f}bps" if arr_s is not None else "")
+        + (f", slip={fmt_signed(lim_s, 1)}bps" if lim_s is not None else "")
+        + (f", arrival_sf={fmt_signed(arr_s, 1)}bps" if arr_s is not None else "")
         + ")"
     ]
     if mkt_n > 0:
         parts.append(
             f"MARKET(n={mkt_n}"
-            + (f", slip={mkt_s:+.1f}bps" if mkt_s is not None else "")
+            + (f", slip={fmt_signed(mkt_s, 1)}bps" if mkt_s is not None else "")
             + ")"
         )
     return parts
@@ -960,7 +961,7 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
             f"total={_fmt_usd(ai_sum.get('total_net_usd'))}, "
             f"est_fees=${safe_nonneg_float(ai_sum.get('est_fees_usd'), 0.0):.2f}, "
             f"WR={safe_nonneg_float(ai_sum.get('win_rate_pct'), 0.0):.1f}%, "
-            f"avg_edge={safe_float(ai_sum.get('avg_net_edge_pct'), 0.0) or 0.0:+.2f}%, "
+            f"avg_edge={fmt_signed(safe_float(ai_sum.get('avg_net_edge_pct'), 0.0) or 0.0, 2)}%, "
             f"PF={_fmt_pf(ai_sum.get('profit_factor'))}"
         ),
     ]
@@ -983,7 +984,7 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
                 f"  {mdl:<28} {safe_nonneg_int(m.get('intents'), 0):>4} "
                 f"{safe_nonneg_int(m.get('filled'), 0):>4} {safe_nonneg_int(m.get('scored'), 0):>4} "
                 f"{safe_nonneg_float(m.get('win_rate_pct'), 0.0):>5.1f}% "
-                f"{(safe_float(m.get('avg_net_edge_pct'), 0.0) or 0.0):>+6.2f}% "
+                f"{fmt_signed(safe_float(m.get('avg_net_edge_pct'), 0.0) or 0.0, 2):>6}% "
                 f"{_fmt_usd(m.get('total_net_usd')):>10} {_fmt_pf(m.get('profit_factor')):>6}"
             )
 
@@ -997,7 +998,7 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
                 f"  {vs:<24} {safe_nonneg_int(m.get('closed_trades'), 0):>4} "
                 f"{safe_nonneg_int(m.get('open_mtm'), 0):>4} "
                 f"{safe_nonneg_float(m.get('win_rate_pct'), 0.0):>5.1f}% "
-                f"{(safe_float(m.get('avg_net_edge_pct'), 0.0) or 0.0):>+6.2f}% "
+                f"{fmt_signed(safe_float(m.get('avg_net_edge_pct'), 0.0) or 0.0, 2):>6}% "
                 f"{_fmt_usd(m.get('realized_net_usd')):>10} {_fmt_usd(m.get('total_net_usd')):>10} "
                 f"${safe_nonneg_float(m.get('est_fees_usd'), 0.0):>6.2f}"
             )
@@ -1012,7 +1013,7 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
                 f"  {g_code:<14} {safe_nonneg_int(g.get('overrides_filled'), 0):>6} "
                 f"{safe_nonneg_int(g.get('scored'), 0):>6} {safe_nonneg_int(g.get('ai_right'), 0):>6} "
                 f"{safe_nonneg_int(g.get('guard_right'), 0):>6} {safe_nonneg_float(g.get('ai_win_rate_pct'), 0.0):>6.1f}% "
-                f"{(safe_float(g.get('avg_net_edge_pct'), 0.0) or 0.0):>+6.2f}% {_fmt_usd(g.get('net_usd')):>10}"
+                f"{fmt_signed(safe_float(g.get('avg_net_edge_pct'), 0.0) or 0.0, 2):>6}% {_fmt_usd(g.get('net_usd')):>10}"
             )
 
     plans = report.get("trade_plan_calibration") if isinstance(report.get("trade_plan_calibration"), Mapping) else {}
@@ -1032,8 +1033,8 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
             f"ACTIVE={safe_nonneg_int(psc.get('ACTIVE'), 0)}"
         )
         lines.append(
-            f"  Planned avg={safe_float(p_perf.get('avg_net_edge_pct'), 0.0) or 0.0:+.2f}% ({_fmt_usd(p_perf.get('total_net_usd'))}) | "
-            f"Unplanned avg={safe_float(u_perf.get('avg_net_edge_pct'), 0.0) or 0.0:+.2f}% ({_fmt_usd(u_perf.get('total_net_usd'))})"
+            f"  Planned avg={fmt_signed(safe_float(p_perf.get('avg_net_edge_pct'), 0.0) or 0.0, 2)}% ({_fmt_usd(p_perf.get('total_net_usd'))}) | "
+            f"Unplanned avg={fmt_signed(safe_float(u_perf.get('avg_net_edge_pct'), 0.0) or 0.0, 2)}% ({_fmt_usd(u_perf.get('total_net_usd'))})"
         )
 
     exec_cmp = report.get("execution_audit_ai_vs_bot") if isinstance(report.get("execution_audit_ai_vs_bot"), Mapping) else {}
@@ -1093,8 +1094,8 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
             ar_v = safe_float(v_row.get("avg_arrival_shortfall_bps"), default=None)
             fe_v = safe_float(v_row.get("avg_leg_fee_bps"), default=None)
             fr_s = f"{fr_v:>5.1f}%" if fr_v is not None else f"{'n/a':>6}"
-            sl_s = f"{sl_v:>+8.1f}" if sl_v is not None else f"{'n/a':>8}"
-            ar_s = f"{ar_v:>+8.1f}" if ar_v is not None else f"{'n/a':>8}"
+            sl_s = f"{fmt_signed(sl_v, 1):>8}" if sl_v is not None else f"{'n/a':>8}"
+            ar_s = f"{fmt_signed(ar_v, 1):>8}" if ar_v is not None else f"{'n/a':>8}"
             fe_s = f"{fe_v:>7.1f}" if fe_v is not None else f"{'n/a':>7}"
             lines.append(
                 f"  {vot_k:<20} {safe_nonneg_int(v_row.get('filled'), 0):>4} "

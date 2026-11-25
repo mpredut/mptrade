@@ -995,7 +995,7 @@ def test_pre_commit_gate_runs_all_deterministic_checks_and_blocks_violations(tmp
     """Verify verify_tools.pre_commit_gate orchestrates every deterministic gate cleanly on staged files."""
     from verify_tools import pre_commit_gate as gate
 
-    assert len(DETERMINISTIC_GATES) >= 14
+    assert len(DETERMINISTIC_GATES) >= 15
     assert gate.cmd_list(SimpleNamespace()) == 0
 
     # Seed one violation for each non-trivial deterministic gate in tmp_path.
@@ -1025,11 +1025,13 @@ def test_pre_commit_gate_runs_all_deterministic_checks_and_blocks_violations(tmp
         textwrap.dedent(
             """
             import os
+            from state_io import save_json_state
 
-            def run(client, sym: str):
+            def run(client, sym: str, bcache_path: str):
                 tmp_path = "a.tmp"
                 os.replace(tmp_path, "a.json")
                 _ = get_current_price_manager(data_sync_mode="producer")
+                save_json_state(bcache_path, {})
                 client.order_market_buy(symbol=sym, quantity=1)
                 return sym.endswith(("USDT", "USDC")) or sym.endswith("_US_EQ")
             """
@@ -1069,6 +1071,7 @@ def test_pre_commit_gate_runs_all_deterministic_checks_and_blocks_violations(tmp
         "evaluator_clock_purity_ast",
         "equity_quote_provenance_ast",
         "signed_zero_format_ast",
+        "venue_balances_single_writer_ast",
     ):
         assert expected_gate in failures, f"Expected gate {expected_gate} to fail; got {sorted(failures)}"
     assert gate.cmd_pre_commit(SimpleNamespace(files=bad_files, root=str(tmp_path), min_score=2)) == 1

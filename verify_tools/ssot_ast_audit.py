@@ -302,11 +302,28 @@ _LOCAL_ATOMIC_DEF_RE = re.compile(
     re.MULTILINE,
 )
 EVALUATOR_CLOCK_GUARDED_PREFIX = "intelligence/sentiment/evaluators/"
+EVALUATOR_CLOCK_EXTRA_FILES = frozenset({"orchestratorOS/supervisor/prompt_sections.py"})
 EQUITY_QUOTE_PROVENANCE_KEYS = frozenset({"quote_source", "quote_age_min"})
 EQUITY_QUOTE_PROVENANCE_OWNER_FILE = "intelligence/sentiment/collectors/microstructure_collector.py"
 EQUITY_QUOTE_PROVENANCE_OWNER_FN = "_apply_resolved_equity_quote"
 SIGNED_ZERO_GUARDED_PREFIXES = ("intelligence/sentiment/", "orchestratorOS/supervisor/")
-_RAW_SIGNED_FLOAT_SPEC_RE = re.compile(r"\+,?\.\d+f")
+SIGNED_ZERO_EXTRA_FILES = frozenset({
+    "providers/ai_survival_guard.py",
+    "providers/nav_drawdown.py",
+    "providers/ai_attribution.py",
+})
+_RAW_SIGNED_FLOAT_SPEC_RE = re.compile(r"\+[\d,]*\.\d+f")
+VENUE_BALANCES_STATE_OWNER_FILE = "intelligence/macro_sentiment_ssot.py"
+VENUE_BALANCES_STATE_OWNER_FN = "update_venue_balances_state_locked"
+_VENUE_BALANCES_WRITE_PATH_RE = re.compile(r"(?:venue_balances_state|VENUE_BALANCES_STATE_FILENAME|\bbcache_path\b)")
+_VENUE_BALANCES_WRITER_FNS = frozenset({
+    "save_json_state",
+    "save_json_file",
+    "write_json_file",
+    "atomic_write_json",
+    "write_text_file",
+    "write_bytes_file",
+})
 
 
 def _norm_rel_path(path: Path, root: Path) -> str | None:
@@ -1362,7 +1379,8 @@ def audit_evaluator_clock_purity_ast(
     target_rels = [
         r
         for r in _normalize_target_rels(root, rel_paths)
-        if r.startswith(EVALUATOR_CLOCK_GUARDED_PREFIX) and r.endswith(".py")
+        if (r.startswith(EVALUATOR_CLOCK_GUARDED_PREFIX) or r in EVALUATOR_CLOCK_EXTRA_FILES)
+        and r.endswith(".py")
     ]
     violations: list[str] = []
     for rel_s in target_rels:
@@ -1460,7 +1478,8 @@ def audit_signed_zero_format_ast(
     target_rels = [
         r
         for r in _normalize_target_rels(root, rel_paths)
-        if r.startswith(SIGNED_ZERO_GUARDED_PREFIXES) and r.endswith(".py")
+        if (r.startswith(SIGNED_ZERO_GUARDED_PREFIXES) or r in SIGNED_ZERO_EXTRA_FILES)
+        and r.endswith(".py")
     ]
     violations: list[str] = []
     for rel_s in target_rels:
@@ -1854,6 +1873,65 @@ def audit_durability_tier_and_cachedb_dirname_ast(
     return violations
 
 
+# -- Audit 14: Single canonical locked writer for venue_balances_state.json ----
+
+def audit_venue_balances_single_writer_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Enforce that ``venue_balances_state.json`` is written ONLY via ``update_venue_balances_state_locked``."""
+    root = Path(root)
+    target_rels = [r for r in _normalize_target_rels(root, rel_paths) if _is_prod_python_rel(r)]
+    violations: list[str] = []
+
+    def _writer_call_name(call: ast.Call) -> str:
+        fn = call.func
+        if isinstance(fn, ast.Name):
+            return fn.id
+        if isinstance(fn, ast.Attribute):
+            return fn.attr
+        if isinstance(fn, ast.Call):
+            inner = fn.func
+            inner_name = (
+                inner.id
+                if isinstance(inner, ast.Name)
+                else (inner.attr if isinstance(inner, ast.Attribute) else "")
+            )
+            if inner_name == "resolve_save_json_state":
+                return "save_json_state"
+        return ""
+
+    for rel_s in target_rels:
+        _, tree, syntax_err = parse_module_cached(root / rel_s, rel_s, _parsed_cache)
+        if syntax_err is not None or tree is None:
+            continue
+
+        def _visit(node: ast.AST, fn_name: str | None) -> None:
+            cur_fn = fn_name
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                cur_fn = node.name
+            is_owner = (
+                rel_s == VENUE_BALANCES_STATE_OWNER_FILE
+                and cur_fn == VENUE_BALANCES_STATE_OWNER_FN
+            )
+            if not is_owner and isinstance(node, ast.Call) and node.args:
+                wname = _writer_call_name(node)
+                if wname in _VENUE_BALANCES_WRITER_FNS:
+                    arg0_s = ast.unparse(node.args[0])
+                    if _VENUE_BALANCES_WRITE_PATH_RE.search(arg0_s):
+                        violations.append(
+                            f"{rel_s}:{node.lineno}: direct write to venue_balances_state via "
+                            f"{wname}({arg0_s[:80]}, ...) outside {VENUE_BALANCES_STATE_OWNER_FN}"
+                        )
+            for child in ast.iter_child_nodes(node):
+                _visit(child, cur_fn)
+
+        _visit(tree, None)
+    return violations
+
+
 # -- Combined SSOT AST audit runner --------------------------------------------
 
 def audit_all_ssot_ast(
@@ -1882,6 +1960,7 @@ def audit_all_ssot_ast(
         *audit_cross_module_calls_and_imports_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
         *audit_cachedb_path_and_jsonl_purity_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
         *audit_durability_tier_and_cachedb_dirname_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
+        *audit_venue_balances_single_writer_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
     ):
         if err not in seen:
             seen.add(err)

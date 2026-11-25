@@ -192,6 +192,8 @@ from cachepaths import (
 from pricewindow import filter_isolated_price_points
 from instrument_registry import casefold_get, symbols_for
 from state_io import (
+    generation_file_lock,
+    read_json_dict,
     read_json_dict_recovering as _default_read_json_dict_recovering,
     read_json_file,
     read_json_recovering as _default_read_json_recovering,
@@ -1267,6 +1269,88 @@ def load_venue_balances_state(
     except OSError:
         bcache_mtime = 0.0
     return bcache_path, (raw_cb if isinstance(raw_cb, dict) else {}), bcache_mtime
+
+
+_INTERNAL_VENUE_BALANCE_SCRATCH_KEYS: frozenset[str] = frozenset(
+    {"_balance_ts", "_base_balance_ts", "_quote_balance_ts"}
+)
+
+
+def _sanitize_venue_balances_payload(
+    payload: Mapping[str, Any],
+    *,
+    prev_state: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Strip internal scratch ts keys and preserve balance timestamps on price-only ``pos:*`` updates."""
+    prev_map = prev_state if isinstance(prev_state, Mapping) else {}
+    cleaned: Dict[str, Any] = {}
+    for k, v in payload.items():
+        if not isinstance(v, Mapping):
+            cleaned[k] = v
+            continue
+        entry = {ek: ev for ek, ev in v.items() if ek not in _INTERNAL_VENUE_BALANCE_SCRATCH_KEYS}
+        if isinstance(k, str) and k.startswith("pos:"):
+            prev_entry = prev_map.get(k)
+            if isinstance(prev_entry, Mapping):
+                prev_ts = normalize_epoch_sec(prev_entry.get("ts"), default=0.0) or 0.0
+                new_ts = normalize_epoch_sec(entry.get("ts"), default=0.0) or 0.0
+                if prev_ts > 0.0 and new_ts > prev_ts:
+                    if (
+                        "base_bal_ts" not in entry
+                        and entry.get("free_base") == prev_entry.get("free_base")
+                    ):
+                        prev_bts = normalize_epoch_sec(prev_entry.get("base_bal_ts"), default=0.0) or prev_ts
+                        if prev_bts > 0.0:
+                            entry["base_bal_ts"] = prev_bts
+                    if (
+                        "quote_bal_ts" not in entry
+                        and entry.get("free_quote") == prev_entry.get("free_quote")
+                    ):
+                        prev_qts = normalize_epoch_sec(prev_entry.get("quote_bal_ts"), default=0.0) or prev_ts
+                        if prev_qts > 0.0:
+                            entry["quote_bal_ts"] = prev_qts
+        cleaned[k] = entry
+    return cleaned
+
+
+def update_venue_balances_state_locked(
+    bcache_path: str,
+    mutator: Callable[[Dict[str, Any], Optional[Dict[str, Any]]], Optional[Mapping[str, Any]]],
+    *,
+    fallback_state: Optional[Mapping[str, Any]] = None,
+    read_disk: bool = True,
+    save_fn: Any = None,
+    indent: int = 2,
+) -> bool:
+    """Single canonical locked read-modify-write owner for ``venue_balances_state.json``."""
+    if not bcache_path or not callable(mutator):
+        return False
+    os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
+    with generation_file_lock(bcache_path):
+        disk_bals = (
+            read_json_dict(bcache_path, default=None, repair_files=True)
+            if (read_disk and os.path.exists(bcache_path))
+            else None
+        )
+        disk_dict = disk_bals if isinstance(disk_bals, dict) else None
+        src_bals: Dict[str, Any] = (
+            dict(disk_dict)
+            if disk_dict is not None
+            else (dict(fallback_state) if isinstance(fallback_state, Mapping) else {})
+        )
+        next_raw = mutator(src_bals, disk_dict)
+        if not isinstance(next_raw, Mapping):
+            return False
+        sanitized = _sanitize_venue_balances_payload(next_raw, prev_state=src_bals)
+        should_write = (
+            (sanitized != disk_dict)
+            if disk_dict is not None
+            else (sanitized != src_bals or (bool(sanitized) and not os.path.exists(bcache_path)))
+        )
+        if not should_write:
+            return False
+        resolve_save_json_state(local_fn=save_fn or save_json_state)(bcache_path, sanitized, indent=indent)
+        return True
 
 
 def _clean_nonbool_str(val: Any, default: str = "") -> str:
