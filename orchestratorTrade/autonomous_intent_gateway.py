@@ -55,6 +55,7 @@ from cachepaths import (
     AUTO_ORDER_INTENTS_STATE_FILENAME,
     CACHE_CURRENT_PRICE_FILENAME,
     VENUE_RUNTIME_DIR_MAP,
+    cycle_state_filename,
     is_equity_venue_or_suffix,
     normalize_venue_name,
     resolve_cachedb_filepath,
@@ -379,7 +380,7 @@ class AutonomousIntentGateway:
         for cand_sym in cand_syms:
             if not cand_sym:
                 continue
-            st_path = os.path.join(venue_dir, f".state_{cand_sym}.json")
+            st_path = os.path.join(venue_dir, cycle_state_filename(cand_sym, preserve_case=True))
             if cachedb_exists(st_path, include_previous=True):
                 st_data = read_json_dict(st_path, default={}, recover_previous=True)
                 qty_f = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0

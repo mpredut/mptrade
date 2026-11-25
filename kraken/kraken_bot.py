@@ -86,11 +86,11 @@ def main() -> int:
 
     if args.test_strategy:
         args.test_strategy = _norm_pair(args.test_strategy)
-        single_instance(f"kraken_bot_{args.test_strategy.strip().upper()}")
+        single_instance(f"kraken_bot_{args.test_strategy}")
     elif not any(getattr(args, a, None) for a in ("balance", "find_pair", "price")):
         # Use one instance PER PAIR so HYPE, ADA, WIF, etc. can run concurrently with
         # separate locks. The former fixed 'kraken_bot' key blocked a second pair.
-        _lock_pair = (args.pair or required_env("KRAKEN_PAIR")).strip().upper()
+        _lock_pair = _norm_pair(args.pair or required_env("KRAKEN_PAIR"))
         single_instance(f"kraken_bot_{_lock_pair}")
 
     # --- one-shot commands ---

@@ -17,7 +17,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import resolve_venue_runtime_dir
+from cachepaths import cycle_state_filename, resolve_venue_runtime_dir
 from instrument_registry import resolve_registered_symbol_case
 from state_io import StateReadError, load_json_state, save_json_state
 from .position_exit_manager import PositionExitConfig, PositionExitManager, is_stop_exit_kind
@@ -167,7 +167,7 @@ def state_path_for(
     eff_default = clean_scalar_str(default_dir) or (resolve_venue_runtime_dir(venue_str) if venue_str else "")
     raw_dir = os.fspath(state_dir) if isinstance(state_dir, (str, os.PathLike)) else None
     directory = clean_scalar_str(raw_dir) or eff_default
-    return os.path.join(directory, f".state_{safe}.json")
+    return os.path.join(directory, cycle_state_filename(safe, preserve_case=True))
 
 
 class StatePersistenceError(RuntimeError):

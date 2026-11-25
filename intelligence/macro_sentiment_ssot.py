@@ -172,6 +172,7 @@ def __dir__() -> List[str]:
 
 
 from cachepaths import (
+    CACHE_DERIVATIVES_TELEMETRY_PREFIX,
     CACHE_ETF_FLOWS_FILENAME,
     CACHE_FEAR_GREED_FILENAME,
     CACHE_GEOPOLITICAL_EVAL_FILENAME,
@@ -179,6 +180,7 @@ from cachepaths import (
     CACHE_MACRO_CALENDAR_FILENAME,
     CACHE_MARKET_BREADTH_FILENAME,
     CACHE_SENTIMENT_EVAL_FILENAME,
+    CACHE_WHALE_SNAPSHOT_PREFIX,
     MICROSTRUCTURE_CYCLE_HISTORY_FILENAME,
     cache_24_price_filename,
     cache_path,
@@ -1421,7 +1423,7 @@ def load_cached_whale_telemetry(
     symbols: Optional[Sequence[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Load cached whale positioning snapshot from ``cache_dir`` without network I/O."""
-    prefix = _cfg_str("cache_files", "whale_snapshot_prefix", "whale_snapshot_")
+    prefix = _cfg_str("cache_files", "whale_snapshot_prefix", CACHE_WHALE_SNAPSHOT_PREFIX)
     return _load_cached_symbol_telemetry_dict(cache_dir, prefix, symbols=symbols)
 
 
@@ -1430,7 +1432,7 @@ def load_cached_derivatives_telemetry(
     symbols: Optional[Sequence[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Load cached derivatives telemetry snapshot (funding_annualized_pct, perp_spot_basis_bps) without network I/O."""
-    prefix = _cfg_str("cache_files", "derivatives_telemetry_prefix", "derivatives_telemetry_")
+    prefix = _cfg_str("cache_files", "derivatives_telemetry_prefix", CACHE_DERIVATIVES_TELEMETRY_PREFIX)
     return _load_cached_symbol_telemetry_dict(cache_dir, prefix, symbols=symbols)
 
 

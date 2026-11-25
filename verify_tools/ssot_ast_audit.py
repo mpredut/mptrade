@@ -62,12 +62,20 @@ _FORBIDDEN_MANUAL_CONCAT_SUFFIXES = frozenset({
     "_EQ", "_US_EQ", "xUSD", "XUSD", "x/USD", "X/USD",
     "USD", "USDC", "USDT", "EUR", "FDUSD", "TUSD", "BUSD",
 })
-_PRICE_CACHE_FILE_PREFIXES = (
+_CACHE_FILE_PREFIXES = (
     "cache_ohlc_24h_",
     "cache_24_price_",
     "cache_365_price_",
+    "cache_sparse_price_",
     "price_24h_",
+    "24price_",
+    "order_events_",
+    "orders_closed_",
+    "whale_snapshot_",
+    "derivatives_telemetry_",
+    "orderbook_depth_",
 )
+_CACHE_FILE_PREFIX_EXEMPT_SUFFIXES = ("_collector", "_prefix", "_1pct")
 CACHEPRICE_POLLER_ALIASES = frozenset({
     "NonBinanceTrendPoller",
     "VenuePriceStreamBase",
@@ -919,8 +927,8 @@ def audit_repo_ssot_ast(
                     if alias.name == "providers.base":
                         ssot_violations.append(f"{rel_s}:{lineno}: upward layer import providers.base")
             elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if rel_s != "cachepaths.py":
-                    for pfx in _PRICE_CACHE_FILE_PREFIXES:
+                if rel_s != "cachepaths.py" and not node.value.endswith(_CACHE_FILE_PREFIX_EXEMPT_SUFFIXES):
+                    for pfx in _CACHE_FILE_PREFIXES:
                         if node.value.startswith(pfx):
                             ssot_violations.append(
                                 f"{rel_s}:{lineno}: hardcoded {pfx} filename prefix (use cachepaths filename builders)"
@@ -940,6 +948,14 @@ def audit_repo_ssot_ast(
                     f"{rel_s}:{lineno}: direct INVALID_SCALAR_STRINGS use (call clean_scalar_str / clean_upper_scalar)"
                 )
             elif rel_s != "cachepaths.py" and isinstance(node, ast.JoinedStr) and node.values:
+                if (
+                    isinstance(node.values[0], ast.Constant)
+                    and isinstance(node.values[0].value, str)
+                    and node.values[0].value == ".state_"
+                ):
+                    ssot_violations.append(
+                        f"{rel_s}:{lineno}: manual f-string .state_ cycle filename (call cachepaths.cycle_state_filename)"
+                    )
                 if (
                     isinstance(node.values[-1], ast.Constant)
                     and isinstance(node.values[-1].value, str)

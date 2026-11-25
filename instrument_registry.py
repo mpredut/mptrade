@@ -31,6 +31,7 @@ from botcore import (
     split_csv,
 )
 from cachepaths import (
+    DEFAULT_USD_QUOTES,
     READONLY_XSTOCK_SUFFIXES,
     bind_symbol_case_resolver,
     cache_symbol_variants,
@@ -60,7 +61,7 @@ _ORIG_DEFAULT_PATH = DEFAULT_PATH
 _DEFAULT_RESOLVED_PATH = str(DEFAULT_PATH.resolve())
 CORE = {"provider", "symbol", "base", "quote", "enabled", "isolation", "market_hours"}
 ROLES = {"mt", "tradeall_fire", "kalman_primary", "trailing", "assetguardian", "archive", "rtrade", "force_sell"}
-_DEFAULT_USD_QUOTES = ("USDC", "USDT", "USD", "FDUSD")
+_DEFAULT_USD_QUOTES = DEFAULT_USD_QUOTES
 _REGISTRY_CACHE: dict = {}
 _SYMBOL_IDENTITY_CACHE: dict = {}
 

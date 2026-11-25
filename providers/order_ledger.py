@@ -1257,7 +1257,11 @@ class OrderLedgerReader(FileOrderLedgerBase):
         closed_files = all_closed_files[-2:] if (max_days is not None and not min_day and not max_day) else all_closed_files
         for cpath in closed_files:
             base = os.path.basename(cpath)
-            cmonth = base[len("orders_closed_") : -len(".jsonl")] if base.startswith("orders_closed_") and base.endswith(".jsonl") else ""
+            cmonth = (
+                base[len(ORDER_LEDGER_CLOSED_PREFIX) : -len(".jsonl")]
+                if base.startswith(ORDER_LEDGER_CLOSED_PREFIX) and base.endswith(".jsonl")
+                else ""
+            )
             if cmonth:
                 if min_month and cmonth < min_month:
                     continue

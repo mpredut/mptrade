@@ -57,6 +57,7 @@ from botcore import (  # noqa: E402
 )
 from core.http import fetch_json_post  # noqa: E402
 from credentials import kraken_credentials  # noqa: E402
+from instrument_registry import canonical_balance_asset_key  # noqa: E402
 from notify_engine import alertnotifiers as alert  # noqa: E402
 from providers.kraken_provider import KrakenProvider  # noqa: E402
 from state_io import encode_json_payload  # noqa: E402
@@ -251,12 +252,12 @@ def extract_kraken_cash(balance_map: dict[str, Any]) -> dict[str, float]:
 
 def select_native_arbitrum_method(methods: list[dict[str, Any]], cfg: RebalanceConfig) -> dict[str, Any] | None:
     """Return the exact Kraken WithdrawMethods row for Native Arbitrum One USDC."""
-    wanted_asset = cfg.withdraw_asset.upper()
+    wanted_asset = canonical_balance_asset_key(cfg.withdraw_asset, venue="kraken")
     wanted_method = cfg.withdraw_method.strip().lower()
     for row in methods:
         if not isinstance(row, dict):
             continue
-        asset_u = clean_upper_scalar(row.get("asset")) or ""
+        asset_u = canonical_balance_asset_key(row.get("asset"), venue="kraken")
         method_s = (clean_scalar_str(row.get("method")) or "").lower()
         if asset_u == wanted_asset and method_s == wanted_method:
             return row

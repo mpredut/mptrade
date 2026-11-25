@@ -804,7 +804,7 @@ class BinanceProvider(MarketDataProvider):
                 total += fee_info["fee_in_quote"]
             else:
                 asset = fee_info["fee_asset"]
-                conv_f = safe_pos_float(_get_bapi().get_current_price(f"{asset}{quote}"), default=0.0)
+                conv_f = safe_pos_float(_get_bapi().get_current_price(ensure_quote_suffix(asset, quote)), default=0.0)
                 if conv_f <= 0.0:
                     raise ProviderError(f"order_status({order_id}): cannot convert the fee {asset}->{quote}")
                 total += fee_info["fee"] * conv_f

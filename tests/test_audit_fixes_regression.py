@@ -8107,6 +8107,20 @@ def test_kraken_xstock_balance_cache_canonical_key_and_nav_dedup(tmp_path):
     assert KrakenClient._norm_wire_asset("SPCXx.T") == "SPCXx.T"
     assert KrakenClient._norm_wire_asset("usdc") == "USDC"
 
+    # 9. Cycle 2 SSOT: cycle_state_filename, parse_cycle_state_symbol, resolve_ssot_price_from_cache & kraken_bot lock case
+    from cachepaths import cache_24_price_filename, cycle_state_filename, legacy_filenames_for, parse_cycle_state_symbol
+    from cacheprice import resolve_ssot_price_from_cache
+
+    assert cycle_state_filename("SPCXxUSD") == ".state_SPCXxUSD.json"
+    assert cycle_state_filename("SPCXxUSD".upper()) == ".state_SPCXxUSD.json"
+    assert parse_cycle_state_symbol("/tmp/kraken/.state_SPCXxUSD.json") == "SPCXxUSD"
+    assert "24price_BTCUSDC.json" in legacy_filenames_for(cache_24_price_filename("BTCUSDC", ext=".json"))
+    (cdb / "prices" / "cache_current_price.json").write_text(
+        json.dumps({"items": {"SPCXxUSD": [[int(now_s * 1000), 120.0]]}, "fetchtime": {"SPCXxUSD": int(now_s * 1000)}}),
+        encoding="utf-8",
+    )
+    assert resolve_ssot_price_from_cache("SPCXxUSD", cache_dir=str(cdb), max_age_sec=300.0, now_ts=now_s) == pytest.approx(120.0)
+
 
 def test_pure_portfolio_valuation_split_and_cache_first_portfolio_collector(tmp_path):
     """Verify pure portfolio_valuation split + cache-first TradablePositionsAndOrdersCollector:

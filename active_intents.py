@@ -43,6 +43,7 @@ from cachepaths import (
     is_shadow_or_paper_state_filename,
     is_shadow_or_paper_state_payload,
     normalize_venue_name,
+    parse_cycle_state_symbol,
     resolve_cachedb_filepath,
 )
 from instrument_registry import resolve_symbol_identity
@@ -527,8 +528,8 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
                 if not spec.json_lines and isinstance(payload, dict) and is_shadow_or_paper_state_payload(payload):
                     continue
                 inherited = (
-                    {"symbol": name[len(".state_"):-len(".json")]}
-                    if name.startswith(".state_") and name.endswith(".json")
+                    {"symbol": st_sym}
+                    if (st_sym := parse_cycle_state_symbol(name))
                     else {}
                 )
                 intents.extend(_walk(
@@ -803,8 +804,8 @@ def trace_order_or_intent(
                 continue
 
             inherited = (
-                {"symbol": name[len(".state_"):-len(".json")]}
-                if name.startswith(".state_") and name.endswith(".json")
+                {"symbol": st_sym}
+                if (st_sym := parse_cycle_state_symbol(name))
                 else {}
             )
             for row in _walk(

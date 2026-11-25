@@ -435,8 +435,10 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             return self._log_provider_balance_error("Kraken", "history", symbol, e)
 
     # -- Credentialed account access. -----------------------------------------
+    _KRAKEN_USD_ASSETS: frozenset[str] = frozenset({"USD", "ZUSD", "XUSD"})
+    _KRAKEN_USD_BALANCE_KEYS: tuple[str, ...] = ("USD", "ZUSD", "XUSD", "USD.F", "ZUSD.F")
     _USD_EQUIVALENT_BUCKETS = (
-        ("USD", ("USD", "ZUSD", "XUSD", "USD.F", "ZUSD.F")),
+        ("USD", _KRAKEN_USD_BALANCE_KEYS),
         ("USDC", ("USDC", "USDC.F", "USDC.S")),
         ("USDG", ("USDG", "USDG.F", "USDG.S")),
         ("USDT", ("USDT", "ZUSDT", "USDT.F", "USDT.S")),
@@ -523,7 +525,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             if not isinstance(bal, dict):
                 return None
             has_ex_payload = any(isinstance(v, dict) for v in bal.values())
-            if asset_u in {"USD", "ZUSD", "XUSD"}:
+            if asset_u in self._KRAKEN_USD_ASSETS:
                 total_usd = 0.0
                 total_hold = 0.0
                 all_holds_known = has_ex_payload
@@ -575,7 +577,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                         all_holds_known = False
                     else:
                         total_hold += hold_v
-            if any_usd or any((clean_upper_scalar(a) or "") in {"USD", "ZUSD", "XUSD"} for a in (assets or ())):
+            if any_usd or any((clean_upper_scalar(a) or "") in self._KRAKEN_USD_ASSETS for a in (assets or ())):
                 out["USD"] = (total_usd, total_hold if all_holds_known else None)
             usd_bucket_keys = {k.upper() for _, keys in self._USD_EQUIVALENT_BUCKETS for k in keys}
             seen_raw_u: set[str] = set(usd_bucket_keys)
@@ -584,7 +586,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 if not req_s:
                     continue
                 req_u = req_s.upper()
-                if req_u in {"USD", "ZUSD", "XUSD"}:
+                if req_u in self._KRAKEN_USD_ASSETS:
                     continue
                 req_key = canonical_balance_asset_key(req_s, venue="kraken") or req_s
                 candidates = _kraken_balance_asset_candidates(req_key)
@@ -751,7 +753,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 cli = self._client()
                 bal = self._query_with_bot_fallback(self._available_balances_from_client) or {}
                 if isinstance(bal, dict):
-                    _, zusd = self._lookup_balance_candidates(bal, ("USD", "ZUSD", "XUSD", "USD.F", "ZUSD.F"))
+                    _, zusd = self._lookup_balance_candidates(bal, self._KRAKEN_USD_BALANCE_KEYS)
                     _, usdc = self._lookup_balance_candidates(bal, ("USDC", "USDC.F", "USDC.S"))
                     zusd_f = zusd or 0.0
                     usdc_f = usdc or 0.0

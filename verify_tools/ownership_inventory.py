@@ -27,7 +27,7 @@ from botcore import (
     parse_procs_manifest,
     _parse_bool_flag,
 )
-from cachepaths import normalize_venue_name, split_symbol_assets  # noqa: E402
+from cachepaths import ensure_quote_suffix, normalize_venue_name, split_symbol_assets  # noqa: E402
 from instrument_registry import single_symbol_for, symbols_for  # noqa: E402
 from providers.quantity import resolve_assets  # noqa: E402
 from state_io import encode_json_payload  # noqa: E402
@@ -229,7 +229,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         account_ref=_account_ref(
             hl_env, "hyperliquid", "hyperliquid-spot-dca",
         ),
-        symbol=f"{hl_token}USDC", base=hl_token, quote="USDC",
+        symbol=ensure_quote_suffix(hl_token, "USDC"), base=hl_token, quote="USDC",
         role="primary", coordination="spot-dca", pattern="hl_bot.py",
         configured="hl_bot.py" in patterns,
         enabled=(

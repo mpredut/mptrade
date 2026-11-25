@@ -37,6 +37,7 @@ from cachepaths import (
     clean_symbol_key,
     clean_upper_scalar,
     compatible_quote_suffixes,
+    cycle_state_filename,
     ensure_equity_suffix,
     ensure_quote_suffix,
     ensure_xstock_pair,
@@ -48,6 +49,7 @@ from cachepaths import (
     is_shadow_or_paper_state_payload,
     iter_venue_cycle_state_files,
     normalize_venue_name,
+    parse_cycle_state_symbol,
     resolve_cachedb_filepath,
     resolve_workspace_dir_from_cachedb,
     split_symbol_assets,
@@ -1013,7 +1015,7 @@ class VenueCyclesCollector(PortfolioCacheCollectorBase):
 
         kraken_cycles: Dict[str, Any] = {}
         for st_path in iter_venue_cycle_state_files("kraken", workspace_dir=eff_workspace):
-            raw_pair = os.path.basename(st_path)[len(".state_") : -len(".json")]
+            raw_pair = parse_cycle_state_symbol(st_path)
             pair_name = resolve_registered_symbol_case(raw_pair, "kraken") or raw_pair.upper()
             if pair_name.isalnum() and symbol_quote_asset(pair_name) in ("USD", "EUR", "USDC", "USDT"):
                 _record_cyc(kraken_cycles, st_path, pair_name, 6)
@@ -1058,7 +1060,7 @@ class VenueCyclesCollector(PortfolioCacheCollectorBase):
 
         hyperliquid_cycles: Dict[str, Any] = {}
         for st_path in iter_venue_cycle_state_files("hyperliquid", workspace_dir=eff_workspace):
-            raw_tok = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
+            raw_tok = parse_cycle_state_symbol(st_path).upper()
             if raw_tok.startswith("DN_") or raw_tok == "DN":
                 continue
             hl_dir: Optional[str] = None
@@ -1267,7 +1269,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
                         cyc_entry.get("avg_cost_px"), cyc_entry.get("entry_price"), cyc_entry.get("last_buy_price")
                     )
             if active_cycle_cost_px is None and eff_k_dir:
-                st_pair_path = os.path.join(eff_k_dir, f".state_{primary_xpair}.json")
+                st_pair_path = os.path.join(eff_k_dir, cycle_state_filename(primary_xpair))
                 if os.path.exists(st_pair_path) and isinstance(st_pair_d := _rj(st_pair_path), dict):
                     st_q = safe_nonneg_float(st_pair_d.get("qty"), default=0.0) or 0.0
                     st_c = safe_nonneg_float(st_pair_d.get("cost"), default=0.0) or 0.0
@@ -2380,8 +2382,9 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                 cand_u = str(matched_cand or "").strip().upper()
                 default_q_v = MarketDataProvider.resolve_venue_default_quote(cache_venue, fallback="USD")
                 is_bare_base_cand = MarketDataProvider.uses_bare_base_order_symbols(cache_venue) and cand_u == base_upper
+                default_pair_v = ensure_quote_suffix(base_upper, default_q_v)
                 cand_quotes = (
-                    compatible_quote_suffixes(f"{base_upper}{default_q_v}")
+                    compatible_quote_suffixes(default_pair_v)
                     if is_bare_base_cand
                     else compatible_quote_suffixes(cand_u)
                 )
@@ -2392,7 +2395,7 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                     1
                     if (
                         cand_clean == sym_clean
-                        or (is_bare_base_cand and sym_clean == f"{base_upper}{default_q_v}")
+                        or (is_bare_base_cand and sym_clean == default_pair_v)
                     )
                     else 0
                 )

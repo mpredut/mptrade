@@ -58,6 +58,7 @@ from cachepaths import (
     cache_path,
     cache_symbol_variants,
     canonical_symbol_key,
+    ensure_quote_suffix,
     get_cachedb_dir,
     has_equity_suffix,
     normalize_cache_base_asset,
@@ -406,7 +407,7 @@ def estimate_T(
     candidates = [clean_sym_u] if clean_sym_u else ([sym_u] if sym_u else [symbol])
     if not is_eq and not is_tok and base and clean_sym_u != "USDCUSDT":
         for suffix in ("USDC", "USDT"):
-            cand = f"{base}{suffix}"
+            cand = ensure_quote_suffix(base, suffix)
             if cand not in candidates:
                 candidates.append(cand)
     ts = px = None

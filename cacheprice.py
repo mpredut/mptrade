@@ -74,12 +74,14 @@ from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
     CACHE_CURRENT_PRICE_TICKS_SOCKET_FILENAME,
     CACHE_SPARSE_PRICE_PREFIX,
+    DEFAULT_USD_QUOTES,
     cache_ohlc_24h_filename,
     cache_path,
     cache_symbol_variants,
     cachedb_root_for_file,
     canonical_base_asset,
     canonical_symbol_key,
+    clean_scalar_str,
     clean_symbol_key,
     compatible_quote_suffixes,
     ensure_equity_suffix,
@@ -3385,20 +3387,21 @@ def resolve_ssot_price_from_cache(
     now_ts: Optional[float] = None,
 ) -> Optional[float]:
     """Resolve a fresh positive spot price for ``symbol`` from SSOT cacheManager stores (0 ms local)."""
-    if (sym_u := clean_upper_scalar(symbol)) is None or not (sym_clean := clean_symbol_key(sym_u)):
+    if (raw_s := clean_scalar_str(symbol)) is None or not (sym_clean := clean_symbol_key(raw_s)):
         return None
+    sym_u = raw_s.upper()
     if (max_age := resolve_positive_max_age(max_age_sec, 60.0)) is None:
         return None
     now_s = resolve_now_ts(now_ts)
     quotes = (
-        compatible_quote_suffixes(sym_clean, default_usd=("USDC", "USDT", "USD", "FDUSD"))
+        compatible_quote_suffixes(raw_s, default_usd=DEFAULT_USD_QUOTES)
         if quote_isolated
         else ("USDC", "USDT", "USD", "EUR")
     )
     cands = list(
         dict.fromkeys(
             c
-            for c in (sym_clean, sym_u, *cache_symbol_variants(sym_clean, quotes=quotes))
+            for c in (raw_s, sym_clean, sym_u, *cache_symbol_variants(raw_s, quotes=quotes))
             if isinstance(c, str) and c and "/" not in c
         )
     )

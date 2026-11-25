@@ -38,6 +38,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
+    DEFAULT_USD_QUOTES,
     cache_symbol_variants,
     compatible_quote_suffixes,
     normalize_cache_base_asset,
@@ -499,7 +500,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         if exact_only:
             cands_ex = list(dict.fromkeys([sym_clean, sym_clean.upper()]))
             return sym_clean, cands_ex
-        quotes = compatible_quote_suffixes(symbol, default_usd=("USDC", "USDT", "USD", "FDUSD")) if self._QUOTE_ISOLATED else None
+        quotes = compatible_quote_suffixes(symbol, default_usd=DEFAULT_USD_QUOTES) if self._QUOTE_ISOLATED else None
         raw_vars = cache_symbol_variants(symbol, quotes=quotes) if quotes is not None else cache_symbol_variants(symbol)
         return sym_clean, list(dict.fromkeys([sym_clean, *raw_vars]))
 

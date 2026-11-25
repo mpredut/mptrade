@@ -955,6 +955,10 @@ def test_ssot_ast_audit_pre_commit_blocks_manual_parsing_and_allows_ssot_delegat
                     _ = sym + "USDC"
                     _ = f"cache_24_price_{{sym}}.json"
                     _ = "cache_365_price_BTCUSDC.json"
+                    _ = "24price_BTCUSDC.json"
+                    _ = "orders_closed_"
+                    _ = "whale_snapshot_"
+                    _ = f".state_{{sym}}.json"
                 if venue == "kraken":
                     _ = float(raw)
                     _ = os.getenv("FOO")
@@ -975,10 +979,14 @@ def test_ssot_ast_audit_pre_commit_blocks_manual_parsing_and_allows_ssot_delegat
     assert "manual f-string USDC pair concatenation" in joined
     assert "manual f-string USDT pair concatenation" in joined
     assert "manual f-string xStock asset concatenation" in joined
+    assert "manual f-string .state_ cycle filename" in joined
     assert "manual string concatenation 'xUSD'" in joined
     assert "manual string concatenation 'USDC'" in joined
     assert "hardcoded cache_24_price_ filename prefix" in joined
     assert "hardcoded cache_365_price_ filename prefix" in joined
+    assert "hardcoded 24price_ filename prefix" in joined
+    assert "hardcoded orders_closed_ filename prefix" in joined
+    assert "hardcoded whale_snapshot_ filename prefix" in joined
     assert "corrupted uppercase xStock literal" in joined
     assert "hardcoded venue branch 'kraken'" in joined
     assert "raw float()" in joined
@@ -999,13 +1007,14 @@ def test_ssot_ast_audit_pre_commit_blocks_manual_parsing_and_allows_ssot_delegat
     clean_collector.write_text(
         textwrap.dedent(
             """
-            from cachepaths import ensure_equity_suffix, ensure_quote_suffix, ensure_xstock_asset, ensure_xstock_pair, has_equity_suffix, symbol_quote_asset
+            from cachepaths import cycle_state_filename, ensure_equity_suffix, ensure_quote_suffix, ensure_xstock_asset, ensure_xstock_pair, has_equity_suffix, symbol_quote_asset
 
             def ingest(sym: str) -> str:
                 if symbol_quote_asset(sym) in ("USDT", "USDC") or has_equity_suffix(sym):
                     return ensure_equity_suffix(sym)
                 _ = ensure_xstock_asset(sym)
                 _ = ensure_xstock_pair(sym)
+                _ = cycle_state_filename(sym)
                 return ensure_quote_suffix(sym, "USD")
             """
         ).lstrip(),

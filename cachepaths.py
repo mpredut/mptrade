@@ -90,6 +90,8 @@ CACHE_365_PRICE_PREFIX = "cache_365_price_"
 CACHE_365_PRICE_EXT = ".jsonl"
 CACHE_OHLC_24H_PREFIX = "cache_ohlc_24h_"
 CACHE_OHLC_24H_EXT = ".json"
+CYCLE_STATE_PREFIX = ".state_"
+CYCLE_STATE_EXT = ".json"
 
 
 INVALID_SCALAR_STRINGS = frozenset((
@@ -209,7 +211,7 @@ EXACT_LEGACY_FILENAMES = {
 }
 PREFIX_LEGACY_FILENAMES = (
     (CACHE_SPARSE_PRICE_PREFIX, ("cache_price_sparse_", "cache_price_")),
-    (CACHE_24_PRICE_PREFIX, ("cache_24price_", "price_24h_")),
+    (CACHE_24_PRICE_PREFIX, ("cache_24price_", "price_24h_", "24price_")),
     (CACHE_365_PRICE_PREFIX, ("cache_365price_", "cache_24price_long_")),
 )
 
@@ -1322,6 +1324,7 @@ EQUITY_VENUES: frozenset[str] = frozenset({"t212"})
 PRIMARY_STREAM_VENUES: frozenset[str] = frozenset({"binance"})
 CYCLE_STATE_VENUES: frozenset[str] = frozenset({"kraken", "hyperliquid", "t212"})
 USDC_DEFAULT_VENUES: frozenset[str] = frozenset({"binance", "hyperliquid"})
+DEFAULT_USD_QUOTES: tuple[str, ...] = ("USDC", "USDT", "USD", "FDUSD")
 _USD_FAMILY_QUOTES: tuple[str, ...] = ("USDC", "USDT", "USD", "FDUSD", "TUSD", "BUSD")
 _USD_STABLECOIN_QUOTES: tuple[str, ...] = ("USDC", "USDT", "FDUSD", "TUSD", "BUSD")
 
@@ -2041,12 +2044,28 @@ def is_shadow_or_paper_state_payload(payload: object) -> bool:
     return False
 
 
+def cycle_state_filename(token: object, *, preserve_case: bool = False) -> str:
+    """Return the canonical venue DCA cycle state filename ``.state_<TOKEN>.json`` preserving mixed-case xStocks."""
+    tok = _clean_cache_symbol(token, preserve_case=preserve_case)
+    if not tok:
+        return ""
+    return f"{CYCLE_STATE_PREFIX}{tok}{CYCLE_STATE_EXT}"
+
+
+def parse_cycle_state_symbol(path: object) -> str:
+    """Extract the symbol/token stem from a ``.state_<TOKEN>.json`` filename or path, or ``''``."""
+    bname = os.path.basename(str(path or "")).strip()
+    if not (bname.startswith(CYCLE_STATE_PREFIX) and bname.lower().endswith(CYCLE_STATE_EXT)):
+        return ""
+    return bname[len(CYCLE_STATE_PREFIX) : -len(CYCLE_STATE_EXT)].strip()
+
+
 def is_shadow_or_paper_state_filename(path: object) -> bool:
     """Return True if a ``.state_*.json`` filename stem denotes a paper, replay, shadow, or mock cycle state."""
     bname = os.path.basename(str(path or "")).strip()
-    if not (bname.startswith(".state_") and bname.lower().endswith(".json")):
+    if not (bname.startswith(CYCLE_STATE_PREFIX) and bname.lower().endswith(CYCLE_STATE_EXT)):
         return False
-    stem = bname[len(".state_") : -len(".json")].strip().upper()
+    stem = parse_cycle_state_symbol(bname).upper()
     if not stem or stem.startswith(_SHADOW_OID_PREFIXES):
         return True
     parts = [p for p in stem.replace("-", "_").split("_") if p]
