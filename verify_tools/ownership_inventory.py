@@ -174,7 +174,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
     patterns = {p["pattern"] for p in parse_procs_manifest(str(root), roles=("bot", "fleet"))}
     owners: list[Owner] = []
 
-    root_env = _env(root / "config.env", root / ".env")
+    root_env = _env(root / "config.env", root / ".env", root / "binance_api" / ".env")
     trade_settings = _env(root / "config.txt")
     kraken_env = _env(root / "kraken" / "config.env", root / "kraken" / ".env")
     hl_env = _env(root / "hyperliquid" / "config.env", root / "hyperliquid" / ".env")

@@ -9393,6 +9393,120 @@ def test_cycle19_prompt_audit_fixes(tmp_path, monkeypatch):
     )
 
 
+def test_pre_cutover_organize_cachedb_zero_split_brain_and_binance_env_precedence(tmp_path):
+    """Regression locks for:
+    1. organize_cachedb_subdomains() when statedb/ does not exist keeps statedb files inside pre-cutover
+       cachedb/{state,orders,system}/ (never creating phantom cachedb/portfolio/ or cachedb/bots/ split-brain),
+       and preserves richer historical state files over smaller fresh stubs during coalescing.
+    2. credentials.py loads BINANCE_API_KEY/SECRET/WS from binance_api/.env first, falling back to root .env,
+       with explicit os.environ winning over both; binance_credentials() enforces complete pairs.
+    """
+    import importlib.util
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    from cachepaths import (
+        LLM_TOPIC_THREADS_FILENAME,
+        NAV_HISTORY_STATE_FILENAME,
+        PORTFOLIO_POSITIONS_STATE_FILENAME,
+        VENUE_FEE_MAINTENANCE_STATE_FILENAME,
+        organize_cachedb_subdomains,
+        resolve_statedb_filepath,
+    )
+    import credentials as creds_mod
+
+    # 1. Pre-cutover organize_cachedb_subdomains() must NOT create phantom cachedb/portfolio or cachedb/bots
+    ws = tmp_path / "ws_pre_cutover"
+    cdb = ws / "cachedb"
+    (cdb / "state").mkdir(parents=True)
+    (cdb / "system").mkdir(parents=True)
+    (cdb / "orders").mkdir(parents=True)
+
+    full_nav = {"version": 1, "updated_ts": 1000.0, "points": [{"ts": 100.0 + i, "nav_usd": 17000.0 + i} for i in range(6)]}
+    stub_nav = {"version": 1, "updated_ts": 2000.0, "points": [{"ts": 2000.0, "nav_usd": 17100.0}]}
+    full_topics = {
+        "auto_cryptotrade_executor": {"conversation_id": "cid_c", "rolling_history": [{"utc": "t1", "summary": "x" * 120}]},
+        "auto_sharetrade_executor": {"conversation_id": "cid_s", "rolling_history": [{"utc": "t2", "summary": "y" * 120}]},
+        "macro_sentiment": {"conversation_id": "cid_m", "rolling_history": [{"utc": "t3", "summary": "z" * 120}]},
+    }
+    stub_topics = {"macro_sentiment": {"conversation_id": "cid_stub"}}
+
+    # Simulate exact live split-brain state: richer older history in portfolio/ & llm/, tiny newer stub in state/ & system/
+    (cdb / "portfolio").mkdir(parents=True)
+    (cdb / "bots").mkdir(parents=True)
+    (cdb / "llm").mkdir(parents=True)
+    p_nav_rich = cdb / "portfolio" / NAV_HISTORY_STATE_FILENAME
+    p_nav_stub = cdb / "state" / NAV_HISTORY_STATE_FILENAME
+    p_nav_rich.write_text(json.dumps(full_nav), encoding="utf-8")
+    p_nav_stub.write_text(json.dumps(stub_nav), encoding="utf-8")
+    os.utime(p_nav_rich, (1000.0, 1000.0))
+    os.utime(p_nav_stub, (2000.0, 2000.0))
+
+    p_top_rich = cdb / "llm" / LLM_TOPIC_THREADS_FILENAME
+    p_top_stub = cdb / "system" / LLM_TOPIC_THREADS_FILENAME
+    p_top_rich.write_text(json.dumps(full_topics), encoding="utf-8")
+    p_top_stub.write_text(json.dumps(stub_topics), encoding="utf-8")
+    os.utime(p_top_rich, (1000.0, 1000.0))
+    os.utime(p_top_stub, (2000.0, 2000.0))
+
+    (cdb / "state" / PORTFOLIO_POSITIONS_STATE_FILENAME).write_text(json.dumps({"pos:binance:BTCUSDC": {"qty": 1.0}}), encoding="utf-8")
+    (cdb / "state" / VENUE_FEE_MAINTENANCE_STATE_FILENAME).write_text(json.dumps({"last_run_ts": 1500.0}), encoding="utf-8")
+
+    organize_cachedb_subdomains(str(cdb))
+
+    # Legacy cachedb/state/ coalesced cleanly into portfolio/ & bots/; llm_topic_threads coalesced into llm/
+    assert not (cdb / "state").exists()
+    assert not (cdb / "system" / LLM_TOPIC_THREADS_FILENAME).exists()
+    assert (cdb / "portfolio" / PORTFOLIO_POSITIONS_STATE_FILENAME).is_file()
+    assert (cdb / "bots" / VENUE_FEE_MAINTENANCE_STATE_FILENAME).is_file()
+    # Richer historical nav_history & llm_topic_threads were preserved over smaller newer stubs
+    recovered_nav = json.loads((cdb / "portfolio" / NAV_HISTORY_STATE_FILENAME).read_text(encoding="utf-8"))
+    assert len(recovered_nav["points"]) == 6
+    recovered_topics = json.loads((cdb / "llm" / LLM_TOPIC_THREADS_FILENAME).read_text(encoding="utf-8"))
+    assert set(recovered_topics.keys()) == {"auto_cryptotrade_executor", "auto_sharetrade_executor", "macro_sentiment"}
+    # Subsequent resolver calls point to exact same files (zero split-brain)
+    assert Path(str(resolve_statedb_filepath(str(cdb / NAV_HISTORY_STATE_FILENAME)))) == (cdb / "portfolio" / NAV_HISTORY_STATE_FILENAME)
+    assert Path(str(resolve_statedb_filepath(str(cdb / LLM_TOPIC_THREADS_FILENAME)))) == (cdb / "llm" / LLM_TOPIC_THREADS_FILENAME)
+
+    # 2. credentials.py loads binance_api/.env ahead of root .env, with os.environ highest priority
+    pair_ok = creds_mod.binance_credentials(values={"BINANCE_API_KEY": "k1", "BINANCE_API_SECRET": "s1"})
+    assert pair_ok.key == "k1" and pair_ok.secret == "s1"
+    with pytest.raises(creds_mod.CredentialConfigurationError):
+        creds_mod.binance_credentials(values={"BINANCE_API_KEY": "k1", "BINANCE_API_SECRET": ""})
+
+    fake_ws = tmp_path / "creds_ws"
+    (fake_ws / "binance_api").mkdir(parents=True)
+    (fake_ws / ".env").write_text(
+        "BINANCE_API_KEY=root_key\nBINANCE_API_SECRET=root_sec\nBINANCE_API_KEY_WS=root_ws\n",
+        encoding="utf-8",
+    )
+    (fake_ws / "binance_api" / ".env").write_text(
+        "BINANCE_API_KEY=venue_key\nBINANCE_API_SECRET=venue_sec\n",
+        encoding="utf-8",
+    )
+    repo_root = Path(creds_mod.__file__).resolve().parent
+    (fake_ws / "credentials.py").write_text(
+        (repo_root / "credentials.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    probe_code = (
+        "import importlib.util, sys\n"
+        f"sys.path.insert(0, {str(repo_root)!r})\n"
+        f"spec = importlib.util.spec_from_file_location('creds_probe', {str(fake_ws / 'credentials.py')!r})\n"
+        "mod = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['creds_probe'] = mod\n"
+        "spec.loader.exec_module(mod)\n"
+        "assert mod.api_key == 'venue_key', mod.api_key\n"
+        "assert mod.api_secret == 'venue_sec', mod.api_secret\n"
+        "assert mod.api_key_ws == 'root_ws', mod.api_key_ws\n"
+    )
+    clean_env = {k: v for k, v in os.environ.items() if not k.startswith("BINANCE_API_")}
+    proc = subprocess.run([sys.executable, "-c", probe_code], env=clean_env, capture_output=True, text=True, timeout=20)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+
 
 
 

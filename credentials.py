@@ -12,7 +12,12 @@ from collections.abc import Mapping, Sequence
 
 from botcore import clean_non_bool_str as _clean_cred_val, load_dotenv, secret_env
 
-load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+BINANCE_ENV_PATH = os.path.join(_ROOT_DIR, "binance_api", ".env")
+# Load Binance venue secrets from binance_api/.env first (symmetric with kraken/.env,
+# 212trading/.env, hyperliquid/.env), falling back to root .env for legacy/global keys.
+load_dotenv(BINANCE_ENV_PATH)
+load_dotenv(os.path.join(_ROOT_DIR, ".env"))
 
 api_key = secret_env("BINANCE_API_KEY", "") or ""
 api_secret = secret_env("BINANCE_API_SECRET", "") or ""
@@ -89,6 +94,11 @@ def kraken_credentials(role: str, *, values=None) -> CredentialPair:
     if role_key not in _KRAKEN_PROFILES:
         raise ValueError(f"Unknown Kraken credential role: {role}")
     return resolve_credential_pair(_KRAKEN_PROFILES[role_key], values=values)
+
+
+def binance_credentials(*, values=None) -> CredentialPair:
+    """Resolve the Binance REST API key/secret pair (canonical source: ``binance_api/.env``)."""
+    return resolve_credential_pair((("Binance", "BINANCE_API_KEY", "BINANCE_API_SECRET"),), values=values)
 
 
 def t212_credentials(*, values=None) -> CredentialPair:

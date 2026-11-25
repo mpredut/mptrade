@@ -863,13 +863,23 @@ def _clean_stale_staging_in_dir(
                 pass
 
 
-def _replace_or_discard_file(src: str, dst: str, *, is_jsonl: bool = False) -> None:
+def _replace_or_discard_file(
+    src: str,
+    dst: str,
+    *,
+    is_jsonl: bool = False,
+    preserve_larger: bool = False,
+) -> None:
     if not os.path.exists(dst):
         os.replace(src, dst)
         return
     src_sz = os.path.getsize(src)
+    dst_sz = os.path.getsize(dst)
     if is_jsonl:
-        should_replace = src_sz > os.path.getsize(dst)
+        should_replace = src_sz > dst_sz
+    elif preserve_larger and src_sz > 0 and dst_sz > 0 and (src_sz > dst_sz * 1.25 or dst_sz > src_sz * 1.25):
+        # Protect irreplaceable state files from being overwritten by smaller fresh stubs during migration.
+        should_replace = src_sz > dst_sz
     else:
         should_replace = src_sz > 0 and os.path.getmtime(src) >= os.path.getmtime(dst)
     if should_replace:
@@ -918,6 +928,8 @@ def organize_cachedb_subdomains(
         if os.path.isdir(sub_p):
             scan_dirs.append((sub_p, sub_skips))
     legacy_state_dir = os.path.join(base, "state")
+    sibling_statedb = resolve_statedb_dir_from_cachedb(base)
+    statedb_active = os.path.abspath(sibling_statedb) != os.path.abspath(base) and os.path.isdir(sibling_statedb)
     for scan_dir, skip_names in scan_dirs:
         for entry in sorted(os.listdir(scan_dir)):
             if entry in skip_names:
@@ -927,7 +939,11 @@ def organize_cachedb_subdomains(
             if not dom:
                 continue
             root_kind, sub = dom
-            dst_dir = os.path.join(base, *sub.split("/"))
+            if root_kind == "statedb" and statedb_active:
+                dst_dir = os.path.join(sibling_statedb, *sub.split("/"))
+            else:
+                dst_dir = os.path.join(base, *sub.split("/"))
+            moved_key = sub
             os.makedirs(dst_dir, exist_ok=True)
             target_entry = entry
             prefix_dot = "." if (entry.startswith(".") and not entry.startswith("..")) else ""
@@ -957,9 +973,12 @@ def organize_cachedb_subdomains(
                     shutil.rmtree(src, ignore_errors=True)
                 else:
                     _replace_or_discard_file(
-                        src, dst, is_jsonl=(entry.endswith(".jsonl") or ".jsonl." in entry)
+                        src,
+                        dst,
+                        is_jsonl=(entry.endswith(".jsonl") or ".jsonl." in entry),
+                        preserve_larger=(root_kind == "statedb" and not entry.endswith(".lock")),
                     )
-                moved[sub].append(target_entry)
+                moved[moved_key].append(target_entry)
             except OSError:
                 pass
     if os.path.isdir(legacy_state_dir):
@@ -1072,7 +1091,10 @@ def organize_storage_domains(
                     shutil.rmtree(src, ignore_errors=True)
                 else:
                     _replace_or_discard_file(
-                        src, dst, is_jsonl=(entry.endswith(".jsonl") or ".jsonl." in entry)
+                        src,
+                        dst,
+                        is_jsonl=(entry.endswith(".jsonl") or ".jsonl." in entry),
+                        preserve_larger=(root_kind == "statedb" and not entry.endswith(".lock")),
                     )
                 moved[key].append(target_entry)
             except OSError:
