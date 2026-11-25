@@ -3434,6 +3434,21 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
     def _persist_items(self, symbol, new_items):
         self.replace_symbol_open_orders(symbol, new_items or ())
 
+    def _on_complete_remote_sync_cycle(
+        self, account_cycle_high_water: Optional[int]
+    ) -> None:
+        if account_cycle_high_water:
+            with self.lock:
+                self._last_complete_sync_at_ms = account_cycle_high_water
+        super()._on_complete_remote_sync_cycle(account_cycle_high_water)
+
+    def _publish_periodic_sync_health(self, sync_complete, persisted) -> None:
+        with self.lock:
+            publish = bool(sync_complete and persisted and self._last_complete_sync_at_ms > 0)
+            sync_at_ms = self._last_complete_sync_at_ms
+        if publish:
+            _record_venue_health_sync(self.venue, "open_orders", now_ms=sync_at_ms)
+
     def apply_ws_order_update(
         self,
         symbol: str,
@@ -4273,6 +4288,24 @@ CacheAccountManagerBase.venue_open_order_cache_contracts = staticmethod(
 _account_cache_getter = None
 
 
+def _record_venue_health_sync(
+    venue: str,
+    stream: str,
+    *,
+    now_ms: Optional[int] = None,
+    data_version: str = "",
+) -> bool:
+    """Best-effort multi-venue freshness publication to ``cache_account_health.json``."""
+    try:
+        ach = _cm_override("account_cache_health", account_cache_health)
+        fn = getattr(ach, "record_venue_sync", None)
+        if callable(fn):
+            return bool(fn(venue, stream, now_ms=now_ms, data_version=data_version))
+    except Exception:
+        pass
+    return False
+
+
 def bind_account_cache_getter(getter_fn) -> None:
     """Bind the canonical factory cache getter used by account reader and WS helpers."""
     global _account_cache_getter
@@ -4558,8 +4591,10 @@ class _HyperliquidAccountTradeBridge:
                 touch_symbols=symbols,
                 touch_create_missing=is_snapshot,
             )
+            _record_venue_health_sync("hyperliquid", "filled_orders", now_ms=ts_ms)
         except Exception:
             pass
+        _record_venue_health_sync("hyperliquid", "trades", now_ms=ts_ms)
         if is_snapshot:
             ws_stream._fills_ws_seeded = True
         ws_stream._last_fills_touch_ms = ts_ms
@@ -4587,6 +4622,8 @@ class _HyperliquidAccountTradeBridge:
                 symbols=symbols,
                 create_missing=False,
             )
+            _record_venue_health_sync("hyperliquid", "trades", now_ms=ts_ms)
+            _record_venue_health_sync("hyperliquid", "filled_orders", now_ms=ts_ms)
             ws_stream._last_fills_touch_ms = ts_ms
         except Exception:
             pass
@@ -4672,8 +4709,10 @@ def run_kraken_trade_poll_loop(
                 indent=1,
                 force_save=True,
             )
+            _record_venue_health_sync("kraken", "filled_orders", now_ms=eff_ms)
         except Exception:
             pass
+        _record_venue_health_sync("kraken", "trades", now_ms=eff_ms)
         return merged
 
     _run_account_trade_poll_loop(
@@ -4788,8 +4827,10 @@ def run_kraken_trade_ws_loop(
                     indent=1,
                     force_save=True,
                 )
+                _record_venue_health_sync("kraken", "filled_orders", now_ms=eff_ms)
             except Exception:
                 pass
+            _record_venue_health_sync("kraken", "trades", now_ms=eff_ms)
             last_flush_ms[0] = last_rest_sync_ms[0] = eff_ms
             return merged
         except Exception as exc:
@@ -4883,6 +4924,8 @@ def run_kraken_trade_ws_loop(
                         create_missing=False,
                         indent=1,
                     )
+                    _record_venue_health_sync("kraken", "trades", now_ms=now_ms)
+                    _record_venue_health_sync("kraken", "filled_orders", now_ms=now_ms)
                 last_flush_ms[0] = now_ms
                 should_hb = True
         else:
@@ -4907,8 +4950,10 @@ def run_kraken_trade_ws_loop(
                     touch_create_missing=False,
                     indent=1,
                 )
+                _record_venue_health_sync("kraken", "filled_orders", now_ms=now_ms)
             except Exception:
                 pass
+            _record_venue_health_sync("kraken", "trades", now_ms=now_ms)
             last_flush_ms[0] = now_ms
             should_hb = True
         if should_hb and callable(heartbeat_fn):
@@ -5047,8 +5092,10 @@ def run_t212_trade_poll_loop(
                 indent=1,
                 force_save=True,
             )
+            _record_venue_health_sync("t212", "filled_orders", now_ms=eff_ms)
         except Exception:
             pass
+        _record_venue_health_sync("t212", "trades", now_ms=eff_ms)
         return merged
 
     _run_account_trade_poll_loop(
@@ -5150,6 +5197,8 @@ class _VenueOpenOrdersBridge(_AccountTradeBridgeBase):
                                 now_ms=now_ms,
                                 verified_ts=now_s if all_ok else None,
                             )
+                            if all_ok:
+                                _record_venue_health_sync(v_key, "open_orders", now_ms=now_ms)
                     except Exception as exc:
                         log(f"[{self.LOG_TAG}] {v_key} sync failed: {exc}")
                 if _wait_or_sleep(self._stop_event, OPEN_ORDER_SYNC_INTERVAL_SEC):
@@ -5213,6 +5262,7 @@ class _VenueBalancesBridge(_AccountTradeBridgeBase):
             verified_ts=eff_now,
             breakdown=breakdown,
         )
+        _record_venue_health_sync(v_key, "balances", now_ms=math.trunc(eff_now * 1000))
         return True
 
     def start(self) -> bool:

@@ -415,3 +415,202 @@ def test_persisted_sync_state_ignores_retired_symbols_and_requires_all_active_sy
     mgr.symbols = ["BTCUSDC", "TAOUSDC", "ARBUSDC", "SOLUSDC"]
     assert mgr.get_persisted_sync_state() == ("snapshot:live_v1", 0)
 
+
+def test_multi_venue_account_cache_health_etapa3(tmp_path):
+    """Etapa 3: cache_account_health tracks binance/kraken/hyperliquid/t212 across all streams with fail-closed checks."""
+    marker = str(tmp_path / "cache_account_health.json")
+    now_ms = 1_900_000_000_000
+    started_ms = now_ms - 5_000
+
+    # Writer disabled => record_venue_sync is a strict no-op and never touches disk.
+    health.disable_writer()
+    assert health.record_venue_sync("kraken", "balances", now_ms=now_ms) is False
+    assert not os.path.exists(marker)
+
+    with patch.object(health, "_pid_started_at_ms", return_value=started_ms):
+        health.enable_writer(path=marker, pid=4321, now_ms=now_ms)
+    try:
+        # Unsupported venue / stream rejected without mutating state.
+        assert health.record_venue_sync("unknown_exchange", "balances", now_ms=now_ms) is False
+        assert health.record_venue_sync("kraken", "invalid_stream", now_ms=now_ms) is False
+
+        # Binance canonical record_successful_sync mirrors into venues.binance.
+        assert health.record_successful_sync("BinanceOrderFilled", "bn-ord-v1", now_ms=now_ms - 1_000)
+        assert health.record_successful_sync("BinanceTrade", "bn-trd-v1", now_ms=now_ms - 2_000)
+        assert health.record_venue_sync("binance", "open_orders", now_ms=now_ms - 500)
+        assert health.record_venue_sync("binance", "balances", now_ms=now_ms - 1_500)
+
+        # Record all 3 other venues (including alias normalization for trading212 / hl).
+        for venue_arg, ts_offset in (("kraken", 1_000), ("hl", 2_000), ("trading212", 3_000)):
+            assert health.record_venue_sync(venue_arg, "filled_orders", now_ms=now_ms - ts_offset)
+            assert health.record_venue_sync(venue_arg, "open_orders", now_ms=now_ms - ts_offset)
+            assert health.record_venue_sync(venue_arg, "balances", now_ms=now_ms - ts_offset)
+            assert health.record_venue_sync(venue_arg, "trades", now_ms=now_ms - ts_offset)
+
+        # Monotonic guard: older timestamp cannot regress a newer venue sync timestamp.
+        assert health.record_venue_sync("kraken", "balances", now_ms=now_ms - 60_000)
+
+        # Classic Binance inspect_health stays 100% backward compatible.
+        bn_legacy = health.inspect_health(
+            path=marker,
+            now_ms=now_ms,
+            max_age_sec=10,
+            pid_is_alive=lambda _pid: True,
+            pid_started_at_ms=lambda _pid: started_ms,
+        )
+        assert bn_legacy.ready is True
+        assert bn_legacy.order_age_sec == 1.0
+        assert bn_legacy.trade_age_sec == 2.0
+        assert bn_legacy.order_cache_version == "bn-ord-v1"
+
+        all_status = health.inspect_all_venues_health(
+            path=marker,
+            now_ms=now_ms,
+            max_age_sec=10,
+            required_streams=("filled_orders", "open_orders", "balances"),
+            pid_is_alive=lambda _pid: True,
+            pid_started_at_ms=lambda _pid: started_ms,
+        )
+        assert set(all_status.keys()) == {"binance", "kraken", "hyperliquid", "t212"}
+        for v_key, st in all_status.items():
+            assert st.ready is True, (v_key, st)
+            assert st.reason == ""
+        assert all_status["binance"].filled_orders_age_sec == 1.0
+        assert all_status["binance"].open_orders_age_sec == 0.5
+        assert all_status["binance"].balances_age_sec == 1.5
+        assert all_status["binance"].filled_orders_version == "bn-ord-v1"
+        assert all_status["kraken"].balances_age_sec == 1.0  # preserved newer ts despite -60s call
+        assert all_status["hyperliquid"].open_orders_age_sec == 2.0
+        assert all_status["t212"].filled_orders_age_sec == 3.0
+
+        # Fail-closed on stale stream for a specific venue.
+        stale_t212 = health.inspect_venue_health(
+            "t212",
+            path=marker,
+            now_ms=now_ms + 10_000,
+            max_age_sec=10,
+            required_streams=("filled_orders", "open_orders"),
+            pid_is_alive=lambda _pid: True,
+            pid_started_at_ms=lambda _pid: started_ms,
+        )
+        assert stale_t212.ready is False
+        assert stale_t212.reason == "t212_filled_orders_stale"
+
+        # Fail-closed on dead writer PID.
+        dead_kr = health.inspect_venue_health(
+            "kraken",
+            path=marker,
+            now_ms=now_ms,
+            max_age_sec=10,
+            pid_is_alive=lambda _pid: False,
+            pid_started_at_ms=lambda _pid: None,
+        )
+        assert dead_kr.ready is False
+        assert dead_kr.reason == "account_cache_writer_not_running"
+
+        # Unknown venue fails closed cleanly.
+        unk = health.inspect_venue_health("bitfinex", path=marker, now_ms=now_ms)
+        assert unk.ready is False
+        assert unk.reason == "account_cache_unknown_venue"
+    finally:
+        health.disable_writer(now_ms=now_ms + 1_000)
+
+    # Stopping state fails closed for every venue.
+    stopped = health.inspect_all_venues_health(
+        path=marker,
+        now_ms=now_ms + 1_000,
+        max_age_sec=10,
+        pid_is_alive=lambda _pid: True,
+        pid_started_at_ms=lambda _pid: started_ms,
+    )
+    assert all((not st.ready and st.reason == "account_cache_writer_stopping") for st in stopped.values())
+
+    # Legacy Binance-only marker (no "venues" dict) still resolves binance filled_orders & trades.
+    legacy_path = str(tmp_path / "legacy_health.json")
+    with open(legacy_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "schema_version": health.SCHEMA_VERSION,
+                "writer_pid": 4321,
+                "writer_started_at_ms": started_ms,
+                "published_at_ms": now_ms - 500,
+                "generation": 2,
+                "stopping": False,
+                "order_sync_at_ms": now_ms - 1_000,
+                "trade_sync_at_ms": now_ms - 2_000,
+                "order_cache_version": "legacy-ord-v1",
+                "trade_cache_version": "legacy-trd-v1",
+            },
+            fh,
+        )
+    bn_from_legacy = health.inspect_venue_health(
+        "binance",
+        path=legacy_path,
+        now_ms=now_ms,
+        max_age_sec=10,
+        required_streams=("filled_orders",),
+        pid_is_alive=lambda _pid: True,
+        pid_started_at_ms=lambda _pid: started_ms,
+    )
+    assert bn_from_legacy.ready is True
+    assert bn_from_legacy.filled_orders_age_sec == 1.0
+    assert bn_from_legacy.trades_age_sec == 2.0
+    assert bn_from_legacy.filled_orders_version == "legacy-ord-v1"
+    kr_from_legacy = health.inspect_venue_health(
+        "kraken",
+        path=legacy_path,
+        now_ms=now_ms,
+        max_age_sec=10,
+        required_streams=("open_orders",),
+        pid_is_alive=lambda _pid: True,
+        pid_started_at_ms=lambda _pid: started_ms,
+    )
+    assert kr_from_legacy.ready is False
+    assert kr_from_legacy.reason == "kraken_open_orders_initializing"
+
+
+def test_cacheaccount_bridges_publish_multi_venue_health_etapa3(tmp_path, monkeypatch):
+    """Verify cacheaccount bridges (_VenueBalancesBridge & CacheOrderOpenManager) call record_venue_sync."""
+    import cacheaccount as ca
+
+    recorded: list[tuple[str, str, int | None]] = []
+    monkeypatch.setattr(
+        ca.account_cache_health,
+        "record_venue_sync",
+        lambda venue, stream, *, now_ms=None, data_version="": (
+            recorded.append((venue, stream, now_ms)) or True
+        ),
+    )
+
+    class _FakeProv:
+        def all_free_and_locked_balances(self, assets):
+            return {"USDC": (100.0, 0.0)}
+
+    monkeypatch.setattr(
+        ca.MarketDataProvider,
+        "resolve_venue_provider_class",
+        classmethod(lambda cls, v: _FakeProv),
+    )
+    monkeypatch.setattr(
+        ca._VenueBalancesBridge,
+        "_venue_requested_assets",
+        staticmethod(lambda v: ["USDC"]),
+    )
+    monkeypatch.setattr(ca, "cache_path", lambda fname: str(tmp_path / fname))
+
+    bridge = ca._VenueBalancesBridge()
+    assert bridge.sync_venue_once("kraken", now_s=1_700_000_000.5) is True
+    assert ("kraken", "balances", 1_700_000_000_500) in recorded
+
+    mgr = ca.CacheOrderOpenManager(
+        sync_ts=60,
+        symbols=["BTCUSDC"],
+        filename=str(tmp_path / "cache_order_open_binance.json"),
+        read_only=False,
+        venue="binance",
+    )
+    mgr._on_complete_remote_sync_cycle(1_700_000_001_234)
+    mgr._publish_periodic_sync_health(sync_complete=True, persisted=True)
+    assert ("binance", "open_orders", 1_700_000_001_234) in recorded
+
+
