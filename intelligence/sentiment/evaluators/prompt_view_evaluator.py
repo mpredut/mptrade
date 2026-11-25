@@ -7,9 +7,17 @@ asset-scope filtering, and runtime-state pruning from Markdown formatting in
 from __future__ import annotations
 
 from abc import ABC
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import (
+    _parse_bool_flag,
+    normalize_epoch_sec,
+    resolve_now_ts,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -23,6 +31,10 @@ from cachepaths import (
     normalize_venue_name,
 )
 from intelligence.macro_sentiment_ssot import SHORT_KINEMATIC_METRIC_KEYS
+from intelligence.sentiment.evaluators.asset_session_policy import (
+    AssetTelemetryCapabilities,
+    resolve_asset_session_policy,
+)
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     MICRO_OB_LOCAL_KEYS,
     compute_liquidation_clusters,
@@ -102,6 +114,143 @@ _AG_HISTORICAL_KEYS: frozenset[str] = frozenset({
     "terminal_orders", "completed_tiers", "attempts_by_tier",
     "spent_quote_by_tier", "last_refusal",
 })
+
+
+@dataclass(frozen=True)
+class ScopePresentationSpec:
+    """Declarative SSOT for scope-specific prompt headings, labels, venue schemas, and risk-engine headers."""
+
+    scope_key: str
+    is_equities: bool
+    market_prices_hdr: str
+    microstructure_hdr: str
+    priority_universe_lbl: str
+    summary_scope_lbl: str
+    unit_by_unit: str
+    unit_tables: str
+    ro_all_assets: str
+    venue_schema: str
+    venue_list_desc: str
+    example_symbol: str
+    risk_engine_hdr: str
+    risk_engine_nav_lbl: str
+    include_crypto_beta: bool
+
+
+_SCOPE_PRESENTATION_SPECS: Dict[str, ScopePresentationSpec] = {
+    "equities": ScopePresentationSpec(
+        scope_key="equities",
+        is_equities=True,
+        market_prices_hdr="ALL US EQUITIES",
+        microstructure_hdr="\n### 3B. PILLAR 2 MICROSTRUCTURE, ESTIMATED 5M VOLUME ZONES & INTRADAY FLOW:",
+        priority_universe_lbl="US equities",
+        summary_scope_lbl="multi-equity",
+        unit_by_unit="ticker-by-ticker",
+        unit_tables="equity tables",
+        ro_all_assets="Toate Ac\u021biunile",
+        venue_schema='"t212"',
+        venue_list_desc="`t212`",
+        example_symbol='"NVDA_US_EQ"',
+        risk_engine_hdr="Portfolio Risk Engine (Equities Scope: t212; excl. crypto venues)",
+        risk_engine_nav_lbl="equities_nav",
+        include_crypto_beta=False,
+    ),
+    "crypto": ScopePresentationSpec(
+        scope_key="crypto",
+        is_equities=False,
+        market_prices_hdr="ALL COINS",
+        microstructure_hdr="\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:",
+        priority_universe_lbl="coins",
+        summary_scope_lbl="multi-coin",
+        unit_by_unit="coin-by-coin",
+        unit_tables="coin tables",
+        ro_all_assets="Toate Monedele",
+        venue_schema='"binance" | "kraken" | "hyperliquid"',
+        venue_list_desc="`binance`, `kraken`, `hyperliquid`",
+        example_symbol='"BTCUSDC"',
+        risk_engine_hdr="Portfolio Risk Engine (Crypto Scope: binance + kraken + hyperliquid; excl. T212 equities)",
+        risk_engine_nav_lbl="crypto_nav",
+        include_crypto_beta=True,
+    ),
+    "all": ScopePresentationSpec(
+        scope_key="all",
+        is_equities=False,
+        market_prices_hdr="ALL COINS",
+        microstructure_hdr="\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:",
+        priority_universe_lbl="coins",
+        summary_scope_lbl="multi-coin",
+        unit_by_unit="coin-by-coin",
+        unit_tables="coin tables",
+        ro_all_assets="Toate Monedele",
+        venue_schema='"binance" | "kraken" | "hyperliquid"',
+        venue_list_desc="`binance`, `kraken`, `hyperliquid`",
+        example_symbol='"BTCUSDC"',
+        risk_engine_hdr="Enterprise Global Portfolio Risk Engine (All Venues)",
+        risk_engine_nav_lbl="unified_nav",
+        include_crypto_beta=True,
+    ),
+}
+
+
+def resolve_scope_presentation(asset_scope: Any) -> ScopePresentationSpec:
+    """Resolve the declarative ``ScopePresentationSpec`` for ``asset_scope`` ('equities', 'crypto', or 'all')."""
+    scope_s = str(asset_scope or "all").strip().lower() if isinstance(asset_scope, str) else "all"
+    if scope_s in ("equities", "equity"):
+        return _SCOPE_PRESENTATION_SPECS["equities"]
+    if scope_s == "crypto":
+        return _SCOPE_PRESENTATION_SPECS["crypto"]
+    return _SCOPE_PRESENTATION_SPECS["all"]
+
+
+def _project_bellwethers(
+    raw_map: Any,
+    *,
+    compact_keys: Tuple[str, ...],
+    major_symbols: Optional[frozenset[str]] = None,
+    exclude_symbols: Optional[frozenset[str]] = None,
+    soft_exclude_symbols: Optional[frozenset[str]] = None,
+    drop_tokenized: bool = False,
+    compact_fields: bool = True,
+) -> Any:
+    """Project cross-market bellwethers symmetrically across equities and crypto prompt scopes."""
+    if not isinstance(raw_map, dict):
+        return raw_map
+    cleaned: Dict[str, Any] = {
+        sk: (
+            {
+                k: v
+                for k, v in sv.items()
+                if k not in _CMC_LABEL_KEYS
+                and not (k == "funding_rate" and sv.get("funding_annualized_pct") is not None)
+            }
+            if isinstance(sv, dict)
+            else sv
+        )
+        for sk, sv in raw_map.items()
+    }
+    if not compact_fields:
+        return cleaned
+    excl_u = exclude_symbols or frozenset()
+    soft_excl_u = soft_exclude_symbols or frozenset()
+    has_major = bool(major_symbols and any(str(k).strip().upper() in major_symbols for k in cleaned))
+    has_non_soft = bool(soft_excl_u and any(str(k).strip().upper() not in soft_excl_u for k in cleaned))
+    out: Dict[str, Any] = {}
+    for sk, sv in cleaned.items():
+        sk_u = str(sk).strip().upper()
+        if drop_tokenized and is_equity_or_tokenized_symbol(sk):
+            continue
+        if sk_u in excl_u:
+            continue
+        if has_non_soft and sk_u in soft_excl_u:
+            continue
+        if has_major and major_symbols is not None and sk_u not in major_symbols:
+            continue
+        out[sk] = (
+            {k: sv[k] for k in compact_keys if k in sv and sv[k] is not None}
+            if isinstance(sv, dict)
+            else sv
+        )
+    return out
 
 
 def coalesce_case_variants(mapping: Dict[str, Any]) -> Dict[str, Any]:
@@ -213,10 +362,12 @@ class MicrostructurePromptViewEvaluator(PromptViewEvaluatorBase):
         microstructure: Any,
         *,
         prices_and_trends: Optional[Dict[str, Any]] = None,
+        now_ts: Optional[float] = None,
         **kwargs: Any,
     ) -> List[Dict[str, Any]]:
         m_map = coalesce_case_variants(microstructure if isinstance(microstructure, dict) else {})
         pt_map = coalesce_case_variants(prices_and_trends if isinstance(prices_and_trends, dict) else {})
+        ref_now = resolve_now_ts(now_ts)
 
         def _group_key_3b(s: str, m: Dict[str, Any]) -> Tuple[str, Tuple[str, ...]]:
             s_is_eq = has_equity_suffix(s)
@@ -305,9 +456,10 @@ class MicrostructurePromptViewEvaluator(PromptViewEvaluatorBase):
             ob_ref_px = ob_mid if ob_mid > 0 else cur_px
 
             sym_ident = resolve_symbol_identity(sym)
+            caps: AssetTelemetryCapabilities = resolve_asset_session_policy(sym).telemetry_capabilities
             sym_is_eq = sym_ident.is_rth_equity
             sym_is_tok = sym_ident.is_tokenized_equity
-            sym_no_perp = not sym_ident.has_crypto_perpetuals
+            sym_no_perp = not caps.has_crypto_perpetuals
             raw_p = (
                 pt_map.get(sym)
                 if isinstance(pt_map.get(sym), dict)
@@ -378,6 +530,36 @@ class MicrostructurePromptViewEvaluator(PromptViewEvaluatorBase):
             elif is_usdc_pair(sym) and b_canon not in rendered_perp_by_base:
                 rendered_perp_by_base[b_canon] = (sym, tr_sig[0], tr_sig[1])
 
+            raw_ob_t = minfo.get("_ob_raw_ts") if minfo.get("_ob_raw_ts") is not None else minfo.get("_ob_ts")
+            ob_t = normalize_epoch_sec(raw_ob_t, default=0.0) or 0.0
+            ob_age_s = (ref_now - ob_t) if ob_t > 0.0 else None
+            ob_is_frozen = bool(
+                not caps.suppress_frozen_ob_guard
+                and ob_age_s is not None
+                and ob_age_s > 600.0
+                and (now_ts is not None or ob_age_s <= 7.0 * 86400.0)
+            )
+            has_perp_cvd = minfo.get("cvd_15m_usd") is not None
+            no_flow = bool(
+                caps.uses_cboe_options_oi
+                and not has_perp_cvd
+                and (safe_float(minfo.get("taker_buy_vol_usd"), 0.0) or 0.0) <= 0.0
+                and (safe_float(minfo.get("taker_sell_vol_usd"), 0.0) or 0.0) <= 0.0
+            )
+            show_spot_cvd = bool(
+                not ob_is_frozen
+                and caps.allow_spot_cvd_display(minfo, has_perp_cvd=has_perp_cvd)
+                and safe_float(minfo.get("spot_cvd_15m_usd"), None) is not None
+            )
+            show_whale_long = caps.allow_whale_long_display(minfo)
+            show_whale_long_delta = caps.allow_whale_long_delta_display(minfo, has_flow=not no_flow)
+            deriv_mode = caps.resolve_deriv_display_mode(minfo)
+            tok_spot_only = bool(
+                sym_is_tok
+                and minfo.get("whale_long_pct") is None
+                and minfo.get("taker_buy_sell_ratio") is None
+            )
+
             out_rows.append({
                 "sym": sym,
                 "sib_3b": sorted(sib_3b),
@@ -392,6 +574,16 @@ class MicrostructurePromptViewEvaluator(PromptViewEvaluatorBase):
                 "sym_is_tok": sym_is_tok,
                 "sym_no_perp": sym_no_perp,
                 "shared_perp_sym": shared_perp_sym,
+                "caps": caps,
+                "ob_age_s": ob_age_s,
+                "ob_is_frozen": ob_is_frozen,
+                "has_perp_cvd": has_perp_cvd,
+                "no_flow": no_flow,
+                "show_spot_cvd": show_spot_cvd,
+                "show_whale_long": show_whale_long,
+                "show_whale_long_delta": show_whale_long_delta,
+                "deriv_mode": deriv_mode,
+                "tok_spot_only": tok_spot_only,
             })
         return out_rows
 
@@ -961,58 +1153,27 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
         crypto_bw_view: Any = None
         equity_bw_view: Any = None
         if isinstance(cmc := ps.get("cross_market_context"), dict):
-            def _clean_bw(bw_map: Any) -> Any:
-                return (
-                    {
-                        sk: (
-                            {
-                                k: v
-                                for k, v in sv.items()
-                                if k not in _CMC_LABEL_KEYS
-                                and not (k == "funding_rate" and sv.get("funding_annualized_pct") is not None)
-                            }
-                            if isinstance(sv, dict)
-                            else sv
-                        )
-                        for sk, sv in bw_map.items()
-                    }
-                    if isinstance(bw_map, dict)
-                    else bw_map
-                )
-
             if cmc.get("crypto_bellwethers") and scope_s == "equities":
-                cr_bw_raw = _clean_bw(cmc["crypto_bellwethers"])
-                if isinstance(cr_bw_raw, dict):
-                    xs_under_u = (
-                        str(xs_view["payload"].get("underlying") or "").strip().upper()
-                        if isinstance(xs_view, dict) and isinstance(xs_view.get("payload"), dict)
-                        else ""
-                    )
-                    has_major_cr = any(str(k).strip().upper() in _MAJOR_CRYPTO_BELLWETHERS for k in cr_bw_raw)
-                    crypto_bw_view = {
-                        sk: (
-                            {k: sv[k] for k in _COMPACT_CRYPTO_BELLWETHER_KEYS if k in sv and sv[k] is not None}
-                            if isinstance(sv, dict)
-                            else sv
-                        )
-                        for sk, sv in cr_bw_raw.items()
-                        if not is_equity_or_tokenized_symbol(sk)
-                        and (not xs_under_u or str(sk).strip().upper() != xs_under_u)
-                        and (not has_major_cr or str(sk).strip().upper() in _MAJOR_CRYPTO_BELLWETHERS)
-                    }
-                else:
-                    crypto_bw_view = cr_bw_raw
+                xs_under_u = (
+                    str(xs_view["payload"].get("underlying") or "").strip().upper()
+                    if isinstance(xs_view, dict) and isinstance(xs_view.get("payload"), dict)
+                    else ""
+                )
+                crypto_bw_view = _project_bellwethers(
+                    cmc["crypto_bellwethers"],
+                    compact_keys=_COMPACT_CRYPTO_BELLWETHER_KEYS,
+                    major_symbols=_MAJOR_CRYPTO_BELLWETHERS,
+                    exclude_symbols=frozenset({xs_under_u}) if xs_under_u else frozenset(),
+                    drop_tokenized=True,
+                    compact_fields=True,
+                )
             if cmc.get("equity_bellwethers") and scope_s != "equities":
-                eq_bw_raw = _clean_bw(cmc["equity_bellwethers"])
-                if scope_s == "crypto" and isinstance(eq_bw_raw, dict):
-                    has_major_eq = any(k != "RGNT_US_EQ" for k in eq_bw_raw)
-                    equity_bw_view = {
-                        sk: ({k: sv[k] for k in _COMPACT_EQ_BELLWETHER_KEYS if k in sv and sv[k] is not None} if isinstance(sv, dict) else sv)
-                        for sk, sv in eq_bw_raw.items()
-                        if not (has_major_eq and sk == "RGNT_US_EQ")
-                    }
-                else:
-                    equity_bw_view = eq_bw_raw
+                equity_bw_view = _project_bellwethers(
+                    cmc["equity_bellwethers"],
+                    compact_keys=_COMPACT_EQ_BELLWETHER_KEYS,
+                    soft_exclude_symbols=frozenset({"RGNT_US_EQ"}),
+                    compact_fields=(scope_s == "crypto"),
+                )
 
         clean_lces: Any = None
         if ps.get("last_cycle_execution_status"):
@@ -1103,9 +1264,18 @@ def evaluate_market_prices_prompt_view(prices_and_trends: Any) -> Dict[str, Any]
     return _MARKET_PRICES_PROMPT_VIEW_EVALUATOR.evaluate(prices_and_trends)
 
 
-def evaluate_microstructure_prompt_view(microstructure: Any, prices_and_trends: Any) -> List[Dict[str, Any]]:
+def evaluate_microstructure_prompt_view(
+    microstructure: Any,
+    prices_and_trends: Any,
+    *,
+    now_ts: Optional[float] = None,
+) -> List[Dict[str, Any]]:
     """Build normalized Section 3B microstructure view model."""
-    return _MICROSTRUCTURE_PROMPT_VIEW_EVALUATOR.evaluate(microstructure, prices_and_trends=prices_and_trends)
+    return _MICROSTRUCTURE_PROMPT_VIEW_EVALUATOR.evaluate(
+        microstructure,
+        prices_and_trends=prices_and_trends,
+        now_ts=now_ts,
+    )
 
 
 def evaluate_tradable_position_prompt_view(pos: Any, *, max_usd: float = 2000.0) -> Dict[str, Any]:

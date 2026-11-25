@@ -31,6 +31,7 @@ from botcore import (
     safe_pos_float,
 )
 from providers.portfolio_valuation import compute_venue_nav_breakdown
+from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import compute_futures_premarket_lead
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     CLOSED_EQUITY_INTRADAY_KEYS,
@@ -361,9 +362,10 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
             )
             dec = max(MarketDataProvider.resolve_venue_tca_price_decimals(v_norm, lim_px), obs_dec)
             queue_penalty = 1.0
-            # Equity orderbooks are synthetic Yahoo 5m OHLCV volume-profile proxies, not real resting L2 walls;
-            # skip wall queue penalties and front-run recommendations on equities to prevent chasing synthetic zones.
-            if isinstance(m_entry, dict) and not ob_is_stale and not is_eq_o and side in ("SELL", "BUY"):
+            # Gate resting-wall queue penalties & front-run recommendations via AssetTelemetryCapabilities SSOT
+            # so synthetic volume-profile proxies (RTH equities) never produce fake L2 wall penalties.
+            tca_caps = resolve_asset_session_policy(scoped_sym).telemetry_capabilities
+            if isinstance(m_entry, dict) and not ob_is_stale and tca_caps.has_real_l2_book and side in ("SELL", "BUY"):
                 is_sell = side == "SELL"
                 w_pfx, w_tag = ("ask", "ASK") if is_sell else ("bid", "BID")
                 sp_bps = safe_nonneg_float(m_entry.get("spread_bps"), default=2.0)

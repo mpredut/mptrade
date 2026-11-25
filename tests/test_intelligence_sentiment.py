@@ -17872,6 +17872,98 @@ def test_prompt_accuracy_wave1_equity_proxy_rvol_delayed_macro_bellwethers_and_n
     assert top_cr[-1]["title"].startswith("Nvidia Launches Next-Gen")
 
 
+def test_stages_1_to_3_ssot_capabilities_windows_and_prompt_view_normalization() -> None:
+    """Verify AssetTelemetryCapabilities, shared time-window/freshness SSOT, ScopePresentationSpec, and flat kinematic suppression."""
+    from intelligence.macro_sentiment_ssot import (
+        EQUITY_FLOW_HORIZON_SEC,
+        MACRO_BENCHMARK_DELAYED_FEED_MIN,
+        filter_bars_within_horizon,
+        is_macro_benchmark_feed_delayed,
+        resolve_volume_window_anchor_ms,
+    )
+    from intelligence.sentiment.evaluators.asset_session_policy import (
+        AssetTelemetryCapabilities,
+        resolve_asset_session_policy,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import format_kinematic_parts
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import (
+        evaluate_microstructure_prompt_view,
+        resolve_scope_presentation,
+    )
+
+    # 1. AssetTelemetryCapabilities polymorphic contract across Crypto, TokenizedEquity, RthEquity
+    cr_caps = resolve_asset_session_policy("BTCUSDC").telemetry_capabilities
+    tok_caps = resolve_asset_session_policy("SPCXxUSD").telemetry_capabilities
+    eq_caps = resolve_asset_session_policy("NVDA_US_EQ").telemetry_capabilities
+    assert isinstance(cr_caps, AssetTelemetryCapabilities)
+    assert cr_caps.has_real_l2_book and cr_caps.has_crypto_perpetuals and cr_caps.has_liquidation_clusters
+    assert tok_caps.has_real_l2_book and not tok_caps.has_crypto_perpetuals and not tok_caps.uses_cboe_options_oi
+    assert not eq_caps.has_real_l2_book and eq_caps.uses_cboe_options_oi and eq_caps.suppress_frozen_ob_guard
+    assert eq_caps.book_source_prefix == "ob_proxy[yahoo_5m_vol_profile] "
+    assert eq_caps.bid_zone_label == "est_bid_zone" and eq_caps.ask_zone_label == "est_ask_zone"
+    assert not eq_caps.allow_spot_cvd_display({"spot_cvd_source": "est_ob_15m"}, has_perp_cvd=True)
+    assert eq_caps.allow_spot_cvd_display({"spot_cvd_source": "real_spot"}, has_perp_cvd=False)
+    assert not eq_caps.allow_whale_long_display({"oi_usd": 0.0})
+    assert eq_caps.allow_whale_long_display({"oi_usd": 500_000.0})
+    assert not eq_caps.allow_whale_long_delta_display({"oi_usd": 0.0}, has_flow=True)
+    assert eq_caps.allow_whale_long_delta_display({}, has_flow=True)
+    assert not eq_caps.allow_whale_long_delta_display({}, has_flow=False)
+    assert eq_caps.resolve_deriv_display_mode({"oi_usd": 0.0}) == "none"
+    assert eq_caps.resolve_deriv_display_mode({"oi_usd": 1_000_000.0}) == "cboe_options"
+    assert cr_caps.resolve_deriv_display_mode({"oi_usd": 0.0}) == "crypto_perp"
+    assert tok_caps.resolve_deriv_display_mode({"oi_usd": 0.0}) == "none"
+
+    # 2. Shared time-window & freshness SSOT helpers
+    now_s = 1_795_640_000.0
+    assert EQUITY_FLOW_HORIZON_SEC["15m"] == 900.0
+    bars = [
+        [now_s - 1200.0, 100.0],
+        [now_s - 800.0, 101.0],
+        [now_s - 200.0, 102.0],
+    ]
+    kept_15m = filter_bars_within_horizon(bars, now_s, EQUITY_FLOW_HORIZON_SEC["15m"], max_bars=3)
+    assert len(kept_15m) == 2 and kept_15m[0][1] == 101.0
+    assert resolve_volume_window_anchor_ms(10_000_000.0, 9_500_000.0, 300_000.0) == 10_000_000.0
+    assert resolve_volume_window_anchor_ms(10_000_000.0, 9_800_000.0, 300_000.0) == 9_800_000.0
+    assert is_macro_benchmark_feed_delayed("REGULAR", MACRO_BENCHMARK_DELAYED_FEED_MIN) is True
+    assert is_macro_benchmark_feed_delayed("REGULAR", 10.0) is False
+    assert is_macro_benchmark_feed_delayed("CLOSED", 180.0) is False
+
+    # 3. ScopePresentationSpec SSOT registry & MicrostructurePromptViewEvaluator normalized flags
+    eq_spec = resolve_scope_presentation("equities")
+    cr_spec = resolve_scope_presentation("crypto")
+    all_spec = resolve_scope_presentation("all")
+    assert eq_spec.is_equities and eq_spec.market_prices_hdr == "ALL US EQUITIES" and eq_spec.risk_engine_nav_lbl == "equities_nav"
+    assert not cr_spec.is_equities and cr_spec.market_prices_hdr == "ALL COINS" and cr_spec.risk_engine_nav_lbl == "crypto_nav"
+    assert all_spec.risk_engine_nav_lbl == "unified_nav"
+    rows = evaluate_microstructure_prompt_view(
+        {
+            "NVDA_US_EQ": {
+                "ob_imbalance": 0.55,
+                "spot_cvd_15m_usd": -1000.0,
+                "spot_cvd_source": "est_ob_15m",
+                "oi_usd": 0.0,
+                "_ob_ts": now_s - 900.0,
+            }
+        },
+        {"NVDA_US_EQ": {"price": 150.0}},
+        now_ts=now_s,
+    )
+    assert len(rows) == 1
+    assert rows[0]["caps"] is eq_caps
+    assert rows[0]["ob_is_frozen"] is False
+    assert rows[0]["show_spot_cvd"] is False
+    assert rows[0]["show_whale_long"] is False
+    assert rows[0]["show_whale_long_delta"] is False
+    assert rows[0]["deriv_mode"] == "none"
+
+    # 4. format_kinematic_parts suppresses flat pairs that round to +0.0000 on both vel & acc
+    assert format_kinematic_parts({"vel_90s_pct_min": 0.00001, "accel_90s_pct_min2": -0.00002}, compact=True) == []
+    assert "vel_90s=+0.0000%/m" in format_kinematic_parts(
+        {"vel_90s_pct_min": -0.00003, "accel_90s_pct_min2": 0.1234}, compact=True
+    )
+
+
 
 
 

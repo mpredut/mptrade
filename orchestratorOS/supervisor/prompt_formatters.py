@@ -27,6 +27,7 @@ from intelligence.macro_sentiment_ssot import (
     format_telemetry_domain_age_tag,
     resolve_telemetry_domain_stale_thresholds_sec,
 )
+from intelligence.sentiment.evaluators.prompt_view_evaluator import resolve_scope_presentation
 from orchestratorOS.lib.technical_repair_ssot import (
     ALL_DIAGNOSED_CATEGORIES,
     ALL_REPAIR_ACTIONS,
@@ -194,7 +195,8 @@ def build_supervisor_prompt(
     prices_and_trends = getattr(sensors, "prices_and_trends", None) or {}
     microstructure = getattr(sensors, "microstructure", None) or {}
     portfolio_summary = getattr(sensors, "portfolio_summary", None) or {}
-    is_equities = spec_scope_norm in ("equities", "equity")
+    scope_spec = resolve_scope_presentation(spec_scope_norm)
+    is_equities = scope_spec.is_equities
     if not is_pure_sre and prices_and_trends:
         context_items.extend(_format_market_prices_section(prices_and_trends, asset_scope=spec_scope_norm))
     if not is_pure_sre and microstructure:
@@ -216,10 +218,9 @@ def build_supervisor_prompt(
     if not is_pure_sre and focus_symbols:
         clean_syms = parse_symbol_list(focus_symbols)
         if clean_syms:
-            priority_universe_lbl = "US equities" if is_equities else "coins"
             context_items.append(
                 f"\n### 4. TACTICAL PRIORITY SYMBOLS: {', '.join(clean_syms)}\n"
-                f"- Pay heightened attention to these symbols alongside all other live tradable {priority_universe_lbl} above."
+                f"- Pay heightened attention to these symbols alongside all other live tradable {scope_spec.priority_universe_lbl} above."
             )
 
     context_str = "\n".join(context_items)
@@ -247,9 +248,8 @@ def build_supervisor_prompt(
             '"search_block": "", "replace_block": ""}',
         ])
     else:
-        scope_summary_lbl = "multi-equity" if is_equities else "multi-coin"
         schema.append(
-            f'  "summary": "1-2 sentence executive assessment of {scope_summary_lbl} market posture and trading decisions"'
+            f'  "summary": "1-2 sentence executive assessment of {scope_spec.summary_scope_lbl} market posture and trading decisions"'
         )
     xs_min_profit_pct, xs_min_drop_pct, xs_crash_drop_pct, xs_crash_conf = _resolve_xstock_sell_prompt_thresholds()
     xs_target_lbl = "tokenized xStocks"
@@ -268,9 +268,9 @@ def build_supervisor_prompt(
                 f"sell rarely on >+{xs_min_profit_pct:g}% profit + `target_px` >={xs_min_drop_pct:g}% lower{xs_crash_sfx}; emailed)"
             )
         )
-        venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
-        venue_list_desc = "`t212`" if is_equities else "`binance`, `kraken`, `hyperliquid`"
-        ex_sym = '"NVDA_US_EQ"' if is_equities else '"BTCUSDC"'
+        venue_schema = scope_spec.venue_schema
+        venue_list_desc = scope_spec.venue_list_desc
+        ex_sym = scope_spec.example_symbol
         dip_flow_rule = (
             "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN) & KINEMATICS: Weigh `kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)`, `kalman_vel`, `slopes`, "
             "`bottom_6h`, RTH CLV bar flow (`cvd_5m`/`cvd_15m`, `taker_ratio`), `spot_vol_15m`/`spot_vol_1h` & `rvol_15m`/`rvol_1h` (volume expansion vs noise), "
@@ -346,9 +346,9 @@ def build_supervisor_prompt(
             f'"confidence": 0.90, "suggested_notional_usd": 1000.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
         )
 
-    unit_by_unit = "ticker-by-ticker" if is_equities else "coin-by-coin"
-    unit_tables = "equity tables" if is_equities else "coin tables"
-    ro_all_assets = "Toate Ac\u021biunile" if is_equities else "Toate Monedele"
+    unit_by_unit = scope_spec.unit_by_unit
+    unit_tables = scope_spec.unit_tables
+    ro_all_assets = scope_spec.ro_all_assets
     if compact_rules and not spec.can_self_heal:
         compact_crash_sfx = (
             f", OR imminent crash (`urgency=HIGH`, `conf>={xs_crash_conf:g}`, `target_px` >={xs_crash_drop_pct:g}% lower)"

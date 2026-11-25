@@ -1736,6 +1736,60 @@ def scan_latest_long_trend_value(
     return None
 
 
+EQUITY_FLOW_HORIZON_SEC: Dict[str, float] = {
+    "5m": 600.0,
+    "15m": 900.0,
+    "1h": 3900.0,
+    "4h": 14700.0,
+}
+VOLUME_RVOL_15M_HORIZON_MS: float = 900_000.0
+VOLUME_RVOL_1H_HORIZON_MS: float = 3_600_000.0
+MACRO_BENCHMARK_DELAYED_FEED_MIN: float = 11.5
+
+
+def filter_bars_within_horizon(
+    bars: Sequence[Any],
+    now_sec: float,
+    horizon_sec: float,
+    *,
+    max_bars: Optional[int] = None,
+    future_slack_sec: float = 60.0,
+) -> List[Any]:
+    """Filter timestamp-prefixed OHLCV bars to ``[-future_slack_sec, horizon_sec]`` relative to ``now_sec``."""
+    matched: List[Any] = []
+    for bar in bars:
+        if not isinstance(bar, (list, tuple)) or not bar:
+            continue
+        b_ts = normalize_epoch_sec(bar[0], default=0.0) or 0.0
+        if b_ts > 0.0 and -future_slack_sec <= (now_sec - b_ts) <= horizon_sec:
+            matched.append(bar)
+    if max_bars is not None and max_bars > 0:
+        return matched[-max_bars:]
+    return matched
+
+
+def resolve_volume_window_anchor_ms(
+    ref_end_ms: float,
+    latest_vol_ms: float,
+    step_ms: float,
+) -> float:
+    """Anchor rolling volume windows to ``ref_end_ms`` once the latest volume bar lags by ``> step_ms``."""
+    return ref_end_ms if (ref_end_ms - latest_vol_ms) > step_ms else latest_vol_ms
+
+
+def is_macro_benchmark_feed_delayed(
+    market_state: str,
+    bar_age_min: Optional[float],
+) -> bool:
+    """Return whether an active (non-CLOSED) macro benchmark feed exceeds the delayed-quote threshold."""
+    m_state = str(market_state or "").strip().upper()
+    return bool(
+        m_state != "CLOSED"
+        and bar_age_min is not None
+        and bar_age_min >= MACRO_BENCHMARK_DELAYED_FEED_MIN
+    )
+
+
 @dataclass
 class TelemetrySensorSnapshot:
     """Consolidated snapshot of passive sensors and wallet state collected from bot runtime files."""

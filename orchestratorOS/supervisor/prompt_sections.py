@@ -74,6 +74,7 @@ from intelligence.sentiment.evaluators.prompt_view_evaluator import (
     evaluate_microstructure_prompt_view,
     evaluate_portfolio_prompt_view,
     evaluate_tradable_position_prompt_view,
+    resolve_scope_presentation,
 )
 from instrument_registry import (
     is_equity_or_tokenized_symbol,
@@ -670,8 +671,8 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any], asset_scope
     view = evaluate_market_prices_prompt_view(prices_and_trends)
     btc_entry = view["btc_entry"]
     obs_syms = observe_only_registry_symbols()
-    scope_lbl = "ALL US EQUITIES" if str(asset_scope or "all").strip().lower() in ("equities", "equity") else "ALL COINS"
-    lines = [f"\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION ({scope_lbl}):"]
+    scope_spec = resolve_scope_presentation(asset_scope)
+    lines = [f"\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION ({scope_spec.market_prices_hdr}):"]
     for sym, pinfo, sib_specs in view["rows"]:
         px = pinfo.get("price")
         px_f = safe_float(px, 0.0)
@@ -929,15 +930,10 @@ def _format_microstructure_section(
     asset_scope: Any = "all",
 ) -> List[str]:
     """Format Section 3B (Orderbook Walls, Derivatives & Whale Flow)."""
-    is_eq_scope = str(asset_scope or "all").strip().lower() in ("equities", "equity")
-    hdr_3b = (
-        "\n### 3B. PILLAR 2 MICROSTRUCTURE, ESTIMATED 5M VOLUME ZONES & INTRADAY FLOW:"
-        if is_eq_scope
-        else "\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:"
-    )
-    lines = [hdr_3b]
+    scope_spec = resolve_scope_presentation(asset_scope)
+    lines = [scope_spec.microstructure_hdr]
     derived_3b_itvs = resolve_derived_telemetry_intervals()
-    for row in evaluate_microstructure_prompt_view(microstructure, prices_and_trends):
+    for row in evaluate_microstructure_prompt_view(microstructure, prices_and_trends, now_ts=now_ts):
         sym = row["sym"]
         sib_3b = row["sib_3b"]
         b_canon_3b = row["b_canon"]
@@ -947,22 +943,20 @@ def _format_microstructure_section(
         ob_ref_px = row["ob_ref_px"]
         b_bid = row["b_bid"]
         b_ask = row["b_ask"]
-        sym_is_eq_3b = row["sym_is_eq"]
+        caps = row["caps"]
         sym_is_tok_xstock_3b = row["sym_is_tok"]
-        sym_no_crypto_perp_3b = row["sym_no_perp"]
         shared_perp_sym = row["shared_perp_sym"]
+        ob_age_3b = row["ob_age_s"]
+        ob_is_frozen = row["ob_is_frozen"]
+        has_perp_cvd = row["has_perp_cvd"]
+        no_flow = row["no_flow"]
+        show_spot_cvd = row["show_spot_cvd"]
+        show_whale_long = row["show_whale_long"]
+        show_whale_long_delta = row["show_whale_long_delta"]
+        deriv_mode = row["deriv_mode"]
+        tok_spot_only = row["tok_spot_only"]
 
         sym_3b_lbl = f"{sym} ({', '.join(sib_3b)})" if sib_3b else sym
-        ref_now_3b = resolve_now_ts(now_ts)
-        raw_ob_t_3b = minfo.get("_ob_raw_ts") if minfo.get("_ob_raw_ts") is not None else minfo.get("_ob_ts")
-        ob_t_3b = normalize_epoch_sec(raw_ob_t_3b, default=0.0) or 0.0
-        ob_age_3b = (ref_now_3b - ob_t_3b) if ob_t_3b > 0.0 else None
-        ob_is_frozen = bool(
-            not sym_is_eq_3b
-            and ob_age_3b is not None
-            and ob_age_3b > 600.0
-            and (now_ts is not None or ob_age_3b <= 7.0 * 86400.0)
-        )
         bw_px = minfo.get("bid_wall_px")
         aw_px = minfo.get("ask_wall_px")
         bw_px_f = safe_float(bw_px, 0.0)
@@ -996,9 +990,8 @@ def _format_microstructure_section(
             )
 
         cvd_sfx = ""
-        has_perp_cvd = (cvd_usd_raw := minfo.get("cvd_15m_usd")) is not None
         if has_perp_cvd:
-            cvd_u = safe_float(cvd_usd_raw, 0.0)
+            cvd_u = safe_float(minfo.get("cvd_15m_usd"), 0.0)
             usd_s = _fmt_signed_usd(cvd_u)
             cvd_b = minfo.get("cvd_15m_base")
             cvd_b_s = fmt_signed(cvd_b, 3, strip_zeros=True) if cvd_b is not None else ""
@@ -1009,12 +1002,8 @@ def _format_microstructure_section(
             )
             if mh_parts := format_flow_horizon_parts(minfo, _fmt_signed_usd):
                 cvd_sfx += f", flow_horizons({', '.join(mh_parts)})"
-        if (
-            not ob_is_frozen
-            and not (sym_is_eq_3b and minfo.get("spot_cvd_source") != "real_spot")
-            and (sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None
-            and (has_perp_cvd or minfo.get("spot_cvd_source") == "real_spot")
-        ):
+        if show_spot_cvd:
+            sp_cvd = safe_float(minfo.get("spot_cvd_15m_usd"), 0.0)
             cvd_sfx += f", spot_cvd_15m={_fmt_signed_usd(sp_cvd)}{format_spot_cvd_source_tag(minfo)}"
         if not ob_is_frozen and (
             agg_sp_part := format_agg_spot_cvd_part(minfo, _fmt_signed_usd, _fmt_liq_usd)
@@ -1025,12 +1014,11 @@ def _format_microstructure_section(
 
         basis_sfx = ""
         basis_parts: List[str] = []
-        eq_no_oi_3b = sym_no_crypto_perp_3b and (safe_float(minfo.get("oi_usd"), 0.0) or 0.0) <= 0.0
-        if not sym_no_crypto_perp_3b and (b_bps := safe_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
+        if caps.has_crypto_perpetuals and (b_bps := safe_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
             b_d15 = safe_float(minfo.get("basis_delta_15m_bps"), None)
             b_d15_s = f"(d15m={fmt_signed(b_d15, 1)}bps)" if (b_d15 is not None and abs(b_d15) >= 0.1) else ""
             basis_parts.append(f"perp_basis={fmt_signed(b_bps, 1)}bps{b_d15_s}")
-        if not sym_no_crypto_perp_3b and (f_ann := safe_float(minfo.get("funding_annualized_pct"), None)) is not None:
+        if caps.has_crypto_perpetuals and (f_ann := safe_float(minfo.get("funding_annualized_pct"), None)) is not None:
             f_d1h = safe_float(minfo.get("funding_delta_1h_bps"), None)
             f_d1h_s = f"(d1h={fmt_signed(f_d1h)}bps)" if (f_d1h is not None and abs(f_d1h) >= 0.05) else ""
             basis_parts.append(f"funding_ann={fmt_signed(f_ann, 1)}%{f_d1h_s}")
@@ -1043,7 +1031,7 @@ def _format_microstructure_section(
             basis_sfx = f", {', '.join(basis_parts)}"
 
         liq_sfx = ""
-        if not sym_no_crypto_perp_3b and minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
+        if caps.has_liquidation_clusters and minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
             liq_parts: List[str] = []
             for l_lbl, px_k, usd_k, dist_k in (
                 ("long_liq", "long_liq_px", "long_liq_usd", "long_liq_dist_pct"),
@@ -1063,7 +1051,7 @@ def _format_microstructure_section(
                 )
             liq_parts.append(f"src={minfo.get('liq_source') or 'model_est'}")
             liq_sfx = f", liq_clusters({', '.join(liq_parts)})"
-        if not sym_no_crypto_perp_3b and (
+        if caps.has_liquidation_clusters and (
             (rl_l := safe_float(minfo.get("realized_liq_15m_long_usd"), None)) is not None
             and (rl_s := safe_float(minfo.get("realized_liq_15m_short_usd"), None)) is not None
             and (rl_l > 0.0 or rl_s > 0.0 or (safe_float(minfo.get("realized_liq_15m_events"), 0.0) or 0.0) > 0.0)
@@ -1073,12 +1061,7 @@ def _format_microstructure_section(
             rl_src_tag = format_realized_liq_sources_tag(minfo, multi_only=True)
             rl_src_sfx = f", src={rl_src_tag}" if rl_src_tag else ""
             liq_sfx += f", realized_liq_15m(long={_fmt_liq_usd(rl_l)}, short={_fmt_liq_usd(rl_s)}{rl_n_sfx}{rl_src_sfx})"
-        eq_no_flow_3b = bool(
-            sym_is_eq_3b
-            and not has_perp_cvd
-            and (safe_float(minfo.get("taker_buy_vol_usd"), 0.0) or 0.0) <= 0.0
-            and (safe_float(minfo.get("taker_sell_vol_usd"), 0.0) or 0.0) <= 0.0
-        )
+
         cd_sfx = ""
         if isinstance(cd_map := minfo.get("cycle_delta"), dict):
             cd_parts: List[str] = []
@@ -1089,18 +1072,13 @@ def _format_microstructure_section(
             if (d_cvd := safe_float(cd_map.get("cvd_15m_delta_usd"), None)) is not None and abs(d_cvd) >= 1.0:
                 cd_parts.append(f"d_cvd={_fmt_signed_usd(d_cvd)}")
             if (
-                not eq_no_flow_3b
+                not no_flow
                 and (d_tr := safe_float(cd_map.get("taker_ratio_delta"), None)) is not None
                 and abs(d_tr) >= 0.05
             ):
                 cd_parts.append(f"d_tr={fmt_signed(d_tr)}")
-            eq_explicit_no_oi_3b = bool(
-                sym_is_eq_3b
-                and "oi_usd" in minfo
-                and (safe_float(minfo.get("oi_usd"), 0.0) or 0.0) <= 0.0
-            )
             if (
-                not ((eq_no_flow_3b and eq_no_oi_3b) or eq_explicit_no_oi_3b)
+                show_whale_long_delta
                 and (d_wl := safe_float(cd_map.get("whale_long_delta_pct"), None)) is not None
                 and abs(d_wl) >= 0.005
             ):
@@ -1109,6 +1087,7 @@ def _format_microstructure_section(
                 cd_parts.append(f"d_oi={fmt_signed(d_oi)}%")
             if len(cd_parts) > 1:
                 cd_sfx = f", cycle_delta({', '.join(cd_parts)})"
+
         l1_oi_v = safe_float(minfo.get("native_l1_oi_usd"), None)
         oi_v = safe_float(minfo.get("oi_usd"), None)
         has_distinct_l1_oi = bool(l1_oi_v is not None and oi_v is not None and abs(l1_oi_v - oi_v) > 1.0)
@@ -1140,21 +1119,21 @@ def _format_microstructure_section(
                 )
             else:
                 lines.append(
-                    f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
+                    f"  * {sym_3b_lbl}: {caps.book_source_prefix}ob_imbalance={minfo.get('ob_imbalance')} "
                     f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
-                    f"bid_wall={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
-                    f"ask_wall={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist})"
+                    f"{caps.bid_zone_label}={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
+                    f"{caps.ask_zone_label}={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist})"
                     f"{sib_sp_sfx}{arb_sfx}{spread_sfx}{cd_sfx}{ob_age_sfx}, perp_whale_flow=shared_with_{shared_perp_sym}"
                 )
             continue
-        eq_zero_fund_3b = sym_is_eq_3b
+
         oi_1h_v = safe_float(minfo.get("oi_1h_chg_pct"), None)
         oi_1h_lbl = (oi_1h_v + 0.0) if oi_1h_v is not None else minfo.get("oi_1h_chg_pct")
         oi_15m_v = safe_float(minfo.get("oi_15m_chg_pct"), None)
         oi_15m_sfx = f", oi_15m_chg={fmt_signed(oi_15m_v)}%" if oi_15m_v is not None else ""
-        if sym_is_tok_xstock_3b or (eq_no_oi_3b and eq_zero_fund_3b):
+        if deriv_mode == "none":
             deriv_oi_sfx = ""
-        elif eq_zero_fund_3b:
+        elif deriv_mode == "cboe_options":
             deriv_oi_sfx = f", oi_usd={oi_lbl} (cboe_options_oi), oi_1h_chg={oi_1h_lbl}%"
         else:
             fr_v = safe_float(minfo.get("funding_rate"), default=None)
@@ -1180,7 +1159,8 @@ def _format_microstructure_section(
             ob_only=sym_is_tok_xstock_3b,
             include_deriv=bool(deriv_oi_sfx),
         )
-        if sym_is_tok_xstock_3b and minfo.get("whale_long_pct") is None and minfo.get("taker_buy_sell_ratio") is None:
+        wl_prefix = f"whale_long_pct={minfo.get('whale_long_pct')}, " if show_whale_long else ""
+        if tok_spot_only:
             tok_sp_parts: List[str] = []
             if not cvd_sfx and not ob_is_frozen and (tok_sp := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
                 tok_sp_parts.append(f"spot_cvd_15m={_fmt_signed_usd(tok_sp)}[real_spot]")
@@ -1188,11 +1168,9 @@ def _format_microstructure_section(
                 tok_sp_parts.extend(format_spot_volume_rvol_parts(minfo, _fmt_liq_usd))
             tok_sp_sfx = f", {', '.join(tok_sp_parts)}" if tok_sp_parts else ""
             flow_3b_core = f"perp_derivatives=N/A[spot_tokenized_equity]{cvd_sfx}{tok_sp_sfx}"
-        elif eq_no_flow_3b:
-            wl_prefix = "" if eq_no_oi_3b else f"whale_long_pct={minfo.get('whale_long_pct')}, "
+        elif no_flow:
             flow_3b_core = f"{wl_prefix}intraday_rth_flow=N/A[no_fresh_vol_bars]{cvd_sfx}"
         else:
-            wl_prefix = "" if eq_no_oi_3b else f"whale_long_pct={minfo.get('whale_long_pct')}, "
             flow_3b_core = (
                 f"{wl_prefix}"
                 f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
@@ -1204,22 +1182,12 @@ def _format_microstructure_section(
                 f"{flow_3b_core}"
                 f"{deriv_oi_sfx}{basis_sfx}{liq_sfx}{cd_sfx}{src_age_sfx}"
             )
-        elif sym_is_eq_3b:
-            lines.append(
-                f"  * {sym_3b_lbl}: ob_proxy[yahoo_5m_vol_profile] "
-                f"ob_imbalance={minfo.get('ob_imbalance')} "
-                f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
-                f"est_bid_zone={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
-                f"est_ask_zone={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist}), "
-                f"{flow_3b_core}"
-                f"{deriv_oi_sfx}{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}{src_age_sfx}"
-            )
         else:
             lines.append(
-                f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
+                f"  * {sym_3b_lbl}: {caps.book_source_prefix}ob_imbalance={minfo.get('ob_imbalance')} "
                 f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
-                f"bid_wall={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
-                f"ask_wall={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist}), "
+                f"{caps.bid_zone_label}={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
+                f"{caps.ask_zone_label}={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist}), "
                 f"{flow_3b_core}"
                 f"{deriv_oi_sfx}{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}{src_age_sfx}"
             )
@@ -1367,18 +1335,12 @@ def _format_portfolio_section(
     now_ts: Optional[float] = None,
 ) -> List[str]:
     """Format Section 3C (Spot Wallet Balances, Tradable Positions, Cycle Cost Anchors & Last Fills)."""
-    scope_s = str(asset_scope or "all").strip().lower() if isinstance(asset_scope, str) else "all"
+    scope_spec = resolve_scope_presentation(asset_scope)
+    scope_s = scope_spec.scope_key
     lines = ["\n### 3C. SPOT WALLET BALANCES, TRADABLE POSITIONS, CYCLE COST ANCHORS & LAST FILLS:"]
     if isinstance(pre := ps.get("portfolio_risk_engine"), dict) and pre.get("unified_nav_usd"):
-        if scope_s == "crypto":
-            pre_hdr = "Portfolio Risk Engine (Crypto Scope: binance + kraken + hyperliquid; excl. T212 equities)"
-            nav_key_lbl = "crypto_nav"
-        elif scope_s in ("equities", "equity"):
-            pre_hdr = "Portfolio Risk Engine (Equities Scope: t212; excl. crypto venues)"
-            nav_key_lbl = "equities_nav"
-        else:
-            pre_hdr = "Enterprise Global Portfolio Risk Engine (All Venues)"
-            nav_key_lbl = "unified_nav"
+        pre_hdr = scope_spec.risk_engine_hdr
+        nav_key_lbl = scope_spec.risk_engine_nav_lbl
         pre_parts = [
             f"{nav_key_lbl}=${safe_float(pre.get('unified_nav_usd'), 0.0):,.2f}",
             f"invested=${safe_float(pre.get('invested_exposure_usd'), 0.0):,.2f}",
@@ -1394,7 +1356,7 @@ def _format_portfolio_section(
             )
             if vn_s:
                 pre_parts.append(f"venues({vn_s})")
-        if scope_s not in ("equities", "equity"):
+        if scope_spec.include_crypto_beta:
             pre_parts.extend([
                 f"portfolio_btc_beta={pre.get('portfolio_btc_beta')}",
                 f"avg_corr_24h={pre.get('avg_corr_vs_btc_24h')}",

@@ -1253,16 +1253,16 @@ class PriceWindow:
                 ts_buf = self._trend_buf.timestamps
                 win_start = blen - n_win
                 if wf is not None and len(ts_buf) == blen and ts_buf[blen - 1] > 0 and ts_buf[win_start] > 0:
-                    t_end = ts_buf[blen - 1]
-                    cut_idx = bisect_left(ts_buf, math.trunc(t_end - wf * 1000.0), lo=win_start, hi=blen)
-                    prices = self._trend_buf.prices[cut_idx:blen]
-                    ts_slice = ts_buf[cut_idx:blen]
-                    if len(prices) < 3:
+                    ts_window = slice_timestamped_window(
+                        ts_buf,
+                        self._trend_buf.prices,
+                        wf,
+                        start_idx=win_start,
+                        end_idx=blen,
+                    )
+                    if ts_window is None:
                         return 0.0, 0.0
-                    span_sec = (ts_slice[-1] - ts_slice[0]) / 1000.0
-                    if span_sec < max(1.0, wf * 0.4):
-                        return 0.0, 0.0
-                    rate = max(span_sec / (len(prices) - 1), 0.1)
+                    prices, rate = ts_window
                 else:
                     take = min(n_samples, n_win) if n_samples is not None else n_win
                     prices = self._trend_buf.prices[blen - take : blen]
@@ -1355,6 +1355,38 @@ class PriceWindow:
             return velocity, acceleration
         except Exception:
             return 0.0, 0.0
+
+
+def slice_timestamped_window(
+    timestamps_ms: Sequence[int],
+    values: Sequence[float],
+    window_sec: float,
+    *,
+    start_idx: int = 0,
+    end_idx: Optional[int] = None,
+    min_points: int = 3,
+    min_span_frac: float = 0.4,
+) -> Optional[Tuple[list, float]]:
+    """Slice ``values`` strictly by ``timestamps_ms`` over ``[t_end - window_sec, t_end]``.
+
+    Returns ``(sliced_values, effective_sample_rate_sec)`` when at least ``min_points``
+    samples span ``>= max(1.0, window_sec * min_span_frac)`` seconds, else ``None``.
+    """
+    end = len(timestamps_ms) if end_idx is None else end_idx
+    if end <= start_idx or len(timestamps_ms) < end or len(values) < end:
+        return None
+    if timestamps_ms[end - 1] <= 0 or timestamps_ms[start_idx] <= 0:
+        return None
+    t_end = timestamps_ms[end - 1]
+    cut_idx = bisect_left(timestamps_ms, math.trunc(t_end - window_sec * 1000.0), lo=start_idx, hi=end)
+    sliced_vals = list(values[cut_idx:end])
+    if len(sliced_vals) < min_points:
+        return None
+    span_sec = (timestamps_ms[end - 1] - timestamps_ms[cut_idx]) / 1000.0
+    if span_sec < max(1.0, window_sec * min_span_frac):
+        return None
+    eff_rate = max(span_sec / (len(sliced_vals) - 1), 0.1)
+    return sliced_vals, eff_rate
 
 
 class WindowAnalyzer:

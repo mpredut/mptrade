@@ -650,4 +650,15 @@ class TestUnifiedWeightResolution(unittest.TestCase):
         self.assertAlmostEqual(vel2, 0.10, delta=0.015)
         self.assertAlmostEqual(acc2, 0.0, delta=0.015)
 
+        # Direct SSOT slice_timestamped_window contract
+        ts_ms = [t0 + i * 60_000 for i in range(10)]
+        vals = [100.0 + i for i in range(10)]
+        sliced = pw.slice_timestamped_window(ts_ms, vals, 300.0)
+        self.assertIsNotNone(sliced)
+        assert sliced is not None
+        s_vals, eff_rate = sliced
+        self.assertEqual(s_vals, [104.0, 105.0, 106.0, 107.0, 108.0, 109.0])
+        self.assertAlmostEqual(eff_rate, 60.0, delta=1e-6)
+        self.assertIsNone(pw.slice_timestamped_window(ts_ms[:2], vals[:2], 300.0))
+
 

@@ -9,9 +9,16 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
-from botcore import _prices_diverged, resolve_us_equity_session_state, safe_nonneg_float, safe_pos_float
+from botcore import (
+    _prices_diverged,
+    resolve_us_equity_session_state,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from instrument_registry import resolve_symbol_identity
 from intelligence.macro_sentiment_ssot import (
     SHORT_KINEMATIC_METRIC_KEYS,
@@ -33,6 +40,104 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 )
 
 
+@dataclass(frozen=True)
+class AssetTelemetryCapabilities:
+    """Single Source of Truth (SSOT) declaring telemetry & execution capabilities per asset class.
+
+    Centralizes L2 orderbook availability, perpetual/liquidation support, synthetic spot CVD
+    gating, CBOE options OI handling, and Section 3B book labels so evaluators, TCA, and prompt
+    renderers never scatter ad-hoc ``is_equity`` / ``oi_usd`` / ``spot_cvd_source`` checks.
+    """
+
+    has_real_l2_book: bool
+    has_crypto_perpetuals: bool
+    has_liquidation_clusters: bool
+    has_real_spot_tape: bool
+    book_source_prefix: str
+    bid_zone_label: str
+    ask_zone_label: str
+    suppress_frozen_ob_guard: bool
+    allow_synthetic_spot_cvd: bool
+    uses_cboe_options_oi: bool
+    has_zero_funding: bool
+
+    def has_live_options_oi(self, minfo: Dict[str, Any]) -> bool:
+        """Return whether ``minfo`` carries positive live CBOE options open interest."""
+        return self.uses_cboe_options_oi and (safe_float(minfo.get("oi_usd"), 0.0) or 0.0) > 0.0
+
+    def allow_spot_cvd_display(self, minfo: Dict[str, Any], *, has_perp_cvd: bool) -> bool:
+        """Return whether ``spot_cvd_15m`` should be rendered for this asset class and source."""
+        is_real_spot = minfo.get("spot_cvd_source") == "real_spot"
+        if not self.allow_synthetic_spot_cvd and not is_real_spot:
+            return False
+        return bool(has_perp_cvd or is_real_spot)
+
+    def allow_whale_long_display(self, minfo: Dict[str, Any]) -> bool:
+        """Return whether ``whale_long_pct`` represents real positioning (crypto perp or CBOE OI)."""
+        return self.has_crypto_perpetuals or self.has_live_options_oi(minfo)
+
+    def allow_whale_long_delta_display(self, minfo: Dict[str, Any], *, has_flow: bool) -> bool:
+        """Return whether ``d_whale_long`` in ``cycle_delta`` represents real positioning movement."""
+        if self.has_crypto_perpetuals:
+            return True
+        if self.uses_cboe_options_oi:
+            if "oi_usd" in minfo:
+                return (safe_float(minfo.get("oi_usd"), 0.0) or 0.0) > 0.0
+            return bool(has_flow)
+        return False
+
+    def resolve_deriv_display_mode(self, minfo: Dict[str, Any]) -> str:
+        """Return canonical Section 3B derivatives display mode: ``crypto_perp``, ``cboe_options``, or ``none``."""
+        if self.has_crypto_perpetuals:
+            return "crypto_perp"
+        if self.has_live_options_oi(minfo):
+            return "cboe_options"
+        return "none"
+
+
+_CRYPTO_TELEMETRY_CAPS = AssetTelemetryCapabilities(
+    has_real_l2_book=True,
+    has_crypto_perpetuals=True,
+    has_liquidation_clusters=True,
+    has_real_spot_tape=True,
+    book_source_prefix="",
+    bid_zone_label="bid_wall",
+    ask_zone_label="ask_wall",
+    suppress_frozen_ob_guard=False,
+    allow_synthetic_spot_cvd=True,
+    uses_cboe_options_oi=False,
+    has_zero_funding=False,
+)
+
+_TOKENIZED_EQUITY_TELEMETRY_CAPS = AssetTelemetryCapabilities(
+    has_real_l2_book=True,
+    has_crypto_perpetuals=False,
+    has_liquidation_clusters=False,
+    has_real_spot_tape=True,
+    book_source_prefix="",
+    bid_zone_label="bid_wall",
+    ask_zone_label="ask_wall",
+    suppress_frozen_ob_guard=False,
+    allow_synthetic_spot_cvd=True,
+    uses_cboe_options_oi=False,
+    has_zero_funding=True,
+)
+
+_RTH_EQUITY_TELEMETRY_CAPS = AssetTelemetryCapabilities(
+    has_real_l2_book=False,
+    has_crypto_perpetuals=False,
+    has_liquidation_clusters=False,
+    has_real_spot_tape=False,
+    book_source_prefix="ob_proxy[yahoo_5m_vol_profile] ",
+    bid_zone_label="est_bid_zone",
+    ask_zone_label="est_ask_zone",
+    suppress_frozen_ob_guard=True,
+    allow_synthetic_spot_cvd=False,
+    uses_cboe_options_oi=True,
+    has_zero_funding=True,
+)
+
+
 class AssetClassPolicyInterface(ABC):
     """Pure abstract contract (Level 1) for asset-class market hours, derivatives availability, and series normalization."""
 
@@ -40,6 +145,11 @@ class AssetClassPolicyInterface(ABC):
     @abstractmethod
     def asset_class(self) -> str:
         """Canonical asset-class key ('crypto', 'tokenized_equity', 'rth_equity')."""
+
+    @property
+    @abstractmethod
+    def telemetry_capabilities(self) -> AssetTelemetryCapabilities:
+        """Declarative telemetry & L2 execution capability contract for this asset class."""
 
     @property
     @abstractmethod
@@ -142,11 +252,11 @@ class AssetSessionPolicy(AssetClassPolicyInterface):
 
     @property
     def has_crypto_perpetuals(self) -> bool:
-        return False
+        return self.telemetry_capabilities.has_crypto_perpetuals
 
     @property
     def has_liquidation_clusters(self) -> bool:
-        return False
+        return self.telemetry_capabilities.has_liquidation_clusters
 
     @property
     def uses_equity_risk_priors(self) -> bool:
@@ -268,12 +378,8 @@ class Crypto24x7SessionPolicy(Continuous24x7SessionPolicy):
         return "crypto"
 
     @property
-    def has_crypto_perpetuals(self) -> bool:
-        return True
-
-    @property
-    def has_liquidation_clusters(self) -> bool:
-        return True
+    def telemetry_capabilities(self) -> AssetTelemetryCapabilities:
+        return _CRYPTO_TELEMETRY_CAPS
 
     @property
     def uses_equity_risk_priors(self) -> bool:
@@ -290,6 +396,10 @@ class TokenizedEquity24x7SessionPolicy(Continuous24x7SessionPolicy):
         return "tokenized_equity"
 
     @property
+    def telemetry_capabilities(self) -> AssetTelemetryCapabilities:
+        return _TOKENIZED_EQUITY_TELEMETRY_CAPS
+
+    @property
     def is_tokenized_equity(self) -> bool:
         return True
 
@@ -302,6 +412,10 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
     @property
     def asset_class(self) -> str:
         return "rth_equity"
+
+    @property
+    def telemetry_capabilities(self) -> AssetTelemetryCapabilities:
+        return _RTH_EQUITY_TELEMETRY_CAPS
 
     @property
     def is_equity(self) -> bool:

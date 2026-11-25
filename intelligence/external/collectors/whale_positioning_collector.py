@@ -39,7 +39,12 @@ from intelligence.external.collectors.base_collector import (
     _DiskBackedSymbolCollector,
     _has_hyperliquid_instrument,
 )
-from intelligence.macro_sentiment_ssot import _extract_sorted_ts_px, fetch_public_json
+from intelligence.macro_sentiment_ssot import (
+    EQUITY_FLOW_HORIZON_SEC,
+    _extract_sorted_ts_px,
+    fetch_public_json,
+    filter_bars_within_horizon,
+)
 from providers.ohlc_utils import split_bar_clv_turnover_usd
 
 logger = logging.getLogger("intelligence.external.whale_positioning")
@@ -308,19 +313,10 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             return r_val, round(b_u - s_u, 0)
 
         active_bars = [b for b in bars if b[5] > 0.0]
-
-        def _bars_within(max_age_sec: float, limit: int) -> list:
-            matched = []
-            for b in active_bars:
-                b_ts = normalize_epoch_sec(b[0], default=0.0) or 0.0
-                if b_ts > 0.0 and -60.0 <= (now - b_ts) <= max_age_sec:
-                    matched.append(b)
-            return matched[-limit:]
-
-        bars_5m = _bars_within(600.0, 1)
-        bars_15m = _bars_within(900.0, 3)
-        bars_1h = _bars_within(3900.0, 12)
-        bars_4h = _bars_within(14700.0, 48)
+        bars_5m = filter_bars_within_horizon(active_bars, now, EQUITY_FLOW_HORIZON_SEC["5m"], max_bars=1)
+        bars_15m = filter_bars_within_horizon(active_bars, now, EQUITY_FLOW_HORIZON_SEC["15m"], max_bars=3)
+        bars_1h = filter_bars_within_horizon(active_bars, now, EQUITY_FLOW_HORIZON_SEC["1h"], max_bars=12)
+        bars_4h = filter_bars_within_horizon(active_bars, now, EQUITY_FLOW_HORIZON_SEC["4h"], max_bars=48)
         taker_buy, taker_sell = _bars_buy_sell(bars_15m)
         taker_ratio = (
             round(taker_buy / taker_sell, 4)

@@ -43,6 +43,8 @@ from intelligence.macro_sentiment_ssot import (
     ALL_KINEMATIC_METRIC_KEYS,
     KINEMATIC_HORIZON_SPECS,
     SHORT_KINEMATIC_METRIC_KEYS,
+    VOLUME_RVOL_15M_HORIZON_MS,
+    VOLUME_RVOL_1H_HORIZON_MS,
     _TWO_COL_TS_PX_IDS,
     _extract_sorted_ts_px,
     _finalize_sorted_ts_px,
@@ -50,6 +52,7 @@ from intelligence.macro_sentiment_ssot import (
     _series_memo_anchor,
     _series_memo_key,
     resolve_kalman_vel_z,
+    resolve_volume_window_anchor_ms,
 )
 
 KalmanTrend: Any = None
@@ -483,10 +486,10 @@ def compute_volume_rvol_metrics(
     avg_15m_usd = avg_1h_usd * 0.25
     # Include bars strictly inside (vol_anchor_ms - horizon, vol_anchor_ms]; anchor to ref_end_ms when
     # the last positive-volume bar lags by >1 bar step so quiet assets never report stale 15m/1h volume.
-    vol_anchor_ms = ref_end_ms if (ref_end_ms - vol_now_ms) > step_ms else vol_now_ms
-    cut_15m = vol_anchor_ms - max(900_000.0, step_ms * 0.9)
-    vol_15m_usd = sum(u for t, u in w24 if t > cut_15m) if step_ms <= 900_000.0 else 0.0
-    cut_1h = vol_anchor_ms - max(3_600_000.0, step_ms * 0.9)
+    vol_anchor_ms = resolve_volume_window_anchor_ms(ref_end_ms, vol_now_ms, step_ms)
+    cut_15m = vol_anchor_ms - max(VOLUME_RVOL_15M_HORIZON_MS, step_ms * 0.9)
+    vol_15m_usd = sum(u for t, u in w24 if t > cut_15m) if step_ms <= VOLUME_RVOL_15M_HORIZON_MS else 0.0
+    cut_1h = vol_anchor_ms - max(VOLUME_RVOL_1H_HORIZON_MS, step_ms * 0.9)
     w1h = [(t, u) for t, u in w24 if t > cut_1h]
     vol_1h_usd = sum(u for _, u in w1h)
     eff_avg_1h_usd = avg_1h_usd
@@ -1944,7 +1947,7 @@ def format_kinematic_parts(entry: Any, *, compact: bool = False) -> List[str]:
     for k_lbl, v_key, a_key in KINEMATIC_HORIZON_SPECS:
         vk_v = safe_float(entry.get(v_key), default=None)
         ak_v = safe_float(entry.get(a_key), default=None)
-        if vk_v is not None and ak_v is not None and (abs(vk_v) >= 1e-6 or abs(ak_v) >= 1e-6):
+        if vk_v is not None and ak_v is not None and (abs(vk_v) >= 5e-5 or abs(ak_v) >= 5e-5):
             vk_s, ak_s = fmt_signed(vk_v, 4), fmt_signed(ak_v, 4)
             if compact:
                 parts.extend((f"vel_{k_lbl}={vk_s}%/m", f"acc_{k_lbl}={ak_s}%/m^2"))

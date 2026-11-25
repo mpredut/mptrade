@@ -37,6 +37,7 @@ from intelligence.macro_sentiment_ssot import (
     get_cross_asset_regimes,
     get_deribit_options_currencies,
     get_macro_benchmark_specs,
+    is_macro_benchmark_feed_delayed,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import extract_bbo_and_mid
 from intelligence.sentiment.evaluators.price_series_evaluator import (
@@ -1143,7 +1144,7 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
         m_state = str(entry.get("market_state") or "").strip().upper()
         if not m_state and bar_age_min is not None and bar_age_min > 45.0:
             m_state = "CLOSED"
-        is_delayed_feed = bool(m_state != "CLOSED" and bar_age_min is not None and bar_age_min >= 11.5)
+        is_delayed_feed = is_macro_benchmark_feed_delayed(m_state, bar_age_min)
         horizons = (
             (("24h", "chg_24h_pct"),)
             if m_state == "CLOSED"
