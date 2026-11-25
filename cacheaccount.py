@@ -4473,12 +4473,16 @@ class _HyperliquidAccountTradeBridge:
             return
         is_snapshot, fills_by_symbol = parsed
         fills_file = self.resolve_fills_cache_file()
+        # Hyperliquid WS ``userFills`` snapshots only carry a bounded recent fill window;
+        # always union-merge into ``CacheTradeManager`` (matching ``CacheOrderFilledManager``)
+        # so reconnect snapshots never wipe older fills from ``cache_trade_hyperliquid.json``.
         CacheTradeManager.merge_venue_fills_snapshot(
             fills_file,
             fills_by_symbol,
             now_ms=ts_ms,
-            is_snapshot=is_snapshot,
+            is_snapshot=False,
             touch_symbols=symbols,
+            touch_create_missing=is_snapshot,
         )
         try:
             CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
@@ -4488,6 +4492,7 @@ class _HyperliquidAccountTradeBridge:
                 now_ms=ts_ms,
                 is_snapshot=is_snapshot,
                 touch_symbols=symbols,
+                touch_create_missing=is_snapshot,
             )
         except Exception:
             pass
@@ -4578,11 +4583,15 @@ def run_kraken_trade_poll_loop(
             client, pairs=pairs, lookback_sec=lookback_sec
         )
         eff_ms = resolve_now_ms()
+        # Windowed ``lookback_sec`` REST Ledgers fetches must union-merge (same as WS loop)
+        # so fills older than ``lookback_sec`` are never wiped from ``cache_trade_kraken.json``.
         merged = CacheTradeManager._merge_venue_fills_snapshot_locked(
             cache_file,
             by_sym,
             now_ms=eff_ms,
-            is_snapshot=True,
+            is_snapshot=False,
+            touch_symbols=pairs,
+            touch_create_missing=True,
             sanitize_venue="kraken",
             indent=1,
             force_save=True,
@@ -4593,7 +4602,7 @@ def run_kraken_trade_poll_loop(
                 by_sym,
                 venue="kraken",
                 now_ms=eff_ms,
-                is_snapshot=True,
+                is_snapshot=False,
                 touch_symbols=pairs,
                 touch_create_missing=True,
                 indent=1,

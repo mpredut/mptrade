@@ -327,6 +327,96 @@ def test_hyperliquid_ws_bridge_mirrors_fills_to_order_filled_cache(tmp_path):
     assert rows[0]["fee"] == pytest.approx(0.15)
     assert rows[0]["clientOrderId"] == "0xabc1"
 
+    # Regression: a subsequent reconnect WS snapshot carrying only newer fills must NOT wipe
+    # older fills from cache_trade_hyperliquid.json (keeping 1:1 parity with cache_order_filled_hyperliquid.json).
+    reconnect_hl_fills = (
+        True,
+        {
+            "HYPEUSDC": [
+                {"oid": 88802, "tid": 3, "side": "A", "px": "65.0", "sz": "5.0", "time": 1700001500000, "fee": "0.10", "cloid": "0xabc2"},
+            ]
+        },
+    )
+    with patch.object(bridge.hl_prov_cls, "extract_ws_user_fills", return_value=reconnect_hl_fills):
+        bridge.handle_user_fills({"isSnapshot": True, "fills": []}, ts_ms=1700001505000)
+
+    with open(hl_trade_file, encoding="utf-8") as fh:
+        tr_doc = json.load(fh)
+    with open(hl_filled_file, encoding="utf-8") as fh:
+        fi_doc = json.load(fh)
+    assert [r["tid"] for r in tr_doc["items"]["HYPEUSDC"]] == [1, 2, 3]
+    assert [r["orderId"] for r in fi_doc["items"]["HYPEUSDC"]] == ["88801", "88802"]
+
+    # Bidirectional verifier confirms 0 diffs when in sync, and catches missing trade rows + realized_net drift!
+    from verify_tools import sync_order_filled_from_trade_cache as sync_tool
+
+    orders_dir = tmp_path / "orders"
+    orders_dir.mkdir(exist_ok=True)
+    os.replace(hl_trade_file, str(orders_dir / os.path.basename(hl_trade_file)))
+    os.replace(hl_filled_file, str(orders_dir / CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME))
+    res_ok = sync_tool._sync_json_venue(
+        str(tmp_path), "hyperliquid", os.path.basename(hl_trade_file), CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME, apply_changes=False
+    )
+    assert res_ok["diffs"] == []
+
+    # Simulate pre-fix trade cache truncation (missing order 88801 -> realized_net & spent drift)
+    trunc_tr = dict(tr_doc)
+    trunc_tr["items"] = {"HYPEUSDC": [r for r in tr_doc["items"]["HYPEUSDC"] if r["oid"] == 88802]}
+    with open(orders_dir / os.path.basename(hl_trade_file), "w", encoding="utf-8") as fh:
+        json.dump(trunc_tr, fh)
+    res_drift = sync_tool._sync_json_venue(
+        str(tmp_path), "hyperliquid", os.path.basename(hl_trade_file), CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME, apply_changes=False
+    )
+    assert any("only_in_filled=1" in d for d in res_drift["diffs"])
+    assert any("pos_realized_net_diff" in d for d in res_drift["diffs"])
+    assert any("pos_spent_diff" in d for d in res_drift["diffs"])
+
+
+def test_kraken_poll_loop_preserves_older_fills_outside_lookback_window(tmp_path):
+    """Windowed lookback REST Ledgers polling must union-merge rather than wiping older fills."""
+    import threading
+    import cacheaccount
+    from providers.base import MarketDataProvider
+    import providers.kraken_provider  # noqa: F401
+
+    kr_trade = tmp_path / "cache_trade_kraken.json"
+    old_fill = {"id": "old_1", "orderId": "oid_old", "side": "BUY", "time": 1_700_000_000_000, "price": 50.0, "qty": 2.0}
+    new_fill = {"id": "new_2", "orderId": "oid_new", "side": "SELL", "time": 1_700_900_000_000, "price": 55.0, "qty": 2.0}
+    cacheaccount.CacheTradeManager.merge_venue_fills_snapshot(
+        str(kr_trade), {"HYPEUSD": [old_fill]}, now_ms=1_700_000_005_000, is_snapshot=True
+    )
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        str(tmp_path / "cache_order_filled_kraken.json"),
+        {"HYPEUSD": [old_fill]},
+        venue="kraken",
+        now_ms=1_700_000_005_000,
+        is_snapshot=True,
+    )
+
+    stop_ev = threading.Event()
+    kr_cls = MarketDataProvider.resolve_venue_provider_class("kraken")
+
+    def _windowed_ledger(_client, *, pairs, lookback_sec):
+        stop_ev.set()
+        return {"HYPEUSD": [new_fill]}
+
+    with patch.object(kr_cls, "fetch_ledger_fills_by_symbol", side_effect=_windowed_ledger):
+        cacheaccount.run_kraken_trade_poll_loop(
+            SimpleNamespace(),
+            cache_file=str(kr_trade),
+            pairs=["HYPEUSD"],
+            poll_interval=0.01,
+            backoff_init=0.01,
+            backoff_max=0.05,
+            lookback_sec=3600.0,
+            stop_event=stop_ev,
+        )
+
+    tr_after = json.loads(kr_trade.read_text(encoding="utf-8"))
+    fi_after = json.loads((tmp_path / "cache_order_filled_kraken.json").read_text(encoding="utf-8"))
+    assert [r["id"] for r in tr_after["items"]["HYPEUSD"]] == ["old_1", "new_2"]
+    assert [r["orderId"] for r in fi_after["items"]["HYPEUSD"]] == ["oid_old", "oid_new"]
+
 
 def test_portfolio_collector_strips_open_orders_from_venue_balances_and_persists_to_order_open_cache(tmp_path):
     now_s = time.time()

@@ -20,8 +20,10 @@ Behavior:
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
+import time
 from typing import Any
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -96,11 +98,13 @@ def _sync_json_venue(
         filled_path, venue=venue, allow_legacy=False, allow_trade_fallback=False
     )
     diffs: list[str] = []
-    for sym, t_rows in sorted(trade_items.items()):
-        if not isinstance(t_rows, list) or not t_rows:
+    for sym in sorted(set(trade_items.keys()) | set(filled_items.keys())):
+        t_rows = trade_items.get(sym) if isinstance(trade_items.get(sym), list) else []
+        actual_rows = filled_items.get(sym) if isinstance(filled_items.get(sym), list) else []
+        if not t_rows and not actual_rows:
             continue
         expected_rows = CacheOrderFilledManager.aggregate_fills_to_order_rows(t_rows, venue=venue)
-        actual_rows = filled_items.get(sym) if isinstance(filled_items.get(sym), list) else []
+        expected_oids = {str(exp.get("orderId")) for exp in expected_rows}
         actual_by_oid = {str(r.get("orderId")): r for r in actual_rows if isinstance(r, dict)}
         for exp in expected_rows:
             oid_s = str(exp.get("orderId"))
@@ -120,6 +124,9 @@ def _sync_json_venue(
             act_fee = safe_nonneg_float(act.get("fee"), default=0.0) or 0.0
             if exp_fee > 0.0 and abs(exp_fee - act_fee) > 1e-6:
                 diffs.append(f"{venue}:{sym}:oid={oid_s}:fee_diff({act_fee}!={exp_fee})")
+        only_in_filled = sorted(set(actual_by_oid.keys()) - expected_oids)
+        if only_in_filled:
+            diffs.append(f"{venue}:{sym}:only_in_filled={len(only_in_filled)}(sample={only_in_filled[:3]})")
         base_a, quote_a = split_symbol_assets(sym) or ("", "")
         t_pos = summarize_fills_position_and_cost(t_rows, base_asset=base_a, quote_asset=quote_a)
         f_pos = summarize_fills_position_and_cost(actual_rows, base_asset=base_a, quote_asset=quote_a)
@@ -128,6 +135,16 @@ def _sync_json_venue(
                 diffs.append(f"{venue}:{sym}:pos_qty_diff({f_pos.get('qty')}!={t_pos.get('qty')})")
             if abs((t_pos.get("cost") or 0.0) - (f_pos.get("cost") or 0.0)) > 1e-2:
                 diffs.append(f"{venue}:{sym}:pos_cost_diff({f_pos.get('cost')}!={t_pos.get('cost')})")
+            if abs((t_pos.get("realized_net") or 0.0) - (f_pos.get("realized_net") or 0.0)) > 1e-2:
+                diffs.append(
+                    f"{venue}:{sym}:pos_realized_net_diff({round(f_pos.get('realized_net') or 0.0, 4)}!="
+                    f"{round(t_pos.get('realized_net') or 0.0, 4)})"
+                )
+            if abs((t_pos.get("spent") or 0.0) - (f_pos.get("spent") or 0.0)) > 1e-2:
+                diffs.append(
+                    f"{venue}:{sym}:pos_spent_diff({round(f_pos.get('spent') or 0.0, 4)}!="
+                    f"{round(t_pos.get('spent') or 0.0, 4)})"
+                )
     return {
         "venue": venue,
         "trade_symbols": len(trade_items),
@@ -224,6 +241,8 @@ def _sync_binance(cachedb_dir: str, *, apply_changes: bool) -> dict[str, Any]:
                 raise RuntimeError("Failed to persist certified BinanceOrderFilled snapshot")
 
     diffs: list[str] = []
+    historical_notes: list[str] = []
+    recent_cutoff_ms = math.trunc((time.time() - 30.0 * 86400.0) * 1000.0)
     for sym in sorted(set(tm.cache.keys()) | set(fm.cache.keys())):
         for side in ("BUY", "SELL"):
             t_opp = tm.get_last_opposite_fill_price(sym, side)
@@ -246,6 +265,52 @@ def _sync_binance(cachedb_dir: str, *, apply_changes: bool) -> dict[str, Any]:
         missing_oids = sorted(t_oids - set(f_rows.keys()))
         if missing_oids:
             diffs.append(f"binance:{sym}:missing_oids={len(missing_oids)}")
+        only_in_filled = sorted(oid for oid in (set(f_rows.keys()) - t_oids) if oid is not None)
+        if only_in_filled:
+            recent_only_f = [
+                oid
+                for oid in only_in_filled
+                if (extract_timestamp_ms(f_rows[oid], default=0) or 0) >= recent_cutoff_ms
+            ]
+            if recent_only_f:
+                diffs.append(
+                    f"binance:{sym}:recent_only_in_filled={len(recent_only_f)}(sample={recent_only_f[:3]})"
+                )
+            hist_only_f = len(only_in_filled) - len(recent_only_f)
+            if hist_only_f > 0:
+                historical_notes.append(f"binance:{sym}:historical_only_in_filled={hist_only_f}")
+        legacy_qty_diffs = 0
+        for oid in sorted(t_oids & set(f_rows.keys())):
+            f_row = f_rows[oid]
+            fills = t_by_oid[oid]
+            f_qty = safe_pos_float(f_row.get("quantity"), default=0.0) or 0.0
+            t_qty = sum(safe_pos_float(extract_order_qty(fl), default=0.0) or 0.0 for fl in fills)
+            f_px = safe_pos_float(f_row.get("price"), default=0.0) or 0.0
+            t_vwap = (
+                sum(
+                    (safe_pos_float(extract_order_price(fl), default=0.0) or 0.0)
+                    * (safe_pos_float(extract_order_qty(fl), default=0.0) or 0.0)
+                    for fl in fills
+                )
+                / t_qty
+                if t_qty > 0.0
+                else 0.0
+            )
+            has_fill_ids = isinstance(f_row.get("_fillIds"), list)
+            if f_qty > 0.0 and t_qty > 0.0 and abs(f_qty - t_qty) / max(f_qty, t_qty) > 1e-4:
+                if has_fill_ids:
+                    diffs.append(f"binance:{sym}:oid={oid}:modern_qty_diff({f_qty}!={round(t_qty, 8)})")
+                else:
+                    legacy_qty_diffs += 1
+            if has_fill_ids and f_px > 0.0 and t_vwap > 0.0 and abs(f_px - t_vwap) / max(f_px, t_vwap) > 1e-3:
+                diffs.append(f"binance:{sym}:oid={oid}:modern_px_diff({f_px}!={round(t_vwap, 8)})")
+            if has_fill_ids:
+                f_fids = {str(x) for x in f_row["_fillIds"]}
+                t_fids = {str(fl["id"]) for fl in fills if fl.get("id") is not None}
+                if t_fids and f_fids != t_fids:
+                    diffs.append(f"binance:{sym}:oid={oid}:fill_ids_diff({len(f_fids)}!={len(t_fids)})")
+        if legacy_qty_diffs > 0:
+            historical_notes.append(f"binance:{sym}:legacy_pre_fillIds_qty_diffs={legacy_qty_diffs}")
         missing_fee = sum(
             1
             for oid, fs in t_by_oid.items()
@@ -260,6 +325,7 @@ def _sync_binance(cachedb_dir: str, *, apply_changes: bool) -> dict[str, Any]:
         "enriched_rows": enriched_count,
         "added_orders": added_count,
         "diffs": diffs,
+        "historical_notes": historical_notes,
     }
 
 
@@ -285,6 +351,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     for d in bn_res["diffs"][:20]:
         print(f"  DIFF: {d}")
+    for note in bn_res.get("historical_notes", ()):
+        print(f"  NOTE (historical): {note}")
     all_diffs.extend(bn_res["diffs"])
     return 1 if all_diffs else 0
 
