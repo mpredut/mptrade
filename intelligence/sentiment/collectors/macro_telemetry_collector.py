@@ -545,6 +545,7 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                             currency=ccy,
                             dvol=extra_macro.get(d_key),
                             rv=rv_val,
+                            now_ts=eff_now,
                         )
                         if surf:
                             extra_macro.update(surf)

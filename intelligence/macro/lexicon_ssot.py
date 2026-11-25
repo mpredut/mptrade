@@ -557,6 +557,8 @@ def _is_excluded_non_crisis_attack_keyword(
             & {
                 "jail", "jailed", "jailing", "sailor", "prison", "sentenced",
                 "convicted", "trial", "arrest", "arrested", "indicted", "court",
+                "children", "child", "camp", "diplomat", "diplomats",
+                "representative", "expels", "expel", "expelled",
             }
         ) and not (
             combined_words
@@ -565,6 +567,7 @@ def _is_excluded_non_crisis_attack_keyword(
                 | {
                     "impose", "imposed", "imposes", "package", "treasury", "embargo",
                     "ban", "bans", "oil", "crude", "bank", "banks",
+                    "freeze", "frozen", "tariff", "tariffs", "asset", "assets",
                 }
             )
         ):

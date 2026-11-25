@@ -4355,3 +4355,63 @@ def test_audit_repeat_cycles4_to_8_edge_fixes(tmp_path):
     ev_res = Horizon24hPriceEvaluator().evaluate(rth_bars, now_ts=closed_now_s)
     assert "spot_vol_15m_usd" not in ev_res and "rvol_15m" not in ev_res
 
+
+def test_cycle10_deribit_0dte_skew_exclusion_kinematics_signed_zero_and_nk_sanctions_filter():
+    """Cycle 10 daytime audit fixes:
+    1. Deribit 25d Skew must exclude expiring 0-DTE (<24h to 08:00 UTC settlement) contracts when
+       now_ts is supplied and >=24h expiries exist, preventing gamma IV spikes & asymmetric call/put
+       0-DTE OI from causing Simpson's paradox while retaining full live book PC_OI and fallback.
+    2. format_kinematic_parts must normalize near-zero negative vel/acc values (-0.00003) to +0.0000.
+    3. Diplomatic trivia ('North Korea expels Swiss representative over sanctions related to
+       children's camp') must not trigger high-severity 'sanctions', while economic sanctions remain active.
+    """
+    from datetime import datetime, timezone
+    from intelligence.macro.lexicon_ssot import match_high_severity_keywords
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import compute_deribit_options_surface
+    from intelligence.sentiment.evaluators.price_series_evaluator import format_kinematic_parts
+
+    # C10.1: Reproduce live 07:02 UTC (58m before 25NOV26 08:00 UTC expiry) Simpson's paradox
+    now_ts = datetime(2026, 11, 25, 7, 2, tzinfo=timezone.utc).timestamp()
+    books = [
+        # 0-DTE expiring in 58m: huge call OI at exploding 135% IV vs smaller put OI at 164% IV
+        {"instrument_name": "BTC-25NOV26-73000-C", "estimated_delivery_price": 70000.0, "open_interest": 2800.0, "mark_iv": 135.5},
+        {"instrument_name": "BTC-25NOV26-67000-P", "estimated_delivery_price": 70000.0, "open_interest": 1500.0, "mark_iv": 164.4},
+        # >=24h institutional maturities: clean +9.0% put skew (put IV 61.0% vs call IV 52.0%)
+        {"instrument_name": "BTC-27NOV26-74000-C", "estimated_delivery_price": 70000.0, "open_interest": 5000.0, "mark_iv": 52.0},
+        {"instrument_name": "BTC-27NOV26-66000-P", "estimated_delivery_price": 70000.0, "open_interest": 5000.0, "mark_iv": 61.0},
+        {"instrument_name": "BTC-4DEC26-75000-C", "estimated_delivery_price": 70000.0, "open_interest": 4000.0, "mark_iv": 52.0},
+        {"instrument_name": "BTC-4DEC26-65000-P", "estimated_delivery_price": 70000.0, "open_interest": 4000.0, "mark_iv": 61.0},
+    ]
+    surf_live = compute_deribit_options_surface(books, currency="BTC", dvol=55.0, rv=55.0, now_ts=now_ts)
+    # Full book PC_OI retains 0-DTE OI: puts=(1500+5000+4000)=10500, calls=(2800+5000+4000)=11800 -> 0.89
+    assert surf_live["btc_pc_oi_ratio"] == pytest.approx(0.89, abs=0.01)
+    # Skew reflects institutional >=24h maturities (+9.00%), NOT Simpson's paradox (~+4.3%)
+    assert surf_live["btc_skew_25d_pct"] == pytest.approx(9.0, abs=0.01)
+    assert surf_live["btc_vrp_pct"] == 0.0
+
+    # Fallback when ONLY 0-DTE options exist still computes a skew rather than dropping the metric
+    surf_0dte_only = compute_deribit_options_surface(books[:2], currency="BTC", now_ts=now_ts)
+    assert surf_0dte_only["btc_skew_25d_pct"] == pytest.approx(28.9, abs=0.1)
+
+    # Backward compatibility when now_ts is omitted (pools all provided books)
+    surf_legacy = compute_deribit_options_surface(books, currency="BTC")
+    assert surf_legacy["btc_skew_25d_pct"] < 5.0
+
+    # C10.2: Signed negative zero normalized in format_kinematic_parts (both compact and verbose)
+    entry = {"vel_90s_pct_min": -0.00003, "accel_90s_pct_min2": 0.4224, "kalman_vel_z": -0.01}
+    compact_parts = format_kinematic_parts(entry, compact=True)
+    assert "vel_90s=+0.0000%/m" in compact_parts
+    assert all("-0.0000" not in p for p in compact_parts)
+    verbose_parts = format_kinematic_parts({"vel_90s_pct_min": 0.0123, "accel_90s_pct_min2": -0.00004}, compact=False)
+    assert "90s: vel=+0.0123%/m, acc=+0.0000%/m^2" in verbose_parts
+
+    # C10.3: Diplomatic children's-camp sanctions trivia excluded; real economic sanctions preserved
+    assert match_high_severity_keywords(
+        "North Korea expels Swiss representative over sanctions related to children's camp"
+    ) == ()
+    assert match_high_severity_keywords(
+        "US Treasury imposes new sanctions package targeting Iranian oil tankers"
+    )
+    assert match_high_severity_keywords(
+        "Swiss freeze Russian bank assets under expanded EU sanctions"
+    )

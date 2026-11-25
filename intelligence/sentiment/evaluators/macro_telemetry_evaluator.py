@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC
-from datetime import datetime
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 import math
 import os
@@ -516,6 +516,30 @@ class DeribitOptionsSurfaceEvaluator(MacroTelemetryEvaluatorBase):
     """Concrete evaluator (Level 3) computing Deribit options surface metrics (RV, VRP, Put/Call OI ratio, 25d Skew)."""
 
     cls_name = "DeribitOptionsSurfaceEvaluator"
+    _MIN_SKEW_DTE_SEC: float = 86400.0
+    _DERIBIT_MONTH_MAP: Dict[str, int] = {
+        "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+        "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+    }
+
+    @classmethod
+    def _parse_expiry_ts(cls, expiry_token: str) -> Optional[float]:
+        """Parse a Deribit expiry token like '25NOV26' or '4DEC26' to its 08:00 UTC epoch timestamp."""
+        tok = str(expiry_token or "").strip().upper()
+        if len(tok) not in (6, 7):
+            return None
+        mon = cls._DERIBIT_MONTH_MAP.get(tok[-5:-2])
+        day_s, yy_s = tok[:-5], tok[-2:]
+        if mon is None or not day_s.isdigit() or not yy_s.isdigit():
+            return None
+        day = safe_int(day_s, default=None)
+        yy = safe_int(yy_s, default=None)
+        if day is None or yy is None:
+            return None
+        try:
+            return datetime(2000 + yy, mon, day, 8, 0, tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            return None
 
     def evaluate(
         self,
@@ -526,6 +550,7 @@ class DeribitOptionsSurfaceEvaluator(MacroTelemetryEvaluatorBase):
         rv: Optional[float] = None,
         btc_dvol: Optional[float] = None,
         btc_rv: Optional[float] = None,
+        now_ts: Optional[float] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
@@ -535,8 +560,9 @@ class DeribitOptionsSurfaceEvaluator(MacroTelemetryEvaluatorBase):
         if rv_f is not None:
             out[f"{pfx}_rv_pct"] = round(rv_f, 2)
         if dvol_f is not None and rv_f is not None:
-            out[f"{pfx}_vrp_pct"] = round(dvol_f - rv_f, 2)
+            out[f"{pfx}_vrp_pct"] = round(dvol_f - rv_f, 2) + 0.0
 
+        eff_now = normalize_epoch_sec(now_ts, default=None) if now_ts is not None else None
         spot = 0.0
         if isinstance(books, list) and books:
             for b in books:
@@ -547,6 +573,7 @@ class DeribitOptionsSurfaceEvaluator(MacroTelemetryEvaluatorBase):
                         break
             call_oi = put_oi = 0.0
             put_iv_num = put_iv_den = call_iv_num = call_iv_den = 0.0
+            all_put_iv_num = all_put_iv_den = all_call_iv_num = all_call_iv_den = 0.0
             for b in books:
                 if not isinstance(b, dict):
                     continue
@@ -561,21 +588,37 @@ class DeribitOptionsSurfaceEvaluator(MacroTelemetryEvaluatorBase):
                     iv *= 100.0
                 if strike is None or oi <= 0.0 or opt_type not in ("C", "P"):
                     continue
+                # Exclude expiring 0-DTE (<24h) options from skew IV averages to prevent
+                # pre-settlement gamma IV spikes and OI imbalance from causing Simpson's paradox,
+                # while keeping full live book OI in PC_OI and falling back if no >=24h quotes exist.
+                is_short_expiry = False
+                if eff_now is not None:
+                    exp_ts = self._parse_expiry_ts(parts[1])
+                    if exp_ts is not None and (exp_ts - eff_now) < self._MIN_SKEW_DTE_SEC:
+                        is_short_expiry = True
                 if opt_type == "C":
                     call_oi += oi
                     if spot > 0.0 and 1.02 * spot <= strike <= 1.12 * spot and 5.0 <= iv <= 250.0:
-                        call_iv_num += iv * oi
-                        call_iv_den += oi
+                        all_call_iv_num += iv * oi
+                        all_call_iv_den += oi
+                        if not is_short_expiry:
+                            call_iv_num += iv * oi
+                            call_iv_den += oi
                 else:
                     put_oi += oi
                     if spot > 0.0 and 0.88 * spot <= strike <= 0.98 * spot and 5.0 <= iv <= 250.0:
-                        put_iv_num += iv * oi
-                        put_iv_den += oi
+                        all_put_iv_num += iv * oi
+                        all_put_iv_den += oi
+                        if not is_short_expiry:
+                            put_iv_num += iv * oi
+                            put_iv_den += oi
 
             if call_oi > 0.0 and put_oi > 0.0:
                 out[f"{pfx}_pc_oi_ratio"] = round(put_oi / call_oi, 2)
             if put_iv_den > 0.0 and call_iv_den > 0.0:
-                out[f"{pfx}_skew_25d_pct"] = round((put_iv_num / put_iv_den) - (call_iv_num / call_iv_den), 2)
+                out[f"{pfx}_skew_25d_pct"] = round((put_iv_num / put_iv_den) - (call_iv_num / call_iv_den), 2) + 0.0
+            elif all_put_iv_den > 0.0 and all_call_iv_den > 0.0:
+                out[f"{pfx}_skew_25d_pct"] = round((all_put_iv_num / all_put_iv_den) - (all_call_iv_num / all_call_iv_den), 2) + 0.0
         return out
 
 
@@ -984,6 +1027,7 @@ def compute_deribit_options_surface(
     rv: Optional[float] = None,
     btc_dvol: Optional[float] = None,
     btc_rv: Optional[float] = None,
+    now_ts: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Compute Deribit options surface metrics (RV, VRP, Put/Call OI ratio, and OTM 25d Skew proxy) for any currency (BTC, ETH)."""
     return _DERIBIT_OPTIONS_SURFACE_EVALUATOR.evaluate(
@@ -993,6 +1037,7 @@ def compute_deribit_options_surface(
         rv=rv,
         btc_dvol=btc_dvol,
         btc_rv=btc_rv,
+        now_ts=now_ts,
     )
 
 

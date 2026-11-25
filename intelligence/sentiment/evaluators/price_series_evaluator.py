@@ -1925,12 +1925,15 @@ def format_kinematic_parts(entry: Any, *, compact: bool = False) -> List[str]:
         vk_v = safe_float(entry.get(v_key), default=None)
         ak_v = safe_float(entry.get(a_key), default=None)
         if vk_v is not None and ak_v is not None and (abs(vk_v) >= 1e-6 or abs(ak_v) >= 1e-6):
+            vk_disp = round(vk_v, 4) + 0.0
+            ak_disp = round(ak_v, 4) + 0.0
             if compact:
-                parts.extend((f"vel_{k_lbl}={vk_v:+.4f}%/m", f"acc_{k_lbl}={ak_v:+.4f}%/m^2"))
+                parts.extend((f"vel_{k_lbl}={vk_disp:+.4f}%/m", f"acc_{k_lbl}={ak_disp:+.4f}%/m^2"))
             else:
-                parts.append(f"{k_lbl}: vel={vk_v:+.4f}%/m, acc={ak_v:+.4f}%/m^2")
+                parts.append(f"{k_lbl}: vel={vk_disp:+.4f}%/m, acc={ak_disp:+.4f}%/m^2")
     if parts and (kz_v := resolve_kalman_vel_z(entry)) is not None and abs(kz_v) >= 0.01:
-        parts.append(f"kalman_z={kz_v:+.2f}")
+        kz_disp = round(kz_v, 2) + 0.0
+        parts.append(f"kalman_z={kz_disp:+.2f}")
     return parts
 
 
