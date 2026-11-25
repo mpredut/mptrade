@@ -39,6 +39,9 @@ from cachepaths import (
     clean_symbol_key,
     clean_upper_scalar,
     compatible_quote_suffixes,
+    ensure_quote_suffix,
+    ensure_xstock_asset,
+    ensure_xstock_pair,
     filter_candidates_by_asset_class,
     has_crypto_quote_suffix,
     has_equity_suffix,
@@ -352,7 +355,7 @@ def observe_only_registry_symbols(workspace_dir: str | Path | None = None, *, pa
 
 
 def resolve_registered_symbol_case(symbol: object, provider: str | None = None, *, path=None) -> str:
-    """Return the exact-case ``spec.symbol`` from ``instruments.conf`` when registered (e.g. ``SPCXXUSD`` -> ``SPCXxUSD``)."""
+    """Return the exact-case ``spec.symbol`` from ``instruments.conf`` when registered (e.g. case-folded input -> ``SPCXxUSD``)."""
     raw = clean_scalar_str(symbol)
     if raw is None:
         return ""
@@ -370,13 +373,12 @@ def resolve_registered_symbol_case(symbol: object, provider: str | None = None, 
 
 
 def canonical_balance_asset_key(asset: object, *, venue: object = None, path=None) -> str:
-    """Return the canonical balance-cache asset key preserving mixed-case Kraken xStocks (e.g. ``SPCXx.T``/``SPCXX`` -> ``SPCXx``)."""
+    """Return the canonical balance-cache asset key preserving mixed-case Kraken xStocks (e.g. ``SPCXx.T`` -> ``SPCXx``)."""
     raw = clean_scalar_str(asset)
     if raw is None:
         return ""
     if is_readonly_xstock_symbol(raw):
-        stem = canonical_base_asset(raw)
-        return f"{stem}x" if stem else raw
+        return ensure_xstock_asset(raw) or raw
     raw_u = raw.upper()
     prov_norm = normalize_venue_name(venue) if venue is not None else None
     try:
@@ -394,7 +396,7 @@ def canonical_balance_asset_key(asset: object, *, venue: object = None, path=Non
 def resolve_kraken_tokenized_pair(
     symbol: object, *, upper_default: bool = False, path=None
 ) -> tuple[str, bool]:
-    """Return ``(effective_pair, is_tokenized)`` resolving uppercase registry keys (e.g. ``SPCXXUSD`` -> ``SPCXxUSD``)."""
+    """Return ``(effective_pair, is_tokenized)`` resolving case-folded registry keys to canonical mixed-case pairs (e.g. ``SPCXxUSD``)."""
     p_clean = clean_scalar_str(symbol)
     if p_clean is None:
         return "", False
@@ -537,6 +539,34 @@ class SymbolIdentity:
     def uses_equity_risk_priors(self) -> bool:
         return self.asset_class in ("rth_equity", "tokenized_equity")
 
+    @property
+    def base_asset(self) -> str:
+        """Return the venue-agnostic uppercase underlying/base ticker (e.g. ``SPCXxUSD`` -> ``SPCX``, ``BTCUSDC`` -> ``BTC``)."""
+        return canonical_base_asset(self.wire_symbol or self.storage_key or self.raw)
+
+    @property
+    def balance_asset_key(self) -> str:
+        """Return the canonical balance/holding asset key (e.g. ``SPCXxUSD`` -> ``SPCXx``, ``BTCUSDC`` -> ``BTC``, ``NVDA_US_EQ`` -> ``NVDA_US_EQ``)."""
+        anchor = self.wire_symbol or self.storage_key or self.raw
+        if not anchor:
+            return ""
+        if self.is_tokenized_equity:
+            return ensure_xstock_asset(anchor) or anchor
+        if self.is_rth_equity:
+            return self.storage_key or anchor.upper()
+        return canonical_base_asset(anchor) or anchor.upper()
+
+    def quote_pair(self, default_quote: str = "USD") -> str:
+        """Return the canonical quoted trading pair (e.g. ``SPCXx`` -> ``SPCXxUSD``, ``NVDA_US_EQ`` -> ``NVDA_US_EQ``, ``HYPE`` -> ``HYPEUSD``)."""
+        anchor = self.display_symbol or self.wire_symbol or self.storage_key or self.raw
+        if not anchor:
+            return ""
+        if self.is_tokenized_equity:
+            return ensure_xstock_pair(anchor, quote=default_quote)
+        if self.is_rth_equity:
+            return self.display_symbol or self.storage_key or anchor.upper()
+        return ensure_quote_suffix(anchor, default_quote)
+
     def candidate_cache_symbols(
         self,
         *,
@@ -592,6 +622,8 @@ def resolve_symbol_identity(symbol: object, *, venue: object = None, path=None) 
     if is_tok or is_readonly_xstock_symbol(raw):
         wire = tok_pair or raw
         ident = SymbolIdentity(raw, wire, wire, wire, "tokenized_equity")
+    elif (bal_k := canonical_balance_asset_key(raw, venue=v_norm or None, path=path)) and is_readonly_xstock_symbol(bal_k):
+        ident = SymbolIdentity(raw, bal_k, bal_k, bal_k, "tokenized_equity")
     elif (v_norm and is_equity_venue(v_norm)) or is_equity_symbol(raw, path=path):
         up = raw.upper()
         wire = resolve_registered_symbol_case(raw, "t212", path=path) or up
@@ -606,7 +638,7 @@ def resolve_symbol_identity(symbol: object, *, venue: object = None, path=None) 
 
 
 def canonical_display_symbol(symbol: object, *, venue: object = None, path=None) -> str:
-    """Return the canonical in-memory/cache dict symbol key (e.g. ``SPCXXUSD`` -> ``SPCXxUSD``, ``btcusdc`` -> ``BTCUSDC``)."""
+    """Return the canonical in-memory/cache dict symbol key (e.g. case-folded xStock -> ``SPCXxUSD``, ``btcusdc`` -> ``BTCUSDC``)."""
     ident = resolve_symbol_identity(symbol, venue=venue, path=path)
     if ident.is_tokenized_equity and ident.display_symbol:
         return ident.display_symbol
@@ -616,7 +648,7 @@ def canonical_display_symbol(symbol: object, *, venue: object = None, path=None)
 def coalesce_symbol_case_variants(
     mapping: dict, *, in_place: bool = False, path=None
 ) -> dict:
-    """Normalize tokenized xStock symbol keys and merge case-only duplicate entries (e.g. ``SPCXXUSD`` + ``SPCXxUSD`` -> ``SPCXxUSD``)."""
+    """Normalize tokenized xStock symbol keys and merge case-only duplicate entries into canonical mixed case (e.g. ``SPCXxUSD``)."""
     if not isinstance(mapping, dict) or not mapping:
         return mapping
 

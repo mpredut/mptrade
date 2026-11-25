@@ -13,6 +13,7 @@ from cachepaths import (
     canonical_base_asset,
     clean_scalar_str,
     compatible_quote_suffixes,
+    ensure_quote_suffix,
     has_equity_suffix,
     is_equity_venue_or_suffix,
     normalize_venue_name,
@@ -21,7 +22,7 @@ from cachepaths import (
 )
 from core.math_coercion import first_pos_float
 from core.time_market import extract_current_price_item, normalize_epoch_sec
-from instrument_registry import canonical_balance_asset_key
+from instrument_registry import canonical_balance_asset_key, canonical_display_symbol
 
 
 def extract_position_held_qty(entry: Any) -> Optional[float]:
@@ -128,7 +129,7 @@ def build_cached_balance_observations(
         if ":" in raw_a:
             continue
         v_n = normalize_venue_name(raw_v) or raw_v.strip().lower()
-        a_u = raw_a.strip().upper()
+        a_u = canonical_balance_asset_key(raw_a, venue=v_n)
         if v_n and a_u and (val_f := safe_nonneg_float(v, default=None)) is not None:
             va_k = (v_n, a_u)
             if (merged := merge_balance_observation(obs_by_va.get(va_k), val_f, None, 0)) is not None:
@@ -148,10 +149,10 @@ def build_cached_balance_observations(
         p_sym = (
             (canonical_symbol_fn(p_sym_raw, venue=v_n) or p_sym_raw.upper())
             if callable(canonical_symbol_fn)
-            else p_sym_raw.upper()
+            else (canonical_display_symbol(p_sym_raw, venue=v_n) or p_sym_raw.upper())
         )
         res_b, res_q = resolve_assets_fn(p_sym, v.get("base"), v.get("quote"))
-        b_u = str(res_b or "").strip().upper()
+        b_u = canonical_balance_asset_key(res_b, venue=v_n)
         q_u = str(res_q or "USD").strip().upper()
         pos_ts = safe_pos_float(v.get("ts"), default=None)
         base_ts = safe_pos_float(v.get("base_bal_ts"), default=None) or pos_ts
@@ -191,7 +192,7 @@ def build_cached_balance_observations(
         if not (isinstance(k, str) and k.startswith("cash:") and isinstance(v, Mapping)):
             continue
         v_n = normalize_venue_name(v.get("venue"))
-        a_u = str(v.get("asset") or "").strip().upper()
+        a_u = canonical_balance_asset_key(v.get("asset"), venue=v_n)
         if not v_n or not a_u:
             continue
         cf = safe_nonneg_float(v.get("free"), default=None)
@@ -233,7 +234,9 @@ def extract_balance_observations_from_caches(
                 a_clean = clean_scalar_str(raw_a)
                 if not a_clean or not isinstance(entry, Mapping):
                     continue
-                a_u = a_clean.upper()
+                a_u = canonical_balance_asset_key(a_clean, venue=v_n)
+                if not a_u:
+                    continue
                 free_v = safe_nonneg_float(entry.get("free"), default=None)
                 if free_v is None:
                     continue
@@ -319,16 +322,15 @@ def compose_unified_portfolio_state(
             out[k] = dict(v)
 
     # 3. Layer 3 authoritative account balances (cache_balance_<venue>.json)
-    for (v_n, a_u), obs in cache_obs.items():
-        a_disp = canonical_balance_asset_key(a_u, venue=v_n) or a_u
-        out[f"{v_n}:{a_disp}"] = obs.free
-        if a_u in _NAV_QUOTE_CASH_ASSETS:
-            c_entry: dict[str, Any] = {"venue": v_n, "asset": a_u, "free": round(obs.free, 2)}
+    for (v_n, a_k), obs in cache_obs.items():
+        out[f"{v_n}:{a_k}"] = obs.free
+        if a_k in _NAV_QUOTE_CASH_ASSETS:
+            c_entry: dict[str, Any] = {"venue": v_n, "asset": a_k, "free": round(obs.free, 2)}
             if obs.ts is not None:
                 c_entry["ts"] = round(obs.ts, 3)
             if obs.reflected_locked is not None and obs.reflected_locked > 1e-6:
                 c_entry["locked_quote_usd"] = round(obs.reflected_locked, 2)
-            out[f"cash:{v_n}:{a_u}"] = c_entry
+            out[f"cash:{v_n}:{a_k}"] = c_entry
     for (v_n, q_u), bd in cache_bds.items():
         out[f"breakdown:{v_n}:{q_u}"] = dict(bd)
 
@@ -341,10 +343,10 @@ def compose_unified_portfolio_state(
             v_n = normalize_venue_name(entry.get("venue") or (parts[1] if len(parts) > 1 else ""))
             if not v_n or v_n not in cache_venues:
                 continue
-            base_u = (clean_scalar_str(entry.get("base")) or "").upper()
+            base_k = canonical_balance_asset_key(entry.get("base"), venue=v_n)
             quote_u = (clean_scalar_str(entry.get("quote")) or "").upper()
             pos_ts = normalize_epoch_sec(entry.get("ts"), default=0.0) or 0.0
-            if base_u and (b_obs := cache_obs.get((v_n, base_u))) is not None:
+            if base_k and (b_obs := cache_obs.get((v_n, base_k))) is not None:
                 cur_bts = normalize_epoch_sec(entry.get("base_bal_ts"), default=0.0) or pos_ts
                 if b_obs.ts is None or b_obs.ts >= cur_bts - 1e-6:
                     entry["free_base"] = round(b_obs.free, 6)
@@ -473,7 +475,7 @@ def compute_venue_nav_breakdown(
         else (live_prices if isinstance(live_prices, dict) else {})
     )
     live_px_map = {
-        raw_k.strip().upper(): px
+        (canonical_display_symbol(raw_k) or raw_k.strip().upper()): px
         for raw_k, raw_v in live_src.items()
         if isinstance(raw_k, str) and raw_k.strip() and (px := extract_current_price_item(raw_v)) is not None
     }
@@ -490,14 +492,18 @@ def compute_venue_nav_breakdown(
                 continue
             parts = key.split(":", 2)
             v_f = normalize_venue_name(entry.get("venue") or (parts[1] if len(parts) > 1 else ""))
-            s_f = str(entry.get("symbol") or (parts[2] if len(parts) > 2 else "")).strip().upper()
-            b_f = (canonical_base_asset(entry.get("base") or s_f) or s_f).upper()
+            s_raw = str(entry.get("symbol") or (parts[2] if len(parts) > 2 else "")).strip()
+            s_f = canonical_display_symbol(s_raw, venue=v_f) or s_raw.upper()
+            b_f = canonical_balance_asset_key(entry.get("base") or s_f, venue=v_f) or s_f
+            b_canon = canonical_base_asset(entry.get("base") or s_f) or ""
             px_f = safe_pos_float(entry.get("price"), default=0.0) or 0.0
             if v_f and px_f > 0.0:
                 if s_f:
                     fallback_px_by_va[(v_f, s_f)] = px_f
                 if b_f:
                     fallback_px_by_va[(v_f, b_f)] = px_f
+                if b_canon:
+                    fallback_px_by_va[(v_f, b_canon)] = px_f
 
     balance_cache_venues: set[str] = set()
     if isinstance(venue_balance_caches, Mapping) and venue_balance_caches:
@@ -506,28 +512,28 @@ def compute_venue_nav_breakdown(
             if isinstance(doc, Mapping) and isinstance(doc.get("items"), Mapping) and doc.get("items"):
                 if (v_n := normalize_venue_name(doc.get("venue") or raw_v)):
                     balance_cache_venues.add(v_n)
-        for (v_n, a_u), obs in cache_obs.items():
+        for (v_n, a_k), obs in cache_obs.items():
             free_v = obs.free
             locked_v = obs.reflected_locked or 0.0
             if free_v <= 0.0 and locked_v <= 0.0:
                 continue
-            if a_u in _NAV_QUOTE_CASH_ASSETS:
+            if a_k in _NAV_QUOTE_CASH_ASSETS:
                 disk_cash_items.append(
-                    (f"{v_n}:{a_u}", {"venue": v_n, "asset": a_u, "free": free_v, "locked_quote_usd": locked_v})
+                    (f"{v_n}:{a_k}", {"venue": v_n, "asset": a_k, "free": free_v, "locked_quote_usd": locked_v})
                 )
             else:
-                a_disp = canonical_balance_asset_key(a_u, venue=v_n) or a_u
-                is_eq_a = is_equity_venue_or_suffix(a_disp, v_n)
-                sym_a = a_disp if is_eq_a else f"{a_disp}USD"
+                is_eq_a = is_equity_venue_or_suffix(a_k, v_n)
+                sym_a = a_k if is_eq_a else ensure_quote_suffix(a_k, "USD")
                 fb_px = (
-                    fallback_px_by_va.get((v_n, a_u))
-                    or fallback_px_by_va.get((v_n, canonical_base_asset(a_disp) or a_u))
+                    fallback_px_by_va.get((v_n, a_k))
+                    or fallback_px_by_va.get((v_n, sym_a))
+                    or fallback_px_by_va.get((v_n, canonical_base_asset(a_k) or a_k))
                     or 0.0
                 )
                 row: dict[str, Any] = {
                     "venue": v_n,
                     "symbol": sym_a,
-                    "base": a_disp,
+                    "base": a_k,
                     "free_base": free_v,
                     "locked_base_qty": locked_v,
                 }
@@ -569,7 +575,7 @@ def compute_venue_nav_breakdown(
     live_pos_keys: set[tuple[str, str]] = set()
     for p in live_pos_rows:
         v_name = normalize_venue_name(p.get("venue")) or "unknown"
-        sym_raw = str(p.get("symbol") or "").strip().upper()
+        sym_raw = canonical_display_symbol(p.get("symbol"), venue=v_name) or str(p.get("symbol") or "").strip().upper()
         if not _matches_scope(v_name, sym_raw):
             continue
         is_eq_p = is_equity_venue_or_suffix(sym_raw, v_name)
@@ -580,7 +586,7 @@ def compute_venue_nav_breakdown(
         grouped_pos.setdefault(g_key, []).append(p)
     for p in disk_pos_rows:
         v_name = normalize_venue_name(p.get("venue")) or "unknown"
-        sym_raw = str(p.get("symbol") or "").strip().upper()
+        sym_raw = canonical_display_symbol(p.get("symbol"), venue=v_name) or str(p.get("symbol") or "").strip().upper()
         if not _matches_scope(v_name, sym_raw):
             continue
         is_eq_p = is_equity_venue_or_suffix(sym_raw, v_name)
@@ -597,16 +603,19 @@ def compute_venue_nav_breakdown(
         free_val_u = 0.0
         locked_by_sym: dict[str, float] = {}
         for idx_g, gp in enumerate(grp_list):
-            sym_u = str(gp.get("symbol") or "").strip().upper()
+            sym_raw_g = str(gp.get("symbol") or "").strip()
+            sym_u = canonical_display_symbol(sym_raw_g, venue=v_name) or sym_raw_g.upper()
             live_px: float | None = None
             if live_px_map and sym_u:
                 if sym_u in live_px_map:
                     live_px = live_px_map[sym_u]
                 elif not has_equity_suffix(sym_u):
                     for cand in cache_symbol_variants(sym_u, quotes=compatible_quote_suffixes(sym_u)):
-                        if isinstance(cand, str) and not has_equity_suffix(cand) and (cand_u := cand.upper()) in live_px_map:
-                            live_px = live_px_map[cand_u]
-                            break
+                        if isinstance(cand, str) and not has_equity_suffix(cand):
+                            cand_k = canonical_display_symbol(cand, venue=v_name) or cand.upper()
+                            if cand_k in live_px_map:
+                                live_px = live_px_map[cand_k]
+                                break
             if live_px is not None and (
                 fb_live := safe_nonneg_float(gp.get("free_base"), None)
             ) is not None:

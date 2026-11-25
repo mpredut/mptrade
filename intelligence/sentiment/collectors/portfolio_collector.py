@@ -39,11 +39,11 @@ from cachepaths import (
     compatible_quote_suffixes,
     ensure_equity_suffix,
     ensure_quote_suffix,
+    ensure_xstock_pair,
     filter_asset_class_variants,
     has_equity_suffix,
     is_equity_venue,
     is_equity_venue_or_suffix,
-    is_kraken_tokenized_asset,
     is_primary_stream_venue,
     is_shadow_or_paper_state_payload,
     iter_venue_cycle_state_files,
@@ -1022,7 +1022,7 @@ class VenueCyclesCollector(PortfolioCacheCollectorBase):
                 a_px = safe_pos_float(alloc_doc.get("alloc_price"), default=0.0) or 0.0
                 a_asset = str(alloc_doc.get("asset") or "").strip()
                 a_base = canonical_base_asset(a_asset)
-                a_pair = resolve_registered_symbol_case(f"{a_base}xUSD", "kraken") if a_base else None
+                a_pair = resolve_registered_symbol_case(ensure_xstock_pair(a_base), "kraken") if a_base else None
                 known_a = xst_st.get("known_assets") if isinstance(xst_st.get("known_assets"), dict) else None
                 live_a_qty = (
                     safe_nonneg_float(casefold_get(known_a, a_asset), default=0.0) or 0.0
@@ -1145,7 +1145,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         def _holding_unit_px(hk: str) -> float:
             hu = _holding_underlying(hk)
             return (
-                resolve_symbol_price(f"{hu}xUSD", eff_pt)
+                resolve_symbol_price(ensure_xstock_pair(hu), eff_pt)
                 or resolve_symbol_price(ensure_equity_suffix(hu), eff_pt)
                 or 0.0
             )
@@ -1216,7 +1216,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             return None
         t212_sib = ensure_equity_suffix(underlying)
         active_pair_entry = active_pair_by_underlying.get(underlying)
-        default_xpair = f"{underlying}xUSD"
+        default_xpair = ensure_xstock_pair(underlying)
         inferred_listed_pair = (
             live_pos_pairs.get(underlying)
             or (default_xpair if resolve_symbol_price(default_xpair, eff_pt) > 0.0 else None)
@@ -1277,7 +1277,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         alloc_px = active_cycle_cost_px or static_alloc_px
         xpair_px = (
             resolve_symbol_price(primary_xpair, eff_pt)
-            or resolve_symbol_price(f"{underlying}xUSD", eff_pt)
+            or resolve_symbol_price(default_xpair, eff_pt)
         )
         sib_px = resolve_symbol_price(t212_sib, eff_pt)
         live_px = xpair_px or sib_px
@@ -1349,7 +1349,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             f"large enough to clearly overcome the heavy manual rebuy fee/spread{crash_clause}. NEVER scalp on 90s/5m kinematics or shallow dips, "
             f"and do NOT submit Kraken xStock BUY orders (use T212 {t212_sib} for US equity buys)."
         )
-        ipo_sym_lbl = f"{cfg_underlying}xUSD" if (ipo_watch_active and cfg_underlying) else ""
+        ipo_sym_lbl = ensure_xstock_pair(cfg_underlying) if (ipo_watch_active and cfg_underlying) else ""
         xst_summary: Dict[str, Any] = {
             "underlying": underlying,
             "t212_sibling": t212_sib,
@@ -1459,7 +1459,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 if k.startswith("cash:") and isinstance(v, dict):
                     parts = k.split(":", 2)
                     v_n = normalize_venue_name(v.get("venue") or (parts[1] if len(parts) > 1 else ""))
-                    a_u = str(v.get("asset") or (parts[2] if len(parts) > 2 else "")).strip().upper()
+                    a_u = canonical_balance_asset_key(v.get("asset") or (parts[2] if len(parts) > 2 else ""), venue=v_n)
                     free_v = safe_nonneg_float(v.get("free"), default=None)
                     if v_n and a_u and free_v is not None:
                         locked_q = safe_nonneg_float(v.get("locked_quote_usd"), default=0.0) or 0.0
@@ -1590,7 +1590,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 if p_sym:
                     rec_pos["symbol"] = p_sym
                 res_b_rec, res_q_rec = resolve_assets(p_sym, rec_pos.get("base"), rec_pos.get("quote"))
-                p_base_u = str(res_b_rec or "").strip().upper()
+                p_base_u = canonical_balance_asset_key(res_b_rec, venue=v_rec_norm)
                 p_quote = str(res_q_rec or rec_pos.get("quote") or "USD").strip().upper()
                 is_eq_rec = is_equity_venue(v_rec_norm)
                 base_ref_locked: Optional[float] = None
@@ -1667,7 +1667,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 )
                 tradable_positions.append(rec_pos)
             elif k.startswith("cash:") and isinstance(v, dict):
-                c_venue, c_asset = str(v.get("venue") or "").strip().lower(), str(v.get("asset") or "").strip().upper()
+                c_venue = str(v.get("venue") or "").strip().lower()
+                c_asset = canonical_balance_asset_key(v.get("asset"), venue=c_venue)
                 if c_venue and c_asset:
                     c_v_norm = normalize_venue_name(c_venue)
                     rec_cash = dict(v)
@@ -1738,9 +1739,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 return None
             raw_v = str(getattr(inst_obj, "provider_name", "") or "").strip().lower()
             v_name = normalize_venue_name(raw_v) or raw_v
-            eff_asset = asset if is_kraken_tokenized_asset(asset) else asset.upper()
-            asset_u = asset.upper()
-            key = (v_name, asset_u)
+            eff_asset = canonical_balance_asset_key(asset, venue=v_name) or asset.upper()
+            key = (v_name, eff_asset)
             if key in balance_obs_memo:
                 return balance_obs_memo[key]
             if key in balance_memo and balance_memo[key] is not None:
@@ -1790,7 +1790,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 except Exception:
                     val_f = None
             bkey = f"{v_name}:{eff_asset}"
-            raw_bkey = f"{raw_v}:{asset_u}"
+            raw_bkey = f"{raw_v}:{eff_asset}"
             obs_out: Optional[BalanceObservation] = None
             if val_f is not None:
                 updated_bals[bkey] = round(val_f, 8)

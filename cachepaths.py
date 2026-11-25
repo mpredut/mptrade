@@ -916,6 +916,24 @@ def strip_equity_suffix(symbol: object, *, base_only: bool = False) -> str:
     return s.split("_", 1)[0] if base_only else s
 
 
+def ensure_xstock_asset(symbol: object) -> str:
+    """Return the canonical mixed-case Kraken xStock asset token ``<STEM>x`` (e.g. ``SPCX`` / ``SPCXx.T`` / ``SPCXxUSD`` -> ``SPCXx``)."""
+    raw = clean_scalar_str(symbol)
+    if raw is None:
+        return ""
+    stem = canonical_base_asset(raw)
+    return f"{stem}x" if stem else ""
+
+
+def ensure_xstock_pair(symbol: object, quote: str = "USD") -> str:
+    """Return the canonical mixed-case Kraken xStock spot pair ``<STEM>x<QUOTE>`` (e.g. ``SPCX`` -> ``SPCXxUSD``)."""
+    asset = ensure_xstock_asset(symbol)
+    if not asset:
+        return ""
+    q = clean_symbol_key(quote) if isinstance(quote, str) else ""
+    return f"{asset}{q or 'USD'}"
+
+
 def filter_asset_class_variants(
     symbol: object,
     variants: object,
@@ -1171,11 +1189,18 @@ def is_usd_compatible_pair(symbol: object) -> bool:
 
 
 def ensure_quote_suffix(symbol: object, default_quote: str = "USDC") -> str:
-    """Append ``default_quote`` when ``symbol`` is a bare uppercase token lacking a quote suffix."""
-    if (raw_u := clean_upper_scalar(symbol)) is None:
+    """Append ``default_quote`` when ``symbol`` is a bare token lacking a quote suffix, preserving xStock mixed case."""
+    raw = clean_scalar_str(symbol)
+    if raw is None:
         return ""
+    raw_u = raw.upper()
     if has_equity_suffix(raw_u, include_compact=True):
         return raw_u
+    if is_readonly_xstock_symbol(raw):
+        q_default = clean_symbol_key(default_quote) if isinstance(default_quote, str) else ""
+        q_default = q_default or "USD"
+        existing_q = symbol_quote_asset(raw) if _extract_raw_symbol_base(raw, min_stem_len=3) != raw else ""
+        return ensure_xstock_pair(raw, quote=existing_q or q_default)
     if not (sym := clean_symbol_key(raw_u)):
         return ""
     q = clean_symbol_key(default_quote) if isinstance(default_quote, str) else ""

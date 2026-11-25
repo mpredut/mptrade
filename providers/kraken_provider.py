@@ -72,6 +72,8 @@ from cachepaths import (
     canonical_symbol_key,
     clean_symbol_key,
     compatible_quote_suffixes,
+    ensure_quote_suffix,
+    ensure_xstock_asset,
     is_readonly_xstock_symbol,
     kraken_pair_key,  # noqa: F401
     kraken_pair_matches,
@@ -120,13 +122,16 @@ def _kraken_balance_asset_candidates(asset: str) -> List[str]:
     if (raw := clean_scalar_str(asset)) is None:
         return []
     asset_u = raw.upper()
+    asset_x = ensure_xstock_asset(raw)
     candidates: List[str] = [
         raw, f"{raw}.T", asset_u, "X" + asset_u, "Z" + asset_u,
-        asset_u + ".F", asset_u + ".S", f"{asset_u}.T", f"{asset_u}x.T", f"{asset_u}X.T", f"{asset_u}x",
+        asset_u + ".F", asset_u + ".S", f"{asset_u}.T",
     ]
+    if asset_x:
+        candidates.extend([f"{asset_x}.T", f"{asset_x.upper()}.T", asset_x])
     if len(asset_u) >= 2 and asset_u.endswith("X"):
-        stem = asset_u[:-1]
-        candidates.extend([f"{stem}x.T", f"{stem}x"])
+        if stem_x := ensure_xstock_asset(asset_u[:-1]):
+            candidates.extend([f"{stem_x}.T", stem_x])
     if asset_u in {"BTC", "XBT", "XXBT"}:
         candidates.extend(["BTC", "XBT", "XXBT", "XBT.F", "XXBT.F"])
     elif asset_u in {"DOGE", "XDG", "XXDG"}:
@@ -136,7 +141,10 @@ def _kraken_balance_asset_candidates(asset: str) -> List[str]:
         candidates.extend([stripped, f"{stripped}.F", f"{stripped}.S"])
     canon = canonical_base_asset(raw)
     if canon and canon != asset_u:
-        candidates.extend([canon, f"{canon}.F", f"{canon}.S", f"{canon}x.T", f"{canon}X.T", f"{canon}x"])
+        canon_x = ensure_xstock_asset(canon)
+        candidates.extend([canon, f"{canon}.F", f"{canon}.S"])
+        if canon_x:
+            candidates.extend([f"{canon_x}.T", f"{canon_x.upper()}.T", canon_x])
     return list(dict.fromkeys(candidates))
 
 
@@ -1233,7 +1241,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         if is_tok:
             return series_to_historical_points(self.ohlc_series(reg_sym, 60))
         base_u = normalize_cache_base_asset(symbol)
-        krk_sym = f"{base_u}USD" if base_u else str(symbol or "").strip().upper()
+        krk_sym = ensure_quote_suffix(base_u, "USD") if base_u else str(symbol or "").strip().upper()
         return series_to_historical_points(self.ohlc_series(krk_sym, 60))
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:

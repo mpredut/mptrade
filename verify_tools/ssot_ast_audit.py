@@ -26,6 +26,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import cachepaths as _cachepaths
+import instrument_registry as _instrument_registry
 from state_io import read_text_file
 from state_stores.registry import CRITICAL_STATE_SPECS, expected_store_class_name
 from verify_tools.translation_audit import PROD_PYTHON_SKIP_TOP, find_first_non_ascii_line
@@ -55,6 +56,8 @@ QUOTE_ENDSWITH_OWNERS = frozenset({
 QUOTE_SUFFIX_TOKENS = frozenset({"USDC", "USDT", "USD", "EUR", "FDUSD", "TUSD", "BUSD"})
 EQUITY_SUFFIX_TOKENS = frozenset({"_EQ", "_US_EQ"})
 _US_EQ_SUFFIX = "_US_EQ"
+_XSTOCK_PAIR_FSTRING_PREFIXES = ("xUSD", "XUSD", "x/USD", "X/USD")
+_FORBIDDEN_MANUAL_CONCAT_SUFFIXES = frozenset({"_US_EQ", "xUSD", "XUSD", "x/USD", "X/USD", "USD"})
 _OHLC_24H_PREFIX = "cache_ohlc_24h_"
 CACHEPRICE_POLLER_ALIASES = frozenset({
     "NonBinanceTrendPoller",
@@ -627,6 +630,38 @@ def _imported_roots_and_full(tree: ast.Module, *, include_dynamic: bool = False)
 
 # -- Audit 1: Repo-wide SSOT primitives, ASCII, undefined names, re-exports ----
 
+def _load_forbidden_upper_xstock_re(root: Path) -> tuple[re.Pattern[str] | None, dict[str, str]]:
+    """Derive case-sensitive corrupted uppercase xStock tokens dynamically from registered mixed-case instruments."""
+    conf_candidates = [root / "instruments.conf"]
+    root_conf = _ROOT / "instruments.conf"
+    if root_conf not in conf_candidates:
+        conf_candidates.append(root_conf)
+    tokens: dict[str, str] = {}
+    for conf_p in conf_candidates:
+        if not conf_p.is_file():
+            continue
+        try:
+            reg = _instrument_registry.load_registry(conf_p)
+        except Exception:
+            continue
+        for spec in reg.values():
+            for canon in (spec.symbol, spec.base):
+                if canon and any(ch.islower() for ch in canon) and _cachepaths.is_readonly_xstock_symbol(canon):
+                    bad_u = canon.upper()
+                    if bad_u != canon:
+                        tokens[bad_u] = canon
+                        if not bad_u.endswith("USD") and not bad_u.endswith(".T"):
+                            tokens[f"{bad_u}.T"] = f"{canon}.T"
+        if tokens:
+            break
+    if not tokens:
+        return None, {}
+    pat = re.compile(
+        r"\b(?:" + "|".join(re.escape(tok) for tok in sorted(tokens, key=len, reverse=True)) + r")\b"
+    )
+    return pat, tokens
+
+
 def audit_repo_ssot_ast(
     root: Path = _ROOT,
     rel_paths: Sequence[str] | None = None,
@@ -635,6 +670,7 @@ def audit_repo_ssot_ast(
 ) -> list[str]:
     """Audit production Python modules (and extra dirs for transitive re-exports) for SSOT AST purity."""
     root = Path(root)
+    bad_xstock_re, bad_xstock_map = _load_forbidden_upper_xstock_re(root)
     target_rels = _normalize_target_rels(root, rel_paths)
     prod_rels = [r for r in target_rels if _is_prod_python_rel(r)]
     reexport_extra_rels = [
@@ -811,13 +847,15 @@ def audit_repo_ssot_ast(
                 for alias in node.names:
                     if alias.name == "providers.base":
                         ssot_violations.append(f"{rel_s}:{lineno}: upward layer import providers.base")
-            elif (
-                rel_s != "cachepaths.py"
-                and isinstance(node, ast.Constant)
-                and isinstance(node.value, str)
-                and node.value.startswith(_OHLC_24H_PREFIX)
-            ):
-                ssot_violations.append(f"{rel_s}:{lineno}: hardcoded cache_ohlc_24h_ filename prefix")
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if rel_s != "cachepaths.py" and node.value.startswith(_OHLC_24H_PREFIX):
+                    ssot_violations.append(f"{rel_s}:{lineno}: hardcoded cache_ohlc_24h_ filename prefix")
+                if bad_xstock_re is not None and (bad_m := bad_xstock_re.search(node.value)) is not None:
+                    bad_tok = bad_m.group(0)
+                    ssot_violations.append(
+                        f"{rel_s}:{lineno}: corrupted uppercase xStock literal {bad_tok!r} "
+                        f"(use canonical {bad_xstock_map.get(bad_tok, '')!r} or SymbolIdentity API)"
+                    )
             elif rel_s not in INVALID_SCALAR_OWNERS and (
                 (isinstance(node, ast.Name) and node.id == "INVALID_SCALAR_STRINGS")
                 or (isinstance(node, ast.Attribute) and node.attr == "INVALID_SCALAR_STRINGS")
@@ -825,16 +863,54 @@ def audit_repo_ssot_ast(
                 ssot_violations.append(
                     f"{rel_s}:{lineno}: direct INVALID_SCALAR_STRINGS use (call clean_scalar_str / clean_upper_scalar)"
                 )
+            elif rel_s != "cachepaths.py" and isinstance(node, ast.JoinedStr) and node.values:
+                if (
+                    isinstance(node.values[-1], ast.Constant)
+                    and isinstance(node.values[-1].value, str)
+                    and node.values[-1].value.endswith(_US_EQ_SUFFIX)
+                ):
+                    ssot_violations.append(
+                        f"{rel_s}:{lineno}: manual f-string _US_EQ concatenation (call ensure_equity_suffix)"
+                    )
+                if any(
+                    isinstance(node.values[idx - 1], ast.FormattedValue)
+                    and isinstance(node.values[idx], ast.Constant)
+                    and isinstance(node.values[idx].value, str)
+                    and node.values[idx].value.startswith(_XSTOCK_PAIR_FSTRING_PREFIXES)
+                    for idx in range(1, len(node.values))
+                ):
+                    ssot_violations.append(
+                        f"{rel_s}:{lineno}: manual f-string xStock pair concatenation "
+                        f"(call ensure_xstock_pair / SymbolIdentity.quote_pair)"
+                    )
+                if (
+                    len(node.values) == 2
+                    and isinstance(node.values[0], ast.FormattedValue)
+                    and isinstance(node.values[1], ast.Constant)
+                    and isinstance(node.values[1].value, str)
+                ):
+                    tail_s = node.values[1].value
+                    if tail_s == "USD":
+                        ssot_violations.append(
+                            f"{rel_s}:{lineno}: manual f-string USD pair concatenation "
+                            f"(call ensure_quote_suffix / SymbolIdentity.quote_pair)"
+                        )
+                    elif tail_s == "x" and node.values[0].format_spec is None:
+                        ssot_violations.append(
+                            f"{rel_s}:{lineno}: manual f-string xStock asset concatenation "
+                            f"(call ensure_xstock_asset / SymbolIdentity.balance_asset_key)"
+                        )
             elif (
                 rel_s != "cachepaths.py"
-                and isinstance(node, ast.JoinedStr)
-                and node.values
-                and isinstance(node.values[-1], ast.Constant)
-                and isinstance(node.values[-1].value, str)
-                and node.values[-1].value.endswith(_US_EQ_SUFFIX)
+                and isinstance(node, ast.BinOp)
+                and isinstance(node.op, ast.Add)
+                and isinstance(node.right, ast.Constant)
+                and isinstance(node.right.value, str)
+                and node.right.value in _FORBIDDEN_MANUAL_CONCAT_SUFFIXES
             ):
                 ssot_violations.append(
-                    f"{rel_s}:{lineno}: manual f-string _US_EQ concatenation (call ensure_equity_suffix)"
+                    f"{rel_s}:{lineno}: manual string concatenation {node.right.value!r} "
+                    f"(use cachepaths / SymbolIdentity canonical builders)"
                 )
 
     for rel_s in reexport_extra_rels:

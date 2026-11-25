@@ -16,6 +16,7 @@ from cachepaths import (
     clean_symbol_key,
     compatible_quote_suffixes,
     ensure_equity_suffix,
+    ensure_xstock_pair,
     has_equity_suffix,
     is_usd_compatible_pair,
     is_usdc_pair,
@@ -98,7 +99,7 @@ _AG_HISTORICAL_KEYS: frozenset[str] = frozenset({
 
 
 def coalesce_case_variants(mapping: Dict[str, Any]) -> Dict[str, Any]:
-    """Merge case-only duplicate keys (e.g. ``SPCXXUSD`` + ``SPCXxUSD`` -> ``SPCXxUSD``) preserving all fields."""
+    """Merge case-only duplicate keys into canonical mixed case (e.g. ``SPCXxUSD``) preserving all fields."""
     return coalesce_symbol_case_variants(mapping, in_place=False)
 
 
@@ -743,7 +744,7 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
         is_tok_pos = pos_ident.is_tokenized_equity
         disp_pos_sym = pos_ident.display_symbol if is_tok_pos else p_map.get("symbol")
         disp_base_lbl = (
-            f"{canonical_base_asset(pos_ident.wire_symbol)}x"
+            pos_ident.balance_asset_key
             if is_tok_pos
             else (p_map.get("base") or canonical_base_asset(str(disp_pos_sym or "")) or "BASE")
         )
@@ -935,12 +936,12 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
             else:
                 xs = xs_raw
             xs_pair_lbl = (
-                (xs.get("listed_pair") or (f"{xs['underlying']}xUSD" if xs.get("underlying") else "xStocks"))
+                (xs.get("listed_pair") or (ensure_xstock_pair(xs["underlying"]) if xs.get("underlying") else "xStocks"))
                 if isinstance(xs, dict)
                 else "xStocks"
             )
             xs_ipo_lbl = (
-                f", {xs['watched_ipo_underlying']}xUSD IPO Playbook"
+                f", {ensure_xstock_pair(xs['watched_ipo_underlying'])} IPO Playbook"
                 if isinstance(xs, dict) and xs.get("watched_ipo_underlying")
                 else ""
             )

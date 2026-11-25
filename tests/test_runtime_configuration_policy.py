@@ -935,22 +935,29 @@ def test_ssot_ast_audit_pre_commit_blocks_manual_parsing_and_allows_ssot_delegat
     """Verify verify_tools.ssot_ast_audit blocks manual parsing/venue/IO/re-export violations in pre-commit mode."""
     from verify_tools import ssot_ast_audit as audit
 
-    # 1. Manual quote/equity suffix parsing, venue branching, raw coercion/IO/env, and f-string assembly are blocked.
+    # 1. Manual quote/equity/xStock suffix parsing, corrupted uppercase xStock literals, venue branching, raw coercion/IO/env, and f-string assembly are blocked.
+    bad_upper_xstock = "SPCXx".upper()
     bad_collector = tmp_path / "intelligence" / "collector_bad.py"
     bad_collector.parent.mkdir(parents=True, exist_ok=True)
     bad_collector.write_text(
         textwrap.dedent(
-            '''
+            f'''
             import json
             import os
 
+            BAD_LIT = "{bad_upper_xstock}"
+
             def ingest(sym: str, venue: str, raw: str) -> bool:
                 if sym.endswith(("USDT", "USDC")) or sym.endswith("_US_EQ"):
-                    _ = f"{sym}_US_EQ"
+                    _ = f"{{sym}}_US_EQ"
+                    _ = f"{{sym}}xUSD"
+                    _ = f"{{sym}}USD"
+                    _ = f"{{sym}}x"
+                    _ = sym + "xUSD"
                 if venue == "kraken":
                     _ = float(raw)
                     _ = os.getenv("FOO")
-                    _ = json.loads("{}")
+                    _ = json.loads("{{}}")
                 return False
             '''
         ).lstrip(),
@@ -961,6 +968,11 @@ def test_ssot_ast_audit_pre_commit_blocks_manual_parsing_and_allows_ssot_delegat
     assert "manual quote .endswith" in joined
     assert "manual equity .endswith" in joined
     assert "manual f-string _US_EQ concatenation" in joined
+    assert "manual f-string xStock pair concatenation" in joined
+    assert "manual f-string USD pair concatenation" in joined
+    assert "manual f-string xStock asset concatenation" in joined
+    assert "manual string concatenation 'xUSD'" in joined
+    assert "corrupted uppercase xStock literal" in joined
     assert "hardcoded venue branch 'kraken'" in joined
     assert "raw float()" in joined
     assert "os.getenv" in joined
@@ -980,12 +992,14 @@ def test_ssot_ast_audit_pre_commit_blocks_manual_parsing_and_allows_ssot_delegat
     clean_collector.write_text(
         textwrap.dedent(
             """
-            from cachepaths import ensure_equity_suffix, has_equity_suffix, symbol_quote_asset
+            from cachepaths import ensure_equity_suffix, ensure_quote_suffix, ensure_xstock_asset, ensure_xstock_pair, has_equity_suffix, symbol_quote_asset
 
             def ingest(sym: str) -> str:
                 if symbol_quote_asset(sym) in ("USDT", "USDC") or has_equity_suffix(sym):
                     return ensure_equity_suffix(sym)
-                return sym
+                _ = ensure_xstock_asset(sym)
+                _ = ensure_xstock_pair(sym)
+                return ensure_quote_suffix(sym, "USD")
             """
         ).lstrip(),
         encoding="utf-8",

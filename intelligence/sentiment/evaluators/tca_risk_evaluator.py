@@ -493,10 +493,11 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
         )
         for v_name, p, val_u in grouped_positions:
             if val_u >= 1.0:
-                sym = str(p.get("symbol") or "").strip().upper()
-                ident = resolve_symbol_identity(sym, venue=v_name)
+                raw_sym = str(p.get("symbol") or "").strip()
+                ident = resolve_symbol_identity(raw_sym, venue=v_name)
+                sym = ident.display_symbol or raw_sym.upper()
                 base = (
-                    f"{canonical_base_asset(ident.wire_symbol)}x"
+                    ident.balance_asset_key
                     if ident.is_tokenized_equity
                     else canonical_base_asset(p.get("base") or sym)
                 )

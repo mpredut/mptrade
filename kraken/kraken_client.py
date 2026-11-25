@@ -129,7 +129,7 @@ def get_cached_pair_info(candidates, cache_dict: dict | None = None) -> dict | N
 
 
 def _resolve_kraken_pair(pair: str, *, upper_default: bool = True) -> tuple[str, bool]:
-    """Return ``(effective_pair, is_tokenized)`` resolving uppercase registry keys (e.g. ``SPCXXUSD`` -> ``SPCXxUSD``)."""
+    """Return ``(effective_pair, is_tokenized)`` resolving case-folded registry keys to canonical mixed-case pairs (e.g. ``SPCXxUSD``)."""
     return resolve_kraken_tokenized_pair(pair, upper_default=upper_default)
 
 
