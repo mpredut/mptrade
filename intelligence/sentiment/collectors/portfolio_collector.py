@@ -1385,7 +1385,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         if live_px > 0:
             xst_summary["live_price"] = round(live_px, 4)
             if alloc_px is not None:
-                xst_summary["pnl_vs_alloc_pct"] = round(((live_px - alloc_px) / alloc_px) * 100.0, 2)
+                xst_summary["pnl_vs_alloc_pct"] = round(((live_px - alloc_px) / alloc_px) * 100.0, 2) + 0.0
         if xpair_px > 0 and sib_px > 0:
             sib_entry = casefold_get(eff_pt, t212_sib)
             sib_mstate = str(sib_entry.get("market_state") or "").strip().upper() if isinstance(sib_entry, dict) else ""
@@ -1402,7 +1402,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             xst_summary["underlying_live_price"] = round(sib_px, 4)
             if sib_mstate:
                 xst_summary["underlying_session"] = sib_mstate
-            xst_summary["xstock_vs_underlying_pct"] = round(((xpair_px - sib_px) / sib_px) * 100.0, 2)
+            xst_summary["xstock_vs_underlying_pct"] = round(((xpair_px - sib_px) / sib_px) * 100.0, 2) + 0.0
         if isinstance((sib_cyc := first_variant_dict(eff_t212, (t212_sib, underlying))), dict):
             xst_summary["t212_sibling_cycle"] = {k: v for k, v in sib_cyc.items() if not str(k).startswith("_")}
         return xst_summary

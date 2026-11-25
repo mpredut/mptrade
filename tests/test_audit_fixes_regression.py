@@ -8992,6 +8992,59 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
     assert seeded_prices["BNBUSDC"][0][1] == pytest.approx(620.0)
 
 
+def test_cycle18_xstock_no_negative_zero_and_personal_finance_affiliate_news_filter(tmp_path):
+    """Cycle 18 regressions:
+    1. KrakenXstocksCollector must normalize -0.0 to 0.0 on xstock_vs_underlying_pct and pnl_vs_alloc_pct.
+    2. Consumer personal-finance affiliate/listicle items (e.g. CNBC Select / 'Best low-interest personal loans...')
+       must be excluded so they cannot evict live macro headlines from the top-6 Breaking News feed.
+    """
+    import math
+    from intelligence.macro.lexicon_ssot import has_financial_or_geopolitical_context, is_excluded_reference_news_item
+    from intelligence.sentiment.collectors.portfolio_collector import KrakenXstocksCollector
+    from state_io import save_json_state
+
+    # 1. Tiny negative delta (-0.004%) must emit +0.0 (not IEEE-754 -0.0)
+    k_dir = tmp_path / "kraken_neg0"
+    k_dir.mkdir()
+    save_json_state(
+        str(k_dir / "xstock_state.json"),
+        {"known_assets": {"SPCXx": 12.135889}, "pair": "SPCXxUSD", "allocated": {"asset": "SPCXx", "qty": 12.135889, "alloc_price": 117.105}},
+    )
+    xst = KrakenXstocksCollector(start_sync=False).collect(
+        str(k_dir),
+        kraken_dir=str(k_dir),
+        prices_and_trends={
+            "SPCXxUSD": {"price": 117.1},
+            "SPCX_US_EQ": {"price": 117.105, "quote_source": "yahoo_rth"},
+        },
+        all_t212_cycles={},
+    )
+    assert xst is not None
+    assert xst["xstock_vs_underlying_pct"] == 0.0
+    assert not math.copysign(1.0, xst["xstock_vs_underlying_pct"]) < 0
+    assert xst["pnl_vs_alloc_pct"] == 0.0
+    assert not math.copysign(1.0, xst["pnl_vs_alloc_pct"]) < 0
+
+    # 2. CNBC Select & consumer personal-finance product roundups are excluded; genuine macro headlines remain allowed
+    assert is_excluded_reference_news_item(
+        "Best low-interest personal loans of December 2026",
+        source="US Top News and Analysis",
+        url="https://www.cnbc.com/select/best-low-interest-personal-loans/",
+    ) is True
+    assert has_financial_or_geopolitical_context("Best low-interest personal loans of December 2026") is False
+    assert has_financial_or_geopolitical_context("Best high-yield savings accounts for 2026") is False
+    assert is_excluded_reference_news_item(
+        "Some affiliate comparison article",
+        url="https://www.cnbc.com/select/some-product-review/",
+    ) is True
+    assert is_excluded_reference_news_item(
+        "Fed's preferred inflation gauge accelerated to 3.8% in October",
+        url="https://www.cnbc.com/2026/11/25/pce-inflation.html",
+    ) is False
+    assert has_financial_or_geopolitical_context("Personal loan delinquencies rise to five-year high") is True
+
+
+
 
 
 
