@@ -190,6 +190,7 @@ from cachepaths import (
 )
 from pricewindow import filter_isolated_price_points
 from providers.portfolio_valuation import (
+    INTERNAL_BALANCE_SCRATCH_KEYS,
     load_venue_balances_state_dict,
     resolve_venue_balances_state_path,
 )
@@ -1278,9 +1279,7 @@ def load_venue_balances_state(
     return bcache_path, raw_cb, bcache_mtime
 
 
-_INTERNAL_VENUE_BALANCE_SCRATCH_KEYS: frozenset[str] = frozenset(
-    {"_balance_ts", "_base_balance_ts", "_quote_balance_ts"}
-)
+_INTERNAL_VENUE_BALANCE_SCRATCH_KEYS: frozenset[str] = INTERNAL_BALANCE_SCRATCH_KEYS
 
 
 def _sanitize_venue_balances_payload(

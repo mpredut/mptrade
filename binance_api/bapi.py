@@ -78,23 +78,36 @@ def get_current_price(symbol):
     return update_price(symbol)
 
 
-def get_free_balance(asset: str):
+def get_free_and_locked_balance(asset: str):
+    """Return atomic ``(free, locked)`` Binance balance from a single ``get_asset_balance`` read, or ``None`` on error."""
     try:
         asset_u = clean_upper_scalar(asset)
         if asset_u is None:
             return None
-        # Return the free Binance balance for an asset.
         asset_info = client.get_asset_balance(asset=asset_u)
-        raw_free = (asset_info or {}).get("free", 0)
+        info_d = asset_info or {}
+        raw_free = info_d.get("free", 0)
+        raw_locked = info_d.get("locked", 0)
         if isinstance(raw_free, bool):
             raise TypeError(f"invalid boolean free balance: {raw_free!r}")
+        if isinstance(raw_locked, bool):
+            raise TypeError(f"invalid boolean locked balance: {raw_locked!r}")
         free_val = safe_nonneg_float(raw_free, default=None)
         if free_val is None:
             raise ValueError(f"invalid free balance: {raw_free!r}")
-        return free_val
+        locked_val = safe_nonneg_float(raw_locked, default=None) if "locked" in info_d else 0.0
+        return (free_val, locked_val)
     except Exception as e:
         print(f"get_free_balance: Error for {asset}: {e}")
         return None
+
+
+def get_free_balance(asset: str):
+    pair = get_free_and_locked_balance(asset)
+    return pair[0] if pair is not None else None
+
+
+_DEFAULT_GET_FREE_BALANCE = get_free_balance
 
 
 def get_account_assets_balances(raise_errors=False):

@@ -387,8 +387,8 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
             )
 
     # -- Read-only spot account access. ----------------------------------------
-    def free_balance(self, asset: str) -> Optional[float]:
-        """Return available spot balance as total minus hold for supported assets."""
+    def free_and_locked_balance(self, asset: str) -> Optional[tuple[float, Optional[float]]]:
+        """Return atomic ``(free, hold)`` spot balance from a single ``spot_user_state`` query."""
         if (asset_u := clean_upper_scalar(asset)) is None:
             return None
         if (c := self._hl()) is None:
@@ -417,12 +417,17 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
                         hold = safe_nonneg_float(b.get("hold"), default=None)
                         if total is None or hold is None:
                             return None
-                        return max(total - hold, 0.0)
-            return 0.0
+                        return max(total - hold, 0.0), hold
+            return 0.0, 0.0
         except Exception as e:  # noqa: BLE001
             return self._log_provider_balance_error(
                 "HL", "free_balance", asset, e, fmt="[{tag}] {label}({asset}) failed: {exc}"
             )
+
+    def free_balance(self, asset: str) -> Optional[float]:
+        """Return available spot balance as total minus hold for supported assets."""
+        pair = self.free_and_locked_balance(asset)
+        return pair[0] if pair is not None else None
 
     def _require_hl_client_and_pair(
         self,

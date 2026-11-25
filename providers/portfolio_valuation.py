@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from cachepaths import (
     VENUE_BALANCES_STATE_FILENAME,
@@ -20,6 +20,200 @@ from cachepaths import (
 from core.math_coercion import first_pos_float
 from core.time_market import extract_current_price_item
 from state_io import read_json_dict, read_json_dict_cached
+
+
+INTERNAL_BALANCE_SCRATCH_KEYS: frozenset[str] = frozenset(
+    {
+        "_balance_ts",
+        "_base_balance_ts",
+        "_quote_balance_ts",
+        "_prev_locked_quote_usd",
+        "_prev_locked_base_qty",
+    }
+)
+
+
+def strip_internal_balance_scratch_keys(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a shallow copy of ``entry`` with all internal balance scratch keys removed."""
+    return {k: v for k, v in entry.items() if k not in INTERNAL_BALANCE_SCRATCH_KEYS}
+
+
+def extract_position_held_qty(entry: Any) -> Optional[float]:
+    """Return total held base quantity (``free_base + locked_base_qty``) from a position dict, or ``None`` if absent."""
+    if not isinstance(entry, Mapping):
+        return None
+    fb = safe_nonneg_float(
+        entry.get("free_base") if entry.get("free_base") is not None else entry.get("free"),
+        default=None,
+    )
+    lb = first_pos_float(entry.get("locked_base_qty"), entry.get("locked"), default=0.0) or 0.0
+    if fb is None:
+        return lb if lb > 0.0 else None
+    return fb + lb
+
+
+def reprice_position_balance_fields(entry: dict[str, Any], cur_px: float) -> None:
+    """Update ``value_usd`` and ``locked_base_usd`` consistently when a position's mark price changes."""
+    px_f = safe_pos_float(cur_px, default=0.0) or 0.0
+    if px_f <= 0.0:
+        return
+    fb = safe_nonneg_float(
+        entry.get("free_base") if entry.get("free_base") is not None else entry.get("free"),
+        default=None,
+    )
+    if fb is not None:
+        entry["value_usd"] = round(fb * px_f, 2)
+    lb = first_pos_float(entry.get("locked_base_qty"), entry.get("locked"), default=0.0) or 0.0
+    if lb > 0.0:
+        entry["locked_base_usd"] = round(lb * px_f, 2)
+
+
+@dataclass(frozen=True, slots=True)
+class BalanceObservation:
+    """Atomic balance observation binding raw free quantity to its own timestamp, reflected locked amount, and priority."""
+
+    free: float
+    ts: Optional[float] = None
+    priority: int = 0
+    reflected_locked: Optional[float] = None
+
+
+def merge_balance_observation(
+    cur: Optional[BalanceObservation],
+    free: Optional[float],
+    ts: Optional[float],
+    priority: int,
+    reflected_locked: Optional[float] = None,
+) -> Optional[BalanceObservation]:
+    """Combine atomic ``BalanceObservation`` records without mixing value, timestamp, or reflected locks."""
+    if free is None:
+        return cur
+    cand = BalanceObservation(free=free, ts=ts, priority=priority, reflected_locked=reflected_locked)
+    if cur is None:
+        return cand
+    if cur.ts is not None and ts is not None:
+        if ts > cur.ts + 1e-6:
+            return cand
+        if cur.ts > ts + 1e-6:
+            return cur
+        winner, other = (cand, cur) if priority >= cur.priority else (cur, cand)
+        if winner.reflected_locked is None and other.reflected_locked is not None:
+            return BalanceObservation(
+                free=winner.free, ts=winner.ts, priority=winner.priority, reflected_locked=other.reflected_locked
+            )
+        return winner
+    if ts is not None:
+        return cand
+    if cur.ts is not None:
+        return cur
+    winner, other = (cand, cur) if priority >= cur.priority else (cur, cand)
+    if winner.reflected_locked is None and other.reflected_locked is not None:
+        return BalanceObservation(
+            free=winner.free, ts=winner.ts, priority=winner.priority, reflected_locked=other.reflected_locked
+        )
+    return winner
+
+
+def build_cached_balance_observations(
+    cached_bals: Any,
+    *,
+    resolve_assets_fn: Callable[[str, Any, Any], tuple[Any, Any]],
+    canonical_symbol_fn: Optional[Callable[..., str]] = None,
+) -> dict[tuple[str, str], BalanceObservation]:
+    """Build atomic ``(venue, asset) -> BalanceObservation`` records from ``venue_balances_state.json``.
+
+    Preserves ``reflected_locked`` grouped strictly by matching timestamp bucket so stale position snapshots
+    cannot contaminate newer observations, while retaining quote locks even when ``cash:*`` is absent or older.
+    """
+    obs_by_va: dict[tuple[str, str], BalanceObservation] = {}
+    if not isinstance(cached_bals, Mapping):
+        return obs_by_va
+
+    # 1. Scalar "<venue>:<ASSET>" entries (lowest precedence; untimestamped unless corroborated)
+    for k, v in cached_bals.items():
+        if not isinstance(k, str) or ":" not in k or k.startswith(("pos:", "cash:", "breakdown:", "open_orders:", "open_orders_verified_ts:")):
+            continue
+        raw_v, raw_a = k.split(":", 1)
+        if ":" in raw_a:
+            continue
+        v_n = normalize_venue_name(raw_v) or raw_v.strip().lower()
+        a_u = raw_a.strip().upper()
+        if v_n and a_u and (val_f := safe_nonneg_float(v, default=None)) is not None:
+            va_k = (v_n, a_u)
+            if (merged := merge_balance_observation(obs_by_va.get(va_k), val_f, None, 0)) is not None:
+                obs_by_va[va_k] = merged
+
+    # 2. Structured "pos:<venue>:<symbol>" snapshots: accumulate locks per (venue, asset, ts_bucket) first
+    pos_rows: list[tuple[str, str, str, Optional[float], Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]] = []
+    pos_locked_base_by_vat: dict[tuple[str, str, Optional[float]], float] = {}
+    pos_locked_quote_by_vat: dict[tuple[str, str, Optional[float]], float] = {}
+    for k, v in cached_bals.items():
+        if not (isinstance(k, str) and k.startswith("pos:") and isinstance(v, Mapping)):
+            continue
+        v_n = normalize_venue_name(v.get("venue"))
+        if not v_n:
+            continue
+        p_sym_raw = str(v.get("symbol") or "").strip()
+        p_sym = (
+            (canonical_symbol_fn(p_sym_raw, venue=v_n) or p_sym_raw.upper())
+            if callable(canonical_symbol_fn)
+            else p_sym_raw.upper()
+        )
+        res_b, res_q = resolve_assets_fn(p_sym, v.get("base"), v.get("quote"))
+        b_u = str(res_b or "").strip().upper()
+        q_u = str(res_q or "USD").strip().upper()
+        pos_ts = safe_pos_float(v.get("ts"), default=None)
+        base_ts = safe_pos_float(v.get("base_bal_ts"), default=None) or pos_ts
+        quote_ts = safe_pos_float(v.get("quote_bal_ts"), default=None) or pos_ts
+        b_bucket = round(base_ts, 3) if base_ts is not None else None
+        q_bucket = round(quote_ts, 3) if quote_ts is not None else None
+        fb = safe_nonneg_float(v.get("free_base") if v.get("free_base") is not None else v.get("free"), default=None)
+        fq = safe_nonneg_float(v.get("free_quote"), default=None)
+        lb = safe_nonneg_float(v.get("locked_base_qty"), default=None)
+        lq = safe_nonneg_float(v.get("locked_quote_usd"), default=None)
+        if b_u and lb is not None:
+            pos_locked_base_by_vat[(v_n, b_u, b_bucket)] = pos_locked_base_by_vat.get((v_n, b_u, b_bucket), 0.0) + lb
+        if q_u and lq is not None:
+            pos_locked_quote_by_vat[(v_n, q_u, q_bucket)] = pos_locked_quote_by_vat.get((v_n, q_u, q_bucket), 0.0) + lq
+        pos_rows.append((v_n, b_u, q_u, fb, base_ts, b_bucket, fq, quote_ts, q_bucket))
+
+    for v_n, b_u, q_u, fb, base_ts, b_bucket, fq, quote_ts, q_bucket in pos_rows:
+        if b_u and fb is not None:
+            va_b = (v_n, b_u)
+            if (
+                merged_b := merge_balance_observation(
+                    obs_by_va.get(va_b), fb, base_ts, 1, reflected_locked=pos_locked_base_by_vat.get((v_n, b_u, b_bucket))
+                )
+            ) is not None:
+                obs_by_va[va_b] = merged_b
+        if q_u and fq is not None:
+            va_q = (v_n, q_u)
+            if (
+                merged_q := merge_balance_observation(
+                    obs_by_va.get(va_q), fq, quote_ts, 1, reflected_locked=pos_locked_quote_by_vat.get((v_n, q_u, q_bucket))
+                )
+            ) is not None:
+                obs_by_va[va_q] = merged_q
+
+    # 3. Structured "cash:<venue>:<asset>" snapshots (highest precedence on equal/absent timestamps)
+    for k, v in cached_bals.items():
+        if not (isinstance(k, str) and k.startswith("cash:") and isinstance(v, Mapping)):
+            continue
+        v_n = normalize_venue_name(v.get("venue"))
+        a_u = str(v.get("asset") or "").strip().upper()
+        if not v_n or not a_u:
+            continue
+        cf = safe_nonneg_float(v.get("free"), default=None)
+        if cf is not None:
+            c_ts = safe_pos_float(v.get("ts"), default=None)
+            c_lq = safe_nonneg_float(v.get("locked_quote_usd"), default=None)
+            va_c = (v_n, a_u)
+            if (
+                merged_c := merge_balance_observation(obs_by_va.get(va_c), cf, c_ts, 2, reflected_locked=c_lq)
+            ) is not None:
+                obs_by_va[va_c] = merged_c
+
+    return obs_by_va
 
 
 def resolve_venue_balances_state_path(cachedb_dir: str) -> str:

@@ -196,6 +196,16 @@ class BinanceProvider(MarketDataProvider):
         # for an absent asset and ``None`` when the API read fails.
         return _get_bapi().get_free_balance(asset)
 
+    def free_and_locked_balance(self, asset: str) -> Optional[tuple[float, Optional[float]]]:
+        """Return atomic ``(free, locked)`` Binance balance when ``get_free_balance`` is unpatched."""
+        bapi = _get_bapi()
+        default_fn = getattr(bapi, "_DEFAULT_GET_FREE_BALANCE", None)
+        fl_fn = getattr(bapi, "get_free_and_locked_balance", None)
+        if callable(fl_fn) and (default_fn is None or getattr(bapi, "get_free_balance", None) is default_fn):
+            return fl_fn(asset)
+        free_v = self.free_balance(asset)
+        return (free_v, None) if free_v is not None else None
+
     @classmethod
     def fetch_remote_trades_with_client(
         cls,

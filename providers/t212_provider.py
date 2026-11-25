@@ -440,8 +440,8 @@ class T212Provider(MarketDataProvider):
         return []
 
     # -- Account. --------------------------------------------------------------
-    def free_balance(self, asset: str) -> Optional[float]:
-        # Under the common contract, errors become None rather than a valid zero.
+    def free_and_locked_balance(self, asset: str) -> Optional[tuple[float, Optional[float]]]:
+        """Return atomic ``(free, locked)`` cash or share quantity from Trading 212."""
         if (asset_u := clean_upper_scalar(asset)) is None:
             return None
         if asset_u in {"USD", "RON", "EUR"}:
@@ -459,8 +459,11 @@ class T212Provider(MarketDataProvider):
                 free_ron = safe_nonneg_float(cash.get("free", 0.0), default=None)
                 if free_ron is None:
                     return None
+                blocked_ron = (
+                    safe_nonneg_float(cash.get("blocked"), default=None) if "blocked" in cash else None
+                )
                 if asset_u == "RON":
-                    return free_ron
+                    return free_ron, blocked_ron
                 try:
                     market_data = importlib.import_module("212trading.market_data")
                     usd_ron = safe_pos_float(market_data.get_usd_ron(), default=4.6)
@@ -474,8 +477,9 @@ class T212Provider(MarketDataProvider):
                             eur_usd = safe_pos_float(market_data.get_eur_usd(), default=1.08)
                         except Exception:
                             eur_usd = 1.08
-                    return round(free_ron / (usd_ron * eur_usd), 2)
-                return round(free_ron / usd_ron, 2)
+                    denom = usd_ron * eur_usd
+                    return round(free_ron / denom, 2), (round(blocked_ron / denom, 2) if blocked_ron is not None else None)
+                return round(free_ron / usd_ron, 2), (round(blocked_ron / usd_ron, 2) if blocked_ron is not None else None)
             except Exception as e:
                 return self._log_provider_balance_error("T212", "cash balance", asset, e)
         try:
@@ -483,20 +487,27 @@ class T212Provider(MarketDataProvider):
         except ProviderError as e:
             return self._log_provider_balance_error("T212", "balance", asset, e)
         if not p:
-            return 0.0
+            return 0.0, 0.0
         total_qty = safe_nonneg_float(p.get("quantity", 0.0), default=None)
         if total_qty is None:
             return None
         open_sell_qty = 0.0
+        open_orders_ok = False
         try:
             for o in self.open_orders(asset):
                 if o.get("side") == "SELL":
                     orig = safe_float(o.get("origQty"), default=0.0) or 0.0
                     exec_q = safe_float(o.get("executedQty"), default=0.0) or 0.0
                     open_sell_qty += max(0.0, orig - exec_q)
+            open_orders_ok = True
         except Exception as e:
             print(f"[T212] balance {asset} open_orders check: {e}")
-        return max(0.0, round(total_qty - open_sell_qty, 6))
+        return max(0.0, round(total_qty - open_sell_qty, 6)), (round(open_sell_qty, 6) if open_orders_ok else None)
+
+    def free_balance(self, asset: str) -> Optional[float]:
+        # Under the common contract, errors become None rather than a valid zero.
+        pair = self.free_and_locked_balance(asset)
+        return pair[0] if pair is not None else None
 
     def get_orders(
         self,

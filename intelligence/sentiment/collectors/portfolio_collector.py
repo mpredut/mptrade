@@ -120,7 +120,15 @@ from providers.intent_state import (
     intent_venue_client_order_ids,
     load_durable_intents_from_cachedb,
 )
-from providers.portfolio_valuation import BalanceSnapshotRecord
+from providers.portfolio_valuation import (
+    BalanceObservation,
+    BalanceSnapshotRecord,
+    INTERNAL_BALANCE_SCRATCH_KEYS,
+    build_cached_balance_observations,
+    extract_position_held_qty,
+    merge_balance_observation,
+    strip_internal_balance_scratch_keys,
+)
 from providers.quantity import resolve_assets, resolve_kraken_trade_cache_position, venue_fee_cap_quantity
 from state_io import (
     generation_file_lock,
@@ -292,13 +300,8 @@ def _extract_cached_venue_held_qty(
         return None
     for cand in dict.fromkeys(str(c).strip().upper() for c in cand_syms if str(c).strip()):
         if isinstance(p_d := casefold_get(vb_doc, f"pos:{venue}:{cand}"), dict):
-            fb = safe_nonneg_float(
-                p_d.get("free_base") if p_d.get("free_base") is not None else p_d.get("free"),
-                default=None,
-            )
-            if fb is not None:
-                lb = first_pos_float(p_d.get("locked_base_qty"), p_d.get("locked"), default=0.0) or 0.0
-                return fb + lb
+            if (held_q := extract_position_held_qty(p_d)) is not None:
+                return held_q
     for fb_key in (sym_upper, base_upper or ""):
         if fb_key and (raw_b := safe_nonneg_float(vb_doc.get(f"{venue}:{fb_key}"), default=None)) is not None:
             return raw_b
@@ -551,129 +554,30 @@ def _iter_valid_tradable_positions(
     return out
 
 
-_INTERNAL_BALANCE_TS_KEYS: tuple[str, ...] = (
-    "_balance_ts",
-    "_base_balance_ts",
-    "_quote_balance_ts",
-    "_prev_locked_quote_usd",
-    "_prev_locked_base_qty",
-)
+_INTERNAL_BALANCE_TS_KEYS: tuple[str, ...] = tuple(sorted(INTERNAL_BALANCE_SCRATCH_KEYS))
+_strip_internal_balance_ts = strip_internal_balance_scratch_keys
+_merge_balance_observation = merge_balance_observation
 
 
-def _strip_internal_balance_ts(entry: Dict[str, Any]) -> Dict[str, Any]:
-    return {k: v for k, v in entry.items() if k not in _INTERNAL_BALANCE_TS_KEYS}
-
-
-@dataclass(frozen=True, slots=True)
-class BalanceObservation:
-    """Atomic balance observation binding raw free quantity to its own timestamp, reflected locked amount, and source priority."""
-
-    free: float
-    ts: Optional[float] = None
-    priority: int = 0
-    reflected_locked: Optional[float] = None
-
-
-def _merge_balance_observation(
-    cur: Optional[BalanceObservation],
-    free: Optional[float],
-    ts: Optional[float],
-    priority: int,
-    reflected_locked: Optional[float] = None,
-) -> Optional[BalanceObservation]:
-    """Combine atomic ``BalanceObservation(free, ts, priority, reflected_locked)`` records without mixing value and timestamp."""
-    if free is None:
-        return cur
-    cand = BalanceObservation(free=free, ts=ts, priority=priority, reflected_locked=reflected_locked)
-    if cur is None:
-        return cand
-    if cur.ts is not None and ts is not None:
-        if ts > cur.ts + 1e-6:
-            return cand
-        if cur.ts > ts + 1e-6:
-            return cur
-        winner, other = (cand, cur) if priority >= cur.priority else (cur, cand)
-        if winner.reflected_locked is None and other.reflected_locked is not None:
-            return BalanceObservation(
-                free=winner.free, ts=winner.ts, priority=winner.priority, reflected_locked=other.reflected_locked
-            )
-        return winner
-    if ts is not None:
-        return cand
-    if cur.ts is not None:
-        return cur
-    winner, other = (cand, cur) if priority >= cur.priority else (cur, cand)
-    if winner.reflected_locked is None and other.reflected_locked is not None:
-        return BalanceObservation(
-            free=winner.free, ts=winner.ts, priority=winner.priority, reflected_locked=other.reflected_locked
-        )
-    return winner
+def _build_cached_balance_observations(
+    cached_bals: Dict[str, Any],
+) -> Dict[tuple[str, str], BalanceObservation]:
+    """Build atomic ``(venue, asset) -> BalanceObservation`` records via ``providers.portfolio_valuation`` SSOT."""
+    return build_cached_balance_observations(
+        cached_bals,
+        resolve_assets_fn=resolve_assets,
+        canonical_symbol_fn=canonical_display_symbol,
+    )
 
 
 def _build_cached_balance_index(
     cached_bals: Dict[str, Any],
 ) -> Dict[tuple[str, str], tuple[float, Optional[float]]]:
-    """Build atomic ``(venue, asset) -> (free, ts)`` observations from ``venue_balances_state.json`` for both collection paths."""
-    obs_by_va: Dict[tuple[str, str], BalanceObservation] = {}
-    if not isinstance(cached_bals, dict):
-        return {}
-
-    # 1. Scalar "<venue>:<ASSET>" entries (lowest precedence; untimestamped unless corroborated)
-    for k, v in cached_bals.items():
-        if not isinstance(k, str) or ":" not in k or k.startswith(("pos:", "cash:", "breakdown:", "open_orders:", "open_orders_verified_ts:")):
-            continue
-        raw_v, raw_a = k.split(":", 1)
-        if ":" in raw_a:
-            continue
-        v_n = normalize_venue_name(raw_v) or raw_v.strip().lower()
-        a_u = raw_a.strip().upper()
-        if v_n and a_u and (val_f := safe_nonneg_float(v, default=None)) is not None:
-            va_k = (v_n, a_u)
-            if (merged := _merge_balance_observation(obs_by_va.get(va_k), val_f, None, 0)) is not None:
-                obs_by_va[va_k] = merged
-
-    # 2. Structured "pos:<venue>:<symbol>" snapshots (bind each asset value to its own balance timestamp)
-    for k, v in cached_bals.items():
-        if not (isinstance(k, str) and k.startswith("pos:") and isinstance(v, dict)):
-            continue
-        v_n = normalize_venue_name(v.get("venue"))
-        if not v_n:
-            continue
-        p_sym_raw = str(v.get("symbol") or "").strip()
-        p_sym = canonical_display_symbol(p_sym_raw, venue=v_n) or p_sym_raw.upper()
-        res_b, res_q = resolve_assets(p_sym, v.get("base"), v.get("quote"))
-        b_u = str(res_b or "").strip().upper()
-        q_u = str(res_q or "USD").strip().upper()
-        pos_ts = safe_pos_float(v.get("ts"), default=None)
-        base_ts = safe_pos_float(v.get("base_bal_ts"), default=None) or pos_ts
-        quote_ts = safe_pos_float(v.get("quote_bal_ts"), default=None) or pos_ts
-        fb = safe_nonneg_float(v.get("free_base") if v.get("free_base") is not None else v.get("free"), default=None)
-        if b_u and fb is not None:
-            va_b = (v_n, b_u)
-            if (merged_b := _merge_balance_observation(obs_by_va.get(va_b), fb, base_ts, 1)) is not None:
-                obs_by_va[va_b] = merged_b
-        fq = safe_nonneg_float(v.get("free_quote"), default=None)
-        if q_u and fq is not None:
-            va_q = (v_n, q_u)
-            if (merged_q := _merge_balance_observation(obs_by_va.get(va_q), fq, quote_ts, 1)) is not None:
-                obs_by_va[va_q] = merged_q
-
-    # 3. Structured "cash:<venue>:<asset>" snapshots (highest precedence on equal/absent timestamps)
-    for k, v in cached_bals.items():
-        if not (isinstance(k, str) and k.startswith("cash:") and isinstance(v, dict)):
-            continue
-        v_n = normalize_venue_name(v.get("venue"))
-        a_u = str(v.get("asset") or "").strip().upper()
-        if not v_n or not a_u:
-            continue
-        cf = safe_nonneg_float(v.get("free"), default=None)
-        if cf is not None:
-            c_ts = safe_pos_float(v.get("ts"), default=None)
-            va_c = (v_n, a_u)
-            if (merged_c := _merge_balance_observation(obs_by_va.get(va_c), cf, c_ts, 2)) is not None:
-                obs_by_va[va_c] = merged_c
-
-    return {va_k: (obs.free, obs.ts) for va_k, obs in obs_by_va.items()}
+    """Build legacy ``(venue, asset) -> (free, ts)`` view backed by ``build_cached_balance_observations`` SSOT."""
+    return {
+        va_k: (obs.free, obs.ts)
+        for va_k, obs in _build_cached_balance_observations(cached_bals).items()
+    }
 
 
 def derive_runtime_portfolio_view(
@@ -693,22 +597,18 @@ def derive_runtime_portfolio_view(
     def _strip_all_internal_ts() -> None:
         for p_cl in tradable_positions:
             if isinstance(p_cl, dict):
-                for ts_k in _INTERNAL_BALANCE_TS_KEYS:
+                for ts_k in INTERNAL_BALANCE_SCRATCH_KEYS:
                     p_cl.pop(ts_k, None)
         for c_cl in venue_quote_cash.values():
             if isinstance(c_cl, dict):
-                for ts_k in _INTERNAL_BALANCE_TS_KEYS:
+                for ts_k in INTERNAL_BALANCE_SCRATCH_KEYS:
                     c_cl.pop(ts_k, None)
 
-    if not open_orders_list:
-        _strip_all_internal_ts()
-        return
     pos_by_vs: Dict[tuple[str, str], Dict[str, Any]] = {
         (pv, ps): pos_item for pos_item, pv, ps in _iter_valid_tradable_positions(tradable_positions)
     }
 
     shared_obs_by_va: Dict[tuple[str, str], BalanceObservation] = {}
-    prev_locked_base_by_va: Dict[tuple[str, str], float] = {}
     for cash_val in venue_quote_cash.values():
         if isinstance(cash_val, dict):
             cv_n = normalize_venue_name(cash_val.get("venue"))
@@ -718,7 +618,7 @@ def derive_runtime_portfolio_view(
                 c_ts = safe_pos_float(cash_val.get("_balance_ts"), default=None)
                 c_prev_lq = safe_nonneg_float(cash_val.get("_prev_locked_quote_usd"), default=None)
                 if (
-                    m_c := _merge_balance_observation(
+                    m_c := merge_balance_observation(
                         shared_obs_by_va.get((cv_n, cq_u)), c_free, c_ts, 2, reflected_locked=c_prev_lq
                     )
                 ) is not None:
@@ -732,18 +632,21 @@ def derive_runtime_portfolio_view(
             fb_v = safe_nonneg_float(pos_item.get("free_base"), default=None)
             b_ts = safe_pos_float(pos_item.get("_base_balance_ts"), default=None) or fallback_ts
             p_prev_lb = safe_nonneg_float(pos_item.get("_prev_locked_base_qty"), default=None)
-            if p_prev_lb is not None:
-                prev_locked_base_by_va[(pv, p_b_u)] = prev_locked_base_by_va.get((pv, p_b_u), 0.0) + p_prev_lb
             if (
-                m_b := _merge_balance_observation(
-                    shared_obs_by_va.get((pv, p_b_u)), fb_v, b_ts, 1, reflected_locked=prev_locked_base_by_va.get((pv, p_b_u))
+                m_b := merge_balance_observation(
+                    shared_obs_by_va.get((pv, p_b_u)), fb_v, b_ts, 1, reflected_locked=p_prev_lb
                 )
             ) is not None:
                 shared_obs_by_va[(pv, p_b_u)] = m_b
         if p_q_u:
             fq_v = safe_nonneg_float(pos_item.get("free_quote"), default=None)
             q_ts = safe_pos_float(pos_item.get("_quote_balance_ts"), default=None) or fallback_ts
-            if (m_q := _merge_balance_observation(shared_obs_by_va.get((pv, p_q_u)), fq_v, q_ts, 1)) is not None:
+            p_prev_lq = safe_nonneg_float(pos_item.get("_prev_locked_quote_usd"), default=None)
+            if (
+                m_q := merge_balance_observation(
+                    shared_obs_by_va.get((pv, p_q_u)), fq_v, q_ts, 1, reflected_locked=p_prev_lq
+                )
+            ) is not None:
                 shared_obs_by_va[(pv, p_q_u)] = m_q
 
     locked_quote_by_vq: Dict[tuple[str, str], float] = {}
@@ -753,7 +656,7 @@ def derive_runtime_portfolio_view(
     pre_bal_locked_by_va: Dict[tuple[str, str], float] = {}
     pre_bal_locked_quote_by_vs: Dict[tuple[str, str], float] = {}
     pre_bal_locked_base_by_vs: Dict[tuple[str, str], float] = {}
-    for oo_item in open_orders_list:
+    for oo_item in open_orders_list or ():
         if not isinstance(oo_item, dict):
             continue
         oo_v = normalize_venue_name(oo_item.get("venue"))
@@ -833,16 +736,14 @@ def derive_runtime_portfolio_view(
         if obs_va is not None and bal_rec.synthetic_deduct > 0.0:
             adjusted_free_by_va[va_key] = bal_rec.runtime_free
 
-    # Apply synthetic pre-balance deductions to runtime/prompt views ONLY via BalanceSnapshotRecord;
-    # persisted ``updated_bals`` keeps raw free balances + venue-reflected locked balances so Unified NAV is conserved.
+    # Apply synthetic pre-balance deductions and cross-position shared balance reconciliation to runtime/prompt views
+    # via BalanceSnapshotRecord; persisted ``updated_bals`` keeps raw free balances + venue-reflected locks for NAV.
     for cash_val in venue_quote_cash.values():
         if isinstance(cash_val, dict):
             cv_norm, cq_u = normalize_venue_name(cash_val.get("venue")), str(cash_val.get("asset") or "").strip().upper()
             va_c = (cv_norm, cq_u)
-            if va_c in adjusted_free_by_va:
-                cash_val["free"] = round(adjusted_free_by_va[va_c], 2)
-            elif (raw_c_obs := shared_obs_by_va.get(va_c)) is not None:
-                cash_val["free"] = round(raw_c_obs.free, 2)
+            if va_c in shared_obs_by_va and (c_rec_free := balance_records_by_va.get(va_c)) is not None:
+                cash_val["free"] = round(c_rec_free.runtime_free, 2)
             if (lq_val := locked_quote_by_vq.get(va_c, 0.0)) > 0.0:
                 cash_val["locked_quote_usd"] = round(lq_val, 2)
                 c_rec = balance_records_by_va.get(va_c) or BalanceSnapshotRecord(free_raw=0.0, total_locked=lq_val)
@@ -859,16 +760,25 @@ def derive_runtime_portfolio_view(
         p_base_u = str(p_res_b or "").strip().upper()
         p_quote_u = str(p_res_q or pos_entry.get("quote_asset") or "").strip().upper()
         balance_changed = False
-        if p_quote_u and (p_v_norm, p_quote_u) in adjusted_free_by_va:
-            pos_entry["free_quote"] = round(adjusted_free_by_va[(p_v_norm, p_quote_u)], 2)
-            balance_changed = True
-        if p_base_u and (p_v_norm, p_base_u) in adjusted_free_by_va:
-            adj_fb = round(adjusted_free_by_va[(p_v_norm, p_base_u)], 8)
-            pos_entry["free_base"] = adj_fb
-            px_adj = safe_pos_float(pos_entry.get("price"), default=0.0) or 0.0
-            if px_adj > 0.0:
-                pos_entry["value_usd"] = round(adj_fb * px_adj, 2)
-            balance_changed = True
+        va_q = (p_v_norm, p_quote_u)
+        if p_quote_u and va_q in shared_obs_by_va and (q_rec := balance_records_by_va.get(va_q)) is not None:
+            if va_q in adjusted_free_by_va or "free_quote" in pos_entry:
+                new_fq = round(q_rec.runtime_free, 2)
+                prev_fq = safe_nonneg_float(pos_entry.get("free_quote"), default=None)
+                if va_q in adjusted_free_by_va or prev_fq is None or abs(new_fq - prev_fq) > 1e-6:
+                    pos_entry["free_quote"] = new_fq
+                    balance_changed = True
+        va_b = (p_v_norm, p_base_u)
+        if p_base_u and va_b in shared_obs_by_va and (b_rec := balance_records_by_va.get(va_b)) is not None:
+            if va_b in adjusted_free_by_va or "free_base" in pos_entry:
+                adj_fb = round(b_rec.runtime_free, 8 if va_b in adjusted_free_by_va else 6)
+                prev_fb = safe_nonneg_float(pos_entry.get("free_base"), default=None)
+                if va_b in adjusted_free_by_va or prev_fb is None or abs(adj_fb - prev_fb) > 1e-9:
+                    pos_entry["free_base"] = adj_fb
+                    px_adj = safe_pos_float(pos_entry.get("price"), default=0.0) or 0.0
+                    if px_adj > 0.0:
+                        pos_entry["value_usd"] = round(adj_fb * px_adj, 2)
+                    balance_changed = True
         lq_pos = locked_quote_by_vs.get((p_v_norm, p_sym_u), 0.0)
         lb_pos = locked_base_by_vs.get((p_v_norm, p_sym_u), 0.0)
         if balance_changed or lq_pos > 0.0 or lb_pos > 0.0:
@@ -923,7 +833,7 @@ def derive_runtime_portfolio_view(
                     pos_entry["trailing_peak"] = pend_peak[0]
                     pos_entry["dd_from_peak_pct"] = pend_peak[1]
             pos_bkey = f"pos:{p_v_norm}:{p_sym_raw}" if f"pos:{p_v_norm}:{p_sym_raw}" in updated_bals else f"pos:{p_v_norm}:{p_sym_u}"
-            if pos_bkey in updated_bals and isinstance(updated_bals[pos_bkey], dict):
+            if pos_bkey in updated_bals and isinstance(updated_bals[pos_bkey], dict) and (lq_pos > 0.0 or lb_pos > 0.0 or pos_entry.get("trailing_peak") is not None):
                 pers_pos = dict(updated_bals[pos_bkey])
                 base_bal_rec = (
                     balance_records_by_va.get((p_v_norm, p_base_u))
@@ -1182,7 +1092,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
                 for bk, bv in vb_state.items():
                     if bk.startswith("pos:kraken:") and isinstance(bv, dict):
                         b_asset = str(bv.get("base") or "").strip()
-                        b_qty = safe_nonneg_float(bv.get("free_base"), default=None)
+                        b_qty = extract_position_held_qty(bv)
                         b_sym = str(bv.get("symbol") or bk[len("pos:kraken:") :]).strip()
                         if b_asset and b_qty is not None:
                             live_bal_assets[b_asset] = b_qty
@@ -1561,7 +1471,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
     ) -> None:
         gw_max_rec = safe_pos_float(gateway_max_usd, default=2000.0) or 2000.0
         seen_rec_vs: set[tuple[str, str]] = set()
-        cached_obs_by_va = _build_cached_balance_index(cached_bals)
+        cached_obs_by_va = _build_cached_balance_observations(cached_bals)
         for k, v in cached_bals.items():
             if k.startswith("pos:") and isinstance(v, dict):
                 rec_pos = dict(v)
@@ -1569,6 +1479,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 pos_base_ts = safe_pos_float(v.get("base_bal_ts"), default=None) or pos_bal_ts
                 pos_quote_ts = safe_pos_float(v.get("quote_bal_ts"), default=None) or pos_bal_ts
                 prev_pos_lb = safe_nonneg_float(v.get("locked_base_qty"), default=None)
+                prev_pos_lq = safe_nonneg_float(v.get("locked_quote_usd"), default=None)
                 for stale_k in ("locked_quote_usd", "replace_max_buy_usd", "locked_base_qty", "locked_base_usd", "replace_max_sell_usd", "ts", "base_bal_ts", "quote_bal_ts"):
                     rec_pos.pop(stale_k, None)
                 v_rec_norm = normalize_venue_name(rec_pos.get("venue"))
@@ -1585,26 +1496,32 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 p_base_u = str(res_b_rec or "").strip().upper()
                 p_quote = str(res_q_rec or rec_pos.get("quote") or "USD").strip().upper()
                 is_eq_rec = is_equity_venue(v_rec_norm)
+                base_ref_locked: Optional[float] = None
                 if v_rec_norm and p_base_u and (base_obs := cached_obs_by_va.get((v_rec_norm, p_base_u))) is not None:
-                    fb_val, base_bal_ts = base_obs
+                    fb_val, base_bal_ts, base_ref_locked = base_obs.free, base_obs.ts, base_obs.reflected_locked
                 else:
                     fb_val = safe_nonneg_float(rec_pos.get("free_base"), default=None)
                     base_bal_ts = pos_base_ts if fb_val is not None else None
+                    base_ref_locked = prev_pos_lb
                 if fb_val is not None:
                     rec_pos["free_base"] = round(fb_val, 6)
+                quote_ref_locked: Optional[float] = None
                 if v_rec_norm and p_quote and (quote_obs := cached_obs_by_va.get((v_rec_norm, p_quote))) is not None:
-                    fq_val, quote_bal_ts = quote_obs
+                    fq_val, quote_bal_ts, quote_ref_locked = quote_obs.free, quote_obs.ts, quote_obs.reflected_locked
                 else:
                     fq_val = safe_nonneg_float(rec_pos.get("free_quote"), default=None)
                     quote_bal_ts = pos_quote_ts if fq_val is not None else None
+                    quote_ref_locked = prev_pos_lq
                 if fq_val is not None:
                     rec_pos["free_quote"] = round(fq_val, 2)
                 if base_bal_ts is not None:
                     rec_pos["_base_balance_ts"] = base_bal_ts
-                    if prev_pos_lb is not None and pos_base_ts is not None and abs(base_bal_ts - pos_base_ts) <= 1e-3:
-                        rec_pos["_prev_locked_base_qty"] = prev_pos_lb
+                    if base_ref_locked is not None:
+                        rec_pos["_prev_locked_base_qty"] = base_ref_locked
                 if quote_bal_ts is not None:
                     rec_pos["_quote_balance_ts"] = quote_bal_ts
+                    if quote_ref_locked is not None:
+                        rec_pos["_prev_locked_quote_usd"] = quote_ref_locked
                 px_rec = 0.0
                 if p_sym:
                     exact_pt_px = safe_pos_float((casefold_get(prices_and_trends, p_sym) or {}).get("price"), default=0.0) or 0.0
@@ -1661,15 +1578,18 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     raw_c_ts = safe_pos_float(v.get("ts"), default=None)
                     rec_cash.pop("locked_quote_usd", None)
                     rec_cash.pop("ts", None)
+                    cash_ref_locked: Optional[float] = None
                     if (c_obs := cached_obs_by_va.get((c_v_norm, c_asset))) is not None:
-                        rec_cash["free"] = round(c_obs[0], 2)
-                        c_bal_ts = c_obs[1]
+                        rec_cash["free"] = round(c_obs.free, 2)
+                        c_bal_ts = c_obs.ts
+                        cash_ref_locked = c_obs.reflected_locked
                     else:
                         c_bal_ts = raw_c_ts
+                        cash_ref_locked = prev_cash_lq
                     if c_bal_ts is not None:
                         rec_cash["_balance_ts"] = c_bal_ts
-                        if prev_cash_lq is not None and raw_c_ts is not None and abs(c_bal_ts - raw_c_ts) <= 1e-3:
-                            rec_cash["_prev_locked_quote_usd"] = prev_cash_lq
+                        if cash_ref_locked is not None:
+                            rec_cash["_prev_locked_quote_usd"] = cash_ref_locked
                     venue_quote_cash[f"{c_venue}:{c_asset}"] = rec_cash
 
     @staticmethod
@@ -1703,41 +1623,71 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         failed_open_venues: set[str],
         live_open_ok_symbols: set[Tuple[str, str]],
         failed_open_symbols: set[Tuple[str, str]],
+        explicit_now_ts: bool = False,
     ) -> None:
-        cached_obs_by_va = _build_cached_balance_index(cached_bals)
-        balance_ts_memo: Dict[tuple[str, str], Optional[float]] = {}
+        cached_obs_by_va = _build_cached_balance_observations(cached_bals)
+        balance_obs_memo: Dict[tuple[str, str], Optional[BalanceObservation]] = {}
 
-        def _query_free_bal(inst_obj: Any, asset: str) -> tuple[Optional[float], Optional[float]]:
+        def _query_free_bal(inst_obj: Any, asset: str) -> Optional[BalanceObservation]:
             if not asset:
-                return None, None
+                return None
             raw_v = str(getattr(inst_obj, "provider_name", "") or "").strip().lower()
             v_name = normalize_venue_name(raw_v) or raw_v
             eff_asset = asset if is_kraken_tokenized_asset(asset) else asset.upper()
             asset_u = asset.upper()
             key = (v_name, asset_u)
-            if key in balance_memo:
-                return balance_memo[key], balance_ts_memo.get(key)
-            free_fn = getattr(getattr(inst_obj, "_provider", None), "free_balance", None) if allow_network else None
+            if key in balance_obs_memo:
+                return balance_obs_memo[key]
+            if key in balance_memo and balance_memo[key] is not None:
+                c_obs_pre = cached_obs_by_va.get(key)
+                obs_mem = BalanceObservation(
+                    free=balance_memo[key],
+                    ts=c_obs_pre.ts if c_obs_pre is not None else None,
+                    priority=1,
+                    reflected_locked=c_obs_pre.reflected_locked if c_obs_pre is not None else None,
+                )
+                balance_obs_memo[key] = obs_mem
+                return obs_mem
+            prov = getattr(inst_obj, "_provider", None) if allow_network else None
+            prov_dict = getattr(prov, "__dict__", {}) if prov is not None else {}
+            fl_fn = getattr(prov, "free_and_locked_balance", None) if prov is not None else None
+            free_fn = getattr(prov, "free_balance", None) if prov is not None else None
+            use_fl = (
+                callable(fl_fn)
+                and not hasattr(fl_fn, "_mock_name")
+                and not ("free_balance" in prov_dict and "free_and_locked_balance" not in prov_dict)
+            )
             val_f: Optional[float] = None
-            bal_ts: Optional[float] = None
-            if callable(free_fn):
+            live_locked: Optional[float] = None
+            if use_fl:
+                try:
+                    raw_pair = fl_fn(eff_asset)
+                    if isinstance(raw_pair, tuple) and len(raw_pair) == 2:
+                        val_f = safe_nonneg_float(raw_pair[0], default=None)
+                        live_locked = safe_nonneg_float(raw_pair[1], default=None)
+                    else:
+                        val_f = safe_nonneg_float(raw_pair, default=None)
+                except Exception:
+                    val_f, live_locked = None, None
+            elif callable(free_fn):
                 try:
                     val_f = safe_nonneg_float(free_fn(eff_asset), default=None)
                 except Exception:
                     val_f = None
             bkey = f"{v_name}:{eff_asset}"
             raw_bkey = f"{raw_v}:{asset_u}"
+            obs_out: Optional[BalanceObservation] = None
             if val_f is not None:
                 updated_bals[bkey] = round(val_f, 8)
-                bal_ts = round(now_ts_oo, 3)
-            else:
-                if (cached_obs := cached_obs_by_va.get(key)) is not None:
-                    val_f, bal_ts = cached_obs
-                elif raw_bkey in cached_bals:
-                    val_f = safe_nonneg_float(cached_bals.get(raw_bkey), default=None)
-            balance_memo[key] = val_f
-            balance_ts_memo[key] = bal_ts
-            return val_f, bal_ts
+                bal_ts = round(now_ts_oo if explicit_now_ts else resolve_now_ts(None), 3)
+                obs_out = BalanceObservation(free=val_f, ts=bal_ts, priority=2, reflected_locked=live_locked)
+            elif (cached_obs := cached_obs_by_va.get(key)) is not None:
+                obs_out = cached_obs
+            elif raw_bkey in cached_bals and (raw_v_f := safe_nonneg_float(cached_bals.get(raw_bkey), default=None)) is not None:
+                obs_out = BalanceObservation(free=raw_v_f, ts=None, priority=0, reflected_locked=None)
+            balance_memo[key] = obs_out.free if obs_out is not None else None
+            balance_obs_memo[key] = obs_out
+            return obs_out
 
         merged_params_by_vs: Dict[tuple[str, str], Dict[str, Any]] = {}
         for _inst_cand in inst_map.values():
@@ -1768,7 +1718,13 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 inst_by_sym.setdefault(sym_u, inst)
                 inst_by_sym[f"{v_norm}:{sym_u}"] = inst
 
-            (base_free, base_bal_ts), (quote_free, quote_bal_ts) = _query_free_bal(inst, base), _query_free_bal(inst, quote)
+            base_obs, quote_obs = _query_free_bal(inst, base), _query_free_bal(inst, quote)
+            base_free = base_obs.free if base_obs is not None else None
+            base_bal_ts = base_obs.ts if base_obs is not None else None
+            base_ref_locked = base_obs.reflected_locked if base_obs is not None else None
+            quote_free = quote_obs.free if quote_obs is not None else None
+            quote_bal_ts = quote_obs.ts if quote_obs is not None else None
+            quote_ref_locked = quote_obs.reflected_locked if quote_obs is not None else None
             pt_entry_existing = casefold_get(prices_and_trends, sym)
             px = pt_entry_existing.get("price") if isinstance(pt_entry_existing, dict) else None
             px_f = safe_pos_float(px, default=0.0) or 0.0
@@ -1788,15 +1744,18 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 )
                 if base_free is not None:
                     base_bal_ts = safe_pos_float(prev_cached_pos.get("base_bal_ts"), default=None) or prev_pos_ts
+                    base_ref_locked = safe_nonneg_float(prev_cached_pos.get("locked_base_qty"), default=None)
             if quote_free is None:
                 if prev_cached_pos and prev_cached_pos.get("free_quote") is not None:
                     quote_free = safe_nonneg_float(prev_cached_pos.get("free_quote"), default=None)
                     if quote_free is not None:
                         quote_bal_ts = safe_pos_float(prev_cached_pos.get("quote_bal_ts"), default=None) or prev_pos_ts
+                        quote_ref_locked = safe_nonneg_float(prev_cached_pos.get("locked_quote_usd"), default=None)
                 elif isinstance(c_cash := cached_bals.get(f"cash:{v_norm}:{quote.upper()}"), dict):
                     quote_free = safe_nonneg_float(c_cash.get("free"), default=None)
                     if quote_free is not None:
                         quote_bal_ts = safe_pos_float(c_cash.get("ts"), default=None)
+                        quote_ref_locked = safe_nonneg_float(c_cash.get("locked_quote_usd"), default=None)
             px_from_cached_pos = False
             if allow_network and (
                 px_f <= 0
@@ -1854,13 +1813,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 if quote_bal_ts is not None:
                     persisted_cash["ts"] = round(quote_bal_ts, 3)
                     cash_entry["_balance_ts"] = quote_bal_ts
-                    if (
-                        isinstance(c_cash_prev := cached_bals.get(f"cash:{v_norm}:{quote.upper()}"), dict)
-                        and (prev_c_ts := safe_pos_float(c_cash_prev.get("ts"), default=None)) is not None
-                        and abs(quote_bal_ts - prev_c_ts) <= 1e-3
-                        and (prev_c_lq := safe_nonneg_float(c_cash_prev.get("locked_quote_usd"), default=None)) is not None
-                    ):
-                        cash_entry["_prev_locked_quote_usd"] = prev_c_lq
+                    if quote_ref_locked is not None:
+                        cash_entry["_prev_locked_quote_usd"] = quote_ref_locked
                 updated_bals[f"cash:{v_norm}:{quote.upper()}"] = persisted_cash
                 venue_quote_cash[f"{venue}:{quote}"] = cash_entry
 
@@ -1906,15 +1860,12 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 pos_entry["mt_gain_pct"], pos_entry["mt_lost_pct"] = params.get("mt.gain"), params.get("mt.lost")
             if base_bal_ts is not None:
                 pos_entry["_base_balance_ts"] = base_bal_ts
-                prev_b_ts = safe_pos_float(prev_cached_pos.get("base_bal_ts"), default=None) or prev_pos_ts
-                if (
-                    prev_b_ts is not None
-                    and abs(base_bal_ts - prev_b_ts) <= 1e-3
-                    and (prev_p_lb := safe_nonneg_float(prev_cached_pos.get("locked_base_qty"), default=None)) is not None
-                ):
-                    pos_entry["_prev_locked_base_qty"] = prev_p_lb
+                if base_ref_locked is not None:
+                    pos_entry["_prev_locked_base_qty"] = base_ref_locked
             if quote_bal_ts is not None:
                 pos_entry["_quote_balance_ts"] = quote_bal_ts
+                if quote_ref_locked is not None:
+                    pos_entry["_prev_locked_quote_usd"] = quote_ref_locked
             tradable_positions.append(pos_entry)
             eff_pos_ts = (
                 prev_pos_ts or round(now_ts_oo, 3)
@@ -2071,6 +2022,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 failed_open_venues=failed_open_venues,
                 live_open_ok_symbols=live_open_ok_symbols,
                 failed_open_symbols=failed_open_symbols,
+                explicit_now_ts=now_ts is not None,
             )
         elif (allow_empty_inst_recovery or not allow_network) and (
             cached_bals or cached_open_by_vs or cached_open_sym_verified_ts

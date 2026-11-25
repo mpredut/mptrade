@@ -153,6 +153,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
 )
 from providers.ohlc_utils import normalize_ohlc_row, normalize_yahoo_5d_chart_bars
+from providers.portfolio_valuation import reprice_position_balance_fields
 from intelligence.sentiment.evaluators.asset_session_policy import (
     Continuous24x7SessionPolicy,
     resolve_asset_session_policy,
@@ -1063,13 +1064,8 @@ def refresh_stale_t212_cached_positions(
             new_c_px = round(cur_px, 4)
             is_stale_ts = prev_c_ts <= 0.0 or not (0.0 <= (now_ts - prev_c_ts) < max_age_sec)
             if prev_c_px is None or abs(new_c_px - round(prev_c_px, 4)) >= 1e-4 or ts_missing or is_stale_ts:
-                c_free = safe_pos_float(
-                    c_pos.get("free") if c_pos.get("free") is not None else c_pos.get("free_base"),
-                    default=0.0,
-                ) or 0.0
                 c_pos["price"] = new_c_px
-                if c_free > 0.0:
-                    c_pos["value_usd"] = round(c_free * cur_px, 2)
+                reprice_position_balance_fields(c_pos, cur_px)
                 if prev_c_ts > 0.0:
                     c_pos.setdefault("base_bal_ts", round(prev_c_ts, 3))
                     c_pos.setdefault("quote_bal_ts", round(prev_c_ts, 3))

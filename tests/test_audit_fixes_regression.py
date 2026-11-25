@@ -7157,6 +7157,282 @@ def test_structural_ssot_bug_free_by_construction_refactors(tmp_path):
     assert arr["arrived"] is True and arr["stages"]["transaction_confirmed"] is True and arr["arb_txid"] == valid_hash
 
 
+def test_free_balance_ssot_refactor_atomic_locked_xstock_reconcile_and_t212_reprice(tmp_path, monkeypatch):
+    """Comprehensive free/locked balance SSOT refactor tests:
+    1. KrakenXstocksCollector counts free_base + locked_base_qty via extract_position_held_qty so resting SELL
+       orders on SPCXxUSD never zero out reported xStock holdings.
+    2. build_cached_balance_observations preserves reflected_locked grouped strictly by matching timestamp
+       bucket (stale position locks cannot pollute fresh balances; pos:* quote locks survive absent/stale cash:*).
+    3. derive_runtime_portfolio_view reconciles shared free_quote/free_base across positions even when
+       open_orders_list is empty or synthetic_deduct == 0, and strips ALL INTERNAL_BALANCE_SCRATCH_KEYS.
+    4. update_venue_balances_state_locked strips _prev_locked_quote_usd and _prev_locked_base_qty via SSOT keys.
+    5. refresh_stale_t212_cached_positions updates both locked_base_usd and value_usd (including free_base==0.0).
+    6. Atomic free_and_locked_balance on Binance/Hyperliquid/Kraken/T212 exposes live exchange locks in one
+       call and prevents double-subtraction when an order reprices during a live collect() cycle.
+    """
+    from types import SimpleNamespace
+    import binance_api.bapi as bapi_mod
+    from intelligence.macro_sentiment_ssot import update_venue_balances_state_locked
+    from intelligence.sentiment.collectors.microstructure_collector import refresh_stale_t212_cached_positions
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        KrakenXstocksCollector,
+        TradablePositionsAndOrdersCollector,
+        derive_runtime_portfolio_view,
+    )
+    from providers.binance_provider import BinanceProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.portfolio_valuation import (
+        INTERNAL_BALANCE_SCRATCH_KEYS,
+        build_cached_balance_observations,
+        extract_position_held_qty,
+        reprice_position_balance_fields,
+    )
+    from providers.quantity import resolve_assets
+    from providers.t212_provider import T212Provider
+
+    now_s = 1_795_605_000.0
+
+    # 1. KrakenXStockCollector sees free_base + locked_base_qty when all SPCXx is locked in a resting SELL order
+    cdb_xs = tmp_path / "xs_cdb"
+    (cdb_xs / "state").mkdir(parents=True)
+    (cdb_xs / "state" / "venue_balances_state.json").write_text(
+        json.dumps(
+            {
+                "pos:kraken:SPCXxUSD": {
+                    "venue": "kraken",
+                    "symbol": "SPCXxUSD",
+                    "base": "SPCXx",
+                    "quote": "USD",
+                    "free_base": 0.0,
+                    "locked_base_qty": 12.135889,
+                    "price": 122.47,
+                    "ts": now_s,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert extract_position_held_qty({"free_base": 0.0, "locked_base_qty": 12.135889}) == pytest.approx(12.135889)
+    xs_res = KrakenXstocksCollector(start_sync=False).collect(
+        str(cdb_xs),
+        prices_and_trends={"SPCXxUSD": {"price": 122.47}},
+    )
+    assert xs_res is not None
+    assert xs_res["holdings"]["SPCXx"] == pytest.approx(12.135889, abs=1e-5)
+
+    # 2. build_cached_balance_observations groups locks strictly by matching timestamp bucket & preserves pos:* quote lock
+    cached_bals = {
+        "pos:binance:BTCUSDC": {
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "base": "BTC",
+            "quote": "USDC",
+            "free_base": 0.02,
+            "free_quote": 5000.0,
+            "base_bal_ts": now_s,
+            "quote_bal_ts": now_s,
+            "locked_base_qty": 0.01,
+            "locked_quote_usd": 900.0,
+        },
+        "pos:binance:BTCUSDT": {
+            "venue": "binance",
+            "symbol": "BTCUSDT",
+            "base": "BTC",
+            "quote": "USDT",
+            "free_base": 0.05,
+            "free_quote": 100.0,
+            "base_bal_ts": now_s - 500.0,  # STALE base timestamp -> must NOT pollute fresh BTC reflected_locked!
+            "quote_bal_ts": now_s - 500.0,
+            "locked_base_qty": 0.04,
+        },
+        "pos:binance:TAOUSDC": {
+            "venue": "binance",
+            "symbol": "TAOUSDC",
+            "base": "TAO",
+            "quote": "USDC",
+            "free_base": 10.0,
+            "free_quote": 5000.0,
+            "base_bal_ts": now_s,
+            "quote_bal_ts": now_s,
+            "locked_quote_usd": 100.0,
+        },
+        "cash:binance:USDC": {
+            "venue": "binance",
+            "asset": "USDC",
+            "free": 4800.0,
+            "ts": now_s - 300.0,  # OLDER than pos:* -> pos:* quote observation (5000, reflected=1000) must win!
+            "locked_quote_usd": 250.0,
+        },
+    }
+    obs_map = build_cached_balance_observations(cached_bals, resolve_assets_fn=resolve_assets)
+    assert obs_map[("binance", "BTC")].free == pytest.approx(0.02)
+    assert obs_map[("binance", "BTC")].reflected_locked == pytest.approx(0.01)
+    assert obs_map[("binance", "USDC")].free == pytest.approx(5000.0)
+    assert obs_map[("binance", "USDC")].reflected_locked == pytest.approx(1000.0)
+
+    # 3. derive_runtime_portfolio_view reconciles shared free_quote across positions EVEN with empty open_orders_list
+    pos_reconcile = [
+        {
+            "venue": "binance",
+            "symbol": "TAOUSDC",
+            "base": "TAO",
+            "quote": "USDC",
+            "price": 175.0,
+            "free_base": 10.0,
+            "free_quote": 4200.0,
+            "_base_balance_ts": now_s - 200.0,
+            "_quote_balance_ts": now_s - 200.0,
+            "_prev_locked_quote_usd": 100.0,
+            "_prev_locked_base_qty": 0.5,
+        }
+    ]
+    cash_reconcile = {
+        "binance:USDC": {
+            "venue": "binance",
+            "asset": "USDC",
+            "free": 5143.68,
+            "_balance_ts": now_s,
+            "_prev_locked_quote_usd": 0.0,
+        }
+    }
+    derive_runtime_portfolio_view(
+        [], pos_reconcile, cash_reconcile, {}, {}, {}, {}, now_ts_oo=now_s, gateway_max_usd=2000.0
+    )
+    assert pos_reconcile[0]["free_quote"] == pytest.approx(5143.68, abs=0.01)
+    assert pos_reconcile[0]["effective_max_buy_usd"] == pytest.approx(2000.0, abs=0.01)
+    for sk in INTERNAL_BALANCE_SCRATCH_KEYS:
+        assert sk not in pos_reconcile[0]
+        assert sk not in cash_reconcile["binance:USDC"]
+
+    # 4. update_venue_balances_state_locked strips _prev_locked_* scratch keys too
+    vb_strip_p = tmp_path / "strip_vb" / "venue_balances_state.json"
+    assert update_venue_balances_state_locked(
+        str(vb_strip_p),
+        lambda _s, _d: {
+            "cash:binance:USDC": {
+                "venue": "binance",
+                "asset": "USDC",
+                "free": 100.0,
+                "ts": now_s,
+                "_prev_locked_quote_usd": 50.0,
+            },
+            "pos:binance:BTCUSDC": {
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "free_base": 0.1,
+                "ts": now_s,
+                "_prev_locked_base_qty": 0.05,
+            },
+        },
+    )
+    saved_strip = json.loads(vb_strip_p.read_text(encoding="utf-8"))
+    for sk in INTERNAL_BALANCE_SCRATCH_KEYS:
+        assert sk not in saved_strip["cash:binance:USDC"]
+        assert sk not in saved_strip["pos:binance:BTCUSDC"]
+
+    # 5. reprice_position_balance_fields & refresh_stale_t212_cached_positions update locked_base_usd and zero value_usd
+    t212_pos = {"free_base": 0.0, "value_usd": 300.0, "locked_base_qty": 2.0, "locked_base_usd": 200.0, "price": 100.0}
+    reprice_position_balance_fields(t212_pos, 125.0)
+    assert t212_pos["value_usd"] == pytest.approx(0.0)
+    assert t212_pos["locked_base_usd"] == pytest.approx(250.0)
+    vb_t212_p = tmp_path / "t212_reprice" / "venue_balances_state.json"
+    vb_t212_p.parent.mkdir(parents=True)
+    cached_t212 = {
+        "pos:t212:SPCX_US_EQ": {
+            "venue": "t212",
+            "symbol": "SPCX_US_EQ",
+            "free_base": 0.0,
+            "value_usd": 250.0,
+            "locked_base_qty": 2.0,
+            "locked_base_usd": 240.0,
+            "price": 120.0,
+            "ts": now_s - 600.0,
+        }
+    }
+    vb_t212_p.write_text(json.dumps(cached_t212), encoding="utf-8")
+    import intelligence.sentiment.collectors.microstructure_collector as _mc_mod
+    import providers.t212_provider as _t212_mod
+    fake_t212_cli = SimpleNamespace(get_portfolio=lambda: [{"ticker": "SPCX_US_EQ", "currentPrice": 130.0}])
+    class _FakeT212Prov:
+        def _client(self):
+            return fake_t212_cli
+    monkeypatch.setattr(_t212_mod, "T212Provider", _FakeT212Prov)
+    monkeypatch.setattr(_mc_mod, "_LAST_T212_PORTFOLIO_POLL_TS", 0.0)
+    assert refresh_stale_t212_cached_positions(cached_t212, str(vb_t212_p), now_s) is True
+    persisted_t212 = json.loads(vb_t212_p.read_text(encoding="utf-8"))["pos:t212:SPCX_US_EQ"]
+    assert persisted_t212["value_usd"] == pytest.approx(0.0)
+    assert persisted_t212["locked_base_usd"] == pytest.approx(260.0)
+
+    # 6. Atomic free_and_locked_balance on Binance, Hyperliquid, Kraken, T212 + live collect() anti-double-subtract
+    monkeypatch.setattr(
+        bapi_mod, "client", SimpleNamespace(get_asset_balance=lambda asset: {"asset": asset, "free": "5143.79", "locked": "1004.66"})
+    )
+    assert BinanceProvider().free_and_locked_balance("USDC") == pytest.approx((5143.79, 1004.66))
+
+    monkeypatch.setenv("HL_ACCOUNT_ADDRESS", "0xabc123")
+    hl_p = HyperliquidProvider(
+        token="HYPE",
+        client=SimpleNamespace(
+            info=SimpleNamespace(
+                spot_user_state=lambda _addr: {"balances": [{"coin": "USDC", "total": "4088.83", "hold": "699.63"}]}
+            )
+        ),
+    )
+    assert hl_p.free_and_locked_balance("USDC") == pytest.approx((3389.2, 699.63))
+
+    kr_p = KrakenProvider(
+        client=SimpleNamespace(
+            balance_ex=lambda: {"ZUSD": {"balance": "1660.02", "hold_trade": "200.00"}, "SPCXx": {"balance": "12.0", "hold_trade": "5.0"}}
+        )
+    )
+    assert kr_p.free_and_locked_balance("USD") == pytest.approx((1460.02, 200.0))
+    assert kr_p.free_and_locked_balance("SPCXx") == pytest.approx((7.0, 5.0))
+
+    t212_p = T212Provider()
+    monkeypatch.setattr(
+        t212_p,
+        "_client",
+        lambda: SimpleNamespace(get_cash=lambda: {"free": 4600.0, "blocked": 920.0}),
+    )
+    import sys
+    monkeypatch.setitem(sys.modules, "212trading.market_data", SimpleNamespace(get_usd_ron=lambda: 4.6))
+    assert t212_p.free_and_locked_balance("USD") == pytest.approx((1000.0, 200.0))
+
+    # End-to-end live collect() test: exchange returns atomic (5143.79, 1004.66), and order reprices 1s after bal_ts ->
+    # MUST NOT double-subtract $104.85!
+    live_prov = SimpleNamespace(
+        free_and_locked_balance=lambda a: (5143.79, 1004.66) if a == "USDC" else (0.025, 0.0),
+        free_balance=lambda a: 5143.79 if a == "USDC" else 0.025,
+    )
+    live_inst = SimpleNamespace(
+        symbol="BTCUSDC",
+        provider_name="binance",
+        base="BTC",
+        quote="USDC",
+        _provider=live_prov,
+        params={},
+        open_orders=lambda: [
+            {"orderId": "1", "side": "BUY", "type": "LIMIT", "price": 58050.0, "origQty": 0.0155, "executedQty": 0.0, "status": "NEW", "timestamp": int((now_s - 3600.0) * 1000)},
+            {"orderId": "2", "side": "BUY", "type": "LIMIT", "price": 58907.4, "origQty": 0.00178, "executedQty": 0.0, "status": "NEW", "timestamp": int((now_s + 2.0) * 1000)},
+        ],
+    )
+    cdb_live = tmp_path / "live_atomic_cdb"
+    (cdb_live / "state").mkdir(parents=True)
+    tpos_live, _, vcash_live, _ = TradablePositionsAndOrdersCollector(start_sync=False).collect(
+        str(cdb_live),
+        inst_map={"BTCUSDC": live_inst},
+        prices_and_trends={"BTCUSDC": {"price": 58973.0}},
+        allow_network=True,
+        persist=False,
+        now_ts=now_s,
+    )
+    assert vcash_live["binance:USDC"]["free"] == pytest.approx(5143.79, abs=0.02)
+    assert vcash_live["binance:USDC"]["locked_quote_usd"] == pytest.approx(1004.63, abs=0.02)
+    assert tpos_live[0]["free_quote"] == pytest.approx(5143.79, abs=0.02)
+
+
+
 
 
 

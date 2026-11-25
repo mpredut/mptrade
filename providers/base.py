@@ -193,6 +193,11 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         """Return free balance: ``0.0`` is real zero; ``None`` means unavailable."""
         return None
 
+    def free_and_locked_balance(self, asset: str) -> Optional[tuple[float, Optional[float]]]:
+        """Return atomic ``(free, locked)`` balance when exposed in one venue query, else ``(free, None)``."""
+        free_v = self.free_balance(asset)
+        return (free_v, None) if free_v is not None else None
+
     def _require_submitted_order_id(
         self,
         symbol: str,

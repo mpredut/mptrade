@@ -429,25 +429,38 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
     )
 
     @staticmethod
-    def _parse_balance_value(raw_val: object) -> Optional[float]:
+    def _parse_balance_free_and_hold(raw_val: object) -> tuple[Optional[float], Optional[float]]:
         if isinstance(raw_val, dict):
             total = safe_nonneg_float(raw_val.get("balance"), default=None)
             hold = safe_nonneg_float(raw_val.get("hold_trade", 0.0), default=None)
             if total is None or hold is None:
-                return None
-            return max(0.0, total - hold)
-        return safe_nonneg_float(raw_val, default=None)
+                return None, None
+            return max(0.0, total - hold), hold
+        return safe_nonneg_float(raw_val, default=None), None
 
     @staticmethod
-    def _lookup_balance_candidates(bal: dict, candidates: tuple[str, ...] | List[str]) -> tuple[bool, Optional[float]]:
+    def _parse_balance_value(raw_val: object) -> Optional[float]:
+        return KrakenProvider._parse_balance_free_and_hold(raw_val)[0]
+
+    @staticmethod
+    def _lookup_balance_candidates_with_hold(
+        bal: dict, candidates: tuple[str, ...] | List[str]
+    ) -> tuple[bool, Optional[float], Optional[float]]:
         for key in candidates:
             if key in bal:
-                return True, KrakenProvider._parse_balance_value(bal[key])
+                free_v, hold_v = KrakenProvider._parse_balance_free_and_hold(bal[key])
+                return True, free_v, hold_v
         for key in candidates:
             raw_val = casefold_get(bal, key, _MISSING)
             if raw_val is not _MISSING:
-                return True, KrakenProvider._parse_balance_value(raw_val)
-        return False, 0.0
+                free_v, hold_v = KrakenProvider._parse_balance_free_and_hold(raw_val)
+                return True, free_v, hold_v
+        return False, 0.0, None
+
+    @staticmethod
+    def _lookup_balance_candidates(bal: dict, candidates: tuple[str, ...] | List[str]) -> tuple[bool, Optional[float]]:
+        found, free_v, _ = KrakenProvider._lookup_balance_candidates_with_hold(bal, candidates)
+        return found, free_v
 
     @staticmethod
     def _available_balances_from_client(cli) -> dict:
@@ -487,27 +500,41 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         except Exception:  # noqa: BLE001
             return {}
 
-    def free_balance(self, asset: str) -> Optional[float]:
+    def free_and_locked_balance(self, asset: str) -> Optional[tuple[float, Optional[float]]]:
+        """Return atomic ``(free, hold_trade)`` from Kraken ``BalanceEx`` (or ``(free, None)`` on ``Balance`` fallback)."""
         if (asset_u := clean_upper_scalar(asset)) is None:
             return None
         try:
             bal = self._query_with_bot_fallback(self._available_balances_from_client) or {}
             if not isinstance(bal, dict):
                 return None
+            has_ex_payload = any(isinstance(v, dict) for v in bal.values())
             if asset_u in {"USD", "ZUSD", "XUSD"}:
                 total_usd = 0.0
+                total_hold = 0.0
+                all_holds_known = has_ex_payload
                 for _label, keys in self._USD_EQUIVALENT_BUCKETS:
-                    found, val = self._lookup_balance_candidates(bal, keys)
+                    found, val, hold_v = self._lookup_balance_candidates_with_hold(bal, keys)
                     if found:
                         if val is None:
                             return None
                         total_usd += val
-                return total_usd
+                        if hold_v is None:
+                            all_holds_known = False
+                        else:
+                            total_hold += hold_v
+                return total_usd, (total_hold if all_holds_known else None)
             candidates = _kraken_balance_asset_candidates(asset)
-            found, val = self._lookup_balance_candidates(bal, candidates)
-            return val if found else 0.0
+            found, val, hold_v = self._lookup_balance_candidates_with_hold(bal, candidates)
+            if not found:
+                return 0.0, (0.0 if has_ex_payload else None)
+            return (val, hold_v) if val is not None else None
         except Exception as e:  # noqa: BLE001
             return self._log_provider_balance_error("Kraken", "balance", asset, e)
+
+    def free_balance(self, asset: str) -> Optional[float]:
+        pair = self.free_and_locked_balance(asset)
+        return pair[0] if pair is not None else None
 
     def open_orders_by_symbol(self, symbols: Sequence[str]) -> dict[str, List[dict]]:
         """Fetch all Kraken open orders in ONE private API call and bucket by requested ``symbols``."""
