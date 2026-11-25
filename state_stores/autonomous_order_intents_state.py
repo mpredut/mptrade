@@ -1,4 +1,4 @@
-"""1:1 SSOT store owner for ``autonomous_trade_intents_state.json``."""
+"""1:1 SSOT store owner for ``autonomous_order_intents_state.json``."""
 from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
@@ -7,7 +7,11 @@ import threading
 from typing import Any, Callable, Optional
 
 from botcore import FileLock, _parse_bool_flag, clean_json_value, clean_scalar_str
-from cachepaths import AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME, resolve_cachedb_filepath
+from cachepaths import (
+    AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME,
+    resolve_statedb_dir_from_cachedb,
+    resolve_statedb_filepath,
+)
 from state_io import (
     StateReadError,
     generation_lock_path,
@@ -19,13 +23,36 @@ from state_io import (
 from .base import StateStoreBase
 
 _INTENTS_LOCK_LOCAL = threading.local()
+_LEGACY_INTENTS_FILENAMES: tuple[str, ...] = (
+    "autonomous_trade_intents_state.json",
+    "autonomous_trade_intents.json",
+)
 
 
-class AutonomousTradeIntentsStateStore(StateStoreBase):
-    """Exclusive 1:1 owner for durable read/write/lock access to ``autonomous_trade_intents_state.json``."""
+class AutonomousOrderIntentsStateStore(StateStoreBase):
+    """Exclusive 1:1 owner for durable read/write/lock access to ``autonomous_order_intents_state.json``."""
 
-    FILENAME = AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME
-    SUBDOMAIN = "state"
+    FILENAME = AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME
+    SUBDOMAIN = "orders"
+
+    @classmethod
+    def candidate_paths(cls, cachedb_dir: str) -> list[str]:
+        """Return deduplicated candidate paths across ``statedb/orders/``, ``cachedb/orders/``, ``cachedb/state/``, and root."""
+        statedb_dir = resolve_statedb_dir_from_cachedb(cachedb_dir)
+        dirs = tuple(
+            dict.fromkeys((
+                os.path.join(statedb_dir, cls.SUBDOMAIN),
+                os.path.join(cachedb_dir, cls.SUBDOMAIN),
+                os.path.join(cachedb_dir, "state"),
+                cachedb_dir,
+            ))
+        )
+        names = (cls.FILENAME, *_LEGACY_INTENTS_FILENAMES)
+        cands: list[str] = [cls.resolve_path(cachedb_dir)]
+        for d in dirs:
+            for nm in names:
+                cands.append(os.path.join(d, nm))
+        return list(dict.fromkeys(cands))
 
     @classmethod
     @contextmanager
@@ -34,7 +61,7 @@ class AutonomousTradeIntentsStateStore(StateStoreBase):
         raw_p = clean_scalar_str(os.fspath(intents_file)) if isinstance(intents_file, (str, os.PathLike)) else None
         if raw_p is None:
             raise ValueError(f"Invalid durable intents_file: {intents_file!r}")
-        key = generation_lock_path(str(resolve_cachedb_filepath(raw_p, migrate=True)))
+        key = generation_lock_path(str(resolve_statedb_filepath(raw_p, migrate=True)))
         depths = getattr(_INTENTS_LOCK_LOCAL, "depths", None)
         if depths is None:
             depths = _INTENTS_LOCK_LOCAL.depths = {}
@@ -61,7 +88,7 @@ class AutonomousTradeIntentsStateStore(StateStoreBase):
         read_only: bool = False,
         fail_closed: Optional[bool] = None,
     ) -> list[dict[str, Any]]:
-        """Load all trade intents from ``intents_file`` with ``.previous`` crash recovery."""
+        """Load all order intents from ``intents_file`` with ``.previous`` crash recovery."""
         is_ro = _parse_bool_flag(read_only, False)
         eff_fail_closed = (not is_ro) if fail_closed is None else _parse_bool_flag(fail_closed, not is_ro)
         lock_cm = nullcontext() if is_ro else cls.lock(intents_file)
@@ -70,7 +97,7 @@ class AutonomousTradeIntentsStateStore(StateStoreBase):
                 intents_file,
                 default_factory=list,
                 fail_closed=eff_fail_closed,
-                label="autonomous_trade_intents",
+                label="autonomous_order_intents",
                 root_type=list,
                 repair_files=not is_ro,
             )
@@ -89,17 +116,7 @@ class AutonomousTradeIntentsStateStore(StateStoreBase):
         """Read-only loader accepting both canonical ``list`` and legacy ``{"intents": [...]}`` schemas."""
         if not cachedb_dir:
             return []
-        raw_candidates = (
-            os.path.join(cachedb_dir, "state", cls.FILENAME),
-            os.path.join(cachedb_dir, cls.FILENAME),
-        )
-        resolved_candidates = list(
-            dict.fromkeys(
-                p
-                for raw_p in raw_candidates
-                for p in (str(resolve_cachedb_filepath(raw_p)), raw_p)
-            )
-        )
+        resolved_candidates = cls.candidate_paths(cachedb_dir)
         raw_payload: Any = None
         if callable(read_json_fn):
             for cand_p in resolved_candidates:

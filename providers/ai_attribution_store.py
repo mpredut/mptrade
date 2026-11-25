@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from botcore import clean_upper_scalar, resolve_now_ts, safe_nonneg_float, safe_pos_float
 from cachepaths import (
-    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
+    AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME,
     CACHE_CURRENT_PRICE_FILENAME,
     resolve_cachedb_filepath,
 )
@@ -74,7 +74,7 @@ def load_and_evaluate_ai_attribution(
     min_day = datetime.fromtimestamp(max(0.0, cutoff - 86400.0), timezone.utc).strftime("%Y-%m-%d")
     max_day = datetime.fromtimestamp(eff_now + 86400.0, timezone.utc).strftime("%Y-%m-%d")
 
-    intents_path = _workspace_cachedb_path(workspace_dir, AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME)
+    intents_path = _workspace_cachedb_path(workspace_dir, AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME)
     intents = load_durable_intents_state(intents_path, read_only=True)
     live_prices = _load_live_prices_from_workspace(workspace_dir)
 

@@ -31,8 +31,6 @@ from botcore import (
     safe_nonneg_int,
     topic_spec,
 )
-from cachepaths import cache_path, resolve_cachedb_filepath
-
 load_dotenv()
 from orchestratorOS.agy.paths import (
     expand_config_path,
@@ -52,7 +50,8 @@ from orchestratorOS.agy.ui_mirror import (
     mirror_topic_thread_to_ui,
     sync_topic_thread_from_ui,
 )
-from state_io import extract_json_object, generation_file_lock, read_json_dict, save_json_state
+from state_io import extract_json_object
+from state_stores.llm_topic_threads import LlmTopicThreadsStore
 
 logger = logging.getLogger("orchestratorOS.agy.topics")
 
@@ -62,26 +61,20 @@ LOW_STAKE_MODEL = required_env("LLM_LOW_STAKE_MODEL")
 
 
 def get_topic_registry_path(registry_path: Optional[str] = None) -> str:
-    """Registry JSON path: explicit, LLM_TOPIC_REGISTRY_PATH (tests/ops override), or cachedb/llm_topic_threads.json."""
-    raw = registry_path or optional_env("LLM_TOPIC_REGISTRY_PATH", "")
-    if raw:
-        return str(resolve_cachedb_filepath(expand_config_path(raw)))
-    try:
-        return cache_path("llm_topic_threads.json")
-    except Exception:
-        return os.path.join(_ROOT_DIR, "cachedb", "llm_topic_threads.json")
+    """Registry JSON path: explicit, LLM_TOPIC_REGISTRY_PATH (tests/ops override), or statedb/llm/llm_topic_threads.json."""
+    return LlmTopicThreadsStore.resolve_registry_path(
+        registry_path,
+        env_override=optional_env("LLM_TOPIC_REGISTRY_PATH", ""),
+        expand_fn=expand_config_path,
+        fallback_root=_ROOT_DIR,
+    )
 
 
 def load_topic_registry(
     registry_path: Optional[str] = None, *, repair_files: bool = False
 ) -> Dict[str, dict]:
-    data = dict(
-        read_json_dict(
-            get_topic_registry_path(registry_path),
-            default={},
-            recover_previous=True,
-            repair_files=repair_files,
-        )
+    data = LlmTopicThreadsStore.read_registry(
+        get_topic_registry_path(registry_path), repair_files=repair_files
     )
     for old_key, new_key in TOPIC_ALIASES.items():
         if old_key in data:
@@ -93,10 +86,7 @@ def load_topic_registry(
 
 
 def save_topic_registry(registry: Dict[str, dict], registry_path: Optional[str] = None) -> None:
-    path = get_topic_registry_path(registry_path)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with generation_file_lock(path):
-        save_json_state(path, registry, indent=2)
+    LlmTopicThreadsStore.save_registry(get_topic_registry_path(registry_path), registry)
 
 
 def get_active_topic_cids(registry_path: Optional[str] = None) -> Set[str]:
@@ -195,7 +185,7 @@ def sync_all_topic_titles(
         updated += 1
     if updated_titles:
         reg_path = get_topic_registry_path(registry_path)
-        with generation_file_lock(reg_path):
+        with LlmTopicThreadsStore.generation_lock(reg_path):
             fresh_reg = load_topic_registry(registry_path, repair_files=True)
             dirty = False
             for key, canonical in updated_titles.items():
@@ -299,7 +289,7 @@ def record_topic_slow_rotation(
     resolved, base = canonical_topic_key(topic_key), resolve_bot_cli_base(cli_base)
     target_cid = conversation_id.strip() if isinstance(conversation_id, str) and conversation_id.strip() else None
     reg_path = get_topic_registry_path(registry_path)
-    with generation_file_lock(reg_path):
+    with LlmTopicThreadsStore.generation_lock(reg_path):
         _, reg, entry = _load_topic_entry(resolved, registry_path, repair_files=True)
         if entry is None:
             entry = {"topic_key": resolved, "turn_count": 0, "rolling_history": []}
@@ -343,7 +333,7 @@ def reset_topic_slow_rotations(
         else None
     )
     reset_count = 0
-    with generation_file_lock(reg_path):
+    with LlmTopicThreadsStore.generation_lock(reg_path):
         reg = load_topic_registry(registry_path, repair_files=True)
         changed = False
         for k, entry in reg.items():
@@ -377,7 +367,7 @@ def record_topic_resume_timeout(
     max_to = exact_pos_int(max_consecutive_timeouts, default=2) or 2
     target_cid = conversation_id.strip() if isinstance(conversation_id, str) and conversation_id.strip() else None
     reg_path = get_topic_registry_path(registry_path)
-    with generation_file_lock(reg_path):
+    with LlmTopicThreadsStore.generation_lock(reg_path):
         _, reg, entry = _load_topic_entry(resolved, registry_path, repair_files=True)
         if entry is None:
             return False
@@ -444,7 +434,7 @@ def prepare_topic_session(
             )
             return TopicSession(cid, hist_prefix, (step_count - compacted_at) >= compact_steps_i)
         reg_path = get_topic_registry_path(registry_path)
-        with generation_file_lock(reg_path):
+        with LlmTopicThreadsStore.generation_lock(reg_path):
             _, reg, fresh_entry = _load_topic_entry(
                 resolved, registry_path, repair_files=True
             )
@@ -657,7 +647,7 @@ def record_topic_turn(
 
     condensed = condense_decision(response_text)
     reg_path = get_topic_registry_path(registry_path)
-    with generation_file_lock(reg_path):
+    with LlmTopicThreadsStore.generation_lock(reg_path):
         _, reg, entry = _load_topic_entry(resolved, registry_path, repair_files=True)
         if entry is None:
             entry = {"topic_key": resolved, "turn_count": 0, "rolling_history": []}

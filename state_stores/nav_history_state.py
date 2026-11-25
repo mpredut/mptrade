@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from typing import Any, Optional, Sequence
 
-from cachepaths import NAV_HISTORY_STATE_FILENAME, cache_relpath, resolve_cachedb_filepath
+from cachepaths import NAV_HISTORY_STATE_FILENAME, cache_relpath, resolve_statedb_filepath
 
 from .base import StateStoreBase
 
@@ -17,8 +17,8 @@ class NavHistoryStateStore(StateStoreBase):
 
     @classmethod
     def resolve_workspace_path(cls, workspace_dir: str) -> str:
-        """Resolve ``nav_history_state.json`` inside ``workspace_dir``."""
-        return str(resolve_cachedb_filepath(os.path.join(workspace_dir, cache_relpath(cls.FILENAME))))
+        """Resolve ``nav_history_state.json`` inside ``workspace_dir`` (``statedb/state/`` with pre-cutover fallback)."""
+        return str(resolve_statedb_filepath(os.path.join(workspace_dir, cache_relpath(cls.FILENAME))))
 
     @classmethod
     def read_raw_doc(cls, workspace_dir: str) -> dict[str, Any]:

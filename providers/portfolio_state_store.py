@@ -66,6 +66,7 @@ def load_venue_balance_caches(
         candidates = list(
             dict.fromkeys((
                 str(resolve_cachedb_filepath(os.path.join(cachedb_dir, fname))),
+                os.path.join(cachedb_dir, "account", fname),
                 os.path.join(cachedb_dir, "orders", fname),
                 os.path.join(cachedb_dir, fname),
             ))

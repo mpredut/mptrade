@@ -65,13 +65,25 @@ def ssh_cat(remote_path: str) -> dict | list | str | None:
 
 
 def inspect_fleet(json_output: bool = False):
-    raw_balances = ssh_cat(cache_path(f"state/{VENUE_BALANCES_STATE_FILENAME}")) or ssh_cat(cache_path(VENUE_BALANCES_STATE_FILENAME))
+    raw_balances = (
+        ssh_cat(f"statedb/state/{VENUE_BALANCES_STATE_FILENAME}")
+        or ssh_cat(cache_path(f"state/{VENUE_BALANCES_STATE_FILENAME}"))
+        or ssh_cat(cache_path(VENUE_BALANCES_STATE_FILENAME))
+    )
     balances = raw_balances if isinstance(raw_balances, dict) else {}
-    raw_topic = ssh_cat(cache_path("system/llm_topic_threads.json")) or ssh_cat(cache_path("llm_topic_threads.json"))
+    raw_topic = (
+        ssh_cat("statedb/llm/llm_topic_threads.json")
+        or ssh_cat(cache_path("system/llm_topic_threads.json"))
+        or ssh_cat(cache_path("llm_topic_threads.json"))
+    )
     topic_data = raw_topic if isinstance(raw_topic, dict) else {}
     open_orders_by_venue: dict[str, dict] = {}
     for v_key, open_fname in CacheOrderOpenManager.VENUE_FILENAMES.items():
-        raw_oo = ssh_cat(cache_path(f"orders/{open_fname}")) or ssh_cat(cache_path(open_fname))
+        raw_oo = (
+            ssh_cat(cache_path(f"account/{open_fname}"))
+            or ssh_cat(cache_path(f"orders/{open_fname}"))
+            or ssh_cat(cache_path(open_fname))
+        )
         if isinstance(raw_oo, dict):
             open_orders_by_venue[v_key] = raw_oo
 

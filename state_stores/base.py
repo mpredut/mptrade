@@ -12,7 +12,12 @@ from dataclasses import dataclass
 import os
 from typing import Any, Callable, Optional
 
-from cachepaths import cache_path, clean_scalar_str, resolve_cachedb_filepath
+from cachepaths import (
+    clean_scalar_str,
+    resolve_statedb_dir_from_cachedb,
+    resolve_statedb_filepath,
+    state_path,
+)
 from state_io import (
     generation_file_lock,
     load_json_state,
@@ -43,17 +48,19 @@ class StateStoreBase:
 
     @classmethod
     def resolve_path(cls, cachedb_dir: Optional[str] = None, *, migrate: bool = False) -> str:
-        """Resolve the canonical on-disk path for this store's file."""
+        """Resolve the canonical on-disk path for this store's file (``statedb/`` with pre-cutover fallback)."""
         if cachedb_dir and (clean_dir := clean_scalar_str(cachedb_dir)):
-            return str(resolve_cachedb_filepath(os.path.join(clean_dir, cls.FILENAME), migrate=migrate))
-        return str(resolve_cachedb_filepath(cache_path(cls.FILENAME), migrate=migrate))
+            return str(resolve_statedb_filepath(os.path.join(clean_dir, cls.FILENAME), migrate=migrate))
+        return str(resolve_statedb_filepath(state_path(cls.FILENAME), migrate=migrate))
 
     @classmethod
     def candidate_paths(cls, cachedb_dir: str) -> list[str]:
-        """Return deduplicated candidate disk paths (resolved, subdomain, flat root)."""
+        """Return deduplicated candidate disk paths across ``statedb/<sub_dir>/``, ``cachedb/<sub_dir>/``, and flat root."""
+        statedb_dir = resolve_statedb_dir_from_cachedb(cachedb_dir)
         return list(
             dict.fromkeys((
                 cls.resolve_path(cachedb_dir),
+                os.path.join(statedb_dir, cls.SUBDOMAIN, cls.FILENAME),
                 os.path.join(cachedb_dir, cls.SUBDOMAIN, cls.FILENAME),
                 os.path.join(cachedb_dir, cls.FILENAME),
             ))

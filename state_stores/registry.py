@@ -5,9 +5,11 @@ from pathlib import Path
 
 from cachepaths import (
     ASSETGUARDIAN_STATE_FILENAME,
-    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
+    AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME,
+    LLM_TOPIC_THREADS_FILENAME,
     MT_STATE_FILENAME,
     NAV_HISTORY_STATE_FILENAME,
+    NOTIFY_QUEUE_FILENAME,
     ORDER_RETRY_QUEUE_FILENAME,
     PORTFOLIO_POSITIONS_STATE_FILENAME,
     RTRADE_PAIRS_STATE_FILENAME,
@@ -42,11 +44,11 @@ CRITICAL_STATE_SPECS: tuple[StateFileSpec, ...] = (
         subdomain="state",
     ),
     StateFileSpec(
-        filename=AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
-        const_name="AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME",
-        owner_module="state_stores/autonomous_trade_intents_state.py",
-        store_class="AutonomousTradeIntentsStateStore",
-        subdomain="state",
+        filename=AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME,
+        const_name="AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME",
+        owner_module="state_stores/autonomous_order_intents_state.py",
+        store_class="AutonomousOrderIntentsStateStore",
+        subdomain="orders",
     ),
     StateFileSpec(
         filename=ORDER_RETRY_QUEUE_FILENAME,
@@ -104,6 +106,21 @@ CRITICAL_STATE_SPECS: tuple[StateFileSpec, ...] = (
         owner_module="state_stores/rtrade_pairs_state.py",
         store_class="RtradePairsStateStore",
         subdomain="state",
+    ),
+    StateFileSpec(
+        filename=LLM_TOPIC_THREADS_FILENAME,
+        const_name="LLM_TOPIC_THREADS_FILENAME",
+        owner_module="state_stores/llm_topic_threads.py",
+        store_class="LlmTopicThreadsStore",
+        subdomain="llm",
+    ),
+    StateFileSpec(
+        filename=NOTIFY_QUEUE_FILENAME,
+        const_name="NOTIFY_QUEUE_FILENAME",
+        owner_module="state_stores/notify_queue.py",
+        store_class="NotifyQueueStore",
+        subdomain="system",
+        is_jsonl=True,
     ),
 )
 

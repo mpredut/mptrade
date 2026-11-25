@@ -387,33 +387,43 @@ class TestCachepaths(TempDirTestCase):
             "orderbook_depth_BTCUSDC.json": "telemetry",
             "derivatives_telemetry_BTCUSDC.json": "telemetry",
             "whale_snapshot_ETHUSDC.json": "telemetry",
+            "kinematic_impulse_signal.json": "telemetry",
             "fear_greed_index.json": "macro",
             "market_breadth_metrics.json": "macro",
             "news_feed_snapshot.json": "macro",
             "macro_lexicon_collect.json": "macro",
             "sentiment_eval.json": "macro",
             "geopolitical_eval.json": "macro",
-            "cache_order.json": "orders",
-            "cache_order_binance.json": "orders",
-            "cache_trade_binance.jsonl": "orders",
-            "cache_orders_kraken.json": "orders",
-            "cache_trades_hyperliquid.json": "orders",
-            "cache_asset_value_t212.json": "orders",
-            "binance_account_cache_health.json": "orders",
+            "cache_order.json": "account",
+            "cache_order_binance.json": "account",
+            "cache_trade_binance.jsonl": "account",
+            "cache_orders_kraken.json": "account",
+            "cache_trades_hyperliquid.json": "account",
+            "cache_asset_value_t212.json": "account",
+            "cache_balance_binance.json": "account",
+            "cache_fee_schedule.json": "account",
+            "account_cache_health.json": "account",
+            "binance_account_cache_health.json": "account",
             "order_retry_queue.json": "orders",
+            "orders_active.json": "orders",
+            "autonomous_order_intents_state.json": "orders",
+            "autonomous_trade_intents_state.json": "orders",
             "assetguardian_state_BTCUSDC.json": "state",
             "mt_state.json": "state",
             "rtrade_pairs_state.json": "state",
             "trailing_state.json": "state",
             "smart_stop_loss_state.json": "state",
-            "autonomous_trade_intents_state.json": "state",
+            "venue_fee_maintenance_state.json": "state",
             "rtrade_BTCUSDC.heartbeat": "system/heartbeat",
             "auto_technical_repair.heartbeat": "system/heartbeat",
             "auto_technical_repair.heartbeat.previous": "system/heartbeat",
-            "auto_repair_eval.json": "system",
+            "auto_repair_eval.json": "llm",
+            "llm_quota_status.json": "llm",
+            "llm_model_catalog.json": "llm",
+            "ai_attribution_status.json": "llm",
+            "llm_topic_threads.json": "llm",
             "fleet_health_status.json": "system",
             "dev_regression_status.json": "system",
-            "llm_topic_threads.json": "system",
             "notify_queue.json": "system",
         }
         for filename, expected_domain in cases.items():
@@ -448,7 +458,7 @@ class TestCachepaths(TempDirTestCase):
         self.assertEqual(moved["trends"], ["cache_short_trend.json"])
         self.assertEqual(moved["macro"], ["fear_greed_index.json"])
         self.assertEqual(
-            sorted(moved["orders"]),
+            sorted(moved["account"]),
             ["cache_order_filled_binance.json", "cache_trade_binance.jsonl"],
         )
         self.assertEqual(
@@ -459,8 +469,8 @@ class TestCachepaths(TempDirTestCase):
         self.assertTrue((root / "prices" / "cache_current_price.json").exists())
         self.assertTrue((root / "trends" / "cache_short_trend.json").exists())
         self.assertTrue((root / "macro" / "fear_greed_index.json").exists())
-        self.assertTrue((root / "orders" / "cache_order_filled_binance.json").exists())
-        self.assertTrue((root / "orders" / "cache_trade_binance.jsonl").exists())
+        self.assertTrue((root / "account" / "cache_order_filled_binance.json").exists())
+        self.assertTrue((root / "account" / "cache_trade_binance.jsonl").exists())
         self.assertFalse((root / "orders" / "cache_order.json").exists())
         self.assertFalse((root / "orders" / "cache_trade.jsonl").exists())
         self.assertTrue((root / "system" / "heartbeat" / "rtrade_BTCUSDC.heartbeat").exists())

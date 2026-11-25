@@ -52,7 +52,7 @@ from botcore import (
     split_csv,
 )
 from cachepaths import (
-    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
+    AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME,
     CACHE_CURRENT_PRICE_FILENAME,
     VENUE_RUNTIME_DIR_MAP,
     is_equity_venue_or_suffix,
@@ -183,7 +183,7 @@ class AutonomousIntentGateway:
     ) -> None:
         self.workspace_dir = workspace_dir or ROOT_DIR
         self.cache_dir = os.path.join(self.workspace_dir, cache_dir)
-        self.intents_file = os.path.join(self.cache_dir, AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME)
+        self.intents_file = os.path.join(self.cache_dir, AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME)
 
         conf = load_key_value_conf(self.workspace_dir, ROOT_DIR)
         (

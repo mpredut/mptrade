@@ -27,12 +27,16 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
+    CACHE_FEE_SCHEDULE_FILENAME,
+    cache_path,
     clean_scalar_str,
     clean_upper_scalar,
     has_equity_suffix,
     normalize_venue_name,
+    resolve_cachedb_filepath,
 )
 from instrument_registry import casefold_get, resolve_kraken_tokenized_pair, symbols_for
+from state_io import read_json_dict, save_json_state
 from state_stores.venue_fee_maintenance_state import VenueFeeMaintenanceStateStore
 
 from .base import MarketDataProvider
@@ -104,11 +108,100 @@ def load_fee_maintenance_config(cfg_map: Optional[Dict[str, Any]] = None) -> Dic
     }
 
 
+_FEE_SCHEDULE_EXCHANGE_KEYS: frozenset[str] = frozenset({
+    "ts",
+    "fee_spec",
+    "by_symbol",
+    "spot_bnb_burn",
+    "bnb_free",
+    "bnb_locked",
+    "bnb_price_usdc",
+    "held_bnb_usdc",
+    "effective_bnb_usdc",
+    "free_usdc",
+    "volume_30d_usd",
+    "idle_usdc",
+    "active_referral_discount",
+    "active_staking_discount",
+})
+_FEE_MAINTENANCE_WORKFLOW_KEYS: frozenset[str] = frozenset({
+    "ts",
+    "has_pending_bnb_order",
+    "retry_soon",
+    "topup_action",
+    "placed_order_id",
+    "canceled_stale_ids",
+    "bnb_burn_error",
+    "last_bnb_burn_error_ts",
+    "last_idle_usdc_alert_ts",
+    "last_error",
+    "last_error_ts",
+})
+
+
+def _partition_venue_maintenance_payload(
+    entry: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Split one maintainer result into ``(exchange_schedule_cache, local_workflow_state)``."""
+    sched: Dict[str, Any] = {}
+    workflow: Dict[str, Any] = {}
+    for k, v in entry.items():
+        if k in _FEE_SCHEDULE_EXCHANGE_KEYS:
+            sched[k] = v
+        if k in _FEE_MAINTENANCE_WORKFLOW_KEYS or k not in _FEE_SCHEDULE_EXCHANGE_KEYS:
+            workflow[k] = v
+    return sched, workflow
+
+
 def resolve_fee_maintenance_state_path(
     cache_dir: Optional[str] = None, *, migrate: bool = False
 ) -> str:
     """Resolve the canonical ``venue_fee_maintenance_state.json`` path via its 1:1 store."""
     return VenueFeeMaintenanceStateStore.resolve_path(cache_dir, migrate=migrate)
+
+
+def resolve_fee_schedule_cache_path(
+    cache_dir: Optional[str] = None, *, migrate: bool = False
+) -> str:
+    """Resolve canonical ``cachedb/account/cache_fee_schedule.json`` (with pre-cutover ``orders/`` fallback)."""
+    if cache_dir and (clean_dir := clean_scalar_str(cache_dir)):
+        resolved = str(
+            resolve_cachedb_filepath(os.path.join(clean_dir, CACHE_FEE_SCHEDULE_FILENAME), migrate=migrate)
+        )
+        if os.path.exists(resolved) or os.path.abspath(os.path.dirname(resolved)) != os.path.abspath(clean_dir):
+            return resolved
+        return os.path.join(clean_dir, "account", CACHE_FEE_SCHEDULE_FILENAME)
+    return str(resolve_cachedb_filepath(cache_path(CACHE_FEE_SCHEDULE_FILENAME), migrate=migrate))
+
+
+def read_persisted_venue_fee_schedule(
+    cache_dir: Optional[str] = None,
+    *,
+    read_json_fn: Optional[Callable[[str], Any]] = None,
+) -> Dict[str, Any]:
+    """Read exchange-truth fee schedule & BNB reserve cache with transparent legacy fallback."""
+    if not cache_dir or not (clean_dir := clean_scalar_str(cache_dir)):
+        return {}
+    candidates = list(
+        dict.fromkeys((
+            resolve_fee_schedule_cache_path(clean_dir),
+            os.path.join(clean_dir, "account", CACHE_FEE_SCHEDULE_FILENAME),
+            os.path.join(clean_dir, "orders", CACHE_FEE_SCHEDULE_FILENAME),
+            os.path.join(clean_dir, CACHE_FEE_SCHEDULE_FILENAME),
+        ))
+    )
+    for cand in candidates:
+        if callable(read_json_fn):
+            raw = read_json_fn(cand)
+        else:
+            if not (os.path.exists(cand) or os.path.exists(f"{cand}.previous")):
+                continue
+            raw = read_json_dict(cand, default=None, recover_previous=True)
+        if isinstance(raw, dict) and raw:
+            return raw
+    # Pre-split backward compatibility: fall back to combined venue_fee_maintenance_state.json
+    legacy = VenueFeeMaintenanceStateStore.read_state(clean_dir, read_json_fn=read_json_fn)
+    return legacy if isinstance(legacy, dict) else {}
 
 
 class VenueFeeMaintainerInterface(ABC):
@@ -722,7 +815,7 @@ def read_persisted_venue_fee_spec(
     m_cls = VENUE_FEE_MAINTAINER_REGISTRY.get(v_norm)
     if m_cls is not None and (sym_override := m_cls.static_symbol_fee_override(symbol)):
         return sym_override
-    payload = VenueFeeMaintenanceStateStore.read_state(cache_dir)
+    payload = read_persisted_venue_fee_schedule(cache_dir)
     if not isinstance(payload, dict) or not payload:
         return {}
     venues_map = payload.get("venues")
@@ -790,6 +883,20 @@ def run_venue_fee_maintenance(
 
     dry_run_b = _parse_bool_flag(dry_run, False)
     with VenueFeeMaintenanceStateStore.locked_read_for_update(cache_dir, dry_run=dry_run_b) as (state_path, prev_state):
+        prev_sched = read_persisted_venue_fee_schedule(cache_dir)
+        prev_sched_venues = prev_sched.get("venues") if isinstance(prev_sched.get("venues"), dict) else {}
+        prev_workflow_venues = prev_state.get("venues") if isinstance(prev_state.get("venues"), dict) else {}
+
+        def _merge_venue_views(
+            sched_map: Dict[str, Any], wf_map: Dict[str, Any]
+        ) -> Dict[str, Any]:
+            merged: Dict[str, Any] = {}
+            for vk in dict.fromkeys((*sched_map.keys(), *wf_map.keys())):
+                s_row = sched_map.get(vk) if isinstance(sched_map.get(vk), dict) else {}
+                w_row = wf_map.get(vk) if isinstance(wf_map.get(vk), dict) else {}
+                merged[vk] = {**s_row, **w_row}
+            return merged
+
         last_run_ts = safe_nonneg_float(prev_state.get("last_run_ts"), default=0.0) or 0.0
         due_interval = _effective_due_interval_sec(prev_state, cfg)
         if last_run_ts > 0.0 and not is_interval_due(eff_now, last_run_ts, due_interval, force=force):
@@ -798,7 +905,7 @@ def run_venue_fee_maintenance(
                 "ts": round(eff_now, 3),
                 "last_run_ts": last_run_ts,
                 "due_in_sec": round(max(0.0, (last_run_ts + due_interval) - eff_now), 1),
-                "venues": prev_state.get("venues") if isinstance(prev_state.get("venues"), dict) else {},
+                "venues": _merge_venue_views(prev_sched_venues, prev_workflow_venues),
                 "events": [],
             }
 
@@ -807,8 +914,16 @@ def run_venue_fee_maintenance(
             for v in (venues if venues else list(VENUE_FEE_MAINTAINER_REGISTRY.keys()))
             if normalize_venue_name(v)
         ]
-        prev_venues = prev_state.get("venues") if isinstance(prev_state.get("venues"), dict) else {}
-        updated_venues: Dict[str, Any] = dict(prev_venues)
+        updated_sched_venues: Dict[str, Any] = {
+            vk: _partition_venue_maintenance_payload(v_row)[0]
+            for vk, v_row in prev_sched_venues.items()
+            if isinstance(v_row, dict)
+        }
+        updated_workflow_venues: Dict[str, Any] = {
+            vk: _partition_venue_maintenance_payload(v_row)[1]
+            for vk, v_row in prev_workflow_venues.items()
+            if isinstance(v_row, dict)
+        }
         all_events: List[Dict[str, Any]] = []
         errors: Dict[str, str] = {}
 
@@ -820,11 +935,15 @@ def run_venue_fee_maintenance(
                     errors[v_key] = f"Unknown venue fee maintainer: {v_key}"
                     continue
                 inst = cls()
-            prev_v = prev_venues.get(v_key) if isinstance(prev_venues.get(v_key), dict) else {}
+            prev_v_sched = updated_sched_venues.get(v_key) if isinstance(updated_sched_venues.get(v_key), dict) else {}
+            prev_v_wf = updated_workflow_venues.get(v_key) if isinstance(updated_workflow_venues.get(v_key), dict) else {}
+            prev_v = {**prev_v_sched, **prev_v_wf}
             try:
-                res = dict(inst.maintain(eff_now, prev_v, cfg, dry_run=_parse_bool_flag(dry_run, False)))
+                res = dict(inst.maintain(eff_now, prev_v, cfg, dry_run=dry_run_b))
                 v_events = list(res.pop("events", None) or ())
-                updated_venues[v_key] = res
+                v_sched, v_wf = _partition_venue_maintenance_payload(res)
+                updated_sched_venues[v_key] = v_sched
+                updated_workflow_venues[v_key] = v_wf
                 for ev in v_events:
                     all_events.append(ev)
                     if callable(event_handler):
@@ -832,27 +951,37 @@ def run_venue_fee_maintenance(
             except Exception as exc:
                 err_msg = " ".join(str(exc).split())
                 errors[v_key] = err_msg
-                preserved = dict(prev_v)
-                preserved["last_error"] = err_msg
-                preserved["last_error_ts"] = round(eff_now, 3)
-                updated_venues[v_key] = preserved
+                preserved_wf = dict(prev_v_wf)
+                preserved_wf["last_error"] = err_msg
+                preserved_wf["last_error_ts"] = round(eff_now, 3)
+                updated_workflow_venues[v_key] = preserved_wf
 
+        new_schedule: Dict[str, Any] = {
+            "schema_version": 1,
+            "ts": round(eff_now, 3),
+            "interval_sec": cfg["interval_sec"],
+            "state_max_age_sec": cfg["state_max_age_sec"],
+            "venues": updated_sched_venues,
+        }
         new_state: Dict[str, Any] = {
             "schema_version": 1,
             "ts": round(eff_now, 3),
             "last_run_ts": round(eff_now, 3) if not errors or len(errors) < len(target_venues) else last_run_ts,
             "interval_sec": cfg["interval_sec"],
             "state_max_age_sec": cfg["state_max_age_sec"],
-            "venues": updated_venues,
+            "venues": updated_workflow_venues,
         }
-        if not _parse_bool_flag(dry_run, False):
+        if not dry_run_b:
+            sched_path = resolve_fee_schedule_cache_path(cache_dir, migrate=True)
+            os.makedirs(os.path.dirname(os.path.abspath(sched_path)), exist_ok=True)
+            save_json_state(sched_path, new_schedule, indent=2, skip_if_unchanged=True)
             VenueFeeMaintenanceStateStore.save_state(state_path, new_state, indent=2)
 
         return {
             "status": "partial_error" if errors else "ok",
             "ts": round(eff_now, 3),
             "last_run_ts": new_state["last_run_ts"],
-            "venues": updated_venues,
+            "venues": _merge_venue_views(updated_sched_venues, updated_workflow_venues),
             "events": all_events,
             "errors": errors,
         }
@@ -867,7 +996,9 @@ __all__ = [
     "VenueFeeMaintainerBase",
     "VenueFeeMaintainerInterface",
     "load_fee_maintenance_config",
+    "read_persisted_venue_fee_schedule",
     "read_persisted_venue_fee_spec",
     "resolve_fee_maintenance_state_path",
+    "resolve_fee_schedule_cache_path",
     "run_venue_fee_maintenance",
 ]

@@ -794,7 +794,7 @@ class FileOrderLedgerBase(OrderLedgerBackendInterface, ABC):
 
     def _list_prefixed_jsonl_files(self, prefix: str) -> list[str]:
         candidates: dict[str, str] = {}
-        for scan_dir in dict.fromkeys((self.orders_dir, self.cachedb_dir)):
+        for scan_dir in dict.fromkeys((self.orders_dir, os.path.join(self.cachedb_dir, "orders"), self.cachedb_dir)):
             if not scan_dir or not os.path.isdir(scan_dir):
                 continue
             try:

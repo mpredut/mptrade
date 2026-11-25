@@ -283,8 +283,8 @@ def test_ai_attribution_workspace_loader_and_cli(tmp_path, capsys):
     # Persisted live Binance BNB discount fee (7.5 bps maker = 15 bps RT) and LIMIT execution quality metrics
     from cachepaths import resolve_cache_subdomain
 
-    assert resolve_cache_subdomain("ai_attribution_status.json") == "system"
-    assert resolve_cache_subdomain("ai_attribution_30d.json") == "system"
+    assert resolve_cache_subdomain("ai_attribution_status.json") == "llm"
+    assert resolve_cache_subdomain("ai_attribution_30d.json") == "llm"
     intents_with_lim = [
         {
             **intents[0],
@@ -490,9 +490,9 @@ def test_faza4_prep_shared_ssot_primitives(monkeypatch):
         resolve_matched_notional_usd,
     )
 
-    # 1. System cache filename SSOT constants
+    # 1. LLM cache filename SSOT constants
     for fn in (AI_ATTRIBUTION_STATUS_FILENAME, AI_ATTRIBUTION_30D_FILENAME, LLM_QUOTA_STATUS_FILENAME):
-        assert resolve_cache_subdomain(fn) == "system"
+        assert resolve_cache_subdomain(fn) == "llm"
 
     # 2. Pure LIFO matching, signed edge, USD formatting, and live-price payload helpers
     assert compute_signed_price_edge_pct("BUY", 100.0, 102.5) == pytest.approx(2.5)

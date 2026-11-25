@@ -23,16 +23,14 @@ from botcore import (
     safe_nonneg_float,
     safe_nonneg_int,
 )
-from cachepaths import cache_path, normalize_venue_name
+from cachepaths import normalize_venue_name
 from state_io import (
-    atomic_write_text,
     decode_embedded_json_dict,
     encode_json_payload,
-    generation_file_lock,
     parse_json_payload,
     read_json_dict,
-    read_text_lines,
 )
+from state_stores.notify_queue import NotifyQueueStore
 from notify_engine.alertnotifiers import (
     AlertNotifier,
     format_ntfy_url,
@@ -131,7 +129,7 @@ class NotificationServer:
         self.traceback_buffers: Dict[str, List[str]] = defaultdict(list)
         
         # Persistent Queue File
-        self.queue_file = optional_env("NOTIFICATION_QUEUE_FILE") or cache_path("notify_queue.json")
+        self.queue_file = optional_env("NOTIFICATION_QUEUE_FILE") or NotifyQueueStore.default_queue_file()
         os.makedirs(os.path.dirname(self.queue_file), exist_ok=True)
 
     def _load_ntfy_token(self) -> str:
@@ -166,17 +164,13 @@ class NotificationServer:
             payload["__orchestrator_intent__"] = intent_type
             encoded = encode_json_payload(payload)
             max_q = _queue_max_items()
-            with generation_file_lock(self.queue_file):
-                existing = (
-                    [ln.strip() for ln in read_text_lines(self.queue_file, keepends=True, errors="replace") if ln.strip()]
-                    if os.path.exists(self.queue_file)
-                    else []
-                )
+            with NotifyQueueStore.generation_lock(self.queue_file):
+                existing = [ln.strip() for ln in NotifyQueueStore.read_lines_nolock(self.queue_file) if ln.strip()]
                 if len(existing) >= max_q:
                     logging.warning(f"Retry queue full ({len(existing)} >= {max_q}); dropping oldest notification.")
                     existing = existing[-(max_q - 1):] if max_q > 1 else []
                 existing.append(encoded)
-                atomic_write_text(self.queue_file, "".join(ln + "\n" for ln in existing))
+                NotifyQueueStore.write_lines_nolock(self.queue_file, existing)
         except Exception as e:
             logging.error(f"Failed to enqueue notification: {e}")
 
@@ -617,10 +611,8 @@ class NotificationServer:
                 logging.error(f"Error flushing pending bulk notifications: {e}")
 
             try:
-                with generation_file_lock(self.queue_file):
-                    if not os.path.exists(self.queue_file):
-                        continue
-                    lines = read_text_lines(self.queue_file, keepends=True, errors="replace")
+                with NotifyQueueStore.generation_lock(self.queue_file):
+                    lines = NotifyQueueStore.read_lines_nolock(self.queue_file)
                 if not lines:
                     continue
 
@@ -702,14 +694,14 @@ class NotificationServer:
                         
                 if queue_dirty or success_count > 0 or len(remaining) != len(lines):
                     # Preserve any notifications appended concurrently while network I/O ran
-                    with generation_file_lock(self.queue_file):
+                    with NotifyQueueStore.generation_lock(self.queue_file):
                         newly_appended = []
-                        if os.path.exists(self.queue_file):
-                            cur_stripped = [
-                                l.strip()
-                                for l in read_text_lines(self.queue_file, keepends=True, errors="replace")
-                                if l.strip()
-                            ]
+                        cur_stripped = [
+                            l.strip()
+                            for l in NotifyQueueStore.read_lines_nolock(self.queue_file)
+                            if l.strip()
+                        ]
+                        if cur_stripped:
                             if cur_stripped[:len(snapshot_stripped)] == snapshot_stripped:
                                 newly_appended = cur_stripped[len(snapshot_stripped):]
                             else:
@@ -720,8 +712,7 @@ class NotificationServer:
                                     else:
                                         newly_appended.append(item_ln)
                         combined = (remaining + newly_appended)[-_queue_max_items():]
-                        content = "".join(r + "\n" for r in combined)
-                        atomic_write_text(self.queue_file, content)
+                        NotifyQueueStore.write_lines_nolock(self.queue_file, combined)
                     if success_count > 0:
                         logging.info(f"Flushed {success_count} delayed notifications from queue.")
 

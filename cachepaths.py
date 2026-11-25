@@ -36,7 +36,8 @@ CACHE_KRAKEN_BALANCE_FILENAME = "cache_balance_kraken.json"
 CACHE_HYPERLIQUID_BALANCE_FILENAME = "cache_balance_hyperliquid.json"
 CACHE_T212_BALANCE_FILENAME = "cache_balance_t212.json"
 CACHE_BINANCE_TRADE_FILENAME = "cache_trade_binance.jsonl"
-CACHE_ACCOUNT_HEALTH_FILENAME = "binance_account_cache_health.json"
+CACHE_ACCOUNT_HEALTH_FILENAME = "account_cache_health.json"
+CACHE_FEE_SCHEDULE_FILENAME = "cache_fee_schedule.json"
 CACHE_ASSET_VALUE_FILENAME = "cache_asset_value.jsonl"
 CACHE_KRAKEN_TRADE_FILENAME = "cache_trade_kraken.json"
 CACHE_HYPERLIQUID_TRADE_FILENAME = "cache_trade_hyperliquid.json"
@@ -46,7 +47,8 @@ ORDER_LEDGER_ACTIVE_FILENAME = "orders_active.json"
 ORDER_LEDGER_EVENTS_PREFIX = "order_events_"
 ORDER_LEDGER_CLOSED_PREFIX = "orders_closed_"
 ASSETGUARDIAN_STATE_FILENAME = "assetguardian_state.json"
-AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME = "autonomous_trade_intents_state.json"
+AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME = "autonomous_order_intents_state.json"
+AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME = AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME
 MT_STATE_FILENAME = "mt_state.json"
 RTRADE_PAIRS_STATE_FILENAME = "rtrade_pairs_state.json"
 SMART_STOP_LOSS_STATE_FILENAME = "smart_stop_loss_state.json"
@@ -59,6 +61,9 @@ KINEMATIC_IMPULSE_SIGNAL_FILENAME = "kinematic_impulse_signal.json"
 AI_ATTRIBUTION_STATUS_FILENAME = "ai_attribution_status.json"
 AI_ATTRIBUTION_30D_FILENAME = "ai_attribution_30d.json"
 LLM_QUOTA_STATUS_FILENAME = "llm_quota_status.json"
+LLM_MODEL_CATALOG_FILENAME = "llm_model_catalog.json"
+LLM_TOPIC_THREADS_FILENAME = "llm_topic_threads.json"
+NOTIFY_QUEUE_FILENAME = "notify_queue.json"
 
 CACHE_ORDERBOOK_DEPTH_PREFIX = "orderbook_depth_"
 CACHE_DERIVATIVES_TELEMETRY_PREFIX = "derivatives_telemetry_"
@@ -191,8 +196,12 @@ EXACT_LEGACY_FILENAMES = {
     CACHE_LONG_TREND_FILENAME: ("cache_price_long_trend.json",),
     CACHE_BINANCE_ORDER_FILLED_FILENAME: ("cache_order_binance.json", "cache_order.json"),
     CACHE_BINANCE_TRADE_FILENAME: ("cache_trade.jsonl",),
+    CACHE_ACCOUNT_HEALTH_FILENAME: ("binance_account_cache_health.json",),
     RTRADE_PAIRS_STATE_FILENAME: ("rtrade_pairs.json",),
-    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME: ("autonomous_trade_intents.json",),
+    AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME: (
+        "autonomous_trade_intents_state.json",
+        "autonomous_trade_intents.json",
+    ),
 }
 PREFIX_LEGACY_FILENAMES = (
     (CACHE_SPARSE_PRICE_PREFIX, ("cache_price_sparse_", "cache_price_")),
@@ -200,6 +209,7 @@ PREFIX_LEGACY_FILENAMES = (
     (CACHE_365_PRICE_PREFIX, ("cache_365price_", "cache_24price_long_")),
 )
 
+# Regenerable caches (can be deleted and re-synced from exchanges / external feeds).
 CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     "trends": {
         "exact": (
@@ -231,8 +241,19 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         "suffixes": (".npz",),
     },
     "telemetry": {
-        "exact": ("microstructure_cycle_history.json", "realized_liquidations.json"),
-        "prefixes": ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_", "microstructure_cycle_history.", "realized_liquidations."),
+        "exact": (
+            "microstructure_cycle_history.json",
+            "realized_liquidations.json",
+            KINEMATIC_IMPULSE_SIGNAL_FILENAME,
+        ),
+        "prefixes": (
+            "orderbook_depth_",
+            "derivatives_telemetry_",
+            "whale_snapshot_",
+            "microstructure_cycle_history.",
+            "realized_liquidations.",
+            "kinematic_impulse_signal.",
+        ),
         "suffixes": (),
     },
     "macro": {
@@ -253,30 +274,29 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         ),
         "suffixes": (),
     },
-    "orders": {
-        "exact": ("binance_account_cache_health.json", ORDER_LEDGER_ACTIVE_FILENAME),
+    "account": {
+        "exact": (
+            CACHE_ACCOUNT_HEALTH_FILENAME,
+            "binance_account_cache_health.json",
+            CACHE_FEE_SCHEDULE_FILENAME,
+        ),
         "prefixes": (
             "cache_order", "cache_balance", "cache_trade", "cache_asset_value",
-            "order_retry_", "orders_active.", ORDER_LEDGER_EVENTS_PREFIX, ORDER_LEDGER_CLOSED_PREFIX,
-            "binance_account_cache_health.",
+            "cache_fee_schedule", "account_cache_health.", "binance_account_cache_health.",
         ),
         "suffixes": (),
     },
-    "state": {
+    "llm": {
         "exact": (
-            ASSETGUARDIAN_STATE_FILENAME, MT_STATE_FILENAME, TRAILING_STATE_FILENAME,
-            SMART_STOP_LOSS_STATE_FILENAME, RTRADE_PAIRS_STATE_FILENAME,
-            AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME, NAV_HISTORY_STATE_FILENAME,
-            PORTFOLIO_POSITIONS_STATE_FILENAME,
-            VENUE_BALANCES_STATE_FILENAME, VENUE_FEE_MAINTENANCE_STATE_FILENAME,
+            AI_ATTRIBUTION_STATUS_FILENAME,
+            AI_ATTRIBUTION_30D_FILENAME,
+            LLM_QUOTA_STATUS_FILENAME,
+            LLM_MODEL_CATALOG_FILENAME,
         ),
         "prefixes": (
-            "assetguardian_state", "rtrade_pairs", "mt_state.", "trailing_state.",
-            "smart_stop_loss_state.", "autonomous_trade_intents", "nav_history_state",
-            "portfolio_positions_state",
-            "venue_balances_state", "venue_fee_maintenance_state",
+            "auto_", "ai_attribution_", "llm_quota_status.", "llm_model_catalog.",
         ),
-        "suffixes": ("_state.json",),
+        "suffixes": ("_eval.json",),
     },
     "system/heartbeat": {
         "exact": (),
@@ -284,26 +304,73 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         "suffixes": (".heartbeat",),
     },
     "system": {
-        "exact": (
-            "fleet_health_status.json", "dev_regression_status.json",
-            AI_ATTRIBUTION_STATUS_FILENAME, AI_ATTRIBUTION_30D_FILENAME,
-            "llm_topic_threads.json", LLM_QUOTA_STATUS_FILENAME, "llm_model_catalog.json",
-            "notify_queue.json",
-            KINEMATIC_IMPULSE_SIGNAL_FILENAME,
-        ),
-        "prefixes": (
-            "auto_", "fleet_health_status.", "dev_regression_status.", "ai_attribution_",
-            "llm_topic_threads.", "llm_quota_status.", "llm_model_catalog.",
-            "notify_queue.",
-            "kinematic_impulse_signal.",
-        ),
-        "suffixes": ("_eval.json",),
+        "exact": ("fleet_health_status.json", "dev_regression_status.json"),
+        "prefixes": ("fleet_health_status.", "dev_regression_status."),
+        "suffixes": (),
     },
 }
 
+# Irreplaceable local mptrade state (backup-mandatory, fsync=True, 1:1 state_stores/ owners).
+STATEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
+    "orders": {
+        "exact": (
+            ORDER_LEDGER_ACTIVE_FILENAME,
+            ORDER_RETRY_QUEUE_FILENAME,
+            AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME,
+            "autonomous_trade_intents_state.json",
+            "autonomous_trade_intents.json",
+        ),
+        "prefixes": (
+            "order_retry_",
+            "orders_active.",
+            ORDER_LEDGER_EVENTS_PREFIX,
+            ORDER_LEDGER_CLOSED_PREFIX,
+            "autonomous_order_intents",
+            "autonomous_trade_intents",
+        ),
+        "suffixes": (),
+    },
+    "state": {
+        "exact": (
+            ASSETGUARDIAN_STATE_FILENAME,
+            MT_STATE_FILENAME,
+            TRAILING_STATE_FILENAME,
+            SMART_STOP_LOSS_STATE_FILENAME,
+            RTRADE_PAIRS_STATE_FILENAME,
+            NAV_HISTORY_STATE_FILENAME,
+            PORTFOLIO_POSITIONS_STATE_FILENAME,
+            VENUE_BALANCES_STATE_FILENAME,
+            VENUE_FEE_MAINTENANCE_STATE_FILENAME,
+        ),
+        "prefixes": (
+            "assetguardian_state",
+            "rtrade_pairs",
+            "mt_state.",
+            "trailing_state.",
+            "smart_stop_loss_state.",
+            "nav_history_state",
+            "portfolio_positions_state",
+            "venue_balances_state",
+            "venue_fee_maintenance_state",
+        ),
+        "suffixes": ("_state.json",),
+    },
+    "llm": {
+        "exact": (LLM_TOPIC_THREADS_FILENAME,),
+        "prefixes": ("llm_topic_threads.",),
+        "suffixes": (),
+    },
+    "system": {
+        "exact": (NOTIFY_QUEUE_FILENAME,),
+        "prefixes": ("notify_queue.",),
+        "suffixes": (),
+    },
+}
+
+_ALL_STORAGE_SUBDOMAINS: frozenset[str] = frozenset(CACHEDB_SUBDOMAINS) | frozenset(STATEDB_SUBDOMAINS)
 _SIDECAR_SUFFIXES: tuple[str, ...] = (".generation.lock", ".previous", ".meta", ".lock", ".tmp")
-_SORTED_SUBDOMAINS: tuple[str, ...] = tuple(sorted(CACHEDB_SUBDOMAINS, key=len, reverse=True))
-_TOP_LEVEL_SUBDOMAINS: frozenset[str] = frozenset(sub.split("/", 1)[0] for sub in CACHEDB_SUBDOMAINS)
+_SORTED_SUBDOMAINS: tuple[str, ...] = tuple(sorted(_ALL_STORAGE_SUBDOMAINS, key=len, reverse=True))
+_TOP_LEVEL_SUBDOMAINS: frozenset[str] = frozenset(sub.split("/", 1)[0] for sub in _ALL_STORAGE_SUBDOMAINS)
 STALE_STAGING_MAX_AGE_SEC: float = 300.0
 
 
@@ -388,14 +455,21 @@ def _strip_sidecar_basename(path: object) -> str:
 
 
 def is_financial_critical_path(path: object) -> bool:
-    """Return True when ``path`` resolves to a financial/state subdomain requiring durable ``fsync=True``."""
-    return resolve_cache_subdomain(path) in ("orders", "state")
+    """Return True when ``path`` resolves to ``statedb/`` or ``cachedb/account/`` requiring durable ``fsync=True``."""
+    dom = resolve_storage_domain(path)
+    if dom is None:
+        return False
+    root_kind, sub = dom
+    return root_kind == "statedb" or sub == "account"
 
 
 def resolve_durability_policy(path: object) -> DurabilityPolicy:
     """Resolve the declarative ``DurabilityPolicy`` for ``path`` (fail-safe ``FINANCIAL_CRITICAL`` default)."""
-    sub = resolve_cache_subdomain(path)
-    if sub in ("orders", "state"):
+    dom = resolve_storage_domain(path)
+    if dom is None:
+        return DURABILITY_POLICY_FINANCIAL_CRITICAL
+    root_kind, sub = dom
+    if root_kind == "statedb" or sub == "account":
         return DURABILITY_POLICY_FINANCIAL_CRITICAL
     if sub in _EPHEMERAL_SUBDOMAINS:
         return DURABILITY_POLICY_EPHEMERAL_TELEMETRY
@@ -455,19 +529,9 @@ def _move_sidecars(src: str, dst: str, *, include_archives: bool = False) -> Non
                 os.replace(old_arch, new_arch)
 
 
-def resolve_cache_subdomain(name: object) -> str | None:
-    """Return the canonical thematic cachedb subdomain for ``name``, or ``None`` if unclassified."""
-    raw = _norm_rel_cache_path(_clean_path_str(name), strip_cachedb_prefix=True)
-    if not raw or raw in CACHEDB_SUBDOMAINS:
-        return None
-    if "/" in raw:
-        for sub in _SORTED_SUBDOMAINS:
-            if raw.startswith(f"{sub}/") and raw[len(sub) + 1:]:
-                return (resolve_cache_subdomain(os.path.basename(raw)) or sub) if sub == "system" else sub
-        if raw.startswith("24trend/"):
-            return "trends"
-        raw = os.path.basename(raw)
-    stripped = raw[1:] if raw.startswith(".") and not raw.startswith("..") else raw
+def _strip_all_sidecars_from_name(raw_name: str) -> tuple[str, str]:
+    """Split ``raw_name`` into ``(base_filename, trailing_sidecar_suffix)``."""
+    stripped = raw_name[1:] if raw_name.startswith(".") and not raw_name.startswith("..") else raw_name
     while True:
         matched = next((sfx for sfx in _SIDECAR_SUFFIXES if stripped.endswith(sfx) and len(stripped) > len(sfx)), None)
         if matched:
@@ -476,24 +540,137 @@ def resolve_cache_subdomain(name: object) -> str | None:
             stripped = stripped.split(".previous.", 1)[0]
         else:
             break
+    prefix_dot = "." if (raw_name.startswith(".") and not raw_name.startswith("..")) else ""
+    sidecar = raw_name[len(prefix_dot) + len(stripped):]
+    return stripped, sidecar
+
+
+def _legacy_basenames_for_item(rel_item: str) -> tuple[str, ...]:
+    """Return legacy exact filename variants for ``rel_item``, preserving any sidecar suffix."""
+    if "/" in rel_item or "\\" in rel_item:
+        return ()
+    stripped, sidecar = _strip_all_sidecars_from_name(rel_item)
+    legacy_bases = EXACT_LEGACY_FILENAMES.get(stripped)
+    if not legacy_bases:
+        return ()
+    prefix_dot = "." if (rel_item.startswith(".") and not rel_item.startswith("..")) else ""
+    return tuple(f"{prefix_dot}{lb}{sidecar}" for lb in legacy_bases)
+
+
+def _legacy_cachedb_subdomains_for(root_kind: str, sub: str, stripped_name: str) -> tuple[str, ...]:
+    """Return ordered pre-Variant-A ``cachedb/<sub_dir>/`` fallback subdomains for dual-layout resolution."""
+    if root_kind == "cachedb":
+        if sub == "account":
+            return ("orders",)
+        if sub == "llm":
+            return ("system",)
+        if sub == "telemetry" and stripped_name.startswith("kinematic_impulse_signal"):
+            return ("system",)
+        if sub == "system/heartbeat":
+            return ("system",)
+        return ()
+    if sub == "orders":
+        if stripped_name.startswith(("autonomous_order_intents", "autonomous_trade_intents")):
+            return ("state", "orders")
+        return ("orders",)
+    if sub == "state":
+        return ("state",)
+    if sub in ("llm", "system"):
+        return ("system",)
+    return ()
+
+
+def resolve_storage_domain(name: object) -> tuple[str, str] | None:
+    """Classify ``name`` into ``("statedb" | "cachedb", subdomain)`` under Variant A taxonomy."""
+    raw = _norm_rel_cache_path(_clean_path_str(name), strip_cachedb_prefix=True)
+    if raw.startswith("statedb/"):
+        raw = raw[len("statedb/"):]
+    if not raw or raw in _ALL_STORAGE_SUBDOMAINS:
+        return None
+    explicit_sub: str | None = None
+    if "/" in raw:
+        for sub in _SORTED_SUBDOMAINS:
+            if raw.startswith(f"{sub}/") and raw[len(sub) + 1:]:
+                explicit_sub = sub
+                raw = os.path.basename(raw)
+                break
+        else:
+            if raw.startswith("24trend/"):
+                return ("cachedb", "trends")
+            raw = os.path.basename(raw)
+    stripped, _ = _strip_all_sidecars_from_name(raw)
     cands = (stripped, raw)
+    # 0. Heartbeat files always route to cachedb/system/heartbeat regardless of daemon name prefix (e.g. auto_*)
+    for cand in cands:
+        if cand.endswith(".heartbeat"):
+            return ("cachedb", "system/heartbeat")
+    # 1. Exact filename matches (statedb first so durable files never misclassify as cache)
+    for cand in cands:
+        for sub, rules in STATEDB_SUBDOMAINS.items():
+            if cand in rules["exact"]:
+                return ("statedb", sub)
     for cand in cands:
         for sub, rules in CACHEDB_SUBDOMAINS.items():
             if cand in rules["exact"]:
-                return sub
+                return ("cachedb", sub)
+    # 2. Prefix matches (statedb first so autonomous_*_intents matches orders before _state.json)
+    for cand in cands:
+        for sub, rules in STATEDB_SUBDOMAINS.items():
+            if cand.startswith(rules["prefixes"]):
+                return ("statedb", sub)
     for cand in cands:
         for sub, rules in CACHEDB_SUBDOMAINS.items():
-            if cand.startswith(rules["prefixes"]) or cand.endswith(rules["suffixes"]):
-                return sub
+            if cand.startswith(rules["prefixes"]):
+                return ("cachedb", sub)
+    # 3. Suffix matches
+    for cand in cands:
+        for sub, rules in STATEDB_SUBDOMAINS.items():
+            if cand.endswith(rules["suffixes"]):
+                return ("statedb", sub)
+    for cand in cands:
+        for sub, rules in CACHEDB_SUBDOMAINS.items():
+            if cand.endswith(rules["suffixes"]):
+                return ("cachedb", sub)
+    if explicit_sub is not None:
+        if explicit_sub in STATEDB_SUBDOMAINS and explicit_sub not in CACHEDB_SUBDOMAINS:
+            return ("statedb", explicit_sub)
+        return ("cachedb", explicit_sub)
     return None
 
 
-def resolve_cachedb_filepath(path: object, *, migrate: bool = False) -> object:
-    """Resolve ``path`` to its thematic ``cachedb/<subdomain>/`` location when active on disk.
+def resolve_cache_subdomain(name: object) -> str | None:
+    """Return the canonical thematic storage subdomain for ``name``, or ``None`` if unclassified."""
+    dom = resolve_storage_domain(name)
+    return dom[1] if dom is not None else None
 
-    Passive by default (``migrate=False``): locates an existing file without mutating disk.
-    Pass ``migrate=True`` from writers/producers or explicit migrations to move flat/legacy
-    files and their sidecars into the active subdomain directory.
+
+def resolve_statedb_dir_from_cachedb(cache_dir: object) -> str:
+    """Derive the sibling ``statedb`` root for ``cache_dir`` (preserving isolated temp test dirs)."""
+    raw = _clean_path_str(cache_dir)
+    if not raw:
+        return get_statedb_dir()
+    norm = os.path.normpath(os.path.abspath(raw.rstrip("/\\") or raw))
+    base_lc = os.path.basename(norm).lower()
+    if base_lc == "statedb":
+        return norm
+    if base_lc == "cachedb":
+        return os.path.join(os.path.dirname(norm), "statedb")
+    cand_nested = os.path.join(norm, "statedb")
+    if os.path.isdir(cand_nested):
+        return cand_nested
+    return norm
+
+
+def _resolve_storage_filepath(path: object, *, migrate: bool = False) -> object:
+    """Dual-layout SSOT path resolver across ``cachedb/<sub_dir>/`` and ``statedb/<sub_dir>/``.
+
+    Zero-split-brain guarantee:
+      - Variant A target directories (``statedb/<sub_dir>/``, ``cachedb/account/``, ``cachedb/llm/``)
+        activate automatically ONLY once created on disk (e.g. via ``organize_storage_domains``),
+        preserving 100% compatibility with pre-cutover ``cachedb/state/`` & ``cachedb/orders/`` layouts
+        and existing unit-test fixtures.
+      - Passive by default (``migrate=False``); pass ``migrate=True`` from writers/migrations to move
+        flat/legacy files and sidecars into their active subdomain directory.
     """
     raw = _clean_path_str(path)
     if not raw:
@@ -501,40 +678,145 @@ def resolve_cachedb_filepath(path: object, *, migrate: bool = False) -> object:
     parts = [p for p in raw.replace("\\", "/").split("/") if p and p != "."]
     if not parts:
         return raw
-    if len(parts) >= 3 and f"{parts[-3]}/{parts[-2]}" in CACHEDB_SUBDOMAINS:
-        return raw
-    if len(parts) >= 2 and parts[-2] in CACHEDB_SUBDOMAINS:
-        if parts[-2] != "system" or resolve_cache_subdomain(parts[-1]) != "system/heartbeat":
-            return raw
-        rel_item, base_dir = parts[-1], os.path.dirname(os.path.dirname(raw))
-    elif len(parts) >= 3 and parts[-2] == "24trend" and parts[-3] in CACHEDB_SUBDOMAINS:
+
+    # Determine whether ``raw`` already includes an explicit subdomain directory.
+    explicit_sub: str | None = None
+    if len(parts) >= 3 and f"{parts[-3]}/{parts[-2]}" in _ALL_STORAGE_SUBDOMAINS:
+        explicit_sub = f"{parts[-3]}/{parts[-2]}"
+        rel_item = parts[-1]
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(raw)))
+    elif len(parts) >= 2 and parts[-2] in _ALL_STORAGE_SUBDOMAINS:
+        explicit_sub = parts[-2]
+        rel_item = parts[-1]
+        base_dir = os.path.dirname(os.path.dirname(raw))
+    elif len(parts) >= 3 and parts[-2] == "24trend" and parts[-3] in _ALL_STORAGE_SUBDOMAINS:
         return raw
     elif len(parts) >= 2 and parts[-2] == "24trend":
-        rel_item, base_dir = os.path.join("24trend", parts[-1]), os.path.dirname(os.path.dirname(raw))
+        rel_item = os.path.join("24trend", parts[-1])
+        base_dir = os.path.dirname(os.path.dirname(raw))
     else:
-        rel_item, base_dir = parts[-1], os.path.dirname(raw)
+        rel_item = parts[-1]
+        base_dir = os.path.dirname(raw)
+
     base_dir = base_dir or "."
-    sub = resolve_cache_subdomain(rel_item)
-    if not sub:
+    dom = resolve_storage_domain(rel_item)
+    if dom is None:
         return raw
-    flat_path = os.path.join(base_dir, rel_item)
-    sub_dir = os.path.join(base_dir, *sub.split("/"))
-    sub_path = os.path.join(sub_dir, rel_item)
-    legacy_sys_path = os.path.join(base_dir, "system", rel_item) if sub == "system/heartbeat" else ""
-    sub_dir_exists = os.path.isdir(sub_dir)
-    if sub_dir_exists and _parse_bool_flag(migrate, False):
-        for old_p in (flat_path, legacy_sys_path):
-            if old_p and os.path.isfile(old_p) and not os.path.exists(sub_path):
-                try:
-                    os.makedirs(os.path.dirname(sub_path), exist_ok=True)
-                    os.replace(old_p, sub_path)
-                    _move_sidecars(old_p, sub_path)
-                except OSError:
-                    pass
-    for cand_p in (sub_path, legacy_sys_path, flat_path):
+    root_kind, sub = dom
+    stripped, _ = _strip_all_sidecars_from_name(rel_item)
+    legacy_subs = _legacy_cachedb_subdomains_for(root_kind, sub, stripped)
+
+    base_leaf_lc = os.path.basename(os.path.normpath(base_dir)).lower()
+    if root_kind == "statedb":
+        if base_leaf_lc == "statedb":
+            canonical_root = base_dir
+            sibling_cachedb = os.path.join(os.path.dirname(base_dir), "cachedb")
+            legacy_root = sibling_cachedb if os.path.isdir(sibling_cachedb) else base_dir
+        elif base_leaf_lc == "cachedb":
+            canonical_root = os.path.join(os.path.dirname(base_dir), "statedb")
+            legacy_root = base_dir
+        else:
+            nested_state = os.path.join(base_dir, "statedb")
+            canonical_root = nested_state if os.path.isdir(nested_state) else base_dir
+            legacy_root = base_dir
+    else:
+        if base_leaf_lc == "statedb":
+            sibling_cachedb = os.path.join(os.path.dirname(base_dir), "cachedb")
+            canonical_root = sibling_cachedb if os.path.isdir(sibling_cachedb) else base_dir
+            legacy_root = canonical_root
+        else:
+            canonical_root = base_dir
+            legacy_root = base_dir
+
+    # Preserve already-canonical explicit paths when no reclassification is needed.
+    if explicit_sub is not None:
+        canonical_sub_dir_chk = os.path.join(canonical_root, *sub.split("/"))
+        if (
+            explicit_sub == sub
+            and (
+                (root_kind == "cachedb" and base_leaf_lc != "statedb")
+                or (
+                    root_kind == "statedb"
+                    and (
+                        base_leaf_lc == "statedb"
+                        or os.path.abspath(os.path.dirname(raw)) == os.path.abspath(canonical_sub_dir_chk)
+                        or not os.path.isdir(canonical_sub_dir_chk)
+                    )
+                )
+            )
+        ):
+            if _exists_with_prev(raw):
+                return raw
+            for leg_name in _legacy_basenames_for_item(rel_item):
+                leg_same_dir = os.path.join(os.path.dirname(raw), leg_name)
+                if _exists_with_prev(leg_same_dir):
+                    return leg_same_dir
+            return raw
+
+    canonical_sub_dir = os.path.join(canonical_root, *sub.split("/"))
+    canonical_sub_path = os.path.join(canonical_sub_dir, rel_item)
+    canonical_active = os.path.isdir(canonical_sub_dir)
+
+    legacy_sub_dirs = [
+        os.path.join(legacy_root, *lsub.split("/"))
+        for lsub in legacy_subs
+        if os.path.abspath(os.path.join(legacy_root, *lsub.split("/"))) != os.path.abspath(canonical_sub_dir)
+    ]
+    legacy_sub_paths = [os.path.join(ldir, rel_item) for ldir in legacy_sub_dirs]
+    flat_path = os.path.join(legacy_root, rel_item)
+
+    if _parse_bool_flag(migrate, False):
+        if canonical_active:
+            for old_p in (*legacy_sub_paths, flat_path):
+                if old_p and os.path.isfile(old_p) and not _exists_with_prev(canonical_sub_path):
+                    try:
+                        os.makedirs(os.path.dirname(canonical_sub_path), exist_ok=True)
+                        os.replace(old_p, canonical_sub_path)
+                        _move_sidecars(old_p, canonical_sub_path)
+                    except OSError:
+                        pass
+        else:
+            for ldir, lpath in zip(legacy_sub_dirs, legacy_sub_paths):
+                if os.path.isdir(ldir) and os.path.isfile(flat_path) and not _exists_with_prev(lpath):
+                    try:
+                        os.makedirs(os.path.dirname(lpath), exist_ok=True)
+                        os.replace(flat_path, lpath)
+                        _move_sidecars(flat_path, lpath)
+                    except OSError:
+                        pass
+                    break
+
+    # 1. Exact rel_item check across canonical -> legacy subdomains -> flat root
+    ordered_exact = (canonical_sub_path, *legacy_sub_paths, flat_path)
+    for cand_p in dict.fromkeys(ordered_exact):
         if _exists_with_prev(cand_p):
             return cand_p
-    return sub_path if sub_dir_exists else raw
+
+    # 2. Passive fallback to legacy pre-rename filenames (e.g. binance_account_cache_health.json,
+    #    autonomous_trade_intents_state.json) when canonical filename does not yet exist on disk.
+    for leg_name in _legacy_basenames_for_item(rel_item):
+        for cand_dir in dict.fromkeys((canonical_sub_dir, *legacy_sub_dirs, legacy_root)):
+            leg_p = os.path.join(cand_dir, leg_name)
+            if _exists_with_prev(leg_p):
+                return leg_p
+
+    # 3. No file exists yet: choose active canonical subdomain, else active legacy subdomain, else raw.
+    if canonical_active:
+        return canonical_sub_path
+    for ldir, lpath in zip(legacy_sub_dirs, legacy_sub_paths):
+        if os.path.isdir(ldir):
+            return lpath
+    return raw
+
+
+def resolve_cachedb_filepath(path: object, *, migrate: bool = False) -> object:
+    """Resolve ``path`` to its active ``cachedb/<subdomain>/`` or ``statedb/<subdomain>/`` location."""
+    return _resolve_storage_filepath(path, migrate=migrate)
+
+
+def resolve_statedb_filepath(path: object, *, migrate: bool = False) -> object:
+    """Resolve ``path`` to its active ``statedb/<subdomain>/`` location (with pre-cutover ``cachedb/`` fallback)."""
+    return _resolve_storage_filepath(path, migrate=migrate)
 
 
 def _clean_stale_staging_in_dir(
@@ -581,28 +863,33 @@ def organize_cachedb_subdomains(
     *,
     remove_stale_staging: bool = True,
 ) -> dict[str, list[str]]:
-    """Partition flat files in ``cachedb_dir`` into thematic subdomain subdirectories."""
+    """Partition flat/legacy files in ``cachedb_dir`` into thematic ``cachedb/<subdomain>/`` subdirectories."""
     base = cachedb_dir or get_cachedb_dir()
     for sub in CACHEDB_SUBDOMAINS:
         os.makedirs(os.path.join(base, *sub.split("/")), exist_ok=True)
-    moved: dict[str, list[str]] = {sub: [] for sub in CACHEDB_SUBDOMAINS}
+    moved: dict[str, list[str]] = {sub: [] for sub in _ALL_STORAGE_SUBDOMAINS}
     if not os.path.isdir(base):
         return moved
-    top_level_subs = set(_TOP_LEVEL_SUBDOMAINS)
+    top_level_subs = set(_TOP_LEVEL_SUBDOMAINS) | {"bots"}
     if remove_stale_staging:
         _clean_stale_staging_in_dir(base)
-        for sub in CACHEDB_SUBDOMAINS:
+        for sub in _ALL_STORAGE_SUBDOMAINS:
             sub_dir_p = os.path.join(base, *sub.split("/"))
-            _clean_stale_staging_in_dir(sub_dir_p)
-            trend24_p = os.path.join(sub_dir_p, "24trend")
-            if os.path.isdir(trend24_p):
-                _clean_stale_staging_in_dir(trend24_p)
+            if os.path.isdir(sub_dir_p):
+                _clean_stale_staging_in_dir(sub_dir_p)
+                trend24_p = os.path.join(sub_dir_p, "24trend")
+                if os.path.isdir(trend24_p):
+                    _clean_stale_staging_in_dir(trend24_p)
     scan_dirs: list[tuple[str, set[str]]] = [(base, top_level_subs)]
     for sub_k, sub_skips in (
         ("system", {"heartbeat"}),
+        ("account", set()),
         ("orders", set()),
         ("prices", set()),
         ("trends", {"24trend"}),
+        ("telemetry", set()),
+        ("macro", set()),
+        ("llm", set()),
         ("state", set()),
         ("bots", set()),
     ):
@@ -615,16 +902,22 @@ def organize_cachedb_subdomains(
             if entry in skip_names:
                 continue
             src = os.path.join(scan_dir, entry)
-            sub = resolve_cache_subdomain(entry)
-            if not sub:
+            dom = resolve_storage_domain(entry)
+            if not dom:
                 continue
+            root_kind, sub = dom
             dst_dir = os.path.join(base, *sub.split("/"))
+            os.makedirs(dst_dir, exist_ok=True)
             target_entry = entry
+            prefix_dot = "." if (entry.startswith(".") and not entry.startswith("..")) else ""
+            bare_entry = entry[len(prefix_dot):]
             for new_exact, old_exacts in EXACT_LEGACY_FILENAMES.items():
                 for old_ex in old_exacts:
-                    if entry == old_ex or entry.startswith(old_ex + "."):
-                        target_entry = new_exact + entry[len(old_ex):]
+                    if bare_entry == old_ex or bare_entry.startswith(old_ex + "."):
+                        target_entry = prefix_dot + new_exact + bare_entry[len(old_ex):]
                         break
+                if target_entry != entry:
+                    break
             if os.path.abspath(scan_dir) == os.path.abspath(dst_dir) and target_entry == entry:
                 continue
             dst = os.path.join(dst_dir, target_entry)
@@ -653,6 +946,124 @@ def organize_cachedb_subdomains(
             os.rmdir(legacy_bots_dir)
         except OSError:
             pass
+    return moved
+
+
+def organize_storage_domains(
+    workspace_dir: str | None = None,
+    *,
+    cachedb_dir: str | None = None,
+    statedb_dir: str | None = None,
+    remove_stale_staging: bool = True,
+    dry_run: bool = False,
+) -> dict[str, list[str]]:
+    """Atomically organize workspace storage into pure Variant A ``cachedb/`` (regenerable) and ``statedb/`` (durable).
+
+    Moves durable state/orders/llm/system files into ``statedb/<sub_dir>/`` and exchange-mirror
+    account caches into ``cachedb/account/`` while renaming legacy filenames via ``EXACT_LEGACY_FILENAMES``.
+    """
+    ws = _clean_path_str(workspace_dir) or _ROOT
+    c_base = _clean_path_str(cachedb_dir) or (os.path.join(ws, "cachedb") if workspace_dir else get_cachedb_dir())
+    s_base = _clean_path_str(statedb_dir) or (os.path.join(ws, "statedb") if workspace_dir else get_statedb_dir())
+    is_dry = _parse_bool_flag(dry_run, False)
+
+    moved: dict[str, list[str]] = {
+        **{f"cachedb/{sub}": [] for sub in CACHEDB_SUBDOMAINS},
+        **{f"statedb/{sub}": [] for sub in STATEDB_SUBDOMAINS},
+    }
+    if not is_dry:
+        for sub in CACHEDB_SUBDOMAINS:
+            os.makedirs(os.path.join(c_base, *sub.split("/")), exist_ok=True)
+        for sub in STATEDB_SUBDOMAINS:
+            os.makedirs(os.path.join(s_base, *sub.split("/")), exist_ok=True)
+        if remove_stale_staging:
+            for root_p, subs in ((c_base, CACHEDB_SUBDOMAINS), (s_base, STATEDB_SUBDOMAINS)):
+                if os.path.isdir(root_p):
+                    _clean_stale_staging_in_dir(root_p)
+                    for sub in subs:
+                        sub_p = os.path.join(root_p, *sub.split("/"))
+                        if os.path.isdir(sub_p):
+                            _clean_stale_staging_in_dir(sub_p)
+
+    top_skips = set(_TOP_LEVEL_SUBDOMAINS) | {"bots", "cachedb", "statedb"}
+    scan_dirs: list[tuple[str, set[str]]] = []
+    for root_p in (c_base, s_base):
+        if os.path.isdir(root_p):
+            scan_dirs.append((root_p, top_skips))
+            for sub_k, sub_skips in (
+                ("system", {"heartbeat"}),
+                ("account", set()),
+                ("orders", set()),
+                ("prices", set()),
+                ("trends", {"24trend"}),
+                ("telemetry", set()),
+                ("macro", set()),
+                ("llm", set()),
+                ("state", set()),
+                ("bots", set()),
+            ):
+                sub_p = os.path.join(root_p, sub_k)
+                if os.path.isdir(sub_p):
+                    scan_dirs.append((sub_p, sub_skips))
+
+    for scan_dir, skip_names in scan_dirs:
+        for entry in sorted(os.listdir(scan_dir)):
+            if entry in skip_names:
+                continue
+            src = os.path.join(scan_dir, entry)
+            dom = resolve_storage_domain(entry)
+            if dom is None:
+                continue
+            root_kind, sub = dom
+            target_root = s_base if root_kind == "statedb" else c_base
+            dst_dir = os.path.join(target_root, *sub.split("/"))
+            target_entry = entry
+            prefix_dot = "." if (entry.startswith(".") and not entry.startswith("..")) else ""
+            bare_entry = entry[len(prefix_dot):]
+            for new_exact, old_exacts in EXACT_LEGACY_FILENAMES.items():
+                for old_ex in old_exacts:
+                    if bare_entry == old_ex or bare_entry.startswith(old_ex + "."):
+                        target_entry = prefix_dot + new_exact + bare_entry[len(old_ex):]
+                        break
+                if target_entry != entry:
+                    break
+            if os.path.abspath(scan_dir) == os.path.abspath(dst_dir) and target_entry == entry:
+                continue
+            dst = os.path.join(dst_dir, target_entry)
+            key = f"{root_kind}/{sub}"
+            if is_dry:
+                moved[key].append(target_entry)
+                continue
+            try:
+                os.makedirs(dst_dir, exist_ok=True)
+                if os.path.isdir(src) and not os.path.islink(src):
+                    if remove_stale_staging:
+                        _clean_stale_staging_in_dir(src)
+                    os.makedirs(dst, exist_ok=True)
+                    for child in os.listdir(src):
+                        c_src = os.path.join(src, child)
+                        c_dst = os.path.join(dst, child)
+                        if os.path.isdir(c_src) and not os.path.islink(c_src):
+                            shutil.rmtree(c_src, ignore_errors=True)
+                        else:
+                            _replace_or_discard_file(c_src, c_dst)
+                    shutil.rmtree(src, ignore_errors=True)
+                else:
+                    _replace_or_discard_file(
+                        src, dst, is_jsonl=(entry.endswith(".jsonl") or ".jsonl." in entry)
+                    )
+                moved[key].append(target_entry)
+            except OSError:
+                pass
+
+    if not is_dry:
+        for legacy_dir in ("orders", "state", "bots"):
+            cand = os.path.join(c_base, legacy_dir)
+            if os.path.isdir(cand):
+                try:
+                    os.rmdir(cand)
+                except OSError:
+                    pass
     return moved
 
 
@@ -720,20 +1131,55 @@ def get_cachedb_dir() -> str:
     return os.path.join(_ROOT, "cachedb")
 
 
+def get_statedb_dir() -> str:
+    """Return the canonical statedb directory path honoring MPTRADE_STATEDB_DIR."""
+    if clean_dir := clean_scalar_str(os.environ.get("MPTRADE_STATEDB_DIR")):
+        return clean_dir
+    for env_key in ("MPTRADE_CACHEDB_DIR", "BINANCE_CACHE_DIR"):
+        if clean_cdir := clean_scalar_str(os.environ.get(env_key)):
+            return resolve_statedb_dir_from_cachedb(clean_cdir)
+    return os.path.join(_ROOT, "statedb")
+
+
 def resolve_workspace_dir_from_cachedb(cache_dir: object) -> str:
-    """Resolve the workspace root directory corresponding to ``cache_dir``."""
+    """Resolve the workspace root directory corresponding to ``cache_dir`` (or ``statedb``)."""
     raw = _clean_path_str(cache_dir)
     if not raw:
         return ""
     abs_dir = os.path.normpath(os.path.abspath(raw.rstrip("/\\") or raw))
-    return os.path.dirname(abs_dir) if os.path.basename(abs_dir).lower() == "cachedb" else abs_dir
+    return os.path.dirname(abs_dir) if os.path.basename(abs_dir).lower() in ("cachedb", "statedb") else abs_dir
+
+
+def state_path(name: str) -> str:
+    """Return the canonical path for a durable ``statedb`` file (with automatic pre-cutover ``cachedb`` fallback)."""
+    raw = _clean_path_str(name)
+    if not raw:
+        return name
+    if os.path.isabs(raw):
+        return str(resolve_statedb_filepath(raw))
+    norm = _norm_rel_cache_path(raw, strip_cachedb_prefix=False)
+    if norm.startswith("statedb/"):
+        norm = norm[len("statedb/"):]
+    elif norm.startswith("cachedb/"):
+        norm = norm[len("cachedb/"):]
+    elif "/" in norm:
+        head = norm.split("/", 1)[0]
+        if head not in _TOP_LEVEL_SUBDOMAINS:
+            return str(resolve_statedb_filepath(raw))
+    s_dir = get_statedb_dir()
+    if os.path.isdir(s_dir):
+        return str(resolve_statedb_filepath(os.path.join(s_dir, norm)))
+    return cache_path(norm)
+
+
+state_path._is_canonical_cache_path = True  # type: ignore[attr-defined]
 
 
 def cache_path(name: str) -> str:
-    """Return the path to a cache file inside the canonical cachedb directory.
+    """Return the path to a cache/state file inside the canonical storage directories.
 
     Preserves name when it is already absolute or None/empty, while resolving
-    thematic cachedb subdomains when active on disk.
+    thematic ``cachedb/<subdomain>/`` and ``statedb/<subdomain>/`` paths when active on disk.
     """
     raw = _clean_path_str(name)
     if not raw:
@@ -743,9 +1189,11 @@ def cache_path(name: str) -> str:
     norm = _norm_rel_cache_path(raw, strip_cachedb_prefix=False)
     if "/" in norm:
         head = norm.split("/", 1)[0]
-        if head != "cachedb" and head != "24trend" and head not in _TOP_LEVEL_SUBDOMAINS:
+        if head not in ("cachedb", "statedb", "24trend") and head not in _TOP_LEVEL_SUBDOMAINS:
             return str(resolve_cachedb_filepath(raw))
     name = _norm_rel_cache_path(raw, strip_cachedb_prefix=True)
+    if name.startswith("statedb/"):
+        name = name[len("statedb/"):]
     d = get_cachedb_dir()
     try:
         os.makedirs(d, exist_ok=True)
@@ -1366,10 +1814,10 @@ def _strip_cachedb_subdomain_dir(dir_path: str) -> str:
     parent = os.path.dirname(cur)
     base = os.path.basename(cur)
     pbase = os.path.basename(parent) if parent else ""
-    if parent and (f"{pbase}/{base}" in CACHEDB_SUBDOMAINS or (pbase == "trends" and base == "24trend")):
+    if parent and (f"{pbase}/{base}" in _ALL_STORAGE_SUBDOMAINS or (pbase == "trends" and base == "24trend")):
         gp = os.path.dirname(parent)
         return gp if gp and gp != parent else cur
-    if base in CACHEDB_SUBDOMAINS and parent and parent != cur:
+    if base in _ALL_STORAGE_SUBDOMAINS and parent and parent != cur:
         return parent
     return cur
 
@@ -1379,7 +1827,12 @@ def cachedb_root_for_file(filepath: object) -> str:
     raw = _clean_path_str(filepath)
     if not raw:
         return ""
-    return _strip_cachedb_subdomain_dir(os.path.dirname(raw))
+    stripped = _strip_cachedb_subdomain_dir(os.path.dirname(raw))
+    if os.path.basename(stripped).lower() == "statedb":
+        sibling_c = os.path.join(os.path.dirname(stripped), "cachedb")
+        if os.path.isdir(sibling_c):
+            return sibling_c
+    return stripped
 
 
 @dataclass(frozen=True)
@@ -1390,7 +1843,7 @@ class CachedbRoot:
 
     @classmethod
     def from_path(cls, any_path: object) -> "CachedbRoot":
-        """Normalize any file or directory path inside ``cachedb/`` (or a subdomain) to its root ``CachedbRoot``."""
+        """Normalize any file or directory path inside ``cachedb/`` or ``statedb/`` to its root ``CachedbRoot``."""
         raw = _clean_path_str(any_path)
         if not raw:
             return cls(get_cachedb_dir())
@@ -1398,19 +1851,22 @@ class CachedbRoot:
         if os.path.isdir(norm):
             root_dir = _strip_cachedb_subdomain_dir(norm)
         else:
-            # Handle non-existent directory paths ending in a known subdomain token as well as file paths.
             base = os.path.basename(norm)
             parent = os.path.dirname(norm)
             pbase = os.path.basename(parent) if parent else ""
             if (
-                base in CACHEDB_SUBDOMAINS
-                or (parent and f"{pbase}/{base}" in CACHEDB_SUBDOMAINS)
+                base in _ALL_STORAGE_SUBDOMAINS
+                or (parent and f"{pbase}/{base}" in _ALL_STORAGE_SUBDOMAINS)
                 or (pbase == "trends" and base == "24trend")
-                or base.lower() == "cachedb"
+                or base.lower() in ("cachedb", "statedb")
             ):
                 root_dir = _strip_cachedb_subdomain_dir(norm)
             else:
                 root_dir = _strip_cachedb_subdomain_dir(parent)
+        if root_dir and os.path.basename(root_dir).lower() == "statedb":
+            sibling_c = os.path.join(os.path.dirname(root_dir), "cachedb")
+            if os.path.isdir(sibling_c):
+                root_dir = sibling_c
         return cls(root_dir or get_cachedb_dir())
 
     def __fspath__(self) -> str:

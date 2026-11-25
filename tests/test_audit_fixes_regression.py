@@ -7807,17 +7807,19 @@ def test_layer3_cache_balance_manager_eliminates_inversion_and_splits_positions_
 def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
     """Verify Etapa 1 state_stores/ package:
     1. Every registered critical state file has strict 1:1 filename <-> state_stores/<stem>.py <-> <PascalCase>Store symmetry.
-    2. All 11 typed stores round-trip cleanly with .previous recovery and dirty-check semantics.
+    2. All 13 typed stores round-trip cleanly with .previous recovery and dirty-check semantics.
     3. AST audits statically block raw reads, raw writes, and upward Layer 2.5 DAG leaks from state_stores/.
     """
     from pathlib import Path
     import state_stores
     from state_stores import (
         AssetguardianStateStore,
-        AutonomousTradeIntentsStateStore,
+        AutonomousOrderIntentsStateStore,
         CRITICAL_STATE_SPECS,
+        LlmTopicThreadsStore,
         MtStateStore,
         NavHistoryStateStore,
+        NotifyQueueStore,
         OrderRetryQueueStore,
         PortfolioPositionsStateStore,
         RtradePairsStateStore,
@@ -7832,8 +7834,8 @@ def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
         audit_state_file_owners_ast,
     )
 
-    # 1. Exact 1:1 registry symmetry across all 11 critical state files
-    assert len(CRITICAL_STATE_SPECS) == 11
+    # 1. Exact 1:1 registry symmetry across all 13 critical state files
+    assert len(CRITICAL_STATE_SPECS) == 13
     for spec in CRITICAL_STATE_SPECS:
         assert spec.owner_module == f"state_stores/{Path(spec.filename).stem}.py"
         assert spec.store_class == expected_store_class_name(spec.filename)
@@ -7859,14 +7861,23 @@ def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
     )
     assert PortfolioPositionsStateStore.load_dict(str(cdb))["pos:binance:BTCUSDC"]["trailing_peak"] == pytest.approx(60000.0)
 
-    # AutonomousTradeIntentsStateStore
-    int_path = AutonomousTradeIntentsStateStore.resolve_path(str(cdb))
-    assert AutonomousTradeIntentsStateStore.upsert_intent(
+    # AutonomousOrderIntentsStateStore
+    int_path = AutonomousOrderIntentsStateStore.resolve_path(str(cdb))
+    assert AutonomousOrderIntentsStateStore.upsert_intent(
         int_path,
         {"intent_id": "ai_1", "symbol": "BTCUSDC", "status": "PENDING"},
         extract_id_fn=lambda d: str(d.get("intent_id") or ""),
     )
-    assert len(AutonomousTradeIntentsStateStore.load_from_cachedb(str(cdb))) == 1
+    assert len(AutonomousOrderIntentsStateStore.load_from_cachedb(str(cdb))) == 1
+
+    # LlmTopicThreadsStore & NotifyQueueStore
+    top_p = LlmTopicThreadsStore.resolve_path(str(cdb))
+    LlmTopicThreadsStore.save_registry(top_p, {"auto_cryptotrade_executor": {"conversation_id": "cid_1"}})
+    assert LlmTopicThreadsStore.read_registry(top_p)["auto_cryptotrade_executor"]["conversation_id"] == "cid_1"
+
+    nq_p = NotifyQueueStore.resolve_path(str(cdb))
+    NotifyQueueStore.write_lines_nolock(nq_p, ['{"__orchestrator_intent__":"email","subject":"s1"}'])
+    assert len(NotifyQueueStore.read_lines_nolock(nq_p)) == 1
 
     # OrderRetryQueueStore
     q_path = OrderRetryQueueStore.resolve_path(str(cdb))
@@ -8534,7 +8545,7 @@ def test_priority2_pure_provider_math_modules_zero_io_and_stores(tmp_path):
         "providers/nav_drawdown.py": "import os\nfrom state_stores.nav_history_state import NavHistoryStateStore\n",
         "providers/ai_attribution.py": "import glob\nfrom state_io import read_json_dict\n",
         "providers/quantity.py": "import os\nfrom state_io import read_json_dict\n",
-        "providers/intent_state.py": "from state_stores.autonomous_trade_intents_state import AutonomousTradeIntentsStateStore\n",
+        "providers/intent_state.py": "from state_stores.autonomous_order_intents_state import AutonomousOrderIntentsStateStore\n",
     }
     for rel, code in leaks.items():
         (synth / rel).write_text(code, encoding="utf-8")
@@ -8695,6 +8706,290 @@ def test_cycle17_rth_open_inflight_quote_skew_whale_long_pp_and_opening_rvol_1h(
     crypto_bars = [[c_start + i * 300_000.0, 100.0, 100.0] for i in range(72)]
     rvol_crypto = compute_volume_rvol_metrics(crypto_bars, now_ts=(c_start + 71 * 300_000.0) / 1000.0)
     assert rvol_crypto["rvol_1h"] == pytest.approx(1.0, abs=0.05)
+
+
+def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(tmp_path):
+    """Verify Variant A storage separation (cachedb/ vs statedb/), zero-split-brain dual layout,
+    dry-run + applied CLI cutover migration, and clean cache_fee_schedule vs venue_fee_maintenance split.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import account_cache_health
+    from active_intents import build_active_intent_index
+    from cachepaths import (
+        AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME,
+        CACHE_ACCOUNT_HEALTH_FILENAME,
+        CACHE_BINANCE_BALANCE_FILENAME,
+        CACHE_FEE_SCHEDULE_FILENAME,
+        DurabilityTier,
+        KINEMATIC_IMPULSE_SIGNAL_FILENAME,
+        LLM_MODEL_CATALOG_FILENAME,
+        LLM_QUOTA_STATUS_FILENAME,
+        LLM_TOPIC_THREADS_FILENAME,
+        NAV_HISTORY_STATE_FILENAME,
+        NOTIFY_QUEUE_FILENAME,
+        ORDER_LEDGER_ACTIVE_FILENAME,
+        ORDER_RETRY_QUEUE_FILENAME,
+        PORTFOLIO_POSITIONS_STATE_FILENAME,
+        VENUE_FEE_MAINTENANCE_STATE_FILENAME,
+        is_financial_critical_path,
+        resolve_cachedb_filepath,
+        resolve_durability_policy,
+        resolve_statedb_filepath,
+        resolve_storage_domain,
+    )
+    from providers.nav_history_store import _load_workspace_balances_and_prices
+    from providers.order_ledger import OrderLedgerReader
+    from providers.portfolio_state_store import load_venue_balance_caches
+    from providers.venue_fee_maintenance import (
+        KrakenFeeMaintainer,
+        VenueFeeMaintainerInterface,
+        read_persisted_venue_fee_spec,
+        resolve_fee_schedule_cache_path,
+        run_venue_fee_maintenance,
+    )
+    from state_stores import (
+        AutonomousOrderIntentsStateStore,
+        LlmTopicThreadsStore,
+        NavHistoryStateStore,
+        NotifyQueueStore,
+        OrderRetryQueueStore,
+        PortfolioPositionsStateStore,
+        VenueFeeMaintenanceStateStore,
+    )
+    from verify_tools import migrate_storage_domains as migrate_cli
+
+    # 1. Variant A taxonomy classification & DurabilityPolicy
+    domain_cases = {
+        "cache_current_price.json": ("cachedb", "prices"),
+        "cache_short_trend.json": ("cachedb", "trends"),
+        KINEMATIC_IMPULSE_SIGNAL_FILENAME: ("cachedb", "telemetry"),
+        "fear_greed_collect.json": ("cachedb", "macro"),
+        CACHE_BINANCE_BALANCE_FILENAME: ("cachedb", "account"),
+        "cache_order_open_binance.json": ("cachedb", "account"),
+        "cache_order_filled_kraken.json": ("cachedb", "account"),
+        CACHE_FEE_SCHEDULE_FILENAME: ("cachedb", "account"),
+        CACHE_ACCOUNT_HEALTH_FILENAME: ("cachedb", "account"),
+        "binance_account_cache_health.json": ("cachedb", "account"),
+        LLM_MODEL_CATALOG_FILENAME: ("cachedb", "llm"),
+        LLM_QUOTA_STATUS_FILENAME: ("cachedb", "llm"),
+        "ai_attribution_status.json": ("cachedb", "llm"),
+        "auto_cryptotrade_executor_eval.json": ("cachedb", "llm"),
+        "fleet_health_status.json": ("cachedb", "system"),
+        "rtrade_BTCUSDC.heartbeat": ("cachedb", "system/heartbeat"),
+        ORDER_LEDGER_ACTIVE_FILENAME: ("statedb", "orders"),
+        "order_events_2026-11-25.jsonl": ("statedb", "orders"),
+        ORDER_RETRY_QUEUE_FILENAME: ("statedb", "orders"),
+        AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME: ("statedb", "orders"),
+        "autonomous_trade_intents_state.json": ("statedb", "orders"),
+        PORTFOLIO_POSITIONS_STATE_FILENAME: ("statedb", "state"),
+        NAV_HISTORY_STATE_FILENAME: ("statedb", "state"),
+        VENUE_FEE_MAINTENANCE_STATE_FILENAME: ("statedb", "state"),
+        LLM_TOPIC_THREADS_FILENAME: ("statedb", "llm"),
+        NOTIFY_QUEUE_FILENAME: ("statedb", "system"),
+    }
+    for fname, expected in domain_cases.items():
+        assert resolve_storage_domain(fname) == expected, f"{fname} -> expected {expected}"
+    assert is_financial_critical_path(AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME) is True
+    assert is_financial_critical_path(LLM_TOPIC_THREADS_FILENAME) is True
+    assert is_financial_critical_path(NOTIFY_QUEUE_FILENAME) is True
+    assert is_financial_critical_path(CACHE_FEE_SCHEDULE_FILENAME) is True
+    assert resolve_durability_policy(KINEMATIC_IMPULSE_SIGNAL_FILENAME).tier == DurabilityTier.EPHEMERAL_TELEMETRY
+
+    # 2. Pre-cutover legacy workspace (no statedb/, no cachedb/account/, no cachedb/llm/)
+    ws = tmp_path / "ws_variant_a"
+    cdb = ws / "cachedb"
+    sdb = ws / "statedb"
+    for sub in ("prices", "orders", "state", "system", "telemetry"):
+        (cdb / sub).mkdir(parents=True)
+
+    now_s = 1_796_000_000.0
+    (cdb / "orders" / CACHE_BINANCE_BALANCE_FILENAME).write_text(
+        json.dumps({"ts": now_s, "items": {"USDC": {"free": 2500.0, "locked": 0.0}, "BNB": {"free": 0.3, "locked": 0.0}}}),
+        encoding="utf-8",
+    )
+    (cdb / "orders" / "binance_account_cache_health.json").write_text(
+        json.dumps({"schema_version": 2, "order_sync_at_ms": int(now_s * 1000)}),
+        encoding="utf-8",
+    )
+    (cdb / "orders" / ORDER_LEDGER_ACTIVE_FILENAME).write_text(
+        json.dumps({"schema_version": 1, "updated_ts": now_s, "journal_cursor": {"file": "", "offset": 0}, "orders": {}}),
+        encoding="utf-8",
+    )
+    (cdb / "orders" / "order_events_2026-11-25.jsonl").write_text(
+        json.dumps({"ts": now_s, "ev": "SUBMITTED", "v": "binance", "sym": "BTCUSDC", "vid": "12345"}) + "\n",
+        encoding="utf-8",
+    )
+    (cdb / "orders" / ORDER_RETRY_QUEUE_FILENAME).write_text(
+        json.dumps({"id": "rq1", "symbol": "BTCUSDC", "side": "BUY"}) + "\n",
+        encoding="utf-8",
+    )
+    (cdb / "state" / "autonomous_trade_intents_state.json").write_text(
+        json.dumps([
+            {
+                "intent_id": "ai_va_1",
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "decision": "BUY",
+                "status": "PENDING",
+                "requested_qty": 0.01,
+                "requested_price": 70000.0,
+                "timestamp": now_s,
+            }
+        ]),
+        encoding="utf-8",
+    )
+    (cdb / "state" / "autonomous_trade_intents_state.json.previous").write_text("[]", encoding="utf-8")
+    (cdb / "state" / PORTFOLIO_POSITIONS_STATE_FILENAME).write_text(
+        json.dumps({"pos:binance:BTCUSDC": {"venue": "binance", "symbol": "BTCUSDC", "trailing_peak": 72000.0}}),
+        encoding="utf-8",
+    )
+    (cdb / "state" / NAV_HISTORY_STATE_FILENAME).write_text(
+        json.dumps({"version": 1, "updated_ts": now_s, "points": [{"ts": now_s - 300.0, "nav_usd": 18000.0}]}),
+        encoding="utf-8",
+    )
+    (cdb / "system" / LLM_TOPIC_THREADS_FILENAME).write_text(
+        json.dumps({"auto_cryptotrade_executor": {"conversation_id": "cid_va"}}),
+        encoding="utf-8",
+    )
+    (cdb / "system" / NOTIFY_QUEUE_FILENAME).write_text(
+        json.dumps({"__orchestrator_intent__": "email", "subject": "queued_va"}) + "\n",
+        encoding="utf-8",
+    )
+    (cdb / "system" / KINEMATIC_IMPULSE_SIGNAL_FILENAME).write_text(json.dumps({"ts": now_s}), encoding="utf-8")
+    (cdb / "system" / LLM_QUOTA_STATUS_FILENAME).write_text(json.dumps({"ts": now_s}), encoding="utf-8")
+
+    # Pre-cutover passive dual-layout reads must find every legacy file with zero split-brain
+    assert Path(str(resolve_cachedb_filepath(str(cdb / CACHE_ACCOUNT_HEALTH_FILENAME)))) == (
+        cdb / "orders" / "binance_account_cache_health.json"
+    )
+    assert Path(str(resolve_statedb_filepath(str(cdb / AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME)))) == (
+        cdb / "state" / "autonomous_trade_intents_state.json"
+    )
+    assert len(AutonomousOrderIntentsStateStore.load_from_cachedb(str(cdb))) == 1
+    assert "binance" in load_venue_balance_caches(str(cdb))
+
+    # 3. CLI dry-run preview leaves disk untouched
+    assert migrate_cli.main(["--workspace-dir", str(ws), "--json"]) == 0
+    assert not sdb.exists()
+    assert (cdb / "state" / "autonomous_trade_intents_state.json").is_file()
+
+    # 4. CLI --apply performs clean atomic Variant A cutover + renames + sidecars
+    assert migrate_cli.main(["--workspace-dir", str(ws), "--apply", "--json"]) == 0
+    assert (cdb / "account" / CACHE_BINANCE_BALANCE_FILENAME).is_file()
+    assert (cdb / "account" / CACHE_ACCOUNT_HEALTH_FILENAME).is_file()
+    assert (cdb / "telemetry" / KINEMATIC_IMPULSE_SIGNAL_FILENAME).is_file()
+    assert (cdb / "llm" / LLM_QUOTA_STATUS_FILENAME).is_file()
+    assert (sdb / "orders" / ORDER_LEDGER_ACTIVE_FILENAME).is_file()
+    assert (sdb / "orders" / "order_events_2026-11-25.jsonl").is_file()
+    assert (sdb / "orders" / ORDER_RETRY_QUEUE_FILENAME).is_file()
+    assert (sdb / "orders" / AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME).is_file()
+    assert (sdb / "orders" / f"{AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME}.previous").is_file()
+    assert (sdb / "state" / PORTFOLIO_POSITIONS_STATE_FILENAME).is_file()
+    assert (sdb / "state" / NAV_HISTORY_STATE_FILENAME).is_file()
+    assert (sdb / "llm" / LLM_TOPIC_THREADS_FILENAME).is_file()
+    assert (sdb / "system" / NOTIFY_QUEUE_FILENAME).is_file()
+    # Empty legacy cachedb/orders & cachedb/state directories removed cleanly
+    assert not (cdb / "orders").exists()
+    assert not (cdb / "state").exists()
+
+    # 5. Post-cutover readers across ALL subsystems seamlessly resolve statedb/ & cachedb/account/
+    assert Path(account_cache_health._resolve_health_path(str(cdb / CACHE_ACCOUNT_HEALTH_FILENAME))) == (
+        cdb / "account" / CACHE_ACCOUNT_HEALTH_FILENAME
+    )
+    assert "binance" in load_venue_balance_caches(str(cdb))
+    assert len(AutonomousOrderIntentsStateStore.load_from_cachedb(str(cdb))) == 1
+    assert len(OrderRetryQueueStore.read_tail_records(str(cdb), limit=10)) == 1
+    assert PortfolioPositionsStateStore.load_dict(str(cdb))["pos:binance:BTCUSDC"]["trailing_peak"] == pytest.approx(72000.0)
+    assert NavHistoryStateStore.read_raw_doc(str(ws))["points"][0]["nav_usd"] == pytest.approx(18000.0)
+    assert LlmTopicThreadsStore.read_registry(LlmTopicThreadsStore.resolve_path(str(cdb)))["auto_cryptotrade_executor"]["conversation_id"] == "cid_va"
+    assert len(NotifyQueueStore.read_lines_nolock(NotifyQueueStore.resolve_path(str(cdb)))) == 1
+    lr = OrderLedgerReader(cachedb_dir=str(cdb))
+    assert len(lr.list_event_files()) == 1 and str(sdb / "orders") in lr.list_event_files()[0]
+    idx = build_active_intent_index(str(ws))
+    assert any(it.get("intent_id") == "ai_va_1" for it in idx["intents"])
+
+    # 6. Clean split: cache_fee_schedule.json (cachedb/account/) vs venue_fee_maintenance_state.json (statedb/state/)
+    cfg = {
+        "FEE_MAINTENANCE_ENABLED": "true",
+        "FEE_MAINTENANCE_INTERVAL_SEC": 14400,
+        "BINANCE_BNB_RESERVE_MIN_USDC": 100.0,
+        "BINANCE_BNB_RESERVE_TARGET_USDC": 200.0,
+        "BINANCE_BNB_MIN_FREE_USDC": 300.0,
+        "BINANCE_BNB_ORDER_STALE_SEC": 1800,
+        "KRAKEN_IDLE_USDC_ALERT_MIN": 25.0,
+        "KRAKEN_IDLE_USDC_ALERT_COOLDOWN_SEC": 86400,
+    }
+    bn_m = MagicMock(spec=VenueFeeMaintainerInterface)
+    bn_m.maintain.return_value = {
+        "ts": now_s,
+        "fee_spec": {"fee_tier": "VIP0_BNB", "maker_fee_bps": 7.5, "taker_fee_bps": 7.5},
+        "by_symbol": {"BTCUSDC": {"fee_tier": "VIP0_BNB", "maker_fee_bps": 7.5, "taker_fee_bps": 7.12}},
+        "spot_bnb_burn": True,
+        "bnb_free": 0.3,
+        "bnb_locked": 0.0,
+        "bnb_price_usdc": 620.0,
+        "held_bnb_usdc": 186.0,
+        "effective_bnb_usdc": 186.0,
+        "free_usdc": 2500.0,
+        "has_pending_bnb_order": False,
+        "retry_soon": False,
+        "topup_action": "none",
+        "events": [],
+    }
+    kr_p = MagicMock()
+    kr_cli = MagicMock()
+    kr_cli._private.return_value = {
+        "volume": "25000.0",
+        "fees": {"TAOUSD": {"fee": "0.3800"}},
+        "fees_maker": {"TAOUSD": {"fee": "0.2200"}},
+    }
+    kr_p._client.return_value = kr_cli
+    kr_p.usd_cash_breakdown.return_value = {"ZUSD": 1500.0, "USDC": 50.0}
+    kr_m = KrakenFeeMaintainer(provider=kr_p)
+
+    res_fee = run_venue_fee_maintenance(
+        venues=["binance", "kraken"],
+        cache_dir=str(cdb),
+        cfg_map=cfg,
+        maintainers={"binance": bn_m, "kraken": kr_m},
+        now_ts=now_s,
+    )
+    assert res_fee["status"] == "ok"
+
+    sched_p = Path(resolve_fee_schedule_cache_path(str(cdb)))
+    wf_p = Path(VenueFeeMaintenanceStateStore.resolve_path(str(cdb)))
+    assert sched_p == cdb / "account" / CACHE_FEE_SCHEDULE_FILENAME
+    assert wf_p == sdb / "state" / VENUE_FEE_MAINTENANCE_STATE_FILENAME
+
+    sched_doc = json.loads(sched_p.read_text(encoding="utf-8"))
+    wf_doc = json.loads(wf_p.read_text(encoding="utf-8"))
+
+    # Exchange truth lives strictly in cachedb/account/cache_fee_schedule.json (no workflow keys)
+    bn_sched = sched_doc["venues"]["binance"]
+    assert bn_sched["fee_spec"]["maker_fee_bps"] == pytest.approx(7.5)
+    assert bn_sched["bnb_price_usdc"] == pytest.approx(620.0)
+    assert bn_sched["held_bnb_usdc"] == pytest.approx(186.0)
+    for forbidden_wf_key in ("has_pending_bnb_order", "retry_soon", "topup_action", "last_idle_usdc_alert_ts"):
+        assert forbidden_wf_key not in bn_sched
+    assert "last_run_ts" not in sched_doc
+
+    # Local workflow state lives strictly in statedb/state/venue_fee_maintenance_state.json (no fee schedule duplication)
+    bn_wf = wf_doc["venues"]["binance"]
+    assert wf_doc["last_run_ts"] == pytest.approx(now_s)
+    assert bn_wf["has_pending_bnb_order"] is False
+    assert bn_wf["topup_action"] == "none"
+    assert wf_doc["venues"]["kraken"]["last_idle_usdc_alert_ts"] == pytest.approx(now_s)
+    for forbidden_sched_key in ("fee_spec", "by_symbol", "bnb_price_usdc", "held_bnb_usdc", "spot_bnb_burn"):
+        assert forbidden_sched_key not in bn_wf
+
+    # Readers (TCA fee spec & NAV history BNB pricing) consume cache_fee_schedule.json cleanly
+    live_spec = read_persisted_venue_fee_spec("binance", "BTCUSDC", cache_dir=str(cdb), now_ts=now_s + 10.0)
+    assert live_spec == {"fee_tier": "VIP0_BNB", "maker_fee_bps": 7.5, "taker_fee_bps": 7.12}
+    _, _, seeded_prices = _load_workspace_balances_and_prices(str(ws))
+    assert seeded_prices["BNBUSDC"][0][1] == pytest.approx(620.0)
 
 
 

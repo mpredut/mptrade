@@ -5,7 +5,7 @@ import os
 from typing import Any, Optional, Sequence
 
 from botcore import FileLock
-from cachepaths import ORDER_RETRY_QUEUE_FILENAME, cache_path, resolve_cachedb_filepath
+from cachepaths import ORDER_RETRY_QUEUE_FILENAME, resolve_statedb_filepath, state_path
 from state_io import atomic_write_jsonl, read_tail_jsonl_dicts, read_text_lines
 
 from .base import StateStoreBase
@@ -21,17 +21,17 @@ class OrderRetryQueueStore(StateStoreBase):
     @classmethod
     def default_queue_file(cls) -> str:
         """Return default canonical path for ``order_retry_queue.jsonl``."""
-        return cache_path(cls.FILENAME)
+        return state_path(cls.FILENAME)
 
     @classmethod
     def default_lock_file(cls) -> str:
         """Return default canonical lock file path for ``order_retry_queue.jsonl``."""
-        return cache_path("order_retry_queue.lock")
+        return state_path("order_retry_queue.lock")
 
     @classmethod
     def resolve_queue_path(cls, path: Optional[str] = None) -> str:
         """Resolve an explicit queue path or default ``order_retry_queue.jsonl`` path."""
-        return str(resolve_cachedb_filepath(cls.default_queue_file() if path is None else path))
+        return str(resolve_statedb_filepath(cls.default_queue_file() if path is None else path))
 
     @classmethod
     def resolve_sidecar_path(cls, filename: str, *, queue_path: Optional[str] = None) -> str:

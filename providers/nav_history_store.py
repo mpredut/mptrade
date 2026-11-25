@@ -19,7 +19,6 @@ from cachepaths import (
 )
 from state_io import read_json_dict
 from state_stores.nav_history_state import NavHistoryStateStore
-from state_stores.venue_fee_maintenance_state import VenueFeeMaintenanceStateStore
 
 from .nav_drawdown import (
     DEFAULT_CASHFLOW_JUMP_PCT,
@@ -32,6 +31,7 @@ from .nav_drawdown import (
     evaluate_nav_drawdown_metrics,
 )
 from .portfolio_state_store import load_venue_balance_caches, load_venue_balances_state_dict
+from .venue_fee_maintenance import read_persisted_venue_fee_schedule
 
 
 def _nav_history_filepath(workspace_dir: str) -> str:
@@ -61,12 +61,12 @@ def _load_workspace_balances_and_prices(
     cp_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, CACHE_CURRENT_PRICE_FILENAME)))
     cp = read_json_dict(cp_path, default={}, recover_previous=True)
     cp_out = dict(cp) if isinstance(cp, dict) else {}
-    # Seed Binance fee-reserve BNB price from venue_fee_maintenance_state.json when BNB is not tracked
-    # in cache_current_price.json so automatic BNB fee top-ups from USDC never look like NAV drawdown.
+    # Seed Binance fee-reserve BNB price from cache_fee_schedule.json (with legacy fallback) when BNB
+    # is not tracked in cache_current_price.json so automatic BNB fee top-ups never look like NAV drawdown.
     try:
         items_view = cp_out.get("items") if isinstance(cp_out.get("items"), dict) else cp_out
         if not any(isinstance(k, str) and canonical_base_asset(k) == "BNB" for k in items_view):
-            fee_state = VenueFeeMaintenanceStateStore.read_state(cache_dir)
+            fee_state = read_persisted_venue_fee_schedule(cache_dir)
             bn_fee = (fee_state.get("venues") or {}).get("binance") if isinstance(fee_state, dict) else None
             bnb_px = safe_pos_float(bn_fee.get("bnb_price_usdc") if isinstance(bn_fee, dict) else None, default=None)
             if bnb_px is not None:

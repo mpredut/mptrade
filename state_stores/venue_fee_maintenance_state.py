@@ -6,7 +6,12 @@ import os
 from typing import Any, Callable, Optional
 
 from botcore import FileLock
-from cachepaths import VENUE_FEE_MAINTENANCE_STATE_FILENAME, cache_path, clean_scalar_str, resolve_cachedb_filepath
+from cachepaths import (
+    VENUE_FEE_MAINTENANCE_STATE_FILENAME,
+    clean_scalar_str,
+    resolve_statedb_filepath,
+    state_path,
+)
 
 from .base import StateStoreBase
 
@@ -19,15 +24,15 @@ class VenueFeeMaintenanceStateStore(StateStoreBase):
 
     @classmethod
     def resolve_path(cls, cachedb_dir: Optional[str] = None, *, migrate: bool = False) -> str:
-        """Resolve canonical ``state/venue_fee_maintenance_state.json`` path."""
+        """Resolve canonical ``statedb/state/venue_fee_maintenance_state.json`` (with pre-cutover fallback)."""
         if cachedb_dir and (clean_dir := clean_scalar_str(cachedb_dir)):
             resolved = str(
-                resolve_cachedb_filepath(os.path.join(clean_dir, cls.FILENAME), migrate=migrate)
+                resolve_statedb_filepath(os.path.join(clean_dir, cls.FILENAME), migrate=migrate)
             )
-            if os.path.exists(resolved):
+            if os.path.exists(resolved) or os.path.abspath(os.path.dirname(resolved)) != os.path.abspath(clean_dir):
                 return resolved
             return os.path.join(clean_dir, cls.SUBDOMAIN, cls.FILENAME)
-        return str(resolve_cachedb_filepath(cache_path(cls.FILENAME), migrate=migrate))
+        return str(resolve_statedb_filepath(state_path(cls.FILENAME), migrate=migrate))
 
     @classmethod
     def read_state(

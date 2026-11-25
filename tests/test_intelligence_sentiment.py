@@ -1440,7 +1440,7 @@ def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeyp
     # 8. Interrupted CLI process (SIGTERM / "error: interrupted") is never mistaken for quota exhaustion
     # even when stdout contains buffered prompt/context text mentioning "rate limit"
 
-    assert resolve_cache_subdomain("llm_quota_status.json") == "system"
+    assert resolve_cache_subdomain("llm_quota_status.json") == "llm"
     interrupted_proc = subprocess.CompletedProcess(
         ["agy"],
         returncode=1,
@@ -10265,7 +10265,7 @@ def test_kinematic_velocity_acceleration_and_impulse_wakeup(tmp_path, monkeypatc
     # Valid mid-cycle offset (120s into 360s cycle) -> spawns detached flock wakeup
     from cachepaths import resolve_cache_subdomain, resolve_cachedb_filepath
 
-    assert resolve_cache_subdomain("kinematic_impulse_signal.json") == "system"
+    assert resolve_cache_subdomain("kinematic_impulse_signal.json") == "telemetry"
     mid_ts = 1_794_500_000.0 - (1_794_500_000.0 % 360.0) + 120.0
     fired = gtc.maybe_trigger_kinematic_ai_wakeup(now=mid_ts)
     assert fired == ["BTCUSDC"]

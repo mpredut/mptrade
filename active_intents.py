@@ -32,7 +32,7 @@ from botcore import (
 from cacheaccount import UnifiedOrderBookEvidence, load_unified_order_book_evidence
 from cachepaths import (
     ASSETGUARDIAN_STATE_FILENAME,
-    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
+    AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME,
     ORDER_RETRY_QUEUE_FILENAME,
     RTRADE_PAIRS_STATE_FILENAME,
     TRAILING_STATE_FILENAME,
@@ -99,7 +99,7 @@ class StateSource:
 
 DEFAULT_SOURCES = (
     StateSource("global_outbox", cache_relpath(ORDER_RETRY_QUEUE_FILENAME), True),
-    StateSource("autonomous_ai", cache_relpath(AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME)),
+    StateSource("autonomous_ai", cache_relpath(AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME)),
     StateSource("assetguardian", cache_relpath(ASSETGUARDIAN_STATE_FILENAME)),
     StateSource("rtrade", cache_relpath(RTRADE_PAIRS_STATE_FILENAME)),
     StateSource("binance_trailing", cache_relpath(TRAILING_STATE_FILENAME)),
