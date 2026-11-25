@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .assetguardian_state import AssetguardianStateStore
-from .autonomous_order_intents_state import AutonomousOrderIntentsStateStore
+from .auto_order_intents_state import AutoOrderIntentsStateStore
 from .base import StateFileSpec, StateStoreBase
 from .llm_topic_threads import LlmTopicThreadsStore
 from .mt_state import MtStateStore
@@ -30,7 +30,7 @@ from .venue_fee_maintenance_state import VenueFeeMaintenanceStateStore
 
 __all__ = [
     "AssetguardianStateStore",
-    "AutonomousOrderIntentsStateStore",
+    "AutoOrderIntentsStateStore",
     "CRITICAL_STATE_SPECS",
     "INTERNAL_BALANCE_SCRATCH_KEYS",
     "LlmTopicThreadsStore",

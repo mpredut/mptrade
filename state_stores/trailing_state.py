@@ -14,7 +14,7 @@ class TrailingStateStore(StateStoreBase):
     """Exclusive 1:1 owner for reading and persisting venue ``trailing_state.json`` files."""
 
     FILENAME = TRAILING_STATE_FILENAME
-    SUBDOMAIN = "state"
+    SUBDOMAIN = "bots"
 
     @classmethod
     def resolve_venue_path(

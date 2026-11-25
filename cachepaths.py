@@ -36,7 +36,7 @@ CACHE_KRAKEN_BALANCE_FILENAME = "cache_balance_kraken.json"
 CACHE_HYPERLIQUID_BALANCE_FILENAME = "cache_balance_hyperliquid.json"
 CACHE_T212_BALANCE_FILENAME = "cache_balance_t212.json"
 CACHE_BINANCE_TRADE_FILENAME = "cache_trade_binance.jsonl"
-CACHE_ACCOUNT_HEALTH_FILENAME = "account_cache_health.json"
+CACHE_ACCOUNT_HEALTH_FILENAME = "cache_account_health.json"
 CACHE_FEE_SCHEDULE_FILENAME = "cache_fee_schedule.json"
 CACHE_ASSET_VALUE_FILENAME = "cache_asset_value.jsonl"
 CACHE_KRAKEN_TRADE_FILENAME = "cache_trade_kraken.json"
@@ -47,8 +47,9 @@ ORDER_LEDGER_ACTIVE_FILENAME = "orders_active.json"
 ORDER_LEDGER_EVENTS_PREFIX = "order_events_"
 ORDER_LEDGER_CLOSED_PREFIX = "orders_closed_"
 ASSETGUARDIAN_STATE_FILENAME = "assetguardian_state.json"
-AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME = "autonomous_order_intents_state.json"
-AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME = AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME
+AUTO_ORDER_INTENTS_STATE_FILENAME = "auto_order_intents_state.json"
+AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME = AUTO_ORDER_INTENTS_STATE_FILENAME
+AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME = AUTO_ORDER_INTENTS_STATE_FILENAME
 MT_STATE_FILENAME = "mt_state.json"
 RTRADE_PAIRS_STATE_FILENAME = "rtrade_pairs_state.json"
 SMART_STOP_LOSS_STATE_FILENAME = "smart_stop_loss_state.json"
@@ -196,9 +197,10 @@ EXACT_LEGACY_FILENAMES = {
     CACHE_LONG_TREND_FILENAME: ("cache_price_long_trend.json",),
     CACHE_BINANCE_ORDER_FILLED_FILENAME: ("cache_order_binance.json", "cache_order.json"),
     CACHE_BINANCE_TRADE_FILENAME: ("cache_trade.jsonl",),
-    CACHE_ACCOUNT_HEALTH_FILENAME: ("binance_account_cache_health.json",),
+    CACHE_ACCOUNT_HEALTH_FILENAME: ("binance_account_cache_health.json", "account_cache_health.json"),
     RTRADE_PAIRS_STATE_FILENAME: ("rtrade_pairs.json",),
-    AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME: (
+    AUTO_ORDER_INTENTS_STATE_FILENAME: (
+        "autonomous_order_intents_state.json",
         "autonomous_trade_intents_state.json",
         "autonomous_trade_intents.json",
     ),
@@ -277,12 +279,13 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     "account": {
         "exact": (
             CACHE_ACCOUNT_HEALTH_FILENAME,
+            "account_cache_health.json",
             "binance_account_cache_health.json",
             CACHE_FEE_SCHEDULE_FILENAME,
         ),
         "prefixes": (
             "cache_order", "cache_balance", "cache_trade", "cache_asset_value",
-            "cache_fee_schedule", "account_cache_health.", "binance_account_cache_health.",
+            "cache_fee_schedule", "cache_account_health.", "account_cache_health.", "binance_account_cache_health.",
         ),
         "suffixes": (),
     },
@@ -316,7 +319,8 @@ STATEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         "exact": (
             ORDER_LEDGER_ACTIVE_FILENAME,
             ORDER_RETRY_QUEUE_FILENAME,
-            AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME,
+            AUTO_ORDER_INTENTS_STATE_FILENAME,
+            "autonomous_order_intents_state.json",
             "autonomous_trade_intents_state.json",
             "autonomous_trade_intents.json",
         ),
@@ -325,21 +329,32 @@ STATEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             "orders_active.",
             ORDER_LEDGER_EVENTS_PREFIX,
             ORDER_LEDGER_CLOSED_PREFIX,
+            "auto_order_intents",
             "autonomous_order_intents",
             "autonomous_trade_intents",
         ),
         "suffixes": (),
     },
-    "state": {
+    "portfolio": {
+        "exact": (
+            NAV_HISTORY_STATE_FILENAME,
+            PORTFOLIO_POSITIONS_STATE_FILENAME,
+            VENUE_BALANCES_STATE_FILENAME,
+        ),
+        "prefixes": (
+            "nav_history_state",
+            "portfolio_positions_state",
+            "venue_balances_state",
+        ),
+        "suffixes": (),
+    },
+    "bots": {
         "exact": (
             ASSETGUARDIAN_STATE_FILENAME,
             MT_STATE_FILENAME,
             TRAILING_STATE_FILENAME,
             SMART_STOP_LOSS_STATE_FILENAME,
             RTRADE_PAIRS_STATE_FILENAME,
-            NAV_HISTORY_STATE_FILENAME,
-            PORTFOLIO_POSITIONS_STATE_FILENAME,
-            VENUE_BALANCES_STATE_FILENAME,
             VENUE_FEE_MAINTENANCE_STATE_FILENAME,
         ),
         "prefixes": (
@@ -348,9 +363,6 @@ STATEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             "mt_state.",
             "trailing_state.",
             "smart_stop_loss_state.",
-            "nav_history_state",
-            "portfolio_positions_state",
-            "venue_balances_state",
             "venue_fee_maintenance_state",
         ),
         "suffixes": ("_state.json",),
@@ -367,7 +379,10 @@ STATEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
-_ALL_STORAGE_SUBDOMAINS: frozenset[str] = frozenset(CACHEDB_SUBDOMAINS) | frozenset(STATEDB_SUBDOMAINS)
+_LEGACY_STORAGE_SUBDOMAINS: frozenset[str] = frozenset({"state"})
+_ALL_STORAGE_SUBDOMAINS: frozenset[str] = (
+    frozenset(CACHEDB_SUBDOMAINS) | frozenset(STATEDB_SUBDOMAINS) | _LEGACY_STORAGE_SUBDOMAINS
+)
 _SIDECAR_SUFFIXES: tuple[str, ...] = (".generation.lock", ".previous", ".meta", ".lock", ".tmp")
 _SORTED_SUBDOMAINS: tuple[str, ...] = tuple(sorted(_ALL_STORAGE_SUBDOMAINS, key=len, reverse=True))
 _TOP_LEVEL_SUBDOMAINS: frozenset[str] = frozenset(sub.split("/", 1)[0] for sub in _ALL_STORAGE_SUBDOMAINS)
@@ -570,10 +585,10 @@ def _legacy_cachedb_subdomains_for(root_kind: str, sub: str, stripped_name: str)
             return ("system",)
         return ()
     if sub == "orders":
-        if stripped_name.startswith(("autonomous_order_intents", "autonomous_trade_intents")):
+        if stripped_name.startswith(("auto_order_intents", "autonomous_order_intents", "autonomous_trade_intents")):
             return ("state", "orders")
         return ("orders",)
-    if sub == "state":
+    if sub in ("portfolio", "bots"):
         return ("state",)
     if sub in ("llm", "system"):
         return ("system",)
@@ -890,6 +905,7 @@ def organize_cachedb_subdomains(
         ("telemetry", set()),
         ("macro", set()),
         ("llm", set()),
+        ("portfolio", set()),
         ("state", set()),
         ("bots", set()),
     ):
@@ -999,6 +1015,7 @@ def organize_storage_domains(
                 ("telemetry", set()),
                 ("macro", set()),
                 ("llm", set()),
+                ("portfolio", set()),
                 ("state", set()),
                 ("bots", set()),
             ):
@@ -1057,7 +1074,7 @@ def organize_storage_domains(
                 pass
 
     if not is_dry:
-        for legacy_dir in ("orders", "state", "bots"):
+        for legacy_dir in ("orders", "state", "bots", "portfolio"):
             cand = os.path.join(c_base, legacy_dir)
             if os.path.isdir(cand):
                 try:

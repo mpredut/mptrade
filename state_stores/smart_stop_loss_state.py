@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from cachepaths import SMART_STOP_LOSS_STATE_FILENAME, cache_path, resolve_cachedb_filepath
+from cachepaths import SMART_STOP_LOSS_STATE_FILENAME, resolve_statedb_filepath, state_path
 from state_io import read_json_dict_cached
 
 from .base import StateStoreBase
@@ -13,17 +13,17 @@ class SmartStopLossStateStore(StateStoreBase):
     """Exclusive 1:1 owner for reading and persisting ``smart_stop_loss_state.json``."""
 
     FILENAME = SMART_STOP_LOSS_STATE_FILENAME
-    SUBDOMAIN = "state"
+    SUBDOMAIN = "bots"
 
     @classmethod
     def default_path(cls) -> str:
         """Return default canonical path for ``smart_stop_loss_state.json``."""
-        return cache_path(cls.FILENAME)
+        return state_path(cls.FILENAME)
 
     @classmethod
     def resolve_file_path(cls, state_file: str) -> str:
         """Resolve an explicit ``smart_stop_loss_state.json`` file path."""
-        return str(resolve_cachedb_filepath(state_file))
+        return str(resolve_statedb_filepath(state_file))
 
     @classmethod
     def read_cached(cls, state_file: str, memo: Optional[dict] = None) -> Any:

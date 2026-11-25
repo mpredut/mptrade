@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from cachepaths import MT_STATE_FILENAME, cache_path
+from cachepaths import MT_STATE_FILENAME, state_path
 
 from .base import StateStoreBase
 
@@ -12,12 +12,12 @@ class MtStateStore(StateStoreBase):
     """Exclusive 1:1 owner for reading and persisting ``mt_state.json``."""
 
     FILENAME = MT_STATE_FILENAME
-    SUBDOMAIN = "state"
+    SUBDOMAIN = "bots"
 
     @classmethod
     def default_path(cls) -> str:
         """Return default canonical path for ``mt_state.json``."""
-        return cache_path(cls.FILENAME)
+        return state_path(cls.FILENAME)
 
     @classmethod
     def read_state(cls, state_file: str) -> Optional[dict[str, Any]]:

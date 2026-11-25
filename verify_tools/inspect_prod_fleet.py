@@ -66,7 +66,8 @@ def ssh_cat(remote_path: str) -> dict | list | str | None:
 
 def inspect_fleet(json_output: bool = False):
     raw_balances = (
-        ssh_cat(f"statedb/state/{VENUE_BALANCES_STATE_FILENAME}")
+        ssh_cat(f"statedb/portfolio/{VENUE_BALANCES_STATE_FILENAME}")
+        or ssh_cat(f"statedb/state/{VENUE_BALANCES_STATE_FILENAME}")
         or ssh_cat(cache_path(f"state/{VENUE_BALANCES_STATE_FILENAME}"))
         or ssh_cat(cache_path(VENUE_BALANCES_STATE_FILENAME))
     )

@@ -20,11 +20,11 @@ class VenueFeeMaintenanceStateStore(StateStoreBase):
     """Exclusive 1:1 owner for reading and locked-persisting ``venue_fee_maintenance_state.json``."""
 
     FILENAME = VENUE_FEE_MAINTENANCE_STATE_FILENAME
-    SUBDOMAIN = "state"
+    SUBDOMAIN = "bots"
 
     @classmethod
     def resolve_path(cls, cachedb_dir: Optional[str] = None, *, migrate: bool = False) -> str:
-        """Resolve canonical ``statedb/state/venue_fee_maintenance_state.json`` (with pre-cutover fallback)."""
+        """Resolve canonical ``statedb/bots/venue_fee_maintenance_state.json`` (with pre-cutover fallback)."""
         if cachedb_dir and (clean_dir := clean_scalar_str(cachedb_dir)):
             resolved = str(
                 resolve_statedb_filepath(os.path.join(clean_dir, cls.FILENAME), migrate=migrate)

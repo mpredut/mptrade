@@ -15,7 +15,7 @@ class PortfolioPositionsStateStore(StateStoreBase):
     """Exclusive 1:1 owner for reading and locked-updating ``portfolio_positions_state.json`` (``pos:*`` only)."""
 
     FILENAME = PORTFOLIO_POSITIONS_STATE_FILENAME
-    SUBDOMAIN = "state"
+    SUBDOMAIN = "portfolio"
 
     @classmethod
     def load_dict(

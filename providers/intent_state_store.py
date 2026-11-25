@@ -1,6 +1,6 @@
 """providers/intent_state_store.py -- Layer 3 persistence facade for durable autonomous AI order intents.
 
-Delegates locking, atomic reads, recovery, and upserts to Layer 2.5 ``AutonomousOrderIntentsStateStore``.
+Delegates locking, atomic reads, recovery, and upserts to Layer 2.5 ``AutoOrderIntentsStateStore``.
 Pure schema normalization, ID correlation, and validation live exclusively in ``providers/intent_state.py``
 (zero disk I/O).
 """
@@ -8,14 +8,14 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from state_stores.autonomous_order_intents_state import AutonomousOrderIntentsStateStore
+from state_stores.auto_order_intents_state import AutoOrderIntentsStateStore
 
 from .intent_state import _extract_intent_id, collect_known_ai_order_ids
 
 
 def durable_intents_lock(intents_file: str):
     """Reentrant (per thread) cross-process lock serializing read-modify-write via 1:1 store."""
-    return AutonomousOrderIntentsStateStore.lock(intents_file)
+    return AutoOrderIntentsStateStore.lock(intents_file)
 
 
 def load_durable_intents_state(
@@ -25,8 +25,8 @@ def load_durable_intents_state(
     read_only: bool = False,
     fail_closed: Optional[bool] = None,
 ) -> list[dict[str, Any]]:
-    """Load all order intents from the durable JSON queue via ``AutonomousOrderIntentsStateStore``."""
-    return AutonomousOrderIntentsStateStore.load_state(
+    """Load all order intents from the durable JSON queue via ``AutoOrderIntentsStateStore``."""
+    return AutoOrderIntentsStateStore.load_state(
         intents_file,
         reconcile_fn=reconcile_fn,
         read_only=read_only,
@@ -39,8 +39,8 @@ def load_durable_intents_from_cachedb(
     *,
     read_json_fn: Optional[Callable[[str], Any]] = None,
 ) -> list[dict[str, Any]]:
-    """Read-only SSOT loader for ``autonomous_order_intents_state.json`` via ``AutonomousOrderIntentsStateStore``."""
-    return AutonomousOrderIntentsStateStore.load_from_cachedb(
+    """Read-only SSOT loader for ``auto_order_intents_state.json`` via ``AutoOrderIntentsStateStore``."""
+    return AutoOrderIntentsStateStore.load_from_cachedb(
         cachedb_dir,
         read_json_fn=read_json_fn,
     )
@@ -59,8 +59,8 @@ def save_durable_intents_state(
     intents: list[dict[str, Any]],
     log: Optional[Any] = None,
 ) -> bool:
-    """Transactionally persist all intents via ``AutonomousOrderIntentsStateStore``."""
-    return AutonomousOrderIntentsStateStore.save_state(intents_file, intents, log=log)
+    """Transactionally persist all intents via ``AutoOrderIntentsStateStore``."""
+    return AutoOrderIntentsStateStore.save_state(intents_file, intents, log=log)
 
 
 def upsert_durable_intent(
@@ -70,8 +70,8 @@ def upsert_durable_intent(
     reconcile_fn: Optional[Callable[[list[dict[str, Any]]], Any]] = None,
     log: Optional[Any] = None,
 ) -> bool:
-    """Atomically merge one intent (by ``intent_id``) via ``AutonomousOrderIntentsStateStore``."""
-    return AutonomousOrderIntentsStateStore.upsert_intent(
+    """Atomically merge one intent (by ``intent_id``) via ``AutoOrderIntentsStateStore``."""
+    return AutoOrderIntentsStateStore.upsert_intent(
         intents_file,
         intent,
         extract_id_fn=_extract_intent_id,

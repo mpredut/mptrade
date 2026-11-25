@@ -427,7 +427,8 @@ _VENUE_BALANCES_WRITER_FNS = frozenset({
 })
 STATE_FILE_OWNER_MAP: dict[str, frozenset[str]] = {
     **{spec.const_name: frozenset({spec.owner_module}) for spec in CRITICAL_STATE_SPECS},
-    "AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME": frozenset({"state_stores/autonomous_order_intents_state.py"}),
+    "AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME": frozenset({"state_stores/auto_order_intents_state.py"}),
+    "AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME": frozenset({"state_stores/auto_order_intents_state.py"}),
     "CACHE_FEE_SCHEDULE_FILENAME": frozenset({"providers/venue_fee_maintenance.py"}),
     "CACHE_BINANCE_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_state_store.py"}),
     "CACHE_KRAKEN_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_state_store.py"}),
@@ -436,8 +437,9 @@ STATE_FILE_OWNER_MAP: dict[str, frozenset[str]] = {
 }
 STATE_FILE_LITERAL_TO_CONST: dict[str, str] = {
     **{spec.filename: spec.const_name for spec in CRITICAL_STATE_SPECS},
-    "autonomous_trade_intents_state.json": "AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME",
-    "autonomous_trade_intents.json": "AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME",
+    "autonomous_order_intents_state.json": "AUTO_ORDER_INTENTS_STATE_FILENAME",
+    "autonomous_trade_intents_state.json": "AUTO_ORDER_INTENTS_STATE_FILENAME",
+    "autonomous_trade_intents.json": "AUTO_ORDER_INTENTS_STATE_FILENAME",
     "cache_fee_schedule.json": "CACHE_FEE_SCHEDULE_FILENAME",
     "cache_balance_binance.json": "CACHE_BINANCE_BALANCE_FILENAME",
     "cache_balance_kraken.json": "CACHE_KRAKEN_BALANCE_FILENAME",
@@ -1971,7 +1973,7 @@ def audit_cross_module_calls_and_imports_ast(
 # -- Audit 12: Canonical cachedb subdomain path & JSONL reader purity ----------
 
 _CACHEDB_SUBDOMAIN_TOKENS = frozenset({
-    "prices", "trends", "macro", "orders", "account", "state", "telemetry", "llm", "system", "heartbeat",
+    "prices", "trends", "macro", "orders", "account", "portfolio", "bots", "state", "telemetry", "llm", "system", "heartbeat",
 })
 _RAW_CACHEDIR_VAR_RE = re.compile(r"(?:^|_)(?:cache_dir|cachedb_dir|cdir|eff_dir)$")
 _JSONL_CACHE_PATH_HINT_RE = re.compile(
@@ -2070,6 +2072,7 @@ _STATE_WRITER_FN_NAMES = frozenset({
 _FINANCIAL_CRITICAL_PATH_RE = re.compile(
     r"(?:ORDER_LEDGER_|orders_active|order_events_|orders_closed_|"
     r"RTRADE_PAIRS_|rtrade_pairs|ASSETGUARDIAN_STATE_|assetguardian_state|"
+    r"AUTO_ORDER_INTENTS_|auto_order_intents|"
     r"AUTONOMOUS_ORDER_INTENTS_|autonomous_order_intents|"
     r"AUTONOMOUS_TRADE_INTENTS_|autonomous_trade_intents|"
     r"CACHE_[A-Z0-9_]*ORDER_|cache_order_|CACHE_[A-Z0-9_]*BALANCE_|cache_balance_|CACHE_[A-Z0-9_]*TRADE_|cache_trade_|"

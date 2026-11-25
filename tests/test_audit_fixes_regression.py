@@ -7814,7 +7814,7 @@ def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
     import state_stores
     from state_stores import (
         AssetguardianStateStore,
-        AutonomousOrderIntentsStateStore,
+        AutoOrderIntentsStateStore,
         CRITICAL_STATE_SPECS,
         LlmTopicThreadsStore,
         MtStateStore,
@@ -7861,14 +7861,14 @@ def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
     )
     assert PortfolioPositionsStateStore.load_dict(str(cdb))["pos:binance:BTCUSDC"]["trailing_peak"] == pytest.approx(60000.0)
 
-    # AutonomousOrderIntentsStateStore
-    int_path = AutonomousOrderIntentsStateStore.resolve_path(str(cdb))
-    assert AutonomousOrderIntentsStateStore.upsert_intent(
+    # AutoOrderIntentsStateStore
+    int_path = AutoOrderIntentsStateStore.resolve_path(str(cdb))
+    assert AutoOrderIntentsStateStore.upsert_intent(
         int_path,
         {"intent_id": "ai_1", "symbol": "BTCUSDC", "status": "PENDING"},
         extract_id_fn=lambda d: str(d.get("intent_id") or ""),
     )
-    assert len(AutonomousOrderIntentsStateStore.load_from_cachedb(str(cdb))) == 1
+    assert len(AutoOrderIntentsStateStore.load_from_cachedb(str(cdb))) == 1
 
     # LlmTopicThreadsStore & NotifyQueueStore
     top_p = LlmTopicThreadsStore.resolve_path(str(cdb))
@@ -8545,7 +8545,7 @@ def test_priority2_pure_provider_math_modules_zero_io_and_stores(tmp_path):
         "providers/nav_drawdown.py": "import os\nfrom state_stores.nav_history_state import NavHistoryStateStore\n",
         "providers/ai_attribution.py": "import glob\nfrom state_io import read_json_dict\n",
         "providers/quantity.py": "import os\nfrom state_io import read_json_dict\n",
-        "providers/intent_state.py": "from state_stores.autonomous_order_intents_state import AutonomousOrderIntentsStateStore\n",
+        "providers/intent_state.py": "from state_stores.auto_order_intents_state import AutoOrderIntentsStateStore\n",
     }
     for rel, code in leaks.items():
         (synth / rel).write_text(code, encoding="utf-8")
@@ -8719,7 +8719,7 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
     import account_cache_health
     from active_intents import build_active_intent_index
     from cachepaths import (
-        AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME,
+        AUTO_ORDER_INTENTS_STATE_FILENAME,
         CACHE_ACCOUNT_HEALTH_FILENAME,
         CACHE_BINANCE_BALANCE_FILENAME,
         CACHE_FEE_SCHEDULE_FILENAME,
@@ -8751,7 +8751,7 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
         run_venue_fee_maintenance,
     )
     from state_stores import (
-        AutonomousOrderIntentsStateStore,
+        AutoOrderIntentsStateStore,
         LlmTopicThreadsStore,
         NavHistoryStateStore,
         NotifyQueueStore,
@@ -8772,6 +8772,7 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
         "cache_order_filled_kraken.json": ("cachedb", "account"),
         CACHE_FEE_SCHEDULE_FILENAME: ("cachedb", "account"),
         CACHE_ACCOUNT_HEALTH_FILENAME: ("cachedb", "account"),
+        "account_cache_health.json": ("cachedb", "account"),
         "binance_account_cache_health.json": ("cachedb", "account"),
         LLM_MODEL_CATALOG_FILENAME: ("cachedb", "llm"),
         LLM_QUOTA_STATUS_FILENAME: ("cachedb", "llm"),
@@ -8782,17 +8783,20 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
         ORDER_LEDGER_ACTIVE_FILENAME: ("statedb", "orders"),
         "order_events_2026-11-25.jsonl": ("statedb", "orders"),
         ORDER_RETRY_QUEUE_FILENAME: ("statedb", "orders"),
-        AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME: ("statedb", "orders"),
+        AUTO_ORDER_INTENTS_STATE_FILENAME: ("statedb", "orders"),
+        "autonomous_order_intents_state.json": ("statedb", "orders"),
         "autonomous_trade_intents_state.json": ("statedb", "orders"),
-        PORTFOLIO_POSITIONS_STATE_FILENAME: ("statedb", "state"),
-        NAV_HISTORY_STATE_FILENAME: ("statedb", "state"),
-        VENUE_FEE_MAINTENANCE_STATE_FILENAME: ("statedb", "state"),
+        PORTFOLIO_POSITIONS_STATE_FILENAME: ("statedb", "portfolio"),
+        NAV_HISTORY_STATE_FILENAME: ("statedb", "portfolio"),
+        VENUE_FEE_MAINTENANCE_STATE_FILENAME: ("statedb", "bots"),
         LLM_TOPIC_THREADS_FILENAME: ("statedb", "llm"),
         NOTIFY_QUEUE_FILENAME: ("statedb", "system"),
     }
     for fname, expected in domain_cases.items():
         assert resolve_storage_domain(fname) == expected, f"{fname} -> expected {expected}"
-    assert is_financial_critical_path(AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME) is True
+    assert CACHE_ACCOUNT_HEALTH_FILENAME == "cache_account_health.json"
+    assert AUTO_ORDER_INTENTS_STATE_FILENAME == "auto_order_intents_state.json"
+    assert is_financial_critical_path(AUTO_ORDER_INTENTS_STATE_FILENAME) is True
     assert is_financial_critical_path(LLM_TOPIC_THREADS_FILENAME) is True
     assert is_financial_critical_path(NOTIFY_QUEUE_FILENAME) is True
     assert is_financial_critical_path(CACHE_FEE_SCHEDULE_FILENAME) is True
@@ -8865,10 +8869,10 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
     assert Path(str(resolve_cachedb_filepath(str(cdb / CACHE_ACCOUNT_HEALTH_FILENAME)))) == (
         cdb / "orders" / "binance_account_cache_health.json"
     )
-    assert Path(str(resolve_statedb_filepath(str(cdb / AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME)))) == (
+    assert Path(str(resolve_statedb_filepath(str(cdb / AUTO_ORDER_INTENTS_STATE_FILENAME)))) == (
         cdb / "state" / "autonomous_trade_intents_state.json"
     )
-    assert len(AutonomousOrderIntentsStateStore.load_from_cachedb(str(cdb))) == 1
+    assert len(AutoOrderIntentsStateStore.load_from_cachedb(str(cdb))) == 1
     assert "binance" in load_venue_balance_caches(str(cdb))
 
     # 3. CLI dry-run preview leaves disk untouched
@@ -8885,10 +8889,10 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
     assert (sdb / "orders" / ORDER_LEDGER_ACTIVE_FILENAME).is_file()
     assert (sdb / "orders" / "order_events_2026-11-25.jsonl").is_file()
     assert (sdb / "orders" / ORDER_RETRY_QUEUE_FILENAME).is_file()
-    assert (sdb / "orders" / AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME).is_file()
-    assert (sdb / "orders" / f"{AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME}.previous").is_file()
-    assert (sdb / "state" / PORTFOLIO_POSITIONS_STATE_FILENAME).is_file()
-    assert (sdb / "state" / NAV_HISTORY_STATE_FILENAME).is_file()
+    assert (sdb / "orders" / AUTO_ORDER_INTENTS_STATE_FILENAME).is_file()
+    assert (sdb / "orders" / f"{AUTO_ORDER_INTENTS_STATE_FILENAME}.previous").is_file()
+    assert (sdb / "portfolio" / PORTFOLIO_POSITIONS_STATE_FILENAME).is_file()
+    assert (sdb / "portfolio" / NAV_HISTORY_STATE_FILENAME).is_file()
     assert (sdb / "llm" / LLM_TOPIC_THREADS_FILENAME).is_file()
     assert (sdb / "system" / NOTIFY_QUEUE_FILENAME).is_file()
     # Empty legacy cachedb/orders & cachedb/state directories removed cleanly
@@ -8900,7 +8904,7 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
         cdb / "account" / CACHE_ACCOUNT_HEALTH_FILENAME
     )
     assert "binance" in load_venue_balance_caches(str(cdb))
-    assert len(AutonomousOrderIntentsStateStore.load_from_cachedb(str(cdb))) == 1
+    assert len(AutoOrderIntentsStateStore.load_from_cachedb(str(cdb))) == 1
     assert len(OrderRetryQueueStore.read_tail_records(str(cdb), limit=10)) == 1
     assert PortfolioPositionsStateStore.load_dict(str(cdb))["pos:binance:BTCUSDC"]["trailing_peak"] == pytest.approx(72000.0)
     assert NavHistoryStateStore.read_raw_doc(str(ws))["points"][0]["nav_usd"] == pytest.approx(18000.0)
@@ -8962,7 +8966,7 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
     sched_p = Path(resolve_fee_schedule_cache_path(str(cdb)))
     wf_p = Path(VenueFeeMaintenanceStateStore.resolve_path(str(cdb)))
     assert sched_p == cdb / "account" / CACHE_FEE_SCHEDULE_FILENAME
-    assert wf_p == sdb / "state" / VENUE_FEE_MAINTENANCE_STATE_FILENAME
+    assert wf_p == sdb / "bots" / VENUE_FEE_MAINTENANCE_STATE_FILENAME
 
     sched_doc = json.loads(sched_p.read_text(encoding="utf-8"))
     wf_doc = json.loads(wf_p.read_text(encoding="utf-8"))

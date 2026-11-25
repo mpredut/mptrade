@@ -5,7 +5,7 @@ import os
 from typing import Any, Callable, Optional
 
 from botcore import FileLock
-from cachepaths import ASSETGUARDIAN_STATE_FILENAME, cache_path, resolve_cachedb_filepath
+from cachepaths import ASSETGUARDIAN_STATE_FILENAME, resolve_statedb_filepath, state_path
 
 from .base import StateStoreBase
 
@@ -14,12 +14,12 @@ class AssetguardianStateStore(StateStoreBase):
     """Exclusive 1:1 owner for reading and locked-persisting ``assetguardian_state.json``."""
 
     FILENAME = ASSETGUARDIAN_STATE_FILENAME
-    SUBDOMAIN = "state"
+    SUBDOMAIN = "bots"
 
     @classmethod
     def default_path(cls) -> str:
         """Return default canonical path for ``assetguardian_state.json``."""
-        return cache_path(cls.FILENAME)
+        return state_path(cls.FILENAME)
 
     @classmethod
     def resolve_paths(
@@ -31,11 +31,11 @@ class AssetguardianStateStore(StateStoreBase):
     ) -> tuple[str, str]:
         """Resolve ``(state_path, lock_path)`` keeping sibling lock files aligned across migrations."""
         raw_path = path or cls.default_path()
-        target_path = str(resolve_cachedb_filepath(raw_path, migrate=migrate))
+        target_path = str(resolve_statedb_filepath(raw_path, migrate=migrate))
         eff_lock = (
             f"{target_path}.lock"
             if (not lock_path or lock_path == f"{raw_path}.lock")
-            else str(resolve_cachedb_filepath(lock_path, migrate=migrate))
+            else str(resolve_statedb_filepath(lock_path, migrate=migrate))
         )
         return target_path, eff_lock
 

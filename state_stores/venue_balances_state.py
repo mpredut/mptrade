@@ -67,7 +67,7 @@ class VenueBalancesStateStore(StateStoreBase):
     """Exclusive 1:1 owner for reading and locked-updating ``venue_balances_state.json``."""
 
     FILENAME = VENUE_BALANCES_STATE_FILENAME
-    SUBDOMAIN = "state"
+    SUBDOMAIN = "portfolio"
 
     @classmethod
     def load_dict(

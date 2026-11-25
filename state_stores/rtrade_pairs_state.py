@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from cachepaths import RTRADE_PAIRS_STATE_FILENAME, resolve_cachedb_filepath
+from cachepaths import RTRADE_PAIRS_STATE_FILENAME, resolve_statedb_filepath
 from state_io import atomic_write_json, read_json_file
 
 from .base import StateStoreBase
@@ -13,12 +13,12 @@ class RtradePairsStateStore(StateStoreBase):
     """Exclusive 1:1 storage owner for ``rtrade_pairs_state.json``."""
 
     FILENAME = RTRADE_PAIRS_STATE_FILENAME
-    SUBDOMAIN = "state"
+    SUBDOMAIN = "bots"
 
     @classmethod
     def resolve_file_path(cls, path: str, *, migrate: bool = False) -> str:
         """Resolve an explicit ``rtrade_pairs_state.json`` file path."""
-        return str(resolve_cachedb_filepath(path, migrate=migrate))
+        return str(resolve_statedb_filepath(path, migrate=migrate))
 
     @classmethod
     def resolve_lock_path(
@@ -33,7 +33,7 @@ class RtradePairsStateStore(StateStoreBase):
             return None
         if path and lock_path == f"{path}.lock":
             return f"{cls.resolve_file_path(path, migrate=migrate)}.lock"
-        return str(resolve_cachedb_filepath(lock_path, migrate=migrate))
+        return str(resolve_statedb_filepath(lock_path, migrate=migrate))
 
     @classmethod
     def read_raw(cls, path: str) -> Any:

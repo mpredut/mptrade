@@ -55,16 +55,17 @@ class StateStoreBase:
 
     @classmethod
     def candidate_paths(cls, cachedb_dir: str) -> list[str]:
-        """Return deduplicated candidate disk paths across ``statedb/<sub_dir>/``, ``cachedb/<sub_dir>/``, and flat root."""
+        """Return deduplicated candidate disk paths across ``statedb/<sub_dir>/``, ``cachedb/<sub_dir>/``, legacy ``state/``, and root."""
         statedb_dir = resolve_statedb_dir_from_cachedb(cachedb_dir)
-        return list(
-            dict.fromkeys((
-                cls.resolve_path(cachedb_dir),
-                os.path.join(statedb_dir, cls.SUBDOMAIN, cls.FILENAME),
-                os.path.join(cachedb_dir, cls.SUBDOMAIN, cls.FILENAME),
-                os.path.join(cachedb_dir, cls.FILENAME),
-            ))
-        )
+        cands = [
+            cls.resolve_path(cachedb_dir),
+            os.path.join(statedb_dir, cls.SUBDOMAIN, cls.FILENAME),
+            os.path.join(cachedb_dir, cls.SUBDOMAIN, cls.FILENAME),
+        ]
+        if cls.SUBDOMAIN in ("portfolio", "bots"):
+            cands.append(os.path.join(cachedb_dir, "state", cls.FILENAME))
+        cands.append(os.path.join(cachedb_dir, cls.FILENAME))
+        return list(dict.fromkeys(cands))
 
     @classmethod
     def has_disk_file(cls, path: str) -> bool:

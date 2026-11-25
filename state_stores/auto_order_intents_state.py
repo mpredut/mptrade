@@ -1,4 +1,4 @@
-"""1:1 SSOT store owner for ``autonomous_order_intents_state.json``."""
+"""1:1 SSOT store owner for ``auto_order_intents_state.json``."""
 from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 
 from botcore import FileLock, _parse_bool_flag, clean_json_value, clean_scalar_str
 from cachepaths import (
-    AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME,
+    AUTO_ORDER_INTENTS_STATE_FILENAME,
     resolve_statedb_dir_from_cachedb,
     resolve_statedb_filepath,
 )
@@ -24,15 +24,16 @@ from .base import StateStoreBase
 
 _INTENTS_LOCK_LOCAL = threading.local()
 _LEGACY_INTENTS_FILENAMES: tuple[str, ...] = (
+    "autonomous_order_intents_state.json",
     "autonomous_trade_intents_state.json",
     "autonomous_trade_intents.json",
 )
 
 
-class AutonomousOrderIntentsStateStore(StateStoreBase):
-    """Exclusive 1:1 owner for durable read/write/lock access to ``autonomous_order_intents_state.json``."""
+class AutoOrderIntentsStateStore(StateStoreBase):
+    """Exclusive 1:1 owner for durable read/write/lock access to ``auto_order_intents_state.json``."""
 
-    FILENAME = AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME
+    FILENAME = AUTO_ORDER_INTENTS_STATE_FILENAME
     SUBDOMAIN = "orders"
 
     @classmethod
@@ -97,7 +98,7 @@ class AutonomousOrderIntentsStateStore(StateStoreBase):
                 intents_file,
                 default_factory=list,
                 fail_closed=eff_fail_closed,
-                label="autonomous_order_intents",
+                label="auto_order_intents",
                 root_type=list,
                 repair_files=not is_ro,
             )

@@ -13,11 +13,11 @@ class NavHistoryStateStore(StateStoreBase):
     """Exclusive 1:1 owner for reading and persisting ``nav_history_state.json``."""
 
     FILENAME = NAV_HISTORY_STATE_FILENAME
-    SUBDOMAIN = "state"
+    SUBDOMAIN = "portfolio"
 
     @classmethod
     def resolve_workspace_path(cls, workspace_dir: str) -> str:
-        """Resolve ``nav_history_state.json`` inside ``workspace_dir`` (``statedb/state/`` with pre-cutover fallback)."""
+        """Resolve ``nav_history_state.json`` inside ``workspace_dir`` (``statedb/portfolio/`` with pre-cutover fallback)."""
         return str(resolve_statedb_filepath(os.path.join(workspace_dir, cache_relpath(cls.FILENAME))))
 
     @classmethod

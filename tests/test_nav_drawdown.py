@@ -29,7 +29,7 @@ from providers.nav_history_store import (
 
 def test_nav_drawdown_config_and_cashflow_immune_metrics():
     """Verify cachepaths registration, order_guard.conf defaults, and cashflow-adjusted NAV drawdown math."""
-    assert resolve_cache_subdomain(NAV_HISTORY_STATE_FILENAME) == "state"
+    assert resolve_cache_subdomain(NAV_HISTORY_STATE_FILENAME) == "portfolio"
 
     root_cfg = load_key_value_conf(GW_ROOT_DIR, GW_ROOT_DIR)
     cb_cfg = parse_intent_circuit_breaker_config(root_cfg)
