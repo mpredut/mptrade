@@ -1384,7 +1384,10 @@ def test_incremental_jsonl_tailing_and_assetguardian_vectorized_extrema(tmp_path
     jsonl_path = prices_dir / "cache_24_price_BTCUSDC.jsonl"
     now_ms = int(time.time() * 1000)
 
-    prod = cacheprice.Cache24PriceManager(30, ["BTCUSDC"], str(jsonl_path), api_client=None, read_only=False)
+    prod = cacheprice.Cache24PriceManager(
+        30, ["BTCUSDC"], str(jsonl_path), api_client=None, read_only=False,
+        current_price_getter=lambda _s: None,
+    )
     for idx in range(20):
         prod.on_price_update("BTCUSDC", now_ms - (30 - idx) * 1000, 60000.0 + idx)
     assert prod.save_state_to_file() is True

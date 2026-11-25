@@ -16,9 +16,11 @@ from visuals import tradeall_observe as observe
 @pytest.fixture(autouse=True)
 def _reset_observer_process_caches():
     observe._PIPE_LOG_CACHE.clear()
+    observe._PRICE_FILE_CACHE.clear()
     observe._LAST_SAMPLED_TS.clear()
     yield
     observe._PIPE_LOG_CACHE.clear()
+    observe._PRICE_FILE_CACHE.clear()
     observe._LAST_SAMPLED_TS.clear()
 
 
@@ -195,6 +197,76 @@ def test_default_symbols_include_multivenue_tradeall_fire_instruments():
     default_syms = observe._resolve_default_symbols()
     assert "BTCUSDC" in default_syms
     assert "HYPEUSDC" in default_syms
+
+
+def test_price_file_cache_tails_jsonl_incrementally_and_reloads_on_replace(tmp_path, monkeypatch):
+    cachedb = tmp_path / "cachedb"
+    cachedb.mkdir(parents=True, exist_ok=True)
+    jsonl = cachedb / "cache_24_price_BTCUSDC.jsonl"
+    jsonl.write_text(
+        "\n".join([
+            json.dumps({"s": "BTCUSDC", "i": [1_000, 10.0]}),
+            json.dumps({"s": "BTCUSDC", "i": [2_000, 11.0]}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    tail_calls = []
+    orig_offset = observe.read_jsonl_bucket_map_from_offset
+
+    def _spy_offset(*args, **kwargs):
+        res = orig_offset(*args, **kwargs)
+        tail_calls.append((kwargs.get("start_offset", 0), res[5]))
+        return res
+
+    monkeypatch.setattr(observe, "read_jsonl_bucket_map_from_offset", _spy_offset)
+
+    # Cold read populates cache + cursor.
+    assert observe._load_cachedb_price_entries("cache_24_price_BTCUSDC.jsonl", "BTCUSDC") == [
+        [1_000, 10.0],
+        [2_000, 11.0],
+    ]
+    assert tail_calls == []
+
+    # Unchanged file hits stat cache with zero incremental or full reads.
+    assert observe._load_cachedb_price_entries("cache_24_price_BTCUSDC.jsonl", "BTCUSDC") == [
+        [1_000, 10.0],
+        [2_000, 11.0],
+    ]
+    assert tail_calls == []
+
+    # Appended line on same inode uses incremental byte-offset tailing.
+    with open(jsonl, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"s": "BTCUSDC", "i": [3_000, 12.5]}) + "\n")
+    assert observe._load_cachedb_price_entries("cache_24_price_BTCUSDC.jsonl", "BTCUSDC") == [
+        [1_000, 10.0],
+        [2_000, 11.0],
+        [3_000, 12.5],
+    ]
+    assert len(tail_calls) == 1 and tail_calls[0][1] is True
+
+    # Atomic compaction (new inode) triggers clean reload.
+    replacement = cachedb / "replacement.jsonl"
+    replacement.write_text(json.dumps({"s": "BTCUSDC", "i": [4_000, 15.0]}) + "\n", encoding="utf-8")
+    os.replace(replacement, jsonl)
+    assert observe._load_cachedb_price_entries("cache_24_price_BTCUSDC.jsonl", "BTCUSDC") == [[4_000, 15.0]]
+
+
+def test_ingest_cachedb_points_rejects_bool_nan_and_nonpositive_values():
+    pts = {}
+    observe._ingest_cachedb_points(
+        pts,
+        [
+            [True, 10.0],
+            [1_000, False],
+            [1_000, float("nan")],
+            [float("inf"), 10.0],
+            [-1_000, 10.0],
+            [2_000, 20],
+            ["3000", "30.5"],
+        ],
+    )
+    assert pts == {2: 20.0, 3: 30.5}
 
 
 def test_order_markers_are_batched_by_side():

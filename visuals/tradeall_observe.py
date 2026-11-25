@@ -61,8 +61,11 @@ from state_io import (
     atomic_file_path,
     atomic_write_text,
     open_binary_read_file,
+    parse_json_payload,
     read_json_dict,
+    read_jsonl_bucket_map_from_offset,
     read_tail_jsonl_dicts,
+    read_tail_lines_with_cursor,
 )
 from intelligence.internal.state.volatility import get_kalman_state_path
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
@@ -114,6 +117,12 @@ _TRADEALL_OUTCOME_CALLERS = frozenset({"market_api.py", "order_retry_worker.py",
 _PIPE_LOG_CACHE_MAX_FILES = 32
 _PIPE_LOG_CACHE = OrderedDict()
 # path -> (bytes consumed, ncols, rows, device, inode, observed size, mtime_ns)
+
+_PRICE_FILE_CACHE_MAX_FILES = 48
+_PRICE_FILE_CACHE = OrderedDict()
+# (path, sym_upper, max_bytes) -> (dev, ino, size, mtime_ns, cursor, entries)
+_ORIG_READ_TAIL_JSONL_DICTS = read_tail_jsonl_dicts
+_ORIG_READ_JSON_DICT = read_json_dict
 
 
 def _read_pipe_log(path, ncols):
@@ -221,13 +230,16 @@ def _resolve_default_symbols():
     return symbols_for(role="tradeall_fire") or symbols_for("binance")
 
 
-def sample_current_prices(symbols):
-    if not os.path.exists(CACHE_TREND_PATH):
-        return
-    try:
-        snapshot = read_json_dict(CACHE_TREND_PATH, recover_previous=True)
-    except (OSError, json.JSONDecodeError, ValueError) as e:
-        print(f"[tradeall_observe] error reading cache_short_trend.json: {e}")
+def sample_current_prices(symbols, *, snapshot=None):
+    if snapshot is None:
+        if not os.path.exists(CACHE_TREND_PATH):
+            return
+        try:
+            snapshot = read_json_dict(CACHE_TREND_PATH, recover_previous=True)
+        except (OSError, json.JSONDecodeError, ValueError) as e:
+            print(f"[tradeall_observe] error reading cache_short_trend.json: {e}")
+            return
+    if not isinstance(snapshot, dict) or not snapshot:
         return
     items_map = snapshot.get("items") if isinstance(snapshot.get("items"), dict) else snapshot
 
@@ -297,44 +309,147 @@ def load_price_samples(symbol, days_back):
 def _load_cachedb_price_entries(filename, symbol, max_bytes=None):
     """Read Cache24/365/sparse ``[[ts_ms, price], ...]`` entries from cachedb.
 
-    Incremental long-term JSONL files may grow to hundreds of megabytes, so the
-    weekly caller reads only their ``max_bytes`` tail. Live 24-hour JSONL caches
-    default to ``CACHE24_TAIL_MAX_BYTES`` so a full 24h file is not truncated.
-    Legacy JSON caches remain supported unchanged.
+    Uses stat-keyed caching plus incremental byte-offset JSONL tailing so live
+    cycles only parse newly appended lines instead of reparsing multi-megabyte
+    archives every few seconds. Live 24-hour JSONL caches default to
+    ``CACHE24_TAIL_MAX_BYTES`` so a full 24h file is not truncated.
     """
     path = str(resolve_cachedb_filepath(os.path.join(get_cachedb_dir(), filename)))
-    if not os.path.exists(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        for k in [k for k in _PRICE_FILE_CACHE if k[0] == path]:
+            _PRICE_FILE_CACHE.pop(k, None)
         return []
-    if str(filename).endswith(".jsonl"):
-        eff_max_bytes = (
-            max_bytes
-            if max_bytes is not None
-            else (
-                CACHE24_TAIL_MAX_BYTES
-                if os.path.basename(str(filename)).startswith(CACHE_24_PRICE_PREFIX)
-                else DEFAULT_HISTORY_TAIL_MAX_BYTES
-            )
+    is_jsonl = str(filename).endswith(".jsonl")
+    eff_max_bytes = (
+        max_bytes
+        if max_bytes is not None
+        else (
+            CACHE24_TAIL_MAX_BYTES
+            if os.path.basename(str(filename)).startswith(CACHE_24_PRICE_PREFIX)
+            else DEFAULT_HISTORY_TAIL_MAX_BYTES
         )
+    )
+    sym_u = str(symbol).strip().upper()
+    cache_key = (path, sym_u, eff_max_bytes if is_jsonl else None)
+    sig = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+    readers_unpatched = (
+        read_tail_jsonl_dicts is _ORIG_READ_TAIL_JSONL_DICTS
+        and read_json_dict is _ORIG_READ_JSON_DICT
+    )
+    cached = _PRICE_FILE_CACHE.get(cache_key) if readers_unpatched else None
+    if cached is not None and cached[:4] == sig:
+        _PRICE_FILE_CACHE.move_to_end(cache_key)
+        return cached[5]
+
+    if is_jsonl:
         sym_variants = {v.upper() for v in cache_symbol_variants(symbol, include_original=True)}
-        return [
-            rec["i"]
-            for rec in read_tail_jsonl_dicts(path, limit=None, max_bytes=eff_max_bytes)
-            if isinstance(rec.get("s"), str)
-            and rec["s"].strip().upper() in sym_variants
-            and "i" in rec
-        ]
+        if not readers_unpatched:
+            return [
+                rec["i"]
+                for rec in read_tail_jsonl_dicts(path, limit=None, max_bytes=eff_max_bytes)
+                if isinstance(rec.get("s"), str)
+                and rec["s"].strip().upper() in sym_variants
+                and "i" in rec
+            ]
+        # Incremental byte-offset tail when the same JSONL inode grew by append.
+        if (
+            cached is not None
+            and cached[4] is not None
+            and cached[0] == st.st_dev
+            and cached[1] == st.st_ino
+            and st.st_size >= cached[2]
+        ):
+            prev_dev_ino, prev_off, prev_anchor = cached[4]
+            try:
+                delta_map, had_bad, next_off, dev_ino, new_anchor, inc_used = (
+                    read_jsonl_bucket_map_from_offset(
+                        path,
+                        start_offset=prev_off,
+                        expected_dev_ino=prev_dev_ino,
+                        expected_anchor=prev_anchor,
+                        allow_full_fallback=False,
+                    )
+                )
+            except OSError:
+                inc_used = False
+            if inc_used:
+                entries = list(cached[5])
+                for rec_sym, rows_delta in delta_map.items():
+                    if isinstance(rec_sym, str) and rec_sym.strip().upper() in sym_variants:
+                        entries.extend(rows_delta)
+                max_rows = max(4096, eff_max_bytes // 32)
+                if len(entries) > max_rows:
+                    entries = entries[-max_rows:]
+                new_cursor = (
+                    (dev_ino, next_off, new_anchor)
+                    if (not had_bad and dev_ino is not None and next_off > 0)
+                    else None
+                )
+                lru_dict_put(
+                    _PRICE_FILE_CACHE,
+                    cache_key,
+                    (*sig, new_cursor, entries),
+                    _PRICE_FILE_CACHE_MAX_FILES,
+                )
+                return entries
+        raw_lines, cursor = read_tail_lines_with_cursor(path, limit=None, max_bytes=eff_max_bytes)
+        entries = []
+        for raw_line in raw_lines:
+            rec = parse_json_payload(raw_line, default=None)
+            if (
+                isinstance(rec, dict)
+                and isinstance(rec.get("s"), str)
+                and rec["s"].strip().upper() in sym_variants
+                and "i" in rec
+            ):
+                entries.append(rec["i"])
+        lru_dict_put(
+            _PRICE_FILE_CACHE,
+            cache_key,
+            (*sig, cursor, entries),
+            _PRICE_FILE_CACHE_MAX_FILES,
+        )
+        return entries
+
     data = read_json_dict(path, default={}, recover_previous=True)
-    return lookup_symbol_cache_items(data, symbol, allow_base_fallback=False, require_list=True, unwrap_items=True) or []
+    entries = lookup_symbol_cache_items(data, symbol, allow_base_fallback=False, require_list=True, unwrap_items=True) or []
+    if readers_unpatched:
+        lru_dict_put(
+            _PRICE_FILE_CACHE,
+            cache_key,
+            (*sig, None, entries),
+            _PRICE_FILE_CACHE_MAX_FILES,
+        )
+    return entries
 
 
 def _ingest_cachedb_points(points: dict, entries) -> None:
+    isfinite = math.isfinite
+    trunc = math.trunc
     for entry in entries or ():
         if not isinstance(entry, (list, tuple)) or len(entry) < 2:
             continue
-        t_ms = safe_pos_float(entry[0], default=None)
-        p_val = safe_pos_float(entry[1], default=None)
-        if t_ms is not None and p_val is not None:
-            points[math.trunc(t_ms / 1000.0)] = p_val
+        t_raw, p_raw = entry[0], entry[1]
+        t_type = type(t_raw)
+        if t_type is int:
+            t_ms = t_raw if t_raw > 0 else None
+        elif t_type is float:
+            t_ms = t_raw if (t_raw > 0.0 and isfinite(t_raw)) else None
+        else:
+            t_ms = safe_pos_float(t_raw, default=None)
+        if t_ms is None:
+            continue
+        p_type = type(p_raw)
+        if p_type is float:
+            p_val = p_raw if (p_raw > 0.0 and isfinite(p_raw)) else None
+        elif p_type is int:
+            p_val = (p_raw * 1.0) if p_raw > 0 else None
+        else:
+            p_val = safe_pos_float(p_raw, default=None)
+        if p_val is not None:
+            points[trunc(t_ms / 1000.0)] = p_val
 
 
 def load_price_series_live(symbol, days_back, include_history=True):
@@ -694,7 +809,8 @@ def render_chart(symbol, window_label, window_start, window_end,
     # stable, so use margins calibrated from a reference run and apply the
     # default 30-degree label rotation without remeasurement.
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
-    ax.legend(loc="lower left", fontsize=8)
+    if vis_ts:
+        ax.legend(loc="lower left", fontsize=8)
     fig.subplots_adjust(left=0.065, right=0.985, top=0.92, bottom=0.16)
     try:
         _save_figure_atomic(fig, out_path, dpi=110)
@@ -1095,10 +1211,13 @@ setInterval(function() {{
     # Refresh day/week charts less often because their visible state barely changes
     # in three seconds and rendering them increased a cycle from ~3s to ~17s.
     last_day = last_week = last_memory_trim = 0.0
+    last_state_text: dict[str, str] = {}
     try:
         while True:
             cycle_start = time.time()
-            sample_current_prices(symbols)
+            trend_snapshot = read_json_dict(CACHE_TREND_PATH, default={}, recover_previous=True)
+            kalman_snapshot = read_json_dict(get_kalman_state_path(), default={}, recover_previous=True)
+            sample_current_prices(symbols, snapshot=trend_snapshot)
             due_day = cycle_start - last_day >= day_refresh
             due_week = cycle_start - last_week >= week_refresh
             if due_day:
@@ -1109,8 +1228,6 @@ setInterval(function() {{
                 write_html(
                     symbols, live_minutes=live_minutes, active_summary=active_summary, refresh_ms=html_refresh_ms,
                 )
-            trend_snapshot = read_json_dict(CACHE_TREND_PATH, default={}, recover_previous=True)
-            kalman_snapshot = read_json_dict(get_kalman_state_path(), default={}, recover_previous=True)
             for symbol in symbols:
                 try:
                     chart_specs = [
@@ -1175,8 +1292,10 @@ setInterval(function() {{
                             entry, f"ANALYSIS NOW ({age:.0f}s ago)",
                             pending=pending_info, exposure=exposure_info,
                         )
-                        render_state_image(state_text,
-                                            os.path.join(LIVE_OUT_DIR, f"tradeall_live_{symbol}_state.png"))
+                        state_out = os.path.join(LIVE_OUT_DIR, f"tradeall_live_{symbol}_state.png")
+                        if last_state_text.get(symbol) != state_text or not os.path.exists(state_out):
+                            render_state_image(state_text, state_out)
+                            last_state_text[symbol] = state_text
                 except Exception as e:
                     print(f"[tradeall_observe] render error {symbol}: {e}")
             if due_day:
