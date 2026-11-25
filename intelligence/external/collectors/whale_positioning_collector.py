@@ -318,7 +318,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             return matched[-limit:]
 
         bars_5m = _bars_within(600.0, 1)
-        bars_15m = _bars_within(1200.0, 3)
+        bars_15m = _bars_within(900.0, 3)
         bars_1h = _bars_within(3900.0, 12)
         bars_4h = _bars_within(14700.0, 48)
         taker_buy, taker_sell = _bars_buy_sell(bars_15m)

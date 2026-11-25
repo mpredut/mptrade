@@ -626,3 +626,28 @@ class TestUnifiedWeightResolution(unittest.TestCase):
         for k in mgr._KINEMATIC_WINDOW_KEYS:
             self.assertNotIn(k, snap)
 
+    def test_price_window_calculate_acceleration_uses_real_timestamps_across_cadence_shift(self):
+        import pricewindow as pw
+
+        # Simulate a 9000s window booted at 7s RTH cadence that later shifts to 60s POST cadence at flat price:
+        # without timestamp-anchored slicing, 300s/7s=43 samples reaches ~43m back and fabricates huge vel_5m/acc_5m.
+        w = pw.PriceWindow("RGNT_US_EQ", window_size=200, sample_rate_sec=7.0, window_seconds=9000.0)
+        t0 = 1_795_638_000_000
+        for i in range(40):
+            w.process_price(0.9052, ts_ms=t0 + i * 7_000)
+        t_post = t0 + 40 * 7_000
+        for j in range(15):
+            w.process_price(0.9224, ts_ms=t_post + (j + 1) * 60_000)
+        vel_5m, acc_5m = w.calculate_acceleration(window_sec=300.0)
+        self.assertEqual(vel_5m, 0.0)
+        self.assertEqual(acc_5m, 0.0)
+
+        # Steady +0.10%/min linear ramp over 60s ticks must report ~+0.10%/min (not 8.5x inflated by 7s sample_rate_sec)
+        w2 = pw.PriceWindow("NVDA_US_EQ", window_size=200, sample_rate_sec=7.0, window_seconds=9000.0)
+        for j in range(10):
+            w2.process_price(100.0 + 0.1 * j, ts_ms=t0 + j * 60_000)
+        vel2, acc2 = w2.calculate_acceleration(window_sec=300.0)
+        self.assertAlmostEqual(vel2, 0.10, delta=0.015)
+        self.assertAlmostEqual(acc2, 0.0, delta=0.015)
+
+

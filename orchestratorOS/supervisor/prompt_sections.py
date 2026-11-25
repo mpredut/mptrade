@@ -1094,8 +1094,13 @@ def _format_microstructure_section(
                 and abs(d_tr) >= 0.05
             ):
                 cd_parts.append(f"d_tr={fmt_signed(d_tr)}")
+            eq_explicit_no_oi_3b = bool(
+                sym_is_eq_3b
+                and "oi_usd" in minfo
+                and (safe_float(minfo.get("oi_usd"), 0.0) or 0.0) <= 0.0
+            )
             if (
-                not (eq_no_flow_3b and eq_no_oi_3b)
+                not ((eq_no_flow_3b and eq_no_oi_3b) or eq_explicit_no_oi_3b)
                 and (d_wl := safe_float(cd_map.get("whale_long_delta_pct"), None)) is not None
                 and abs(d_wl) >= 0.005
             ):

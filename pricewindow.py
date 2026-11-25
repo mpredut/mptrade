@@ -1010,7 +1010,7 @@ class PriceWindow:
         """Update the window from a ``Cache24PriceManager`` callback."""
         if symbol != self.symbol and str(symbol or "").upper() != str(self.symbol or "").upper():
             return
-        self.process_price(price)
+        self.process_price(price, ts_ms=ts_ms)
 
     @staticmethod
     def _sample_rate_from_entries(entries) -> float:
@@ -1042,10 +1042,11 @@ class PriceWindow:
         sample_rate = cls._sample_rate_from_entries(entries)
         window_size = max(10, math.trunc(win_sec / sample_rate))
 
-        prices = [e[1] for e in entries if isinstance(e, (list, tuple)) and len(e) >= 2]
         pw = cls(symbol, window_size, sample_rate_sec=sample_rate, window_seconds=win_sec)
-        for p in prices:
-            pw.process_price(p)
+        for e in entries:
+            if isinstance(e, (list, tuple)) and len(e) >= 2:
+                e_ts = safe_pos_int(e[0], default=0) or 0
+                pw.process_price(e[1], ts_ms=e_ts)
 
         pw.subscribe_to_cache24(cache24)
         return pw
@@ -1054,19 +1055,24 @@ class PriceWindow:
         cache24.subscribe_price(self)
         self._subscribed_to_cache24 = True
 
-    def process_price(self, price):
+    def process_price(self, price, ts_ms: int = 0):
         price_f = safe_float(price, default=None)
         if price_f is None:
             return
         if not isinstance(price, (int, float)):
             price = price_f
+        ts_int = safe_nonneg_int(ts_ms, default=0) or 0
+        if 0 < ts_int < 10_000_000_000:
+            ts_int *= 1000
         with self._lock:
             while len(self.prices) >= self.window_size:
                 self.prices.popleft()
 
             self.prices.append(price)
             self._sorted_prices_dirty = True
-            self._trend_buf.append(price)
+            if ts_int > 0 and self._trend_buf.timestamps and ts_int < self._trend_buf.timestamps[-1]:
+                ts_int = self._trend_buf.timestamps[-1]
+            self._trend_buf.append(price, ts_ms=ts_int)
             if len(self._trend_buf.prices) - len(self.prices) >= max(512, self.window_size):
                 self._trend_buf.trim_front(len(self._trend_buf.prices) - len(self.prices))
 
@@ -1244,8 +1250,22 @@ class PriceWindow:
             n_win = len(self.prices)
             if n_win > 0 and self._is_trend_buf_synced():
                 blen = len(self._trend_buf.prices)
-                take = min(n_samples, n_win) if n_samples is not None else n_win
-                prices = self._trend_buf.prices[blen - take : blen]
+                ts_buf = self._trend_buf.timestamps
+                win_start = blen - n_win
+                if wf is not None and len(ts_buf) == blen and ts_buf[blen - 1] > 0 and ts_buf[win_start] > 0:
+                    t_end = ts_buf[blen - 1]
+                    cut_idx = bisect_left(ts_buf, math.trunc(t_end - wf * 1000.0), lo=win_start, hi=blen)
+                    prices = self._trend_buf.prices[cut_idx:blen]
+                    ts_slice = ts_buf[cut_idx:blen]
+                    if len(prices) < 3:
+                        return 0.0, 0.0
+                    span_sec = (ts_slice[-1] - ts_slice[0]) / 1000.0
+                    if span_sec < max(1.0, wf * 0.4):
+                        return 0.0, 0.0
+                    rate = max(span_sec / (len(prices) - 1), 0.1)
+                else:
+                    take = min(n_samples, n_win) if n_samples is not None else n_win
+                    prices = self._trend_buf.prices[blen - take : blen]
             else:
                 prices = list(self.prices)
                 if n_samples is not None:

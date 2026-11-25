@@ -2766,6 +2766,22 @@ def test_equity_whale_excludes_prior_session_moc_bars_and_sets_taker_bar_ts_ms(t
     assert snap_open.cvd_5m_usd is not None and snap_open.cvd_5m_usd > 0.0
     assert snap_open.taker_bar_ts_ms == ts_b2
 
+    # 3. Post-close (+13m after 16:00): 15m window strictly uses 900s cutoff so 18m-old 15:55 MOC bar is excluded
+    #    (preventing |cvd_15m| from exceeding 15m spot_vol_15m by 3x-25x).
+    ts_close_bar = int(datetime(2026, 11, 20, 16, 0, 0, tzinfo=ny_tz).timestamp() * 1000)
+    ts_moc_bar = int(datetime(2026, 11, 20, 15, 55, 0, tzinfo=ny_tz).timestamp() * 1000)
+    ts_post_13m = datetime(2026, 11, 20, 16, 13, 0, tzinfo=ny_tz).timestamp()
+    post_bars = [
+        (ts_moc_bar, 149.0, 149.6, 148.9, 149.2, 9_800_000.0),   # ~$1.46B, 18m old -> excluded
+        (ts_close_bar, 149.2, 149.6, 149.1, 149.5, 360_000.0),   # ~$53.8M, 13m old -> included
+    ]
+    monkeypatch.setattr(w_col, "_resolve_equity_context_bars_and_price", lambda *_a, **_kw: ({}, post_bars, 149.3))
+    snap_post = w_col._fetch_equity_whale("NVDA_US_EQ", ts_post_13m, 0.0, None)
+    assert snap_post is not None
+    assert (snap_post.taker_buy_vol_usd + snap_post.taker_sell_vol_usd) < 60_000_000.0
+    assert abs(snap_post.taker_buy_vol_usd - snap_post.taker_sell_vol_usd) <= (snap_post.taker_buy_vol_usd + snap_post.taker_sell_vol_usd) + 1.0
+
+
 
 
 

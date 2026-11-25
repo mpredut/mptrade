@@ -17779,6 +17779,7 @@ def test_prompt_accuracy_wave1_equity_proxy_rvol_delayed_macro_bellwethers_and_n
                     "spot_cvd_15m_usd": -663_800.0,
                     "spot_cvd_source": "est_ob_15m",
                     "oi_usd": 0.0,
+                    "cycle_delta": {"dt_min": 6.4, "d_ob": -0.05, "ob_imbalance_delta": -0.05, "whale_long_delta_pct": 0.009},
                 }
             },
             {"NVDA_US_EQ": {"price": 148.0}},
@@ -17791,6 +17792,7 @@ def test_prompt_accuracy_wave1_equity_proxy_rvol_delayed_macro_bellwethers_and_n
     assert "est_ask_zone=148.55" in sec3b_nvda
     assert "bid_wall=" not in sec3b_nvda
     assert "whale_long_pct=" not in sec3b_nvda
+    assert "d_whale_long=" not in sec3b_nvda
     assert "spot_cvd_15m=" not in sec3b_nvda
 
     # 2. Quiet asset (RGNT_US_EQ: last positive bar 36m ago) omits stale spot_vol_15m / rvol_15m while keeping accurate trailing 1h volume
