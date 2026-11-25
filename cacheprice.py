@@ -1508,7 +1508,7 @@ class Cache365PriceManager(Cache24PriceManager):
         """Never rebuild an existing long archive from its bounded memory tail."""
         if os.path.exists(self.filename):
             return self.maintain_append_persist()
-        return super().compact_jsonl()
+        return CachePriceManagerBase.compact_jsonl(self)
 
     def _rotate_disk_archive(self):
         """Archive an oversized file while retaining a complete-line tail without holding ``self.lock`` during disk I/O."""

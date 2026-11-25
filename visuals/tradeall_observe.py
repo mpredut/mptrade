@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """Separate observational monitor for the tradeall trend model.
 
-This module neither imports nor starts tradeall.py or bapi_placeorder.py. It only
-reads pipe-delimited logger files and cache_short_trend.json.
+This module neither imports nor starts tradeall.py or Instrument.place. It only
+reads pipe-delimited logger files, active_intents summaries, and cachedb
+price/trend snapshots.
 
 Live mode (default) runs every two seconds by default:
   1. Sample the current price into logger/tradeall_price_samples_YYYY-MM-DD.log.
-  2. Read trend-start decisions and tradeall order outcomes.
+  2. Read trend-start decisions, shadow Kalman transitions, and tradeall order outcomes.
   3. Reconstruct trend regions from one transition to the next.
   4. Draw live/day/week charts with price, state background, and order markers.
   5. Write a static, auto-refreshing tradeall_live.html with a day/week toggle.
 
 Manual live invocation:
-    ./tradeall_observe.py [--symbols BTCUSDC,TAOUSDC] [--interval 5]
-    Then open tradeall_live.html locally or through ngrok.
+    python -m visuals.tradeall_observe [--symbols BTCUSDC,TAOUSDC,HYPEUSDC,ARBUSDC] [--interval 5]
+    Then open tradeall_live/tradeall_live.html locally or via python3 -m http.server.
 
 Backtest mode renders an offline/backtests/tradeall.py run (A5):
-    ./tradeall_observe.py --backtest-dir logger/backtest/<run_id> --symbols BTCUSDC
+    python -m visuals.tradeall_observe --backtest-dir logger/backtest/<run_id> --symbols BTCUSDC
 It performs no live sampling, reads flat files in that directory, uses the full
 replayed interval so far, and writes the PNG into the same directory.
 """
@@ -66,6 +67,7 @@ from state_io import (
 from intelligence.internal.state.volatility import get_kalman_state_path
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
 from cachepaths import (
+    CACHE_24_PRICE_PREFIX,
     CACHE_SHORT_TREND_FILENAME,
     cache_24_price_filename,
     cache_365_price_filename,
@@ -75,7 +77,11 @@ from cachepaths import (
     get_cachedb_dir,
     resolve_cachedb_filepath,
 )
-from instrument_registry import symbols_for
+from instrument_registry import (
+    resolve_registered_symbol_case,
+    symbols_for,
+    tracked_price_instruments,
+)
 LOGGER_DIR = os.path.join(ROOT, "logger")
 CACHE_TREND_PATH = cache_path(CACHE_SHORT_TREND_FILENAME)
 
@@ -89,11 +95,20 @@ DECISIONS_PREFIX = "tradeall_decisions_"
 OUTCOMES_PREFIX = "order_outcomes_"
 SHADOW_PREFIX = "tradeall_shadow_"
 SHADOW_COLOR = "#8250df"   # violet -- shadow signals (Kalman), distinct from green/red
+UNKNOWN_ORDER_COLOR = "#d4a017"  # amber -- ambiguous/timed-out submissions
 
 STATE_COLORS = {"UP": "#1a7f37", "DOWN": "#cf222e", "HOLD": "#8c8c8c"}
 DAY_SECONDS = 24 * 3600
 WEEK_SECONDS = 7 * DAY_SECONDS
 MEMORY_TRIM_SECONDS = 300
+DEFAULT_HISTORY_TAIL_MAX_BYTES = 4 * 1024 * 1024
+# A full 24h append-only JSONL cache (~86k rows plus pre-compaction slack) exceeds 4 MiB.
+CACHE24_TAIL_MAX_BYTES = 16 * 1024 * 1024
+_TRADEALL_MOTIVATION_PREFIXES = (
+    "trend_", "kalman_", "consistent_", "force_", "test_", "surge_",
+    "small_window_", "accel_", "slope<=", "slope>=",
+)
+_TRADEALL_OUTCOME_CALLERS = frozenset({"market_api.py", "order_retry_worker.py", ""})
 
 
 _PIPE_LOG_CACHE_MAX_FILES = 32
@@ -183,6 +198,29 @@ def _log_dates(days_back):
 _LAST_SAMPLED_TS = {}
 
 
+def _entry_latest_ts(entry, *, default=None):
+    """Return the freshest positive timestamp between ``ts`` and ``ts_fast``."""
+    if not isinstance(entry, dict):
+        return default
+    candidates = [
+        val
+        for key in ("ts", "ts_fast")
+        if (val := safe_pos_float(entry.get(key), default=None)) is not None
+    ]
+    return max(candidates) if candidates else default
+
+
+def _same_symbol(raw_symbol, target_symbol) -> bool:
+    if not isinstance(raw_symbol, str) or not isinstance(target_symbol, str):
+        return False
+    return raw_symbol.strip().upper() == target_symbol.strip().upper()
+
+
+def _resolve_default_symbols():
+    """Return enabled TradeAll fire symbols across all venues, falling back to Binance."""
+    return symbols_for(role="tradeall_fire") or symbols_for("binance")
+
+
 def sample_current_prices(symbols):
     if not os.path.exists(CACHE_TREND_PATH):
         return
@@ -198,9 +236,8 @@ def sample_current_prices(symbols):
         entry = _lookup_symbol_dict(items_map, symbol)
         if not isinstance(entry, dict) or "current_price" not in entry:
             continue
-        raw_ts = entry.get("ts", time.time())
         raw_px = entry["current_price"]
-        sample_ts = safe_pos_float(raw_ts, default=None)
+        sample_ts = _entry_latest_ts(entry, default=time.time())
         px_val = safe_pos_float(raw_px, default=None)
         if sample_ts is None or px_val is None:
             continue
@@ -235,7 +272,7 @@ def _parse_price_sample_rows(rows, symbol, *, require_pos_ts: bool = False):
         if not isinstance(row, (list, tuple)) or len(row) < 3:
             continue
         ts, sym_, price = row[:3]
-        if sym_ != symbol:
+        if not _same_symbol(sym_, symbol):
             continue
         t_val = safe_pos_float(ts, default=None) if require_pos_ts else safe_float(ts, default=None)
         p_val = safe_pos_float(price, default=None)
@@ -256,22 +293,34 @@ def load_price_samples(symbol, days_back):
     return _parse_price_sample_rows(_read_daily_pipe_rows(PRICE_SAMPLES_PREFIX, 3, days_back), symbol, require_pos_ts=False)
 
 
-def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
-    """Read Cache24 ``[[ts_ms, price], ...]`` entries from cachedb.
+def _load_cachedb_price_entries(filename, symbol, max_bytes=None):
+    """Read Cache24/365/sparse ``[[ts_ms, price], ...]`` entries from cachedb.
 
     Incremental long-term JSONL files may grow to hundreds of megabytes, so the
-    weekly caller reads only their ``max_bytes`` tail. The legacy JSON format
-    used by the live 24-hour cache remains supported unchanged.
+    weekly caller reads only their ``max_bytes`` tail. Live 24-hour JSONL caches
+    default to ``CACHE24_TAIL_MAX_BYTES`` so a full 24h file is not truncated.
+    Legacy JSON caches remain supported unchanged.
     """
     path = str(resolve_cachedb_filepath(os.path.join(get_cachedb_dir(), filename)))
     if not os.path.exists(path):
         return []
     if filename.endswith(".jsonl"):
-        sym_variants = set(cache_symbol_variants(symbol, include_original=True))
+        eff_max_bytes = (
+            max_bytes
+            if max_bytes is not None
+            else (
+                CACHE24_TAIL_MAX_BYTES
+                if str(filename).startswith(CACHE_24_PRICE_PREFIX)
+                else DEFAULT_HISTORY_TAIL_MAX_BYTES
+            )
+        )
+        sym_variants = {v.upper() for v in cache_symbol_variants(symbol, include_original=True)}
         return [
             rec["i"]
-            for rec in read_tail_jsonl_dicts(path, limit=None, max_bytes=max_bytes)
-            if rec.get("s") in sym_variants and "i" in rec
+            for rec in read_tail_jsonl_dicts(path, limit=None, max_bytes=eff_max_bytes)
+            if isinstance(rec.get("s"), str)
+            and rec["s"].strip().upper() in sym_variants
+            and "i" in rec
         ]
     data = read_json_dict(path, default={}, recover_previous=True)
     return lookup_symbol_cache_items(data, symbol, allow_base_fallback=False, require_list=True, unwrap_items=True) or []
@@ -334,7 +383,7 @@ def _parse_trend_start_rows(rows, symbol):
             "prev_confirm_count": prev_confirm,
         }
         for ts, sym_, event, state, old_state, price, prev_confirm, *_ in rows
-        if sym_ == symbol and event == "trend_start" and (tp := _parse_pos_ts_price(ts, price))[0] is not None
+        if _same_symbol(sym_, symbol) and event == "trend_start" and (tp := _parse_pos_ts_price(ts, price))[0] is not None
     ])
 
 
@@ -347,25 +396,31 @@ def _parse_order_event_rows(rows, symbol, *, filter_caller: bool = True):
     for row in rows:
         ts, sym_, side, price, qty, outcome, refuse_reason, caller, motivation = row[:9]
         is_ta_order = caller == "tradeall.py" or (
-            caller == "market_api.py"
-            and bool(motivation)
-            and any(
-                motivation.startswith(prefix)
-                for prefix in (
-                    "trend_", "kalman_", "consistent_", "force_", "test_", "surge_",
-                    "small_window_", "accel_", "slope<=", "slope>=",
+            caller in _TRADEALL_OUTCOME_CALLERS
+            and (
+                (
+                    bool(motivation)
+                    and any(
+                        motivation.startswith(prefix)
+                        for prefix in _TRADEALL_MOTIVATION_PREFIXES
+                    )
                 )
+                or refuse_reason.startswith("kalman_gate_")
             )
         )
-        if sym_ != symbol or (filter_caller and not is_ta_order):
+        if not _same_symbol(sym_, symbol) or (filter_caller and not is_ta_order):
             continue
         t_val, p_val = _parse_pos_ts_price(ts, price)
         if t_val is None:
             continue
-        events.append({
+        ev = {
             "ts": t_val, "side": normalize_side(side) or side, "price": p_val,
             "outcome": outcome, "reason": motivation or refuse_reason,
-        })
+            "refuse_reason": refuse_reason,
+        }
+        if len(row) >= 10 and row[9]:
+            ev["regime"] = row[9]
+        events.append(ev)
     return _sort_events_by_ts(events)
 
 
@@ -379,7 +434,7 @@ def _parse_shadow_rows(rows, symbol):
     events = []
     for row in rows:
         ts, sym_, signal, event, state, old_state, price, vel, vel_std = row[:9]
-        if sym_ != symbol or event != "trend_start":
+        if not _same_symbol(sym_, symbol) or event != "trend_start":
             continue
         t_val, p_val = _parse_pos_ts_price(ts, price)
         st_val = safe_int(state, default=None)
@@ -462,7 +517,7 @@ def _save_figure_atomic(fig, out_path, **savefig_kwargs):
         fig.savefig(temp_path, format="png", **savefig_kwargs)
 
 
-def _plot_order_markers(ax, events, *, filled, max_annotated=25):
+def _plot_order_markers(ax, events, *, filled, max_annotated=25, color_override=None):
     """Plot orders in batches instead of one PathCollection per order.
 
     Weekly charts may contain thousands of refusals. One scatter call per row
@@ -476,7 +531,7 @@ def _plot_order_markers(ax, events, *, filled, max_annotated=25):
         if not group:
             continue
         marker = "^" if side == "BUY" else "v"
-        color = STATE_COLORS["UP"] if side == "BUY" else STATE_COLORS["DOWN"]
+        color = color_override or (STATE_COLORS["UP"] if side == "BUY" else STATE_COLORS["DOWN"])
         scatter_args = {
             "marker": marker,
             "s": 90,
@@ -496,8 +551,12 @@ def _plot_order_markers(ax, events, *, filled, max_annotated=25):
         if annotate:
             y_offset = 6 if filled else -10
             for event in group:
+                label = event["reason"]
+                refuse_reason = event.get("refuse_reason")
+                if not filled and refuse_reason and refuse_reason != label:
+                    label = f"{label} [{refuse_reason}]"
                 ax.annotate(
-                    event["reason"],
+                    label,
                     (datetime.fromtimestamp(event["ts"]), event["price"]),
                     fontsize=7,
                     xytext=(4, y_offset),
@@ -590,6 +649,7 @@ def render_chart(symbol, window_label, window_start, window_end,
         if e["outcome"] in {"accepted", "executed"}
     ]
     refused = [e for e in visible_orders if e["outcome"] == "refused"]
+    unknown = [e for e in visible_orders if e["outcome"] == "unknown"]
 
     # Limit marker annotations when attempts are dense. Filled marker styling below
     # represents provider acceptance, not a confirmed venue fill.
@@ -597,6 +657,10 @@ def render_chart(symbol, window_label, window_start, window_end,
 
     _plot_order_markers(ax, accepted, filled=True, max_annotated=MAX_ANNOTATED)
     _plot_order_markers(ax, refused, filled=False, max_annotated=MAX_ANNOTATED)
+    if unknown:
+        _plot_order_markers(
+            ax, unknown, filled=False, max_annotated=MAX_ANNOTATED, color_override=UNKNOWN_ORDER_COLOR
+        )
 
     summary = (
         f"BUY  accepted: {sum(1 for e in accepted if e['side'] == 'BUY')}   "
@@ -604,6 +668,11 @@ def render_chart(symbol, window_label, window_start, window_end,
         f"SELL accepted: {sum(1 for e in accepted if e['side'] == 'SELL')}   "
         f"refused: {sum(1 for e in refused if e['side'] == 'SELL')}"
     )
+    if unknown:
+        summary += (
+            f"\nUNKNOWN: BUY {sum(1 for e in unknown if e['side'] == 'BUY')}   "
+            f"SELL {sum(1 for e in unknown if e['side'] == 'SELL')}"
+        )
     ax.text(0.01, 0.98, summary, transform=ax.transAxes, va="top", fontsize=9,
             family="monospace", bbox=dict(boxstyle="round", fc="white", ec="#cccccc", alpha=0.9))
 
@@ -667,6 +736,16 @@ def format_state_text(entry, header, pending=None, exposure=None):
     if entry.get("kalman_trend") is not None:
         text += (f"\nkalman:    {_t_label(entry.get('kalman_trend'))} "
                  f"(v={safe_float(entry.get('kalman_vel')):+.3f}%/min \u00b1{safe_float(entry.get('kalman_vel_std')):.3f})")
+    for label, v_key, a_key in (
+        ("kin 90s", "vel_90s_pct_min", "accel_90s_pct_min2"),
+        ("kin 5m", "vel_5m_pct_min", "accel_5m_pct_min2"),
+    ):
+        v_val = safe_float(entry.get(v_key), default=None)
+        a_val = safe_float(entry.get(a_key), default=None)
+        if v_val is not None or a_val is not None:
+            v_str = f"{v_val:+.3f}" if v_val is not None else "?"
+            a_str = f"{a_val:+.3f}" if a_val is not None else "?"
+            text += f"\n{label + ':':11s}v={v_str}%/m a={a_str}%/m2"
     v1h_f = safe_float(entry.get("vol_1h_pct"), default=None)
     if v1h_f is not None:
         text += f"\nvol 1h:    {v1h_f:.2f}%"
@@ -700,7 +779,7 @@ def build_backtest_state_text(directory, symbol):
 @_close_new_figures
 def render_state_image(state_text, out_path):
     """Render the state box separately for the HTML chart's hover display."""
-    fig = plt.figure(figsize=(4.8, 3.2))
+    fig = plt.figure(figsize=(5.2, 3.8))
     fig.patch.set_alpha(0.0)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.axis("off")
@@ -758,8 +837,9 @@ img { max-width: 100%; border: 1px solid #333; border-radius: 4px; }
 .chart-wrap:hover .state-overlay { opacity: 1; }"""
 
 
-def write_html(symbols, live_minutes=60, active_summary=None):
+def write_html(symbols, live_minutes=60, active_summary=None, refresh_ms=2500):
     live_minutes = safe_pos_float(live_minutes, default=60.0)
+    eff_refresh_ms = safe_pos_int(refresh_ms, default=2500) or 2500
     blocks = [
         f'\n  <div class="chart">\n    <h3>{s}</h3>\n    <div class="chart-wrap">\n'
         f'      <img class="view-live" src="tradeall_live_{s}_live.png" alt="{s} live">\n'
@@ -812,7 +892,7 @@ function show(which) {{
     document.getElementById('btn-' + v).classList.toggle('active', which === v);
   }});
 }}
-setInterval(bust, 2500);
+setInterval(bust, {eff_refresh_ms});
 </script>
 </body></html>"""
     atomic_write_text(os.path.join(LIVE_OUT_DIR, "tradeall_live.html"), html)
@@ -822,8 +902,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
 
-    parser.add_argument("--symbols", default=None,
-                         help="explicit override; otherwise all enabled Binance instruments")
+    parser.add_argument(
+        "--symbols",
+        default=None,
+        help="explicit CSV override (or 'all' for every tracked instrument); "
+             "defaults to enabled role=tradeall_fire symbols across all venues",
+    )
     for flag, default_val, help_text in (
         ("--interval", 2.0, "seconds between cycles (live plus the analysis state; default 2)"),
         (
@@ -870,19 +954,25 @@ def main():
         if args.window_hours is not None
         else None
     )
-    symbols = (
-        symbols_for("binance")
-        if args.symbols is None
-        else list(split_csv(args.symbols))
-    )
+    if args.symbols is None:
+        symbols = _resolve_default_symbols()
+    elif args.symbols.strip().lower() == "all":
+        symbols = tracked_price_instruments()[0]
+    else:
+        symbols = [
+            resolve_registered_symbol_case(s)
+            for s in split_csv(args.symbols)
+        ]
 
     if args.backtest_dir and frame_hours is not None:
         directory = os.path.abspath(args.backtest_dir)
         chunk_sec = frame_hours * 3600
+        shadow_rows = _read_pipe_log(os.path.join(directory, "tradeall_shadow.log"), 9)
         for symbol in symbols:
             price_ts, price_vals = load_backtest_price_samples(directory, symbol)
             trend_events = load_backtest_trend_starts(directory, symbol)
             order_events = load_backtest_order_events(directory, symbol)
+            shadow_events = _parse_shadow_rows(shadow_rows, symbol)
             all_ts = price_ts + [e["ts"] for e in trend_events] + [e["ts"] for e in order_events]
             if not all_ts:
                 print(f"[tradeall_observe] {symbol}: no data for the frames yet")
@@ -906,7 +996,10 @@ def main():
                         start_tag = str(math.trunc(c_start))
                     label = f"{start_label} \u2192 {end_label}  (frame {i+1}/{n_chunks})"
                     path = os.path.join(directory, f"tradeall_live_{symbol}_frame{i+1:03d}_{start_tag}.png")
-                    render_chart(symbol, label, c_start, c_end, price_ts, price_vals, trend_events, order_events, path)
+                    render_chart(
+                        symbol, label, c_start, c_end, price_ts, price_vals,
+                        trend_events, order_events, path, shadow_events=shadow_events,
+                    )
                     paths.append(path)
             print(f"[tradeall_observe] {symbol}: {len(paths)} frames generated in {directory}")
             for p in paths:
@@ -985,11 +1078,14 @@ setInterval(function() {{
             print("\n[tradeall_observe] stopped.")
         return
 
+    html_refresh_ms = max(2500, math.trunc(interval_sec * 1000))
     try:
         active_summary = build_active_intent_index(ROOT).get("summary")
     except Exception:
         active_summary = None
-    write_html(symbols, live_minutes=live_minutes, active_summary=active_summary)
+    write_html(
+        symbols, live_minutes=live_minutes, active_summary=active_summary, refresh_ms=html_refresh_ms,
+    )
     html_path = os.path.join(LIVE_OUT_DIR, "tradeall_live.html")
     print(f"[tradeall_observe] symbols: {symbols} | rendering every {interval_sec}s")
     print(f"[tradeall_observe] open in browser: {html_path}")
@@ -1009,7 +1105,9 @@ setInterval(function() {{
                     active_summary = build_active_intent_index(ROOT).get("summary")
                 except Exception:
                     active_summary = None
-                write_html(symbols, live_minutes=live_minutes, active_summary=active_summary)
+                write_html(
+                    symbols, live_minutes=live_minutes, active_summary=active_summary, refresh_ms=html_refresh_ms,
+                )
             for symbol in symbols:
                 try:
                     chart_specs = [
@@ -1046,7 +1144,8 @@ setInterval(function() {{
                                 entry = {**entry, **{k: v for k, v in sh.items() if k not in ("ts", "price")}}
                         except Exception:
                             pass
-                        age = max(0.0, time.time() - safe_float(entry.get("ts"), 0.0))
+                        latest_ts = _entry_latest_ts(entry, default=0.0) or 0.0
+                        age = max(0.0, time.time() - latest_ts)
                         pending_info = None
                         exposure_info = None
                         if isinstance(active_summary, dict):

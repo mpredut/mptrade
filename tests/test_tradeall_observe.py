@@ -79,6 +79,31 @@ def test_price_sampling_deduplicates_an_unchanged_snapshot(tmp_path, monkeypatch
     assert len(log_path.read_text(encoding="utf-8").splitlines()) == 2
 
 
+def test_price_sampling_uses_fresher_ts_fast_when_ts_is_unchanged(tmp_path, monkeypatch):
+    cache_path = tmp_path / "cache_short_trend.json"
+    logger_dir = tmp_path / "logger"
+    monkeypatch.setattr(observe, "CACHE_TREND_PATH", str(cache_path))
+    monkeypatch.setattr(observe, "LOGGER_DIR", str(logger_dir))
+
+    cache_path.write_text(
+        json.dumps({"BTCUSDC": {"ts": 123.0, "ts_fast": 123.5, "current_price": 42.5}}),
+        encoding="utf-8",
+    )
+    observe.sample_current_prices(["BTCUSDC"])
+
+    cache_path.write_text(
+        json.dumps({"BTCUSDC": {"ts": 123.0, "ts_fast": 125.0, "current_price": 43.2}}),
+        encoding="utf-8",
+    )
+    observe.sample_current_prices(["BTCUSDC"])
+
+    log_path = next(logger_dir.glob("tradeall_price_samples_*.log"))
+    assert log_path.read_text(encoding="utf-8").splitlines() == [
+        "123.5|BTCUSDC|42.5",
+        "125.0|BTCUSDC|43.2",
+    ]
+
+
 def test_history_tail_keeps_first_record_when_file_is_smaller_than_tail(tmp_path, monkeypatch):
     cachedb = tmp_path / "cachedb"
     cachedb.mkdir(parents=True, exist_ok=True)
@@ -105,13 +130,57 @@ def test_live_dense_price_has_priority_over_archived_sources(monkeypatch):
     monkeypatch.setattr(observe, "load_price_samples", lambda _symbol, _days: ([1.0], [3.0]))
 
     def cached_entries(filename, _symbol):
-        if "sparse" in filename:
+        if filename.startswith("cache_sparse_price_"):
             return [[1_000, 1.0]]
-        return [[1_000, 4.0]] if filename.endswith(".json") else [[1_000, 2.0]]
+        if filename.startswith("cache_365_price_"):
+            return [[1_000, 2.0]]
+        if filename.startswith("cache_24_price_") and filename.endswith(".jsonl"):
+            return [[1_000, 4.0]]
+        return []
 
     monkeypatch.setattr(observe, "_load_cachedb_price_entries", cached_entries)
 
     assert observe.load_price_series_live("BTCUSDC", 9, include_history=True) == ([1], [4.0])
+
+
+def test_live_dense_price_falls_back_to_legacy_cache24_json(monkeypatch):
+    monkeypatch.setattr(observe, "load_price_samples", lambda _symbol, _days: ([], []))
+
+    def cached_entries(filename, _symbol):
+        if filename == "cache_24_price_BTCUSDC.json":
+            return [[2_000, 5.5]]
+        return []
+
+    monkeypatch.setattr(observe, "_load_cachedb_price_entries", cached_entries)
+
+    assert observe.load_price_series_live("BTCUSDC", 2, include_history=False) == ([2], [5.5])
+
+
+def test_cache24_jsonl_uses_larger_tail_budget_than_long_archives(tmp_path, monkeypatch):
+    cachedb = tmp_path / "cachedb"
+    cachedb.mkdir(parents=True, exist_ok=True)
+    for fname in ("cache_24_price_BTCUSDC.jsonl", "cache_365_price_BTCUSDC.jsonl"):
+        (cachedb / fname).write_text(json.dumps({"s": "BTCUSDC", "i": [1_000, 10.0]}) + "\n", encoding="utf-8")
+
+    observed_budgets = {}
+
+    def fake_tail(path, limit=None, max_bytes=None):
+        observed_budgets[os.path.basename(path)] = max_bytes
+        return [{"s": "BTCUSDC", "i": [1_000, 10.0]}]
+
+    monkeypatch.setattr(observe, "read_tail_jsonl_dicts", fake_tail)
+
+    assert observe._load_cachedb_price_entries("cache_24_price_BTCUSDC.jsonl", "BTCUSDC") == [[1_000, 10.0]]
+    assert observe._load_cachedb_price_entries("cache_365_price_BTCUSDC.jsonl", "BTCUSDC") == [[1_000, 10.0]]
+    assert observed_budgets["cache_24_price_BTCUSDC.jsonl"] == observe.CACHE24_TAIL_MAX_BYTES
+    assert observed_budgets["cache_365_price_BTCUSDC.jsonl"] == observe.DEFAULT_HISTORY_TAIL_MAX_BYTES
+    assert observe.CACHE24_TAIL_MAX_BYTES > observe.DEFAULT_HISTORY_TAIL_MAX_BYTES
+
+
+def test_default_symbols_include_multivenue_tradeall_fire_instruments():
+    default_syms = observe._resolve_default_symbols()
+    assert "BTCUSDC" in default_syms
+    assert "HYPEUSDC" in default_syms
 
 
 def test_order_markers_are_batched_by_side():
@@ -214,22 +283,25 @@ def test_load_order_events_recognizes_tradeall_via_market_api_and_filters_other_
     monkeypatch.setattr(observe, "LOGGER_DIR", str(tmp_path))
 
     rows = [
-        # ts|symbol|side|price|qty|outcome|refuse_reason|caller|motivation
+        # ts|symbol|side|price|qty|outcome|refuse_reason|caller|motivation[|regime|...]
         "100.0|BTCUSDC|BUY|85000.0|0.1|accepted||tradeall.py|trend_confirmed_up",
         "200.0|BTCUSDC|BUY|85100.0|0.1|refused|deferred|market_api.py|kalman_primary_up",
-        "300.0|BTCUSDC|SELL|85500.0|0.1|accepted||market_api.py|consistent_or_old_down",
+        "300.0|BTCUSDC|SELL|85500.0|0.1|accepted||market_api.py|consistent_or_old_down|BEAR|0.6200|live|True|False|ok",
         "350.0|BTCUSDC|SELL|85400.0|0.1|accepted||market_api.py|small_window_plunge_down",
         "360.0|BTCUSDC|SELL|85350.0|0.1|accepted||market_api.py|accel_plunge_down",
         "370.0|BTCUSDC|BUY|84900.0|0.1|accepted||market_api.py|slope<=-5.1_and_old_down",
+        "380.0|BTCUSDC|BUY|84950.0||refused|kalman_gate_strict(trend=0)||trend_confirmed_up",
+        "390.0|BTCUSDC|SELL|85450.0|0.1|unknown|submit_timeout|order_retry_worker.py|trend_confirmed_down",
         "400.0|BTCUSDC|BUY|85200.0|0.1|refused|error|market_api.py|rtrade_pair_quote",
         "500.0|BTCUSDC|SELL|85300.0|0.1|accepted||monitortrades.py|monitortrades_exit",
         "600.0|TAOUSDC|BUY|300.0|1.0|accepted||tradeall.py|trend_confirmed_up",
+        "700.0|SPCXXUSD|BUY|125.0|1.0|accepted||tradeall.py|trend_confirmed_up",
     ]
     log_file.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
     btc_events = observe.load_order_events("BTCUSDC", 1)
-    assert len(btc_events) == 6
-    assert [e["ts"] for e in btc_events] == [100.0, 200.0, 300.0, 350.0, 360.0, 370.0]
+    assert len(btc_events) == 8
+    assert [e["ts"] for e in btc_events] == [100.0, 200.0, 300.0, 350.0, 360.0, 370.0, 380.0, 390.0]
     assert [e["reason"] for e in btc_events] == [
         "trend_confirmed_up",
         "kalman_primary_up",
@@ -237,11 +309,20 @@ def test_load_order_events_recognizes_tradeall_via_market_api_and_filters_other_
         "small_window_plunge_down",
         "accel_plunge_down",
         "slope<=-5.1_and_old_down",
+        "trend_confirmed_up",
+        "trend_confirmed_down",
     ]
+    assert btc_events[2]["regime"] == "BEAR"
+    assert btc_events[6]["refuse_reason"] == "kalman_gate_strict(trend=0)"
+    assert btc_events[7]["outcome"] == "unknown"
 
     tao_events = observe.load_order_events("TAOUSDC", 1)
     assert len(tao_events) == 1
     assert tao_events[0]["ts"] == 600.0
+
+    spcx_events = observe.load_order_events("SPCXxUSD", 1)
+    assert len(spcx_events) == 1
+    assert spcx_events[0]["ts"] == 700.0
 
 
 def test_format_state_text_with_fast_trend_pending_and_exposure():
@@ -257,6 +338,10 @@ def test_format_state_text_with_fast_trend_pending_and_exposure():
         "kalman_trend": 0,
         "kalman_vel": 0.015,
         "kalman_vel_std": 0.12,
+        "vel_90s_pct_min": 0.042,
+        "accel_90s_pct_min2": 0.055,
+        "vel_5m_pct_min": -0.011,
+        "accel_5m_pct_min2": -0.002,
     }
     text = observe.format_state_text(
         entry, "HEADER NOW",
@@ -266,6 +351,8 @@ def test_format_state_text_with_fast_trend_pending_and_exposure():
     assert "HEADER NOW" in text
     assert "trend:     DOWN" in text
     assert "fast:      UP (grad: +0.0025)" in text
+    assert "kin 90s:   v=+0.042%/m a=+0.055%/m2" in text
+    assert "kin 5m:    v=-0.011%/m a=-0.002%/m2" in text
     assert "slope short:+0.000" in text
     assert "slope long: +0.000" in text
     assert "pending:   BUY $1482.45" in text
@@ -278,15 +365,37 @@ def test_write_html_generates_summary_bar(tmp_path, monkeypatch):
         "pending_notional": {"total_buy": 1500.0, "total_sell": 2500.0},
         "net_exposures": {"total_cost": 3000.0},
     }
-    observe.write_html(["BTCUSDC"], live_minutes=60, active_summary=active_summary)
+    observe.write_html(["BTCUSDC"], live_minutes=60, active_summary=active_summary, refresh_ms=5000)
     html_file = tmp_path / "tradeall_live.html"
     assert html_file.exists()
     content = html_file.read_text(encoding="utf-8")
     assert "Fleet Pending BUY:</strong> $1500.00" in content
     assert "Fleet Pending SELL:</strong> $2500.00" in content
     assert "Open Cost Basis:</strong> $3000.00" in content
+    assert "setInterval(bust, 5000);" in content
     assert "Day" in content
     assert "Week" in content
+
+
+def test_render_chart_handles_unknown_order_outcomes(tmp_path):
+    out = tmp_path / "chart.png"
+    observe.render_chart(
+        "BTCUSDC",
+        "LIVE",
+        1000.0,
+        2000.0,
+        [1100.0, 1500.0, 1900.0],
+        [60000.0, 60100.0, 60050.0],
+        [{"ts": 1200.0, "state": "UP", "old_state": "HOLD", "price": 60020.0, "prev_confirm_count": "2"}],
+        [
+            {"ts": 1300.0, "side": "BUY", "price": 60040.0, "outcome": "refused",
+             "reason": "trend_confirmed_up", "refuse_reason": "kalman_gate_strict(trend=0)"},
+            {"ts": 1600.0, "side": "SELL", "price": 60080.0, "outcome": "unknown",
+             "reason": "trend_confirmed_down", "refuse_reason": "submit_timeout"},
+        ],
+        str(out),
+    )
+    assert out.exists() and out.stat().st_size > 0
 
 
 def test_kalman_gate_blocks_handles_unmapped_symbols():
