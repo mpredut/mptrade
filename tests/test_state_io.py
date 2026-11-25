@@ -1713,7 +1713,7 @@ def test_adversarial_audit_bugfixes_regression(tmp_path, monkeypatch):
     second = state_io.read_jsonl_or_json_dict_cached(str(j_path), memo)
     assert second is not None and len(second["items"]["BTCUSDC"]) == 6
     assert second["items"]["BTCUSDC"][-1][1] == pytest.approx(60100.0)
-    assert state_io._JSONL_CACHED_CURSORS[ck][0] == id(second)
+    assert state_io._JSONL_MEMO_ENTRIES[ck].doc is second
 
     # Multi-threaded concurrent read + append check
     errs: list[Exception] = []
@@ -2265,6 +2265,112 @@ def test_jsonl_unterminated_eof_parity_and_corrupt_utf8_previous_recovery(tmp_pa
     assert had_bad_direct is True and bmap_direct == {"SOLUSDC": [[now_ms - 3000, 150.0]]}
     rec_head = state_io.read_jsonl_or_json_dict_cached(str(corrupt_head), {})
     assert rec_head is not None and rec_head["items"] == {"SOLUSDC": [[now_ms - 3000, 150.0]]}
+
+
+def test_ssot_p1_p2_reentrant_filelock_cachedb_exists_365_compact_and_ast_gates(tmp_path, monkeypatch):
+    """Verify P1+P2 structural SSOT invariants:
+    1) FileLock is re-entrant per thread (nested/recursive acquisition never deadlocks) while still
+       strictly excluding other threads via flock;
+    2) state_io.cachedb_exists resolves cachedb/<subdomain>/ identically to atomic_write_*;
+    3) Cache365PriceManager shares CacheBoundedJsonlArchiveMixin + CompactPriceSeries (16 B/pt)
+       while preserving issubclass(Cache365PriceManager, Cache24PriceManager) and get_series_arrays();
+    4) New SSOT AST gates (Audits 11 & 12) catch broken local imports, bad call signatures,
+       unresolved os.path.exists(os.path.join(cache_dir, ...)), and JSON readers on JSONL paths."""
+    import threading
+    from pathlib import Path
+    import numpy as np
+    import cacheprice
+    from core.lock import FileLock
+    from verify_tools import ssot_ast_audit as ast_audit
+
+    # 1. Re-entrant FileLock (nested instances + recursive same instance) + cross-thread exclusion
+    lock_p = tmp_path / "reentrant.lock"
+    other_thread_acquired: list[bool] = []
+    other_thread_after_release: list[bool] = []
+
+    def _contend(out_list: list[bool]):
+        with FileLock(lock_p, timeout=0.05, poll_interval=0.01, raise_on_timeout=False, reentrant=True) as lk:
+            out_list.append(bool(lk.acquired))
+
+    re_lock = FileLock(lock_p, reentrant=True)
+    with re_lock as outer:
+        assert outer.acquired is True
+        # Same instance recursive re-entry
+        with re_lock as inner_same:
+            assert inner_same.acquired is True
+            # Distinct instance nested re-entry on same thread
+            with FileLock(lock_p, timeout=0.05, reentrant=True) as inner_other:
+                assert inner_other.acquired is True
+                # Another thread MUST still be blocked while outer lock is held
+                t1 = threading.Thread(target=_contend, args=(other_thread_acquired,))
+                t1.start()
+                t1.join(timeout=2.0)
+                assert other_thread_acquired == [False]
+        # Still held after inner exits!
+        assert outer.acquired is True
+    # Released after outermost exit -> other thread can now acquire immediately
+    t2 = threading.Thread(target=_contend, args=(other_thread_after_release,))
+    t2.start()
+    t2.join(timeout=2.0)
+    assert other_thread_after_release == [True]
+
+    # Unified CacheManagerInterface._generation_lock() shares re-entrancy with state_io.generation_file_lock()
+    gen_target = tmp_path / "gen_nested.jsonl"
+    with state_io.generation_file_lock(str(gen_target)):
+        with state_io.generation_file_lock(str(gen_target)):
+            pass
+
+    # 2. state_io.cachedb_exists resolves subdomain paths + .previous
+    cdb = tmp_path / "cachedb"
+    prices_dir = cdb / "prices"
+    prices_dir.mkdir(parents=True)
+    monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(cdb))
+    p365_real = prices_dir / "cache_365_price_BTCUSDC.jsonl"
+    p365_unresolved = str(cdb / "cache_365_price_BTCUSDC.jsonl")
+    assert state_io.cachedb_exists(p365_unresolved) is False
+    p365_real.write_text(json.dumps({"s": "BTCUSDC", "i": [1_795_000_000_000, 60000.0]}) + "\n", encoding="utf-8")
+    assert state_io.cachedb_exists(p365_unresolved) is True
+    p365_real.rename(prices_dir / "cache_365_price_BTCUSDC.jsonl.previous")
+    assert state_io.cachedb_exists(p365_unresolved, include_previous=False) is False
+    assert state_io.cachedb_exists(p365_unresolved, include_previous=True) is True
+
+    # 3. Cache365PriceManager shares CacheBoundedJsonlArchiveMixin + CompactPriceSeries
+    assert issubclass(cacheprice.Cache365PriceManager, cacheprice.Cache24PriceManager)
+    assert issubclass(cacheprice.Cache365PriceManager, cacheprice.CacheBoundedJsonlArchiveMixin)
+    assert issubclass(cacheprice.CacheSparsePriceManager, cacheprice.CacheBoundedJsonlArchiveMixin)
+    p365_live = prices_dir / "cache_365_price_ETHUSDC.jsonl"
+    now_ms = int(time.time() * 1000)
+    p365_live.write_text(
+        "\n".join(json.dumps({"s": "ETHUSDC", "i": [now_ms - (5 - k) * 1000, 3000.0 + k]}) for k in range(5)) + "\n",
+        encoding="utf-8",
+    )
+    mgr365 = cacheprice.Cache365PriceManager(60, ["ETHUSDC"], str(p365_live), read_only=True)
+    assert isinstance(mgr365.cache["ETHUSDC"], cacheprice.CompactPriceSeries)
+    ts365, px365 = mgr365.get_series_arrays("ETHUSDC", since_ms=now_ms - 3000)
+    assert ts365.dtype == np.int64 and px365.dtype == np.float64
+    assert len(ts365) == 3 and float(px365[-1]) == pytest.approx(3004.0)
+
+    # 4. Audits 11 & 12 catch synthetic violations cleanly on an isolated mini-repo
+    mini = tmp_path / "mini_repo"
+    mini.mkdir()
+    (mini / "callee_mod.py").write_text("def need_two(a, b):\n    return a + b\n", encoding="utf-8")
+    (mini / "bad_caller.py").write_text(
+        "import os\n"
+        "from callee_mod import need_two, missing_sym\n"
+        "def f(cache_dir):\n"
+        "    need_two(1)\n"
+        "    p = os.path.join(cache_dir, 'cache_365_price_BTCUSDC.jsonl')\n"
+        "    if os.path.exists(p):\n"
+        "        return read_json_dict('cache_24_price_BTCUSDC.jsonl')\n",
+        encoding="utf-8",
+    )
+    v11 = ast_audit.audit_cross_module_calls_and_imports_ast(mini, rel_paths=["bad_caller.py"])
+    assert any("missing_sym" in v for v in v11), v11
+    assert any("missing required positional arg" in v for v in v11), v11
+    v12 = ast_audit.audit_cachedb_path_and_jsonl_purity_ast(mini, rel_paths=["bad_caller.py"])
+    assert any("unresolved os.path.join(cache_dir" in v for v in v12), v12
+    assert any("JSONL cache path" in v for v in v12), v12
+
 
 
 

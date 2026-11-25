@@ -28,7 +28,6 @@ import time
 from typing import Any, Callable, Optional
 
 from botcore import (
-    FileLock,
     PRICE_FALLBACK_HTTP_DEADLINE_SEC,
     PRICE_FRESHNESS_MAX_AGE_MS,
     PRICE_FRESHNESS_MAX_AGE_SEC,
@@ -120,6 +119,7 @@ from state_io import (
     atomic_text_writer,
     atomic_write_json,
     atomic_write_jsonl,
+    cachedb_exists,
     canonical_json_key,
     commit_file_and_meta,
     discard_generation_file,
@@ -411,7 +411,11 @@ class CompactPriceSeries(MutableSequence):
         if fast is not None:
             return fast
         if isinstance(item, (list, tuple)) and len(item) >= 2:
-            ts_i = normalize_timestamp_ms(item[0], default=None)
+            raw_ts = item[0]
+            if type(raw_ts) is int and 0 < raw_ts <= 9_000_000_000_000_000:
+                ts_i: Optional[int] = raw_ts
+            else:
+                ts_i = normalize_timestamp_ms(raw_ts, default=None)
             px_f = safe_pos_float(item[1], default=None)
             if ts_i is not None and ts_i > 0 and px_f is not None:
                 return ts_i, px_f
@@ -551,45 +555,20 @@ class CompactPriceSeries(MutableSequence):
         return f"CompactPriceSeries(len={len(self._ts)})"
 
 
-class CacheSparsePriceManager(CachePriceManagerBase):
-    """Store sparse three-minute price samples (Level 3) for two years in JSONL.
+class CacheBoundedJsonlArchiveMixin:
+    """SSOT bounded-memory compact-buffer mixin for multi-year JSONL archives (Sparse & 365d).
 
-    Keeps a bounded in-memory working set (``SPARSE_MEMORY_ROWS``) in compact typed
-    ``CompactPriceSeries`` buffers (16 B/point) while preserving the full 2-year JSONL
-    archive on disk.
+    Enforces by construction:
+      1. Compact ``CompactPriceSeries`` storage (16 B/point) in RAM bounded to ``_memory_row_limit()``.
+      2. Lossless ``_persisted_counts`` trimming (never drops unpersisted entries before disk flush).
+      3. Incremental byte-offset tailing for read-only consumers and bounded cold startup loads.
+      4. Streaming disk-level ``maintain_append_persist()`` / ``compact_jsonl()`` so a bounded memory
+         tail can NEVER overwrite or truncate the full multi-year JSONL archive on disk.
+      5. Direct zero-tuple ``get_series_arrays()`` slicing from the underlying C ``int64``/``float64`` buffers.
     """
 
-    FILE_PREFIX = CACHE_SPARSE_PRICE_PREFIX
-    FILE_EXT = "jsonl"
-    SPARSE_MEMORY_ROWS: int = 35_000
-
-    def __init__(
-        self,
-        sync_ts,
-        symbols,
-        filename,
-        api_client=None,
-        read_only=False,
-        *,
-        current_price_getter=None,
-        current_price_mgr=None,
-        data_sync_mode: Optional[str] = None,
-    ):
-        super().__init__(
-            sync_ts,
-            symbols,
-            filename,
-            append_mode=True,
-            api_client=api_client,
-            append_persist=True,
-            read_only=read_only,
-            current_price_getter=current_price_getter,
-            current_price_mgr=current_price_mgr,
-            data_sync_mode=data_sync_mode,
-        )
-
     def _memory_row_limit(self) -> int:
-        return safe_pos_int(self.SPARSE_MEMORY_ROWS, default=35_000) or 35_000
+        return safe_pos_int(getattr(self, "MEMORY_ROWS", 35_000), default=35_000) or 35_000
 
     def _new_symbol_bucket(self, symbol: str) -> CompactPriceSeries:
         return CompactPriceSeries()
@@ -600,15 +579,21 @@ class CacheSparsePriceManager(CachePriceManagerBase):
     def _on_stale_memory_detected_locked(self) -> None:
         pass
 
-    def _trim_memory_tail_locked(self, symbol: Optional[str] = None) -> None:
+    def _before_snapshot_commit_locked(self, persisted_max_ts: int) -> None:
+        pass
+
+    def _trim_memory_tail_locked(
+        self, symbol: Optional[str] = None, *, min_batch: int = 1
+    ) -> None:
         limit = self._memory_row_limit()
+        eff_batch = safe_pos_int(min_batch, default=1) or 1
         syms = (symbol,) if symbol is not None else tuple(self.cache.keys())
         for sym_k in syms:
             bucket = self.cache.get(sym_k)
             if not self._is_bucket_seq(bucket):
                 continue
             overflow = len(bucket) - limit
-            if overflow <= 0:
+            if overflow < eff_batch:
                 continue
             persisted = safe_nonneg_int(self._persisted_counts.get(sym_k, 0), default=0) or 0
             trim_n = overflow if self.read_only else min(overflow, persisted)
@@ -620,12 +605,14 @@ class CacheSparsePriceManager(CachePriceManagerBase):
                 self.cache[sym_k] = bucket[trim_n:]
             self._persisted_counts[sym_k] = max(0, persisted - trim_n)
 
-    def update_cache_per_symbol(self, symbol, new_items):
-        super().update_cache_per_symbol(symbol, new_items)
-        with self.lock:
-            self._trim_memory_tail_locked(symbol)
-
     def _after_state_persisted(self) -> None:
+        drain_fn = getattr(self, "_drain_deferred_price_ticks_locked", None)
+        if callable(drain_fn):
+            with self._deferred_ticks_lock:
+                has_deferred = bool(self._deferred_price_ticks)
+            if has_deferred:
+                with self.lock:
+                    drain_fn()
         with self.lock:
             self._trim_memory_tail_locked()
 
@@ -728,29 +715,160 @@ class CacheSparsePriceManager(CachePriceManagerBase):
                         s_sym, self.fetchtime_per_symbol[s_sym]
                     )
 
+    @staticmethod
+    def _merge_max_nonneg_int_map(dst: dict, src: dict) -> None:
+        for s_sym, val in src.items():
+            dst[s_sym] = max(
+                safe_nonneg_int(dst.get(s_sym), default=0) or 0,
+                safe_nonneg_int(val, default=0) or 0,
+            )
+
+    def _snapshot_memory_watermark_locked(self):
+        original_state = self._snapshot_memory_state_locked()
+        watermarks: dict[str, tuple[int, int, set[str]]] = {}
+        for sym_k, bucket in self.cache.items():
+            if isinstance(bucket, CompactPriceSeries):
+                max_ts = bucket.max_timestamp_ms()
+                tail_keys = {canonical_json_key(it) for it in bucket[-self.DEDUP_WINDOW :]}
+                watermarks[sym_k] = (len(bucket), max_ts, tail_keys)
+            elif self._is_bucket_seq(bucket):
+                max_ts = max((self._entry_timestamp_ms(it) for it in bucket), default=0)
+                tail_keys = {canonical_json_key(it) for it in bucket[-self.DEDUP_WINDOW :]}
+                watermarks[sym_k] = (len(bucket), max_ts, tail_keys)
+        return original_state, watermarks
+
+    def _collect_live_delta_by_watermark_locked(
+        self,
+        watermarks: dict[str, tuple[int, int, set[str]]],
+        *,
+        min_ts_ms: int = 0,
+    ) -> dict[str, list]:
+        """Collect in-memory ticks added while disk streaming ran unlocked (works on CompactPriceSeries & list)."""
+        delta: dict[str, list] = {}
+        for sym_k, bucket in self.cache.items():
+            if not self._is_bucket_seq(bucket):
+                continue
+            wm = watermarks.get(sym_k)
+            if wm is None:
+                cands = list(bucket)
+            else:
+                snap_len, snap_max_ts, snap_tail_keys = wm
+                cands = []
+                seen_local: set[str] = set()
+                # Fast-path: check items appended past snapshot length or newer than snapshot max_ts
+                start_idx = snap_len if len(bucket) > snap_len else 0
+                if start_idx > 0:
+                    for item in bucket[start_idx:]:
+                        k = canonical_json_key(item)
+                        if k not in snap_tail_keys and k not in seen_local:
+                            seen_local.add(k)
+                            cands.append(item)
+                for item in bucket:
+                    if self._entry_timestamp_ms(item) > snap_max_ts:
+                        k = canonical_json_key(item)
+                        if k not in seen_local:
+                            seen_local.add(k)
+                            cands.append(item)
+            extra = [
+                item
+                for item in cands
+                if min_ts_ms <= 0 or self._entry_timestamp_ms(item) >= min_ts_ms
+            ]
+            if extra:
+                delta[sym_k] = extra
+        return delta
+
+    def _merge_live_delta_locked(
+        self, delta_by_sym: dict[str, list], *, restore_state=None
+    ) -> None:
+        if restore_state is not None:
+            self._restore_memory_state_locked(restore_state)
+        for sym_k, extra_items in delta_by_sym.items():
+            if not extra_items:
+                continue
+            bucket = self.cache.get(sym_k)
+            if bucket is None:
+                bucket = self._new_symbol_bucket(sym_k)
+                self.cache[sym_k] = bucket
+            seen = {canonical_json_key(it) for it in bucket[-self.DEDUP_WINDOW :]}
+            for item in extra_items:
+                key = canonical_json_key(item)
+                if key not in seen:
+                    seen.add(key)
+                    bucket.append(item)
+            self._trim_memory_tail_locked(sym_k)
+
+    def _reload_and_merge_live_delta_locked(
+        self,
+        watermarks: dict[str, tuple[int, int, set[str]]],
+        original_fetchtimes,
+        original_rest_cursors,
+        *,
+        min_ts_ms: Optional[int] = None,
+    ) -> dict[str, list]:
+        post_delta = self._collect_live_delta_by_watermark_locked(
+            watermarks, min_ts_ms=0 if min_ts_ms is None else min_ts_ms
+        )
+        live_fetchtimes = {
+            k: safe_nonneg_int(v, default=0) or 0 for k, v in dict(original_fetchtimes).items()
+        }
+        self._merge_max_nonneg_int_map(live_fetchtimes, self.fetchtime_per_symbol)
+        live_rest_cursors = {
+            k: safe_nonneg_int(v, default=0) or 0 for k, v in dict(original_rest_cursors).items()
+        }
+        self._merge_max_nonneg_int_map(live_rest_cursors, self._rest_sync_cursor_per_symbol)
+        self._load_jsonl()
+        self._merge_max_nonneg_int_map(self.fetchtime_per_symbol, live_fetchtimes)
+        self._merge_max_nonneg_int_map(self._rest_sync_cursor_per_symbol, live_rest_cursors)
+        self._merge_live_delta_locked(post_delta)
+        return post_delta
+
+    def _write_unpersisted_and_live_delta(
+        self,
+        target,
+        original_state,
+        watermarks: dict[str, tuple[int, int, set[str]]],
+        *,
+        min_ts_ms: Optional[int] = None,
+    ) -> bool:
+        wrote = False
+        eff_min_ts_ms = 0 if min_ts_ms is None else min_ts_ms
+        original_cache, original_persisted_counts = original_state[0], original_state[1]
+        for sym_k, items in original_cache.items():
+            start = min(max(0, original_persisted_counts.get(sym_k, 0)), len(items))
+            for item in items[start:]:
+                if eff_min_ts_ms <= 0 or self._entry_timestamp_ms(item) >= eff_min_ts_ms:
+                    target.write(format_jsonl_bucket_line(sym_k, item))
+                wrote = True
+        with self.lock:
+            delta_by_sym = self._collect_live_delta_by_watermark_locked(
+                watermarks, min_ts_ms=eff_min_ts_ms
+            )
+            for sym_k, extra_items in delta_by_sym.items():
+                for item in extra_items:
+                    target.write(format_jsonl_bucket_line(sym_k, item))
+                    wrote = True
+        return wrote
+
     def maintain_append_persist(self):
-        """Stream-prune the full 2-year disk archive without overwriting it from the bounded memory tail."""
+        """Stream-prune the full multi-year disk archive without holding ``self.lock`` during disk I/O."""
         if not self.save_state or not os.path.exists(self.filename):
             return False
         cutoff_ms = math.trunc((_now_time() - self.RETENTION_DAYS * 86400) * 1000)
         changed = False
         backup_path = None
         original_state = None
-        snap_last_ts: dict[str, int] = {}
+        watermarks: dict[str, tuple[int, int, set[str]]] = {}
         try:
             with self._generation_lock():
                 with self.lock:
-                    original_state = self._snapshot_memory_state_locked()
-                    for sym_k, bucket in self.cache.items():
-                        if isinstance(bucket, CompactPriceSeries):
-                            snap_last_ts[sym_k] = bucket.max_timestamp_ms()
-                        elif self._is_bucket_seq(bucket) and bucket:
-                            snap_last_ts[sym_k] = max(
-                                (self._entry_timestamp_ms(it) for it in bucket), default=0
-                            )
+                    drain_fn = getattr(self, "_drain_deferred_price_ticks_locked", None)
+                    if callable(drain_fn):
+                        drain_fn()
+                    original_state, watermarks = self._snapshot_memory_watermark_locked()
+
                 backup_path = self.filename + ".maint_backup"
                 self._snapshot_file_to(backup_path)
-                original_cache, original_persisted_counts = original_state[0], original_state[1]
                 with atomic_text_writer(self.filename) as target:
                     for line_out, keep in iter_jsonl_retention_lines(
                         backup_path,
@@ -763,61 +881,38 @@ class CacheSparsePriceManager(CachePriceManagerBase):
                             target.write(line_out)
                         else:
                             changed = True
-                    for sym_k, items in original_cache.items():
-                        start = min(max(0, original_persisted_counts.get(sym_k, 0)), len(items))
-                        for item in items[start:]:
-                            if self._entry_timestamp_ms(item) >= cutoff_ms:
-                                target.write(format_jsonl_bucket_line(sym_k, item))
-                            changed = True
-                    with self.lock:
-                        for sym_k, bucket in self.cache.items():
-                            prev_ts = snap_last_ts.get(sym_k, 0)
-                            if not self._is_bucket_seq(bucket):
-                                continue
-                            for item in bucket:
-                                item_ts = self._entry_timestamp_ms(item)
-                                if item_ts > prev_ts and item_ts >= cutoff_ms:
-                                    target.write(format_jsonl_bucket_line(sym_k, item))
-                                    changed = True
+                    if self._write_unpersisted_and_live_delta(
+                        target, original_state, watermarks, min_ts_ms=cutoff_ms
+                    ):
+                        changed = True
 
                 with self.lock:
-                    live_extra: dict[str, list] = {}
-                    for sym_k, bucket in self.cache.items():
-                        prev_ts = snap_last_ts.get(sym_k, 0)
-                        if self._is_bucket_seq(bucket):
-                            extra = [
-                                item
-                                for item in bucket
-                                if (t_ms := self._entry_timestamp_ms(item)) > prev_ts
-                                and t_ms >= cutoff_ms
-                            ]
-                            if extra:
-                                live_extra[sym_k] = extra
-                    self._load_jsonl()
-                    for sym_k, extra_items in live_extra.items():
-                        bucket = self.cache.setdefault(sym_k, self._new_symbol_bucket(sym_k))
-                        seen = {canonical_json_key(it) for it in bucket[-self.DEDUP_WINDOW :]}
-                        for item in extra_items:
-                            k = canonical_json_key(item)
-                            if k not in seen:
-                                seen.add(k)
-                                bucket.append(item)
-                    self._trim_memory_tail_locked()
+                    post_delta = self._reload_and_merge_live_delta_locked(
+                        watermarks,
+                        original_state[2],
+                        original_state[3],
+                        min_ts_ms=cutoff_ms,
+                    )
                     if changed:
                         if not self._write_meta(self._build_basic_meta_locked(self._persisted_counts)):
-                            self._restore_memory_state_locked(original_state)
+                            self._merge_live_delta_locked(post_delta, restore_state=original_state)
                             self._restore_previous_generation(backup_path)
                             backup_path = None
                             return False
                     if backup_path is not None:
                         discard_generation_file(backup_path)
                         backup_path = None
-            if changed:
-                builtins.print(f"[{self.cls_name}][maintain] pruned expired/corrupt disk records")
-            return True
+                if changed:
+                    builtins.print(f"[{self.cls_name}][maintain] pruned expired/corrupt disk records")
+                if os.path.getsize(self.filename) > self.MAX_FILE_BYTES:
+                    return self._rotate_disk_archive()
+                return True
         except OSError as exc:
             with self.lock:
-                self._restore_memory_state_locked(original_state)
+                self._merge_live_delta_locked(
+                    self._collect_live_delta_by_watermark_locked(watermarks),
+                    restore_state=original_state,
+                )
                 if backup_path is not None and os.path.exists(backup_path):
                     try:
                         self._restore_previous_generation(backup_path)
@@ -829,10 +924,45 @@ class CacheSparsePriceManager(CachePriceManagerBase):
             self._after_state_persisted()
 
     def compact_jsonl(self):
-        """Never rebuild an existing 2-year sparse archive from its bounded memory tail."""
+        """Never rebuild an existing multi-year archive from its bounded memory tail."""
         if os.path.exists(self.filename):
             return self.maintain_append_persist()
-        return super().compact_jsonl()
+        return CachePriceManagerBase.compact_jsonl(self)
+
+    def _rotate_disk_archive(self):
+        """Archive an oversized file while retaining a complete-line tail without holding ``self.lock`` during disk I/O."""
+        archive = self._archive_snapshot_path()
+        with self._generation_lock():
+            with self.lock:
+                original_state, watermarks = self._snapshot_memory_watermark_locked()
+            try:
+                self._snapshot_file_to(archive)
+            except OSError as exc:
+                return self._log_tagged_false("maintain", f"archiving failed: {exc}")
+            try:
+                archive_size = os.path.getsize(archive)
+                keep_bytes = max(1, math.trunc(archive_size * self.ROTATE_KEEP_FRACTION))
+                decoded_tail = read_tail_complete_lines_text(archive, keep_bytes)
+                with atomic_text_writer(self.filename) as target:
+                    target.write(decoded_tail)
+                    self._write_unpersisted_and_live_delta(target, original_state, watermarks)
+                with self.lock:
+                    self._reload_and_merge_live_delta_locked(
+                        watermarks, original_state[2], original_state[3]
+                    )
+                    meta_ok = self._write_meta(self._build_basic_meta_locked(self._persisted_counts))
+            except Exception as exc:
+                builtins.print(f"[{self.cls_name}][maintain] rotation rewrite failed: {exc}")
+                meta_ok = False
+            if not meta_ok:
+                with self.lock:
+                    self._merge_live_delta_locked(
+                        self._collect_live_delta_by_watermark_locked(watermarks),
+                        restore_state=original_state,
+                    )
+                    return self._restore_archive_after_failed_rotation_locked(archive)
+            self._compress_and_prune_archive(archive)
+            return True
 
     def get_series_arrays(
         self,
@@ -851,7 +981,48 @@ class CacheSparsePriceManager(CachePriceManagerBase):
                 raw = casefold_get(self.cache, symbol, None)
             if isinstance(raw, CompactPriceSeries):
                 return raw.to_numpy(since_ms=cutoff_ms)
-        return super().get_series_arrays(symbol, since_ms=since_ms, resync=False)
+        return CacheManagerInterface.get_series_arrays(self, symbol, since_ms=since_ms, resync=False)
+
+
+class CacheSparsePriceManager(CacheBoundedJsonlArchiveMixin, CachePriceManagerBase):
+    """Store sparse three-minute price samples (Level 3) for two years in JSONL."""
+
+    FILE_PREFIX = CACHE_SPARSE_PRICE_PREFIX
+    FILE_EXT = "jsonl"
+    SPARSE_MEMORY_ROWS: int = 35_000
+
+    def __init__(
+        self,
+        sync_ts,
+        symbols,
+        filename,
+        api_client=None,
+        read_only=False,
+        *,
+        current_price_getter=None,
+        current_price_mgr=None,
+        data_sync_mode: Optional[str] = None,
+    ):
+        super().__init__(
+            sync_ts,
+            symbols,
+            filename,
+            append_mode=True,
+            api_client=api_client,
+            append_persist=True,
+            read_only=read_only,
+            current_price_getter=current_price_getter,
+            current_price_mgr=current_price_mgr,
+            data_sync_mode=data_sync_mode,
+        )
+
+    def _memory_row_limit(self) -> int:
+        return safe_pos_int(self.SPARSE_MEMORY_ROWS, default=35_000) or 35_000
+
+    def update_cache_per_symbol(self, symbol, new_items):
+        super().update_cache_per_symbol(symbol, new_items)
+        with self.lock:
+            self._trim_memory_tail_locked(symbol)
 
 
 # =============================================================================
@@ -1251,7 +1422,7 @@ class Cache24PriceManager(CachePriceManagerBase):
         filtered = {s: v for s, v in items.items() if s in self.symbols}
         with self._deferred_ticks_lock:
             for sym_k, entries in filtered.items():
-                if isinstance(entries, list) and entries:
+                if self._is_bucket_seq(entries) and entries:
                     last_ts = self._entry_timestamp_ms(entries[-1])
                     if last_ts > self._last_accepted_tick_ts_ms.get(sym_k, 0):
                         self._last_accepted_tick_ts_ms[sym_k] = last_ts
@@ -1260,7 +1431,7 @@ class Cache24PriceManager(CachePriceManagerBase):
     def _sync_last_accepted_tick_ts_locked(self) -> None:
         with self._deferred_ticks_lock:
             for sym_k, entries in self.cache.items():
-                if isinstance(entries, list) and entries:
+                if self._is_bucket_seq(entries) and entries:
                     last_ts = self._entry_timestamp_ms(entries[-1])
                     if last_ts > self._last_accepted_tick_ts_ms.get(sym_k, 0):
                         self._last_accepted_tick_ts_ms[sym_k] = last_ts
@@ -1342,7 +1513,7 @@ class Cache24PriceManager(CachePriceManagerBase):
         eff_batch = safe_pos_int(min_batch, default=1) or 1
         with self.lock:
             entries = self.cache.get(symbol)
-            if not entries or not isinstance(entries, list):
+            if not entries or not self._is_bucket_seq(entries):
                 return
             probe_idx = eff_batch - 1
             if len(entries) <= probe_idx or self._entry_timestamp_ms(entries[probe_idx]) >= cutoff_ms:
@@ -1353,7 +1524,10 @@ class Cache24PriceManager(CachePriceManagerBase):
             if is_equity_symbol(symbol):
                 idx = min(idx, max(0, len(entries) - 288))
             if idx >= eff_batch:
-                self.cache[symbol] = entries[idx:]
+                if isinstance(entries, CompactPriceSeries):
+                    entries.trim_head(idx)
+                else:
+                    self.cache[symbol] = entries[idx:]
                 if self.append_persist:
                     self._persisted_counts[symbol] = max(
                         0, self._persisted_counts.get(symbol, 0) - idx
@@ -1371,12 +1545,12 @@ class Cache24PriceManager(CachePriceManagerBase):
         with self.lock:
             self._drain_deferred_price_ticks_locked()
             entries = casefold_get(self.cache, symbol, [])
-            if not entries or not isinstance(entries, list):
+            if not entries or not self._is_bucket_seq(entries):
                 return []
             idx = bisect.bisect_left(
                 entries, cutoff_ms, key=self._entry_timestamp_ms
             )
-            return entries[idx:]
+            return list(entries[idx:])
 
     def _should_poll(self):
         return False
@@ -1396,7 +1570,7 @@ class Cache24PriceManager(CachePriceManagerBase):
             return
         target_path = str(resolve_cachedb_filepath(target_path, migrate=True))
         os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
-        with FileLock(generation_lock_path(target_path)):
+        with generation_file_lock(target_path):
             is_jsonl = target_path.lower().endswith(".jsonl")
             if isinstance(existing_obj, dict):
                 disk_obj = existing_obj
@@ -1649,8 +1823,8 @@ class Cache24PriceManager(CachePriceManagerBase):
 # =============================================================================
 
 
-class Cache365PriceManager(Cache24PriceManager):
-    """Multi-month/multi-year dense archive variant (Level 3) using incremental JSONL persistence."""
+class Cache365PriceManager(CacheBoundedJsonlArchiveMixin, Cache24PriceManager):
+    """Multi-month/multi-year dense archive variant (Level 3) using compact incremental JSONL persistence."""
 
     KEEP_HOURS = CM_LONG_ARCHIVE_MONTHS * 30 * 24
     RETENTION_DAYS = CM_LONG_ARCHIVE_MONTHS * 30
@@ -1666,7 +1840,7 @@ class Cache365PriceManager(Cache24PriceManager):
         if not target_path or not isinstance(points, (list, tuple)) or not points:
             return False
         resolved_target = str(resolve_cachedb_filepath(target_path, migrate=True))
-        if os.path.exists(resolved_target) or os.path.exists(previous_generation_path(resolved_target)):
+        if cachedb_exists(resolved_target, include_previous=True):
             return False
         rows = [
             {"s": symbol, "i": [ts_i, px_f]}
@@ -1679,7 +1853,7 @@ class Cache365PriceManager(Cache24PriceManager):
         if not rows:
             return False
         with generation_file_lock(resolved_target):
-            if os.path.exists(resolved_target) or os.path.exists(previous_generation_path(resolved_target)):
+            if cachedb_exists(resolved_target, include_previous=True):
                 return False
             atomic_write_jsonl(resolved_target, rows)
         return True
@@ -1712,352 +1886,23 @@ class Cache365PriceManager(Cache24PriceManager):
         )
         self._filter_maps_to_configured_symbols_locked()
 
-    def _on_stale_memory_detected_locked(self) -> None:
-        pass
-
-    def _before_snapshot_commit_locked(self, persisted_max_ts: int) -> None:
-        pass
-
-    def _should_compact_before_append_locked(self) -> bool:
-        return False
-
-    def _load_jsonl(self):
-        """Load only a recent working set; tail newly appended lines incrementally for read-only consumers."""
-        with self.lock:
-            backup_path = (
-                self._previous_generation_path()
-                if self.read_only
-                else self._ensure_file_or_restore_previous_locked()
-            )
-            abs_path = os.path.abspath(self.filename)
-            tail_st = getattr(self, "_jsonl_tail_state", None)
-            inc_done = False
-            if (
-                self.read_only
-                and os.path.exists(self.filename)
-                and isinstance(self.cache, dict)
-                and bool(self.cache)
-                and tail_st is not None
-                and tail_st[0] == abs_path
-            ):
-                delta_map, had_bad, next_off, dev_ino, new_anchor, inc_used = (
-                    read_jsonl_bucket_map_from_offset(
-                        self.filename,
-                        start_offset=tail_st[2],
-                        expected_dev_ino=tail_st[1],
-                        expected_anchor=tail_st[3],
-                        allow_full_fallback=False,
-                    )
-                )
-                if inc_used:
-                    for sym_k, rows_delta in delta_map.items():
-                        if sym_k not in self.symbols:
-                            continue
-                        bucket = self.cache.setdefault(sym_k, [])
-                        bucket.extend(rows_delta)
-                        if len(bucket) > CM_LONG_ARCHIVE_MEMORY_ROWS:
-                            self.cache[sym_k] = bucket[-CM_LONG_ARCHIVE_MEMORY_ROWS:]
-                    self._jsonl_tail_state = (
-                        (abs_path, dev_ino, next_off, new_anchor)
-                        if (not had_bad and dev_ino is not None and next_off > 0)
-                        else None
-                    )
-                    inc_done = True
-
-            if not inc_done:
-                self.cache = {}
-                self._jsonl_tail_state = None
-                source_path = (
-                    self.filename
-                    if os.path.exists(self.filename)
-                    else (backup_path if self.read_only and os.path.exists(backup_path) else None)
-                )
-                if source_path is not None:
-                    tail_lines, cursor = read_tail_lines_with_cursor(
-                        source_path, CM_LONG_ARCHIVE_MEMORY_ROWS
-                    )
-                    for raw_line in tail_lines:
-                        rec = parse_json_payload(raw_line, default=None)
-                        if (
-                            isinstance(rec, dict)
-                            and rec.get("s") in self.symbols
-                            and rec.get("i") is not None
-                        ):
-                            self.cache.setdefault(rec["s"], []).append(rec["i"])
-                    if self.read_only and source_path == self.filename and cursor is not None:
-                        self._jsonl_tail_state = (abs_path, cursor[0], cursor[1], cursor[2])
-            self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
-            if meta_payload := self._read_optional_meta_dict():
-                self._hydrate_fetchtimes_from_mapping_locked(
-                    meta_payload, filter_symbols=True, coerce_nonneg_int=True
-                )
-            if self.cache:
-                for s_sym, rebuilt_ft in self.rebuild_fetchtimes().items():
-                    self.fetchtime_per_symbol[s_sym] = max(
-                        safe_nonneg_int(self.fetchtime_per_symbol.get(s_sym), default=0),
-                        safe_nonneg_int(rebuilt_ft, default=0),
-                    )
-                    self._rest_sync_cursor_per_symbol.setdefault(
-                        s_sym, self.fetchtime_per_symbol[s_sym]
-                    )
+    def _memory_row_limit(self) -> int:
+        return safe_pos_int(CM_LONG_ARCHIVE_MEMORY_ROWS, default=10_000) or 10_000
 
     def _trim_old_data(self, symbol, *, min_batch: int = 1):
         req_batch = safe_pos_int(min_batch, default=1) or 1
         eff_batch = (
             1
             if req_batch <= 1
-            else min(req_batch, max(1, CM_LONG_ARCHIVE_MEMORY_ROWS // 16))
+            else min(req_batch, max(1, self._memory_row_limit() // 16))
         )
         with self.lock:
-            entries = self.cache.get(symbol, [])
-            overflow = max(0, len(entries) - CM_LONG_ARCHIVE_MEMORY_ROWS)
-            if overflow >= eff_batch:
-                self.cache[symbol] = entries[overflow:]
-                self._persisted_counts[symbol] = max(
-                    0, self._persisted_counts.get(symbol, 0) - overflow
-                )
+            self._trim_memory_tail_locked(symbol, min_batch=eff_batch)
         now = _monotonic_time()
         if now - self._last_long_trim < self.LONG_TRIM_INTERVAL_SEC:
             return
         self._last_long_trim = now
-        with self.lock:
-            before = len(self.cache.get(symbol, []))
-        super()._trim_old_data(symbol, min_batch=1)
-        with self.lock:
-            after = len(self.cache.get(symbol, []))
-            if after < before:
-                removed = before - after
-                self._persisted_counts[symbol] = max(
-                    0, self._persisted_counts.get(symbol, 0) - removed
-                )
-
-    @staticmethod
-    def _merge_max_nonneg_int_map(dst: dict, src: dict) -> None:
-        for s_sym, val in src.items():
-            dst[s_sym] = max(
-                safe_nonneg_int(dst.get(s_sym), default=0),
-                safe_nonneg_int(val, default=0),
-            )
-
-    def _collect_live_delta_locked(
-        self, snap_item_ids: set[int], *, min_ts_ms: int = 0
-    ) -> dict[str, list]:
-        """Collect in-memory ticks added by WebSocket while disk streaming ran unlocked."""
-        delta = {}
-        for symbol, items in self.cache.items():
-            extra = [
-                item
-                for item in items
-                if id(item) not in snap_item_ids
-                and (min_ts_ms <= 0 or self._entry_timestamp_ms(item) >= min_ts_ms)
-            ]
-            if extra:
-                delta[symbol] = extra
-        return delta
-
-    def _merge_live_delta_locked(
-        self, delta_by_sym: dict[str, list], *, restore_state=None
-    ) -> None:
-        """Re-apply live ticks that arrived while an unlocked disk pass was running."""
-        if restore_state is not None:
-            self._restore_memory_state_locked(restore_state)
-        for symbol, extra_items in delta_by_sym.items():
-            if not extra_items:
-                continue
-            bucket = self.cache.setdefault(symbol, [])
-            seen = {
-                canonical_json_key(it)
-                for it in bucket[-self.DEDUP_WINDOW :]
-            }
-            for item in extra_items:
-                key = canonical_json_key(item)
-                if key not in seen:
-                    seen.add(key)
-                    bucket.append(item)
-            overflow = max(0, len(bucket) - CM_LONG_ARCHIVE_MEMORY_ROWS)
-            if overflow:
-                self.cache[symbol] = bucket[overflow:]
-                self._persisted_counts[symbol] = max(
-                    0, self._persisted_counts.get(symbol, 0) - overflow
-                )
-
-    def _snapshot_memory_state_with_item_ids_locked(self):
-        original_state = self._snapshot_memory_state_locked()
-        snap_item_ids = {
-            id(item) for items in original_state[0].values() for item in items
-        }
-        return original_state, snap_item_ids
-
-    def _reload_and_merge_live_delta_locked(
-        self,
-        snap_item_ids: set[int],
-        original_fetchtimes,
-        original_rest_cursors,
-        *,
-        min_ts_ms=None,
-    ):
-        post_delta = (
-            self._collect_live_delta_locked(snap_item_ids)
-            if min_ts_ms is None
-            else self._collect_live_delta_locked(snap_item_ids, min_ts_ms=min_ts_ms)
-        )
-        live_fetchtimes = {
-            k: safe_nonneg_int(v, default=0) for k, v in dict(original_fetchtimes).items()
-        }
-        self._merge_max_nonneg_int_map(live_fetchtimes, self.fetchtime_per_symbol)
-        live_rest_cursors = {
-            k: safe_nonneg_int(v, default=0) for k, v in dict(original_rest_cursors).items()
-        }
-        self._merge_max_nonneg_int_map(live_rest_cursors, self._rest_sync_cursor_per_symbol)
-        self._load_jsonl()
-        self._merge_max_nonneg_int_map(self.fetchtime_per_symbol, live_fetchtimes)
-        self._merge_max_nonneg_int_map(self._rest_sync_cursor_per_symbol, live_rest_cursors)
-        self._merge_live_delta_locked(post_delta)
-        return post_delta
-
-    def _write_unpersisted_and_live_delta(
-        self, target, original_state, snap_item_ids: set[int], *, min_ts_ms=None
-    ) -> bool:
-        wrote = False
-        eff_min_ts_ms = 0 if min_ts_ms is None else min_ts_ms
-        original_cache, original_persisted_counts = original_state[0], original_state[1]
-        for symbol, items in original_cache.items():
-            start = min(max(0, original_persisted_counts.get(symbol, 0)), len(items))
-            for item in items[start:]:
-                if eff_min_ts_ms <= 0 or self._entry_timestamp_ms(item) >= eff_min_ts_ms:
-                    target.write(format_jsonl_bucket_line(symbol, item))
-                wrote = True
-        with self.lock:
-            delta_by_sym = (
-                self._collect_live_delta_locked(snap_item_ids)
-                if min_ts_ms is None
-                else self._collect_live_delta_locked(snap_item_ids, min_ts_ms=min_ts_ms)
-            )
-            for symbol, extra_items in delta_by_sym.items():
-                for item in extra_items:
-                    target.write(format_jsonl_bucket_line(symbol, item))
-                    wrote = True
-        return wrote
-
-    def maintain_append_persist(self):
-        """Prune the full disk archive without holding ``self.lock`` during disk I/O."""
-        if not self.save_state:
-            return False
-        cutoff_ms = math.trunc((_now_time() - self.RETENTION_DAYS * 86400) * 1000)
-        if not os.path.exists(self.filename):
-            return False
-        changed = False
-        backup_path = None
-        original_state = None
-        snap_item_ids: set[int] = set()
-        try:
-            with self.lock:
-                self._drain_deferred_price_ticks_locked()
-                original_state, snap_item_ids = self._snapshot_memory_state_with_item_ids_locked()
-
-            backup_path = self.filename + ".maint_backup"
-            self._snapshot_file_to(backup_path)
-            with atomic_text_writer(self.filename) as target:
-                for line_out, keep in iter_jsonl_retention_lines(
-                    backup_path,
-                    lambda rec: (
-                        isinstance(rec.get("s"), str)
-                        and self._entry_timestamp_ms(rec.get("i")) >= cutoff_ms
-                    ),
-                ):
-                    if keep:
-                        target.write(line_out)
-                    else:
-                        changed = True
-                if self._write_unpersisted_and_live_delta(
-                    target, original_state, snap_item_ids, min_ts_ms=cutoff_ms
-                ):
-                    changed = True
-
-            with self.lock:
-                post_delta = self._reload_and_merge_live_delta_locked(
-                    snap_item_ids,
-                    original_state[2],
-                    original_state[3],
-                    min_ts_ms=cutoff_ms,
-                )
-                if changed:
-                    if not self._write_meta(self._build_basic_meta_locked(self._persisted_counts)):
-                        self._merge_live_delta_locked(post_delta, restore_state=original_state)
-                        self._restore_previous_generation(backup_path)
-                        backup_path = None
-                        return False
-                if backup_path is not None:
-                    discard_generation_file(backup_path)
-                    backup_path = None
-            if changed:
-                builtins.print(
-                    f"[{self.cls_name}][maintain] pruned expired/corrupt disk records"
-                )
-            if os.path.getsize(self.filename) > self.MAX_FILE_BYTES:
-                return self._rotate_disk_archive()
-            return True
-        except OSError as exc:
-            with self.lock:
-                self._merge_live_delta_locked(
-                    self._collect_live_delta_locked(snap_item_ids),
-                    restore_state=original_state,
-                )
-                if backup_path is not None and os.path.exists(backup_path):
-                    try:
-                        self._restore_previous_generation(backup_path)
-                    except OSError:
-                        pass
-            builtins.print(
-                f"[{self.cls_name}][Error] streaming maintenance {self.filename}: {exc}"
-            )
-            return False
-        finally:
-            self._after_state_persisted()
-
-    def compact_jsonl(self):
-        """Never rebuild an existing long archive from its bounded memory tail."""
-        if os.path.exists(self.filename):
-            return self.maintain_append_persist()
-        return CachePriceManagerBase.compact_jsonl(self)
-
-    def _rotate_disk_archive(self):
-        """Archive an oversized file while retaining a complete-line tail without holding ``self.lock`` during disk I/O."""
-        archive = self._archive_snapshot_path()
-        with self.lock:
-            original_state, snap_item_ids = self._snapshot_memory_state_with_item_ids_locked()
-        try:
-            self._snapshot_file_to(archive)
-        except OSError as exc:
-            return self._log_tagged_false("maintain", f"archiving failed: {exc}")
-        try:
-            archive_size = os.path.getsize(archive)
-            keep_bytes = max(1, math.trunc(archive_size * self.ROTATE_KEEP_FRACTION))
-            decoded_tail = read_tail_complete_lines_text(archive, keep_bytes)
-            with atomic_text_writer(self.filename) as target:
-                target.write(decoded_tail)
-                self._write_unpersisted_and_live_delta(
-                    target, original_state, snap_item_ids
-                )
-            with self.lock:
-                self._reload_and_merge_live_delta_locked(
-                    snap_item_ids, original_state[2], original_state[3]
-                )
-                meta_ok = self._write_meta(self._build_basic_meta_locked(self._persisted_counts))
-        except Exception as exc:
-            builtins.print(
-                f"[{self.cls_name}][maintain] rotation rewrite failed: {exc}"
-            )
-            meta_ok = False
-        if not meta_ok:
-            with self.lock:
-                self._merge_live_delta_locked(
-                    self._collect_live_delta_locked(snap_item_ids),
-                    restore_state=original_state,
-                )
-                return self._restore_archive_after_failed_rotation_locked(archive)
-        self._compress_and_prune_archive(archive)
-        return True
+        Cache24PriceManager._trim_old_data(self, symbol, min_batch=1)
 
 
 # =============================================================================

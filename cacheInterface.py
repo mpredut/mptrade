@@ -21,7 +21,6 @@ from typing import Any, Optional
 import weakref
 
 from botcore import (
-    FileLock,
     _parse_bool_flag,
     check_cooldown_gate,
     extract_timestamp_ms,
@@ -61,6 +60,7 @@ from state_io import (
     commit_file_and_meta,
     discard_generation_file,
     format_jsonl_bucket_line,
+    generation_file_lock,
     generation_lock_path,
     is_state_io_dict_reader_unpatched,
     meta_file_path,
@@ -1203,9 +1203,8 @@ class CacheManagerInterface(ABC):
         return previous_generation_path(self.filename)
 
     def _generation_lock(self):
-        """Serialize cache data/manifest publication and canonical recovery."""
-        os.makedirs(os.path.dirname(os.path.abspath(self.filename)), exist_ok=True)
-        return FileLock(generation_lock_path(self.filename))
+        """Serialize cache data/manifest publication and canonical recovery (re-entrant per thread)."""
+        return generation_file_lock(self.filename)
 
     def _restore_previous_generation(self, backup_path=None):
         """Atomically restore data matching the still-current manifest."""

@@ -282,7 +282,8 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
             )
             ts_ms_arr, px_arr = mgr.get_series_arrays(symbol, since_ms=since_ms, resync=True)
             if ts_ms_arr.size:
-                ts_sec_arr = ts_ms_arr.astype(np.float64) * 1e-3
+                ts_f64 = ts_ms_arr.astype(np.float64)
+                ts_sec_arr = np.where(ts_ms_arr >= 100_000_000_000, ts_f64 * 1e-3, ts_f64)
                 if ts_sec_arr.size > 1 and bool(np.any(ts_sec_arr[1:] < ts_sec_arr[:-1])):
                     order = np.argsort(ts_sec_arr, kind="mergesort")
                     ts_sec_arr = ts_sec_arr[order]

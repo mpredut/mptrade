@@ -1492,6 +1492,287 @@ def audit_signed_zero_format_ast(
     return violations
 
 
+# -- Audit 11: Cross-module local import & call-signature integrity ------------
+
+_SIGNATURE_PRESERVING_DECORATORS = frozenset({
+    "contextmanager", "lru_cache", "cache", "singledispatch",
+})
+
+
+def _collect_module_exports_and_funcs(
+    tree: ast.Module,
+) -> tuple[set[str], bool, dict[str, ast.arguments]]:
+    exports: set[str] = set()
+    funcs: dict[str, ast.arguments] = {}
+    is_dynamic = False
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            exports.add(node.name)
+            if node.name == "__getattr__":
+                is_dynamic = True
+            decs_ok = all(
+                (isinstance(d, ast.Name) and d.id in _SIGNATURE_PRESERVING_DECORATORS)
+                or (isinstance(d, ast.Attribute) and d.attr in _SIGNATURE_PRESERVING_DECORATORS)
+                or (
+                    isinstance(d, ast.Call)
+                    and (
+                        (isinstance(d.func, ast.Name) and d.func.id in _SIGNATURE_PRESERVING_DECORATORS)
+                        or (isinstance(d.func, ast.Attribute) and d.func.attr in _SIGNATURE_PRESERVING_DECORATORS)
+                    )
+                )
+                for d in node.decorator_list
+            )
+            if decs_ok:
+                funcs[node.name] = node.args
+        elif isinstance(node, ast.ClassDef):
+            exports.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                for sub in ast.walk(t):
+                    if isinstance(sub, ast.Name):
+                        exports.add(sub.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            exports.add(node.target.id)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                exports.add(a.asname or a.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.name == "*":
+                    is_dynamic = True
+                else:
+                    exports.add(a.asname or a.name)
+        elif isinstance(node, (ast.If, ast.Try)):
+            for sub in ast.walk(node):
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    exports.add(sub.name)
+                elif isinstance(sub, ast.Assign):
+                    for t in sub.targets:
+                        if isinstance(t, ast.Name):
+                            exports.add(t.id)
+                elif isinstance(sub, ast.ImportFrom):
+                    for a in sub.names:
+                        if a.name == "*":
+                            is_dynamic = True
+                        else:
+                            exports.add(a.asname or a.name)
+                elif isinstance(sub, ast.Import):
+                    for a in sub.names:
+                        exports.add(a.asname or a.name.split(".")[0])
+    return exports, is_dynamic, funcs
+
+
+def _check_call_against_signature(call: ast.Call, fargs: ast.arguments) -> str | None:
+    if any(isinstance(a, ast.Starred) for a in call.args):
+        return None
+    if any(kw.arg is None for kw in call.keywords):
+        return None
+    all_pos = [a.arg for a in fargs.posonlyargs] + [a.arg for a in fargs.args]
+    pos_or_kw = [a.arg for a in fargs.args]
+    kw_only = [a.arg for a in fargs.kwonlyargs]
+    req_pos = all_pos[: len(all_pos) - len(fargs.defaults)]
+    req_kw = [a.arg for a, d in zip(fargs.kwonlyargs, fargs.kw_defaults) if d is None]
+    n_pos = len(call.args)
+    if fargs.vararg is None and n_pos > len(all_pos):
+        return f"too many positional args ({n_pos} > {len(all_pos)})"
+    kw_names = [kw.arg for kw in call.keywords if kw.arg is not None]
+    if fargs.kwarg is None:
+        allowed_kw = set(pos_or_kw) | set(kw_only)
+        bad_kw = [k for k in kw_names if k not in allowed_kw]
+        if bad_kw:
+            return f"unexpected kwarg(s) {bad_kw}"
+    passed_pos = set(all_pos[:n_pos])
+    dup = passed_pos & set(kw_names)
+    if dup:
+        return f"multiple values for arg(s) {sorted(dup)}"
+    missing_pos = [a for a in req_pos if a not in passed_pos and a not in kw_names]
+    if missing_pos:
+        return f"missing required positional arg(s) {missing_pos}"
+    missing_kw = [a for a in req_kw if a not in kw_names]
+    if missing_kw:
+        return f"missing required kw-only arg(s) {missing_kw}"
+    return None
+
+
+def audit_cross_module_calls_and_imports_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Verify local ``from mod import sym`` existence and direct top-level call signatures across prod modules."""
+    root = Path(root)
+    parsed_cache: ParsedCache = _parsed_cache if _parsed_cache is not None else {}
+    all_rels = _iter_repo_python_rels(root)
+    mod_to_rel: dict[str, str] = {}
+    for rel_s in all_rels:
+        if rel_s.startswith(("tests/", "offline/", "archive/")):
+            continue
+        mod_to_rel[_rel_to_mod(rel_s)] = rel_s
+
+    mod_meta_cache: dict[str, tuple[set[str], bool, dict[str, ast.arguments]]] = {}
+
+    def _get_mod_meta(mod_name: str) -> tuple[set[str], bool, dict[str, ast.arguments]] | None:
+        if mod_name in mod_meta_cache:
+            return mod_meta_cache[mod_name]
+        rel_m = mod_to_rel.get(mod_name)
+        if not rel_m:
+            return None
+        _, m_tree, m_err = parse_module_cached(root / rel_m, rel_m, parsed_cache)
+        if m_err is not None or m_tree is None:
+            return None
+        meta = _collect_module_exports_and_funcs(m_tree)
+        mod_meta_cache[mod_name] = meta
+        return meta
+
+    target_rels = [r for r in _normalize_target_rels(root, rel_paths) if _is_prod_python_rel(r)]
+    violations: list[str] = []
+    for rel_s in target_rels:
+        _, tree, syntax_err = parse_module_cached(root / rel_s, rel_s, parsed_cache)
+        if syntax_err is not None or tree is None:
+            continue
+        # Collect locally redefined top-level names so we don't flag shadowed calls
+        local_defs = {
+            n.name
+            for n in tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        }
+        sym_map: dict[str, tuple[str, str]] = {}
+        mod_alias: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name in mod_to_rel:
+                        mod_alias[a.asname or a.name] = a.name
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in mod_to_rel:
+                src_mod = node.module
+                meta = _get_mod_meta(src_mod)
+                if meta is None:
+                    continue
+                exports, is_dynamic, _ = meta
+                for a in node.names:
+                    if a.name == "*":
+                        continue
+                    local_name = a.asname or a.name
+                    if local_name not in local_defs:
+                        sym_map[local_name] = (src_mod, a.name)
+                    if not is_dynamic and a.name not in exports and f"{src_mod}.{a.name}" not in mod_to_rel:
+                        violations.append(
+                            f"{rel_s}:{node.lineno}: broken local import `from {src_mod} import {a.name}`"
+                        )
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            target_info: tuple[str, ast.arguments] | None = None
+            if isinstance(node.func, ast.Name) and node.func.id in sym_map:
+                src_mod, orig = sym_map[node.func.id]
+                meta = _get_mod_meta(src_mod)
+                if meta is not None and orig in meta[2]:
+                    target_info = (f"{src_mod}.{orig}", meta[2][orig])
+            elif (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in mod_alias
+            ):
+                src_mod = mod_alias[node.func.value.id]
+                orig = node.func.attr
+                meta = _get_mod_meta(src_mod)
+                if meta is not None and orig in meta[2]:
+                    target_info = (f"{src_mod}.{orig}", meta[2][orig])
+            if target_info is not None:
+                if err := _check_call_against_signature(node, target_info[1]):
+                    violations.append(f"{rel_s}:{node.lineno}: call to {target_info[0]}() {err}")
+    return violations
+
+
+# -- Audit 12: Canonical cachedb subdomain path & JSONL reader purity ----------
+
+_CACHEDB_SUBDOMAIN_TOKENS = frozenset({
+    "prices", "trends", "macro", "orders", "state", "telemetry", "system", "heartbeat",
+})
+_RAW_CACHEDIR_VAR_RE = re.compile(r"(?:^|_)(?:cache_dir|cachedb_dir|cdir|eff_dir)$")
+_JSONL_CACHE_PATH_HINT_RE = re.compile(
+    r"(?:\.jsonl\b|cache_(?:24|365|sparse)_price_|cache_asset_value|cache_trade_binance|order_retry_queue)",
+    re.I,
+)
+_JSON_DICT_READER_NAMES = frozenset({
+    "read_json_dict", "read_json_dict_cached", "read_json_recovering", "read_json_dict_recovering",
+})
+_CACHEDB_PATH_PURITY_EXEMPT = frozenset({"cachepaths.py", "state_io.py"})
+
+
+def audit_cachedb_path_and_jsonl_purity_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Enforce resolved cachedb subdomain checks and prevent JSON dict readers on JSONL cache files."""
+    root = Path(root)
+    target_rels = [
+        r
+        for r in _normalize_target_rels(root, rel_paths)
+        if _is_prod_python_rel(r) and r not in _CACHEDB_PATH_PURITY_EXEMPT
+    ]
+    violations: list[str] = []
+    for rel_s in target_rels:
+        _, tree, syntax_err = parse_module_cached(root / rel_s, rel_s, _parsed_cache)
+        if syntax_err is not None or tree is None:
+            continue
+        for fn_node in ast.walk(tree):
+            if not isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            raw_joined_vars: dict[str, int] = {}
+            for node in ast.walk(fn_node):
+                # Track `var = os.path.join(cache_dir, ...)` without resolve_cachedb_filepath / explicit subdomain
+                if (
+                    isinstance(node, ast.Assign)
+                    and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Attribute)
+                    and node.value.func.attr == "join"
+                    and isinstance(node.value.func.value, ast.Attribute)
+                    and node.value.func.value.attr == "path"
+                    and len(node.value.args) == 2
+                ):
+                    arg0 = node.value.args[0]
+                    if isinstance(arg0, ast.Name) and _RAW_CACHEDIR_VAR_RE.search(arg0.id):
+                        has_subdomain_arg = any(
+                            isinstance(a, ast.Constant)
+                            and isinstance(a.value, str)
+                            and a.value.strip("/") in _CACHEDB_SUBDOMAIN_TOKENS
+                            for a in node.value.args[1:]
+                        )
+                        if not has_subdomain_arg:
+                            raw_joined_vars[node.targets[0].id] = node.lineno
+                # Check direct FS calls on unresolved raw_joined_vars
+                if isinstance(node, ast.Call) and node.args:
+                    call_s = ast.unparse(node.func)
+                    if call_s in (
+                        "os.path.exists", "os.path.isfile", "os.path.getmtime", "os.stat",
+                    ) and isinstance(node.args[0], ast.Name) and node.args[0].id in raw_joined_vars:
+                        var_name = node.args[0].id
+                        violations.append(
+                            f"{rel_s}:{node.lineno}: {call_s}({var_name}) on unresolved os.path.join(cache_dir, ...) "
+                            f"from line {raw_joined_vars[var_name]} (use resolve_cachedb_filepath or state_io.cachedb_exists)"
+                        )
+                    # Check JSON dict readers called directly on known JSONL cache path literals
+                    fn_attr = (
+                        node.func.id
+                        if isinstance(node.func, ast.Name)
+                        else (node.func.attr if isinstance(node.func, ast.Attribute) else "")
+                    )
+                    if fn_attr in _JSON_DICT_READER_NAMES:
+                        arg0_s = ast.unparse(node.args[0])
+                        if _JSONL_CACHE_PATH_HINT_RE.search(arg0_s) and ".meta" not in arg0_s and ".json\"" not in arg0_s and ".json'" not in arg0_s:
+                            violations.append(
+                                f"{rel_s}:{node.lineno}: {fn_attr}({arg0_s[:80]}) called on JSONL cache path "
+                                "(use read_jsonl_bucket_map / read_jsonl_or_json_dict_cached)"
+                            )
+    return violations
+
+
 # -- Combined SSOT AST audit runner --------------------------------------------
 
 def audit_all_ssot_ast(
@@ -1517,6 +1798,8 @@ def audit_all_ssot_ast(
         *audit_evaluator_clock_purity_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
         *audit_equity_quote_provenance_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
         *audit_signed_zero_format_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
+        *audit_cross_module_calls_and_imports_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
+        *audit_cachedb_path_and_jsonl_purity_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
     ):
         if err not in seen:
             seen.add(err)

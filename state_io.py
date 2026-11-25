@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+from dataclasses import dataclass
 import fcntl
 from functools import partial
 import glob
@@ -55,6 +56,19 @@ def _resolve_target_path(path: Any, *, abspath: bool = False, migrate: bool = Fa
         resolve_cachedb_filepath(raw, migrate=True) if migrate else resolve_cachedb_filepath(raw)
     )
     return os.path.abspath(resolved) if abspath else resolved
+
+
+def cachedb_exists(path: Any, *, include_previous: bool = True) -> bool:
+    """Return True if ``path`` (resolved via canonical ``cachedb/<subdomain>/`` layout) exists on disk."""
+    try:
+        resolved = _resolve_target_path(path)
+    except (TypeError, ValueError):
+        return False
+    if os.path.exists(resolved):
+        return True
+    if include_previous and os.path.exists(previous_generation_path(resolved)):
+        return True
+    return False
 
 
 def _json_dump_kwargs(
@@ -1650,8 +1664,23 @@ def _looks_like_jsonl_bucket_file(path: str) -> bool:
     return False
 
 
+@dataclass(frozen=True, slots=True)
+class _JsonlMemoEntry:
+    """Immutable atomic pairing of a memoized JSONL document and its byte-offset tail cursor."""
+
+    sig: tuple[Any, ...]
+    doc: dict[str, Any]
+    dev_ino: tuple[int, int] | None = None
+    offset: int = 0
+    anchor: bytes = b""
+
+    @property
+    def has_cursor(self) -> bool:
+        return self.dev_ino is not None and self.offset > 0
+
+
 _JSONL_CACHED_CURSOR_LOCK = threading.Lock()
-_JSONL_CACHED_CURSORS: dict[tuple[int, str], tuple[int, tuple[int, int], int, bytes]] = {}
+_JSONL_MEMO_ENTRIES: dict[tuple[int, str], _JsonlMemoEntry] = {}
 
 
 def read_jsonl_or_json_dict_cached(
@@ -1660,7 +1689,7 @@ def read_jsonl_or_json_dict_cached(
     *, max_entries: int = 32,
 ) -> dict[str, Any] | None:
     """Stat-memoized reader supporting both JSONL bucket files (``{'s', 'i'}``) and legacy JSON dicts,
-    with thread-safe incremental byte-offset tailing on appended JSONL files."""
+    with thread-safe incremental byte-offset tailing bound atomically to the cached document."""
     try:
         resolved = _resolve_target_path(path)
     except Exception:
@@ -1673,12 +1702,15 @@ def read_jsonl_or_json_dict_cached(
         return None
     cache_store = _JSON_DICT_MEMO if memo is None else memo
     sig = (st_main, st_bak, read_recovering_previous, json.load, "jsonl")
-    cursor_key = (id(cache_store), resolved)
+    entry_key = (id(cache_store), resolved)
     with _JSONL_CACHED_CURSOR_LOCK:
         cached = cache_store.get(resolved)
         if cached is not None and cached[0] == sig:
             return cached[1]
-        prev_cursor = _JSONL_CACHED_CURSORS.get(cursor_key)
+        prev_entry = _JSONL_MEMO_ENTRIES.get(entry_key)
+        # If an external caller overwrote or cleared `memo[resolved]`, discard any mismatched entry atomically.
+        if prev_entry is not None and (cached is None or cached[1] is not prev_entry.doc):
+            prev_entry = None
     main_is_jsonl = st_main is not None and _looks_like_jsonl_bucket_file(resolved)
     if not main_is_jsonl:
         bak_is_jsonl = st_bak is not None and _looks_like_jsonl_bucket_file(backup_path)
@@ -1690,25 +1722,25 @@ def read_jsonl_or_json_dict_cached(
         ):
             return read_json_dict_cached(resolved, memo, max_entries=max_entries)
 
-    prev_res = cached[1] if (cached is not None and isinstance(cached[1], dict)) else None
-    prev_items = prev_res.get("items") if (prev_res is not None and isinstance(prev_res.get("items"), dict)) else None
+    prev_items = (
+        prev_entry.doc.get("items")
+        if (prev_entry is not None and isinstance(prev_entry.doc.get("items"), dict))
+        else None
+    )
     bucket_map: dict[str, list[Any]] = {}
-    new_cursor: tuple[tuple[int, int], int, bytes] | None = None
+    new_dev_ino: tuple[int, int] | None = None
+    new_offset = 0
+    new_anchor = b""
 
     if st_main is not None and os.path.exists(resolved):
         try:
-            can_tail = (
-                prev_cursor is not None
-                and prev_res is not None
-                and prev_cursor[0] == id(prev_res)
-                and bool(prev_items)
-            )
-            parsed_map, had_bad, next_off, dev_ino, new_anchor, inc_used = (
+            can_tail = prev_entry is not None and prev_entry.has_cursor and bool(prev_items)
+            parsed_map, had_bad, next_off, dev_ino, anchor_b, inc_used = (
                 read_jsonl_bucket_map_from_offset(
                     resolved,
-                    start_offset=prev_cursor[2] if can_tail else 0,
-                    expected_dev_ino=prev_cursor[1] if can_tail else None,
-                    expected_anchor=prev_cursor[3] if can_tail else b"",
+                    start_offset=prev_entry.offset if can_tail else 0,
+                    expected_dev_ino=prev_entry.dev_ino if can_tail else None,
+                    expected_anchor=prev_entry.anchor if can_tail else b"",
                     allow_full_fallback=True,
                 )
             )
@@ -1722,7 +1754,7 @@ def read_jsonl_or_json_dict_cached(
             else:
                 bucket_map = parsed_map
             if not had_bad and dev_ino is not None and next_off > 0 and bucket_map:
-                new_cursor = (dev_ino, next_off, new_anchor)
+                new_dev_ino, new_offset, new_anchor = dev_ino, next_off, anchor_b
         except Exception:
             bucket_map = {}
 
@@ -1731,29 +1763,33 @@ def read_jsonl_or_json_dict_cached(
             parsed_map, _ = read_jsonl_bucket_map(backup_path)
             if parsed_map:
                 bucket_map = parsed_map
-                new_cursor = None
+                new_dev_ino, new_offset, new_anchor = None, 0, b""
         except Exception:
             pass
 
     if not bucket_map:
         with _JSONL_CACHED_CURSOR_LOCK:
-            _JSONL_CACHED_CURSORS.pop(cursor_key, None)
+            _JSONL_MEMO_ENTRIES.pop(entry_key, None)
         return None
     res: dict[str, Any] = {"items": bucket_map}
+    new_entry = _JsonlMemoEntry(
+        sig=sig,
+        doc=res,
+        dev_ino=new_dev_ino,
+        offset=new_offset,
+        anchor=new_anchor,
+    )
     with _JSONL_CACHED_CURSOR_LOCK:
         if resolved in cache_store:
             cache_store.pop(resolved, None)
         cache_store[resolved] = (sig, res)
-        if new_cursor is not None:
-            _JSONL_CACHED_CURSORS[cursor_key] = (id(res), new_cursor[0], new_cursor[1], new_cursor[2])
-        else:
-            _JSONL_CACHED_CURSORS.pop(cursor_key, None)
+        _JSONL_MEMO_ENTRIES[entry_key] = new_entry
         for old_key in list(cache_store)[: max(0, len(cache_store) - max_entries)]:
             cache_store.pop(old_key, None)
-            _JSONL_CACHED_CURSORS.pop((id(cache_store), old_key), None)
-        if len(_JSONL_CACHED_CURSORS) > max(64, max_entries * 4):
-            for stale_ck in list(_JSONL_CACHED_CURSORS)[: len(_JSONL_CACHED_CURSORS) - max(64, max_entries * 2)]:
-                _JSONL_CACHED_CURSORS.pop(stale_ck, None)
+            _JSONL_MEMO_ENTRIES.pop((id(cache_store), old_key), None)
+        if len(_JSONL_MEMO_ENTRIES) > max(64, max_entries * 4):
+            for stale_ck in list(_JSONL_MEMO_ENTRIES)[: len(_JSONL_MEMO_ENTRIES) - max(64, max_entries * 2)]:
+                _JSONL_MEMO_ENTRIES.pop(stale_ck, None)
     return res
 
 
