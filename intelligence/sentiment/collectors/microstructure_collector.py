@@ -1775,6 +1775,12 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     eq_sess = resolve_symbol_market_session(ticker, eff_now)
                 except Exception:
                     t_rth_open = False
+            cp_sess = ""
+            if has_equity_suffix(ticker) and cp_ts_s_eq > 0.0:
+                try:
+                    cp_sess = resolve_symbol_market_session(ticker, cp_ts_s_eq)
+                except Exception:
+                    cp_sess = ""
             cp_in_active_ext_sess = bool(
                 has_equity_suffix(ticker)
                 and not t_rth_open
@@ -1782,7 +1788,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 and cp_pt is not None
                 and cp_pt[1] > 0.0
                 and 0.0 <= (eff_now - cp_ts_s_eq) <= 20.0 * 60.0
-                and resolve_symbol_market_session(ticker, cp_ts_s_eq) == eq_sess
+                and cp_sess == eq_sess
             )
             cp_is_fresher_ext = bool(
                 cp_in_active_ext_sess
@@ -1797,6 +1803,29 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 if cached_t212_px is not None and abs(ext_live_px - cached_t212_px) / max(ext_live_px, cached_t212_px) >= 0.0005:
                     t_entry["t212_close_px"] = cached_t212_px
                     t_entry["ext_vs_rth_pct"] = round(((ext_live_px - cached_t212_px) / cached_t212_px) * 100.0, 2)
+                else:
+                    t_entry.pop("t212_close_px", None)
+                    t_entry.pop("ext_vs_rth_pct", None)
+                continue
+            cp_is_fresher_ext_close = bool(
+                has_equity_suffix(ticker)
+                and not t_rth_open
+                and not cp_in_active_ext_sess
+                and cp_pt is not None
+                and cp_pt[1] > 0.0
+                and cp_ts_s_eq > (pos_ts_val or 0.0) + 1.0
+                and 0.0 <= (eff_now - cp_ts_s_eq) <= 14 * 86400.0
+                and cp_sess in ("PRE", "POST")
+            )
+            if cp_is_fresher_ext_close and cp_pt is not None:
+                ext_close_px = round(cp_pt[1], 4)
+                t_entry["price"] = ext_close_px
+                t_entry["quote_source"] = "yahoo_ext_cached"
+                t_entry.pop("market_state", None)
+                t_entry["quote_age_min"] = round(max(0.0, eff_now - cp_ts_s_eq) / 60.0, 1)
+                if cached_t212_px is not None and abs(ext_close_px - cached_t212_px) / max(ext_close_px, cached_t212_px) >= 0.0005:
+                    t_entry["t212_close_px"] = cached_t212_px
+                    t_entry["ext_vs_rth_pct"] = round(((ext_close_px - cached_t212_px) / cached_t212_px) * 100.0, 2)
                 else:
                     t_entry.pop("t212_close_px", None)
                     t_entry.pop("ext_vs_rth_pct", None)
@@ -2019,6 +2048,8 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     for k_7d_opt in ("major_swing_low_px", "rally_from_major_low_pct", "recent_swings_7d", "avg_swing_amp_7d_pct"):
                         pt_map[sym].pop(k_7d_opt, None)
                     pt_map[sym].update(compute_7d_range_metrics(vals_5d, decimals=4))
+                    pt_map[sym].pop("is_partial_7d", None)
+                    pt_map[sym].pop("span_7d_hours", None)
                     active_7d_vals = list(vals_5d)
         except Exception:
             pass
@@ -2144,9 +2175,11 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 pt_map[sym].pop(k_7d_opt, None)
             pt_map[sym].update(compute_7d_range_metrics(arch_vals_7d, decimals=4 if is_eq_sym else None))
             active_7d_vals = list(arch_vals_7d)
-            if 0.0 <= arch_span_7d_ms < 5 * 86400 * 1000:
+            min_full_7d_ms = (48 * 3600 * 1000) if is_eq_sym else (5 * 86400 * 1000)
+            if 0.0 <= arch_span_7d_ms < min_full_7d_ms:
                 pt_map[sym]["_partial_7d_span_ms"] = arch_span_7d_ms
-                if not is_eq_sym and arch_span_7d_ms > 0.0:
+                eq_has_24h_ctx = (not is_eq_sym) or ("chg_24h_pct" in m24) or (span_24h_ms >= 18 * 3600 * 1000)
+                if arch_span_7d_ms > 0.0 and eq_has_24h_ctx:
                     pt_map[sym]["is_partial_7d"] = True
                     pt_map[sym]["span_7d_hours"] = round(arch_span_7d_ms / 3600000.0, 1)
                 else:
@@ -2235,6 +2268,36 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 t212_cached_px,
                 eff_now,
             )
+        if is_eq_sym and not pt_map[sym].get("quote_source"):
+            cp_raw_eq = casefold_get(cp_map, sym) if isinstance(cp_map, dict) else None
+            cp_pt_eq = parse_ts_px_row(cp_raw_eq[-1]) if isinstance(cp_raw_eq, list) and cp_raw_eq else None
+            q_pt_eq = (
+                cp_pt_eq
+                if (cp_pt_eq is not None and cp_pt_eq[0] > 1e11)
+                else (raw_s24_last_pt if (raw_s24_last_pt is not None and raw_s24_last_pt[0] > 1e11) else None)
+            )
+            if q_pt_eq is not None:
+                q_ts_s_eq = q_pt_eq[0] / 1000.0
+                if 0.0 <= (eff_now - q_ts_s_eq) <= 14 * 86400.0:
+                    if pt_map[sym].get("quote_age_min") is None:
+                        pt_map[sym]["quote_age_min"] = round(max(0.0, eff_now - q_ts_s_eq) / 60.0, 1)
+                    if not pt_map[sym].get("quote_source"):
+                        try:
+                            eq_open_fb = bool(is_symbol_market_open(sym, eff_now))
+                            now_sess_fb = resolve_symbol_market_session(sym, eff_now)
+                            q_sess_fb = resolve_symbol_market_session(sym, q_ts_s_eq)
+                        except Exception:
+                            eq_open_fb, now_sess_fb, q_sess_fb = False, "", ""
+                        q_is_recent = (eff_now - q_ts_s_eq) <= 20.0 * 60.0
+                        if eq_open_fb and q_is_recent:
+                            pt_map[sym]["quote_source"] = "yahoo_rth"
+                        elif not eq_open_fb and now_sess_fb in ("PRE", "POST") and q_sess_fb == now_sess_fb and q_is_recent:
+                            pt_map[sym]["quote_source"] = "yahoo_ext"
+                            pt_map[sym]["market_state"] = now_sess_fb
+                        elif q_sess_fb in ("PRE", "POST"):
+                            pt_map[sym]["quote_source"] = "yahoo_ext_cached"
+                        else:
+                            pt_map[sym]["quote_source"] = "yahoo_rth_close"
         if m24:
             if is_eq_sym and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")):
                 for k_stale_15m in ("recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
@@ -2246,6 +2309,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 matched_series_24h,
                 eff_now,
                 post_rth_series_replaced=post_rth_series_replaced,
+                include_kinematics=True,
             )
             if post_rth_px_override is not None:
                 recalculate_live_price_geometry(pt_map[sym], post_rth_px_override)

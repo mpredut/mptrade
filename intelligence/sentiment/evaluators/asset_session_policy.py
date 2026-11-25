@@ -478,13 +478,15 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
         include_kinematics: bool = False,
         has_series_tail: bool = True,
     ) -> None:
-        if not isinstance(entry, dict) or post_rth_series_replaced:
+        if not isinstance(entry, dict):
             return
         q_age_min = safe_nonneg_float(entry.get("quote_age_min"), default=None)
         if q_age_min is not None and q_age_min > CLOSED_EQUITY_QUOTE_AGE_MIN:
             for k_closed in CLOSED_EQUITY_INTRADAY_KEYS:
                 m24.pop(k_closed, None)
                 entry.pop(k_closed, None)
+        if post_rth_series_replaced:
+            return
         if not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct")):
             for k_stale_90 in (
                 "slope_90s",

@@ -3600,3 +3600,144 @@ def test_audit_findings_balance_parity_ohlc_cache_jsonl_ledger_intents_transfer_
     assert len(detect_calls) == 2  # Exactly 1 computation for cycle 1 and 1 for cycle 2 (NOT 2 on flip!)
     assert len(draw_calls) == 2 and draw_calls[-1][1] == "down"
     assert pa_state["last_draw_ts"]["BTCUSDC"] == 1120.0
+
+
+def test_cycle4_equity_post_close_provenance_kinematics_and_partial_7d(tmp_path):
+    """Cycle 4 overnight audit fixes:
+    1. After US post-market closes (20:00 ET), _seed_t212_positions preserves the fresher 19:59 ET
+       POST-close cache_current_price (yahoo_ext_cached + t212_close_px + ext_vs_rth_pct) instead of
+       reverting 4h backward to stale 16:00 ET pos:t212 RTH close or mislabeling post-close as t212_rth_close.
+    2. KrakenXstocksCollector reports underlying_session='EXT_CLOSE' for yahoo_ext_cached siblings.
+    3. Unseeded observe-only equities (e.g. AMD_US_EQ) receive quote_source/quote_age_min from cache_current_price,
+       prune closed intraday deltas (15m/30m/1h) + stale 90s/5m kinematics, and flag partial <48h 7d archives.
+    4. prune_stale_short_metrics prunes CLOSED_EQUITY_INTRADAY_KEYS when quote_age_min > 30m even if
+       post_rth_series_replaced is True.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from intelligence.sentiment.collectors.microstructure_collector import Fleet24hAndMicrostructureEnricher
+    from intelligence.sentiment.collectors.portfolio_collector import KrakenXstocksCollector
+    from intelligence.sentiment.evaluators.asset_session_policy import EquityRthSessionPolicy
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+    from state_io import save_json_state
+
+    ny_tz = ZoneInfo("America/New_York")
+    ts_rth_close = datetime(2026, 11, 24, 15, 59, 0, tzinfo=ny_tz).timestamp()
+    ts_post_close = datetime(2026, 11, 24, 19, 59, 50, tzinfo=ny_tz).timestamp()
+    ts_closed_now = datetime(2026, 11, 24, 20, 35, 0, tzinfo=ny_tz).timestamp()  # 35m after POST close
+
+    # --- C4.1: Overnight CLOSED preserves fresher POST-close quote instead of regressing to 4h-older RTH close ---
+    pt_seed = {
+        "ANT_US_EQ": {"price": 80.04, "trend": 0, "growth_coefficient": 0.0},
+        "NVDA_US_EQ": {"price": 151.90, "trend": 0, "growth_coefficient": 0.0},
+        "SPCX_US_EQ": {"price": 125.07, "trend": 0, "growth_coefficient": 0.0},
+    }
+    cp_seed = {
+        "ANT_US_EQ": [[int(ts_post_close * 1000), 80.04]],
+        "NVDA_US_EQ": [[int(ts_post_close * 1000), 151.90]],
+        "SPCX_US_EQ": [[int(ts_post_close * 1000), 125.07]],
+    }
+    cached_bals = {
+        "pos:t212:ANT_US_EQ": {"symbol": "ANT_US_EQ", "free": 0.0, "price": 82.56, "ts": ts_rth_close},
+        "pos:t212:NVDA_US_EQ": {"symbol": "NVDA_US_EQ", "free": 0.0, "price": 155.05, "ts": ts_rth_close},
+        "pos:t212:SPCX_US_EQ": {"symbol": "SPCX_US_EQ", "free": 2.2, "price": 125.74, "ts": ts_rth_close},
+    }
+    # Empty inst_map mimics auto_cryptotrade_executor (and observe-only ANT_US_EQ in auto_sharetrade_executor)
+    Fleet24hAndMicrostructureEnricher._seed_t212_positions(
+        "", pt_seed, cp_seed, {}, cached_bals, "", 0.0, ts_closed_now, lambda _p: None, False
+    )
+    assert pt_seed["ANT_US_EQ"]["price"] == pytest.approx(80.04)
+    assert pt_seed["ANT_US_EQ"]["quote_source"] == "yahoo_ext_cached"
+    assert pt_seed["ANT_US_EQ"]["quote_age_min"] == pytest.approx(35.2, abs=0.2)
+    assert pt_seed["ANT_US_EQ"]["t212_close_px"] == pytest.approx(82.56)
+    assert pt_seed["ANT_US_EQ"]["ext_vs_rth_pct"] == pytest.approx(-3.05, abs=0.05)
+    assert "market_state" not in pt_seed["ANT_US_EQ"]
+    assert pt_seed["NVDA_US_EQ"]["price"] == pytest.approx(151.90)
+    assert pt_seed["NVDA_US_EQ"]["quote_source"] == "yahoo_ext_cached"
+    assert pt_seed["SPCX_US_EQ"]["price"] == pytest.approx(125.07)
+    assert pt_seed["SPCX_US_EQ"]["quote_source"] == "yahoo_ext_cached"
+
+    # --- C4.2: KrakenXstocksCollector marks yahoo_ext_cached sibling as EXT_CLOSE ---
+    k_dir = tmp_path / "kraken_ext_close"
+    k_dir.mkdir()
+    save_json_state(str(k_dir / "xstock_state.json"), {"known_assets": {"SPCXx": 12.0}, "pair": "SPCXxUSD"})
+    xst = KrakenXstocksCollector(start_sync=False).collect(
+        str(k_dir),
+        kraken_dir=str(k_dir),
+        prices_and_trends={
+            "SPCXxUSD": {"price": 125.60},
+            "SPCX_US_EQ": dict(pt_seed["SPCX_US_EQ"]),
+        },
+        all_t212_cycles={},
+    )
+    assert xst is not None
+    assert xst["underlying_live_price"] == pytest.approx(125.07)
+    assert xst["underlying_session"] == "EXT_CLOSE"
+    assert xst["xstock_vs_underlying_pct"] == pytest.approx(0.42, abs=0.02)
+
+    # --- C4.3: Unseeded observe-only AMD_US_EQ gets quote_source/age, prunes closed 15m/1h & 90s/5m kinematics, flags <48h 7d ---
+    cdir = tmp_path / "cachedb_amd"
+    pdir = cdir / "prices"
+    pdir.mkdir(parents=True)
+    # 24h series ending at 19:59:50 ET (35m before ts_closed_now) with realistic intraday moves
+    pts_24 = [
+        [int((ts_post_close - 24 * 3600) * 1000), 447.75],
+        [int((ts_post_close - 3600) * 1000), 411.50],
+        [int((ts_post_close - 900) * 1000), 408.50],
+        [int((ts_post_close - 300) * 1000), 408.70],
+        [int((ts_post_close - 90) * 1000), 408.60],
+        [int(ts_post_close * 1000), 408.393],
+    ]
+    (pdir / "cache_24_price_AMD_US_EQ.json").write_text(
+        json.dumps({"items": {"AMD_US_EQ": pts_24}}),
+        encoding="utf-8",
+    )
+    # Newly-added 7h archive (far shorter than 48h!)
+    pts_arch = [
+        {"s": "AMD_US_EQ", "i": [int((ts_post_close - 7 * 3600) * 1000), 412.47]},
+        {"s": "AMD_US_EQ", "i": [int(ts_post_close * 1000), 408.393]},
+    ]
+    (pdir / "cache_365_price_AMD_US_EQ.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in pts_arch) + "\n",
+        encoding="utf-8",
+    )
+    pt_amd = {"AMD_US_EQ": {"price": 408.393, "trend": 0, "growth_coefficient": 0.0}}
+    cp_amd = {"AMD_US_EQ": [[int(ts_post_close * 1000), 408.393]]}
+    Fleet24hAndMicrostructureEnricher._enrich_primary_symbol_series(
+        str(cdir),
+        "",
+        "AMD_US_EQ",
+        pt_amd,
+        cp_amd,
+        {},
+        [],
+        [],
+        set(),
+        {},
+        {},
+        ts_closed_now,
+        False,
+    )
+    amd_e = pt_amd["AMD_US_EQ"]
+    assert amd_e.get("quote_source") == "yahoo_ext_cached"
+    assert amd_e.get("quote_age_min") == pytest.approx(35.2, abs=0.2)
+    assert "chg_15m_pct" not in amd_e
+    assert "chg_1h_pct" not in amd_e
+    assert "vel_90s_pct_min" not in amd_e
+    assert "vel_5m_pct_min" not in amd_e
+    assert amd_e.get("is_partial_7d") is True
+    assert amd_e.get("span_7d_hours") == pytest.approx(7.0, abs=0.5)
+    # Cross-market equity bellwether also omits bogus 7d and closed 15m/1h deltas
+    cmc = build_cross_market_context(pt_amd, {})
+    amd_bw = cmc["equity_bellwethers"]["AMD_US_EQ"]
+    assert amd_bw["quote_source"] == "yahoo_ext_cached"
+    assert "chg_15m_pct" not in amd_bw and "chg_1h_pct" not in amd_bw and "chg_7d_pct" not in amd_bw
+
+    # --- C4.4: Closed quote (>30m old) prunes intraday keys even when post_rth_series_replaced=True ---
+    pol = EquityRthSessionPolicy()
+    closed_entry = {"quote_age_min": 180.0, "chg_15m_pct": 3.46, "chg_30m_pct": 3.72, "chg_1h_pct": 2.45}
+    closed_m24 = {"chg_15m_pct": 3.46, "chg_30m_pct": 3.72, "chg_1h_pct": 2.45, "chg_24h_pct": -5.27}
+    pol.prune_stale_short_metrics(closed_entry, closed_m24, [], ts_closed_now, post_rth_series_replaced=True)
+    assert "chg_15m_pct" not in closed_entry and "chg_1h_pct" not in closed_entry
+    assert "chg_15m_pct" not in closed_m24 and "chg_24h_pct" in closed_m24

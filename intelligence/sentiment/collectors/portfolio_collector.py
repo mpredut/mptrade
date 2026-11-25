@@ -1351,6 +1351,8 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
                     sib_mstate = "REGULAR"
                 elif sib_qsrc == "t212_rth_close":
                     sib_mstate = "RTH_CLOSE"
+                elif sib_qsrc == "yahoo_ext_cached":
+                    sib_mstate = "EXT_CLOSE"
                 else:
                     sib_mstate = resolve_symbol_market_session(t212_sib)
             xst_summary["underlying_live_price"] = round(sib_px, 4)
