@@ -1178,11 +1178,13 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         # check memoization under lock before copying, and snapshot at most once across all windows.
         if hasattr(c24, "cache") and hasattr(c24, "lock"):
             all_entries = None
+            slice_offset = 0
             pending: list[tuple[int, int, float, str]] = []
             with c24.lock:
                 raw_entries = casefold_get(c24.cache, c24_sym, [])
                 copied_raw = False
-                if not isinstance(raw_entries, (list, tuple)):
+                has_fast_bisect = hasattr(raw_entries, "bisect_left_ts")
+                if not has_fast_bisect and not isinstance(raw_entries, (list, tuple)):
                     if isinstance(raw_entries, (str, bytes, dict)) or not hasattr(raw_entries, "__iter__"):
                         raw_entries = ()
                     else:
@@ -1196,8 +1198,12 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                         newest_ts_ms, _ = newest_tick
                         for clamped, w_key in requests:
                             cutoff_ms = math.trunc((now_val - clamped) * 1000)
-                            a = bisect.bisect_left(
-                                raw_entries, cutoff_ms, key=self._c24_entry_ts_ms
+                            a = (
+                                raw_entries.bisect_left_ts(cutoff_ms)
+                                if has_fast_bisect
+                                else bisect.bisect_left(
+                                    raw_entries, cutoff_ms, key=self._c24_entry_ts_ms
+                                )
                             )
                             n_samples = b - a + 1
                             if n_samples < 3:
@@ -1214,10 +1220,21 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                             else:
                                 pending.append((a, b, clamped, w_key))
                         if pending:
-                            all_entries = raw_entries if copied_raw else list(raw_entries)
+                            if copied_raw:
+                                all_entries = raw_entries
+                            else:
+                                slice_offset = min(a for a, _, _, _ in pending)
+                                all_entries = list(raw_entries[slice_offset:])
             for a, b, clamped, w_key in pending:
                 dyn = self._eval_and_persist_window_slice(
-                    c24_sym, all_entries, a, b, clamped, w_key, now_val, check_memo=False
+                    c24_sym,
+                    all_entries,
+                    a - slice_offset,
+                    b - slice_offset,
+                    clamped,
+                    w_key,
+                    now_val,
+                    check_memo=False,
                 )
                 if dyn is not None:
                     results[w_key] = dyn

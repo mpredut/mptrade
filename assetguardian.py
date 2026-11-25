@@ -348,6 +348,41 @@ def _read_symbol_price_rows(symbol):
         return []
 
 
+_ORIG_READ_SYMBOL_PRICE_ROWS = _read_symbol_price_rows
+
+
+def _read_symbol_window_arrays(symbol, target_ts, now_ts):
+    """Read ``(ts_sec_float64, px_float64)`` directly from compact 24h buffers when unpatched."""
+    if _read_symbol_price_rows is not _ORIG_READ_SYMBOL_PRICE_ROWS:
+        return _extract_window_arrays(_read_symbol_price_rows(symbol), target_ts, now_ts)
+    try:
+        managers = get_24_price_manager(symbols=list(TRACKED_SYMBOLS))
+        manager = casefold_get(managers, symbol) if isinstance(managers, dict) else None
+        if manager is None:
+            print(f"ERROR 24Price manager missing for {symbol}")
+            return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)
+        if hasattr(manager, "get_series_arrays"):
+            since_ms = max(0, math.trunc(target_ts * 1000.0) - 1000)
+            ts_ms_arr, px_arr = manager.get_series_arrays(symbol, since_ms=since_ms, resync=True)
+            print(f"[DEBUG] {symbol} 24Price rows loaded: {ts_ms_arr.size}")
+            if not ts_ms_arr.size:
+                return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)
+            ts_f64 = ts_ms_arr.astype(np.float64)
+            ts_sec = np.where(ts_ms_arr >= 100_000_000_000, ts_f64 * 1e-3, ts_f64)
+            mask = (
+                np.isfinite(ts_sec)
+                & np.isfinite(px_arr)
+                & (px_arr > 0.0)
+                & (ts_sec >= target_ts)
+                & (ts_sec <= now_ts)
+            )
+            return ts_sec[mask], px_arr[mask]
+        return _extract_window_arrays(_read_symbol_price_rows(symbol), target_ts, now_ts)
+    except Exception as e:
+        print(f"ERROR reading 24Price cache for {symbol}: {e}")
+        return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)
+
+
 def _volatility_mult_bounds():
     """Derive symmetric volatility multiplier bounds from configured discount parameters."""
     max_swing = min(0.45, PORTFOLIO_SELL_MAX_DISCOUNT * (1.0 + PORTFOLIO_SELL_MAX_DISCOUNT))
@@ -706,7 +741,7 @@ def _get_symbol_window_extrema(symbol, current_price,
     now_ts = time.time() * 1.0
     target_ts = now_ts - minutes_back * 60.0
 
-    cached_ts, cached_px = _extract_window_arrays(_read_symbol_price_rows(symbol), target_ts, now_ts)
+    cached_ts, cached_px = _read_symbol_window_arrays(symbol, target_ts, now_ts)
     cached_ts, cached_px = _sort_and_dedup_ts_px(cached_ts, cached_px)
 
     if cached_px.size >= 5:

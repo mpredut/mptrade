@@ -2630,6 +2630,113 @@ def test_orders_state_skip_if_unchanged_and_filled_touch_no_resurrection(tmp_pat
     assert fsync_calls == []
 
 
+def test_compact_price_series_3col_5col_cache24_short_trend_and_assetguardian_fastpath(tmp_path, monkeypatch):
+    """Verify CompactPriceSeries lazy 3-col/5-col OHLCV support, Cache24PriceManager compact storage
+    (.jsonl append + compact + reload + legacy .json), and AssetGuardian/CacheShortTrend zero-copy fast-paths."""
+    import numpy as np
+    import assetguardian
+    import cacheprice
+    import cachetrend
+
+    # 1. CompactPriceSeries: 0 bytes _vol/_extra for 2-col crypto, lossless lazy 3-col & 5-col OHLCV for equities
+    s2 = cacheprice.CompactPriceSeries([[1_795_000_000_000, 60000.0], [1_795_000_001_000, 60010.0]])
+    assert s2._vol is None and s2._extra is None
+    assert s2.has_positive_volume() is False
+    assert s2.bisect_left_ts(1_795_000_000_500) == 1
+    assert list(s2) == [[1_795_000_000_000, 60000.0], [1_795_000_001_000, 60010.0]]
+
+    s_mix = cacheprice.CompactPriceSeries([
+        [1_795_000_000_000, 100.0],
+        [1_795_000_060_000, 101.0, 250.5],
+        [1_795_000_120_000, 102.0, 0.0],
+        [1_795_000_180_000, 103.0, 500.0, 104.0, 99.5],
+        [1_795_000_240_000, 103.5],
+    ])
+    assert s_mix._vol is not None and s_mix._extra == {3: (104.0, 99.5)}
+    assert s_mix.has_positive_volume() is True
+    assert list(s_mix) == [
+        [1_795_000_000_000, 100.0],
+        [1_795_000_060_000, 101.0, 250.5],
+        [1_795_000_120_000, 102.0, 0.0],
+        [1_795_000_180_000, 103.0, 500.0, 104.0, 99.5],
+        [1_795_000_240_000, 103.5],
+    ]
+    sliced = s_mix[1:4]
+    assert isinstance(sliced, cacheprice.CompactPriceSeries)
+    assert list(sliced) == [
+        [1_795_000_060_000, 101.0, 250.5],
+        [1_795_000_120_000, 102.0, 0.0],
+        [1_795_000_180_000, 103.0, 500.0, 104.0, 99.5],
+    ]
+    s_mix.trim_head(2)
+    assert list(s_mix) == [
+        [1_795_000_120_000, 102.0, 0.0],
+        [1_795_000_180_000, 103.0, 500.0, 104.0, 99.5],
+        [1_795_000_240_000, 103.5],
+    ]
+    ts_np, px_np = s_mix.to_numpy(since_ms=1_795_000_180_000)
+    assert ts_np.dtype == np.int64 and px_np.dtype == np.float64
+    assert ts_np.tolist() == [1_795_000_180_000, 1_795_000_240_000]
+    assert px_np.tolist() == [103.0, 103.5]
+
+    # 2. Cache24PriceManager stores CompactPriceSeries across append, compact_jsonl, reload, and OHLC merge
+    now_ms = int(time.time() * 1000)
+    c24_p = tmp_path / "cache_24_price_BTCUSDC.jsonl"
+    mgr = cacheprice.Cache24PriceManager(
+        30, ["BTCUSDC"], str(c24_p), api_client=None, data_sync_mode="producer", current_price_getter=lambda: None
+    )
+    mgr.update_cache_per_symbol("BTCUSDC", [[now_ms - 10_000 + i * 1000, 60000.0 + i] for i in range(10)])
+    assert isinstance(mgr.cache["BTCUSDC"], cacheprice.CompactPriceSeries)
+    assert mgr.cache["BTCUSDC"]._vol is None
+    assert mgr.save_state_to_file() is True
+    assert mgr.compact_jsonl() is True
+    assert isinstance(mgr.cache["BTCUSDC"], cacheprice.CompactPriceSeries)
+
+    reader = cacheprice.Cache24PriceManager(
+        30, ["BTCUSDC"], str(c24_p), api_client=None, read_only=True
+    )
+    assert isinstance(reader.cache["BTCUSDC"], cacheprice.CompactPriceSeries)
+    ts_r, px_r = reader.get_series_arrays("BTCUSDC", since_ms=now_ms - 5000)
+    assert len(ts_r) == 5 and float(px_r[-1]) == pytest.approx(60009.0)
+
+    # Equity 3-col OHLC merge stays CompactPriceSeries and round-trips through JSONL
+    eq_p = tmp_path / "cache_24_price_NVDA_US_EQ.jsonl"
+    eq_mgr = cacheprice.Cache24PriceManager(
+        30, ["NVDA_US_EQ"], str(eq_p), api_client=None, data_sync_mode="producer", current_price_getter=lambda: None
+    )
+    eq_mgr._merge_ohlc_rows_locked(
+        "NVDA_US_EQ",
+        [[now_ms - 600_000, 130.0, 1234.5], [now_ms - 300_000, 131.0, 2345.0, 131.5, 129.8]],
+    )
+    assert isinstance(eq_mgr.cache["NVDA_US_EQ"], cacheprice.CompactPriceSeries)
+    assert eq_mgr.cache["NVDA_US_EQ"].has_positive_volume() is True
+    eq_mgr.fetchtime_per_symbol["NVDA_US_EQ"] = now_ms + 1000
+    eq_mgr._jsonl_needs_compact = True
+    assert eq_mgr.save_state_to_file() is True
+    eq_reader = cacheprice.Cache24PriceManager(
+        30, ["NVDA_US_EQ"], str(eq_p), api_client=None, read_only=True
+    )
+    assert list(eq_reader.cache["NVDA_US_EQ"]) == [
+        [now_ms - 600_000, 130.0, 1234.5],
+        [now_ms - 300_000, 131.0, 2345.0, 131.5, 129.8],
+    ]
+
+    # 3. AssetGuardian fast-path reads directly from CompactPriceSeries without _read_symbol_price_rows list copy
+    monkeypatch.setattr(assetguardian, "get_24_price_manager", lambda symbols=None: {"BTCUSDC": reader})
+    ts_ag, px_ag = assetguardian._read_symbol_window_arrays(
+        "BTCUSDC", (now_ms - 5500) / 1000.0, (now_ms + 5000) / 1000.0
+    )
+    assert len(ts_ag) == 5 and float(px_ag[-1]) == pytest.approx(60009.0)
+
+    # 4. CacheShortTrendManager evaluates CompactPriceSeries directly via bisect_left_ts & minimal slice
+    st_p = tmp_path / "cache_short_trend.json"
+    stm = cachetrend.CacheShortTrendManager(symbols=["BTCUSDC"], filename=str(st_p), read_only=True)
+    stm._cache24_managers = {"BTCUSDC": reader}
+    out_w = stm.get_short_trends_for_windows("BTCUSDC", [300.0], now_ts=(now_ms + 1000) / 1000.0)
+    assert "300s" in out_w and out_w["300s"]["n_samples"] == 10
+
+
+
 
 
 

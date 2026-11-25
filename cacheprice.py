@@ -384,23 +384,28 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
 
 
 class CompactPriceSeries(MutableSequence):
-    """Memory-compact ``[ts_ms, price]`` sequence backed by C ``int64`` + ``float64`` arrays (16 B/point).
+    """Memory-compact ``[ts_ms, price(, volume, ...)]`` sequence backed by C ``int64`` + ``float64`` arrays.
 
-    Provides amortized O(1) appends, O(1) tail/max queries, list-compatible indexing/slicing/equality
-    for generic cache hooks, and direct ``to_numpy(since_ms=...)`` slicing via temporary ``np.frombuffer``
-    views (released before returning so subsequent resizes never hit ``BufferError``).
+    Uses ``16 B/point`` (``array('q')`` + ``array('d')``) for standard 2-column ``[ts, px]`` series.
+    Lazily allocates an optional ``_vol`` ``array('d')`` buffer (``+8 B/point``) only when a 3+-column
+    OHLCV row arrives (e.g. equity 5m bars), and an optional sparse ``_extra`` map only for >3-column
+    bars, preserving 100% lossless round-trip semantics with zero memory overhead on crypto ticks.
     """
 
-    __slots__ = ("_ts", "_px", "_monotonic")
+    __slots__ = ("_ts", "_px", "_vol", "_extra", "_monotonic")
 
     def __init__(self, items: Any = None) -> None:
         if isinstance(items, CompactPriceSeries):
             self._ts = array.array("q", items._ts)
             self._px = array.array("d", items._px)
+            self._vol = array.array("d", items._vol) if items._vol is not None else None
+            self._extra = dict(items._extra) if items._extra is not None else None
             self._monotonic = items._monotonic
             return
         self._ts = array.array("q")
         self._px = array.array("d")
+        self._vol: Optional[array.array] = None
+        self._extra: Optional[dict[int, tuple[Any, ...]]] = None
         self._monotonic = True
         if items is not None:
             self.extend(items)
@@ -421,32 +426,92 @@ class CompactPriceSeries(MutableSequence):
                 return ts_i, px_f
         return None
 
+    @classmethod
+    def _coerce_row(
+        cls, item: Any
+    ) -> Optional[tuple[int, float, Optional[float], Optional[tuple[Any, ...]]]]:
+        if type(item) in _LIST_OR_TUPLE_TYPES and len(item) == 2:
+            fast = _fast_parse_ssot_point(item)
+            if fast is not None:
+                return fast[0], fast[1], None, None
+        pair = cls._coerce_pair(item)
+        if pair is None:
+            return None
+        if isinstance(item, (list, tuple)) and len(item) >= 3:
+            raw_vol = item[2]
+            vol_f = (
+                None
+                if raw_vol is None or isinstance(raw_vol, bool)
+                else safe_nonneg_float(raw_vol, default=None)
+            )
+            extra = tuple(item[3:]) if len(item) > 3 else None
+            return pair[0], pair[1], vol_f, extra
+        return pair[0], pair[1], None, None
+
     def append_pair(self, ts_ms: int, price: float) -> None:
         if self._monotonic and self._ts and ts_ms < self._ts[-1]:
             self._monotonic = False
         self._ts.append(ts_ms)
         self._px.append(price)
+        if self._vol is not None:
+            self._vol.append(math.nan)
+
+    def append_row(
+        self,
+        ts_ms: int,
+        price: float,
+        volume: Optional[float] = None,
+        extra: Optional[tuple[Any, ...]] = None,
+    ) -> None:
+        if volume is None and extra is None:
+            self.append_pair(ts_ms, price)
+            return
+        idx = len(self._ts)
+        if self._monotonic and idx and ts_ms < self._ts[-1]:
+            self._monotonic = False
+        self._ts.append(ts_ms)
+        self._px.append(price)
+        if self._vol is None:
+            self._vol = array.array("d", [math.nan] * idx)
+        self._vol.append(math.nan if volume is None else volume * 1.0)
+        if extra is not None:
+            if self._extra is None:
+                self._extra = {}
+            self._extra[idx] = extra
 
     def append(self, value: Any) -> None:
-        pair = self._coerce_pair(value)
-        if pair is not None:
-            self.append_pair(pair[0], pair[1])
+        row = self._coerce_row(value)
+        if row is not None:
+            self.append_row(row[0], row[1], row[2], row[3])
 
     def extend(self, values: Any) -> None:
         if isinstance(values, CompactPriceSeries):
             if not values._ts:
                 return
+            base_len = len(self._ts)
             if self._monotonic:
                 self._monotonic = values._monotonic and (
-                    not self._ts or values._ts[0] >= self._ts[-1]
+                    not base_len or values._ts[0] >= self._ts[-1]
                 )
             self._ts.extend(values._ts)
             self._px.extend(values._px)
+            if self._vol is not None or values._vol is not None:
+                if self._vol is None:
+                    self._vol = array.array("d", [math.nan] * base_len)
+                if values._vol is not None:
+                    self._vol.extend(values._vol)
+                else:
+                    self._vol.extend(array.array("d", [math.nan] * len(values._ts)))
+            if values._extra:
+                if self._extra is None:
+                    self._extra = {}
+                for rel_idx, ext_val in values._extra.items():
+                    self._extra[base_len + rel_idx] = ext_val
             return
         for item in values:
-            pair = self._coerce_pair(item)
-            if pair is not None:
-                self.append_pair(pair[0], pair[1])
+            row = self._coerce_row(item)
+            if row is not None:
+                self.append_row(row[0], row[1], row[2], row[3])
 
     def trim_head(self, drop_count: int) -> int:
         if drop_count <= 0 or not self._ts:
@@ -454,6 +519,13 @@ class CompactPriceSeries(MutableSequence):
         n = min(drop_count, len(self._ts))
         del self._ts[:n]
         del self._px[:n]
+        if self._vol is not None:
+            del self._vol[:n]
+            if not self._ts:
+                self._vol = None
+        if self._extra is not None:
+            shifted = {k - n: v for k, v in self._extra.items() if k >= n}
+            self._extra = shifted or None
         return n
 
     def copy(self) -> CompactPriceSeries:
@@ -462,6 +534,8 @@ class CompactPriceSeries(MutableSequence):
     def clear(self) -> None:
         del self._ts[:]
         del self._px[:]
+        self._vol = None
+        self._extra = None
         self._monotonic = True
 
     def last_pair(self) -> Optional[tuple[int, float]]:
@@ -471,6 +545,30 @@ class CompactPriceSeries(MutableSequence):
         if not self._ts:
             return 0
         return self._ts[-1] if self._monotonic else max(self._ts)
+
+    def bisect_left_ts(self, ts_ms: int) -> int:
+        """Binary-search ``self._ts`` directly in C without allocating Python point lists."""
+        return bisect.bisect_left(self._ts, ts_ms)
+
+    def has_positive_volume(self) -> bool:
+        """Return True when at least one row carries a positive 3rd-column volume (O(1) False on 2-col series)."""
+        if self._vol is None:
+            return False
+        return any(v > 0.0 and not math.isnan(v) for v in self._vol)
+
+    def _materialize_at(self, idx: int) -> list[Any]:
+        n = len(self._ts)
+        if idx < 0:
+            idx += n
+        if self._vol is None:
+            return [self._ts[idx], self._px[idx]]
+        v = self._vol[idx]
+        ext = self._extra.get(idx) if self._extra is not None else None
+        if ext is not None:
+            return [self._ts[idx], self._px[idx], (None if math.isnan(v) else v), *ext]
+        if not math.isnan(v):
+            return [self._ts[idx], self._px[idx], v]
+        return [self._ts[idx], self._px[idx]]
 
     def to_numpy(self, *, since_ms: Optional[int] = None) -> tuple[Any, Any]:
         """Return independent ``(ts_ms_int64, px_float64)`` NumPy arrays sliced at ``since_ms``."""
@@ -502,51 +600,133 @@ class CompactPriceSeries(MutableSequence):
             out = CompactPriceSeries()
             out._ts = self._ts[index]
             out._px = self._px[index]
+            if self._vol is not None:
+                out._vol = self._vol[index]
+            if self._extra:
+                orig_indices = range(*index.indices(len(self._ts)))
+                mapped = {
+                    new_i: self._extra[old_i]
+                    for new_i, old_i in enumerate(orig_indices)
+                    if old_i in self._extra
+                }
+                out._extra = mapped or None
             if self._monotonic and (index.step is None or index.step > 0):
                 out._monotonic = True
             else:
                 ts_s = out._ts
                 out._monotonic = all(ts_s[i] >= ts_s[i - 1] for i in range(1, len(ts_s)))
             return out
-        return [self._ts[index], self._px[index]]
+        return self._materialize_at(index)
 
     def __setitem__(self, index: Any, value: Any) -> None:
         if isinstance(index, slice):
-            pairs = [p for it in value if (p := self._coerce_pair(it)) is not None]
-            self._ts[index] = array.array("q", (p[0] for p in pairs))
-            self._px[index] = array.array("d", (p[1] for p in pairs))
+            rows = [r for it in value if (r := self._coerce_row(it)) is not None]
+            has_vol_in = any(r[2] is not None or r[3] is not None for r in rows)
+            n_before = len(self._ts)
+            if self._vol is None and has_vol_in:
+                self._vol = array.array("d", [math.nan] * n_before)
+            self._ts[index] = array.array("q", (r[0] for r in rows))
+            self._px[index] = array.array("d", (r[1] for r in rows))
+            if self._vol is not None:
+                self._vol[index] = array.array(
+                    "d", (math.nan if r[2] is None else r[2] * 1.0 for r in rows)
+                )
+            if self._extra is not None or any(r[3] is not None for r in rows):
+                old_extra_list: list[Optional[tuple[Any, ...]]] = [
+                    (self._extra.get(i) if self._extra is not None else None)
+                    for i in range(n_before)
+                ]
+                old_extra_list[index] = [r[3] for r in rows]
+                rebuilt = {i: e for i, e in enumerate(old_extra_list) if e is not None}
+                self._extra = rebuilt or None
             self._monotonic = False
             return
-        pair = self._coerce_pair(value)
-        if pair is None:
+        row = self._coerce_row(value)
+        if row is None:
             raise ValueError(f"invalid compact price point: {value!r}")
-        self._ts[index] = pair[0]
-        self._px[index] = pair[1]
+        n = len(self._ts)
+        eff_idx = index + n if index < 0 else index
+        self._ts[eff_idx] = row[0]
+        self._px[eff_idx] = row[1]
+        if row[2] is not None or row[3] is not None:
+            if self._vol is None:
+                self._vol = array.array("d", [math.nan] * n)
+            self._vol[eff_idx] = math.nan if row[2] is None else row[2] * 1.0
+        elif self._vol is not None:
+            self._vol[eff_idx] = math.nan
+        if row[3] is not None:
+            if self._extra is None:
+                self._extra = {}
+            self._extra[eff_idx] = row[3]
+        elif self._extra is not None:
+            self._extra.pop(eff_idx, None)
+            if not self._extra:
+                self._extra = None
         self._monotonic = False
 
     def __delitem__(self, index: Any) -> None:
+        n_before = len(self._ts)
         del self._ts[index]
         del self._px[index]
+        if self._vol is not None:
+            del self._vol[index]
+            if not self._ts:
+                self._vol = None
+        if self._extra is not None:
+            old_extra_list = [self._extra.get(i) for i in range(n_before)]
+            del old_extra_list[index]
+            rebuilt = {i: e for i, e in enumerate(old_extra_list) if e is not None}
+            self._extra = rebuilt or None
 
     def insert(self, index: int, value: Any) -> None:
-        pair = self._coerce_pair(value)
-        if pair is None:
+        row = self._coerce_row(value)
+        if row is None:
             return
-        self._ts.insert(index, pair[0])
-        self._px.insert(index, pair[1])
+        n_before = len(self._ts)
+        eff_idx = max(0, min(n_before, index + n_before if index < 0 else index))
+        self._ts.insert(eff_idx, row[0])
+        self._px.insert(eff_idx, row[1])
+        if row[2] is not None or row[3] is not None:
+            if self._vol is None:
+                self._vol = array.array("d", [math.nan] * n_before)
+            self._vol.insert(eff_idx, math.nan if row[2] is None else row[2] * 1.0)
+        elif self._vol is not None:
+            self._vol.insert(eff_idx, math.nan)
+        if self._extra is not None or row[3] is not None:
+            shifted = {
+                (k + 1 if k >= eff_idx else k): v
+                for k, v in (self._extra or {}).items()
+            }
+            if row[3] is not None:
+                shifted[eff_idx] = row[3]
+            self._extra = shifted or None
         self._monotonic = False
 
     def __iter__(self):
-        return ([t, p] for t, p in zip(self._ts, self._px))
+        if self._vol is None and self._extra is None:
+            return ([t, p] for t, p in zip(self._ts, self._px))
+        return (self._materialize_at(i) for i in range(len(self._ts)))
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, CompactPriceSeries):
-            return self._ts == other._ts and self._px == other._px
+            if self._ts != other._ts or self._px != other._px:
+                return False
+            if self._vol is None and other._vol is None and self._extra is None and other._extra is None:
+                return True
+            return all(
+                self._materialize_at(i) == other._materialize_at(i)
+                for i in range(len(self._ts))
+            )
         if isinstance(other, list):
             if len(other) != len(self._ts):
                 return False
-            for row, t, p in zip(other, self._ts, self._px):
-                if not isinstance(row, (list, tuple)) or len(row) != 2 or row[0] != t or row[1] != p:
+            if self._vol is None and self._extra is None:
+                for row, t, p in zip(other, self._ts, self._px):
+                    if not isinstance(row, (list, tuple)) or len(row) != 2 or row[0] != t or row[1] != p:
+                        return False
+                return True
+            for i, row in enumerate(other):
+                if not isinstance(row, (list, tuple)) or list(row) != self._materialize_at(i):
                     return False
             return True
         return NotImplemented
@@ -1081,6 +1261,29 @@ class Cache24PriceManager(CachePriceManagerBase):
         )
         self._filter_maps_to_configured_symbols_locked()
 
+    def _new_symbol_bucket(self, symbol: str) -> CompactPriceSeries:
+        return CompactPriceSeries()
+
+    def get_series_arrays(
+        self,
+        symbol: str,
+        *,
+        since_ms: Optional[int] = None,
+        resync: bool = False,
+    ) -> tuple[Any, Any]:
+        """Return ``(ts_ms_int64, px_float64)`` sliced directly from ``CompactPriceSeries``."""
+        if resync:
+            self.resync_mem_file()
+        cutoff_ms = safe_nonneg_int(since_ms, default=None) if since_ms is not None else None
+        with self.lock:
+            self._drain_deferred_price_ticks_locked()
+            raw = self.cache.get(symbol)
+            if raw is None:
+                raw = casefold_get(self.cache, symbol, None)
+            if isinstance(raw, CompactPriceSeries):
+                return raw.to_numpy(since_ms=cutoff_ms)
+        return super().get_series_arrays(symbol, since_ms=cutoff_ms, resync=False)
+
     def _filter_maps_to_configured_symbols_locked(self):
         """Remove unrelated symbols loaded from legacy redundant files that stored every coin."""
         with self.lock:
@@ -1131,7 +1334,7 @@ class Cache24PriceManager(CachePriceManagerBase):
                 ):
                     by_ts[ts_r] = list(r) if isinstance(r, tuple) else r
         merged_pts = [by_ts[k] for k in sorted(by_ts)]
-        self.cache[symbol] = merged_pts
+        self.cache[symbol] = CompactPriceSeries(merged_pts)
         return merged_pts
 
     def _resolve_equity_ohlc_refresh_interval_sec(
@@ -1265,19 +1468,27 @@ class Cache24PriceManager(CachePriceManagerBase):
         any_refreshed = False
         for sym_eq in eq_symbols:
             with self.lock:
-                cur_rows = list(self.cache.get(sym_eq) or ())
-            has_pos_vol_ohlc = any(
-                isinstance(r, (list, tuple))
-                and len(r) >= 3
-                and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
-                for r in cur_rows
-            )
+                raw_bucket = self.cache.get(sym_eq)
+                if isinstance(raw_bucket, CompactPriceSeries):
+                    row_count = len(raw_bucket)
+                    has_pos_vol_ohlc = raw_bucket.has_positive_volume()
+                else:
+                    cur_rows_tmp = list(raw_bucket or ())
+                    row_count = len(cur_rows_tmp)
+                    has_pos_vol_ohlc = any(
+                        isinstance(r, (list, tuple))
+                        and len(r) >= 3
+                        and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+                        for r in cur_rows_tmp
+                    )
             eq_rth_open, min_interval = self._resolve_equity_ohlc_refresh_interval_sec(
-                sym_eq, eff_now, row_count=len(cur_rows), has_pos_vol_ohlc=has_pos_vol_ohlc
+                sym_eq, eff_now, row_count=row_count, has_pos_vol_ohlc=has_pos_vol_ohlc
             )
             last_ref = refresh_map.get(sym_eq, -1e18)
             if not force and 0.0 <= (eff_now - last_ref) < min_interval:
                 continue
+            with self.lock:
+                cur_rows = list(self.cache.get(sym_eq) or ())
             try:
                 chart_res = _market_api.api.fetch_intraday_chart(
                     canonical_base_asset(sym_eq) or sym_eq,
@@ -1415,11 +1626,17 @@ class Cache24PriceManager(CachePriceManagerBase):
             print(f"[{self.cls_name}][Error] merge disk OHLC {self.filename}: {exc}")
 
     def _filter_reloaded_items_locked(self, items: dict) -> dict:
-        filtered = {s: v for s, v in items.items() if s in self.symbols}
+        filtered = self._wrap_loaded_buckets_locked(
+            {s: v for s, v in items.items() if s in self.symbols}
+        )
         with self._deferred_ticks_lock:
             for sym_k, entries in filtered.items():
                 if self._is_bucket_seq(entries) and entries:
-                    last_ts = self._entry_timestamp_ms(entries[-1])
+                    last_ts = (
+                        entries._ts[-1]
+                        if isinstance(entries, CompactPriceSeries)
+                        else self._entry_timestamp_ms(entries[-1])
+                    )
                     if last_ts > self._last_accepted_tick_ts_ms.get(sym_k, 0):
                         self._last_accepted_tick_ts_ms[sym_k] = last_ts
         return filtered
@@ -1512,15 +1729,25 @@ class Cache24PriceManager(CachePriceManagerBase):
             if not entries or not self._is_bucket_seq(entries):
                 return
             probe_idx = eff_batch - 1
-            if len(entries) <= probe_idx or self._entry_timestamp_ms(entries[probe_idx]) >= cutoff_ms:
+            if len(entries) <= probe_idx:
                 return
-            idx = bisect.bisect_left(
-                entries, cutoff_ms, key=self._entry_timestamp_ms
+            is_compact = isinstance(entries, CompactPriceSeries)
+            probe_ts = (
+                entries._ts[probe_idx]
+                if is_compact
+                else self._entry_timestamp_ms(entries[probe_idx])
+            )
+            if probe_ts >= cutoff_ms:
+                return
+            idx = (
+                entries.bisect_left_ts(cutoff_ms)
+                if is_compact
+                else bisect.bisect_left(entries, cutoff_ms, key=self._entry_timestamp_ms)
             )
             if is_equity_symbol(symbol):
                 idx = min(idx, max(0, len(entries) - 288))
             if idx >= eff_batch:
-                if isinstance(entries, CompactPriceSeries):
+                if is_compact:
                     entries.trim_head(idx)
                 else:
                     self.cache[symbol] = entries[idx:]
@@ -1543,8 +1770,10 @@ class Cache24PriceManager(CachePriceManagerBase):
             entries = casefold_get(self.cache, symbol, [])
             if not entries or not self._is_bucket_seq(entries):
                 return []
-            idx = bisect.bisect_left(
-                entries, cutoff_ms, key=self._entry_timestamp_ms
+            idx = (
+                entries.bisect_left_ts(cutoff_ms)
+                if isinstance(entries, CompactPriceSeries)
+                else bisect.bisect_left(entries, cutoff_ms, key=self._entry_timestamp_ms)
             )
             return list(entries[idx:])
 

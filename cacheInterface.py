@@ -509,6 +509,26 @@ class CacheManagerInterface(ABC):
         """Create a new per-symbol entry container (override for compact typed buffers)."""
         return []
 
+    def _wrap_loaded_buckets_locked(self, items: dict) -> dict:
+        """Wrap raw loaded per-symbol lists into ``_new_symbol_bucket()`` when overridden."""
+        if not isinstance(items, dict) or not items:
+            return items if isinstance(items, dict) else {}
+        sample_bucket = self._new_symbol_bucket("")
+        target_cls = type(sample_bucket)
+        if target_cls is list:
+            return items
+        wrapped: dict = {}
+        for sym_k, raw_v in items.items():
+            if isinstance(raw_v, target_cls):
+                wrapped[sym_k] = raw_v
+            elif self._is_bucket_seq(raw_v):
+                b = self._new_symbol_bucket(sym_k)
+                b.extend(raw_v)
+                wrapped[sym_k] = b
+            else:
+                wrapped[sym_k] = raw_v
+        return wrapped
+
     def get_series_arrays(
         self,
         symbol: str,
@@ -692,6 +712,7 @@ class CacheManagerInterface(ABC):
                         else:
                             self.cache = {}
                         print(f"[{self.cls_name}][warning] self.cache is not Dict!!!!")
+                    self.cache = self._wrap_loaded_buckets_locked(self.cache)
 
                     self._hydrate_fetchtimes_from_mapping_locked(data)
                     self._last_disk_sync_max_ts = max(
@@ -986,8 +1007,16 @@ class CacheManagerInterface(ABC):
             if not pre_commit_merged:
                 self._before_snapshot_commit_locked(persisted_max_ts)
             metadata = self._build_basic_meta_locked(sanitize_cursor=True)
+            serializable_items = {
+                k: (
+                    list(v)
+                    if self._is_bucket_seq(v) and not isinstance(v, list)
+                    else v
+                )
+                for k, v in self.cache.items()
+            }
             payload = {
-                "items": self.cache,
+                "items": serializable_items,
                 "fetchtime": metadata["fetchtime"],
                 "rest_sync_cursor": metadata["rest_sync_cursor"],
             }
@@ -1270,26 +1299,29 @@ class CacheManagerInterface(ABC):
                     for sym_k, rows_delta in loaded_map.items():
                         self.cache.setdefault(sym_k, self._new_symbol_bucket(sym_k)).extend(rows_delta)
                 else:
-                    self.cache = loaded_map
+                    self.cache = self._wrap_loaded_buckets_locked(loaded_map)
                 self._jsonl_tail_state = (
                     (abs_path, dev_ino, next_offset, new_anchor)
                     if (not had_invalid_line and dev_ino is not None and next_offset > 0)
                     else None
                 )
                 if not inc_used and not self.cache and os.path.exists(backup_path):
-                    self.cache, had_invalid_line = read_jsonl_bucket_map(backup_path)
+                    raw_backup, had_invalid_line = read_jsonl_bucket_map(backup_path)
+                    self.cache = self._wrap_loaded_buckets_locked(raw_backup)
                     self._jsonl_tail_state = None
             else:
                 self.cache = {}
                 self._jsonl_tail_state = None
                 if os.path.exists(self.filename):
-                    self.cache, had_invalid_line = read_jsonl_bucket_map(self.filename)
+                    raw_disk, had_invalid_line = read_jsonl_bucket_map(self.filename)
+                    self.cache = self._wrap_loaded_buckets_locked(raw_disk)
                     if not self.cache and had_invalid_line and os.path.exists(backup_path):
                         prev_cache, _ = read_jsonl_bucket_map(backup_path)
                         if prev_cache:
-                            self.cache = prev_cache
+                            self.cache = self._wrap_loaded_buckets_locked(prev_cache)
                 elif self.read_only and os.path.exists(backup_path):
-                    self.cache, had_invalid_line = read_jsonl_bucket_map(backup_path)
+                    raw_backup, had_invalid_line = read_jsonl_bucket_map(backup_path)
+                    self.cache = self._wrap_loaded_buckets_locked(raw_backup)
             self._legacy_jsonl_needs_rewrite = had_invalid_line
             if not self.read_only and not had_invalid_line and os.path.exists(backup_path):
                 discard_generation_file(backup_path)
@@ -1305,7 +1337,7 @@ class CacheManagerInterface(ABC):
                 original_state = self._snapshot_memory_state_locked()
                 for symbol, items in list(self.cache.items()):
                     seen = set()
-                    deduped = []
+                    deduped = self._new_symbol_bucket(symbol)
                     for item in items:
                         k = canonical_json_key(item)
                         if k not in seen:
