@@ -553,17 +553,44 @@ def _strip_internal_balance_ts(entry: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in entry.items() if k not in _INTERNAL_BALANCE_TS_KEYS}
 
 
+_BalanceObs = tuple[float, Optional[float], int]
+
+
+def _merge_balance_observation(
+    cur: Optional[_BalanceObs],
+    free: Optional[float],
+    ts: Optional[float],
+    priority: int,
+) -> Optional[_BalanceObs]:
+    """Combine atomic ``(free, ts, priority)`` observations without ever mixing one record's value with another's timestamp."""
+    if free is None:
+        return cur
+    cand: _BalanceObs = (free, ts, priority)
+    if cur is None:
+        return cand
+    _, cur_ts, cur_prio = cur
+    if cur_ts is not None and ts is not None:
+        if ts > cur_ts + 1e-6:
+            return cand
+        if cur_ts > ts + 1e-6:
+            return cur
+        return cand if priority >= cur_prio else cur
+    if ts is not None:
+        return cand
+    if cur_ts is not None:
+        return cur
+    return cand if priority >= cur_prio else cur
+
+
 def _build_cached_balance_index(
     cached_bals: Dict[str, Any],
-) -> tuple[Dict[tuple[str, str], float], Dict[tuple[str, str], float], Dict[str, float]]:
-    """Build unified ``(free_by_va, ts_by_va, venue_ts)`` from ``venue_balances_state.json`` for both collection paths."""
-    free_by_va: Dict[tuple[str, str], float] = {}
-    ts_by_va: Dict[tuple[str, str], float] = {}
-    venue_ts: Dict[str, float] = {}
+) -> Dict[tuple[str, str], tuple[float, Optional[float]]]:
+    """Build atomic ``(venue, asset) -> (free, ts)`` observations from ``venue_balances_state.json`` for both collection paths."""
+    obs_by_va: Dict[tuple[str, str], _BalanceObs] = {}
     if not isinstance(cached_bals, dict):
-        return free_by_va, ts_by_va, venue_ts
+        return {}
 
-    # 1. Scalar "<venue>:<ASSET>" entries (lowest precedence when structured pos:/cash: entries exist)
+    # 1. Scalar "<venue>:<ASSET>" entries (lowest precedence; untimestamped unless corroborated)
     for k, v in cached_bals.items():
         if not isinstance(k, str) or ":" not in k or k.startswith(("pos:", "cash:", "breakdown:", "open_orders:", "open_orders_verified_ts:")):
             continue
@@ -573,9 +600,11 @@ def _build_cached_balance_index(
         v_n = normalize_venue_name(raw_v) or raw_v.strip().lower()
         a_u = raw_a.strip().upper()
         if v_n and a_u and (val_f := safe_nonneg_float(v, default=None)) is not None:
-            free_by_va[(v_n, a_u)] = val_f
+            va_k = (v_n, a_u)
+            if (merged := _merge_balance_observation(obs_by_va.get(va_k), val_f, None, 0)) is not None:
+                obs_by_va[va_k] = merged
 
-    # 2. Structured "pos:<venue>:<symbol>" snapshots (authoritative base balances and position timestamps)
+    # 2. Structured "pos:<venue>:<symbol>" snapshots (bind each asset value to its own balance timestamp)
     for k, v in cached_bals.items():
         if not (isinstance(k, str) and k.startswith("pos:") and isinstance(v, dict)):
             continue
@@ -588,22 +617,20 @@ def _build_cached_balance_index(
         b_u = str(res_b or "").strip().upper()
         q_u = str(res_q or "USD").strip().upper()
         pos_ts = safe_pos_float(v.get("ts"), default=None)
-        if pos_ts is not None:
-            venue_ts[v_n] = max(venue_ts.get(v_n, 0.0), pos_ts)
+        base_ts = safe_pos_float(v.get("base_bal_ts"), default=None) or pos_ts
+        quote_ts = safe_pos_float(v.get("quote_bal_ts"), default=None) or pos_ts
         fb = safe_nonneg_float(v.get("free_base") if v.get("free_base") is not None else v.get("free"), default=None)
-        if b_u:
-            if fb is not None:
-                free_by_va[(v_n, b_u)] = fb
-            if pos_ts is not None:
-                ts_by_va[(v_n, b_u)] = max(ts_by_va.get((v_n, b_u), 0.0), pos_ts)
+        if b_u and fb is not None:
+            va_b = (v_n, b_u)
+            if (merged_b := _merge_balance_observation(obs_by_va.get(va_b), fb, base_ts, 1)) is not None:
+                obs_by_va[va_b] = merged_b
         fq = safe_nonneg_float(v.get("free_quote"), default=None)
-        if q_u:
-            if fq is not None:
-                free_by_va[(v_n, q_u)] = fq
-            if pos_ts is not None:
-                ts_by_va[(v_n, q_u)] = max(ts_by_va.get((v_n, q_u), 0.0), pos_ts)
+        if q_u and fq is not None:
+            va_q = (v_n, q_u)
+            if (merged_q := _merge_balance_observation(obs_by_va.get(va_q), fq, quote_ts, 1)) is not None:
+                obs_by_va[va_q] = merged_q
 
-    # 3. Structured "cash:<venue>:<asset>" snapshots (authoritative quote cash balances)
+    # 3. Structured "cash:<venue>:<asset>" snapshots (highest precedence on equal/absent timestamps)
     for k, v in cached_bals.items():
         if not (isinstance(k, str) and k.startswith("cash:") and isinstance(v, dict)):
             continue
@@ -611,17 +638,14 @@ def _build_cached_balance_index(
         a_u = str(v.get("asset") or "").strip().upper()
         if not v_n or not a_u:
             continue
-        if (cf := safe_nonneg_float(v.get("free"), default=None)) is not None:
-            free_by_va[(v_n, a_u)] = cf
-        if (c_ts := safe_pos_float(v.get("ts"), default=None)) is not None:
-            venue_ts[v_n] = max(venue_ts.get(v_n, 0.0), c_ts)
-            ts_by_va[(v_n, a_u)] = max(ts_by_va.get((v_n, a_u), 0.0), c_ts)
+        cf = safe_nonneg_float(v.get("free"), default=None)
+        if cf is not None:
+            c_ts = safe_pos_float(v.get("ts"), default=None)
+            va_c = (v_n, a_u)
+            if (merged_c := _merge_balance_observation(obs_by_va.get(va_c), cf, c_ts, 2)) is not None:
+                obs_by_va[va_c] = merged_c
 
-    # 4. Inherit venue snapshot timestamp for cached assets lacking an entry-specific ts
-    for va_key in free_by_va:
-        if va_key not in ts_by_va and va_key[0] in venue_ts:
-            ts_by_va[va_key] = venue_ts[va_key[0]]
-    return free_by_va, ts_by_va, venue_ts
+    return {va_k: (obs[0], obs[1]) for va_k, obs in obs_by_va.items()}
 
 
 def _apply_open_orders_locked_balances(
@@ -644,34 +668,31 @@ def _apply_open_orders_locked_balances(
         (pv, ps): pos_item for pos_item, pv, ps in _iter_valid_tradable_positions(tradable_positions)
     }
 
-    shared_free_by_va: Dict[tuple[str, str], float] = {}
-    shared_ts_by_va: Dict[tuple[str, str], float] = {}
+    shared_obs_by_va: Dict[tuple[str, str], _BalanceObs] = {}
     for cash_val in venue_quote_cash.values():
         if isinstance(cash_val, dict):
             cv_n = normalize_venue_name(cash_val.get("venue"))
             cq_u = str(cash_val.get("asset") or "").strip().upper()
             if cv_n and cq_u:
-                if (c_free := safe_nonneg_float(cash_val.get("free"), default=None)) is not None:
-                    shared_free_by_va[(cv_n, cq_u)] = c_free
-                if (c_ts := safe_pos_float(cash_val.get("_balance_ts"), default=None)) is not None:
-                    shared_ts_by_va[(cv_n, cq_u)] = max(shared_ts_by_va.get((cv_n, cq_u), 0.0), c_ts)
+                c_free = safe_nonneg_float(cash_val.get("free"), default=None)
+                c_ts = safe_pos_float(cash_val.get("_balance_ts"), default=None)
+                if (m_c := _merge_balance_observation(shared_obs_by_va.get((cv_n, cq_u)), c_free, c_ts, 2)) is not None:
+                    shared_obs_by_va[(cv_n, cq_u)] = m_c
     for pos_item, pv, ps in _iter_valid_tradable_positions(tradable_positions):
         p_res_b, p_res_q = resolve_assets(ps, pos_item.get("base"), pos_item.get("quote"))
         p_b_u = str(p_res_b or "").strip().upper()
         p_q_u = str(p_res_q or pos_item.get("quote_asset") or "").strip().upper()
         fallback_ts = safe_pos_float(pos_item.get("_balance_ts"), default=None)
         if p_b_u:
-            if (fb_v := safe_nonneg_float(pos_item.get("free_base"), default=None)) is not None:
-                shared_free_by_va.setdefault((pv, p_b_u), fb_v)
+            fb_v = safe_nonneg_float(pos_item.get("free_base"), default=None)
             b_ts = safe_pos_float(pos_item.get("_base_balance_ts"), default=None) or fallback_ts
-            if b_ts is not None:
-                shared_ts_by_va[(pv, p_b_u)] = max(shared_ts_by_va.get((pv, p_b_u), 0.0), b_ts)
+            if (m_b := _merge_balance_observation(shared_obs_by_va.get((pv, p_b_u)), fb_v, b_ts, 1)) is not None:
+                shared_obs_by_va[(pv, p_b_u)] = m_b
         if p_q_u:
-            if (fq_v := safe_nonneg_float(pos_item.get("free_quote"), default=None)) is not None:
-                shared_free_by_va.setdefault((pv, p_q_u), fq_v)
+            fq_v = safe_nonneg_float(pos_item.get("free_quote"), default=None)
             q_ts = safe_pos_float(pos_item.get("_quote_balance_ts"), default=None) or fallback_ts
-            if q_ts is not None:
-                shared_ts_by_va[(pv, p_q_u)] = max(shared_ts_by_va.get((pv, p_q_u), 0.0), q_ts)
+            if (m_q := _merge_balance_observation(shared_obs_by_va.get((pv, p_q_u)), fq_v, q_ts, 1)) is not None:
+                shared_obs_by_va[(pv, p_q_u)] = m_q
 
     locked_quote_by_vq: Dict[tuple[str, str], float] = {}
     locked_quote_by_vs: Dict[tuple[str, str], float] = {}
@@ -725,36 +746,35 @@ def _apply_open_orders_locked_balances(
             locked_notional = oo_rem * oo_px
             locked_quote_by_vq[(oo_v, oo_q_u)] = locked_quote_by_vq.get((oo_v, oo_q_u), 0.0) + locked_notional
             locked_quote_by_vs[(oo_v, oo_pos_sym)] = locked_quote_by_vs.get((oo_v, oo_pos_sym), 0.0) + locked_notional
-            q_ts = shared_ts_by_va.get((oo_v, oo_q_u))
+            q_obs = shared_obs_by_va.get((oo_v, oo_q_u))
+            q_ts = q_obs[1] if q_obs is not None else None
             if explicit_oo_ts is not None and q_ts is not None and explicit_oo_ts > q_ts + 0.5:
                 pre_bal_locked_by_va[(oo_v, oo_q_u)] = pre_bal_locked_by_va.get((oo_v, oo_q_u), 0.0) + locked_notional
         elif oo_side == "SELL":
             locked_base_by_vs[(oo_v, oo_pos_sym)] = locked_base_by_vs.get((oo_v, oo_pos_sym), 0.0) + oo_rem
-            b_ts = shared_ts_by_va.get((oo_v, oo_b_u)) if oo_b_u else None
+            b_obs = shared_obs_by_va.get((oo_v, oo_b_u)) if oo_b_u else None
+            b_ts = b_obs[1] if b_obs is not None else None
             if explicit_oo_ts is not None and b_ts is not None and explicit_oo_ts > b_ts + 0.5:
                 pre_bal_locked_by_va[(oo_v, oo_b_u)] = pre_bal_locked_by_va.get((oo_v, oo_b_u), 0.0) + oo_rem
 
     adjusted_free_by_va: Dict[tuple[str, str], float] = {}
     for va_key, pre_locked in pre_bal_locked_by_va.items():
-        if pre_locked > 0.0 and (raw_free := shared_free_by_va.get(va_key)) is not None:
-            adjusted_free_by_va[va_key] = max(0.0, raw_free - pre_locked)
+        if pre_locked > 0.0 and (obs_va := shared_obs_by_va.get(va_key)) is not None:
+            adjusted_free_by_va[va_key] = max(0.0, obs_va[0] - pre_locked)
 
+    # Apply synthetic pre-balance deductions to runtime/prompt views ONLY; keep persisted ``updated_bals`` raw.
+    _ = updated_bals
     for cash_val in venue_quote_cash.values():
         if isinstance(cash_val, dict):
             for ts_k in _INTERNAL_BALANCE_TS_KEYS:
                 cash_val.pop(ts_k, None)
             cv_norm, cq_u = normalize_venue_name(cash_val.get("venue")), str(cash_val.get("asset") or "").strip().upper()
-            cash_updated = False
             if (cv_norm, cq_u) in adjusted_free_by_va:
                 cash_val["free"] = round(adjusted_free_by_va[(cv_norm, cq_u)], 2)
-                cash_updated = True
+            elif (raw_c_obs := shared_obs_by_va.get((cv_norm, cq_u))) is not None:
+                cash_val["free"] = round(raw_c_obs[0], 2)
             if (lq_val := locked_quote_by_vq.get((cv_norm, cq_u), 0.0)) > 0.0:
                 cash_val["locked_quote_usd"] = round(lq_val, 2)
-                cash_updated = True
-            if cash_updated:
-                cash_bkey = f"cash:{cv_norm}:{cq_u}"
-                if cash_bkey in updated_bals:
-                    updated_bals[cash_bkey] = dict(cash_val)
 
     for pos_entry in tradable_positions:
         for ts_k in _INTERNAL_BALANCE_TS_KEYS:
@@ -829,10 +849,6 @@ def _apply_open_orders_locked_balances(
                 if px_pos <= 0.0 or held_total * px_pos >= min_not_pos:
                     pos_entry["trailing_peak"] = pend_peak[0]
                     pos_entry["dd_from_peak_pct"] = pend_peak[1]
-            pos_bkey = f"pos:{p_v_norm}:{p_sym_raw}" if f"pos:{p_v_norm}:{p_sym_raw}" in updated_bals else f"pos:{p_v_norm}:{p_sym_u}"
-            if pos_bkey in updated_bals:
-                prev_b_ts = updated_bals[pos_bkey].get("ts") if isinstance(updated_bals[pos_bkey], dict) else None
-                updated_bals[pos_bkey] = {**pos_entry, "ts": prev_b_ts} if prev_b_ts is not None else dict(pos_entry)
 
 
 def _merge_audit_orders(primary_list: Any, audit_list: Any) -> List[Dict[str, Any]]:
@@ -1444,12 +1460,14 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
     ) -> None:
         gw_max_rec = safe_pos_float(gateway_max_usd, default=2000.0) or 2000.0
         seen_rec_vs: set[tuple[str, str]] = set()
-        cached_free_by_va, cached_ts_by_va, venue_bal_ts = _build_cached_balance_index(cached_bals)
+        cached_obs_by_va = _build_cached_balance_index(cached_bals)
         for k, v in cached_bals.items():
             if k.startswith("pos:") and isinstance(v, dict):
                 rec_pos = dict(v)
                 pos_bal_ts = safe_pos_float(v.get("ts"), default=None)
-                for stale_k in ("locked_quote_usd", "replace_max_buy_usd", "locked_base_qty", "locked_base_usd", "replace_max_sell_usd", "ts"):
+                pos_base_ts = safe_pos_float(v.get("base_bal_ts"), default=None) or pos_bal_ts
+                pos_quote_ts = safe_pos_float(v.get("quote_bal_ts"), default=None) or pos_bal_ts
+                for stale_k in ("locked_quote_usd", "replace_max_buy_usd", "locked_base_qty", "locked_base_usd", "replace_max_sell_usd", "ts", "base_bal_ts", "quote_bal_ts"):
                     rec_pos.pop(stale_k, None)
                 v_rec_norm = normalize_venue_name(rec_pos.get("venue"))
                 p_sym_raw = str(rec_pos.get("symbol") or "").strip()
@@ -1465,22 +1483,20 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 p_base_u = str(res_b_rec or "").strip().upper()
                 p_quote = str(res_q_rec or rec_pos.get("quote") or "USD").strip().upper()
                 is_eq_rec = is_equity_venue(v_rec_norm)
-                fb_val = (
-                    cached_free_by_va[(v_rec_norm, p_base_u)]
-                    if (v_rec_norm and p_base_u and (v_rec_norm, p_base_u) in cached_free_by_va)
-                    else safe_nonneg_float(rec_pos.get("free_base"), default=None)
-                )
+                if v_rec_norm and p_base_u and (base_obs := cached_obs_by_va.get((v_rec_norm, p_base_u))) is not None:
+                    fb_val, base_bal_ts = base_obs
+                else:
+                    fb_val = safe_nonneg_float(rec_pos.get("free_base"), default=None)
+                    base_bal_ts = pos_base_ts if fb_val is not None else None
                 if fb_val is not None:
                     rec_pos["free_base"] = round(fb_val, 6)
-                fq_val = (
-                    cached_free_by_va[(v_rec_norm, p_quote)]
-                    if (v_rec_norm and p_quote and (v_rec_norm, p_quote) in cached_free_by_va)
-                    else safe_nonneg_float(rec_pos.get("free_quote"), default=None)
-                )
+                if v_rec_norm and p_quote and (quote_obs := cached_obs_by_va.get((v_rec_norm, p_quote))) is not None:
+                    fq_val, quote_bal_ts = quote_obs
+                else:
+                    fq_val = safe_nonneg_float(rec_pos.get("free_quote"), default=None)
+                    quote_bal_ts = pos_quote_ts if fq_val is not None else None
                 if fq_val is not None:
                     rec_pos["free_quote"] = round(fq_val, 2)
-                base_bal_ts = pos_bal_ts or (cached_ts_by_va.get((v_rec_norm, p_base_u)) if p_base_u else None)
-                quote_bal_ts = cached_ts_by_va.get((v_rec_norm, p_quote)) or pos_bal_ts
                 if base_bal_ts is not None:
                     rec_pos["_base_balance_ts"] = base_bal_ts
                 if quote_bal_ts is not None:
@@ -1538,9 +1554,12 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     c_v_norm = normalize_venue_name(c_venue)
                     rec_cash = dict(v)
                     rec_cash.pop("locked_quote_usd", None)
-                    if (c_v_norm, c_asset) in cached_free_by_va:
-                        rec_cash["free"] = round(cached_free_by_va[(c_v_norm, c_asset)], 2)
-                    c_bal_ts = safe_pos_float(v.get("ts"), default=None) or cached_ts_by_va.get((c_v_norm, c_asset)) or venue_bal_ts.get(c_v_norm)
+                    rec_cash.pop("ts", None)
+                    if (c_obs := cached_obs_by_va.get((c_v_norm, c_asset))) is not None:
+                        rec_cash["free"] = round(c_obs[0], 2)
+                        c_bal_ts = c_obs[1]
+                    else:
+                        c_bal_ts = safe_pos_float(v.get("ts"), default=None)
                     if c_bal_ts is not None:
                         rec_cash["_balance_ts"] = c_bal_ts
                     venue_quote_cash[f"{c_venue}:{c_asset}"] = rec_cash
@@ -1574,7 +1593,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         live_open_ok_venues: set[str],
         failed_open_venues: set[str],
     ) -> None:
-        cached_free_by_va, cached_ts_by_va, cached_venue_ts = _build_cached_balance_index(cached_bals)
+        cached_obs_by_va = _build_cached_balance_index(cached_bals)
         balance_ts_memo: Dict[tuple[str, str], Optional[float]] = {}
 
         def _query_free_bal(inst_obj: Any, asset: str) -> tuple[Optional[float], Optional[float]]:
@@ -1599,13 +1618,12 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             raw_bkey = f"{raw_v}:{asset_u}"
             if val_f is not None:
                 updated_bals[bkey] = round(val_f, 8)
+                bal_ts = round(now_ts_oo, 3)
             else:
-                if key in cached_free_by_va:
-                    val_f = cached_free_by_va[key]
+                if (cached_obs := cached_obs_by_va.get(key)) is not None:
+                    val_f, bal_ts = cached_obs
                 elif raw_bkey in cached_bals:
                     val_f = safe_nonneg_float(cached_bals.get(raw_bkey), default=None)
-                if val_f is not None:
-                    bal_ts = cached_ts_by_va.get(key) or cached_venue_ts.get(v_name)
             balance_memo[key] = val_f
             balance_ts_memo[key] = bal_ts
             return val_f, bal_ts
@@ -1657,15 +1675,17 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     else prev_cached_pos.get("free"),
                     default=None,
                 )
-                if base_free is not None and base_bal_ts is None:
-                    base_bal_ts = prev_pos_ts or cached_venue_ts.get(v_norm)
+                if base_free is not None:
+                    base_bal_ts = safe_pos_float(prev_cached_pos.get("base_bal_ts"), default=None) or prev_pos_ts
             if quote_free is None:
                 if prev_cached_pos and prev_cached_pos.get("free_quote") is not None:
                     quote_free = safe_nonneg_float(prev_cached_pos.get("free_quote"), default=None)
+                    if quote_free is not None:
+                        quote_bal_ts = safe_pos_float(prev_cached_pos.get("quote_bal_ts"), default=None) or prev_pos_ts
                 elif isinstance(c_cash := cached_bals.get(f"cash:{v_norm}:{quote.upper()}"), dict):
                     quote_free = safe_nonneg_float(c_cash.get("free"), default=None)
-                if quote_free is not None and quote_bal_ts is None:
-                    quote_bal_ts = cached_ts_by_va.get((v_norm, quote.upper())) or prev_pos_ts or cached_venue_ts.get(v_norm)
+                    if quote_free is not None:
+                        quote_bal_ts = safe_pos_float(c_cash.get("ts"), default=None)
             px_from_cached_pos = False
             if allow_network and (
                 px_f <= 0
@@ -1719,9 +1739,11 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 cash_entry: Dict[str, Any] = {"venue": venue, "asset": quote, "free": round(quote_free, 2)}
                 if quote_breakdown:
                     cash_entry["breakdown"] = quote_breakdown
-                updated_bals[f"cash:{v_norm}:{quote.upper()}"] = dict(cash_entry)
+                persisted_cash = dict(cash_entry)
                 if quote_bal_ts is not None:
+                    persisted_cash["ts"] = round(quote_bal_ts, 3)
                     cash_entry["_balance_ts"] = quote_bal_ts
+                updated_bals[f"cash:{v_norm}:{quote.upper()}"] = persisted_cash
                 venue_quote_cash[f"{venue}:{quote}"] = cash_entry
 
             pos_val_usd = round(base_free * px_f, 2) if base_free is not None and px_f > 0 else None
@@ -1783,7 +1805,12 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 )
                 else round(now_ts_oo, 3)
             )
-            updated_bals[pos_bkey_cur] = {**_strip_internal_balance_ts(pos_entry), "ts": eff_pos_ts}
+            persisted_pos = {**_strip_internal_balance_ts(pos_entry), "ts": eff_pos_ts}
+            if base_bal_ts is not None:
+                persisted_pos["base_bal_ts"] = round(base_bal_ts, 3)
+            if quote_bal_ts is not None:
+                persisted_pos["quote_bal_ts"] = round(quote_bal_ts, 3)
+            updated_bals[pos_bkey_cur] = persisted_pos
 
             vs_open_key = (v_norm, sym_u)
             cached_oo_list = cached_open_by_vs.get(vs_open_key)

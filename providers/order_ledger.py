@@ -460,6 +460,83 @@ def _classify_venue_status_transition(
     return None
 
 
+def classify_fill_evidence_state(
+    fill_row: dict[str, Any],
+    *,
+    req_qty: Optional[float],
+    resting_now: bool,
+    order_created_ts: float = 0.0,
+    snapshot_verified_ts: float = 0.0,
+) -> str:
+    """Single-place classification of venue fill evidence using executed qty, requested qty, and status.
+
+    Returns one of ``OrderLedgerState`` values: ``FILLED``, ``CANCELED``, ``EXPIRED``, or ``PARTIAL``.
+    A strictly partial fill (``fill_qty < req_qty``) is never archived as full ``FILLED`` even if a
+    legacy cache row carried ``status="FILLED"`` and no open-order snapshot is present.
+    """
+    _ = (resting_now, order_created_ts, snapshot_verified_ts)
+    fill_qty = safe_pos_float(fill_row.get("quantity") or fill_row.get("qty"), default=0.0) or 0.0
+    fill_vst = clean_upper_scalar(fill_row.get("status")) or ""
+    qty_complete = req_qty is not None and req_qty > 0.0 and fill_qty >= req_qty * 0.9999
+    qty_strictly_partial = req_qty is not None and req_qty > 0.0 and fill_qty < req_qty * 0.9999
+
+    if qty_complete:
+        return OrderLedgerState.FILLED.value
+    if fill_vst in {"PARTIALLY_FILLED", "PARTIAL"} or (
+        fill_vst and is_open_working_status(fill_vst, allow_empty=False)
+    ):
+        return OrderLedgerState.PARTIAL.value
+    if fill_vst == "FILLED":
+        if qty_strictly_partial:
+            return OrderLedgerState.PARTIAL.value
+        return OrderLedgerState.FILLED.value
+    if fill_vst == "EXPIRED":
+        return OrderLedgerState.EXPIRED.value
+    if fill_vst in CANCEL_OR_EXPIRE_VENUE_STATUSES:
+        return OrderLedgerState.CANCELED.value
+    # Raw venue execution fills carry no terminal order status (e.g. Hyperliquid userFills / Kraken ownTrades):
+    # remain PARTIAL until cumulative executed qty reaches req_qty or verified open-book absence converges it.
+    return OrderLedgerState.PARTIAL.value
+
+
+def resolve_late_closed_event_state(
+    event: dict[str, Any],
+    ev: str,
+    *,
+    ev_toks: Sequence[str],
+    recently_closed: dict[str, float],
+) -> Optional[str]:
+    """Decide whether trailing evidence for an already-closed order should supersede its closed archive.
+
+    Returns a guaranteed-terminal ``OrderLedgerState`` value to archive without resurrecting the order
+    into active ``orders``, or ``None`` when the trailing event must be suppressed.
+    """
+    if any(f"filled:{tok}" in recently_closed for tok in ev_toks):
+        return None
+    ev_fq = safe_nonneg_float(event.get("fq"), default=0.0) or 0.0
+    ev_qty = safe_pos_float(event.get("qty"), default=None)
+    cand_state = _DIRECT_TERMINAL_EVENTS.get(ev) or _classify_venue_status_transition(
+        event.get("vst"),
+        fq=ev_fq,
+        req_qty=ev_qty,
+        current_state=OrderLedgerState.OPEN.value,
+    )
+    is_full_fill = (
+        cand_state == OrderLedgerState.FILLED.value
+        or (ev_fq > 0.0 and ev_qty is not None and ev_fq >= ev_qty * 0.9999)
+    )
+    if is_full_fill:
+        return OrderLedgerState.FILLED.value
+    if ev_fq > 0.0 and not any(f"partial:{tok}" in recently_closed for tok in ev_toks):
+        if cand_state in {OrderLedgerState.CANCELED.value, OrderLedgerState.EXPIRED.value}:
+            return cand_state
+        if cand_state == OrderLedgerState.PARTIAL.value:
+            # Record late partial execution on a 0-fill closed order as a terminal CANCELED archive,
+            # never resurrecting the closed order back into the active ledger map.
+            return OrderLedgerState.CANCELED.value
+    return None
+
+
 def make_closed_summary(key: str, rec: dict[str, Any], *, closed_ts: float) -> dict[str, Any]:
     """Build one compact terminal summary row for ``orders_closed_YYYY-MM.jsonl``."""
     summary: dict[str, Any] = {
@@ -504,25 +581,19 @@ def apply_order_event(
         if raw_ev_key and raw_ev_key in orders:
             key = raw_ev_key
 
+    forced_terminal_state: Optional[str] = None
     if key is None:
-        # Ignore late trailing updates after an order already closed, EXCEPT allow an authoritative
-        # FILLED update to supersede an earlier non-fill closure (e.g. absent_from_verified_open_book CANCELED).
+        # Ignore late trailing updates after an order already closed, EXCEPT allow centralized
+        # terminal upgrades (e.g. authoritative FILLED or 0-fill -> partial-fill closed correction)
+        # without ever resurrecting a closed order into the active ledger map.
         if ev in _TRAILING_NON_NEW_EVENTS and isinstance(recently_closed, dict) and recently_closed:
             ev_toks = closed_order_tokens(venue, symbol=sym, vid=vid, iid=iid, cid=cid)
-            ev_fq = safe_nonneg_float(event.get("fq"), default=0.0) or 0.0
-            ev_qty = safe_pos_float(event.get("qty"), default=None)
-            is_full_fill_upgrade = (
-                clean_upper_scalar(event.get("vst")) in {"FILLED", "CLOSED"}
-                or (ev_fq > 0.0 and ev_qty is not None and ev_fq >= ev_qty * 0.9999)
-            )
-            if is_full_fill_upgrade:
-                if any(f"filled:{tok}" in recently_closed for tok in ev_toks):
+            if any(tok in recently_closed for tok in ev_toks):
+                forced_terminal_state = resolve_late_closed_event_state(
+                    event, ev, ev_toks=ev_toks, recently_closed=recently_closed
+                )
+                if forced_terminal_state is None:
                     return None
-            elif ev_fq > 0.0:
-                if any((f"filled:{tok}" in recently_closed or f"partial:{tok}" in recently_closed) for tok in ev_toks):
-                    return None
-            elif any(tok in recently_closed for tok in ev_toks):
-                return None
         key = _canonical_order_key(venue, symbol=sym, iid=iid, cid=cid, vid=vid, ts=ts)
         rec = {"v": venue, "sym": sym, "state": OrderLedgerState.INTENT.value, "created_ts": round(ts, 3), "updated_ts": round(ts, 3), "events": 0}
         orders[key] = rec
@@ -591,6 +662,8 @@ def apply_order_event(
     else:
         new_state = cur_state
 
+    if forced_terminal_state is not None:
+        new_state = forced_terminal_state
     rec["state"] = new_state
     if new_state in TERMINAL_LEDGER_STATES:
         archived = orders.pop(key, rec)

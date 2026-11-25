@@ -4356,6 +4356,429 @@ def test_audit_repeat_cycles4_to_8_edge_fixes(tmp_path):
     assert "spot_vol_15m_usd" not in ev_res and "rvol_15m" not in ev_res
 
 
+def test_p1_p2_audit_balance_obs_ledger_quote_clock_fixes(tmp_path):
+    """Regression coverage for the 4 P1/P2 audit findings:
+    1. P1 portfolio_collector: keep observed balance & timestamp bound atomically; persist raw balance
+       (never adjusted 75 USDC) so canceling orders restores 100 USDC, and prevent old 100 from stealing a newer ts.
+    2. P1 order ledger + open/filled caches:
+       - CANCELED 0/10 -> PARTIALLY_FILLED 2/10 never resurrects into active orders (archives terminal partial CANCELED;
+         subsequent FILLED 10/10 still upgrades to terminal FILLED).
+       - Legacy cache_order_open_<venue>.json with fetchtime only (no verified_ts / symbol_verified_ts) never
+         acts as complete-snapshot absence proof; legacy verified_ts caps per-symbol ts against newer WS fetchtime.
+       - Legacy fill labeled status='FILLED' with 2/10 executed stays PARTIAL when open-order snapshot is absent.
+    3. P2 equity quote provenance: never attach yahoo_ext_cached / t212_rth_close / age from a different price
+       (e.g. 408.393) onto displayed price 420.00 across unseeded fallback and Trading212 seeding.
+    4. P2 pretrade replay clock: shifting process wall-clock by +8h with fixed replay now_ts produces identical
+       equity RVOL and pretrade telemetry.
+    """
+    from datetime import datetime
+    from pathlib import Path
+    from types import SimpleNamespace
+    from unittest import mock
+    from zoneinfo import ZoneInfo
+
+    from cacheaccount import CACHE_BINANCE_ORDER_OPEN_FILENAME, CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME, CacheOrderOpenManager
+    from intelligence.sentiment.collectors.microstructure_collector import Fleet24hAndMicrostructureEnricher
+    from intelligence.sentiment.collectors.portfolio_collector import TradablePositionsAndOrdersCollector
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import PretradeTelemetryOrchestrator
+    from providers.order_ledger import (
+        OrderEventType,
+        OrderLedgerReader,
+        OrderLedgerState,
+        OrderLedgerWriter,
+        apply_order_event,
+        classify_fill_evidence_state,
+        update_recently_closed,
+    )
+
+    # --- 1a. P1: Raw balance persisted (100), prompt displays 75 while BUY open, reverts to 100 when orders clear ---
+    now_s = 1_795_650_000.0
+    bal_ts = now_s - 60.0
+    ord_ts = now_s - 30.0
+    cdir1 = tmp_path / "cachedb_raw_persist"
+    (cdir1 / "state").mkdir(parents=True)
+    (cdir1 / "orders").mkdir(parents=True)
+    vb_path1 = cdir1 / "state" / "venue_balances_state.json"
+    vb_path1.write_text(
+        json.dumps(
+            {
+                "binance:ARB": 10.0,
+                "binance:USDC": 100.0,
+                "pos:binance:ARBUSDC": {
+                    "venue": "binance",
+                    "symbol": "ARBUSDC",
+                    "base": "ARB",
+                    "quote": "USDC",
+                    "price": 1.0,
+                    "free_base": 10.0,
+                    "value_usd": 10.0,
+                    "free_quote": 100.0,
+                    "ts": bal_ts,
+                },
+                "cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 100.0, "ts": bal_ts},
+            }
+        ),
+        encoding="utf-8",
+    )
+    open_orders_state = [
+        {
+            "orderId": "B1",
+            "symbol": "ARBUSDC",
+            "side": "BUY",
+            "type": "LIMIT",
+            "price": "1.0",
+            "origQty": "25.0",
+            "executedQty": "0.0",
+            "status": "NEW",
+            "time": int(ord_ts * 1000.0),
+        }
+    ]
+    failing_provider = SimpleNamespace(free_balance=lambda _asset: None)
+    inst_map1 = {
+        "ARBUSDC": SimpleNamespace(
+            symbol="ARBUSDC",
+            provider_name="binance",
+            base="ARB",
+            quote="USDC",
+            params={},
+            _provider=failing_provider,
+            open_orders=lambda: list(open_orders_state),
+        )
+    }
+    tpos_c1, _, vcash_c1, _ = TradablePositionsAndOrdersCollector(start_sync=False).collect(
+        str(cdir1),
+        inst_map=inst_map1,
+        prices_and_trends={"ARBUSDC": {"price": 1.0}},
+        allow_network=True,
+        persist=True,
+        force_persist=True,
+        now_ts=now_s,
+    )
+    assert tpos_c1[0]["free_quote"] == pytest.approx(75.0)
+    assert vcash_c1["binance:USDC"]["free"] == pytest.approx(75.0)
+    assert vcash_c1["binance:USDC"]["locked_quote_usd"] == pytest.approx(25.0)
+    # Persisted snapshot MUST keep raw 100.0 (NOT synthetic 75.0) and preserve bal_ts!
+    saved_vb1 = json.loads(vb_path1.read_text(encoding="utf-8"))
+    assert saved_vb1["cash:binance:USDC"]["free"] == pytest.approx(100.0)
+    assert saved_vb1["cash:binance:USDC"]["ts"] == pytest.approx(bal_ts)
+    assert saved_vb1["pos:binance:ARBUSDC"]["free_quote"] == pytest.approx(100.0)
+    assert saved_vb1["pos:binance:ARBUSDC"]["quote_bal_ts"] == pytest.approx(bal_ts)
+
+    # Next cycle: order canceled (empty open orders) + provider still unavailable -> restores 100.0 free!
+    open_orders_state.clear()
+    tpos_c2, _, vcash_c2, _ = TradablePositionsAndOrdersCollector(start_sync=False).collect(
+        str(cdir1),
+        inst_map=inst_map1,
+        prices_and_trends={"ARBUSDC": {"price": 1.0}},
+        allow_network=True,
+        persist=True,
+        force_persist=True,
+        now_ts=now_s + 30.0,
+    )
+    assert tpos_c2[0]["free_quote"] == pytest.approx(100.0)
+    assert vcash_c2["binance:USDC"]["free"] == pytest.approx(100.0)
+
+    # --- 1b. P1: Old value 100 must NEVER steal a newer timestamp from another record ---
+    cdir1b = tmp_path / "cachedb_no_ts_theft"
+    (cdir1b / "state").mkdir(parents=True)
+    (cdir1b / "orders").mkdir(parents=True)
+    (cdir1b / "state" / "venue_balances_state.json").write_text(
+        json.dumps(
+            {
+                "pos:binance:ARBUSDC": {
+                    "venue": "binance",
+                    "symbol": "ARBUSDC",
+                    "base": "ARB",
+                    "quote": "USDC",
+                    "price": 1.0,
+                    "free_base": 10.0,
+                    "free_quote": 100.0,
+                    "ts": bal_ts,
+                },
+                # Newer BTCUSDC record with NO free_quote must NOT stamp ts=now_s-5 onto USDC=100.0!
+                "pos:binance:BTCUSDC": {
+                    "venue": "binance",
+                    "symbol": "BTCUSDC",
+                    "base": "BTC",
+                    "quote": "USDC",
+                    "price": 60000.0,
+                    "free_base": 0.01,
+                    "ts": now_s - 5.0,
+                },
+                "cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 100.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir1b / "orders" / CACHE_BINANCE_ORDER_OPEN_FILENAME).write_text(
+        json.dumps(
+            {
+                "items": {
+                    "ARBUSDC": [
+                        {
+                            "orderId": "B2",
+                            "symbol": "ARBUSDC",
+                            "side": "BUY",
+                            "type": "LIMIT",
+                            "price": "1.0",
+                            "origQty": "25.0",
+                            "executedQty": "0.0",
+                            "status": "NEW",
+                            "time": int(ord_ts * 1000.0),
+                        }
+                    ]
+                },
+                "symbol_verified_ts": {"ARBUSDC": now_s - 1.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    tpos_1b, _, vcash_1b, _ = TradablePositionsAndOrdersCollector(start_sync=False).collect(
+        str(cdir1b),
+        prices_and_trends={"ARBUSDC": {"price": 1.0}, "BTCUSDC": {"price": 60000.0}},
+        allow_empty_inst_recovery=True,
+        allow_network=False,
+        persist=False,
+        now_ts=now_s,
+    )
+    by_s1b = {p["symbol"]: p for p in tpos_1b}
+    assert by_s1b["ARBUSDC"]["free_quote"] == pytest.approx(75.0)
+    assert by_s1b["BTCUSDC"]["free_quote"] == pytest.approx(75.0)
+    assert vcash_1b["binance:USDC"]["free"] == pytest.approx(75.0)
+    assert vcash_1b["binance:USDC"]["locked_quote_usd"] == pytest.approx(25.0)
+
+    # --- 2a. P1: CANCELED 0/10 -> PARTIALLY_FILLED 2/10 never resurrects order into active ledger ---
+    orders_l: dict = {}
+    closed_l: list = []
+    rc_l: dict = {}
+    apply_order_event(
+        orders_l,
+        {"ts": now_s, "ev": "ACKED", "v": "binance", "sym": "ARBUSDC", "iid": "i-c0", "cid": "AI_c0", "vid": "99001", "side": "BUY", "qty": 10.0, "px": 1.0},
+        closed_out=closed_l,
+        recently_closed=rc_l,
+    )
+    apply_order_event(
+        orders_l,
+        {"ts": now_s + 5.0, "ev": "RECONCILED_CANCELED", "v": "binance", "sym": "ARBUSDC", "iid": "i-c0", "cid": "AI_c0", "vid": "99001", "fq": 0.0},
+        closed_out=closed_l,
+        recently_closed=rc_l,
+    )
+    assert orders_l == {}
+    assert len(closed_l) == 1 and closed_l[0]["state"] == "CANCELED"
+    rc_l = update_recently_closed(rc_l, closed_l, eff_now=now_s + 5.0)
+
+    apply_order_event(
+        orders_l,
+        {"ts": now_s + 10.0, "ev": "STATUS", "v": "binance", "sym": "ARBUSDC", "iid": "i-c0", "cid": "AI_c0", "vid": "99001", "vst": "PARTIALLY_FILLED", "qty": 10.0, "fq": 2.0},
+        closed_out=closed_l,
+        recently_closed=rc_l,
+    )
+    assert orders_l == {}  # Must NEVER resurrect into active orders!
+    assert len(closed_l) == 2 and closed_l[1]["state"] == "CANCELED" and closed_l[1]["fq"] == pytest.approx(2.0)
+    rc_l = update_recently_closed(rc_l, closed_l[1:], eff_now=now_s + 10.0)
+
+    # Duplicate PARTIALLY_FILLED 2/10 is suppressed
+    assert (
+        apply_order_event(
+            orders_l,
+            {"ts": now_s + 12.0, "ev": "STATUS", "v": "binance", "sym": "ARBUSDC", "iid": "i-c0", "cid": "AI_c0", "vid": "99001", "vst": "PARTIALLY_FILLED", "qty": 10.0, "fq": 2.0},
+            closed_out=closed_l,
+            recently_closed=rc_l,
+        )
+        is None
+    )
+    assert orders_l == {}
+
+    # Subsequent authoritative FILLED 10/10 still archives terminal FILLED without activating orders
+    apply_order_event(
+        orders_l,
+        {"ts": now_s + 20.0, "ev": "STATUS", "v": "binance", "sym": "ARBUSDC", "iid": "i-c0", "cid": "AI_c0", "vid": "99001", "vst": "FILLED", "qty": 10.0, "fq": 10.0},
+        closed_out=closed_l,
+        recently_closed=rc_l,
+    )
+    assert orders_l == {}
+    assert len(closed_l) == 3 and closed_l[2]["state"] == "FILLED" and closed_l[2]["fq"] == pytest.approx(10.0)
+
+    # --- 2b. P1: Legacy open cache with fetchtime only (no verified_ts) never proves complete snapshot ---
+    leg_open_p = tmp_path / "legacy_open_ft_only.json"
+    leg_open_p.write_text(
+        json.dumps({"items": {"BTCUSDC": []}, "fetchtime": {"BTCUSDC": int(now_s * 1000)}}),
+        encoding="utf-8",
+    )
+    _, _, leg_ver_ts, leg_sym_ver = CacheOrderOpenManager.read_venue_open_orders_snapshot_detailed(str(leg_open_p))
+    assert leg_ver_ts == 0.0 and leg_sym_ver == {}
+
+    leg_open_cap = tmp_path / "legacy_open_ws_bumped_ft.json"
+    leg_open_cap.write_text(
+        json.dumps(
+            {
+                "items": {"BTCUSDC": []},
+                "fetchtime": {"BTCUSDC": int((now_s + 60.0) * 1000)},
+                "verified_ts": now_s,
+            }
+        ),
+        encoding="utf-8",
+    )
+    _, _, _, cap_sym_ver = CacheOrderOpenManager.read_venue_open_orders_snapshot_detailed(str(leg_open_cap))
+    assert cap_sym_ver == {"BTCUSDC": pytest.approx(now_s)}
+
+    # --- 2c. P1: Legacy fill labeled status='FILLED' with 2/10 executed stays PARTIAL without open snapshot ---
+    assert (
+        classify_fill_evidence_state(
+            {"orderId": "OLD-2", "quantity": 2.0, "status": "FILLED"},
+            req_qty=10.0,
+            resting_now=False,
+        )
+        == OrderLedgerState.PARTIAL.value
+    )
+    cdb_leg = tmp_path / "cachedb_legacy_fill"
+    (cdb_leg / "orders").mkdir(parents=True)
+    writer_leg = OrderLedgerWriter(cachedb_dir=cdb_leg)
+    reconciler_leg = OrderLedgerReconciler(cachedb_dir=cdb_leg, use_singletons=False, reconcile_grace_sec=10.0)
+    reader_leg = OrderLedgerReader(cachedb_dir=cdb_leg)
+    writer_leg.record_event(
+        OrderEventType.ACKED,
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+        ts=now_s,
+        iid="hl-leg-2",
+        vid="HL-LEG-2",
+        side="BUY",
+        qty=10.0,
+        px=50.0,
+    )
+    (cdb_leg / "orders" / CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME).write_text(
+        json.dumps(
+            {
+                "items": {
+                    "HYPEUSDC": [
+                        {
+                            "orderId": "HL-LEG-2",
+                            "symbol": "HYPEUSDC",
+                            "side": "BUY",
+                            "price": 50.0,
+                            "quantity": 2.0,
+                            "status": "FILLED",
+                            "timestamp": int((now_s + 2.0) * 1000),
+                        }
+                    ]
+                },
+                "fetchtime": {"HYPEUSDC": int((now_s + 3.0) * 1000)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    st_leg = reconciler_leg.reconcile_once(now_ts=now_s + 5.0)
+    assert st_leg["reconciled_filled"] == 0 and st_leg["reconciled_closed"] == 0 and st_leg["active_count"] == 1
+    act_leg = reader_leg.list_active_orders(venue="hyperliquid", apply_tail=False)
+    assert len(act_leg) == 1 and act_leg[0]["state"] == OrderLedgerState.PARTIAL.value and act_leg[0]["fq"] == pytest.approx(2.0)
+
+    # --- 3. P2: Provenance never mismatches displayed price (420.00 vs 408.393) on unseeded or T212 paths ---
+    ny_tz = ZoneInfo("America/New_York")
+    ts_rth_q = datetime(2026, 11, 24, 15, 59, 0, tzinfo=ny_tz).timestamp()
+    ts_post_q = datetime(2026, 11, 24, 19, 59, 50, tzinfo=ny_tz).timestamp()
+    ts_closed_q = datetime(2026, 11, 24, 20, 35, 0, tzinfo=ny_tz).timestamp()
+    cdir_q = tmp_path / "cachedb_amd_420"
+    pdir_q = cdir_q / "prices"
+    pdir_q.mkdir(parents=True)
+    (pdir_q / "cache_24_price_AMD_US_EQ.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "AMD_US_EQ": [
+                        [int((ts_post_q - 24 * 3600) * 1000), 447.75],
+                        [int((ts_post_q - 3600) * 1000), 411.50],
+                        [int(ts_post_q * 1000), 408.393],
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_420 = {"AMD_US_EQ": {"price": 420.00, "trend": 0, "growth_coefficient": 0.0}}
+    cp_408 = {"AMD_US_EQ": [[int(ts_post_q * 1000), 408.393]]}
+    Fleet24hAndMicrostructureEnricher._enrich_primary_symbol_series(
+        str(cdir_q), "", "AMD_US_EQ", pt_420, cp_408, {}, [], [], set(), {}, {}, ts_closed_q, False
+    )
+    assert pt_420["AMD_US_EQ"]["price"] == pytest.approx(420.00)
+    assert "quote_source" not in pt_420["AMD_US_EQ"]
+    assert "quote_age_min" not in pt_420["AMD_US_EQ"]
+
+    # T212 seeding also must NOT stamp t212_rth_close / pos:t212 age onto an unrelated 420.00 price
+    pt_t212_420 = {"AMD_US_EQ": {"price": 420.00, "trend": 0, "growth_coefficient": 0.0}}
+    bals_t212_408 = {"pos:t212:AMD_US_EQ": {"symbol": "AMD_US_EQ", "free": 1.0, "price": 408.393, "ts": ts_rth_q}}
+    Fleet24hAndMicrostructureEnricher._seed_t212_positions(
+        "",
+        pt_t212_420,
+        {},
+        {"AMD_US_EQ": SimpleNamespace(symbol="AMD_US_EQ", provider_name="trading212")},
+        bals_t212_408,
+        "",
+        0.0,
+        ts_closed_q,
+        lambda _p: None,
+        False,
+    )
+    assert pt_t212_420["AMD_US_EQ"]["price"] == pytest.approx(420.00)
+    assert "quote_source" not in pt_t212_420["AMD_US_EQ"]
+    assert "quote_age_min" not in pt_t212_420["AMD_US_EQ"]
+
+    # _apply_yahoo_equity_quote_meta classifies overnight stale POST bar as yahoo_ext_cached (not live yahoo_ext)
+    pt_y_meta = {"AMD_US_EQ": {"price": 408.393}}
+    Fleet24hAndMicrostructureEnricher._apply_yahoo_equity_quote_meta(
+        pt_y_meta, {"AMD_US_EQ": 415.0}, "AMD_US_EQ", 408.393, ts_post_q * 1000.0, False, ts_closed_q
+    )
+    assert pt_y_meta["AMD_US_EQ"]["quote_source"] == "yahoo_ext_cached"
+    assert pt_y_meta["AMD_US_EQ"]["quote_age_min"] == pytest.approx(35.2, abs=0.2)
+    assert "market_state" not in pt_y_meta["AMD_US_EQ"]
+
+    # --- 4. P2: Pretrade replay clock invariance when process wall-clock shifts by +8h ---
+    rth_start_dt = datetime(2026, 11, 24, 9, 30, 0, tzinfo=ny_tz)
+    rth_start_ms = int(rth_start_dt.timestamp() * 1000)
+    # 50 x 5m bars (09:30 -> 13:35 ET), with last 3 bars (15m) having ~2.8x average turnover
+    eq_bars = [
+        [rth_start_ms + i * 300_000, 150.0 + i * 0.05, 300_000.0 if i >= 47 else 100_000.0]
+        for i in range(50)
+    ]
+    replay_now = (eq_bars[-1][0] / 1000.0) + 60.0  # 13:36 ET (during RTH, 1m after last bar)
+    cdir_pt = tmp_path / "cachedb_pretrade_clock"
+    (cdir_pt / "prices").mkdir(parents=True)
+    (cdir_pt / "telemetry").mkdir(parents=True)
+    (cdir_pt / "prices" / "cache_24_price_NVDA_US_EQ.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": eq_bars}}),
+        encoding="utf-8",
+    )
+    (cdir_pt / "telemetry" / "orderbook_depth_NVDA_US_EQ.json").write_text(
+        json.dumps(
+            {
+                "ts": replay_now - 10.0,
+                "symbol": "NVDA_US_EQ",
+                "ob_mid_price": eq_bars[-1][1],
+                "bid_depth_usd": 50_000.0,
+                "ask_depth_usd": 45_000.0,
+                "imbalance_ratio": 0.53,
+                "spread_bps": 3.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    orch = PretradeTelemetryOrchestrator(start_sync=False)
+    with mock.patch("intelligence.sentiment.collectors.pretrade_telemetry_collector._time.time", return_value=replay_now):
+        snap_same_clk = orch.read_snapshot(str(cdir_pt), "NVDA_US_EQ", now_ts=replay_now)
+    with mock.patch(
+        "intelligence.sentiment.collectors.pretrade_telemetry_collector._time.time",
+        return_value=replay_now + 8 * 3600.0,
+    ):
+        snap_shifted_clk = orch.read_snapshot(str(cdir_pt), "NVDA_US_EQ", now_ts=replay_now)
+
+    cvd_same = snap_same_clk.get("15m Cumulative Volume Delta (CVD)", "")
+    cvd_shifted = snap_shifted_clk.get("15m Cumulative Volume Delta (CVD)", "")
+    assert "rvol_15m=" in cvd_same
+    assert cvd_shifted == cvd_same
+    assert dict(snap_shifted_clk) == dict(snap_same_clk)
+
+
+
 def test_cycle10_deribit_0dte_skew_exclusion_kinematics_signed_zero_and_nk_sanctions_filter():
     """Cycle 10 daytime audit fixes:
     1. Deribit 25d Skew must exclude expiring 0-DTE (<24h to 08:00 UTC settlement) contracts when

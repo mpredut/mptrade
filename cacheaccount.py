@@ -3090,15 +3090,17 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
                 if clean_scalar_str(k) is not None and (v_f := safe_pos_float(v, default=None)) is not None:
                     out[str(k)] = round(v_f, 3)
             return out
-        # Legacy snapshot compatibility: only symbols explicitly present in ``items`` (including verified
-        # empty lists ``[]``) were covered by the snapshot; omitted symbols remain unverified.
+        # Legacy snapshot compatibility (no explicit ``symbol_verified_ts`` field):
+        # bare ``fetchtime`` alone is NOT proof of a complete open-order snapshot because single-order WS
+        # deltas advance ``fetchtime``. Require an explicit venue-wide ``verified_ts > 0`` and cap any
+        # per-symbol timestamp at ``verified_ts`` for symbols explicitly listed in ``items``.
+        if ver_ts <= 0.0:
+            return {}
         inferred: dict[str, float] = {}
         for sym_k in items.keys():
             ft_ms = ft_map.get(sym_k, 0)
-            if ft_ms > 0:
-                inferred[sym_k] = round(ft_ms / 1000.0, 3)
-            elif ver_ts > 0.0:
-                inferred[sym_k] = round(ver_ts, 3)
+            sym_ts = min(ver_ts, ft_ms / 1000.0) if ft_ms > 0 else ver_ts
+            inferred[sym_k] = round(sym_ts, 3)
         return inferred
 
     def _reload_snapshot_from_disk(self):

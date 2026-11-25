@@ -1757,7 +1757,31 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
     COLLECTOR_ID = "fleet_24h_and_microstructure"
 
     @staticmethod
+    def _prices_match_quote(px_a: float, px_b: float, *, rel_tol: float = 0.0005) -> bool:
+        return px_a > 0.0 and px_b > 0.0 and abs(px_a - px_b) / max(px_a, px_b) <= rel_tol
+
+    @staticmethod
+    def _classify_yahoo_equity_quote_source(
+        sym_k: str, quote_ts_sec: float, eff_now: float
+    ) -> Tuple[str, Optional[str]]:
+        try:
+            eq_open = bool(is_symbol_market_open(sym_k, eff_now))
+            now_sess = resolve_symbol_market_session(sym_k, eff_now)
+            q_sess = resolve_symbol_market_session(sym_k, quote_ts_sec)
+        except Exception:
+            eq_open, now_sess, q_sess = False, "", ""
+        q_is_recent = 0.0 <= (eff_now - quote_ts_sec) <= 20.0 * 60.0
+        if eq_open and q_is_recent:
+            return "yahoo_rth", None
+        if not eq_open and now_sess in ("PRE", "POST") and q_sess == now_sess and q_is_recent:
+            return "yahoo_ext", now_sess
+        if q_sess in ("PRE", "POST"):
+            return "yahoo_ext_cached", None
+        return "yahoo_rth_close", None
+
+    @classmethod
     def _apply_yahoo_equity_quote_meta(
+        cls,
         pt_map: Dict[str, Any],
         t212_cached_px: Dict[str, float],
         sym_k: str,
@@ -1766,14 +1790,23 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         is_open: bool,
         eff_now: float,
     ) -> None:
-        pt_map[sym_k]["quote_source"] = "yahoo_rth" if is_open else "yahoo_ext"
-        eq_sess = resolve_symbol_market_session(sym_k, eff_now)
-        if not is_open and eq_sess in ("PRE", "POST"):
-            pt_map[sym_k]["market_state"] = eq_sess
-        else:
-            pt_map[sym_k].pop("market_state", None)
         if quote_ts_ms > 1e11:
-            pt_map[sym_k]["quote_age_min"] = round(max(0.0, eff_now - (quote_ts_ms / 1000.0)) / 60.0, 1)
+            q_ts_s = quote_ts_ms / 1000.0
+            q_src, q_mstate = cls._classify_yahoo_equity_quote_source(sym_k, q_ts_s, eff_now)
+            pt_map[sym_k]["quote_source"] = q_src
+            if q_mstate:
+                pt_map[sym_k]["market_state"] = q_mstate
+            else:
+                pt_map[sym_k].pop("market_state", None)
+            pt_map[sym_k]["quote_age_min"] = round(max(0.0, eff_now - q_ts_s) / 60.0, 1)
+            eq_sess = q_mstate or resolve_symbol_market_session(sym_k, eff_now)
+        else:
+            pt_map[sym_k]["quote_source"] = "yahoo_rth" if is_open else "yahoo_ext"
+            eq_sess = resolve_symbol_market_session(sym_k, eff_now)
+            if not is_open and eq_sess in ("PRE", "POST"):
+                pt_map[sym_k]["market_state"] = eq_sess
+            else:
+                pt_map[sym_k].pop("market_state", None)
         # BY DESIGN: During open US RTH, cached pos:t212:* is a slightly older intraday T212 tick, not an RTH close;
         # only publish t212_close_px outside RTH when T212 stays frozen at 16:00 EST close while Yahoo trades pre/post-market.
         if (
@@ -1782,7 +1815,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             and abs(px_cur - c_t212) / max(px_cur, c_t212) >= 0.0005
         ):
             pt_map[sym_k]["t212_close_px"] = c_t212
-            if eq_sess in ("PRE", "POST"):
+            if eq_sess in ("PRE", "POST") or pt_map[sym_k].get("quote_source") == "yahoo_ext_cached":
                 pt_map[sym_k]["ext_vs_rth_pct"] = round(((px_cur - c_t212) / c_t212) * 100.0, 2)
             else:
                 pt_map[sym_k].pop("ext_vs_rth_pct", None)
@@ -1943,13 +1976,18 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             ):
                 t_entry["price"] = cached_t212_px
                 t212_seeded_from_cache.add(ticker)
-            if has_equity_suffix(ticker) and safe_pos_float(t_entry.get("price"), default=0.0):
+            disp_t_px = safe_pos_float(t_entry.get("price"), default=0.0) or 0.0
+            if (
+                has_equity_suffix(ticker)
+                and disp_t_px > 0.0
+                and cached_t212_px is not None
+                and Fleet24hAndMicrostructureEnricher._prices_match_quote(disp_t_px, cached_t212_px)
+            ):
                 if (
                     not t_rth_open
                     and not cp_in_active_ext_sess
                     and cp_pt is not None
                     and cp_pt[1] > 0.0
-                    and cached_t212_px is not None
                     and abs(cached_t212_px - round(cp_pt[1], 4)) > 1e-4
                     and (pos_ts_val or 0.0) > cp_ts_s_eq > 0.0
                 ):
@@ -1959,7 +1997,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     t_entry["t212_close_px"] = cp_close_px
                     if eq_sess in ("PRE", "POST"):
                         t_entry.setdefault("market_state", eq_sess)
-                        t_entry["ext_vs_rth_pct"] = round(((cached_t212_px - cp_close_px) / cp_close_px) * 100.0, 2)
+                        t_entry["ext_vs_rth_pct"] = round(((disp_t_px - cp_close_px) / cp_close_px) * 100.0, 2)
                 else:
                     t_entry.setdefault("quote_source", "t212_live" if t_rth_open else "t212_rth_close")
                 if (t_ts_v := t212_pos_ts.get(ticker, 0.0)) > 0.0 and 0.0 <= (eff_now - t_ts_v) <= 14 * 86400.0:
@@ -2371,6 +2409,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 eff_now,
             )
         if is_eq_sym and not pt_map[sym].get("quote_source"):
+            disp_px_eq = safe_pos_float(pt_map[sym].get("price"), default=0.0) or 0.0
             cp_raw_eq = casefold_get(cp_map, sym) if isinstance(cp_map, dict) else None
             cp_pt_eq = parse_ts_px_row(cp_raw_eq[-1]) if isinstance(cp_raw_eq, list) and cp_raw_eq else None
             q_pt_eq = max(
@@ -2382,13 +2421,8 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     )
                     if pt_cand is not None
                     and pt_cand[0] > 1e11
-                    and (
-                        sym_px_cur <= 0.0
-                        or (
-                            pt_cand[1] > 0.0
-                            and abs(sym_px_cur - pt_cand[1]) / max(sym_px_cur, pt_cand[1]) <= 0.0005
-                        )
-                    )
+                    and pt_cand[1] > 0.0
+                    and (disp_px_eq <= 0.0 or cls._prices_match_quote(disp_px_eq, pt_cand[1]))
                 ),
                 key=lambda pt_cand: pt_cand[0],
                 default=None,
@@ -2396,25 +2430,14 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             if q_pt_eq is not None:
                 q_ts_s_eq = q_pt_eq[0] / 1000.0
                 if 0.0 <= (eff_now - q_ts_s_eq) <= 14 * 86400.0:
+                    if disp_px_eq <= 0.0:
+                        pt_map[sym]["price"] = round(q_pt_eq[1], 4)
                     if pt_map[sym].get("quote_age_min") is None:
                         pt_map[sym]["quote_age_min"] = round(max(0.0, eff_now - q_ts_s_eq) / 60.0, 1)
-                    if not pt_map[sym].get("quote_source"):
-                        try:
-                            eq_open_fb = bool(is_symbol_market_open(sym, eff_now))
-                            now_sess_fb = resolve_symbol_market_session(sym, eff_now)
-                            q_sess_fb = resolve_symbol_market_session(sym, q_ts_s_eq)
-                        except Exception:
-                            eq_open_fb, now_sess_fb, q_sess_fb = False, "", ""
-                        q_is_recent = (eff_now - q_ts_s_eq) <= 20.0 * 60.0
-                        if eq_open_fb and q_is_recent:
-                            pt_map[sym]["quote_source"] = "yahoo_rth"
-                        elif not eq_open_fb and now_sess_fb in ("PRE", "POST") and q_sess_fb == now_sess_fb and q_is_recent:
-                            pt_map[sym]["quote_source"] = "yahoo_ext"
-                            pt_map[sym]["market_state"] = now_sess_fb
-                        elif q_sess_fb in ("PRE", "POST"):
-                            pt_map[sym]["quote_source"] = "yahoo_ext_cached"
-                        else:
-                            pt_map[sym]["quote_source"] = "yahoo_rth_close"
+                    q_src_fb, q_mstate_fb = cls._classify_yahoo_equity_quote_source(sym, q_ts_s_eq, eff_now)
+                    pt_map[sym]["quote_source"] = q_src_fb
+                    if q_mstate_fb:
+                        pt_map[sym]["market_state"] = q_mstate_fb
         if m24:
             if is_eq_sym and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")):
                 for k_stale_15m in ("recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):

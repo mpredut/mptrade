@@ -616,6 +616,7 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
     *,
     allow_network: bool = False,
     series_24h: Optional[list] = None,
+    now_ts: Optional[float] = None,
 ) -> None:
     sym_u_pt = clean_symbol_key(sym_v) or str(sym_v or "").strip().upper()
     s24_start_ms_pt = (
@@ -627,7 +628,7 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
         sym_u_pt,
         m24_d,
         px_v,
-        _time.time(),
+        resolve_now_ts(now_ts),
         last_series_pt=last_pt_v,
         ob_ts_sec=ob_ts_v,
         respect_policy_network_gate=True,
@@ -903,9 +904,10 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
             if (live_cur_px <= 0.0 or is_eq_sym)
             else (None, {}, 0.0)
         )
+        eff_now = resolve_now_ts(ctx.now_ts or None)
         if vb_path and vb_d:
             if eff_allow_net and is_eq_sym and ctx.rj is _default_read_json_cached:
-                refresh_stale_t212_cached_positions(vb_d, vb_path, _time.time())
+                refresh_stale_t212_cached_positions(vb_d, vb_path, eff_now)
             for vb_k, vb_v in vb_d.items():
                 if isinstance(vb_k, str) and vb_k.startswith("pos:") and isinstance(vb_v, dict):
                     if clean_symbol_key(vb_v.get("symbol") or vb_k.split(":", 2)[-1]) == clean_symbol_key(symbol):
@@ -933,7 +935,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
         )
         bars_4h_pt = LAST_7D_4H_BARS_BY_SYM.get(str(symbol).strip().upper()) if arch_vals_7d else None
         eq_7d_series = bars_4h_pt
-        now_s_eq_chk = _time.time()
+        now_s_eq_chk = eff_now
         m24 = (
             _call_compute_24h(alt_series_24h, is_equity=is_eq_sym, series_7d_ts_px=eq_7d_series, now_ts=now_s_eq_chk)
             if alt_series_24h
@@ -996,7 +998,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                 pass
 
         if is_eq_sym and last_alt_pt is not None:
-            now_ms_eq = math.trunc(_time.time() * 1000)
+            now_ms_eq = math.trunc(eff_now * 1000)
             eq_rth_open = bool(is_symbol_market_open(symbol, now_ms_eq / 1000.0))
             eff_live_px_ts = max(cp_ts_sec, vb_pos_ts)
             if (
@@ -1045,7 +1047,14 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                     m24.pop(k_stale_15m, None)
 
         _upgrade_pretrade_tpo_vp_from_ohlc(
-            cachedb_dir, symbol, m24, cur_px_est, last_alt_pt, allow_network=eff_allow_net, series_24h=alt_series_24h
+            cachedb_dir,
+            symbol,
+            m24,
+            cur_px_est,
+            last_alt_pt,
+            allow_network=eff_allow_net,
+            series_24h=alt_series_24h,
+            now_ts=eff_now,
         )
         (
             ctx.alt_series_24h,
@@ -1094,7 +1103,7 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
         if not cur_m_info:
             ctx.cur_m_info, ctx.cur_px_est, ctx.ob_ts_est = {}, cur_px_est, ob_ts_est
             return
-        now_ts_s = _time.time()
+        now_ts_s = resolve_now_ts(ctx.now_ts or None)
         ob_ts_est = safe_pos_float(cur_m_info.pop("_ob_ts", None), default=0.0) or 0.0
         ob_raw_ts_m = safe_pos_float(cur_m_info.pop("_ob_raw_ts", None), default=0.0) or 0.0
         deriv_ts_m = safe_pos_float(cur_m_info.pop("_deriv_ts", None), default=0.0) or 0.0
@@ -1135,7 +1144,15 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
             _refresh_wall_telemetry(use_sub_ten_decimals=True)
         if m24 and m24.get("vp_source") == "TPO":
             _upgrade_pretrade_tpo_vp_from_ohlc(
-                cachedb_dir, symbol, m24, cur_px_est, last_alt_pt, ob_ts_est, allow_network=allow_network, series_24h=ctx.alt_series_24h
+                cachedb_dir,
+                symbol,
+                m24,
+                cur_px_est,
+                last_alt_pt,
+                ob_ts_est,
+                allow_network=allow_network,
+                series_24h=ctx.alt_series_24h,
+                now_ts=now_ts_s,
             )
             if cur_px_est > 0.0 and m24.get("vp_source") == "REAL_VOL":
                 recalculate_live_price_geometry(m24, cur_px_est)
@@ -1234,10 +1251,11 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
             telemetry["Session VWAP & Intraday Structure"] = " | ".join(sess_struct_parts)
 
         if canonical_base_asset(symbol) != "BTC" and not is_equity_symbol(symbol):
+            eff_now_btc = resolve_now_ts(ctx.now_ts or None)
             btc_series_24h, btc_vals_7d = load_symbol_price_series(
                 cachedb_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=True
             )
-            btc_m24 = compute_24h_price_metrics(btc_series_24h) if btc_series_24h else {}
+            btc_m24 = compute_24h_price_metrics(btc_series_24h, now_ts=eff_now_btc) if btc_series_24h else {}
             btc_live_px = extract_current_price_item(casefold_get(cur_p_items, "BTCUSDC")) or 0.0
             if btc_m24 and btc_series_24h:
                 btc_last_pt = parse_ts_px_row(btc_series_24h[-1])
@@ -1249,7 +1267,7 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
                     for _k_int_ts in ("_ob_ts", "_ob_raw_ts", "_deriv_ts", "_whale_ts"):
                         btc_m_info.pop(_k_int_ts, None)
                 btc_ob_mid = safe_pos_float((btc_m_info or {}).get("ob_mid_price"), default=None)
-                btc_ob_fresh = is_ob_live_and_newer(btc_ob_ts, _time.time(), btc_last_pt)
+                btc_ob_fresh = is_ob_live_and_newer(btc_ob_ts, eff_now_btc, btc_last_pt)
                 if (
                     btc_ob_mid is not None
                     and btc_ob_fresh
@@ -1386,7 +1404,7 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
             and (not m7d or partial_w_7d_span or 0.0 < LAST_7D_SPAN_MS_BY_SYM.get(str(symbol).strip().upper(), 0.0) < 5 * 86400 * 1000)
         ):
             try:
-                now_s_7d = _time.time()
+                now_s_7d = resolve_now_ts(ctx.now_ts or None)
                 if (
                     last_alt_pt is None
                     or abs(now_s_7d * 1000.0 - last_alt_pt[0]) <= 30 * 60 * 1000.0
@@ -1661,7 +1679,7 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                 t_entry,
                 m24,
                 alt_series_24h,
-                _time.time(),
+                resolve_now_ts(ctx.now_ts or None),
                 post_rth_series_replaced=eq_px_diverged_05pct,
                 rth_fresh_override=rth_fresh_eq,
                 include_kinematics=True,
@@ -1815,10 +1833,11 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                 sib_live_px = extract_current_price_item(casefold_get(ctx.cur_p_items, cand_u))
                 if not sib_live_px or sib_live_px <= 0.0:
                     sib_live_px = resolve_live_24trend_current_price(cachedb_dir, cand_u, _rj)
-                if (not sib_live_px or sib_live_px <= 0.0) and cur_px_est > 0.0 and sib_ob_ts > 0.0 and (_time.time() - sib_ob_ts) > 120.0:
+                eff_now_sib = resolve_now_ts(ctx.now_ts or None)
+                if (not sib_live_px or sib_live_px <= 0.0) and cur_px_est > 0.0 and sib_ob_ts > 0.0 and (eff_now_sib - sib_ob_ts) > 120.0:
                     sib_live_px = cur_px_est
-                sib_ob_fresh = is_ob_live_and_newer(sib_ob_ts, _time.time(), sib_last_pt)
-                if should_rescale_usd_sibling_walls(cand_u, sib_live_px, sib_ob_mid, cur_px_est, ob_ts=sib_ob_ts, last_pt=sib_last_pt, now_ts=_time.time()):
+                sib_ob_fresh = is_ob_live_and_newer(sib_ob_ts, eff_now_sib, sib_last_pt)
+                if should_rescale_usd_sibling_walls(cand_u, sib_live_px, sib_ob_mid, cur_px_est, ob_ts=sib_ob_ts, last_pt=sib_last_pt, now_ts=eff_now_sib):
                     rescale_orderbook_walls_to_price(sib_m, sib_live_px, sib_ob_mid)
                 sib_px = (
                     (safe_pos_float(sib_m.get("ob_mid_price"), default=None) if sib_ob_fresh else None)
@@ -1840,12 +1859,20 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                             sib_p_est[k_kal] = sib_k.get(k_kal)
                     if (sib_k_vol := safe_pos_float(sib_k.get("vol_1h_pct"), default=None)) is not None:
                         sib_p_est["vol_1h_pct"] = sib_k_vol
-                if sib_s24 and (sib_m24 := compute_24h_price_metrics(sib_s24)):
+                if sib_s24 and (sib_m24 := compute_24h_price_metrics(sib_s24, now_ts=eff_now_sib)):
                     if not ctx.k_items_map and not isinstance(casefold_get(ctx.st_items_map, cand_u), dict):
                         for k_kal in ("kalman_vel", "kalman_vel_std", "kalman_trend"):
                             sib_p_est.pop(k_kal, None)
                     _upgrade_pretrade_tpo_vp_from_ohlc(
-                        cachedb_dir, cand_u, sib_m24, sib_px or 0.0, sib_last_pt, sib_ob_ts, allow_network=allow_network, series_24h=sib_s24
+                        cachedb_dir,
+                        cand_u,
+                        sib_m24,
+                        sib_px or 0.0,
+                        sib_last_pt,
+                        sib_ob_ts,
+                        allow_network=allow_network,
+                        series_24h=sib_s24,
+                        now_ts=eff_now_sib,
                     )
                     apply_24h_series_enrichment(cand_u, sib_p_est, sib_m24, sib_s24, None)
                     if sib_px and sib_px > 0:
@@ -1862,7 +1889,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                     micro_pair,
                     pt_pair,
                     cache_dir=cachedb_dir,
-                    now_ts=_time.time(),
+                    now_ts=eff_now_sib,
                 )
                 liq_c["liq_magnet_bias"] = cur_m_info.get("liq_magnet_bias")
                 if (arb_bps := safe_float(cur_m_info.get("cross_venue_arb_bps"), default=None)) is not None and cur_m_info.get("cross_venue_peer"):
@@ -1895,13 +1922,14 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             p_est["price"] = cur_px_est
         if m7d and not ctx.is_sub24h_dup_7d:
             p_est.update(m7d)
+        eff_now_ob = resolve_now_ts(ctx.now_ts or None)
         if m24:
             apply_24h_series_enrichment(symbol, p_est, m24, alt_series_24h, None)
             ctx.session_policy.prune_stale_short_metrics(
                 p_est,
                 m24,
                 alt_series_24h,
-                _time.time(),
+                eff_now_ob,
                 post_rth_series_replaced=ctx.eq_px_diverged_05pct,
                 rth_fresh_override=(ctx.rth_fresh_eq if ctx.last_alt_pt is not None else True),
             )
@@ -1922,7 +1950,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                     MicrostructureCycleDeltaEvaluator().evaluate(
                         {symbol: cur_m_info},
                         history=mhist_pt,
-                        now_ts=safe_pos_float(getattr(ctx, "now_ts", None), default=None) or _time.time(),
+                        now_ts=eff_now_ob,
                     )
             except Exception:
                 pass
@@ -2062,7 +2090,7 @@ class RecentFillsExecutionStage(PretradePillarCollectorBase):
                     else (f"{ls.get('price')}{ls_by}" if ls.get("price") is not None else "none")
                 )
                 sub_parts = []
-                now_ms_f = _time.time() * 1000.0
+                now_ms_f = resolve_now_ts(ctx.now_ts or None) * 1000.0
                 for side_lbl, side_d in (("Last BUY Age", lb), ("Last SELL Age", ls)):
                     if isinstance(side_d, dict) and (s_ts := safe_pos_float(side_d.get("ts_ms"), default=None)) is not None:
                         diff_ms = now_ms_f - s_ts

@@ -57,13 +57,13 @@ from providers.order_ledger import (
     TERMINAL_LEDGER_STATES,
     apply_order_event,
     build_order_event,
+    classify_fill_evidence_state,
     make_closed_summary,
     match_active_order_key,
     replay_producer_events,
     update_recently_closed,
 )
 from providers.order_ohlc_utils import extract_executed_qty, extract_orig_qty
-from providers.order_status_ssot import CANCEL_OR_EXPIRE_VENUE_STATUSES, is_open_working_status
 from state_io import encode_json_payload, generation_file_lock
 
 
@@ -274,34 +274,14 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
         order_created_ts: float = 0.0,
         snapshot_verified_ts: float = 0.0,
     ) -> str:
-        """Single-place classification of a filled-cache match using executed qty, requested qty, and open-book evidence.
-
-        Returns one of ``OrderLedgerState`` values: ``FILLED``, ``CANCELED``, ``EXPIRED``, or ``PARTIAL``.
-        """
-        _ = (order_created_ts, snapshot_verified_ts)
-        fill_qty = safe_pos_float(fill_row.get("quantity") or fill_row.get("qty"), default=0.0) or 0.0
-        fill_vst = clean_upper_scalar(fill_row.get("status")) or ""
-        qty_complete = req_qty is not None and req_qty > 0.0 and fill_qty >= req_qty * 0.9999
-        qty_strictly_partial = req_qty is not None and req_qty > 0.0 and fill_qty < req_qty * 0.9999
-
-        if qty_complete:
-            return OrderLedgerState.FILLED.value
-        if fill_vst in {"PARTIALLY_FILLED", "PARTIAL"} or (
-            fill_vst and is_open_working_status(fill_vst, allow_empty=False)
-        ):
-            return OrderLedgerState.PARTIAL.value
-        if fill_vst == "FILLED":
-            if qty_strictly_partial and resting_now:
-                return OrderLedgerState.PARTIAL.value
-            return OrderLedgerState.FILLED.value
-        if fill_vst == "EXPIRED":
-            return OrderLedgerState.EXPIRED.value
-        if fill_vst in CANCEL_OR_EXPIRE_VENUE_STATUSES:
-            return OrderLedgerState.CANCELED.value
-        # Raw venue execution fills carry NO terminal order status (e.g. Hyperliquid userFills / Kraken ownTrades):
-        # keep the order PARTIAL until cumulative executed qty reaches req_qty or absence from a freshly
-        # verified symbol snapshot past grace converges it in Step 5 (CANCELED if partial, FILLED if req_qty unknown).
-        return OrderLedgerState.PARTIAL.value
+        """Delegate fill-cache classification to the centralized ``providers.order_ledger`` SSoT rule."""
+        return classify_fill_evidence_state(
+            fill_row,
+            req_qty=req_qty,
+            resting_now=resting_now,
+            order_created_ts=order_created_ts,
+            snapshot_verified_ts=snapshot_verified_ts,
+        )
 
     def _is_fill_complete(
         self,
