@@ -1138,6 +1138,21 @@ def _headline_alnum_words_2(title: str) -> Set[str]:
     return set(_ALNUM_WORD_2_RE.findall(_strip_headline_publisher_suffix(title).lower()))
 
 
+_MACRO_POLICY_CONTEXT_WORDS: frozenset[str] = frozenset({
+    "boj", "central", "cpi", "deflation", "ecb", "fed", "fomc", "gdp",
+    "inflation", "jobs", "macro", "opec", "payroll", "payrolls", "pce",
+    "powell", "ppi", "rate", "rates", "recession", "tariff", "tariffs",
+    "treasuries", "treasury", "unemployment", "yield", "yields",
+})
+
+
+def has_macro_policy_context(title: Any) -> bool:
+    """Return True if ``title`` explicitly references broad macro/rates/inflation/tariff policy context."""
+    if not isinstance(title, str) or not title.strip() or is_excluded_reference_news_item(title):
+        return False
+    return bool(_headline_alnum_words_2(title) & _MACRO_POLICY_CONTEXT_WORDS)
+
+
 def has_tracked_equity_entity(title: Any) -> bool:
     """Return True if ``title`` explicitly mentions any tracked equity ticker or company keyword."""
     if not isinstance(title, str) or not title.strip() or not (words := _headline_alnum_words_2(title)):

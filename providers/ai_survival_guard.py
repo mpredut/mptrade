@@ -1027,6 +1027,7 @@ def evaluate_ai_decision_scorecard(
         "latest_loss_ts": 0.0,
         "buy_shadow_active": False,
         "cooldown_remaining_h": 0.0,
+        "unmatched_sells": 0,
         "status": "HEALTHY",
         "reason": "",
     }
@@ -1092,7 +1093,8 @@ def evaluate_ai_decision_scorecard(
             return "WIN"
         return "SCRATCH"
 
-    closed_pairs, open_buys, _ = match_filled_intent_rows_lifo(filled_rows)
+    closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo(filled_rows)
+    unmatched_sells = len(open_sells)
     outcomes: list[dict[str, Any]] = []
 
     for kind, entry_row, exit_row in closed_pairs:
@@ -1198,6 +1200,7 @@ def evaluate_ai_decision_scorecard(
         "latest_loss_ts": round(latest_loss_ts, 3),
         "buy_shadow_active": buy_shadow_active,
         "cooldown_remaining_h": cooldown_remaining_h,
+        "unmatched_sells": unmatched_sells,
         "status": status,
         "reason": reason,
     }
@@ -1217,9 +1220,11 @@ def format_ai_decision_scorecard_line(scorecard: Any) -> str:
     net_u = safe_float(scorecard.get("net_usd"), default=0.0) or 0.0
     avg_e = safe_float(scorecard.get("avg_edge_pct"), default=0.0) or 0.0
     streak = safe_nonneg_int(scorecard.get("loss_streak"), default=0)
+    unm_sells = safe_nonneg_int(scorecard.get("unmatched_sells"), default=0)
     status = str(scorecard.get("status") or "HEALTHY").strip().upper()
     rem_h = safe_nonneg_float(scorecard.get("cooldown_remaining_h"), default=0.0)
     streak_sfx = f", streak={streak}L" if streak >= 2 else ""
+    unm_sfx = f", excl_unmatched_sells={unm_sells}" if unm_sells > 0 else ""
     if status == "BUY_SHADOW_COOLDOWN" and rem_h > 0.0:
         tag_sfx = f" [BUY_SHADOW_COOLDOWN: {rem_h:.1f}h left]"
     else:
@@ -1228,7 +1233,7 @@ def format_ai_decision_scorecard_line(scorecard: Any) -> str:
     win_lbl = f"last {cnt}/{tot}" if tot > cnt else f"n={cnt}"
     return (
         f"AI Decision Scorecard (48h, {win_lbl}): "
-        f"{w}W/{s}S/{lo}L, avg={fmt_signed(avg_e, 2)}%, net={net_lbl}{streak_sfx}{tag_sfx}"
+        f"{w}W/{s}S/{lo}L, avg={fmt_signed(avg_e, 2)}%, net={net_lbl}{streak_sfx}{unm_sfx}{tag_sfx}"
     )
 
 

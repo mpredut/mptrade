@@ -665,12 +665,13 @@ def _format_sre_and_fleet_section(
     return lines
 
 
-def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str]:
+def _format_market_prices_section(prices_and_trends: Dict[str, Any], asset_scope: Any = "all") -> List[str]:
     """Format Section 3A (Live Market Prices, Multi-Horizon Trends & 24h/7d Evolution)."""
     view = evaluate_market_prices_prompt_view(prices_and_trends)
     btc_entry = view["btc_entry"]
     obs_syms = observe_only_registry_symbols()
-    lines = ["\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION (ALL COINS):"]
+    scope_lbl = "ALL US EQUITIES" if str(asset_scope or "all").strip().lower() in ("equities", "equity") else "ALL COINS"
+    lines = [f"\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION ({scope_lbl}):"]
     for sym, pinfo, sib_specs in view["rows"]:
         px = pinfo.get("price")
         px_f = safe_float(px, 0.0)
@@ -925,9 +926,16 @@ def _format_microstructure_section(
     prices_and_trends: Dict[str, Any],
     *,
     now_ts: Optional[float] = None,
+    asset_scope: Any = "all",
 ) -> List[str]:
     """Format Section 3B (Orderbook Walls, Derivatives & Whale Flow)."""
-    lines = ["\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:"]
+    is_eq_scope = str(asset_scope or "all").strip().lower() in ("equities", "equity")
+    hdr_3b = (
+        "\n### 3B. PILLAR 2 MICROSTRUCTURE, ESTIMATED 5M VOLUME ZONES & INTRADAY FLOW:"
+        if is_eq_scope
+        else "\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:"
+    )
+    lines = [hdr_3b]
     derived_3b_itvs = resolve_derived_telemetry_intervals()
     for row in evaluate_microstructure_prompt_view(microstructure, prices_and_trends):
         sym = row["sym"]
@@ -1003,6 +1011,7 @@ def _format_microstructure_section(
                 cvd_sfx += f", flow_horizons({', '.join(mh_parts)})"
         if (
             not ob_is_frozen
+            and not (sym_is_eq_3b and minfo.get("spot_cvd_source") != "real_spot")
             and (sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None
             and (has_perp_cvd or minfo.get("spot_cvd_source") == "real_spot")
         ):
@@ -1178,8 +1187,9 @@ def _format_microstructure_section(
             wl_prefix = "" if eq_no_oi_3b else f"whale_long_pct={minfo.get('whale_long_pct')}, "
             flow_3b_core = f"{wl_prefix}intraday_rth_flow=N/A[no_fresh_vol_bars]{cvd_sfx}"
         else:
+            wl_prefix = "" if eq_no_oi_3b else f"whale_long_pct={minfo.get('whale_long_pct')}, "
             flow_3b_core = (
-                f"whale_long_pct={minfo.get('whale_long_pct')}, "
+                f"{wl_prefix}"
                 f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
                 f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}){cvd_sfx}"
             )
@@ -1188,6 +1198,16 @@ def _format_microstructure_section(
                 f"  * {sym_3b_lbl}: orderbook=STALE_FROZEN({ob_age_3b:.0f}s; walls/imbalance/spot_cvd_15m suppressed), "
                 f"{flow_3b_core}"
                 f"{deriv_oi_sfx}{basis_sfx}{liq_sfx}{cd_sfx}{src_age_sfx}"
+            )
+        elif sym_is_eq_3b:
+            lines.append(
+                f"  * {sym_3b_lbl}: ob_proxy[yahoo_5m_vol_profile] "
+                f"ob_imbalance={minfo.get('ob_imbalance')} "
+                f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
+                f"est_bid_zone={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
+                f"est_ask_zone={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist}), "
+                f"{flow_3b_core}"
+                f"{deriv_oi_sfx}{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}{src_age_sfx}"
             )
         else:
             lines.append(

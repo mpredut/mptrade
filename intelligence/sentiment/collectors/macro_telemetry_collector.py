@@ -54,6 +54,7 @@ from intelligence.macro.lexicon_ssot import (
     _strip_headline_publisher_suffix,
     filter_valid_severity_keywords,
     has_financial_or_geopolitical_context,
+    has_macro_policy_context,
     has_tracked_equity_corporate_risk,
     has_tracked_equity_entity,
     headlines_are_semantic_duplicates,
@@ -1192,6 +1193,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                                 or "yahoo! finance" in str(x.get("source") or "").lower()
                             )
                             and not x.get("is_high_severity")
+                            and not has_macro_policy_context(x.get("title"))
                         )
                         else 0
                     )

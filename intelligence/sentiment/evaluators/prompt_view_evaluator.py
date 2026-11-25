@@ -91,6 +91,12 @@ _COMPACT_EQ_BELLWETHER_KEYS: Tuple[str, ...] = (
     "price", *EQUITY_QUOTE_META_KEYS,
     "chg_15m_pct", "chg_1h_pct", "chg_24h_pct", "chg_7d_pct", "pos_24h_pct",
 )
+_COMPACT_CRYPTO_BELLWETHER_KEYS: Tuple[str, ...] = (
+    "price",
+    "chg_15m_pct", "chg_1h_pct", "chg_24h_pct", "chg_7d_pct", "pos_24h_pct",
+    "funding_annualized_pct", "oi_1h_chg_pct", "cvd_15m_usd", "taker_buy_sell_ratio",
+)
+_MAJOR_CRYPTO_BELLWETHERS: frozenset[str] = frozenset({"BTC", "ETH", "SOL"})
 
 _AG_HISTORICAL_KEYS: frozenset[str] = frozenset({
     "terminal_orders", "completed_tiers", "attempts_by_tier",
@@ -975,7 +981,27 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                 )
 
             if cmc.get("crypto_bellwethers") and scope_s == "equities":
-                crypto_bw_view = _clean_bw(cmc["crypto_bellwethers"])
+                cr_bw_raw = _clean_bw(cmc["crypto_bellwethers"])
+                if isinstance(cr_bw_raw, dict):
+                    xs_under_u = (
+                        str(xs_view["payload"].get("underlying") or "").strip().upper()
+                        if isinstance(xs_view, dict) and isinstance(xs_view.get("payload"), dict)
+                        else ""
+                    )
+                    has_major_cr = any(str(k).strip().upper() in _MAJOR_CRYPTO_BELLWETHERS for k in cr_bw_raw)
+                    crypto_bw_view = {
+                        sk: (
+                            {k: sv[k] for k in _COMPACT_CRYPTO_BELLWETHER_KEYS if k in sv and sv[k] is not None}
+                            if isinstance(sv, dict)
+                            else sv
+                        )
+                        for sk, sv in cr_bw_raw.items()
+                        if not is_equity_or_tokenized_symbol(sk)
+                        and (not xs_under_u or str(sk).strip().upper() != xs_under_u)
+                        and (not has_major_cr or str(sk).strip().upper() in _MAJOR_CRYPTO_BELLWETHERS)
+                    }
+                else:
+                    crypto_bw_view = cr_bw_raw
             if cmc.get("equity_bellwethers") and scope_s != "equities":
                 eq_bw_raw = _clean_bw(cmc["equity_bellwethers"])
                 if scope_s == "crypto" and isinstance(eq_bw_raw, dict):

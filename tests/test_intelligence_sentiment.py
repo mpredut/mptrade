@@ -17747,6 +17747,130 @@ def test_crypto_executor_prompt_telemetry_audit_fixes(tmp_path):
     assert rec_pos_out[0]["free_quote_breakdown"] == {"USD": 1657.71, "USDC": 0.56, "USDG": 1.75}
 
 
+def test_prompt_accuracy_wave1_equity_proxy_rvol_delayed_macro_bellwethers_and_news():
+    """Verify Wave 1 prompt accuracy fixes: equity synthetic book tagging & no fake whale_long/spot_cvd, quiet-asset RVOL anchor, delayed Yahoo futures 15m suppression, compact crypto_bellwethers, equity prompt wording, and crypto macro-news preservation."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from botcore import topic_spec
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MacroAndNewsSensorsCollector
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import format_macro_benchmarks_summary_line
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_volume_rvol_metrics
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import evaluate_portfolio_prompt_view
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+
+    # 1. Equity Section 3B tags synthetic Yahoo 5m book as ob_proxy/est_*_zone and suppresses synthetic spot_cvd_15m + fake whale_long_pct when oi_usd == 0
+    sec3b_nvda = "\n".join(
+        _format_microstructure_section(
+            {
+                "NVDA_US_EQ": {
+                    "ob_imbalance": 0.612,
+                    "bid_depth_usd": 4_988_000.0,
+                    "ask_depth_usd": 3_165_000.0,
+                    "bid_wall_px": 147.46,
+                    "bid_wall_usd": 1_450_205.0,
+                    "ask_wall_px": 148.55,
+                    "ask_wall_usd": 790_051.0,
+                    "whale_long_pct": 0.3712,
+                    "taker_buy_sell_ratio": 0.59,
+                    "taker_buy_vol_usd": 100_000_000.0,
+                    "taker_sell_vol_usd": 170_000_000.0,
+                    "cvd_15m_usd": -8_220_000.0,
+                    "spot_cvd_15m_usd": -663_800.0,
+                    "spot_cvd_source": "est_ob_15m",
+                    "oi_usd": 0.0,
+                }
+            },
+            {"NVDA_US_EQ": {"price": 148.0}},
+            asset_scope="equities",
+        )
+    )
+    assert "ESTIMATED 5M VOLUME ZONES" in sec3b_nvda
+    assert "ob_proxy[yahoo_5m_vol_profile]" in sec3b_nvda
+    assert "est_bid_zone=147.46" in sec3b_nvda
+    assert "est_ask_zone=148.55" in sec3b_nvda
+    assert "bid_wall=" not in sec3b_nvda
+    assert "whale_long_pct=" not in sec3b_nvda
+    assert "spot_cvd_15m=" not in sec3b_nvda
+
+    # 2. Quiet asset (RGNT_US_EQ: last positive bar 36m ago) omits stale spot_vol_15m / rvol_15m while keeping accurate trailing 1h volume
+    t0 = datetime(2026, 11, 25, 14, 30, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+    rgnt_bars = [[t0 + i * 300_000.0, 0.93, 2000.0] for i in range(60)]  # 5h of 5m bars ending at 19:25 UTC
+    rvol_quiet = compute_volume_rvol_metrics(rgnt_bars, now_ts=(t0 + 60 * 300_000.0 + 36 * 60_000.0) / 1000.0)
+    assert "spot_vol_15m_usd" not in rvol_quiet
+    assert "rvol_15m" not in rvol_quiet
+    assert rvol_quiet["spot_vol_1h_usd"] > 0.0
+
+    # 3. Delayed Yahoo feeds (>=12m old during REGULAR hours) tag delayed=Xm and omit stale contradictory 15m delta
+    mb_del = format_macro_benchmarks_summary_line(
+        {
+            "items": {
+                "SPY": {"price": 600.0, "chg_24h_pct": -0.20, "chg_1h_pct": -0.10, "chg_15m_pct": -0.18, "bar_age_min": 0.5, "market_state": "REGULAR"},
+                "ES=F": {"price": 6010.0, "chg_24h_pct": -0.15, "chg_1h_pct": 0.05, "chg_15m_pct": 0.22, "bar_age_min": 13.0, "market_state": "REGULAR"},
+            }
+        }
+    )
+    assert "SPY=$600.00 (-0.20% 24h, -0.10% 1h, -0.18% 15m)" in mb_del
+    assert "ES=F=$6,010.00 (-0.15% 24h, +0.05% 1h, delayed=13m)" in mb_del
+    assert "+0.22% 15m" not in mb_del
+
+    # 4. Equities scope compacts crypto_bellwethers to major bellwethers (BTC/ETH/SOL) and strips tokenized equity duplicates & alt L2 bloat
+    pv_eq = evaluate_portfolio_prompt_view(
+        {
+            "kraken_xstocks": {"underlying": "SPCX", "listed_pair": "SPCXxUSD"},
+            "cross_market_context": {
+                "crypto_bellwethers": {
+                    "BTC": {"price": 65000.0, "chg_15m_pct": -0.3, "chg_24h_pct": -2.1, "funding_annualized_pct": 7.5, "long_liq_px": 61000.0, "slope_90s": -0.1},
+                    "ETH": {"price": 1950.0, "chg_24h_pct": -3.0},
+                    "ARB": {"price": 0.11, "chg_24h_pct": -4.0, "long_liq_px": 0.10},
+                    "SPCX": {"price": 127.0, "chg_24h_pct": -1.5},
+                }
+            },
+        },
+        asset_scope="equities",
+    )
+    assert set(pv_eq["crypto_bellwethers"].keys()) == {"BTC", "ETH"}
+    assert "long_liq_px" not in pv_eq["crypto_bellwethers"]["BTC"]
+    assert "slope_90s" not in pv_eq["crypto_bellwethers"]["BTC"]
+    assert pv_eq["crypto_bellwethers"]["BTC"]["funding_annualized_pct"] == 7.5
+
+    # 5. Equity supervisor prompt uses equity-specific headings & wording (no coin/vs_btc/liq_clusters copy-paste)
+    eq_sensors = SimpleNamespace(
+        prices_and_trends={"NVDA_US_EQ": {"price": 148.0, "chg_24h_pct": -1.2}},
+        microstructure={"NVDA_US_EQ": {"ob_imbalance": 0.55, "bid_depth_usd": 1e6, "ask_depth_usd": 8e5, "bid_wall_px": 147.5, "bid_wall_usd": 2e5, "ask_wall_px": 148.5, "ask_wall_usd": 2e5, "oi_usd": 0.0}},
+        portfolio_summary={},
+        macro_and_sentiment={},
+        breaking_news=[],
+    )
+    eq_prompt = build_supervisor_prompt(
+        eq_sensors,
+        SimpleNamespace(),
+        spec=topic_spec("auto_sharetrade_executor"),
+        focus_symbols=["NVDA_US_EQ"],
+    )
+    assert "(ALL US EQUITIES)" in eq_prompt
+    assert "(ALL COINS)" not in eq_prompt
+    assert "multi-equity" in eq_prompt
+    assert "Toate Ac\u021biunile" in eq_prompt
+    assert "`vs_btc`" not in eq_prompt
+    assert "`liq_clusters`" not in eq_prompt
+    assert "`recommended_front_run_px`" not in eq_prompt
+
+    # 6. Macro inflation headline mentioning Nvidia is NOT demoted below pure corporate equity news on scope='crypto'
+    now_s = 1_795_638_400.0
+    raw_news = [
+        {"title": "Fed's Preferred Inflation Gauge Rises to 3.8% YoY; Nvidia Drops 2%", "source": "Yahoo! Finance", "first_seen_ts": now_s - 600.0, "is_high_severity": False, "matched_keywords": []},
+        {"title": "European Automaker Unveils New EV Concept For City Drivers", "source": "Reuters", "first_seen_ts": now_s - 120.0, "is_high_severity": False, "matched_keywords": []},
+        {"title": "Nvidia Launches Next-Gen Gaming GPU Bundle", "source": "Yahoo! Finance", "first_seen_ts": now_s - 60.0, "is_high_severity": False, "matched_keywords": []},
+    ]
+    top_cr, _, _ = MacroAndNewsSensorsCollector._collect_and_rank_breaking_news(
+        "/tmp", now_ts=now_s, scope="crypto", read_json_any_fn=lambda _p: raw_news
+    )
+    assert top_cr[0]["title"].startswith("Fed's Preferred Inflation Gauge")
+    assert top_cr[-1]["title"].startswith("Nvidia Launches Next-Gen")
+
+
+
 
 
 

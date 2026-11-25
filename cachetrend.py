@@ -569,6 +569,13 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         if run_full_eval:
             self._start_full_eval_loop()
 
+    _KINEMATIC_WINDOW_KEYS = (
+        "vel_90s_pct_min",
+        "accel_90s_pct_min2",
+        "vel_5m_pct_min",
+        "accel_5m_pct_min2",
+    )
+
     # -- Full metric calculation without trading logic ------------------------
     def _compute_kinematic_metrics(self, wins, pwin) -> Dict[str, float]:
         kin_extra: Dict[str, float] = {}
@@ -789,7 +796,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             current_price=current_price,
             ts=observed_at,
             dynamic=published_dyn,
-            **kin_extra,
+            **{k: kin_extra.get(k) for k in self._KINEMATIC_WINDOW_KEYS},
             **kalman_extra,
         )
 
@@ -1619,6 +1626,9 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             for legacy_k in _LEGACY_SNAP_KEYS:
                 snap.pop(legacy_k, None)
             snap.update(fields)
+            for kin_k in self._KINEMATIC_WINDOW_KEYS:
+                if kin_k in fields and fields[kin_k] is None:
+                    snap.pop(kin_k, None)
             snap["symbol"] = sym_key
             self._mem[sym_key] = snap
             self.cache = self._mem

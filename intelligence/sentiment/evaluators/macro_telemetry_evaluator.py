@@ -1143,13 +1143,19 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
         m_state = str(entry.get("market_state") or "").strip().upper()
         if not m_state and bar_age_min is not None and bar_age_min > 45.0:
             m_state = "CLOSED"
-        d_parts = [
-            f"{fmt_signed(val)}% {h_lbl}"
-            for h_lbl, h_key in (
-                (("24h", "chg_24h_pct"),)
-                if m_state == "CLOSED"
+        is_delayed_feed = bool(m_state != "CLOSED" and bar_age_min is not None and bar_age_min >= 11.5)
+        horizons = (
+            (("24h", "chg_24h_pct"),)
+            if m_state == "CLOSED"
+            else (
+                (("24h", "chg_24h_pct"), ("1h", "chg_1h_pct"))
+                if is_delayed_feed
                 else (("24h", "chg_24h_pct"), ("1h", "chg_1h_pct"), ("15m", "chg_15m_pct"))
             )
+        )
+        d_parts = [
+            f"{fmt_signed(val)}% {h_lbl}"
+            for h_lbl, h_key in horizons
             if (val := safe_float(entry.get(h_key), default=None)) is not None
         ]
         if m_state and m_state != "REGULAR":
@@ -1157,6 +1163,8 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
         if bar_age_min is not None:
             if bar_age_min >= 60.0:
                 d_parts.append(f"bar_age={bar_age_min / 60.0:.1f}h")
+            elif is_delayed_feed:
+                d_parts.append(f"delayed={bar_age_min:.0f}m")
             elif bar_age_min >= 5.0:
                 d_parts.append(f"bar_age={bar_age_min:.0f}m")
         delta_s = f" ({', '.join(d_parts)})" if d_parts else ""

@@ -1528,3 +1528,38 @@ def test_critical_path_aware_trade_plans_and_fee_adjusted_reload_scorecard():
     assert btc_orders[0]["wall_queue_pos"] == "BEHIND_ASK_WALL"
     assert btc_orders[0]["recommended_front_run_px"] is not None
     assert btc_orders[0]["recommended_front_run_px"] < 60100.0
+
+    # 7. Equity open limit orders NEVER emit synthetic wall queue traps / recommended_front_run_px
+    eq_orders = [
+        {"venue": "t212", "symbol": "NVDA_US_EQ", "side": "BUY", "price": 146.85, "notional_usd": 250.0}
+    ]
+    enrich_open_limit_orders_tca(
+        eq_orders,
+        {"NVDA_US_EQ": {"price": 148.00, "vol_1h_pct": 0.9}},
+        {
+            "NVDA_US_EQ": {
+                "best_bid": 147.99,
+                "best_ask": 148.01,
+                "spread_bps": 1.4,
+                "bid_depth_usd": 4_988_000.0,
+                "spot_vol_15m_usd": 848_000_000.0,
+                "bid_wall_px": 147.46,
+                "bid_wall_usd": 1_450_000.0,
+            }
+        },
+        now_ts=now_s,
+    )
+    assert "wall_queue_pos" not in eq_orders[0]
+    assert "recommended_front_run_px" not in eq_orders[0]
+    assert eq_orders[0]["fill_prob_1h_pct"] > 0.0
+
+    # 8. Scorecard surfaces standalone unmatched SELL exits transparently without penalizing wins/losses
+    unm_intents = [
+        *sc_intents[2:4],
+        {"intent_id": "u_s1", "timestamp": now_s - 2500.0, "decision": "SELL", "venue": "binance", "symbol": "SOLUSDC", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 800.0, "execution_payload": {"orderId": "ou1", "status": "FILLED", "avg_fill_price": 80.0, "executedQty": "10"}},
+        {"intent_id": "u_s2", "timestamp": now_s - 2000.0, "decision": "SELL", "venue": "kraken", "symbol": "SPCXxUSD", "order_type": "LIMIT", "status": "EXECUTED", "clamped_notional_usd": 900.0, "execution_payload": {"orderId": "ou2", "status": "FILLED", "avg_fill_price": 130.0, "executedQty": "6.9"}},
+    ]
+    sc_unm = evaluate_ai_decision_scorecard(unm_intents, now_ts=now_s, window_trades=5, scope="crypto")
+    assert sc_unm["count"] == 1 and sc_unm["unmatched_sells"] == 2
+    assert ", excl_unmatched_sells=2" in format_ai_decision_scorecard_line(sc_unm)
+

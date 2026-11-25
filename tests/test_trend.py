@@ -594,3 +594,35 @@ class TestUnifiedWeightResolution(unittest.TestCase):
         confirm_lo = res["blocks"][-1][0]
         self.assertGreater(px[confirm_lo], px[-1])
         self.assertLessEqual(res["duration_seconds"] / 3600.0, 152.0)
+
+    def test_short_trend_clears_stale_kinematics_on_flat_price(self):
+        import threading
+        from cachetrend import CacheShortTrendManager
+
+        mgr = CacheShortTrendManager.__new__(CacheShortTrendManager)
+        mgr._lock = threading.RLock()
+        mgr._mem = {
+            "RGNT_US_EQ": {
+                "symbol": "RGNT_US_EQ",
+                "current_price": 0.9332,
+                "vel_90s_pct_min": 0.0,
+                "accel_90s_pct_min2": 0.4157,
+                "vel_5m_pct_min": 0.0,
+                "accel_5m_pct_min2": 0.0234,
+            }
+        }
+        mgr.cache = mgr._mem
+        mgr._mem_dirty = False
+        mgr.fetchtime_per_symbol = {}
+        mgr._rest_sync_cursor_per_symbol = {}
+
+        mgr._set_mem(
+            "RGNT_US_EQ",
+            current_price=0.9332,
+            ts=1_795_638_403.0,
+            **{k: None for k in mgr._KINEMATIC_WINDOW_KEYS},
+        )
+        snap = mgr._mem["RGNT_US_EQ"]
+        for k in mgr._KINEMATIC_WINDOW_KEYS:
+            self.assertNotIn(k, snap)
+

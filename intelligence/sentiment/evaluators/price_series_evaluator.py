@@ -481,10 +481,12 @@ def compute_volume_rvol_metrics(
         return {}
     avg_1h_usd = tot_usd / eff_span_h
     avg_15m_usd = avg_1h_usd * 0.25
-    # Include bars strictly inside (vol_now_ms - horizon, vol_now_ms]; when bar step >= horizon, use latest bar.
-    cut_15m = vol_now_ms - max(900_000.0, step_ms * 0.9)
+    # Include bars strictly inside (vol_anchor_ms - horizon, vol_anchor_ms]; anchor to ref_end_ms when
+    # the last positive-volume bar lags by >1 bar step so quiet assets never report stale 15m/1h volume.
+    vol_anchor_ms = ref_end_ms if (ref_end_ms - vol_now_ms) > step_ms else vol_now_ms
+    cut_15m = vol_anchor_ms - max(900_000.0, step_ms * 0.9)
     vol_15m_usd = sum(u for t, u in w24 if t > cut_15m) if step_ms <= 900_000.0 else 0.0
-    cut_1h = vol_now_ms - max(3_600_000.0, step_ms * 0.9)
+    cut_1h = vol_anchor_ms - max(3_600_000.0, step_ms * 0.9)
     w1h = [(t, u) for t, u in w24 if t > cut_1h]
     vol_1h_usd = sum(u for _, u in w1h)
     eff_avg_1h_usd = avg_1h_usd

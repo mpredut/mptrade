@@ -194,10 +194,15 @@ def build_supervisor_prompt(
     prices_and_trends = getattr(sensors, "prices_and_trends", None) or {}
     microstructure = getattr(sensors, "microstructure", None) or {}
     portfolio_summary = getattr(sensors, "portfolio_summary", None) or {}
+    is_equities = spec_scope_norm in ("equities", "equity")
     if not is_pure_sre and prices_and_trends:
-        context_items.extend(_format_market_prices_section(prices_and_trends))
+        context_items.extend(_format_market_prices_section(prices_and_trends, asset_scope=spec_scope_norm))
     if not is_pure_sre and microstructure:
-        context_items.extend(_format_microstructure_section(microstructure, prices_and_trends, now_ts=eval_now_ts))
+        context_items.extend(
+            _format_microstructure_section(
+                microstructure, prices_and_trends, now_ts=eval_now_ts, asset_scope=spec_scope_norm
+            )
+        )
     if not is_pure_sre and portfolio_summary:
         context_items.extend(
             _format_portfolio_section(
@@ -211,9 +216,10 @@ def build_supervisor_prompt(
     if not is_pure_sre and focus_symbols:
         clean_syms = parse_symbol_list(focus_symbols)
         if clean_syms:
+            priority_universe_lbl = "US equities" if is_equities else "coins"
             context_items.append(
                 f"\n### 4. TACTICAL PRIORITY SYMBOLS: {', '.join(clean_syms)}\n"
-                "- Pay heightened attention to these symbols alongside all other live tradable coins above."
+                f"- Pay heightened attention to these symbols alongside all other live tradable {priority_universe_lbl} above."
             )
 
     context_str = "\n".join(context_items)
@@ -241,12 +247,12 @@ def build_supervisor_prompt(
             '"search_block": "", "replace_block": ""}',
         ])
     else:
+        scope_summary_lbl = "multi-equity" if is_equities else "multi-coin"
         schema.append(
-            '  "summary": "1-2 sentence executive assessment of multi-coin market posture and trading decisions"'
+            f'  "summary": "1-2 sentence executive assessment of {scope_summary_lbl} market posture and trading decisions"'
         )
     xs_min_profit_pct, xs_min_drop_pct, xs_crash_drop_pct, xs_crash_conf = _resolve_xstock_sell_prompt_thresholds()
     xs_target_lbl = "tokenized xStocks"
-    is_equities = getattr(spec, "asset_scope", "all") == "equities"
     if spec.can_trade:
         target_desc, xs_target_lbl = _build_dynamic_target_desc(is_equities)
         xs_crash_sfx = (
@@ -265,20 +271,59 @@ def build_supervisor_prompt(
         venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
         venue_list_desc = "`t212`" if is_equities else "`binance`, `kraken`, `hyperliquid`"
         ex_sym = '"NVDA_US_EQ"' if is_equities else '"BTCUSDC"'
+        dip_flow_rule = (
+            "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN) & KINEMATICS: Weigh `kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)`, `kalman_vel`, `slopes`, "
+            "`bottom_6h`, RTH CLV bar flow (`cvd_5m`/`cvd_15m`, `taker_ratio`), `spot_vol_15m`/`spot_vol_1h` & `rvol_15m`/`rvol_1h` (volume expansion vs noise), "
+            "and `ob_proxy[yahoo_5m_vol_profile]` (`est_bid_zone`/`est_ask_zone` are synthetic 5m OHLCV volume-profile proxies, NOT real L2 resting walls). "
+            "Scale in on confirmed downside deceleration + absorption; de-risk when negative velocity/acceleration aligns with unabsorbed selling.\n"
+            if is_equities
+            else (
+                "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN) & KINEMATICS: Weigh `kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)`, `kalman_vel`, `slopes`, "
+                "`bottom_6h`, `vs_btc`, `cvd_5m`/`cvd_15m`, `spot_cvd_15m` (`[real_spot]` observed vs `[est:ob+15m]` proxy\u2014never double-count proxy alongside `ob_imbalance`), "
+                "`spot_vol_15m`/`spot_vol_1h` & `rvol_15m`/`rvol_1h` (volume expansion vs noise), `taker_ratio`, and L2 walls. Scale in on confirmed downside deceleration + absorption; "
+                "de-risk when negative velocity/acceleration aligns with unabsorbed selling.\n"
+            )
+        )
+        limit_exec_rule = (
+            "   - DUAL EXECUTION MODE \u2014 IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS: Prefer `\"order_type\": \"LIMIT\"` to control fill price and capture bid-ask spread "
+            "(check venue fees/spread; passive `limit_price` near `vol_profile`/`session_vwap` support/resistance for swings; right at spot/BBO for urgent entries/reversals). "
+            "Audit `open_limit_orders` (`dist_from_spot_pct` & `fill_prob_1h_pct` anchored to live spot; watch `[ob_stale]` when `ob_age > 30s`), "
+            "`last_cycle_execution_status` (emitted for recent `<=60m` fill/rejection or `<=30m` resting order), and calibration `arr`/`slip` bps (negative bps = favorable price improvement): "
+            "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) resting orders via `replace_open_orders: true`; returning `'HOLD'` leaves resting orders untouched.\n"
+            if is_equities
+            else (
+                "   - DUAL EXECUTION MODE \u2014 IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK: Prefer `\"order_type\": \"LIMIT\"` to capture bid-ask spread and lower execution cost (check per-venue maker vs taker bps; "
+                "passive `limit_price` at bid/ask walls for swings; right at spot/BBO for urgent entries/reversals, auto-stepped 1 tick onto maker book). "
+                "Audit `open_limit_orders` (`dist_from_spot_pct` & `fill_prob_1h_pct` anchored to live spot; watch `[ob_stale]` when `ob_age > 30s`), "
+                "`last_cycle_execution_status` (emitted for recent `<=60m` fill/rejection or `<=30m` resting order), and calibration `arr`/`slip` bps (negative bps = favorable price improvement): "
+                "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) "
+                "or wall-trapped orders (`recommended_front_run_px`) via `replace_open_orders: true`; returning `'HOLD'` leaves resting orders untouched.\n"
+            )
+        )
+        structure_macro_rule = (
+            "   - STRUCTURE & CROSS-ASSET MACRO, VIX & INSTITUTIONAL CRYPTO/OPTIONS SURFACE SYMMETRY: Combine `vol_profile` (`POC`/`VAL`/`VAH`/`LVN`, `REAL_VOL` vs `TPO`), "
+            "`session_vwap`, per-venue fees/spread/`limits`, and Section 1 cross-asset telemetry "
+            "(`SPY/QQQ/ES=F/NQ=F/VIX/DXY/US10Y`, `Futures_Lead`, `IBIT`, `CB_Premium`, `BTC_DVOL/ETH_DVOL`, `Options_Surface` & `ETH_Options`; note `delayed=` tags on Yahoo futures/VIX during RTH, and judge coupled risk-on/off vs cross-asset decoupling directly from the numbers; positive `Skew_25d` = Put_IV - Call_IV > 0 reflects put-buying fear, negative reflects call demand).\n"
+            if is_equities
+            else (
+                "   - STRUCTURE, LIQUIDATIONS & CROSS-ASSET MACRO, VIX & INSTITUTIONAL CRYPTO/OPTIONS SURFACE SYMMETRY: Combine `vol_profile` (`POC`/`VAL`/`VAH`/`LVN`, `REAL_VOL` vs `TPO`), "
+                "`liq_clusters` (`src=model_est` heuristic bands; prioritize `realized_liq_15m` when present), `book_window` cap tags, per-venue fees/spread/`limits`, and Section 1 cross-asset telemetry "
+                "(`SPY/QQQ/ES=F/NQ=F/VIX/DXY/US10Y`, `Futures_Lead`, `IBIT`, `CB_Premium`, `BTC_DVOL/ETH_DVOL`, `Options_Surface` & `ETH_Options`, judging coupled risk-on/off vs cross-asset decoupling directly from the numbers; positive `Skew_25d` = Put_IV - Call_IV > 0 reflects put-buying fear, negative reflects call demand).\n"
+            )
+        )
         tasks.append(
             f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc}:\n"
-            "   - FULL ACCESS TO EVERYTHING IN `cachedb/` AS A DECISION INFORMATION SOURCE: Telemetry below is a compact dashboard; "
-            "you have unrestricted read access to `cachedb/` (including `cachedb/orders/` Order Ledger SSoT), `logs/`, and `providers.market_api` for deeper verification.\n"
+            "   - FULL READ ACCESS TO `cachedb/`: Telemetry below is a compact dashboard; "
+            "you have unrestricted read access to `cachedb/` (incl. `cachedb/orders/` Order Ledger SSoT), `logs/`, and `providers.market_api` for deeper verification.\n"
             "   - ZERO PROFIT OR STRATEGY GUARDS (AI SURVIVAL BREAKERS ONLY): Maximize risk-adjusted net NAV (after venue fees). All deterministic order_guard gates "
-            "(G_PROF, GO1, GT_*, G_QLIMIT*, GI_*, GLLM*) are BYPASSED symmetrically on BUY and SELL. Deterministic bots and configs "
-            "continue working in parallel in the system and can be consulted by you on demand as advisory references only--ZERO obligation to follow them. "
+            "(G_PROF, GO1, GT_*, G_QLIMIT*, GI_*, GLLM*) are BYPASSED symmetrically on BUY and SELL. Deterministic bots/configs run in parallel as optional advisory references only--ZERO obligation to follow them. "
             "Only AI-specific survival circuit breakers "
             "(anti-ping-pong flip cooldown unless `invalidation_px`/`target_px` or net edge triggers, 6h whipsaw cap, daily `by=AI` BUY notional cap, and 48h `AI Decision Scorecard` BUY shadow cooldown) apply in the gateway.\n"
             "   - SUPERVISORY AUTHORITY TO AUDIT & REPAIR / REVERSE UNWANTED BOT OR FLEET TRADES (`by=BOT`/`by=MANUAL` vs `by=AI`): "
-            "Audit interim `by=BOT`/`by=MANUAL` fills/orders independently. Cancel unwanted unfilled bot or manual orders BEFORE they fill (`cancel_bot_open_orders: true` "
-            "with mandatory `cancel_order_ids: [...]` on standalone `HOLD`, or optionally narrowed via `cancel_order_ids` on `BUY`/`SELL`); do NOT sell in the first few minutes after a bot fill unless structure genuinely breaks down "
-            "(avoid burning round-trip fees on normal noise). When a real repair is warranted, submit a spot `LIMIT` order (`\"order_type\": \"LIMIT\"`) "
-            "priced as close as possible to the current live market price (`best_bid` for BUY / `best_ask` for SELL):\n"
+            "Audit interim `by=BOT`/`by=MANUAL` fills/orders independently. Cancel unwanted bot/manual orders BEFORE fill (`cancel_bot_open_orders: true` "
+            "with mandatory `cancel_order_ids: [...]` on standalone `HOLD`, or narrowed via `cancel_order_ids` on `BUY`/`SELL`); do NOT sell minutes after a bot fill unless structure genuinely breaks down "
+            "(avoid burning round-trip fees on normal noise). When repair is warranted, submit spot `LIMIT` (`\"order_type\": \"LIMIT\"`) "
+            "right at live BBO (`best_bid` for BUY / `best_ask` for SELL):\n"
             "     1) If a bot SOLD prematurely or when it should NOT have, submit a corrective `BUY` `LIMIT` right at live spot/`best_bid` to restore at maker fee.\n"
             "     2) If a bot BOUGHT prematurely or when it should NOT have (confirmed structural breakdown), submit a corrective `SELL` `LIMIT` right at live spot/`best_ask`.\n"
             "     3) Targeting specific orders with `cancel_order_ids: [...]` + `cancel_bot_open_orders: true` / `replace_open_orders: true` cancels only those orders "
@@ -286,20 +331,10 @@ def build_supervisor_prompt(
             f"   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: Decide freely WHEN/WHAT/HOW MUCH/WHICH venue ({venue_list_desc}). "
             "Cost basis (`avg_buy_px`, `lifo_rem_avg_px`, `open_lifo_lots`) is informational, NEVER a constraint on 2-way pairs: harvest profitable LIFO tranches or up to `50%\u2013100%` of `value_usd` "
             f"(up to {max_usd:g} USD), OR trim/exit via near-market `LIMIT` even at breakeven or below cost basis on breakdown{xs_exception_sfx}.\n"
-            "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN) & KINEMATICS: Weigh `kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)`, `kalman_vel`, `slopes`, "
-            "`bottom_6h`, `vs_btc`, `cvd_5m`/`cvd_15m`, `spot_cvd_15m` (`[real_spot]` observed vs `[est:ob+15m]` proxy\u2014never double-count proxy alongside `ob_imbalance`), "
-            "`spot_vol_15m`/`spot_vol_1h` & `rvol_15m`/`rvol_1h` (volume expansion vs noise), `taker_ratio`, and L2 walls. Scale in on confirmed downside deceleration + absorption; "
-            "de-risk when negative velocity/acceleration aligns with unabsorbed selling.\n"
-            "   - DUAL EXECUTION MODE \u2014 IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK: Prefer `\"order_type\": \"LIMIT\"` to capture bid-ask spread and lower execution cost (check per-venue maker vs taker bps; "
-            "passive `limit_price` at bid/ask walls for swings; right at spot/BBO for urgent entries/reversals, auto-stepped 1 tick onto maker book). "
-            "Audit `open_limit_orders` (`dist_from_spot_pct` & `fill_prob_1h_pct` anchored to live spot; watch `[ob_stale]` when `ob_age > 30s`), "
-            "`last_cycle_execution_status` (emitted for recent `<=60m` fill/rejection or `<=30m` resting order), and calibration `arr`/`slip` bps (negative bps = favorable price improvement): "
-            "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) "
-            "or wall-trapped orders (`recommended_front_run_px`) via `replace_open_orders: true`; returning `'HOLD'` leaves resting orders untouched.\n"
-            "   - STRUCTURE, LIQUIDATIONS & CROSS-ASSET MACRO, VIX & INSTITUTIONAL CRYPTO/OPTIONS SURFACE SYMMETRY: Combine `vol_profile` (`POC`/`VAL`/`VAH`/`LVN`, `REAL_VOL` vs `TPO`), "
-            "`liq_clusters` (`src=model_est` heuristic bands; prioritize `realized_liq_15m` when present), `book_window` cap tags, per-venue fees/spread/`limits`, and Section 1 cross-asset telemetry "
-            "(`SPY/QQQ/ES=F/NQ=F/VIX/DXY/US10Y`, `Futures_Lead`, `IBIT`, `CB_Premium`, `BTC_DVOL/ETH_DVOL`, `Options_Surface` & `ETH_Options`, judging coupled risk-on/off vs cross-asset decoupling directly from the numbers; positive `Skew_25d` = Put_IV - Call_IV > 0 reflects put-buying fear, negative reflects call demand).\n"
-            f"   - Emit one entry per actionable instrument in `market_trading_decisions` (`confidence >= {min_conf:g}`, `suggested_notional_usd` between {min_usd:g} and {max_usd:g} USD; "
+            + dip_flow_rule
+            + limit_exec_rule
+            + structure_macro_rule
+            + f"   - Emit one entry per actionable instrument in `market_trading_decisions` (`confidence >= {min_conf:g}`, `suggested_notional_usd` between {min_usd:g} and {max_usd:g} USD; "
             "gateway clamps strictly to free balance with zero artificial cooldowns or dedup locks beyond AI survival breakers), or a single `'HOLD'` entry. "
             "On actionable BUY/SELL, set numeric `invalidation_px` (thesis break) and `target_px` (primary objective); active plans persist in Section 3C across compactions."
         )
@@ -311,6 +346,9 @@ def build_supervisor_prompt(
             f'"confidence": 0.90, "suggested_notional_usd": 1000.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
         )
 
+    unit_by_unit = "ticker-by-ticker" if is_equities else "coin-by-coin"
+    unit_tables = "equity tables" if is_equities else "coin tables"
+    ro_all_assets = "Toate Ac\u021biunile" if is_equities else "Toate Monedele"
     if compact_rules and not spec.can_self_heal:
         compact_crash_sfx = (
             f", OR imminent crash (`urgency=HIGH`, `conf>={xs_crash_conf:g}`, `target_px` >={xs_crash_drop_pct:g}% lower)"
@@ -333,10 +371,10 @@ def build_supervisor_prompt(
             "- Honor any user chat instructions, price targets, overrides, or questions earlier in this thread with highest priority.\n"
             "- Format your response in TWO parts:\n"
             "  1) A concise Markdown report in **Romanian** with the cycle timestamp header (`### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`): "
-            "on routine pure `HOLD` cycles (no BUY/SELL/cancel, no Section 4 priority symbols, no user chat message), output ONLY "
-            "2-3 ultra-compact bullets (NAV + free cash, 1-line market pulse, HOLD rationale; omit coin-by-coin tables); "
+            f"on routine pure `HOLD` cycles (no BUY/SELL/cancel, no Section 4 priority symbols, no user chat message), output ONLY "
+            f"2-3 ultra-compact bullets (NAV + free cash, 1-line market pulse, HOLD rationale; omit {unit_by_unit} tables); "
             "when executing BUY/SELL/cancel, evaluating Section 4 priority symbols, or replying to user chat, provide the full "
-            "concise coin-by-coin Romanian breakdown.\n"
+            f"concise {unit_by_unit} Romanian breakdown.\n"
             "  2) At the very end, a single fenced ```json ... ``` block matching this exact schema:\n"
             "```json\n{\n" + ",\n".join(schema) + "\n}\n```\n\n"
             "LIVE TELEMETRY SNAPSHOT:\n"
@@ -375,9 +413,9 @@ def build_supervisor_prompt(
             "- Format your response in TWO parts:\n"
             "  1) A concise Markdown report in **Romanian** with cycle timestamp header (`### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`):\n"
             "     - On routine pure `HOLD` cycles (no BUY/SELL/cancel action, no Section 4 priority symbols, no user chat message), "
-            "keep the report ULTRA-COMPACT (2-3 short bullet lines max: NAV + free cash, 1-line market pulse, HOLD rationale; omit coin tables).\n"
+            f"keep the report ULTRA-COMPACT (2-3 short bullet lines max: NAV + free cash, 1-line market pulse, HOLD rationale; omit {unit_tables}).\n"
             "     - On BUY/SELL/cancel, Section 4 priority symbols, or user chat replies, include concise bullet points for: "
-            "Pia\u021ba Live & Pante (Toate Monedele), Portofoliu, Solduri & Pozi\u021bii Active, \u0219i Decizia AI de Tranzac\u021bionare / R\u0103spuns la interven\u021biile din chat).\n",
+            f"Pia\u021ba Live & Pante ({ro_all_assets}), Portofoliu, Solduri & Pozi\u021bii Active, \u0219i Decizia AI de Tranzac\u021bionare / R\u0103spuns la interven\u021biile din chat).\n",
         )
     )
 
