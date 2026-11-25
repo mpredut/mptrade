@@ -2509,6 +2509,128 @@ def test_ssot_p3_durability_tier_cachedb_root_generation_tx_ws_watchdog_and_ast1
     assert any("os.path.dirname(STATE.path)" in v for v in v13), v13
 
 
+def test_orders_state_skip_if_unchanged_and_filled_touch_no_resurrection(tmp_path, monkeypatch):
+    """Verify:
+    1) CacheOrderFilledManager.touch_venue_filled_orders_snapshot & merge_venue_filled_orders_snapshot
+       never resurrect an invalidated symbol's fetchtime when create_missing=False (including via unresolved flat path);
+    2) Financial orders/ & state/ snapshot writers skip redundant fsync/.previous rewrites on unchanged payloads
+       while writing durably on any real mutation."""
+    import assetguardian
+    import cacheaccount
+    import rtrade_pair_store
+
+    cdb = tmp_path / "cachedb"
+    orders_dir = cdb / "orders"
+    state_dir = cdb / "state"
+    orders_dir.mkdir(parents=True, exist_ok=True)
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Invalidated symbol in cache_order_filled_kraken.json must NOT be resurrected by WS keepalive touch
+    #    or by a fill for a different symbol (even when called via unresolved flat cachedb/ path).
+    flat_filled = str(cdb / "cache_order_filled_kraken.json")
+    real_filled = orders_dir / "cache_order_filled_kraken.json"
+    now_ms = 1_795_600_000_000
+    f_hype = {"orderId": "O-H1", "tid": "T-H1", "side": "BUY", "price": 50.0, "quantity": 1.0, "time": now_ms - 5000}
+    f_spcx = {"orderId": "O-S1", "tid": "T-S1", "side": "BUY", "price": 100.0, "quantity": 1.0, "time": now_ms - 4000}
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        flat_filled,
+        {"HYPEUSD": [f_hype], "SPCXxUSD": [f_spcx]},
+        venue="kraken",
+        now_ms=now_ms,
+        is_snapshot=True,
+    )
+    assert real_filled.is_file()
+    cacheaccount.CacheOrderFilledManager.invalidate_venue_fills_snapshot(
+        "HYPEUSD", flat_filled, candidate_keys=("HYPEUSD",)
+    )
+    doc_after_inv = json.loads(real_filled.read_text(encoding="utf-8"))
+    assert "HYPEUSD" not in doc_after_inv["fetchtime"]
+    assert "SPCXxUSD" in doc_after_inv["fetchtime"]
+
+    # WS keepalive touch (create_missing=False) must update SPCXxUSD but NOT resurrect HYPEUSD
+    touched = cacheaccount.CacheOrderFilledManager.touch_venue_filled_orders_snapshot(
+        flat_filled, now_ms=now_ms + 15_000, symbols=["HYPEUSD", "SPCXxUSD"], create_missing=False
+    )
+    assert touched is True
+    doc_after_touch = json.loads(real_filled.read_text(encoding="utf-8"))
+    assert "HYPEUSD" not in doc_after_touch["fetchtime"]
+    assert doc_after_touch["fetchtime"]["SPCXxUSD"] == now_ms + 15_000
+
+    # A fill arriving for SPCXxUSD with touch_symbols=[HYPEUSD, SPCXxUSD] and touch_create_missing=False
+    # must ALSO not resurrect HYPEUSD!
+    f_spcx2 = {"orderId": "O-S2", "tid": "T-S2", "side": "SELL", "price": 105.0, "quantity": 1.0, "time": now_ms + 20_000}
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        flat_filled,
+        {"SPCXxUSD": [f_spcx2]},
+        venue="kraken",
+        now_ms=now_ms + 20_000,
+        is_snapshot=False,
+        touch_symbols=["HYPEUSD", "SPCXxUSD"],
+        touch_create_missing=False,
+    )
+    doc_after_merge = json.loads(real_filled.read_text(encoding="utf-8"))
+    assert "HYPEUSD" not in doc_after_merge["fetchtime"]
+    assert len(doc_after_merge["items"]["SPCXxUSD"]) == 2
+
+    # 2. skip_if_unchanged=True prevents redundant fsync & .previous staging on identical orders/ and state/ snapshots
+    fsync_calls: list[int] = []
+    stage_calls: list[str] = []
+    orig_stage = state_io.stage_previous_generation
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+    monkeypatch.setattr(
+        state_io,
+        "stage_previous_generation",
+        lambda p, **kw: (stage_calls.append(str(p)), orig_stage(p, **kw))[1],
+    )
+
+    # 2a. CacheOrderOpenManager.replace_venue_open_orders_snapshot (same open orders + same timestamp -> 0 fsync)
+    open_p = str(cdb / "cache_order_open_kraken.json")
+    cacheaccount.CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        open_p, {"HYPEUSD": []}, now_ms=now_ms, verified_ts=now_ms / 1000.0
+    )
+    assert len(fsync_calls) >= 1
+    fsync_calls.clear()
+    stage_calls.clear()
+    cacheaccount.CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        open_p, {"HYPEUSD": []}, now_ms=now_ms, verified_ts=now_ms / 1000.0
+    )
+    assert fsync_calls == [] and stage_calls == []
+
+    # 2b. CacheOrderFilledManager.merge_venue_filled_orders_snapshot (same snapshot + force_save=True -> 0 fsync)
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        flat_filled,
+        {"SPCXxUSD": [f_spcx, f_spcx2]},
+        venue="kraken",
+        now_ms=now_ms + 20_000,
+        is_snapshot=True,
+        force_save=True,
+    )
+    assert fsync_calls == [] and stage_calls == []
+
+    # 2c. AssetGuardianState.save (unchanged state -> 0 fsync; mutated state -> durable fsync)
+    ag_st = assetguardian.AssetGuardianState(
+        path=str(state_dir / "assetguardian_state.json"),
+    )
+    ag_st.save({"BTCUSDC": {"tier": 1}})
+    assert len(fsync_calls) >= 1
+    fsync_calls.clear()
+    stage_calls.clear()
+    ag_st.save({"BTCUSDC": {"tier": 1}})
+    assert fsync_calls == [] and stage_calls == []
+    ag_st.save({"BTCUSDC": {"tier": 2}})
+    assert len(fsync_calls) >= 1 and len(stage_calls) == 1
+
+    # 2d. RTradePairStore._write (unchanged payload -> 0 fsync)
+    rt_store = rtrade_pair_store.RTradePairStore(path=str(state_dir / "rtrade_pairs_state.json"))
+    fsync_calls.clear()
+    rt_store._write({"version": 1, "pairs": {}})
+    assert len(fsync_calls) >= 1
+    fsync_calls.clear()
+    rt_store._write({"version": 1, "pairs": {}})
+    assert fsync_calls == []
+
+
+
 
 
 

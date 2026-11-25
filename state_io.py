@@ -419,7 +419,7 @@ def save_json_state(path: str, value: Any, *, indent: int | None = None,
         )
     )
     pre_encoded: str | None = None
-    if _parse_bool_flag(skip_if_unchanged, False) and write_fn is None:
+    if _parse_bool_flag(skip_if_unchanged, False) and (write_fn is None or write_fn is atomic_write_json):
         kwargs = _json_dump_kwargs(
             indent=indent, sort_keys=sort_keys, separators=eff_separators,
             ensure_ascii=ensure_ascii, allow_nan=allow_nan, default=default,

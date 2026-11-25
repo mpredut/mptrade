@@ -114,7 +114,7 @@ class _PersistentQuarantineSet(set):
                     key=lambda item: tuple(str(e) for e in item) if isinstance(item, tuple) else (str(item),),
                 )
             ]
-            save_json_state(path, data, separators=(",", ":"))
+            save_json_state(path, data, separators=(",", ":"), skip_if_unchanged=True)
         except Exception:
             pass
 
@@ -126,7 +126,7 @@ class _PersistentQuarantineSet(set):
                 loaded = load_json_state(path, default_factory=dict, fail_closed=False, label="quarantine alerts")
                 if isinstance(loaded, dict) and self._key in loaded:
                     loaded.pop(self._key, None)
-                    save_json_state(path, loaded, separators=(",", ":"))
+                    save_json_state(path, loaded, separators=(",", ":"), skip_if_unchanged=True)
             except Exception:
                 pass
 
@@ -981,7 +981,7 @@ class IncidentDigest:
             if not groups:
                 discard_generation_file(target_path, include_previous=True)
             elif changed:
-                save_json_state(target_path, state, separators=(",", ":"))
+                save_json_state(target_path, state, separators=(",", ":"), skip_if_unchanged=True)
             return due
 
 

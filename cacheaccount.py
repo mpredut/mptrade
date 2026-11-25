@@ -116,7 +116,7 @@ from state_io import (
     atomic_text_writer,
     atomic_write_json,
     discard_generation_file,
-    generation_file_lock,
+    generation_transaction,
     meta_file_path,
     parse_json_payload,
     read_json_dict,
@@ -1049,7 +1049,7 @@ class CacheTradeManager(CacheAccountManagerBase):
         is_snapshot_b = _parse_bool_flag(is_snapshot, False)
         touch_create_b = _parse_bool_flag(touch_create_missing, False)
         force_save_b = _parse_bool_flag(force_save, False)
-        with generation_file_lock(target_path):
+        with generation_transaction(target_path) as target_path:
             cache_obj = (
                 cls.load_sanitized_trade_snapshot(
                     target_path, venue=sanitize_venue, repair_files=True
@@ -1074,7 +1074,7 @@ class CacheTradeManager(CacheAccountManagerBase):
             ):
                 changed = True
             if changed or is_snapshot_b or force_save_b or not os.path.exists(target_path):
-                save_json_state(target_path, cache_obj, indent=indent)
+                save_json_state(target_path, cache_obj, indent=indent, skip_if_unchanged=True)
             return cache_obj
 
     @classmethod
@@ -1127,7 +1127,7 @@ class CacheTradeManager(CacheAccountManagerBase):
         target_path = str(cache_file)
         create_missing_b = _parse_bool_flag(create_missing, False)
         try:
-            with generation_file_lock(target_path):
+            with generation_transaction(target_path) as target_path:
                 loaded = cls._load_venue_snapshot_dict(
                     target_path, create=create_missing_b, repair_files=True
                 )
@@ -1137,7 +1137,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     loaded, now_ms, symbols=symbols, create_missing=create_missing_b
                 )
                 if touched or (create_missing_b and not os.path.exists(target_path)):
-                    save_json_state(target_path, loaded, indent=indent)
+                    save_json_state(target_path, loaded, indent=indent, skip_if_unchanged=True)
                 return touched
         except Exception:
             return False
@@ -1207,7 +1207,7 @@ class CacheTradeManager(CacheAccountManagerBase):
             return
         target_path = str(cache_file)
         try:
-            with generation_file_lock(target_path):
+            with generation_transaction(target_path) as target_path:
                 data = read_json_dict_recovering(
                     target_path, default=None, repair_files=True
                 )
@@ -1239,7 +1239,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 for k in keys:
                     data["fetchtime"].pop(k, None)
                 if keys:
-                    save_json_state(target_path, data)
+                    save_json_state(target_path, data, skip_if_unchanged=True)
         except Exception:
             pass
 
@@ -2321,7 +2321,11 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                 )
                 write_json_fn = _cm_override("atomic_write_json", atomic_write_json)
                 if not self._commit_file_and_meta_locked(
-                    lambda: write_json_fn(self.filename, payload, indent=1),
+                    lambda: (
+                        write_json_fn(self.filename, payload, indent=1, skip_if_unchanged=True)
+                        if write_json_fn is atomic_write_json
+                        else write_json_fn(self.filename, payload, indent=1)
+                    ),
                     metadata,
                     backup_path=backup_path,
                     had_prior_file=had_prior_file,
@@ -2727,7 +2731,7 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
         is_snapshot_b = _parse_bool_flag(is_snapshot, False)
         touch_create_b = _parse_bool_flag(touch_create_missing, False)
         force_save_b = _parse_bool_flag(force_save, False)
-        with generation_file_lock(target_path):
+        with generation_transaction(target_path) as target_path:
             loaded = read_json_dict_recovering(target_path, repair_files=True)
             if not isinstance(loaded, dict):
                 loaded = {}
@@ -2857,13 +2861,15 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                     if ts_sym not in items and touch_create_b:
                         items[ts_sym] = []
                         changed = True
-                    if ts_sym in items or touch_create_b:
+                    # When touch_create_missing=False, never resurrect a symbol whose fetchtime
+                    # was explicitly invalidated after order execution until a real fill or REST sync arrives.
+                    if touch_create_b or (ts_sym in items and ts_sym in ft):
                         old_ft = safe_pos_float(ft.get(ts_sym), default=None)
                         if old_ft is None or (eff_now_ms - old_ft) >= 60_000:
                             changed = True
                         ft[ts_sym] = eff_now_ms
             if changed or is_snapshot_b or force_save_b or not os.path.exists(target_path):
-                save_json_state(target_path, cache_obj, indent=indent)
+                save_json_state(target_path, cache_obj, indent=indent, skip_if_unchanged=True)
             return cache_obj
 
     @classmethod
@@ -2876,33 +2882,35 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
         create_missing: bool = False,
         indent: Optional[int] = 1,
     ) -> bool:
-        """Atomically refresh ``fetchtime`` across active symbols in ``cache_order_filled_<venue>.json``."""
+        """Atomically refresh ``fetchtime`` across active symbols in ``cache_order_filled_<venue>.json``.
+
+        Delegates to ``CacheTradeManager.touch_venue_ws_fetchtimes_in_dict`` so ``create_missing=False``
+        never resurrects a symbol whose ``fetchtime`` was invalidated after live order execution.
+        """
         if not cache_file:
             return False
         target_path = str(cache_file)
         eff_now_ms = resolve_now_ms(now_ms)
         create_b = _parse_bool_flag(create_missing, False)
         try:
-            with generation_file_lock(target_path):
-                if not os.path.exists(target_path) and not create_b:
+            with generation_transaction(target_path) as resolved_target:
+                if not os.path.exists(resolved_target) and not create_b:
                     return False
-                loaded = read_json_dict_recovering(target_path, repair_files=True)
+                loaded = read_json_dict_recovering(resolved_target, repair_files=True)
                 if not isinstance(loaded, dict):
                     loaded = {}
                 items = loaded.get("items") if isinstance(loaded.get("items"), dict) else {}
                 ft = loaded.get("fetchtime") if isinstance(loaded.get("fetchtime"), dict) else {}
-                touched = False
-                for s in (symbols or list(items.keys())):
-                    if clean_scalar_str(s) is None:
-                        continue
-                    if s not in items:
-                        if not create_b:
-                            continue
-                        items[s] = []
-                    ft[s] = eff_now_ms
-                    touched = True
-                if touched:
-                    save_json_state(target_path, {"items": items, "fetchtime": ft}, indent=indent)
+                cache_obj = {"items": items, "fetchtime": ft}
+                target_syms = symbols if symbols is not None else list(items.keys())
+                touched = CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
+                    cache_obj,
+                    eff_now_ms,
+                    symbols=target_syms,
+                    create_missing=create_b,
+                )
+                if touched or (create_b and not os.path.exists(resolved_target)):
+                    save_json_state(resolved_target, cache_obj, indent=indent, skip_if_unchanged=True)
                 return touched
         except Exception:
             return False
@@ -3313,7 +3321,7 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
                     },
                     "verified_ts": round(self.verified_ts, 3) if self.verified_ts > 0.0 else None,
                 }
-            save_json_state(self.filename, payload, indent=1)
+            save_json_state(self.filename, payload, indent=1, skip_if_unchanged=True)
             return True
 
         return self._with_generation_lock_bool(_save_locked, "OpenOrder snapshot")
@@ -3435,7 +3443,7 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
         eff_now_ms = resolve_now_ms(now_ms)
         eff_ver_ts = safe_pos_float(verified_ts, default=None)
         sym_snap_ts = round(eff_ver_ts if eff_ver_ts is not None else (eff_now_ms / 1000.0), 3)
-        with generation_file_lock(target_path):
+        with generation_transaction(target_path) as target_path:
             loaded = read_json_dict_recovering(target_path, repair_files=True)
             if not isinstance(loaded, dict):
                 loaded = {}
@@ -3469,7 +3477,7 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
                 "symbol_verified_ts": sym_ver,
                 "verified_ts": round(eff_ver_ts, 3) if eff_ver_ts is not None else (round(prev_ver, 3) if prev_ver > 0 else None),
             }
-            save_json_state(target_path, out_obj, indent=indent)
+            save_json_state(target_path, out_obj, indent=indent, skip_if_unchanged=True)
             return out_obj
 
     @classmethod

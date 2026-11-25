@@ -208,6 +208,7 @@ class RTradePairStore:
             data,
             sort_keys=True,
             separators=(",", ":"),
+            skip_if_unchanged=True,
         )
 
     def _resolved_lock_path(self, *, migrate: bool = False):

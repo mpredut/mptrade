@@ -206,7 +206,9 @@ class AssetGuardianState:
         target_path, lock_path = self._resolved_paths(migrate=True)
         os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
         with FileLock(lock_path):
-            save_json_state(target_path, value, sort_keys=True, separators=(",", ":"))
+            save_json_state(
+                target_path, value, sort_keys=True, separators=(",", ":"), skip_if_unchanged=True
+            )
 
 
 STATE = AssetGuardianState()

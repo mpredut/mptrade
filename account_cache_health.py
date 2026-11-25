@@ -169,7 +169,9 @@ def disable_writer(*, now_ms: Optional[int] = None) -> bool:
 def _publish_locked(*, bump_generation: bool = True) -> bool:
     if _parse_bool_flag(bump_generation, True):
         _writer_state["generation"] += 1
-    atomic_write_json(_writer_path, _writer_state, separators=(",", ":"), sort_keys=True)
+    atomic_write_json(
+        _writer_path, _writer_state, separators=(",", ":"), sort_keys=True, skip_if_unchanged=True
+    )
     return True
 
 
