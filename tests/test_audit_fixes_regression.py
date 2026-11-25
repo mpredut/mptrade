@@ -6893,5 +6893,89 @@ def test_cycle13_reprice_balance_no_double_subtract_equity_ob_depth_sre_bypass_a
     )
 
 
+def test_cycle14_equity_ob_ext_hours_depth_hyphenated_publisher_strip_and_sre_guard_pass(tmp_path):
+    """Cycle 14 audit fixes:
+    1. Equity orderbook filters out zero-volume extended-hours bars before taking the 78-bar RTH
+       liquidity window and backfills background book depth behind thin L1 odd-lot prints (e.g.
+       1-share $386 AMD bid / $0.11 decayed RGNT bar dust) so PRE-market depth & slip_2k stay sane.
+    2. _PUBLISHER_SUFFIX_RE strips hyphenated publisher names (' - Daily News-Record') so bare
+       topic stubs ('Russia Ukraine War - Daily News-Record') plus speculative 'cling to power?'
+       questions and non-kinetic diplomatic spats do not fire high-severity war alerts.
+    3. SRE log harvester ignores passing profit_guard checks (diff >= threshold) while retaining
+       actual guard vetoes (diff < threshold).
+    """
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.macro.lexicon_ssot import _strip_headline_publisher_suffix, match_high_severity_keywords
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    now_s = 1_795_604_400.0
+    col_ob = OrderbookDepthCollector(cache_dir=str(tmp_path / "ob_c14"), start_sync=False)
+
+    # C14.1a: AMD PRE-market gap-down with 74 trailing zero-vol bars + 1-share L1 bid ($386.3) vs 60-share ask ($23.2K)
+    rth_amd = [(now_s - 70000.0 + i * 300.0, 412.0, 414.0, 411.0, 413.0, 250_000.0) for i in range(78)]
+    pre_zero_amd = [(now_s - 22200.0 + i * 300.0, 386.5, 387.0, 386.0, 386.5, 0.0) for i in range(74)]
+    col_ob._resolve_equity_context_bars_and_price = lambda sym, ts, include_options=False: (
+        {
+            "best_bid": 386.3,
+            "best_ask": 386.7,
+            "bid_size_sh": 1.0,
+            "ask_size_sh": 60.0,
+            "daily_vol_sh": 562_086.0,
+            "market_state": "PRE",
+        },
+        rth_amd + pre_zero_amd,
+        386.5,
+    )
+    snap_amd = col_ob._fetch_equity_orderbook("AMD_US_EQ", now_s)
+    assert snap_amd is not None
+    assert snap_amd.bid_depth_usd >= 50_000.0 and snap_amd.ask_depth_usd >= 50_000.0
+    assert 0.25 <= snap_amd.imbalance_ratio <= 0.75
+
+    # C14.1b: RGNT micro-cap with 70 trailing zero-vol bars decaying in-band RTH bars must NOT emit $0/$1 depth
+    rth_rgnt = [(now_s - 70000.0 + i * 300.0, 0.78, 0.795, 0.775, 0.782, 1500.0) for i in range(20)]
+    pre_zero_rgnt = [(now_s - 21000.0 + i * 300.0, 0.7816, 0.7816, 0.7816, 0.7816, 0.0) for i in range(70)]
+    col_ob._resolve_equity_context_bars_and_price = lambda sym, ts, include_options=False: (
+        {
+            "best_bid": 0.80,
+            "best_ask": 0.966,
+            "bid_size_sh": 100.0,
+            "ask_size_sh": 100.0,
+            "daily_vol_sh": 312.0,
+            "market_state": "PRE",
+        },
+        rth_rgnt + pre_zero_rgnt,
+        0.7816,
+    )
+    snap_rgnt = col_ob._fetch_equity_orderbook("RGNT_US_EQ", now_s)
+    assert snap_rgnt is not None
+    assert snap_rgnt.bid_depth_usd >= 400.0 and snap_rgnt.ask_depth_usd >= 400.0
+
+    # C14.2: Hyphenated publisher suffix stripped; bare war stub, speculative 'cling to power?', and diplomat spat excluded
+    assert _strip_headline_publisher_suffix("Russia Ukraine War - Daily News-Record") == "Russia Ukraine War"
+    assert match_high_severity_keywords("Russia Ukraine War - Daily News-Record") == ()
+    assert match_high_severity_keywords("Could Netanyahu take Israel into another war with Iran to cling to power?") == ()
+    assert match_high_severity_keywords(
+        "North Korea Kicks Out Swiss Diplomats in Spat Linked to Ukraine War - The New York Times"
+    ) == ()
+    assert match_high_severity_keywords(
+        "Iran rations electricity: How deeply are US sanctions, blockade biting?"
+    )
+
+    # C14.3: Passing order_guard check (diff >= threshold) excluded from SRE guard_interventions; real veto kept
+    ldir = tmp_path / "logs_c14"
+    ldir.mkdir(parents=True)
+    now_hms = time.strftime("%H:%M:%S")
+    (ldir / "rtrade.log").write_text(
+        f"{now_hms} [GUARD] BUY TAOUSDC (mode=hybrid): ref 189.45 (the window), price 174.0, diff 8.16%, threshold 1.15%\n"
+        f"{now_hms} [GUARD] SELL TAOUSDC (mode=last): ref 175.9 (the window), price 176.2, diff 0.17%, threshold 1.15%\n",
+        encoding="utf-8",
+    )
+    anom = harvest_log_anomalies_from_dirs([str(ldir)], 1.0)
+    assert anom.error_count == 0
+    assert len(anom.guard_interventions) == 1
+    assert "SELL TAOUSDC" in anom.guard_interventions[0]
+
+
+
 
 

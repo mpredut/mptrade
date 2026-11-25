@@ -1127,6 +1127,22 @@ _LOG_GUARD_PERMIT_RE = re.compile(
     r"\breference is off for this venue/module\b|\bbrake=(?:BrakeAction\.)?ALLOW\b)",
     re.IGNORECASE,
 )
+_LOG_GUARD_DIFF_THRESHOLD_RE = re.compile(
+    r"\bdiff\s+([-+]?\d+(?:\.\d+)?)%,\s*threshold\s+([-+]?\d+(?:\.\d+)?)%",
+    re.IGNORECASE,
+)
+
+
+def _is_permitted_profit_guard_line(line: str) -> bool:
+    """Return True when an order_guard diff/threshold check actually passed (diff >= threshold)."""
+    if "BLOCKED" in line.upper():
+        return False
+    m = _LOG_GUARD_DIFF_THRESHOLD_RE.search(line)
+    if not m:
+        return False
+    diff_v = safe_float(m.group(1), default=None)
+    thr_v = safe_float(m.group(2), default=None)
+    return diff_v is not None and thr_v is not None and diff_v >= thr_v
 _LOG_GUARD_EURO_RE = re.compile(r"(\b(?:BUY|SELL)\s+[A-Z0-9_]*?(?:USD|USDC|USDT|_EQ)\s+)\u20ac(?=\d)")
 _LOG_GUARD_NUM_RE = re.compile(r"(?<![A-Za-z_])[-+]?\d+(?:\.\d+)?%?(?:[hsm]\b)?")
 _LOG_DATED_FNAME_RE = re.compile(r"^(.+?)_\d{4}-\d{2}-\d{2}(\.(?:log|txt))$", re.IGNORECASE)
@@ -1354,7 +1370,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 if idx >= tail_start_idx:
                                     st["unresolved_at_tail"] = True
                         elif _LOG_GUARD_RE.search(line):
-                            if _LOG_GUARD_PERMIT_RE.search(line):
+                            if _LOG_GUARD_PERMIT_RE.search(line) or _is_permitted_profit_guard_line(line):
                                 continue
                             if any(tok in line for tok in _ACCOUNT_CACHE_GUARD_TOKENS) and _has_subsequent_recovery(
                                 lines, idx + 1, allow_weight_limit=True

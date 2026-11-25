@@ -245,7 +245,7 @@ _TOKEN_RUN_RE = re.compile(r"[a-z]+|[^\s\w]+|\d+")
 _ALPHA_WORD_2_RE = re.compile(r"[a-zA-Z]{2,}")
 _ALPHA_WORD_3_RE = re.compile(r"[a-zA-Z]{3,}")
 _ALNUM_WORD_2_RE = re.compile(r"[a-z0-9]{2,}")
-_PUBLISHER_SUFFIX_RE = re.compile(r"\s+[-|]\s+([^-|\u2013\u2014]+)$")
+_PUBLISHER_SUFFIX_RE = re.compile(r"\s+[-|]\s+((?:(?!\s+[-|]\s+)[^|\u2013\u2014])+)$")
 
 
 def _collapse_lower_ws(text: str) -> str:
@@ -529,7 +529,7 @@ def _is_excluded_non_crisis_attack_keyword(
                     "bolstered", "outlast", "removed", "commander", "relieved",
                     "awarded", "contract", "contracts", "filmmaker", "newsom",
                     "deportation", "deportations", "restarting", "lieberman",
-                    "sand",
+                    "sand", "cling", "diplomat", "diplomats", "spat",
                 }
             )
         ) and not (combined_words & ((eff_kinetic - kw_words) | _BROAD_MARKET_INDEX_CONTEXT_WORDS)):
