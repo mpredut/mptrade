@@ -3237,3 +3237,366 @@ def test_cycle3_open_order_balance_race_sre_dump_log_and_fog_of_war(tmp_path):
     )
     assert "live_unassessed=UNASSESSED_FRESH_HIGH_SEV" in sec1_both
     assert "shield_note=historical_eval_gt_90m_verify_live_section1" in sec1_both
+
+
+def test_audit_findings_balance_parity_ohlc_cache_jsonl_ledger_intents_transfer_and_trend(tmp_path, monkeypatch):
+    """Regression suite verifying all 6 audit findings:
+    1) Portfolio collector balance/limit parity across recovery vs loaded-instrument paths + shared asset recalculation.
+    2) 24h series OHLC invariance across populated cache, cleared cache, and LRU-evicted cache.
+    3) Unified JSONL bucket parser: unterminated valid JSON line not consumed; non-UTF-8 corrupt main falls back to .previous.
+    4) OrderLedger late FILLED 10/10 supersedes partial CANCELED 2/10; active_intents keeps uncovered HYPEUSD.
+    5) Rebalance Arbitrum arrival rejects invalid non-EVM tx refs without receipt checks.
+    6) priceAnalysis direction flip with draw_plots=True computes trend ONCE and draws immediately.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+
+    import active_intents
+    import intelligence.macro_sentiment_ssot as mss
+    import intelligence.sentiment.evaluators.price_series_evaluator as pse
+    import priceAnalysis as pa
+    import state_io
+    from intelligence.sentiment.collectors.portfolio_collector import TradablePositionsAndOrdersCollector
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import evaluate_tradable_position_prompt_view
+    from providers.order_ledger import apply_order_event, update_recently_closed
+    from verify_tools import rebalance_kraken_to_hl as reb
+
+    # --- 1. Portfolio collector balance & limits parity across recovery vs loaded instruments + shared USDC ---
+    now_s = 1_795_600_000.0
+    bal_ts = now_s - 45.0
+    ord_ts = now_s - 40.0
+    cdir = tmp_path / "cachedb_bal"
+    (cdir / "state").mkdir(parents=True)
+    (cdir / "orders").mkdir(parents=True)
+    (cdir / "state" / "venue_balances_state.json").write_text(
+        json.dumps({
+            "binance:ARB": 10.0,
+            "binance:BTC": 0.0,
+            "binance:USDC": 100.0,
+            "pos:binance:ARBUSDC": {
+                "venue": "binance",
+                "symbol": "ARBUSDC",
+                "base": "ARB",
+                "quote": "USDC",
+                "price": 1.0,
+                "free_base": 10.0,
+                "value_usd": 10.0,
+                "free_quote": 100.0,
+                "effective_max_buy_usd": 99.5,
+                "ts": bal_ts,
+            },
+            "pos:binance:BTCUSDC": {
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "base": "BTC",
+                "quote": "USDC",
+                "price": 60000.0,
+                "free_base": 0.0,
+                "value_usd": 0.0,
+                "free_quote": 100.0,
+                "effective_max_buy_usd": 100.0,
+                "ts": bal_ts,
+            },
+            "cash:binance:USDC": {
+                "venue": "binance",
+                "asset": "USDC",
+                "free": 100.0,
+            },
+        }),
+        encoding="utf-8",
+    )
+    (cdir / "orders" / "cache_order_open_binance.json").write_text(
+        json.dumps({
+            "items": {
+                "ARBUSDC": [
+                    {
+                        "orderId": "1001",
+                        "symbol": "ARBUSDC",
+                        "side": "BUY",
+                        "type": "LIMIT",
+                        "price": "1.0",
+                        "origQty": "25.0",
+                        "executedQty": "0.0",
+                        "status": "NEW",
+                        "time": int(ord_ts * 1000.0),
+                    },
+                    {
+                        "orderId": "1002",
+                        "symbol": "ARBUSDC",
+                        "side": "SELL",
+                        "type": "LIMIT",
+                        "price": "1.0",
+                        "origQty": "4.0",
+                        "executedQty": "0.0",
+                        "status": "NEW",
+                        "time": int(ord_ts * 1000.0),
+                    },
+                ],
+                "BTCUSDC": [],
+            },
+            "fetchtime": {"ARBUSDC": int(now_s * 1000.0), "BTCUSDC": int(now_s * 1000.0)},
+        }),
+        encoding="utf-8",
+    )
+    prices_map = {"ARBUSDC": {"price": 1.0}, "BTCUSDC": {"price": 60000.0}}
+    tpos_rec, _, vcash_rec, _ = TradablePositionsAndOrdersCollector(start_sync=False).collect(
+        str(cdir),
+        prices_and_trends=dict(prices_map),
+        allow_empty_inst_recovery=True,
+        allow_network=False,
+        persist=False,
+        now_ts=now_s,
+    )
+    fake_insts = {
+        "ARBUSDC": SimpleNamespace(symbol="ARBUSDC", provider_name="binance", base="ARB", quote="USDC", params={}, _provider=None),
+        "BTCUSDC": SimpleNamespace(symbol="BTCUSDC", provider_name="binance", base="BTC", quote="USDC", params={}, _provider=None),
+    }
+    tpos_inst, _, vcash_inst, _ = TradablePositionsAndOrdersCollector(start_sync=False).collect(
+        str(cdir),
+        inst_map=fake_insts,
+        prices_and_trends=dict(prices_map),
+        allow_network=False,
+        persist=False,
+        now_ts=now_s,
+    )
+    for label, tpos, vcash in (("recovery", tpos_rec, vcash_rec), ("instruments", tpos_inst, vcash_inst)):
+        by_sym = {p["symbol"]: p for p in tpos}
+        arb_p, btc_p = by_sym["ARBUSDC"], by_sym["BTCUSDC"]
+        assert arb_p["free_base"] == pytest.approx(6.0), label
+        assert arb_p["locked_base_qty"] == pytest.approx(4.0), label
+        assert arb_p["free_quote"] == pytest.approx(75.0), label
+        assert arb_p["locked_quote_usd"] == pytest.approx(25.0), label
+        assert arb_p["effective_max_buy_usd"] == pytest.approx(74.62), label
+        assert btc_p["free_quote"] == pytest.approx(75.0), label
+        assert btc_p["effective_max_buy_usd"] == pytest.approx(74.62), label
+        assert vcash["binance:USDC"]["free"] == pytest.approx(75.0), label
+        assert vcash["binance:USDC"]["locked_quote_usd"] == pytest.approx(25.0), label
+        btc_view = evaluate_tradable_position_prompt_view(btc_p, max_usd=2000.0)
+        assert ("max_buy=$", 74.62) in btc_view["limit_items"], label
+
+    # Prompt view also defensively caps a manually stale effective_max_buy_usd against free_quote
+    stale_view = evaluate_tradable_position_prompt_view(
+        {"venue": "binance", "symbol": "BTCUSDC", "price": 60000.0, "free_quote": 75.0, "effective_max_buy_usd": 100.0},
+        max_usd=2000.0,
+    )
+    assert ("max_buy=$", 74.62) in stale_view["limit_items"]
+
+    # --- 2. 24h series OHLC equality with cache populated, cleared, and after LRU eviction ---
+    t0_ms = 1_795_500_000_000
+    synth_raw = [[t0_ms + idx * 60_000, px] for idx, px in enumerate((100.0, 100.0, 500.0, 1000.0, 500.0, 100.0, 100.0))]
+    norm_synth = pse.normalize_and_dedup_24h_series(synth_raw, "BTCUSDC")
+    bars_populated = pse._resample_ohlc_bars(norm_synth, 900_000.0)
+    m24_populated = pse.compute_24h_price_metrics(norm_synth)
+    assert max(b[2] for b in bars_populated) == pytest.approx(100.0)
+    assert m24_populated["high_24h"] == pytest.approx(100.0)
+
+    mss._SORTED_TS_PX_MEMO.clear()
+    mss._SORTED_TS_PX_ANCHORS.clear()
+    mss._TWO_COL_TS_PX_IDS.clear()
+    bars_empty = pse._resample_ohlc_bars(norm_synth, 900_000.0)
+    m24_empty = pse.compute_24h_price_metrics(norm_synth)
+    assert bars_empty == bars_populated
+    assert m24_empty["high_24h"] == pytest.approx(100.0)
+
+    # Evict the memo entry by populating > _SORTED_TS_PX_MAX_ENTRIES unrelated series
+    for ev_i in range(mss._SORTED_TS_PX_MAX_ENTRIES + 3):
+        other = [[t0_ms + k * 60_000, 200.0 + ev_i + k * 0.1] for k in range(5)]
+        pse.normalize_and_dedup_24h_series(other, f"SYM{ev_i}USDC")
+    bars_evicted = pse._resample_ohlc_bars(norm_synth, 900_000.0)
+    m24_evicted = pse.compute_24h_price_metrics(norm_synth)
+    assert bars_evicted == bars_populated
+    assert m24_evicted["high_24h"] == pytest.approx(100.0)
+
+    # --- 3. JSONL incremental reader waits for '\n' even on valid JSON, and format detector recovers .previous on non-UTF-8 ---
+    inc_p = tmp_path / "unterm_valid.jsonl"
+    l1 = json.dumps({"s": "BTCUSDC", "i": [t0_ms, 60000.0]}, separators=(",", ":")) + "\n"
+    l2_no_nl = json.dumps({"s": "BTCUSDC", "i": [t0_ms + 1000, 60001.0]}, separators=(",", ":"))
+    inc_p.write_bytes(l1.encode("utf-8"))
+    m0, bad0, off0, di0, anc0, _ = state_io.read_jsonl_bucket_map_from_offset(str(inc_p), start_offset=0)
+    assert bad0 is False and m0 == {"BTCUSDC": [[t0_ms, 60000.0]]}
+    # Append valid JSON WITHOUT trailing '\n'
+    with open(inc_p, "ab") as fh:
+        fh.write(l2_no_nl.encode("utf-8"))
+    m1, bad1, off1, di1, anc1, inc1 = state_io.read_jsonl_bucket_map_from_offset(
+        str(inc_p), start_offset=off0, expected_dev_ino=di0, expected_anchor=anc0
+    )
+    assert inc1 is True and bad1 is False and m1 == {} and off1 == off0
+    # Once '\n' arrives, incremental read consumes l2 exactly once
+    with open(inc_p, "ab") as fh:
+        fh.write(b"\n")
+    m2, bad2, off2, _, _, inc2 = state_io.read_jsonl_bucket_map_from_offset(
+        str(inc_p), start_offset=off1, expected_dev_ino=di1, expected_anchor=anc1
+    )
+    assert inc2 is True and bad2 is False and m2 == {"BTCUSDC": [[t0_ms + 1000, 60001.0]]} and off2 > off1
+
+    # Corrupt non-UTF-8 main .jsonl must NOT raise UnicodeDecodeError and must recover valid .previous (single-line JSONL too)
+    corrupt_jl = tmp_path / "corrupt_utf8.jsonl"
+    corrupt_jl.write_bytes(b"\xff\xfe\x80\x81invalid-utf8\n")
+    Path(f"{corrupt_jl}.previous").write_bytes(l1.encode("utf-8"))
+    recovered_doc = state_io.read_jsonl_or_json_dict_cached(str(corrupt_jl), memo={})
+    assert recovered_doc == {"items": {"BTCUSDC": [[t0_ms, 60000.0]]}}
+
+    # --- 4a. OrderLedger: late FILLED 10/10 supersedes partial CANCELED 2/10 ---
+    orders: dict = {}
+    closed_rows: list = []
+    rc: dict = {}
+    apply_order_event(
+        orders,
+        {"ts": now_s, "ev": "ACKED", "v": "binance", "sym": "ARBUSDC", "iid": "i-part-1", "cid": "AI_part_1", "vid": "777001", "side": "BUY", "qty": 10.0, "px": 1.0},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    )
+    apply_order_event(
+        orders,
+        {"ts": now_s + 5.0, "ev": "RECONCILED_PARTIAL", "v": "binance", "sym": "ARBUSDC", "iid": "i-part-1", "cid": "AI_part_1", "vid": "777001", "fq": 2.0},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    )
+    apply_order_event(
+        orders,
+        {"ts": now_s + 10.0, "ev": "RECONCILED_CANCELED", "v": "binance", "sym": "ARBUSDC", "iid": "i-part-1", "cid": "AI_part_1", "vid": "777001", "fq": 2.0},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    )
+    assert len(closed_rows) == 1 and closed_rows[0]["state"] == "CANCELED" and closed_rows[0]["fq"] == pytest.approx(2.0)
+    rc = update_recently_closed(rc, closed_rows, eff_now=now_s + 10.0)
+    # Duplicate partial CANCELED is suppressed
+    assert (
+        apply_order_event(
+            orders,
+            {"ts": now_s + 12.0, "ev": "STATUS", "v": "binance", "sym": "ARBUSDC", "iid": "i-part-1", "cid": "AI_part_1", "vid": "777001", "vst": "CANCELED", "fq": 2.0},
+            closed_out=closed_rows,
+            recently_closed=rc,
+        )
+        is None
+    )
+    # Authoritative FILLED 10/10 MUST NOT be ignored
+    apply_order_event(
+        orders,
+        {"ts": now_s + 20.0, "ev": "STATUS", "v": "binance", "sym": "ARBUSDC", "iid": "i-part-1", "cid": "AI_part_1", "vid": "777001", "vst": "FILLED", "qty": 10.0, "fq": 10.0, "avg_px": 1.0},
+        closed_out=closed_rows,
+        recently_closed=rc,
+    )
+    assert len(closed_rows) == 2 and closed_rows[1]["state"] == "FILLED" and closed_rows[1]["fq"] == pytest.approx(10.0)
+    rc = update_recently_closed(rc, closed_rows[1:], eff_now=now_s + 20.0)
+    # Duplicate FILLED 10/10 afterwards IS suppressed
+    assert (
+        apply_order_event(
+            orders,
+            {"ts": now_s + 25.0, "ev": "STATUS", "v": "binance", "sym": "ARBUSDC", "iid": "i-part-1", "cid": "AI_part_1", "vid": "777001", "vst": "FILLED", "fq": 10.0},
+            closed_out=closed_rows,
+            recently_closed=rc,
+        )
+        is None
+    )
+
+    # --- 4b. active_intents keeps HYPEUSD when open-order cache covers ONLY SPCXxUSD ---
+    ai_root = tmp_path / "ai_scope"
+    (ai_root / "cachedb" / "orders").mkdir(parents=True)
+    (ai_root / "cachedb" / "state").mkdir(parents=True)
+    (ai_root / "cachedb" / "orders" / "cache_order_open_kraken.json").write_text(
+        json.dumps({
+            "items": {
+                "SPCXxUSD": [
+                    {"orderId": "OMGUV7-1", "symbol": "SPCXxUSD", "side": "SELL", "status": "NEW", "price": 140.0, "origQty": 5.0, "executedQty": 0.0}
+                ]
+            },
+            "fetchtime": {"SPCXxUSD": int(now_s * 1000.0)},
+            "verified_ts": now_s,
+        }),
+        encoding="utf-8",
+    )
+    (ai_root / "cachedb" / "state" / "autonomous_trade_intents_state.json").write_text(
+        json.dumps([
+            {
+                "intent_id": "intent_spcx_live",
+                "venue": "kraken",
+                "symbol": "SPCXxUSD",
+                "side": "SELL",
+                "order_type": "LIMIT",
+                "requested_qty": 5.0,
+                "requested_price": 140.0,
+                "timestamp": now_s - 600.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "OMGUV7-1", "status": "NEW"},
+            },
+            {
+                "intent_id": "intent_hype_uncovered",
+                "venue": "kraken",
+                "symbol": "HYPEUSD",
+                "side": "BUY",
+                "order_type": "LIMIT",
+                "requested_qty": 10.0,
+                "requested_price": 40.0,
+                "timestamp": now_s - 1800.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "HYPE-OID-99", "status": "NEW"},
+            },
+        ]),
+        encoding="utf-8",
+    )
+    idx_ai = active_intents.build_active_intent_index(str(ai_root))
+    assert {r["symbol"] for r in idx_ai["intents"]} == {"SPCXxUSD", "HYPEUSD"}
+
+    # --- 5a. Rebalance Arbitrum arrival never confirms invalid non-EVM tx reference ---
+    cfg_reb = reb.RebalanceConfig(
+        withdraw_asset="USDC",
+        withdraw_method="Arbitrum One Network - Native",
+        arb_rpc_url="https://arb1.arbitrum.io/rpc",
+        hl_info_url="https://api.hyperliquid.xyz/info",
+        arb_usdc_contract="0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+        min_net_usdc=6.0,
+        min_arb_eth_gas=0.0002,
+        poll_interval_sec=0.005,
+        poll_timeout_sec=0.015,
+        target_address="0x1111111111111111111111111111111111111111",
+        configured_withdraw_key="hyperliquid",
+    )
+    cli_reb = MagicMock()
+    cli_reb.funding_withdrawals.return_value = [
+        {"withdrawal_id": "WD-BADREF-1", "status": "success", "onchain_transaction": "0xarbtx123"}
+    ]
+    with (
+        patch.object(reb, "fetch_arbitrum_balances", return_value={"eth": 0.001, "usdc": 110.0}),
+        patch.object(reb, "fetch_json_post") as mock_rpc,
+    ):
+        arr_bad = reb.wait_for_arbitrum_arrival(cli_reb, cfg_reb, "WD-BADREF-1", 100.0, 10.0)
+    assert arr_bad["arrived"] is False
+    assert arr_bad["stages"]["transaction_confirmed"] is False
+    assert arr_bad["stages"]["balance_observed"] is True
+    assert mock_rpc.call_count == 0
+
+    # --- 5b. priceAnalysis direction flip with draw_plots=True calculates trend ONCE and draws immediately ---
+    detect_calls = []
+    draw_calls = []
+    base_ts = time.time() - 5 * 86400.0
+    fake_series = [(int((base_ts + i * 3600.0) * 1000), 100.0 + i * 0.5) for i in range(80)]
+    dir_seq = ["up", "down"]
+    sig_seq = [(80, fake_series[-1][0], fake_series[-1][1]), (81, fake_series[-1][0] + 60_000, 150.0)]
+
+    def _fake_detect(_ts, _px, **_kw):
+        d = dir_seq[len(detect_calls)]
+        detect_calls.append(d)
+        return {
+            "direction": d,
+            "start_timestamp": base_ts,
+            "duration_seconds": 3600.0 * (len(detect_calls) + 1),
+            "current_slope_h": 0.01 if d == "up" else -0.01,
+            "blocks": [(0, 10)],
+            "estimated_future_hours": 12.0,
+        }
+
+    monkeypatch.setattr(pa, "priceLstFor", lambda _s: fake_series)
+    monkeypatch.setattr(pa, "_series_signature_for", lambda _s: sig_seq[min(len(detect_calls), len(sig_seq) - 1)])
+    monkeypatch.setattr(pa, "detect_long_term_trend", _fake_detect)
+    monkeypatch.setattr(pa, "drawPriceLst", lambda _t, _p, _b, sym, direction, dur_h: draw_calls.append((sym, direction, dur_h)))
+    monkeypatch.setattr(pa, "estimate_remaining_trend_hours", lambda *_a, **_kw: 24.0)
+    pa_state: dict = {}
+    c1 = pa.run_price_analysis_cycle(["BTCUSDC"], pa_state, now_ts=1000.0, draw_plots=True, inter_symbol_yield_sec=0.0)
+    assert c1["BTCUSDC"]["direction"] == "up" and len(detect_calls) == 1 and len(draw_calls) == 1
+    c2 = pa.run_price_analysis_cycle(["BTCUSDC"], pa_state, now_ts=1120.0, draw_plots=True, inter_symbol_yield_sec=0.0)
+    assert c2["BTCUSDC"]["direction"] == "down"
+    assert len(detect_calls) == 2  # Exactly 1 computation for cycle 1 and 1 for cycle 2 (NOT 2 on flip!)
+    assert len(draw_calls) == 2 and draw_calls[-1][1] == "down"
+    assert pa_state["last_draw_ts"]["BTCUSDC"] == 1120.0

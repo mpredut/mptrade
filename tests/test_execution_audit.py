@@ -938,9 +938,10 @@ def test_post_phase4_bugfixes_intent_dedup_symbol_case_sqlite_stderr_and_replay(
             "items": {
                 "SPCXxUSD": [
                     {"orderId": "OMGUV7-LIVE", "symbol": "SPCXxUSD", "side": "SELL", "status": "NEW", "price": 140.88, "origQty": 5.0, "executedQty": 0.0}
-                ]
+                ],
+                "HYPEUSD": [],
             },
-            "fetchtime": {"SPCXxUSD": int(now_s * 1000)},
+            "fetchtime": {"SPCXxUSD": int(now_s * 1000), "HYPEUSD": int(now_s * 1000)},
             "verified_ts": now_s,
         },
     )

@@ -397,10 +397,8 @@ def _finalize_sorted_ts_px(
     mkey: Optional[Tuple[Any, int, Any, Any, Any]],
     *,
     all_two_col: bool,
-    skip_outlier_filter: bool = False,
 ) -> List[Tuple[float, float]]:
-    if not skip_outlier_filter:
-        pts = filter_isolated_ts_px_outliers(pts)
+    pts = filter_isolated_ts_px_outliers(pts)
     if (
         len(pts) >= 10
         and 0.0 < (pts[-1][0] - pts[-2][0]) < 295000.0

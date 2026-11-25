@@ -509,12 +509,17 @@ def apply_order_event(
         # FILLED update to supersede an earlier non-fill closure (e.g. absent_from_verified_open_book CANCELED).
         if ev in _TRAILING_NON_NEW_EVENTS and isinstance(recently_closed, dict) and recently_closed:
             ev_toks = closed_order_tokens(venue, symbol=sym, vid=vid, iid=iid, cid=cid)
-            is_fill_upgrade = (
-                (safe_nonneg_float(event.get("fq"), default=0.0) or 0.0) > 0.0
-                or clean_upper_scalar(event.get("vst")) in {"FILLED", "CLOSED"}
+            ev_fq = safe_nonneg_float(event.get("fq"), default=0.0) or 0.0
+            ev_qty = safe_pos_float(event.get("qty"), default=None)
+            is_full_fill_upgrade = (
+                clean_upper_scalar(event.get("vst")) in {"FILLED", "CLOSED"}
+                or (ev_fq > 0.0 and ev_qty is not None and ev_fq >= ev_qty * 0.9999)
             )
-            if is_fill_upgrade:
+            if is_full_fill_upgrade:
                 if any(f"filled:{tok}" in recently_closed for tok in ev_toks):
+                    return None
+            elif ev_fq > 0.0:
+                if any((f"filled:{tok}" in recently_closed or f"partial:{tok}" in recently_closed) for tok in ev_toks):
                     return None
             elif any(tok in recently_closed for tok in ev_toks):
                 return None
@@ -622,10 +627,8 @@ def update_recently_closed(
         if not isinstance(row, dict):
             continue
         row_ts = safe_pos_float(row.get("closed_ts"), default=None) or eff_now or resolve_now_ts()
-        is_filled_row = (
-            clean_upper_scalar(row.get("state")) == OrderLedgerState.FILLED.value
-            or (safe_nonneg_float(row.get("fq"), default=0.0) or 0.0) > 0.0
-        )
+        is_filled_row = clean_upper_scalar(row.get("state")) == OrderLedgerState.FILLED.value
+        has_partial_fill = (not is_filled_row) and (safe_nonneg_float(row.get("fq"), default=0.0) or 0.0) > 0.0
         for tok in closed_order_tokens(
             row.get("v"),
             symbol=row.get("sym"),
@@ -637,6 +640,9 @@ def update_recently_closed(
             if is_filled_row:
                 f_tok = f"filled:{tok}"
                 pruned[f_tok] = round(max(pruned.get(f_tok, 0.0), row_ts), 3)
+            elif has_partial_fill:
+                p_tok = f"partial:{tok}"
+                pruned[p_tok] = round(max(pruned.get(p_tok, 0.0), row_ts), 3)
     if len(pruned) > max_entries:
         keep = sorted(pruned.items(), key=lambda kv: kv[1], reverse=True)[:max_entries]
         pruned = dict(keep)

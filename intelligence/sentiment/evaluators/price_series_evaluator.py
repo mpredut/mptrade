@@ -3088,7 +3088,6 @@ def normalize_and_dedup_24h_series(series_24h: list, symbol: str, *, is_market_o
                 [(r[0], r[1]) for r in dedup_24h],
                 mkey,
                 all_two_col=True,
-                skip_outlier_filter=True,
             )
     return dedup_24h if len(dedup_24h) >= 2 else []
 

@@ -573,12 +573,12 @@ def _order_key_tuple(venue: Any, symbol: Any, oid: Any) -> tuple[str, str, str]:
 
 def _load_cached_order_book_index(
     root: str,
-) -> tuple[list[dict[str, Any]], set[str], set[tuple[str, str, str]]]:
-    """Collect read-only resting open orders, covered venues, and explicitly terminal venue order keys."""
+) -> tuple[list[dict[str, Any]], dict[tuple[str, str], float], set[tuple[str, str, str]]]:
+    """Collect read-only resting open orders, per-symbol verified open-book timestamps, and explicitly terminal venue order keys."""
     out: list[dict[str, Any]] = []
     seen_keys: set[tuple[str, str, str]] = set()
-    open_covered: set[str] = set()
-    filled_covered: set[str] = set()
+    open_covered_venues: set[str] = set()
+    covered_symbol_ts: dict[tuple[str, str], float] = {}
     terminal_order_keys: set[tuple[str, str, str]] = set()
     filled_open_by_venue: dict[str, list[dict[str, Any]]] = {}
     terminal_venue_statuses = TERMINAL_AUDIT_VENUE_STATUSES | TERMINAL_CANCEL_VENUE_STATUSES
@@ -588,7 +588,6 @@ def _load_cached_order_book_index(
         items, ft = CacheOrderFilledManager.read_venue_filled_orders_snapshot(oc_path, venue=venue_key)
         if not items and not ft:
             continue
-        filled_covered.add(venue_key)
         for k_sym, sym_orders in items.items():
             latest_by_oid: dict[str, dict[str, Any]] = {}
             for oo in sym_orders:
@@ -610,10 +609,14 @@ def _load_cached_order_book_index(
 
     for venue_key, open_fname in CacheOrderOpenManager.VENUE_FILENAMES.items():
         oo_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(open_fname))))
-        items, ft, ver_ts = CacheOrderOpenManager.read_venue_open_orders_snapshot(oo_path)
-        if not items and not ft and ver_ts <= 0.0:
+        items, ft, ver_ts, sym_ver = CacheOrderOpenManager.read_venue_open_orders_snapshot_detailed(oo_path)
+        if not items and not ft and ver_ts <= 0.0 and not sym_ver:
             continue
-        open_covered.add(venue_key)
+        open_covered_venues.add(venue_key)
+        for sym_k, s_ts in sym_ver.items():
+            sym_lc = (_canonical_symbol(sym_k) or "").lower()
+            if sym_lc and s_ts > 0.0:
+                covered_symbol_ts[(venue_key, sym_lc)] = max(covered_symbol_ts.get((venue_key, sym_lc), 0.0), s_ts)
         for k_sym, rows in items.items():
             for oo in rows:
                 if not isinstance(oo, dict):
@@ -629,7 +632,7 @@ def _load_cached_order_book_index(
                     out.append({"venue": venue_key, "symbol": oo_sym, **oo})
 
     for venue_key, oc_orders in filled_open_by_venue.items():
-        if venue_key in open_covered:
+        if venue_key in open_covered_venues:
             continue
         for oo in oc_orders:
             oid = clean_order_id(extract_order_id(oo, default=None)) or ""
@@ -639,13 +642,13 @@ def _load_cached_order_book_index(
                     seen_keys.add(key_t)
                 out.append(oo)
 
-    return out, (open_covered | filled_covered), terminal_order_keys
+    return out, covered_symbol_ts, terminal_order_keys
 
 
 def _load_cached_open_orders_and_covered_venues(root: str) -> tuple[list[dict[str, Any]], set[str]]:
     """Collect read-only resting open orders and the set of venues with an on-disk open-order snapshot."""
-    open_orders, covered_venues, _ = _load_cached_order_book_index(root)
-    return open_orders, covered_venues
+    open_orders, covered_symbol_ts, _ = _load_cached_order_book_index(root)
+    return open_orders, {v_k for v_k, _ in covered_symbol_ts}
 
 
 def _load_cached_open_orders(root: str) -> list[dict[str, Any]]:
@@ -694,7 +697,7 @@ def _prune_and_deduplicate_active_intents(intents: list[dict[str, Any]], root: s
     if not intents:
         return []
     now_s = resolve_now_ts(None)
-    open_orders, covered_venues, terminal_order_keys = _load_cached_order_book_index(root)
+    open_orders, covered_symbol_ts, terminal_order_keys = _load_cached_order_book_index(root)
     live_open_keys: set[tuple[str, str, str]] = set()
     for oo in open_orders:
         if oid_oo := clean_order_id(extract_order_id(oo, default=None)):
@@ -730,8 +733,9 @@ def _prune_and_deduplicate_active_intents(intents: list[dict[str, Any]], root: s
                 if st_lc in {"pending", "pending_execution", "submit_unknown"} and age_s > 3600.0:
                     if row["intent_id"] not in outbox_iids and not is_live_open:
                         continue
-                elif age_s > 300.0 and row_key and v_k in covered_venues:
-                    if not is_live_open and row_key not in outbox_oids:
+                elif age_s > 300.0 and row_key:
+                    sym_ver_ts = covered_symbol_ts.get((row_key[0], row_key[1]), 0.0)
+                    if sym_ver_ts > 0.0 and sym_ver_ts >= created_ts_s and not is_live_open and row_key not in outbox_oids:
                         continue
         kept_primary.append(row)
 

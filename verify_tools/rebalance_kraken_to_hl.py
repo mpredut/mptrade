@@ -65,7 +65,6 @@ _EVM_ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _EVM_TX_HASH_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 _ERC20_BALANCE_OF_SELECTOR = "0x70a08231"
 _ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-_KRAKEN_SETTLED_STATUSES = frozenset({"settled", "success", "confirmed", "complete"})
 _KRAKEN_FAILED_STATUSES = frozenset({"canceled", "cancelled", "failure", "failed"})
 _USDC_DECIMALS_DIVISOR = 1_000_000.0
 _ETH_DECIMALS_DIVISOR = 1_000_000_000_000_000_000.0
@@ -485,11 +484,10 @@ def wait_for_arbitrum_arrival(
 
     Explicitly tracks three distinct stages:
       - ``withdrawal_accepted``: Kraken accepted ``withdrawal_id``.
-      - ``transaction_confirmed``: the withdrawal's associated transaction is confirmed (via Arbitrum
-        ``eth_getTransactionReceipt`` ERC-20 ``Transfer`` log when an EVM tx hash is available, or
-        Kraken settled status + txid for non-EVM/simulated references).
+      - ``transaction_confirmed``: the withdrawal's associated Arbitrum transaction is strictly confirmed
+        via ``eth_getTransactionReceipt`` ERC-20 ``Transfer`` log on a valid ``0x`` + 64-hex EVM tx hash.
       - ``balance_observed``: diagnostic flag showing whether wallet USDC balance increased by the
-        expected net amount (NEVER sufficient alone to confirm arrival while withdrawal is pending).
+        expected net amount (NEVER sufficient alone to confirm arrival).
     """
     deadline = time.monotonic() + cfg.poll_timeout_sec
     min_expected = max(0.0, expected_net_usdc - 0.01)
@@ -521,7 +519,6 @@ def wait_for_arbitrum_arrival(
             raise RuntimeError(f"Kraken withdrawal {withdrawal_id} failed with status={last_k_status}")
 
         has_txid = bool(chain_txid and chain_txid != "-")
-        k_settled = last_k_status.lower() in _KRAKEN_SETTLED_STATUSES
         is_evm_tx_hash = bool(has_txid and chain_txid and _EVM_TX_HASH_RE.fullmatch(chain_txid))
 
         if is_evm_tx_hash and chain_txid:
@@ -541,9 +538,13 @@ def wait_for_arbitrum_arrival(
                 raise
             except Exception as exc:  # noqa: BLE001
                 print(f"[WARN] Arbitrum tx receipt poll failed for {chain_txid}: {exc}", file=sys.stderr, flush=True)
-        elif has_txid and k_settled:
-            # Non-64-hex reference / simulated txid: requires BOTH Kraken settled status AND txid AND observed balance.
-            transaction_confirmed = balance_observed
+        elif has_txid:
+            print(
+                f"[WARN] Ignoring non-EVM Arbitrum tx reference {chain_txid!r} for withdrawal {withdrawal_id}; "
+                "receipt verification requires a valid 0x + 64-hex transaction hash.",
+                file=sys.stderr,
+                flush=True,
+            )
 
         print(
             f"[WAIT-ARB] withdrawal_id={withdrawal_id} kraken_status={last_k_status} txid={chain_txid or '-'} "

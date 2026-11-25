@@ -256,7 +256,8 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
                            draw: Optional[bool] = None,
                            min_points_per_window: int = MIN_POINTS_PER_WINDOW,
                            detection_lag_hours: float = 48.0,
-                           mk_alpha: float = 0.05) -> Optional[dict]:
+                           mk_alpha: float = 0.05,
+                           draw_on_direction_change_from: Optional[str] = None) -> Optional[dict]:
     # detection_lag_hours models the empirical delay between trend start and
     # detector confirmation. mk_alpha requires current-window Mann-Kendall
     # significance; None disables that filter.
@@ -358,7 +359,12 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
     print(f"{'='*60}\n")
 
     eff_draw = PRICEANALYSIS_DRAW_PLOTS if draw is None else _parse_bool_flag(draw, False)
-    if eff_draw:
+    flip_draw = (
+        draw_on_direction_change_from is not None
+        and direction is not None
+        and direction != draw_on_direction_change_from
+    )
+    if eff_draw or flip_draw:
         drawPriceLst(timestamps, prices, res['blocks'], symbol, direction, dur / 3600.0)
 
     est_future_h = estimate_remaining_trend_hours(dur / 3600.0, symbol=symbol, allow_network=True)
@@ -518,26 +524,20 @@ def run_price_analysis_cycle(
             continue
 
         prev_dir = prev_trend.get("direction") if isinstance(prev_trend, dict) else None
-        res = getTrendLongTerm_fixed(
-            symbol,
-            window_hours=16,
-            step_hours=8,
-            min_consecutive_blocks=3,
-            noise_tolerance=2,  # Allow two UP blocks within a DOWN trend.
-            lookback_days=30,
-            draw=due_draw,
-        )
+        flip_from = prev_dir if (eff_draw_enabled and not due_draw and prev_dir is not None) else None
+        trend_kwargs = {
+            "window_hours": 16,
+            "step_hours": 8,
+            "min_consecutive_blocks": 3,
+            "noise_tolerance": 2,  # Allow two UP blocks within a DOWN trend.
+            "lookback_days": 30,
+            "draw": due_draw,
+        }
+        if flip_from is not None:
+            trend_kwargs["draw_on_direction_change_from"] = flip_from
+        res = getTrendLongTerm_fixed(symbol, **trend_kwargs)
         new_dir = res.get("direction") if isinstance(res, dict) else None
-        if eff_draw_enabled and not due_draw and prev_dir is not None and new_dir is not None and new_dir != prev_dir:
-            res = getTrendLongTerm_fixed(
-                symbol,
-                window_hours=16,
-                step_hours=8,
-                min_consecutive_blocks=3,
-                noise_tolerance=2,
-                lookback_days=30,
-                draw=True,
-            )
+        if flip_from is not None and new_dir is not None and new_dir != flip_from:
             due_draw = True
         all_trends[symbol] = res
         trends_cache[symbol] = res

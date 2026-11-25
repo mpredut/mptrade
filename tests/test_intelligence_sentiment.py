@@ -918,7 +918,10 @@ class TestEnrichedPretradeTelemetry:
         assert "Technical Trend Regime: bull (gradient=+0.0012, epsilon=0.0004)" in prompt
         assert "€1,500.00 EUR" in prompt
 
-    def test_gemini_client_fallback_chain_and_non_gemini_rest(self, tmp_path):
+    def test_gemini_client_fallback_chain_and_non_gemini_rest(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OPENAI_COMPAT_FALLBACK_URL", raising=False)
+        monkeypatch.delenv("OPENAI_COMPAT_FALLBACK_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_COMPAT_FALLBACK_MODEL", raising=False)
 
         # 1. Test fallback models initialization across Flash tiers
         client = GeminiClient(

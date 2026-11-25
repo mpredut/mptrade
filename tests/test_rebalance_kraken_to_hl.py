@@ -180,6 +180,30 @@ def test_resolve_verified_withdraw_address_matches_arb_network_and_rejects_misma
     assert chosen["address_id"] == _ADDR_ID
 
 
+_VALID_TX_HASH_1 = "0x" + "12" * 32
+_VALID_TX_HASH_42 = "0x" + "42" * 32
+
+
+def _usdc_receipt_resp(cfg: reb.RebalanceConfig, net_usdc: float = 10.0) -> dict:
+    to_topic = "0x" + "0" * 24 + _WALLET[2:].lower()
+    usdc_hex = "0x" + format(round(net_usdc * 1_000_000), "064x")
+    return {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+            "status": "0x1",
+            "blockNumber": "0x10",
+            "logs": [
+                {
+                    "address": cfg.arb_usdc_contract,
+                    "topics": [reb._ERC20_TRANSFER_TOPIC, "0x" + "0" * 64, to_topic],
+                    "data": usdc_hex,
+                }
+            ],
+        },
+    }
+
+
 def _mock_client(*, zusd: float = 6400.0, usdc: float = 20.0, fee: float = 1.0) -> MagicMock:
     cli = MagicMock(spec=KrakenClient)
     cli.balance.return_value = {"ZUSD": str(zusd), "USDC": str(usdc)}
@@ -227,7 +251,7 @@ def _mock_client(*, zusd: float = 6400.0, usdc: float = 20.0, fee: float = 1.0) 
     cli.funding_fee_quote.side_effect = _quote
     cli.funding_withdraw.return_value = {"withdrawal_id": "WD-TEST-123"}
     cli.funding_withdrawals.return_value = [
-        {"withdrawal_id": "WD-TEST-123", "status": "success", "onchain_transaction": "0xarbtx123"}
+        {"withdrawal_id": "WD-TEST-123", "status": "success", "onchain_transaction": _VALID_TX_HASH_1}
     ]
     return cli
 
@@ -277,6 +301,7 @@ def test_execute_refuses_shortfall_without_convert_flag_and_executes_when_funded
     arb_seq = [{"eth": 0.0012, "usdc": 0.0}, {"eth": 0.0012, "usdc": 10.0}]
     with (
         patch.object(reb, "fetch_arbitrum_balances", side_effect=arb_seq),
+        patch.object(reb, "fetch_json_post", return_value=_usdc_receipt_resp(cfg, 10.0)),
         patch.object(
             reb,
             "fetch_hyperliquid_balances",
@@ -383,7 +408,7 @@ def test_rpc_error_after_withdrawal_preserves_id_and_cli_resume_avoids_duplicate
     cli = _mock_client(zusd=6400.0, usdc=25.0, fee=1.0)
     cli.funding_withdraw.return_value = {"withdrawal_id": "WD-RESUME-42"}
     cli.funding_withdrawals.return_value = [
-        {"withdrawal_id": "WD-RESUME-42", "status": "success", "onchain_transaction": "0xarbtx42", "net_amount": {"amount": "10.0"}}
+        {"withdrawal_id": "WD-RESUME-42", "status": "success", "onchain_transaction": _VALID_TX_HASH_42, "net_amount": {"amount": "10.0"}}
     ]
 
     # 1. Execute: snapshot RPC succeeds, withdrawal accepted, then first monitoring RPC raises
@@ -427,6 +452,7 @@ def test_rpc_error_after_withdrawal_preserves_id_and_cli_resume_avoids_duplicate
         patch.object(reb, "kraken_credentials", return_value=fake_creds),
         patch.object(reb.KrakenProvider, "build_client", return_value=cli),
         patch.object(reb, "fetch_arbitrum_balances", side_effect=[{"eth": 0.0012, "usdc": 100.0}, {"eth": 0.0012, "usdc": 110.0}]),
+        patch.object(reb, "fetch_json_post", return_value=_usdc_receipt_resp(cfg, 10.0)),
         patch.object(reb.alert, "notify") as mock_notify,
     ):
         rc2 = reb.main(["--withdrawal-id", "WD-RESUME-42", "--notify", "--json"])

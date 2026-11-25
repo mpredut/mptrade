@@ -937,75 +937,90 @@ def append_jsonl_bucket_delta(
         raise
 
 
-def read_jsonl_bucket_map(path: str) -> tuple[dict[str, list[Any]], bool]:
-    """Read a JSONL file of ``{'s': symbol, 'i': item}`` records into ``(cache_map, had_invalid_line)``."""
-    target_path = _resolve_target_path(path)
+def _parse_jsonl_bucket_record(
+    raw_line: bytes | str,
+    loads_orjson: Callable[[Any], Any] | None,
+) -> tuple[Any, Any]:
+    """Decode and validate one ``{'s': symbol, 'i': item}`` JSONL record."""
+    if loads_orjson is not None:
+        try:
+            rec = loads_orjson(raw_line)
+        except Exception:
+            rec = _fast_json_loads(raw_line.decode("utf-8") if isinstance(raw_line, (bytes, bytearray)) else raw_line)
+    else:
+        rec = _fast_json_loads(raw_line.decode("utf-8") if isinstance(raw_line, (bytes, bytearray)) else raw_line)
+    if type(rec) is not dict and not isinstance(rec, dict):
+        raise ValueError("invalid JSONL record")
+    raw_sym = rec.get("s")
+    item = rec.get("i")
+    if item is None:
+        raise ValueError("invalid JSONL record")
+    return raw_sym, item
+
+
+def _scan_jsonl_bucket_lines(
+    handle: Any,
+    *,
+    binary: bool,
+    require_newline: bool,
+    mark_unterminated_invalid: bool,
+) -> tuple[dict[str, list[Any]], bool, int]:
+    """Single canonical JSONL bucket-map parser for full and incremental byte/text streams."""
     cache: dict[str, list[Any]] = {}
     had_invalid_line = False
+    consumed = 0
     last_raw_sym: str | None = None
     last_bucket: list[Any] | None = None
     loads_orjson = _orjson.loads if (_orjson is not None and json.loads is _ORIG_JSON_LOADS) else None
-    if loads_orjson is not None and open is _ORIG_OPEN:
-        with open(target_path, "rb") as handle:
-            for raw_b in handle:
-                if raw_b[0] != 123 and not raw_b.strip():
-                    continue
-                try:
-                    try:
-                        rec = loads_orjson(raw_b)
-                    except Exception:
-                        rec = _fast_json_loads(raw_b.decode("utf-8"))
-                    if type(rec) is not dict and not isinstance(rec, dict):
-                        raise ValueError("invalid JSONL record")
-                    raw_sym = rec.get("s")
-                    item = rec.get("i")
-                    if item is None:
-                        raise ValueError("invalid JSONL record")
-                    if type(raw_sym) is str and raw_sym == last_raw_sym and last_bucket is not None:
-                        last_bucket.append(item)
-                    else:
-                        sym = clean_scalar_str(raw_sym)
-                        if sym is None:
-                            raise ValueError("invalid JSONL record")
-                        bucket = cache.get(sym)
-                        if bucket is None:
-                            bucket = []
-                            cache[sym] = bucket
-                        bucket.append(item)
-                        if type(raw_sym) is str:
-                            last_raw_sym = raw_sym
-                            last_bucket = bucket
-                except Exception:
-                    had_invalid_line = True
-                    continue
-        return cache, had_invalid_line
-    with open(target_path, "r", encoding="utf-8") as handle:
-        for raw in filter(None, map(str.strip, handle)):
-            try:
-                rec = _fast_json_loads(raw)
-                if type(rec) is not dict and not isinstance(rec, dict):
-                    raise ValueError("invalid JSONL record")
-                raw_sym = rec.get("s")
-                item = rec.get("i")
-                if item is None:
-                    raise ValueError("invalid JSONL record")
-                if type(raw_sym) is str and raw_sym == last_raw_sym and last_bucket is not None:
-                    last_bucket.append(item)
-                else:
-                    sym = clean_scalar_str(raw_sym)
-                    if sym is None:
-                        raise ValueError("invalid JSONL record")
-                    bucket = cache.get(sym)
-                    if bucket is None:
-                        bucket = []
-                        cache[sym] = bucket
-                    bucket.append(item)
-                    if type(raw_sym) is str:
-                        last_raw_sym = raw_sym
-                        last_bucket = bucket
-            except Exception:
+    nl: bytes | str = b"\n" if binary else "\n"
+    open_brace: int | str = 123 if binary else "{"
+
+    for raw_line in handle:
+        line_len = len(raw_line)
+        if require_newline and not raw_line.endswith(nl):
+            # Unterminated EOF frame (even if valid JSON prior to '\n'): stop without advancing cursor.
+            if mark_unterminated_invalid:
                 had_invalid_line = True
-                continue
+            break
+        if not line_len or (raw_line[0] != open_brace and not raw_line.strip()):
+            consumed += line_len
+            continue
+        try:
+            raw_sym, item = _parse_jsonl_bucket_record(raw_line, loads_orjson)
+            if type(raw_sym) is str and raw_sym == last_raw_sym and last_bucket is not None:
+                last_bucket.append(item)
+            else:
+                sym = clean_scalar_str(raw_sym)
+                if sym is None:
+                    raise ValueError("invalid JSONL record")
+                bucket = cache.get(sym)
+                if bucket is None:
+                    bucket = []
+                    cache[sym] = bucket
+                bucket.append(item)
+                if type(raw_sym) is str:
+                    last_raw_sym = raw_sym
+                    last_bucket = bucket
+        except Exception:
+            had_invalid_line = True
+        consumed += line_len
+    return cache, had_invalid_line, consumed
+
+
+def read_jsonl_bucket_map(path: str) -> tuple[dict[str, list[Any]], bool]:
+    """Read a JSONL file of ``{'s': symbol, 'i': item}`` records into ``(cache_map, had_invalid_line)``."""
+    target_path = _resolve_target_path(path)
+    binary = open is _ORIG_OPEN
+    if binary:
+        with open(target_path, "rb") as handle:
+            cache, had_invalid_line, _ = _scan_jsonl_bucket_lines(
+                handle, binary=True, require_newline=False, mark_unterminated_invalid=False
+            )
+    else:
+        with open(target_path, "r", encoding="utf-8") as handle:
+            cache, had_invalid_line, _ = _scan_jsonl_bucket_lines(
+                handle, binary=False, require_newline=False, mark_unterminated_invalid=False
+            )
     return cache, had_invalid_line
 
 
@@ -1017,18 +1032,13 @@ def read_jsonl_bucket_map_from_offset(
     expected_anchor: bytes = b"",
     allow_full_fallback: bool = True,
 ) -> tuple[dict[str, list[Any]], bool, int, tuple[int, int] | None, bytes, bool]:
-    """Incrementally tail appended ``{'s': symbol, 'i': item}`` JSONL lines when inode and pre-offset anchor match.
+    """Incrementally tail newline-terminated ``{'s': symbol, 'i': item}`` JSONL lines when inode and pre-offset anchor match.
 
     Returns ``(bucket_map, had_invalid_line, next_offset, dev_ino, new_anchor, incremental_used)``.
     When ``incremental_used`` is True, ``bucket_map`` contains only lines newly appended after ``start_offset``;
     otherwise, if ``allow_full_fallback`` is True, the entire file is parsed from offset 0.
     """
     target_path = _resolve_target_path(path)
-    cache: dict[str, list[Any]] = {}
-    had_invalid_line = False
-    loads_orjson = _orjson.loads if (_orjson is not None and json.loads is _ORIG_JSON_LOADS) else None
-    last_raw_sym: str | None = None
-    last_bucket: list[Any] | None = None
     with open(target_path, "rb") as handle:
         st = os.fstat(handle.fileno())
         dev_ino = (st.st_dev, st.st_ino)
@@ -1052,52 +1062,17 @@ def read_jsonl_bucket_map_from_offset(
             if not allow_full_fallback:
                 return {}, False, 0, dev_ino, b"", False
             handle.seek(0)
-            next_offset = 0
+            base_offset = 0
         else:
-            next_offset = start_offset
+            base_offset = start_offset
 
-        for raw_b in handle:
-            line_len = len(raw_b)
-            if raw_b[0] != 123 and not raw_b.strip():
-                next_offset += line_len
-                continue
-            try:
-                if loads_orjson is not None:
-                    try:
-                        rec = loads_orjson(raw_b)
-                    except Exception:
-                        rec = _fast_json_loads(raw_b.decode("utf-8"))
-                else:
-                    rec = _fast_json_loads(raw_b.decode("utf-8"))
-                if type(rec) is not dict and not isinstance(rec, dict):
-                    raise ValueError("invalid JSONL record")
-                raw_sym = rec.get("s")
-                item = rec.get("i")
-                if item is None:
-                    raise ValueError("invalid JSONL record")
-                if type(raw_sym) is str and raw_sym == last_raw_sym and last_bucket is not None:
-                    last_bucket.append(item)
-                else:
-                    sym = clean_scalar_str(raw_sym)
-                    if sym is None:
-                        raise ValueError("invalid JSONL record")
-                    bucket = cache.get(sym)
-                    if bucket is None:
-                        bucket = []
-                        cache[sym] = bucket
-                    bucket.append(item)
-                    if type(raw_sym) is str:
-                        last_raw_sym = raw_sym
-                        last_bucket = bucket
-                next_offset += line_len
-            except Exception:
-                if not raw_b.endswith(b"\n"):
-                    # In-flight partial append at EOF: stop before this line without advancing cursor.
-                    if not incremental_used:
-                        had_invalid_line = True
-                    break
-                had_invalid_line = True
-                next_offset += line_len
+        cache, had_invalid_line, consumed = _scan_jsonl_bucket_lines(
+            handle,
+            binary=True,
+            require_newline=True,
+            mark_unterminated_invalid=not incremental_used,
+        )
+        next_offset = base_offset + consumed
 
         new_anchor = b""
         if next_offset > 0:
@@ -1651,11 +1626,11 @@ def read_json_dict_cached(
 
 def _looks_like_jsonl_bucket_file(path: str) -> bool:
     try:
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, "rb") as handle:
             for raw in handle:
                 s = raw.strip()
                 if s:
-                    return s.startswith('{"s":') or s.startswith('{"s" :')
+                    return s.startswith(b'{"s":') or s.startswith(b'{"s" :')
     except OSError:
         pass
     return False
@@ -1690,9 +1665,16 @@ def read_jsonl_or_json_dict_cached(
         if cached is not None and cached[0] == sig:
             return cached[1]
         prev_cursor = _JSONL_CACHED_CURSORS.get(cursor_key)
-    eff_src = resolved if st_main is not None else backup_path
-    if not _looks_like_jsonl_bucket_file(eff_src):
-        return read_json_dict_cached(resolved, memo, max_entries=max_entries)
+    main_is_jsonl = st_main is not None and _looks_like_jsonl_bucket_file(resolved)
+    if not main_is_jsonl:
+        bak_is_jsonl = st_bak is not None and _looks_like_jsonl_bucket_file(backup_path)
+        if not bak_is_jsonl:
+            return read_json_dict_cached(resolved, memo, max_entries=max_entries)
+        if st_main is not None and isinstance(
+            read_json_dict(resolved, default=None, recover_previous=False, repair_files=False),
+            dict,
+        ):
+            return read_json_dict_cached(resolved, memo, max_entries=max_entries)
 
     prev_res = cached[1] if (cached is not None and isinstance(cached[1], dict)) else None
     prev_items = prev_res.get("items") if (prev_res is not None and isinstance(prev_res.get("items"), dict)) else None

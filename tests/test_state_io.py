@@ -1307,7 +1307,7 @@ def test_price_analysis_cpu_throttling_and_low_priority_background_jobs(monkeypa
     monkeypatch.setattr(pa, "_series_signature_for", lambda _s: sig_cur[0])
 
     def _fake_trend(sym, **kw):
-        calls.append((sym, bool(kw.get("draw"))))
+        calls.append((sym, bool(kw.get("draw")), kw.get("draw_on_direction_change_from")))
         return {
             "timestamp": 1000,
             "direction": dir_cur[0],
@@ -1320,42 +1320,43 @@ def test_price_analysis_cpu_throttling_and_low_priority_background_jobs(monkeypa
     state_off: dict = {}
 
     r1 = pa.run_price_analysis_cycle(["BTCUSDC"], state_off, now_ts=1000.0, inter_symbol_yield_sec=0.0)
-    assert calls == [("BTCUSDC", False)] and r1["BTCUSDC"]["direction"] == "up"
+    assert calls == [("BTCUSDC", False, None)] and r1["BTCUSDC"]["direction"] == "up"
 
     r2 = pa.run_price_analysis_cycle(["BTCUSDC"], state_off, now_ts=1060.0, inter_symbol_yield_sec=0.0)
-    assert calls == [("BTCUSDC", False)] and r2["BTCUSDC"]["timestamp"] == 1060
+    assert calls == [("BTCUSDC", False, None)] and r2["BTCUSDC"]["timestamp"] == 1060
 
     sig_cur[0] = (101, 1_760_000_180_000, 59500.0)
     dir_cur[0] = "down"
     r3 = pa.run_price_analysis_cycle(["BTCUSDC"], state_off, now_ts=1180.0, inter_symbol_yield_sec=0.0)
-    assert calls == [("BTCUSDC", False), ("BTCUSDC", False)] and r3["BTCUSDC"]["direction"] == "down"
+    assert calls == [("BTCUSDC", False, None), ("BTCUSDC", False, None)] and r3["BTCUSDC"]["direction"] == "down"
 
     pa.run_price_analysis_cycle(["BTCUSDC"], state_off, now_ts=2300.0, inter_symbol_yield_sec=0.0)
-    assert calls == [("BTCUSDC", False), ("BTCUSDC", False), ("BTCUSDC", False)]
+    assert calls == [("BTCUSDC", False, None), ("BTCUSDC", False, None), ("BTCUSDC", False, None)]
 
-    # 2b. Opt-in PNG drawing (draw_plots=True): throttles PNG redraws to 15m and redraws immediately on direction flip
+    # 2b. Opt-in PNG drawing (draw_plots=True): throttles PNG redraws to 15m and redraws in a SINGLE call on direction flip
     calls.clear()
     sig_cur[0] = (100, 1_760_000_000_000, 60000.0)
     dir_cur[0] = "up"
     state_on: dict = {}
 
     pa.run_price_analysis_cycle(["BTCUSDC"], state_on, now_ts=1000.0, draw_plots=True, inter_symbol_yield_sec=0.0)
-    assert calls == [("BTCUSDC", True)]
+    assert calls == [("BTCUSDC", True, None)]
 
     pa.run_price_analysis_cycle(["BTCUSDC"], state_on, now_ts=1060.0, draw_plots=True, inter_symbol_yield_sec=0.0)
-    assert calls == [("BTCUSDC", True)]
+    assert calls == [("BTCUSDC", True, None)]
 
     sig_cur[0] = (101, 1_760_000_180_000, 60050.0)
     pa.run_price_analysis_cycle(["BTCUSDC"], state_on, now_ts=1180.0, draw_plots=True, inter_symbol_yield_sec=0.0)
-    assert calls == [("BTCUSDC", True), ("BTCUSDC", False)]
+    assert calls == [("BTCUSDC", True, None), ("BTCUSDC", False, "up")]
 
     sig_cur[0] = (102, 1_760_000_360_000, 59500.0)
     dir_cur[0] = "down"
     pa.run_price_analysis_cycle(["BTCUSDC"], state_on, now_ts=1360.0, draw_plots=True, inter_symbol_yield_sec=0.0)
-    assert calls == [("BTCUSDC", True), ("BTCUSDC", False), ("BTCUSDC", False), ("BTCUSDC", True)]
+    assert calls == [("BTCUSDC", True, None), ("BTCUSDC", False, "up"), ("BTCUSDC", False, "up")]
+    assert state_on["last_draw_ts"]["BTCUSDC"] == 1360.0
 
     pa.run_price_analysis_cycle(["BTCUSDC"], state_on, now_ts=2300.0, draw_plots=True, inter_symbol_yield_sec=0.0)
-    assert calls[-1] == ("BTCUSDC", True)
+    assert calls[-1] == ("BTCUSDC", True, None)
 
     # 3. procs.conf & crontab.prod.txt apply nice/ionice to heavy background jobs while keeping trade executors at normal priority
     procs_txt = (repo_root / "procs.conf").read_text(encoding="utf-8")

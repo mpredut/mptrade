@@ -98,6 +98,7 @@ def _isolate_cachedb_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path / "cachedb"))
     monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(tmp_path / "notification_delivery_state.json"))
     monkeypatch.setenv("NOTIFICATION_QUEUE_FILE", str(tmp_path / "notify_queue.json"))
+    monkeypatch.delenv("OPENAI_COMPAT_FALLBACK_API_KEY", raising=False)
     _botcore_init.configure_runtime_services(
         clock_fn=None,
         sleep_fn=None,

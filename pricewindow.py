@@ -48,18 +48,13 @@ from cachepaths import canonical_base_asset, canonical_symbol_key
 from instrument_registry import load_registry
 
 
-def filter_isolated_price_points(
+def _filter_isolated_price_points_once(
     pts: list,
     *,
-    neighbor_agree_ratio: float = 1.20,
-    spike_ratio: float = 1.5,
-    edge_ratio: float = 2.5,
+    neighbor_agree_ratio: float,
+    spike_ratio: float,
+    edge_ratio: float,
 ) -> list:
-    """Drop isolated 1-tick spikes (and 2-tick extreme bursts) from ascending ``(ts, px)`` or ``[ts, px]`` sequences.
-
-    Protects 24h range/ATR/short-trend/parabolic-surge readers against cross-symbol single-tick
-    leaks (e.g. ARBUSDC=189.7 or BTCUSDC=0.1461) without filtering genuine sustained market moves.
-    """
     n = len(pts)
     if n < 3:
         return pts
@@ -142,6 +137,33 @@ def filter_isolated_price_points(
     return kept
 
 
+def filter_isolated_price_points(
+    pts: list,
+    *,
+    neighbor_agree_ratio: float = 1.20,
+    spike_ratio: float = 1.5,
+    edge_ratio: float = 2.5,
+) -> list:
+    """Idempotently drop isolated 1-tick spikes (and 2-tick extreme bursts) from ascending ``(ts, px)`` or ``[ts, px]`` sequences.
+
+    Iterates to fixed point when outliers are removed (1 single pass on clean series) so repeated filtering
+    never changes OHLC or range metrics.
+    """
+    if len(pts) < 3:
+        return pts
+    cur = pts
+    while True:
+        kept = _filter_isolated_price_points_once(
+            cur,
+            neighbor_agree_ratio=neighbor_agree_ratio,
+            spike_ratio=spike_ratio,
+            edge_ratio=edge_ratio,
+        )
+        if len(kept) == len(cur) or len(kept) < 3:
+            return kept
+        cur = kept
+
+
 def filter_isolated_price_arrays(
     ts,
     px,
@@ -150,45 +172,52 @@ def filter_isolated_price_arrays(
     spike_ratio: float = 1.5,
     edge_ratio: float = 2.5,
 ):
-    """Vectorized NumPy counterpart of ``filter_isolated_price_points`` for large dense 365d archives."""
-    n = len(px)
-    if n < 3 or np is None:
+    """Idempotent vectorized NumPy counterpart of ``filter_isolated_price_points`` for large dense 365d archives."""
+    if len(px) < 3 or np is None:
         return ts, px
-    keep = np.ones(n, dtype=bool)
-    p_prev = px[:-2]
-    p_cur = px[1:-1]
-    p_next = px[2:]
-    lo_nb = np.minimum(p_prev, p_next)
-    hi_nb = np.maximum(p_prev, p_next)
-    agree = (lo_nb > 0.0) & ((hi_nb / np.where(lo_nb > 0.0, lo_nb, 1.0)) <= neighbor_agree_ratio)
-    bad_mid = agree & ((p_cur > hi_nb * spike_ratio) | (p_cur < lo_nb / spike_ratio))
-    keep[1:-1] &= ~bad_mid
-    if n >= 4:
-        p_l = px[:-3]
-        p_r = px[3:]
-        lo2 = np.minimum(p_l, p_r)
-        hi2 = np.maximum(p_l, p_r)
-        agree2 = (lo2 > 0.0) & ((hi2 / np.where(lo2 > 0.0, lo2, 1.0)) <= neighbor_agree_ratio)
-        b1 = (px[1:-2] > hi2 * edge_ratio) | (px[1:-2] < lo2 / edge_ratio)
-        b2 = (px[2:-1] > hi2 * edge_ratio) | (px[2:-1] < lo2 / edge_ratio)
-        burst2 = agree2 & b1 & b2
-        if np.any(burst2):
-            keep[1:-2] &= ~burst2
-            keep[2:-1] &= ~burst2
-    if not np.all(keep):
-        ts = ts[keep]
-        px = px[keep]
-    if len(px) >= 5:
-        h_lo, h_hi = np.min(px[1:4]).item(), np.max(px[1:4]).item()
-        if h_lo > 0.0 and (h_hi / h_lo) <= neighbor_agree_ratio:
-            if px[0] > h_hi * edge_ratio or px[0] < h_lo / edge_ratio:
-                ts, px = ts[1:], px[1:]
-    if len(px) >= 5:
-        t_lo, t_hi = np.min(px[-4:-1]).item(), np.max(px[-4:-1]).item()
-        if t_lo > 0.0 and (t_hi / t_lo) <= neighbor_agree_ratio:
-            if px[-1] > t_hi * edge_ratio or px[-1] < t_lo / edge_ratio:
-                ts, px = ts[:-1], px[:-1]
-    return ts, px
+    while True:
+        n = len(px)
+        if n < 3:
+            return ts, px
+        keep = np.ones(n, dtype=bool)
+        p_prev = px[:-2]
+        p_cur = px[1:-1]
+        p_next = px[2:]
+        lo_nb = np.minimum(p_prev, p_next)
+        hi_nb = np.maximum(p_prev, p_next)
+        agree = (lo_nb > 0.0) & ((hi_nb / np.where(lo_nb > 0.0, lo_nb, 1.0)) <= neighbor_agree_ratio)
+        bad_mid = agree & ((p_cur > hi_nb * spike_ratio) | (p_cur < lo_nb / spike_ratio))
+        keep[1:-1] &= ~bad_mid
+        if n >= 4:
+            p_l = px[:-3]
+            p_r = px[3:]
+            lo2 = np.minimum(p_l, p_r)
+            hi2 = np.maximum(p_l, p_r)
+            agree2 = (lo2 > 0.0) & ((hi2 / np.where(lo2 > 0.0, lo2, 1.0)) <= neighbor_agree_ratio)
+            b1 = (px[1:-2] > hi2 * edge_ratio) | (px[1:-2] < lo2 / edge_ratio)
+            b2 = (px[2:-1] > hi2 * edge_ratio) | (px[2:-1] < lo2 / edge_ratio)
+            burst2 = agree2 & b1 & b2 & keep[1:-2] & keep[2:-1]
+            if np.any(burst2):
+                for idx_b in np.flatnonzero(burst2).tolist():
+                    i_b = idx_b + 1
+                    if keep[i_b] and keep[i_b + 1]:
+                        keep[i_b] = False
+                        keep[i_b + 1] = False
+        if not np.all(keep):
+            ts = ts[keep]
+            px = px[keep]
+        if len(px) >= 5:
+            h_lo, h_hi = np.min(px[1:4]).item(), np.max(px[1:4]).item()
+            if h_lo > 0.0 and (h_hi / h_lo) <= neighbor_agree_ratio:
+                if px[0] > h_hi * edge_ratio or px[0] < h_lo / edge_ratio:
+                    ts, px = ts[1:], px[1:]
+        if len(px) >= 5:
+            t_lo, t_hi = np.min(px[-4:-1]).item(), np.max(px[-4:-1]).item()
+            if t_lo > 0.0 and (t_hi / t_lo) <= neighbor_agree_ratio:
+                if px[-1] > t_hi * edge_ratio or px[-1] < t_lo / edge_ratio:
+                    ts, px = ts[:-1], px[:-1]
+        if len(px) == n:
+            return ts, px
 
 # -- Window constants ----------------------------------------------------------
 DEFAULT_SAMPLE_RATE_SEC = 0.8     # Nominal fallback sampling rate.

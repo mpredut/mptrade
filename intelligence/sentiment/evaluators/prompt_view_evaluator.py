@@ -639,6 +639,10 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
         eff_pos = {**fb_fees, **{k: v for k, v in p_map.items() if v is not None}}
         for cap_k in ("effective_max_buy_usd", "effective_max_sell_usd", "replace_max_buy_usd", "replace_max_sell_usd"):
             cap_v = safe_float(eff_pos.get(cap_k), None)
+            fb_cap_v = safe_float(fb_fees.get(cap_k), None)
+            if cap_v is not None and fb_cap_v is not None and cap_v > fb_cap_v:
+                cap_v = fb_cap_v
+                eff_pos[cap_k] = round(cap_v, 2)
             if cap_v is not None and max_usd > 0 and cap_v > max_usd:
                 eff_pos[cap_k] = round(max_usd * 1.0, 2)
         taker_bps = safe_float(eff_pos.get("taker_fee_bps"), 15.0)
