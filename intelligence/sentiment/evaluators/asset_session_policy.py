@@ -580,6 +580,8 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
             else:
                 for k_stale in STALE_SHORT_24H_KEYS:
                     m24.pop(k_stale, None)
+                if (math.trunc(now_ts * 1000) - s24_p1[0]) > 20 * 60 * 1000:
+                    m24.pop("chg_15m_pct", None)
         return matched_series_24h, m24, post_rth_px_override, post_rth_series_replaced
 
     def prune_stale_short_metrics(

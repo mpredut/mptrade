@@ -748,7 +748,13 @@ def resolve_macro_economic_calendar(
 
     merged_events, has_live_feed = _merge_confirmed_macro_events(ts, dt_eet, dt_ny, calendar_snapshot)
     confirmed_events_today = [
-        ev for ev in merged_events if ev.get("eet_date_iso") == today_iso or ev.get("date_iso") == today_ny_iso
+        ev
+        for ev in merged_events
+        if ev.get("eet_date_iso") == today_iso
+        or (
+            ev.get("date_iso") == today_ny_iso
+            and (safe_float(ev.get("minutes_until"), default=-999.0) or -999.0) >= -60.0
+        )
     ][:8]
     if any(ev.get("category") == "fomc" for ev in confirmed_events_today):
         is_fomc_today = True

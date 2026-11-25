@@ -17966,6 +17966,53 @@ def test_stages_1_to_3_ssot_capabilities_windows_and_prompt_view_normalization()
         {"vel_90s_pct_min": -0.00003, "accel_90s_pct_min2": 0.1234}, compact=True
     )
 
+    # 5. Midnight EET rollover excludes >60m-past prior-EET-day NY releases from confirmed_events_today
+    from datetime import datetime, timezone
+
+    from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
+
+    # 2026-11-26 00:06 EET == 2026-11-25 22:06 UTC (17:06 EST on 2026-11-25)
+    rollover_ts = datetime(2026, 11, 25, 22, 6, tzinfo=timezone.utc).timestamp()
+    cal_snap = {
+        "events": [
+            {
+                "title": "Core PCE Price Index MoM",
+                "impact": "HIGH",
+                "ts": datetime(2026, 11, 25, 13, 30, tzinfo=timezone.utc).timestamp(),  # -516m ago (prior EET day)
+            },
+            {
+                "title": "FOMC Beige Book",
+                "impact": "HIGH",
+                "ts": datetime(2026, 11, 25, 21, 30, tzinfo=timezone.utc).timestamp(),  # -36m ago (still active window)
+            },
+        ]
+    }
+    cal_ctx = resolve_macro_economic_calendar(now_ts=rollover_ts, calendar_snapshot=cal_snap)
+    confirmed_names = [ev["title"] for ev in cal_ctx["confirmed_events_today"]]
+    assert "Core PCE Price Index MoM" not in confirmed_names
+    assert "FOMC Beige Book" in confirmed_names
+
+    # 6. Delayed macro benchmark threshold catches 10.1m+ delayed futures while allowing exact 10.0m
+    assert MACRO_BENCHMARK_DELAYED_FEED_MIN == pytest.approx(10.1)
+    assert is_macro_benchmark_feed_delayed("REGULAR", 10.1) is True
+    assert is_macro_benchmark_feed_delayed("REGULAR", 10.4) is True
+
+    # 7. Equity unchanged >20m stale tail strips phantom chg_15m_pct while preserving chg_24h_pct
+    eq_policy = resolve_asset_session_policy("RGNT_US_EQ")
+    base_ms = int(now_s * 1000)
+    stale_series = [
+        [base_ms - 55 * 60_000, 0.9052],
+        [base_ms - 40 * 60_000, 0.9052],
+        [base_ms - 25 * 60_000, 0.925],
+    ]
+    m24_in = {"chg_15m_pct": 2.19, "chg_24h_pct": 15.62, "low_15m": 0.9052, "high_15m": 0.925}
+    _, m24_out, px_ov, replaced = eq_policy.evaluate_post_rth_override(stale_series, dict(m24_in), 0.925, now_s)
+    assert px_ov is None
+    assert replaced is False
+    assert "chg_15m_pct" not in m24_out
+    assert "low_15m" not in m24_out
+    assert m24_out["chg_24h_pct"] == pytest.approx(15.62)
+
 
 
 
