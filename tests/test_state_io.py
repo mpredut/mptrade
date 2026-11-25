@@ -2736,15 +2736,79 @@ def test_compact_price_series_3col_5col_cache24_short_trend_and_assetguardian_fa
     assert isinstance(out_w, dict) and out_w["n_samples"] == 10
 
 
+def test_jsonl_nul_corruption_auto_heals_on_next_flush_and_restores_incremental_tailing(tmp_path):
+    """Regression for reboot-induced NUL bytes in ephemeral fsync=False Cache24 JSONL files:
+    1) Startup sets _legacy_jsonl_needs_rewrite=True while preserving all valid rows;
+    2) Next save_state_to_file() auto-compacts away the corrupt line and clears _legacy_jsonl_needs_rewrite;
+    3) read_only consumers immediately regain O(1) incremental byte-offset tailing (_jsonl_tail_state != None);
+    4) CacheBoundedJsonlArchiveMixin (Sparse/365d) never triggers memory-to-disk compaction on append."""
+    import cacheprice
 
+    now_ms = int(time.time() * 1000)
+    eth_p = tmp_path / "cache_24_price_ETHUSDC.jsonl"
+    row1 = json.dumps({"s": "ETHUSDC", "i": [now_ms - 5000, 3100.0]}, separators=(",", ":")) + "\n"
+    row2 = json.dumps({"s": "ETHUSDC", "i": [now_ms - 4000, 3105.0]}, separators=(",", ":")) + "\n"
+    row3 = json.dumps({"s": "ETHUSDC", "i": [now_ms - 3000, 3110.0]}, separators=(",", ":")) + "\n"
+    # Exact reproduction of an unclean kernel reboot leaving a NUL-byte sector mid-file
+    eth_p.write_bytes(
+        row1.encode("utf-8")
+        + row2.encode("utf-8")
+        + (b"\x00" * 1024 + b"\n")
+        + row3.encode("utf-8")
+    )
+    meta_p = Path(state_io.meta_file_path(str(eth_p)))
+    meta_p.write_text(
+        json.dumps({"fetchtime": {"ETHUSDC": now_ms - 3000}, "counts": {"ETHUSDC": 3}, "max_ts": now_ms - 3000}),
+        encoding="utf-8",
+    )
 
+    # Producer loads valid rows and marks rewrite needed
+    prod = cacheprice.Cache24PriceManager(
+        30, ["ETHUSDC"], str(eth_p), api_client=None, data_sync_mode="producer", current_price_getter=lambda: None
+    )
+    assert len(prod.cache["ETHUSDC"]) == 3
+    assert prod._legacy_jsonl_needs_rewrite is True
 
+    # Before flush, read_only consumer sees corrupt line and cannot arm incremental tailing
+    reader = cacheprice.Cache24PriceManager(
+        30, ["ETHUSDC"], str(eth_p), api_client=None, read_only=True
+    )
+    assert len(reader.cache["ETHUSDC"]) == 3
+    assert reader._jsonl_tail_state is None
 
+    # Next flush auto-heals the file (even with just 1 new tick, well below 4000-row / 30m compact thresholds)
+    prod.update_cache_per_symbol("ETHUSDC", [[now_ms - 2000, 3115.0]])
+    assert prod.save_state_to_file() is True
+    assert prod._legacy_jsonl_needs_rewrite is False
+    disk_map, had_bad = state_io.read_jsonl_bucket_map(str(eth_p))
+    assert had_bad is False
+    assert disk_map["ETHUSDC"] == [
+        [now_ms - 5000, 3100.0],
+        [now_ms - 4000, 3105.0],
+        [now_ms - 3000, 3110.0],
+        [now_ms - 2000, 3115.0],
+    ]
 
+    # Reader resyncs cleanly onto the healed file and arms incremental tailing
+    reader.resync_mem_file()
+    assert len(reader.cache["ETHUSDC"]) == 4
+    assert reader._jsonl_tail_state is not None
+    prev_tail = reader._jsonl_tail_state
 
+    # Subsequent append uses fast O(1) incremental byte-offset tailing (same inode, larger offset)
+    prod.update_cache_per_symbol("ETHUSDC", [[now_ms - 1000, 3120.0]])
+    assert prod.save_state_to_file() is True
+    reader.resync_mem_file()
+    assert len(reader.cache["ETHUSDC"]) == 5
+    assert reader._jsonl_tail_state is not None
+    assert reader._jsonl_tail_state[1] == prev_tail[1]  # same (dev, ino)
+    assert reader._jsonl_tail_state[2] > prev_tail[2]   # advanced byte offset
 
-
-
-
-
+    # Multi-year bounded archives (Sparse/365d) must NEVER compact from bounded memory on append
+    sp_p = tmp_path / "cache_sparse_price_BTCUSDC.jsonl"
+    sp_mgr = cacheprice.CacheSparsePriceManager(
+        300, ["BTCUSDC"], str(sp_p), api_client=None, data_sync_mode="producer", current_price_getter=lambda: None
+    )
+    sp_mgr._legacy_jsonl_needs_rewrite = True
+    assert sp_mgr._should_compact_before_append_locked() is False
 

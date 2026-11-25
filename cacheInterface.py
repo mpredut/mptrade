@@ -661,9 +661,11 @@ class CacheManagerInterface(ABC):
         """Hook invoked after ``_save_state_to_file_impl`` releases ``self.lock``."""
 
     def _should_compact_before_append_locked(self) -> bool:
-        """Return whether ``_save_jsonl_append`` should compact because memory shrank."""
+        """Return whether ``_save_jsonl_append`` should compact (memory shrank or disk had corrupt lines)."""
         if not isinstance(self.cache, dict):
             return False
+        if getattr(self, "_legacy_jsonl_needs_rewrite", False):
+            return True
         return any(
             self._is_bucket_seq(items) and self._persisted_counts.get(symbol, 0) > len(items)
             for symbol, items in self.cache.items()
@@ -1362,6 +1364,7 @@ class CacheManagerInterface(ABC):
                         self._restore_memory_state_locked(original_state)
                         return False
                 self._persisted_counts = dict(metadata["counts"])
+                self._legacy_jsonl_needs_rewrite = False
                 self._last_disk_sync_max_ts = max(
                     self._persisted_max_ts(), self._mem_max_ts()
                 )
