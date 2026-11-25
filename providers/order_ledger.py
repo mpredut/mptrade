@@ -155,6 +155,7 @@ _AUDIT_EVENT_TO_LEDGER_EVENT: dict[str, str] = {
     "order_terminal_retry": OrderEventType.STATUS.value,
     "order_recovered": OrderEventType.RECOVERED.value,
     "order_reconciled": OrderEventType.RECOVERED.value,
+    "retry_giveup": OrderEventType.RECONCILED_EXPIRED.value,
 }
 _DIRECT_TERMINAL_EVENTS: dict[str, str] = {
     OrderEventType.SUBMIT_REFUSED.value: OrderLedgerState.REJECTED.value,
@@ -991,7 +992,13 @@ class OrderLedgerWriter(FileOrderLedgerBase):
             vid=kw.get("order_id") or extract_order_id(kw, default=None),
             kind=kw.get("kind"),
             vst=kw.get("venue_status") or kw.get("status"),
-            reason=kw.get("reason") or kw.get("failure_reason") or kw.get("error"),
+            reason=(
+                kw.get("reason")
+                or kw.get("failure_reason")
+                or kw.get("expiry_reason")
+                or kw.get("last_failure_reason")
+                or kw.get("error")
+            ),
             src="audit_bridge",
         )
 

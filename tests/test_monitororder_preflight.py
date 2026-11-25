@@ -614,3 +614,64 @@ class MonitorOrderPreflightTest(TempDirTestCase):
         self.assertEqual(len(persisted_kr), 1)
         self.assertEqual(persisted_kr[0]["lifecycle"], "accepted")
         self.assertEqual(persisted_kr[0]["order_id"], "OTXID-KR-1")
+
+    def test_native_replace_not_attempted_refuses_fallback_cancel_when_repreflight_fails(self):
+        """If native replace returns replace_not_attempted and re-preflight fails, do NOT cancel the live order."""
+        orders = {101: {"price": 100.0, "quantity": 2.0}}
+        initial_permit = object()
+        pf_calls = [initial_permit, SubmissionRefused("account_cache_not_fresh")]
+
+        def _pf(*_a, **_kw):
+            nxt = pf_calls.pop(0)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+
+        with (
+            patch.object(monitororder, "_native_replace_enabled_for", return_value=True),
+            patch.object(monitororder.api, "get_open_orders", return_value=orders),
+            patch.object(monitororder.api, "get_current_price", return_value=100.0),
+            patch.object(monitororder, "are_close", return_value=True),
+            patch.object(monitororder.mkt, "preflight_order", side_effect=_pf),
+            patch.object(
+                monitororder.mkt,
+                "place",
+                side_effect=self._make_outcome_refusal("replace_not_attempted"),
+            ) as place_mock,
+            patch.object(monitororder.api, "cancel_order") as cancel_mock,
+            patch("builtins.print"),
+        ):
+            monitororder.monitor_open_orders_by_type("BTCUSDC", "BUY")
+
+        place_mock.assert_called_once()
+        cancel_mock.assert_not_called()
+        self.assertEqual(monitororder.order_retry.load_all(), [])
+
+    def test_non_binance_buy_reprice_checks_venue_account_cache_health_before_cancel(self):
+        """Non-Binance BUY reprice aborts before cancel when venue account-cache health is stale."""
+        orders = {"OTXID-KR-BUY": {"price": 100.0, "quantity": 2.0}}
+        fake_kr = SimpleNamespace(
+            requires_cache_permit=lambda: False,
+            defers_preflight_quantity=lambda: True,
+            require_account_cache_fresh_for_submit=lambda sym, side: (
+                (_ for _ in ()).throw(SubmissionRefused("account_cache_not_fresh"))
+                if side == "BUY"
+                else None
+            ),
+        )
+        with (
+            patch.object(monitororder, "_resolve_provider", return_value=fake_kr),
+            patch.object(monitororder.api, "get_open_orders", return_value=orders),
+            patch.object(monitororder.api, "get_current_price", return_value=100.0),
+            patch.object(monitororder, "are_close", return_value=True),
+            patch.object(monitororder.mkt, "preflight_order") as pf_mock,
+            patch.object(monitororder.api, "cancel_order") as cancel_mock,
+            patch.object(monitororder.mkt, "place") as place_mock,
+            patch("builtins.print"),
+        ):
+            monitororder.monitor_open_orders_by_type("HYPEUSD", "BUY")
+
+        pf_mock.assert_not_called()
+        cancel_mock.assert_not_called()
+        place_mock.assert_not_called()
+        self.assertEqual(monitororder.order_retry.load_all(), [])

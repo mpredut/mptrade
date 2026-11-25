@@ -3440,6 +3440,7 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
         if account_cycle_high_water:
             with self.lock:
                 self._last_complete_sync_at_ms = account_cycle_high_water
+                self.verified_ts = max(self.verified_ts, round(account_cycle_high_water / 1000.0, 3))
         super()._on_complete_remote_sync_cycle(account_cycle_high_water)
 
     def _publish_periodic_sync_health(self, sync_complete, persisted) -> None:

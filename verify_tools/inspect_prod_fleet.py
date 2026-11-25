@@ -282,11 +282,16 @@ def inspect_fleet(json_output: bool = False):
             "summary": sentiment_data.get("summary"),
         }
     if health_data:
+        h_ts = safe_float(health_data.get("ts"), default=None)
+        h_age_sec = round(max(0.0, time.time() - h_ts), 1) if h_ts else None
+        h_stale = bool(h_age_sec is None or h_age_sec > 1800.0)
         result["fleet_health"] = {
             "fleet_healthy": health_data.get("fleet_healthy"),
             "running_processes": health_data.get("running_processes"),
             "total_processes": health_data.get("total_processes"),
             "stale_processes": health_data.get("stale_processes"),
+            "age_sec": h_age_sec,
+            "stale": h_stale,
         }
     if acct_health_summary:
         result["account_cache_health"] = acct_health_summary
@@ -357,7 +362,15 @@ def inspect_fleet(json_output: bool = False):
             snap = breadth_data["snapshot"]
             print(f"  Breadth: {snap.get('advancing_pct', 0)*100:.1f}% advancing | Regime={breadth_data.get('regime')}")
         if health_data:
-            print(f"  Fleet Health: {health_data.get('running_processes')}/{health_data.get('total_processes')} processes running | Healthy={health_data.get('fleet_healthy')}")
+            fh = result.get("fleet_health") or {}
+            stale_note = ""
+            if fh.get("stale"):
+                age_v = fh.get("age_sec")
+                stale_note = f" [STALE {age_v / 3600.0:.1f}h old]" if age_v is not None else " [STALE]"
+            print(
+                f"  Fleet Health: {health_data.get('running_processes')}/{health_data.get('total_processes')} "
+                f"processes running | Healthy={health_data.get('fleet_healthy')}{stale_note}"
+            )
 
     if acct_health_summary:
         print("\n=== ACCOUNT CACHE HEALTH ===")

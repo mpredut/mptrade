@@ -680,7 +680,7 @@ class PairCoordinatorTest(unittest.TestCase):
             self.assertEqual(
                 venue.preflight_calls,
                 [("SELL", 1.0, None, True,
-                  "rtrade:fast_fill_hard_stop:pair-1")],
+                  "rtrade:fast_fill_hard_stop:pair-1:revision:0")],
             )
 
         with self.subTest("fast_buy_fill_hard_stop_after_threshold"):
@@ -715,6 +715,68 @@ class PairCoordinatorTest(unittest.TestCase):
                 [("SELL", 0.75, "fast_fill_hard_stop")])
             self.assertEqual(venue.preflight_calls[0][1], 1.0)
             self.assertIs(venue.market_permits[-1], venue.preflight_permit)
+
+        with self.subTest("hard_stop_permit_kind_matches_place_market_exit_and_sell_fails_open"):
+            from account_cache_health import CacheHealthStatus
+            from binance_api import bapi_placeorder
+
+            # 1. Verify hard-stop preflight kind matches rtrade.py place_market_exit kind so permit consumes cleanly
+            venue = FakeVenue(current=95.0)
+            fresh_status = CacheHealthStatus(True, "", 1.0, 1.0, "ord-v1", "trd-v1")
+            with (
+                patch.object(bapi_placeorder.cfg, "is_trade_enabled", return_value=True),
+                patch.object(bapi_placeorder, "require_account_cache_for_submit", return_value=fresh_status),
+            ):
+                def _real_preflight(side, qty, price=None, *, market=False, kind=None):
+                    venue.preflight_calls.append((side.upper(), qty, price, market, kind))
+                    return bapi_placeorder.issue_account_cache_submit_permit(
+                        "TAOUSDC", side, qty, price, market=market, kind=kind,
+                    )
+
+                def _real_market_exit(side, qty, reason, pair_id=None, *, cache_permit=None, revision=0):
+                    eff_kind = f"rtrade:{reason}:{pair_id}:revision:{revision}"
+                    bapi_placeorder._consume_account_cache_submit_permit(
+                        cache_permit,
+                        symbol="TAOUSDC",
+                        side=side,
+                        qty=qty,
+                        actual_price=None,
+                        requested_price=None,
+                        market=True,
+                        kind=eff_kind,
+                    )
+                    return FakeVenue.place_market_exit(
+                        venue, side, qty, reason, pair_id=pair_id, cache_permit=cache_permit, revision=revision
+                    )
+
+                venue.preflight_order = _real_preflight
+                venue.place_market_exit = _real_market_exit
+                coord = _coordinator(venue, quote_ttl_sec=32, fast_fill_ratio=0.25, shock_hard_stop_fraction=0.04)
+                coord.start(mid=100.0)
+                venue.fill("L1", 1.0, 99.36)
+                out = coord.step(now=5.0)
+            self.assertEqual(out.phase, "stopping")
+            self.assertEqual(venue.market_calls, [("SELL", 1.0, "fast_fill_hard_stop")])
+
+            # 2. Verify _LivePairVenue.preflight_order and _preflight_routed_order fail OPEN on SELL stale cache
+            #    while staying strictly fail CLOSED on BUY.
+            stub_exec = SimpleNamespace(
+                preflight_order=Mock(side_effect=SubmissionRefused("account_cache_not_fresh")),
+            )
+            rt_venue = object.__new__(rtrade._LivePairVenue)
+            rt_venue.symbol = "TAOUSDC"
+            rt_venue.audited_executor = stub_exec
+            self.assertIsNone(rt_venue.preflight_order("SELL", 1.0, None, market=True, kind="hs"))
+            with self.assertRaisesRegex(SubmissionRefused, "account_cache_not_fresh"):
+                rt_venue.preflight_order("BUY", 1.0, None, market=True, kind="hs")
+
+            with (
+                patch.object(rtrade.mkt, "provider_name_for", return_value="binance"),
+                patch.object(rtrade.mkt, "provider_by_name", return_value=stub_exec),
+            ):
+                self.assertIsNone(rtrade._preflight_routed_order("TAOUSDC", "SELL", 1.0, 100.0))
+                with self.assertRaisesRegex(SubmissionRefused, "account_cache_not_fresh"):
+                    rtrade._preflight_routed_order("TAOUSDC", "BUY", 1.0, 100.0)
 
         with self.subTest("hard_stop_skips_market_when_race_flattens_exposure"):
             venue = FakeVenue(current=95.0)

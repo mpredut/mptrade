@@ -614,6 +614,10 @@ def _lease_replacement_and_preflight(
         )
         if filter_refusal:
             raise SubmissionRefused(filter_refusal)
+        if not requires_permit and provider_obj is not None:
+            venue_cache_gate = getattr(provider_obj, "require_account_cache_fresh_for_submit", None)
+            if callable(venue_cache_gate):
+                venue_cache_gate(symbol, order_type)
         cache_permit = mkt.preflight_order(
             symbol, order_type, preflight_qty, new_price,
             market=False, kind="monitor_order_replace")
@@ -747,13 +751,41 @@ def _dispatch_native_or_cancel_replace(
             )
             return
         native_cancel_only = native_reason == "replace_cancel_only"
-        try:
-            cache_permit = mkt.preflight_order(
-                symbol, order_type, preflight_qty, new_price,
-                market=False, kind="monitor_order_replace",
-            )
-        except Exception:
-            cache_permit = None
+        provider_obj = _resolve_provider(symbol, provider_name)
+        requires_permit = (
+            True
+            if provider_obj is None or not callable(getattr(provider_obj, "requires_cache_permit", None))
+            else bool(provider_obj.requires_cache_permit())
+        )
+        if native_cancel_only:
+            try:
+                cache_permit = mkt.preflight_order(
+                    symbol, order_type, preflight_qty, new_price,
+                    market=False, kind="monitor_order_replace",
+                )
+            except Exception:
+                cache_permit = None
+        else:
+            try:
+                if not requires_permit and provider_obj is not None:
+                    venue_cache_gate = getattr(provider_obj, "require_account_cache_fresh_for_submit", None)
+                    if callable(venue_cache_gate):
+                        venue_cache_gate(symbol, order_type)
+                cache_permit = mkt.preflight_order(
+                    symbol, order_type, preflight_qty, new_price,
+                    market=False, kind="monitor_order_replace",
+                )
+                if requires_permit and cache_permit is None:
+                    raise SubmissionRefused("account_cache_not_fresh")
+            except Exception as exc:  # noqa: BLE001
+                order_retry.complete_claim(replacement_claim, "success")
+                refusal_reason = getattr(exc, "reason", str(exc))
+                cd_sec, cd_tier = _record_reprice_refusal_cooldown(oid_str, refusal_reason)
+                print(
+                    f"The {order_type} replacement was refused before fallback cancellation: "
+                    f"{refusal_reason} (tier={cd_tier}, cooldown={cd_sec:.0f}s). The existing order remains active."
+                )
+                return
 
     fallback_submission_kw = {"submission_state": "refused"} if native_refused else {}
     if native_cancel_only:

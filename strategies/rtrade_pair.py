@@ -776,7 +776,8 @@ class PairCoordinator:
                     exit_qty = abs(net)
                     if exit_ticket is not None:
                         cache_permit = self.venue.preflight_order(
-                            exit_side, exit_qty, None, market=True, kind=f"rtrade:{hs_reason}:{self.pair_id}"
+                            exit_side, exit_qty, None, market=True,
+                            kind=f"rtrade:{hs_reason}:{self.pair_id}:revision:{self.hard_stop_revision}",
                         )
                         rem_qty = self._cancel_active_exit_ticket(
                             exit_ticket, exit_side, net,

@@ -610,6 +610,7 @@ def test_cacheaccount_bridges_publish_multi_venue_health_etapa3(tmp_path, monkey
         venue="binance",
     )
     mgr._on_complete_remote_sync_cycle(1_700_000_001_234)
+    assert mgr.verified_ts == pytest.approx(1_700_000_001.234)
     mgr._publish_periodic_sync_health(sync_complete=True, persisted=True)
     assert ("binance", "open_orders", 1_700_000_001_234) in recorded
 
@@ -707,11 +708,23 @@ def test_etapa3b_multi_venue_health_snapshot_coherence_and_fleet_inspection(tmp_
     assert ccc.main() == 1
 
     # 3. inspect_prod_fleet exposes account_cache_health from remote SSH snapshot without local PID dependency
+    #    and flags stale fleet_health_status.json timestamps instead of presenting old data as live.
+    stale_fleet_health = {
+        "ts": now_s - 7200.0,
+        "fleet_healthy": True,
+        "running_processes": 17,
+        "total_processes": 17,
+        "stale_processes": 0,
+    }
     monkeypatch.setattr(inspect_prod_fleet.time, "time", lambda: now_s)
     monkeypatch.setattr(
         inspect_prod_fleet,
         "ssh_cat",
-        lambda p: snapshot if "cache_account_health.json" in str(p) else {},
+        lambda p: (
+            snapshot
+            if "cache_account_health.json" in str(p)
+            else (stale_fleet_health if "fleet_health_status.json" in str(p) else {})
+        ),
     )
     fleet_res = inspect_prod_fleet.inspect_fleet(json_output=True)
     assert "account_cache_health" in fleet_res
@@ -719,6 +732,8 @@ def test_etapa3b_multi_venue_health_snapshot_coherence_and_fleet_inspection(tmp_
     assert all(v["ready"] is True for v in fleet_res["account_cache_health"].values())
     assert fleet_res["account_cache_health"]["binance"]["filled_orders_age_sec"] == pytest.approx(5.0)
     assert fleet_res["account_cache_health"]["t212"]["balances_age_sec"] == pytest.approx(7200.0)
+    assert fleet_res["fleet_health"]["stale"] is True
+    assert fleet_res["fleet_health"]["age_sec"] == pytest.approx(7200.0)
 
 
 def test_multi_venue_pre_submit_gate_blocks_buy_and_fails_open_on_sell(tmp_path, monkeypatch):

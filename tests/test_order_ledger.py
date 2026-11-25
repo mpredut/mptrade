@@ -1396,3 +1396,50 @@ def test_bug2_intelligence_guard_reason_and_qlimit_bypass_log_and_bug3_caller_ow
     by_vid = {r["vid"]: r for r in reader.list_active_orders(apply_tail=False)}
     assert by_vid["700001"]["owner"] == "ai_executor"
     assert by_vid["700002"]["owner"] == "external"
+
+
+def test_retry_giveup_audit_event_expires_deferred_intent_from_active_ledger(tmp_path):
+    """Verify retry_giveup mirrors into RECONCILED_EXPIRED so given-up outbox intents do not linger 72h."""
+    cdb = str(tmp_path / "cachedb")
+    t0 = 1_795_620_000.0
+    writer = OrderLedgerWriter(cachedb_dir=cdb)
+    reader = OrderLedgerReader(cachedb_dir=cdb)
+    reconciler = OrderLedgerReconciler(cachedb_dir=cdb, use_singletons=False, reconcile_grace_sec=30.0)
+
+    assert writer.record_event(
+        OrderEventType.GUARD_BLOCKED,
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+        ts=t0,
+        owner="tradeall",
+        side="SELL",
+        order_type="LIMIT",
+        iid="outbox-deadbeef01",
+        kind="accel_plunge_down",
+        reason="intelligence_guard",
+        qty=10.61,
+        px=57.633,
+        deferred=True,
+        src="instrument_guard",
+    )
+    reconciler.reconcile_once(now_ts=t0 + 5.0)
+    assert any(r.get("iid") == "outbox-deadbeef01" for r in reader.list_active_orders(apply_tail=False))
+
+    assert writer.record_audit_event(
+        "retry_giveup",
+        intent_id="outbox-deadbeef01",
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+        ts=t0 + 60.0,
+        fields={
+            "side": "sell",
+            "qty": 10.61,
+            "expiry_reason": "active_ttl",
+            "last_failure_reason": "intelligence_guard",
+        },
+    )
+    reconciler.reconcile_once(now_ts=t0 + 65.0)
+    assert not any(r.get("iid") == "outbox-deadbeef01" for r in reader.list_active_orders(apply_tail=False))
+    # Unsubmitted deferred intent must not pollute closed-trade history
+    assert reader.list_closed_files() == []
+

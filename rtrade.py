@@ -25,6 +25,7 @@ from botcore import (
     format_price_log,
     load_dotenv,
     normalize_epoch_sec,
+    normalize_side,
     required_bool_env,
     required_env,
     required_float_env,
@@ -227,9 +228,18 @@ class _LivePairVenue:
         return mkt.get_current_price(self.symbol)
 
     def preflight_order(self, side, qty, price=None, *, market=False, kind=None):
-        return self.audited_executor.preflight_order(
-            self.symbol, side, qty, price, market=_parse_bool_flag(market, default=False), kind=kind
-        )
+        try:
+            return self.audited_executor.preflight_order(
+                self.symbol, side, qty, price, market=_parse_bool_flag(market, default=False), kind=kind
+            )
+        except SubmissionRefused as exc:
+            if normalize_side(side) == "SELL" and exc.reason in {
+                "account_cache_not_fresh",
+                "account_cache_snapshot_changed",
+            }:
+                print(f"[{self.symbol}] SELL preflight failing OPEN on {exc.reason} so exit is not trapped")
+                return None
+            raise
 
     @staticmethod
     def _intent_id(pair_id, side, kind):
@@ -833,7 +843,16 @@ def _preflight_routed_order(symbol, side, qty, price=None, *, market=False, kind
     preflight = getattr(executor, "preflight_order", None)
     if not callable(preflight):
         raise RuntimeError(f"{provider_name} preflight unavailable for {symbol}")
-    return preflight(symbol, side, qty, price, market=market, kind=kind)
+    try:
+        return preflight(symbol, side, qty, price, market=market, kind=kind)
+    except SubmissionRefused as exc:
+        if normalize_side(side) == "SELL" and exc.reason in {
+            "account_cache_not_fresh",
+            "account_cache_snapshot_changed",
+        }:
+            print(f"[{symbol}] SELL preflight failing OPEN on {exc.reason} so exit is not trapped")
+            return None
+        raise
 
 
 def _cancel_order_confirmed(symbol, order_id):
