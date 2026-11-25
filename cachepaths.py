@@ -589,13 +589,15 @@ def _legacy_cachedb_subdomains_for(root_kind: str, sub: str, stripped_name: str)
         return ()
     if sub == "orders":
         if stripped_name.startswith(("auto_order_intents", "autonomous_order_intents", "autonomous_trade_intents")):
-            return ("state", "orders")
+            return ("orders", "state")
         return ("orders",)
     if sub in ("portfolio", "bots"):
-        return ("state",)
-    if sub in ("llm", "system"):
+        return (sub, "state")
+    if sub == "llm":
+        return ("llm", "system")
+    if sub == "system":
         return ("system",)
-    return ()
+    return (sub,)
 
 
 def resolve_storage_domain(name: object) -> tuple[str, str] | None:
@@ -915,7 +917,7 @@ def organize_cachedb_subdomains(
         sub_p = os.path.join(base, sub_k)
         if os.path.isdir(sub_p):
             scan_dirs.append((sub_p, sub_skips))
-    legacy_bots_dir = os.path.join(base, "bots")
+    legacy_state_dir = os.path.join(base, "state")
     for scan_dir, skip_names in scan_dirs:
         for entry in sorted(os.listdir(scan_dir)):
             if entry in skip_names:
@@ -960,9 +962,9 @@ def organize_cachedb_subdomains(
                 moved[sub].append(target_entry)
             except OSError:
                 pass
-    if os.path.isdir(legacy_bots_dir):
+    if os.path.isdir(legacy_state_dir):
         try:
-            os.rmdir(legacy_bots_dir)
+            os.rmdir(legacy_state_dir)
         except OSError:
             pass
     return moved

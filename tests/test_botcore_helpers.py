@@ -493,6 +493,70 @@ class TestCachepaths(TempDirTestCase):
                 root / "telemetry" / "orderbook_depth_BTCUSDC.json",
             )
 
+    def test_organize_cachedb_subdomains_and_resolve_statedb_zero_split_brain(self):
+        """Pre-cutover (no statedb/) runtime resolvers must match organize_cachedb_subdomains() 1:1."""
+        from cachepaths import resolve_statedb_filepath
+
+        ws = Path(self.tmp) / "ws"
+        cdb = ws / "cachedb"
+        for sub in ("state", "system", "orders"):
+            (cdb / sub).mkdir(parents=True, exist_ok=True)
+        seeded = [
+            ("state", "nav_history_state.json", "portfolio", "nav_history_state.json"),
+            ("state", "portfolio_positions_state.json", "portfolio", "portfolio_positions_state.json"),
+            ("state", "venue_balances_state.json", "portfolio", "venue_balances_state.json"),
+            ("state", "assetguardian_state.json", "bots", "assetguardian_state.json"),
+            ("state", "mt_state.json", "bots", "mt_state.json"),
+            ("state", "trailing_state.json", "bots", "trailing_state.json"),
+            ("state", "smart_stop_loss_state.json", "bots", "smart_stop_loss_state.json"),
+            ("state", "rtrade_pairs_state.json", "bots", "rtrade_pairs_state.json"),
+            ("state", "venue_fee_maintenance_state.json", "bots", "venue_fee_maintenance_state.json"),
+            ("state", "autonomous_trade_intents_state.json", "orders", "auto_order_intents_state.json"),
+            ("orders", "orders_active.json", "orders", "orders_active.json"),
+            ("orders", "order_retry_queue.jsonl", "orders", "order_retry_queue.jsonl"),
+            ("orders", "cache_balance_binance.json", "account", "cache_balance_binance.json"),
+            ("orders", "cache_account_health.json", "account", "cache_account_health.json"),
+            ("system", "llm_topic_threads.json", "llm", "llm_topic_threads.json"),
+            ("system", "notify_queue.json", "system", "notify_queue.json"),
+        ]
+        for old_sub, old_fn, _, _ in seeded:
+            (cdb / old_sub / old_fn).write_text("{}", encoding="utf-8")
+
+        organize_cachedb_subdomains(str(cdb), remove_stale_staging=True)
+        self.assertFalse((cdb / "state").exists())
+
+        for _, _, exp_sub, exp_fn in seeded:
+            expected = cdb / exp_sub / exp_fn
+            self.assertTrue(expected.is_file(), f"missing moved file {expected}")
+            # Existing file resolves identically via both resolvers
+            self.assertEqual(Path(str(resolve_statedb_filepath(str(cdb / exp_fn)))), expected)
+            self.assertEqual(Path(str(resolve_cachedb_filepath(str(cdb / exp_fn)))), expected)
+            # Newly created file (when removed) also resolves to the exact same subdomain directory
+            expected.unlink()
+            self.assertEqual(Path(str(resolve_statedb_filepath(str(cdb / exp_fn)))), expected)
+            expected.write_text("{}", encoding="utf-8")
+
+        # Pure legacy layout (cachedb/state & cachedb/system ONLY, without portfolio/bots/llm dirs) still resolves cleanly
+        ws_leg = Path(self.tmp) / "ws_legacy"
+        cdb_leg = ws_leg / "cachedb"
+        (cdb_leg / "state").mkdir(parents=True)
+        (cdb_leg / "system").mkdir(parents=True)
+        (cdb_leg / "state" / "nav_history_state.json").write_text("{}", encoding="utf-8")
+        (cdb_leg / "state" / "trailing_state.json").write_text("{}", encoding="utf-8")
+        (cdb_leg / "system" / "llm_topic_threads.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(
+            Path(str(resolve_statedb_filepath(str(cdb_leg / "nav_history_state.json")))),
+            cdb_leg / "state" / "nav_history_state.json",
+        )
+        self.assertEqual(
+            Path(str(resolve_statedb_filepath(str(cdb_leg / "trailing_state.json")))),
+            cdb_leg / "state" / "trailing_state.json",
+        )
+        self.assertEqual(
+            Path(str(resolve_statedb_filepath(str(cdb_leg / "llm_topic_threads.json")))),
+            cdb_leg / "system" / "llm_topic_threads.json",
+        )
+
 
 def test_env_stack_preserves_process_secret_and_versioned_precedence(tmp_path, monkeypatch):
     env_file = tmp_path / "profile.env"

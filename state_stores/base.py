@@ -64,6 +64,8 @@ class StateStoreBase:
         ]
         if cls.SUBDOMAIN in ("portfolio", "bots"):
             cands.append(os.path.join(cachedb_dir, "state", cls.FILENAME))
+        elif cls.SUBDOMAIN == "llm":
+            cands.append(os.path.join(cachedb_dir, "system", cls.FILENAME))
         cands.append(os.path.join(cachedb_dir, cls.FILENAME))
         return list(dict.fromkeys(cands))
 
