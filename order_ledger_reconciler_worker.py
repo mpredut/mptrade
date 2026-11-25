@@ -49,7 +49,7 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 from instrument_registry import canonical_display_symbol
-from providers.intent_state import load_known_ai_order_ids_from_cachedb
+from providers.intent_state_store import load_known_ai_order_ids_from_cachedb
 from providers.order_id_context import (
     all_correlatable_client_order_ids,
     extract_client_order_id,

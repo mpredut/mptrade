@@ -37,7 +37,7 @@ from intelligence.macro_sentiment_ssot import load_venue_balances_state  # noqa:
 from instrument_registry import select_instruments  # noqa: E402
 from notify_engine import alertnotifiers as _alertnotifiers  # noqa: E402
 from providers.market_api import api as mkt  # noqa: E402
-from providers.quantity import resolve_kraken_trade_cache_position  # noqa: E402
+from providers.portfolio_state_store import resolve_kraken_trade_cache_position  # noqa: E402
 from state_io import encode_json_payload, read_json_dict, save_json_state  # noqa: E402
 from strategies.state_store import state_path_for  # noqa: E402
 

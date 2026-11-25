@@ -1,15 +1,16 @@
-"""Durable AI intent state persistence, schema normalization, and ID correlation."""
+"""Pure in-memory AI intent schema normalization, validation, and ID correlation SSOT.
+
+Strictly zero disk I/O (no ``os``, ``pathlib``, ``state_io``, or ``state_stores`` imports).
+Durable JSON persistence wrappers live in ``providers/intent_state_store.py`` and
+``state_stores/autonomous_trade_intents_state.py``.
+"""
 from __future__ import annotations
 
-import os
 import re
-import threading
-from contextlib import contextmanager, nullcontext
 from functools import lru_cache
 from typing import Any, Callable, Mapping, Optional
 
 from botcore import (
-    FileLock,
     _parse_bool_flag,
     _parse_epoch_or_iso_s,
     _ts_ms_to_s,
@@ -38,7 +39,6 @@ from cachepaths import (
     symbol_quote_asset,
 )
 from instrument_registry import canonical_display_symbol, resolve_symbol_identity
-from state_stores.autonomous_trade_intents_state import AutonomousTradeIntentsStateStore
 from .order_id_context import (
     ScopedOrderIdSet,
     all_venue_native_client_order_ids,
@@ -59,7 +59,6 @@ _NOTIONAL_KEYS: tuple[str, ...] = (
     "notional",
     "value_usd",
 )
-_INTENTS_LOCK_LOCAL = threading.local()
 
 
 def _clean_intent_symbol(raw_sym: Any) -> str:
@@ -719,73 +718,6 @@ def _intent_executed_notional_usd(item: dict[str, Any]) -> float:
     return safe_pos_float(extract_intent_notional(item, default=None), default=0.0) or 0.0
 
 
-def durable_intents_lock(intents_file: str):
-    """Reentrant (per thread) cross-process lock serializing read-modify-write via 1:1 store."""
-    return AutonomousTradeIntentsStateStore.lock(intents_file)
-
-
-def load_durable_intents_state(
-    intents_file: str,
-    reconcile_fn: Optional[Callable[[list[dict[str, Any]]], Any]] = None,
-    *,
-    read_only: bool = False,
-    fail_closed: Optional[bool] = None,
-) -> list[dict[str, Any]]:
-    """Load all trade intents from the durable JSON queue via ``AutonomousTradeIntentsStateStore``."""
-    return AutonomousTradeIntentsStateStore.load_state(
-        intents_file,
-        reconcile_fn=reconcile_fn,
-        read_only=read_only,
-        fail_closed=fail_closed,
-    )
-
-
-def load_durable_intents_from_cachedb(
-    cachedb_dir: Optional[str],
-    *,
-    read_json_fn: Optional[Callable[[str], Any]] = None,
-) -> list[dict[str, Any]]:
-    """Read-only SSOT loader for ``autonomous_trade_intents_state.json`` via ``AutonomousTradeIntentsStateStore``."""
-    return AutonomousTradeIntentsStateStore.load_from_cachedb(
-        cachedb_dir,
-        read_json_fn=read_json_fn,
-    )
-
-
-def load_known_ai_order_ids_from_cachedb(cachedb_dir: Optional[str]) -> set[str]:
-    """Return lowercase venue order IDs and derived venue-native cloids from durable AI intents."""
-    intents = load_durable_intents_from_cachedb(cachedb_dir)
-    if not intents:
-        return set()
-    return {tok.lower() for tok in collect_known_ai_order_ids(intents) if tok}
-
-
-def save_durable_intents_state(
-    intents_file: str,
-    intents: list[dict[str, Any]],
-    log: Optional[Any] = None,
-) -> bool:
-    """Transactionally persist all intents via ``AutonomousTradeIntentsStateStore``."""
-    return AutonomousTradeIntentsStateStore.save_state(intents_file, intents, log=log)
-
-
-def upsert_durable_intent(
-    intents_file: str,
-    intent: dict[str, Any],
-    *,
-    reconcile_fn: Optional[Callable[[list[dict[str, Any]]], Any]] = None,
-    log: Optional[Any] = None,
-) -> bool:
-    """Atomically merge one intent (by ``intent_id``) via ``AutonomousTradeIntentsStateStore``."""
-    return AutonomousTradeIntentsStateStore.upsert_intent(
-        intents_file,
-        intent,
-        extract_id_fn=_extract_intent_id,
-        reconcile_fn=reconcile_fn,
-        log=log,
-    )
-
-
 def parse_pos_epoch_s(raw: Any) -> Optional[float]:
     """Parse an epoch-seconds, epoch-ms, or ISO-8601 timestamp into positive UTC seconds."""
     parsed = _parse_epoch_or_iso_s(raw)
@@ -928,7 +860,6 @@ __all__ = [
     "append_intent_history",
     "collect_known_ai_order_ids",
     "decision_has_cancel_directive",
-    "durable_intents_lock",
     "eval_doc_was_actionable",
     "extract_intent_cancel_order_ids",
     "extract_intent_limit_price",
@@ -941,17 +872,12 @@ __all__ = [
     "generate_unique_intent_id",
     "intent_venue_client_order_ids",
     "is_non_fiat_btc_quote_instrument",
-    "load_durable_intents_from_cachedb",
-    "load_durable_intents_state",
-    "load_known_ai_order_ids_from_cachedb",
     "normalize_intent_fields",
     "normalize_trading_decisions",
     "order_matches_intent_client_id",
     "parse_intent_gateway_config",
     "parse_pos_epoch_s",
     "resolve_hold_cancel_target",
-    "save_durable_intents_state",
     "symbols_match_intent_scope_and_quote",
-    "upsert_durable_intent",
     "validate_and_build_intent_dict",
 ]

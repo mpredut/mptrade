@@ -672,7 +672,8 @@ def test_order_filled_manager_symmetric_passive_readers_and_fallbacks(tmp_path):
 
 
 def test_order_filled_coherence_kraken_subsumption_t212_fee_upgrade_and_binance_last_opposite(tmp_path):
-    from providers.quantity import resolve_kraken_trade_cache_position, summarize_fills_position_and_cost
+    from providers.portfolio_state_store import resolve_kraken_trade_cache_position
+    from providers.quantity import summarize_fills_position_and_cost
 
     # 1. Kraken Bug K1: provisional Ledger fills (orderId == fillId) must be subsumed by the real order
     #    both when real order arrives later and when Ledger fill arrives after the real order.

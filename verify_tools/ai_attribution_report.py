@@ -22,10 +22,8 @@ if _ROOT not in sys.path:
 
 with contextlib.redirect_stdout(sys.stderr):
     from botcore import disable_auto_start_websockets_default, parse_pos_cli_float  # noqa: E402
-    from providers.ai_attribution import (  # noqa: E402
-        format_ai_attribution_report,
-        load_and_evaluate_ai_attribution,
-    )
+    from providers.ai_attribution import format_ai_attribution_report  # noqa: E402
+    from providers.ai_attribution_store import load_and_evaluate_ai_attribution  # noqa: E402
     from state_io import encode_json_payload, save_json_state  # noqa: E402
 
 

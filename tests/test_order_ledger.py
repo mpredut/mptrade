@@ -713,7 +713,7 @@ def test_migrated_audit_readers_use_order_ledger_first_with_legacy_fallback(tmp_
         _load_audit_terminal_orders,
         _load_recent_audit_origins,
     )
-    from providers.ai_attribution import load_and_evaluate_ai_attribution
+    from providers.ai_attribution_store import load_and_evaluate_ai_attribution
     from providers.execution_audit import find_order_audit_record
     from providers.intent_reconciliation import reconcile_intents_from_execution_audit
 

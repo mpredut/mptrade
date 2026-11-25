@@ -33,8 +33,8 @@ from providers.ai_survival_guard import evaluate_ai_decision_scorecard, match_fi
 from providers.execution_audit import ExecutionAudit
 from providers.intent_execution import cancel_existing_ai_open_orders
 from providers.intent_reconciliation import reconcile_intents_from_execution_audit
-from providers.intent_state import (
-    collect_known_ai_order_ids,
+from providers.intent_state import collect_known_ai_order_ids
+from providers.intent_state_store import (
     load_durable_intents_state,
     upsert_durable_intent,
 )
@@ -7006,7 +7006,7 @@ def test_structural_ssot_bug_free_by_construction_refactors(tmp_path):
     import json
     from order_lifecycle import OrderPreemptionTransaction
     import order_retry
-    from providers.intent_state import (
+    from providers.intent_state_store import (
         load_durable_intents_from_cachedb,
         load_known_ai_order_ids_from_cachedb,
     )
@@ -7627,7 +7627,7 @@ def test_layer3_cache_balance_manager_eliminates_inversion_and_splits_positions_
     from providers.binance_provider import BinanceProvider
     from providers.hyperliquid_provider import HyperliquidProvider
     from providers.kraken_provider import KrakenProvider
-    from providers.nav_drawdown import record_nav_history_snapshot
+    from providers.nav_history_store import record_nav_history_snapshot
     from providers.portfolio_state_store import (
         load_portfolio_positions_state_dict,
         load_venue_balance_caches,
@@ -8465,6 +8465,109 @@ def test_evaluator_write_purity_ohlc_single_writer_and_t212_cache_first(tmp_path
     assert rest_calls["t212"] == 1
     assert cached_bals["pos:t212:NVDA_US_EQ"]["price"] == pytest.approx(149.0)
     assert cached_bals["pos:t212:NVDA_US_EQ"]["value_usd"] == pytest.approx(298.0)
+
+
+def test_priority2_pure_provider_math_modules_zero_io_and_stores(tmp_path):
+    """Verify Priority 2 pure-math vs store separation across nav_drawdown, ai_attribution, quantity, and intent_state:
+    1. All 6 PURE_VALUATION_MODULES pass audit_layer_dag_ast with zero disk/state I/O imports.
+    2. Synthetic os/glob/state_io/state_stores leaks into any of the 4 newly purified modules are statically blocked.
+    3. All 4 store facades (nav_history_store, ai_attribution_store, intent_state_store, portfolio_state_store)
+       function cleanly end-to-end.
+    """
+    from pathlib import Path
+    from providers.ai_attribution_store import load_and_evaluate_ai_attribution
+    from providers.intent_state_store import (
+        load_durable_intents_from_cachedb,
+        load_known_ai_order_ids_from_cachedb,
+        upsert_durable_intent,
+    )
+    from providers.nav_history_store import load_and_evaluate_nav_drawdown, record_nav_history_snapshot
+    from providers.portfolio_state_store import resolve_kraken_trade_cache_position
+    from verify_tools.ssot_ast_audit import PURE_VALUATION_MODULES, audit_layer_dag_ast
+
+    repo_root = Path(__file__).resolve().parents[1]
+    expected_pure = {
+        "providers/portfolio_valuation.py",
+        "providers/nav_drawdown.py",
+        "providers/ai_attribution.py",
+        "providers/quantity.py",
+        "providers/intent_state.py",
+        "intelligence/sentiment/evaluators/price_series_evaluator.py",
+    }
+    assert expected_pure.issubset(PURE_VALUATION_MODULES)
+    assert audit_layer_dag_ast(repo_root, rel_paths=sorted(expected_pure)) == []
+
+    # Negative AST checks: any disk/state I/O import in the 4 newly purified provider modules is blocked
+    synth = tmp_path / "synth_p2"
+    (synth / "providers").mkdir(parents=True)
+    leaks = {
+        "providers/nav_drawdown.py": "import os\nfrom state_stores.nav_history_state import NavHistoryStateStore\n",
+        "providers/ai_attribution.py": "import glob\nfrom state_io import read_json_dict\n",
+        "providers/quantity.py": "import os\nfrom state_io import read_json_dict\n",
+        "providers/intent_state.py": "from state_stores.autonomous_trade_intents_state import AutonomousTradeIntentsStateStore\n",
+    }
+    for rel, code in leaks.items():
+        (synth / rel).write_text(code, encoding="utf-8")
+    viols = audit_layer_dag_ast(synth, rel_paths=sorted(leaks.keys()))
+    for rel in leaks:
+        assert any(v.startswith(f"{rel}: pure valuation module must not import disk/state I/O modules") for v in viols)
+
+    # Functional round-trip across all 4 store facades on isolated workspace
+    ws = tmp_path / "ws_p2"
+    cdb = ws / "cachedb"
+    (cdb / "state").mkdir(parents=True)
+    (cdb / "orders").mkdir(parents=True)
+    (cdb / "prices").mkdir(parents=True)
+    now_s = 1_795_960_000.0
+
+    # intent_state_store
+    from cachepaths import AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME
+
+    int_path = cdb / "state" / AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME
+    assert upsert_durable_intent(
+        str(int_path),
+        {
+            "intent_id": "ai-p2-1",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "decision": "BUY",
+            "status": "EXECUTED",
+            "timestamp": now_s - 600.0,
+            "execution_payload": {"orderId": "bn-901", "status": "FILLED", "executedQty": "0.01", "avg_fill_price": 70000.0},
+        },
+    ) is True
+    assert len(load_durable_intents_from_cachedb(str(cdb))) == 1
+    assert "bn-901" in load_known_ai_order_ids_from_cachedb(str(cdb))
+
+    # nav_history_store
+    m_nav = record_nav_history_snapshot(
+        str(ws),
+        venue_balances_state={"cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 2000.0}},
+        live_prices={},
+        now_ts=now_s,
+    )
+    assert m_nav["current_nav_usd"] == pytest.approx(2000.0)
+    assert load_and_evaluate_nav_drawdown(str(ws), now_ts=now_s, include_live_point=False)["sample_count"] == 1
+
+    # ai_attribution_store
+    rep = load_and_evaluate_ai_attribution(str(ws), lookback_days=7.0, now_ts=now_s)
+    assert rep["unified_nav_drawdown"]["sample_count"] == 1
+
+    # portfolio_state_store.resolve_kraken_trade_cache_position
+    (cdb / "orders" / "cache_order_filled_kraken.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "HYPEUSD": [
+                        {"id": "k1", "side": "BUY", "price": 40.0, "qty": 5.0, "time": int((now_s - 3600) * 1000)}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    kpos = resolve_kraken_trade_cache_position("HYPEUSD", str(cdb), held_qty=5.0)
+    assert kpos is not None and kpos["avg_cost_px"] == pytest.approx(40.0)
 
 
 

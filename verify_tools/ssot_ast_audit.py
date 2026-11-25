@@ -222,18 +222,28 @@ PROVIDER_NON_FACADE_MODULES = frozenset({
     "providers/strategy_executor.py",
     "providers/execution_audit.py",
     "providers/intent_state.py",
+    "providers/intent_state_store.py",
     "providers/intent_execution.py",
     "providers/intent_reconciliation.py",
     "providers/intent_telemetry.py",
+    "providers/ai_attribution.py",
+    "providers/ai_attribution_store.py",
+    "providers/nav_drawdown.py",
+    "providers/nav_history_store.py",
     "providers/portfolio_state_store.py",
     "providers/portfolio_valuation.py",
 })
 PURE_VALUATION_MODULES = frozenset({
     "providers/portfolio_valuation.py",
+    "providers/nav_drawdown.py",
+    "providers/ai_attribution.py",
+    "providers/quantity.py",
+    "providers/intent_state.py",
     "intelligence/sentiment/evaluators/price_series_evaluator.py",
 })
 FORBIDDEN_PURE_VALUATION_IMPORTS = frozenset({
     "os",
+    "glob",
     "pathlib",
     "io",
     "shutil",

@@ -19,7 +19,7 @@ from botcore import (
 )
 from providers.market_api import api as mkt
 from providers.order_id_context import resolve_order_owner
-from providers.quantity import resolve_kraken_trade_cache_position
+from providers.portfolio_state_store import resolve_kraken_trade_cache_position
 from instrument_registry import symbols_for
 from state_io import read_json_dict
 

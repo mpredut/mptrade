@@ -118,10 +118,11 @@ from providers.order_ohlc_utils import normalize_open_order
 from providers.intent_state import (
     collect_known_ai_order_ids,
     intent_venue_client_order_ids,
-    load_durable_intents_from_cachedb,
 )
+from providers.intent_state_store import load_durable_intents_from_cachedb
 from providers.portfolio_state_store import (
     load_venue_balance_caches,
+    resolve_kraken_trade_cache_position,
     resolve_portfolio_positions_state_path,
     resolve_venue_balance_cache_path,
     upsert_portfolio_positions_snapshot,
@@ -138,7 +139,7 @@ from state_stores.venue_balances_state import (
     INTERNAL_BALANCE_SCRATCH_KEYS,
     strip_internal_balance_scratch_keys,
 )
-from providers.quantity import resolve_assets, resolve_kraken_trade_cache_position, venue_fee_cap_quantity
+from providers.quantity import resolve_assets, venue_fee_cap_quantity
 from state_io import (
     generation_file_lock,
     read_json_dict,

@@ -477,13 +477,15 @@ class ExecutionCalibrationTest(TempDirTestCase):
         tmp_int = os.path.join(self.tmp, "int")
         os.makedirs(tmp_int, exist_ok=True)
         intents_path = os.path.join(tmp_int, "intents.json")
+        from providers import intent_state_store
+
         self.assertTrue(
-            intent_state.save_durable_intents_state(
+            intent_state_store.save_durable_intents_state(
                 intents_path,
                 [{"intent_id": "i-1", "confidence": float("nan"), "status": "PENDING"}],
             )
         )
-        loaded_intents = intent_state.load_durable_intents_state(intents_path)
+        loaded_intents = intent_state_store.load_durable_intents_state(intents_path)
         self.assertEqual(loaded_intents, [{"intent_id": "i-1", "confidence": None, "status": "PENDING"}])
         self.assertEqual(
             intent_execution.resolve_intent_topic_tag({"created_by": "auto_trade_executor"}, "binance"),

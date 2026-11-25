@@ -10,7 +10,8 @@ from botcore import load_key_value_conf
 from cachepaths import NAV_HISTORY_STATE_FILENAME, resolve_cache_subdomain
 from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
 from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway, ROOT_DIR as GW_ROOT_DIR
-from providers.ai_attribution import format_ai_attribution_report, load_and_evaluate_ai_attribution
+from providers.ai_attribution import format_ai_attribution_report
+from providers.ai_attribution_store import load_and_evaluate_ai_attribution
 from providers.ai_circuit_breaker import parse_intent_circuit_breaker_config
 from providers.nav_drawdown import (
     append_nav_history_point,
@@ -18,6 +19,8 @@ from providers.nav_drawdown import (
     evaluate_daily_nav_drawdown_guard,
     evaluate_nav_drawdown_metrics,
     format_nav_drawdown_summary_line,
+)
+from providers.nav_history_store import (
     load_and_evaluate_nav_drawdown,
     load_nav_history_state,
     record_nav_history_snapshot,

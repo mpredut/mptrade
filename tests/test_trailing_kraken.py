@@ -1827,7 +1827,7 @@ def test_subiect2_kraken_bots_retired_and_trade_cache_ssot_cost_basis(tmp_path, 
     from botcore import parse_procs_manifest
     from intelligence.sentiment.collectors.portfolio_collector import KrakenXstocksCollector
     from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
-    from providers.quantity import resolve_kraken_trade_cache_position
+    from providers.portfolio_state_store import resolve_kraken_trade_cache_position
     from verify_tools import ownership_inventory as oi
     from verify_tools import portfolio_snapshot as ps
 

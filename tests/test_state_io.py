@@ -944,11 +944,13 @@ def test_phase2_passive_readers_lock_alignment_and_trade_alias_coalescing(tmp_pa
     assert not (cdb / "state" / "trailing_state.json").exists()
 
     # 2. load_durable_intents_state(..., read_only=True) does not lock, migrate, or repair disk.
+    from providers import intent_state_store
+
     flat_intents = cdb / "autonomous_trade_intents.json"
     flat_intents_prev = Path(previous_generation_path(str(flat_intents)))
     flat_intents.write_text("{corrupt", encoding="utf-8")
     flat_intents_prev.write_text(json.dumps([{"intent_id": "i1"}]), encoding="utf-8")
-    ro_intents = intent_state.load_durable_intents_state(str(flat_intents), read_only=True)
+    ro_intents = intent_state_store.load_durable_intents_state(str(flat_intents), read_only=True)
     assert ro_intents == [{"intent_id": "i1"}]
     assert flat_intents.read_text(encoding="utf-8") == "{corrupt"
     assert flat_intents_prev.is_file()
@@ -956,7 +958,7 @@ def test_phase2_passive_readers_lock_alignment_and_trade_alias_coalescing(tmp_pa
     assert not Path(state_io.generation_lock_path(str(flat_intents))).exists()
 
     # Writable durable_intents_lock migrates flat file into state/ BEFORE locking so lock and file share state/.
-    with intent_state.durable_intents_lock(str(flat_intents)):
+    with intent_state_store.durable_intents_lock(str(flat_intents)):
         assert (cdb / "state" / "autonomous_trade_intents.json").is_file()
         assert not flat_intents.exists()
         assert Path(state_io.generation_lock_path(str(cdb / "state" / "autonomous_trade_intents.json"))).is_file()

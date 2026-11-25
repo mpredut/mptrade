@@ -144,7 +144,7 @@ from providers.ai_survival_guard import (
     evaluate_ai_calibration_feedback,
     evaluate_ai_decision_scorecard,
 )
-from providers.nav_drawdown import load_and_evaluate_nav_drawdown
+from providers.nav_history_store import load_and_evaluate_nav_drawdown
 from providers.intent_telemetry import (
     build_last_cycle_execution_status,
     summarize_active_ai_trade_plans,

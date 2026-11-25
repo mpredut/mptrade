@@ -8,8 +8,8 @@ import pytest
 from providers.ai_attribution import (
     evaluate_ai_attribution,
     format_ai_attribution_report,
-    load_and_evaluate_ai_attribution,
 )
+from providers.ai_attribution_store import load_and_evaluate_ai_attribution
 from verify_tools import ai_attribution_report as attr_cli
 
 

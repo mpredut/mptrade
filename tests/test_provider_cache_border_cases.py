@@ -7945,9 +7945,11 @@ def test_wave45_ws_stream_intent_state_execution_reconciliation_and_scalar_hygie
     assert built["thesis"] == ""
     assert built["created_by"] == ""
     assert "max_mode" not in built
-    assert is_mod.save_durable_intents_state("null", [], log=None) is False
+    from providers import intent_state_store as is_store_mod
+
+    assert is_store_mod.save_durable_intents_state("null", [], log=None) is False
     with pytest.raises(ValueError, match="Invalid durable intents_file"):
-        with is_mod.durable_intents_lock("null"):
+        with is_store_mod.durable_intents_lock("null"):
             pass
 
     # 3. providers/intent_execution: topic tag fallback, outcome_ctx "null" reason/category sanitization, and cancel_existing_ai_open_orders "null" symbol guard.

@@ -101,7 +101,7 @@ from instrument_registry import (
 )
 from providers.base import MarketDataProvider
 from providers.intent_state import eval_doc_was_actionable
-from providers.nav_drawdown import record_nav_history_snapshot
+from providers.nav_history_store import record_nav_history_snapshot
 
 load_tradable_instruments = MarketDataProvider.load_tradable_instruments
 from intelligence.sentiment.collectors.macro_telemetry_collector import (

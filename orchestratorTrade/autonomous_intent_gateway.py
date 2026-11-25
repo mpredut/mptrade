@@ -109,8 +109,8 @@ from providers.nav_drawdown import (
     DEFAULT_DAILY_NAV_DD_LIMIT_PCT,
     DEFAULT_DAILY_NAV_DD_MODE,
     evaluate_daily_nav_drawdown_guard,
-    load_and_evaluate_nav_drawdown,
 )
+from providers.nav_history_store import load_and_evaluate_nav_drawdown
 from providers.intent_reconciliation import (
     reconcile_intents_from_execution_audit,
 )
@@ -128,16 +128,19 @@ from providers.intent_state import (
     append_intent_history,
     collect_known_ai_order_ids,
     extract_intent_cancel_order_ids,
-    load_durable_intents_state,
     parse_intent_gateway_config,
     resolve_hold_cancel_target,
+    validate_and_build_intent_dict,
+)
+from providers.intent_state_store import (
+    load_durable_intents_state,
     save_durable_intents_state,
     upsert_durable_intent,
-    validate_and_build_intent_dict,
 )
 from providers.order_id_context import extract_client_order_id, resolve_order_actor
 from providers.order_status_ssot import NON_FILL_ORDER_STATUSES
-from providers.quantity import clamp_notional_to_wallet_balance, resolve_kraken_trade_cache_position
+from providers.portfolio_state_store import resolve_kraken_trade_cache_position
+from providers.quantity import clamp_notional_to_wallet_balance
 from providers.venue_fee_maintenance import read_persisted_venue_fee_spec
 from state_io import read_json_dict
 
