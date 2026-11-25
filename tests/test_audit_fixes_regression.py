@@ -3812,3 +3812,146 @@ def test_cycle5_upgrade_tpo_vp_preserves_va_hold_min_across_zero_vol_tail_gap(tm
     assert m24_disk_only["vp_source"] == "REAL_VOL"
     assert m24_disk_only["va_regime"] == "BELOW_VAL"
     assert m24_disk_only["va_hold_min"] >= 180.0
+
+
+def test_cycle6_interior_zero_vol_va_hold_and_cross_quote_7d_archive_stitching(tmp_path):
+    """Cycle 6 overnight audit fixes:
+    1. upgrade_tpo_vp_from_ohlc recomputes continuous va_hold_min even when a >60m zero-volume OHLC gap
+       is INTERIOR to the breakout (e.g., a small trade arrives 45m ago after a 115m quiet period on SPCXxUSD).
+    2. CompositeSymbolPriceSeriesLoader must NOT break out of the quote-candidate loop early when a newer
+       365-day file on the primary quote (ADAUSDC, 31.18h) is slightly longer than its sparse file (31.14h)
+       yet still <5d — it must continue to compatible quote siblings (ADAUSD) and stitch full 7d history
+       both when 24h is complete and when 24h supplement is needed.
+    """
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        CompositeSymbolPriceSeriesLoader,
+        upgrade_tpo_vp_from_ohlc,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import LAST_7D_SPAN_MS_BY_SYM
+
+    now_s = 1_795_578_000.0
+    now_ms = int(now_s * 1000)
+
+    # --- C6.1: Interior >60m zero-volume OHLC gap (115m quiet gap followed by a fresh trade 45m ago) ---
+    cdir_vp = tmp_path / "cachedb_vp_interior"
+    pdir_vp = cdir_vp / "prices"
+    pdir_vp.mkdir(parents=True)
+    ohlc_pts = []
+    ser_24h = []
+    for k in range(288):
+        t_ms = now_ms - (288 - k) * 300_000
+        age_m = (now_ms - t_ms) / 60_000.0
+        if age_m > 245.0:
+            px = 131.0 + (0.6 if k % 2 == 0 else -0.6)
+            vol = 12.0
+        elif age_m > 165.0:
+            px = 125.25
+            vol = 3.0
+        elif 45.0 <= age_m <= 50.5:
+            # Small print 45-50m ago makes the LAST gap <=60m while leaving a 115m interior zero-vol gap!
+            px = 124.20
+            vol = 1.4
+        else:
+            px = 125.10 if age_m > 50.5 else 124.10
+            vol = 0.0
+        ohlc_pts.append([t_ms, px, vol, px, px, px])
+        ser_24h.append([t_ms, px])
+    ser_24h.append([now_ms - 5_000, 124.10])
+    (pdir_vp / "cache_ohlc_24h_SPCXxUSD.json").write_text(
+        json.dumps({"ts": now_s - 30.0, "symbol": "SPCXxUSD", "points": ohlc_pts}),
+        encoding="utf-8",
+    )
+    m24_int = {"vp_source": "TPO", "low_24h": 124.0, "high_24h": 132.0, "va_regime": "BELOW_VAL", "va_hold_min": 244.0}
+    upgrade_tpo_vp_from_ohlc(
+        "SPCXxUSD",
+        m24_int,
+        124.10,
+        now_s,
+        s24_is_live_clock=True,
+        cache_dir=str(cdir_vp),
+        allow_network=False,
+        series_24h_start_ms=ser_24h[0][0],
+        series_24h=ser_24h,
+    )
+    assert m24_int["vp_source"] == "REAL_VOL"
+    assert m24_int["va_regime"] == "BELOW_VAL"
+    assert m24_int["va_hold_min"] >= 235.0  # Continuous ~245m, NOT truncated at 50m by the 115m interior gap!
+
+    # --- C6.2a: ADAUSDC sparse (31.14h) + ADAUSDC 365 (31.18h, 2m fresher) must STILL stitch ADAUSD (8d) ---
+    cdir_ada = tmp_path / "cachedb_ada_7d"
+    pdir_ada = cdir_ada / "prices"
+    pdir_ada.mkdir(parents=True)
+
+    # Full 24h cache for ADAUSDC -> need_24h_supplement=False
+    p24_rows = [
+        {"s": "ADAUSDC", "i": [now_ms - int((24.0 - i * 0.5) * 3600_000), 0.145 - i * 0.00004]}
+        for i in range(49)
+    ]
+    (pdir_ada / "cache_24_price_ADAUSDC.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in p24_rows) + "\n",
+        encoding="utf-8",
+    )
+    # Sparse ADAUSDC: -31.18h to -0.04h (span 31.14h)
+    sp_usdc = [
+        {"s": "ADAUSDC", "i": [now_ms - int(31.18 * 3600_000) + i * 180_000, 0.1479 - i * 0.000007]}
+        for i in range(623)
+    ]
+    (pdir_ada / "cache_sparse_price_ADAUSDC.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in sp_usdc) + "\n",
+        encoding="utf-8",
+    )
+    # 365 ADAUSDC: -31.18h to -0.001h (span 31.18h -> 2.4m longer than sparse, still <5d!)
+    # Make file >512KB so _read_archive_series_file takes span_seek path just like live PROD
+    dense_usdc = [
+        {"s": "ADAUSDC", "i": [now_ms - int(31.18 * 3600_000) + i * 9_350, 0.1479 - i * 0.0000004]}
+        for i in range(12_000)
+    ]
+    (pdir_ada / "cache_365_price_ADAUSDC.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in dense_usdc) + "\n",
+        encoding="utf-8",
+    )
+    # Older compatible sibling ADAUSD: -192h (8d) to -31.23h (3m before ADAUSDC started)
+    sp_usd = [
+        {"s": "ADAUSD", "i": [now_ms - int(192.0 * 3600_000) + i * 3600_000, 0.155 - i * 0.000043]}
+        for i in range(161)
+    ]
+    sp_usd.append({"s": "ADAUSD", "i": [now_ms - int(31.23 * 3600_000), 0.1480]})
+    (pdir_ada / "cache_sparse_price_ADAUSD.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in sp_usd) + "\n",
+        encoding="utf-8",
+    )
+
+    loader = CompositeSymbolPriceSeriesLoader()
+    s24_a, vals_7d_a = loader.collect(str(cdir_ada), "ADAUSDC", include_7d=True)
+    assert len(s24_a) >= 20
+    assert len(vals_7d_a) >= 100
+    assert LAST_7D_SPAN_MS_BY_SYM.get("ADAUSDC", 0.0) >= 6.5 * 86400.0 * 1000.0
+
+    # --- C6.2b: Same stitch must also succeed when need_24h_supplement=True (partial 8h 24h file) ---
+    cdir_ada_sup = tmp_path / "cachedb_ada_7d_sup"
+    pdir_ada_sup = cdir_ada_sup / "prices"
+    pdir_ada_sup.mkdir(parents=True)
+    p24_short = [
+        {"s": "ADAUSDC", "i": [now_ms - int((8.0 - i * 0.5) * 3600_000), 0.1445 - i * 0.00009]}
+        for i in range(17)
+    ]
+    (pdir_ada_sup / "cache_24_price_ADAUSDC.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in p24_short) + "\n",
+        encoding="utf-8",
+    )
+    (pdir_ada_sup / "cache_sparse_price_ADAUSDC.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in sp_usdc) + "\n",
+        encoding="utf-8",
+    )
+    (pdir_ada_sup / "cache_365_price_ADAUSDC.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in dense_usdc) + "\n",
+        encoding="utf-8",
+    )
+    (pdir_ada_sup / "cache_sparse_price_ADAUSD.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in sp_usd) + "\n",
+        encoding="utf-8",
+    )
+    s24_b, vals_7d_b = loader.collect(str(cdir_ada_sup), "ADAUSDC", include_7d=True)
+    assert len(s24_b) >= 17
+    assert len(vals_7d_b) >= 100
+    assert LAST_7D_SPAN_MS_BY_SYM.get("ADAUSDC", 0.0) >= 6.5 * 86400.0 * 1000.0

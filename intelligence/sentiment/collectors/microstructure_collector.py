@@ -1231,12 +1231,24 @@ def upgrade_tpo_vp_from_ohlc(
                     if cur_px > 0:
                         pts_vp.append([math.trunc(now_ts * 1000), cur_px, 0.0])
                     if (vp_real := compute_volume_profile_metrics(pts_vp)) and vp_real.get("vp_source") == "REAL_VOL":
-                        if (
-                            vp_real.get("va_regime") in ("ABOVE_VAH", "BELOW_VAL")
-                            and len(pts_vp) >= 2
-                            and (pts_vp[-1][0] - pts_vp[-2][0]) > 3_600_000.0
-                        ):
-                            hold_src = series_24h if series_24h else raw_ohlc_disk_pts
+                        val_vp = safe_pos_float(vp_real.get("val_px"), default=0.0) or 0.0
+                        vah_vp = safe_pos_float(vp_real.get("vah_px"), default=0.0) or 0.0
+                        va_reg_vp = vp_real.get("va_regime")
+                        hit_va_gap = False
+                        if va_reg_vp in ("ABOVE_VAH", "BELOW_VAL") and len(pts_vp) >= 2 and val_vp > 0.0 and vah_vp > val_vp:
+                            for idx_g in range(len(pts_vp) - 2, -1, -1):
+                                if (pts_vp[idx_g + 1][0] - pts_vp[idx_g][0]) > 3_600_000.0:
+                                    hit_va_gap = True
+                                    break
+                                px_g = safe_pos_float(pts_vp[idx_g][1], default=0.0) or 0.0
+                                if not ((px_g > vah_vp) if va_reg_vp == "ABOVE_VAH" else (px_g < val_vp)):
+                                    break
+                        if hit_va_gap:
+                            hold_src = (
+                                raw_ohlc_disk_pts
+                                if (partial_local_24h and raw_ohlc_disk_pts)
+                                else (series_24h if series_24h else raw_ohlc_disk_pts)
+                            )
                             if not hold_src and cache_dir and os.path.isdir(cache_dir):
                                 ident_h = resolve_symbol_identity(sym)
                                 for fn_h in price_cache_filename_variants(
@@ -1246,17 +1258,13 @@ def upgrade_tpo_vp_from_ohlc(
                                     if os.path.exists(p_h) and isinstance(d_h := read_json_recovering(p_h), dict) and isinstance(d_h.get("points"), list):
                                         hold_src = d_h["points"]
                                         break
+                            if not hold_src and series_24h:
+                                hold_src = series_24h
                             if hold_src and (hold_ts_px := _extract_sorted_ts_px(hold_src)):
                                 now_ms_h = now_ts * 1000.0
                                 if cur_px > 0.0 and 1000.0 < (now_ms_h - hold_ts_px[-1][0]) <= 3_600_000.0:
                                     hold_ts_px = list(hold_ts_px) + [(now_ms_h, cur_px)]
-                                if (
-                                    cont_hold := compute_va_breakout_hold_min(
-                                        hold_ts_px,
-                                        safe_pos_float(vp_real.get("val_px"), default=0.0) or 0.0,
-                                        safe_pos_float(vp_real.get("vah_px"), default=0.0) or 0.0,
-                                    )
-                                ) is not None:
+                                if (cont_hold := compute_va_breakout_hold_min(hold_ts_px, val_vp, vah_vp)) is not None:
                                     vp_real["va_hold_min"] = cont_hold
                         for vp_clr_k in ("sec_poc_px", "hvn2_px", "lvn_px"):
                             m24.pop(vp_clr_k, None)
@@ -1482,6 +1490,8 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         need_24h_supplement = span_24h_ms < 3600000.0 * 18
         archive_pts: list = []
         sparse_7d_pts: list = []
+        sparse_7d_span_ms = 0.0
+        min_full_7d_ms = 5.0 * 86400.0 * 1000.0
         cands_upper = {str(c).strip().upper() for c in cands if isinstance(c, str) and str(c).strip()}
         cands_upper_tup = tuple(sorted(cands_upper))
         for cand in (cands if (include_7d or need_24h_supplement or is_eq_sym_load) else ()):
@@ -1508,7 +1518,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                 )
                 a0, a1 = parse_ts_px_row(archive_pts[0]), parse_ts_px_row(archive_pts[-1])
                 arch_span_ms = (a1[0] - a0[0]) if (a0 and a1) else 0.0
-                if include_7d and arch_span_ms < 5.0 * 86400.0 * 1000.0 and not sparse_7d_pts:
+                if include_7d and max(arch_span_ms, sparse_7d_span_ms) < min_full_7d_ms:
                     for sp_path in _candidate_cache_paths(
                         cachedb_dir,
                         f_sparse,
@@ -1525,17 +1535,51 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                             max_b=512 * 1024,
                             span_ms=7.05 * 86400.0 * 1000.0,
                         ):
-                            sp0, sp1 = parse_ts_px_row(sp_rows[0]), parse_ts_px_row(sp_rows[-1])
+                            sp_raw1 = parse_ts_px_row(sp_rows[-1])
+                            base_sp = sparse_7d_pts or archive_pts
+                            base_p0 = parse_ts_px_row(base_sp[0]) if base_sp else None
+                            if (
+                                base_sp
+                                and base_p0
+                                and a1 is not None
+                                and sp_raw1 is not None
+                                and sp_raw1[0] < a1[0] - 3_600_000.0
+                            ):
+                                sp_older = [
+                                    r
+                                    for r in sp_rows
+                                    if (pt_o := parse_ts_px_row(r)) is not None and pt_o[0] <= base_p0[0]
+                                ]
+                                cand_sp = (
+                                    prepend_older_non_diverged_points(
+                                        base_sp, sp_older, threshold=session_policy.price_divergence_threshold
+                                    )
+                                    if sp_older
+                                    else []
+                                )
+                            else:
+                                cand_sp = sp_rows
+                            if not cand_sp:
+                                continue
+                            sp0, sp1 = parse_ts_px_row(cand_sp[0]), parse_ts_px_row(cand_sp[-1])
+                            cand_sp_span = (sp1[0] - sp0[0]) if (sp0 and sp1) else 0.0
+                            extends_earlier = a0 is None or (sp0 is not None and sp0[0] < a0[0] - 600_000.0)
                             if (
                                 sp0
                                 and sp1
-                                and (sp1[0] - sp0[0]) > arch_span_ms
+                                and cand_sp_span > max(arch_span_ms, sparse_7d_span_ms)
+                                and (extends_earlier or cand_sp_span >= min_full_7d_ms)
                                 and (a0 is None or sp1[0] >= a0[0] - 86400.0 * 1000.0)
                                 and (a1 is None or not _prices_diverged(sp1[1], a1[1]))
                             ):
-                                sparse_7d_pts = sp_rows
-                                break
-                if arch_span_ms >= 5.0 * 86400.0 * 1000.0 or sparse_7d_pts:
+                                sparse_7d_pts = cand_sp
+                                sparse_7d_span_ms = cand_sp_span
+                                if sparse_7d_span_ms >= min_full_7d_ms:
+                                    break
+                if arch_span_ms >= min_full_7d_ms and arch_span_ms > sparse_7d_span_ms:
+                    sparse_7d_pts = []
+                    sparse_7d_span_ms = 0.0
+                if max(arch_span_ms, sparse_7d_span_ms) >= min_full_7d_ms:
                     break
 
         watcher_cutoff_24h: Optional[float] = None
