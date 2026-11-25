@@ -120,15 +120,19 @@ from providers.intent_state import (
     intent_venue_client_order_ids,
     load_durable_intents_from_cachedb,
 )
+from providers.portfolio_state_store import (
+    load_venue_balance_caches,
+    resolve_portfolio_positions_state_path,
+    resolve_venue_balance_cache_path,
+    upsert_portfolio_positions_snapshot,
+)
 from providers.portfolio_valuation import (
     BalanceObservation,
     BalanceSnapshotRecord,
     build_cached_balance_observations,
+    extract_balance_observations_from_caches,
     extract_position_held_qty,
     merge_balance_observation,
-    resolve_portfolio_positions_state_path,
-    resolve_venue_balance_cache_path,
-    upsert_portfolio_positions_snapshot,
 )
 from state_stores.venue_balances_state import (
     INTERNAL_BALANCE_SCRATCH_KEYS,
@@ -151,6 +155,8 @@ save_json_state = _default_save_json_state
 logger = logging.getLogger("intelligence.sentiment.portfolio_collector")
 
 _resolve_read_json_cached = resolve_read_json_cached
+FRESH_BALANCE_CACHE_MAX_AGE_SEC: float = 90.0
+FRESH_OPEN_ORDERS_CACHE_MAX_AGE_SEC: float = 30.0
 
 
 def _resolve_order_cache_files() -> Tuple[Tuple[str, str], ...]:
@@ -1438,6 +1444,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         *,
         now_ts: Optional[float] = None,
         rj_bals: Any,
+        skip_balance_cache_venues: Optional[set[str]] = None,
     ) -> None:
         try:
             eff_now = resolve_now_ts(now_ts)
@@ -1509,11 +1516,14 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                                 "ts": eff_now,
                             }
 
+            skip_v_set = skip_balance_cache_venues or set()
             if per_venue_assets or per_venue_bd:
                 ensure_cacheprice_classes_bound()
                 bal_cls = _mc.CacheBalanceManager
                 if bal_cls is not None:
                     for v_n in sorted(set(per_venue_assets) | set(per_venue_bd)):
+                        if v_n in skip_v_set:
+                            continue
                         if (bal_path := resolve_venue_balance_cache_path(cache_dir, v_n)) is None:
                             continue
                         try:
@@ -1711,9 +1721,17 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         live_open_ok_symbols: set[Tuple[str, str]],
         failed_open_symbols: set[Tuple[str, str]],
         explicit_now_ts: bool = False,
+        fresh_bal_cache_venues: Optional[set[str]] = None,
+        fresh_bal_cache_obs: Optional[Dict[tuple[str, str], BalanceObservation]] = None,
+        fresh_bal_cache_bd: Optional[Dict[tuple[str, str], Dict[str, float]]] = None,
+        live_balance_venues: Optional[set[str]] = None,
     ) -> None:
         cached_obs_by_va = _build_cached_balance_observations(cached_bals)
         balance_obs_memo: Dict[tuple[str, str], Optional[BalanceObservation]] = {}
+        l3_fresh_venues = fresh_bal_cache_venues or set()
+        l3_fresh_obs = fresh_bal_cache_obs or {}
+        l3_fresh_bd = fresh_bal_cache_bd or {}
+        live_bal_v = live_balance_venues if isinstance(live_balance_venues, set) else set()
 
         def _query_free_bal(inst_obj: Any, asset: str) -> Optional[BalanceObservation]:
             if not asset:
@@ -1736,6 +1754,16 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 balance_obs_memo[key] = obs_mem
                 return obs_mem
             prov = getattr(inst_obj, "_provider", None) if allow_network else None
+            # Cache-first on Layer 3 cache_balance_<venue>.json for real providers when fresh (0 ms, zero REST).
+            if (
+                allow_network
+                and isinstance(prov, MarketDataProvider)
+                and v_name in l3_fresh_venues
+                and (c_l3_obs := l3_fresh_obs.get(key)) is not None
+            ):
+                balance_memo[key] = c_l3_obs.free
+                balance_obs_memo[key] = c_l3_obs
+                return c_l3_obs
             prov_dict = getattr(prov, "__dict__", {}) if prov is not None else {}
             fl_fn = getattr(prov, "free_and_locked_balance", None) if prov is not None else None
             free_fn = getattr(prov, "free_balance", None) if prov is not None else None
@@ -1766,6 +1794,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             obs_out: Optional[BalanceObservation] = None
             if val_f is not None:
                 updated_bals[bkey] = round(val_f, 8)
+                live_bal_v.add(v_name)
                 bal_ts = round(now_ts_oo if explicit_now_ts else resolve_now_ts(None), 3)
                 obs_out = BalanceObservation(free=val_f, ts=bal_ts, priority=2, reflected_locked=live_locked)
             elif (cached_obs := cached_obs_by_va.get(key)) is not None:
@@ -1882,12 +1911,26 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 sym_entry["price"] = px
             quote_breakdown: Optional[Dict[str, float]] = None
             bd_key = f"breakdown:{v_norm}:{quote.upper()}"
-            if allow_network and quote.upper() == "USD" and callable(bd_fn := getattr(inst._provider, "usd_cash_breakdown", None)):
+            prov_inst = getattr(inst, "_provider", None)
+            if (
+                allow_network
+                and quote.upper() == "USD"
+                and isinstance(prov_inst, MarketDataProvider)
+                and v_norm in l3_fresh_venues
+                and (v_norm, "USD") in l3_fresh_bd
+            ):
+                quote_breakdown = {
+                    str(k): round(vf, 2)
+                    for k, v in l3_fresh_bd[(v_norm, "USD")].items()
+                    if (vf := safe_pos_float(v, default=None)) is not None
+                } or None
+            elif allow_network and quote.upper() == "USD" and callable(bd_fn := getattr(prov_inst, "usd_cash_breakdown", None)):
                 try:
                     if isinstance(raw_bd := bd_fn(), dict) and raw_bd:
                         quote_breakdown = {str(k): round(vf, 2) for k, v in raw_bd.items() if (vf := safe_pos_float(v, default=None)) is not None} or None
                         if quote_breakdown:
                             updated_bals[bd_key] = quote_breakdown
+                            live_bal_v.add(v_norm)
                 except Exception:
                     quote_breakdown = None
             if quote_breakdown is None and isinstance(cached_bd := cached_bals.get(bd_key), dict) and cached_bd:
@@ -1977,7 +2020,34 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
 
             vs_open_key = (v_norm, sym_u)
             cached_oo_list = cached_open_by_vs.get(vs_open_key)
-            if allow_network and callable(open_fn := getattr(inst, "open_orders", None)):
+            sym_oo_ver_ts = safe_pos_float(cached_open_sym_verified_ts.get(vs_open_key), default=0.0) or 0.0
+            ven_oo_ver_ts = safe_pos_float(cached_open_verified_ts.get(v_norm), default=0.0) or 0.0
+            eff_oo_ver_ts = max(sym_oo_ver_ts, ven_oo_ver_ts)
+            # Cache-first on Layer 3 cache_order_open_<venue>.json for real providers when fresh (0 ms, zero REST).
+            fresh_l3_open = (
+                allow_network
+                and isinstance(prov_inst, MarketDataProvider)
+                and eff_oo_ver_ts > 0.0
+                and 0.0 <= (now_ts_oo - eff_oo_ver_ts) <= FRESH_OPEN_ORDERS_CACHE_MAX_AGE_SEC
+                and (vs_open_key in cached_open_by_vs or ven_oo_ver_ts > 0.0 or vs_open_key in cached_open_sym_verified_ts)
+            )
+            if fresh_l3_open:
+                if cached_oo_list:
+                    open_orders_list.extend(
+                        _normalize_open_orders_list(
+                            cached_oo_list,
+                            venue,
+                            sym,
+                            known_ai_order_ids,
+                            audit_origin_map=audit_origin_map,
+                            now_ts=now_ts_oo,
+                            order_ts_map=order_ts_map,
+                        )
+                    )
+                live_open_ok_symbols.add(vs_open_key)
+                if ven_oo_ver_ts > 0.0 and 0.0 <= (now_ts_oo - ven_oo_ver_ts) <= FRESH_OPEN_ORDERS_CACHE_MAX_AGE_SEC:
+                    live_open_ok_venues.add(v_norm)
+            elif allow_network and callable(open_fn := getattr(inst, "open_orders", None)):
                 sym_open_ok = False
                 try:
                     if isinstance(raw_open := open_fn(), list):
@@ -2072,6 +2142,33 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         live_open_ok_symbols: set[Tuple[str, str]] = set()
         failed_open_symbols: set[Tuple[str, str]] = set()
         now_ts_oo = resolve_now_ts(now_ts)
+        raw_bal_caches = load_venue_balance_caches(cache_dir, read_json_fn=_rj_bals) if cache_dir else {}
+        fresh_bal_cache_venues: set[str] = set()
+        fresh_bal_cache_obs: Dict[tuple[str, str], BalanceObservation] = {}
+        fresh_bal_cache_bd: Dict[tuple[str, str], Dict[str, float]] = {}
+        if raw_bal_caches:
+            _all_c_obs, _all_c_bd = extract_balance_observations_from_caches(raw_bal_caches)
+            for _raw_v, _doc in raw_bal_caches.items():
+                if not isinstance(_doc, dict):
+                    continue
+                _v_n = normalize_venue_name(_doc.get("venue") or _raw_v)
+                _v_ts = normalize_epoch_sec(_doc.get("verified_ts"), default=None)
+                if (
+                    _v_n
+                    and _v_ts is not None
+                    and 0.0 <= (now_ts_oo - _v_ts) <= FRESH_BALANCE_CACHE_MAX_AGE_SEC
+                    and isinstance(_doc.get("items"), dict)
+                    and _doc.get("items")
+                ):
+                    fresh_bal_cache_venues.add(_v_n)
+            if fresh_bal_cache_venues:
+                fresh_bal_cache_obs = {
+                    k: obs for k, obs in _all_c_obs.items() if k[0] in fresh_bal_cache_venues
+                }
+                fresh_bal_cache_bd = {
+                    k: bd for k, bd in _all_c_bd.items() if k[0] in fresh_bal_cache_venues
+                }
+        live_balance_venues: set[str] = set()
         order_ts_map = _load_open_order_timestamps(cache_dir, cached_bals)
         audit_origin_map = _load_recent_audit_origins(cache_dir) if cache_dir else {}
         _, known_ai_order_ids = _resolve_ai_intents_and_known_order_ids(
@@ -2110,6 +2207,10 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 live_open_ok_symbols=live_open_ok_symbols,
                 failed_open_symbols=failed_open_symbols,
                 explicit_now_ts=now_ts is not None,
+                fresh_bal_cache_venues=fresh_bal_cache_venues,
+                fresh_bal_cache_obs=fresh_bal_cache_obs,
+                fresh_bal_cache_bd=fresh_bal_cache_bd,
+                live_balance_venues=live_balance_venues,
             )
         elif (allow_empty_inst_recovery or not allow_network) and (
             cached_bals or cached_open_by_vs or cached_open_sym_verified_ts
@@ -2201,7 +2302,13 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             or (bcache_path and os.path.exists(bcache_path))
         ):
             self._persist_venue_balances_locked(
-                cache_dir, cached_bals, updated_bals, failed_open_venues, now_ts=now_ts_oo, rj_bals=_rj_bals
+                cache_dir,
+                cached_bals,
+                updated_bals,
+                failed_open_venues,
+                now_ts=now_ts_oo,
+                rj_bals=_rj_bals,
+                skip_balance_cache_venues=fresh_bal_cache_venues - live_balance_venues,
             )
 
         return tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym

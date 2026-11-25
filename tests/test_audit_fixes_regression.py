@@ -4468,7 +4468,7 @@ def test_p1_p2_audit_balance_obs_ledger_quote_clock_fixes(tmp_path):
     assert vcash_c1["binance:USDC"]["free"] == pytest.approx(75.0)
     assert vcash_c1["binance:USDC"]["locked_quote_usd"] == pytest.approx(25.0)
     # Persisted split snapshots MUST keep raw 100.0 (NOT synthetic 75.0) and preserve bal_ts!
-    from providers.portfolio_valuation import load_venue_balances_state_dict as _load_vb_split
+    from providers.portfolio_state_store import load_venue_balances_state_dict as _load_vb_split
 
     bal_bin1 = json.loads((cdir1 / "orders" / "cache_balance_binance.json").read_text(encoding="utf-8"))
     assert bal_bin1["items"]["USDC"]["free"] == pytest.approx(100.0)
@@ -5917,7 +5917,7 @@ def test_audit_cycle8_to_11_execution_guards_status_ssot_spot_tranche_and_ag_pre
     pos_state_nav = json.loads((cdir_nav / "state" / "portfolio_positions_state.json").read_text(encoding="utf-8"))
     assert "pos:binance:ARBUSDC" in pos_state_nav
     assert all(k.startswith("pos:") for k in pos_state_nav)
-    from providers.portfolio_valuation import load_venue_balance_caches, load_venue_balances_state_dict
+    from providers.portfolio_state_store import load_venue_balance_caches, load_venue_balances_state_dict
 
     bal_caches_nav = load_venue_balance_caches(str(cdir_nav))
     saved_nav = load_venue_balances_state_dict(str(cdir_nav))
@@ -6548,11 +6548,11 @@ def test_structural_ssot_primitives_fmt_signed_unified_book_and_balance_view(tmp
         assert k_int not in pos_list[0]
         assert k_int not in cash_map["binance:USDC"]
 
-    # 4. providers.portfolio_valuation.upsert_venue_balances_snapshot strips internal scratch keys, strips legacy open_orders keys,
+    # 4. providers.portfolio_state_store.upsert_venue_balances_snapshot strips internal scratch keys, strips legacy open_orders keys,
     #    and protects balance ts on price-only updates
     from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
     from providers.nav_drawdown import format_nav_drawdown_summary_line
-    from providers.portfolio_valuation import upsert_venue_balances_snapshot
+    from providers.portfolio_state_store import upsert_venue_balances_snapshot
 
     vb_sw_path = tmp_path / "state" / "venue_balances_state.json"
     t_bal = now_s - 600.0
@@ -7206,13 +7206,13 @@ def test_free_balance_ssot_refactor_atomic_locked_xstock_reconcile_and_t212_repr
     from providers.binance_provider import BinanceProvider
     from providers.hyperliquid_provider import HyperliquidProvider
     from providers.kraken_provider import KrakenProvider
+    from providers.portfolio_state_store import upsert_venue_balances_snapshot
     from providers.portfolio_valuation import (
-        INTERNAL_BALANCE_SCRATCH_KEYS,
         build_cached_balance_observations,
         extract_position_held_qty,
         reprice_position_balance_fields,
-        upsert_venue_balances_snapshot,
     )
+    from state_stores.venue_balances_state import INTERNAL_BALANCE_SCRATCH_KEYS
     from providers.quantity import resolve_assets
     from providers.t212_provider import T212Provider
 
@@ -7474,11 +7474,11 @@ def test_post_7fc3348e_edge_case_hardening(tmp_path):
     from intelligence.sentiment.collectors.portfolio_collector import derive_runtime_portfolio_view
     from providers.order_ledger import OrderLedgerState, _classify_venue_status_transition, classify_fill_evidence_state
     from providers.order_status_ssot import classify_order_evidence_state
-    from providers.portfolio_valuation import (
-        BalanceSnapshotRecord,
+    from providers.portfolio_state_store import (
         load_venue_balances_state_dict,
         upsert_venue_balances_snapshot,
     )
+    from providers.portfolio_valuation import BalanceSnapshotRecord
 
     # 1a. OPEN working status with partial fill -> PARTIAL (never regresses PARTIAL -> OPEN on Kraken/HL)
     assert (
@@ -7629,13 +7629,13 @@ def test_layer3_cache_balance_manager_eliminates_inversion_and_splits_positions_
     from providers.hyperliquid_provider import HyperliquidProvider
     from providers.kraken_provider import KrakenProvider
     from providers.nav_drawdown import record_nav_history_snapshot
-    from providers.portfolio_valuation import (
-        INTERNAL_BALANCE_SCRATCH_KEYS,
+    from providers.portfolio_state_store import (
         load_portfolio_positions_state_dict,
         load_venue_balance_caches,
         load_venue_balances_state_dict,
         upsert_portfolio_positions_snapshot,
     )
+    from state_stores.venue_balances_state import INTERNAL_BALANCE_SCRATCH_KEYS
     from providers.t212_provider import T212Provider
 
     now_s = 1_795_800_000.0
@@ -7936,11 +7936,11 @@ def test_kraken_xstock_balance_cache_canonical_key_and_nav_dedup(tmp_path):
     from cacheaccount import CacheAssetValueManager, CacheBalanceManager, _VenueBalancesBridge
     from cachepaths import CACHE_KRAKEN_BALANCE_FILENAME
     from providers.kraken_provider import KrakenProvider
-    from providers.portfolio_valuation import (
-        compute_venue_nav_breakdown,
+    from providers.portfolio_state_store import (
         load_venue_balance_caches,
         load_venue_balances_state_dict,
     )
+    from providers.portfolio_valuation import compute_venue_nav_breakdown
 
     now_s = 1_795_900_000.0
 
@@ -8035,6 +8035,164 @@ def test_kraken_xstock_balance_cache_canonical_key_and_nav_dedup(tmp_path):
     assert len(av_items) == 1
     assert av_items[0]["venues_usd"] == {"binance": 9000.0, "kraken": 3100.0}
     assert av_items[0]["portfolio_total_usd"] == pytest.approx(12100.0)
+
+
+def test_pure_portfolio_valuation_split_and_cache_first_portfolio_collector(tmp_path):
+    """Verify pure portfolio_valuation split + cache-first TradablePositionsAndOrdersCollector:
+    1. providers/portfolio_valuation.py has zero disk/state I/O imports, enforced by audit_layer_dag_ast.
+    2. With fresh Layer 3 cache_balance_<venue>.json (<=90s) and cache_order_open_<venue>.json (<=30s)
+       and a real MarketDataProvider subclass, TradablePositionsAndOrdersCollector makes ZERO REST calls
+       and ZERO redundant rewrites to Layer 3 caches while still persisting Layer 5 portfolio_positions_state.json.
+    3. When Layer 3 caches turn stale (>90s / >30s), live REST fallback runs and refreshes Layer 3 caches.
+    """
+    from pathlib import Path
+    from cacheaccount import CacheBalanceManager, CacheOrderOpenManager
+    from cachepaths import (
+        CACHE_BINANCE_BALANCE_FILENAME,
+        CACHE_BINANCE_ORDER_OPEN_FILENAME,
+        PORTFOLIO_POSITIONS_STATE_FILENAME,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import TradablePositionsAndOrdersCollector
+    from providers.base import MarketDataProvider
+    from verify_tools.ssot_ast_audit import audit_layer_dag_ast
+
+    # 1. Pure valuation AST gate passes on repo and blocks disk/state I/O leaks
+    repo_root = Path(__file__).resolve().parents[1]
+    assert audit_layer_dag_ast(repo_root, rel_paths=["providers/portfolio_valuation.py"]) == []
+    synth_pv = tmp_path / "synth_pv"
+    (synth_pv / "providers").mkdir(parents=True)
+    (synth_pv / "providers" / "portfolio_valuation.py").write_text(
+        "import os\nfrom state_io import read_json_dict\nfrom state_stores.venue_balances_state import VenueBalancesStateStore\n",
+        encoding="utf-8",
+    )
+    pv_viols = audit_layer_dag_ast(synth_pv, rel_paths=["providers/portfolio_valuation.py"])
+    assert any("pure valuation module must not import disk/state I/O modules" in v for v in pv_viols)
+
+    # 2. Seed fresh Layer 3 balance + open-order caches for Binance
+    cdb = tmp_path / "cachedb"
+    (cdb / "orders").mkdir(parents=True)
+    (cdb / "state").mkdir(parents=True)
+    now_s = 1_795_900_000.0
+    bal_path = cdb / "orders" / CACHE_BINANCE_BALANCE_FILENAME
+    open_path = cdb / "orders" / CACHE_BINANCE_ORDER_OPEN_FILENAME
+    pos_path = cdb / "state" / PORTFOLIO_POSITIONS_STATE_FILENAME
+
+    CacheBalanceManager.replace_venue_balances_snapshot(
+        str(bal_path),
+        {"BTC": (0.25, 0.05), "USDC": (1000.0, 200.0)},
+        venue="binance",
+        now_s=now_s - 10.0,
+        verified_ts=now_s - 10.0,
+    )
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(open_path),
+        {
+            "BTCUSDC": [
+                {
+                    "orderId": "ord-l3-1",
+                    "symbol": "BTCUSDC",
+                    "side": "BUY",
+                    "price": 50000.0,
+                    "origQty": 0.004,
+                    "executedQty": 0.0,
+                    "status": "NEW",
+                    "time": int((now_s - 60.0) * 1000),
+                }
+            ]
+        },
+        now_ms=int((now_s - 10.0) * 1000),
+        verified_ts=now_s - 10.0,
+    )
+    bal_before = bal_path.read_text(encoding="utf-8")
+    open_before = open_path.read_text(encoding="utf-8")
+
+    rest_calls = {"balance": 0, "open_orders": 0}
+
+    class _CountingProvider(MarketDataProvider):
+        name = "binance"
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return True
+
+        def get_current_price(self, symbol: str) -> float:
+            return 60000.0
+
+        def get_klines(self, symbol: str, interval: str, limit: int = 100):
+            return []
+
+        def free_balance(self, asset: str) -> float:
+            rest_calls["balance"] += 1
+            return 0.5 if asset.upper() == "BTC" else 1500.0
+
+        def free_and_locked_balance(self, asset: str) -> tuple[float, float]:
+            rest_calls["balance"] += 1
+            return (0.5, 0.0) if asset.upper() == "BTC" else (1500.0, 0.0)
+
+        def open_orders(self, symbol: str) -> list[dict]:
+            rest_calls["open_orders"] += 1
+            return []
+
+    real_prov = _CountingProvider()
+    fake_inst = SimpleNamespace(
+        symbol="BTCUSDC",
+        base="BTC",
+        quote="USDC",
+        provider_name="binance",
+        _provider=real_prov,
+        params={},
+        open_orders=lambda: real_prov.open_orders("BTCUSDC"),
+    )
+
+    verified_v: set[str] = set()
+    verified_s: set[tuple[str, str]] = set()
+    tpos, oorders, vcash, _ = TradablePositionsAndOrdersCollector(start_sync=False).collect(
+        str(cdb),
+        inst_map={"BIN_BTC": fake_inst},
+        prices_and_trends={"BTCUSDC": {"price": 60000.0, "trend": 0, "growth_coefficient": 0.0}},
+        verified_open_venues=verified_v,
+        verified_open_symbols=verified_s,
+        allow_network=True,
+        persist=True,
+        force_persist=True,
+        now_ts=now_s,
+    )
+    # Zero REST calls AND zero redundant Layer 3 cache rewrites
+    assert rest_calls == {"balance": 0, "open_orders": 0}
+    assert bal_path.read_text(encoding="utf-8") == bal_before
+    assert open_path.read_text(encoding="utf-8") == open_before
+    assert verified_v == {"binance"}
+    assert ("binance", "BTCUSDC") in verified_s
+    assert len(oorders) == 1 and oorders[0]["order_id"] == "ord-l3-1"
+    assert len(tpos) == 1
+    assert tpos[0]["free_base"] == pytest.approx(0.25)
+    assert tpos[0]["free_quote"] == pytest.approx(1000.0)
+    assert vcash["binance:USDC"]["free"] == pytest.approx(1000.0)
+    assert vcash["binance:USDC"]["locked_quote_usd"] == pytest.approx(200.0)
+    # Layer 5 derived position snapshot WAS persisted (pos:* only)
+    assert pos_path.is_file()
+    pos_saved = json.loads(pos_path.read_text(encoding="utf-8"))
+    assert list(pos_saved.keys()) == ["pos:binance:BTCUSDC"]
+
+    # 3. Advance past freshness limits (>90s balance, >30s open orders) -> live REST fallback + Layer 3 refresh
+    tpos2, oorders2, vcash2, _ = TradablePositionsAndOrdersCollector(start_sync=False).collect(
+        str(cdb),
+        inst_map={"BIN_BTC": fake_inst},
+        prices_and_trends={"BTCUSDC": {"price": 60000.0, "trend": 0, "growth_coefficient": 0.0}},
+        allow_network=True,
+        persist=True,
+        force_persist=True,
+        now_ts=now_s + 120.0,
+    )
+    assert rest_calls["balance"] == 2
+    assert rest_calls["open_orders"] == 1
+    assert oorders2 == []
+    assert tpos2[0]["free_base"] == pytest.approx(0.5)
+    assert vcash2["binance:USDC"]["free"] == pytest.approx(1500.0)
+    bal_after = json.loads(bal_path.read_text(encoding="utf-8"))
+    assert bal_after["items"]["BTC"]["free"] == pytest.approx(0.5)
+    assert bal_after["items"]["USDC"]["free"] == pytest.approx(1500.0)
+    open_after = json.loads(open_path.read_text(encoding="utf-8"))
+    assert open_after["items"]["BTCUSDC"] == []
 
 
 

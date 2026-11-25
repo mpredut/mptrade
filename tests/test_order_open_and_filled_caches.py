@@ -387,7 +387,7 @@ def test_portfolio_collector_strips_open_orders_from_venue_balances_and_persists
     assert open_orders[0]["order_id"] == "900123"
 
     # Split persisted files & unified reader must NOT contain any open_orders:* or open_orders_verified_ts:* keys
-    from providers.portfolio_valuation import load_venue_balances_state_dict
+    from providers.portfolio_state_store import load_venue_balances_state_dict
 
     bal_cache_path = orders_dir / "cache_balance_binance.json"
     pos_state_path = state_dir / "portfolio_positions_state.json"

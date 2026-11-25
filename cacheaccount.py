@@ -118,11 +118,11 @@ from providers.order_status_ssot import (
     is_open_working_status,
     merge_monotonic_fill_row_status,
 )
-from providers.portfolio_valuation import (
-    compute_venue_nav_breakdown,
+from providers.portfolio_state_store import (
     load_venue_balance_caches,
     load_venue_balances_state_dict,
 )
+from providers.portfolio_valuation import compute_venue_nav_breakdown
 from state_io import (
     atomic_text_writer,
     atomic_write_json,

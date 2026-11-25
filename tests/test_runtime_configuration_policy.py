@@ -784,9 +784,9 @@ def test_secondary_writers_and_t212_ssot_market_data(tmp_path, monkeypatch):
     assert saved_t["BTCUSDC"]["n"] > 0 and saved_t["ETHUSDC"]["n"] > 0
 
     # 2. refresh_stale_t212_cached_positions refreshes T212 prices in-memory only (never mutates venue_balances_state.json
-    #    on disk), and providers.portfolio_valuation.upsert_venue_balances_snapshot merges touched keys without clobbering
+    #    on disk), and providers.portfolio_state_store.upsert_venue_balances_snapshot merges touched keys without clobbering
     #    concurrent crypto balances on disk.
-    from providers.portfolio_valuation import upsert_venue_balances_snapshot
+    from providers.portfolio_state_store import upsert_venue_balances_snapshot
 
     bals_file = tmp_path / "venue_balances_state.json"
     now_s = time.time()
@@ -1094,7 +1094,7 @@ def test_pre_commit_gate_runs_all_deterministic_checks_and_blocks_violations(tmp
     assert gate.cmd_pre_commit(SimpleNamespace(files=bad_files, root=str(tmp_path), min_score=2)) == 1
     # Calling the typed producer API from a non-producer module is also blocked by venue_balances_single_writer_ast.
     (tmp_path / "rogue_producer.py").write_text(
-        "from providers.portfolio_valuation import upsert_portfolio_positions_snapshot, upsert_venue_balances_snapshot\n"
+        "from providers.portfolio_state_store import upsert_portfolio_positions_snapshot, upsert_venue_balances_snapshot\n"
         "def write(p: str):\n"
         "    upsert_portfolio_positions_snapshot(p, {'pos:binance:BTCUSDC': {'free_base': 1.0}})\n"
         "    return upsert_venue_balances_snapshot(p, {'cash:binance:USDC': {'free': 1.0}})\n",

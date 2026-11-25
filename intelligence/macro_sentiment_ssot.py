@@ -189,7 +189,7 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 from pricewindow import filter_isolated_price_points
-from providers.portfolio_valuation import (
+from providers.portfolio_state_store import (
     VENUE_BALANCE_CACHE_FILENAMES,
     load_venue_balances_state_dict,
     resolve_portfolio_positions_state_path,
@@ -1260,7 +1260,7 @@ def read_first_cached_dict(
 def load_venue_balances_state(
     cache_dir: Optional[str], read_json_fn: Any = None, *, require_exists: bool = True
 ) -> Tuple[Optional[str], Dict[str, Any], float]:
-    """Resolve and load unified portfolio balances/positions via ``providers.portfolio_valuation`` SSOT."""
+    """Resolve and load unified portfolio balances/positions via ``providers.portfolio_state_store`` SSOT."""
     if not cache_dir:
         return None, {}, 0.0
     pos_path = resolve_portfolio_positions_state_path(cache_dir)

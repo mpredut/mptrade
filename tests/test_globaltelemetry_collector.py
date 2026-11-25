@@ -1510,7 +1510,7 @@ def test_global_telemetry_collector_publishes_venue_balances_and_cycle_deltas(tm
         pos_doc = json.load(fh)
     assert pos_doc["pos:binance:BTCUSDC"]["free_base"] == pytest.approx(0.25)
     assert all(k.startswith("pos:") for k in pos_doc)
-    from providers.portfolio_valuation import load_venue_balances_state_dict as _load_vb_gtc
+    from providers.portfolio_state_store import load_venue_balances_state_dict as _load_vb_gtc
 
     bals = _load_vb_gtc(str(cache_dir))
     assert bals["pos:binance:BTCUSDC"]["free_base"] == pytest.approx(0.25)

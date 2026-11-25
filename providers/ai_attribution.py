@@ -34,7 +34,7 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 from state_io import read_json_dict, read_jsonl_dicts, read_text_lines
-from .portfolio_valuation import load_venue_balance_caches, load_venue_balances_state_dict
+from .portfolio_state_store import load_venue_balance_caches, load_venue_balances_state_dict
 from .ai_survival_guard import (
     _collect_canceled_order_ids,
     _extract_intent_exec_price,

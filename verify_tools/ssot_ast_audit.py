@@ -222,6 +222,18 @@ PROVIDER_NON_FACADE_MODULES = frozenset({
     "providers/intent_execution.py",
     "providers/intent_reconciliation.py",
     "providers/intent_telemetry.py",
+    "providers/portfolio_state_store.py",
+    "providers/portfolio_valuation.py",
+})
+PURE_VALUATION_MODULES = frozenset({"providers/portfolio_valuation.py"})
+FORBIDDEN_PURE_VALUATION_IMPORTS = frozenset({
+    "os",
+    "pathlib",
+    "io",
+    "shutil",
+    "tempfile",
+    "state_io",
+    "state_stores",
 })
 FORBIDDEN_PROVIDER_UPWARD = frozenset({
     "cacheInterface",
@@ -359,7 +371,7 @@ VENUE_BALANCE_CACHE_OWNER_FN = "replace_venue_balances_snapshot"
 VENUE_BALANCES_STATE_PRODUCER_FILES = frozenset({
     "state_stores/venue_balances_state.py",
     "state_stores/portfolio_positions_state.py",
-    "providers/portfolio_valuation.py",
+    "providers/portfolio_state_store.py",
     "intelligence/sentiment/collectors/portfolio_collector.py",
 })
 _VENUE_BALANCES_WRITE_PATH_RE = re.compile(
@@ -377,10 +389,10 @@ _VENUE_BALANCES_WRITER_FNS = frozenset({
 })
 STATE_FILE_OWNER_MAP: dict[str, frozenset[str]] = {
     **{spec.const_name: frozenset({spec.owner_module}) for spec in CRITICAL_STATE_SPECS},
-    "CACHE_BINANCE_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_valuation.py"}),
-    "CACHE_KRAKEN_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_valuation.py"}),
-    "CACHE_HYPERLIQUID_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_valuation.py"}),
-    "CACHE_T212_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_valuation.py"}),
+    "CACHE_BINANCE_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_state_store.py"}),
+    "CACHE_KRAKEN_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_state_store.py"}),
+    "CACHE_HYPERLIQUID_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_state_store.py"}),
+    "CACHE_T212_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_state_store.py"}),
 }
 STATE_FILE_LITERAL_TO_CONST: dict[str, str] = {
     **{spec.filename: spec.const_name for spec in CRITICAL_STATE_SPECS},
@@ -1080,6 +1092,12 @@ def audit_layer_dag_ast(
         if rel in PROVIDER_NON_FACADE_MODULES:
             if leak := sorted(roots & FORBIDDEN_PROVIDER_UPWARD):
                 violations.append(f"{rel}: provider upward DAG leak {leak}")
+        if rel in PURE_VALUATION_MODULES:
+            if io_leak := sorted(roots & FORBIDDEN_PURE_VALUATION_IMPORTS):
+                violations.append(
+                    f"{rel}: pure valuation module must not import disk/state I/O modules {io_leak} "
+                    "(delegate persistence to providers/portfolio_state_store.py or state_stores/)"
+                )
         if rel == "providers/market_api.py":
             if leak := sorted(roots & (FORBIDDEN_PROVIDER_UPWARD - {"market_regime"})):
                 violations.append(f"{rel}: MarketApi upward DAG leak {leak}")
@@ -1976,7 +1994,7 @@ def audit_venue_balances_single_writer_ast(
     *,
     _parsed_cache: ParsedCache | None = None,
 ) -> list[str]:
-    """Enforce single writer & producer (portfolio_collector -> providers.portfolio_valuation.upsert_venue_balances_snapshot)."""
+    """Enforce single writer & producer (portfolio_collector -> providers.portfolio_state_store / state_stores)."""
     root = Path(root)
     target_rels = [r for r in _normalize_target_rels(root, rel_paths) if _is_prod_python_rel(r)]
     violations: list[str] = []
