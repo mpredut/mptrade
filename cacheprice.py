@@ -553,16 +553,17 @@ class Cache24PriceManager(CachePriceManagerBase):
     def compact_jsonl(self):
         if not self.append_persist:
             return False
-        if self._filter_fetchtimes_to_symbols:
-            self._filter_maps_to_configured_symbols_locked()
-        for s_trim in list(self.symbols):
-            self._trim_old_data(s_trim, min_batch=1)
-        ok = super().compact_jsonl()
-        if ok:
-            self._last_24h_compact_mono = _monotonic_time()
-            self._jsonl_trimmed_disk_rows = 0
-            self._jsonl_needs_compact = False
-        return ok
+        with self.lock:
+            if self._filter_fetchtimes_to_symbols:
+                self._filter_maps_to_configured_symbols_locked()
+            for s_trim in list(self.symbols):
+                self._trim_old_data(s_trim, min_batch=1)
+            ok = super().compact_jsonl()
+            if ok:
+                self._last_24h_compact_mono = _monotonic_time()
+                self._jsonl_trimmed_disk_rows = 0
+                self._jsonl_needs_compact = False
+            return ok
 
     def _legacy_json_path(self) -> Optional[str]:
         if self.append_persist and isinstance(self.filename, str) and self.filename.endswith(".jsonl"):

@@ -149,6 +149,12 @@ class BinancePriceStream(PublicPriceStreamBase):
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
                 self._process_message(raw)
+                if self._is_price_stream_stale(session_start):
+                    logger.warning(
+                        "BinancePriceStream silent for %.0fs without ticker data; forcing reconnect",
+                        self._stale_reconnect_sec,
+                    )
+                    break
             except asyncio.TimeoutError:
                 if self._is_price_stream_stale(session_start):
                     logger.warning(

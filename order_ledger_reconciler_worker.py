@@ -335,7 +335,10 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
             venue_verified_ts: dict[str, float] = dict(snap["venue_verified_ts"])
             symbol_verified_ts: dict[str, float] = dict(snap.get("symbol_verified_ts") or {})
             recently_closed: dict[str, float] = dict(snap.get("recently_closed") or {})
-            active_file_exists = os.path.isfile(str(resolve_cachedb_filepath(self.active_path())))
+            active_file_exists = (
+                os.path.isfile(str(resolve_cachedb_filepath(self.active_path())))
+                and (safe_pos_float(snap.get("updated_ts"), default=0.0) or 0.0) > 0.0
+            )
             prev_core_sig = (
                 encode_json_payload(
                     {

@@ -1678,6 +1678,127 @@ def test_order_ledger_and_rtrade_pair_store_skip_redundant_noop_fsync_writes(tmp
     assert len(fsync_calls) >= 1
 
 
+def test_adversarial_audit_bugfixes_regression(tmp_path, monkeypatch):
+    """Verify all 5 edge-case bugs caught during full-thread audit:
+    1) read_jsonl_or_json_dict_cached cursor object-identity & thread-safety;
+    2) read_jsonl_bucket_map_from_offset partial EOF line on start_offset=0;
+    3) WS stale watchdog triggers even when server heartbeats prevent TimeoutError;
+    4) OrderLedgerReconciler heals corrupt orders_active.json without .previous;
+    5) priceAnalysis caches None trend outcomes when SparsePrice signature is unchanged."""
+    import asyncio
+    import threading
+    import binance_api.bapi_ws as bapi_ws
+    import order_ledger_reconciler_worker as olw
+    import priceAnalysis as pa
+    import providers.price_poller as pp
+
+    # 1. Cursor object-id mismatch cannot drop rows + concurrent readers/writer stay consistent
+    j_path = tmp_path / "race_24h.jsonl"
+    now_ms = int(time.time() * 1000)
+    j_path.write_text(
+        "\n".join(json.dumps({"s": "BTCUSDC", "i": [now_ms - (20 - k) * 1000, 60000.0 + k]}, separators=(",", ":")) for k in range(5)) + "\n",
+        encoding="utf-8",
+    )
+    memo: dict = {}
+    first = state_io.read_jsonl_or_json_dict_cached(str(j_path), memo)
+    assert first is not None and len(first["items"]["BTCUSDC"]) == 5
+    with open(j_path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"s": "BTCUSDC", "i": [now_ms - 5000, 60100.0]}, separators=(",", ":")) + "\n")
+    # Simulate stale memo dict object paired against newer cursor object id
+    resolved = os.path.abspath(str(j_path))
+    ck = (id(memo), resolved)
+    old_sig = memo[resolved][0]
+    memo[resolved] = (old_sig, {"items": {"BTCUSDC": [[now_ms - 99_000, 1.0]]}})
+    second = state_io.read_jsonl_or_json_dict_cached(str(j_path), memo)
+    assert second is not None and len(second["items"]["BTCUSDC"]) == 6
+    assert second["items"]["BTCUSDC"][-1][1] == pytest.approx(60100.0)
+    assert state_io._JSONL_CACHED_CURSORS[ck][0] == id(second)
+
+    # Multi-threaded concurrent read + append check
+    errs: list[Exception] = []
+    shared_memo: dict = {}
+
+    def _reader():
+        try:
+            for _ in range(25):
+                doc = state_io.read_jsonl_or_json_dict_cached(str(j_path), shared_memo)
+                assert doc is not None and len(doc["items"]["BTCUSDC"]) >= 6
+        except Exception as exc:
+            errs.append(exc)
+
+    threads = [threading.Thread(target=_reader) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for step in range(5):
+        with open(j_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"s": "BTCUSDC", "i": [now_ms - 4000 + step * 100, 60200.0 + step]}, separators=(",", ":")) + "\n")
+    for t in threads:
+        t.join()
+    assert errs == []
+    final_doc = state_io.read_jsonl_or_json_dict_cached(str(j_path), shared_memo)
+    assert final_doc is not None and len(final_doc["items"]["BTCUSDC"]) == 11
+
+    # 2. Partial unterminated EOF line on initial load (start_offset=0) keeps cursor BEFORE partial line
+    part_p = tmp_path / "partial_init.jsonl"
+    line1 = json.dumps({"s": "BTCUSDC", "i": [now_ms - 3000, 61000.0]}, separators=(",", ":")) + "\n"
+    line2 = json.dumps({"s": "BTCUSDC", "i": [now_ms - 2000, 61001.0]}, separators=(",", ":")) + "\n"
+    line3 = json.dumps({"s": "BTCUSDC", "i": [now_ms - 1000, 61002.0]}, separators=(",", ":"))
+    part_p.write_bytes((line1 + line2 + line3[:12]).encode("utf-8"))
+    bmap0, bad0, off0, dev_ino0, anc0, inc0 = state_io.read_jsonl_bucket_map_from_offset(str(part_p), start_offset=0)
+    assert bad0 is True and inc0 is False and len(bmap0["BTCUSDC"]) == 2
+    assert off0 == len((line1 + line2).encode("utf-8"))
+    with open(part_p, "ab") as fh:
+        fh.write((line3[12:] + "\n").encode("utf-8"))
+    bmap1, bad1, _off1, _di1, _anc1, inc1 = state_io.read_jsonl_bucket_map_from_offset(
+        str(part_p), start_offset=off0, expected_dev_ino=dev_ino0, expected_anchor=anc0
+    )
+    assert bad1 is False and inc1 is True and bmap1["BTCUSDC"] == [[now_ms - 1000, 61002.0]]
+
+    # 3. WS stale watchdog breaks out even when heartbeats keep ws.recv() returning without TimeoutError
+    mono_clock = [1000.0]
+    monkeypatch.setattr(bapi_ws.time, "monotonic", lambda: mono_clock[0])
+    monkeypatch.setattr(pp.time, "monotonic", lambda: mono_clock[0])
+    import providers.ws_stream as ws_stream
+    monkeypatch.setattr(ws_stream.time, "monotonic", lambda: mono_clock[0])
+
+    class _HeartbeatOnlyWs:
+        def __init__(self):
+            self.recv_count = 0
+
+        async def recv(self):
+            self.recv_count += 1
+            mono_clock[0] += 40.0
+            return '{"channel":"heartbeat"}'
+
+    bstream = bapi_ws.BinancePriceStream(symbols=["BTCUSDC"], stale_reconnect_sec=100.0)
+    bws = _HeartbeatOnlyWs()
+    asyncio.run(bstream._recv_loop(bws))
+    assert bws.recv_count == 3  # 1000 -> 1040 -> 1080 -> 1120 (>= 100s stale!) breaks without TimeoutError
+
+    # 4. OrderLedgerReconciler heals corrupt orders_active.json with no .previous
+    cdb = tmp_path / "cachedb_corrupt"
+    (cdb / "orders").mkdir(parents=True, exist_ok=True)
+    corrupt_active = cdb / "orders" / "orders_active.json"
+    corrupt_active.write_text("{corrupt_json", encoding="utf-8")
+    rec = olw.OrderLedgerReconciler(cachedb_dir=str(cdb), use_singletons=False)
+    rec.reconcile_once(now_ts=1_795_000_500.0)
+    healed = json.loads(corrupt_active.read_text(encoding="utf-8"))
+    assert healed["updated_ts"] == pytest.approx(1_795_000_500.0)
+
+    # 5. priceAnalysis caches None trend outcomes (e.g. off-hours equities) when SparsePrice signature is unchanged
+    sig_val = [(50, 1_760_000_000_000, 10.0)]
+    none_calls: list[str] = []
+    monkeypatch.setattr(pa, "_series_signature_for", lambda _s: sig_val[0])
+    monkeypatch.setattr(pa, "getTrendLongTerm_fixed", lambda s, **_kw: (none_calls.append(s), None)[1])
+    st: dict = {}
+    out1 = pa.run_price_analysis_cycle(["RGNT_US_EQ"], st, now_ts=1000.0, inter_symbol_yield_sec=0.0)
+    out2 = pa.run_price_analysis_cycle(["RGNT_US_EQ"], st, now_ts=1060.0, inter_symbol_yield_sec=0.0)
+    assert out1 == {"RGNT_US_EQ": None} and out2 == {"RGNT_US_EQ": None}
+    assert none_calls == ["RGNT_US_EQ"]  # skipped recompute on cycle 2!
+    pa.run_price_analysis_cycle(["RGNT_US_EQ"], st, now_ts=2000.0, inter_symbol_yield_sec=0.0)
+    assert len(none_calls) == 2  # safety refresh after >=900s!
+
+
 
 
 

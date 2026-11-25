@@ -210,6 +210,8 @@ class VenuePriceStreamBase(PublicPriceStreamBase, ABC):
                     self._process_message(
                         await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
                     )
+                    if self._is_price_stream_stale(session_start):
+                        break
                 except asyncio.TimeoutError:
                     if self._is_price_stream_stale(session_start):
                         break

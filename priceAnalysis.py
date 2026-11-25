@@ -498,19 +498,23 @@ def run_price_analysis_cycle(
         prev_draw_ts = safe_pos_float(last_draw.get(symbol), default=0.0) or 0.0
         due_draw = eff_draw_enabled and ((prev_draw_ts <= 0.0) or (eff_now - prev_draw_ts) >= eff_draw_itv)
         due_refresh = (prev_comp_ts <= 0.0) or (eff_now - prev_comp_ts) >= eff_skip_cap
+        has_prev = symbol in trends_cache
         unchanged = (
             sig is not None
             and prev_sig is not None
             and sig == prev_sig
-            and isinstance(prev_trend, dict)
+            and has_prev
             and not due_draw
             and not due_refresh
         )
         if unchanged:
-            reused = dict(prev_trend)
-            reused["timestamp"] = math.trunc(eff_now)
-            all_trends[symbol] = reused
-            trends_cache[symbol] = reused
+            if isinstance(prev_trend, dict):
+                reused = dict(prev_trend)
+                reused["timestamp"] = math.trunc(eff_now)
+                all_trends[symbol] = reused
+                trends_cache[symbol] = reused
+            else:
+                all_trends[symbol] = prev_trend
             continue
 
         prev_dir = prev_trend.get("direction") if isinstance(prev_trend, dict) else None
