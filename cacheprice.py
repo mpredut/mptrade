@@ -2778,8 +2778,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             prefer_ext = bool(
                 self._is_equity_instrument(symbol)
                 and self.market_api is _market_api.api
-                and not is_us_rth_open(now_s)
-                and is_us_extended_hours_open(now_s)
+                and (is_us_rth_open(now_s) or is_us_extended_hours_open(now_s))
             )
             with live_price_fetch_context():
                 if provider_name is None:

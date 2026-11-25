@@ -1324,6 +1324,18 @@ _PARTISAN_MARKET_CONTEXT_WHITELIST: frozenset[str] = (
     })
 )
 
+_CRIMINAL_BAIL_BOND_CONTEXT_WORDS: frozenset[str] = frozenset({
+    "arrested", "bail", "bugging", "charged", "convicted", "court", "custody",
+    "defendant", "felony", "indicted", "jail", "jailed", "judge", "murder",
+    "prison", "prosecutor", "prosecutors", "released", "sentenced", "suspect",
+    "trial",
+})
+_FIXED_INCOME_BOND_CONTEXT_WORDS: frozenset[str] = frozenset({
+    "auction", "convertible", "corporate", "coupon", "default", "defaults",
+    "fixed", "issuance", "issuer", "junk", "maturity", "municipal", "sovereign",
+    "spread", "spreads", "treasury",
+})
+
 _MAJOR_GEOPOLITICAL_THEATER_WORDS: frozenset[str] = frozenset({
     "china", "chinese", "europe", "gaza", "hormuz", "houthi", "houthis", "iran", "iranian", "israel",
     "israeli", "korea", "korean", "lebanon", "middle", "nato", "pentagon",
@@ -1364,6 +1376,15 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
     ):
         return False
     if matched_fin and matched_fin <= {"price", "prices"} and (words & {"apparel", "clothes", "clothing", "console", "fabric", "fabrics", "fashion", "grocery", "menu", "nintendo", "playstation", "shoes", "shopper", "shoppers", "sneakers", "switch", "ticket", "tickets", "xbox"}):
+        return False
+    if (
+        matched_fin
+        and matched_fin <= {"bond"}
+        and (words & _CRIMINAL_BAIL_BOND_CONTEXT_WORDS)
+        and not (words & _BROAD_MARKET_INDEX_CONTEXT_WORDS)
+        and not (words & _FIXED_INCOME_BOND_CONTEXT_WORDS)
+        and not has_eq_entity
+    ):
         return False
     if (
         matched_fin

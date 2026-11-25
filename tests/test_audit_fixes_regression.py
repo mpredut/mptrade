@@ -9140,6 +9140,260 @@ def test_point3_1to1_stores_locked_merges_and_zero_io_evaluators(tmp_path: Any) 
     assert len(owner_errs) == 4
 
 
+def test_cycle19_prompt_audit_fixes(tmp_path, monkeypatch):
+    """Regression coverage for Cycle 19 live US RTH / London 4PM Fix prompt audit fixes:
+    1. Collapsed trailing_peak below active_avg_buy_px or open LIFO lot entry_px self-heals from cycle high / entry floor.
+    2. NonBinanceTrendPoller and CacheCurrentPriceManager prefer live public equity quotes during US RTH as well as PRE/POST.
+    3. Zero-flow, zero-OI equities suppress synthetic whale_long_pct/taker_ratio in cycle_delta history and Section 3B formatting.
+    4. Criminal court bail headlines ('released on $1 million bond') do not false-match fixed-income financial context.
+    """
+    import time
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    import cacheprice as cp_mod
+    import providers.market_api as ma_mod
+    import providers.price_poller as pp_mod
+    from intelligence.macro.lexicon_ssot import has_financial_or_geopolitical_context
+    from intelligence.sentiment.evaluators.microstructure_evaluator import evaluate_microstructure_cycle_deltas
+    from intelligence.sentiment.evaluators.portfolio_evaluator import PositionCostBasisEnrichmentEvaluator
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+
+    # 1. Self-heal collapsed trailing_peak below entry cost / open LIFO lots (e.g. after trailing_state reset)
+    now_ms = int(datetime(2026, 11, 25, 16, 5, 0, tzinfo=ZoneInfo("UTC")).timestamp() * 1000)
+    old_lot_ms = now_ms - 48 * 3600 * 1000
+    pos_btc = {
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "price": 58226.215,
+        "free_base": 0.02689,
+        "trailing_peak": 58226.215,
+        "dd_from_peak_pct": 0.0,
+    }
+    ro_btc = {
+        "active_avg_buy_px": 60865.128881,
+        "open_lots": [
+            {"qty": 0.01018, "entry_px": 62350.0, "ts_ms": old_lot_ms},
+            {"qty": 0.01493, "entry_px": 60076.8, "ts_ms": old_lot_ms + 3600 * 1000},
+            {"qty": 0.00178, "entry_px": 58985.22, "ts_ms": old_lot_ms + 7200 * 1000},
+        ],
+    }
+    PositionCostBasisEnrichmentEvaluator._enrich_position_from_recent_orders(
+        pos_btc,
+        ro_btc,
+        p_sym="BTCUSDC",
+        p_quote_variants=("BTCUSDT",),
+        pos_px_f=58226.215,
+        held_cur=0.02689,
+        is_flat_balance=False,
+        is_flat_after_exit=False,
+        prices_and_trends={"BTCUSDC": {"price": 58226.215, "high_24h": 62600.0}},
+        cache_dir="",
+        cycle_high_memo={},
+        now_ms=now_ms,
+    )
+    assert pos_btc["trailing_peak"] == pytest.approx(62600.0)
+    assert pos_btc["dd_from_peak_pct"] < -6.5
+
+    # Even for a fresh (<12h) position with no 24h high available, peak floors at max(avg_buy, open_lot.entry_px)
+    pos_fresh = {
+        "venue": "binance",
+        "symbol": "TAOUSDC",
+        "price": 170.0,
+        "free_base": 4.0,
+        "trailing_peak": 170.0,
+        "dd_from_peak_pct": 0.0,
+    }
+    ro_fresh = {
+        "active_avg_buy_px": 175.0,
+        "open_lots": [{"qty": 4.0, "entry_px": 178.0, "ts_ms": now_ms - 3600 * 1000}],
+    }
+    PositionCostBasisEnrichmentEvaluator._enrich_position_from_recent_orders(
+        pos_fresh,
+        ro_fresh,
+        p_sym="TAOUSDC",
+        p_quote_variants=(),
+        pos_px_f=170.0,
+        held_cur=4.0,
+        is_flat_balance=False,
+        is_flat_after_exit=False,
+        prices_and_trends={"TAOUSDC": {"price": 170.0}},
+        cache_dir="",
+        cycle_high_memo={},
+        now_ms=now_ms,
+    )
+    assert pos_fresh["trailing_peak"] == pytest.approx(178.0)
+    assert pos_fresh["dd_from_peak_pct"] == pytest.approx(-4.49, abs=0.02)
+
+    # Venue-cycle reconciliation also heals collapsed pos_peak below entry_price (while leaving SHORT cycles untouched)
+    pos_cyc = {"venue": "kraken", "symbol": "HYPEUSD", "price": 24.0, "free_base": 5.0, "trailing_peak": 24.0}
+    cyc_long = {"qty": 5.0, "entry_price": 27.5, "avg_cost_px": 26.8, "pos_peak": 24.0}
+    PositionCostBasisEnrichmentEvaluator._reconcile_position_with_venue_cycle(
+        pos_cyc,
+        cyc_long,
+        p_venue="kraken",
+        p_sym="HYPEUSD",
+        p_quote_variants=(),
+        pos_px_f=24.0,
+        fb_cur=5.0,
+        lb_cur=0.0,
+        held_cur=5.0,
+        min_notional_f=10.0,
+        is_flat_balance=False,
+        is_flat_after_exit=False,
+        last_side_ro="BUY",
+        ro={"open_lots": [{"qty": 5.0, "entry_px": 27.5, "ts_ms": old_lot_ms}]},
+        recent_orders={},
+        v_ro_map={},
+        cyc_sell_ts_map={},
+        prices_and_trends={"HYPEUSD": {"price": 24.0, "high_24h": 28.4}},
+        cache_dir="",
+        cycle_high_memo={},
+        now_ms=now_ms,
+    )
+    assert pos_cyc["trailing_peak"] == pytest.approx(28.4)
+    assert cyc_long["pos_peak"] == pytest.approx(28.4)
+    assert cyc_long["dd_from_peak_pct"] < -15.0
+
+    # 2. NonBinanceTrendPoller and CacheCurrentPriceManager prefer live public equity quotes during US RTH
+    ny_tz = ZoneInfo("America/New_York")
+    ts_rth = datetime(2026, 11, 25, 11, 4, 0, tzinfo=ny_tz).timestamp()
+    rth_calls = []
+
+    class _FakeRthApi:
+        def get_current_price(self, symbol, provider_name=None, prefer_public_extended=False):
+            rth_calls.append((symbol, provider_name, prefer_public_extended))
+            return 116.32
+
+    class _FakeRthCpm:
+        def __init__(self):
+            self.market_api = _FakeRthApi()
+            self._enforce_rth_gate = True
+            self._delegated_poller_symbols = set()
+            self.cache = {}
+            self.pushed = []
+
+        def bind_providers(self, _b):
+            pass
+
+        @staticmethod
+        def extract_price_and_ts(entries):
+            if isinstance(entries, list) and entries:
+                return entries[-1][1], entries[-1][0]
+            return None, None
+
+        def mark_symbol_ws_event(self, _s, _t):
+            pass
+
+        def push_price(self, sym, px):
+            self.pushed.append((sym, px))
+            self.cache[sym] = [[int(ts_rth * 1000), px]]
+
+    monkeypatch.setattr(pp_mod.time, "time", lambda: ts_rth)
+    cpm_rth = _FakeRthCpm()
+    poller_rth = pp_mod.start_nonbinance_trend_poller(
+        cpm_rth,
+        ["SPCX_US_EQ"],
+        interval_sec=0.05,
+        fetch_deadline_sec=1.0,
+        provider_names={"SPCX_US_EQ": "t212"},
+        start_ws=False,
+    )
+    try:
+        deadline = time.monotonic() + 2.0
+        while not cpm_rth.pushed and time.monotonic() < deadline:
+            time.sleep(0.02)
+    finally:
+        poller_rth.stop(timeout=1.0)
+    assert rth_calls and rth_calls[0] == ("SPCX_US_EQ", "t212", True)
+
+    cp_calls = []
+    monkeypatch.setattr(cp_mod, "_now_time", lambda: ts_rth)
+    monkeypatch.setattr(
+        ma_mod.api,
+        "get_current_price",
+        lambda symbol, provider_name=None, prefer_public_extended=False: (
+            cp_calls.append((symbol, provider_name, prefer_public_extended)) or 116.32
+        ),
+    )
+    mgr_stub = cp_mod.CacheCurrentPriceManager.__new__(cp_mod.CacheCurrentPriceManager)
+    mgr_stub.market_api = ma_mod.api
+    mgr_stub.provider_name_for = lambda _s: "t212"
+    mgr_stub._is_equity_instrument = lambda _s: True
+    mgr_stub._log_remote_fetch_error = lambda *_a: []
+    rows_cp = mgr_stub.get_remote_items("SPCX_US_EQ", 0)
+    assert rows_cp and rows_cp[0][1] == pytest.approx(116.32)
+    assert cp_calls and cp_calls[0] == ("SPCX_US_EQ", "t212", True)
+
+    # 3. Zero-flow, zero-OI equity suppresses synthetic whale_long_pct/taker_ratio in cycle_delta and Section 3B
+    eff_now = 1795622800.0
+    m_rgnt = {
+        "RGNT_US_EQ": {
+            "ob_imbalance": 0.491,
+            "bid_depth_usd": 47000.0,
+            "ask_depth_usd": 49000.0,
+            "bid_wall_px": 0.84,
+            "bid_wall_usd": 20000.0,
+            "ask_wall_px": 0.85,
+            "ask_wall_usd": 20000.0,
+            "whale_long_pct": 0.5,
+            "taker_buy_sell_ratio": 1.0,
+            "taker_buy_vol_usd": 0.0,
+            "taker_sell_vol_usd": 0.0,
+            "oi_usd": 0.0,
+            "oi_1h_chg_pct": 0.0,
+            "funding_rate": 0.0,
+            "spread_bps": 23.0,
+            "ob_mid_price": 0.842,
+        }
+    }
+    prev_hist = {
+        "RGNT_US_EQ": [
+            {
+                "ts": eff_now - 365.0,
+                "ob_imbalance": 0.520,
+                "whale_long_pct": 0.604,
+                "taker_buy_sell_ratio": 1.52,
+            }
+        ]
+    }
+    out_m, out_hist, _ = evaluate_microstructure_cycle_deltas(m_rgnt, prev_hist, now_ts=eff_now)
+    cd_rgnt = out_m["RGNT_US_EQ"].get("cycle_delta") or {}
+    assert "whale_long_delta_pct" not in cd_rgnt
+    assert "taker_ratio_delta" not in cd_rgnt
+    assert cd_rgnt.get("ob_imbalance_delta") == pytest.approx(-0.029, abs=1e-4)
+    assert "whale_long_pct" not in out_hist["RGNT_US_EQ"][-1]
+    assert "taker_buy_sell_ratio" not in out_hist["RGNT_US_EQ"][-1]
+
+    # Defense-in-depth in Section 3B formatter even if a pre-populated cycle_delta carries stale d_whale_long/d_tr
+    m_rgnt["RGNT_US_EQ"]["cycle_delta"] = {
+        "dt_min": 6.1,
+        "ob_imbalance_delta": -0.029,
+        "whale_long_delta_pct": -0.104,
+        "taker_ratio_delta": -0.52,
+    }
+    sec3b = "\n".join(_format_microstructure_section(m_rgnt, {"RGNT_US_EQ": {"price": 0.842}}, now_ts=eff_now))
+    assert "intraday_rth_flow=N/A[no_fresh_vol_bars]" in sec3b
+    assert "d_whale_long=" not in sec3b
+    assert "d_tr=" not in sec3b
+    assert "d_ob=-0.029" in sec3b
+
+    # 4. Criminal court bail headlines do not false-match financial 'bond' while real fixed-income bond stories pass
+    assert not has_financial_or_geopolitical_context(
+        "Saudi national charged in OpenAI bugging to be released on $1 million bond"
+    )
+    assert not has_financial_or_geopolitical_context(
+        "Suspect arrested in wire fraud case held on $500,000 bond by federal judge"
+    )
+    assert has_financial_or_geopolitical_context(
+        "US Treasury bond yields surge to session highs after hot Core PCE"
+    )
+    assert has_financial_or_geopolitical_context(
+        "Corporate bond default risk climbs after court blocks debt restructuring"
+    )
+
+
+
 
 
 

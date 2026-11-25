@@ -1053,6 +1053,12 @@ def _format_microstructure_section(
             rl_src_tag = format_realized_liq_sources_tag(minfo, multi_only=True)
             rl_src_sfx = f", src={rl_src_tag}" if rl_src_tag else ""
             liq_sfx += f", realized_liq_15m(long={_fmt_liq_usd(rl_l)}, short={_fmt_liq_usd(rl_s)}{rl_n_sfx}{rl_src_sfx})"
+        eq_no_flow_3b = bool(
+            sym_is_eq_3b
+            and not has_perp_cvd
+            and (safe_float(minfo.get("taker_buy_vol_usd"), 0.0) or 0.0) <= 0.0
+            and (safe_float(minfo.get("taker_sell_vol_usd"), 0.0) or 0.0) <= 0.0
+        )
         cd_sfx = ""
         if isinstance(cd_map := minfo.get("cycle_delta"), dict):
             cd_parts: List[str] = []
@@ -1062,9 +1068,17 @@ def _format_microstructure_section(
                 cd_parts.append(f"d_ob={fmt_signed(d_ob, 3)}")
             if (d_cvd := safe_float(cd_map.get("cvd_15m_delta_usd"), None)) is not None and abs(d_cvd) >= 1.0:
                 cd_parts.append(f"d_cvd={_fmt_signed_usd(d_cvd)}")
-            if (d_tr := safe_float(cd_map.get("taker_ratio_delta"), None)) is not None and abs(d_tr) >= 0.05:
+            if (
+                not eq_no_flow_3b
+                and (d_tr := safe_float(cd_map.get("taker_ratio_delta"), None)) is not None
+                and abs(d_tr) >= 0.05
+            ):
                 cd_parts.append(f"d_tr={fmt_signed(d_tr)}")
-            if (d_wl := safe_float(cd_map.get("whale_long_delta_pct"), None)) is not None and abs(d_wl) >= 0.005:
+            if (
+                not (eq_no_flow_3b and eq_no_oi_3b)
+                and (d_wl := safe_float(cd_map.get("whale_long_delta_pct"), None)) is not None
+                and abs(d_wl) >= 0.005
+            ):
                 cd_parts.append(f"d_whale_long={fmt_signed(d_wl * 100.0, 1)}pp")
             if (d_oi := safe_float(cd_map.get("oi_delta_pct"), None)) is not None and abs(d_oi) >= 0.005:
                 cd_parts.append(f"d_oi={fmt_signed(d_oi)}%")
@@ -1149,12 +1163,7 @@ def _format_microstructure_section(
                 tok_sp_parts.extend(format_spot_volume_rvol_parts(minfo, _fmt_liq_usd))
             tok_sp_sfx = f", {', '.join(tok_sp_parts)}" if tok_sp_parts else ""
             flow_3b_core = f"perp_derivatives=N/A[spot_tokenized_equity]{cvd_sfx}{tok_sp_sfx}"
-        elif (
-            sym_is_eq_3b
-            and not has_perp_cvd
-            and safe_float(minfo.get("taker_buy_vol_usd"), 0.0) <= 0.0
-            and safe_float(minfo.get("taker_sell_vol_usd"), 0.0) <= 0.0
-        ):
+        elif eq_no_flow_3b:
             wl_prefix = "" if eq_no_oi_3b else f"whale_long_pct={minfo.get('whale_long_pct')}, "
             flow_3b_core = f"{wl_prefix}intraday_rth_flow=N/A[no_fresh_vol_bars]{cvd_sfx}"
         else:

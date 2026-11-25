@@ -1937,19 +1937,52 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
             pos_age_ms = (eff_now_ms - oldest_pos_ts) if oldest_pos_ts > 0 else 0
             cur_pk = safe_pos_float(pos.get("trailing_peak"), default=None)
             act_avg_pk = safe_pos_float(pos.get("active_avg_buy_px"), default=None)
-            pk_is_missing_or_unwarmed = cur_pk is None or (
-                act_avg_pk is not None and abs(cur_pk - act_avg_pk) <= max(1e-6, max(cur_pk, act_avg_pk) * 1e-5)
+            max_lot_px = max(
+                (
+                    safe_pos_float(
+                        lt.get("entry_px") if lt.get("entry_px") is not None else lt.get("price"),
+                        default=0.0,
+                    )
+                    or 0.0
+                    for lt in open_lots
+                    if isinstance(lt, dict)
+                ),
+                default=0.0,
             )
-            if pk_is_missing_or_unwarmed and 12 * 3600 * 1000 <= pos_age_ms <= 90 * 86400 * 1000:
-                hi_24h = _resolve_cycle_high_since(
-                    p_sym, p_quote_variants, oldest_pos_ts, prices_and_trends, cache_dir=cache_dir, memo=cycle_high_memo, now_ms=eff_now_ms
+            entry_floor_pk = max(act_avg_pk or 0.0, max_lot_px)
+            pk_below_entry = bool(
+                cur_pk is not None
+                and entry_floor_pk > 0.0
+                and cur_pk < entry_floor_pk * (1.0 - 1e-5)
+            )
+            pk_is_missing_or_unwarmed = (
+                cur_pk is None
+                or pk_below_entry
+                or (
+                    act_avg_pk is not None
+                    and abs(cur_pk - act_avg_pk) <= max(1e-6, max(cur_pk, act_avg_pk) * 1e-5)
                 )
+            )
+            if pk_is_missing_or_unwarmed:
                 ls_ts_ms = (safe_pos_int(ls.get("ts_ms"), default=0) or 0) if isinstance(ls, dict) else 0
-                ls_px_pk = (safe_pos_float(pos.get("last_sell_px"), default=0.0) or 0.0) if ls_ts_ms >= oldest_pos_ts else 0.0
-                ref_pk_anchor = max(pos_px_f, act_avg_pk or 0.0, ls_px_pk)
-                if hi_24h > 0.0 and not _prices_diverged(ref_pk_anchor, hi_24h, threshold=0.35):
-                    seed_pk = max(hi_24h, ls_px_pk, pos_px_f, cur_pk or 0.0, act_avg_pk or 0.0)
-                    set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", seed_pk, pos_px_f, overwrite=True)
+                ls_px_pk = (
+                    (safe_pos_float(pos.get("last_sell_px"), default=0.0) or 0.0)
+                    if oldest_pos_ts > 0 and ls_ts_ms >= oldest_pos_ts
+                    else 0.0
+                )
+                healed_from_archive = False
+                if 12 * 3600 * 1000 <= pos_age_ms <= 90 * 86400 * 1000:
+                    hi_24h = _resolve_cycle_high_since(
+                        p_sym, p_quote_variants, oldest_pos_ts, prices_and_trends, cache_dir=cache_dir, memo=cycle_high_memo, now_ms=eff_now_ms
+                    )
+                    ref_pk_anchor = max(pos_px_f, entry_floor_pk, ls_px_pk)
+                    if hi_24h > 0.0 and not _prices_diverged(ref_pk_anchor, hi_24h, threshold=0.35):
+                        seed_pk = max(hi_24h, ls_px_pk, pos_px_f, cur_pk or 0.0, entry_floor_pk)
+                        set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", seed_pk, pos_px_f, overwrite=True)
+                        healed_from_archive = True
+                if pk_below_entry and not healed_from_archive:
+                    floor_seed_pk = max(entry_floor_pk, ls_px_pk, pos_px_f, cur_pk or 0.0)
+                    set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", floor_seed_pk, pos_px_f, overwrite=True)
 
     @staticmethod
     def _reconcile_position_with_venue_cycle(
@@ -2073,12 +2106,33 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 set_pos_anchor(
                     pos, "trailing_peak", "dd_from_peak_pct", max(c_pk_sync, p_pk_sync), pos_px_f, overwrite=(c_pk_sync > p_pk_sync)
                 )
-            if pos_px_f > 0.0:
+            is_short_cyc = str(cyc.get("direction") or "").strip().upper() == "SHORT"
+            if pos_px_f > 0.0 and not is_short_cyc:
                 cur_pk_c = safe_pos_float(pos.get("trailing_peak"), default=None)
                 act_avg_c = first_pos_float(pos.get("active_avg_buy_px"), cyc.get("avg_cost_px"), cyc.get("entry_price"))
                 c_entry_c = safe_pos_float(cyc.get("entry_price"), default=None)
+                ro_lots_c = ro.get("open_lots") if isinstance(ro, dict) and isinstance(ro.get("open_lots"), list) else []
+                max_lot_px_c = max(
+                    (
+                        safe_pos_float(
+                            lt.get("entry_px") if lt.get("entry_px") is not None else lt.get("price"),
+                            default=0.0,
+                        )
+                        or 0.0
+                        for lt in ro_lots_c
+                        if isinstance(lt, dict)
+                    ),
+                    default=0.0,
+                )
+                entry_floor_c = max(act_avg_c or 0.0, c_entry_c or 0.0, max_lot_px_c)
+                pk_below_entry_c = bool(
+                    raw_pk_orig is not None
+                    and entry_floor_c > 0.0
+                    and raw_pk_orig < entry_floor_c * (1.0 - 1e-5)
+                )
                 if (
                     raw_pk_orig is None
+                    or pk_below_entry_c
                     or (act_avg_c is not None and abs(raw_pk_orig - act_avg_c) <= max(1e-6, max(raw_pk_orig, act_avg_c) * 1e-5))
                     or (c_entry_c is not None and abs(raw_pk_orig - c_entry_c) <= max(1e-6, max(raw_pk_orig, c_entry_c) * 1e-5))
                 ):
@@ -2087,16 +2141,23 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     )
                     eff_now_ms_p = now_ms if (now_ms is not None and now_ms > 0) else math.trunc(resolve_now_ts(None) * 1000)
                     c_age_ms_p = (eff_now_ms_p - oldest_c_ts_p) if oldest_c_ts_p > 0 else 0
+                    healed_c_archive = False
                     if 12 * 3600 * 1000 <= c_age_ms_p <= 90 * 86400 * 1000:
                         hi_24h_p = _resolve_cycle_high_since(
                             p_sym, p_quote_variants, oldest_c_ts_p, prices_and_trends, cache_dir=cache_dir, memo=cycle_high_memo, now_ms=eff_now_ms_p
                         )
-                        ref_pk_anchor_p = max(pos_px_f, act_avg_c or 0.0, c_entry_c or 0.0, c_pk_sync)
+                        ref_pk_anchor_p = max(pos_px_f, entry_floor_c, c_pk_sync)
                         if hi_24h_p > 0.0 and not _prices_diverged(ref_pk_anchor_p, hi_24h_p, threshold=0.35):
-                            seed_pk_p = max(hi_24h_p, pos_px_f, cur_pk_c or 0.0, act_avg_c or 0.0, c_pk_sync)
+                            seed_pk_p = max(hi_24h_p, pos_px_f, cur_pk_c or 0.0, entry_floor_c, c_pk_sync)
                             set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", seed_pk_p, pos_px_f, overwrite=True)
                             cyc["pos_peak"] = round(seed_pk_p, 6)
                             cyc["dd_from_peak_pct"] = pct_delta(pos_px_f, seed_pk_p)
+                            healed_c_archive = True
+                    if pk_below_entry_c and not healed_c_archive:
+                        floor_pk_p = max(entry_floor_c, pos_px_f, cur_pk_c or 0.0, c_pk_sync)
+                        set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", floor_pk_p, pos_px_f, overwrite=True)
+                        cyc["pos_peak"] = round(floor_pk_p, 6)
+                        cyc["dd_from_peak_pct"] = pct_delta(pos_px_f, floor_pk_p)
         set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
         set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
         has_ro_buys = isinstance(ro, dict) and bool(ro.get("recent_buys"))

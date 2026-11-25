@@ -675,7 +675,11 @@ def start_nonbinance_trend_poller(
                 ) or (is_eq and s in rth_seeded and (now_ts - last_equity_poll_ts.get(s, 0.0)) < equity_min_gap_sec):
                     _mark_eq_idle(s, now_ts)
                     continue
-                pending_polls.append((s, prov_name, is_eq, is_ext_open))
+                # Prefer live public equity quotes (Yahoo RTH + PRE/POST) over authenticated broker portfolio marks
+                # during both US RTH and extended hours to prevent multi-minute broker-mark freezes on held tickers
+                # while falling back automatically to the provider's broker mark if the public quote is unavailable.
+                prefer_public_eq = bool(is_eq and (market_open or is_ext_open))
+                pending_polls.append((s, prov_name, is_eq, prefer_public_eq))
 
             if len(pending_polls) == 1:
                 s_one, prov_one, is_eq_one, use_ext_one = pending_polls[0]

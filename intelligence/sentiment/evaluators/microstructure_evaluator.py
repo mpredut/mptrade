@@ -991,6 +991,15 @@ def evaluate_microstructure_cycle_deltas(
         cur_tr = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=None)
         cur_fr = safe_float(minfo.get("funding_rate"), None)
         cur_basis = safe_float(minfo.get("perp_spot_basis_bps"), None)
+        if (
+            has_equity_suffix(msym)
+            and cur_cvd is None
+            and (safe_nonneg_float(minfo.get("taker_buy_vol_usd"), default=0.0) or 0.0) <= 0.0
+            and (safe_nonneg_float(minfo.get("taker_sell_vol_usd"), default=0.0) or 0.0) <= 0.0
+        ):
+            cur_tr = None
+            if cur_oi is None:
+                cur_wl = None
         cur_bar_ts_ms = normalize_timestamp_ms(
             minfo.get("_taker_bar_ts_ms") or minfo.get("taker_bar_ts_ms"),
             default=None,
