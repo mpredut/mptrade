@@ -137,7 +137,6 @@ from intelligence.macro_sentiment_ssot import (
     resolve_read_json_cached,
     same_callable_anchor,
     save_microstructure_cycle_history,
-    update_venue_balances_state_locked,
     parse_ts_px_row,
     _extract_sorted_ts_px,
 )
@@ -1007,7 +1006,7 @@ def refresh_stale_t212_cached_positions(
     *,
     max_age_sec: float = 180.0,
 ) -> bool:
-    """Refresh stale (`>= max_age_sec`) `pos:t212:*` prices in `cached_bals` from Trading212 live portfolio."""
+    """Refresh stale (`>= max_age_sec`) `pos:t212:*` prices in-memory inside `cached_bals` (never writes venue_balances_state.json)."""
     global _LAST_T212_PORTFOLIO_POLL_TS
     if (
         not isinstance(cached_bals, dict)
@@ -1055,7 +1054,6 @@ def refresh_stale_t212_cached_positions(
         if not isinstance(t212_rows, list):
             t212_rows = []
         t212_dirty = False
-        touched_keys: set[str] = set()
         seen_portfolio_tickers: set[str] = set()
 
         def _update_t212_pos_price(c_pos: Dict[str, Any], cur_px: float, *, ts_missing: bool) -> bool:
@@ -1084,7 +1082,6 @@ def refresh_stale_t212_cached_positions(
             if rticker and cur_px_r is not None and isinstance(c_pos := cached_bals.get(tkey), dict):
                 if _update_t212_pos_price(c_pos, cur_px_r, ts_missing=safe_pos_float(c_pos.get("ts"), default=None) is None):
                     t212_dirty = True
-                    touched_keys.add(tkey)
         for bkey, c_pos in list(cached_bals.items()):
             if not (isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(c_pos, dict)):
                 continue
@@ -1098,34 +1095,8 @@ def refresh_stale_t212_cached_positions(
                 cur_px_fb = MarketDataProvider.resolve_venue_public_price_usd("t212", rticker)
                 if cur_px_fb is not None and _update_t212_pos_price(c_pos, cur_px_fb, ts_missing=prev_c_ts <= 0.0):
                     t212_dirty = True
-                    touched_keys.add(bkey)
             except Exception:
                 pass
-        if t212_dirty and bcache_path:
-            def _merge_t212_prices(
-                src_bals: Dict[str, Any], disk_bals: Optional[Dict[str, Any]]
-            ) -> Optional[Dict[str, Any]]:
-                target_bals = dict(src_bals)
-                wrote_any = disk_bals is None
-                for tkey in touched_keys:
-                    new_entry = cached_bals.get(tkey)
-                    if not isinstance(new_entry, dict):
-                        continue
-                    cur_entry = target_bals.get(tkey)
-                    cur_ts = normalize_epoch_sec(cur_entry.get("ts") if isinstance(cur_entry, dict) else None, default=0.0) or 0.0
-                    if cur_ts <= now_ts or (cur_ts - now_ts) > 60.0:
-                        merged_entry = dict(cur_entry) if isinstance(cur_entry, dict) else {}
-                        merged_entry.update(new_entry)
-                        target_bals[tkey] = merged_entry
-                        wrote_any = True
-                return target_bals if wrote_any else None
-
-            update_venue_balances_state_locked(
-                bcache_path,
-                _merge_t212_prices,
-                fallback_state=cached_bals,
-                save_fn=save_json_state,
-            )
         return t212_dirty
     except Exception:
         return False

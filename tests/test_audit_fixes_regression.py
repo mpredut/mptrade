@@ -6526,16 +6526,17 @@ def test_structural_ssot_primitives_fmt_signed_unified_book_and_balance_view(tmp
         assert k_int not in pos_list[0]
         assert k_int not in cash_map["binance:USDC"]
 
-    # 4. update_venue_balances_state_locked strips internal scratch keys and protects balance ts on price-only updates
-    from intelligence.macro_sentiment_ssot import update_venue_balances_state_locked
+    # 4. providers.portfolio_valuation.upsert_venue_balances_snapshot strips internal scratch keys, strips legacy open_orders keys,
+    #    and protects balance ts on price-only updates
     from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
     from providers.nav_drawdown import format_nav_drawdown_summary_line
+    from providers.portfolio_valuation import upsert_venue_balances_snapshot
 
     vb_sw_path = tmp_path / "state" / "venue_balances_state.json"
     t_bal = now_s - 600.0
-    assert update_venue_balances_state_locked(
+    assert upsert_venue_balances_snapshot(
         str(vb_sw_path),
-        lambda _s, _d: {
+        {
             "pos:t212:AMD_US_EQ": {
                 "venue": "t212",
                 "symbol": "AMD_US_EQ",
@@ -6546,13 +6547,15 @@ def test_structural_ssot_primitives_fmt_signed_unified_book_and_balance_view(tmp
                 "_base_balance_ts": t_bal,
             }
         },
+        fallback_state={"open_orders:binance": [{"id": "stale"}]},
     ) is True
     saved_v1 = json.loads(vb_sw_path.read_text(encoding="utf-8"))
     assert "_base_balance_ts" not in saved_v1["pos:t212:AMD_US_EQ"]
+    assert "open_orders:binance" not in saved_v1
     # Price-only bump WITHOUT explicit base_bal_ts/quote_bal_ts MUST automatically preserve t_bal
-    assert update_venue_balances_state_locked(
+    assert upsert_venue_balances_snapshot(
         str(vb_sw_path),
-        lambda s, _d: {**s, "pos:t212:AMD_US_EQ": {**s["pos:t212:AMD_US_EQ"], "price": 205.0, "ts": now_s}},
+        {"pos:t212:AMD_US_EQ": {**saved_v1["pos:t212:AMD_US_EQ"], "price": 205.0, "ts": now_s}},
     ) is True
     saved_v2 = json.loads(vb_sw_path.read_text(encoding="utf-8"))
     assert saved_v2["pos:t212:AMD_US_EQ"]["price"] == pytest.approx(205.0)
@@ -7165,14 +7168,13 @@ def test_free_balance_ssot_refactor_atomic_locked_xstock_reconcile_and_t212_repr
        bucket (stale position locks cannot pollute fresh balances; pos:* quote locks survive absent/stale cash:*).
     3. derive_runtime_portfolio_view reconciles shared free_quote/free_base across positions even when
        open_orders_list is empty or synthetic_deduct == 0, and strips ALL INTERNAL_BALANCE_SCRATCH_KEYS.
-    4. update_venue_balances_state_locked strips _prev_locked_quote_usd and _prev_locked_base_qty via SSOT keys.
-    5. refresh_stale_t212_cached_positions updates both locked_base_usd and value_usd (including free_base==0.0).
+    4. providers.portfolio_valuation.upsert_venue_balances_snapshot strips _prev_locked_quote_usd and _prev_locked_base_qty via SSOT keys.
+    5. refresh_stale_t212_cached_positions updates both locked_base_usd and value_usd in-memory (including free_base==0.0) without mutating disk.
     6. Atomic free_and_locked_balance on Binance/Hyperliquid/Kraken/T212 exposes live exchange locks in one
        call and prevents double-subtraction when an order reprices during a live collect() cycle.
     """
     from types import SimpleNamespace
     import binance_api.bapi as bapi_mod
-    from intelligence.macro_sentiment_ssot import update_venue_balances_state_locked
     from intelligence.sentiment.collectors.microstructure_collector import refresh_stale_t212_cached_positions
     from intelligence.sentiment.collectors.portfolio_collector import (
         KrakenXstocksCollector,
@@ -7187,6 +7189,7 @@ def test_free_balance_ssot_refactor_atomic_locked_xstock_reconcile_and_t212_repr
         build_cached_balance_observations,
         extract_position_held_qty,
         reprice_position_balance_fields,
+        upsert_venue_balances_snapshot,
     )
     from providers.quantity import resolve_assets
     from providers.t212_provider import T212Provider
@@ -7305,11 +7308,11 @@ def test_free_balance_ssot_refactor_atomic_locked_xstock_reconcile_and_t212_repr
         assert sk not in pos_reconcile[0]
         assert sk not in cash_reconcile["binance:USDC"]
 
-    # 4. update_venue_balances_state_locked strips _prev_locked_* scratch keys too
+    # 4. upsert_venue_balances_snapshot strips _prev_locked_* scratch keys too
     vb_strip_p = tmp_path / "strip_vb" / "venue_balances_state.json"
-    assert update_venue_balances_state_locked(
+    assert upsert_venue_balances_snapshot(
         str(vb_strip_p),
-        lambda _s, _d: {
+        {
             "cash:binance:USDC": {
                 "venue": "binance",
                 "asset": "USDC",
@@ -7360,9 +7363,12 @@ def test_free_balance_ssot_refactor_atomic_locked_xstock_reconcile_and_t212_repr
     monkeypatch.setattr(_t212_mod, "T212Provider", _FakeT212Prov)
     monkeypatch.setattr(_mc_mod, "_LAST_T212_PORTFOLIO_POLL_TS", 0.0)
     assert refresh_stale_t212_cached_positions(cached_t212, str(vb_t212_p), now_s) is True
-    persisted_t212 = json.loads(vb_t212_p.read_text(encoding="utf-8"))["pos:t212:SPCX_US_EQ"]
-    assert persisted_t212["value_usd"] == pytest.approx(0.0)
-    assert persisted_t212["locked_base_usd"] == pytest.approx(260.0)
+    mem_t212 = cached_t212["pos:t212:SPCX_US_EQ"]
+    assert mem_t212["value_usd"] == pytest.approx(0.0)
+    assert mem_t212["locked_base_usd"] == pytest.approx(260.0)
+    # Disk state stays untouched by microstructure_collector (single producer invariant).
+    disk_t212 = json.loads(vb_t212_p.read_text(encoding="utf-8"))["pos:t212:SPCX_US_EQ"]
+    assert disk_t212["price"] == pytest.approx(120.0)
 
     # 6. Atomic free_and_locked_balance on Binance, Hyperliquid, Kraken, T212 + live collect() anti-double-subtract
     monkeypatch.setattr(

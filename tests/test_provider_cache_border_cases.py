@@ -5220,8 +5220,11 @@ def test_wave29_ssot_price_candidates_t212_peek_lexicon_and_border_cases(tmp_pat
             now_ts=real_now,
             max_age_sec=60.0,
         ) is True
-    refreshed_bals = state_io.read_json_dict(str(bcache_file), default={})
-    assert refreshed_bals["pos:t212:NVDA_US_EQ"]["price"] == pytest.approx(125.0)
+    assert bals_doc["pos:t212:NVDA_US_EQ"]["price"] == pytest.approx(125.0)
+    assert bals_doc["pos:t212:NVDA_US_EQ"]["ts"] == pytest.approx(real_now)
+    # Single-producer invariant: microstructure_collector never writes venue_balances_state.json on disk.
+    disk_bals = state_io.read_json_dict(str(bcache_file), default={})
+    assert disk_bals["pos:t212:NVDA_US_EQ"]["price"] == pytest.approx(100.0)
 
 
 def test_wave30_open_lots_vwap_short_trend_freshness_and_shutdown_border_cases(tmp_path, monkeypatch):

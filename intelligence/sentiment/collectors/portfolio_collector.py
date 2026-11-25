@@ -61,7 +61,6 @@ from intelligence.macro_sentiment_ssot import (
     load_venue_balances_state,
     resolve_read_json_cached,
     resolve_save_json_state,
-    update_venue_balances_state_locked,
 )
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
@@ -128,6 +127,7 @@ from providers.portfolio_valuation import (
     extract_position_held_qty,
     merge_balance_observation,
     strip_internal_balance_scratch_keys,
+    upsert_venue_balances_snapshot,
 )
 from providers.quantity import resolve_assets, resolve_kraken_trade_cache_position, venue_fee_cap_quantity
 from state_io import (
@@ -1429,25 +1429,12 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
     ) -> None:
         try:
             read_disk = rj_bals in (_default_read_json_cached, read_json_recovering, read_json_cached)
-
-            def _merge_portfolio_balances(
-                src_bals: Dict[str, Any], _disk_bals: Optional[Dict[str, Any]]
-            ) -> Dict[str, Any]:
-                updated_upper_keys = {str(uk).upper() for uk in updated_bals}
-                base_bals = {
-                    k: v
-                    for k, v in src_bals.items()
-                    if not (isinstance(k, str) and k.startswith(("open_orders:", "open_orders_verified_ts:")))
-                    and (k in updated_bals or str(k).upper() not in updated_upper_keys)
-                }
-                return {**base_bals, **updated_bals}
-
-            update_venue_balances_state_locked(
+            upsert_venue_balances_snapshot(
                 bcache_path,
-                _merge_portfolio_balances,
+                updated_bals,
                 fallback_state=cached_bals,
                 read_disk=read_disk,
-                save_fn=save_json_state,
+                save_fn=resolve_save_json_state(local_fn=save_json_state),
             )
         except Exception:
             pass

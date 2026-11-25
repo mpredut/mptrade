@@ -313,8 +313,12 @@ SIGNED_ZERO_EXTRA_FILES = frozenset({
     "providers/ai_attribution.py",
 })
 _RAW_SIGNED_FLOAT_SPEC_RE = re.compile(r"\+[\d,]*\.\d+f")
-VENUE_BALANCES_STATE_OWNER_FILE = "intelligence/macro_sentiment_ssot.py"
-VENUE_BALANCES_STATE_OWNER_FN = "update_venue_balances_state_locked"
+VENUE_BALANCES_STATE_OWNER_FILE = "providers/portfolio_valuation.py"
+VENUE_BALANCES_STATE_OWNER_FN = "upsert_venue_balances_snapshot"
+VENUE_BALANCES_STATE_PRODUCER_FILES = frozenset({
+    "providers/portfolio_valuation.py",
+    "intelligence/sentiment/collectors/portfolio_collector.py",
+})
 _VENUE_BALANCES_WRITE_PATH_RE = re.compile(r"(?:venue_balances_state|VENUE_BALANCES_STATE_FILENAME|\bbcache_path\b)")
 _VENUE_BALANCES_WRITER_FNS = frozenset({
     "save_json_state",
@@ -327,10 +331,7 @@ _VENUE_BALANCES_WRITER_FNS = frozenset({
 STATE_FILE_OWNER_MAP: dict[str, frozenset[str]] = {
     "AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME": frozenset({"providers/intent_state.py"}),
     "ORDER_RETRY_QUEUE_FILENAME": frozenset({"order_retry.py"}),
-    "VENUE_BALANCES_STATE_FILENAME": frozenset({
-        "providers/portfolio_valuation.py",
-        "intelligence/macro_sentiment_ssot.py",
-    }),
+    "VENUE_BALANCES_STATE_FILENAME": frozenset({"providers/portfolio_valuation.py"}),
 }
 STATE_FILE_LITERAL_TO_CONST: dict[str, str] = {
     "autonomous_trade_intents_state.json": "AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME",
@@ -1905,7 +1906,7 @@ def audit_venue_balances_single_writer_ast(
     *,
     _parsed_cache: ParsedCache | None = None,
 ) -> list[str]:
-    """Enforce that ``venue_balances_state.json`` is written ONLY via ``update_venue_balances_state_locked``."""
+    """Enforce single writer & producer (portfolio_collector -> providers.portfolio_valuation.upsert_venue_balances_snapshot)."""
     root = Path(root)
     target_rels = [r for r in _normalize_target_rels(root, rel_paths) if _is_prod_python_rel(r)]
     violations: list[str] = []
@@ -1940,15 +1941,23 @@ def audit_venue_balances_single_writer_ast(
                 rel_s == VENUE_BALANCES_STATE_OWNER_FILE
                 and cur_fn == VENUE_BALANCES_STATE_OWNER_FN
             )
-            if not is_owner and isinstance(node, ast.Call) and node.args:
+            if isinstance(node, ast.Call) and node.args:
                 wname = _writer_call_name(node)
-                if wname in _VENUE_BALANCES_WRITER_FNS:
+                if not is_owner and wname in _VENUE_BALANCES_WRITER_FNS:
                     arg0_s = ast.unparse(node.args[0])
                     if _VENUE_BALANCES_WRITE_PATH_RE.search(arg0_s):
                         violations.append(
                             f"{rel_s}:{node.lineno}: direct write to venue_balances_state via "
                             f"{wname}({arg0_s[:80]}, ...) outside {VENUE_BALANCES_STATE_OWNER_FN}"
                         )
+                elif (
+                    wname == VENUE_BALANCES_STATE_OWNER_FN
+                    and rel_s not in VENUE_BALANCES_STATE_PRODUCER_FILES
+                ):
+                    violations.append(
+                        f"{rel_s}:{node.lineno}: forbidden producer call {VENUE_BALANCES_STATE_OWNER_FN}() "
+                        f"outside {sorted(VENUE_BALANCES_STATE_PRODUCER_FILES)}"
+                    )
             for child in ast.iter_child_nodes(node):
                 _visit(child, cur_fn)
 

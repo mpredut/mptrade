@@ -783,7 +783,11 @@ def test_secondary_writers_and_t212_ssot_market_data(tmp_path, monkeypatch):
     assert "BTCUSDC" in saved_t and "ETHUSDC" in saved_t
     assert saved_t["BTCUSDC"]["n"] > 0 and saved_t["ETHUSDC"]["n"] > 0
 
-    # 2. refresh_stale_t212_cached_positions merges touched T212 keys without clobbering concurrent crypto balances.
+    # 2. refresh_stale_t212_cached_positions refreshes T212 prices in-memory only (never mutates venue_balances_state.json
+    #    on disk), and providers.portfolio_valuation.upsert_venue_balances_snapshot merges touched keys without clobbering
+    #    concurrent crypto balances on disk.
+    from providers.portfolio_valuation import upsert_venue_balances_snapshot
+
     bals_file = tmp_path / "venue_balances_state.json"
     now_s = time.time()
     initial_bals = {
@@ -792,7 +796,7 @@ def test_secondary_writers_and_t212_ssot_market_data(tmp_path, monkeypatch):
     }
     save_json_state(str(bals_file), initial_bals, indent=2)
     stale_ram_copy = json.loads(json.dumps(initial_bals))
-    # Simulate portfolio_collector updating crypto cash on disk before microstructure_collector flushes its stale RAM copy.
+    # Simulate portfolio_collector updating crypto cash on disk before microstructure_collector refreshes its stale RAM copy.
     updated_disk = dict(initial_bals)
     updated_disk["cash:binance:USDC"] = {"free": 1250.0, "ts": now_s - 5.0}
     updated_disk["pos:kraken:TAOUSD"] = {"symbol": "TAOUSD", "free": 1.5, "price": 400.0, "ts": now_s - 5.0}
@@ -809,6 +813,19 @@ def test_secondary_writers_and_t212_ssot_market_data(tmp_path, monkeypatch):
     monkeypatch.setattr(mc._t212_prov_mod, "T212Provider", _FakeT212Provider)
     monkeypatch.setattr(mc, "_LAST_T212_PORTFOLIO_POLL_TS", 0.0)
     assert mc.refresh_stale_t212_cached_positions(stale_ram_copy, str(bals_file), now_s, max_age_sec=180.0) is True
+    assert stale_ram_copy["pos:t212:NVDA_US_EQ"]["price"] == 135.25
+    assert stale_ram_copy["pos:t212:NVDA_US_EQ"]["value_usd"] == 270.5
+    # Disk state MUST remain untouched by microstructure_collector (single producer invariant).
+    disk_after_mc = json.loads(bals_file.read_text(encoding="utf-8"))
+    assert disk_after_mc["pos:t212:NVDA_US_EQ"]["price"] == 120.0
+    assert disk_after_mc["cash:binance:USDC"]["free"] == 1250.0
+    assert disk_after_mc["pos:kraken:TAOUSD"]["free"] == 1.5
+    # Official single writer merges touched keys under lock without clobbering concurrent crypto balances.
+    assert upsert_venue_balances_snapshot(
+        str(bals_file),
+        {"pos:t212:NVDA_US_EQ": stale_ram_copy["pos:t212:NVDA_US_EQ"]},
+        fallback_state=stale_ram_copy,
+    ) is True
     merged_bals = json.loads(bals_file.read_text(encoding="utf-8"))
     assert merged_bals["pos:t212:NVDA_US_EQ"]["price"] == 135.25
     assert merged_bals["pos:t212:NVDA_US_EQ"]["value_usd"] == 270.5
@@ -1075,6 +1092,21 @@ def test_pre_commit_gate_runs_all_deterministic_checks_and_blocks_violations(tmp
     ):
         assert expected_gate in failures, f"Expected gate {expected_gate} to fail; got {sorted(failures)}"
     assert gate.cmd_pre_commit(SimpleNamespace(files=bad_files, root=str(tmp_path), min_score=2)) == 1
+    # Calling the typed producer API from a non-producer module is also blocked by venue_balances_single_writer_ast.
+    (tmp_path / "rogue_producer.py").write_text(
+        "from providers.portfolio_valuation import upsert_venue_balances_snapshot\n"
+        "def write(p: str):\n"
+        "    return upsert_venue_balances_snapshot(p, {'cash:binance:USDC': {'free': 1.0}})\n",
+        encoding="utf-8",
+    )
+    rogue_ctx = gate.GateContext(
+        root=tmp_path,
+        mode="pre-commit",
+        rel_paths=("rogue_producer.py",),
+        python_rels=("rogue_producer.py",),
+        explicit_files=True,
+    )
+    assert "venue_balances_single_writer_ast" in gate.run_gates(rogue_ctx)
 
     # Clean staged files across shell, JSON, TOML, and SSOT-delegating Python pass with exit code 0.
     (tmp_path / "ok.sh").write_text("#!/usr/bin/env bash\nset -euo pipefail\necho ok\n", encoding="utf-8")

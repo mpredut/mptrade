@@ -395,7 +395,7 @@ DETERMINISTIC_GATES: tuple[DeterministicGate, ...] = (
     ),
     DeterministicGate(
         "venue_balances_single_writer_ast",
-        "Enforce single locked writer (update_venue_balances_state_locked) for venue_balances_state.json",
+        "Enforce single producer (portfolio_collector -> providers.portfolio_valuation.upsert_venue_balances_snapshot) for venue_balances_state.json",
         lambda ctx: audit_venue_balances_single_writer_ast(
             ctx.root, rel_paths=ctx.python_rels, _parsed_cache=ctx.parsed_cache
         ),

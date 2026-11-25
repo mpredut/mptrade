@@ -18,8 +18,13 @@ from cachepaths import (
     safe_pos_float,
 )
 from core.math_coercion import first_pos_float
-from core.time_market import extract_current_price_item
-from state_io import read_json_dict, read_json_dict_cached
+from core.time_market import extract_current_price_item, normalize_epoch_sec
+from state_io import (
+    generation_file_lock,
+    read_json_dict,
+    read_json_dict_cached,
+    save_json_state,
+)
 
 
 INTERNAL_BALANCE_SCRATCH_KEYS: frozenset[str] = frozenset(
@@ -250,6 +255,89 @@ def load_venue_balances_state_dict(
         if isinstance(raw, dict) and raw:
             return raw
     return {}
+
+
+def _sanitize_venue_balances_payload(
+    payload: Mapping[str, Any],
+    *,
+    prev_state: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Strip internal scratch keys via SSOT and preserve balance timestamps on price-only ``pos:*`` updates."""
+    prev_map = prev_state if isinstance(prev_state, Mapping) else {}
+    cleaned: dict[str, Any] = {}
+    for k, v in payload.items():
+        if not isinstance(v, Mapping):
+            cleaned[k] = v
+            continue
+        entry = strip_internal_balance_scratch_keys(v)
+        if isinstance(k, str) and k.startswith("pos:"):
+            prev_entry = prev_map.get(k)
+            if isinstance(prev_entry, Mapping):
+                prev_ts = normalize_epoch_sec(prev_entry.get("ts"), default=0.0) or 0.0
+                new_ts = normalize_epoch_sec(entry.get("ts"), default=0.0) or 0.0
+                if prev_ts > 0.0 and new_ts > prev_ts:
+                    if (
+                        "base_bal_ts" not in entry
+                        and entry.get("free_base") == prev_entry.get("free_base")
+                    ):
+                        prev_bts = normalize_epoch_sec(prev_entry.get("base_bal_ts"), default=0.0) or prev_ts
+                        if prev_bts > 0.0:
+                            entry["base_bal_ts"] = prev_bts
+                    if (
+                        "quote_bal_ts" not in entry
+                        and entry.get("free_quote") == prev_entry.get("free_quote")
+                    ):
+                        prev_qts = normalize_epoch_sec(prev_entry.get("quote_bal_ts"), default=0.0) or prev_ts
+                        if prev_qts > 0.0:
+                            entry["quote_bal_ts"] = prev_qts
+        cleaned[k] = entry
+    return cleaned
+
+
+def upsert_venue_balances_snapshot(
+    bcache_path: str,
+    updated_bals: Mapping[str, Any],
+    *,
+    fallback_state: Optional[Mapping[str, Any]] = None,
+    read_disk: bool = True,
+    save_fn: Optional[Callable[..., Any]] = None,
+    indent: int = 2,
+) -> bool:
+    """Single canonical locked producer writer for ``venue_balances_state.json``."""
+    if not bcache_path or not isinstance(updated_bals, Mapping) or not updated_bals:
+        return False
+    os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
+    with generation_file_lock(bcache_path):
+        disk_bals = (
+            read_json_dict(bcache_path, default=None, repair_files=True)
+            if (read_disk and os.path.exists(bcache_path))
+            else None
+        )
+        disk_dict = disk_bals if isinstance(disk_bals, dict) else None
+        src_bals: dict[str, Any] = (
+            dict(disk_dict)
+            if disk_dict is not None
+            else (dict(fallback_state) if isinstance(fallback_state, Mapping) else {})
+        )
+        updated_upper_keys = {str(uk).upper() for uk in updated_bals}
+        base_bals = {
+            k: v
+            for k, v in src_bals.items()
+            if not (isinstance(k, str) and k.startswith(("open_orders:", "open_orders_verified_ts:")))
+            and (k in updated_bals or str(k).upper() not in updated_upper_keys)
+        }
+        merged_raw = {**base_bals, **updated_bals}
+        sanitized = _sanitize_venue_balances_payload(merged_raw, prev_state=src_bals)
+        should_write = (
+            (sanitized != disk_dict)
+            if disk_dict is not None
+            else (sanitized != src_bals or (bool(sanitized) and not os.path.exists(bcache_path)))
+        )
+        if not should_write:
+            return False
+        writer = save_fn if callable(save_fn) else save_json_state
+        writer(bcache_path, sanitized, indent=indent)
+        return True
 
 
 @dataclass(frozen=True, slots=True)
