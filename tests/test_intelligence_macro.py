@@ -1319,6 +1319,7 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
                 "older blockade", "war timeline", "war exposes", "crash ahead",
                 "attack debunked", "unpriced shock", "train crash", "jet crash",
                 "florida jet", "alert apps", "worse chip",
+                "tanker crash", "fuel tanker", "crash ignites", "ignites massive",
             ],
             cache_dir=str(tmp_path),
             now_ts=t0 - 3600.0,
@@ -1336,8 +1337,15 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
             "war timeline", "war exposes", "crash ahead", "attack debunked",
             "unpriced shock", "train crash", "jet crash", "florida jet",
             "alert apps", "worse chip",
+            "tanker crash", "fuel tanker", "crash ignites", "ignites massive",
         ):
             assert noise_term not in high_terms
+        assert filter_valid_severity_keywords(
+            ["tanker crash", "crash ignites"],
+            title="Fuel tanker crash on major Cairo highway kills at least 30",
+            cache_dir=str(tmp_path),
+            now_ts=t0,
+        ) == ()
 
         # Same-URL RSS headline revisions (e.g. BBC crime story edited from "baseball bat" to "bat")
         # must deduplicate in the rolling pool and must not self-promote local crime bigrams like

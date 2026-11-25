@@ -41,7 +41,7 @@ _NOISE_LEXICON_PHRASES: frozenset[str] = frozenset({
     "doordash strikes", "billion deal", "rival instacart", "grocery delivery",
     "gillibrand presses", "civilian schools", "hacked emergency", "shock emergency",
     "emergency sanction", "supply shock", "warfare cyber", "bank collapse",
-    "naval cruise", "houthi cruise",
+    "naval cruise", "houthi cruise", "fuel tanker", "tanker crash",
 })
 
 _NON_CRISIS_STRIKE_CONTEXT_WORDS: frozenset[str] = frozenset({
@@ -215,20 +215,20 @@ _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "end", "error", "essay", "essays", "eve", "evident", "exceptionally", "exists", "expert",
     "experts", "expiration", "explained", "exposes", "faces", "facing",
     "fallout", "false", "fare", "features", "five", "fleet", "florida", "follow", "followed", "following", "follows",
-    "forced", "four", "fresh", "functioning", "funding", "general", "golf", "harward", "headlines", "heighten",
-    "highlight", "highlights", "history", "horrific", "household", "households", "humanitarian", "hurt", "identified", "intel",
-    "institute", "intercepted", "introduces", "investigation", "involvement", "island", "jet", "join",
+    "forced", "four", "freeway", "fresh", "functioning", "funding", "general", "golf", "harward", "headlines", "heighten",
+    "highlight", "highlights", "highway", "history", "horrific", "household", "households", "humanitarian", "hurt", "identified", "ignites", "intel",
+    "institute", "interchange", "intercepted", "introduces", "investigation", "involvement", "island", "jet", "join",
     "keyword", "kills", "kinetic", "landing", "later", "latest", "leadership", "likely", "limited", "lingering", "links",
     "liquidation", "liquidations", "liv", "localized", "long", "loser",
-    "losers", "losses", "macro", "media", "members", "michigan", "midterm", "midterms",
+    "losers", "losses", "macro", "massive", "media", "members", "michigan", "midterm", "midterms",
     "mobile", "moderate", "monroe", "mounting", "mutual", "narrative", "nine", "non", "normal",
-    "noting", "nyc", "official", "officials", "old", "one", "ongoing", "orderly", "outlook",
+    "noting", "nyc", "official", "officials", "old", "one", "ongoing", "orderly", "outlook", "overturned", "overturns",
     "partial", "peacefully", "persistent", "physical", "plane", "plant", "playbook", "played", "plunge",
     "plunged", "plunges", "plunging", "political", "poses", "position", "possible", "post", "posture",
     "potential", "prices", "processed", "progress", "prolongation", "pursues",
     "qeshm", "questions", "rather", "readiness", "recent", "record", "reflect",
     "reflected", "reflects", "related", "remain", "remained", "remaining", "remains", "removal", "renewed", "reported", "reportedly", "represent",
-    "researchers", "reshapes", "resign", "resigned", "resigns", "retaining", "rhetoric", "rhetorical", "risk", "risks",
+    "researchers", "reshapes", "resign", "resigned", "resigns", "retaining", "rhetoric", "rhetorical", "risk", "risks", "road",
     "role", "rout", "routine", "ryanair", "say", "schedule", "scheduled", "scrutiny", "secondary",
     "selloff", "seven", "short", "showdown", "six", "sizing", "soaring", "somalia",
     "south", "stocks", "story", "strategy", "striker", "study", "sudden", "surging", "surprise", "suspected",
@@ -310,6 +310,10 @@ def _is_excluded_non_crisis_attack_keyword(
     if kw_words and kw_words <= {"war", "wars"} and "fog" in text_words and not (text_words & (kinetic_only - kw_words)):
         return True
     if (combined_words & _SPORTS_CONTEXT_WORDS) and not (text_words & (kinetic_only - kw_words)):
+        return True
+    if (text_words & {"highway", "freeway", "interchange", "motorway"}) and not (
+        text_words & {"missile", "missiles", "drone", "drones", "airstrike", "airstrikes", "troops", "nuclear", "hormuz"}
+    ):
         return True
     if (combined_words & _NON_CRISIS_STRIKE_CONTEXT_WORDS) and kw_words and kw_words <= {"strike", "strikes"} and not (text_words & (kinetic_only - {"strike", "strikes"})):
         return True
