@@ -252,15 +252,22 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
     def _persisted_max_ts(self) -> int:
         """Return on-disk freshness (ms), falling back to sidecar-less JSON snapshots with ``os.stat`` caching."""
         meta_ts = super()._persisted_max_ts()
-        if meta_ts > 0 or self.append_persist or not os.path.exists(self.filename):
+        if meta_ts > 0 or self.append_persist:
             return meta_ts
         try:
-            st = os.stat(self.filename)
+            target_path = self.filename
+            using_primary = os.path.isfile(target_path)
+            if not using_primary:
+                prev_path = self._previous_generation_path()
+                if not os.path.isfile(prev_path):
+                    return meta_ts
+                target_path = prev_path
+            st = os.stat(target_path)
             sig = (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
             cached = getattr(self, "_persisted_ts_stat_cache", None)
-            if cached is not None and cached[0] == sig:
+            if using_primary and cached is not None and cached[0] == sig:
                 return cached[1]
-            data = read_json_dict(self.filename)
+            data = read_json_dict(self.filename, recover_previous=True)
             if not isinstance(data, dict):
                 return meta_ts
             best_ms = meta_ts
@@ -280,7 +287,8 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
             for scalar_key in ("verified_ts", "ts"):
                 if (v_ms := self._scalar_ts_to_ms(data.get(scalar_key))) > best_ms:
                     best_ms = v_ms
-            self._persisted_ts_stat_cache = (sig, best_ms)
+            if using_primary:
+                self._persisted_ts_stat_cache = (sig, best_ms)
             return best_ms
         except Exception:
             return meta_ts
@@ -1045,7 +1053,11 @@ class CacheTradeManager(CacheAccountManagerBase):
             if alias_rows:
                 existing_list.extend(alias_rows)
             has_oid_only = any(
-                isinstance(r, dict) and r.get("id") is None and r.get("tid") is None and extract_order_id(r)
+                isinstance(r, dict)
+                and r.get("id") is None
+                and r.get("tid") is None
+                and r.get("oid") is None
+                and extract_order_id(r)
                 for r in new_rows
             )
             if has_oid_only:

@@ -26,6 +26,7 @@ from cachepaths import (
     split_symbol_assets,
 )
 from state_io import (
+    cachedb_exists,
     read_json_dict,
     read_json_dict_cached,
 )
@@ -206,9 +207,13 @@ def resolve_kraken_trade_cache_position(
     sym_cf = sym_s.casefold()
     for fname in (CACHE_KRAKEN_ORDER_FILLED_FILENAME, CACHE_KRAKEN_TRADE_FILENAME):
         cache_file = resolve_cachedb_filepath(os.path.join(cachedb_dir, fname))
-        if not os.path.isfile(cache_file):
+        if not cachedb_exists(cache_file, include_previous=True):
             continue
-        payload = read_json_fn(cache_file) if callable(read_json_fn) else read_json_dict(cache_file, default=None)
+        payload = (
+            read_json_fn(cache_file)
+            if callable(read_json_fn)
+            else read_json_dict(cache_file, default=None, recover_previous=True)
+        )
         if not isinstance(payload, dict):
             continue
         items = payload.get("items")

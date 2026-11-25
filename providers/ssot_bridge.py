@@ -774,9 +774,17 @@ class ProviderSsotBridgeMixin:
             return False
         sym_key = canonical_display_symbol(symbol) or clean_symbol_key(symbol) or str(symbol).strip().upper()
         payload = {sym_key: list(fills or ())}
-        ok = bool(tm_cls.merge_venue_fills_snapshot(cache_file, payload, is_snapshot=True))
+        ok = bool(
+            tm_cls.merge_venue_fills_snapshot(
+                cache_file,
+                payload,
+                is_snapshot=False,
+                touch_symbols=(sym_key,),
+                touch_create_missing=True,
+            )
+        )
         if ok:
-            self._mirror_to_order_filled_cache(cache_file, payload, is_snapshot=True)
+            self._mirror_to_order_filled_cache(cache_file, payload, is_snapshot=False)
         return ok
 
     @classmethod

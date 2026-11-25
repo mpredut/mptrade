@@ -769,3 +769,98 @@ def test_order_filled_coherence_kraken_subsumption_t212_fee_upgrade_and_binance_
     assert row_100["type"] == "LIMIT"
     assert bn_mgr.get_last_opposite_fill_price("BTCUSDC", "BUY") == pytest.approx(61500.0)
     assert bn_mgr.get_last_opposite_fill_price("BTCUSDC", "SELL") == pytest.approx(60000.0)
+
+
+def test_final_audit_partial_sell_fee_proration_previous_recovery_and_non_destructive_ssot_write(tmp_path):
+    """Regression tests for:
+    1. summarize_fills_position_and_cost prorates quote_fee on partial-history sells so split vs aggregated fills match.
+    2. resolve_kraken_trade_cache_position & CacheAccountManagerBase._persisted_max_ts recover from .previous swaps.
+    3. ProviderSsotBridgeMixin.write_ssot_fills_cache union-merges without wiping older fills.
+    """
+    import json
+    from cacheaccount import CacheTradeManager
+    from cachepaths import CACHE_KRAKEN_ORDER_FILLED_FILENAME, CACHE_KRAKEN_TRADE_FILENAME
+    from providers.portfolio_state_store import resolve_kraken_trade_cache_position
+    from providers.quantity import summarize_fills_position_and_cost
+    from providers.ssot_bridge import ProviderSsotBridgeMixin
+    from state_io import previous_generation_path
+
+    # 1. Partial-history sell: tracked BUY 5.475079 @ 79.306557, SELL 17.88 @ 93.3 (2 partial fills vs 1 order row).
+    buy_row = {"id": "B1", "orderId": "OB1", "side": "BUY", "price": 79.306557, "quantity": 5.475079, "timestamp": 1792000000000, "fee": 0.0}
+    sell_split = [
+        {"id": "S1", "orderId": "OTWER3", "side": "SELL", "price": 93.3, "quantity": 6.1252, "timestamp": 1793287711316, "fee": 1.25726},
+        {"id": "S2", "orderId": "OTWER3", "side": "SELL", "price": 93.3, "quantity": 11.7548, "timestamp": 1793287711318, "fee": 2.41279},
+    ]
+    sell_agg = [
+        {"orderId": "OTWER3", "side": "SELL", "price": 93.3, "quantity": 17.88, "timestamp": 1793287711318, "fee": 3.67005},
+    ]
+    pos_split = summarize_fills_position_and_cost([buy_row, *sell_split], base_asset="HYPE", quote_asset="USD")
+    pos_agg = summarize_fills_position_and_cost([buy_row, *sell_agg], base_asset="HYPE", quote_asset="USD")
+    assert pos_split is not None and pos_agg is not None
+    assert pos_split["qty"] == pytest.approx(0.0, abs=1e-9)
+    assert pos_agg["qty"] == pytest.approx(0.0, abs=1e-9)
+    assert pos_split["realized_net"] == pytest.approx(pos_agg["realized_net"], abs=1e-4)
+    # Normal fully-matched sell (qty >= removed) still deducts 100% of quote_fee.
+    full_buy = {"id": "FB1", "orderId": "OFB1", "side": "BUY", "price": 100.0, "quantity": 10.0, "timestamp": 1792000000000, "fee": 1.0}
+    full_sell = {"id": "FS1", "orderId": "OFS1", "side": "SELL", "price": 110.0, "quantity": 10.0, "timestamp": 1792000005000, "fee": 2.0}
+    pos_full = summarize_fills_position_and_cost([full_buy, full_sell], base_asset="HYPE", quote_asset="USD")
+    assert pos_full is not None
+    assert pos_full["realized_net"] == pytest.approx(10.0 * (110.0 - 100.1) - 2.0, abs=1e-6)
+
+    # 2. .previous-only atomic swap recovery for resolve_kraken_trade_cache_position & _persisted_max_ts.
+    orders_dir = tmp_path / "orders"
+    orders_dir.mkdir(parents=True, exist_ok=True)
+    kr_filled_primary = orders_dir / CACHE_KRAKEN_ORDER_FILLED_FILENAME
+    kr_filled_prev = previous_generation_path(str(kr_filled_primary))
+    with open(kr_filled_prev, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "items": {
+                    "HYPEUSD": [
+                        {"orderId": "O1", "side": "BUY", "price": 80.0, "quantity": 2.0, "timestamp": 1795000001000, "fee": 0.32}
+                    ]
+                },
+                "fetchtime": {"HYPEUSD": 1795000005000},
+            },
+            fh,
+        )
+    pos_prev = resolve_kraken_trade_cache_position("HYPEUSD", str(tmp_path))
+    assert pos_prev is not None
+    assert pos_prev["qty"] == pytest.approx(2.0, abs=1e-6)
+
+    kr_trade_primary = orders_dir / CACHE_KRAKEN_TRADE_FILENAME
+    kr_trade_prev = previous_generation_path(str(kr_trade_primary))
+    with open(kr_trade_prev, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "items": {"HYPEUSD": [buy_row]},
+                "fetchtime": {"HYPEUSD": 1795000099000},
+            },
+            fh,
+        )
+    tm = CacheTradeManager(3600, ["HYPEUSD"], str(kr_trade_primary), read_only=True, venue="kraken")
+    assert tm._persisted_max_ts() == 1795000099000
+
+    # 3. write_ssot_fills_cache union-merges without wiping historical fills in trade & mirrored filled caches.
+    class _BridgeProbe(ProviderSsotBridgeMixin):
+        name = "hyperliquid"
+
+    probe = _BridgeProbe()
+    hl_dir = tmp_path / "hl_bridge"
+    hl_dir.mkdir(parents=True, exist_ok=True)
+    hl_trade = hl_dir / "cache_trade_hyperliquid.json"
+    hl_filled = hl_dir / "cache_order_filled_hyperliquid.json"
+    older_fill = {"coin": "@107", "oid": 1001, "tid": 11, "side": "B", "px": "80.0", "sz": "1.0", "time": 1793700000000}
+    newer_fill = {"coin": "@107", "oid": 1002, "tid": 12, "side": "B", "px": "82.0", "sz": "2.0", "time": 1795600000000}
+    assert probe.write_ssot_fills_cache("HYPEUSDC", str(hl_trade), [older_fill]) is True
+    assert probe.write_ssot_fills_cache("HYPEUSDC", str(hl_trade), [newer_fill]) is True
+    assert probe.write_ssot_fills_cache("HYPEUSDC", str(hl_trade), []) is True
+
+    tr_doc = json.loads(hl_trade.read_text(encoding="utf-8"))
+    fi_doc = json.loads(hl_filled.read_text(encoding="utf-8"))
+    assert {str(r["oid"]) for r in tr_doc["items"]["HYPEUSDC"]} == {"1001", "1002"}
+    assert {str(r["orderId"]) for r in fi_doc["items"]["HYPEUSDC"]} == {"1001", "1002"}
+    assert probe.write_ssot_fills_cache("SOLUSDC", str(hl_trade), []) is True
+    tr_doc2 = json.loads(hl_trade.read_text(encoding="utf-8"))
+    assert tr_doc2["items"]["SOLUSDC"] == []
+    assert tr_doc2["fetchtime"]["SOLUSDC"] > 0
