@@ -483,6 +483,17 @@ def _is_excluded_non_crisis_attack_keyword(
     ):
         eff_kinetic = kinetic_only - non_kinetic_war_kws
         if (
+            combined_words
+            and combined_words <= {"war", "wars", "conflict", "russia", "ukraine", "gaza", "israel", "iran", "middle", "east"}
+        ):
+            return True
+        if (
+            "how" in combined_words
+            and bool(combined_words & {"forced", "fighters"})
+            and not (combined_words & ((eff_kinetic - kw_words) | _BROAD_MARKET_INDEX_CONTEXT_WORDS))
+        ):
+            return True
+        if (
             "trump" in combined_words
             and not (
                 combined_words
@@ -658,7 +669,7 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
 )
 
 _EDITORIAL_CLICKBAIT_OR_ADVICE_RE = re.compile(
-    r"^(?:['\u2018\"].*['\u2019\"]:\s*)?(?:i(?:['\u2019]m|['\u2019]ve|\s+have|\s+am)\s+(?:\d{2}\b|worth\b|retired\b|inheriting\b|saving\b)|we(?:['\u2019]re|['\u2019]ve|\s+have|\s+are)\s+(?:\d{2}\b|in\s+our\b|worth\b|retired\b)|my\s+(?:(?:[\d-]+-year-old|elderly|late|aging)\s+)?(?:husband|wife|spouse|partner|parents|mother|father|brother|sister|son|daughter|adviser|advisor|financial\s+adviser|financial\s+advisor))\b|^['\u2018\"].*['\u2019\"]:\s*(?:i(?:['\u2019]m|['\u2019]ve|\s+have|\s+am)|we(?:['\u2019]re|['\u2019]ve|\s+have|\s+are))\b|^cramer:\s|^prediction:\s|^forget\s+[a-z0-9&-]+\.\s+here['\u2019]?s\b|^why\s+[a-z0-9&-]+\s+stock\s+is\s+(?:up|down|rising|falling|climbing|dropping|soaring|sliding)\s+today\b|^best\s+[a-z0-9-]+\s+dip\s+buys\b|^these\s+\d+\s+(?:[a-z0-9&-]+\s+){0,3}stocks\b|^not\s+[a-z]+\.\s+not\s+[a-z]+\.|^historically\s+(?:bullish|bearish)\s+signal\s+emerges\s+for\b|^etfs\s+(?:bought|sold)\s+\$[\d.]+\s+(?:million|billion)\s+of\b|\([a-z]{2,5}\)\s+(?:adds|buys|sells|trims|sees)\b.*\bon\s+(?:monday|tuesday|wednesday|thursday|friday|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z.]*\s+\d{1,2})\b|\(hint:\s*only\s+\d+\s+is\s+a\s+(?:buy|sell)\)|\bis\s+it\s+(?:time\s+to\s+buy|a\s+bargain\s+or\s+a\s+value\s+trap)\?|\b(?:can i buy a\s+\$?\d|can we afford\s+a\s+\$?\d|how to buy a\s+(?:new\s+|used\s+)?(?:car|home|house)\b|should i (?:stop going|put|invest|move|roll|buy|sell|keep|hold|withdraw|take|retire)\b|into an annuity\b|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:[a-z0-9&-]+\s+){0,3}stocks?\s+to\s+(?:buy|sell|watch|avoid)|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+reasons?\s+to\s+(?:buy|sell|avoid|hold|own)|crypto\s+bettors\s+weigh|alleged\s+[a-z0-9.\s'-]{1,40}\s+affair)\b"
+    r"^(?:['\u2018\"].*['\u2019\"]:\s*)?(?:i(?:['\u2019]m|['\u2019]ve|\s+have|\s+am)\s+(?:\d{2}\b|worth\b|retired\b|inheriting\b|saving\b)|we(?:['\u2019]re|['\u2019]ve|\s+have|\s+are)\s+(?:\d{2}\b|in\s+our\b|worth\b|retired\b)|my\s+(?:(?:[\d-]+-year-old|elderly|late|aging)\s+)?(?:husband|wife|spouse|partner|parents|mother|father|brother|sister|son|daughter|adviser|advisor|financial\s+adviser|financial\s+advisor))\b|^['\u2018\"].*['\u2019\"]:\s*(?:i(?:['\u2019]m|['\u2019]ve|\s+have|\s+am)|we(?:['\u2019]re|['\u2019]ve|\s+have|\s+are))\b|^aptopix\b|^cramer:\s|^prediction:\s|^forget\s+[a-z0-9&-]+\.\s+here['\u2019]?s\b|^why\s+[a-z0-9&-]+\s+stock\s+is\s+(?:up|down|rising|falling|climbing|dropping|soaring|sliding)\s+today\b|^best\s+[a-z0-9-]+\s+dip\s+buys\b|^these\s+\d+\s+(?:[a-z0-9&-]+\s+){0,3}stocks\b|^not\s+[a-z]+\.\s+not\s+[a-z]+\.|^historically\s+(?:bullish|bearish)\s+signal\s+emerges\s+for\b|^etfs\s+(?:bought|sold)\s+\$[\d.]+\s+(?:million|billion)\s+of\b|\([a-z]{2,5}\)\s+(?:adds|buys|sells|trims|sees)\b.*\bon\s+(?:monday|tuesday|wednesday|thursday|friday|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z.]*\s+\d{1,2})\b|\(hint:\s*only\s+\d+\s+is\s+a\s+(?:buy|sell)\)|\bis\s+it\s+(?:time\s+to\s+buy|a\s+bargain\s+or\s+a\s+value\s+trap)\?|\b(?:can i buy a\s+\$?\d|can we afford\s+a\s+\$?\d|how to buy a\s+(?:new\s+|used\s+)?(?:car|home|house)\b|should i (?:stop going|put|invest|move|roll|buy|sell|keep|hold|withdraw|take|retire)\b|into an annuity\b|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:[a-z0-9&-]+\s+){0,3}stocks?\s+to\s+(?:buy|sell|watch|avoid)|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+reasons?\s+to\s+(?:buy|sell|avoid|hold|own)|crypto\s+bettors\s+weigh|alleged\s+[a-z0-9.\s'-]{1,40}\s+affair)\b"
 )
 
 

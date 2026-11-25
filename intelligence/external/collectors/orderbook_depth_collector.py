@@ -724,14 +724,20 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             bid_buckets[best_bid] = bid_buckets.get(best_bid, 0.0) + bid_sz_usd
         if ask_sz_usd > 0.0:
             ask_buckets[best_ask] = ask_buckets.get(best_ask, 0.0) + ask_sz_usd
+        bars_vol_sh = sum(
+            v_sh for b in window_bars if len(b) >= 6 and (v_sh := safe_pos_float(b[5], default=None)) is not None
+        )
+        eff_daily_vol_sh = safe_pos_float(ctx.get("daily_vol_sh"), default=None) or bars_vol_sh or 1000.0
         fallback_depth_usd = min(
             250_000.0,
-            max(1000.0, (safe_pos_float(ctx.get("daily_vol_sh"), default=1000.0) or 1000.0) * mid * 0.0005),
+            max(1000.0, eff_daily_vol_sh * mid * 0.0005),
         )
+        fb_bid_px = best_bid if 0.0 < best_bid < mid else round(mid * 0.9985, 4)
+        fb_ask_px = best_ask if best_ask > mid else round(mid * 1.0015, 4)
         if not bid_buckets:
-            bid_buckets[round(mid * 0.995, 4)] = fallback_depth_usd
+            bid_buckets[fb_bid_px] = fallback_depth_usd
         if not ask_buckets:
-            ask_buckets[round(mid * 1.005, 4)] = fallback_depth_usd
+            ask_buckets[fb_ask_px] = fallback_depth_usd
 
         bid_depth_usd = sum(bid_buckets.values())
         ask_depth_usd = sum(ask_buckets.values())

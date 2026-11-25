@@ -1114,7 +1114,7 @@ _LOG_SUPERVISOR_SUMMARY_RE = re.compile(
     r"Exception ignored in:.*BaseSubprocessTransport\.__del__|RuntimeError:\s+Event loop is closed|"
     r"curl:\s*\(22\).*returned error:\s*429|deadman:\s*(?:curl ERROR after retries|ntfy rate-limited)|"
     r"In-place /compact for topic .* failed:|"
-    r"the historical price reference was explicitly bypassed;|"
+    r"the historical price reference(?: and quantity/weight guard)? (?:was|were) explicitly bypassed\b|"
     r"BLOCKED \(pre-submit\):\s*(?:replace_not_attempted|replace_cancel_only)\b|"
     r"\[<stdin>:\d+\])",
     re.IGNORECASE,

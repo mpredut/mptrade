@@ -6633,5 +6633,194 @@ def test_cycle12_premarket_overnight_gap_15m_macro_bar_age_short_trends_and_powe
     )
 
 
+def test_cycle13_reprice_balance_no_double_subtract_equity_ob_depth_sre_bypass_and_war_stubs(tmp_path):
+    """Cycle 13 audit fixes:
+    1. When monitororder cancels & reprices an already-locked order after bal_ts, capping synthetic
+       post-balance free-cash deduction by max(0, cur_locked - reflected_locked) prevents phantom
+       double-subtraction (e.g. -$104.85 NAV loss on Binance BTCUSDC), while still deducting
+       genuine brand-new post-bal_ts orders in full.
+    2. Equity orderbook fallback derives depth from RTH bar volume when ctx.daily_vol_sh is absent
+       and anchors empty-band buckets at BBO rather than fake $1000 @ +/-0.50% (103bps slip).
+    3. SRE log harvester ignores benign AI guard-bypass messages ('historical price reference and
+       quantity/weight guard were explicitly bypassed').
+    4. Photo-wire stubs ('APTOPIX Russia Ukraine War'), bare topic stubs ('Russia Ukraine War'),
+       and 'How forced fighters...' explainers are excluded from high-severity war alerts.
+    """
+    from cachepaths import CACHE_BINANCE_ORDER_OPEN_FILENAME
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item, match_high_severity_keywords
+    from intelligence.sentiment.collectors.portfolio_collector import TradablePositionsAndOrdersCollector
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    # C13.1a: Repriced order after bal_ts with unchanged total locked ($1004.66 -> $1004.63) must NOT double-subtract!
+    now_s = 1_795_600_845.0
+    bal_ts = now_s - 48.0
+    reprice_ts = now_s - 15.0
+    cdir1 = tmp_path / "cdir_c13_reprice"
+    (cdir1 / "state").mkdir(parents=True)
+    (cdir1 / "orders").mkdir(parents=True)
+    (cdir1 / "state" / "venue_balances_state.json").write_text(
+        json.dumps(
+            {
+                "binance:BTC": 0.025,
+                "binance:USDC": 5143.79,
+                "cash:binance:USDC": {
+                    "venue": "binance",
+                    "asset": "USDC",
+                    "free": 5143.79,
+                    "ts": bal_ts,
+                    "locked_quote_usd": 1004.66,
+                },
+                "pos:binance:BTCUSDC": {
+                    "venue": "binance",
+                    "symbol": "BTCUSDC",
+                    "base": "BTC",
+                    "quote": "USDC",
+                    "price": 58973.0,
+                    "free_base": 0.025,
+                    "free_quote": 5143.79,
+                    "ts": bal_ts,
+                    "base_bal_ts": bal_ts,
+                    "quote_bal_ts": bal_ts,
+                    "locked_quote_usd": 1004.66,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir1 / "orders" / CACHE_BINANCE_ORDER_OPEN_FILENAME).write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        {
+                            "orderId": "10965871781",
+                            "side": "BUY",
+                            "type": "LIMIT",
+                            "price": 58050.0,
+                            "origQty": 0.0155,
+                            "executedQty": 0.0,
+                            "status": "NEW",
+                            "timestamp": int((bal_ts - 3600.0) * 1000),
+                        },
+                        {
+                            "orderId": "10966561934",
+                            "side": "BUY",
+                            "type": "LIMIT",
+                            "price": 58907.4,
+                            "origQty": 0.00178,
+                            "executedQty": 0.0,
+                            "status": "NEW",
+                            "clientOrderId": "MO_TA_OR_reprice_0",
+                            "timestamp": int(reprice_ts * 1000),
+                        },
+                    ]
+                },
+                "symbol_verified_ts": {"BTCUSDC": now_s - 2.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    tpos_r, _, vcash_r, _ = TradablePositionsAndOrdersCollector(start_sync=False).collect(
+        str(cdir1),
+        prices_and_trends={"BTCUSDC": {"price": 58973.0}},
+        allow_empty_inst_recovery=True,
+        allow_network=False,
+        persist=False,
+        now_ts=now_s,
+    )
+    assert vcash_r["binance:USDC"]["free"] == pytest.approx(5143.79, abs=0.02)
+    assert vcash_r["binance:USDC"]["locked_quote_usd"] == pytest.approx(1004.63, abs=0.02)
+    assert tpos_r[0]["free_quote"] == pytest.approx(5143.79, abs=0.02)
+
+    # C13.1b: Genuine brand-new order (+$500) placed after bal_ts STILL deducts exact incremental +$500!
+    (cdir1 / "orders" / CACHE_BINANCE_ORDER_OPEN_FILENAME).write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        {
+                            "orderId": "10965871781",
+                            "side": "BUY",
+                            "type": "LIMIT",
+                            "price": 58050.0,
+                            "origQty": 0.0155,
+                            "executedQty": 0.0,
+                            "status": "NEW",
+                            "timestamp": int((bal_ts - 3600.0) * 1000),
+                        },
+                        {
+                            "orderId": "10966561934",
+                            "side": "BUY",
+                            "type": "LIMIT",
+                            "price": 58907.4,
+                            "origQty": 0.00178,
+                            "executedQty": 0.0,
+                            "status": "NEW",
+                            "timestamp": int(reprice_ts * 1000),
+                        },
+                        {
+                            "orderId": "10966599999",
+                            "side": "BUY",
+                            "type": "LIMIT",
+                            "price": 50000.0,
+                            "origQty": 0.01,
+                            "executedQty": 0.0,
+                            "status": "NEW",
+                            "timestamp": int((reprice_ts + 2.0) * 1000),
+                        },
+                    ]
+                },
+                "symbol_verified_ts": {"BTCUSDC": now_s - 2.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    tpos_n, _, vcash_n, _ = TradablePositionsAndOrdersCollector(start_sync=False).collect(
+        str(cdir1),
+        prices_and_trends={"BTCUSDC": {"price": 58973.0}},
+        allow_empty_inst_recovery=True,
+        allow_network=False,
+        persist=False,
+        now_ts=now_s,
+    )
+    assert vcash_n["binance:USDC"]["free"] == pytest.approx(5143.79 - 499.97, abs=0.05)
+    assert vcash_n["binance:USDC"]["locked_quote_usd"] == pytest.approx(1504.63, abs=0.05)
+
+    # C13.2: Equity orderbook fallback uses bar volume when daily_vol_sh is missing and anchors at BBO
+    col_ob = OrderbookDepthCollector(cache_dir=str(tmp_path / "ob_c13"), start_sync=False)
+    # Pre-market gap-down to $147.53 while prior RTH bars sit above $152 with 30M volume
+    rth_bars_nvda = [(now_s - 36000.0 + i * 300.0, 155.0, 155.5, 154.5, 155.0, 400_000.0) for i in range(78)]
+    col_ob._resolve_equity_context_bars_and_price = lambda sym, ts, include_options=False: (
+        {"best_bid": 147.48, "best_ask": 147.58, "bid_size_sh": 0.0, "ask_size_sh": 0.0},
+        rth_bars_nvda,
+        147.53,
+    )
+    snap_nvda = col_ob._fetch_equity_orderbook("NVDA_US_EQ", now_s)
+    assert snap_nvda is not None
+    assert snap_nvda.bid_depth_usd >= 100_000.0 and snap_nvda.ask_depth_usd >= 100_000.0
+    assert snap_nvda.largest_bid_wall_price == pytest.approx(147.48, abs=0.01)
+    assert snap_nvda.largest_ask_wall_price == pytest.approx(147.58, abs=0.01)
+
+    # C13.3: Benign AI guard-bypass line does not count as SRE guard intervention
+    ldir = tmp_path / "logs_c13"
+    ldir.mkdir(parents=True)
+    now_hms = time.strftime("%H:%M:%S")
+    (ldir / "order_guard.log").write_text(
+        f"{now_hms} [GUARD] BUY BTCUSDC: the historical price reference and quantity/weight guard were explicitly bypassed\n",
+        encoding="utf-8",
+    )
+    anom = harvest_log_anomalies_from_dirs([str(ldir)], 1.0)
+    assert anom.error_count == 0 and anom.guard_interventions == []
+
+    # C13.4: APTOPIX photo stub, bare 'Russia Ukraine War' stub, and 'How forced fighters...' excluded
+    assert is_excluded_reference_news_item("APTOPIX Russia Ukraine War - TelegraphHerald.com")
+    assert match_high_severity_keywords("Russia Ukraine War - WV News") == ()
+    assert match_high_severity_keywords("How 'forced fighters' are used by Russia in Ukraine war - RTE.ie") == ()
+    assert match_high_severity_keywords(
+        "Ukraine war escalates as Russian missile strike hits major oil refinery"
+    )
+
+
 
 

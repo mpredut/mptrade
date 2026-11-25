@@ -551,7 +551,13 @@ def _iter_valid_tradable_positions(
     return out
 
 
-_INTERNAL_BALANCE_TS_KEYS: tuple[str, ...] = ("_balance_ts", "_base_balance_ts", "_quote_balance_ts")
+_INTERNAL_BALANCE_TS_KEYS: tuple[str, ...] = (
+    "_balance_ts",
+    "_base_balance_ts",
+    "_quote_balance_ts",
+    "_prev_locked_quote_usd",
+    "_prev_locked_base_qty",
+)
 
 
 def _strip_internal_balance_ts(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -560,11 +566,12 @@ def _strip_internal_balance_ts(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 @dataclass(frozen=True)
 class BalanceObservation:
-    """Atomic balance observation binding raw free quantity to its own timestamp and source priority."""
+    """Atomic balance observation binding raw free quantity to its own timestamp, reflected locked amount, and source priority."""
 
     free: float
     ts: Optional[float] = None
     priority: int = 0
+    reflected_locked: Optional[float] = None
 
 
 def _merge_balance_observation(
@@ -572,11 +579,12 @@ def _merge_balance_observation(
     free: Optional[float],
     ts: Optional[float],
     priority: int,
+    reflected_locked: Optional[float] = None,
 ) -> Optional[BalanceObservation]:
-    """Combine atomic ``BalanceObservation(free, ts, priority)`` records without mixing value and timestamp."""
+    """Combine atomic ``BalanceObservation(free, ts, priority, reflected_locked)`` records without mixing value and timestamp."""
     if free is None:
         return cur
-    cand = BalanceObservation(free=free, ts=ts, priority=priority)
+    cand = BalanceObservation(free=free, ts=ts, priority=priority, reflected_locked=reflected_locked)
     if cur is None:
         return cand
     if cur.ts is not None and ts is not None:
@@ -584,12 +592,22 @@ def _merge_balance_observation(
             return cand
         if cur.ts > ts + 1e-6:
             return cur
-        return cand if priority >= cur.priority else cur
+        winner, other = (cand, cur) if priority >= cur.priority else (cur, cand)
+        if winner.reflected_locked is None and other.reflected_locked is not None:
+            return BalanceObservation(
+                free=winner.free, ts=winner.ts, priority=winner.priority, reflected_locked=other.reflected_locked
+            )
+        return winner
     if ts is not None:
         return cand
     if cur.ts is not None:
         return cur
-    return cand if priority >= cur.priority else cur
+    winner, other = (cand, cur) if priority >= cur.priority else (cur, cand)
+    if winner.reflected_locked is None and other.reflected_locked is not None:
+        return BalanceObservation(
+            free=winner.free, ts=winner.ts, priority=winner.priority, reflected_locked=other.reflected_locked
+        )
+    return winner
 
 
 def _build_cached_balance_index(
@@ -690,6 +708,7 @@ def derive_runtime_portfolio_view(
     }
 
     shared_obs_by_va: Dict[tuple[str, str], BalanceObservation] = {}
+    prev_locked_base_by_va: Dict[tuple[str, str], float] = {}
     for cash_val in venue_quote_cash.values():
         if isinstance(cash_val, dict):
             cv_n = normalize_venue_name(cash_val.get("venue"))
@@ -697,7 +716,12 @@ def derive_runtime_portfolio_view(
             if cv_n and cq_u:
                 c_free = safe_nonneg_float(cash_val.get("free"), default=None)
                 c_ts = safe_pos_float(cash_val.get("_balance_ts"), default=None)
-                if (m_c := _merge_balance_observation(shared_obs_by_va.get((cv_n, cq_u)), c_free, c_ts, 2)) is not None:
+                c_prev_lq = safe_nonneg_float(cash_val.get("_prev_locked_quote_usd"), default=None)
+                if (
+                    m_c := _merge_balance_observation(
+                        shared_obs_by_va.get((cv_n, cq_u)), c_free, c_ts, 2, reflected_locked=c_prev_lq
+                    )
+                ) is not None:
                     shared_obs_by_va[(cv_n, cq_u)] = m_c
     for pos_item, pv, ps in _iter_valid_tradable_positions(tradable_positions):
         p_res_b, p_res_q = resolve_assets(ps, pos_item.get("base"), pos_item.get("quote"))
@@ -707,7 +731,14 @@ def derive_runtime_portfolio_view(
         if p_b_u:
             fb_v = safe_nonneg_float(pos_item.get("free_base"), default=None)
             b_ts = safe_pos_float(pos_item.get("_base_balance_ts"), default=None) or fallback_ts
-            if (m_b := _merge_balance_observation(shared_obs_by_va.get((pv, p_b_u)), fb_v, b_ts, 1)) is not None:
+            p_prev_lb = safe_nonneg_float(pos_item.get("_prev_locked_base_qty"), default=None)
+            if p_prev_lb is not None:
+                prev_locked_base_by_va[(pv, p_b_u)] = prev_locked_base_by_va.get((pv, p_b_u), 0.0) + p_prev_lb
+            if (
+                m_b := _merge_balance_observation(
+                    shared_obs_by_va.get((pv, p_b_u)), fb_v, b_ts, 1, reflected_locked=prev_locked_base_by_va.get((pv, p_b_u))
+                )
+            ) is not None:
                 shared_obs_by_va[(pv, p_b_u)] = m_b
         if p_q_u:
             fq_v = safe_nonneg_float(pos_item.get("free_quote"), default=None)
@@ -716,6 +747,7 @@ def derive_runtime_portfolio_view(
                 shared_obs_by_va[(pv, p_q_u)] = m_q
 
     locked_quote_by_vq: Dict[tuple[str, str], float] = {}
+    locked_base_by_vb: Dict[tuple[str, str], float] = {}
     locked_quote_by_vs: Dict[tuple[str, str], float] = {}
     locked_base_by_vs: Dict[tuple[str, str], float] = {}
     pre_bal_locked_by_va: Dict[tuple[str, str], float] = {}
@@ -776,16 +808,30 @@ def derive_runtime_portfolio_view(
                 pre_bal_locked_quote_by_vs[(oo_v, oo_pos_sym)] = pre_bal_locked_quote_by_vs.get((oo_v, oo_pos_sym), 0.0) + locked_notional
         elif oo_side == "SELL":
             locked_base_by_vs[(oo_v, oo_pos_sym)] = locked_base_by_vs.get((oo_v, oo_pos_sym), 0.0) + oo_rem
+            if oo_b_u:
+                locked_base_by_vb[(oo_v, oo_b_u)] = locked_base_by_vb.get((oo_v, oo_b_u), 0.0) + oo_rem
             b_obs = shared_obs_by_va.get((oo_v, oo_b_u)) if oo_b_u else None
             b_ts = b_obs.ts if b_obs is not None else None
             if explicit_oo_ts is not None and b_ts is not None and explicit_oo_ts > b_ts + 0.5:
                 pre_bal_locked_by_va[(oo_v, oo_b_u)] = pre_bal_locked_by_va.get((oo_v, oo_b_u), 0.0) + oo_rem
                 pre_bal_locked_base_by_vs[(oo_v, oo_pos_sym)] = pre_bal_locked_base_by_vs.get((oo_v, oo_pos_sym), 0.0) + oo_rem
 
+    cur_locked_by_va: Dict[tuple[str, str], float] = dict(locked_quote_by_vq)
+    for vb_k, lb_v in locked_base_by_vb.items():
+        cur_locked_by_va[vb_k] = cur_locked_by_va.get(vb_k, 0.0) + lb_v
     adjusted_free_by_va: Dict[tuple[str, str], float] = {}
+    eff_pre_bal_locked_by_va: Dict[tuple[str, str], float] = {}
     for va_key, pre_locked in pre_bal_locked_by_va.items():
         if pre_locked > 0.0 and (obs_va := shared_obs_by_va.get(va_key)) is not None:
-            adjusted_free_by_va[va_key] = max(0.0, obs_va.free - pre_locked)
+            eff_deduct = pre_locked
+            if obs_va.reflected_locked is not None:
+                # Cap synthetic post-balance deduction by the net increase in total locked amount
+                # over what was already reflected at obs_va.ts (prevents double-subtracting free
+                # balances when monitororder cancels & reprices an already-locked order).
+                eff_deduct = min(pre_locked, max(0.0, cur_locked_by_va.get(va_key, 0.0) - obs_va.reflected_locked))
+            if eff_deduct > 1e-8:
+                eff_pre_bal_locked_by_va[va_key] = eff_deduct
+                adjusted_free_by_va[va_key] = max(0.0, obs_va.free - eff_deduct)
 
     # Apply synthetic pre-balance deductions to runtime/prompt views ONLY; keep persisted ``updated_bals``
     # free balances raw while persisting venue-reflected locked balances & trailing peaks for Unified NAV.
@@ -798,7 +844,7 @@ def derive_runtime_portfolio_view(
                 cash_val["free"] = round(raw_c_obs.free, 2)
             if (lq_val := locked_quote_by_vq.get((cv_norm, cq_u), 0.0)) > 0.0:
                 cash_val["locked_quote_usd"] = round(lq_val, 2)
-                pers_cash_lq = max(0.0, lq_val - pre_bal_locked_by_va.get((cv_norm, cq_u), 0.0))
+                pers_cash_lq = max(0.0, lq_val - eff_pre_bal_locked_by_va.get((cv_norm, cq_u), 0.0))
                 if pers_cash_lq > 1e-6:
                     cash_bkey = f"cash:{cv_norm}:{cq_u}"
                     if cash_bkey in updated_bals and isinstance(updated_bals[cash_bkey], dict):
@@ -878,8 +924,16 @@ def derive_runtime_portfolio_view(
             pos_bkey = f"pos:{p_v_norm}:{p_sym_raw}" if f"pos:{p_v_norm}:{p_sym_raw}" in updated_bals else f"pos:{p_v_norm}:{p_sym_u}"
             if pos_bkey in updated_bals and isinstance(updated_bals[pos_bkey], dict):
                 pers_pos = dict(updated_bals[pos_bkey])
-                pers_lq = max(0.0, lq_pos - pre_bal_locked_quote_by_vs.get((p_v_norm, p_sym_u), 0.0))
-                pers_lb = max(0.0, lb_pos - pre_bal_locked_base_by_vs.get((p_v_norm, p_sym_u), 0.0))
+                raw_pre_q = pre_bal_locked_by_va.get((p_v_norm, p_quote_u), 0.0) if p_quote_u else 0.0
+                q_deduct_scale = (
+                    eff_pre_bal_locked_by_va.get((p_v_norm, p_quote_u), 0.0) / raw_pre_q if raw_pre_q > 1e-12 else 0.0
+                )
+                raw_pre_b = pre_bal_locked_by_va.get((p_v_norm, p_base_u), 0.0) if p_base_u else 0.0
+                b_deduct_scale = (
+                    eff_pre_bal_locked_by_va.get((p_v_norm, p_base_u), 0.0) / raw_pre_b if raw_pre_b > 1e-12 else 0.0
+                )
+                pers_lq = max(0.0, lq_pos - pre_bal_locked_quote_by_vs.get((p_v_norm, p_sym_u), 0.0) * q_deduct_scale)
+                pers_lb = max(0.0, lb_pos - pre_bal_locked_base_by_vs.get((p_v_norm, p_sym_u), 0.0) * b_deduct_scale)
                 if pers_lq > 1e-6:
                     pers_pos["locked_quote_usd"] = round(pers_lq, 2)
                 if pers_lb > 1e-12:
@@ -1513,6 +1567,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 pos_bal_ts = safe_pos_float(v.get("ts"), default=None)
                 pos_base_ts = safe_pos_float(v.get("base_bal_ts"), default=None) or pos_bal_ts
                 pos_quote_ts = safe_pos_float(v.get("quote_bal_ts"), default=None) or pos_bal_ts
+                prev_pos_lb = safe_nonneg_float(v.get("locked_base_qty"), default=None)
                 for stale_k in ("locked_quote_usd", "replace_max_buy_usd", "locked_base_qty", "locked_base_usd", "replace_max_sell_usd", "ts", "base_bal_ts", "quote_bal_ts"):
                     rec_pos.pop(stale_k, None)
                 v_rec_norm = normalize_venue_name(rec_pos.get("venue"))
@@ -1545,6 +1600,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     rec_pos["free_quote"] = round(fq_val, 2)
                 if base_bal_ts is not None:
                     rec_pos["_base_balance_ts"] = base_bal_ts
+                    if prev_pos_lb is not None and pos_base_ts is not None and abs(base_bal_ts - pos_base_ts) <= 1e-3:
+                        rec_pos["_prev_locked_base_qty"] = prev_pos_lb
                 if quote_bal_ts is not None:
                     rec_pos["_quote_balance_ts"] = quote_bal_ts
                 px_rec = 0.0
@@ -1599,15 +1656,19 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 if c_venue and c_asset:
                     c_v_norm = normalize_venue_name(c_venue)
                     rec_cash = dict(v)
+                    prev_cash_lq = safe_nonneg_float(v.get("locked_quote_usd"), default=None)
+                    raw_c_ts = safe_pos_float(v.get("ts"), default=None)
                     rec_cash.pop("locked_quote_usd", None)
                     rec_cash.pop("ts", None)
                     if (c_obs := cached_obs_by_va.get((c_v_norm, c_asset))) is not None:
                         rec_cash["free"] = round(c_obs[0], 2)
                         c_bal_ts = c_obs[1]
                     else:
-                        c_bal_ts = safe_pos_float(v.get("ts"), default=None)
+                        c_bal_ts = raw_c_ts
                     if c_bal_ts is not None:
                         rec_cash["_balance_ts"] = c_bal_ts
+                        if prev_cash_lq is not None and raw_c_ts is not None and abs(c_bal_ts - raw_c_ts) <= 1e-3:
+                            rec_cash["_prev_locked_quote_usd"] = prev_cash_lq
                     venue_quote_cash[f"{c_venue}:{c_asset}"] = rec_cash
 
     @staticmethod
@@ -1792,6 +1853,13 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 if quote_bal_ts is not None:
                     persisted_cash["ts"] = round(quote_bal_ts, 3)
                     cash_entry["_balance_ts"] = quote_bal_ts
+                    if (
+                        isinstance(c_cash_prev := cached_bals.get(f"cash:{v_norm}:{quote.upper()}"), dict)
+                        and (prev_c_ts := safe_pos_float(c_cash_prev.get("ts"), default=None)) is not None
+                        and abs(quote_bal_ts - prev_c_ts) <= 1e-3
+                        and (prev_c_lq := safe_nonneg_float(c_cash_prev.get("locked_quote_usd"), default=None)) is not None
+                    ):
+                        cash_entry["_prev_locked_quote_usd"] = prev_c_lq
                 updated_bals[f"cash:{v_norm}:{quote.upper()}"] = persisted_cash
                 venue_quote_cash[f"{venue}:{quote}"] = cash_entry
 
@@ -1837,6 +1905,13 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 pos_entry["mt_gain_pct"], pos_entry["mt_lost_pct"] = params.get("mt.gain"), params.get("mt.lost")
             if base_bal_ts is not None:
                 pos_entry["_base_balance_ts"] = base_bal_ts
+                prev_b_ts = safe_pos_float(prev_cached_pos.get("base_bal_ts"), default=None) or prev_pos_ts
+                if (
+                    prev_b_ts is not None
+                    and abs(base_bal_ts - prev_b_ts) <= 1e-3
+                    and (prev_p_lb := safe_nonneg_float(prev_cached_pos.get("locked_base_qty"), default=None)) is not None
+                ):
+                    pos_entry["_prev_locked_base_qty"] = prev_p_lb
             if quote_bal_ts is not None:
                 pos_entry["_quote_balance_ts"] = quote_bal_ts
             tradable_positions.append(pos_entry)
