@@ -17921,8 +17921,16 @@ def test_stages_1_to_3_ssot_capabilities_windows_and_prompt_view_normalization()
     assert resolve_volume_window_anchor_ms(10_000_000.0, 9_500_000.0, 300_000.0) == 10_000_000.0
     assert resolve_volume_window_anchor_ms(10_000_000.0, 9_800_000.0, 300_000.0) == 9_800_000.0
     assert is_macro_benchmark_feed_delayed("REGULAR", MACRO_BENCHMARK_DELAYED_FEED_MIN) is True
+    assert is_macro_benchmark_feed_delayed("REGULAR", 11.0) is True
     assert is_macro_benchmark_feed_delayed("REGULAR", 10.0) is False
     assert is_macro_benchmark_feed_delayed("CLOSED", 180.0) is False
+
+    # 2b. recalculate_live_price_geometry computes pos_15m_pct from unrounded live price (no 2-decimal rounding drift)
+    from intelligence.sentiment.evaluators.price_series_evaluator import recalculate_live_price_geometry
+
+    p15 = {"price": 127.885, "low_15m": 127.72, "high_15m": 128.15, "pos_15m_pct": 39.5}
+    recalculate_live_price_geometry(p15, 127.885)
+    assert p15["pos_15m_pct"] == pytest.approx(38.4, abs=0.1)
 
     # 3. ScopePresentationSpec SSOT registry & MicrostructurePromptViewEvaluator normalized flags
     eq_spec = resolve_scope_presentation("equities")

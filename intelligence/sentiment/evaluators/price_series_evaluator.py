@@ -2267,10 +2267,15 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
     l15 = safe_pos_float(pinfo.get("low_15m"), default=None)
     h15 = safe_pos_float(pinfo.get("high_15m"), default=None)
     if l15 is not None and h15 is not None:
-        l15_new, h15_new = round(min(l15, p_cur_15m), eff_dec_15m), round(max(h15, p_cur_15m), eff_dec_15m)
+        l15_new = round(min(l15, p_cur), eff_dec_15m)
+        h15_new = round(max(h15, p_cur), eff_dec_15m)
+        if p_cur < l15_new:
+            l15_new = round(p_cur, max(eff_dec_15m, 4))
+        if p_cur > h15_new:
+            h15_new = round(p_cur, max(eff_dec_15m, 4))
         pinfo["low_15m"], pinfo["high_15m"] = l15_new, h15_new
         if h15_new > l15_new > 0:
-            pinfo["pos_15m_pct"] = round(min(100.0, max(0.0, ((p_cur_15m - l15_new) / (h15_new - l15_new)) * 100.0)), 1)
+            pinfo["pos_15m_pct"] = range_position_pct(p_cur, l15_new, h15_new)
             pinfo["span_15m_pct"] = pct_delta(h15_new, l15_new)
 
 
