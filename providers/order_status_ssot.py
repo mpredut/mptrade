@@ -430,18 +430,20 @@ def classify_order_evidence_state(
 
     if v_u in {"PARTIALLY_FILLED", "PARTIAL"}:
         return "PARTIAL"
-    if v_u and is_open_working_status(v_u, allow_empty=False):
-        return "OPEN"
     if v_u in {"EXPIRED", "EXPIRED_IN_MATCH"}:
         return "EXPIRED"
     if not collapse_cancel_variants and v_u in {"REPLACED", "REJECTED"}:
         return v_u
     if v_u in CANCEL_OR_EXPIRE_VENUE_STATUSES or is_terminal_non_fill_venue_status(v_u):
         return "CANCELED"
+    if v_u and is_open_working_status(v_u, allow_empty=False):
+        if not require_qty_match_for_filled and qty_complete:
+            return "FILLED"
+        return "PARTIAL" if fq > 0.0 else "OPEN"
     if qty_complete:
         return "FILLED"
     if v_u in {"FILLED", "CLOSED"}:
-        if qty_strictly_partial and (require_qty_match_for_filled or fq > 0.0):
+        if require_qty_match_for_filled and qty_strictly_partial:
             return "PARTIAL"
         return "FILLED"
     if fq > 0.0 and (rq is None or qty_strictly_partial):

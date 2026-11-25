@@ -7438,6 +7438,148 @@ def test_free_balance_ssot_refactor_atomic_locked_xstock_reconcile_and_t212_repr
     assert tpos_live[0]["free_quote"] == pytest.approx(5143.79, abs=0.02)
 
 
+def test_post_7fc3348e_edge_case_hardening(tmp_path):
+    """Regression coverage for the 4 post-7fc3348e audit edge cases:
+    1. classify_order_evidence_state: partial fill on OPEN stays PARTIAL (Kraken/HL),
+       and authoritative FILLED/CLOSED with require_qty_match_for_filled=False transitions to FILLED.
+    2. load_venue_balances_state_dict & upsert_venue_balances_snapshot recover .previous on corrupt/missing
+       primary file and never fall through from an existing empty state/ file to a stale root file.
+    3. BalanceSnapshotRecord.to_persisted_cash_fields isolates quote_locked from base-side SELL locks
+       when an asset serves simultaneously as quote (BUY) and base (SELL).
+    4. upsert_venue_balances_snapshot strips all 5 INTERNAL_BALANCE_SCRATCH_KEYS including _prev_locked_*.
+    """
+    import json
+    from intelligence.sentiment.collectors.portfolio_collector import derive_runtime_portfolio_view
+    from providers.order_ledger import OrderLedgerState, _classify_venue_status_transition, classify_fill_evidence_state
+    from providers.order_status_ssot import classify_order_evidence_state
+    from providers.portfolio_valuation import (
+        BalanceSnapshotRecord,
+        load_venue_balances_state_dict,
+        upsert_venue_balances_snapshot,
+    )
+
+    # 1a. OPEN working status with partial fill -> PARTIAL (never regresses PARTIAL -> OPEN on Kraken/HL)
+    assert (
+        _classify_venue_status_transition("OPEN", fq=0.4, req_qty=1.0, current_state=OrderLedgerState.PARTIAL.value)
+        == OrderLedgerState.PARTIAL.value
+    )
+    assert (
+        _classify_venue_status_transition("OPEN", fq=0.0, req_qty=1.0, current_state=OrderLedgerState.OPEN.value)
+        == OrderLedgerState.OPEN.value
+    )
+    assert (
+        _classify_venue_status_transition("OPEN", fq=1.0, req_qty=1.0, current_state=OrderLedgerState.PARTIAL.value)
+        == OrderLedgerState.FILLED.value
+    )
+    # 1b. Authoritative FILLED/CLOSED (require_qty_match_for_filled=False) transitions to FILLED even with dust gap,
+    # while fill-cache classification (require_qty_match_for_filled=True) stays strictly PARTIAL.
+    assert (
+        _classify_venue_status_transition("CLOSED", fq=0.995, req_qty=1.0, current_state=OrderLedgerState.PARTIAL.value)
+        == OrderLedgerState.FILLED.value
+    )
+    assert (
+        classify_order_evidence_state("FILLED", filled_qty=0.4, req_qty=1.0, require_qty_match_for_filled=False)
+        == "FILLED"
+    )
+    assert (
+        classify_fill_evidence_state({"quantity": 0.4, "status": "FILLED"}, req_qty=1.0, resting_now=False)
+        == OrderLedgerState.PARTIAL.value
+    )
+    assert (
+        classify_fill_evidence_state({"quantity": 1.0, "status": "OPEN"}, req_qty=1.0, resting_now=True)
+        == OrderLedgerState.PARTIAL.value
+    )
+
+    # 2a. Corrupt primary state/venue_balances_state.json recovers valid .previous (never falls back to stale root)
+    cdb = tmp_path / "cachedb_rec"
+    (cdb / "state").mkdir(parents=True)
+    primary = cdb / "state" / "venue_balances_state.json"
+    primary_prev = cdb / "state" / "venue_balances_state.json.previous"
+    stale_root = cdb / "venue_balances_state.json"
+    primary.write_text("{corrupt-json", encoding="utf-8")
+    primary_prev.write_text(json.dumps({"cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 5000.0}}), encoding="utf-8")
+    stale_root.write_text(json.dumps({"cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 1.0}}), encoding="utf-8")
+
+    loaded = load_venue_balances_state_dict(str(cdb), use_cache=False)
+    assert loaded["cash:binance:USDC"]["free"] == pytest.approx(5000.0)
+
+    # 2b. Missing primary with valid .previous still recovers in upsert_venue_balances_snapshot before merging
+    primary.unlink()
+    assert upsert_venue_balances_snapshot(
+        str(primary),
+        {
+            "cash:kraken:USD": {
+                "venue": "kraken",
+                "asset": "USD",
+                "free": 1200.0,
+                "_balance_ts": 100.0,
+                "_prev_locked_quote_usd": 50.0,
+                "_prev_locked_base_qty": 1.0,
+            }
+        },
+    )
+    merged_disk = json.loads(primary.read_text(encoding="utf-8"))
+    assert merged_disk["cash:binance:USDC"]["free"] == pytest.approx(5000.0)
+    assert merged_disk["cash:kraken:USD"]["free"] == pytest.approx(1200.0)
+    # 4. All 5 scratch keys stripped on persist
+    assert not any(k.startswith("_") for k in merged_disk["cash:kraken:USD"])
+
+    # 2c. Existing empty state/ file returns {} instead of falling through to stale legacy root
+    primary.write_text("{}", encoding="utf-8")
+    primary_prev.unlink(missing_ok=True)
+    assert load_venue_balances_state_dict(str(cdb), use_cache=False) == {}
+
+    # 3. Dual-role asset (USDC locked as BUY quote on BTCUSDC AND as SELL base on USDCUSDT): no double-count in cash:*
+    rec_dual = BalanceSnapshotRecord(free_raw=1000.0, total_locked=700.0, pre_balance_locked=0.0, reflected_locked=700.0)
+    assert rec_dual.to_persisted_cash_fields(decimals=2, quote_locked=500.0, pre_quote_locked=0.0) == {
+        "locked_quote_usd": 500.0
+    }
+    now_s = 1_795_610_000.0
+    tpos = [
+        {
+            "venue": "binance",
+            "symbol": "USDCUSDT",
+            "base": "USDC",
+            "quote": "USDT",
+            "price": 1.0,
+            "free_base": 1000.0,
+            "free_quote": 200.0,
+            "_balance_ts": now_s - 60.0,
+            "_prev_locked_base_qty": 200.0,
+        }
+    ]
+    vcash = {
+        "binance:USDC": {
+            "venue": "binance",
+            "asset": "USDC",
+            "free": 1000.0,
+            "_balance_ts": now_s - 60.0,
+            "_prev_locked_quote_usd": 500.0,
+        }
+    }
+    updated_bals = {
+        "cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 1000.0},
+        "pos:binance:USDCUSDT": {"venue": "binance", "symbol": "USDCUSDT", "free_base": 1000.0, "free_quote": 200.0},
+    }
+    derive_runtime_portfolio_view(
+        open_orders_list=[
+            {"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "price": 50000.0, "qty": 0.01, "created_ts": now_s - 120.0},
+            {"venue": "binance", "symbol": "USDCUSDT", "side": "SELL", "price": 1.0, "qty": 200.0, "created_ts": now_s - 120.0},
+        ],
+        tradable_positions=tpos,
+        venue_quote_cash=vcash,
+        inst_by_sym={},
+        prices_and_trends={"BTCUSDC": {"price": 50000.0}, "USDCUSDT": {"price": 1.0}},
+        updated_bals=updated_bals,
+        pending_peaks_by_vs={},
+        now_ts_oo=now_s,
+        gateway_max_usd=2000.0,
+    )
+    assert updated_bals["cash:binance:USDC"]["locked_quote_usd"] == pytest.approx(500.0)
+    assert updated_bals["pos:binance:USDCUSDT"]["locked_base_qty"] == pytest.approx(200.0)
+
+
+
 
 
 

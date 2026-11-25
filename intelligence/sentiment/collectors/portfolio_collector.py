@@ -654,6 +654,7 @@ def derive_runtime_portfolio_view(
     locked_quote_by_vs: Dict[tuple[str, str], float] = {}
     locked_base_by_vs: Dict[tuple[str, str], float] = {}
     pre_bal_locked_by_va: Dict[tuple[str, str], float] = {}
+    pre_bal_locked_quote_by_vq: Dict[tuple[str, str], float] = {}
     pre_bal_locked_quote_by_vs: Dict[tuple[str, str], float] = {}
     pre_bal_locked_base_by_vs: Dict[tuple[str, str], float] = {}
     for oo_item in open_orders_list or ():
@@ -708,6 +709,7 @@ def derive_runtime_portfolio_view(
             q_ts = q_obs.ts if q_obs is not None else None
             if explicit_oo_ts is not None and q_ts is not None and explicit_oo_ts > q_ts + 0.5:
                 pre_bal_locked_by_va[(oo_v, oo_q_u)] = pre_bal_locked_by_va.get((oo_v, oo_q_u), 0.0) + locked_notional
+                pre_bal_locked_quote_by_vq[(oo_v, oo_q_u)] = pre_bal_locked_quote_by_vq.get((oo_v, oo_q_u), 0.0) + locked_notional
                 pre_bal_locked_quote_by_vs[(oo_v, oo_pos_sym)] = pre_bal_locked_quote_by_vs.get((oo_v, oo_pos_sym), 0.0) + locked_notional
         elif oo_side == "SELL":
             locked_base_by_vs[(oo_v, oo_pos_sym)] = locked_base_by_vs.get((oo_v, oo_pos_sym), 0.0) + oo_rem
@@ -747,7 +749,11 @@ def derive_runtime_portfolio_view(
             if (lq_val := locked_quote_by_vq.get(va_c, 0.0)) > 0.0:
                 cash_val["locked_quote_usd"] = round(lq_val, 2)
                 c_rec = balance_records_by_va.get(va_c) or BalanceSnapshotRecord(free_raw=0.0, total_locked=lq_val)
-                if pers_cash_fields := c_rec.to_persisted_cash_fields(decimals=2):
+                if pers_cash_fields := c_rec.to_persisted_cash_fields(
+                    decimals=2,
+                    quote_locked=lq_val,
+                    pre_quote_locked=pre_bal_locked_quote_by_vq.get(va_c, 0.0),
+                ):
                     cash_bkey = f"cash:{cv_norm}:{cq_u}"
                     if cash_bkey in updated_bals and isinstance(updated_bals[cash_bkey], dict):
                         updated_bals[cash_bkey] = {**updated_bals[cash_bkey], **pers_cash_fields}

@@ -244,14 +244,20 @@ def load_venue_balances_state_dict(
         ))
     )
     for cand in candidates:
-        if require_exists and not (os.path.exists(cand) or os.path.exists(f"{cand}.previous")):
+        has_disk_file = os.path.exists(cand) or os.path.exists(f"{cand}.previous")
+        if require_exists and not has_disk_file:
             continue
         if callable(read_json_fn):
             raw = read_json_fn(cand)
         elif use_cache:
             raw = read_json_dict_cached(cand)
         else:
-            raw = read_json_dict(cand, default={})
+            if not has_disk_file:
+                continue
+            raw = read_json_dict(cand, default=None, recover_previous=True)
+            if isinstance(raw, dict):
+                return raw
+            continue
         if isinstance(raw, dict) and raw:
             return raw
     return {}
@@ -308,9 +314,10 @@ def upsert_venue_balances_snapshot(
         return False
     os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
     with generation_file_lock(bcache_path):
+        disk_exists = os.path.exists(bcache_path) or os.path.exists(f"{bcache_path}.previous")
         disk_bals = (
-            read_json_dict(bcache_path, default=None, repair_files=True)
-            if (read_disk and os.path.exists(bcache_path))
+            read_json_dict(bcache_path, default=None, recover_previous=True, repair_files=True)
+            if (read_disk and disk_exists)
             else None
         )
         disk_dict = disk_bals if isinstance(disk_bals, dict) else None
@@ -379,8 +386,18 @@ class BalanceSnapshotRecord:
     def persisted_symbol_locked(self, symbol_total_locked: float, symbol_pre_balance_locked: float) -> float:
         return max(0.0, max(0.0, symbol_total_locked) - max(0.0, symbol_pre_balance_locked) * self.deduct_scale)
 
-    def to_persisted_cash_fields(self, *, decimals: int = 2) -> dict[str, float]:
-        pers_lq = self.venue_reflected_locked
+    def to_persisted_cash_fields(
+        self,
+        *,
+        decimals: int = 2,
+        quote_locked: Optional[float] = None,
+        pre_quote_locked: float = 0.0,
+    ) -> dict[str, float]:
+        pers_lq = (
+            self.persisted_symbol_locked(quote_locked, pre_quote_locked)
+            if quote_locked is not None
+            else self.venue_reflected_locked
+        )
         return {"locked_quote_usd": round(pers_lq, decimals)} if pers_lq > 1e-6 else {}
 
     def to_persisted_position_fields(
