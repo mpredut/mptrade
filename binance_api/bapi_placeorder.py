@@ -47,6 +47,7 @@ from providers.quantity import (
     binance_filter_refusal_reason,
     decimal_places,
     fee_cap_quantity,
+    format_fixed_decimal,
 )
 from providers.strategy_executor import SubmissionRefused
 import account_cache_health
@@ -373,6 +374,8 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
 
     target_client = api_client or client
     client_order_id = clean_order_id(client_order_id) or rc.create_client_order_id()
+    qty_str = format_fixed_decimal(qty)
+    price_str = format_fixed_decimal(price) if price is not None else None
     cancel_replace_fn = None
     if cancel_oid is not None:
         cancel_replace_fn = getattr(target_client, "cancel_replace_order", None)
@@ -382,10 +385,10 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
         submit_kwargs = {}
     elif market:
         method = target_client.order_market_buy if side == "BUY" else target_client.order_market_sell
-        submit_kwargs = {"symbol": symbol, "quantity": qty}
+        submit_kwargs = {"symbol": symbol, "quantity": qty_str}
     else:
         method = target_client.order_limit_buy if side == "BUY" else target_client.order_limit_sell
-        submit_kwargs = {"symbol": symbol, "quantity": qty, "price": str(price)}
+        submit_kwargs = {"symbol": symbol, "quantity": qty_str, "price": price_str}
         if not post_only_flag and getattr(target_client, "_post_only_limit_installed", False):
             submit_kwargs["post_only"] = False
     if cache_permit is None:
@@ -419,8 +422,8 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
             "side": side,
             "type": "LIMIT_MAKER" if post_only_flag else "LIMIT",
             **({} if post_only_flag else {"timeInForce": "GTC"}),
-            "quantity": qty,
-            "price": str(price),
+            "quantity": qty_str,
+            "price": price_str,
             "cancelReplaceMode": "STOP_ON_FAILURE",
             "cancelRestrictions": "ONLY_NEW",
             "cancelOrderId": cancel_oid,
@@ -473,7 +476,7 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
             f"[Binance] Post-only LIMIT_MAKER crossed book ({exc}); "
             f"stepping {side} {symbol} price {price} -> {retry_px}"
         )
-        submit_kwargs["price"] = str(retry_px)
+        submit_kwargs["price"] = format_fixed_decimal(retry_px)
         try:
             order = method(**submit_kwargs, newClientOrderId=client_order_id)
         except BinanceAPIException as retry_exc:

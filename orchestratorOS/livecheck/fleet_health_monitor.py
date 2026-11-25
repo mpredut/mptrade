@@ -177,8 +177,8 @@ class FleetHealthMonitor:
                 "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
                 "-p", str(self.dev_port),
                 f"{self.dev_user}@{self.dev_host}",
-                "pgrep -f run_overnight_master_suite.sh >/dev/null && echo 'RUNNING' || echo 'STOPPED'; "
-                "tail -n 5 ~/mptrade/logs/overnight_runs/latest_overnight.log ~/mptrade/logs/overnight_runs/master_suite_current.log 2>/dev/null",
+                "pgrep -f '[r]un_overnight_master_suite.sh' >/dev/null && echo 'RUNNING' || echo 'STOPPED'; "
+                "tail -n 5 ~/mptrade/logs/overnight_runs/latest_overnight.log ~/mptrade/logs/overnight_runs/master_suite_current.log 2>/dev/null || true",
             ]
             res = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=8)
             if res.returncode == 0:

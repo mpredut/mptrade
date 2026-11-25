@@ -218,11 +218,11 @@ will return -2015. Generate a new token from the PIA account (the Dedicated IP s
 
 rung_relogin() {
     log "rung 4: Logout and Login to reset account state"
-    pia logout >/dev/null 2>&1
-    sleep 2
     [ -n "${PIA_ACCOUNT_USER:-}" ] || { log "   FAILED: PIA_USER missing in .env"; return 1; }
     [ -n "${PIA_PASS:-}" ] || { log "   FAILED: PIA_PASS missing in .env"; return 1; }
     [ -n "${PIA_DIP_TOKEN_FRANKFURT:-}" ] || { log "   FAILED: PIA_DIP_TOKEN_FRANKFURT missing in .env"; return 1; }
+    pia logout >/dev/null 2>&1
+    sleep 2
 
     pia_with_secret_file "$(printf "%s\n%s" "$PIA_ACCOUNT_USER" "$PIA_PASS")" pia login || true
     sleep 2

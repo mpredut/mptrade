@@ -107,6 +107,7 @@ def _install_threadsafe_request(cl):
             read=3,
             status_forcelist=[429, 500, 502, 503, 504],
             raise_on_status=True,
+            allowed_methods=frozenset({"GET", "HEAD", "OPTIONS"}),
         )
         tls.session = new_sess
         tls.base_session_id = base_id
@@ -315,10 +316,11 @@ def getClient():
             except TypeError:
                 cl = Client(api_key, api_secret, requests_params={"timeout": REQUEST_TIMEOUT_SEC})
             cl.REQUEST_RECVWINDOW = REQUEST_RECVWINDOW_MS
-            # Retry transient DNS/connection/5xx/429 failures on idempotent methods only (never POST/order placement).
+            # Retry transient DNS/connection/5xx/429 failures on read-only methods only (never POST/DELETE order calls).
             if not mount_connect_retry(cl.session, attempts=3, backoff=1.0, read=3,
                                        status_forcelist=[429, 500, 502, 503, 504],
-                                       raise_on_status=True):
+                                       raise_on_status=True,
+                                       allowed_methods=frozenset({"GET", "HEAD", "OPTIONS"})):
                 print("[bapi_client] _install_retry: adapter mount failed (timeout still guards)")
             _install_threadsafe_request(cl)  # Isolate per-thread HTTP sessions & local response objects.
             _install_recvwindow_retry(cl)  # Re-sync and re-sign once on -1021 recvWindow rejection.

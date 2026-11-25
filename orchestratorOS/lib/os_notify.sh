@@ -69,7 +69,7 @@ send_os_ntfy() {
         local dedup_dir="$ROOT/logs/.os_notify_dedup"
         mkdir -p "$dedup_dir" 2>/dev/null || true
         chmod 0777 "$dedup_dir" 2>/dev/null || true
-        find "$dedup_dir" -maxdepth 1 -type f \( -name '[0-9a-f]*' -o -name '.pending_bulk_*' \) -mmin +60 -delete 2>/dev/null || true
+        find "$dedup_dir" -maxdepth 1 -type f -name '[0-9a-f]*' -mmin +60 -delete 2>/dev/null || true
         local norm_title norm_body key_hash safe_topic
         norm_title="$(printf '%s' "$title" | sed -E 's/[0-9]+([.][0-9]+)?/<N>/g')"
         norm_body="$(printf '%s' "$body" | head -n 1 | sed -E 's/\b[0-9a-f]{7,40}\b/<SHA>/g; s/[0-9]+([.][0-9]+)?/<N>/g')"
@@ -98,6 +98,11 @@ send_os_ntfy() {
                     should_buffer=1
                 fi
             fi
+            case "${priority,,}" in
+                urgent|5|max)
+                    should_buffer=0
+                    ;;
+            esac
             case "${title,,}" in
                 *recovered*|*repaired*|*restored*|*reconnected*|*revived*)
                     should_buffer=0

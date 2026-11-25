@@ -398,7 +398,8 @@ class KrakenTrailing(TrailingAdapterBase):
             lambda: self.executor.submit_order_with_intent(
                 intent["intent_id"], pair, side.lower(), qty, price,
                 market=market, kind=kind,
-                client_order_id=intent["client_order_id"]),
+                client_order_id=intent["client_order_id"],
+                post_only=False),
         )
 
     def log_tick_error(self, e) -> None:

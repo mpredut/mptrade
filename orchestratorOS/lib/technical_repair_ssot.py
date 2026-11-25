@@ -2053,7 +2053,7 @@ def parse_supervisor_config(
 
 
 def _is_decision_in_scope(dec: Dict[str, Any], scope: str) -> bool:
-    if str(dec.get("decision") or "HOLD").upper() not in ("BUY", "SELL"):
+    if str(dec.get("decision") or "HOLD").upper() not in ("BUY", "SELL") and not decision_has_cancel_directive(dec):
         return True
     sym_raw = dec.get("symbol")
     if is_readonly_xstock_symbol(sym_raw) and not is_xstock_trading_enabled(sym_raw):

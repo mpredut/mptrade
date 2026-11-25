@@ -243,7 +243,7 @@ _asset_value_cache = {"value": None, "timestamp": 0.0}
 _asset_value_cache_lock = threading.Lock()
 
 
-def _get_symbol_price_safe(symbol):
+def _get_symbol_price_safe(symbol, *, raise_errors=False):
     try:
         sym_u = clean_upper_scalar(symbol)
         if sym_u is None:
@@ -255,11 +255,13 @@ def _get_symbol_price_safe(symbol):
             return None
         raw_px = ticker.get("price")
         return safe_pos_float(raw_px, default=None)
-    except Exception:
+    except Exception as exc:
+        if _parse_bool_flag(raise_errors, False) and getattr(exc, "code", None) != -1121:
+            raise
         return None
 
 
-def _convert_to_usdc(asset, amount):
+def _convert_to_usdc(asset, amount, *, raise_errors=False):
     if (asset_clean := clean_upper_scalar(asset)) is None:
         return 0.0
     amt_f = safe_pos_float(amount, default=0.0)
@@ -268,11 +270,13 @@ def _convert_to_usdc(asset, amount):
     if asset_clean in {"USDC", "USD"}:
         return amt_f
 
-    price = _get_symbol_price_safe(ensure_quote_suffix(asset_clean, "USDC"))
+    sym_direct = ensure_quote_suffix(asset_clean, "USDC")
+    price = _get_symbol_price_safe(sym_direct, raise_errors=True) if raise_errors else _get_symbol_price_safe(sym_direct)
     if price:
         return amt_f * price
 
-    inv_price = _get_symbol_price_safe(f"USDC{asset_clean}")
+    sym_inv = f"USDC{asset_clean}"
+    inv_price = _get_symbol_price_safe(sym_inv, raise_errors=True) if raise_errors else _get_symbol_price_safe(sym_inv)
     if inv_price and inv_price > 0:
         return amt_f / inv_price
 
@@ -301,7 +305,7 @@ def get_total_assets_value_usdc(use_cache=True, cache_ttl_seconds=ASSET_VALUE_CA
     total_value = 0.0
     try:
         for balance in get_account_assets_balances(raise_errors=True):
-            total_value += _convert_to_usdc(balance["asset"], balance["total"])
+            total_value += _convert_to_usdc(balance["asset"], balance["total"], raise_errors=True)
     except Exception as e:
         print("Error: get_total_assets_value_usdc: Error calculating portfolio value:", e)
         if raise_errors:

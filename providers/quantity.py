@@ -48,6 +48,22 @@ QUOTE_SUFFIXES = (
 )
 
 
+def format_fixed_decimal(value: object) -> str:
+    """Format a finite numeric/Decimal value without scientific notation."""
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"invalid decimal value: {value!r}")
+    try:
+        dec = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError(f"invalid decimal value: {value!r}") from exc
+    if not dec.is_finite():
+        raise ValueError(f"non-finite decimal value: {value!r}")
+    text = format(dec.normalize(), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in ("", "-0") else text
+
+
 def remaining_average_cost(fills, held_qty):
     """Reconstruct moving-average acquisition cost from chronological real fills."""
     try:

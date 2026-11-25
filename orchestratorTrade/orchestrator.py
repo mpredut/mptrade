@@ -146,12 +146,13 @@ class BotManager:
         task = None
         try:
             fresh_env = botcore.clone_process_env()
-            config_env_path = os.path.join(ROOT_DIR, "config.env")
-            if os.path.exists(config_env_path):
-                try:
-                    fresh_env.update(botcore.parse_dotenv(config_env_path))
-                except Exception as env_err:
-                    logging.warning(f"Could not parse fresh config.env for {name}: {env_err}")
+            for env_fname in ("config.env", ".env"):
+                env_path = os.path.join(ROOT_DIR, env_fname)
+                if os.path.exists(env_path):
+                    try:
+                        fresh_env.update(botcore.parse_dotenv(env_path))
+                    except Exception as env_err:
+                        logging.warning(f"Could not parse fresh {env_fname} for {name}: {env_err}")
             venv_bin = os.path.join(ROOT_DIR, self.venv, "bin")
             bot_env = {
                 **fresh_env,
@@ -353,9 +354,10 @@ class BotManager:
             resolve_cachedb_filepath = _cp.resolve_cachedb_filepath
             open_append_text_file = _sio.open_append_text_file
             read_bytes_file = _sio.read_bytes_file
-            cfg_path = os.path.join(ROOT_DIR, "config.env")
-            if os.path.exists(cfg_path):
-                botcore.load_dotenv(cfg_path, override=True)
+            for env_fname in ("config.env", ".env"):
+                env_path = os.path.join(ROOT_DIR, env_fname)
+                if os.path.exists(env_path):
+                    botcore.load_dotenv(env_path, override=True)
             evaluate_heartbeat_files_freshness = botcore.evaluate_heartbeat_files_freshness
             parse_procs_manifest = botcore.parse_procs_manifest
             if type(getattr(self, "server", None)).__name__ == "NotificationServer":

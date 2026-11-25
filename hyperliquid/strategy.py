@@ -495,8 +495,16 @@ class Strategy(BaseSpotMixin):
                 else None
             )
             close_px = filled_close_px or price
-            self._apply_close(self._avg() or entry or close_px, close_px, prev - qty_now,
-                              real_qty=qty_now, real_avg=entry)
+            filled_close_oid = clean_order_id(filled_close.get("oid")) if isinstance(filled_close, dict) else None
+            self._apply_close(
+                self._avg() or entry or close_px,
+                close_px,
+                prev - qty_now,
+                real_qty=qty_now,
+                real_avg=entry,
+                active_oids=active,
+                filled_close_oid=filled_close_oid,
+            )
         else:
             if qty_now <= 1e-12:
                 self._zero_position_exposure(clear_spent=True)
@@ -581,7 +589,17 @@ class Strategy(BaseSpotMixin):
             notify_kwargs={"source": "hyperliquid", "price": price, "desktop": self.desktop},
         )
 
-    def _apply_close(self, avg, price, sz, real_qty=None, real_avg=None):
+    def _apply_close(
+        self,
+        avg,
+        price,
+        sz,
+        real_qty=None,
+        real_avg=None,
+        *,
+        active_oids=None,
+        filled_close_oid=None,
+    ):
         gross = self.sign * (price - avg) * sz
         fee_pct = getattr(self.p, "fee_pct", HL_FEE_PCT)
         fee = (fee_pct / 100.0) * (avg * sz + price * sz)
@@ -618,6 +636,11 @@ class Strategy(BaseSpotMixin):
             self.s["cycles_completed"] = self.s.get("cycles_completed", 0) + 1
             remaining_orders = []
             for o in list(self.s.get("orders", [])):
+                oid_clean = clean_order_id(o.get("oid"))
+                if filled_close_oid is not None and oid_clean == filled_close_oid:
+                    continue
+                if active_oids is not None and oid_clean not in active_oids:
+                    continue
                 if not self.dry_run and not self.replay_mode and self.client and _is_live_order_oid(o.get("oid")):
                     try:
                         if not self.client.cancel(self.coin, o["oid"]):

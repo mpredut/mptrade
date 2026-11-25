@@ -133,12 +133,15 @@ def main() -> int:
     order_price      = float_env("ORDER_PRICE")
     order_qty        = float_env("ORDER_QTY")
     order_budget_ron = float_env("ORDER_BUDGET_RON")
-    _val             = required_env("ORDER_VALIDITY").upper()
-    if _val not in {"DAY", "GTC", "GOOD_TILL_CANCEL"}:
-        raise ValueError(f"Invalid ORDER_VALIDITY: {_val!r}")
-    order_validity   = "GOOD_TILL_CANCEL" if _val in ("GTC", "GOOD_TILL_CANCEL") else "DAY"
-    order_dry        = args.paper or not (args.execute or required_bool_env("ORDER_EXECUTE"))
     interval         = max(safe_pos_float(args.interval, default=30.0), 30.0)
+
+    def _resolve_order_policy() -> tuple[str, bool]:
+        raw_val = required_env("ORDER_VALIDITY").upper()
+        if raw_val not in {"DAY", "GTC", "GOOD_TILL_CANCEL"}:
+            raise ValueError(f"Invalid ORDER_VALIDITY: {raw_val!r}")
+        validity = "GOOD_TILL_CANCEL" if raw_val in ("GTC", "GOOD_TILL_CANCEL") else "DAY"
+        dry = args.paper or not (args.execute or required_bool_env("ORDER_EXECUTE"))
+        return validity, dry
 
     # --- one-shot commands ---
     if args.find_ticker:
@@ -166,6 +169,7 @@ def main() -> int:
         if qty_f is None:
             log(invalid_msg)
             return 1
+        order_validity, order_dry = _resolve_order_policy()
         ok = place_order_with_retry(
             client, ticker, qty_f, px_f, order_validity,
             order_dry, desktop=args.desktop, write_marker=write_marker,
@@ -197,7 +201,8 @@ def main() -> int:
     log(f"    instrument   : {label}  ({t212_ticker}, price through {yahoo_symbol})")
     log(f"    T212 env     : {t212_env.upper()}")
     log(f"    mode         : {'STRATEGY (DCA+TP)' if strat_enabled else 'a single order'}")
-    log(f"    execution    : {'PAPER (no money)' if (strat_dry if strat_enabled else order_dry) else '\u26a0 REAL \u2014 REAL MONEY'}")
+    exec_dry = strat_dry if strat_enabled else _resolve_order_policy()[1]
+    log(f"    execution    : {'PAPER (no money)' if exec_dry else '\u26a0 REAL \u2014 REAL MONEY'}")
     log(f"    launch       : checking until {label} is launched (already listed: immediately; IPO: at the open)")
     log(f"    ntfy/email   : {optional_env('NTFY_TOPIC_TRADES', '-')} / {optional_env('ALERT_TO_EMAIL', '-')}")
 

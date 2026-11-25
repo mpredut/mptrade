@@ -43,6 +43,7 @@ def mount_connect_retry(
     read: int = 0,
     status_forcelist=None,
     raise_on_status: bool = False,
+    allowed_methods=None,
 ) -> bool:
     """Mount an order-safe Retry adapter on ``session`` for https:// and http:// (best-effort)."""
     try:
@@ -61,16 +62,19 @@ def mount_connect_retry(
                 if c_i is None:
                     return False
                 forcelist.append(c_i)
-        retry = Retry(
-            total=att_i,
-            connect=att_i,
-            read=read_i,
-            status=att_i if forcelist else 0,
-            redirect=0,
-            backoff_factor=bo_f,
-            status_forcelist=forcelist if forcelist else None,
-            raise_on_status=_parse_bool_flag(raise_on_status, default=False),
-        )
+        retry_kw = {
+            "total": att_i,
+            "connect": att_i,
+            "read": read_i,
+            "status": att_i if forcelist else 0,
+            "redirect": 0,
+            "backoff_factor": bo_f,
+            "status_forcelist": forcelist if forcelist else None,
+            "raise_on_status": _parse_bool_flag(raise_on_status, default=False),
+        }
+        if allowed_methods is not None:
+            retry_kw["allowed_methods"] = allowed_methods
+        retry = Retry(**retry_kw)
         adapter = HTTPAdapter(max_retries=retry)
         session.mount("https://", adapter)
         session.mount("http://", adapter)

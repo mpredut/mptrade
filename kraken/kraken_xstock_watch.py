@@ -39,6 +39,7 @@ from botcore import (
     clone_process_env,
     exact_pos_int,
     fetch_public_json,
+    is_env_defined,
     load_env_stack,
     log,
     normalize_timestamp_ms,
@@ -168,12 +169,13 @@ def sync_trade_archive(client: KrakenClient, pair: str, *, max_pages: int = 3) -
     meta = read_json_dict(meta_file_path(target_path), default={}) if os.path.exists(target_path) else {}
     if not isinstance(meta, dict):
         meta = {}
-    since = clean_scalar_str(meta.get("kraken_trades_since_ns")) or "0"
+    raw_since = clean_scalar_str(meta.get("kraken_trades_since_ns"))
     prev_counts = meta.get("counts") if isinstance(meta.get("counts"), dict) else {}
     prev_rest_cursor = meta.get("rest_sync_cursor") if isinstance(meta.get("rest_sync_cursor"), dict) else {}
     prev_count = safe_nonneg_int(prev_counts.get(sym_key), default=0) or 0
     prev_max_ts = safe_nonneg_int(meta.get("max_ts"), default=0) or 0
     prev_min_ts = safe_nonneg_int(prev_rest_cursor.get(sym_key), default=0) or 0
+    since = raw_since or (str(prev_max_ts * 1_000_000) if prev_max_ts > 0 else "0")
 
     new_items: list[list] = []
     cur_since = since
@@ -194,7 +196,7 @@ def sync_trade_archive(client: KrakenClient, pair: str, *, max_pages: int = 3) -
             ts_ms = normalize_timestamp_ms(tr[2], default=None)
             if px is None or ts_ms is None:
                 continue
-            if since == "0" and prev_max_ts > 0 and ts_ms <= prev_max_ts:
+            if raw_since is None and prev_max_ts > 0 and ts_ms <= prev_max_ts:
                 continue
             new_items.append([ts_ms, px, vol])
         cur_since = next_since
@@ -204,6 +206,12 @@ def sync_trade_archive(client: KrakenClient, pair: str, *, max_pages: int = 3) -
             time.sleep(1.05)
 
     if not new_items:
+        if cur_since and cur_since != since and os.path.exists(target_path):
+            with generation_transaction(target_path) as tx_target:
+                write_meta_json(
+                    tx_target,
+                    {**meta, "kraken_trades_since_ns": cur_since, "saved_at": resolve_now_ms()},
+                )
         return 0
     new_items.sort(key=lambda item: item[0])
     with generation_transaction(target_path) as tx_target:
@@ -594,6 +602,7 @@ def _build_xstock_bot_env(
     alloc_price: float, *, symbol_label: str | None = None, ipo_mode: bool = True
 ) -> dict[str, str]:
     env = clone_process_env({"STRAT_ADOPT_COST": str(alloc_price)})
+    clearable_keys = frozenset({"XSTOCK_BOT_TP_TRANCHES", "XSTOCK_BOT_IPO_TP_TRANCHES"})
     for src, dst in (
         ("XSTOCK_BOT_OBSERVE_ONLY", "KRAKEN_BOT_OBSERVE_ONLY"),
         ("XSTOCK_SYMBOL_LABEL", "SYMBOL_LABEL"),
@@ -613,7 +622,8 @@ def _build_xstock_bot_env(
         ("XSTOCK_BOT_MAX_BUDGET", "STRAT_MAX_BUDGET"),
         ("XSTOCK_BOT_CHECK_MINUTES", "STRAT_CHECK_MINUTES"),
     ):
-        if (val := optional_env(src)) is not None:
+        val = optional_env(src)
+        if val or (src in clearable_keys and is_env_defined(src)):
             env[dst] = val
     if ipo_mode:
         for src, dst in (
@@ -621,7 +631,8 @@ def _build_xstock_bot_env(
             ("XSTOCK_BOT_IPO_TRAIL_PCT", "STRAT_IPO_TRAIL_PCT"),
             ("XSTOCK_BOT_IPO_REENTRY_DROP_PCT", "STRAT_IPO_REENTRY_DROP_PCT"),
         ):
-            if (val := optional_env(src)) is not None:
+            val = optional_env(src)
+            if val or (src in clearable_keys and is_env_defined(src)):
                 env[dst] = val
     else:
         env["STRAT_IPO_TP_TRANCHES"] = ""

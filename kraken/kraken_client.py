@@ -309,8 +309,10 @@ class KrakenClient:
 
     @staticmethod
     def _parse(status: int, body: bytes, *, allow_list: bool = False) -> dict | list:
+        if not body:
+            raise KrakenError(f"empty response (HTTP {status})")
         try:
-            payload = parse_json_payload(body or b"{}")
+            payload = parse_json_payload(body)
         except ValueError:
             raise KrakenError(f"invalid response (HTTP {status})")
         if not isinstance(payload, dict):
@@ -318,6 +320,9 @@ class KrakenClient:
         if payload.get("error"):
             err_val = payload["error"]
             raise KrakenError(", ".join(str(x) for x in err_val) if isinstance(err_val, (list, tuple)) else str(err_val))
+        code = exact_nonneg_int(status, default=0) or 0
+        if not (200 <= code < 300):
+            raise KrakenError(f"HTTP {status} error response")
         res = payload.get("result", [] if allow_list else {})
         if allow_list:
             return res if isinstance(res, list) else []

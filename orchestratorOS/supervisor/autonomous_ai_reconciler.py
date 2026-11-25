@@ -525,7 +525,8 @@ class AutonomousAIReconciler:
 
         if self.mode == "off":
             return self.write_audit_artifact(
-                SupervisorAuditReport(ts=now, mode="off", summary="Supervisor mode is off; cycle skipped.")
+                SupervisorAuditReport(ts=now, mode="off", summary="Supervisor mode is off; cycle skipped."),
+                persist_eval=False,
             )
 
         scope = getattr(spec, "asset_scope", "all")
@@ -537,7 +538,10 @@ class AutonomousAIReconciler:
         ):
             msg = "US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) closed; cycle skipped."
             logger.info("[SHARE EXECUTOR] %s", msg)
-            return self.write_audit_artifact(SupervisorAuditReport(ts=now, mode=self.mode, summary=msg))
+            return self.write_audit_artifact(
+                SupervisorAuditReport(ts=now, mode=self.mode, summary=msg),
+                persist_eval=False,
+            )
 
         sensors = self.harvest_sensors_telemetry(
             include_fleet=spec.can_self_heal,

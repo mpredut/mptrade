@@ -32,10 +32,12 @@ from botcore import (
     _sign_ed25519,
     clamp_price_to_bbo_mid,
     safe_float,
+    safe_int,
     safe_pos_float,
     safe_nonneg_float,
     safe_nonneg_int,
 )
+from . import bapi_client
 from providers.ws_stream import (
     AsyncReconnectStreamBase,
     PublicPriceStreamBase,
@@ -350,12 +352,20 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
 
     # --- Signed logon (login + keepalive) ------------------------------------
     def _signed_logon_msg(self, msg_id: str) -> str:
-        timestamp = math.trunc(time.time() * 1000)
+        raw_offset = getattr(getattr(bapi_client, "_client", None), "timestamp_offset", 0)
+        offset_ms = safe_int(raw_offset, default=0) or 0
+        timestamp = math.trunc(time.time() * 1000) + offset_ms
         params_str = f"apiKey={api_key_ws}&timestamp={timestamp}"
         signature = _sign_ed25519(self._signing_key, params_str)
         return encode_json_payload({
             "id": msg_id, "method": "session.logon",
             "params": {"apiKey": api_key_ws, "timestamp": timestamp, "signature": signature}})
+
+    @staticmethod
+    def _maybe_resync_clock_on_1021(resp: object) -> None:
+        if isinstance(resp, dict) and isinstance(err := resp.get("error"), dict):
+            if safe_int(err.get("code"), default=None) == -1021:
+                bapi_client.sync_time()
 
     @staticmethod
     def _classify(event: dict):
@@ -388,6 +398,7 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
             await ws.send(self._signed_logon_msg("login"))
             resp = parse_json_payload(await asyncio.wait_for(ws.recv(), timeout=10))
             if not isinstance(resp, dict) or resp.get("status") != 200:
+                self._maybe_resync_clock_on_1021(resp)
                 raise RuntimeError(f"login failed: {resp}")     # The base reconnect loop applies backoff.
             logger.info("[WS] Login OK")
             # Do not reset backoff here. The reconnect loop does so only after a stable
@@ -439,10 +450,14 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
                         logger.warning("[WS] Error response id=%s status=%s: %s",
                                        event.get("id"), event.get("status"), event)
                         if event.get("id") in ("sub", "keepalive"):
+                            if event.get("id") == "keepalive":
+                                self._maybe_resync_clock_on_1021(event)
                             raise RuntimeError(f"{event.get('id')} failed: {event}")
                     else:
                         self._mark_event()
                     continue
+                if payload.get("e") == "eventStreamTerminated":
+                    raise RuntimeError(f"Binance userDataStream terminated by server: {payload}")
                 self._mark_event()
                 self.on_event(payload)
 

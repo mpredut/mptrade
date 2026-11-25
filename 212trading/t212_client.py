@@ -828,19 +828,21 @@ class T212Client:
                 self._pace_shared_endpoint_locked(attr)
                 status, body = http_get(f"{self.base}{path}", headers=self._headers(attr))
                 if status != 200 or not body:
-                    s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache(
-                        attr, stale_limit, allow_invalidated=True
-                    )
-                    if s_fb_hit and isinstance(s_fb_val, expect_type):
-                        self._record_shared_cache_fail(attr)
-                        with self._lock:
-                            setattr(self, attr, (time.monotonic() - min(s_fb_age, eff_ttl * 0.5), s_fb_val))
-                            self._fetch_fail[attr] = time.monotonic()
-                        return s_fb_val
                     if status == 429:
                         self._record_shared_cache_fail(attr)
                         self.notify_rate_limit(max(5.0, self._pf_ttl))
                     self._record_read_fail(what, status, attr)
+                    if status in (401, 403):
+                        return None
+                    s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache(
+                        attr, stale_limit, allow_invalidated=True
+                    )
+                    if s_fb_hit and isinstance(s_fb_val, expect_type):
+                        if status != 429:
+                            self._record_shared_cache_fail(attr)
+                        with self._lock:
+                            setattr(self, attr, (time.monotonic() - min(s_fb_age, eff_ttl * 0.5), s_fb_val))
+                        return s_fb_val
                     with self._lock:
                         c = getattr(self, attr, None)
                         if c and (time.monotonic() - c[0]) < stale_limit:
