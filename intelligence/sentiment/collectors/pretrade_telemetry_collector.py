@@ -618,6 +618,11 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
     series_24h: Optional[list] = None,
 ) -> None:
     sym_u_pt = clean_symbol_key(sym_v) or str(sym_v or "").strip().upper()
+    s24_start_ms_pt = (
+        safe_pos_float(series_24h[0][0], default=None)
+        if series_24h and isinstance(series_24h[0], (list, tuple)) and len(series_24h[0]) >= 1
+        else None
+    )
     upgrade_tpo_vp_from_ohlc(
         sym_u_pt,
         m24_d,
@@ -628,6 +633,7 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
         respect_policy_network_gate=True,
         cache_dir=cachedb_dir,
         allow_network=allow_network,
+        series_24h_start_ms=s24_start_ms_pt,
         series_24h=series_24h,
     )
 
@@ -1863,9 +1869,9 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                     net_b = safe_float(cur_m_info.get("net_buy_edge_vs_peer_bps"), default=None)
                     best_b = cur_m_info.get("best_buy_venue")
                     fee_basis = str(cur_m_info.get("arb_fee_basis") or "maker").strip().lower()
-                    arb_s = f"arb_vs_{cur_m_info['cross_venue_peer']}={arb_bps:+.1f}bps"
+                    arb_s = f"arb_vs_{cur_m_info['cross_venue_peer']}={round(arb_bps, 1) + 0.0:+.1f}bps"
                     if net_b is not None and best_b:
-                        arb_s += f", net_buy_edge={net_b:+.1f}bps[{fee_basis}] (best_buy={best_b})"
+                        arb_s += f", net_buy_edge={round(net_b, 1) + 0.0:+.1f}bps[{fee_basis}] (best_buy={best_b})"
                     telemetry["Cross-Venue Relative Value (Arbitrage)"] = arb_s
             break
 

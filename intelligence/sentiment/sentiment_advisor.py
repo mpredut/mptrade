@@ -166,7 +166,7 @@ def _format_single_whale_entry(
         if fr_raw is not None:
             fund_ann = round(fr_raw * 3.0 * 365.0 * 100.0, 2) + 0.0
     if fund_ann is not None:
-        parts.append(f"funding={fund_ann + 0.0:+.2f}% ann")
+        parts.append(f"funding={round(fund_ann, 2) + 0.0:+.2f}% ann")
 
     basis_bps = safe_float(
         wt_d.get("perp_spot_basis_bps")
@@ -175,7 +175,7 @@ def _format_single_whale_entry(
         default=None,
     )
     if basis_bps is not None:
-        parts.append(f"perp_spot_basis={basis_bps + 0.0:+.2f}bps")
+        parts.append(f"perp_spot_basis={round(basis_bps, 2) + 0.0:+.2f}bps")
 
     cvd_15m = safe_float(wt_d.get("cvd_15m_usd"), default=None)
     if cvd_15m is None:

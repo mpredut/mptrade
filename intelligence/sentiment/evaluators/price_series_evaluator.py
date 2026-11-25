@@ -3171,7 +3171,7 @@ class Horizon24hPriceEvaluator(PriceSeriesEvaluatorBase):
     cls_name = "Horizon24hPriceEvaluator"
 
     def evaluate(self, data: Any, *, now_ts: Optional[float] = None, **kwargs: Any) -> Dict[str, Any]:
-        return compute_24h_price_metrics(data)
+        return compute_24h_price_metrics(data, now_ts=now_ts)
 
 
 class Structural7dWaveEvaluator(PriceSeriesEvaluatorBase):

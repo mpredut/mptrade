@@ -1244,28 +1244,44 @@ def upgrade_tpo_vp_from_ohlc(
                                 if not ((px_g > vah_vp) if va_reg_vp == "ABOVE_VAH" else (px_g < val_vp)):
                                     break
                         if hit_va_gap:
-                            hold_src = (
-                                raw_ohlc_disk_pts
-                                if (partial_local_24h and raw_ohlc_disk_pts)
-                                else (series_24h if series_24h else raw_ohlc_disk_pts)
-                            )
-                            if not hold_src and cache_dir and os.path.isdir(cache_dir):
+                            if (
+                                not raw_ohlc_disk_pts
+                                and (partial_local_24h or not series_24h)
+                                and cache_dir
+                                and os.path.isdir(cache_dir)
+                            ):
                                 ident_h = resolve_symbol_identity(sym)
                                 for fn_h in price_cache_filename_variants(
                                     sym, cache_ohlc_24h_filename, *ident_h.candidate_cache_symbols(include_base=False)
                                 ):
                                     p_h = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn_h)))
                                     if os.path.exists(p_h) and isinstance(d_h := read_json_recovering(p_h), dict) and isinstance(d_h.get("points"), list):
-                                        hold_src = d_h["points"]
+                                        raw_ohlc_disk_pts = d_h["points"]
                                         break
-                            if not hold_src and series_24h:
-                                hold_src = series_24h
+                            if partial_local_24h and raw_ohlc_disk_pts:
+                                hold_src = list(raw_ohlc_disk_pts)
+                                if series_24h:
+                                    last_disk_pt = parse_ts_px_row(hold_src[-1]) if hold_src else None
+                                    if last_disk_pt is not None:
+                                        hold_src.extend(
+                                            r_s
+                                            for r_s in series_24h
+                                            if (pt_s := parse_ts_px_row(r_s)) is not None and pt_s[0] > last_disk_pt[0]
+                                        )
+                            else:
+                                hold_src = series_24h if series_24h else raw_ohlc_disk_pts
                             if hold_src and (hold_ts_px := _extract_sorted_ts_px(hold_src)):
                                 now_ms_h = now_ts * 1000.0
-                                if cur_px > 0.0 and 1000.0 < (now_ms_h - hold_ts_px[-1][0]) <= 3_600_000.0:
-                                    hold_ts_px = list(hold_ts_px) + [(now_ms_h, cur_px)]
-                                if (cont_hold := compute_va_breakout_hold_min(hold_ts_px, val_vp, vah_vp)) is not None:
-                                    vp_real["va_hold_min"] = cont_hold
+                                gap_to_now_ms = now_ms_h - hold_ts_px[-1][0]
+                                if gap_to_now_ms <= 3_600_000.0:
+                                    if cur_px > 0.0 and gap_to_now_ms > 1000.0:
+                                        hold_ts_px = list(hold_ts_px) + [(now_ms_h, cur_px)]
+                                    end_px_h = hold_ts_px[-1][1]
+                                    end_matches_reg = (
+                                        (end_px_h > vah_vp) if va_reg_vp == "ABOVE_VAH" else (end_px_h < val_vp)
+                                    )
+                                    if end_matches_reg and (cont_hold := compute_va_breakout_hold_min(hold_ts_px, val_vp, vah_vp)) is not None:
+                                        vp_real["va_hold_min"] = cont_hold
                         for vp_clr_k in ("sec_poc_px", "hvn2_px", "lvn_px"):
                             m24.pop(vp_clr_k, None)
                         m24.update(vp_real)
@@ -1536,7 +1552,11 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                             span_ms=7.05 * 86400.0 * 1000.0,
                         ):
                             sp_raw1 = parse_ts_px_row(sp_rows[-1])
-                            base_sp = sparse_7d_pts or archive_pts
+                            base_sp = (
+                                sparse_7d_pts
+                                if (sparse_7d_pts and sparse_7d_span_ms >= arch_span_ms)
+                                else archive_pts
+                            )
                             base_p0 = parse_ts_px_row(base_sp[0]) if base_sp else None
                             if (
                                 base_sp
@@ -1570,7 +1590,12 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                                 and cand_sp_span > max(arch_span_ms, sparse_7d_span_ms)
                                 and (extends_earlier or cand_sp_span >= min_full_7d_ms)
                                 and (a0 is None or sp1[0] >= a0[0] - 86400.0 * 1000.0)
-                                and (a1 is None or not _prices_diverged(sp1[1], a1[1]))
+                                and (
+                                    a1 is None
+                                    or not _prices_diverged(
+                                        sp1[1], a1[1], threshold=session_policy.price_divergence_threshold
+                                    )
+                                )
                             ):
                                 sparse_7d_pts = cand_sp
                                 sparse_7d_span_ms = cand_sp_span
@@ -2348,7 +2373,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         if is_eq_sym and not pt_map[sym].get("quote_source"):
             cp_raw_eq = casefold_get(cp_map, sym) if isinstance(cp_map, dict) else None
             cp_pt_eq = parse_ts_px_row(cp_raw_eq[-1]) if isinstance(cp_raw_eq, list) and cp_raw_eq else None
-            q_pt_eq = next(
+            q_pt_eq = max(
                 (
                     pt_cand
                     for pt_cand in (
@@ -2365,7 +2390,8 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                         )
                     )
                 ),
-                None,
+                key=lambda pt_cand: pt_cand[0],
+                default=None,
             )
             if q_pt_eq is not None:
                 q_ts_s_eq = q_pt_eq[0] / 1000.0

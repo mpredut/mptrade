@@ -1349,7 +1349,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             if not sib_mstate:
                 if sib_qsrc in ("yahoo_rth", "t212_live"):
                     sib_mstate = "REGULAR"
-                elif sib_qsrc == "t212_rth_close":
+                elif sib_qsrc in ("t212_rth_close", "yahoo_rth_close"):
                     sib_mstate = "RTH_CLOSE"
                 elif sib_qsrc == "yahoo_ext_cached":
                     sib_mstate = "EXT_CLOSE"

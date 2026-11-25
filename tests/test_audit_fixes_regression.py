@@ -4096,3 +4096,262 @@ def test_cycle8_signed_zero_basis_formatting_and_time_to_buy_clickbait_filter():
     assert not is_excluded_reference_news_item(
         "SoftBank drops 15% as Wall Street AI sell-off ripples across Asian tech names"
     )
+
+
+def test_audit_repeat_cycles4_to_8_edge_fixes(tmp_path):
+    """Regression coverage for edge cases found in Cycles 4-8 and b340fa18:
+    1. KrakenXstocksCollector maps quote_source='yahoo_rth_close' to underlying_session='RTH_CLOSE'.
+    2. upgrade_tpo_vp_from_ohlc:
+       - When local series_24h is partial (<22h) and load_stitched_24h_ohlc_points succeeds directly,
+         hit_va_gap still loads unfiltered 24h OHLC disk bars + local tail so va_hold_min is not truncated.
+       - When hold_src is >1h stale or ends in the opposite VA regime, va_hold_min is NOT overwritten.
+    3. CompositeSymbolPriceSeriesLoader applies session_policy.price_divergence_threshold (35% for equities)
+       when comparing candidate 7d archive tail prices against archive_pts.
+    4. Unseeded equity fallback provenance prefers the fresher matching timestamp when both cp_map and
+       raw_s24_last_pt match sym_px_cur.
+    5. Pre-trade cross-venue arb telemetry and sentiment_advisor whale entry normalize near-zero negatives
+       (no '-0.0bps' or '-0.00%').
+    6. Horizon24hPriceEvaluator forwards now_ts into compute_24h_price_metrics so closed RTH RVOL does not leak.
+    """
+    from datetime import datetime
+    from pathlib import Path
+    from unittest import mock
+    from zoneinfo import ZoneInfo
+
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        CompositeSymbolPriceSeriesLoader,
+        Fleet24hAndMicrostructureEnricher,
+        upgrade_tpo_vp_from_ohlc,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import KrakenXstocksCollector
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import (
+        PretradeEvaluationContext,
+        PretradeOrderbookCvdAndLiqStage,
+    )
+    from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        LAST_7D_SPAN_MS_BY_SYM,
+        Horizon24hPriceEvaluator,
+    )
+    from intelligence.sentiment.sentiment_advisor import _format_single_whale_entry
+    from state_io import save_json_state
+
+    # 1. KrakenXstocksCollector recognizes yahoo_rth_close -> RTH_CLOSE
+    k_dir = tmp_path / "kraken_yahoo_rth_close"
+    k_dir.mkdir()
+    save_json_state(str(k_dir / "xstock_state.json"), {"known_assets": {"SPCXx": 10.0}, "pair": "SPCXxUSD"})
+    xst = KrakenXstocksCollector(start_sync=False).collect(
+        str(k_dir),
+        kraken_dir=str(k_dir),
+        prices_and_trends={
+            "SPCXxUSD": {"price": 126.10},
+            "SPCX_US_EQ": {"price": 125.74, "quote_source": "yahoo_rth_close", "quote_age_min": 210.0},
+        },
+        all_t212_cycles={},
+    )
+    assert xst is not None
+    assert xst["underlying_session"] == "RTH_CLOSE"
+
+    # 2a. upgrade_tpo_vp_from_ohlc with partial local series_24h (2h) + fresh full 24h OHLC cache on disk
+    now_s = time.time()
+    now_ms = int(now_s * 1000)
+    cdir_vp = tmp_path / "cachedb_vp_partial_s24"
+    pdir_vp = cdir_vp / "prices"
+    pdir_vp.mkdir(parents=True)
+    ohlc_pts = []
+    for k in range(288):
+        t_ms = now_ms - (288 - k) * 300_000
+        age_m = (now_ms - t_ms) / 60_000.0
+        if age_m > 300.0:
+            px, vol = 131.0 + (0.5 if k % 2 == 0 else -0.5), 14.0
+        elif age_m > 210.0:
+            px, vol = 125.1, 3.0
+        elif 35.0 <= age_m <= 40.5:
+            px, vol = 124.2, 1.5
+        else:
+            px, vol = (124.8 if age_m > 40.5 else 124.1), 0.0
+        ohlc_pts.append([t_ms, px, vol, px, px, px])
+    (pdir_vp / "cache_ohlc_24h_SPCXxUSD.json").write_text(
+        json.dumps({"ts": now_s - 20.0, "symbol": "SPCXxUSD", "points": ohlc_pts}),
+        encoding="utf-8",
+    )
+    # Local series_24h only covers last 2h (partial_local_24h=True)
+    partial_ser_24h = [[now_ms - (24 - j) * 300_000, 124.1] for j in range(24)]
+    partial_ser_24h.append([now_ms - 5_000, 124.05])
+    m24_partial = {"vp_source": "TPO", "low_24h": 124.0, "high_24h": 132.0, "va_regime": "BELOW_VAL", "va_hold_min": 120.0}
+    upgrade_tpo_vp_from_ohlc(
+        "SPCXxUSD",
+        m24_partial,
+        124.05,
+        now_s,
+        s24_is_live_clock=True,
+        cache_dir=str(cdir_vp),
+        allow_network=False,
+        series_24h_start_ms=partial_ser_24h[0][0],
+        series_24h=partial_ser_24h,
+    )
+    assert m24_partial["vp_source"] == "REAL_VOL"
+    assert m24_partial["va_regime"] == "BELOW_VAL"
+    assert m24_partial["va_hold_min"] >= 290.0  # Full ~300m from unfiltered disk OHLC + tail, NOT truncated to 120m
+
+    # 2b. Stale (>1h old) opposite-regime series_24h must NOT overwrite va_hold_min
+    stale_opp_ser = [
+        [now_ms - int((10.0 - j * 0.25) * 3600_000), 134.0]
+        for j in range(30)  # Ends at -2.5h, continuously ABOVE_VAH!
+    ]
+    m24_stale = {"vp_source": "TPO", "low_24h": 124.0, "high_24h": 132.0, "va_regime": "BELOW_VAL", "va_hold_min": 40.0}
+    upgrade_tpo_vp_from_ohlc(
+        "SPCXxUSD",
+        m24_stale,
+        124.05,
+        now_s,
+        s24_is_live_clock=True,
+        cache_dir=str(cdir_vp),
+        allow_network=False,
+        series_24h_start_ms=now_ms - 24 * 3600_000,
+        series_24h=stale_opp_ser,
+    )
+    assert m24_stale["vp_source"] == "REAL_VOL"
+    assert m24_stale["va_regime"] == "BELOW_VAL"
+    assert m24_stale["va_hold_min"] <= 45.0  # Must NOT adopt the 435m stale ABOVE_VAH hold
+
+    # 3. Equity 7d stitching respects session_policy.price_divergence_threshold (35%, not hardcoded 10%)
+    cdir_eq7 = tmp_path / "cachedb_eq_7d_div"
+    pdir_eq7 = cdir_eq7 / "prices"
+    pdir_eq7.mkdir(parents=True)
+    # Primary 365 file has short 20h span ending at $100; sparse file spans 7d ending at $84 (16% diff: >10% but <35%)
+    p24_eq = [
+        {"s": "TEST_US_EQ", "i": [now_ms - int((20.0 - i) * 3600_000), 99.0 + i * 0.05]}
+        for i in range(21)
+    ]
+    (pdir_eq7 / "cache_24_price_TEST_US_EQ.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in p24_eq) + "\n", encoding="utf-8"
+    )
+    p365_short = [
+        {"s": "TEST_US_EQ", "i": [now_ms - int((20.0 - i * 0.5) * 3600_000), 99.0 + i * 0.025]}
+        for i in range(41)
+    ]
+    (pdir_eq7 / "cache_365_price_TEST_US_EQ.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in p365_short) + "\n", encoding="utf-8"
+    )
+    sp_eq_7d = [
+        {"s": "TEST_US_EQ", "i": [now_ms - int((168.0 - i * 4.0) * 3600_000), 82.0 + (i / 42.0) * 2.0]}
+        for i in range(43)
+    ]
+    (pdir_eq7 / "cache_sparse_price_TEST_US_EQ.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in sp_eq_7d) + "\n", encoding="utf-8"
+    )
+    _, vals_eq_7d = CompositeSymbolPriceSeriesLoader().collect(str(cdir_eq7), "TEST_US_EQ", include_7d=True)
+    assert len(vals_eq_7d) >= 35
+    assert LAST_7D_SPAN_MS_BY_SYM.get("TEST_US_EQ", 0.0) >= 6.0 * 86400.0 * 1000.0
+
+    # 4. Unseeded equity fallback provenance picks fresher matching timestamp (POST over stale RTH at same price)
+    ny_tz = ZoneInfo("America/New_York")
+    ts_rth = datetime(2026, 11, 24, 15, 59, 0, tzinfo=ny_tz).timestamp()
+    ts_post = datetime(2026, 11, 24, 19, 59, 50, tzinfo=ny_tz).timestamp()
+    ts_closed = datetime(2026, 11, 24, 20, 35, 0, tzinfo=ny_tz).timestamp()
+    cdir_eq_fb = tmp_path / "cachedb_eq_fresher_ts"
+    pdir_eq_fb = cdir_eq_fb / "prices"
+    pdir_eq_fb.mkdir(parents=True)
+    (pdir_eq_fb / "cache_24_price_MU_US_EQ.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "MU_US_EQ": [
+                        [int((ts_post - 24 * 3600) * 1000), 102.0],
+                        [int(ts_rth * 1000), 100.0],
+                        [int((ts_rth + 3600) * 1000), 100.4],
+                        [int((ts_post - 600) * 1000), 100.2],
+                        [int(ts_post * 1000), 100.0],
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_mu = {"MU_US_EQ": {"price": 100.0, "trend": 0, "growth_coefficient": 0.0}}
+    cp_mu = {"MU_US_EQ": [[int(ts_rth * 1000), 100.0]]}  # 4h older RTH close at identical price
+    Fleet24hAndMicrostructureEnricher._enrich_primary_symbol_series(
+        str(cdir_eq_fb), "", "MU_US_EQ", pt_mu, cp_mu, {}, [], [], set(), {}, {}, ts_closed, False
+    )
+    assert pt_mu["MU_US_EQ"]["quote_source"] == "yahoo_ext_cached"
+    assert pt_mu["MU_US_EQ"]["quote_age_min"] == pytest.approx(35.2, abs=0.2)
+
+    # 5a. Pre-trade cross-venue arb normalizes near-zero negatives to +0.0bps
+    cdir_arb = tmp_path / "cachedb_arb_zero"
+    tdir_arb = cdir_arb / "telemetry"
+    tdir_arb.mkdir(parents=True)
+    ob_ts = time.time() - 5.0
+    (tdir_arb / "orderbook_depth_ADAUSD.json").write_text(
+        json.dumps(
+            {
+                "ts": ob_ts,
+                "symbol": "ADAUSD",
+                "ob_mid_price": 1.000003,
+                "best_bid": 0.999993,
+                "best_ask": 1.000013,
+                "bid_depth_usd": 120_000.0,
+                "ask_depth_usd": 110_000.0,
+                "imbalance_ratio": 0.52,
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx_arb = PretradeEvaluationContext(
+        symbol="ADAUSDC",
+        cachedb_dir=str(cdir_arb),
+        regime_context=None,
+        dur_sec=None,
+        session_policy=resolve_asset_session_policy("ADAUSDC"),
+        sym_quotes=("USDC", "USD"),
+        is_usd_sym=True,
+        is_eq_sym=False,
+        sym_variants=["ADAUSDC", "ADAUSD"],
+        quote_variants=["ADAUSDC", "ADAUSD"],
+        rj=lambda p: json.loads(Path(p).read_text(encoding="utf-8")) if Path(p).exists() else None,
+        allow_network=False,
+        now_ts=ob_ts + 5.0,
+    )
+    ctx_arb.cur_px_est = 1.0
+    ctx_arb.cur_m_info = {
+        "ob_mid_price": 1.0,
+        "bid_depth_usd": 90_000.0,
+        "ask_depth_usd": 85_000.0,
+        "spread_bps": 2.0,
+    }
+    p_est_arb = {"price": 1.0}
+    liq_arb: dict = {}
+    with mock.patch(
+        "intelligence.sentiment.collectors.pretrade_telemetry_collector.compute_cross_venue_arb_metrics",
+        side_effect=lambda sym, m_cur, *_a, **_kw: m_cur.update(
+            {
+                "cross_venue_peer": "ADAUSD",
+                "cross_venue_arb_bps": -0.03,
+                "net_buy_edge_vs_peer_bps": -0.04,
+                "best_buy_venue": "kraken",
+                "arb_fee_basis": "maker",
+            }
+        ),
+    ):
+        PretradeOrderbookCvdAndLiqStage._reconcile_sibling_arbitrage(ctx_arb, p_est_arb, liq_arb)
+    arb_line = ctx_arb.telemetry.get("Cross-Venue Relative Value (Arbitrage)", "")
+    assert "arb_vs_ADAUSD=+0.0bps" in arb_line
+    assert "net_buy_edge=+0.0bps" in arb_line
+    assert "-0.0bps" not in arb_line
+
+    # 5b. sentiment_advisor whale entry normalizes -0.004 funding/basis to +0.00
+    w_line = _format_single_whale_entry(
+        "BTCUSDC",
+        {"symbol": "BTCUSDC", "funding_annualized_pct": -0.004, "perp_spot_basis_bps": -0.004},
+    )
+    assert "funding=+0.00% ann" in w_line
+    assert "perp_spot_basis=+0.00bps" in w_line
+    assert "-0.00" not in w_line
+
+    # 6. Horizon24hPriceEvaluator forwards now_ts and blocks stale RTH closing-bell RVOL overnight
+    rth_open_ms = 1_795_530_600_000.0
+    rth_bars = [[rth_open_ms + i * 300_000.0, 155.0 - i * 0.02, 100_000.0] for i in range(78)]
+    closed_now_s = (rth_open_ms + 78 * 300_000.0) / 1000.0 + 7.75 * 3600.0
+    ev_res = Horizon24hPriceEvaluator().evaluate(rth_bars, now_ts=closed_now_s)
+    assert "spot_vol_15m_usd" not in ev_res and "rvol_15m" not in ev_res
+
