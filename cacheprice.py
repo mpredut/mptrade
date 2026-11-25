@@ -1222,7 +1222,10 @@ class Cache365PriceManager(Cache24PriceManager):
     @classmethod
     def seed_initial_archive_if_missing(cls, target_path: str, symbol: str, points: list) -> bool:
         """Bootstrap ``cache_365_price_<SYM>.jsonl`` once when missing on disk without overwriting an existing archive."""
-        if not target_path or os.path.exists(target_path) or not isinstance(points, (list, tuple)) or not points:
+        if not target_path or not isinstance(points, (list, tuple)) or not points:
+            return False
+        resolved_target = str(resolve_cachedb_filepath(target_path, migrate=True))
+        if os.path.exists(resolved_target) or os.path.exists(previous_generation_path(resolved_target)):
             return False
         rows = [
             {"s": symbol, "i": [ts_i, px_f]}
@@ -1234,7 +1237,10 @@ class Cache365PriceManager(Cache24PriceManager):
         ]
         if not rows:
             return False
-        atomic_write_jsonl(target_path, rows)
+        with generation_file_lock(resolved_target):
+            if os.path.exists(resolved_target) or os.path.exists(previous_generation_path(resolved_target)):
+                return False
+            atomic_write_jsonl(resolved_target, rows)
         return True
 
     def __init__(
@@ -1686,7 +1692,15 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         )
         self._provider_names = {}
         self.bind_providers(provider_names)
-        file_existed_before_init = bool(filename and os.path.exists(filename))
+        resolved_init_path = cache_path(filename) if filename else ""
+        file_existed_before_init = bool(
+            resolved_init_path
+            and (
+                os.path.exists(resolved_init_path)
+                or os.path.exists(previous_generation_path(resolved_init_path))
+                or (filename != resolved_init_path and os.path.exists(filename))
+            )
+        )
         super().__init__(
             sync_ts,
             symbols,
@@ -2958,7 +2972,9 @@ def resolve_cached_symbol_price(
     cands_upper = {c.strip().upper() for c in series_cands if c.strip()}
     try:
         for cand in series_cands:
-            p24_path = os.path.join(cache_dir, Cache24PriceManager.disk_filename_for_symbol(cand))
+            p24_path = str(
+                resolve_cachedb_filepath(os.path.join(cache_dir, Cache24PriceManager.disk_filename_for_symbol(cand)))
+            )
             _, rows = Cache24PriceManager.read_ssot_24price_entries(
                 p24_path, cand, candidates=series_cands, allow_single_item_fallback=True
             )
@@ -2971,7 +2987,7 @@ def resolve_cached_symbol_price(
                 CacheSparsePriceManager.disk_filename_for_symbol(cand),
                 Cache365PriceManager.disk_filename_for_symbol(cand),
             ):
-                jsonl_path = os.path.join(cache_dir, jsonl_fn)
+                jsonl_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, jsonl_fn)))
                 if not os.path.exists(jsonl_path):
                     continue
                 for line in reversed(read_tail_lines(jsonl_path, max_bytes=64 * 1024)):

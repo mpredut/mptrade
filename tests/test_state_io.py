@@ -2007,6 +2007,68 @@ def test_assetguardian_p3b_subdomain_and_jsonl_generation_lock_ohlc_merge(tmp_pa
     assert rows[-1] == [now_ms, 142.2]
 
 
+def test_cacheprice_subdomain_anchor_sparse_fallback_and_seed_guard(tmp_path, monkeypatch):
+    """Verify 3 cacheprice subdomain-resolution bug fixes:
+    1) CacheCurrentPriceManager.__init__ resolves filename before checking file_existed_before_init,
+       seeding _price_anchor_confirmations=2 on restart so the very first outlier tick is rejected;
+    2) resolve_cached_symbol_price resolves cachedb/prices/ for sparse & 365d JSONL fallbacks;
+    3) Cache365PriceManager.seed_initial_archive_if_missing resolves target_path before exists check
+       so an unresolved cachedb/<file> path never clobbers an existing cachedb/prices/ archive."""
+    import cacheprice
+
+    cdb = tmp_path / "cachedb"
+    prices_dir = cdb / "prices"
+    prices_dir.mkdir(parents=True)
+    monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(cdb))
+
+    # 1. Restart outlier-anchor seeding with bare DEFAULT_FILENAME ("cache_current_price.json")
+    now_ms = int(time.time() * 1000)
+    cp_file = prices_dir / "cache_current_price.json"
+    cp_file.write_text(
+        json.dumps({"items": {"BTCUSDC": [[now_ms - 2000, 60000.0]]}, "fetchtime": {"BTCUSDC": now_ms - 2000}}),
+        encoding="utf-8",
+    )
+    cpm = cacheprice.CacheCurrentPriceManager(
+        sync_ts=60,
+        symbols=["BTCUSDC"],
+        filename=cacheprice.CacheCurrentPriceManager.DEFAULT_FILENAME,
+        read_only=True,
+        data_sync_mode="live_reader",
+    )
+    assert cpm._price_anchor_confirmations.get("BTCUSDC", 0) >= 2
+    # First corrupt cross-symbol outlier tick after restart must be rejected immediately!
+    cpm.push_price("BTCUSDC", 0.15, ts_ms=now_ms)
+    assert cpm.extract_price_and_ts(cpm.cache.get("BTCUSDC"))[0] == pytest.approx(60000.0)
+
+    # 2. resolve_cached_symbol_price falls back to cachedb/prices/cache_sparse_price_<SYM>.jsonl
+    sparse_file = prices_dir / "cache_sparse_price_NVDA_US_EQ.jsonl"
+    sparse_file.write_text(
+        json.dumps({"s": "NVDA_US_EQ", "i": [now_ms - 3_600_000, 145.75]}) + "\n",
+        encoding="utf-8",
+    )
+    px_sparse = cacheprice.resolve_cached_symbol_price("NVDA_US_EQ", cache_dir=str(cdb))
+    assert px_sparse == pytest.approx(145.75)
+
+    # And falls back to cachedb/prices/cache_365_price_<SYM>.jsonl when sparse is absent
+    p365_file = prices_dir / "cache_365_price_AMD_US_EQ.jsonl"
+    p365_file.write_text(
+        json.dumps({"s": "AMD_US_EQ", "i": [now_ms - 7_200_000, 118.25]}) + "\n",
+        encoding="utf-8",
+    )
+    px_365 = cacheprice.resolve_cached_symbol_price("AMD_US_EQ", cache_dir=str(cdb))
+    assert px_365 == pytest.approx(118.25)
+
+    # 3. seed_initial_archive_if_missing with unresolved cachedb/ path must NOT overwrite existing archive
+    unresolved_p365 = str(cdb / "cache_365_price_AMD_US_EQ.jsonl")
+    assert cacheprice.Cache365PriceManager.seed_initial_archive_if_missing(
+        unresolved_p365, "AMD_US_EQ", [[now_ms, 999.0]]
+    ) is False
+    reloaded_365, bad = state_io.read_jsonl_bucket_map(str(p365_file))
+    assert bad is False
+    assert reloaded_365["AMD_US_EQ"] == [[now_ms - 7_200_000, 118.25]]
+
+
+
 
 
 
