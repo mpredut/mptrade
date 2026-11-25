@@ -198,7 +198,7 @@ def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
 
 
 def require_account_cache_for_submit():
-    """Fail closed unless the central Binance account caches are current."""
+    """Fail closed unless the canonical Binance filled-order cache is current."""
     if not cfg.is_trade_enabled():
         raise SubmissionRefused("trading_disabled")
     try:
@@ -206,9 +206,7 @@ def require_account_cache_for_submit():
             requested = account_cache_health.require_fresh_account_cache()
             ProviderSsotBridgeMixin.ensure_ssot_account_cache_readers(requested)
             confirmed = account_cache_health.require_fresh_account_cache()
-            if (requested.order_cache_version, requested.trade_cache_version) == (
-                confirmed.order_cache_version, confirmed.trade_cache_version
-            ):
+            if requested.order_cache_version == confirmed.order_cache_version:
                 return confirmed
         raise account_cache_health.AccountCacheNotReady(
             "account_cache_changed_during_reader_sync")
@@ -218,10 +216,10 @@ def require_account_cache_for_submit():
 
 
 def _require_submit_permit_headroom(status):
-    parsed_ages = [safe_nonneg_float(age, default=None) for age in (status.order_age_sec, status.trade_age_sec)]
+    order_age = safe_nonneg_float(status.order_age_sec, default=None)
     if (
-        any(age_f is None for age_f in parsed_ages)
-        or max(parsed_ages) + account_cache_health.SUBMIT_PERMIT_TTL_SEC > account_cache_health.MAX_AGE_SEC
+        order_age is None
+        or order_age + account_cache_health.SUBMIT_PERMIT_TTL_SEC > account_cache_health.MAX_AGE_SEC
     ):
         raise SubmissionRefused("account_cache_not_fresh")
     return status
@@ -287,7 +285,7 @@ def _consume_account_cache_submit_permit(
             scope.pid == os.getpid()
             and time.monotonic() <= scope.expires_at
             and time.time() <= scope.expires_at_wall
-            and bool(scope.order_cache_version) and bool(scope.trade_cache_version)
+            and bool(scope.order_cache_version)
             and bool(sym_u)
             and side is not None and not isinstance(side, bool)
             and scope.symbol == sym_u

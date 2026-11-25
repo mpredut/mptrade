@@ -9,6 +9,7 @@ from botcore import (
     extract_order_id,
     extract_order_side,
     extract_timestamp_ms,
+    safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_int,
 )
@@ -18,8 +19,8 @@ from providers.ssot_bridge import ProviderSsotBridgeMixin
 
 
 def init_cache_trade_manager():
-    """Return the process-wide BinanceTrade cache reader from CacheFactory."""
-    return ProviderSsotBridgeMixin.get_ssot_cache_manager("BinanceTrade")
+    """Return the process-wide canonical BinanceOrderFilled cache reader from CacheFactory."""
+    return ProviderSsotBridgeMixin.get_ssot_cache_manager("BinanceOrderFilled")
 
 #######
 #######      get_my_trades     #######
@@ -78,9 +79,12 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     ):
         sym_out = clean_upper_scalar(trade.get('symbol')) or symbol
         clean_oid = _resolve_trade_order_id(trade)
+        fill_id = _valid_fill_id(trade.get('id'))
+        if fill_id is None:
+            fill_id = clean_oid
         row = {
             'symbol': sym_out,
-            'id': _valid_fill_id(trade.get('id')),
+            'id': fill_id,
             'orderId': clean_oid,
             'orderListId': clean_oid,
             'price': px,
@@ -94,5 +98,9 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
         cid = extract_client_order_id(trade, default="")
         if cid:
             row['clientOrderId'] = cid
+        if (fee_val := safe_nonneg_float(trade.get('fee'), default=None)) is not None:
+            row['fee'] = fee_val
+        if fee_asset := clean_upper_scalar(trade.get('feeAsset')):
+            row['feeAsset'] = fee_asset
         filtered_trades.append(row)
     return filtered_trades

@@ -923,7 +923,7 @@ _TERMINAL_QTY_OR_LIMIT_REFUSALS = frozenset({
 })
 
 _TERMINAL_UNFILLED_REFUSALS = _TERMINAL_QTY_OR_LIMIT_REFUSALS | frozenset({
-    "profit_guard", "trend_deferred", "medium_trend_deferred", "aborted_by_caller",
+    "profit_guard", "intelligence_guard", "trend_deferred", "medium_trend_deferred", "aborted_by_caller",
 })
 
 
@@ -1143,8 +1143,8 @@ class TradingBot:
                     )
                     if refusal_reason in _TERMINAL_QTY_OR_LIMIT_REFUSALS or is_terminal_filter_refusal(refusal_reason):
                         return _complete_followup(msg=f"24h limit reached ({side}: {refusal_reason}) \u2014 exiting without retry")
-                    if refusal_reason == "profit_guard" and (is_buy or not is_opp_filled()):
-                        return _complete_followup(msg=f"Blocked by profit guard ({side}: {refusal_reason}) \u2014 exiting without retry")
+                    if refusal_reason in {"profit_guard", "intelligence_guard"} and (is_buy or not is_opp_filled()):
+                        return _complete_followup(msg=f"Blocked by guard ({side}: {refusal_reason}) \u2014 exiting without retry")
                     if refusal_reason in {"trend_deferred", "medium_trend_deferred"} and not is_opp_filled():
                         return _complete_followup(msg=f"Deferred by trend ({side}: {refusal_reason}) \u2014 exiting without retry")
                     if (refusal_reason == "aborted_by_caller" or getattr(self, "_round_aborted", False)) and not is_opp_filled():

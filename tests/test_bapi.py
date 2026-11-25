@@ -175,7 +175,7 @@ class BapiTradesReaderTest(unittest.TestCase):
                 actual = bapi_trades.init_cache_trade_manager()
 
             self.assertIs(actual, manager)
-            get_cache_manager.assert_called_once_with("BinanceTrade")
+            get_cache_manager.assert_called_once_with("BinanceOrderFilled")
 
         with self.subTest(msg="recent trade reader copies one locked generation"):
             trade = {
@@ -704,16 +704,18 @@ def test_bapi_placeorder_rejects_boolean_qty_price_cancel_opposite_requested_pri
         bapi_placeorder._submit_binance_order("BUY", "BTCUSDC", 1.0, price=60000.0, cancel_opposite_requested_price=True)
 
 def test__require_submit_permit_headroom_refuses_nan_negative_or_boolean_cache_ages_iter38_s1():
-    """[ITER38 #1] _require_submit_permit_headroom refuses NaN, negative, or boolean cache ages."""
-    # 1. _require_submit_permit_headroom refuses NaN, negative, or boolean cache ages
+    """[ITER38 #1] _require_submit_permit_headroom refuses missing, NaN, negative, or boolean order_age_sec."""
     for bad_status in (
-        SimpleNamespace(order_age_sec=0.5, trade_age_sec=float("nan")),
+        SimpleNamespace(order_age_sec=None, trade_age_sec=0.5),
         SimpleNamespace(order_age_sec=float("nan"), trade_age_sec=0.5),
         SimpleNamespace(order_age_sec=True, trade_age_sec=0.5),
         SimpleNamespace(order_age_sec=-1.0, trade_age_sec=0.5),
     ):
         with pytest.raises(bapi_placeorder.SubmissionRefused):
             bapi_placeorder._require_submit_permit_headroom(bad_status)
+    # Missing or stale legacy trade_age_sec does not block when canonical order_age_sec has headroom.
+    ok_status = SimpleNamespace(order_age_sec=0.5, trade_age_sec=None)
+    assert bapi_placeorder._require_submit_permit_headroom(ok_status) is ok_status
 
 def test_cancel_opposite_orders_ignores_zero_missing_price_on_buy_symmetrically_iter38_s2(monkeypatch):
     """[ITER38 #2] cancel_opposite_orders ignores zero/missing price on BUY symmetrically with SELL and rejects bool requested_price."""

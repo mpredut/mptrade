@@ -42,8 +42,14 @@ from cacheaccount import (
     get_order_filled_manager,
     get_order_open_manager,
 )
-from cachepaths import clean_symbol_key, normalize_venue_name, resolve_cachedb_filepath
+from cachepaths import (
+    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
+    clean_symbol_key,
+    normalize_venue_name,
+    resolve_cachedb_filepath,
+)
 from instrument_registry import canonical_display_symbol
+from providers.intent_state import collect_known_ai_order_ids
 from providers.order_id_context import (
     all_correlatable_client_order_ids,
     extract_client_order_id,
@@ -64,7 +70,7 @@ from providers.order_ledger import (
     update_recently_closed,
 )
 from providers.order_ohlc_utils import extract_executed_qty, extract_orig_qty
-from state_io import encode_json_payload, generation_file_lock
+from state_io import encode_json_payload, generation_file_lock, read_json_dict
 
 
 def derive_reconcile_grace_sec(open_sync_interval_sec: float = OPEN_ORDER_SYNC_INTERVAL_SEC) -> float:
@@ -303,6 +309,21 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
             == OrderLedgerState.FILLED.value
         )
 
+    def _load_known_ai_order_ids_lc(self) -> set[str]:
+        """Load lowercase venue order IDs and derived 128-bit cloids from local autonomous intents state."""
+        candidates = (
+            os.path.join(self.cachedb_dir, "state", AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME),
+            os.path.join(self.cachedb_dir, AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME),
+        )
+        for path in candidates:
+            resolved = str(resolve_cachedb_filepath(path))
+            if not os.path.isfile(resolved):
+                continue
+            payload = read_json_dict(resolved, default=None)
+            if isinstance(payload, dict):
+                return {tok.lower() for tok in collect_known_ai_order_ids(payload) if tok}
+        return set()
+
     def reconcile_once(self, *, now_ts: Optional[float] = None) -> dict[str, int]:
         """Execute one locked, network-free reconciliation pass and persist updated state."""
         eff_now = resolve_now_ts(now_ts)
@@ -373,6 +394,7 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
             filled_by_sym_vid, filled_by_vid_any, filled_by_cid = self._index_filled_rows(filled_by_venue)
 
             # 3. Reconcile resting venue open orders against active ledger records.
+            known_ai_ids_lc: Optional[set[str]] = None
             seen_open_keys: set[str] = set()
             for venue_key, sym_map in open_by_venue.items():
                 for sym_k, rows in sym_map.items():
@@ -435,6 +457,14 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                                 continue
                             raw_owner = resolve_order_owner(cid) if cid else None
                             inferred_owner = raw_owner if (raw_owner and raw_owner not in ("unspecified", "unknown") and not raw_owner.startswith("alt:")) else "external"
+                            if inferred_owner == "external":
+                                if known_ai_ids_lc is None:
+                                    known_ai_ids_lc = self._load_known_ai_order_ids_lc()
+                                cand_ids = {oid.lower()}
+                                if cid:
+                                    cand_ids.update(tok.lower() for tok in all_correlatable_client_order_ids(cid))
+                                if known_ai_ids_lc and (cand_ids & known_ai_ids_lc):
+                                    inferred_owner = "ai_executor"
                             adopted_key = _emit(
                                 OrderEventType.ORPHAN_ADOPTED.value,
                                 venue=venue_key,

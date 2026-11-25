@@ -34,7 +34,13 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import CACHE_T212_TRADE_FILENAME, cache_path, canonical_base_asset, same_canonical_base_asset
+from cachepaths import (
+    CACHE_T212_ORDER_FILLED_FILENAME,
+    CACHE_T212_TRADE_FILENAME,
+    cache_path,
+    canonical_base_asset,
+    same_canonical_base_asset,
+)
 from .base import MarketDataProvider
 from .broker_history import (
     aggregate_broker_history_fills,
@@ -116,6 +122,7 @@ class T212Provider(MarketDataProvider):
     _STRATEGY_HEARTBEAT_NAME = "T212-bot"
     _SSOT_PRICE_MAX_AGE_SEC = SHORT_TREND_FRESHNESS_MAX_AGE_SEC
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_T212_TRADE_FILENAME
+    _DEFAULT_FILLED_ORDERS_CACHE_FILENAME = CACHE_T212_ORDER_FILLED_FILENAME
     _FILLS_CACHE_MAX_STALE_S = 86400.0 * 30
     _fills_match_fn = staticmethod(_t212_tickers_match)
     _OHLC_MARKET_DATA_SPEC = (None, "212trading.market_data", "fetch_yahoo_candles")

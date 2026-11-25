@@ -1279,3 +1279,120 @@ def test_section_c_monitororder_cooldown_manual_trace_actor_and_macro_ntfy_dedup
         with patch.object(analyzer.geopolitical_analyzer, "assess", return_value=geo3_chg):
             analyzer.assess_geopolitical_threat(force=False, now=t0 + 9000.0)
         assert mock_notify.call_count == 4  # Escalation to DOWNSCALE_50 (ELEVATED) notified immediately!
+
+
+def test_bug2_intelligence_guard_reason_and_qlimit_bypass_log_and_bug3_caller_owns_retry_acked_and_hl_ai_owner(tmp_path, capsys):
+    import instrument as inst_mod
+    import order_guard
+    from cachepaths import AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME
+
+    # Bug #2: When G_PROF + G_QLIMIT1 are both bypassed and Stage-2 intelligence guard blocks,
+    # Instrument logs that BOTH were bypassed and reports reason="intelligence_guard" (not "profit_guard").
+    fake_prov = MagicMock()
+    fake_prov.name = "Binance"
+    fake_prov.guards_internally.return_value = False
+    fake_prov.requires_cache_permit.return_value = False
+    fake_prov.defers_smart_cancel.return_value = False
+    fake_prov.free_balance.return_value = 1000.0
+    fake_prov.get_current_price.return_value = 0.12
+    fake_prov.round_price.side_effect = lambda _s, px: px
+    fake_prov.quantity_decision.return_value = SimpleNamespace(
+        final_qty=100.0, refuse_reason=None, balance_asset="USDC",
+        scale_applied=False, applied_scale=1.0, wallet_constrained=False,
+    )
+    fake_prov.place_order.return_value = {"orderId": "568399001", "status": "NEW"}
+    fake_api = MagicMock()
+    fake_api.market_regime_context.return_value = None
+    inst = inst_mod.Instrument(
+        name="ARB", symbol="ARBUSDC", provider="Binance", base="ARB", quote="USDC", api=fake_api
+    )
+    inst._provider = fake_prov
+
+    outcome_ctx: dict = {}
+    with (
+        patch.object(order_guard, "daily_limit_guard", return_value=(True, None)),
+        patch.object(order_guard, "get_margin_cfg", return_value=0.01),
+        patch.object(order_guard, "check_intelligence_guards", return_value=(False, "severe_taker_selling_dominated", 1.0)),
+        patch.object(inst_mod.order_lifecycle, "log_order_outcome"),
+    ):
+        res = inst.place(
+            "BUY",
+            0.12,
+            100.0,
+            smart=False,
+            wait_for_trend=False,
+            caller_owns_retry=True,
+            kind="monitor_order_replace",
+            bypass_guards=["G_PROF", "GT_S", "GLLM1", "G_QLIMIT1"],
+            _outcome_context=outcome_ctx,
+        )
+    assert res is None
+    assert outcome_ctx["reason"] == "intelligence_guard"
+    out = capsys.readouterr().out
+    assert "the historical price reference and quantity/weight guard were explicitly bypassed" in out
+    assert "quantity/weight guard remains active" not in out
+
+    # Bug #3a: caller_owns_retry=True without intent_id (e.g. monitororder MO_MN_OR_*) emits ACKED to OrderLedger.
+    cdb = str(tmp_path / "cachedb")
+    os.makedirs(os.path.join(cdb, "orders"), exist_ok=True)
+    os.makedirs(os.path.join(cdb, "state"), exist_ok=True)
+    writer = OrderLedgerWriter(cachedb_dir=cdb)
+    reader = OrderLedgerReader(cachedb_dir=cdb)
+    with (
+        patch.object(order_guard, "daily_limit_guard", return_value=(True, None)),
+        patch.object(order_guard, "get_margin_cfg", return_value=0.01),
+        patch.object(order_guard, "check_intelligence_guards", return_value=(True, "ok", 1.0)),
+        patch.object(inst_mod.order_lifecycle, "log_order_outcome"),
+        patch.object(inst_mod, "get_default_ledger_writer", return_value=writer),
+    ):
+        placed = inst.place(
+            "BUY",
+            0.12,
+            100.0,
+            smart=False,
+            wait_for_trend=False,
+            caller_owns_retry=True,
+            client_order_id="MO_MN_OR_TEST_01",
+            bypass_guards=["G_PROF", "GT_S", "GLLM1", "G_QLIMIT1"],
+        )
+    assert placed is not None
+    active_after_ack = reader.list_active_orders(apply_tail=True)
+    assert any(r["cid"] == "MO_MN_OR_TEST_01" and r["vid"] == "568399001" for r in active_after_ack)
+
+    # Bug #3b: OrderLedgerReconciler resolves known local AI 128-bit hex cloid on Hyperliquid as owner="ai_executor"
+    # while keeping genuinely foreign 128-bit hex cloids as owner="external".
+    t0 = 1_795_570_000.0
+    known_cid = "AI_intent_1795570000_buy_hypeusdc"
+    known_cloid = derive_venue_128bit_client_order_id("hyperliquid", known_cid)
+    foreign_cloid = derive_venue_128bit_client_order_id("hyperliquid", "AI_intent_foreign_host_order")
+    with open(os.path.join(cdb, "state", AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME), "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "intents": [
+                    {
+                        "intent_id": "intent_1795570000_buy_hypeusdc",
+                        "venue": "hyperliquid",
+                        "symbol": "HYPEUSDC",
+                        "client_order_id": known_cid,
+                        "status": "OPEN",
+                    }
+                ]
+            },
+            fh,
+        )
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        os.path.join(cdb, "orders", CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME),
+        {
+            "HYPEUSDC": [
+                {"orderId": "700001", "clientOrderId": known_cloid, "side": "BUY", "price": 58.0, "origQty": 10.0, "executedQty": 0.0, "status": "OPEN", "timestamp": int(t0 * 1000)},
+                {"orderId": "700002", "clientOrderId": foreign_cloid, "side": "BUY", "price": 58.1, "origQty": 10.0, "executedQty": 0.0, "status": "OPEN", "timestamp": int(t0 * 1000)},
+            ]
+        },
+        now_ms=int((t0 + 2) * 1000),
+        verified_ts=t0 + 2.0,
+    )
+    reconciler = OrderLedgerReconciler(cachedb_dir=cdb, use_singletons=False, reconcile_grace_sec=30.0)
+    reconciler.reconcile_once(now_ts=t0 + 3.0)
+    by_vid = {r["vid"]: r for r in reader.list_active_orders(apply_tail=False)}
+    assert by_vid["700001"]["owner"] == "ai_executor"
+    assert by_vid["700002"]["owner"] == "external"

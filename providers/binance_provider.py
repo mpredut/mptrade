@@ -241,7 +241,7 @@ class BinanceProvider(MarketDataProvider):
             return None
         status = health.require_fresh_account_cache()
         self.ensure_ssot_account_cache_readers(status)
-        manager = self.get_ssot_cache_manager("BinanceTrade")
+        manager = self.get_ssot_cache_manager("BinanceOrderFilled")
         with manager.lock:
             bucket = None
             for cand in [symbol] + cache_symbol_variants(symbol):
@@ -262,7 +262,8 @@ class BinanceProvider(MarketDataProvider):
             validate_row_fn=lambda row: bool(
                 manager._is_valid_item(row)
                 and (
-                    (row_sym := clean_upper_scalar(row.get("symbol")) or "") == symbol
+                    row.get("symbol") is None
+                    or (row_sym := clean_upper_scalar(row.get("symbol")) or "") == symbol
                     or (sym_canon and canonical_symbol_key(row_sym) == sym_canon)
                 )
             ),
@@ -344,12 +345,12 @@ class BinanceProvider(MarketDataProvider):
             api_client=_get_bapi().client,
         )
 
-    def prepare_order_state(self) -> tuple[str, str]:
-        """Synchronize Binance account readers before shared policy checks."""
+    def prepare_order_state(self) -> tuple[str, ...]:
+        """Synchronize the canonical Binance filled-order reader before shared policy checks."""
         _po = _get_placeorder()
 
         status = _po.require_account_cache_for_submit()
-        return str(status.order_cache_version), str(status.trade_cache_version)
+        return (str(status.order_cache_version),)
 
     def validate_order_state(self, expected_state):
         """Refuse when policy checks raced with a newer account-cache snapshot."""
@@ -454,7 +455,7 @@ class BinanceProvider(MarketDataProvider):
     def last_opposite_fill(self, symbol: str, order_type: str, since_s: float = 0) -> Optional[float]:
         _po = _get_placeorder()
 
-        ref = self.get_ssot_cache_manager("BinanceTrade").get_last_opposite_fill_price(symbol, order_type)
+        ref = self.get_ssot_cache_manager("BinanceOrderFilled").get_last_opposite_fill_price(symbol, order_type)
         if ref is None:
             ref = _po._last_opposite_fill_price_api(symbol, order_type)  # direct API fallback
         return ref

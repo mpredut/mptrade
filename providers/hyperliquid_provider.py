@@ -50,6 +50,7 @@ from botcore import (
     _parse_bool_flag,
 )
 from cachepaths import (
+    CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME,
     CACHE_HYPERLIQUID_TRADE_FILENAME,
     canonical_base_asset,
     split_symbol_assets,
@@ -168,6 +169,7 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
     _TCA_DECIMALS_LADDER = ((100.0, 2), (1.0, 3))
     _TCA_DECIMALS_FALLBACK = 4
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_HYPERLIQUID_TRADE_FILENAME
+    _DEFAULT_FILLED_ORDERS_CACHE_FILENAME = CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME
     _FILLS_CACHE_MAX_STALE_S = 60.0
     _OHLC_MARKET_DATA_SPEC = (_HL_DIR, "market_data", "fetch_ohlc_candles")
     _RECONCILIATION_CAPABILITIES = OrderReconciliationCapabilities(

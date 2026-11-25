@@ -1,9 +1,12 @@
 """Compact cross-process freshness state for Binance account caches.
 
 The dedicated cacheManager process is the sole writer. Trading processes read the
-atomic snapshot before live order actions and fail closed unless both the Order and
-Trade caches were reconciled successfully within the configured age. File mtime is
-intentionally ignored because it does not prove that Binance confirmed account state.
+atomic snapshot before live order actions and fail closed unless the canonical
+``CacheOrderFilledManager`` (``BinanceOrderFilled``) cache was reconciled
+successfully within the configured age. Legacy ``BinanceTrade`` sync fields
+remain recorded as passive observability metadata during Stage-1 parallel
+reference operation. File mtime is intentionally ignored because it does not
+prove that Binance confirmed account state.
 """
 from __future__ import annotations
 
@@ -253,15 +256,16 @@ def inspect_health(
         if not isinstance(stopping, bool):
             raise ValueError("invalid stopping")
         order_sync_ms = require_int(state.get("order_sync_at_ms"), "order_sync_at_ms", min_value=0)
-        trade_sync_ms = require_int(state.get("trade_sync_at_ms"), "trade_sync_at_ms", min_value=0)
+        raw_trade_sync = state.get("trade_sync_at_ms", 0)
+        trade_sync_ms = require_int(raw_trade_sync, "trade_sync_at_ms", min_value=0)
         order_version = state.get("order_cache_version")
-        trade_version = state.get("trade_cache_version")
-        if not isinstance(order_version, str) or not isinstance(trade_version, str):
+        raw_trade_version = state.get("trade_cache_version", "")
+        if not isinstance(order_version, str) or not isinstance(raw_trade_version, str):
             raise ValueError("invalid cache version")
         order_version = clean_scalar_str(order_version) or ""
-        trade_version = clean_scalar_str(trade_version) or ""
+        trade_version = clean_scalar_str(raw_trade_version) or ""
         initializing = (
-            generation < 2 or not order_sync_ms or not trade_sync_ms or not order_version or not trade_version
+            generation < 1 or not order_sync_ms or not order_version
         )
     except FileNotFoundError:
         return CacheHealthStatus(False, "account_cache_health_missing")
@@ -284,15 +288,17 @@ def inspect_health(
     max_age_val = safe_pos_float(max_age_sec, default=MAX_AGE_SEC)
     future_tolerance_ms = round(safe_nonneg_float(future_tolerance_sec, default=5.0) * 1000)
 
-    if order_sync_ms > current_ms + future_tolerance_ms or trade_sync_ms > current_ms + future_tolerance_ms:
+    if order_sync_ms > current_ms + future_tolerance_ms:
         return CacheHealthStatus(False, "account_cache_timestamp_in_future")
 
     order_age = max(0.0, (current_ms - order_sync_ms) / 1000.0)
-    trade_age = max(0.0, (current_ms - trade_sync_ms) / 1000.0)
+    trade_age = (
+        max(0.0, (current_ms - trade_sync_ms) / 1000.0)
+        if trade_sync_ms > 0
+        else None
+    )
     if order_age > max_age_val:
         return CacheHealthStatus(False, "order_cache_stale", order_age, trade_age)
-    if trade_age > max_age_val:
-        return CacheHealthStatus(False, "trade_cache_stale", order_age, trade_age)
     return CacheHealthStatus(True, "", order_age, trade_age, order_version, trade_version)
 
 

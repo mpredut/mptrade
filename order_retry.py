@@ -294,7 +294,7 @@ def valid_record(rec):
 _CONSOLIDATED_DEFERRAL_REASONS = frozenset({
     "balance_unavailable", "daily_limit", "insufficient_funds", "trend_deferred",
     "medium_trend_deferred", "medium_trend_qty_zero", "profit_guard",
-    "qty_zero_after_policy", "qty_zero_after_weight",
+    "intelligence_guard", "qty_zero_after_policy", "qty_zero_after_weight",
 })
 
 

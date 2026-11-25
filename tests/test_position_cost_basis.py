@@ -80,9 +80,11 @@ def test_negative_fee_is_unknown():
 def binance_history(monkeypatch):
 
     rows = []
+    stub_filled = object.__new__(cm.CacheOrderFilledManager)
+    stub_filled.venue = "binance"
     manager = SimpleNamespace(cache={"ARBUSDC": rows}, lock=RLock(),
-                              _is_valid_item=cm.CacheTradeManager._is_valid_item)
-    current = Mock(return_value=SimpleNamespace(order_cache_version="o", trade_cache_version="t"))
+                              _is_valid_item=stub_filled._is_valid_item)
+    current = Mock(return_value=SimpleNamespace(order_cache_version="o", trade_cache_version=""))
     ensure = Mock()
     get_cache = Mock(return_value=manager)
     monkeypatch.setattr(health, "require_fresh_account_cache", current)
@@ -92,9 +94,9 @@ def binance_history(monkeypatch):
 
 
 def native(i, side="BUY", qty=1, price=100, **extra):
-    return dict(symbol="ARBUSDC", id=i, orderId=i, time=int(time.time()*1000)-1000+i,
-                isBuyer=side == "BUY", qty=str(qty), price=str(price),
-                commission="0", commissionAsset="USDC", **extra)
+    return dict(orderId=i, timestamp=int(time.time()*1000)-1000+i,
+                side=side, quantity=qty, price=price,
+                fee=0.0, feeAsset="USDC", **extra)
 
 
 def test_binance_uses_immutable_fills_and_current_durable_versions(binance_history):
@@ -104,7 +106,7 @@ def test_binance_uses_immutable_fills_and_current_durable_versions(binance_histo
     assert api.position_cost_basis("ARBUSDC", 1, 3600, provider_name="binance") == 100
     current.assert_called_once()
     ensure.assert_called_once_with(current.return_value)
-    get_cache.assert_called_once_with("BinanceTrade")
+    get_cache.assert_called_once_with("BinanceOrderFilled")
     assert api.position_cost_basis("ARBUSDC", 2, 3600, provider_name="binance") is None
 
 
@@ -121,7 +123,7 @@ def test_binance_rejects_stale_history_before_reading(binance_history):
 def test_binance_base_fee_matches_actual_inventory(binance_history):
     api, rows, *_ = binance_history
     row = native(1)
-    row.update(commission="0.001", commissionAsset="ARB")
+    row.update(fee=0.001, feeAsset="ARB")
     rows.append(row)
     assert math.isclose(api.position_cost_basis("ARBUSDC", 0.999, 3600), 100 / 0.999)
 
@@ -133,8 +135,8 @@ def test_provider_without_inventory_cost_support_reports_unknown():
 def test_binance_missing_commission_returns_none_instead_of_keyerror(binance_history):
     api, rows, *_ = binance_history
     row = native(1)
-    row.pop("commission")
-    row.pop("commissionAsset")
+    row.pop("fee")
+    row.pop("feeAsset")
     rows.append(row)
     assert api.position_cost_basis("ARBUSDC", 1, 3600, provider_name="binance") is None
 

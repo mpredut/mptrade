@@ -486,3 +486,102 @@ def test_order_filled_manager_symmetric_passive_readers_and_fallbacks(tmp_path):
     assert covered_with_trd == {"binance", "kraken", "hyperliquid"}
     assert len(flat_with_trd) == 3
     assert any(r["venue"] == "hyperliquid" and r["orderId"] == "HL-99" for r in flat_with_trd)
+
+
+def test_order_filled_coherence_kraken_subsumption_t212_fee_upgrade_and_binance_last_opposite(tmp_path):
+    from providers.quantity import resolve_kraken_trade_cache_position, summarize_fills_position_and_cost
+
+    # 1. Kraken Bug K1: provisional Ledger fills (orderId == fillId) must be subsumed by the real order
+    #    both when real order arrives later and when Ledger fill arrives after the real order.
+    kr_path = str(tmp_path / CACHE_KRAKEN_ORDER_FILLED_FILENAME)
+    ledger_fills = [
+        {"id": "TAIDKY-1", "orderId": "TAIDKY-1", "side": "SELL", "price": 135.42, "qty": 4.91815, "time": 1795467222749, "fee": 0.0},
+        {"id": "TJJTVY-2", "orderId": "TJJTVY-2", "side": "SELL", "price": 135.42, "qty": 4.91815, "time": 1795467222750, "fee": 0.0},
+        {"id": "TAVULX-3", "orderId": "TAVULX-3", "side": "SELL", "price": 135.42, "qty": 2.500535, "time": 1795467222751, "fee": 0.0},
+    ]
+    own_trades_fills = [
+        {"id": "BUY-0", "orderId": "OBUY-000", "side": "BUY", "price": 134.85, "qty": 24.472723, "time": 1795400000000, "fee": 0.0, "feeAsset": "USD"},
+        {"id": "TAIDKY-1", "orderId": "OFMFTT-REAL", "side": "SELL", "price": 135.42, "qty": 4.91815, "time": 1795467222749, "fee": 0.0, "feeAsset": "USD"},
+        {"id": "TJJTVY-2", "orderId": "OFMFTT-REAL", "side": "SELL", "price": 135.42, "qty": 4.91815, "time": 1795467222750, "fee": 0.0, "feeAsset": "USD"},
+        {"id": "TAVULX-3", "orderId": "OFMFTT-REAL", "side": "SELL", "price": 135.42, "qty": 2.500535, "time": 1795467222751, "fee": 0.0, "feeAsset": "USD"},
+    ]
+    CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        kr_path, {"SPCXxUSD": ledger_fills}, venue="kraken", now_ms=1795467230000, is_snapshot=False
+    )
+    doc = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        kr_path, {"SPCXxUSD": own_trades_fills}, venue="kraken", now_ms=1795467240000, is_snapshot=False
+    )
+    assert [r["orderId"] for r in doc["items"]["SPCXxUSD"]] == ["OBUY-000", "OFMFTT-REAL"]
+    # Re-sending provisional Ledger fills after real order must NOT re-add duplicates
+    doc2 = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        kr_path, {"SPCXxUSD": ledger_fills}, venue="kraken", now_ms=1795467250000, is_snapshot=False
+    )
+    assert [r["orderId"] for r in doc2["items"]["SPCXxUSD"]] == ["OBUY-000", "OFMFTT-REAL"]
+    pos_filled = resolve_kraken_trade_cache_position("SPCXxUSD", str(tmp_path))
+    pos_ref = summarize_fills_position_and_cost(own_trades_fills, base_asset="SPCXx", quote_asset="USD")
+    assert pos_filled is not None and pos_ref is not None
+    assert pos_filled["qty"] == pytest.approx(pos_ref["qty"], abs=1e-6)
+    assert pos_filled["cost"] == pytest.approx(pos_ref["cost"], abs=1e-4)
+
+    # 2. T212 Bug T1: settled fee 0.0 -> 1.24 upgrades on equal-qty/ts merge and never downgrades back to 0.0.
+    t212_path = str(tmp_path / CACHE_T212_ORDER_FILLED_FILENAME)
+    CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        t212_path,
+        {"NVDA_US_EQ": [{"orderId": "60903496656", "side": "BUY", "price": 182.5, "quantity": 5.0, "timestamp": 1795530903000, "fee": 0.0}]},
+        venue="t212",
+        now_ms=1795530910000,
+    )
+    doc_t1 = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        t212_path,
+        {"NVDA_US_EQ": [{"orderId": "60903496656", "side": "BUY", "price": 182.5, "quantity": 5.0, "timestamp": 1795530903000, "fee": 1.24, "feeAsset": "USD"}]},
+        venue="t212",
+        now_ms=1795530920000,
+    )
+    assert doc_t1["items"]["NVDA_US_EQ"][0]["fee"] == pytest.approx(1.24)
+    assert doc_t1["items"]["NVDA_US_EQ"][0]["feeAsset"] == "USD"
+    doc_t2 = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        t212_path,
+        {"NVDA_US_EQ": [{"orderId": "60903496656", "side": "BUY", "price": 182.5, "quantity": 5.0, "timestamp": 1795530903000, "fee": 0.0}]},
+        venue="t212",
+        now_ms=1795530930000,
+        is_snapshot=True,
+    )
+    assert doc_t2["items"]["NVDA_US_EQ"][0]["fee"] == pytest.approx(1.24)
+
+    # 3. Binance Bugs B1 & B2: _persist_items backfills fee/feeAsset/type/clientOrderId on known _fillId
+    #    and get_last_opposite_fill_price returns latest opposite fill price.
+    bn_path = str(tmp_path / CACHE_BINANCE_ORDER_FILLED_FILENAME)
+    bn_mgr = CacheOrderFilledManager(3600, ["BTCUSDC"], bn_path, read_only=True, venue="binance")
+    bn_mgr.read_only = False
+    bn_mgr._persist_items(
+        "BTCUSDC",
+        [
+            {"orderId": 100, "price": 60000.0, "quantity": 0.1, "timestamp": 1700000001000, "side": "BUY", "_fillId": "1"},
+            {"orderId": 101, "price": 61500.0, "quantity": 0.1, "timestamp": 1700000005000, "side": "SELL", "_fillId": "2"},
+        ],
+    )
+    bn_mgr._persist_items(
+        "BTCUSDC",
+        [
+            {
+                "orderId": 100,
+                "price": 60000.0,
+                "quantity": 0.1,
+                "timestamp": 1700000001000,
+                "side": "BUY",
+                "clientOrderId": "TA_backfill_1",
+                "type": "LIMIT",
+                "status": "FILLED",
+                "fee": 0.0004,
+                "feeAsset": "BNB",
+                "_fillId": "1",
+            }
+        ],
+    )
+    row_100 = next(r for r in bn_mgr.cache["BTCUSDC"] if r["orderId"] == 100)
+    assert row_100["fee"] == pytest.approx(0.0004)
+    assert row_100["feeAsset"] == "BNB"
+    assert row_100["clientOrderId"] == "TA_backfill_1"
+    assert row_100["type"] == "LIMIT"
+    assert bn_mgr.get_last_opposite_fill_price("BTCUSDC", "BUY") == pytest.approx(61500.0)
+    assert bn_mgr.get_last_opposite_fill_price("BTCUSDC", "SELL") == pytest.approx(60000.0)

@@ -63,6 +63,7 @@ from .strategy_executor import (
 )
 from .venue_ws_protocols import KrakenWsLedgerMixin
 from cachepaths import (
+    CACHE_KRAKEN_ORDER_FILLED_FILENAME,
     CACHE_KRAKEN_TRADE_FILENAME,
     _LEGACY_KRAKEN_X_BASES,
     cache_path,
@@ -161,6 +162,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
     )
     _INTENT_CLIENT_ID_FORMAT = "{token}"
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_KRAKEN_TRADE_FILENAME
+    _DEFAULT_FILLED_ORDERS_CACHE_FILENAME = CACHE_KRAKEN_ORDER_FILLED_FILENAME
     _FILLS_CACHE_PATH_MODULE_ATTR = "_KRAKEN_CACHE_FILE"
     _FILLS_CACHE_DEFAULT_MODULE_ATTR = "_DEFAULT_KRAKEN_CACHE_FILE"
     _FILLS_CACHE_MAX_STALE_S = _CACHE_MAX_STALE_S

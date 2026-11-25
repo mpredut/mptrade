@@ -27,6 +27,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
+    CACHE_KRAKEN_ORDER_FILLED_FILENAME,
     CACHE_KRAKEN_TRADE_FILENAME,
     _LEGACY_KRAKEN_X_BASES,
     has_equity_suffix,
@@ -308,37 +309,39 @@ def resolve_kraken_trade_cache_position(
     held_qty: Optional[float] = None,
     read_json_fn: Any = None,
 ) -> Optional[dict[str, Any]]:
-    """Resolve live Kraken position/cost-basis summary from ``cachedb/orders/cache_trade_kraken.json``."""
+    """Resolve live Kraken position/cost-basis summary from ``cache_order_filled_kraken.json`` (with Stage-1 fallback to ``cache_trade_kraken.json``)."""
     sym_s = clean_scalar_str(symbol) or ""
     if not sym_s or not cachedb_dir:
         return None
-    cache_file = resolve_cachedb_filepath(os.path.join(cachedb_dir, CACHE_KRAKEN_TRADE_FILENAME))
-    if not os.path.isfile(cache_file):
-        return None
-    payload = read_json_fn(cache_file) if callable(read_json_fn) else read_json_dict(cache_file, default=None)
-    if not isinstance(payload, dict):
-        return None
-    items = payload.get("items")
-    if not isinstance(items, dict) or not items:
-        return None
     sym_cf = sym_s.casefold()
-    rows = items.get(sym_s)
-    matched_sym = sym_s
-    if not isinstance(rows, list):
-        for k, v in items.items():
-            if isinstance(v, list) and str(k or "").strip().casefold() == sym_cf:
-                rows = v
-                matched_sym = str(k).strip()
-                break
-    if not isinstance(rows, list) or not rows:
-        return None
-    base_asset, quote_asset = split_symbol_assets(matched_sym)
-    return summarize_fills_position_and_cost(
-        rows,
-        base_asset=base_asset or "",
-        quote_asset=quote_asset or "",
-        held_qty=held_qty,
-    )
+    for fname in (CACHE_KRAKEN_ORDER_FILLED_FILENAME, CACHE_KRAKEN_TRADE_FILENAME):
+        cache_file = resolve_cachedb_filepath(os.path.join(cachedb_dir, fname))
+        if not os.path.isfile(cache_file):
+            continue
+        payload = read_json_fn(cache_file) if callable(read_json_fn) else read_json_dict(cache_file, default=None)
+        if not isinstance(payload, dict):
+            continue
+        items = payload.get("items")
+        if not isinstance(items, dict) or not items:
+            continue
+        rows = items.get(sym_s)
+        matched_sym = sym_s
+        if not isinstance(rows, list):
+            for k, v in items.items():
+                if isinstance(v, list) and str(k or "").strip().casefold() == sym_cf:
+                    rows = v
+                    matched_sym = str(k).strip()
+                    break
+        if not isinstance(rows, list) or not rows:
+            continue
+        base_asset, quote_asset = split_symbol_assets(matched_sym)
+        return summarize_fills_position_and_cost(
+            rows,
+            base_asset=base_asset or "",
+            quote_asset=quote_asset or "",
+            held_qty=held_qty,
+        )
+    return None
 
 
 @dataclass(frozen=True)

@@ -761,7 +761,7 @@ class Instrument:
                         deferred=ctx.retry_enqueued,
                         src="instrument_guard",
                     )
-        elif ctx.order is not None and not ctx.prequeued_intent_id and not ctx.caller_owns_retry:
+        elif ctx.order is not None and not ctx.prequeued_intent_id and not (ctx.caller_owns_retry and ledger_iid):
             get_default_ledger_writer().record_event(
                 OrderEventType.ACKED,
                 venue=self.provider_name,
@@ -1044,10 +1044,16 @@ class Instrument:
                 )
 
             if ctx.bypass_math_ref:
-                print(
-                    f"[GUARD] {ctx.side_u} {self.symbol}: the historical price reference "
-                    "was explicitly bypassed; the quantity/weight guard remains active"
-                )
+                if ctx.bypass_quantity_policy:
+                    print(
+                        f"[GUARD] {ctx.side_u} {self.symbol}: the historical price reference "
+                        "and quantity/weight guard were explicitly bypassed"
+                    )
+                else:
+                    print(
+                        f"[GUARD] {ctx.side_u} {self.symbol}: the historical price reference "
+                        "was explicitly bypassed; the quantity/weight guard remains active"
+                    )
             elif (
                 not ctx.bypass_all
                 and not hasattr(order_guard.profit_guard, "_mock_name")
@@ -1291,6 +1297,7 @@ class Instrument:
                 ctx.profit_reference_mode,
                 ctx.caller_module,
             )
+            order_guard.clear_last_profit_guard_block_reason()
             if not order_guard.profit_guard(
                 self._provider,
                 self.symbol,
@@ -1299,7 +1306,7 @@ class Instrument:
                 ctx.profit_margin,
                 **pg_kwargs,
             ):
-                ctx.reason = "profit_guard"
+                ctx.reason = order_guard.get_last_profit_guard_block_reason()
             elif not ctx.is_monitor_replace:
                 ctx.qty, ctx.applied_scale, ctx.reason = self._apply_late_intelligence_scale(
                     ctx.qty,
@@ -1405,6 +1412,7 @@ class Instrument:
                     ctx.profit_reference_mode,
                     ctx.caller_module,
                 )
+                order_guard.clear_last_profit_guard_block_reason()
                 if not order_guard.profit_guard(
                     self._provider,
                     self.symbol,
@@ -1413,7 +1421,7 @@ class Instrument:
                     ctx.profit_margin,
                     **pg_kwargs,
                 ):
-                    ctx.reason = "profit_guard"
+                    ctx.reason = order_guard.get_last_profit_guard_block_reason()
                 else:
                     pre_final_qty = ctx.qty
                     ctx.qty, ctx.applied_scale, ctx.reason = self._apply_late_intelligence_scale(

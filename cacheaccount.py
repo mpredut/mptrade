@@ -1959,6 +1959,75 @@ def _sibling_order_filled_path(trade_cache_file: str, venue: str) -> str:
     return os.path.join(base_dir, fname) if base_dir else cache_path(fname)
 
 
+def _enrich_filled_row_metadata(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+    *,
+    allow_fee_upgrade: bool = True,
+) -> bool:
+    """Backfill missing metadata (and settled positive fees) on an existing filled-order row without downgrading."""
+    changed = False
+    if not existing.get("clientOrderId") and incoming.get("clientOrderId"):
+        existing["clientOrderId"] = incoming["clientOrderId"]
+        changed = True
+    in_type = clean_upper_scalar(incoming.get("type"))
+    if not existing.get("type") and in_type:
+        existing["type"] = in_type
+        changed = True
+    in_st = clean_upper_scalar(incoming.get("status"))
+    ex_st = clean_upper_scalar(existing.get("status"))
+    if in_st and (not ex_st or (ex_st == "PARTIALLY_FILLED" and in_st == "FILLED")):
+        existing["status"] = in_st
+        changed = True
+    in_asset = clean_upper_scalar(incoming.get("feeAsset"))
+    if not existing.get("feeAsset") and in_asset:
+        existing["feeAsset"] = in_asset
+        changed = True
+    if _parse_bool_flag(allow_fee_upgrade, True):
+        ex_fee = safe_nonneg_float(existing.get("fee"), default=None)
+        in_fee = safe_nonneg_float(incoming.get("fee"), default=None)
+        if in_fee is not None and (ex_fee is None or (ex_fee == 0.0 and in_fee > 0.0)):
+            existing["fee"] = round(in_fee, 10)
+            if in_asset:
+                existing["feeAsset"] = in_asset
+            changed = True
+    return changed
+
+
+def _subsume_provisional_fill_rows(by_oid: dict[str, dict[str, Any]]) -> bool:
+    """Evict provisional fill-keyed rows (``orderId == fid``) once a real order row owns that ``fid``.
+
+    Prevents double-counting venues (such as Kraken Ledgers vs ownTrades/TradesHistory) where an
+    earlier ledger feed has no parent ``ordertxid`` and falls back to ``orderId = fill_id``.
+    """
+    real_fill_owner: dict[str, str] = {}
+    for oid_key, row in by_oid.items():
+        if not isinstance(row, dict):
+            continue
+        for raw_fid in (row.get("_fillIds") or ()):
+            fid_s = clean_order_id(raw_fid)
+            if fid_s and fid_s != oid_key and fid_s not in real_fill_owner:
+                real_fill_owner[fid_s] = oid_key
+    if not real_fill_owner:
+        return False
+    removed = False
+    for oid_key in list(by_oid.keys()):
+        real_owner = real_fill_owner.get(oid_key)
+        if not real_owner or real_owner == oid_key or real_owner not in by_oid:
+            continue
+        prov_row = by_oid.get(oid_key)
+        if not isinstance(prov_row, dict):
+            continue
+        prov_fids = [fid_s for raw_f in (prov_row.get("_fillIds") or ()) if (fid_s := clean_order_id(raw_f))]
+        if prov_fids and prov_fids != [oid_key]:
+            continue
+        by_oid.pop(oid_key, None)
+        target_row = by_oid[real_owner]
+        _enrich_filled_row_metadata(target_row, prov_row, allow_fee_upgrade=False)
+        removed = True
+    return removed
+
+
 def _merge_optional_order_fee(existing: dict, incoming: dict, merged: dict) -> None:
     """Accumulate optional ``fee`` and ``feeAsset`` across fills belonging to the same order."""
     ex_fee = safe_nonneg_float(existing.get("fee"), default=None)
@@ -2419,10 +2488,11 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                     legacy_cutoff = existing_ts
                 known_fill_ids = {*known_fill_id_list}
                 if fill_id and fill_id in known_fill_ids:
-                    if not existing.get("clientOrderId") and incoming.get("clientOrderId"):
-                        existing["clientOrderId"] = incoming["clientOrderId"]
-                    if not existing.get("status") and incoming.get("status"):
-                        existing["status"] = clean_upper_scalar(incoming["status"])
+                    _enrich_filled_row_metadata(
+                        existing,
+                        incoming,
+                        allow_fee_upgrade=(len(known_fill_ids) <= 1),
+                    )
                     continue
                 if legacy_cutoff is not None and incoming_ts <= legacy_cutoff:
                     continue
@@ -2600,7 +2670,8 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                 _merge_optional_order_fee(cur, {"fee": fee_val, "feeAsset": fee_asset}, cur)
             if fid:
                 cur["_fillIds"] = [*known_fids, fid]
-        rows = [grouped[k] for k in order_sequence]
+        _subsume_provisional_fill_rows(grouped)
+        rows = [grouped[k] for k in order_sequence if k in grouped]
         rows.sort(key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")))
         return rows
 
@@ -2673,10 +2744,7 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                         if re_aggs:
                             merged_order = re_aggs[0]
                             merged_order["_fills"] = merged_fills
-                            if ex_row.get("clientOrderId") and not merged_order.get("clientOrderId"):
-                                merged_order["clientOrderId"] = ex_row["clientOrderId"]
-                            if ex_row.get("type") and not merged_order.get("type"):
-                                merged_order["type"] = ex_row["type"]
+                            _enrich_filled_row_metadata(merged_order, ex_row, allow_fee_upgrade=True)
                             by_oid[oid_str] = merged_order
                             merged_from_fills.add(oid_str)
 
@@ -2696,10 +2764,11 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                     ex_fids = list(ex_row.get("_fillIds") or ())
                     inc_fids = list(inc.get("_fillIds") or ())
                     if not is_snapshot_b and inc_fids and ex_fids and set(inc_fids).issubset(set(ex_fids)):
-                        if inc.get("clientOrderId") and not ex_row.get("clientOrderId"):
-                            ex_row["clientOrderId"] = inc["clientOrderId"]
-                        if inc.get("status") and not ex_row.get("status"):
-                            ex_row["status"] = inc["status"]
+                        _enrich_filled_row_metadata(
+                            ex_row,
+                            inc,
+                            allow_fee_upgrade=(set(inc_fids) == set(ex_fids)),
+                        )
                         continue
                     if (
                         (is_snapshot_b and (not ex_fids or not inc_fids or set(ex_fids).issubset(set(inc_fids))))
@@ -2707,8 +2776,7 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                     ):
                         merged_row = dict(ex_row)
                         merged_row.update(inc)
-                        if ex_row.get("clientOrderId") and not merged_row.get("clientOrderId"):
-                            merged_row["clientOrderId"] = ex_row["clientOrderId"]
+                        _enrich_filled_row_metadata(merged_row, ex_row, allow_fee_upgrade=True)
                         if inc_key in raw_by_oid and inc_fids and set(inc_fids).issubset(set(raw_by_oid[inc_key].keys())):
                             merged_row["_fills"] = dict(raw_by_oid[inc_key])
                         by_oid[inc_key] = merged_row
@@ -2729,9 +2797,17 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                         ) > (safe_nonneg_int(ex_row.get("timestamp"), default=0) or 0):
                             merged_row = dict(ex_row)
                             merged_row.update(inc)
+                            _enrich_filled_row_metadata(merged_row, ex_row, allow_fee_upgrade=True)
                             if ex_fids or inc_fids:
                                 merged_row["_fillIds"] = list(dict.fromkeys([*ex_fids, *inc_fids]))
                             by_oid[inc_key] = merged_row
+                        else:
+                            _enrich_filled_row_metadata(
+                                ex_row,
+                                inc,
+                                allow_fee_upgrade=(abs(in_q - ex_q) <= 1e-12),
+                            )
+                _subsume_provisional_fill_rows(by_oid)
                 new_bucket = sorted(
                     by_oid.values(),
                     key=lambda r: (safe_nonneg_int(r.get("timestamp"), default=0) or 0, str(r.get("orderId") or "")),
@@ -2908,6 +2984,91 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                 for row in rows:
                     flat.append({"venue": venue_key, "symbol": str(row.get("symbol") or sym_k), **row})
         return flat, covered, fetchtime_by_venue
+
+    def get_last_opposite_fill_price(self, symbol, order_type):
+        """Return the latest opposite filled-order price without a time limit."""
+        self.sync_account_reader_if_needed()
+        if not (side_u := normalize_side(order_type, require_str=True)):
+            return None
+        want_side = "BUY" if side_u == "SELL" else "SELL"
+        strict_int = self._requires_int_order_id()
+        sym_clean = clean_symbol_key(symbol)
+        cand_clean_set = {clean_symbol_key(c) for c in cache_symbol_variants(symbol, include_base=True) if c}
+        latest_key = None
+        latest_price = None
+        with self.lock:
+            bucket = casefold_get(self.cache, symbol) or casefold_get(self.cache, sym_clean)
+            if not bucket and isinstance(self.cache, dict):
+                items_map = (
+                    self.cache.get("items")
+                    if isinstance(self.cache.get("items"), dict)
+                    else self.cache
+                )
+                for cand in cache_symbol_variants(symbol, include_base=True):
+                    if cand and isinstance(rows := casefold_get(items_map, cand), list) and rows:
+                        bucket = rows
+                        break
+            for row in bucket or ():
+                if not isinstance(row, dict) or not self._is_valid_item(row):
+                    continue
+                if row.get("symbol") is not None:
+                    tr_sym = clean_symbol_key(row.get("symbol"))
+                    if tr_sym and sym_clean and tr_sym != sym_clean and tr_sym not in cand_clean_set:
+                        continue
+                row_side = extract_order_side(row) or normalize_side(row.get("side"))
+                if row_side != want_side:
+                    continue
+                px_val = safe_pos_float(row.get("price"), default=None)
+                ts_ms = strict_ascii_int(row.get("timestamp"), default=0) or 0
+                if px_val is None or ts_ms <= 0:
+                    continue
+                oid_norm = self._normalize_order_id(row.get("orderId"), strict_int=strict_int)
+                if strict_int:
+                    key = (ts_ms, safe_nonneg_int(oid_norm, default=0) or 0)
+                else:
+                    key = (ts_ms, str(oid_norm or ""))
+                if latest_key is None or key > latest_key:
+                    latest_key = key
+                    latest_price = px_val
+        return latest_price
+
+    @classmethod
+    def read_venue_fills_snapshot(
+        cls,
+        symbol: str,
+        cache_file: str,
+        *,
+        max_stale_sec: float = 90.0,
+        match_fn=None,
+        candidate_keys=None,
+        normalize_fn=None,
+    ) -> Optional[list[dict]]:
+        """Read fresh normalized filled-order rows for ``symbol`` from ``cache_order_filled_<venue>.json``."""
+        return CacheTradeManager.read_venue_fills_snapshot(
+            symbol,
+            cache_file,
+            max_stale_sec=max_stale_sec,
+            match_fn=match_fn,
+            candidate_keys=candidate_keys,
+            normalize_fn=normalize_fn,
+        )
+
+    @classmethod
+    def invalidate_venue_fills_snapshot(
+        cls,
+        symbol: str,
+        cache_file: str,
+        *,
+        match_fn=None,
+        candidate_keys=None,
+    ) -> None:
+        """Expire ``fetchtime`` for ``symbol`` in ``cache_order_filled_<venue>.json`` after order execution."""
+        CacheTradeManager.invalidate_venue_fills_snapshot(
+            symbol,
+            cache_file,
+            match_fn=match_fn,
+            candidate_keys=candidate_keys,
+        )
 
 
 class CacheOrderOpenManager(CacheAccountManagerBase):
@@ -3525,16 +3686,14 @@ def bind_account_cache_getter(getter_fn) -> None:
 
 
 def ensure_account_cache_readers(status):
-    """Synchronize this process with both versions in a fresh health marker."""
+    """Synchronize this process with the canonical filled-order version in a fresh health marker."""
     ach = _cm_override("account_cache_health", account_cache_health)
     getter = _cm_override("get_cache_manager", _account_cache_getter or _bapi_ws_bridge._default_cache_getter)
     try:
         order_version = status.order_cache_version
-        trade_version = status.trade_cache_version
-        if not order_version or not trade_version:
-            raise ValueError("health marker has no durable cache versions")
+        if not order_version:
+            raise ValueError("health marker has no durable filled-order cache version")
         getter("BinanceOrderFilled").ensure_persisted_version(order_version)
-        getter("BinanceTrade").ensure_persisted_version(trade_version)
     except ach.AccountCacheNotReady:
         raise
     except (AttributeError, TypeError, ValueError) as exc:

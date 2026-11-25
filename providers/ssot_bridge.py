@@ -24,6 +24,12 @@ from botcore import (
 )
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
+    CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME,
+    CACHE_HYPERLIQUID_TRADE_FILENAME,
+    CACHE_KRAKEN_ORDER_FILLED_FILENAME,
+    CACHE_KRAKEN_TRADE_FILENAME,
+    CACHE_T212_ORDER_FILLED_FILENAME,
+    CACHE_T212_TRADE_FILENAME,
     cache_ohlc_24h_filename,
     cache_path,
     canonical_symbol_key,
@@ -31,6 +37,12 @@ from cachepaths import (
     resolve_cachedb_filepath,
     split_symbol_assets,
 )
+
+_TRADE_TO_FILLED_MIRROR_MAP = {
+    CACHE_KRAKEN_TRADE_FILENAME: ("kraken", CACHE_KRAKEN_ORDER_FILLED_FILENAME),
+    CACHE_HYPERLIQUID_TRADE_FILENAME: ("hyperliquid", CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME),
+    CACHE_T212_TRADE_FILENAME: ("t212", CACHE_T212_ORDER_FILLED_FILENAME),
+}
 from instrument_registry import canonical_display_symbol
 from state_io import read_json_dict_recovering
 
@@ -70,6 +82,7 @@ class ProviderSsotBridgeMixin:
     """Level-2 mixin isolating runtime upward-layer hook bindings and SSOT cache operations."""
 
     _DEFAULT_FILLS_CACHE_FILENAME: Optional[str] = None
+    _DEFAULT_FILLED_ORDERS_CACHE_FILENAME: Optional[str] = None
     _FILLS_CACHE_PATH_MODULE_ATTR: Optional[str] = None
     _FILLS_CACHE_DEFAULT_MODULE_ATTR: Optional[str] = None
     _FILLS_CACHE_MAX_STALE_S: float = 60.0
@@ -632,33 +645,103 @@ class ProviderSsotBridgeMixin:
                 return self._resolve_cache_path(self._DEFAULT_FILLS_CACHE_FILENAME)
         return None
 
-    def _fills_from_cache(self, symbol: str) -> Optional[List[dict]]:
-        """Read symbol fills from the shared SSOT trade cache, or return None for API fallback."""
-        cache_file = self._fills_cache_file()
-        if not cache_file:
+    def _filled_orders_cache_file(self) -> Optional[str]:
+        """Resolve the canonical ``cache_order_filled_<venue>.json`` path unless a module-level test override is active."""
+        if not self._DEFAULT_FILLED_ORDERS_CACHE_FILENAME:
             return None
-        stale_s = resolve_patched_attr("_CACHE_MAX_STALE_S", None, modules=(type(self).__module__,))
-        return self.read_ssot_fills_cache(
-            symbol,
-            cache_file,
-            max_stale_sec=stale_s if stale_s is not None else self._FILLS_CACHE_MAX_STALE_S,
-            match_fn=getattr(type(self), "_fills_match_fn", None),
-            normalize_fn=getattr(type(self), "_fills_normalize_fn", None),
+        mod_name = type(self).__module__
+        mod_path = _clean_fs_path(
+            resolve_patched_attr(self._FILLS_CACHE_PATH_MODULE_ATTR, None, modules=(mod_name,))
+            if self._FILLS_CACHE_PATH_MODULE_ATTR
+            else None
         )
+        def_path = _clean_fs_path(
+            resolve_patched_attr(self._FILLS_CACHE_DEFAULT_MODULE_ATTR, None, modules=(mod_name,))
+            if self._FILLS_CACHE_DEFAULT_MODULE_ATTR
+            else None
+        )
+        if mod_path and def_path and mod_path != def_path:
+            return None
+        if self._allow_ssot_price_cache():
+            return self._resolve_cache_path(self._DEFAULT_FILLED_ORDERS_CACHE_FILENAME)
+        return None
+
+    def _fills_from_cache(self, symbol: str) -> Optional[List[dict]]:
+        """Read symbol fills from canonical ``cache_order_filled_<venue>.json``, falling back to Stage-1 trade cache."""
+        stale_s = resolve_patched_attr("_CACHE_MAX_STALE_S", None, modules=(type(self).__module__,))
+        eff_stale = stale_s if stale_s is not None else self._FILLS_CACHE_MAX_STALE_S
+        match_fn = getattr(type(self), "_fills_match_fn", None)
+        norm_fn = getattr(type(self), "_fills_normalize_fn", None)
+        filled_file = self._filled_orders_cache_file()
+        trade_file = self._fills_cache_file()
+        candidates: list[str] = []
+        if filled_file:
+            candidates.append(filled_file)
+        if trade_file and trade_file not in candidates:
+            candidates.append(trade_file)
+        for cand_file in candidates:
+            rows = self.read_ssot_fills_cache(
+                symbol,
+                cand_file,
+                max_stale_sec=eff_stale,
+                match_fn=match_fn,
+                normalize_fn=norm_fn,
+            )
+            if rows is not None:
+                return rows
+        return None
 
     def _invalidate_fills_cache(self, symbol: str) -> None:
-        """Expire ``fetchtime`` for ``symbol`` in this provider's configured SSOT trade cache."""
-        cache_file = self._fills_cache_file()
-        if cache_file:
-            self.invalidate_ssot_fills_cache(
-                symbol, cache_file, match_fn=getattr(type(self), "_fills_match_fn", None)
-            )
+        """Expire ``fetchtime`` for ``symbol`` in both canonical filled-order and Stage-1 reference trade caches."""
+        match_fn = getattr(type(self), "_fills_match_fn", None)
+        seen: set[str] = set()
+        for cache_file in (self._filled_orders_cache_file(), self._fills_cache_file()):
+            if cache_file and cache_file not in seen:
+                seen.add(cache_file)
+                self.invalidate_ssot_fills_cache(symbol, cache_file, match_fn=match_fn)
 
     def _resolve_ssot_trade_cache_cls(self, symbol: str, cache_file: str) -> Any:
         if clean_scalar_str(symbol) is None or _clean_fs_path(cache_file) is None:
             return None
         self._ensure_ssot_cache_bindings()
         return self._ssot_trade_cache_cls
+
+    def _resolve_ssot_filled_reader_cls(self, symbol: str, cache_file: str) -> Any:
+        if clean_scalar_str(symbol) is None or _clean_fs_path(cache_file) is None:
+            return None
+        self._ensure_ssot_cache_bindings()
+        filled_cls = self._ssot_order_filled_cache_cls
+        if filled_cls is not None and callable(getattr(filled_cls, "read_venue_fills_snapshot", None)):
+            return filled_cls
+        return self._ssot_trade_cache_cls
+
+    @classmethod
+    def _mirror_to_order_filled_cache(
+        cls,
+        cache_file: str,
+        fills_by_symbol: dict,
+        *,
+        is_snapshot: bool = False,
+    ) -> None:
+        """Mirror Stage-1 venue trade-cache writes into the sibling ``cache_order_filled_<venue>.json``."""
+        filled_cls = cls._ssot_order_filled_cache_cls
+        if filled_cls is None or not callable(getattr(filled_cls, "merge_venue_filled_orders_snapshot", None)):
+            return
+        spec = _TRADE_TO_FILLED_MIRROR_MAP.get(os.path.basename(str(cache_file)))
+        if spec is None:
+            return
+        venue_key, filled_fname = spec
+        base_dir = os.path.dirname(os.path.abspath(str(cache_file)))
+        filled_path = os.path.join(base_dir, filled_fname) if base_dir else cache_path(filled_fname)
+        try:
+            filled_cls.merge_venue_filled_orders_snapshot(
+                filled_path,
+                fills_by_symbol,
+                venue=venue_key,
+                is_snapshot=_parse_bool_flag(is_snapshot, False),
+            )
+        except Exception:
+            pass
 
     def read_ssot_fills_cache(
         self,
@@ -669,11 +752,11 @@ class ProviderSsotBridgeMixin:
         match_fn: Any = None,
         normalize_fn: Any = None,
     ) -> Optional[List[dict]]:
-        """Read normalized fills for ``symbol`` from a shared SSOT trade cache file (`items` + `fetchtime`)."""
-        tm_cls = self._resolve_ssot_trade_cache_cls(symbol, cache_file)
-        if tm_cls is None:
+        """Read normalized fills for ``symbol`` from a shared SSOT filled-order or trade cache file (`items` + `fetchtime`)."""
+        reader_cls = self._resolve_ssot_filled_reader_cls(symbol, cache_file)
+        if reader_cls is None:
             return None
-        return tm_cls.read_venue_fills_snapshot(
+        return reader_cls.read_venue_fills_snapshot(
             symbol,
             cache_file,
             max_stale_sec=max_stale_sec,
@@ -683,22 +766,22 @@ class ProviderSsotBridgeMixin:
         )
 
     def write_ssot_fills_cache(self, symbol: str, cache_file: str, fills: List[dict]) -> bool:
-        """Persist ``fills`` for ``symbol`` into the shared SSOT trade cache file (`items` + `fetchtime`)."""
+        """Persist ``fills`` for ``symbol`` into the shared SSOT trade cache and mirror to ``cache_order_filled_<venue>.json``."""
         if fills is not None and not isinstance(fills, (list, tuple)):
             return False
         tm_cls = self._resolve_ssot_trade_cache_cls(symbol, cache_file)
         if tm_cls is None:
             return False
         sym_key = canonical_display_symbol(symbol) or clean_symbol_key(symbol) or str(symbol).strip().upper()
-        return bool(
-            tm_cls.merge_venue_fills_snapshot(
-                cache_file, {sym_key: list(fills or ())}, is_snapshot=True
-            )
-        )
+        payload = {sym_key: list(fills or ())}
+        ok = bool(tm_cls.merge_venue_fills_snapshot(cache_file, payload, is_snapshot=True))
+        if ok:
+            self._mirror_to_order_filled_cache(cache_file, payload, is_snapshot=True)
+        return ok
 
     @classmethod
     def merge_ssot_fills_cache(cls, cache_file: str, fills_by_symbol: dict) -> bool:
-        """Atomically merge normalized multi-symbol fills into a shared SSOT trade cache snapshot."""
+        """Atomically merge normalized multi-symbol fills into a shared SSOT trade cache and mirror to filled-order cache."""
         if callable(patched := cls._patched_mdp_attr("merge_ssot_fills_cache")):
             return bool(patched(cache_file, fills_by_symbol))
         clean_cf = _clean_fs_path(cache_file)
@@ -706,15 +789,18 @@ class ProviderSsotBridgeMixin:
             return False
         cls._ensure_ssot_cache_bindings()
         tm_cls = cls._ssot_trade_cache_cls
-        return bool(tm_cls.merge_venue_fills_snapshot(clean_cf, fills_by_symbol)) if tm_cls is not None else False
+        ok = bool(tm_cls.merge_venue_fills_snapshot(clean_cf, fills_by_symbol)) if tm_cls is not None else False
+        if ok:
+            cls._mirror_to_order_filled_cache(clean_cf, fills_by_symbol, is_snapshot=False)
+        return ok
 
     def invalidate_ssot_fills_cache(
         self, symbol: str, cache_file: str, *, match_fn: Any = None
     ) -> None:
-        """Expire ``fetchtime`` for ``symbol`` in the shared SSOT trade cache after order execution."""
-        tm_cls = self._resolve_ssot_trade_cache_cls(symbol, cache_file)
-        if tm_cls is not None:
-            tm_cls.invalidate_venue_fills_snapshot(
+        """Expire ``fetchtime`` for ``symbol`` in the shared SSOT filled-order or trade cache after order execution."""
+        reader_cls = self._resolve_ssot_filled_reader_cls(symbol, cache_file)
+        if reader_cls is not None:
+            reader_cls.invalidate_venue_fills_snapshot(
                 symbol,
                 cache_file,
                 match_fn=match_fn,

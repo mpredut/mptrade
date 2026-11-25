@@ -18,6 +18,7 @@ from collections.abc import Iterable
 from functools import partial
 import math
 import statistics
+import threading
 from botcore import (
     _parse_bool_flag,
     clean_scalar_str,
@@ -1252,6 +1253,19 @@ def unpack_daily_limit_result(
     return (True, None) if allowed else (False, default_reason)
 
 
+_PROFIT_GUARD_LOCAL = threading.local()
+
+
+def clear_last_profit_guard_block_reason() -> None:
+    """Clear the thread-local refusal reason recorded by ``profit_guard``."""
+    _PROFIT_GUARD_LOCAL.last_block_reason = None
+
+
+def get_last_profit_guard_block_reason(default: str = "profit_guard") -> str:
+    """Return the refusal reason recorded by the most recent ``profit_guard`` call on this thread."""
+    return clean_scalar_str(getattr(_PROFIT_GUARD_LOCAL, "last_block_reason", None)) or default
+
+
 def profit_guard(
     provider,
     symbol,
@@ -1278,6 +1292,7 @@ def profit_guard(
       and Geopolitical shock shield only on mathematically cleared orders when
       evaluate_intelligence=True.
     """
+    _PROFIT_GUARD_LOCAL.last_block_reason = None
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if is_master_bypass(bypassed):
         return True
@@ -1293,6 +1308,7 @@ def profit_guard(
             provider, symbol, order_type, price, profit_percentage,
             **cm_kwargs,
         ):
+            _PROFIT_GUARD_LOCAL.last_block_reason = "profit_guard"
             return False
 
     has_valid_qty = safe_pos_float(qty, 0.0) > 0.0
@@ -1306,6 +1322,7 @@ def profit_guard(
         bypass_guards=bypassed,
     )
     if not intel_ok:
+        _PROFIT_GUARD_LOCAL.last_block_reason = "intelligence_guard"
         print(f"[GUARD] {order_type} {symbol}: blocked by intelligence guard ({intel_reason})")
         return False
 

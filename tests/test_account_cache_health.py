@@ -158,10 +158,14 @@ class BinanceAccountCacheHealthTest(TempDirTestCase):
         self.assertFalse(order_status.ready)
         self.assertEqual(order_status.reason, "order_cache_stale")
 
+        # Stage-1 CacheOrderFilledManager SSoT: stale legacy trade cache is passive
+        # observability and does not block CachePermit when filled-order cache is fresh.
         self._write(self._state(trade_sync_at_ms=self.NOW_MS - 11_000))
         trade_status = self._inspect()
-        self.assertFalse(trade_status.ready)
-        self.assertEqual(trade_status.reason, "trade_cache_stale")
+        self.assertTrue(trade_status.ready)
+        self.assertEqual(trade_status.reason, "")
+        self.assertEqual(trade_status.order_age_sec, 1.0)
+        self.assertEqual(trade_status.trade_age_sec, 11.0)
 
     def test_fresh_marker_reports_both_ages(self):
         self._write(self._state())
@@ -189,8 +193,13 @@ class BinanceAccountCacheHealthTest(TempDirTestCase):
             pid_is_alive=lambda _pid: True,
             pid_started_at_ms=lambda _pid: self.WRITER_STARTED_MS,
         )
-        self.assertFalse(order_only.ready)
-        self.assertEqual(order_only.reason, "account_cache_initializing")
+        # Canonical BinanceOrderFilled alone satisfies readiness; legacy trade fields remain optional.
+        self.assertTrue(order_only.ready)
+        self.assertEqual(order_only.reason, "")
+        self.assertEqual(order_only.order_age_sec, 0.0)
+        self.assertIsNone(order_only.trade_age_sec)
+        self.assertEqual(order_only.order_cache_version, "order-v2")
+        self.assertEqual(order_only.trade_cache_version, "")
 
         with patch.object(
                 health, "resolve_now_ms", side_effect=lambda v=None: (self.NOW_MS + 2_500) if v is None else v):
