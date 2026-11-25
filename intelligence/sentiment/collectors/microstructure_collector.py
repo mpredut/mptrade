@@ -2242,6 +2242,29 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 and -Fleet24hAndMicrostructureEnricher._MAX_INFLIGHT_QUOTE_SKEW_SEC <= (eff_now - cp_ts_s_eq) <= 20.0 * 60.0
                 and cp_sess == eq_sess
             )
+            cp_is_fresher_rth = bool(
+                has_equity_suffix(ticker)
+                and t_rth_open
+                and cp_pt is not None
+                and cp_pt[1] > 0.0
+                and -Fleet24hAndMicrostructureEnricher._MAX_INFLIGHT_QUOTE_SKEW_SEC
+                <= (eff_now - cp_ts_s_eq)
+                <= 20.0 * 60.0
+                and (pos_ts_val is None or cp_ts_s_eq >= pos_ts_val - 1.0)
+            )
+            if cp_is_fresher_rth and cp_pt is not None:
+                Fleet24hAndMicrostructureEnricher._apply_resolved_equity_quote(
+                    t_entry,
+                    _ResolvedEquityQuote(
+                        price=cp_pt[1],
+                        quote_source="yahoo_rth",
+                        quote_ts_sec=cp_ts_s_eq,
+                        market_state=None,
+                    ),
+                    eff_now=eff_now,
+                    set_price=True,
+                )
+                continue
             cp_is_fresher_ext = bool(
                 cp_in_active_ext_sess
                 and cp_ts_s_eq > (pos_ts_val or 0.0) + 1.0

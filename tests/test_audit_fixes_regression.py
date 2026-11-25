@@ -9599,6 +9599,83 @@ def test_storage_root_separation_20_1to1_stores_and_pure_indirect_evaluator_guar
     assert any("order_retry_quarantine_alerts" in e for e in dur_errs)
 
 
+def test_cycle20_prompt_audit_fixes(tmp_path):
+    """Regression coverage for Cycle 20 US Midday prompt audit fixes:
+    1. Live US RTH equities in crypto scope keep fresher cache_current_price Yahoo RTH quotes
+       instead of downgrading to older pos:t212:* snapshot prices / quote_source='t212_live'.
+    2. Personal-finance tax advice, first-person shopper fluff, non-numeric 'These ... stocks are shining'
+       clickbait, and retro company-origin trivia headlines are excluded from Breaking News while
+       real macro and tracked-equity headlines remain preserved.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from intelligence.macro.lexicon_ssot import (
+        has_financial_or_geopolitical_context,
+        is_excluded_reference_news_item,
+    )
+    from intelligence.sentiment.collectors.microstructure_collector import Fleet24hAndMicrostructureEnricher
+
+    ny_tz = ZoneInfo("America/New_York")
+    eff_now_rth = datetime(2026, 11, 25, 11, 56, 0, tzinfo=ny_tz).timestamp()
+
+    # 1a. Fresher live RTH cache_current_price beats older pos:t212:* snapshot in crypto scope (inst_map={})
+    pt_map = {
+        "SPCX_US_EQ": {"price": 119.09, "trend": 1, "growth_coefficient": 0.01},
+        "NVDA_US_EQ": {"price": 141.70, "trend": -1, "growth_coefficient": -0.01},
+    }
+    cp_map = {
+        "SPCX_US_EQ": [[int((eff_now_rth - 1.0) * 1000), 119.09]],
+        # Stale cp_map for NVDA (5m old vs 10s-old pos:t212) must still allow t212_live fallback
+        "NVDA_US_EQ": [[int((eff_now_rth - 300.0) * 1000), 141.20]],
+    }
+    cached_bals = {
+        "pos:t212:SPCX_US_EQ": {"symbol": "SPCX_US_EQ", "free": 2.222965, "price": 118.90, "ts": eff_now_rth - 52.0},
+        "pos:t212:NVDA_US_EQ": {"symbol": "NVDA_US_EQ", "free": 0.0, "price": 141.80, "ts": eff_now_rth - 10.0},
+    }
+    Fleet24hAndMicrostructureEnricher._seed_t212_positions(
+        str(tmp_path),
+        pt_map,
+        cp_map,
+        {},
+        cached_bals,
+        "",
+        0.0,
+        eff_now_rth,
+        lambda _p: None,
+        False,
+    )
+    assert pt_map["SPCX_US_EQ"]["price"] == pytest.approx(119.09)
+    assert pt_map["SPCX_US_EQ"]["quote_source"] == "yahoo_rth"
+    assert pt_map["SPCX_US_EQ"]["quote_age_min"] == pytest.approx(0.0, abs=0.05)
+
+    assert pt_map["NVDA_US_EQ"]["price"] == pytest.approx(141.80)
+    assert pt_map["NVDA_US_EQ"]["quote_source"] == "t212_live"
+
+    # 2. Breaking News filters exclude Cycle 20 advice/shopper/clickbait/retro-trivia headlines
+    fluff_headlines = (
+        "The latest stock-market drop could lower your tax bill over your lifetime",
+        "\u2018My life is in the stock market\u2019: Recent volatility is shaking up holiday spending plans for these shoppers",
+        "These low-volatility stocks are shining in November as markets shudder",
+        "How Sega gave Nvidia six months to survive",
+    )
+    for title in fluff_headlines:
+        assert is_excluded_reference_news_item(title), f"Expected excluded: {title}"
+        assert not has_financial_or_geopolitical_context(title), f"Expected filtered: {title}"
+
+    # Genuine macro & tracked-equity news must remain untouched
+    real_headlines = (
+        "Nvidia Agrees to Pay $290M to Settle Investor Lawsuit Over Crypto Mining Sales",
+        "Cutting-edge Nvidia chips not hard to find for sale in China, despite U.S. ban",
+        "Regentis Establishes Global Clinical Support Team to Accelerate GelrinC(R) Knee Cartilage Repair U.S. Phase III Trial",
+        "10-year Treasury yield slides despite sticky inflation data as investors buy bonds for protection",
+    )
+    for title in real_headlines:
+        assert not is_excluded_reference_news_item(title), f"Unexpectedly excluded: {title}"
+        assert has_financial_or_geopolitical_context(title), f"Unexpectedly filtered: {title}"
+
+
+
 
 
 
