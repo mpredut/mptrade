@@ -1740,16 +1740,16 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             fr_extras = [
                 x
                 for x in (
-                    f"funding_ann={f_ann:+.1f}%"
+                    f"funding_ann={round(f_ann, 1) + 0.0:+.1f}%"
                     if f_ann is not None and not (is_eq_sym and abs(f_ann) < 1e-9 and abs(fr_v) < 1e-12)
                     else "",
-                    f"fund_d1h={f_d1h:+.2f}bps"
+                    f"fund_d1h={round(f_d1h, 2) + 0.0:+.2f}bps"
                     if f_d1h is not None and abs(f_d1h) >= 0.05 and not is_eq_sym
                     else "",
-                    f"perp_basis={b_bps:+.1f}bps"
+                    f"perp_basis={round(b_bps, 1) + 0.0:+.1f}bps"
                     if b_bps is not None and not (is_eq_sym and abs(b_bps) < 1e-9)
                     else "",
-                    f"basis_d15m={b_d15:+.1f}bps"
+                    f"basis_d15m={round(b_d15, 1) + 0.0:+.1f}bps"
                     if b_d15 is not None and abs(b_d15) >= 0.1 and not is_eq_sym
                     else "",
                 )

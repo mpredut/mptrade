@@ -612,6 +612,7 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "is it a bargain",
     "may be a bargain",
     "is it a buy?",
+    "time to buy?",
     "running out of gas",
     "biggest stock losers",
     "biggest stock winners",

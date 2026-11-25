@@ -4025,3 +4025,52 @@ def test_cycle7_closed_equity_rvol_leak_and_cameroon_human_interest_filter():
     assert match_high_severity_keywords(
         "Houthi drone attack on Riyadh tower injures 11 amid Middle East escalation"
     )
+
+
+def test_cycle8_signed_zero_basis_formatting_and_time_to_buy_clickbait_filter():
+    """Cycle 8 overnight audit fixes:
+    1. Near-zero negative perp_spot_basis_bps / funding_annualized_pct / arb bps (e.g. -0.04) must
+       render as '+0.0bps' / '+0.0%', never '-0.0bps' / '-0.0%' in Section 3B.
+    2. Editorial stock-pick clickbait ending in 'Time to Buy?' is excluded from breaking news feed.
+    """
+    from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+
+    sec3b = "\n".join(
+        _format_microstructure_section(
+            {
+                "ADAUSDC": {
+                    "ob_imbalance": 0.61,
+                    "bid_depth_usd": 170_000.0,
+                    "ask_depth_usd": 108_000.0,
+                    "bid_wall_px": 0.1426,
+                    "bid_wall_usd": 27_800.0,
+                    "ask_wall_px": 0.1432,
+                    "ask_wall_usd": 19_000.0,
+                    "whale_long_pct": 0.58,
+                    "taker_buy_sell_ratio": 0.95,
+                    "taker_buy_vol_usd": 100_000.0,
+                    "taker_sell_vol_usd": 105_000.0,
+                    "oi_usd": 56_000_000.0,
+                    "oi_1h_chg_pct": -0.2,
+                    "perp_spot_basis_bps": -0.04,
+                    "funding_annualized_pct": -0.02,
+                    "cross_venue_peer": "ADAUSD",
+                    "cross_venue_arb_bps": -0.03,
+                }
+            },
+            {"ADAUSDC": {"price": 0.1429}},
+        )
+    )
+    assert "perp_basis=+0.0bps" in sec3b
+    assert "perp_basis=-0.0bps" not in sec3b
+    assert "funding_ann=+0.0%" in sec3b
+    assert "funding_ann=-0.0%" not in sec3b
+    assert "arb_vs_ADAUSD=+0.0bps" in sec3b
+
+    assert is_excluded_reference_news_item(
+        "The Semiconductor ETF Kept Falling After Nvidia Raised Its Forecast. Time to Buy?"
+    )
+    assert not is_excluded_reference_news_item(
+        "SoftBank drops 15% as Wall Street AI sell-off ripples across Asian tech names"
+    )
