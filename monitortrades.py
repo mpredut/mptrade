@@ -58,7 +58,8 @@ from providers.order_status_ssot import (
 from providers.market_api import api as mkt, resolve_symbol_provider_name
 apitrades = mkt
 from providers.quantity import check_order_filter_refusal, resolve_assets
-from state_io import canonical_json_key, discard_generation_file, read_json_dict, save_json_state
+from state_io import canonical_json_key, discard_generation_file
+from state_stores.mt_state import MtStateStore
 from strategies.mt_position_accounting import (
     _FifoTradeIdTracker,
     _build_sl_bounce_state,
@@ -367,7 +368,7 @@ _LAST_EXIT_KIND: Dict[str, str] = {}
 _REENTRY_DONE_SELL_TIME: Dict[str, float] = {}
 _PENDING_STOP_EXIT: Dict[str, Dict[str, Any]] = {}
 
-_DEFAULT_MT_STATE_FILE = cachepaths.cache_path(cachepaths.MT_STATE_FILENAME)
+_DEFAULT_MT_STATE_FILE = MtStateStore.default_path()
 _MT_STATE_FILE = _DEFAULT_MT_STATE_FILE
 _MT_PERSISTENCE_ENABLED = not bool_env("MT_DISABLE_STATE_PERSISTENCE", default=False)
 _LAST_SAVED_MT_STATE_KEY: Optional[Tuple[str, str]] = None
@@ -376,11 +377,11 @@ _LAST_SAVED_MT_STATE_KEY: Optional[Tuple[str, str]] = None
 def _effective_mt_state_file() -> str:
     if isinstance(_MT_STATE_FILE, str) and _MT_STATE_FILE.strip() and _MT_STATE_FILE != _DEFAULT_MT_STATE_FILE:
         return _MT_STATE_FILE
-    return cachepaths.cache_path(cachepaths.MT_STATE_FILENAME)
+    return MtStateStore.default_path()
 
 
 def _save_mt_state(ts: float | None = None):
-    """Durably persist in-flight MHDSL bounce, MDHTP ride, and pending stop exits."""
+    """Durably persist in-flight MHDSL bounce, MDHTP ride, and pending stop exits via ``MtStateStore``."""
     global _LAST_SAVED_MT_STATE_KEY
     if not _MT_PERSISTENCE_ENABLED:
         return
@@ -400,7 +401,7 @@ def _save_mt_state(ts: float | None = None):
         cache_key = (st_file, serialized)
         if _LAST_SAVED_MT_STATE_KEY == cache_key and os.path.exists(st_file):
             return
-        save_json_state(
+        MtStateStore.save_state(
             st_file,
             {"version": 1, "ts": safe_pos_float(ts, default=None) or time.time(), **payload},
             indent=2,
@@ -411,11 +412,11 @@ def _save_mt_state(ts: float | None = None):
 
 
 def _load_mt_state(now_curr: float | None = None):
-    """Restore in-flight MHDSL/MDHTP states upon monitor restart to prevent state loss."""
+    """Restore in-flight MHDSL/MDHTP states upon monitor restart via ``MtStateStore``."""
     if not _MT_PERSISTENCE_ENABLED:
         return
     try:
-        data = read_json_dict(_effective_mt_state_file(), default=None, recover_previous=True)
+        data = MtStateStore.read_state(_effective_mt_state_file())
         if not isinstance(data, dict):
             return
         now_curr = safe_pos_float(now_curr, default=None) or time.time()

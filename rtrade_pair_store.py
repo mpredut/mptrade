@@ -16,9 +16,10 @@ from botcore import (
     safe_nonneg_float,
     safe_nonneg_int,
 )
-from cachepaths import canonical_symbol_key, resolve_cachedb_filepath
+from cachepaths import canonical_symbol_key
 from providers.order_status_ssot import VALID_SNAPSHOT_ORDER_STATUSES as _VALID_SNAPSHOT_STATUSES
-from state_io import atomic_write_json, encode_json_payload, parse_json_payload, read_json_file
+from state_io import encode_json_payload, parse_json_payload
+from state_stores.rtrade_pairs_state import RtradePairsStateStore
 
 
 def rtrade_client_order_id(pair_id, side, kind="limit"):
@@ -193,9 +194,8 @@ class RTradePairStore:
     def _read(self):
         if not self.path:
             return self._validate(parse_json_payload(encode_json_payload(self._mem_data)))
-        eff_path = str(resolve_cachedb_filepath(self.path))
         try:
-            return self._validate(read_json_file(eff_path, recover_previous=True))
+            return self._validate(RtradePairsStateStore.read_raw(self.path))
         except FileNotFoundError:
             return {"version": 1, "pairs": {}}
 
@@ -203,20 +203,10 @@ class RTradePairStore:
         if not self.path:
             self._mem_data = parse_json_payload(encode_json_payload(data))
             return
-        atomic_write_json(
-            str(resolve_cachedb_filepath(self.path, migrate=True)),
-            data,
-            sort_keys=True,
-            separators=(",", ":"),
-            skip_if_unchanged=True,
-        )
+        RtradePairsStateStore.write_atomic(self.path, data)
 
     def _resolved_lock_path(self, *, migrate: bool = False):
-        if not self.lock_path:
-            return None
-        if self.path and self.lock_path == f"{self.path}.lock":
-            return f"{resolve_cachedb_filepath(self.path, migrate=migrate)}.lock"
-        return str(resolve_cachedb_filepath(self.lock_path, migrate=migrate))
+        return RtradePairsStateStore.resolve_lock_path(self.path, self.lock_path, migrate=migrate)
 
     def mutate(self, fn):
         resolved_lock = self._resolved_lock_path(migrate=True)

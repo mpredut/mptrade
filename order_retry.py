@@ -38,10 +38,8 @@ from botcore import (
     safe_pos_int,
 )
 from cachepaths import (
-    ORDER_RETRY_QUEUE_FILENAME,
     canonical_symbol_key,
     normalize_venue_name,
-    resolve_cachedb_filepath,
 )
 from providers import order_id_context as rc
 from providers.base import MarketDataProvider
@@ -51,13 +49,11 @@ resolve_order_actor = rc.resolve_order_actor
 record_client_order_id = rc.record_client_order_id
 from providers.strategy_executor import OrderStatus
 from state_io import (
-    atomic_write_jsonl,
     parse_json_payload,
     parse_proc_stat_fields,
-    read_tail_jsonl_dicts,
     read_text_file,
-    read_text_lines,
 )
+from state_stores.order_retry_queue import OrderRetryQueueStore
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 load_dotenv()
@@ -148,19 +144,19 @@ def is_non_failure_deferral(reason):
     return reason in NON_FAILURE_DEFERRAL_REASONS
 
 
-_DEFAULT_QUEUE_FILE = os.path.join(_ROOT, "cachedb", ORDER_RETRY_QUEUE_FILENAME)
+_DEFAULT_QUEUE_FILE = OrderRetryQueueStore.default_queue_file()
 QUEUE_FILE = _DEFAULT_QUEUE_FILE
-LOCK_FILE = os.path.join(_ROOT, "cachedb", "order_retry_queue.lock")
+LOCK_FILE = OrderRetryQueueStore.default_lock_file()
 
 
 def resolve_queue_filepath(path=None) -> str:
     """Return canonical resolved path for ``QUEUE_FILE`` (or ``path``)."""
-    return str(resolve_cachedb_filepath(QUEUE_FILE if path is None else path))
+    return OrderRetryQueueStore.resolve_queue_path(QUEUE_FILE if path is None else path)
 
 
 def resolve_queue_sidecar_path(filename: str) -> str:
     """Return absolute path for a sidecar state file next to the resolved ``QUEUE_FILE``."""
-    return os.path.join(os.path.dirname(os.path.abspath(resolve_queue_filepath())), filename)
+    return OrderRetryQueueStore.resolve_sidecar_path(filename, queue_path=QUEUE_FILE)
 
 
 def _process_start_identity(pid):
@@ -234,11 +230,11 @@ def _remove_matching_locked(predicate, *, validate: bool = False) -> list[dict]:
 
 def _read_nolock(*, validate=False):
     """Read the complete queue or fail closed while the caller holds the lock."""
-    q_path = resolve_queue_filepath()
-    if not os.path.exists(q_path):
+    raw_lines = OrderRetryQueueStore.read_lines_nolock(QUEUE_FILE)
+    if not raw_lines:
         return []
     items = []
-    for line_number, raw_line in enumerate(read_text_lines(q_path, keepends=True), start=1):
+    for line_number, raw_line in enumerate(raw_lines, start=1):
         line = raw_line.strip()
         if not line:
             continue
@@ -1452,13 +1448,8 @@ def is_safe_to_supersede_record(rec: object) -> bool:
 
 
 def read_tail_queue_records(cachedb_dir: Optional[str], *, limit: int = 50) -> list[dict]:
-    """Read-only SSOT owner accessor returning the tail of ``order_retry_queue.jsonl`` from ``cachedb_dir``."""
-    if not cachedb_dir:
-        return []
-    retry_q_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, ORDER_RETRY_QUEUE_FILENAME)))
-    if not os.path.exists(retry_q_path):
-        return []
-    return list(read_tail_jsonl_dicts(retry_q_path, limit=limit))
+    """Read-only SSOT owner accessor returning the tail of ``order_retry_queue.jsonl`` via 1:1 store."""
+    return OrderRetryQueueStore.read_tail_records(cachedb_dir, limit=limit)
 
 
 def resolve(symbol, side):
@@ -1483,7 +1474,7 @@ def resolve(symbol, side):
 
 def _write_nolock(items):
     """Replace the queue file atomically while the caller holds the lock."""
-    atomic_write_jsonl(QUEUE_FILE, items)
+    OrderRetryQueueStore.write_records_nolock(QUEUE_FILE, items)
 
 
 def rewrite(items):

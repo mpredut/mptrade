@@ -41,6 +41,7 @@ from verify_tools.ssot_ast_audit import (
     audit_producer_only_caches_ast,
     audit_repo_ssot_ast,
     audit_signed_zero_format_ast,
+    audit_state_file_owners_ast,
     audit_venue_balances_single_writer_ast,
     audit_venue_string_branches_ast,
 )
@@ -397,6 +398,13 @@ DETERMINISTIC_GATES: tuple[DeterministicGate, ...] = (
         "venue_balances_single_writer_ast",
         "Enforce canonical single writers & producers for cache_balance_<venue>.json and portfolio_positions_state.json",
         lambda ctx: audit_venue_balances_single_writer_ast(
+            ctx.root, rel_paths=ctx.python_rels, _parsed_cache=ctx.parsed_cache
+        ),
+    ),
+    DeterministicGate(
+        "state_file_owners_ast",
+        "Enforce 1:1 state_stores/<file_stem>.py symmetry and exclusive read/write ownership of critical state files",
+        lambda ctx: audit_state_file_owners_ast(
             ctx.root, rel_paths=ctx.python_rels, _parsed_cache=ctx.parsed_cache
         ),
     ),

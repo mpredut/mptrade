@@ -27,15 +27,11 @@ from botcore import (
 )
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
-    NAV_HISTORY_STATE_FILENAME,
     is_equity_venue,
     resolve_cachedb_filepath,
 )
-from state_io import (
-    generation_file_lock,
-    read_json_dict,
-    save_json_state,
-)
+from state_io import read_json_dict
+from state_stores.nav_history_state import NavHistoryStateStore
 from .portfolio_valuation import (
     compute_venue_nav_breakdown,
     load_venue_balance_caches,
@@ -458,13 +454,12 @@ def evaluate_daily_nav_drawdown_guard(
 
 
 def _nav_history_filepath(workspace_dir: str) -> str:
-    return str(resolve_cachedb_filepath(os.path.join(workspace_dir, "cachedb", NAV_HISTORY_STATE_FILENAME)))
+    return NavHistoryStateStore.resolve_workspace_path(workspace_dir)
 
 
 def load_nav_history_state(workspace_dir: str) -> list[dict[str, Any]]:
-    """Load persisted NAV history points from ``cachedb/state/nav_history_state.json``."""
-    path = _nav_history_filepath(workspace_dir)
-    doc = read_json_dict(path, default={})
+    """Load persisted NAV history points via ``NavHistoryStateStore``."""
+    doc = NavHistoryStateStore.read_raw_doc(workspace_dir)
     raw_pts = doc.get("points") if isinstance(doc, dict) else None
     if not isinstance(raw_pts, list):
         return []
@@ -522,7 +517,7 @@ def record_nav_history_snapshot(
     if point is None:
         return evaluate_nav_drawdown_metrics(load_nav_history_state(workspace_dir), now_ts=eff_now)
 
-    with generation_file_lock(nav_path):
+    with NavHistoryStateStore.generation_lock(nav_path):
         existing = load_nav_history_state(workspace_dir)
         updated, appended = append_nav_history_point(
             existing,
@@ -532,15 +527,7 @@ def record_nav_history_snapshot(
             cashflow_jump_pct=cashflow_jump_pct,
         )
         if appended:
-            save_json_state(
-                nav_path,
-                {
-                    "version": 1,
-                    "updated_ts": round(eff_now, 3),
-                    "points": updated,
-                },
-                indent=2,
-            )
+            NavHistoryStateStore.save_points_doc(nav_path, updated, updated_ts=eff_now, indent=2)
     return evaluate_nav_drawdown_metrics(
         updated,
         now_ts=eff_now,

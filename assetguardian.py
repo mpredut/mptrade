@@ -69,7 +69,8 @@ from botcore import (
     touch_module_heartbeat,
     validate_required_env_keys,
 )
-from cachepaths import ASSETGUARDIAN_STATE_FILENAME, CachedbRoot, cache_path, resolve_cachedb_filepath
+from cachepaths import CachedbRoot, cache_path, resolve_cachedb_filepath
+from state_stores.assetguardian_state import AssetguardianStateStore
 load_root_config()
 
 REQUIRED_CONFIG_KEYS = (
@@ -181,34 +182,20 @@ ORDER_MISSING_CONFIRMATIONS = required_int_env("AG_ORDER_MISSING_CONFIRMATIONS")
 
 class AssetGuardianState:
     def __init__(self, path=None, *, fail_closed=True):
-        self.path = path or cache_path(ASSETGUARDIAN_STATE_FILENAME)
+        self.path = path or AssetguardianStateStore.default_path()
         self.lock_path = self.path + ".lock"
         self.fail_closed = _parse_bool_flag(fail_closed, default=True)
 
     def _resolved_paths(self, *, migrate: bool = False) -> tuple[str, str]:
-        target_path = str(resolve_cachedb_filepath(self.path, migrate=migrate))
-        lock_path = (
-            f"{target_path}.lock"
-            if self.lock_path == f"{self.path}.lock"
-            else str(resolve_cachedb_filepath(self.lock_path, migrate=migrate))
-        )
-        return target_path, lock_path
+        return AssetguardianStateStore.resolve_paths(self.path, self.lock_path, migrate=migrate)
 
     def load(self):
-        target_path, lock_path = self._resolved_paths(migrate=True)
-        os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
-        with FileLock(lock_path):
-            return load_json_state(
-                target_path, default_factory=dict, fail_closed=self.fail_closed, label="AssetGuardian"
-            )
+        return AssetguardianStateStore.load_state(
+            self.path, lock_path=self.lock_path, fail_closed=self.fail_closed
+        )
 
     def save(self, value):
-        target_path, lock_path = self._resolved_paths(migrate=True)
-        os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
-        with FileLock(lock_path):
-            save_json_state(
-                target_path, value, sort_keys=True, separators=(",", ":"), skip_if_unchanged=True
-            )
+        AssetguardianStateStore.save_state(value, self.path, lock_path=self.lock_path)
 
 
 STATE = AssetGuardianState()

@@ -8714,12 +8714,14 @@ def test_wave50_anchored_id_memos_and_market_regime_scalar_ssot(tmp_path, monkey
     monkeypatch.setattr(ssl_mod, "_GRACE_FILE_MEMO", {})
     monkeypatch.setattr(ssl_mod, "_LOADED_STATE_FILE_KEY", None)
 
+    from state_stores.smart_stop_loss_state import SmartStopLossStateStore
+
     def _load_transient_grace(sym_k: str):
         with monkeypatch.context() as mp:
             mp.setattr(
-                ssl_mod,
-                "read_json_dict_cached",
-                lambda _f, _m: {sym_k: {"start_ts": now_fixed - 10.0, "provider": "binance"}},
+                SmartStopLossStateStore,
+                "read_cached",
+                classmethod(lambda _cls, _f, _m=None: {sym_k: {"start_ts": now_fixed - 10.0, "provider": "binance"}}),
             )
             return dict(ssl_mod._load_grace_state(is_sim=False, now_ts=now_fixed))
 

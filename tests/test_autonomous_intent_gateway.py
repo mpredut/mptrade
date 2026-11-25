@@ -1975,8 +1975,10 @@ def test_harvest_tradable_positions_preserves_trailing_peak_for_100pct_locked_se
     assert pos["trailing_peak"] == pytest.approx(440.0)
     assert pos["dd_from_peak_pct"] == pytest.approx(-9.09)
 
-    saved_bcache = json.loads(bcache_file.read_text(encoding="utf-8"))
-    cached_pos = saved_bcache["pos:binance:TAOUSDC"]
+    from state_stores.portfolio_positions_state import PortfolioPositionsStateStore
+
+    saved_positions = PortfolioPositionsStateStore.load_dict(str(tmp_path))
+    cached_pos = saved_positions["pos:binance:TAOUSDC"]
     assert cached_pos["locked_base_qty"] == pytest.approx(1.5)
     assert cached_pos["trailing_peak"] == pytest.approx(440.0)
 
@@ -1997,7 +1999,9 @@ def test_harvest_tradable_positions_preserves_trailing_peak_for_100pct_locked_se
     # and strips stale locked_* / ghost trailing_peak when open_orders in cached_bals becomes empty
     cached_pos["step_size"] = 0.001
     cached_pos["exchange_min_notional_usd"] = 5.0
-    bcache_file.write_text(json.dumps(saved_bcache), encoding="utf-8")
+    PortfolioPositionsStateStore.upsert_locked(
+        PortfolioPositionsStateStore.resolve_path(str(tmp_path)), saved_positions
+    )
 
     rec_positions_with_oo, rec_oo, _, _ = harvest_tradable_positions_and_orders(
         {},

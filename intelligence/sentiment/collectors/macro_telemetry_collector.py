@@ -38,7 +38,6 @@ from cachepaths import (
     CACHE_MARKET_BREADTH_FILENAME,
     CACHE_NEWS_FEED_FILENAME,
     CACHE_WATCHER_ALL_PRICE_FILENAME,
-    VENUE_FEE_MAINTENANCE_STATE_FILENAME,
     cache_symbol_variants,
     canonical_base_asset,
     has_equity_suffix,
@@ -46,6 +45,7 @@ from cachepaths import (
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
+from state_stores.venue_fee_maintenance_state import VenueFeeMaintenanceStateStore
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
 from intelligence.macro.lexicon_ssot import (
     _strip_headline_publisher_suffix,
@@ -1530,7 +1530,7 @@ class PortfolioAndVenueCyclesCollector(MacroTelemetryCollectorBase):
         last_av = read_last_jsonl_dict(os.path.join(cachedb_dir, av_cls.DEFAULT_FILENAME), tail_bytes=2048)
         if av_summary := av_cls.extract_asset_value_summary(last_av, now_ts=now_ts):
             eff_ps.update(av_summary)
-        fee_st = _rj(os.path.join(cachedb_dir, VENUE_FEE_MAINTENANCE_STATE_FILENAME))
+        fee_st = VenueFeeMaintenanceStateStore.read_state(cachedb_dir, read_json_fn=_rj)
         if isinstance(fee_st, dict) and isinstance(bn_fee_st := (fee_st.get("venues") or {}).get("binance"), dict):
             if (bnb_usdc := safe_pos_float(bn_fee_st.get("held_bnb_usdc"), default=None)) is not None:
                 eff_ps["binance_bnb_fee_reserve_usdc"] = round(bnb_usdc, 2)

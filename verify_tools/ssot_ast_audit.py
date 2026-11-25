@@ -25,7 +25,9 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+import cachepaths as _cachepaths
 from state_io import read_text_file
+from state_stores.registry import CRITICAL_STATE_SPECS, expected_store_class_name
 from verify_tools.translation_audit import PROD_PYTHON_SKIP_TOP, find_first_non_ascii_line
 
 ParsedCache = dict[str, tuple[str | None, ast.Module | None, str | None]]
@@ -89,6 +91,34 @@ _BUILTIN_NAMES = frozenset(dir(builtins)) | frozenset({
 # -- Layer DAG & isolation constants -------------------------------------------
 
 LAYER2_MODULES = frozenset({"cachepaths.py", "state_io.py", "cacheintegrity.py", "pricewindow.py"})
+FORBIDDEN_STATE_STORE_IMPORTS = frozenset({
+    "account_cache_health",
+    "binance_cache_health",
+    "cacheInterface",
+    "cacheaccount",
+    "cacheprice",
+    "cachetrend",
+    "cacheManager",
+    "providers",
+    "instrument",
+    "order_guard",
+    "guard_hierarchy",
+    "llm_order_guard",
+    "order_lifecycle",
+    "order_retry",
+    "order_retry_worker",
+    "order_ledger_reconciler_worker",
+    "strategies",
+    "trailing_core",
+    "intelligence",
+    "shadow_signals",
+    "orchestratorTrade",
+    "orchestratorOS",
+    "binance_api",
+    "kraken",
+    "hyperliquid",
+    "212trading",
+})
 FORBIDDEN_LAYER2_IMPORTS = frozenset({
     "account_cache_health",
     "binance_cache_health",
@@ -314,14 +344,21 @@ SIGNED_ZERO_EXTRA_FILES = frozenset({
     "providers/ai_attribution.py",
 })
 _RAW_SIGNED_FLOAT_SPEC_RE = re.compile(r"\+[\d,]*\.\d+f")
-VENUE_BALANCES_STATE_OWNER_FILE = "providers/portfolio_valuation.py"
+VENUE_BALANCES_STATE_OWNER_FILES = frozenset({
+    "state_stores/venue_balances_state.py",
+    "state_stores/portfolio_positions_state.py",
+})
+VENUE_BALANCES_STATE_OWNER_FILE = "state_stores/venue_balances_state.py"
 VENUE_BALANCES_STATE_OWNER_FNS = frozenset({
     "upsert_venue_balances_snapshot",
     "upsert_portfolio_positions_snapshot",
+    "upsert_locked",
 })
 VENUE_BALANCE_CACHE_OWNER_FILE = "cacheaccount.py"
 VENUE_BALANCE_CACHE_OWNER_FN = "replace_venue_balances_snapshot"
 VENUE_BALANCES_STATE_PRODUCER_FILES = frozenset({
+    "state_stores/venue_balances_state.py",
+    "state_stores/portfolio_positions_state.py",
     "providers/portfolio_valuation.py",
     "intelligence/sentiment/collectors/portfolio_collector.py",
 })
@@ -339,20 +376,14 @@ _VENUE_BALANCES_WRITER_FNS = frozenset({
     "write_bytes_file",
 })
 STATE_FILE_OWNER_MAP: dict[str, frozenset[str]] = {
-    "AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME": frozenset({"providers/intent_state.py"}),
-    "ORDER_RETRY_QUEUE_FILENAME": frozenset({"order_retry.py"}),
-    "PORTFOLIO_POSITIONS_STATE_FILENAME": frozenset({"providers/portfolio_valuation.py"}),
-    "VENUE_BALANCES_STATE_FILENAME": frozenset({"providers/portfolio_valuation.py"}),
+    **{spec.const_name: frozenset({spec.owner_module}) for spec in CRITICAL_STATE_SPECS},
     "CACHE_BINANCE_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_valuation.py"}),
     "CACHE_KRAKEN_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_valuation.py"}),
     "CACHE_HYPERLIQUID_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_valuation.py"}),
     "CACHE_T212_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_valuation.py"}),
 }
 STATE_FILE_LITERAL_TO_CONST: dict[str, str] = {
-    "autonomous_trade_intents_state.json": "AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME",
-    "order_retry_queue.jsonl": "ORDER_RETRY_QUEUE_FILENAME",
-    "portfolio_positions_state.json": "PORTFOLIO_POSITIONS_STATE_FILENAME",
-    "venue_balances_state.json": "VENUE_BALANCES_STATE_FILENAME",
+    **{spec.filename: spec.const_name for spec in CRITICAL_STATE_SPECS},
     "cache_balance_binance.json": "CACHE_BINANCE_BALANCE_FILENAME",
     "cache_balance_kraken.json": "CACHE_KRAKEN_BALANCE_FILENAME",
     "cache_balance_hyperliquid.json": "CACHE_HYPERLIQUID_BALANCE_FILENAME",
@@ -368,6 +399,14 @@ STATE_RAW_IO_READERS: frozenset[str] = frozenset({
     "read_jsonl_dicts",
     "read_tail_jsonl_dicts",
     "read_jsonl_dicts_from_offset",
+})
+STATE_RAW_IO_WRITERS: frozenset[str] = frozenset({
+    "save_json_state",
+    "save_json_file",
+    "write_json_file",
+    "atomic_write_json",
+    "atomic_write_jsonl",
+    "append_jsonl_record",
 })
 
 
@@ -948,9 +987,16 @@ def audit_persistence_and_cache_dag_ast(
     root = Path(root)
     watched = LAYER2_MODULES | {"account_cache_health.py", "shadow_signals.py"} | CACHE_MODULES
     if rel_paths is None:
-        target_rels = [r for r in sorted(watched) if (root / r).is_file()]
+        state_store_rels = [
+            r for r in _iter_repo_python_rels(root) if r.startswith("state_stores/")
+        ]
+        target_rels = [r for r in sorted(watched) if (root / r).is_file()] + sorted(state_store_rels)
     else:
-        target_rels = [r for r in _normalize_target_rels(root, rel_paths) if r in watched]
+        target_rels = [
+            r
+            for r in _normalize_target_rels(root, rel_paths)
+            if r in watched or r.startswith("state_stores/")
+        ]
     violations: list[str] = []
     for rel in target_rels:
         src, tree, syntax_err = parse_module_cached(root / rel, rel, _parsed_cache)
@@ -961,8 +1007,11 @@ def audit_persistence_and_cache_dag_ast(
             continue
         roots, fulls = _imported_roots_and_full(tree, include_dynamic=True)
         if rel in LAYER2_MODULES:
-            if leak := sorted(roots & FORBIDDEN_LAYER2_IMPORTS):
+            if leak := sorted(roots & (FORBIDDEN_LAYER2_IMPORTS | {"state_stores"})):
                 violations.append(f"{rel}: upward layer leak {leak}")
+        elif rel.startswith("state_stores/"):
+            if leak := sorted(roots & FORBIDDEN_STATE_STORE_IMPORTS):
+                violations.append(f"{rel}: state_stores Layer 2.5 upward leak {leak}")
         elif rel == "account_cache_health.py":
             if leak := sorted(roots & (FORBIDDEN_LAYER2_IMPORTS - {"account_cache_health"})):
                 violations.append(f"{rel}: upward layer leak {leak}")
@@ -1959,7 +2008,7 @@ def audit_venue_balances_single_writer_ast(
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 cur_fn = node.name
             is_owner = (
-                (rel_s == VENUE_BALANCES_STATE_OWNER_FILE and cur_fn in VENUE_BALANCES_STATE_OWNER_FNS)
+                (rel_s in VENUE_BALANCES_STATE_OWNER_FILES and cur_fn in VENUE_BALANCES_STATE_OWNER_FNS)
                 or (rel_s == VENUE_BALANCE_CACHE_OWNER_FILE and cur_fn == VENUE_BALANCE_CACHE_OWNER_FN)
             )
             if isinstance(node, ast.Call) and node.args:
@@ -1988,20 +2037,73 @@ def audit_venue_balances_single_writer_ast(
 
 # -- Audit 15: Exclusive typed state file owners -------------------------------
 
+def _audit_state_store_registry_symmetry(
+    root: Path,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Verify strict 1:1 filename <-> state_stores/<stem>.py <-> <PascalCase>Store symmetry."""
+    violations: list[str] = []
+    seen_files: set[str] = set()
+    seen_owners: set[str] = set()
+    for spec in CRITICAL_STATE_SPECS:
+        if spec.filename in seen_files:
+            violations.append(f"state_stores/registry.py: duplicate filename registration {spec.filename!r}")
+        seen_files.add(spec.filename)
+        if spec.owner_module in seen_owners:
+            violations.append(f"state_stores/registry.py: duplicate owner module {spec.owner_module!r}")
+        seen_owners.add(spec.owner_module)
+        expected_mod = f"state_stores/{Path(spec.filename).stem}.py"
+        if spec.owner_module != expected_mod:
+            violations.append(
+                f"state_stores/registry.py: asymmetric owner {spec.owner_module!r} for {spec.filename!r} "
+                f"(expected {expected_mod!r})"
+            )
+        expected_cls = expected_store_class_name(spec.filename)
+        if spec.store_class != expected_cls:
+            violations.append(
+                f"state_stores/registry.py: asymmetric store class {spec.store_class!r} for {spec.filename!r} "
+                f"(expected {expected_cls!r})"
+            )
+        cp_val = getattr(_cachepaths, spec.const_name, None)
+        if cp_val != spec.filename:
+            violations.append(
+                f"state_stores/registry.py: cachepaths.{spec.const_name}={cp_val!r} != {spec.filename!r}"
+            )
+        mod_path = root / spec.owner_module
+        if not mod_path.is_file():
+            violations.append(f"state_stores/registry.py: missing 1:1 owner module {spec.owner_module}")
+            continue
+        _, tree, syntax_err = parse_module_cached(mod_path, spec.owner_module, _parsed_cache)
+        if syntax_err is not None:
+            violations.append(syntax_err)
+            continue
+        if tree is not None:
+            defined_classes = {n.name for n in tree.body if isinstance(n, ast.ClassDef)}
+            if spec.store_class not in defined_classes:
+                violations.append(
+                    f"{spec.owner_module}: missing 1:1 store class {spec.store_class} for {spec.filename}"
+                )
+    return violations
+
+
 def audit_state_file_owners_ast(
     root: Path = _ROOT,
     rel_paths: Sequence[str] | None = None,
     *,
     _parsed_cache: ParsedCache | None = None,
 ) -> list[str]:
-    """Enforce that owned state files are never read directly via raw state_io readers outside their SSOT owner."""
+    """Enforce 1:1 state_stores symmetry and forbid raw state_io reads/writes outside each file's exclusive owner."""
     root = Path(root)
+    norm_rels = _normalize_target_rels(root, rel_paths)
     target_rels = [
         r
-        for r in _normalize_target_rels(root, rel_paths)
+        for r in norm_rels
         if _is_prod_python_rel(r) and r != "cachepaths.py" and not r.startswith("verify_tools/")
     ]
     violations: list[str] = []
+    if rel_paths is None or any(r.startswith("state_stores/") or r == "cachepaths.py" for r in norm_rels):
+        violations.extend(_audit_state_store_registry_symmetry(root, _parsed_cache=_parsed_cache))
 
     def _expr_state_consts(expr: ast.AST | None, tainted: dict[str, set[str]]) -> set[str]:
         found: set[str] = set()
@@ -2068,17 +2170,18 @@ def audit_state_file_owners_ast(
                     fn_name = node.func.id
                 elif isinstance(node.func, ast.Attribute):
                     fn_name = node.func.attr
-                if fn_name in STATE_RAW_IO_READERS:
+                if fn_name in STATE_RAW_IO_READERS or fn_name in STATE_RAW_IO_WRITERS:
                     hit_consts: set[str] = set()
                     for arg in node.args:
                         hit_consts.update(_expr_state_consts(arg, tainted))
                     for kw in node.keywords:
                         hit_consts.update(_expr_state_consts(kw.value, tainted))
+                    io_kind = "write" if fn_name in STATE_RAW_IO_WRITERS else "read"
                     for const_name in sorted(hit_consts):
                         owners = STATE_FILE_OWNER_MAP[const_name]
                         if rel_s not in owners:
                             violations.append(
-                                f"{rel_s}:{node.lineno}: direct raw read of {const_name} via {fn_name}() "
+                                f"{rel_s}:{node.lineno}: direct raw {io_kind} of {const_name} via {fn_name}() "
                                 f"outside SSOT owner {sorted(owners)}"
                             )
             for child in ast.iter_child_nodes(node):

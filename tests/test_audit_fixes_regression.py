@@ -7805,6 +7805,130 @@ def test_layer3_cache_balance_manager_eliminates_inversion_and_splits_positions_
     assert unified["pos:kraken:HYPEUSD"]["locked_base_qty"] == pytest.approx(2.0)
 
 
+def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
+    """Verify Etapa 1 state_stores/ package:
+    1. Every registered critical state file has strict 1:1 filename <-> state_stores/<stem>.py <-> <PascalCase>Store symmetry.
+    2. All 11 typed stores round-trip cleanly with .previous recovery and dirty-check semantics.
+    3. AST audits statically block raw reads, raw writes, and upward Layer 2.5 DAG leaks from state_stores/.
+    """
+    from pathlib import Path
+    import state_stores
+    from state_stores import (
+        AssetguardianStateStore,
+        AutonomousTradeIntentsStateStore,
+        CRITICAL_STATE_SPECS,
+        MtStateStore,
+        NavHistoryStateStore,
+        OrderRetryQueueStore,
+        PortfolioPositionsStateStore,
+        RtradePairsStateStore,
+        SmartStopLossStateStore,
+        TrailingStateStore,
+        VenueBalancesStateStore,
+        VenueFeeMaintenanceStateStore,
+        expected_store_class_name,
+    )
+    from verify_tools.ssot_ast_audit import (
+        audit_persistence_and_cache_dag_ast,
+        audit_state_file_owners_ast,
+    )
+
+    # 1. Exact 1:1 registry symmetry across all 11 critical state files
+    assert len(CRITICAL_STATE_SPECS) == 11
+    for spec in CRITICAL_STATE_SPECS:
+        assert spec.owner_module == f"state_stores/{Path(spec.filename).stem}.py"
+        assert spec.store_class == expected_store_class_name(spec.filename)
+        cls_obj = getattr(state_stores, spec.store_class)
+        assert cls_obj.FILENAME == spec.filename
+
+    # 2. Functional round-trips on isolated temp cachedb
+    cdb = tmp_path / "cachedb"
+    (cdb / "state").mkdir(parents=True)
+    (cdb / "orders").mkdir(parents=True)
+
+    # VenueBalancesStateStore & PortfolioPositionsStateStore
+    vb_path = VenueBalancesStateStore.resolve_path(str(cdb))
+    assert VenueBalancesStateStore.upsert_locked(
+        vb_path, {"cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 1000.0, "_balance_ts": 1.0}}
+    )
+    assert VenueBalancesStateStore.load_dict(str(cdb))["cash:binance:USDC"]["free"] == pytest.approx(1000.0)
+    assert "_balance_ts" not in VenueBalancesStateStore.load_dict(str(cdb))["cash:binance:USDC"]
+
+    pos_path = PortfolioPositionsStateStore.resolve_path(str(cdb))
+    assert PortfolioPositionsStateStore.upsert_locked(
+        pos_path, {"pos:binance:BTCUSDC": {"venue": "binance", "symbol": "BTCUSDC", "trailing_peak": 60000.0}}
+    )
+    assert PortfolioPositionsStateStore.load_dict(str(cdb))["pos:binance:BTCUSDC"]["trailing_peak"] == pytest.approx(60000.0)
+
+    # AutonomousTradeIntentsStateStore
+    int_path = AutonomousTradeIntentsStateStore.resolve_path(str(cdb))
+    assert AutonomousTradeIntentsStateStore.upsert_intent(
+        int_path,
+        {"intent_id": "ai_1", "symbol": "BTCUSDC", "status": "PENDING"},
+        extract_id_fn=lambda d: str(d.get("intent_id") or ""),
+    )
+    assert len(AutonomousTradeIntentsStateStore.load_from_cachedb(str(cdb))) == 1
+
+    # OrderRetryQueueStore
+    q_path = OrderRetryQueueStore.resolve_path(str(cdb))
+    OrderRetryQueueStore.write_records_nolock(q_path, [{"id": "r1", "symbol": "BTCUSDC", "side": "BUY"}])
+    assert len(OrderRetryQueueStore.read_tail_records(str(cdb), limit=10)) == 1
+
+    # NavHistoryStateStore
+    nav_p = NavHistoryStateStore.resolve_workspace_path(str(tmp_path))
+    NavHistoryStateStore.save_points_doc(nav_p, [{"ts": 100.0, "nav_usd": 17000.0}], updated_ts=100.0)
+    assert NavHistoryStateStore.read_raw_doc(str(tmp_path))["points"][0]["nav_usd"] == pytest.approx(17000.0)
+
+    # VenueFeeMaintenanceStateStore
+    with VenueFeeMaintenanceStateStore.locked_read_for_update(str(cdb)) as (fee_p, prev_fee):
+        assert prev_fee == {}
+        VenueFeeMaintenanceStateStore.save_state(fee_p, {"venues": {"binance": {"held_bnb_usdc": 150.0}}})
+    assert VenueFeeMaintenanceStateStore.read_state(str(cdb))["venues"]["binance"]["held_bnb_usdc"] == pytest.approx(150.0)
+
+    # AssetguardianStateStore, SmartStopLossStateStore, MtStateStore, TrailingStateStore, RtradePairsStateStore
+    ag_p = AssetguardianStateStore.resolve_path(str(cdb))
+    AssetguardianStateStore.save_state({"symbols": {"BTCUSDC": {}}}, ag_p)
+    assert "BTCUSDC" in AssetguardianStateStore.read_from_cachedb(str(cdb))["symbols"]
+
+    ssl_p = SmartStopLossStateStore.resolve_path(str(cdb))
+    SmartStopLossStateStore.save_state(ssl_p, {"BTCUSDC": {"start_ts": 1_795_000_000.0}})
+    assert "BTCUSDC" in SmartStopLossStateStore.read_from_cachedb(str(cdb))
+
+    mt_p = MtStateStore.resolve_path(str(cdb))
+    MtStateStore.save_state(mt_p, {"version": 1, "tp_ride_state": {"BTCUSDC": {}}})
+    assert "BTCUSDC" in MtStateStore.read_from_cachedb(str(cdb))["tp_ride_state"]
+
+    tr_p = TrailingStateStore.resolve_venue_path("binance", cache_dir=str(cdb))
+    TrailingStateStore.save_state(tr_p, {"BTCUSDC": {"peak": 62000.0}})
+    assert TrailingStateStore.read_venue_state("binance", cache_dir=str(cdb))["BTCUSDC"]["peak"] == pytest.approx(62000.0)
+
+    rt_p = RtradePairsStateStore.resolve_path(str(cdb))
+    RtradePairsStateStore.write_atomic(rt_p, {"version": 1, "pairs": {}})
+    assert RtradePairsStateStore.read_raw(rt_p)["version"] == 1
+
+    # 3. Negative AST checks: raw read, raw write, and upward DAG leak from state_stores/
+    synth = tmp_path / "synth_stores"
+    (synth / "state_stores").mkdir(parents=True)
+    (synth / "bad_writer.py").write_text(
+        "import os\n"
+        "from cachepaths import NAV_HISTORY_STATE_FILENAME\n"
+        "from state_io import save_json_state\n"
+        "def f(d):\n"
+        "    p = os.path.join(d, NAV_HISTORY_STATE_FILENAME)\n"
+        "    save_json_state(p, {'points': []})\n",
+        encoding="utf-8",
+    )
+    (synth / "state_stores" / "leaky_store.py").write_text(
+        "import providers.portfolio_valuation\n",
+        encoding="utf-8",
+    )
+    w_viols = audit_state_file_owners_ast(synth, rel_paths=["bad_writer.py"])
+    assert any("direct raw write of NAV_HISTORY_STATE_FILENAME" in v for v in w_viols)
+    dag_viols = audit_persistence_and_cache_dag_ast(synth, rel_paths=["state_stores/leaky_store.py"])
+    assert any("Layer 2.5 upward leak" in v and "providers" in v for v in dag_viols)
+
+
+
 
 
 

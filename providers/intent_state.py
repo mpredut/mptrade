@@ -28,19 +28,17 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
-    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
     canonical_base_asset,
     compatible_quote_suffixes,
     has_equity_suffix,
     is_equity_venue,
     is_equity_venue_or_suffix,
     normalize_venue_name,
-    resolve_cachedb_filepath,
     same_canonical_base_asset,
     symbol_quote_asset,
 )
 from instrument_registry import canonical_display_symbol, resolve_symbol_identity
-from state_io import StateReadError, generation_lock_path, load_json_state, read_json_recovering, save_json_state
+from state_stores.autonomous_trade_intents_state import AutonomousTradeIntentsStateStore
 from .order_id_context import (
     ScopedOrderIdSet,
     all_venue_native_client_order_ids,
@@ -721,29 +719,9 @@ def _intent_executed_notional_usd(item: dict[str, Any]) -> float:
     return safe_pos_float(extract_intent_notional(item, default=None), default=0.0) or 0.0
 
 
-@contextmanager
 def durable_intents_lock(intents_file: str):
-    """Reentrant (per thread) cross-process lock serializing read-modify-write of the durable intents file."""
-    raw_p = clean_scalar_str(os.fspath(intents_file)) if isinstance(intents_file, (str, os.PathLike)) else None
-    if raw_p is None:
-        raise ValueError(f"Invalid durable intents_file: {intents_file!r}")
-    key = generation_lock_path(str(resolve_cachedb_filepath(raw_p, migrate=True)))
-    depths = getattr(_INTENTS_LOCK_LOCAL, "depths", None)
-    if depths is None:
-        depths = _INTENTS_LOCK_LOCAL.depths = {}
-    if depths.get(key):
-        depths[key] += 1
-        try:
-            yield
-        finally:
-            depths[key] -= 1
-        return
-    with FileLock(key):
-        depths[key] = 1
-        try:
-            yield
-        finally:
-            depths.pop(key, None)
+    """Reentrant (per thread) cross-process lock serializing read-modify-write via 1:1 store."""
+    return AutonomousTradeIntentsStateStore.lock(intents_file)
 
 
 def load_durable_intents_state(
@@ -753,28 +731,13 @@ def load_durable_intents_state(
     read_only: bool = False,
     fail_closed: Optional[bool] = None,
 ) -> list[dict[str, Any]]:
-    """Load all trade intents from the durable JSON queue with `.previous` crash recovery.
-
-    Empty initialization is allowed when the file is absent. When an existing queue file is
-    truncated or corrupt without a recoverable ``.previous`` backup, writable loads fail closed
-    (raising ``StateReadError``) so a subsequent upsert cannot wipe existing intents.
-    """
-    is_ro = _parse_bool_flag(read_only, False)
-    eff_fail_closed = (not is_ro) if fail_closed is None else _parse_bool_flag(fail_closed, not is_ro)
-    lock_cm = nullcontext() if is_ro else durable_intents_lock(intents_file)
-    with lock_cm:
-        data = load_json_state(
-            intents_file,
-            default_factory=list,
-            fail_closed=eff_fail_closed,
-            label="autonomous_trade_intents",
-            root_type=list,
-            repair_files=not is_ro,
-        )
-        items = [item for item in data if isinstance(item, dict)]
-        if callable(reconcile_fn):
-            reconcile_fn(items)
-        return items
+    """Load all trade intents from the durable JSON queue via ``AutonomousTradeIntentsStateStore``."""
+    return AutonomousTradeIntentsStateStore.load_state(
+        intents_file,
+        reconcile_fn=reconcile_fn,
+        read_only=read_only,
+        fail_closed=fail_closed,
+    )
 
 
 def load_durable_intents_from_cachedb(
@@ -782,47 +745,11 @@ def load_durable_intents_from_cachedb(
     *,
     read_json_fn: Optional[Callable[[str], Any]] = None,
 ) -> list[dict[str, Any]]:
-    """Read-only SSOT loader for ``autonomous_trade_intents_state.json`` from a ``cachedb`` directory.
-
-    Accepts both the canonical ``list`` root schema and legacy/fixture ``{"intents": [...]}``
-    envelopes, transparently checking ``state/`` and root paths with ``.previous`` crash recovery.
-    """
-    if not cachedb_dir:
-        return []
-    raw_candidates = (
-        os.path.join(cachedb_dir, "state", AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME),
-        os.path.join(cachedb_dir, AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME),
+    """Read-only SSOT loader for ``autonomous_trade_intents_state.json`` via ``AutonomousTradeIntentsStateStore``."""
+    return AutonomousTradeIntentsStateStore.load_from_cachedb(
+        cachedb_dir,
+        read_json_fn=read_json_fn,
     )
-    resolved_candidates = list(
-        dict.fromkeys(
-            p
-            for raw_p in raw_candidates
-            for p in (str(resolve_cachedb_filepath(raw_p)), raw_p)
-        )
-    )
-    raw_payload: Any = None
-    if callable(read_json_fn):
-        for cand_p in resolved_candidates:
-            try:
-                raw_payload = read_json_fn(cand_p)
-            except Exception:
-                raw_payload = None
-            if isinstance(raw_payload, (list, dict)) and raw_payload:
-                break
-    if raw_payload is None:
-        for cand_p in resolved_candidates:
-            if not (os.path.isfile(cand_p) or os.path.isfile(f"{cand_p}.previous")):
-                continue
-            cand_payload = read_json_recovering(cand_p, default=None)
-            if isinstance(cand_payload, (list, dict)):
-                raw_payload = cand_payload
-                break
-    int_list = (
-        raw_payload.get("intents")
-        if isinstance(raw_payload, dict)
-        else (raw_payload if isinstance(raw_payload, list) else [])
-    )
-    return [it for it in (int_list or ()) if isinstance(it, dict)]
 
 
 def load_known_ai_order_ids_from_cachedb(cachedb_dir: Optional[str]) -> set[str]:
@@ -838,16 +765,8 @@ def save_durable_intents_state(
     intents: list[dict[str, Any]],
     log: Optional[Any] = None,
 ) -> bool:
-    """Transactionally persist all intents to disk using `.previous` staging and atomic replace."""
-    try:
-        cleaned = clean_json_value(intents if isinstance(intents, list) else [])
-        with durable_intents_lock(intents_file):
-            save_json_state(intents_file, cleaned, indent=2)
-        return True
-    except Exception as e:
-        if log:
-            log.error("Failed saving intents to %s: %s", intents_file, e)
-        return False
+    """Transactionally persist all intents via ``AutonomousTradeIntentsStateStore``."""
+    return AutonomousTradeIntentsStateStore.save_state(intents_file, intents, log=log)
 
 
 def upsert_durable_intent(
@@ -857,28 +776,14 @@ def upsert_durable_intent(
     reconcile_fn: Optional[Callable[[list[dict[str, Any]]], Any]] = None,
     log: Optional[Any] = None,
 ) -> bool:
-    """Atomically merge one intent (by ``intent_id``) into the freshly reloaded durable intents file."""
-    if not isinstance(intent, dict):
-        return False
-    iid = _extract_intent_id(intent)
-    with durable_intents_lock(intents_file):
-        try:
-            intents = load_durable_intents_state(
-                intents_file, reconcile_fn=reconcile_fn, fail_closed=True
-            )
-        except StateReadError as exc:
-            if log:
-                log.error("Refusing to overwrite corrupt intents queue %s: %s", intents_file, exc)
-            return False
-        idx = next(
-            (k for k in range(len(intents) - 1, -1, -1) if iid and _extract_intent_id(intents[k]) == iid),
-            None,
-        )
-        if idx is None:
-            intents.append(intent)
-        else:
-            intents[idx] = intent
-        return save_durable_intents_state(intents_file, intents, log=log)
+    """Atomically merge one intent (by ``intent_id``) via ``AutonomousTradeIntentsStateStore``."""
+    return AutonomousTradeIntentsStateStore.upsert_intent(
+        intents_file,
+        intent,
+        extract_id_fn=_extract_intent_id,
+        reconcile_fn=reconcile_fn,
+        log=log,
+    )
 
 
 def parse_pos_epoch_s(raw: Any) -> Optional[float]:

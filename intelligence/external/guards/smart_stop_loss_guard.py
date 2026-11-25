@@ -50,18 +50,18 @@ from intelligence.internal.guards.guard_decision import (
     resolve_hierarchical_guard_mode,
 )
 import notify_engine.alertnotifiers as _alertnotifiers
-from state_io import generation_file_lock, read_json_dict, read_json_dict_cached, save_json_state
+from state_stores.smart_stop_loss_state import SmartStopLossStateStore
 
 load_dotenv()
 
 logger = logging.getLogger("intelligence.external.smart_stop_loss")
 
-_DEFAULT_SMART_SL_STATE_FILE = cache_path(SMART_STOP_LOSS_STATE_FILENAME)
+_DEFAULT_SMART_SL_STATE_FILE = SmartStopLossStateStore.default_path()
 _SMART_SL_STATE_FILE = _DEFAULT_SMART_SL_STATE_FILE
 
 
 def _effective_smart_sl_state_file() -> str:
-    return _SMART_SL_STATE_FILE if _SMART_SL_STATE_FILE != _DEFAULT_SMART_SL_STATE_FILE else cache_path(SMART_STOP_LOSS_STATE_FILENAME)
+    return _SMART_SL_STATE_FILE if _SMART_SL_STATE_FILE != _DEFAULT_SMART_SL_STATE_FILE else SmartStopLossStateStore.default_path()
 
 
 def _prov_tag(provider: Any, fallback: Any = None) -> Tuple[str, str]:
@@ -139,10 +139,10 @@ def _load_grace_state(*, is_sim: bool = False, now_ts: Optional[float] = None) -
     if is_sim:
         return _GRACE_TRACKER
     state_file = _effective_smart_sl_state_file()
-    data = read_json_dict_cached(state_file, _GRACE_FILE_MEMO)
+    data = SmartStopLossStateStore.read_cached(state_file, _GRACE_FILE_MEMO)
     if not isinstance(data, dict):
         return _GRACE_TRACKER
-    resolved_state_file = str(resolve_cachedb_filepath(state_file))
+    resolved_state_file = SmartStopLossStateStore.resolve_file_path(state_file)
     memo_entry = _GRACE_FILE_MEMO.get(resolved_state_file)
     file_sig = memo_entry[0] if memo_entry else None
     if (
@@ -167,16 +167,11 @@ def _save_grace_state(
 ) -> None:
     global _LOADED_STATE_FILE_KEY
     state_file = _effective_smart_sl_state_file()
-    resolved_state_file = str(resolve_cachedb_filepath(state_file))
+    resolved_state_file = SmartStopLossStateStore.resolve_file_path(state_file)
     try:
-        with generation_file_lock(resolved_state_file):
+        with SmartStopLossStateStore.generation_lock(resolved_state_file):
             if upsert is not None or remove:
-                disk_raw = read_json_dict(
-                    resolved_state_file,
-                    default={},
-                    recover_previous=True,
-                    repair_files=True,
-                )
+                disk_raw = SmartStopLossStateStore.read_for_update(resolved_state_file)
                 now_curr = resolve_now_ts(now_ts, allow_zero=True)
                 persisted = {
                     k: v
@@ -198,11 +193,11 @@ def _save_grace_state(
                     for k, v in _GRACE_TRACKER.items()
                     if isinstance(v, dict) and not _is_simulated_provider(v.get("provider"))
                 }
-            save_json_state(resolved_state_file, persisted, indent=2)
+            SmartStopLossStateStore.save_state(resolved_state_file, persisted, indent=2)
             if upsert is not None or remove:
                 _replace_live_grace_entries(persisted)
             _GRACE_FILE_MEMO.clear()
-            cached = read_json_dict_cached(state_file, _GRACE_FILE_MEMO)
+            cached = SmartStopLossStateStore.read_cached(state_file, _GRACE_FILE_MEMO)
             memo_entry = _GRACE_FILE_MEMO.get(resolved_state_file)
             _LOADED_STATE_FILE_KEY = (
                 (state_file, memo_entry[0], id(cached), cached)

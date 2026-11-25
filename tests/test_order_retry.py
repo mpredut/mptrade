@@ -1928,7 +1928,9 @@ def test_is_expired_preserves_retry_terminal_remainder_and_dedup_refreshed_ttl(t
 
 
 def test_discard_superseded_symbol_records_protects_default_queue_when_mock(monkeypatch):
-    monkeypatch.setattr(oq, "QUEUE_FILE", os.path.join(oq._ROOT, "cachedb", oq.ORDER_RETRY_QUEUE_FILENAME))
+    from state_stores.order_retry_queue import OrderRetryQueueStore
+
+    monkeypatch.setattr(oq, "QUEUE_FILE", OrderRetryQueueStore.default_queue_file())
     monkeypatch.setattr(
         oq,
         "load_all",

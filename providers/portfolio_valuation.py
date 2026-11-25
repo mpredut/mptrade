@@ -10,8 +10,6 @@ from cachepaths import (
     CACHE_HYPERLIQUID_BALANCE_FILENAME,
     CACHE_KRAKEN_BALANCE_FILENAME,
     CACHE_T212_BALANCE_FILENAME,
-    PORTFOLIO_POSITIONS_STATE_FILENAME,
-    VENUE_BALANCES_STATE_FILENAME,
     cache_symbol_variants,
     canonical_base_asset,
     clean_scalar_str,
@@ -26,27 +24,16 @@ from cachepaths import (
 from core.math_coercion import first_pos_float
 from core.time_market import extract_current_price_item, normalize_epoch_sec
 from state_io import (
-    generation_file_lock,
     read_json_dict,
     read_json_dict_cached,
-    save_json_state,
 )
-
-
-INTERNAL_BALANCE_SCRATCH_KEYS: frozenset[str] = frozenset(
-    {
-        "_balance_ts",
-        "_base_balance_ts",
-        "_quote_balance_ts",
-        "_prev_locked_quote_usd",
-        "_prev_locked_base_qty",
-    }
+from state_stores.portfolio_positions_state import PortfolioPositionsStateStore
+from state_stores.venue_balances_state import (
+    INTERNAL_BALANCE_SCRATCH_KEYS,
+    VenueBalancesStateStore,
+    sanitize_balance_state_payload as _sanitize_venue_balances_payload,
+    strip_internal_balance_scratch_keys,
 )
-
-
-def strip_internal_balance_scratch_keys(entry: Mapping[str, Any]) -> dict[str, Any]:
-    """Return a shallow copy of ``entry`` with all internal balance scratch keys removed."""
-    return {k: v for k, v in entry.items() if k not in INTERNAL_BALANCE_SCRATCH_KEYS}
 
 
 def extract_position_held_qty(entry: Any) -> Optional[float]:
@@ -343,8 +330,8 @@ def extract_balance_observations_from_caches(
 
 
 def resolve_portfolio_positions_state_path(cachedb_dir: str) -> str:
-    """Resolve the canonical disk path for Layer 5 ``portfolio_positions_state.json`` inside ``cachedb_dir``."""
-    return str(resolve_cachedb_filepath(os.path.join(cachedb_dir, PORTFOLIO_POSITIONS_STATE_FILENAME)))
+    """Resolve the canonical disk path for Layer 5 ``portfolio_positions_state.json`` via its 1:1 store."""
+    return PortfolioPositionsStateStore.resolve_path(cachedb_dir)
 
 
 def load_portfolio_positions_state_dict(
@@ -354,35 +341,13 @@ def load_portfolio_positions_state_dict(
     read_json_fn: Optional[Callable[[str], Any]] = None,
     require_exists: bool = False,
 ) -> dict[str, Any]:
-    """SSOT owner reader for Layer 5 ``portfolio_positions_state.json`` (strictly ``pos:*`` derived snapshots)."""
-    if not cachedb_dir:
-        return {}
-    candidates = list(
-        dict.fromkeys((
-            resolve_portfolio_positions_state_path(cachedb_dir),
-            os.path.join(cachedb_dir, "state", PORTFOLIO_POSITIONS_STATE_FILENAME),
-            os.path.join(cachedb_dir, PORTFOLIO_POSITIONS_STATE_FILENAME),
-        ))
+    """SSOT owner reader for Layer 5 ``portfolio_positions_state.json`` (delegated to 1:1 store)."""
+    return PortfolioPositionsStateStore.load_dict(
+        cachedb_dir,
+        use_cache=use_cache,
+        read_json_fn=read_json_fn,
+        require_exists=require_exists,
     )
-    for cand in candidates:
-        has_disk_file = os.path.exists(cand) or os.path.exists(f"{cand}.previous")
-        if require_exists and not has_disk_file:
-            continue
-        if callable(read_json_fn):
-            raw = read_json_fn(cand)
-        elif use_cache:
-            if not has_disk_file:
-                continue
-            raw = read_json_dict_cached(cand)
-        else:
-            if not has_disk_file:
-                continue
-            raw = read_json_dict(cand, default=None, recover_previous=True)
-        if isinstance(raw, dict) and raw:
-            return {
-                k: v for k, v in raw.items() if isinstance(k, str) and k.startswith("pos:") and isinstance(v, dict)
-            }
-    return {}
 
 
 def upsert_portfolio_positions_snapshot(
@@ -394,56 +359,15 @@ def upsert_portfolio_positions_snapshot(
     save_fn: Optional[Callable[..., Any]] = None,
     indent: int = 2,
 ) -> bool:
-    """Single canonical locked producer writer for Layer 5 ``portfolio_positions_state.json`` (``pos:*`` only)."""
-    if not pos_path or not isinstance(updated_positions, Mapping):
-        return False
-    pos_updates = {
-        k: v
-        for k, v in updated_positions.items()
-        if isinstance(k, str) and k.startswith("pos:") and isinstance(v, Mapping)
-    }
-    if not pos_updates:
-        return False
-    os.makedirs(os.path.dirname(os.path.abspath(pos_path)), exist_ok=True)
-    with generation_file_lock(pos_path):
-        disk_exists = os.path.exists(pos_path) or os.path.exists(f"{pos_path}.previous")
-        disk_raw = (
-            read_json_dict(pos_path, default=None, recover_previous=True, repair_files=True)
-            if (read_disk and disk_exists)
-            else None
-        )
-        disk_dict = (
-            {k: v for k, v in disk_raw.items() if isinstance(k, str) and k.startswith("pos:") and isinstance(v, dict)}
-            if isinstance(disk_raw, dict)
-            else None
-        )
-        src_pos: dict[str, Any] = (
-            dict(disk_dict)
-            if disk_dict is not None
-            else {
-                k: v
-                for k, v in (fallback_state.items() if isinstance(fallback_state, Mapping) else ())
-                if isinstance(k, str) and k.startswith("pos:") and isinstance(v, Mapping)
-            }
-        )
-        updated_upper = {k.upper() for k in pos_updates}
-        base_pos = {
-            k: v
-            for k, v in src_pos.items()
-            if k in pos_updates or k.upper() not in updated_upper
-        }
-        merged_raw = {**base_pos, **pos_updates}
-        sanitized = _sanitize_venue_balances_payload(merged_raw, prev_state=src_pos)
-        should_write = (
-            (sanitized != disk_dict)
-            if disk_dict is not None
-            else (sanitized != src_pos or (bool(sanitized) and not os.path.exists(pos_path)))
-        )
-        if not should_write:
-            return False
-        writer = save_fn if callable(save_fn) else save_json_state
-        writer(pos_path, sanitized, indent=indent)
-        return True
+    """Single canonical locked producer writer for Layer 5 ``portfolio_positions_state.json`` (delegated to 1:1 store)."""
+    return PortfolioPositionsStateStore.upsert_locked(
+        pos_path,
+        updated_positions,
+        fallback_state=fallback_state,
+        read_disk=read_disk,
+        save_fn=save_fn,
+        indent=indent,
+    )
 
 
 def compose_unified_portfolio_state(
@@ -547,8 +471,8 @@ def compose_unified_portfolio_state(
 
 
 def resolve_venue_balances_state_path(cachedb_dir: str) -> str:
-    """Resolve the canonical disk path for legacy ``venue_balances_state.json`` inside ``cachedb_dir``."""
-    return str(resolve_cachedb_filepath(os.path.join(cachedb_dir, VENUE_BALANCES_STATE_FILENAME)))
+    """Resolve the canonical disk path for legacy ``venue_balances_state.json`` via its 1:1 store."""
+    return VenueBalancesStateStore.resolve_path(cachedb_dir)
 
 
 def _load_legacy_venue_balances_state_dict(
@@ -558,35 +482,12 @@ def _load_legacy_venue_balances_state_dict(
     read_json_fn: Optional[Callable[[str], Any]] = None,
     require_exists: bool = False,
 ) -> dict[str, Any]:
-    if not cachedb_dir:
-        return {}
-    candidates = list(
-        dict.fromkeys((
-            resolve_venue_balances_state_path(cachedb_dir),
-            os.path.join(cachedb_dir, "state", VENUE_BALANCES_STATE_FILENAME),
-            os.path.join(cachedb_dir, VENUE_BALANCES_STATE_FILENAME),
-        ))
+    return VenueBalancesStateStore.load_dict(
+        cachedb_dir,
+        use_cache=use_cache,
+        read_json_fn=read_json_fn,
+        require_exists=require_exists,
     )
-    for cand in candidates:
-        has_disk_file = os.path.exists(cand) or os.path.exists(f"{cand}.previous")
-        if require_exists and not has_disk_file:
-            continue
-        if callable(read_json_fn):
-            raw = read_json_fn(cand)
-        elif use_cache:
-            if not has_disk_file:
-                continue
-            raw = read_json_dict_cached(cand)
-        else:
-            if not has_disk_file:
-                continue
-            raw = read_json_dict(cand, default=None, recover_previous=True)
-            if isinstance(raw, dict):
-                return raw
-            continue
-        if isinstance(raw, dict) and raw:
-            return raw
-    return {}
 
 
 def load_venue_balances_state_dict(
@@ -611,43 +512,6 @@ def load_venue_balances_state_dict(
     return legacy_vb
 
 
-def _sanitize_venue_balances_payload(
-    payload: Mapping[str, Any],
-    *,
-    prev_state: Optional[Mapping[str, Any]] = None,
-) -> dict[str, Any]:
-    """Strip internal scratch keys via SSOT and preserve balance timestamps on price-only ``pos:*`` updates."""
-    prev_map = prev_state if isinstance(prev_state, Mapping) else {}
-    cleaned: dict[str, Any] = {}
-    for k, v in payload.items():
-        if not isinstance(v, Mapping):
-            cleaned[k] = v
-            continue
-        entry = strip_internal_balance_scratch_keys(v)
-        if isinstance(k, str) and k.startswith("pos:"):
-            prev_entry = prev_map.get(k)
-            if isinstance(prev_entry, Mapping):
-                prev_ts = normalize_epoch_sec(prev_entry.get("ts"), default=0.0) or 0.0
-                new_ts = normalize_epoch_sec(entry.get("ts"), default=0.0) or 0.0
-                if prev_ts > 0.0 and new_ts > prev_ts:
-                    if (
-                        "base_bal_ts" not in entry
-                        and entry.get("free_base") == prev_entry.get("free_base")
-                    ):
-                        prev_bts = normalize_epoch_sec(prev_entry.get("base_bal_ts"), default=0.0) or prev_ts
-                        if prev_bts > 0.0:
-                            entry["base_bal_ts"] = prev_bts
-                    if (
-                        "quote_bal_ts" not in entry
-                        and entry.get("free_quote") == prev_entry.get("free_quote")
-                    ):
-                        prev_qts = normalize_epoch_sec(prev_entry.get("quote_bal_ts"), default=0.0) or prev_ts
-                        if prev_qts > 0.0:
-                            entry["quote_bal_ts"] = prev_qts
-        cleaned[k] = entry
-    return cleaned
-
-
 def upsert_venue_balances_snapshot(
     bcache_path: str,
     updated_bals: Mapping[str, Any],
@@ -657,42 +521,15 @@ def upsert_venue_balances_snapshot(
     save_fn: Optional[Callable[..., Any]] = None,
     indent: int = 2,
 ) -> bool:
-    """Single canonical locked producer writer for ``venue_balances_state.json``."""
-    if not bcache_path or not isinstance(updated_bals, Mapping) or not updated_bals:
-        return False
-    os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
-    with generation_file_lock(bcache_path):
-        disk_exists = os.path.exists(bcache_path) or os.path.exists(f"{bcache_path}.previous")
-        disk_bals = (
-            read_json_dict(bcache_path, default=None, recover_previous=True, repair_files=True)
-            if (read_disk and disk_exists)
-            else None
-        )
-        disk_dict = disk_bals if isinstance(disk_bals, dict) else None
-        src_bals: dict[str, Any] = (
-            dict(disk_dict)
-            if disk_dict is not None
-            else (dict(fallback_state) if isinstance(fallback_state, Mapping) else {})
-        )
-        updated_upper_keys = {str(uk).upper() for uk in updated_bals}
-        base_bals = {
-            k: v
-            for k, v in src_bals.items()
-            if not (isinstance(k, str) and k.startswith(("open_orders:", "open_orders_verified_ts:")))
-            and (k in updated_bals or str(k).upper() not in updated_upper_keys)
-        }
-        merged_raw = {**base_bals, **updated_bals}
-        sanitized = _sanitize_venue_balances_payload(merged_raw, prev_state=src_bals)
-        should_write = (
-            (sanitized != disk_dict)
-            if disk_dict is not None
-            else (sanitized != src_bals or (bool(sanitized) and not os.path.exists(bcache_path)))
-        )
-        if not should_write:
-            return False
-        writer = save_fn if callable(save_fn) else save_json_state
-        writer(bcache_path, sanitized, indent=indent)
-        return True
+    """Single canonical locked producer writer for ``venue_balances_state.json`` (delegated to 1:1 store)."""
+    return VenueBalancesStateStore.upsert_locked(
+        bcache_path,
+        updated_bals,
+        fallback_state=fallback_state,
+        read_disk=read_disk,
+        save_fn=save_fn,
+        indent=indent,
+    )
 
 
 @dataclass(frozen=True, slots=True)

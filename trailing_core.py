@@ -59,7 +59,7 @@ from cachepaths import cache_symbol_variants, canonical_base_asset, canonical_sy
 import cachetrend as ct
 from instrument_registry import casefold_get
 from providers.execution_audit import intent_client_order_id
-from state_io import load_json_state, save_json_state
+from state_stores.trailing_state import TrailingStateStore
 
 
 COST_BASIS_LOOKBACK_S = 120 * 24 * 3600
@@ -207,10 +207,11 @@ class TrailingCore:
 
     # -- state (peak per key) -------------------------------------------------
     def load(self, *, read_only: bool = False) -> dict:
-        loaded = load_json_state(
-            self.state_file, default_factory=dict, fail_closed=self.enabled,
+        loaded = TrailingStateStore.load_state(
+            self.state_file,
+            fail_closed=self.enabled,
             label="live trailing" if self.enabled else "paper trailing",
-            repair_files=not _parse_bool_flag(read_only, default=False),
+            read_only=read_only,
         )
         if not isinstance(loaded, dict):
             if self.enabled:
@@ -220,10 +221,7 @@ class TrailingCore:
 
     def save(self, state: dict) -> bool:
         try:
-            d = os.path.dirname(self.state_file)
-            if d:
-                os.makedirs(d, exist_ok=True)
-            save_json_state(self.state_file, clean_json_value(state, stringify_keys=False), indent=2)
+            TrailingStateStore.save_state(self.state_file, state, indent=2)
             return True
         except (OSError, ValueError, TypeError) as e:
             self.log(f"  ! [TRAIL] cannot save the state: {e}")

@@ -31,9 +31,6 @@ from botcore import (
     _prices_diverged,
 )
 from cachepaths import (
-    ASSETGUARDIAN_STATE_FILENAME,
-    MT_STATE_FILENAME,
-    SMART_STOP_LOSS_STATE_FILENAME,
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
@@ -52,11 +49,14 @@ from cachepaths import (
     iter_venue_cycle_state_files,
     normalize_venue_name,
     resolve_cachedb_filepath,
-    resolve_venue_trailing_state_path,
     resolve_workspace_dir_from_cachedb,
     split_symbol_assets,
     symbol_quote_asset,
 )
+from state_stores.assetguardian_state import AssetguardianStateStore
+from state_stores.mt_state import MtStateStore
+from state_stores.smart_stop_loss_state import SmartStopLossStateStore
+from state_stores.trailing_state import TrailingStateStore
 from intelligence.macro_sentiment_ssot import (
     load_venue_balances_state,
     resolve_read_json_cached,
@@ -122,14 +122,16 @@ from providers.intent_state import (
 from providers.portfolio_valuation import (
     BalanceObservation,
     BalanceSnapshotRecord,
-    INTERNAL_BALANCE_SCRATCH_KEYS,
     build_cached_balance_observations,
     extract_position_held_qty,
     merge_balance_observation,
     resolve_portfolio_positions_state_path,
     resolve_venue_balance_cache_path,
-    strip_internal_balance_scratch_keys,
     upsert_portfolio_positions_snapshot,
+)
+from state_stores.venue_balances_state import (
+    INTERNAL_BALANCE_SCRATCH_KEYS,
+    strip_internal_balance_scratch_keys,
 )
 from providers.quantity import resolve_assets, resolve_kraken_trade_cache_position, venue_fee_cap_quantity
 from state_io import (
@@ -940,8 +942,8 @@ class VenueTrailingMapsCollector(PortfolioCacheCollectorBase):
         trailing_map: Dict[str, Dict[str, Any]] = {}
         trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]] = {"binance": {}, "kraken": {}}
         for trail_venue, raw_trail, default_quote in (
-            ("binance", _rj(resolve_venue_trailing_state_path("binance", cache_dir=cachedb_dir)), ""),
-            ("kraken", _rj(resolve_venue_trailing_state_path("kraken", workspace_dir=workspace_dir)), "USD"),
+            ("binance", TrailingStateStore.read_venue_state("binance", cache_dir=cachedb_dir, read_json_fn=_rj), ""),
+            ("kraken", TrailingStateStore.read_venue_state("kraken", workspace_dir=workspace_dir, read_json_fn=_rj), "USD"),
         ):
             if not isinstance(raw_trail, dict):
                 continue
@@ -2682,7 +2684,7 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
             if active_retries:
                 out["active_retry_queue"] = active_retries
 
-        if isinstance(mt_state := _rj(os.path.join(cache_dir, MT_STATE_FILENAME)), dict):
+        if isinstance(mt_state := MtStateStore.read_from_cachedb(cache_dir, read_json_fn=_rj), dict) and mt_state:
             active_mt = {
                 k: v for k in ("tp_ride_state", "sl_bounce_state", "sl_episode_state", "reentry_state", "pending_stop_exit")
                 if isinstance(v := mt_state.get(k), dict) and v
@@ -2690,7 +2692,7 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
             if active_mt:
                 out["monitortrades_active_state"] = active_mt
 
-        ag_state = _rj(os.path.join(cache_dir, ASSETGUARDIAN_STATE_FILENAME))
+        ag_state = AssetguardianStateStore.read_from_cachedb(cache_dir, read_json_fn=_rj)
         if isinstance(ag_state, dict) and isinstance(ag_state.get("symbols"), dict) and ag_state["symbols"]:
             dust_binance_syms = {
                 str(pos.get("symbol") or "").upper()
@@ -2727,7 +2729,7 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
             if cleaned_ag_syms:
                 out["assetguardian_state"] = cleaned_ag_syms
 
-        if isinstance(ssl_state := _rj(os.path.join(cache_dir, SMART_STOP_LOSS_STATE_FILENAME)), dict) and ssl_state:
+        if isinstance(ssl_state := SmartStopLossStateStore.read_from_cachedb(cache_dir, read_json_fn=_rj), dict) and ssl_state:
             out["smart_stop_loss_state"] = ssl_state
         return out
 
