@@ -9,6 +9,8 @@ import statistics
 import threading
 import time
 
+import numpy as np
+
 from providers.order_id_context import (
     can_bot_preempt_order,
     extract_client_order_id,
@@ -518,6 +520,178 @@ def _is_corrupted_sell_trough(
     return False
 
 
+def _compute_symbol_volatility_multiplier_arrays(
+    ts_arr: np.ndarray,
+    px_arr: np.ndarray,
+    *,
+    bucket_sec=None,
+    ref_step_pct=None,
+    min_mult=None,
+    max_mult=None,
+) -> float:
+    """Vectorized equivalent of ``_compute_symbol_volatility_multiplier`` for sorted ``(ts_arr, px_arr)``."""
+    if bucket_sec is None:
+        bucket_sec = max(60.0, (safe_pos_float(ORDER_MAX_AGE_SECONDS, default=60.0) or 60.0))
+    if ref_step_pct is None:
+        ref_min_back = safe_pos_float(ASSET_REFERENCE_MINUTES_BACK_DEFAULT, default=1440.0) or 1440.0
+        buckets_per_window = max(1.0, (ref_min_back * 60.0) / bucket_sec)
+        ref_step_pct = (RECOVERY_RESET_PERCENT + 0.5 * NEAR_TRIGGER_DISTANCE_PCT) / math.sqrt(buckets_per_window)
+    default_min, default_max = _volatility_mult_bounds()
+    min_mult = default_min if min_mult is None else min_mult
+    max_mult = default_max if max_mult is None else max_mult
+    n = ts_arr.size
+    if n < 60:
+        return 1.0
+    if not bool(np.all(ts_arr[:-1] <= ts_arr[1:])):
+        order = np.argsort(ts_arr, kind="mergesort")
+        ts_arr = ts_arr[order]
+        px_arr = px_arr[order]
+    if (ts_arr[-1] - ts_arr[0]).item() < 8.0 * bucket_sec:
+        return 1.0
+    bucket_ids = np.floor(ts_arr / bucket_sec).astype(np.int64)
+    change_idx = np.flatnonzero(bucket_ids[:-1] != bucket_ids[1:])
+    last_idx = np.empty(change_idx.size + 1, dtype=np.intp)
+    if change_idx.size:
+        last_idx[:-1] = change_idx
+    last_idx[-1] = n - 1
+    if last_idx.size < 8:
+        return 1.0
+    bp = px_arr[last_idx]
+    prev_bp = bp[:-1]
+    curr_bp = bp[1:]
+    pos_mask = prev_bp > 0.0
+    if not bool(np.any(pos_mask)):
+        return 1.0
+    abs_returns = np.abs((curr_bp[pos_mask] - prev_bp[pos_mask]) / prev_bp[pos_mask]) * 100.0
+    mean_abs_ret_pct = np.mean(abs_returns).item()
+    if mean_abs_ret_pct <= 0.0 or ref_step_pct <= 0.0:
+        return 1.0
+    return round(clamp_float((mean_abs_ret_pct / ref_step_pct) ** 0.5, min_mult, max_mult, default=1.0), 4)
+
+
+def _extract_window_arrays(rows, target_ts: float, now_ts: float) -> tuple[np.ndarray, np.ndarray]:
+    """Extract in-window ``(timestamp_sec, price)`` arrays without per-row dict allocation."""
+    ts_list: list[float] = []
+    px_list: list[float] = []
+    isfinite = math.isfinite
+    for raw in rows:
+        t_raw = type(raw)
+        if t_raw is list or t_raw is tuple:
+            if len(raw) >= 2:
+                r0 = raw[0]
+                r1 = raw[1]
+                t0 = type(r0)
+                t1 = type(r1)
+                if (t0 is int or t0 is float) and (t1 is int or t1 is float):
+                    if r0 > 0 and r1 > 0 and isfinite(r0) and isfinite(r1):
+                        ts_val = (r0 / 1000.0) if r0 >= 1e11 else (r0 * 1.0)
+                        if target_ts <= ts_val <= now_ts:
+                            ts_list.append(ts_val)
+                            px_list.append(r1 * 1.0)
+                    continue
+        parsed = _price_row(raw)
+        if parsed is None:
+            continue
+        ts_val, px_val = parsed
+        if target_ts <= ts_val <= now_ts:
+            ts_list.append(ts_val)
+            px_list.append(px_val)
+    if not ts_list:
+        empty = np.empty(0, dtype=np.float64)
+        return empty, empty
+    return np.asarray(ts_list, dtype=np.float64), np.asarray(px_list, dtype=np.float64)
+
+
+def _sort_and_dedup_ts_px(ts_arr: np.ndarray, px_arr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return timestamp-sorted arrays with exact ``(ts, px)`` duplicates removed."""
+    n = ts_arr.size
+    if n <= 1:
+        return ts_arr, px_arr
+    if not bool(np.all(ts_arr[:-1] <= ts_arr[1:])):
+        order = np.argsort(ts_arr, kind="mergesort")
+        ts_arr = ts_arr[order]
+        px_arr = px_arr[order]
+    same_ts = ts_arr[1:] == ts_arr[:-1]
+    if not bool(np.any(same_ts)):
+        return ts_arr, px_arr
+    keep = np.ones(n, dtype=bool)
+    i = 0
+    while i < n:
+        j = i + 1
+        if j < n and ts_arr[j] == ts_arr[i]:
+            seen_px = {px_arr[i].item()}
+            while j < n and ts_arr[j] == ts_arr[i]:
+                pv = px_arr[j].item()
+                if pv in seen_px:
+                    keep[j] = False
+                else:
+                    seen_px.add(pv)
+                j += 1
+        i = j
+    if bool(np.all(keep)):
+        return ts_arr, px_arr
+    return ts_arr[keep], px_arr[keep]
+
+
+def _filter_isolated_price_outliers_arrays(
+    ts_arr: np.ndarray, px_arr: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Vectorized equivalent of ``_filter_isolated_price_outliers`` on sorted ``(ts_arr, px_arr)``."""
+    n = ts_arr.size
+    if n < 3:
+        return ts_arr, px_arr, 0
+    if not bool(np.all(ts_arr[:-1] <= ts_arr[1:])):
+        order = np.argsort(ts_arr, kind="mergesort")
+        ts_arr = ts_arr[order]
+        px_arr = px_arr[order]
+
+    prev_px = px_arr[:-2]
+    cur_px = px_arr[1:-1]
+    next_px = px_arr[2:]
+    lo_nb = np.minimum(prev_px, next_px)
+    hi_nb = np.maximum(prev_px, next_px)
+    agree = (lo_nb > 0.0) & ((hi_nb / lo_nb) <= _WINDOW_OUTLIER_NEIGHBOR_AGREE_RATIO)
+    spike = agree & (
+        (cur_px > hi_nb * _WINDOW_OUTLIER_SPIKE_RATIO)
+        | (cur_px < lo_nb / _WINDOW_OUTLIER_SPIKE_RATIO)
+    )
+    removed = np.count_nonzero(spike)
+    if removed > 0:
+        keep_mask = np.ones(n, dtype=bool)
+        keep_mask[1:-1] = ~spike
+        kept_ts = ts_arr[keep_mask]
+        kept_px = px_arr[keep_mask]
+    else:
+        kept_ts = ts_arr
+        kept_px = px_arr
+
+    if kept_px.size >= 5:
+        med_px = np.median(kept_px).item()
+        if med_px > 0.0:
+            extreme_indices = np.flatnonzero(
+                np.maximum(kept_px / med_px, med_px / kept_px) > _WINDOW_OUTLIER_MEDIAN_RATIO
+            )
+            if extreme_indices.size > 0:
+                drop_ext = np.zeros(kept_px.size, dtype=bool)
+                for idx_raw in extreme_indices:
+                    idx = idx_raw.item()
+                    px = kept_px[idx].item()
+                    corr = (
+                        np.count_nonzero(
+                            np.maximum(kept_px / px, px / kept_px) <= _WINDOW_OUTLIER_CORROBORATE_RATIO
+                        )
+                        - 1
+                    )
+                    if corr < 2:
+                        drop_ext[idx] = True
+                ext_removed = np.count_nonzero(drop_ext)
+                if ext_removed > 0:
+                    kept_ts = kept_ts[~drop_ext]
+                    kept_px = kept_px[~drop_ext]
+                    removed += ext_removed
+    return kept_ts, kept_px, removed
+
+
 def _get_symbol_window_extrema(symbol, current_price,
                                minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     """Return validated per-symbol price minimum/maximum for the rolling window."""
@@ -529,28 +703,16 @@ def _get_symbol_window_extrema(symbol, current_price,
     now_ts = time.time() * 1.0
     target_ts = now_ts - minutes_back * 60.0
 
-    cached_normalized = []
-    cached_seen = set()
-    for raw in _read_symbol_price_rows(symbol):
-        parsed = _price_row(raw)
-        if parsed is None:
-            continue
-        timestamp, price = parsed
-        if not target_ts <= timestamp <= now_ts:
-            continue
-        key = (timestamp, price)
-        if key not in cached_seen:
-            cached_seen.add(key)
-            cached_normalized.append({"timestamp": timestamp, "price": price})
+    cached_ts, cached_px = _extract_window_arrays(_read_symbol_price_rows(symbol), target_ts, now_ts)
+    cached_ts, cached_px = _sort_and_dedup_ts_px(cached_ts, cached_px)
 
-    if len(cached_normalized) >= 5:
-        clean_cached, _ = _filter_isolated_price_outliers(cached_normalized)
-        if len(clean_cached) >= 5:
-            hist_med = statistics.median(row["price"] for row in clean_cached)
-            recent_tail = clean_cached[-5:]
-            recent_matches = sum(
-                1 for row in recent_tail
-                if max(row["price"] / current_price, current_price / row["price"])
+    if cached_px.size >= 5:
+        clean_ts, clean_px, _ = _filter_isolated_price_outliers_arrays(cached_ts, cached_px)
+        if clean_px.size >= 5:
+            hist_med = np.median(clean_px).item()
+            recent_tail = clean_px[-5:]
+            recent_matches = np.count_nonzero(
+                np.maximum(recent_tail / current_price, current_price / recent_tail)
                 <= _WINDOW_OUTLIER_CORROBORATE_RATIO
             )
             if (
@@ -572,38 +734,36 @@ def _get_symbol_window_extrema(symbol, current_price,
                 if (parsed := _price_row(row)) is not None
                 and target_ts <= parsed[0] <= now_ts]
 
-    normalized = list(cached_normalized)
-    seen = set(cached_seen)
-    for raw in list(local):
-        parsed = _price_row(raw)
-        if parsed is None:
-            continue
-        timestamp, price = parsed
-        if not target_ts <= timestamp <= now_ts:
-            continue
-        key = (timestamp, price)
-        if key not in seen:
-            seen.add(key)
-            normalized.append({"timestamp": timestamp, "price": price})
+    local_ts, local_px = _extract_window_arrays(local, target_ts, now_ts)
+    if cached_ts.size and local_ts.size:
+        comb_ts = np.concatenate((cached_ts, local_ts))
+        comb_px = np.concatenate((cached_px, local_px))
+    elif local_ts.size:
+        comb_ts, comb_px = local_ts, local_px
+    else:
+        comb_ts, comb_px = cached_ts, cached_px
 
-    normalized, removed_outliers = _filter_isolated_price_outliers(normalized)
+    comb_ts, comb_px = _sort_and_dedup_ts_px(comb_ts, comb_px)
+    norm_ts, norm_px, removed_outliers = _filter_isolated_price_outliers_arrays(comb_ts, comb_px)
     if removed_outliers > 0:
         print(
             f"[WARNING] [{symbol}] Filtered {removed_outliers} isolated price outlier(s) "
             f"from rolling window."
         )
 
-    print(f"[DEBUG] {symbol} candidate price rows: {len(normalized)}")
-    if len(normalized) < 2:
+    print(f"[DEBUG] {symbol} candidate price rows: {norm_px.size}")
+    if norm_px.size < 2:
         return _log_symbol_and_return(symbol, "Insufficient per-asset price baseline; skip evaluation.", None)
-    vol_mult = _compute_symbol_volatility_multiplier(normalized)
+    vol_mult = _compute_symbol_volatility_multiplier_arrays(norm_ts, norm_px)
     eval_row = _last_evaluation.setdefault(
         symbol,
         {"growth": None, "drawdown": None, "pending_tier": False, "volatility_mult": 1.0},
     )
     eval_row["volatility_mult"] = vol_mult
-    minimum = min(normalized, key=lambda row: row["price"])
-    maximum = max(normalized, key=lambda row: row["price"])
+    idx_min = np.argmin(norm_px).item()
+    idx_max = np.argmax(norm_px).item()
+    minimum = {"timestamp": norm_ts[idx_min].item(), "price": norm_px[idx_min].item()}
+    maximum = {"timestamp": norm_ts[idx_max].item(), "price": norm_px[idx_max].item()}
     print(f"[DEBUG] {symbol} chosen MIN/MAX: {minimum}/{maximum} (vol_mult={vol_mult:.4f})")
     return minimum, maximum
 

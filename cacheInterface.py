@@ -67,6 +67,7 @@ from state_io import (
     read_json_dict,
     read_json_dict_cached,
     read_jsonl_bucket_map,
+    read_jsonl_bucket_map_from_offset,
     restore_previous_generation,
     truncate_file_bytes,
 )
@@ -470,6 +471,7 @@ class CacheManagerInterface(ABC):
         if not self.read_only:
             self.filename = str(cachepaths.resolve_cachedb_filepath(self.filename, migrate=True))
         self._persisted_counts = {}
+        self._jsonl_tail_state: Optional[tuple[str, tuple[int, int], int, bytes]] = None
         self._reader_reload_lock = threading.Lock()
         self._legacy_jsonl_needs_rewrite = False
         self._last_disk_sync_max_ts = 0
@@ -1154,20 +1156,50 @@ class CacheManagerInterface(ABC):
         )
 
     def _load_jsonl(self):
-        """Load generic JSONL state; repair ``.previous`` on disk only for producers."""
+        """Load generic JSONL state; tail appended lines incrementally for read-only consumers."""
         legacy_metadata = self._read_optional_meta_dict()
         with self.lock:
-            self.cache = {}
             had_invalid_line = False
             backup_path = (
                 self._previous_generation_path()
                 if self.read_only
                 else self._ensure_file_or_restore_previous_locked()
             )
-            if os.path.exists(self.filename):
-                self.cache, had_invalid_line = read_jsonl_bucket_map(self.filename)
-            elif self.read_only and os.path.exists(backup_path):
-                self.cache, had_invalid_line = read_jsonl_bucket_map(backup_path)
+            if self.read_only and os.path.exists(self.filename):
+                abs_path = os.path.abspath(self.filename)
+                tail_st = self._jsonl_tail_state
+                can_tail = (
+                    isinstance(self.cache, dict)
+                    and bool(self.cache)
+                    and tail_st is not None
+                    and tail_st[0] == abs_path
+                )
+                loaded_map, had_invalid_line, next_offset, dev_ino, new_anchor, inc_used = (
+                    read_jsonl_bucket_map_from_offset(
+                        self.filename,
+                        start_offset=tail_st[2] if can_tail else 0,
+                        expected_dev_ino=tail_st[1] if can_tail else None,
+                        expected_anchor=tail_st[3] if can_tail else b"",
+                        allow_full_fallback=True,
+                    )
+                )
+                if inc_used:
+                    for sym_k, rows_delta in loaded_map.items():
+                        self.cache.setdefault(sym_k, []).extend(rows_delta)
+                else:
+                    self.cache = loaded_map
+                self._jsonl_tail_state = (
+                    (abs_path, dev_ino, next_offset, new_anchor)
+                    if (not had_invalid_line and dev_ino is not None and next_offset > 0)
+                    else None
+                )
+            else:
+                self.cache = {}
+                self._jsonl_tail_state = None
+                if os.path.exists(self.filename):
+                    self.cache, had_invalid_line = read_jsonl_bucket_map(self.filename)
+                elif self.read_only and os.path.exists(backup_path):
+                    self.cache, had_invalid_line = read_jsonl_bucket_map(backup_path)
             self._legacy_jsonl_needs_rewrite = had_invalid_line
             if not self.read_only and not had_invalid_line and os.path.exists(backup_path):
                 discard_generation_file(backup_path)

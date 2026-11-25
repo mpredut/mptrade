@@ -907,6 +907,86 @@ def read_jsonl_bucket_map(path: str) -> tuple[dict[str, list[Any]], bool]:
     return cache, had_invalid_line
 
 
+_JSONL_TAIL_ANCHOR_BYTES = 64
+
+
+def read_jsonl_bucket_map_from_offset(
+    path: str,
+    *,
+    start_offset: int = 0,
+    expected_dev_ino: tuple[int, int] | None = None,
+    expected_anchor: bytes = b"",
+    allow_full_fallback: bool = True,
+) -> tuple[dict[str, list[Any]], bool, int, tuple[int, int] | None, bytes, bool]:
+    """Incrementally tail appended ``{'s': symbol, 'i': item}`` JSONL lines when inode and pre-offset anchor match.
+
+    Returns ``(bucket_map, had_invalid_line, next_offset, dev_ino, new_anchor, incremental_used)``.
+    When ``incremental_used`` is True, ``bucket_map`` contains only lines newly appended after ``start_offset``;
+    otherwise, if ``allow_full_fallback`` is True, the entire file is parsed from offset 0.
+    """
+    target_path = _resolve_target_path(path)
+    cache: dict[str, list[Any]] = {}
+    had_invalid_line = False
+    with open(target_path, "rb") as handle:
+        st = os.fstat(handle.fileno())
+        dev_ino = (st.st_dev, st.st_ino)
+        incremental_used = False
+        if (
+            start_offset > 0
+            and expected_dev_ino is not None
+            and expected_dev_ino == dev_ino
+            and st.st_size >= start_offset
+        ):
+            anchor_len = len(expected_anchor)
+            if anchor_len > 0 and start_offset >= anchor_len:
+                handle.seek(start_offset - anchor_len)
+                if handle.read(anchor_len) == expected_anchor:
+                    incremental_used = True
+            elif anchor_len == 0:
+                handle.seek(start_offset)
+                incremental_used = True
+
+        if not incremental_used:
+            if not allow_full_fallback:
+                return {}, False, 0, dev_ino, b"", False
+            handle.seek(0)
+            next_offset = 0
+        else:
+            next_offset = start_offset
+
+        while True:
+            raw_b = handle.readline()
+            if not raw_b:
+                break
+            stripped = raw_b.strip()
+            if not stripped:
+                next_offset = handle.tell()
+                continue
+            try:
+                rec = _fast_json_loads(stripped.decode("utf-8"))
+                if (
+                    not isinstance(rec, dict)
+                    or (sym := clean_scalar_str(rec.get("s"))) is None
+                    or rec.get("i") is None
+                ):
+                    raise ValueError("invalid JSONL record")
+                cache.setdefault(sym, []).append(rec["i"])
+                next_offset = handle.tell()
+            except Exception:
+                if incremental_used and not raw_b.endswith(b"\n"):
+                    # In-flight partial append at EOF: stop before this line without advancing cursor.
+                    break
+                had_invalid_line = True
+                next_offset = handle.tell()
+
+        new_anchor = b""
+        if next_offset > 0:
+            a_len = min(_JSONL_TAIL_ANCHOR_BYTES, next_offset)
+            handle.seek(next_offset - a_len)
+            new_anchor = handle.read(a_len)
+    return cache, had_invalid_line, next_offset, dev_ino, new_anchor, incremental_used
+
+
 def iter_jsonl_retention_lines(
     path: str,
     keep_record_fn: Callable[[dict[str, Any]], bool],

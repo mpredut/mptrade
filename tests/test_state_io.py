@@ -1370,6 +1370,127 @@ def test_price_analysis_cpu_throttling_and_low_priority_background_jobs(monkeypa
         assert "nice -n" not in line
 
 
+def test_incremental_jsonl_tailing_and_assetguardian_vectorized_extrema(tmp_path, monkeypatch):
+    """Verify read-only JSONL caches tail appended lines incrementally (falling back cleanly on compaction/rewrite/partial EOF)
+    and AssetGuardian's vectorized window extrema/volatility matches legacy dict helpers."""
+    import assetguardian as ag
+    import cacheInterface as ci
+    import cacheprice
+
+    # 1. Incremental JSONL tailing: append -> tail only new bytes; partial EOF -> pause safely;
+    #    compaction (new inode) & in-place rewrite (same inode, anchor mismatch) -> clean full reload.
+    prices_dir = tmp_path / "prices"
+    prices_dir.mkdir(parents=True, exist_ok=True)
+    jsonl_path = prices_dir / "cache_24_price_BTCUSDC.jsonl"
+    now_ms = int(time.time() * 1000)
+
+    prod = cacheprice.Cache24PriceManager(30, ["BTCUSDC"], str(jsonl_path), api_client=None, read_only=False)
+    for idx in range(20):
+        prod.on_price_update("BTCUSDC", now_ms - (30 - idx) * 1000, 60000.0 + idx)
+    assert prod.save_state_to_file() is True
+
+    reader = cacheprice.Cache24PriceManager(30, ["BTCUSDC"], str(jsonl_path), api_client=None, read_only=True)
+    assert len(reader.cache["BTCUSDC"]) == 20
+    assert reader._jsonl_tail_state is not None
+    offset_after_init = reader._jsonl_tail_state[2]
+    assert offset_after_init > 0
+
+    # Spy on read_jsonl_bucket_map_from_offset to verify incremental_used=True on append
+    tail_calls: list[tuple[int, bool]] = []
+    orig_tail = state_io.read_jsonl_bucket_map_from_offset
+
+    def _spy_tail(*args, **kwargs):
+        res = orig_tail(*args, **kwargs)
+        tail_calls.append((kwargs.get("start_offset", 0), res[5]))
+        return res
+
+    monkeypatch.setattr(ci, "read_jsonl_bucket_map_from_offset", _spy_tail)
+
+    # Producer appends 3 new ticks on same inode -> reader MUST use incremental tail from offset_after_init
+    prod.on_price_update("BTCUSDC", now_ms - 5_000, 60100.0)
+    prod.on_price_update("BTCUSDC", now_ms - 4_000, 60101.0)
+    prod.on_price_update("BTCUSDC", now_ms - 3_000, 60102.0)
+    assert prod.save_state_to_file() is True
+    reader.resync_mem_file()
+    assert len(reader.cache["BTCUSDC"]) == 23
+    assert reader.cache["BTCUSDC"][-1][1] == pytest.approx(60102.0)
+    assert tail_calls[-1] == (offset_after_init, True)
+
+    # In-flight partial trailing line without '\n': reader preserves cursor and picks up line once completed
+    prev_off = reader._jsonl_tail_state[2]
+    partial_line = json.dumps({"s": "BTCUSDC", "i": [now_ms - 2_000, 60103.0]}, separators=(",", ":"))
+    with open(jsonl_path, "ab") as fh:
+        fh.write(partial_line[:14].encode("utf-8"))
+    reader._load_jsonl()
+    assert len(reader.cache["BTCUSDC"]) == 23
+    assert reader._jsonl_tail_state[2] == prev_off
+    with open(jsonl_path, "ab") as fh:
+        fh.write((partial_line[14:] + "\n").encode("utf-8"))
+    reader._load_jsonl()
+    assert len(reader.cache["BTCUSDC"]) == 24
+    assert reader.cache["BTCUSDC"][-1][1] == pytest.approx(60103.0)
+
+    # Producer compacts (atomic replace -> new inode) -> reader detects inode change and performs full reload
+    prod.cache["BTCUSDC"] = prod.cache["BTCUSDC"][-5:]
+    assert prod.compact_jsonl() is True
+    reader.cache["BTCUSDC"].append([now_ms - 99_999, 1.0])  # ensure full reload clears stale rows
+    reader._load_jsonl()
+    assert tail_calls[-1][1] is False
+    assert len(reader.cache["BTCUSDC"]) == 5
+
+    # In-place overwrite on same inode with larger payload -> anchor mismatch forces full reload
+    big_rows = [
+        json.dumps({"s": "BTCUSDC", "i": [now_ms - (50 - k) * 1000, 61000.0 + k]}, separators=(",", ":"))
+        for k in range(40)
+    ]
+    with open(jsonl_path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(big_rows) + "\n")
+    reader._load_jsonl()
+    assert tail_calls[-1][1] is False
+    assert len(reader.cache["BTCUSDC"]) == 40
+    assert reader.cache["BTCUSDC"][0][1] == pytest.approx(61000.0)
+
+    # 2. AssetGuardian vectorized outlier filter, volatility multiplier, and _get_symbol_window_extrema
+    #    match legacy dict helpers exactly (including duplicate timestamps, spikes, and extreme outliers).
+    base_ts = 1_795_000_000.0
+    dict_rows = []
+    raw_rows = []
+    for k in range(180):
+        ts_s = base_ts + k * 60.0
+        px = 100.0 + (k % 11) * 0.4 + (0.15 if k % 3 == 0 else -0.1)
+        if k == 42:
+            px = 250.0  # isolated single-tick spike
+        elif k == 120:
+            px = 450.0  # uncorroborated extreme outlier
+        dict_rows.append({"timestamp": ts_s, "price": px})
+        raw_rows.append([int(ts_s * 1000), px])
+    # Add an exact duplicate and a same-ts different-px row + malformed rows
+    raw_rows.append(list(raw_rows[10]))
+    raw_rows.append(["bad", 100.0])
+    raw_rows.append([int((base_ts + 20 * 60.0) * 1000), float("nan")])
+
+    legacy_clean, legacy_removed = ag._filter_isolated_price_outliers(dict_rows)
+    legacy_vol = ag._compute_symbol_volatility_multiplier(legacy_clean)
+
+    monkeypatch.setattr(ag, "_read_symbol_price_rows", lambda _s: raw_rows)
+    monkeypatch.setattr(ag.time, "time", lambda: base_ts + 180 * 60.0)
+    ag._local_price_samples["BTCUSDC"] = []
+    extrema = ag._get_symbol_window_extrema("BTCUSDC", 101.5, minutes_back=240.0)
+    assert extrema is not None
+    lo, hi = extrema
+    # Legacy clean + current_price at base_ts + 180*60 should match min/max & vol_mult closely
+    dict_plus = dict_rows + [{"timestamp": base_ts + 180 * 60.0, "price": 101.5}]
+    exp_clean, exp_removed = ag._filter_isolated_price_outliers(dict_plus)
+    assert exp_removed == 2 and legacy_removed == 2
+    assert lo == min(exp_clean, key=lambda r: r["price"])
+    assert hi == max(exp_clean, key=lambda r: r["price"])
+    assert ag._last_evaluation["BTCUSDC"]["volatility_mult"] == ag._compute_symbol_volatility_multiplier(exp_clean)
+    assert abs(ag._last_evaluation["BTCUSDC"]["volatility_mult"] - legacy_vol) <= 0.05
+
+    # Outlier current_price is still rejected cleanly
+    assert ag._get_symbol_window_extrema("BTCUSDC", 9999.0, minutes_back=240.0) is None
+
+
 
 
 
