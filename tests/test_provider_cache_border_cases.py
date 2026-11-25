@@ -8693,9 +8693,9 @@ def test_wave50_anchored_id_memos_and_market_regime_scalar_ssot(tmp_path, monkey
     def _eval_transient_lexicon(term: str):
         with monkeypatch.context() as mp:
             mp.setattr(
-                lex_mod,
-                "read_json_dict_cached",
-                lambda _p, _c: {"entries": {term: {"ts": now_fixed - 5.0, "tier": "acute"}}},
+                lex_mod.MacroLexiconCollectStore,
+                "read_cached_dict",
+                classmethod(lambda _cls, _p, _c=None: {"entries": {term: {"ts": now_fixed - 5.0, "tier": "acute"}}}),
             )
             return lex_mod.load_dynamic_lexicon(cache_dir=str(tmp_path), now_ts=now_fixed)
 

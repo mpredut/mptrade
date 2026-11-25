@@ -1269,7 +1269,7 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
             btc_series_24h, btc_vals_7d = load_symbol_price_series(
                 cachedb_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=True
             )
-            btc_m24 = compute_24h_price_metrics(btc_series_24h, now_ts=eff_now_btc) if btc_series_24h else {}
+            btc_m24 = _call_compute_24h(btc_series_24h, now_ts=eff_now_btc) if btc_series_24h else {}
             btc_live_px = extract_current_price_item(casefold_get(cur_p_items, "BTCUSDC")) or 0.0
             if btc_m24 and btc_series_24h:
                 btc_last_pt = parse_ts_px_row(btc_series_24h[-1])
@@ -1874,7 +1874,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                             sib_p_est[k_kal] = sib_k.get(k_kal)
                     if (sib_k_vol := safe_pos_float(sib_k.get("vol_1h_pct"), default=None)) is not None:
                         sib_p_est["vol_1h_pct"] = sib_k_vol
-                if sib_s24 and (sib_m24 := compute_24h_price_metrics(sib_s24, now_ts=eff_now_sib)):
+                if sib_s24 and (sib_m24 := _call_compute_24h(sib_s24, now_ts=eff_now_sib)):
                     if not ctx.k_items_map and not isinstance(casefold_get(ctx.st_items_map, cand_u), dict):
                         for k_kal in ("kalman_vel", "kalman_vel_std", "kalman_trend"):
                             sib_p_est.pop(k_kal, None)
@@ -2105,7 +2105,7 @@ class RecentFillsExecutionStage(PretradePillarCollectorBase):
                     else (f"{ls.get('price')}{ls_by}" if ls.get("price") is not None else "none")
                 )
                 sub_parts = []
-                now_ms_f = resolve_now_ts(ctx.now_ts or None) * 1000.0
+                now_ms_f = resolve_now_ts(getattr(ctx, "now_ts", None) or None) * 1000.0
                 for side_lbl, side_d in (("Last BUY Age", lb), ("Last SELL Age", ls)):
                     if isinstance(side_d, dict) and (s_ts := safe_pos_float(side_d.get("ts_ms"), default=None)) is not None:
                         diff_ms = now_ms_f - s_ts

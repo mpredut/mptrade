@@ -75,6 +75,7 @@ from intelligence.macro_sentiment_ssot import (
     load_cached_fear_greed_snapshot,
     load_cached_market_breadth_snapshot,
     load_cached_whale_telemetry,
+    scan_cached_price_archive_high_since,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
@@ -7579,6 +7580,9 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
         t212_cyc_nvda,
         {},
         cache_dir=str(cdir_nvda),
+        archive_high_resolver=lambda cands, oldest_ms, base_hi: scan_cached_price_archive_high_since(
+            str(cdir_nvda), cands, oldest_ms, baseline_high=base_hi
+        ),
     )
     assert pos_nvda[0]["trailing_peak"] == 210.7
     assert t212_cyc_nvda["NVDA_US_EQ"]["pos_peak"] == 210.7
@@ -8665,6 +8669,9 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
         t212_cyc_dd,
         {},
         cache_dir=str(cdir_pk),
+        archive_high_resolver=lambda cands, oldest_ms, base_hi: scan_cached_price_archive_high_since(
+            str(cdir_pk), cands, oldest_ms, baseline_high=base_hi
+        ),
     )
     assert pos_rgnt_dd[0]["trailing_peak"] == 1.6
     assert pos_rgnt_dd[0]["dd_from_peak_pct"] == -26.88
