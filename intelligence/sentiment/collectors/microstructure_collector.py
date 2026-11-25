@@ -137,6 +137,7 @@ from intelligence.macro_sentiment_ssot import (
     same_callable_anchor,
     save_microstructure_cycle_history,
     parse_ts_px_row,
+    _extract_sorted_ts_px,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     first_variant_dict,
@@ -163,6 +164,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_atr_multi_horizon,
     compute_series_kinematics,
     compute_session_vwap_metrics,
+    compute_va_breakout_hold_min,
     compute_volume_profile_metrics,
     compute_volume_rvol_metrics,
     extract_archive_24h_and_7d_slices,
@@ -1137,6 +1139,7 @@ def upgrade_tpo_vp_from_ohlc(
     cache_dir: Optional[str] = None,
     allow_network: bool = True,
     series_24h_start_ms: Optional[float] = None,
+    series_24h: Optional[list] = None,
 ) -> List[List[Any]]:
     """Upgrade a TPO volume profile in `m24` to REAL_VOL using 24h OHLC bars when available and non-diverged."""
     if not m24 or m24.get("vp_source") != "TPO":
@@ -1169,6 +1172,7 @@ def upgrade_tpo_vp_from_ohlc(
             require_positive_volume=True,
             cache_dir=cache_dir,
         )
+        raw_ohlc_disk_pts: List[List[Any]] = []
         if (len(pts_vp) < 8 or (pts_vp[-1][0] - pts_vp[0][0]) < 18 * 3600 * 1000) and cache_dir and os.path.isdir(cache_dir):
             ident = resolve_symbol_identity(sym)
             for fn_vp in price_cache_filename_variants(
@@ -1183,6 +1187,7 @@ def upgrade_tpo_vp_from_ohlc(
                     ]
                     if len(cand_vp) >= 8 and (cand_vp[-1][0] - cand_vp[0][0]) >= 18 * 3600 * 1000:
                         pts_vp = cand_vp
+                        raw_ohlc_disk_pts = d_vp["points"]
                         break
         if len(pts_vp) >= 8 and (pts_vp[-1][0] - pts_vp[0][0]) >= 18 * 3600 * 1000:
             vp_last_px = safe_pos_float(pts_vp[-1][1], default=0.0) or 0.0
@@ -1226,6 +1231,33 @@ def upgrade_tpo_vp_from_ohlc(
                     if cur_px > 0:
                         pts_vp.append([math.trunc(now_ts * 1000), cur_px, 0.0])
                     if (vp_real := compute_volume_profile_metrics(pts_vp)) and vp_real.get("vp_source") == "REAL_VOL":
+                        if (
+                            vp_real.get("va_regime") in ("ABOVE_VAH", "BELOW_VAL")
+                            and len(pts_vp) >= 2
+                            and (pts_vp[-1][0] - pts_vp[-2][0]) > 3_600_000.0
+                        ):
+                            hold_src = series_24h if series_24h else raw_ohlc_disk_pts
+                            if not hold_src and cache_dir and os.path.isdir(cache_dir):
+                                ident_h = resolve_symbol_identity(sym)
+                                for fn_h in price_cache_filename_variants(
+                                    sym, cache_ohlc_24h_filename, *ident_h.candidate_cache_symbols(include_base=False)
+                                ):
+                                    p_h = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn_h)))
+                                    if os.path.exists(p_h) and isinstance(d_h := read_json_recovering(p_h), dict) and isinstance(d_h.get("points"), list):
+                                        hold_src = d_h["points"]
+                                        break
+                            if hold_src and (hold_ts_px := _extract_sorted_ts_px(hold_src)):
+                                now_ms_h = now_ts * 1000.0
+                                if cur_px > 0.0 and 1000.0 < (now_ms_h - hold_ts_px[-1][0]) <= 3_600_000.0:
+                                    hold_ts_px = list(hold_ts_px) + [(now_ms_h, cur_px)]
+                                if (
+                                    cont_hold := compute_va_breakout_hold_min(
+                                        hold_ts_px,
+                                        safe_pos_float(vp_real.get("val_px"), default=0.0) or 0.0,
+                                        safe_pos_float(vp_real.get("vah_px"), default=0.0) or 0.0,
+                                    )
+                                ) is not None:
+                                    vp_real["va_hold_min"] = cont_hold
                         for vp_clr_k in ("sec_poc_px", "hvn2_px", "lvn_px"):
                             m24.pop(vp_clr_k, None)
                         m24.update(vp_real)
@@ -2244,6 +2276,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             cache_dir=cachedb_dir,
             allow_network=allow_network,
             series_24h_start_ms=s24_start_ms,
+            series_24h=matched_series_24h,
         )
         pt_map[sym].pop("_partial_7d_span_ms", None)
         if allow_network:

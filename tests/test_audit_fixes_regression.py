@@ -3741,3 +3741,74 @@ def test_cycle4_equity_post_close_provenance_kinematics_and_partial_7d(tmp_path)
     pol.prune_stale_short_metrics(closed_entry, closed_m24, [], ts_closed_now, post_rth_series_replaced=True)
     assert "chg_15m_pct" not in closed_entry and "chg_1h_pct" not in closed_entry
     assert "chg_15m_pct" not in closed_m24 and "chg_24h_pct" in closed_m24
+
+
+def test_cycle5_upgrade_tpo_vp_preserves_va_hold_min_across_zero_vol_tail_gap(tmp_path):
+    """Cycle 5 overnight audit fix:
+    When upgrade_tpo_vp_from_ohlc strips >60m of zero-volume overnight OHLC bars (e.g. Kraken SPCXxUSD)
+    before appending live cur_px, va_hold_min must NOT collapse to 0.0; it recomputes continuous breakout
+    hold duration from series_24h (or unfiltered disk OHLC bars) against the upgraded REAL_VOL VAL/VAH.
+    """
+    from intelligence.sentiment.collectors.microstructure_collector import upgrade_tpo_vp_from_ohlc
+
+    cdir = tmp_path / "cachedb_vp_hold"
+    pdir = cdir / "prices"
+    pdir.mkdir(parents=True)
+
+    now_s = 1_795_574_700.0
+    now_ms = int(now_s * 1000)
+    # 24h of 5m OHLC bars: active volume around $131 (first 20h), drops below VAL (~$126.4) at -190m,
+    # last positive-volume bar at -110m ($125.25), followed by 110m of 0-volume overnight bars at $125.25 -> $124.46.
+    ohlc_pts = []
+    ser_24h = []
+    for k in range(288):
+        t_ms = now_ms - (288 - k) * 300_000
+        age_m = (now_ms - t_ms) / 60_000.0
+        if age_m > 190.0:
+            px = 131.0 + (0.6 if k % 2 == 0 else -0.6)
+            vol = 12.0
+        elif age_m > 110.0:
+            px = 125.3
+            vol = 3.0
+        else:
+            px = 125.25
+            vol = 0.0
+        ohlc_pts.append([t_ms, px, vol, px, px, px])
+        ser_24h.append([t_ms, 124.5 if age_m <= 60.0 else px])
+    ser_24h.append([now_ms - 5_000, 124.46])
+    (pdir / "cache_ohlc_24h_SPCXxUSD.json").write_text(
+        json.dumps({"ts": now_s - 30.0, "symbol": "SPCXxUSD", "points": ohlc_pts}),
+        encoding="utf-8",
+    )
+
+    # 1. With continuous series_24h supplied: REAL_VOL upgrade preserves ~190m continuous hold below VAL (NOT 0.0!)
+    m24_with_s24 = {"vp_source": "TPO", "low_24h": 124.4, "high_24h": 132.0, "va_regime": "BELOW_VAL", "va_hold_min": 190.0}
+    upgrade_tpo_vp_from_ohlc(
+        "SPCXxUSD",
+        m24_with_s24,
+        124.46,
+        now_s,
+        s24_is_live_clock=True,
+        cache_dir=str(cdir),
+        allow_network=False,
+        series_24h_start_ms=ser_24h[0][0],
+        series_24h=ser_24h,
+    )
+    assert m24_with_s24["vp_source"] == "REAL_VOL"
+    assert m24_with_s24["va_regime"] == "BELOW_VAL"
+    assert m24_with_s24["va_hold_min"] >= 180.0
+
+    # 2. Without series_24h (disk fallback): unfiltered disk OHLC bars also preserve ~190m hold (NOT 0.0!)
+    m24_disk_only = {"vp_source": "TPO", "low_24h": 124.4, "high_24h": 132.0, "va_regime": "BELOW_VAL", "va_hold_min": 190.0}
+    upgrade_tpo_vp_from_ohlc(
+        "SPCXxUSD",
+        m24_disk_only,
+        124.46,
+        now_s,
+        s24_is_live_clock=True,
+        cache_dir=str(cdir),
+        allow_network=False,
+    )
+    assert m24_disk_only["vp_source"] == "REAL_VOL"
+    assert m24_disk_only["va_regime"] == "BELOW_VAL"
+    assert m24_disk_only["va_hold_min"] >= 180.0

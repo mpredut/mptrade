@@ -614,6 +614,7 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
     ob_ts_v: float = 0.0,
     *,
     allow_network: bool = False,
+    series_24h: Optional[list] = None,
 ) -> None:
     sym_u_pt = clean_symbol_key(sym_v) or str(sym_v or "").strip().upper()
     upgrade_tpo_vp_from_ohlc(
@@ -626,6 +627,7 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
         respect_policy_network_gate=True,
         cache_dir=cachedb_dir,
         allow_network=allow_network,
+        series_24h=series_24h,
     )
 
 
@@ -1036,7 +1038,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                     m24.pop(k_stale_15m, None)
 
         _upgrade_pretrade_tpo_vp_from_ohlc(
-            cachedb_dir, symbol, m24, cur_px_est, last_alt_pt, allow_network=eff_allow_net
+            cachedb_dir, symbol, m24, cur_px_est, last_alt_pt, allow_network=eff_allow_net, series_24h=alt_series_24h
         )
         (
             ctx.alt_series_24h,
@@ -1126,7 +1128,7 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
             _refresh_wall_telemetry(use_sub_ten_decimals=True)
         if m24 and m24.get("vp_source") == "TPO":
             _upgrade_pretrade_tpo_vp_from_ohlc(
-                cachedb_dir, symbol, m24, cur_px_est, last_alt_pt, ob_ts_est, allow_network=allow_network
+                cachedb_dir, symbol, m24, cur_px_est, last_alt_pt, ob_ts_est, allow_network=allow_network, series_24h=ctx.alt_series_24h
             )
             if cur_px_est > 0.0 and m24.get("vp_source") == "REAL_VOL":
                 recalculate_live_price_geometry(m24, cur_px_est)
@@ -1836,7 +1838,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                         for k_kal in ("kalman_vel", "kalman_vel_std", "kalman_trend"):
                             sib_p_est.pop(k_kal, None)
                     _upgrade_pretrade_tpo_vp_from_ohlc(
-                        cachedb_dir, cand_u, sib_m24, sib_px or 0.0, sib_last_pt, sib_ob_ts, allow_network=allow_network
+                        cachedb_dir, cand_u, sib_m24, sib_px or 0.0, sib_last_pt, sib_ob_ts, allow_network=allow_network, series_24h=sib_s24
                     )
                     apply_24h_series_enrichment(cand_u, sib_p_est, sib_m24, sib_s24, None)
                     if sib_px and sib_px > 0:
