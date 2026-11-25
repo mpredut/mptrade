@@ -17648,6 +17648,104 @@ def test_crypto_executor_prompt_telemetry_audit_fixes(tmp_path):
     sec1 = "\n".join(_format_macro_and_news_section(TelemetrySensorSnapshot(market_breadth=mb_dict), asset_scope="crypto"))
     assert f"(trimmed={mb_snap.trimmed_mean_change_pct}%)" in sec1
 
+    # 8. Cross-venue arb refuses stale/diverged spot price (>1% away from live OB mid) even when OB timestamps are skewed
+    stale_arb_micro = {
+        "TAOUSD": {"venue": "kraken", "ob_mid_price": 180.55, "_ob_raw_ts": now_s - 2.0, "spread_bps": 5.5},
+        "TAOUSDC": {"venue": "binance", "ob_mid_price": 180.70, "_ob_raw_ts": now_s - 18.0, "spread_bps": 11.0},
+    }
+    stale_arb_pt = {"TAOUSD": {"price": 191.5986}, "TAOUSDC": {"price": 180.60}}
+    compute_cross_venue_arb_metrics(
+        "TAOUSD", stale_arb_micro["TAOUSD"], stale_arb_pt["TAOUSD"], stale_arb_micro, stale_arb_pt, now_ts=now_s
+    )
+    assert abs(stale_arb_micro["TAOUSD"]["cross_venue_arb_bps"]) < 20.0
+    assert stale_arb_micro["TAOUSD"]["cross_venue_arb_bps"] == pytest.approx(-8.3, abs=0.5)
+
+    # 9. Cached-balance recovery skips disabled/observe-only ghosts and refreshes stale free_quote_breakdown
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_tradable_positions_and_orders
+
+    rec_ws = tmp_path / "rec_ws"
+    rec_cdir = rec_ws / "cachedb"
+    rec_ws.mkdir(parents=True, exist_ok=True)
+    (rec_ws / "instruments.conf").write_text(
+        "[KRAKEN_HYPE]\nprovider = kraken\nsymbol = HYPEUSD\nbase = HYPE\nquote = USD\n"
+        "enabled = yes\nisolation = own_ledger\nmarket_hours = 24x7\nai.tradable = yes\n"
+        "role.mt = no\nrole.tradeall_fire = no\nrole.kalman_primary = no\nrole.trailing = no\n"
+        "role.assetguardian = no\nrole.archive = yes\nrole.rtrade = no\nrole.force_sell = no\n\n"
+        "[KRAKEN_TAO]\nprovider = kraken\nsymbol = TAOUSD\nbase = TAO\nquote = USD\n"
+        "enabled = no\nisolation = own_ledger\nmarket_hours = 24x7\nai.tradable = no\n"
+        "role.mt = no\nrole.tradeall_fire = no\nrole.kalman_primary = no\nrole.trailing = no\n"
+        "role.assetguardian = no\nrole.archive = no\nrole.rtrade = no\nrole.force_sell = no\n\n"
+        "[KRAKEN_ANT]\nprovider = kraken\nsymbol = ANTxUSD\nbase = ANTx\nquote = USD\n"
+        "enabled = yes\nisolation = own_ledger\nmarket_hours = 24x7\nai.tradable = no\n"
+        "role.mt = no\nrole.tradeall_fire = no\nrole.kalman_primary = no\nrole.trailing = no\n"
+        "role.assetguardian = no\nrole.archive = yes\nrole.rtrade = no\nrole.force_sell = no\n",
+        encoding="utf-8",
+    )
+    atomic_write_json(
+        str(rec_cdir / "state" / "venue_balances_state.json"),
+        {
+            "breakdown:kraken:USD": {"USD": 1657.71, "USDC": 0.56, "USDG": 1.75},
+            "cash:kraken:USD": {
+                "venue": "kraken",
+                "asset": "USD",
+                "free": 1660.02,
+                "breakdown": {"USD": 1657.71, "USDC": 0.56, "USDG": 1.75},
+                "ts": now_s - 5.0,
+            },
+            "kraken:USD": 1660.02,
+            "pos:kraken:HYPEUSD": {
+                "venue": "kraken",
+                "symbol": "HYPEUSD",
+                "base": "HYPE",
+                "quote": "USD",
+                "price": 60.44,
+                "free_base": 0.0025,
+                "free_quote": 6411.02,
+                "free_quote_breakdown": {"USD": 6407.71, "USDC": 1.56, "USDG": 1.75},
+                "ts": now_s - 100.0,
+            },
+            "pos:kraken:TAOUSD": {
+                "venue": "kraken",
+                "symbol": "TAOUSD",
+                "base": "TAO",
+                "quote": "USD",
+                "price": 191.5986,
+                "free_base": 0.0016,
+                "free_quote": 6411.02,
+                "free_quote_breakdown": {"USD": 6407.71, "USDC": 1.56, "USDG": 1.75},
+                "ts": now_s - 160_000.0,
+            },
+            "pos:kraken:ANTxUSD": {
+                "venue": "kraken",
+                "symbol": "ANTxUSD",
+                "base": "ANTx",
+                "quote": "USD",
+                "price": 92.73,
+                "free_base": 0.0013,
+                "free_quote": 6411.02,
+                "free_quote_breakdown": {"USD": 6407.71, "USDC": 1.56, "USDG": 1.75},
+                "ts": now_s - 160_000.0,
+            },
+        },
+    )
+    rec_pt: dict = {"HYPEUSD": {"price": 60.44}}
+    rec_pos_out, _, _, _ = harvest_tradable_positions_and_orders(
+        {},
+        rec_pt,
+        {},
+        {},
+        cache_dir=str(rec_cdir),
+        allow_empty_inst_recovery=True,
+        allow_network=False,
+        persist=False,
+        now_ts=now_s,
+    )
+    rec_syms = [p["symbol"] for p in rec_pos_out]
+    assert rec_syms == ["HYPEUSD"]
+    assert "TAOUSD" not in rec_pt and "ANTxUSD" not in rec_pt
+    assert rec_pos_out[0]["free_quote"] == pytest.approx(1660.02)
+    assert rec_pos_out[0]["free_quote_breakdown"] == {"USD": 1657.71, "USDC": 0.56, "USDG": 1.75}
+
 
 
 

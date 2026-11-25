@@ -838,7 +838,11 @@ def compute_cross_venue_arb_metrics(
             eff_now_arb is not None
             and any(t is not None and (eff_now_arb - t) > 10.0 for t in (own_ob_ts, peer_ob_ts))
         )
-        if ob_skewed and own_spot_px and peer_spot_px:
+        spot_consistent_with_ob = (
+            (not own_ob_px or not own_spot_px or abs(own_spot_px - own_ob_px) / own_ob_px <= 0.01)
+            and (not peer_ob_px or not peer_spot_px or abs(peer_spot_px - peer_ob_px) / peer_ob_px <= 0.01)
+        )
+        if ob_skewed and own_spot_px and peer_spot_px and spot_consistent_with_ob:
             own_px, peer_px = own_spot_px, peer_spot_px
         else:
             own_px = own_px_default

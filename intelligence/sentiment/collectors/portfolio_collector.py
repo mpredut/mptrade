@@ -102,6 +102,7 @@ from instrument_registry import (
     canonical_display_symbol,
     casefold_get,
     disabled_registry_symbols,
+    observe_only_registry_symbols,
     resolve_kraken_tokenized_pair,
     resolve_registered_symbol_case,
     resolve_symbol_market_session,
@@ -1570,10 +1571,18 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         open_orders_list: List[Dict[str, Any]],
         venue_quote_cash: Dict[str, Dict[str, Any]],
         pending_peaks_by_vs: Dict[tuple[str, str], tuple[float, Optional[float]]],
+        cache_dir: Optional[str] = None,
+        fresh_bal_cache_bd: Optional[Dict[tuple[str, str], Dict[str, float]]] = None,
     ) -> None:
         gw_max_rec = safe_pos_float(gateway_max_usd, default=2000.0) or 2000.0
         seen_rec_vs: set[tuple[str, str]] = set()
         cached_obs_by_va = _build_cached_balance_observations(cached_bals)
+        ws_dir_rec = resolve_workspace_dir_from_cachedb(cache_dir) if cache_dir else ""
+        non_tradable_rec_syms = (
+            (disabled_registry_symbols(ws_dir_rec) | observe_only_registry_symbols(ws_dir_rec))
+            if ws_dir_rec
+            else frozenset()
+        )
         for k, v in cached_bals.items():
             if k.startswith("pos:") and isinstance(v, dict):
                 rec_pos = dict(v)
@@ -1588,6 +1597,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 p_sym_raw = str(rec_pos.get("symbol") or "").strip()
                 p_sym = canonical_display_symbol(p_sym_raw, venue=v_rec_norm) or p_sym_raw.upper()
                 p_sym_u = p_sym.upper()
+                if p_sym_u and p_sym_u in non_tradable_rec_syms:
+                    continue
                 if p_sym_u and (v_rec_norm, p_sym_u) in seen_rec_vs:
                     continue
                 if p_sym_u:
@@ -1616,6 +1627,31 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     quote_ref_locked = prev_pos_lq
                 if fq_val is not None:
                     rec_pos["free_quote"] = round(fq_val, 2)
+                bd_src = (
+                    (fresh_bal_cache_bd or {}).get((v_rec_norm, p_quote))
+                    or (
+                        cached_bals.get(f"breakdown:{v_rec_norm}:{p_quote}")
+                        if isinstance(cached_bals.get(f"breakdown:{v_rec_norm}:{p_quote}"), dict)
+                        else None
+                    )
+                    or (
+                        cash_bd.get("breakdown")
+                        if isinstance(cash_bd := cached_bals.get(f"cash:{v_rec_norm}:{p_quote}"), dict)
+                        and isinstance(cash_bd.get("breakdown"), dict)
+                        else None
+                    )
+                )
+                if isinstance(bd_src, dict) and bd_src:
+                    if clean_bd := {
+                        str(bk): round(bv_f, 2)
+                        for bk, bv in bd_src.items()
+                        if (bv_f := safe_pos_float(bv, default=None)) is not None
+                    }:
+                        rec_pos["free_quote_breakdown"] = clean_bd
+                elif isinstance(old_bd := rec_pos.get("free_quote_breakdown"), dict) and fq_val is not None:
+                    old_bd_sum = sum(safe_nonneg_float(bv, 0.0) or 0.0 for bv in old_bd.values())
+                    if old_bd_sum > 0.0 and abs(old_bd_sum - fq_val) / max(old_bd_sum, fq_val, 1.0) > 0.05:
+                        rec_pos.pop("free_quote_breakdown", None)
                 if base_bal_ts is not None:
                     rec_pos["_base_balance_ts"] = base_bal_ts
                     if base_ref_locked is not None:
@@ -2235,6 +2271,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     open_orders_list=open_orders_list,
                     venue_quote_cash=venue_quote_cash,
                     pending_peaks_by_vs=pending_peaks_by_vs,
+                    cache_dir=cache_dir,
+                    fresh_bal_cache_bd=fresh_bal_cache_bd,
                 )
             for (v_k, sym_u_k), oo_rows in cached_open_by_vs.items():
                 open_orders_list.extend(
