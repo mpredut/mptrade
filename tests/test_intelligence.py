@@ -6802,7 +6802,7 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
         t212_prov_mod,
         "T212Provider",
         lambda: SimpleNamespace(
-            _client=lambda: SimpleNamespace(get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "currentPrice": 199.06}])
+            portfolio_mark_prices=lambda: {"NVDA_US_EQ": 199.06},
         ),
     )
     refreshed = mc.refresh_stale_t212_cached_positions(vb_data, str(vb_file), now_s)

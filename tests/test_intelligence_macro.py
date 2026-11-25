@@ -68,7 +68,10 @@ from intelligence.macro_sentiment_ssot import (
     resolve_derived_telemetry_intervals,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
-from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+from intelligence.sentiment.collectors.macro_telemetry_collector import (
+    harvest_macro_and_news_sensors,
+    load_cached_macro_benchmarks,
+)
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector, MarketBreadthSnapshot
 from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
@@ -81,7 +84,6 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     evaluate_institutional_posture_divergence,
     format_equity_macro_regime_line,
     format_macro_benchmarks_summary_line,
-    load_cached_macro_benchmarks,
 )
 from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     build_cross_market_context,

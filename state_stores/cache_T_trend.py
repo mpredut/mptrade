@@ -21,6 +21,7 @@ class CacheTTrendStore(StateStoreBase):
 
     FILENAME = CACHE_T_TREND_FILENAME
     SUBDOMAIN = "trends"
+    STORAGE_ROOT = "cachedb"
 
     @classmethod
     def read_cached_dict(

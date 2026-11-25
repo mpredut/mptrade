@@ -1326,7 +1326,7 @@ def test_guard_regime_lifecycle_retry_and_cache_path_border_cases(monkeypatch, t
             "sentiment_eval.json",
         ),
     )
-    monkeypatch.setattr(mte_mod, "load_cached_macro_benchmarks", lambda *_a, **_kw: {"ts": "corrupt"})
+    monkeypatch.setattr(mtc_mod, "load_cached_macro_benchmarks", lambda *_a, **_kw: {"ts": "corrupt"})
     ok, _, scale = llm_order_guard.check_geopolitical_order_guards(
         "BTCUSDC",
         "BUY",
@@ -5214,9 +5214,7 @@ def test_wave29_ssot_price_candidates_t212_peek_lexicon_and_border_cases(tmp_pat
             mc_mod._t212_prov_mod,
             "T212Provider",
             lambda: SimpleNamespace(
-                _client=lambda: SimpleNamespace(
-                    get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "currentPrice": 125.0}]
-                )
+                portfolio_mark_prices=lambda: {"NVDA_US_EQ": 125.0},
             ),
         )
         assert mc_mod.refresh_stale_t212_cached_positions(

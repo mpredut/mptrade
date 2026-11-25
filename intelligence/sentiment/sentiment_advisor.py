@@ -26,6 +26,7 @@ from intelligence.macro_sentiment_ssot import (
     FearGreedSnapshot,
     get_cache_filenames,
     get_deribit_options_currencies,
+    load_cached_btc_24h_change_pct,
     load_cached_derivatives_telemetry,
     load_cached_etf_flows_snapshot,
     load_cached_geopolitical_eval,
@@ -35,12 +36,14 @@ from intelligence.macro_sentiment_ssot import (
     normalize_risk_level,
     _extract_sorted_ts_px,
 )
+from intelligence.sentiment.collectors.macro_telemetry_collector import (
+    load_cached_macro_benchmarks,
+)
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     enrich_macro_benchmarks_live_state,
     format_compact_usd,
     format_equity_macro_regime_line,
     format_etf_flows_summary_line,
-    load_cached_macro_benchmarks,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
 import intelligence.sentiment.collectors.microstructure_collector as _mc
@@ -513,10 +516,14 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                     f"- {ccy} Intraday Structure: price=${last_px:.2f} ({' | '.join(struct_segs)}){lows_sfx}"
                 )
             if isinstance(eff_mb, dict) and eff_mb:
+                eff_btc_chg = (
+                    btc_chg_24h_live
+                    if btc_chg_24h_live is not None
+                    else load_cached_btc_24h_change_pct(cache_dir)
+                )
                 eff_mb = enrich_macro_benchmarks_live_state(
                     eff_mb,
-                    cache_dir=cache_dir,
-                    btc_chg_24h_pct=btc_chg_24h_live,
+                    btc_chg_24h_pct=eff_btc_chg,
                 ) or eff_mb
                 eq_macro_line = format_equity_macro_regime_line(eff_mb)
                 if eq_macro_line and eq_macro_line != "NEUTRAL":

@@ -8,7 +8,6 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import (
-    CACHE_MACRO_BENCHMARKS_FILENAME,
     VENUE_RUNTIME_DIR_MAP,
     cache_symbol_variants,
     canonical_base_asset,
@@ -34,7 +33,6 @@ from botcore import (
 )
 from providers.portfolio_valuation import compute_venue_nav_breakdown
 from pricewindow import filter_isolated_price_points
-import intelligence.macro_sentiment_ssot as _mss
 from intelligence.macro_sentiment_ssot import (
     get_cross_asset_regimes,
     get_deribit_options_currencies,
@@ -1240,8 +1238,6 @@ def enrich_macro_benchmarks_live_state(
         ):
             out["equity_regime"] = compute_equity_macro_regime(out)
         btc_chg = btc_chg_24h_pct
-        if btc_chg is None and cache_dir:
-            btc_chg = _mss.load_cached_btc_24h_change_pct(cache_dir)
         if (
             force_recompute
             or lead_changed
@@ -1254,12 +1250,6 @@ def enrich_macro_benchmarks_live_state(
     except Exception:
         pass
     return out
-
-
-def load_cached_macro_benchmarks(cache_dir: str) -> Optional[Dict[str, Any]]:
-    """Load cached macro benchmarks snapshot from ``cache_dir`` without network I/O, enriched with live futures lead and BTC 24h delta."""
-    data, _ = _mss.read_first_cached_dict(cache_dir, "macro_benchmarks_files", CACHE_MACRO_BENCHMARKS_FILENAME)
-    return enrich_macro_benchmarks_live_state(data, cache_dir=cache_dir)
 
 
 _FARSIDE_EMPTY_TOKENS: frozenset[str] = frozenset(
@@ -1634,7 +1624,6 @@ __all__ = [
     "format_etf_flows_summary_line",
     "format_macro_benchmarks_summary_line",
     "format_pretrade_etf_flows_line",
-    "load_cached_macro_benchmarks",
     "parse_farside_etf_flows_html",
     "reconcile_live_venue_equity_summary",
 ]

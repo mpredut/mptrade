@@ -283,6 +283,16 @@ EVALUATOR_FORBIDDEN_WRITE_PREFIXES = (
     "append_jsonl",
     "atomic_write",
 )
+EVALUATOR_INDIRECT_READ_EXEMPT = frozenset({
+    "intelligence/sentiment/evaluators/guard_probe_evaluator.py",
+})
+EVALUATOR_FORBIDDEN_INDIRECT_READ_PREFIXES = (
+    "load_cached_",
+    "scan_cached_",
+)
+EVALUATOR_FORBIDDEN_INDIRECT_READ_FNS = frozenset({
+    "read_first_cached_dict",
+})
 FORBIDDEN_PROVIDER_UPWARD = frozenset({
     "cacheInterface",
     "cacheaccount",
@@ -439,7 +449,6 @@ STATE_FILE_OWNER_MAP: dict[str, frozenset[str]] = {
     **{spec.const_name: frozenset({spec.owner_module}) for spec in CRITICAL_STATE_SPECS},
     "AUTONOMOUS_ORDER_INTENTS_STATE_FILENAME": frozenset({"state_stores/auto_order_intents_state.py"}),
     "AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME": frozenset({"state_stores/auto_order_intents_state.py"}),
-    "CACHE_FEE_SCHEDULE_FILENAME": frozenset({"providers/venue_fee_maintenance.py"}),
     "CACHE_BINANCE_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_state_store.py"}),
     "CACHE_KRAKEN_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_state_store.py"}),
     "CACHE_HYPERLIQUID_BALANCE_FILENAME": frozenset({"cacheaccount.py", "providers/portfolio_state_store.py"}),
@@ -450,7 +459,6 @@ STATE_FILE_LITERAL_TO_CONST: dict[str, str] = {
     "autonomous_order_intents_state.json": "AUTO_ORDER_INTENTS_STATE_FILENAME",
     "autonomous_trade_intents_state.json": "AUTO_ORDER_INTENTS_STATE_FILENAME",
     "autonomous_trade_intents.json": "AUTO_ORDER_INTENTS_STATE_FILENAME",
-    "cache_fee_schedule.json": "CACHE_FEE_SCHEDULE_FILENAME",
     "cache_balance_binance.json": "CACHE_BINANCE_BALANCE_FILENAME",
     "cache_balance_kraken.json": "CACHE_KRAKEN_BALANCE_FILENAME",
     "cache_balance_hyperliquid.json": "CACHE_HYPERLIQUID_BALANCE_FILENAME",
@@ -1261,6 +1269,14 @@ def audit_layer_dag_ast(
                         violations.append(
                             f"{rel}:{node.lineno}: stateless evaluator must not call disk writer {fn_nm}() "
                             "(delegate persistence to Layer 3 cache manager, collectors/, or state_stores/)"
+                        )
+                    elif rel not in EVALUATOR_INDIRECT_READ_EXEMPT and (
+                        fn_nm in EVALUATOR_FORBIDDEN_INDIRECT_READ_FNS
+                        or fn_nm.lower().startswith(EVALUATOR_FORBIDDEN_INDIRECT_READ_PREFIXES)
+                    ):
+                        violations.append(
+                            f"{rel}:{node.lineno}: pure evaluator must not call indirect disk reader {fn_nm}() "
+                            "(preload data in collectors/ and inject as arguments)"
                         )
         if rel.startswith("intelligence/"):
             for node in ast.walk(tree):
@@ -2094,7 +2110,9 @@ _FINANCIAL_CRITICAL_PATH_RE = re.compile(
     r"AUTONOMOUS_TRADE_INTENTS_|autonomous_trade_intents|"
     r"CACHE_[A-Z0-9_]*ORDER_|cache_order_|CACHE_[A-Z0-9_]*BALANCE_|cache_balance_|CACHE_[A-Z0-9_]*TRADE_|cache_trade_|"
     r"CACHE_FEE_SCHEDULE_|cache_fee_schedule|VENUE_FEE_MAINTENANCE_STATE_|venue_fee_maintenance_state|"
-    r"ORDER_RETRY_QUEUE_|order_retry_queue|VENUE_BALANCES_STATE_|venue_balances_state|"
+    r"ORDER_RETRY_QUEUE_|order_retry_queue|"
+    r"ORDER_RETRY_QUARANTINE_ALERTS_|order_retry_quarantine_alerts|"
+    r"VENUE_BALANCES_STATE_|venue_balances_state|"
     r"PORTFOLIO_POSITIONS_STATE_|portfolio_positions_state|"
     r"NAV_HISTORY_STATE_|nav_history_state|SMART_STOP_LOSS_STATE_|smart_stop_loss_state|"
     r"TRAILING_STATE_|trailing_state|MT_STATE_|mt_state|"
@@ -2263,6 +2281,16 @@ def _audit_state_store_registry_symmetry(
             violations.append(
                 f"state_stores/registry.py: cachepaths.{spec.const_name}={cp_val!r} != {spec.filename!r}"
             )
+        if spec.storage_root not in ("statedb", "cachedb"):
+            violations.append(
+                f"state_stores/registry.py: invalid storage_root {spec.storage_root!r} for {spec.filename!r}"
+            )
+        classified = _cachepaths.resolve_storage_domain(spec.filename)
+        if classified is not None and classified[0] != spec.storage_root:
+            violations.append(
+                f"state_stores/registry.py: storage_root {spec.storage_root!r} for {spec.filename!r} "
+                f"does not match cachepaths.resolve_storage_domain -> {classified[0]!r}"
+            )
         mod_path = root / spec.owner_module
         if not mod_path.is_file():
             violations.append(f"state_stores/registry.py: missing 1:1 owner module {spec.owner_module}")
@@ -2272,11 +2300,25 @@ def _audit_state_store_registry_symmetry(
             violations.append(syntax_err)
             continue
         if tree is not None:
-            defined_classes = {n.name for n in tree.body if isinstance(n, ast.ClassDef)}
-            if spec.store_class not in defined_classes:
+            cls_nodes = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
+            if spec.store_class not in cls_nodes:
                 violations.append(
                     f"{spec.owner_module}: missing 1:1 store class {spec.store_class} for {spec.filename}"
                 )
+            else:
+                cls_storage_root = "statedb"
+                for stmt in cls_nodes[spec.store_class].body:
+                    if isinstance(stmt, ast.Assign):
+                        for tgt in stmt.targets:
+                            if isinstance(tgt, ast.Name) and tgt.id == "STORAGE_ROOT" and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
+                                cls_storage_root = stmt.value.value
+                    elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id == "STORAGE_ROOT" and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
+                        cls_storage_root = stmt.value.value
+                if cls_storage_root != spec.storage_root:
+                    violations.append(
+                        f"{spec.owner_module}: {spec.store_class}.STORAGE_ROOT={cls_storage_root!r} "
+                        f"!= registry storage_root={spec.storage_root!r}"
+                    )
     return violations
 
 

@@ -34,7 +34,8 @@ from intelligence.sentiment.openai_compat_rest import (
     resolve_openai_compat_config,
     strip_openai_compat_prefix,
 )
-from state_io import generation_file_lock, read_json_dict, save_json_state
+from state_io import read_json_dict, save_json_state
+from state_stores.llm_quota_status import LlmQuotaStatusStore
 
 _agy_paths = importlib.import_module("orchestratorOS.agy.paths")
 resolve_bot_cli_base = _agy_paths.resolve_bot_cli_base
@@ -720,7 +721,7 @@ class GeminiQuotaRouterMixin:
 
         with cls._QUOTA_LOCK:
             for is_disk in (False, True):
-                cand = _read_json_dict(state_path, default={}) if is_disk else cls._QUOTA_MEM_CACHE
+                cand = cls._read_quota_state_path(state_path, _read_json_dict, default={}) if is_disk else cls._QUOTA_MEM_CACHE
                 if (
                     isinstance(cand, dict)
                     and isinstance(cand.get("buckets"), dict)
@@ -821,7 +822,7 @@ class GeminiQuotaRouterMixin:
             return None
 
         with cls._quota_state_rmw_lock(state_path, _save_json_state):
-            prev = _read_json_dict(state_path, default={})
+            prev = cls._read_quota_state_path(state_path, _read_json_dict, default={})
             if not isinstance(prev, dict):
                 prev = {}
             prev_fp = str(prev.get("oauth_token_fp") or "").strip()
@@ -878,10 +879,17 @@ class GeminiQuotaRouterMixin:
         return snapshot
 
     @classmethod
+    def _read_quota_state_path(cls, state_path: str, read_fn: Any, *, default: Any = None) -> Any:
+        custom_r = read_fn if read_fn is not read_json_dict else None
+        return LlmQuotaStatusStore.read_dict_path(state_path, default=default, read_fn=custom_r)
+
+    @classmethod
     @contextlib.contextmanager
     def _quota_state_rmw_lock(cls, state_path: str, save_fn: Any):
         with cls._QUOTA_LOCK, (
-            generation_file_lock(state_path) if save_fn is save_json_state else contextlib.nullcontext()
+            LlmQuotaStatusStore.generation_lock(state_path)
+            if save_fn is save_json_state
+            else contextlib.nullcontext()
         ):
             yield
 
@@ -891,7 +899,8 @@ class GeminiQuotaRouterMixin:
     ) -> None:
         cls._QUOTA_MEM_CACHE = dict(snapshot)
         try:
-            save_fn(state_path, snapshot)
+            custom_w = save_fn if save_fn is not save_json_state else None
+            LlmQuotaStatusStore.save_snapshot(state_path, snapshot, save_fn=custom_w)
         except Exception:
             pass
 
@@ -1027,7 +1036,7 @@ class GeminiQuotaRouterMixin:
         )
         already_active = False
         with cls._quota_state_rmw_lock(state_path, _save_json_state):
-            data = _read_json_dict(state_path, default={})
+            data = cls._read_quota_state_path(state_path, _read_json_dict, default={})
             if not isinstance(data, dict):
                 data = {}
             demoted = data.get("latency_demoted_models")
@@ -1123,7 +1132,7 @@ class GeminiQuotaRouterMixin:
         )
         restored_items: list[tuple[str, Dict[str, Any]]] = []
         with cls._quota_state_rmw_lock(state_path, _save_json_state):
-            data = _read_json_dict(state_path, default={})
+            data = cls._read_quota_state_path(state_path, _read_json_dict, default={})
             if not isinstance(data, dict):
                 return []
             demoted = data.get("latency_demoted_models")
@@ -1190,7 +1199,7 @@ class GeminiQuotaRouterMixin:
         )
         snapshot: Optional[Dict[str, Any]] = None
         with cls._quota_state_rmw_lock(state_path, _save_json_state):
-            data = _read_json_dict(state_path, default={})
+            data = cls._read_quota_state_path(state_path, _read_json_dict, default={})
             if not isinstance(data, dict):
                 data = {}
             buckets = data.get("buckets") if isinstance(data.get("buckets"), dict) else {}
@@ -1323,7 +1332,7 @@ class GeminiQuotaRouterMixin:
                 _gc_attr("save_json_state", save_json_state),
             )
             with cls._quota_state_rmw_lock(state_path, _save_json_state):
-                cur = _read_json_dict(state_path, default=None)
+                cur = cls._read_quota_state_path(state_path, _read_json_dict, default=None)
                 merged = dict(cur) if isinstance(cur, dict) else dict(snapshot)
                 merged.update(alert_updates)
                 snapshot.update(alert_updates)

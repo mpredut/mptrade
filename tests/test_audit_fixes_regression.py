@@ -1248,7 +1248,11 @@ def test_p0_intelligence_24h_metrics_and_cache24_filter_isolated_cross_symbol_ou
     fallback_pxs = build_cycle_fallback_prices({}, {"BTCUSDC": btc_edge_series})
     assert fallback_pxs["BTCUSDC"] == pytest.approx(60300.0)
 
-    enriched = enrich_macro_benchmarks_live_state({"items": {}}, cache_dir=str(tmp_path), force_recompute=True)
+    from intelligence.macro_sentiment_ssot import load_cached_btc_24h_change_pct
+
+    btc_chg = load_cached_btc_24h_change_pct(str(tmp_path))
+    assert btc_chg is not None and btc_chg > 0.0
+    enriched = enrich_macro_benchmarks_live_state({"items": {}}, btc_chg_24h_pct=btc_chg, force_recompute=True)
     assert isinstance(enriched, dict)
     assert enriched.get("cross_asset_regime") in ("CONVERGENT", "DIVERGENT", "NEUTRAL", "DECOUPLED", "RISK_ON", "RISK_OFF", "UNKNOWN", None) or isinstance(enriched.get("cross_asset_regime"), str)
 
@@ -7834,8 +7838,8 @@ def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
         audit_state_file_owners_ast,
     )
 
-    # 1. Exact 1:1 registry symmetry across all 17 critical state files
-    assert len(CRITICAL_STATE_SPECS) == 17
+    # 1. Exact 1:1 registry symmetry across all 20 critical state files
+    assert len(CRITICAL_STATE_SPECS) == 20
     for spec in CRITICAL_STATE_SPECS:
         assert spec.owner_module == f"state_stores/{Path(spec.filename).stem}.py"
         assert spec.store_class == expected_store_class_name(spec.filename)
@@ -8307,18 +8311,23 @@ def test_cycle16_unmatched_cycle_pos_peak_scope_parity_and_equity_quote_provenan
         "last_buy_price": 138.98,
         "last_sell_price": 125.97,
     }
+    from intelligence.macro_sentiment_ssot import scan_cached_price_archive_high_since
+
+    _archive_hi = lambda cands, oldest_ms, base_hi: scan_cached_price_archive_high_since(
+        str(cdir), cands, oldest_ms, baseline_high=base_hi
+    )
     # Equities scope (matched tradable position)
     cyc_eq = {"SPCX_US_EQ": dict(base_cyc)}
     pos_eq = [{"venue": "t212", "symbol": "SPCX_US_EQ", "price": 120.81, "free_base": 2.222965, "value_usd": 268.56}]
     enrich_positions_with_orders_and_cycles(
         pos_eq, pt_spcx, {}, {"t212": {"SPCX_US_EQ": dict(ro_spcx)}}, {"SPCX_US_EQ": dict(ro_spcx)},
-        {}, {}, cyc_eq, {}, cache_dir=str(cdir), now_ts=now_s,
+        {}, {}, cyc_eq, {}, cache_dir=str(cdir), now_ts=now_s, archive_high_resolver=_archive_hi,
     )
     # Crypto scope (unmatched T212 cycle — not in tradable_positions)
     cyc_crypto = {"SPCX_US_EQ": dict(base_cyc)}
     enrich_positions_with_orders_and_cycles(
         [], pt_spcx, {}, {"t212": {"SPCX_US_EQ": dict(ro_spcx)}}, {"SPCX_US_EQ": dict(ro_spcx)},
-        {}, {}, cyc_crypto, {}, cache_dir=str(cdir), now_ts=now_s,
+        {}, {}, cyc_crypto, {}, cache_dir=str(cdir), now_ts=now_s, archive_high_resolver=_archive_hi,
     )
     assert cyc_eq["SPCX_US_EQ"]["pos_peak"] == pytest.approx(164.64)
     assert cyc_crypto["SPCX_US_EQ"]["pos_peak"] == pytest.approx(164.64)
@@ -9504,6 +9513,91 @@ def test_pre_cutover_organize_cachedb_zero_split_brain_and_binance_env_precedenc
     clean_env = {k: v for k, v in os.environ.items() if not k.startswith("BINANCE_API_")}
     proc = subprocess.run([sys.executable, "-c", probe_code], env=clean_env, capture_output=True, text=True, timeout=20)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_storage_root_separation_20_1to1_stores_and_pure_indirect_evaluator_guards(tmp_path: Any) -> None:
+    """Verify STORAGE_ROOT separation, 3 new cachedb 1:1 stores (20 total), OrdersActiveStore mkdir,
+    quarantine fsync AST protection, and pure-evaluator indirect disk-read static blocking."""
+    from state_stores import (
+        CRITICAL_STATE_SPECS,
+        CacheFeeScheduleStore,
+        CacheTTrendStore,
+        LlmQuotaStatusStore,
+        MacroLexiconCollectStore,
+        MicrostructureCycleHistoryStore,
+        OrdersActiveStore,
+    )
+    from verify_tools.ssot_ast_audit import (
+        audit_durability_tier_and_cachedb_dirname_ast,
+        audit_layer_dag_ast,
+        audit_state_file_owners_ast,
+    )
+
+    assert len(CRITICAL_STATE_SPECS) == 20
+
+    # 1. Cachedb-rooted 1:1 stores never generate phantom statedb/<subdomain> candidate paths
+    ws = tmp_path / "ws"
+    cdb = ws / "cachedb"
+    cdb.mkdir(parents=True)
+    for store_cls in (
+        CacheTTrendStore,
+        MicrostructureCycleHistoryStore,
+        CacheFeeScheduleStore,
+        MacroLexiconCollectStore,
+        LlmQuotaStatusStore,
+    ):
+        assert store_cls.STORAGE_ROOT == "cachedb"
+        cands = store_cls.candidate_paths(str(cdb))
+        assert cands and all("statedb" not in c for c in cands), (store_cls.__name__, cands)
+
+    # 2. Functional round-trips for the 3 new cachedb 1:1 stores + OrdersActiveStore auto-mkdir
+    sched_p = CacheFeeScheduleStore.resolve_schedule_path(str(cdb))
+    assert CacheFeeScheduleStore.save_schedule(sched_p, {"schema_version": 1, "venues": {"binance": {"maker_fee_bps": 7.5}}})
+    assert CacheFeeScheduleStore.read_schedule(str(cdb))["venues"]["binance"]["maker_fee_bps"] == pytest.approx(7.5)
+
+    lex_p = str(cdb / "macro" / "macro_lexicon_collect.json")
+    assert MacroLexiconCollectStore.save_doc(lex_p, {"updated_ts": 100.0, "entries": {"oil embargo": {"ts": 100.0, "tier": "acute"}}})
+    lex_memo: dict[Any, Any] = {}
+    assert "oil embargo" in (MacroLexiconCollectStore.read_cached_dict(lex_p, lex_memo) or {}).get("entries", {})
+
+    quota_p = str(cdb / "llm" / "llm_quota_status.json")
+    assert LlmQuotaStatusStore.save_snapshot(quota_p, {"checked_ts": 200.0, "buckets": {"gemini-3-flash": 0.9}})
+    assert LlmQuotaStatusStore.read_recovering_path(quota_p)["buckets"]["gemini-3-flash"] == pytest.approx(0.9)
+
+    oa_nested = str(ws / "statedb" / "orders" / "orders_active.json")
+    assert OrdersActiveStore.write_snapshot(oa_nested, {"schema_version": 1, "orders": {"1": {"state": "OPEN"}}})
+    assert OrdersActiveStore.read_raw_snapshot(oa_nested)["orders"]["1"]["state"] == "OPEN"
+
+    # 3. Static AST enforcement: raw writes to the 3 new stores, fsync=False on quarantine alerts, and indirect reads in pure evaluators
+    fake_root = tmp_path / "ast_sandbox_20"
+    ev_dir = fake_root / "intelligence" / "sentiment" / "evaluators"
+    ev_dir.mkdir(parents=True)
+    (ev_dir / "bad_indirect_evaluator.py").write_text(
+        "def run(cdir):\n"
+        "    load_cached_btc_24h_change_pct(cdir)\n"
+        "    scan_cached_price_archive_high_since(cdir, [], 0)\n"
+        "    read_first_cached_dict(cdir, 'k', 'f.json')\n",
+        encoding="utf-8",
+    )
+    ev_errs = audit_layer_dag_ast(fake_root, rel_paths=["intelligence/sentiment/evaluators/bad_indirect_evaluator.py"])
+    assert any("load_cached_btc_24h_change_pct" in e for e in ev_errs)
+    assert any("scan_cached_price_archive_high_since" in e for e in ev_errs)
+    assert any("read_first_cached_dict" in e for e in ev_errs)
+
+    (fake_root / "rogue_20.py").write_text(
+        "from state_io import save_json_state\n"
+        "def leak():\n"
+        "    save_json_state('cachedb/account/cache_fee_schedule.json', {})\n"
+        "    save_json_state('cachedb/macro/macro_lexicon_collect.json', {})\n"
+        "    save_json_state('cachedb/llm/llm_quota_status.json', {})\n"
+        "    save_json_state('statedb/orders/order_retry_quarantine_alerts.json', {}, fsync=False)\n",
+        encoding="utf-8",
+    )
+    owner_errs = audit_state_file_owners_ast(fake_root, rel_paths=["rogue_20.py"])
+    assert len(owner_errs) == 4
+    dur_errs = audit_durability_tier_and_cachedb_dirname_ast(fake_root, rel_paths=["rogue_20.py"])
+    assert any("order_retry_quarantine_alerts" in e for e in dur_errs)
+
 
 
 

@@ -67,7 +67,7 @@ from intelligence.macro_sentiment_ssot import (
     load_cached_whale_telemetry,
     resolve_derived_telemetry_intervals,
 )
-from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+from intelligence.sentiment.collectors.macro_telemetry_collector import (
     load_cached_macro_benchmarks,
 )
 import intelligence.sentiment.sentiment_advisor as _sentiment_advisor

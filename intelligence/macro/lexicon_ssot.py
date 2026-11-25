@@ -16,14 +16,14 @@ from botcore import (
     resolve_now_ts,
     split_csv,
 )
-from cachepaths import cache_path, canonical_base_asset, resolve_cachedb_filepath
+from cachepaths import CACHE_MACRO_LEXICON_FILENAME, cache_path, canonical_base_asset, resolve_cachedb_filepath
 from instrument_registry import is_equity_symbol, tracked_price_instruments
 from intelligence.macro_sentiment_ssot import (
     _cfg_float,
     _cfg_int,
     _cfg_str,
 )
-from state_io import cachedb_exists, generation_file_lock, read_json_dict, read_json_dict_cached, save_json_state
+from state_stores.macro_lexicon_collect import MacroLexiconCollectStore
 
 logger = logging.getLogger(__name__)
 
@@ -768,7 +768,7 @@ def _bigram_stem_signature(term: str) -> Tuple[str, ...]:
 def _resolve_dynamic_lexicon_context(
     cache_dir: Optional[str] = None, now_ts: Optional[float] = None
 ) -> Tuple[float, float, str]:
-    fname = _cfg_str("cache_files", "dynamic_lexicon_file") or "macro_lexicon_collect.json"
+    fname = _cfg_str("cache_files", "dynamic_lexicon_file") or CACHE_MACRO_LEXICON_FILENAME
     return (
         resolve_now_ts(now_ts),
         _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0),
@@ -813,8 +813,7 @@ def _save_and_invalidate_dynamic_lexicon(
     path: str, now: float, entries: Dict[str, Dict[str, Any]]
 ) -> None:
     try:
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        save_json_state(path, {"updated_ts": now, "entries": entries}, indent=2)
+        MacroLexiconCollectStore.save_doc(path, {"updated_ts": now, "entries": entries}, indent=2)
     except Exception as exc:
         logger.debug("Could not save dynamic lexicon to %s: %s", path, exc)
     _LEXICON_FILE_CACHE.clear()
@@ -831,7 +830,7 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
         "dynamic_acute_shock_phrases": (),
     }
     try:
-        data = read_json_dict_cached(path, _LEXICON_FILE_CACHE)
+        data = MacroLexiconCollectStore.read_cached_dict(path, _LEXICON_FILE_CACHE)
         entries = data.get("entries") if isinstance(data, dict) else None
         if not isinstance(entries, dict):
             return empty_res
@@ -899,8 +898,8 @@ def update_dynamic_lexicon(
     acute_seq = (new_acute_terms,) if isinstance(new_acute_terms, str) else (new_acute_terms or ())
     stopwords = _get_stopwords_set()
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with generation_file_lock(path):
-        raw = read_json_dict(path, default=None, recover_previous=True, repair_files=True) if cachedb_exists(path, include_previous=True) else None
+    with MacroLexiconCollectStore.generation_lock(path):
+        raw = MacroLexiconCollectStore.read_locked_dict(path)
         existing_entries, sig_to_key, changed = _extract_valid_dynamic_entries(
             raw.get("entries") if isinstance(raw, dict) else None, now, ttl, stopwords
         )
@@ -942,10 +941,10 @@ def demote_dynamic_acute_terms(
 ) -> bool:
     """Demote dynamically discovered ``acute`` terms to ``high`` once threat is not CRITICAL_SHOCK."""
     now, ttl, path = _resolve_dynamic_lexicon_context(cache_dir, now_ts)
-    if not cachedb_exists(path, include_previous=True):
+    if not MacroLexiconCollectStore.exists_on_disk(path):
         return False
-    with generation_file_lock(path):
-        raw = read_json_dict(path, default=None, recover_previous=True, repair_files=True)
+    with MacroLexiconCollectStore.generation_lock(path):
+        raw = MacroLexiconCollectStore.read_locked_dict(path)
         if not isinstance(raw, dict) or not isinstance(raw.get("entries"), dict):
             return False
 

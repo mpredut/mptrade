@@ -250,13 +250,11 @@ class AutonomousAIReconciler:
         return harvest_log_anomalies_from_dirs(self.logs_dirs, hours)
 
     def _load_cached_quota_snapshot(self) -> Dict[str, Any]:
-        """Read cached ``llm_quota_status.json`` from ``self.cache_dir`` and refresh when stale in live runtime."""
+        """Read cached ``llm_quota_status.json`` from ``self.cache_dir`` via ``LlmQuotaStatusStore`` and refresh when stale."""
+        from state_stores.llm_quota_status import LlmQuotaStatusStore
+
         quota_path = _resolve_topic_cache_path(self.cache_dir, LLM_QUOTA_STATUS_FILENAME)
-        raw: Dict[str, Any] = {}
-        if os.path.exists(quota_path) or os.path.exists(f"{quota_path}.previous"):
-            loaded = read_json_recovering(quota_path, default={})
-            if isinstance(loaded, dict):
-                raw = loaded
+        raw: Dict[str, Any] = LlmQuotaStatusStore.read_recovering_path(quota_path, default={})
         probe_fn = getattr(self.gemini_auditor, "probe_live_model_quota", None)
         if callable(probe_fn) and is_unmocked_llm_query_allowed():
             ttl_sec = max(30.0, float_env("LLM_QUOTA_CACHE_TTL_SEC", default=30.0) or 30.0)

@@ -58,7 +58,7 @@ from intelligence.internal.guards.guard_decision import (
 import intelligence.macro.geopolitical_analyzer as _geo_analyzer
 import intelligence.macro.geopolitical_guard as _geo_guard
 import intelligence.macro_sentiment_ssot as _mss
-import intelligence.sentiment.evaluators.macro_telemetry_evaluator as _mte
+import intelligence.sentiment.collectors.macro_telemetry_collector as _mtc
 import intelligence.sentiment.guards.high_stake_guard as _high_stake_guard
 import notify_engine.alertnotifiers as _alertnotifiers
 
@@ -314,7 +314,7 @@ def check_geopolitical_order_guards(
                         ):
                             market_absorbed = True
                     if not market_absorbed:
-                        mb_data = _mte.load_cached_macro_benchmarks(cdir)
+                        mb_data = _mtc.load_cached_macro_benchmarks(cdir)
                         mb_ts = (
                             (normalize_epoch_sec(mb_data.get("ts"), allow_iso=True) or 0.0)
                             if isinstance(mb_data, dict)

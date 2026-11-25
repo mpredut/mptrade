@@ -27,16 +27,13 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
-    CACHE_FEE_SCHEDULE_FILENAME,
-    cache_path,
     clean_scalar_str,
     clean_upper_scalar,
     has_equity_suffix,
     normalize_venue_name,
-    resolve_cachedb_filepath,
 )
 from instrument_registry import casefold_get, resolve_kraken_tokenized_pair, symbols_for
-from state_io import read_json_dict, save_json_state
+from state_stores.cache_fee_schedule import CacheFeeScheduleStore
 from state_stores.venue_fee_maintenance_state import VenueFeeMaintenanceStateStore
 
 from .base import MarketDataProvider
@@ -163,15 +160,8 @@ def resolve_fee_maintenance_state_path(
 def resolve_fee_schedule_cache_path(
     cache_dir: Optional[str] = None, *, migrate: bool = False
 ) -> str:
-    """Resolve canonical ``cachedb/account/cache_fee_schedule.json`` (with pre-cutover ``orders/`` fallback)."""
-    if cache_dir and (clean_dir := clean_scalar_str(cache_dir)):
-        resolved = str(
-            resolve_cachedb_filepath(os.path.join(clean_dir, CACHE_FEE_SCHEDULE_FILENAME), migrate=migrate)
-        )
-        if os.path.exists(resolved) or os.path.abspath(os.path.dirname(resolved)) != os.path.abspath(clean_dir):
-            return resolved
-        return os.path.join(clean_dir, "account", CACHE_FEE_SCHEDULE_FILENAME)
-    return str(resolve_cachedb_filepath(cache_path(CACHE_FEE_SCHEDULE_FILENAME), migrate=migrate))
+    """Resolve canonical ``cachedb/account/cache_fee_schedule.json`` via ``CacheFeeScheduleStore``."""
+    return CacheFeeScheduleStore.resolve_schedule_path(cache_dir, migrate=migrate)
 
 
 def read_persisted_venue_fee_schedule(
@@ -179,26 +169,12 @@ def read_persisted_venue_fee_schedule(
     *,
     read_json_fn: Optional[Callable[[str], Any]] = None,
 ) -> Dict[str, Any]:
-    """Read exchange-truth fee schedule & BNB reserve cache with transparent legacy fallback."""
+    """Read exchange-truth fee schedule & BNB reserve cache via ``CacheFeeScheduleStore`` with legacy fallback."""
     if not cache_dir or not (clean_dir := clean_scalar_str(cache_dir)):
         return {}
-    candidates = list(
-        dict.fromkeys((
-            resolve_fee_schedule_cache_path(clean_dir),
-            os.path.join(clean_dir, "account", CACHE_FEE_SCHEDULE_FILENAME),
-            os.path.join(clean_dir, "orders", CACHE_FEE_SCHEDULE_FILENAME),
-            os.path.join(clean_dir, CACHE_FEE_SCHEDULE_FILENAME),
-        ))
-    )
-    for cand in candidates:
-        if callable(read_json_fn):
-            raw = read_json_fn(cand)
-        else:
-            if not (os.path.exists(cand) or os.path.exists(f"{cand}.previous")):
-                continue
-            raw = read_json_dict(cand, default=None, recover_previous=True)
-        if isinstance(raw, dict) and raw:
-            return raw
+    sched = CacheFeeScheduleStore.read_schedule(clean_dir, read_json_fn=read_json_fn)
+    if sched:
+        return sched
     # Pre-split backward compatibility: fall back to combined venue_fee_maintenance_state.json
     legacy = VenueFeeMaintenanceStateStore.read_state(clean_dir, read_json_fn=read_json_fn)
     return legacy if isinstance(legacy, dict) else {}
@@ -973,8 +949,7 @@ def run_venue_fee_maintenance(
         }
         if not dry_run_b:
             sched_path = resolve_fee_schedule_cache_path(cache_dir, migrate=True)
-            os.makedirs(os.path.dirname(os.path.abspath(sched_path)), exist_ok=True)
-            save_json_state(sched_path, new_schedule, indent=2, skip_if_unchanged=True)
+            CacheFeeScheduleStore.save_schedule(sched_path, new_schedule, indent=2)
             VenueFeeMaintenanceStateStore.save_state(state_path, new_state, indent=2)
 
         return {

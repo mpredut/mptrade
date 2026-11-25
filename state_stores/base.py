@@ -13,7 +13,9 @@ import os
 from typing import Any, Callable, Optional
 
 from cachepaths import (
+    cache_path,
     clean_scalar_str,
+    resolve_cachedb_filepath,
     resolve_statedb_dir_from_cachedb,
     resolve_statedb_filepath,
     state_path,
@@ -37,25 +39,42 @@ class StateFileSpec:
     store_class: str
     subdomain: str = "state"
     is_jsonl: bool = False
+    storage_root: str = "statedb"
 
 
 class StateStoreBase:
-    """Level 2 reusable base for 1:1 typed durable state file owners."""
+    """Level 2 reusable base for 1:1 typed durable state and multi-key cache file owners."""
 
     FILENAME: str = ""
     SUBDOMAIN: str = "state"
     IS_JSONL: bool = False
+    STORAGE_ROOT: str = "statedb"
 
     @classmethod
     def resolve_path(cls, cachedb_dir: Optional[str] = None, *, migrate: bool = False) -> str:
-        """Resolve the canonical on-disk path for this store's file (``statedb/`` with pre-cutover fallback)."""
+        """Resolve the canonical on-disk path for this store's file (honoring ``STORAGE_ROOT``)."""
+        if cls.STORAGE_ROOT == "cachedb":
+            if cachedb_dir and (clean_dir := clean_scalar_str(cachedb_dir)):
+                return str(resolve_cachedb_filepath(os.path.join(clean_dir, cls.FILENAME), migrate=migrate))
+            return str(resolve_cachedb_filepath(cache_path(cls.FILENAME), migrate=migrate))
         if cachedb_dir and (clean_dir := clean_scalar_str(cachedb_dir)):
             return str(resolve_statedb_filepath(os.path.join(clean_dir, cls.FILENAME), migrate=migrate))
         return str(resolve_statedb_filepath(state_path(cls.FILENAME), migrate=migrate))
 
     @classmethod
     def candidate_paths(cls, cachedb_dir: str) -> list[str]:
-        """Return deduplicated candidate disk paths across ``statedb/<sub_dir>/``, ``cachedb/<sub_dir>/``, legacy ``state/``, and root."""
+        """Return deduplicated candidate disk paths honoring ``STORAGE_ROOT`` (never probing phantom ``statedb`` cache dirs)."""
+        if cls.STORAGE_ROOT == "cachedb":
+            cands = [
+                cls.resolve_path(cachedb_dir),
+                os.path.join(cachedb_dir, cls.SUBDOMAIN, cls.FILENAME),
+            ]
+            if cls.SUBDOMAIN == "account":
+                cands.append(os.path.join(cachedb_dir, "orders", cls.FILENAME))
+            elif cls.SUBDOMAIN == "llm":
+                cands.append(os.path.join(cachedb_dir, "system", cls.FILENAME))
+            cands.append(os.path.join(cachedb_dir, cls.FILENAME))
+            return list(dict.fromkeys(cands))
         statedb_dir = resolve_statedb_dir_from_cachedb(cachedb_dir)
         cands = [
             cls.resolve_path(cachedb_dir),

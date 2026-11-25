@@ -61,6 +61,7 @@ from intelligence.macro_sentiment_ssot import (
     load_venue_balances_state,
     resolve_read_json_cached,
     resolve_save_json_state,
+    scan_cached_price_archive_high_since,
 )
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
@@ -2698,6 +2699,13 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
         cyc_sell_ts_map = reconcile_venue_cycles_with_recent_orders(
             kraken_cycles, hyperliquid_cycles, t212_cycles, venue_recent_orders, live_held_by_venue_sym, prices_and_trends
         )
+        _archive_high_fn = (
+            (lambda cands, oldest_ms, base_hi: scan_cached_price_archive_high_since(
+                cache_dir, cands, oldest_ms, baseline_high=base_hi
+            ))
+            if cache_dir
+            else None
+        )
         enrich_positions_with_orders_and_cycles(
             tradable_positions,
             prices_and_trends,
@@ -2711,6 +2719,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
             gateway_max_usd=gateway_max_usd,
             cache_dir=cache_dir,
             now_ts=now_ts,
+            archive_high_resolver=_archive_high_fn,
         )
         for ro_val in recent_orders.values():
             if isinstance(ro_val, dict):
@@ -3014,7 +3023,6 @@ __all__ = [
     "_load_open_order_timestamps",
     "_load_recent_audit_origins",
     "_normalize_open_orders_list",
-    "enrich_positions_with_orders_and_cycles",
     "extract_symbol_recent_fills",
     "harvest_bot_runtime_states",
     "harvest_kraken_xstocks",

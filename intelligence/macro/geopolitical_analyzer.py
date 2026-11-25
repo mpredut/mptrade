@@ -42,8 +42,9 @@ from intelligence.macro_sentiment_ssot import (
     split_headlines_digest,
 )
 _macro_tel_eval = importlib.import_module("intelligence.sentiment.evaluators.macro_telemetry_evaluator")
+_macro_tel_col = importlib.import_module("intelligence.sentiment.collectors.macro_telemetry_collector")
 format_equity_macro_regime_line = _macro_tel_eval.format_equity_macro_regime_line
-load_cached_macro_benchmarks = _macro_tel_eval.load_cached_macro_benchmarks
+load_cached_macro_benchmarks = _macro_tel_col.load_cached_macro_benchmarks
 GeminiClient = importlib.import_module("intelligence.sentiment.gemini_client").GeminiClient
 
 load_dotenv()

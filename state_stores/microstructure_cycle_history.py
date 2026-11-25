@@ -52,6 +52,7 @@ class MicrostructureCycleHistoryStore(StateStoreBase):
 
     FILENAME = MICROSTRUCTURE_CYCLE_HISTORY_FILENAME
     SUBDOMAIN = "telemetry"
+    STORAGE_ROOT = "cachedb"
 
     @classmethod
     def load_path(

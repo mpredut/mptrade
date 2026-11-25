@@ -1031,7 +1031,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
         return (
             enrich_macro_benchmarks_live_state(
                 enriched,
-                cache_dir=cache_dir,
+                btc_chg_24h_pct=_mss.load_cached_btc_24h_change_pct(cache_dir),
                 force_recompute=stripped_stale_intraday,
                 update_summary_line=True,
             )
@@ -2147,6 +2147,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 _surv_mod.estimate_T
                 if (
                     allow_network
+                    and persist
                     and (
                         is_live_network_backfill_enabled()
                         or getattr(_surv_mod, "estimate_T", None) is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
@@ -2392,6 +2393,15 @@ def collect_macro_benchmarks_snapshot(
     )
 
 
+def load_cached_macro_benchmarks(cache_dir: str) -> Optional[Dict[str, Any]]:
+    """Load cached macro benchmarks snapshot from ``cache_dir`` without network I/O, enriched with live futures lead and BTC 24h delta."""
+    data, _ = _mss.read_first_cached_dict(cache_dir, "macro_benchmarks_files", CACHE_MACRO_BENCHMARKS_FILENAME)
+    return enrich_macro_benchmarks_live_state(
+        data,
+        btc_chg_24h_pct=_mss.load_cached_btc_24h_change_pct(cache_dir),
+    )
+
+
 def harvest_macro_and_news_sensors(
     cache_dir: str,
     now_ts: float,
@@ -2436,5 +2446,6 @@ __all__ = [
     "format_etf_flows_summary_line",
     "format_macro_benchmarks_summary_line",
     "harvest_macro_and_news_sensors",
+    "load_cached_macro_benchmarks",
     "reconcile_live_venue_equity_summary",
 ]

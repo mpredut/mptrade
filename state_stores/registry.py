@@ -6,7 +6,10 @@ from pathlib import Path
 from cachepaths import (
     ASSETGUARDIAN_STATE_FILENAME,
     AUTO_ORDER_INTENTS_STATE_FILENAME,
+    CACHE_FEE_SCHEDULE_FILENAME,
+    CACHE_MACRO_LEXICON_FILENAME,
     CACHE_T_TREND_FILENAME,
+    LLM_QUOTA_STATUS_FILENAME,
     LLM_TOPIC_THREADS_FILENAME,
     MICROSTRUCTURE_CYCLE_HISTORY_FILENAME,
     MT_STATE_FILENAME,
@@ -132,6 +135,7 @@ CRITICAL_STATE_SPECS: tuple[StateFileSpec, ...] = (
         owner_module="state_stores/microstructure_cycle_history.py",
         store_class="MicrostructureCycleHistoryStore",
         subdomain="telemetry",
+        storage_root="cachedb",
     ),
     StateFileSpec(
         filename=ORDER_RETRY_QUARANTINE_ALERTS_FILENAME,
@@ -139,6 +143,7 @@ CRITICAL_STATE_SPECS: tuple[StateFileSpec, ...] = (
         owner_module="state_stores/order_retry_quarantine_alerts.py",
         store_class="OrderRetryQuarantineAlertsStore",
         subdomain="orders",
+        storage_root="statedb",
     ),
     StateFileSpec(
         filename=ORDER_LEDGER_ACTIVE_FILENAME,
@@ -146,6 +151,7 @@ CRITICAL_STATE_SPECS: tuple[StateFileSpec, ...] = (
         owner_module="state_stores/orders_active.py",
         store_class="OrdersActiveStore",
         subdomain="orders",
+        storage_root="statedb",
     ),
     StateFileSpec(
         filename=CACHE_T_TREND_FILENAME,
@@ -153,6 +159,31 @@ CRITICAL_STATE_SPECS: tuple[StateFileSpec, ...] = (
         owner_module="state_stores/cache_T_trend.py",
         store_class="CacheTTrendStore",
         subdomain="trends",
+        storage_root="cachedb",
+    ),
+    StateFileSpec(
+        filename=CACHE_FEE_SCHEDULE_FILENAME,
+        const_name="CACHE_FEE_SCHEDULE_FILENAME",
+        owner_module="state_stores/cache_fee_schedule.py",
+        store_class="CacheFeeScheduleStore",
+        subdomain="account",
+        storage_root="cachedb",
+    ),
+    StateFileSpec(
+        filename=CACHE_MACRO_LEXICON_FILENAME,
+        const_name="CACHE_MACRO_LEXICON_FILENAME",
+        owner_module="state_stores/macro_lexicon_collect.py",
+        store_class="MacroLexiconCollectStore",
+        subdomain="macro",
+        storage_root="cachedb",
+    ),
+    StateFileSpec(
+        filename=LLM_QUOTA_STATUS_FILENAME,
+        const_name="LLM_QUOTA_STATUS_FILENAME",
+        owner_module="state_stores/llm_quota_status.py",
+        store_class="LlmQuotaStatusStore",
+        subdomain="llm",
+        storage_root="cachedb",
     ),
 )
 

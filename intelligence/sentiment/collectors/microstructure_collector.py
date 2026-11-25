@@ -140,6 +140,7 @@ from intelligence.external.collectors.orderbook_depth_collector import Orderbook
 from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 from intelligence.macro_sentiment_ssot import (
     callable_identity_anchor,
+    load_cached_btc_24h_change_pct,
     load_microstructure_cycle_history,
     load_venue_balances_state,
     lookup_symbol_cache_items,
@@ -553,9 +554,11 @@ def resolve_cached_btc_24h_change_pct(
     *,
     current_price_items: Optional[Dict[str, Any]] = None,
 ) -> Optional[float]:
-    """Return BTC 24h percentage change from cached 24h BTCUSDC/BTCUSDT price series if available."""
+    """Return BTC 24h percentage change from cached 24h BTCUSDC/BTCUSDT price series (or SSOT fallback)."""
     if not cache_dir:
         return None
+    if current_price_items is None:
+        return load_cached_btc_24h_change_pct(cache_dir)
     ensure_cacheprice_classes_bound()
     btc_24h_files = dict.fromkeys(
         fn
@@ -567,7 +570,7 @@ def resolve_cached_btc_24h_change_pct(
         os.path.exists(str(resolve_cachedb_filepath(os.path.join(cache_dir, fn))))
         for fn in btc_24h_files
     ):
-        return None
+        return load_cached_btc_24h_change_pct(cache_dir)
     btc_pts, _ = load_symbol_price_series(
         cache_dir,
         "BTCUSDC",
@@ -575,7 +578,7 @@ def resolve_cached_btc_24h_change_pct(
         include_7d=False,
     )
     if not btc_pts:
-        return None
+        return load_cached_btc_24h_change_pct(cache_dir)
     btc_m = compute_24h_price_metrics(btc_pts)
     chg = safe_float(btc_m.get("chg_24h_pct"), default=None) if isinstance(btc_m, dict) else None
     return chg if chg is not None and abs(chg) > 1e-6 else None
@@ -3160,7 +3163,6 @@ __all__ = [
     "ensure_cacheprice_classes_bound",
     "ensure_fresh_symbol_microstructure",
     "load_fleet_microstructure_snapshots",
-    "load_microstructure_cycle_history",
     "load_stitched_24h_ohlc_points",
     "load_stitched_7d_ohlc_closes",
     "load_symbol_microstructure",
@@ -3169,7 +3171,6 @@ __all__ = [
     "resolve_cached_btc_24h_change_pct",
     "resolve_fallback_ohlc_fn",
     "resolve_live_24trend_current_price",
-    "save_microstructure_cycle_history",
     "update_microstructure_cycle_deltas",
     "upgrade_tpo_vp_from_ohlc",
 ]
