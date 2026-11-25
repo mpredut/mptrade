@@ -21,7 +21,7 @@ if _ROOT_DIR not in sys.path:
 
 with contextlib.redirect_stdout(sys.stderr):
     from botcore import disable_auto_start_websockets_default, parse_pos_cli_float
-    from intelligence.sentiment.evaluators.guard_probe_evaluator import probe_deterministic_guards
+    from intelligence.sentiment.collectors.guard_probe_collector import probe_deterministic_guards
     from state_io import encode_json_payload
 
 

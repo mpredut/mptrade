@@ -8294,12 +8294,12 @@ def test_audit_remediations_a_through_g_and_crypto_completeness(tmp_path, monkey
         "HYPEUSD": {"price": 86.40, "chg_15m_pct": 0.20},
     }
     hist_g: dict[str, Any] = {}
-    sync_sibling_symbol_telemetry(pt_g, micro_g, cache_dir=str(cache_dir), now_ts=1000.0, cycle_history=hist_g)
+    sync_sibling_symbol_telemetry(pt_g, micro_g, now_ts=1000.0, cycle_history=hist_g)
     micro_g["HYPEUSDC"]["ob_imbalance"] = 0.64
     micro_g["HYPEUSDC"]["cvd_15m_usd"] = 850000.0
     micro_g["HYPEUSDC"]["taker_buy_vol_usd"] = 2850000.0
     micro_g["HYPEUSDC"]["taker_sell_vol_usd"] = 2000000.0
-    sync_sibling_symbol_telemetry(pt_g, micro_g, cache_dir=str(cache_dir), now_ts=1600.0, cycle_history=hist_g)
+    sync_sibling_symbol_telemetry(pt_g, micro_g, now_ts=1600.0, cycle_history=hist_g)
     assert "cycle_delta" in micro_g["HYPEUSDC"]
     sec_3b = "\n".join(_format_microstructure_section(micro_g, pt_g))
     assert "* HYPEUSDC:" in sec_3b
@@ -10208,7 +10208,7 @@ def test_proposal4a_structured_trade_plans_3c_memory_and_delta_gate_trigger():
 
 def test_advisory_guard_probe_and_scorecard_surfaced_in_section_3c(capsys):
     """Verify read-only deterministic guard probing (0 ms, no side effects), CLI probe, and Section 3C rendering."""
-    from intelligence.sentiment.evaluators.guard_probe_evaluator import (
+    from intelligence.sentiment.collectors.guard_probe_collector import (
         format_guard_advisory_line,
         probe_deterministic_guards,
         summarize_symbol_guard_advisories,

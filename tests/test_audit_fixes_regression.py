@@ -8335,13 +8335,13 @@ def test_cycle16_unmatched_cycle_pos_peak_scope_parity_and_equity_quote_provenan
     pos_eq = [{"venue": "t212", "symbol": "SPCX_US_EQ", "price": 120.81, "free_base": 2.222965, "value_usd": 268.56}]
     enrich_positions_with_orders_and_cycles(
         pos_eq, pt_spcx, {}, {"t212": {"SPCX_US_EQ": dict(ro_spcx)}}, {"SPCX_US_EQ": dict(ro_spcx)},
-        {}, {}, cyc_eq, {}, cache_dir=str(cdir), now_ts=now_s, archive_high_resolver=_archive_hi,
+        {}, {}, cyc_eq, {}, now_ts=now_s, archive_high_resolver=_archive_hi,
     )
     # Crypto scope (unmatched T212 cycle — not in tradable_positions)
     cyc_crypto = {"SPCX_US_EQ": dict(base_cyc)}
     enrich_positions_with_orders_and_cycles(
         [], pt_spcx, {}, {"t212": {"SPCX_US_EQ": dict(ro_spcx)}}, {"SPCX_US_EQ": dict(ro_spcx)},
-        {}, {}, cyc_crypto, {}, cache_dir=str(cdir), now_ts=now_s, archive_high_resolver=_archive_hi,
+        {}, {}, cyc_crypto, {}, now_ts=now_s, archive_high_resolver=_archive_hi,
     )
     assert cyc_eq["SPCX_US_EQ"]["pos_peak"] == pytest.approx(164.64)
     assert cyc_crypto["SPCX_US_EQ"]["pos_peak"] == pytest.approx(164.64)
@@ -9211,7 +9211,6 @@ def test_cycle19_prompt_audit_fixes(tmp_path, monkeypatch):
         is_flat_balance=False,
         is_flat_after_exit=False,
         prices_and_trends={"BTCUSDC": {"price": 58226.215, "high_24h": 62600.0}},
-        cache_dir="",
         cycle_high_memo={},
         now_ms=now_ms,
     )
@@ -9241,7 +9240,6 @@ def test_cycle19_prompt_audit_fixes(tmp_path, monkeypatch):
         is_flat_balance=False,
         is_flat_after_exit=False,
         prices_and_trends={"TAOUSDC": {"price": 170.0}},
-        cache_dir="",
         cycle_high_memo={},
         now_ms=now_ms,
     )
@@ -9270,7 +9268,6 @@ def test_cycle19_prompt_audit_fixes(tmp_path, monkeypatch):
         v_ro_map={},
         cyc_sell_ts_map={},
         prices_and_trends={"HYPEUSD": {"price": 24.0, "high_24h": 28.4}},
-        cache_dir="",
         cycle_high_memo={},
         now_ms=now_ms,
     )
@@ -9590,13 +9587,17 @@ def test_storage_root_separation_20_1to1_stores_and_pure_indirect_evaluator_guar
         "def run(cdir):\n"
         "    load_cached_btc_24h_change_pct(cdir)\n"
         "    scan_cached_price_archive_high_since(cdir, [], 0)\n"
-        "    read_first_cached_dict(cdir, 'k', 'f.json')\n",
+        "    read_first_cached_dict(cdir, 'k', 'f.json')\n"
+        "    read_persisted_venue_fee_spec('binance', 'BTCUSDC', cache_dir=cdir)\n"
+        "    read_persisted_venue_fee_schedule(cdir)\n",
         encoding="utf-8",
     )
     ev_errs = audit_layer_dag_ast(fake_root, rel_paths=["intelligence/sentiment/evaluators/bad_indirect_evaluator.py"])
     assert any("load_cached_btc_24h_change_pct" in e for e in ev_errs)
     assert any("scan_cached_price_archive_high_since" in e for e in ev_errs)
     assert any("read_first_cached_dict" in e for e in ev_errs)
+    assert any("read_persisted_venue_fee_spec" in e for e in ev_errs)
+    assert any("read_persisted_venue_fee_schedule" in e for e in ev_errs)
 
     (fake_root / "rogue_20.py").write_text(
         "from state_io import save_json_state\n"

@@ -57,7 +57,6 @@ from instrument_registry import (
     resolve_symbol_identity,
 )
 from providers.market_api import api as mkt_api
-from providers.venue_fee_maintenance import read_persisted_venue_fee_spec
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_evaluator")
 
@@ -753,8 +752,7 @@ def _infer_symbol_venue_and_fees_bps(
     sym: str,
     m_dict: Dict[str, Any],
     *,
-    cache_dir: Optional[str] = None,
-    now_ts: Optional[float] = None,
+    fee_spec_resolver: Optional[Callable[[str, str], Optional[Dict[str, Any]]]] = None,
 ) -> Tuple[str, float, float, float]:
     """Infer canonical venue name, live/default maker/taker fee bps, and half-spread bps."""
     venue = mkt_api.infer_symbol_venue(
@@ -765,8 +763,8 @@ def _infer_symbol_venue_and_fees_bps(
     _, maker_bps, taker_bps, _ = MarketDataProvider.resolve_venue_default_fee_spec(
         venue, fallback_venue="t212"
     )
-    if cache_dir:
-        live_spec = read_persisted_venue_fee_spec(venue, sym, cache_dir=cache_dir, now_ts=now_ts)
+    if callable(fee_spec_resolver):
+        live_spec = fee_spec_resolver(venue, sym)
         if isinstance(live_spec, dict) and live_spec:
             maker_bps = safe_nonneg_float(live_spec.get("maker_fee_bps"), default=maker_bps)
             taker_bps = safe_nonneg_float(live_spec.get("taker_fee_bps"), default=taker_bps)
@@ -786,7 +784,7 @@ def compute_cross_venue_arb_metrics(
     microstructure: Dict[str, Any],
     prices_and_trends: Dict[str, Any],
     *,
-    cache_dir: Optional[str] = None,
+    fee_spec_resolver: Optional[Callable[[str, str], Optional[Dict[str, Any]]]] = None,
     now_ts: Optional[float] = None,
 ) -> None:
     """Populate Cross-Venue Relative Value / Arbitrage Spread using live maker fees (with taker edge alongside)."""
@@ -804,7 +802,7 @@ def compute_cross_venue_arb_metrics(
     mbase = canonical_base_asset(msym)
     msym_is_eq = has_equity_suffix(msym)
     own_v, own_maker, own_taker, own_hsp = _infer_symbol_venue_and_fees_bps(
-        msym, minfo, cache_dir=cache_dir, now_ts=now_ts
+        msym, minfo, fee_spec_resolver=fee_spec_resolver
     )
     peer_candidates = [
         (peer_sym, peer_m)
@@ -820,7 +818,7 @@ def compute_cross_venue_arb_metrics(
     )
     for peer_sym, peer_m in peer_candidates:
         peer_v, peer_maker, peer_taker, peer_hsp = _infer_symbol_venue_and_fees_bps(
-            peer_sym, peer_m, cache_dir=cache_dir, now_ts=now_ts
+            peer_sym, peer_m, fee_spec_resolver=fee_spec_resolver
         )
         if peer_v == own_v:
             continue
@@ -1534,7 +1532,7 @@ def sync_sibling_symbol_telemetry(
     prices_and_trends: Dict[str, Any],
     microstructure: Dict[str, Any],
     *,
-    cache_dir: Optional[str] = None,
+    fee_spec_resolver: Optional[Callable[[str, str], Optional[Dict[str, Any]]]] = None,
     now_ts: Optional[float] = None,
     persist_cycle_deltas: bool = False,
     cycle_history: Optional[Dict[str, Any]] = None,
@@ -1653,7 +1651,7 @@ def sync_sibling_symbol_telemetry(
             p_match,
             microstructure,
             prices_and_trends,
-            cache_dir=cache_dir,
+            fee_spec_resolver=fee_spec_resolver,
             now_ts=now_ts,
         )
 
@@ -2138,7 +2136,7 @@ class CrossVenueSiblingArbEvaluator(MicrostructureEvaluatorBase):
         price_info: Optional[Dict[str, Any]] = None,
         microstructure_map: Optional[Dict[str, Dict[str, Any]]] = None,
         price_trends_map: Optional[Dict[str, Dict[str, Any]]] = None,
-        cache_dir: Optional[str] = None,
+        fee_spec_resolver: Optional[Callable[[str, str], Optional[Dict[str, Any]]]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         m_info = data if isinstance(data, dict) else {}
@@ -2151,7 +2149,7 @@ class CrossVenueSiblingArbEvaluator(MicrostructureEvaluatorBase):
                     price_info or price_trends_map.get(symbol, {}),
                     microstructure_map,
                     price_trends_map,
-                    cache_dir=cache_dir,
+                    fee_spec_resolver=fee_spec_resolver,
                     now_ts=now_ts,
                 )
         return m_info
@@ -2228,18 +2226,18 @@ class SiblingSymbolTelemetrySyncEvaluator(MicrostructureEvaluatorBase):
         *,
         microstructure: Optional[Dict[str, Any]] = None,
         cycle_history: Optional[Dict[str, Any]] = None,
-        cache_dir: Optional[str] = None,
+        fee_spec_resolver: Optional[Callable[[str, str], Optional[Dict[str, Any]]]] = None,
         now_ts: Optional[float] = None,
         persist_cycle_deltas: bool = False,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         pt_map, m_map = coerce_dict_maps(data, microstructure)
         raw_hist = cycle_history if isinstance(cycle_history, dict) else kwargs.get("history")
-        eff_hist = raw_hist if isinstance(raw_hist, dict) else ({} if not persist_cycle_deltas and not cache_dir else None)
+        eff_hist = raw_hist if isinstance(raw_hist, dict) else ({} if not persist_cycle_deltas else None)
         sync_sibling_symbol_telemetry(
             pt_map,
             m_map,
-            cache_dir=cache_dir,
+            fee_spec_resolver=fee_spec_resolver,
             now_ts=now_ts,
             persist_cycle_deltas=persist_cycle_deltas,
             cycle_history=eff_hist,

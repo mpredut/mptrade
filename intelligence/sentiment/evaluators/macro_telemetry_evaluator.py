@@ -1224,7 +1224,6 @@ def format_equity_macro_regime_line(data: Any, *, include_crypto: bool = True) -
 def enrich_macro_benchmarks_live_state(
     data: Optional[Dict[str, Any]],
     *,
-    cache_dir: Optional[str] = None,
     btc_chg_24h_pct: Optional[float] = None,
     force_recompute: bool = False,
     update_summary_line: bool = False,

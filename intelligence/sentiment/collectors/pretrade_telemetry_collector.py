@@ -143,6 +143,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 )
 from instrument_registry import casefold_get, disabled_registry_symbols, is_equity_symbol, is_symbol_market_open, resolve_symbol_identity, venue_for_symbol
 from providers.base import MarketDataProvider
+from providers.venue_fee_maintenance import build_persisted_venue_fee_resolver
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
 )
@@ -1903,7 +1904,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                     p_est,
                     micro_pair,
                     pt_pair,
-                    cache_dir=cachedb_dir,
+                    fee_spec_resolver=build_persisted_venue_fee_resolver(cachedb_dir, now_ts=eff_now_sib),
                     now_ts=eff_now_sib,
                 )
                 liq_c["liq_magnet_bias"] = cur_m_info.get("liq_magnet_bias")

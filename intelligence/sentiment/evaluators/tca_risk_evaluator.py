@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from abc import ABC
 import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from cachepaths import (
     cache_symbol_variants,
@@ -44,7 +44,6 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 from instrument_registry import casefold_get, resolve_symbol_identity
 from providers.base import MarketDataProvider
 from providers.quantity import venue_fee_cap_quantity
-from providers.venue_fee_maintenance import read_persisted_venue_fee_spec
 
 
 def resolve_symbol_price(
@@ -119,7 +118,7 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
         locked_base_qty: Optional[float] = None,
         spread_bps: Optional[float] = None,
         gateway_max_usd: float = 2000.0,
-        cache_dir: Optional[str] = None,
+        fee_spec_resolver: Optional[Callable[[str, str], Optional[Dict[str, Any]]]] = None,
         fallback_limits: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
@@ -163,8 +162,8 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
 
         if inst is None and isinstance(fallback_limits, dict):
             _apply_fee_meta(fallback_limits)
-        if cache_dir:
-            _apply_fee_meta(read_persisted_venue_fee_spec(v_norm, symbol, cache_dir=cache_dir), include_limits=False)
+        if callable(fee_spec_resolver):
+            _apply_fee_meta(fee_spec_resolver(v_norm, symbol) or {}, include_limits=False)
         params = getattr(inst, "params", {}) if inst is not None and isinstance(getattr(inst, "params", None), dict) else {}
         _apply_fee_meta(params)
         if inst is not None:
@@ -867,7 +866,7 @@ def resolve_venue_fee_and_limits(
     locked_base_qty: Optional[float] = None,
     spread_bps: Optional[float] = None,
     gateway_max_usd: float = 2000.0,
-    cache_dir: Optional[str] = None,
+    fee_spec_resolver: Optional[Callable[[str, str], Optional[Dict[str, Any]]]] = None,
     fallback_limits: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Resolve active venue fee tier, maker vs taker bps, live spread, and exchange/account order limits (0 ms, zero network calls)."""
@@ -882,7 +881,7 @@ def resolve_venue_fee_and_limits(
         locked_base_qty=locked_base_qty,
         spread_bps=spread_bps,
         gateway_max_usd=gateway_max_usd,
-        cache_dir=cache_dir,
+        fee_spec_resolver=fee_spec_resolver,
         fallback_limits=fallback_limits,
     )
 

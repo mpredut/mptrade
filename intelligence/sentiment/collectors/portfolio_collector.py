@@ -82,7 +82,10 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
 )
 from providers.order_ledger import OrderLedgerReader
 from providers.order_status_ssot import is_terminal_audit_status
-from providers.venue_fee_maintenance import BinanceFeeMaintainer
+from providers.venue_fee_maintenance import (
+    BinanceFeeMaintainer,
+    build_persisted_venue_fee_resolver,
+)
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     apply_cycle_fallback_to_recent_fills,
     clip_open_lots_to_held_qty,
@@ -887,6 +890,7 @@ def derive_runtime_portfolio_view(
                     if cash_bkey in updated_bals and isinstance(updated_bals[cash_bkey], dict):
                         updated_bals[cash_bkey] = {**updated_bals[cash_bkey], **pers_cash_fields}
 
+    fee_spec_resolver = build_persisted_venue_fee_resolver(cache_dir, now_ts=now_ts_oo)
     for pos_entry in tradable_positions:
         p_v_norm = normalize_venue_name(pos_entry.get("venue"))
         p_sym_raw = str(pos_entry.get("symbol") or "").strip()
@@ -955,7 +959,7 @@ def derive_runtime_portfolio_view(
                     locked_quote_usd=lq_pos if lq_pos > 0.0 else None,
                     locked_base_qty=lb_pos if lb_pos > 0.0 else None,
                     gateway_max_usd=gateway_max_usd,
-                    cache_dir=cache_dir,
+                    fee_spec_resolver=fee_spec_resolver,
                     fallback_limits=prev_inst_limits,
                 )
             )
@@ -1942,6 +1946,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             _c_ven = normalize_venue_name(str(getattr(_inst_cand, "provider_name", "") or "").strip().lower())
             if _c_sym and _c_ven and isinstance(_c_p := getattr(_inst_cand, "params", None), dict) and _c_p:
                 merged_params_by_vs.setdefault((_c_ven, _c_sym), {}).update(_c_p)
+        fee_spec_resolver = build_persisted_venue_fee_resolver(cache_dir, now_ts=now_ts_oo)
         seen_vs: set[tuple[str, str]] = set()
         for inst in inst_map.values():
             raw_sym = str(getattr(inst, "symbol", "") or "").strip()
@@ -2109,7 +2114,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     free_quote=quote_free,
                     free_base=base_free,
                     gateway_max_usd=gateway_max_usd,
-                    cache_dir=cache_dir,
+                    fee_spec_resolver=fee_spec_resolver,
                 )
             )
             _attach_trailing_peak_to_position(
@@ -2838,6 +2843,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
             if cache_dir
             else None
         )
+        _fee_spec_fn = build_persisted_venue_fee_resolver(cache_dir, now_ts=now_ts)
         enrich_positions_with_orders_and_cycles(
             tradable_positions,
             prices_and_trends,
@@ -2849,9 +2855,9 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
             t212_cycles,
             cyc_sell_ts_map,
             gateway_max_usd=gateway_max_usd,
-            cache_dir=cache_dir,
             now_ts=now_ts,
             archive_high_resolver=_archive_high_fn,
+            fee_spec_resolver=_fee_spec_fn,
         )
         for ro_val in recent_orders.values():
             if isinstance(ro_val, dict):

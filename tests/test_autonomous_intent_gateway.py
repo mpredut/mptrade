@@ -3930,7 +3930,7 @@ def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
         _extract_intent_exec_ts,
         _extract_intent_notional_usd,
     )
-    from intelligence.sentiment.evaluators.guard_probe_evaluator import probe_deterministic_guards
+    from intelligence.sentiment.collectors.guard_probe_collector import probe_deterministic_guards
 
     binance_mkt_buy = {
         "intent_id": "bn_mkt_1",

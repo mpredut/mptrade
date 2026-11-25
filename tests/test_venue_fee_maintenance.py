@@ -18,6 +18,7 @@ from providers.venue_fee_maintenance import (
     VENUE_FEE_MAINTAINER_REGISTRY,
     VenueFeeMaintainerBase,
     VenueFeeMaintainerInterface,
+    build_persisted_venue_fee_resolver,
     load_fee_maintenance_config,
     run_venue_fee_maintenance,
 )
@@ -258,18 +259,19 @@ def test_4h_schedule_gate_and_tca_evaluator_cache_dir_override(tmp_path, monkeyp
     assert r3["status"] == "ok"
     assert bn_m.maintain.call_count == 2
 
-    # Without cache_dir, static _DEFAULT_FEE_SPEC remains unchanged; with cache_dir, live fees apply!
+    # Without fee_spec_resolver, static _DEFAULT_FEE_SPEC remains unchanged; with injected fee_spec_resolver, live fees apply!
     with patch("providers.venue_fee_maintenance.resolve_now_ts", return_value=now_ts + 14410.0):
         static_bn = resolve_venue_fee_and_limits("binance", "BTCUSDC", None, price=90000.0)
         assert (static_bn["fee_tier"], static_bn["maker_fee_bps"], static_bn["taker_fee_bps"]) == ("VIP0", 10.0, 10.0)
 
-        live_bn = resolve_venue_fee_and_limits("binance", "BTCUSDC", None, price=90000.0, cache_dir=str(tmp_path))
+        fee_resolver = build_persisted_venue_fee_resolver(str(tmp_path))
+        live_bn = resolve_venue_fee_and_limits("binance", "BTCUSDC", None, price=90000.0, fee_spec_resolver=fee_resolver)
         assert (live_bn["fee_tier"], live_bn["maker_fee_bps"], live_bn["taker_fee_bps"]) == ("VIP0_BNB", 7.5, 7.5)
 
-        live_kr = resolve_venue_fee_and_limits("kraken", "HYPEUSD", None, price=40.0, cache_dir=str(tmp_path))
+        live_kr = resolve_venue_fee_and_limits("kraken", "HYPEUSD", None, price=40.0, fee_spec_resolver=fee_resolver)
         assert (live_kr["fee_tier"], live_kr["maker_fee_bps"], live_kr["taker_fee_bps"]) == ("PRO_LIVE", 22.0, 38.0)
 
-        xstock_kr = resolve_venue_fee_and_limits("kraken", "SPCXxUSD", None, price=150.0, cache_dir=str(tmp_path))
+        xstock_kr = resolve_venue_fee_and_limits("kraken", "SPCXxUSD", None, price=150.0, fee_spec_resolver=fee_resolver)
         assert (xstock_kr["fee_tier"], xstock_kr["maker_fee_bps"], xstock_kr["taker_fee_bps"]) == ("XSTOCK_ZERO_FEE", 0.0, 0.0)
     kr_pair_arg = kr_cli._private.call_args[0][1]["pair"]
     assert "SPCXXUSD" not in kr_pair_arg and "ANTXUSD" not in kr_pair_arg
@@ -396,7 +398,7 @@ def test_binance_per_symbol_fee_schedule_and_live_maker_cross_venue_arb(tmp_path
         {"price": 200.0},
         {"TAOUSDC": m_bn, "TAOUSD": m_kr},
         {"TAOUSDC": {"price": 200.0}, "TAOUSD": {"price": 200.0}},
-        cache_dir=str(tmp_path),
+        fee_spec_resolver=build_persisted_venue_fee_resolver(str(tmp_path), now_ts=now_ts),
         now_ts=now_ts,
     )
     assert m_bn["arb_fee_basis"] == "maker"

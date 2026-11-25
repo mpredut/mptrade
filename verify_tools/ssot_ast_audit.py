@@ -291,15 +291,16 @@ EVALUATOR_FORBIDDEN_WRITE_PREFIXES = (
     "append_jsonl",
     "atomic_write",
 )
-EVALUATOR_INDIRECT_READ_EXEMPT = frozenset({
-    "intelligence/sentiment/evaluators/guard_probe_evaluator.py",
-})
+EVALUATOR_INDIRECT_READ_EXEMPT = frozenset()
 EVALUATOR_FORBIDDEN_INDIRECT_READ_PREFIXES = (
     "load_cached_",
     "scan_cached_",
+    "read_persisted_",
 )
 EVALUATOR_FORBIDDEN_INDIRECT_READ_FNS = frozenset({
     "read_first_cached_dict",
+    "read_persisted_venue_fee_spec",
+    "read_persisted_venue_fee_schedule",
 })
 FORBIDDEN_PROVIDER_UPWARD = frozenset({
     "cacheInterface",

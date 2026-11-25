@@ -1383,7 +1383,7 @@ def test_botcore_config_runtime_services_and_account_bridge_hierarchy(tmp_path, 
 
 def test_profit_diff_pct_sell_denominator_matches_pnl_and_guard_probe():
     """Verify profit_diff_pct divides by ref_price on both BUY and SELL (matching PnL on deep underwater SELLs)."""
-    from intelligence.sentiment.evaluators.guard_probe_evaluator import probe_deterministic_guards
+    from intelligence.sentiment.collectors.guard_probe_collector import probe_deterministic_guards
 
     # SELL PnL vs ref_price=100: -20.48% and -33.06% (previously distorted to -25.76% and -49.40%)
     assert botcore.profit_diff_pct("SELL", 79.52, 100.0) == pytest.approx(-20.48, abs=1e-6)

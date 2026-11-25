@@ -2003,7 +2003,7 @@ def test_reverify_scheduled_step_noop_scope_isolation_and_sibling_ob_ts(temp_cac
             "_deriv_ts": now_s - 12.0,
         },
     }
-    sync_sibling_symbol_telemetry(pt_sib, micro_sib, cache_dir=scope_dir, now_ts=now_s, persist_cycle_deltas=False)
+    sync_sibling_symbol_telemetry(pt_sib, micro_sib, now_ts=now_s, persist_cycle_deltas=False)
     assert "_ob_raw_ts" not in micro_sib["BTCUSDC"]
     assert micro_sib["BTCUSDC"].get("_deriv_ts") == pytest.approx(now_s - 12.0)
 

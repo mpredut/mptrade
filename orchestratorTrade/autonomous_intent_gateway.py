@@ -71,7 +71,7 @@ from instrument_registry import (
     resolve_kraken_tokenized_pair,
     resolve_symbol_identity,
 )
-from intelligence.sentiment.evaluators.guard_probe_evaluator import (
+from intelligence.sentiment.collectors.guard_probe_collector import (
     probe_deterministic_guards,
 )
 import notify_engine.alertnotifiers as _alertnotifiers

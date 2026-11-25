@@ -7579,7 +7579,6 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
         {},
         t212_cyc_nvda,
         {},
-        cache_dir=str(cdir_nvda),
         archive_high_resolver=lambda cands, oldest_ms, base_hi: scan_cached_price_archive_high_since(
             str(cdir_nvda), cands, oldest_ms, baseline_high=base_hi
         ),
@@ -8668,7 +8667,6 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
         {},
         t212_cyc_dd,
         {},
-        cache_dir=str(cdir_pk),
         archive_high_resolver=lambda cands, oldest_ms, base_hi: scan_cached_price_archive_high_since(
             str(cdir_pk), cands, oldest_ms, baseline_high=base_hi
         ),
@@ -15973,7 +15971,6 @@ def test_iter4_slope_unit_scaling_resting_plan_target_hit_and_post_sell_lifo_res
         is_flat_balance=False,
         is_flat_after_exit=False,
         prices_and_trends={},
-        cache_dir="",
         cycle_high_memo={},
     )
     assert len(pos_arb["open_lots"]) == 1 and pos_arb["open_lots"][0]["entry_px"] == 0.1184
@@ -16389,7 +16386,6 @@ def test_iter6_deribit_carryover_active_cycle_lifo_and_sibling_whale_freshness(t
         is_flat_balance=False,
         is_flat_after_exit=False,
         prices_and_trends={"TAOUSDC": {"price": 175.65}},
-        cache_dir="",
         cycle_high_memo={},
     )
     assert tao_ro["lifo_realized_pnl_usd"] == pytest.approx(0.28, abs=0.02)
@@ -16414,7 +16410,6 @@ def test_iter6_deribit_carryover_active_cycle_lifo_and_sibling_whale_freshness(t
         is_flat_balance=False,
         is_flat_after_exit=False,
         prices_and_trends={"BTCUSDC": {"price": 58460.0}},
-        cache_dir="",
         cycle_high_memo={},
     )
     assert btc_ro["lifo_realized_pnl_usd"] == pytest.approx(-15.0, abs=0.05)

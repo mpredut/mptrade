@@ -46,7 +46,10 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 from providers.portfolio_state_store import resolve_venue_balance_cache_path
-from providers.venue_fee_maintenance import read_persisted_venue_fee_schedule
+from providers.venue_fee_maintenance import (
+    build_persisted_venue_fee_resolver,
+    read_persisted_venue_fee_schedule,
+)
 from state_stores.cache_T_trend import CacheTTrendStore
 from intelligence.internal.state import survival as _surv_mod
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
@@ -2244,7 +2247,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         sync_sibling_symbol_telemetry(
             snapshot.prices_and_trends,
             snapshot.microstructure,
-            cache_dir=cache_dir,
+            fee_spec_resolver=build_persisted_venue_fee_resolver(cache_dir, now_ts=now_ts),
             now_ts=now_ts,
             persist_cycle_deltas=False,
             cycle_history=cycle_history,

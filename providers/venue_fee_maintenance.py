@@ -829,6 +829,32 @@ def read_persisted_venue_fee_spec(
     return out
 
 
+def build_persisted_venue_fee_resolver(
+    cache_dir: Optional[str],
+    *,
+    now_ts: Optional[float] = None,
+) -> Optional[Callable[[str, str], Dict[str, Any]]]:
+    """Build a memoized ``(venue, symbol) -> fee_spec`` resolver from persisted ``cache_fee_schedule.json``."""
+    cdir = clean_scalar_str(cache_dir)
+    if not cdir:
+        return None
+    eff_now: Optional[float] = safe_nonneg_float(now_ts, default=None) if now_ts is not None else None
+    memo: dict[tuple[str, str], Dict[str, Any]] = {}
+
+    def _resolve(venue: str, symbol: str = "") -> Dict[str, Any]:
+        nonlocal eff_now
+        if eff_now is None:
+            eff_now = resolve_now_ts(None)
+        key = (normalize_venue_name(venue), (clean_scalar_str(symbol) or "").upper())
+        if key in memo:
+            return memo[key]
+        res = read_persisted_venue_fee_spec(venue, symbol, cache_dir=cdir, now_ts=eff_now)
+        memo[key] = res
+        return res
+
+    return _resolve
+
+
 def _effective_due_interval_sec(prev_state: Dict[str, Any], cfg: Dict[str, Any]) -> float:
     venues_map = prev_state.get("venues") if isinstance(prev_state, dict) else None
     bn_state = venues_map.get("binance") if isinstance(venues_map, dict) else None
@@ -970,6 +996,7 @@ __all__ = [
     "VENUE_FEE_MAINTAINER_REGISTRY",
     "VenueFeeMaintainerBase",
     "VenueFeeMaintainerInterface",
+    "build_persisted_venue_fee_resolver",
     "load_fee_maintenance_config",
     "read_persisted_venue_fee_schedule",
     "read_persisted_venue_fee_spec",
