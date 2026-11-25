@@ -1164,7 +1164,19 @@ _LOG_STARTUP_FATAL_EXC_RE = re.compile(
     r"\bname '[^']+' is not defined\b|\bcannot access local variable '[^']+' where it is not associated with a value\b)",
     re.IGNORECASE,
 )
-_LOG_IGNORED_TEST_PREFIXES = (".", "pytest_", "__main___", "py.test_", "c_", "app_", "inspect_")
+_LOG_IGNORED_TEST_PREFIXES = (
+    ".",
+    "pytest_",
+    "__main___",
+    "py.test_",
+    "c_",
+    "app_",
+    "inspect_",
+    "dump_crypto_prompt_",
+    "deep_audit_crypto_prompt_",
+    "check_crypto_prompt_quality_",
+    "check_cache_coherence_",
+)
 _ACCOUNT_CACHE_GUARD_TOKENS = (
     "account_cache_not_fresh", "account_cache_initializing",
     "account cache is not fresh", "account_cache_writer_not_running",

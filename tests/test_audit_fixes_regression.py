@@ -3104,3 +3104,136 @@ def test_cycle2_watcher_partial_7d_etf_partial_streak_and_geo_stale_summary(tmp_
     )
     assert "no fresh high-severity macro headlines in the last 90 minutes" in gt_reset_target["summary"].lower()
     assert gt_reset_target["age_min"] == 0.0
+
+
+def test_cycle3_open_order_balance_race_sre_dump_log_and_fog_of_war(tmp_path):
+    """Verify Cycle 3 fixes: open-order vs stale balance double-count guard, SRE dump log exclusion, 'fog of war' metaphor filter, and Geo shield_note alongside live_unassessed."""
+    import json
+    from types import SimpleNamespace
+
+    from intelligence.macro.lexicon_ssot import match_high_severity_keywords
+    from intelligence.sentiment.collectors.portfolio_collector import TradablePositionsAndOrdersCollector
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+    from orchestratorOS.supervisor.prompt_sections import _format_macro_and_news_section
+
+    now_s = 1_795_567_190.0
+    bal_ts = now_s - 45.0  # Cached balance snapshot taken BEFORE order placement
+    ord_ts = now_s - 40.0  # Brand-new open SELL & BUY orders placed AFTER balance snapshot
+
+    # --- C3.1: Stale cached balance + newer open SELL/BUY order must NEVER double-count free + locked ---
+    cdir = tmp_path / "cachedb"
+    (cdir / "state").mkdir(parents=True)
+    (cdir / "orders").mkdir(parents=True)
+    (cdir / "state" / "venue_balances_state.json").write_text(
+        json.dumps({
+            "pos:binance:ARBUSDC": {
+                "venue": "binance",
+                "symbol": "ARBUSDC",
+                "base": "ARB",
+                "quote": "USDC",
+                "price": 0.1102,
+                "free_base": 11003.84511,
+                "value_usd": 1212.62,
+                "free_quote": 4058.97,
+                "ts": bal_ts,
+            },
+            "cash:binance:USDC": {
+                "venue": "binance",
+                "asset": "USDC",
+                "free": 4058.97,
+            },
+        }),
+        encoding="utf-8",
+    )
+    (cdir / "orders" / "cache_order_open_binance.json").write_text(
+        json.dumps({
+            "items": {
+                "ARBUSDC": [
+                    {
+                        "orderId": "568352644",
+                        "symbol": "ARBUSDC",
+                        "side": "SELL",
+                        "type": "LIMIT",
+                        "price": "0.1111",
+                        "origQty": "5400.5",
+                        "executedQty": "0.0",
+                        "status": "NEW",
+                        "time": int(ord_ts * 1000.0),
+                    },
+                    {
+                        "orderId": "568352699",
+                        "symbol": "ARBUSDC",
+                        "side": "BUY",
+                        "type": "LIMIT",
+                        "price": "0.1050",
+                        "origQty": "1000.0",
+                        "executedQty": "0.0",
+                        "status": "NEW",
+                        "time": int(ord_ts * 1000.0),
+                    },
+                ]
+            },
+            "fetchtime": now_s - 5.0,
+        }),
+        encoding="utf-8",
+    )
+    tpos, oolist, vcash, _ = TradablePositionsAndOrdersCollector(start_sync=False).collect(
+        str(cdir),
+        prices_and_trends={"ARBUSDC": {"price": 0.1102}},
+        allow_empty_inst_recovery=True,
+        allow_network=False,
+        persist=False,
+        now_ts=now_s,
+    )
+    assert len(tpos) == 1
+    arb = tpos[0]
+    assert arb["free_base"] == pytest.approx(5603.34511, abs=1e-4)
+    assert arb["locked_base_qty"] == pytest.approx(5400.5, abs=1e-4)
+    assert arb["value_usd"] == pytest.approx(617.49, abs=0.05)
+    assert arb["locked_base_usd"] == pytest.approx(595.14, abs=0.05)
+    # Total base is conserved (11003.84511 ARB = $1212.62, NOT phantom $1807.76!)
+    assert arb["free_base"] + arb["locked_base_qty"] == pytest.approx(11003.84511, abs=1e-4)
+    assert arb["replace_max_sell_usd"] == pytest.approx(1212.62, abs=0.1)
+    assert "_balance_ts" not in arb
+    # Quote cash is also conserved ($4058.97 - $105.00 = $3953.97 free + $105.00 locked)
+    assert vcash["binance:USDC"]["free"] == pytest.approx(3953.97, abs=0.05)
+    assert vcash["binance:USDC"]["locked_quote_usd"] == pytest.approx(105.0, abs=0.05)
+    assert "_balance_ts" not in vcash["binance:USDC"]
+
+    # --- C3.2: SRE log anomaly scanner ignores verify_tools diagnostic prompt dump logs ---
+    ldir = tmp_path / "logger"
+    ldir.mkdir()
+    (ldir / "dump_crypto_prompt_sections_2026-11-25.log").write_text(
+        "02:39:50 (EXCEPTION: SELL-only Kraken SPCXxUSD = long-term HOLD)\n"
+        "02:39:51 (EXCEPTION: SELL-only Kraken SPCXxUSD = long-term HOLD)\n",
+        encoding="utf-8",
+    )
+    log_sum = harvest_log_anomalies_from_dirs([str(ldir)], lookback_hours=1.0)
+    assert log_sum.error_count == 0
+    assert log_sum.persistent_errors == []
+
+    # --- C3.3: 'fog of war' idiom in software/tech article must NOT match high-severity 'war' ---
+    assert match_high_severity_keywords(
+        "Microsoft's historic cloud outage exposed an engineering 'fog of war' - Ars Technica"
+    ) == ()
+    assert "war" in match_high_severity_keywords(
+        "Iran war live: Houthis threaten Saudi ports over coalition's Hodeidah order"
+    )
+
+    # --- C3.4: Geo shield_note also renders when age >= 90m alongside live_unassessed ---
+    sec1_both = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(
+                geopolitical_threat={
+                    "threat_level": "NORMAL",
+                    "risk_score": 0.2,
+                    "age_min": 214.5,
+                    "live_unassessed_high_sev_note": "UNASSESSED_FRESH_HIGH_SEV (1 headline)",
+                    "summary": "The sole headline within the 90-minute window is routine; SPY (+0.37% 1h), QQQ (+0.41% 1h).",
+                }
+            ),
+            asset_scope="crypto",
+        )
+    )
+    assert "live_unassessed=UNASSESSED_FRESH_HIGH_SEV" in sec1_both
+    assert "shield_note=historical_eval_gt_90m_verify_live_section1" in sec1_both

@@ -569,6 +569,16 @@ def _apply_open_orders_locked_balances(
     locked_quote_by_vq: Dict[tuple[str, str], float] = {}
     locked_quote_by_vs: Dict[tuple[str, str], float] = {}
     locked_base_by_vs: Dict[tuple[str, str], float] = {}
+    pre_bal_locked_quote_by_vq: Dict[tuple[str, str], float] = {}
+    pre_bal_locked_base_by_vs: Dict[tuple[str, str], float] = {}
+    cash_ts_by_vq: Dict[tuple[str, str], float] = {}
+    for cash_val in venue_quote_cash.values():
+        if isinstance(cash_val, dict):
+            cv_n = normalize_venue_name(cash_val.get("venue"))
+            cq_u = str(cash_val.get("asset") or "").strip().upper()
+            c_ts = safe_pos_float(cash_val.get("_balance_ts"), default=None)
+            if cv_n and cq_u and c_ts is not None:
+                cash_ts_by_vq[(cv_n, cq_u)] = c_ts
     for oo_item in open_orders_list:
         if not isinstance(oo_item, dict):
             continue
@@ -577,6 +587,7 @@ def _apply_open_orders_locked_balances(
         oo_side = str(oo_item.get("side") or "").strip().upper()
         oo_px = safe_pos_float(oo_item.get("price"), default=0.0) or 0.0
         oo_rem = safe_pos_float(oo_item.get("remaining_qty"), default=None) or safe_pos_float(oo_item.get("qty"), default=0.0) or 0.0
+        explicit_oo_ts = safe_pos_float(oo_item.get("created_ts"), default=None)
         if oo_item.get("created_ts") is None:
             oo_item["created_ts"] = round(now_ts_oo, 3)
             oo_item["age_min"] = 0.0
@@ -613,12 +624,26 @@ def _apply_open_orders_locked_balances(
             locked_notional = oo_rem * oo_px
             locked_quote_by_vq[(oo_v, oo_q_u)] = locked_quote_by_vq.get((oo_v, oo_q_u), 0.0) + locked_notional
             locked_quote_by_vs[(oo_v, oo_pos_sym)] = locked_quote_by_vs.get((oo_v, oo_pos_sym), 0.0) + locked_notional
+            c_ts = cash_ts_by_vq.get((oo_v, oo_q_u))
+            if explicit_oo_ts is not None and c_ts is not None and explicit_oo_ts > c_ts + 0.5:
+                pre_bal_locked_quote_by_vq[(oo_v, oo_q_u)] = pre_bal_locked_quote_by_vq.get((oo_v, oo_q_u), 0.0) + locked_notional
         elif oo_side == "SELL":
             locked_base_by_vs[(oo_v, oo_pos_sym)] = locked_base_by_vs.get((oo_v, oo_pos_sym), 0.0) + oo_rem
+            pos_ts = safe_pos_float((matched_pos or {}).get("_balance_ts"), default=None)
+            if explicit_oo_ts is not None and pos_ts is not None and explicit_oo_ts > pos_ts + 0.5:
+                pre_bal_locked_base_by_vs[(oo_v, oo_pos_sym)] = pre_bal_locked_base_by_vs.get((oo_v, oo_pos_sym), 0.0) + oo_rem
 
+    adjusted_free_quote_by_vq: Dict[tuple[str, str], float] = {}
     for cash_val in venue_quote_cash.values():
         if isinstance(cash_val, dict):
+            cash_val.pop("_balance_ts", None)
             cv_norm, cq_u = normalize_venue_name(cash_val.get("venue")), str(cash_val.get("asset") or "").strip().upper()
+            if (pre_lq := pre_bal_locked_quote_by_vq.get((cv_norm, cq_u), 0.0)) > 0.0:
+                raw_free_q = safe_nonneg_float(cash_val.get("free"), default=None)
+                if raw_free_q is not None:
+                    adj_free_q = round(max(0.0, raw_free_q - pre_lq), 2)
+                    cash_val["free"] = adj_free_q
+                    adjusted_free_quote_by_vq[(cv_norm, cq_u)] = adj_free_q
             if (lq_val := locked_quote_by_vq.get((cv_norm, cq_u), 0.0)) > 0.0:
                 cash_val["locked_quote_usd"] = round(lq_val, 2)
                 cash_bkey = f"cash:{cv_norm}:{cq_u}"
@@ -626,9 +651,22 @@ def _apply_open_orders_locked_balances(
                     updated_bals[cash_bkey] = dict(cash_val)
 
     for pos_entry in tradable_positions:
+        pos_entry.pop("_balance_ts", None)
         p_v_norm = normalize_venue_name(pos_entry.get("venue"))
         p_sym_raw = str(pos_entry.get("symbol") or "").strip()
         p_sym_u = p_sym_raw.upper()
+        p_quote_u = str(pos_entry.get("quote") or pos_entry.get("quote_asset") or "").strip().upper()
+        if p_quote_u and (p_v_norm, p_quote_u) in adjusted_free_quote_by_vq:
+            pos_entry["free_quote"] = adjusted_free_quote_by_vq[(p_v_norm, p_quote_u)]
+        pre_lb = pre_bal_locked_base_by_vs.get((p_v_norm, p_sym_u), 0.0)
+        if pre_lb > 0.0:
+            raw_fb = safe_nonneg_float(pos_entry.get("free_base"), default=None)
+            if raw_fb is not None:
+                adj_fb = round(max(0.0, raw_fb - pre_lb), 8)
+                pos_entry["free_base"] = adj_fb
+                px_adj = safe_pos_float(pos_entry.get("price"), default=0.0) or 0.0
+                if px_adj > 0.0:
+                    pos_entry["value_usd"] = round(adj_fb * px_adj, 2)
         lq_pos = locked_quote_by_vs.get((p_v_norm, p_sym_u), 0.0)
         lb_pos = locked_base_by_vs.get((p_v_norm, p_sym_u), 0.0)
         if lq_pos > 0.0 or lb_pos > 0.0:
@@ -1295,11 +1333,20 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
     ) -> None:
         gw_max_rec = safe_pos_float(gateway_max_usd, default=2000.0) or 2000.0
         seen_rec_vs: set[tuple[str, str]] = set()
+        venue_bal_ts: Dict[str, float] = {}
+        for k, v in cached_bals.items():
+            if k.startswith("pos:") and isinstance(v, dict):
+                v_n_ts = normalize_venue_name(v.get("venue"))
+                if v_n_ts and (ts_v := safe_pos_float(v.get("ts"), default=None)) is not None:
+                    venue_bal_ts[v_n_ts] = max(venue_bal_ts.get(v_n_ts, 0.0), ts_v)
         for k, v in cached_bals.items():
             if k.startswith("pos:") and isinstance(v, dict):
                 rec_pos = dict(v)
+                pos_bal_ts = safe_pos_float(v.get("ts"), default=None)
                 for stale_k in ("locked_quote_usd", "replace_max_buy_usd", "locked_base_qty", "locked_base_usd", "replace_max_sell_usd", "ts"):
                     rec_pos.pop(stale_k, None)
+                if pos_bal_ts is not None:
+                    rec_pos["_balance_ts"] = pos_bal_ts
                 v_rec_norm = normalize_venue_name(rec_pos.get("venue"))
                 p_sym_raw = str(rec_pos.get("symbol") or "").strip()
                 p_sym = canonical_display_symbol(p_sym_raw, venue=v_rec_norm) or p_sym_raw.upper()
@@ -1365,6 +1412,9 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 if c_venue and c_asset:
                     rec_cash = dict(v)
                     rec_cash.pop("locked_quote_usd", None)
+                    c_bal_ts = safe_pos_float(v.get("ts"), default=None) or venue_bal_ts.get(normalize_venue_name(c_venue))
+                    if c_bal_ts is not None:
+                        rec_cash["_balance_ts"] = c_bal_ts
                     venue_quote_cash[f"{c_venue}:{c_asset}"] = rec_cash
 
     @staticmethod
@@ -1782,6 +1832,12 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             gateway_max_usd=gateway_max_usd,
             cache_dir=cache_dir,
         )
+        for p_cl in tradable_positions:
+            if isinstance(p_cl, dict):
+                p_cl.pop("_balance_ts", None)
+        for c_cl in venue_quote_cash.values():
+            if isinstance(c_cl, dict):
+                c_cl.pop("_balance_ts", None)
 
         if persist and allow_network and bcache_path and updated_bals and (
             _parse_bool_flag(force_persist, False) or is_live_network_backfill_enabled() or os.path.exists(bcache_path)

@@ -306,6 +306,8 @@ def _is_excluded_non_crisis_attack_keyword(
     if (combined_words & _COMMERCIAL_METAPHOR_WAR_WORDS) and not (text_words & (kinetic_only - kw_words)):
         if kw_words and (kw_words & {"war", "wars"}):
             return True
+    if kw_words and kw_words <= {"war", "wars"} and "fog" in text_words and not (text_words & (kinetic_only - kw_words)):
+        return True
     if (combined_words & _SPORTS_CONTEXT_WORDS) and not (text_words & (kinetic_only - kw_words)):
         return True
     if (combined_words & _NON_CRISIS_STRIKE_CONTEXT_WORDS) and kw_words and kw_words <= {"strike", "strikes"} and not (text_words & (kinetic_only - {"strike", "strikes"})):

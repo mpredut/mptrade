@@ -489,7 +489,6 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
             and gt_age_m is not None
             and gt_age_m >= 90.0
             and not gt.get("live_deescalation_note")
-            and not gt.get("live_unassessed_high_sev_note")
             and any(tok in gt_sum_low for tok in ("90-minute window", "spy", "qqq", "vix", "past 15 minutes", "1h)"))
         )
         else ""
