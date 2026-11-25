@@ -72,6 +72,7 @@ from cachepaths import (
     canonical_symbol_key,
     clean_symbol_key,
     compatible_quote_suffixes,
+    is_readonly_xstock_symbol,
     kraken_pair_key,  # noqa: F401
     kraken_pair_matches,
     normalize_cache_base_asset,
@@ -81,7 +82,12 @@ from cachepaths import (
     symbol_quote_asset,
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
-from instrument_registry import canonical_display_symbol, casefold_get, resolve_kraken_tokenized_pair
+from instrument_registry import (
+    canonical_balance_asset_key,
+    canonical_display_symbol,
+    casefold_get,
+    resolve_kraken_tokenized_pair,
+)
 
 _MISSING = object()
 
@@ -564,6 +570,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             if any_usd or any((clean_upper_scalar(a) or "") in {"USD", "ZUSD", "XUSD"} for a in (assets or ())):
                 out["USD"] = (total_usd, total_hold if all_holds_known else None)
             usd_bucket_keys = {k.upper() for _, keys in self._USD_EQUIVALENT_BUCKETS for k in keys}
+            seen_raw_u: set[str] = set(usd_bucket_keys)
             for req_a in (assets or ()):
                 req_s = clean_scalar_str(req_a)
                 if not req_s:
@@ -571,23 +578,35 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 req_u = req_s.upper()
                 if req_u in {"USD", "ZUSD", "XUSD"}:
                     continue
-                candidates = _kraken_balance_asset_candidates(req_s)
+                req_key = canonical_balance_asset_key(req_s, venue="kraken") or req_s
+                candidates = _kraken_balance_asset_candidates(req_key)
                 found, val, hold_v = self._lookup_balance_candidates_with_hold(bal, candidates)
                 if found and val is not None:
-                    out[req_s] = (val, hold_v)
+                    out[req_key] = (val, hold_v)
+                    matched_raw = next((c for c in candidates if c in bal), None)
+                    if matched_raw is not None:
+                        seen_raw_u.add(matched_raw.upper())
+                    else:
+                        cand_u = {c.upper() for c in candidates}
+                        seen_raw_u.update(k.upper() for k in bal if isinstance(k, str) and k.upper() in cand_u)
                 elif not found:
-                    out[req_s] = (0.0, 0.0 if has_ex_payload else None)
+                    out[req_key] = (0.0, 0.0 if has_ex_payload else None)
             seen_u = {k.upper() for k in out}
             for raw_k, raw_v in bal.items():
-                if not isinstance(raw_k, str) or raw_k.upper() in usd_bucket_keys:
+                if not isinstance(raw_k, str) or raw_k.upper() in seen_raw_u:
                     continue
-                canon_k = canonical_base_asset(raw_k) or raw_k.strip()
+                canon_k = (
+                    canonical_balance_asset_key(raw_k, venue="kraken")
+                    if is_readonly_xstock_symbol(raw_k)
+                    else (canonical_base_asset(raw_k) or raw_k.strip())
+                )
                 if not canon_k or canon_k.upper() in seen_u:
                     continue
                 found, val, hold_v = self._lookup_balance_candidates_with_hold(bal, (raw_k,))
                 if found and val is not None and (val > 0.0 or (hold_v is not None and hold_v > 0.0)):
                     out[canon_k] = (val, hold_v)
                     seen_u.add(canon_k.upper())
+                    seen_raw_u.add(raw_k.upper())
             return out
         except Exception as e:  # noqa: BLE001
             self._log_provider_balance_error("Kraken", "all_balances", "*", e)

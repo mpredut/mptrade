@@ -369,6 +369,28 @@ def resolve_registered_symbol_case(symbol: object, provider: str | None = None, 
     return raw
 
 
+def canonical_balance_asset_key(asset: object, *, venue: object = None, path=None) -> str:
+    """Return the canonical balance-cache asset key preserving mixed-case Kraken xStocks (e.g. ``SPCXx.T``/``SPCXX`` -> ``SPCXx``)."""
+    raw = clean_scalar_str(asset)
+    if raw is None:
+        return ""
+    if is_readonly_xstock_symbol(raw):
+        stem = canonical_base_asset(raw)
+        return f"{stem}x" if stem else raw
+    raw_u = raw.upper()
+    prov_norm = normalize_venue_name(venue) if venue is not None else None
+    try:
+        _, reg = _load_registry_cached(path)
+        for spec in reg.values():
+            if prov_norm and spec.provider != prov_norm:
+                continue
+            if spec.base and spec.base.upper() == raw_u and any(ch.islower() for ch in spec.base):
+                return spec.base
+    except Exception:
+        pass
+    return raw_u
+
+
 def resolve_kraken_tokenized_pair(
     symbol: object, *, upper_default: bool = False, path=None
 ) -> tuple[str, bool]:

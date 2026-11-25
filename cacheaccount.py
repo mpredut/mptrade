@@ -98,7 +98,7 @@ from cachepaths import (
     split_symbol_assets,
 )
 import instrument_registry as sym
-from instrument_registry import casefold_get, is_symbol_market_open
+from instrument_registry import canonical_balance_asset_key, casefold_get, is_symbol_market_open
 from providers.base import MarketDataProvider
 from providers.order_id_context import extract_client_order_id
 from providers.order_ledger import (
@@ -3886,11 +3886,11 @@ class CacheBalanceManager(CacheAccountManagerBase):
             raw_items = loaded.get("items") if isinstance(loaded.get("items"), dict) else {}
             cleaned: dict[str, list[dict[str, Any]]] = {}
             for a_k, a_val in raw_items.items():
-                a_clean = clean_scalar_str(a_k)
+                a_clean = canonical_balance_asset_key(a_k, venue=self.venue)
                 if not a_clean:
                     continue
                 if (norm := self.normalize_balance_entry(a_val, default_ts=doc_ts)) is not None:
-                    cleaned[a_clean.upper()] = [norm]
+                    cleaned[a_clean] = [norm]
             raw_bd = loaded.get("breakdown") if isinstance(loaded.get("breakdown"), dict) else {}
             clean_bd: dict[str, dict[str, float]] = {}
             for q_k, q_map in raw_bd.items():
@@ -3914,12 +3914,12 @@ class CacheBalanceManager(CacheAccountManagerBase):
 
     def get_balance(self, asset: str) -> Optional[dict[str, Any]]:
         """Return latest cached ``{"free", "locked", "ts"}`` dict for ``asset``."""
-        a_u = clean_upper_scalar(asset)
-        if not a_u:
+        a_k = canonical_balance_asset_key(asset, venue=self.venue)
+        if not a_k:
             return None
         self.resync_mem_file()
         with self.lock:
-            rows = self.cache.get(a_u)
+            rows = self.cache.get(a_k)
             return dict(rows[0]) if rows else None
 
     def get_all_balances(self) -> dict[str, dict[str, Any]]:
@@ -3968,13 +3968,13 @@ class CacheBalanceManager(CacheAccountManagerBase):
             items_out: dict[str, dict[str, Any]] = {}
             if eff_ver_ts is None:
                 for pk, pv in prev_items.items():
-                    if (pk_c := clean_scalar_str(pk)) is not None and (norm_p := cls.normalize_balance_entry(pv)) is not None:
-                        items_out[pk_c.upper()] = norm_p
+                    if (pk_c := canonical_balance_asset_key(pk, venue=v_norm)) and (norm_p := cls.normalize_balance_entry(pv)) is not None:
+                        items_out[pk_c] = norm_p
             for asset_k, raw_entry in (balances_by_asset or {}).items():
-                if (ak_c := clean_scalar_str(asset_k)) is None:
+                if not (ak_c := canonical_balance_asset_key(asset_k, venue=v_norm)):
                     continue
                 if (norm := cls.normalize_balance_entry(raw_entry, default_ts=eff_now_s)) is not None:
-                    items_out[ak_c.upper()] = norm
+                    items_out[ak_c] = norm
 
             bd_out: dict[str, dict[str, float]] = {}
             bd_src = breakdown if isinstance(breakdown, Mapping) else prev_bd
@@ -4019,13 +4019,14 @@ class CacheBalanceManager(CacheAccountManagerBase):
         if not isinstance(data, dict):
             return {}, 0.0, {}
         doc_ts = normalize_epoch_sec(data.get("verified_ts") or data.get("ts"), default=None)
+        v_norm = normalize_venue_name(data.get("venue")) or cls._normalize_venue_arg(filename=resolved)
         raw_items = data.get("items") if isinstance(data.get("items"), dict) else {}
         items_out: dict[str, dict[str, Any]] = {}
         for a_k, a_val in raw_items.items():
-            if (ak_c := clean_scalar_str(a_k)) is None:
+            if not (ak_c := canonical_balance_asset_key(a_k, venue=v_norm)):
                 continue
             if (norm := cls.normalize_balance_entry(a_val, default_ts=doc_ts)) is not None:
-                items_out[ak_c.upper()] = norm
+                items_out[ak_c] = norm
         ver_ts = safe_nonneg_float(data.get("verified_ts"), default=0.0) or 0.0
         raw_bd = data.get("breakdown") if isinstance(data.get("breakdown"), dict) else {}
         bd_out: dict[str, dict[str, float]] = {}
@@ -5094,25 +5095,19 @@ class _VenueBalancesBridge(_AccountTradeBridgeBase):
 
     @staticmethod
     def _venue_requested_assets(v_key: str) -> list[str]:
-        v_syms = list(sym.symbols_for(v_key))
+        specs = list(sym.select_instruments(v_key).values())
         assets: list[str] = []
         seen: set[str] = set()
-        for s_item in v_syms:
+        for spec in specs:
             if is_equity_venue(v_key):
-                s_u = clean_upper_scalar(s_item)
-                if s_u and s_u not in seen:
-                    seen.add(s_u)
-                    assets.append(s_u)
-                if "USD" not in seen:
-                    seen.add("USD")
-                    assets.append("USD")
+                parts: tuple[Any, ...] = (spec.symbol, "USD")
             else:
-                b_a, q_a = split_symbol_assets(s_item)
-                for part in (b_a, q_a):
-                    p_c = clean_scalar_str(part)
-                    if p_c and p_c.upper() not in seen:
-                        seen.add(p_c.upper())
-                        assets.append(p_c)
+                parts = (spec.base, spec.quote) if (spec.base or spec.quote) else (split_symbol_assets(spec.symbol) or ())
+            for part in parts:
+                p_c = canonical_balance_asset_key(part, venue=v_key)
+                if p_c and p_c.upper() not in seen:
+                    seen.add(p_c.upper())
+                    assets.append(p_c)
         return assets
 
     def sync_venue_once(self, v_key: str, *, now_s: Optional[float] = None) -> bool:

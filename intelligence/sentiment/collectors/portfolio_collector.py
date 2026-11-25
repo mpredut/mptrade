@@ -95,6 +95,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_venue_fee_and_limits,
 )
 from instrument_registry import (
+    canonical_balance_asset_key,
     canonical_display_symbol,
     casefold_get,
     disabled_registry_symbols,
@@ -1474,14 +1475,14 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                         continue
                     p_sym = str(v.get("symbol") or (parts[2] if len(parts) > 2 else "")).strip()
                     res_b, res_q = resolve_assets(p_sym, v.get("base"), v.get("quote"))
-                    b_u = str(res_b or "").strip().upper()
+                    b_k = canonical_balance_asset_key(res_b, venue=v_n)
                     q_u = str(res_q or "").strip().upper()
                     pos_ts = normalize_epoch_sec(v.get("ts"), default=None) or eff_now
                     fb_v = safe_nonneg_float(v.get("free_base"), default=None)
-                    if b_u and fb_v is not None:
+                    if b_k and fb_v is not None:
                         lb_v = safe_nonneg_float(v.get("locked_base_qty"), default=0.0) or 0.0
                         b_ts = normalize_epoch_sec(v.get("base_bal_ts"), default=None) or pos_ts
-                        per_venue_assets.setdefault(v_n, {})[b_u] = {
+                        per_venue_assets.setdefault(v_n, {})[b_k] = {
                             "free": fb_v,
                             "locked": lb_v,
                             "ts": b_ts,
@@ -1499,10 +1500,10 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     raw_v, raw_a = k.split(":", 1)
                     if ":" not in raw_a:
                         v_n = normalize_venue_name(raw_v)
-                        a_u = raw_a.strip().upper()
+                        a_k = canonical_balance_asset_key(raw_a, venue=v_n)
                         free_v = safe_nonneg_float(v, default=None)
-                        if v_n and a_u and free_v is not None and a_u not in per_venue_assets.get(v_n, {}):
-                            per_venue_assets.setdefault(v_n, {})[a_u] = {
+                        if v_n and a_k and free_v is not None and a_k not in per_venue_assets.get(v_n, {}):
+                            per_venue_assets.setdefault(v_n, {})[a_k] = {
                                 "free": free_v,
                                 "locked": None,
                                 "ts": eff_now,

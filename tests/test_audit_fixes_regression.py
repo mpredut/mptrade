@@ -7928,6 +7928,115 @@ def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
     assert any("Layer 2.5 upward leak" in v and "providers" in v for v in dag_viols)
 
 
+def test_kraken_xstock_balance_cache_canonical_key_and_nav_dedup(tmp_path):
+    """Regression: Kraken tokenized xStocks (SPCXx.T / ANTx.T / AAPLx.T) must preserve canonical
+    mixed-case keys in CacheBalanceManager, never duplicate under SPCX+SPCXX, and always resolve
+    live mixed-case prices in compute_venue_nav_breakdown without dipping to $0 or doubling NAV.
+    """
+    from cacheaccount import CacheAssetValueManager, CacheBalanceManager, _VenueBalancesBridge
+    from cachepaths import CACHE_KRAKEN_BALANCE_FILENAME
+    from providers.kraken_provider import KrakenProvider
+    from providers.portfolio_valuation import (
+        compute_venue_nav_breakdown,
+        load_venue_balance_caches,
+        load_venue_balances_state_dict,
+    )
+
+    now_s = 1_795_900_000.0
+
+    # 1. _VenueBalancesBridge requests canonical mixed-case xStock bases from instruments.conf
+    req_assets = _VenueBalancesBridge._venue_requested_assets("kraken")
+    assert "SPCXx" in req_assets
+    assert "ANTx" in req_assets
+    assert "SPCX" not in req_assets
+    assert "ANT" not in req_assets
+
+    # 2. KrakenProvider.all_free_and_locked_balances maps SPCXx.T/ANTx.T/AAPLx.T without duplicates
+    kr_p = KrakenProvider(
+        client=SimpleNamespace(
+            balance_ex=lambda: {
+                "ZUSD": {"balance": "1660.02", "hold_trade": "0.0"},
+                "HYPE": {"balance": "0.002591", "hold_trade": "0.0"},
+                "SPCXx.T": {"balance": "12.0", "hold_trade": "0.0"},
+                "ANTx.T": {"balance": "1.5", "hold_trade": "0.0"},
+                "AAPLx.T": {"balance": "0.25", "hold_trade": "0.0"},
+                "XETH": {"balance": "0.1", "hold_trade": "0.0"},
+            }
+        )
+    )
+    kr_all = kr_p.all_free_and_locked_balances(["HYPE", "USD", "SPCXx", "ANTx"])
+    assert kr_all["SPCXx"] == pytest.approx((12.0, 0.0))
+    assert kr_all["ANTx"] == pytest.approx((1.5, 0.0))
+    assert kr_all["AAPLx"] == pytest.approx((0.25, 0.0))
+    assert kr_all["ETH"] == pytest.approx((0.1, 0.0))
+    assert "SPCX" not in kr_all
+    assert "ANT" not in kr_all
+    assert "AAPL" not in kr_all
+
+    # 3. CacheBalanceManager canonicalizes SPCXx/SPCXX on full replace & partial merge (no duplicates)
+    cdb = tmp_path / "cachedb"
+    (cdb / "orders").mkdir(parents=True)
+    (cdb / "prices").mkdir(parents=True)
+    kr_bal_path = cdb / "orders" / CACHE_KRAKEN_BALANCE_FILENAME
+    CacheBalanceManager.replace_venue_balances_snapshot(
+        str(kr_bal_path),
+        {"USD": (1660.0, 0.0), "SPCXx": (12.0, 0.0)},
+        venue="kraken",
+        now_s=now_s,
+        verified_ts=now_s,
+    )
+    CacheBalanceManager.replace_venue_balances_snapshot(
+        str(kr_bal_path),
+        {"SPCXX": {"free": 12.0, "locked": 0.0, "ts": now_s + 5.0}},
+        venue="kraken",
+        now_s=now_s + 5.0,
+        verified_ts=None,
+    )
+    saved_doc = json.loads(kr_bal_path.read_text(encoding="utf-8"))
+    assert set(saved_doc["items"].keys()) == {"USD", "SPCXx"}
+    kr_mgr = CacheBalanceManager(60, None, str(kr_bal_path), read_only=True, venue="kraken")
+    assert kr_mgr.get_balance("SPCXx")["free"] == pytest.approx(12.0)
+    assert kr_mgr.get_balance("SPCXX")["free"] == pytest.approx(12.0)
+    snap_items, _, _ = CacheBalanceManager.read_venue_balances_snapshot(str(kr_bal_path))
+    assert set(snap_items.keys()) == {"USD", "SPCXx"}
+
+    # 4. Live price lookup & NAV valuation strictly from Layer 3 caches (no $0 dip and no 2x spike)
+    live_prices = {"items": {"SPCXxUSD": [[int(now_s * 1000), 120.0]]}}
+    (cdb / "prices" / "cache_current_price.json").write_text(json.dumps(live_prices), encoding="utf-8")
+    bal_caches = load_venue_balance_caches(str(cdb))
+    nav = compute_venue_nav_breakdown(venue_balance_caches=bal_caches, live_prices=live_prices)
+    # Kraken = $1660 cash + 12 * $120 SPCXx = $3100.0
+    assert nav["venues_usd"]["kraken"] == pytest.approx(3100.0)
+    assert nav["portfolio_total_usd"] == pytest.approx(3100.0)
+    unified = load_venue_balances_state_dict(str(cdb))
+    assert unified["kraken:SPCXx"] == pytest.approx(12.0)
+    assert "kraken:SPCXX" not in unified
+
+    # 5. Even a legacy/stale file containing both SPCX and SPCXX deduplicates cleanly and resolves SPCXxUSD price
+    stale_caches = {
+        "kraken": {
+            "venue": "kraken",
+            "ts": now_s,
+            "items": {
+                "USD": {"free": 1660.0, "locked": 0.0, "ts": now_s},
+                "SPCX": {"free": 12.0, "locked": 0.0, "ts": now_s},
+                "SPCXX": {"free": 12.0, "locked": 0.0, "ts": now_s + 1.0},
+            },
+        }
+    }
+    nav_stale = compute_venue_nav_breakdown(venue_balance_caches=stale_caches, live_prices=live_prices)
+    assert nav_stale["venues_usd"]["kraken"] == pytest.approx(3100.0)
+
+    # 6. CacheAssetValueManager prices Kraken SPCXx using only Layer 3 balance + current price caches
+    api_mock = MagicMock()
+    api_mock.get_total_assets_value_usdc.return_value = 9000.0
+    av_mgr = CacheAssetValueManager(9999, ["TOTAL"], str(cdb / "orders" / "cache_asset_value.jsonl"), api_client=api_mock)
+    av_items = av_mgr.get_remote_items("TOTAL", 0)
+    assert len(av_items) == 1
+    assert av_items[0]["venues_usd"] == {"binance": 9000.0, "kraken": 3100.0}
+    assert av_items[0]["portfolio_total_usd"] == pytest.approx(12100.0)
+
+
 
 
 
