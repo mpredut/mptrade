@@ -30,7 +30,14 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import canonical_symbol_key, normalize_venue_name
+from cachepaths import canonical_symbol_key, is_kraken_tokenized_asset, normalize_venue_name
+
+
+def _normalize_regime_symbol(symbol: object) -> Optional[str]:
+    raw = clean_scalar_str(symbol)
+    if raw is None:
+        return None
+    return raw if is_kraken_tokenized_asset(raw) else clean_upper_scalar(raw)
 
 
 _NON_FINITE_FLOAT_TOKENS = frozenset({
@@ -244,8 +251,8 @@ class MarketRegimeContext:
         )
         return cls(
             decision=decision, resolved_trend=trend, evaluated_at=eval_ts,
-            symbol=clean_upper_scalar(symbol), provider=normalize_venue_name(provider, default=None),
-            trend_duration_seconds=dur_s, benchmark_symbol=clean_upper_scalar(benchmark_symbol),
+            symbol=_normalize_regime_symbol(symbol), provider=normalize_venue_name(provider, default=None),
+            trend_duration_seconds=dur_s, benchmark_symbol=_normalize_regime_symbol(benchmark_symbol),
             benchmark_decision=benchmark_decision,
         )
 

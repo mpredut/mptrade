@@ -269,7 +269,51 @@ class TestModuleSpecifics(unittest.TestCase):
     def test_monitortrades_global_hardtp_fallbacks_loaded(self):
         self.assertFalse(mt.HARD_TP_ENABLED)
         self.assertEqual(mt.MT_REENTRY_POST_STOP_COOLDOWN_SEC, 0.0)
+        self.assertEqual(mt.MT_REENTRY_TOLERANCE_PCT, 0.05)
+        self.assertEqual(mt.get_exit_manager().config.reentry_tolerance_pct, 0.05)
+        self.assertEqual(mt.get_exit_manager().config.are_close_tolerance_pct, mt.MT_ARE_CLOSE_TOLERANCE_PCT)
         self.assertEqual(mt.TP_REFERENCE, "last")
+
+    def test_monitortrades_load_state_preserves_mixed_case_xstock_keys(self):
+        import json
+        import tempfile
+
+        now_s = 1_795_500_000.0
+        with tempfile.TemporaryDirectory() as td:
+            st_path = os.path.join(td, "mt_state.json")
+            with open(st_path, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "version": 1,
+                        "ts": now_s,
+                        "sl_bounce_state": {"SPCXxUSD": {"started_at": now_s - 30.0}},
+                        "reentry_state": {"ANTxUSD": {"trough": 90.0}, "btcusdc": {"trough": 65000.0}},
+                        "last_exit_kind": {"SPCXxUSD": "STOP"},
+                        "reentry_done_sell_time": {"SPCXxUSD": now_s - 10.0},
+                        "pending_stop_exit": {"ANTxUSD": {"time": now_s - 5.0}},
+                    },
+                    fh,
+                )
+            prev_file = mt._MT_STATE_FILE
+            prev_en = mt._MT_PERSISTENCE_ENABLED
+            try:
+                mt._MT_STATE_FILE = st_path
+                mt._MT_PERSISTENCE_ENABLED = True
+                for m in (mt._SL_BOUNCE_STATE, mt._REENTRY_STATE, mt._LAST_EXIT_KIND, mt._REENTRY_DONE_SELL_TIME, mt._PENDING_STOP_EXIT):
+                    m.clear()
+                mt._load_mt_state(now_curr=now_s)
+                self.assertIn("SPCXxUSD", mt._SL_BOUNCE_STATE)
+                self.assertNotIn("SPCXXUSD", mt._SL_BOUNCE_STATE)
+                self.assertIn("ANTxUSD", mt._REENTRY_STATE)
+                self.assertIn("BTCUSDC", mt._REENTRY_STATE)
+                self.assertEqual(mt._LAST_EXIT_KIND.get("SPCXxUSD"), "STOP")
+                self.assertIn("SPCXxUSD", mt._REENTRY_DONE_SELL_TIME)
+                self.assertIn("ANTxUSD", mt._PENDING_STOP_EXIT)
+            finally:
+                mt._MT_STATE_FILE = prev_file
+                mt._MT_PERSISTENCE_ENABLED = prev_en
+                for m in (mt._SL_BOUNCE_STATE, mt._REENTRY_STATE, mt._LAST_EXIT_KIND, mt._REENTRY_DONE_SELL_TIME, mt._PENDING_STOP_EXIT):
+                    m.clear()
 
     def test_rtrade_buy_sell_asymmetry_preserved(self):
         self.assertNotEqual(rt.RTRADE_BUY_DECAY_PCT, rt.RTRADE_SELL_DECAY_PCT)

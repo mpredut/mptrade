@@ -217,6 +217,7 @@ class KrakenTrailing(TrailingAdapterBase):
                 yield (asset, asset, pair, trail)
 
     def begin_tick(self) -> bool:
+        self._tick_balances = None
         self._tick_balances = self._balance_ex_map()
         if self._tick_balances is None:
             self.log("  ! [TRAIL-K] empty or invalid BalanceEx snapshot -- skipping the tick")

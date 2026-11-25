@@ -49,7 +49,10 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 from instrument_registry import canonical_display_symbol
-from providers.intent_state_store import load_known_ai_order_ids_from_cachedb
+from providers.intent_state_store import (
+    load_known_ai_order_id_to_intent_map_from_cachedb,
+    load_known_ai_order_ids_from_cachedb,
+)
 from providers.order_id_context import (
     all_correlatable_client_order_ids,
     extract_client_order_id,
@@ -385,6 +388,7 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
 
             # 3. Reconcile resting venue open orders against active ledger records.
             known_ai_ids_lc: Optional[set[str]] = None
+            known_ai_iid_map: Optional[dict[str, str]] = None
             seen_open_keys: set[str] = set()
             for venue_key, sym_map in open_by_venue.items():
                 for sym_k, rows in sym_map.items():
@@ -457,6 +461,20 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                                     cand_ids.update(tok.lower() for tok in all_correlatable_client_order_ids(cid))
                                 if known_ai_ids_lc and (cand_ids & known_ai_ids_lc):
                                     inferred_owner = "ai_executor"
+                            adopted_iid: Optional[str] = None
+                            if inferred_owner == "ai_executor":
+                                if known_ai_iid_map is None:
+                                    known_ai_iid_map = load_known_ai_order_id_to_intent_map_from_cachedb(self.cachedb_dir)
+                                cand_tokens = [oid.lower()]
+                                if cid:
+                                    cand_tokens.append(cid.lower())
+                                    cand_tokens.extend(tok.lower() for tok in all_correlatable_client_order_ids(cid))
+                                for tok in cand_tokens:
+                                    if matched_iid := known_ai_iid_map.get(tok):
+                                        adopted_iid = matched_iid
+                                        break
+                                if not adopted_iid and cid and cid.upper().startswith("AI_INTENT_"):
+                                    adopted_iid = cid[3:]
                             adopted_key = _emit(
                                 OrderEventType.ORPHAN_ADOPTED.value,
                                 venue=venue_key,
@@ -467,6 +485,7 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                                 qty=orig_q,
                                 px=oo_px,
                                 fq=exec_q if exec_q > 0.0 else None,
+                                iid=adopted_iid,
                                 cid=cid,
                                 vid=oid,
                                 vst=oo_vst,

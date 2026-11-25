@@ -1374,6 +1374,8 @@ class BaseSpotMixin:
                                 mtime_val = safe_nonneg_float(os.path.getmtime(self.state_file), default=0.0) or 0.0
                                 if mtime_val > getattr(self, "_state_file_mtime", 0.0) + 1e-3:
                                     self.s = self._load()
+                                    if getattr(self, "exit_manager", None) is not None:
+                                        self.exit_manager.bind_state(self.s)
                         except OSError:
                             pass
                     if self.reconcile(price) is False:

@@ -506,6 +506,14 @@ class AutonomousIntentGateway:
             cache_ok, cache_reason = ensure_submit_account_cache_ready(inst, side=decision)
             if not cache_ok:
                 sym_lbl = str(getattr(inst, "symbol", "") or intent.get("symbol") or "")
+                if canceled_order_snapshots:
+                    self._rollback_canceled_orders(
+                        inst,
+                        intent,
+                        list(canceled_order_snapshots),
+                        reason=f"intent {intent_id} {cache_reason}",
+                    )
+                    canceled_order_snapshots.clear()
                 logger.warning(
                     "[LLM TRADER \u00b7 ENFORCE] Aborting pre-submit cancel for %s %s: %s (keeping prior open orders active)",
                     decision,

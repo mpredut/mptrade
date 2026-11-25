@@ -15,6 +15,7 @@ from botcore import (
     extract_order_price,
     safe_pos_float,
 )
+from cachepaths import normalize_venue_name
 from .execution_audit import (
     _extract_audit_fill_metrics,
     _read_audit_intent_records,
@@ -25,6 +26,7 @@ from .intent_state import (
     _extract_intent_id,
     _record_intent_state,
     extract_intent_side,
+    intent_venue_client_order_ids,
 )
 from .intent_telemetry import (  # noqa: F401
     _attach_intent_age_fields,
@@ -35,6 +37,7 @@ from .intent_telemetry import (  # noqa: F401
     build_last_cycle_execution_status,
     summarize_recent_ai_intents,
 )
+from .order_id_context import all_correlatable_client_order_ids, extract_client_order_id
 from .order_ledger import OrderLedgerReader
 from .order_ohlc_utils import extract_executed_qty
 from .order_status_ssot import (
@@ -44,6 +47,7 @@ from .order_status_ssot import (
     RECONCILABLE_AI_INTENT_STATUSES,
     TERMINAL_CANCEL_VENUE_STATUSES,
     is_cancel_or_expire_status,
+    is_terminal_non_fill_venue_status,
 )
 
 
@@ -226,6 +230,35 @@ def _scan_matching_audit_records(
         iid_e: extract_order_id(it_e.get("execution_payload"), default=None)
         for iid_e, it_e in executed_incomplete_by_id.items()
     }
+    cid_to_iid: dict[str, str] = {}
+    oid_to_iid: dict[tuple[str, str], str] = {}
+    oid_any_to_iid: dict[str, str] = {}
+    for iid_k, it_k in (*failed_by_id.items(), *executed_incomplete_by_id.items()):
+        for tok in intent_venue_client_order_ids(it_k):
+            if tok:
+                cid_to_iid[tok.lower()] = iid_k
+        ep_k = it_k.get("execution_payload")
+        if ep_cid := extract_client_order_id(ep_k, default=None):
+            cid_to_iid[ep_cid.lower()] = iid_k
+            for tok in all_correlatable_client_order_ids(ep_cid):
+                cid_to_iid[tok.lower()] = iid_k
+        v_k = normalize_venue_name(it_k.get("venue") or it_k.get("provider_name") or it_k.get("provider")) or ""
+        cand_oids: list[str] = []
+        if ep_oid := clean_order_id(extract_order_id(ep_k, default=None)):
+            cand_oids.append(ep_oid)
+        for h_entry in (it_k.get("history") if isinstance(it_k.get("history"), list) else ()):
+            if isinstance(h_entry, dict):
+                h_oid = clean_order_id(
+                    extract_order_id(h_entry.get("order_id"), default=None)
+                    or extract_order_id(h_entry.get("payload"), default=None)
+                )
+                if h_oid:
+                    cand_oids.append(h_oid)
+        for o_k in cand_oids:
+            o_lc = o_k.lower()
+            if v_k:
+                oid_to_iid[(v_k, o_lc)] = iid_k
+            oid_any_to_iid[o_lc] = iid_k
 
     record_batches: list[list[dict[str, Any]]] = []
     eff_cachedb = _resolve_sibling_cachedb_dir(audit_dir, cachedb_dir)
@@ -245,6 +278,16 @@ def _scan_matching_audit_records(
     for batch in record_batches:
         for rec in batch:
             iid = _extract_intent_id(rec)
+            if not iid:
+                if rec_cid := clean_order_id(rec.get("client_order_id")):
+                    for tok in (rec_cid.lower(), *all_correlatable_client_order_ids(rec_cid)):
+                        if matched_iid := cid_to_iid.get(tok.lower()):
+                            iid = matched_iid
+                            break
+                if not iid and (rec_oid := clean_order_id(rec.get("order_id"))):
+                    rec_v = normalize_venue_name(rec.get("venue")) or ""
+                    rec_oid_lc = rec_oid.lower()
+                    iid = oid_to_iid.get((rec_v, rec_oid_lc)) or oid_any_to_iid.get(rec_oid_lc) or ""
             if not iid:
                 continue
             any_audit_seen_ids.add(iid)
@@ -371,7 +414,11 @@ def _apply_failed_intent_audit_record(
     if is_cancel_terminal:
         if st_up == "FAILED":
             return False
-        raw_v_status = v_stat if v_stat in CANCEL_OR_EXPIRE_VENUE_STATUSES else l_stat.upper()
+        raw_v_status = (
+            v_stat
+            if (v_stat in CANCEL_OR_EXPIRE_VENUE_STATUSES or is_terminal_non_fill_venue_status(v_stat))
+            else l_stat.upper()
+        )
         target_state, action_lbl, reason_val = "FAILED", "RECONCILED_TERMINAL", raw_v_status
         is_term = ev == "order_terminal"
         exec_qty_s, quote_qty_s = "0", ""
@@ -465,7 +512,11 @@ def _apply_executed_intent_audit_record(
         and "terminal_ts" not in exec_pay
         and rec_ts is not None
     ):
-        norm_cancel = v_stat if v_stat in CANCEL_OR_EXPIRE_VENUE_STATUSES else "CANCELED"
+        norm_cancel = (
+            v_stat
+            if (v_stat in CANCEL_OR_EXPIRE_VENUE_STATUSES or is_terminal_non_fill_venue_status(v_stat))
+            else "CANCELED"
+        )
         exec_pay["status"] = norm_cancel
         if ev == "order_terminal":
             if rec_ts is not None:

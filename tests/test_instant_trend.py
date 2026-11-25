@@ -2273,3 +2273,41 @@ class TestWsBridgeIntegration(TempDirTestCase):
         self.assertGreater(raw_tick_vol, 2.0)
         self.assertLess(snap["vol_1h_pct"], raw_tick_vol * 0.55)
         self.assertGreater(snap["vol_1h_pct"], 0.5)
+
+    def test_short_dynamic_window_does_not_truncate_persistent_trend_buffer(self):
+        """Evaluating a short dynamic window (e.g. 90s) must never trim_front the persistent 24h buffer."""
+        now_s = 1_795_500_000.0
+        now_ms = int(now_s * 1000)
+        # 2 hours of ticks spaced 2s apart (3600 ticks)
+        rows = [
+            [now_ms - i * 2_000, round(100.0 + 0.001 * (3600 - i), 4)]
+            for i in range(3600, -1, -1)
+        ]
+        trend_file = os.path.join(self.tmp, "short_window_preserves_buf.json")
+        mgr = cm.CacheShortTrendManager(["BTCUSDC"], trend_file, data_sync_mode="producer")
+        fake_c24 = SimpleNamespace(
+            lock=threading.RLock(),
+            cache={"BTCUSDC": rows},
+            subscribe_price=lambda _sub: None,
+            get_recent_entries=lambda _sym, last_seconds=0: [
+                r for r in rows if r[0] >= now_ms - int(last_seconds * 1000)
+            ],
+        )
+        mgr._cache24_managers = {"BTCUSDC": fake_c24}
+        buf = mgr._get_trend_buffer("BTCUSDC")
+        buf.sync_entries(rows)
+        orig_len = len(buf.timestamps)
+        orig_first_ts = buf.timestamps[0]
+
+        res_short = mgr.get_short_trend_for_window("BTCUSDC", 90, now=now_s)
+        self.assertIsNotNone(res_short)
+        self.assertEqual(len(buf.timestamps), orig_len)
+        self.assertEqual(buf.timestamps[0], orig_first_ts)
+
+        # Even if a newer tick arrives in c24, evaluating a 90s dynamic window appends the tail without trimming head
+        rows.append([now_ms + 2_000, 105.0])
+        res_short2 = mgr.get_short_trend_for_window("BTCUSDC", 90, now=now_s + 2.0)
+        self.assertIsNotNone(res_short2)
+        self.assertEqual(buf.timestamps[0], orig_first_ts)
+        self.assertEqual(len(buf.timestamps), orig_len + 1)
+

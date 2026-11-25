@@ -1947,3 +1947,36 @@ def test_subiect2_kraken_bots_retired_and_trade_cache_ssot_cost_basis(tmp_path, 
     assert rows["Kraken SPCXx"]["cost"] == pytest.approx(12.135889 * expected_new_avg, abs=0.1)
 
 
+def test_kraken_trailing_begin_tick_refreshes_balance_ex_across_ticks(tmp_path):
+    """begin_tick() must clear previous tick's _tick_balances so fresh BalanceEx changes are seen on tick 2+."""
+    k = FakeK(price=60.0, total=0.0, held=0.0)
+    tr = KrakenTrailing(
+        k,
+        log=lambda _msg: None,
+        enabled=True,
+        state_file=str(tmp_path / "trailing_state.json"),
+    )
+    # Tick 1: starts flat (balance = 0)
+    assert tr.begin_tick() is True
+    assert k.balance_calls == 1
+    assert tr.free_qty("HYPE") == 0.0
+    assert tr.total_qty("HYPE") == 0.0
+    # Within same tick, _tick_balances is cached (no extra BalanceEx call)
+    assert k.balance_calls == 1
+
+    # Tick 2: user buys 15.0 HYPE -> begin_tick() MUST fetch fresh BalanceEx
+    k.total = 15.0
+    assert tr.begin_tick() is True
+    assert k.balance_calls == 2
+    assert tr.free_qty("HYPE") == pytest.approx(15.0)
+    assert tr.total_qty("HYPE") == pytest.approx(15.0)
+
+    # Tick 3: user sells back to 0 -> begin_tick() MUST observe zero balance
+    k.total = 0.0
+    assert tr.begin_tick() is True
+    assert k.balance_calls == 3
+    assert tr.free_qty("HYPE") == 0.0
+    assert tr.total_qty("HYPE") == 0.0
+
+
+

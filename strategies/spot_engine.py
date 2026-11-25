@@ -974,7 +974,8 @@ class Strategy(BaseSpotMixin):
 
     def _finalize_cycle_if_flat(self, o: dict, price: float) -> None:
         """Close a cycle once, only after terminal exit status."""
-        dust = 2 * 10.0 ** -(max(self.vol_dec - 1, 1))
+        dust_decimals = self.vol_dec if self.vol_dec <= 2 else self.vol_dec - 1
+        dust = 2 * 10.0 ** -max(dust_decimals, 1)
         if abs(self.s["qty"]) < dust or (
             self.ordermin > 0
             and 0.0 < self.s["qty"] < self.ordermin
@@ -1959,6 +1960,12 @@ class Strategy(BaseSpotMixin):
         )
 
         sells = [o for o in self.s["orders"] if o["side"] == "sell"]
+
+        def _order_rem_vol(order: dict) -> float:
+            orig_v = safe_nonneg_float(order.get("vol"), 0.0) or 0.0
+            applied_v = safe_nonneg_float(order.get("applied_vol"), 0.0) or 0.0
+            return max(0.0, orig_v - applied_v)
+
         locked_by_slot: dict[int, PlannedTranche] = {}
         used_orders: set[int] = set()
         reserved_vol = 0.0
@@ -1975,16 +1982,17 @@ class Strategy(BaseSpotMixin):
                 o_tr = safe_nonneg_int(o.get("tranche_idx"), default=None)
                 if tr_idx is not None and o_tr is not None and o_tr != tr_idx:
                     continue
-                if abs(o["price"] - target_px) / target_px <= 0.001 and 0 < o["vol"] <= held - reserved_vol + 1e-9:
+                o_rem = _order_rem_vol(o)
+                if abs(o["price"] - target_px) / target_px <= 0.001 and 0 < o_rem <= held - reserved_vol + 1e-9:
                     locked_by_slot[slot_i] = PlannedTranche(
                         slot_idx=slot_i,
                         price=o["price"],
-                        qty=o["vol"],
+                        qty=o_rem,
                         tranche_idx=tr_idx,
                         locked=True,
                     )
                     used_orders.add(id(o))
-                    reserved_vol += o["vol"]
+                    reserved_vol += o_rem
                     break
 
         unstarted = [(slot_i, tr_idx, pct, share) for slot_i, (tr_idx, pct, share) in enumerate(unsold) if slot_i not in locked_by_slot]
@@ -2035,9 +2043,9 @@ class Strategy(BaseSpotMixin):
             len(sells) == len(planned)
             and all(not _parse_bool_flag(o.get("cancel_requested"), False) for o in sells)
             and all(
-                abs(o["price"] - tr.price) / tr.price <= 0.001 and abs(o["vol"] - tr.qty) <= 1e-9
+                abs(o["price"] - tr.price) / tr.price <= 0.001 and abs(_order_rem_vol(o) - tr.qty) <= 1e-9
                 for o, tr in zip(
-                    sorted(sells, key=lambda x: (x["price"], x["vol"])),
+                    sorted(sells, key=lambda x: (x["price"], _order_rem_vol(x))),
                     sorted(planned, key=lambda tr: (tr.price, tr.qty)),
                 )
             )

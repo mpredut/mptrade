@@ -631,3 +631,37 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             )
             self.assertTrue(ok_eth)
             self.assertEqual(reason_eth, "ok")
+
+    def test_market_regime_context_preserves_mixed_case_kraken_xstocks(self):
+        dec = order_guard.MarketRegimeDecision(
+            regime="bull", gradient=0.5, epsilon=0.1, strength=5.0,
+            fresh=True, reason="signal",
+        )
+        ctx = order_guard.MarketRegimeContext.from_decision(
+            dec,
+            evaluated_at=self.now,
+            symbol="SPCXxUSD",
+            provider="kraken",
+            benchmark_symbol="ANTxUSD",
+        )
+        self.assertEqual(ctx.symbol, "SPCXxUSD")
+        self.assertEqual(ctx.benchmark_symbol, "ANTxUSD")
+        self.assertTrue(
+            ctx.is_valid_for(
+                symbol="SPCXxUSD",
+                provider="kraken",
+                now=self.now,
+                max_age_seconds=60.0,
+                require_identity=True,
+            )
+        )
+        self.assertFalse(
+            ctx.is_valid_for(
+                symbol="SPCXXUSD",
+                provider="kraken",
+                now=self.now,
+                max_age_seconds=60.0,
+                require_identity=True,
+            )
+        )
+

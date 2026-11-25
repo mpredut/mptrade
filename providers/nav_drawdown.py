@@ -305,10 +305,16 @@ def evaluate_nav_drawdown_metrics(
                 cf_events += 1
             elif has_conf_cf and prev["nav_usd"] > 0.0:
                 cf_events += 1
-                # Deduct ONLY the confirmed external cashflow amount from return calculation:
-                # portfolio return across the step is (NAV_cur - confirmed_cashflow) / NAV_prev.
-                mkt_nav_cur = max(0.0, pt["nav_usd"] - conf_cf)
-                cur_idx *= mkt_nav_cur / prev["nav_usd"]
+                if conf_cf > 0.0:
+                    # Deposit (start-of-period convention): new capital joins the base
+                    # so market return is NAV_cur / (NAV_prev + deposit), never collapsing to 0.
+                    denom = prev["nav_usd"] + conf_cf
+                    cur_idx *= pt["nav_usd"] / denom if denom > 0.0 else 1.0
+                else:
+                    # Withdrawal (end-of-period convention): add withdrawn cash back to NAV_cur
+                    # so market return is (NAV_cur - withdrawal) / NAV_prev.
+                    mkt_nav_cur = max(0.0, pt["nav_usd"] - conf_cf)
+                    cur_idx *= mkt_nav_cur / prev["nav_usd"]
             elif prev["nav_usd"] > 0.0:
                 cur_idx *= pt["nav_usd"] / prev["nav_usd"]
         adj_series.append((pt["ts"], _utc_day_str(pt["ts"]), cur_idx, pt))

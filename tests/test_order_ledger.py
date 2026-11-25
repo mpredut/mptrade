@@ -1443,3 +1443,94 @@ def test_retry_giveup_audit_event_expires_deferred_intent_from_active_ledger(tmp
     # Unsubmitted deferred intent must not pollute closed-trade history
     assert reader.list_closed_files() == []
 
+
+def test_compound_terminal_non_fill_statuses_and_ai_orphan_iid_adoption(tmp_path):
+    """Compound terminal non-fill venue statuses classify as terminal (never open), and AI orphan adoption populates iid."""
+    from providers.order_ledger import OrderEventType, ledger_row_to_audit_record
+    from providers.order_status_ssot import is_cancel_or_expire_status, is_terminal_audit_status
+
+    for vst, exp_local in (
+        ("MINTRADENTLREJECTED", "rejected"),
+        ("BADALOPXREJECTED", "rejected"),
+        ("ARCHIVED_CANCELED", "canceled"),
+        ("EXPIRED_IN_MATCH", "expired"),
+    ):
+        assert is_cancel_or_expire_status(vst) is True
+        assert is_terminal_audit_status(vst) is True
+        rec = ledger_row_to_audit_record(
+            {
+                "ts": 1_795_500_000.0,
+                "ev": OrderEventType.STATUS.value,
+                "v": "hyperliquid",
+                "sym": "HYPEUSDC",
+                "vid": "999",
+                "vst": vst,
+            }
+        )
+        assert rec is not None
+        assert rec["event"] == "order_terminal"
+        assert rec["status"] == exp_local
+    # Composite status stays gated by include_composite
+    assert is_cancel_or_expire_status("CANCELED_OR_EXPIRED", include_composite=False) is False
+    assert is_cancel_or_expire_status("CANCELED_OR_EXPIRED", include_composite=True) is True
+
+    # AI orphan adoption populates iid from auto_order_intents_state.json (and AI_intent_ cid prefix)
+    from cachepaths import (
+        AUTO_ORDER_INTENTS_STATE_FILENAME,
+        CACHE_BINANCE_ORDER_OPEN_FILENAME,
+        resolve_cachedb_filepath,
+    )
+
+    t0 = 1_795_500_100.0
+    cdir = tmp_path / "cachedb"
+    intent_id = "intent_1795500000_ab12"
+    intents_path = resolve_cachedb_filepath(os.path.join(str(cdir), AUTO_ORDER_INTENTS_STATE_FILENAME))
+    os.makedirs(os.path.dirname(intents_path), exist_ok=True)
+    with open(intents_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            [
+                {
+                    "intent_id": intent_id,
+                    "venue": "binance",
+                    "symbol": "BTCUSDC",
+                    "decision": "BUY",
+                    "status": "SUBMIT_UNKNOWN",
+                    "execution_payload": {"orderId": "888777"},
+                }
+            ],
+            fh,
+        )
+    oo_path = resolve_cachedb_filepath(os.path.join(str(cdir), CACHE_BINANCE_ORDER_OPEN_FILENAME))
+    os.makedirs(os.path.dirname(oo_path), exist_ok=True)
+    with open(oo_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "verified_ts": t0,
+                "items": {
+                    "BTCUSDC": [
+                        {
+                            "orderId": "888777",
+                            "clientOrderId": f"AI_{intent_id}",
+                            "symbol": "BTCUSDC",
+                            "side": "BUY",
+                            "type": "LIMIT",
+                            "origQty": "0.01",
+                            "executedQty": "0",
+                            "price": "70000",
+                            "status": "NEW",
+                        }
+                    ]
+                },
+            },
+            fh,
+        )
+    reconciler = OrderLedgerReconciler(cachedb_dir=str(cdir), use_singletons=False)
+    reader = OrderLedgerReader(cachedb_dir=str(cdir))
+    stats = reconciler.reconcile_once(now_ts=t0 + 2.0)
+    assert stats["orphans_adopted"] == 1
+    active = reader.list_active_orders(apply_tail=False)
+    assert len(active) == 1
+    assert active[0]["owner"] == "ai_executor"
+    assert active[0]["iid"] == intent_id
+
+

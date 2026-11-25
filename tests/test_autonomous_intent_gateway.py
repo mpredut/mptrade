@@ -4937,6 +4937,153 @@ def test_tokenized_equity_longterm_sell_survival_guard_and_gateway(tmp_path):
     assert len(place_calls) == 1
 
 
+def test_gateway_stale_cache_abort_rolls_back_prior_canceled_orders(temp_workspace):
+    """If Step-2 balance-unlock aborts on stale account cache, already-canceled Step-1 AI orders must be restored."""
+    gw = AutonomousIntentGateway(workspace_dir=str(temp_workspace))
+    inst = MagicMock()
+    inst.symbol = "BTCUSDC"
+    inst.provider_name = "binance"
+    intent = {"intent_id": "intent_stale_rollback", "symbol": "BTCUSDC", "venue": "binance", "history": []}
+    prior_snaps = [
+        {
+            "order_id": "prior-ai-1",
+            "client_order_id": "AI_intent_old",
+            "side": "BUY",
+            "price": 69000.0,
+            "qty": 0.01,
+            "actor": "AI",
+        }
+    ]
+    rollback_calls = []
+    with (
+        patch(
+            "orchestratorTrade.autonomous_intent_gateway.ensure_submit_account_cache_ready",
+            return_value=(False, "account_cache_stale:binance"),
+        ),
+        patch.object(
+            gw,
+            "_rollback_canceled_orders",
+            side_effect=lambda i, it, snaps, **kw: rollback_calls.append((list(snaps), kw.get("reason"))),
+        ),
+    ):
+        ok, cids = gw._cancel_prior_orders_or_abort(
+            inst,
+            intent,
+            intent_id="intent_stale_rollback",
+            decision="BUY",
+            now_ts=1_795_500_000.0,
+            canceled_order_snapshots=prior_snaps,
+        )
+    assert ok is False and cids == []
+    assert intent["status"] == "FAILED"
+    assert len(rollback_calls) == 1
+    assert rollback_calls[0][0][0]["order_id"] == "prior-ai-1"
+    assert prior_snaps == []
+
+
+def test_circuit_breaker_and_reconciliation_handle_compound_terminal_and_orphan_records(tmp_path):
+    """Circuit breaker ignores compound non-fill zero-fill statuses; reconciliation correlates iid=None orphan rows."""
+    from providers.ai_circuit_breaker import evaluate_ai_intent_circuit_breaker
+    from providers.order_id_context import derive_ai_intent_client_order_id, derive_venue_128bit_client_order_id
+    from providers.order_ledger import OrderEventType, OrderLedgerWriter
+
+    now_s = 1_795_500_000.0
+    # 1. Compound terminal non-fill status (MINTRADENTLREJECTED) with 0 fill must NOT count toward daily buy cap
+    rejected_intents = [
+        {
+            "intent_id": f"intent_rej_{i}",
+            "timestamp": now_s - 60.0 * (i + 1),
+            "symbol": "HYPEUSDC",
+            "venue": "hyperliquid",
+            "decision": "BUY",
+            "status": "EXECUTED",
+            "suggested_notional_usd": 500.0,
+            "execution_payload": {"orderId": f"hl_{i}", "status": "MINTRADENTLREJECTED", "executedQty": "0"},
+        }
+        for i in range(5)
+    ]
+    ok_cb, _adj_usd, reason_cb, metrics_cb = evaluate_ai_intent_circuit_breaker(
+        {"intent_id": "intent_cur", "symbol": "HYPEUSDC", "venue": "hyperliquid", "decision": "BUY"},
+        rejected_intents,
+        symbol="HYPEUSDC",
+        venue="hyperliquid",
+        decision="BUY",
+        effective_usd=500.0,
+        min_notional_usd=10.0,
+        price=50.0,
+        now_ts=now_s,
+        max_daily_buys_per_symbol=2,
+        max_daily_buy_notional_usd=1000.0,
+    )
+    assert ok_cb is True, f"unexpected block: {reason_cb}"
+    assert metrics_cb["daily_sym_buys"] == 0
+
+    # 2. Orphan-adopted ledger record with iid=None reconciles via 128-bit Hyperliquid cloid AND via order_id
+    cdir = tmp_path / "cachedb"
+    audit_dir = tmp_path / "logs" / "execution_audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    writer = OrderLedgerWriter(cachedb_dir=str(cdir))
+    iid_cloid = "intent_1795500000_hl01"
+    hl_cloid = derive_venue_128bit_client_order_id("hyperliquid", derive_ai_intent_client_order_id(iid_cloid))
+    writer.record_event(
+        OrderEventType.RECONCILED_FILLED.value,
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+        ts=now_s - 10.0,
+        owner="ai_executor",
+        side="BUY",
+        qty=2.0,
+        fq=2.0,
+        px=50.0,
+        cid=hl_cloid,
+        vid="777111",
+        vst="FILLED",
+        iid=None,
+    )
+    iid_oid = "intent_1795500000_bn02"
+    writer.record_event(
+        OrderEventType.STATUS.value,
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+        ts=now_s - 5.0,
+        owner="ai_executor",
+        side="BUY",
+        qty=1.0,
+        px=50.0,
+        vid="777222",
+        vst="MINTRADENTLREJECTED",
+        iid=None,
+    )
+    intents = [
+        {
+            "intent_id": iid_cloid,
+            "timestamp": now_s - 30.0,
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "decision": "BUY",
+            "status": "SUBMIT_UNKNOWN",
+            "history": [],
+        },
+        {
+            "intent_id": iid_oid,
+            "timestamp": now_s - 20.0,
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "decision": "BUY",
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "777222", "status": "NEW"},
+            "history": [],
+        },
+    ]
+    changed = reconcile_intents_from_execution_audit(intents, str(audit_dir), cachedb_dir=str(cdir))
+    assert changed is True
+    assert intents[0]["status"] == "EXECUTED"
+    assert intents[0]["execution_payload"]["status"] == "FILLED"
+    assert intents[1]["execution_payload"]["status"] == "MINTRADENTLREJECTED"
+    assert intents[1]["execution_payload"].get("reconciled_terminal") is True
+
+
+
 
 
 

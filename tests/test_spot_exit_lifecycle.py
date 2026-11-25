@@ -1484,3 +1484,116 @@ def test_stratparams___post_init___normalizes_string_boolean_flags_iter173_s4():
     assert sp.sl_mhdsl_enabled is False
     assert sp.surge_guard is False
     assert sp.tp_mdhtp_enabled is True
+
+
+def test_base_spot_mixin_external_reload_rebinds_exit_manager(tmp_path):
+    """External state reload in _run_poll_loop must rebind exit_manager to the reloaded state dict."""
+    import threading
+    from types import SimpleNamespace
+    from strategies.base_spot_mixin import BaseSpotMixin
+    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager
+
+    st_file = tmp_path / "state.json"
+    st_file.write_text("{}", encoding="utf-8")
+
+    class _DummyBot(BaseSpotMixin):
+        def __init__(self):
+            self.dry_run = False
+            self.p = SimpleNamespace(check_minutes=0.01)
+            self.state_file = str(st_file)
+            self._state_file_mtime = 0.0
+            self._state_write_failed = False
+            self.s = {
+                "sl_bounce_state": {},
+                "sl_episode_state": {},
+                "tp_ride_state": {},
+                "reentry_state": {},
+                "hard_tp_last": {},
+            }
+            self.exit_manager = PositionExitManager(PositionExitConfig())
+            self.exit_manager.bind_state(self.s)
+            self.stop_ev = threading.Event()
+
+        def _touch_strategy_heartbeat(self, *_a, **_kw):
+            return None
+
+        def _load(self):
+            return {
+                "sl_bounce_state": {},
+                "sl_episode_state": {},
+                "tp_ride_state": {"SYM": {"peak_price": 123.0}},
+                "reentry_state": {},
+                "hard_tp_last": {},
+            }
+
+        def _save(self):
+            return True
+
+        def reconcile(self, price):
+            return True
+
+        def step(self, price):
+            self.exit_manager.tp_ride_state["SYM"]["peak_price"] = 130.0
+            self.stop_ev.set()
+
+    bot = _DummyBot()
+    bot._run_strategy_loop(
+        price_fn=lambda: 130.0,
+        status_log_fn=lambda _p: None,
+        stop=bot.stop_ev,
+        reload_external=True,
+    )
+    assert bot.exit_manager.tp_ride_state is bot.s["tp_ride_state"]
+    assert bot.s["tp_ride_state"]["SYM"]["peak_price"] == 130.0
+
+
+def test_spot_engine_live_partial_tp_uses_remaining_vol_and_vol_dec2_dust():
+    """Live partial TP fills reserve only remaining volume (vol - applied_vol), and vol_dec=2 keeps 0.05 HYPE."""
+    from types import SimpleNamespace
+    from providers.strategy_executor import PairPrecision
+    from strategies import spot_engine
+
+    placed = []
+    cancelled = []
+    executor = SimpleNamespace(
+        pair_precision=lambda _s: PairPrecision(2, 2, 0.01, "HYPE"),
+        add_order=lambda **kw: placed.append(kw) or {"txid": "NEW1"},
+        cancel_order=lambda txid: cancelled.append(txid) or True,
+    )
+    params = StratParams(
+        currency="USD",
+        entry_amount=100.0,
+        entry_discount_pct=0.0,
+        dca_amount=100.0,
+        dca_drop_pct=5.0,
+        check_minutes=1.0,
+        takeprofit_pct=10.0,
+        max_budget=1000.0,
+        max_dca_buys=0,
+        enable_takeprofit=True,
+        order_ttl_min=60.0,
+        tp_tranches=[(5.0, 50.0), (10.0, 50.0)],
+        tp_mdhtp_enabled=False,
+    )
+    st = spot_engine._new_state()
+    # Original position was 10.0 HYPE @ avg 50.0; tranche 0 (vol=5.0) partially filled 3.0 -> held=7.0, remaining=2.0
+    st["qty"] = 7.0
+    st["cost_usd"] = 350.0
+    st["orders"] = [
+        {"txid": "TP0", "side": "sell", "price": 52.5, "vol": 5.0, "applied_vol": 3.0, "kind": "TP", "tranche_idx": 0},
+        {"txid": "TP1", "side": "sell", "price": 55.0, "vol": 4.99, "kind": "TP", "tranche_idx": 1},
+    ]
+    strat = spot_engine.Strategy(executor, "HYPE/USD", params, dry_run=True, initial_state=st)
+    strat._dispatch_take_profit(52.0, 50.0, 7.0)
+    # Neither TP0 (remaining 2.0) nor TP1 (4.99 = dust_safe(5.0)) should be cancelled or shrunk
+    assert cancelled == []
+    assert placed == []
+    assert len(strat.s["orders"]) == 2
+
+    # vol_dec=2 dust threshold is 0.02, NOT 0.2 -> 0.05 HYPE must NOT be zeroed by _finalize_cycle_if_flat
+    strat.s["qty"] = 0.05
+    strat.s["cost_usd"] = 2.5
+    strat.s["orders"] = []
+    strat._finalize_cycle_if_flat({"kind": "TP"}, 50.0)
+    assert strat.s["qty"] == pytest.approx(0.05)
+

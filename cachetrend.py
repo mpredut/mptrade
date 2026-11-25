@@ -43,6 +43,7 @@ from botcore import (
     resolve_positive_max_age,
     resolve_sustained_sample_rate,
     safe_float,
+    safe_int,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_nonneg_ts,
@@ -891,25 +892,62 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
     # -- Dynamic window & Historical Subslice (O(1) Prefix Sums + Persistence) --
     def _eval_entries_with_buffer(
-        self, symbol, entries, a: int, b: int, window_seconds=None
+        self,
+        symbol,
+        entries,
+        a: int,
+        b: int,
+        window_seconds=None,
+        *,
+        is_partial_slice: bool = False,
     ):
         """Evaluate slice [a, b] of entries using the symbol's IncrementalTrendBuffer."""
         sub_entries = entries[a : b + 1]
         sample_rate = pw.PriceWindow._sample_rate_from_entries(sub_entries)
         with self._lock:
             buf = self._get_trend_buffer(symbol)
-            buf.sync_entries(entries)
-            if len(buf.prices) == len(entries):
-                ft, gc, sf, gr, eps = buf.eval_slice(
-                    a,
-                    b,
-                    sample_rate_sec=sample_rate,
-                    eps_k=self.EPSILON_K,
-                    window_seconds=window_seconds,
-                    symbol=symbol,
-                )
-                return ft, gc, sf, gr, eps, sample_rate
-        # Fallback if entries were non-monotonic or ad-hoc:
+            if is_partial_slice:
+                if buf.timestamps and entries:
+                    last_buf_ts = buf.timestamps[-1]
+                    for e in entries:
+                        if isinstance(e, (list, tuple)) and len(e) >= 2:
+                            ets = safe_int(e[0], default=None)
+                            if ets is not None and ets > last_buf_ts:
+                                buf.append(e[1], ets)
+                                last_buf_ts = ets
+                    a_ts = safe_int(entries[a][0], default=None) if 0 <= a < len(entries) else None
+                    b_ts = safe_int(entries[b][0], default=None) if 0 <= b < len(entries) else None
+                    if a_ts is not None and b_ts is not None:
+                        buf_a = bisect.bisect_left(buf.timestamps, a_ts)
+                        buf_b = bisect.bisect_right(buf.timestamps, b_ts) - 1
+                        if (
+                            0 <= buf_a <= buf_b < len(buf.prices)
+                            and (buf_b - buf_a) == (b - a)
+                            and buf.timestamps[buf_a] == a_ts
+                            and buf.timestamps[buf_b] == b_ts
+                        ):
+                            ft, gc, sf, gr, eps = buf.eval_slice(
+                                buf_a,
+                                buf_b,
+                                sample_rate_sec=sample_rate,
+                                eps_k=self.EPSILON_K,
+                                window_seconds=window_seconds,
+                                symbol=symbol,
+                            )
+                            return ft, gc, sf, gr, eps, sample_rate
+            else:
+                buf.sync_entries(entries)
+                if len(buf.prices) == len(entries):
+                    ft, gc, sf, gr, eps = buf.eval_slice(
+                        a,
+                        b,
+                        sample_rate_sec=sample_rate,
+                        eps_k=self.EPSILON_K,
+                        window_seconds=window_seconds,
+                        symbol=symbol,
+                    )
+                    return ft, gc, sf, gr, eps, sample_rate
+        # Fallback if entries were non-monotonic, partial without buffer coverage, or ad-hoc:
         tmp_buf = pw.IncrementalTrendBuffer()
         tmp_buf.sync_entries(sub_entries)
         ft, gc, sf, gr, eps = tmp_buf.eval_slice(
@@ -1056,6 +1094,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         now_val: float,
         *,
         check_memo: bool = False,
+        is_partial_slice: bool = False,
     ) -> Optional[dict]:
         n_samples = b - a + 1
         if n_samples < 3:
@@ -1076,7 +1115,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     hit["ts"] = now_val
                     return hit
         ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(
-            target_sym, entries, a, b, window_seconds=clamped
+            target_sym, entries, a, b, window_seconds=clamped, is_partial_slice=is_partial_slice
         )
         res = dict(
             final_trend=ft,
@@ -1220,7 +1259,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                                 all_entries = raw_entries
                             else:
                                 slice_offset = min(a for a, _, _, _ in pending)
-                                all_entries = list(raw_entries[slice_offset:])
+                                all_entries = list(raw_entries) if slice_offset == 0 else list(raw_entries[slice_offset:])
             for a, b, clamped, w_key in pending:
                 dyn = self._eval_and_persist_window_slice(
                     c24_sym,
@@ -1231,6 +1270,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     w_key,
                     now_val,
                     check_memo=False,
+                    is_partial_slice=(slice_offset > 0),
                 )
                 if dyn is not None:
                     results[w_key] = dyn
@@ -1248,7 +1288,8 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 return results
             if len(entries) >= 3:
                 dyn = self._eval_and_persist_window_slice(
-                    symbol, entries, 0, len(entries) - 1, clamped, w_key, now_val, check_memo=False
+                    symbol, entries, 0, len(entries) - 1, clamped, w_key, now_val,
+                    check_memo=False, is_partial_slice=True,
                 )
                 if dyn is not None:
                     results[w_key] = dyn
@@ -1276,7 +1317,8 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 )
             )
             dyn = self._eval_and_persist_window_slice(
-                symbol, all_recent, a, b, clamped, w_key, now_val, check_memo=False
+                symbol, all_recent, a, b, clamped, w_key, now_val,
+                check_memo=False, is_partial_slice=True,
             )
             if dyn is not None:
                 results[w_key] = dyn

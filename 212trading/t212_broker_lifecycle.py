@@ -7,6 +7,7 @@ while sharing active-order matching and portfolio position lookup with ``order_m
 
 from __future__ import annotations
 
+import math
 import os
 import re
 
@@ -374,14 +375,14 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
         p = ref_price or self._avg() or 0.0
         if self._is_dust(held, p):
             return 0.0
-        q_round = round(held, 2)
-        dust = held - q_round
-        if abs(dust) > 1e-6 and self.p.ladder_min_free > 0 and p > 0:
-            if abs(dust) * p < self.p.ladder_min_free:
+        max_qty = math.floor(held * 100.0 + 1e-9) / 100.0
+        dust = held - max_qty
+        if dust > 1e-6 and self.p.ladder_min_free > 0 and p > 0:
+            if dust * p < self.p.ladder_min_free:
                 buf = self.p.ladder_min_free / p
                 if held > buf:
-                    return round(held - buf, 2)
-        return q_round
+                    return min(round(held - buf, 2), max_qty)
+        return max_qty
 
     def _notify_trade(
         self, status: str, side: str, price_str: str, qty: float, val: float,

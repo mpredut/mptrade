@@ -10,7 +10,7 @@ from typing import Any, Callable, Optional
 
 from state_stores.auto_order_intents_state import AutoOrderIntentsStateStore
 
-from .intent_state import _extract_intent_id, collect_known_ai_order_ids
+from .intent_state import _extract_intent_id, _intent_order_ids, collect_known_ai_order_ids
 
 
 def durable_intents_lock(intents_file: str):
@@ -54,6 +54,24 @@ def load_known_ai_order_ids_from_cachedb(cachedb_dir: Optional[str]) -> set[str]
     return {tok.lower() for tok in collect_known_ai_order_ids(intents) if tok}
 
 
+def load_known_ai_order_id_to_intent_map_from_cachedb(cachedb_dir: Optional[str]) -> dict[str, str]:
+    """Return mapping of lowercase venue order IDs and derived venue-native cloids -> ``intent_id``."""
+    intents = load_durable_intents_from_cachedb(cachedb_dir)
+    if not intents:
+        return {}
+    mapping: dict[str, str] = {}
+    for item in intents:
+        if not isinstance(item, dict):
+            continue
+        iid = _extract_intent_id(item)
+        if not iid:
+            continue
+        for tok in _intent_order_ids(item):
+            if tok:
+                mapping[tok.lower()] = iid
+    return mapping
+
+
 def save_durable_intents_state(
     intents_file: str,
     intents: list[dict[str, Any]],
@@ -84,6 +102,7 @@ __all__ = [
     "durable_intents_lock",
     "load_durable_intents_from_cachedb",
     "load_durable_intents_state",
+    "load_known_ai_order_id_to_intent_map_from_cachedb",
     "load_known_ai_order_ids_from_cachedb",
     "save_durable_intents_state",
     "upsert_durable_intent",

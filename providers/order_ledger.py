@@ -57,6 +57,7 @@ from providers.order_status_ssot import (
     TERMINAL_AUDIT_VENUE_STATUSES,
     classify_order_evidence_state,
     is_open_working_status,
+    is_terminal_non_fill_venue_status,
 )
 from state_io import (
     append_jsonl_record,
@@ -1065,12 +1066,20 @@ def ledger_row_to_audit_record(
         elif ev == OrderEventType.RECOVERED.value:
             ev_out = "order_recovered"
         elif ev == OrderEventType.STATUS.value:
-            is_term_vst = bool(vst_out and (vst_out in TERMINAL_AUDIT_VENUE_STATUSES or vst_out in CANCEL_OR_EXPIRE_VENUE_STATUSES))
+            is_non_fill_term = bool(
+                vst_out and (vst_out in CANCEL_OR_EXPIRE_VENUE_STATUSES or is_terminal_non_fill_venue_status(vst_out))
+            )
+            is_term_vst = bool(vst_out and (vst_out in TERMINAL_AUDIT_VENUE_STATUSES or is_non_fill_term))
             ev_out = "order_terminal" if is_term_vst else "order_status"
             if vst_out in {"FILLED", "CLOSED"}:
                 status_out = "closed"
-            elif vst_out in CANCEL_OR_EXPIRE_VENUE_STATUSES:
-                status_out = "expired" if vst_out == "EXPIRED" else "canceled"
+            elif is_non_fill_term:
+                if "EXPIRED" in vst_out:
+                    status_out = "expired"
+                elif "REJECTED" in vst_out:
+                    status_out = "rejected"
+                else:
+                    status_out = "canceled"
             else:
                 status_out = "open"
         elif ev == OrderEventType.RECONCILED_FILLED.value:

@@ -315,17 +315,18 @@ class Strategy(T212BrokerLifecycleMixin):
                 if self.s["spent_cash"] + self.p.entry_amount > self.p.max_budget:
                     log(f"  [STRAT] re-buy SL cancelled \u2014 budget cap {self.p.max_budget:.0f} {self.ccy} reached")
                 elif self._place_buy(self.p.entry_amount, price * (1 - self.p.entry_discount_pct / 100), kind="ENTRY"):
-                    self.s.pop("sl_rebuy", None)
-                    self.s["last_exit_kind"] = "TP"
-                    if self.exit_manager is not None:
-                        self.exit_manager.reentry_state.pop(self.ticker, None)
-                    log(f"  \U0001f7e2 [STRAT] RE-BUY after the SL: a +{self.p.sl_rebuy_bounce_pct}% pullback from the low {rb['low']:.2f} \u2014 re-entering ENTRY")
-                    notify(
-                        title=f"\U0001f7e2 {self.yahoo_sym} RE-BUY after the stop-loss",
-                        body=(f"pullback +{self.p.sl_rebuy_bounce_pct}% from low {rb['low']:.2f} \u2014 "
-                              f"re-entering with {self.p.entry_amount:.0f}{self.ccy}"),
-                        source="T212", price=price, desktop=self.desktop,
-                    )
+                    if not self.s.get("pending_submit"):
+                        self.s.pop("sl_rebuy", None)
+                        self.s["last_exit_kind"] = "TP"
+                        if self.exit_manager is not None:
+                            self.exit_manager.reentry_state.pop(self.ticker, None)
+                        log(f"  \U0001f7e2 [STRAT] RE-BUY after the SL: a +{self.p.sl_rebuy_bounce_pct}% pullback from the low {rb['low']:.2f} \u2014 re-entering ENTRY")
+                        notify(
+                            title=f"\U0001f7e2 {self.yahoo_sym} RE-BUY after the stop-loss",
+                            body=(f"pullback +{self.p.sl_rebuy_bounce_pct}% from low {rb['low']:.2f} \u2014 "
+                                  f"re-entering with {self.p.entry_amount:.0f}{self.ccy}"),
+                            source="T212", price=price, desktop=self.desktop,
+                        )
             return False, "handling_sl_rebuy"
         return None
 
@@ -379,15 +380,22 @@ class Strategy(T212BrokerLifecycleMixin):
         for lvl, _ in remaining:
             o = open_sells.get(lvl)
             lim_px = round(avg * (1 + lvl / 100.0), 2)
+            if o is not None:
+                applied = safe_nonneg_float(o.get("applied_fill_qty"), 0.0) or 0.0
+                o_rem = max(0.0, o["qty"] - applied)
+                in_progress = _parse_bool_flag(o.get("_replay_had_fill"), False) or applied > 1e-9
+            else:
+                o_rem = 0.0
+                in_progress = False
             if (
                 o is not None
-                and _parse_bool_flag(o.get("_replay_had_fill"), False)
+                and in_progress
                 and lim_px > 0
                 and abs(o["limit"] - lim_px) / lim_px <= 0.001
-                and 0 < o["qty"] <= held - reserved_partial_qty + 1e-6
+                and 0 < o_rem <= held - reserved_partial_qty + 1e-6
             ):
-                locked_partial[lvl] = (o["qty"], o["limit"])
-                reserved_partial_qty += o["qty"]
+                locked_partial[lvl] = (o_rem, o["limit"])
+                reserved_partial_qty += o_rem
         unstarted = [(lvl, frac) for (lvl, frac) in remaining if lvl not in locked_partial]
         free_held = max(0.0, held - reserved_partial_qty)
         desired = dict(locked_partial)
@@ -408,7 +416,8 @@ class Strategy(T212BrokerLifecycleMixin):
         cancelled_by_level = {}
         for lvl, o in list(open_sells.items()):
             d = desired.get(lvl)
-            if d is None or d[1] <= 0 or abs(o["limit"] - d[1]) / d[1] > 0.001 or abs(o["qty"] - d[0]) > 1e-6:
+            o_rem = max(0.0, o["qty"] - (safe_nonneg_float(o.get("applied_fill_qty"), 0.0) or 0.0))
+            if d is None or d[1] <= 0 or abs(o["limit"] - d[1]) / d[1] > 0.001 or abs(o_rem - d[0]) > 1e-6:
                 cancelled_by_level[lvl] = dict(o)
                 if self._cancel_order(o) and o not in self.s["orders"]:
                     open_sells.pop(lvl, None)
@@ -467,6 +476,8 @@ class Strategy(T212BrokerLifecycleMixin):
                     log(f"  ! [STRAT] {label} sell failed or refused \u2014 backoff 30 min (retaining TP ladder)")
                     self._restore_cancelled_orders(cancelled_orders, reason=f"{label.lower()} sell failed")
                 return False
+            if self.s.get("pending_submit"):
+                return True
             self.s["sl_pending"] = True
             if kind == "SL":
                 self.s["tp_pending_exit"] = None
@@ -505,7 +516,7 @@ class Strategy(T212BrokerLifecycleMixin):
         if drop_pct < self.p.trail_pct or self._now() < safe_nonneg_float(self.s.get("tr_fail_until"), 0.0):
             return False
         if self._execute_protective_exit("TR", price, "TRAILING", "tr_fail_until"):
-            if not self._state_flag("tr_alerted"):
+            if not self.s.get("pending_submit") and not self._state_flag("tr_alerted"):
                 self.s["tr_alerted"] = True
                 log(f"  \U0001f4c9 [STRAT] TRAILING: -{drop_pct:.2f}% from peak {peak:.2f} >= {self.p.trail_pct}% \u2014 SELLING ALL")
                 notify(
@@ -566,8 +577,9 @@ class Strategy(T212BrokerLifecycleMixin):
                 if pending_sl is None:
                     self.s["sl_pending_exit"] = {"reason": exit_reason, "time": self._now()}
                 if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until", sell_qty=sell_qty):
-                    self.s["sl_pending_exit"] = None
-                    self._alert_stop_loss_once(price, loss_pct, exit_reason)
+                    if not self.s.get("pending_submit"):
+                        self.s["sl_pending_exit"] = None
+                        self._alert_stop_loss_once(price, loss_pct, exit_reason)
                 elif self.s.get("sl_fail_until"):
                     self.s["sl_pending_exit"] = None
                 return True
@@ -578,7 +590,8 @@ class Strategy(T212BrokerLifecycleMixin):
         if self._now() < safe_nonneg_float(self.s.get("sl_fail_until"), 0.0):
             return False
         if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until"):
-            self._alert_stop_loss_once(price, loss_pct)
+            if not self.s.get("pending_submit"):
+                self._alert_stop_loss_once(price, loss_pct)
         return True
 
     # -- Step Pipeline Sub-Stages ----------------------------------------------
@@ -704,6 +717,12 @@ class Strategy(T212BrokerLifecycleMixin):
 
             exit_px = round(price * 0.999, 2)
             if self._place_sell(sell_qty, exit_px, kind="TP", market=True):
+                if self.s.get("pending_submit"):
+                    log(
+                        f"  ! [STRAT] MDHTP EXIT order outcome unknown ({pending_exit.get('reason')}) "
+                        "\u2014 awaiting pending_submit reconciliation (intent retained)"
+                    )
+                    return True
                 if pending_exit.get("action") == ExitAction.PARTIAL_SELL.value and self.exit_manager is not None:
                     self.exit_manager.record_hard_tp(self.ticker, tick_time)
                 return _clear_exit_intent(
@@ -744,18 +763,22 @@ class Strategy(T212BrokerLifecycleMixin):
             target_lim = round(target, 2)
             if sell is None:
                 self._place_sell(sell_qty, target)
-            elif (
-                target_lim <= 0
-                or abs(sell["limit"] - target_lim) / target_lim > 0.001
-                or (
-                    not (_parse_bool_flag(sell.get("_replay_had_fill"), False) and 0 < sell["qty"] <= held + 1e-6)
-                    and abs(sell["qty"] - sell_qty) > 1e-6
-                )
-            ):
-                old_sell = dict(sell)
-                if self._cancel_open("SELL") and sell not in self.s["orders"]:
-                    if not self._place_sell(sell_qty, target) and not self.s.get("pending_submit"):
-                        self._restore_cancelled_orders([old_sell], reason="single TP replace failed")
+            else:
+                sell_applied = safe_nonneg_float(sell.get("applied_fill_qty"), 0.0) or 0.0
+                sell_rem = max(0.0, sell["qty"] - sell_applied)
+                sell_in_progress = _parse_bool_flag(sell.get("_replay_had_fill"), False) or sell_applied > 1e-9
+                if (
+                    target_lim <= 0
+                    or abs(sell["limit"] - target_lim) / target_lim > 0.001
+                    or (
+                        not (sell_in_progress and 0 < sell_rem <= held + 1e-6)
+                        and abs(sell_rem - sell_qty) > 1e-6
+                    )
+                ):
+                    old_sell = dict(sell)
+                    if self._cancel_open("SELL") and sell not in self.s["orders"]:
+                        if not self._place_sell(sell_qty, target) and not self.s.get("pending_submit"):
+                            self._restore_cancelled_orders([old_sell], reason="single TP replace failed")
         return False
 
     def _dispatch_dca_buy(self, price: float, disc: float, *, in_backoff: bool) -> None:

@@ -8,6 +8,7 @@ from notify_engine import alertnotifiers as alert
 from botcore import (
     _parse_bool_flag,
     bool_env,
+    clean_scalar_str,
     clean_scale,
     extract_order_id,
     extract_order_price,
@@ -361,6 +362,7 @@ MT_TP_PROFIT_FLOOR_RATIO: float = 0.0
 MT_TP_PROFIT_FLOOR_MIN_PCT: float = 0.0
 MT_TP_STAGNATION_MAX_SEC: float = 0.0
 MT_REENTRY_HYBRID_ENABLED: bool = False
+MT_REENTRY_TOLERANCE_PCT: float = 0.0
 MT_REENTRY_POST_STOP_COOLDOWN_SEC: float = 0.0
 _TP_RIDE_STATE: Dict[str, Dict[str, Any]] = {}
 _REENTRY_STATE: Dict[str, Dict[str, Any]] = {}
@@ -411,6 +413,16 @@ def _save_mt_state(ts: float | None = None):
         pass
 
 
+def _mt_state_symbol_key(s_name: Any) -> str:
+    raw = clean_scalar_str(s_name) or ""
+    if not raw:
+        return ""
+    resolved = sym.resolve_registered_symbol_case(raw)
+    if resolved != raw:
+        return resolved
+    return raw if cachepaths.is_kraken_tokenized_asset(raw) else raw.upper()
+
+
 def _load_mt_state(now_curr: float | None = None):
     """Restore in-flight MHDSL/MDHTP states upon monitor restart via ``MtStateStore``."""
     if not _MT_PERSISTENCE_ENABLED:
@@ -442,17 +454,18 @@ def _load_mt_state(now_curr: float | None = None):
                     if lpt is None or lpt > now_curr:
                         state = {**state, "last_peak_time": now_curr}
                 if 0 <= (now_curr - started) < 86400:
-                    target[str(s_name).strip().upper()] = state
+                    if norm_s := _mt_state_symbol_key(s_name):
+                        target[norm_s] = state
         raw_reentry = data.get("reentry_state")
         if isinstance(raw_reentry, dict):
             for s_name, state in raw_reentry.items():
-                if isinstance(state, dict):
-                    _REENTRY_STATE[str(s_name).strip().upper()] = state
+                if isinstance(state, dict) and (norm_s := _mt_state_symbol_key(s_name)):
+                    _REENTRY_STATE[norm_s] = state
         raw_exit_kind = data.get("last_exit_kind")
         if isinstance(raw_exit_kind, dict):
             for s_name, kind in raw_exit_kind.items():
-                if isinstance(kind, str):
-                    _LAST_EXIT_KIND[str(s_name).strip().upper()] = kind
+                if isinstance(kind, str) and (norm_s := _mt_state_symbol_key(s_name)):
+                    _LAST_EXIT_KIND[norm_s] = kind
         for key, target, max_age in (
             ("reentry_done_sell_time", _REENTRY_DONE_SELL_TIME, 7 * 86400),
             ("hard_tp_last", _hard_tp_last, 86400),
@@ -462,7 +475,8 @@ def _load_mt_state(now_curr: float | None = None):
                 for s_name, ts_raw in raw_ts_map.items():
                     ts_val = safe_pos_float(ts_raw, default=None)
                     if ts_val is not None and 0 <= (now_curr - ts_val) < max_age:
-                        target[str(s_name).strip().upper()] = ts_val
+                        if norm_s := _mt_state_symbol_key(s_name):
+                            target[norm_s] = ts_val
         raw_pending_stop = data.get("pending_stop_exit")
         if isinstance(raw_pending_stop, dict):
             for s_name, state in raw_pending_stop.items():
@@ -474,7 +488,8 @@ def _load_mt_state(now_curr: float | None = None):
                         state = {**state, "time": now_curr}
                         p_ts = now_curr
                     if 0 <= (now_curr - p_ts) < 300:
-                        _PENDING_STOP_EXIT[str(s_name).strip().upper()] = state
+                        if norm_s := _mt_state_symbol_key(s_name):
+                            _PENDING_STOP_EXIT[norm_s] = state
     except Exception:
         pass
 
@@ -554,7 +569,7 @@ _REQUIRED_MT_CONF_KEYS = frozenset({
     "sl_disaster_buffer_min_pct", "tp_trend_ride_enabled", "tp_pullback_pct",
     "tp_ratchet_enabled", "tp_ratchet_k", "tp_ratchet_min_pullback_pct",
     "tp_profit_floor_ratio", "tp_profit_floor_min_pct", "tp_stagnation_max_s",
-    "reentry_hybrid_enabled", "reentry_post_stop_cooldown_s",
+    "reentry_hybrid_enabled", "reentry_tolerance_pct", "reentry_post_stop_cooldown_s",
 })
 
 
@@ -572,7 +587,7 @@ def _load_mt_conf(path=None):
     global MT_SL_BOUNCE_RATCHET_ENABLED, MT_SL_BOUNCE_RATCHET_K, MT_SL_BOUNCE_MIN_PULLBACK_PCT, MT_SL_STRUCTURAL_BREAK_ENABLED
     global MT_SL_DISASTER_BUFFER_RATIO, MT_SL_DISASTER_VOL_MULTIPLIER, MT_SL_DISASTER_BUFFER_MIN_PCT
     global MT_TP_TREND_RIDE_ENABLED, MT_TP_PULLBACK_PCT, MT_TP_PROFIT_FLOOR_RATIO, MT_TP_RATCHET_ENABLED, MT_TP_RATCHET_K
-    global MT_TP_RATCHET_MIN_PULLBACK_PCT, MT_TP_PROFIT_FLOOR_MIN_PCT, MT_TP_STAGNATION_MAX_SEC, MT_REENTRY_HYBRID_ENABLED, MT_REENTRY_POST_STOP_COOLDOWN_SEC
+    global MT_TP_RATCHET_MIN_PULLBACK_PCT, MT_TP_PROFIT_FLOOR_MIN_PCT, MT_TP_STAGNATION_MAX_SEC, MT_REENTRY_HYBRID_ENABLED, MT_REENTRY_TOLERANCE_PCT, MT_REENTRY_POST_STOP_COOLDOWN_SEC
     path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitortrades.conf")
     if not os.path.exists(path):
         raise FileNotFoundError(f"Missing mandatory configuration file: {path}")
@@ -609,6 +624,7 @@ def _load_mt_conf(path=None):
     MT_TP_PROFIT_FLOOR_MIN_PCT = parse_ratio_or_pct(parsed["tp_profit_floor_min_pct"])
     MT_TP_STAGNATION_MAX_SEC = require_nonneg_float(parsed["tp_stagnation_max_s"], name="tp_stagnation_max_s")
     MT_REENTRY_HYBRID_ENABLED = _parse_mt_bool("reentry_hybrid_enabled", parsed["reentry_hybrid_enabled"])
+    MT_REENTRY_TOLERANCE_PCT = require_nonneg_float(parsed["reentry_tolerance_pct"], name="reentry_tolerance_pct")
     MT_REENTRY_POST_STOP_COOLDOWN_SEC = require_nonneg_float(parsed["reentry_post_stop_cooldown_s"], name="reentry_post_stop_cooldown_s")
 
     if not (0.0 < HARD_TP_FRACTION <= 1.0) or HARD_TP_PCT <= 0.0:
@@ -639,7 +655,7 @@ def get_exit_manager() -> PositionExitManager:
         MT_SL_STRUCTURAL_BREAK_ENABLED, MT_TP_TREND_RIDE_ENABLED, MT_TP_PROFIT_FLOOR_RATIO,
         MT_TP_PROFIT_FLOOR_MIN_PCT, MT_TP_PULLBACK_PCT, MT_TP_RATCHET_ENABLED, MT_TP_RATCHET_K,
         MT_TP_RATCHET_MIN_PULLBACK_PCT, MT_TP_STAGNATION_MAX_SEC, MT_ARE_CLOSE_TOLERANCE_PCT,
-        MT_REENTRY_HYBRID_ENABLED, MT_REENTRY_POST_STOP_COOLDOWN_SEC,
+        MT_REENTRY_HYBRID_ENABLED, MT_REENTRY_TOLERANCE_PCT, MT_REENTRY_POST_STOP_COOLDOWN_SEC,
     )
     mgr = _CACHED_EXIT_MGR
     if mgr is None or _CACHED_EXIT_MGR_KEY != cfg_key:
@@ -670,7 +686,7 @@ def get_exit_manager() -> PositionExitManager:
             are_close_tolerance_pct=MT_ARE_CLOSE_TOLERANCE_PCT,
             reentry_enabled=True,
             reentry_hybrid_enabled=MT_REENTRY_HYBRID_ENABLED,
-            reentry_tolerance_pct=MT_ARE_CLOSE_TOLERANCE_PCT,
+            reentry_tolerance_pct=MT_REENTRY_TOLERANCE_PCT,
             reentry_post_stop_cooldown_sec=MT_REENTRY_POST_STOP_COOLDOWN_SEC,
         )
         mgr = PositionExitManager(

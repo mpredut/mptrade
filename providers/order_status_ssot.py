@@ -296,7 +296,11 @@ def is_cancel_or_expire_status(
     v_set = TERMINAL_CANCEL_VENUE_STATUSES if include_composite else CANCEL_OR_EXPIRE_VENUE_STATUSES
     if v_u in v_set or l_lc in CANCEL_OR_EXPIRE_LOCAL_STATUSES:
         return True
-    return bool(include_composite and l_lc == "canceled_or_expired")
+    if include_composite and l_lc == "canceled_or_expired":
+        return True
+    if v_u and (include_composite or v_u != "CANCELED_OR_EXPIRED"):
+        return is_terminal_non_fill_venue_status(v_u)
+    return False
 
 
 def is_non_fill_order_status(status: object, submission_state: object = None) -> bool:
@@ -315,8 +319,10 @@ def is_active_or_filled_status(status: object, filled_qty: object = 0.0) -> bool
 
 def is_terminal_audit_status(venue_status: object, local_status: object = None) -> bool:
     """Return True when an execution-audit ``order_status`` record reflects a terminal state."""
+    v_u = _norm_upper_status(venue_status)
     return (
-        _norm_upper_status(venue_status) in TERMINAL_AUDIT_VENUE_STATUSES
+        v_u in TERMINAL_AUDIT_VENUE_STATUSES
+        or is_terminal_non_fill_venue_status(v_u)
         or _norm_lower_status(local_status) in TERMINAL_AUDIT_LOCAL_STATUSES
     )
 

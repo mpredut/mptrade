@@ -513,5 +513,49 @@ def test_macro_snapshot_nav_dd_includes_live_bnb_reserve_parity(tmp_path):
     assert risk_eng["daily_nav_drawdown_pct"] == pytest.approx(0.0, abs=0.02)
 
 
+def test_nav_drawdown_large_deposit_with_dip_preserves_index_and_guard():
+    """Large confirmed deposit + market dip must use start-of-period base so index never collapses to 0."""
+    day0 = datetime(2026, 11, 20, 1, 0, tzinfo=timezone.utc).timestamp()
+    day1 = datetime(2026, 11, 21, 1, 0, tzinfo=timezone.utc).timestamp()
+    hist: list[dict] = []
+    hist, _ = append_nav_history_point(
+        hist,
+        {"ts": day0, "nav_usd": 5000.0, "invested_usd": 4000.0, "free_cash_usd": 1000.0, "venues_usd": {"binance": 5000.0}},
+    )
+    # Deposit +$50,000 (base becomes $55,000) while market dips -10% -> NAV = $49,500.
+    # End-of-period subtraction would give (49500 - 50000)/5000 = 0.0, permanently locking cur_idx=0.
+    hist, _ = append_nav_history_point(
+        hist,
+        {
+            "ts": day0 + 3600.0,
+            "nav_usd": 49500.0,
+            "invested_usd": 44500.0,
+            "free_cash_usd": 5000.0,
+            "venues_usd": {"binance": 49500.0},
+            "confirmed_cashflow_usd": 50000.0,
+        },
+    )
+    m_dip = evaluate_nav_drawdown_metrics(hist, now_ts=day0 + 3600.0)
+    assert m_dip["daily_nav_drawdown_pct"] == pytest.approx(-10.0, abs=0.05)
+    assert m_dip["daily_nav_return_pct"] == pytest.approx(-10.0, abs=0.05)
+    ok_day0, rsn_day0, _ = evaluate_daily_nav_drawdown_guard(m_dip, decision="BUY", mode="enforce", limit_pct=5.0)
+    assert ok_day0 is False and "ai_daily_nav_drawdown_guard" in rsn_day0
+
+    # Next UTC day: real -8% crash must STILL be measured and blocked (proving cur_idx > 0).
+    hist, _ = append_nav_history_point(
+        hist,
+        {"ts": day1, "nav_usd": 49500.0, "invested_usd": 44500.0, "free_cash_usd": 5000.0, "venues_usd": {"binance": 49500.0}},
+    )
+    hist, _ = append_nav_history_point(
+        hist,
+        {"ts": day1 + 3600.0, "nav_usd": 45540.0, "invested_usd": 40540.0, "free_cash_usd": 5000.0, "venues_usd": {"binance": 45540.0}},
+    )
+    m_day1 = evaluate_nav_drawdown_metrics(hist, now_ts=day1 + 3600.0)
+    assert m_day1["daily_nav_drawdown_pct"] == pytest.approx(-8.0, abs=0.05)
+    ok_day1, rsn_day1, _ = evaluate_daily_nav_drawdown_guard(m_day1, decision="BUY", mode="enforce", limit_pct=5.0)
+    assert ok_day1 is False and "ai_daily_nav_drawdown_guard" in rsn_day1
+
+
+
 
 

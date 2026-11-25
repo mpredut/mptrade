@@ -1269,6 +1269,91 @@ class TestTrailingStopAndSellableQty(_T212StateFileTestBase):
         qty = self.strat._sellable_qty(2.9229, ref_price=146.0)
         self.assertEqual(qty, 2.92)
 
+    def test_sellable_qty_never_exceeds_held(self):
+        self.strat.p.ladder_min_free = 0.0
+        self.assertEqual(self.strat._sellable_qty(2.928, ref_price=146.0), 2.92)
+        self.strat.p.ladder_min_free = 6.0
+        self.assertEqual(self.strat._sellable_qty(2.928, ref_price=2000.0), 2.92)
+        self.strat.p.ladder_min_free = 1.0
+        self.assertEqual(self.strat._sellable_qty(2.929, ref_price=1000.0), 2.92)
+
+    def test_unknown_submit_retains_exit_and_rebuy_intents(self):
+        def _fake_unknown_sell(*a, **kw):
+            self.strat.s["pending_submit"] = {"intent_id": "unk-sell", "side": "SELL"}
+            return True
+
+        def _fake_unknown_buy(*a, **kw):
+            self.strat.s["pending_submit"] = {"intent_id": "unk-buy", "side": "BUY"}
+            return True
+
+        self.strat._place_sell = _fake_unknown_sell
+        self.strat._place_buy = _fake_unknown_buy
+
+        # 1. Trailing unknown submit must not set sl_pending or tr_alerted
+        self.assertTrue(self.strat._check_trailing(160.0))
+        self.assertFalse(self.strat.s.get("sl_pending"))
+        self.assertFalse(self.strat.s.get("tr_alerted"))
+
+        # 2. MHDSL unknown submit must retain sl_pending_exit and not set sl_alerted
+        self.strat.s["pending_submit"] = None
+        self.strat.p.stop_loss_pct = 5.0
+        self.strat.p.sl_mhdsl_enabled = True
+        self.strat.s["sl_pending_exit"] = {"reason": "test_sl", "time": self.now_val}
+        self.assertTrue(self.strat._check_stop_loss(100.0))
+        self.assertIsNotNone(self.strat.s.get("sl_pending_exit"))
+        self.assertFalse(self.strat.s.get("sl_alerted"))
+
+        # 3. MDHTP unknown submit must retain tp_pending_exit and not record hard_tp
+        self.strat.s["pending_submit"] = None
+        self.strat.s["sl_pending"] = False
+        self.strat.p.tp_mdhtp_enabled = True
+        if self.strat.exit_manager is None:
+            from strategies.position_exit_manager import PositionExitConfig, PositionExitManager
+
+            self.strat.exit_manager = PositionExitManager(PositionExitConfig())
+            self.strat.exit_manager.bind_state(self.strat.s)
+        self.strat.s["tp_pending_exit"] = {"reason": "test_tp", "action": "PARTIAL_SELL", "sell_fraction": 0.5}
+        self.assertTrue(self.strat._evaluate_mdhtp_tp(180.0, 146.0, 2.92))
+        self.assertIsNotNone(self.strat.s.get("tp_pending_exit"))
+        self.assertNotIn(self.strat.ticker, self.strat.exit_manager.hard_tp_last)
+
+        # 4. sl_rebuy unknown submit must retain sl_rebuy
+        self.strat.s["pending_submit"] = None
+        self.strat.p.sl_rebuy_enabled = True
+        self.strat.p.sl_rebuy_bounce_pct = 1.0
+        self.strat.s["spent_cash"] = 0.0
+        self.strat.s["sl_rebuy"] = {"low": 100.0}
+        self.strat._pre_reentry_gate_hook(102.0)
+        self.assertIsNotNone(self.strat.s.get("sl_rebuy"))
+
+    def test_live_partial_fill_tp_uses_remaining_qty(self):
+        # Single TP with live partial fill: orig qty=2.0, applied_fill_qty=0.8 -> remaining 1.2 <= held 1.2 -> keep order!
+        self.strat.p.tp_mdhtp_enabled = False
+        self.strat.p.tp_ladder = []
+        self.strat.p.takeprofit_pct = 10.0
+        self.strat.p.ladder_min_free = 0.0
+        self.strat.s["sl_pending"] = False
+        self.strat.s["qty"] = 1.2
+        self.strat.s["orders"] = [
+            {"id": "TP-LIVE", "side": "SELL", "qty": 2.0, "applied_fill_qty": 0.8, "limit": 110.0, "kind": "TP"}
+        ]
+        cancels = []
+        self.strat._cancel_open = lambda side: cancels.append(side) or True
+        self.strat._dispatch_take_profit(108.0, 100.0, 1.2)
+        self.assertEqual(cancels, [])
+
+        # Ladder TP with live partial fill on rung 1 (orig 2.0, applied 1.0 -> rem 1.0) and rung 2 (1.0) on held=2.0
+        self.strat.p.tp_ladder = [(10.0, 0.5), (20.0, 0.5)]
+        self.strat.s["qty"] = 2.0
+        self.strat.s["orders"] = [
+            {"id": "L1", "side": "SELL", "qty": 2.0, "applied_fill_qty": 1.0, "limit": 110.0, "kind": "TP", "level": 10.0},
+            {"id": "L2", "side": "SELL", "qty": 1.0, "limit": 120.0, "kind": "TP", "level": 20.0},
+        ]
+        ladder_cancels = []
+        self.strat._cancel_order = lambda o: ladder_cancels.append(o["id"]) or True
+        self.strat._manage_tp_ladder(2.0, 100.0)
+        self.assertEqual(ladder_cancels, [])
+
     def test_trailing_drawdown_triggers_sell(self):
         self.assertTrue(self.strat._check_trailing(160.0))
         self.assertEqual(len(self.client.placed), 1)
