@@ -480,20 +480,20 @@ def classify_fill_evidence_state(
     qty_complete = req_qty is not None and req_qty > 0.0 and fill_qty >= req_qty * 0.9999
     qty_strictly_partial = req_qty is not None and req_qty > 0.0 and fill_qty < req_qty * 0.9999
 
-    if qty_complete:
-        return OrderLedgerState.FILLED.value
-    if fill_vst in {"PARTIALLY_FILLED", "PARTIAL"} or (
-        fill_vst and is_open_working_status(fill_vst, allow_empty=False)
-    ):
+    if fill_vst in {"PARTIALLY_FILLED", "PARTIAL"}:
         return OrderLedgerState.PARTIAL.value
-    if fill_vst == "FILLED":
-        if qty_strictly_partial:
-            return OrderLedgerState.PARTIAL.value
-        return OrderLedgerState.FILLED.value
+    if fill_vst and is_open_working_status(fill_vst, allow_empty=False):
+        return OrderLedgerState.OPEN.value
     if fill_vst == "EXPIRED":
         return OrderLedgerState.EXPIRED.value
     if fill_vst in CANCEL_OR_EXPIRE_VENUE_STATUSES:
         return OrderLedgerState.CANCELED.value
+    if qty_complete:
+        return OrderLedgerState.FILLED.value
+    if fill_vst in {"FILLED", "CLOSED"}:
+        if qty_strictly_partial:
+            return OrderLedgerState.PARTIAL.value
+        return OrderLedgerState.FILLED.value
     # Raw venue execution fills carry no terminal order status (e.g. Hyperliquid userFills / Kraken ownTrades):
     # remain PARTIAL until cumulative executed qty reaches req_qty or verified open-book absence converges it.
     return OrderLedgerState.PARTIAL.value

@@ -2190,6 +2190,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd,
             ai_intents=intents_data if isinstance(intents_data, list) else None,
             allow_network=allow_network,
+            now_ts=now_ts,
         )
         if t212_cycles:
             if xst_summary := harvest_kraken_xstocks(

@@ -2197,6 +2197,7 @@ def test_impulse_eval_gap_configurable_are_close_and_zero_benefit_triggers(tmp_p
 
     gtc = gtc_mod.GlobalTelemetryCollector(cache_dir=str(cdb_dir), symbols=["TAOUSDC"], skip_news=True, skip_external=True)
     monkeypatch.setenv("AI_IMPULSE_TRIGGER_ENABLED", "true")
+    monkeypatch.setenv("AI_IMPULSE_REQUIRE_ACTIVE_CRON", "false")
     monkeypatch.setenv("AI_IMPULSE_COOLDOWN_SEC", "150")
     monkeypatch.delenv("AI_IMPULSE_MIN_EVAL_GAP_SEC", raising=False)
 
@@ -6137,6 +6138,301 @@ def test_cycle13_reconciler_loads_list_root_ai_intents_and_enrich_preserves_term
     assert row_part["status"] == "CANCELED"
     assert _enrich_filled_row_metadata(row_part, {"orderId": "10", "status": "PARTIALLY_FILLED"}) is False
     assert row_part["status"] == "CANCELED"
+
+
+def test_twin_bug_elimination_and_by_construction_refactors(tmp_path):
+    """Regression coverage for twin bugs found in codebase-wide sweep and by-construction SSOT refactors:
+    1. providers/portfolio_valuation.py: separate authoritative runtime views from raw disk venue_balances_state
+       so raw pre-deduction free cash/base is never double-counted alongside runtime locked balances.
+    2. active_intents.py: classify cache_order_filled rows via providers.order_ledger.classify_fill_evidence_state
+       so legacy status='FILLED' 2/10 partial fills never hide resting open orders or prune partial intents.
+    3. order_ledger_reconciler_worker.py: Step 3 orphan adoption checks closed_order_tokens (cid + vid), not vid only.
+    4. microstructure_collector.py: refresh_stale_t212_cached_positions preserves original balance timestamps into
+       base_bal_ts/quote_bal_ts when updating price ts.
+    5. portfolio_evaluator.py: PositionCostBasisEnrichmentEvaluator honors explicit now_ts (no _time.time() leak).
+    6. sentiment_advisor.py & prompt_sections.py: normalize near-zero negatives (-0.004 -> +0.00%, never -0.00%).
+    """
+    from types import SimpleNamespace
+    from unittest import mock
+
+    import active_intents
+    from cacheaccount import (
+        CACHE_BINANCE_ORDER_OPEN_FILENAME,
+        CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME,
+        CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME,
+        CacheOrderOpenManager,
+    )
+    from intelligence.sentiment.collectors import microstructure_collector as mc_mod
+    from intelligence.sentiment.evaluators.portfolio_evaluator import PositionCostBasisEnrichmentEvaluator
+    from intelligence.sentiment.sentiment_advisor import _format_breadth_line, _format_single_whale_entry
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+    from providers.order_ledger import OrderEventType, OrderLedgerReader, OrderLedgerWriter
+    from providers.portfolio_valuation import compute_venue_nav_breakdown
+
+    # --- 1. NAV valuation never double-counts raw disk free + runtime locked balances ---
+    nav = compute_venue_nav_breakdown(
+        positions=[
+            {
+                "venue": "binance",
+                "symbol": "ARBUSDC",
+                "base": "ARB",
+                "price": 1.0,
+                "free_base": 6.0,
+                "value_usd": 6.0,
+                "locked_base_qty": 4.0,
+                "locked_base_usd": 4.0,
+            }
+        ],
+        quote_cash={"binance:USDC": {"venue": "binance", "asset": "USDC", "free": 75.0, "locked_quote_usd": 25.0}},
+        venue_balances_state={
+            "pos:binance:ARBUSDC": {"venue": "binance", "symbol": "ARBUSDC", "base": "ARB", "price": 1.0, "free_base": 10.0, "value_usd": 10.0},
+            "cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 100.0},
+            # Separate venue absent from runtime views MUST still be backfilled from disk snapshot
+            "cash:kraken:USD": {"venue": "kraken", "asset": "USD", "free": 50.0},
+        },
+    )
+    assert nav["venues_usd"]["binance"] == pytest.approx(110.0)
+    assert nav["venues_usd"]["kraken"] == pytest.approx(50.0)
+    assert nav["free_cash_usd"] == pytest.approx(125.0)
+    assert nav["locked_quote_usd"] == pytest.approx(25.0)
+    assert nav["invested_usd"] == pytest.approx(10.0)
+    assert nav["portfolio_total_usd"] == pytest.approx(160.0)
+
+    # --- 2. active_intents keeps resting open orders & partial intents despite legacy status='FILLED' 2/10 ---
+    now_s = 1_795_700_000.0
+    ai_root = tmp_path / "ai_legacy_partial"
+    (ai_root / "cachedb" / "orders").mkdir(parents=True)
+    (ai_root / "cachedb" / "state").mkdir(parents=True)
+    # Resting order HL-OPEN-PART (2/10 filled) + unverified partial HL-NO-SNAP (2/10) + genuinely full HL-FULL (10/10)
+    (ai_root / "cachedb" / "orders" / CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME).write_text(
+        json.dumps(
+            {
+                "items": {
+                    "HYPEUSDC": [
+                        {
+                            "orderId": "HL-OPEN-PART",
+                            "symbol": "HYPEUSDC",
+                            "side": "BUY",
+                            "price": 50.0,
+                            "origQty": 10.0,
+                            "executedQty": 2.0,
+                            "status": "PARTIALLY_FILLED",
+                        }
+                    ]
+                },
+                "symbol_verified_ts": {"HYPEUSDC": now_s},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (ai_root / "cachedb" / "orders" / CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME).write_text(
+        json.dumps(
+            {
+                "items": {
+                    "HYPEUSDC": [
+                        {"orderId": "HL-OPEN-PART", "symbol": "HYPEUSDC", "side": "BUY", "price": 50.0, "quantity": 2.0, "status": "FILLED"},
+                        {"orderId": "HL-NO-SNAP", "symbol": "HYPEUSDC", "side": "BUY", "price": 49.0, "quantity": 2.0, "status": "FILLED"},
+                        {"orderId": "HL-FULL", "symbol": "HYPEUSDC", "side": "BUY", "price": 48.0, "quantity": 10.0, "status": "FILLED"},
+                    ]
+                },
+                "fetchtime": {"HYPEUSDC": int(now_s * 1000)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (ai_root / "cachedb" / "state" / "autonomous_trade_intents_state.json").write_text(
+        json.dumps(
+            [
+                {
+                    "intent_id": "i_open_part",
+                    "venue": "hyperliquid",
+                    "symbol": "HYPEUSDC",
+                    "side": "BUY",
+                    "order_type": "LIMIT",
+                    "requested_qty": 10.0,
+                    "requested_price": 50.0,
+                    "timestamp": now_s - 60.0,
+                    "status": "EXECUTED",
+                    "execution_payload": {"orderId": "HL-OPEN-PART", "status": "NEW"},
+                },
+                {
+                    "intent_id": "i_no_snap_part",
+                    "venue": "hyperliquid",
+                    "symbol": "HYPEUSDC",
+                    "side": "BUY",
+                    "order_type": "LIMIT",
+                    "requested_qty": 10.0,
+                    "requested_price": 49.0,
+                    "timestamp": now_s - 60.0,
+                    "status": "EXECUTED",
+                    "execution_payload": {"orderId": "HL-NO-SNAP", "status": "NEW"},
+                },
+                {
+                    "intent_id": "i_full_done",
+                    "venue": "hyperliquid",
+                    "symbol": "HYPEUSDC",
+                    "side": "BUY",
+                    "order_type": "LIMIT",
+                    "requested_qty": 10.0,
+                    "requested_price": 48.0,
+                    "timestamp": now_s - 60.0,
+                    "status": "EXECUTED",
+                    "execution_payload": {"orderId": "HL-FULL", "status": "NEW"},
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with mock.patch("active_intents.resolve_now_ts", return_value=now_s):
+        idx_part = active_intents.build_active_intent_index(str(ai_root))
+    kept_iids = {r["intent_id"] for r in idx_part["intents"]}
+    assert "i_open_part" in kept_iids
+    assert "i_no_snap_part" in kept_iids
+    assert "i_full_done" not in kept_iids
+    assert any(o.get("orderId") == "HL-OPEN-PART" for o in active_intents._load_cached_open_orders(str(ai_root)))
+
+    # --- 3. OrderLedgerReconciler Step 3 skips re-adopting order closed by cid even if vid wasn't on close ---
+    cdb_cid = tmp_path / "cachedb_cid_close"
+    (cdb_cid / "orders").mkdir(parents=True)
+    w_cid = OrderLedgerWriter(cachedb_dir=cdb_cid)
+    rec_cid = OrderLedgerReconciler(cachedb_dir=cdb_cid, use_singletons=False, reconcile_grace_sec=10.0)
+    rd_cid = OrderLedgerReader(cachedb_dir=cdb_cid)
+    w_cid.record_event(
+        OrderEventType.SUBMITTED,
+        venue="binance",
+        symbol="ARBUSDC",
+        ts=now_s,
+        iid="iid-cid-1",
+        cid="AI_cid_only_1",
+        side="BUY",
+        qty=10.0,
+        px=1.0,
+    )
+    w_cid.record_event(
+        OrderEventType.STATUS,
+        venue="binance",
+        symbol="ARBUSDC",
+        ts=now_s + 2.0,
+        iid="iid-cid-1",
+        cid="AI_cid_only_1",
+        vst="CANCELED",
+    )
+    rec_cid.reconcile_once(now_ts=now_s + 3.0)
+    # Stale open snapshot still shows that exact cid with a newly discovered vid -> MUST NOT be re-adopted as orphan!
+    CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(cdb_cid / "orders" / CACHE_BINANCE_ORDER_OPEN_FILENAME),
+        {
+            "ARBUSDC": [
+                {
+                    "orderId": "BN-LATE-VID-99",
+                    "clientOrderId": "AI_cid_only_1",
+                    "side": "BUY",
+                    "price": 1.0,
+                    "origQty": 10.0,
+                    "executedQty": 0.0,
+                    "status": "NEW",
+                    "timestamp": int(now_s * 1000),
+                }
+            ]
+        },
+        now_ms=int((now_s + 4.0) * 1000),
+        verified_ts=now_s + 4.0,
+    )
+    st_cid = rec_cid.reconcile_once(now_ts=now_s + 5.0)
+    assert st_cid["orphans_adopted"] == 0 and st_cid["active_count"] == 0
+    assert rd_cid.list_active_orders(venue="binance", apply_tail=False) == []
+
+    # --- 4. refresh_stale_t212_cached_positions preserves original balance ts into base_bal_ts/quote_bal_ts ---
+    vb_t212_p = tmp_path / "venue_balances_state.json"
+    old_bal_ts = now_s - 600.0
+    cached_t212 = {
+        "pos:t212:NVDA_US_EQ": {
+            "venue": "t212",
+            "symbol": "NVDA_US_EQ",
+            "price": 150.0,
+            "free_base": 2.0,
+            "free_quote": 500.0,
+            "ts": old_bal_ts,
+        }
+    }
+    vb_t212_p.write_text(json.dumps(cached_t212), encoding="utf-8")
+    fake_t212_cls = type(
+        "FakeT212Provider",
+        (),
+        {"_client": lambda self: SimpleNamespace(get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "currentPrice": 152.5}])},
+    )
+    with (
+        mock.patch.object(mc_mod._t212_prov_mod, "T212Provider", fake_t212_cls),
+        mock.patch.object(mc_mod, "_LAST_T212_PORTFOLIO_POLL_TS", 0.0),
+    ):
+        dirty = mc_mod.refresh_stale_t212_cached_positions(cached_t212, str(vb_t212_p), now_s)
+    assert dirty is True
+    assert cached_t212["pos:t212:NVDA_US_EQ"]["price"] == pytest.approx(152.5)
+    assert cached_t212["pos:t212:NVDA_US_EQ"]["ts"] == pytest.approx(now_s)
+    assert cached_t212["pos:t212:NVDA_US_EQ"]["base_bal_ts"] == pytest.approx(old_bal_ts)
+    assert cached_t212["pos:t212:NVDA_US_EQ"]["quote_bal_ts"] == pytest.approx(old_bal_ts)
+
+    # --- 5. PositionCostBasisEnrichmentEvaluator honors explicit now_ts regardless of wall-clock shift ---
+    lot_ts_ms = int((now_s - 20 * 3600.0) * 1000)  # 20h old at now_s (inside 12h..90d peak-seeding window)
+    def _run_cost_basis(wall_clock_s: float) -> dict:
+        pos_l = [{"venue": "binance", "symbol": "ARBUSDC", "base": "ARB", "quote": "USDC", "price": 1.0, "free_base": 100.0}]
+        ro_map = {
+            "binance": {
+                "ARBUSDC": {
+                    "last_action_side": "BUY",
+                    "active_avg_buy_px": 1.0,
+                    "last_buy": {"price": 1.0, "ts_ms": lot_ts_ms},
+                    "open_lots": [{"qty": 100.0, "entry_px": 1.0, "ts_ms": lot_ts_ms}],
+                }
+            }
+        }
+        with mock.patch("intelligence.sentiment.evaluators.portfolio_evaluator._time.time", return_value=wall_clock_s):
+            PositionCostBasisEnrichmentEvaluator().evaluate(
+                pos_l,
+                prices_and_trends={"ARBUSDC": {"price": 1.0, "high_24h": 1.15}},
+                venue_recent_orders=ro_map,
+                now_ts=now_s,
+            )
+        return pos_l[0]
+
+    pos_same_w = _run_cost_basis(now_s)
+    pos_shifted_w = _run_cost_basis(now_s + 120 * 86400.0)  # +120 days outside 90d window if wall-clock leaked!
+    assert pos_same_w.get("trailing_peak") == pytest.approx(1.15)
+    assert pos_shifted_w.get("trailing_peak") == pytest.approx(1.15)
+
+    # --- 6. Signed-zero formatting across sentiment_advisor & prompt_sections ---
+    br_line = _format_breadth_line(
+        {
+            "advance_ratio": 0.5,
+            "median_change_pct": -0.004,
+            "mean_change_pct": -0.004,
+            "advancing_count": 5,
+            "total_count": 10,
+            "eth_price": 3000.0,
+            "eth_chg_24h_pct": -0.004,
+            "eth_btc_ratio": 0.05,
+            "eth_btc_chg_24h_pct": -0.004,
+        }
+    )
+    assert "-0.00%" not in br_line and "median +0.00%" in br_line and "mean +0.00%" in br_line
+    wh_line = _format_single_whale_entry("BTCUSDC", {"symbol": "BTCUSDC", "open_interest_usd": 1e8, "open_interest_1h_change_pct": -0.004})
+    assert "-0.00%" not in wh_line and "+0.00% 1h" in wh_line
+    sec3b_oi = "\n".join(
+        _format_microstructure_section(
+            {
+                "BTCUSDC": {
+                    "ob_imbalance": 0.55,
+                    "bid_depth_usd": 100_000.0,
+                    "ask_depth_usd": 90_000.0,
+                    "oi_usd": 50_000_000.0,
+                    "oi_1h_chg_pct": 0.5,
+                    "oi_15m_chg_pct": -0.004,
+                }
+            },
+            {"BTCUSDC": {"price": 60000.0}},
+        )
+    )
+    assert "oi_15m_chg=+0.00%" in sec3b_oi and "oi_15m_chg=-0.00%" not in sec3b_oi
 
 
 

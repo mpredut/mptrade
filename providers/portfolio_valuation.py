@@ -40,8 +40,10 @@ def compute_venue_nav_breakdown(
         if isinstance(raw_k, str) and raw_k.strip() and (px := extract_current_price_item(raw_v)) is not None
     }
 
-    pos_rows: list[dict] = []
-    cash_items: list[tuple[str, object]] = []
+    disk_pos_rows: list[dict] = []
+    disk_cash_items: list[tuple[str, object]] = []
+    live_pos_rows: list[dict] = []
+    live_cash_items: list[tuple[str, object]] = []
 
     if isinstance(venue_balances_state, dict):
         for key, entry in venue_balances_state.items():
@@ -51,15 +53,15 @@ def compute_venue_nav_breakdown(
             v_cand = entry.get("venue") or (parts[1] if len(parts) > 1 else "")
             if key.startswith("cash:"):
                 a_cand = entry.get("asset") or (parts[2] if len(parts) > 2 else "USD")
-                cash_items.append((f"{v_cand}:{a_cand}", {**entry, "venue": v_cand, "asset": a_cand}))
+                disk_cash_items.append((f"{v_cand}:{a_cand}", {**entry, "venue": v_cand, "asset": a_cand}))
             elif key.startswith("pos:"):
                 s_cand = entry.get("symbol") or (parts[2] if len(parts) > 2 else key)
-                pos_rows.append({**entry, "venue": v_cand, "symbol": s_cand})
+                disk_pos_rows.append({**entry, "venue": v_cand, "symbol": s_cand})
 
     if isinstance(positions, (list, tuple)):
-        pos_rows.extend(p for p in positions if isinstance(p, dict))
+        live_pos_rows.extend(p for p in positions if isinstance(p, dict))
     if isinstance(quote_cash, dict):
-        cash_items.extend((str(ck or ""), cv) for ck, cv in quote_cash.items())
+        live_cash_items.extend((str(ck or ""), cv) for ck, cv in quote_cash.items())
 
     def _matches_scope(v_name: str, sym_u: str = "") -> bool:
         if v_name in excl_set:
@@ -69,15 +71,31 @@ def compute_venue_nav_breakdown(
         is_eq = is_equity_venue_or_suffix(sym_u, v_name)
         return is_eq if scope_norm == "equities" else (not is_eq)
 
+    # Keep authoritative runtime views (positions/quote_cash) separate from raw disk snapshots
+    # (venue_balances_state) so raw pre-deduction free balances are never combined with runtime locked balances.
     grouped_pos: dict[tuple[str, str], list[dict]] = {}
-    for p in pos_rows:
+    live_pos_keys: set[tuple[str, str]] = set()
+    for p in live_pos_rows:
         v_name = normalize_venue_name(p.get("venue")) or "unknown"
         sym_raw = str(p.get("symbol") or "").strip().upper()
         if not _matches_scope(v_name, sym_raw):
             continue
         is_eq_p = is_equity_venue_or_suffix(sym_raw, v_name)
         base_p = canonical_base_asset(p.get("base") or sym_raw) or sym_raw or f"IDX_{len(grouped_pos)}"
-        grouped_pos.setdefault((v_name, f"EQ:{base_p}" if is_eq_p else base_p), []).append(p)
+        g_key = (v_name, f"EQ:{base_p}" if is_eq_p else base_p)
+        live_pos_keys.add(g_key)
+        grouped_pos.setdefault(g_key, []).append(p)
+    for p in disk_pos_rows:
+        v_name = normalize_venue_name(p.get("venue")) or "unknown"
+        sym_raw = str(p.get("symbol") or "").strip().upper()
+        if not _matches_scope(v_name, sym_raw):
+            continue
+        is_eq_p = is_equity_venue_or_suffix(sym_raw, v_name)
+        base_p = canonical_base_asset(p.get("base") or sym_raw) or sym_raw or f"IDX_{len(grouped_pos)}"
+        g_key = (v_name, f"EQ:{base_p}" if is_eq_p else base_p)
+        if g_key in live_pos_keys:
+            continue
+        grouped_pos.setdefault(g_key, []).append(p)
 
     venue_pos_usd: dict[str, float] = {}
     grouped_positions_out: list[tuple[str, dict, float]] = []
@@ -120,8 +138,7 @@ def compute_venue_nav_breakdown(
         venue_pos_usd[v_name] = venue_pos_usd.get(v_name, 0.0) + val_u
         grouped_positions_out.append((v_name, grp_list[0], val_u))
 
-    dedup_cash: dict[tuple[str, str], tuple[float, float]] = {}
-    for c_key, c in cash_items:
+    def _parse_cash_entry(c_key: str, c: object) -> tuple[str, str, float, float] | None:
         k_parts = str(c_key or "").split(":", 1)
         v_fallback = normalize_venue_name(k_parts[0])
         if isinstance(c, dict):
@@ -134,11 +151,30 @@ def compute_venue_nav_breakdown(
         else:
             f_u = safe_pos_float(c, default=0.0) or 0.0
             if f_u <= 0.0:
-                continue
+                return None
             v_name = v_fallback or "unknown"
             c_asset_u = k_parts[1].strip().upper() if len(k_parts) > 1 and k_parts[1].strip() else "USD"
             l_u = 0.0
         if not _matches_scope(v_name):
+            return None
+        return v_name, c_asset_u, f_u, l_u
+
+    dedup_cash: dict[tuple[str, str], tuple[float, float]] = {}
+    live_cash_keys: set[tuple[str, str]] = set()
+    for c_key, c in live_cash_items:
+        parsed_c = _parse_cash_entry(c_key, c)
+        if parsed_c is None:
+            continue
+        v_name, c_asset_u, f_u, l_u = parsed_c
+        live_cash_keys.add((v_name, c_asset_u))
+        prev_f, prev_l = dedup_cash.get((v_name, c_asset_u), (0.0, 0.0))
+        dedup_cash[(v_name, c_asset_u)] = (max(prev_f, f_u), max(prev_l, l_u))
+    for c_key, c in disk_cash_items:
+        parsed_c = _parse_cash_entry(c_key, c)
+        if parsed_c is None:
+            continue
+        v_name, c_asset_u, f_u, l_u = parsed_c
+        if (v_name, c_asset_u) in live_cash_keys:
             continue
         prev_f, prev_l = dedup_cash.get((v_name, c_asset_u), (0.0, 0.0))
         dedup_cash[(v_name, c_asset_u)] = (max(prev_f, f_u), max(prev_l, l_u))

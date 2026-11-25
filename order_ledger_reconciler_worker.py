@@ -552,7 +552,7 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                         reason="venue_fill_status_expired",
                         **common_fill_kw,
                     )
-                elif fill_qty > (safe_nonneg_float(rec.get("fq"), default=0.0) or 0.0) + 1e-12:
+                elif outcome == OrderLedgerState.PARTIAL.value and fill_qty > (safe_nonneg_float(rec.get("fq"), default=0.0) or 0.0) + 1e-12:
                     raw_fill_vst = clean_upper_scalar(fill_row.get("status"))
                     partial_vst = (
                         raw_fill_vst

@@ -2246,6 +2246,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
         gateway_max_usd: float = 2000.0,
         ai_intents: Optional[List[Dict[str, Any]]] = None,
         allow_network: bool = True,
+        now_ts: Optional[float] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         cache_dir = cachedb_dir
@@ -2472,6 +2473,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
             cyc_sell_ts_map,
             gateway_max_usd=gateway_max_usd,
             cache_dir=cache_dir,
+            now_ts=now_ts,
         )
         for ro_val in recent_orders.values():
             if isinstance(ro_val, dict):
@@ -2723,6 +2725,7 @@ def harvest_recent_orders_and_enrich_positions(
     gateway_max_usd: float = 2000.0,
     ai_intents: Optional[List[Dict[str, Any]]] = None,
     allow_network: bool = True,
+    now_ts: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Load recent fills across Binance, Kraken, Hyperliquid, and T212 and enrich tradable_positions with cost-basis anchors."""
     return TelemetryCollectorFactory.create("portfolio_recent_orders", start_sync=allow_network).collect(
@@ -2739,6 +2742,7 @@ def harvest_recent_orders_and_enrich_positions(
         gateway_max_usd=gateway_max_usd,
         ai_intents=ai_intents,
         allow_network=allow_network,
+        now_ts=now_ts,
     )
 
 

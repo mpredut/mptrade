@@ -65,7 +65,12 @@ from providers.order_id_context import (
     resolve_order_actor,
     resolve_order_owner,
 )
-from providers.order_ledger import OrderLedgerReader
+from providers.order_ledger import (
+    OrderLedgerReader,
+    OrderLedgerState,
+    TERMINAL_LEDGER_STATES,
+    classify_fill_evidence_state,
+)
 from providers.order_ohlc_utils import extract_executed_qty, extract_orig_qty
 from providers.order_status_ssot import (
     OPEN_WORKING_OR_EMPTY_VENUE_STATUSES,
@@ -571,61 +576,24 @@ def _order_key_tuple(venue: Any, symbol: Any, oid: Any) -> tuple[str, str, str]:
     return (v_k, sym_c, oid_c)
 
 
-def _is_fill_terminal_for_qty(fill_meta: tuple[str, float] | None, req_qty: float | None) -> bool:
-    """Return True when a filled-cache ``(status, qty)`` record proves an order of ``req_qty`` is terminal."""
-    if fill_meta is None:
-        return False
-    st_up, fill_q = fill_meta
-    if st_up in {"FILLED", "CLOSED"}:
-        if req_qty is not None and req_qty > 0.0 and fill_q > 0.0 and fill_q < req_qty * 0.9999:
-            return False
-        return True
-    return bool(st_up)
-
-
-def _load_cached_order_book_index(
+def _load_cached_order_book_state(
     root: str,
-) -> tuple[list[dict[str, Any]], dict[tuple[str, str], float], dict[tuple[str, str, str], tuple[str, float]]]:
-    """Collect read-only resting open orders, per-symbol verified open-book timestamps, and terminal fill metadata."""
-    out: list[dict[str, Any]] = []
-    seen_keys: set[tuple[str, str, str]] = set()
+) -> tuple[
+    list[dict[str, Any]],
+    dict[tuple[str, str], float],
+    set[tuple[str, str, str]],
+    dict[tuple[str, str, str], dict[str, Any]],
+]:
+    """Collect read-only resting open orders, per-symbol verified open-book timestamps, and SSOT-classified fill evidence."""
+    raw_open_rows: list[tuple[tuple[str, str, str], dict[str, Any]]] = []
+    open_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     open_covered_venues: set[str] = set()
     covered_symbol_ts: dict[tuple[str, str], float] = {}
-    terminal_fill_meta: dict[tuple[str, str, str], tuple[str, float]] = {}
+    terminal_order_keys: set[tuple[str, str, str]] = set()
+    ambiguous_filled_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     filled_open_by_venue: dict[str, list[dict[str, Any]]] = {}
-    terminal_venue_statuses = TERMINAL_AUDIT_VENUE_STATUSES | TERMINAL_CANCEL_VENUE_STATUSES
 
-    for venue_key, filled_fname in CacheOrderFilledManager.VENUE_FILENAMES.items():
-        oc_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(filled_fname))))
-        items, ft = CacheOrderFilledManager.read_venue_filled_orders_snapshot(oc_path, venue=venue_key)
-        if not items and not ft:
-            continue
-        for k_sym, sym_orders in items.items():
-            latest_by_oid: dict[str, dict[str, Any]] = {}
-            for oo in sym_orders:
-                oid = clean_order_id(extract_order_id(oo, default=None)) or ""
-                if oid:
-                    latest_by_oid[oid] = oo
-            for oid, oo in latest_by_oid.items():
-                oo_sym = str(oo.get("symbol") or k_sym)
-                oo_st = oo.get("status")
-                oo_st_up = clean_upper_scalar(oo_st) or ""
-                if oo_st_up and oo_st_up in terminal_venue_statuses:
-                    fill_q = (
-                        safe_nonneg_float(
-                            oo.get("quantity") or oo.get("qty") or oo.get("executedQty"),
-                            default=0.0,
-                        )
-                        or 0.0
-                    )
-                    terminal_fill_meta[_order_key_tuple(venue_key, oo_sym, oid)] = (oo_st_up, fill_q)
-                    continue
-                if not (is_open_working_status(oo_st, allow_empty=False) or oo_st_up == "PARTIALLY_FILLED"):
-                    continue
-                filled_open_by_venue.setdefault(venue_key, []).append(
-                    {"venue": venue_key, "symbol": oo_sym, **oo}
-                )
-
+    # 1. Read open-order snapshots FIRST so fill classification knows whether an order is still resting & its origQty.
     for venue_key, open_fname in CacheOrderOpenManager.VENUE_FILENAMES.items():
         oo_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(open_fname))))
         items, ft, ver_ts, sym_ver = CacheOrderOpenManager.read_venue_open_orders_snapshot_detailed(oo_path)
@@ -643,13 +611,60 @@ def _load_cached_order_book_index(
                 oid = clean_order_id(extract_order_id(oo, default=None)) or ""
                 oo_sym = str(oo.get("symbol") or k_sym)
                 key_t = _order_key_tuple(venue_key, oo_sym, oid)
-                orig_q = safe_pos_float(extract_orig_qty(oo, default=None), default=None)
-                if oid and _is_fill_terminal_for_qty(terminal_fill_meta.get(key_t), orig_q):
+                row_full = {"venue": venue_key, "symbol": oo_sym, **oo}
+                if oid:
+                    open_by_key[key_t] = row_full
+                raw_open_rows.append((key_t, row_full))
+
+    # 2. Classify filled-order cache rows using the canonical order-ledger SSoT rule (never letting a legacy
+    #    partial fill labeled status='FILLED' hide a resting open order or prematurely prune a partial intent).
+    for venue_key, filled_fname in CacheOrderFilledManager.VENUE_FILENAMES.items():
+        oc_path = str(resolve_cachedb_filepath(os.path.join(root, cache_relpath(filled_fname))))
+        items, ft = CacheOrderFilledManager.read_venue_filled_orders_snapshot(oc_path, venue=venue_key)
+        if not items and not ft:
+            continue
+        for k_sym, sym_orders in items.items():
+            latest_by_oid: dict[str, dict[str, Any]] = {}
+            for oo in sym_orders:
+                oid = clean_order_id(extract_order_id(oo, default=None)) or ""
+                if oid:
+                    latest_by_oid[oid] = oo
+            for oid, oo in latest_by_oid.items():
+                oo_sym = str(oo.get("symbol") or k_sym)
+                key_t = _order_key_tuple(venue_key, oo_sym, oid)
+                resting_row = open_by_key.get(key_t)
+                req_qty = (
+                    safe_pos_float(extract_orig_qty(resting_row, default=None), default=None)
+                    if resting_row is not None
+                    else first_pos_float(oo.get("origQty"), oo.get("orig_qty"), oo.get("requested_qty"), default=None)
+                )
+                oo_st = oo.get("status")
+                oo_st_up = clean_upper_scalar(oo_st) or ""
+                fill_state = classify_fill_evidence_state(
+                    oo, req_qty=req_qty, resting_now=(resting_row is not None)
+                )
+                if fill_state in TERMINAL_LEDGER_STATES:
+                    if fill_state == OrderLedgerState.FILLED.value and req_qty is None and resting_row is None:
+                        ambiguous_filled_by_key[key_t] = oo
+                    else:
+                        terminal_order_keys.add(key_t)
                     continue
-                if not oid or key_t not in seen_keys:
-                    if oid:
-                        seen_keys.add(key_t)
-                    out.append({"venue": venue_key, "symbol": oo_sym, **oo})
+                if not (is_open_working_status(oo_st, allow_empty=False) or oo_st_up == "PARTIALLY_FILLED"):
+                    continue
+                filled_open_by_venue.setdefault(venue_key, []).append(
+                    {"venue": venue_key, "symbol": oo_sym, **oo}
+                )
+
+    out: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str, str]] = set()
+    for key_t, row_full in raw_open_rows:
+        oid = key_t[2]
+        if oid and key_t in terminal_order_keys:
+            continue
+        if not oid or key_t not in seen_keys:
+            if oid:
+                seen_keys.add(key_t)
+            out.append(row_full)
 
     for venue_key, oc_orders in filled_open_by_venue.items():
         if venue_key in open_covered_venues:
@@ -662,7 +677,15 @@ def _load_cached_order_book_index(
                     seen_keys.add(key_t)
                 out.append(oo)
 
-    return out, covered_symbol_ts, terminal_fill_meta
+    return out, covered_symbol_ts, terminal_order_keys, ambiguous_filled_by_key
+
+
+def _load_cached_order_book_index(
+    root: str,
+) -> tuple[list[dict[str, Any]], dict[tuple[str, str], float], set[tuple[str, str, str]]]:
+    """Collect read-only resting open orders, per-symbol verified open-book timestamps, and explicitly terminal venue order keys."""
+    out, covered_symbol_ts, terminal_order_keys, _ = _load_cached_order_book_state(root)
+    return out, covered_symbol_ts, terminal_order_keys
 
 
 def _load_cached_open_orders_and_covered_venues(root: str) -> tuple[list[dict[str, Any]], set[str]]:
@@ -717,7 +740,7 @@ def _prune_and_deduplicate_active_intents(intents: list[dict[str, Any]], root: s
     if not intents:
         return []
     now_s = resolve_now_ts(None)
-    open_orders, covered_symbol_ts, terminal_fill_meta = _load_cached_order_book_index(root)
+    open_orders, covered_symbol_ts, terminal_order_keys, ambiguous_filled_by_key = _load_cached_order_book_state(root)
     live_open_keys: set[tuple[str, str, str]] = set()
     for oo in open_orders:
         if oid_oo := clean_order_id(extract_order_id(oo, default=None)):
@@ -732,7 +755,7 @@ def _prune_and_deduplicate_active_intents(intents: list[dict[str, Any]], root: s
         if (oid_r := clean_order_id(r.get("order_id")))
     }
     term_outbox_iids, term_outbox_oids = _collect_terminal_outbox_keys(root)
-    eff_outbox_terminal_oids = term_outbox_oids - outbox_oids
+    eff_terminal_oids = terminal_order_keys | (term_outbox_oids - outbox_oids)
     eff_terminal_iids = term_outbox_iids - outbox_iids
 
     kept_primary: list[dict[str, Any]] = []
@@ -743,9 +766,14 @@ def _prune_and_deduplicate_active_intents(intents: list[dict[str, Any]], root: s
             oid_k = clean_order_id(row.get("order_id"))
             row_key = _order_key_tuple(v_k, row.get("symbol"), oid_k) if oid_k else None
             is_live_open = bool(row_key and row_key in live_open_keys)
-            req_q = safe_pos_float(row.get("requested_qty"), default=None)
-            is_filled_terminal = bool(row_key and _is_fill_terminal_for_qty(terminal_fill_meta.get(row_key), req_q))
-            if is_filled_terminal or (row_key and row_key in eff_outbox_terminal_oids) or (
+            is_fill_terminal = False
+            if row_key and (amb_fill := ambiguous_filled_by_key.get(row_key)) is not None:
+                intent_req_qty = safe_pos_float(row.get("qty") or row.get("requested_qty"), default=None)
+                is_fill_terminal = (
+                    classify_fill_evidence_state(amb_fill, req_qty=intent_req_qty, resting_now=is_live_open)
+                    in TERMINAL_LEDGER_STATES
+                )
+            if (row_key and (row_key in eff_terminal_oids or is_fill_terminal)) or (
                 row.get("intent_id") in eff_terminal_iids and not is_live_open
             ):
                 continue

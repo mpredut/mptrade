@@ -29,6 +29,7 @@ from botcore import (
     extract_timestamp_ms,
     first_pos_float,
     normalize_timestamp_ms,
+    resolve_now_ts,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -664,6 +665,8 @@ def _resolve_cycle_high_since(
     prices_and_trends: Dict[str, Any],
     cache_dir: str = "",
     memo: Optional[Dict[tuple[str, int], float]] = None,
+    *,
+    now_ms: Optional[int] = None,
 ) -> float:
     """Resolve the highest price reached during an active position cycle since ``oldest_ts_ms``."""
     sym_u = str(symbol or "").strip().upper()
@@ -679,8 +682,8 @@ def _resolve_cycle_high_since(
         casefold_get(prices_and_trends, sym_u),
     )
     best_high = safe_pos_float(pt_entry.get("high_24h") if isinstance(pt_entry, dict) else None, default=0.0) or 0.0
-    now_ms = math.trunc(_time.time() * 1000)
-    if cache_dir and oldest_ts_ms > 0 and (now_ms - oldest_ts_ms) > 24 * 3600 * 1000:
+    eff_now_ms = now_ms if (now_ms is not None and now_ms > 0) else math.trunc(resolve_now_ts(None) * 1000)
+    if cache_dir and oldest_ts_ms > 0 and (eff_now_ms - oldest_ts_ms) > 24 * 3600 * 1000:
         for cand in dict.fromkeys(cands):
             for mgr_cls in (Cache365PriceManager, CacheSparsePriceManager):
                 arch_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, mgr_cls.disk_filename_for_symbol(cand))))
@@ -1872,6 +1875,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
         prices_and_trends: Dict[str, Any],
         cache_dir: str,
         cycle_high_memo: Dict[tuple[str, int], float],
+        now_ms: Optional[int] = None,
     ) -> None:
         lb, ls = ro.get("last_buy"), ro.get("last_sell")
         if ro.get("last_action_side"):
@@ -1941,7 +1945,8 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 if isinstance(x, dict) and (t := safe_pos_int(x.get("ts_ms"), default=0) or 0) > 0
             ]
             oldest_pos_ts = min(open_lot_ts_vals) if open_lot_ts_vals else newest_lot_ts
-            pos_age_ms = (math.trunc(_time.time() * 1000) - oldest_pos_ts) if oldest_pos_ts > 0 else 0
+            eff_now_ms = now_ms if (now_ms is not None and now_ms > 0) else math.trunc(resolve_now_ts(None) * 1000)
+            pos_age_ms = (eff_now_ms - oldest_pos_ts) if oldest_pos_ts > 0 else 0
             cur_pk = safe_pos_float(pos.get("trailing_peak"), default=None)
             act_avg_pk = safe_pos_float(pos.get("active_avg_buy_px"), default=None)
             pk_is_missing_or_unwarmed = cur_pk is None or (
@@ -1949,7 +1954,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
             )
             if pk_is_missing_or_unwarmed and 12 * 3600 * 1000 <= pos_age_ms <= 90 * 86400 * 1000:
                 hi_24h = _resolve_cycle_high_since(
-                    p_sym, p_quote_variants, oldest_pos_ts, prices_and_trends, cache_dir=cache_dir, memo=cycle_high_memo
+                    p_sym, p_quote_variants, oldest_pos_ts, prices_and_trends, cache_dir=cache_dir, memo=cycle_high_memo, now_ms=eff_now_ms
                 )
                 ls_ts_ms = (safe_pos_int(ls.get("ts_ms"), default=0) or 0) if isinstance(ls, dict) else 0
                 ls_px_pk = (safe_pos_float(pos.get("last_sell_px"), default=0.0) or 0.0) if ls_ts_ms >= oldest_pos_ts else 0.0
@@ -1981,6 +1986,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
         prices_and_trends: Dict[str, Any],
         cache_dir: str,
         cycle_high_memo: Dict[tuple[str, int], float],
+        now_ms: Optional[int] = None,
     ) -> tuple[float, float, bool, bool, Optional[Dict[str, Any]]]:
         cyc_qty = safe_nonneg_float(cyc.get("qty"), default=None)
         c_pk_orig = safe_pos_float(cyc.get("pos_peak"), default=0.0) or 0.0
@@ -2091,10 +2097,11 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     oldest_c_ts_p = _extract_oldest_cycle_lot_ts_ms(
                         ro, fallback_ts_ms=cyc_sell_ts_map.get((f"{p_venue}:entry", p_sym)) or 0
                     )
-                    c_age_ms_p = (math.trunc(_time.time() * 1000) - oldest_c_ts_p) if oldest_c_ts_p > 0 else 0
+                    eff_now_ms_p = now_ms if (now_ms is not None and now_ms > 0) else math.trunc(resolve_now_ts(None) * 1000)
+                    c_age_ms_p = (eff_now_ms_p - oldest_c_ts_p) if oldest_c_ts_p > 0 else 0
                     if 12 * 3600 * 1000 <= c_age_ms_p <= 90 * 86400 * 1000:
                         hi_24h_p = _resolve_cycle_high_since(
-                            p_sym, p_quote_variants, oldest_c_ts_p, prices_and_trends, cache_dir=cache_dir, memo=cycle_high_memo
+                            p_sym, p_quote_variants, oldest_c_ts_p, prices_and_trends, cache_dir=cache_dir, memo=cycle_high_memo, now_ms=eff_now_ms_p
                         )
                         ref_pk_anchor_p = max(pos_px_f, act_avg_c or 0.0, c_entry_c or 0.0, c_pk_sync)
                         if hi_24h_p > 0.0 and not _prices_diverged(ref_pk_anchor_p, hi_24h_p, threshold=0.35):
@@ -2199,7 +2206,9 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
         prices_and_trends: Dict[str, Any],
         cache_dir: str,
         cycle_high_memo: Dict[tuple[str, int], float],
+        now_ms: Optional[int] = None,
     ) -> None:
+        eff_now_ms_u = now_ms if (now_ms is not None and now_ms > 0) else math.trunc(resolve_now_ts(None) * 1000)
         for c_venue, cyc_map in (("t212", t212_cycles), ("kraken", kraken_cycles), ("hyperliquid", hyperliquid_cycles)):
             if not isinstance(cyc_map, dict):
                 continue
@@ -2258,10 +2267,10 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                         oldest_c_ts = _extract_oldest_cycle_lot_ts_ms(
                             ro, fallback_ts_ms=cyc_sell_ts_map.get((f"{c_venue}:entry", c_sym_u)) or 0
                         )
-                        c_age_ms = (math.trunc(_time.time() * 1000) - oldest_c_ts) if oldest_c_ts > 0 else 0
+                        c_age_ms = (eff_now_ms_u - oldest_c_ts) if oldest_c_ts > 0 else 0
                         if 12 * 3600 * 1000 <= c_age_ms <= 90 * 86400 * 1000:
                             hi_24h_c = _resolve_cycle_high_since(
-                                c_sym_u, c_quote_variants, oldest_c_ts, prices_and_trends, cache_dir=cache_dir, memo=cycle_high_memo
+                                c_sym_u, c_quote_variants, oldest_c_ts, prices_and_trends, cache_dir=cache_dir, memo=cycle_high_memo, now_ms=eff_now_ms_u
                             )
                             ls_c_d = ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}
                             ls_c_ts = safe_pos_int(ls_c_d.get("ts_ms"), default=0) or 0
@@ -2295,10 +2304,12 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
         *,
         gateway_max_usd: float = 2000.0,
         cache_dir: str = "",
+        now_ts: Optional[float] = None,
         **kwargs: Any,
     ) -> List[Dict[str, Any]]:
         prices_and_trends = prices_and_trends or {}
         inst_by_sym = inst_by_sym or {}
+        eff_now_ms = math.trunc(resolve_now_ts(now_ts) * 1000)
         venue_recent_orders, recent_orders, kraken_cycles, hyperliquid_cycles, t212_cycles, cyc_sell_ts_map = coerce_dict_maps(
             venue_recent_orders, recent_orders, kraken_cycles, hyperliquid_cycles, t212_cycles, cyc_sell_ts_map
         )
@@ -2348,6 +2359,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     prices_and_trends=prices_and_trends,
                     cache_dir=cache_dir,
                     cycle_high_memo=cycle_high_memo,
+                    now_ms=eff_now_ms,
                 )
             for cyc_map in {"hyperliquid": (hyperliquid_cycles,), "t212": (t212_cycles,), "kraken": (kraken_cycles,)}.get(p_venue, ()):
                 cyc = next((val for cand in (p_sym, *p_quote_variants) if isinstance((val := casefold_get(cyc_map, cand)), dict)), None)
@@ -2373,6 +2385,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                         prices_and_trends=prices_and_trends,
                         cache_dir=cache_dir,
                         cycle_high_memo=cycle_high_memo,
+                        now_ms=eff_now_ms,
                     )
             exact_sym_sp = (prices_and_trends.get(p_sym) or {}).get("spread_bps") if isinstance(prices_and_trends.get(p_sym), dict) else None
             sym_spread = (
@@ -2432,6 +2445,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
             prices_and_trends,
             cache_dir,
             cycle_high_memo,
+            now_ms=eff_now_ms,
         )
         return tradable_positions
 
@@ -2522,6 +2536,7 @@ def enrich_positions_with_orders_and_cycles(
     *,
     gateway_max_usd: float = 2000.0,
     cache_dir: str = "",
+    now_ts: Optional[float] = None,
 ) -> None:
     """Enrich `tradable_positions` and venue cycles in-place with cost-basis anchors, LIFO PnL, trailing peaks, and venue fee/limits."""
     _POSITION_COST_BASIS_ENRICHMENT_EVALUATOR.evaluate(
@@ -2536,6 +2551,7 @@ def enrich_positions_with_orders_and_cycles(
         cyc_sell_ts_map,
         gateway_max_usd=gateway_max_usd,
         cache_dir=cache_dir,
+        now_ts=now_ts,
     )
 
 
