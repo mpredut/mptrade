@@ -405,6 +405,89 @@ def match_filled_intent_rows_lifo(
     return closed_pairs, open_buys, open_sells
 
 
+def match_filled_intent_rows_lifo_in_window(
+    filled_rows: Sequence[dict[str, Any]],
+    *,
+    cutoff_ts: float = 0.0,
+) -> tuple[list[tuple[str, dict[str, Any], dict[str, Any]]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Match the full chronological fill stream LIFO first, then filter realized/open outcomes to ``>= cutoff_ts``.
+
+    Applying ``cutoff_ts`` *after* LIFO matching prevents pre-window entry legs from vanishing off the
+    stack and turning in-window stop-loss SELLs into orphaned sells that fabricate phantom ``SELL->BUY`` wins.
+    """
+    closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo(filled_rows)
+    if cutoff_ts <= 0.0:
+        return closed_pairs, open_buys, open_sells
+    win_closed = [
+        pair for pair in closed_pairs
+        if (safe_float(pair[2].get("ts"), default=0.0) or 0.0) >= cutoff_ts
+    ]
+    win_open_buys = [
+        row for row in open_buys
+        if (safe_float(row.get("ts"), default=0.0) or 0.0) >= cutoff_ts
+    ]
+    win_open_sells = [
+        row for row in open_sells
+        if (safe_float(row.get("ts"), default=0.0) or 0.0) >= cutoff_ts
+    ]
+    return win_closed, win_open_buys, win_open_sells
+
+
+def build_normalized_filled_ai_intent_row(
+    it: Mapping[str, Any],
+    *,
+    venue: str,
+    symbol: str,
+    side: str,
+    ts_s: float,
+    px: float,
+    fee_resolver: Optional[Callable[[str, str, str], Optional[float]]] = None,
+    include_slippage: bool = False,
+    include_attribution: bool = False,
+    model_used: str = "",
+    override_codes: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Build the canonical normalized filled-intent row shared by scorecard, calibration, and attribution."""
+    ot = extract_intent_order_type(it)
+    inv_px, tgt_px = extract_intent_trade_plan_levels(it, side=side, ref_price=px)
+    live_rt = fee_resolver(venue, symbol, ot) if callable(fee_resolver) else None
+    rt_bps = resolve_venue_round_trip_fee_bps(venue, symbol, order_type=ot, round_trip_fee_bps=live_rt)
+    v_k, b_k, q_k, _ = _intent_venue_symbol_side_key(venue, symbol, side)
+    exec_payload = it.get("execution_payload")
+    exec_qty = (
+        safe_pos_float(extract_executed_qty(exec_payload, default=0.0), default=None)
+        if isinstance(exec_payload, Mapping)
+        else None
+    )
+    row: dict[str, Any] = {
+        "ts": ts_s,
+        "venue": venue,
+        "symbol": symbol,
+        "inst_key": (v_k, b_k, q_k),
+        "side": side,
+        "order_type": ot,
+        "px": px,
+        "qty": exec_qty,
+        "usd": _extract_intent_notional_usd(it),
+        "leg_fee_bps": rt_bps / 2.0,
+        "rt_fee_bps": rt_bps,
+        "invalidation_px": inv_px,
+        "target_px": tgt_px,
+        "has_plan": _is_actionable_filled_trade_plan(venue, symbol, side, inv_px, tgt_px),
+    }
+    if include_slippage:
+        lim_slip, arr_sf, mkt_slip = extract_fill_execution_slippage(it, side=side, exec_px=px, order_type=ot)
+        row["limit_slip_bps"] = lim_slip
+        row["arrival_sf_bps"] = arr_sf
+        row["market_slip_bps"] = mkt_slip
+    if include_attribution:
+        row["intent_id"] = _extract_intent_id(it)
+        row["order_id"] = extract_intent_primary_order_id(it, default="", include_top_level=True)
+        row["model_used"] = model_used or (clean_scalar_str(it.get("model_used")) or "unknown")
+        row["override_codes"] = list(override_codes)
+    return row
+
+
 def format_signed_usd(val: Any, *, decimals: int = 2) -> str:
     """Format a signed USD value as ``+$X.XX`` / ``-$X.XX`` (or integer dollars when ``decimals=0``)."""
     v = safe_float(val, default=0.0) or 0.0
@@ -1050,33 +1133,19 @@ def evaluate_ai_decision_scorecard(
             continue
         ts_s = _extract_intent_exec_ts(it)
         px = _extract_intent_exec_price(it)
-        if ts_s <= 0.0 or ts_s < cutoff or ts_s > eff_now + 60.0 or px <= 0.0:
+        if ts_s <= 0.0 or ts_s > eff_now + 60.0 or px <= 0.0:
             continue
-        inv_px, tgt_px = extract_intent_trade_plan_levels(it, side=side, ref_price=px)
-        ot = extract_intent_order_type(it)
-        live_rt = fee_resolver(ven, sym, ot) if callable(fee_resolver) else None
-        rt_bps = resolve_venue_round_trip_fee_bps(ven, sym, order_type=ot, round_trip_fee_bps=live_rt)
-        v_k, b_k, q_k, _ = _intent_venue_symbol_side_key(ven, sym, side)
-        exec_payload = it.get("execution_payload")
-        exec_qty = (
-            safe_pos_float(extract_executed_qty(exec_payload, default=0.0), default=None)
-            if isinstance(exec_payload, Mapping)
-            else None
+        filled_rows.append(
+            build_normalized_filled_ai_intent_row(
+                it,
+                venue=ven,
+                symbol=sym,
+                side=side,
+                ts_s=ts_s,
+                px=px,
+                fee_resolver=fee_resolver,
+            )
         )
-        filled_rows.append({
-            "ts": ts_s,
-            "venue": ven,
-            "symbol": sym,
-            "inst_key": (v_k, b_k, q_k),
-            "side": side,
-            "order_type": ot,
-            "rt_fee_bps": rt_bps,
-            "px": px,
-            "qty": exec_qty,
-            "usd": _extract_intent_notional_usd(it),
-            "invalidation_px": inv_px,
-            "target_px": tgt_px,
-        })
 
     if not filled_rows:
         return empty_res
@@ -1093,7 +1162,9 @@ def evaluate_ai_decision_scorecard(
             return "WIN"
         return "SCRATCH"
 
-    closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo(filled_rows)
+    closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo_in_window(
+        filled_rows, cutoff_ts=cutoff
+    )
     unmatched_sells = len(open_sells)
     outcomes: list[dict[str, Any]] = []
 
@@ -1521,25 +1592,17 @@ def evaluate_ai_calibration_feedback(
         px = _extract_intent_exec_price(it)
         if px <= 0.0:
             continue
-        inv_px, tgt_px = extract_intent_trade_plan_levels(it, side=side, ref_price=px)
-        lim_slip, arr_sf, mkt_slip = extract_fill_execution_slippage(it, side=side, exec_px=px, order_type=ot)
-        v_k, b_k, q_k, _ = _intent_venue_symbol_side_key(ven, sym, side)
-        filled_rows.append({
-            "ts": ref_ts,
-            "venue": ven,
-            "symbol": sym,
-            "inst_key": (v_k, b_k, q_k),
-            "side": side,
-            "order_type": ot,
-            "px": px,
-            "usd": _extract_intent_notional_usd(it),
-            "invalidation_px": inv_px,
-            "target_px": tgt_px,
-            "has_plan": _is_actionable_filled_trade_plan(ven, sym, side, inv_px, tgt_px),
-            "limit_slip_bps": lim_slip,
-            "arrival_sf_bps": arr_sf,
-            "market_slip_bps": mkt_slip,
-        })
+        filled_rows.append(
+            build_normalized_filled_ai_intent_row(
+                it,
+                venue=ven,
+                symbol=sym,
+                side=side,
+                ts_s=ref_ts,
+                px=px,
+                include_slippage=True,
+            )
+        )
 
     status_counts, by_side, planned_filled = evaluate_filled_trade_plans(
         filled_rows, prices_map, price_bars_by_symbol=price_bars_by_symbol
@@ -1633,6 +1696,7 @@ def format_ai_calibration_feedback_line(calibration: Any) -> str:
 
 __all__ = [
     "build_intent_live_price_map",
+    "build_normalized_filled_ai_intent_row",
     "build_persisted_round_trip_fee_resolver",
     "compute_signed_price_edge_pct",
     "evaluate_ai_calibration_feedback",
@@ -1647,6 +1711,7 @@ __all__ = [
     "format_ai_decision_scorecard_line",
     "format_signed_usd",
     "match_filled_intent_rows_lifo",
+    "match_filled_intent_rows_lifo_in_window",
     "resolve_matched_notional_usd",
     "resolve_venue_flip_min_edge_pct",
     "resolve_venue_round_trip_fee_bps",

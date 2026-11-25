@@ -11,6 +11,7 @@ import time as _time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from botcore import (
+    TimedQuote,
     clean_order_id,
     coerce_dict_maps,
     extract_order_id,
@@ -22,6 +23,7 @@ from botcore import (
     load_key_value_conf,
     normalize_epoch_sec,
     normalize_timestamp_ms,
+    quote_spread_bps,
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
@@ -597,6 +599,111 @@ def _build_cached_balance_index(
     }
 
 
+def _resolve_non_tradable_registry_symbols(cache_dir: Optional[str]) -> frozenset[str]:
+    """Return upper-cased disabled or observe-only symbols from the workspace instrument registry."""
+    ws_dir = resolve_workspace_dir_from_cachedb(cache_dir) if cache_dir else ""
+    if not ws_dir:
+        return frozenset()
+    return disabled_registry_symbols(ws_dir) | observe_only_registry_symbols(ws_dir)
+
+
+def _filter_non_tradable_and_dedup_positions(
+    tradable_positions: List[Dict[str, Any]],
+    *,
+    inst_by_sym: Optional[Dict[str, Any]] = None,
+    cache_dir: Optional[str] = None,
+) -> None:
+    """Single-path position hygiene: drop non-tradable registry ghosts (unless explicitly loaded) and dedup (venue, symbol)."""
+    non_tradable_syms = _resolve_non_tradable_registry_symbols(cache_dir)
+    explicit_vs: set[tuple[str, str]] = set()
+    if isinstance(inst_by_sym, dict):
+        for inst_obj in inst_by_sym.values():
+            iv = normalize_venue_name(str(getattr(inst_obj, "provider_name", "") or "").strip().lower())
+            isym = str(getattr(inst_obj, "symbol", "") or "").strip().upper()
+            if iv and isym:
+                explicit_vs.add((iv, isym))
+    kept: List[Dict[str, Any]] = []
+    seen_vs: set[tuple[str, str]] = set()
+    for pos in tradable_positions:
+        if not isinstance(pos, dict):
+            continue
+        pv = normalize_venue_name(pos.get("venue"))
+        ps_raw = str(pos.get("symbol") or "").strip()
+        ps_u = ps_raw.upper()
+        if ps_u and non_tradable_syms and ps_u in non_tradable_syms and (pv, ps_u) not in explicit_vs:
+            continue
+        if ps_u and (pv, ps_u) in seen_vs:
+            continue
+        if ps_u:
+            seen_vs.add((pv, ps_u))
+        kept.append(pos)
+    tradable_positions[:] = kept
+
+
+def _reconcile_position_quote_breakdowns(
+    tradable_positions: List[Dict[str, Any]],
+    venue_quote_cash: Dict[str, Dict[str, Any]],
+    *,
+    fresh_bal_cache_bd: Optional[Dict[tuple[str, str], Dict[str, float]]] = None,
+    cached_bals: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Single-path quote breakdown normalizer shared by live harvest and cache recovery.
+
+    Refreshes ``free_quote_breakdown`` from the freshest available breakdown source and drops any
+    breakdown whose sum diverges >5% from the finalized runtime ``free_quote`` (e.g., stale cached
+    sub-balances or synthetic open-order lock deductions).
+    """
+    fresh_bd_map = fresh_bal_cache_bd if isinstance(fresh_bal_cache_bd, dict) else {}
+    cb_map = cached_bals if isinstance(cached_bals, dict) else {}
+    cash_bd_by_vq: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for cash_val in venue_quote_cash.values():
+        if isinstance(cash_val, dict) and isinstance(bd_c := cash_val.get("breakdown"), dict) and bd_c:
+            cv_n = normalize_venue_name(cash_val.get("venue"))
+            cq_u = str(cash_val.get("asset") or "").strip().upper()
+            if cv_n and cq_u:
+                cash_bd_by_vq[(cv_n, cq_u)] = bd_c
+    for pos_entry in tradable_positions:
+        if not isinstance(pos_entry, dict):
+            continue
+        pv = normalize_venue_name(pos_entry.get("venue"))
+        ps_raw = str(pos_entry.get("symbol") or "").strip()
+        _, res_q = resolve_assets(ps_raw, pos_entry.get("base"), pos_entry.get("quote"))
+        pq_u = str(res_q or pos_entry.get("quote_asset") or "").strip().upper()
+        fq_val = safe_nonneg_float(pos_entry.get("free_quote"), default=None)
+        bd_src = (
+            fresh_bd_map.get((pv, pq_u))
+            or cash_bd_by_vq.get((pv, pq_u))
+            or (
+                cb_map.get(f"breakdown:{pv}:{pq_u}")
+                if isinstance(cb_map.get(f"breakdown:{pv}:{pq_u}"), dict)
+                else None
+            )
+            or (
+                cb_cash.get("breakdown")
+                if isinstance(cb_cash := cb_map.get(f"cash:{pv}:{pq_u}"), dict)
+                and isinstance(cb_cash.get("breakdown"), dict)
+                else None
+            )
+            or (pos_entry.get("free_quote_breakdown") if isinstance(pos_entry.get("free_quote_breakdown"), dict) else None)
+        )
+        if not isinstance(bd_src, dict) or not bd_src:
+            continue
+        clean_bd = {
+            str(bk): round(bv_f, 2)
+            for bk, bv in bd_src.items()
+            if (bv_f := safe_pos_float(bv, default=None)) is not None
+        }
+        if not clean_bd:
+            pos_entry.pop("free_quote_breakdown", None)
+            continue
+        if fq_val is not None:
+            bd_sum = sum(clean_bd.values())
+            if bd_sum > 0.0 and abs(bd_sum - fq_val) / max(bd_sum, fq_val, 1.0) > 0.05:
+                pos_entry.pop("free_quote_breakdown", None)
+                continue
+        pos_entry["free_quote_breakdown"] = clean_bd
+
+
 def derive_runtime_portfolio_view(
     open_orders_list: List[Dict[str, Any]],
     tradable_positions: List[Dict[str, Any]],
@@ -609,8 +716,13 @@ def derive_runtime_portfolio_view(
     now_ts_oo: float,
     gateway_max_usd: float,
     cache_dir: Optional[str] = None,
+    fresh_bal_cache_bd: Optional[Dict[tuple[str, str], Dict[str, float]]] = None,
+    cached_bals: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Derive runtime/prompt adjusted balances and limits from raw observations + open orders without mutating persisted raw free balances."""
+    _filter_non_tradable_and_dedup_positions(
+        tradable_positions, inst_by_sym=inst_by_sym, cache_dir=cache_dir
+    )
     def _strip_all_internal_ts() -> None:
         for p_cl in tradable_positions:
             if isinstance(p_cl, dict):
@@ -877,6 +989,12 @@ def derive_runtime_portfolio_view(
                     )
                 )
                 updated_bals[pos_bkey] = pers_pos
+    _reconcile_position_quote_breakdowns(
+        tradable_positions,
+        venue_quote_cash,
+        fresh_bal_cache_bd=fresh_bal_cache_bd,
+        cached_bals=cached_bals,
+    )
     _strip_all_internal_ts()
 
 
@@ -1406,7 +1524,10 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             xst_summary["underlying_live_price"] = round(sib_px, 4)
             if sib_mstate:
                 xst_summary["underlying_session"] = sib_mstate
-            xst_summary["xstock_vs_underlying_pct"] = round(((xpair_px - sib_px) / sib_px) * 100.0, 2) + 0.0
+            xpair_q = TimedQuote.from_raw(xpair_px, source="kraken_xstock")
+            sib_q = TimedQuote.from_raw(sib_px, source="underlying")
+            if xpair_q is not None and sib_q is not None and not _prices_diverged(xpair_q.price, sib_q.price, threshold=0.35):
+                xst_summary["xstock_vs_underlying_pct"] = round(quote_spread_bps(xpair_q, sib_q, decimals=4) / 100.0, 2) + 0.0
         if isinstance((sib_cyc := first_variant_dict(eff_t212, (t212_sib, underlying))), dict):
             xst_summary["t212_sibling_cycle"] = {k: v for k, v in sib_cyc.items() if not str(k).startswith("_")}
         return xst_summary
@@ -1572,17 +1693,11 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         venue_quote_cash: Dict[str, Dict[str, Any]],
         pending_peaks_by_vs: Dict[tuple[str, str], tuple[float, Optional[float]]],
         cache_dir: Optional[str] = None,
-        fresh_bal_cache_bd: Optional[Dict[tuple[str, str], Dict[str, float]]] = None,
     ) -> None:
         gw_max_rec = safe_pos_float(gateway_max_usd, default=2000.0) or 2000.0
         seen_rec_vs: set[tuple[str, str]] = set()
         cached_obs_by_va = _build_cached_balance_observations(cached_bals)
-        ws_dir_rec = resolve_workspace_dir_from_cachedb(cache_dir) if cache_dir else ""
-        non_tradable_rec_syms = (
-            (disabled_registry_symbols(ws_dir_rec) | observe_only_registry_symbols(ws_dir_rec))
-            if ws_dir_rec
-            else frozenset()
-        )
+        non_tradable_rec_syms = _resolve_non_tradable_registry_symbols(cache_dir)
         for k, v in cached_bals.items():
             if k.startswith("pos:") and isinstance(v, dict):
                 rec_pos = dict(v)
@@ -1627,31 +1742,6 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     quote_ref_locked = prev_pos_lq
                 if fq_val is not None:
                     rec_pos["free_quote"] = round(fq_val, 2)
-                bd_src = (
-                    (fresh_bal_cache_bd or {}).get((v_rec_norm, p_quote))
-                    or (
-                        cached_bals.get(f"breakdown:{v_rec_norm}:{p_quote}")
-                        if isinstance(cached_bals.get(f"breakdown:{v_rec_norm}:{p_quote}"), dict)
-                        else None
-                    )
-                    or (
-                        cash_bd.get("breakdown")
-                        if isinstance(cash_bd := cached_bals.get(f"cash:{v_rec_norm}:{p_quote}"), dict)
-                        and isinstance(cash_bd.get("breakdown"), dict)
-                        else None
-                    )
-                )
-                if isinstance(bd_src, dict) and bd_src:
-                    if clean_bd := {
-                        str(bk): round(bv_f, 2)
-                        for bk, bv in bd_src.items()
-                        if (bv_f := safe_pos_float(bv, default=None)) is not None
-                    }:
-                        rec_pos["free_quote_breakdown"] = clean_bd
-                elif isinstance(old_bd := rec_pos.get("free_quote_breakdown"), dict) and fq_val is not None:
-                    old_bd_sum = sum(safe_nonneg_float(bv, 0.0) or 0.0 for bv in old_bd.values())
-                    if old_bd_sum > 0.0 and abs(old_bd_sum - fq_val) / max(old_bd_sum, fq_val, 1.0) > 0.05:
-                        rec_pos.pop("free_quote_breakdown", None)
                 if base_bal_ts is not None:
                     rec_pos["_base_balance_ts"] = base_bal_ts
                     if base_ref_locked is not None:
@@ -2272,7 +2362,6 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     venue_quote_cash=venue_quote_cash,
                     pending_peaks_by_vs=pending_peaks_by_vs,
                     cache_dir=cache_dir,
-                    fresh_bal_cache_bd=fresh_bal_cache_bd,
                 )
             for (v_k, sym_u_k), oo_rows in cached_open_by_vs.items():
                 open_orders_list.extend(
@@ -2337,6 +2426,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             now_ts_oo=now_ts_oo,
             gateway_max_usd=gateway_max_usd,
             cache_dir=cache_dir,
+            fresh_bal_cache_bd=fresh_bal_cache_bd,
+            cached_bals=cached_bals,
         )
 
         if persist and allow_network and cache_dir and updated_bals and (

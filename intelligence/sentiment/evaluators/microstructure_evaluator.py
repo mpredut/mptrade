@@ -6,10 +6,13 @@ from abc import ABC
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from botcore import (
+    TimedQuote,
     clean_scale,
     coerce_dict_maps,
     normalize_epoch_sec,
     normalize_timestamp_ms,
+    quote_spread_bps,
+    resolve_aligned_quote_pair,
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
@@ -790,16 +793,14 @@ def compute_cross_venue_arb_metrics(
     if not isinstance(minfo, dict) or not isinstance(microstructure, dict):
         return
     prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
-    own_ob_px = safe_pos_float(minfo.get("ob_mid_price"), default=None)
-    own_spot_px = safe_pos_float((p_match or {}).get("price") if isinstance(p_match, dict) else None, default=None)
-    own_px_default = own_ob_px or own_spot_px
-    if not (own_px_default and own_px_default > 0.0 and is_usd_compatible_pair(msym)):
-        return
-    own_ob_ts = normalize_epoch_sec(
-        minfo.get("_ob_raw_ts") if minfo.get("_ob_raw_ts") is not None else minfo.get("_ob_ts"),
-        default=None,
+    own_ob_ts = minfo.get("_ob_raw_ts") if minfo.get("_ob_raw_ts") is not None else minfo.get("_ob_ts")
+    own_ob_q = TimedQuote.from_raw(minfo.get("ob_mid_price"), own_ob_ts, source="ob_mid")
+    own_spot_q = TimedQuote.from_raw(
+        (p_match or {}).get("price") if isinstance(p_match, dict) else None,
+        source="spot",
     )
-    eff_now_arb = normalize_epoch_sec(now_ts, default=None)
+    if not ((own_ob_q or own_spot_q) and is_usd_compatible_pair(msym)):
+        return
     mbase = canonical_base_asset(msym)
     msym_is_eq = has_equity_suffix(msym)
     own_v, own_maker, own_taker, own_hsp = _infer_symbol_venue_and_fees_bps(
@@ -824,33 +825,28 @@ def compute_cross_venue_arb_metrics(
         if peer_v == own_v:
             continue
         peer_p_dict = casefold_get(prices_and_trends, peer_sym)
-        peer_ob_px = safe_pos_float(peer_m.get("ob_mid_price"), default=None)
-        peer_spot_px = safe_pos_float(peer_p_dict.get("price") if isinstance(peer_p_dict, dict) else None, default=None)
-        peer_ob_ts = normalize_epoch_sec(
-            peer_m.get("_ob_raw_ts") if peer_m.get("_ob_raw_ts") is not None else peer_m.get("_ob_ts"),
-            default=None,
+        peer_ob_ts = peer_m.get("_ob_raw_ts") if peer_m.get("_ob_raw_ts") is not None else peer_m.get("_ob_ts")
+        peer_ob_q = TimedQuote.from_raw(peer_m.get("ob_mid_price"), peer_ob_ts, source="ob_mid")
+        peer_spot_q = TimedQuote.from_raw(
+            peer_p_dict.get("price") if isinstance(peer_p_dict, dict) else None,
+            source="spot",
         )
-        ob_skewed = (
-            own_ob_ts is not None
-            and peer_ob_ts is not None
-            and abs(own_ob_ts - peer_ob_ts) > 2.0
-        ) or (
-            eff_now_arb is not None
-            and any(t is not None and (eff_now_arb - t) > 10.0 for t in (own_ob_ts, peer_ob_ts))
+        aligned = resolve_aligned_quote_pair(
+            own_ob_q,
+            peer_ob_q,
+            own_spot_q,
+            peer_spot_q,
+            now_ts=now_ts,
+            max_skew_sec=2.0,
+            max_age_sec=10.0,
+            max_fallback_divergence=0.01,
+            max_pair_divergence=0.10,
         )
-        spot_consistent_with_ob = (
-            (not own_ob_px or not own_spot_px or abs(own_spot_px - own_ob_px) / own_ob_px <= 0.01)
-            and (not peer_ob_px or not peer_spot_px or abs(peer_spot_px - peer_ob_px) / peer_ob_px <= 0.01)
-        )
-        if ob_skewed and own_spot_px and peer_spot_px and spot_consistent_with_ob:
-            own_px, peer_px = own_spot_px, peer_spot_px
-        else:
-            own_px = own_px_default
-            peer_px = peer_ob_px or peer_spot_px
-        if peer_px and peer_px > 0.0 and not _prices_diverged(own_px, peer_px):
-            arb_bps = round(((own_px - peer_px) / peer_px) * 10000.0, 1)
+        if aligned is not None:
+            own_q, peer_q = aligned
+            arb_bps = quote_spread_bps(own_q, peer_q, decimals=1)
             minfo["cross_venue_peer"] = peer_sym
-            minfo["cross_venue_peer_px"] = peer_px
+            minfo["cross_venue_peer_px"] = peer_q.price
             minfo["cross_venue_arb_bps"] = arb_bps
             # Primary edge uses passive maker fees (LIMIT execution does not cross half-spread).
             net_buy_maker_edge = round(peer_maker - (arb_bps + own_maker), 1)

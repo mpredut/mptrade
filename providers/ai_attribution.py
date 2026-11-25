@@ -27,16 +27,15 @@ from .ai_survival_guard import (
     _collect_canceled_order_ids,
     _extract_intent_exec_price,
     _extract_intent_exec_ts,
-    _extract_intent_notional_usd,
-    _is_actionable_filled_trade_plan,
     _is_filled_ai_intent,
     _is_terminal_or_stale_unfilled_intent,
     _resolve_live_price_for_symbol,
+    build_normalized_filled_ai_intent_row,
     compute_signed_price_edge_pct,
     evaluate_filled_trade_plans,
     extract_fill_execution_slippage,
     format_signed_usd,
-    match_filled_intent_rows_lifo,
+    match_filled_intent_rows_lifo_in_window,
     resolve_matched_notional_usd,
     resolve_venue_round_trip_fee_bps,
     summarize_execution_quality_bucket,
@@ -48,10 +47,8 @@ from .intent_state import (
     _intent_venue_symbol_side_key,
     collect_known_ai_order_ids,
     extract_intent_order_type,
-    extract_intent_primary_order_id,
     extract_intent_side,
     extract_intent_timestamp_s,
-    extract_intent_trade_plan_levels,
     parse_pos_epoch_s,
 )
 from .intent_telemetry import evaluate_trade_plan_path_status, resolve_symbol_price_bars
@@ -60,7 +57,6 @@ from .nav_drawdown import (
     format_nav_drawdown_summary_line,
 )
 from .order_id_context import resolve_order_actor, resolve_order_owner
-from .order_ohlc_utils import extract_executed_qty
 
 _GUARD_CODE_RE = re.compile(r"^([A-Za-z0-9_]+)")
 _CB_TAG_RE = re.compile(r"^([a-z0-9_]+)")
@@ -245,7 +241,7 @@ def _evaluate_execution_audit_actors(
         if ev in _AUDIT_SKIP_EVENTS:
             continue
         ts_s = parse_pos_epoch_s(rec.get("ts")) or 0.0
-        if ts_s <= 0.0 or ts_s < cutoff_ts or ts_s > eff_now + 60.0:
+        if ts_s <= 0.0 or ts_s > eff_now + 60.0:
             continue
         ven = normalize_venue_name(clean_scalar_str(rec.get("venue")) or "")
         sym = clean_scalar_str(rec.get("symbol")) or ""
@@ -380,9 +376,8 @@ def _evaluate_execution_audit_actors(
         buckets: dict[str, dict[str, Any]] = {}
         lifo_inputs: list[dict[str, Any]] = []
 
-        for row in filled_entries:
-            g_name = str(row[group_field])
-            b = buckets.setdefault(
+        def _ensure_bucket(g_name: str) -> dict[str, Any]:
+            return buckets.setdefault(
                 g_name,
                 {
                     "filled_orders": 0,
@@ -395,22 +390,28 @@ def _evaluate_execution_audit_actors(
                     "realized_net_usd": 0.0,
                 },
             )
-            b["filled_orders"] += 1
-            b["est_fees_usd"] += row["est_fee_usd"]
-            if row["side"] == "BUY":
-                b["buys"] += 1
-                b["buy_notional_usd"] += row["cost_usd"]
-            else:
-                b["sells"] += 1
-                b["sell_notional_usd"] += row["cost_usd"]
+
+        for row in filled_entries:
+            g_name = str(row[group_field])
+            if row["ts"] >= cutoff_ts:
+                b = _ensure_bucket(g_name)
+                b["filled_orders"] += 1
+                b["est_fees_usd"] += row["est_fee_usd"]
+                if row["side"] == "BUY":
+                    b["buys"] += 1
+                    b["buy_notional_usd"] += row["cost_usd"]
+                else:
+                    b["sells"] += 1
+                    b["sell_notional_usd"] += row["cost_usd"]
 
             v_k, base_k, q_k, _ = _intent_venue_symbol_side_key(row["venue"], row["symbol"], row["side"])
             lifo_inputs.append({**row, "inst_key": (g_name, v_k, base_k, q_k), "_group": g_name})
 
-        # Reuse the canonical partial-lot LIFO matcher so AI and non-AI attribution share one contract.
-        closed_pairs, _, _ = match_filled_intent_rows_lifo(lifo_inputs)
+        # Reuse the canonical full-history LIFO matcher + post-match window filter so pre-window entries
+        # never vanish off the stack and corrupt in-window realized PnL.
+        closed_pairs, _, _ = match_filled_intent_rows_lifo_in_window(lifo_inputs, cutoff_ts=cutoff_ts)
         for _kind, entry_row, exit_row in closed_pairs:
-            b = buckets[entry_row["_group"]]
+            b = _ensure_bucket(entry_row["_group"])
             gross_pct = compute_signed_price_edge_pct(entry_row["side"], entry_row["px"], exit_row["px"])
             rt_bps = entry_row["leg_fee_bps"] + exit_row["leg_fee_bps"]
             entry_usd = safe_pos_float(entry_row.get("usd"), default=0.0) or 0.0
@@ -433,8 +434,9 @@ def _evaluate_execution_audit_actors(
             }
         return out
 
+    window_filled_count = sum(1 for row in filled_entries if row["ts"] >= cutoff_ts)
     return {
-        "total_filled_orders": len(filled_entries),
+        "total_filled_orders": window_filled_count,
         "by_actor": _aggregate("actor"),
         "by_owner": _aggregate("owner"),
     }
@@ -541,6 +543,7 @@ def evaluate_ai_attribution(
     model_intent_counts: dict[str, dict[str, int]] = {}
     override_intent_counts: dict[str, int] = {}
     unfilled_counts: dict[tuple[str, str], int] = {}
+    all_filled_rows: list[dict[str, Any]] = []
     filled_rows: list[dict[str, Any]] = []
 
     for it in items:
@@ -555,32 +558,35 @@ def evaluate_ai_attribution(
         _, base_ts = extract_intent_timestamp_s(it)
         exec_ts = _extract_intent_exec_ts(it)
         ref_ts = exec_ts if exec_ts > 0.0 else base_ts
-        if ref_ts <= 0.0 or ref_ts < cutoff or ref_ts > eff_now + 60.0:
+        if ref_ts <= 0.0 or ref_ts > eff_now + 60.0:
             continue
 
+        in_window = ref_ts >= cutoff
         lifecycle = _classify_intent_lifecycle(it, canceled_oids)
-        status_counts[lifecycle] = status_counts.get(lifecycle, 0) + 1
-
         mdl = clean_scalar_str(it.get("model_used")) or "unknown"
-        m_cnt = model_intent_counts.setdefault(mdl, {"intents": 0, "filled": 0})
-        m_cnt["intents"] += 1
 
-        if cb_rsn := (
-            it.get("circuit_breaker_reason")
-            or it.get("scorecard_downgraded_to_shadow")
-            or it.get("daily_nav_dd_downgraded_to_shadow")
-            or it.get("daily_nav_dd_shadow_warning")
-            or (it.get("history")[-1].get("guard_reason") if isinstance(it.get("history"), list) and it.get("history") and isinstance(it.get("history")[-1], dict) and it.get("history")[-1].get("guard_allowed") is False else "")
-        ):
-            if tag := _extract_cb_tag(cb_rsn):
-                cb_reason_counts[tag] = cb_reason_counts.get(tag, 0) + 1
+        if in_window:
+            status_counts[lifecycle] = status_counts.get(lifecycle, 0) + 1
+            m_cnt = model_intent_counts.setdefault(mdl, {"intents": 0, "filled": 0})
+            m_cnt["intents"] += 1
 
-        if lifecycle == "EXECUTED_UNFILLED":
-            if _is_terminal_or_stale_unfilled_intent(it, canceled_oids, now_ts=eff_now, ref_ts=ref_ts):
-                unf_ot = "LIMIT" if extract_intent_order_type(it) == "LIMIT" else "MARKET"
-                k_unf = (ven or "unknown", unf_ot)
-                unfilled_counts[k_unf] = unfilled_counts.get(k_unf, 0) + 1
-            continue
+            if cb_rsn := (
+                it.get("circuit_breaker_reason")
+                or it.get("scorecard_downgraded_to_shadow")
+                or it.get("daily_nav_dd_downgraded_to_shadow")
+                or it.get("daily_nav_dd_shadow_warning")
+                or (it.get("history")[-1].get("guard_reason") if isinstance(it.get("history"), list) and it.get("history") and isinstance(it.get("history")[-1], dict) and it.get("history")[-1].get("guard_allowed") is False else "")
+            ):
+                if tag := _extract_cb_tag(cb_rsn):
+                    cb_reason_counts[tag] = cb_reason_counts.get(tag, 0) + 1
+
+            if lifecycle == "EXECUTED_UNFILLED":
+                if _is_terminal_or_stale_unfilled_intent(it, canceled_oids, now_ts=eff_now, ref_ts=ref_ts):
+                    unf_ot = "LIMIT" if extract_intent_order_type(it) == "LIMIT" else "MARKET"
+                    k_unf = (ven or "unknown", unf_ot)
+                    unfilled_counts[k_unf] = unfilled_counts.get(k_unf, 0) + 1
+                continue
+
         if lifecycle != "EXECUTED_FILLED":
             continue
         side = extract_intent_side(it)
@@ -590,55 +596,35 @@ def evaluate_ai_attribution(
         if px <= 0.0:
             continue
 
-        m_cnt["filled"] += 1
-        ot = extract_intent_order_type(it)
-        live_rt = fee_resolver(ven, sym, ot) if callable(fee_resolver) else None
-        rt_bps = resolve_venue_round_trip_fee_bps(ven, sym, order_type=ot, round_trip_fee_bps=live_rt)
-        inv_px, tgt_px = extract_intent_trade_plan_levels(it, side=side, ref_price=px)
-        limit_slip_bps, arrival_sf_bps, market_slip_bps = extract_fill_execution_slippage(
-            it, side=side, exec_px=px, order_type=ot
-        )
         raw_ov = it.get("advisory_guards_overridden")
         ov_codes = sorted({
             code
             for raw_item in (raw_ov if isinstance(raw_ov, list) else [])
             if (code := _extract_guard_code(raw_item))
         })
-        for code in ov_codes:
-            override_intent_counts[code] = override_intent_counts.get(code, 0) + 1
-
-        v_k, b_k, q_k, _ = _intent_venue_symbol_side_key(ven, sym, side)
-        exec_payload = it.get("execution_payload")
-        exec_qty = (
-            safe_pos_float(extract_executed_qty(exec_payload, default=0.0), default=None)
-            if isinstance(exec_payload, Mapping)
-            else None
+        norm_row = build_normalized_filled_ai_intent_row(
+            it,
+            venue=ven,
+            symbol=sym,
+            side=side,
+            ts_s=ref_ts,
+            px=px,
+            fee_resolver=fee_resolver,
+            include_slippage=in_window,
+            include_attribution=True,
+            model_used=mdl,
+            override_codes=ov_codes,
         )
-        filled_rows.append({
-            "intent_id": _extract_intent_id(it),
-            "order_id": extract_intent_primary_order_id(it, default="", include_top_level=True),
-            "ts": ref_ts,
-            "venue": ven,
-            "symbol": sym,
-            "inst_key": (v_k, b_k, q_k),
-            "side": side,
-            "order_type": ot,
-            "px": px,
-            "qty": exec_qty,
-            "usd": _extract_intent_notional_usd(it),
-            "leg_fee_bps": rt_bps / 2.0,
-            "rt_fee_bps": rt_bps,
-            "model_used": mdl,
-            "invalidation_px": inv_px,
-            "target_px": tgt_px,
-            "has_plan": _is_actionable_filled_trade_plan(ven, sym, side, inv_px, tgt_px),
-            "override_codes": ov_codes,
-            "limit_slip_bps": limit_slip_bps,
-            "arrival_sf_bps": arrival_sf_bps,
-            "market_slip_bps": market_slip_bps,
-        })
+        all_filled_rows.append(norm_row)
+        if in_window:
+            model_intent_counts[mdl]["filled"] += 1
+            for code in ov_codes:
+                override_intent_counts[code] = override_intent_counts.get(code, 0) + 1
+            filled_rows.append(norm_row)
 
-    closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo(filled_rows)
+    closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo_in_window(
+        all_filled_rows, cutoff_ts=cutoff
+    )
     outcomes: list[dict[str, Any]] = []
     plan_status_counts, _, planned_filled = evaluate_filled_trade_plans(
         filled_rows, prices_map, price_bars_by_symbol=price_bars_by_symbol

@@ -388,6 +388,83 @@ def _prices_diverged(px_a: object, px_b: object, threshold: float = 0.10) -> boo
     return (abs(a_f - b_f) / min(a_f, b_f) > threshold) if (a_f > 0.0 and b_f > 0.0) else False
 
 
+@dataclass(frozen=True)
+class TimedQuote:
+    """Immutable timestamped price quote for freshness-aware cross-source comparisons."""
+
+    price: float
+    ts: float | None = None
+    source: str = ""
+
+    @classmethod
+    def from_raw(cls, price: object, ts: object = None, *, source: str = "") -> "TimedQuote | None":
+        px_f = safe_pos_float(price, default=None)
+        if px_f is None:
+            return None
+        ts_f = normalize_epoch_sec(ts, default=None) if ts is not None else None
+        return cls(price=px_f, ts=ts_f, source=source)
+
+    def age_sec(self, now_ts: float | None) -> float | None:
+        if self.ts is None or now_ts is None:
+            return None
+        return max(0.0, now_ts - self.ts)
+
+    def is_fresh(self, now_ts: float | None, max_age_sec: float) -> bool:
+        age = self.age_sec(now_ts)
+        return age is None or age <= max_age_sec
+
+
+def quote_spread_bps(quote_a: TimedQuote, quote_b: TimedQuote, *, decimals: int = 1) -> float:
+    """Return signed basis-point difference ``((a - b) / b) * 10_000`` rounded to ``decimals``."""
+    return round(((quote_a.price - quote_b.price) / quote_b.price) * 10000.0, decimals)
+
+
+def resolve_aligned_quote_pair(
+    primary_a: TimedQuote | None,
+    primary_b: TimedQuote | None,
+    fallback_a: TimedQuote | None = None,
+    fallback_b: TimedQuote | None = None,
+    *,
+    now_ts: float | None = None,
+    max_skew_sec: float = 2.0,
+    max_age_sec: float = 10.0,
+    max_fallback_divergence: float = 0.01,
+    max_pair_divergence: float = 0.10,
+) -> tuple[TimedQuote, TimedQuote] | None:
+    """Select a temporally aligned quote pair across two sources without silently mixing stale fallbacks.
+
+    Prefers ``(primary_a, primary_b)`` when temporally aligned and fresh; switches to
+    ``(fallback_a, fallback_b)`` when primaries are skewed/stale *and* both fallbacks agree
+    with their respective primaries within ``max_fallback_divergence``; finally guards the
+    selected pair against cross-venue price divergence exceeding ``max_pair_divergence``.
+    """
+    eff_now = normalize_epoch_sec(now_ts, default=None) if now_ts is not None else None
+    pa_ts = primary_a.ts if primary_a is not None else None
+    pb_ts = primary_b.ts if primary_b is not None else None
+    primaries_skewed = (
+        pa_ts is not None
+        and pb_ts is not None
+        and abs(pa_ts - pb_ts) > max_skew_sec
+    ) or (
+        eff_now is not None
+        and any(t is not None and (eff_now - t) > max_age_sec for t in (pa_ts, pb_ts))
+    )
+    fallback_consistent = (
+        (primary_a is None or fallback_a is None or abs(fallback_a.price - primary_a.price) / primary_a.price <= max_fallback_divergence)
+        and (primary_b is None or fallback_b is None or abs(fallback_b.price - primary_b.price) / primary_b.price <= max_fallback_divergence)
+    )
+    if primaries_skewed and fallback_a is not None and fallback_b is not None and fallback_consistent:
+        q_a, q_b = fallback_a, fallback_b
+    else:
+        q_a = primary_a or fallback_a
+        q_b = primary_b or fallback_b
+    if q_a is None or q_b is None:
+        return None
+    if _prices_diverged(q_a.price, q_b.price, threshold=max_pair_divergence):
+        return None
+    return q_a, q_b
+
+
 def summarize_current_price_cache_freshness(
     cp_payload: object,
     *,
