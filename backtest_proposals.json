@@ -1,16 +1,1 @@
-[
-  {
-    "ts": "2026-11-24T12:44:12+00:00",
-    "full_key": "BINANCE_TAO.mt.gain",
-    "section": "BINANCE_TAO",
-    "key": "mt.gain",
-    "symbol": "TAOUSDC",
-    "current_on_dev": 10.25,
-    "winner_value": 9.2,
-    "margin_vs_current": {
-      "half1": 131.48,
-      "half2": 66.55
-    },
-    "dev_commit": "f0085b0a"
-  }
-]
+[]
