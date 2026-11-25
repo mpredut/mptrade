@@ -162,13 +162,44 @@ def _sync_binance(cachedb_dir: str, *, apply_changes: bool) -> dict[str, Any]:
                     if oid_norm is None:
                         continue
                     by_oid_fills.setdefault(oid_norm, []).append(tr)
-                bucket = fm.cache.setdefault(sym, [])
-                existing_by_oid = {
-                    fm._normalize_order_id(r.get("orderId"), strict_int=True): r
-                    for r in bucket
+                existing_oids = {
+                    fm._normalize_order_id(r.get("orderId"), strict_int=True)
+                    for r in fm.cache.get(sym, [])
                     if isinstance(r, dict)
                 }
                 for oid_norm, fills in by_oid_fills.items():
+                    if oid_norm in existing_oids:
+                        continue
+                    order_fills = []
+                    for f in fills:
+                        row: dict[str, Any] = {
+                            "orderId": oid_norm,
+                            "price": extract_order_price(f),
+                            "quantity": extract_order_qty(f),
+                            "timestamp": extract_timestamp_ms(f, default=0) or 0,
+                            "side": extract_order_side(f),
+                            "_fillId": str(f["id"]),
+                        }
+                        if f_cid := extract_client_order_id(f, default=""):
+                            row["clientOrderId"] = f_cid
+                        if (f_val := safe_nonneg_float(f.get("commission"), default=None)) is not None:
+                            row["fee"] = f_val
+                        if f_asset := clean_upper_scalar(f.get("commissionAsset")):
+                            row["feeAsset"] = f_asset
+                        order_fills.append(row)
+                    if order_fills:
+                        fm._persist_items(sym, order_fills)
+                        existing_oids.add(oid_norm)
+                        added_count += 1
+                existing_by_oid = {
+                    fm._normalize_order_id(r.get("orderId"), strict_int=True): r
+                    for r in fm.cache.get(sym, [])
+                    if isinstance(r, dict)
+                }
+                for oid_norm, fills in by_oid_fills.items():
+                    ex_row = existing_by_oid.get(oid_norm)
+                    if ex_row is None:
+                        continue
                     agg_fee: dict[str, Any] = {}
                     cid = ""
                     for f in fills:
@@ -178,38 +209,15 @@ def _sync_binance(cachedb_dir: str, *, apply_changes: bool) -> dict[str, Any]:
                         f_asset = clean_upper_scalar(f.get("commissionAsset"))
                         if f_val is not None:
                             _merge_optional_order_fee(agg_fee, {"fee": f_val, "feeAsset": f_asset}, agg_fee)
-                    ex_row = existing_by_oid.get(oid_norm)
-                    if ex_row is not None:
-                        meta_inc: dict[str, Any] = {}
-                        if cid:
-                            meta_inc["clientOrderId"] = cid
-                        if "fee" in agg_fee:
-                            meta_inc["fee"] = agg_fee["fee"]
-                        if "feeAsset" in agg_fee:
-                            meta_inc["feeAsset"] = agg_fee["feeAsset"]
-                        if _enrich_filled_row_metadata(ex_row, meta_inc, allow_fee_upgrade=True):
-                            enriched_count += 1
-                    else:
-                        order_fills = []
-                        for f in fills:
-                            row: dict[str, Any] = {
-                                "orderId": oid_norm,
-                                "price": extract_order_price(f),
-                                "quantity": extract_order_qty(f),
-                                "timestamp": extract_timestamp_ms(f, default=0) or 0,
-                                "side": extract_order_side(f),
-                                "_fillId": str(f["id"]),
-                            }
-                            if f_cid := extract_client_order_id(f, default=""):
-                                row["clientOrderId"] = f_cid
-                            if (f_val := safe_nonneg_float(f.get("commission"), default=None)) is not None:
-                                row["fee"] = f_val
-                            if f_asset := clean_upper_scalar(f.get("commissionAsset")):
-                                row["feeAsset"] = f_asset
-                            order_fills.append(row)
-                        if order_fills:
-                            fm._persist_items(sym, order_fills)
-                            added_count += 1
+                    meta_inc: dict[str, Any] = {}
+                    if cid:
+                        meta_inc["clientOrderId"] = cid
+                    if "fee" in agg_fee:
+                        meta_inc["fee"] = agg_fee["fee"]
+                    if "feeAsset" in agg_fee:
+                        meta_inc["feeAsset"] = agg_fee["feeAsset"]
+                    if _enrich_filled_row_metadata(ex_row, meta_inc, allow_fee_upgrade=True):
+                        enriched_count += 1
         if enriched_count > 0 or added_count > 0:
             saved = fm.save_state_to_file()
             if not saved:
@@ -225,11 +233,11 @@ def _sync_binance(cachedb_dir: str, *, apply_changes: bool) -> dict[str, Any]:
             elif t_opp is not None and f_opp is not None and abs(t_opp - f_opp) > 1e-4:
                 # Allow minor VWAP vs last-partial-fill delta only if reported explicitly.
                 diffs.append(f"binance:{sym}:{side}:last_opp_px({f_opp}!={t_opp})")
-        t_oids = {
-            fm._normalize_order_id(r.get("orderId"), strict_int=True)
-            for r in (tm.cache.get(sym) or ())
-            if isinstance(r, dict)
-        } - {None}
+        t_by_oid: dict[int, list[dict[str, Any]]] = {}
+        for r in (tm.cache.get(sym) or ()):
+            if isinstance(r, dict) and (oid_n := fm._normalize_order_id(r.get("orderId"), strict_int=True)) is not None:
+                t_by_oid.setdefault(oid_n, []).append(r)
+        t_oids = set(t_by_oid.keys())
         f_rows = {
             fm._normalize_order_id(r.get("orderId"), strict_int=True): r
             for r in (fm.cache.get(sym) or ())
@@ -240,8 +248,10 @@ def _sync_binance(cachedb_dir: str, *, apply_changes: bool) -> dict[str, Any]:
             diffs.append(f"binance:{sym}:missing_oids={len(missing_oids)}")
         missing_fee = sum(
             1
-            for oid in t_oids
-            if oid in f_rows and (f_rows[oid].get("fee") is None or not f_rows[oid].get("feeAsset"))
+            for oid, fs in t_by_oid.items()
+            if oid in f_rows
+            and any(clean_upper_scalar(f.get("commissionAsset")) for f in fs)
+            and (f_rows[oid].get("fee") is None or not f_rows[oid].get("feeAsset"))
         )
         if missing_fee:
             diffs.append(f"binance:{sym}:missing_fee_metadata={missing_fee}")
