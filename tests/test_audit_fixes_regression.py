@@ -8600,6 +8600,104 @@ def test_priority2_pure_provider_math_modules_zero_io_and_stores(tmp_path):
     assert kpos is not None and kpos["avg_cost_px"] == pytest.approx(40.0)
 
 
+def test_cycle17_rth_open_inflight_quote_skew_whale_long_pp_and_opening_rvol_1h():
+    """Cycle 17 regressions caught at US NYSE/Nasdaq Cash Open (09:33-09:38 EST):
+    1. d_whale_long must render fraction delta as percentage points (*100, e.g. -34.4pp instead of -0.34%).
+    2. In-flight equity ticks written 1-60s AFTER snapshot start now_ts must NOT fall through to yahoo_rth_close
+       or keep stale quote_age_min during live US RTH or PRE/POST; truly far-future corrupted timestamps (>60s) still fail.
+    3. Opening-hour US equity rvol_1h after an overnight >1h market-closed gap must prorate baseline by active
+       session elapsed fraction (floored at 0.25 = 15m), preventing 4x understatement during opening-bell surges,
+       while continuous 24/7 crypto rvol_1h remains unchanged.
+    """
+    from datetime import datetime, timezone
+    from botcore import ET
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        Fleet24hAndMicrostructureEnricher,
+        _ResolvedEquityQuote,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_volume_rvol_metrics
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+
+    # 1. d_whale_long renders percentage points (*100), never 100x-understated fraction with '%'
+    sec3b = "\n".join(
+        _format_microstructure_section(
+            {
+                "AMD_US_EQ": {
+                    "ob_imbalance": 0.278,
+                    "bid_depth_usd": 250_000.0,
+                    "ask_depth_usd": 647_956.0,
+                    "whale_long_pct": 0.1563,
+                    "taker_ratio": 0.1853,
+                    "taker_buy_vol_usd": 219_382_129.0,
+                    "taker_sell_vol_usd": 1_184_102_525.0,
+                    "cycle_delta": {
+                        "dt_min": 6.0,
+                        "ob_imbalance_delta": -0.214,
+                        "taker_ratio_delta": -0.81,
+                        "whale_long_delta_pct": -0.3437,
+                    },
+                }
+            },
+            {"AMD_US_EQ": {"price": 373.07}},
+        )
+    )
+    assert "d_whale_long=-34.4pp" in sec3b
+    assert "d_whale_long=-0.34%" not in sec3b
+
+    # 2. In-flight tick (+4s newer than snapshot eff_now) during live US RTH classifies as yahoo_rth with age=0.0m
+    eff_now_rth = datetime(2026, 11, 25, 9, 38, 46, tzinfo=ET).timestamp()
+    inflight_ts = eff_now_rth + 4.0
+    src_rth, mstate_rth = Fleet24hAndMicrostructureEnricher._classify_yahoo_equity_quote_source(
+        "NVDA_US_EQ", inflight_ts, eff_now_rth
+    )
+    assert src_rth == "yahoo_rth" and mstate_rth is None
+
+    nv_entry = {"price": 142.67, "quote_source": "t212_live", "quote_age_min": 3.7}
+    Fleet24hAndMicrostructureEnricher._apply_resolved_equity_quote(
+        nv_entry,
+        _ResolvedEquityQuote(price=142.67, quote_source=src_rth, quote_ts_sec=inflight_ts, market_state=mstate_rth),
+        eff_now=eff_now_rth,
+        set_price=False,
+    )
+    assert nv_entry["quote_source"] == "yahoo_rth"
+    assert nv_entry["quote_age_min"] == 0.0
+
+    # Same in-flight tolerance in PRE session stays yahoo_ext / PRE (not yahoo_ext_cached)
+    eff_now_pre = datetime(2026, 11, 25, 8, 35, 0, tzinfo=ET).timestamp()
+    src_pre, mstate_pre = Fleet24hAndMicrostructureEnricher._classify_yahoo_equity_quote_source(
+        "AMD_US_EQ", eff_now_pre + 5.0, eff_now_pre
+    )
+    assert src_pre == "yahoo_ext" and mstate_pre == "PRE"
+
+    # Truly far-future corrupted timestamp (+5 min ahead) still does NOT classify as live yahoo_rth
+    src_corrupt, _ = Fleet24hAndMicrostructureEnricher._classify_yahoo_equity_quote_source(
+        "NVDA_US_EQ", eff_now_rth + 300.0, eff_now_rth
+    )
+    assert src_corrupt == "yahoo_rth_close"
+
+    # 3. Opening-hour US equity rvol_1h prorates active session fraction after >1h overnight gap
+    d1_rth0 = datetime(2026, 11, 24, 14, 30, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+    d2_rth0 = datetime(2026, 11, 25, 14, 30, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+    d1_bars = [[d1_rth0 + i * 300_000.0, 100.0, 100.0] for i in range(78)]  # 6.5h at $10k/5m ($120k/1h, $30k/15m)
+    # 10 min into Day 2 open (2 bars at $30k/5m = $60k total, ~2x 15m baseline): rvol_1h must NOT read 0.5x!
+    open_2bars = d1_bars + [[d2_rth0 + i * 300_000.0, 100.0, 300.0] for i in range(2)]
+    rvol_open = compute_volume_rvol_metrics(open_2bars, now_ts=(d2_rth0 + 400_000.0) / 1000.0)
+    assert rvol_open["rvol_15m"] == pytest.approx(rvol_open["rvol_1h"], abs=0.05)
+    assert rvol_open["rvol_1h"] > 1.7
+
+    # 30 min into Day 2 open (6 bars at $20k/5m = $120k = 2x normal 30m baseline): rvol_1h ~ 1.85x (not 0.9x)
+    open_6bars = d1_bars + [[d2_rth0 + i * 300_000.0, 100.0, 200.0] for i in range(6)]
+    rvol_30m = compute_volume_rvol_metrics(open_6bars, now_ts=(d2_rth0 + 1_600_000.0) / 1000.0)
+    assert 1.6 <= rvol_30m["rvol_1h"] <= 2.1
+
+    # Continuous 24/7 crypto bars (no >1h closure gap) keep exact standard full-1h baseline
+    c_start = d2_rth0 - 6 * 3_600_000.0
+    crypto_bars = [[c_start + i * 300_000.0, 100.0, 100.0] for i in range(72)]
+    rvol_crypto = compute_volume_rvol_metrics(crypto_bars, now_ts=(c_start + 71 * 300_000.0) / 1000.0)
+    assert rvol_crypto["rvol_1h"] == pytest.approx(1.0, abs=0.05)
+
+
+
 
 
 

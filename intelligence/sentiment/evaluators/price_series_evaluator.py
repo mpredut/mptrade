@@ -485,7 +485,16 @@ def compute_volume_rvol_metrics(
     cut_15m = vol_now_ms - max(900_000.0, step_ms * 0.9)
     vol_15m_usd = sum(u for t, u in w24 if t > cut_15m) if step_ms <= 900_000.0 else 0.0
     cut_1h = vol_now_ms - max(3_600_000.0, step_ms * 0.9)
-    vol_1h_usd = sum(u for t, u in w24 if t > cut_1h)
+    w1h = [(t, u) for t, u in w24 if t > cut_1h]
+    vol_1h_usd = sum(u for _, u in w1h)
+    eff_avg_1h_usd = avg_1h_usd
+    if w1h and avg_1h_usd > 0.0:
+        w1h_first_idx = len(w24) - len(w1h)
+        if w1h_first_idx > 0 and (w24[w1h_first_idx][0] - w24[w1h_first_idx - 1][0]) > 3_600_000.0:
+            active_1h_ms = (w1h[-1][0] - w1h[0][0]) + step_ms
+            if 0.0 < active_1h_ms < 3_600_000.0:
+                eff_1h_frac = min(1.0, max(0.25, active_1h_ms / 3_600_000.0))
+                eff_avg_1h_usd = avg_1h_usd * eff_1h_frac
     out: Dict[str, float] = {
         "spot_vol_24h_avg_15m_usd": round(avg_15m_usd, 0),
     }
@@ -495,8 +504,8 @@ def compute_volume_rvol_metrics(
             out["rvol_15m"] = round(vol_15m_usd / avg_15m_usd, 2)
     if vol_1h_usd > 0.0:
         out["spot_vol_1h_usd"] = round(vol_1h_usd, 0)
-        if avg_1h_usd > 0.0:
-            out["rvol_1h"] = round(vol_1h_usd / avg_1h_usd, 2)
+        if eff_avg_1h_usd > 0.0:
+            out["rvol_1h"] = round(vol_1h_usd / eff_avg_1h_usd, 2)
     return out
 
 

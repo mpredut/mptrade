@@ -1065,7 +1065,7 @@ def _format_microstructure_section(
             if (d_tr := safe_float(cd_map.get("taker_ratio_delta"), None)) is not None and abs(d_tr) >= 0.05:
                 cd_parts.append(f"d_tr={fmt_signed(d_tr)}")
             if (d_wl := safe_float(cd_map.get("whale_long_delta_pct"), None)) is not None and abs(d_wl) >= 0.005:
-                cd_parts.append(f"d_whale_long={fmt_signed(d_wl)}%")
+                cd_parts.append(f"d_whale_long={fmt_signed(d_wl * 100.0, 1)}pp")
             if (d_oi := safe_float(cd_map.get("oi_delta_pct"), None)) is not None and abs(d_oi) >= 0.005:
                 cd_parts.append(f"d_oi={fmt_signed(d_oi)}%")
             if len(cd_parts) > 1:

@@ -1975,6 +1975,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
 
     cls_name = "Fleet24hAndMicrostructureEnricher"
     COLLECTOR_ID = "fleet_24h_and_microstructure"
+    _MAX_INFLIGHT_QUOTE_SKEW_SEC: float = 60.0
 
     @staticmethod
     def _prices_match_quote(px_a: float, px_b: float, *, rel_tol: float = 0.0005) -> bool:
@@ -1990,7 +1991,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             q_sess = resolve_symbol_market_session(sym_k, quote_ts_sec)
         except Exception:
             eq_open, now_sess, q_sess = False, "", ""
-        q_is_recent = 0.0 <= (eff_now - quote_ts_sec) <= 20.0 * 60.0
+        q_is_recent = -Fleet24hAndMicrostructureEnricher._MAX_INFLIGHT_QUOTE_SKEW_SEC <= (eff_now - quote_ts_sec) <= 20.0 * 60.0
         if eq_open and q_is_recent:
             return "yahoo_rth", None
         if not eq_open and now_sess in ("PRE", "POST") and q_sess == now_sess and q_is_recent:
@@ -2027,7 +2028,11 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 entry["market_state"] = quote.market_state
         elif clear_market_state:
             entry.pop("market_state", None)
-        if quote.quote_ts_sec is not None and quote.quote_ts_sec > 0.0 and 0.0 <= (eff_now - quote.quote_ts_sec) <= 14 * 86400.0:
+        if (
+            quote.quote_ts_sec is not None
+            and quote.quote_ts_sec > 0.0
+            and -Fleet24hAndMicrostructureEnricher._MAX_INFLIGHT_QUOTE_SKEW_SEC <= (eff_now - quote.quote_ts_sec) <= 14 * 86400.0
+        ):
             entry["quote_age_min"] = round(max(0.0, eff_now - quote.quote_ts_sec) / 60.0, 1)
         if (
             rth_close_px is not None
@@ -2116,7 +2121,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     (
                         pt_cand
                         for pt_cand in q_cands
-                        if 0.0 <= (eff_now - (pt_cand[0] / 1000.0)) <= 20.0 * 60.0
+                        if -cls._MAX_INFLIGHT_QUOTE_SKEW_SEC <= (eff_now - (pt_cand[0] / 1000.0)) <= 20.0 * 60.0
                         and not _prices_diverged(disp_px_eq, pt_cand[1], threshold=0.05)
                     ),
                     key=lambda pt_cand: pt_cand[0],
@@ -2124,7 +2129,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 )
         if q_pt_eq is not None:
             q_ts_s_eq = q_pt_eq[0] / 1000.0
-            if 0.0 <= (eff_now - q_ts_s_eq) <= 14 * 86400.0:
+            if -cls._MAX_INFLIGHT_QUOTE_SKEW_SEC <= (eff_now - q_ts_s_eq) <= 14 * 86400.0:
                 q_src_fb, q_mstate_fb = cls._classify_yahoo_equity_quote_source(sym, q_ts_s_eq, eff_now)
                 cls._apply_resolved_equity_quote(
                     entry,
@@ -2238,7 +2243,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 and eq_sess in ("PRE", "POST")
                 and cp_pt is not None
                 and cp_pt[1] > 0.0
-                and 0.0 <= (eff_now - cp_ts_s_eq) <= 20.0 * 60.0
+                and -Fleet24hAndMicrostructureEnricher._MAX_INFLIGHT_QUOTE_SKEW_SEC <= (eff_now - cp_ts_s_eq) <= 20.0 * 60.0
                 and cp_sess == eq_sess
             )
             cp_is_fresher_ext = bool(
@@ -2261,7 +2266,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 and cp_pt is not None
                 and cp_pt[1] > 0.0
                 and cp_ts_s_eq > (pos_ts_val or 0.0) + 1.0
-                and 0.0 <= (eff_now - cp_ts_s_eq) <= 14 * 86400.0
+                and -Fleet24hAndMicrostructureEnricher._MAX_INFLIGHT_QUOTE_SKEW_SEC <= (eff_now - cp_ts_s_eq) <= 14 * 86400.0
                 and cp_sess in ("PRE", "POST")
             )
             if cp_is_fresher_ext_close and cp_pt is not None:
