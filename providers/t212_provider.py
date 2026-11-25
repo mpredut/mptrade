@@ -58,6 +58,7 @@ from .order_ohlc_utils import (
     require_clean_order_id,
     resolve_market_flag,
 )
+from .order_status_ssot import classify_venue_order_status
 from .strategy_executor import (
     OrderNotFound,
     OrderReconciliationCapabilities,
@@ -706,9 +707,15 @@ class T212Provider(MarketDataProvider):
             raise ProviderError(f"order_status({order_id}): ticker {ticker!r}, expected {symbol!r}")
 
         venue_status = clean_upper_scalar(raw.get("status")) or ""
-        normalized = "open" if venue_status in _OPEN_STATUSES else _STATUS_MAP.get(venue_status)
-        if normalized is None:
-            raise ProviderError(f"order_status({order_id}): unknown T212 status {venue_status!r}")
+        try:
+            classified = classify_venue_order_status(
+                raw.get("status"),
+                status_map=_STATUS_MAP,
+                open_statuses=_OPEN_STATUSES,
+            )
+        except ValueError as exc:
+            raise ProviderError(f"order_status({order_id}): unknown T212 status {venue_status!r}") from exc
+        normalized = classified.local_status
 
         if any(isinstance(raw.get(k), bool) for k in ("filledQuantity", "filledValue", "fee", "commission")):
             raise ProviderError(f"order_status({order_id}): invalid fill values")

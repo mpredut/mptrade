@@ -473,6 +473,73 @@ def verify_arbitrum_usdc_transfer_tx(
     }
 
 
+@dataclass(frozen=True, slots=True)
+class ArbitrumReceiptProof:
+    """Validated cryptographic proof that an Arbitrum ERC-20 USDC transfer receipt confirmed on-chain.
+
+    Construction enforces a valid ``0x`` + 64-hex EVM transaction hash, ``confirmed=True``,
+    ``reverted=False``, and positive ``received_usdc`` so ``arrived=True`` cannot be forged
+    from balance increases or non-EVM Kraken references.
+    """
+
+    tx_hash: str
+    received_usdc: float
+    block_number: int | None = None
+    confirmed: bool = True
+    reverted: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tx_hash, str) or not _EVM_TX_HASH_RE.fullmatch(self.tx_hash):
+            raise ValueError(f"Invalid Arbitrum EVM tx hash for receipt proof: {self.tx_hash!r}")
+        if self.reverted or not self.confirmed:
+            raise ValueError("ArbitrumReceiptProof requires confirmed=True and reverted=False")
+        if safe_pos_float(self.received_usdc, default=None) is None:
+            raise ValueError(f"ArbitrumReceiptProof requires positive received_usdc, got {self.received_usdc!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class ArbitrumBalanceDiagnostic:
+    """Diagnostic Arbitrum wallet USDC observation (NEVER sufficient alone to confirm arrival)."""
+
+    usdc_before: float
+    usdc_after: float
+    observed: bool
+
+    @property
+    def usdc_delta(self) -> float:
+        return round(self.usdc_after - self.usdc_before, 6)
+
+
+def build_arbitrum_arrival_result(
+    proof: ArbitrumReceiptProof,
+    diagnostic: ArbitrumBalanceDiagnostic,
+    *,
+    withdrawal_id: str,
+    kraken_status: str,
+) -> dict[str, Any]:
+    """Single canonical builder for ``arrived=True`` results, structurally requiring ``ArbitrumReceiptProof``."""
+    if not isinstance(proof, ArbitrumReceiptProof):
+        raise TypeError("arrived=True structurally requires a validated ArbitrumReceiptProof")
+    if not isinstance(diagnostic, ArbitrumBalanceDiagnostic):
+        raise TypeError("diagnostic must be an ArbitrumBalanceDiagnostic")
+    return {
+        "arrived": True,
+        "status": "arrived",
+        "withdrawal_id": withdrawal_id,
+        "kraken_status": kraken_status,
+        "arb_txid": proof.tx_hash,
+        "tx_usdc_amount": proof.received_usdc,
+        "stages": {
+            "withdrawal_accepted": True,
+            "transaction_confirmed": True,
+            "balance_observed": diagnostic.observed,
+        },
+        "arb_usdc_before": diagnostic.usdc_before,
+        "arb_usdc_after": diagnostic.usdc_after,
+        "arb_usdc_delta": diagnostic.usdc_delta,
+    }
+
+
 def wait_for_arbitrum_arrival(
     client: Any,
     cfg: RebalanceConfig,
@@ -485,7 +552,8 @@ def wait_for_arbitrum_arrival(
     Explicitly tracks three distinct stages:
       - ``withdrawal_accepted``: Kraken accepted ``withdrawal_id``.
       - ``transaction_confirmed``: the withdrawal's associated Arbitrum transaction is strictly confirmed
-        via ``eth_getTransactionReceipt`` ERC-20 ``Transfer`` log on a valid ``0x`` + 64-hex EVM tx hash.
+        via ``eth_getTransactionReceipt`` ERC-20 ``Transfer`` log on a valid ``0x`` + 64-hex EVM tx hash
+        producing a validated ``ArbitrumReceiptProof``.
       - ``balance_observed``: diagnostic flag showing whether wallet USDC balance increased by the
         expected net amount (NEVER sufficient alone to confirm arrival).
     """
@@ -496,8 +564,7 @@ def wait_for_arbitrum_arrival(
     chain_txid: str | None = None
     last_arb_usdc: float = baseline_arb_usdc
     balance_observed = False
-    transaction_confirmed = False
-    tx_received_usdc: float | None = None
+    receipt_proof: ArbitrumReceiptProof | None = None
 
     while time.monotonic() <= deadline:
         try:
@@ -512,8 +579,12 @@ def wait_for_arbitrum_arrival(
 
         arb = fetch_arbitrum_balances(cfg, cfg.target_address)
         last_arb_usdc = arb["usdc"]
-        delta = last_arb_usdc - baseline_arb_usdc
         balance_observed = last_arb_usdc >= target_arb_usdc
+        diagnostic = ArbitrumBalanceDiagnostic(
+            usdc_before=baseline_arb_usdc,
+            usdc_after=last_arb_usdc,
+            observed=balance_observed,
+        )
 
         if last_k_status.lower() in _KRAKEN_FAILED_STATUSES:
             raise RuntimeError(f"Kraken withdrawal {withdrawal_id} failed with status={last_k_status}")
@@ -532,8 +603,13 @@ def wait_for_arbitrum_arrival(
                 if tx_check["reverted"]:
                     raise RuntimeError(f"Arbitrum transaction {chain_txid} reverted on-chain")
                 if tx_check["confirmed"]:
-                    transaction_confirmed = True
-                    tx_received_usdc = tx_check["received_usdc"]
+                    receipt_proof = ArbitrumReceiptProof(
+                        tx_hash=chain_txid,
+                        received_usdc=tx_check["received_usdc"],
+                        block_number=tx_check.get("block_number"),
+                        confirmed=True,
+                        reverted=False,
+                    )
             except RuntimeError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -548,30 +624,19 @@ def wait_for_arbitrum_arrival(
 
         print(
             f"[WAIT-ARB] withdrawal_id={withdrawal_id} kraken_status={last_k_status} txid={chain_txid or '-'} "
-            f"tx_confirmed={transaction_confirmed} balance_observed={balance_observed} "
-            f"arb_usdc={last_arb_usdc:.4f} (+{delta:.4f} / expected {expected_net_usdc:.4f})",
+            f"tx_confirmed={receipt_proof is not None} balance_observed={diagnostic.observed} "
+            f"arb_usdc={diagnostic.usdc_after:.4f} (+{diagnostic.usdc_delta:.4f} / expected {expected_net_usdc:.4f})",
             file=sys.stderr,
             flush=True,
         )
 
-        if transaction_confirmed:
-            stages = {
-                "withdrawal_accepted": True,
-                "transaction_confirmed": True,
-                "balance_observed": balance_observed,
-            }
-            return {
-                "arrived": True,
-                "status": "arrived",
-                "withdrawal_id": withdrawal_id,
-                "kraken_status": last_k_status,
-                "arb_txid": chain_txid,
-                "tx_usdc_amount": tx_received_usdc,
-                "stages": stages,
-                "arb_usdc_before": baseline_arb_usdc,
-                "arb_usdc_after": last_arb_usdc,
-                "arb_usdc_delta": round(delta, 6),
-            }
+        if receipt_proof is not None:
+            return build_arbitrum_arrival_result(
+                receipt_proof,
+                diagnostic,
+                withdrawal_id=withdrawal_id,
+                kraken_status=last_k_status,
+            )
         time.sleep(cfg.poll_interval_sec)
 
     try:
@@ -579,22 +644,26 @@ def wait_for_arbitrum_arrival(
         balance_observed = last_arb_usdc >= target_arb_usdc
     except Exception:  # noqa: BLE001
         pass
-    delta = last_arb_usdc - baseline_arb_usdc
+    timeout_diag = ArbitrumBalanceDiagnostic(
+        usdc_before=baseline_arb_usdc,
+        usdc_after=last_arb_usdc,
+        observed=balance_observed,
+    )
     return {
         "arrived": False,
         "status": "withdrawal_accepted_monitoring_incomplete",
         "withdrawal_id": withdrawal_id,
         "kraken_status": last_k_status,
         "arb_txid": chain_txid,
-        "tx_usdc_amount": tx_received_usdc,
+        "tx_usdc_amount": None,
         "stages": {
             "withdrawal_accepted": True,
             "transaction_confirmed": False,
-            "balance_observed": balance_observed,
+            "balance_observed": timeout_diag.observed,
         },
-        "arb_usdc_before": baseline_arb_usdc,
-        "arb_usdc_after": last_arb_usdc,
-        "arb_usdc_delta": round(delta, 6),
+        "arb_usdc_before": timeout_diag.usdc_before,
+        "arb_usdc_after": timeout_diag.usdc_after,
+        "arb_usdc_delta": timeout_diag.usdc_delta,
     }
 
 

@@ -32,9 +32,7 @@ from botcore import (
 )
 from cachepaths import (
     ASSETGUARDIAN_STATE_FILENAME,
-    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
     MT_STATE_FILENAME,
-    ORDER_RETRY_QUEUE_FILENAME,
     SMART_STOP_LOSS_STATE_FILENAME,
     cache_symbol_variants,
     canonical_base_asset,
@@ -117,7 +115,12 @@ from providers.base import MarketDataProvider
 from providers.execution_audit import _extract_audit_fill_metrics
 from providers.order_id_context import derive_venue_128bit_client_order_id, resolve_order_origin
 from providers.order_ohlc_utils import normalize_open_order
-from providers.intent_state import collect_known_ai_order_ids, intent_venue_client_order_ids
+from providers.intent_state import (
+    collect_known_ai_order_ids,
+    intent_venue_client_order_ids,
+    load_durable_intents_from_cachedb,
+)
+from providers.portfolio_valuation import BalanceSnapshotRecord
 from providers.quantity import resolve_assets, resolve_kraken_trade_cache_position, venue_fee_cap_quantity
 from state_io import (
     generation_file_lock,
@@ -171,17 +174,30 @@ def _read_cached_open_orders_by_venue_sym(
     cache_dir: Optional[str],
     read_json_fn: Any = None,
 ) -> Tuple[Dict[Tuple[str, str], List[Dict[str, Any]]], Dict[str, float], Dict[Tuple[str, str], float]]:
-    """Passively read open orders from ``cache_order_open_<venue>.json`` keyed by ``(venue, SYMBOL_UPPER)``."""
-    by_vs: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
-    verified_by_venue: Dict[str, float] = {}
-    verified_by_vs: Dict[Tuple[str, str], float] = {}
+    """Passively read open orders from ``cache_order_open_<venue>.json`` via ``UnifiedOrderBookEvidence`` SSOT."""
     if not cache_dir:
-        return by_vs, verified_by_venue, verified_by_vs
+        return {}, {}, {}
     ensure_cacheprice_classes_bound()
     open_cls = _mc.CacheOrderOpenManager
     if open_cls is None:
-        return by_vs, verified_by_venue, verified_by_vs
+        return {}, {}, {}
     _rj = _resolve_read_json_cached(read_json_fn) if read_json_fn is not None else None
+    loader_fn = getattr(open_cls, "load_unified_evidence", None)
+    if callable(loader_fn):
+        ev = loader_fn(
+            cache_dir,
+            read_json_fn=_rj,
+            symbol_normalizer=lambda raw_s: str(raw_s or "").strip().lower(),
+            include_filled=False,
+        )
+        return (
+            ev.open_orders_by_venue_sym(),
+            dict(ev.verified_by_venue),
+            {(v_k, s_k.upper()): s_ts for (v_k, s_k), s_ts in ev.symbol_verified_ts.items()},
+        )
+    by_vs: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    verified_by_venue: Dict[str, float] = {}
+    verified_by_vs: Dict[Tuple[str, str], float] = {}
     for venue_key, fname in open_cls.VENUE_FILENAMES.items():
         cand_path = os.path.join(cache_dir, fname)
         items, _, ver_ts, sym_ver = open_cls.read_venue_open_orders_snapshot_detailed(cand_path, read_json_fn=_rj)
@@ -290,29 +306,12 @@ def _extract_cached_venue_held_qty(
 
 
 def _load_cached_ai_intents_list(cache_dir: Optional[str], read_json_fn: Any = None) -> List[Dict[str, Any]]:
-    """Load persisted AI trade intents from `autonomous_trade_intents_state.json` across `state/` and root cache paths."""
+    """Load persisted AI trade intents via ``providers.intent_state`` SSOT across ``state/`` and root cache paths."""
     if not cache_dir:
         return []
     _rj = _resolve_read_json_cached(read_json_fn)
-    raw_path = os.path.join(cache_dir, AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME)
-    resolved_path = str(resolve_cachedb_filepath(raw_path))
-    raw_int: Any = None
-    if _rj not in (_default_read_json_cached, read_json_recovering):
-        for cand_p in dict.fromkeys((resolved_path, raw_path)):
-            try:
-                raw_int = _rj(cand_p)
-            except Exception:
-                raw_int = None
-            if raw_int is not None:
-                break
-    if raw_int is None:
-        for cand_p in dict.fromkeys((resolved_path, raw_path)):
-            if os.path.exists(cand_p):
-                raw_int = read_json_file(cand_p, default=[], recover_previous=True)
-                if raw_int:
-                    break
-    int_list = raw_int.get("intents") if isinstance(raw_int, dict) else (raw_int if isinstance(raw_int, list) else [])
-    return [it for it in (int_list or ()) if isinstance(it, dict)]
+    custom_reader = _rj if _rj not in (_default_read_json_cached, read_json_recovering) else None
+    return load_durable_intents_from_cachedb(cache_dir, read_json_fn=custom_reader)
 
 
 def _resolve_ai_intents_and_known_order_ids(
@@ -565,7 +564,7 @@ def _strip_internal_balance_ts(entry: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in entry.items() if k not in _INTERNAL_BALANCE_TS_KEYS}
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BalanceObservation:
     """Atomic balance observation binding raw free quantity to its own timestamp, reflected locked amount, and source priority."""
 
@@ -820,36 +819,37 @@ def derive_runtime_portfolio_view(
     cur_locked_by_va: Dict[tuple[str, str], float] = dict(locked_quote_by_vq)
     for vb_k, lb_v in locked_base_by_vb.items():
         cur_locked_by_va[vb_k] = cur_locked_by_va.get(vb_k, 0.0) + lb_v
+    balance_records_by_va: Dict[tuple[str, str], BalanceSnapshotRecord] = {}
     adjusted_free_by_va: Dict[tuple[str, str], float] = {}
-    eff_pre_bal_locked_by_va: Dict[tuple[str, str], float] = {}
-    for va_key, pre_locked in pre_bal_locked_by_va.items():
-        if pre_locked > 0.0 and (obs_va := shared_obs_by_va.get(va_key)) is not None:
-            eff_deduct = pre_locked
-            if obs_va.reflected_locked is not None:
-                # Cap synthetic post-balance deduction by the net increase in total locked amount
-                # over what was already reflected at obs_va.ts (prevents double-subtracting free
-                # balances when monitororder cancels & reprices an already-locked order).
-                eff_deduct = min(pre_locked, max(0.0, cur_locked_by_va.get(va_key, 0.0) - obs_va.reflected_locked))
-            if eff_deduct > 1e-8:
-                eff_pre_bal_locked_by_va[va_key] = eff_deduct
-                adjusted_free_by_va[va_key] = max(0.0, obs_va.free - eff_deduct)
+    for va_key in set(shared_obs_by_va) | set(cur_locked_by_va) | set(pre_bal_locked_by_va):
+        obs_va = shared_obs_by_va.get(va_key)
+        bal_rec = BalanceSnapshotRecord(
+            free_raw=obs_va.free if obs_va is not None else 0.0,
+            total_locked=cur_locked_by_va.get(va_key, 0.0),
+            pre_balance_locked=pre_bal_locked_by_va.get(va_key, 0.0),
+            reflected_locked=obs_va.reflected_locked if obs_va is not None else None,
+        )
+        balance_records_by_va[va_key] = bal_rec
+        if obs_va is not None and bal_rec.synthetic_deduct > 0.0:
+            adjusted_free_by_va[va_key] = bal_rec.runtime_free
 
-    # Apply synthetic pre-balance deductions to runtime/prompt views ONLY; keep persisted ``updated_bals``
-    # free balances raw while persisting venue-reflected locked balances & trailing peaks for Unified NAV.
+    # Apply synthetic pre-balance deductions to runtime/prompt views ONLY via BalanceSnapshotRecord;
+    # persisted ``updated_bals`` keeps raw free balances + venue-reflected locked balances so Unified NAV is conserved.
     for cash_val in venue_quote_cash.values():
         if isinstance(cash_val, dict):
             cv_norm, cq_u = normalize_venue_name(cash_val.get("venue")), str(cash_val.get("asset") or "").strip().upper()
-            if (cv_norm, cq_u) in adjusted_free_by_va:
-                cash_val["free"] = round(adjusted_free_by_va[(cv_norm, cq_u)], 2)
-            elif (raw_c_obs := shared_obs_by_va.get((cv_norm, cq_u))) is not None:
+            va_c = (cv_norm, cq_u)
+            if va_c in adjusted_free_by_va:
+                cash_val["free"] = round(adjusted_free_by_va[va_c], 2)
+            elif (raw_c_obs := shared_obs_by_va.get(va_c)) is not None:
                 cash_val["free"] = round(raw_c_obs.free, 2)
-            if (lq_val := locked_quote_by_vq.get((cv_norm, cq_u), 0.0)) > 0.0:
+            if (lq_val := locked_quote_by_vq.get(va_c, 0.0)) > 0.0:
                 cash_val["locked_quote_usd"] = round(lq_val, 2)
-                pers_cash_lq = max(0.0, lq_val - eff_pre_bal_locked_by_va.get((cv_norm, cq_u), 0.0))
-                if pers_cash_lq > 1e-6:
+                c_rec = balance_records_by_va.get(va_c) or BalanceSnapshotRecord(free_raw=0.0, total_locked=lq_val)
+                if pers_cash_fields := c_rec.to_persisted_cash_fields(decimals=2):
                     cash_bkey = f"cash:{cv_norm}:{cq_u}"
                     if cash_bkey in updated_bals and isinstance(updated_bals[cash_bkey], dict):
-                        updated_bals[cash_bkey] = {**updated_bals[cash_bkey], "locked_quote_usd": round(pers_cash_lq, 2)}
+                        updated_bals[cash_bkey] = {**updated_bals[cash_bkey], **pers_cash_fields}
 
     for pos_entry in tradable_positions:
         p_v_norm = normalize_venue_name(pos_entry.get("venue"))
@@ -925,26 +925,24 @@ def derive_runtime_portfolio_view(
             pos_bkey = f"pos:{p_v_norm}:{p_sym_raw}" if f"pos:{p_v_norm}:{p_sym_raw}" in updated_bals else f"pos:{p_v_norm}:{p_sym_u}"
             if pos_bkey in updated_bals and isinstance(updated_bals[pos_bkey], dict):
                 pers_pos = dict(updated_bals[pos_bkey])
-                raw_pre_q = pre_bal_locked_by_va.get((p_v_norm, p_quote_u), 0.0) if p_quote_u else 0.0
-                q_deduct_scale = (
-                    eff_pre_bal_locked_by_va.get((p_v_norm, p_quote_u), 0.0) / raw_pre_q if raw_pre_q > 1e-12 else 0.0
+                base_bal_rec = (
+                    balance_records_by_va.get((p_v_norm, p_base_u))
+                    if p_base_u
+                    else None
+                ) or BalanceSnapshotRecord(free_raw=0.0, total_locked=lb_pos)
+                quote_bal_rec = balance_records_by_va.get((p_v_norm, p_quote_u)) if p_quote_u else None
+                pers_pos.update(
+                    base_bal_rec.to_persisted_position_fields(
+                        symbol_locked_quote=lq_pos,
+                        symbol_pre_quote=pre_bal_locked_quote_by_vs.get((p_v_norm, p_sym_u), 0.0),
+                        quote_record=quote_bal_rec,
+                        symbol_locked_base=lb_pos,
+                        symbol_pre_base=pre_bal_locked_base_by_vs.get((p_v_norm, p_sym_u), 0.0),
+                        price=px_pos,
+                        trailing_peak=pos_entry.get("trailing_peak"),
+                        dd_from_peak_pct=pos_entry.get("dd_from_peak_pct"),
+                    )
                 )
-                raw_pre_b = pre_bal_locked_by_va.get((p_v_norm, p_base_u), 0.0) if p_base_u else 0.0
-                b_deduct_scale = (
-                    eff_pre_bal_locked_by_va.get((p_v_norm, p_base_u), 0.0) / raw_pre_b if raw_pre_b > 1e-12 else 0.0
-                )
-                pers_lq = max(0.0, lq_pos - pre_bal_locked_quote_by_vs.get((p_v_norm, p_sym_u), 0.0) * q_deduct_scale)
-                pers_lb = max(0.0, lb_pos - pre_bal_locked_base_by_vs.get((p_v_norm, p_sym_u), 0.0) * b_deduct_scale)
-                if pers_lq > 1e-6:
-                    pers_pos["locked_quote_usd"] = round(pers_lq, 2)
-                if pers_lb > 1e-12:
-                    pers_pos["locked_base_qty"] = round(pers_lb, 8)
-                    if px_pos > 0.0:
-                        pers_pos["locked_base_usd"] = round(pers_lb * px_pos, 2)
-                if "trailing_peak" in pos_entry:
-                    pers_pos["trailing_peak"] = pos_entry["trailing_peak"]
-                    if "dd_from_peak_pct" in pos_entry:
-                        pers_pos["dd_from_peak_pct"] = pos_entry["dd_from_peak_pct"]
                 updated_bals[pos_bkey] = pers_pos
     _strip_all_internal_ts()
 
@@ -2587,8 +2585,8 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
         cache_dir = cachedb_dir
         eff_now, _rj = _resolve_now_and_read_json(now_ts, read_json_fn)
         out: Dict[str, Any] = {}
-        retry_q_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, ORDER_RETRY_QUEUE_FILENAME)))
-        if os.path.exists(retry_q_path):
+        retry_records = _oq.read_tail_queue_records(cache_dir, limit=50)
+        if retry_records:
             terminal_ai_intent_ids: set[str] = set()
             for it in _load_cached_ai_intents_list(cache_dir, _rj):
                 st_u = str(it.get("status") or "").strip().upper()
@@ -2606,7 +2604,7 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
                     if iid := str(it.get("intent_id") or "").strip():
                         terminal_ai_intent_ids.add(iid)
             active_retries: List[Dict[str, Any]] = []
-            for rec in read_tail_jsonl_dicts(retry_q_path, limit=50):
+            for rec in retry_records:
                 rec_iid = str(rec.get("intent_id") or "").strip()
                 if rec_iid and rec_iid in terminal_ai_intent_ids:
                     continue

@@ -1,10 +1,15 @@
-"""Canonical SSOT taxonomy and pure predicates for venue order and AI/bot intent lifecycle states."""
+"""Canonical SSOT taxonomy, venue status classifier, and monotonic evidence lattice for orders and intents."""
 from __future__ import annotations
+
+from collections.abc import Mapping, Set as AbstractSet
+from dataclasses import dataclass
+from typing import Optional
 
 from botcore import (
     StringEnum,
     clean_scalar_str,
     clean_upper_scalar,
+    safe_nonneg_float,
     safe_pos_float,
 )
 
@@ -143,6 +148,117 @@ RECONCILABLE_AI_INTENT_STATUSES: frozenset[str] = frozenset({
     "SUBMIT_UNKNOWN",
 })
 
+TERMINAL_FILL_ROW_STATUSES: frozenset[str] = frozenset({
+    "FILLED",
+    "CLOSED",
+    "CANCELED",
+    "CANCELLED",
+    "EXPIRED",
+    "EXPIRED_IN_MATCH",
+    "REJECTED",
+    "REPLACED",
+})
+
+FILL_COMPLETE_QTY_RATIO: float = 0.9999
+
+_MONOTONIC_STATUS_RANK: dict[str, int] = {
+    "OPEN": 1,
+    "NEW": 1,
+    "RESTING": 1,
+    "PENDING": 1,
+    "PENDING_NEW": 1,
+    "PENDING_CANCEL": 1,
+    "WORKING": 1,
+    "LOCAL": 1,
+    "UNCONFIRMED": 1,
+    "CONFIRMED": 1,
+    "CANCELLING": 1,
+    "REPLACING": 1,
+    "PARTIAL": 2,
+    "PARTIALLY_FILLED": 2,
+    "CANCELED": 3,
+    "CANCELLED": 3,
+    "CANCELED_OR_EXPIRED": 3,
+    "ARCHIVED_CANCELED": 3,
+    "EXPIRED": 3,
+    "EXPIRED_IN_MATCH": 3,
+    "REJECTED": 3,
+    "REPLACED": 3,
+    "FILLED": 4,
+    "CLOSED": 4,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedVenueStatus:
+    """Typed classification result for a raw venue order status string."""
+
+    local_status: str
+    venue_status: str
+    is_terminal: bool
+    is_filled: bool
+    is_terminal_non_fill: bool
+    is_confirmed_cancel: bool
+
+
+def classify_venue_order_status(
+    raw_status: object,
+    *,
+    status_map: Mapping[str, str],
+    open_statuses: AbstractSet[str] = frozenset(),
+    case_sensitive: bool = False,
+    preserve_raw_venue_status: bool = False,
+    fallback_non_open_status: Optional[str] = None,
+) -> NormalizedVenueStatus:
+    """Strictly classify a raw venue status string using a declarative venue table.
+
+    Raises ``ValueError`` for boolean, non-scalar, empty, or unknown statuses so
+    every venue adapter fails closed on unrecognized payloads.
+    """
+    if raw_status is None or isinstance(raw_status, (bool, dict, list, tuple, set, frozenset)):
+        raise ValueError("invalid or empty venue order status")
+    raw_clean = clean_scalar_str(raw_status) or ""
+    if not raw_clean:
+        raise ValueError("empty venue order status")
+    lookup_key = raw_clean if case_sensitive else raw_clean.upper()
+    norm_open = open_statuses if case_sensitive else {str(k).strip().upper() for k in open_statuses}
+    norm_map = status_map if case_sensitive else {str(k).strip().upper(): v for k, v in status_map.items()}
+
+    if lookup_key in norm_open:
+        local_status = "open"
+    elif lookup_key in norm_map:
+        local_status = norm_map[lookup_key]
+    elif fallback_non_open_status is not None:
+        local_status = fallback_non_open_status
+    else:
+        raise ValueError(f"unknown venue order status: {raw_clean!r}")
+
+    if local_status not in VALID_SNAPSHOT_ORDER_STATUSES:
+        raise ValueError(f"mapped local status {local_status!r} is not canonical")
+
+    venue_status = raw_clean if preserve_raw_venue_status else raw_clean.upper()
+    v_u = venue_status.upper()
+    is_terminal = local_status in TERMINAL_SNAPSHOT_ORDER_STATUSES
+    is_filled = local_status == "closed"
+    is_terminal_non_fill = local_status in {"canceled", "expired"}
+    is_confirmed_cancel = bool(
+        v_u in {"CANCELED", "CANCELLED", "ARCHIVED_CANCELED"}
+        or (
+            local_status == "canceled"
+            and v_u.endswith(("CANCELED", "CANCELLED", "CANCEL"))
+            and "REJECT" not in v_u
+            and "PENDING" not in v_u
+        )
+    )
+    return NormalizedVenueStatus(
+        local_status=local_status,
+        venue_status=venue_status,
+        is_terminal=is_terminal,
+        is_filled=is_filled,
+        is_terminal_non_fill=is_terminal_non_fill,
+        is_confirmed_cancel=is_confirmed_cancel,
+    )
+
 
 def _norm_upper_status(raw: object) -> str:
     if raw is None or isinstance(raw, (bool, dict, list, tuple, set, frozenset)):
@@ -227,6 +343,110 @@ def is_terminal_non_fill_venue_status(status: object) -> bool:
     if v_u in TERMINAL_CANCEL_VENUE_STATUSES or v_u in {"ARCHIVED_CANCELED", "EXPIRED_IN_MATCH"}:
         return True
     return v_u.endswith(("CANCELED", "CANCELLED", "CANCEL", "EXPIRED", "REJECTED"))
+
+
+def is_working_or_pending_venue_status(status: object) -> bool:
+    """Return True when a venue status indicates an active, partially filled, or pending order."""
+    v_u = _norm_upper_status(status)
+    if not v_u:
+        return False
+    return v_u in {"PARTIALLY_FILLED", "PENDING_CANCEL", "PENDING_NEW"} or is_open_working_status(
+        v_u, allow_empty=False
+    )
+
+
+def is_filled_venue_status(status: object, *, include_resolved: bool = False) -> bool:
+    """Return True when a raw venue status string represents full execution."""
+    v_u = _norm_upper_status(status)
+    if v_u in {"FILLED", "CLOSED"}:
+        return True
+    return bool(include_resolved and v_u == "RESOLVED")
+
+
+def status_lattice_rank(status: object) -> int:
+    """Return monotonic evidence lattice rank: UNKNOWN(0) < OPEN(1) < PARTIAL(2) < TERMINAL_NON_FILL(3) < FILLED(4)."""
+    v_u = _norm_upper_status(status)
+    if not v_u:
+        return 0
+    if (rank := _MONOTONIC_STATUS_RANK.get(v_u)) is not None:
+        return rank
+    if is_terminal_non_fill_venue_status(v_u):
+        return 3
+    if is_open_working_status(v_u, allow_empty=False):
+        return 1
+    return 0
+
+
+def merge_monotonic_fill_row_status(
+    existing_st: object,
+    incoming_st: object,
+    *,
+    incoming_ts: int = 0,
+    existing_ts: int = 0,
+) -> Optional[str]:
+    """Merge two fill-row status strings along the monotonic lattice ``OPEN < PARTIAL < TERMINAL_NON_FILL < FILLED``."""
+    ex_st = _norm_upper_status(existing_st) or None
+    in_st = _norm_upper_status(incoming_st) or None
+    if not in_st:
+        return ex_st
+    if not ex_st:
+        return in_st
+    ex_rank = status_lattice_rank(ex_st)
+    in_rank = status_lattice_rank(in_st)
+    if ex_rank >= 3 and in_rank < 3:
+        return ex_st
+    if in_rank >= 3 and ex_rank < 3:
+        return in_st
+    if ex_rank == 4 and in_rank == 3:
+        return ex_st
+    if in_rank == 4 and ex_rank == 3:
+        return in_st
+    if ex_rank == 2 and in_rank == 1:
+        return ex_st
+    if in_rank == 2 and ex_rank == 1:
+        return in_st
+    return in_st if incoming_ts >= existing_ts else ex_st
+
+
+def classify_order_evidence_state(
+    venue_status: object,
+    *,
+    filled_qty: object = 0.0,
+    req_qty: object = None,
+    require_qty_match_for_filled: bool = False,
+    collapse_cancel_variants: bool = False,
+    default_unqualified_state: Optional[str] = None,
+) -> Optional[str]:
+    """Single canonical evidence classifier shared by ``order_ledger`` transitions and fill-cache reconciliation.
+
+    Returns one of ``"FILLED"``, ``"CANCELED"``, ``"EXPIRED"``, ``"REJECTED"``, ``"REPLACED"``,
+    ``"PARTIAL"``, ``"OPEN"``, or ``default_unqualified_state``.
+    """
+    v_u = _norm_upper_status(venue_status)
+    fq = safe_nonneg_float(filled_qty, default=0.0) or 0.0
+    rq = safe_pos_float(req_qty, default=None)
+    qty_complete = rq is not None and rq > 0.0 and fq >= rq * FILL_COMPLETE_QTY_RATIO
+    qty_strictly_partial = rq is not None and rq > 0.0 and fq < rq * FILL_COMPLETE_QTY_RATIO
+
+    if v_u in {"PARTIALLY_FILLED", "PARTIAL"}:
+        return "PARTIAL"
+    if v_u and is_open_working_status(v_u, allow_empty=False):
+        return "OPEN"
+    if v_u in {"EXPIRED", "EXPIRED_IN_MATCH"}:
+        return "EXPIRED"
+    if not collapse_cancel_variants and v_u in {"REPLACED", "REJECTED"}:
+        return v_u
+    if v_u in CANCEL_OR_EXPIRE_VENUE_STATUSES or is_terminal_non_fill_venue_status(v_u):
+        return "CANCELED"
+    if qty_complete:
+        return "FILLED"
+    if v_u in {"FILLED", "CLOSED"}:
+        if qty_strictly_partial and (require_qty_match_for_filled or fq > 0.0):
+            return "PARTIAL"
+        return "FILLED"
+    if fq > 0.0 and (rq is None or qty_strictly_partial):
+        return "PARTIAL"
+    return default_unqualified_state
 
 
 def classify_order_lifecycle_state(

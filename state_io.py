@@ -1031,6 +1031,34 @@ def _parse_jsonl_bucket_record(
     return raw_sym, item
 
 
+def _iter_jsonl_frames(
+    handle: Any,
+    *,
+    binary: bool = True,
+    require_newline: bool = True,
+    progress_out: list[int] | None = None,
+) -> Iterator[bytes | str]:
+    """Single canonical O(1)-memory JSONL frame iterator shared across cache and ledger tail readers.
+
+    When ``require_newline=True``, stops cleanly before any trailing bytes lacking ``\\n`` so
+    cursors never advance across partially written frames; writes ``[consumed, had_unterminated_tail]``
+    into ``progress_out`` on completion.
+    """
+    nl: bytes | str = b"\n" if binary else "\n"
+    consumed = 0
+    unterminated = 0
+    try:
+        for raw_line in handle:
+            if require_newline and not raw_line.endswith(nl):
+                unterminated = 1
+                break
+            consumed += len(raw_line)
+            yield raw_line
+    finally:
+        if progress_out is not None:
+            progress_out[:] = [consumed, unterminated]
+
+
 def _scan_jsonl_bucket_lines(
     handle: Any,
     *,
@@ -1038,25 +1066,20 @@ def _scan_jsonl_bucket_lines(
     require_newline: bool,
     mark_unterminated_invalid: bool,
 ) -> tuple[dict[str, list[Any]], bool, int]:
-    """Single canonical JSONL bucket-map parser for full and incremental byte/text streams."""
+    """Single canonical JSONL bucket-map parser for full and incremental byte/text streams via ``_iter_jsonl_frames``."""
     cache: dict[str, list[Any]] = {}
     had_invalid_line = False
-    consumed = 0
     last_raw_sym: str | None = None
     last_bucket: list[Any] | None = None
     loads_orjson = _orjson.loads if (_orjson is not None and json.loads is _ORIG_JSON_LOADS) else None
-    nl: bytes | str = b"\n" if binary else "\n"
     open_brace: int | str = 123 if binary else "{"
+    progress: list[int] = [0, 0]
 
-    for raw_line in handle:
+    for raw_line in _iter_jsonl_frames(
+        handle, binary=binary, require_newline=require_newline, progress_out=progress
+    ):
         line_len = len(raw_line)
-        if require_newline and not raw_line.endswith(nl):
-            # Unterminated EOF frame (even if valid JSON prior to '\n'): stop without advancing cursor.
-            if mark_unterminated_invalid:
-                had_invalid_line = True
-            break
         if not line_len or (raw_line[0] != open_brace and not raw_line.strip()):
-            consumed += line_len
             continue
         try:
             raw_sym, item = _parse_jsonl_bucket_record(raw_line, loads_orjson)
@@ -1076,7 +1099,9 @@ def _scan_jsonl_bucket_lines(
                     last_bucket = bucket
         except Exception:
             had_invalid_line = True
-        consumed += line_len
+    consumed, unterminated = progress[0], progress[1]
+    if unterminated and mark_unterminated_invalid:
+        had_invalid_line = True
     return cache, had_invalid_line, consumed
 
 
@@ -1480,12 +1505,13 @@ def read_jsonl_dicts(path: str, *, strict: bool = False) -> list[dict[str, Any]]
 
 
 def read_jsonl_dicts_from_offset(path: str, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
-    """Read complete newline-terminated JSON object lines starting at byte ``offset``."""
+    """Read complete newline-terminated JSON object lines starting at byte ``offset`` via ``_iter_jsonl_frames``."""
     target = _resolve_target_path(path)
     if not os.path.isfile(target):
         return [], 0
     start_off = offset if (isinstance(offset, int) and not isinstance(offset, bool) and offset > 0) else 0
     records: list[dict[str, Any]] = []
+    progress: list[int] = [0, 0]
     try:
         file_size = os.path.getsize(target)
         if start_off > file_size:
@@ -1493,26 +1519,18 @@ def read_jsonl_dicts_from_offset(path: str, offset: int = 0) -> tuple[list[dict[
         with open(target, "rb") as handle:
             if start_off:
                 handle.seek(start_off)
-            chunk = handle.read()
+            for raw_line in _iter_jsonl_frames(handle, binary=True, require_newline=True, progress_out=progress):
+                if not raw_line.strip():
+                    continue
+                try:
+                    item = json.loads(raw_line.decode("utf-8", errors="replace"))
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(item, dict):
+                    records.append(item)
     except OSError:
         return [], start_off
-    if not chunk:
-        return [], start_off
-    last_nl = chunk.rfind(b"\n")
-    if last_nl < 0:
-        return [], start_off
-    complete = chunk[: last_nl + 1]
-    new_offset = start_off + len(complete)
-    for raw_line in complete.splitlines():
-        if not raw_line.strip():
-            continue
-        try:
-            item = json.loads(raw_line.decode("utf-8", errors="replace"))
-        except (ValueError, TypeError):
-            continue
-        if isinstance(item, dict):
-            records.append(item)
-    return records, new_offset
+    return records, start_off + progress[0]
 
 
 def read_text_file(
@@ -1715,7 +1733,7 @@ def _looks_like_jsonl_bucket_file(path: str) -> bool:
         checked = 0
         with open(path, "rb") as handle:
             for raw in handle:
-                s = raw.strip()
+                s = raw.strip().lstrip(b"\xef\xbb\xbf")
                 if not s:
                     continue
                 if s.startswith(b'{"s":') or s.startswith(b'{"s" :'):
@@ -1731,7 +1749,7 @@ def _looks_like_jsonl_bucket_file(path: str) -> bool:
                 checked += 1
                 if checked >= 8:
                     break
-    except OSError:
+    except (OSError, UnicodeError):
         pass
     return False
 

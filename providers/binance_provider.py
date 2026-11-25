@@ -42,6 +42,7 @@ from .order_ohlc_utils import (
     require_int_order_id,
     resolve_market_flag,
 )
+from .order_status_ssot import classify_venue_order_status
 from .quantity import (
     BinanceFilterError,
     BinanceOrderRules,
@@ -62,6 +63,19 @@ from .strategy_executor import (
 # Keep these variables patchable in tests (both here and on providers.market_api).
 _bapi = None
 _allorders = None
+
+_BINANCE_ORDER_STATUS_MAP: dict[str, str] = {
+    "FILLED": "closed",
+    "CANCELED": "canceled",
+    "CANCELLED": "canceled",
+    "EXPIRED": "expired",
+    "EXPIRED_IN_MATCH": "expired",
+    "REJECTED": "canceled",
+    "NEW": "open",
+    "PARTIALLY_FILLED": "open",
+    "PENDING_CANCEL": "open",
+    "PENDING_NEW": "open",
+}
 
 # Binance documents that some zero-fill canceled/expired orders are archived
 # after 90 days. This is an upper bound on a NOT_FOUND response's usefulness;
@@ -786,31 +800,22 @@ class BinanceProvider(MarketDataProvider):
         if None in (executed_qty, cost_val, orig_val):
             raise ProviderError(f"order_status({order_id}): invalid fill values")
         fee = self._order_fee_quote(symbol, oid) if executed_qty > 0 else 0.0
-        st_map = {
-            "FILLED": "closed",
-            "CANCELED": "canceled",
-            "CANCELLED": "canceled",
-            "EXPIRED": "expired",
-            "EXPIRED_IN_MATCH": "expired",
-            "REJECTED": "canceled",
-            "NEW": "open",
-            "PARTIALLY_FILLED": "open",
-            "PENDING_CANCEL": "open",
-            "PENDING_NEW": "open",
-        }
         raw_venue_status = o.get("status")
         if isinstance(raw_venue_status, bool):
             raise ProviderError(f"order_status({order_id}): invalid order status")
         venue_status = clean_upper_scalar(raw_venue_status) or ""
-        norm_status = st_map.get(venue_status)
-        if norm_status is None:
-            raise ProviderError(f"order_status({order_id}): unknown or empty Binance status {venue_status!r}")
+        try:
+            classified = classify_venue_order_status(raw_venue_status, status_map=_BINANCE_ORDER_STATUS_MAP)
+        except ValueError as exc:
+            raise ProviderError(
+                f"order_status({order_id}): unknown or empty Binance status {venue_status!r}"
+            ) from exc
         return OrderStatus(
-            status=norm_status,
+            status=classified.local_status,
             filled_qty=executed_qty,
             cost=cost_val,
             fee=fee,
-            venue_status=venue_status,
+            venue_status=classified.venue_status,
             orig_qty=orig_val,
         )
 

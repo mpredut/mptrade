@@ -15,7 +15,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import builtins
 from collections import defaultdict
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 import json
 import math
@@ -106,9 +107,11 @@ from providers.order_ohlc_utils import (
 from providers.order_status_ssot import (
     TERMINAL_AUDIT_VENUE_STATUSES,
     TERMINAL_CANCEL_VENUE_STATUSES,
+    TERMINAL_FILL_ROW_STATUSES,
     is_open_working_status,
+    merge_monotonic_fill_row_status,
 )
-from providers.portfolio_valuation import compute_venue_nav_breakdown
+from providers.portfolio_valuation import compute_venue_nav_breakdown, load_venue_balances_state_dict
 from state_io import (
     atomic_text_writer,
     atomic_write_json,
@@ -1965,16 +1968,7 @@ def _sibling_order_filled_path(trade_cache_file: str, venue: str) -> str:
     return os.path.join(base_dir, fname) if base_dir else cache_path(fname)
 
 
-_TERMINAL_FILL_ROW_STATUSES: frozenset[str] = frozenset({
-    "FILLED",
-    "CLOSED",
-    "CANCELED",
-    "CANCELLED",
-    "EXPIRED",
-    "EXPIRED_IN_MATCH",
-    "REJECTED",
-    "REPLACED",
-})
+_TERMINAL_FILL_ROW_STATUSES: frozenset[str] = TERMINAL_FILL_ROW_STATUSES
 
 
 def _enrich_filled_row_metadata(
@@ -1994,9 +1988,11 @@ def _enrich_filled_row_metadata(
         changed = True
     in_st = clean_upper_scalar(incoming.get("status"))
     ex_st = clean_upper_scalar(existing.get("status"))
-    if in_st and (not ex_st or (ex_st not in _TERMINAL_FILL_ROW_STATUSES and in_st in _TERMINAL_FILL_ROW_STATUSES)):
-        existing["status"] = in_st
-        changed = True
+    if in_st:
+        merged_st = merge_monotonic_fill_row_status(ex_st, in_st, incoming_ts=0, existing_ts=1)
+        if merged_st and merged_st != ex_st:
+            existing["status"] = merged_st
+            changed = True
     in_asset = clean_upper_scalar(incoming.get("feeAsset"))
     if not existing.get("feeAsset") and in_asset:
         existing["feeAsset"] = in_asset
@@ -2072,17 +2068,12 @@ def _merge_fill_row_status(
     incoming_ts: int,
     existing_ts: int,
 ) -> Optional[str]:
-    ex_st = clean_upper_scalar(existing_st)
-    in_st = clean_upper_scalar(incoming_st)
-    if not in_st:
-        return ex_st
-    if not ex_st:
-        return in_st
-    if ex_st in _TERMINAL_FILL_ROW_STATUSES and in_st not in _TERMINAL_FILL_ROW_STATUSES:
-        return ex_st
-    if in_st in _TERMINAL_FILL_ROW_STATUSES and ex_st not in _TERMINAL_FILL_ROW_STATUSES:
-        return in_st
-    return in_st if incoming_ts >= existing_ts else ex_st
+    return merge_monotonic_fill_row_status(
+        existing_st,
+        incoming_st,
+        incoming_ts=incoming_ts,
+        existing_ts=existing_ts,
+    )
 
 
 def _vwap_merge_filled_row(
@@ -3554,7 +3545,7 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
         return flat, covered, verified_by_venue
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class UnifiedOrderBookEvidence:
     """SSOT read-only open/filled order book snapshot classified in canonical open-first order."""
 
@@ -3564,6 +3555,87 @@ class UnifiedOrderBookEvidence:
     symbol_verified_ts: dict[tuple[str, str], float]
     terminal_order_keys: set[tuple[str, str, str]]
     ambiguous_filled_by_key: dict[tuple[str, str, str], dict[str, Any]]
+    open_items_by_venue: dict[str, dict[str, list[dict[str, Any]]]] = field(default_factory=dict)
+
+    @staticmethod
+    def proves_symbol_absent(
+        symbol_verified_ts: Mapping[Any, float],
+        venue: Any,
+        symbol_key: str,
+        *,
+        ref_ts: float,
+        grace_sec: float = 0.0,
+    ) -> bool:
+        """Canonical per-(venue, symbol) absence proof shared across reconciler and active_intents.
+
+        Strictly requires a complete open-order snapshot covering ``(venue, symbol)`` verified at
+        least ``grace_sec`` after ``ref_ts`` -- never falls back to venue-wide timestamps when a
+        symbol was omitted from a partial snapshot.
+        """
+        v_norm = str(normalize_venue_name(venue) or venue or "").strip().lower()
+        sym_lc = str(symbol_key or "").strip().lower()
+        if not v_norm or not sym_lc:
+            return False
+        raw_ts = symbol_verified_ts.get((v_norm, sym_lc))
+        if raw_ts is None:
+            raw_ts = symbol_verified_ts.get(f"{v_norm}:{sym_lc}")
+        s_ver_ts = safe_pos_float(raw_ts, default=0.0) or 0.0
+        return bool(s_ver_ts > 0.0 and (s_ver_ts - ref_ts) >= max(0.0, grace_sec))
+
+    def symbol_verified_ts_for(
+        self,
+        venue: Any,
+        symbol: Any,
+        *,
+        normalizer: Optional[Callable[[Any], str]] = None,
+    ) -> float:
+        """Return verified snapshot timestamp for ``(venue, symbol)``, or ``0.0`` if uncovered."""
+        v_norm = str(normalize_venue_name(venue) or venue or "").strip().lower()
+        sym_lc = (
+            str(normalizer(symbol) or "").strip().lower()
+            if normalizer is not None
+            else str(clean_symbol_key(symbol) or symbol or "").strip().lower()
+        )
+        if not v_norm or not sym_lc:
+            return 0.0
+        return safe_pos_float(self.symbol_verified_ts.get((v_norm, sym_lc)), default=0.0) or 0.0
+
+    def proves_absent(
+        self,
+        venue: Any,
+        symbol: Any,
+        *,
+        ref_ts: float,
+        grace_sec: float = 0.0,
+        normalizer: Optional[Callable[[Any], str]] = None,
+    ) -> bool:
+        """Return True iff this snapshot proves ``(venue, symbol)`` was completely verified after ``ref_ts + grace_sec``."""
+        sym_lc = (
+            str(normalizer(symbol) or "").strip().lower()
+            if normalizer is not None
+            else str(clean_symbol_key(symbol) or symbol or "").strip().lower()
+        )
+        return self.proves_symbol_absent(
+            self.symbol_verified_ts,
+            venue,
+            sym_lc,
+            ref_ts=ref_ts,
+            grace_sec=grace_sec,
+        )
+
+    def open_orders_by_venue_sym(self) -> dict[tuple[str, str], list[dict[str, Any]]]:
+        """Return ``{(venue, SYMBOL_UPPER): [order_rows]}`` preserving explicit empty covered symbols."""
+        by_vs: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for venue_key, sym_map in self.open_items_by_venue.items():
+            for sym_k, rows in sym_map.items():
+                if not isinstance(rows, list):
+                    continue
+                by_vs[(venue_key, str(sym_k).strip().upper())] = [
+                    {"venue": venue_key, "symbol": str(r.get("symbol") or sym_k), **r}
+                    for r in rows
+                    if isinstance(r, dict)
+                ]
+        return by_vs
 
 
 def load_unified_order_book_evidence(
@@ -3571,10 +3643,11 @@ def load_unified_order_book_evidence(
     *,
     read_json_fn=None,
     symbol_normalizer: Optional[Callable[[Any], str]] = None,
+    include_filled: bool = True,
 ) -> UnifiedOrderBookEvidence:
     """Read open and filled order caches across all venues in open-first order and classify fills via order-ledger SSOT."""
     if not cachedb_dir:
-        return UnifiedOrderBookEvidence([], set(), {}, {}, set(), {})
+        return UnifiedOrderBookEvidence([], set(), {}, {}, set(), {}, {})
 
     def _norm_sym(raw_sym: Any) -> str:
         if symbol_normalizer is not None:
@@ -3593,6 +3666,7 @@ def load_unified_order_book_evidence(
     terminal_order_keys: set[tuple[str, str, str]] = set()
     ambiguous_filled_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     filled_open_by_venue: dict[str, list[dict[str, Any]]] = {}
+    open_items_by_venue: dict[str, dict[str, list[dict[str, Any]]]] = {}
 
     # 1. Read open-order snapshots FIRST so fill classification knows resting presence & origQty.
     for venue_key, open_fname in CacheOrderOpenManager.VENUE_FILENAMES.items():
@@ -3603,6 +3677,7 @@ def load_unified_order_book_evidence(
         if not items and not ft and ver_ts <= 0.0 and not sym_ver:
             continue
         open_covered_venues.add(venue_key)
+        open_items_by_venue[venue_key] = items
         if ver_ts > 0.0:
             verified_by_venue[venue_key] = ver_ts
         for sym_k, s_ts in sym_ver.items():
@@ -3621,45 +3696,46 @@ def load_unified_order_book_evidence(
                     open_by_key[key_t] = row_full
                 raw_open_rows.append((key_t, row_full))
 
-    # 2. Classify filled-order cache rows via canonical order-ledger SSOT rules.
-    for venue_key, filled_fname in CacheOrderFilledManager.VENUE_FILENAMES.items():
-        oc_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, filled_fname)))
-        items, ft = CacheOrderFilledManager.read_venue_filled_orders_snapshot(
-            oc_path, venue=venue_key, read_json_fn=read_json_fn
-        )
-        if not items and not ft:
-            continue
-        for k_sym, sym_orders in items.items():
-            latest_by_oid: dict[str, dict[str, Any]] = {}
-            for oo in sym_orders:
-                oid = clean_order_id(extract_order_id(oo, default=None)) or ""
-                if oid:
-                    latest_by_oid[oid] = oo
-            for oid, oo in latest_by_oid.items():
-                oo_sym = str(oo.get("symbol") or k_sym)
-                key_t = _key(venue_key, oo_sym, oid)
-                resting_row = open_by_key.get(key_t)
-                req_qty = (
-                    safe_pos_float(extract_orig_qty(resting_row, default=None), default=None)
-                    if resting_row is not None
-                    else first_pos_float(oo.get("origQty"), oo.get("orig_qty"), oo.get("requested_qty"), default=None)
-                )
-                oo_st = oo.get("status")
-                oo_st_up = clean_upper_scalar(oo_st) or ""
-                fill_state = classify_fill_evidence_state(
-                    oo, req_qty=req_qty, resting_now=(resting_row is not None)
-                )
-                if fill_state in TERMINAL_LEDGER_STATES:
-                    if fill_state == OrderLedgerState.FILLED.value and req_qty is None and resting_row is None:
-                        ambiguous_filled_by_key[key_t] = oo
-                    else:
-                        terminal_order_keys.add(key_t)
-                    continue
-                if not (is_open_working_status(oo_st, allow_empty=False) or oo_st_up == "PARTIALLY_FILLED"):
-                    continue
-                filled_open_by_venue.setdefault(venue_key, []).append(
-                    {"venue": venue_key, "symbol": oo_sym, **oo}
-                )
+    # 2. Classify filled-order cache rows via canonical order-ledger SSOT rules (when requested).
+    if include_filled:
+        for venue_key, filled_fname in CacheOrderFilledManager.VENUE_FILENAMES.items():
+            oc_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, filled_fname)))
+            items, ft = CacheOrderFilledManager.read_venue_filled_orders_snapshot(
+                oc_path, venue=venue_key, read_json_fn=read_json_fn
+            )
+            if not items and not ft:
+                continue
+            for k_sym, sym_orders in items.items():
+                latest_by_oid: dict[str, dict[str, Any]] = {}
+                for oo in sym_orders:
+                    oid = clean_order_id(extract_order_id(oo, default=None)) or ""
+                    if oid:
+                        latest_by_oid[oid] = oo
+                for oid, oo in latest_by_oid.items():
+                    oo_sym = str(oo.get("symbol") or k_sym)
+                    key_t = _key(venue_key, oo_sym, oid)
+                    resting_row = open_by_key.get(key_t)
+                    req_qty = (
+                        safe_pos_float(extract_orig_qty(resting_row, default=None), default=None)
+                        if resting_row is not None
+                        else first_pos_float(oo.get("origQty"), oo.get("orig_qty"), oo.get("requested_qty"), default=None)
+                    )
+                    oo_st = oo.get("status")
+                    oo_st_up = clean_upper_scalar(oo_st) or ""
+                    fill_state = classify_fill_evidence_state(
+                        oo, req_qty=req_qty, resting_now=(resting_row is not None)
+                    )
+                    if fill_state in TERMINAL_LEDGER_STATES:
+                        if fill_state == OrderLedgerState.FILLED.value and req_qty is None and resting_row is None:
+                            ambiguous_filled_by_key[key_t] = oo
+                        else:
+                            terminal_order_keys.add(key_t)
+                        continue
+                    if not (is_open_working_status(oo_st, allow_empty=False) or oo_st_up == "PARTIALLY_FILLED"):
+                        continue
+                    filled_open_by_venue.setdefault(venue_key, []).append(
+                        {"venue": venue_key, "symbol": oo_sym, **oo}
+                    )
 
     resting_out: list[dict[str, Any]] = []
     seen_keys: set[tuple[str, str, str]] = set()
@@ -3690,7 +3766,11 @@ def load_unified_order_book_evidence(
         symbol_verified_ts=symbol_verified_ts,
         terminal_order_keys=terminal_order_keys,
         ambiguous_filled_by_key=ambiguous_filled_by_key,
+        open_items_by_venue=open_items_by_venue,
     )
+
+
+CacheOrderOpenManager.load_unified_evidence = staticmethod(load_unified_order_book_evidence)
 
 
 # =============================================================================
@@ -3796,14 +3876,7 @@ class CacheAssetValueManager(CacheAccountManagerBase):
         venues_usd: dict[str, float] = {}
         try:
             cache_root = cachedb_root_for_file(os.path.abspath(str(self.filename or "")))
-            vb_data = None
-            for cand in (
-                os.path.join(cache_root, "state", VENUE_BALANCES_STATE_FILENAME),
-                os.path.join(cache_root, VENUE_BALANCES_STATE_FILENAME),
-            ):
-                vb_data = read_json_dict_cached(cand)
-                if isinstance(vb_data, dict) and vb_data:
-                    break
+            vb_data = load_venue_balances_state_dict(cache_root, use_cache=True)
             if isinstance(vb_data, dict) and vb_data:
                 live_cp_data = None
                 cp_default_filename = CACHE_CURRENT_PRICE_FILENAME

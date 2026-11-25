@@ -179,7 +179,6 @@ from cachepaths import (
     CACHE_MACRO_CALENDAR_FILENAME,
     CACHE_MARKET_BREADTH_FILENAME,
     CACHE_SENTIMENT_EVAL_FILENAME,
-    VENUE_BALANCES_STATE_FILENAME,
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
@@ -190,6 +189,10 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 from pricewindow import filter_isolated_price_points
+from providers.portfolio_valuation import (
+    load_venue_balances_state_dict,
+    resolve_venue_balances_state_path,
+)
 from instrument_registry import casefold_get, symbols_for
 from state_io import (
     generation_file_lock,
@@ -1256,19 +1259,23 @@ def read_first_cached_dict(
 def load_venue_balances_state(
     cache_dir: Optional[str], read_json_fn: Any = None, *, require_exists: bool = True
 ) -> Tuple[Optional[str], Dict[str, Any], float]:
-    """Resolve and load ``venue_balances_state.json`` from ``cache_dir``."""
+    """Resolve and load ``venue_balances_state.json`` via ``providers.portfolio_valuation`` SSOT."""
     if not cache_dir:
         return None, {}, 0.0
-    bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, VENUE_BALANCES_STATE_FILENAME)))
+    bcache_path = resolve_venue_balances_state_path(cache_dir)
     exists = os.path.exists(bcache_path)
     if require_exists and not exists:
         return bcache_path, {}, 0.0
-    raw_cb = resolve_read_json_cached(read_json_fn)(bcache_path)
+    raw_cb = load_venue_balances_state_dict(
+        cache_dir,
+        read_json_fn=resolve_read_json_cached(read_json_fn),
+        require_exists=False,
+    )
     try:
         bcache_mtime = os.path.getmtime(bcache_path) if exists else 0.0
     except OSError:
         bcache_mtime = 0.0
-    return bcache_path, (raw_cb if isinstance(raw_cb, dict) else {}), bcache_mtime
+    return bcache_path, raw_cb, bcache_mtime
 
 
 _INTERNAL_VENUE_BALANCE_SCRATCH_KEYS: frozenset[str] = frozenset(

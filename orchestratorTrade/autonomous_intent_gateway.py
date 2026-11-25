@@ -74,7 +74,7 @@ from intelligence.sentiment.evaluators.guard_probe_evaluator import (
     probe_deterministic_guards,
 )
 import notify_engine.alertnotifiers as _alertnotifiers
-from order_lifecycle import restore_cancelled_instrument_orders
+from order_lifecycle import OrderPreemptionTransaction, restore_cancelled_instrument_orders
 from providers.ai_circuit_breaker import (
     DEFAULT_FLIP_COOLDOWN_MIN,
     DEFAULT_FLIP_MIN_EDGE_PCT,
@@ -1110,127 +1110,132 @@ class AutonomousIntentGateway:
             if short_circuit is not None:
                 return short_circuit
 
-        canceled_order_snapshots: list[dict[str, Any]] = []
-        if mode == "enforce" and (replace_open or cancel_bot_open or bool(target_oids)):
-            ok_cancel, _ = self._cancel_prior_orders_or_abort(
+        intent_ref: List[Dict[str, Any]] = [intent]
+        with OrderPreemptionTransaction(
+            restore_fn=lambda orders, reason: self._rollback_canceled_orders(
+                inst, intent_ref[0], orders, reason=reason
+            ),
+            default_reason=f"intent {intent_id} aborted",
+        ) as preempt_tx:
+            if mode == "enforce" and (replace_open or cancel_bot_open or bool(target_oids)):
+                ok_cancel, _ = self._cancel_prior_orders_or_abort(
+                    inst,
+                    intent,
+                    intent_id=intent_id,
+                    decision=decision,
+                    now_ts=now,
+                    canceled_order_snapshots=preempt_tx.canceled_orders,
+                    rollback_reason="unlock_cancel_failed" if thesis_cancels_bot_order else "cancel_prior_order_failed",
+                    include_bot_orders=cancel_bot_open or bool(target_oids) or thesis_cancels_bot_order,
+                    any_side=bool(target_oids),
+                    exclude_order_ids={dup_oid} if dup_oid else None,
+                    target_order_ids=target_oids or None,
+                    verify_not_filled=replace_open or bool(target_oids),
+                    extra_intent_key="canceled_bot_open_orders" if thesis_cancels_bot_order else None,
+                    intents=all_intents,
+                )
+                if not ok_cancel:
+                    # _cancel_prior_orders_or_abort already rolled back canceled_order_snapshots.
+                    preempt_tx.commit()
+                    return intent
+            if dup_oid:
+                preempt_tx.commit()
+                return self._record_duplicate_open_order_skip(
+                    inst, intent, decision=decision, price=price, effective_usd=effective_usd, dup_oid=dup_oid, now_ts=now
+                )
+
+            ok_wallet, guard_allowed, effective_usd, guard_reason = self._unlock_and_clamp_wallet_notional(
+                inst,
+                intent,
+                all_intents,
+                mode=mode,
+                intent_id=intent_id,
+                decision=decision,
+                price=price,
+                effective_usd=effective_usd,
+                now_ts=now,
+                replace_open=replace_open,
+                cancel_bot_open=cancel_bot_open,
+                target_oids=target_oids,
+                thesis_cancels_bot_order=thesis_cancels_bot_order,
+                canceled_order_snapshots=preempt_tx.canceled_orders,
+            )
+            if not ok_wallet:
+                # _unlock_and_clamp_wallet_notional already rolled back on cancel failure.
+                preempt_tx.commit()
+                return intent
+            if guard_allowed and effective_usd > 0:
+                intent["clamped_notional_usd"] = round(effective_usd, 2)
+            target_qty = effective_usd / price if effective_usd > 0 else 0.0
+
+            if mode == "shadow":
+                return record_shadow_intent_observation(
+                    inst,
+                    intent,
+                    decision=decision,
+                    target_qty=target_qty,
+                    price=price,
+                    effective_usd=effective_usd,
+                    confidence=confidence,
+                    guard_allowed=guard_allowed,
+                    guard_reason=guard_reason,
+                    thesis=thesis,
+                    trade_tag=trade_tag,
+                    now_ts=now,
+                    is_limit=is_limit,
+                    dispatch_notify_fn=self._dispatch_notify,
+                    log=logger,
+                )
+
+            if mode != "enforce":
+                logger.info("[LLM TRADER] Gateway mode is %r \u2014 skipping execution for intent %s", mode, intent_id)
+                intent["status"] = "REJECTED_GATEWAY_DISABLED"
+                append_intent_history(intent, {
+                    "ts": now,
+                    "action": "REJECTED_GATEWAY_DISABLED",
+                    "mode": mode,
+                })
+                return intent
+
+            if guard_allowed:
+                self._record_advisory_guard_overrides(
+                    intent, symbol=symbol, decision=decision, price=price, venue=venue, now_ts=now
+                )
+
+            res_intent = execute_enforce_intent_order(
                 inst,
                 intent,
                 intent_id=intent_id,
                 decision=decision,
-                now_ts=now,
-                canceled_order_snapshots=canceled_order_snapshots,
-                rollback_reason="unlock_cancel_failed" if thesis_cancels_bot_order else "cancel_prior_order_failed",
-                include_bot_orders=cancel_bot_open or bool(target_oids) or thesis_cancels_bot_order,
-                any_side=bool(target_oids),
-                exclude_order_ids={dup_oid} if dup_oid else None,
-                target_order_ids=target_oids or None,
-                verify_not_filled=replace_open or bool(target_oids),
-                extra_intent_key="canceled_bot_open_orders" if thesis_cancels_bot_order else None,
-                intents=all_intents,
-            )
-            if not ok_cancel:
-                return intent
-        if dup_oid:
-            return self._record_duplicate_open_order_skip(
-                inst, intent, decision=decision, price=price, effective_usd=effective_usd, dup_oid=dup_oid, now_ts=now
-            )
-
-        ok_wallet, guard_allowed, effective_usd, guard_reason = self._unlock_and_clamp_wallet_notional(
-            inst,
-            intent,
-            all_intents,
-            mode=mode,
-            intent_id=intent_id,
-            decision=decision,
-            price=price,
-            effective_usd=effective_usd,
-            now_ts=now,
-            replace_open=replace_open,
-            cancel_bot_open=cancel_bot_open,
-            target_oids=target_oids,
-            thesis_cancels_bot_order=thesis_cancels_bot_order,
-            canceled_order_snapshots=canceled_order_snapshots,
-        )
-        if not ok_wallet:
-            return intent
-        if guard_allowed and effective_usd > 0:
-            intent["clamped_notional_usd"] = round(effective_usd, 2)
-        target_qty = effective_usd / price if effective_usd > 0 else 0.0
-
-        if mode == "shadow":
-            return record_shadow_intent_observation(
-                inst,
-                intent,
-                decision=decision,
                 target_qty=target_qty,
                 price=price,
                 effective_usd=effective_usd,
-                confidence=confidence,
                 guard_allowed=guard_allowed,
                 guard_reason=guard_reason,
                 thesis=thesis,
                 trade_tag=trade_tag,
                 now_ts=now,
+                bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
                 is_limit=is_limit,
                 dispatch_notify_fn=self._dispatch_notify,
                 log=logger,
             )
-
-        if mode != "enforce":
-            logger.info("[LLM TRADER] Gateway mode is %r \u2014 skipping execution for intent %s", mode, intent_id)
-            intent["status"] = "REJECTED_GATEWAY_DISABLED"
-            append_intent_history(intent, {
-                "ts": now,
-                "action": "REJECTED_GATEWAY_DISABLED",
-                "mode": mode,
-            })
-            return intent
-
-        if guard_allowed:
-            self._record_advisory_guard_overrides(
-                intent, symbol=symbol, decision=decision, price=price, venue=venue, now_ts=now
-            )
-
-        res_intent = execute_enforce_intent_order(
-            inst,
-            intent,
-            intent_id=intent_id,
-            decision=decision,
-            target_qty=target_qty,
-            price=price,
-            effective_usd=effective_usd,
-            guard_allowed=guard_allowed,
-            guard_reason=guard_reason,
-            thesis=thesis,
-            trade_tag=trade_tag,
-            now_ts=now,
-            bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
-            is_limit=is_limit,
-            dispatch_notify_fn=self._dispatch_notify,
-            log=logger,
-        )
-        last_hist = (res_intent.get("history") or [{}])[-1] if isinstance(res_intent.get("history"), list) else {}
-        if (
-            canceled_order_snapshots
-            and not res_intent.get("execution_payload")
-            and (
+            intent_ref[0] = res_intent
+            last_hist = (res_intent.get("history") or [{}])[-1] if isinstance(res_intent.get("history"), list) else {}
+            if res_intent.get("execution_payload"):
+                preempt_tx.commit()
+            elif last_hist.get("category") == "deferred":
+                preempt_tx.mark_deferred()
+            elif last_hist.get("submission_state") == "unknown" or last_hist.get("reason") == "submit_ambiguous":
+                preempt_tx.mark_ambiguous()
+            elif (
                 (not guard_allowed and res_intent.get("status") == "BLOCKED_BY_GUARD")
-                or (
-                    guard_allowed
-                    and res_intent.get("status") == "FAILED"
-                    and last_hist.get("category") != "deferred"
-                    and last_hist.get("submission_state") != "unknown"
-                    and last_hist.get("reason") != "submit_ambiguous"
-                )
-            )
-        ):
-            self._rollback_canceled_orders(
-                inst,
-                res_intent,
-                canceled_order_snapshots,
-                reason=f"intent {intent_id} {res_intent.get('status')}",
-            )
-        return res_intent
+                or (guard_allowed and res_intent.get("status") == "FAILED")
+            ):
+                preempt_tx.set_reason(f"intent {intent_id} {res_intent.get('status')}")
+            else:
+                preempt_tx.set_reason(f"intent {intent_id} {res_intent.get('status') or 'uncommitted'}")
+            return res_intent
 
     def submit(
         self,

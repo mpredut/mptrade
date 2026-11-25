@@ -29,7 +29,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cacheaccount import load_unified_order_book_evidence
+from cacheaccount import UnifiedOrderBookEvidence, load_unified_order_book_evidence
 from cachepaths import (
     ASSETGUARDIAN_STATE_FILENAME,
     AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
@@ -696,8 +696,13 @@ def _prune_and_deduplicate_active_intents(intents: list[dict[str, Any]], root: s
                     if row["intent_id"] not in outbox_iids and not is_live_open:
                         continue
                 elif age_s > 300.0 and row_key:
-                    sym_ver_ts = covered_symbol_ts.get((row_key[0], row_key[1]), 0.0)
-                    if sym_ver_ts > 0.0 and sym_ver_ts >= created_ts_s and not is_live_open and row_key not in outbox_oids:
+                    if (
+                        UnifiedOrderBookEvidence.proves_symbol_absent(
+                            covered_symbol_ts, row_key[0], row_key[1], ref_ts=created_ts_s, grace_sec=0.0
+                        )
+                        and not is_live_open
+                        and row_key not in outbox_oids
+                    ):
                         continue
         kept_primary.append(row)
 

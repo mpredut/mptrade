@@ -28,6 +28,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
+    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
     canonical_base_asset,
     compatible_quote_suffixes,
     has_equity_suffix,
@@ -39,7 +40,7 @@ from cachepaths import (
     symbol_quote_asset,
 )
 from instrument_registry import canonical_display_symbol, resolve_symbol_identity
-from state_io import StateReadError, generation_lock_path, load_json_state, save_json_state
+from state_io import StateReadError, generation_lock_path, load_json_state, read_json_recovering, save_json_state
 from .order_id_context import (
     ScopedOrderIdSet,
     all_venue_native_client_order_ids,
@@ -776,6 +777,62 @@ def load_durable_intents_state(
         return items
 
 
+def load_durable_intents_from_cachedb(
+    cachedb_dir: Optional[str],
+    *,
+    read_json_fn: Optional[Callable[[str], Any]] = None,
+) -> list[dict[str, Any]]:
+    """Read-only SSOT loader for ``autonomous_trade_intents_state.json`` from a ``cachedb`` directory.
+
+    Accepts both the canonical ``list`` root schema and legacy/fixture ``{"intents": [...]}``
+    envelopes, transparently checking ``state/`` and root paths with ``.previous`` crash recovery.
+    """
+    if not cachedb_dir:
+        return []
+    raw_candidates = (
+        os.path.join(cachedb_dir, "state", AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME),
+        os.path.join(cachedb_dir, AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME),
+    )
+    resolved_candidates = list(
+        dict.fromkeys(
+            p
+            for raw_p in raw_candidates
+            for p in (str(resolve_cachedb_filepath(raw_p)), raw_p)
+        )
+    )
+    raw_payload: Any = None
+    if callable(read_json_fn):
+        for cand_p in resolved_candidates:
+            try:
+                raw_payload = read_json_fn(cand_p)
+            except Exception:
+                raw_payload = None
+            if isinstance(raw_payload, (list, dict)) and raw_payload:
+                break
+    if raw_payload is None:
+        for cand_p in resolved_candidates:
+            if not (os.path.isfile(cand_p) or os.path.isfile(f"{cand_p}.previous")):
+                continue
+            cand_payload = read_json_recovering(cand_p, default=None)
+            if isinstance(cand_payload, (list, dict)):
+                raw_payload = cand_payload
+                break
+    int_list = (
+        raw_payload.get("intents")
+        if isinstance(raw_payload, dict)
+        else (raw_payload if isinstance(raw_payload, list) else [])
+    )
+    return [it for it in (int_list or ()) if isinstance(it, dict)]
+
+
+def load_known_ai_order_ids_from_cachedb(cachedb_dir: Optional[str]) -> set[str]:
+    """Return lowercase venue order IDs and derived venue-native cloids from durable AI intents."""
+    intents = load_durable_intents_from_cachedb(cachedb_dir)
+    if not intents:
+        return set()
+    return {tok.lower() for tok in collect_known_ai_order_ids(intents) if tok}
+
+
 def save_durable_intents_state(
     intents_file: str,
     intents: list[dict[str, Any]],
@@ -979,7 +1036,9 @@ __all__ = [
     "generate_unique_intent_id",
     "intent_venue_client_order_ids",
     "is_non_fiat_btc_quote_instrument",
+    "load_durable_intents_from_cachedb",
     "load_durable_intents_state",
+    "load_known_ai_order_ids_from_cachedb",
     "normalize_intent_fields",
     "normalize_trading_decisions",
     "order_matches_intent_client_id",

@@ -50,7 +50,14 @@ from providers.order_ohlc_utils import extract_orig_qty
 resolve_order_actor = rc.resolve_order_actor
 record_client_order_id = rc.record_client_order_id
 from providers.strategy_executor import OrderStatus
-from state_io import atomic_write_jsonl, parse_json_payload, parse_proc_stat_fields, read_text_file, read_text_lines
+from state_io import (
+    atomic_write_jsonl,
+    parse_json_payload,
+    parse_proc_stat_fields,
+    read_tail_jsonl_dicts,
+    read_text_file,
+    read_text_lines,
+)
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 load_dotenv()
@@ -1425,6 +1432,35 @@ def discard(ids):
     return _remove_matching_locked(lambda rec: clean_order_id(rec.get("id")) in ids)
 
 
+_PROTECTED_SUBMISSION_STATES: frozenset[str] = frozenset({"producer_claimed", "unknown"})
+_PROTECTED_FAILURE_REASONS: frozenset[str] = frozenset({"submit_ambiguous", "response_without_order_id"})
+
+
+def is_safe_to_supersede_record(rec: object) -> bool:
+    """Return True iff ``rec`` may be safely discarded as superseded without dropping an accepted or in-flight order."""
+    if not isinstance(rec, dict):
+        return False
+    lc = _record_lifecycle(rec)
+    if lc not in ("submit_pending", "awaiting_cancel"):
+        return False
+    if lc == "submit_pending":
+        sub_st = (clean_scalar_str(rec.get("submission_state")) or "").lower()
+        fail_r = (clean_scalar_str(rec.get("last_failure_reason")) or "").lower()
+        if sub_st in _PROTECTED_SUBMISSION_STATES or fail_r in _PROTECTED_FAILURE_REASONS:
+            return False
+    return True
+
+
+def read_tail_queue_records(cachedb_dir: Optional[str], *, limit: int = 50) -> list[dict]:
+    """Read-only SSOT owner accessor returning the tail of ``order_retry_queue.jsonl`` from ``cachedb_dir``."""
+    if not cachedb_dir:
+        return []
+    retry_q_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, ORDER_RETRY_QUEUE_FILENAME)))
+    if not os.path.exists(retry_q_path):
+        return []
+    return list(read_tail_jsonl_dicts(retry_q_path, limit=limit))
+
+
 def resolve(symbol, side):
     """Legacy helper: remove only unaccepted pending records by symbol and side."""
     if isinstance(symbol, bool) or isinstance(side, bool):
@@ -1439,6 +1475,7 @@ def resolve(symbol, side):
                 _canonical_queue_symbol(rec.get("symbol")) == target_sym
                 and normalize_side(rec.get("side")) == side_u
                 and _record_lifecycle(rec) == "submit_pending"
+                and is_safe_to_supersede_record(rec)
             )
         )
     )
@@ -1666,14 +1703,8 @@ def discard_superseded_symbol_records(
         rec_oid = clean_order_id(rec.get("order_id")) or ""
         if rec_oid and rec_oid in canceled_set:
             return True
-        lc = _record_lifecycle(rec)
-        if lc not in ("submit_pending", "awaiting_cancel"):
+        if not is_safe_to_supersede_record(rec):
             return False
-        if lc == "submit_pending":
-            sub_st = (clean_scalar_str(rec.get("submission_state")) or "").lower()
-            fail_r = (clean_scalar_str(rec.get("last_failure_reason")) or "").lower()
-            if sub_st in {"producer_claimed", "unknown"} or fail_r in {"submit_ambiguous", "response_without_order_id"}:
-                return False
         rec_side = normalize_side(rec.get("side"))
         if not any_side_b and rec_side != want_side_u:
             return False

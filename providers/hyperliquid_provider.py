@@ -73,6 +73,7 @@ from .order_ohlc_utils import (
     require_int_order_id,
     resolve_market_flag,
 )
+from .order_status_ssot import classify_venue_order_status
 from .strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
@@ -1229,14 +1230,13 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
                     f"order_status({order_id}): fills incomplete "
                     f"({filled} < {expected_filled})"
                 )
-            if venue_status_lc == "open":
-                normalized = "open"
-            elif venue_status_lc == "filled":
-                normalized = "closed"
-            else:
-                # Every rejection or cancellation is terminal, not a temporarily
-                # missing open order.
-                normalized = "canceled"
+            classified = classify_venue_order_status(
+                venue_status,
+                status_map={"OPEN": "open", "FILLED": "closed"},
+                preserve_raw_venue_status=True,
+                fallback_non_open_status="canceled",
+            )
+            normalized = classified.local_status
             if normalized == "closed" or (normalized in {"canceled", "expired"} and filled > 0):
                 self._invalidate_fills_cache(symbol)
             return OrderStatus(

@@ -1509,51 +1509,56 @@ class Instrument:
         ctx, early_return = self._init_and_gate_pre_pipeline(side, price, qty, kwargs)
         if ctx is None:
             return early_return
-        preempted_orders: list[dict[str, Any]] = []
-        try:
-            self._prepare_permit_and_smart_price(ctx)
-            stage1 = self._check_daily_cap_and_reference_guards(ctx, preempted_orders)
-            if stage1 is None:
-                return None
-            target_asset, allow_priority_preempt = stage1
-            if not self._resolve_weighted_quantity_and_trend_gates(
-                ctx, target_asset, allow_priority_preempt, preempted_orders
-            ):
-                return None
-            if not self._run_post_sizing_guards(ctx):
-                return None
-            if not self._reserve_outbox_claim_and_permit(ctx):
-                return None
-            return self._revalidate_and_submit_to_venue(ctx)
-        except SubmissionRefused as exc:
-            ctx.reason = exc.reason
-            ctx.submit_attempted = False
-            print(f"[{self.symbol}] {ctx.side_u} BLOCKED (pre-submit): {ctx.reason}")
-            return None
-        except Exception as e:  # noqa: BLE001 -- Fail closed when guards cannot be verified.
-            print(f"[{self.symbol}] {ctx.side_u} BLOCKED (fail-closed): {e}")
-            ctx.reason = ctx.reason or "guard_check_failed"
-            return None
-        finally:
-            will_rollback_preempted = bool(
-                ctx.order is None
-                and preempted_orders
-                and not ctx.submit_attempted
-            )
-            if will_rollback_preempted and ctx.prequeued_record_id is None and not order_retry.is_non_failure_deferral(ctx.reason):
-                ctx.caller_owns_retry = True
+        with order_lifecycle.OrderPreemptionTransaction(
+            inst=self,
+            bypass_guards={"all"},
+            default_reason=f"{ctx.caller_module or 'bot'} placement refused",
+        ) as preempt_tx:
             try:
-                caller = os.path.basename(sys._getframe(1).f_code.co_filename)
-            except Exception:
-                caller = None
-            self._finalize_place_outcome(ctx, caller=caller)
-            if will_rollback_preempted and not getattr(ctx, "retry_enqueued", False):
-                order_lifecycle.restore_cancelled_instrument_orders(
-                    self,
-                    preempted_orders,
-                    bypass_guards={"all"},
-                    reason=f"{ctx.caller_module or 'bot'} placement refused ({ctx.reason})",
+                self._prepare_permit_and_smart_price(ctx)
+                stage1 = self._check_daily_cap_and_reference_guards(ctx, preempt_tx.canceled_orders)
+                if stage1 is None:
+                    return None
+                target_asset, allow_priority_preempt = stage1
+                if not self._resolve_weighted_quantity_and_trend_gates(
+                    ctx, target_asset, allow_priority_preempt, preempt_tx.canceled_orders
+                ):
+                    return None
+                if not self._run_post_sizing_guards(ctx):
+                    return None
+                if not self._reserve_outbox_claim_and_permit(ctx):
+                    return None
+                return self._revalidate_and_submit_to_venue(ctx)
+            except SubmissionRefused as exc:
+                ctx.reason = exc.reason
+                ctx.submit_attempted = False
+                print(f"[{self.symbol}] {ctx.side_u} BLOCKED (pre-submit): {ctx.reason}")
+                return None
+            except Exception as e:  # noqa: BLE001 -- Fail closed when guards cannot be verified.
+                print(f"[{self.symbol}] {ctx.side_u} BLOCKED (fail-closed): {e}")
+                ctx.reason = ctx.reason or "guard_check_failed"
+                return None
+            finally:
+                will_rollback_preempted = bool(
+                    ctx.order is None
+                    and preempt_tx.canceled_orders
+                    and not ctx.submit_attempted
                 )
+                if will_rollback_preempted and ctx.prequeued_record_id is None and not order_retry.is_non_failure_deferral(ctx.reason):
+                    ctx.caller_owns_retry = True
+                try:
+                    caller = os.path.basename(sys._getframe(1).f_code.co_filename)
+                except Exception:
+                    caller = None
+                self._finalize_place_outcome(ctx, caller=caller)
+                if ctx.order is not None:
+                    preempt_tx.commit()
+                elif ctx.submit_attempted:
+                    preempt_tx.mark_ambiguous()
+                elif getattr(ctx, "retry_enqueued", False):
+                    preempt_tx.mark_deferred()
+                else:
+                    preempt_tx.set_reason(f"{ctx.caller_module or 'bot'} placement refused ({ctx.reason})")
 
     def min_qty(self) -> float:
         """Return the venue minimum order quantity; ``0`` means no known minimum."""

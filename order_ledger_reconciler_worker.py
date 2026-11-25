@@ -39,17 +39,17 @@ from cacheaccount import (
     CacheOrderFilledManager,
     CacheOrderOpenManager,
     OPEN_ORDER_SYNC_INTERVAL_SEC,
+    UnifiedOrderBookEvidence,
     get_order_filled_manager,
     get_order_open_manager,
 )
 from cachepaths import (
-    AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME,
     clean_symbol_key,
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
 from instrument_registry import canonical_display_symbol
-from providers.intent_state import collect_known_ai_order_ids
+from providers.intent_state import load_known_ai_order_ids_from_cachedb
 from providers.order_id_context import (
     all_correlatable_client_order_ids,
     extract_client_order_id,
@@ -71,7 +71,7 @@ from providers.order_ledger import (
     update_recently_closed,
 )
 from providers.order_ohlc_utils import extract_executed_qty, extract_orig_qty
-from state_io import encode_json_payload, generation_file_lock, read_json_recovering
+from state_io import encode_json_payload, generation_file_lock
 
 
 def derive_reconcile_grace_sec(open_sync_interval_sec: float = OPEN_ORDER_SYNC_INTERVAL_SEC) -> float:
@@ -311,19 +311,8 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
         )
 
     def _load_known_ai_order_ids_lc(self) -> set[str]:
-        """Load lowercase venue order IDs and derived 128-bit cloids from local autonomous intents state."""
-        candidates = (
-            os.path.join(self.cachedb_dir, "state", AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME),
-            os.path.join(self.cachedb_dir, AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME),
-        )
-        for path in candidates:
-            resolved = str(resolve_cachedb_filepath(path))
-            if not (os.path.isfile(resolved) or os.path.isfile(f"{resolved}.previous")):
-                continue
-            payload = read_json_recovering(resolved, default=None)
-            if isinstance(payload, (list, dict)):
-                return {tok.lower() for tok in collect_known_ai_order_ids(payload) if tok}
-        return set()
+        """Load lowercase venue order IDs and derived 128-bit cloids via ``providers.intent_state`` SSOT."""
+        return load_known_ai_order_ids_from_cachedb(self.cachedb_dir)
 
     def reconcile_once(self, *, now_ts: Optional[float] = None) -> dict[str, int]:
         """Execute one locked, network-free reconciliation pass and persist updated state."""
@@ -575,18 +564,24 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                 ref_ts = max(safe_pos_float(rec.get("updated_ts"), default=0.0) or 0.0, safe_pos_float(rec.get("last_seen_open_ts"), default=0.0) or 0.0)
                 _, sym_lc = _norm_sym_lc(rec.get("sym"), venue_key)
                 # Strictly require a complete open-order snapshot covering THIS order's symbol
-                # (never fall back to venue-wide verified_ts when this symbol was omitted).
-                s_ver_ts = symbol_verified_ts.get(f"{venue_key}:{sym_lc}", 0.0) if sym_lc else 0.0
+                # via the canonical UnifiedOrderBookEvidence absence rule (shared with active_intents).
+                symbol_absent_verified = UnifiedOrderBookEvidence.proves_symbol_absent(
+                    symbol_verified_ts,
+                    venue_key,
+                    sym_lc,
+                    ref_ts=ref_ts,
+                    grace_sec=self.reconcile_grace_sec,
+                )
                 close_ev_type, close_reason = None, None
                 if state in {OrderLedgerState.OPEN.value, OrderLedgerState.PARTIAL.value, OrderLedgerState.CANCELING.value}:
-                    if s_ver_ts > 0.0 and (s_ver_ts - ref_ts) >= self.reconcile_grace_sec:
+                    if symbol_absent_verified:
                         cur_fq, req_qty = safe_nonneg_float(rec.get("fq"), default=0.0) or 0.0, safe_pos_float(rec.get("qty"), default=None)
                         if cur_fq > 0.0 and (req_qty is None or cur_fq >= req_qty * 0.9999):
                             close_ev_type, close_reason = OrderEventType.RECONCILED_FILLED.value, "filled_and_absent_from_open"
                         else:
                             close_ev_type, close_reason = OrderEventType.RECONCILED_CANCELED.value, "absent_from_verified_open_book"
                 elif state in {OrderLedgerState.SUBMITTED.value, OrderLedgerState.SUBMIT_UNKNOWN.value}:
-                    if s_ver_ts > 0.0 and (s_ver_ts - ref_ts) >= self.reconcile_grace_sec:
+                    if symbol_absent_verified:
                         close_ev_type, close_reason = OrderEventType.RECONCILED_FAILED.value, "absent_after_verified_grace"
                 elif state == OrderLedgerState.INTENT.value:
                     is_deferred = _parse_bool_flag(rec.get("deferred"), False)

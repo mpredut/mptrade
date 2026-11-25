@@ -1,18 +1,136 @@
-"""providers/portfolio_valuation.py -- Pure multi-venue NAV and position/cash deduplicator."""
+"""providers/portfolio_valuation.py -- Pure multi-venue NAV, balance snapshot SSOT, and deduplicator."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+import os
+from typing import Any, Callable, Optional
+
 from cachepaths import (
+    VENUE_BALANCES_STATE_FILENAME,
     cache_symbol_variants,
     canonical_base_asset,
     compatible_quote_suffixes,
     has_equity_suffix,
     is_equity_venue_or_suffix,
     normalize_venue_name,
+    resolve_cachedb_filepath,
     safe_nonneg_float,
     safe_pos_float,
 )
 from core.math_coercion import first_pos_float
 from core.time_market import extract_current_price_item
+from state_io import read_json_dict, read_json_dict_cached
+
+
+def resolve_venue_balances_state_path(cachedb_dir: str) -> str:
+    """Resolve the canonical disk path for ``venue_balances_state.json`` inside ``cachedb_dir``."""
+    return str(resolve_cachedb_filepath(os.path.join(cachedb_dir, VENUE_BALANCES_STATE_FILENAME)))
+
+
+def load_venue_balances_state_dict(
+    cachedb_dir: Optional[str],
+    *,
+    use_cache: bool = False,
+    read_json_fn: Optional[Callable[[str], Any]] = None,
+    require_exists: bool = False,
+) -> dict[str, Any]:
+    """SSOT owner reader for ``venue_balances_state.json`` across ``state/`` and root cache layouts."""
+    if not cachedb_dir:
+        return {}
+    candidates = list(
+        dict.fromkeys((
+            resolve_venue_balances_state_path(cachedb_dir),
+            os.path.join(cachedb_dir, "state", VENUE_BALANCES_STATE_FILENAME),
+            os.path.join(cachedb_dir, VENUE_BALANCES_STATE_FILENAME),
+        ))
+    )
+    for cand in candidates:
+        if require_exists and not (os.path.exists(cand) or os.path.exists(f"{cand}.previous")):
+            continue
+        if callable(read_json_fn):
+            raw = read_json_fn(cand)
+        elif use_cache:
+            raw = read_json_dict_cached(cand)
+        else:
+            raw = read_json_dict(cand, default={})
+        if isinstance(raw, dict) and raw:
+            return raw
+    return {}
+
+
+@dataclass(frozen=True, slots=True)
+class BalanceSnapshotRecord:
+    """Immutable SSOT balance record separating raw venue free balance from synthetic post-balance order locks.
+
+    Enforces the conservation invariant ``runtime_free + total_locked == free_raw + venue_reflected_locked``
+    (whenever ``free_raw >= synthetic_deduct``) so runtime prompt views and persisted Unified NAV cannot drift.
+    """
+
+    free_raw: float
+    total_locked: float = 0.0
+    pre_balance_locked: float = 0.0
+    reflected_locked: Optional[float] = None
+
+    @property
+    def synthetic_deduct(self) -> float:
+        pre = max(0.0, self.pre_balance_locked)
+        if pre <= 0.0:
+            return 0.0
+        eff = pre
+        if self.reflected_locked is not None:
+            eff = min(pre, max(0.0, max(0.0, self.total_locked) - max(0.0, self.reflected_locked)))
+        return eff if eff > 1e-8 else 0.0
+
+    @property
+    def runtime_free(self) -> float:
+        return max(0.0, max(0.0, self.free_raw) - self.synthetic_deduct)
+
+    @property
+    def venue_reflected_locked(self) -> float:
+        return max(0.0, max(0.0, self.total_locked) - self.synthetic_deduct)
+
+    @property
+    def deduct_scale(self) -> float:
+        pre = max(0.0, self.pre_balance_locked)
+        return (self.synthetic_deduct / pre) if pre > 1e-12 else 0.0
+
+    def persisted_symbol_locked(self, symbol_total_locked: float, symbol_pre_balance_locked: float) -> float:
+        return max(0.0, max(0.0, symbol_total_locked) - max(0.0, symbol_pre_balance_locked) * self.deduct_scale)
+
+    def to_persisted_cash_fields(self, *, decimals: int = 2) -> dict[str, float]:
+        pers_lq = self.venue_reflected_locked
+        return {"locked_quote_usd": round(pers_lq, decimals)} if pers_lq > 1e-6 else {}
+
+    def to_persisted_position_fields(
+        self,
+        *,
+        symbol_locked_quote: float,
+        symbol_pre_quote: float,
+        quote_record: Optional["BalanceSnapshotRecord"],
+        symbol_locked_base: float,
+        symbol_pre_base: float,
+        price: float = 0.0,
+        trailing_peak: Optional[float] = None,
+        dd_from_peak_pct: Optional[float] = None,
+    ) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        pers_lq = (
+            quote_record.persisted_symbol_locked(symbol_locked_quote, symbol_pre_quote)
+            if quote_record is not None
+            else max(0.0, symbol_locked_quote)
+        )
+        pers_lb = self.persisted_symbol_locked(symbol_locked_base, symbol_pre_base)
+        if pers_lq > 1e-6:
+            out["locked_quote_usd"] = round(pers_lq, 2)
+        if pers_lb > 1e-12:
+            out["locked_base_qty"] = round(pers_lb, 8)
+            if price > 0.0:
+                out["locked_base_usd"] = round(pers_lb * price, 2)
+        if trailing_peak is not None:
+            out["trailing_peak"] = trailing_peak
+            if dd_from_peak_pct is not None:
+                out["dd_from_peak_pct"] = dd_from_peak_pct
+        return out
 
 
 def compute_venue_nav_breakdown(

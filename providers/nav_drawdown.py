@@ -28,7 +28,6 @@ from botcore import (
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
     NAV_HISTORY_STATE_FILENAME,
-    VENUE_BALANCES_STATE_FILENAME,
     is_equity_venue,
     resolve_cachedb_filepath,
 )
@@ -37,7 +36,7 @@ from state_io import (
     read_json_dict,
     save_json_state,
 )
-from .portfolio_valuation import compute_venue_nav_breakdown
+from .portfolio_valuation import compute_venue_nav_breakdown, load_venue_balances_state_dict
 
 DEFAULT_DAILY_NAV_DD_MODE: str = "shadow"
 DEFAULT_DAILY_NAV_DD_LIMIT_PCT: float = 5.0
@@ -470,11 +469,11 @@ def load_nav_history_state(workspace_dir: str) -> list[dict[str, Any]]:
 
 
 def _load_workspace_balances_and_prices(workspace_dir: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    vb_path = str(resolve_cachedb_filepath(os.path.join(workspace_dir, "cachedb", VENUE_BALANCES_STATE_FILENAME)))
-    cp_path = str(resolve_cachedb_filepath(os.path.join(workspace_dir, "cachedb", CACHE_CURRENT_PRICE_FILENAME)))
-    vb = read_json_dict(vb_path, default={})
+    cache_dir = os.path.join(workspace_dir, "cachedb")
+    vb = load_venue_balances_state_dict(cache_dir)
+    cp_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, CACHE_CURRENT_PRICE_FILENAME)))
     cp = read_json_dict(cp_path, default={})
-    return (vb if isinstance(vb, dict) else {}), (cp if isinstance(cp, dict) else {})
+    return vb, (cp if isinstance(cp, dict) else {})
 
 
 def record_nav_history_snapshot(

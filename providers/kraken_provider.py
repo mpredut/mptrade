@@ -55,6 +55,7 @@ from .order_ohlc_utils import (
     require_clean_order_id,
     resolve_market_flag,
 )
+from .order_status_ssot import classify_venue_order_status
 from .strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
@@ -97,6 +98,15 @@ _KRAKEN_FALLBACK_ERR_TOKENS = (
     "temporary lockout",
     "network error",
 )
+
+_KRAKEN_ORDER_STATUS_MAP: dict[str, str] = {
+    "PENDING": "open",
+    "OPEN": "open",
+    "CLOSED": "closed",
+    "CANCELED": "canceled",
+    "CANCELLED": "canceled",
+    "EXPIRED": "expired",
+}
 
 
 def _kraken_balance_asset_candidates(asset: str) -> List[str]:
@@ -819,19 +829,17 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         if not isinstance(info, dict):
             raise ProviderError(f"order_status: the order {order_id} was not found")
         raw_status = clean_scalar_str(info.get("status")) or ""
-        status_map = {
-            "pending": "open",
-            "open": "open",
-            "closed": "closed",
-            "canceled": "canceled",
-            "cancelled": "canceled",
-            "expired": "expired",
-        }
-        norm_status = status_map.get(raw_status.lower())
-        if norm_status is None:
+        try:
+            classified = classify_venue_order_status(
+                info.get("status"),
+                status_map=_KRAKEN_ORDER_STATUS_MAP,
+                preserve_raw_venue_status=True,
+            )
+        except ValueError as exc:
             raise ProviderError(
                 f"order_status {order_id}: unknown Kraken status {raw_status!r}"
-            )
+            ) from exc
+        norm_status = classified.local_status
         filled_qty = parse_nonneg_order_field(info.get("vol_exec"))
         cost = parse_nonneg_order_field(info.get("cost"))
         fee = parse_nonneg_order_field(info.get("fee"))

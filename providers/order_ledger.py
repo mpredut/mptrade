@@ -53,7 +53,9 @@ from providers.order_id_context import (
 )
 from providers.order_status_ssot import (
     CANCEL_OR_EXPIRE_VENUE_STATUSES,
+    FILL_COMPLETE_QTY_RATIO,
     TERMINAL_AUDIT_VENUE_STATUSES,
+    classify_order_evidence_state,
     is_open_working_status,
 )
 from state_io import (
@@ -444,20 +446,17 @@ def _merge_records(primary: dict[str, Any], secondary: dict[str, Any]) -> dict[s
 def _classify_venue_status_transition(
     vst: Optional[str], *, fq: float, req_qty: Optional[float], current_state: str
 ) -> Optional[str]:
-    v_u = clean_upper_scalar(vst) or ""
-    if v_u in {"FILLED", "CLOSED"}:
-        return OrderLedgerState.FILLED.value
-    if v_u in {"REPLACED", "EXPIRED", "REJECTED"}:
-        return v_u
-    if v_u in CANCEL_OR_EXPIRE_VENUE_STATUSES:
-        return OrderLedgerState.CANCELED.value
-    if v_u == "PARTIALLY_FILLED" or (fq > 0.0 and (req_qty is None or fq < req_qty * 0.9999)):
-        return OrderLedgerState.CANCELING.value if current_state == OrderLedgerState.CANCELING.value else OrderLedgerState.PARTIAL.value
-    if fq > 0.0 and req_qty is not None and fq >= req_qty * 0.9999:
-        return OrderLedgerState.FILLED.value
-    if v_u and is_open_working_status(v_u, allow_empty=False):
-        return OrderLedgerState.CANCELING.value if current_state == OrderLedgerState.CANCELING.value else OrderLedgerState.OPEN.value
-    return None
+    classified = classify_order_evidence_state(
+        vst,
+        filled_qty=fq,
+        req_qty=req_qty,
+        require_qty_match_for_filled=False,
+        collapse_cancel_variants=False,
+        default_unqualified_state=None,
+    )
+    if classified in {OrderLedgerState.OPEN.value, OrderLedgerState.PARTIAL.value} and current_state == OrderLedgerState.CANCELING.value:
+        return OrderLedgerState.CANCELING.value
+    return classified
 
 
 def classify_fill_evidence_state(
@@ -470,33 +469,21 @@ def classify_fill_evidence_state(
 ) -> str:
     """Single-place classification of venue fill evidence using executed qty, requested qty, and status.
 
-    Returns one of ``OrderLedgerState`` values: ``FILLED``, ``CANCELED``, ``EXPIRED``, or ``PARTIAL``.
+    Returns one of ``OrderLedgerState`` values: ``FILLED``, ``CANCELED``, ``EXPIRED``, ``PARTIAL``, or ``OPEN``.
     A strictly partial fill (``fill_qty < req_qty``) is never archived as full ``FILLED`` even if a
     legacy cache row carried ``status="FILLED"`` and no open-order snapshot is present.
     """
     _ = (resting_now, order_created_ts, snapshot_verified_ts)
     fill_qty = safe_pos_float(fill_row.get("quantity") or fill_row.get("qty"), default=0.0) or 0.0
-    fill_vst = clean_upper_scalar(fill_row.get("status")) or ""
-    qty_complete = req_qty is not None and req_qty > 0.0 and fill_qty >= req_qty * 0.9999
-    qty_strictly_partial = req_qty is not None and req_qty > 0.0 and fill_qty < req_qty * 0.9999
-
-    if fill_vst in {"PARTIALLY_FILLED", "PARTIAL"}:
-        return OrderLedgerState.PARTIAL.value
-    if fill_vst and is_open_working_status(fill_vst, allow_empty=False):
-        return OrderLedgerState.OPEN.value
-    if fill_vst == "EXPIRED":
-        return OrderLedgerState.EXPIRED.value
-    if fill_vst in CANCEL_OR_EXPIRE_VENUE_STATUSES:
-        return OrderLedgerState.CANCELED.value
-    if qty_complete:
-        return OrderLedgerState.FILLED.value
-    if fill_vst in {"FILLED", "CLOSED"}:
-        if qty_strictly_partial:
-            return OrderLedgerState.PARTIAL.value
-        return OrderLedgerState.FILLED.value
-    # Raw venue execution fills carry no terminal order status (e.g. Hyperliquid userFills / Kraken ownTrades):
-    # remain PARTIAL until cumulative executed qty reaches req_qty or verified open-book absence converges it.
-    return OrderLedgerState.PARTIAL.value
+    classified = classify_order_evidence_state(
+        fill_row.get("status"),
+        filled_qty=fill_qty,
+        req_qty=req_qty,
+        require_qty_match_for_filled=True,
+        collapse_cancel_variants=True,
+        default_unqualified_state=OrderLedgerState.PARTIAL.value,
+    )
+    return classified or OrderLedgerState.PARTIAL.value
 
 
 def resolve_late_closed_event_state(

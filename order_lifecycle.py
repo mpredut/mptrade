@@ -894,6 +894,105 @@ def restore_cancelled_instrument_orders(
     )
 
 
+class OrderPreemptionTransaction:
+    """RAII transaction guard for preemptive order cancellations.
+
+    Any canceled order snapshots accumulated in ``self.canceled_orders`` are
+    automatically restored on context exit unless the transaction is explicitly
+    finalized via ``commit()``, ``mark_ambiguous()``, or ``mark_deferred()``.
+    This eliminates missing rollback paths across early returns and exceptions
+    by construction.
+    """
+
+    def __init__(
+        self,
+        *,
+        restore_fn: Optional[Callable[[list[dict[str, Any]], str], Any]] = None,
+        inst: Any = None,
+        default_reason: str = "preemption_rollback",
+        bypass_guards: Any = None,
+        log_fn: Callable[[str], None] = print,
+        restored_orders_out: Optional[list[dict[str, Any]]] = None,
+    ) -> None:
+        self.canceled_orders: list[dict[str, Any]] = []
+        self._restore_fn = restore_fn
+        self._inst = inst
+        self._reason: str = clean_scalar_str(default_reason) or "preemption_rollback"
+        self._bypass_guards = bypass_guards
+        self._log_fn = log_fn
+        self._restored_orders_out = restored_orders_out
+        self._outcome: str = "pending"
+        self.restored_count: int = 0
+
+    @property
+    def outcome(self) -> str:
+        return self._outcome
+
+    def set_reason(self, reason: str) -> None:
+        clean = clean_scalar_str(reason)
+        if clean:
+            self._reason = clean
+
+    def record_canceled(self, orders: Any) -> None:
+        if isinstance(orders, dict):
+            self.canceled_orders.append(dict(orders))
+        elif isinstance(orders, (list, tuple)):
+            for item in orders:
+                if isinstance(item, dict):
+                    self.canceled_orders.append(dict(item))
+
+    def commit(self) -> None:
+        """Mark the replacement order accepted; suppress rollback on exit."""
+        self._outcome = "committed"
+
+    def mark_ambiguous(self) -> None:
+        """Mark submission outcome unknown/ambiguous; suppress rollback to avoid duplicate orders."""
+        self._outcome = "ambiguous"
+
+    def mark_deferred(self) -> None:
+        """Mark placement deferred to retry outbox; suppress rollback so retry worker owns completion."""
+        self._outcome = "deferred"
+
+    def rollback(self, reason: Optional[str] = None) -> int:
+        """Restore canceled orders immediately (idempotent) if still pending."""
+        if reason:
+            self.set_reason(reason)
+        if self._outcome != "pending":
+            return 0
+        self._outcome = "rolled_back"
+        if not self.canceled_orders:
+            return 0
+        if callable(self._restore_fn):
+            res = self._restore_fn(self.canceled_orders, self._reason)
+            self.restored_count = (
+                safe_nonneg_int(res, default=0)
+                if isinstance(res, int) and not isinstance(res, bool)
+                else (1 if res else 0)
+            )
+            return self.restored_count
+        if self._inst is not None:
+            self.restored_count = restore_cancelled_instrument_orders(
+                self._inst,
+                self.canceled_orders,
+                bypass_guards=self._bypass_guards,
+                log_fn=self._log_fn,
+                reason=self._reason,
+                restored_orders_out=self._restored_orders_out,
+            )
+            return self.restored_count
+        return 0
+
+    def __enter__(self) -> "OrderPreemptionTransaction":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        if self._outcome == "pending" and self.canceled_orders:
+            if exc_type is not None and not self._reason:
+                self._reason = f"exception:{exc_type.__name__}"
+            self.rollback()
+        return False
+
+
 def _collect_preemptible_open_orders(
     inst_or_provider: Any,
     symbol: str,

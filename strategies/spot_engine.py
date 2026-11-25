@@ -48,6 +48,17 @@ from .position_exit_manager import ExitAction
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _LEGACY_STATE_DIR = resolve_venue_runtime_dir("kraken", workspace_dir=_ROOT)
 _DEFAULT_FEE_NOTE = "fee Kraken ~0.26% taker / ~0.16% maker per leg"
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedTranche:
+    """Single canonical take-profit tranche entry shared by order-match checks and placement."""
+
+    slot_idx: int
+    price: float
+    qty: float
+    tranche_idx: int | None
+    locked: bool = False
 _PLACEMENT_BACKOFF_CAP_SEC = 3600.0
 _REGIME_BAR_SETTLE_MAX_SEC = 900.0
 
@@ -1948,7 +1959,7 @@ class Strategy(BaseSpotMixin):
         )
 
         sells = [o for o in self.s["orders"] if o["side"] == "sell"]
-        locked_by_slot: dict[int, tuple[float, float, int | None]] = {}
+        locked_by_slot: dict[int, PlannedTranche] = {}
         used_orders: set[int] = set()
         reserved_vol = 0.0
         for slot_i, (tr_idx, pct, _share) in enumerate(unsold):
@@ -1965,7 +1976,13 @@ class Strategy(BaseSpotMixin):
                 if tr_idx is not None and o_tr is not None and o_tr != tr_idx:
                     continue
                 if abs(o["price"] - target_px) / target_px <= 0.001 and 0 < o["vol"] <= held - reserved_vol + 1e-9:
-                    locked_by_slot[slot_i] = (o["price"], o["vol"], tr_idx)
+                    locked_by_slot[slot_i] = PlannedTranche(
+                        slot_idx=slot_i,
+                        price=o["price"],
+                        qty=o["vol"],
+                        tranche_idx=tr_idx,
+                        locked=True,
+                    )
                     used_orders.add(id(o))
                     reserved_vol += o["vol"]
                     break
@@ -1974,7 +1991,7 @@ class Strategy(BaseSpotMixin):
         rem_pool = max(0.0, round(held - reserved_vol, self.vol_dec))
         tail_hold_share = active_tranches[-1][1] if holding_trail_tail else 0.0
         share_sum = sum(share for _, _, _, share in unstarted) + tail_hold_share
-        sized_by_slot: dict[int, tuple[float, float, int | None]] = dict(locked_by_slot)
+        planned_by_slot: dict[int, PlannedTranche] = dict(locked_by_slot)
         if unstarted and rem_pool > 0 and share_sum > 0:
             rem = rem_pool
             for u_pos, (slot_i, tr_idx, pct, share) in enumerate(unstarted):
@@ -1985,35 +2002,43 @@ class Strategy(BaseSpotMixin):
                 )
                 rem = round(rem - q, self.vol_dec)
                 if q > 0:
-                    sized_by_slot[slot_i] = (round(sr.tp_price(avg, pct), self.price_dec), q, tr_idx)
+                    planned_by_slot[slot_i] = PlannedTranche(
+                        slot_idx=slot_i,
+                        price=round(sr.tp_price(avg, pct), self.price_dec),
+                        qty=q,
+                        tranche_idx=tr_idx,
+                        locked=False,
+                    )
 
-        desired = [sized_by_slot[slot_i] for slot_i in sorted(sized_by_slot)]
-        if self.ordermin and any(
-            q < self.ordermin and slot_i not in locked_by_slot
-            for slot_i, (_p, q, _tr) in sorted(sized_by_slot.items())
-        ):
-            if not locked_by_slot:
+        planned: list[PlannedTranche] = [planned_by_slot[slot_i] for slot_i in sorted(planned_by_slot)]
+        if self.ordermin and any((not tr.locked) and tr.qty < self.ordermin for tr in planned):
+            if not any(tr.locked for tr in planned):
                 safe_held = self._dust_safe_qty(held)
                 first_tr, first_pct, _ = unsold[0]
-                desired = (
-                    [(round(sr.tp_price(avg, first_pct), self.price_dec), safe_held, first_tr)]
-                    if safe_held >= self.ordermin else []
+                planned = (
+                    [
+                        PlannedTranche(
+                            slot_idx=0,
+                            price=round(sr.tp_price(avg, first_pct), self.price_dec),
+                            qty=safe_held,
+                            tranche_idx=first_tr,
+                            locked=False,
+                        )
+                    ]
+                    if safe_held >= self.ordermin
+                    else []
                 )
-                sized_by_slot = {0: desired[0]} if desired else {}
             else:
-                desired = [
-                    val for slot_i, val in sorted(sized_by_slot.items())
-                    if slot_i in locked_by_slot or val[1] >= self.ordermin
-                ]
+                planned = [tr for tr in planned if tr.locked or tr.qty >= self.ordermin]
 
         ok = (
-            len(sells) == len(desired)
+            len(sells) == len(planned)
             and all(not _parse_bool_flag(o.get("cancel_requested"), False) for o in sells)
             and all(
-                abs(o["price"] - p) / p <= 0.001 and abs(o["vol"] - q) <= 1e-9
-                for o, (p, q, _tr) in zip(
+                abs(o["price"] - tr.price) / tr.price <= 0.001 and abs(o["vol"] - tr.qty) <= 1e-9
+                for o, tr in zip(
                     sorted(sells, key=lambda x: (x["price"], x["vol"])),
-                    sorted(desired, key=lambda x: (x[0], x[1])),
+                    sorted(planned, key=lambda tr: (tr.price, tr.qty)),
                 )
             )
         )
@@ -2023,14 +2048,12 @@ class Strategy(BaseSpotMixin):
                     self._cancel_order(o)
             remaining_sells = [o for o in self.s["orders"] if o["side"] == "sell"]
             if len(remaining_sells) == len(used_orders):
-                for slot_i, (p_, q_, tr_idx) in sorted(sized_by_slot.items()):
-                    if slot_i in locked_by_slot:
-                        continue
-                    if self.ordermin and q_ < self.ordermin:
+                for tr in planned:
+                    if tr.locked:
                         continue
                     self._place(
-                        "sell", q_, p_, kind="TP", tranche_idx=tr_idx,
-                        post_only=False if (not self.dry_run and price >= p_) else None,
+                        "sell", tr.qty, tr.price, kind="TP", tranche_idx=tr.tranche_idx,
+                        post_only=False if (not self.dry_run and price >= tr.price) else None,
                     )
         return False
 

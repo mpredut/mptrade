@@ -324,6 +324,30 @@ _VENUE_BALANCES_WRITER_FNS = frozenset({
     "write_text_file",
     "write_bytes_file",
 })
+STATE_FILE_OWNER_MAP: dict[str, frozenset[str]] = {
+    "AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME": frozenset({"providers/intent_state.py"}),
+    "ORDER_RETRY_QUEUE_FILENAME": frozenset({"order_retry.py"}),
+    "VENUE_BALANCES_STATE_FILENAME": frozenset({
+        "providers/portfolio_valuation.py",
+        "intelligence/macro_sentiment_ssot.py",
+    }),
+}
+STATE_FILE_LITERAL_TO_CONST: dict[str, str] = {
+    "autonomous_trade_intents_state.json": "AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME",
+    "order_retry_queue.jsonl": "ORDER_RETRY_QUEUE_FILENAME",
+    "venue_balances_state.json": "VENUE_BALANCES_STATE_FILENAME",
+}
+STATE_RAW_IO_READERS: frozenset[str] = frozenset({
+    "read_json_dict",
+    "read_json_dict_cached",
+    "read_json_dict_recovering",
+    "read_json_file",
+    "read_json_recovering",
+    "load_json_state",
+    "read_jsonl_dicts",
+    "read_tail_jsonl_dicts",
+    "read_jsonl_dicts_from_offset",
+})
 
 
 def _norm_rel_path(path: Path, root: Path) -> str | None:
@@ -1932,6 +1956,370 @@ def audit_venue_balances_single_writer_ast(
     return violations
 
 
+# -- Audit 15: Exclusive typed state file owners -------------------------------
+
+def audit_state_file_owners_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Enforce that owned state files are never read directly via raw state_io readers outside their SSOT owner."""
+    root = Path(root)
+    target_rels = [
+        r
+        for r in _normalize_target_rels(root, rel_paths)
+        if _is_prod_python_rel(r) and r != "cachepaths.py" and not r.startswith("verify_tools/")
+    ]
+    violations: list[str] = []
+
+    def _expr_state_consts(expr: ast.AST | None, tainted: dict[str, set[str]]) -> set[str]:
+        found: set[str] = set()
+        if expr is None:
+            return found
+        for sub in ast.walk(expr):
+            if isinstance(sub, ast.Name):
+                if sub.id in STATE_FILE_OWNER_MAP:
+                    found.add(sub.id)
+                elif sub.id in tainted:
+                    found.update(tainted[sub.id])
+            elif isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                low = sub.value.strip().lower()
+                for lit_fname, const_name in STATE_FILE_LITERAL_TO_CONST.items():
+                    if lit_fname in low:
+                        found.add(const_name)
+        return found
+
+    def _audit_scope(rel_s: str, stmts: list[ast.stmt], inherited: dict[str, set[str]]) -> None:
+        tainted: dict[str, set[str]] = {k: set(v) for k, v in inherited.items()}
+        nested_scopes: list[list[ast.stmt]] = []
+
+        def _collect_local_stmts(block: list[ast.stmt], out: list[ast.stmt]) -> None:
+            for stmt in block:
+                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    nested_scopes.append(list(stmt.body))
+                    continue
+                out.append(stmt)
+                for attr in ("body", "orelse", "finalbody"):
+                    if isinstance(sub_b := getattr(stmt, attr, None), list):
+                        _collect_local_stmts(sub_b, out)
+                if isinstance(handlers := getattr(stmt, "handlers", None), list):
+                    for h in handlers:
+                        if isinstance(h, ast.ExceptHandler):
+                            _collect_local_stmts(h.body, out)
+
+        local_stmts: list[ast.stmt] = []
+        _collect_local_stmts(stmts, local_stmts)
+
+        # Two O(N) passes propagate local path variables (raw_path -> resolved_path -> reader).
+        for _ in range(2):
+            for stmt in local_stmts:
+                if isinstance(stmt, ast.Assign):
+                    consts = _expr_state_consts(stmt.value, tainted)
+                    if consts:
+                        for tgt in stmt.targets:
+                            if isinstance(tgt, ast.Name):
+                                tainted.setdefault(tgt.id, set()).update(consts)
+                elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                    consts = _expr_state_consts(stmt.value, tainted)
+                    if consts:
+                        tainted.setdefault(stmt.target.id, set()).update(consts)
+                elif isinstance(stmt, ast.For) and isinstance(stmt.target, ast.Name):
+                    consts = _expr_state_consts(stmt.iter, tainted)
+                    if consts:
+                        tainted.setdefault(stmt.target.id, set()).update(consts)
+
+        def _scan_expr_calls(node: ast.AST | None) -> None:
+            if node is None or isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                return
+            if isinstance(node, ast.Call):
+                fn_name: str | None = None
+                if isinstance(node.func, ast.Name):
+                    fn_name = node.func.id
+                elif isinstance(node.func, ast.Attribute):
+                    fn_name = node.func.attr
+                if fn_name in STATE_RAW_IO_READERS:
+                    hit_consts: set[str] = set()
+                    for arg in node.args:
+                        hit_consts.update(_expr_state_consts(arg, tainted))
+                    for kw in node.keywords:
+                        hit_consts.update(_expr_state_consts(kw.value, tainted))
+                    for const_name in sorted(hit_consts):
+                        owners = STATE_FILE_OWNER_MAP[const_name]
+                        if rel_s not in owners:
+                            violations.append(
+                                f"{rel_s}:{node.lineno}: direct raw read of {const_name} via {fn_name}() "
+                                f"outside SSOT owner {sorted(owners)}"
+                            )
+            for child in ast.iter_child_nodes(node):
+                if not isinstance(child, ast.stmt):
+                    _scan_expr_calls(child)
+
+        for stmt in local_stmts:
+            for child in ast.iter_child_nodes(stmt):
+                if not isinstance(child, ast.stmt):
+                    _scan_expr_calls(child)
+        for nested_body in nested_scopes:
+            _audit_scope(rel_s, nested_body, tainted)
+
+    for rel_s in target_rels:
+        _, tree, syntax_err = parse_module_cached(root / rel_s, rel_s, _parsed_cache)
+        if syntax_err is not None or tree is None:
+            continue
+        _audit_scope(rel_s, list(tree.body), {})
+    return violations
+
+
+# -- Audit 16: Dataclass slots=True assignment safety --------------------------
+
+def _is_slotted_dataclass_def(cls_node: ast.ClassDef) -> bool:
+    for dec in cls_node.decorator_list:
+        if not isinstance(dec, ast.Call):
+            continue
+        fn = dec.func
+        is_dc = (isinstance(fn, ast.Name) and fn.id == "dataclass") or (
+            isinstance(fn, ast.Attribute) and fn.attr == "dataclass"
+        )
+        if not is_dc:
+            continue
+        for kw in dec.keywords:
+            if kw.arg == "slots" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                return True
+    return False
+
+
+def _is_classvar_annotation(ann: ast.AST | None) -> bool:
+    if ann is None:
+        return False
+    if isinstance(ann, ast.Name) and ann.id == "ClassVar":
+        return True
+    if isinstance(ann, ast.Attribute) and ann.attr == "ClassVar":
+        return True
+    if isinstance(ann, ast.Subscript):
+        return _is_classvar_annotation(ann.value)
+    return False
+
+
+def _annotation_matches_cls(ann: ast.AST | None, slotted_names: set[str]) -> str | None:
+    if ann is None:
+        return None
+    if isinstance(ann, ast.Name) and ann.id in slotted_names:
+        return ann.id
+    if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
+        raw = ann.value.strip()
+        if raw in slotted_names:
+            return raw
+        for name in slotted_names:
+            if raw == f"Optional[{name}]" or raw == f"{name} | None" or raw == f"None | {name}":
+                return name
+        return None
+    if isinstance(ann, ast.Subscript):
+        base_id = (
+            ann.value.id
+            if isinstance(ann.value, ast.Name)
+            else (ann.value.attr if isinstance(ann.value, ast.Attribute) else "")
+        )
+        if base_id in ("Optional", "Union"):
+            elts = ann.slice.elts if isinstance(ann.slice, ast.Tuple) else [ann.slice]
+            matches = {m for e in elts if (m := _annotation_matches_cls(e, slotted_names))}
+            if len(matches) == 1:
+                return next(iter(matches))
+    if isinstance(ann, ast.BinOp) and isinstance(ann.op, ast.BitOr):
+        m_left = _annotation_matches_cls(ann.left, slotted_names)
+        m_right = _annotation_matches_cls(ann.right, slotted_names)
+        if m_left and not m_right:
+            return m_left
+        if m_right and not m_left:
+            return m_right
+    return None
+
+
+def _tuple_return_slots(ann: ast.AST | None, slotted_names: set[str]) -> list[str | None] | None:
+    if isinstance(ann, ast.Subscript):
+        base_id = (
+            ann.value.id
+            if isinstance(ann.value, ast.Name)
+            else (ann.value.attr if isinstance(ann.value, ast.Attribute) else "")
+        )
+        if base_id.lower() == "tuple" and isinstance(ann.slice, ast.Tuple):
+            return [_annotation_matches_cls(e, slotted_names) for e in ann.slice.elts]
+    return None
+
+
+def audit_dataclass_slots_assignments_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Verify every attribute write to a ``@dataclass(..., slots=True)`` targets a declared slot field."""
+    root = Path(root)
+    target_rels = [r for r in _normalize_target_rels(root, rel_paths) if _is_prod_python_rel(r)]
+    violations: list[str] = []
+
+    for rel_s in target_rels:
+        _, tree, syntax_err = parse_module_cached(root / rel_s, rel_s, _parsed_cache)
+        if syntax_err is not None or tree is None:
+            continue
+
+        raw_fields_by_cls: dict[str, set[str]] = {}
+        cls_bases: dict[str, list[str]] = {}
+        slotted_names: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            fields: set[str] = set()
+            for stmt in node.body:
+                if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                    if not _is_classvar_annotation(stmt.annotation):
+                        fields.add(stmt.target.id)
+                elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for dec in stmt.decorator_list:
+                        if isinstance(dec, ast.Attribute) and dec.attr == "setter":
+                            fields.add(stmt.name)
+            raw_fields_by_cls[node.name] = fields
+            cls_bases[node.name] = [b.id for b in node.bases if isinstance(b, ast.Name)]
+            if _is_slotted_dataclass_def(node):
+                slotted_names.add(node.name)
+
+        if not slotted_names:
+            continue
+
+        slotted_fields: dict[str, set[str]] = {}
+        for cname in slotted_names:
+            acc: set[str] = set()
+            stack = [cname]
+            seen_c: set[str] = set()
+            while stack:
+                cur = stack.pop()
+                if cur in seen_c:
+                    continue
+                seen_c.add(cur)
+                acc.update(raw_fields_by_cls.get(cur, ()))
+                stack.extend(cls_bases.get(cur, ()))
+            slotted_fields[cname] = acc
+
+        fn_return_cls: dict[str, str] = {}
+        fn_return_tuple: dict[str, list[str | None]] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if ret_c := _annotation_matches_cls(node.returns, slotted_names):
+                    fn_return_cls[node.name] = ret_c
+                elif ret_t := _tuple_return_slots(node.returns, slotted_names):
+                    fn_return_tuple[node.name] = ret_t
+
+        def _call_name(call_node: ast.Call) -> str:
+            if isinstance(call_node.func, ast.Name):
+                return call_node.func.id
+            if isinstance(call_node.func, ast.Attribute):
+                return call_node.func.attr
+            return ""
+
+        def _audit_fn(fn_node: ast.FunctionDef | ast.AsyncFunctionDef, enclosing_cls: str | None) -> None:
+            var_types: dict[str, str] = {}
+            all_args = [*fn_node.args.posonlyargs, *fn_node.args.args, *fn_node.args.kwonlyargs]
+            if enclosing_cls in slotted_fields and all_args:
+                var_types[all_args[0].arg] = enclosing_cls
+            for arg in all_args:
+                if arg_cls := _annotation_matches_cls(arg.annotation, slotted_names):
+                    var_types[arg.arg] = arg_cls
+
+            def _scan_stmts(stmts: list[ast.stmt]) -> None:
+                for stmt in stmts:
+                    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        _audit_fn(stmt, None)
+                        continue
+                    if isinstance(stmt, ast.ClassDef):
+                        for c_stmt in stmt.body:
+                            if isinstance(c_stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                _audit_fn(c_stmt, stmt.name)
+                        continue
+                    # Record local variable bindings first for assignments.
+                    if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
+                        cname_call = _call_name(stmt.value)
+                        for tgt in stmt.targets:
+                            if isinstance(tgt, ast.Name):
+                                if cname_call in slotted_fields:
+                                    var_types[tgt.id] = cname_call
+                                elif cname_call in fn_return_cls:
+                                    var_types[tgt.id] = fn_return_cls[cname_call]
+                                else:
+                                    var_types.pop(tgt.id, None)
+                            elif isinstance(tgt, (ast.Tuple, ast.List)) and cname_call in fn_return_tuple:
+                                ret_slots = fn_return_tuple[cname_call]
+                                if len(tgt.elts) == len(ret_slots):
+                                    for elt, slot_cls in zip(tgt.elts, ret_slots):
+                                        if isinstance(elt, ast.Name):
+                                            if slot_cls:
+                                                var_types[elt.id] = slot_cls
+                                            else:
+                                                var_types.pop(elt.id, None)
+                    elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                        if ann_c := _annotation_matches_cls(stmt.annotation, slotted_names):
+                            var_types[stmt.target.id] = ann_c
+                        elif isinstance(stmt.value, ast.Call):
+                            cname_call = _call_name(stmt.value)
+                            if cname_call in slotted_fields:
+                                var_types[stmt.target.id] = cname_call
+
+                    def _check_expr_writes(node: ast.AST) -> None:
+                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                            return
+                        if (
+                            isinstance(node, ast.Attribute)
+                            and isinstance(node.ctx, ast.Store)
+                            and isinstance(node.value, ast.Name)
+                            and (cls_name := var_types.get(node.value.id)) is not None
+                        ):
+                            if node.attr not in slotted_fields[cls_name]:
+                                violations.append(
+                                    f"{rel_s}:{node.lineno}: assignment to undeclared slot {cls_name}.{node.attr} "
+                                    f"(declared: {sorted(slotted_fields[cls_name])})"
+                                )
+                        elif (
+                            isinstance(node, ast.Call)
+                            and isinstance(node.func, ast.Name)
+                            and node.func.id == "setattr"
+                            and len(node.args) >= 2
+                            and isinstance(node.args[0], ast.Name)
+                            and isinstance(node.args[1], ast.Constant)
+                            and isinstance(node.args[1].value, str)
+                            and (cls_name := var_types.get(node.args[0].id)) is not None
+                        ):
+                            attr_s = node.args[1].value
+                            if attr_s not in slotted_fields[cls_name]:
+                                violations.append(
+                                    f"{rel_s}:{node.lineno}: setattr to undeclared slot {cls_name}.{attr_s} "
+                                    f"(declared: {sorted(slotted_fields[cls_name])})"
+                                )
+                        for child in ast.iter_child_nodes(node):
+                            if not isinstance(child, ast.stmt):
+                                _check_expr_writes(child)
+
+                    for child in ast.iter_child_nodes(stmt):
+                        if not isinstance(child, ast.stmt):
+                            _check_expr_writes(child)
+
+                    for child_list_attr in ("body", "orelse", "finalbody"):
+                        if isinstance(sub_stmts := getattr(stmt, child_list_attr, None), list):
+                            _scan_stmts(sub_stmts)
+                    if isinstance(handlers := getattr(stmt, "handlers", None), list):
+                        for h in handlers:
+                            if isinstance(h, ast.ExceptHandler):
+                                _scan_stmts(h.body)
+
+            _scan_stmts(fn_node.body)
+
+        for top_stmt in tree.body:
+            if isinstance(top_stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                _audit_fn(top_stmt, None)
+            elif isinstance(top_stmt, ast.ClassDef):
+                for c_stmt in top_stmt.body:
+                    if isinstance(c_stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        _audit_fn(c_stmt, top_stmt.name)
+    return violations
+
+
 # -- Combined SSOT AST audit runner --------------------------------------------
 
 def audit_all_ssot_ast(
@@ -1961,6 +2349,8 @@ def audit_all_ssot_ast(
         *audit_cachedb_path_and_jsonl_purity_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
         *audit_durability_tier_and_cachedb_dirname_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
         *audit_venue_balances_single_writer_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
+        *audit_state_file_owners_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
+        *audit_dataclass_slots_assignments_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
     ):
         if err not in seen:
             seen.add(err)

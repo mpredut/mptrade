@@ -6976,6 +6976,187 @@ def test_cycle14_equity_ob_ext_hours_depth_hyphenated_publisher_strip_and_sre_gu
     assert "SELL TAOUSDC" in anom.guard_interventions[0]
 
 
+def test_structural_ssot_bug_free_by_construction_refactors(tmp_path):
+    """End-to-end structural invariant tests for all 7 SSOT refactors and AST Audits 15 & 16."""
+    import json
+    from order_lifecycle import OrderPreemptionTransaction
+    import order_retry
+    from providers.intent_state import (
+        load_durable_intents_from_cachedb,
+        load_known_ai_order_ids_from_cachedb,
+    )
+    from providers.order_status_ssot import (
+        classify_order_evidence_state,
+        classify_venue_order_status,
+        merge_monotonic_fill_row_status,
+    )
+    from providers.portfolio_valuation import BalanceSnapshotRecord
+    from cacheaccount import UnifiedOrderBookEvidence
+    from state_io import (
+        read_jsonl_bucket_map_from_offset,
+        read_jsonl_dicts_from_offset,
+    )
+    from strategies.spot_engine import PlannedTranche
+    from verify_tools.rebalance_kraken_to_hl import (
+        ArbitrumBalanceDiagnostic,
+        ArbitrumReceiptProof,
+        build_arbitrum_arrival_result,
+    )
+    from verify_tools.ssot_ast_audit import (
+        audit_dataclass_slots_assignments_ast,
+        audit_state_file_owners_ast,
+    )
+
+    # 1. OrderPreemptionTransaction: RAII rollback on early return & exception, idempotent, suppressed on commit/ambiguous/deferred
+    restored_calls: list[tuple[list[dict], str]] = []
+
+    def _rec_restore(orders, reason):
+        restored_calls.append((list(orders), reason))
+        return len(orders)
+
+    with OrderPreemptionTransaction(restore_fn=_rec_restore, default_reason="early_exit") as tx_early:
+        tx_early.record_canceled({"orderId": "101", "side": "BUY", "price": 1.0, "qty": 10.0})
+    assert len(restored_calls) == 1 and restored_calls[0][1] == "early_exit"
+    assert tx_early.rollback("second_call") == 0 and len(restored_calls) == 1
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with OrderPreemptionTransaction(restore_fn=_rec_restore, default_reason="on_exc") as tx_exc:
+            tx_exc.record_canceled({"orderId": "102", "side": "SELL", "price": 2.0, "qty": 5.0})
+            raise RuntimeError("boom")
+    assert len(restored_calls) == 2 and restored_calls[1][1] == "on_exc"
+
+    for finalize_method in ("commit", "mark_ambiguous", "mark_deferred"):
+        with OrderPreemptionTransaction(restore_fn=_rec_restore, default_reason="nope") as tx_ok:
+            tx_ok.record_canceled({"orderId": "103", "side": "BUY", "price": 1.0, "qty": 1.0})
+            getattr(tx_ok, finalize_method)()
+    assert len(restored_calls) == 2
+
+    # 2. Unified venue status classifier & monotonic evidence lattice
+    ok_st = classify_venue_order_status("FILLED", status_map={"FILLED": "closed", "NEW": "open"})
+    assert ok_st.local_status == "closed" and ok_st.is_terminal and ok_st.is_filled and not ok_st.is_terminal_non_fill
+    for bad_raw in (None, "", True, False, "SURPRISE_STATUS"):
+        with pytest.raises(ValueError):
+            classify_venue_order_status(bad_raw, status_map={"FILLED": "closed"})
+    # Monotonicity: FILLED(4) > CANCELED(3) > PARTIAL(2) > OPEN(1) regardless of timestamp
+    assert merge_monotonic_fill_row_status("FILLED", "CANCELED", incoming_ts=200, existing_ts=100) == "FILLED"
+    assert merge_monotonic_fill_row_status("CANCELED", "FILLED", incoming_ts=100, existing_ts=200) == "FILLED"
+    assert merge_monotonic_fill_row_status("CANCELED", "OPEN", incoming_ts=999, existing_ts=100) == "CANCELED"
+    assert merge_monotonic_fill_row_status("PARTIALLY_FILLED", "OPEN", incoming_ts=999, existing_ts=100) == "PARTIALLY_FILLED"
+    assert (
+        classify_order_evidence_state(
+            "FILLED", filled_qty=2.0, req_qty=10.0, require_qty_match_for_filled=True, collapse_cancel_variants=True
+        )
+        == "PARTIAL"
+    )
+
+    # 3. Exclusive state owners + order_retry supersede safety + AST Audits 11 & 12
+    cb_dir = tmp_path / "cachedb"
+    (cb_dir / "state").mkdir(parents=True)
+    (cb_dir / "state" / "autonomous_trade_intents_state.json").write_text(
+        json.dumps({"intents": [{"intent_id": "ai_99", "venue": "binance", "symbol": "BTCUSDC", "execution_payload": {"orderId": "778899"}}]}),
+        encoding="utf-8",
+    )
+    assert len(load_durable_intents_from_cachedb(str(cb_dir))) == 1
+    assert "778899" in load_known_ai_order_ids_from_cachedb(str(cb_dir))
+
+    assert order_retry.is_safe_to_supersede_record({"lifecycle": "submit_pending", "submission_state": "refused"}) is True
+    assert order_retry.is_safe_to_supersede_record({"lifecycle": "awaiting_cancel"}) is True
+    assert order_retry.is_safe_to_supersede_record({"lifecycle": "accepted"}) is False
+    assert order_retry.is_safe_to_supersede_record({"lifecycle": "submit_pending", "submission_state": "producer_claimed"}) is False
+    assert order_retry.is_safe_to_supersede_record({"lifecycle": "submit_pending", "submission_state": "unknown"}) is False
+    assert order_retry.is_safe_to_supersede_record({"lifecycle": "submit_pending", "last_failure_reason": "submit_ambiguous"}) is False
+    assert order_retry.is_safe_to_supersede_record({"lifecycle": "submit_pending", "last_failure_reason": "response_without_order_id"}) is False
+
+    # Negative tests proving AST Audits 11 & 12 catch real bugs statically
+    synth_repo = tmp_path / "synth_repo"
+    synth_repo.mkdir()
+    (synth_repo / "bad_reader.py").write_text(
+        "import os\n"
+        "from cachepaths import AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME\n"
+        "from state_io import read_json_recovering\n"
+        "def f(d):\n"
+        "    p = os.path.join(d, AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME)\n"
+        "    return read_json_recovering(p)\n",
+        encoding="utf-8",
+    )
+    v11 = audit_state_file_owners_ast(synth_repo, rel_paths=["bad_reader.py"])
+    assert any("AUTONOMOUS_TRADE_INTENTS_STATE_FILENAME" in err for err in v11)
+
+    (synth_repo / "bad_slot.py").write_text(
+        "from dataclasses import dataclass\n"
+        "@dataclass(slots=True)\n"
+        "class _Ctx:\n"
+        "    order: object = None\n"
+        "def mutate(ctx: _Ctx):\n"
+        "    ctx.order = 1\n"
+        "    ctx.enqueued_intent_id = 'boom'\n",
+        encoding="utf-8",
+    )
+    v12 = audit_dataclass_slots_assignments_ast(synth_repo, rel_paths=["bad_slot.py"])
+    assert any("_Ctx.enqueued_intent_id" in err for err in v12)
+    assert not any("_Ctx.order" in err for err in v12)
+
+    # 4. UnifiedOrderBookEvidence.proves_symbol_absent: strictly per-(venue, symbol)
+    sym_ver_tuple = {("kraken", "spcxxusd"): 1000.0}
+    sym_ver_str = {"kraken:spcxxusd": 1000.0}
+    assert UnifiedOrderBookEvidence.proves_symbol_absent(sym_ver_tuple, "kraken", "spcxxusd", ref_ts=900.0, grace_sec=45.0) is True
+    assert UnifiedOrderBookEvidence.proves_symbol_absent(sym_ver_tuple, "kraken", "hypeusd", ref_ts=900.0, grace_sec=45.0) is False
+    assert UnifiedOrderBookEvidence.proves_symbol_absent(sym_ver_str, "kraken", "spcxxusd", ref_ts=980.0, grace_sec=45.0) is False
+    assert UnifiedOrderBookEvidence.proves_symbol_absent(sym_ver_str, "kraken", "spcxxusd", ref_ts=900.0, grace_sec=45.0) is True
+
+    # 5. BalanceSnapshotRecord conservation law (normal + reprice reflected_locked cap)
+    bal_new = BalanceSnapshotRecord(free_raw=1000.0, total_locked=300.0, pre_balance_locked=300.0, reflected_locked=None)
+    assert bal_new.runtime_free == pytest.approx(700.0)
+    assert bal_new.venue_reflected_locked == pytest.approx(0.0)
+    assert (bal_new.runtime_free + bal_new.total_locked) == pytest.approx(bal_new.free_raw + bal_new.venue_reflected_locked)
+
+    bal_reprice = BalanceSnapshotRecord(free_raw=5143.79, total_locked=1504.63, pre_balance_locked=1004.66, reflected_locked=1004.66)
+    assert bal_reprice.synthetic_deduct == pytest.approx(499.97, abs=1e-6)
+    assert bal_reprice.runtime_free == pytest.approx(5143.79 - 499.97, abs=1e-6)
+    assert bal_reprice.venue_reflected_locked == pytest.approx(1004.66, abs=1e-6)
+    assert (bal_reprice.runtime_free + bal_reprice.total_locked) == pytest.approx(
+        bal_reprice.free_raw + bal_reprice.venue_reflected_locked
+    )
+
+    # 6. Unified JSONL frame reader: identical unterminated EOF behavior for cache & ledger
+    f_jsonl = tmp_path / "shared_frames.jsonl"
+    f_jsonl.write_bytes(b'{"s":"BTCUSDC","i":{"v":1}}')
+    bmap_0, _, off_b0, _, _, _ = read_jsonl_bucket_map_from_offset(str(f_jsonl), start_offset=0)
+    drows_0, off_d0 = read_jsonl_dicts_from_offset(str(f_jsonl), offset=0)
+    assert bmap_0 == {} and drows_0 == [] and off_b0 == 0 and off_d0 == 0
+    with open(f_jsonl, "ab") as fh:
+        fh.write(b"\n")
+    bmap_1, _, off_b1, _, _, _ = read_jsonl_bucket_map_from_offset(str(f_jsonl), start_offset=0)
+    drows_1, off_d1 = read_jsonl_dicts_from_offset(str(f_jsonl), offset=0)
+    assert len(bmap_1["BTCUSDC"]) == 1 and len(drows_1) == 1 and off_b1 == off_d1 > 0
+
+    # 7b. PlannedTranche frozen slotted single-plan record
+    tr = PlannedTranche(slot_idx=0, price=105.0, qty=2.5, tranche_idx=0, locked=False)
+    assert tr.price == 105.0 and tr.qty == 2.5 and tr.locked is False
+
+    # 7c. ArbitrumReceiptProof enforces valid EVM tx hash + confirmed + non-reverted + positive USDC
+    valid_hash = "0x" + "ab" * 32
+    with pytest.raises(ValueError):
+        ArbitrumReceiptProof(tx_hash="KRAKEN-INTERNAL-REF", received_usdc=10.0)
+    with pytest.raises(ValueError):
+        ArbitrumReceiptProof(tx_hash=valid_hash, received_usdc=10.0, confirmed=False)
+    with pytest.raises(ValueError):
+        ArbitrumReceiptProof(tx_hash=valid_hash, received_usdc=10.0, reverted=True)
+    with pytest.raises(ValueError):
+        ArbitrumReceiptProof(tx_hash=valid_hash, received_usdc=0.0)
+    with pytest.raises(TypeError):
+        build_arbitrum_arrival_result(
+            {"confirmed": True},  # type: ignore[arg-type]
+            ArbitrumBalanceDiagnostic(0.0, 10.0, True),
+            withdrawal_id="W1",
+            kraken_status="success",
+        )
+    proof = ArbitrumReceiptProof(tx_hash=valid_hash, received_usdc=10.0, block_number=12345)
+    diag = ArbitrumBalanceDiagnostic(usdc_before=5.0, usdc_after=15.0, observed=True)
+    arr = build_arbitrum_arrival_result(proof, diag, withdrawal_id="W1", kraken_status="success")
+    assert arr["arrived"] is True and arr["stages"]["transaction_confirmed"] is True and arr["arb_txid"] == valid_hash
+
+
 
 
 
