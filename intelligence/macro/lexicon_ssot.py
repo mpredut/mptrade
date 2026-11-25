@@ -67,7 +67,8 @@ _PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({
 _HUMAN_INTEREST_WAR_FILLER_WORDS: frozenset[str] = frozenset({
     "academic", "alaska", "alaskan", "alaskans", "appreciation", "assistance",
     "asu", "bags", "bills", "bird", "birds", "broadcasting", "cabin", "cabins",
-    "cambodia", "centcom", "children", "concentration", "consortium", "counterpunch",
+    "cambodia", "cameroon", "cameroonian", "centcom", "children", "concentration",
+    "consortium", "counterpunch",
     "cruise", "cruises", "decider", "declassified", "disabled", "disney", "drama",
     "dreading", "education", "episode", "episodes", "explained", "finale", "forever",
     "french", "fries", "greenland", "hbo", "heating", "hitler", "holocaust", "hulu",

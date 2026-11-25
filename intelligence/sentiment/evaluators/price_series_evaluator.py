@@ -430,13 +430,20 @@ def compute_volume_rvol_metrics(
     if precleaned_ts_px is not None and _TWO_COL_TS_PX_IDS.get(id(precleaned_ts_px)) is precleaned_ts_px:
         return {}
     bars: List[Tuple[float, float, float]] = []
+    last_any_ts_ms = 0.0
     for row in series:
         rt = type(row)
-        if (rt is not list and rt is not tuple and not isinstance(row, (list, tuple))) or len(row) < 3:
+        if (rt is not list and rt is not tuple and not isinstance(row, (list, tuple))) or len(row) < 2:
             continue
         pt = parse_ts_px_row(row)
+        if pt is None:
+            continue
+        if pt[0] > last_any_ts_ms:
+            last_any_ts_ms = pt[0]
+        if len(row) < 3:
+            continue
         vol_v = safe_nonneg_float(row[2], default=None)
-        if pt is None or vol_v is None:
+        if vol_v is None:
             continue
         bars.append((pt[0], pt[1], vol_v))
     if len(bars) < 3:
@@ -445,7 +452,7 @@ def compute_volume_rvol_metrics(
     pos_bars = [b for b in bars if b[2] > 0.0]
     if len(pos_bars) < 3:
         return {}
-    series_end_ms = bars[-1][0]
+    series_end_ms = max(bars[-1][0], last_any_ts_ms)
     vol_now_ms = pos_bars[-1][0]
     ref_end_ms = series_end_ms
     if now_ts is not None and now_ts > 0.0:

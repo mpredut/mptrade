@@ -3955,3 +3955,73 @@ def test_cycle6_interior_zero_vol_va_hold_and_cross_quote_7d_archive_stitching(t
     assert len(s24_b) >= 17
     assert len(vals_7d_b) >= 100
     assert LAST_7D_SPAN_MS_BY_SYM.get("ADAUSDC", 0.0) >= 6.5 * 86400.0 * 1000.0
+
+
+def test_cycle7_closed_equity_rvol_leak_and_cameroon_human_interest_filter():
+    """Cycle 7 overnight audit fixes:
+    1. compute_volume_rvol_metrics must advance series_end_ms across trailing 2-column [ts, px] post-market
+       bars so stale RTH closing-bell turnover cannot leak when now_ts=None, and
+       EquityRthSessionPolicy.evaluate_post_rth_override must forward now_ts into apply_post_rth_price_override
+       so closed US equities (7.75h after RTH close) do NOT emit stale closing-bell spot_vol_15m / rvol_15m
+       alongside intraday_rth_flow=N/A[no_fresh_vol_bars].
+    2. Localized human-interest conflict retrospectives (e.g. Cameroon decade of conflict) must not trigger
+       is_high_severity=True on generic 'conflict' without kinetic/macro market context.
+    """
+    from intelligence.macro.lexicon_ssot import match_high_severity_keywords
+    from intelligence.sentiment.evaluators.asset_session_policy import EquityRthSessionPolicy
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        compute_24h_price_metrics,
+        compute_volume_rvol_metrics,
+    )
+
+    # 2026-11-24 09:30 EST -> 16:00 EST RTH (78 x 5m bars with real volume), followed by 2-col POST ticks to 19:59 EST
+    rth_open_ms = 1_795_530_600_000.0
+    rth_bars = [
+        [rth_open_ms + i * 300_000.0, 155.0 - i * 0.02, 100_000.0 if i < 75 else 250_000.0]
+        for i in range(78)
+    ]
+    post_ticks = [
+        [rth_open_ms + 78 * 300_000.0 + k * 600_000.0, 152.10 - k * 0.01]
+        for k in range(24)  # 4 hours of 2-column extended-hours ticks up to 19:59 EST
+    ]
+    mixed_series = rth_bars + post_ticks
+    closed_now_s = (rth_open_ms + 78 * 300_000.0) / 1000.0 + 7.75 * 3600.0  # 23:45 EST (7.75h post-RTH)
+
+    # C7.1a: Mixed 3-col RTH + 2-col POST series must NOT leak closing-bell volume even with now_ts=None
+    assert compute_volume_rvol_metrics(mixed_series, now_ts=None) == {}
+    assert compute_volume_rvol_metrics(rth_bars, now_ts=closed_now_s) == {}
+
+    # C7.1b: evaluate_post_rth_override forwards now_ts so closing-bell spot_vol_15m/rvol_15m never reappear overnight
+    eq_pol = EquityRthSessionPolicy()
+    m24_init = compute_24h_price_metrics(mixed_series, is_equity=True, now_ts=closed_now_s)
+    assert "spot_vol_15m_usd" not in m24_init and "rvol_15m" not in m24_init
+    _, m24_ov, ov_px, _ = eq_pol.evaluate_post_rth_override(
+        mixed_series,
+        dict(m24_init),
+        151.90,  # slightly differs from 19:55 bar close -> triggers apply_post_rth_price_override
+        closed_now_s,
+    )
+    assert ov_px == pytest.approx(151.90)
+    assert "spot_vol_15m_usd" not in m24_ov
+    assert "rvol_15m" not in m24_ov
+    assert "spot_vol_1h_usd" not in m24_ov
+    assert "rvol_1h" not in m24_ov
+    assert m24_ov.get("poc_px") == m24_init.get("poc_px")
+
+    # Even on pure RTH-only bars (no 2-col post ticks), forwarding now_ts blocks stale closing-bell volume
+    m24_rth_init = compute_24h_price_metrics(rth_bars, is_equity=True, now_ts=closed_now_s)
+    _, m24_rth_ov, _, _ = eq_pol.evaluate_post_rth_override(
+        rth_bars,
+        dict(m24_rth_init),
+        151.90,
+        closed_now_s,
+    )
+    assert "spot_vol_15m_usd" not in m24_rth_ov and "rvol_15m" not in m24_rth_ov
+
+    # C7.2: Human-interest Cameroon feature does not trigger high-severity 'conflict'
+    assert match_high_severity_keywords(
+        "Shot in the face at 15: The lives shattered by Cameroon's decade of conflict"
+    ) == ()
+    assert match_high_severity_keywords(
+        "Houthi drone attack on Riyadh tower injures 11 amid Middle East escalation"
+    )

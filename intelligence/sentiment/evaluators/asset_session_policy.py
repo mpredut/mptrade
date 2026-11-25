@@ -164,6 +164,7 @@ class AssetSessionPolicy(AssetClassPolicyInterface):
         *,
         entry: Optional[Dict[str, Any]] = None,
         compute_24h_fn: Any = None,
+        now_ts: Optional[float] = None,
     ) -> Tuple[list, Dict[str, Any], bool]:
         """Apply an off-RTH quote override while preserving session Volume Profile anchors."""
         return matched_series_24h, m24, False
@@ -398,6 +399,7 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
         *,
         entry: Optional[Dict[str, Any]] = None,
         compute_24h_fn: Any = None,
+        now_ts: Optional[float] = None,
     ) -> Tuple[list, Dict[str, Any], bool]:
         eff_compute_24h = compute_24h_fn or compute_24h_price_metrics
         s24_p0 = parse_ts_px_row(matched_series_24h[0]) if len(matched_series_24h) >= 2 else None
@@ -408,7 +410,7 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
             prev_m24 = dict(m24)
             override_series_24h = override_series_tail_close(matched_series_24h, override_px)
             m24 = (
-                eff_compute_24h(override_series_24h, is_equity=True)
+                eff_compute_24h(override_series_24h, is_equity=True, now_ts=now_ts)
                 if eff_compute_24h is compute_24h_price_metrics
                 else eff_compute_24h(override_series_24h)
             ) or m24
@@ -459,7 +461,7 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
             ):
                 post_rth_px_override = round(sym_px_cur, 4)
                 matched_series_24h, m24, post_rth_series_replaced = self.apply_post_rth_price_override(
-                    matched_series_24h, m24, sym_px_cur, entry=entry, compute_24h_fn=compute_24h_fn
+                    matched_series_24h, m24, sym_px_cur, entry=entry, compute_24h_fn=compute_24h_fn, now_ts=now_ts
                 )
             else:
                 for k_stale in STALE_SHORT_24H_KEYS:
