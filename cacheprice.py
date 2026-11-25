@@ -124,8 +124,8 @@ from state_io import (
     commit_file_and_meta,
     discard_generation_file,
     format_jsonl_bucket_line,
-    generation_file_lock,
     generation_lock_path,
+    generation_transaction,
     is_state_io_dict_reader_unpatched,
     iter_jsonl_retention_lines,
     meta_file_path,
@@ -1314,12 +1314,8 @@ class Cache24PriceManager(CachePriceManagerBase):
                 self._trim_old_data(sym_eq)
                 if base_cachedb:
                     try:
-                        ohlc24_target = str(
-                            resolve_cachedb_filepath(
-                                os.path.join(base_cachedb, cache_ohlc_24h_filename(sym_eq))
-                            )
-                        )
-                        with generation_file_lock(ohlc24_target):
+                        ohlc24_raw = os.path.join(base_cachedb, cache_ohlc_24h_filename(sym_eq))
+                        with generation_transaction(ohlc24_raw) as ohlc24_target:
                             save_json_state(
                                 ohlc24_target,
                                 {"ts": eff_now, "symbol": sym_eq, "points": eff_pts},
@@ -1568,9 +1564,8 @@ class Cache24PriceManager(CachePriceManagerBase):
         """Persist 24h OHLCV series into ``cache_24_price_<SYM>.json`` and ``.meta`` transactionally under ``.generation.lock``."""
         if not target_path or not points:
             return
-        target_path = str(resolve_cachedb_filepath(target_path, migrate=True))
-        os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
-        with generation_file_lock(target_path):
+        with generation_transaction(target_path) as target_path:
+            os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
             is_jsonl = target_path.lower().endswith(".jsonl")
             if isinstance(existing_obj, dict):
                 disk_obj = existing_obj
@@ -1852,10 +1847,10 @@ class Cache365PriceManager(CacheBoundedJsonlArchiveMixin, Cache24PriceManager):
         ]
         if not rows:
             return False
-        with generation_file_lock(resolved_target):
-            if cachedb_exists(resolved_target, include_previous=True):
+        with generation_transaction(resolved_target) as eff_target:
+            if cachedb_exists(eff_target, include_previous=True):
                 return False
-            atomic_write_jsonl(resolved_target, rows)
+            atomic_write_jsonl(eff_target, rows)
         return True
 
     def __init__(

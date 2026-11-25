@@ -277,6 +277,22 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
             last_mono = max(self._last_price_mono, session_start_mono)
         return (time.monotonic() - last_mono) >= limit
 
+    def _check_data_staleness_or_reconnect(
+        self,
+        session_start_mono: float,
+        *,
+        stream_logger: Optional[logging.Logger] = None,
+    ) -> bool:
+        """Single SSOT watchdog invariant: log and return True when the stream exceeded ``_stale_reconnect_sec``."""
+        if not self._is_price_stream_stale(session_start_mono):
+            return False
+        (stream_logger or _ws_logger).warning(
+            "%s silent for %.0fs without ticker data; forcing reconnect",
+            self.__class__.__name__,
+            self._stale_reconnect_sec,
+        )
+        return True
+
     def _notify_subscribers(self, symbol: str, items) -> None:
         with self._lock:
             self._last_price_mono = time.monotonic()

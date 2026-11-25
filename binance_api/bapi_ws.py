@@ -148,27 +148,18 @@ class BinancePriceStream(PublicPriceStreamBase):
         while not self._stop_event.is_set():
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
-                self._process_message(raw)
-                if self._is_price_stream_stale(session_start):
-                    logger.warning(
-                        "BinancePriceStream silent for %.0fs without ticker data; forcing reconnect",
-                        self._stale_reconnect_sec,
-                    )
-                    break
             except asyncio.TimeoutError:
-                if self._is_price_stream_stale(session_start):
-                    logger.warning(
-                        "BinancePriceStream silent for %.0fs without ticker data; forcing reconnect",
-                        self._stale_reconnect_sec,
-                    )
-                    break
-                continue
+                raw = None
             except websockets.exceptions.ConnectionClosed:
                 logger.info("Connection closed by server, reconnecting...")
                 break
-            except JSONDecodeError as e:
-                logger.warning("JSON decode error: %s", e)
-                continue
+            if raw is not None:
+                try:
+                    self._process_message(raw)
+                except JSONDecodeError as e:
+                    logger.warning("JSON decode error: %s", e)
+            if self._check_data_staleness_or_reconnect(session_start, stream_logger=logger):
+                break
 
     async def _cmd_loop(self, ws) -> None:
         if self._loop is None:

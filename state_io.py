@@ -37,6 +37,7 @@ from cachepaths import (
     exact_nonneg_int,
     exact_pos_int,
     resolve_cachedb_filepath,
+    resolve_durability_policy,
     safe_pos_float,
 )
 
@@ -251,12 +252,29 @@ def _flush_and_fsync(handle: Any) -> None:
     os.fsync(handle.fileno())
 
 
+def _effective_fsync(path: Any, fsync: bool | None) -> bool:
+    if fsync is None:
+        return resolve_durability_policy(path).fsync
+    return _parse_bool_flag(fsync, True)
+
+
+def _file_matches_utf8_content(path: str, content: str) -> bool:
+    raw_bytes = content.encode("utf-8")
+    try:
+        if os.path.getsize(path) != len(raw_bytes):
+            return False
+        with open(path, "rb") as handle:
+            return handle.read() == raw_bytes
+    except OSError:
+        return False
+
+
 @contextlib.contextmanager
 def _atomic_stream_writer(
-    path: str, mode: str, *, preserve_mode: bool = False, fsync: bool = True, **open_kwargs: Any,
+    path: str, mode: str, *, preserve_mode: bool = False, fsync: bool | None = None, **open_kwargs: Any,
 ) -> Iterator[Any]:
     destination, directory = _prepare_target_and_dir(path)
-    do_fsync = _parse_bool_flag(fsync, True)
+    do_fsync = _effective_fsync(destination, fsync)
     prefix = f".{os.path.basename(destination)}."
     fd, temporary = tempfile.mkstemp(dir=directory, prefix=prefix, suffix=".tmp")
     handle = os.fdopen(fd, mode, **open_kwargs)
@@ -285,11 +303,11 @@ def _atomic_stream_writer(
 def atomic_text_writer(path: str, *, encoding: str = "utf-8",
                        newline: str | None = None,
                        preserve_mode: bool = False,
-                       fsync: bool = True) -> contextlib.AbstractContextManager[Any]:
+                       fsync: bool | None = None) -> contextlib.AbstractContextManager[Any]:
     """Yield a text handle and atomically publish it only after a successful write."""
     return _atomic_stream_writer(
         path, "w", preserve_mode=_parse_bool_flag(preserve_mode, False),
-        fsync=_parse_bool_flag(fsync, True),
+        fsync=fsync,
         encoding=encoding, newline=newline,
     )
 
@@ -312,7 +330,7 @@ def open_binary_read_file(path: str | os.PathLike[str]) -> Any:
 
 def atomic_write_text(path: str, content: str, *, encoding: str = "utf-8",
                       newline: str | None = None, preserve_mode: bool = False,
-                      fsync: bool = True) -> None:
+                      fsync: bool | None = None) -> None:
     """Write text ``content`` to ``path`` atomically through ``atomic_text_writer``."""
     with atomic_text_writer(
         path, encoding=encoding, newline=newline, preserve_mode=preserve_mode, fsync=fsync
@@ -323,13 +341,29 @@ def atomic_write_text(path: str, content: str, *, encoding: str = "utf-8",
 def atomic_write_json(path: str, value: Any, *, indent: int | None = None,
                       sort_keys: bool = False, separators=None, ensure_ascii: bool = True,
                       allow_nan: bool = False, default: Any = None,
-                      fsync: bool = True) -> None:
-    """Serialize JSON through ``atomic_text_writer``."""
+                      fsync: bool | None = None,
+                      skip_if_unchanged: bool = False) -> None:
+    """Serialize JSON through ``atomic_text_writer``, honoring declarative ``DurabilityPolicy`` defaults."""
+    target_path = _resolve_target_path(path, migrate=True)
+    policy = resolve_durability_policy(target_path)
+    eff_fsync = policy.fsync if fsync is None else _parse_bool_flag(fsync, True)
+    eff_separators = (
+        policy.separators
+        if (separators is None and indent is None and policy.compact_json)
+        else separators
+    )
     kwargs = _json_dump_kwargs(
-        indent=indent, sort_keys=sort_keys, separators=separators,
+        indent=indent, sort_keys=sort_keys, separators=eff_separators,
         ensure_ascii=ensure_ascii, allow_nan=allow_nan, default=default,
     )
-    with atomic_text_writer(path, fsync=fsync) as handle:
+    if _parse_bool_flag(skip_if_unchanged, False):
+        encoded = json.dumps(value, **kwargs)
+        if _file_matches_utf8_content(target_path, encoded):
+            return
+        with atomic_text_writer(target_path, fsync=eff_fsync) as handle:
+            handle.write(encoded)
+        return
+    with atomic_text_writer(target_path, fsync=eff_fsync) as handle:
         json.dump(value, handle, **kwargs)
 
 
@@ -364,33 +398,58 @@ def save_json_state(path: str, value: Any, *, indent: int | None = None,
                     sort_keys: bool = False, separators=None, ensure_ascii: bool = True,
                     allow_nan: bool = False, default: Any = None,
                     write_fn: Callable[..., Any] | None = None,
-                    fsync: bool = True) -> Any:
-    """Transactionally write JSON state while staging and cleaning up ``<path>.previous``."""
+                    fsync: bool | None = None,
+                    keep_previous: bool | None = None,
+                    skip_if_unchanged: bool = False) -> Any:
+    """Transactionally write JSON state honoring ``DurabilityPolicy`` (``fsync``, ``.previous``, compact JSON, dirty-check)."""
     target_path = _resolve_target_path(path, migrate=True)
-    eff_fsync = _parse_bool_flag(fsync, True)
+    policy = resolve_durability_policy(target_path)
+    eff_fsync = policy.fsync if fsync is None else _parse_bool_flag(fsync, True)
+    eff_keep_prev = policy.keep_previous if keep_previous is None else _parse_bool_flag(keep_previous, True)
+    eff_separators = (
+        policy.separators
+        if (separators is None and indent is None and policy.compact_json)
+        else separators
+    )
+    is_builtin_atomic = (
+        write_fn is None
+        or (
+            getattr(write_fn, "__module__", None) == __name__
+            and getattr(write_fn, "__name__", None) == "atomic_write_json"
+        )
+    )
+    pre_encoded: str | None = None
+    if _parse_bool_flag(skip_if_unchanged, False) and write_fn is None:
+        kwargs = _json_dump_kwargs(
+            indent=indent, sort_keys=sort_keys, separators=eff_separators,
+            ensure_ascii=ensure_ascii, allow_nan=allow_nan, default=default,
+        )
+        pre_encoded = json.dumps(value, **kwargs)
+        if _file_matches_utf8_content(target_path, pre_encoded):
+            return None
     backup_path = None
     had_prior = os.path.exists(target_path)
-    if had_prior:
+    if had_prior and (eff_keep_prev or not is_builtin_atomic):
         try:
             backup_path = stage_previous_generation(target_path, fsync=eff_fsync)
         except OSError:
             backup_path = None
     try:
-        if write_fn is None:
+        if pre_encoded is not None:
+            with atomic_text_writer(target_path, fsync=eff_fsync) as handle:
+                handle.write(pre_encoded)
+            res = None
+        elif write_fn is None:
             res = atomic_write_json(
                 target_path, value, indent=indent, sort_keys=sort_keys,
-                separators=separators, ensure_ascii=ensure_ascii,
+                separators=eff_separators, ensure_ascii=ensure_ascii,
                 allow_nan=allow_nan, default=default, fsync=eff_fsync,
             )
-        elif (
-            not eff_fsync
-            and getattr(write_fn, "__module__", None) == __name__
-            and getattr(write_fn, "__name__", None) == "atomic_write_json"
-        ):
+        elif is_builtin_atomic:
             res = write_fn(
                 target_path, value, indent=indent, sort_keys=sort_keys,
-                separators=separators, ensure_ascii=ensure_ascii,
-                allow_nan=allow_nan, default=default, fsync=False,
+                separators=eff_separators, ensure_ascii=ensure_ascii,
+                allow_nan=allow_nan, default=default, fsync=eff_fsync,
             )
         else:
             res = write_fn(target_path, value, **({"indent": indent} if indent is not None else {}))
@@ -1228,6 +1287,19 @@ def generation_file_lock(
                         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
+@contextlib.contextmanager
+def generation_transaction(
+    path: str | os.PathLike[str],
+    *,
+    lock_path: str | os.PathLike[str] | None = None,
+    migrate: bool = True,
+) -> Iterator[str]:
+    """Resolve ``path`` and hold its re-entrant cross-process generation lock for a state/JSONL transaction."""
+    target_path = _resolve_target_path(path, migrate=migrate)
+    with generation_file_lock(target_path, lock_path=lock_path):
+        yield target_path
+
+
 def discard_generation_file(
     path: str | None, *, include_previous: bool = False, include_meta: bool = False,
 ) -> None:
@@ -1250,11 +1322,11 @@ def discard_generation_file(
 
 
 def stage_previous_generation(
-    path: str, *, backup_path: str | None = None, fsync: bool = True,
+    path: str, *, backup_path: str | None = None, fsync: bool | None = None,
 ) -> str:
     """Snapshot the currently certified ``path`` at ``backup_path`` (default ``.previous``)."""
     target_backup = backup_path or previous_generation_path(path)
-    atomic_snapshot_file(path, target_backup, fsync=fsync)
+    atomic_snapshot_file(path, target_backup, fsync=_effective_fsync(path, fsync))
     return target_backup
 
 
@@ -1263,20 +1335,20 @@ def restore_previous_generation(path: str, *, backup_path: str | None = None) ->
     durable_replace_file(backup_path or previous_generation_path(path), path)
 
 
-def write_meta_json(path: str, payload: dict[str, Any], *, fsync: bool = True) -> None:
+def write_meta_json(path: str, payload: dict[str, Any], *, fsync: bool | None = None) -> None:
     """Atomically write ``payload`` to ``<path>.meta``."""
-    atomic_write_json(meta_file_path(path), payload, fsync=fsync)
+    atomic_write_json(meta_file_path(path), payload, fsync=_effective_fsync(path, fsync))
 
 
 def commit_file_and_meta(
     path: str, write_data_fn: Callable[[], Any], write_meta_fn: Callable[[], bool], *,
     backup_path: str | None = None, had_prior_file: bool | None = None,
     on_rollback_error: Callable[[OSError], None] | None = None,
-    fsync: bool = True,
+    fsync: bool | None = None,
 ) -> bool:
     """Transactionally replace ``path`` and commit its ``.meta`` manifest."""
     target_path = _resolve_target_path(path, migrate=True)
-    do_fsync = _parse_bool_flag(fsync, True)
+    do_fsync = _effective_fsync(target_path, fsync)
     if had_prior_file is None:
         had_prior_file = os.path.exists(target_path)
         if had_prior_file and backup_path is None:

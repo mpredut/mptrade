@@ -1773,6 +1773,87 @@ def audit_cachedb_path_and_jsonl_purity_ast(
     return violations
 
 
+# -- Audit 13: DurabilityTier financial fsync & cachedb dirname purity ---------
+
+_STATE_WRITER_FN_NAMES = frozenset({
+    "atomic_write_json",
+    "atomic_write_text",
+    "atomic_text_writer",
+    "save_json_state",
+    "write_meta_json",
+    "commit_file_and_meta",
+    "stage_previous_generation",
+})
+_FINANCIAL_CRITICAL_PATH_RE = re.compile(
+    r"(?:ORDER_LEDGER_|orders_active|order_events_|orders_closed_|"
+    r"RTRADE_PAIRS_|rtrade_pairs|ASSETGUARDIAN_STATE_|assetguardian_state|"
+    r"AUTONOMOUS_TRADE_INTENTS_|autonomous_trade_intents|"
+    r"CACHE_[A-Z0-9_]*ORDER_|cache_order_|CACHE_[A-Z0-9_]*TRADE_|cache_trade_|"
+    r"ORDER_RETRY_QUEUE_|order_retry_queue|VENUE_BALANCES_STATE_|venue_balances_state|"
+    r"NAV_HISTORY_STATE_|nav_history_state|SMART_STOP_LOSS_STATE_|smart_stop_loss_state|"
+    r"TRAILING_STATE_|trailing_state|MT_STATE_|mt_state)",
+    re.I,
+)
+_STATE_FILE_DIRNAME_ARG_RE = re.compile(r"(?:^|\.)(?:STATE\.path|state_path|state_file)$")
+
+
+def audit_durability_tier_and_cachedb_dirname_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Block ``fsync=False`` on ``FINANCIAL_CRITICAL`` state paths and ``os.path.dirname(state_path)`` as a cachedb root."""
+    root = Path(root)
+    target_rels = [
+        r
+        for r in _normalize_target_rels(root, rel_paths)
+        if _is_prod_python_rel(r) and r not in _CACHEDB_PATH_PURITY_EXEMPT
+    ]
+    violations: list[str] = []
+    for rel_s in target_rels:
+        _, tree, syntax_err = parse_module_cached(root / rel_s, rel_s, _parsed_cache)
+        if syntax_err is not None or tree is None:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and node.args:
+                fn_attr = (
+                    node.func.id
+                    if isinstance(node.func, ast.Name)
+                    else (node.func.attr if isinstance(node.func, ast.Attribute) else "")
+                )
+                if fn_attr in _STATE_WRITER_FN_NAMES:
+                    has_fsync_false = any(
+                        kw.arg == "fsync"
+                        and isinstance(kw.value, ast.Constant)
+                        and kw.value.value is False
+                        for kw in node.keywords
+                    )
+                    if has_fsync_false:
+                        arg0_s = ast.unparse(node.args[0])
+                        if _FINANCIAL_CRITICAL_PATH_RE.search(arg0_s):
+                            violations.append(
+                                f"{rel_s}:{node.lineno}: forbidden fsync=False on FINANCIAL_CRITICAL path "
+                                f"{arg0_s[:80]} in {fn_attr}() (use default DurabilityPolicy / fsync=True)"
+                            )
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and _RAW_CACHEDIR_VAR_RE.search(node.targets[0].id)
+                and isinstance(node.value, ast.Call)
+                and ast.unparse(node.value.func) == "os.path.dirname"
+                and len(node.value.args) == 1
+            ):
+                arg0_s = ast.unparse(node.value.args[0])
+                if _STATE_FILE_DIRNAME_ARG_RE.search(arg0_s):
+                    violations.append(
+                        f"{rel_s}:{node.lineno}: {node.targets[0].id} = os.path.dirname({arg0_s}) "
+                        "may return a cachedb/<subdomain>/ leaf (use CachedbRoot.from_path or cachedb_root_for_file)"
+                    )
+    return violations
+
+
 # -- Combined SSOT AST audit runner --------------------------------------------
 
 def audit_all_ssot_ast(
@@ -1800,6 +1881,7 @@ def audit_all_ssot_ast(
         *audit_signed_zero_format_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
         *audit_cross_module_calls_and_imports_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
         *audit_cachedb_path_and_jsonl_purity_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
+        *audit_durability_tier_and_cachedb_dirname_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
     ):
         if err not in seen:
             seen.add(err)

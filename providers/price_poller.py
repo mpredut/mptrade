@@ -207,19 +207,20 @@ class VenuePriceStreamBase(PublicPriceStreamBase, ABC):
             session_start = time.monotonic()
             while not self._stop_event.is_set():
                 try:
-                    self._process_message(
-                        await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
-                    )
-                    if self._is_price_stream_stale(session_start):
-                        break
+                    raw = await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
                 except asyncio.TimeoutError:
-                    if self._is_price_stream_stale(session_start):
-                        break
-                    continue
+                    raw = None
                 except _websockets.exceptions.ConnectionClosed:
                     break
                 except Exception:
-                    continue
+                    raw = None
+                if raw is not None:
+                    try:
+                        self._process_message(raw)
+                    except Exception:
+                        pass
+                if self._check_data_staleness_or_reconnect(session_start):
+                    break
 
     @abstractmethod
     def _build_subscribe_payload(self) -> Optional[str]:

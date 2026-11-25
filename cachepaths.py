@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import builtins
+from dataclasses import dataclass
+from enum import Enum
 import glob
 import math
 import numbers
@@ -296,6 +298,111 @@ _SIDECAR_SUFFIXES: tuple[str, ...] = (".generation.lock", ".previous", ".meta", 
 _SORTED_SUBDOMAINS: tuple[str, ...] = tuple(sorted(CACHEDB_SUBDOMAINS, key=len, reverse=True))
 _TOP_LEVEL_SUBDOMAINS: frozenset[str] = frozenset(sub.split("/", 1)[0] for sub in CACHEDB_SUBDOMAINS)
 STALE_STAGING_MAX_AGE_SEC: float = 300.0
+
+
+class DurabilityTier(str, Enum):
+    """Declarative SSOT durability classification for cachedb files."""
+
+    FINANCIAL_CRITICAL = "financial_critical"
+    ARCHIVE_DURABLE = "archive_durable"
+    EPHEMERAL_TELEMETRY = "ephemeral_telemetry"
+
+
+@dataclass(frozen=True)
+class DurabilityPolicy:
+    """Resolved write durability & formatting policy for a single cachedb path."""
+
+    tier: DurabilityTier
+    fsync: bool
+    keep_previous: bool
+    compact_json: bool
+    separators: tuple[str, str] | None = None
+
+
+DURABILITY_POLICY_FINANCIAL_CRITICAL = DurabilityPolicy(
+    tier=DurabilityTier.FINANCIAL_CRITICAL,
+    fsync=True,
+    keep_previous=True,
+    compact_json=False,
+    separators=None,
+)
+DURABILITY_POLICY_ARCHIVE_DURABLE = DurabilityPolicy(
+    tier=DurabilityTier.ARCHIVE_DURABLE,
+    fsync=True,
+    keep_previous=True,
+    compact_json=True,
+    separators=(",", ":"),
+)
+DURABILITY_POLICY_EPHEMERAL_TELEMETRY = DurabilityPolicy(
+    tier=DurabilityTier.EPHEMERAL_TELEMETRY,
+    fsync=False,
+    keep_previous=False,
+    compact_json=True,
+    separators=(",", ":"),
+)
+
+_ARCHIVE_DURABLE_PREFIXES: tuple[str, ...] = (
+    CACHE_SPARSE_PRICE_PREFIX,
+    CACHE_365_PRICE_PREFIX,
+    "cache_price_sparse_",
+    "cache_price_",
+    "cache_365price_",
+    "cache_24price_long_",
+)
+_EPHEMERAL_SUBDOMAINS: frozenset[str] = frozenset({"system/heartbeat", "telemetry", "trends"})
+_EPHEMERAL_MACRO_PREFIXES: tuple[str, ...] = (
+    "fear_greed_",
+    "market_breadth_",
+    "macro_benchmarks_",
+    "macro_calendar_",
+    "etf_flows_",
+    "news_feed_",
+)
+
+
+def _strip_sidecar_basename(path: object) -> str:
+    raw = _clean_path_str(path)
+    if not raw:
+        return ""
+    base = os.path.basename(raw.replace("\\", "/").rstrip("/"))
+    stripped = base[1:] if base.startswith(".") and not base.startswith("..") else base
+    while True:
+        matched = next(
+            (sfx for sfx in _SIDECAR_SUFFIXES if stripped.endswith(sfx) and len(stripped) > len(sfx)),
+            None,
+        )
+        if matched:
+            stripped = stripped[: -len(matched)]
+        elif ".previous." in stripped:
+            stripped = stripped.split(".previous.", 1)[0]
+        else:
+            break
+    return stripped
+
+
+def is_financial_critical_path(path: object) -> bool:
+    """Return True when ``path`` resolves to a financial/state subdomain requiring durable ``fsync=True``."""
+    return resolve_cache_subdomain(path) in ("orders", "state")
+
+
+def resolve_durability_policy(path: object) -> DurabilityPolicy:
+    """Resolve the declarative ``DurabilityPolicy`` for ``path`` (fail-safe ``FINANCIAL_CRITICAL`` default)."""
+    sub = resolve_cache_subdomain(path)
+    if sub in ("orders", "state"):
+        return DURABILITY_POLICY_FINANCIAL_CRITICAL
+    if sub in _EPHEMERAL_SUBDOMAINS:
+        return DURABILITY_POLICY_EPHEMERAL_TELEMETRY
+    if sub == "prices":
+        base = _strip_sidecar_basename(path)
+        if base.startswith(_ARCHIVE_DURABLE_PREFIXES):
+            return DURABILITY_POLICY_ARCHIVE_DURABLE
+        return DURABILITY_POLICY_EPHEMERAL_TELEMETRY
+    if sub == "macro":
+        base = _strip_sidecar_basename(path)
+        if base.startswith(_EPHEMERAL_MACRO_PREFIXES):
+            return DURABILITY_POLICY_EPHEMERAL_TELEMETRY
+        return DURABILITY_POLICY_FINANCIAL_CRITICAL
+    return DURABILITY_POLICY_FINANCIAL_CRITICAL
 
 
 def _clean_path_str(p: object) -> str:
@@ -1219,19 +1326,78 @@ def resolve_cache_dir_path(cache_dir: object, *, fallback_default: bool = False)
     return raw
 
 
+def _strip_cachedb_subdomain_dir(dir_path: str) -> str:
+    """Strip any trailing thematic cachedb subdomain directory (including ``system/heartbeat`` and ``trends/24trend``)."""
+    cur = os.path.normpath(dir_path) if dir_path else ""
+    if not cur:
+        return ""
+    parent = os.path.dirname(cur)
+    base = os.path.basename(cur)
+    pbase = os.path.basename(parent) if parent else ""
+    if parent and (f"{pbase}/{base}" in CACHEDB_SUBDOMAINS or (pbase == "trends" and base == "24trend")):
+        gp = os.path.dirname(parent)
+        return gp if gp and gp != parent else cur
+    if base in CACHEDB_SUBDOMAINS and parent and parent != cur:
+        return parent
+    return cur
+
+
 def cachedb_root_for_file(filepath: object) -> str:
     """Return the root ``cachedb`` directory containing ``filepath``, stripping any thematic subdomain directory."""
     raw = _clean_path_str(filepath)
     if not raw:
         return ""
-    d = os.path.dirname(raw)
-    parent = os.path.dirname(d)
-    if parent and f"{os.path.basename(parent)}/{os.path.basename(d)}" in CACHEDB_SUBDOMAINS:
-        gp = os.path.dirname(parent)
-        return gp if gp != parent else d
-    if os.path.basename(d) in CACHEDB_SUBDOMAINS and parent != d:
-        return parent
-    return d
+    return _strip_cachedb_subdomain_dir(os.path.dirname(raw))
+
+
+@dataclass(frozen=True)
+class CachedbRoot:
+    """Immutable value-object representing the root ``cachedb/`` directory (never a subdomain leaf)."""
+
+    path: str
+
+    @classmethod
+    def from_path(cls, any_path: object) -> "CachedbRoot":
+        """Normalize any file or directory path inside ``cachedb/`` (or a subdomain) to its root ``CachedbRoot``."""
+        raw = _clean_path_str(any_path)
+        if not raw:
+            return cls(get_cachedb_dir())
+        norm = os.path.normpath(raw)
+        if os.path.isdir(norm):
+            root_dir = _strip_cachedb_subdomain_dir(norm)
+        else:
+            # Handle non-existent directory paths ending in a known subdomain token as well as file paths.
+            base = os.path.basename(norm)
+            parent = os.path.dirname(norm)
+            pbase = os.path.basename(parent) if parent else ""
+            if (
+                base in CACHEDB_SUBDOMAINS
+                or (parent and f"{pbase}/{base}" in CACHEDB_SUBDOMAINS)
+                or (pbase == "trends" and base == "24trend")
+                or base.lower() == "cachedb"
+            ):
+                root_dir = _strip_cachedb_subdomain_dir(norm)
+            else:
+                root_dir = _strip_cachedb_subdomain_dir(parent)
+        return cls(root_dir or get_cachedb_dir())
+
+    def __fspath__(self) -> str:
+        return self.path
+
+    def __str__(self) -> str:
+        return self.path
+
+    def resolve(self, filename: str, *, migrate: bool = False) -> str:
+        """Resolve ``filename`` inside this ``cachedb`` root into its canonical thematic subdomain."""
+        clean_name = _norm_rel_cache_path(_clean_path_str(filename), strip_cachedb_prefix=True)
+        if not clean_name:
+            return self.path
+        return str(resolve_cachedb_filepath(os.path.join(self.path, clean_name), migrate=migrate))
+
+    def subdomain_dir(self, subdomain: str) -> str:
+        """Return the absolute/joined directory path for ``subdomain`` under this ``cachedb`` root."""
+        parts = [p for p in _clean_path_str(subdomain).replace("\\", "/").split("/") if p]
+        return os.path.join(self.path, *parts) if parts else self.path
 
 
 def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) -> str | None:

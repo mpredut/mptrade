@@ -2372,6 +2372,144 @@ def test_ssot_p1_p2_reentrant_filelock_cachedb_exists_365_compact_and_ast_gates(
     assert any("JSONL cache path" in v for v in v12), v12
 
 
+def test_ssot_p3_durability_tier_cachedb_root_generation_tx_ws_watchdog_and_ast13(tmp_path, monkeypatch):
+    """Verify SSOT P3 structural refactors:
+    1) CachedbRoot.from_path normalizes any file/subdomain/nested dir to the root cachedb/;
+    2) DurabilityTier / resolve_durability_policy drives default fsync, .previous, compact JSON, and skip_if_unchanged;
+    3) generation_transaction resolves subdomain + nests re-entrantly with generation_file_lock;
+    4) Unified PublicPriceStreamBase._check_data_staleness_or_reconnect works for Binance & Venue WS streams;
+    5) AST Audit 13 blocks fsync=False on FINANCIAL_CRITICAL paths and os.path.dirname(STATE.path) as cache_dir."""
+    import asyncio
+    import binance_api.bapi_ws as bapi_ws
+    import cachepaths
+    import providers.price_poller as pp
+    import providers.ws_stream as ws_stream
+    from verify_tools import ssot_ast_audit as ast_audit
+
+    # 1. CachedbRoot value-object never leaks a subdomain leaf
+    cdb = tmp_path / "cachedb"
+    for sub in ("state", "prices", "orders", "macro", "trends/24trend", "system/heartbeat"):
+        (cdb / sub).mkdir(parents=True, exist_ok=True)
+    for sample in (
+        cdb,
+        cdb / "state",
+        cdb / "state" / "assetguardian_state.json",
+        cdb / "trends" / "24trend",
+        cdb / "trends" / "24trend" / "live_BTCUSDC.json",
+        cdb / "system" / "heartbeat",
+        cdb / "system" / "heartbeat" / "cacheManager.heartbeat",
+    ):
+        root_obj = cachepaths.CachedbRoot.from_path(sample)
+        assert str(root_obj) == str(cdb)
+        assert os.fspath(root_obj) == str(cdb)
+    assert cachepaths.CachedbRoot.from_path(cdb / "state" / "assetguardian_state.json").resolve(
+        cachepaths.CACHE_SENTIMENT_EVAL_FILENAME
+    ) == str(cdb / "macro" / cachepaths.CACHE_SENTIMENT_EVAL_FILENAME)
+
+    # 2. Declarative DurabilityTier classification + state_io defaults + skip_if_unchanged dirty-check
+    assert cachepaths.resolve_durability_policy("orders_active.json").tier is cachepaths.DurabilityTier.FINANCIAL_CRITICAL
+    assert cachepaths.is_financial_critical_path("rtrade_pairs_state.json") is True
+    assert cachepaths.resolve_durability_policy("cache_sparse_price_BTCUSDC.jsonl").tier is cachepaths.DurabilityTier.ARCHIVE_DURABLE
+    assert cachepaths.resolve_durability_policy("cache_365_price_BTCUSDC.jsonl").tier is cachepaths.DurabilityTier.ARCHIVE_DURABLE
+    assert cachepaths.resolve_durability_policy("cacheManager.heartbeat").tier is cachepaths.DurabilityTier.EPHEMERAL_TELEMETRY
+    assert cachepaths.resolve_durability_policy("orderbook_depth_BTCUSDC.json").tier is cachepaths.DurabilityTier.EPHEMERAL_TELEMETRY
+    assert cachepaths.resolve_durability_policy("priceanalysis.json").tier is cachepaths.DurabilityTier.EPHEMERAL_TELEMETRY
+    assert cachepaths.resolve_durability_policy("cache_24_price_BTCUSDC.jsonl").tier is cachepaths.DurabilityTier.EPHEMERAL_TELEMETRY
+    assert cachepaths.resolve_durability_policy("cache_ohlc_24h_NVDA_US_EQ.json").tier is cachepaths.DurabilityTier.EPHEMERAL_TELEMETRY
+    assert cachepaths.resolve_durability_policy("sentiment_eval.json").tier is cachepaths.DurabilityTier.FINANCIAL_CRITICAL
+
+    fsync_calls: list[int] = []
+    stage_prev_calls: list[str] = []
+    orig_stage_prev = state_io.stage_previous_generation
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+    monkeypatch.setattr(
+        state_io,
+        "stage_previous_generation",
+        lambda p, **kw: (stage_prev_calls.append(str(p)), orig_stage_prev(p, **kw))[1],
+    )
+
+    # Ephemeral telemetry path: default save_json_state skips fsync, skips .previous, and writes compact JSON
+    pa_path = cdb / "priceanalysis.json"
+    state_io.save_json_state(str(pa_path), {"BTCUSDC": {"slope": 1.2}})
+    state_io.save_json_state(str(pa_path), {"BTCUSDC": {"slope": 1.3}})
+    assert fsync_calls == []
+    assert stage_prev_calls == []
+    raw_pa = (cdb / "trends" / "priceanalysis.json").read_text(encoding="utf-8")
+    assert "\n" not in raw_pa and ": " not in raw_pa
+
+    # Financial critical path: default save_json_state enforces fsync=True + .previous, and skip_if_unchanged avoids no-op writes
+    ord_path = cdb / "orders_active.json"
+    state_io.save_json_state(str(ord_path), {"orders": {"1": "NEW"}}, sort_keys=True, skip_if_unchanged=True)
+    assert len(fsync_calls) >= 1
+    fsync_calls.clear()
+    stage_prev_calls.clear()
+    # Identical payload with skip_if_unchanged=True -> 0 fsync, 0 .previous staging
+    state_io.save_json_state(str(ord_path), {"orders": {"1": "NEW"}}, sort_keys=True, skip_if_unchanged=True)
+    assert fsync_calls == []
+    assert stage_prev_calls == []
+    # Changed payload -> writes durably with fsync + .previous staging
+    state_io.save_json_state(str(ord_path), {"orders": {"1": "FILLED"}}, sort_keys=True, skip_if_unchanged=True)
+    assert len(fsync_calls) >= 1
+    assert len(stage_prev_calls) == 1
+
+    # 3. generation_transaction resolves subdomain and nests re-entrantly with generation_file_lock
+    with state_io.generation_transaction(str(cdb / "cache_24_price_BTCUSDC.jsonl")) as tx_path:
+        assert tx_path == str(cdb / "prices" / "cache_24_price_BTCUSDC.jsonl")
+        with state_io.generation_file_lock(tx_path):
+            pass
+
+    # 4. Unified WS staleness watchdog on PublicPriceStreamBase (Binance + VenuePriceStreamBase)
+    mono = [500.0]
+    monkeypatch.setattr(ws_stream.time, "monotonic", lambda: mono[0])
+    monkeypatch.setattr(bapi_ws.time, "monotonic", lambda: mono[0])
+    monkeypatch.setattr(pp.time, "monotonic", lambda: mono[0])
+
+    class _DummyVenueStream(pp.VenuePriceStreamBase):
+        def _build_subscribe_payload(self):
+            return None
+
+        def _process_message(self, raw, *, now_ms=None):
+            _ = (raw, now_ms)
+
+    hl_like = _DummyVenueStream(symbols=["BTCUSDC"], ws_url="wss://example.invalid", stale_reconnect_sec=60.0)
+    assert hl_like._check_data_staleness_or_reconnect(500.0) is False
+    mono[0] = 561.0
+    assert hl_like._check_data_staleness_or_reconnect(500.0) is True
+
+    class _SilentWs:
+        def __init__(self):
+            self.n = 0
+
+        async def recv(self):
+            self.n += 1
+            mono[0] += 35.0
+            return '{"channel":"pong"}'
+
+    mono[0] = 1000.0
+    bstream = bapi_ws.BinancePriceStream(symbols=["BTCUSDC"], stale_reconnect_sec=60.0)
+    sws = _SilentWs()
+    asyncio.run(bstream._recv_loop(sws))
+    assert sws.n == 2
+
+    # 5. AST Audit 13 catches forbidden fsync=False on financial files & os.path.dirname(STATE.path)
+    mini = tmp_path / "mini_p3"
+    mini.mkdir()
+    (mini / "bad_p3.py").write_text(
+        "import os\n"
+        "def bad(STATE, ORDER_LEDGER_ACTIVE_FILENAME, rtrade_pairs_path):\n"
+        "    cache_dir = os.path.dirname(STATE.path)\n"
+        "    atomic_write_json(ORDER_LEDGER_ACTIVE_FILENAME, {}, fsync=False)\n"
+        "    save_json_state(rtrade_pairs_path, {}, fsync=False)\n"
+        "    return cache_dir\n",
+        encoding="utf-8",
+    )
+    v13 = ast_audit.audit_durability_tier_and_cachedb_dirname_ast(mini, rel_paths=["bad_p3.py"])
+    assert any("ORDER_LEDGER_ACTIVE_FILENAME" in v for v in v13), v13
+    assert any("rtrade_pairs_path" in v for v in v13), v13
+    assert any("os.path.dirname(STATE.path)" in v for v in v13), v13
+
+
+
 
 
 
