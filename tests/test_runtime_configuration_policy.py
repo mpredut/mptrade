@@ -995,7 +995,7 @@ def test_pre_commit_gate_runs_all_deterministic_checks_and_blocks_violations(tmp
     """Verify verify_tools.pre_commit_gate orchestrates every deterministic gate cleanly on staged files."""
     from verify_tools import pre_commit_gate as gate
 
-    assert len(DETERMINISTIC_GATES) >= 11
+    assert len(DETERMINISTIC_GATES) >= 14
     assert gate.cmd_list(SimpleNamespace()) == 0
 
     # Seed one violation for each non-trivial deterministic gate in tmp_path.
@@ -1007,6 +1007,20 @@ def test_pre_commit_gate_runs_all_deterministic_checks_and_blocks_violations(tmp
     (tmp_path / "cachepaths.py").write_text("import providers\nX = providers\n", encoding="utf-8")
     (tmp_path / "cyc_a.py").write_text("import cyc_b\nX = cyc_b\n", encoding="utf-8")
     (tmp_path / "cyc_b.py").write_text("import cyc_a\nY = cyc_a\n", encoding="utf-8")
+    (tmp_path / "intelligence" / "sentiment" / "evaluators").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "intelligence" / "sentiment" / "evaluators" / "bad_eval.py").write_text(
+        textwrap.dedent(
+            """
+            import time
+
+            def evaluate(entry: dict, x: float) -> str:
+                entry["quote_source"] = "rogue"
+                _ = time.time()
+                return f"{x:+.2f}%"
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
     (tmp_path / "consumer_bad.py").write_text(
         textwrap.dedent(
             """
@@ -1032,6 +1046,7 @@ def test_pre_commit_gate_runs_all_deterministic_checks_and_blocks_violations(tmp
         "cachepaths.py",
         "cyc_a.py",
         "consumer_bad.py",
+        "intelligence/sentiment/evaluators/bad_eval.py",
     ]
     ctx = gate.GateContext(
         root=tmp_path,
@@ -1051,6 +1066,9 @@ def test_pre_commit_gate_runs_all_deterministic_checks_and_blocks_violations(tmp
         "producer_only_caches_ast",
         "atomic_writers_ast",
         "direct_order_boundaries_ast",
+        "evaluator_clock_purity_ast",
+        "equity_quote_provenance_ast",
+        "signed_zero_format_ast",
     ):
         assert expected_gate in failures, f"Expected gate {expected_gate} to fail; got {sorted(failures)}"
     assert gate.cmd_pre_commit(SimpleNamespace(files=bad_files, root=str(tmp_path), min_score=2)) == 1

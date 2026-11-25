@@ -10,6 +10,7 @@ from intelligence.macro.calendar_ssot import resolve_global_trading_session
 from intelligence.macro.daemon_ssot import CachedTopicAssessmentAgent
 from botcore import (
     clean_scale,
+    fmt_signed,
     is_cache_fresh,
     obj_attr,
     obj_float,
@@ -55,11 +56,6 @@ DEFAULT_CACHE_FILE = cache_path(_SENTIMENT_FILENAMES[0] if _SENTIMENT_FILENAMES 
 _fmt_compact_usd = format_compact_usd
 
 
-def _fmt_signed(val: float, decimals: int = 2) -> str:
-    """Format a signed float after normalizing negative zero at the target rounding precision."""
-    return f"{round(val, decimals) + 0.0:+.{decimals}f}"
-
-
 def _format_breadth_line(breadth: Any) -> str:
     """Format pure quantitative 24h market breadth, ETH/BTC context, and volume share (no heuristic regime labels)."""
     mb_adv = clean_scale(obj_attr(breadth, "advance_ratio", 0.5), default=0.5, allow_percent=True)
@@ -74,10 +70,10 @@ def _format_breadth_line(breadth: Any) -> str:
     tot_cnt = safe_int(raw_tot, 0)
     cnt_sfx = f" ({adv_cnt}/{tot_cnt})" if tot_cnt > 0 else ""
 
-    core_parts = [f"{mb_adv * 100.0:.1f}% advancing{cnt_sfx}", f"median {_fmt_signed(mb_med)}%"]
+    core_parts = [f"{mb_adv * 100.0:.1f}% advancing{cnt_sfx}", f"median {fmt_signed(mb_med)}%"]
     mb_mean = safe_float(obj_attr(breadth, "mean_change_pct"), default=None)
     if mb_mean is not None and (tot_cnt > 0 or abs(mb_mean) > 1e-9):
-        core_parts.append(f"mean {_fmt_signed(mb_mean)}%")
+        core_parts.append(f"mean {fmt_signed(mb_mean)}%")
     mb_disp = safe_pos_float(obj_attr(breadth, "dispersion_std"), default=None)
     if mb_disp is not None:
         core_parts.append(f"dispersion_std {mb_disp:.2f}%")
@@ -89,13 +85,13 @@ def _format_breadth_line(breadth: Any) -> str:
     eth_chg = safe_float(obj_attr(breadth, "eth_chg_24h_pct"), default=None)
     if eth_px is not None:
         eth_parts.append(
-            f"ETH=${eth_px:,.2f}" + (f" ({_fmt_signed(eth_chg)}% 24h)" if eth_chg is not None else "")
+            f"ETH=${eth_px:,.2f}" + (f" ({fmt_signed(eth_chg)}% 24h)" if eth_chg is not None else "")
         )
     eb_px = safe_pos_float(obj_attr(breadth, "eth_btc_ratio"), default=None)
     eb_chg = safe_float(obj_attr(breadth, "eth_btc_chg_24h_pct"), default=None)
     if eb_px is not None:
         eth_parts.append(
-            f"ETH/BTC={eb_px:.5f}" + (f" ({_fmt_signed(eb_chg)}% 24h)" if eb_chg is not None else "")
+            f"ETH/BTC={eb_px:.5f}" + (f" ({fmt_signed(eb_chg)}% 24h)" if eb_chg is not None else "")
         )
     if eth_parts:
         segments.append(", ".join(eth_parts))
@@ -140,10 +136,10 @@ def _format_single_whale_entry(
     )
     if oi_usd is not None:
         parts.append(
-            f"OI={_fmt_compact_usd(oi_usd)}" + (f" ({_fmt_signed(oi_1h)}% 1h)" if oi_1h is not None else "")
+            f"OI={_fmt_compact_usd(oi_usd)}" + (f" ({fmt_signed(oi_1h)}% 1h)" if oi_1h is not None else "")
         )
     elif oi_1h is not None:
-        parts.append(f"OI_1h={_fmt_signed(oi_1h)}%")
+        parts.append(f"OI_1h={fmt_signed(oi_1h)}%")
 
     raw_tl_pct = wt_d.get("top_traders_long_pct")
     tl_pct = clean_scale(raw_tl_pct, default=None, allow_percent=True) if raw_tl_pct is not None else None
@@ -171,7 +167,7 @@ def _format_single_whale_entry(
         if fr_raw is not None:
             fund_ann = round(fr_raw * 3.0 * 365.0 * 100.0, 2) + 0.0
     if fund_ann is not None:
-        parts.append(f"funding={_fmt_signed(fund_ann)}% ann")
+        parts.append(f"funding={fmt_signed(fund_ann)}% ann")
 
     basis_bps = safe_float(
         wt_d.get("perp_spot_basis_bps")
@@ -180,7 +176,7 @@ def _format_single_whale_entry(
         default=None,
     )
     if basis_bps is not None:
-        parts.append(f"perp_spot_basis={_fmt_signed(basis_bps)}bps")
+        parts.append(f"perp_spot_basis={fmt_signed(basis_bps)}bps")
 
     cvd_15m = safe_float(wt_d.get("cvd_15m_usd"), default=None)
     if cvd_15m is None:
@@ -456,7 +452,7 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                 if pos_24h_v is None:
                     pos_24h_v = 50.0
                 chg_parts = [
-                    f"{lbl} {_fmt_signed(val)}%"
+                    f"{lbl} {fmt_signed(val)}%"
                     for lbl, key in (
                         ("15m", "chg_15m_pct"),
                         ("1h", "chg_1h_pct"),
@@ -464,13 +460,13 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                     )
                     if (val := safe_float(c_m.get(key), default=None)) is not None
                 ]
-                chg_parts.append(f"24h {_fmt_signed(chg_24h_v)}%")
+                chg_parts.append(f"24h {fmt_signed(chg_24h_v)}%")
 
                 rng_parts = [f"range_pos={pos_24h_v:.0f}%"]
                 if (bnc_v := safe_float(c_m.get("bounce_24h_low_pct"), default=None)) is not None:
-                    rng_parts.append(f"bounce_24h_low={_fmt_signed(bnc_v)}%")
+                    rng_parts.append(f"bounce_24h_low={fmt_signed(bnc_v)}%")
                 if (dd_v := safe_float(c_m.get("dd_24h_high_pct"), default=None)) is not None:
-                    rng_parts.append(f"dd_24h_high={_fmt_signed(dd_v)}%")
+                    rng_parts.append(f"dd_24h_high={fmt_signed(dd_v)}%")
 
                 struct_segs = [", ".join(chg_parts), ", ".join(rng_parts)]
                 val_px = safe_pos_float(c_m.get("val_px"), default=None)
@@ -497,11 +493,11 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                     hl_diff = safe_float(c_m.get("higher_low_vs_prior_pct"), default=None)
                     reclaim_diff = safe_float(c_m.get("reclaim_above_prior_low_pct"), default=None)
                     if hl_diff is not None:
-                        lows_sfx += f", hl_vs_prior={_fmt_signed(hl_diff)}%"
+                        lows_sfx += f", hl_vs_prior={fmt_signed(hl_diff)}%"
                     elif reclaim_diff is not None:
-                        lows_sfx += f", reclaim_vs_prior={_fmt_signed(reclaim_diff)}%"
+                        lows_sfx += f", reclaim_vs_prior={fmt_signed(reclaim_diff)}%"
                     else:
-                        lows_sfx += f", low_vs_prior={_fmt_signed(((r1h_lo_v / p6h_lo_v) - 1.0) * 100.0)}%"
+                        lows_sfx += f", low_vs_prior={fmt_signed(((r1h_lo_v / p6h_lo_v) - 1.0) * 100.0)}%"
                 struct_lines.append(
                     f"- {ccy} Intraday Structure: price=${last_px:.2f} ({' | '.join(struct_segs)}){lows_sfx}"
                 )

@@ -6143,7 +6143,7 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
     )
     joined_3b = "\n".join(lines_3b)
     assert "spread=0.0013bps (bid=77746.99/ask=77747.0), ob_mid=77746.995" in joined_3b
-    assert "bid_wall=77746.99 ($120000.0, dist=-0.00%)" in joined_3b
+    assert "bid_wall=77746.99 ($120000.0, dist=+0.00%)" in joined_3b
     assert "cvd_15m=+9.75 BTC (+$758.0K)" in joined_3b
 
     # 4. Section 3C pnl_vs_avg=+6.89% when positive vs dd=-17.89% when negative + dd_from_peak on pos_peak

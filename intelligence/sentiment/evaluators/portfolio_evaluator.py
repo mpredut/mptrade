@@ -28,6 +28,7 @@ from botcore import (
     extract_order_side,
     extract_timestamp_ms,
     first_pos_float,
+    fmt_signed,
     normalize_timestamp_ms,
     resolve_now_ts,
     safe_float,
@@ -496,7 +497,7 @@ def format_recent_fill_subcycle_parts(
     ):
         parts.append(f"Swing Sub-Cycle Avg BUY={sw_avg}")
     if (lifo_pnl := safe_float(fills.get("lifo_realized_pnl_usd"), None)) is not None and abs(lifo_pnl) >= 0.01:
-        parts.append(f"Sub-Cycle LIFO Realized PnL=${lifo_pnl:+.2f}")
+        parts.append(f"Sub-Cycle LIFO Realized PnL=${fmt_signed(lifo_pnl)}")
     if include_open_lots:
         o_lots = [
             f"{round_opt_px(lt.get('qty'), 6)}@{round_opt_px(lt.get('entry_px'), 6)}"
@@ -508,9 +509,9 @@ def format_recent_fill_subcycle_parts(
     if include_markout:
         m_parts: List[str] = []
         if (bm_v := safe_float(fills.get("buy_markout_bps"), None)) is not None:
-            m_parts.append(f"buy={bm_v:+.0f}bps")
+            m_parts.append(f"buy={fmt_signed(bm_v, 0)}bps")
         if (sm_v := safe_float(fills.get("sell_markout_bps"), None)) is not None:
-            m_parts.append(f"sell={sm_v:+.0f}bps")
+            m_parts.append(f"sell={fmt_signed(sm_v, 0)}bps")
         if m_parts:
             parts.append(f"Post-Trade Markout({', '.join(m_parts)})")
     for key_tr, lbl_tr in (("recent_buys", "Recent BUY Tranches"), ("recent_sells", "Recent SELL Tranches")):

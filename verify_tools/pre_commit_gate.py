@@ -33,11 +33,14 @@ from verify_tools.direct_order_api_inventory import audit_direct_order_boundarie
 from verify_tools.ssot_ast_audit import (
     ParsedCache,
     audit_bespoke_atomic_writers,
+    audit_equity_quote_provenance_ast,
     audit_equity_suffix_endswith_ast,
+    audit_evaluator_clock_purity_ast,
     audit_import_cycles_ast,
     audit_layer_dag_ast,
     audit_producer_only_caches_ast,
     audit_repo_ssot_ast,
+    audit_signed_zero_format_ast,
     audit_venue_string_branches_ast,
 )
 from verify_tools.translation_audit import (
@@ -365,6 +368,27 @@ DETERMINISTIC_GATES: tuple[DeterministicGate, ...] = (
         "direct_order_boundaries_ast",
         "Enforce reviewed allowlist for direct venue order submit/cancel APIs",
         lambda ctx: audit_direct_order_boundaries(
+            ctx.root, rel_paths=ctx.python_rels, _parsed_cache=ctx.parsed_cache
+        ),
+    ),
+    DeterministicGate(
+        "evaluator_clock_purity_ast",
+        "Enforce zero bare time.time()/datetime.now() wall-clock calls inside stateless evaluators",
+        lambda ctx: audit_evaluator_clock_purity_ast(
+            ctx.root, rel_paths=ctx.python_rels, _parsed_cache=ctx.parsed_cache
+        ),
+    ),
+    DeterministicGate(
+        "equity_quote_provenance_ast",
+        "Enforce single atomic writer (_apply_resolved_equity_quote) for quote_source/quote_age_min",
+        lambda ctx: audit_equity_quote_provenance_ast(
+            ctx.root, rel_paths=ctx.python_rels, _parsed_cache=ctx.parsed_cache
+        ),
+    ),
+    DeterministicGate(
+        "signed_zero_format_ast",
+        "Enforce botcore.fmt_signed instead of raw :+.Nf specs in prompt/telemetry code (prevents -0.00%)",
+        lambda ctx: audit_signed_zero_format_ast(
             ctx.root, rel_paths=ctx.python_rels, _parsed_cache=ctx.parsed_cache
         ),
     ),

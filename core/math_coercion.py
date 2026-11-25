@@ -184,6 +184,28 @@ def format_notify_price(price: object, *, comma: bool = True) -> str:
     return raw
 
 
+def fmt_signed(
+    val: object,
+    decimals: int = 2,
+    *,
+    default: float = 0.0,
+    comma: bool = False,
+    strip_zeros: bool = False,
+) -> str:
+    """Format a signed finite float after normalizing negative zero at the target rounding precision."""
+    num = safe_float(val, default=default)
+    if num is None:
+        num = default
+    rounded = round(num, decimals) + 0.0
+    sep = "," if comma else ""
+    out = f"{rounded:+{sep}.{decimals}f}"
+    if strip_zeros and decimals > 0:
+        out = out.rstrip("0").rstrip(".")
+        if out in ("-0", "+0", "0"):
+            out = "+0"
+    return out
+
+
 def parse_ratio_or_pct(raw: object, pct_cutoff: float = 0.05) -> float:
     """Parse a numeric config value that may be expressed either as a ratio or as a percentage."""
     if isinstance(raw, str) and raw.strip().endswith("%"):

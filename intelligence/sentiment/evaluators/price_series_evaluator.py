@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 import math
 import os
 import statistics
-import time as _time
 from abc import ABC, abstractmethod
 from operator import itemgetter
 from typing import Any, Dict, List, Optional, Tuple
@@ -14,10 +13,12 @@ from zoneinfo import ZoneInfo
 
 from botcore import (
     _prices_diverged,
+    fmt_signed,
     is_live_network_backfill_enabled,
     is_offline_disk_cache_enabled,
     lru_dict_put,
     normalize_epoch_sec,
+    resolve_now_ts,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -968,9 +969,9 @@ def format_session_vwap_summary(entry: Any, *, cur_px: Optional[float] = None, f
         dist_pct = pct_delta(cur_px, vwap_px)
     meta: List[str] = []
     if dist_pct is not None:
-        meta.append(f"{dist_pct:+.2f}%")
+        meta.append(f"{fmt_signed(dist_pct)}%")
     if (z_val := safe_float(entry.get("session_vwap_z"), default=None)) is not None:
-        meta.append(f"z={z_val:+.2f}")
+        meta.append(f"z={fmt_signed(z_val)}")
     if (sig_pct := safe_pos_float(entry.get("session_vwap_sigma_pct"), default=None)) is not None and len(meta) < 2:
         meta.append(f"1s={sig_pct:.2f}%")
     if anc := str(entry.get("session_vwap_anchor") or "").strip():
@@ -1019,7 +1020,7 @@ def format_equity_quote_meta_suffix(entry: Any) -> str:
     if entry.get("quote_age_min") is not None:
         qm_parts.append(f"age={entry['quote_age_min']}m")
     if (ext_chg := safe_float(entry.get("ext_vs_rth_pct"), default=None)) is not None:
-        qm_parts.append(f"ext_vs_rth={ext_chg:+.2f}%")
+        qm_parts.append(f"ext_vs_rth={fmt_signed(ext_chg)}%")
     if entry.get("t212_close_px") is not None:
         qm_parts.append(f"t212_close=${entry['t212_close_px']}")
     return f" [{', '.join(qm_parts)}]"
@@ -1391,7 +1392,7 @@ def compute_swing_wave_metrics(
         out["major_swing_low_px"] = round(major_low_px, eff_dec)
         out["rally_from_major_low_pct"] = major_rally_pct
     if swing_legs_pct:
-        out["recent_swings_7d"] = [f"{x:+.1f}%" for x in swing_legs_pct[-5:]]
+        out["recent_swings_7d"] = [f"{fmt_signed(x, 1)}%" for x in swing_legs_pct[-5:]]
         out["avg_swing_amp_7d_pct"] = round(sum(abs(x) for x in swing_legs_pct) / len(swing_legs_pct), 2)
     return out
 
@@ -1931,15 +1932,13 @@ def format_kinematic_parts(entry: Any, *, compact: bool = False) -> List[str]:
         vk_v = safe_float(entry.get(v_key), default=None)
         ak_v = safe_float(entry.get(a_key), default=None)
         if vk_v is not None and ak_v is not None and (abs(vk_v) >= 1e-6 or abs(ak_v) >= 1e-6):
-            vk_disp = round(vk_v, 4) + 0.0
-            ak_disp = round(ak_v, 4) + 0.0
+            vk_s, ak_s = fmt_signed(vk_v, 4), fmt_signed(ak_v, 4)
             if compact:
-                parts.extend((f"vel_{k_lbl}={vk_disp:+.4f}%/m", f"acc_{k_lbl}={ak_disp:+.4f}%/m^2"))
+                parts.extend((f"vel_{k_lbl}={vk_s}%/m", f"acc_{k_lbl}={ak_s}%/m^2"))
             else:
-                parts.append(f"{k_lbl}: vel={vk_disp:+.4f}%/m, acc={ak_disp:+.4f}%/m^2")
+                parts.append(f"{k_lbl}: vel={vk_s}%/m, acc={ak_s}%/m^2")
     if parts and (kz_v := resolve_kalman_vel_z(entry)) is not None and abs(kz_v) >= 0.01:
-        kz_disp = round(kz_v, 2) + 0.0
-        parts.append(f"kalman_z={kz_disp:+.2f}")
+        parts.append(f"kalman_z={fmt_signed(kz_v)}")
     return parts
 
 
@@ -2011,6 +2010,7 @@ def load_stitched_24h_ohlc_points(
     *,
     require_positive_volume: bool = False,
     cache_dir: Optional[str] = None,
+    now_ts: Optional[float] = None,
 ) -> List[List[Any]]:
     """Load 5m OHLC points since `cutoff_24h` and prepend older 15m OHLC points when span < 18h."""
     allow_offline_disk = is_offline_disk_cache_enabled()
@@ -2055,7 +2055,7 @@ def load_stitched_24h_ohlc_points(
             )
             if can_read_disk:
                 st = os.stat(read_cpath)
-                age_s = _time.time() - st.st_mtime
+                age_s = resolve_now_ts(now_ts) - st.st_mtime
                 max_disk_age = 7200.0 if allow_offline_disk else 3600.0
                 if 0.0 <= age_s < max_disk_age:
                     file_sig = (st.st_mtime_ns, st.st_size)
@@ -2098,7 +2098,7 @@ def load_stitched_24h_ohlc_points(
     if cpath and len(pts_all) >= 8 and (pts_all[-1][0] - pts_all[0][0]) >= 18 * 3600 * 1000:
         try:
             with generation_file_lock(cpath):
-                now_w = _time.time()
+                now_w = resolve_now_ts(now_ts)
                 cur_disk = read_json_dict(cpath, default=None, repair_files=True)
                 cur_ts = normalize_epoch_sec(cur_disk.get("ts") if isinstance(cur_disk, dict) else None, default=None)
                 if not (is_equity_symbol(sym_u) and cur_ts is not None and -5.0 <= (now_w - cur_ts) < 240.0):

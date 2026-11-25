@@ -301,6 +301,12 @@ _LOCAL_ATOMIC_DEF_RE = re.compile(
     r"^\s*def\s+(?:_?atomic_write(?:_json)?|_write_json_atomic)\b",
     re.MULTILINE,
 )
+EVALUATOR_CLOCK_GUARDED_PREFIX = "intelligence/sentiment/evaluators/"
+EQUITY_QUOTE_PROVENANCE_KEYS = frozenset({"quote_source", "quote_age_min"})
+EQUITY_QUOTE_PROVENANCE_OWNER_FILE = "intelligence/sentiment/collectors/microstructure_collector.py"
+EQUITY_QUOTE_PROVENANCE_OWNER_FN = "_apply_resolved_equity_quote"
+SIGNED_ZERO_GUARDED_PREFIXES = ("intelligence/sentiment/", "orchestratorOS/supervisor/")
+_RAW_SIGNED_FLOAT_SPEC_RE = re.compile(r"\+,?\.\d+f")
 
 
 def _norm_rel_path(path: Path, root: Path) -> str | None:
@@ -1343,6 +1349,149 @@ def audit_bespoke_atomic_writers(
     return violations
 
 
+# -- Audit 8: Evaluator replay clock purity (no bare wall-clock calls) ---------
+
+def audit_evaluator_clock_purity_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Enforce zero direct time.time()/datetime.now()/datetime.utcnow() calls inside stateless evaluators."""
+    root = Path(root)
+    target_rels = [
+        r
+        for r in _normalize_target_rels(root, rel_paths)
+        if r.startswith(EVALUATOR_CLOCK_GUARDED_PREFIX) and r.endswith(".py")
+    ]
+    violations: list[str] = []
+    for rel_s in target_rels:
+        _, tree, syntax_err = parse_module_cached(root / rel_s, rel_s, _parsed_cache)
+        if syntax_err is not None or tree is None:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            attr = node.func.attr
+            val = node.func.value
+            if isinstance(val, ast.Name):
+                if val.id in ("time", "_time") and attr == "time":
+                    violations.append(
+                        f"{rel_s}:{node.lineno}: direct wall-clock {val.id}.time() in evaluator (use resolve_now_ts(now_ts))"
+                    )
+                elif val.id in ("datetime", "_datetime") and attr in ("now", "utcnow"):
+                    violations.append(
+                        f"{rel_s}:{node.lineno}: direct wall-clock {val.id}.{attr}() in evaluator (use resolve_now_ts(now_ts))"
+                    )
+    return violations
+
+
+# -- Audit 9: Single atomic writer for equity quote provenance -----------------
+
+def audit_equity_quote_provenance_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Enforce that quote_source and quote_age_min are written ONLY via Fleet24hAndMicrostructureEnricher._apply_resolved_equity_quote."""
+    root = Path(root)
+    target_rels = [r for r in _normalize_target_rels(root, rel_paths) if _is_prod_python_rel(r)]
+    violations: list[str] = []
+
+    def _const_str(node: ast.AST | None) -> str | None:
+        return node.value if (isinstance(node, ast.Constant) and isinstance(node.value, str)) else None
+
+    for rel_s in target_rels:
+        _, tree, syntax_err = parse_module_cached(root / rel_s, rel_s, _parsed_cache)
+        if syntax_err is not None or tree is None:
+            continue
+
+        def _visit(node: ast.AST, fn_name: str | None) -> None:
+            cur_fn = fn_name
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                cur_fn = node.name
+            is_owner = (
+                rel_s == EQUITY_QUOTE_PROVENANCE_OWNER_FILE
+                and cur_fn == EQUITY_QUOTE_PROVENANCE_OWNER_FN
+            )
+            if not is_owner:
+                if (
+                    isinstance(node, ast.Subscript)
+                    and isinstance(node.ctx, ast.Store)
+                    and (key_s := _const_str(node.slice)) in EQUITY_QUOTE_PROVENANCE_KEYS
+                ):
+                    violations.append(
+                        f"{rel_s}:{node.lineno}: direct write to {key_s!r} outside {EQUITY_QUOTE_PROVENANCE_OWNER_FN}"
+                    )
+                elif (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "setdefault"
+                    and node.args
+                    and (key_s := _const_str(node.args[0])) in EQUITY_QUOTE_PROVENANCE_KEYS
+                ):
+                    violations.append(
+                        f"{rel_s}:{node.lineno}: direct setdefault({key_s!r}, ...) outside {EQUITY_QUOTE_PROVENANCE_OWNER_FN}"
+                    )
+                elif isinstance(node, ast.Dict):
+                    for k_node in node.keys:
+                        if (key_s := _const_str(k_node)) in EQUITY_QUOTE_PROVENANCE_KEYS:
+                            violations.append(
+                                f"{rel_s}:{getattr(k_node, 'lineno', node.lineno)}: dict literal {key_s!r} outside {EQUITY_QUOTE_PROVENANCE_OWNER_FN}"
+                            )
+            for child in ast.iter_child_nodes(node):
+                _visit(child, cur_fn)
+
+        _visit(tree, None)
+    return violations
+
+
+# -- Audit 10: Signed-zero safe float formatting in prompts & telemetry --------
+
+def audit_signed_zero_format_ast(
+    root: Path = _ROOT,
+    rel_paths: Sequence[str] | None = None,
+    *,
+    _parsed_cache: ParsedCache | None = None,
+) -> list[str]:
+    """Enforce botcore.fmt_signed instead of raw :+.Nf format specs in prompt/telemetry code (prevents -0.00%)."""
+    root = Path(root)
+    target_rels = [
+        r
+        for r in _normalize_target_rels(root, rel_paths)
+        if r.startswith(SIGNED_ZERO_GUARDED_PREFIXES) and r.endswith(".py")
+    ]
+    violations: list[str] = []
+    for rel_s in target_rels:
+        _, tree, syntax_err = parse_module_cached(root / rel_s, rel_s, _parsed_cache)
+        if syntax_err is not None or tree is None:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FormattedValue) and isinstance(node.format_spec, ast.JoinedStr):
+                spec_parts = [
+                    v.value for v in node.format_spec.values if isinstance(v, ast.Constant) and isinstance(v.value, str)
+                ]
+                spec_s = "".join(spec_parts)
+                if spec_s and _RAW_SIGNED_FLOAT_SPEC_RE.search(spec_s):
+                    violations.append(
+                        f"{rel_s}:{node.lineno}: raw signed float format spec {spec_s!r} (use botcore.fmt_signed)"
+                    )
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "format"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+                and _RAW_SIGNED_FLOAT_SPEC_RE.search(node.args[1].value)
+            ):
+                violations.append(
+                    f"{rel_s}:{node.lineno}: raw signed format(..., {node.args[1].value!r}) (use botcore.fmt_signed)"
+                )
+    return violations
+
+
 # -- Combined SSOT AST audit runner --------------------------------------------
 
 def audit_all_ssot_ast(
@@ -1351,7 +1500,7 @@ def audit_all_ssot_ast(
     *,
     _parsed_cache: ParsedCache | None = None,
 ) -> list[str]:
-    """Run all SSOT AST audits (primitives, venue branches, equity suffixes, DAG, cycles, producers, atomic writers)."""
+    """Run all SSOT AST audits (primitives, venue branches, equity suffixes, DAG, cycles, producers, atomic writers, structural guards)."""
     root = Path(root)
     target_rels = _normalize_target_rels(root, rel_paths) if rel_paths is not None else None
     parsed_cache: ParsedCache = _parsed_cache if _parsed_cache is not None else {}
@@ -1365,6 +1514,9 @@ def audit_all_ssot_ast(
         *audit_import_cycles_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
         *audit_producer_only_caches_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
         *audit_bespoke_atomic_writers(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
+        *audit_evaluator_clock_purity_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
+        *audit_equity_quote_provenance_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
+        *audit_signed_zero_format_ast(root, rel_paths=target_rels, _parsed_cache=parsed_cache),
     ):
         if err not in seen:
             seen.add(err)

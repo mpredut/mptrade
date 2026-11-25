@@ -15,12 +15,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import builtins
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 import json
 import math
 import os
 import threading
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 import uuid
 
 import account_cache_health
@@ -92,6 +93,11 @@ import instrument_registry as sym
 from instrument_registry import casefold_get
 from providers.base import MarketDataProvider
 from providers.order_id_context import extract_client_order_id
+from providers.order_ledger import (
+    OrderLedgerState,
+    TERMINAL_LEDGER_STATES,
+    classify_fill_evidence_state,
+)
 from providers.order_ohlc_utils import (
     extract_executed_qty,
     extract_order_fee,
@@ -3546,6 +3552,145 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
                 for row in rows:
                     flat.append({"venue": venue_key, "symbol": str(row.get("symbol") or sym_k), **row})
         return flat, covered, verified_by_venue
+
+
+@dataclass(frozen=True)
+class UnifiedOrderBookEvidence:
+    """SSOT read-only open/filled order book snapshot classified in canonical open-first order."""
+
+    resting_open_orders: list[dict[str, Any]]
+    open_covered_venues: set[str]
+    verified_by_venue: dict[str, float]
+    symbol_verified_ts: dict[tuple[str, str], float]
+    terminal_order_keys: set[tuple[str, str, str]]
+    ambiguous_filled_by_key: dict[tuple[str, str, str], dict[str, Any]]
+
+
+def load_unified_order_book_evidence(
+    cachedb_dir: str,
+    *,
+    read_json_fn=None,
+    symbol_normalizer: Optional[Callable[[Any], str]] = None,
+) -> UnifiedOrderBookEvidence:
+    """Read open and filled order caches across all venues in open-first order and classify fills via order-ledger SSOT."""
+    if not cachedb_dir:
+        return UnifiedOrderBookEvidence([], set(), {}, {}, set(), {})
+
+    def _norm_sym(raw_sym: Any) -> str:
+        if symbol_normalizer is not None:
+            return str(symbol_normalizer(raw_sym) or "").strip().lower()
+        return str(clean_symbol_key(raw_sym) or raw_sym or "").strip().lower()
+
+    def _key(v_k: str, s_raw: Any, oid_raw: Any) -> tuple[str, str, str]:
+        v_norm = str(normalize_venue_name(v_k) or v_k or "").strip().lower()
+        return (v_norm, _norm_sym(s_raw), clean_order_id(oid_raw) or "")
+
+    raw_open_rows: list[tuple[tuple[str, str, str], dict[str, Any]]] = []
+    open_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    open_covered_venues: set[str] = set()
+    verified_by_venue: dict[str, float] = {}
+    symbol_verified_ts: dict[tuple[str, str], float] = {}
+    terminal_order_keys: set[tuple[str, str, str]] = set()
+    ambiguous_filled_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    filled_open_by_venue: dict[str, list[dict[str, Any]]] = {}
+
+    # 1. Read open-order snapshots FIRST so fill classification knows resting presence & origQty.
+    for venue_key, open_fname in CacheOrderOpenManager.VENUE_FILENAMES.items():
+        oo_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, open_fname)))
+        items, ft, ver_ts, sym_ver = CacheOrderOpenManager.read_venue_open_orders_snapshot_detailed(
+            oo_path, read_json_fn=read_json_fn
+        )
+        if not items and not ft and ver_ts <= 0.0 and not sym_ver:
+            continue
+        open_covered_venues.add(venue_key)
+        if ver_ts > 0.0:
+            verified_by_venue[venue_key] = ver_ts
+        for sym_k, s_ts in sym_ver.items():
+            sym_lc = _norm_sym(sym_k)
+            if sym_lc and s_ts > 0.0:
+                symbol_verified_ts[(venue_key, sym_lc)] = max(symbol_verified_ts.get((venue_key, sym_lc), 0.0), s_ts)
+        for k_sym, rows in items.items():
+            for oo in rows:
+                if not isinstance(oo, dict):
+                    continue
+                oid = clean_order_id(extract_order_id(oo, default=None)) or ""
+                oo_sym = str(oo.get("symbol") or k_sym)
+                key_t = _key(venue_key, oo_sym, oid)
+                row_full = {"venue": venue_key, "symbol": oo_sym, **oo}
+                if oid:
+                    open_by_key[key_t] = row_full
+                raw_open_rows.append((key_t, row_full))
+
+    # 2. Classify filled-order cache rows via canonical order-ledger SSOT rules.
+    for venue_key, filled_fname in CacheOrderFilledManager.VENUE_FILENAMES.items():
+        oc_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, filled_fname)))
+        items, ft = CacheOrderFilledManager.read_venue_filled_orders_snapshot(
+            oc_path, venue=venue_key, read_json_fn=read_json_fn
+        )
+        if not items and not ft:
+            continue
+        for k_sym, sym_orders in items.items():
+            latest_by_oid: dict[str, dict[str, Any]] = {}
+            for oo in sym_orders:
+                oid = clean_order_id(extract_order_id(oo, default=None)) or ""
+                if oid:
+                    latest_by_oid[oid] = oo
+            for oid, oo in latest_by_oid.items():
+                oo_sym = str(oo.get("symbol") or k_sym)
+                key_t = _key(venue_key, oo_sym, oid)
+                resting_row = open_by_key.get(key_t)
+                req_qty = (
+                    safe_pos_float(extract_orig_qty(resting_row, default=None), default=None)
+                    if resting_row is not None
+                    else first_pos_float(oo.get("origQty"), oo.get("orig_qty"), oo.get("requested_qty"), default=None)
+                )
+                oo_st = oo.get("status")
+                oo_st_up = clean_upper_scalar(oo_st) or ""
+                fill_state = classify_fill_evidence_state(
+                    oo, req_qty=req_qty, resting_now=(resting_row is not None)
+                )
+                if fill_state in TERMINAL_LEDGER_STATES:
+                    if fill_state == OrderLedgerState.FILLED.value and req_qty is None and resting_row is None:
+                        ambiguous_filled_by_key[key_t] = oo
+                    else:
+                        terminal_order_keys.add(key_t)
+                    continue
+                if not (is_open_working_status(oo_st, allow_empty=False) or oo_st_up == "PARTIALLY_FILLED"):
+                    continue
+                filled_open_by_venue.setdefault(venue_key, []).append(
+                    {"venue": venue_key, "symbol": oo_sym, **oo}
+                )
+
+    resting_out: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str, str]] = set()
+    for key_t, row_full in raw_open_rows:
+        oid = key_t[2]
+        if oid and key_t in terminal_order_keys:
+            continue
+        if not oid or key_t not in seen_keys:
+            if oid:
+                seen_keys.add(key_t)
+            resting_out.append(row_full)
+
+    for venue_key, oc_orders in filled_open_by_venue.items():
+        if venue_key in open_covered_venues:
+            continue
+        for oo in oc_orders:
+            oid = clean_order_id(extract_order_id(oo, default=None)) or ""
+            key_t = _key(venue_key, oo.get("symbol"), oid)
+            if not oid or key_t not in seen_keys:
+                if oid:
+                    seen_keys.add(key_t)
+                resting_out.append(oo)
+
+    return UnifiedOrderBookEvidence(
+        resting_open_orders=resting_out,
+        open_covered_venues=open_covered_venues,
+        verified_by_venue=verified_by_venue,
+        symbol_verified_ts=symbol_verified_ts,
+        terminal_order_keys=terminal_order_keys,
+        ambiguous_filled_by_key=ambiguous_filled_by_key,
+    )
 
 
 # =============================================================================

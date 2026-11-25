@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from abc import ABC
 import math
-import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import (
@@ -26,6 +25,7 @@ from botcore import (
     first_pos_float,
     normalize_epoch_sec,
     normalize_side,
+    resolve_now_ts,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -244,7 +244,7 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
             return open_orders
         prices_and_trends, microstructure = prices_and_trends or {}, microstructure or {}
         explicit_now = safe_pos_float(now_ts, default=None)
-        ref_now = explicit_now if explicit_now is not None else time.time()
+        ref_now = explicit_now if explicit_now is not None else resolve_now_ts(None)
         eff_ob_stale_sec = safe_pos_float(ob_stale_sec, default=30.0) or 30.0
         for o in open_orders:
             if not isinstance(o, dict):

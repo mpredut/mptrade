@@ -13,6 +13,7 @@ from botcore import (
     _parse_bool_flag,
     clean_scalar_str,
     clean_scale,
+    fmt_signed,
     normalize_epoch_sec,
     normalize_side,
     obj_attr,
@@ -211,7 +212,7 @@ def probe_deterministic_guards(
                 "guard": "G_PROF",
                 "action": "VETO",
                 "scale": 0.0,
-                "reason": f"margin={diff_pct:+.2f}%<{prof_pct:.2f}%(ref={ref_px:g})",
+                "reason": f"margin={fmt_signed(diff_pct)}%<{prof_pct:.2f}%(ref={ref_px:g})",
             })
             min_scale = 0.0
 

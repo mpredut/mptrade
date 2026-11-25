@@ -27,6 +27,7 @@ from botcore import (
     _parse_bool_flag,
     coerce_dict_maps,
     first_pos_float,
+    fmt_signed,
     normalize_epoch_sec,
     safe_float,
     safe_int,
@@ -116,13 +117,13 @@ def enrich_sentiment_advisor_live_flow_divergence(
     summary_cited_tr = parse_cited_taker_ratio(sa_texts)
     cited_tr = summary_cited_tr if sa_age >= 15.0 else None
     tr_s = f"taker_ratio={live_tr:.2f}" if live_tr is not None else (f"1h_taker={live_tr_1h:.2f}" if live_tr_1h is not None else "")
-    cvd_s = f"cvd_15m={live_cvd / 1e6:+.2f}M" if live_cvd is not None else (f"cvd_1h={live_cvd_1h / 1e6:+.2f}M" if live_cvd_1h is not None else "")
+    cvd_s = f"cvd_15m={fmt_signed(live_cvd / 1e6)}M" if live_cvd is not None else (f"cvd_1h={fmt_signed(live_cvd_1h / 1e6)}M" if live_cvd_1h is not None else "")
     flow_lbl = ", ".join(x for x in (
         tr_s, cvd_s,
         f"5m_tr={live_tr_5m:.2f}" if live_tr_5m is not None else "",
-        f"cvd_5m={live_cvd_5m / 1e6:+.2f}M" if live_cvd_5m is not None else "",
+        f"cvd_5m={fmt_signed(live_cvd_5m / 1e6)}M" if live_cvd_5m is not None else "",
         f"1h_tr={live_tr_1h:.2f}" if (live_tr is not None and live_tr_1h is not None) else "",
-        f"cvd_1h={live_cvd_1h / 1e6:+.2f}M" if (live_cvd is not None and live_cvd_1h is not None) else "",
+        f"cvd_1h={fmt_signed(live_cvd_1h / 1e6)}M" if (live_cvd is not None and live_cvd_1h is not None) else "",
     ) if x)
     bear_acts = ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE")
     already_cited_sell_on_hold = (
@@ -234,7 +235,7 @@ def enrich_sentiment_advisor_live_flow_divergence(
             ):
                 if sgn * cited_cvd_1h <= -500_000.0 and sgn * live_cvd_1h >= 5_000_000.0 and (live_cvd is None or sgn * live_cvd > 0.0) and tr_ok:
                     sentiment_advisor["live_flow_divergence"] = (
-                        f"LIVE_1H_CVD_FLIP_{lbl} ({flow_lbl} vs {sa_age:.1f}m-old advisor 1h_cvd={cited_cvd_1h / 1e6:+.2f}M)"
+                        f"LIVE_1H_CVD_FLIP_{lbl} ({flow_lbl} vs {sa_age:.1f}m-old advisor 1h_cvd={fmt_signed(cited_cvd_1h / 1e6)}M)"
                     )
                     break
     if "live_flow_divergence" not in sentiment_advisor and sa_age >= 15.0 and live_tr_5m is not None:
@@ -299,9 +300,9 @@ def format_bottom_structure_6h_parts(
         f"1h_low={px_prefix}{m24.get('recent_1h_low_px')}",
     ]
     if m24.get("higher_low_vs_prior_pct") is not None:
-        b_parts.append(f"hl_diff={safe_float(m24.get('higher_low_vs_prior_pct'), 0.0):+.2f}%")
+        b_parts.append(f"hl_diff={fmt_signed(m24.get('higher_low_vs_prior_pct'))}%")
     if m24.get("reclaim_above_prior_low_pct") is not None:
-        b_parts.append(f"reclaim={safe_float(m24.get('reclaim_above_prior_low_pct'), 0.0):+.2f}%")
+        b_parts.append(f"reclaim={fmt_signed(m24.get('reclaim_above_prior_low_pct'))}%")
     return str(b_struct), b_parts
 
 
@@ -680,12 +681,12 @@ class InstitutionalPostureDivergenceEvaluator(MacroTelemetryEvaluatorBase):
             x
             for x in (
                 f"Cross_Asset={cross_reg}" if cross_reg and cross_reg != "NEUTRAL" else "",
-                f"CB_Premium={cb_bps:+.2f}bps" if cb_bps is not None else "",
-                f"IBIT_1h={ibit_1h:+.2f}%" if ibit_1h is not None else "",
-                f"Futures_Lead={fut_lead:+.2f}%"
+                f"CB_Premium={fmt_signed(cb_bps)}bps" if cb_bps is not None else "",
+                f"IBIT_1h={fmt_signed(ibit_1h)}%" if ibit_1h is not None else "",
+                f"Futures_Lead={fmt_signed(fut_lead)}%"
                 if fut_lead is not None and fut_reg in ("FUTURES_PREMARKET_GAP_UP", "FUTURES_PREMARKET_GAP_DOWN")
                 else "",
-                f"Skew_25d={eff_skew:+.2f}%" if eff_skew is not None and (eff_skew <= -2.5 or eff_skew >= 4.0) else "",
+                f"Skew_25d={fmt_signed(eff_skew)}%" if eff_skew is not None and (eff_skew <= -2.5 or eff_skew >= 4.0) else "",
                 flow_lbl,
             )
             if x
@@ -694,15 +695,15 @@ class InstitutionalPostureDivergenceEvaluator(MacroTelemetryEvaluatorBase):
         reg_tag = (cross_reg if cross_reg and cross_reg != "NEUTRAL" else "cb_premium").lower()
         posture_tag = (act_u or bias_u).lower()
         metric_tag = (
-            f"{cb_bps:+.1f}bps"
+            f"{fmt_signed(cb_bps, 1)}bps"
             if cb_bps is not None
             else (
-                f"ibit_{ibit_1h:+.2f}pct"
+                f"ibit_{fmt_signed(ibit_1h)}pct"
                 if ibit_1h is not None
                 else (
-                    f"lead_{fut_lead:+.2f}pct"
+                    f"lead_{fmt_signed(fut_lead)}pct"
                     if fut_lead is not None
-                    else (f"skew_{eff_skew:+.2f}pct" if eff_skew is not None else "flow")
+                    else (f"skew_{fmt_signed(eff_skew)}pct" if eff_skew is not None else "flow")
                 )
             )
         )
@@ -1149,7 +1150,7 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
         if not m_state and bar_age_min is not None and bar_age_min > 45.0:
             m_state = "CLOSED"
         d_parts = [
-            f"{(round(val, 2) + 0.0):+.2f}% {h_lbl}"
+            f"{fmt_signed(val)}% {h_lbl}"
             for h_lbl, h_key in (
                 (("24h", "chg_24h_pct"),)
                 if m_state == "CLOSED"
@@ -1170,13 +1171,12 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
     if (lead_v := safe_float(lead_info.get("futures_lead_pct"), default=None)) is not None and str(
         lead_info.get("futures_lead_regime") or ""
     ).strip() in ("FUTURES_PREMARKET_GAP_UP", "FUTURES_PREMARKET_GAP_DOWN"):
-        parts.append(f"Futures_Lead={(round(lead_v, 2) + 0.0):+.2f}%")
+        parts.append(f"Futures_Lead={fmt_signed(lead_v)}%")
     if not include_crypto:
         return " | ".join(parts)
     cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
     if cb_bps is not None:
-        cb_bps = round(cb_bps, 1) + 0.0
-        parts.append(f"CB_Premium={cb_bps:+.1f}bps")
+        parts.append(f"CB_Premium={fmt_signed(cb_bps, 1)}bps")
     btc_dvol = safe_pos_float(data.get("btc_dvol", items.get("btc_dvol")), default=None)
     eth_dvol = safe_pos_float(data.get("eth_dvol", items.get("eth_dvol")), default=None)
     if btc_dvol is not None or eth_dvol is not None:
@@ -1192,11 +1192,11 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
         if (rv_v := safe_pos_float(data.get(f"{pfx}_rv_pct", items.get(f"{pfx}_rv_pct")), default=None)) is not None:
             opt_parts.append(f"RV={rv_v:.1f}%")
         if (vrp_v := safe_float(data.get(f"{pfx}_vrp_pct", items.get(f"{pfx}_vrp_pct")), default=None)) is not None:
-            opt_parts.append(f"VRP={(round(vrp_v, 1) + 0.0):+.1f}%")
+            opt_parts.append(f"VRP={fmt_signed(vrp_v, 1)}%")
         if (pc_v := safe_pos_float(data.get(f"{pfx}_pc_oi_ratio", items.get(f"{pfx}_pc_oi_ratio")), default=None)) is not None:
             opt_parts.append(f"PC_OI={pc_v:.2f}")
         if (sk_v := safe_float(data.get(f"{pfx}_skew_25d_pct", items.get(f"{pfx}_skew_25d_pct")), default=None)) is not None:
-            opt_parts.append(f"Skew_25d={(round(sk_v, 2) + 0.0):+.2f}%")
+            opt_parts.append(f"Skew_25d={fmt_signed(sk_v)}%")
         if opt_parts:
             lbl = "Options_Surface" if ccy == "BTC" else f"{ccy}_Options"
             parts.append(f"{lbl}({', '.join(opt_parts)})")

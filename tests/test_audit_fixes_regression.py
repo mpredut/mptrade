@@ -6435,6 +6435,89 @@ def test_twin_bug_elimination_and_by_construction_refactors(tmp_path):
     assert "oi_15m_chg=+0.00%" in sec3b_oi and "oi_15m_chg=-0.00%" not in sec3b_oi
 
 
+def test_structural_ssot_primitives_fmt_signed_unified_book_and_balance_view(tmp_path):
+    """Verify structural by-construction SSOT primitives:
+    1. botcore.fmt_signed normalizes negative zero across decimals, commas, and strip_zeros.
+    2. cacheaccount.load_unified_order_book_evidence classifies open-first order caches via order-ledger SSOT.
+    3. portfolio_collector.BalanceObservation & derive_runtime_portfolio_view strip internal ts keys even with no open orders.
+    """
+    from botcore import fmt_signed
+    from cacheaccount import (
+        CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME,
+        CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME,
+        load_unified_order_book_evidence,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        BalanceObservation,
+        _INTERNAL_BALANCE_TS_KEYS,
+        derive_runtime_portfolio_view,
+    )
+
+    # 1. botcore.fmt_signed
+    assert fmt_signed(-0.004) == "+0.00"
+    assert fmt_signed(-0.004, 1) == "+0.0"
+    assert fmt_signed(-0.4, 0) == "+0"
+    assert fmt_signed(-0.3, 0, comma=True) == "+0"
+    assert fmt_signed(12345.6, 0, comma=True) == "+12,346"
+    assert fmt_signed(-0.0001, 3, strip_zeros=True) == "+0"
+    assert fmt_signed(1.25, 3, strip_zeros=True) == "+1.25"
+    assert fmt_signed(None) == "+0.00"
+
+    # 2. load_unified_order_book_evidence reads open first and prevents legacy 2/10 FILLED hiding resting open order
+    cdb = tmp_path / "cachedb"
+    (cdb / "orders").mkdir(parents=True)
+    now_s = 1_795_700_000.0
+    (cdb / "orders" / CACHE_HYPERLIQUID_ORDER_OPEN_FILENAME).write_text(
+        json.dumps(
+            {
+                "items": {
+                    "HYPEUSDC": [
+                        {
+                            "orderId": "HL-1",
+                            "symbol": "HYPEUSDC",
+                            "side": "BUY",
+                            "price": 50.0,
+                            "origQty": 10.0,
+                            "executedQty": 2.0,
+                            "status": "PARTIALLY_FILLED",
+                        }
+                    ]
+                },
+                "symbol_verified_ts": {"HYPEUSDC": now_s},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdb / "orders" / CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME).write_text(
+        json.dumps(
+            {
+                "items": {
+                    "HYPEUSDC": [
+                        {"orderId": "HL-1", "symbol": "HYPEUSDC", "side": "BUY", "price": 50.0, "quantity": 2.0, "status": "FILLED"},
+                        {"orderId": "HL-2", "symbol": "HYPEUSDC", "side": "BUY", "price": 49.0, "quantity": 5.0, "origQty": 5.0, "status": "FILLED"},
+                    ]
+                },
+                "fetchtime": {"HYPEUSDC": int(now_s * 1000)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    ev = load_unified_order_book_evidence(str(cdb))
+    assert any(r.get("orderId") == "HL-1" for r in ev.resting_open_orders)
+    assert ("hyperliquid", "hypeusdc", "HL-1") not in ev.terminal_order_keys
+    assert ("hyperliquid", "hypeusdc", "HL-2") in ev.terminal_order_keys
+
+    # 3. BalanceObservation & derive_runtime_portfolio_view clean internal keys even on empty open_orders_list
+    obs = BalanceObservation(free=100.0, ts=now_s, priority=2)
+    assert obs.free == pytest.approx(100.0) and obs.ts == pytest.approx(now_s)
+    pos_list = [{"venue": "binance", "symbol": "ARBUSDC", "free_base": 10.0, "_base_balance_ts": now_s, "_quote_balance_ts": now_s}]
+    cash_map = {"binance:USDC": {"venue": "binance", "asset": "USDC", "free": 100.0, "_balance_ts": now_s}}
+    derive_runtime_portfolio_view([], pos_list, cash_map, {}, {}, {}, {}, now_ts_oo=now_s, gateway_max_usd=2000.0)
+    for k_int in _INTERNAL_BALANCE_TS_KEYS:
+        assert k_int not in pos_list[0]
+        assert k_int not in cash_map["binance:USDC"]
+
+
 def test_cycle12_premarket_overnight_gap_15m_macro_bar_age_short_trends_and_powell_clickbait(tmp_path):
     """Cycle 12 US Pre-Market open (11:00 EET / 04:00 EST) audit fixes:
     1. compute_24h_price_metrics must not mislabel an 8h overnight close gap as chg_15m_pct /

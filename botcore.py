@@ -108,6 +108,7 @@ from core.math_coercion import (  # noqa: E402
     extract_order_qty,
     extract_order_side,
     first_pos_float,
+    fmt_signed,
     format_notify_price,
     format_notify_qty,
     format_price_log,

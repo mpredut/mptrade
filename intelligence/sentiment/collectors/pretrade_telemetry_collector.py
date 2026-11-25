@@ -15,6 +15,7 @@ from botcore import (
     clean_scale,
     extract_current_price_item,
     extract_timestamp_s,
+    fmt_signed,
     is_live_network_backfill_enabled,
     normalize_epoch_sec,
     obj_attr,
@@ -817,7 +818,7 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
                 oi_f = safe_pos_float(obj_attr(f_snap, "open_interest_usd", None), 0.0)
                 if fr_f is not None and not (is_eq_sym and abs(fr_f) < 1e-12):
                     fr_period = _funding_period_label(fr_f, fr_ann_f, symbol=symbol)
-                    telemetry["Perpetual Funding Rate"] = f"{fr_f * 100:+.4f}% ({fr_period})"
+                    telemetry["Perpetual Funding Rate"] = f"{fmt_signed(fr_f * 100, 4)}% ({fr_period})"
                 if oi_f > 0.0:
                     telemetry["Derivatives Open Interest"] = (
                         f"${oi_f:,.0f} (Cboe options chain OI)" if is_eq_sym else f"${oi_f:,.0f}"
@@ -851,7 +852,7 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
                 ef = safe_float(obj_attr(dec, "epsilon", None), default=None) if dec is not None else None
                 trend_str = f"{trend}" if trend else "unspecified"
                 if gf is not None and ef is not None:
-                    gf_s = f"{gf:+.2e}" if 0.0 < abs(gf) < 1e-4 else f"{gf:+.4f}"
+                    gf_s = f"{gf:+.2e}" if 0.0 < abs(gf) < 1e-4 else fmt_signed(gf, 4)
                     ef_s = f"{ef:.2e}" if 0.0 < abs(ef) < 1e-4 else f"{ef:.4f}"
                     trend_str += f" (gradient={gf_s}, epsilon={ef_s})"
                 telemetry["Technical Trend Regime"] = trend_str
@@ -1204,7 +1205,7 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
             for k in ("chg_15m_pct", "chg_30m_pct", "chg_1h_pct", "chg_3h_pct", "chg_6h_pct", "chg_12h_pct", "chg_24h_pct")
         )
         h_parts = [
-            f"{lbl}={safe_float(m24.get(k), 0.0):+.2f}%"
+            f"{lbl}={fmt_signed(m24.get(k))}%"
             for lbl, k, req in (
                 ("1m", "chg_1m_pct", False), ("3m", "chg_3m_pct", False), ("5m", "chg_5m_pct", False),
                 ("15m", "chg_15m_pct", not has_any_m24_h), ("30m", "chg_30m_pct", not has_any_m24_h),
@@ -1215,7 +1216,7 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
         ]
         rng_str = f"24h Range=[${m24.get('low_24h')}, ${m24.get('high_24h')}]"
         geom_parts = [
-            f"{g_lbl}={g_val:+.2f}%" if g_signed else f"{g_lbl}={m24[g_k]}%"
+            f"{g_lbl}={fmt_signed(g_val)}%" if g_signed else f"{g_lbl}={m24[g_k]}%"
             for g_lbl, g_k, g_signed in (
                 ("pos", "pos_24h_pct", False), ("dd_high", "dd_24h_high_pct", True),
                 ("bounce_low", "bounce_24h_low_pct", True), ("span", "span_24h_pct", False),
@@ -1234,9 +1235,9 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
             lvn_s = f", LVN=${m24['lvn_px']}" if m24.get("lvn_px") is not None else ""
             vp_src_s = f", vp_source={m24['vp_source']}" if m24.get("vp_source") else ""
             telemetry["24h Volume Profile (POC / Value Area)"] = (
-                f"POC=${m24.get('poc_px')} ({safe_float(m24.get('poc_dist_pct'), 0.0):+.2f}%){sec_poc_s}{lvn_s}, "
-                f"VAL=${m24.get('val_px')} ({safe_float(m24.get('val_dist_pct'), 0.0):+.2f}%), "
-                f"VAH=${m24.get('vah_px')} ({safe_float(m24.get('vah_dist_pct'), 0.0):+.2f}%), "
+                f"POC=${m24.get('poc_px')} ({fmt_signed(m24.get('poc_dist_pct'))}%){sec_poc_s}{lvn_s}, "
+                f"VAL=${m24.get('val_px')} ({fmt_signed(m24.get('val_dist_pct'))}%), "
+                f"VAH=${m24.get('vah_px')} ({fmt_signed(m24.get('vah_dist_pct'))}%), "
                 f"va_pos={m24.get('va_pos_pct')}%{format_va_hold_suffix(m24)}{vp_src_s}"
             )
 
@@ -1281,7 +1282,7 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
                         btc_vals_7d = list(btc_vals_7d) + [btc_ob_mid]
             if btc_m24:
                 vs_parts = [
-                    f"{h_lbl}={m_v - b_v:+.2f}%"
+                    f"{h_lbl}={fmt_signed(m_v - b_v)}%"
                     for h_lbl, h_k in (
                         ("5m", "chg_5m_pct"), ("15m", "chg_15m_pct"), ("1h", "chg_1h_pct"), ("3h", "chg_3h_pct"),
                         ("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct"),
@@ -1291,7 +1292,7 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
                 ]
                 cross_btc = compute_cross_btc_metrics(alt_series_24h, btc_series_24h)
                 cross_parts = [
-                    f"{c_lbl}={c_val:+.2f}%" if c_signed else f"{c_lbl}={cross_btc[c_k]}%"
+                    f"{c_lbl}={fmt_signed(c_val)}%" if c_signed else f"{c_lbl}={cross_btc[c_k]}%"
                     for c_lbl, c_k, c_signed in (
                         ("alt_btc_pos_24h", "alt_btc_pos_24h_pct", False),
                         ("alt_btc_dd_high", "alt_btc_dd_24h_high_pct", True),
@@ -1486,28 +1487,29 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
                 b7_chg = safe_float((btc_m7d or {}).get("chg_7d_pct"), default=None)
                 if m7_chg is not None and b7_chg is not None:
                     cur_rel_btc = telemetry.get("Relative Strength vs BTC (24h Benchmark)")
+                    rel_7d_s = fmt_signed(m7_chg - b7_chg)
                     if not cur_rel_btc:
-                        telemetry["Relative Strength vs BTC (24h Benchmark)"] = f"vs_btc(7d={m7_chg - b7_chg:+.2f}%)"
+                        telemetry["Relative Strength vs BTC (24h Benchmark)"] = f"vs_btc(7d={rel_7d_s}%)"
                     elif cur_rel_btc.startswith("vs_btc("):
                         telemetry["Relative Strength vs BTC (24h Benchmark)"] = cur_rel_btc.replace(
-                            ")", f", 7d={m7_chg - b7_chg:+.2f}%)", 1
+                            ")", f", 7d={rel_7d_s}%)", 1
                         )
                     else:
                         telemetry["Relative Strength vs BTC (24h Benchmark)"] = (
-                            f"vs_btc(7d={m7_chg - b7_chg:+.2f}%) | {cur_rel_btc}"
+                            f"vs_btc(7d={rel_7d_s}%) | {cur_rel_btc}"
                         )
             p7_parts = [
-                f"7d={safe_float(m7d.get('chg_7d_pct'), 0.0):+.2f}%",
+                f"7d={fmt_signed(m7d.get('chg_7d_pct'))}%",
                 (
                     f"7d Range=[${m7d.get('low_7d')}, ${m7d.get('high_7d')}] "
-                    f"(pos={m7d.get('pos_7d_pct')}%, dd_high={safe_float(m7d.get('dd_7d_high_pct'), 0.0):+.2f}%, "
-                    f"bounce_low={safe_float(m7d.get('bounce_7d_low_pct'), 0.0):+.2f}%, span={m7d.get('span_7d_pct')}%)"
+                    f"(pos={m7d.get('pos_7d_pct')}%, dd_high={fmt_signed(m7d.get('dd_7d_high_pct'))}%, "
+                    f"bounce_low={fmt_signed(m7d.get('bounce_7d_low_pct'))}%, span={m7d.get('span_7d_pct')}%)"
                 ),
             ]
             if m7d.get("swing_low_px") is not None and m7d.get("swing_high_px") is not None:
                 maj_sfx = (
                     f", major_low=${m7d.get('major_swing_low_px')}"
-                    f"(rally={safe_float(m7d.get('rally_from_major_low_pct'), 0.0):+.2f}%)"
+                    f"(rally={fmt_signed(m7d.get('rally_from_major_low_pct'))}%)"
                     if m7d.get("rally_from_major_low_pct") is not None and m7d.get("major_swing_low_px") is not None
                     else ""
                 )
@@ -1521,8 +1523,8 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
                     hist_sfx = f", swings_7d=[{', '.join(str(x) for x in m7d['recent_swings_7d'])}]{amp_s}"
                 p7_parts.append(
                     f"swing_wave(low=${m7d.get('swing_low_px')}, high=${m7d.get('swing_high_px')}, "
-                    f"rally_low={safe_float(m7d.get('rally_from_swing_low_pct'), 0.0):+.2f}%, "
-                    f"pullback_high={safe_float(m7d.get('pullback_from_swing_high_pct'), 0.0):+.2f}%{maj_sfx}){hist_sfx}"
+                    f"rally_low={fmt_signed(m7d.get('rally_from_swing_low_pct'))}%, "
+                    f"pullback_high={fmt_signed(m7d.get('pullback_from_swing_high_pct'))}%{maj_sfx}){hist_sfx}"
                 )
             telemetry["7d Price Range & Swing Structure"] = ", ".join(p7_parts)
         ctx.m7d, ctx.is_sub24h_dup_7d = m7d, is_sub24h_dup_7d
@@ -1757,23 +1759,23 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
         elif (fr_v := safe_float(cur_m_info.get("funding_rate"), default=None)) is not None:
             f_ann = safe_float(cur_m_info.get("funding_annualized_pct"), default=None)
             fr_period = _funding_period_label(fr_v, f_ann, symbol=symbol)
-            fr_base = telemetry.get("Perpetual Funding Rate") or f"{fr_v * 100:+.4f}% ({fr_period})"
+            fr_base = telemetry.get("Perpetual Funding Rate") or f"{fmt_signed(fr_v * 100, 4)}% ({fr_period})"
             b_bps = safe_float(cur_m_info.get("perp_spot_basis_bps"), default=None)
             b_d15 = safe_float(cur_m_info.get("basis_delta_15m_bps"), default=None)
             f_d1h = safe_float(cur_m_info.get("funding_delta_1h_bps"), default=None)
             fr_extras = [
                 x
                 for x in (
-                    f"funding_ann={round(f_ann, 1) + 0.0:+.1f}%"
+                    f"funding_ann={fmt_signed(f_ann, 1)}%"
                     if f_ann is not None and not (is_eq_sym and abs(f_ann) < 1e-9 and abs(fr_v) < 1e-12)
                     else "",
-                    f"fund_d1h={round(f_d1h, 2) + 0.0:+.2f}bps"
+                    f"fund_d1h={fmt_signed(f_d1h)}bps"
                     if f_d1h is not None and abs(f_d1h) >= 0.05 and not is_eq_sym
                     else "",
-                    f"perp_basis={round(b_bps, 1) + 0.0:+.1f}bps"
+                    f"perp_basis={fmt_signed(b_bps, 1)}bps"
                     if b_bps is not None and not (is_eq_sym and abs(b_bps) < 1e-9)
                     else "",
-                    f"basis_d15m={round(b_d15, 1) + 0.0:+.1f}bps"
+                    f"basis_d15m={fmt_signed(b_d15, 1)}bps"
                     if b_d15 is not None and abs(b_d15) >= 0.1 and not is_eq_sym
                     else "",
                 )
@@ -1790,9 +1792,9 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             eq_oi_tag = " (Cboe options chain OI)" if is_eq_sym else ""
             oi_chg_parts: List[str] = []
             if (oi_chg := safe_float(cur_m_info.get("oi_1h_chg_pct"), default=None)) is not None:
-                oi_chg_parts.append(f"1h_chg={oi_chg:+.2f}%")
+                oi_chg_parts.append(f"1h_chg={fmt_signed(oi_chg)}%")
             if (oi_15m := safe_float(cur_m_info.get("oi_15m_chg_pct"), default=None)) is not None:
-                oi_chg_parts.append(f"15m_chg={oi_15m:+.2f}%")
+                oi_chg_parts.append(f"15m_chg={fmt_signed(oi_15m)}%")
             if oi_chg_parts:
                 telemetry["Derivatives Open Interest"] = f"{oi_base}{eq_oi_tag} ({', '.join(oi_chg_parts)})"
             else:
@@ -1896,9 +1898,9 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                     net_b = safe_float(cur_m_info.get("net_buy_edge_vs_peer_bps"), default=None)
                     best_b = cur_m_info.get("best_buy_venue")
                     fee_basis = str(cur_m_info.get("arb_fee_basis") or "maker").strip().lower()
-                    arb_s = f"arb_vs_{cur_m_info['cross_venue_peer']}={round(arb_bps, 1) + 0.0:+.1f}bps"
+                    arb_s = f"arb_vs_{cur_m_info['cross_venue_peer']}={fmt_signed(arb_bps, 1)}bps"
                     if net_b is not None and best_b:
-                        arb_s += f", net_buy_edge={round(net_b, 1) + 0.0:+.1f}bps[{fee_basis}] (best_buy={best_b})"
+                        arb_s += f", net_buy_edge={fmt_signed(net_b, 1)}bps[{fee_basis}] (best_buy={best_b})"
                     telemetry["Cross-Venue Relative Value (Arbitrage)"] = arb_s
             break
 
@@ -1965,16 +1967,16 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
         if ctx.is_usd_sym:
             self._reconcile_sibling_arbitrage(ctx, p_est, liq_c)
         sp_vol_parts = format_spot_volume_rvol_parts(cur_m_info, lambda v: f"${v:,.0f}")
-        agg_sp_part = format_agg_spot_cvd_part(cur_m_info, lambda v: f"${v:+,.0f}", lambda v: f"${v:,.0f}")
+        agg_sp_part = format_agg_spot_cvd_part(cur_m_info, lambda v: f"${fmt_signed(v, 0, comma=True)}", lambda v: f"${v:,.0f}")
         if cur_m_info.get("cvd_15m_usd") is not None:
             cvd_u = safe_float(cur_m_info.get("cvd_15m_usd"), 0.0)
-            cvd_line = f"${cvd_u:+,.0f}"
+            cvd_line = f"${fmt_signed(cvd_u, 0, comma=True)}"
             if mh_parts := format_flow_horizon_parts(
-                cur_m_info, lambda v: f"${v:+,.0f}", pos_ratio_only=True
+                cur_m_info, lambda v: f"${fmt_signed(v, 0, comma=True)}", pos_ratio_only=True
             ):
                 cvd_line += f", flow_horizons({', '.join(mh_parts)})"
             if (sp_cvd := safe_float(cur_m_info.get("spot_cvd_15m_usd"), default=None)) is not None:
-                cvd_line += f", spot_cvd_15m=${sp_cvd:+,.0f}{format_spot_cvd_source_tag(cur_m_info)}"
+                cvd_line += f", spot_cvd_15m=${fmt_signed(sp_cvd, 0, comma=True)}{format_spot_cvd_source_tag(cur_m_info)}"
             if agg_sp_part:
                 cvd_line += f", {agg_sp_part}"
             if sp_vol_parts:
@@ -1986,12 +1988,12 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
         ):
             spot_tail = [p for p in (agg_sp_part, *sp_vol_parts) if p]
             tail_sfx = f", {', '.join(spot_tail)}" if spot_tail else ""
-            telemetry["15m Cumulative Volume Delta (CVD)"] = f"spot_cvd_15m=${sp_only_cvd:+,.0f}[real_spot]{tail_sfx}"
+            telemetry["15m Cumulative Volume Delta (CVD)"] = f"spot_cvd_15m=${fmt_signed(sp_only_cvd, 0, comma=True)}[real_spot]{tail_sfx}"
         elif agg_sp_part or sp_vol_parts:
             telemetry["15m Cumulative Volume Delta (CVD)"] = ", ".join(p for p in (agg_sp_part, *sp_vol_parts) if p)
         if not no_perp_liq and liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
             deep_parts = [
-                f"deep_{s_lbl}=${liq_c[px_k]} (${safe_float(liq_c.get(usd_k), 0.0):,.0f}, {safe_float(liq_c.get(dist_k), 0.0):+.2f}%)"
+                f"deep_{s_lbl}=${liq_c[px_k]} (${safe_float(liq_c.get(usd_k), 0.0):,.0f}, {fmt_signed(liq_c.get(dist_k))}%)"
                 for s_lbl, px_k, usd_k, dist_k in (
                     ("LONG", "long_liq_deep_px", "long_liq_deep_usd", "long_liq_deep_dist_pct"),
                     ("SHORT", "short_liq_deep_px", "short_liq_deep_usd", "short_liq_deep_dist_pct"),
@@ -2001,8 +2003,8 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             deep_sfx = f", {', '.join(deep_parts)}" if deep_parts else ""
             liq_src_lbl = str(liq_c.get("liq_source") or "model_est").strip()
             telemetry["Liquidation Clusters (LONG vs SHORT)"] = (
-                f"LONG liq=${liq_c['long_liq_px']} (${safe_float(liq_c.get('long_liq_usd'), 0.0):,.0f}, {safe_float(liq_c.get('long_liq_dist_pct'), 0.0):+.2f}%), "
-                f"SHORT liq=${liq_c['short_liq_px']} (${safe_float(liq_c.get('short_liq_usd'), 0.0):,.0f}, {safe_float(liq_c.get('short_liq_dist_pct'), 0.0):+.2f}%){deep_sfx}, "
+                f"LONG liq=${liq_c['long_liq_px']} (${safe_float(liq_c.get('long_liq_usd'), 0.0):,.0f}, {fmt_signed(liq_c.get('long_liq_dist_pct'))}%), "
+                f"SHORT liq=${liq_c['short_liq_px']} (${safe_float(liq_c.get('short_liq_usd'), 0.0):,.0f}, {fmt_signed(liq_c.get('short_liq_dist_pct'))}%){deep_sfx}, "
                 f"src={liq_src_lbl}"
             )
         if not no_perp_liq and (

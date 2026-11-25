@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC
+from dataclasses import dataclass
 import logging
 import math
 import os
@@ -557,40 +558,45 @@ def _strip_internal_balance_ts(entry: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in entry.items() if k not in _INTERNAL_BALANCE_TS_KEYS}
 
 
-_BalanceObs = tuple[float, Optional[float], int]
+@dataclass(frozen=True)
+class BalanceObservation:
+    """Atomic balance observation binding raw free quantity to its own timestamp and source priority."""
+
+    free: float
+    ts: Optional[float] = None
+    priority: int = 0
 
 
 def _merge_balance_observation(
-    cur: Optional[_BalanceObs],
+    cur: Optional[BalanceObservation],
     free: Optional[float],
     ts: Optional[float],
     priority: int,
-) -> Optional[_BalanceObs]:
-    """Combine atomic ``(free, ts, priority)`` observations without ever mixing one record's value with another's timestamp."""
+) -> Optional[BalanceObservation]:
+    """Combine atomic ``BalanceObservation(free, ts, priority)`` records without mixing value and timestamp."""
     if free is None:
         return cur
-    cand: _BalanceObs = (free, ts, priority)
+    cand = BalanceObservation(free=free, ts=ts, priority=priority)
     if cur is None:
         return cand
-    _, cur_ts, cur_prio = cur
-    if cur_ts is not None and ts is not None:
-        if ts > cur_ts + 1e-6:
+    if cur.ts is not None and ts is not None:
+        if ts > cur.ts + 1e-6:
             return cand
-        if cur_ts > ts + 1e-6:
+        if cur.ts > ts + 1e-6:
             return cur
-        return cand if priority >= cur_prio else cur
+        return cand if priority >= cur.priority else cur
     if ts is not None:
         return cand
-    if cur_ts is not None:
+    if cur.ts is not None:
         return cur
-    return cand if priority >= cur_prio else cur
+    return cand if priority >= cur.priority else cur
 
 
 def _build_cached_balance_index(
     cached_bals: Dict[str, Any],
 ) -> Dict[tuple[str, str], tuple[float, Optional[float]]]:
     """Build atomic ``(venue, asset) -> (free, ts)`` observations from ``venue_balances_state.json`` for both collection paths."""
-    obs_by_va: Dict[tuple[str, str], _BalanceObs] = {}
+    obs_by_va: Dict[tuple[str, str], BalanceObservation] = {}
     if not isinstance(cached_bals, dict):
         return {}
 
@@ -649,10 +655,10 @@ def _build_cached_balance_index(
             if (merged_c := _merge_balance_observation(obs_by_va.get(va_c), cf, c_ts, 2)) is not None:
                 obs_by_va[va_c] = merged_c
 
-    return {va_k: (obs[0], obs[1]) for va_k, obs in obs_by_va.items()}
+    return {va_k: (obs.free, obs.ts) for va_k, obs in obs_by_va.items()}
 
 
-def _apply_open_orders_locked_balances(
+def derive_runtime_portfolio_view(
     open_orders_list: List[Dict[str, Any]],
     tradable_positions: List[Dict[str, Any]],
     venue_quote_cash: Dict[str, Dict[str, Any]],
@@ -665,14 +671,25 @@ def _apply_open_orders_locked_balances(
     gateway_max_usd: float,
     cache_dir: Optional[str] = None,
 ) -> None:
-    """Aggregate locked quote/base from `open_orders_list`, adjust shared `(venue, asset)` balances once, and recalculate limits for all affected instruments."""
+    """Derive runtime/prompt adjusted balances and limits from raw observations + open orders without mutating persisted raw free balances."""
+    def _strip_all_internal_ts() -> None:
+        for p_cl in tradable_positions:
+            if isinstance(p_cl, dict):
+                for ts_k in _INTERNAL_BALANCE_TS_KEYS:
+                    p_cl.pop(ts_k, None)
+        for c_cl in venue_quote_cash.values():
+            if isinstance(c_cl, dict):
+                for ts_k in _INTERNAL_BALANCE_TS_KEYS:
+                    c_cl.pop(ts_k, None)
+
     if not open_orders_list:
+        _strip_all_internal_ts()
         return
     pos_by_vs: Dict[tuple[str, str], Dict[str, Any]] = {
         (pv, ps): pos_item for pos_item, pv, ps in _iter_valid_tradable_positions(tradable_positions)
     }
 
-    shared_obs_by_va: Dict[tuple[str, str], _BalanceObs] = {}
+    shared_obs_by_va: Dict[tuple[str, str], BalanceObservation] = {}
     for cash_val in venue_quote_cash.values():
         if isinstance(cash_val, dict):
             cv_n = normalize_venue_name(cash_val.get("venue"))
@@ -753,14 +770,14 @@ def _apply_open_orders_locked_balances(
             locked_quote_by_vq[(oo_v, oo_q_u)] = locked_quote_by_vq.get((oo_v, oo_q_u), 0.0) + locked_notional
             locked_quote_by_vs[(oo_v, oo_pos_sym)] = locked_quote_by_vs.get((oo_v, oo_pos_sym), 0.0) + locked_notional
             q_obs = shared_obs_by_va.get((oo_v, oo_q_u))
-            q_ts = q_obs[1] if q_obs is not None else None
+            q_ts = q_obs.ts if q_obs is not None else None
             if explicit_oo_ts is not None and q_ts is not None and explicit_oo_ts > q_ts + 0.5:
                 pre_bal_locked_by_va[(oo_v, oo_q_u)] = pre_bal_locked_by_va.get((oo_v, oo_q_u), 0.0) + locked_notional
                 pre_bal_locked_quote_by_vs[(oo_v, oo_pos_sym)] = pre_bal_locked_quote_by_vs.get((oo_v, oo_pos_sym), 0.0) + locked_notional
         elif oo_side == "SELL":
             locked_base_by_vs[(oo_v, oo_pos_sym)] = locked_base_by_vs.get((oo_v, oo_pos_sym), 0.0) + oo_rem
             b_obs = shared_obs_by_va.get((oo_v, oo_b_u)) if oo_b_u else None
-            b_ts = b_obs[1] if b_obs is not None else None
+            b_ts = b_obs.ts if b_obs is not None else None
             if explicit_oo_ts is not None and b_ts is not None and explicit_oo_ts > b_ts + 0.5:
                 pre_bal_locked_by_va[(oo_v, oo_b_u)] = pre_bal_locked_by_va.get((oo_v, oo_b_u), 0.0) + oo_rem
                 pre_bal_locked_base_by_vs[(oo_v, oo_pos_sym)] = pre_bal_locked_base_by_vs.get((oo_v, oo_pos_sym), 0.0) + oo_rem
@@ -768,19 +785,17 @@ def _apply_open_orders_locked_balances(
     adjusted_free_by_va: Dict[tuple[str, str], float] = {}
     for va_key, pre_locked in pre_bal_locked_by_va.items():
         if pre_locked > 0.0 and (obs_va := shared_obs_by_va.get(va_key)) is not None:
-            adjusted_free_by_va[va_key] = max(0.0, obs_va[0] - pre_locked)
+            adjusted_free_by_va[va_key] = max(0.0, obs_va.free - pre_locked)
 
     # Apply synthetic pre-balance deductions to runtime/prompt views ONLY; keep persisted ``updated_bals``
     # free balances raw while persisting venue-reflected locked balances & trailing peaks for Unified NAV.
     for cash_val in venue_quote_cash.values():
         if isinstance(cash_val, dict):
-            for ts_k in _INTERNAL_BALANCE_TS_KEYS:
-                cash_val.pop(ts_k, None)
             cv_norm, cq_u = normalize_venue_name(cash_val.get("venue")), str(cash_val.get("asset") or "").strip().upper()
             if (cv_norm, cq_u) in adjusted_free_by_va:
                 cash_val["free"] = round(adjusted_free_by_va[(cv_norm, cq_u)], 2)
             elif (raw_c_obs := shared_obs_by_va.get((cv_norm, cq_u))) is not None:
-                cash_val["free"] = round(raw_c_obs[0], 2)
+                cash_val["free"] = round(raw_c_obs.free, 2)
             if (lq_val := locked_quote_by_vq.get((cv_norm, cq_u), 0.0)) > 0.0:
                 cash_val["locked_quote_usd"] = round(lq_val, 2)
                 pers_cash_lq = max(0.0, lq_val - pre_bal_locked_by_va.get((cv_norm, cq_u), 0.0))
@@ -790,8 +805,6 @@ def _apply_open_orders_locked_balances(
                         updated_bals[cash_bkey] = {**updated_bals[cash_bkey], "locked_quote_usd": round(pers_cash_lq, 2)}
 
     for pos_entry in tradable_positions:
-        for ts_k in _INTERNAL_BALANCE_TS_KEYS:
-            pos_entry.pop(ts_k, None)
         p_v_norm = normalize_venue_name(pos_entry.get("venue"))
         p_sym_raw = str(pos_entry.get("symbol") or "").strip()
         p_sym_u = p_sym_raw.upper()
@@ -878,6 +891,10 @@ def _apply_open_orders_locked_balances(
                     if "dd_from_peak_pct" in pos_entry:
                         pers_pos["dd_from_peak_pct"] = pos_entry["dd_from_peak_pct"]
                 updated_bals[pos_bkey] = pers_pos
+    _strip_all_internal_ts()
+
+
+_apply_open_orders_locked_balances = derive_runtime_portfolio_view
 
 
 def _merge_audit_orders(primary_list: Any, audit_list: Any) -> List[Dict[str, Any]]:
@@ -2050,7 +2067,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                         pass
 
         open_orders_list = self._dedup_open_orders(open_orders_list)
-        _apply_open_orders_locked_balances(
+        derive_runtime_portfolio_view(
             open_orders_list,
             tradable_positions,
             venue_quote_cash,
@@ -2062,14 +2079,6 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             gateway_max_usd=gateway_max_usd,
             cache_dir=cache_dir,
         )
-        for p_cl in tradable_positions:
-            if isinstance(p_cl, dict):
-                for ts_k in _INTERNAL_BALANCE_TS_KEYS:
-                    p_cl.pop(ts_k, None)
-        for c_cl in venue_quote_cash.values():
-            if isinstance(c_cl, dict):
-                for ts_k in _INTERNAL_BALANCE_TS_KEYS:
-                    c_cl.pop(ts_k, None)
 
         if persist and allow_network and bcache_path and updated_bals and (
             _parse_bool_flag(force_persist, False) or is_live_network_backfill_enabled() or os.path.exists(bcache_path)
