@@ -808,7 +808,7 @@ def discover_hyperliquid_spot(workspace_dir: str) -> list[tuple[str, str, str]]:
     if not _parse_bool_flag(kv.get("HL_LIVE_ORDERS"), False):
         return []
     token = clean_upper_scalar(kv.get("HL_SPOT_TOKEN")) or "HYPE"
-    return [(f"{token}USDC", token, "USDC")] if token else []
+    return [(ensure_quote_suffix(token, "USDC"), token, "USDC")] if token else []
 
 
 def discover_t212_equities(workspace_dir: str) -> list[tuple[str, str, str, str]]:

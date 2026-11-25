@@ -34,7 +34,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import cache_symbol_variants, canonical_base_asset, clean_symbol_key, symbol_quote_asset
+from cachepaths import cache_symbol_variants, canonical_base_asset, clean_symbol_key, ensure_quote_suffix, symbol_quote_asset
 from instrument_registry import casefold_get
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
@@ -488,7 +488,7 @@ class BinanceFuturesLiquidationCollector(LiquidationCollectorBase):
             if notional is None:
                 continue
             ev_ts = normalize_epoch_sec(order.get("T") or msg.get("E")) or time.time()
-            self.record_event(f"{base}USDT", liq_side, notional, ts=ev_ts)
+            self.record_event(ensure_quote_suffix(base, "USDT"), liq_side, notional, ts=ev_ts)
 
 
 class OkxLiquidationCollector(LiquidationCollectorBase):
@@ -610,7 +610,7 @@ class OkxLiquidationCollector(LiquidationCollectorBase):
                 if notional is None:
                     continue
                 ev_ts = normalize_epoch_sec(det.get("ts")) or time.time()
-                self.record_event(f"{base}USDT", liq_side, notional, ts=ev_ts)
+                self.record_event(ensure_quote_suffix(base, "USDT"), liq_side, notional, ts=ev_ts)
 
 
 for _liq_cls in (

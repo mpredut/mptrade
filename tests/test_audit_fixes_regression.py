@@ -8062,6 +8062,36 @@ def test_kraken_xstock_balance_cache_canonical_key_and_nav_dedup(tmp_path):
     assert av_items[0]["venues_usd"] == {"binance": 9000.0, "kraken": 3100.0}
     assert av_items[0]["portfolio_total_usd"] == pytest.approx(12100.0)
 
+    # 8. P1 hardening: Kraken ledger_to_fills, order_retry_worker display assets, open_order/fee/ledger & wire asset helpers
+    from kraken.kraken_client import KrakenClient
+    import order_retry_worker as orw_mod
+    from providers.order_ledger import build_order_event
+    from providers.order_ohlc_utils import extract_order_fee, normalize_open_order
+    from providers.quantity import resolve_assets as pq_resolve_assets
+    from providers.venue_ws_protocols import KrakenWsLedgerMixin
+
+    x_fills = KrakenWsLedgerMixin.ledger_to_fills(
+        {
+            "L1": {"refid": "RF1", "type": "trade", "asset": "SPCXx.T", "amount": "2.0", "fee": "0.01", "time": now_s},
+            "L2": {"refid": "RF1", "type": "trade", "asset": "ZUSD", "amount": "-240.0", "fee": "0.0", "time": now_s},
+        }
+    )
+    assert len(x_fills) == 1
+    assert x_fills[0]["symbol"] == "SPCXxUSD"
+    assert x_fills[0]["feeAsset"] == "SPCXx"
+    assert orw_mod._resolve_display_assets("SPCXxUSD") == ("SPCX", "USD")
+    assert orw_mod._resolve_display_assets("SPCXxUSD".upper()) == ("SPCX", "USD")
+    assert pq_resolve_assets("SPCXx") == ("SPCXx", "USD")
+    assert pq_resolve_assets("SPCXx.T") == ("SPCXx.T", "USD")
+    norm_oo = normalize_open_order({"symbol": "SPCXxUSD", "side": "SELL", "price": "120.0", "origQty": "1.0"}, venue="kraken")
+    assert norm_oo is not None and norm_oo["symbol"] == "SPCXxUSD"
+    fee_d = extract_order_fee({"fee": "0.01", "feeAsset": "SPCXx"})
+    assert fee_d is not None and fee_d["fee_asset"] == "SPCXx"
+    ev_d = build_order_event("FILL", venue="kraken", symbol="SPCXxUSD", fee=0.01, fee_asset="SPCXx")
+    assert ev_d["sym"] == "SPCXxUSD" and ev_d["fee_asset"] == "SPCXx"
+    assert KrakenClient._norm_wire_asset("SPCXx.T") == "SPCXx.T"
+    assert KrakenClient._norm_wire_asset("usdc") == "USDC"
+
 
 def test_pure_portfolio_valuation_split_and_cache_first_portfolio_collector(tmp_path):
     """Verify pure portfolio_valuation split + cache-first TradablePositionsAndOrdersCollector:

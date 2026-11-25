@@ -33,6 +33,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import canonical_base_asset, normalize_venue_name, same_canonical_base_asset  # noqa: F401
+from instrument_registry import canonical_balance_asset_key, canonical_display_symbol
 from .broker_history import (  # noqa: F401
     aggregate_broker_history_fills,
     extract_broker_history_matches,
@@ -260,7 +261,8 @@ def extract_order_fee(
         return None
 
     has_asset_key = any(k in order for k in _FEE_ASSET_KEYS)
-    fee_asset = _first_mapped(order, _FEE_ASSET_KEYS, clean_upper_scalar, "")
+    raw_fee_asset = _first_mapped(order, _FEE_ASSET_KEYS, clean_scalar_str, "")
+    fee_asset = canonical_balance_asset_key(raw_fee_asset) if raw_fee_asset else ""
 
     req_explicit = _parse_bool_flag(require_explicit_asset, False)
     if req_explicit and (not has_asset_key or (fee > 0.0 and not fee_asset)):
@@ -357,7 +359,11 @@ def normalize_open_order(
         venue=venue or None,
         symbol=symbol or None,
     )
-    sym_out = clean_scalar_str(symbol) or (clean_upper_scalar(order.get("symbol")) or "")
+    sym_out = (
+        clean_scalar_str(symbol)
+        or canonical_display_symbol(order.get("symbol"), venue=venue or None)
+        or (clean_upper_scalar(order.get("symbol")) or "")
+    )
     rec = {
         "venue": clean_scalar_str(venue) or "",
         "symbol": sym_out,

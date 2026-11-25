@@ -38,6 +38,7 @@ from botcore import (
 from cachepaths import (
     CMC_LISTINGS_CACHE_FILENAME,
     cache_path,
+    ensure_quote_suffix,
     normalize_venue_name,
     strip_equity_suffix,
 )
@@ -326,7 +327,7 @@ class BinancePricePlatform(CryptoPricePlatformBase):
         sym_up = symbol.strip().upper()
         if sym_up in self._symbol_mapping:
             return self._symbol_mapping[sym_up]
-        pair = f"{sym_up}USDC"
+        pair = ensure_quote_suffix(sym_up, "USDC")
         if pair in self._supported_symbols or pair in self._usdc_pairs:
             return pair
         if sym_up in self._supported_symbols or sym_up in self._usdc_pairs:
@@ -334,7 +335,7 @@ class BinancePricePlatform(CryptoPricePlatformBase):
         base = get_base_symbol(sym_up)
         if base in self._symbol_mapping:
             return self._symbol_mapping[base]
-        base_pair = f"{base}USDC"
+        base_pair = ensure_quote_suffix(base, "USDC")
         if base_pair in self._supported_symbols or base_pair in self._usdc_pairs:
             return base_pair
         return None

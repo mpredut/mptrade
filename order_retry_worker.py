@@ -40,6 +40,7 @@ from botcore import (
     touch_module_heartbeat,
 )
 from cachepaths import resolve_cachedb_filepath, split_symbol_assets
+from instrument_registry import resolve_symbol_identity
 import order_retry as oq
 from providers.execution_audit import ExecutionAudit
 from providers.market_api import api as mkt, resolve_symbol_provider_name
@@ -697,8 +698,11 @@ def process_once(mkt, now=None):
 
 def _resolve_display_assets(symbol):
     """Return (base_asset, quote_asset) for human-readable alert formatting."""
-    if (sym := clean_upper_scalar(symbol)) is None:
+    raw = clean_scalar_str(symbol)
+    if raw is None:
         return "?", "USD"
+    ident = resolve_symbol_identity(raw)
+    sym = ident.display_symbol if (ident.is_tokenized_equity and ident.display_symbol) else raw.upper()
     split = split_symbol_assets(sym)
     base, quote = split if split is not None else resolve_assets(sym)
     return (base or sym), (quote or "USD")

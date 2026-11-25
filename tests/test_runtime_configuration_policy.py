@@ -944,12 +944,17 @@ def test_ssot_ast_audit_pre_commit_blocks_manual_parsing_and_allows_ssot_delegat
             BAD_LIT = "{bad_upper_xstock}"
 
             def ingest(sym: str, venue: str, raw: str) -> bool:
-                if sym.endswith(("USDT", "USDC")) or sym.endswith("_US_EQ"):
+                if sym.endswith(("USDT", "USDC")) or sym.endswith("_US_EQ") or sym.endswith("X.T"):
                     _ = f"{{sym}}_US_EQ"
                     _ = f"{{sym}}xUSD"
                     _ = f"{{sym}}USD"
+                    _ = f"{{sym}}USDC"
+                    _ = f"{{sym}}USDT"
                     _ = f"{{sym}}x"
                     _ = sym + "xUSD"
+                    _ = sym + "USDC"
+                    _ = f"cache_24_price_{{sym}}.json"
+                    _ = "cache_365_price_BTCUSDC.json"
                 if venue == "kraken":
                     _ = float(raw)
                     _ = os.getenv("FOO")
@@ -963,11 +968,17 @@ def test_ssot_ast_audit_pre_commit_blocks_manual_parsing_and_allows_ssot_delegat
     joined = "\n".join(violations)
     assert "manual quote .endswith" in joined
     assert "manual equity .endswith" in joined
+    assert "manual xStock .endswith" in joined
     assert "manual f-string _US_EQ concatenation" in joined
     assert "manual f-string xStock pair concatenation" in joined
     assert "manual f-string USD pair concatenation" in joined
+    assert "manual f-string USDC pair concatenation" in joined
+    assert "manual f-string USDT pair concatenation" in joined
     assert "manual f-string xStock asset concatenation" in joined
     assert "manual string concatenation 'xUSD'" in joined
+    assert "manual string concatenation 'USDC'" in joined
+    assert "hardcoded cache_24_price_ filename prefix" in joined
+    assert "hardcoded cache_365_price_ filename prefix" in joined
     assert "corrupted uppercase xStock literal" in joined
     assert "hardcoded venue branch 'kraken'" in joined
     assert "raw float()" in joined

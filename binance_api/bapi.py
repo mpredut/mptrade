@@ -14,6 +14,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from cachepaths import ensure_quote_suffix
 import instrument_registry as sym
 
 from .bapi_client import client
@@ -267,7 +268,7 @@ def _convert_to_usdc(asset, amount):
     if asset_clean in {"USDC", "USD"}:
         return amt_f
 
-    price = _get_symbol_price_safe(f"{asset_clean}USDC")
+    price = _get_symbol_price_safe(ensure_quote_suffix(asset_clean, "USDC"))
     if price:
         return amt_f * price
 

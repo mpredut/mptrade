@@ -83,7 +83,7 @@ from cachepaths import (  # noqa: E402
     split_kraken_pair,
 )
 from guard_hierarchy import normalize_bypassed_guards  # noqa: E402
-from instrument_registry import canonical_display_symbol, casefold_get, select_instruments  # noqa: E402
+from instrument_registry import canonical_balance_asset_key, canonical_display_symbol, casefold_get, select_instruments  # noqa: E402
 import order_guard  # noqa: E402
 
 STATE_FILE = resolve_venue_trailing_state_path("kraken")
@@ -99,7 +99,7 @@ load_dotenv(os.path.join(_HERE, "trailing.conf"))
 # Wide threshold per asset (crash circuit breaker, not a profit tool) and sale pair.
 # Primary SSOT is instruments.conf (provider=kraken, role.trailing=yes), symmetric with Binance.
 TRAILING_INSTRUMENTS = {
-    spec.base.strip().upper(): spec
+    (canonical_balance_asset_key(spec.base, venue="kraken") or spec.base.strip().upper()): spec
     for spec in select_instruments("kraken", "trailing").values()
 }
 TRAIL_PCT = {

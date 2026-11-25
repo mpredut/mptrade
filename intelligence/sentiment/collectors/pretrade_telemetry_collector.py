@@ -378,9 +378,17 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
                     eff_unavail = "telemetry_empty"
                 elif snap_age is None or snap_age > eff_max_age:
                     eff_unavail = "telemetry_stale"
+            raw_canon_sym = raw.canonical_symbol
+            if not raw_canon_sym:
+                raw_ident = resolve_symbol_identity(symbol)
+                raw_canon_sym = (
+                    raw_ident.display_symbol
+                    if (raw_ident.is_tokenized_equity and raw_ident.display_symbol)
+                    else (clean_symbol_key(symbol) or str(symbol or "").strip().upper())
+                )
             return cls(
                 symbol=raw.symbol or str(symbol or "").strip(),
-                canonical_symbol=raw.canonical_symbol or clean_symbol_key(symbol) or str(symbol or "").strip().upper(),
+                canonical_symbol=raw_canon_sym,
                 asset_scope=raw.asset_scope,
                 source=raw.source or source,
                 pillar_sources=dict(raw.pillar_sources),
@@ -396,7 +404,12 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
                 ),
             )
         sym_raw = str(symbol or "").strip()
-        canon_sym = clean_symbol_key(sym_raw) or sym_raw.upper()
+        sym_ident = resolve_symbol_identity(sym_raw)
+        canon_sym = (
+            sym_ident.display_symbol
+            if (sym_ident.is_tokenized_equity and sym_ident.display_symbol)
+            else (clean_symbol_key(sym_raw) or sym_raw.upper())
+        )
         scope = "EQUITY" if is_equity_symbol(sym_raw) else "CRYPTO"
         if not isinstance(raw, Mapping):
             return cls.unavailable(

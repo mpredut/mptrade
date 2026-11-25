@@ -26,6 +26,7 @@ from botcore import (
 from cachepaths import (
     cache_symbol_variants,
     canonical_symbol_key,
+    ensure_quote_suffix,
     resolve_binance_lookup_symbol,
     split_symbol_assets,
 )
@@ -578,10 +579,10 @@ class BinanceProvider(MarketDataProvider):
             return (), ()
         canon_sym, base_asset, quote_asset = parsed
         if quote_asset == "EUR":
-            bin_eur_sym = f"{base_asset}EUR" if base_asset else canon_sym
+            bin_eur_sym = ensure_quote_suffix(base_asset, "EUR") if base_asset else canon_sym
             return (f"https://api.binance.com/api/v3/depth?symbol={bin_eur_sym}&limit=500",), ()
         lookup_sym = resolve_binance_lookup_symbol(symbol)
-        usdc_sym = f"{base_asset}USDC" if (base_asset and quote_asset in ("USD", "USDC")) else ""
+        usdc_sym = ensure_quote_suffix(base_asset, "USDC") if (base_asset and quote_asset in ("USD", "USDC")) else ""
         spot_urls = (
             (
                 f"https://api.binance.com/api/v3/depth?symbol={usdc_sym}&limit=500",
@@ -601,7 +602,7 @@ class BinanceProvider(MarketDataProvider):
             return None
         _, base_asset, quote_asset = parsed
         spot_sym = (
-            f"{base_asset}USDC"
+            ensure_quote_suffix(base_asset, "USDC")
             if (base_asset and quote_asset == "USDC")
             else resolve_binance_lookup_symbol(symbol)
         )
@@ -621,7 +622,7 @@ class BinanceProvider(MarketDataProvider):
         _, base_asset, quote_asset = parsed
         if not base_asset or quote_asset == "USDT":
             return None
-        usdt_sym = f"{base_asset}USDT"
+        usdt_sym = ensure_quote_suffix(base_asset, "USDT")
         return (f"https://api.binance.com/api/v3/klines?symbol={usdt_sym}&interval=5m&limit=4", None)
 
     @classmethod

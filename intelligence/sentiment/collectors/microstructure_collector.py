@@ -34,6 +34,8 @@ from botcore import (
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
     CACHE_DERIVATIVES_TELEMETRY_PREFIX,
+    cache_24_price_filename,
+    cache_365_price_filename,
     cache_ohlc_24h_filename,
     cache_path,
     CACHE_ORDERBOOK_DEPTH_PREFIX,
@@ -46,6 +48,7 @@ from cachepaths import (
     clean_symbol_key,
     clean_upper_scalar,
     compatible_quote_suffixes,
+    ensure_quote_suffix,
     has_equity_suffix,
     is_equity_venue,
     is_fiat_usd_pair,
@@ -555,7 +558,7 @@ def resolve_cached_btc_24h_change_pct(
     btc_24h_files = dict.fromkeys(
         fn
         for s in ("BTCUSDC", "BTCUSDT")
-        for base_fn in (Cache24PriceManager.disk_filename_for_symbol(s), f"cache_24_price_{s}.json")
+        for base_fn in (Cache24PriceManager.disk_filename_for_symbol(s), cache_24_price_filename(s, ext=".json"))
         for fn in (*legacy_filenames_for(base_fn), base_fn)
     )
     if not any(
@@ -805,7 +808,7 @@ def load_symbol_microstructure(
             rliq_syms = rliq_doc.get("symbols") if isinstance(rliq_doc.get("symbols"), dict) else {}
             rliq_base = canonical_base_asset(sym)
             if rliq_fresh and rliq_base and isinstance(rliq_syms, dict):
-                rliq_entry = casefold_get(rliq_syms, f"{rliq_base}USDT") or casefold_get(rliq_syms, sym)
+                rliq_entry = casefold_get(rliq_syms, ensure_quote_suffix(rliq_base, "USDT")) or casefold_get(rliq_syms, sym)
                 if isinstance(rliq_entry, dict):
                     rl_l = safe_nonneg_float(rliq_entry.get("long_15m_usd"), default=None)
                     rl_s = safe_nonneg_float(rliq_entry.get("short_15m_usd"), default=None)
@@ -1619,11 +1622,11 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                 stat_list = _stat_candidate_price_files(
                     cachedb_dir,
                     *(Cache24PriceManager.disk_filename_for_symbol(c) for c in cands),
-                    *(f"cache_24_price_{c}.json" for c in cands),
+                    *(cache_24_price_filename(c, ext=".json") for c in cands),
                     *(cache_ohlc_24h_filename(c) for c in cands),
                     *(CacheSparsePriceManager.disk_filename_for_symbol(c) for c in cands),
                     *(Cache365PriceManager.disk_filename_for_symbol(c) for c in cands),
-                    *(f"cache_365_price_{c}.json" for c in cands),
+                    *(cache_365_price_filename(c, ext=".json") for c in cands),
                 )
                 if not stat_list:
                     stat_list = _stat_candidate_price_files(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME)
@@ -1657,7 +1660,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
             for p24_path in _candidate_cache_paths(
                 cachedb_dir,
                 Cache24PriceManager.disk_filename_for_symbol(cand),
-                f"cache_24_price_{cand}.json",
+                cache_24_price_filename(cand, ext=".json"),
             ):
                 if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                     continue
@@ -1719,7 +1722,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         for cand in (cands if (include_7d or need_24h_supplement or is_eq_sym_load) else ()):
             f_sparse = CacheSparsePriceManager.disk_filename_for_symbol(cand)
             f_365 = Cache365PriceManager.disk_filename_for_symbol(cand)
-            f_365_legacy = f"cache_365_price_{cand}.json"
+            f_365_legacy = cache_365_price_filename(cand, ext=".json")
             primary_names = (
                 (f_sparse, f_365, f_365_legacy)
                 if not need_24h_supplement

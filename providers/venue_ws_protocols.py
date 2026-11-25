@@ -37,6 +37,10 @@ from cachepaths import (
     _strip_kraken_asset_suffixes,
     canonical_base_asset,
     clean_symbol_key,
+    ensure_quote_suffix,
+    ensure_xstock_asset,
+    ensure_xstock_pair,
+    is_readonly_xstock_symbol,
     kraken_pair_key,
     kraken_pair_matches,
     split_symbol_assets,
@@ -340,9 +344,14 @@ class KrakenWsLedgerMixin(VenueWsProtocolInterface):
             qa = safe_float(quote.get("amount") if isinstance(quote, dict) else None, None)
             if ba is None or qa is None or ba == 0.0 or qa == 0.0:
                 continue
-            raw_base = _strip_kraken_asset_suffixes(str(base["asset"]).strip().upper())
+            raw_asset = str(base["asset"]).strip()
             quote_ccy = cls._KRAKEN_QUOTE_ASSETS[str(quote["asset"]).strip().upper()]
-            raw_symbol = raw_base + quote_ccy
+            if is_readonly_xstock_symbol(raw_asset):
+                raw_base = ensure_xstock_asset(raw_asset) or raw_asset
+                raw_symbol = ensure_xstock_pair(raw_base, quote=quote_ccy)
+            else:
+                raw_base = _strip_kraken_asset_suffixes(raw_asset.upper())
+                raw_symbol = ensure_quote_suffix(raw_base, quote_ccy)
             ts_ms = extract_timestamp_ms(base, default=None) or extract_timestamp_ms(quote, default=0) or 0
             if ts_ms <= 0:
                 continue

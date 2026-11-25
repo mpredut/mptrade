@@ -43,7 +43,7 @@ from cachepaths import (
     order_ledger_events_path,
     resolve_cachedb_filepath,
 )
-from instrument_registry import canonical_display_symbol
+from instrument_registry import canonical_balance_asset_key, canonical_display_symbol
 from providers.order_id_context import (
     all_correlatable_client_order_ids,
     derive_venue_128bit_client_order_id,
@@ -336,7 +336,7 @@ def build_order_event(
         ("owner", _norm_owner(owner, cid=cid_clean)),
         ("side", normalize_side(side)),
         ("type", _norm_order_type(order_type, market=market)),
-        ("fee_asset", clean_upper_scalar(fee_asset)),
+        ("fee_asset", canonical_balance_asset_key(fee_asset, venue=v_str) or None),
         ("iid", clean_order_id(iid)),
         ("cid", cid_clean),
         ("vid", clean_order_id(vid)),
@@ -617,7 +617,11 @@ def apply_order_event(
     for mono_k in ("fq", "fee"):
         if (val_f := safe_nonneg_float(event.get(mono_k), default=None)) is not None and val_f > 0.0:
             rec[mono_k] = round(max(safe_nonneg_float(rec.get(mono_k), default=0.0) or 0.0, val_f), 8)
-    for ov_k, ov_v in (("fee_asset", clean_upper_scalar(event.get("fee_asset"))), ("vst", clean_upper_scalar(event.get("vst"))), ("reason", _clean_reason(event.get("reason")))):
+    for ov_k, ov_v in (
+        ("fee_asset", canonical_balance_asset_key(event.get("fee_asset"), venue=rec.get("v")) or None),
+        ("vst", clean_upper_scalar(event.get("vst"))),
+        ("reason", _clean_reason(event.get("reason"))),
+    ):
         if ov_v:
             rec[ov_k] = ov_v
     if "deferred" in event:
@@ -1116,7 +1120,7 @@ def ledger_row_to_audit_record(
         if px_f is not None:
             out["cost"] = round(fq_f * px_f, 8)
     fee_f = safe_nonneg_float(row.get("fee"), default=None)
-    fee_asset = clean_upper_scalar(row.get("fee_asset")) or ""
+    fee_asset = canonical_balance_asset_key(row.get("fee_asset"), venue=row.get("v")) or ""
     if fee_f is not None and fee_f > 0.0:
         if fee_asset in _USD_FEE_ASSETS:
             out["fee"] = fee_f

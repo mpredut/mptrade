@@ -49,7 +49,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import kraken_pair_matches
+from cachepaths import is_readonly_xstock_symbol, kraken_pair_matches
 from instrument_registry import resolve_kraken_tokenized_pair
 from providers.ohlc_utils import extract_kraken_ohlc_rows, require_ohlc_symbol
 from providers.order_ohlc_utils import get_cached_pair_info as _get_cached_pair_info
@@ -567,12 +567,16 @@ class KrakenClient:
             raise ValueError(f"invalid Kraken {label}: {amount!r}")
         return f"{amt_f:.8f}".rstrip("0").rstrip(".") or "0"
 
+    @staticmethod
+    def _norm_wire_asset(asset_s: str) -> str:
+        return asset_s if is_readonly_xstock_symbol(asset_s) else asset_s.upper()
+
     def withdraw_methods(self, asset: str) -> list[dict]:
         """List supported Kraken withdrawal networks/fees for ``asset``."""
         asset_s = clean_scalar_str(asset)
         if not asset_s:
             raise ValueError(f"invalid Kraken asset: {asset!r}")
-        res = self._private("WithdrawMethods", {"asset": asset_s.upper()}, fresh=True, allow_list=True)
+        res = self._private("WithdrawMethods", {"asset": self._norm_wire_asset(asset_s)}, fresh=True, allow_list=True)
         return [row for row in res if isinstance(row, dict)] if isinstance(res, list) else []
 
     def withdraw_addresses(self, asset: str | None = None, *, method: str | None = None) -> list[dict]:
@@ -582,7 +586,7 @@ class KrakenClient:
             asset_s = clean_scalar_str(asset)
             if not asset_s:
                 raise ValueError(f"invalid Kraken asset: {asset!r}")
-            params["asset"] = asset_s.upper()
+            params["asset"] = self._norm_wire_asset(asset_s)
         if method is not None:
             method_s = clean_scalar_str(method)
             if method_s:
@@ -597,7 +601,7 @@ class KrakenClient:
         if not asset_s or not key_s:
             raise ValueError("Kraken withdraw_info requires non-empty asset and withdrawal key")
         data = {
-            "asset": asset_s.upper(),
+            "asset": self._norm_wire_asset(asset_s),
             "key": key_s,
             "amount": self._fmt_amount(amount),
         }
@@ -619,7 +623,7 @@ class KrakenClient:
         if not asset_s or not key_s:
             raise ValueError("Kraken withdraw requires non-empty asset and withdrawal key")
         data: dict[str, str] = {
-            "asset": asset_s.upper(),
+            "asset": self._norm_wire_asset(asset_s),
             "key": key_s,
             "amount": self._fmt_amount(amount),
         }
@@ -639,7 +643,7 @@ class KrakenClient:
         if asset is not None:
             asset_s = clean_scalar_str(asset)
             if asset_s:
-                params["asset"] = asset_s.upper()
+                params["asset"] = self._norm_wire_asset(asset_s)
         if method is not None:
             method_s = clean_scalar_str(method)
             if method_s:
@@ -752,7 +756,7 @@ class KrakenClient:
         aclass = clean_scalar_str(asset_class) or "currency"
         if not asset_s or not mid or not aid:
             raise ValueError("Kraken funding_withdraw requires non-empty asset, method_id, and address_id")
-        asset_obj = {"class": aclass, "name": asset_s.upper()}
+        asset_obj = {"class": aclass, "name": self._norm_wire_asset(asset_s)}
         fee_obj: dict[str, object] = {
             "fee_included": bool(_parse_bool_flag(fee_included, default=True)),
         }

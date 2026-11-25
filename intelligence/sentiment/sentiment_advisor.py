@@ -46,7 +46,14 @@ from intelligence.sentiment.gemini_client import GeminiClient
 import intelligence.sentiment.collectors.microstructure_collector as _mc
 from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
 from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
-from cachepaths import CACHE_SENTIMENT_EVAL_FILENAME, cache_path, resolve_cachedb_filepath
+from cachepaths import (
+    CACHE_SENTIMENT_EVAL_FILENAME,
+    cache_24_price_filename,
+    cache_path,
+    ensure_quote_suffix,
+    legacy_filenames_for,
+    resolve_cachedb_filepath,
+)
 
 logger = logging.getLogger("intelligence.sentiment.sentiment_advisor")
 
@@ -422,20 +429,24 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             struct_lines: List[str] = []
             _mc.ensure_cacheprice_classes_bound()
             for ccy in get_deribit_options_currencies():
+                usdc_pair = ensure_quote_suffix(ccy, "USDC")
+                usdt_pair = ensure_quote_suffix(ccy, "USDT")
+                cand_24h_files = dict.fromkeys(
+                    fn
+                    for sym_p in (usdc_pair, usdt_pair)
+                    for base_fn in (
+                        _mc.Cache24PriceManager.disk_filename_for_symbol(sym_p),
+                        cache_24_price_filename(sym_p, ext=".json"),
+                    )
+                    for fn in (*legacy_filenames_for(base_fn), base_fn)
+                )
                 if not any(
                     os.path.exists(str(resolve_cachedb_filepath(os.path.join(cache_dir, fn))))
-                    for fn in (
-                        f"price_24h_{ccy}USDC.json",
-                        f"price_24h_{ccy}USDT.json",
-                        _mc.Cache24PriceManager.disk_filename_for_symbol(f"{ccy}USDC"),
-                        _mc.Cache24PriceManager.disk_filename_for_symbol(f"{ccy}USDT"),
-                        f"cache_24_price_{ccy}USDC.json",
-                        f"cache_24_price_{ccy}USDT.json",
-                    )
+                    for fn in cand_24h_files
                 ):
                     continue
 
-                c_pts, _ = load_symbol_price_series(cache_dir, f"{ccy}USDC", include_7d=False)
+                c_pts, _ = load_symbol_price_series(cache_dir, usdc_pair, include_7d=False)
                 c_m = compute_24h_price_metrics(c_pts) if c_pts else {}
                 if not c_m:
                     continue

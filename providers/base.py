@@ -350,17 +350,25 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Return inventory-reconciled acquisition cost from fresh SSOT fills, or None when unknown."""
         since_val = require_pos_float(since_s, "since_s")
-        if (sym_u := clean_upper_scalar(symbol)) is None:
+        if (sym_c := clean_scalar_str(symbol)) is None:
             return None
+        v_name = getattr(self, "name", "")
+        sym_canon = _default_ir.canonical_display_symbol(sym_c, venue=v_name) or sym_c.upper()
         fills_fn = getattr(self, "_fills_from_cache", None)
         rows = fills_fn(symbol) if callable(fills_fn) else None
         if rows is None:
             return None
-        spec = self.resolve_venue_instrument_spec(getattr(self, "name", ""), sym_u)
+        spec = self.resolve_venue_instrument_spec(v_name, sym_canon)
         base_asset = spec.base if spec is not None else ""
         quote_asset = spec.quote if spec is not None else ""
-        if not base_asset and (parts := split_symbol_assets(sym_u)) is not None:
-            base_asset, quote_asset = parts
+        if not base_asset:
+            ident = _default_ir.resolve_symbol_identity(sym_canon, venue=v_name)
+            parts = split_symbol_assets(sym_canon)
+            if ident.is_tokenized_equity:
+                base_asset = ident.balance_asset_key
+                quote_asset = parts[1] if parts is not None else "USD"
+            elif parts is not None:
+                base_asset, quote_asset = parts
         return compute_fills_cost_basis(
             rows, held_qty, since_val, base_asset=base_asset, quote_asset=quote_asset
         )

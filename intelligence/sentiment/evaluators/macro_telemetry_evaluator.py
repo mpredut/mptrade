@@ -11,10 +11,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from cachepaths import (
     CACHE_MACRO_BENCHMARKS_FILENAME,
     VENUE_RUNTIME_DIR_MAP,
+    cache_24_price_filename,
     cache_symbol_variants,
     canonical_base_asset,
     has_equity_suffix,
     is_equity_venue,
+    legacy_filenames_for,
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
@@ -1245,16 +1247,24 @@ def enrich_macro_benchmarks_live_state(
             out["equity_regime"] = compute_equity_macro_regime(out)
         btc_chg = btc_chg_24h_pct
         if btc_chg is None and cache_dir:
-            for fn in (
-                "cache_24_price_BTCUSDC.jsonl",
-                "cache_24_price_BTCUSDT.jsonl",
-                "24price_BTCUSDC.json",
-                "cache_24_price_BTCUSDC.json",
-                "24price_BTCUSDT.json",
-                "cache_24_price_BTCUSDT.json",
-                "24price.json",
-                "cache_24_price.json",
-            ):
+            btc_24h_cands = dict.fromkeys(
+                (
+                    *(
+                        fn
+                        for sym_p in ("BTCUSDC", "BTCUSDT")
+                        for base_fn in (
+                            cache_24_price_filename(sym_p),
+                            cache_24_price_filename(sym_p, ext=".json"),
+                        )
+                        for fn in (base_fn, *legacy_filenames_for(base_fn))
+                    ),
+                    "24price_BTCUSDC.json",
+                    "24price_BTCUSDT.json",
+                    "24price.json",
+                    "cache_24_price.json",
+                )
+            )
+            for fn in btc_24h_cands:
                 fpath = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn)))
                 if not os.path.exists(fpath):
                     continue

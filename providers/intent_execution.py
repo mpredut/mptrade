@@ -22,6 +22,7 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
 )
+from instrument_registry import canonical_display_symbol
 import notify_engine.alertnotifiers as _alertnotifiers
 from .base import MarketDataProvider
 from .intent_state import (
@@ -639,7 +640,11 @@ def cancel_existing_ai_open_orders(
                 log.warning("Could not cancel open order %s: %s", cancel_ref, ce)
 
     raw_inst_sym = getattr(inst, "symbol", None)
-    sym_str = clean_upper_scalar(raw_inst_sym) or ""
+    sym_str = (
+        canonical_display_symbol(raw_inst_sym, venue=getattr(inst, "provider_name", None))
+        or clean_upper_scalar(raw_inst_sym)
+        or ""
+    )
     if sym_str and not hasattr(raw_inst_sym, "_mock_name"):
         try:
             if targeted is not None:

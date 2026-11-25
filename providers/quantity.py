@@ -33,6 +33,7 @@ from cachepaths import (
     _LEGACY_KRAKEN_X_BASES,
     has_equity_suffix,
     is_kraken_tokenized_asset,
+    is_readonly_xstock_symbol,
     normalize_venue_name,
     split_symbol_assets,
 )
@@ -359,9 +360,8 @@ def resolve_assets(
                 stem = stem_u[:-1]
             if stem:
                 return base_c or stem, quote_u or suffix
-    if has_equity_suffix(symbol_u) or symbol_u.endswith("X.T"):
-        raw_sym = "" if isinstance(symbol, bool) else str(symbol or "").strip()
-        eff_base = base_c or (raw_sym if raw_sym.endswith("x.T") else symbol_u)
+    if has_equity_suffix(symbol_u) or is_readonly_xstock_symbol(symbol_c):
+        eff_base = base_c or (symbol_c if is_readonly_xstock_symbol(symbol_c) else symbol_u)
         return eff_base, quote_u or "USD"
     return base_c or symbol_c, quote_u
 

@@ -55,10 +55,19 @@ QUOTE_ENDSWITH_OWNERS = frozenset({
 })
 QUOTE_SUFFIX_TOKENS = frozenset({"USDC", "USDT", "USD", "EUR", "FDUSD", "TUSD", "BUSD"})
 EQUITY_SUFFIX_TOKENS = frozenset({"_EQ", "_US_EQ"})
+_XSTOCK_ENDSWITH_TOKENS = frozenset({".T", "x.T", "X.T", "xUSD", "XUSD", "x/USD", "X/USD"})
 _US_EQ_SUFFIX = "_US_EQ"
 _XSTOCK_PAIR_FSTRING_PREFIXES = ("xUSD", "XUSD", "x/USD", "X/USD")
-_FORBIDDEN_MANUAL_CONCAT_SUFFIXES = frozenset({"_US_EQ", "xUSD", "XUSD", "x/USD", "X/USD", "USD"})
-_OHLC_24H_PREFIX = "cache_ohlc_24h_"
+_FORBIDDEN_MANUAL_CONCAT_SUFFIXES = frozenset({
+    "_EQ", "_US_EQ", "xUSD", "XUSD", "x/USD", "X/USD",
+    "USD", "USDC", "USDT", "EUR", "FDUSD", "TUSD", "BUSD",
+})
+_PRICE_CACHE_FILE_PREFIXES = (
+    "cache_ohlc_24h_",
+    "cache_24_price_",
+    "cache_365_price_",
+    "price_24h_",
+)
 CACHEPRICE_POLLER_ALIASES = frozenset({
     "NonBinanceTrendPoller",
     "VenuePriceStreamBase",
@@ -860,12 +869,16 @@ def audit_repo_ssot_ast(
                     ssot_violations.append(f"{rel_s}:{lineno}: urllib {fn_name}")
                 elif rel_s not in HTTP_OWNERS and owner_mod == "requests" and fn_name in ("get", "post", "put", "delete", "request"):
                     ssot_violations.append(f"{rel_s}:{lineno}: raw requests.{fn_name}")
-                elif rel_s not in QUOTE_ENDSWITH_OWNERS and isinstance(fn, ast.Attribute) and fn_name == "endswith" and node.args:
+                elif isinstance(fn, ast.Attribute) and fn_name == "endswith" and node.args:
                     ew_arg = node.args[0]
                     ew_nodes = ew_arg.elts if isinstance(ew_arg, (ast.Tuple, ast.List)) else (ew_arg,)
                     ew_vals = [e.value for e in ew_nodes if isinstance(e, ast.Constant) and isinstance(e.value, str)]
-                    if any(v in QUOTE_SUFFIX_TOKENS for v in ew_vals):
+                    if rel_s not in QUOTE_ENDSWITH_OWNERS and any(v in QUOTE_SUFFIX_TOKENS for v in ew_vals):
                         ssot_violations.append(f"{rel_s}:{lineno}: manual quote .endswith({ew_vals})")
+                    if rel_s != "cachepaths.py" and any(v in _XSTOCK_ENDSWITH_TOKENS for v in ew_vals):
+                        ssot_violations.append(
+                            f"{rel_s}:{lineno}: manual xStock .endswith({ew_vals}) (call is_readonly_xstock_symbol)"
+                        )
             elif (
                 rel_s not in ENV_OWNERS
                 and isinstance(node, ast.Attribute)
@@ -881,8 +894,13 @@ def audit_repo_ssot_ast(
                     if alias.name == "providers.base":
                         ssot_violations.append(f"{rel_s}:{lineno}: upward layer import providers.base")
             elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if rel_s != "cachepaths.py" and node.value.startswith(_OHLC_24H_PREFIX):
-                    ssot_violations.append(f"{rel_s}:{lineno}: hardcoded cache_ohlc_24h_ filename prefix")
+                if rel_s != "cachepaths.py":
+                    for pfx in _PRICE_CACHE_FILE_PREFIXES:
+                        if node.value.startswith(pfx):
+                            ssot_violations.append(
+                                f"{rel_s}:{lineno}: hardcoded {pfx} filename prefix (use cachepaths filename builders)"
+                            )
+                            break
                 if bad_xstock_re is not None and (bad_m := bad_xstock_re.search(node.value)) is not None:
                     bad_tok = bad_m.group(0)
                     ssot_violations.append(
@@ -923,9 +941,9 @@ def audit_repo_ssot_ast(
                     and isinstance(node.values[1].value, str)
                 ):
                     tail_s = node.values[1].value
-                    if tail_s == "USD":
+                    if tail_s in QUOTE_SUFFIX_TOKENS:
                         ssot_violations.append(
-                            f"{rel_s}:{lineno}: manual f-string USD pair concatenation "
+                            f"{rel_s}:{lineno}: manual f-string {tail_s} pair concatenation "
                             f"(call ensure_quote_suffix / SymbolIdentity.quote_pair)"
                         )
                     elif tail_s == "x" and node.values[0].format_spec is None:

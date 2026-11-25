@@ -53,6 +53,7 @@ from cachepaths import (
     CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME,
     CACHE_HYPERLIQUID_TRADE_FILENAME,
     canonical_base_asset,
+    ensure_quote_suffix,
     split_symbol_assets,
 )
 from instrument_registry import casefold_get
@@ -104,7 +105,7 @@ def _spot_symbol_alias(symbol: str, token: str = "HYPE") -> bool:
         return False
     return normalized in {
         base,
-        f"{base}USDC",
+        ensure_quote_suffix(base, "USDC"),
         f"{base}/USDC",
         f"{base}-USDC",
         f"{base}_USDC",
@@ -302,7 +303,7 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
     # -- Public market data without a key. -------------------------------------
     def _ssot_symbol_candidates(self, symbol: str) -> tuple[str, ...]:
         self.validate_symbol(symbol)
-        return (f"{self._token}USDC", self._token)
+        return (ensure_quote_suffix(self._token, "USDC"), self._token)
 
     @staticmethod
     def extract_orderbook_sides(raw_data: dict) -> Optional[dict]:

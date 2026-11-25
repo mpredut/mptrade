@@ -485,7 +485,8 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
                     f_q = safe_pos_float(f_q_opt, default=0.0) or 0.0
                     if not is_fill or f_q <= 0.0:
                         continue
-                    sym_t = str(rec.get("symbol") or "").strip().upper()
+                    raw_sym_t = str(rec.get("symbol") or "").strip()
+                    sym_t = canonical_display_symbol(raw_sym_t, venue=venue) or raw_sym_t.upper()
                     meta = submit_meta_by_oid.get(oid_s, {}) if oid_s else {}
                     vwap_px = round(cost_opt / f_q, 6) if cost_opt is not None and cost_opt > 0.0 else None
                     px_f = vwap_px or fallback_px or meta.get("price")
@@ -637,7 +638,7 @@ def derive_runtime_portfolio_view(
                     shared_obs_by_va[(cv_n, cq_u)] = m_c
     for pos_item, pv, ps in _iter_valid_tradable_positions(tradable_positions):
         p_res_b, p_res_q = resolve_assets(ps, pos_item.get("base"), pos_item.get("quote"))
-        p_b_u = str(p_res_b or "").strip().upper()
+        p_b_u = canonical_balance_asset_key(p_res_b, venue=pv)
         p_q_u = str(p_res_q or pos_item.get("quote_asset") or "").strip().upper()
         fallback_ts = safe_pos_float(pos_item.get("_balance_ts"), default=None)
         if p_b_u:
@@ -706,12 +707,12 @@ def derive_runtime_portfolio_view(
                     if inst_oo is None:
                         inst_oo = inst_by_sym.get(f"{oo_v}:{ps}") or inst_by_sym.get(ps)
                     break
-        inst_b = str(getattr(inst_oo, "base", "") or getattr(inst_oo, "base_asset", "") or "").strip().upper() if inst_oo is not None else ""
+        inst_b = canonical_balance_asset_key(getattr(inst_oo, "base", "") or getattr(inst_oo, "base_asset", ""), venue=oo_v) if inst_oo is not None else ""
         inst_q = str(getattr(inst_oo, "quote", "") or getattr(inst_oo, "quote_asset", "") or "").strip().upper() if inst_oo is not None else ""
-        pos_b = str((matched_pos or {}).get("base") or (matched_pos or {}).get("base_asset") or "").strip().upper()
+        pos_b = canonical_balance_asset_key((matched_pos or {}).get("base") or (matched_pos or {}).get("base_asset"), venue=oo_v)
         pos_q = str((matched_pos or {}).get("quote") or (matched_pos or {}).get("quote_asset") or "").strip().upper()
         parsed_b, parsed_q = resolve_assets(oo_pos_sym, None, None)
-        oo_b_u = inst_b or pos_b or str(parsed_b or "").strip().upper()
+        oo_b_u = inst_b or pos_b or canonical_balance_asset_key(parsed_b, venue=oo_v)
         oo_q_u = inst_q or pos_q or str(parsed_q or "").strip().upper() or MarketDataProvider.resolve_venue_default_quote(oo_v, fallback="USD")
         if oo_side == "BUY" and oo_px > 0.0:
             locked_notional = oo_rem * oo_px
@@ -774,8 +775,8 @@ def derive_runtime_portfolio_view(
         p_v_norm = normalize_venue_name(pos_entry.get("venue"))
         p_sym_raw = str(pos_entry.get("symbol") or "").strip()
         p_sym_u = p_sym_raw.upper()
-        p_res_b, p_res_q = resolve_assets(p_sym_u, pos_entry.get("base"), pos_entry.get("quote"))
-        p_base_u = str(p_res_b or "").strip().upper()
+        p_res_b, p_res_q = resolve_assets(p_sym_raw, pos_entry.get("base"), pos_entry.get("quote"))
+        p_base_u = canonical_balance_asset_key(p_res_b, venue=p_v_norm)
         p_quote_u = str(p_res_q or pos_entry.get("quote_asset") or "").strip().upper()
         balance_changed = False
         va_q = (p_v_norm, p_quote_u)
@@ -2610,17 +2611,18 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
         seen_live_order_vs: set[tuple[str, str]] = set()
         if allow_network:
             for inst in inst_by_sym.values():
-                sym = str(getattr(inst, "symbol", "")).upper()
                 v_inst = normalize_venue_name(getattr(inst, "provider_name", ""))
+                raw_inst_s = str(getattr(inst, "symbol", "") or "").strip()
+                sym = canonical_display_symbol(raw_inst_s, venue=v_inst) or raw_inst_s.upper()
                 if (
                     not sym
                     or not v_inst
                     or not MarketDataProvider.uses_bare_base_order_symbols(v_inst)
-                    or (v_inst, sym) in seen_live_order_vs
+                    or (v_inst, sym.upper()) in seen_live_order_vs
                     or first_variant_dict(venue_recent_orders.get(v_inst, {}), cache_symbol_variants(sym, include_base=True)) is not None
                 ):
                     continue
-                seen_live_order_vs.add((v_inst, sym))
+                seen_live_order_vs.add((v_inst, sym.upper()))
                 try:
                     prov = getattr(inst, "_provider", None)
                     if prov is not None and hasattr(prov, "get_orders"):
@@ -2640,14 +2642,15 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 )
             )
             intent_syms = {
-                str(it.get("symbol") or "").strip().upper()
+                (canonical_display_symbol(it.get("symbol"), venue=fallback_venue) or str(it.get("symbol") or "").strip().upper())
                 for it in (fb_ai_intents or ())
                 if isinstance(it, dict) and str(it.get("symbol") or "").strip()
             }
             for sym_fb in sorted(set(audit_by_sym.keys()) | intent_syms):
-                if sym_fb in disabled_ro_syms and sym_fb not in held_or_inst_syms:
+                sym_fb_u = sym_fb.upper()
+                if sym_fb_u in disabled_ro_syms and sym_fb_u not in held_or_inst_syms:
                     continue
-                if not is_equity_venue(fallback_venue) and sym_fb == fee_reserve_sym and sym_fb not in active_non_eq_syms:
+                if not is_equity_venue(fallback_venue) and sym_fb_u == fee_reserve_sym and sym_fb_u not in active_non_eq_syms:
                     continue
                 if first_variant_dict(venue_recent_orders[fallback_venue], cache_symbol_variants(sym_fb, include_base=True)) is not None:
                     continue

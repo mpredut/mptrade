@@ -51,6 +51,7 @@ from cachepaths import (
     canonical_base_asset,
     clean_symbol_key,
     crypto_quote_priority_rank,
+    ensure_quote_suffix,
     has_crypto_quote_suffix,
     is_equity_venue,
     resolve_cachedb_filepath,
@@ -567,7 +568,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             base = canonical_base_asset(ident.wire_symbol)
             if base and base not in seen:
                 seen.add(base)
-                perp_syms.append(f"{base}USDT")
+                perp_syms.append(ensure_quote_suffix(base, "USDT"))
         return perp_syms
 
     def _active_liquidation_collectors(self) -> List[LiquidationCollectorBase]:

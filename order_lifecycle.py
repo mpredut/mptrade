@@ -44,6 +44,7 @@ from botcore import (
     split_csv,
 )
 from cachepaths import normalize_venue_name
+from instrument_registry import canonical_display_symbol
 from notify_engine import alertnotifiers as alert
 from providers import order_id_context as rc
 from providers.base import MarketDataProvider
@@ -1002,7 +1003,8 @@ def _collect_preemptible_open_orders(
     owner_map: Optional[dict[str, str]] = None,
 ) -> tuple[str, str, list[tuple[int, str, dict[str, Any], str]]]:
     want_side = normalize_side(side)
-    sym_str = clean_upper_scalar(symbol) or ""
+    prov_v = getattr(inst_or_provider, "name", None) or getattr(inst_or_provider, "provider_name", None)
+    sym_str = canonical_display_symbol(symbol, venue=prov_v) or clean_upper_scalar(symbol) or ""
     if not want_side or not sym_str or not rc.preemptible_owners_for(caller_bot):
         return "", "", []
     open_fn = getattr(inst_or_provider, "open_orders", None)
