@@ -1847,6 +1847,70 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             allow_ext_vs_rth=bool(eq_sess in ("PRE", "POST") or q_src == "yahoo_ext_cached"),
         )
 
+    @classmethod
+    def _apply_equity_fallback_quote_meta(
+        cls,
+        sym: str,
+        entry: Dict[str, Any],
+        cp_map: Any,
+        last_series_pt: Optional[Tuple[float, float]],
+        eff_now: float,
+        *,
+        frozen_t212_px: Optional[float] = None,
+    ) -> None:
+        if entry.get("quote_source"):
+            return
+        disp_px_eq = safe_pos_float(entry.get("price"), default=0.0) or 0.0
+        cp_raw_eq = casefold_get(cp_map, sym) if isinstance(cp_map, dict) else None
+        cp_pt_eq = parse_ts_px_row(cp_raw_eq[-1]) if isinstance(cp_raw_eq, list) and cp_raw_eq else None
+        q_cands = [
+            pt_cand
+            for pt_cand in (cp_pt_eq, last_series_pt)
+            if pt_cand is not None and pt_cand[0] > 1e11 and pt_cand[1] > 0.0
+        ]
+        q_pt_eq = max(
+            (
+                pt_cand
+                for pt_cand in q_cands
+                if disp_px_eq <= 0.0 or cls._prices_match_quote(disp_px_eq, pt_cand[1])
+            ),
+            key=lambda pt_cand: pt_cand[0],
+            default=None,
+        )
+        if q_pt_eq is None and disp_px_eq > 0.0 and q_cands:
+            matches_frozen_t212 = bool(
+                frozen_t212_px is not None
+                and cls._prices_match_quote(disp_px_eq, frozen_t212_px)
+            )
+            if not matches_frozen_t212:
+                q_pt_eq = max(
+                    (
+                        pt_cand
+                        for pt_cand in q_cands
+                        if 0.0 <= (eff_now - (pt_cand[0] / 1000.0)) <= 20.0 * 60.0
+                        and not _prices_diverged(disp_px_eq, pt_cand[1], threshold=0.05)
+                    ),
+                    key=lambda pt_cand: pt_cand[0],
+                    default=None,
+                )
+        if q_pt_eq is not None:
+            q_ts_s_eq = q_pt_eq[0] / 1000.0
+            if 0.0 <= (eff_now - q_ts_s_eq) <= 14 * 86400.0:
+                q_src_fb, q_mstate_fb = cls._classify_yahoo_equity_quote_source(sym, q_ts_s_eq, eff_now)
+                cls._apply_resolved_equity_quote(
+                    entry,
+                    _ResolvedEquityQuote(
+                        price=q_pt_eq[1],
+                        quote_source=q_src_fb,
+                        quote_ts_sec=q_ts_s_eq if entry.get("quote_age_min") is None else None,
+                        market_state=q_mstate_fb,
+                    ),
+                    eff_now=eff_now,
+                    set_price=(disp_px_eq <= 0.0),
+                    clear_market_state=False,
+                    clear_close_meta=False,
+                )
+
     @staticmethod
     def _seed_t212_positions(
         workspace_dir: str,
@@ -2448,41 +2512,14 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 eff_now,
             )
         if is_eq_sym and not pt_map[sym].get("quote_source"):
-            disp_px_eq = safe_pos_float(pt_map[sym].get("price"), default=0.0) or 0.0
-            cp_raw_eq = casefold_get(cp_map, sym) if isinstance(cp_map, dict) else None
-            cp_pt_eq = parse_ts_px_row(cp_raw_eq[-1]) if isinstance(cp_raw_eq, list) and cp_raw_eq else None
-            q_pt_eq = max(
-                (
-                    pt_cand
-                    for pt_cand in (
-                        cp_pt_eq,
-                        raw_s24_last_pt if post_rth_px_override is None else None,
-                    )
-                    if pt_cand is not None
-                    and pt_cand[0] > 1e11
-                    and pt_cand[1] > 0.0
-                    and (disp_px_eq <= 0.0 or cls._prices_match_quote(disp_px_eq, pt_cand[1]))
-                ),
-                key=lambda pt_cand: pt_cand[0],
-                default=None,
+            cls._apply_equity_fallback_quote_meta(
+                sym,
+                pt_map[sym],
+                cp_map,
+                raw_s24_last_pt if post_rth_px_override is None else None,
+                eff_now,
+                frozen_t212_px=t212_cached_px.get(sym),
             )
-            if q_pt_eq is not None:
-                q_ts_s_eq = q_pt_eq[0] / 1000.0
-                if 0.0 <= (eff_now - q_ts_s_eq) <= 14 * 86400.0:
-                    q_src_fb, q_mstate_fb = cls._classify_yahoo_equity_quote_source(sym, q_ts_s_eq, eff_now)
-                    cls._apply_resolved_equity_quote(
-                        pt_map[sym],
-                        _ResolvedEquityQuote(
-                            price=q_pt_eq[1],
-                            quote_source=q_src_fb,
-                            quote_ts_sec=q_ts_s_eq if pt_map[sym].get("quote_age_min") is None else None,
-                            market_state=q_mstate_fb,
-                        ),
-                        eff_now=eff_now,
-                        set_price=(disp_px_eq <= 0.0),
-                        clear_market_state=False,
-                        clear_close_meta=False,
-                    )
         if m24:
             if is_eq_sym and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")):
                 for k_stale_15m in ("recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
@@ -2699,15 +2736,25 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 if ref_px is None and ser_24h:
                     ref_px = safe_pos_float(ser_24h[-1][1], default=None)
                 if ref_px is not None:
+                    is_eq_ref = has_equity_suffix(msym)
                     p_ref = {"price": ref_px, "trend": 0, "growth_coefficient": 0.0}
                     if m_info_ref.get("spread_bps") is not None:
                         p_ref["spread_bps"] = m_info_ref["spread_bps"]
-                    if ser_24h and (m24_ref := compute_24h_price_metrics(ser_24h)):
+                    if is_eq_ref:
+                        ser_ref_last_pt = parse_ts_px_row(ser_24h[-1]) if ser_24h else None
+                        Fleet24hAndMicrostructureEnricher._apply_equity_fallback_quote_meta(
+                            msym, p_ref, cp_map, ser_ref_last_pt, eff_now
+                        )
+                    if ser_24h and (m24_ref := _call_compute_24h(ser_24h, is_equity=is_eq_ref, now_ts=eff_now)):
                         apply_24h_series_enrichment(msym, p_ref, m24_ref, ser_24h, btc_series_24h)
+                        if is_eq_ref:
+                            resolve_asset_session_policy(msym).prune_stale_short_metrics(
+                                p_ref, m24_ref, ser_24h, eff_now, include_kinematics=True
+                            )
                     if vals_7d and len(vals_7d) >= 2:
                         if not _prices_diverged(ref_px, safe_float(vals_7d[-1], 0.0)) and abs(ref_px - safe_float(vals_7d[-1], 0.0)) > 1e-9:
                             vals_7d = list(vals_7d) + [ref_px]
-                        p_ref.update(compute_7d_range_metrics(vals_7d))
+                        p_ref.update(compute_7d_range_metrics(vals_7d, decimals=4 if is_eq_ref else None))
                     pt_map[msym] = p_ref
                     if price_path_bars is not None and msym not in price_path_bars:
                         if vals_7d:

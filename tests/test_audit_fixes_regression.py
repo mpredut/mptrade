@@ -8222,6 +8222,116 @@ def test_pure_portfolio_valuation_split_and_cache_first_portfolio_collector(tmp_
     assert open_after["items"]["BTCUSDC"] == []
 
 
+def test_cycle16_unmatched_cycle_pos_peak_scope_parity_and_equity_quote_provenance(tmp_path):
+    """Cycle 16 regressions:
+    1. Unmatched T212 cycles in scope='crypto' must upgrade under-tracked pos_peak (e.g. 148.34 -> 164.64)
+       identically to matched positions in scope='equities' via _resolve_cycle_high_since.
+    2. Observe-only US equities (e.g. AMD_US_EQ) must retain quote_source/market_state/quote_age_min
+       when live price ticks >0.05% away from cache_current_price during macro volatility, while still
+       refusing to misclassify a frozen T212 RTH close as Yahoo extended.
+    3. Reference-microstructure equities entering via _enrich_reference_microstructure_symbols also receive
+       equity quote provenance and session-aware 24h metrics.
+    """
+    from datetime import datetime
+    from botcore import ET
+    from intelligence.sentiment.collectors.microstructure_collector import Fleet24hAndMicrostructureEnricher
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+
+    # 1. Scope parity on SPCX_US_EQ pos_peak: stale 148.34 in .state file vs true 164.64 cycle high in cache_365
+    now_s = datetime(2026, 11, 25, 8, 34, tzinfo=ET).timestamp()
+    oldest_lot_ms = int((now_s - 5 * 86400.0) * 1000)
+    cdir = tmp_path / "cachedb"
+    prices_dir = cdir / "prices"
+    prices_dir.mkdir(parents=True)
+    (prices_dir / "cache_365_price_SPCX_US_EQ.jsonl").write_text(
+        json.dumps({"s": "SPCX_US_EQ", "i": [oldest_lot_ms + 3600_000, 164.64]}) + "\n",
+        encoding="utf-8",
+    )
+    pt_spcx = {"SPCX_US_EQ": {"price": 120.81, "high_24h": 132.24}}
+    ro_spcx = {
+        "last_action_side": "SELL",
+        "active_avg_buy_px": 143.1331,
+        "last_buy": {"price": 138.98, "qty": 1.15, "ts_ms": oldest_lot_ms + 86400_000},
+        "last_sell": {"price": 125.97, "qty": 2.22, "ts_ms": int((now_s - 17.5 * 3600.0) * 1000)},
+        "open_lots": [
+            {"qty": 0.53, "entry_px": 159.58, "ts_ms": oldest_lot_ms},
+            {"qty": 1.62, "entry_px": 156.47, "ts_ms": oldest_lot_ms + 43200_000},
+        ],
+    }
+    base_cyc = {
+        "qty": 2.222965,
+        "cost_usd": 318.18,
+        "avg_cost_px": 143.1331,
+        "entry_price": 144.9872,
+        "pos_peak": 148.34,
+        "last_buy_price": 138.98,
+        "last_sell_price": 125.97,
+    }
+    # Equities scope (matched tradable position)
+    cyc_eq = {"SPCX_US_EQ": dict(base_cyc)}
+    pos_eq = [{"venue": "t212", "symbol": "SPCX_US_EQ", "price": 120.81, "free_base": 2.222965, "value_usd": 268.56}]
+    enrich_positions_with_orders_and_cycles(
+        pos_eq, pt_spcx, {}, {"t212": {"SPCX_US_EQ": dict(ro_spcx)}}, {"SPCX_US_EQ": dict(ro_spcx)},
+        {}, {}, cyc_eq, {}, cache_dir=str(cdir), now_ts=now_s,
+    )
+    # Crypto scope (unmatched T212 cycle — not in tradable_positions)
+    cyc_crypto = {"SPCX_US_EQ": dict(base_cyc)}
+    enrich_positions_with_orders_and_cycles(
+        [], pt_spcx, {}, {"t212": {"SPCX_US_EQ": dict(ro_spcx)}}, {"SPCX_US_EQ": dict(ro_spcx)},
+        {}, {}, cyc_crypto, {}, cache_dir=str(cdir), now_ts=now_s,
+    )
+    assert cyc_eq["SPCX_US_EQ"]["pos_peak"] == pytest.approx(164.64)
+    assert cyc_crypto["SPCX_US_EQ"]["pos_peak"] == pytest.approx(164.64)
+    assert cyc_crypto["SPCX_US_EQ"]["dd_from_peak_pct"] == cyc_eq["SPCX_US_EQ"]["dd_from_peak_pct"]
+
+    # 2. Fast PRE tick (>0.05% away from cache_current_price) still populates quote_source/market_state/quote_age_min
+    amd_entry = {"price": 387.10}
+    cp_map = {"AMD_US_EQ": [[int((now_s - 15.0) * 1000), 388.639]]}
+    Fleet24hAndMicrostructureEnricher._apply_equity_fallback_quote_meta(
+        "AMD_US_EQ", amd_entry, cp_map, None, now_s, frozen_t212_px=None
+    )
+    assert amd_entry["price"] == pytest.approx(387.10)
+    assert amd_entry["quote_source"] == "yahoo_ext"
+    assert amd_entry["market_state"] == "PRE"
+    assert amd_entry["quote_age_min"] == pytest.approx(0.2, abs=0.1)
+
+    # Frozen T212 RTH close must NOT be misclassified as yahoo_ext even when cp_map has a fresh PRE print
+    frozen_entry = {"price": 155.05}
+    cp_nvda = {"NVDA_US_EQ": [[int((now_s - 10.0) * 1000), 152.00]]}
+    Fleet24hAndMicrostructureEnricher._apply_equity_fallback_quote_meta(
+        "NVDA_US_EQ", frozen_entry, cp_nvda, None, now_s, frozen_t212_px=155.05
+    )
+    assert "quote_source" not in frozen_entry
+
+    # 3. End-to-end Fleet24hAndMicrostructureEnricher.collect for observe-only AMD_US_EQ when live price moved >0.05%
+    tel_dir = cdir / "telemetry"
+    tel_dir.mkdir(parents=True)
+    (tel_dir / "orderbook_depth_AMD_US_EQ.json").write_text(
+        json.dumps({"symbol": "AMD_US_EQ", "mid_price": 388.639, "spread_bps": 8.56, "ts": now_s - 12.0}),
+        encoding="utf-8",
+    )
+    pt_end2end = {"AMD_US_EQ": {"price": 387.10, "trend": -1, "growth_coefficient": -0.5}}
+    m_end2end: dict = {}
+    Fleet24hAndMicrostructureEnricher(start_sync=False).collect(
+        str(cdir),
+        "BTCUSDC",
+        workspace_dir=str(tmp_path),
+        prices_and_trends=pt_end2end,
+        microstructure=m_end2end,
+        cur_p_items=cp_map,
+        inst_by_sym={},
+        now_ts=now_s,
+        read_json_fn=lambda p: json.loads(open(p, encoding="utf-8").read()) if os.path.exists(p) else None,
+        allow_network=False,
+        persist=False,
+    )
+    assert pt_end2end["AMD_US_EQ"]["price"] == pytest.approx(387.10)
+    assert pt_end2end["AMD_US_EQ"]["quote_source"] == "yahoo_ext"
+    assert pt_end2end["AMD_US_EQ"]["market_state"] == "PRE"
+    assert pt_end2end["AMD_US_EQ"]["quote_age_min"] == pytest.approx(0.2, abs=0.1)
+
+
+
 
 
 

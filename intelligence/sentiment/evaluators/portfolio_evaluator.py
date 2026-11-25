@@ -2259,33 +2259,27 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     c_avg = first_pos_float(cyc.get("avg_cost_px"), cyc.get("entry_price"))
                     c_entry = safe_pos_float(cyc.get("entry_price"), default=None)
                     c_pk = safe_pos_float(cyc.get("pos_peak"), default=None)
-                    c_pk_missing_or_unwarmed = (
-                        c_pk is None
-                        or (c_avg is not None and abs(c_pk - c_avg) <= max(1e-6, max(c_pk, c_avg) * 1e-5))
-                        or (c_entry is not None and abs(c_pk - c_entry) <= max(1e-6, max(c_pk, c_entry) * 1e-5))
+                    oldest_c_ts = _extract_oldest_cycle_lot_ts_ms(
+                        ro, fallback_ts_ms=cyc_sell_ts_map.get((f"{c_venue}:entry", c_sym_u)) or 0
                     )
-                    if c_pk_missing_or_unwarmed:
-                        oldest_c_ts = _extract_oldest_cycle_lot_ts_ms(
-                            ro, fallback_ts_ms=cyc_sell_ts_map.get((f"{c_venue}:entry", c_sym_u)) or 0
+                    c_age_ms = (eff_now_ms_u - oldest_c_ts) if oldest_c_ts > 0 else 0
+                    if 12 * 3600 * 1000 <= c_age_ms <= 90 * 86400 * 1000:
+                        hi_24h_c = _resolve_cycle_high_since(
+                            c_sym_u, c_quote_variants, oldest_c_ts, prices_and_trends, cache_dir=cache_dir, memo=cycle_high_memo, now_ms=eff_now_ms_u
                         )
-                        c_age_ms = (eff_now_ms_u - oldest_c_ts) if oldest_c_ts > 0 else 0
-                        if 12 * 3600 * 1000 <= c_age_ms <= 90 * 86400 * 1000:
-                            hi_24h_c = _resolve_cycle_high_since(
-                                c_sym_u, c_quote_variants, oldest_c_ts, prices_and_trends, cache_dir=cache_dir, memo=cycle_high_memo, now_ms=eff_now_ms_u
+                        ls_c_d = ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}
+                        ls_c_ts = safe_pos_int(ls_c_d.get("ts_ms"), default=0) or 0
+                        ls_c_px = (first_pos_float(cyc.get("last_sell_price"), ls_c_d.get("price"), default=0.0) or 0.0) if ls_c_ts >= oldest_c_ts else 0.0
+                        ref_pk_anchor_c = max(c_px, c_avg or 0.0, c_entry or 0.0, ls_c_px, c_pk or 0.0)
+                        if hi_24h_c > 0.0 and not _prices_diverged(ref_pk_anchor_c, hi_24h_c, threshold=0.35):
+                            c_pk = max(
+                                hi_24h_c,
+                                ls_c_px,
+                                c_px,
+                                c_pk or 0.0,
+                                c_avg or 0.0,
+                                c_entry or 0.0,
                             )
-                            ls_c_d = ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}
-                            ls_c_ts = safe_pos_int(ls_c_d.get("ts_ms"), default=0) or 0
-                            ls_c_px = (first_pos_float(cyc.get("last_sell_price"), ls_c_d.get("price"), default=0.0) or 0.0) if ls_c_ts >= oldest_c_ts else 0.0
-                            ref_pk_anchor_c = max(c_px, c_avg or 0.0, c_entry or 0.0, ls_c_px)
-                            if hi_24h_c > 0.0 and not _prices_diverged(ref_pk_anchor_c, hi_24h_c, threshold=0.35):
-                                c_pk = max(
-                                    hi_24h_c,
-                                    ls_c_px,
-                                    c_px,
-                                    c_pk or 0.0,
-                                    c_avg or 0.0,
-                                    safe_pos_float(cyc.get("entry_price"), default=0.0) or 0.0,
-                                )
                     if c_pk is not None and c_pk > 0.0:
                         eff_c_pk = max(c_pk, c_px)
                         cyc["pos_peak"] = round(eff_c_pk, 6)
