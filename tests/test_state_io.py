@@ -1491,6 +1491,121 @@ def test_incremental_jsonl_tailing_and_assetguardian_vectorized_extrema(tmp_path
     assert ag._get_symbol_window_extrema("BTCUSDC", 9999.0, minutes_back=240.0) is None
 
 
+def test_fleet_wide_ephemeral_no_fsync_and_incremental_jsonl_cached_readers(tmp_path, monkeypatch):
+    """Verify ephemeral trends/heartbeats skip fsync (while default save_json_state keeps fsync=True),
+    read_jsonl_or_json_dict_cached & Cache365PriceManager tail incrementally, and macro_analyzer/DEV backtests are niced."""
+    import botcore
+    import cacheprice
+    import cachetrend
+    import priceAnalysis as pa
+
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+
+    # 1. Default save_json_state(fsync=True) keeps full fsync durability; fsync=False writes atomically with 0 fsync
+    durable_p = tmp_path / "durable_orders.json"
+    state_io.save_json_state(str(durable_p), {"orders": [1]})
+    assert len(fsync_calls) >= 1
+    fsync_calls.clear()
+
+    eph_p = tmp_path / "ephemeral_state.json"
+    state_io.save_json_state(str(eph_p), {"v": 1}, separators=(",", ":"), fsync=False)
+    state_io.save_json_state(str(eph_p), {"v": 2}, separators=(",", ":"), fsync=False)
+    assert fsync_calls == []
+    assert eph_p.read_text(encoding="utf-8") == '{"v":2}'
+
+    # 2. Heartbeat, CacheShortTrendManager, 24trend/live_*, KalmanStateTracker, and priceAnalysis all skip fsync
+    hb_p = tmp_path / "daemon.heartbeat"
+    botcore.touch_heartbeat_file(hb_p, force=True, now=100.0, status={"ok": True})
+    assert fsync_calls == [] and "\n" not in hb_p.read_text(encoding="utf-8")
+
+    st_file = tmp_path / "cache_short_trend.json"
+    stm = cachetrend.CacheShortTrendManager(symbols=["BTCUSDC"], filename=str(st_file), read_only=False)
+    stm._mem["BTCUSDC"] = {"ts": time.time(), "slope": 0.12, "current_price": 60000.0}
+    stm._live_windows["BTCUSDC"] = {"222": {"ts": time.time(), "slope": 0.12}}
+    stm._dirty_live_symbols.add("BTCUSDC")
+    assert stm.save_state_to_file() is True
+    assert fsync_calls == []
+    assert "\n" not in st_file.read_text(encoding="utf-8")
+
+    kal_file = tmp_path / "cache_kalman_trend.json"
+    kt = cachetrend.KalmanStateTracker(state_path=str(kal_file), read_only=False, state_min_interval=0.0)
+    kt._state["BTCUSDC"] = {"ts": time.time(), "kalman_trend": 1.0}
+    kt._write_state(time.time())
+    assert fsync_calls == [] and kal_file.exists()
+
+    pa_file = tmp_path / "priceanalysis.json"
+    pa.write_all_trends({"BTCUSDC": {"direction": "up", "start_timestamp": 1000, "duration_seconds": 60, "estimated_future_hours": 10}}, filename=str(pa_file))
+    assert fsync_calls == [] and json.loads(pa_file.read_text(encoding="utf-8"))["BTCUSDC"]["direction"] == "up"
+
+    # 3. read_jsonl_or_json_dict_cached tails appended JSONL lines incrementally without mutating prior snapshots
+    c24_p = tmp_path / "cache_24_price_BTCUSDC.jsonl"
+    now_ms = int(time.time() * 1000)
+    lines0 = [json.dumps({"s": "BTCUSDC", "i": [now_ms - (20 - k) * 1000, 60000.0 + k]}, separators=(",", ":")) for k in range(10)]
+    c24_p.write_text("\n".join(lines0) + "\n", encoding="utf-8")
+    memo: dict = {}
+    tail_events: list[bool] = []
+    orig_off = state_io.read_jsonl_bucket_map_from_offset
+
+    def _spy_off(*args, **kwargs):
+        res = orig_off(*args, **kwargs)
+        tail_events.append(res[5])
+        return res
+
+    monkeypatch.setattr(state_io, "read_jsonl_bucket_map_from_offset", _spy_off)
+    d1 = state_io.read_jsonl_or_json_dict_cached(str(c24_p), memo)
+    assert d1 is not None and len(d1["items"]["BTCUSDC"]) == 10 and tail_events == [False]
+    snap1_list = d1["items"]["BTCUSDC"]
+
+    # Append 2 lines on same inode -> incremental tail (True) and prior list reference stays unmutated
+    with open(c24_p, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"s": "BTCUSDC", "i": [now_ms - 5000, 60100.0]}, separators=(",", ":")) + "\n")
+        fh.write(json.dumps({"s": "BTCUSDC", "i": [now_ms - 4000, 60101.0]}, separators=(",", ":")) + "\n")
+    d2 = state_io.read_jsonl_or_json_dict_cached(str(c24_p), memo)
+    assert d2 is not None and len(d2["items"]["BTCUSDC"]) == 12 and tail_events == [False, True]
+    assert len(snap1_list) == 10
+
+    # Atomic replace (new inode, e.g. compaction) -> clean full reload (False)
+    state_io.atomic_write_text(
+        str(c24_p),
+        json.dumps({"s": "BTCUSDC", "i": [now_ms - 1000, 60200.0]}, separators=(",", ":")) + "\n",
+    )
+    d3 = state_io.read_jsonl_or_json_dict_cached(str(c24_p), memo)
+    assert d3 is not None and len(d3["items"]["BTCUSDC"]) == 1 and tail_events[-1] is False
+
+    # 4. Cache365PriceManager (read_only=True) tails newly appended lines incrementally & falls back on inode swap
+    sp_p = tmp_path / "cache_sparse_price_BTCUSDC.jsonl"
+    sp_p.write_text("\n".join(lines0) + "\n", encoding="utf-8")
+    monkeypatch.setattr(cacheprice, "read_jsonl_bucket_map_from_offset", _spy_off)
+    sp_ro = cacheprice.Cache365PriceManager(180, ["BTCUSDC"], str(sp_p), api_client=None, read_only=True)
+    assert len(sp_ro.cache["BTCUSDC"]) == 10
+    with open(sp_p, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"s": "BTCUSDC", "i": [now_ms - 2000, 60300.0]}, separators=(",", ":")) + "\n")
+    tail_events.clear()
+    sp_ro._load_jsonl()
+    assert tail_events == [True] and len(sp_ro.cache["BTCUSDC"]) == 11 and sp_ro.cache["BTCUSDC"][-1][1] == pytest.approx(60300.0)
+
+    # Atomic replace (rotation/new inode) -> falls back to read_tail_lines_with_cursor cleanly
+    state_io.atomic_write_text(
+        str(sp_p),
+        json.dumps({"s": "BTCUSDC", "i": [now_ms - 500, 60400.0]}, separators=(",", ":")) + "\n",
+    )
+    tail_events.clear()
+    sp_ro._load_jsonl()
+    assert tail_events == [False] and len(sp_ro.cache["BTCUSDC"]) == 1 and sp_ro.cache["BTCUSDC"][0][1] == pytest.approx(60400.0)
+
+    # 5. macro_analyzer.py & DEV offline backtests run with nice/ionice while DEV CI watcher stays normal priority
+    repo_root = Path(__file__).resolve().parents[1]
+    macro_row = next(ln for ln in (repo_root / "procs.conf").read_text(encoding="utf-8").splitlines() if ln.startswith("macro_analyzer.py|"))
+    assert "nice -n 5 ionice -c3 python intelligence/macro_analyzer.py" in macro_row
+    dev_cron = (repo_root / "systemd/crontab.dev.txt").read_text(encoding="utf-8")
+    for tok in ("run_backtest_cycle.sh", "run_overnight_master_suite.sh", "run_dev_observability.sh"):
+        ln = next(line for line in dev_cron.splitlines() if tok in line and not line.strip().startswith("#"))
+        assert "nice -n 15 ionice -c3" in ln
+    ci_ln = next(line for line in dev_cron.splitlines() if "run_dev_regression.sh watch" in line and not line.strip().startswith("#"))
+    assert "nice -n" not in ci_ln
+
+
 
 
 

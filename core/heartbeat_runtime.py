@@ -98,7 +98,14 @@ def touch_heartbeat_file(
             intervals=intervals if intervals is not None else {"heartbeat": interval_sec},
             extra=extra,
         )
-        _state_io.atomic_write_json(hb_path, payload)
+        write_fn = _state_io.atomic_write_json
+        if (
+            getattr(write_fn, "__module__", None) == "state_io"
+            and getattr(write_fn, "__name__", None) == "atomic_write_json"
+        ):
+            write_fn(hb_path, payload, separators=(",", ":"), fsync=False)
+        else:
+            write_fn(hb_path, payload)
         os.utime(hb_path, None)
     except OSError:
         return last_ts

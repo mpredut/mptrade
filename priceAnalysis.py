@@ -407,7 +407,7 @@ def write_all_trends(all_trends, filename=None):
     print("\n" + "="*80 + "\n")
     
     try:
-        save_json_state(filename, all_trends, indent=2, write_fn=atomic_write_json)
+        save_json_state(filename, all_trends, indent=2, write_fn=atomic_write_json, fsync=False)
         print(f"Results were written to {filename}")
     except Exception as exc:
         print(f"Could not write {filename}: {exc}")

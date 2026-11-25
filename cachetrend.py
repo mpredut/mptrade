@@ -173,6 +173,7 @@ class CacheTrendManagerBase(CacheManagerInterface, ABC):
     Shared by ``CacheLongTrendManager`` and ``CacheShortTrendManager``.
     """
 
+    _SNAPSHOT_FSYNC = False
     _default_cache24_getter: Optional[Callable[[], Any]] = None
     _default_current_price_getter: Optional[Callable[[], Any]] = None
 
@@ -1319,7 +1320,9 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 save_json_state(
                     self._live_trend_file(symbol),
                     clean,
+                    separators=(",", ":"),
                     write_fn=_cm_attr("atomic_write_json", atomic_write_json),
+                    fsync=False,
                 )
         except Exception as e:
             print(f"[{self.cls_name}] live write failure for {symbol}: {e}")
@@ -1464,8 +1467,18 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     "fetchtime": fetchtime,
                     "rest_sync_cursor": dict(fetchtime),
                 }
+                write_json_fn = _cm_attr("atomic_write_json", atomic_write_json)
+                if (
+                    getattr(write_json_fn, "__module__", None) == "state_io"
+                    and getattr(write_json_fn, "__name__", None) == "atomic_write_json"
+                ):
+                    snap_writer = lambda: write_json_fn(
+                        self.filename, snapshot_mem, separators=(",", ":"), fsync=False
+                    )
+                else:
+                    snap_writer = lambda: write_json_fn(self.filename, snapshot_mem)
                 if not self._commit_file_and_meta_locked(
-                    lambda: _cm_attr("atomic_write_json", atomic_write_json)(self.filename, snapshot_mem),
+                    snap_writer,
                     metadata,
                 ):
                     return False
@@ -2093,7 +2106,7 @@ class KalmanStateTracker:
                                 eff_k = self._canonical_state_key(k) or str(k)
                                 merged[eff_k] = self._merge_state_entry(merged.get(eff_k), v)
                     self._state = merged
-                    save_json_state(self.state_path, merged)
+                    save_json_state(self.state_path, merged, separators=(",", ":"), fsync=False)
                     self._last_state_write = now
                     self._last_written_count = len(merged)
             except Exception as e:  # noqa: BLE001

@@ -132,9 +132,11 @@ from state_io import (
     read_json_dict,
     read_json_dict_cached,
     read_json_dict_recovering,
+    read_jsonl_bucket_map_from_offset,
     read_jsonl_or_json_dict_cached,
     read_tail_complete_lines_text,
     read_tail_lines,
+    read_tail_lines_with_cursor,
     save_json_state,
     write_meta_json,
 )
@@ -1251,30 +1253,70 @@ class Cache365PriceManager(Cache24PriceManager):
         return False
 
     def _load_jsonl(self):
-        """Load only a recent working set; the JSONL file remains the full archive."""
+        """Load only a recent working set; tail newly appended lines incrementally for read-only consumers."""
         with self.lock:
-            self.cache = {}
             backup_path = (
                 self._previous_generation_path()
                 if self.read_only
                 else self._ensure_file_or_restore_previous_locked()
             )
-            source_path = (
-                self.filename
-                if os.path.exists(self.filename)
-                else (backup_path if self.read_only and os.path.exists(backup_path) else None)
-            )
-            if source_path is not None:
-                for raw_line in read_tail_lines(
-                    source_path, CM_LONG_ARCHIVE_MEMORY_ROWS
-                ):
-                    rec = parse_json_payload(raw_line, default=None)
-                    if (
-                        isinstance(rec, dict)
-                        and rec.get("s") in self.symbols
-                        and rec.get("i") is not None
-                    ):
-                        self.cache.setdefault(rec["s"], []).append(rec["i"])
+            abs_path = os.path.abspath(self.filename)
+            tail_st = getattr(self, "_jsonl_tail_state", None)
+            inc_done = False
+            if (
+                self.read_only
+                and os.path.exists(self.filename)
+                and isinstance(self.cache, dict)
+                and bool(self.cache)
+                and tail_st is not None
+                and tail_st[0] == abs_path
+            ):
+                delta_map, had_bad, next_off, dev_ino, new_anchor, inc_used = (
+                    read_jsonl_bucket_map_from_offset(
+                        self.filename,
+                        start_offset=tail_st[2],
+                        expected_dev_ino=tail_st[1],
+                        expected_anchor=tail_st[3],
+                        allow_full_fallback=False,
+                    )
+                )
+                if inc_used:
+                    for sym_k, rows_delta in delta_map.items():
+                        if sym_k not in self.symbols:
+                            continue
+                        bucket = self.cache.setdefault(sym_k, [])
+                        bucket.extend(rows_delta)
+                        if len(bucket) > CM_LONG_ARCHIVE_MEMORY_ROWS:
+                            self.cache[sym_k] = bucket[-CM_LONG_ARCHIVE_MEMORY_ROWS:]
+                    self._jsonl_tail_state = (
+                        (abs_path, dev_ino, next_off, new_anchor)
+                        if (not had_bad and dev_ino is not None and next_off > 0)
+                        else None
+                    )
+                    inc_done = True
+
+            if not inc_done:
+                self.cache = {}
+                self._jsonl_tail_state = None
+                source_path = (
+                    self.filename
+                    if os.path.exists(self.filename)
+                    else (backup_path if self.read_only and os.path.exists(backup_path) else None)
+                )
+                if source_path is not None:
+                    tail_lines, cursor = read_tail_lines_with_cursor(
+                        source_path, CM_LONG_ARCHIVE_MEMORY_ROWS
+                    )
+                    for raw_line in tail_lines:
+                        rec = parse_json_payload(raw_line, default=None)
+                        if (
+                            isinstance(rec, dict)
+                            and rec.get("s") in self.symbols
+                            and rec.get("i") is not None
+                        ):
+                            self.cache.setdefault(rec["s"], []).append(rec["i"])
+                    if self.read_only and source_path == self.filename and cursor is not None:
+                        self._jsonl_tail_state = (abs_path, cursor[0], cursor[1], cursor[2])
             self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
             if meta_payload := self._read_optional_meta_dict():
                 self._hydrate_fetchtimes_from_mapping_locked(

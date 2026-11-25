@@ -349,14 +349,16 @@ def _rollback_generation(
 def save_json_state(path: str, value: Any, *, indent: int | None = None,
                     sort_keys: bool = False, separators=None, ensure_ascii: bool = True,
                     allow_nan: bool = False, default: Any = None,
-                    write_fn: Callable[..., Any] | None = None) -> Any:
+                    write_fn: Callable[..., Any] | None = None,
+                    fsync: bool = True) -> Any:
     """Transactionally write JSON state while staging and cleaning up ``<path>.previous``."""
     target_path = _resolve_target_path(path, migrate=True)
+    eff_fsync = _parse_bool_flag(fsync, True)
     backup_path = None
     had_prior = os.path.exists(target_path)
     if had_prior:
         try:
-            backup_path = stage_previous_generation(target_path)
+            backup_path = stage_previous_generation(target_path, fsync=eff_fsync)
         except OSError:
             backup_path = None
     try:
@@ -364,7 +366,17 @@ def save_json_state(path: str, value: Any, *, indent: int | None = None,
             res = atomic_write_json(
                 target_path, value, indent=indent, sort_keys=sort_keys,
                 separators=separators, ensure_ascii=ensure_ascii,
-                allow_nan=allow_nan, default=default,
+                allow_nan=allow_nan, default=default, fsync=eff_fsync,
+            )
+        elif (
+            not eff_fsync
+            and getattr(write_fn, "__module__", None) == __name__
+            and getattr(write_fn, "__name__", None) == "atomic_write_json"
+        ):
+            res = write_fn(
+                target_path, value, indent=indent, sort_keys=sort_keys,
+                separators=separators, ensure_ascii=ensure_ascii,
+                allow_nan=allow_nan, default=default, fsync=False,
             )
         else:
             res = write_fn(target_path, value, **({"indent": indent} if indent is not None else {}))
@@ -465,28 +477,52 @@ def _extract_tail_non_empty(chunks: list[bytes], *, drop_partial_head: bool) -> 
     return [line for line in joined.splitlines() if line.strip()]
 
 
-def read_tail_lines(
+_JSONL_TAIL_ANCHOR_BYTES = 64
+
+
+def read_tail_lines_with_cursor(
     path: str, limit: int | None = None, *, chunk_size: int = 65536, max_bytes: int | None = None,
-) -> list[bytes]:
-    """Read up to the last ``limit`` lines and/or ``max_bytes`` from ``path`` with bounded memory."""
+) -> tuple[list[bytes], tuple[tuple[int, int], int, bytes] | None]:
+    """Read up to the last ``limit`` lines and/or ``max_bytes`` from ``path`` plus an append-tail cursor."""
     try:
         resolved = _resolve_target_path(path)
     except (TypeError, ValueError):
-        return []
+        return [], None
     if not os.path.isfile(resolved):
-        return []
+        return [], None
     limit_i = exact_pos_int(limit, default=None) if limit is not None else None
     max_b = exact_pos_int(max_bytes, default=None) if max_bytes is not None else None
     if (limit is not None and limit_i is None) or (max_bytes is not None and max_b is None) or (limit_i is None and max_b is None):
-        return []
+        return [], None
     eff_chunk = max_b if limit_i is None else exact_pos_int(chunk_size, default=65536)
     chunks: list[bytes] = []
     newline_count = 0
+    cursor: tuple[tuple[int, int], int, bytes] | None = None
     try:
         with open(resolved, "rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            position = handle.tell()
+            st = os.fstat(handle.fileno())
+            dev_ino = (st.st_dev, st.st_ino)
+            end_pos = st.st_size
+            position = end_pos
             min_pos = max(0, position - max_b) if max_b is not None else 0
+
+            def _build_cursor() -> tuple[tuple[int, int], int, bytes] | None:
+                if end_pos <= 0 or not chunks:
+                    return None
+                tail_chunk = chunks[0]
+                if tail_chunk.endswith(b"\n"):
+                    c_pos = end_pos
+                else:
+                    last_nl = tail_chunk.rfind(b"\n")
+                    if last_nl < 0:
+                        return None
+                    c_pos = (end_pos - len(tail_chunk)) + last_nl + 1
+                if c_pos <= 0:
+                    return None
+                a_len = min(_JSONL_TAIL_ANCHOR_BYTES, c_pos)
+                handle.seek(c_pos - a_len)
+                return (dev_ino, c_pos, handle.read(a_len))
+
             while position > min_pos:
                 step = min(eff_chunk, position - min_pos)
                 position -= step
@@ -497,12 +533,21 @@ def read_tail_lines(
                 if limit_i is not None and newline_count > limit_i and position > min_pos:
                     non_empty = _extract_tail_non_empty(chunks, drop_partial_head=True)
                     if len(non_empty) >= limit_i:
-                        return non_empty[-limit_i:]
+                        return non_empty[-limit_i:], _build_cursor()
                     newline_count = len(non_empty)
+            cursor = _build_cursor()
     except OSError:
-        return []
+        return [], None
     lines = _extract_tail_non_empty(chunks, drop_partial_head=(position > 0 and b"\n" in b"".join(reversed(chunks))))
-    return lines[-limit_i:] if limit_i is not None else lines
+    return (lines[-limit_i:] if limit_i is not None else lines), cursor
+
+
+def read_tail_lines(
+    path: str, limit: int | None = None, *, chunk_size: int = 65536, max_bytes: int | None = None,
+) -> list[bytes]:
+    """Read up to the last ``limit`` lines and/or ``max_bytes`` from ``path`` with bounded memory."""
+    lines, _ = read_tail_lines_with_cursor(path, limit, chunk_size=chunk_size, max_bytes=max_bytes)
+    return lines
 
 
 def _extract_jsonl_record_ts_ms(rec: Any) -> float | None:
@@ -905,9 +950,6 @@ def read_jsonl_bucket_map(path: str) -> tuple[dict[str, list[Any]], bool]:
                 had_invalid_line = True
                 continue
     return cache, had_invalid_line
-
-
-_JSONL_TAIL_ANCHOR_BYTES = 64
 
 
 def read_jsonl_bucket_map_from_offset(
@@ -1541,12 +1583,16 @@ def _looks_like_jsonl_bucket_file(path: str) -> bool:
     return False
 
 
+_JSONL_CACHED_CURSORS: dict[tuple[int, str], tuple[tuple[int, int], int, bytes]] = {}
+
+
 def read_jsonl_or_json_dict_cached(
     path: str | os.PathLike[str],
     memo: dict[str, tuple[tuple, dict[str, Any]]] | None = None,
     *, max_entries: int = 32,
 ) -> dict[str, Any] | None:
-    """Stat-memoized reader supporting both JSONL bucket files (``{'s', 'i'}``) and legacy JSON dicts."""
+    """Stat-memoized reader supporting both JSONL bucket files (``{'s', 'i'}``) and legacy JSON dicts,
+    with incremental byte-offset tailing on appended JSONL files."""
     try:
         resolved = _resolve_target_path(path)
     except Exception:
@@ -1565,25 +1611,69 @@ def read_jsonl_or_json_dict_cached(
     eff_src = resolved if st_main is not None else backup_path
     if not _looks_like_jsonl_bucket_file(eff_src):
         return read_json_dict_cached(resolved, memo, max_entries=max_entries)
+
+    cursor_key = (id(cache_store), resolved)
+    prev_cursor = _JSONL_CACHED_CURSORS.get(cursor_key)
+    prev_items = (
+        cached[1].get("items")
+        if (cached is not None and isinstance(cached[1], dict) and isinstance(cached[1].get("items"), dict))
+        else None
+    )
     bucket_map: dict[str, list[Any]] = {}
-    for cand_src in ((resolved, backup_path) if st_main is not None else (backup_path,)):
-        if not cand_src or not os.path.exists(cand_src):
-            continue
+    new_cursor: tuple[tuple[int, int], int, bytes] | None = None
+
+    if st_main is not None and os.path.exists(resolved):
         try:
-            parsed_map, _ = read_jsonl_bucket_map(cand_src)
+            can_tail = prev_cursor is not None and bool(prev_items)
+            parsed_map, had_bad, next_off, dev_ino, new_anchor, inc_used = (
+                read_jsonl_bucket_map_from_offset(
+                    resolved,
+                    start_offset=prev_cursor[1] if can_tail else 0,
+                    expected_dev_ino=prev_cursor[0] if can_tail else None,
+                    expected_anchor=prev_cursor[2] if can_tail else b"",
+                    allow_full_fallback=True,
+                )
+            )
+            if inc_used and isinstance(prev_items, dict):
+                if parsed_map:
+                    bucket_map = {k: list(v) for k, v in prev_items.items()}
+                    for sym_k, rows_delta in parsed_map.items():
+                        bucket_map.setdefault(sym_k, []).extend(rows_delta)
+                else:
+                    bucket_map = prev_items
+            else:
+                bucket_map = parsed_map
+            if not had_bad and dev_ino is not None and next_off > 0 and bucket_map:
+                new_cursor = (dev_ino, next_off, new_anchor)
+        except Exception:
+            bucket_map = {}
+
+    if not bucket_map and backup_path and os.path.exists(backup_path):
+        try:
+            parsed_map, _ = read_jsonl_bucket_map(backup_path)
             if parsed_map:
                 bucket_map = parsed_map
-                break
+                new_cursor = None
         except Exception:
-            continue
+            pass
+
     if not bucket_map:
+        _JSONL_CACHED_CURSORS.pop(cursor_key, None)
         return None
     res: dict[str, Any] = {"items": bucket_map}
     if resolved in cache_store:
         cache_store.pop(resolved, None)
     cache_store[resolved] = (sig, res)
+    if new_cursor is not None:
+        _JSONL_CACHED_CURSORS[cursor_key] = new_cursor
+    else:
+        _JSONL_CACHED_CURSORS.pop(cursor_key, None)
     for old_key in list(cache_store)[: max(0, len(cache_store) - max_entries)]:
         cache_store.pop(old_key, None)
+        _JSONL_CACHED_CURSORS.pop((id(cache_store), old_key), None)
+    if len(_JSONL_CACHED_CURSORS) > max(64, max_entries * 4):
+        for stale_ck in list(_JSONL_CACHED_CURSORS)[: len(_JSONL_CACHED_CURSORS) - max(64, max_entries * 2)]:
+            _JSONL_CACHED_CURSORS.pop(stale_ck, None)
     return res
 
 
