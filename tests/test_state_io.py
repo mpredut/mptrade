@@ -2069,6 +2069,129 @@ def test_cacheprice_subdomain_anchor_sparse_fallback_and_seed_guard(tmp_path, mo
     assert reloaded_365["AMD_US_EQ"] == [[now_ms - 7_200_000, 118.25]]
 
 
+def test_compact_price_series_and_bounded_sparse_cache_parity(tmp_path, monkeypatch):
+    """Verify A+B design for CacheSparsePriceManager:
+    1) CompactPriceSeries stores int64+float64 (16 B/pt raw), supports list-like API + equality,
+       slices compactly, and releases frombuffer views before returning so subsequent appends never BufferError;
+    2) CacheSparsePriceManager loads only the bounded tail into CompactPriceSeries while preserving
+       100% of the full JSONL archive on disk across appends, trims, compact_jsonl, and maintain_append_persist;
+    3) Read-only reader tails incrementally into CompactPriceSeries and serves get_series_arrays() cleanly;
+    4) priceAnalysis.getTrendLongTerm_fixed() fast-path over get_series_arrays() matches legacy tuple path."""
+    import sys
+    import numpy as np
+    import cacheprice
+    import priceAnalysis as pa
+
+    # 1. CompactPriceSeries contract, ~16 B/pt raw storage, and zero BufferError after to_numpy()
+    cps = cacheprice.CompactPriceSeries()
+    base_ms = int((time.time() - 20 * 86400) * 1000)
+    for k in range(2000):
+        cps.append([base_ms + k * 60_000, 50000.0 + k * 0.5])
+    assert len(cps) == 2000
+    assert cps[0] == [base_ms, 50000.0]
+    assert cps[-1] == [base_ms + 1999 * 60_000, 50000.0 + 1999 * 0.5]
+    assert cps.last_pair() == (base_ms + 1999 * 60_000, 50000.0 + 1999 * 0.5)
+    assert cps.max_timestamp_ms() == base_ms + 1999 * 60_000
+    raw_buf_bytes = sys.getsizeof(cps._ts) + sys.getsizeof(cps._px)
+    assert raw_buf_bytes / len(cps) < 28.0  # ~16 B/pt + small C array growth headroom (vs ~153 B/pt Python list)
+    sliced = cps[-5:]
+    assert isinstance(sliced, cacheprice.CompactPriceSeries)
+    assert sliced == [[base_ms + k * 60_000, 50000.0 + k * 0.5] for k in range(1995, 2000)]
+
+    ts_arr, px_arr = cps.to_numpy(since_ms=base_ms + 1990 * 60_000)
+    assert ts_arr.dtype == np.int64 and px_arr.dtype == np.float64
+    assert len(ts_arr) == 10 and px_arr[0] == pytest.approx(50000.0 + 1990 * 0.5)
+    # Subsequent append/resize must NOT raise BufferError
+    cps.append([base_ms + 2000 * 60_000, 51000.0])
+    assert len(cps) == 2001 and len(ts_arr) == 10  # returned array is independent
+
+    # Non-monotonic to_numpy fallback
+    cps.append([base_ms + 1000 * 60_000, 50500.0])
+    assert cps._monotonic is False
+    ts_nm, px_nm = cps.to_numpy(since_ms=base_ms + 1999 * 60_000)
+    assert len(ts_nm) == 2 and float(px_nm[-1]) == pytest.approx(51000.0)
+
+    # 2. CacheSparsePriceManager bounded memory tail + full disk preservation
+    cdb = tmp_path / "cachedb"
+    prices_dir = cdb / "prices"
+    prices_dir.mkdir(parents=True)
+    sp_path = prices_dir / "cache_sparse_price_BTCUSDC.jsonl"
+    now_ms = int(time.time() * 1000)
+    # Write 40 rows spanning last 20 days (12h step) on disk; cap memory at 12 rows
+    total_disk_rows = 40
+    step_ms = 12 * 3600 * 1000
+    start_ms = now_ms - (total_disk_rows + 2) * step_ms
+    with open(sp_path, "w", encoding="utf-8") as fh:
+        for i in range(total_disk_rows):
+            fh.write(json.dumps({"s": "BTCUSDC", "i": [start_ms + i * step_ms, 50000.0 + i * 250.0]}) + "\n")
+
+    monkeypatch.setattr(cacheprice.CacheSparsePriceManager, "SPARSE_MEMORY_ROWS", 12)
+    writer = cacheprice.CacheSparsePriceManager(
+        180, ["BTCUSDC"], str(sp_path), api_client=None, read_only=False, data_sync_mode="producer"
+    )
+    assert isinstance(writer.cache["BTCUSDC"], cacheprice.CompactPriceSeries)
+    assert len(writer.cache["BTCUSDC"]) == 12
+    assert writer.cache["BTCUSDC"][0][0] == start_ms + (total_disk_rows - 12) * step_ms
+
+    # Append 2 new live ticks, save, and verify disk keeps ALL 42 rows while memory stays capped at 12
+    t_new1 = start_ms + total_disk_rows * step_ms
+    t_new2 = start_ms + (total_disk_rows + 1) * step_ms
+    writer.update_cache_per_symbol("BTCUSDC", [[t_new1, 60000.0]])
+    writer.update_cache_per_symbol("BTCUSDC", [[t_new2, 60500.0]])
+    assert len(writer.cache["BTCUSDC"]) == 12
+    assert writer.save_state_to_file() is True
+
+    # compact_jsonl on an existing archive must preserve ALL 42 disk rows (never truncate to 12!)
+    assert writer.compact_jsonl() is True
+    full_disk, had_bad = state_io.read_jsonl_bucket_map(str(sp_path))
+    assert had_bad is False
+    assert len(full_disk["BTCUSDC"]) == total_disk_rows + 2
+    assert full_disk["BTCUSDC"][0][0] == start_ms
+    assert full_disk["BTCUSDC"][-1] == [t_new2, 60500.0]
+
+    # 3. Read-only reader tails incrementally into CompactPriceSeries & serves get_series_arrays
+    reader = cacheprice.CacheSparsePriceManager(
+        180, ["BTCUSDC"], str(sp_path), api_client=None, read_only=True, data_sync_mode="disk_reader"
+    )
+    assert isinstance(reader.cache["BTCUSDC"], cacheprice.CompactPriceSeries)
+    assert len(reader.cache["BTCUSDC"]) == 12
+    assert reader._jsonl_tail_state is not None
+
+    t_new3 = start_ms + (total_disk_rows + 2) * step_ms
+    writer.update_cache_per_symbol("BTCUSDC", [[t_new3, 61000.0]])
+    assert writer.save_state_to_file() is True
+    ts_r, px_r = reader.get_series_arrays("BTCUSDC", resync=True)
+    assert len(ts_r) == 12 and int(ts_r[-1]) == t_new3 and float(px_r[-1]) == pytest.approx(61000.0)
+
+    # 4. priceAnalysis _series_signature_for + getTrendLongTerm_fixed fast-path parity vs legacy priceLstFor
+    monkeypatch.setattr(cacheprice.CacheSparsePriceManager, "SPARSE_MEMORY_ROWS", 35_000)
+    sp_trend_path = prices_dir / "cache_sparse_price_ETHUSDC.jsonl"
+    # Build 20 days of 1-hour rising points (480 pts)
+    n_pts = 480
+    t0_ms = now_ms - n_pts * 3600 * 1000
+    with open(sp_trend_path, "w", encoding="utf-8") as fh:
+        for i in range(n_pts):
+            fh.write(json.dumps({"s": "ETHUSDC", "i": [t0_ms + i * 3600 * 1000, 2000.0 + i * 2.5]}) + "\n")
+    pa_mgr = cacheprice.CacheSparsePriceManager(
+        180, ["ETHUSDC"], str(sp_trend_path), api_client=None, read_only=True, data_sync_mode="disk_reader"
+    )
+    monkeypatch.setattr(pa, "price_cache_manager", {"ETHUSDC": pa_mgr})
+    sig = pa._series_signature_for("ETHUSDC")
+    assert sig == (n_pts, t0_ms + (n_pts - 1) * 3600 * 1000, 2000.0 + (n_pts - 1) * 2.5)
+
+    monkeypatch.setattr(pa, "estimate_remaining_trend_hours", lambda *a, **kw: 12.0)
+    res_fast = pa.getTrendLongTerm_fixed("ETHUSDC", window_hours=16, step_hours=8, lookback_days=30, draw=False)
+    # Compare against legacy tuple path by monkeypatching priceLstFor to a wrapper (disables fastpath)
+    orig_plf = pa.priceLstFor
+    monkeypatch.setattr(pa, "priceLstFor", lambda s: orig_plf(s))
+    res_legacy = pa.getTrendLongTerm_fixed("ETHUSDC", window_hours=16, step_hours=8, lookback_days=30, draw=False)
+    assert res_fast is not None and res_legacy is not None
+    assert res_fast["direction"] == res_legacy["direction"]
+    assert res_fast["start_timestamp"] == pytest.approx(res_legacy["start_timestamp"], rel=1e-9)
+    assert res_fast["duration_seconds"] == pytest.approx(res_legacy["duration_seconds"], rel=1e-9)
+
+
+
 
 
 

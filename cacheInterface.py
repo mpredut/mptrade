@@ -11,6 +11,7 @@ from __future__ import annotations
 import builtins
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Sequence
 import math
 import os
 import sys
@@ -35,6 +36,7 @@ from botcore import (
     safe_int,
     safe_nonneg_float,
     safe_nonneg_int,
+    safe_pos_float,
     safe_pos_int,
     set_stop_event,
     timestampToTime,
@@ -48,7 +50,7 @@ from cachepaths import (
     clean_upper_scalar,
     migrate_legacy_filename_if_needed,
 )
-from instrument_registry import resolve_symbol_identity
+from instrument_registry import casefold_get, resolve_symbol_identity
 from state_io import (
     append_jsonl_bucket_delta,
     atomic_gzip_file,
@@ -499,6 +501,55 @@ class CacheManagerInterface(ABC):
 
     _DICT_SEC_FETCHTIMES: bool = False
 
+    @staticmethod
+    def _is_bucket_seq(obj: Any) -> bool:
+        return isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray))
+
+    def _new_symbol_bucket(self, symbol: str) -> Any:
+        """Create a new per-symbol entry container (override for compact typed buffers)."""
+        return []
+
+    def get_series_arrays(
+        self,
+        symbol: str,
+        *,
+        since_ms: Optional[int] = None,
+        resync: bool = False,
+    ) -> tuple[Any, Any]:
+        """Return ``(timestamps_ms_int64, prices_float64)`` NumPy arrays for ``symbol``.
+
+        Subclasses backed by compact typed buffers override this to slice directly from
+        contiguous ``int64``/``float64`` storage without allocating Python list/tuple rows.
+        """
+        import numpy as np
+
+        if resync:
+            self.resync_mem_file()
+        cutoff_ms = safe_nonneg_int(since_ms, default=None) if since_ms is not None else None
+        with self.lock:
+            raw = self.cache.get(symbol)
+            if raw is None:
+                raw = casefold_get(self.cache, symbol, None)
+            if not self._is_bucket_seq(raw) or not raw:
+                return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float64)
+            if hasattr(raw, "to_numpy"):
+                return raw.to_numpy(since_ms=cutoff_ms)
+            rows = list(raw)
+        ts_list: list[int] = []
+        px_list: list[float] = []
+        for item in rows:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                ts_v = normalize_timestamp_ms(item[0], default=None)
+                px_v = safe_pos_float(item[1], default=None)
+                if ts_v is not None and px_v is not None:
+                    if cutoff_ms is not None and ts_v < cutoff_ms:
+                        continue
+                    ts_list.append(ts_v)
+                    px_list.append(px_v)
+        if not ts_list:
+            return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float64)
+        return np.asarray(ts_list, dtype=np.int64), np.asarray(px_list, dtype=np.float64)
+
     def rebuild_fetchtimes(self):
         """Allow subclasses to provide custom fetch-time reconstruction."""
         if not self._DICT_SEC_FETCHTIMES:
@@ -507,7 +558,7 @@ class CacheManagerInterface(ABC):
             return {}
         last_times = {}
         for symbol, items in self.cache.items():
-            if not isinstance(items, (list, tuple)) or not items:
+            if not self._is_bucket_seq(items) or not items:
                 continue
             max_ts_sec = max(
                 (
@@ -534,10 +585,13 @@ class CacheManagerInterface(ABC):
                 if entry_lookup_fn is not None
                 else self.cache.get(symbol, [])
             )
-            if isinstance(entries, list) and entries:
-                max_ts = max(
-                    (self._entry_timestamp_ms(entry) for entry in entries), default=0
-                )
+            if self._is_bucket_seq(entries) and entries:
+                if hasattr(entries, "max_timestamp_ms"):
+                    max_ts = entries.max_timestamp_ms()
+                else:
+                    max_ts = max(
+                        (self._entry_timestamp_ms(entry) for entry in entries), default=0
+                    )
                 if max_ts > 0:
                     last_times[symbol] = max_ts
         return last_times
@@ -547,7 +601,12 @@ class CacheManagerInterface(ABC):
         if not last_times_per_sym and isinstance(self.cache, dict):
             last_times_per_sym = defaultdict(int)
             for symbol, trades in self.cache.items():
-                if not isinstance(trades, (list, tuple)):
+                if not self._is_bucket_seq(trades):
+                    continue
+                if hasattr(trades, "max_timestamp_ms"):
+                    max_t = trades.max_timestamp_ms()
+                    if max_t > last_times_per_sym[symbol]:
+                        last_times_per_sym[symbol] = max_t
                     continue
                 for trade in trades:
                     time_ = self._entry_timestamp_ms(trade)
@@ -586,7 +645,7 @@ class CacheManagerInterface(ABC):
         if not isinstance(self.cache, dict):
             return False
         return any(
-            isinstance(items, (list, tuple)) and self._persisted_counts.get(symbol, 0) > len(items)
+            self._is_bucket_seq(items) and self._persisted_counts.get(symbol, 0) > len(items)
             for symbol, items in self.cache.items()
         )
 
@@ -747,7 +806,10 @@ class CacheManagerInterface(ABC):
 
     def _snapshot_memory_state_locked(self):
         return (
-            {symbol: list(items) for symbol, items in self.cache.items()},
+            {
+                symbol: (items.copy() if hasattr(items, "copy") else list(items))
+                for symbol, items in self.cache.items()
+            },
             dict(self._persisted_counts),
             dict(self.fetchtime_per_symbol),
             dict(self._rest_sync_cursor_per_symbol),
@@ -1207,7 +1269,7 @@ class CacheManagerInterface(ABC):
                 )
                 if inc_used:
                     for sym_k, rows_delta in loaded_map.items():
-                        self.cache.setdefault(sym_k, []).extend(rows_delta)
+                        self.cache.setdefault(sym_k, self._new_symbol_bucket(sym_k)).extend(rows_delta)
                 else:
                     self.cache = loaded_map
                 self._jsonl_tail_state = (
@@ -1425,7 +1487,7 @@ class CacheManagerInterface(ABC):
         kept_count: Optional[int] = None
         added_count = 0
         with self.lock:
-            bucket = self.cache.setdefault(symbol, [])
+            bucket = self.cache.setdefault(symbol, self._new_symbol_bucket(symbol))
             if self.append_mode:
                 cache_copy = bucket[-self.DEDUP_WINDOW :]
                 filtered_items = self.filter_new_items(cache_copy, new_items)

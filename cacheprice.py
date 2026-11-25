@@ -13,9 +13,11 @@ Thematic layout (Sections 1..7):
 from __future__ import annotations
 
 from abc import ABC
+import array
 import bisect
 import builtins
 from collections import defaultdict, deque
+from collections.abc import MutableSequence, Sequence
 import concurrent.futures as _futures
 import math
 from operator import itemgetter
@@ -377,15 +379,189 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
 
 
 # =============================================================================
-# 2. SPARSE LONG-HORIZON ARCHIVE: CacheSparsePriceManager
+# 2. COMPACT TYPED SERIES & SPARSE LONG-HORIZON ARCHIVE: CacheSparsePriceManager
 # =============================================================================
 
 
+class CompactPriceSeries(MutableSequence):
+    """Memory-compact ``[ts_ms, price]`` sequence backed by C ``int64`` + ``float64`` arrays (16 B/point).
+
+    Provides amortized O(1) appends, O(1) tail/max queries, list-compatible indexing/slicing/equality
+    for generic cache hooks, and direct ``to_numpy(since_ms=...)`` slicing via temporary ``np.frombuffer``
+    views (released before returning so subsequent resizes never hit ``BufferError``).
+    """
+
+    __slots__ = ("_ts", "_px", "_monotonic")
+
+    def __init__(self, items: Any = None) -> None:
+        if isinstance(items, CompactPriceSeries):
+            self._ts = array.array("q", items._ts)
+            self._px = array.array("d", items._px)
+            self._monotonic = items._monotonic
+            return
+        self._ts = array.array("q")
+        self._px = array.array("d")
+        self._monotonic = True
+        if items is not None:
+            self.extend(items)
+
+    @staticmethod
+    def _coerce_pair(item: Any) -> Optional[tuple[int, float]]:
+        fast = _fast_parse_ssot_point(item)
+        if fast is not None:
+            return fast
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            ts_i = normalize_timestamp_ms(item[0], default=None)
+            px_f = safe_pos_float(item[1], default=None)
+            if ts_i is not None and ts_i > 0 and px_f is not None:
+                return ts_i, px_f
+        return None
+
+    def append_pair(self, ts_ms: int, price: float) -> None:
+        if self._monotonic and self._ts and ts_ms < self._ts[-1]:
+            self._monotonic = False
+        self._ts.append(ts_ms)
+        self._px.append(price)
+
+    def append(self, value: Any) -> None:
+        pair = self._coerce_pair(value)
+        if pair is not None:
+            self.append_pair(pair[0], pair[1])
+
+    def extend(self, values: Any) -> None:
+        if isinstance(values, CompactPriceSeries):
+            if not values._ts:
+                return
+            if self._monotonic:
+                self._monotonic = values._monotonic and (
+                    not self._ts or values._ts[0] >= self._ts[-1]
+                )
+            self._ts.extend(values._ts)
+            self._px.extend(values._px)
+            return
+        for item in values:
+            pair = self._coerce_pair(item)
+            if pair is not None:
+                self.append_pair(pair[0], pair[1])
+
+    def trim_head(self, drop_count: int) -> int:
+        if drop_count <= 0 or not self._ts:
+            return 0
+        n = min(drop_count, len(self._ts))
+        del self._ts[:n]
+        del self._px[:n]
+        return n
+
+    def copy(self) -> CompactPriceSeries:
+        return CompactPriceSeries(self)
+
+    def clear(self) -> None:
+        del self._ts[:]
+        del self._px[:]
+        self._monotonic = True
+
+    def last_pair(self) -> Optional[tuple[int, float]]:
+        return (self._ts[-1], self._px[-1]) if self._ts else None
+
+    def max_timestamp_ms(self) -> int:
+        if not self._ts:
+            return 0
+        return self._ts[-1] if self._monotonic else max(self._ts)
+
+    def to_numpy(self, *, since_ms: Optional[int] = None) -> tuple[Any, Any]:
+        """Return independent ``(ts_ms_int64, px_float64)`` NumPy arrays sliced at ``since_ms``."""
+        import numpy as np
+
+        if not self._ts:
+            return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float64)
+        ts_view = np.frombuffer(self._ts, dtype=np.int64)
+        px_view = np.frombuffer(self._px, dtype=np.float64)
+        try:
+            if since_ms is None:
+                return ts_view.copy(), px_view.copy()
+            if self._monotonic:
+                idx = np.searchsorted(ts_view, since_ms, side="left").item()
+                return ts_view[idx:].copy(), px_view[idx:].copy()
+            mask = ts_view >= since_ms
+            return ts_view[mask].copy(), px_view[mask].copy()
+        finally:
+            del ts_view, px_view
+
+    def __len__(self) -> int:
+        return len(self._ts)
+
+    def __bool__(self) -> bool:
+        return bool(self._ts)
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, slice):
+            out = CompactPriceSeries()
+            out._ts = self._ts[index]
+            out._px = self._px[index]
+            if self._monotonic and (index.step is None or index.step > 0):
+                out._monotonic = True
+            else:
+                ts_s = out._ts
+                out._monotonic = all(ts_s[i] >= ts_s[i - 1] for i in range(1, len(ts_s)))
+            return out
+        return [self._ts[index], self._px[index]]
+
+    def __setitem__(self, index: Any, value: Any) -> None:
+        if isinstance(index, slice):
+            pairs = [p for it in value if (p := self._coerce_pair(it)) is not None]
+            self._ts[index] = array.array("q", (p[0] for p in pairs))
+            self._px[index] = array.array("d", (p[1] for p in pairs))
+            self._monotonic = False
+            return
+        pair = self._coerce_pair(value)
+        if pair is None:
+            raise ValueError(f"invalid compact price point: {value!r}")
+        self._ts[index] = pair[0]
+        self._px[index] = pair[1]
+        self._monotonic = False
+
+    def __delitem__(self, index: Any) -> None:
+        del self._ts[index]
+        del self._px[index]
+
+    def insert(self, index: int, value: Any) -> None:
+        pair = self._coerce_pair(value)
+        if pair is None:
+            return
+        self._ts.insert(index, pair[0])
+        self._px.insert(index, pair[1])
+        self._monotonic = False
+
+    def __iter__(self):
+        return ([t, p] for t, p in zip(self._ts, self._px))
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, CompactPriceSeries):
+            return self._ts == other._ts and self._px == other._px
+        if isinstance(other, list):
+            if len(other) != len(self._ts):
+                return False
+            for row, t, p in zip(other, self._ts, self._px):
+                if not isinstance(row, (list, tuple)) or len(row) != 2 or row[0] != t or row[1] != p:
+                    return False
+            return True
+        return NotImplemented
+
+    def __repr__(self) -> str:
+        return f"CompactPriceSeries(len={len(self._ts)})"
+
+
 class CacheSparsePriceManager(CachePriceManagerBase):
-    """Store sparse three-minute price samples (Level 3) for two years in JSONL."""
+    """Store sparse three-minute price samples (Level 3) for two years in JSONL.
+
+    Keeps a bounded in-memory working set (``SPARSE_MEMORY_ROWS``) in compact typed
+    ``CompactPriceSeries`` buffers (16 B/point) while preserving the full 2-year JSONL
+    archive on disk.
+    """
 
     FILE_PREFIX = CACHE_SPARSE_PRICE_PREFIX
     FILE_EXT = "jsonl"
+    SPARSE_MEMORY_ROWS: int = 35_000
 
     def __init__(
         self,
@@ -411,6 +587,271 @@ class CacheSparsePriceManager(CachePriceManagerBase):
             current_price_mgr=current_price_mgr,
             data_sync_mode=data_sync_mode,
         )
+
+    def _memory_row_limit(self) -> int:
+        return safe_pos_int(self.SPARSE_MEMORY_ROWS, default=35_000) or 35_000
+
+    def _new_symbol_bucket(self, symbol: str) -> CompactPriceSeries:
+        return CompactPriceSeries()
+
+    def _should_compact_before_append_locked(self) -> bool:
+        return False
+
+    def _on_stale_memory_detected_locked(self) -> None:
+        pass
+
+    def _trim_memory_tail_locked(self, symbol: Optional[str] = None) -> None:
+        limit = self._memory_row_limit()
+        syms = (symbol,) if symbol is not None else tuple(self.cache.keys())
+        for sym_k in syms:
+            bucket = self.cache.get(sym_k)
+            if not self._is_bucket_seq(bucket):
+                continue
+            overflow = len(bucket) - limit
+            if overflow <= 0:
+                continue
+            persisted = safe_nonneg_int(self._persisted_counts.get(sym_k, 0), default=0) or 0
+            trim_n = overflow if self.read_only else min(overflow, persisted)
+            if trim_n <= 0:
+                continue
+            if isinstance(bucket, CompactPriceSeries):
+                bucket.trim_head(trim_n)
+            else:
+                self.cache[sym_k] = bucket[trim_n:]
+            self._persisted_counts[sym_k] = max(0, persisted - trim_n)
+
+    def update_cache_per_symbol(self, symbol, new_items):
+        super().update_cache_per_symbol(symbol, new_items)
+        with self.lock:
+            self._trim_memory_tail_locked(symbol)
+
+    def _after_state_persisted(self) -> None:
+        with self.lock:
+            self._trim_memory_tail_locked()
+
+    def _load_jsonl(self):
+        """Load bounded recent working set into compact typed buffers; tail incrementally for readers."""
+        limit = self._memory_row_limit()
+        allowed_syms = set(self.symbols) if self.symbols else None
+        with self.lock:
+            backup_path = (
+                self._previous_generation_path()
+                if self.read_only
+                else self._ensure_file_or_restore_previous_locked()
+            )
+            abs_path = os.path.abspath(self.filename)
+            tail_st = getattr(self, "_jsonl_tail_state", None)
+            inc_done = False
+            if (
+                self.read_only
+                and os.path.exists(self.filename)
+                and isinstance(self.cache, dict)
+                and bool(self.cache)
+                and tail_st is not None
+                and tail_st[0] == abs_path
+            ):
+                delta_map, had_bad, next_off, dev_ino, new_anchor, inc_used = (
+                    read_jsonl_bucket_map_from_offset(
+                        self.filename,
+                        start_offset=tail_st[2],
+                        expected_dev_ino=tail_st[1],
+                        expected_anchor=tail_st[3],
+                        allow_full_fallback=False,
+                    )
+                )
+                if inc_used:
+                    for sym_k, rows_delta in delta_map.items():
+                        if allowed_syms is not None and sym_k not in allowed_syms:
+                            continue
+                        bucket = self.cache.get(sym_k)
+                        if bucket is None:
+                            bucket = self._new_symbol_bucket(sym_k)
+                            self.cache[sym_k] = bucket
+                        bucket.extend(rows_delta)
+                        if len(bucket) > limit:
+                            overflow = len(bucket) - limit
+                            if isinstance(bucket, CompactPriceSeries):
+                                bucket.trim_head(overflow)
+                            else:
+                                self.cache[sym_k] = bucket[overflow:]
+                    self._jsonl_tail_state = (
+                        (abs_path, dev_ino, next_off, new_anchor)
+                        if (not had_bad and dev_ino is not None and next_off > 0)
+                        else None
+                    )
+                    inc_done = True
+
+            if not inc_done:
+                self.cache = {}
+                self._jsonl_tail_state = None
+                source_path = (
+                    self.filename
+                    if os.path.exists(self.filename)
+                    else (backup_path if self.read_only and os.path.exists(backup_path) else None)
+                )
+                if source_path is not None:
+                    tail_lines, cursor = read_tail_lines_with_cursor(source_path, limit)
+                    for raw_line in tail_lines:
+                        rec = parse_json_payload(raw_line, default=None)
+                        if not isinstance(rec, dict):
+                            continue
+                        sym_k = rec.get("s")
+                        item = rec.get("i")
+                        if not isinstance(sym_k, str) or item is None:
+                            continue
+                        if allowed_syms is not None and sym_k not in allowed_syms:
+                            continue
+                        pair = CompactPriceSeries._coerce_pair(item)
+                        if pair is None:
+                            continue
+                        bucket = self.cache.get(sym_k)
+                        if bucket is None:
+                            bucket = self._new_symbol_bucket(sym_k)
+                            self.cache[sym_k] = bucket
+                        bucket.append_pair(pair[0], pair[1])
+                    if self.read_only and source_path == self.filename and cursor is not None:
+                        self._jsonl_tail_state = (abs_path, cursor[0], cursor[1], cursor[2])
+            self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
+            if meta_payload := self._read_optional_meta_dict():
+                self._hydrate_fetchtimes_from_mapping_locked(
+                    meta_payload,
+                    filter_symbols=bool(allowed_syms),
+                    coerce_nonneg_int=True,
+                )
+            if self.cache:
+                for s_sym, rebuilt_ft in self.rebuild_fetchtimes().items():
+                    self.fetchtime_per_symbol[s_sym] = max(
+                        safe_nonneg_int(self.fetchtime_per_symbol.get(s_sym), default=0) or 0,
+                        safe_nonneg_int(rebuilt_ft, default=0) or 0,
+                    )
+                    self._rest_sync_cursor_per_symbol.setdefault(
+                        s_sym, self.fetchtime_per_symbol[s_sym]
+                    )
+
+    def maintain_append_persist(self):
+        """Stream-prune the full 2-year disk archive without overwriting it from the bounded memory tail."""
+        if not self.save_state or not os.path.exists(self.filename):
+            return False
+        cutoff_ms = math.trunc((_now_time() - self.RETENTION_DAYS * 86400) * 1000)
+        changed = False
+        backup_path = None
+        original_state = None
+        snap_last_ts: dict[str, int] = {}
+        try:
+            with self._generation_lock():
+                with self.lock:
+                    original_state = self._snapshot_memory_state_locked()
+                    for sym_k, bucket in self.cache.items():
+                        if isinstance(bucket, CompactPriceSeries):
+                            snap_last_ts[sym_k] = bucket.max_timestamp_ms()
+                        elif self._is_bucket_seq(bucket) and bucket:
+                            snap_last_ts[sym_k] = max(
+                                (self._entry_timestamp_ms(it) for it in bucket), default=0
+                            )
+                backup_path = self.filename + ".maint_backup"
+                self._snapshot_file_to(backup_path)
+                original_cache, original_persisted_counts = original_state[0], original_state[1]
+                with atomic_text_writer(self.filename) as target:
+                    for line_out, keep in iter_jsonl_retention_lines(
+                        backup_path,
+                        lambda rec: (
+                            isinstance(rec.get("s"), str)
+                            and self._entry_timestamp_ms(rec.get("i")) >= cutoff_ms
+                        ),
+                    ):
+                        if keep:
+                            target.write(line_out)
+                        else:
+                            changed = True
+                    for sym_k, items in original_cache.items():
+                        start = min(max(0, original_persisted_counts.get(sym_k, 0)), len(items))
+                        for item in items[start:]:
+                            if self._entry_timestamp_ms(item) >= cutoff_ms:
+                                target.write(format_jsonl_bucket_line(sym_k, item))
+                            changed = True
+                    with self.lock:
+                        for sym_k, bucket in self.cache.items():
+                            prev_ts = snap_last_ts.get(sym_k, 0)
+                            if not self._is_bucket_seq(bucket):
+                                continue
+                            for item in bucket:
+                                item_ts = self._entry_timestamp_ms(item)
+                                if item_ts > prev_ts and item_ts >= cutoff_ms:
+                                    target.write(format_jsonl_bucket_line(sym_k, item))
+                                    changed = True
+
+                with self.lock:
+                    live_extra: dict[str, list] = {}
+                    for sym_k, bucket in self.cache.items():
+                        prev_ts = snap_last_ts.get(sym_k, 0)
+                        if self._is_bucket_seq(bucket):
+                            extra = [
+                                item
+                                for item in bucket
+                                if (t_ms := self._entry_timestamp_ms(item)) > prev_ts
+                                and t_ms >= cutoff_ms
+                            ]
+                            if extra:
+                                live_extra[sym_k] = extra
+                    self._load_jsonl()
+                    for sym_k, extra_items in live_extra.items():
+                        bucket = self.cache.setdefault(sym_k, self._new_symbol_bucket(sym_k))
+                        seen = {canonical_json_key(it) for it in bucket[-self.DEDUP_WINDOW :]}
+                        for item in extra_items:
+                            k = canonical_json_key(item)
+                            if k not in seen:
+                                seen.add(k)
+                                bucket.append(item)
+                    self._trim_memory_tail_locked()
+                    if changed:
+                        if not self._write_meta(self._build_basic_meta_locked(self._persisted_counts)):
+                            self._restore_memory_state_locked(original_state)
+                            self._restore_previous_generation(backup_path)
+                            backup_path = None
+                            return False
+                    if backup_path is not None:
+                        discard_generation_file(backup_path)
+                        backup_path = None
+            if changed:
+                builtins.print(f"[{self.cls_name}][maintain] pruned expired/corrupt disk records")
+            return True
+        except OSError as exc:
+            with self.lock:
+                self._restore_memory_state_locked(original_state)
+                if backup_path is not None and os.path.exists(backup_path):
+                    try:
+                        self._restore_previous_generation(backup_path)
+                    except OSError:
+                        pass
+            builtins.print(f"[{self.cls_name}][Error] streaming maintenance {self.filename}: {exc}")
+            return False
+        finally:
+            self._after_state_persisted()
+
+    def compact_jsonl(self):
+        """Never rebuild an existing 2-year sparse archive from its bounded memory tail."""
+        if os.path.exists(self.filename):
+            return self.maintain_append_persist()
+        return super().compact_jsonl()
+
+    def get_series_arrays(
+        self,
+        symbol: str,
+        *,
+        since_ms: Optional[int] = None,
+        resync: bool = False,
+    ) -> tuple[Any, Any]:
+        """Return ``(timestamps_ms_int64, prices_float64)`` directly from the compact C buffers."""
+        if resync:
+            self.resync_mem_file()
+        cutoff_ms = safe_nonneg_int(since_ms, default=None) if since_ms is not None else None
+        with self.lock:
+            raw = self.cache.get(symbol)
+            if raw is None:
+                raw = casefold_get(self.cache, symbol, None)
+            if isinstance(raw, CompactPriceSeries):
+                return raw.to_numpy(since_ms=cutoff_ms)
+        return super().get_series_arrays(symbol, since_ms=since_ms, resync=False)
 
 
 # =============================================================================

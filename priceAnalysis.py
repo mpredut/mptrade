@@ -2,6 +2,7 @@
 import math
 import os
 import time
+from collections.abc import Sequence
 from datetime import datetime
 from typing import List, Optional, Tuple
 
@@ -262,72 +263,118 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
     # detector confirmation. mk_alpha requires current-window Mann-Kendall
     # significance; None disables that filter.
     lookback_days = safe_pos_float(lookback_days, 30.0)
-    data: List[Tuple[int, float]] = priceLstFor(symbol)
-    norm_data = [
-        (tf, pf)
-        for ts, p in data
-        if (tf := normalize_epoch_sec(ts, default=None)) is not None
-        and (pf := safe_pos_float(p, default=None)) is not None
-    ]
-    norm_data.sort(key=lambda x: x[0])
     is_eq = is_equity_symbol(symbol)
     _, is_tok = (("", False) if is_eq else resolve_kraken_tokenized_pair(symbol))
     min_req_span_s = min((safe_pos_float(lookback_days, 30.0) or 30.0) * 0.5, 7.0) * 86400.0
-    cur_span_s = (norm_data[-1][0] - norm_data[0][0]) if len(norm_data) >= 2 else 0.0
-    if cur_span_s < min_req_span_s and priceLstFor is _ORIG_PRICE_LST_FOR and price_cache_manager is not None:
-        oldest_ts = norm_data[0][0] if norm_data else math.inf
-        anchor_px = norm_data[0][1] if norm_data else None
-        if not is_eq and not is_tok:
-            for sib in cache_symbol_variants(symbol, include_original=False, include_base=False, quotes=("USDC", "USDT", "USD")):
-                sib_raw = priceLstFor(sib)
-                if len(sib_raw) >= 2:
-                    sib_norm = sorted(
-                        (
-                            (tf, pf)
-                            for ts, p in sib_raw
-                            if (tf := normalize_epoch_sec(ts, default=None)) is not None
-                            and (pf := safe_pos_float(p, default=None)) is not None
-                        ),
-                        key=lambda x: x[0],
-                    )
-                    older_pts = [pt for pt in sib_norm if pt[0] < oldest_ts - 1.0]
-                    if older_pts and (
+    cutoff_timestamp = (time.time() - (lookback_days * 86400.0)) if lookback_days is not None else None
+    timestamps: Optional[np.ndarray] = None
+    prices: Optional[np.ndarray] = None
+    norm_data: List[Tuple[float, float]] = []
+
+    use_array_fastpath = False
+    if priceLstFor is _ORIG_PRICE_LST_FOR and price_cache_manager is not None:
+        mgr = casefold_get(price_cache_manager, symbol)
+        if isinstance(mgr, cm.CacheManagerInterface) and hasattr(mgr, "get_series_arrays"):
+            since_ms = (
+                max(0, math.trunc(cutoff_timestamp * 1000.0) - 1000)
+                if cutoff_timestamp is not None
+                else None
+            )
+            ts_ms_arr, px_arr = mgr.get_series_arrays(symbol, since_ms=since_ms, resync=True)
+            if ts_ms_arr.size:
+                ts_sec_arr = ts_ms_arr.astype(np.float64) * 1e-3
+                if ts_sec_arr.size > 1 and bool(np.any(ts_sec_arr[1:] < ts_sec_arr[:-1])):
+                    order = np.argsort(ts_sec_arr, kind="mergesort")
+                    ts_sec_arr = ts_sec_arr[order]
+                    px_arr = px_arr[order]
+                if cutoff_timestamp is not None:
+                    keep_mask = ts_sec_arr > cutoff_timestamp
+                    if not bool(np.all(keep_mask)):
+                        ts_sec_arr = ts_sec_arr[keep_mask]
+                        px_arr = px_arr[keep_mask]
+                cur_span_s = (ts_sec_arr[-1] - ts_sec_arr[0]).item() if ts_sec_arr.size >= 2 else 0.0
+                if cur_span_s >= min_req_span_s and not is_eq:
+                    timestamps = ts_sec_arr
+                    prices = px_arr
+                    use_array_fastpath = True
+                else:
+                    norm_data = list(zip(ts_sec_arr.tolist(), px_arr.tolist()))
+            else:
+                norm_data = []
+        else:
+            data: List[Tuple[int, float]] = priceLstFor(symbol)
+            norm_data = [
+                (tf, pf)
+                for ts, p in data
+                if (tf := normalize_epoch_sec(ts, default=None)) is not None
+                and (pf := safe_pos_float(p, default=None)) is not None
+            ]
+            norm_data.sort(key=lambda x: x[0])
+    else:
+        data = priceLstFor(symbol)
+        norm_data = [
+            (tf, pf)
+            for ts, p in data
+            if (tf := normalize_epoch_sec(ts, default=None)) is not None
+            and (pf := safe_pos_float(p, default=None)) is not None
+        ]
+        norm_data.sort(key=lambda x: x[0])
+
+    if not use_array_fastpath:
+        cur_span_s = (norm_data[-1][0] - norm_data[0][0]) if len(norm_data) >= 2 else 0.0
+        if cur_span_s < min_req_span_s and priceLstFor is _ORIG_PRICE_LST_FOR and price_cache_manager is not None:
+            oldest_ts = norm_data[0][0] if norm_data else math.inf
+            anchor_px = norm_data[0][1] if norm_data else None
+            if not is_eq and not is_tok:
+                for sib in cache_symbol_variants(symbol, include_original=False, include_base=False, quotes=("USDC", "USDT", "USD")):
+                    sib_raw = priceLstFor(sib)
+                    if len(sib_raw) >= 2:
+                        sib_norm = sorted(
+                            (
+                                (tf, pf)
+                                for ts, p in sib_raw
+                                if (tf := normalize_epoch_sec(ts, default=None)) is not None
+                                and (pf := safe_pos_float(p, default=None)) is not None
+                            ),
+                            key=lambda x: x[0],
+                        )
+                        older_pts = [pt for pt in sib_norm if pt[0] < oldest_ts - 1.0]
+                        if older_pts and (
+                            anchor_px is None
+                            or abs(older_pts[-1][1] - anchor_px) / max(older_pts[-1][1], anchor_px) <= 0.10
+                        ):
+                            norm_data = older_pts + norm_data
+                            oldest_ts = norm_data[0][0]
+                            anchor_px = norm_data[0][1]
+                            cur_span_s = norm_data[-1][0] - norm_data[0][0]
+                            if cur_span_s >= min_req_span_s:
+                                break
+            if cur_span_s < min_req_span_s and is_live_network_backfill_enabled():
+                ohlc_pts = _backfill_ohlc_series(symbol, lookback_days=safe_pos_float(lookback_days, 30.0) or 30.0)
+                if ohlc_pts:
+                    older_ohlc = [pt for pt in ohlc_pts if pt[0] < oldest_ts - 1.0]
+                    if older_ohlc and (
                         anchor_px is None
-                        or abs(older_pts[-1][1] - anchor_px) / max(older_pts[-1][1], anchor_px) <= 0.10
+                        or abs(older_ohlc[-1][1] - anchor_px) / max(older_ohlc[-1][1], anchor_px) <= 0.10
                     ):
-                        norm_data = older_pts + norm_data
-                        oldest_ts = norm_data[0][0]
-                        anchor_px = norm_data[0][1]
-                        cur_span_s = norm_data[-1][0] - norm_data[0][0]
-                        if cur_span_s >= min_req_span_s:
-                            break
-        if cur_span_s < min_req_span_s and is_live_network_backfill_enabled():
-            ohlc_pts = _backfill_ohlc_series(symbol, lookback_days=safe_pos_float(lookback_days, 30.0) or 30.0)
-            if ohlc_pts:
-                older_ohlc = [pt for pt in ohlc_pts if pt[0] < oldest_ts - 1.0]
-                if older_ohlc and (
-                    anchor_px is None
-                    or abs(older_ohlc[-1][1] - anchor_px) / max(older_ohlc[-1][1], anchor_px) <= 0.10
-                ):
-                    norm_data = older_ohlc + norm_data
-    if (
-        is_eq
-        and len(norm_data) >= 2
-        and priceLstFor is _ORIG_PRICE_LST_FOR
-        and price_cache_manager is not None
-    ):
-        norm_data = _interpolate_price_gaps(norm_data, max_gap_s=345600.0, step_s=180.0)
-    if len(norm_data) < 2:
-        return None
-    if lookback_days is not None:
-        cutoff_timestamp = time.time() - (lookback_days * 86400)
-        norm_data = [(ts, p) for ts, p in norm_data if ts > cutoff_timestamp]
+                        norm_data = older_ohlc + norm_data
+        if (
+            is_eq
+            and len(norm_data) >= 2
+            and priceLstFor is _ORIG_PRICE_LST_FOR
+            and price_cache_manager is not None
+        ):
+            norm_data = _interpolate_price_gaps(norm_data, max_gap_s=345600.0, step_s=180.0)
         if len(norm_data) < 2:
-            print(f"[{symbol}] Not enough data in the last {lookback_days} days")
             return None
-    raw_ts, raw_px = zip(*norm_data)
-    timestamps = np.array(raw_ts, dtype=float)
-    prices = np.array(raw_px, dtype=float)
+        if cutoff_timestamp is not None:
+            norm_data = [(ts, p) for ts, p in norm_data if ts > cutoff_timestamp]
+            if len(norm_data) < 2:
+                print(f"[{symbol}] Not enough data in the last {lookback_days} days")
+                return None
+        raw_ts, raw_px = zip(*norm_data)
+        timestamps = np.array(raw_ts, dtype=float)
+        prices = np.array(raw_px, dtype=float)
 
     # Use time-defined windows to tolerate uneven density while respecting gaps.
     res = detect_long_term_trend(
@@ -454,16 +501,16 @@ def _series_signature_for(symbol: str) -> Optional[Tuple[int, int, float]]:
     if lock is not None:
         with lock:
             raw = casefold_get(manager.cache, symbol, None)
-            if not isinstance(raw, list) or not raw:
+            if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)) or not raw:
                 return (0, 0, 0.0)
             cnt = len(raw)
-            last_item = raw[-1]
+            last_item = raw.last_pair() if hasattr(raw, "last_pair") else raw[-1]
     else:
         raw = casefold_get(manager.cache, symbol, None)
-        if not isinstance(raw, list) or not raw:
+        if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)) or not raw:
             return (0, 0, 0.0)
         cnt = len(raw)
-        last_item = raw[-1]
+        last_item = raw.last_pair() if hasattr(raw, "last_pair") else raw[-1]
     if isinstance(last_item, (list, tuple)) and len(last_item) >= 2:
         l_ts = safe_pos_int(last_item[0], default=0) or 0
         l_px = safe_pos_float(last_item[1], default=0.0) or 0.0
