@@ -3062,6 +3062,81 @@ def test_cycle23_vs_btc_7d_after_block_tape_now_and_lh_return_bounds() -> None:
     }.issubset(bad_subjs)
 
 
+def test_cycle25_limit_dust_snap_preserves_tick_fill_and_tight_slippage_bps_invariant() -> None:
+    """Verify real tick fills (62.651 vs 62.6505) are preserved while IEEE-754 dust snaps cleanly, and fill==limit with non-zero slippage_bps is caught."""
+    from providers.intent_state import extract_intent_notional
+    from providers.intent_telemetry import (
+        build_last_cycle_execution_status,
+        summarize_active_ai_trade_plans,
+        summarize_recent_ai_intents,
+    )
+
+    now_s = 1_795_731_900.0
+    intents = [
+        {
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "decision": "SELL",
+            "order_type": "LIMIT",
+            "status": "EXECUTED",
+            "limit_price": 62.6505,
+            "requested_price": 62.6505,
+            "target_px": 61.8,
+            "invalidation_px": 63.35,
+            "suggested_notional_usd": 1210.56,
+            "timestamp": now_s - 1200.0,
+            "execution_payload": {
+                "orderId": "617497252477",
+                "status": "FILLED",
+                "price": 62.651,
+                "executedQty": "19.32",
+                "cost": 1210.41732,
+                "filled_at": now_s - 1100.0,
+            },
+        },
+        {
+            "venue": "kraken",
+            "symbol": "SPCXxUSD",
+            "decision": "SELL",
+            "order_type": "LIMIT",
+            "status": "EXECUTED",
+            "limit_price": 130.07,
+            "suggested_notional_usd": 646.31,
+            "timestamp": now_s - 3600.0,
+            "execution_payload": {
+                "order_id": "DUST-1",
+                "status": "FILLED",
+                "price": 130.0700008,
+                "executedQty": "4.968943",
+            },
+        },
+    ]
+    rec_sum = {r["symbol"]: r for r in summarize_recent_ai_intents(intents, "crypto", now_s, extract_intent_notional)}
+    assert rec_sum["HYPEUSDC"]["fill_px"] == 62.651
+    assert rec_sum["HYPEUSDC"]["slippage_bps"] == -0.08
+    assert rec_sum["SPCXxUSD"]["fill_px"] == 130.07
+    assert rec_sum["SPCXxUSD"]["slippage_bps"] == 0.0
+
+    lces = build_last_cycle_execution_status(intents, "crypto", now_s, extract_intent_notional)
+    assert isinstance(lces, dict) and lces["fill_px"] == 62.651 and lces["limit_px"] == 62.6505
+    plans = summarize_active_ai_trade_plans(
+        intents, "crypto", now_s, extract_intent_notional, prices_and_trends={"HYPEUSDC": {"price": 62.47}}
+    )
+    assert plans[0]["entry_px"] == 62.651
+
+    clean_p = (
+        "LIVE TELEMETRY SNAPSHOT:\n### 1. PORTFOLIO:\n"
+        "  * Last Cycle Execution Status — last_cycle_execution_status: "
+        "[hyperliquid] HYPEUSDC SELL LIMIT FILLED (fill_px=62.651, limit_px=62.6505, ref_px=62.6505, qty=19.32, notional=$1,210.42, slippage_bps=-0.08, id=617497252477, age=19.5m)\n"
+        "### 2. MACRO:\n"
+    )
+    assert audit_rendered_prompt_text(clean_p) == []
+
+    bad_p = clean_p.replace("fill_px=62.651,", "fill_px=62.6505,")
+    assert any(v.subject == "Exec.SELL.slippage_bps" for v in audit_rendered_prompt_text(bad_p))
+
+
+
 
 
 

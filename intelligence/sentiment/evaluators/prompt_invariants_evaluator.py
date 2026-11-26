@@ -3246,7 +3246,8 @@ def _audit_prompt_cross_section_math(
             if fp_v is not None and rp_v is not None and rp_v > 0.0 and ab_v is not None:
                 sgn_ex = 1.0 if ex_side == "BUY" else -1.0
                 exp_ab = sgn_ex * ((fp_v - rp_v) / rp_v) * 10000.0
-                if abs(exp_ab - ab_v) > 1.0:
+                tol_ab = max(0.05, (1e-6 / rp_v) * 10000.0)
+                if abs(exp_ab - ab_v) > tol_ab:
                     violations.append(
                         InvariantViolation(
                             "PROMPT_EXEC_AND_CROSS_MARKET_MATH",
@@ -3261,7 +3262,8 @@ def _audit_prompt_cross_section_math(
             if fp_v is not None and lp_v is not None and lp_v > 0.0 and sb_v is not None:
                 sgn_ex = 1.0 if ex_side == "BUY" else -1.0
                 exp_sb = sgn_ex * ((fp_v - lp_v) / lp_v) * 10000.0
-                if abs(exp_sb - sb_v) > 1.0:
+                tol_sb = max(0.05, (1e-6 / lp_v) * 10000.0)
+                if abs(exp_sb - sb_v) > tol_sb:
                     violations.append(
                         InvariantViolation(
                             "PROMPT_EXEC_AND_CROSS_MARKET_MATH",

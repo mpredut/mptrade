@@ -526,9 +526,11 @@ def _resolve_intent_execution_details(
         and exec_status == "FILLED"
         and fill_px is not None
         and limit_px is not None
-        and abs(fill_px - limit_px) <= limit_px * 1e-5
+        and abs(fill_px - limit_px) <= limit_px * 5e-8
     ):
         fill_px = limit_px
+        if slippage_bps is not None:
+            slippage_bps = 0.0
     fill_ts_val, fail_reason = _resolve_intent_fill_ts_and_reason(
         i,
         exec_pay=exec_pay,
