@@ -431,7 +431,8 @@ def _resolve_intent_execution_details(
         )
 
     is_unfilled_resting_limit = (
-        order_type == "LIMIT"
+        raw_intent_st == "EXECUTED"
+        and order_type == "LIMIT"
         and (venue_st in UNFILLED_ORDER_STATUSES or not venue_st)
         and filled_qty <= 0
     )

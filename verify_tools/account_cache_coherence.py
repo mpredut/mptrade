@@ -13,7 +13,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import os
+from pathlib import Path
+import sys
 from typing import Any, Iterable, Mapping, Optional
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 from account_cache_health import SUPPORTED_HEALTH_VENUES
 from botcore import (

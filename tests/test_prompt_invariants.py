@@ -2935,6 +2935,101 @@ def test_audit_cli_check_cross_cache_and_reconciler_temporal_anchor(monkeypatch:
     assert any("TEMPORAL_PEAK_PX_MONOTONICITY" in ln for ln in viol_lines)
 
 
+def test_cycle22_pre_submit_rejection_fix_and_wave5_invariants() -> None:
+    """Verify pre-submit rejections never become CANCELED_OR_EXPIRED + Wave-5 chronology/tranches/edge/swings/bounds/open-order invariants."""
+    from providers.intent_state import extract_intent_notional
+    from providers.intent_telemetry import summarize_recent_ai_intents
+
+    now_s = 1_795_727_400.0
+    rej_intent = {
+        "intent_id": "intent_1795725010_sell_hypeusdc",
+        "timestamp": now_s - 2400.0,
+        "decision": "SELL",
+        "symbol": "HYPEUSDC",
+        "venue": "hyperliquid",
+        "suggested_notional_usd": 1225.0,
+        "order_type": "LIMIT",
+        "limit_price": 63.28,
+        "status": "REJECTED_AI_CIRCUIT_BREAKER",
+        "execution_payload": None,
+        "circuit_breaker_reason": "ai_ping_pong_whipsaw_cap(HYPEUSDC@hyperliquid:2/2 flips in 6h)",
+    }
+    summaries = summarize_recent_ai_intents(
+        [rej_intent],
+        "crypto",
+        now_s,
+        extract_intent_notional,
+        open_orders=[],
+        verified_open_venues={"hyperliquid"},
+    )
+    assert len(summaries) == 1
+    assert summaries[0]["status"] == "REJECTED_AI_CIRCUIT_BREAKER"
+    assert "venue_status" not in summaries[0]
+
+    # Snapshot invariant catches pre-submit rejection stamped with venue_status
+    bad_snap = {
+        "portfolio_summary": {
+            "recent_ai_intents": [
+                {"symbol": "HYPEUSDC", "status": "REJECTED_AI_CIRCUIT_BREAKER", "venue_status": "CANCELED_OR_EXPIRED"}
+            ]
+        }
+    }
+    assert any(v.subject == "recent_ai_intents:HYPEUSDC:pre_submit_venue_status" for v in audit_snapshot_invariants(bad_snap))
+
+    clean_c22 = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Active Open Orders & Linked Trade Plans (Locking Liquidity) — open_limit_orders:\n"
+        "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Plan (Tgt/Inv) | Note |\n"
+        "    |---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+        "    | hyperliquid | HYPEUSDC | SELL | 63.49 | 19.32 | 0 | 617468930935 | AI | 27.6m | +0.13% | 99% | - | - |\n"
+        "  * HYPEUSDC Last Action=BUY (by=AI): Last BUY=19.33 @ 62.06 (age=1.8h, by=AI) | "
+        "Last SELL=16.8 @ 60.38 (age=3.3h, by=AI) | Recent SELL Tranches=[12.34@57.785, 16.8@60.38]\n"
+        "  * Recent Autonomous Intents:\n"
+        "    - [hyperliquid] HYPEUSDC SELL LIMIT REJECTED_AI_CIRCUIT_BREAKER (limit_px=63.28, notional=$1,225.00, age=0.68h, reason=ai_ping_pong_whipsaw_cap(HYPEUSDC@hyperliquid:2/2 flips in 6h))\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+        "- Macro Sentiment Advisor: conf=0.79, age=3.0m | summary=Calm.\n"
+        "- Geopolitical Threat Shield: risk_score=0.68, age=5.0m | summary=Elevated.\n"
+        "  * Multi-Month & Annual Structure:\n"
+        "    | Symbol | YTD | 30d | 90d | 52w Range (Pos52w) | 3y Range (Pos) | vs MA50 | vs MA200 | Swings (3y, YY-MM:px) |\n"
+        "    |---|---|---|---|---|---|---|---|---|\n"
+        "    | HYPEUSDC | +149.1% | -21.9% | -21.7% | [$20.46..$98.00] (55.4%) | [$9.306..$98.00] (61.0%) | -16.7% | -9.9% | 25-04:9.31->26-09:98.00->now:63.41 |\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * HYPEUSDC: Price=$63.41\n"
+        "    - Trend: 24h=+2.00%\n"
+        "    - Flow: arb_vs_HYPEUSD=+7.2bps, net_buy_edge=+10.8bps[maker](best_buy=hyperliquid:HYPEUSDC)\n"
+        "  * HYPEUSD (sibling of HYPEUSDC):\n"
+        "    - Flow: arb_vs_HYPEUSDC=-7.2bps, net_buy_edge=-10.8bps[maker](best_buy=hyperliquid:HYPEUSDC)\n"
+    )
+    assert audit_rendered_prompt_text(clean_c22) == []
+
+    bad_c22 = (
+        clean_c22
+        .replace("| 19.32 | 0 |", "| 19.32 | 25.0 |")
+        .replace("| +0.13% | 99% |", "| +0.13% | 125% |")
+        .replace("HYPEUSDC Last Action=BUY", "HYPEUSDC Last Action=SELL")
+        .replace("Recent SELL Tranches=[12.34@57.785, 16.8@60.38]", "Recent SELL Tranches=[12.34@57.785, 9.9@55.0]")
+        .replace("SELL LIMIT REJECTED_AI_CIRCUIT_BREAKER", "SELL LIMIT CANCELED_OR_EXPIRED")
+        .replace("conf=0.79", "conf=1.45")
+        .replace("risk_score=0.68", "risk_score=1.25")
+        .replace("25-04:9.31->26-09:98.00->now:63.41", "25-04:9.31->26-09:150.00->now:63.41")
+        .replace("net_buy_edge=+10.8bps[maker](best_buy=hyperliquid:HYPEUSDC)", "net_buy_edge=+10.8bps[maker](best_buy=kraken:HYPEUSD)")
+    )
+    bad_subjs = {v.subject for v in audit_rendered_prompt_text(bad_c22)}
+    assert {
+        "hyperliquid:HYPEUSDC:filled_vs_qty",
+        "hyperliquid:HYPEUSDC:fill1h_bounds",
+        "RecentFillsChronology:HYPEUSDC",
+        "RecentFillsTrancheTail:HYPEUSDC:SELL",
+        "Section1.PreSubmitRejectionMisstatus",
+        "Section2.Advisor.conf",
+        "Section2.GeoShield.risk_score",
+        "HYPEUSDC:lh_swings_bounds",
+        "HYPEUSDC:net_buy_edge_best_buy",
+    }.issubset(bad_subjs)
+
+
+
 
 
 

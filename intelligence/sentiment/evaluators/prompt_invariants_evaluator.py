@@ -325,6 +325,43 @@ _REALIZED_LIQ_RE = re.compile(
     r"\brealized_liq_15m\(long=([+-]?)\$([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?[KMBkmb]?),\s*"
     r"short=([+-]?)\$([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?[KMBkmb]?)(?:,\s*n=([+-]?\d+))?"
 )
+_PRE_SUBMIT_REJ_STATUS_PREFIXES: tuple[str, ...] = ("REJECTED_",)
+_PRE_SUBMIT_REJ_STATUSES: frozenset[str] = frozenset({
+    "BLOCKED_BY_GUARD",
+    "OBSERVED_SHADOW",
+    "SKIPPED_DUPLICATE_OPEN_ORDER",
+    "IGNORED_HOLD",
+})
+_VENUE_ORDER_LIFECYCLE_STATUSES: frozenset[str] = frozenset({
+    "OPEN",
+    "NEW",
+    "RESTING",
+    "PARTIALLY_FILLED",
+    "FILLED",
+    "CANCELED",
+    "CANCELLED",
+    "EXPIRED",
+    "CANCELED_OR_EXPIRED",
+})
+_PRE_SUBMIT_MISSTATUS_LINE_RE = re.compile(
+    r"\b(?:CANCELED_OR_EXPIRED|OPEN_RESTING|FILLED)\b\s*\(([^)\n]*)\breason=(?:ai_|BLOCKED_BY_GUARD|circuit_breaker)([^)\n]*)\)"
+)
+_RECENT_FILL_ACT_RE = re.compile(
+    r"^\s*\*\s+([A-Za-z0-9_]+)\s+Last Action=(BUY|SELL)[^:]*:(.*)$",
+    re.MULTILINE,
+)
+_RO_LAST_BUY_FULL_RE = re.compile(r"\bLast BUY=([0-9.]+)\s*@\s*([0-9.]+)\s*\(age=([0-9.]+)h")
+_RO_LAST_SELL_FULL_RE = re.compile(r"\bLast SELL=([0-9.]+)\s*@\s*([0-9.]+)\s*\(age=([0-9.]+)h")
+_RO_TRANCHE_BUY_RE = re.compile(r"\bRecent BUY Tranches=\[([^\]]+)\]")
+_RO_TRANCHE_SELL_RE = re.compile(r"\bRecent SELL Tranches=\[([^\]]+)\]")
+_RO_TRANCHE_PAIR_RE = re.compile(r"([0-9.]+)@([0-9.]+)")
+_NET_BUY_EDGE_BEST_RE = re.compile(
+    r"\bnet_buy_edge=([+-]?[0-9.]+)bps\[maker\]\(best_buy=[a-z0-9_]+:([A-Za-z0-9_]+)\)"
+)
+_LH_SWING_PX_RE = re.compile(r"\b\d\d-\d\d:([0-9.]+[KMBkmb]?)")
+_GEO_RISK_SCORE_RE = re.compile(r"\brisk_score=([+-]?[0-9.]+)\b")
+_ADV_CONF_RE = re.compile(r"Macro Sentiment Advisor[^\n]*\bconf=([+-]?[0-9.]+)\b")
+_OO_FILL1H_CELL_RE = re.compile(r"\|\s*[+-]?[0-9.]+%\s*\|\s*([+-]?[0-9.]+)%\s*\|")
 _NUMERIC_HYGIENE_SPECS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("NONE_LITERAL", re.compile(r"(?:=None\b|\|\s*None\s*\||\(None\)|\[None\])")),
     ("NAN_OR_INF", re.compile(r"(?:[=:(,\[\s\$])(?:nan|NaN|[+-]?inf|Inf)\b")),
@@ -1111,6 +1148,26 @@ def _audit_snapshot_risk_macro_and_liq(
                         "PORTFOLIO_RISK_ENGINE_MATH",
                         f"{ven}:{sym}:sell_only_max_buy",
                         f"SELL-only instrument has non-zero effective_max_buy_usd=${mb:.2f}",
+                    )
+                )
+
+    raw_ri = ps.get("recent_ai_intents")
+    if isinstance(raw_ri, Sequence) and not isinstance(raw_ri, (str, bytes)):
+        for it in raw_ri:
+            if not isinstance(it, Mapping):
+                continue
+            r_st = str(it.get("status") or "").strip().upper()
+            v_st = str(it.get("venue_status") or "").strip().upper()
+            if (
+                v_st in _VENUE_ORDER_LIFECYCLE_STATUSES
+                and (r_st in _PRE_SUBMIT_REJ_STATUSES or r_st.startswith(_PRE_SUBMIT_REJ_STATUS_PREFIXES))
+            ):
+                ri_sym = str(it.get("symbol") or "UNKNOWN").strip()
+                violations.append(
+                    InvariantViolation(
+                        "ORDER_LIFECYCLE_CONSISTENCY",
+                        f"recent_ai_intents:{ri_sym}:pre_submit_venue_status",
+                        f"pre-submit intent status={r_st} must not carry venue_status={v_st}",
                     )
                 )
 
@@ -1932,6 +1989,25 @@ def audit_rendered_prompt_text(
                         "PROMPT_OPEN_ORDER_REM_MATH",
                         f"{ven_o}:{sym_o}",
                         f"filled({f_v:g})+rem({r_v:g}) != qty({qty_o:g})",
+                    )
+                )
+        elif qty_o is not None and (f_plain := safe_float(filled_cell, default=None)) is not None:
+            if f_plain < -1e-6 or f_plain > qty_o * 1.0001 + 1e-6:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_OPEN_ORDER_REM_MATH",
+                        f"{ven_o}:{sym_o}:filled_vs_qty",
+                        f"filled({f_plain:g}) out of [0, qty={qty_o:g}]",
+                    )
+                )
+        if (m_f1h := _OO_FILL1H_CELL_RE.search(m_oo.group(0))) is not None:
+            f1h_v = safe_float(m_f1h.group(1), default=None)
+            if f1h_v is not None and not (0.0 <= f1h_v <= 100.0):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_OPEN_ORDER_REM_MATH",
+                        f"{ven_o}:{sym_o}:fill1h_bounds",
+                        f"Fill1h={f1h_v:g}% outside [0, 100]",
                     )
                 )
         if side_o == "BUY" and px_o is not None and rem_qty_o is not None:
@@ -2759,6 +2835,17 @@ def _audit_prompt_cross_section_math(
         if (m_nbe := _NET_BUY_EDGE_RE.search(rest)) is not None:
             if (nbe_v := safe_float(m_nbe.group(1), default=None)) is not None:
                 edge_by_sym[sym_u] = nbe_v
+        if (m_nbeb := _NET_BUY_EDGE_BEST_RE.search(rest)) is not None:
+            nbeb_v = safe_float(m_nbeb.group(1), default=None)
+            best_s = m_nbeb.group(2).upper()
+            if nbeb_v is not None and ((nbeb_v > 0.5 and best_s != sym_u) or (nbeb_v < -0.5 and best_s == sym_u)):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_FLOW_DEPTH_EDGE_MATH",
+                        f"{sym}:net_buy_edge_best_buy",
+                        f"net_buy_edge={fmt_signed(nbeb_v, 1)}bps contradicts best_buy={m_nbeb.group(2)}",
+                    )
+                )
         if (m_v15 := _SPOT_VOL_15M_RE.search(rest)) is not None and (m_v1h := _SPOT_VOL_1H_RE.search(rest)) is not None:
             v15_f, v1h_f = _parse_money(m_v15.group(1)), _parse_money(m_v1h.group(1))
             if v15_f is not None and v1h_f is not None and v15_f > v1h_f * 1.05 + 1.0:
@@ -2975,6 +3062,16 @@ def _audit_prompt_cross_section_math(
                     f"order id={oid_tok} has conflicting statuses across Section 1: {sorted(st_set)}",
                 )
             )
+    for m_pm in _PRE_SUBMIT_MISSTATUS_LINE_RE.finditer(sec1_body):
+        inner_pm = f"{m_pm.group(1)} {m_pm.group(2)}"
+        if _INTENT_ID_ONLY_RE.search(inner_pm) is None:
+            violations.append(
+                InvariantViolation(
+                    "PROMPT_ORDER_LIFECYCLE_CONSISTENCY",
+                    "Section1.PreSubmitRejectionMisstatus",
+                    f"pre-submit local rejection without order id mislabeled as venue order status: {m_pm.group(0)[:120]}",
+                )
+            )
 
     # Warm-turn delta elision truthfulness: no block declared omitted in Section 0 may still be rendered in full
     if (m_om := _WARM_OMITTED_LINE_RE.search(prompt_text)) is not None:
@@ -3024,6 +3121,20 @@ def _audit_prompt_cross_section_math(
                     f"non-chronological long-horizon swings: {sw_yms}",
                 )
             )
+        out_lo = lo_h if lo_h is not None else lo52
+        out_hi = hi_h if hi_h is not None else hi52
+        if out_lo is not None and out_hi is not None and out_hi > 0.0:
+            for sw_px_s in _LH_SWING_PX_RE.findall(swings_pre):
+                sw_px = _parse_money(sw_px_s)
+                if sw_px is not None and (sw_px < out_lo * 0.98 or sw_px > out_hi * 1.02):
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_LONG_HORIZON_MATH",
+                            f"{lh_sym}:lh_swings_bounds",
+                            f"long-horizon swing px={sw_px:g} outside outer range [{out_lo:g}..{out_hi:g}]",
+                        )
+                    )
+                    break
         if now_lh is not None and now_lh > 0.0:
             if lo52 is not None and hi52 is not None and p52 is not None and hi52 > lo52:
                 exp_52 = clamp_float(((now_lh - lo52) / (hi52 - lo52)) * 100.0, 0.0, 100.0)
@@ -3528,6 +3639,50 @@ def _audit_prompt_section1_parity_and_structure(
                         )
                     )
 
+    # 3B. Recent_Fills Last Action chronology and Recent BUY/SELL Tranches tail parity
+    for m_ra in _RECENT_FILL_ACT_RE.finditer(sec1_body):
+        sym_a, act_a, body_a = m_ra.group(1).upper(), m_ra.group(2), m_ra.group(3)
+        m_lbf = _RO_LAST_BUY_FULL_RE.search(body_a)
+        m_lsf = _RO_LAST_SELL_FULL_RE.search(body_a)
+        if m_lbf is not None and m_lsf is not None:
+            age_b = safe_nonneg_float(m_lbf.group(3), default=None)
+            age_s = safe_nonneg_float(m_lsf.group(3), default=None)
+            if age_b is not None and age_s is not None and abs(age_b - age_s) > 0.15:
+                exp_act = "BUY" if age_b < age_s else "SELL"
+                if act_a != exp_act:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_SECTION1_PARITY_AND_SCORECARD_MATH",
+                            f"RecentFillsChronology:{sym_a}",
+                            f"Last Action={act_a} contradicts ages (Last BUY={age_b:.1f}h vs Last SELL={age_s:.1f}h)",
+                        )
+                    )
+        for tr_side, m_leg, tr_pat in (
+            ("BUY", m_lbf, _RO_TRANCHE_BUY_RE),
+            ("SELL", m_lsf, _RO_TRANCHE_SELL_RE),
+        ):
+            if m_leg is None or (m_tr := tr_pat.search(body_a)) is None:
+                continue
+            tr_pairs = _RO_TRANCHE_PAIR_RE.findall(m_tr.group(1))
+            if not tr_pairs:
+                continue
+            tq, tp = safe_pos_float(tr_pairs[-1][0], default=None), safe_pos_float(tr_pairs[-1][1], default=None)
+            lq, lp = safe_pos_float(m_leg.group(1), default=None), safe_pos_float(m_leg.group(2), default=None)
+            if (
+                tq is not None
+                and tp is not None
+                and lq is not None
+                and lp is not None
+                and (abs(tq - lq) > max(1e-4, lq * 0.005) or abs(tp - lp) > max(1e-4, lp * 0.005))
+            ):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_SECTION1_PARITY_AND_SCORECARD_MATH",
+                        f"RecentFillsTrancheTail:{sym_a}:{tr_side}",
+                        f"Recent {tr_side} Tranches tail={tq:g}@{tp:g} != Last {tr_side}={lq:g}@{lp:g}",
+                    )
+                )
+
     # 4. Section 0 Domain Age Ordering (newest <= oldest)
     for m_da in _DOMAIN_AGE_PAIR_RE.finditer(sec1_body):
         dom_n = m_da.group(1)
@@ -3988,9 +4143,19 @@ def _audit_prompt_risk_trigger_macro_and_liq(
                                 )
                             )
 
-    # 6. Section 2 Geopolitical Threat Shield live_unassessed truthfulness vs Live Breaking News Feed
+    # 6. Section 2 Geopolitical Threat Shield risk_score/live_unassessed & Macro Sentiment Advisor conf bounds
     if (m_geo := _GEO_SHIELD_LINE_RE.search(prompt_text)) is not None:
         geo_body = m_geo.group(1)
+        if (m_gr := _GEO_RISK_SCORE_RE.search(geo_body)) is not None:
+            gr_v = safe_float(m_gr.group(1), default=None)
+            if gr_v is not None and not (0.0 <= gr_v <= 1.0):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_SECTION0_AND_MACRO_HYGIENE",
+                        "Section2.GeoShield.risk_score",
+                        f"Geopolitical Threat Shield risk_score={gr_v:g} outside [0.0, 1.0]",
+                    )
+                )
         if "live_unassessed=UNASSESSED_FRESH_HIGH_SEV" in geo_body and (m_ga := _AGE_TOKEN_RE.search(geo_body)) is not None:
             ga_num = safe_nonneg_float(m_ga.group(1), default=None)
             if ga_num is not None:
@@ -4017,6 +4182,16 @@ def _audit_prompt_risk_trigger_macro_and_liq(
                                 f"yet newest rendered headline is {min(news_ages_sec) / 60.0:.1f}m old",
                             )
                         )
+    if (m_ac2 := _ADV_CONF_RE.search(prompt_text)) is not None:
+        ac2_v = safe_float(m_ac2.group(1), default=None)
+        if ac2_v is not None and not (0.0 <= ac2_v <= 1.0):
+            violations.append(
+                InvariantViolation(
+                    "PROMPT_SECTION0_AND_MACRO_HYGIENE",
+                    "Section2.Advisor.conf",
+                    f"Macro Sentiment Advisor conf={ac2_v:g} outside [0.0, 1.0]",
+                )
+            )
 
     # 7. Section 2 US Spot Crypto ETF Net Flows streak sign consistency
     for m_etf in _ETF_FLOW_STREAK_RE.finditer(prompt_text):
