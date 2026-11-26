@@ -233,19 +233,6 @@ def _resolve_provider_name(symbol: str) -> str:
     return resolve_symbol_provider_name(symbol, market_api=mkt, fallback="Binance")
 
 
-def _explicit_provider_kw(symbol: str, provider_name: str | None = None) -> dict[str, str]:
-    """Pass explicit ``provider_name`` when MarketApi's implicit ``supports_symbol`` route does not claim ``symbol``."""
-    supports_fn = getattr(mkt, "supports_symbol", None)
-    if callable(supports_fn):
-        try:
-            if supports_fn(symbol):
-                return {}
-        except Exception:
-            pass
-    pname = provider_name or _resolve_provider_name(symbol)
-    return {"provider_name": pname} if pname else {}
-
-
 def _resolve_provider(symbol: str, provider_name: str):
     prov_by_name = getattr(mkt, "provider_by_name", None)
     provider = prov_by_name(provider_name) if callable(prov_by_name) else None
@@ -436,7 +423,7 @@ def _expire_open_order_if_ttl_exceeded(
                 f"age {age_str} >= TTL {ttl_str}. Canceling on venue..."
             )
             try:
-                if mkt.cancel_order(symbol, oid_str, **_explicit_provider_kw(symbol)) is False:
+                if mkt.cancel_order(symbol, oid_str) is False:
                     print(f"[MONITORORDER] Cancel returned False for expired order {order_id};", "will retry next cycle.")
                     return True, age_sec, effective_ttl
                 _clear_initial_order_price(initial_prices, order_id, oid_str)
@@ -633,8 +620,7 @@ def _lease_replacement_and_preflight(
                 venue_cache_gate(symbol, order_type)
         cache_permit = mkt.preflight_order(
             symbol, order_type, preflight_qty, new_price,
-            market=False, kind="monitor_order_replace",
-            **_explicit_provider_kw(symbol, provider_name))
+            market=False, kind="monitor_order_replace")
         if requires_permit and cache_permit is None:
             raise SubmissionRefused("account_cache_not_fresh")
     except Exception as exc:  # noqa: BLE001
@@ -697,7 +683,6 @@ def _dispatch_native_or_cancel_replace(
                 replaces_locked_balance=locked_balance,
                 _outcome_context=native_outcome,
                 cache_permit=cache_permit,
-                **_explicit_provider_kw(symbol, provider_name),
             )
         except Exception as exc:  # noqa: BLE001
             native_order = None
@@ -777,7 +762,6 @@ def _dispatch_native_or_cancel_replace(
                 cache_permit = mkt.preflight_order(
                     symbol, order_type, preflight_qty, new_price,
                     market=False, kind="monitor_order_replace",
-                    **_explicit_provider_kw(symbol, provider_name),
                 )
             except Exception:
                 cache_permit = None
@@ -790,7 +774,6 @@ def _dispatch_native_or_cancel_replace(
                 cache_permit = mkt.preflight_order(
                     symbol, order_type, preflight_qty, new_price,
                     market=False, kind="monitor_order_replace",
-                    **_explicit_provider_kw(symbol, provider_name),
                 )
                 if requires_permit and cache_permit is None:
                     raise SubmissionRefused("account_cache_not_fresh")
@@ -809,7 +792,7 @@ def _dispatch_native_or_cancel_replace(
         cancel_confirmed = True
     else:
         try:
-            cancel_confirmed = api.cancel_order(symbol, order_id, **_explicit_provider_kw(symbol, provider_name)) is not False
+            cancel_confirmed = api.cancel_order(symbol, order_id) is not False
         except Exception as exc:  # noqa: BLE001
             cancel_confirmed = False
             print(
@@ -817,7 +800,7 @@ def _dispatch_native_or_cancel_replace(
                 "reconciling venue status before deciding on replacement."
             )
     try:
-        status = mkt.order_status(symbol, str(order_id), **_explicit_provider_kw(symbol, provider_name))
+        status = mkt.order_status(symbol, str(order_id))
     except Exception as exc:  # noqa: BLE001
         order_retry.complete_claim(
             replacement_claim, "status_error",
@@ -890,8 +873,7 @@ def _dispatch_native_or_cancel_replace(
             caller_owns_retry=True,
             client_order_id=client_order_id,
             _outcome_context=outcome,
-            cache_permit=cache_permit,
-            **_explicit_provider_kw(symbol, provider_name))
+            cache_permit=cache_permit)
     except Exception as exc:  # noqa: BLE001
         new_order = None
         outcome.update(state="unknown", reason=f"replacement_exception:{exc}")
@@ -969,10 +951,9 @@ def monitor_open_orders_by_type(
     order_type = order_type_u
 
     provider_name = _resolve_provider_name(symbol)
-    prov_kw = _explicit_provider_kw(symbol, provider_name)
-    orders = api.get_open_orders(order_type, symbol, **prov_kw)
+    orders = api.get_open_orders(order_type, symbol)
     has_orders = bool(orders and isinstance(orders, dict))
-    current_price = safe_pos_float(api.get_current_price(symbol, **prov_kw), default=None) if has_orders else None
+    current_price = safe_pos_float(api.get_current_price(symbol), default=None) if has_orders else None
     if not has_orders or current_price is None:
         print(
             f"For {symbol} there are no open {order_type} orders to begin with."
@@ -1160,10 +1141,9 @@ def warmup_open_orders():
     """Seed existing open orders into tracking sets to avoid notifying historical orders on startup."""
     global _monitororder_initialized
     for symbol in sym.monitored_order_symbols():
-        prov_kw = _explicit_provider_kw(symbol)
         for side in ("SELL", "BUY"):
             try:
-                orders = api.get_open_orders(side, symbol, **prov_kw)
+                orders = api.get_open_orders(side, symbol)
                 if orders and isinstance(orders, dict):
                     for oid in orders.keys():
                         clean_oid = clean_order_id_str(oid)

@@ -89,6 +89,7 @@ from instrument_registry import (
     canonical_display_symbol,
     casefold_get,
     resolve_kraken_tokenized_pair,
+    venue_for_symbol,
 )
 
 _MISSING = object()
@@ -225,8 +226,9 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         return "Kraken-HYPE" if ("HYPE" in sym.upper() or not sym) else f"Kraken-{sym}"
 
     def supports_symbol(self, symbol: str) -> bool:
-        # Explicit-only: claim no pattern and remain reachable only through Instrument.
-        return False
+        if (sym_s := clean_scalar_str(symbol)) is None:
+            return False
+        return venue_for_symbol(sym_s, default="") == "kraken"
 
     @staticmethod
     def build_client(api_key: Optional[str] = None, api_secret: Optional[str] = None):

@@ -67,6 +67,7 @@ from .strategy_executor import (
     SubmissionRefused,
 )
 from credentials import t212_credentials
+from instrument_registry import venue_for_symbol
 
 _T212_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "212trading")
 _PRICE_DECIMALS = 2
@@ -153,7 +154,9 @@ class T212Provider(MarketDataProvider):
         return "T212"
 
     def supports_symbol(self, symbol: str) -> bool:
-        return False  # explicit-only
+        if (sym_s := clean_scalar_str(symbol)) is None:
+            return False
+        return venue_for_symbol(sym_s, default="") == "t212"
 
     @classmethod
     def _build_client_from_dir(cls, *, trade_cache_path: Optional[str] = None):
