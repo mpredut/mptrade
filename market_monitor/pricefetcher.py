@@ -365,7 +365,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             )
         return history
 
-    def cleanup_old_prices(self, retention_days: int = PRICE_HISTORY_RETENTION_DAYS):
+    def cleanup_old_prices(self, retention_days: int = PRICE_HISTORY_RETENTION_DAYS, *, verbose: bool = True):
         if not isinstance(retention_days, (int, float)) or safe_pos_float(retention_days, default=None) is None:
             return
         cutoff_timestamp = (time.time() - retention_days * 24 * 3600) * 1000
@@ -388,7 +388,8 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 removed = original_count - len(self.cache[symbol])
                 if removed > 0:
                     removed_count += removed
-                    print(f"[Cleanup] {symbol}: removed {removed} old entries")
+                    if verbose:
+                        print(f"[Cleanup] {symbol}: removed {removed} old entries")
                 max_hist = safe_pos_int(
                     getattr(self, "max_history_per_symbol", None),
                     default=MAX_PRICE_HISTORY_PER_SYMBOL,
@@ -397,15 +398,17 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                     over_limit = len(self.cache[symbol]) - max_hist
                     self.cache[symbol] = self.cache[symbol][-max_hist:]
                     trimmed_count += over_limit
-                    print(f"[Cleanup] {symbol}: trimmed to the latest {max_hist} entries")
+                    if verbose:
+                        print(f"[Cleanup] {symbol}: trimmed to the latest {max_hist} entries")
                 if not self.cache[symbol] and symbol not in self.active_symbols:
                     del self.cache[symbol]
                     self.fetchtime_per_symbol.pop(symbol, None)
                     self._rest_sync_cursor_per_symbol.pop(symbol, None)
-                    print(f"[Cleanup] {symbol}: fully removed")
-            if removed_count > 0:
+                    if verbose:
+                        print(f"[Cleanup] {symbol}: fully removed")
+            if verbose and removed_count > 0:
                 print(f"[Cleanup] Total: {removed_count} old entries removed")
-            if trimmed_count > 0:
+            if verbose and trimmed_count > 0:
                 print(f"[Cleanup] Total: {trimmed_count} entries trimmed beyond the per-symbol limit")
 
     def cleanup_old_symbols(self, max_age_days: int = 7):
@@ -425,7 +428,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         return removed_symbols
 
     def save_state_to_file(self):
-        self.cleanup_old_prices()
+        self.cleanup_old_prices(verbose=False)
         self.cleanup_old_symbols(max_age_days=PRICE_HISTORY_RETENTION_DAYS)
         try:
             with self.lock:

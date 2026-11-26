@@ -502,8 +502,14 @@ class PriceChecker:
         alerts: List[PriceAlert] = []
         stats, breaches = self.evaluate_symbol(symbol)
 
+        logged_map = getattr(self, "_last_logged_snapshot", None)
         if not _parse_bool_flag(stats.get("has_data"), False):
-            print(f"[Checker][{symbol}] {stats.get('error', 'Unknown error')}")
+            err_msg = stats.get("error", "Unknown error")
+            err_sig = ("no_data", err_msg)
+            if logged_map is None or logged_map.get(symbol) != err_sig:
+                if logged_map is not None:
+                    logged_map[symbol] = err_sig
+                print(f"[Checker][{symbol}] {err_msg}")
             return alerts
 
         suppressed_notes: List[str] = []
@@ -536,8 +542,9 @@ class PriceChecker:
             round(stats["max_price"], 8),
             tuple(suppressed_notes),
         )
-        if alerts or self._last_logged_snapshot.get(symbol) != snap_sig:
-            self._last_logged_snapshot[symbol] = snap_sig
+        if alerts or logged_map is None or logged_map.get(symbol) != snap_sig:
+            if logged_map is not None:
+                logged_map[symbol] = snap_sig
             note_suffix = f" | {'; '.join(suppressed_notes)}" if suppressed_notes else ""
             print(
                 f"[Checker][{symbol}] Price: ${current_price:.4f} | "
