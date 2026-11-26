@@ -1714,3 +1714,163 @@ def test_cross_section_coherence_futures_cash_close_lead_live_calibration_fees_a
     assert micro["HYPEUSD"]["agg_spot_cvd_source"] == "hyperliquid+kraken+bn_usdt"
 
 
+def test_crypto_prompt_var_24_7_xstock_at_spot_arrival_shortfall_section_clock_and_3b_liq_anchor():
+    """Verify:
+    1. 24/7 Kraken tokenized xStocks (SPCXxUSD) scale vol_1h_pct by sqrt(24) and span_7d_pct by sqrt(7)
+       in PortfolioRiskEngine instead of NYSE 6.5h/5d RTH equity factors.
+    2. extract_fill_execution_slippage includes at-spot LIMIT fills (reference_price == limit_price)
+       in arrival_sf_bps instead of dropping them as None.
+    3. Section 1 macro ages align to Section 0 evaluated_at_ts (including sentiment_advisor live_btc_flow_delta).
+    4. Section 3B liq_clusters distances share the same ob_mid anchor as bid_wall/ask_wall on the same line.
+    """
+    import math
+    from types import SimpleNamespace
+
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import compute_enterprise_portfolio_risk_metrics
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_macro_and_news_section,
+        _format_microstructure_section,
+    )
+    from providers.ai_survival_guard import (
+        evaluate_ai_calibration_feedback,
+        extract_fill_execution_slippage,
+    )
+
+    # 1. 24/7 xStock SPCXxUSD vs 6.5h RTH SPCX_US_EQ VaR scaling
+    ps_xstock = {
+        "tradable_positions": [
+            {"venue": "kraken", "symbol": "SPCXxUSD", "base": "SPCXx", "free_base": 10.0, "price": 150.0, "value_usd": 1500.0},
+        ],
+        "venue_quote_cash": {"kraken:USD": {"venue": "kraken", "asset": "USD", "free": 8500.0}},
+    }
+    ps_rth = {
+        "tradable_positions": [
+            {"venue": "t212", "symbol": "SPCX_US_EQ", "base": "SPCX", "free_base": 10.0, "price": 150.0, "value_usd": 1500.0},
+        ],
+        "venue_quote_cash": {"t212:USD": {"venue": "t212", "asset": "USD", "free": 8500.0}},
+    }
+    risk_xs = compute_enterprise_portfolio_risk_metrics(
+        ps_xstock, {"SPCXxUSD": {"price": 150.0, "vol_1h_pct": 1.0, "corr_btc_24h": 0.4}}, {}
+    )
+    risk_rth = compute_enterprise_portfolio_risk_metrics(
+        ps_rth, {"SPCX_US_EQ": {"price": 150.0, "vol_1h_pct": 1.0, "corr_btc_24h": 0.4}}, {}
+    )
+    assert risk_xs["intraday_var_95_usd"] == pytest.approx(1500.0 * (math.sqrt(24.0) / 100.0) * 1.645, abs=0.05)
+    assert risk_rth["intraday_var_95_usd"] == pytest.approx(1500.0 * (math.sqrt(6.5) / 100.0) * 1.645, abs=0.05)
+    assert risk_xs["intraday_var_95_usd"] / risk_rth["intraday_var_95_usd"] == pytest.approx(math.sqrt(24.0 / 6.5), abs=0.02)
+
+    # 2. At-spot LIMIT fills (reference_price == limit_price) retained in arrival_sf_bps
+    lim_s, arr_s, mkt_s = extract_fill_execution_slippage(
+        {"limit_price": 173.7, "reference_price": 173.7},
+        side="SELL",
+        exec_px=173.7,
+        order_type="LIMIT",
+    )
+    assert lim_s == pytest.approx(0.0, abs=1e-6)
+    assert arr_s == pytest.approx(0.0, abs=1e-6)
+    assert mkt_s is None
+
+    now_s = 1_795_676_500.0
+    cal_intents = [
+        {
+            "intent_id": "at_spot_sell",
+            "timestamp": now_s - 3600.0,
+            "decision": "SELL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "status": "EXECUTED",
+            "limit_price": 60000.0,
+            "reference_price": 60000.0,
+            "clamped_notional_usd": 1000.0,
+            "execution_payload": {"orderId": "bn_1", "status": "FILLED", "executedQty": "0.0166", "avg_fill_price": 60000.0},
+        },
+        {
+            "intent_id": "passive_sell",
+            "timestamp": now_s - 1800.0,
+            "decision": "SELL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "status": "EXECUTED",
+            "limit_price": 60600.0,
+            "reference_price": 60000.0,
+            "clamped_notional_usd": 1000.0,
+            "execution_payload": {"orderId": "bn_2", "status": "FILLED", "executedQty": "0.0165", "avg_fill_price": 60600.0},
+        },
+    ]
+    cal_res = evaluate_ai_calibration_feedback(cal_intents, now_ts=now_s, scope="crypto")
+    # Average of 0.0 bps and -100.0 bps = -50.0 bps (instead of -100.0 bps when at-spot fill was dropped)
+    assert cal_res["venue_tca"]["binance"]["avg_arrival_shortfall_bps"] == pytest.approx(-50.0, abs=0.5)
+
+    # 3. Section 1 macro ages align to Section 0 evaluated_at_ts (even if age_min was pre-stamped 90s earlier)
+    eval_now = 1_795_676_500.0
+    sensors_stub = SimpleNamespace(
+        evaluated_at_ts=eval_now,
+        fear_greed={"value": 11, "classification": "Extreme Fear", "trend_7d_change": -1, "ts": eval_now - 150.0, "age_min": 1.0},
+        market_breadth={
+            "advance_ratio": 0.89,
+            "median_change_pct": 3.0,
+            "mean_change_pct": 3.2,
+            "dispersion_std": 4.0,
+            "advancing": 41,
+            "total_symbols": 46,
+            "ts": eval_now - 150.0,
+            "age_min": 1.0,
+        },
+        sentiment_advisor={
+            "confidence": 0.74,
+            "ts": eval_now - 1350.0,
+            "age_min": 21.0,
+            "live_flow_divergence": "(taker_ratio=1.01, cvd_15m=+0.59M vs 21.0m-old summary)",
+            "summary": "Calm tape.",
+        },
+        geopolitical_threat={"risk_score": 0.15, "ts": eval_now - 2208.0, "age_min": 35.3, "summary": "No escalation."},
+        macro_benchmarks={"summary_line": "SPY=$716.70 (+0.23% 24h)", "ts": eval_now - 144.0, "age_min": 0.9},
+        etf_flows={"summary_line": "BTC_ETF: -$453.00M", "ts": eval_now - 750.0, "age_min": 11.0},
+        macro_calendar={"session_label": "EU", "next_high_impact_event": "London Fix", "fomc_today": False},
+        breaking_news=[],
+        macro_and_sentiment={},
+        portfolio_summary={},
+        microstructure={},
+    )
+    sec1_txt = "\n".join(_format_macro_and_news_section(sensors_stub, "crypto", now_ts=eval_now))
+    assert "Fear & Greed: 11 (Extreme Fear, 7d_chg=-1, age=2.5m)" in sec1_txt
+    assert "Market Breadth:" in sec1_txt and "age=2.5m" in sec1_txt
+    assert "Macro Sentiment Advisor: conf=0.74, age=22.5m | live_btc_flow_delta=(taker_ratio=1.01, cvd_15m=+0.59M vs 22.5m-old summary)" in sec1_txt
+    assert "Geopolitical Threat Shield: risk_score=0.15, age=36.8m" in sec1_txt
+    assert "SPY=$716.70 (+0.23% 24h) (age=2.4m)" in sec1_txt
+    assert "BTC_ETF: -$453.00M (age=12.5m)" in sec1_txt
+
+    # 4. Section 3B liq_clusters distances share ob_mid anchor with bid_wall/ask_wall on the same line
+    ms_3b = {
+        "ADAUSDC": {
+            "ob_imbalance": 0.61,
+            "bid_depth_usd": 133608.0,
+            "ask_depth_usd": 84978.0,
+            "bid_wall_px": 0.147,
+            "bid_wall_usd": 19645.0,
+            "ask_wall_px": 0.1484,
+            "ask_wall_usd": 17434.0,
+            "best_bid": 0.148,
+            "best_ask": 0.1481,
+            "ob_mid_price": 0.14805,
+            "spread_bps": 6.75,
+            "_ob_raw_ts": eval_now - 5.0,
+            "long_liq_px": 0.144291,
+            "long_liq_usd": 453700.0,
+            "long_liq_dist_pct": -2.37,  # stale vs cur_px=0.1478; vs ob_mid=0.14805 it is -2.54%
+            "short_liq_px": 0.149702,
+            "short_liq_usd": 332000.0,
+            "short_liq_dist_pct": 1.29,  # stale vs cur_px=0.1478; vs ob_mid=0.14805 it is +1.12%
+            "liq_source": "model_est",
+        }
+    }
+    pt_3b = {"ADAUSDC": {"price": 0.1478}}
+    sec3b_txt = "\n".join(_format_microstructure_section(ms_3b, pt_3b, now_ts=eval_now, asset_scope="crypto"))
+    assert "bid_wall=0.147 ($19645.0, dist=-0.71%)" in sec3b_txt
+    assert "long_liq=$0.144291[$453.7K, -2.54%]" in sec3b_txt
+    assert "short_liq=$0.149702[$332.0K, +1.12%]" in sec3b_txt
+
+
+

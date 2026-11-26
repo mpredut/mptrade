@@ -90,11 +90,27 @@ from providers.ai_survival_guard import (
 from providers.order_id_context import format_actor_tag
 
 
-def _age_sfx(d: Dict[str, Any], parens: bool = False) -> str:
-    if d.get("age_min") is None:
+def _resolve_sensor_age_min(d: Any, now_ts: Optional[float] = None) -> Optional[float]:
+    """Resolve sensor age in minutes anchored to ``now_ts`` (matching Section 0) when raw epoch ``ts`` is available."""
+    if not isinstance(d, dict):
+        return None
+    ref_now = safe_pos_float(now_ts, default=None)
+    if ref_now is not None:
+        raw_ts = d.get("ts")
+        if raw_ts is None:
+            raw_ts = d.get("timestamp")
+        ts_v = normalize_epoch_sec(raw_ts, default=None)
+        if ts_v is not None and ts_v > 0.0 and ref_now >= ts_v - 5.0:
+            return round(max(0.0, (ref_now - ts_v) / 60.0), 1)
+    return safe_float(d.get("age_min"), default=None)
+
+
+def _age_sfx(d: Dict[str, Any], parens: bool = False, now_ts: Optional[float] = None) -> str:
+    eff_age = _resolve_sensor_age_min(d, now_ts=now_ts)
+    if eff_age is None:
         return ""
     pub = str(d.get("published_utc") or "").strip()
-    inner = f"{pub}, age={d['age_min']}m" if pub else f"age={d['age_min']}m"
+    inner = f"{pub}, age={eff_age}m" if pub else f"age={eff_age}m"
     return f" ({inner})" if parens else f", {inner}"
 
 
@@ -227,7 +243,12 @@ def _format_horizon_range(pinfo: Dict[str, Any], px_f: float, horizon: str) -> s
     return f"{horizon}_range=[{lo}, {hi}]{pos_sfx}"
 
 
-def _extract_macro_benchmarks_line(mb_raw: Any, *, include_crypto: bool = True) -> str:
+def _extract_macro_benchmarks_line(
+    mb_raw: Any,
+    *,
+    include_crypto: bool = True,
+    now_ts: Optional[float] = None,
+) -> str:
     """Extract or synthesize the 1-line SPY / QQQ / ES=F / NQ=F / DXY / US10Y benchmark summary."""
     if not isinstance(mb_raw, dict) or not mb_raw:
         return ""
@@ -235,7 +256,7 @@ def _extract_macro_benchmarks_line(mb_raw: Any, *, include_crypto: bool = True) 
         summary_s = format_macro_benchmarks_summary_line(mb_raw, include_crypto=False)
     else:
         summary_s = str(mb_raw.get("summary_line") or "").strip() or format_macro_benchmarks_summary_line(mb_raw)
-    return f"{summary_s}{_age_sfx(mb_raw, parens=True)}" if summary_s else ""
+    return f"{summary_s}{_age_sfx(mb_raw, parens=True, now_ts=now_ts)}" if summary_s else ""
 
 
 def _fmt_liq_usd(val: Any, *, signed: bool = False) -> str:
@@ -270,6 +291,7 @@ _SA_FLOW_POSTURE_RE = re.compile(
     r"(-old\s+)(?:(?:ACCUMULATE|HOLD|DEFENSIVE|TRIM_PROFITS|BULLISH|BEARISH|NEUTRAL|CAUTION)(?:/(?:ACCUMULATE|HOLD|DEFENSIVE|TRIM_PROFITS|BULLISH|BEARISH|NEUTRAL|CAUTION))?)\b",
     re.IGNORECASE,
 )
+_SA_FLOW_AGE_RE = re.compile(r"(vs\s+)\d+(?:\.\d+)?(m-old\b)")
 _SA_SUMMARY_DIRECTIVE_RE = re.compile(
     r"(?:,\s*(?:so\s+|therefore\s+|thus\s+)?|\s*)\b(?:pausing|shifting|maintaining|staying|switching|recommending)\b[^.]*\b(?:HOLD|ACCUMULATE|DEFENSIVE|TRIM_PROFITS)\b[^.]*\.?",
     re.IGNORECASE,
@@ -368,9 +390,18 @@ def _resolve_macro_sensor(
     return val if isinstance(val, dict) else {}
 
 
-def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> List[str]:
+def _format_macro_and_news_section(
+    sensors: Any,
+    asset_scope: Any = "all",
+    *,
+    now_ts: Optional[float] = None,
+) -> List[str]:
     """Format Section 1 (Macro, Sentiment, Geopolitical & Live Breaking News) for the AI prompt."""
     is_equities_scope = str(asset_scope or "all").strip().lower() == "equities"
+    ref_now = (
+        safe_pos_float(now_ts, default=None)
+        or safe_pos_float(getattr(sensors, "evaluated_at_ts", None), default=None)
+    )
     macro = getattr(sensors, "macro_and_sentiment", None) or {}
     ps = getattr(sensors, "portfolio_summary", None) or {}
     fg = _resolve_macro_sensor(sensors, macro, "fear_greed")
@@ -384,7 +415,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         f"{fg.get('value', 'N/A')} ({fg.get('classification') or fg.get('sentiment') or 'N/A'}, "
         f"7d_chg={fg.get('trend_7d_change', 'N/A')}"
         + (f", 7d_hist={fg_hist}" if fg_hist else "")
-        + f"{_age_sfx(fg)})"
+        + f"{_age_sfx(fg, now_ts=ref_now)})"
         if fg else "None"
     )
     mb_gainers = mb.get("top_gainers")[:3] if isinstance(mb.get("top_gainers"), list) else None
@@ -406,6 +437,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         mb_mn = safe_float(mb.get("mean_change_pct"), None)
         if mb_mn is None or abs(mb_mn - mb_tm) >= 1.0:
             mb_trim_sfx = f" (trimmed={mb_tm}%)"
+    mb_age_m = _resolve_sensor_age_min(mb, now_ts=ref_now)
     mb_line = (
         f"advance_ratio={mb.get('advance_ratio', 'N/A')}, "
         f"median_chg={mb.get('median_change_pct', 'N/A')}%, "
@@ -414,9 +446,10 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         + (f", {', '.join(mb_rot_parts)}" if mb_rot_parts else "")
         + (f", top_gainers={mb_gainers}" if mb_gainers else "")
         + (f", top_losers={mb_losers}" if mb_losers else "")
-        + (f", age={mb.get('age_min')}m" if mb.get("age_min") is not None else "")
+        + (f", age={mb_age_m}m" if mb_age_m is not None else "")
         if mb else "None"
     )
+    sa_age_m = _resolve_sensor_age_min(sa, now_ts=ref_now)
     sa_flow_raw = str(sa.get("live_flow_divergence") or "").strip() if sa else ""
     sa_flow_delta = (
         sa_flow_raw[sa_flow_raw.find("("):]
@@ -425,6 +458,8 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
     )
     if sa_flow_delta:
         sa_flow_delta = _SA_FLOW_POSTURE_RE.sub(r"\1summary", sa_flow_delta)
+        if sa_age_m is not None:
+            sa_flow_delta = _SA_FLOW_AGE_RE.sub(rf"\g<1>{sa_age_m}\g<2>", sa_flow_delta)
         if (
             "CB_Prem=" not in sa_flow_delta
             and " vs " in sa_flow_delta
@@ -432,7 +467,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
             and (cb_v := safe_float(mb_bench.get("coinbase_premium_bps"), None)) is not None
         ):
             sa_flow_delta = sa_flow_delta.replace(" vs ", f", CB_Prem={fmt_signed(cb_v, 1)}bps vs ", 1)
-    if not sa_flow_delta and sa and (safe_float(sa.get("age_min"), 0.0) or 0.0) >= 5.0:
+    if not sa_flow_delta and sa and (sa_age_m or 0.0) >= 5.0:
         micro_map = getattr(sensors, "microstructure", None) or {}
         btc_m = (
             micro_map.get("BTCUSDC")
@@ -468,7 +503,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
             if isinstance(mb_bench, dict) and (cb_v := safe_float(mb_bench.get("coinbase_premium_bps"), None)) is not None:
                 d_parts.append(f"CB_Prem={fmt_signed(cb_v, 1)}bps")
             if d_parts:
-                sa_flow_delta = f"({', '.join(d_parts)} vs {sa.get('age_min')}m-old summary)"
+                sa_flow_delta = f"({', '.join(d_parts)} vs {sa_age_m}m-old summary)"
     sa_summary_raw = str(sa.get("summary") or "").strip() if sa else ""
     sa_summary = (
         _SA_SUMMARY_DIRECTIVE_RE.sub(
@@ -488,7 +523,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
             sa_summary = cut_s.rstrip(" ,;:") + "..."
     sa_line = (
         f"conf={sa.get('confidence', 'N/A')}"
-        f"{_age_sfx(sa)}"
+        f"{_age_sfx(sa, now_ts=ref_now)}"
         + (f" | live_btc_flow_delta={sa_flow_delta}" if sa_flow_delta else "")
         + f" | summary={sa_summary}"
         if sa else "None"
@@ -501,7 +536,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
     )
     if not gt_summary or gt_summary == ".":
         gt_summary = gt_summary_raw
-    gt_age_m = safe_float(gt.get("age_min"), None) if isinstance(gt, dict) else None
+    gt_age_m = _resolve_sensor_age_min(gt, now_ts=ref_now)
     gt_sum_low = gt_summary.lower()
     gt_stale_ctx_note = (
         "historical_eval_gt_90m_verify_live_section1"
@@ -515,7 +550,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         else ""
     )
     gt_line = (
-        f"risk_score={gt.get('risk_score', 'N/A')}{_age_sfx(gt)}"
+        f"risk_score={gt.get('risk_score', 'N/A')}{_age_sfx(gt, now_ts=ref_now)}"
         + (f" | live_deescalation={gt.get('live_deescalation_note')}" if gt.get("live_deescalation_note") else "")
         + (f" | live_unassessed={gt.get('live_unassessed_high_sev_note')}" if gt.get("live_unassessed_high_sev_note") else "")
         + (f" | shield_note={gt_stale_ctx_note}" if gt_stale_ctx_note else "")
@@ -526,7 +561,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         eq_reg_line = format_equity_macro_regime_line(mb_bench) if isinstance(mb_bench, dict) and mb_bench else "NEUTRAL"
         lines = [
             "### 1. ACTIVE MACRO, SENTIMENT, GEOPOLITICAL & LIVE BREAKING NEWS TELEMETRY:",
-            f"- US Equity & Macro Regime: {eq_reg_line}{_age_sfx(mb_bench, parens=True) if isinstance(mb_bench, dict) else ''}",
+            f"- US Equity & Macro Regime: {eq_reg_line}{_age_sfx(mb_bench, parens=True, now_ts=ref_now) if isinstance(mb_bench, dict) else ''}",
             f"- Geopolitical Threat Shield: {gt_line}",
         ]
     else:
@@ -543,10 +578,10 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
     )
     if mc_line := _format_macro_calendar_line(mc):
         lines.append(mc_line)
-    mb_bench_line = _extract_macro_benchmarks_line(mb_bench, include_crypto=True)
+    mb_bench_line = _extract_macro_benchmarks_line(mb_bench, include_crypto=True, now_ts=ref_now)
     if mb_bench_line and not (
         is_equities_scope
-        and f"{eq_reg_line}{_age_sfx(mb_bench, parens=True) if isinstance(mb_bench, dict) else ''}" == mb_bench_line
+        and f"{eq_reg_line}{_age_sfx(mb_bench, parens=True, now_ts=ref_now) if isinstance(mb_bench, dict) else ''}" == mb_bench_line
     ):
         lines.append(
             f"- US Equities, Futures & Macro Rates Benchmarks (SPY / QQQ / ES=F / NQ=F / DXY / US10Y 24h Delta): {mb_bench_line}"
@@ -557,12 +592,12 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
             etf_s = format_etf_flows_summary_line(etf_flows) or str(etf_flows.get("summary_line") or "").strip()
             if etf_s:
                 lines.append(
-                    f"- US Spot Crypto ETF Net Flows (Farside Daily): {etf_s}{_age_sfx(etf_flows, parens=True)}"
+                    f"- US Spot Crypto ETF Net Flows (Farside Daily): {etf_s}{_age_sfx(etf_flows, parens=True, now_ts=ref_now)}"
                 )
     if breaking_news:
         lines.append("- Live Breaking News Feed (cachedb/macro/news_feed_collect.json, 1m refresh):")
         for hn in breaking_news:
-            lines.append(f"  * {hn.get('title')}{_age_sfx(hn, parens=True)}")
+            lines.append(f"  * {hn.get('title')}{_age_sfx(hn, parens=True, now_ts=ref_now)}")
     return lines
 
 
@@ -1047,6 +1082,7 @@ def _format_microstructure_section(
 
         liq_sfx = ""
         if caps.has_liquidation_clusters and minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
+            liq_ref_px = ob_ref_px if (ob_ref_px > 0 and not ob_is_frozen) else cur_px
             liq_parts: List[str] = []
             for l_lbl, px_k, usd_k, dist_k in (
                 ("long_liq", "long_liq_px", "long_liq_usd", "long_liq_dist_pct"),
@@ -1057,10 +1093,10 @@ def _format_microstructure_section(
                 if minfo.get(px_k) is None:
                     continue
                 l_px = safe_float(minfo.get(px_k), 0.0)
-                l_d = safe_float(
-                    minfo.get(dist_k),
-                    ((l_px - cur_px) / cur_px) * 100.0 if cur_px > 0 and l_px > 0 else 0.0,
-                )
+                if liq_ref_px > 0 and l_px > 0:
+                    l_d = ((l_px - liq_ref_px) / liq_ref_px) * 100.0
+                else:
+                    l_d = safe_float(minfo.get(dist_k), 0.0)
                 liq_parts.append(
                     f"{l_lbl}=${minfo.get(px_k)}[{_fmt_liq_usd(minfo.get(usd_k))}, {fmt_signed(l_d)}%]"
                 )

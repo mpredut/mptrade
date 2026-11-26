@@ -550,7 +550,7 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
                     )
                 )
                 if vol_1h_raw is not None:
-                    raw_daily_v = vol_1h_raw * math.sqrt(6.5 if is_eq_like else 24.0)
+                    raw_daily_v = vol_1h_raw * math.sqrt(6.5 if is_eq else 24.0)
                     if is_macro_vol_stress and macro_daily_vol is not None:
                         raw_daily_v = max(raw_daily_v, macro_daily_vol)
                     daily_vol_pct = min(25.0, max(0.8, raw_daily_v))
@@ -560,7 +560,7 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
                         25.0,
                         max(
                             0.8,
-                            (span_7d / (2.0 * math.sqrt(5.0)))
+                            (span_7d / (2.0 * math.sqrt(5.0 if is_eq else 7.0)))
                             if span_7d is not None
                             else (macro_daily_vol if macro_daily_vol is not None else 2.2),
                         ),
