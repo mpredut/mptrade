@@ -650,7 +650,7 @@ def _format_macro_and_news_section(
         if gt_d_parts:
             gt_live_macro_delta = f"({', '.join(gt_d_parts)} vs {gt_age_m}m-old summary)"
     gt_stale_ctx_note = (
-        "historical_eval_gt_90m_verify_live_section1"
+        "historical_eval_gt_90m_verify_live_section2"
         if (
             isinstance(gt, dict)
             and gt_age_m is not None
@@ -675,13 +675,13 @@ def _format_macro_and_news_section(
     if is_equities_scope:
         eq_reg_line = format_equity_macro_regime_line(mb_bench) if isinstance(mb_bench, dict) and mb_bench else "NEUTRAL"
         lines = [
-            "### 1. ACTIVE MACRO, SENTIMENT, GEOPOLITICAL & LIVE BREAKING NEWS TELEMETRY:",
+            "\n### 2. MACRO, REGIME & NEWS:",
             f"- US Equity & Macro Regime: {eq_reg_line}{_age_sfx(mb_bench, parens=True, now_ts=ref_now) if isinstance(mb_bench, dict) else ''}",
             f"- Geopolitical Threat Shield{gt_tag}: {gt_line}",
         ]
     else:
         lines = [
-            "### 1. ACTIVE MACRO, SENTIMENT, GEOPOLITICAL & LIVE BREAKING NEWS TELEMETRY:",
+            "\n### 2. MACRO, REGIME & NEWS:",
         ]
         if delta_plan is None or delta_plan.should_show("fear_greed"):
             fg_tag = delta_plan.tag_for("fear_greed") if (delta_plan is not None and fg) else ""
@@ -921,7 +921,7 @@ def _format_market_prices_section(
     btc_entry = view["btc_entry"]
     obs_syms = observe_only_registry_symbols()
     scope_spec = resolve_scope_presentation(asset_scope)
-    lines = [f"\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION ({scope_spec.market_prices_hdr}):"]
+    lines = [f"\n### 3. MARKET PRICES & TRENDS ({scope_spec.market_prices_hdr}):"]
     for sym, pinfo, sib_specs in view["rows"]:
         px = pinfo.get("price")
         px_f = safe_float(px, 0.0)
@@ -1907,7 +1907,7 @@ def _format_portfolio_section(
     """Format Section 3C (Spot Wallet Balances, Tradable Positions, Cycle Cost Anchors & Last Fills)."""
     scope_spec = resolve_scope_presentation(asset_scope)
     scope_s = scope_spec.scope_key
-    lines = ["\n### 3C. SPOT WALLET BALANCES, TRADABLE POSITIONS, CYCLE COST ANCHORS & LAST FILLS:"]
+    lines = ["\n### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:"]
     if isinstance(pre := ps.get("portfolio_risk_engine"), dict) and pre.get("unified_nav_usd"):
         pre_hdr = scope_spec.risk_engine_hdr
         nav_key_lbl = scope_spec.risk_engine_nav_lbl

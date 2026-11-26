@@ -249,7 +249,14 @@ def test_multigroup_cadence_and_transparent_rendering() -> None:
     assert plan1.next_state["blocks"]["fear_greed"]["turns_omitted"] == 0
 
     full_prompt = build_supervisor_prompt(sensors, logs, compact_rules=False, delta_plan=plan1)
-    assert "### 0. RUN TIMESTAMP & OPERATIONAL CLOCK: 2026-11-26 12:00:00 EET (Thu)" in full_prompt
+    assert "### 0. CLOCK & SNAPSHOT: 2026-11-26 12:00:00 EET (Thu)" in full_prompt
+    s0_i = full_prompt.index("### 0. CLOCK & SNAPSHOT:")
+    s1_i = full_prompt.index("### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:")
+    s2_i = full_prompt.index("### 2. MACRO, REGIME & NEWS:")
+    s3_i = full_prompt.index("### 3. MARKET PRICES & TRENDS (ALL COINS):")
+    s4_i = full_prompt.index("### 4. ORDERBOOK, FLOW & DERIVATIVES:")
+    assert s0_i < s1_i < s2_i < s3_i < s4_i
+    assert "PILLAR 2" not in full_prompt
     assert "Raport Execu\u021bie [YYYY-MM-DD HH:MM:SS EET]" in full_prompt
     assert "- Snapshot Mode: FULL_KEYFRAME (reason=cold_turn)" in full_prompt
     assert "Fear & Greed:" in full_prompt

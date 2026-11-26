@@ -5700,7 +5700,7 @@ def test_wave31_kinematic_ssot_and_impulse_border_cases(tmp_path, monkeypatch):
         topic_key="auto_cryptotrade_executor",
         focus_symbols="btcusdc, taousdc",
     )
-    assert "### 4. TACTICAL PRIORITY SYMBOLS: BTCUSDC, TAOUSDC" in prompt_csv
+    assert "### 5. TACTICAL PRIORITY SYMBOLS: BTCUSDC, TAOUSDC" in prompt_csv
     prompt_bool = pf_mod.build_supervisor_prompt(
         empty_sensors,
         [],

@@ -3101,7 +3101,7 @@ def test_cycle2_watcher_partial_7d_etf_partial_streak_and_geo_stale_summary(tmp_
             asset_scope="crypto",
         )
     )
-    assert "shield_note=historical_eval_gt_90m_verify_live_section1" in sec1_warn
+    assert "shield_note=historical_eval_gt_90m_verify_live_section2" in sec1_warn
 
     gt_reset_target = dict(gt_aged_normal)
     MacroAndNewsSensorsCollector._reconcile_geopolitical_deescalation(
@@ -3249,7 +3249,7 @@ def test_cycle3_open_order_balance_race_sre_dump_log_and_fog_of_war(tmp_path):
         )
     )
     assert "live_unassessed=UNASSESSED_FRESH_HIGH_SEV" in sec1_both
-    assert "shield_note=historical_eval_gt_90m_verify_live_section1" in sec1_both
+    assert "shield_note=historical_eval_gt_90m_verify_live_section2" in sec1_both
 
 
 def test_audit_findings_balance_parity_ohlc_cache_jsonl_ledger_intents_transfer_and_trend(tmp_path, monkeypatch):

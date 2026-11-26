@@ -2218,7 +2218,7 @@ def test_subcycle_lifo_pnl_reset_open_order_deep_passive_and_cycle_wallet_sync(m
 
     # 1. Operational clock header uses Europe/Bucharest (EET / EEST)
     prompt_txt = build_supervisor_prompt(sensors=object(), logs=[])
-    clock_line = next(l for l in prompt_txt.splitlines() if l.startswith("### 0. RUN TIMESTAMP & OPERATIONAL CLOCK:"))
+    clock_line = next(l for l in prompt_txt.splitlines() if l.startswith("### 0. CLOCK & SNAPSHOT:"))
     assert any(tz in clock_line for tz in (" EET (", " EEST ("))
 
     # 2. extract_symbol_recent_fills resets LIFO PnL across flattened cycles & scopes to 72h swing window
@@ -17783,7 +17783,7 @@ def test_prompt_accuracy_wave1_equity_proxy_rvol_delayed_macro_bellwethers_and_n
             asset_scope="equities",
         )
     )
-    assert "ESTIMATED 5M VOLUME ZONES" in sec3b_nvda
+    assert "VOLUME ZONES & INTRADAY FLOW" in sec3b_nvda
     assert "ob_proxy[yahoo_5m_vol_profile]" in sec3b_nvda
     assert "est_bid_zone=147.46" in sec3b_nvda
     assert "est_ask_zone=148.55" in sec3b_nvda
@@ -18513,7 +18513,7 @@ def test_cycle6_clock_anchor_lces_delta_gate_ts_and_venue_cash_breakdown_sync(tm
         LogEventSummary(0, 0, 0),
         topic_spec("auto_sharetrade_executor"),
     )
-    assert "### 0. RUN TIMESTAMP & OPERATIONAL CLOCK: 2026-11-27 18:30:00 EET" in p_bf
+    assert "### 0. CLOCK & SNAPSHOT: 2026-11-27 18:30:00 EET" in p_bf
 
     # 2. last_cycle_execution_status carries updated_ts for delta gate and strips it from prompt view
     now_s = 1_795_700_000.0

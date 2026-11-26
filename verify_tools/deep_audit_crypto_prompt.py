@@ -61,14 +61,24 @@ def deep_audit(workspace_dir: str = ".") -> None:
         if "Domain Ages" in line or line.startswith("### 0."):
             print(line)
 
-    print("\n=== MACRO & NEWS TELEMETRY (Section 1) ===")
+    print("\n=== PORTFOLIO STATE (Section 1) ===")
     in_s1 = False
     for line in prompt.splitlines():
         if line.startswith("### 1."):
             in_s1 = True
-        elif line.startswith("### 3."):
+        elif line.startswith("### 2."):
             in_s1 = False
         if in_s1:
+            print(line[:160] + ("..." if len(line) > 160 else ""))
+
+    print("\n=== MACRO & NEWS TELEMETRY (Section 2) ===")
+    in_s2 = False
+    for line in prompt.splitlines():
+        if line.startswith("### 2."):
+            in_s2 = True
+        elif line.startswith("### 3."):
+            in_s2 = False
+        if in_s2:
             print(line[:160] + ("..." if len(line) > 160 else ""))
 
     print("\n=== SAMPLE COIN PRICE & TREND (Section 3: BTC, HYPE, ARB) ===")
@@ -76,19 +86,9 @@ def deep_audit(workspace_dir: str = ".") -> None:
         if any(line.strip().startswith(f"* {sym}") for sym in ["BTCUSDC", "HYPEUSDC", "ARBUSDC", "SPCXxUSD"]):
             print(line[:160] + ("..." if len(line) > 160 else ""))
 
-    print("\n=== SAMPLE MICROSTRUCTURE (Section 3B: BTC, HYPE, ARB) ===")
+    print("\n=== SAMPLE MICROSTRUCTURE (Section 4: BTC, HYPE, ARB) ===")
     for line in prompt.splitlines():
         if any(line.strip().startswith(f"* {sym}") for sym in ["BTCUSDC", "HYPEUSDC", "ARBUSDC", "SPCXxUSD"]):
-            print(line[:160] + ("..." if len(line) > 160 else ""))
-
-    print("\n=== PORTFOLIO STATE (Section 3C) ===")
-    in_s3c = False
-    for line in prompt.splitlines():
-        if line.startswith("### 3C."):
-            in_s3c = True
-        elif line.startswith("INTERACTIVE THREAD RULES:") or line.startswith("```json"):
-            in_s3c = False
-        if in_s3c:
             print(line[:160] + ("..." if len(line) > 160 else ""))
 
 

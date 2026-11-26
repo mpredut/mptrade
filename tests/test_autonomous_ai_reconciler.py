@@ -1127,8 +1127,8 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
     assert "Configuration Files Audit:" in repair_prompt
     assert "Starea Flotei, Boților, Sistemului Linux & VPN (wgpia0) & Loguri" in repair_prompt
     assert "diagnosed_issues" in repair_prompt
-    assert "LIVE MARKET PRICES, MULTI-HORIZON TRENDS" not in repair_prompt
-    assert "SPOT WALLET BALANCES, TRADABLE POSITIONS" not in repair_prompt
+    assert "MARKET PRICES & TRENDS" not in repair_prompt
+    assert "PORTFOLIO, OPEN ORDERS & TRADE PLANS" not in repair_prompt
     assert "Portofoliu, Solduri & Poziții Active" not in repair_prompt
     assert "Piața Live & Pante (Toate Monedele)" not in repair_prompt
 
@@ -9430,15 +9430,15 @@ def test_proposal3_static_first_prompt_compact_resume_and_hold_output_diet():
     assert prefix1 == prefix2
     assert "INTERACTIVE THREAD RULES:" in prefix1
     assert '"market_trading_decisions":' in prefix1
-    assert "### 0. RUN TIMESTAMP" not in prefix1
-    assert dyn1.startswith("### 0. RUN TIMESTAMP")
+    assert "### 0. CLOCK & SNAPSHOT" not in prefix1
+    assert dyn1.startswith("### 0. CLOCK & SNAPSHOT")
     assert "$90,000.00" in dyn1 and "$91,250.00" in dyn2
 
     # SRE topic is also Static-First
     p_sre = build_supervisor_prompt(s1, empty_logs, topic_spec("auto_technical_repair"))
     sre_prefix, sre_dyn = p_sre.split(marker, 1)
     assert '"code_remediation":' in sre_prefix
-    assert sre_dyn.startswith("### 0. RUN TIMESTAMP")
+    assert sre_dyn.startswith("### 0. CLOCK & SNAPSHOT")
 
     # 3.3 Output-Token Diet on routine pure HOLD turns
     assert "ULTRA-COMPACT" in prefix1
@@ -9451,7 +9451,7 @@ def test_proposal3_static_first_prompt_compact_resume_and_hold_output_diet():
     compact_prefix, compact_dyn = p_compact.split(marker, 1)
     assert "CONTINUATION TURN" in compact_prefix
     assert '"market_trading_decisions":' in compact_prefix
-    assert compact_dyn.startswith("### 0. RUN TIMESTAMP")
+    assert compact_dyn.startswith("### 0. CLOCK & SNAPSHOT")
     assert len(compact_prefix) < len(prefix1) * 0.35
 
     # SRE ignores compact_rules and always sends full SRE instructions
