@@ -2101,9 +2101,20 @@ def submit_supervisor_trading_decisions(
             )
         effective_max_mode = "shadow"
     any_executed = False
+    # Execute standalone CANCEL directives before BUY/SELL placements so freed quote/base liquidity
+    # is unlocked on the exchange before new same-cycle orders size against wallet balance.
+    exec_decs = sorted(
+        submit_decs,
+        key=lambda d: (
+            0
+            if str(d.get("decision") or "HOLD").upper() not in ("BUY", "SELL")
+            and decision_has_cancel_directive(d)
+            else 1
+        ),
+    )
     scope_fn = getattr(intent_gateway, "cycle_shared_cash_scope", None)
     with (scope_fn() if callable(scope_fn) else contextlib.nullcontext()):
-        for dec in submit_decs:
+        for dec in exec_decs:
             dec_payload = {**dec, "model_used": clean_model_used} if clean_model_used else dec
             if isinstance(emitted := intent_gateway.submit(dec_payload, source=topic_key, max_mode=effective_max_mode), dict):
                 intents_emitted.append(emitted)

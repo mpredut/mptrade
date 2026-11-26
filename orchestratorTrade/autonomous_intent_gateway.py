@@ -1384,6 +1384,7 @@ class AutonomousIntentGateway:
                 preempt_tx.mark_deferred()
             elif last_hist.get("submission_state") == "unknown" or last_hist.get("reason") == "submit_ambiguous":
                 preempt_tx.mark_ambiguous()
+                self._commit_cycle_quote_spend(decision, effective_usd)
             elif (
                 (not guard_allowed and res_intent.get("status") == "BLOCKED_BY_GUARD")
                 or (guard_allowed and res_intent.get("status") == "FAILED")
@@ -1454,8 +1455,10 @@ class AutonomousIntentGateway:
             if mode == "enforce":
                 failed_ids: List[str] = []
                 scan_errors: List[str] = []
+                cancel_snaps: List[Dict[str, Any]] = []
                 _, canceled_ids = self._cancel_prior_orders_or_abort(
                     inst,
+                    canceled_order_snapshots=cancel_snaps,
                     include_bot_orders=True,
                     only_bot_orders=only_bots,
                     any_side=True,
@@ -1465,6 +1468,12 @@ class AutonomousIntentGateway:
                     failed_ids_out=failed_ids,
                     scan_errors_out=scan_errors,
                 )
+                cycle_caps = getattr(self, "_cycle_quote_caps", None)
+                if isinstance(cycle_caps, dict) and cancel_snaps:
+                    if (q_key := self._resolve_cycle_quote_key(inst)) is not None and q_key in cycle_caps:
+                        freed_c = self._sum_canceled_buy_quote(cancel_snaps)
+                        if freed_c > 0.0:
+                            cycle_caps[q_key] += freed_c
                 cancel_rec["canceled_order_ids"] = list(canceled_ids)
                 cancel_rec["failed_order_ids"] = list(failed_ids)
                 if scan_errors:

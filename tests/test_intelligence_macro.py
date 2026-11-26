@@ -1918,10 +1918,10 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     sup_cr = build_supervisor_prompt(sensors_ns, SimpleNamespace(), topic_key="auto_cryptotrade_executor")
     sup_eq = build_supervisor_prompt(sensors_ns, SimpleNamespace(), topic_key="auto_sharetrade_executor")
     for sp in (sup_cr, sup_eq):
-        assert "CROSS-ASSET MACRO, VIX & INSTITUTIONAL CRYPTO/OPTIONS SURFACE SYMMETRY" in sp
+        assert "CROSS-ASSET MACRO:" in sp
         assert "ETH_Options" in sp
         assert "Futures_Lead" in sp
-        assert "positive `Skew_25d` = Put_IV - Call_IV > 0" in sp
+        assert "`Skew_25d`=Put_IV-Call_IV, >0 fear, <0 call demand" in sp
         assert "CRYPTO_BULLISH_DECOUPLING" not in sp
         assert "EQUITY_BULLISH_DECOUPLING" not in sp
 

@@ -5527,6 +5527,92 @@ def test_simultaneous_buys_share_cycle_venue_quote_cash_budget(tmp_path):
     assert emitted_sh[0]["status"] == "OBSERVED_SHADOW" and emitted_sh[0]["clamped_notional_usd"] == pytest.approx(1500.0, abs=0.05)
     assert emitted_sh[1]["status"] == "OBSERVED_SHADOW" and emitted_sh[1]["clamped_notional_usd"] == pytest.approx(499.0, abs=1.5)
 
+    # 5. Ambiguous BUY submission conservatively reserves quote spend (fail-closed) so BUY #2 cannot overspend.
+    (ws / "cachedb" / "autonomous_trade_intents.json").unlink(missing_ok=True)
+    bn_bal_amb = {"USDC": 2000.0, "BTC": 0.0, "ARB": 0.0}
+    btc_amb = _make_inst("binance", "BTCUSDC", "BTC", "USDC", 60000.0, bn_bal_amb)
+    arb_amb = _make_inst("binance", "ARBUSDC", "ARB", "USDC", 0.11, bn_bal_amb)
+
+    def _ambiguous_place(**kwargs):
+        ctx = kwargs.get("_outcome_context")
+        if isinstance(ctx, dict):
+            ctx.update({"state": "unknown", "reason": "submit_ambiguous"})
+        return None
+
+    btc_amb.place.side_effect = _ambiguous_place
+    amb_map = {("binance", "BTCUSDC"): btc_amb, ("binance", "ARBUSDC"): arb_amb}
+    gw2.resolve_instrument = lambda sym, venue=None, instruments_map=None: amb_map[(str(venue).lower(), str(sym).upper())]
+    _, _, emitted_amb, _, _ = submit_supervisor_trading_decisions(
+        {"market_trading_decisions": plan_stale["market_trading_decisions"][:2]},
+        topic_spec("auto_cryptotrade_executor"),
+        topic_key="auto_cryptotrade_executor",
+        mode="enforce",
+        now_ts=time.time(),
+        intent_gateway=gw2,
+        is_rth_open_fn=lambda _: True,
+    )
+    by_amb = {e["symbol"]: e for e in emitted_amb}
+    assert by_amb["BTCUSDC"]["history"][-1].get("submission_state") == "unknown"
+    assert by_amb["ARBUSDC"]["status"] == "EXECUTED" and by_amb["ARBUSDC"]["clamped_notional_usd"] == pytest.approx(499.0, abs=1.5)
+
+    # 6. Standalone CANCEL runs BEFORE same-cycle BUYs in submit_supervisor_trading_decisions (unlocking locked quote
+    #    on the exchange first), AND mid-scope BUY -> standalone CANCEL -> BUY also credits freed BUY quote cleanly.
+    (ws / "cachedb" / "autonomous_trade_intents.json").unlink(missing_ok=True)
+    bn_bal_can = {"USDC": 2000.0, "BTC": 0.0, "ARB": 0.0, "ADA": 0.0}
+    btc_can = _make_inst("binance", "BTCUSDC", "BTC", "USDC", 60000.0, bn_bal_can)
+    ada_can = _make_inst("binance", "ADAUSDC", "ADA", "USDC", 0.15, bn_bal_can)
+    arb_can = _make_inst("binance", "ARBUSDC", "ARB", "USDC", 0.11, bn_bal_can)
+    ada_can.open_orders.return_value = [
+        {"orderId": "ada_rest_1", "clientOrderId": "AI_intent_9_buy_adausdc", "side": "BUY", "price": "0.14", "origQty": "6000", "executedQty": "0"}
+    ]
+
+    def _unlock_cancel(oid):
+        if oid == "ada_rest_1":
+            bn_bal_can["USDC"] += 840.0
+        return True
+
+    ada_can.cancel_order.side_effect = _unlock_cancel
+    can_map = {
+        ("binance", "BTCUSDC"): btc_can,
+        ("binance", "ADAUSDC"): ada_can,
+        ("binance", "ARBUSDC"): arb_can,
+    }
+    gw2.resolve_instrument = lambda sym, venue=None, instruments_map=None: can_map[(str(venue).lower(), str(sym).upper())]
+    plan_can = {
+        "market_trading_decisions": [
+            {**plan_stale["market_trading_decisions"][0], "confidence": 0.95},
+            {"decision": "CANCEL", "venue": "binance", "symbol": "ADAUSDC", "cancel_order_ids": ["ada_rest_1"], "confidence": 0.93},
+            {**plan_stale["market_trading_decisions"][1], "confidence": 0.90, "suggested_notional_usd": 1200.0},
+        ]
+    }
+    _, _, emitted_can, _, _ = submit_supervisor_trading_decisions(
+        plan_can,
+        topic_spec("auto_cryptotrade_executor"),
+        topic_key="auto_cryptotrade_executor",
+        mode="enforce",
+        now_ts=time.time(),
+        intent_gateway=gw2,
+        is_rth_open_fn=lambda _: True,
+    )
+    assert emitted_can[0]["decision"] == "CANCEL" and emitted_can[0]["status"] == "CANCELED"
+    by_can = {e["symbol"]: e for e in emitted_can}
+    assert by_can["BTCUSDC"]["status"] == "EXECUTED" and by_can["BTCUSDC"]["clamped_notional_usd"] == pytest.approx(1500.0, abs=0.05)
+    # Unlocked $840 + initial $2000 = $2840 -> $1500 BTC + $1200 ARB both fit cleanly!
+    assert by_can["ARBUSDC"]["status"] == "EXECUTED" and by_can["ARBUSDC"]["clamped_notional_usd"] == pytest.approx(1200.0, abs=0.05)
+
+    # 6b. Direct cycle_shared_cash_scope() BUY -> standalone CANCEL -> BUY also credits freed quote into cycle_caps.
+    (ws / "cachedb" / "autonomous_trade_intents.json").unlink(missing_ok=True)
+    bn_bal_can["USDC"] = 2000.0
+    ada_can.cancel_order.side_effect = None
+    ada_can.cancel_order.return_value = True
+    with gw2.cycle_shared_cash_scope():
+        r_b1 = gw2.submit(plan_can["market_trading_decisions"][0], source="auto_cryptotrade_executor", max_mode="enforce")
+        r_c1 = gw2.submit(plan_can["market_trading_decisions"][1], source="auto_cryptotrade_executor", max_mode="enforce")
+        r_b2 = gw2.submit(plan_can["market_trading_decisions"][2], source="auto_cryptotrade_executor", max_mode="enforce")
+    assert r_b1["status"] == "EXECUTED" and r_b1["clamped_notional_usd"] == pytest.approx(1500.0, abs=0.05)
+    assert r_c1["status"] == "CANCELED"
+    assert r_b2["status"] == "EXECUTED" and r_b2["clamped_notional_usd"] == pytest.approx(1200.0, abs=0.05)
+
 
 
 
