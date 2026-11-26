@@ -96,6 +96,7 @@ from instrument_registry import (
     casefold_get,
     disabled_registry_symbols,
     has_workspace_instrument_sources,
+    is_equity_or_tokenized_symbol,
     is_equity_symbol,
     observe_only_registry_symbols,
     resolve_symbol_identity,
@@ -190,6 +191,21 @@ def _filter_actionable_impulse_symbols(
     ]
 
 
+_IMPULSE_ATR_15M_ANCHOR_PCT = 0.35
+_IMPULSE_VOL_SCALE_MAX = 2.0
+
+
+def _resolve_symbol_atr_15m_pct(p_entry: Any) -> Optional[float]:
+    """Return explicit 15m ATR (%) or volatility-derived ``vol_1h_pct * 0.5`` proxy."""
+    if not isinstance(p_entry, dict):
+        return None
+    atr_15m = safe_pos_float(p_entry.get("atr_15m_pct"), default=None)
+    if atr_15m is not None:
+        return atr_15m
+    vol_1h = safe_pos_float(p_entry.get("vol_1h_pct"), default=None)
+    return (vol_1h * 0.5) if vol_1h is not None else None
+
+
 def _filter_unmoved_since_eval_symbols(
     shocked: List[str],
     prices_and_trends: Any,
@@ -232,11 +248,7 @@ def _filter_unmoved_since_eval_symbols(
         prev_px = prev_px_by_sym.get(sym_c)
         p_entry = casefold_get(prices_and_trends, sym_c)
         cur_px = safe_pos_float(p_entry.get("price"), default=None) if isinstance(p_entry, dict) else None
-        atr_15m = safe_pos_float(p_entry.get("atr_15m_pct"), default=None) if isinstance(p_entry, dict) else None
-        if atr_15m is None and isinstance(p_entry, dict):
-            vol_1h = safe_pos_float(p_entry.get("vol_1h_pct"), default=None)
-            if vol_1h is not None:
-                atr_15m = vol_1h * 0.5
+        atr_15m = _resolve_symbol_atr_15m_pct(p_entry)
         sym_thresh = (
             min(eff_high_move, max(eff_min_move, atr_15m * 0.75))
             if atr_15m is not None
@@ -260,7 +272,7 @@ def evaluate_kinematic_impulse_symbols(
         allowed_bases = {
             b
             for s in parse_symbol_list(candidate_symbols)
-            if s and not is_equity_symbol(s) and (b := canonical_base_asset(s))
+            if s and not is_equity_or_tokenized_symbol(s) and (b := canonical_base_asset(s))
         }
         if not allowed_bases:
             return []
@@ -269,11 +281,17 @@ def evaluate_kinematic_impulse_symbols(
         if not isinstance(raw_sym, str) or not isinstance(pinfo, dict):
             continue
         sym = canonical_display_symbol(raw_sym) or clean_symbol_key(raw_sym)
-        if not sym or is_equity_symbol(sym) or not has_crypto_quote_suffix(sym):
+        if not sym or is_equity_or_tokenized_symbol(sym) or not has_crypto_quote_suffix(sym):
             continue
         base = canonical_base_asset(sym)
         if not base or (allowed_bases is not None and base not in allowed_bases):
             continue
+        atr_15m = _resolve_symbol_atr_15m_pct(pinfo)
+        vol_scale = (
+            max(1.0, min(_IMPULSE_VOL_SCALE_MAX, atr_15m / _IMPULSE_ATR_15M_ANCHOR_PCT))
+            if atr_15m is not None
+            else 1.0
+        )
         c3m = safe_float(pinfo.get("chg_3m_pct"), default=None)
         c5m = safe_float(pinfo.get("chg_5m_pct"), default=None)
         v90 = safe_float(pinfo.get("vel_90s_pct_min"), default=None)
@@ -283,39 +301,39 @@ def evaluate_kinematic_impulse_symbols(
         px_cur = safe_pos_float(pinfo.get("price"), default=None)
         s90_pct_min = ((s90_raw / px_cur) * 6000.0) if (s90_raw is not None and px_cur is not None) else None
         # When 90s linear trend is present, require v90 impulse spikes to be corroborated by a real
-        # directional 90s move (>= 0.15%/min = 0.225% over 90s) so flat-plateau single ticks and
+        # directional 90s move (vol-scaled >= 0.15%/min) so flat-plateau single ticks and
         # counter-trend micro-bounces do not trigger false mid-cycle high-effort LLM wakeups.
         v90_corroborated = (
             s90_pct_min is None
             or (
                 v90 is not None
                 and (
-                    ((v90 * s90_pct_min) > 0.0 and abs(s90_pct_min) >= 0.15)
-                    or (v5m is not None and (v90 * v5m) > 0.0 and abs(v5m) >= 0.18)
+                    ((v90 * s90_pct_min) > 0.0 and abs(s90_pct_min) >= (0.15 * vol_scale))
+                    or (v5m is not None and (v90 * v5m) > 0.0 and abs(v5m) >= (0.18 * vol_scale))
                 )
             )
         )
         shock = (
-            (c3m is not None and abs(c3m) >= 0.55)
-            or (c5m is not None and abs(c5m) >= 0.70)
+            (c3m is not None and abs(c3m) >= (0.55 * vol_scale))
+            or (c5m is not None and abs(c5m) >= (0.70 * vol_scale))
             or (
                 v90_corroborated
                 and (
                     (
                         v90 is not None
                         and a90 is not None
-                        and abs(v90) >= 0.22
-                        and abs(a90) >= 0.14
+                        and abs(v90) >= (0.22 * vol_scale)
+                        and abs(a90) >= (0.14 * vol_scale)
                         and (v90 * a90) > 0.0
                     )
-                    or (v90 is not None and abs(v90) >= 0.35)
+                    or (v90 is not None and abs(v90) >= (0.35 * vol_scale))
                 )
             )
             or (
                 v5m is not None
                 and v90 is not None
-                and abs(v5m) >= 0.18
-                and abs(v90) >= 0.20
+                and abs(v5m) >= (0.18 * vol_scale)
+                and abs(v90) >= (0.20 * vol_scale)
                 and (v5m * v90) > 0.0
             )
         )

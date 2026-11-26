@@ -6,6 +6,7 @@ and order_guard.conf thresholds in 0 ms with zero network calls or extra disk st
 """
 from __future__ import annotations
 
+from statistics import median
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from botcore import (
@@ -512,6 +513,7 @@ def build_normalized_filled_ai_intent_row(
         row["limit_slip_bps"] = lim_slip
         row["arrival_sf_bps"] = arr_sf
         row["market_slip_bps"] = mkt_slip
+        row["limit_passive_offset_bps"] = extract_limit_passive_offset_bps(it, side=side, order_type=ot)
     if include_attribution:
         row["intent_id"] = _extract_intent_id(it)
         row["order_id"] = extract_intent_primary_order_id(it, default="", include_top_level=True)
@@ -1340,6 +1342,64 @@ def format_ai_decision_scorecard_line(scorecard: Any) -> str:
     )
 
 
+_LIMIT_PASSIVE_OFFSET_BUCKETS: tuple[tuple[str, str, Optional[float], Optional[float]], ...] = (
+    ("le_40bps", "<=40bp", None, 40.0),
+    ("40_100bps", "40-100bp", 40.0, 100.0),
+    ("gt_100bps", ">100bp", 100.0, None),
+)
+
+
+def extract_limit_passive_offset_bps(
+    intent: Mapping[str, Any],
+    *,
+    side: str = "",
+    order_type: str = "",
+) -> Optional[float]:
+    """Return signed passive LIMIT distance from arrival ``reference_price`` in bps (>0 passive, <0 aggressive)."""
+    if not isinstance(intent, Mapping):
+        return None
+    ot = clean_upper_scalar(order_type) or extract_intent_order_type(intent)
+    if ot != "LIMIT":
+        return None
+    side_u = normalize_side(side) or extract_intent_side(intent)
+    if side_u not in ("BUY", "SELL"):
+        return None
+    lim_px = first_pos_float(intent.get("limit_price"), intent.get("requested_price"))
+    ref_px = first_pos_float(intent.get("reference_price"))
+    if lim_px is None or ref_px is None:
+        return None
+    raw_bps = ((ref_px - lim_px) / ref_px) * 10000.0 if side_u == "BUY" else ((lim_px - ref_px) / ref_px) * 10000.0
+    return round(raw_bps, 2)
+
+
+def summarize_limit_passive_offset_fill_rates(
+    filled_offsets_bps: Sequence[float],
+    unfilled_offsets_bps: Sequence[float],
+) -> dict[str, dict[str, Any]]:
+    """Partition filled vs. unfilled LIMIT passive offsets (bps from arrival spot) into empirical fill-rate bands."""
+    f_vals = [v for raw in filled_offsets_bps if (v := safe_float(raw, default=None)) is not None]
+    u_vals = [v for raw in unfilled_offsets_bps if (v := safe_float(raw, default=None)) is not None]
+    out: dict[str, dict[str, Any]] = {}
+    for key, label, lo_excl, hi_incl in _LIMIT_PASSIVE_OFFSET_BUCKETS:
+        f_n = sum(
+            1 for v in f_vals
+            if (lo_excl is None or v > lo_excl) and (hi_incl is None or v <= hi_incl)
+        )
+        u_n = sum(
+            1 for v in u_vals
+            if (lo_excl is None or v > lo_excl) and (hi_incl is None or v <= hi_incl)
+        )
+        tot = f_n + u_n
+        out[key] = {
+            "label": label,
+            "filled": f_n,
+            "unfilled": u_n,
+            "total": tot,
+            "fill_rate_pct": round((f_n / tot) * 100.0, 1) if tot > 0 else None,
+        }
+    return out
+
+
 def extract_fill_execution_slippage(
     intent: Mapping[str, Any],
     *,
@@ -1396,6 +1456,7 @@ def summarize_execution_quality_by_venue_and_order_type(
     filled_rows: Sequence[Mapping[str, Any]],
     *,
     unfilled_counts: Optional[Mapping[tuple[str, str], int]] = None,
+    unfilled_limit_offsets_by_venue: Optional[Mapping[str, Sequence[float]]] = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """Group filled and unfilled execution TCA metrics by ``venue`` and by ``venue:order_type``."""
     valid_rows = [r for r in filled_rows if isinstance(r, Mapping)]
@@ -1408,6 +1469,14 @@ def summarize_execution_quality_by_venue_and_order_type(
                 cnt_u = safe_nonneg_int(v, default=0)
                 if cnt_u > 0:
                     unf_map[(ven_u, ot_u)] = unf_map.get((ven_u, ot_u), 0) + cnt_u
+    unf_off_map: dict[str, list[float]] = {}
+    if isinstance(unfilled_limit_offsets_by_venue, Mapping):
+        for raw_ven, raw_offs in unfilled_limit_offsets_by_venue.items():
+            ven_u = normalize_venue_name(clean_scalar_str(raw_ven) or "") or "unknown"
+            if isinstance(raw_offs, Sequence) and not isinstance(raw_offs, (str, bytes)):
+                vals = [v for x in raw_offs if (v := safe_float(x, default=None)) is not None]
+                if vals:
+                    unf_off_map.setdefault(ven_u, []).extend(vals)
 
     by_venue_rows: dict[str, list[Mapping[str, Any]]] = {}
     by_vot_rows: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
@@ -1429,12 +1498,20 @@ def summarize_execution_quality_by_venue_and_order_type(
             f_v for r in v_rows
             if (f_v := safe_nonneg_float(r.get("leg_fee_bps"), default=None)) is not None
         ]
+        f_offs = [
+            off_v for r in v_rows
+            if (clean_upper_scalar(r.get("order_type")) or "") == "LIMIT"
+            and (off_v := safe_float(r.get("limit_passive_offset_bps"), default=None)) is not None
+        ]
+        u_offs = unf_off_map.get(ven, [])
         by_venue[ven] = {
             **bucket,
             "limit_unfilled": lim_unf,
             "limit_fill_rate_pct": round((bucket["limit_filled"] / lim_tot) * 100.0, 1) if lim_tot > 0 else None,
             "notional_usd": round(notional_usd, 2),
             "avg_leg_fee_bps": round(sum(leg_fees) / len(leg_fees), 2) if leg_fees else None,
+            "med_filled_offset_bps": round(median(f_offs), 1) if f_offs else None,
+            "med_unfilled_offset_bps": round(median(u_offs), 1) if u_offs else None,
         }
 
     all_vot = sorted(set(by_vot_rows.keys()) | set(unf_map.keys()))
@@ -1452,6 +1529,7 @@ def summarize_execution_quality_by_venue_and_order_type(
         ]
         avg_slip = bucket["avg_limit_slippage_bps"] if ot == "LIMIT" else bucket["avg_market_slippage_bps"]
         avg_arr = bucket["avg_arrival_shortfall_bps"] if ot == "LIMIT" else None
+        ven_bkt = by_venue.get(ven, {})
         by_vot[f"{ven}:{ot}"] = {
             "venue": ven,
             "order_type": ot,
@@ -1462,6 +1540,8 @@ def summarize_execution_quality_by_venue_and_order_type(
             "avg_slippage_bps": avg_slip,
             "avg_arrival_shortfall_bps": avg_arr,
             "avg_leg_fee_bps": round(sum(leg_fees) / len(leg_fees), 2) if leg_fees else None,
+            "med_filled_offset_bps": ven_bkt.get("med_filled_offset_bps") if ot == "LIMIT" else None,
+            "med_unfilled_offset_bps": ven_bkt.get("med_unfilled_offset_bps") if ot == "LIMIT" else None,
         }
     return by_venue, by_vot
 
@@ -1605,11 +1685,14 @@ def evaluate_ai_calibration_feedback(
             "resolved_hit_rate_pct": None,
             "venue_tca": {},
             "venue_order_type_tca": {},
+            "limit_offset_fill_rates": {},
         }
 
     canceled_oids = _collect_canceled_order_ids(items)
     filled_rows: list[dict[str, Any]] = []
     unfilled_counts: dict[tuple[str, str], int] = {}
+    unfilled_limit_offsets_by_venue: dict[str, list[float]] = {}
+    all_unfilled_lim_offs: list[float] = []
 
     for it in items:
         if not isinstance(it, dict):
@@ -1630,8 +1713,15 @@ def evaluate_ai_calibration_feedback(
         ot = extract_intent_order_type(it)
         if not _is_filled_ai_intent(it, canceled_oids):
             if _is_terminal_or_stale_unfilled_intent(it, canceled_oids, now_ts=eff_now, ref_ts=ref_ts):
-                k_unf = (ven or "unknown", "LIMIT" if ot == "LIMIT" else "MARKET")
+                unf_ven = ven or "unknown"
+                unf_ot = "LIMIT" if ot == "LIMIT" else "MARKET"
+                k_unf = (unf_ven, unf_ot)
                 unfilled_counts[k_unf] = unfilled_counts.get(k_unf, 0) + 1
+                if unf_ot == "LIMIT":
+                    unf_off = extract_limit_passive_offset_bps(it, order_type="LIMIT")
+                    if unf_off is not None:
+                        unfilled_limit_offsets_by_venue.setdefault(unf_ven, []).append(unf_off)
+                        all_unfilled_lim_offs.append(unf_off)
             continue
         side = extract_intent_side(it)
         if side not in ("BUY", "SELL"):
@@ -1661,8 +1751,16 @@ def evaluate_ai_calibration_feedback(
     resolved_n = status_counts["TARGET_HIT"] + status_counts["INVALIDATED"]
     hit_rate = round((status_counts["TARGET_HIT"] / resolved_n) * 100.0, 1) if resolved_n > 0 else None
     by_venue, by_vot = summarize_execution_quality_by_venue_and_order_type(
-        filled_rows, unfilled_counts=unfilled_counts
+        filled_rows,
+        unfilled_counts=unfilled_counts,
+        unfilled_limit_offsets_by_venue=unfilled_limit_offsets_by_venue,
     )
+    all_filled_lim_offs = [
+        off_v for r in filled_rows
+        if (clean_upper_scalar(r.get("order_type")) or "") == "LIMIT"
+        and (off_v := safe_float(r.get("limit_passive_offset_bps"), default=None)) is not None
+    ]
+    lim_offset_fill_rates = summarize_limit_passive_offset_fill_rates(all_filled_lim_offs, all_unfilled_lim_offs)
     return {
         "lookback_days": lb_days,
         "filled_total": len(filled_rows),
@@ -1672,6 +1770,7 @@ def evaluate_ai_calibration_feedback(
         "resolved_hit_rate_pct": hit_rate,
         "venue_tca": by_venue,
         "venue_order_type_tca": by_vot,
+        "limit_offset_fill_rates": lim_offset_fill_rates,
     }
 
 
@@ -1730,6 +1829,9 @@ def format_ai_calibration_feedback_line(calibration: Any) -> str:
                 lim_hdr += f" slip={fmt_signed(lim_s, 1)}bps"
             if arr_s is not None:
                 lim_hdr += f" arr={fmt_signed(arr_s, 1)}bps"
+            unf_off = safe_float(vt.get("med_unfilled_offset_bps"), default=None)
+            if lim_u >= 3 and unf_off is not None:
+                lim_hdr += f" unf_off={fmt_signed(unf_off, 0)}bps"
             v_bits.append(lim_hdr)
         if mkt_f > 0:
             mkt_s = safe_float(vt.get("avg_market_slippage_bps"), default=None)
@@ -1739,6 +1841,30 @@ def format_ai_calibration_feedback_line(calibration: Any) -> str:
             venue_parts.append(f"{ven}: {' | '.join(v_bits)}")
     if venue_parts:
         segments.append(f"venue_tca({', '.join(venue_parts)})")
+
+    lim_off_map = calibration.get("limit_offset_fill_rates")
+    if isinstance(lim_off_map, Mapping):
+        off_tot = 0
+        off_unf = 0
+        off_parts: list[str] = []
+        for b_key, default_lbl, _, _ in _LIMIT_PASSIVE_OFFSET_BUCKETS:
+            bkt = lim_off_map.get(b_key)
+            if not isinstance(bkt, Mapping):
+                continue
+            b_f = safe_nonneg_int(bkt.get("filled"), default=0)
+            b_u = safe_nonneg_int(bkt.get("unfilled"), default=0)
+            b_t = b_f + b_u
+            if b_t <= 0:
+                continue
+            off_tot += b_t
+            off_unf += b_u
+            b_fr = safe_float(bkt.get("fill_rate_pct"), default=None)
+            if b_fr is None:
+                b_fr = (b_f / b_t) * 100.0
+            lbl = clean_scalar_str(bkt.get("label")) or default_lbl
+            off_parts.append(f"{lbl}:{b_fr:.0f}%[{b_f}/{b_t}]")
+        if off_parts and off_tot >= 5 and off_unf >= 1:
+            segments.append(f"lim_off({', '.join(off_parts)})")
 
     if not segments:
         return ""
@@ -1757,6 +1883,7 @@ __all__ = [
     "evaluate_ai_tokenized_equity_sell_guard",
     "evaluate_filled_trade_plans",
     "extract_fill_execution_slippage",
+    "extract_limit_passive_offset_bps",
     "extract_live_prices_from_cache_payload",
     "format_ai_calibration_feedback_line",
     "format_ai_decision_scorecard_line",
@@ -1768,4 +1895,5 @@ __all__ = [
     "resolve_venue_round_trip_fee_bps",
     "summarize_execution_quality_bucket",
     "summarize_execution_quality_by_venue_and_order_type",
+    "summarize_limit_passive_offset_fill_rates",
 ]

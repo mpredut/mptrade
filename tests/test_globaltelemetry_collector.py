@@ -3285,6 +3285,38 @@ def test_ai_impulse_wakeup_host_guard_blocks_non_executor_hosts_and_disabled_tra
     assert len(popen_calls) == 1
 
 
+def test_kinematic_impulse_vol_scaling_and_tokenized_equity_exclusion():
+    """Verify kinematic impulse thresholds scale with realized ATR/vol_1h and exclude tokenized xStocks."""
+    import intelligence.globaltelemetry_collector as gtc_mod
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import _collect_delta_gate_atr_15m
+
+    shocked = gtc_mod.evaluate_kinematic_impulse_symbols(
+        {
+            # Tokenized xStock (SELL-only multi-day equity) must NEVER trigger mid-cycle crypto impulse wakeups
+            "SPCXxUSD": {"chg_3m_pct": 1.80, "chg_5m_pct": 2.40, "vel_90s_pct_min": 0.90},
+            "ANTxUSD": {"chg_3m_pct": -1.60, "vel_90s_pct_min": -0.80},
+            # Calm major (vol_1h=0.44% -> atr_15m=0.22% <= 0.35% -> vol_scale=1.0): keeps baseline 0.55% 3m sensitivity
+            "BTCUSDC": {"vol_1h_pct": 0.44, "chg_3m_pct": 0.60},
+            # High-vol alt (vol_1h=1.40% -> atr_15m=0.70% -> vol_scale=2.0 -> 3m floor 1.10%): 0.75% chop suppressed
+            "ARBUSDC": {"vol_1h_pct": 1.40, "chg_3m_pct": 0.75, "chg_5m_pct": 0.95, "vel_90s_pct_min": 0.45},
+            # High-vol alt with explicit atr_15m_pct=0.70 experiencing genuine 1.25% 3m shock: wakes cleanly
+            "HYPEUSDC": {"atr_15m_pct": 0.70, "chg_3m_pct": -1.25},
+        }
+    )
+    assert shocked == ["BTCUSDC", "HYPEUSDC"]
+
+    # Delta-Gate ATR collector symmetrically falls back to vol_1h_pct * 0.5 when atr_15m_pct is absent
+    atr_map = _collect_delta_gate_atr_15m(
+        {
+            "BTCUSDC": {"atr_15m_pct": 0.42, "vol_1h_pct": 1.00},
+            "ARBUSDC": {"vol_1h_pct": 1.40},
+        }
+    )
+    assert atr_map["BTCUSDC"] == pytest.approx(0.42)
+    assert atr_map["ARBUSDC"] == pytest.approx(0.70)
+
+
+
 
 
 

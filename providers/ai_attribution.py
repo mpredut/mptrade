@@ -24,6 +24,7 @@ from botcore import (
 )
 from cachepaths import matches_asset_scope, normalize_venue_name
 from .ai_survival_guard import (
+    _LIMIT_PASSIVE_OFFSET_BUCKETS,
     _collect_canceled_order_ids,
     _extract_intent_exec_price,
     _extract_intent_exec_ts,
@@ -34,12 +35,14 @@ from .ai_survival_guard import (
     compute_signed_price_edge_pct,
     evaluate_filled_trade_plans,
     extract_fill_execution_slippage,
+    extract_limit_passive_offset_bps,
     format_signed_usd,
     match_filled_intent_rows_lifo_in_window,
     resolve_matched_notional_usd,
     resolve_venue_round_trip_fee_bps,
     summarize_execution_quality_bucket,
     summarize_execution_quality_by_venue_and_order_type,
+    summarize_limit_passive_offset_fill_rates,
 )
 from .execution_audit import _extract_audit_fill_metrics
 from .intent_state import (
@@ -177,6 +180,7 @@ def _build_closed_round_trip_outcome(
     exit_row: Mapping[str, Any],
     *,
     plan_outcome: str,
+    cutoff_ts: float = 0.0,
 ) -> dict[str, Any]:
     gross_pct = compute_signed_price_edge_pct(entry_row["side"], entry_row["px"], exit_row["px"])
     rt_bps = entry_row["leg_fee_bps"] + exit_row["leg_fee_bps"]
@@ -186,8 +190,11 @@ def _build_closed_round_trip_outcome(
     matched_usd = entry_usd if entry_usd > 0.0 else resolve_matched_notional_usd(entry_usd, exit_usd)
     gross_usd = matched_usd * (gross_pct / 100.0)
     fee_usd = matched_usd * (rt_bps / 10000.0)
+    entry_ts = safe_float(entry_row.get("ts"), default=0.0) or 0.0
     return {
         "ts": exit_row["ts"],
+        "entry_ts": entry_ts,
+        "entry_in_window": bool(cutoff_ts <= 0.0 or entry_ts >= cutoff_ts),
         "kind": kind,
         "venue": exit_row["venue"],
         "symbol": exit_row["symbol"],
@@ -548,6 +555,8 @@ def evaluate_ai_attribution(
     model_intent_counts: dict[str, dict[str, int]] = {}
     override_intent_counts: dict[str, int] = {}
     unfilled_counts: dict[tuple[str, str], int] = {}
+    unfilled_limit_offsets_by_venue: dict[str, list[float]] = {}
+    all_unfilled_lim_offs: list[float] = []
     all_filled_rows: list[dict[str, Any]] = []
     filled_rows: list[dict[str, Any]] = []
 
@@ -587,9 +596,15 @@ def evaluate_ai_attribution(
 
             if lifecycle == "EXECUTED_UNFILLED":
                 if _is_terminal_or_stale_unfilled_intent(it, canceled_oids, now_ts=eff_now, ref_ts=ref_ts):
+                    unf_ven = ven or "unknown"
                     unf_ot = "LIMIT" if extract_intent_order_type(it) == "LIMIT" else "MARKET"
-                    k_unf = (ven or "unknown", unf_ot)
+                    k_unf = (unf_ven, unf_ot)
                     unfilled_counts[k_unf] = unfilled_counts.get(k_unf, 0) + 1
+                    if unf_ot == "LIMIT":
+                        unf_off = extract_limit_passive_offset_bps(it, order_type="LIMIT")
+                        if unf_off is not None:
+                            unfilled_limit_offsets_by_venue.setdefault(unf_ven, []).append(unf_off)
+                            all_unfilled_lim_offs.append(unf_off)
                 continue
 
         if lifecycle != "EXECUTED_FILLED":
@@ -656,7 +671,9 @@ def evaluate_ai_attribution(
 
     for kind, entry_row, exit_row in closed_pairs:
         plan_st = _record_closed_plan_outcome(entry_row, exit_row)
-        outcomes.append(_build_closed_round_trip_outcome(kind, entry_row, exit_row, plan_outcome=plan_st))
+        outcomes.append(
+            _build_closed_round_trip_outcome(kind, entry_row, exit_row, plan_outcome=plan_st, cutoff_ts=cutoff)
+        )
 
     def _evaluate_open_mtm_row(entry_row: dict[str, Any], side: str) -> Optional[dict[str, Any]]:
         spot_px = _resolve_live_price_for_symbol(prices_map, entry_row["venue"], entry_row["symbol"])
@@ -685,6 +702,8 @@ def evaluate_ai_attribution(
         fee_usd = entry_row["usd"] * (rt_bps / 10000.0)
         return {
             "ts": entry_row["ts"],
+            "entry_ts": entry_row["ts"],
+            "entry_in_window": True,
             "kind": f"{side}_MTM",
             "venue": entry_row["venue"],
             "symbol": entry_row["symbol"],
@@ -711,6 +730,9 @@ def evaluate_ai_attribution(
         if (sell_mtm := _evaluate_open_mtm_row(sell_row, "SELL")) is not None:
             planned_sell_mtm_outcomes.append(sell_mtm)
 
+    in_window_outcomes = [o for o in outcomes if o.get("entry_in_window", True)]
+    legacy_pre_window_outcomes = [o for o in outcomes if not o.get("entry_in_window", True)]
+
     # Groupings: by venue, by venue:symbol, by model_used, by overridden guard, by trade plan coverage
     by_venue_rows: dict[str, list[dict[str, Any]]] = {}
     by_symbol_rows: dict[str, list[dict[str, Any]]] = {}
@@ -719,7 +741,12 @@ def evaluate_ai_attribution(
     for out in outcomes:
         by_venue_rows.setdefault(out["venue"] or "unknown", []).append(out)
         by_symbol_rows.setdefault(f"{out['venue']}:{out['symbol']}", []).append(out)
-        by_model_rows.setdefault(out["model_used"], []).append(out)
+        mdl_bucket = (
+            "legacy_pre_window"
+            if (not out.get("entry_in_window", True) and out["model_used"] == "unknown")
+            else out["model_used"]
+        )
+        by_model_rows.setdefault(mdl_bucket, []).append(out)
         for code in out["override_codes"]:
             by_override_rows.setdefault(code, []).append(out)
 
@@ -755,7 +782,8 @@ def evaluate_ai_attribution(
 
     unplanned_filled = len(filled_rows) - planned_filled
     planned_outcomes = [o for o in outcomes if o["has_plan"]] + planned_sell_mtm_outcomes
-    unplanned_outcomes = [o for o in outcomes if not o["has_plan"]]
+    unplanned_outcomes = [o for o in outcomes if not o["has_plan"] and o.get("entry_in_window", True)]
+    legacy_unplanned_outcomes = [o for o in outcomes if not o["has_plan"] and not o.get("entry_in_window", True)]
     trade_plan_calibration = {
         "planned_filled": planned_filled,
         "unplanned_filled": unplanned_filled,
@@ -763,6 +791,7 @@ def evaluate_ai_attribution(
         "status_counts": plan_status_counts,
         "planned_performance": _summarize_outcomes_bucket(planned_outcomes),
         "unplanned_performance": _summarize_outcomes_bucket(unplanned_outcomes),
+        "legacy_pre_window_performance": _summarize_outcomes_bucket(legacy_unplanned_outcomes),
     }
 
     actor_comparison = _evaluate_execution_audit_actors(
@@ -775,8 +804,16 @@ def evaluate_ai_attribution(
     )
     eq_global = summarize_execution_quality_bucket(filled_rows)
     eq_by_venue, eq_by_vot = summarize_execution_quality_by_venue_and_order_type(
-        filled_rows, unfilled_counts=unfilled_counts
+        filled_rows,
+        unfilled_counts=unfilled_counts,
+        unfilled_limit_offsets_by_venue=unfilled_limit_offsets_by_venue,
     )
+    all_filled_lim_offs = [
+        off_v for r in filled_rows
+        if (clean_upper_scalar(r.get("order_type")) or "") == "LIMIT"
+        and (off_v := safe_float(r.get("limit_passive_offset_bps"), default=None)) is not None
+    ]
+    lim_offset_fill_rates = summarize_limit_passive_offset_fill_rates(all_filled_lim_offs, all_unfilled_lim_offs)
     lim_unf_total = sum(v for (_, ot_k), v in unfilled_counts.items() if ot_k == "LIMIT")
     lim_sub_total = eq_global["limit_filled"] + lim_unf_total
     execution_quality = {
@@ -785,6 +822,7 @@ def evaluate_ai_attribution(
         "limit_fill_rate_pct": round((eq_global["limit_filled"] / lim_sub_total) * 100.0, 1) if lim_sub_total > 0 else None,
         "by_venue": eq_by_venue,
         "by_venue_order_type": eq_by_vot,
+        "limit_offset_fill_rates": lim_offset_fill_rates,
     }
     delta_gate = summarize_delta_gate_logs(
         reconciler_log_lines if isinstance(reconciler_log_lines, list) else [],
@@ -806,6 +844,8 @@ def evaluate_ai_attribution(
         "ai_status_counts": status_counts,
         "ai_circuit_breaker_triggers": cb_reason_counts,
         "ai_summary": _summarize_outcomes_bucket(outcomes),
+        "ai_summary_in_window": _summarize_outcomes_bucket(in_window_outcomes),
+        "ai_summary_legacy_pre_window": _summarize_outcomes_bucket(legacy_pre_window_outcomes),
         "ai_by_venue": by_venue,
         "ai_by_symbol": by_symbol,
         "ai_by_model": by_model,
@@ -853,6 +893,23 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
             f"PF={_fmt_pf(ai_sum.get('profit_factor'))}"
         ),
     ]
+
+    in_win_sum = report.get("ai_summary_in_window") if isinstance(report.get("ai_summary_in_window"), Mapping) else {}
+    legacy_sum = (
+        report.get("ai_summary_legacy_pre_window")
+        if isinstance(report.get("ai_summary_legacy_pre_window"), Mapping)
+        else {}
+    )
+    if safe_nonneg_int(legacy_sum.get("scored"), 0) > 0:
+        lines.append(
+            f"AI Cohort Split: in_window={safe_nonneg_int(in_win_sum.get('scored'), 0)} "
+            f"(net={_fmt_usd(in_win_sum.get('total_net_usd'))}, "
+            f"WR={safe_nonneg_float(in_win_sum.get('win_rate_pct'), 0.0):.1f}%, "
+            f"PF={_fmt_pf(in_win_sum.get('profit_factor'))}) | "
+            f"legacy_pre_window_exits={safe_nonneg_int(legacy_sum.get('scored'), 0)} "
+            f"(realized={_fmt_usd(legacy_sum.get('realized_net_usd'))}, "
+            f"WR={safe_nonneg_float(legacy_sum.get('win_rate_pct'), 0.0):.1f}%)"
+        )
 
     if st_counts := (report.get("ai_status_counts") if isinstance(report.get("ai_status_counts"), Mapping) else {}):
         st_str = ", ".join(f"{k}={v}" for k, v in sorted(st_counts.items()))
@@ -920,9 +977,21 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
             f"CLOSED_EARLY={safe_nonneg_int(psc.get('CLOSED_EARLY'), 0)}, "
             f"ACTIVE={safe_nonneg_int(psc.get('ACTIVE'), 0)}"
         )
+        leg_perf = (
+            plans.get("legacy_pre_window_performance")
+            if isinstance(plans.get("legacy_pre_window_performance"), Mapping)
+            else {}
+        )
+        leg_sfx = (
+            f" | Legacy pre-window avg={fmt_signed(safe_float(leg_perf.get('avg_net_edge_pct'), 0.0) or 0.0, 2)}% "
+            f"({_fmt_usd(leg_perf.get('total_net_usd'))}, n={safe_nonneg_int(leg_perf.get('scored'), 0)})"
+            if safe_nonneg_int(leg_perf.get("scored"), 0) > 0
+            else ""
+        )
         lines.append(
             f"  Planned avg={fmt_signed(safe_float(p_perf.get('avg_net_edge_pct'), 0.0) or 0.0, 2)}% ({_fmt_usd(p_perf.get('total_net_usd'))}) | "
             f"Unplanned avg={fmt_signed(safe_float(u_perf.get('avg_net_edge_pct'), 0.0) or 0.0, 2)}% ({_fmt_usd(u_perf.get('total_net_usd'))})"
+            f"{leg_sfx}"
         )
 
     exec_cmp = report.get("execution_audit_ai_vs_bot") if isinstance(report.get("execution_audit_ai_vs_bot"), Mapping) else {}
@@ -970,24 +1039,42 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
     eq = report.get("execution_quality") if isinstance(report.get("execution_quality"), Mapping) else {}
     if eq_parts := format_execution_quality_parts(eq):
         lines.append(f"Execution Quality: {', '.join(eq_parts)}")
+    lim_off = eq.get("limit_offset_fill_rates") if isinstance(eq.get("limit_offset_fill_rates"), Mapping) else {}
+    if lim_off:
+        off_segs: list[str] = []
+        for b_key, default_lbl, _, _ in _LIMIT_PASSIVE_OFFSET_BUCKETS:
+            bkt = lim_off.get(b_key)
+            if not isinstance(bkt, Mapping):
+                continue
+            b_t = safe_nonneg_int(bkt.get("total"), 0)
+            if b_t <= 0:
+                continue
+            b_f = safe_nonneg_int(bkt.get("filled"), 0)
+            b_fr = safe_float(bkt.get("fill_rate_pct"), default=None)
+            lbl = clean_scalar_str(bkt.get("label")) or default_lbl
+            off_segs.append(f"{lbl}: {b_fr:.1f}% ({b_f}/{b_t})" if b_fr is not None else f"{lbl}: n/a ({b_f}/{b_t})")
+        if off_segs:
+            lines.append(f"  LIMIT Offset Fill Rate: {', '.join(off_segs)}")
     by_vot = eq.get("by_venue_order_type") if isinstance(eq.get("by_venue_order_type"), Mapping) else {}
     if by_vot:
         lines.append("  -- Execution TCA by Venue:OrderType --")
-        lines.append(f"  {'Venue:Type':<20} {'Fil':>4} {'Unf':>4} {'FR%':>6} {'SlipBps':>8} {'ArrBps':>8} {'FeeBps':>7} {'Notional':>10}")
+        lines.append(f"  {'Venue:Type':<20} {'Fil':>4} {'Unf':>4} {'FR%':>6} {'SlipBps':>8} {'ArrBps':>8} {'UnfOff':>8} {'FeeBps':>7} {'Notional':>10}")
         for vot_k, v_row in sorted(by_vot.items()):
             if not isinstance(v_row, Mapping):
                 continue
             fr_v = safe_float(v_row.get("fill_rate_pct"), default=None)
             sl_v = safe_float(v_row.get("avg_slippage_bps"), default=None)
             ar_v = safe_float(v_row.get("avg_arrival_shortfall_bps"), default=None)
+            uo_v = safe_float(v_row.get("med_unfilled_offset_bps"), default=None)
             fe_v = safe_float(v_row.get("avg_leg_fee_bps"), default=None)
             fr_s = f"{fr_v:>5.1f}%" if fr_v is not None else f"{'n/a':>6}"
             sl_s = f"{fmt_signed(sl_v, 1):>8}" if sl_v is not None else f"{'n/a':>8}"
             ar_s = f"{fmt_signed(ar_v, 1):>8}" if ar_v is not None else f"{'n/a':>8}"
+            uo_s = f"{fmt_signed(uo_v, 1):>8}" if uo_v is not None else f"{'n/a':>8}"
             fe_s = f"{fe_v:>7.1f}" if fe_v is not None else f"{'n/a':>7}"
             lines.append(
                 f"  {vot_k:<20} {safe_nonneg_int(v_row.get('filled'), 0):>4} "
-                f"{safe_nonneg_int(v_row.get('unfilled'), 0):>4} {fr_s} {sl_s} {ar_s} {fe_s} "
+                f"{safe_nonneg_int(v_row.get('unfilled'), 0):>4} {fr_s} {sl_s} {ar_s} {uo_s} {fe_s} "
                 f"${safe_nonneg_float(v_row.get('notional_usd'), 0.0):>9.0f}"
             )
 
