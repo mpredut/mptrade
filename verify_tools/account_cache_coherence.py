@@ -141,7 +141,12 @@ def _order_remaining_qty(row: Mapping[str, Any]) -> float:
     return max(0.0, orig_q - exec_q)
 
 
-def _is_filled_row_terminal(fill_row: Mapping[str, Any], open_row: Optional[Mapping[str, Any]] = None) -> bool:
+def _is_filled_row_terminal(
+    fill_row: Mapping[str, Any],
+    open_row: Optional[Mapping[str, Any]] = None,
+    *,
+    req_qty: Any = None,
+) -> bool:
     st_u = clean_upper_scalar(fill_row.get("status")) or ""
     if st_u in _TERMINAL_FILL_STATUSES:
         return True
@@ -150,7 +155,9 @@ def _is_filled_row_terminal(fill_row: Mapping[str, Any], open_row: Optional[Mapp
         default=None,
     )
     orig_q = safe_pos_float(
-        extract_orig_qty(open_row, default=None) if open_row is not None else extract_orig_qty(fill_row, default=None),
+        req_qty
+        if req_qty is not None
+        else (extract_orig_qty(open_row, default=None) if open_row is not None else extract_orig_qty(fill_row, default=None)),
         default=None,
     )
     if orig_q is not None and filled_q is not None and filled_q >= orig_q * (1.0 - 1e-6):
@@ -432,7 +439,7 @@ def _evaluate_venue_coherence(
                 or 0.0
             )
             f_row = filled_by_sym_oid.get((sym_l, vid))
-            if f_row is not None and _is_filled_row_terminal(f_row):
+            if f_row is not None and _is_filled_row_terminal(f_row, req_qty=rec.get("qty")):
                 f_ts = extract_timestamp_s(f_row) or rec_ts
                 if f_ts <= 0.0 or (now_s - f_ts) >= ledger_grace:
                     out.append(

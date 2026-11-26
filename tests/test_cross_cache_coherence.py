@@ -630,7 +630,7 @@ def test_cross_cache_auditor_catches_every_drift_class_across_venues():
     assert [v.rule for v in v_tr] == ["trade_missing_in_filled"]
     assert "MISS1" in v_tr[0].detail
 
-    # 5. Ledger rules: open_order_missing_from_ledger, ledger_stuck_filled_order, ledger_orphan_active_order
+    # 5. Ledger rules: open_order_missing_from_ledger, ledger_stuck_filled_order (incl. status=None venue fills), ledger_orphan_active_order
     ev_ledger = VenueCoherenceEvidence(
         venue="binance",
         open_items={"TAOUSDC": [{"orderId": "REST-9", "symbol": "TAOUSDC", "side": "SELL", "origQty": 1.0, "executedQty": 0.0, "price": 190.0, "timestamp": int((t_now - 90.0) * 1000)}]},
@@ -638,7 +638,10 @@ def test_cross_cache_auditor_catches_every_drift_class_across_venues():
         open_latest_ts=t_now - 2.0,
         open_sym_verified_ts={"taousdc": t_now - 2.0, "adausdc": t_now - 2.0},
         open_file_exists=True,
-        filled_items={"TAOUSDC": [{"orderId": "FILLED-8", "symbol": "TAOUSDC", "status": "FILLED", "quantity": 2.0, "timestamp": int((t_now - 80.0) * 1000)}]},
+        filled_items={
+            "TAOUSDC": [{"orderId": "FILLED-8", "symbol": "TAOUSDC", "status": "FILLED", "quantity": 2.0, "timestamp": int((t_now - 80.0) * 1000)}],
+            "ARBUSDC": [{"orderId": "FILL-NOSTAT-6", "symbol": "ARBUSDC", "quantity": 321.3, "timestamp": int((t_now - 80.0) * 1000)}],
+        },
         filled_file_exists=True,
     )
     snap_ledger = AccountCacheCoherenceSnapshot(
@@ -647,13 +650,15 @@ def test_cross_cache_auditor_catches_every_drift_class_across_venues():
         ledger_present=True,
         ledger_updated_ts=t_now - 1.0,
         ledger_active_orders={
-            "binance:FILLED-8": {"v": "binance", "sym": "TAOUSDC", "vid": "FILLED-8", "state": "OPEN", "updated_ts": t_now - 100.0},
+            "binance:FILLED-8": {"v": "binance", "sym": "TAOUSDC", "vid": "FILLED-8", "state": "OPEN", "qty": 2.0, "updated_ts": t_now - 100.0},
+            "binance:FILL-NOSTAT-6": {"v": "binance", "sym": "ARBUSDC", "vid": "FILL-NOSTAT-6", "state": "SUBMITTED", "qty": 321.3, "updated_ts": t_now - 100.0},
             "binance:ORPHAN-7": {"v": "binance", "sym": "ADAUSDC", "vid": "ORPHAN-7", "state": "OPEN", "updated_ts": t_now - 100.0},
         },
     )
     v_led = evaluate_account_cache_coherence(snap_ledger, sync_grace_sec=15.0, ledger_grace_sec=45.0)
     assert sorted(v.rule for v in v_led) == [
         "ledger_orphan_active_order",
+        "ledger_stuck_filled_order",
         "ledger_stuck_filled_order",
         "open_order_missing_from_ledger",
     ]
