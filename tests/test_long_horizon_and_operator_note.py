@@ -89,11 +89,15 @@ def test_long_horizon_configurable_months_zigzag_live_recalc_and_chart_zoom() ->
     assert len(ev_18m["weekly_bars"]) >= 50
     assert len(ev_18m["recent_daily_bars"]) == 90
 
-    # Live price recalculation updates percentages and expands range without disk I/O
+    # Live price recalculation updates percentages and expands range (including intraday extremes) without disk I/O
     recalc = recalculate_long_horizon_with_live_price(ev_18m, 55000.0)
     assert recalc["low_52w"] == 55000.0
     assert recalc["pos_52w_pct"] == 0.0
     assert recalc["ytd_pct"] < ev_18m["ytd_pct"]
+    recalc_ext = recalculate_long_horizon_with_live_price(ev_18m, 60800.0, live_low=59500.0, live_high=135000.0)
+    assert recalc_ext["low_52w"] == 59500.0 and recalc_ext["low_horizon"] == 59500.0
+    assert recalc_ext["high_52w"] == 135000.0 and recalc_ext["high_horizon"] == 135000.0
+    assert 0.0 < recalc_ext["pos_52w_pct"] < 10.0
 
     # ASCII chart zoom supports both --months and --from/--to slices cleanly (including day 31 without day-28 clipping)
     chart_txt = render_ascii_chart_view(ev_18m, start_ym="2026-01", end_ym="2026-10", timeframe="1w")
@@ -227,7 +231,7 @@ def test_long_horizon_collector_prompt_rendering_warm_elision_and_chart_cli(tmp_
     sensors = TelemetrySensorSnapshot(
         evaluated_at_ts=t0,
         macro_calendar=fixed_cal,
-        prices_and_trends={"BTCUSDC": {"price": 60800.0, "chg_24h_pct": -1.2, "low_24h": 59500.0, "high_24h": 61800.0}},
+        prices_and_trends={"BTCUSDC": {"price": 60800.0, "chg_24h_pct": -1.2, "low_24h": 60800.0, "high_24h": 61800.0}},
         long_horizon=snap_lh,
         operator_regime_note=parse_operator_regime_note_text(
             "Market below current year open.", mtime_ts=t0 - 3600.0, now_ts=t0, default_ttl_days=5.0
@@ -248,7 +252,7 @@ def test_long_horizon_collector_prompt_rendering_warm_elision_and_chart_cli(tmp_
     sensors_t2 = TelemetrySensorSnapshot(
         evaluated_at_ts=t2,
         macro_calendar=fixed_cal,
-        prices_and_trends={"BTCUSDC": {"price": 60850.0, "chg_24h_pct": -1.1, "low_24h": 59500.0, "high_24h": 61800.0}},
+        prices_and_trends={"BTCUSDC": {"price": 60850.0, "chg_24h_pct": -1.1, "low_24h": 60800.0, "high_24h": 61800.0}},
         long_horizon=snap_lh,
         operator_regime_note=parse_operator_regime_note_text(
             "Market below current year open.", mtime_ts=t0 - 3600.0, now_ts=t2, default_ttl_days=5.0
@@ -270,7 +274,7 @@ def test_long_horizon_collector_prompt_rendering_warm_elision_and_chart_cli(tmp_
     sensors_t3 = TelemetrySensorSnapshot(
         evaluated_at_ts=t3,
         macro_calendar=fixed_cal,
-        prices_and_trends={"BTCUSDC": {"price": 60860.0, "chg_24h_pct": -1.1, "low_24h": 59500.0, "high_24h": 61800.0}},
+        prices_and_trends={"BTCUSDC": {"price": 60860.0, "chg_24h_pct": -1.1, "low_24h": 60800.0, "high_24h": 61800.0}},
         long_horizon=snap_lh,
         operator_regime_note=None,
     )
