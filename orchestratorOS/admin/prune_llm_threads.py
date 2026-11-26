@@ -308,6 +308,20 @@ def prune_old_cli_threads(
             except sqlite3.Error:
                 pass
 
+    if candidates or ui_candidates:
+        fresh_protected = protected | get_active_topic_cids()
+        candidates = {
+            c
+            for c in candidates
+            if c not in fresh_protected and not os.path.exists(os.path.join(base, "presence", f"{c}.lock"))
+        }
+        if ui_candidates and ui_base:
+            ui_candidates = {
+                c
+                for c in ui_candidates
+                if c not in fresh_protected and not os.path.exists(os.path.join(ui_base, "presence", f"{c}.lock"))
+            }
+
     if not candidates and not ui_candidates:
         logger.info("No candidate threads older than %.1f days found in %s.", retention_days, sorted(targets))
         return (0, 0)

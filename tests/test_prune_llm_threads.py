@@ -348,3 +348,55 @@ class TestPruneCliThreads:
         assert os.path.exists(os.path.join(cli_base, "conversations", f"{cid_locked}.db"))
         assert not os.path.exists(os.path.join(cli_base, "conversations", f"{cid_orphan}.db"))
 
+    def test_prune_rechecks_active_topics_before_delete_and_clean_orphans_skips_running(self, tmp_path, monkeypatch):
+        """TOCTOU protection: a topic CID registered mid-scan survives prune; clean_orphan_summaries skips RUNNING/locked rows."""
+        from orchestratorOS.admin import prune_llm_threads as plt_mod
+        from orchestratorOS.agy.summary_store import clean_orphan_summaries
+
+        now = datetime.now(timezone.utc)
+        ts_old = (now - timedelta(days=3)).isoformat()
+        cli_base, db_path = _init_summaries_db(
+            tmp_path,
+            [
+                ("newly-registered-topic", "[auto_cryptotrade_executor]", "run", ts_old, AUTONOMOUS_PROJECT_UUID),
+                ("truly-stale-auto", "[auto_cryptotrade_executor]", "old", ts_old, AUTONOMOUS_PROJECT_UUID),
+            ],
+            create_files=True,
+        )
+        calls = {"n": 0}
+
+        def _dynamic_active():
+            calls["n"] += 1
+            return set() if calls["n"] == 1 else {"newly-registered-topic"}
+
+        monkeypatch.setattr(plt_mod, "get_active_topic_cids", _dynamic_active)
+        pruned, _ = prune_old_cli_threads(cli_base=cli_base, retention_days=1.0, dry_run=False)
+        assert pruned == 1
+        assert _remaining_cids(db_path) == {"newly-registered-topic"}
+        assert os.path.exists(os.path.join(cli_base, "conversations", "newly-registered-topic.db"))
+
+        # clean_orphan_summaries skips RUNNING and presence-locked rows even when .db not yet flushed
+        cli_o = str(tmp_path / "cli_orphans")
+        os.makedirs(os.path.join(cli_o, "conversations"), exist_ok=True)
+        os.makedirs(os.path.join(cli_o, "presence"), exist_ok=True)
+        odb = os.path.join(cli_o, "conversation_summaries.db")
+        conn = sqlite3.connect(odb)
+        conn.execute(
+            "CREATE TABLE conversation_summaries (conversation_id text PRIMARY KEY, title text, status text)"
+        )
+        conn.executemany(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?)",
+            [
+                ("run-no-db", "active", "CASCADE_RUN_STATUS_RUNNING"),
+                ("lock-no-db", "locked", "CASCADE_RUN_STATUS_IDLE"),
+                ("dead-ghost", "ghost", "CASCADE_RUN_STATUS_IDLE"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+        with open(os.path.join(cli_o, "presence", "lock-no-db.lock"), "w", encoding="utf-8") as fh:
+            fh.write("lock")
+        removed = clean_orphan_summaries(cli_o, dry_run=False)
+        assert removed == 1
+        assert _remaining_cids(odb) == {"run-no-db", "lock-no-db"}
+

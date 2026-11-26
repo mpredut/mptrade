@@ -536,8 +536,9 @@ def clean_orphan_summaries(cli_base: str, dry_run: bool = False) -> int:
         return 0
     try:
         conn = connect_sqlite_db(db)
+        conn.row_factory = sqlite3.Row
         try:
-            rows = conn.execute("SELECT conversation_id, title FROM conversation_summaries").fetchall()
+            rows = conn.execute("SELECT * FROM conversation_summaries").fetchall()
         finally:
             conn.close()
     except sqlite3.Error as exc:
@@ -545,18 +546,25 @@ def clean_orphan_summaries(cli_base: str, dry_run: bool = False) -> int:
         return 0
     vis_dir = _visible_dir_if_cli_store(cli_base)
     active = optional_env("CURRENT_CONVERSATION_ID", "")
-    orphans = {
-        cid.strip()
-        for cid, _ in rows
-        if isinstance(cid, str)
-        and cid.strip()
-        and cid.strip() != active
-        and not os.path.exists(conversation_db(cli_base, cid.strip()))
-        and not (vis_dir and os.path.exists(os.path.join(vis_dir, f"{cid.strip()}.db")))
-    }
-    for cid, title in rows:
-        if isinstance(cid, str) and cid.strip() in orphans:
-            logger.info("Found orphan summary: %s (%s)", cid.strip(), title)
+    orphans: Set[str] = set()
+    for row in rows:
+        row_keys = set(row.keys())
+        raw_cid = row["conversation_id"] if "conversation_id" in row_keys else None
+        if not isinstance(raw_cid, str) or not raw_cid.strip():
+            continue
+        cid_s = raw_cid.strip()
+        if cid_s == active:
+            continue
+        status_s = str(row["status"] or "").strip().upper() if "status" in row_keys else ""
+        if status_s == "CASCADE_RUN_STATUS_RUNNING" or os.path.exists(os.path.join(cli_base, "presence", f"{cid_s}.lock")):
+            continue
+        if os.path.exists(conversation_db(cli_base, cid_s)):
+            continue
+        if vis_dir and os.path.exists(os.path.join(vis_dir, f"{cid_s}.db")):
+            continue
+        orphans.add(cid_s)
+        title_s = row["title"] if "title" in row_keys else ""
+        logger.info("Found orphan summary: %s (%s)", cid_s, title_s)
     if orphans and not dry_run:
         _drop_summaries(cli_base, orphans)
         for cid in orphans:
