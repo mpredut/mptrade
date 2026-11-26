@@ -3024,3 +3024,96 @@ def test_tracked_equity_corporate_risk_scoped_to_equities_only(tmp_path):
     assert cr_breaking[0]["title"] == btc_macro
     assert all(item.get("is_corporate_risk") is None for item in cr_breaking)
 
+
+def test_pass3_crypto_scope_xstock_news_and_local_real_spot_cvd_sync(tmp_path):
+    """Pass 3 live crypto prompt audit regressions:
+    1. Crypto-tradable tokenized xStock (SPCX/SpaceX/Anthropic) news is not demoted on scope='crypto'
+       and corporate-risk headlines are elevated with is_corporate_risk=True, while RTH-only Nvidia PR stays demoted.
+    2. Heavy local real-spot flow aligned with aggregate spot & perp CVD overrides contradictory cvd_regime
+       on high-agg-volume majors (BTCUSDC), symmetrically on BUY/SELL, without breaking cross-venue absorption.
+    """
+    from intelligence.macro.lexicon_ssot import (
+        has_tracked_tokenized_equity_corporate_risk,
+        has_tracked_tokenized_equity_entity,
+    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_microstructure_cvd
+
+    spcx_risk = "SpaceX grounded by FAA investigation after launch pad anomaly"
+    spcx_news = "SPCX Wins Million-Satellite Nod And Retail Attention"
+    ant_junk = "Anthropic's Potential Bond Issue Could Reportedly Be Rated Junk"
+    btc_macro = "Bitcoin holds steady as global stocks rally past tariffs"
+    nvda_pr = "Nvidia announces new gaming conference showcase"
+
+    assert has_tracked_tokenized_equity_entity(spcx_news) is True
+    assert has_tracked_tokenized_equity_entity(nvda_pr) is False
+    assert has_tracked_tokenized_equity_corporate_risk(spcx_risk) is True
+    assert has_tracked_tokenized_equity_corporate_risk(ant_junk) is True
+    assert has_tracked_tokenized_equity_corporate_risk(spcx_news) is False
+
+    now_ts = 1795682700.0
+    news_payload = {
+        "items": [
+            {"title": nvda_pr, "source": "Yahoo! Finance: SPCX NVDA News", "first_seen_ts": now_ts - 30.0, "is_high_severity": False, "matched_keywords": []},
+            {"title": spcx_news, "source": "Yahoo! Finance: SPCX NVDA News", "first_seen_ts": now_ts - 60.0, "is_high_severity": False, "matched_keywords": []},
+            {"title": btc_macro, "source": "CNBC", "first_seen_ts": now_ts - 120.0, "is_high_severity": False, "matched_keywords": []},
+            {"title": spcx_risk, "source": "Yahoo! Finance: SPCX NVDA News", "first_seen_ts": now_ts - 300.0, "is_high_severity": False, "matched_keywords": []},
+        ]
+    }
+    (tmp_path / "news_feed_collect.json").write_text(json.dumps(news_payload), encoding="utf-8")
+
+    _, cr_breaking = harvest_macro_and_news_sensors(str(tmp_path), now_ts, persist=False, scope="crypto")
+    titles = [item["title"] for item in cr_breaking]
+    assert titles[0] == spcx_risk
+    assert cr_breaking[0].get("is_corporate_risk") is True
+    assert titles.index(spcx_news) < titles.index(btc_macro)
+    assert titles[-1] == nvda_pr
+
+    # 2a. Live BTCUSDC sell case: local real spot -$909K (-44.3% of $2.05M) + agg spot -$317K + perp -$6.0M
+    btc_sell = {
+        "ob_imbalance": 0.452,
+        "bid_depth_usd": 4_217_323.0,
+        "ask_depth_usd": 5_104_606.0,
+        "taker_buy_sell_ratio": 0.8258,
+        "cvd_5m_usd": -52_861.0,
+        "cvd_15m_usd": -5_997_346.0,
+        "cvd_1h_usd": 275_591.0,
+        "spot_cvd_15m_usd": -909_345.0,
+        "spot_cvd_source": "real_spot",
+        "spot_vol_15m_usd": 2_051_733.0,
+        "agg_spot_cvd_15m_usd": -317_120.0,
+        "agg_spot_vol_15m_usd": 10_546_596.0,
+        "funding_rate": 0.00008,
+    }
+    enrich_microstructure_cvd(btc_sell, {"price": 60679.32, "chg_15m_pct": 0.06})
+    assert btc_sell["cvd_regime"] == "aggressive_market_dumps"
+    assert btc_sell["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_SELLING"
+
+    # 2b. Symmetric BUY case: local real spot +$909K + agg spot +$317K + perp +$6.0M overrides ask_absorbing
+    btc_buy = {
+        **btc_sell,
+        "ob_imbalance": 0.452,
+        "taker_buy_sell_ratio": 1.21,
+        "cvd_15m_usd": 5_997_346.0,
+        "spot_cvd_15m_usd": 909_345.0,
+        "agg_spot_cvd_15m_usd": 317_120.0,
+        "cvd_regime": None,
+        "spot_perp_flow_regime": None,
+    }
+    enrich_microstructure_cvd(btc_buy, {"price": 60679.32, "chg_15m_pct": -0.02})
+    assert btc_buy["cvd_regime"] == "aggressive_buying"
+    assert btc_buy["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_BUYING"
+
+    # 2c. Opposite-sign cross-venue absorption (local selling absorbed by aggregate spot buying) stays spot_absorbing
+    btc_cross_abs = {
+        **btc_sell,
+        "ob_imbalance": 0.59,
+        "agg_spot_cvd_15m_usd": 3_000_000.0,
+        "cvd_regime": None,
+        "spot_perp_flow_regime": None,
+    }
+    enrich_microstructure_cvd(btc_cross_abs, {"price": 60679.32, "chg_15m_pct": 0.06})
+    assert btc_cross_abs["cvd_regime"] == "spot_absorbing"
+    assert btc_cross_abs["spot_perp_flow_regime"] == "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE"
+
+

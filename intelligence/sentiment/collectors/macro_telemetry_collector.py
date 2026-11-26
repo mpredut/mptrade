@@ -60,6 +60,8 @@ from intelligence.macro.lexicon_ssot import (
     has_macro_policy_context,
     has_tracked_equity_corporate_risk,
     has_tracked_equity_entity,
+    has_tracked_tokenized_equity_corporate_risk,
+    has_tracked_tokenized_equity_entity,
     headlines_are_semantic_duplicates,
     is_excluded_reference_news_item,
     is_off_topic_general_news_title,
@@ -160,6 +162,7 @@ from providers.intent_telemetry import (
 from providers.intent_state import (
     collect_known_ai_order_ids,
     extract_intent_notional,
+    parse_intent_gateway_config,
 )
 from providers.ohlc_utils import (
     extract_yahoo_chart_ohlcv_bars,
@@ -1193,17 +1196,25 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                         )
                     )
                     else (
-                        -1
+                        1
                         if (
                             scope_norm == "crypto"
-                            and (
-                                has_tracked_equity_entity(x.get("title"))
-                                or "yahoo! finance" in str(x.get("source") or "").lower()
-                            )
-                            and not x.get("is_high_severity")
-                            and not has_macro_policy_context(x.get("title"))
+                            and has_tracked_tokenized_equity_corporate_risk(x.get("title"))
                         )
-                        else 0
+                        else (
+                            -1
+                            if (
+                                scope_norm == "crypto"
+                                and not has_tracked_tokenized_equity_entity(x.get("title"))
+                                and (
+                                    has_tracked_equity_entity(x.get("title"))
+                                    or "yahoo! finance" in str(x.get("source") or "").lower()
+                                )
+                                and not x.get("is_high_severity")
+                                and not has_macro_policy_context(x.get("title"))
+                            )
+                            else 0
+                        )
                     )
                 ),
                 0
@@ -1235,7 +1246,8 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
             )
             resolved_title = clean_title or item.get("title")
             is_corp_risk = bool(
-                scope_norm == "equities" and has_tracked_equity_corporate_risk(resolved_title)
+                (scope_norm == "equities" and has_tracked_equity_corporate_risk(resolved_title))
+                or (scope_norm == "crypto" and has_tracked_tokenized_equity_corporate_risk(resolved_title))
             )
             breaking_news.append({
                 "title": resolved_title, "source": item.get("source"),
@@ -2164,7 +2176,21 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             cache_dir, ai_intents=intents_data, read_json_fn=_rj_any
         )
         known_ai_oids = raw_known_oids if raw_known_oids is not None else collect_known_ai_order_ids(intents_data)
-        gw_max_usd = safe_pos_float(getattr(intent_gateway, "max_notional_usd", None), default=2000.0) or 2000.0
+        gw_max_usd = safe_pos_float(getattr(intent_gateway, "max_notional_usd", None), default=None)
+        gw_min_usd = safe_nonneg_float(getattr(intent_gateway, "min_notional_usd", None), default=None)
+        if (gw_max_usd is None or gw_min_usd is None) and workspace_dir:
+            og_conf_path = os.path.join(workspace_dir, "order_guard.conf")
+            if os.path.isfile(og_conf_path):
+                try:
+                    _, cfg_min_usd, cfg_max_usd, _, _ = parse_intent_gateway_config(load_key_value_conf(og_conf_path))
+                    if gw_min_usd is None:
+                        gw_min_usd = cfg_min_usd
+                    if gw_max_usd is None:
+                        gw_max_usd = cfg_max_usd
+                except Exception:
+                    pass
+        gw_max_usd = gw_max_usd or 2000.0
+        gw_min_usd = gw_min_usd or 0.0
 
         tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = [], [], {}, {}
         verified_open_venues: set[str] = set()
@@ -2195,7 +2221,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         if should_harvest:
             tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = harvest_tradable_positions_and_orders(
                 inst_map, snapshot.prices_and_trends, trailing_map, trailing_by_venue,
-                known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd, cache_dir=cache_dir,
+                known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd, gateway_min_usd=gw_min_usd, cache_dir=cache_dir,
                 verified_open_venues=verified_open_venues,
                 verified_open_symbols=verified_open_symbols,
                 allow_empty_inst_recovery=allow_empty_recovery,
@@ -2289,7 +2315,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         recent_orders = harvest_recent_orders_and_enrich_positions(
             cache_dir, inst_by_sym, snapshot.portfolio_summary.get("tradable_positions", []), snapshot.prices_and_trends,
             kraken_cycles, hyperliquid_cycles, t212_cycles, _rj,
-            known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd,
+            known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd, gateway_min_usd=gw_min_usd,
             ai_intents=intents_data if isinstance(intents_data, list) else None,
             allow_network=allow_network,
             now_ts=now_ts,

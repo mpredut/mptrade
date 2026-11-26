@@ -16,7 +16,13 @@ from botcore import (
     resolve_now_ts,
     split_csv,
 )
-from cachepaths import CACHE_MACRO_LEXICON_FILENAME, cache_path, canonical_base_asset, resolve_cachedb_filepath
+from cachepaths import (
+    CACHE_MACRO_LEXICON_FILENAME,
+    cache_path,
+    canonical_base_asset,
+    is_kraken_tokenized_asset,
+    resolve_cachedb_filepath,
+)
 from instrument_registry import is_equity_symbol, tracked_price_instruments
 from intelligence.macro_sentiment_ssot import (
     _cfg_float,
@@ -1172,6 +1178,19 @@ def has_macro_policy_context(title: Any) -> bool:
     return bool(_headline_alnum_words_2(title) & _MACRO_POLICY_CONTEXT_WORDS)
 
 
+def _tracked_tokenized_equity_base_tickers() -> List[str]:
+    """Return deduplicated canonical underlying base tickers for tracked 24/7 Kraken tokenized xStocks."""
+    try:
+        tickers = [
+            base
+            for sym in tracked_price_instruments()[0]
+            if is_kraken_tokenized_asset(sym) and (base := canonical_base_asset(sym))
+        ]
+    except Exception:
+        return []
+    return list(dict.fromkeys(tickers))
+
+
 def has_tracked_equity_entity(title: Any) -> bool:
     """Return True if ``title`` explicitly mentions any tracked equity ticker or company keyword."""
     if not isinstance(title, str) or not title.strip() or not (words := _headline_alnum_words_2(title)):
@@ -1181,9 +1200,26 @@ def has_tracked_equity_entity(title: Any) -> bool:
     return bool(words & {k for k in cfg_kws if k})
 
 
+def has_tracked_tokenized_equity_entity(title: Any) -> bool:
+    """Return True if ``title`` mentions any tracked 24/7 crypto-scope tokenized equity (xStock) entity."""
+    if not isinstance(title, str) or not title.strip() or not (words := _headline_alnum_words_2(title)):
+        return False
+    cfg_kws = set(split_csv(_cfg_str("feeds", "tokenized_equity_entity_keywords"), lower=True))
+    cfg_kws.update(base.lower() for base in _tracked_tokenized_equity_base_tickers())
+    return bool(words & {k for k in cfg_kws if k})
+
+
 def has_tracked_equity_corporate_risk(title: Any) -> bool:
     """Return True if ``title`` mentions a tracked equity entity together with a corporate-risk keyword."""
     if not has_tracked_equity_entity(title) or is_excluded_reference_news_item(title):
+        return False
+    risk_kws = {k for k in split_csv(_cfg_str("feeds", "equity_corporate_risk_keywords"), lower=True) if k}
+    return bool(_headline_alnum_words_2(title) & risk_kws)
+
+
+def has_tracked_tokenized_equity_corporate_risk(title: Any) -> bool:
+    """Return True if ``title`` mentions a tracked tokenized equity (xStock) entity with a corporate-risk keyword."""
+    if not has_tracked_tokenized_equity_entity(title) or is_excluded_reference_news_item(title):
         return False
     risk_kws = {k for k in split_csv(_cfg_str("feeds", "equity_corporate_risk_keywords"), lower=True) if k}
     return bool(_headline_alnum_words_2(title) & risk_kws)

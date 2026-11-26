@@ -507,7 +507,13 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
     spot_cvd = agg_spot_cvd if use_agg_spot else local_spot_cvd
     eff_spot_vol = agg_spot_vol if use_agg_spot else local_spot_vol
     sync_spot_thr = max(eff_spot_vol * 0.10, 5000.0) if eff_spot_vol > 0.0 else max(abs(cvd_usd) * 0.25, 5000.0)
-    real_spot_sync = is_real_spot_m and abs(spot_cvd) >= sync_spot_thr
+    local_real_spot_sync = (
+        is_real_spot_m
+        and local_spot_vol > 0.0
+        and local_spot_cvd * spot_cvd > 0.0
+        and abs(local_spot_cvd) >= max(local_spot_vol * 0.15, 5000.0)
+    )
+    real_spot_sync = (is_real_spot_m and abs(spot_cvd) >= sync_spot_thr) or local_real_spot_sync
     if real_spot_sync:
         if (
             cvd_usd < 0.0
