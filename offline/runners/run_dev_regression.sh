@@ -15,6 +15,8 @@ LOG_FILE="$ROOT/logs/dev_regression.log"
 STATUS_JSON="$ROOT/cachedb/system/dev_regression_status.json"
 LOCK="${DEV_REGRESSION_LOCK:-/tmp/dev_regression.lock}"
 QUEUE_LOCK="${DEV_REGRESSION_QUEUE_LOCK:-/tmp/dev_regression_queued.lock}"
+REGRESSION_TIMEOUT_SEC="${DEV_REGRESSION_TIMEOUT_SEC:-1200}"
+LOCK_WAIT_SEC=$((REGRESSION_TIMEOUT_SEC + 60))
 WATCHER_LOCK="${DEV_CI_WATCHER_LOCK:-/tmp/dev_ci_watcher.lock}"
 OVERNIGHT_LOCK="${OVERNIGHT_SUITE_LOCK:-/tmp/mptrade_overnight_master_suite.lock}"
 
@@ -112,7 +114,7 @@ do_run() {
         fi
         echo "[dev_regression $(date '+%F %T')] Another regression is already running -- waiting for lock..."
         was_queued=true
-        flock -w 600 8 || { echo "[dev_regression $(date '+%F %T')] ERROR: Timed out waiting for regression lock" >&2; exit 1; }
+        flock -w "$LOCK_WAIT_SEC" 8 || { echo "[dev_regression $(date '+%F %T')] ERROR: Timed out waiting for regression lock" >&2; exit 1; }
         if [ "${REG_WAIT_CALLER:-0}" != "1" ]; then
             flock -u 6 2>/dev/null || true
             exec 6>&-
@@ -154,7 +156,7 @@ do_run() {
     echo "[dev_regression $start_iso] Starting regression on commit $commit_short: $commit_msg" | tee -a "$LOG_FILE"
     unset BACKTEST_MODE REPLAY_MODE DISABLE_EXTERNAL_NOTIFICATIONS DISABLE_GEMINI_LLM
 
-    ( exec 8>&-; timeout --kill-after=30 600 "$PYTHON_BIN" -m pytest tests/ -q ) > "$LOG_FILE.run" 2>&1 || rc=$?
+    ( exec 8>&-; timeout --kill-after=30 "$REGRESSION_TIMEOUT_SEC" "$PYTHON_BIN" -m pytest tests/ -q ) > "$LOG_FILE.run" 2>&1 || rc=$?
     duration=$(($(date +%s) - start_ts))
     cat "$LOG_FILE.run" >> "$LOG_FILE"
     prev_status="$("$PYTHON_BIN" -c 'import sys; from state_io import read_json_dict; print(read_json_dict(sys.argv[1], default={}).get("status",""))' "$STATUS_JSON" 2>/dev/null || true)"
