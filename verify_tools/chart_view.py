@@ -9,6 +9,7 @@ an exact ASCII price chart with OHLCV anchors and ZigZag swings for any chosen p
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 from pathlib import Path
 import sys
@@ -18,7 +19,12 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from botcore import exact_pos_int
-from cachepaths import CACHE_LONG_HORIZON_FILENAME, resolve_cachedb_filepath
+from cachepaths import (
+    CACHE_LONG_HORIZON_FILENAME,
+    CACHE_OHLC_BARS_EXT,
+    CACHE_OHLC_BARS_PREFIX,
+    resolve_cachedb_filepath,
+)
 from intelligence.sentiment.evaluators.long_horizon_evaluator import (
     evaluate_symbol_long_horizon,
     render_ascii_chart_view,
@@ -63,10 +69,22 @@ def main(argv: list[str] | None = None) -> int:
     items = data.get("items") if isinstance(data, dict) and isinstance(data.get("items"), dict) else {}
 
     if not args.symbol:
-        if not items:
+        listed = set(items.keys())
+        prices_dir = os.path.join(args.cache_dir, "prices")
+        prefix_1d = f"{CACHE_OHLC_BARS_PREFIX}1d_"
+        for scan_dir in (prices_dir, args.cache_dir):
+            if not os.path.isdir(scan_dir):
+                continue
+            for p_arch in glob.glob(os.path.join(scan_dir, f"{prefix_1d}*{CACHE_OHLC_BARS_EXT}")):
+                base = os.path.basename(p_arch)
+                if base.startswith(prefix_1d) and base.endswith(CACHE_OHLC_BARS_EXT):
+                    sym_a = base[len(prefix_1d) : -len(CACHE_OHLC_BARS_EXT)]
+                    if sym_a:
+                        listed.add(sym_a)
+        if not listed:
             print(f"No long-horizon snapshot found at {path}.")
             return 1
-        print(f"Available symbols ({data.get('horizon_label', '?')} / {data.get('months', '?')}m): {', '.join(sorted(items.keys()))}")
+        print(f"Available symbols ({data.get('horizon_label', '?')} / {data.get('months', '?')}m): {', '.join(sorted(listed))}")
         return 0
 
     req_raw = args.symbol.strip()

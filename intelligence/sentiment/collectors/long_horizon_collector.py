@@ -38,6 +38,7 @@ from instrument_registry import (
     discover_tradable_specs,
     is_equity_symbol,
     resolve_kraken_tokenized_pair,
+    symbols_for,
     venue_for_symbol,
 )
 from intelligence.external.collectors.base_collector import (
@@ -403,9 +404,10 @@ _CRYPTO_VENUE_OHLC_FETCHERS: Dict[str, Callable[..., Tuple[List[List[float]], st
 def _resolve_default_long_horizon_symbols(
     workspace_dir: str = ".",
     *,
+    include_observe_only: bool = False,
     deduplicate_hype_usd: bool = True,
 ) -> List[str]:
-    """Discover configured tradable symbols from instruments.conf SSOT plus major benchmarks."""
+    """Discover configured tradable (and optionally observe-only ``role.archive=yes``) symbols plus major benchmarks."""
     syms: List[str] = []
     seen: set[str] = set()
     try:
@@ -413,13 +415,26 @@ def _resolve_default_long_horizon_symbols(
         for sp in specs.values():
             s = str(getattr(sp, "symbol", "") or "").strip()
             if s and s not in seen:
-                # Deduplicate HYPEUSD into primary HYPEUSDC in prompt table, while keeping it for multi-venue intraday archives
+                # Deduplicate HYPEUSD into primary HYPEUSDC in prompt table, while keeping it for multi-venue archives
                 if deduplicate_hype_usd and s.upper() == "HYPEUSD" and "HYPEUSDC" in seen:
                     continue
                 seen.add(s)
                 syms.append(s)
     except Exception:
         pass
+    if include_observe_only:
+        try:
+            ws_conf = os.path.join(str(workspace_dir or "."), "instruments.conf")
+            if os.path.isfile(ws_conf):
+                for raw_s in symbols_for(None, "archive", path=ws_conf):
+                    s = str(raw_s or "").strip()
+                    if s and s not in seen:
+                        if deduplicate_hype_usd and s.upper() == "HYPEUSD" and "HYPEUSDC" in seen:
+                            continue
+                        seen.add(s)
+                        syms.append(s)
+        except Exception:
+            pass
     for b_sym in _BENCHMARK_SYMBOLS:
         if b_sym not in seen:
             seen.add(b_sym)
@@ -588,29 +603,52 @@ class LongHorizonStructureCollector(TelemetryCacheCollectorInterface):
         prev_snap = load_cached_long_horizon_snapshot(cachedb_dir)
         if not allow_network and fetch_fn is None and post_fn is None:
             return prev_snap
+        if symbols:
+            prompt_syms = [str(s or "").strip() for s in symbols if str(s or "").strip()]
+            archive_syms = list(prompt_syms)
+        else:
+            prompt_syms = _resolve_default_long_horizon_symbols(
+                workspace_dir, include_observe_only=False, deduplicate_hype_usd=True
+            )
+            archive_syms = _resolve_default_long_horizon_symbols(
+                workspace_dir, include_observe_only=True, deduplicate_hype_usd=False
+            )
+        prompt_sym_set = set(prompt_syms)
+
         if (
             prev_snap is not None
             and skip_if_fresh_sec > 0.0
             and safe_int(prev_snap.get("months"), default=0) == eff_months
             and isinstance(prev_snap.get("items"), dict)
             and bool(prev_snap["items"])
-            and (not symbols or all(str(s).strip() in prev_snap["items"] for s in symbols if str(s or "").strip()))
+            and (not symbols or all(s in prev_snap["items"] for s in prompt_syms))
             and is_cache_fresh(prev_snap.get("ts"), eff_now, ttl_sec=skip_if_fresh_sec)
             and (
                 not persist
-                or all(
-                    isinstance(it, dict)
-                    and bool(it.get("bar_archive"))
-                    and os.path.exists(
-                        str(resolve_cachedb_filepath(os.path.join(cachedb_dir, str(it["bar_archive"]))))
+                or (
+                    all(
+                        isinstance(it, dict)
+                        and bool(it.get("bar_archive"))
+                        and os.path.exists(
+                            str(resolve_cachedb_filepath(os.path.join(cachedb_dir, str(it["bar_archive"]))))
+                        )
+                        for it in prev_snap["items"].values()
                     )
-                    for it in prev_snap["items"].values()
+                    and all(
+                        os.path.exists(
+                            str(
+                                resolve_cachedb_filepath(
+                                    os.path.join(cachedb_dir, cache_ohlc_bars_filename(s, timeframe=_ARCHIVE_TIMEFRAME_DAILY))
+                                )
+                            )
+                        )
+                        for s in archive_syms
+                    )
                 )
             )
         ):
             return prev_snap
 
-        target_syms = [str(s or "").strip() for s in (symbols if symbols else _resolve_default_long_horizon_symbols(workspace_dir)) if str(s or "").strip()]
         needed_days = round(eff_months * _DAYS_PER_MONTH) + _MA200_WARMUP_DAYS
 
         def _sync_one(sym_s: str) -> Tuple[str, Optional[Dict[str, Any]]]:
@@ -629,14 +667,16 @@ class LongHorizonStructureCollector(TelemetryCacheCollectorInterface):
             return sym_s, doc
 
         synced: List[Tuple[str, Optional[Dict[str, Any]]]]
-        if len(target_syms) > 1 and fetch_fn is None and post_fn is None:
-            with ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(target_syms))) as pool:
-                synced = list(pool.map(_sync_one, target_syms))
+        if len(archive_syms) > 1 and fetch_fn is None and post_fn is None:
+            with ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(archive_syms))) as pool:
+                synced = list(pool.map(_sync_one, archive_syms))
         else:
-            synced = [_sync_one(s) for s in target_syms]
+            synced = [_sync_one(s) for s in archive_syms]
 
         items_out: Dict[str, Dict[str, Any]] = {}
         for sym_s, archive_doc in synced:
+            if sym_s not in prompt_sym_set:
+                continue
             merged_bars = archive_doc.get("bars") if isinstance(archive_doc, dict) else []
             eff_source = str(archive_doc.get("source") or "") if isinstance(archive_doc, dict) else ""
             if not merged_bars and isinstance(prev_snap, dict) and isinstance(prev_snap.get("items"), dict):
@@ -703,7 +743,13 @@ class IntradayOhlcArchiveCollector(TelemetryCacheCollectorInterface):
         target_tfs = tuple(resolve_archive_policy(tf).timeframe for tf in (timeframes or _INTRADAY_ARCHIVE_TIMEFRAMES))
         target_syms = [
             str(s or "").strip()
-            for s in (symbols if symbols else _resolve_default_long_horizon_symbols(workspace_dir, deduplicate_hype_usd=False))
+            for s in (
+                symbols
+                if symbols
+                else _resolve_default_long_horizon_symbols(
+                    workspace_dir, include_observe_only=True, deduplicate_hype_usd=False
+                )
+            )
             if str(s or "").strip()
         ]
         if not target_syms or not target_tfs:

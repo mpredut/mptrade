@@ -1081,3 +1081,60 @@ def test_option3_unified_multi_tf_intraday_collector_market_api_consumers_and_au
     ]
     sw_intra = compute_zigzag_swings(intra_wave, threshold_pct=5.0, max_pivots=8, preserve_intraday=True)
     assert len(sw_intra) >= 3 and sw_intra[0]["ym"] == "11-25"
+
+    # 9. Observe-only instruments (enabled=yes, ai.tradable=no, role.archive=yes) are archived in 1d/4h/1h
+    # without bloating long_horizon_collect.json prompt table
+    ws_obs = tmp_path / "ws_obs"
+    ws_obs.mkdir(parents=True, exist_ok=True)
+    (ws_obs / "instruments.conf").write_text(
+        "[BINANCE_BTC]\nprovider = binance\nsymbol = BTCUSDC\nbase = BTC\nquote = USDC\nenabled = yes\n"
+        "isolation = own_ledger\nmarket_hours = 24x7\nrole.mt = no\nrole.tradeall_fire = no\n"
+        "role.kalman_primary = no\nrole.trailing = no\nrole.assetguardian = no\nrole.archive = yes\n"
+        "role.rtrade = no\nrole.force_sell = no\nai.tradable = yes\n\n"
+        "[BINANCE_ETH]\nprovider = binance\nsymbol = ETHUSDC\nbase = ETH\nquote = USDC\nenabled = yes\n"
+        "isolation = own_ledger\nmarket_hours = 24x7\nrole.mt = no\nrole.tradeall_fire = no\n"
+        "role.kalman_primary = no\nrole.trailing = no\nrole.assetguardian = no\nrole.archive = yes\n"
+        "role.rtrade = no\nrole.force_sell = no\nai.tradable = no\n",
+        encoding="utf-8",
+    )
+    obs_cache = str(ws_obs / "cachedb")
+    os.makedirs(os.path.join(obs_cache, "prices"), exist_ok=True)
+    os.makedirs(os.path.join(obs_cache, "macro"), exist_ok=True)
+
+    def _obs_fetch(url: str, timeout: float = 5.0) -> Any:
+        _ = timeout
+        if "binance.com" in url:
+            if "interval=1d" in url:
+                return [[now_ms - (30 - i) * 86400 * 1000, "2000.0", "2100.0", "1950.0", f"{2010 + i}.0", "500.0"] for i in range(31)]
+            if "interval=4h" in url:
+                return bn_4h
+            return bn_1h
+        return {}
+
+    obs_lh = collect_long_horizon_snapshot(
+        obs_cache,
+        months=12,
+        now_ts=now_ts,
+        persist=True,
+        fetch_fn=_obs_fetch,
+        workspace_dir=str(ws_obs),
+    )
+    assert obs_lh is not None
+    assert "BTCUSDC" in obs_lh["items"]
+    assert "ETHUSDC" not in obs_lh["items"]  # observe-only stays out of AI prompt table
+    assert load_ohlc_bar_archive(obs_cache, "ETHUSDC", "1d") is not None  # but IS archived in 1d!
+
+    obs_intra = collect_intraday_ohlc_archives(
+        obs_cache,
+        now_ts=now_ts,
+        persist=True,
+        fetch_fn=_obs_fetch,
+        workspace_dir=str(ws_obs),
+    )
+    assert obs_intra is not None
+    assert load_ohlc_bar_archive(obs_cache, "ETHUSDC", "1h") is not None
+    assert load_ohlc_bar_archive(obs_cache, "ETHUSDC", "4h") is not None
+    assert chart_view_main(["--cache-dir", obs_cache]) == 0
+    assert "ETHUSDC" in capsys.readouterr().out
+    assert chart_view_main(["ETHUSDC", "--tf", "1d", "--cache-dir", obs_cache]) == 0
+    assert "=== ETHUSDC (1d," in capsys.readouterr().out
