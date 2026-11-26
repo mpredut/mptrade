@@ -65,7 +65,7 @@ AI_ATTRIBUTION_30D_FILENAME = "ai_attribution_30d.json"
 LLM_QUOTA_STATUS_FILENAME = "llm_quota_status.json"
 LLM_MODEL_CATALOG_FILENAME = "llm_model_catalog.json"
 LLM_TOPIC_THREADS_FILENAME = "llm_topic_threads.json"
-NOTIFY_QUEUE_FILENAME = "notify_queue.json"
+NOTIFY_QUEUE_STATE_FILENAME = "notify_queue_state.json"
 NOTIFICATION_DELIVERY_STATE_FILENAME = "notification_delivery_state.json"
 OS_RESOURCES_WATCHDOG_STATE_FILENAME = "os_resources_watchdog_state.json"
 PRICE_WATCHER_STATE_FILENAME = "price_watcher_state.json"
@@ -228,6 +228,7 @@ EXACT_LEGACY_FILENAMES = {
         "autonomous_trade_intents.json",
     ),
     PRICE_WATCHER_STATE_FILENAME: ("cache_watcher_all_price.cooldowns.json",),
+    NOTIFY_QUEUE_STATE_FILENAME: ("notify_queue.json",),
 }
 PREFIX_LEGACY_FILENAMES = (
     (CACHE_SPARSE_PRICE_PREFIX, ("cache_price_sparse_", "cache_price_")),
@@ -402,11 +403,13 @@ STATEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "system": {
         "exact": (
-            NOTIFY_QUEUE_FILENAME,
+            NOTIFY_QUEUE_STATE_FILENAME,
+            "notify_queue.json",
             NOTIFICATION_DELIVERY_STATE_FILENAME,
             OS_RESOURCES_WATCHDOG_STATE_FILENAME,
         ),
         "prefixes": (
+            "notify_queue_state.",
             "notify_queue.",
             "notification_delivery_state.",
             "os_resources_watchdog_state.",

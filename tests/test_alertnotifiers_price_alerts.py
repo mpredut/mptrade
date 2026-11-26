@@ -967,3 +967,18 @@ def test_pricefetcher_carries_forward_legacy_quote_series_and_cleans_legacy_hear
     monkeypatch.setattr(pricewatcher, "get_cachedb_dir", lambda: str(tmp_path / "cachedb"))
     pricewatcher._cleanup_legacy_heartbeat()
     assert not legacy_hb.exists()
+
+    # Verify NotifyQueueStateStore migrates legacy notify_queue.json -> notify_queue_state.json
+    from state_stores.notify_queue_state import NotifyQueueStateStore
+
+    sys_dir = tmp_path / "statedb" / "system"
+    sys_dir.mkdir(parents=True)
+    leg_q = sys_dir / "notify_queue.json"
+    leg_q.write_text('{"__orchestrator_intent__":"email","subject":"s_migr"}\n', encoding="utf-8")
+    (sys_dir / "notify_queue.json.generation.lock").write_text("", encoding="utf-8")
+    monkeypatch.setenv("MPTRADE_STATEDB_DIR", str(tmp_path / "statedb"))
+    q_target = NotifyQueueStateStore.default_queue_file()
+    assert q_target == str(sys_dir / "notify_queue_state.json")
+    assert (sys_dir / "notify_queue_state.json").is_file()
+    assert not leg_q.exists()
+    assert len(NotifyQueueStateStore.read_lines_nolock(q_target)) == 1

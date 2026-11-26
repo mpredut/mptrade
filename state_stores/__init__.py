@@ -13,7 +13,7 @@ from .microstructure_cycle_history import MicrostructureCycleHistoryStore
 from .mt_state import MtStateStore
 from .nav_history_state import NavHistoryStateStore
 from .notification_delivery_state import NotificationDeliveryStateStore
-from .notify_queue import NotifyQueueStore
+from .notify_queue_state import NotifyQueueStateStore
 from .order_retry_quarantine_alerts import OrderRetryQuarantineAlertsStore
 from .order_retry_queue import OrderRetryQueueStore
 from .orders_active import OrdersActiveStore
@@ -52,7 +52,7 @@ __all__ = [
     "MtStateStore",
     "NavHistoryStateStore",
     "NotificationDeliveryStateStore",
-    "NotifyQueueStore",
+    "NotifyQueueStateStore",
     "OrderRetryQuarantineAlertsStore",
     "OrderRetryQueueStore",
     "OrdersActiveStore",

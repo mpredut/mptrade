@@ -643,7 +643,7 @@ def test_cross_process_serialized_state_merges_preserve_sibling_entries(tmp_path
     assert json.loads(deliv_file.read_text(encoding="utf-8"))["channels"]["ntfy"]["sent"] == 3
     assert not deliv_prev.exists()
 
-    q_file = tmp_path / "notify_queue.json"
+    q_file = tmp_path / "notify_queue_state.json"
     monkeypatch.setenv("NOTIFICATION_QUEUE_FILE", str(q_file))
     srv = NotificationServer()
     q_threads = [

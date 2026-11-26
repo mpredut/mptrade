@@ -429,6 +429,7 @@ class TestCachepaths(TempDirTestCase):
             "llm_topic_threads.json": "llm",
             "fleet_health_status.json": "system",
             "dev_regression_status.json": "system",
+            "notify_queue_state.json": "system",
             "notify_queue.json": "system",
             "price_watcher_state.json": "prices",
             "cache_watcher_all_price.cooldowns.json": "prices",
@@ -519,7 +520,7 @@ class TestCachepaths(TempDirTestCase):
             ("orders", "cache_balance_binance.json", "account", "cache_balance_binance.json"),
             ("orders", "cache_account_health.json", "account", "cache_account_health.json"),
             ("system", "llm_topic_threads.json", "llm", "llm_topic_threads.json"),
-            ("system", "notify_queue.json", "system", "notify_queue.json"),
+            ("system", "notify_queue.json", "system", "notify_queue_state.json"),
         ]
         for old_sub, old_fn, _, _ in seeded:
             (cdb / old_sub / old_fn).write_text("{}", encoding="utf-8")

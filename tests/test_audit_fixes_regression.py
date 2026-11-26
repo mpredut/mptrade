@@ -7849,7 +7849,7 @@ def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
         MtStateStore,
         NavHistoryStateStore,
         NotificationDeliveryStateStore,
-        NotifyQueueStore,
+        NotifyQueueStateStore,
         OrderRetryQueueStore,
         OsResourcesWatchdogStateStore,
         PortfolioPositionsStateStore,
@@ -7865,8 +7865,8 @@ def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
         audit_state_file_owners_ast,
     )
 
-    # 1. Exact 1:1 registry symmetry across all 22 critical state files
-    assert len(CRITICAL_STATE_SPECS) == 22
+    # 1. Exact 1:1 registry symmetry across all 23 critical state files
+    assert len(CRITICAL_STATE_SPECS) == 23
     for spec in CRITICAL_STATE_SPECS:
         assert spec.owner_module == f"state_stores/{Path(spec.filename).stem}.py"
         assert spec.store_class == expected_store_class_name(spec.filename)
@@ -7901,14 +7901,14 @@ def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
     )
     assert len(AutoOrderIntentsStateStore.load_from_cachedb(str(cdb))) == 1
 
-    # LlmTopicThreadsStore & NotifyQueueStore
+    # LlmTopicThreadsStore & NotifyQueueStateStore
     top_p = LlmTopicThreadsStore.resolve_path(str(cdb))
     LlmTopicThreadsStore.save_registry(top_p, {"auto_cryptotrade_executor": {"conversation_id": "cid_1"}})
     assert LlmTopicThreadsStore.read_registry(top_p)["auto_cryptotrade_executor"]["conversation_id"] == "cid_1"
 
-    nq_p = NotifyQueueStore.resolve_path(str(cdb))
-    NotifyQueueStore.write_lines_nolock(nq_p, ['{"__orchestrator_intent__":"email","subject":"s1"}'])
-    assert len(NotifyQueueStore.read_lines_nolock(nq_p)) == 1
+    nq_p = NotifyQueueStateStore.resolve_path(str(cdb))
+    NotifyQueueStateStore.write_lines_nolock(nq_p, ['{"__orchestrator_intent__":"email","subject":"s1"}'])
+    assert len(NotifyQueueStateStore.read_lines_nolock(nq_p)) == 1
 
     # NotificationDeliveryStateStore & OsResourcesWatchdogStateStore
     nd_p = NotificationDeliveryStateStore.default_state_path(str(tmp_path))
@@ -8797,7 +8797,7 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
         LLM_QUOTA_STATUS_FILENAME,
         LLM_TOPIC_THREADS_FILENAME,
         NAV_HISTORY_STATE_FILENAME,
-        NOTIFY_QUEUE_FILENAME,
+        NOTIFY_QUEUE_STATE_FILENAME,
         ORDER_LEDGER_ACTIVE_FILENAME,
         ORDER_RETRY_QUEUE_FILENAME,
         PORTFOLIO_POSITIONS_STATE_FILENAME,
@@ -8822,7 +8822,7 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
         AutoOrderIntentsStateStore,
         LlmTopicThreadsStore,
         NavHistoryStateStore,
-        NotifyQueueStore,
+        NotifyQueueStateStore,
         OrderRetryQueueStore,
         PortfolioPositionsStateStore,
         VenueFeeMaintenanceStateStore,
@@ -8858,7 +8858,8 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
         NAV_HISTORY_STATE_FILENAME: ("statedb", "portfolio"),
         VENUE_FEE_MAINTENANCE_STATE_FILENAME: ("statedb", "bots"),
         LLM_TOPIC_THREADS_FILENAME: ("statedb", "llm"),
-        NOTIFY_QUEUE_FILENAME: ("statedb", "system"),
+        NOTIFY_QUEUE_STATE_FILENAME: ("statedb", "system"),
+        "notify_queue.json": ("statedb", "system"),
     }
     for fname, expected in domain_cases.items():
         assert resolve_storage_domain(fname) == expected, f"{fname} -> expected {expected}"
@@ -8866,7 +8867,7 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
     assert AUTO_ORDER_INTENTS_STATE_FILENAME == "auto_order_intents_state.json"
     assert is_financial_critical_path(AUTO_ORDER_INTENTS_STATE_FILENAME) is True
     assert is_financial_critical_path(LLM_TOPIC_THREADS_FILENAME) is True
-    assert is_financial_critical_path(NOTIFY_QUEUE_FILENAME) is True
+    assert is_financial_critical_path(NOTIFY_QUEUE_STATE_FILENAME) is True
     assert is_financial_critical_path(CACHE_FEE_SCHEDULE_FILENAME) is True
     assert resolve_durability_policy(KINEMATIC_IMPULSE_SIGNAL_FILENAME).tier == DurabilityTier.EPHEMERAL_TELEMETRY
 
@@ -8926,7 +8927,7 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
         json.dumps({"auto_cryptotrade_executor": {"conversation_id": "cid_va"}}),
         encoding="utf-8",
     )
-    (cdb / "system" / NOTIFY_QUEUE_FILENAME).write_text(
+    (cdb / "system" / "notify_queue.json").write_text(
         json.dumps({"__orchestrator_intent__": "email", "subject": "queued_va"}) + "\n",
         encoding="utf-8",
     )
@@ -8962,7 +8963,7 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
     assert (sdb / "portfolio" / PORTFOLIO_POSITIONS_STATE_FILENAME).is_file()
     assert (sdb / "portfolio" / NAV_HISTORY_STATE_FILENAME).is_file()
     assert (sdb / "llm" / LLM_TOPIC_THREADS_FILENAME).is_file()
-    assert (sdb / "system" / NOTIFY_QUEUE_FILENAME).is_file()
+    assert (sdb / "system" / NOTIFY_QUEUE_STATE_FILENAME).is_file()
     # Empty legacy cachedb/orders & cachedb/state directories removed cleanly
     assert not (cdb / "orders").exists()
     assert not (cdb / "state").exists()
@@ -8977,7 +8978,7 @@ def test_variant_a_storage_domains_dual_layout_migration_and_fee_schedule_split(
     assert PortfolioPositionsStateStore.load_dict(str(cdb))["pos:binance:BTCUSDC"]["trailing_peak"] == pytest.approx(72000.0)
     assert NavHistoryStateStore.read_raw_doc(str(ws))["points"][0]["nav_usd"] == pytest.approx(18000.0)
     assert LlmTopicThreadsStore.read_registry(LlmTopicThreadsStore.resolve_path(str(cdb)))["auto_cryptotrade_executor"]["conversation_id"] == "cid_va"
-    assert len(NotifyQueueStore.read_lines_nolock(NotifyQueueStore.resolve_path(str(cdb)))) == 1
+    assert len(NotifyQueueStateStore.read_lines_nolock(NotifyQueueStateStore.resolve_path(str(cdb)))) == 1
     lr = OrderLedgerReader(cachedb_dir=str(cdb))
     assert len(lr.list_event_files()) == 1 and str(sdb / "orders") in lr.list_event_files()[0]
     idx = build_active_intent_index(str(ws))
@@ -9589,7 +9590,7 @@ def test_storage_root_separation_20_1to1_stores_and_pure_indirect_evaluator_guar
         audit_state_file_owners_ast,
     )
 
-    assert len(CRITICAL_STATE_SPECS) == 22
+    assert len(CRITICAL_STATE_SPECS) == 23
 
     # 1. Cachedb-rooted 1:1 stores never generate phantom statedb/<subdomain> candidate paths
     ws = tmp_path / "ws"

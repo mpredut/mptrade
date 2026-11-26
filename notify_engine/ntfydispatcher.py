@@ -65,7 +65,7 @@ from state_io import (
     parse_json_payload,
     read_json_dict,
 )
-from state_stores.notify_queue import NotifyQueueStore
+from state_stores.notify_queue_state import NotifyQueueStateStore
 
 _MAX_QUEUE_RETRIES = 5
 
@@ -134,7 +134,7 @@ class NtfyDispatcher:
         self.traceback_buffers: Dict[str, List[str]] = defaultdict(list)
 
         # Persistent Queue File
-        self.queue_file = optional_env("NOTIFICATION_QUEUE_FILE") or NotifyQueueStore.default_queue_file()
+        self.queue_file = optional_env("NOTIFICATION_QUEUE_FILE") or NotifyQueueStateStore.default_queue_file()
         os.makedirs(os.path.dirname(self.queue_file), exist_ok=True)
 
     def _load_ntfy_token(self) -> str:
@@ -169,13 +169,13 @@ class NtfyDispatcher:
             payload["__orchestrator_intent__"] = intent_type
             encoded = encode_json_payload(payload)
             max_q = _queue_max_items()
-            with NotifyQueueStore.generation_lock(self.queue_file):
-                existing = [ln.strip() for ln in NotifyQueueStore.read_lines_nolock(self.queue_file) if ln.strip()]
+            with NotifyQueueStateStore.generation_lock(self.queue_file):
+                existing = [ln.strip() for ln in NotifyQueueStateStore.read_lines_nolock(self.queue_file) if ln.strip()]
                 if len(existing) >= max_q:
                     logging.warning(f"Retry queue full ({len(existing)} >= {max_q}); dropping oldest notification.")
                     existing = existing[-(max_q - 1):] if max_q > 1 else []
                 existing.append(encoded)
-                NotifyQueueStore.write_lines_nolock(self.queue_file, existing)
+                NotifyQueueStateStore.write_lines_nolock(self.queue_file, existing)
         except Exception as e:
             logging.error(f"Failed to enqueue notification: {e}")
 
@@ -618,8 +618,8 @@ class NtfyDispatcher:
                 logging.error(f"Error flushing pending bulk notifications: {e}")
 
             try:
-                with NotifyQueueStore.generation_lock(self.queue_file):
-                    lines = NotifyQueueStore.read_lines_nolock(self.queue_file)
+                with NotifyQueueStateStore.generation_lock(self.queue_file):
+                    lines = NotifyQueueStateStore.read_lines_nolock(self.queue_file)
                 if not lines:
                     continue
 
@@ -701,11 +701,11 @@ class NtfyDispatcher:
 
                 if queue_dirty or success_count > 0 or len(remaining) != len(lines):
                     # Preserve any notifications appended concurrently while network I/O ran
-                    with NotifyQueueStore.generation_lock(self.queue_file):
+                    with NotifyQueueStateStore.generation_lock(self.queue_file):
                         newly_appended = []
                         cur_stripped = [
                             l.strip()
-                            for l in NotifyQueueStore.read_lines_nolock(self.queue_file)
+                            for l in NotifyQueueStateStore.read_lines_nolock(self.queue_file)
                             if l.strip()
                         ]
                         if cur_stripped:
@@ -719,7 +719,7 @@ class NtfyDispatcher:
                                     else:
                                         newly_appended.append(item_ln)
                         combined = (remaining + newly_appended)[-_queue_max_items():]
-                        NotifyQueueStore.write_lines_nolock(self.queue_file, combined)
+                        NotifyQueueStateStore.write_lines_nolock(self.queue_file, combined)
                     if success_count > 0:
                         logging.info(f"Flushed {success_count} delayed notifications from queue.")
 

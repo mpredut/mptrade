@@ -72,7 +72,7 @@ os.environ["NOTIFICATION_STATE_FILE"] = os.path.join(
 import order_lifecycle as _order_lifecycle_init  # noqa: E402,F401
 from intelligence.external.collectors import bybit_liquidations_collector as _liq_col_init  # noqa: E402,F401
 os.environ["NOTIFICATION_QUEUE_FILE"] = os.path.join(
-    _notification_state_tmp.name, "notify_queue.json"
+    _notification_state_tmp.name, "notify_queue_state.json"
 )
 
 _cachedb_tmp = tempfile.TemporaryDirectory(
@@ -102,7 +102,7 @@ def _isolate_cachedb_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path / "cachedb"))
     monkeypatch.setenv("MPTRADE_STATEDB_DIR", str(tmp_path / "statedb"))
     monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(tmp_path / "notification_delivery_state.json"))
-    monkeypatch.setenv("NOTIFICATION_QUEUE_FILE", str(tmp_path / "notify_queue.json"))
+    monkeypatch.setenv("NOTIFICATION_QUEUE_FILE", str(tmp_path / "notify_queue_state.json"))
     monkeypatch.delenv("OPENAI_COMPAT_FALLBACK_API_KEY", raising=False)
     _botcore_init.configure_runtime_services(
         clock_fn=None,
