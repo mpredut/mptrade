@@ -534,7 +534,7 @@ class TestRebuyGuardsKraken(_KrakenTrailingBase):
         ts2.check_once()  # rebuy armed with sell_price=48.0
         c2.price = 49.0   # +2.08% > 1.2%, above sell_price=48.0
         ts2.executor.get_orders = lambda *_a, **_k: []
-        with patch("kraken.trailing_stop.order_guard.daily_limit_guard", return_value=(False, "daily_limit_exceeded")):
+        with patch("order_guard.daily_limit_guard", return_value=(False, "daily_limit_exceeded")):
             ts2.check_once()
         self.assertEqual([o for o in c2.orders if o["side"] == "buy"], [])
 

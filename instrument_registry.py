@@ -387,6 +387,35 @@ def symbols_for(provider=None, role=None, *, path=None):
     return [spec.symbol for spec in select_instruments(provider, role, path=path).values()]
 
 
+def trailing_venues(*, path=None, include_all_24x7: bool = False) -> list[str]:
+    """Return ordered unique venue names supporting trailing stops from ``instruments.conf``.
+
+    When ``include_all_24x7`` is True, includes every venue with at least one enabled 24x7
+    instrument (or explicit ``role.trailing=yes``) so read-only telemetry discovers venue
+    trailing states without hardcoding venue names.
+    """
+    seen: list[str] = []
+    for spec in select_instruments(path=path).values():
+        if spec.has_role("trailing") or (include_all_24x7 and spec.market_hours == "24x7"):
+            v = str(spec.provider or "").strip().lower()
+            if v and v not in seen:
+                seen.append(v)
+    return seen
+
+
+def venue_default_quote(venue: object, *, path=None, default: str = "") -> str:
+    """Return the canonical quote currency for ``venue`` derived from enabled ``instruments.conf`` entries."""
+    v_norm = normalize_venue_name(venue) if not isinstance(venue, bool) else None
+    if not v_norm:
+        return default
+    for only_enabled in (True, False):
+        for spec in select_instruments(v_norm, path=path, only_enabled=only_enabled).values():
+            q = str(spec.quote or "").strip().upper()
+            if q:
+                return q
+    return default
+
+
 def disabled_registry_symbols(workspace_dir: str | Path | None = None, *, path=None) -> frozenset[str]:
     """Return uppercase symbols explicitly disabled (`enabled = no`) in `instruments.conf` and not enabled elsewhere.
 

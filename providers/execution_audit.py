@@ -375,6 +375,12 @@ class AuditedStrategyExecutor:
     def free_balance(self, asset: str):
         return self._executor.free_balance(asset)
 
+    def free_and_locked_balance(self, asset: str):
+        return self._call_opt("free_and_locked_balance", asset)
+
+    def all_free_and_locked_balances(self, assets=None):
+        return self._call_opt("all_free_and_locked_balances", assets)
+
     def preflight_order(self, symbol: str, side: str, qty: float, price=None, *, market: bool = False, kind: Optional[str] = None) -> Any:
         """Run the adapter's optional preflight before a submit is audited."""
         return self._call_opt("preflight_order", symbol, side, qty, price, market=_parse_bool_flag(market, False), kind=kind)

@@ -32,7 +32,9 @@ ADAPTER contract (duck typing; see the two adapter classes):
 from __future__ import annotations
 
 import argparse
+import math
 import os
+import statistics
 import sys
 import time
 
@@ -43,7 +45,11 @@ from botcore import (
     clean_scalar_str,
     clean_upper_scalar,
     env_items_with_prefix,
+    extract_order_id,
+    extract_order_side,
     first_pos_float,
+    format_price_log,
+    require_pos_float,
     required_bool_env,
     required_env,
     required_float_env,
@@ -55,10 +61,29 @@ from botcore import (
     single_instance,
     touch_module_heartbeat,
 )
-from cachepaths import cache_symbol_variants, canonical_base_asset, canonical_symbol_key
+from cachepaths import (
+    cache_symbol_variants,
+    canonical_base_asset,
+    canonical_symbol_key,
+    split_symbol_assets,
+)
 import cachetrend as ct
-from instrument_registry import casefold_get
-from providers.execution_audit import intent_client_order_id
+from guard_hierarchy import normalize_bypassed_guards
+from instrument_registry import (
+    canonical_balance_asset_key,
+    canonical_display_symbol,
+    casefold_get,
+    select_instruments,
+    venue_default_quote,
+)
+from notify_engine.alertnotifiers import emit_trade_notification
+import order_guard
+from order_lifecycle import (
+    StrategyExecutorLifecycleApi,
+    TrackedOrderLifecycle,
+    TrackedOrderResult,
+)
+from providers.execution_audit import AuditedStrategyExecutor, intent_client_order_id
 from state_stores.trailing_state import TrailingStateStore
 
 
@@ -105,6 +130,41 @@ def apply_trailing_asset_env_overrides(
             asset = env_k[len(prefix):-len("_PCT")].strip().upper()
             if asset and asset in pair_for:
                 trail_pct[asset] = required_float_env(env_k, env)
+
+
+def load_venue_trailing_registry(
+    venue: str,
+    *,
+    env_prefix: str = "",
+    key_by_asset: bool = True,
+    default_trail_pct: float | None = None,
+    env: dict | None = None,
+) -> tuple[dict, dict[str, float], dict[str, str], dict[str, str], dict[str, str]]:
+    """Build per-venue trailing config maps strictly from ``instruments.conf`` (+ optional env overrides)."""
+    instruments: dict = {}
+    trail_pct: dict[str, float] = {}
+    pair_for: dict[str, str] = {}
+    rebuy_mode: dict[str, str] = {}
+    quote_for: dict[str, str] = {}
+    for spec in select_instruments(venue, "trailing").values():
+        key = (
+            (canonical_balance_asset_key(spec.base, venue=venue) or spec.base.strip().upper())
+            if key_by_asset
+            else spec.symbol
+        )
+        pair = (
+            (canonical_display_symbol(spec.symbol, venue=venue) or spec.symbol.strip())
+            if key_by_asset
+            else spec.symbol.strip()
+        )
+        instruments[key] = spec
+        trail_pct[key] = spec.number("trailing.pct")
+        pair_for[key] = pair
+        rebuy_mode[key] = spec.rebuy_mode()
+        quote_for[key] = str(spec.quote or "").strip().upper()
+    if env_prefix and default_trail_pct is not None:
+        apply_trailing_asset_env_overrides(env_prefix, pair_for, trail_pct, default_trail_pct, env=env)
+    return instruments, trail_pct, pair_for, rebuy_mode, quote_for
 
 
 def add_once_status_cli_args(
@@ -731,7 +791,7 @@ class TrailingAdapterBase:
 
     def _module_attr(self, name: str, default=None):
         for cls in type(self).__mro__:
-            if cls is TrailingAdapterBase or cls is object:
+            if cls is object or getattr(cls, "__module__", "") == __name__:
                 continue
             mod = sys.modules.get(getattr(cls, "__module__", ""))
             if mod is not None and hasattr(mod, name):
@@ -756,11 +816,19 @@ class TrailingAdapterBase:
             return default_pct
         raise KeyError(symbol)
 
+    def _lifecycle_for(self, pair: str = ""):
+        _ = pair
+        return self.order_lifecycle
+
     def _submit_and_clear_if_refused(self, intent, persist, submit_fn):
-        result = self.order_lifecycle.submit(intent, persist=persist, submit=submit_fn)
+        pair = clean_scalar_str(intent.get("symbol")) or "" if isinstance(intent, dict) else ""
+        result = self._lifecycle_for(pair).submit(intent, persist=persist, submit=submit_fn)
         if result.outcome == "refused":
             persist(None)
         return result
+
+    def _supports_auto_rebuy(self) -> bool:
+        return callable(getattr(self, "_long_trend_up", None))
 
     def rebuy_enabled_for(self, symbol: str) -> bool:
         """Per-coin re-buy switch (registry trailing.rebuy: on/off/auto), falling back to REBUY_ENABLED."""
@@ -768,7 +836,7 @@ class TrailingAdapterBase:
             return False
         rebuy_map = self._module_attr(self._REBUY_MODE_MAP_ATTR)
         default_rebuy = _parse_bool_flag(self._module_attr("REBUY_ENABLED", self.core.rebuy_enabled), self.core.rebuy_enabled)
-        has_auto_trend = callable(getattr(self, "_long_trend_up", None))
+        has_auto_trend = self._supports_auto_rebuy()
         predicate = (
             (lambda v: v in ("on", "off", "auto"))
             if has_auto_trend
@@ -795,7 +863,7 @@ class TrailingAdapterBase:
         """Return configured re-buy intent for symbol/asset (including auto while trend is down)."""
         if (sym_norm := clean_upper_scalar(symbol)) is None:
             return False
-        if callable(getattr(self, "_long_trend_up", None)):
+        if self._supports_auto_rebuy():
             rebuy_map = self._module_attr(self._REBUY_MODE_MAP_ATTR)
             mode = self._lookup_symbol_entry(
                 rebuy_map, symbol, predicate=lambda v: v in ("on", "off", "auto")
@@ -844,7 +912,7 @@ class TrailingAdapterBase:
         )
         if attempt > 1:
             intent_id = f"{intent_id}:a{attempt}"
-        return self.order_lifecycle.new_intent(
+        return self._lifecycle_for(pair).new_intent(
             intent_id=intent_id,
             client_order_id=intent_client_order_id(self._VENUE_LABEL, intent_id),
             symbol=pair,
@@ -859,8 +927,8 @@ class TrailingAdapterBase:
     def reconcile_pending(self, pending, persist):
         if not isinstance(pending, dict):
             return None
-        result = self.order_lifecycle.reconcile(pending, persist=persist)
         pair = clean_scalar_str(pending.get("symbol")) or ""
+        result = self._lifecycle_for(pair).reconcile(pending, persist=persist)
         action, _ = extract_trailing_intent_action_asset(pending)
         retry_key = (pair, action)
         st = getattr(persist, "st", None)
@@ -1107,3 +1175,532 @@ class TrailingAdapterBase:
                 intervals={"check_seconds": check_seconds},
             )
             time.sleep(check_seconds)
+
+
+class StrategyExecutorTrailingAdapter(TrailingAdapterBase):
+    """Unified provider-agnostic trailing-stop adapter backed by ``AuditedStrategyExecutor``.
+
+    Encapsulates balance snapshots, order unlocking, cost-basis resolution, optional daily-SMA
+    auto-rebuy gating, guarded lifecycle submission with downscaling, fill notifications,
+    heartbeat logging, and status/loop CLI behavior with zero venue-specific literals.
+    """
+
+    _REBUY_MODE_MAP_ATTR = "REBUY_MODE_BY_ASSET"
+    _LOOKUP_BY_BASE_ASSET = True
+    _PREFER_ASSET_LABEL = True
+    _SELL_LIMIT_SLIPPAGE_FACTOR = 0.995
+    _REBUY_LIMIT_CUSHION_FACTOR = 1.005
+    _INCLUDE_MARKET_IN_SELL_INTENT = True
+    _MISSING_CONFIRMATIONS = 2
+    _RETRY_ON_LOOKUP_ERROR = False
+    _ORDER_MAX_AGE_SECONDS = 180
+    _EMIT_HEARTBEAT_LOG = True
+    _NOTIFY_SOURCE_SUFFIX = "-trail"
+
+    def _init_executor_adapter(
+        self,
+        executor,
+        *,
+        log,
+        enabled=None,
+        state_file: str | None = None,
+        min_profit_pct=None,
+        trailing_market: bool | None = None,
+        notify_fn=None,
+        rebuy_trend_days: int | None = None,
+    ) -> None:
+        mod_market = _parse_bool_flag(self._module_attr("TRAILING_MARKET", True), True)
+        self.trailing_market = _parse_bool_flag(
+            trailing_market,
+            mod_market if trailing_market is None else False,
+        )
+        self._tick_balances: dict | None = None
+        self._notify_fn = notify_fn
+        self._long_trend_cache: dict[str, tuple[float, int]] = {}
+        self._rebuy_trend_days = rebuy_trend_days
+        self._executors_by_asset: dict[str, AuditedStrategyExecutor] = {}
+        self._lifecycles_by_asset: dict[str, TrackedOrderLifecycle] = {}
+        mod_min_profit = safe_nonneg_float(self._module_attr("MIN_PROFIT_PCT", 0.0), default=0.0)
+        eff_state_file = state_file if state_file is not None else self._module_attr("STATE_FILE", "")
+        default_enabled = (
+            required_bool_env(self._ENABLED_ENV_VAR)
+            if (enabled is None and self._ENABLED_ENV_VAR)
+            else False
+        )
+        self._init_adapter_core(
+            log=log,
+            enabled=enabled,
+            default_enabled=default_enabled,
+            state_file=str(eff_state_file),
+            min_notional=safe_nonneg_float(self._module_attr("MIN_NOTIONAL_USD", 10.0), default=10.0),
+            rebuy_enabled=_parse_bool_flag(self._module_attr("REBUY_ENABLED", False), False),
+            rebuy_bounce_pct=safe_nonneg_float(self._module_attr("REBUY_BOUNCE_PCT", 0.0), default=0.0),
+            rebuy_skip_if_trend_down=_parse_bool_flag(self._module_attr("REBUY_SKIP_IF_TREND_DOWN", True), True),
+            sell_skip_if_trend_up=_parse_bool_flag(self._module_attr("SELL_SKIP_IF_TREND_UP", True), True),
+            sell_trend_defer_max_sec=safe_nonneg_float(
+                self._module_attr("SELL_TREND_DEFER_MAX_SEC", 0.0), default=0.0
+            ),
+            sell_fraction=1.0,
+            item_isolation=False,
+            min_profit_pct=safe_nonneg_float(min_profit_pct, default=mod_min_profit),
+        )
+        self.executor = (
+            executor
+            if isinstance(executor, AuditedStrategyExecutor)
+            else AuditedStrategyExecutor(executor, venue=self._VENUE_LABEL)
+        )
+        self.order_lifecycle = self._build_order_lifecycle(self.executor)
+
+    def _build_order_lifecycle(self, executor) -> TrackedOrderLifecycle:
+        return TrackedOrderLifecycle(
+            StrategyExecutorLifecycleApi(executor),
+            provider_name=self._VENUE_LABEL,
+            venue=self._VENUE_LABEL,
+            missing_confirmations=self._MISSING_CONFIRMATIONS,
+            retry_on_lookup_error=self._RETRY_ON_LOOKUP_ERROR,
+            max_age_seconds=self._ORDER_MAX_AGE_SECONDS,
+        )
+
+    def _executor_for(self, pair: str = ""):
+        _ = pair
+        return getattr(self, "executor", None)
+
+    def _lifecycle_for(self, pair: str = ""):
+        base_exec = getattr(self, "executor", None)
+        exec_api = self._executor_for(pair)
+        if exec_api is None or exec_api is base_exec:
+            return self.order_lifecycle
+        key = clean_upper_scalar(pair) or ""
+        cached = self._lifecycles_by_asset.get(key)
+        if cached is not None:
+            return cached
+        lc = self._build_order_lifecycle(exec_api)
+        self._lifecycles_by_asset[key] = lc
+        return lc
+
+    def _resolve_rebuy_trend_days(self) -> int:
+        raw = self._rebuy_trend_days if self._rebuy_trend_days is not None else self._module_attr("REBUY_TREND_DAYS", 0)
+        return safe_pos_int(raw, default=0) or 0
+
+    def _supports_auto_rebuy(self) -> bool:
+        return 1 <= self._resolve_rebuy_trend_days() < 1000
+
+    def _pair_for_symbol(self, symbol: str) -> str:
+        pair_map = self._module_attr("PAIR_FOR")
+        if isinstance(pair_map, dict):
+            found = self._lookup_symbol_entry(pair_map, symbol)
+            if isinstance(found, str) and found.strip():
+                return found.strip()
+        return symbol
+
+    def _quote_for_symbol(self, asset: object = None, pair: object = None) -> str:
+        inst_map = self._module_attr("TRAILING_INSTRUMENTS")
+        for cand in (asset, pair):
+            if isinstance(cand, str) and cand.strip():
+                spec = self._lookup_symbol_entry(inst_map, cand) if isinstance(inst_map, dict) else None
+                if spec is not None and getattr(spec, "quote", None):
+                    return str(spec.quote).strip().upper()
+                quote_map = self._module_attr("QUOTE_FOR")
+                if isinstance(quote_map, dict):
+                    q_val = self._lookup_symbol_entry(quote_map, cand)
+                    if isinstance(q_val, str) and q_val.strip():
+                        return q_val.strip().upper()
+                split = split_symbol_assets(cand)
+                if split is not None and split[1]:
+                    return str(split[1]).strip().upper()
+        return venue_default_quote(self._VENUE_SLUG)
+
+    def _resolve_notify_fn(self):
+        mod_notify = self._module_attr("notify")
+        if callable(mod_notify):
+            return mod_notify
+        return self._notify_fn if callable(self._notify_fn) else None
+
+    def _long_trend_up(self, symbol: str) -> bool:
+        """Compare live price against completed daily-bar SMA for ``trailing.rebuy = auto``."""
+        days = self._resolve_rebuy_trend_days()
+        sym_norm = clean_upper_scalar(symbol)
+        if not (1 <= days < 1000) or sym_norm is None:
+            return False
+        pair = self._pair_for_symbol(sym_norm)
+        day = math.floor(time.time() / 86400.0)
+        cached = self._long_trend_cache.get(sym_norm)
+        try:
+            if cached and cached[1] == day:
+                sma = cached[0]
+            else:
+                series = self._executor_for(pair).ohlc_series(pair, 1440)
+                raw_closes = getattr(series, "closes", None) if series is not None else None
+                closes = [
+                    c_val
+                    for c in (raw_closes or ())
+                    if (c_val := safe_pos_float(c, default=None)) is not None
+                ]
+                if len(closes) < days:
+                    raise ValueError("insufficient completed daily history")
+                sma = safe_pos_float(statistics.fmean(closes[-days:]), default=None)
+                if sma is None:
+                    raise ValueError("invalid daily average")
+                self._long_trend_cache[sym_norm] = (sma, day)
+            px = safe_pos_float(self.price(pair), default=None)
+            return bool(px is not None and px > sma)
+        except Exception as e:  # noqa: BLE001
+            self.log(f"  {self._LOG_TAG} long-trend({sym_norm}) unavailable ({e}) -- auto rebuy OFF")
+            return False
+
+    # == TrailingCore ADAPTER contract ========================================
+    def assets(self):
+        trail_map = self._module_attr("TRAIL_PCT")
+        pair_map = self._module_attr("PAIR_FOR")
+        if not isinstance(trail_map, dict) or not isinstance(pair_map, dict):
+            return
+        for asset, trail in trail_map.items():
+            pair = casefold_get(pair_map, asset)
+            if pair:
+                yield (asset, asset, pair, trail)
+
+    def _fetch_balances_snapshot(self) -> dict | None:
+        req_assets = [asset for _k, asset, _p, _t in self.assets()]
+        try:
+            snap = self._executor_for().all_free_and_locked_balances(req_assets)
+        except Exception as e:  # noqa: BLE001
+            self.log(f"  ! {self._LOG_TAG} balances fetch failed ({e.__class__.__name__}: {e})")
+            return None
+        if not isinstance(snap, dict) or not snap:
+            return None
+        return snap
+
+    def _lookup_balance_pair(self, asset: str) -> tuple[float, float | None] | None:
+        if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
+            return None
+        snap = self._tick_balances if isinstance(self._tick_balances, dict) else self._fetch_balances_snapshot()
+        if not isinstance(snap, dict):
+            return None
+        canon = canonical_balance_asset_key(asset, venue=self._VENUE_SLUG) or asset.strip().upper()
+        for cand in (asset.strip(), canon, canonical_base_asset(asset)):
+            if not cand:
+                continue
+            entry = casefold_get(snap, cand)
+            if isinstance(entry, (tuple, list)) and len(entry) >= 2:
+                free_v = safe_nonneg_float(entry[0], default=None)
+                hold_v = None if entry[1] is None else safe_nonneg_float(entry[1], default=None)
+                if free_v is None or (entry[1] is not None and hold_v is None):
+                    return None
+                return free_v, hold_v
+        return 0.0, 0.0
+
+    def begin_tick(self) -> bool:
+        self._tick_balances = None
+        if not list(self.assets()):
+            self._tick_balances = {}
+            return True
+        self._tick_balances = self._fetch_balances_snapshot()
+        if self._tick_balances is None:
+            self.log(f"  ! {self._LOG_TAG} empty or invalid balance snapshot -- skipping the tick")
+        return self._tick_balances is not None
+
+    def free_qty(self, asset: str) -> float:
+        pair_val = self._lookup_balance_pair(asset)
+        return pair_val[0] if pair_val is not None else 0.0
+
+    def total_qty(self, asset: str) -> float | None:
+        if self._tick_balances is None and self._fetch_balances_snapshot() is None:
+            return None
+        pair_val = self._lookup_balance_pair(asset)
+        if pair_val is None or pair_val[1] is None:
+            return None
+        return safe_nonneg_float(pair_val[0] + pair_val[1], default=None)
+
+    def _asset_for_pair(self, pair: str) -> str:
+        inst_map = self._module_attr("TRAILING_INSTRUMENTS")
+        spec = self._lookup_symbol_entry(inst_map, pair) if isinstance(inst_map, dict) else None
+        if spec is not None and getattr(spec, "base", None):
+            return str(spec.base).strip()
+        split = split_symbol_assets(pair)
+        if split is not None and split[0]:
+            return str(split[0]).strip()
+        return canonical_base_asset(pair) or ""
+
+    def cost_basis(self, pair: str):
+        """Use reconciled BUY/SELL inventory for new-position warm-up when fresh SSOT fills are available."""
+        if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
+            return None
+        try:
+            pair_norm = canonical_display_symbol(pair, venue=self._VENUE_SLUG) or pair.strip()
+            asset = self._asset_for_pair(pair) or self._asset_for_pair(pair_norm)
+            if not asset:
+                return None
+            held = self.total_qty(asset)
+            if held is None or held <= 0.0:
+                return None
+            return self._executor_for(pair_norm or pair).position_cost_basis(
+                pair_norm or pair, held, COST_BASIS_LOOKBACK_S
+            )
+        except Exception as e:  # noqa: BLE001
+            return self._log_cost_basis_unavailable(pair, e)
+
+    def _open_sell_orders_for_unlock(self, pair: str) -> list[str]:
+        open_ords = self._executor_for(pair).open_orders(pair) or []
+        if not isinstance(open_ords, list):
+            return []
+        oids: list[str] = []
+        for ord_info in open_ords:
+            if not isinstance(ord_info, dict):
+                continue
+            if extract_order_side(ord_info) != "SELL":
+                continue
+            oid = extract_order_id(ord_info, default=None)
+            if oid:
+                oids.append(str(oid))
+        return oids
+
+    def _cancel_open_order_for_unlock(self, pair: str, oid: str) -> bool:
+        self._executor_for(pair).cancel_order(pair, oid)
+        return True
+
+    def unlock_qty(self, pair: str) -> bool:
+        """Cancel open SELL orders to release locked quantity for emergency stop."""
+        try:
+            sell_oids = self._open_sell_orders_for_unlock(pair)
+            cancelled_any = False
+            for oid in sell_oids:
+                try:
+                    if self._cancel_open_order_for_unlock(pair, oid):
+                        cancelled_any = True
+                except Exception as cancel_err:  # noqa: BLE001
+                    self.log(f"  ! {self._LOG_TAG} failed to cancel open order {oid} for {pair}: {cancel_err}")
+            if cancelled_any:
+                self._tick_balances = None
+                try:
+                    refreshed = self._fetch_balances_snapshot()
+                except Exception:  # noqa: BLE001
+                    refreshed = None
+                if refreshed is not None:
+                    self._tick_balances = refreshed
+            return cancelled_any
+        except Exception as e:  # noqa: BLE001
+            self.log(f"  ! {self._LOG_TAG} failed to cancel open orders for {pair}: {e}")
+            return False
+
+    def price(self, pair: str):
+        exec_api = self._executor_for(pair)
+        get_px = getattr(exec_api, "get_current_price", None)
+        if callable(get_px):
+            return get_px(pair)
+        client = getattr(self, "client", None)
+        last_px = getattr(client, "last_price", None)
+        return last_px(pair) if callable(last_px) else None
+
+    def reconcile_pending(self, pending, persist):
+        result = super().reconcile_pending(pending, persist)
+        if result is not None and result.outcome == "terminal":
+            filled = safe_nonneg_float(getattr(result.status, "filled_qty", None), default=0.0)
+            if filled > 0:
+                notify_fn = self._resolve_notify_fn()
+                if callable(notify_fn):
+                    act_norm, asset_norm = extract_trailing_intent_action_asset(result.intent)
+                    notify_action = act_norm or "ORDER"
+                    pair_raw = result.intent.get("symbol") if isinstance(result.intent, dict) else None
+                    notify_asset = asset_norm or pair_raw
+                    qty = filled
+                    avg = vwap_or_fallback(
+                        getattr(result.status, "cost", None),
+                        qty,
+                        result.intent.get("requested_price") if isinstance(result.intent, dict) else 0.0,
+                    )
+                    avg_str = format_price_log(avg) if 0.0 < avg < 1.0 else f"{avg:.2f}"
+                    quote_ccy = self._quote_for_symbol(notify_asset, pair_raw)
+                    emit_trade_notification(
+                        notify_fn,
+                        "FILLED",
+                        notify_action,
+                        notify_asset,
+                        f"~{avg_str}",
+                        qty,
+                        qty * avg,
+                        quote_ccy,
+                        extract_order_id(result.intent) or None,
+                        venue=self._VENUE_SLUG,
+                        owner="trailing_stop",
+                        detail=f"TRAILING ({result.status.status}, fee {result.status.fee})",
+                        notify_kwargs={
+                            "source": f"{self._VENUE_SLUG}{self._NOTIFY_SOURCE_SUFFIX}",
+                            "price": avg,
+                            "desktop": False,
+                        },
+                    )
+        return result
+
+    def _submit_lifecycle_order(
+        self,
+        intent,
+        persist,
+        pair,
+        side,
+        qty,
+        price,
+        kind="TRAIL",
+        bypass_guards=None,
+        market=False,
+    ):
+        """Submit through StrategyExecutor with guard pre-checks and dynamic downscaling."""
+        exec_api = self._executor_for(pair)
+        if bypass_guards is None:
+            bypass_guards = {"all"} if side.upper() == "SELL" else {"math_reference"}
+
+        normalized_bypass = normalize_bypassed_guards(bypass_guards=bypass_guards)
+        if "all" not in normalized_bypass:
+            def _refuse_intent(refusal_reason: object) -> TrackedOrderResult:
+                intent["refusal_reason"] = refusal_reason
+                persist(None)
+                return TrackedOrderResult(outcome="refused", intent=intent, status=None)
+
+            if callable(getattr(exec_api, "get_orders", None)):
+                dl_ok, dl_reason = order_guard.unpack_daily_limit_result(
+                    order_guard.daily_limit_guard(
+                        exec_api, pair, side.upper(), bypass_guards=bypass_guards,
+                    )
+                )
+                if not dl_ok:
+                    return _refuse_intent(dl_reason)
+            allowed, reason, suggested_scale = order_guard.check_intelligence_guards(
+                exec_api,
+                pair,
+                side.upper(),
+                price,
+                qty=qty,
+                bypass_guards=bypass_guards,
+            )
+            if not allowed:
+                return _refuse_intent(reason)
+            if side.upper() == "BUY" and suggested_scale is not None:
+                scale_f = safe_float(suggested_scale, default=None)
+                if scale_f is None or scale_f <= 0.0:
+                    return _refuse_intent(f"downscaled_to_zero:{reason}")
+                if scale_f < 1.0:
+                    qty_f = require_pos_float(qty, "qty")
+                    scaled_qty = qty_f * scale_f
+                    round_fn = getattr(exec_api, "round_quantity", None)
+                    if callable(round_fn):
+                        try:
+                            rq = safe_float(round_fn(pair, scaled_qty), default=None)
+                            if rq is not None:
+                                scaled_qty = rq
+                        except Exception:
+                            pass
+                    min_qty_fn = getattr(exec_api, "min_order_qty", None)
+                    raw_min_q = min_qty_fn(pair) if callable(min_qty_fn) else 0.0
+                    min_q = safe_nonneg_float(raw_min_q, default=0.0)
+                    sq_pos = safe_pos_float(scaled_qty, default=None)
+                    if sq_pos is None or (min_q > 0 and sq_pos < min_q):
+                        return _refuse_intent(f"downscaled_below_min_qty:{reason}")
+                    price_f = safe_pos_float(price, default=0.0)
+                    min_notional = safe_nonneg_float(getattr(self.core, "min_notional", 0.0), default=0.0)
+                    if min_notional > 0.0 and price_f > 0.0 and sq_pos * price_f < min_notional:
+                        return _refuse_intent(f"downscaled_below_min_notional:{reason}")
+                    qty = sq_pos
+                    intent["requested_qty"] = qty
+                    intent["submitted_qty"] = qty
+
+        return self._submit_and_clear_if_refused(
+            intent,
+            persist,
+            lambda: exec_api.submit_order_with_intent(
+                intent["intent_id"],
+                pair,
+                side.lower(),
+                qty,
+                price,
+                market=market,
+                kind=kind,
+                client_order_id=intent["client_order_id"],
+                post_only=False,
+            ),
+        )
+
+    def log_tick_error(self, e) -> None:
+        self.log(f"  ! {self._LOG_TAG} cycle failed ({e.__class__.__name__}: {e}) -- retrying")
+
+    def _log_sell_result(
+        self,
+        result,
+        *,
+        asset,
+        pair,
+        qty,
+        price,
+        order_price,
+        peak,
+        trail,
+        use_market: bool,
+    ) -> None:
+        order_desc = "MARKET" if use_market else f"@ ~{safe_float(order_price, 0.0):.4f}"
+        status_lbl, detail = self._extract_order_result_status(result)
+        self.log(f"  [SELL] {self._LOG_TAG} SELL {status_lbl} {qty} {asset} {order_desc} ({detail})")
+
+    def _log_rebuy_result(
+        self,
+        result,
+        *,
+        asset,
+        pair,
+        qty,
+        price_ref: float,
+        order_price,
+    ) -> None:
+        status_lbl, detail = self._extract_order_result_status(result)
+        rebuy_lbl = "RE-BUY REFUSED" if status_lbl == "REFUSED" else "REBUY PENDING"
+        suffix = " (not catching the knife)" if status_lbl == "REFUSED" else ""
+        self.log(
+            f"  [REBUY] {self._LOG_TAG} {rebuy_lbl} {qty} {asset} "
+            f"@ ~{safe_float(order_price, 0.0):.4f} ({detail}){suffix}"
+        )
+
+    def print_status(self) -> None:
+        state = self.core.load(read_only=True)
+        trail_map = self._module_attr("TRAIL_PCT")
+        rows = (
+            list(trail_map.items())
+            if isinstance(trail_map, dict)
+            else [(s, tr) for s, _a, _p, tr in self.assets()]
+        )
+        for a, t in rows:
+            e = casefold_get(state, a, {}) if isinstance(state, dict) else {}
+            if not isinstance(e, dict):
+                e = {}
+            peak = safe_pos_float(e.get("peak"), default=None)
+            t_f = safe_nonneg_float(t, default=0.0)
+            rb = e.get("rebuy") if isinstance(e.get("rebuy"), dict) else None
+            print(
+                f"{a}: peak={peak} trailing={t}% "
+                + (f"sells below {peak * (1 - t_f / 100):.4f}" if peak else "(no peak yet)")
+                + (f"  | re-buy ARMED (qty {rb.get('qty')}, min {rb.get('low')})" if rb else "")
+            )
+        rebuy_en = self._module_attr("REBUY_ENABLED", self.core.rebuy_enabled)
+        rebuy_bounce = self._module_attr("REBUY_BOUNCE_PCT", self.core.rebuy_bounce_pct)
+        print(f"ENABLED={self.enabled}  REBUY={rebuy_en} (bounce {rebuy_bounce}%)")
+
+    def check_once(self) -> None:
+        super().check_once()
+        if self._EMIT_HEARTBEAT_LOG:
+            self.log(f"  {self._LOG_TAG} heartbeat")
+
+    def run(self) -> None:
+        mode = "[ACTIVE] (it really sells)" if self.enabled else "DRY RUN (it only logs)"
+        trail_map = self._module_attr("TRAIL_PCT")
+        protected = (
+            ", ".join(f"{a}={t}%" for a, t in trail_map.items())
+            if isinstance(trail_map, dict) and trail_map
+            else "(none configured)"
+        )
+        rebuy_en = _parse_bool_flag(self._module_attr("REBUY_ENABLED", self.core.rebuy_enabled), False)
+        rebuy_bounce = self._module_attr("REBUY_BOUNCE_PCT", self.core.rebuy_bounce_pct)
+        check_sec = safe_pos_float(self._module_attr("CHECK_SECONDS", 60.0), default=60.0) or 60.0
+        self._run_trailing_loop(
+            check_sec,
+            [
+                f"=== TRAILING STOP {self._VENUE_LABEL.upper()} started -- {mode} ===",
+                f"    protecting: {protected}  (FREE balance only)",
+                f"    re-buy: {'ON' if rebuy_en else 'off'} (bounce +{rebuy_bounce}% from trough)",
+            ],
+        )

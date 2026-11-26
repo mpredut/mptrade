@@ -101,13 +101,25 @@ DEFAULT_SOURCES = (
     StateSource("autonomous_ai", cache_relpath(AUTO_ORDER_INTENTS_STATE_FILENAME)),
     StateSource("assetguardian", cache_relpath(ASSETGUARDIAN_STATE_FILENAME)),
     StateSource("rtrade", cache_relpath(RTRADE_PAIRS_STATE_FILENAME)),
-    StateSource("binance_trailing", "statedb/bots/trailing_state_binance.json"),
+    StateSource("trailing", "statedb/bots/trailing_state_*.json"),
     StateSource("kraken", "kraken/.state_*.json"),
-    StateSource("kraken_trailing", "statedb/bots/trailing_state_kraken.json"),
     StateSource("t212", "212trading/.state_*.json"),
     StateSource("t212_one_shot", "212trading/.t212_order.*.json"),
     StateSource("hyperliquid", "hyperliquid/.state_*.json"),
 )
+
+
+def _resolve_source_owner_and_venue(spec_owner: str, filename: str) -> tuple[str, str | None]:
+    """Derive per-venue owner/venue dynamically for wildcard trailing state files."""
+    if spec_owner == "trailing":
+        prefix = "trailing_state_"
+        suffix = ".json"
+        if filename.startswith(prefix) and filename.endswith(suffix):
+            raw_venue = filename[len(prefix):-len(suffix)].strip()
+            norm_v = str(normalize_venue_name(raw_venue) or raw_venue).strip().lower()
+            if norm_v:
+                return f"{norm_v}_trailing", norm_v
+    return spec_owner, None
 
 _TERMINAL = TERMINAL_ACTIVE_INTENT_STATUSES
 _STATUS_FIELDS = ("last_status", "status", "lifecycle", "submission_outcome", "submit_status")
@@ -526,18 +538,21 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
                 payload = _read(path, json_lines=spec.json_lines)
                 if not spec.json_lines and isinstance(payload, dict) and is_shadow_or_paper_state_payload(payload):
                     continue
+                eff_owner, derived_venue = _resolve_source_owner_and_venue(spec.owner, name)
                 inherited = (
                     {"symbol": st_sym}
                     if (st_sym := parse_cycle_state_symbol(name))
                     else {}
                 )
+                if derived_venue:
+                    inherited["venue"] = derived_venue
                 intents.extend(_walk(
-                    payload, owner=spec.owner, source=relative,
+                    payload, owner=eff_owner, source=relative,
                     inherited=inherited,
                 ))
                 if not spec.json_lines and isinstance(payload, dict):
                     exp = _extract_exposure(
-                        payload, owner=spec.owner, source=relative,
+                        payload, owner=eff_owner, source=relative,
                         inherited=inherited,
                     )
                     if exp is not None:

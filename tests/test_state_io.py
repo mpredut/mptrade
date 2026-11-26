@@ -212,6 +212,7 @@ def test_trailing_once_commands_share_daemon_lock(monkeypatch):
     for relative, lock_name in (
         ("binance_api/trailing_stop.py", "binance_trailing"),
         ("kraken/trailing_stop.py", "kraken_trailing"),
+        ("hyperliquid/trailing_stop.py", "hyperliquid_trailing"),
     ):
         text = (root / relative).read_text(encoding="utf-8")
         assert "parse_trailing_cli_args(" in text

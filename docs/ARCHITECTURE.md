@@ -159,7 +159,7 @@ line-for-line across the two `trailing_stop.py` files, so it moved into
   clearly down); (3) below notional -> skip; (4) `price>peak` -> raise the peak;
   (5) `price≤peak·(1−trail%)` -> sell `free·sell_fraction`, re-arm the peak and arm the `rebuy`.
 - **Persisted state** (the schema is unchanged by the refactor): `{"<key>": {"peak", "rebuy":{qty,sell_price,low}?, "warmup_at"?}}`.
-  Binance uses `statedb/bots/trailing_state_binance.json` (keyed by symbol), Kraken `statedb/bots/trailing_state_kraken.json` (keyed by asset).
+  Per-venue trailing state is stored symmetrically at `statedb/bots/trailing_state_<venue>.json` (Binance keyed by symbol; Kraken and Hyperliquid keyed by base asset via the shared `StrategyExecutorTrailingAdapter`).
   It survives a restart (the peak is not reset).
 - **`item_isolation`** (the error model, a genuine difference): Binance `True` = a try per coin plus
   always saving; Kraken `False` = one try for the whole tick, with no save on error.

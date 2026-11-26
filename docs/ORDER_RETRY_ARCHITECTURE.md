@@ -115,6 +115,7 @@ The files are relative to the repository root, unless a path is set through conf
 | AssetGuardian | `statedb/bots/assetguardian_state.json` |
 | Binance trailing | `statedb/bots/trailing_state_binance.json` |
 | Kraken trailing | `statedb/bots/trailing_state_kraken.json` |
+| Hyperliquid trailing | `statedb/bots/trailing_state_hyperliquid.json` |
 | Kraken spot-DCA | `kraken/.state_<PAIR>.json` |
 | Hyperliquid spot-DCA live | `hyperliquid/.state_<TOKEN>.json` |
 | Hyperliquid spot-DCA paper | `hyperliquid/.paper_state/.state_<TOKEN>.json` |

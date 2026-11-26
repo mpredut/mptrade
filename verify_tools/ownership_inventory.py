@@ -126,6 +126,7 @@ def _fleet_role_instruments(root: Path) -> dict[str, list[tuple[str, str, str, s
         "rtrade": [],
         "assetguardian": [],
         "binance-trailing": [],
+        "trailing": [],
     }
     conf_path = root / "instruments.conf"
     if not conf_path.exists():
@@ -136,6 +137,7 @@ def _fleet_role_instruments(root: Path) -> dict[str, list[tuple[str, str, str, s
         ("rtrade", "role.rtrade", False),
         ("assetguardian", "role.assetguardian", False),
         ("binance-trailing", "role.trailing", True),
+        ("trailing", "role.trailing", False),
     )
     seen: dict[str, set[tuple[str, str]]] = {k: set() for k in role_map}
     for section in parser.sections():
@@ -221,20 +223,6 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
             and not _parse_bool_flag(kraken_env.get("KRAKEN_BOT_OBSERVE_ONLY"))
         ),
         source="kraken/config.env", commands=commands,
-    ))
-
-    trailing_env = _env(
-        root / "kraken" / "config.env", root / "kraken" / "trailing.conf",
-        root / "kraken" / ".env",
-    )
-    owners.append(_record(
-        owner_id="kraken-trailing", venue="kraken",
-        account_ref=_account_ref(kraken_env, "kraken", "kraken-trailing"),
-        symbol=kraken_pair, role="protective", coordination="free-balance-only",
-        pattern="kraken/trailing_stop.py",
-        configured="kraken/trailing_stop.py" in patterns,
-        enabled=_parse_bool_flag(trailing_env.get("KRAKEN_TRAILING_ENABLED")),
-        source="kraken/trailing.conf", commands=commands,
     ))
 
     dn_pair = hl_env.get("HL_COIN", "HYPE").strip() or "HYPE"
@@ -354,14 +342,9 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         ("tradeall", "tradeall.py", "primary"),
         ("rtrade", "rtrade.py", "primary"),
         ("assetguardian", "assetguardian.py", "protective"),
-        ("binance-trailing", "binance_api/trailing_stop.py", "protective"),
     )
     for owner_id, process, role in fleet_specs:
         configured = process in patterns
-        enabled = True
-        if owner_id == "binance-trailing":
-            trailing = _env(root / "binance_api" / "trailing.conf", root / ".env")
-            enabled = _parse_bool_flag(trailing.get("TRAILING_ENABLED"))
         for venue, symbol, base, quote in role_instruments.get(owner_id, ()):
             env = venue_envs.get(venue, {})
             owners.append(_record(
@@ -377,10 +360,63 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
                 ),
                 pattern=process,
                 configured=configured,
-                enabled=enabled,
+                enabled=True,
                 source=process,
                 commands=commands,
             ))
+
+    # Dynamic per-venue trailing-stop inventory derived from instruments.conf + procs.conf.
+    trailing_entries: list[tuple[str, str, str, str]] = list(role_instruments.get("trailing", ()))
+    trailing_venues_present = {v for v, _s, _b, _q in trailing_entries}
+    for pat in sorted(patterns):
+        if not pat.endswith("/trailing_stop.py"):
+            continue
+        pat_dir = pat.rsplit("/", 1)[0]
+        pat_venue = "binance" if pat_dir == "binance_api" else (normalize_venue_name(pat_dir) or pat_dir)
+        if pat_venue in trailing_venues_present:
+            continue
+        fallback_sym = kraken_pair if pat_venue == "kraken" else (
+            ensure_quote_suffix(hl_token, "USDC") if pat_venue == "hyperliquid" else ""
+        )
+        if fallback_sym:
+            trailing_entries.append((pat_venue, fallback_sym, "", ""))
+            trailing_venues_present.add(pat_venue)
+
+    for venue, symbol, base, quote in trailing_entries:
+        rel_dir = "binance_api" if is_primary_stream_venue(venue) else venue
+        process = f"{rel_dir}/trailing_stop.py"
+        owner_id = f"{venue}-trailing"
+        env = venue_envs.get(venue, {})
+        t_conf_path = root / rel_dir / "trailing.conf"
+        t_conf_raw = _env(t_conf_path)
+        t_env = _env(root / rel_dir / "config.env", t_conf_path, root / rel_dir / ".env", root / ".env")
+        enabled_key = next(
+            (k for k in t_conf_raw if k.endswith("TRAILING_ENABLED")),
+            next((k for k in t_env if k.endswith("TRAILING_ENABLED")), "TRAILING_ENABLED"),
+        )
+        enabled = _parse_bool_flag(t_env.get(enabled_key))
+        acct_ref = (
+            _account_ref(env, venue)
+            if is_primary_stream_venue(venue)
+            else _account_ref(env, venue, owner_id)
+        )
+        owners.append(_record(
+            owner_id=owner_id,
+            venue=venue,
+            account_ref=acct_ref,
+            symbol=symbol,
+            base=base,
+            quote=quote,
+            role="protective",
+            coordination=(
+                "binance-order-pipeline" if is_primary_stream_venue(venue) else "free-balance-only"
+            ),
+            pattern=process,
+            configured=process in patterns,
+            enabled=enabled,
+            source=f"{rel_dir}/trailing.conf" if t_conf_path.exists() else process,
+            commands=commands,
+        ))
 
     return sorted(owners, key=lambda item: (
         item.venue, item.account_ref, item.symbol, item.owner_id,

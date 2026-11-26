@@ -111,6 +111,8 @@ from instrument_registry import (
     resolve_kraken_tokenized_pair,
     resolve_registered_symbol_case,
     resolve_symbol_market_session,
+    trailing_venues,
+    venue_default_quote,
 )
 import order_retry as _oq
 from providers.ai_circuit_breaker import (
@@ -1270,13 +1272,25 @@ class VenueTrailingMapsCollector(PortfolioCacheCollectorBase):
     ) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Dict[str, Any]]]]:
         _rj = _resolve_read_json_cached(read_json_fn)
         trailing_map: Dict[str, Dict[str, Any]] = {}
-        trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]] = {"binance": {}, "kraken": {}}
-        for trail_venue, raw_trail, default_quote in (
-            ("binance", TrailingStateStore.read_venue_state("binance", cache_dir=cachedb_dir, read_json_fn=_rj), ""),
-            ("kraken", TrailingStateStore.read_venue_state("kraken", cache_dir=cachedb_dir, workspace_dir=workspace_dir, read_json_fn=_rj), "USD"),
+        venue_list: list[str] = []
+        for v_name in (
+            *trailing_venues(include_all_24x7=False),
+            *TrailingStateStore.discover_venue_names(cache_dir=cachedb_dir, workspace_dir=workspace_dir),
         ):
+            v_norm = str(normalize_venue_name(v_name) or v_name or "").strip().lower()
+            if v_norm and v_norm not in venue_list:
+                venue_list.append(v_norm)
+        trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]] = {v: {} for v in venue_list}
+        for trail_venue in venue_list:
+            raw_trail = TrailingStateStore.read_venue_state(
+                trail_venue,
+                cache_dir=cachedb_dir,
+                workspace_dir=workspace_dir,
+                read_json_fn=_rj,
+            )
             if not isinstance(raw_trail, dict):
                 continue
+            default_quote = venue_default_quote(trail_venue)
             for k_asset, k_st in raw_trail.items():
                 if not (k_up := str(k_asset).strip().upper()):
                     continue

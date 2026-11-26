@@ -68,6 +68,35 @@ class TrailingStateStore(StateStoreBase):
         )
 
     @classmethod
+    def discover_venue_names(
+        cls,
+        *,
+        cache_dir: Optional[str] = None,
+        workspace_dir: Optional[str] = None,
+    ) -> list[str]:
+        """Discover venue slugs from existing ``statedb/bots/trailing_state_<venue>.json`` files."""
+        sample_path = cls.resolve_venue_path("_probe", cache_dir=cache_dir, workspace_dir=workspace_dir)
+        bots_dir = os.path.dirname(sample_path)
+        if not bots_dir or not os.path.isdir(bots_dir):
+            return []
+        found: list[str] = []
+        try:
+            entries = sorted(os.listdir(bots_dir))
+        except OSError:
+            return []
+        prefix = "trailing_state_"
+        suffix = ".json"
+        for name in entries:
+            if not (name.startswith(prefix) and name.endswith(suffix)):
+                continue
+            if any(tok in name for tok in (".pre_", ".bak", ".backup", ".tmp")):
+                continue
+            venue_slug = name[len(prefix):-len(suffix)].strip().lower()
+            if venue_slug and venue_slug not in found:
+                found.append(venue_slug)
+        return found
+
+    @classmethod
     def read_venue_state(
         cls,
         venue: str,
