@@ -353,10 +353,11 @@ def build_supervisor_prompt(
             "Scale in on confirmed downside deceleration + absorption; de-risk when negative velocity/acceleration aligns with unabsorbed selling.\n"
             if is_equities
             else (
-                "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN) & KINEMATICS: Weigh `kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)`, `kalman_vel`, `slopes`, "
-                "`bottom_6h`, `vs_btc`, `cvd_5m`/`cvd_15m`, `spot_cvd_15m` (`[real_spot]` observed vs `[est:ob+15m]` proxy\u2014never double-count proxy alongside `ob_imbalance`), "
-                "`spot_vol_15m`/`spot_vol_1h` & `rvol_15m`/`rvol_1h` (volume expansion vs noise), `taker_ratio`, and L2 walls. Scale in on confirmed downside deceleration + absorption; "
-                "de-risk when negative velocity/acceleration aligns with unabsorbed selling.\n"
+                "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN), BREAKOUT MOMENTUM & KINEMATICS: Weigh `kinematics(vel_90s/5m, acc_90s/5m, kalman_z)`, `kalman_vel`, `slopes`, "
+                "`bottom_6h`, `vs_btc`, `cvd_5m/15m`, `spot_cvd_15m` (`[real_spot]` vs `[est:ob+15m]`, no double-count with `ob_imbalance`), `rvol`, `taker_ratio`, L2 walls. "
+                "Deep dips (deceleration+absorption): size decisively (50%\u2013100% `max_usd`); "
+                "breakouts/momentum (positive `vel/acc`+`rvol`+`cvd`): enter near-BBO maker `LIMIT` (`urgency:\"HIGH\"`, tight `invalidation_px`) despite high `pos_15m`; "
+                "de-risk on negative `vel`+unabsorbed selling.\n"
             )
         )
         limit_exec_rule = (
@@ -485,7 +486,7 @@ def build_supervisor_prompt(
             "CONTINUATION TURN (ACTIVE THREAD POLICY APPLIES):\n"
             f"- Apply thread rules ({compact_exec_desc}, `by=BOT` vs `by=AI` supervision, `cachedb/` & `statedb/` read access; "
             f"zero deterministic order_guard gates; AI survival breakers active: {compact_surv}; `conf>={min_conf:g}`, notional {min_usd:g}-{max_usd:g} USD{compact_xs_sfx}). "
-            "All AI orders submit as `LIMIT`; re-evaluate R:R from new `limit_price` on replace (use `CANCEL`+`cancel_order_ids` or `HOLD` instead of chasing).\n"
+            "All AI orders submit as `LIMIT`; re-evaluate R:R from new `limit_price` on replace (participate via near-BBO maker `LIMIT` on confirmed high-velocity breakouts/momentum and size decisively on high-conviction deep dips; use `CANCEL`+`cancel_order_ids` or `HOLD` only on poor R:R).\n"
             "- Honor user chat instructions/overrides strictly for their stated instrument, action, and timeframe.\n"
             "- Format your response in TWO parts:\n"
             "  1) Concise Markdown in **Romanian** (`### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`): "

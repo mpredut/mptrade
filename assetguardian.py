@@ -175,7 +175,7 @@ SELL_TIERS = tuple(
     zip(_SELL_ORDERED, _progressive_tier_allocations(len(_SELL_ORDERED), _SELL_INIT_ALLOC, mode="linear"))
 )
 GUARDED_BUY_THRESHOLD = min((t for t, _ in BUY_TIERS), default=None)
-TRACKED_SYMBOLS = tuple(symbols_for("binance", "assetguardian"))
+TRACKED_SYMBOLS = tuple(symbols_for(None, "assetguardian"))
 LEGACY_BUY_SYMBOL = TRACKED_SYMBOLS[0] if TRACKED_SYMBOLS else "BTCUSDC"
 ORDER_MISSING_CONFIRMATIONS = required_int_env("AG_ORDER_MISSING_CONFIRMATIONS")
 
@@ -289,8 +289,9 @@ if BUY_TIERS[0][0] * (1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT) <= RECOVERY_RESET_P
     raise ValueError("Compressed first BUY tier must remain above AG_RECOVERY_RESET_PCT")
 
 
+_DEFAULT_PROVIDER_NAME = "binance"
 ORDER_LIFECYCLE = mkt.tracked_order_lifecycle(
-    provider_name="binance",
+    provider_name=_DEFAULT_PROVIDER_NAME,
     venue="Binance",
     missing_confirmations=ORDER_MISSING_CONFIRMATIONS,
     retry_on_lookup_error=True,
@@ -298,6 +299,36 @@ ORDER_LIFECYCLE = mkt.tracked_order_lifecycle(
     audit=ExecutionAudit(),
     clock=lambda: time.time(),
 )
+_ORDER_LIFECYCLES: dict[str, object] = {}
+
+
+def _provider_name_for(symbol: str) -> str:
+    try:
+        pname = mkt.provider_name_for(symbol)
+        if pname:
+            return str(pname).strip().lower()
+    except Exception:
+        pass
+    return _DEFAULT_PROVIDER_NAME
+
+
+def _order_lifecycle_for(symbol: str):
+    pname = _provider_name_for(symbol)
+    if pname == _DEFAULT_PROVIDER_NAME:
+        return ORDER_LIFECYCLE
+    lc = _ORDER_LIFECYCLES.get(pname)
+    if lc is None:
+        lc = mkt.tracked_order_lifecycle(
+            provider_name=pname,
+            venue=pname.capitalize(),
+            missing_confirmations=ORDER_MISSING_CONFIRMATIONS,
+            retry_on_lookup_error=True,
+            max_age_seconds=ORDER_MAX_AGE_SECONDS,
+            audit=ExecutionAudit(),
+            clock=lambda: time.time(),
+        )
+        _ORDER_LIFECYCLES[pname] = lc
+    return lc
 
 
 _finite_float = coerce_finite_float
@@ -890,7 +921,7 @@ def _cycle_p3b_sentiment():
     return copy.deepcopy(cycle["p3b_val"])
 
 
-def _p3b_threshold_multipliers(assessment=None, bypass_guards=None):
+def _p3b_threshold_multipliers(assessment=None, bypass_guards=None, *, provider_name="binance"):
     """Compute (sell_mult, buy_mult, assessment) from Pillar 3B sentiment state.
 
     Preserves canonical tier identities while scaling trigger thresholds:
@@ -901,7 +932,7 @@ def _p3b_threshold_multipliers(assessment=None, bypass_guards=None):
       AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT; DEFENSIVE expands drawdown thresholds by
       up to AG_P3B_BUY_DEFENSIVE_MAX_PENALTY to avoid catching falling knives early.
     """
-    eff_bypass = _og.resolve_effective_bypass_guards("binance", bypass_guards=bypass_guards)
+    eff_bypass = _og.resolve_effective_bypass_guards(provider_name, bypass_guards=bypass_guards)
     if GUARD_REGISTRY["GLLM2"].is_bypassed(eff_bypass):
         return 1.0, 1.0, None
     if assessment is None:
@@ -1009,10 +1040,11 @@ def sell_asset(symbol, qty, current_price, client_order_id, tier_threshold):
     _LAST_SUBMIT_OUTCOME.clear()
     try:
         base_asset, _ = resolve_assets(symbol)
-        provider = mkt.provider_by_name("binance")
+        pname = _provider_name_for(symbol)
+        provider = mkt.provider_by_name(pname)
         if provider is None:
             return _refuse_submit(
-                "provider_unavailable", None, f"[{symbol}] Binance provider unavailable; skip SELL fail-closed."
+                "provider_unavailable", None, f"[{symbol}] {pname} provider unavailable; skip SELL fail-closed."
             )
         free_qty = _finite_float(provider.free_balance(base_asset), positive=True)
         requested_qty = _finite_float(qty, positive=True)
@@ -1057,10 +1089,11 @@ def buy_with_all_cash(
         cash_ratio = _finite_float(cash_ratio, positive=True)
         if cash_ratio is None or cash_ratio > 1:
             return _refuse_submit("invalid_cash_ratio", False, f" Invalid cash ratio for buy: {cash_ratio}")
-        provider = mkt.provider_by_name("binance")
+        pname = _provider_name_for(buy_symbol)
+        provider = mkt.provider_by_name(pname)
         if provider is None:
             return _refuse_submit(
-                "provider_unavailable", False, f"[{buy_symbol}] Binance provider unavailable; skip BUY fail-closed."
+                "provider_unavailable", False, f"[{buy_symbol}] {pname} provider unavailable; skip BUY fail-closed."
             )
         free_cash = _finite_float(provider.free_balance(quote_asset), positive=True)
         current_price = _finite_float(api.get_current_price(buy_symbol), positive=True)
@@ -1661,7 +1694,7 @@ def _reconcile_pending_campaign(symbol, kind, state):
     if pending != raw_pending:
         persist(pending)
     try:
-        result = ORDER_LIFECYCLE.reconcile(pending, persist=persist)
+        result = _order_lifecycle_for(symbol).reconcile(pending, persist=persist)
     except Exception as exc:
         print(f"[{symbol}] Invalid/corrupt {side_label} pending; block fail-closed: {exc}")
         return box["state"], "active"
@@ -1751,7 +1784,7 @@ def _resolve_blocking_sell_orders(symbol, open_sells, *, canceled_orders_out: li
         oid = extract_order_id(order, default=None)
         if oid:
             try:
-                if mkt.cancel_order(symbol, oid, provider_name="binance") is not False:
+                if mkt.cancel_order(symbol, oid, provider_name=_provider_name_for(symbol)) is not False:
                     if canceled_orders_out is not None and isinstance(order, dict):
                         canceled_orders_out.append(dict(order))
                     print(
@@ -2004,12 +2037,13 @@ def _submit_campaign_tier(
     raw_attempts = state.get("attempts_by_tier")
     state = {**state, "attempts_by_tier": {**(raw_attempts if isinstance(raw_attempts, dict) else {}), key: attempt}}
     last_ref = state.get("last_refusal")
+    lifecycle = _order_lifecycle_for(symbol)
     if isinstance(last_ref, dict) and last_ref.get("intent_id") == client_order_id and last_ref.get("reason"):
-        ref_map = getattr(ORDER_LIFECYCLE, "_last_refusal_by_intent", None)
+        ref_map = getattr(lifecycle, "_last_refusal_by_intent", None)
         if isinstance(ref_map, dict):
             ref_map[(str(client_order_id), str(symbol), str(side_label), str(intent_kind))] = str(last_ref["reason"])
     state.pop("last_refusal", None)
-    intent = ORDER_LIFECYCLE.new_intent(
+    intent = lifecycle.new_intent(
         intent_id=client_order_id, client_order_id=client_order_id, symbol=symbol,
         side=side_label, requested_qty=requested_qty, requested_price=requested_price,
         kind=intent_kind, attempt=attempt, metadata=metadata,
@@ -2024,7 +2058,7 @@ def _submit_campaign_tier(
         return propagate_submission_refusal(resp, _LAST_SUBMIT_OUTCOME)
 
     try:
-        result = ORDER_LIFECYCLE.submit(intent, persist=persist, submit=_submit)
+        result = lifecycle.submit(intent, persist=persist, submit=_submit)
     except Exception as exc:
         print(f"[{symbol}] {side_label} tracked submit failed before/around submit: {exc}")
         return False
@@ -2183,7 +2217,8 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         print(f"[{symbol}] Drawdown recovered below {RECOVERY_RESET_PERCENT:.2f}%; rearm BUY campaign.")
         _save_symbol_campaign(symbol, "buy", {})
 
-    provider = mkt.provider_by_name("binance")
+    pname = _provider_name_for(symbol)
+    provider = mkt.provider_by_name(pname)
     try:
         base_asset, _ = resolve_assets(symbol)
         free_base_qty = provider.free_balance(base_asset) if provider is not None else None
@@ -2193,7 +2228,7 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     portfolio_growth_pct = _cycle_portfolio_growth_percent(minutes_back=minutes_back)
     evaluation["portfolio_growth"] = portfolio_growth_pct
     p3b_assessment = _cycle_p3b_sentiment()
-    sell_mult, buy_mult, _ = _p3b_threshold_multipliers(p3b_assessment)
+    sell_mult, buy_mult, _ = _p3b_threshold_multipliers(p3b_assessment, provider_name=pname)
     with OrderPreemptionTransaction(
         restore_fn=lambda orders, reason: _restore_preempted_orders(symbol, orders, reason),
         default_reason="assetguardian_sell_aborted",
@@ -2307,7 +2342,7 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
                     symbol,
                     "BUY",
                     "assetguardian",
-                    cancel_fn=lambda oid: mkt.cancel_order(symbol, oid, provider_name="binance"),
+                    cancel_fn=lambda oid: mkt.cancel_order(symbol, oid, provider_name=pname),
                     canceled_orders_out=buy_tx.canceled_orders,
                     resolve_retry_fn=resolve_accepted_order,
                 ):
