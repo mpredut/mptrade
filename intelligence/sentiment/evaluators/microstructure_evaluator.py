@@ -39,6 +39,7 @@ from intelligence.macro_sentiment_ssot import (
     parse_ts_px_row,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
+    CLOSED_EQUITY_QUOTE_AGE_MIN,
     apply_short_trend_item,
     compute_7d_range_metrics,
     is_unseeded_kalman_state,
@@ -1385,9 +1386,13 @@ def enrich_cross_venue_trends(
             cache_symbol_variants(sym, include_original=True, include_base=True),
             include_compact_equity=True,
         )
+        is_closed_equity = (
+            has_equity_suffix(sym)
+            and (safe_nonneg_float(entry.get("quote_age_min"), default=0.0) or 0.0) > CLOSED_EQUITY_QUOTE_AGE_MIN
+        )
         has_slopes = any(entry.get(k) is not None for k in ("slope_3_7m", "slope_15m", "slope_2_5h"))
 
-        if not has_slopes and trends_items_map:
+        if not has_slopes and not is_closed_equity and trends_items_map:
             for ck in cand_keys[1:]:
                 tinfo = casefold_get(trends_items_map, ck)
                 if isinstance(tinfo, dict) and apply_short_trend_item(
@@ -1395,7 +1400,7 @@ def enrich_cross_venue_trends(
                 ):
                     has_slopes = True
                     break
-        if not has_slopes:
+        if not has_slopes and not is_closed_equity:
             for ck in cand_keys[1:]:
                 sib = casefold_get(prices_and_trends, ck)
                 if isinstance(sib, dict) and any(sib.get(k) is not None for k in ("slope_3_7m", "slope_15m", "slope_2_5h")):
@@ -1428,7 +1433,11 @@ def enrich_cross_venue_trends(
         if isinstance(kalman_data, dict) and isinstance(k_sym := first_variant_dict(kalman_data, cand_keys), dict):
             is_unseeded_cold_kalman = is_unseeded_kalman_state(k_sym)
             cur_is_unseeded = is_unseeded_kalman_state(entry, treat_none_as_unseeded=True)
-            if cur_is_unseeded and (not is_unseeded_cold_kalman or safe_float(entry.get("kalman_vel"), default=None) is None):
+            if (
+                not is_closed_equity
+                and cur_is_unseeded
+                and (not is_unseeded_cold_kalman or safe_float(entry.get("kalman_vel"), default=None) is None)
+            ):
                 entry["kalman_vel"], entry["kalman_vel_std"], entry["kalman_trend"] = (
                     k_sym.get("kalman_vel"), k_sym.get("kalman_vel_std"), k_sym.get("kalman_trend")
                 )

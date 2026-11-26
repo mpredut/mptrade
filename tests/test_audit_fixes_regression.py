@@ -3750,11 +3750,37 @@ def test_cycle4_equity_post_close_provenance_kinematics_and_partial_7d(tmp_path)
 
     # --- C4.4: Closed quote (>30m old) prunes intraday keys even when post_rth_series_replaced=True ---
     pol = EquityRthSessionPolicy()
-    closed_entry = {"quote_age_min": 180.0, "chg_15m_pct": 3.46, "chg_30m_pct": 3.72, "chg_1h_pct": 2.45}
+    closed_entry = {
+        "quote_age_min": 180.0,
+        "chg_15m_pct": 3.46,
+        "chg_30m_pct": 3.72,
+        "chg_1h_pct": 2.45,
+        "slope_15m": -0.0544,
+        "gradient_recent": -0.2098,
+        "kalman_vel": -0.74411,
+        "slope_2_5h": 0.05611,
+    }
     closed_m24 = {"chg_15m_pct": 3.46, "chg_30m_pct": 3.72, "chg_1h_pct": 2.45, "chg_24h_pct": -5.27}
     pol.prune_stale_short_metrics(closed_entry, closed_m24, [], ts_closed_now, post_rth_series_replaced=True)
     assert "chg_15m_pct" not in closed_entry and "chg_1h_pct" not in closed_entry
+    assert "slope_15m" not in closed_entry and "gradient_recent" not in closed_entry and "kalman_vel" not in closed_entry
+    assert closed_entry["slope_2_5h"] == pytest.approx(0.05611)
     assert "chg_15m_pct" not in closed_m24 and "chg_24h_pct" in closed_m24
+    # Second enrich_cross_venue_trends pass must NOT re-inject stale kalman_vel onto a closed equity (>30m quote age)
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends
+
+    pt_closed_kalman = {"NVDA_US_EQ": dict(closed_entry)}
+    enrich_cross_venue_trends(
+        pt_closed_kalman,
+        {},
+        {"NVDA_US_EQ": {"kalman_vel": -0.0393, "kalman_vel_std": 0.12, "kalman_trend": -1}},
+        {},
+        {},
+        {},
+        {},
+        allow_network=False,
+    )
+    assert "kalman_vel" not in pt_closed_kalman["NVDA_US_EQ"]
 
     # --- C4.5: Live post-RTH price overriding stale cache_current_price / 24h tail must NOT inherit stale quote_age_min ---
     pt_amd_live = {"AMD_US_EQ": {"price": 409.50, "trend": 0, "growth_coefficient": 0.0}}

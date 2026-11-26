@@ -2577,6 +2577,13 @@ CLOSED_EQUITY_INTRADAY_KEYS: Tuple[str, ...] = (
     "chg_30m_pct",
     "chg_1h_pct",
     "va_hold_min",
+    "slope_15m",
+    "growth_15m",
+    "trend_15m",
+    "gradient_recent",
+    "kalman_vel",
+    "kalman_vel_std",
+    "kalman_trend",
 )
 CLOSED_EQUITY_QUOTE_AGE_MIN: float = 30.0
 _SHORT_SLOPE_OVERRIDE_KEYS: Tuple[str, ...] = (
