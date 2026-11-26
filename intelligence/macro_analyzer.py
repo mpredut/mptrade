@@ -94,14 +94,18 @@ class MacroAnalyzer:
         derived = resolve_derived_telemetry_intervals()
         exec_scale = derived["crypto_executor_interval_sec"] / 360.0
 
-        default_macro_itv = safe_pos_float(
-            conf_margins.get("macro_llm_interval_sec"),
-            derived["default_geopolitical_interval_sec"],
-        ) * exec_scale
-        default_adv_itv = safe_pos_float(
-            conf_margins.get("macro_advisor_interval_sec"),
-            derived["default_sentiment_interval_sec"],
-        ) * exec_scale
+        conf_macro_itv = safe_pos_float(conf_margins.get("macro_llm_interval_sec"), default=None)
+        default_macro_itv = (
+            conf_macro_itv * exec_scale
+            if conf_macro_itv is not None
+            else derived["default_geopolitical_interval_sec"]
+        )
+        conf_adv_itv = safe_pos_float(conf_margins.get("macro_advisor_interval_sec"), default=None)
+        default_adv_itv = (
+            conf_adv_itv * exec_scale
+            if conf_adv_itv is not None
+            else derived["default_sentiment_interval_sec"]
+        )
         self.macro_llm_interval_sec = safe_pos_float(macro_llm_interval_sec, default_macro_itv)
         self.advisor_interval_sec = safe_pos_float(advisor_interval_sec, default_adv_itv)
         self.shadow_notify = _parse_bool_flag(conf_margins.get("shadow_notify", True), False)

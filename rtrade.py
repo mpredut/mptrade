@@ -1473,7 +1473,12 @@ class TradingBot:
 
                 survivors, checkpoints = [], []
                 for coordinator in active:
-                    outcome = coordinator.step(now=now)
+                    try:
+                        outcome = coordinator.step(now=now)
+                    except Exception as step_exc:  # noqa: BLE001 -- isolate per-round failure so sibling rounds still step
+                        print(f"[{self.symbol}] pair={coordinator.pair_id} step error: {step_exc}")
+                        survivors.append(coordinator)
+                        continue
                     export_state = getattr(coordinator, "export_state", None)
                     if callable(export_state):
                         checkpoints.append((coordinator.pair_id, export_state(), outcome.terminal))
@@ -1530,16 +1535,24 @@ class TradingBot:
                         outcome = coordinator.start(current_price, pair_id=reserved_pair_id)
                         export_state = getattr(coordinator, "export_state", None)
                         last_start_at = now
-                        if not outcome.terminal:
+                        has_pair_fn = getattr(pair_store, "has_pair", None)
+                        persisted = True if not callable(has_pair_fn) else bool(has_pair_fn(coordinator.pair_id))
+                        if not outcome.terminal and persisted:
                             active.append(coordinator)
-                        try:
-                            if callable(export_state):
-                                pair_store.checkpoint(
-                                    coordinator.pair_id, export_state(), terminal=outcome.terminal
-                                )
-                        except Exception:
-                            recovery_blocked = True
-                            raise
+                        if persisted:
+                            try:
+                                if callable(export_state):
+                                    pair_store.checkpoint(
+                                        coordinator.pair_id, export_state(), terminal=outcome.terminal
+                                    )
+                            except Exception:
+                                recovery_blocked = True
+                                raise
+                        elif not outcome.terminal:
+                            print(
+                                f"[{self.symbol}] pair={outcome.pair_id} startup failed before intent persistence "
+                                f"(phase={outcome.phase}, reason={outcome.reason}); skipping unpersisted tracking"
+                            )
                         if outcome.terminal:
                             self._clear_venue_blocked_pair(venue, coordinator.pair_id)
                             failed_side, backoff_sec = _place_failure_backoff(outcome.reason)

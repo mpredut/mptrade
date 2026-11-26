@@ -80,21 +80,29 @@ def ssh_cat(remote_path: str) -> dict | list | str | None:
     return None
 
 
+def _ssh_cat_cachedb_candidates(fname: str, subdirs: tuple[str, ...]) -> dict | list | str | None:
+    """Probe distinct remote cachedb subdomain paths in priority order."""
+    seen: set[str] = set()
+    for sub in subdirs:
+        rel = f"{_PROD_ROOT}/cachedb/{sub}/{fname}" if sub else f"{_PROD_ROOT}/cachedb/{fname}"
+        if rel in seen:
+            continue
+        seen.add(rel)
+        val = ssh_cat(rel)
+        if val is not None:
+            return val
+    return None
+
+
 def inspect_fleet(json_output: bool = False):
     bal_caches: dict[str, dict] = {}
     for v_key, bal_fname in VENUE_BALANCE_CACHE_FILENAMES.items():
-        raw_bc = (
-            ssh_cat(cache_path(f"account/{bal_fname}"))
-            or ssh_cat(cache_path(f"orders/{bal_fname}"))
-            or ssh_cat(cache_path(bal_fname))
-        )
+        raw_bc = _ssh_cat_cachedb_candidates(bal_fname, ("account", "orders", ""))
         if isinstance(raw_bc, dict) and isinstance(raw_bc.get("items"), dict) and raw_bc.get("items"):
             bal_caches[v_key] = raw_bc
     raw_positions = (
         ssh_cat(f"statedb/portfolio/{PORTFOLIO_POSITIONS_STATE_FILENAME}")
-        or ssh_cat(cache_path(f"portfolio/{PORTFOLIO_POSITIONS_STATE_FILENAME}"))
-        or ssh_cat(cache_path(f"state/{PORTFOLIO_POSITIONS_STATE_FILENAME}"))
-        or ssh_cat(cache_path(PORTFOLIO_POSITIONS_STATE_FILENAME))
+        or _ssh_cat_cachedb_candidates(PORTFOLIO_POSITIONS_STATE_FILENAME, ("portfolio", "state", ""))
     )
     pos_state = raw_positions if isinstance(raw_positions, dict) else {}
     if bal_caches or pos_state:
@@ -102,25 +110,17 @@ def inspect_fleet(json_output: bool = False):
     else:
         raw_balances = (
             ssh_cat(f"statedb/portfolio/{VENUE_BALANCES_STATE_FILENAME}")
-            or ssh_cat(cache_path(f"portfolio/{VENUE_BALANCES_STATE_FILENAME}"))
-            or ssh_cat(cache_path(f"state/{VENUE_BALANCES_STATE_FILENAME}"))
-            or ssh_cat(cache_path(VENUE_BALANCES_STATE_FILENAME))
+            or _ssh_cat_cachedb_candidates(VENUE_BALANCES_STATE_FILENAME, ("portfolio", "state", ""))
         )
         balances = raw_balances if isinstance(raw_balances, dict) else {}
     raw_topic = (
         ssh_cat(f"statedb/llm/{LLM_TOPIC_THREADS_FILENAME}")
-        or ssh_cat(cache_path(f"llm/{LLM_TOPIC_THREADS_FILENAME}"))
-        or ssh_cat(cache_path(f"system/{LLM_TOPIC_THREADS_FILENAME}"))
-        or ssh_cat(cache_path(LLM_TOPIC_THREADS_FILENAME))
+        or _ssh_cat_cachedb_candidates(LLM_TOPIC_THREADS_FILENAME, ("llm", "system", ""))
     )
     topic_data = raw_topic if isinstance(raw_topic, dict) else {}
     open_orders_by_venue: dict[str, dict] = {}
     for v_key, open_fname in CacheOrderOpenManager.VENUE_FILENAMES.items():
-        raw_oo = (
-            ssh_cat(cache_path(f"account/{open_fname}"))
-            or ssh_cat(cache_path(f"orders/{open_fname}"))
-            or ssh_cat(cache_path(open_fname))
-        )
+        raw_oo = _ssh_cat_cachedb_candidates(open_fname, ("account", "orders", ""))
         if isinstance(raw_oo, dict):
             open_orders_by_venue[v_key] = raw_oo
 
@@ -354,13 +354,16 @@ def inspect_fleet(json_output: bool = False):
             long_pct = f"{deriv.get('top_traders_long_pct', 0)*100:.1f}%" if deriv.get("top_traders_long_pct") else "N/A"
             print(f"  {sym}: Px={px_str} | Imb={imb_str} (Bids={bids_str} Asks={asks_str}) | Wall={wall_str} | CVD 5m={cvd5} (tr={tr5}) 1h={cvd1h} 4h={cvd4h} | Long={long_pct}")
 
-    if sentiment_data or health_data:
+    if sentiment_data or breadth_data or health_data:
         print("\n=== MACRO SENTIMENT & FLEET HEALTH ===")
         if sentiment_data:
             print(f"  Sentiment: {sentiment_data.get('market_bias')} | Conf={sentiment_data.get('confidence')} | Action={sentiment_data.get('recommended_action')}")
-        if breadth_data and isinstance(breadth_data.get("snapshot"), dict):
-            snap = breadth_data["snapshot"]
-            print(f"  Breadth: {snap.get('advancing_pct', 0)*100:.1f}% advancing | Regime={breadth_data.get('regime')}")
+        if breadth_data:
+            adv_ratio = safe_float(breadth_data.get("advance_ratio"), default=None)
+            if adv_ratio is None and isinstance(snap := breadth_data.get("snapshot"), dict):
+                adv_ratio = safe_float(snap.get("advancing_pct"), default=None)
+            if adv_ratio is not None:
+                print(f"  Breadth: {adv_ratio*100:.1f}% advancing | Regime={breadth_data.get('regime')}")
         if health_data:
             fh = result.get("fleet_health") or {}
             stale_note = ""

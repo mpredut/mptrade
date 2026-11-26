@@ -1139,7 +1139,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         except subprocess.TimeoutExpired:
             _record_hard_timeout_slow_rotation()
             logger.warning("Gemini query timed out after %s seconds", timeout_sec)
-            return True, None
+            return False, None
         except Exception as e:
             logger.warning("Failed to invoke agy CLI: %s", e)
         finally:

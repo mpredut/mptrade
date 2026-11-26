@@ -38,8 +38,11 @@ from providers.order_ledger import (
     utc_month_for_ts,
 )
 from state_io import (
+    atomic_write_bytes,
     atomic_write_jsonl,
+    encode_json_payload,
     generation_file_lock,
+    read_bytes_file,
     read_jsonl_dicts,
     save_json_state,
 )
@@ -299,12 +302,18 @@ def backfill_order_ledger_from_audit(
             if already_backfilled:
                 continue
             if existing:
-                old_size = os.path.getsize(ev_path)
-                live_only = [r for r in existing if clean_upper_scalar(r.get("src")) != "AUDIT_BACKFILL"]
-                merged_day = [*day_evs, *live_only]
-                atomic_write_jsonl(ev_path, merged_day, ensure_ascii=False)
-                new_size = os.path.getsize(ev_path)
-                delta = max(0, new_size - old_size)
+                old_raw = read_bytes_file(ev_path)
+                if old_raw is None:
+                    old_raw = b""
+                old_size = len(old_raw)
+                prefix_bytes = "".join(
+                    encode_json_payload(r, ensure_ascii=False, separators=(",", ":")) + "\n"
+                    for r in day_evs
+                ).encode("utf-8")
+                merged_bytes = prefix_bytes + old_raw
+                atomic_write_bytes(ev_path, merged_bytes)
+                new_size = len(merged_bytes)
+                delta = len(prefix_bytes)
                 if ev_fname in offsets or cursor.get("file") == ev_fname:
                     prev_off = safe_nonneg_int(offsets.get(ev_fname), default=old_size)
                     shifted_off = min(new_size, (prev_off if prev_off is not None else old_size) + delta)

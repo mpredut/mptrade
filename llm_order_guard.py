@@ -48,7 +48,7 @@ from guard_hierarchy import (
     set_regime_context_attrs,
     validate_guard_mode_cfg,
 )
-from instrument_registry import is_equity_symbol
+from instrument_registry import is_equity_or_tokenized_symbol
 from intelligence.internal.guards.guard_decision import (
     BrakeAction,
     OrderGuardEvaluatorBase,
@@ -324,7 +324,7 @@ def check_geopolitical_order_guards(
                             ca_reg = clean_upper_scalar(mb_data.get("cross_asset_regime")) or ""
                             target_decouple = (
                                 "EQUITY_BULLISH_DECOUPLING"
-                                if is_equity_symbol(symbol)
+                                if is_equity_or_tokenized_symbol(symbol)
                                 else "CRYPTO_BULLISH_DECOUPLING"
                             )
                             if ca_reg in ("COUPLED_RISK_ON", target_decouple):

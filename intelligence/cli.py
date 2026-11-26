@@ -23,7 +23,7 @@ from botcore import (
     safe_nonneg_ts,
     safe_pos_float,
 )
-from cachepaths import cache_symbol_variants, clean_symbol_key, is_kraken_tokenized_asset
+from cachepaths import cache_symbol_variants, is_kraken_tokenized_asset, telemetry_cache_file_path
 from instrument_registry import canonical_display_symbol
 import intelligence.daemon as _intel_daemon
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
@@ -132,11 +132,7 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
     # 2. Pillar 2: External Microstructure & Derivatives
     try:
-        sym_candidates = list(
-            dict.fromkeys(
-                c for v in (symbol, *cache_symbol_variants(symbol)) if (c := clean_symbol_key(v))
-            )
-        ) or [symbol]
+        sym_candidates = list(dict.fromkeys(v for v in (symbol, *cache_symbol_variants(symbol)) if v)) or [symbol]
 
         for key, prefix in (
             ("orderbook", "orderbook_depth"),
@@ -145,7 +141,10 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         ):
             snap_data = None
             for cand in sym_candidates:
-                cand_data = read_json_dict(os.path.join(cache_dir, f"{prefix}_{cand}.json"), default=None, recover_previous=True)
+                cand_path = telemetry_cache_file_path(cache_dir, prefix, cand)
+                if not cand_path:
+                    continue
+                cand_data = read_json_dict(cand_path, default=None, recover_previous=True)
                 if isinstance(cand_data, dict):
                     snap_data = cand_data
                     break

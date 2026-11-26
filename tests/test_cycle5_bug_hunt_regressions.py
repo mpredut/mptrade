@@ -296,3 +296,240 @@ def test_cycle5_find_order_audit_record_ignores_guard_blocked_events(tmp_path):
         cachedb_dir=str(cache_dir),
     )
     assert rec is None
+
+
+def test_cycle5_backfill_boundary_day_preserves_live_byte_offsets(tmp_path):
+    from verify_tools.backfill_order_ledger_from_audit import backfill_order_ledger_from_audit
+    import state_io as sio
+
+    cache_dir = tmp_path / "cachedb"
+    audit_dir = tmp_path / "audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    reader = OrderLedgerReader(cachedb_dir=str(cache_dir))
+
+    # Write 5 compact live ledger events on 2026-11-25, cursor positioned after event #3.
+    day_key = "2026-11-25"
+    ev_path = Path(reader.events_path(day_key))
+    ev_path.parent.mkdir(parents=True, exist_ok=True)
+    live_rows = [
+        {
+            "ts": 1_795_568_400.0 + idx * 10.0,
+            "ev": "SUBMITTED",
+            "v": "binance",
+            "sym": "BTCUSDC",
+            "cid": f"LIVE_{idx}",
+            "side": "BUY",
+            "qty": 0.01,
+        }
+        for idx in range(5)
+    ]
+    live_lines = [sio.encode_json_payload(r, ensure_ascii=False, separators=(",", ":")) + "\n" for r in live_rows]
+    ev_path.write_bytes("".join(live_lines).encode("utf-8"))
+    prev_off = len("".join(live_lines[:3]).encode("utf-8"))
+
+    active_p = Path(reader.active_path())
+    active_p.parent.mkdir(parents=True, exist_ok=True)
+    sio.save_json_state(
+        str(active_p),
+        {
+            "orders": {},
+            "recently_closed": {},
+            "journal_cursor": {
+                "file": ev_path.name,
+                "offset": prev_off,
+                "offsets": {ev_path.name: prev_off},
+            },
+        },
+    )
+
+    # Historical audit file strictly earlier than the first live event on the same UTC day.
+    hist_audit = [
+        {
+            "ts": 1_795_564_900.0 + idx,
+            "event": "submit_requested",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "client_order_id": f"HIST_{idx}",
+            "side": "BUY",
+            "qty": 0.02,
+        }
+        for idx in range(2)
+    ]
+    (audit_dir / "execution_audit_2026-11-25.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in hist_audit),
+        encoding="utf-8",
+    )
+
+    stats = backfill_order_ledger_from_audit(str(audit_dir), str(cache_dir), dry_run=False)
+    assert stats["boundary_day_prepended"] == 2
+
+    snap = reader.read_active_snapshot()
+    shifted_off = snap["journal_cursor"]["offsets"][ev_path.name]
+    unread, _ = sio.read_jsonl_dicts_from_offset(str(ev_path), shifted_off)
+    assert [r["cid"] for r in unread] == ["LIVE_3", "LIVE_4"]
+
+
+def test_cycle5_gemini_cli_timeout_returns_unhandled_for_rest_fallback(monkeypatch):
+    import subprocess
+    from intelligence.sentiment import gemini_client as gc
+
+    cli = gc.GeminiClient.__new__(gc.GeminiClient)
+    cli._cli_runner = "agy"
+    cli._model = "gemini-2.5-pro"
+    cli._JSON_MODE_LOCAL = SimpleNamespace(include_repo_rules=False)
+    cli._QUOTA_MEM_CACHE = {}
+    cli._resolve_cli_model_candidates = lambda *_a, **_kw: ["gemini-2.5-pro"]
+    cli._resolve_model_pools = lambda **_kw: ((), (), ())
+    cli._build_cli_cmd = lambda *_a, **_kw: ["agy", "run"]
+    cli._invoke_cli = lambda *_a, **_kw: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd=["agy"], timeout=5))
+
+    monkeypatch.setattr(gc, "resolve_bot_cli_base", lambda: "agy")
+    handled, out = cli._query_cli_runner(
+        "hello",
+        selected_model="gemini-2.5-pro",
+        timeout_sec=5.0,
+        cache_ttl_sec=60.0,
+        now=1_700_000_000.0,
+        thread_title=None,
+        topic_key=None,
+        conversation_id=None,
+        resume_prompt=None,
+        include_repo_rules=False,
+        require_json=False,
+        cli_mocked=True,
+    )
+    assert handled is False
+    assert out is None
+
+
+def test_cycle5_intelligence_cli_finds_equity_and_xstock_pillar2_telemetry(tmp_path):
+    from intelligence.cli import inspect_symbol_intelligence
+    from cachepaths import telemetry_cache_file_path
+    import state_io as sio
+
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for sym in ("NVDA_US_EQ", "SPCXxUSD"):
+        p = telemetry_cache_file_path(str(cache_dir), "orderbook_depth", sym)
+        assert p is not None
+        Path(p).parent.mkdir(parents=True, exist_ok=True)
+        sio.atomic_write_json(p, {"ts": 1_700_000_000.0, "bid_depth_usd": 12345.0})
+
+    st_eq = inspect_symbol_intelligence("NVDA_US_EQ", cache_dir=str(cache_dir))
+    assert st_eq["pillar2_external"]["orderbook"] is not None
+    assert st_eq["pillar2_external"]["orderbook"]["bid_depth_usd"] == 12345.0
+
+    st_xs = inspect_symbol_intelligence("SPCXxUSD", cache_dir=str(cache_dir))
+    assert st_xs["pillar2_external"]["orderbook"] is not None
+    assert st_xs["pillar2_external"]["orderbook"]["bid_depth_usd"] == 12345.0
+
+
+def test_cycle5_macro_analyzer_does_not_double_scale_derived_intervals(monkeypatch, tmp_path):
+    import intelligence.macro_analyzer as ma_mod
+
+    monkeypatch.setattr(ma_mod, "_load_margins", lambda: {})
+    monkeypatch.setattr(
+        ma_mod,
+        "resolve_derived_telemetry_intervals",
+        lambda: {
+            "crypto_executor_interval_sec": 600.0,
+            "default_geopolitical_interval_sec": 27000.0,
+            "default_sentiment_interval_sec": 18000.0,
+        },
+    )
+    monkeypatch.setattr(ma_mod._geo_analyzer, "GeopoliticalThreatAnalyzer", lambda **_kw: SimpleNamespace())
+    monkeypatch.setattr(ma_mod._sentiment_advisor, "SentimentAdvisor", lambda **_kw: SimpleNamespace())
+
+    analyzer = ma_mod.MacroAnalyzer(cache_dir=str(tmp_path))
+    assert analyzer.macro_llm_interval_sec == pytest.approx(27000.0)
+    assert analyzer.advisor_interval_sec == pytest.approx(18000.0)
+
+
+def test_cycle5_inspect_prod_fleet_distinct_ssh_paths_and_flat_breadth(monkeypatch, capsys):
+    from verify_tools import inspect_prod_fleet as ipf
+
+    probed = []
+
+    def _fake_ssh_cat(p):
+        probed.append(p)
+        return None
+
+    monkeypatch.setattr(ipf, "ssh_cat", _fake_ssh_cat)
+    ipf._ssh_cat_cachedb_candidates("cache_balance_binance.json", ("account", "orders", ""))
+    assert len(probed) == 3
+    assert len(set(probed)) == 3
+    assert probed[0].endswith("/cachedb/account/cache_balance_binance.json")
+    assert probed[1].endswith("/cachedb/orders/cache_balance_binance.json")
+    assert probed[2].endswith("/cachedb/cache_balance_binance.json")
+
+
+def test_cycle5_monitor_night_no_deleted_healthcheck_sh():
+    src = Path("/home/predut/mptrade/verify_tools/monitor_night.py").read_text(encoding="utf-8")
+    assert "healthcheck.sh" not in src
+    assert "trading-orchestrator.service" in src
+    assert "__RESTART_OK__" in src
+
+
+def test_cycle5_rtrade_pair_store_skips_unpersisted_terminal_checkpoint(tmp_path):
+    from rtrade_pair_store import RTradePairStore
+
+    store = RTradePairStore(str(tmp_path / "rtrade_pairs.json"))
+    assert store.has_pair("never-persisted") is False
+    # Terminal checkpoint on unpersisted failed start must NOT raise KeyError.
+    store.checkpoint("never-persisted", {"phase": "failed", "reason": "buy_insufficient_funds:USDC"}, terminal=True)
+    # Non-terminal checkpoint on unknown pair still raises KeyError so state corruption is never hidden.
+    with pytest.raises(KeyError):
+        store.checkpoint("never-persisted", {"phase": "working"}, terminal=False)
+
+
+def test_cycle5_rtrade_loop_isolates_per_coordinator_step_error():
+    src = Path("/home/predut/mptrade/rtrade.py").read_text(encoding="utf-8")
+    loop_block = src.split("survivors, checkpoints = [], []", 1)[1].split("pair_store.checkpoint_many(checkpoints)", 1)[0]
+    assert "except Exception as step_exc:" in loop_block
+    assert "survivors.append(coordinator)" in loop_block
+    assert "continue" in loop_block
+
+
+def test_cycle5_llm_order_guard_classifies_kraken_xstocks_as_equities_for_decoupling(monkeypatch, tmp_path):
+    import llm_order_guard as log_mod
+
+    now_ts = 1_700_000_000.0
+    monkeypatch.setattr(log_mod, "is_intelligence_master_off", lambda: False)
+    monkeypatch.setattr(
+        log_mod,
+        "_load_margins",
+        lambda: {"geopolitical_guard_mode": "enforce"},
+    )
+    geo_assessment = SimpleNamespace(
+        threat_level="ELEVATED",
+        risk_score=0.72,
+        recommended_brake="DOWNSCALE_50",
+        summary="Regional escalation",
+        ts=now_ts - 2400.0,
+    )
+    monkeypatch.setattr(
+        log_mod._geo_analyzer,
+        "GeopoliticalThreatAnalyzer",
+        lambda start_sync=False: SimpleNamespace(
+            _cached_assessment=geo_assessment,
+            _effective_cache_dir=lambda: str(tmp_path),
+        ),
+    )
+    monkeypatch.setattr(
+        log_mod._mtc,
+        "load_cached_macro_benchmarks",
+        lambda _cdir: {
+            "ts": now_ts - 60.0,
+            "cross_asset_regime": "CRYPTO_BULLISH_DECOUPLING",
+        },
+    )
+    # Under CRYPTO_BULLISH_DECOUPLING (equities selling off, crypto bullish), SPCXxUSD MUST NOT absorb the threat!
+    allowed, reason, scale = log_mod.check_geopolitical_order_guards(
+        "SPCXxUSD",
+        "BUY",
+        margins={"geopolitical_guard_mode": "enforce"},
+        now=now_ts,
+    )
+    assert allowed is True
+    assert scale < 1.0
+    assert "absorbed" not in reason

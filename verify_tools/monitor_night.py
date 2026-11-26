@@ -142,9 +142,14 @@ def main():
         c.close()
         return 1
 
-    # 2. Process status through healthcheck --check (read-only).
-    check_out = run(c, f"cd {ROOT} && bash healthcheck.sh --check 2>&1", wait=30)
-    print("\n--- healthcheck --check ---")
+    # 2. Orchestrator supervision status (read-only).
+    check_out = run(
+        c,
+        "systemctl status trading-orchestrator.service --no-pager -n 5 2>&1 "
+        "|| pgrep -af orchestratorTrade/orchestrator.py 2>&1 || true",
+        wait=30,
+    )
+    print("\n--- orchestrator status ---")
     print(check_out)
 
     # 3. Per-process analysis
@@ -181,10 +186,17 @@ def main():
         fleet_dead = [l for l, r in dead if r == "fleet"]
 
         if bot_dead:
-            print(f"\n--- restarting dead bots: {bot_dead} ---")
-            sup_out = run(c, f"cd {ROOT} && bash healthcheck.sh --supervise 2>&1", wait=30)
+            print(f"\n--- restarting dead bots via orchestrator: {bot_dead} ---")
+            sup_out = run(
+                c,
+                "sudo -n /usr/local/bin/trading-admin restart-fleet 2>&1 && echo __RESTART_OK__ || echo __RESTART_FAIL__",
+                wait=30,
+            )
             print(sup_out)
-            actions.append(f"RESTART: {bot_dead}")
+            if "__RESTART_OK__" in sup_out:
+                actions.append(f"RESTART: {bot_dead}")
+            else:
+                actions.append(f"RESTART-FAILED: {bot_dead}")
 
         if fleet_dead:
             print(f"\n  ⚠  FLEET dead (not restarting by hand, flota_start owns it): {fleet_dead}")

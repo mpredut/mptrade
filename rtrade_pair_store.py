@@ -344,7 +344,11 @@ class RTradePairStore:
             now = time.time()
             changed = False
             for pid_clean, state, terminal_b in normalized:
-                rec = pairs[pid_clean]
+                rec = pairs.get(pid_clean)
+                if rec is None:
+                    if terminal_b:
+                        continue
+                    raise KeyError(pid_clean)
                 new_phase = state.get("phase")
                 if (
                     rec.get("state") == state
@@ -360,6 +364,14 @@ class RTradePairStore:
             return changed
 
         self.mutate(op)
+
+    def has_pair(self, pair_id) -> bool:
+        pid_clean = clean_order_id_str(pair_id)
+        if not pid_clean:
+            return False
+        resolved_lock = self._resolved_lock_path()
+        with (FileLock(resolved_lock) if resolved_lock else self._mem_lock):
+            return pid_clean in self._read().get("pairs", {})
 
     def active(self, symbol):
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
