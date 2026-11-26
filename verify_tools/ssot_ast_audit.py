@@ -102,7 +102,10 @@ VENUE_LEAF_ADAPTERS = frozenset({
     "providers/t212_provider.py",
     "providers/replay_provider.py",
 })
-VENUE_BRANCH_EXTRA_GUARDED = frozenset({"verify_tools/check_cache_coherence.py"})
+VENUE_BRANCH_EXTRA_GUARDED = frozenset({
+    "verify_tools/account_cache_coherence.py",
+    "verify_tools/check_cache_coherence.py",
+})
 EQUITY_ENDSWITH_EXEMPT_PREFIXES = ("tests/", "offline/", ".venv/", "myenv/")
 REEXPORT_EXTRA_DIRS = ("offline", "verify_tools")
 _BUILTIN_NAMES = frozenset(dir(builtins)) | frozenset({

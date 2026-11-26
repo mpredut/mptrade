@@ -38,6 +38,10 @@ from cachepaths import (  # noqa: E402
 )
 from instrument_registry import casefold_get, is_symbol_market_open, monitored_order_symbols, symbols_for  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
+from verify_tools.account_cache_coherence import (  # noqa: E402
+    evaluate_account_cache_coherence,
+    load_account_cache_coherence_snapshot,
+)
 
 _DEFAULT_CACHEDB = os.path.join(ROOT, "cachedb")
 CACHEDB = _DEFAULT_CACHEDB
@@ -225,6 +229,33 @@ def main() -> int:
     elif os.path.abspath(_effective_cachedb_dir()) == os.path.abspath(_DEFAULT_CACHEDB):
         problems.append("account_health MISSING")
         print(f"-- {CACHE_ACCOUNT_HEALTH_FILENAME}: MISSING")
+
+    # 4. cross-cache event reflection coherence (open/filled/trade/balance/ledger/health)
+    eff_cache_dir = _effective_cachedb_dir()
+    is_default_cache = os.path.abspath(eff_cache_dir) == os.path.abspath(_DEFAULT_CACHEDB)
+    coh_snap = load_account_cache_coherence_snapshot(
+        eff_cache_dir,
+        now_s=now,
+        venues=SUPPORTED_HEALTH_VENUES,
+        health_path=health_path,
+        include_ledger=True,
+    )
+    has_any_acct_files = any(
+        ev.open_file_exists or ev.filled_file_exists or ev.balance_file_exists
+        for ev in coh_snap.venues.values()
+    )
+    if is_default_cache or has_any_acct_files or coh_snap.ledger_present:
+        coh_violations = evaluate_account_cache_coherence(
+            coh_snap,
+            require_health_disk_files=bool(is_default_cache or has_any_acct_files),
+        )
+        print(f"-- cross-cache event coherence ({len(coh_snap.venues)} venues, ledger={'yes' if coh_snap.ledger_present else 'no'}):")
+        if coh_violations:
+            for viol in coh_violations:
+                problems.append(f"cross_cache {viol.venue} {viol.rule}")
+                print(f"   FAIL {viol.format_line()}")
+        else:
+            print("   all venue reflections (open/filled/trade/balance/ledger/health) -> OK")
 
     if problems:
         print(f"\nPROBLEMS ({len(problems)}): {problems}")

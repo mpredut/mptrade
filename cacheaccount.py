@@ -5263,7 +5263,36 @@ class _VenueOpenOrdersBridge(_AccountTradeBridgeBase):
     LOG_TAG = "open_orders_cache"
     THREAD_NAME = "VenueOpenOrdersBridge"
 
-    def sync_venue_once(self, v_key: str, *, now_ms: Optional[int] = None) -> bool:
+    def __init__(self) -> None:
+        super().__init__()
+        self._sig_lock = threading.Lock()
+        self._last_open_sig_by_venue: dict[str, tuple[tuple[str, str, str, str, str], ...]] = {}
+
+    @staticmethod
+    def _open_orders_signature(
+        open_by_sym: Mapping[str, list[dict[str, Any]]],
+    ) -> tuple[tuple[str, str, str, str, str], ...]:
+        sig: list[tuple[str, str, str, str, str]] = []
+        for s_k, rows in open_by_sym.items():
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                oid = clean_order_id(extract_order_id(row, default=None)) or ""
+                side = extract_order_side(row) or ""
+                orig = f"{safe_nonneg_float(row.get('origQty') if row.get('origQty') is not None else row.get('qty'), default=0.0) or 0.0:.8f}"
+                ex_q = f"{safe_nonneg_float(row.get('executedQty') if row.get('executedQty') is not None else row.get('filled_qty'), default=0.0) or 0.0:.8f}"
+                px = f"{safe_nonneg_float(row.get('price'), default=0.0) or 0.0:.8f}"
+                sig.append((str(s_k), oid, side, f"{orig}/{ex_q}", px))
+        sig.sort()
+        return tuple(sig)
+
+    def sync_venue_once(
+        self,
+        v_key: str,
+        *,
+        now_ms: Optional[int] = None,
+        trigger_balance_refresh: bool = True,
+    ) -> bool:
         """Fetch one venue's open orders in batch and persist ``cache_order_open_<venue>.json``."""
         eff_ms = resolve_now_ms(now_ms)
         eff_s = eff_ms / 1000.0
@@ -5298,6 +5327,12 @@ class _VenueOpenOrdersBridge(_AccountTradeBridgeBase):
             )
             if all_ok:
                 _record_venue_health_sync(v_key, "open_orders", now_ms=eff_ms)
+                cur_sig = self._open_orders_signature(open_by_sym)
+                with self._sig_lock:
+                    prev_sig = self._last_open_sig_by_venue.get(v_key)
+                    self._last_open_sig_by_venue[v_key] = cur_sig
+                if trigger_balance_refresh and prev_sig is not None and cur_sig != prev_sig:
+                    request_venue_account_refresh(v_key, include_open_orders=False)
             return True
         return False
 
