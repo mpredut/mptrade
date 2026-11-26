@@ -28,9 +28,9 @@ from botcore import (
 )
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
-from market_monitor.alerts_config import resolve as resolve_alert_threshold
-from market_monitor.price_platforms import get_base_symbol, is_rth_equity_symbol
-from state_io import load_json_state, save_json_state
+from market_monitor.alertsconfig import resolve as resolve_alert_threshold
+from market_monitor.priceplatforms import get_base_symbol, is_rth_equity_symbol
+from state_stores.price_watcher_state import PriceWatcherStateStore
 
 # Canonical CoinMarketCap slugs for major symbols. _all_listings is keyed by
 # symbol, so when several coins share one (for example, real Bitcoin and a scam
@@ -148,7 +148,7 @@ class PriceChecker:
                 for item in (alert if isinstance(alert, (list, tuple)) else [alert])
             ]
         )
-        # Use market_alerts.conf configuration, including per_coin, when supplied;
+        # Use pricewatcher.conf configuration, including per_coin, when supplied;
         # otherwise retain the legacy hardcoded defaults.
         self.config = copy.deepcopy(PRICE_ALERT_CONFIG)
         if isinstance(config, dict):
@@ -183,11 +183,11 @@ class PriceChecker:
         return f"{str(symbol or '').strip().upper()}_{str(alert_type or '').strip().lower()}"
 
     def _load_notification_state(self) -> None:
-        if not self.state_file or not os.path.exists(self.state_file):
+        if not self.state_file:
             return
         try:
-            raw = load_json_state(self.state_file, default_factory=dict, fail_closed=False, label="PriceChecker cooldowns")
-            if not isinstance(raw, dict):
+            raw = PriceWatcherStateStore.load_state(self.state_file)
+            if not isinstance(raw, dict) or not raw:
                 return
             now = time.time()
             for k, v in raw.items():
@@ -226,11 +226,7 @@ class PriceChecker:
             if mag is not None:
                 entry["last_pct"] = round(mag, 4)
             payload[key] = entry
-        try:
-            os.makedirs(os.path.dirname(os.path.abspath(self.state_file)), exist_ok=True)
-            save_json_state(self.state_file, payload, indent=2)
-        except Exception:
-            pass
+        PriceWatcherStateStore.save_state(self.state_file, payload)
 
     def _effective_sample_interval_sec(self) -> float:
         cache_sync = safe_pos_float(getattr(self.cachePriceAll, "sync_interval_sec", None), default=None)

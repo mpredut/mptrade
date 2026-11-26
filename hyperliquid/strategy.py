@@ -53,7 +53,7 @@ from botcore import (  # noqa: E402
 ensure_local_module_priority(_HERE, "common", "hl_client", "market_data", "signals")
 
 from common import load_hl_default_env as _hl_default_env, notify
-from notify_engine.alertnotifiers import emit_trade_notification  # noqa: E402
+from notify_engine.notifyapi import emit_trade_notification  # noqa: E402
 from strategies.base_spot_mixin import BaseSpotMixin, SpotParamsMixin, load_common_core_strat_env, sanitize_common_spot_state
 from strategies.state_store import safe_state_token, state_path_for as _shared_state_path_for
 from hl_client import HLClient

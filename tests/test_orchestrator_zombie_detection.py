@@ -7,8 +7,8 @@ from unittest import IsolatedAsyncioTestCase
 from intelligence.macro.lexicon_ssot import discover_dynamic_terms_from_headlines
 from market_monitor.pricechecker import PriceChecker
 from market_monitor.pricefetcher import is_rth_equity_symbol
-from notify_engine import alertnotifiers as _an, mailer as _mailer, server as _ns
-from notify_engine.server import NotificationServer
+from notify_engine import ntfymailer as _mailer, notifyapi as _na, ntfypolicy as _ng, ntfydispatcher as _nd
+from notify_engine.ntfydispatcher import NtfyDispatcher as NotificationServer
 from orchestratorTrade.orchestrator import BotManager
 from tests.conftest import TempDirTestCase
 from pathlib import Path
@@ -357,7 +357,7 @@ class OrchestratorZombieDetectionTest(TempDirTestCase, IsolatedAsyncioTestCase):
             return mod
 
         fake_server = type(
-            "NotificationServer",
+            "NtfyDispatcher",
             (),
             {"_load_ntfy_token": lambda self: "tok", "_load_rules": lambda self: {}},
         )()
@@ -368,12 +368,16 @@ class OrchestratorZombieDetectionTest(TempDirTestCase, IsolatedAsyncioTestCase):
             await self.manager._reload_runtime_modules_and_manifest()
 
         self.assertLess(
-            reload_order.index(_an.__name__),
+            reload_order.index(_ng.__name__),
+            reload_order.index(_na.__name__),
+        )
+        self.assertLess(
+            reload_order.index(_na.__name__),
             reload_order.index(_mailer.__name__),
         )
         self.assertLess(
             reload_order.index(_mailer.__name__),
-            reload_order.index(_ns.__name__),
+            reload_order.index(_nd.__name__),
         )
 
         self.assertTrue(is_rth_equity_symbol("SPCX"))

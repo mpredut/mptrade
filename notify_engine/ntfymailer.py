@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""mailer.py -- the single SMTP choke point for every email the fleet sends.
+"""ntfymailer.py -- the single SMTP choke point for every email the fleet sends.
 
 Owns two things and nothing else:
   * Delivery: ``send_email(subject, body)`` over SMTP (STARTTLS), with cross-process
-    deduplication through the shared delivery policy in ``alertnotifiers``.
+    deduplication through the shared delivery policy in ``ntfypolicy``.
   * Mirror policy: which ntfy topics are ALSO copied to email. The ERROR channel and
     the DEADMAN ("server down") channel are mirrored; everything else is push-only
     unless a caller explicitly asks for email.
@@ -14,7 +14,7 @@ Environment (``.env`` / ``config.env`` in the repository root):
   DISABLE_EXTERNAL_NOTIFICATIONS                  -- global kill switch
 
 CLI (used by the bash notifiers in orchestratorOS/):
-  mailer.py [--topic TOPIC] SUBJECT BODY
+  ntfymailer.py [--topic TOPIC] SUBJECT BODY
 With ``--topic`` the email is sent only if that topic is mirrored, so the policy
 stays here and the shell scripts never duplicate it.
 """
@@ -32,11 +32,13 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from botcore import _parse_bool_flag, load_env_stack, optional_env, safe_pos_int
-from notify_engine.alertnotifiers import (
-    _GATE_ACCEPTED_REASONS,
+from notify_engine.notifyapi import (
     _external_notifications_disabled,
     is_email_mirrored,
     is_email_suppressed_subject,
+)
+from notify_engine.ntfypolicy import (
+    _GATE_ACCEPTED_REASONS,
     pass_common_gate,
     sanitize_single_line,
 )

@@ -21,10 +21,11 @@ from botcore import evaluate_heartbeat_files_freshness, parse_procs_manifest
 botcore.load_root_config()
 import cachepaths as _cp
 from cachepaths import organize_cachedb_subdomains, resolve_cachedb_filepath
-import notify_engine.alertnotifiers as _an
-import notify_engine.mailer as _mailer
-import notify_engine.server as _ns
-from notify_engine.server import NotificationServer
+import notify_engine.ntfypolicy as _ng
+import notify_engine.notifyapi as _na
+import notify_engine.ntfymailer as _mailer
+import notify_engine.ntfydispatcher as _nd
+from notify_engine.ntfydispatcher import NtfyDispatcher
 import state_io as _sio
 from state_io import open_append_text_file, read_bytes_file
 
@@ -46,7 +47,7 @@ _APPEND_REDIRECT_RE = re.compile(r">>\s*[^\s]+")
 
 
 class BotManager:
-    def __init__(self, server: NotificationServer):
+    def __init__(self, server: NtfyDispatcher):
         self.server = server
         self.processes: Dict[str, asyncio.subprocess.Process] = {}
         self.log_files: Dict[str, Any] = {}
@@ -345,7 +346,7 @@ class BotManager:
         return head_str
 
     async def _reload_runtime_modules_and_manifest(self) -> None:
-        global evaluate_heartbeat_files_freshness, parse_procs_manifest, NotificationServer, organize_cachedb_subdomains, resolve_cachedb_filepath, open_append_text_file, read_bytes_file
+        global evaluate_heartbeat_files_freshness, parse_procs_manifest, NtfyDispatcher, organize_cachedb_subdomains, resolve_cachedb_filepath, open_append_text_file, read_bytes_file
         try:
             importlib.reload(_cp)
             importlib.reload(_sio)
@@ -360,12 +361,13 @@ class BotManager:
                     botcore.load_dotenv(env_path, override=True)
             evaluate_heartbeat_files_freshness = botcore.evaluate_heartbeat_files_freshness
             parse_procs_manifest = botcore.parse_procs_manifest
-            if type(getattr(self, "server", None)).__name__ == "NotificationServer":
-                importlib.reload(_an)
+            if type(getattr(self, "server", None)).__name__ in ("NtfyDispatcher", "NotificationServer"):
+                importlib.reload(_ng)
+                importlib.reload(_na)
                 importlib.reload(_mailer)
-                importlib.reload(_ns)
-                NotificationServer = _ns.NotificationServer
-                self.server.__class__ = _ns.NotificationServer
+                importlib.reload(_nd)
+                NtfyDispatcher = _nd.NtfyDispatcher
+                self.server.__class__ = _nd.NtfyDispatcher
                 self.server.ntfy_token = self.server._load_ntfy_token()
                 self.server.rules = self.server._load_rules()
         except Exception as exc:
@@ -599,7 +601,7 @@ class BotManager:
 
 
 async def main():
-    server = NotificationServer()
+    server = NtfyDispatcher()
     manager = BotManager(server)
 
     # Register OS signals for graceful shutdown

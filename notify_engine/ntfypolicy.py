@@ -1,0 +1,838 @@
+"""ntfypolicy.py -- cross-process notification delivery policy, dedup, and bulk batching engine.
+
+Exclusive policy owner for ``statedb/system/notification_delivery_state.json`` via
+``NotificationDeliveryStateStore``. Pure delivery policy & alert classification
+(zero HTTP, zero SMTP, zero stdout parsing).
+"""
+from __future__ import annotations
+
+import hashlib
+import re
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+from botcore import (
+    _parse_bool_flag,
+    exact_pos_int,
+    float_env,
+    has_explicit_nonroot_env,
+    int_env,
+    is_cache_fresh,
+    is_live_network_backfill_enabled,
+    obj_attr,
+    optional_env,
+    parse_dotenv,
+    safe_float,
+    safe_int,
+    safe_nonneg_int,
+    safe_pos_float,
+)
+from state_io import encode_json_payload
+from state_stores.notification_delivery_state import NotificationDeliveryStateStore
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Matched against title.upper(). Bilingual ON PURPOSE, and it stays that way (owner's
+# decision, same reasoning as verify_tools/watchdogfor_anomaly.py): every alert title is
+# English today, but one written in Romanian by mistake would silently stop being urgent
+# -- it would be routed to the routine topic and skip the email, with no error anywhere.
+# An extra tuple entry costs nothing; a missed liquidation alert costs money.
+_URGENT_MARKERS = (
+    "\U0001f6d1", "\U0001f6e1", "LIQUID", "STOP-LOSS", "STOP_LOSS", "TRAILING", "FAILED",
+    "MANUAL", "ERROR", "CATASTROPH", "CRASH", "GONE", "IMBALANC",
+    "LICHID", "ESUAT", "ERORI", "DISPARUT", "DEZECHILIBR", "CATASTROF",
+)
+_GUARD_ALERT_TITLE_MARKERS = (
+    "\U0001f6e1", "\U0001f6d1", "GUARD", "VETO", "SHADOW", "BLOCKED", "REFUSED",
+    "SMART-SL", "POST-STOP", "STOP-LOSS", "STOP_LOSS",
+    "TRAILING", "QUARANTINE", "GIVE UP",
+)
+_GUARD_ALERT_SOURCES = (
+    "order_guard", "guard", "assetguardian", "macro_shadow",
+    "smart_stop_loss", "post_stop_guard",
+)
+_ERROR_AND_OPS_TITLE_MARKERS = (
+    "FAILED", "ERROR", "EXCEPTION", "TRACEBACK", "CRITICAL", "CATASTROPH", "CRASH",
+    "LIQUID", "LICHID", "CATASTROF", "ESUAT", "ERORI", "DISPARUT", "GONE",
+    "IMBALANC", "DEZECHILIBR", "QUARANTINE", "GIVE UP", "ORDER TERMINAL",
+    "EXPIRED", "CANCELED", "CANCELLED", "REJECTED", "MISMATCH", "NEPOTRIVIT",
+    "TIMEOUT", "DEFER", "ZOMBIE", "OUTAGE", "UNREACHABLE", "SUSTAINED",
+    "RESOURCE USAGE", "SERVER DOWN", "VPN DOWN", "ISP DOWN",
+    "\u26a0", "\u2717", "\u23f0", "\U0001f4c9",
+)
+_ERROR_AND_OPS_SOURCES = (
+    "watchdog", "order_retry", "order-persistence", "smart_stop_loss",
+    "post_stop_guard", "verify", "deadman", "mailer", "orchestrator",
+)
+_TRADE_MARKERS = (
+    "BUY", "SELL", "FILLED", "PLACED", "TREND_ENTRY", "ADOPT", "EXECUTION", "OPEN ", "CLOSE ", "\U0001f4dd", "\U0001f389",
+)
+_KNOWN_OWNERS = (
+    "MANUAL", "TRADEALL", "MONITORORDER", "RTRADE", "MONITORTRADES", "ORDER_RETRY",
+    "ASSETGUARDIAN", "AI_EXECUTOR", "AUTO_CRYPTOTRADE_EXECUTOR", "AUTO_SHARETRADE_EXECUTOR",
+    "AUTO_TRADE_EXECUTOR", "SPOT_DCA", "TRAILING_STOP", "ORDER_MANAGER", "HL_BOT",
+    "KRAKEN_BOT", "T212_BOT", "XSTOCK_WATCH", "FEE_MAINTAINER",
+)
+_OWNER_PAT = "|".join(_KNOWN_OWNERS)
+_VENUE_PAT = "BINANCE|KRAKEN|HYPERLIQUID|HL|T212|TRADING212"
+_OWNER_TAG_RE = re.compile(
+    rf"\[(?:(?:{_VENUE_PAT}):)?({_OWNER_PAT})\]"
+    rf"|\[({_VENUE_PAT})\]"
+    rf"|\((?:(?:{_VENUE_PAT}):)?({_OWNER_PAT})\)",
+    flags=re.IGNORECASE,
+)
+_LINEBREAK_RE = re.compile(r"[\r\n]+")
+_BULK_PRICE_AT_RE = re.compile(r"@\s*\$?[0-9][0-9.,]*")
+_BULK_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+_WHITESPACE_RE = re.compile(r"\s+")
+_GATE_SUPPRESSED_REASONS = (
+    "duplicate", "similar_eliminated", "queue_full_dropped", "topic_queue_full_dropped",
+)
+_GATE_ACCEPTED_REASONS = ("buffered_for_bulk", *_GATE_SUPPRESSED_REASONS)
+
+_REDUNDANT_BULK_LINE_RE = re.compile(
+    r"^(?:Mode:\s*\S+\s*" "\u00b7" r"\s*Status:\s*Simulated/Observed"
+    r"|Action:\s*[^" "\u00b7" r"]+" "\u00b7" r"\s*Bias:\s*[^(]+\(([^)]+)\)"
+    r"|Brake:\s*[^" "\u00b7" r"]+" "\u00b7" r"\s*Threat:\s*[^(]+\(([^)]+)\)"
+    r"|Risk:\s*(.+))$",
+    flags=re.IGNORECASE,
+)
+_LAST_LOGS_RE = re.compile(r"(?is)\n*\s*last logs:.*")
+_AUTO_TOPIC_TAG_RE = re.compile(r"\[(?:[a-z0-9_]+:)?auto_[a-z0-9_]+", re.IGNORECASE)
+_BRACKET_GROUP_RE = re.compile(r"\[([^\[\]]+)\]")
+_BODY_VENUE_RE = re.compile(r"\bVenue:\s*([A-Za-z0-9_]+)", re.IGNORECASE)
+_LEADING_BRACKET_RE = re.compile(r"^\[[^\]]+\]\s*")
+_SIMILARITY_SUBS = (
+    (re.compile(r"^\d{4}[-/]\d{2}[-/]\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?Z?\s*"), ""),
+    (re.compile(r"^\d{2}:\d{2}:\d{2}\s*"), ""),
+    (re.compile(r"0x[0-9a-fA-F]+"), "<HEX>"),
+    (re.compile(r"~\d+(?:,\d{3})*(?:\.\d+)?\s*[\$" "\u20ac" r"]\s*~"), "<N>"),
+    (re.compile(r"[+-]?[\$" "\u20ac" r"~]?\d+(?:,\d{3})*(?:\.\d+)?(?:%|ms|s|m|h|d|x|bps|\$|" "\u20ac" r")?"), "<N>"),
+    (re.compile(r"\s+"), " "),
+)
+_IDENTITY_NAME_SUBS = (
+    (re.compile(r"[+-]?\d+(?:\.\d+)?%"), "<PCT>"),
+    (re.compile(r"@\s*~?\$?\d+(?:\.\d+)?"), "@ <PX>"),
+    (re.compile(r"~\d+(?:\.\d+)?\s*[\$" "\u20ac" r"]\s*~?"), "<VAL>"),
+    (re.compile(r"\(\d+(?:\.\d+)?s\)"), "(<DUR>)"),
+)
+_PRIO_RANK = {"urgent": 3, "high": 2, "default": 1, "low": 0}
+_MAX_FINGERPRINT_HISTORY = 200
+_KNOWN_NOTIFY_VENUES = frozenset({"binance", "kraken", "hyperliquid", "t212", "bybit", "coinbase", "okx"})
+_BULK_TITLE_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "at", "by", "for", "from", "in", "is", "of", "on", "or", "the", "to", "with",
+})
+_TOPIC_CATEGORY_SPECS = (
+    ("deadman", "DEADMAN", 3),
+    ("error", "ERROR", 3),
+    ("guard", "GUARD", 2),
+    ("trade", "TRADES", 2),
+    ("server", "SERVER", 1),
+    ("macro", "MACRO", 1),
+    ("price", "PRICE", 0),
+)
+
+
+def sanitize_single_line(val: Any, default: str = "") -> str:
+    """Coerce ``val`` to a single-line stripped string (rejecting booleans/None) or return ``default``."""
+    if isinstance(val, bool) or val is None:
+        return default
+    cleaned = _LINEBREAK_RE.sub(" ", str(val)).strip()
+    return cleaned if cleaned else default
+
+
+def strip_owner_tags(text: Any) -> str:
+    """Remove bot/manual owner bracket or paren tags from an alert title."""
+    s = "" if isinstance(text, bool) or text is None else str(text)
+    return _OWNER_TAG_RE.sub("", s)
+
+
+def make_bot_event_alert(
+    title: Any,
+    body: Any,
+    source: Any = "system",
+    symbol: Any = "SYSTEM",
+    **extra: Any,
+) -> dict[str, Any]:
+    """Construct a canonical bot_event alert dictionary."""
+    return {
+        "type": "bot_event",
+        "name": title,
+        "body": body,
+        "source": source,
+        "symbol": symbol,
+        **extra,
+    }
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    val = int_env(name)
+    return val if (val is not None and val >= 0) else default
+
+
+def _delivery_state_lock(path: Path):
+    return NotificationDeliveryStateStore.state_lock(path)
+
+
+def _load_delivery_state(path: Path, today: str) -> dict:
+    state = NotificationDeliveryStateStore.read_state(path)
+    if not isinstance(state, dict) or not isinstance(state.get("channels"), dict):
+        return {"schema_version": 1, "date_utc": today, "channels": {}}
+    if state.get("date_utc") != today:
+        state["schema_version"] = 1
+        state["date_utc"] = today
+        for ch in state["channels"].values():
+            if isinstance(ch, dict):
+                ch["sent"] = 0
+                ch["budget_warning_sent"] = False
+    return state
+
+
+def _save_delivery_state(path: Path, state: dict) -> None:
+    NotificationDeliveryStateStore.write_state(path, state)
+
+
+def _is_guard_alert(alerts: list[Any]) -> bool:
+    for alert in alerts:
+        if not isinstance(alert, dict):
+            continue
+        title = strip_owner_tags(str(alert.get("name") or alert.get("symbol") or alert.get("title") or "").upper())
+        source = str(alert.get("source") or "").lower()
+        if any(m in title for m in _GUARD_ALERT_TITLE_MARKERS) or any(s in source for s in _GUARD_ALERT_SOURCES):
+            return True
+    return False
+
+
+def _is_error_or_ops_alert(alerts: list[Any]) -> bool:
+    for alert in alerts:
+        if not isinstance(alert, dict):
+            continue
+        title_no_owner = strip_owner_tags(str(alert.get("name") or alert.get("title") or "").upper())
+        source = str(alert.get("source") or "").lower()
+        if (
+            any(m in title_no_owner for m in _ERROR_AND_OPS_TITLE_MARKERS)
+            or any(s in source for s in _ERROR_AND_OPS_SOURCES)
+            or alert.get("type") == "email"
+        ):
+            return True
+    return False
+
+
+def _normalize_text_for_similarity(text: str) -> str:
+    """Normalize volatile numbers, timestamps, PIDs, hex IDs, prices, and percentages."""
+    s = _LAST_LOGS_RE.sub("", str(text or "")).strip()
+    for pat, repl in _SIMILARITY_SUBS:
+        s = pat.sub(repl, s)
+    return s.strip().lower()
+
+
+def _canonical_topic_key(topic: Any) -> str:
+    """Normalize a topic name or URL into a canonical per-topic queue key."""
+    if isinstance(topic, bool) or topic is None:
+        return "_default_"
+    s = str(topic).strip().rstrip("/")
+    if "/" in s:
+        s = s.rsplit("/", 1)[-1].strip()
+    return s or "_default_"
+
+
+def _config_notification_int(key: str, default: int) -> int:
+    """Resolve a notification interval from env/config.env, defaulting to 0 when unconfigured in non-live mode."""
+    if has_explicit_nonroot_env(key):
+        return _positive_int_env(key, default)
+    dedup_s = float_env("NOTIFICATION_DEDUP_SECONDS")
+    if dedup_s == 0.0 or not is_live_network_backfill_enabled():
+        return 0
+    if optional_env(key):
+        return _positive_int_env(key, default)
+    cfg = parse_dotenv(str(BASE_DIR / "config.env"))
+    cfg_val = safe_int(cfg.get(key), default=None)
+    return cfg_val if (cfg_val is not None and cfg_val >= 0) else default
+
+
+def _queue_max_items() -> int:
+    """Maximum total notifications buffered across all topics and retry queues."""
+    return max(1, _positive_int_env("NOTIFICATION_QUEUE_MAX_ITEMS", 50))
+
+
+def _normalize_channel_state(state: dict, channel: str, now_ts: float) -> dict:
+    """Normalize and bound per-channel delivery state so state files remain compact."""
+    raw_ch = state["channels"].get(channel)
+    if not isinstance(raw_ch, dict):
+        raw_ch = {}
+        state["channels"][channel] = raw_ch
+    cutoff = now_ts - 2 * 24 * 60 * 60
+    last_raw = raw_ch.get("last")
+    valid_last = [
+        (str(k), vf)
+        for k, v in (last_raw.items() if isinstance(last_raw, dict) else ())
+        if cutoff <= (vf := safe_float(v, -1.0)) <= now_ts
+    ]
+    if len(valid_last) > _MAX_FINGERPRINT_HISTORY:
+        valid_last = sorted(valid_last, key=lambda kv: kv[1])[-_MAX_FINGERPRINT_HISTORY:]
+    raw_ch["last"] = dict(valid_last)
+
+    topic_raw = raw_ch.get("topic_last_ts")
+    raw_ch["topic_last_ts"] = {
+        str(k): vf
+        for k, v in (topic_raw.items() if isinstance(topic_raw, dict) else ())
+        if cutoff <= (vf := safe_float(v, -1.0)) <= now_ts
+    }
+    raw_bulk = raw_ch.get("pending_bulk")
+    raw_ch["pending_bulk"] = (
+        [
+            it
+            for it in raw_bulk
+            if isinstance(it, dict) and cutoff <= safe_float(it.get("ts"), now_ts) <= now_ts
+        ]
+        if isinstance(raw_bulk, list)
+        else []
+    )
+    lg = safe_float(raw_ch.get("last_gate_ts", 0.0), 0.0)
+    raw_ch["last_gate_ts"] = 0.0 if (lg < 0.0 or lg > now_ts) else lg
+    return raw_ch
+
+
+def _is_ntfy_channel_blocked(channel: str, channel_state: dict, now_ts: float) -> bool:
+    if channel != "ntfy" or not _parse_bool_flag(channel_state.get("blocked"), default=False):
+        return False
+    blocked_until = safe_float(channel_state.get("blocked_until", 0.0), 0.0)
+    if blocked_until > 0 and now_ts >= blocked_until:
+        channel_state["blocked"] = False
+        return False
+    return True
+
+
+def _topic_category_label(topic: str) -> str:
+    tl = str(topic or "").lower()
+    return next((label for key, label, _ in _TOPIC_CATEGORY_SPECS if key in tl), "")
+
+
+def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str]:
+    """Synthesize and concatenate multiple distinct notifications into a single bulk message."""
+    if not items:
+        return ("Alert", "", "default", "")
+    best_priority = max(
+        (str(it.get("priority") or "default") for it in items),
+        key=lambda p: _PRIO_RANK.get(p, 1),
+    )
+    best_topic = max(
+        (str(it.get("topic") or "") for it in items),
+        key=lambda t: next((tier for key, _, tier in _TOPIC_CATEGORY_SPECS if key in t.lower()), 0),
+    )
+
+    if len(items) == 1:
+        it = items[0]
+        cnt = exact_pos_int(it.get("count", 1), 1)
+        raw_title = str(it.get("title") or "Alert")
+        out_title = f"{raw_title} (\u00d7{cnt})" if cnt > 1 else raw_title
+        out_body = str(it.get("body") or "")
+        return (out_title, out_body, best_priority, best_topic)
+
+    body_lines = []
+    for idx, it in enumerate(items, 1):
+        cnt = exact_pos_int(it.get("count", 1), 1)
+        t = str(it.get("title") or "Alert").strip()
+        repeat_tag = f" (\u00d7{cnt})" if cnt > 1 else ""
+        cleaned = _LAST_LOGS_RE.sub("", str(it.get("body") or "")).strip()
+        raw_lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
+        if not raw_lines:
+            compact_body = ""
+        else:
+            lines: list[str] = []
+            prefix_tag = ""
+            for l_idx, ln in enumerate(raw_lines):
+                if l_idx == 0 and (m := _REDUNDANT_BULK_LINE_RE.match(ln)):
+                    inner = (m.group(1) or m.group(2) or "").strip()
+                    risk_only = (m.group(3) or "").strip()
+                    if inner:
+                        prefix_tag = f"[{inner}]"
+                    elif risk_only:
+                        prefix_tag = f"[Risk: {risk_only}]"
+                    continue
+                lines.append(ln)
+            if not lines:
+                compact_body = prefix_tag or raw_lines[0]
+            else:
+                compact_body = " | ".join(lines[:4])
+                if prefix_tag:
+                    compact_body = f"{prefix_tag} {compact_body}"
+                if len(compact_body) > 900:
+                    cut = compact_body[:900].rsplit(" ", 1)[0]
+                    compact_body = (cut if len(cut) >= 450 else compact_body[:900]) + "..."
+        if compact_body and compact_body.lower() != t.lower():
+            body_lines.append(f"{idx}. {t}{repeat_tag}: {compact_body}")
+        else:
+            body_lines.append(f"{idx}. {t}{repeat_tag}")
+
+    item_venues: list[str] = []
+    item_tags: list[list[str]] = []
+    item_tokens: list[list[str]] = []
+    categories: list[str] = []
+
+    for it in items:
+        raw_t = str(it.get("title") or "Alert").strip()
+        cat = _topic_category_label(str(it.get("topic") or ""))
+        if cat and cat not in categories:
+            categories.append(cat)
+
+        venue = ""
+        tags: list[str] = []
+        for match in _BRACKET_GROUP_RE.finditer(raw_t):
+            inner = match.group(1).strip()
+            if not inner:
+                continue
+            if ":" in inner:
+                v_part, m_part = inner.split(":", 1)
+                if v_part.strip().lower() in _KNOWN_NOTIFY_VENUES:
+                    venue = v_part.strip().lower()
+                    if m_part.strip():
+                        tags.append(m_part.strip())
+                    continue
+            if inner.lower() in _KNOWN_NOTIFY_VENUES:
+                venue = inner.lower()
+            else:
+                tags.append(inner)
+        if not venue:
+            body_venue_m = _BODY_VENUE_RE.search(str(it.get("body") or ""))
+            if body_venue_m and body_venue_m.group(1).lower() in _KNOWN_NOTIFY_VENUES:
+                venue = body_venue_m.group(1).lower()
+        item_venues.append(venue)
+        item_tags.append(tags)
+
+        stripped = _BRACKET_GROUP_RE.sub(" ", raw_t)
+        stripped = _BULK_PRICE_AT_RE.sub(" ", stripped)
+        tokens = [
+            tok for tok in _BULK_TOKEN_RE.findall(stripped)
+            if tok.lower() not in _BULK_TITLE_STOPWORDS and len(tok) > 1
+        ]
+        item_tokens.append(tokens)
+
+    non_empty_venues = [v for v in item_venues if v]
+    common_venue = non_empty_venues[0] if non_empty_venues and len(set(non_empty_venues)) == 1 else ""
+
+    common_tag = ""
+    if item_tags and all(item_tags):
+        first_tags = item_tags[0]
+        shared = [
+            tg for tg in first_tags
+            if all(any(tg.lower() == other.lower() for other in tg_list) for tg_list in item_tags[1:])
+        ]
+        if shared:
+            common_tag = shared[0]
+        elif all(
+            any(
+                other.lower() in ("ai_executor", "auto_cryptotrade_executor", "auto_sharetrade_executor", "auto_trade_executor")
+                for other in tg_list
+            )
+            for tg_list in item_tags
+        ):
+            common_tag = "ai_executor"
+        else:
+            auto_prefixes = []
+            for tg_list in item_tags:
+                auto_match = next((tg for tg in tg_list if tg.lower().startswith("auto_")), "")
+                parts = auto_match.lower().split("_")
+                auto_prefixes.append("_".join(parts[:2]) if len(parts) >= 2 else "")
+            if auto_prefixes and all(p and p == auto_prefixes[0] for p in auto_prefixes):
+                common_tag = auto_prefixes[0]
+
+    if common_venue and common_tag:
+        bracket_str = f"[{common_venue}:{common_tag}]"
+    elif common_venue:
+        bracket_str = f"[{common_venue}]"
+    elif common_tag:
+        bracket_str = f"[{common_tag}]"
+    else:
+        bracket_str = ""
+
+    common_words: list[str] = []
+    if item_tokens and all(item_tokens):
+        seen_lower: set[str] = set()
+        for tok in item_tokens[0]:
+            tl = tok.lower()
+            if tl in seen_lower:
+                continue
+            if all(any(tl == other.lower() for other in tok_list) for tok_list in item_tokens[1:]):
+                common_words.append(tok)
+                seen_lower.add(tl)
+
+    if common_words:
+        core_label = " ".join(common_words[:4])
+    elif categories:
+        core_label = " / ".join(categories)
+    else:
+        core_label = _topic_category_label(best_topic) or "Alerts"
+
+    raw_summary = f"{core_label} {bracket_str}" if (bracket_str and core_label) else (bracket_str or core_label)
+    summary_subject = (raw_summary or "").strip() or _topic_category_label(best_topic) or "Alerts"
+    bulk_title = f"\U0001f4e6 Bulk ({len(items)}): {summary_subject}"
+    bulk_body = "\n\n".join(body_lines)
+    return (bulk_title, bulk_body, best_priority, best_topic)
+
+
+def _alert_identity(alert: Any) -> dict:
+    """Return stable identity excluding timestamps and prices that change each poll."""
+    if isinstance(alert, dict):
+        source = str(alert.get("source") or "").lower()
+        name = str(alert.get("name") or alert.get("title") or "")
+        if alert.get("type") == "new_coin_discovered":
+            return {
+                "type": "new_coin_discovered",
+                "symbol": str(alert.get("symbol") or "").upper(),
+                "source": source,
+            }
+        if _is_guard_alert([alert]) or _is_error_or_ops_alert([alert]):
+            # For guard, error, ops, watchdog, and mailer alerts, dedup on stable
+            # identity fields excluding volatile body timestamps/reasoning/log lines.
+            norm_name = name
+            for pat, repl in _IDENTITY_NAME_SUBS:
+                norm_name = pat.sub(repl, norm_name)
+            identity = {
+                "type": alert.get("type"),
+                "symbol": alert.get("symbol"),
+                "name": norm_name,
+                "source": alert.get("source"),
+            }
+            if norm_name.strip().upper() in ("ALERT", "OS ALERT", "TRADE ALERT"):
+                body_str = str(alert.get("body") or "")
+                body_norm = _normalize_text_for_similarity(body_str)[:120]
+                identity["body_norm"] = body_norm
+            return identity
+        ident = {
+            key: alert.get(key)
+            for key in ("type", "symbol", "name", "source", "body", "url", "alert_type", "threshold")
+        }
+        esc_tier = exact_pos_int(alert.get("escalation_tier"), 1)
+        if esc_tier > 1:
+            ident["escalation_tier"] = esc_tier
+        return ident
+    ident = {
+        "type": getattr(alert, "type", alert.__class__.__name__),
+        "symbol": getattr(alert, "symbol", None),
+        "alert_type": getattr(alert, "alert_type", None),
+        "threshold": getattr(alert, "threshold", None),
+    }
+    esc_tier = exact_pos_int(getattr(alert, "escalation_tier", 1), 1)
+    if esc_tier > 1:
+        ident["escalation_tier"] = esc_tier
+    return ident
+
+
+def _delivery_fingerprint(alerts: list[Any]) -> str:
+    identities = sorted(
+        (encode_json_payload(_alert_identity(alert), sort_keys=True, default=str) for alert in alerts),
+    )
+    return hashlib.sha256("\n".join(identities).encode("utf-8")).hexdigest()
+
+
+def _alerts_are_urgent(alerts: list[Any]) -> bool:
+    for alert in alerts:
+        if not isinstance(alert, dict):
+            continue
+        title = str(alert.get("name") or alert.get("symbol") or alert.get("title") or "").upper()
+        source = str(alert.get("source") or "").lower()
+        if (
+            any(marker in title for marker in _URGENT_MARKERS)
+            or any(marker in title for marker in _TRADE_MARKERS)
+            or "watchdog" in source
+        ):
+            return True
+    return False
+
+
+def _dedup_seconds(alerts: list[Any], urgent: bool) -> int:
+    titles = " ".join(
+        str(alert.get("name") or alert.get("title") or "").upper()
+        for alert in alerts if isinstance(alert, dict)
+    )
+    if any(m in titles for m in ("AUTO_MACRO_", "MACRO_SENTIMENT", "MACRO_GEOPOLITICAL")):
+        return _config_notification_int("NOTIFICATION_MACRO_DEDUP_SECONDS", 3600)
+    if _is_guard_alert(alerts):
+        return _positive_int_env("NOTIFICATION_GUARD_DEDUP_SECONDS", 30 * 60)
+    if _is_error_or_ops_alert(alerts):
+        return _positive_int_env(
+            "NOTIFICATION_ERROR_DEDUP_SECONDS",
+            _positive_int_env("NOTIFICATION_URGENT_DEDUP_SECONDS", 30 * 60),
+        )
+    if any(marker in titles for marker in _TRADE_MARKERS):
+        return 0  # Real trades must never be suppressed by deduplication
+    if any(m in titles for m in ("DISPONIBIL", "AVAILABLE", "LISTED")):
+        return _positive_int_env("NOTIFICATION_STARTUP_DEDUP_SECONDS", 6 * 60 * 60)
+    if any(m in titles for m in ("MACRO", "SENTIMENT")) or any(
+        isinstance(a, dict) and "macro" in str(a.get("source", "")).lower() for a in alerts
+    ):
+        return _positive_int_env("NOTIFICATION_MACRO_DEDUP_SECONDS", 3600)
+    if urgent:
+        return _positive_int_env("NOTIFICATION_URGENT_DEDUP_SECONDS", 30 * 60)
+    if any(
+        not isinstance(alert, dict) or alert.get("type") == "new_coin_discovered"
+        for alert in alerts
+    ):
+        return _positive_int_env("NOTIFICATION_PRICE_DEDUP_SECONDS", 30 * 60)
+    return _positive_int_env("NOTIFICATION_DEDUP_SECONDS", 15 * 60)
+
+
+def _resolve_gate_context(
+    now: Optional[float] = None, *, flag: Any = False
+) -> tuple[float, bool, str, Path]:
+    nf = safe_pos_float(now, default=None)
+    now_ts = nf if (nf is not None and nf < 32503680000.0) else time.time()
+    today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
+    cfg_path = optional_env("NOTIFICATION_STATE_FILE")
+    return now_ts, _parse_bool_flag(flag, False), today, NotificationDeliveryStateStore.resolve_state_path(cfg_path)
+
+
+def _claim_budget_warning(channel_state: dict[str, Any]) -> bool:
+    """Mark ``budget_warning_sent`` on ``channel_state`` and return True only on the first warning."""
+    first = not bool(_parse_bool_flag(channel_state.get("budget_warning_sent"), default=False))
+    channel_state["budget_warning_sent"] = True
+    return first
+
+
+def _gate_and_topic_bulk_seconds() -> tuple[int, int]:
+    if has_explicit_nonroot_env("NOTIFICATION_TOPIC_BULK_SECONDS"):
+        topic_bulk = _positive_int_env("NOTIFICATION_TOPIC_BULK_SECONDS", 300)
+    elif has_explicit_nonroot_env("NOTIFICATION_GATE_SECONDS"):
+        topic_bulk = min(300, _positive_int_env("NOTIFICATION_GATE_SECONDS", 300))
+    else:
+        topic_bulk = _config_notification_int("NOTIFICATION_TOPIC_BULK_SECONDS", 300)
+    return _config_notification_int("NOTIFICATION_GATE_SECONDS", 180), topic_bulk
+
+
+def pass_common_gate(
+    channel: str,
+    title: str,
+    body: str,
+    priority: str = "default",
+    topic: str = "",
+    alerts: Optional[list[Any]] = None,
+    *,
+    urgent: bool = False,
+    now: Optional[float] = None,
+) -> tuple[bool, str, bool, Optional[tuple[str, str, str, str]]]:
+    """Bounded Producer-Consumer notification gate:
+
+    1. Deduplicates / merges structurally similar notifications.
+    2. Batches same-topic messages arriving within NOTIFICATION_TOPIC_BULK_SECONDS (default 5m),
+       strictly bounded by NOTIFICATION_TOPIC_BULK_MAX_ITEMS and NOTIFICATION_QUEUE_MAX_ITEMS.
+    3. Routes every outgoing single or bulk message through the central single-gate dispatcher
+       (NOTIFICATION_GATE_SECONDS, default 3m).
+    """
+    now_ts, urgent, today, path = _resolve_gate_context(now, flag=urgent)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    alerts_list = alerts if alerts else [make_bot_event_alert(title, body, "common_gate")]
+    t_key = _canonical_topic_key(topic)
+    fingerprint = _delivery_fingerprint(alerts_list)
+    norm_title = _normalize_text_for_similarity(title)
+    bare_title = _LEADING_BRACKET_RE.sub("", norm_title).strip()
+    is_generic_title = bare_title in (
+        "", "alert", "os alert", "trade alert", "price alert",
+        "critical errors", "alerts (<n>)",
+    )
+    is_pure_trade = (
+        any(m in strip_owner_tags(str(title or "")).upper() for m in _TRADE_MARKERS)
+        and not _is_guard_alert(alerts_list)
+        and not _is_error_or_ops_alert(alerts_list)
+    )
+    first_line = next((ln.strip() for ln in str(body or "").splitlines() if ln.strip()), "")
+    norm_body_head = _normalize_text_for_similarity(first_line)[:120]
+    if is_pure_trade:
+        raw_t = _WHITESPACE_RE.sub(" ", str(title or "")).strip().lower()
+        raw_b = _WHITESPACE_RE.sub(" ", first_line).strip().lower()[:120]
+        sig_raw = f"sim|{topic}|{raw_t}|{raw_b}"
+    elif is_generic_title:
+        sig_raw = f"sim|{topic}|{norm_title}|{norm_body_head}"
+    else:
+        sig_raw = f"sim|{topic}|{norm_title}"
+    esc_tiers = tuple(
+        t for a in alerts_list if (t := exact_pos_int(obj_attr(a, "escalation_tier", 1), 1)) > 1
+    )
+    if esc_tiers:
+        sig_raw = f"{sig_raw}|esc={','.join(str(t) for t in esc_tiers)}"
+    sim_key = hashlib.sha256(sig_raw.encode("utf-8")).hexdigest()
+    gate_sec, topic_bulk_sec = _gate_and_topic_bulk_seconds()
+    sim_window = max(gate_sec, topic_bulk_sec, _dedup_seconds(alerts_list, urgent))
+
+    with _delivery_state_lock(path):
+        state = _load_delivery_state(path, today)
+        channel_state = _normalize_channel_state(state, channel, now_ts)
+        if _is_ntfy_channel_blocked(channel, channel_state, now_ts):
+            return False, "provider_daily_limit", False, None
+
+        last_map: dict[str, float] = channel_state["last"]
+        topic_last: dict[str, float] = channel_state["topic_last_ts"]
+        pending_bulk: list[dict] = channel_state["pending_bulk"]
+
+        def _mark_seen_keys() -> None:
+            last_map[fingerprint] = now_ts
+            last_map[sim_key] = now_ts
+
+        # 1. Coalesce if already queued in pending_bulk for the same topic
+        for item in pending_bulk:
+            if _canonical_topic_key(item.get("topic")) == t_key and (
+                item.get("sim_key") == sim_key or item.get("fingerprint") == fingerprint
+            ):
+                item["count"] = exact_pos_int(item.get("count", 1), 1) + 1
+                _mark_seen_keys()
+                _save_delivery_state(path, state)
+                return False, "similar_eliminated", False, None
+
+        # 2. Suppress if seen within deduplication / similarity window
+        for k, reason in ((fingerprint, "duplicate"), (sim_key, "similar_eliminated")):
+            prev_f = safe_float(last_map.get(k), -1.0)
+            if prev_f >= 0.0 and 0 <= now_ts - prev_f < sim_window:
+                _save_delivery_state(path, state)
+                return False, reason, False, None
+
+        # 3. Daily routine budget check for ntfy
+        sent = safe_nonneg_int(channel_state.get("sent", 0), default=0)
+        if channel == "ntfy" and not urgent:
+            budget = _positive_int_env("NTFY_DAILY_BUDGET", 220)
+            reserve = _positive_int_env("NTFY_URGENT_RESERVE", 20)
+            if sent >= max(0, budget - reserve):
+                warn = _claim_budget_warning(channel_state)
+                _save_delivery_state(path, state)
+                return False, "local_daily_budget", warn, None
+
+        # 4. Producer-Consumer Gate Evaluation (5m per-topic batching + central single-gate)
+        new_item = {
+            "title": str(title or "Alert")[:240],
+            "body": str(body or "")[:1200],
+            "priority": priority,
+            "topic": topic,
+            "ts": now_ts,
+            "sim_key": sim_key,
+            "fingerprint": fingerprint,
+            "count": 1,
+        }
+        last_gate_ts = channel_state["last_gate_ts"]
+        last_topic_ts = safe_float(topic_last.get(t_key, 0.0), 0.0)
+        new_rank = _PRIO_RANK.get(str(priority or "default"), 1)
+        central_gate_closed = is_cache_fresh(last_gate_ts, now_ts, gate_sec)
+        topic_window_closed = is_cache_fresh(last_topic_ts, now_ts, topic_bulk_sec)
+        has_due_other_topic = any(
+            (other_tk := _canonical_topic_key(it.get("topic"))) != t_key
+            and _PRIO_RANK.get(str(it.get("priority") or "default"), 1) >= new_rank
+            and not is_cache_fresh(topic_last.get(other_tk, 0.0), now_ts, topic_bulk_sec)
+            for it in pending_bulk
+        )
+
+        if central_gate_closed or topic_window_closed or has_due_other_topic:
+            topic_max = max(1, _positive_int_env("NOTIFICATION_TOPIC_BULK_MAX_ITEMS", 10))
+            queue_max = _queue_max_items()
+
+            def _evict_lowest_if_full(indices, limit: int, drop_reason: str) -> Optional[str]:
+                if len(indices) < limit:
+                    return None
+                victim_idx = min(indices, key=lambda i: _PRIO_RANK.get(str(pending_bulk[i].get("priority") or "default"), 1))
+                if new_rank <= _PRIO_RANK.get(str(pending_bulk[victim_idx].get("priority") or "default"), 1):
+                    return drop_reason
+                evicted = pending_bulk.pop(victim_idx)
+                if isinstance(evicted, dict):
+                    last_map.pop(str(evicted.get("fingerprint") or ""), None)
+                    last_map.pop(str(evicted.get("sim_key") or ""), None)
+                return None
+
+            topic_indices = [i for i, it in enumerate(pending_bulk) if _canonical_topic_key(it.get("topic")) == t_key]
+            q_reason = (
+                _evict_lowest_if_full(topic_indices, topic_max, "topic_queue_full_dropped")
+                or _evict_lowest_if_full(range(len(pending_bulk)), queue_max, "queue_full_dropped")
+            )
+            if q_reason is None:
+                pending_bulk.append(new_item)
+                q_reason = "buffered_for_bulk"
+                _mark_seen_keys()
+            _save_delivery_state(path, state)
+            return False, q_reason, False, None
+
+        # 5. Both Per-Topic Window and Central Single Gate are OPEN: consume & dispatch this topic now
+        same_topic_items = [it for it in pending_bulk if _canonical_topic_key(it.get("topic")) == t_key]
+        channel_state["pending_bulk"] = [it for it in pending_bulk if _canonical_topic_key(it.get("topic")) != t_key]
+        channel_state["sent"] = sent + 1
+        _mark_seen_keys()
+        channel_state["last_gate_ts"] = now_ts
+        topic_last[t_key] = now_ts
+        _save_delivery_state(path, state)
+        if same_topic_items:
+            return True, "bulk_synthesized", False, synthesize_bulk_notifications(same_topic_items + [new_item])
+        return True, "reserved", False, (title, body, priority, topic)
+
+
+def pop_due_bulk_batch(
+    channel: str = "ntfy",
+    *,
+    now: Optional[float] = None,
+    force: bool = False,
+) -> Optional[tuple[str, str, str, str]]:
+    """Consumer: pop and synthesize the next due per-topic batch once the central single-gate opens."""
+    now_ts, force, today, path = _resolve_gate_context(now, flag=force)
+    if not path.exists() and not path.with_name(path.name + ".previous").exists():
+        return None
+    gate_sec, topic_bulk_sec = _gate_and_topic_bulk_seconds()
+    with _delivery_state_lock(path):
+        state = _load_delivery_state(path, today)
+        if channel not in state["channels"]:
+            return None
+        channel_state = _normalize_channel_state(state, channel, now_ts)
+        if _is_ntfy_channel_blocked(channel, channel_state, now_ts):
+            return None
+        pending_bulk: list[dict] = channel_state["pending_bulk"]
+        if not pending_bulk:
+            return None
+        last_gate_ts = channel_state["last_gate_ts"]
+        if is_cache_fresh(last_gate_ts, now_ts, gate_sec, force_refresh=force):
+            return None
+
+        topic_last: dict[str, float] = channel_state["topic_last_ts"]
+        due_topics: list[str] = []
+        for it in pending_bulk:
+            tk = _canonical_topic_key(it.get("topic"))
+            if tk not in due_topics and not is_cache_fresh(topic_last.get(tk, 0.0), now_ts, topic_bulk_sec, force_refresh=force):
+                due_topics.append(tk)
+        if not due_topics:
+            return None
+
+        # Dispatch highest-priority due topic first, breaking ties by earliest arrival order
+        chosen_topic = max(
+            due_topics,
+            key=lambda tk: max(
+                _PRIO_RANK.get(str(it.get("priority") or "default"), 1)
+                for it in pending_bulk
+                if _canonical_topic_key(it.get("topic")) == tk
+            ),
+        )
+        items = [it for it in pending_bulk if _canonical_topic_key(it.get("topic")) == chosen_topic]
+        channel_state["pending_bulk"] = [it for it in pending_bulk if _canonical_topic_key(it.get("topic")) != chosen_topic]
+        channel_state["last_gate_ts"] = now_ts
+        topic_last[chosen_topic] = now_ts
+        channel_state["sent"] = safe_nonneg_int(channel_state.get("sent", 0), default=0) + 1
+        _save_delivery_state(path, state)
+        return synthesize_bulk_notifications(items)
+
+
+def _mark_provider_daily_limit(channel: str, cooldown_seconds: float = 900.0) -> bool:
+    """Block the channel with a rolling cooldown and request one alternate warning."""
+    now = time.time()
+    cd_sec = safe_pos_float(cooldown_seconds, default=900.0)
+    today = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+    cfg_path = optional_env("NOTIFICATION_STATE_FILE")
+    path = NotificationDeliveryStateStore.resolve_state_path(cfg_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _delivery_state_lock(path):
+        state = _load_delivery_state(path, today)
+        channel_state = state["channels"].setdefault(channel, {})
+        first = _claim_budget_warning(channel_state)
+        channel_state["blocked"] = True
+        channel_state["blocked_until"] = now + cd_sec
+        _save_delivery_state(path, state)
+        return first
+
+
+def _is_provider_daily_limit(response: Any) -> bool:
+    if getattr(response, "status_code", None) != 429:
+        return False
+    body = str(getattr(response, "text", "") or "").lower()
+    return "42908" in body or "daily" in body

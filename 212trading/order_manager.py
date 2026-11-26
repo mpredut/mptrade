@@ -40,7 +40,7 @@ ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_broker_li
 
 from cachepaths import canonical_base_asset, same_canonical_base_asset as _t212_tickers_match  # noqa: E402
 from ipo_common import notify  # noqa: E402
-from notify_engine.alertnotifiers import emit_trade_notification  # noqa: E402
+from notify_engine.notifyapi import emit_trade_notification  # noqa: E402
 from providers.order_ledger import OrderEventType, get_default_ledger_writer  # noqa: E402
 from market_data import get_price_usd, get_usd_ron  # noqa: E402
 from state_io import encode_json_payload, load_json_state, save_json_state  # noqa: E402

@@ -61,8 +61,8 @@ from intelligence.macro.daemon_ssot import run_scheduled_step
 import intelligence.macro_sentiment_ssot as mss
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
 import monitororder
-from notify_engine import alertnotifiers
-from notify_engine.alertnotifiers import strip_owner_tags
+from notify_engine import notifyapi as alertnotifiers
+from notify_engine.ntfypolicy import strip_owner_tags
 from order_retry import exact_int
 from priceAnalysis import require_int
 from pricewindow import should_wait_short_trend
@@ -430,6 +430,8 @@ class TestCachepaths(TempDirTestCase):
             "fleet_health_status.json": "system",
             "dev_regression_status.json": "system",
             "notify_queue.json": "system",
+            "price_watcher_state.json": "prices",
+            "cache_watcher_all_price.cooldowns.json": "prices",
         }
         for filename, expected_domain in cases.items():
             self.assertEqual(

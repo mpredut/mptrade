@@ -211,7 +211,7 @@ PROCS.CONF
     ├── monitortrades             (monitortrades.py)
     ├── monitororder              (monitororder.py)
     ├── rtrade                    (rtrade.py)
-    ├── price_watcher            (market_monitor/price_watcher.py)
+    ├── pricewatcher             (market_monitor/pricewatcher.py)
     ├── order_retry               (order_retry_worker.py)
     ├── globaltelemetry_collector (intelligence/globaltelemetry_collector.py)
     └── macro_analyzer            (intelligence/macro_analyzer.py)

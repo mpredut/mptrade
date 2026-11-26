@@ -9,7 +9,7 @@ import pytest
 import subprocess
 import sys
 from cachepaths import split_symbol_assets
-from notify_engine.server import _resolve_provider_label
+from notify_engine.ntfydispatcher import _resolve_provider_label
 from pathlib import Path
 from providers.kraken_provider import KrakenProvider
 from providers.market_api import MarketApi

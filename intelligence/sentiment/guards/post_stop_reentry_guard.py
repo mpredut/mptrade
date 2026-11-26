@@ -48,7 +48,7 @@ from intelligence.sentiment.guards.high_stake_guard import (
     is_llm_guard_exempt,
     PreTradeLLMGuardBase,
 )
-import notify_engine.alertnotifiers as _alertnotifiers
+import notify_engine.notifyapi as _notifyapi
 
 logger = logging.getLogger("intelligence.sentiment.guards.post_stop_reentry_guard")
 
@@ -220,7 +220,7 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
             cur_s = format_price_log(current_price)
             trough_s = format_price_log(trough)
             sl_s = format_price_log(last_sell_price)
-            _alertnotifiers.notify(
+            _notifyapi.notify(
                 title=f"{topic_spec('guard_post_stop').ntfy_prefix} {action_label} {symbol}",
                 body=(
                     f"{symbol} @ ${cur_s} (Bounce: +{bounce_pct:.2f}% from low ${trough_s}, SL at: ${sl_s})\n"

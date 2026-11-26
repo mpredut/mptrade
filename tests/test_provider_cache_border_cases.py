@@ -152,7 +152,7 @@ from kraken.kraken_client import KrakenClient
 from kraken.kraken_common import load_isolated_kraken_cfg
 from kraken.trailing_stop import KrakenTrailing
 import llm_order_guard
-from market_monitor.new_coins_discovery import NewCoinsFactory
+from market_monitor.newcoinsdiscovery import NewCoinsFactory
 from market_monitor.pricechecker import PriceAlert, PriceChecker
 from market_monitor.pricefetcher import StockYahooPricePlatform
 from market_regime import (
@@ -164,7 +164,7 @@ from market_regime import (
 )
 import monitororder as mo
 import monitortrades as mt
-from notify_engine import alertnotifiers as alert_mod, server as notify_server_mod
+from notify_engine import ntfypolicy as alert_mod, ntfydispatcher as notify_server_mod
 from offline.backtests import evaluation as bt_eval
 from offline.backtests.comparison import add_path_cli_args, add_report_output_cli_args
 from offline.backtests.evaluation import build_execution_model_from_args, parse_intervals
@@ -2357,7 +2357,7 @@ def test_clean_nonempty_str_t212_fills_guard_inf_scale_rounding_and_daemon_cli_b
     notified_msgs: list[tuple[str, str]] = []
     eog._MICRO_SHADOW_NOTIFY_COOLDOWN.clear()
     monkeypatch.setattr(
-        eog._alertnotifiers,
+        eog._notifyapi,
         "notify",
         lambda *, title="", body="", **_kw: notified_msgs.append((title, body)),
     )
@@ -3261,7 +3261,7 @@ def test_wave20_llm_guard_audit_hl_fills_macro_news_xstock_and_spot_flags(tmp_pa
         ),
     )
     monkeypatch.setattr(
-        llm_order_guard._alertnotifiers,
+        llm_order_guard._notifyapi,
         "notify",
         lambda **kw: hs_notifies.append(kw),
     )
@@ -4685,7 +4685,7 @@ def test_wave27_price_poller_deadlines_canonical_imports_and_border_cases(tmp_pa
     assert waited_vals == [0.0]
 
     # 7. notify_engine.server._send_ntfy handles status_code=None / string "500" without TypeError
-    srv_stub = notify_server_mod.NotificationServer.__new__(notify_server_mod.NotificationServer)
+    srv_stub = notify_server_mod.NtfyDispatcher.__new__(notify_server_mod.NtfyDispatcher)
     srv_stub.ntfy_token = ""
     srv_stub._in_gated_dispatch = True
     enqueued = []

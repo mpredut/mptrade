@@ -145,14 +145,14 @@ from kraken import (
 from kraken.kraken_client import KrakenClient
 from kraken.trailing_stop import KrakenTrailing, TRAIL_PCT as KRAKEN_TRAIL_PCT
 from core.lock import FileLock
-from market_monitor import alerts_config, new_coins_discovery as ncd, pricefetcher as pf
-from market_monitor.new_coins_discovery import NewCoinsMonitor, is_trackable_symbol
+from market_monitor import alertsconfig as alerts_config, newcoinsdiscovery as ncd, pricefetcher as pf
+from market_monitor.newcoinsdiscovery import NewCoinsMonitor, is_trackable_symbol
 from market_monitor.pricechecker import PriceAlert, PriceChecker
 from market_monitor.pricefetcher import CacheAllPriceFetcherManager, StockYahooPricePlatform
 from market_regime import MarketRegimeEvaluator
-from notify_engine import alertnotifiers, mailer, server
-from notify_engine.alertnotifiers import AlertNotifier
-from notify_engine.server import NotificationServer
+from notify_engine import ntfymailer as mailer, notifyapi as alertnotifiers, ntfypolicy as notifygate, ntfydispatcher as server
+from notify_engine.notifyapi import AlertNotifier
+from notify_engine.ntfydispatcher import NtfyDispatcher as NotificationServer
 from offline.backtests import execution_calibration, financial_benchmark, tradeall as bt_ta
 from offline.backtests.datasets import (
     align_previous_values,
@@ -690,7 +690,7 @@ def test_backtest_suppresses_real_gemini_and_notifications(monkeypatch):
     dispatched = []
     monkeypatch.setenv("MPTRADE_ORCHESTRATED", "0")
     monkeypatch.setattr(
-        server.NotificationServer, "dispatch_alerts", lambda self, alerts, **kw: dispatched.extend(alerts)
+        server.NtfyDispatcher, "dispatch_alerts", lambda self, alerts, **kw: dispatched.extend(alerts)
     )
     for env_key in ("BACKTEST_MODE", "REPLAY_MODE", "DISABLE_EXTERNAL_NOTIFICATIONS"):
         monkeypatch.setenv(env_key, "1")
@@ -2985,7 +2985,7 @@ def test_batch14_notify_engine_server_alertnotifiers_and_mailer_hygiene(monkeypa
     # 1. server._send_ntfy rejects bool/whitespace topic without posting to root ntfy.sh
     monkeypatch.setenv("NOTIFICATION_QUEUE_FILE", str(tmp_path / "queue.jsonl"))
     monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(tmp_path / "state.json"))
-    ns = server.NotificationServer()
+    ns = server.NtfyDispatcher()
     assert ns._send_ntfy("Title", "Body", "default", "   ") is True
     assert ns._send_ntfy("Title", "Body", "default", True) is True  # type: ignore[arg-type]
 
@@ -3016,7 +3016,7 @@ def test_batch14_notify_engine_server_alertnotifiers_and_mailer_hygiene(monkeypa
     monkeypatch.setattr(mailer, "_config", lambda: {"server": "localhost", "port": 25, "username": "u", "password": "p", "to": "t"})
     monkeypatch.setattr(mailer, "_smtp_send", lambda msg, cfg: None)
     monkeypatch.setattr(
-        alertnotifiers,
+        notifygate,
         "pass_common_gate",
         lambda *a, **kw: (_ for _ in ()).throw(AssertionError("pass_common_gate should not run when dedup='false'")),
     )

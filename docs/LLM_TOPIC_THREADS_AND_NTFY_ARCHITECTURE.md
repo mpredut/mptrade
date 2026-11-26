@@ -1,6 +1,6 @@
 # Permanent LLM Topic Threads Architecture (Antigravity) & `ntfy` Notifications
 
-This document defines the canonical symmetric architecture of the **7 permanent LLM conversation threads** ([`orchestratorOS/agy/topics.py`](file:///home/predut/mptrade/orchestratorOS/agy/topics.py)), the Python scripts that execute them, their configuration and state files (`cachedb/`), history retention, automated `/compact` compaction policy, and `ntfy` notification routing ([`notify_engine/server.py`](file:///home/predut/mptrade/notify_engine/server.py)).
+This document defines the canonical symmetric architecture of the **7 permanent LLM conversation threads** ([`orchestratorOS/agy/topics.py`](file:///home/predut/mptrade/orchestratorOS/agy/topics.py)), the Python scripts that execute them, their configuration and state files (`cachedb/`), history retention, automated `/compact` compaction policy, and `ntfy` notification routing ([`notify_engine/ntfydispatcher.py`](file:///home/predut/mptrade/notify_engine/ntfydispatcher.py)).
 
 ---
 

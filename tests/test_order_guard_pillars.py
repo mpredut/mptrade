@@ -47,8 +47,8 @@ from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_
 from kraken import shadow_live as kr_sl
 import llm_order_guard as llog
 from llm_order_guard import check_geopolitical_order_guards, check_llm_order_guards
-from market_monitor.alerts_config import load_config, resolve
-from market_monitor.new_coins_discovery import (
+from market_monitor.alertsconfig import load_config, resolve
+from market_monitor.newcoinsdiscovery import (
     BinanceNewListingsSource,
     CoinMarketCapSource,
     DexScreenerSource,
@@ -58,9 +58,9 @@ from market_monitor.new_coins_discovery import (
 from market_monitor.pricechecker import PriceAlert, PriceChecker
 import market_monitor.pricefetcher as pf_mod
 from market_monitor.pricefetcher import CoinMarketCapPricePlatform
-from notify_engine import mailer
-from notify_engine.alertnotifiers import _load_delivery_state, _save_delivery_state
-from notify_engine.server import NotificationServer
+from notify_engine import ntfymailer as mailer
+from notify_engine.ntfypolicy import _load_delivery_state, _save_delivery_state
+from notify_engine.ntfydispatcher import NtfyDispatcher as NotificationServer
 from offline.backtests import comparison as cmp_mod, datasets as ds, evaluation as ev, promotion as prom_mod, tradeall as bt_tradeall
 from offline.backtests.evaluation import load_venue_module
 from offline.backtests.execution_calibration import calibrate_execution_events
@@ -966,7 +966,7 @@ def test_batch40_market_monitor_and_notify_engine_hardening(tmp_path, monkeypatc
             "Cooldown_Minutes = 30",
             "Escalation_Step_Ratio = 0.35",
             "Lookback_Hours = 24",
-            "Max_Monitored = 15",
+            "Retention_Days = 7",
             "Max_New_Coins = 5",
             "New_Coins_Scan_Seconds = 1800",
             "Price_Scan_Seconds = 60",

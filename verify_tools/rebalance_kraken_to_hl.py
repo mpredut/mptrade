@@ -58,7 +58,7 @@ from botcore import (  # noqa: E402
 from core.http import fetch_json_post  # noqa: E402
 from credentials import kraken_credentials  # noqa: E402
 from instrument_registry import canonical_balance_asset_key  # noqa: E402
-from notify_engine import alertnotifiers as alert  # noqa: E402
+from notify_engine import notifyapi as alert  # noqa: E402
 from providers.kraken_provider import KrakenProvider  # noqa: E402
 from state_io import encode_json_payload  # noqa: E402
 

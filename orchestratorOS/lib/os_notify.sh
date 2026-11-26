@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # os_notify.sh -- unified helper for ntfy.sh push notifications from bash.
 # Topics that the mirror policy copies to email (ERROR, DEADMAN -- see
-# notify_engine/mailer.py) are also emailed, in the background, best-effort.
+# notify_engine/ntfymailer.py) are also emailed, in the background, best-effort.
 # Usage:
 #   Direct:  ./os_notify.sh "Title" "Body" [priority] [topic]
 #   Sourced: source os_notify.sh && send_os_ntfy "Title" "Body" [priority] [topic]
@@ -34,7 +34,7 @@ ntfy_load_auth_hdr() {
 # (vpn/autodeploy), drop to the repo owner so shared state files keep their owner.
 send_os_email() {  # $1=title $2=body [$3=topic: email only if that topic is mirrored]
     local log_file="$ROOT/logs/mailer.log"
-    local cmd=("$ROOT/orchestratorOS/run_python.sh" "$ROOT/notify_engine/mailer.py")
+    local cmd=("$ROOT/orchestratorOS/run_python.sh" "$ROOT/notify_engine/ntfymailer.py")
     [ -n "${3:-}" ] && cmd+=(--topic "$3")
     cmd+=("$1" "${2:-}")
     if [ "$(id -u)" = "0" ]; then

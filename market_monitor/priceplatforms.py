@@ -68,7 +68,7 @@ def _active_requests_mod() -> object:
         "requests",
         requests,
         local_val=requests,
-        modules=("market_monitor.pricefetcher", "market_monitor.price_platforms"),
+        modules=("market_monitor.pricefetcher", "market_monitor.priceplatforms"),
     )
 
 
@@ -203,7 +203,7 @@ class PricePlatformFactory:
             eff_cls = resolve_patched_attr(
                 plat_cls.__name__,
                 plat_cls,
-                modules=("market_monitor.pricefetcher", "market_monitor.price_platforms"),
+                modules=("market_monitor.pricefetcher", "market_monitor.priceplatforms"),
                 require_callable=True,
             )
             if getattr(plat_cls, "REQUIRES_CMC_KEY", False):

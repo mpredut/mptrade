@@ -42,7 +42,7 @@ ensure_local_module_priority(_HERE, "ipo_common")
 
 from cachepaths import same_canonical_base_asset as _t212_tickers_match  # noqa: E402
 from ipo_common import notify as _default_notify  # noqa: E402
-from notify_engine.alertnotifiers import emit_trade_notification  # noqa: E402
+from notify_engine.notifyapi import emit_trade_notification  # noqa: E402
 from order_lifecycle import restore_cancelled_orders  # noqa: E402
 from providers.broker_history import extract_broker_order_ticker as _order_ticker  # noqa: E402
 from providers.execution_audit import new_intent_id  # noqa: E402

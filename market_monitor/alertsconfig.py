@@ -1,4 +1,4 @@
-"""alerts_config.py -- load the plain-text price_watcher.conf file for the alert monitor.
+"""alertsconfig.py -- load the plain-text pricewatcher.conf file for the alert monitor.
 
 Line-oriented format (# starts a full-line or inline comment):
     watch    = BTC, TAO, HYPE          # watchlist (coins that are always monitored)
@@ -27,7 +27,7 @@ _SETTING_KEYS = {
     "cooldown_minutes": (int, "ac"),
     "escalation_step_ratio": (float, "ac"),
     "lookback_hours": (int, "ac"),
-    "max_monitored": (int, "top"),
+    "retention_days": (int, "top"),
     "max_new_coins": (int, "top"),
     "new_coins_scan_seconds": (int, "top"),
     "price_scan_seconds": (int, "top"),
@@ -104,7 +104,7 @@ def load_config(path: str) -> dict:
                 f"Invalid alert configuration for {key}: {val!r}") from exc
 
     required_top = {
-        "watch", "sources", "discover_new_coins", "max_monitored",
+        "watch", "sources", "discover_new_coins", "retention_days",
         "max_new_coins", "new_coins_scan_seconds", "price_scan_seconds",
     }
     required_alert = {"default", "dynamic", "cooldown_minutes", "escalation_step_ratio", "lookback_hours"}
@@ -113,6 +113,8 @@ def load_config(path: str) -> dict:
         raise ValueError("Missing mandatory alert settings: " + ", ".join(missing))
     if not cfg["watch"] or not cfg["sources"]:
         raise ValueError("Alert watch and sources lists must not be empty")
+    # Effective symbol cap derived dynamically from explicit watchlist plus optional new-coin discovery budget.
+    cfg["max_monitored"] = len(cfg["watch"]) + (cfg["max_new_coins"] if cfg["discover_new_coins"] else 0)
     return cfg
 
 
@@ -155,5 +157,5 @@ def resolve(alert_config: dict, symbol: str, is_dynamic: bool) -> dict:
 
 
 if __name__ == "__main__":
-    p = sys.argv[1] if len(sys.argv) > 1 else "price_watcher.conf"
+    p = sys.argv[1] if len(sys.argv) > 1 else "pricewatcher.conf"
     print(encode_json_payload(load_config(p), indent=2))

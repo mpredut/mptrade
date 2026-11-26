@@ -60,7 +60,7 @@ import intelligence.macro.geopolitical_guard as _geo_guard
 import intelligence.macro_sentiment_ssot as _mss
 import intelligence.sentiment.collectors.macro_telemetry_collector as _mtc
 import intelligence.sentiment.guards.high_stake_guard as _high_stake_guard
-import notify_engine.alertnotifiers as _alertnotifiers
+import notify_engine.notifyapi as _notifyapi
 
 logger = logging.getLogger("llm_order_guard")
 
@@ -225,7 +225,7 @@ def evaluate_high_stake_order_guard(
                 qty_str = f"{qty_clean:g} " if qty_clean > 0.0 else ""
                 order_header = f"Order: {side} {qty_str}{symbol}" + (f" @ {price_str}" if price_str else "")
                 order_header += f" \u00b7 {ccy_sym}{computed_notional:,.0f} (Scale: {scale_pct}%)"
-                _alertnotifiers.notify(title=g_title, body=f"{order_header}\n{clean_reason}", source="order_guard", symbol=symbol)
+                _notifyapi.notify(title=g_title, body=f"{order_header}\n{clean_reason}", source="order_guard", symbol=symbol)
             except Exception:
                 pass
 
@@ -360,7 +360,7 @@ def check_geopolitical_order_guards(
                             clean_summary = geo_reason.split("(", 1)[1].rstrip(")")
                         raw_tl = obj_attr(cached_geo, "threat_level", "UNKNOWN")
                         raw_rs = clean_scale(obj_attr(cached_geo, "risk_score", 0.0), default=0.0, allow_percent=True)
-                        _alertnotifiers.notify(
+                        _notifyapi.notify(
                             title=geo_title,
                             body=f"Threat: {raw_tl} (Risk: {raw_rs:.2f}, Scale: {scale_pct}%)\n{clean_summary}",
                             source="macro_shadow",

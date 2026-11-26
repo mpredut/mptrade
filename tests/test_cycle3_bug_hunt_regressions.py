@@ -244,27 +244,27 @@ def test_kraken_ws_loop_backs_off_on_periodic_rest_sync_failure(tmp_path, monkey
 
 
 def test_alertnotifiers_get_notification_server_registers_canonical_module(monkeypatch):
-    """_get_notification_server must register sys.modules['notify_engine.server'] cleanly."""
-    from notify_engine import alertnotifiers as an
+    """_get_notification_dispatcher must register sys.modules['notify_engine.ntfydispatcher'] cleanly."""
+    from notify_engine import notifyapi as an
 
-    prev_mod = sys.modules.pop("notify_engine.server", None)
-    prev_cls = an._NOTIFICATION_SERVER_CLS
+    prev_mod = sys.modules.pop("notify_engine.ntfydispatcher", None)
+    prev_cls = an._NOTIFICATION_DISPATCHER_CLS
     try:
-        an._NOTIFICATION_SERVER_CLS = None
-        srv = an._get_notification_server()
+        an._NOTIFICATION_DISPATCHER_CLS = None
+        srv = an._get_notification_dispatcher()
         assert srv is not None
-        assert "notify_engine.server" in sys.modules
-        assert type(srv).__name__ == "NotificationServer"
+        assert "notify_engine.ntfydispatcher" in sys.modules
+        assert type(srv).__name__ == "NtfyDispatcher"
     finally:
-        an._NOTIFICATION_SERVER_CLS = prev_cls
+        an._NOTIFICATION_DISPATCHER_CLS = prev_cls
         if prev_mod is not None:
-            sys.modules["notify_engine.server"] = prev_mod
+            sys.modules["notify_engine.ntfydispatcher"] = prev_mod
 
 
 def test_new_coins_monitor_atomic_refresh_and_is_trade_enabled_throttle(tmp_path, monkeypatch):
     """NewCoinsMonitor refreshes atomically under lock; is_trade_enabled advances _CONFIG_LAST_CHECK on unchanged mtime."""
     from core import config as cfg
-    from market_monitor.new_coins_discovery import NewCoinsMonitor
+    from market_monitor.newcoinsdiscovery import NewCoinsMonitor
 
     fake_factory = SimpleNamespace(
         refresh_all=lambda: None,

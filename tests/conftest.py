@@ -93,7 +93,7 @@ if _tracked_t212_runtime_env.is_file():
 from providers import market_api as _mkt_mod, t212_provider as _t212_prov_mod  # noqa: E402
 import monitortrades as _mt_init  # noqa: E402
 import order_retry as _order_retry_init  # noqa: E402
-from notify_engine import mailer as _mailer_init  # noqa: E402
+from notify_engine import ntfymailer as _mailer_init  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

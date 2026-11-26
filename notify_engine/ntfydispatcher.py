@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
+"""ntfydispatcher.py -- log-stream intent/regex router, ntfy HTTP transport, and retry queue flusher."""
 import asyncio
 import contextlib
-import os
 import logging
+import os
 import re
 import threading
 import time
+from collections import defaultdict
+from typing import Any, Dict, List
+
 import requests
 
 _GATED_DISPATCH_TLS = threading.local()
-from collections import defaultdict
-from typing import Dict, Any, List
 
 from botcore import (
     check_cooldown_gate,
@@ -24,6 +26,39 @@ from botcore import (
     safe_nonneg_int,
 )
 from cachepaths import normalize_venue_name
+from notify_engine.ntfymailer import (
+    _config as _email_config,
+    last_error_is_auth_failure,
+    send_email,
+)
+from notify_engine.notifyapi import (
+    AlertNotifier,
+    _PRICE_ALERT_SOURCES,
+    _category_for_title_and_source,
+    _clean_str,
+    _external_notifications_disabled,
+    _topic_for_category,
+    format_ntfy_url,
+    is_email_mirrored,
+    is_email_suppressed_subject,
+    is_fake_alert_text,
+    register_notification_dispatcher_cls,
+    resolve_topic,
+)
+from notify_engine.ntfypolicy import (
+    _AUTO_TOPIC_TAG_RE,
+    _GATE_ACCEPTED_REASONS,
+    _GATE_SUPPRESSED_REASONS,
+    _alerts_are_urgent,
+    _canonical_topic_key,
+    _is_provider_daily_limit,
+    _mark_provider_daily_limit,
+    _queue_max_items,
+    make_bot_event_alert,
+    pass_common_gate,
+    pop_due_bulk_batch,
+    sanitize_single_line,
+)
 from state_io import (
     decode_embedded_json_dict,
     encode_json_payload,
@@ -31,37 +66,6 @@ from state_io import (
     read_json_dict,
 )
 from state_stores.notify_queue import NotifyQueueStore
-from notify_engine.alertnotifiers import (
-    AlertNotifier,
-    format_ntfy_url,
-    is_email_mirrored,
-    is_email_suppressed_subject,
-    is_fake_alert_text,
-    make_bot_event_alert,
-    pass_common_gate,
-    pop_due_bulk_batch,
-    register_notification_server_cls,
-    resolve_topic,
-    sanitize_single_line,
-    _alerts_are_urgent,
-    _AUTO_TOPIC_TAG_RE,
-    _canonical_topic_key,
-    _category_for_title_and_source,
-    _clean_str,
-    _external_notifications_disabled,
-    _GATE_ACCEPTED_REASONS,
-    _GATE_SUPPRESSED_REASONS,
-    _is_provider_daily_limit,
-    _mark_provider_daily_limit,
-    _PRICE_ALERT_SOURCES,
-    _queue_max_items,
-    _topic_for_category,
-)
-from notify_engine.mailer import (
-    last_error_is_auth_failure,
-    send_email,
-    _config as _email_config,
-)
 
 _MAX_QUEUE_RETRIES = 5
 
@@ -69,7 +73,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] Orch
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-_PRICE_WATCHER_BOTS = ("price_watcher", "price_watcher.py", "price_alert")
+_PRICE_WATCHER_BOTS = ("pricewatcher", "pricewatcher.py", "price_watcher", "price_watcher.py", "price_alert")
 _INTERNAL_LOG_MARKERS = (
     "Failed to send ntfy alert",
     "Email delivery failed",
@@ -90,7 +94,7 @@ _PROVIDER_HINT_SPECS = (
     ("binance", ("binance", "monitororder"), (), (), (), ("rtrade", "tradeall", "monitortrades", "order_retry")),
 )
 _STRIP_BOT_PREFIX_RE = re.compile(
-    r"^\[(?:price_watcher|macro_analyzer)(?:\.py)?\]\s*",
+    r"^\[(?:pricewatcher|price_watcher|macro_analyzer)(?:\.py)?\]\s*",
     flags=re.IGNORECASE,
 )
 _TRAILING_VENUE_TAG_RE = re.compile(
@@ -120,14 +124,15 @@ def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
         return bot_str.split("-")[0]
     return bot_str or (src_str.capitalize() if src_str else "")
 
-class NotificationServer:
+
+class NtfyDispatcher:
     def __init__(self):
         load_env_stack()
         self.ntfy_token = self._load_ntfy_token()
         self.rules = self._load_rules()
         self.cooldowns: Dict[str, float] = {}
         self.traceback_buffers: Dict[str, List[str]] = defaultdict(list)
-        
+
         # Persistent Queue File
         self.queue_file = optional_env("NOTIFICATION_QUEUE_FILE") or NotifyQueueStore.default_queue_file()
         os.makedirs(os.path.dirname(self.queue_file), exist_ok=True)
@@ -157,7 +162,7 @@ class NotificationServer:
             if default is not None:
                 return default
             raise
-        
+
     def _enqueue_payload(self, intent_type: str, data: dict):
         try:
             payload = dict(data) if isinstance(data, dict) else {}
@@ -294,7 +299,7 @@ class NotificationServer:
                 return getattr(_GATED_DISPATCH_TLS, "last_gate_reason", "") in _GATE_ACCEPTED_REASONS
             title, message, priority, topic_str = gated
 
-        # ERROR / DEADMAN topics are mirrored to email (policy: notify_engine.mailer).
+        # ERROR / DEADMAN topics are mirrored to email (policy: notify_engine.ntfymailer).
         # Sent before the push so an ntfy outage or quota never swallows the email.
         if (
             not is_retry
@@ -305,7 +310,7 @@ class NotificationServer:
             em_title, em_body = getattr(_GATED_DISPATCH_TLS, "orig_email", None) or (raw_title, raw_message)
             if not is_email_suppressed_subject(em_title, em_body):
                 self._send_email(em_title, em_body)
-        
+
         url = format_ntfy_url(topic_str)
         if not url:
             return True
@@ -315,7 +320,7 @@ class NotificationServer:
         }
         if self.ntfy_token:
             headers["Authorization"] = f"Bearer {self.ntfy_token}"
-            
+
         try:
             body_bytes = message.encode("utf-8")
             resp = http_requests_post(url, data=body_bytes, headers=headers, timeout=5, requests_mod=requests)
@@ -344,10 +349,10 @@ class NotificationServer:
                     "title": title,
                     "message": message,
                     "priority": priority,
-                    "topic": topic_str
+                    "topic": topic_str,
                 })
             return False
-            
+
     def _send_email(self, subject: str, message: str, is_retry: bool = False, *, dedup: bool = True) -> bool:
         # Retries and synthesized bulk batches bypass dedup: the first attempt already reserved this fingerprint.
         ok = send_email(subject, message, dedup=(dedup and not is_retry))
@@ -558,7 +563,7 @@ class NotificationServer:
             parts = line.split("[NTFY]", 1)
             if len(parts) > 1:
                 msg = parts[1].strip()
-                if bot_name.lower() in ("price_watcher", "price_watcher.py"):
+                if bot_name.lower() in ("pricewatcher", "pricewatcher.py", "price_watcher", "price_watcher.py"):
                     title = "Price Alert"
                 else:
                     title = f"[{bot_name}] Alert" if bot_name else "Alert"
@@ -623,18 +628,18 @@ class NotificationServer:
                 success_count = 0
                 queue_dirty = False
                 failed_intents: set[str] = set()
-                
+
                 for line in lines:
                     line = line.strip()
                     if not line:
                         queue_dirty = True
                         continue
-                    
+
                     payload = parse_json_payload(line, default=None)
                     if not isinstance(payload, dict):
                         queue_dirty = True
                         continue
-                    
+
                     intent = payload.get("__orchestrator_intent__")
                     if intent not in failed_intents:
                         success = False
@@ -693,7 +698,7 @@ class NotificationServer:
                         )
                     else:
                         remaining.append(line)
-                        
+
                 if queue_dirty or success_count > 0 or len(remaining) != len(lines):
                     # Preserve any notifications appended concurrently while network I/O ran
                     with NotifyQueueStore.generation_lock(self.queue_file):
@@ -722,5 +727,4 @@ class NotificationServer:
                 logging.error(f"Error flushing notification queue: {e}")
 
 
-register_notification_server_cls(NotificationServer)
-
+register_notification_dispatcher_cls(NtfyDispatcher)

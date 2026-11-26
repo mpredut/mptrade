@@ -1,4 +1,4 @@
-# new_coins_discovery.py
+# newcoinsdiscovery.py
 import threading
 import time
 import requests
@@ -232,7 +232,7 @@ class NewCoinsFactory:
             eff_cls = resolve_patched_attr(
                 src_cls.__name__,
                 src_cls,
-                modules=("market_monitor.new_coins_discovery",),
+                modules=("market_monitor.newcoinsdiscovery",),
                 require_callable=True,
             )
             self._all_sources[name] = (

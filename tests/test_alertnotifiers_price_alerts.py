@@ -10,8 +10,8 @@ from intelligence.sentiment.guards.post_stop_reentry_guard import (
     clear_post_stop_reentry_cache,
 )
 from market_monitor import pricefetcher
-from market_monitor.alerts_config import load_config, resolve
-from market_monitor.new_coins_discovery import (
+from market_monitor.alertsconfig import load_config, resolve
+from market_monitor.newcoinsdiscovery import (
     DexScreenerSource,
     NewCoinsFactory,
     NewCoinsMonitor,
@@ -24,13 +24,12 @@ from market_monitor.pricefetcher import (
     HyperliquidPricePlatform,
     PricePlatformFactory,
 )
-from notify_engine import alertnotifiers as an
-from notify_engine.alertnotifiers import (
-    AlertNotifier,
+from notify_engine import notifyapi as an, ntfypolicy as ng
+from notify_engine.notifyapi import AlertNotifier, format_ntfy_url
+from notify_engine.ntfypolicy import (
     _alert_identity,
     _delivery_fingerprint,
     _positive_int_env,
-    format_ntfy_url,
     pass_common_gate,
     pop_due_bulk_batch,
     synthesize_bulk_notifications,
@@ -55,7 +54,7 @@ ETH = 5 / 9
 cooldown_minutes = 45
 escalation_step_ratio = 0.35
 lookback_hours = 24
-max_monitored = 20
+retention_days = 7
 max_new_coins = 8
 new_coins_scan_seconds = 3600
 price_scan_seconds = 60
@@ -332,7 +331,14 @@ class TestAlertsConfigLoadAndResolve(TempDirTestCase):
     def test_settings(self):
         self.assertEqual(self.ac["cooldown_minutes"], 45)
         self.assertEqual(self.cfg["max_new_coins"], 8)
-        self.assertEqual(self.cfg["max_monitored"], 20)
+        self.assertEqual(self.cfg["max_monitored"], 3)
+        cfg_disc = load_config(
+            self._write_conf(
+                SAMPLE_ALERTS_CONF.replace("discover_new_coins = no", "discover_new_coins = yes"),
+                "discover_on.conf",
+            )
+        )
+        self.assertEqual(cfg_disc["max_monitored"], 11)
 
     def test_malformed_value_fails_closed(self):
         with self.assertRaises(ValueError):
@@ -356,8 +362,10 @@ class TestAlertsConfigLoadAndResolve(TempDirTestCase):
     def test_missing_file_or_key_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "missing"):
             load_config("/does/not/exist.conf")
-        with self.assertRaisesRegex(ValueError, "max_monitored"):
-            load_config(self._write_conf(SAMPLE_ALERTS_CONF.replace("max_monitored = 20\n", ""), "missing_key.conf"))
+        with self.assertRaisesRegex(ValueError, "max_new_coins"):
+            load_config(self._write_conf(SAMPLE_ALERTS_CONF.replace("max_new_coins = 8\n", ""), "missing_key.conf"))
+        with self.assertRaises(ValueError):
+            load_config(self._write_conf(SAMPLE_ALERTS_CONF + "max_monitored = 20\n", "legacy_max_monitored.conf"))
 
 
 class TestAlertThresholdsModel(unittest.TestCase):
@@ -441,14 +449,14 @@ class TestNewCoinsDiscovery(TempDirTestCase):
                 "listedAt": int(time.time() * 1000),
             }
         ]
-        with patch("market_monitor.new_coins_discovery.requests.get", return_value=mock_resp):
+        with patch("market_monitor.newcoinsdiscovery.requests.get", return_value=mock_resp):
             src = DexScreenerSource()
         self.assertEqual(len(src.get_new_coins()), 1)
 
     def test_factory_instantiates_only_enabled_sources(self):
-        with patch("market_monitor.new_coins_discovery.CoinGeckoSource") as mock_cg, \
-             patch("market_monitor.new_coins_discovery.DexScreenerSource") as mock_dex, \
-             patch("market_monitor.new_coins_discovery.BinanceNewListingsSource") as mock_bin:
+        with patch("market_monitor.newcoinsdiscovery.CoinGeckoSource") as mock_cg, \
+             patch("market_monitor.newcoinsdiscovery.DexScreenerSource") as mock_dex, \
+             patch("market_monitor.newcoinsdiscovery.BinanceNewListingsSource") as mock_bin:
             mock_bin_inst = MagicMock()
             mock_bin_inst.is_available.return_value = True
             mock_bin.return_value = mock_bin_inst
@@ -553,19 +561,19 @@ def test_alertnotifier_helpers_iter78_s2(monkeypatch):
     assert _positive_int_env("TEST_POS_INT_ENV", 10) == 300
 
 def test_notify_engine_alertnotifiers__positive_int_env__safe_pos_int_format_bot_event_iter99_s4(monkeypatch):
-    """[ITER99 #4] notify_engine.alertnotifiers._positive_int_env, _safe_pos_int, format_bot_event."""
-    # 4. notify_engine.alertnotifiers._positive_int_env, _safe_pos_int, format_bot_event
+    """[ITER99 #4] notify_engine.ntfypolicy._positive_int_env, exact_pos_int, format_bot_event."""
+    # 4. notify_engine.ntfypolicy._positive_int_env, exact_pos_int, format_bot_event
     monkeypatch.setenv("MP_TEST_POS_INT", "-5")
-    assert an._positive_int_env("MP_TEST_POS_INT", 42) == 42
+    assert ng._positive_int_env("MP_TEST_POS_INT", 42) == 42
     monkeypatch.setenv("MP_TEST_POS_INT", "3.5")
-    assert an._positive_int_env("MP_TEST_POS_INT", 42) == 42
+    assert ng._positive_int_env("MP_TEST_POS_INT", 42) == 42
     monkeypatch.setenv("MP_TEST_POS_INT", "15")
-    assert an._positive_int_env("MP_TEST_POS_INT", 42) == 15
+    assert ng._positive_int_env("MP_TEST_POS_INT", 42) == 15
 
-    assert an.exact_pos_int(True, 7) == 7
-    assert an.exact_pos_int(-3, 7) == 7
-    assert an.exact_pos_int(2.5, 7) == 7
-    assert an.exact_pos_int("12", 7) == 12
+    assert ng.exact_pos_int(True, 7) == 7
+    assert ng.exact_pos_int(-3, 7) == 7
+    assert ng.exact_pos_int(2.5, 7) == 7
+    assert ng.exact_pos_int("12", 7) == 12
 
     msg = an.AlertNotifier.format_bot_event(
         {"name": "Started", "source": "BTC_bot", "added_at": 1700000000}
@@ -581,7 +589,7 @@ def test_poststopreentryguard__maybe_notify_deduplicates_across_symbol_formattin
     # 5. PostStopReentryGuard._maybe_notify deduplicates across symbol formatting variants
     clear_post_stop_reentry_cache()
     notified = []
-    monkeypatch.setattr("notify_engine.alertnotifiers.notify", lambda **kw: notified.append(kw))
+    monkeypatch.setattr("notify_engine.notifyapi.notify", lambda **kw: notified.append(kw))
     psg = PostStopReentryGuard(notify_enabled=True, cache_ttl_sec=600.0)
     dec = GuardDecision.veto("PostStopReentryGuard", "test_veto")
     psg._maybe_notify("BTC/USDC", 100.0, 102.0, 98.0, 2.0, dec, now_ts=1000.0)
@@ -753,22 +761,22 @@ def test_notify_engine_allows_escalated_price_alerts_through_dedup_gate(tmp_path
     a2 = PriceAlert("HYPE", "down", 89.8, 100.0, -10.2, 7.4, escalation_tier=2, previous_percent_change=-7.5)
     a3 = PriceAlert("HYPE", "down", 87.0, 100.0, -13.0, 7.4, escalation_tier=3, previous_percent_change=-10.2)
 
-    ok1, _, _, _ = an.pass_common_gate("ntfy", "HYPE \u25bc -7.50%", "body", "high", "price-topic", [a1], now=t0)
+    ok1, _, _, _ = ng.pass_common_gate("ntfy", "HYPE \u25bc -7.50%", "body", "high", "price-topic", [a1], now=t0)
     assert ok1 is True
 
     # Duplicate tier 1 inside 30m window is suppressed
-    ok_dup, reason_dup, _, _ = an.pass_common_gate(
+    ok_dup, reason_dup, _, _ = ng.pass_common_gate(
         "ntfy", "HYPE \u25bc -7.60%", "body", "high", "price-topic", [a1_dup], now=t0 + 120.0
     )
     assert ok_dup is False and reason_dup in ("duplicate", "similar_eliminated")
 
     # Tier 2 and Tier 3 escalations inside 30m window pass immediately with distinct identity/similarity keys
-    ok2, reason2, _, _ = an.pass_common_gate(
+    ok2, reason2, _, _ = ng.pass_common_gate(
         "ntfy", "HYPE \u25bc -10.20% [ESC #2]", "body", "high", "price-topic", [a2], now=t0 + 300.0
     )
     assert ok2 is True, f"Expected tier-2 escalation to pass, got {reason2}"
 
-    ok3, reason3, _, _ = an.pass_common_gate(
+    ok3, reason3, _, _ = ng.pass_common_gate(
         "ntfy", "HYPE \u25bc -13.00% [ESC #3]", "body", "high", "price-topic", [a3], now=t0 + 600.0
     )
     assert ok3 is True, f"Expected tier-3 escalation to pass, got {reason3}"
@@ -831,3 +839,82 @@ def test_verify_tools_multi_venue_symmetry_for_hyperliquid(tmp_path, monkeypatch
     owners = oi.build_inventory(tmp_path, commands=[])
     hl_owner_ids = {o.owner_id for o in owners if o.venue == "hyperliquid" and o.symbol == "HYPEUSDC"}
     assert {"tradeall", "assetguardian"}.issubset(hl_owner_ids)
+
+
+def test_price_watcher_state_store_migrates_legacy_cooldowns_and_live_conf_btc_threshold(tmp_path):
+    """PriceWatcherStateStore routes to statedb/prices/price_watcher_state.json and migrates legacy cooldowns."""
+    from pathlib import Path
+    from cachepaths import resolve_storage_domain
+    from state_stores.price_watcher_state import PriceWatcherStateStore
+
+    assert resolve_storage_domain("price_watcher_state.json") == ("statedb", "prices")
+    assert resolve_storage_domain("cache_watcher_all_price.cooldowns.json") == ("statedb", "prices")
+    assert resolve_storage_domain("cache_watcher_all_price.json") == ("cachedb", "prices")
+
+    legacy_dir = tmp_path / "cachedb" / "prices"
+    legacy_dir.mkdir(parents=True)
+    legacy_file = legacy_dir / "cache_watcher_all_price.cooldowns.json"
+    now_s = time.time()
+    legacy_file.write_text(f'{{"BTCUSDC_down": {{"ts": {now_s - 60.0}, "tier": 1, "last_pct": 6.6}}}}', encoding="utf-8")
+
+    target = PriceWatcherStateStore.default_state_path(str(tmp_path))
+    assert target == tmp_path / "statedb" / "prices" / "price_watcher_state.json"
+
+    loaded = PriceWatcherStateStore.load_state(target)
+    assert target.exists()
+    assert not legacy_file.exists()
+    assert loaded["BTCUSDC_down"]["tier"] == 1
+    assert loaded["BTCUSDC_down"]["last_pct"] == 6.6
+
+    # Verify live market_monitor/pricewatcher.conf parses cleanly with BTC = 6 / 6.5, retention_days = 7, and dynamic max_monitored
+    live_conf = Path(__file__).resolve().parents[1] / "market_monitor" / "pricewatcher.conf"
+    cfg = load_config(str(live_conf))
+    assert cfg["watch"] == ["BTC", "TAO", "HYPE", "SPCX"]
+    assert cfg["alert_config"]["per_coin"]["BTC"] == {"up_percent": 6.0, "down_percent": 6.5}
+    assert cfg["retention_days"] == 7
+    assert cfg["max_monitored"] == (
+        len(cfg["watch"]) + (cfg["max_new_coins"] if cfg["discover_new_coins"] else 0)
+    )
+    assert pricefetcher.resolve_max_price_history(60, lookback_hours=24, retention_days=7) == 10200
+
+    # Verify create_cachePriceAll tracks only the explicit watchlist (no sym.symbols injection)
+    captured = {}
+
+    class _FakeMgr:
+        def periodic_sync(self, *, sync_ts, save_state):
+            captured["periodic_sync"] = (sync_ts, save_state)
+
+    def _fake_register(name, cls, **kwargs):
+        captured["register_name"] = name
+        captured["register_kwargs"] = kwargs
+
+    def _fake_get(name, **kwargs):
+        captured["get_name"] = name
+        captured["get_kwargs"] = kwargs
+        return _FakeMgr()
+
+    with patch.object(pricefetcher.CacheFactory, "register", side_effect=_fake_register), \
+         patch.object(pricefetcher.CacheFactory, "get", side_effect=_fake_get):
+        mgr = pricefetcher.create_cachePriceAll(
+            symbols=["BTC", "TAO"],
+            max_symbols=2,
+            sync_interval_sec=60,
+            lookback_hours=24,
+            retention_days=7,
+        )
+    assert captured["get_kwargs"]["symbols"] == ["BTC", "TAO"]
+    assert captured["register_kwargs"]["retention_days"] == 7
+    assert captured["register_kwargs"]["max_history_per_symbol"] == 10200
+    assert mgr.max_monitored_symbols == 2
+    assert mgr.retention_days == 7
+
+
+def test_alert_notifier_default_log_path_writes_to_logs_dir(tmp_path, monkeypatch):
+    """AlertNotifier.save_to_file defaults to BASE_DIR/logs/alerts.log and creates logs/ if absent."""
+    monkeypatch.setattr(an, "BASE_DIR", tmp_path)
+    evt = {"type": "bot_event", "name": "TEST_EVENT", "symbol": "BTCUSDC", "body": "ok", "source": "test"}
+    assert AlertNotifier.save_to_file(evt) is True
+    expected = tmp_path / "logs" / "alerts.log"
+    assert expected.is_file()
+    assert "TEST_EVENT" in expected.read_text(encoding="utf-8")
+    assert not (tmp_path / "alerts.log").exists()

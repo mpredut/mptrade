@@ -71,7 +71,8 @@ from intelligence.macro_sentiment_ssot import (
     read_first_cached_dict,
 )
 from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
-import notify_engine.alertnotifiers as _alertnotifiers
+import notify_engine.notifyapi as _notifyapi
+import notify_engine.ntfypolicy as _ntfypolicy
 from orchestratorOS.agy.paths import resolve_agy_bot_bin
 from providers.intent_state import decision_has_cancel_directive, normalize_trading_decisions
 from state_io import (
@@ -1169,7 +1170,7 @@ _LOG_DAEMON_RECOVERED_RE = re.compile(
     r"(Daemon status:\s*active|Remote-control daemon started|Daemon is active and healthy|ui-sync:\s*check healthy|"
     r"===\s*(?:STRATEGIE\s+.*?\s+PORNITA|(?:[A-Z0-9_]+\s+)?STRATEGY\s+STARTED)\s*===|===\s*TRAILING STOP(?:\s+KRAKEN)?\s+started|\[STRAT\]\s+state loaded|"
     r"\[kraken_cache\]\s+start:|\[kraken_cache\]\[ws\]\s+subscribed ownTrades|"
-    r"\[Pricefetcher\]\s+Checking symbol support:|\[price_watcher\]|\[resources\]\s+OK\b|"
+    r"\[Pricefetcher\]\s+Checking symbol support:|\[price_?watcher\]|\[resources\]\s+OK\b|"
     r"\[verify\].*is LISTED and tradable|total size is [\d,]+\s+speedup is|"
     r"Starting GlobalTelemetryCollector|Global telemetry cycle active:|"
     r"Starting MacroAnalyzer|Macro analyzer cycle active:|"
@@ -1964,9 +1965,9 @@ def send_supervisor_ntfy_http(
 ) -> bool:
     """Gate and send a supervisor ntfy push notification via HTTP POST."""
     try:
-        allowed, reason, _, out_payload = _alertnotifiers.pass_common_gate(
+        allowed, reason, _, out_payload = _ntfypolicy.pass_common_gate(
             "ntfy", title, body, priority, target_topic,
-            [_alertnotifiers.make_bot_event_alert(title, body, "ai_supervisor")],
+            [_ntfypolicy.make_bot_event_alert(title, body, "ai_supervisor")],
             urgent=is_any_error,
         )
         if not allowed:
@@ -1979,8 +1980,8 @@ def send_supervisor_ntfy_http(
         if log:
             log.debug("Common gate fallback in reconciler: %s", e)
 
-    format_ntfy_url = getattr(_alertnotifiers, "format_ntfy_url", None)
-    AlertNotifier = getattr(_alertnotifiers, "AlertNotifier", None)
+    format_ntfy_url = getattr(_notifyapi, "format_ntfy_url", None)
+    AlertNotifier = getattr(_notifyapi, "AlertNotifier", None)
     topic_raw = (target_topic or "").strip()
     url_raw = (ntfy_url or "").strip()
     chosen_target = topic_raw or url_raw

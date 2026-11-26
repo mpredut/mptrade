@@ -7,7 +7,7 @@
     24-hour low" and "drop from the 24-hour high". Use the p85 percentile of these
     movements, so the threshold captures high-movement parts of days rather than normal daily noise.
 
-    Output consists of lines ready for market_alerts.conf. Review them manually; they
+    Output consists of lines ready for pricewatcher.conf. Review them manually; they
     are provisional because a new coin has sparse history and improves as data accumulates.
 
   python3 verify_tools/gen_alert_thresholds.py SPCXx TAO BTC
@@ -121,7 +121,7 @@ def suggest(symbol, days=DAYS):
 
 def main() -> int:
     syms = sys.argv[1:] or ["BTC", "TAO"]
-    print(f"# thresholds suggested from volatility (p{PERCENTILE} over {DAYS} days) — REVIEW, then put them in market_alerts.conf")
+    print(f"# thresholds suggested from volatility (p{PERCENTILE} over {DAYS} days) -- REVIEW, then put them in pricewatcher.conf")
     for s in syms:
         try:
             r = suggest(s)

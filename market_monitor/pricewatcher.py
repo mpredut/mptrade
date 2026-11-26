@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Run new-coin discovery and watch-list price alerts in one process.
 
-``price_watcher.conf`` supplies the watch list, thresholds, scan intervals, sources,
+``pricewatcher.conf`` supplies the watch list, thresholds, scan intervals, sources,
 and limits. Importing this module loads environment files, validates required alert
 configuration, and prints notification-channel status; only ``main`` starts monitor
 threads. Coin discovery additionally requires ``ALERT_NEW_COIN=TRUE``.
 
-Usage: ``python3 price_watcher.py [--config PATH] [--check]``.
+Usage: ``python3 pricewatcher.py [--config PATH] [--check]``.
 """
 import argparse
 import os
@@ -22,8 +22,8 @@ from market_monitor.pricechecker import PriceChecker
 from market_monitor.pricefetcher import create_cachePriceAll
 
 # Alert orchestration formerly lived in ``run_price_monitor.py``.
-from market_monitor.new_coins_discovery import NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
-from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url
+from market_monitor.newcoinsdiscovery import NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
+from notify_engine.notifyapi import AlertNotifier, format_ntfy_url
 from botcore import (
     add_store_true_cli_args,
     load_env_stack,
@@ -35,8 +35,8 @@ from botcore import (
     secret_env,
     touch_module_heartbeat,
 )
-from cachepaths import cache_path
-from market_monitor.alerts_config import load_config
+from market_monitor.alertsconfig import load_config
+from state_stores.price_watcher_state import PriceWatcherStateStore
 
 load_env_stack()
 ALERT_NEW_COIN = required_bool_env("ALERT_NEW_COIN")
@@ -98,7 +98,7 @@ def periodic_cleanup(cachePriceAll, new_coins_checker):
 
         if hasattr(cachePriceAll, 'cleanup_old_symbols'):
             try:
-                cachePriceAll.cleanup_old_symbols(max_age_days=7)
+                cachePriceAll.cleanup_old_symbols()
             except Exception as e:
                 print(f"[Periodic] cleanup_old_symbols error: {e}")
         else:
@@ -217,7 +217,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 def main():
     ap = argparse.ArgumentParser(description="Alert monitor: new coins plus price thresholds (config-driven).")
-    ap.add_argument("--config", default=os.path.join(_HERE, "price_watcher.conf"))
+    ap.add_argument("--config", default=os.path.join(_HERE, "pricewatcher.conf"))
     args = add_store_true_cli_args(
         ap,
         ("--check", "validate the config plus the imports and exit (it does not start the monitor)"),
@@ -226,8 +226,8 @@ def main():
     cfg = load_config(args.config)
     ac = cfg["alert_config"]
     print("=" * 70)
-    print(f"market_alerts -- config: {args.config}")
-    print(f"   watchlist : {cfg['watch']}  (max {cfg['max_monitored']})")
+    print(f"pricewatcher -- config: {args.config}")
+    print(f"   watchlist : {cfg['watch']}  (cap {cfg['max_monitored']})")
     print(f"   default   : up +{ac['default']['up_percent']}% / down -{ac['default']['down_percent']}%")
     print(f"   new_coin  : up +{ac['dynamic']['up_percent']}% / down -{ac['dynamic']['down_percent']}%")
     if ac["per_coin"]:
@@ -236,7 +236,7 @@ def main():
     esc_ratio = safe_nonneg_float(ac.get("escalation_step_ratio"), default=0.0)
     esc_desc = f"hybrid +{esc_ratio * 100:g}% of threshold" if esc_ratio > 0 else "fixed only"
     print(f"   notify cooldown {ac['cooldown_minutes']}min ({esc_desc}) | lookback {ac['lookback_hours']}h | "
-          f"price scan {cfg['price_scan_seconds']}s | new-coin scan {cfg['new_coins_scan_seconds']}s")
+          f"retention {cfg['retention_days']}d | price scan {cfg['price_scan_seconds']}s | new-coin scan {cfg['new_coins_scan_seconds']}s")
     print("=" * 70)
     print(
         "[OK] --check: the config is valid and the imports are OK. Exiting without starting the monitor."
@@ -253,6 +253,7 @@ def main():
         max_symbols=cfg["max_monitored"],
         sync_interval_sec=cfg["price_scan_seconds"],
         lookback_hours=ac["lookback_hours"],
+        retention_days=cfg["retention_days"],
     )
     print("Waiting for the first price sync (5s)...")
     time.sleep(5)
@@ -262,7 +263,7 @@ def main():
         cachePriceAll=cachePriceAll,
         alert_callback=lambda alert: AlertNotifier.send(alert, enable_phone_webhook=True, webhook_url=PRICE_WEBHOOK_URL),
         config={**ac, "price_scan_seconds": cfg["price_scan_seconds"]},
-        state_file=cache_path("cache_watcher_all_price.cooldowns.json"),
+        state_file=str(PriceWatcherStateStore.default_state_path()),
     )
     price_checker.start_monitoring(cfg["price_scan_seconds"])
 
@@ -284,11 +285,11 @@ def main():
     try:
         hb_syms = list(cfg.get("watch") or ())
         hb_itv = {"price_scan": cfg["price_scan_seconds"]}
-        touch_module_heartbeat("price_watcher", interval_sec=30.0, force=True, symbols=hb_syms, intervals=hb_itv)
+        touch_module_heartbeat("pricewatcher", interval_sec=30.0, force=True, symbols=hb_syms, intervals=hb_itv)
         print("\nWaiting for alerts... (Ctrl+C to stop)\n", flush=True)
         while True:
             time.sleep(30)
-            touch_module_heartbeat("price_watcher", interval_sec=30.0, symbols=hb_syms, intervals=hb_itv)
+            touch_module_heartbeat("pricewatcher", interval_sec=30.0, symbols=hb_syms, intervals=hb_itv)
     except KeyboardInterrupt:
         print("\nStopping system...")
         if new_coins_checker is not None:

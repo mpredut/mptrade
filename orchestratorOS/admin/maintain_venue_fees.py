@@ -14,7 +14,7 @@ if ROOT_DIR not in sys.path:
 
 import botcore
 from botcore import add_store_true_cli_args, now_str, split_csv
-from notify_engine import alertnotifiers
+from notify_engine import notifyapi
 from providers.venue_fee_maintenance import run_venue_fee_maintenance
 from state_io import encode_json_payload
 
@@ -22,7 +22,7 @@ from state_io import encode_json_payload
 def _dispatch_maintenance_event(ev: Dict[str, Any]) -> None:
     kind = str(ev.get("kind") or "").strip().lower()
     if kind == "order_placed":
-        alertnotifiers.dispatch_order_event_notification(
+        notifyapi.dispatch_order_event_notification(
             ev.get("symbol"),
             ev.get("side"),
             ev.get("order_id"),
@@ -41,7 +41,7 @@ def _dispatch_maintenance_event(ev: Dict[str, Any]) -> None:
     title = str(ev.get("title") or "").strip()
     body = str(ev.get("body") or "").strip()
     if title and body:
-        alertnotifiers.notify(
+        notifyapi.notify(
             title=title,
             body=body,
             source="fee_maintainer",

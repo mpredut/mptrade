@@ -15,8 +15,8 @@ import subprocess
 import sys
 from collections import defaultdict
 from intelligence.sentiment.gemini_client import GeminiClient
-from market_monitor import alerts_config, new_coins_discovery as ncd
-from market_monitor.new_coins_discovery import (
+from market_monitor import alertsconfig as alerts_config, newcoinsdiscovery as ncd
+from market_monitor.newcoinsdiscovery import (
     DexScreenerSource,
     NewCoinsMonitor,
     _safe_days_back,
@@ -24,14 +24,9 @@ from market_monitor.new_coins_discovery import (
 )
 from market_monitor.pricechecker import PRICE_ALERT_CONFIG, PriceAlert, PriceChecker
 from market_monitor.pricefetcher import StockYahooPricePlatform
-from notify_engine import mailer, server
-from notify_engine.alertnotifiers import (
+from notify_engine import ntfymailer as mailer, ntfydispatcher as server
+from notify_engine.notifyapi import (
     AlertNotifier,
-    _GATE_ACCEPTED_REASONS,
-    _GATE_SUPPRESSED_REASONS,
-    _dedup_seconds,
-    _is_guard_alert,
-    _mark_provider_daily_limit,
     emit_trade_notification,
     format_notify_price,
     format_notify_qty,
@@ -39,13 +34,20 @@ from notify_engine.alertnotifiers import (
     format_trade_notification,
     format_trade_venue_tag,
     notify,
+)
+from notify_engine.ntfypolicy import (
+    _GATE_ACCEPTED_REASONS,
+    _GATE_SUPPRESSED_REASONS,
+    _dedup_seconds,
+    _is_guard_alert,
+    _mark_provider_daily_limit,
     pass_common_gate,
     pop_due_bulk_batch,
     strip_owner_tags,
     synthesize_bulk_notifications,
 )
-from notify_engine.server import (
-    NotificationServer,
+from notify_engine.ntfydispatcher import (
+    NtfyDispatcher as NotificationServer,
     _category_for_title_and_source,
     _resolve_provider_label,
     _topic_for_category,
@@ -608,7 +610,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
             self.dispatched.clear()
             t0 = 1_700_000_000.0
 
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0):
                 # 1. First alert opens and immediately closes the 5-minute gate
                 hung_1 = {
                     "type": "bot_event",
@@ -627,7 +629,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
 
             # 2. 15 seconds later: structurally similar hung alert (different PID, stale seconds, and logs)
             # Must be ELIMINATED completely (neither sent nor buffered as a new bulk item)
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 15):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0 + 15):
                 hung_2 = {
                     "type": "bot_event",
                     "name": "Alert",
@@ -643,7 +645,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(len(self.dispatched), 1, "Similar hung message must be eliminated")
 
             # 3. 30 seconds later: DIFFERENT alert #1 arrives while 5-min gate is closed -> buffered
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 30):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0 + 30):
                 diff_1 = {
                     "type": "bot_event",
                     "name": "⏰ Order Expired & Canceled: BUY TAOUSDC @ 284.50 [rtrade]",
@@ -656,7 +658,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
 
             # 4. 45 seconds later: SIMILAR repeat of buffered alert #1 (different price & order ID)
             # Must be eliminated and increment repeat count (x2) on buffered item #1
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 45):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0 + 45):
                 diff_1_repeat = {
                     "type": "bot_event",
                     "name": "⏰ Order Expired & Canceled: BUY TAOUSDC @ 285.10 [rtrade]",
@@ -668,7 +670,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(len(self.dispatched), 1)
 
             # 5. 60 seconds later: DIFFERENT alert #2 arrives -> buffered
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 60):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0 + 60):
                 diff_2 = {
                     "type": "bot_event",
                     "name": "🛡 [VETO] Would Block BUY ETHUSDC",
@@ -680,7 +682,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(len(self.dispatched), 1)
 
             # 6. 90 seconds later: DIFFERENT alert #3 on same topic as diff_1 (ntfy-trades-test) + alert #4 on ntfy-error-test
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 90):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0 + 90):
                 diff_3_trade = {
                     "type": "bot_event",
                     "name": "🎉 Order Executed: SELL BTCUSDC @ $68000.00",
@@ -750,7 +752,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
             "NOTIFICATION_GATE_SECONDS": "180",
             "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
         }):
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0):
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
                     "name": "📝 SELL ARBUSDC @ 0.169 [assetguardian]",
@@ -760,7 +762,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 }], bot_name="monitororder")
                 self.assertEqual(len(self.dispatched), 1)
 
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 60):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0 + 60):
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
                     "name": "🎉 SELL ARBUSDC @ 0.169 [assetguardian]",
@@ -769,7 +771,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                     "symbol": "ARBUSDC",
                 }], bot_name="monitortrades")
 
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 120):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0 + 120):
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
                     "name": "🎉 SELL ARBUSDC @ 0.1686 [assetguardian]",
@@ -973,7 +975,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
         }):
             self.dispatched.clear()
             t0 = 1_750_000_000.0
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0):
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
                     "name": "🔴 [auto_macro_sentiment] DEFENSIVE (BEARISH)",
@@ -985,7 +987,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(self.dispatched[0]["topic"], "ntfy-macro-test")
 
             # At t0 + 120s (within 5m topic window AND within 10m central gate): 2nd macro alert arrives -> batched on macro topic
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 120):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0 + 120):
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
                     "name": "🌍 [auto_macro_geopolitical] DOWNSCALE_50 (ELEVATED)",
@@ -996,7 +998,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(len(self.dispatched), 1)
 
             # At t0 + 180s: server alert arrives -> queued separately under ntfy-server-test
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 180):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0 + 180):
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
                     "name": "🛠 [auto_technical_repair] Issues: 1 | Actions: 0",
@@ -1032,7 +1034,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
         }):
             self.dispatched.clear()
             t1 = 1_760_000_000.0
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t1):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t1):
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
                     "name": "🔴 [auto_macro_sentiment] DEFENSIVE (BEARISH)",
@@ -1041,7 +1043,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                     "symbol": "GLOBAL",
                 }])
                 self.assertEqual(len(self.dispatched), 1)
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t1 + 60):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t1 + 60):
                 # Buffered in pending_bulk because ntfy-macro-test topic window (300s) is still closed
                 self.server.dispatch_alerts([{
                     "type": "bot_event",
@@ -1148,7 +1150,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
             self.server._send_email = lambda subj, body, is_retry=False, dedup=True: mirrored_emails.append((subj, body, is_retry, dedup)) or True
             t0 = 1_780_000_000.0
 
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0):
                 # 1. First trade alert opens and closes the 10-minute central gate
                 ok1 = self.server.dispatch_alerts([{
                     "type": "bot_event",
@@ -1161,7 +1163,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(len(self.dispatched), 1)
                 self.assertEqual(mirrored_emails, [])
 
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 30):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0 + 30):
                 # 2. ERROR alert arrives while ntfy central gate is closed -> buffered for bulk on ntfy,
                 #    returns True (accepted by gate so callers/flush_queue_loop do not treat as transport failure),
                 #    and immediately mirrors to email!
@@ -1189,7 +1191,7 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 self.assertEqual(len(mirrored_emails), 1)
 
             # 4. If ntfy hits provider_daily_limit while pending_bulk has items, pop_due_bulk_batch must not pop and lose the batch
-            with patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 605):
+            with patch("notify_engine.ntfypolicy.time.time", return_value=t0 + 605):
                 _mark_provider_daily_limit("ntfy", cooldown_seconds=300.0)
                 self.assertIsNone(pop_due_bulk_batch("ntfy", now=t0 + 605))
 
@@ -1221,11 +1223,11 @@ class TestNotifyEngineOrchestrator(TempDirTestCase):
                 #    _send_email receives only the single new error (not the synthesized 'Bulk')
                 mirrored_emails.clear()
                 t_err = midnight_after + 1000.0
-                with patch("notify_engine.alertnotifiers.time.time", return_value=t_err):
+                with patch("notify_engine.ntfypolicy.time.time", return_value=t_err):
                     self.server._gate_and_send_ntfy("Error One", "detail alpha", "urgent", "ntfy-error-test", urgent=True)
-                with patch("notify_engine.alertnotifiers.time.time", return_value=t_err + 30):
+                with patch("notify_engine.ntfypolicy.time.time", return_value=t_err + 30):
                     self.server._gate_and_send_ntfy("Error Two", "detail beta", "urgent", "ntfy-error-test", urgent=True)
-                with patch("notify_engine.alertnotifiers.time.time", return_value=t_err + 610):
+                with patch("notify_engine.ntfypolicy.time.time", return_value=t_err + 610):
                     self.server._gate_and_send_ntfy("Error Three", "detail gamma", "urgent", "ntfy-error-test", urgent=True)
                 self.assertEqual([e[0] for e in mirrored_emails], ["Error One", "Error Two", "Error Three"])
 
@@ -1500,7 +1502,7 @@ class EmailMirrorTest(TempDirTestCase):
 
     def test_server_topic_is_push_only_and_spcx_sell_emails(self):
         """Verify non-critical SERVER notifications skip email, while live SPCX SELL alerts trigger email."""
-        from notify_engine.alertnotifiers import (
+        from notify_engine.notifyapi import (
             EMAIL_MIRRORED_CATEGORIES,
             is_email_mirrored,
             should_email_trade_sell_alert,
@@ -1806,7 +1808,7 @@ def test_dexscreenersource_refresh_rejects_bool_nan_listedat_and_newcoinsmonitor
             {"symbol": "GHI", "listedAt": 1700000000000},
         ]
     }
-    monkeypatch.setattr("market_monitor.new_coins_discovery.requests.get", lambda *a, **kw: fake_resp)
+    monkeypatch.setattr("market_monitor.newcoinsdiscovery.requests.get", lambda *a, **kw: fake_resp)
     dex = DexScreenerSource()
     by_sym = {c["symbol"]: c["added_at"] for c in dex._cache}
     assert by_sym["ABC"] is None
@@ -1950,13 +1952,13 @@ def test_alerts_config__pair_rejects_extra_slashes_and_load_config_rejects_iter7
         "cooldown_minutes = 30\n"
         "escalation_step_ratio = 0.35\n"
         "lookback_hours = 24\n"
-        "max_monitored = 3.5\n"
-        "max_new_coins = 5\n"
+        "retention_days = 7\n"
+        "max_new_coins = 3.5\n"
         "new_coins_scan_seconds = 3600\n"
         "price_scan_seconds = 60\n",
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="Invalid alert configuration for max_monitored"):
+    with pytest.raises(ValueError, match="Invalid alert configuration for max_new_coins"):
         alerts_config.load_config(str(bad_cfg))
 
 def test_alerts_config_resolve_normalizes_case_and_handles_none_per_coin_iter79_s2():
@@ -2038,7 +2040,7 @@ def test_notificationserver__send_ntfy_strips_cr_lf_from_headers_and_iter122_s2(
     sent_calls = []
     ok_resp = MockHttpResponse()
     ok_resp.status_code = 200
-    monkeypatch.setattr("notify_engine.server.requests.post", lambda url, data=None, headers=None, timeout=5: (sent_calls.append((url, headers)), ok_resp)[1])
+    monkeypatch.setattr("notify_engine.ntfydispatcher.requests.post", lambda url, data=None, headers=None, timeout=5: (sent_calls.append((url, headers)), ok_resp)[1])
     srv = NotificationServer()
     assert srv._send_ntfy("Line1\r\nLine2", "Body", "urgent\n", "https://ntfy.sh/custom-topic", is_retry=True, skip_email=True) is True
     assert sent_calls[0][0] == "https://ntfy.sh/custom-topic"
@@ -2123,7 +2125,7 @@ def test_ci_regression_and_bot_restart_never_email_and_xstock_supervisor_retired
     import json
     import subprocess
     from kraken import kraken_xstock_watch as kxw
-    from notify_engine import alertnotifiers as an, mailer, server as ns
+    from notify_engine import notifyapi as an, ntfymailer as mailer, ntfydispatcher as ns
 
     # 1. Subject-level email suppression blocks CI regression and bot/fleet restarts across all entry points
     smtp_sent = []
@@ -2170,7 +2172,7 @@ def test_ci_regression_and_bot_restart_never_email_and_xstock_supervisor_retired
     assert len(smtp_sent) == 2
 
     # NotificationServer also respects skip_email from orchestrated intents & subject suppression
-    srv = ns.NotificationServer()
+    srv = ns.NtfyDispatcher()
     emailed = []
     monkeypatch.setattr(srv, "_send_email", lambda s, m, *a, **k: emailed.append((s, m)) or True)
     monkeypatch.setattr(ns, "http_requests_post", lambda *a, **k: SimpleNamespace(status_code=200))

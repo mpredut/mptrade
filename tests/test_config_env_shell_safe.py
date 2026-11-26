@@ -63,12 +63,12 @@ from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
 from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
 from kraken import shadow_live
-from market_monitor import alerts_config, new_coins_discovery as ncd, pricefetcher as pf
+from market_monitor import alertsconfig as alerts_config, newcoinsdiscovery as ncd, pricefetcher as pf
 from market_monitor.pricechecker import PriceChecker
 from market_regime import MarketRegimeContext, MarketRegimeDecision, MarketRegimeEvaluator, MarketRegimeService
 import monitororder as mo
 import monitortrades as mt
-from notify_engine import alertnotifiers
+from notify_engine import notifyapi, ntfypolicy as notifygate
 from offline.backtests import (
     datasets as bds,
     evaluation as bev,
@@ -350,14 +350,14 @@ def test_alertnotifiers_and_hl_hardening(tmp_path, monkeypatch):
         },
     }), encoding="utf-8")
 
-    allowed, reason, _, payload = alertnotifiers.pass_common_gate(
+    allowed, reason, _, payload = notifygate.pass_common_gate(
         "ntfy", "Test Alert", "Body", now=now_ts
     )
     assert allowed is True
     assert reason == "reserved"
     assert payload is not None
 
-    msg = alertnotifiers.AlertNotifier.format_new_coin_message(
+    msg = notifyapi.AlertNotifier.format_new_coin_message(
         {"symbol": "ABC", "price": "1.23456"}
     )
     assert "Price: $1.2346" in msg

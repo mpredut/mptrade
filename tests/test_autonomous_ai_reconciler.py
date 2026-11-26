@@ -859,7 +859,7 @@ def test_dispatch_notification_routes_system_and_bot_errors_to_ntfy_error(temp_e
         actions_executed=False,
     )
     with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen, \
-         patch("notify_engine.alertnotifiers.pass_common_gate", return_value=(True, "ok", "fp", None)):
+         patch("notify_engine.ntfypolicy.pass_common_gate", return_value=(True, "ok", "fp", None)):
         assert reconciler.dispatch_notification(healthy_report) is True
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "https://ntfy.sh/ntfy-server-1978"
@@ -877,7 +877,7 @@ def test_dispatch_notification_routes_system_and_bot_errors_to_ntfy_error(temp_e
         actions_executed=False,
     )
     with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen, \
-         patch("notify_engine.alertnotifiers.pass_common_gate", return_value=(True, "ok", "fp", None)):
+         patch("notify_engine.ntfypolicy.pass_common_gate", return_value=(True, "ok", "fp", None)):
         assert reconciler.dispatch_notification(sys_error_report) is True
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "https://ntfy.sh/ntfy-server-1978"
@@ -896,7 +896,7 @@ def test_dispatch_notification_routes_system_and_bot_errors_to_ntfy_error(temp_e
         actions_executed=True,
     )
     with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen, \
-         patch("notify_engine.alertnotifiers.pass_common_gate", return_value=(True, "ok", "fp", None)):
+         patch("notify_engine.ntfypolicy.pass_common_gate", return_value=(True, "ok", "fp", None)):
         assert reconciler.dispatch_notification(error_report) is True
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "https://ntfy.sh/ntfy-error-1978"
@@ -915,7 +915,7 @@ def test_dispatch_notification_routes_system_and_bot_errors_to_ntfy_error(temp_e
         actions_executed=False,
     )
     with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen, \
-         patch("notify_engine.alertnotifiers.pass_common_gate", return_value=(True, "ok", "fp", None)):
+         patch("notify_engine.ntfypolicy.pass_common_gate", return_value=(True, "ok", "fp", None)):
         assert reconciler.dispatch_notification(low_note_report) is True
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "https://ntfy.sh/ntfy-server-1978"

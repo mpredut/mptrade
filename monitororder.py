@@ -4,7 +4,7 @@ import time
 
 # Project imports.
 import cachetrend as ct
-from notify_engine import alertnotifiers as alert
+from notify_engine import notifyapi as alert
 import instrument_registry as sym
 import pricewindow as pw
 from providers import order_id_context as rc

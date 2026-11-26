@@ -67,7 +67,7 @@ from botcore import (
 )
 from cachepaths import cache_path
 from instrument_registry import load_registry, select_instruments
-from notify_engine import alertnotifiers as alert
+from notify_engine import notifyapi as alert
 from offline.research.backtest_ranges import scan_backtest_ranges
 from offline.research.monitortrades_backtest import run_replay_backtest as rb
 from providers.replay_provider import load_price_series

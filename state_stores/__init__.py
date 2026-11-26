@@ -19,6 +19,7 @@ from .order_retry_queue import OrderRetryQueueStore
 from .orders_active import OrdersActiveStore
 from .os_resources_watchdog_state import OsResourcesWatchdogStateStore
 from .portfolio_positions_state import PortfolioPositionsStateStore
+from .price_watcher_state import PriceWatcherStateStore
 from .registry import (
     CRITICAL_STATE_SPECS,
     STATE_SPEC_BY_CONST,
@@ -57,6 +58,7 @@ __all__ = [
     "OrdersActiveStore",
     "OsResourcesWatchdogStateStore",
     "PortfolioPositionsStateStore",
+    "PriceWatcherStateStore",
     "RtradePairsStateStore",
     "STATE_SPEC_BY_CONST",
     "STATE_SPEC_BY_FILENAME",

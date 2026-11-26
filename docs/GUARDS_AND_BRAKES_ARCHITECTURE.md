@@ -176,15 +176,15 @@ cachedb/
 
 ## 6. Notification & Alerting Engine ([`notify_engine/`](file:///home/predut/mptrade/notify_engine/))
 
-All bot and guard alerts flow through `notify_engine.alertnotifiers.notify` into dedicated ntfy topics with deduplication and email mirroring:
+All bot and guard alerts flow through `notify_engine.notifyapi.notify` into dedicated ntfy topics with deduplication and email mirroring:
 
 | Category | Source Key | Ntfy Topic | Purpose & Policy |
 | :--- | :--- | :--- | :--- |
 | **GUARD** | `order_guard` | `ntfy-guard-1978` | P2 (Orderbook, Funding, Whale) and P3 High-Stake alerts. 30m per-symbol cooldown. |
 | **MACRO** | `macro_shadow` | `ntfy-macro-1978` | P3 Sentiment Advisor regimes and P3 Geopolitical Threat changes. |
 | **TRADES** | `tradeall`, `monitortrades` | `ntfy-trades-1978` | Live executions, position scaling, take-profit triggers. |
-| **PRICE** | `price_watcher` | `ntfy-price-1978` | Key price threshold breakouts and trend reversals. |
-| **ERROR** | `watchdog`, OS scripts | `ntfy-error-1978` | Critical system errors, auto-mirrored to SMTP Email via [`mailer.py`](file:///home/predut/mptrade/notify_engine/mailer.py). |
+| **PRICE** | `pricewatcher` | `ntfy-price-1978` | Key price threshold breakouts and trend reversals. |
+| **ERROR** | `watchdog`, OS scripts | `ntfy-error-1978` | Critical system errors, auto-mirrored to SMTP Email via [`ntfymailer.py`](file:///home/predut/mptrade/notify_engine/ntfymailer.py). |
 | **SERVER** | `orchestrator`, `deadman` | `ntfy-server-1978` | Daemon lifecycle, config reload notifications, and deadman/heartbeat monitoring. |
 
 ### Standard Alert Format

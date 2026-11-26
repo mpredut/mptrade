@@ -11,7 +11,6 @@ import requests  # noqa: F401 -- retained as monkeypatch seam for market_monitor
 from datetime import datetime
 from typing import Dict, List, Optional
 
-import instrument_registry as sym
 from botcore import (
     clean_scalar_str,
     exact_pos_int,
@@ -26,7 +25,7 @@ from cachepaths import CACHE_WATCHER_ALL_PRICE_FILENAME
 from cacheManager import CacheFactory
 from cacheprice import CachePriceManagerBase
 from instrument_registry import casefold_get
-from market_monitor.price_platforms import (
+from market_monitor.priceplatforms import (
     BinancePricePlatform,
     CoinMarketCapPricePlatform,
     CryptoPricePlatformBase,
@@ -61,11 +60,17 @@ def resolve_price_sync_interval_sec(scan_seconds: Optional[float] = None) -> int
     return max(PRICE_MULTI_MIN_SYNC_INTERVAL_SEC, min(PRICE_MULTI_SYNC_INTERVAL_SEC, math.trunc(scan_f)))
 
 
-def resolve_max_price_history(sync_interval_sec: float, lookback_hours: Optional[float] = None) -> int:
-    """Ensure retained per-symbol history covers at least the full ``lookback_hours`` window."""
+def resolve_max_price_history(
+    sync_interval_sec: float,
+    lookback_hours: Optional[float] = None,
+    retention_days: Optional[float] = None,
+) -> int:
+    """Ensure retained per-symbol history covers both ``lookback_hours`` and ``retention_days``."""
     sync_f = safe_pos_float(sync_interval_sec, default=PRICE_MULTI_SYNC_INTERVAL_SEC)
     lb_h = safe_pos_float(lookback_hours, default=24.0)
-    needed = math.ceil((lb_h * 3600.0) / max(1.0, sync_f)) + 120
+    ret_d = safe_pos_float(retention_days, default=None)
+    eff_hours = max(lb_h, ret_d * 24.0) if ret_d is not None else lb_h
+    needed = math.ceil((eff_hours * 3600.0) / max(1.0, sync_f)) + 120
     return min(100_000, max(MAX_PRICE_HISTORY_PER_SYMBOL, needed))
 
 
@@ -84,14 +89,16 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         *,
         data_sync_mode: Optional[str] = None,
         max_history_per_symbol: Optional[int] = None,
+        retention_days: Optional[float] = None,
     ):
         self.price_factory = PricePlatformFactory(cmc_api_key=cmc_api_key)
         self.max_monitored_symbols = safe_pos_int(max_symbols, default=MAX_MONITORED_SYMBOLS)
         resolved_sync = sync_ts() if callable(sync_ts) else sync_ts
         self.sync_interval_sec = safe_pos_float(resolved_sync, default=PRICE_MULTI_SYNC_INTERVAL_SEC)
+        self.retention_days = safe_pos_float(retention_days, default=PRICE_HISTORY_RETENTION_DAYS)
         self.max_history_per_symbol = safe_pos_int(
             max_history_per_symbol,
-            default=resolve_max_price_history(self.sync_interval_sec),
+            default=resolve_max_price_history(self.sync_interval_sec, retention_days=self.retention_days),
         )
         initial_symbols = []
         seen_bases = set()
@@ -156,24 +163,19 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                     if isinstance(k, str) and isinstance(v, str) and v.strip()
                 }
             seen_bases = {get_base_symbol(symbol) for symbol in self.active_symbols}
-            raw_active = sym_meta.get("active_symbols")
-            active_symbols = (
-                [s for s in raw_active if isinstance(s, str) and s.strip()]
-                if isinstance(raw_active, list)
-                else []
-            )
             raw_items = data.get("items")
             items_map = raw_items if isinstance(raw_items, dict) else {}
+            ret_days = safe_pos_float(getattr(self, "retention_days", None), default=PRICE_HISTORY_RETENTION_DAYS)
             recovered_symbols = [
                 symbol
                 for symbol, added_time in self.symbol_added_time.items()
                 if (
                     casefold_get(items_map, symbol) is not None
                     and (at_val := safe_pos_float(added_time, default=None)) is not None
-                    and time.time() - at_val <= PRICE_HISTORY_RETENTION_DAYS * 24 * 3600
+                    and time.time() - at_val <= ret_days * 24 * 3600
                 )
             ]
-            for symbol in list(dict.fromkeys(active_symbols + recovered_symbols)):
+            for symbol in list(dict.fromkeys(recovered_symbols)):
                 if len(self.active_symbols) >= self.max_monitored_symbols:
                     print(
                         f"[Pricefetcher] Limit reached while loading: maximum "
@@ -365,10 +367,12 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             )
         return history
 
-    def cleanup_old_prices(self, retention_days: int = PRICE_HISTORY_RETENTION_DAYS, *, verbose: bool = True):
-        if not isinstance(retention_days, (int, float)) or safe_pos_float(retention_days, default=None) is None:
+    def cleanup_old_prices(self, retention_days: Optional[float] = None, *, verbose: bool = True):
+        if retention_days is None:
+            ret_f = safe_pos_float(getattr(self, "retention_days", None), default=PRICE_HISTORY_RETENTION_DAYS)
+        elif not isinstance(retention_days, (int, float)) or isinstance(retention_days, bool) or (ret_f := safe_pos_float(retention_days, default=None)) is None:
             return
-        cutoff_timestamp = (time.time() - retention_days * 24 * 3600) * 1000
+        cutoff_timestamp = (time.time() - ret_f * 24 * 3600) * 1000
         with self.lock:
             removed_count = 0
             trimmed_count = 0
@@ -411,10 +415,12 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             if verbose and trimmed_count > 0:
                 print(f"[Cleanup] Total: {trimmed_count} entries trimmed beyond the per-symbol limit")
 
-    def cleanup_old_symbols(self, max_age_days: int = 7):
-        if not isinstance(max_age_days, (int, float)) or safe_pos_float(max_age_days, default=None) is None:
+    def cleanup_old_symbols(self, max_age_days: Optional[float] = None):
+        if max_age_days is None:
+            age_f = safe_pos_float(getattr(self, "retention_days", None), default=PRICE_HISTORY_RETENTION_DAYS)
+        elif not isinstance(max_age_days, (int, float)) or isinstance(max_age_days, bool) or (age_f := safe_pos_float(max_age_days, default=None)) is None:
             return []
-        cutoff_time = time.time() - max_age_days * 24 * 3600
+        cutoff_time = time.time() - age_f * 24 * 3600
         removed_symbols = []
         with self.lock:
             for symbol, added_time in list(self.symbol_added_time.items()):
@@ -422,14 +428,15 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 if at_val is None or at_val < cutoff_time:
                     removed_symbols.append(symbol)
         for symbol in removed_symbols:
-            self.remove_symbol(symbol, reason=f"(older than {max_age_days} days)")
+            self.remove_symbol(symbol, reason=f"(older than {age_f:g} days)")
         if removed_symbols:
             print(f"[Cleanup] Removed {len(removed_symbols)} old symbols: {removed_symbols}")
         return removed_symbols
 
     def save_state_to_file(self):
-        self.cleanup_old_prices(verbose=False)
-        self.cleanup_old_symbols(max_age_days=PRICE_HISTORY_RETENTION_DAYS)
+        ret_days = safe_pos_float(getattr(self, "retention_days", None), default=PRICE_HISTORY_RETENTION_DAYS)
+        self.cleanup_old_prices(retention_days=ret_days, verbose=False)
+        self.cleanup_old_symbols(max_age_days=ret_days)
         try:
             with self.lock:
                 if self._persisted_max_ts() > self._mem_max_ts():
@@ -445,7 +452,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                     "rest_sync_cursor": self._rest_sync_cursor_per_symbol,
                     "metadata": {
                         "last_cleanup": time.time(),
-                        "retention_days": PRICE_HISTORY_RETENTION_DAYS,
+                        "retention_days": ret_days,
                         "symbols_count": len(self.cache),
                         "total_entries": sum(len(v) for v in self.cache.values()),
                     },
@@ -484,15 +491,10 @@ def create_cachePriceAll(
     *,
     sync_interval_sec: Optional[float] = None,
     lookback_hours: Optional[float] = None,
+    retention_days: Optional[float] = None,
 ):
     all_symbols = []
     seen_bases = set()
-
-    if hasattr(sym, "symbols"):
-        for s in sym.symbols:
-            if is_valid_symbol_for_monitoring(s):
-                seen_bases.add(get_base_symbol(s))
-                all_symbols.append(s)
 
     for sym_default in (symbols or DEFAULT_SYMBOLS):
         if not is_valid_symbol_for_monitoring(sym_default):
@@ -502,14 +504,18 @@ def create_cachePriceAll(
             seen_bases.add(base_symbol)
             all_symbols.append(sym_default)
 
-    eff_max = safe_pos_int(max_symbols, default=MAX_MONITORED_SYMBOLS)
-    eff_sync = resolve_price_sync_interval_sec(sync_interval_sec)
-    eff_max_hist = resolve_max_price_history(eff_sync, lookback_hours=lookback_hours)
     all_symbols = list(dict.fromkeys(all_symbols))
     all_symbols = [s for s in all_symbols if is_valid_symbol_for_monitoring(s)]
+    eff_max = safe_pos_int(max_symbols, default=max(len(all_symbols), MAX_MONITORED_SYMBOLS))
+    eff_sync = resolve_price_sync_interval_sec(sync_interval_sec)
+    eff_ret_days = safe_pos_float(retention_days, default=PRICE_HISTORY_RETENTION_DAYS)
+    eff_max_hist = resolve_max_price_history(eff_sync, lookback_hours=lookback_hours, retention_days=eff_ret_days)
     all_symbols = all_symbols[:eff_max]
 
-    print(f"[pricefetcher] Valid symbols to monitor: {len(all_symbols)} (sync={eff_sync}s, max_history={eff_max_hist})")
+    print(
+        f"[pricefetcher] Valid symbols to monitor: {len(all_symbols)} "
+        f"(sync={eff_sync}s, retention={eff_ret_days:g}d, max_history={eff_max_hist})"
+    )
     print(f"[pricefetcher] List: {all_symbols}")
 
     CacheFactory.register(
@@ -520,6 +526,7 @@ def create_cachePriceAll(
         cmc_api_key=cmc_api_key,
         max_symbols=eff_max,
         max_history_per_symbol=eff_max_hist,
+        retention_days=eff_ret_days,
     )
     print("[Pricefetcher] Manager registered in CacheFactory as 'PriceMulti'")
     cachePriceAll = CacheFactory.get(
@@ -529,6 +536,7 @@ def create_cachePriceAll(
     )
     cachePriceAll.max_monitored_symbols = eff_max
     cachePriceAll.sync_interval_sec = eff_sync
+    cachePriceAll.retention_days = eff_ret_days
     cachePriceAll.max_history_per_symbol = eff_max_hist
     cachePriceAll.periodic_sync(sync_ts=eff_sync, save_state=True)
 

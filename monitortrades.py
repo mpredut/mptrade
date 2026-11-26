@@ -4,7 +4,7 @@ import os
 import time
 from typing import Any, Dict, Optional, Tuple
 
-from notify_engine import alertnotifiers as alert
+from notify_engine import notifyapi as alert
 from botcore import (
     _parse_bool_flag,
     bool_env,

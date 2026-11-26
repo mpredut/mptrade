@@ -29,7 +29,7 @@ from cachepaths import (
 )
 from collections import defaultdict
 from market_regime import ClosedPriceSeries, MarketRegimeService
-from notify_engine.server import _resolve_provider_label
+from notify_engine.ntfydispatcher import _resolve_provider_label
 from offline.backtests import datasets as ds, evaluation as ev, execution as ex, metrics as mt
 from pathlib import Path
 from providers import market_api as ma, ohlc_utils, order_ohlc_utils, strategy_executor as sexec
@@ -1263,7 +1263,7 @@ def test_intent_reconciliation_modularization_and_lazy_compat(tmp_path):
 
 
 def test_market_monitor_polymorphic_registries_and_soc_split():
-    from market_monitor import new_coins_discovery as ncd, price_platforms as pp, pricefetcher as pf
+    from market_monitor import newcoinsdiscovery as ncd, priceplatforms as pp, pricefetcher as pf
 
     assert set(pp.PricePlatformFactory._PLATFORM_REGISTRY) == {
         "binance",

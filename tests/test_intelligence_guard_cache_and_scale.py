@@ -16,7 +16,7 @@ import intelligence.macro_sentiment_ssot as _ssot_mod
 import json
 import llm_order_guard
 import monitortrades as mt
-import notify_engine.alertnotifiers as alertnotifiers
+import notify_engine.notifyapi as alertnotifiers
 import numpy as np
 import order_guard
 import order_retry
@@ -2314,8 +2314,11 @@ def test_guard_producer_consumer_decoupling_and_topic_spec_dag_purity():
         "active_intents.py",
         "rtrade_pair_store.py",
         "monitortrades.py",
-        "market_monitor/alerts_config.py",
-        "notify_engine/alertnotifiers.py",
+        "market_monitor/alertsconfig.py",
+        "notify_engine/notifyapi.py",
+        "notify_engine/ntfypolicy.py",
+        "notify_engine/ntfydispatcher.py",
+        "notify_engine/ntfymailer.py",
     ):
         tree = ast.parse((repo_root / rel).read_text(encoding="utf-8"), filename=rel)
         for node in ast.walk(tree):

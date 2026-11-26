@@ -21,6 +21,7 @@ from cachepaths import (
     ORDER_RETRY_QUEUE_FILENAME,
     OS_RESOURCES_WATCHDOG_STATE_FILENAME,
     PORTFOLIO_POSITIONS_STATE_FILENAME,
+    PRICE_WATCHER_STATE_FILENAME,
     RTRADE_PAIRS_STATE_FILENAME,
     SMART_STOP_LOSS_STATE_FILENAME,
     TRAILING_STATE_FILENAME,
@@ -145,6 +146,14 @@ CRITICAL_STATE_SPECS: tuple[StateFileSpec, ...] = (
         owner_module="state_stores/os_resources_watchdog_state.py",
         store_class="OsResourcesWatchdogStateStore",
         subdomain="system",
+        storage_root="statedb",
+    ),
+    StateFileSpec(
+        filename=PRICE_WATCHER_STATE_FILENAME,
+        const_name="PRICE_WATCHER_STATE_FILENAME",
+        owner_module="state_stores/price_watcher_state.py",
+        store_class="PriceWatcherStateStore",
+        subdomain="prices",
         storage_root="statedb",
     ),
     StateFileSpec(
