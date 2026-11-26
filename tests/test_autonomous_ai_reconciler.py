@@ -9769,6 +9769,28 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
     )
     skip_dp, _, _, dp_meta = evaluate_crypto_executor_delta_gate(deep_passive_s, prev_with_order, now_ts=t0 + 360.0)
     assert skip_dp is True and dp_meta["order_attention_flags"] == {}
+    # Near-spot top-of-book walls (<15bps from spot) intentionally omit recommended_front_run_px in TCA
+    # and must NOT trigger false open_order_wall_trapped LLM wakeups when wall_queue_pos is BEHIND_BID_WALL
+    near_spot_wall_s = SimpleNamespace(
+        **{
+            **base_sensors.__dict__,
+            "portfolio_summary": {
+                "open_limit_orders": [
+                    {
+                        "order_id": "ord-1",
+                        "dist_from_spot_pct": -1.31,
+                        "fill_prob_1h_pct": 28.4,
+                        "wall_queue_pos": "BEHIND_BID_WALL",
+                        "bid_wall_ahead_px": 60409.92,
+                        "bid_wall_ahead_usd": 428546.0,
+                    }
+                ],
+                "recent_orders": {},
+            },
+        }
+    )
+    skip_nsw, _, _, nsw_meta = evaluate_crypto_executor_delta_gate(near_spot_wall_s, prev_with_order, now_ts=t0 + 360.0)
+    assert skip_nsw is True and nsw_meta["order_attention_flags"] == {}
     assert evaluate_crypto_executor_delta_gate(near_fill_s, prev_ack_wall, now_ts=t0 + 360.0)[0] is True
 
     # Identical-verdict macro_update / geo_update refreshes do NOT wake the LLM, whereas real verdict shifts DO wake it

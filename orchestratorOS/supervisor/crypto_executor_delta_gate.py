@@ -295,7 +295,6 @@ def _collect_open_order_attention(
         filled_q = safe_float(oo.get("filled_qty"), default=0.0) or 0.0
         dist_pct = safe_float(oo.get("dist_from_spot_pct"), default=None)
         fill_prob = safe_float(oo.get("fill_prob_1h_pct"), default=None)
-        wall_q_pos = str(oo.get("wall_queue_pos") or "").strip().upper()
         cur_flag = ""
         cur_reason = ""
         if st == "PARTIALLY_FILLED" or filled_q > 0.0:
@@ -304,10 +303,7 @@ def _collect_open_order_attention(
         elif (fill_prob is not None and fill_prob <= 5.0) or (dist_pct is not None and abs(dist_pct) > 4.0):
             cur_flag = "open_order_stale_or_far"
             cur_reason = "open_order_stale_or_far"
-        elif oo.get("recommended_front_run_px") or (
-            (oo.get("ask_wall_ahead_px") or oo.get("bid_wall_ahead_px"))
-            and wall_q_pos not in ("DEEP_PASSIVE_BID", "FAR_ABOVE_ASK_WALL")
-        ):
+        elif safe_pos_float(oo.get("recommended_front_run_px"), default=None) is not None:
             cur_flag = "open_order_wall_trapped"
             cur_reason = "open_order_wall_trapped"
         elif oo.get("ob_flag") == "[ob_stale]" and prev_flags.get(oid) == "open_order_wall_trapped":
@@ -368,7 +364,7 @@ def _evaluate_delta_gate_trade_plans(
 
 
 def _collect_delta_gate_atr_15m(prices_and_trends: Any) -> Dict[str, float]:
-    """Collect canonical symbol -> 15m ATR (%) map when Faza 1 ATR telemetry is present."""
+    """Collect canonical symbol -> 15m ATR (%) map (or ``vol_1h_pct * 0.5`` proxy) when volatility telemetry is present."""
     atr_map: Dict[str, float] = {}
     if isinstance(prices_and_trends, Mapping):
         for sym, pinfo in prices_and_trends.items():
@@ -377,6 +373,10 @@ def _collect_delta_gate_atr_15m(prices_and_trends: Any) -> Dict[str, float]:
             sym_raw = str(sym or "").strip()
             sym_k = canonical_display_symbol(sym_raw) or sym_raw.upper()
             atr_15m = safe_pos_float(pinfo.get("atr_15m_pct"), default=None)
+            if atr_15m is None:
+                vol_1h = safe_pos_float(pinfo.get("vol_1h_pct"), default=None)
+                if vol_1h is not None:
+                    atr_15m = vol_1h * 0.5
             if sym_k and atr_15m is not None:
                 atr_map[sym_k] = atr_15m
     return atr_map
