@@ -10,7 +10,7 @@ methods). `kraken/kraken_common.py`, `hyperliquid/common.py` and
 `212trading/ipo_common.py` keep only genuine display or runtime particularities and
 re-export the old API for compatibility.
 
-`alertnotifiers.bind_notify()` centralises how the symbol is chosen from the environment.
+`notify_engine/ntfyapi.py` (`bind_notify()`) centralises how the symbol is chosen from the environment.
 The per-venue `notify.py` files are thin shims, still needed for the historical
 entrypoints; ntfy/email routing remains a single implementation. The same component
 applies deduplication and persistent daily budgets across processes (by default ntfy 100

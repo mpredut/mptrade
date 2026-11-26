@@ -172,7 +172,7 @@ class TestMonitororderProtectsOtherBots(TempDirTestCase):
              patch.object(monitororder.api, "cancel_order", return_value=True) as mock_cancel, \
              patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", terminal=False)), \
              patch.object(monitororder.mkt, "place", return_value={"orderId": 9999}) as mock_place, \
-             patch("notify_engine.notifyapi.notify"):
+             patch("notify_engine.ntfyapi.notify"):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
 
             # Only order 504 (TA_) was replaced via native replace!
@@ -201,7 +201,7 @@ class TestMonitororderProtectsOtherBots(TempDirTestCase):
              patch.object(monitororder.api, "cancel_order", return_value=True) as mock_cancel, \
              patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", terminal=False)), \
              patch.object(monitororder.mkt, "place", return_value={"orderId": 8888}) as mock_place, \
-             patch("notify_engine.notifyapi.notify"):
+             patch("notify_engine.ntfyapi.notify"):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
 
             mock_cancel.assert_not_called()
@@ -329,7 +329,7 @@ class TestMonitororderProtectsOtherBots(TempDirTestCase):
              patch.object(monitororder.api, "cancel_order", return_value=True) as mock_cancel, \
              patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", terminal=False)), \
              patch.object(monitororder.mkt, "place", return_value={"orderId": 7777}) as mock_place, \
-             patch("notify_engine.notifyapi.notify"):
+             patch("notify_engine.ntfyapi.notify"):
             monitororder.monitor_open_orders_by_type("BTCUSDC", "BUY")
             mock_cancel.assert_not_called()
             mock_place.assert_called_once()

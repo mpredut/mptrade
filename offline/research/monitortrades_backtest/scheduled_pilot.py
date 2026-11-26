@@ -25,7 +25,7 @@ one configuration and -$5279 in another, on the SAME history):
      PILOT_MIN_DAYS_BETWEEN_CHANGES days (7 by default) -- a persistent journal.
   5. AUDIT: every run writes a line into the journal (what was tested, both windows,
      decision, reason) -- whether or not anything changed.
-  6. NOTIFICATION (alertnotifiers.notify, the channel the fleet already uses): ONLY
+  6. NOTIFICATION (notify_engine.ntfyapi.notify, the channel the fleet already uses): ONLY
      when a real change is applied (not on every "nothing new" run).
   7. KILL SWITCH: the env var PILOT_DISABLED=true stops EVERYTHING, without touching the code.
 
@@ -67,7 +67,7 @@ from botcore import (
 )
 from cachepaths import cache_path
 from instrument_registry import load_registry, select_instruments
-from notify_engine import notifyapi as alert
+from notify_engine import ntfyapi as alert
 from offline.research.backtest_ranges import scan_backtest_ranges
 from offline.research.monitortrades_backtest import run_replay_backtest as rb
 from providers.replay_provider import load_price_series

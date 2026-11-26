@@ -23,7 +23,7 @@ from market_monitor.pricefetcher import create_cachePriceAll
 
 # Alert orchestration formerly lived in ``run_price_monitor.py``.
 from market_monitor.newcoinsdiscovery import NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
-from notify_engine.notifyapi import AlertNotifier, format_ntfy_url
+from notify_engine.ntfyapi import AlertNotifier, format_ntfy_url
 from botcore import (
     add_store_true_cli_args,
     load_env_stack,
@@ -35,6 +35,7 @@ from botcore import (
     secret_env,
     touch_module_heartbeat,
 )
+from cachepaths import get_cachedb_dir, resolve_cachedb_filepath
 from market_monitor.alertsconfig import load_config
 from state_stores.price_watcher_state import PriceWatcherStateStore
 
@@ -215,6 +216,16 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def _cleanup_legacy_heartbeat() -> None:
+    """Remove obsolete ``price_watcher.heartbeat`` so SRE heartbeat harvesting never flags it stale."""
+    leg_hb = str(resolve_cachedb_filepath(os.path.join(get_cachedb_dir(), "price_watcher.heartbeat")))
+    if os.path.isfile(leg_hb):
+        try:
+            os.remove(leg_hb)
+        except OSError:
+            pass
+
+
 def main():
     ap = argparse.ArgumentParser(description="Alert monitor: new coins plus price thresholds (config-driven).")
     ap.add_argument("--config", default=os.path.join(_HERE, "pricewatcher.conf"))
@@ -286,6 +297,7 @@ def main():
         hb_syms = list(cfg.get("watch") or ())
         hb_itv = {"price_scan": cfg["price_scan_seconds"]}
         touch_module_heartbeat("pricewatcher", interval_sec=30.0, force=True, symbols=hb_syms, intervals=hb_itv)
+        _cleanup_legacy_heartbeat()
         print("\nWaiting for alerts... (Ctrl+C to stop)\n", flush=True)
         while True:
             time.sleep(30)

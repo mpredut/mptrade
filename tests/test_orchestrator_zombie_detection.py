@@ -7,7 +7,7 @@ from unittest import IsolatedAsyncioTestCase
 from intelligence.macro.lexicon_ssot import discover_dynamic_terms_from_headlines
 from market_monitor.pricechecker import PriceChecker
 from market_monitor.pricefetcher import is_rth_equity_symbol
-from notify_engine import ntfymailer as _mailer, notifyapi as _na, ntfypolicy as _ng, ntfydispatcher as _nd
+from notify_engine import ntfymailer as _mailer, ntfyapi as _na, ntfypolicy as _ng, ntfydispatcher as _nd
 from notify_engine.ntfydispatcher import NtfyDispatcher as NotificationServer
 from orchestratorTrade.orchestrator import BotManager
 from tests.conftest import TempDirTestCase

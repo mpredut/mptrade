@@ -45,7 +45,7 @@ from botcore import (
 )
 from cachepaths import normalize_venue_name
 from instrument_registry import canonical_display_symbol
-from notify_engine import notifyapi as alert
+from notify_engine import ntfyapi as alert
 from providers import order_id_context as rc
 from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import (

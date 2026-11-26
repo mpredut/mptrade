@@ -49,7 +49,7 @@ from intelligence.internal.guards.guard_decision import (
     normalize_guard_mode,
     resolve_hierarchical_guard_mode,
 )
-import notify_engine.notifyapi as _notifyapi
+import notify_engine.ntfyapi as _ntfyapi
 from state_stores.smart_stop_loss_state import SmartStopLossStateStore
 
 load_dotenv()
@@ -227,7 +227,7 @@ def _send_ntfy_alert(title: str, body: str, symbol: str) -> None:
     if is_replay_or_backtest_env():
         return
     try:
-        _notifyapi.notify(title=title, body=body, source="smart_stop_loss", symbol=symbol)
+        _ntfyapi.notify(title=title, body=body, source="smart_stop_loss", symbol=symbol)
     except Exception:
         pass
 

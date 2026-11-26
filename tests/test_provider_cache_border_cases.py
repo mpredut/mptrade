@@ -2357,7 +2357,7 @@ def test_clean_nonempty_str_t212_fills_guard_inf_scale_rounding_and_daemon_cli_b
     notified_msgs: list[tuple[str, str]] = []
     eog._MICRO_SHADOW_NOTIFY_COOLDOWN.clear()
     monkeypatch.setattr(
-        eog._notifyapi,
+        eog._ntfyapi,
         "notify",
         lambda *, title="", body="", **_kw: notified_msgs.append((title, body)),
     )
@@ -3261,7 +3261,7 @@ def test_wave20_llm_guard_audit_hl_fills_macro_news_xstock_and_spot_flags(tmp_pa
         ),
     )
     monkeypatch.setattr(
-        llm_order_guard._notifyapi,
+        llm_order_guard._ntfyapi,
         "notify",
         lambda **kw: hs_notifies.append(kw),
     )

@@ -836,7 +836,7 @@ class TestOrderGuardWithGemini:
         )
 
         dispatched_alerts = []
-        monkeypatch.setattr("notify_engine.notifyapi.notify", lambda **kw: dispatched_alerts.append(kw))
+        monkeypatch.setattr("notify_engine.ntfyapi.notify", lambda **kw: dispatched_alerts.append(kw))
 
         # First evaluation: must notify with clear [auto_macro_geopolitical] block title
         allowed, reason, scale = order_guard.check_intelligence_guards(None, "TAOUSDC", "BUY", 250.0)

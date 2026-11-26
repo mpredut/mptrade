@@ -22,7 +22,7 @@ botcore.load_root_config()
 import cachepaths as _cp
 from cachepaths import organize_cachedb_subdomains, resolve_cachedb_filepath
 import notify_engine.ntfypolicy as _ng
-import notify_engine.notifyapi as _na
+import notify_engine.ntfyapi as _na
 import notify_engine.ntfymailer as _mailer
 import notify_engine.ntfydispatcher as _nd
 from notify_engine.ntfydispatcher import NtfyDispatcher

@@ -1261,7 +1261,7 @@ def test_section_c_monitororder_cooldown_manual_trace_actor_and_macro_ntfy_dedup
     geo2_same = GeopoliticalThreatAssessment("NORMAL", 0.12, "Still calm.", "NONE", 3, ts=t0 + 7200.0, is_fallback=False)
     geo3_chg = GeopoliticalThreatAssessment("ELEVATED", 0.65, "Escalation.", "DOWNSCALE_50", 5, ts=t0 + 9000.0, is_fallback=False)
 
-    with patch("notify_engine.notifyapi.notify") as mock_notify:
+    with patch("notify_engine.ntfyapi.notify") as mock_notify:
         with patch.object(analyzer.sentiment_advisor, "review", return_value=adv1):
             analyzer.assess_market_advisor(force=False, now=t0)
         with patch.object(analyzer.sentiment_advisor, "review", return_value=adv2_same):

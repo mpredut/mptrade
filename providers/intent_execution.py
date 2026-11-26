@@ -23,7 +23,7 @@ from botcore import (
     safe_pos_float,
 )
 from instrument_registry import canonical_display_symbol
-import notify_engine.notifyapi as _notifyapi
+import notify_engine.ntfyapi as _ntfyapi
 from .base import MarketDataProvider
 from .intent_state import (
     _extract_intent_id,
@@ -76,7 +76,7 @@ def _emit_intent_alert(
     detail: tuple[str, ...],
     thesis: str,
 ) -> None:
-    _notifyapi.emit_trade_notification(
+    _ntfyapi.emit_trade_notification(
         dispatch_notify_fn, status, decision, inst.symbol, px_log_s, target_qty, effective_usd,
         venue=inst.provider_name, owner=trade_tag, detail=detail, thesis=thesis,
         notify_kwargs={"symbol": inst.symbol},
@@ -342,7 +342,7 @@ def execute_enforce_intent_order(
                     is_resting = (venue_st != "FILLED") and (
                         is_limit or venue_st in ("NEW", "OPEN", "RESTING", "ACCEPTED", "PENDING", "WORKING")
                     )
-                    _notifyapi.dispatch_order_event_notification(
+                    _ntfyapi.dispatch_order_event_notification(
                         inst.symbol,
                         decision,
                         order_id_str,

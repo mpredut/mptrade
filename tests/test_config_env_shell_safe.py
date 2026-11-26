@@ -68,7 +68,7 @@ from market_monitor.pricechecker import PriceChecker
 from market_regime import MarketRegimeContext, MarketRegimeDecision, MarketRegimeEvaluator, MarketRegimeService
 import monitororder as mo
 import monitortrades as mt
-from notify_engine import notifyapi, ntfypolicy as notifygate
+from notify_engine import ntfyapi, ntfypolicy as notifygate
 from offline.backtests import (
     datasets as bds,
     evaluation as bev,
@@ -357,7 +357,7 @@ def test_alertnotifiers_and_hl_hardening(tmp_path, monkeypatch):
     assert reason == "reserved"
     assert payload is not None
 
-    msg = notifyapi.AlertNotifier.format_new_coin_message(
+    msg = ntfyapi.AlertNotifier.format_new_coin_message(
         {"symbol": "ABC", "price": "1.23456"}
     )
     assert "Price: $1.2346" in msg

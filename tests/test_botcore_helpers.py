@@ -61,7 +61,7 @@ from intelligence.macro.daemon_ssot import run_scheduled_step
 import intelligence.macro_sentiment_ssot as mss
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
 import monitororder
-from notify_engine import notifyapi as alertnotifiers
+from notify_engine import ntfyapi as alertnotifiers
 from notify_engine.ntfypolicy import strip_owner_tags
 from order_retry import exact_int
 from priceAnalysis import require_int

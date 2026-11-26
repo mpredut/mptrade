@@ -57,7 +57,7 @@ def _replacement_env(
         if complete_claim:
             stack.enter_context(patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True))
         if silence_notify:
-            stack.enter_context(patch("notify_engine.notifyapi.notify"))
+            stack.enter_context(patch("notify_engine.ntfyapi.notify"))
         yield place_mock, placed
 
 
@@ -196,13 +196,13 @@ def test_crash_after_accepted_replacement_is_reconciled_without_resubmit():
 
 
 def test_rtrade_order_placement_does_not_emit_launched_notification():
-    with patch("notify_engine.notifyapi.notify") as alert_mock:
+    with patch("notify_engine.ntfyapi.notify") as alert_mock:
         monitororder._notify_order_launched("TAOUSDC", "BUY", "rt-1", 255.5, 1.9, owner="rtrade")
     alert_mock.assert_not_called()
 
 
 def test_tradeall_order_placement_emits_launched_notification():
-    with patch("notify_engine.notifyapi.notify") as alert_mock:
+    with patch("notify_engine.ntfyapi.notify") as alert_mock:
         monitororder._notify_order_launched("TAOUSDC", "BUY", "ta-1", 255.5, 1.9, owner="tradeall")
     alert_mock.assert_called_once()
     assert alert_mock.call_args.kwargs["source"] == "monitororder"
@@ -216,7 +216,7 @@ class TestMonitororderNotifications(unittest.TestCase):
             1002: {"price": 81000.0, "quantity": 0.2, "remainingQty": 0.2},
         }
         with patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
-             patch("notify_engine.notifyapi.notify") as mock_notify:
+             patch("notify_engine.ntfyapi.notify") as mock_notify:
             monitororder.warmup_open_orders()
             mock_notify.assert_not_called()
             self.assertIn("1001", monitororder._notified_placed_order_ids)
@@ -231,7 +231,7 @@ class TestMonitororderNotifications(unittest.TestCase):
         }
         with patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
              patch.object(monitororder.api, "get_current_price", return_value=250.0), \
-             patch("notify_engine.notifyapi.notify") as mock_notify:
+             patch("notify_engine.ntfyapi.notify") as mock_notify:
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
             mock_notify.assert_called_once_with(
                 title="PLACED BUY TAO@283.92 ~142 $~ [binance]",
@@ -245,7 +245,7 @@ class TestMonitororderNotifications(unittest.TestCase):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
             mock_notify.assert_not_called()
 
-        with patch("notify_engine.notifyapi.notify") as mock_exp_notify:
+        with patch("notify_engine.ntfyapi.notify") as mock_exp_notify:
             monitororder._notify_order_expired(
                 "ARBUSDC", "BUY", 721818232, 0.131, 1500.0, owner="tradeall", age_str="15.1m", ttl_str="15.0m"
             )
@@ -266,7 +266,7 @@ class TestMonitororderNotifications(unittest.TestCase):
         }
 
         with _replacement_env(initial_order, 100.1, order_id=9999, complete_claim=True), \
-             patch("notify_engine.notifyapi.notify") as mock_notify:
+             patch("notify_engine.ntfyapi.notify") as mock_notify:
             monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
             self.assertEqual(mock_notify.call_count, 1)
             self.assertIn("3001", mock_notify.call_args[1]["body"])
@@ -295,7 +295,7 @@ class TestMonitororderNotifications(unittest.TestCase):
         }
         with patch.object(monitororder.api, "get_open_orders", return_value=worker_replacement_order), \
              patch.object(monitororder.api, "get_current_price", return_value=210.0), \
-             patch("notify_engine.notifyapi.notify") as mock_notify:
+             patch("notify_engine.ntfyapi.notify") as mock_notify:
             monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
             mock_notify.assert_not_called()
             self.assertIn("722771030", monitororder._derived_replacement_order_ids)
@@ -381,7 +381,7 @@ class TestMonitororderNotifications(unittest.TestCase):
              patch.object(monitororder, "_evaluate_reprice_trend_state", return_value=(True, False)), \
              patch.object(monitororder.api, "cancel_order") as mock_cancel, \
              patch.object(monitororder.mkt, "place") as mock_place, \
-             patch("notify_engine.notifyapi.notify"):
+             patch("notify_engine.ntfyapi.notify"):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
             mock_cancel.assert_not_called()
             mock_place.assert_not_called()
@@ -487,7 +487,7 @@ class TestMonitororderNotifications(unittest.TestCase):
         with patch.object(monitororder.api, "get_open_orders", return_value=sell_orders_next), \
              patch.object(monitororder.api, "get_current_price", return_value=98.10), \
              patch.object(monitororder.mkt, "place") as mock_place_blocked, \
-             patch("notify_engine.notifyapi.notify"):
+             patch("notify_engine.ntfyapi.notify"):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
             mock_place_blocked.assert_not_called()
 

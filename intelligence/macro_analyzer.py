@@ -73,7 +73,7 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
     load_cached_macro_benchmarks,
 )
 import intelligence.sentiment.sentiment_advisor as _sentiment_advisor
-import notify_engine.notifyapi as _notifyapi
+import notify_engine.ntfyapi as _ntfyapi
 
 load_dotenv()
 
@@ -194,7 +194,7 @@ class MacroAnalyzer:
         if self.shadow_notify:
             try:
                 tag = topic_spec(topic_id).bracket_tag
-                _notifyapi.notify(title=f"{icon} {tag} {headline_suffix}", body=body, source="macro_shadow", symbol="GLOBAL")
+                _ntfyapi.notify(title=f"{icon} {tag} {headline_suffix}", body=body, source="macro_shadow", symbol="GLOBAL")
                 setattr(self, ts_attr, assessment_ts)
                 if headline_attr:
                     setattr(self, headline_attr, cur_headline)

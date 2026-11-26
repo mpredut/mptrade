@@ -150,8 +150,8 @@ from market_monitor.newcoinsdiscovery import NewCoinsMonitor, is_trackable_symbo
 from market_monitor.pricechecker import PriceAlert, PriceChecker
 from market_monitor.pricefetcher import CacheAllPriceFetcherManager, StockYahooPricePlatform
 from market_regime import MarketRegimeEvaluator
-from notify_engine import ntfymailer as mailer, notifyapi as alertnotifiers, ntfypolicy as notifygate, ntfydispatcher as server
-from notify_engine.notifyapi import AlertNotifier
+from notify_engine import ntfymailer as mailer, ntfyapi as alertnotifiers, ntfypolicy as notifygate, ntfydispatcher as server
+from notify_engine.ntfyapi import AlertNotifier
 from notify_engine.ntfydispatcher import NtfyDispatcher as NotificationServer
 from offline.backtests import execution_calibration, financial_benchmark, tradeall as bt_ta
 from offline.backtests.datasets import (

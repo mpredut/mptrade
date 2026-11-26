@@ -19,7 +19,7 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)  # repository root
 from botcore import bind_isolated_venue_cfg_loader, load_layered_env_config  # noqa: E402
-from notify_engine.notifyapi import bind_notify  # noqa: E402
+from notify_engine.ntfyapi import bind_notify  # noqa: E402
 
 notify = bind_notify(("SYMBOL_LABEL", "HL_COIN"), "HL")
 load_isolated_hl_cfg = bind_isolated_venue_cfg_loader(_HERE, ("HL_",), dir_kwarg="hl_dir")

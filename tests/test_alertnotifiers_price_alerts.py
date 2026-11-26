@@ -24,8 +24,8 @@ from market_monitor.pricefetcher import (
     HyperliquidPricePlatform,
     PricePlatformFactory,
 )
-from notify_engine import notifyapi as an, ntfypolicy as ng
-from notify_engine.notifyapi import AlertNotifier, format_ntfy_url
+from notify_engine import ntfyapi as an, ntfypolicy as ng
+from notify_engine.ntfyapi import AlertNotifier, format_ntfy_url
 from notify_engine.ntfypolicy import (
     _alert_identity,
     _delivery_fingerprint,
@@ -589,7 +589,7 @@ def test_poststopreentryguard__maybe_notify_deduplicates_across_symbol_formattin
     # 5. PostStopReentryGuard._maybe_notify deduplicates across symbol formatting variants
     clear_post_stop_reentry_cache()
     notified = []
-    monkeypatch.setattr("notify_engine.notifyapi.notify", lambda **kw: notified.append(kw))
+    monkeypatch.setattr("notify_engine.ntfyapi.notify", lambda **kw: notified.append(kw))
     psg = PostStopReentryGuard(notify_enabled=True, cache_ttl_sec=600.0)
     dec = GuardDecision.veto("PostStopReentryGuard", "test_veto")
     psg._maybe_notify("BTC/USDC", 100.0, 102.0, 98.0, 2.0, dec, now_ts=1000.0)
@@ -910,11 +910,57 @@ def test_price_watcher_state_store_migrates_legacy_cooldowns_and_live_conf_btc_t
 
 
 def test_alert_notifier_default_log_path_writes_to_logs_dir(tmp_path, monkeypatch):
-    """AlertNotifier.save_to_file defaults to BASE_DIR/logs/alerts.log and creates logs/ if absent."""
+    """AlertNotifier.save_to_file defaults to BASE_DIR/logs/alerts.log and migrates legacy root alerts.log."""
     monkeypatch.setattr(an, "BASE_DIR", tmp_path)
+    legacy = tmp_path / "alerts.log"
+    legacy.write_text("[legacy] PRIOR_ENTRY\n", encoding="utf-8")
     evt = {"type": "bot_event", "name": "TEST_EVENT", "symbol": "BTCUSDC", "body": "ok", "source": "test"}
     assert AlertNotifier.save_to_file(evt) is True
     expected = tmp_path / "logs" / "alerts.log"
     assert expected.is_file()
-    assert "TEST_EVENT" in expected.read_text(encoding="utf-8")
-    assert not (tmp_path / "alerts.log").exists()
+    content = expected.read_text(encoding="utf-8")
+    assert "PRIOR_ENTRY" in content and "TEST_EVENT" in content
+    assert not legacy.exists()
+
+
+def test_pricefetcher_carries_forward_legacy_quote_series_and_cleans_legacy_heartbeat(tmp_path, monkeypatch):
+    """Cutover from BTCUSDC -> BTC preserves cached history without stale shadowing, and cleans legacy heartbeat."""
+    import json
+
+    monkeypatch.setenv("CMC_API_KEY", os.environ.get("CMC_API_KEY") or "test-cmc-key")
+    monkeypatch.setenv("NTFY_TOPIC_PRICE", os.environ.get("NTFY_TOPIC_PRICE") or "ntfy-price-test")
+    from market_monitor import pricewatcher
+
+    cache_file = tmp_path / "cache_watcher_all_price.json"
+    now_ms = int(time.time() * 1000)
+    cache_file.write_text(
+        json.dumps(
+            {
+                "items": {"BTCUSDC": [[now_ms - 60000, 60000.0], [now_ms, 60500.0]]},
+                "fetchtime": {"BTCUSDC": now_ms},
+                "symbol_metadata": {"added_time": {}, "active_symbols": ["BTCUSDC"], "preferred_source": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "market_monitor.pricefetcher.PricePlatformFactory.check_symbol_support",
+        lambda self, sym: {"Binance": True},
+    )
+    mgr = CacheAllPriceFetcherManager(
+        60,
+        ["BTC"],
+        filename=str(cache_file),
+        read_only=False,
+        data_sync_mode="producer",
+    )
+    assert "BTC" in mgr.cache and len(mgr.cache["BTC"]) == 2
+    assert "BTCUSDC" not in mgr.cache
+
+    hb_dir = tmp_path / "cachedb" / "system" / "heartbeat"
+    hb_dir.mkdir(parents=True)
+    legacy_hb = hb_dir / "price_watcher.heartbeat"
+    legacy_hb.write_text('{"ts": 1}', encoding="utf-8")
+    monkeypatch.setattr(pricewatcher, "get_cachedb_dir", lambda: str(tmp_path / "cachedb"))
+    pricewatcher._cleanup_legacy_heartbeat()
+    assert not legacy_hb.exists()

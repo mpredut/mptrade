@@ -49,7 +49,7 @@ from intelligence.internal.guards.guard_decision import (
     normalize_guard_mode,
     unpack_guard_decision,
 )
-import notify_engine.notifyapi as _notifyapi
+import notify_engine.ntfyapi as _ntfyapi
 
 _whale_collector = _READONLY_COLLECTOR_SINGLETONS.get("_whale_collector")
 _orderbook_collector = _READONLY_COLLECTOR_SINGLETONS.get("_orderbook_collector")
@@ -131,7 +131,7 @@ def check_external_order_guards(
                         try:
                             price_str = f" @ ${format_notify_price(price_f)}" if price_f > 0.0 else ""
                             scale_str = f" (Scale: {scale_pct}%)" if scale_pct is not None else ""
-                            _notifyapi.notify(
+                            _ntfyapi.notify(
                                 title=f"\U0001f6e1 [{guard_id}] {action_str} {order_side} {symbol}",
                                 body=f"Order: {order_side} {symbol}{price_str}{scale_str}\n{d_reason}",
                                 source="order_guard",

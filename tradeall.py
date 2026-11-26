@@ -7,7 +7,7 @@ import datetime
 import threading
 
 # Local imports.
-from notify_engine import notifyapi as alert  # noqa: F401 (re-export: test compat)
+from notify_engine import ntfyapi as alert  # noqa: F401 (re-export: test compat)
 import cacheManager as cm
 from intelligence.internal.state.volatility import (
     get_kalman_state_path,

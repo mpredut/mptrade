@@ -1,7 +1,7 @@
 # Shared notification delivery policy
 
-Updated: 2026-09-08. Policy owner: `alertnotifiers.py`, shared by provider bots and
-the Python watchdogs through `verify_tools/watchdog_common.py`.
+Updated: 2026-11-27. Policy owner: `notify_engine/ntfypolicy.py` + `notify_engine/ntfyapi.py`, shared by provider bots and
+the Python watchdogs through `orchestratorOS/lib/watchdog_common.py`.
 
 | Delivery | Local daily volume policy | Duplicate suppression |
 | --- | --- | --- |

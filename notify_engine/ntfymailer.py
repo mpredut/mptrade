@@ -32,7 +32,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from botcore import _parse_bool_flag, load_env_stack, optional_env, safe_pos_int
-from notify_engine.notifyapi import (
+from notify_engine.ntfyapi import (
     _external_notifications_disabled,
     is_email_mirrored,
     is_email_suppressed_subject,

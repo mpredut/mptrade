@@ -76,7 +76,7 @@ from instrument_registry import (
     select_instruments,
     venue_default_quote,
 )
-from notify_engine.notifyapi import emit_trade_notification
+from notify_engine.ntfyapi import emit_trade_notification
 import order_guard
 from order_lifecycle import (
     StrategyExecutorLifecycleApi,

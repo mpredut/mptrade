@@ -11,7 +11,7 @@ The same logic: enter at `market − x%`, buy more on the way down (DCA), sell e
 | `common.py` | utilities: log, `.env`, HTTP (GET plus POST form) |
 | `kraken_client.py` | Kraken REST client: **public** (ticker, asset_pairs) plus **private** (balance, add_order, cancel_order, query_orders) with an HMAC-SHA512 signature |
 | `market_data.py` | price plus pair availability (the "listing" detector) |
-| `notify.py` | ntfy and email notifications (through `alertnotifiers.py` in the root) |
+| `notify.py` | ntfy and email notifications (through `notify_engine/ntfyapi.py`) |
 | `strategy.py` | the DCA plus take-profit engine, with **net** P&L (the real Kraken fee) |
 | `kraken_bot.py` | the entrypoint, configured from `.env` |
 | `.env.example` | a configuration template (copy it to `.env`) |

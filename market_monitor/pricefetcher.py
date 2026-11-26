@@ -132,6 +132,28 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             else:
                 print(f"  [MISSING] {symbol} -> NO PLATFORM SUPPORT!")
 
+    def _migrate_legacy_quote_series(self) -> None:
+        """Carry forward legacy quote-suffixed series (e.g. BTCUSDC -> BTC) to base watchlist keys."""
+        if getattr(self, "read_only", False):
+            return
+        for sym in self.original_symbols:
+            if self.cache.get(sym):
+                continue
+            legacy_key = f"{sym}{QUOTE_CURRENCY}"
+            if legacy_key != sym and legacy_key not in self.active_symbols:
+                legacy_rows = self.cache.get(legacy_key)
+                if isinstance(legacy_rows, list) and legacy_rows:
+                    self.cache[sym] = list(legacy_rows)
+                    self.cache.pop(legacy_key, None)
+                    if legacy_key in self.fetchtime_per_symbol:
+                        self.fetchtime_per_symbol.setdefault(
+                            sym, self.fetchtime_per_symbol.pop(legacy_key)
+                        )
+                    if legacy_key in self._rest_sync_cursor_per_symbol:
+                        self._rest_sync_cursor_per_symbol.setdefault(
+                            sym, self._rest_sync_cursor_per_symbol.pop(legacy_key)
+                        )
+
     def _load_symbol_metadata(self):
         data = read_json_dict(
             self.filename,
@@ -141,6 +163,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         )
         sym_meta = data.get("symbol_metadata") if isinstance(data, dict) else None
         if not isinstance(sym_meta, dict):
+            self._migrate_legacy_quote_series()
             return
         try:
             raw_added = sym_meta.get("added_time")
@@ -195,6 +218,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                         sym_list.append(symbol)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             print(f"[Pricefetcher] Metadata cache ignored: {exc}")
+        self._migrate_legacy_quote_series()
 
     def _reload_from_disk(self):
         super()._reload_from_disk()

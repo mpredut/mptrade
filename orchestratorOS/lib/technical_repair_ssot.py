@@ -71,7 +71,7 @@ from intelligence.macro_sentiment_ssot import (
     read_first_cached_dict,
 )
 from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
-import notify_engine.notifyapi as _notifyapi
+import notify_engine.ntfyapi as _ntfyapi
 import notify_engine.ntfypolicy as _ntfypolicy
 from orchestratorOS.agy.paths import resolve_agy_bot_bin
 from providers.intent_state import decision_has_cancel_directive, normalize_trading_decisions
@@ -1980,8 +1980,8 @@ def send_supervisor_ntfy_http(
         if log:
             log.debug("Common gate fallback in reconciler: %s", e)
 
-    format_ntfy_url = getattr(_notifyapi, "format_ntfy_url", None)
-    AlertNotifier = getattr(_notifyapi, "AlertNotifier", None)
+    format_ntfy_url = getattr(_ntfyapi, "format_ntfy_url", None)
+    AlertNotifier = getattr(_ntfyapi, "AlertNotifier", None)
     topic_raw = (target_topic or "").strip()
     url_raw = (ntfy_url or "").strip()
     chosen_target = topic_raw or url_raw

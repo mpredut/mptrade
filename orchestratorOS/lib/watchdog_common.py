@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from botcore import optional_env  # noqa: E402
-from notify_engine.notifyapi import (  # noqa: E402
+from notify_engine.ntfyapi import (  # noqa: E402
     AlertNotifier,
     format_ntfy_url,
 )

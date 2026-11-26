@@ -1346,7 +1346,7 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
 
             with (
                 patch.object(mt.apitrades, "get_trade_orders", side_effect=_fake_get_trade_orders),
-                patch("notify_engine.notifyapi.notify") as mock_notify,
+                patch("notify_engine.ntfyapi.notify") as mock_notify,
             ):
                 # Run 1: SYM1 warms up, SYM2 fails
                 mt.check_and_notify_executed_trades(symbols_list=["SYM1", "SYM2"])
@@ -1607,7 +1607,7 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
             },
         ]
         with patch.object(mt.apitrades, "get_trade_orders", return_value=historical_trades), \
-             patch("notify_engine.notifyapi.notify") as mock_notify:
+             patch("notify_engine.ntfyapi.notify") as mock_notify:
             mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
             mock_notify.assert_not_called()
 
@@ -1623,7 +1623,7 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
             "price": 283.92, "qty": 0.5, "time": 1700000050000, "isBuyer": True,
         }
         with patch.object(mt.apitrades, "get_trade_orders", side_effect=[initial_trades, initial_trades + [new_trade], initial_trades + [new_trade]]), \
-             patch("notify_engine.notifyapi.notify") as mock_notify:
+             patch("notify_engine.ntfyapi.notify") as mock_notify:
             mt.check_and_notify_executed_trades(symbols_list=["TAOUSDC"])
             mock_notify.assert_not_called()
 
@@ -1653,7 +1653,7 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
             },
         ]
         with patch.object(mt.apitrades, "get_trade_orders", side_effect=[initial_trades, partial_fills]), \
-             patch("notify_engine.notifyapi.notify") as mock_notify:
+             patch("notify_engine.ntfyapi.notify") as mock_notify:
             mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
             mock_notify.assert_not_called()
 
@@ -1681,7 +1681,7 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
             },
         ]
         with patch.object(mt.apitrades, "get_trade_orders", side_effect=[[], wave1, wave2]), \
-             patch("notify_engine.notifyapi.notify") as mock_notify:
+             patch("notify_engine.ntfyapi.notify") as mock_notify:
             mt.check_and_notify_executed_trades(symbols_list=["TAOUSDC"])
             mock_notify.assert_not_called()
 
@@ -1717,7 +1717,7 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
             "isBuyer": True,
         }
         with patch.object(mt.apitrades, "get_trade_orders", side_effect=[initial_trades, [new_trade]]), \
-             patch("notify_engine.notifyapi.notify") as mock_notify:
+             patch("notify_engine.ntfyapi.notify") as mock_notify:
             mt.check_and_notify_executed_trades(symbols_list=["TAOUSDC"])
             mock_notify.assert_not_called()
 
@@ -1755,7 +1755,7 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
         }
         with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": self.tmp}), \
              patch.object(mt.apitrades, "get_trade_orders", side_effect=[initial_trades, [new_trade]]), \
-             patch("notify_engine.notifyapi.notify") as mock_notify:
+             patch("notify_engine.ntfyapi.notify") as mock_notify:
             mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
             mock_notify.assert_not_called()
 
@@ -1789,7 +1789,7 @@ class TestMonitortradesExecutedTrades(TempDirTestCase):
 
     def test_api_error_handled_gracefully(self):
         with patch.object(mt.apitrades, "get_trade_orders", side_effect=RuntimeError("API timeout")), \
-             patch("notify_engine.notifyapi.notify") as mock_notify:
+             patch("notify_engine.ntfyapi.notify") as mock_notify:
             mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
             mock_notify.assert_not_called()
 

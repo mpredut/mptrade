@@ -65,7 +65,7 @@ _IMPORT_MOCKS = dict([
     ("bapi_placeorder", MagicMock()),
     ("binance_api.bapi_placeorder", MagicMock()),
     ("providers.market_api", _mock_market_api),
-    ("notify_engine.notifyapi", MagicMock()),
+    ("notify_engine.ntfyapi", MagicMock()),
     ("log",             MagicMock()),
     ("credentials",     MagicMock(**{"api_key_ws": "fake"})),
 ])

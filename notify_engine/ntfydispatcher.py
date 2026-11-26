@@ -31,7 +31,7 @@ from notify_engine.ntfymailer import (
     last_error_is_auth_failure,
     send_email,
 )
-from notify_engine.notifyapi import (
+from notify_engine.ntfyapi import (
     AlertNotifier,
     _PRICE_ALERT_SOURCES,
     _category_for_title_and_source,

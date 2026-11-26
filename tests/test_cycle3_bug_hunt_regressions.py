@@ -245,7 +245,7 @@ def test_kraken_ws_loop_backs_off_on_periodic_rest_sync_failure(tmp_path, monkey
 
 def test_alertnotifiers_get_notification_server_registers_canonical_module(monkeypatch):
     """_get_notification_dispatcher must register sys.modules['notify_engine.ntfydispatcher'] cleanly."""
-    from notify_engine import notifyapi as an
+    from notify_engine import ntfyapi as an
 
     prev_mod = sys.modules.pop("notify_engine.ntfydispatcher", None)
     prev_cls = an._NOTIFICATION_DISPATCHER_CLS

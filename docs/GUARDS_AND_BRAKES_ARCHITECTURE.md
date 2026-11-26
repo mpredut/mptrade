@@ -176,7 +176,7 @@ cachedb/
 
 ## 6. Notification & Alerting Engine ([`notify_engine/`](file:///home/predut/mptrade/notify_engine/))
 
-All bot and guard alerts flow through `notify_engine.notifyapi.notify` into dedicated ntfy topics with deduplication and email mirroring:
+All bot and guard alerts flow through `notify_engine.ntfyapi.notify` into dedicated ntfy topics with deduplication and email mirroring:
 
 | Category | Source Key | Ntfy Topic | Purpose & Policy |
 | :--- | :--- | :--- | :--- |

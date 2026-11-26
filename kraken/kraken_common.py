@@ -13,7 +13,7 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from botcore import bind_isolated_venue_cfg_loader  # noqa: E402
-from notify_engine.notifyapi import bind_notify  # noqa: E402
+from notify_engine.ntfyapi import bind_notify  # noqa: E402
 
 notify = bind_notify(("SYMBOL_LABEL", "KRAKEN_PAIR"), "CRYPTO")
 load_isolated_kraken_cfg = bind_isolated_venue_cfg_loader(_HERE, ("KRAKEN_",), dir_kwarg="kraken_dir")

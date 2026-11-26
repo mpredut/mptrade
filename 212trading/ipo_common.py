@@ -22,7 +22,7 @@ from botcore import (  # noqa: E402
     required_env,
     required_float_env,
 )
-from notify_engine.notifyapi import bind_notify  # noqa: E402
+from notify_engine.ntfyapi import bind_notify  # noqa: E402
 
 notify = bind_notify(("SYMBOL_LABEL", "YAHOO_SYMBOL"), "STOCK")
 

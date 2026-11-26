@@ -25,7 +25,7 @@ from market_monitor.newcoinsdiscovery import (
 from market_monitor.pricechecker import PRICE_ALERT_CONFIG, PriceAlert, PriceChecker
 from market_monitor.pricefetcher import StockYahooPricePlatform
 from notify_engine import ntfymailer as mailer, ntfydispatcher as server
-from notify_engine.notifyapi import (
+from notify_engine.ntfyapi import (
     AlertNotifier,
     emit_trade_notification,
     format_notify_price,
@@ -1502,7 +1502,7 @@ class EmailMirrorTest(TempDirTestCase):
 
     def test_server_topic_is_push_only_and_spcx_sell_emails(self):
         """Verify non-critical SERVER notifications skip email, while live SPCX SELL alerts trigger email."""
-        from notify_engine.notifyapi import (
+        from notify_engine.ntfyapi import (
             EMAIL_MIRRORED_CATEGORIES,
             is_email_mirrored,
             should_email_trade_sell_alert,
@@ -2125,7 +2125,7 @@ def test_ci_regression_and_bot_restart_never_email_and_xstock_supervisor_retired
     import json
     import subprocess
     from kraken import kraken_xstock_watch as kxw
-    from notify_engine import notifyapi as an, ntfymailer as mailer, ntfydispatcher as ns
+    from notify_engine import ntfyapi as an, ntfymailer as mailer, ntfydispatcher as ns
 
     # 1. Subject-level email suppression blocks CI regression and bot/fleet restarts across all entry points
     smtp_sent = []

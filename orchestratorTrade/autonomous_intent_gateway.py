@@ -78,7 +78,7 @@ from instrument_registry import (
 from intelligence.sentiment.collectors.guard_probe_collector import (
     probe_deterministic_guards,
 )
-import notify_engine.notifyapi as _notifyapi
+import notify_engine.ntfyapi as _ntfyapi
 from order_lifecycle import OrderPreemptionTransaction, restore_cancelled_instrument_orders
 from providers.ai_circuit_breaker import (
     DEFAULT_FLIP_COOLDOWN_MIN,
@@ -565,7 +565,7 @@ class AutonomousIntentGateway:
             return False
 
         try:
-            _notifyapi.notify(
+            _ntfyapi.notify(
                 title=title,
                 body=body,
                 source="llm_trader",
@@ -813,7 +813,7 @@ class AutonomousIntentGateway:
             "[LLM TRADER \u00b7 ENFORCE] AI circuit-breaker blocked %s %s: %s",
             decision, inst.symbol, reason_str,
         )
-        _notifyapi.emit_trade_notification(
+        _ntfyapi.emit_trade_notification(
             self._dispatch_notify,
             "BLOCKED",
             decision,

@@ -16,7 +16,7 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass
 from typing import Callable
 
-from notify_engine.notifyapi import bind_notify, emit_trade_notification
+from notify_engine.ntfyapi import bind_notify, emit_trade_notification
 from botcore import (
     _parse_bool_flag, clean_order_id, defined_env, extract_order_id, extract_order_side, extract_timestamp_s,
     format_price_log, is_market_order, log, normalize_epoch_sec, normalize_side,

@@ -659,7 +659,7 @@ def test_macro_advisor_notification_dispatch(temp_cache_dir):
     )
 
     with patch.object(analyzer.sentiment_advisor, "review", return_value=mock_advisor), \
-         patch("notify_engine.notifyapi.notify") as mock_notify:
+         patch("notify_engine.ntfyapi.notify") as mock_notify:
         ok = analyzer.assess_market_advisor(force=True)
         assert ok is True
         mock_notify.assert_called_once()
@@ -684,7 +684,7 @@ def test_macro_geopolitical_notification_dispatch(temp_cache_dir):
     )
 
     with patch.object(analyzer.geopolitical_analyzer, "assess", return_value=mock_geo), \
-         patch("notify_engine.notifyapi.notify") as mock_notify:
+         patch("notify_engine.ntfyapi.notify") as mock_notify:
         ok = analyzer.assess_geopolitical_threat(force=True)
         assert ok is True
         mock_notify.assert_called_once()
@@ -709,7 +709,7 @@ def test_macro_advisor_skips_redundant_cached_notifications(temp_cache_dir):
     )
 
     with patch.object(analyzer.sentiment_advisor, "review", return_value=mock_advisor), \
-         patch("notify_engine.notifyapi.notify") as mock_notify:
+         patch("notify_engine.ntfyapi.notify") as mock_notify:
         ok = analyzer.assess_market_advisor(force=True)
         assert ok is True
         assert mock_notify.call_count == 1

@@ -16,7 +16,7 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from notify_engine import notifyapi as alert
+from notify_engine import ntfyapi as alert
 from botcore import (
     FileLock,
     _parse_bool_flag,

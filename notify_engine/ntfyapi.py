@@ -1,4 +1,4 @@
-"""notifyapi.py -- public notification API, formatting, topic routing, and email-mirror policy.
+"""ntfyapi.py -- public notification API, formatting, topic routing, and email-mirror policy.
 
 Bots, guards, and CLI scripts call ``notify()``, ``bind_notify()``, ``emit_trade_notification()``,
 ``dispatch_order_event_notification()``, or ``AlertNotifier`` here. Delivery rate-limiting and
@@ -393,6 +393,13 @@ class AlertNotifier:
             alert_file = BASE_DIR / alert_file
         try:
             alert_file.parent.mkdir(parents=True, exist_ok=True)
+            if alert_file == BASE_DIR / "logs" / "alerts.log" and not alert_file.exists():
+                legacy_log = BASE_DIR / "alerts.log"
+                if legacy_log.is_file():
+                    try:
+                        os.replace(legacy_log, alert_file)
+                    except OSError:
+                        pass
             now_iso = datetime.now().isoformat()
             with alert_file.open("a", encoding="utf-8") as f:
                 if AlertNotifier.is_new_coin_alert(alert):
