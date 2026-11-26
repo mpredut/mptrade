@@ -1794,3 +1794,89 @@ def test_order_status_preserves_fetchtime_when_fill_already_persisted(tmp_path, 
     assert "HYPEUSDC" not in json.loads(fills_cache.read_text(encoding="utf-8"))["fetchtime"]
     assert json.loads(filled_cache.read_text(encoding="utf-8"))["fetchtime"]["HYPEUSDC"] == seed_ft
 
+
+def test_batch_balance_fail_closed_and_hl_alo_replace_preserves_fetchtime(tmp_path, monkeypatch):
+    """Batch balance queries fail closed on partial/corrupt payloads across base/Binance/HL, and HL Alo replace_order preserves fetchtime."""
+    from providers.base import MarketDataProvider
+    from providers.binance_provider import BinanceProvider
+    from binance_api import bapi as bapi_mod
+
+    # 1. Base MarketDataProvider.all_free_and_locked_balances fails closed when any asset returns None.
+    class _PartialProv(MarketDataProvider):
+        @property
+        def name(self) -> str:
+            return "PartialTest"
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return True
+
+        def free_balance(self, asset: str):
+            return 1.0 if asset == "BTC" else None
+
+    assert _PartialProv().all_free_and_locked_balances(["BTC", "ETH"]) is None
+
+    # 2. BinanceProvider.all_free_and_locked_balances fails closed on corrupt row AND does not fan out on unpatched failure.
+    free_calls: list[str] = []
+    monkeypatch.setattr(
+        bapi_mod,
+        "get_account_assets_balances",
+        lambda raise_errors=False: [
+            {"asset": "USDC", "free": "100.0", "locked": "0.0"},
+            {"asset": "BTC", "free": "NaN", "locked": "0.0"},
+        ],
+    )
+    assert BinanceProvider().all_free_and_locked_balances(["USDC", "BTC"]) is None
+
+    def _boom_all(raise_errors=False):
+        raise RuntimeError("binance 429")
+
+    monkeypatch.setattr(bapi_mod, "get_account_assets_balances", _boom_all)
+    monkeypatch.setattr(BinanceProvider, "free_and_locked_balance", lambda self, a: (free_calls.append(a) or (1.0, 0.0)))
+    assert BinanceProvider().all_free_and_locked_balances(["USDC", "BTC"]) is None
+    assert free_calls == []
+
+    # 3. HyperliquidProvider.all_free_and_locked_balances fails closed on corrupt coin row.
+    monkeypatch.setenv("HL_ACCOUNT_ADDRESS", "0x0000000000000000000000000000000000000001")
+    hl_corrupt = HyperliquidProvider(
+        token="HYPE",
+        client=SimpleNamespace(
+            info=SimpleNamespace(
+                spot_user_state=lambda _addr: {
+                    "balances": [
+                        {"coin": "USDC", "total": "500.0", "hold": "0.0"},
+                        {"coin": "HYPE", "total": "NaN", "hold": "0.0"},
+                    ]
+                }
+            )
+        ),
+    )
+    assert hl_corrupt.all_free_and_locked_balances(["HYPE", "USDC"]) is None
+
+    # 4. HyperliquidProvider.replace_order preserves fills fetchtime on Alo resting/modified, invalidates on Gtc.
+    fills_cache = tmp_path / "cache_trade_hyperliquid.json"
+    seed_ft = 1_795_721_150_000
+    fills_cache.write_text(
+        json.dumps({"items": {"HYPEUSDC": []}, "fetchtime": {"HYPEUSDC": seed_ft}}),
+        encoding="utf-8",
+    )
+    hl = HyperliquidProvider(token="HYPE", live_enabled=True)
+    hl._ssot_fills_cache_path = str(fills_cache)
+    monkeypatch.setattr(hl, "_pair", lambda: "@107")
+    monkeypatch.setattr(hl, "round_quantity", lambda _s, q: q)
+    monkeypatch.setattr(hl, "round_price", lambda _s, p: p)
+    monkeypatch.setattr(
+        hl,
+        "_signer",
+        lambda: SimpleNamespace(
+            sz_decimals=lambda _t: 2,
+            modify_spot_order=lambda *_a, **_kw: (True, 88802, "modified"),
+        ),
+    )
+    res_alo = hl.replace_order("HYPEUSDC", "88801", "SELL", 25.5, 2.0, post_only=True)
+    assert res_alo is not None and res_alo["ok"] is True
+    assert json.loads(fills_cache.read_text(encoding="utf-8"))["fetchtime"]["HYPEUSDC"] == seed_ft
+
+    res_gtc = hl.replace_order("HYPEUSDC", "88801", "SELL", 25.5, 2.0, post_only=False)
+    assert res_gtc is not None and res_gtc["ok"] is True
+    assert "HYPEUSDC" not in json.loads(fills_cache.read_text(encoding="utf-8"))["fetchtime"]
+

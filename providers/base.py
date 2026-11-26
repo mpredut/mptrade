@@ -217,8 +217,9 @@ class MarketDataProvider(ProviderSsotBridgeMixin, ProviderVenueMetadataMixin, AB
         out: dict[str, tuple[float, Optional[float]]] = {}
         for asset in req_clean:
             pair = self.free_and_locked_balance(asset)
-            if pair is not None:
-                out[asset] = pair
+            if pair is None:
+                return None
+            out[asset] = pair
         return out if out else None
 
     def _require_submitted_order_id(

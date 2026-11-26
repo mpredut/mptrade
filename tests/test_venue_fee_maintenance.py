@@ -541,3 +541,89 @@ def test_persisted_symbol_limits_override_fallback_ladder_and_align_tca_front_ru
     assert orders[0]["recommended_front_run_px"] == 185.3
 
 
+def test_fee_maintenance_partial_error_shortens_retry_and_rejects_corrupt_venue_ts(tmp_path):
+    """Partial-venue failures retry at stale_sec instead of waiting 4h, and corrupt per-venue ts=0 is never resurrected by top-level ts."""
+    from providers.venue_fee_maintenance import read_persisted_venue_fee_spec
+    from state_stores.cache_fee_schedule import CacheFeeScheduleStore
+
+    now_ts = 1_770_200_000.0
+    fail_once = {"fail": True}
+
+    class _FlakyMaintainer(VenueFeeMaintainerInterface):
+        venue = "binance"
+
+        def maintain(self, now_ts, prev_venue_state, cfg, *, dry_run=False):
+            if fail_once["fail"]:
+                raise RuntimeError("VPN timeout")
+            return {
+                "ts": round(now_ts, 3),
+                "fee_spec": {"fee_tier": "VIP0_BNB", "maker_fee_bps": 7.5, "taker_fee_bps": 7.5},
+                "has_pending_bnb_order": False,
+                "retry_soon": False,
+                "events": [],
+            }
+
+    maintainers = {"binance": _FlakyMaintainer(), "t212": T212FeeMaintainer()}
+    r1 = run_venue_fee_maintenance(
+        venues=["binance", "t212"],
+        cache_dir=str(tmp_path),
+        cfg_map=_sample_cfg(),
+        maintainers=maintainers,
+        now_ts=now_ts,
+    )
+    assert r1["status"] == "partial_error"
+    assert "binance" in r1["errors"]
+
+    # Within retry cooldown (+600s < 1800s) -> not_due (prevents spam)
+    r_wait = run_venue_fee_maintenance(
+        venues=["binance", "t212"],
+        cache_dir=str(tmp_path),
+        cfg_map=_sample_cfg(),
+        maintainers=maintainers,
+        now_ts=now_ts + 600.0,
+    )
+    assert r_wait["status"] == "not_due"
+
+    # After shortened retry interval (+1801s < 14400s) -> retries and recovers instead of waiting 4 hours
+    fail_once["fail"] = False
+    r_rec = run_venue_fee_maintenance(
+        venues=["binance", "t212"],
+        cache_dir=str(tmp_path),
+        cfg_map=_sample_cfg(),
+        maintainers=maintainers,
+        now_ts=now_ts + 1801.0,
+    )
+    assert r_rec["status"] == "ok"
+    assert r_rec["errors"] == {}
+
+    # Once recovered, normal 4h cadence resumes (+1801s after recovery is not_due)
+    r_after = run_venue_fee_maintenance(
+        venues=["binance", "t212"],
+        cache_dir=str(tmp_path),
+        cfg_map=_sample_cfg(),
+        maintainers=maintainers,
+        now_ts=now_ts + 3602.0,
+    )
+    assert r_after["status"] == "not_due"
+
+    # Corrupt per-venue ts=0 MUST NOT fall back to fresh top-level payload["ts"]
+    sched_path = CacheFeeScheduleStore.resolve_schedule_path(str(tmp_path))
+    CacheFeeScheduleStore.save_schedule(
+        sched_path,
+        {
+            "schema_version": 1,
+            "ts": now_ts + 3600.0,
+            "interval_sec": 14400.0,
+            "state_max_age_sec": 86400.0,
+            "venues": {
+                "binance": {
+                    "ts": 0,
+                    "fee_spec": {"fee_tier": "VIP0_BNB", "maker_fee_bps": 7.5, "taker_fee_bps": 7.5},
+                }
+            },
+        },
+        indent=2,
+    )
+    assert read_persisted_venue_fee_spec("binance", "BTCUSDC", cache_dir=str(tmp_path), now_ts=now_ts + 3605.0) == {}
+
+

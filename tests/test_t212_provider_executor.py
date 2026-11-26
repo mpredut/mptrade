@@ -1673,3 +1673,95 @@ def test_t212_pace_sleep_does_not_block_ram_cache_peek(monkeypatch):
         t_pace.join(timeout=2.0)
 
 
+def test_t212_all_balances_fail_closed_preserves_disk_cache_and_404_cancel_preserves_fetchtime(
+    tmp_path, monkeypatch
+):
+    """Half-failed T212 balance polls fail closed without wiping disk balances, and 404 cancel_order respects atomic fills guard."""
+    import cacheaccount
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(sys.modules, "212trading.market_data", SimpleNamespace(get_usd_ron=lambda: 4.6))
+
+    # 1. Dependent cross-check: seed cache_balance_t212.json, then fail portfolio OR cash -> disk snapshot untouched.
+    bal_path = tmp_path / "cache_balance_t212.json"
+    seed_ts = 1_770_100_000.0
+    cacheaccount.CacheBalanceManager.replace_venue_balances_snapshot(
+        str(bal_path),
+        {"USD": (500.0, 0.0), "NVDA_US_EQ": (2.5, 0.0)},
+        venue="t212",
+        now_s=seed_ts,
+        verified_ts=seed_ts,
+    )
+
+    state = {"cash": {"free": 2300.0, "blocked": 0.0}, "portfolio": None}
+    prov = T212Provider(
+        client=SimpleNamespace(
+            get_cash=lambda: state["cash"],
+            get_portfolio=lambda: state["portfolio"],
+            list_active_orders=lambda: [],
+        ),
+        live_enabled=True,
+    )
+
+    # Cash OK + portfolio failed (None) -> must fail closed (None), never returning USD-only partial dict
+    assert prov.all_free_and_locked_balances(["USD", "NVDA_US_EQ"]) is None
+
+    # Cash failed (None) + portfolio OK -> must fail closed (None), never returning equity-only dict without USD
+    state["cash"] = None
+    state["portfolio"] = [{"ticker": "NVDA_US_EQ", "quantity": 2.5}]
+    assert prov.all_free_and_locked_balances(["USD", "NVDA_US_EQ"]) is None
+
+    # Cash OK + corrupt portfolio quantity -> must fail closed (None), never fabricating (0.0, 0.0)
+    state["cash"] = {"free": 2300.0, "blocked": 0.0}
+    state["portfolio"] = [{"ticker": "NVDA_US_EQ", "quantity": "NaN"}]
+    assert prov.all_free_and_locked_balances(["USD", "NVDA_US_EQ"]) is None
+
+    # Cross-check through _VenueBalancesBridge.sync_venue_once: failed batch leaves disk balances and verified_ts intact
+    bridge = cacheaccount._VenueBalancesBridge()
+    monkeypatch.setattr(cacheaccount.MarketDataProvider, "resolve_venue_provider_class", classmethod(lambda cls, _v: lambda: prov))
+    monkeypatch.setattr(bridge, "_venue_requested_assets", lambda _v: ["NVDA_US_EQ", "USD"])
+    monkeypatch.setattr(cacheaccount, "cache_path", lambda _fn: str(bal_path))
+    assert bridge.sync_venue_once("t212", now_s=seed_ts + 60.0) is False
+    snap_after = json.loads(bal_path.read_text(encoding="utf-8"))
+    assert snap_after["verified_ts"] == pytest.approx(seed_ts)
+    assert set(snap_after["items"].keys()) == {"USD", "NVDA_US_EQ"}
+
+    # 2. T212Provider.cancel_order 404 fallback relies on order_status() atomic guard:
+    #    zero-fill CANCELED or already-persisted FILLED preserves fetchtime; unpersisted FILLED invalidates it.
+    fills_cache = tmp_path / "cache_trade_t212.json"
+    seed_ft = 1_770_100_000_000
+    status_resp = {"payload": {"id": 9001, "ticker": "NVDA_US_EQ", "status": "CANCELLED", "orderedQuantity": 1.0, "filledQuantity": 0.0, "filledValue": 0.0}}
+    prov_c = T212Provider(
+        client=SimpleNamespace(
+            cancel_order=lambda _oid: False,
+            get_order_status=lambda _oid: status_resp["payload"],
+        ),
+        live_enabled=True,
+    )
+    prov_c._ssot_fills_cache_path = str(fills_cache)
+
+    fills_cache.write_text(
+        json.dumps({"items": {"NVDA_US_EQ": []}, "fetchtime": {"NVDA_US_EQ": seed_ft}}),
+        encoding="utf-8",
+    )
+    prov_c.cancel_order("NVDA_US_EQ", "9001")
+    assert json.loads(fills_cache.read_text(encoding="utf-8"))["fetchtime"]["NVDA_US_EQ"] == seed_ft
+
+    # Already-persisted filled order -> preserves fetchtime
+    fills_cache.write_text(
+        json.dumps({
+            "items": {"NVDA_US_EQ": [{"orderId": "9002", "symbol": "NVDA_US_EQ", "side": "BUY", "qty": 1.5, "executedQty": 1.5, "price": 150.0, "timestamp": seed_ft}]},
+            "fetchtime": {"NVDA_US_EQ": seed_ft},
+        }),
+        encoding="utf-8",
+    )
+    status_resp["payload"] = {"id": 9002, "ticker": "NVDA_US_EQ", "status": "FILLED", "orderedQuantity": 1.5, "filledQuantity": 1.5, "filledValue": 225.0}
+    prov_c.cancel_order("NVDA_US_EQ", "9002")
+    assert json.loads(fills_cache.read_text(encoding="utf-8"))["fetchtime"]["NVDA_US_EQ"] == seed_ft
+
+    # Unpersisted filled order -> invalidates fetchtime
+    status_resp["payload"] = {"id": 9003, "ticker": "NVDA_US_EQ", "status": "FILLED", "orderedQuantity": 2.0, "filledQuantity": 2.0, "filledValue": 300.0}
+    prov_c.cancel_order("NVDA_US_EQ", "9003")
+    assert "NVDA_US_EQ" not in json.loads(fills_cache.read_text(encoding="utf-8"))["fetchtime"]
+
+

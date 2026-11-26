@@ -452,9 +452,13 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
                 if not isinstance(b, dict):
                     continue
                 coin_u = clean_upper_scalar(b.get("coin"))
+                if not coin_u:
+                    continue
                 total = safe_nonneg_float(b.get("total"), default=None)
                 hold = safe_nonneg_float(b.get("hold"), default=None)
-                if coin_u and total is not None and hold is not None and (total > 0.0 or hold > 0.0):
+                if total is None or hold is None:
+                    return None
+                if total > 0.0 or hold > 0.0:
                     out[coin_u] = (max(total - hold, 0.0), hold)
             for req_a in (assets or ()):
                 req_u = clean_upper_scalar(req_a)
@@ -849,7 +853,11 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
                 clean_oid = None
         if not clean_oid:
             clean_oid = str(oid_i)
-        self._invalidate_fills_cache(symbol)
+        if not (
+            order_tif == "Alo"
+            and str(msg or "").strip().lower() in {"resting", "modified"}
+        ):
+            self._invalidate_fills_cache(symbol)
         out_oid = exact_pos_int(clean_oid, default=clean_oid)
         return {"orderId": out_oid, "ok": True, "msg": msg}
 

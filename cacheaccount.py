@@ -5756,8 +5756,7 @@ class _VenueBalancesBridge(_AccountTradeBridgeBase):
                     try:
                         if is_equity_venue(v_key) and v_key in seeded_equity_venues:
                             v_syms = list(sym.symbols_for(v_key))
-                            probe_sym = v_syms[0] if v_syms else "NVDA_US_EQ"
-                            if not is_symbol_market_open(probe_sym, now_s):
+                            if v_syms and not any(is_symbol_market_open(s, now_s) for s in v_syms):
                                 continue
                         if self.sync_venue_once(v_key, now_s=now_s) and is_equity_venue(v_key):
                             seeded_equity_venues.add(v_key)

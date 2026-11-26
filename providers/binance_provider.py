@@ -249,26 +249,36 @@ class BinanceProvider(MarketDataProvider):
     ) -> Optional[dict[str, tuple[float, Optional[float]]]]:
         """Fetch all Binance spot ``(free, locked)`` balances in one ``get_account()`` call."""
         bapi = _get_bapi()
+        default_free_fn = getattr(bapi, "_DEFAULT_GET_FREE_BALANCE", None)
+        free_is_patched = (
+            default_free_fn is not None
+            and getattr(bapi, "get_free_balance", None) is not default_free_fn
+        )
         get_all = getattr(bapi, "get_account_assets_balances", None)
-        if callable(get_all):
+        if callable(get_all) and not free_is_patched:
             try:
                 rows = get_all(raise_errors=True)
-                if isinstance(rows, list):
-                    out: dict[str, tuple[float, Optional[float]]] = {}
-                    for row in rows:
-                        if not isinstance(row, dict):
-                            continue
-                        asset_u = clean_upper_scalar(row.get("asset"))
-                        free_v = safe_nonneg_float(row.get("free"), default=None)
-                        locked_v = safe_nonneg_float(row.get("locked"), default=None)
-                        if asset_u and free_v is not None and locked_v is not None and (free_v > 0.0 or locked_v > 0.0):
-                            out[asset_u] = (free_v, locked_v)
-                    for req_a in (assets or ()):
-                        if (req_u := clean_upper_scalar(req_a)) is not None and req_u not in out:
-                            out[req_u] = (0.0, 0.0)
-                    return out
             except Exception:
-                pass
+                return None
+            if not isinstance(rows, list):
+                return None
+            out: dict[str, tuple[float, Optional[float]]] = {}
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                asset_u = clean_upper_scalar(row.get("asset"))
+                if not asset_u:
+                    continue
+                free_v = safe_nonneg_float(row.get("free"), default=None)
+                locked_v = safe_nonneg_float(row.get("locked"), default=None)
+                if free_v is None or locked_v is None:
+                    return None
+                if free_v > 0.0 or locked_v > 0.0:
+                    out[asset_u] = (free_v, locked_v)
+            for req_a in (assets or ()):
+                if (req_u := clean_upper_scalar(req_a)) is not None and req_u not in out:
+                    out[req_u] = (0.0, 0.0)
+            return out
         return super().all_free_and_locked_balances(assets)
 
     @classmethod

@@ -243,45 +243,61 @@ class KrakenClient:
                 return val
         urlpath = f"/0/private/{method}"
         # A nanosecond nonce is monotonic at maximum resolution and exceeds prior ms/us nonces on the key.
+        is_real_write = (
+            method in _WRITE_METHODS
+            and str(data.get("validate", "")).strip().lower() != "true"
+        )
         max_attempts = 3 if method not in _WRITE_METHODS else 1
         result = None
-        for attempt in range(max_attempts):
-            with self._private_nonce_lock():
-                data["nonce"] = self._next_nonce_str()
-                headers = {
-                    "API-Key": self.api_key,
-                    "API-Sign": self._signature(urlpath, data, self.api_secret),
-                }
-                status, body = http_post_form(API_URL + urlpath, data, headers=headers)
-            if status and body:
-                try:
-                    result = self._parse(status, body, allow_list=allow_list)
-                    break
-                except KrakenError as e:
-                    err_s = str(e)
-                    if not (
-                        any(
-                            tok in err_s
-                            for tok in (
-                                "Invalid nonce",
-                                "Service:Unavailable",
-                                "Service:Busy",
-                                "EService:",
+        write_dispatched = False
+        rate_limited = False
+        try:
+            for attempt in range(max_attempts):
+                with self._private_nonce_lock():
+                    data["nonce"] = self._next_nonce_str()
+                    headers = {
+                        "API-Key": self.api_key,
+                        "API-Sign": self._signature(urlpath, data, self.api_secret),
+                    }
+                    if is_real_write:
+                        write_dispatched = True
+                    status, body = http_post_form(API_URL + urlpath, data, headers=headers)
+                if status == 429:
+                    rate_limited = True
+                if status and body:
+                    try:
+                        result = self._parse(status, body, allow_list=allow_list)
+                        break
+                    except KrakenError as e:
+                        err_s = str(e)
+                        if "rate limit" in err_s.lower():
+                            rate_limited = True
+                        if not (
+                            any(
+                                tok in err_s
+                                for tok in (
+                                    "Invalid nonce",
+                                    "Service:Unavailable",
+                                    "Service:Busy",
+                                    "EService:",
+                                )
                             )
-                        )
-                        and (method not in _WRITE_METHODS or "Invalid nonce" in err_s)
-                        and attempt < max_attempts - 1
-                    ):
-                        raise
-            elif method in _WRITE_METHODS or attempt >= max_attempts - 1:
-                raise KrakenError(f"network error/empty response in {method} (HTTP {status})")
-            time.sleep(0.15 * (attempt + 1))
+                            and (method not in _WRITE_METHODS or "Invalid nonce" in err_s)
+                            and attempt < max_attempts - 1
+                        ):
+                            raise
+                elif method in _WRITE_METHODS or attempt >= max_attempts - 1:
+                    raise KrakenError(f"network error/empty response in {method} (HTTP {status})")
+                time.sleep(0.15 * (attempt + 1))
+        finally:
+            if is_real_write and write_dispatched and not rate_limited:
+                # Invalidate account read caches on any dispatched real write (including
+                # ambiguous timeouts/5xx) so immediate reconciliation never reads stale state.
+                with _CACHE_LOCK:
+                    for k in [k for k in _CACHE if k[0] in _INVALIDATE_ON_WRITE]:
+                        _CACHE.pop(k, None)
         if ttl and result:
             _cache_put(method, data, ttl, result, client_id=client_scope)
-        if method in _WRITE_METHODS:                # AddOrder/CancelOrder/Withdraw changed account state
-            with _CACHE_LOCK:
-                for k in [k for k in _CACHE if k[0] in _INVALIDATE_ON_WRITE]:
-                    _CACHE.pop(k, None)
         return result
 
     def _public(self, method: str, params: dict | None = None, fresh: bool = False) -> dict:
@@ -684,46 +700,54 @@ class KrakenClient:
         )
         max_attempts = 1 if is_write else 3
         last_err: Exception | None = None
-        for attempt in range(max_attempts):
-            with self._private_nonce_lock():
-                nonce = self._next_nonce_str()
-                headers = {
-                    "API-Key": self.api_key,
-                    "API-Nonce": nonce,
-                    "API-Sign": self._funding_signature(uri_path, nonce, body_bytes, self.api_secret),
-                }
-                if payload is not None:
-                    headers["Content-Type"] = "application/json"
-                status, resp_body = http_request(
-                    verb,
-                    API_URL + uri_path,
-                    headers=headers,
-                    body=body_bytes if payload is not None else None,
-                )
-            if not status:
-                last_err = KrakenError(f"network error in {verb} {path} (HTTP 0)")
-                if is_write or attempt >= max_attempts - 1:
+        write_dispatched = False
+        rate_limited = False
+        try:
+            for attempt in range(max_attempts):
+                with self._private_nonce_lock():
+                    nonce = self._next_nonce_str()
+                    headers = {
+                        "API-Key": self.api_key,
+                        "API-Nonce": nonce,
+                        "API-Sign": self._funding_signature(uri_path, nonce, body_bytes, self.api_secret),
+                    }
+                    if payload is not None:
+                        headers["Content-Type"] = "application/json"
+                    if is_write:
+                        write_dispatched = True
+                    status, resp_body = http_request(
+                        verb,
+                        API_URL + uri_path,
+                        headers=headers,
+                        body=body_bytes if payload is not None else None,
+                    )
+                if status == 429:
+                    rate_limited = True
+                if not status:
+                    last_err = KrakenError(f"network error in {verb} {path} (HTTP 0)")
+                    if is_write or attempt >= max_attempts - 1:
+                        raise last_err
+                    time.sleep(0.15 * (attempt + 1))
+                    continue
+                try:
+                    parsed = parse_json_payload(resp_body or b"{}")
+                except ValueError:
+                    raise KrakenError(f"invalid Funding v1 response in {verb} {path} (HTTP {status})")
+                if 200 <= status < 300:
+                    return parsed if isinstance(parsed, dict) else {}
+                title = parsed.get("title") if isinstance(parsed, dict) else None
+                err_type = parsed.get("type") if isinstance(parsed, dict) else None
+                detail = f"{title} ({err_type})" if title or err_type else resp_body.decode("utf-8", errors="replace")[:200]
+                last_err = KrakenError(f"Funding v1 {verb} {path} HTTP {status}: {detail}")
+                if is_write or status < 500 or attempt >= max_attempts - 1:
                     raise last_err
                 time.sleep(0.15 * (attempt + 1))
-                continue
-            try:
-                parsed = parse_json_payload(resp_body or b"{}")
-            except ValueError:
-                raise KrakenError(f"invalid Funding v1 response in {verb} {path} (HTTP {status})")
-            if 200 <= status < 300:
-                if is_write:
-                    with _CACHE_LOCK:
-                        for k in [k for k in _CACHE if k[0] in _INVALIDATE_ON_WRITE]:
-                            _CACHE.pop(k, None)
-                return parsed if isinstance(parsed, dict) else {}
-            title = parsed.get("title") if isinstance(parsed, dict) else None
-            err_type = parsed.get("type") if isinstance(parsed, dict) else None
-            detail = f"{title} ({err_type})" if title or err_type else resp_body.decode("utf-8", errors="replace")[:200]
-            last_err = KrakenError(f"Funding v1 {verb} {path} HTTP {status}: {detail}")
-            if is_write or status < 500 or attempt >= max_attempts - 1:
-                raise last_err
-            time.sleep(0.15 * (attempt + 1))
-        raise last_err or KrakenError(f"Funding v1 {verb} {path} failed")
+            raise last_err or KrakenError(f"Funding v1 {verb} {path} failed")
+        finally:
+            if is_write and write_dispatched and not rate_limited:
+                with _CACHE_LOCK:
+                    for k in [k for k in _CACHE if k[0] in _INVALIDATE_ON_WRITE]:
+                        _CACHE.pop(k, None)
 
     def funding_addresses(self) -> list[dict]:
         """List saved Funding v1 withdrawal addresses (including modern multi-network address book)."""

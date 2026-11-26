@@ -1503,10 +1503,12 @@ def test_kraken_amend_order_and_provider_replace_order(monkeypatch, tmp_path):
         {"txid": "O-TXID-1", "limit_price": "25.5"},
     )
 
-    # Provider replace_order: live confirmed -> returns same txid + amend_id + amended_in_place=True and invalidates fills cache.
+    # Provider replace_order: live confirmed post_only=True preserves fills fetchtime (guaranteed resting);
+    # post_only=False (crossing-capable amend) invalidates fills cache.
     fills_cache = tmp_path / "cache_trade_kraken.json"
+    seed_ft = 1_760_000_000_000
     fills_cache.write_text(
-        json.dumps({"items": {"HYPEUSD": []}, "fetchtime": {"HYPEUSD": 1_760_000_000_000}}),
+        json.dumps({"items": {"HYPEUSD": []}, "fetchtime": {"HYPEUSD": seed_ft}}),
         encoding="utf-8",
     )
     kp = KrakenProvider(client=kcli, live_enabled=True)
@@ -1518,6 +1520,10 @@ def test_kraken_amend_order_and_provider_replace_order(monkeypatch, tmp_path):
         "amend_id": "OA-KRK-1",
         "amended_in_place": True,
     }
+    assert json.loads(fills_cache.read_text(encoding="utf-8")).get("fetchtime", {}).get("HYPEUSD") == seed_ft
+
+    out_cross = kp.replace_order("HYPEUSD", "O-TXID-1", "SELL", 25.68, 2.0, post_only=False)
+    assert out_cross["orderId"] == "O-TXID-1"
     assert "HYPEUSD" not in json.loads(fills_cache.read_text(encoding="utf-8")).get("fetchtime", {})
 
     # Guard-approved qty differing from resting remaining volume (0.5 vs 2.0) MUST refuse price-only amend.
@@ -1632,3 +1638,75 @@ def test_kraken_multi_stablecoin_funding_continues_to_next_bucket_on_bucket_erro
     )
     assert res == {"txid": ["TX-HYPEUSD"]}
     assert [c[0] for c in calls] == ["USDCUSD", "USDGUSD", "HYPEUSD"]
+
+
+def test_kraken_post_only_preserves_fetchtime_ambiguous_write_invalidates_cache_and_corrupt_balance_fails_closed(
+    monkeypatch, tmp_path
+):
+    """Verify post-only placements preserve fills fetchtime, ambiguous writes clear KrakenClient._CACHE, and corrupt BalanceEx fails closed."""
+    import base64
+
+    fills_cache = tmp_path / "cache_trade_kraken.json"
+    seed_ft = 1_760_000_000_000
+
+    def _seed_fills():
+        fills_cache.write_text(
+            json.dumps({"items": {"HYPEUSD": []}, "fetchtime": {"HYPEUSD": seed_ft}}),
+            encoding="utf-8",
+        )
+
+    fake_cli = SimpleNamespace(
+        add_order=lambda *_a, **_kw: {"txid": ["O-KRK-POST-10"]},
+        balance_ex=lambda: {
+            "ZUSD": {"balance": "500.0", "hold_trade": "0.0"},
+            "HYPE": {"balance": "NaN", "hold_trade": "0.0"},
+        },
+    )
+    kp = KrakenProvider(client=fake_cli, live_enabled=True)
+    kp._ssot_fills_cache_path = str(fills_cache)
+    monkeypatch.setattr(kp, "require_account_cache_fresh_for_submit", lambda *_a, **_kw: None)
+    monkeypatch.setattr(kp, "round_quantity", lambda _s, q: q)
+
+    # 1. Post-only limit submit_order & place_order preserve fills fetchtime; crossing/market orders still invalidate.
+    _seed_fills()
+    assert kp.submit_order("HYPEUSD", "SELL", 1.0, price=30.0, market=False, post_only=True) == "O-KRK-POST-10"
+    assert json.loads(fills_cache.read_text(encoding="utf-8"))["fetchtime"]["HYPEUSD"] == seed_ft
+
+    assert kp.place_order("HYPEUSD", "SELL", 30.0, 1.0, force=False, post_only=True) == {"txid": ["O-KRK-POST-10"]}
+    assert json.loads(fills_cache.read_text(encoding="utf-8"))["fetchtime"]["HYPEUSD"] == seed_ft
+
+    assert kp.submit_order("HYPEUSD", "SELL", 1.0, price=30.0, market=False, post_only=False) == "O-KRK-POST-10"
+    assert "HYPEUSD" not in json.loads(fills_cache.read_text(encoding="utf-8"))["fetchtime"]
+
+    _seed_fills()
+    assert kp.place_order("HYPEUSD", "SELL", 30.0, 1.0, force=True) == {"txid": ["O-KRK-POST-10"]}
+    assert "HYPEUSD" not in json.loads(fills_cache.read_text(encoding="utf-8"))["fetchtime"]
+
+    # 2. Corrupt BalanceEx row fails closed (None) instead of omitting the asset from batch balances.
+    assert kp.all_free_and_locked_balances(["HYPE", "USD"]) is None
+
+    # 3. KrakenClient._private: validate=true preserves _CACHE; ambiguous write timeout clears _CACHE for reconciliation.
+    secret_b64 = base64.b64encode(b"kraken_secret_key_test").decode("ascii")
+    kcli = KrakenClient("key_ambig", secret_b64)
+    kcli._enable_nonce_file_lock = False
+    scope = kcli._private_cache_scope()
+    kc._CACHE.clear()
+    kc._cache_put("OpenOrders", {}, 5.0, {"open": {}}, client_id=scope)
+    kc._cache_put("ClosedOrders", {}, 20.0, {"closed": {}}, client_id=scope)
+
+    monkeypatch.setattr(
+        kc,
+        "http_post_form",
+        lambda _url, _data, headers=None: (200, json.dumps({"error": [], "result": {"descr": {"order": "dry"}}}).encode("utf-8")),
+    )
+    kcli._private("AddOrder", {"pair": "HYPEUSD", "type": "sell", "ordertype": "limit", "volume": "1", "price": "30", "validate": "true"})
+    assert kc._cache_get("OpenOrders", {}, client_id=scope)[0] is True
+    assert kc._cache_get("ClosedOrders", {}, client_id=scope)[0] is True
+
+    # Real AddOrder hitting an ambiguous network timeout (HTTP 0) MUST still invalidate _CACHE.
+    monkeypatch.setattr(kc, "http_post_form", lambda _url, _data, headers=None: (0, b""))
+    with pytest.raises(KrakenError, match="network error"):
+        kcli._private("AddOrder", {"pair": "HYPEUSD", "type": "sell", "ordertype": "limit", "volume": "1", "price": "30"})
+    assert kc._cache_get("OpenOrders", {}, client_id=scope)[0] is False
+    assert kc._cache_get("ClosedOrders", {}, client_id=scope)[0] is False
+    kc._CACHE.clear()

@@ -919,7 +919,11 @@ def _extract_venue_fee_spec_from_schedule(
     if max_age_sec is None:
         iv_sec = safe_pos_float(payload.get("interval_sec"), default=14400.0) or 14400.0
         max_age_sec = iv_sec * 6.0
-    entry_ts = safe_pos_float(v_entry.get("ts"), default=safe_pos_float(payload.get("ts"), default=None))
+    entry_ts = (
+        safe_pos_float(v_entry.get("ts"), default=None)
+        if "ts" in v_entry
+        else safe_pos_float(payload.get("ts"), default=None)
+    )
     if not is_cache_fresh(entry_ts, eff_now, max_age_sec):
         return dict(sym_override) if sym_override else {}
 
@@ -995,12 +999,20 @@ def build_persisted_venue_fee_resolver(
 
 def _effective_due_interval_sec(prev_state: Dict[str, Any], cfg: Dict[str, Any]) -> float:
     venues_map = prev_state.get("venues") if isinstance(prev_state, dict) else None
-    bn_state = venues_map.get("binance") if isinstance(venues_map, dict) else None
-    if isinstance(bn_state, dict) and (
-        _parse_bool_flag(bn_state.get("has_pending_bnb_order"), False)
-        or _parse_bool_flag(bn_state.get("retry_soon"), False)
-    ):
-        return min(cfg["interval_sec"], cfg["binance_bnb_order_stale_sec"])
+    if isinstance(venues_map, dict):
+        bn_state = venues_map.get("binance")
+        if isinstance(bn_state, dict) and (
+            _parse_bool_flag(bn_state.get("has_pending_bnb_order"), False)
+            or _parse_bool_flag(bn_state.get("retry_soon"), False)
+        ):
+            return min(cfg["interval_sec"], cfg["binance_bnb_order_stale_sec"])
+        for v_state in venues_map.values():
+            if not isinstance(v_state, dict):
+                continue
+            err_ts = safe_pos_float(v_state.get("last_error_ts"), default=None)
+            ok_ts = safe_nonneg_float(v_state.get("ts"), default=0.0) or 0.0
+            if err_ts is not None and err_ts >= ok_ts:
+                return min(cfg["interval_sec"], cfg["binance_bnb_order_stale_sec"])
     return cfg["interval_sec"]
 
 
@@ -1106,9 +1118,11 @@ def run_venue_fee_maintenance(
                 preserved_wf["last_error_ts"] = round(eff_now, 3)
                 updated_workflow_venues[v_key] = preserved_wf
 
+        any_venue_succeeded = (not errors) or (len(errors) < len(target_venues))
+        prev_sched_ts = safe_pos_float(prev_sched.get("ts"), default=None)
         new_schedule: Dict[str, Any] = {
             "schema_version": 1,
-            "ts": round(eff_now, 3),
+            "ts": round(eff_now, 3) if any_venue_succeeded else (prev_sched_ts if prev_sched_ts is not None else round(eff_now, 3)),
             "interval_sec": cfg["interval_sec"],
             "state_max_age_sec": cfg["state_max_age_sec"],
             "venues": updated_sched_venues,
@@ -1116,7 +1130,7 @@ def run_venue_fee_maintenance(
         new_state: Dict[str, Any] = {
             "schema_version": 1,
             "ts": round(eff_now, 3),
-            "last_run_ts": round(eff_now, 3) if not errors or len(errors) < len(target_venues) else last_run_ts,
+            "last_run_ts": round(eff_now, 3) if any_venue_succeeded else last_run_ts,
             "interval_sec": cfg["interval_sec"],
             "state_max_age_sec": cfg["state_max_age_sec"],
             "venues": updated_workflow_venues,

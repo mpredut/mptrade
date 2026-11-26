@@ -615,13 +615,15 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 req_key = canonical_balance_asset_key(req_s, venue="kraken") or req_s
                 candidates = _kraken_balance_asset_candidates(req_key)
                 found, val, hold_v = self._lookup_balance_candidates_with_hold(bal, candidates)
-                if found and val is not None:
+                if found:
+                    if val is None:
+                        return None
                     out[req_key] = (val, hold_v)
                     cand_cf = {c.casefold() for c in candidates}
                     seen_raw_u.update(
                         k.upper() for k in bal if isinstance(k, str) and k.casefold() in cand_cf
                     )
-                elif not found:
+                else:
                     out[req_key] = (0.0, 0.0 if has_ex_payload else None)
             seen_u = {k.upper() for k in out}
             for raw_k, raw_v in bal.items():
@@ -635,6 +637,8 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 if not canon_k or canon_k.upper() in seen_u:
                     continue
                 found, val, hold_v = self._lookup_balance_candidates_with_hold(bal, (raw_k,))
+                if found and val is None:
+                    return None
                 if found and val is not None and (val > 0.0 or (hold_v is not None and hold_v > 0.0)):
                     out[canon_k] = (val, hold_v)
                     seen_u.add(canon_k.upper())
@@ -873,7 +877,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 include_none_cl_ord_id=True,
                 post_only=post_only,
             )
-            if res:
+            if res and not post_only:
                 self._invalidate_fills_cache(symbol)
             return res
         except SubmissionRefused:
@@ -928,7 +932,10 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 raise SubmissionRefused(f"submit_order {symbol} {s}: {e}") from e
             raise ProviderError(f"submit_order {symbol} {s}: {e}") from e
         return self._require_submitted_order_id(
-            symbol, extract_order_id(res), f"submit_order {symbol}: a response without a txid ({res})"
+            symbol,
+            extract_order_id(res),
+            f"submit_order {symbol}: a response without a txid ({res})",
+            invalidate_fills_cache=not post_only_flag,
         )
 
     def preflight_order(self, symbol: str, side: str, qty: float,
@@ -1096,7 +1103,8 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             raise SubmissionRefused("replace_not_attempted") from exc
         if not isinstance(res, dict) or not clean_order_id(res.get("amend_id")):
             raise SubmissionRefused("replace_not_attempted")
-        self._invalidate_fills_cache(symbol)
+        if not post_only:
+            self._invalidate_fills_cache(symbol)
         return {
             "orderId": clean_txid,
             "txid": [clean_txid],
