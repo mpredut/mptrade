@@ -1269,12 +1269,15 @@ def match_open_order_resting_plan(
     used_plan_indices: Optional[set[int]] = None,
     max_rel_diff: float = 0.05,
 ) -> tuple[Optional[int], Optional[Mapping[str, Any]]]:
-    """Match a resting exchange open order to its closest active RESTING AI trade plan by venue/symbol/side/price."""
+    """Match a resting exchange open order to its active RESTING AI trade plan by order_id or venue/symbol/side/price."""
     if not isinstance(order, Mapping) or not active_plans:
+        return None, None
+    if str(order.get("actor") or "").strip().upper() == "BOT":
         return None, None
     o_ven = str(order.get("venue") or "").strip().lower()
     o_sym = str(order.get("symbol") or "").strip().upper()
     o_side = str(order.get("side") or "").strip().upper()
+    o_oid = clean_order_id(order.get("order_id") or order.get("orderId"))
     o_px = safe_pos_float(order.get("price"), default=None)
     best_idx: Optional[int] = None
     best_diff = math.inf
@@ -1288,6 +1291,11 @@ def match_open_order_resting_plan(
             or str(pl.get("symbol") or "").strip().upper() != o_sym
             or str(pl.get("side") or "").strip().upper() != o_side
         ):
+            continue
+        p_oid = clean_order_id(pl.get("order_id"))
+        if o_oid and p_oid:
+            if o_oid == p_oid:
+                return p_idx, pl
             continue
         p_epx = safe_pos_float(pl.get("entry_px"), default=None)
         diff = abs(p_epx - o_px) / max(o_px, 1e-12) if (p_epx is not None and o_px is not None) else 0.0

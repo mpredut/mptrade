@@ -9624,7 +9624,10 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
     """Verify 3.4 Smart No-Op Delta-Gate skips quiet flat cycles (heartbeat-only) and escalates high-signal cycles."""
     from types import SimpleNamespace
     from state_io import read_json_dict
-    from orchestratorOS.supervisor.crypto_executor_delta_gate import evaluate_crypto_executor_delta_gate
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import (
+        evaluate_crypto_executor_delta_gate,
+        is_extreme_stakes_delta_gate_wakeup,
+    )
     from orchestratorOS.supervisor import autonomous_ai_reconciler as aar_mod
     from tests.conftest import setup_isolated_agy_stores
 
@@ -9702,6 +9705,72 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
     )
     skip_f, rsn_f, hi_f, _ = evaluate_crypto_executor_delta_gate(fill_sensors, prev_hold, now_ts=t0 + 360.0)
     assert skip_f is False and rsn_f == "new_fill" and hi_f is True
+    # New fill preempts simultaneous price_move and max_idle_elapsed so Section 0 Trigger always surfaces the fill
+    fill_with_move_sensors = SimpleNamespace(
+        **{
+            **fill_sensors.__dict__,
+            "prices_and_trends": {"BTCUSDC": {"price": 90600.0}, "TAOUSDC": {"price": 300.0}},
+        }
+    )
+    assert evaluate_crypto_executor_delta_gate(fill_with_move_sensors, prev_hold, now_ts=t0 + 1200.0)[:3] == (
+        False,
+        "new_fill",
+        True,
+    )
+    # INVALIDATED trade plan preempts TARGET_HIT on another symbol so extreme-stakes (-xhigh) escalation is never masked
+    mixed_plan_sensors = SimpleNamespace(
+        **{
+            **base_sensors.__dict__,
+            "portfolio_summary": {
+                "open_limit_orders": [],
+                "recent_orders": {},
+                "active_ai_trade_plans": [
+                    {
+                        "venue": "binance",
+                        "symbol": "BTCUSDC",
+                        "side": "BUY",
+                        "order_state": "FILLED",
+                        "invalidation_px": 88000.0,
+                        "target_px": 89900.0,
+                        "status": "ACTIVE",
+                    },
+                    {
+                        "venue": "binance",
+                        "symbol": "TAOUSDC",
+                        "side": "BUY",
+                        "order_state": "FILLED",
+                        "invalidation_px": 305.0,
+                        "target_px": 330.0,
+                        "status": "ACTIVE",
+                    },
+                ],
+            },
+        }
+    )
+    skip_mp, rsn_mp, hi_mp, _ = evaluate_crypto_executor_delta_gate(mixed_plan_sensors, prev_hold, now_ts=t0 + 360.0)
+    assert (skip_mp, rsn_mp, hi_mp) == (False, "trade_plan_invalidated(TAOUSDC)", True)
+    assert is_extreme_stakes_delta_gate_wakeup(rsn_mp, sensors=mixed_plan_sensors, prev_eval=prev_hold) is True
+    # Partial fill attention flag preempts lower-priority stale_or_far on an earlier open order
+    prev_two_orders = {
+        **prev_hold,
+        "delta_gate_meta": {**prev_hold["delta_gate_meta"], "open_order_ids": ["ord-stale", "ord-part"]},
+    }
+    mixed_attn_sensors = SimpleNamespace(
+        **{
+            **base_sensors.__dict__,
+            "portfolio_summary": {
+                "open_limit_orders": [
+                    {"order_id": "ord-stale", "dist_from_spot_pct": -6.0, "fill_prob_1h_pct": 2.0},
+                    {"order_id": "ord-part", "status": "PARTIALLY_FILLED", "filled_qty": 0.25},
+                ],
+                "recent_orders": {},
+            },
+        }
+    )
+    assert evaluate_crypto_executor_delta_gate(mixed_attn_sensors, prev_two_orders, now_ts=t0 + 360.0)[:2] == (
+        False,
+        "open_order_partial_fill",
+    )
 
     # Macro update, geo shock, near-fill/stale/wall-trapped open order, UI turn, and focus_symbols all wake up
     macro_upd = SimpleNamespace(**{**base_sensors.__dict__, "sentiment_advisor": {"ts": t0 + 100.0}})

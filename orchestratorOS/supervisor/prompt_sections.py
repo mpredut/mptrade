@@ -2071,14 +2071,14 @@ def _format_open_limit_orders_table(
                     else pl.get("invalidation_dist_pct")
                 )
                 t_s = (
-                    f"{pl['target_px']}({fmt_signed(t_dist)}%)"
+                    f"{_fmt_plain_float(pl['target_px'])}({fmt_signed(t_dist)}%)"
                     if pl.get("target_px") is not None and t_dist is not None
-                    else (str(pl.get("target_px")) if pl.get("target_px") is not None else "-")
+                    else (_fmt_plain_float(pl.get("target_px")) if pl.get("target_px") is not None else "-")
                 )
                 i_s = (
-                    f"{pl['invalidation_px']}({fmt_signed(i_dist)}%)"
+                    f"{_fmt_plain_float(pl['invalidation_px'])}({fmt_signed(i_dist)}%)"
                     if pl.get("invalidation_px") is not None and i_dist is not None
-                    else (str(pl.get("invalidation_px")) if pl.get("invalidation_px") is not None else "-")
+                    else (_fmt_plain_float(pl.get("invalidation_px")) if pl.get("invalidation_px") is not None else "-")
                 )
                 rr_cur = compute_order_plan_rr(o_px, o_side, pl.get("target_px"), pl.get("invalidation_px"))
                 rr_sfx = f" RR@limit={rr_cur:.2f}x" if rr_cur is not None else ""
@@ -2106,7 +2106,7 @@ def _format_open_limit_orders_table(
         ven = str(o.get("venue") or "-")
         sym = str(o.get("symbol") or "-")
         side = str(o.get("side") or "-")
-        px = str(o.get("price") if o.get("price") is not None else "-")
+        px = _fmt_plain_float(o.get("price")) if o.get("price") is not None else "-"
         qty_v = safe_pos_float(o.get("qty"), default=None)
         qty = _fmt_plain_float(o.get("qty")) if o.get("qty") is not None else "-"
         filled_v = safe_float(o.get("filled_qty"), 0.0) or 0.0

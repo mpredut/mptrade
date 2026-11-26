@@ -461,6 +461,64 @@ def test_cycle2_unactionable_wall_trapped_suppression_equities_live_lh_and_cycle
     assert "@0.000012(BOT)" in micro_trig
     assert "e-05" not in micro_trig.lower()
 
+    # match_open_order_resting_plan never attaches AI plans to by=BOT orders, matches exact order_id first,
+    # refuses mismatched known order_ids, and Section 1 open-order table renders sub-1e-4 prices without sci notation.
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+    from providers.intent_telemetry import match_open_order_resting_plan
+
+    bot_order = {"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "order_id": "bot-1", "actor": "BOT", "price": 60000.0}
+    ai_order_a = {"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "order_id": "ai-1", "actor": "AI", "price": 60050.0}
+    ai_order_b = {"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "order_id": "ai-2", "actor": "AI", "price": 59990.0}
+    plan_ai_1 = {
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "order_state": "RESTING",
+        "order_id": "ai-1",
+        "entry_px": 60000.0,
+        "target_px": 62000.0,
+        "invalidation_px": 59000.0,
+    }
+    assert match_open_order_resting_plan(bot_order, [plan_ai_1]) == (None, None)
+    assert match_open_order_resting_plan(ai_order_b, [plan_ai_1]) == (None, None)
+    assert match_open_order_resting_plan(ai_order_a, [plan_ai_1]) == (0, plan_ai_1)
+
+    micro_sec1 = "\n".join(
+        _format_portfolio_section(
+            {
+                "open_limit_orders": [
+                    {
+                        "venue": "binance",
+                        "symbol": "PEPEUSDC",
+                        "side": "BUY",
+                        "order_id": "m-1",
+                        "actor": "AI",
+                        "price": 0.000049,
+                        "qty": 1000000.0,
+                        "filled_qty": 0.0,
+                    }
+                ],
+                "active_ai_trade_plans": [
+                    {
+                        "venue": "binance",
+                        "symbol": "PEPEUSDC",
+                        "side": "BUY",
+                        "order_state": "RESTING",
+                        "order_id": "m-1",
+                        "entry_px": 0.000049,
+                        "target_px": 0.000055,
+                        "invalidation_px": 0.000046,
+                        "status": "ACTIVE",
+                    }
+                ],
+            },
+            "crypto",
+        )
+    )
+    assert "| 0.000049 |" in micro_sec1
+    assert "0.000055(" in micro_sec1 and "/0.000046(" in micro_sec1
+    assert "e-05" not in micro_sec1.lower()
+
     # 2. Equities-scope Long_Horizon live-recalculates BTCUSDC & SPY from cross_market_context & macro_benchmarks
     # 3. Active Cycle Cost & Drawdown Anchors elide cleanly on WARM turns under G1 and return [NEW] on fill change
     lh_eq_snap = {

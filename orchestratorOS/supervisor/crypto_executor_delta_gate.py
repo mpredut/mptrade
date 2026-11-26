@@ -311,6 +311,12 @@ def _collect_open_order_attention(
     open_order_ids: List[str] = []
     order_attention_flags: Dict[str, str] = {}
     attention_reason = ""
+    attention_prio = 0
+    _attn_prio = {
+        "open_order_stale_or_far": 1,
+        "open_order_wall_trapped": 2,
+        "open_order_partial_fill": 3,
+    }
     used_plan_indices: set[int] = set()
     for oo in raw_open:
         if not isinstance(oo, Mapping):
@@ -348,8 +354,10 @@ def _collect_open_order_attention(
             cur_flag = "open_order_wall_trapped"
         if oid and cur_flag:
             order_attention_flags[oid] = cur_flag
-            if not attention_reason and prev_flags.get(oid) != cur_flag:
+            cur_prio = _attn_prio.get(cur_reason, 0)
+            if cur_reason and prev_flags.get(oid) != cur_flag and cur_prio > attention_prio:
                 attention_reason = cur_reason
+                attention_prio = cur_prio
     return sorted(set(open_order_ids)), order_attention_flags, attention_reason
 
 
@@ -363,10 +371,12 @@ def _evaluate_delta_gate_trade_plans(
     """Evaluate active AI trade plans and detect first-transition INVALIDATED / TARGET_HIT wake triggers."""
     plan_states: Dict[str, str] = {}
     trigger_reason = ""
+    trigger_sev = 0
     raw_plans = ps_map.get("active_ai_trade_plans")
     if not isinstance(raw_plans, list):
         return plan_states, trigger_reason
     ignored_syms = set(unactionable_syms) if unactionable_syms else set()
+    _sev = {"ACTIVE": 0, "TARGET_HIT": 1, "INVALIDATED": 2}
     for pl in raw_plans:
         if not isinstance(pl, Mapping):
             continue
@@ -388,16 +398,17 @@ def _evaluate_delta_gate_trade_plans(
         else:
             pl_status = stored_status or "ACTIVE"
         pl_key = f"{pl_ven}:{pl_sym}:{pl_side}"
-        _sev = {"ACTIVE": 0, "TARGET_HIT": 1, "INVALIDATED": 2}
-        if pl_key not in plan_states or _sev.get(pl_status, 0) > _sev.get(plan_states[pl_key], 0):
+        pl_sev = _sev.get(pl_status, 0)
+        if pl_key not in plan_states or pl_sev > _sev.get(plan_states[pl_key], 0):
             plan_states[pl_key] = pl_status
         if (
-            not trigger_reason
-            and not _is_ignored_delta_gate_symbol(pl_sym, ignored_syms)
+            not _is_ignored_delta_gate_symbol(pl_sym, ignored_syms)
             and pl_status in ("INVALIDATED", "TARGET_HIT")
             and prev_plan_states.get(pl_key) != pl_status
+            and pl_sev > trigger_sev
         ):
             trigger_reason = f"trade_plan_{pl_status.lower()}({pl_sym})"
+            trigger_sev = pl_sev
     return plan_states, trigger_reason
 
 
@@ -697,12 +708,12 @@ def evaluate_crypto_executor_delta_gate(
     elapsed_sec = max(0.0, eff_now - prev_ts)
     if plan_trigger_reason:
         return False, plan_trigger_reason, True, snapshot_meta
+    if has_new_fill:
+        return False, "new_fill", escalate_high_effort, snapshot_meta
     if elapsed_sec >= eff_max_idle_sec:
         return False, f"max_idle_elapsed({elapsed_sec:.0f}s>={eff_max_idle_sec:.0f}s)", escalate_high_effort, snapshot_meta
     if breach_sym:
         return False, f"price_move({breach_sym}:{breach_move_pct:.2f}%>={breach_thresh_pct:.2f}%)", escalate_high_effort, snapshot_meta
-    if has_new_fill:
-        return False, "new_fill", escalate_high_effort, snapshot_meta
 
     prev_macro_ts = normalize_epoch_sec(prev_meta.get("macro_ts"), default=0.0, allow_iso=True) or 0.0
     prev_macro_verdict = str(prev_meta.get("macro_verdict") or "").strip().upper()
