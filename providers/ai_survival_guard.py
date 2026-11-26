@@ -87,6 +87,7 @@ _MIN_TARGET_EV_FLOOR_PCT = 0.10
 _RESTING_UNFILLED_GRACE_SEC = 3600.0
 _LIFO_REMAINDER_DUST_USD = 2.0
 _LIFO_REMAINDER_DUST_MAX_FRAC = 0.05
+DEFAULT_LIFO_MAX_PAIR_HOLD_SEC = 7.0 * 86400.0
 
 
 def _is_terminal_or_stale_unfilled_intent(
@@ -419,18 +420,37 @@ def match_filled_intent_rows_lifo_in_window(
     filled_rows: Sequence[dict[str, Any]],
     *,
     cutoff_ts: float = 0.0,
+    max_pair_hold_sec: Optional[float] = DEFAULT_LIFO_MAX_PAIR_HOLD_SEC,
 ) -> tuple[list[tuple[str, dict[str, Any], dict[str, Any]]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Match the full chronological fill stream LIFO first, then filter realized/open outcomes to ``>= cutoff_ts``.
+    """Match a bounded-hydration chronological fill stream LIFO first, then filter outcomes to ``>= cutoff_ts``.
 
-    Applying ``cutoff_ts`` *after* LIFO matching prevents pre-window entry legs from vanishing off the
-    stack and turning in-window stop-loss SELLs into orphaned sells that fabricate phantom ``SELL->BUY`` wins.
+    - Hydrating from ``cutoff_ts - max_pair_hold_sec`` preserves genuine cross-boundary entries (preventing
+      in-window stop-loss SELLs from inverting into phantom ``SELL->BUY`` wins) while preventing weeks-old
+      ghost AI BUYs (already closed on a shared wallet by BOT/MANUAL actors) from poisoning recent PnL.
     """
-    closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo(filled_rows)
+    eff_max_hold = (
+        safe_pos_float(max_pair_hold_sec, default=None)
+        if max_pair_hold_sec is not None
+        else None
+    )
+    if cutoff_ts > 0.0 and eff_max_hold is not None:
+        hydrate_cutoff = cutoff_ts - eff_max_hold
+        lifo_stream = [
+            row for row in filled_rows
+            if (safe_float(row.get("ts"), default=0.0) or 0.0) >= hydrate_cutoff
+        ]
+    else:
+        lifo_stream = list(filled_rows)
+    closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo(lifo_stream)
     if cutoff_ts <= 0.0:
         return closed_pairs, open_buys, open_sells
     win_closed = [
         pair for pair in closed_pairs
-        if (safe_float(pair[2].get("ts"), default=0.0) or 0.0) >= cutoff_ts
+        if (ex_ts := (safe_float(pair[2].get("ts"), default=0.0) or 0.0)) >= cutoff_ts
+        and (
+            eff_max_hold is None
+            or (ex_ts - (safe_float(pair[1].get("ts"), default=0.0) or 0.0)) <= eff_max_hold
+        )
     ]
     win_open_buys = [
         row for row in open_buys
@@ -1340,7 +1360,7 @@ def extract_fill_execution_slippage(
     market_slip_bps: Optional[float] = None
     if ot == "LIMIT" and lim_px is not None:
         limit_slip_bps = _compute_signed_exec_bps(side_u, ep, lim_px)
-        if ref_px is not None and abs(ref_px - lim_px) / lim_px > 1e-6:
+        if ref_px is not None:
             arrival_sf_bps = _compute_signed_exec_bps(side_u, ep, ref_px)
     elif ot != "LIMIT" and ref_px is not None:
         market_slip_bps = _compute_signed_exec_bps(side_u, ep, ref_px)

@@ -537,3 +537,31 @@ def test_frozen_resolved_plan_status_persists_write_once_and_survives_4h_bar_rol
     )
     assert res_with_bars == {"buy_early_1": "CLOSED_EARLY"}
 
+
+def test_lifo_window_bounds_pre_window_hydration_against_ancient_ghost_buys() -> None:
+    """Weeks-old unmatched AI BUYs (sold by BOT/MANUAL on shared wallet) must not poison recent SELLs as fake -25% losses."""
+    now_s = 1_800_000_000.0
+    d = 86400.0
+    intents = [
+        # 25-day-old AI BUY that was sold weeks ago by a deterministic bot (absent from AI intent log)
+        _filled_intent("ancient_b", now_s - 25.0 * d, "BUY", "HYPEUSDC", "hyperliquid", 90.0, 10.0),
+        # Recent AI SELL of bot-bought inventory at $65 (should be standalone unmatched sell, NOT a -27.8% loss!)
+        _filled_intent("recent_s", now_s - 1.0 * d, "SELL", "HYPEUSDC", "hyperliquid", 65.0, 10.0),
+        # One real recent winning round-trip so scorecard is non-empty and reports unmatched_sells=1
+        _filled_intent("win_b", now_s - 6.0 * 3600.0, "BUY", "BTCUSDC", "binance", 60000.0, 0.01),
+        _filled_intent("win_s", now_s - 2.0 * 3600.0, "SELL", "BTCUSDC", "binance", 61200.0, 0.01),
+    ]
+    sc = evaluate_ai_decision_scorecard(intents, now_ts=now_s, window_trades=5, lookback_hours=48.0, scope="crypto")
+    assert sc["count"] == 1
+    assert sc["wins"] == 1
+    assert sc["losses"] == 0
+    assert sc["unmatched_sells"] == 1
+    assert sc["net_usd"] > 0.0
+
+    attr = evaluate_ai_attribution(intents, now_ts=now_s, lookback_days=7.0, scope="crypto")
+    assert attr["ai_summary"]["closed_trades"] == 1
+    assert attr["ai_summary"]["wins"] == 1
+    assert attr["ai_summary"]["losses"] == 0
+    assert attr["ai_summary"]["realized_net_usd"] > 0.0
+
+

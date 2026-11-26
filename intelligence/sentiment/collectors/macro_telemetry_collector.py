@@ -1703,8 +1703,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 if ai_cal.get("filled_total", 0) > 0 or ai_cal.get("venue_tca"):
                     snapshot.portfolio_summary["ai_calibration_feedback"] = ai_cal
                 if (
-                    persist
-                    and newly_resolved_plans
+                    newly_resolved_plans
                     and intent_gateway is not None
                     and callable(persist_plans_fn := getattr(intent_gateway, "persist_resolved_trade_plan_statuses", None))
                 ):
@@ -2125,6 +2124,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             workspace_dir = os.path.dirname(os.path.abspath(str(cache_dir).rstrip("/\\")))
         is_live_wallclock = (safe_pos_float(now_ts, default=0.0) or 0.0) <= 0.0
         now_ts, _rj, _rj_any = _resolve_macro_collect_inputs(now_ts, read_json_fn)
+        start_now_ts = now_ts
         macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(
             cache_dir, now_ts, _rj, scope=scope, allow_network=allow_network, persist=persist
         )
@@ -2316,6 +2316,17 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
 
         if is_live_wallclock:
             now_ts = max(now_ts, _time.time())
+            elapsed_wall_s = max(0.0, now_ts - start_now_ts)
+            if elapsed_wall_s >= 1.0:
+                for m_val in macro_sensors.values():
+                    if isinstance(m_val, dict):
+                        m_ts = normalize_epoch_sec(m_val.get("ts"), default=None) or extract_timestamp_s(m_val)
+                        if m_ts is not None and m_ts > 0.0:
+                            m_val["age_min"] = round(max(0.0, now_ts - m_ts) / 60.0, 1)
+                if isinstance(snapshot.breaking_news, list):
+                    for hn in snapshot.breaking_news:
+                        if isinstance(hn, dict) and (old_age := safe_float(hn.get("age_min"), default=None)) is not None:
+                            hn["age_min"] = round(old_age + elapsed_wall_s / 60.0, 1)
         self._enrich_ai_intent_and_guard_telemetry(
             snapshot,
             intents_data,
