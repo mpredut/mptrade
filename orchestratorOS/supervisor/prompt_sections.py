@@ -2427,13 +2427,18 @@ def _format_portfolio_section(
     if isinstance(pre := ps.get("portfolio_risk_engine"), dict) and pre.get("unified_nav_usd"):
         pre_hdr = scope_spec.risk_engine_hdr
         nav_key_lbl = scope_spec.risk_engine_nav_lbl
+        fc_pct = pre.get("global_free_cash_pct")
         pre_parts = [
             f"{nav_key_lbl}=${safe_float(pre.get('unified_nav_usd'), 0.0):,.2f}",
             f"invested=${safe_float(pre.get('invested_exposure_usd'), 0.0):,.2f}",
-            f"free_cash=${safe_float(pre.get('global_free_cash_usd'), 0.0):,.2f} ({pre.get('global_free_cash_pct')}%)",
+            f"free_cash=${safe_float(pre.get('global_free_cash_usd'), 0.0):,.2f}"
+            + (f" ({fc_pct}%)" if fc_pct is not None else ""),
         ]
         if (lq_pre := safe_float(pre.get("locked_quote_usd"), 0.0)) > 0.0:
-            pre_parts.append(f"locked_quote=${lq_pre:,.2f} ({pre.get('locked_quote_pct')}%)")
+            lq_pct = pre.get("locked_quote_pct")
+            pre_parts.append(
+                f"locked_quote=${lq_pre:,.2f}" + (f" ({lq_pct}%)" if lq_pct is not None else "")
+            )
         if isinstance(vn_bd := pre.get("venue_nav_breakdown_usd"), dict) and vn_bd:
             vn_s = ", ".join(
                 f"{vk}=${safe_float(vv, 0.0):,.2f}"
@@ -2443,16 +2448,21 @@ def _format_portfolio_section(
             if vn_s:
                 pre_parts.append(f"venues({vn_s})")
         if scope_spec.include_crypto_beta:
-            pre_parts.extend([
-                f"portfolio_btc_beta={pre.get('portfolio_btc_beta')}",
-                f"avg_corr_24h={pre.get('avg_corr_vs_btc_24h')}",
-            ])
-        pre_parts.append(
-            f"intraday_var_95=${safe_float(pre.get('intraday_var_95_usd'), 0.0):,.2f} ({pre.get('intraday_var_95_pct')}%)"
-        )
-        if pre.get("intraday_cvar_975_usd") is not None:
+            if pre.get("portfolio_btc_beta") is not None:
+                pre_parts.append(f"portfolio_btc_beta={pre.get('portfolio_btc_beta')}")
+            if pre.get("avg_corr_vs_btc_24h") is not None:
+                pre_parts.append(f"avg_corr_24h={pre.get('avg_corr_vs_btc_24h')}")
+        if pre.get("intraday_var_95_usd") is not None:
+            var_pct = pre.get("intraday_var_95_pct")
             pre_parts.append(
-                f"cvar_975=${safe_float(pre.get('intraday_cvar_975_usd'), 0.0):,.2f} ({pre.get('intraday_cvar_975_pct')}%)"
+                f"intraday_var_95=${safe_float(pre.get('intraday_var_95_usd'), 0.0):,.2f}"
+                + (f" ({var_pct}%)" if var_pct is not None else "")
+            )
+        if pre.get("intraday_cvar_975_usd") is not None:
+            cvar_pct = pre.get("intraday_cvar_975_pct")
+            pre_parts.append(
+                f"cvar_975=${safe_float(pre.get('intraday_cvar_975_usd'), 0.0):,.2f}"
+                + (f" ({cvar_pct}%)" if cvar_pct is not None else "")
             )
         if pre.get("daily_nav_drawdown_pct") is not None:
             pre_parts.append(f"nav_dd_day={fmt_signed(pre.get('daily_nav_drawdown_pct'))}%")

@@ -19,7 +19,7 @@ from orchestratorOS.agy.topics import get_topic_thread_state
 from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
 from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
 from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
-from verify_tools.audit_prompt_invariants import audit_rendered_prompt_text
+from intelligence.sentiment.evaluators.prompt_invariants_evaluator import audit_rendered_prompt_text
 
 
 def _make_rich_sensors(ts: float, *, anchor_ts: float | None = None) -> TelemetrySensorSnapshot:
@@ -36,7 +36,7 @@ def _make_rich_sensors(ts: float, *, anchor_ts: float | None = None) -> Telemetr
         "ts": base_ts - 300.0,
     }
     snap.market_breadth = {
-        "advance_ratio": 0.42,
+        "advance_ratio": 0.4138,
         "median_change_pct": -0.8,
         "mean_change_pct": -0.6,
         "dispersion_std": 2.1,
@@ -47,7 +47,7 @@ def _make_rich_sensors(ts: float, *, anchor_ts: float | None = None) -> Telemetr
     snap.sentiment_advisor = {
         "confidence": 0.72,
         "summary": "BTC consolidating near $60.8k POC after ETF outflow stabilization.",
-        "live_flow_divergence": "(taker_ratio=0.98, cvd_15m=-$1.2M vs 20.0m-old summary)",
+        "live_flow_divergence": "(taker_ratio=1.04, cvd_15m=-$1.2M vs 20.0m-old summary)",
         "ts": base_ts - 1200.0,
     }
     snap.geopolitical_threat = {
@@ -713,7 +713,13 @@ def test_trigger_promotion_inline_rr_partial_fill_and_warm_source_age() -> None:
     sensors = _make_rich_sensors(t0)
     sensors.prices_and_trends["HYPEUSDC"] = {"price": 60.41, "chg_24h_pct": 1.8, "low_24h": 58.0, "high_24h": 62.0}
     sensors.portfolio_summary["tradable_positions"][1]["price"] = 60.41
-    sensors.portfolio_summary["tradable_positions"][1]["value_usd"] = round(28.0 * 60.41, 2)
+    hype_new_val = round(28.0 * 60.41, 2)
+    hype_delta = round(hype_new_val - sensors.portfolio_summary["tradable_positions"][1]["value_usd"], 2)
+    sensors.portfolio_summary["tradable_positions"][1]["value_usd"] = hype_new_val
+    pre = sensors.portfolio_summary["portfolio_risk_engine"]
+    pre["invested_exposure_usd"] = round(pre["invested_exposure_usd"] + hype_delta, 2)
+    pre["unified_nav_usd"] = round(pre["unified_nav_usd"] + hype_delta, 2)
+    pre["venue_nav_breakdown_usd"]["hyperliquid"] = round(pre["venue_nav_breakdown_usd"]["hyperliquid"] + hype_delta, 2)
     sensors.source_ages_sec["fear_greed"] = 1680.0
     sensors.portfolio_summary["open_limit_orders"] = [
         {
@@ -775,7 +781,11 @@ def test_trigger_promotion_inline_rr_partial_fill_and_warm_source_age() -> None:
     sensors_t2 = _make_rich_sensors(t2, anchor_ts=t0)
     sensors_t2.prices_and_trends["HYPEUSDC"] = {"price": 60.41, "chg_24h_pct": 1.8, "low_24h": 58.0, "high_24h": 62.0}
     sensors_t2.portfolio_summary["tradable_positions"][1]["price"] = 60.41
-    sensors_t2.portfolio_summary["tradable_positions"][1]["value_usd"] = round(28.0 * 60.41, 2)
+    sensors_t2.portfolio_summary["tradable_positions"][1]["value_usd"] = hype_new_val
+    pre2 = sensors_t2.portfolio_summary["portfolio_risk_engine"]
+    pre2["invested_exposure_usd"] = round(pre2["invested_exposure_usd"] + hype_delta, 2)
+    pre2["unified_nav_usd"] = round(pre2["unified_nav_usd"] + hype_delta, 2)
+    pre2["venue_nav_breakdown_usd"]["hyperliquid"] = round(pre2["venue_nav_breakdown_usd"]["hyperliquid"] + hype_delta, 2)
     sensors_t2.source_ages_sec["fear_greed"] = 2040.0
     sensors_t2.portfolio_summary["cross_market_context"]["equity_bellwethers"]["NVDA_US_EQ"]["quote_age_min"] = 712.0
     p2 = evaluate_prompt_delta_plan(

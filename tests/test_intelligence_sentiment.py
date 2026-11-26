@@ -18416,7 +18416,7 @@ def test_cycle5_equity_ob_proxy_symmetry_xstock_prompt_parity_and_invariant_rege
     from intelligence.sentiment.collectors.portfolio_collector import KrakenXstocksCollector
     from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
     from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
-    from verify_tools.audit_prompt_invariants import audit_rendered_prompt_text
+    from intelligence.sentiment.evaluators.prompt_invariants_evaluator import audit_rendered_prompt_text
 
     now_s = 1_795_655_000.0
     col_ob = OrderbookDepthCollector(cache_dir=str(tmp_path / "ob_c5"), start_sync=False)
@@ -18579,7 +18579,7 @@ def test_cycle7_8_t212_step_size_invariant_keys_and_prompt_sections_dedup():
         _format_macro_and_news_section,
         _format_microstructure_section,
     )
-    from verify_tools.audit_prompt_invariants import audit_snapshot_invariants
+    from intelligence.sentiment.evaluators.prompt_invariants_evaluator import audit_snapshot_invariants
 
     # 1. T212 step_size & min_qty = 0.01 (matching T212Client round(qty, 2) and _ORDER_MIN = 0.01)
     t212_dust = resolve_venue_fee_and_limits(

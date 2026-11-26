@@ -13,10 +13,11 @@ from providers.ai_survival_guard import (
     match_filled_intent_rows_lifo_in_window,
 )
 from providers.intent_telemetry import summarize_active_ai_trade_plans
-from verify_tools.audit_prompt_invariants import (
+from intelligence.sentiment.evaluators.prompt_invariants_evaluator import (
     audit_rendered_prompt_text,
     audit_scorecard_temporal_invariants,
     audit_snapshot_invariants,
+    evaluate_live_prompt_invariants,
 )
 
 
@@ -1063,6 +1064,8 @@ def test_cycle14_section0_recent_order_new_fill_rules_parity_and_active_plan_rr_
     )
     assert "61200.0(+2.00%)/58800.0(-2.00%) RR@limit=1.00x [ACTIVE]" in oo_amended_lines
     assert audit_rendered_prompt_text(oo_amended_lines) == []
+    bad_oo_pct = oo_amended_lines.replace("61200.0(+2.00%)", "61200.0(+5.00%)")
+    assert any(v.code == "PROMPT_OPEN_ORDER_RR_MATH" and v.subject.endswith(":target") for v in audit_rendered_prompt_text(bad_oo_pct))
 
 
 def test_full_mathematical_audit_snapshot_and_rendered_prompt_invariants() -> None:
@@ -1300,6 +1303,219 @@ def test_full_mathematical_audit_snapshot_and_rendered_prompt_invariants() -> No
         prices_and_trends={"BTCUSDC": {"price": 60000.0}},
     )
     assert rows_no_whale and rows_no_whale[0]["show_whale_long"] is False
+
+
+def test_cross_section_prompt_invariants_and_live_evaluator() -> None:
+    """Verify all 6 cross-section mathematical invariants (clean passes, every corruption caught) + live deduplication."""
+    clean_prompt = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Portfolio Risk Engine (Crypto Scope): crypto_nav=$10,000.00, invested=$4,000.00, "
+        "free_cash=$5,000.00 (50.0%), locked_quote=$1,000.00 (10.0%), venues(binance=$7,000.00, kraken=$3,000.00)\n"
+        "  * Available Free Quote Cash per Venue: binance USDC=$3,000.00 [locked_quote_usd=$1,000.00]; kraken USD=$2,000.00\n"
+        "  * Tradable Spot Positions:\n"
+        "    - [binance] BTCUSDC: free_BTC=0.05 ($3,000.00 USD), px=60000.0, limits(max_buy=$2000.0, max_sell=$3000.0)\n"
+        "    - [kraken] HYPEUSD: free_HYPE=20.0 ($1,000.00 USD), px=50.0, limits(max_buy=$2000.0, max_sell=$1000.0)\n"
+        "  * Open Limit Orders:\n"
+        "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Plan (Tgt/Inv) | Note |\n"
+        "    |---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+        "    | binance | BTCUSDC | BUY | 59400.0 | 0.015 | 0 | 11 | AI | 1.0h | -1.00% | 20% | 60600.0(+2.02%)/58800.0(-1.01%) RR@limit=2.00x [ACTIVE] | DEEP_PASSIVE_BID(wall=59700.0/$50.0K), front_run=59750.0 |\n"
+        "  * Venue Specs:\n"
+        "    | Venue | Symbol | Tier | Fee bps (M/T) | MinNotional | MinQty | Step | Tick |\n"
+        "    |---|---|---|---|---|---|---|---|\n"
+        "    | hyperliquid | HYPEUSDC | TIER_0 | 4 (4.0/4.5) | $10 | 0.01 | 0.01 | 0.01 |\n"
+        "    | kraken | HYPEUSD | TIER_0 | 22 (22.0/37.0) | $1 | 0.06 | 0.00000001 | 0.01 |\n"
+        "  * AI Execution & Plan Calibration (7d): plans=10 (BUY:3hit/1inv/1early/1open, SELL:2hit/1inv/0early/1open, hit=71%) | "
+        "binance: LIM 4/5[80%] | fill_by_offset(<0.2%:100%[2/2], 0.2-0.5%:50%[2/4])\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+        "  * Market Breadth: advance_ratio=0.4138, advancing=12/29, BTC_vol_share=38.5%, Alt_vol_share=61.5%\n"
+        "  * Macro Sentiment Advisor (conf=0.75): Neutral | live_btc_flow_delta=(BTC=$60,000.00(POC=$59,500.00), taker_ratio=1.20)\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * BTCUSDC: Price=$60,000.00\n"
+        "    - Trend: 24h=+1.00% | vol_profile(POC=59500.0[+0.84%], VAL=59000.0[+1.69%], VAH=60500.0[-0.83%], va_pos=66.7%)\n"
+        "    - Book: ob_imbalance=0.500 (bid_depth=$100.0K, ask_depth=$100.0K), depth_1pct=(bid=$60.0K/ask=$50.0K), "
+        "bid_wall=59700.0 ($50.0K, dist=-0.50%), ask_wall=60300.0 ($50.0K, dist=+0.50%), spread=0.33bps (bid=59999.0/ask=60001.0), ob_mid=60000.0\n"
+        "    - Flow: taker_ratio=1.20 (buy_v=$1.20M/sell_v=$1.00M), cvd_15m=+1.00 BTC (+$60.0K)\n"
+        "  * HYPEUSDC: Price=$50.01\n"
+        "    - Trend: 24h=+2.00%\n"
+        "    - Flow: arb_vs_HYPEUSD=+2.0bps, net_buy_edge=+16.0bps[maker]\n"
+        "  * HYPEUSD: Price=$50.00\n"
+        "    - Trend: 24h=+2.00%\n"
+        "    - Flow: arb_vs_HYPEUSDC=-2.0bps, net_buy_edge=-16.0bps[maker]\n"
+    )
+    assert audit_rendered_prompt_text(clean_prompt) == []
+
+    bad_prompt = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Portfolio Risk Engine (Crypto Scope): crypto_nav=$10,000.00, invested=$4,000.00, "
+        "free_cash=$5,000.00 (50.0%), locked_quote=$1,000.00 (10.0%), venues(binance=$7,000.00, kraken=$3,000.00)\n"
+        "  * Available Free Quote Cash per Venue: binance USDC=$4,200.00 [locked_quote_usd=$1,500.00]; kraken USD=$2,000.00\n"
+        "  * Tradable Spot Positions:\n"
+        "    - [binance] BTCUSDC: free_BTC=0.05 ($3,000.00 USD), px=60000.0, limits(max_buy=$2000.0, max_sell=$3000.0)\n"
+        "    - [kraken] HYPEUSD: free_HYPE=40.0 ($2,000.00 USD), px=50.0, limits(max_buy=$2000.0, max_sell=$2000.0)\n"
+        "  * Open Limit Orders:\n"
+        "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Plan (Tgt/Inv) | Note |\n"
+        "    |---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+        "    | binance | BTCUSDC | BUY | 59400.0 | 0.03 | 0 | 11 | AI | 1.0h | -1.00% | 20% | 60600.0(+2.02%)/58800.0(-1.01%) RR@limit=2.00x [ACTIVE] | DEEP_PASSIVE_BID(wall=58000.0/$50.0K), front_run=60500.0 |\n"
+        "  * Venue Specs:\n"
+        "    | Venue | Symbol | Tier | Fee bps (M/T) | MinNotional | MinQty | Step | Tick |\n"
+        "    |---|---|---|---|---|---|---|---|\n"
+        "    | hyperliquid | HYPEUSDC | TIER_0 | 4 (4.0/4.5) | $10 | 0.01 | 0.01 | 0.01 |\n"
+        "    | kraken | HYPEUSD | TIER_0 | 22 (22.0/37.0) | $1 | 0.06 | 0.00000001 | 0.01 |\n"
+        "  * AI Execution & Plan Calibration (7d): plans=12 (BUY:3hit/1inv/1early/1open, SELL:2hit/1inv/0early/1open, hit=95%) | "
+        "binance: LIM 4/5[20%] | fill_by_offset(<0.2%:10%[2/2], 0.2-0.5%:50%[2/4])\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+        "  * Market Breadth: advance_ratio=0.7500, advancing=12/29, BTC_vol_share=65.0%, Alt_vol_share=55.0%\n"
+        "  * Macro Sentiment Advisor (conf=0.75): Neutral | live_btc_flow_delta=(BTC=$62,500.00(POC=$58,000.00), taker_ratio=0.75)\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * BTCUSDC: Price=$60,000.00\n"
+        "    - Trend: 24h=+1.00% | vol_profile(POC=59500.0[+0.84%], VAL=59000.0[+1.69%], VAH=60500.0[-0.83%], va_pos=66.7%)\n"
+        "    - Book: ob_imbalance=0.500 (bid_depth=$100.0K, ask_depth=$100.0K), depth_1pct=(bid=$150.0K/ask=$150.0K), "
+        "bid_wall=59700.0 ($50.0K, dist=-0.50%), ask_wall=60300.0 ($50.0K, dist=+0.50%), spread=0.33bps (bid=59999.0/ask=60001.0), ob_mid=60000.0\n"
+        "    - Flow: taker_ratio=2.50 (buy_v=$1.20M/sell_v=$1.00M), cvd_15m=+1.00 BTC (-$500.0K)\n"
+        "  * HYPEUSDC: Price=$50.01\n"
+        "    - Trend: 24h=+2.00%\n"
+        "    - Flow: arb_vs_HYPEUSD=+2.0bps, net_buy_edge=+5.0bps[maker]\n"
+        "  * HYPEUSD: Price=$50.00\n"
+        "    - Trend: 24h=+2.00%\n"
+        "    - Flow: arb_vs_HYPEUSDC=-2.0bps, net_buy_edge=+5.0bps[maker]\n"
+    )
+    bad_vs = audit_rendered_prompt_text(bad_prompt)
+    bad_codes = {v.code for v in bad_vs}
+    assert {
+        "PROMPT_SECTION1_SUM_CONSERVATION",
+        "PROMPT_OPEN_ORDER_WALL_BOOK_MATH",
+        "PROMPT_ADVISOR_BTC_PARITY",
+        "PROMPT_FLOW_DEPTH_EDGE_MATH",
+        "PROMPT_CALIBRATION_MATH",
+        "PROMPT_BREADTH_MATH",
+    }.issubset(bad_codes)
+    # All 4 Section 1 sub-checks fired independently
+    s1_subjects = {v.subject for v in bad_vs if v.code == "PROMPT_SECTION1_SUM_CONSERVATION"}
+    assert {
+        "Section1.InvestedSum",
+        "Section1.FreeCashSum",
+        "Section1.LockedQuoteSum",
+        "Section1.OpenBuyVsLockedQuote",
+    }.issubset(s1_subjects)
+
+    # evaluate_live_prompt_invariants deduplicates identical violations across full + warm prompts
+    warm_extra = bad_prompt + "\n    - Trend: 24h=+1.00%, bad_warm=None\n"
+    combined = evaluate_live_prompt_invariants({}, bad_prompt, resume_prompt_text=warm_extra)
+    assert len(combined) == len(bad_vs) + 1
+    assert any(v.code == "PROMPT_NUMERIC_HYGIENE" for v in combined)
+
+
+def test_reconciler_continuous_runtime_prompt_invariant_validation(tmp_path, caplog) -> None:
+    """Verify AutonomousAIReconciler validates rendered prompts inline before LLM calls, logs ERROR, persists on report, and rate-limits ntfy across runs."""
+    import logging
+    from unittest.mock import patch
+
+    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
+    from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
+
+    ws = tmp_path / "ws_inv"
+    (ws / "cachedb").mkdir(parents=True)
+    (ws / "order_guard.conf").write_text(
+        "supervisor_mode = shadow\n"
+        "supervisor_notify_enabled = true\n"
+        "ntfy_url = https://ntfy.example.test\n"
+        "ntfy_topic_server = srv-topic\n"
+        "ntfy_topic_error = err-topic\n"
+        "ntfy_topic_guard = grd-topic\n"
+        "autonomous_trading_min_notional_usd = 10.0\n"
+        "autonomous_trading_max_notional_usd = 2000.0\n"
+        "autonomous_trading_min_confidence = 0.85\n",
+        encoding="utf-8",
+    )
+
+    def _make_snap(*, bad_breadth: bool = False) -> TelemetrySensorSnapshot:
+        snap = TelemetrySensorSnapshot()
+        snap.evaluated_at_ts = 1_800_000_000.0
+        snap.market_breadth = {
+            "advance_ratio": 0.9000 if bad_breadth else 0.4138,
+            "advancing": 12,
+            "total_symbols": 29,
+        }
+        snap.prices_and_trends = {"BTCUSDC": {"price": 60000.0, "chg_24h_pct": 1.0}}
+        snap.portfolio_summary = {
+            "portfolio_risk_engine": {
+                "unified_nav_usd": 5000.0,
+                "invested_exposure_usd": 3000.0,
+                "global_free_cash_usd": 2000.0,
+                "global_free_cash_pct": 40.0,
+                "venue_nav_breakdown_usd": {"binance": 5000.0},
+            },
+            "venue_quote_cash": {"binance": {"venue": "binance", "asset": "USDC", "free": 2000.0}},
+            "tradable_positions": [
+                {"venue": "binance", "symbol": "BTCUSDC", "free_base": 0.05, "value_usd": 3000.0, "free_quote": 2000.0, "price": 60000.0}
+            ],
+        }
+        return snap
+
+    logs = LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0)
+    ntfy_calls: list[tuple[str, str]] = []
+
+    def _fake_ntfy(title, body, *_args, **_kwargs):
+        ntfy_calls.append((title, body))
+        return True
+
+    fake_resp = {"summary": "Hold steady.", "market_trading_decisions": [{"decision": "HOLD", "confidence": 0.0}]}
+    rec = AutonomousAIReconciler(mode="shadow", workspace_dir=str(ws), notify_enabled=True)
+
+    with (
+        patch("orchestratorOS.supervisor.autonomous_ai_reconciler.query_topic_json", return_value=fake_resp),
+        patch("orchestratorOS.supervisor.autonomous_ai_reconciler.send_supervisor_ntfy_http", side_effect=_fake_ntfy),
+        patch("orchestratorOS.supervisor.autonomous_ai_reconciler.get_topic_thread_state", return_value=("cid-1", 0, False)),
+        caplog.at_level(logging.ERROR, logger="orchestratorOS.supervisor"),
+    ):
+        # 1. Clean snapshot + prompt -> zero violations, zero logs, zero ntfy alerts
+        rec.synthesize_and_diagnose(_make_snap(bad_breadth=False), logs, topic_key="auto_cryptotrade_executor")
+        assert rec._last_prompt_invariant_violations == []
+        assert ntfy_calls == []
+        assert "[PROMPT_INVARIANT_VIOLATION]" not in caplog.text
+
+        # 2. Corrupted breadth -> detects violation, logs ERROR for auto_technical_repair, sends 1 ntfy alert
+        rec.synthesize_and_diagnose(_make_snap(bad_breadth=True), logs, topic_key="auto_cryptotrade_executor")
+        assert any("PROMPT_BREADTH_MATH" in line for line in rec._last_prompt_invariant_violations)
+        assert "[PROMPT_INVARIANT_VIOLATION]" in caplog.text
+        assert len(ntfy_calls) == 1
+        assert "PROMPT_BREADTH_MATH" in ntfy_calls[0][1]
+
+        # 3. Immediate repeat within 4h cooldown -> still records violation, suppresses duplicate ntfy alert
+        rec.synthesize_and_diagnose(_make_snap(bad_breadth=True), logs, topic_key="auto_cryptotrade_executor")
+        assert any("PROMPT_BREADTH_MATH" in line for line in rec._last_prompt_invariant_violations)
+        assert len(ntfy_calls) == 1
+
+    # 4. Cross-process persistence via run_cycle(): SupervisorAuditReport persists violations + alert cooldowns
+    rec2 = AutonomousAIReconciler(mode="shadow", workspace_dir=str(ws), notify_enabled=True)
+    with (
+        patch.object(rec2, "harvest_sensors_telemetry", return_value=_make_snap(bad_breadth=True)),
+        patch("orchestratorOS.supervisor.autonomous_ai_reconciler.query_topic_json", return_value=fake_resp),
+        patch("orchestratorOS.supervisor.autonomous_ai_reconciler.send_supervisor_ntfy_http", side_effect=_fake_ntfy),
+        patch("orchestratorOS.supervisor.autonomous_ai_reconciler.get_topic_thread_state", return_value=("cid-1", 0, False)),
+        patch("orchestratorOS.supervisor.autonomous_ai_reconciler.bool_env", return_value=False),
+    ):
+        rep1 = rec2.run_cycle(topic_key="auto_cryptotrade_executor")
+        assert any("PROMPT_BREADTH_MATH" in line for line in rep1.prompt_invariant_violations)
+        assert rep1.prompt_invariant_alert_ts
+        assert len(ntfy_calls) == 2
+
+    # Fresh process reading persisted {topic_key}_eval.json honors cross-process 4h cooldown
+    rec3 = AutonomousAIReconciler(mode="shadow", workspace_dir=str(ws), notify_enabled=True)
+    with (
+        patch.object(rec3, "harvest_sensors_telemetry", return_value=_make_snap(bad_breadth=True)),
+        patch("orchestratorOS.supervisor.autonomous_ai_reconciler.query_topic_json", return_value=fake_resp),
+        patch("orchestratorOS.supervisor.autonomous_ai_reconciler.send_supervisor_ntfy_http", side_effect=_fake_ntfy),
+        patch("orchestratorOS.supervisor.autonomous_ai_reconciler.get_topic_thread_state", return_value=("cid-1", 0, False)),
+        patch("orchestratorOS.supervisor.autonomous_ai_reconciler.bool_env", return_value=False),
+    ):
+        rep2 = rec3.run_cycle(topic_key="auto_cryptotrade_executor")
+        assert any("PROMPT_BREADTH_MATH" in line for line in rep2.prompt_invariant_violations)
+        assert len(ntfy_calls) == 2
+
 
 
 

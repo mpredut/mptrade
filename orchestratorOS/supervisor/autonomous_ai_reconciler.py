@@ -49,6 +49,7 @@ from botcore import (
     us_market_holiday_name,
 )
 from cachepaths import LLM_QUOTA_STATUS_FILENAME, resolve_cache_subdomain, resolve_cachedb_filepath
+from instrument_registry import disabled_registry_symbols, observe_only_registry_symbols
 
 disable_auto_start_websockets_default()
 from intelligence.macro_sentiment_ssot import (
@@ -66,6 +67,9 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
     MarketAndPortfolioSnapshotOrchestrator,
 )
 from intelligence.sentiment.evaluators.prompt_delta_evaluator import evaluate_prompt_delta_plan
+from intelligence.sentiment.evaluators.prompt_invariants_evaluator import (
+    evaluate_live_prompt_invariants,
+)
 from orchestratorOS.agy.topics import get_topic_thread_state, has_pending_ui_turn
 from orchestratorOS.supervisor.crypto_executor_delta_gate import (
     evaluate_crypto_executor_delta_gate,
@@ -104,6 +108,8 @@ load_dotenv()
 logger = logging.getLogger("orchestratorOS.supervisor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+_PROMPT_INVARIANT_ALERT_COOLDOWN_SEC: float = 14400.0
+
 
 def _resolve_topic_cache_path(cache_dir: str, filename: str) -> str:
     """Resolve ``filename`` inside ``cache_dir``, honoring ``cachedb/<subdomain>/`` routing."""
@@ -138,6 +144,8 @@ class SupervisorAuditReport:
     model_used: str = ""
     delta_gate_meta: Dict[str, Any] = field(default_factory=dict)
     prompt_delta_state: Dict[str, Any] = field(default_factory=dict)
+    prompt_invariant_violations: List[str] = field(default_factory=list)
+    prompt_invariant_alert_ts: Dict[str, float] = field(default_factory=dict)
     completed_ts: Optional[float] = None
 
 
@@ -167,6 +175,8 @@ class AutonomousAIReconciler:
         self._last_model_used: str = ""
         self._last_query_succeeded: bool = False
         self._last_prompt_delta_state: Dict[str, Any] = {}
+        self._last_prompt_invariant_violations: List[str] = []
+        self._prompt_invariant_alert_ts: Dict[str, float] = {}
 
         # Parse decoupled configuration strictly from config files without fallbacks
         conf = load_key_value_conf(self.workspace_dir, _ROOT_DIR)
@@ -276,6 +286,64 @@ class AutonomousAIReconciler:
                     logger.debug("Live quota refresh skipped; using cached snapshot: %s", exc)
         return raw
 
+    def _validate_runtime_prompt_invariants(
+        self,
+        sensors: TelemetrySensorSnapshot,
+        prompt: str,
+        resume_prompt: Optional[str],
+        *,
+        topic_key: str,
+        min_usd: float,
+    ) -> List[str]:
+        """Run pure ~1ms mathematical & structural validation on the rendered prompt before every LLM call."""
+        try:
+            non_tradable = (
+                disabled_registry_symbols(self.workspace_dir)
+                | observe_only_registry_symbols(self.workspace_dir)
+            )
+            violations = evaluate_live_prompt_invariants(
+                sensors,
+                prompt,
+                resume_prompt_text=resume_prompt,
+                non_tradable_symbols=non_tradable,
+                gateway_min_usd=min_usd,
+            )
+        except Exception as exc:
+            logger.debug("Runtime prompt invariant check skipped (%s): %s", topic_key, exc)
+            return []
+        if not violations:
+            return []
+        lines = [v.format_line() for v in violations[:20]]
+        logger.error(
+            "[PROMPT_INVARIANT_VIOLATION] [%s] %d violation(s): %s",
+            topic_key,
+            len(violations),
+            "; ".join(lines[:5]),
+        )
+        if self.notify_enabled:
+            sig = f"{topic_key}:{','.join(sorted({v.code for v in violations}))}"
+            now_ts = time.time()
+            last_ts = self._prompt_invariant_alert_ts.get(sig, 0.0)
+            if now_ts - last_ts >= _PROMPT_INVARIANT_ALERT_COOLDOWN_SEC:
+                self._prompt_invariant_alert_ts[sig] = now_ts
+                target_topic = self.ntfy_topic_error or self.ntfy_topic_server or self.ntfy_topic
+                if target_topic:
+                    body = "\n".join(lines[:8])
+                    if len(violations) > 8:
+                        body += f"\n... (+{len(violations) - 8} more)"
+                    send_supervisor_ntfy_http(
+                        f"Prompt Invariant Violation [{topic_key}] ({len(violations)})",
+                        body,
+                        "default",
+                        target_topic,
+                        True,
+                        ntfy_url=self.ntfy_url,
+                        ntfy_token=self.ntfy_token,
+                        urlopen_fn=urllib.request.urlopen,
+                        log=logger,
+                    )
+        return lines
+
     def synthesize_and_diagnose(
         self,
         sensors: TelemetrySensorSnapshot,
@@ -381,6 +449,16 @@ class AutonomousAIReconciler:
                 compact_rules=True,
                 delta_plan=warm_delta_plan,
                 wake_reason=wake_reason,
+            )
+
+        self._last_prompt_invariant_violations = []
+        if spec.can_trade and not spec.can_self_heal:
+            self._last_prompt_invariant_violations = self._validate_runtime_prompt_invariants(
+                sensors,
+                prompt,
+                resume_prompt,
+                topic_key=resolved_topic,
+                min_usd=min_usd,
             )
 
         model_override: Optional[str] = None
@@ -655,6 +733,13 @@ class AutonomousAIReconciler:
             raw_pds = prev_eval.get("prompt_delta_state")
             if isinstance(raw_pds, dict):
                 prev_prompt_delta_state = raw_pds
+            raw_alert_ts = prev_eval.get("prompt_invariant_alert_ts")
+            if isinstance(raw_alert_ts, dict):
+                self._prompt_invariant_alert_ts = {
+                    str(k): ts_v
+                    for k, v in raw_alert_ts.items()
+                    if (ts_v := safe_pos_float(v, default=None)) is not None
+                }
             prev_eval_was_actionable = eval_doc_was_actionable(prev_eval)
         if resolved_topic in ("auto_cryptotrade_executor", "auto_sharetrade_executor"):
             delta_gate_enabled = bool_env("AI_DELTA_GATE_ENABLED", True)
@@ -824,6 +909,8 @@ class AutonomousAIReconciler:
                 if self._last_query_succeeded
                 else dict(prev_prompt_delta_state)
             ),
+            prompt_invariant_violations=list(self._last_prompt_invariant_violations),
+            prompt_invariant_alert_ts=dict(self._prompt_invariant_alert_ts),
             completed_ts=time.time(),
         )
         # SRE/system/bot-error notifications (ntfy-server / ntfy-error) belong strictly to auto_technical_repair
