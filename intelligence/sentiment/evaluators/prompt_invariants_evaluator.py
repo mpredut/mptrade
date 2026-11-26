@@ -11,9 +11,12 @@ import re
 from typing import Any, Callable, Collection, Mapping, Optional, Sequence
 
 from botcore import (
+    _parse_bool_flag,
     clean_scalar_str,
     clamp_float,
+    extract_timestamp_s,
     fmt_signed,
+    normalize_epoch_sec,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -240,7 +243,7 @@ _POS_LIFO_PNL_RE = re.compile(r"\blifo_realized_pnl=([+-]?)\$([0-9,]+\.\d+)")
 _DOMAIN_AGE_PAIR_RE = re.compile(
     r"\b(prices|orderbook)_newest=([0-9.]+)([smh])[^\n]*?\b\1_oldest=([0-9.]+)([smh])"
 )
-_AGE_UNIT_SEC: dict[str, float] = {"s": 1.0, "m": 60.0, "h": 3600.0}
+_AGE_UNIT_SEC: dict[str, float] = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
 _DVOL_RE = re.compile(r"\b(BTC|ETH)_DVOL=([0-9.]+)%")
 _OPTIONS_RV_VRP_RE = re.compile(r"\b(BTC|ETH)_Options\(([^)]+)\)")
 _RV_ITEM_RE = re.compile(r"\bRV=([0-9.]+)%")
@@ -292,6 +295,35 @@ _EQ_HDR_EXT_RE = re.compile(
 _FEAR_GREED_RE = re.compile(
     r"^\s*-\s*Fear & Greed:\s*([+-]?\d+)\s*\([^)]*\b7d_chg=([+-]?\d+),\s*7d_hist=\[([0-9,\s+-]+)\]",
     re.MULTILINE,
+)
+_PRE_NAV_DD_DAY_RE = re.compile(r"\bnav_dd_day=([+-]?[0-9.]+)%")
+_PRE_AVG_CORR_RE = re.compile(r"\bavg_corr_24h=([+-]?[0-9.]+)\b")
+_PRE_BTC_BETA_RE = re.compile(r"\bportfolio_btc_beta=([+-]?[0-9.]+)\b")
+_PRE_SUBCYCLE_LIFO_RE = re.compile(r"\bsubcycle_lifo_pnl=([+-]?)\$([0-9,]+\.\d+)")
+_MAX_BUY_HDR_CAP_RE = re.compile(r"\[per-order max_buy <= \$([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?)")
+_SELL_ONLY_HDR_SYM_RE = re.compile(r"\bSELL-only\s+(?:xStock\s+)?([A-Za-z0-9_]+)", re.IGNORECASE)
+_XSTOCK_ALLOC_RE = re.compile(
+    r"\b([A-Za-z0-9_]+)=\$([0-9,]+\.?\d*)\s*\(([+-]?[0-9.]+)%\s+vs\s+alloc\s+([0-9,]+\.?\d*)\)"
+)
+_CLOCK_ITER_RE = re.compile(r"### 0\. CLOCK & SNAPSHOT:[^\n]*?\bIter #([+-]?\d+)")
+_CLOCK_PREV_DT_RE = re.compile(r"### 0\. CLOCK & SNAPSHOT:[^\n]*?\(([+-]?[0-9.]+)([smhd])\s+vs\s+prev\)")
+_TRIGGER_LINE_RE = re.compile(r"^\s*-\s*Trigger:\s*(.+)$", re.MULTILINE)
+_TRIGGER_FOCUS_PAREN_RE = re.compile(r"\bfocus_symbols\(([^)]+)\)")
+_TRIGGER_FOCUS_EQ_RE = re.compile(r"\bfocus=([A-Za-z0-9_,]+)")
+_TRIGGER_SYM_TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_]{2,18}\b")
+_ACTIVE_PLAN_TERM_SYM_RE = re.compile(
+    r"^\s*-\s*\[[a-z0-9_]+\]\s+([A-Za-z0-9_]+)\s+[^\n]*\[(INVALIDATED|TARGET_HIT)\]",
+    re.MULTILINE,
+)
+_GEO_SHIELD_LINE_RE = re.compile(r"^\s*-\s*Geopolitical Threat Shield:(.*)$", re.MULTILINE)
+_AGE_TOKEN_RE = re.compile(r"\bage=([0-9.]+)([smhd])\b")
+_NEWS_FEED_HDR_RE = re.compile(r"^\s*-\s*Live Breaking News Feed(?:\s*\[([^\]]*)\])?:\s*$", re.MULTILINE)
+_ETF_FLOW_STREAK_RE = re.compile(
+    r"\b([A-Z0-9]+_ETF)(?:\([^)]*\))?:\s*([+-]?)\$([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?[KMBkmb]?)\b[^|\n]*?\bstreak=([+-]?\d+)d\b"
+)
+_REALIZED_LIQ_RE = re.compile(
+    r"\brealized_liq_15m\(long=([+-]?)\$([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?[KMBkmb]?),\s*"
+    r"short=([+-]?)\$([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?[KMBkmb]?)(?:,\s*n=([+-]?\d+))?"
 )
 _NUMERIC_HYGIENE_SPECS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("NONE_LITERAL", re.compile(r"(?:=None\b|\|\s*None\s*\||\(None\)|\[None\])")),
@@ -631,6 +663,7 @@ def audit_snapshot_invariants(
     _audit_snapshot_positions_and_cycles(violations, ps, pt)
     _audit_snapshot_price_geometry(violations, pt)
     _audit_snapshot_micro_spread_and_walls(violations, micro)
+    _audit_snapshot_risk_macro_and_liq(violations, snapshot, ps, micro)
     return violations
 
 
@@ -968,6 +1001,441 @@ def _audit_snapshot_micro_spread_and_walls(
                                 f"reported {wk}_dist={fmt_signed(wdist, 2)}% != expected {fmt_signed(exp_wd, 2)}% (wall={wpx:g}, mid={mid:g})",
                             )
                         )
+
+
+def _audit_snapshot_risk_macro_and_liq(
+    violations: list[InvariantViolation],
+    snapshot: Any,
+    ps: Mapping[str, Any],
+    micro: Mapping[str, Any],
+) -> None:
+    """Validate risk-engine bounds, subcycle LIFO conservation, max_buy caps, xStock alloc, geo shield, ETF streak & liq."""
+    pr = (
+        ps.get("portfolio_risk_engine")
+        if isinstance(ps.get("portfolio_risk_engine"), Mapping)
+        else ps.get("portfolio_risk")
+    )
+    if isinstance(pr, Mapping):
+        dd_day = safe_float(pr.get("daily_nav_drawdown_pct"), default=None)
+        if dd_day is not None and dd_day > 0.05:
+            violations.append(
+                InvariantViolation(
+                    "PORTFOLIO_RISK_ENGINE_MATH",
+                    "portfolio_risk.daily_nav_drawdown_pct",
+                    f"daily_nav_drawdown_pct={fmt_signed(dd_day, 2)}% must be <= 0.0%",
+                )
+            )
+        avg_corr = safe_float(pr.get("avg_corr_vs_btc_24h"), default=None)
+        if avg_corr is not None and not (-1.01 <= avg_corr <= 1.01):
+            violations.append(
+                InvariantViolation(
+                    "PORTFOLIO_RISK_ENGINE_MATH",
+                    "portfolio_risk.avg_corr_vs_btc_24h",
+                    f"avg_corr_vs_btc_24h={avg_corr:g} outside [-1.0, 1.0]",
+                )
+            )
+        inv = safe_nonneg_float(
+            pr.get("invested_exposure_usd") if pr.get("invested_exposure_usd") is not None else pr.get("invested_usd"),
+            default=None,
+        )
+        if inv is not None and inv <= 0.01:
+            var_u = safe_float(pr.get("intraday_var_95_usd"), default=None)
+            if var_u is not None and var_u > 0.05:
+                violations.append(
+                    InvariantViolation(
+                        "PORTFOLIO_RISK_ENGINE_MATH",
+                        "portfolio_risk.zero_invested_var",
+                        f"invested=${inv:.2f} == $0 yet intraday_var_95_usd=${var_u:.2f}",
+                    )
+                )
+            beta_v = safe_float(pr.get("portfolio_btc_beta"), default=None)
+            if beta_v is not None and abs(beta_v) > 0.01:
+                violations.append(
+                    InvariantViolation(
+                        "PORTFOLIO_RISK_ENGINE_MATH",
+                        "portfolio_risk.zero_invested_beta",
+                        f"invested=${inv:.2f} == $0 yet portfolio_btc_beta={beta_v:g}",
+                    )
+                )
+        rep_lifo = safe_float(pr.get("subcycle_lifo_realized_pnl_usd"), default=None)
+        rec_orders = ps.get("recent_orders")
+        if rep_lifo is not None and isinstance(rec_orders, Mapping):
+            seen_ids: set[int] = set()
+            exp_lifo = 0.0
+            for r_info in rec_orders.values():
+                if isinstance(r_info, Mapping) and id(r_info) not in seen_ids:
+                    seen_ids.add(id(r_info))
+                    exp_lifo += safe_float(r_info.get("lifo_realized_pnl_usd"), default=0.0) or 0.0
+            if abs(rep_lifo - exp_lifo) > 0.05:
+                violations.append(
+                    InvariantViolation(
+                        "PORTFOLIO_RISK_ENGINE_MATH",
+                        "portfolio_risk.subcycle_lifo_pnl",
+                        f"subcycle_lifo_realized_pnl_usd={rep_lifo:.2f} != sum(recent_orders)={exp_lifo:.2f}",
+                    )
+                )
+
+    tpos = ps.get("tradable_positions")
+    if isinstance(tpos, Sequence) and not isinstance(tpos, (str, bytes)):
+        for pos in tpos:
+            if not isinstance(pos, Mapping):
+                continue
+            ven = normalize_venue_name(pos.get("venue")) or str(pos.get("venue") or "").strip().lower()
+            sym = str(pos.get("symbol") or "").strip()
+            if not sym:
+                continue
+            mb = safe_float(pos.get("effective_max_buy_usd"), default=None)
+            fq = safe_nonneg_float(pos.get("free_quote"), default=None)
+            if mb is not None and mb < -1e-6:
+                violations.append(
+                    InvariantViolation(
+                        "PORTFOLIO_RISK_ENGINE_MATH",
+                        f"{ven}:{sym}:max_buy",
+                        f"effective_max_buy_usd=${mb:.2f} must be >= 0",
+                    )
+                )
+            if mb is not None and fq is not None and mb > fq + max(0.25, fq * 0.005):
+                violations.append(
+                    InvariantViolation(
+                        "PORTFOLIO_RISK_ENGINE_MATH",
+                        f"{ven}:{sym}:max_buy_vs_cash",
+                        f"effective_max_buy_usd=${mb:.2f} exceeds free_quote=${fq:.2f}",
+                    )
+                )
+            is_sell_only = _parse_bool_flag(pos.get("sell_only"), False) or _parse_bool_flag(
+                pos.get("buy_disabled"), False
+            )
+            if is_sell_only and mb is not None and mb > 1e-6:
+                violations.append(
+                    InvariantViolation(
+                        "PORTFOLIO_RISK_ENGINE_MATH",
+                        f"{ven}:{sym}:sell_only_max_buy",
+                        f"SELL-only instrument has non-zero effective_max_buy_usd=${mb:.2f}",
+                    )
+                )
+
+    xs = next(
+        (v for k, v in ps.items() if isinstance(k, str) and k.endswith("_xstocks") and isinstance(v, Mapping)),
+        None,
+    )
+    if isinstance(xs, Mapping):
+        x_lp = safe_pos_float(xs.get("live_price"), default=None)
+        x_ap = safe_pos_float(xs.get("alloc_price"), default=None)
+        x_pa = safe_float(xs.get("pnl_vs_alloc_pct"), default=None)
+        if x_lp is not None and x_ap is not None and x_pa is not None:
+            exp_pa = ((x_lp - x_ap) / x_ap) * 100.0
+            if abs(exp_pa - x_pa) > 0.15:
+                pair_s = str(xs.get("listed_pair") or "SPCXxUSD").strip()
+                violations.append(
+                    InvariantViolation(
+                        "XSTOCK_PREMIUM_MATH",
+                        f"{pair_s}:pnl_vs_alloc",
+                        f"reported pnl_vs_alloc={fmt_signed(x_pa, 2)}% != expected {fmt_signed(exp_pa, 2)}% (px={x_lp:g}, alloc={x_ap:g})",
+                    )
+                )
+
+    macro_map: Mapping[str, Any] = {}
+    bnews_seq: Sequence[Any] = ()
+    if isinstance(snapshot, Mapping):
+        raw_m = snapshot.get("macro_context") or snapshot.get("macro")
+        if isinstance(raw_m, Mapping):
+            macro_map = raw_m
+        raw_bn = snapshot.get("breaking_news") or macro_map.get("breaking_news")
+        if isinstance(raw_bn, Sequence) and not isinstance(raw_bn, (str, bytes)):
+            bnews_seq = raw_bn
+    else:
+        raw_m = getattr(snapshot, "macro_context", None) or getattr(snapshot, "macro", None)
+        if isinstance(raw_m, Mapping):
+            macro_map = raw_m
+        raw_bn = getattr(snapshot, "breaking_news", None) or macro_map.get("breaking_news")
+        if isinstance(raw_bn, Sequence) and not isinstance(raw_bn, (str, bytes)):
+            bnews_seq = raw_bn
+
+    gt = macro_map.get("geopolitical_threat") if isinstance(macro_map.get("geopolitical_threat"), Mapping) else None
+    if isinstance(gt, Mapping) and clean_scalar_str(gt.get("live_unassessed_high_sev_note")) and bnews_seq:
+        gt_ts = extract_timestamp_s(gt)
+        if gt_ts is not None and gt_ts > 0.0:
+            news_ts = [
+                nts
+                for it in bnews_seq
+                if isinstance(it, Mapping)
+                and (nts := normalize_epoch_sec(it.get("first_seen_ts"), default=None, allow_iso=True)) is not None
+                and nts > 0.0
+            ]
+            if news_ts and max(news_ts) < gt_ts - 60.0:
+                violations.append(
+                    InvariantViolation(
+                        "GEO_SHIELD_UNASSESSED_TRUTHFULNESS",
+                        "macro.geopolitical_threat",
+                        f"live_unassessed_high_sev_note set, yet newest breaking_news ts={max(news_ts):.0f} predates shield ts={gt_ts:.0f}",
+                    )
+                )
+
+    etf_raw = macro_map.get("etf_flows") if isinstance(macro_map.get("etf_flows"), Mapping) else ps.get("etf_flows")
+    if isinstance(etf_raw, Mapping):
+        etf_assets = etf_raw.get("assets") if isinstance(etf_raw.get("assets"), Mapping) else etf_raw
+        if isinstance(etf_assets, Mapping):
+            for asset_k, entry in etf_assets.items():
+                if not isinstance(entry, Mapping):
+                    continue
+                net_u = safe_float(entry.get("latest_net_flow_usd"), default=None)
+                if net_u is None:
+                    net_m = safe_float(entry.get("latest_net_flow_musd"), default=None)
+                    net_u = (net_m * 1_000_000.0) if net_m is not None else None
+                streak_i = safe_int(entry.get("streak_days"), default=None)
+                if net_u is not None and abs(net_u) >= 10_000.0 and streak_i is not None and streak_i != 0:
+                    if (net_u > 0.0) != (streak_i > 0):
+                        violations.append(
+                            InvariantViolation(
+                                "ETF_FLOW_STREAK_SIGN",
+                                f"etf_flows:{str(asset_k).upper()}",
+                                f"daily net_flow=${net_u:,.0f} contradicts streak_days={streak_i:+d}d",
+                            )
+                        )
+
+    for sym, minfo in micro.items():
+        if not isinstance(minfo, Mapping):
+            continue
+        sym_s = str(sym)
+        rl_l = safe_float(minfo.get("realized_liq_15m_long_usd"), default=None)
+        rl_s = safe_float(minfo.get("realized_liq_15m_short_usd"), default=None)
+        rl_n = safe_int(minfo.get("realized_liq_15m_events"), default=None)
+        if rl_l is None and rl_s is None and rl_n is None:
+            continue
+        if (rl_l is not None and rl_l < -1e-6) or (rl_s is not None and rl_s < -1e-6) or (rl_n is not None and rl_n < 0):
+            violations.append(
+                InvariantViolation(
+                    "REALIZED_LIQ_COHERENCE",
+                    f"{sym_s}:realized_liq_15m",
+                    f"negative realized_liq_15m values: long={rl_l}, short={rl_s}, n={rl_n}",
+                )
+            )
+        elif rl_n is not None and rl_l is not None and rl_s is not None:
+            tot_rl = rl_l + rl_s
+            if (rl_n == 0 and tot_rl > 1e-6) or (rl_n > 0 and tot_rl <= 1e-6):
+                violations.append(
+                    InvariantViolation(
+                        "REALIZED_LIQ_COHERENCE",
+                        f"{sym_s}:realized_liq_15m",
+                        f"inconsistent realized_liq_15m: n={rl_n} with long=${rl_l:g}, short=${rl_s:g}",
+                    )
+                )
+
+
+def extract_temporal_invariant_anchor(snapshot: Any) -> dict[str, Any]:
+    """Extract a compact, JSON-serializable cross-cycle anchor for temporal peak_px and NAV-jump checks."""
+    if isinstance(snapshot, Mapping):
+        ps = snapshot.get("portfolio_summary") or {}
+        raw_ts = snapshot.get("evaluated_at_ts") if snapshot.get("evaluated_at_ts") is not None else snapshot.get("ts")
+        scope_s = clean_scalar_str(snapshot.get("asset_scope")) or ""
+    else:
+        ps = getattr(snapshot, "portfolio_summary", None) or {}
+        raw_ts = getattr(snapshot, "evaluated_at_ts", None)
+        if raw_ts is None:
+            raw_ts = getattr(snapshot, "ts", None)
+        scope_s = clean_scalar_str(getattr(snapshot, "asset_scope", None)) or ""
+    if not isinstance(ps, Mapping):
+        ps = {}
+
+    ts_s = normalize_epoch_sec(raw_ts, default=0.0, allow_iso=True) or 0.0
+    pr = (
+        ps.get("portfolio_risk_engine")
+        if isinstance(ps.get("portfolio_risk_engine"), Mapping)
+        else ps.get("portfolio_risk")
+    )
+    nav_usd: Optional[float] = None
+    free_cash_usd: Optional[float] = None
+    locked_quote_usd: float = 0.0
+    confirmed_cashflow_usd: float = 0.0
+    if isinstance(pr, Mapping):
+        nav_usd = safe_pos_float(
+            pr.get("unified_nav_usd")
+            or pr.get("crypto_nav_usd")
+            or pr.get("equities_nav_usd")
+            or pr.get("total_nav_usd"),
+            default=None,
+        )
+        free_cash_usd = safe_nonneg_float(
+            pr.get("global_free_cash_usd") if pr.get("global_free_cash_usd") is not None else pr.get("free_cash_usd"),
+            default=None,
+        )
+        locked_quote_usd = safe_nonneg_float(pr.get("locked_quote_usd"), default=0.0) or 0.0
+        confirmed_cashflow_usd = safe_float(pr.get("confirmed_cashflow_usd"), default=0.0) or 0.0
+
+    positions: dict[str, dict[str, float]] = {}
+    tpos = ps.get("tradable_positions")
+    if isinstance(tpos, Sequence) and not isinstance(tpos, (str, bytes)):
+        for pos in tpos:
+            if not isinstance(pos, Mapping):
+                continue
+            ven = normalize_venue_name(pos.get("venue")) or str(pos.get("venue") or "").strip().lower()
+            sym = str(pos.get("symbol") or "").strip().upper()
+            if not (ven and sym):
+                continue
+            fb = safe_nonneg_float(pos.get("free_base"), default=0.0) or 0.0
+            lb = safe_nonneg_float(pos.get("locked_base_qty"), default=0.0) or 0.0
+            entry: dict[str, float] = {"qty": round(fb + lb, 8)}
+            if (px_v := safe_pos_float(pos.get("price"), default=None)) is not None:
+                entry["px"] = px_v
+            avg_raw = (
+                pos.get("active_avg_buy_px")
+                if pos.get("active_avg_buy_px") is not None
+                else (pos.get("avg_cost") if pos.get("avg_cost") is not None else pos.get("avg_cost_px"))
+            )
+            if (avg_v := safe_pos_float(avg_raw, default=None)) is not None:
+                entry["avg_cost"] = avg_v
+            pk_raw = (
+                pos.get("trailing_peak")
+                if pos.get("trailing_peak") is not None
+                else (pos.get("pos_peak") if pos.get("pos_peak") is not None else pos.get("peak_px"))
+            )
+            if (pk_v := safe_pos_float(pk_raw, default=None)) is not None:
+                entry["peak_px"] = pk_v
+            positions[f"{ven}:{sym}"] = entry
+
+    latest_fill_ts = 0.0
+    rec_orders = ps.get("recent_orders")
+    if isinstance(rec_orders, Mapping):
+        for r_info in rec_orders.values():
+            if not isinstance(r_info, Mapping):
+                continue
+            for leg_k in ("last_buy", "last_sell"):
+                leg = r_info.get(leg_k)
+                if isinstance(leg, Mapping):
+                    lts = normalize_epoch_sec(
+                        leg.get("ts_ms") if leg.get("ts_ms") is not None else leg.get("ts"),
+                        default=0.0,
+                        allow_iso=True,
+                    ) or 0.0
+                    if lts > latest_fill_ts:
+                        latest_fill_ts = lts
+    raw_lces = ps.get("last_cycle_execution_status")
+    lces_items = (
+        raw_lces
+        if isinstance(raw_lces, Sequence) and not isinstance(raw_lces, (str, bytes))
+        else ([raw_lces] if isinstance(raw_lces, Mapping) else ())
+    )
+    for item in lces_items:
+        if not isinstance(item, Mapping):
+            continue
+        st_u = str(item.get("status") or item.get("venue_status") or "").strip().upper()
+        if st_u not in ("FILLED", "PARTIALLY_FILLED"):
+            continue
+        for tk in ("filled_ts", "executed_ts", "ts_ms", "ts"):
+            if item.get(tk) is not None:
+                lts = normalize_epoch_sec(item.get(tk), default=0.0, allow_iso=True) or 0.0
+                if lts > latest_fill_ts:
+                    latest_fill_ts = lts
+                break
+
+    out: dict[str, Any] = {
+        "ts": round(ts_s, 3),
+        "scope": scope_s.lower(),
+        "positions": positions,
+        "latest_fill_ts": round(latest_fill_ts, 3),
+    }
+    if nav_usd is not None:
+        out["nav_usd"] = round(nav_usd, 2)
+    if free_cash_usd is not None:
+        out["free_cash_usd"] = round(free_cash_usd, 2)
+    if locked_quote_usd > 0.0:
+        out["locked_quote_usd"] = round(locked_quote_usd, 2)
+    if abs(confirmed_cashflow_usd) > 0.0:
+        out["confirmed_cashflow_usd"] = round(confirmed_cashflow_usd, 2)
+    return out
+
+
+def _coerce_temporal_anchor(obj: Any) -> dict[str, Any]:
+    if isinstance(obj, Mapping) and isinstance(obj.get("positions"), Mapping) and "portfolio_summary" not in obj:
+        return dict(obj)
+    return extract_temporal_invariant_anchor(obj)
+
+
+def audit_consecutive_snapshot_invariants(
+    prev_snapshot_or_anchor: Any,
+    cur_snapshot_or_anchor: Any,
+    *,
+    max_gap_sec: float = 3600.0,
+    nav_jump_tol_usd: float = 25.0,
+    nav_jump_tol_frac: float = 0.015,
+) -> list[InvariantViolation]:
+    """Audit cross-cycle temporal invariants: monotonic peak_px on unchanged holdings and anti-phantom NAV-jump conservation."""
+    if not prev_snapshot_or_anchor or not cur_snapshot_or_anchor:
+        return []
+    prev_a = _coerce_temporal_anchor(prev_snapshot_or_anchor)
+    cur_a = _coerce_temporal_anchor(cur_snapshot_or_anchor)
+    prev_scope = str(prev_a.get("scope") or "").strip().lower()
+    cur_scope = str(cur_a.get("scope") or "").strip().lower()
+    if prev_scope and cur_scope and prev_scope != cur_scope:
+        return []
+
+    prev_ts = safe_nonneg_float(prev_a.get("ts"), default=0.0) or 0.0
+    cur_ts = safe_nonneg_float(cur_a.get("ts"), default=0.0) or 0.0
+    if prev_ts > 0.0 and cur_ts > 0.0:
+        if cur_ts < prev_ts - 5.0 or (cur_ts - prev_ts) > max_gap_sec:
+            return []
+
+    violations: list[InvariantViolation] = []
+    prev_pos = prev_a.get("positions") if isinstance(prev_a.get("positions"), Mapping) else {}
+    cur_pos = cur_a.get("positions") if isinstance(cur_a.get("positions"), Mapping) else {}
+
+    # 1. Monotonic peak_px when (qty, avg_cost) is unchanged across consecutive snapshots
+    for vs_key, p_ent in prev_pos.items():
+        c_ent = cur_pos.get(vs_key)
+        if not (isinstance(p_ent, Mapping) and isinstance(c_ent, Mapping)):
+            continue
+        p_qty = safe_nonneg_float(p_ent.get("qty"), default=0.0) or 0.0
+        c_qty = safe_nonneg_float(c_ent.get("qty"), default=0.0) or 0.0
+        p_avg = safe_pos_float(p_ent.get("avg_cost"), default=None)
+        c_avg = safe_pos_float(c_ent.get("avg_cost"), default=None)
+        p_pk = safe_pos_float(p_ent.get("peak_px"), default=None)
+        c_pk = safe_pos_float(c_ent.get("peak_px"), default=None)
+        if not (p_qty > 1e-8 and c_qty > 1e-8 and p_avg and c_avg and p_pk and c_pk):
+            continue
+        qty_same = abs(c_qty - p_qty) <= max(1e-6, p_qty * 0.002)
+        avg_same = abs(c_avg - p_avg) <= max(1e-6, p_avg * 0.001)
+        if qty_same and avg_same and c_pk < p_pk * (1.0 - 1e-4):
+            violations.append(
+                InvariantViolation(
+                    "TEMPORAL_PEAK_PX_MONOTONICITY",
+                    str(vs_key),
+                    f"peak_px regressed from {p_pk:g} to {c_pk:g} with unchanged qty={c_qty:g} and avg_cost={c_avg:g}",
+                )
+            )
+
+    # 2. Anti-phantom NAV-jump conservation across consecutive snapshots
+    prev_nav = safe_pos_float(prev_a.get("nav_usd"), default=None)
+    cur_nav = safe_pos_float(cur_a.get("nav_usd"), default=None)
+    if prev_nav is not None and cur_nav is not None and (prev_pos or cur_pos):
+        mtm_delta = 0.0
+        for vs_key in set(prev_pos.keys()) | set(cur_pos.keys()):
+            p_ent = prev_pos.get(vs_key) if isinstance(prev_pos.get(vs_key), Mapping) else {}
+            c_ent = cur_pos.get(vs_key) if isinstance(cur_pos.get(vs_key), Mapping) else {}
+            p_qty = safe_nonneg_float(p_ent.get("qty"), default=0.0) or 0.0
+            c_qty = safe_nonneg_float(c_ent.get("qty"), default=0.0) or 0.0
+            p_px = safe_pos_float(p_ent.get("px"), default=None)
+            c_px = safe_pos_float(c_ent.get("px"), default=None)
+            if p_px is not None and c_px is not None and (p_qty > 0.0 or c_qty > 0.0):
+                mtm_delta += 0.5 * (p_qty + c_qty) * (c_px - p_px)
+        conf_cf = safe_float(cur_a.get("confirmed_cashflow_usd"), default=0.0) or 0.0
+        actual_delta = (cur_nav - prev_nav) - conf_cf
+        residual = actual_delta - mtm_delta
+        prev_ft = safe_nonneg_float(prev_a.get("latest_fill_ts"), default=0.0) or 0.0
+        cur_ft = safe_nonneg_float(cur_a.get("latest_fill_ts"), default=0.0) or 0.0
+        fill_occurred = cur_ft > prev_ft + 1.0
+        tol = max(nav_jump_tol_usd, prev_nav * nav_jump_tol_frac) + (
+            max(10.0, prev_nav * 0.005) if fill_occurred else 0.0
+        )
+        if abs(residual) > tol:
+            violations.append(
+                InvariantViolation(
+                    "TEMPORAL_NAV_JUMP_CONSERVATION",
+                    cur_scope or prev_scope or "portfolio",
+                    f"unexplained delta_nav={fmt_signed(actual_delta, 2)} USD vs MTM={fmt_signed(mtm_delta, 2)} USD "
+                    f"(residual={fmt_signed(residual, 2)} USD > tol=${tol:.2f}; prev_nav=${prev_nav:.2f}, cur_nav=${cur_nav:.2f})",
+                )
+            )
+    return violations
 
 
 def audit_scorecard_temporal_invariants(
@@ -1880,6 +2348,7 @@ def audit_rendered_prompt_text(
     )
     _audit_prompt_calibration_and_breadth(violations, prompt_text)
     _audit_prompt_section1_parity_and_structure(violations, prompt_text, sec3_items)
+    _audit_prompt_risk_trigger_macro_and_liq(violations, prompt_text, sec3_items, sec3b_items)
     _audit_prompt_numeric_hygiene(violations, prompt_text)
     return violations
 
@@ -1902,6 +2371,7 @@ def _audit_prompt_cross_section_math(
     """Validate rendered range extremes, bottom_6h, vs_btc, OB spread/wall/depth/flow/edge, open orders, advisor & xStock."""
     sec3_px_by_sym: dict[str, float] = {}
     hor_chg_by_sym: dict[str, dict[str, float]] = {}
+    sec3_ranges_by_sym: dict[str, dict[str, tuple[float, float]]] = {}
     for sym, px, rest in sec3_items:
         sym_u = sym.upper()
         sec3_px_by_sym[sym_u] = px
@@ -1974,6 +2444,8 @@ def _audit_prompt_cross_section_math(
                             f"{inner_t}_range=[{i_lo:g}, {i_hi:g}] extends outside {outer_t}_range=[{o_lo:g}, {o_hi:g}]",
                         )
                     )
+        if prompt_rngs:
+            sec3_ranges_by_sym[sym_u] = dict(prompt_rngs)
         if (m_ab := _ALT_BTC_24H_RE.search(rest)) is not None:
             ab_pos = safe_float(m_ab.group(1), default=None)
             ab_dd = safe_float(m_ab.group(2), default=None)
@@ -2582,6 +3054,18 @@ def _audit_prompt_cross_section_math(
                         f"Long_Horizon now={now_lh:g} diverges from live price {live_ref:g}",
                     )
                 )
+        if lo52 is not None and hi52 is not None and (s3_rngs := sec3_ranges_by_sym.get(lh_sym_u)):
+            for short_t in ("7d", "24h"):
+                if (sr_pair := s3_rngs.get(short_t)) is not None:
+                    sr_lo, sr_hi = sr_pair
+                    if sr_lo < lo52 * 0.988 or sr_hi > hi52 * 1.012:
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_LONG_HORIZON_MATH",
+                                f"{lh_sym}:{short_t}_in_52w",
+                                f"Section 3 {short_t}_range=[{sr_lo:g}, {sr_hi:g}] extends outside Long_Horizon 52w=[{lo52:g}..{hi52:g}]",
+                            )
+                        )
 
     # Execution fill notional/arr_bps, cross-block fill parity, Cross-Market/Header ExtVsRTH, xStocks sibling, Breadth & Section 4
     seen_fill_by_id: dict[str, dict[str, float]] = {}
@@ -3274,6 +3758,310 @@ def _audit_prompt_section1_parity_and_structure(
                 )
 
 
+def _audit_prompt_risk_trigger_macro_and_liq(
+    violations: list[InvariantViolation],
+    prompt_text: str,
+    sec3_items: Sequence[tuple[str, float, str]],
+    sec3b_items: Sequence[tuple[str, str]],
+) -> None:
+    """Validate Risk Engine bounds/LIFO conservation, max_buy caps, alloc math, Trigger/Iter, Geo/ETF & realized_liq_15m."""
+    sec0_head = prompt_text.split("### 1.", 1)[0]
+    sec1_body = prompt_text.split("### 2.", 1)[0]
+
+    # 1. Section 1 Portfolio Risk Engine bounds + subcycle_lifo_pnl conservation
+    pos_lifo_sum = 0.0
+    pos_syms_s1: set[str] = set()
+    pos_rows_s1: list[tuple[str, str, str]] = []
+    for m_inst in _SEC3C_INST_RE.finditer(sec1_body):
+        ven_i, sym_i, rest_i = m_inst.group(1).lower(), m_inst.group(2), m_inst.group(3)
+        if "free_" not in rest_i or "limits(" not in rest_i:
+            continue
+        pos_syms_s1.add(sym_i.upper())
+        pos_rows_s1.append((ven_i, sym_i, rest_i))
+        if (m_lp := _POS_LIFO_PNL_RE.search(rest_i)) is not None:
+            if (lp_mag := _parse_money(m_lp.group(2))) is not None:
+                pos_lifo_sum += (-lp_mag) if m_lp.group(1) == "-" else lp_mag
+
+    if (m_nav := _NAV_LINE_RE.search(sec1_body)) is not None:
+        inv_v = _parse_money(m_nav.group(2))
+        ln_start = sec1_body.rfind("\n", 0, m_nav.start()) + 1
+        ln_end = sec1_body.find("\n", m_nav.end())
+        nav_line = sec1_body[ln_start:] if ln_end < 0 else sec1_body[ln_start:ln_end]
+        if (m_dd := _PRE_NAV_DD_DAY_RE.search(nav_line)) is not None:
+            if (dd_v := safe_float(m_dd.group(1), default=None)) is not None and dd_v > 0.05:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_RISK_ENGINE_AND_LIMITS_MATH",
+                        "Section1.nav_dd_day",
+                        f"nav_dd_day={fmt_signed(dd_v, 2)}% must be <= 0.0%",
+                    )
+                )
+        if (m_ac := _PRE_AVG_CORR_RE.search(nav_line)) is not None:
+            if (ac_v := safe_float(m_ac.group(1), default=None)) is not None and not (-1.01 <= ac_v <= 1.01):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_RISK_ENGINE_AND_LIMITS_MATH",
+                        "Section1.avg_corr_24h",
+                        f"avg_corr_24h={ac_v:g} outside [-1.0, 1.0]",
+                    )
+                )
+        if inv_v is not None and inv_v <= 0.01:
+            if (m_vp := _PRE_VAR_PCT_RE.search(nav_line)) is not None:
+                if (vu := _parse_money(m_vp.group(1))) is not None and vu > 0.05:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_RISK_ENGINE_AND_LIMITS_MATH",
+                            "Section1.zero_invested_var",
+                            f"invested=${inv_v:.2f} == $0 yet intraday_var_95=${vu:.2f}",
+                        )
+                    )
+            if (m_bt := _PRE_BTC_BETA_RE.search(nav_line)) is not None:
+                if (bt_v := safe_float(m_bt.group(1), default=None)) is not None and abs(bt_v) > 0.01:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_RISK_ENGINE_AND_LIMITS_MATH",
+                            "Section1.zero_invested_beta",
+                            f"invested=${inv_v:.2f} == $0 yet portfolio_btc_beta={bt_v:g}",
+                        )
+                    )
+        if pos_rows_s1 and (m_sl := _PRE_SUBCYCLE_LIFO_RE.search(nav_line)) is not None:
+            if (sl_mag := _parse_money(m_sl.group(2))) is not None:
+                rep_sl = (-sl_mag) if m_sl.group(1) == "-" else sl_mag
+                extra_ro_lifo = 0.0
+                for m_ro in _RECENT_FILL_LINE_RE.finditer(sec1_body):
+                    ro_sym_u = m_ro.group(1).upper()
+                    if ro_sym_u in pos_syms_s1:
+                        continue
+                    if (m_rlp := _RO_LIFO_PNL_RE.search(m_ro.group(2))) is not None:
+                        if (rmag := _parse_money(m_rlp.group(2))) is not None:
+                            extra_ro_lifo += (-rmag) if m_rlp.group(1) == "-" else rmag
+                tot_lifo = pos_lifo_sum + extra_ro_lifo
+                if abs(rep_sl - tot_lifo) > 0.05:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_RISK_ENGINE_AND_LIMITS_MATH",
+                            "Section1.subcycle_lifo_pnl",
+                            f"Portfolio Risk Engine subcycle_lifo_pnl={rep_sl:.2f} != sum(per-symbol lifo_realized_pnl)={tot_lifo:.2f}",
+                        )
+                    )
+
+    # 2. Section 1 max_buy caps vs gateway cap, venue free cash, and SELL-only declarations
+    hdr_max_buy: Optional[float] = None
+    if (m_hmb := _MAX_BUY_HDR_CAP_RE.search(sec1_body)) is not None:
+        hdr_max_buy = _parse_money(m_hmb.group(1))
+    v_free_cash_s1: dict[str, float] = {}
+    for ln_c in sec1_body.splitlines():
+        if "Available Free Quote Cash per Venue:" not in ln_c:
+            continue
+        stripped_vc = _PARENS_RE.sub("", ln_c.split("Available Free Quote Cash per Venue:", 1)[1])
+        for m_vcl in _VENUE_CASH_LOCK_ITEM_RE.finditer(stripped_vc):
+            vk_c = m_vcl.group(1).lower()
+            if (fc_v := _parse_money(m_vcl.group(2))) is not None:
+                v_free_cash_s1[vk_c] = v_free_cash_s1.get(vk_c, 0.0) + fc_v
+    sell_only_syms: set[str] = {m_so.group(1).upper() for m_so in _SELL_ONLY_HDR_SYM_RE.finditer(sec1_body)}
+    for ven_i, sym_i, rest_i in pos_rows_s1:
+        if (m_lim := _LIMITS_RE.search(rest_i)) is None:
+            continue
+        sym_u = sym_i.upper()
+        for cap_k, cap_s in _LIMIT_CAP_RE.findall(m_lim.group(1)):
+            if cap_k != "max_buy":
+                continue
+            mb_v = _parse_money(cap_s)
+            if mb_v is None:
+                continue
+            if hdr_max_buy is not None and mb_v > hdr_max_buy + 0.05:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_RISK_ENGINE_AND_LIMITS_MATH",
+                        f"{ven_i}:{sym_i}:max_buy_vs_gateway",
+                        f"limits max_buy=${mb_v:.2f} exceeds header per-order cap ${hdr_max_buy:.2f}",
+                    )
+                )
+            if (v_fc := v_free_cash_s1.get(ven_i)) is not None and mb_v > v_fc + max(0.25, v_fc * 0.005):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_RISK_ENGINE_AND_LIMITS_MATH",
+                        f"{ven_i}:{sym_i}:max_buy_vs_cash",
+                        f"limits max_buy=${mb_v:.2f} exceeds venue {ven_i} free quote cash ${v_fc:.2f}",
+                    )
+                )
+            if sym_u in sell_only_syms and mb_v > 1e-6:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_RISK_ENGINE_AND_LIMITS_MATH",
+                        f"{ven_i}:{sym_i}:sell_only_max_buy",
+                        f"SELL-only instrument {sym_i} has non-zero limits max_buy=${mb_v:.2f}",
+                    )
+                )
+
+    # 3. Section 1 Cross-Venue Kraken Tokenized Sibling alloc percentage math
+    for m_al in _XSTOCK_ALLOC_RE.finditer(sec1_body):
+        al_sym = m_al.group(1)
+        al_px = _parse_money(m_al.group(2))
+        rep_al_pct = safe_float(m_al.group(3), default=None)
+        al_ref = _parse_money(m_al.group(4))
+        if al_px is not None and rep_al_pct is not None and al_ref is not None and al_ref > 0.0:
+            exp_al_pct = ((al_px - al_ref) / al_ref) * 100.0
+            if abs(exp_al_pct - rep_al_pct) > 0.15:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_EXEC_AND_CROSS_MARKET_MATH",
+                        f"xStocks.alloc:{al_sym}",
+                        f"reported {al_sym} vs alloc={fmt_signed(rep_al_pct, 2)}% != expected {fmt_signed(exp_al_pct, 2)}% (px={al_px:g}, alloc={al_ref:g})",
+                    )
+                )
+
+    # 4. Section 0 Iter #N and (+dt vs prev) header hygiene
+    if (m_it := _CLOCK_ITER_RE.search(sec0_head)) is not None:
+        if (iter_n := safe_int(m_it.group(1), default=None)) is not None and iter_n < 1:
+            violations.append(
+                InvariantViolation(
+                    "PROMPT_SECTION0_AND_MACRO_HYGIENE",
+                    "Section0.Iter",
+                    f"Iter #{iter_n} must be >= 1",
+                )
+            )
+    if (m_dt := _CLOCK_PREV_DT_RE.search(sec0_head)) is not None:
+        if (dt_v := safe_float(m_dt.group(1), default=None)) is not None and dt_v < 0.0:
+            violations.append(
+                InvariantViolation(
+                    "PROMPT_SECTION0_AND_MACRO_HYGIENE",
+                    "Section0.PrevElapsed",
+                    f"negative elapsed delta ({m_dt.group(1)}{m_dt.group(2)} vs prev)",
+                )
+            )
+
+    # 5. Section 0 Trigger focus_symbols <-> Section 3 promotion parity
+    if sec3_items and (m_trig := _TRIGGER_LINE_RE.search(sec0_head)) is not None:
+        trig_body = m_trig.group(1)
+        focus_syms: list[str] = []
+        for m_fp in _TRIGGER_FOCUS_PAREN_RE.finditer(trig_body):
+            for tok in m_fp.group(1).split(","):
+                if ts := tok.strip():
+                    focus_syms.append(ts)
+        for m_fe in _TRIGGER_FOCUS_EQ_RE.finditer(trig_body):
+            for tok in m_fe.group(1).split(","):
+                if ts := tok.strip():
+                    focus_syms.append(ts)
+        if focus_syms:
+            sib_by_main: dict[str, set[str]] = {}
+            for m_sh in _SIBLING_HDR_RE.finditer(prompt_text):
+                sib_by_main.setdefault(m_sh.group(1).upper(), set()).add(m_sh.group(2).upper())
+            card_sym_sets: list[set[str]] = [
+                {s.upper()} | sib_by_main.get(s.upper(), set()) for s, _, _ in sec3_items
+            ]
+            all_sec3_syms: set[str] = set().union(*card_sym_sets) if card_sym_sets else set()
+            promoted_syms: set[str] = {
+                tok.upper()
+                for tok in _TRIGGER_SYM_TOKEN_RE.findall(trig_body)
+                if tok.upper() in all_sec3_syms
+            }
+            trig_lc = trig_body.lower()
+            if "invalidat" in trig_lc or "target_hit" in trig_lc:
+                for m_ap in _ACTIVE_PLAN_TERM_SYM_RE.finditer(sec1_body):
+                    promoted_syms.add(m_ap.group(1).upper())
+            for fsym in focus_syms:
+                fsym_u = fsym.upper()
+                if pos_syms_s1 and fsym_u in pos_syms_s1 and fsym_u not in all_sec3_syms:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_SECTION0_AND_MACRO_HYGIENE",
+                            f"Section0.TriggerPromo:{fsym}",
+                            f"Section 0 Trigger focuses tradable symbol {fsym}, but it is absent from Section 3",
+                        )
+                    )
+                    continue
+                if fsym_u in all_sec3_syms:
+                    card_idx = next((i for i, cset in enumerate(card_sym_sets) if fsym_u in cset), None)
+                    if card_idx is not None:
+                        unpromoted_before = [
+                            sec3_items[j][0]
+                            for j in range(card_idx)
+                            if not (card_sym_sets[j] & promoted_syms)
+                        ]
+                        if unpromoted_before:
+                            violations.append(
+                                InvariantViolation(
+                                    "PROMPT_SECTION0_AND_MACRO_HYGIENE",
+                                    f"Section0.TriggerPromo:{fsym}",
+                                    f"focused symbol {fsym} appears after unpromoted Section 3 symbol(s): {', '.join(unpromoted_before)}",
+                                )
+                            )
+
+    # 6. Section 2 Geopolitical Threat Shield live_unassessed truthfulness vs Live Breaking News Feed
+    if (m_geo := _GEO_SHIELD_LINE_RE.search(prompt_text)) is not None:
+        geo_body = m_geo.group(1)
+        if "live_unassessed=UNASSESSED_FRESH_HIGH_SEV" in geo_body and (m_ga := _AGE_TOKEN_RE.search(geo_body)) is not None:
+            ga_num = safe_nonneg_float(m_ga.group(1), default=None)
+            if ga_num is not None:
+                geo_age_sec = ga_num * _AGE_UNIT_SEC.get(m_ga.group(2), 60.0)
+                if (m_nf := _NEWS_FEED_HDR_RE.search(prompt_text)) is not None:
+                    news_ages_sec: list[float] = []
+                    for n_ln in prompt_text[m_nf.end():].splitlines():
+                        s_nln = n_ln.strip()
+                        if not s_nln:
+                            if news_ages_sec:
+                                break
+                            continue
+                        if not s_nln.startswith("* "):
+                            break
+                        if (m_na := _AGE_TOKEN_RE.search(s_nln)) is not None:
+                            if (na_v := safe_nonneg_float(m_na.group(1), default=None)) is not None:
+                                news_ages_sec.append(na_v * _AGE_UNIT_SEC.get(m_na.group(2), 60.0))
+                    if news_ages_sec and min(news_ages_sec) > geo_age_sec + 120.0:
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_SECTION0_AND_MACRO_HYGIENE",
+                                "Section2.GeoShield.live_unassessed",
+                                f"live_unassessed=UNASSESSED_FRESH_HIGH_SEV set (shield age={geo_age_sec / 60.0:.1f}m), "
+                                f"yet newest rendered headline is {min(news_ages_sec) / 60.0:.1f}m old",
+                            )
+                        )
+
+    # 7. Section 2 US Spot Crypto ETF Net Flows streak sign consistency
+    for m_etf in _ETF_FLOW_STREAK_RE.finditer(prompt_text):
+        etf_lbl = m_etf.group(1)
+        sgn_s = m_etf.group(2)
+        flow_mag = _parse_money(m_etf.group(3))
+        streak_i = safe_int(m_etf.group(4), default=None)
+        if flow_mag is not None and flow_mag >= 10_000.0 and streak_i is not None and streak_i != 0:
+            flow_pos = sgn_s != "-"
+            if flow_pos != (streak_i > 0):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_SECTION0_AND_MACRO_HYGIENE",
+                        f"Section2.ETF:{etf_lbl}:streak_sign",
+                        f"{etf_lbl} daily flow {sgn_s}${m_etf.group(3)} contradicts streak={streak_i:+d}d",
+                    )
+                )
+
+    # 8. Section 3 realized_liq_15m non-negativity and count <-> notional coherence
+    for sym, rest in sec3b_items:
+        for m_rl in _REALIZED_LIQ_RE.finditer(rest):
+            l_sgn, l_mag = m_rl.group(1), _parse_money(m_rl.group(2))
+            s_sgn, s_mag = m_rl.group(3), _parse_money(m_rl.group(4))
+            rl_n = safe_int(m_rl.group(5), default=None) if m_rl.group(5) is not None else None
+            if l_mag is None or s_mag is None:
+                continue
+            rl_l = (-l_mag) if l_sgn == "-" else l_mag
+            rl_s = (-s_mag) if s_sgn == "-" else s_mag
+            bad_neg = rl_l < -1e-6 or rl_s < -1e-6 or (rl_n is not None and rl_n < 0)
+            tot_rl = rl_l + rl_s
+            bad_cnt = (
+                (rl_n == 0 and tot_rl > 1e-6)
+                or (rl_n is not None and rl_n > 0 and tot_rl <= 1e-6)
+                or (rl_n is None and tot_rl <= 1e-6)
+            )
+            if bad_neg or bad_cnt:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_VA_POS_AND_LIQ_MATH",
+                        f"{sym}:realized_liq_15m",
+                        f"inconsistent realized_liq_15m(long={l_sgn}${m_rl.group(2)}, short={s_sgn}${m_rl.group(4)}, n={rl_n})",
+                    )
+                )
+
+
 def _audit_prompt_numeric_hygiene(
     violations: list[InvariantViolation],
     prompt_text: str,
@@ -3311,8 +4099,9 @@ def evaluate_live_prompt_invariants(
     resume_prompt_text: Optional[str] = None,
     non_tradable_symbols: Collection[str] = (),
     gateway_min_usd: float = 0.0,
+    prev_temporal_anchor: Optional[Mapping[str, Any]] = None,
 ) -> list[InvariantViolation]:
-    """Run deduplicated snapshot + full/warm rendered prompt invariant validation for continuous runtime checks."""
+    """Run deduplicated snapshot + temporal + full/warm rendered prompt invariant validation for continuous runtime checks."""
     out: list[InvariantViolation] = []
     seen: set[tuple[str, str, str]] = set()
 
@@ -3330,6 +4119,8 @@ def evaluate_live_prompt_invariants(
             gateway_min_usd=gateway_min_usd,
         )
     )
+    if prev_temporal_anchor:
+        _extend(audit_consecutive_snapshot_invariants(prev_temporal_anchor, snapshot))
     if prompt_text:
         _extend(
             audit_rendered_prompt_text(
@@ -3351,8 +4142,10 @@ def evaluate_live_prompt_invariants(
 
 __all__ = [
     "InvariantViolation",
+    "audit_consecutive_snapshot_invariants",
     "audit_rendered_prompt_text",
     "audit_scorecard_temporal_invariants",
     "audit_snapshot_invariants",
     "evaluate_live_prompt_invariants",
+    "extract_temporal_invariant_anchor",
 ]

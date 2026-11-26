@@ -70,6 +70,7 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
 from intelligence.sentiment.evaluators.prompt_delta_evaluator import evaluate_prompt_delta_plan
 from intelligence.sentiment.evaluators.prompt_invariants_evaluator import (
     evaluate_live_prompt_invariants,
+    extract_temporal_invariant_anchor,
 )
 from orchestratorOS.agy.topics import get_topic_thread_state, get_topic_turn_count, has_pending_ui_turn
 from orchestratorOS.supervisor.crypto_executor_delta_gate import (
@@ -148,6 +149,7 @@ class SupervisorAuditReport:
     prompt_delta_state: Dict[str, Any] = field(default_factory=dict)
     prompt_invariant_violations: List[str] = field(default_factory=list)
     prompt_invariant_alert_ts: Dict[str, float] = field(default_factory=dict)
+    temporal_invariant_anchor: Dict[str, Any] = field(default_factory=dict)
     completed_ts: Optional[float] = None
 
 
@@ -179,6 +181,7 @@ class AutonomousAIReconciler:
         self._last_prompt_delta_state: Dict[str, Any] = {}
         self._last_prompt_invariant_violations: List[str] = []
         self._prompt_invariant_alert_ts: Dict[str, float] = {}
+        self._last_temporal_invariant_anchor: Dict[str, Any] = {}
 
         # Parse decoupled configuration strictly from config files without fallbacks
         conf = load_key_value_conf(self.workspace_dir, _ROOT_DIR)
@@ -296,6 +299,7 @@ class AutonomousAIReconciler:
         *,
         topic_key: str,
         min_usd: float,
+        prev_temporal_anchor: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         """Run pure ~1ms mathematical & structural validation on the rendered prompt before every LLM call."""
         try:
@@ -309,6 +313,7 @@ class AutonomousAIReconciler:
                 resume_prompt_text=resume_prompt,
                 non_tradable_symbols=non_tradable,
                 gateway_min_usd=min_usd,
+                prev_temporal_anchor=prev_temporal_anchor,
             )
         except Exception as exc:
             logger.debug("Runtime prompt invariant check skipped (%s): %s", topic_key, exc)
@@ -361,6 +366,7 @@ class AutonomousAIReconciler:
         prev_eval_was_actionable: bool = False,
         wake_reason: Optional[str] = None,
         prev_eval_ts: Optional[float] = None,
+        prev_temporal_anchor: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Feeds topic-appropriate telemetry to Gemini; the topic spec bounds both prompt scope and side effects."""
         spec = topic_spec(topic_key)
@@ -473,6 +479,7 @@ class AutonomousAIReconciler:
             )
 
         self._last_prompt_invariant_violations = []
+        self._last_temporal_invariant_anchor = {}
         if spec.can_trade and not spec.can_self_heal:
             self._last_prompt_invariant_violations = self._validate_runtime_prompt_invariants(
                 sensors,
@@ -480,7 +487,9 @@ class AutonomousAIReconciler:
                 resume_prompt,
                 topic_key=resolved_topic,
                 min_usd=min_usd,
+                prev_temporal_anchor=prev_temporal_anchor,
             )
+            self._last_temporal_invariant_anchor = extract_temporal_invariant_anchor(sensors)
 
         model_override: Optional[str] = None
         allow_cli_fallback = False
@@ -741,6 +750,7 @@ class AutonomousAIReconciler:
         ui_turn_pending = False
         prev_eval: Dict[str, Any] = {}
         prev_prompt_delta_state: Dict[str, Any] = {}
+        prev_temporal_anchor: Dict[str, Any] = {}
         prev_eval_was_actionable = False
         if spec.can_trade and not spec.can_self_heal:
             _read_json = _resolve_repair_json_reader(read_json_recovering)
@@ -754,6 +764,9 @@ class AutonomousAIReconciler:
             raw_pds = prev_eval.get("prompt_delta_state")
             if isinstance(raw_pds, dict):
                 prev_prompt_delta_state = raw_pds
+            raw_ta = prev_eval.get("temporal_invariant_anchor")
+            if isinstance(raw_ta, dict):
+                prev_temporal_anchor = raw_ta
             raw_alert_ts = prev_eval.get("prompt_invariant_alert_ts")
             if isinstance(raw_alert_ts, dict):
                 self._prompt_invariant_alert_ts = {
@@ -819,6 +832,7 @@ class AutonomousAIReconciler:
                     model_used="delta_gate_skip",
                     delta_gate_meta=dict(prev_meta),
                     prompt_delta_state=dict(prev_prompt_delta_state),
+                    temporal_invariant_anchor=dict(prev_temporal_anchor),
                 )
                 return self.write_audit_artifact(skip_report, persist_eval=False)
             elif delta_gate_enabled:
@@ -842,6 +856,7 @@ class AutonomousAIReconciler:
             prev_eval_was_actionable=prev_eval_was_actionable,
             wake_reason=gate_reason or None,
             prev_eval_ts=normalize_epoch_sec(prev_eval.get("ts"), default=None, allow_iso=True) if prev_eval else None,
+            prev_temporal_anchor=prev_temporal_anchor or None,
         )
         cat_audit = (
             sensors.system_and_vpn.get("llm_catalog_audit")
@@ -934,6 +949,7 @@ class AutonomousAIReconciler:
             ),
             prompt_invariant_violations=list(self._last_prompt_invariant_violations),
             prompt_invariant_alert_ts=dict(self._prompt_invariant_alert_ts),
+            temporal_invariant_anchor=dict(self._last_temporal_invariant_anchor or prev_temporal_anchor),
             completed_ts=time.time(),
         )
         # SRE/system/bot-error notifications (ntfy-server / ntfy-error) belong strictly to auto_technical_repair

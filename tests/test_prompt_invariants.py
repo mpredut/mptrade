@@ -14,10 +14,12 @@ from providers.ai_survival_guard import (
 )
 from providers.intent_telemetry import summarize_active_ai_trade_plans
 from intelligence.sentiment.evaluators.prompt_invariants_evaluator import (
+    audit_consecutive_snapshot_invariants,
     audit_rendered_prompt_text,
     audit_scorecard_temporal_invariants,
     audit_snapshot_invariants,
     evaluate_live_prompt_invariants,
+    extract_temporal_invariant_anchor,
 )
 
 
@@ -2497,6 +2499,441 @@ def test_cycle21_wave4_lifo_qty_active_plan_breach_spot_perp_sibling_ext_fg_cal_
         "Section2.FearGreed:chg_7d",
         "SPCX_US_EQ:HeaderExtVsRTH",
     }.issubset(bad_subjs)
+
+
+def test_temporal_peak_px_monotonicity_and_nav_jump_conservation() -> None:
+    """Validate consecutive-snapshot peak_px monotonicity and anti-phantom NAV-jump conservation."""
+    snap_t1 = {
+        "evaluated_at_ts": 1_700_000_000.0,
+        "asset_scope": "crypto",
+        "portfolio_summary": {
+            "portfolio_risk_engine": {
+                "unified_nav_usd": 17000.0,
+                "invested_exposure_usd": 2000.0,
+                "global_free_cash_usd": 15000.0,
+                "locked_quote_usd": 0.0,
+            },
+            "tradable_positions": [
+                {
+                    "venue": "binance",
+                    "symbol": "ADAUSDC",
+                    "free_base": 6666.6667,
+                    "locked_base_qty": 0.0,
+                    "price": 0.15,
+                    "active_avg_buy_px": 0.148,
+                    "trailing_peak": 0.155,
+                },
+                {
+                    "venue": "hyperliquid",
+                    "symbol": "HYPEUSDC",
+                    "free_base": 16.0,
+                    "locked_base_qty": 0.0,
+                    "price": 62.5,
+                    "active_avg_buy_px": 62.0,
+                    "trailing_peak": 62.88,
+                },
+            ],
+            "recent_orders": {
+                "HYPEUSDC": {"last_buy": {"ts_ms": 1_699_999_000_000}},
+            },
+        },
+    }
+    anchor_t1 = extract_temporal_invariant_anchor(snap_t1)
+    assert anchor_t1["nav_usd"] == 17000.0
+    assert anchor_t1["positions"]["binance:ADAUSDC"]["peak_px"] == 0.155
+    assert anchor_t1["latest_fill_ts"] == 1_699_999_000.0
+
+    # Clean next cycle: ADA ticks up +0.01 (+$66.67 MTM), peak_px climbs monotonically, NAV follows MTM
+    snap_t2_clean = {
+        "evaluated_at_ts": 1_700_000_360.0,
+        "asset_scope": "crypto",
+        "portfolio_summary": {
+            "portfolio_risk_engine": {
+                "unified_nav_usd": 17066.67,
+                "invested_exposure_usd": 2066.67,
+                "global_free_cash_usd": 15000.0,
+                "locked_quote_usd": 0.0,
+            },
+            "tradable_positions": [
+                {
+                    "venue": "binance",
+                    "symbol": "ADAUSDC",
+                    "free_base": 6666.6667,
+                    "locked_base_qty": 0.0,
+                    "price": 0.16,
+                    "active_avg_buy_px": 0.148,
+                    "trailing_peak": 0.16,
+                },
+                {
+                    "venue": "hyperliquid",
+                    "symbol": "HYPEUSDC",
+                    "free_base": 16.0,
+                    "locked_base_qty": 0.0,
+                    "price": 62.5,
+                    "active_avg_buy_px": 62.0,
+                    "trailing_peak": 62.88,
+                },
+            ],
+            "recent_orders": {
+                "HYPEUSDC": {"last_buy": {"ts_ms": 1_699_999_000_000}},
+            },
+        },
+    }
+    assert audit_consecutive_snapshot_invariants(anchor_t1, snap_t2_clean) == []
+    assert audit_consecutive_snapshot_invariants(snap_t1, snap_t2_clean) == []
+
+    # Confirmed external deposit of +$1,000 is accounted for cleanly
+    snap_t2_deposit = {
+        **snap_t2_clean,
+        "portfolio_summary": {
+            **snap_t2_clean["portfolio_summary"],
+            "portfolio_risk_engine": {
+                **snap_t2_clean["portfolio_summary"]["portfolio_risk_engine"],
+                "unified_nav_usd": 18066.67,
+                "global_free_cash_usd": 16000.0,
+                "confirmed_cashflow_usd": 1000.0,
+            },
+        },
+    }
+    assert audit_consecutive_snapshot_invariants(anchor_t1, snap_t2_deposit) == []
+
+    # Different scope or gap > max_gap_sec is skipped without false positive
+    snap_other_scope = {**snap_t2_clean, "asset_scope": "equities"}
+    assert audit_consecutive_snapshot_invariants(anchor_t1, snap_other_scope) == []
+    snap_stale_gap = {**snap_t2_clean, "evaluated_at_ts": 1_700_010_000.0}
+    assert audit_consecutive_snapshot_invariants(anchor_t1, snap_stale_gap) == []
+
+    # Fault injection: HYPE peak_px regresses on unchanged (qty, avg_cost) AND phantom -$966 NAV dip
+    snap_t2_bad = {
+        "evaluated_at_ts": 1_700_000_360.0,
+        "asset_scope": "crypto",
+        "portfolio_summary": {
+            "portfolio_risk_engine": {
+                "unified_nav_usd": 16034.0,
+                "invested_exposure_usd": 1034.0,
+                "global_free_cash_usd": 15000.0,
+                "locked_quote_usd": 0.0,
+            },
+            "tradable_positions": [
+                {
+                    "venue": "binance",
+                    "symbol": "ADAUSDC",
+                    "free_base": 0.0,
+                    "locked_base_qty": 0.0,
+                    "price": 0.15,
+                    "active_avg_buy_px": 0.148,
+                    "trailing_peak": 0.155,
+                },
+                {
+                    "venue": "hyperliquid",
+                    "symbol": "HYPEUSDC",
+                    "free_base": 16.0,
+                    "locked_base_qty": 0.0,
+                    "price": 62.5,
+                    "active_avg_buy_px": 62.0,
+                    "trailing_peak": 62.55,
+                },
+            ],
+            "recent_orders": {
+                "HYPEUSDC": {"last_buy": {"ts_ms": 1_699_999_000_000}},
+            },
+        },
+    }
+    bad_viols = evaluate_live_prompt_invariants(
+        snap_t2_bad,
+        "",
+        prev_temporal_anchor=anchor_t1,
+    )
+    bad_codes = {v.code for v in bad_viols}
+    assert {"TEMPORAL_PEAK_PX_MONOTONICITY", "TEMPORAL_NAV_JUMP_CONSERVATION"}.issubset(bad_codes)
+
+
+def test_wave5_risk_engine_lifo_max_buy_and_alloc_invariants() -> None:
+    """Validate subcycle_lifo_pnl conservation, max_buy caps, SELL-only enforcement, alloc math, and Risk Engine bounds."""
+    clean_prompt = (
+        "1. Formulate decisions (BTCUSDC on 'binance'; HYPEUSD, 0bps SELL-only xStock SPCXxUSD on 'kraken'):\n"
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Portfolio Risk Engine: crypto_nav=$10,000.00, invested=$2,500.00, free_cash=$7,500.00 (75.0%), "
+        "venues(binance=$7,000.00, kraken=$3,000.00), portfolio_btc_beta=0.25, avg_corr_24h=0.67, "
+        "intraday_var_95=$120.00 (1.20%), nav_dd_day=-0.07%, subcycle_lifo_pnl=-$184.13\n"
+        "  * Available Free Quote Cash per Venue: binance USDC=$5,500.00, kraken USD=$2,000.00\n"
+        "  * Live Tradable Spot Instruments [per-order max_buy <= $2000; simultaneous BUYs share venue free cash above]:\n"
+        "    - [binance] BTCUSDC: free_BTC=0.025 ($1500.00 USD), px=60000.0, lifo_realized_pnl=-$70.58, limits(max_buy=$2000.0, max_sell=$1500.0)\n"
+        "    - [kraken] HYPEUSD: free_HYPE=0.0 ($0.00 USD), px=62.5, limits(max_buy=$1990.0, max_sell=$0.0)\n"
+        "    - [kraken] SPCXxUSD: free_SPCXx=7.722008 ($1000.00 USD), px=129.5, lifo_realized_pnl=-$113.55, limits(max_buy=$0.0, max_sell=$1000.0)\n"
+        "  * Cross-Venue Kraken Tokenized Sibling Reference: SPCXxUSD=$129.5 (-3.96% vs alloc 134.844006) | SPCX=$128.95, xstock_vs_underlying=+0.43%\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+    )
+    assert audit_rendered_prompt_text(clean_prompt) == []
+
+    # Clean zero-invested portfolio
+    zero_inv_clean = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Portfolio Risk Engine: crypto_nav=$5,000.00, invested=$0.00, free_cash=$5,000.00 (100.0%), "
+        "venues(binance=$5,000.00), portfolio_btc_beta=0.0, avg_corr_24h=0.0, intraday_var_95=$0.00 (0.00%), nav_dd_day=0.00%\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+    )
+    assert audit_rendered_prompt_text(zero_inv_clean) == []
+
+    bad_prompt = (
+        clean_prompt
+        .replace("subcycle_lifo_pnl=-$184.13", "subcycle_lifo_pnl=-$120.00")
+        .replace("nav_dd_day=-0.07%", "nav_dd_day=+0.45%")
+        .replace("avg_corr_24h=0.67", "avg_corr_24h=1.25")
+        .replace("BTCUSDC: free_BTC=0.025 ($1500.00 USD), px=60000.0, lifo_realized_pnl=-$70.58, limits(max_buy=$2000.0", "BTCUSDC: free_BTC=0.025 ($1500.00 USD), px=60000.0, lifo_realized_pnl=-$70.58, limits(max_buy=$2500.0")
+        .replace("HYPEUSD: free_HYPE=0.0 ($0.00 USD), px=62.5, limits(max_buy=$1990.0", "HYPEUSD: free_HYPE=0.0 ($0.00 USD), px=62.5, limits(max_buy=$2000.0")
+        .replace("kraken USD=$2,000.00", "kraken USD=$1,500.00")
+        .replace("free_cash=$7,500.00 (75.0%), venues(binance=$7,000.00, kraken=$3,000.00)", "free_cash=$7,000.00 (73.7%), venues(binance=$7,000.00, kraken=$2,500.00)")
+        .replace("crypto_nav=$10,000.00", "crypto_nav=$9,500.00")
+        .replace("intraday_var_95=$120.00 (1.20%)", "intraday_var_95=$120.00 (1.26%)")
+        .replace("SPCXxUSD: free_SPCXx=7.722008 ($1000.00 USD), px=129.5, lifo_realized_pnl=-$113.55, limits(max_buy=$0.0", "SPCXxUSD: free_SPCXx=7.722008 ($1000.00 USD), px=129.5, lifo_realized_pnl=-$113.55, limits(max_buy=$500.0")
+        .replace("SPCXxUSD=$129.5 (-3.96% vs alloc 134.844006)", "SPCXxUSD=$129.5 (+2.50% vs alloc 134.844006)")
+    )
+    bad_subjs = {v.subject for v in audit_rendered_prompt_text(bad_prompt)}
+    assert {
+        "Section1.subcycle_lifo_pnl",
+        "Section1.nav_dd_day",
+        "Section1.avg_corr_24h",
+        "binance:BTCUSDC:max_buy_vs_gateway",
+        "kraken:HYPEUSD:max_buy_vs_cash",
+        "kraken:SPCXxUSD:sell_only_max_buy",
+        "xStocks.alloc:SPCXxUSD",
+    }.issubset(bad_subjs)
+
+    zero_inv_bad = zero_inv_clean.replace(
+        "portfolio_btc_beta=0.0, avg_corr_24h=0.0, intraday_var_95=$0.00 (0.00%)",
+        "portfolio_btc_beta=0.35, avg_corr_24h=0.0, intraday_var_95=$45.00 (0.90%)",
+    )
+    z_subjs = {v.subject for v in audit_rendered_prompt_text(zero_inv_bad)}
+    assert {"Section1.zero_invested_var", "Section1.zero_invested_beta"}.issubset(z_subjs)
+
+    # Snapshot-level equivalents
+    bad_snap = {
+        "portfolio_summary": {
+            "portfolio_risk_engine": {
+                "unified_nav_usd": 5000.0,
+                "invested_exposure_usd": 0.0,
+                "global_free_cash_usd": 5000.0,
+                "daily_nav_drawdown_pct": 0.50,
+                "avg_corr_vs_btc_24h": -1.5,
+                "intraday_var_95_usd": 25.0,
+                "portfolio_btc_beta": 0.25,
+                "subcycle_lifo_realized_pnl_usd": -99.0,
+            },
+            "recent_orders": {
+                "BTCUSDC": {"lifo_realized_pnl_usd": -10.0},
+            },
+            "tradable_positions": [
+                {
+                    "venue": "kraken",
+                    "symbol": "SPCXxUSD",
+                    "free_quote": 500.0,
+                    "effective_max_buy_usd": 800.0,
+                    "sell_only": True,
+                }
+            ],
+            "kraken_xstocks": {
+                "listed_pair": "SPCXxUSD",
+                "live_price": 129.5,
+                "alloc_price": 134.844006,
+                "pnl_vs_alloc_pct": 3.0,
+            },
+        }
+    }
+    snap_subjs = {v.subject for v in audit_snapshot_invariants(bad_snap)}
+    assert {
+        "portfolio_risk.daily_nav_drawdown_pct",
+        "portfolio_risk.avg_corr_vs_btc_24h",
+        "portfolio_risk.zero_invested_var",
+        "portfolio_risk.zero_invested_beta",
+        "portfolio_risk.subcycle_lifo_pnl",
+        "kraken:SPCXxUSD:max_buy_vs_cash",
+        "kraken:SPCXxUSD:sell_only_max_buy",
+        "SPCXxUSD:pnl_vs_alloc",
+    }.issubset(snap_subjs)
+
+
+def test_wave5_trigger_iter_geo_unassessed_and_etf_streak_invariants() -> None:
+    """Validate Section 0 Iter/Trigger promotion parity, Geo Shield live_unassessed truthfulness, and ETF streak sign."""
+    clean_prompt = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 0. CLOCK & SNAPSHOT: 2026-11-26 22:19:05 EET (Thu) | Iter #7 (+3.1m vs prev)\n"
+        "- Trigger: focus_symbols(HYPEUSD, ARBUSDC)\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Live Tradable Spot Instruments:\n"
+        "    - [binance] ARBUSDC: free_ARB=10.0 ($1.13 USD), px=0.113, limits(max_buy=$2000.0, max_sell=$0.0)\n"
+        "    - [hyperliquid] HYPEUSDC: free_HYPE=10.0 ($625.50 USD), px=62.55, limits(max_buy=$2000.0, max_sell=$625.5)\n"
+        "    - [binance] BTCUSDC: free_BTC=0.0 ($0.00 USD), px=60000.0, limits(max_buy=$2000.0, max_sell=$0.0)\n"
+        "    - [binance] TAOUSDC: free_TAO=0.0 ($0.00 USD), px=184.0, limits(max_buy=$2000.0, max_sell=$0.0)\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+        "- Geopolitical Threat Shield: risk_score=0.35, age=30.0m | live_unassessed=UNASSESSED_FRESH_HIGH_SEV (1 headline(s) arrived after shield eval: Strike reported) | summary=Calm prior window.\n"
+        "- US Spot Crypto ETF Net Flows (Farside Daily): BTC_ETF(2026-11-25): -$453.00M [IBIT -$329.70M] (5d=-$2.51B, streak=-7d) | ETH_ETF(2026-11-25): +$68.50M (5d=+$120.00M, streak=+3d) (age=31.0m)\n"
+        "- Live Breaking News Feed:\n"
+        "  * Breaking high-severity headline (age=5.0m)\n"
+        "  * Older headline (age=90.0m)\n"
+        "### 3. TRADABLE MARKETS (UNIFIED PRICE, BOOK & FLOW — ALL COINS):\n"
+        "  * ARBUSDC: Price=$0.1130\n"
+        "    - Trend: 24h=+1.00%\n"
+        "  * HYPEUSDC (sibling venue: HYPEUSD=$62.53 [-0.03%]): Price=$62.55\n"
+        "    - Trend: 24h=+1.00%\n"
+        "  * BTCUSDC: Price=$60,000.00\n"
+        "    - Trend: 24h=+1.00%\n"
+        "  * TAOUSDC: Price=$184.00\n"
+        "    - Trend: 24h=+1.00%\n"
+    )
+    assert audit_rendered_prompt_text(clean_prompt) == []
+
+    bad_prompt = (
+        clean_prompt
+        .replace("Iter #7 (+3.1m vs prev)", "Iter #0 (-2.5m vs prev)")
+        .replace("focus_symbols(HYPEUSD, ARBUSDC)", "focus_symbols(BTCUSDC, TAOUSDC)")
+        .replace("  * TAOUSDC: Price=$184.00\n    - Trend: 24h=+1.00%\n", "")
+        .replace("(age=5.0m)", "(age=75.0m)")
+        .replace("streak=-7d", "streak=+7d")
+    )
+    bad_subjs = {v.subject for v in audit_rendered_prompt_text(bad_prompt)}
+    assert {
+        "Section0.Iter",
+        "Section0.PrevElapsed",
+        "Section0.TriggerPromo:BTCUSDC",
+        "Section0.TriggerPromo:TAOUSDC",
+        "Section2.GeoShield.live_unassessed",
+        "Section2.ETF:BTC_ETF:streak_sign",
+    }.issubset(bad_subjs)
+
+    # Snapshot-level geo shield & ETF streak checks
+    bad_snap = {
+        "macro_context": {
+            "geopolitical_threat": {
+                "ts": 1_700_005_000.0,
+                "live_unassessed_high_sev_note": "UNASSESSED_FRESH_HIGH_SEV (1 headline)",
+            },
+            "etf_flows": {
+                "assets": {
+                    "BTC": {"latest_net_flow_musd": -250.0, "streak_days": 4},
+                }
+            },
+        },
+        "breaking_news": [
+            {"title": "Stale headline", "first_seen_ts": 1_700_001_000.0},
+        ],
+    }
+    snap_codes = {v.code for v in audit_snapshot_invariants(bad_snap)}
+    assert {"GEO_SHIELD_UNASSESSED_TRUTHFULNESS", "ETF_FLOW_STREAK_SIGN"}.issubset(snap_codes)
+
+
+def test_wave5_long_horizon_bridge_and_realized_liq_invariants() -> None:
+    """Validate Section 3 7d/24h range nesting inside Section 2 52w Range and realized_liq_15m coherence."""
+    clean_prompt = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+        "  * Multi-Month & Annual Structure (Long Horizon):\n"
+        "    | Symbol | 30d | 90d | 180d | 52w Range (Pos) | 3y Range (Pos) | vs50d | vs200d | Swings |\n"
+        "    |---|---|---|---|---|---|---|---|---|\n"
+        "    | BTCUSDC | -30.0% | -25.0% | -22.0% | [$55.1K..$98.0K] (12.8%) | [$36.7K..$126.3K] (26.7%) | -18.0% | -15.0% | 25-10:126.3K->26-11:55.1K->now:60.6K |\n"
+        "### 3. TRADABLE MARKETS (UNIFIED PRICE, BOOK & FLOW — ALL COINS):\n"
+        "  * BTCUSDC: Price=$60,600.00\n"
+        "    - Trend: 24h_range=[59000.0, 61500.0] pos_24h=64.0% (dd_high=-1.46%, bounce_low=+2.71%, span=4.24%) | "
+        "7d_range=[55300.0, 64200.0] pos_7d=59.6% (dd_high=-5.61%, bounce_low=+9.58%, span=16.09%)\n"
+        "    - Book: ob_mid=60600.0, realized_liq_15m(long=$0, short=$22.1K, n=1, src=bybit+binance+okx)\n"
+        "  * ADAUSDC: Price=$0.1500\n"
+        "    - Book: ob_mid=0.1500, realized_liq_15m(long=$131, short=$0, n=1, src=bybit+binance+okx)\n"
+    )
+    assert audit_rendered_prompt_text(clean_prompt) == []
+
+    bad_prompt = (
+        clean_prompt
+        .replace("24h_range=[59000.0, 61500.0] pos_24h=64.0% (dd_high=-1.46%, bounce_low=+2.71%, span=4.24%)", "24h_range=[50000.0, 61500.0] pos_24h=92.2% (dd_high=-1.46%, bounce_low=+21.20%, span=23.00%)")
+        .replace("7d_range=[55300.0, 64200.0] pos_7d=59.6% (dd_high=-5.61%, bounce_low=+9.58%, span=16.09%)", "7d_range=[50000.0, 105000.0] pos_7d=19.3% (dd_high=-42.29%, bounce_low=+21.20%, span=110.00%)")
+        .replace("realized_liq_15m(long=$0, short=$22.1K, n=1", "realized_liq_15m(long=$0, short=$0, n=3")
+        .replace("realized_liq_15m(long=$131, short=$0, n=1", "realized_liq_15m(long=$131, short=$0, n=0")
+    )
+    bad_subjs = {v.subject for v in audit_rendered_prompt_text(bad_prompt)}
+    assert {
+        "BTCUSDC:7d_in_52w",
+        "BTCUSDC:24h_in_52w",
+        "BTCUSDC:realized_liq_15m",
+        "ADAUSDC:realized_liq_15m",
+    }.issubset(bad_subjs)
+
+    bad_snap = {
+        "microstructure": {
+            "BTCUSDC": {"realized_liq_15m_long_usd": 0.0, "realized_liq_15m_short_usd": 0.0, "realized_liq_15m_events": 2},
+            "ADAUSDC": {"realized_liq_15m_long_usd": 500.0, "realized_liq_15m_short_usd": 0.0, "realized_liq_15m_events": 0},
+            "TAOUSDC": {"realized_liq_15m_long_usd": -10.0, "realized_liq_15m_short_usd": 0.0, "realized_liq_15m_events": 1},
+        }
+    }
+    snap_subjs = {v.subject for v in audit_snapshot_invariants(bad_snap) if v.code == "REALIZED_LIQ_COHERENCE"}
+    assert {"BTCUSDC:realized_liq_15m", "ADAUSDC:realized_liq_15m", "TAOUSDC:realized_liq_15m"}.issubset(snap_subjs)
+
+
+def test_audit_cli_check_cross_cache_and_reconciler_temporal_anchor(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """Validate --check-cross-cache CLI integration (scoped venues + failure surfacing) and reconciler temporal anchor."""
+    from verify_tools import audit_prompt_invariants as audit_cli
+    from verify_tools.account_cache_coherence import CoherenceViolation
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler, SupervisorAuditReport
+
+    captured_venues: list[tuple[str, ...]] = []
+
+    def _fake_clean(_cache_dir: str, *, venues=()):
+        captured_venues.append(tuple(venues))
+        return []
+
+    monkeypatch.setattr(audit_cli, "audit_account_cache_coherence", _fake_clean)
+    assert audit_cli.main(["--check-cross-cache", "--scope", "crypto"]) == 0
+    assert "t212" not in captured_venues[-1]
+    assert "binance" in captured_venues[-1]
+
+    assert audit_cli.main(["--check-cross-cache", "--scope", "equities"]) == 0
+    assert captured_venues[-1] == ("t212",)
+
+    def _fake_dirty(_cache_dir: str, *, venues=()):
+        return [CoherenceViolation("binance", "open_order_missing_lock", "locked_base=0 for open SELL")]
+
+    monkeypatch.setattr(audit_cli, "audit_account_cache_coherence", _fake_dirty)
+    rc = audit_cli.main(["--check-cross-cache", "--scope", "crypto"])
+    err_out = capsys.readouterr().err
+    assert rc == 1
+    assert "CROSS_CACHE_COHERENCE" in err_out
+    assert "binance:open_order_missing_lock" in err_out
+
+    # Verify SupervisorAuditReport holds temporal_invariant_anchor and reconciler passes prev_temporal_anchor through
+    rep = SupervisorAuditReport(ts=1.0, mode="shadow", summary="ok", temporal_invariant_anchor={"nav_usd": 100.0})
+    assert rep.temporal_invariant_anchor == {"nav_usd": 100.0}
+
+    rec = AutonomousAIReconciler.__new__(AutonomousAIReconciler)
+    rec.workspace_dir = "."
+    rec.notify_enabled = False
+    rec._prompt_invariant_alert_ts = {}
+    prev_anchor = {
+        "ts": 1_700_000_000.0,
+        "scope": "crypto",
+        "nav_usd": 10000.0,
+        "latest_fill_ts": 0.0,
+        "positions": {"binance:ADAUSDC": {"qty": 1000.0, "px": 0.15, "avg_cost": 0.14, "peak_px": 0.16}},
+    }
+    cur_snap = {
+        "evaluated_at_ts": 1_700_000_300.0,
+        "asset_scope": "crypto",
+        "portfolio_summary": {
+            "portfolio_risk_engine": {"unified_nav_usd": 10000.0, "invested_exposure_usd": 150.0, "global_free_cash_usd": 9850.0},
+            "tradable_positions": [
+                {"venue": "binance", "symbol": "ADAUSDC", "free_base": 1000.0, "price": 0.15, "active_avg_buy_px": 0.14, "trailing_peak": 0.152}
+            ],
+        },
+    }
+    viol_lines = rec._validate_runtime_prompt_invariants(
+        cur_snap,  # type: ignore[arg-type]
+        "",
+        None,
+        topic_key="auto_cryptotrade_executor",
+        min_usd=10.0,
+        prev_temporal_anchor=prev_anchor,
+    )
+    assert any("TEMPORAL_PEAK_PX_MONOTONICITY" in ln for ln in viol_lines)
+
 
 
 
