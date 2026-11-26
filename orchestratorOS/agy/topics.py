@@ -514,6 +514,39 @@ def is_topic_resume_warm(
     return step_count > compacted_at
 
 
+def get_topic_thread_state(
+    topic_key: str,
+    *,
+    cli_base: Optional[str] = None,
+    registry_path: Optional[str] = None,
+    max_steps: Optional[int] = None,
+) -> tuple[str, int, bool]:
+    """Read-only topic thread state returning ``(conversation_id, compacted_at_step, is_warm)``."""
+    try:
+        topic_spec(topic_key)
+    except Exception:
+        return "", 0, False
+    resolved = canonical_topic_key(topic_key)
+    _, _, entry = _load_topic_entry(resolved, registry_path)
+    if entry is None:
+        return "", 0, False
+    raw_cid = entry.get("conversation_id")
+    cid = raw_cid.strip() if isinstance(raw_cid, str) else ""
+    compacted_at = safe_nonneg_int(entry.get("compacted_at_step"), 0)
+    is_warm = (
+        is_topic_resume_warm(
+            resolved,
+            cli_base=cli_base,
+            registry_path=registry_path,
+            max_steps=max_steps,
+            conversation_id=cid,
+        )
+        if cid
+        else False
+    )
+    return cid, compacted_at, is_warm
+
+
 def has_pending_ui_turn(
     topic_key: str,
     *,

@@ -398,6 +398,7 @@ def _format_macro_and_news_section(
     asset_scope: Any = "all",
     *,
     now_ts: Optional[float] = None,
+    delta_plan: Optional[Any] = None,
 ) -> List[str]:
     """Format Section 1 (Macro, Sentiment, Geopolitical & Live Breaking News) for the AI prompt."""
     is_equities_scope = str(asset_scope or "all").strip().lower() == "equities"
@@ -576,11 +577,18 @@ def _format_macro_and_news_section(
             else "summary"
         )
     )
+    show_sa_sum = delta_plan is None or delta_plan.should_show("sentiment_advisor_summary")
+    sa_tag = delta_plan.tag_for("sentiment_advisor_summary") if (delta_plan is not None and sa) else ""
+    sa_sum_part = (
+        f" | {sa_sum_key}={sa_summary}"
+        if show_sa_sum
+        else " | summary=[unchanged in thread]"
+    )
     sa_line = (
         f"conf={sa.get('confidence', 'N/A')}"
         f"{_age_sfx(sa, now_ts=ref_now)}"
         + (f" | live_btc_flow_delta={sa_flow_delta}" if sa_flow_delta else "")
-        + f" | {sa_sum_key}={sa_summary}"
+        + sa_sum_part
         if sa else "None"
     )
     gt_summary_raw = str(gt.get("summary") or "").strip() if gt else ""
@@ -647,13 +655,16 @@ def _format_macro_and_news_section(
         )
         else ""
     )
+    show_gt_sum = delta_plan is None or delta_plan.should_show("geopolitical_summary")
+    gt_tag = delta_plan.tag_for("geopolitical_summary") if (delta_plan is not None and gt) else ""
+    gt_sum_part = f" | summary={gt_summary}" if show_gt_sum else " | summary=[unchanged in thread]"
     gt_line = (
         f"risk_score={gt.get('risk_score', 'N/A')}{_age_sfx(gt, now_ts=ref_now)}"
         + (f" | live_deescalation={gt.get('live_deescalation_note')}" if gt.get("live_deescalation_note") else "")
         + (f" | live_unassessed={gt.get('live_unassessed_high_sev_note')}" if gt.get("live_unassessed_high_sev_note") else "")
         + (f" | live_macro_delta={gt_live_macro_delta}" if gt_live_macro_delta else "")
         + (f" | shield_note={gt_stale_ctx_note}" if gt_stale_ctx_note else "")
-        + f" | summary={gt_summary}"
+        + gt_sum_part
         if gt else "None"
     )
     if is_equities_scope:
@@ -661,22 +672,31 @@ def _format_macro_and_news_section(
         lines = [
             "### 1. ACTIVE MACRO, SENTIMENT, GEOPOLITICAL & LIVE BREAKING NEWS TELEMETRY:",
             f"- US Equity & Macro Regime: {eq_reg_line}{_age_sfx(mb_bench, parens=True, now_ts=ref_now) if isinstance(mb_bench, dict) else ''}",
-            f"- Geopolitical Threat Shield: {gt_line}",
+            f"- Geopolitical Threat Shield{gt_tag}: {gt_line}",
         ]
     else:
         lines = [
             "### 1. ACTIVE MACRO, SENTIMENT, GEOPOLITICAL & LIVE BREAKING NEWS TELEMETRY:",
-            f"- Fear & Greed: {fg_line}",
-            f"- Market Breadth: {mb_line}",
-            f"- Macro Sentiment Advisor: {sa_line}",
-            f"- Geopolitical Threat Shield: {gt_line}",
         ]
+        if delta_plan is None or delta_plan.should_show("fear_greed"):
+            fg_tag = delta_plan.tag_for("fear_greed") if (delta_plan is not None and fg) else ""
+            lines.append(f"- Fear & Greed{fg_tag}: {fg_line}")
+        lines.extend([
+            f"- Market Breadth: {mb_line}",
+            f"- Macro Sentiment Advisor{sa_tag}: {sa_line}",
+            f"- Geopolitical Threat Shield{gt_tag}: {gt_line}",
+        ])
     breaking_news = getattr(sensors, "breaking_news", None) or macro.get("recent_news") or []
     mc = _resolve_macro_sensor(sensors, macro, "macro_calendar") or resolve_macro_economic_calendar(
         now_ts=ref_now,
         breaking_news=breaking_news,
     )
-    if mc_line := _format_macro_calendar_line(mc):
+    if (delta_plan is None or delta_plan.should_show("macro_calendar")) and (
+        mc_line := _format_macro_calendar_line(mc)
+    ):
+        mc_tag = delta_plan.tag_for("macro_calendar") if delta_plan is not None else ""
+        if mc_tag and ": " in mc_line:
+            mc_line = mc_line.replace(": ", f"{mc_tag}: ", 1)
         lines.append(mc_line)
     mb_bench_line = _extract_macro_benchmarks_line(mb_bench, include_crypto=True, now_ts=ref_now)
     eq_already_rendered_benchmarks = bool(
@@ -689,18 +709,31 @@ def _format_macro_and_news_section(
         lines.append(
             f"- US Equities, Futures & Macro Rates Benchmarks (SPY / QQQ / ES=F / NQ=F / DXY / US10Y 24h Delta): {mb_bench_line}"
         )
-    if not is_equities_scope:
+    if not is_equities_scope and (delta_plan is None or delta_plan.should_show("etf_flows")):
         etf_flows = _resolve_macro_sensor(sensors, macro, "etf_flows", ps=ps)
         if etf_flows:
             etf_s = format_etf_flows_summary_line(etf_flows) or str(etf_flows.get("summary_line") or "").strip()
             if etf_s:
+                etf_tag = delta_plan.tag_for("etf_flows") if delta_plan is not None else ""
                 lines.append(
-                    f"- US Spot Crypto ETF Net Flows (Farside Daily): {etf_s}{_age_sfx(etf_flows, parens=True, now_ts=ref_now)}"
+                    f"- US Spot Crypto ETF Net Flows (Farside Daily){etf_tag}: {etf_s}{_age_sfx(etf_flows, parens=True, now_ts=ref_now)}"
                 )
-    if breaking_news:
-        lines.append("- Live Breaking News Feed (cachedb/macro/news_feed_collect.json, 1m refresh):")
-        for hn in breaking_news:
-            lines.append(f"  * {hn.get('title')}{_age_sfx(hn, parens=True, now_ts=ref_now)}")
+    if breaking_news and (delta_plan is None or delta_plan.should_show("breaking_news")):
+        if delta_plan is not None and delta_plan.new_news_titles is not None:
+            shown_news = [
+                hn for hn in breaking_news
+                if isinstance(hn, dict) and str(hn.get("title") or "").strip() in delta_plan.new_news_titles
+            ]
+            if shown_news:
+                om_n = safe_int(getattr(delta_plan, "omitted_news_count", 0), 0)
+                prior_sfx = f"; {om_n} prior unchanged in thread" if om_n > 0 else ""
+                lines.append(f"- Live Breaking News Feed [{len(shown_news)} NEW{prior_sfx}]:")
+                for hn in shown_news:
+                    lines.append(f"  * {hn.get('title')}{_age_sfx(hn, parens=True, now_ts=ref_now)}")
+        else:
+            lines.append("- Live Breaking News Feed (cachedb/macro/news_feed_collect.json, 1m refresh):")
+            for hn in breaking_news:
+                lines.append(f"  * {hn.get('title')}{_age_sfx(hn, parens=True, now_ts=ref_now)}")
     return lines
 
 
@@ -1645,6 +1678,7 @@ def _format_portfolio_section(
     max_usd: float = 2000.0,
     include_macro_benchmarks: bool = True,
     now_ts: Optional[float] = None,
+    delta_plan: Optional[Any] = None,
 ) -> List[str]:
     """Format Section 3C (Spot Wallet Balances, Tradable Positions, Cycle Cost Anchors & Last Fills)."""
     scope_spec = resolve_scope_presentation(asset_scope)
@@ -1771,37 +1805,49 @@ def _format_portfolio_section(
                 f"    - [{pl.get('venue')}] {pl.get('symbol')} {pl.get('side')}{entry_s} "
                 f"({', '.join(meta_p)}): {', '.join(p_parts)} [{pl.get('status', 'ACTIVE')}]"
             )
-    if sc_line := format_ai_decision_scorecard_line(view.get("ai_decision_scorecard")):
+    if (delta_plan is None or delta_plan.should_show("scorecard")) and (
+        sc_line := format_ai_decision_scorecard_line(view.get("ai_decision_scorecard"))
+    ):
+        sc_tag = delta_plan.tag_for("scorecard") if delta_plan is not None else ""
+        if sc_tag and ": " in sc_line:
+            sc_line = sc_line.replace(": ", f"{sc_tag}: ", 1)
         lines.append(f"  * {sc_line}")
-    if cal_line := format_ai_calibration_feedback_line(view.get("ai_calibration_feedback")):
+    if (delta_plan is None or delta_plan.should_show("calibration")) and (
+        cal_line := format_ai_calibration_feedback_line(view.get("ai_calibration_feedback"))
+    ):
+        cal_tag = delta_plan.tag_for("calibration") if delta_plan is not None else ""
+        if cal_tag and ": " in cal_line:
+            cal_line = cal_line.replace(": ", f"{cal_tag}: ", 1)
         lines.append(f"  * {cal_line}")
     for venue_lbl, venue_id, cyc_items in view["venue_cycles"]:
         lines.append(f"  * {venue_lbl} Active Cycle Cost & Drawdown Anchors:")
         for c_sym, c_data in cyc_items:
             lines.append(_format_venue_cycle_line(venue_id, c_sym, c_data))
-    if xs_view := view["kraken_xstocks"]:
+    if (delta_plan is None or delta_plan.should_show("kraken_xstocks")) and (xs_view := view["kraken_xstocks"]):
         xs_payload = xs_view["payload"]
         xs_pair_lbl = xs_view["pair_lbl"]
         xs_ipo_lbl = xs_view["ipo_lbl"]
         xs_sib = xs_view["t212_sibling"]
+        xs_tag = delta_plan.tag_for("kraken_xstocks") if delta_plan is not None else ""
         if scope_s in ("equities", "equity"):
             lines.append(
                 f"  * Cross-Venue Kraken Tokenized Sibling Reference (READ-ONLY in Equities Scope; "
-                f"24/7 {xs_pair_lbl} quote/inventory context for T212 {xs_sib}): {xs_payload}"
+                f"24/7 {xs_pair_lbl} quote/inventory context for T212 {xs_sib}){xs_tag}: {xs_payload}"
             )
         else:
             lines.append(
                 f"  * Kraken Tokenized Equities / xStocks (API-TRADABLE 24/7 on 'kraken' at 0bps maker/taker fee [SELL-ONLY EU API]; "
-                f"{xs_pair_lbl} Active Swing Directive{xs_ipo_lbl} & T212 {xs_sib} context): {xs_payload}"
+                f"{xs_pair_lbl} Active Swing Directive{xs_ipo_lbl} & T212 {xs_sib} context){xs_tag}: {xs_payload}"
             )
     if view["crypto_bellwethers"]:
         lines.append(
             f"  * Cross-Market Live Crypto Telemetry (Raw 24/7 Prices, Multi-Horizon Deltas & Microstructure): {view['crypto_bellwethers']}"
         )
-    if view["equity_bellwethers"]:
+    if (delta_plan is None or delta_plan.should_show("equity_bellwethers")) and view["equity_bellwethers"]:
         eq_hdr_cyc_sfx = "" if scope_s == "crypto" else " & Active Cycles"
+        eq_tag = delta_plan.tag_for("equity_bellwethers") if delta_plan is not None else ""
         lines.append(
-            f"  * Cross-Market US Equities Telemetry (Live/Extended & T212 Quotes, Multi-Horizon Deltas{eq_hdr_cyc_sfx}): {view['equity_bellwethers']}"
+            f"  * Cross-Market US Equities Telemetry (Live/Extended & T212 Quotes, Multi-Horizon Deltas{eq_hdr_cyc_sfx}){eq_tag}: {view['equity_bellwethers']}"
         )
     mb_bench_3c = (
         _extract_macro_benchmarks_line(
@@ -1819,8 +1865,9 @@ def _format_portfolio_section(
         lines.append(
             f"  * Macro & US Equities Live Correlation Index (SPY / QQQ / ES=F / NQ=F / DXY / US10Y 24h Delta): {mb_bench_3c}"
         )
-    if ps.get("hyperliquid_readonly"):
-        lines.append(f"  * Hyperliquid Spot/Perp Equity Summary: {ps['hyperliquid_readonly']}")
+    if (delta_plan is None or delta_plan.should_show("hyperliquid_readonly")) and ps.get("hyperliquid_readonly"):
+        hl_tag = delta_plan.tag_for("hyperliquid_readonly") if delta_plan is not None else ""
+        lines.append(f"  * Hyperliquid Spot/Perp Equity Summary{hl_tag}: {ps['hyperliquid_readonly']}")
     now_ms = math.trunc(resolve_now_ts(now_ts) * 1000)
     obs_only_syms = observe_only_registry_symbols()
     active_pos_syms = {
@@ -1853,7 +1900,12 @@ def _format_portfolio_section(
                 and (not s_k or s_k not in active_pos_syms)
             ):
                 continue
-            lines.append(_format_recent_order_line(sym, oinfo, now_ms))
+            if delta_plan is not None and not delta_plan.should_show_recent_order(str(sym)):
+                continue
+            ro_line = _format_recent_order_line(sym, oinfo, now_ms)
+            if delta_plan is not None and (ro_tag := delta_plan.recent_order_tag(str(sym))) and ": " in ro_line:
+                ro_line = ro_line.replace(": ", f"{ro_tag}: ", 1)
+            lines.append(ro_line)
     if view["clean_last_cycle_execution_status"]:
         lines.append(
             f"  * Last Cycle Execution Status \u2014 last_cycle_execution_status: {view['clean_last_cycle_execution_status']}"

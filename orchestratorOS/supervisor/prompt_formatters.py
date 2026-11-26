@@ -182,6 +182,7 @@ def build_supervisor_prompt(
     max_notional_usd: Optional[float] = None,
     min_confidence: Optional[float] = None,
     compact_rules: bool = False,
+    delta_plan: Optional[Any] = None,
     **_extra: Any,
 ) -> str:
     """Build the topic-specific prompt for Gemini (auto_technical_repair or auto_*trade_executor)."""
@@ -199,7 +200,7 @@ def build_supervisor_prompt(
         if eval_now_ts is not None
         else datetime.now(ZoneInfo("Europe/Bucharest"))
     )
-    now_ts_str = clock_dt.strftime("%Y-%m-%d %H:%M:%S %Z").strip()
+    now_ts_str = clock_dt.strftime("%Y-%m-%d %H:%M:%S %Z (%a)").strip()
     context_items: List[str] = [
         f"### 0. RUN TIMESTAMP & OPERATIONAL CLOCK: {now_ts_str}\n"
     ]
@@ -231,9 +232,16 @@ def build_supervisor_prompt(
             age_tokens.append(f"{k}={v}s{stale_tag}")
         if age_tokens:
             context_items.append(f"- Snapshot Domain Ages: {', '.join(age_tokens)}")
+    if not is_pure_sre and delta_plan is not None:
+        context_items.extend(delta_plan.format_section0_lines())
     if not is_pure_sre:
         context_items.extend(
-            _format_macro_and_news_section(sensors, getattr(spec, "asset_scope", "all"), now_ts=eval_now_ts)
+            _format_macro_and_news_section(
+                sensors,
+                getattr(spec, "asset_scope", "all"),
+                now_ts=eval_now_ts,
+                delta_plan=delta_plan,
+            )
         )
     if spec.can_self_heal:
         context_items.extend(_format_sre_and_fleet_section(sensors, logs, lookback_hours))
@@ -276,6 +284,7 @@ def build_supervisor_prompt(
                 max_usd=max_usd,
                 include_macro_benchmarks=False,
                 now_ts=eval_now_ts,
+                delta_plan=delta_plan,
             )
         )
     if not is_pure_sre and focus_symbols:
@@ -502,7 +511,7 @@ def build_supervisor_prompt(
             + compact_entry_bullet
             + "- Honor user chat instructions/overrides strictly for their stated instrument, action, and timeframe.\n"
             "- Format your response in TWO parts:\n"
-            "  1) Concise Markdown in **Romanian** (`### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`): "
+            "  1) Concise Markdown in **Romanian** (`### \u23f1\ufe0f Raport Execu\u021bie [YYYY-MM-DD HH:MM:SS EET]`): "
             f"on routine pure `HOLD` cycles (no BUY/SELL/cancel, no Section 4 priority symbols, no user chat), output ONLY "
             f"2-3 ultra-compact bullets (NAV + free cash, 1-line market pulse, HOLD rationale; omit {unit_by_unit} tables); "
             f"otherwise provide the concise {unit_by_unit} Romanian breakdown.\n"
@@ -528,7 +537,7 @@ def build_supervisor_prompt(
             "Do NOT edit or modify workspace files directly with tools; propose all fixes exclusively in `code_remediation`.\n",
             "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
             "  1) A concise, well-structured Markdown report in **Romanian** strictly covering technical & SRE health "
-            "with the cycle timestamp in the main header (e.g. `### \U0001f6e0\ufe0f Raport Audit Sistem [HH:MM:SS EET]`) "
+            "with the cycle timestamp in the main header (e.g. `### \U0001f6e0\ufe0f Raport Audit Sistem [YYYY-MM-DD HH:MM:SS EET]`) "
             "(bullet points for: Starea Flotei, Bo\u021bilor, Sistemului Linux & VPN (wgpia0) & Loguri, "
             "Conectivitate Internet & Audit Configura\u021bii, Erori Persistente Nerezolvate, \u0219i "
             "Ac\u021biuni de Remediere Cod/Config & Reboot Bo\u021bi/Module/Flot\u0103/Sistem). "
@@ -542,7 +551,7 @@ def build_supervisor_prompt(
             + "\n\n",
             "- Keep this thread focused on market analysis, portfolio management, and autonomous BUY/SELL execution across venues.\n",
             "- Format your response in TWO parts:\n"
-            "  1) A concise Markdown report in **Romanian** with cycle timestamp header (`### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`):\n"
+            "  1) A concise Markdown report in **Romanian** with cycle timestamp header (`### \u23f1\ufe0f Raport Execu\u021bie [YYYY-MM-DD HH:MM:SS EET]`):\n"
             "     - On routine pure `HOLD` cycles (no BUY/SELL/cancel action, no Section 4 priority symbols, no user chat message), "
             f"keep the report ULTRA-COMPACT (2-3 short bullet lines max: NAV + free cash, 1-line market pulse, HOLD rationale; omit {unit_tables}).\n"
             "     - On BUY/SELL/cancel, Section 4 priority symbols, or user chat replies, include concise bullet points for: "

@@ -150,6 +150,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         self._openai_compat_models = openai_compat_models
         self._cache: Dict[Any, tuple[Any, ...]] = {}
         self.last_model_used: Optional[str] = None
+        self.last_used_warm_resume: bool = False
 
     def _cache_get(
         self,
@@ -1066,6 +1067,12 @@ class GeminiClient(GeminiQuotaRouterMixin):
 
                 if output:
                     self.last_model_used = effective_model_used
+                    self.last_used_warm_resume = bool(
+                        use_warm_resume
+                        and not resume_abandoned
+                        and not replaced_conversation
+                        and eff_conv_id is not None
+                    )
                     if attempt_idx > 0 or effective_model_used != selected_model:
                         logger.warning(
                             "LLM query succeeded using fallback model '%s' (primary '%s' unavailable/failed).",
@@ -1351,6 +1358,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
     ) -> Optional[str]:
         """Query Gemini with a prompt and return the text response."""
         self.last_model_used = None
+        self.last_used_warm_resume = False
         if not isinstance(prompt, str) or not prompt.strip():
             return None
         now = time.time()

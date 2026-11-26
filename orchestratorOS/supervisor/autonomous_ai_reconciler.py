@@ -65,12 +65,14 @@ from intelligence.sentiment.openai_compat_rest import strip_openai_compat_prefix
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     MarketAndPortfolioSnapshotOrchestrator,
 )
-from orchestratorOS.agy.topics import has_pending_ui_turn
+from intelligence.sentiment.evaluators.prompt_delta_evaluator import evaluate_prompt_delta_plan
+from orchestratorOS.agy.topics import get_topic_thread_state, has_pending_ui_turn
 from orchestratorOS.supervisor.crypto_executor_delta_gate import (
     evaluate_crypto_executor_delta_gate,
     is_extreme_stakes_delta_gate_wakeup,
     is_urgent_delta_gate_wakeup,
 )
+from providers.intent_state import eval_doc_was_actionable
 from state_io import read_json_recovering
 from orchestratorOS.lib.technical_repair_ssot import (
     apply_code_patch_safely,
@@ -135,6 +137,7 @@ class SupervisorAuditReport:
     notification_sent: bool = False
     model_used: str = ""
     delta_gate_meta: Dict[str, Any] = field(default_factory=dict)
+    prompt_delta_state: Dict[str, Any] = field(default_factory=dict)
     completed_ts: Optional[float] = None
 
 
@@ -163,6 +166,7 @@ class AutonomousAIReconciler:
         self._intent_gateway = intent_gateway
         self._last_model_used: str = ""
         self._last_query_succeeded: bool = False
+        self._last_prompt_delta_state: Dict[str, Any] = {}
 
         # Parse decoupled configuration strictly from config files without fallbacks
         conf = load_key_value_conf(self.workspace_dir, _ROOT_DIR)
@@ -282,6 +286,9 @@ class AutonomousAIReconciler:
         escalate_high_effort: bool = False,
         urgent_escalation: Optional[bool] = None,
         extreme_escalation: Optional[bool] = None,
+        prev_prompt_delta_state: Optional[Dict[str, Any]] = None,
+        ui_turn_pending: bool = False,
+        prev_eval_was_actionable: bool = False,
     ) -> Dict[str, Any]:
         """Feeds topic-appropriate telemetry to Gemini; the topic spec bounds both prompt scope and side effects."""
         spec = topic_spec(topic_key)
@@ -293,33 +300,6 @@ class AutonomousAIReconciler:
             min_usd = safe_pos_float(getattr(gw, "min_notional_usd", None), default=10.0) or 10.0
             min_conf = safe_nonneg_float(getattr(gw, "min_confidence", None), default=0.85)
 
-        prompt = build_supervisor_prompt(
-            sensors,
-            logs,
-            spec,
-            self.lookback_hours,
-            focus_symbols=focus_symbols,
-            min_usd=min_usd,
-            max_usd=max_usd,
-            min_conf=min_conf,
-            compact_rules=False,
-        )
-        resume_prompt: Optional[str] = None
-        if spec.can_trade and not spec.can_self_heal:
-            resume_prompt = build_supervisor_prompt(
-                sensors,
-                logs,
-                spec,
-                self.lookback_hours,
-                focus_symbols=focus_symbols,
-                min_usd=min_usd,
-                max_usd=max_usd,
-                min_conf=min_conf,
-                compact_rules=True,
-            )
-
-        model_override: Optional[str] = None
-        allow_cli_fallback = False
         effective_escalate = _parse_bool_flag(escalate_high_effort, False) or bool(
             focus_symbols and parse_symbol_list(focus_symbols)
         )
@@ -334,6 +314,74 @@ class AutonomousAIReconciler:
             if extreme_escalation is not None
             else is_extreme_stakes_delta_gate_wakeup("", sensors=sensors)
         )
+
+        full_delta_plan = None
+        warm_delta_plan = None
+        if spec.can_trade and not spec.can_self_heal:
+            cur_cid, cur_comp_step, cur_is_warm = "", 0, False
+            try:
+                cur_cid, cur_comp_step, cur_is_warm = get_topic_thread_state(topic_key)
+            except Exception:
+                pass
+            scope_s = getattr(spec, "asset_scope", "all")
+            eval_ts = safe_pos_float(getattr(sensors, "evaluated_at_ts", None), default=None)
+            full_delta_plan = evaluate_prompt_delta_plan(
+                sensors,
+                asset_scope=scope_s,
+                now_ts=eval_ts,
+                min_usd=min_usd,
+                max_usd=max_usd,
+                is_warm_resume=False,
+                conversation_id=cur_cid,
+                compacted_at_step=cur_comp_step,
+            )
+            warm_delta_plan = evaluate_prompt_delta_plan(
+                sensors,
+                asset_scope=scope_s,
+                now_ts=eval_ts,
+                min_usd=min_usd,
+                max_usd=max_usd,
+                is_warm_resume=cur_is_warm,
+                prev_state=prev_prompt_delta_state,
+                conversation_id=cur_cid,
+                compacted_at_step=cur_comp_step,
+                escalate_high_effort=effective_escalate,
+                urgent_escalation=effective_urgent,
+                extreme_escalation=effective_extreme,
+                ui_turn_pending=bool(ui_turn_pending),
+                focus_symbols=focus_symbols,
+                prev_eval_was_actionable=bool(prev_eval_was_actionable),
+            )
+
+        prompt = build_supervisor_prompt(
+            sensors,
+            logs,
+            spec,
+            self.lookback_hours,
+            focus_symbols=focus_symbols,
+            min_usd=min_usd,
+            max_usd=max_usd,
+            min_conf=min_conf,
+            compact_rules=False,
+            delta_plan=full_delta_plan,
+        )
+        resume_prompt: Optional[str] = None
+        if spec.can_trade and not spec.can_self_heal:
+            resume_prompt = build_supervisor_prompt(
+                sensors,
+                logs,
+                spec,
+                self.lookback_hours,
+                focus_symbols=focus_symbols,
+                min_usd=min_usd,
+                max_usd=max_usd,
+                min_conf=min_conf,
+                compact_rules=True,
+                delta_plan=warm_delta_plan,
+            )
+
+        model_override: Optional[str] = None
+        allow_cli_fallback = False
         topic_override_key = getattr(spec, "override_env_key", None) or ""
         if (
             resolved_topic in ("auto_cryptotrade_executor", "auto_sharetrade_executor")
@@ -402,6 +450,7 @@ class AutonomousAIReconciler:
         now_ts_str = time.strftime("%Y-%m-%d %H:%M:%S %Z").strip()
         self._last_model_used = ""
         self._last_query_succeeded = False
+        self._last_prompt_delta_state = {}
         query_kwargs: Dict[str, Any] = {
             "subtitle": f"{self.mode.upper()} [{now_ts_str}]",
             "timeout_sec": call_timeout,
@@ -426,6 +475,22 @@ class AutonomousAIReconciler:
             return default_supervisor_fallback_plan(spec, logs)
 
         self._last_query_succeeded = True
+        if full_delta_plan is not None:
+            used_warm = bool(getattr(self.gemini_auditor, "last_used_warm_resume", False))
+            chosen_plan = (
+                warm_delta_plan
+                if (used_warm and warm_delta_plan is not None)
+                else full_delta_plan
+            )
+            chosen_state = dict(chosen_plan.next_state)
+            try:
+                post_cid, post_comp_step, _ = get_topic_thread_state(topic_key)
+                if post_cid:
+                    chosen_state["conversation_id"] = post_cid
+                    chosen_state["compacted_at_step"] = post_comp_step
+            except Exception:
+                pass
+            self._last_prompt_delta_state = chosen_state
         return resp
 
     def apply_reconciliation(
@@ -570,6 +635,23 @@ class AutonomousAIReconciler:
         urgent_escalation = False
         extreme_escalation = False
         delta_gate_meta: Dict[str, Any] = {}
+        ui_turn_pending = False
+        prev_eval: Dict[str, Any] = {}
+        prev_prompt_delta_state: Dict[str, Any] = {}
+        prev_eval_was_actionable = False
+        if spec.can_trade and not spec.can_self_heal:
+            _read_json = _resolve_repair_json_reader(read_json_recovering)
+            eval_disk_path = _resolve_topic_cache_path(self.cache_dir, f"{topic_key}_eval.json")
+            prev_eval_raw = (
+                _read_json(eval_disk_path, default={})
+                if (os.path.exists(eval_disk_path) or os.path.exists(f"{eval_disk_path}.previous"))
+                else {}
+            )
+            prev_eval = prev_eval_raw if isinstance(prev_eval_raw, dict) else {}
+            raw_pds = prev_eval.get("prompt_delta_state")
+            if isinstance(raw_pds, dict):
+                prev_prompt_delta_state = raw_pds
+            prev_eval_was_actionable = eval_doc_was_actionable(prev_eval)
         if resolved_topic in ("auto_cryptotrade_executor", "auto_sharetrade_executor"):
             delta_gate_enabled = bool_env("AI_DELTA_GATE_ENABLED", True)
             derived_itvs = resolve_derived_telemetry_intervals()
@@ -583,15 +665,6 @@ class AutonomousAIReconciler:
             max_idle_sec = exec_interval_sec * max_idle_mult
             min_move_pct = safe_pos_float(optional_env("AI_DELTA_GATE_MIN_PRICE_MOVE_PCT", ""), default=0.45) or 0.45
             high_effort_move_pct = safe_pos_float(optional_env("AI_HIGH_EFFORT_PRICE_MOVE_PCT", ""), default=1.25) or 1.25
-            _read_json = _resolve_repair_json_reader(read_json_recovering)
-            eval_disk_path = _resolve_topic_cache_path(self.cache_dir, f"{topic_key}_eval.json")
-            prev_eval_raw = (
-                _read_json(eval_disk_path, default={})
-                if (os.path.exists(eval_disk_path) or os.path.exists(f"{eval_disk_path}.previous"))
-                else {}
-            )
-            prev_eval = prev_eval_raw if isinstance(prev_eval_raw, dict) else {}
-            ui_turn_pending = False
             if delta_gate_enabled:
                 try:
                     ui_turn_pending = has_pending_ui_turn(topic_key)
@@ -634,6 +707,7 @@ class AutonomousAIReconciler:
                     notification_sent=False,
                     model_used="delta_gate_skip",
                     delta_gate_meta=dict(prev_meta),
+                    prompt_delta_state=dict(prev_prompt_delta_state),
                 )
                 return self.write_audit_artifact(skip_report, persist_eval=False)
             elif delta_gate_enabled:
@@ -652,6 +726,9 @@ class AutonomousAIReconciler:
             escalate_high_effort=escalate_high_effort,
             urgent_escalation=urgent_escalation,
             extreme_escalation=extreme_escalation,
+            prev_prompt_delta_state=prev_prompt_delta_state,
+            ui_turn_pending=ui_turn_pending,
+            prev_eval_was_actionable=prev_eval_was_actionable,
         )
         cat_audit = (
             sensors.system_and_vpn.get("llm_catalog_audit")
@@ -737,6 +814,11 @@ class AutonomousAIReconciler:
             tests_passed=tests_passed,
             model_used=model_used,
             delta_gate_meta=delta_gate_meta if self._last_query_succeeded else {},
+            prompt_delta_state=(
+                self._last_prompt_delta_state
+                if self._last_query_succeeded
+                else dict(prev_prompt_delta_state)
+            ),
             completed_ts=time.time(),
         )
         # SRE/system/bot-error notifications (ntfy-server / ntfy-error) belong strictly to auto_technical_repair
