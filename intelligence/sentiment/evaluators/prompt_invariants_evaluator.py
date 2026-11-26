@@ -154,7 +154,7 @@ _RANGE_EXT_RE = re.compile(
 )
 _RANGE_15M_RE = re.compile(r"15m_range=\[([0-9.]+),\s*([0-9.]+)\]")
 _BOTTOM_6H_RE = re.compile(
-    r"bottom_6h\(prior_low=([0-9.]+),\s*1h_low=([0-9.]+)(?:,\s*(higher_low_pct|reclaim_pct)=([+-]?[0-9.]+)%)?\)"
+    r"bottom_6h\(prior_low=([0-9.]+),\s*1h_low=([0-9.]+)(?:,\s*(higher_low_pct|reclaim(?:_pct)?)=([+-]?[0-9.]+)%)?\)"
 )
 _HORIZON_CHG_RE = re.compile(r"(?:^|[\s|,(])(15m|1h|6h|24h|7d)=([+-][0-9.]+)%")
 _VS_BTC_BLOCK_RE = re.compile(r"vs_btc\(([^)]+)\)")
@@ -226,6 +226,7 @@ _NUMERIC_HYGIENE_SPECS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("NEG_ZERO", re.compile(r"(?:-0\.0+%|-\$0\.00\b)")),
     ("SCI_NOTATION", re.compile(r"(?:[=:(,\[\s|])\d+(?:\.\d+)?[eE][+-]\d+\b")),
     ("DOUBLE_UNIT", re.compile(r"(?:%%|\$\$)")),
+    ("RAW_PYTHON_DICT", re.compile(r"\{'[A-Za-z0-9_]+':")),
 )
 
 

@@ -2199,6 +2199,30 @@ def _format_retry_queue_item(item: Any) -> str:
     return f"{hdr} ({', '.join(details)})" if details else hdr
 
 
+def _format_compact_kv_value(val: Any) -> str:
+    """Format nested runtime state dicts/lists into clean key=val notation without raw Python dict quotes."""
+    if isinstance(val, dict):
+        parts: List[str] = []
+        for k, v in val.items():
+            if v is None:
+                continue
+            if isinstance(v, dict):
+                inner = _format_compact_kv_value(v)
+                parts.append(f"{k}({inner})" if inner else f"{k}()")
+            elif isinstance(v, list):
+                parts.append(f"{k}=[{', '.join(_format_compact_kv_value(x) for x in v if x is not None)}]")
+            else:
+                parts.append(f"{k}={_format_compact_kv_value(v)}")
+        return ", ".join(parts)
+    if isinstance(val, list):
+        return f"[{', '.join(_format_compact_kv_value(x) for x in val if x is not None)}]"
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    if isinstance(val, (int, float)):
+        return _fmt_plain_float(val)
+    return str(val)
+
+
 def _format_kraken_xstocks_line(xs_view: Dict[str, Any], *, scope_s: str, tag: str = "") -> str:
     """Format Kraken tokenized xStocks cross-venue context concisely without raw dict repr."""
     xs = xs_view.get("payload")
@@ -2253,10 +2277,10 @@ def _format_kraken_xstocks_line(xs_view: Dict[str, Any], *, scope_s: str, tag: s
             sc_parts.append(f"realized={rp_s}{cum_s}")
         parts.append(f"t212_sibling({xs_sib}: {', '.join(sc_parts)})")
     if isinstance(other_sibs := xs.get("other_t212_sibling_cycles"), dict) and other_sibs:
-        parts.append(f"other_t212_siblings={other_sibs}")
+        parts.append(f"other_t212_siblings({_format_compact_kv_value(other_sibs)})")
     if xs.get("watched_ipo_alerts"):
-        parts.append(f"ipo_alerts={xs['watched_ipo_alerts']}")
-    body = " | ".join(parts) if parts else str(xs)
+        parts.append(f"ipo_alerts={_format_compact_kv_value(xs['watched_ipo_alerts'])}")
+    body = " | ".join(parts) if parts else _format_compact_kv_value(xs)
     if scope_s in ("equities", "equity"):
         return (
             f"  * Cross-Venue Kraken Tokenized Sibling Reference (READ-ONLY in Equities Scope; "
@@ -2295,7 +2319,9 @@ def _format_cross_market_equities_table(
         src = str(ev.get("quote_source") or "-")
         age_m = safe_float(ev.get("quote_age_min"), None)
         src_s = f"{src} ({age_m:.0f}m)" if age_m is not None else src
-        cyc_s = f" {ev.get('t212_cycle', '-')} |" if has_cycle else ""
+        cyc_raw = ev.get("t212_cycle")
+        cyc_val = _format_compact_kv_value(cyc_raw) if isinstance(cyc_raw, (dict, list)) else (cyc_raw if cyc_raw is not None else "-")
+        cyc_s = f" {cyc_val} |" if has_cycle else ""
         out.append(f"    | {sym} | {px_s} | {c24} | {c7d} | {p24} | {ext} | {cl_s} | {src_s} |{cyc_s}")
     return out
 
@@ -2346,7 +2372,7 @@ def _format_hyperliquid_summary_line(hl_ro: Any, *, tag: str = "") -> str:
     if (q_hl := safe_float(hl_ro.get("qty"), 0.0) or 0.0) > 0.0:
         val_s = f" (${safe_float(hl_ro.get('value_usd'), 0.0):,.2f})" if hl_ro.get("value_usd") is not None else ""
         parts.append(f"qty={_fmt_plain_float(q_hl)}{val_s}")
-    body = ", ".join(parts) if parts else str(hl_ro)
+    body = ", ".join(parts) if parts else _format_compact_kv_value(hl_ro)
     return f"  * Hyperliquid Spot/Perp Equity Summary{tag}: {body}"
 
 
@@ -2699,6 +2725,14 @@ def _format_portfolio_section(
             lines.append(f"  * {st_label}:")
             for it in st_val:
                 lines.append(f"    - {_format_retry_queue_item(it)}")
+        elif isinstance(st_val, dict):
+            lines.append(f"  * {st_label}:")
+            for sk, sv in st_val.items():
+                lines.append(f"    - {sk}: {_format_compact_kv_value(sv)}")
+        elif isinstance(st_val, list):
+            lines.append(f"  * {st_label}:")
+            for it in st_val:
+                lines.append(f"    - {_format_compact_kv_value(it)}")
         else:
             lines.append(f"  * {st_label}: {st_val}")
     return lines

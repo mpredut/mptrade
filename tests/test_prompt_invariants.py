@@ -1129,6 +1129,40 @@ def test_cycle14_section0_recent_order_new_fill_rules_parity_and_active_plan_rr_
     assert "[binance] ARBUSDC BUY (qty=63039.4, px=0.110611, kind=trend_confirmed_up, attempts=1, reason=qty_zero_after_policy, age=19.9m)" in sec1_lines
     assert audit_rendered_prompt_text(sec1_lines) == []
 
+    # 6. Bot runtime states (assetguardian / monitortrades / smart_stop_loss) render without raw Python dicts,
+    #    RAW_PYTHON_DICT hygiene catches any leaked dict repr, and _BOTTOM_6H_RE validates live `reclaim=` math.
+    rt_lines = "\n".join(
+        _format_portfolio_section(
+            {
+                "assetguardian_state": {"BTCUSDC": {"buy": {"active": True, "tier": 1, "drawdown_pct": -4.2}}},
+                "monitortrades_active_state": {"tp_ride_state": {"BTCUSDC": {"peak_px": 61200.0}}},
+                "smart_stop_loss_state": {"TAOUSDC": {"armed": True, "trigger_px": 175.0}},
+            },
+            asset_scope="crypto",
+            now_ts=t0,
+        )
+    )
+    assert "BTCUSDC: buy(active=true, tier=1, drawdown_pct=-4.2)" in rt_lines
+    assert "tp_ride_state: BTCUSDC(peak_px=61200.0)" in rt_lines
+    assert "TAOUSDC: armed=true, trigger_px=175.0" in rt_lines
+    assert audit_rendered_prompt_text(rt_lines) == []
+    assert any(
+        v.code == "PROMPT_NUMERIC_HYGIENE" and v.subject == "RAW_PYTHON_DICT"
+        for v in audit_rendered_prompt_text("LIVE TELEMETRY SNAPSHOT:\n  * Active Queued Retry Orders: [{'venue': 'binance'}]\n")
+    )
+    good_reclaim = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "  * HYPEUSDC: Price=$60.763\n"
+        "    - Trend: 24h_range=[56.281, 62.785] pos_24h=68.9% (dd_high=-3.22%, bounce_low=+7.96%, span=11.56%) "
+        "| 15m_range=[60.442, 60.892] pos_15m=71.3% | bottom_6h(prior_low=59.6365, 1h_low=59.4845, reclaim=+1.89%)\n"
+    )
+    assert audit_rendered_prompt_text(good_reclaim) == []
+    bad_reclaim = good_reclaim.replace("reclaim=+1.89%", "reclaim=+8.50%")
+    assert any(
+        v.code == "PROMPT_BOTTOM_STRUCTURE_MATH" and v.subject == "HYPEUSDC:reclaim"
+        for v in audit_rendered_prompt_text(bad_reclaim)
+    )
+
 
 def test_full_mathematical_audit_snapshot_and_rendered_prompt_invariants() -> None:
     """Verify full mathematical audit suite across snapshot and rendered prompt text (clean passes, every corruption caught)."""
