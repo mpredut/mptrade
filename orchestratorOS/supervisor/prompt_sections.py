@@ -1054,6 +1054,7 @@ def _format_microstructure_section(
     scope_spec = resolve_scope_presentation(asset_scope)
     lines = [scope_spec.microstructure_hdr]
     derived_3b_itvs = resolve_derived_telemetry_intervals()
+    rendered_agg_spot: set[tuple[str, str]] = set()
     for row in evaluate_microstructure_prompt_view(microstructure, prices_and_trends, now_ts=now_ts):
         sym = row["sym"]
         sib_3b = row["sib_3b"]
@@ -1126,9 +1127,13 @@ def _format_microstructure_section(
         if show_spot_cvd:
             sp_cvd = safe_float(minfo.get("spot_cvd_15m_usd"), 0.0)
             cvd_sfx += f", spot_cvd_15m={_fmt_signed_usd(sp_cvd)}{format_spot_cvd_source_tag(minfo)}"
-        if not ob_is_frozen and (
-            agg_sp_part := format_agg_spot_cvd_part(minfo, _fmt_signed_usd, _fmt_liq_usd)
+        if (
+            shared_perp_sym is None
+            and not ob_is_frozen
+            and (agg_sp_part := format_agg_spot_cvd_part(minfo, _fmt_signed_usd, _fmt_liq_usd))
+            and (b_canon_3b, agg_sp_part) not in rendered_agg_spot
         ):
+            rendered_agg_spot.add((b_canon_3b, agg_sp_part))
             cvd_sfx += f", {agg_sp_part}"
         if sp_vol_parts := format_spot_volume_rvol_parts(minfo, _fmt_liq_usd):
             cvd_sfx += f", {', '.join(sp_vol_parts)}"
@@ -1225,9 +1230,12 @@ def _format_microstructure_section(
             sib_sp_parts: List[str] = []
             if not ob_is_frozen and (sib_sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
                 sib_sp_parts.append(f"spot_cvd_15m={_fmt_signed_usd(sib_sp_cvd)}[real_spot]")
-            if not ob_is_frozen and (
-                sib_agg_part := format_agg_spot_cvd_part(minfo, _fmt_signed_usd, _fmt_liq_usd)
+            if (
+                not ob_is_frozen
+                and (sib_agg_part := format_agg_spot_cvd_part(minfo, _fmt_signed_usd, _fmt_liq_usd))
+                and (b_canon_3b, sib_agg_part) not in rendered_agg_spot
             ):
+                rendered_agg_spot.add((b_canon_3b, sib_agg_part))
                 sib_sp_parts.append(sib_agg_part)
             if not ob_is_frozen:
                 sib_sp_parts.extend(format_spot_volume_rvol_parts(minfo, _fmt_liq_usd))

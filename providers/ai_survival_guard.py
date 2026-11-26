@@ -13,6 +13,7 @@ from botcore import (
     _parse_bool_flag,
     clean_order_id,
     clean_scalar_str,
+    clean_scale,
     clean_upper_scalar,
     extract_current_price_item,
     extract_order_price,
@@ -36,6 +37,7 @@ from .ai_circuit_breaker import (
     DEFAULT_FLIP_COOLDOWN_MIN,
     DEFAULT_FLIP_MIN_EDGE_PCT,
     DEFAULT_MAX_FLIPS_6H,
+    DEFAULT_MIN_TARGET_RR,
     DEFAULT_SCORECARD_COOLDOWN_HOURS,
     DEFAULT_SCORECARD_MAX_LOSS_STREAK,
     DEFAULT_SCORECARD_WINDOW_TRADES,
@@ -51,6 +53,7 @@ from .intent_state import (
     _extract_intent_id,
     _intent_executed_notional_usd,
     _intent_venue_symbol_side_key,
+    extract_intent_horizon_hours,
     extract_intent_order_type,
     extract_intent_primary_order_id,
     extract_intent_side,
@@ -505,6 +508,8 @@ def build_normalized_filled_ai_intent_row(
         "rt_fee_bps": rt_bps,
         "invalidation_px": inv_px,
         "target_px": tgt_px,
+        "horizon_h": extract_intent_horizon_hours(it),
+        "confidence": clean_scale(it.get("confidence"), default=None, allow_percent=True) if it.get("confidence") is not None else None,
         "has_plan": _is_actionable_filled_trade_plan(venue, symbol, side, inv_px, tgt_px),
         "resolved_plan_status": extract_frozen_trade_plan_status(it),
     }
@@ -691,18 +696,21 @@ def evaluate_ai_target_ev_guard(
     venue: str,
     price: float,
     target_ev_fee_mult: float = DEFAULT_TARGET_EV_FEE_MULT,
+    min_target_rr: float = DEFAULT_MIN_TARGET_RR,
     round_trip_fee_bps: Optional[float] = None,
 ) -> tuple[bool, str, dict[str, Any]]:
-    """Pure 4B-1 guard blocking ``urgency='NORMAL'`` intents whose explicit ``target_px`` has negative net EV.
+    """Pure 4B-1 guard blocking ``urgency='NORMAL'`` intents whose explicit ``target_px`` has negative net EV or poor R:R.
 
     Returns ``(allowed, reason, metrics)``.
     - Never blocks intents without an explicit ``target_px`` (e.g. defensive exits or open-ended holds).
     - Never blocks ``urgency == 'HIGH'`` intents.
-    - Blocks only when the gross distance from entry ``price`` to ``target_px`` is strictly below
-      ``max(0.10%, target_ev_fee_mult * venue_round_trip_fee_pct)``.
+    - Blocks when gross distance from entry ``price`` to ``target_px`` is strictly below
+      ``max(0.10%, target_ev_fee_mult * venue_round_trip_fee_pct)``, OR when both ``target_px``
+      and ``invalidation_px`` are set and gross ``reward / risk < min_target_rr`` (e.g. after chasing a REPLACE).
     """
     mult = safe_nonneg_float(target_ev_fee_mult, default=DEFAULT_TARGET_EV_FEE_MULT)
-    if mult <= 0.0:
+    min_rr = safe_nonneg_float(min_target_rr, default=DEFAULT_MIN_TARGET_RR)
+    if mult <= 0.0 and min_rr <= 0.0:
         return True, "", {}
     side = normalize_side(decision) or extract_intent_side(intent)
     if side not in ("BUY", "SELL"):
@@ -713,7 +721,7 @@ def evaluate_ai_target_ev_guard(
     eff_px = safe_pos_float(price, default=0.0) or 0.0
     if eff_px <= 0.0:
         return True, "", {}
-    _, tgt_px = extract_intent_trade_plan_levels(intent, side=side, ref_price=eff_px)
+    inv_px, tgt_px = extract_intent_trade_plan_levels(intent, side=side, ref_price=eff_px)
     if tgt_px is None:
         return True, "", {}
     order_type = extract_intent_order_type(intent)
@@ -725,14 +733,14 @@ def evaluate_ai_target_ev_guard(
         if side == "BUY"
         else ((eff_px - tgt_px) / eff_px) * 100.0
     )
-    min_target_pct = max(_MIN_TARGET_EV_FLOOR_PCT, mult * (rt_bps / 100.0))
+    min_target_pct = max(_MIN_TARGET_EV_FLOOR_PCT, mult * (rt_bps / 100.0)) if mult > 0.0 else 0.0
     metrics: dict[str, Any] = {
         "target_px": tgt_px,
         "target_gross_pct": round(gross_pct, 4),
         "min_target_ev_pct": round(min_target_pct, 4),
         "venue_rt_fee_bps": rt_bps,
     }
-    if gross_pct < min_target_pct:
+    if mult > 0.0 and gross_pct < min_target_pct:
         return (
             False,
             (
@@ -741,6 +749,27 @@ def evaluate_ai_target_ev_guard(
             ),
             metrics,
         )
+    if min_rr > 0.0 and inv_px is not None:
+        risk_pct = (
+            ((eff_px - inv_px) / eff_px) * 100.0
+            if side == "BUY"
+            else ((inv_px - eff_px) / eff_px) * 100.0
+        )
+        if risk_pct > 0.0:
+            rr_ratio = gross_pct / risk_pct
+            metrics["invalidation_px"] = inv_px
+            metrics["risk_pct"] = round(risk_pct, 4)
+            metrics["reward_risk_ratio"] = round(rr_ratio, 3)
+            metrics["min_target_rr"] = round(min_rr, 3)
+            if rr_ratio < min_rr:
+                return (
+                    False,
+                    (
+                        f"ai_poor_rr_plan({symbol}@{venue}:rr={rr_ratio:.2f}<min={min_rr:.2f}, "
+                        f"reward={gross_pct:.2f}%, risk={risk_pct:.2f}%)"
+                    ),
+                    metrics,
+                )
     return True, "", metrics
 
 
@@ -1571,9 +1600,12 @@ def evaluate_filled_trade_plans(
     *,
     price_bars_by_symbol: Optional[Mapping[str, Sequence[Any]]] = None,
     newly_resolved_out: Optional[dict[str, str]] = None,
+    row_outcomes_out: Optional[list[dict[str, Any]]] = None,
+    now_ts: Optional[float] = None,
 ) -> tuple[dict[str, int], dict[str, dict[str, int]], int]:
     """Evaluate every filled intent with a trade plan against frozen status, chronological bars, subsequent fills, and live spot."""
     prices_map = live_prices if isinstance(live_prices, Mapping) else {}
+    eff_now = resolve_now_ts(now_ts)
     empty_side = lambda: {"TARGET_HIT": 0, "INVALIDATED": 0, "CLOSED_EARLY": 0, "ACTIVE": 0}
     status_counts = empty_side()
     by_side = {"BUY": empty_side(), "SELL": empty_side()}
@@ -1590,66 +1622,105 @@ def evaluate_filled_trade_plans(
             if side_k not in ("BUY", "SELL"):
                 continue
             planned_n += 1
-            if frozen_st := extract_frozen_trade_plan_status(row):
-                final_st = frozen_st
-                status_counts[final_st] = status_counts.get(final_st, 0) + 1
-                by_side[side_k][final_st] = by_side[side_k].get(final_st, 0) + 1
-                continue
+            entry_ts = safe_float(row.get("ts"), default=0.0) or 0.0
+            hor_h = safe_pos_float(row.get("horizon_h"), default=None)
             sym_bars = resolve_symbol_price_bars(
                 price_bars_by_symbol, row.get("venue"), row.get("symbol")
             )
-            prev_ts = safe_float(row.get("ts"), default=0.0) or 0.0
-            final_st: Optional[str] = None
-            for nxt in inst_rows[idx + 1:]:
-                nxt_ts = safe_float(nxt.get("ts"), default=0.0) or 0.0
-                if sym_bars:
-                    path_st = evaluate_trade_plan_path_status(
+            spot_px_cached: Optional[float] = None
+            resolved_ts: Optional[float] = None
+            if frozen_st := extract_frozen_trade_plan_status(row):
+                final_st = frozen_st
+            else:
+                prev_ts = entry_ts
+                final_st = None
+                for nxt in inst_rows[idx + 1:]:
+                    nxt_ts = safe_float(nxt.get("ts"), default=0.0) or 0.0
+                    if sym_bars:
+                        path_st = evaluate_trade_plan_path_status(
+                            side_k,
+                            None,
+                            row.get("invalidation_px"),
+                            row.get("target_px"),
+                            start_ts=prev_ts,
+                            end_ts=nxt_ts if nxt_ts > prev_ts else None,
+                            price_bars=sym_bars,
+                            check_spot=False,
+                        )
+                        if path_st in ("TARGET_HIT", "INVALIDATED"):
+                            final_st = path_st
+                            resolved_ts = nxt_ts if nxt_ts > prev_ts else prev_ts
+                            break
+                    st_nxt = evaluate_trade_plan_status(
+                        side_k, nxt.get("px"), row.get("invalidation_px"), row.get("target_px")
+                    )
+                    if st_nxt in ("TARGET_HIT", "INVALIDATED"):
+                        final_st = st_nxt
+                        resolved_ts = nxt_ts if nxt_ts > 0.0 else prev_ts
+                        break
+                    if normalize_side(nxt.get("side")) != side_k:
+                        final_st = "CLOSED_EARLY"
+                        resolved_ts = nxt_ts if nxt_ts > 0.0 else prev_ts
+                        break
+                    if nxt_ts > prev_ts:
+                        prev_ts = nxt_ts
+                if final_st is None:
+                    spot_px_cached = _resolve_live_price_for_symbol(
+                        prices_map, str(row.get("venue") or ""), str(row.get("symbol") or "")
+                    )
+                    st = evaluate_trade_plan_path_status(
                         side_k,
-                        None,
+                        spot_px_cached,
                         row.get("invalidation_px"),
                         row.get("target_px"),
                         start_ts=prev_ts,
-                        end_ts=nxt_ts if nxt_ts > prev_ts else None,
                         price_bars=sym_bars,
-                        check_spot=False,
+                        check_spot=(spot_px_cached is not None and spot_px_cached > 0.0),
                     )
-                    if path_st in ("TARGET_HIT", "INVALIDATED"):
-                        final_st = path_st
-                        break
-                st_nxt = evaluate_trade_plan_status(
-                    side_k, nxt.get("px"), row.get("invalidation_px"), row.get("target_px")
-                )
-                if st_nxt in ("TARGET_HIT", "INVALIDATED"):
-                    final_st = st_nxt
-                    break
-                if normalize_side(nxt.get("side")) != side_k:
-                    final_st = "CLOSED_EARLY"
-                    break
-                if nxt_ts > prev_ts:
-                    prev_ts = nxt_ts
-            if final_st is None:
-                spot_px = _resolve_live_price_for_symbol(
-                    prices_map, str(row.get("venue") or ""), str(row.get("symbol") or "")
-                )
-                st = evaluate_trade_plan_path_status(
-                    side_k,
-                    spot_px,
-                    row.get("invalidation_px"),
-                    row.get("target_px"),
-                    start_ts=prev_ts,
-                    price_bars=sym_bars,
-                    check_spot=(spot_px is not None and spot_px > 0.0),
-                )
-                final_st = st if st in ("TARGET_HIT", "INVALIDATED", "ACTIVE") else "ACTIVE"
-            if (
-                newly_resolved_out is not None
-                and final_st in TERMINAL_TRADE_PLAN_STATUSES
-                and (final_st != "CLOSED_EARLY" or bool(sym_bars))
-                and (row_iid := clean_scalar_str(row.get("intent_id")))
-            ):
-                newly_resolved_out[row_iid] = final_st
+                    final_st = st if st in ("TARGET_HIT", "INVALIDATED", "ACTIVE") else "ACTIVE"
+                    if final_st in ("TARGET_HIT", "INVALIDATED"):
+                        resolved_ts = eff_now
+                if (
+                    newly_resolved_out is not None
+                    and final_st in TERMINAL_TRADE_PLAN_STATUSES
+                    and (final_st != "CLOSED_EARLY" or bool(sym_bars))
+                    and (row_iid := clean_scalar_str(row.get("intent_id")))
+                ):
+                    newly_resolved_out[row_iid] = final_st
             status_counts[final_st] = status_counts.get(final_st, 0) + 1
             by_side[side_k][final_st] = by_side[side_k].get(final_st, 0) + 1
+            if row_outcomes_out is not None:
+                within_hor_st: Optional[str] = None
+                if hor_h is not None and entry_ts > 0.0:
+                    hor_end_ts = entry_ts + hor_h * 3600.0
+                    if sym_bars:
+                        in_win = eff_now <= hor_end_ts
+                        sp = spot_px_cached if spot_px_cached is not None else (
+                            _resolve_live_price_for_symbol(
+                                prices_map, str(row.get("venue") or ""), str(row.get("symbol") or "")
+                            ) if in_win else None
+                        )
+                        h_st = evaluate_trade_plan_path_status(
+                            side_k,
+                            sp if in_win else None,
+                            row.get("invalidation_px"),
+                            row.get("target_px"),
+                            start_ts=entry_ts,
+                            end_ts=hor_end_ts,
+                            price_bars=sym_bars,
+                            check_spot=(in_win and sp is not None and sp > 0.0),
+                        )
+                        within_hor_st = h_st if h_st in ("TARGET_HIT", "INVALIDATED") else ("EXPIRED" if eff_now > hor_end_ts else "ACTIVE")
+                    elif final_st in ("TARGET_HIT", "INVALIDATED") and (resolved_ts is None or resolved_ts <= hor_end_ts):
+                        within_hor_st = final_st
+                    else:
+                        within_hor_st = "EXPIRED" if eff_now > hor_end_ts else final_st
+                row_outcomes_out.append({
+                    "confidence": row.get("confidence"),
+                    "horizon_h": hor_h,
+                    "status": final_st,
+                    "within_horizon_status": within_hor_st,
+                })
     return status_counts, by_side, planned_n
 
 

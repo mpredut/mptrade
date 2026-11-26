@@ -91,6 +91,65 @@ def _extract_cb_tag(raw_reason: Any) -> str:
     return m.group(1) if m else txt[:48]
 
 
+_CONFIDENCE_CAL_BUCKETS: tuple[tuple[str, Optional[float], Optional[float]], ...] = (
+    ("lt_0.85", None, 0.85),
+    ("0.85_0.89", 0.85, 0.90),
+    ("0.90_0.94", 0.90, 0.95),
+    ("ge_0.95", 0.95, None),
+)
+
+
+def _summarize_plan_confidence_calibration(plan_row_outcomes: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Summarize empirical TARGET_HIT vs INVALIDATED rates by confidence bucket and declared horizon_h."""
+    by_bucket: dict[str, dict[str, Any]] = {}
+    hor_declared = 0
+    hor_hit = 0
+    hor_inv = 0
+    hor_exp = 0
+    for row in plan_row_outcomes:
+        if not isinstance(row, Mapping):
+            continue
+        st = clean_upper_scalar(row.get("status")) or ""
+        conf = safe_float(row.get("confidence"), default=None)
+        if conf is not None and st in ("TARGET_HIT", "INVALIDATED"):
+            for b_key, lo, hi in _CONFIDENCE_CAL_BUCKETS:
+                if (lo is None or conf >= lo) and (hi is None or conf < hi):
+                    bkt = by_bucket.setdefault(b_key, {"target_hit": 0, "invalidated": 0})
+                    if st == "TARGET_HIT":
+                        bkt["target_hit"] += 1
+                    else:
+                        bkt["invalidated"] += 1
+                    break
+        if safe_pos_float(row.get("horizon_h"), default=None) is not None:
+            hor_declared += 1
+            h_st = clean_upper_scalar(row.get("within_horizon_status")) or ""
+            if h_st == "TARGET_HIT":
+                hor_hit += 1
+            elif h_st == "INVALIDATED":
+                hor_inv += 1
+            elif h_st == "EXPIRED":
+                hor_exp += 1
+    out_buckets: dict[str, dict[str, Any]] = {}
+    for b_key, _, _ in _CONFIDENCE_CAL_BUCKETS:
+        if (bkt := by_bucket.get(b_key)) is None:
+            continue
+        tot = bkt["target_hit"] + bkt["invalidated"]
+        out_buckets[b_key] = {
+            **bkt,
+            "resolved": tot,
+            "hit_rate_pct": round((bkt["target_hit"] / tot) * 100.0, 1) if tot > 0 else None,
+        }
+    hor_term = hor_hit + hor_inv + hor_exp
+    return {
+        "by_confidence_bucket": out_buckets,
+        "horizon_declared": hor_declared,
+        "within_horizon_target_hit": hor_hit,
+        "within_horizon_invalidated": hor_inv,
+        "within_horizon_expired": hor_exp,
+        "within_horizon_hit_rate_pct": round((hor_hit / hor_term) * 100.0, 1) if hor_term > 0 else None,
+    }
+
+
 def _compute_profit_factor(outcomes: list[dict[str, Any]]) -> Optional[float]:
     gross_win = sum(o["net_usd"] for o in outcomes if o["net_usd"] > 0.0)
     gross_loss = abs(sum(o["net_usd"] for o in outcomes if o["net_usd"] < 0.0))
@@ -646,8 +705,13 @@ def evaluate_ai_attribution(
         all_filled_rows, cutoff_ts=cutoff
     )
     outcomes: list[dict[str, Any]] = []
+    plan_row_outcomes: list[dict[str, Any]] = []
     plan_status_counts, _, planned_filled = evaluate_filled_trade_plans(
-        filled_rows, prices_map, price_bars_by_symbol=price_bars_by_symbol
+        filled_rows,
+        prices_map,
+        price_bars_by_symbol=price_bars_by_symbol,
+        row_outcomes_out=plan_row_outcomes,
+        now_ts=eff_now,
     )
 
     def _record_closed_plan_outcome(entry_row: dict[str, Any], exit_row: dict[str, Any]) -> str:
@@ -792,6 +856,7 @@ def evaluate_ai_attribution(
         "planned_performance": _summarize_outcomes_bucket(planned_outcomes),
         "unplanned_performance": _summarize_outcomes_bucket(unplanned_outcomes),
         "legacy_pre_window_performance": _summarize_outcomes_bucket(legacy_unplanned_outcomes),
+        "confidence_calibration": _summarize_plan_confidence_calibration(plan_row_outcomes),
     }
 
     actor_comparison = _evaluate_execution_audit_actors(
@@ -993,6 +1058,27 @@ def format_ai_attribution_report(report: Mapping[str, Any]) -> str:
             f"Unplanned avg={fmt_signed(safe_float(u_perf.get('avg_net_edge_pct'), 0.0) or 0.0, 2)}% ({_fmt_usd(u_perf.get('total_net_usd'))})"
             f"{leg_sfx}"
         )
+        conf_cal = plans.get("confidence_calibration") if isinstance(plans.get("confidence_calibration"), Mapping) else {}
+        cal_parts: list[str] = []
+        by_cb = conf_cal.get("by_confidence_bucket") if isinstance(conf_cal.get("by_confidence_bucket"), Mapping) else {}
+        for b_k, _, _ in _CONFIDENCE_CAL_BUCKETS:
+            if isinstance(b_row := by_cb.get(b_k), Mapping) and safe_nonneg_int(b_row.get("resolved"), 0) > 0:
+                hr = safe_float(b_row.get("hit_rate_pct"), default=None)
+                cal_parts.append(
+                    f"{b_k}:{hr:.0f}%[{safe_nonneg_int(b_row.get('target_hit'), 0)}/{safe_nonneg_int(b_row.get('resolved'), 0)}]"
+                    if hr is not None
+                    else f"{b_k}:n/a"
+                )
+        hor_decl = safe_nonneg_int(conf_cal.get("horizon_declared"), 0)
+        if hor_decl > 0:
+            h_hr = safe_float(conf_cal.get("within_horizon_hit_rate_pct"), default=None)
+            h_hit = safe_nonneg_int(conf_cal.get("within_horizon_target_hit"), 0)
+            h_inv = safe_nonneg_int(conf_cal.get("within_horizon_invalidated"), 0)
+            h_exp = safe_nonneg_int(conf_cal.get("within_horizon_expired"), 0)
+            h_rate_s = f"{h_hr:.0f}%" if h_hr is not None else "active"
+            cal_parts.append(f"horizon(n={hor_decl}, in_hor={h_rate_s}[{h_hit}T/{h_inv}I/{h_exp}X])")
+        if cal_parts:
+            lines.append(f"  Confidence/Horizon Calibration: {', '.join(cal_parts)}")
 
     exec_cmp = report.get("execution_audit_ai_vs_bot") if isinstance(report.get("execution_audit_ai_vs_bot"), Mapping) else {}
     by_actor = exec_cmp.get("by_actor") if isinstance(exec_cmp.get("by_actor"), Mapping) else {}

@@ -44,6 +44,7 @@ from orchestratorOS.supervisor.prompt_sections import (
 )
 from providers.ai_circuit_breaker import (
     DEFAULT_MAX_HOURLY_REPLACES_PER_SYMBOL,
+    DEFAULT_MIN_TARGET_RR,
     DEFAULT_REPLACE_MIN_PRICE_DELTA_PCT,
     DEFAULT_TARGET_EV_FEE_MULT,
     DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS,
@@ -90,6 +91,9 @@ def _resolve_gateway_survival_prompt_thresholds(
         ),
         "target_ev_fee_mult": safe_nonneg_float(
             cb_cfg.get("target_ev_fee_mult"), default=DEFAULT_TARGET_EV_FEE_MULT
+        ),
+        "min_target_rr": safe_nonneg_float(
+            cb_cfg.get("min_target_rr"), default=DEFAULT_MIN_TARGET_RR
         ),
         "max_hourly_replaces_per_symbol": safe_nonneg_int(
             cb_cfg.get("max_hourly_replaces_per_symbol"),
@@ -300,6 +304,7 @@ def build_supervisor_prompt(
     xs_crash_drop_pct = gw_th["xstock_sell_crash_min_target_drop_pct"]
     xs_crash_conf = gw_th["xstock_sell_crash_min_confidence"]
     ev_fee_mult = gw_th["target_ev_fee_mult"]
+    min_tgt_rr = gw_th["min_target_rr"]
     max_hr_rep = gw_th["max_hourly_replaces_per_symbol"]
     rep_min_delta_pct = gw_th["replace_min_price_delta_pct"]
     xs_target_lbl = "tokenized xStocks"
@@ -337,19 +342,19 @@ def build_supervisor_prompt(
             )
         )
         limit_exec_rule = (
-            "   - DUAL EXECUTION MODE \u2014 IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS: Prefer `\"order_type\": \"LIMIT\"` to control fill price and capture bid-ask spread "
-            "(check venue fees/spread; passive `limit_price` near `vol_profile`/`session_vwap` support/resistance for swings; right at live spot for urgent entries/reversals). "
-            "Audit `open_limit_orders` (`dist_from_spot_pct` & `fill_prob_1h_pct` anchored to live spot), "
+            "   - SPOT 'LIMIT' EXECUTION (PASSIVE OR NEAR-SPOT): All AI orders submit as `\"order_type\": \"LIMIT\"` (never taker MARKET) to control fill price and capture bid-ask spread "
+            "(check venue fees/spread; passive `limit_price` near `vol_profile`/`session_vwap` support/resistance for swings; right at live spot or `limit_price: null` with `urgency: \"HIGH\"` for urgent entries/reversals). "
+            "Audit `open_limit_orders` (`dist_from_spot_pct` & heuristic `fill_prob_1h_pct` anchored to live spot), "
             "`last_cycle_execution_status` (emitted for recent `<=60m` fill/rejection or `<=30m` resting order), and calibration `arr`/`slip` bps (negative bps = favorable price improvement), `unf_off` bps, & `lim_off` fill-rate bands: "
-            "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) resting orders via `replace_open_orders: true`; returning `'HOLD'` leaves resting orders untouched.\n"
+            "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) resting orders via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (use `\"CANCEL\"` + `cancel_order_ids` or `HOLD` instead of chasing into poor R:R); returning `'HOLD'` leaves resting orders untouched.\n"
             if is_equities
             else (
-                "   - DUAL EXECUTION MODE \u2014 IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK: Prefer `\"order_type\": \"LIMIT\"` to capture bid-ask spread and lower execution cost (check per-venue maker vs taker bps; "
-                "passive `limit_price` at bid/ask walls for swings; right at spot/BBO for urgent entries/reversals, auto-stepped 1 tick onto maker book). "
-                "Audit `open_limit_orders` (`dist_from_spot_pct` & `fill_prob_1h_pct` anchored to live spot; watch `[ob_stale]` when `ob_age > 30s`), "
+                "   - SPOT MAKER 'LIMIT' EXECUTION IN THE ORDERBOOK: All AI orders submit as post-only `\"order_type\": \"LIMIT\"` (never taker MARKET; gateway re-checks live price and auto-steps 1 tick onto maker book) to capture bid-ask spread and lower execution cost (check per-venue maker vs taker bps; "
+                "passive `limit_price` at bid/ask walls for swings; right at live spot/BBO or `limit_price: null` with `urgency: \"HIGH\"` for urgent entries/reversals). "
+                "Audit `open_limit_orders` (`dist_from_spot_pct` & heuristic `fill_prob_1h_pct` anchored to live spot; watch `[ob_stale]` when `ob_age > 30s`), "
                 "`last_cycle_execution_status` (emitted for recent `<=60m` fill/rejection or `<=30m` resting order), and calibration `arr`/`slip` bps (negative bps = favorable price improvement), `unf_off` bps, & `lim_off` fill-rate bands: "
                 "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) "
-                "or wall-trapped orders (`recommended_front_run_px`) via `replace_open_orders: true`; returning `'HOLD'` leaves resting orders untouched.\n"
+                "or wall-trapped orders (`recommended_front_run_px`) via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (use `\"CANCEL\"` + `cancel_order_ids` or `HOLD` instead of chasing into poor R:R); returning `'HOLD'` leaves resting orders untouched.\n"
             )
         )
         structure_macro_rule = (
@@ -378,14 +383,19 @@ def build_supervisor_prompt(
                 else ""
             )
             + (
+                f"min R:R >= {min_tgt_rr:g}x when both `target_px` & `invalidation_px` are set on `urgency=NORMAL`, "
+                if min_tgt_rr > 0
+                else ""
+            )
+            + (
                 f"hourly replace churn cap ({max_hr_rep}/h if move < {rep_min_delta_pct:g}%), "
                 if max_hr_rep > 0
                 else ""
             )
             + "daily `by=AI` BUY notional cap, and 48h `AI Decision Scorecard` BUY shadow cooldown) apply in the gateway.\n"
             "   - SUPERVISORY AUTHORITY TO AUDIT & REPAIR / REVERSE UNWANTED BOT OR FLEET TRADES (`by=BOT`/`by=MANUAL` vs `by=AI`): "
-            "Audit interim `by=BOT`/`by=MANUAL` fills/orders independently. Cancel unwanted bot/manual orders BEFORE fill (`cancel_bot_open_orders: true` "
-            "with mandatory `cancel_order_ids: [...]` on standalone `HOLD`, or narrowed via `cancel_order_ids` on `BUY`/`SELL`); do NOT sell minutes after a bot fill unless structure genuinely breaks down "
+            "Audit interim `by=BOT`/`by=MANUAL` fills/orders independently. Cancel any unwanted AI or bot order BEFORE fill via `\"decision\": \"CANCEL\"` with mandatory `cancel_order_ids: [...]` "
+            "(or cancel bot orders alongside `BUY`/`SELL` via `cancel_bot_open_orders: true` / `cancel_order_ids`); do NOT sell minutes after a bot fill unless structure genuinely breaks down "
             "(avoid burning round-trip fees on normal noise). When repair is warranted, submit "
             + (
                 "a `LIMIT` (`\"order_type\": \"LIMIT\"`) right at live spot price:\n"
@@ -399,8 +409,8 @@ def build_supervisor_prompt(
                     "     2) If a bot BOUGHT prematurely or when it should NOT have (confirmed structural breakdown), submit a corrective `SELL` `LIMIT` right at live spot/`best_ask`.\n"
                 )
             )
-            + "     3) Targeting specific orders with `cancel_order_ids: [...]` + `cancel_bot_open_orders: true` / `replace_open_orders: true` cancels only those orders "
-            "(standalone `HOLD` cancel requires explicit `cancel_order_ids`; on `BUY`/`SELL` without `cancel_order_ids`, only same-side orders cancel; if cancel fails, replacement aborts).\n"
+            + "     3) Targeting specific orders with `cancel_order_ids: [...]` cancels only those exact IDs "
+            "(standalone `CANCEL` cancels listed AI or bot orders; on `BUY`/`SELL` without `cancel_order_ids`, only same-side orders cancel; if cancel fails, replacement aborts).\n"
             f"   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: Decide freely WHEN/WHAT/HOW MUCH/WHICH venue ({venue_list_desc}). "
             "Cost basis (`avg_buy_px`, `lifo_rem_avg_px`, `open_lifo_lots`) is informational, NEVER a constraint on 2-way pairs: harvest profitable LIFO tranches or up to `50%\u2013100%` of `value_usd` "
             f"(up to {max_usd:g} USD), OR trim/exit via near-market `LIMIT` even at breakeven or below cost basis on breakdown{xs_exception_sfx}.\n"
@@ -409,12 +419,12 @@ def build_supervisor_prompt(
             + structure_macro_rule
             + f"   - Emit one entry per actionable instrument in `market_trading_decisions` (`confidence >= {min_conf:g}`, `suggested_notional_usd` between {min_usd:g} and {max_usd:g} USD; "
             "gateway clamps strictly to free balance with zero artificial cooldowns or dedup locks beyond AI survival breakers), or a single `'HOLD'` entry. "
-            "On actionable BUY/SELL, set numeric `invalidation_px` (thesis break) and `target_px` (primary objective); active plans persist in Section 3C across compactions."
+            "On actionable BUY/SELL, set numeric `invalidation_px` (thesis break), `target_px` (primary objective), and optional `horizon_h` (expected hours to resolution); active plans persist in Section 3C across compactions."
         )
         schema.append(
-            f'  "market_trading_decisions": [{{"decision": "BUY" | "SELL" | "HOLD", "symbol": {ex_sym}, '
-            f'"venue": {venue_schema}, "order_type": "MARKET" | "LIMIT", "limit_price": null, '
-            f'"invalidation_px": null, "target_px": null, '
+            f'  "market_trading_decisions": [{{"decision": "BUY" | "SELL" | "CANCEL" | "HOLD", "symbol": {ex_sym}, '
+            f'"venue": {venue_schema}, "order_type": "LIMIT", "limit_price": null, '
+            f'"invalidation_px": null, "target_px": null, "horizon_h": null, '
             f'"replace_open_orders": false, "cancel_bot_open_orders": false, "cancel_order_ids": [], '
             f'"confidence": 0.90, "suggested_notional_usd": 1000.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
         )
@@ -443,18 +453,27 @@ def build_supervisor_prompt(
             if is_equities
             else "spot maker-LIMIT execution, active orderbook management"
         )
+        surv_bits: List[str] = []
+        if ev_fee_mult > 0:
+            surv_bits.append(f"EV>={ev_fee_mult:g}xRT")
+        if min_tgt_rr > 0:
+            surv_bits.append(f"RR>={min_tgt_rr:g}x")
+        surv_bits.append("flip-cd")
+        if max_hr_rep > 0:
+            surv_bits.append(f"{max_hr_rep}/h-replace")
+        surv_bits.extend(("daily-buy-cap", "scorecard"))
+        compact_surv = ", ".join(surv_bits)
         compact_prefix = (
             "CONTINUATION TURN (ACTIVE THREAD POLICY APPLIES):\n"
-            f"- Apply all quantitative trading, {compact_exec_desc}, and "
-            "`by=BOT` vs `by=AI` supervisory rules established earlier in this thread (unrestricted read access to "
-            f"`cachedb/` & `statedb/`, zero deterministic guards, `confidence >= {min_conf:g}`, notional {min_usd:g}-{max_usd:g} USD{compact_xs_sfx}).\n"
-            "- Honor any user chat instructions, price targets, overrides, or questions earlier in this thread with highest priority.\n"
+            f"- Apply thread rules ({compact_exec_desc}, `by=BOT` vs `by=AI` supervision, `cachedb/` & `statedb/` read access; "
+            f"zero deterministic order_guard gates; AI survival breakers active: {compact_surv}; `conf>={min_conf:g}`, notional {min_usd:g}-{max_usd:g} USD{compact_xs_sfx}). "
+            "All AI orders submit as `LIMIT`; re-evaluate R:R from new `limit_price` on replace (use `CANCEL`+`cancel_order_ids` or `HOLD` instead of chasing).\n"
+            "- Honor user chat instructions/overrides strictly for their stated instrument, action, and timeframe.\n"
             "- Format your response in TWO parts:\n"
-            "  1) A concise Markdown report in **Romanian** with the cycle timestamp header (`### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`): "
-            f"on routine pure `HOLD` cycles (no BUY/SELL/cancel, no Section 4 priority symbols, no user chat message), output ONLY "
+            "  1) Concise Markdown in **Romanian** (`### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`): "
+            f"on routine pure `HOLD` cycles (no BUY/SELL/cancel, no Section 4 priority symbols, no user chat), output ONLY "
             f"2-3 ultra-compact bullets (NAV + free cash, 1-line market pulse, HOLD rationale; omit {unit_by_unit} tables); "
-            "when executing BUY/SELL/cancel, evaluating Section 4 priority symbols, or replying to user chat, provide the full "
-            f"concise {unit_by_unit} Romanian breakdown.\n"
+            f"otherwise provide the concise {unit_by_unit} Romanian breakdown.\n"
             "  2) At the very end, a single fenced ```json ... ``` block matching this exact schema:\n"
             "```json\n{\n" + ",\n".join(schema) + "\n}\n```\n\n"
             "LIVE TELEMETRY SNAPSHOT:\n"

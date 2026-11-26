@@ -85,6 +85,7 @@ from providers.ai_circuit_breaker import (
     DEFAULT_MAX_DAILY_BUYS_PER_SYMBOL,
     DEFAULT_MAX_FLIPS_6H,
     DEFAULT_MAX_HOURLY_REPLACES_PER_SYMBOL,
+    DEFAULT_MIN_TARGET_RR,
     DEFAULT_REPLACE_MIN_PRICE_DELTA_PCT,
     DEFAULT_SCORECARD_COOLDOWN_HOURS,
     DEFAULT_SCORECARD_MAX_LOSS_STREAK,
@@ -216,6 +217,7 @@ class AutonomousIntentGateway:
         self.flip_cooldown_min: float = cb_cfg["flip_cooldown_min"]
         self.flip_min_edge_pct: float = cb_cfg["flip_min_edge_pct"]
         self.target_ev_fee_mult: float = cb_cfg["target_ev_fee_mult"]
+        self.min_target_rr: float = cb_cfg["min_target_rr"]
         self.max_flips_6h: int = cb_cfg["max_flips_6h"]
         self.scorecard_window_trades: int = cb_cfg["scorecard_window_trades"]
         self.scorecard_max_loss_streak: int = cb_cfg["scorecard_max_loss_streak"]
@@ -795,6 +797,7 @@ class AutonomousIntentGateway:
             venue=venue,
             price=price,
             target_ev_fee_mult=getattr(self, "target_ev_fee_mult", DEFAULT_TARGET_EV_FEE_MULT),
+            min_target_rr=getattr(self, "min_target_rr", DEFAULT_MIN_TARGET_RR),
             round_trip_fee_bps=live_rt_fee_bps,
         )
         if not ev_allowed:

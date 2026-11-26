@@ -987,10 +987,11 @@ def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_w
     assert "brake=" not in prompt
     assert "risk_score=0.96 | summary=Headline shock" in prompt
     assert "CONTRARIAN DIP ACCUMULATION (SCALE-IN)" in prompt
-    assert "DUAL EXECUTION MODE — IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK" in prompt
+    assert "SPOT MAKER 'LIMIT' EXECUTION IN THE ORDERBOOK" in prompt
     assert "do NOT sell minutes after a bot fill unless structure genuinely breaks down" in prompt
     assert "right at live BBO (`best_bid` for BUY / `best_ask` for SELL)" in prompt
-    assert '"order_type": "MARKET" | "LIMIT"' in prompt
+    assert '"order_type": "LIMIT"' in prompt
+    assert '"decision": "BUY" | "SELL" | "CANCEL" | "HOLD"' in prompt
     assert "'order_type': 'LIMIT'" in prompt and "79850.0" in prompt
 
     # 6. When a bot's open order locks wallet liquidity so free_balance is 0, replace_open_orders=True
@@ -4472,7 +4473,7 @@ def test_etapa0_gateway_survival_guards_use_persisted_live_venue_fees(tmp_path):
             "order_type": "LIMIT",
             "limit_price": 62000.0,
             "target_px": 62217.0,  # +0.35% >= 0.30%
-            "invalidation_px": 61200.0,
+            "invalidation_px": 61800.0,
             "confidence": 0.92,
             "suggested_notional_usd": 300.0,
             "urgency": "NORMAL",
@@ -4539,7 +4540,7 @@ def test_etapa0_gateway_survival_guards_use_persisted_live_venue_fees(tmp_path):
             "order_type": "LIMIT",
             "limit_price": 200.0,
             "target_px": 201.5,  # +0.75% >= static 0.64%
-            "invalidation_px": 195.0,
+            "invalidation_px": 198.0,
             "confidence": 0.92,
             "suggested_notional_usd": 300.0,
             "urgency": "NORMAL",
@@ -5081,6 +5082,148 @@ def test_circuit_breaker_and_reconciliation_handle_compound_terminal_and_orphan_
     assert intents[0]["execution_payload"]["status"] == "FILLED"
     assert intents[1]["execution_payload"]["status"] == "MINTRADENTLREJECTED"
     assert intents[1]["execution_payload"].get("reconciled_terminal") is True
+
+
+def test_min_target_rr_guard_explicit_cancel_decision_horizon_and_prompt_parity(temp_workspace):
+    """Verify:
+    1. evaluate_ai_target_ev_guard + gateway block poor R:R plans (e.g. chased REPLACE dropping BTC R:R from 0.99 -> 0.24)
+       on urgency=NORMAL while allowing healthy R:R (>= 0.50) and urgency=HIGH exits.
+    2. Explicit decision='CANCEL' with cancel_order_ids cancels listed AI or BOT orders directly without replace_open_orders=True,
+       while rejecting CANCEL without cancel_order_ids or below min_confidence.
+    3. Optional horizon_h parses numeric & compact unit strings ('12h', '2d', '90m') and persists on emitted intents.
+    4. Full & compact continuation prompts stay aligned on LIMIT-only execution, AI survival breakers, R:R replace rule, and CANCEL.
+    """
+    from botcore import topic_spec
+    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
+    from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from providers.ai_survival_guard import evaluate_ai_target_ev_guard
+    from providers.intent_state import extract_intent_horizon_hours, normalize_trading_decisions
+
+    # 1. Pure R:R check on BTC chase-replace example ($59,680 -> $60,397.68 with same target $60,650 / inv $58,700)
+    ok_orig, rsn_orig, m_orig = evaluate_ai_target_ev_guard(
+        {"decision": "BUY", "order_type": "LIMIT", "urgency": "NORMAL", "target_px": 60650.0, "invalidation_px": 58700.0},
+        decision="BUY",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=59680.0,
+        target_ev_fee_mult=2.0,
+        min_target_rr=0.50,
+    )
+    assert ok_orig is True and rsn_orig == ""
+    assert m_orig["reward_risk_ratio"] == pytest.approx(0.99, abs=0.02)
+
+    ok_chased, rsn_chased, m_chased = evaluate_ai_target_ev_guard(
+        {"decision": "BUY", "order_type": "LIMIT", "urgency": "NORMAL", "target_px": 60650.0, "invalidation_px": 58700.0},
+        decision="BUY",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=60397.68,
+        target_ev_fee_mult=2.0,
+        min_target_rr=0.50,
+    )
+    assert ok_chased is False
+    assert "ai_poor_rr_plan" in rsn_chased
+    assert m_chased["reward_risk_ratio"] < 0.25
+
+    # urgency=HIGH bypasses R:R floor for defensive exits
+    ok_high, _, _ = evaluate_ai_target_ev_guard(
+        {"decision": "SELL", "order_type": "LIMIT", "urgency": "HIGH", "target_px": 60000.0, "invalidation_px": 62000.0},
+        decision="SELL",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=60300.0,
+        target_ev_fee_mult=2.0,
+        min_target_rr=0.50,
+    )
+    assert ok_high is True
+
+    # 2. Gateway enforcement for R:R, horizon_h persistence, and explicit CANCEL for AI + BOT orders
+    ws, _ = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce", notify_enabled=False)
+    btc_inst = _make_mock_inst("BTCUSDC", venue="binance", price=60500.0, free_balance={"USDC": 5000.0, "BTC": 0.1})
+    btc_inst.open_orders.return_value = [
+        {"orderId": "ai_ord_1", "clientOrderId": "AI_intent_1795000001_buy_btcusdc", "side": "BUY", "price": "59680.0"},
+        {"orderId": "bot_ord_2", "clientOrderId": "RT_BUY_2", "side": "BUY", "price": "59500.0"},
+        {"orderId": "ai_keep_3", "clientOrderId": "AI_intent_1795000002_sell_btcusdc", "side": "SELL", "price": "62000.0"},
+    ]
+
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec_poor_rr = gw.submit(
+            {
+                "decision": "BUY",
+                "symbol": "BTCUSDC",
+                "venue": "binance",
+                "order_type": "LIMIT",
+                "limit_price": 60397.68,
+                "target_px": 60650.0,
+                "invalidation_px": 58700.0,
+                "horizon_h": "12h",
+                "confidence": 0.90,
+                "suggested_notional_usd": 500.0,
+                "urgency": "NORMAL",
+                "thesis": "Chased replace",
+            },
+            source="auto_cryptotrade_executor",
+            max_mode="enforce",
+            instruments_map={"BTCUSDC": btc_inst},
+        )
+    assert rec_poor_rr["status"] == "REJECTED_AI_CIRCUIT_BREAKER"
+    assert "ai_poor_rr_plan" in rec_poor_rr["circuit_breaker_reason"]
+    assert rec_poor_rr["horizon_h"] == pytest.approx(12.0)
+
+    # Explicit CANCEL cancels both AI and BOT targeted IDs without requiring replace_open_orders=True
+    btc_inst.cancel_order.reset_mock()
+    btc_inst.place.reset_mock()
+    res_cancel = gw.submit(
+        {
+            "decision": "CANCEL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "cancel_order_ids": ["ai_ord_1", "bot_ord_2"],
+            "confidence": 0.90,
+            "thesis": "Cancel stale ladder legs",
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+    assert res_cancel is None
+    assert [c.args[0] for c in btc_inst.cancel_order.call_args_list] == ["ai_ord_1", "bot_ord_2"]
+    btc_inst.place.assert_not_called()
+
+    # CANCEL without explicit cancel_order_ids or low confidence is a safe no-op
+    btc_inst.cancel_order.reset_mock()
+    for bad_cancel in (
+        {"decision": "CANCEL", "symbol": "BTCUSDC", "venue": "binance", "confidence": 0.95},
+        {"decision": "CANCEL", "symbol": "BTCUSDC", "venue": "binance", "cancel_order_ids": ["ai_keep_3"], "confidence": 0.50},
+    ):
+        assert gw.submit(bad_cancel, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst}) is None
+    btc_inst.cancel_order.assert_not_called()
+
+    # 3. horizon_h parsing & normalization
+    assert extract_intent_horizon_hours({"horizon_h": 24}) == pytest.approx(24.0)
+    assert extract_intent_horizon_hours({"horizon_h": "90m"}) == pytest.approx(1.5)
+    assert extract_intent_horizon_hours({"horizon": "2d"}) == pytest.approx(48.0)
+    assert extract_intent_horizon_hours({"horizon_h": -5}) is None
+    assert extract_intent_horizon_hours({"horizon_h": 9999}) is None
+    norm = normalize_trading_decisions(
+        {"market_trading_decisions": [{"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "horizon_h": "6h"}]}
+    )
+    assert norm[0]["horizon_h"] == pytest.approx(6.0)
+
+    # 4. Full & compact prompts surface LIMIT-only execution, AI survival breakers, R:R rule, CANCEL, and horizon_h
+    empty_logs = LogEventSummary(0, 0, 0)
+    full_p = build_supervisor_prompt(TelemetrySensorSnapshot(), empty_logs, topic_spec("auto_cryptotrade_executor"), compact_rules=False)
+    comp_p = build_supervisor_prompt(TelemetrySensorSnapshot(), empty_logs, topic_spec("auto_cryptotrade_executor"), compact_rules=True)
+    assert "min R:R >= 0.5x" in full_p
+    assert "always re-evaluate R:R from the new `limit_price`" in full_p
+    assert '"horizon_h": null' in full_p and '"horizon_h": null' in comp_p
+    assert "AI survival breakers active:" in comp_p
+    assert "RR>=0.5x" in comp_p
+    assert "re-evaluate R:R from new `limit_price` on replace" in comp_p
+    assert "zero deterministic guards," not in comp_p
+
 
 
 

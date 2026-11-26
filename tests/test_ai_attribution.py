@@ -2296,6 +2296,163 @@ def test_pass6_sentiment_advisor_real_vol_vp_and_geo_shield_macro_delta(tmp_path
     assert "live_macro_delta=" not in sec1_fresh
 
 
+def test_prompt_agg_spot_cvd_dedup_fill_prob_int_and_confidence_horizon_calibration():
+    """Verify:
+    1. Section 3B suppresses duplicate identical agg_spot_cvd_15m across sibling pairs (e.g. HYPEUSDC + HYPEUSD)
+       while retaining each venue's own real_spot CVD.
+    2. PortfolioPromptViewEvaluator rounds open_limit_orders fill_prob_1h_pct >= 1% to integers (no false decimals)
+       while preserving sub-1% precision.
+    3. evaluate_ai_attribution + format_ai_attribution_report track empirical TARGET_HIT vs INVALIDATED rates
+       per confidence bucket and within declared horizon_h.
+    """
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import evaluate_portfolio_prompt_view
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+    from providers.ai_attribution import evaluate_ai_attribution, format_ai_attribution_report
+
+    now_s = 1_795_660_000.0
+    # 1. Sibling agg_spot_cvd_15m emitted once on primary HYPEUSDC and suppressed on secondary HYPEUSD
+    micro_hype = {
+        "HYPEUSDC": {
+            "venue": "hyperliquid",
+            "ob_mid_price": 60.95,
+            "best_bid": 60.94,
+            "best_ask": 60.96,
+            "spread_bps": 3.3,
+            "ob_imbalance": 0.52,
+            "bid_depth_usd": 10_000_000.0,
+            "ask_depth_usd": 9_000_000.0,
+            "bid_wall_px": 60.5,
+            "bid_wall_usd": 500_000.0,
+            "ask_wall_px": 61.5,
+            "ask_wall_usd": 450_000.0,
+            "taker_buy_sell_ratio": 1.15,
+            "taker_buy_vol_usd": 1_200_000.0,
+            "taker_sell_vol_usd": 1_040_000.0,
+            "oi_usd": 50_000_000.0,
+            "spot_cvd_15m_usd": 25_000.0,
+            "spot_vol_15m_usd": 300_000.0,
+            "spot_cvd_source": "real_spot",
+            "agg_spot_cvd_15m_usd": 33_800.0,
+            "agg_spot_vol_15m_usd": 380_000.0,
+            "agg_spot_cvd_source": "hyperliquid+kraken",
+            "_ob_raw_ts": now_s - 5.0,
+        },
+        "HYPEUSD": {
+            "venue": "kraken",
+            "ob_mid_price": 60.94,
+            "best_bid": 60.93,
+            "best_ask": 60.95,
+            "spread_bps": 3.3,
+            "ob_imbalance": 0.65,
+            "bid_depth_usd": 2_000_000.0,
+            "ask_depth_usd": 1_100_000.0,
+            "bid_wall_px": 60.4,
+            "bid_wall_usd": 150_000.0,
+            "ask_wall_px": 61.6,
+            "ask_wall_usd": 120_000.0,
+            "taker_buy_sell_ratio": 1.15,
+            "taker_buy_vol_usd": 1_200_000.0,
+            "taker_sell_vol_usd": 1_040_000.0,
+            "oi_usd": 50_000_000.0,
+            "spot_cvd_15m_usd": 8_800.0,
+            "spot_vol_15m_usd": 80_000.0,
+            "spot_cvd_source": "real_spot",
+            "agg_spot_cvd_15m_usd": 33_800.0,
+            "agg_spot_vol_15m_usd": 380_000.0,
+            "agg_spot_cvd_source": "hyperliquid+kraken",
+            "_ob_raw_ts": now_s - 5.0,
+        },
+    }
+    sec3b = "\n".join(
+        _format_microstructure_section(
+            micro_hype,
+            {"HYPEUSDC": {"price": 60.95}, "HYPEUSD": {"price": 60.94}},
+            now_ts=now_s,
+            asset_scope="crypto",
+        )
+    )
+    assert sec3b.count("agg_spot_cvd_15m=+$33.8K[hyperliquid+kraken") == 1
+    assert "spot_cvd_15m=+$25.0K[real_spot]" in sec3b
+    assert "spot_cvd_15m=+$8.8K[real_spot]" in sec3b
+
+    # 2. fill_prob_1h_pct rounds >= 1% to integers while keeping sub-1% values intact
+    pview = evaluate_portfolio_prompt_view(
+        {
+            "open_limit_orders": [
+                {"order_id": "o1", "symbol": "BTCUSDC", "fill_prob_1h_pct": 17.6},
+                {"order_id": "o2", "symbol": "HYPEUSDC", "fill_prob_1h_pct": 0.1},
+            ]
+        },
+        asset_scope="crypto",
+    )
+    assert pview["clean_open_limit_orders"][0]["fill_prob_1h_pct"] == 18
+    assert isinstance(pview["clean_open_limit_orders"][0]["fill_prob_1h_pct"], int)
+    assert pview["clean_open_limit_orders"][1]["fill_prob_1h_pct"] == pytest.approx(0.1)
+
+    # 3. Confidence bucket & horizon_h calibration in attribution report
+    intents = [
+        {
+            "intent_id": "cal_hit_1",
+            "timestamp": now_s - 20_000.0,
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "decision": "BUY",
+            "order_type": "LIMIT",
+            "confidence": 0.91,
+            "suggested_notional_usd": 500.0,
+            "target_px": 61_000.0,
+            "invalidation_px": 59_000.0,
+            "horizon_h": 4.0,
+            "status": "EXECUTED",
+            "execution_payload": {"status": "FILLED", "avgPrice": "60000.0", "executedQty": "0.00833", "cummulativeQuoteQty": "500.0"},
+        },
+        {
+            "intent_id": "cal_exp_2",
+            "timestamp": now_s - 30_000.0,
+            "venue": "binance",
+            "symbol": "ETHUSDC",
+            "decision": "BUY",
+            "order_type": "LIMIT",
+            "confidence": 0.87,
+            "suggested_notional_usd": 500.0,
+            "target_px": 2_200.0,
+            "invalidation_px": 1_900.0,
+            "horizon_h": 2.0,
+            "status": "EXECUTED",
+            "execution_payload": {"status": "FILLED", "avgPrice": "2000.0", "executedQty": "0.25", "cummulativeQuoteQty": "500.0"},
+        },
+    ]
+    bars = {
+        "BTCUSDC": [
+            [now_s - 18_000.0, 61_100.0, 100.0, 61_200.0, 59_900.0],
+        ],
+        "ETHUSDC": [
+            [now_s - 26_000.0, 2_020.0, 100.0, 2_050.0, 1_980.0],
+            [now_s - 10_000.0, 1_890.0, 100.0, 2_040.0, 1_880.0],
+        ],
+    }
+    rep = evaluate_ai_attribution(
+        intents,
+        now_ts=now_s,
+        live_prices={"BTCUSDC": 61_100.0, "ETHUSDC": 1_890.0},
+        price_bars_by_symbol=bars,
+        lookback_days=7.0,
+        scope="crypto",
+    )
+    cc = rep["trade_plan_calibration"]["confidence_calibration"]
+    assert cc["by_confidence_bucket"]["0.90_0.94"] == {"target_hit": 1, "invalidated": 0, "resolved": 1, "hit_rate_pct": 100.0}
+    assert cc["by_confidence_bucket"]["0.85_0.89"] == {"target_hit": 0, "invalidated": 1, "resolved": 1, "hit_rate_pct": 0.0}
+    assert cc["horizon_declared"] == 2
+    assert cc["within_horizon_target_hit"] == 1
+    assert cc["within_horizon_expired"] == 1
+    assert cc["within_horizon_hit_rate_pct"] == pytest.approx(50.0)
+    txt = format_ai_attribution_report(rep)
+    assert "Confidence/Horizon Calibration:" in txt
+    assert "0.90_0.94:100%[1/1]" in txt
+    assert "horizon(n=2, in_hor=50%[1T/0I/1X])" in txt
+
+
+
 
 
 

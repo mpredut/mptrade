@@ -48,6 +48,7 @@ from .order_id_context import (
 )
 
 _CURRENCY_STRIP_RE = re.compile(r"[\$,\s]|(?:USD[CT]?)\b", re.IGNORECASE)
+_HORIZON_STR_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([mhd]?)\s*$", re.IGNORECASE)
 _EXPLICIT_INTENT_OID_KEYS: tuple[str, ...] = ("orderId", "order_id", "ordertxid", "txid", "oid")
 _INTENT_TIMESTAMP_KEYS: tuple[str, ...] = ("timestamp", "executed_at", "executed_ts", "created_at", "ts")
 _NOTIONAL_KEYS: tuple[str, ...] = (
@@ -272,6 +273,30 @@ def extract_intent_order_type(data: dict[str, Any]) -> str:
 
 _INVALIDATION_PX_KEYS: tuple[str, ...] = ("invalidation_px", "invalidation_price", "stop_loss_px")
 _TARGET_PX_KEYS: tuple[str, ...] = ("target_px", "take_profit_px", "tp_px")
+_HORIZON_MAX_HOURS: float = 720.0
+
+
+def extract_intent_horizon_hours(data: Any) -> Optional[float]:
+    """Extract optional thesis horizon in positive hours (``<= 720h``) from ``horizon_h`` / ``horizon``."""
+    if not isinstance(data, Mapping):
+        return None
+    for key in ("horizon_h", "horizon"):
+        raw = data.get(key)
+        if raw is None or isinstance(raw, bool):
+            continue
+        hours: Optional[float] = None
+        if isinstance(raw, (int, float)):
+            hours = safe_pos_float(raw, default=None)
+        elif isinstance(raw, str):
+            m = _HORIZON_STR_RE.match(raw)
+            if m:
+                val = safe_pos_float(m.group(1), default=None)
+                unit = m.group(2).lower()
+                if val is not None:
+                    hours = val / 60.0 if unit == "m" else (val * 24.0 if unit == "d" else val)
+        if hours is not None and 0.0 < hours <= _HORIZON_MAX_HOURS:
+            return round(hours, 2)
+    return None
 
 
 def _parse_optional_plan_px(data: dict[str, Any], keys: tuple[str, ...]) -> Optional[float]:
@@ -391,11 +416,11 @@ def resolve_hold_cancel_target(
     min_confidence: float,
     resolve_instrument_fn: Callable[[str, str], Any],
 ) -> tuple[Any, list[str], bool]:
-    """Resolve (instrument, target_order_ids, only_bot_orders) for a HOLD decision with targeted cancellation."""
+    """Resolve (instrument, target_order_ids, only_bot_orders) for a CANCEL or HOLD decision with targeted cancellation."""
     if not isinstance(decision, dict):
         return None, [], True
     raw_dec = clean_upper_scalar(decision.get("decision") or decision.get("action") or decision.get("side")) or "HOLD"
-    if extract_intent_side(decision) in ("BUY", "SELL") or raw_dec != "HOLD":
+    if extract_intent_side(decision) in ("BUY", "SELL") or raw_dec not in ("HOLD", "CANCEL"):
         return None, [], True
     target_oids = extract_intent_cancel_order_ids(decision)
     if not target_oids or clean_scale(decision.get("confidence"), 0.0, allow_percent=True) < clean_scale(min_confidence, 1.0, allow_percent=True):
@@ -407,7 +432,8 @@ def resolve_hold_cancel_target(
     inst = resolve_instrument_fn(sym, ven)
     if inst is None or is_non_fiat_btc_quote_instrument(inst):
         return None, [], True
-    return inst, target_oids, not _parse_bool_flag(decision.get("replace_open_orders"), default=False)
+    only_bots = False if raw_dec == "CANCEL" else (not _parse_bool_flag(decision.get("replace_open_orders"), default=False))
+    return inst, target_oids, only_bots
 
 
 def _intent_venue_symbol_side_key(
@@ -478,6 +504,10 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
                 d["target_px"] = tgt_px
             elif "target_px" in d:
                 d.pop("target_px", None)
+            if (hor_h := extract_intent_horizon_hours(d)) is not None:
+                d["horizon_h"] = hor_h
+            elif "horizon_h" in d:
+                d.pop("horizon_h", None)
             if "replace_open_orders" in d:
                 d["replace_open_orders"] = _parse_bool_flag(d.get("replace_open_orders"), False)
             if "cancel_bot_open_orders" in d:
@@ -650,6 +680,8 @@ def validate_and_build_intent_dict(
         rec["invalidation_px"] = inv_px
     if tgt_px is not None:
         rec["target_px"] = tgt_px
+    if (hor_h := extract_intent_horizon_hours(decision)) is not None:
+        rec["horizon_h"] = hor_h
     if (mm := clean_scalar_str(max_mode)) is not None:
         rec["max_mode"] = mm
     if (mu := clean_scalar_str(decision.get("model_used"))) is not None:
@@ -862,6 +894,7 @@ __all__ = [
     "decision_has_cancel_directive",
     "eval_doc_was_actionable",
     "extract_intent_cancel_order_ids",
+    "extract_intent_horizon_hours",
     "extract_intent_limit_price",
     "extract_intent_notional",
     "extract_intent_order_type",

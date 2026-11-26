@@ -596,9 +596,16 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
 
     @staticmethod
     def _clean_open_orders(open_lim: List[Any]) -> Tuple[List[Any], set[str]]:
+        def _clean_order_val(k: str, v: Any) -> Any:
+            if k == "fill_prob_1h_pct" and not isinstance(v, bool):
+                fp = safe_nonneg_float(v, default=None)
+                if fp is not None:
+                    return round(fp) if fp >= 1.0 else round(fp, 1)
+            return v
+
         clean_open_lim = [
             {
-                k: v
+                k: _clean_order_val(k, v)
                 for k, v in o.items()
                 if k not in _DUP_OPEN_ORDER_KEYS
                 and not (
