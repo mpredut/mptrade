@@ -61,6 +61,7 @@ resolve_bot_cli_base = _agy_paths.resolve_bot_cli_base
 
 _agy_summary_store = importlib.import_module("orchestratorOS.agy.summary_store")
 delete_threads = _agy_summary_store.delete_threads
+get_thread_step_count = _agy_summary_store.get_thread_step_count
 restore_conversation_state = _agy_summary_store.restore_conversation_state
 snapshot_conversation_state = _agy_summary_store.snapshot_conversation_state
 
@@ -69,6 +70,7 @@ TopicSession = _agy_topics.TopicSession
 condense_decision = _agy_topics.condense_decision
 format_topic_history_prefix = _agy_topics.format_topic_history_prefix
 format_topic_turn_header = _agy_topics.format_topic_turn_header
+get_active_topic_cids = _agy_topics.get_active_topic_cids
 get_topic_slow_rotation_count = _agy_topics.get_topic_slow_rotation_count
 is_topic_resume_warm = _agy_topics.is_topic_resume_warm
 prepare_topic_session = _agy_topics.prepare_topic_session
@@ -1583,10 +1585,24 @@ class GeminiClient(GeminiQuotaRouterMixin):
         *,
         keep_cid: Optional[str] = None,
     ) -> None:
-        """Delete any newly created detached conversation threads not in ``pre_cids``."""
+        """Delete any newly created detached conversation threads not in ``pre_cids``, protecting live topic/running threads."""
+        protected: set[str] = set()
+        try:
+            protected = get_active_topic_cids()
+        except Exception:
+            protected = set()
         for orphan_cid in self._list_conversation_cids(bot_cli_base) - pre_cids:
-            if orphan_cid != keep_cid:
-                self._remove_detached_thread(bot_cli_base, orphan_cid)
+            if orphan_cid == keep_cid or orphan_cid in protected:
+                continue
+            if os.path.exists(os.path.join(bot_cli_base, "presence", f"{orphan_cid}.lock")):
+                continue
+            try:
+                _, _, st_lbl = get_thread_step_count(orphan_cid, bot_cli_base)
+                if str(st_lbl or "").strip().upper() == "CASCADE_RUN_STATUS_RUNNING":
+                    continue
+            except Exception:
+                pass
+            self._remove_detached_thread(bot_cli_base, orphan_cid)
 
     def _rollback_cli_attempt(
         self,

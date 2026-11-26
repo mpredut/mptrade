@@ -124,6 +124,7 @@ def _partition_prune_candidates(
     all_threads_in_project: bool,
     cutoff: datetime,
     require_match: bool = True,
+    cli_base: Optional[str] = None,
 ) -> Tuple[Set[str], List[Tuple[datetime, str]]]:
     candidates: Set[str] = set()
     kept: List[Tuple[datetime, str]] = []
@@ -132,6 +133,11 @@ def _partition_prune_candidates(
         cid = str(row["conversation_id"] or "").strip()
         if not cid or cid in protected:
             continue
+        status_s = str(row["status"] or "").strip().upper() if "status" in row_keys else ""
+        not_idle = bool(row["not_fully_idle"]) if "not_fully_idle" in row_keys else False
+        has_lock = bool(cli_base and os.path.exists(os.path.join(cli_base, "presence", f"{cid}.lock")))
+        if status_s == "CASCADE_RUN_STATUS_RUNNING" or not_idle or has_lock:
+            continue  # actively running / in-flight conversation: never unlink mid-turn
         steps = safe_nonneg_int(row["step_count"] if "step_count" in row_keys else 0, default=0)
         title_str = (row["title"] if "title" in row_keys else None) or ""
         preview_str = (row["preview"] if "preview" in row_keys else None) or ""
@@ -144,6 +150,13 @@ def _partition_prune_candidates(
             if not (all_threads_in_project or automated or short_autonomous):
                 continue
         dt = parse_db_timestamp(row["last_modified_time"] if "last_modified_time" in row_keys else None)
+        if dt is None and cli_base:
+            db_file = os.path.join(cli_base, "conversations", f"{cid}.db")
+            try:
+                if os.path.exists(db_file):
+                    dt = datetime.fromtimestamp(os.path.getmtime(db_file), tz=timezone.utc)
+            except OSError:
+                pass
         if dt is None or dt < cutoff:
             candidates.add(cid)
         else:
@@ -233,6 +246,7 @@ def prune_old_cli_threads(
         all_threads_in_project=all_threads_in_project,
         cutoff=cutoff,
         require_match=True,
+        cli_base=base,
     )
 
     if norm_project_id is None:
@@ -244,6 +258,8 @@ def prune_old_cli_threads(
                     continue
                 fcid = fname[:-3].strip()
                 if not fcid or fcid in protected or fcid in all_summary_cids:
+                    continue
+                if os.path.exists(os.path.join(base, "presence", f"{fcid}.lock")):
                     continue
                 try:
                     mtime_dt = datetime.fromtimestamp(os.path.getmtime(os.path.join(conv_dir, fname)), tz=timezone.utc)
@@ -284,6 +300,7 @@ def prune_old_cli_threads(
                     all_threads_in_project=False,
                     cutoff=cutoff,
                     require_match=False,
+                    cli_base=ui_base,
                 )
                 if max_threads_i is not None and 0 <= max_threads_i < len(ui_kept):
                     ui_kept.sort(reverse=True)

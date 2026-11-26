@@ -272,3 +272,79 @@ class TestPruneCliThreads:
         assert dt2 is not None and dt2.microsecond == 123000
         assert dt3 is not None and dt3.microsecond == 123456
 
+    def test_inflight_running_or_null_lmt_recent_threads_are_never_pruned(self, tmp_path):
+        """Regression for mid-turn thread deletion race: running, presence-locked, or NULL-lmt fresh threads must survive pruning."""
+        now = datetime.now(timezone.utc)
+        ts_old = (now - timedelta(days=3)).isoformat()
+        cli_base = str(tmp_path / "cli_inflight")
+        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
+        os.makedirs(os.path.join(cli_base, "presence"), exist_ok=True)
+        db_path = os.path.join(cli_base, "conversation_summaries.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE conversation_summaries (
+                conversation_id text PRIMARY KEY,
+                title text,
+                preview text,
+                last_modified_time datetime,
+                project_id text,
+                step_count integer,
+                status text,
+                not_fully_idle integer
+            )
+        """)
+        rows = [
+            ("inflight-running-1", "[auto_cryptotrade_executor]", "run", ts_old, AUTONOMOUS_PROJECT_UUID, 1, "CASCADE_RUN_STATUS_RUNNING", 0),
+            ("inflight-notidle-2", "[auto_cryptotrade_executor]", "run", ts_old, AUTONOMOUS_PROJECT_UUID, 1, "CASCADE_RUN_STATUS_IDLE", 1),
+            ("inflight-locked-3", "[auto_cryptotrade_executor]", "run", ts_old, AUTONOMOUS_PROJECT_UUID, 1, "CASCADE_RUN_STATUS_IDLE", 0),
+            ("inflight-nulllmt-4", "[auto_cryptotrade_executor]", "run", None, AUTONOMOUS_PROJECT_UUID, 0, "CASCADE_RUN_STATUS_IDLE", 0),
+            ("stale-idle-5", "[auto_cryptotrade_executor]", "old", ts_old, AUTONOMOUS_PROJECT_UUID, 2, "CASCADE_RUN_STATUS_IDLE", 0),
+        ]
+        for r in rows:
+            conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?)", r)
+            db_f = os.path.join(cli_base, "conversations", f"{r[0]}.db")
+            with open(db_f, "w", encoding="utf-8") as fh:
+                fh.write("sqlite-bytes")
+            if r[0] == "stale-idle-5":
+                old_epoch = (now - timedelta(days=3)).timestamp()
+                os.utime(db_f, (old_epoch, old_epoch))
+        conn.commit()
+        conn.close()
+        with open(os.path.join(cli_base, "presence", "inflight-locked-3.lock"), "w", encoding="utf-8") as fh:
+            fh.write("locked")
+
+        pruned, _ = prune_old_cli_threads(cli_base=cli_base, retention_days=1.0, dry_run=False)
+        assert pruned == 1
+        assert _remaining_cids(db_path) == {
+            "inflight-running-1",
+            "inflight-notidle-2",
+            "inflight-locked-3",
+            "inflight-nulllmt-4",
+        }
+        assert not os.path.exists(os.path.join(cli_base, "conversations", "stale-idle-5.db"))
+        assert os.path.exists(os.path.join(cli_base, "conversations", "inflight-nulllmt-4.db"))
+
+    def test_cleanup_orphan_threads_protects_concurrent_active_and_locked_threads(self, tmp_path, monkeypatch):
+        """GeminiClient._cleanup_orphan_threads must never delete another process's active topic or presence-locked thread."""
+        from intelligence.sentiment import gemini_client as gc_mod
+
+        cli_base = str(tmp_path / "bot_cli")
+        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
+        os.makedirs(os.path.join(cli_base, "presence"), exist_ok=True)
+        cid_active = "11111111-1111-1111-1111-111111111111"
+        cid_locked = "22222222-2222-2222-2222-222222222222"
+        cid_orphan = "33333333-3333-3333-3333-333333333333"
+        for cid in (cid_active, cid_locked, cid_orphan):
+            with open(os.path.join(cli_base, "conversations", f"{cid}.db"), "w", encoding="utf-8") as fh:
+                fh.write("db")
+        with open(os.path.join(cli_base, "presence", f"{cid_locked}.lock"), "w", encoding="utf-8") as fh:
+            fh.write("lock")
+
+        monkeypatch.setattr(gc_mod, "get_active_topic_cids", lambda: {cid_active})
+        client = gc_mod.GeminiClient.__new__(gc_mod.GeminiClient)
+        client._cleanup_orphan_threads(cli_base, pre_cids=set(), keep_cid=None)
+
+        assert os.path.exists(os.path.join(cli_base, "conversations", f"{cid_active}.db"))
+        assert os.path.exists(os.path.join(cli_base, "conversations", f"{cid_locked}.db"))
+        assert not os.path.exists(os.path.join(cli_base, "conversations", f"{cid_orphan}.db"))
+

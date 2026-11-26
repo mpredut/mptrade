@@ -746,3 +746,97 @@ def test_persistent_ohlc_bar_archive_incremental_refresh_extend_kraken_and_multi
     )
     assert plan_4h.mode == "incremental"
     assert plan_4h.interval_min == 240
+
+
+def test_cycle3_secondary_sibling_impulse_suppression_and_legacy_archive_bootstrap(tmp_path: Path) -> None:
+    """Verify Cycle 3 fixes:
+    1. evaluate_kinematic_impulse_symbols suppresses thin-book secondary sibling (HYPEUSD) spikes when
+       primary deep-book venue (HYPEUSDC) carries live calm kinematics, while keeping genuine shocks and
+       sole-quote symbols intact.
+    2. LongHorizonStructureCollector bypasses skip_if_fresh_sec when a legacy fresh snapshot lacks
+       persistent cache_ohlc_bars_1d_<SYM>.json archive files on disk, then skips normally once seeded.
+    """
+    from intelligence.globaltelemetry_collector import evaluate_kinematic_impulse_symbols
+    from state_io import atomic_write_json
+
+    # 1. Secondary sibling HYPEUSD spike suppressed when primary HYPEUSDC is calm
+    assert evaluate_kinematic_impulse_symbols(
+        {
+            "HYPEUSDC": {"price": 60.10, "chg_3m_pct": 0.12, "vel_90s_pct_min": 0.05, "accel_90s_pct_min2": 0.02},
+            "HYPEUSD": {"price": 60.40, "chg_3m_pct": 0.85, "vel_90s_pct_min": 0.45, "accel_90s_pct_min2": 0.30},
+        }
+    ) == []
+    # When primary HYPEUSDC genuinely shocks, it triggers cleanly
+    assert evaluate_kinematic_impulse_symbols(
+        {
+            "HYPEUSDC": {"price": 60.80, "chg_3m_pct": 0.82, "vel_90s_pct_min": 0.42, "accel_90s_pct_min2": 0.25},
+            "HYPEUSD": {"price": 60.75, "chg_3m_pct": 0.80, "vel_90s_pct_min": 0.40, "accel_90s_pct_min2": 0.24},
+        }
+    ) == ["HYPEUSDC"]
+    # When HYPEUSD is the ONLY live symbol for base HYPE, it still triggers cleanly
+    assert evaluate_kinematic_impulse_symbols(
+        {
+            "HYPEUSD": {"price": 60.40, "chg_3m_pct": 0.85, "vel_90s_pct_min": 0.45, "accel_90s_pct_min2": 0.30},
+        }
+    ) == ["HYPEUSD"]
+
+    # 2. Legacy fresh long_horizon_collect.json without bar_archive triggers immediate archive bootstrap
+    cache_dir = str(tmp_path / "cachedb")
+    t0 = datetime(2026, 11, 26, 15, 0, 0, tzinfo=timezone.utc).timestamp()
+    legacy_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, CACHE_LONG_HORIZON_FILENAME)))
+    atomic_write_json(
+        legacy_path,
+        {
+            "ts": t0 - 60.0,
+            "months": 12,
+            "horizon_label": "1y",
+            "symbol_count": 1,
+            "items": {"BTCUSDC": {"symbol": "BTCUSDC", "last_close": 60000.0}},
+        },
+    )
+    start_dt = datetime(2025, 11, 1, tzinfo=timezone.utc)
+    bn_rows = [
+        [
+            int((start_dt + timedelta(days=i)).timestamp() * 1000.0),
+            "60000.0",
+            "60500.0",
+            "59500.0",
+            str(60000.0 + i * 5.0),
+            "1000.0",
+        ]
+        for i in range(40)
+    ]
+    calls = {"n": 0}
+
+    def _fake_fetch(url: str, timeout: float = 5.0) -> Any:
+        _ = (url, timeout)
+        calls["n"] += 1
+        return bn_rows
+
+    boot = collect_long_horizon_snapshot(
+        cache_dir,
+        months=12,
+        symbols=["BTCUSDC"],
+        now_ts=t0,
+        persist=True,
+        skip_if_fresh_sec=21600.0,
+        fetch_fn=_fake_fetch,
+        workspace_dir=str(tmp_path),
+    )
+    assert boot is not None and calls["n"] >= 1
+    assert boot["items"]["BTCUSDC"].get("bar_archive") == cache_ohlc_bars_filename("BTCUSDC", "1d")
+    assert load_ohlc_bar_archive(cache_dir, "BTCUSDC", "1d") is not None
+
+    # Subsequent call within skip_if_fresh_sec now skips cleanly with 0 network calls
+    calls_before = calls["n"]
+    cached = collect_long_horizon_snapshot(
+        cache_dir,
+        months=12,
+        symbols=["BTCUSDC"],
+        now_ts=t0 + 120.0,
+        persist=True,
+        skip_if_fresh_sec=21600.0,
+        fetch_fn=_fake_fetch,
+        workspace_dir=str(tmp_path),
+    )
+    assert cached is not None and calls["n"] == calls_before

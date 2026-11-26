@@ -414,6 +414,17 @@ class LongHorizonStructureCollector(TelemetryCacheCollectorInterface):
             and isinstance(prev_snap.get("items"), dict)
             and bool(prev_snap["items"])
             and is_cache_fresh(prev_snap.get("ts"), eff_now, ttl_sec=skip_if_fresh_sec)
+            and (
+                not persist
+                or all(
+                    isinstance(it, dict)
+                    and bool(it.get("bar_archive"))
+                    and os.path.exists(
+                        str(resolve_cachedb_filepath(os.path.join(cachedb_dir, str(it["bar_archive"]))))
+                    )
+                    for it in prev_snap["items"].values()
+                )
+            )
         ):
             return prev_snap
 

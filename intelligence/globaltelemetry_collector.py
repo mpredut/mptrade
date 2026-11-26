@@ -277,7 +277,11 @@ def evaluate_kinematic_impulse_symbols(
         }
         if not allowed_bases:
             return []
-    best_by_base: Dict[str, tuple[int, str]] = {}
+    # Determine primary quote rank per base among symbols with live short-horizon kinematics so
+    # noisy thin-book secondary siblings (e.g. Kraken HYPEUSD) cannot trigger spurious high-effort
+    # impulse wakeups while the primary deep-book venue (e.g. Hyperliquid HYPEUSDC) is calm.
+    primary_rank_by_base: Dict[str, int] = {}
+    parsed_candidates: List[tuple[str, str, int, Dict[str, Any]]] = []
     for raw_sym, pinfo in prices_and_trends.items():
         if not isinstance(raw_sym, str) or not isinstance(pinfo, dict):
             continue
@@ -286,6 +290,20 @@ def evaluate_kinematic_impulse_symbols(
             continue
         base = canonical_base_asset(sym)
         if not base or (allowed_bases is not None and base not in allowed_bases):
+            continue
+        q_idx = crypto_quote_priority_rank(sym)
+        parsed_candidates.append((sym, base, q_idx, pinfo))
+        if any(
+            safe_float(pinfo.get(k), default=None) is not None
+            for k in ("chg_3m_pct", "chg_5m_pct", "vel_90s_pct_min", "vel_5m_pct_min")
+        ):
+            prev_r = primary_rank_by_base.get(base)
+            if prev_r is None or q_idx < prev_r:
+                primary_rank_by_base[base] = q_idx
+
+    best_by_base: Dict[str, tuple[int, str]] = {}
+    for sym, base, q_idx, pinfo in parsed_candidates:
+        if (prim_r := primary_rank_by_base.get(base)) is not None and q_idx > prim_r:
             continue
         atr_15m = _resolve_symbol_atr_15m_pct(pinfo)
         vol_scale = (
@@ -340,7 +358,6 @@ def evaluate_kinematic_impulse_symbols(
         )
         if not shock:
             continue
-        q_idx = crypto_quote_priority_rank(sym)
         prev = best_by_base.get(base)
         if prev is None or q_idx < prev[0]:
             best_by_base[base] = (q_idx, sym)
