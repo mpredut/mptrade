@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 from botcore import (
     _parse_bool_flag,
     fmt_signed,
+    is_us_rth_open,
     normalize_epoch_sec,
     normalize_timestamp_ms,
     resolve_now_ts,
@@ -299,6 +300,10 @@ def _format_macro_calendar_line(mc: Any) -> Optional[str]:
     ]
     if mc.get("us_market_holiday"):
         mc_parts.append(f'us_market_holiday="{mc.get("us_market_holiday")} (US markets closed)"')
+    elif mc.get("us_market_early_close"):
+        mc_parts.append(f'us_market_early_close="{mc.get("us_market_early_close")} (NYSE 13:00 ET early close)"')
+    elif mc.get("upcoming_us_market_holiday"):
+        mc_parts.append(f'next_us_market_holiday="{mc.get("upcoming_us_market_holiday")} tomorrow (US markets closed)"')
     if _parse_bool_flag(mc.get("active_release_window"), False) and mc.get("next_scheduled_event"):
         mc_parts.append(f'next_scheduled="{mc.get("next_scheduled_event")}"')
     if mc.get("fomc_today") is not None:
@@ -888,18 +893,26 @@ def _format_3b_source_ages_suffix(
     intervals: Dict[str, float],
     ob_only: bool = False,
     include_deriv: bool = True,
+    is_equity: bool = False,
+    no_flow: bool = False,
 ) -> str:
     explicit_now = safe_pos_float(now_ts, default=None)
     ref_now = resolve_now_ts(explicit_now)
-    specs = (
-        (("ob", "_ob_raw_ts", intervals["orderbook_interval_sec"]),)
-        if ob_only
-        else (
-            ("ob", "_ob_raw_ts", intervals["orderbook_interval_sec"]),
-            *((("deriv", "_deriv_ts", intervals["derivatives_interval_sec"]),) if include_deriv else ()),
-            ("whale", "_whale_ts", intervals["whale_interval_sec"]),
-        )
+    ob_itv = (
+        max(intervals["whale_interval_sec"], intervals["orderbook_interval_sec"] * 6.0)
+        if is_equity
+        else intervals["orderbook_interval_sec"]
     )
+    if ob_only or (is_equity and no_flow):
+        specs: tuple[tuple[str, str, float], ...] = (("ob", "_ob_raw_ts", ob_itv),)
+    else:
+        flow_lbl = "rth_flow" if is_equity else "whale"
+        specs = (
+            ("ob", "_ob_raw_ts", ob_itv),
+            *((("deriv", "_deriv_ts", intervals["derivatives_interval_sec"]),) if include_deriv else ()),
+            (flow_lbl, "_whale_ts", intervals["whale_interval_sec"]),
+        )
+    eq_market_closed = bool(is_equity and not is_us_rth_open(ref_now))
     parts: List[str] = []
     any_stale = False
     for lbl, ts_k, itv_s in specs:
@@ -917,7 +930,7 @@ def _format_3b_source_ages_suffix(
         if is_stale:
             any_stale = True
         itv_lbl = format_interval_sec_label(itv_s)
-        tag = "[stale]" if is_stale else ""
+        tag = ("[market_closed]" if eq_market_closed else "[stale]") if is_stale else ""
         parts.append(f"{lbl}={age_clamped:.1f}s/{itv_lbl}{tag}")
     if not parts or (explicit_now is None and not any_stale):
         return ""
@@ -1160,6 +1173,8 @@ def _format_microstructure_section(
             intervals=derived_3b_itvs,
             ob_only=sym_is_tok_xstock_3b,
             include_deriv=bool(deriv_oi_sfx),
+            is_equity=bool(row.get("sym_is_eq")),
+            no_flow=bool(no_flow),
         )
         wl_prefix = f"whale_long_pct={minfo.get('whale_long_pct')}, " if show_whale_long else ""
         if tok_spot_only:

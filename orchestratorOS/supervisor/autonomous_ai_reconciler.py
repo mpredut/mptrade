@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 import logging
 import os
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
+from zoneinfo import ZoneInfo
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT_DIR not in sys.path:
@@ -43,6 +45,8 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
     topic_spec,
+    us_market_early_close_name,
+    us_market_holiday_name,
 )
 from cachepaths import LLM_QUOTA_STATUS_FILENAME, resolve_cache_subdomain, resolve_cachedb_filepath
 
@@ -536,7 +540,15 @@ class AutonomousAIReconciler:
             and not bool_env("FORCE_SHARE_RTH_OPEN", default=False)
             and not is_us_rth_open(now)
         ):
-            msg = "US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) closed; cycle skipped."
+            ny_now = datetime.fromtimestamp(now, tz=ZoneInfo("America/New_York"))
+            hol_name = us_market_holiday_name(ny_now.date())
+            early_name = None if hol_name else us_market_early_close_name(ny_now.date())
+            if hol_name:
+                msg = f"US equities market holiday ({hol_name}) -- closed; cycle skipped."
+            elif early_name:
+                msg = f"US equities early-close day ({early_name}, 09:30-13:00 America/New_York) closed; cycle skipped."
+            else:
+                msg = "US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) closed; cycle skipped."
             logger.info("[SHARE EXECUTOR] %s", msg)
             return self.write_audit_artifact(
                 SupervisorAuditReport(ts=now, mode=self.mode, summary=msg),

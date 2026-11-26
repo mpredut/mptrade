@@ -281,6 +281,7 @@ from core.time_market import (  # noqa: E402
     is_cache_fresh,
     is_interval_due,
     is_us_extended_hours_open,
+    is_us_market_early_close,
     is_us_market_holiday,
     is_us_rth_open,
     normalize_epoch_sec,
@@ -300,6 +301,7 @@ from core.time_market import (  # noqa: E402
     summarize_current_price_cache_freshness,
     timeToHMS,
     timestampToTime,
+    us_market_early_close_name,
     us_market_holiday_name,
 )
 from core.heartbeat_runtime import (  # noqa: E402

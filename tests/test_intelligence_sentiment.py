@@ -18137,6 +18137,269 @@ def test_crypto_prompt_audit_fixes_long_trend_calendar_holidays_and_ledger_path(
     assert "cachedb/account/" in prompt_txt
 
 
+def test_cycle2_share_and_crypto_prompt_audit_fixes() -> None:
+    """Cycle 2 regression for both auto_sharetrade_executor and auto_cryptotrade_executor:
+    1. NYSE 13:00 ET early-close half-days (Black Friday, Christmas Eve, Independence Day Eve) close RTH at 13:00 ET
+       and shift US_WALL_STREET_CLOSE to 12:30 ET in calendar_ssot + prompt_sections.
+    2. Calendar sets macro_release_confirmed=False when authoritative live calendar has 0 events, and emits
+       upcoming_us_market_holiday on the evening before a full-day US holiday.
+    3. Section 3B source_ages for US equities uses equity OB proxy cadence (90s), suppresses phantom 'whale' on
+       no_flow equities (or labels live intraday flow 'rth_flow'), and tags '[market_closed]' outside US RTH.
+    4. cachetrend._find_by_symbol_variant honors explicit exact None and prevents cross-asset-class contamination
+       between cash equities (_US_EQ) and Kraken tokenized xStocks (xUSD).
+    5. LiveVenueEquityReconciliationEvaluator surfaces free_cash_usd and locked_quote_usd on hyperliquid_readonly
+       whenever quote cash is locked in open orders.
+    """
+    from datetime import date, datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    import cachetrend
+    from botcore import (
+        is_us_extended_hours_open,
+        is_us_market_early_close,
+        is_us_rth_open,
+        resolve_us_equity_session_state,
+        us_market_early_close_name,
+    )
+    from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import LiveVenueEquityReconciliationEvaluator
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_macro_calendar_line,
+        _format_microstructure_section,
+    )
+
+    et = ZoneInfo("America/New_York")
+
+    # 1. NYSE early-close half-days (Black Friday 2026-11-27, Christmas Eve 2026-12-24, Independence Day Eve 2028-07-03)
+    assert us_market_early_close_name(date(2026, 11, 27)) == "Day After Thanksgiving"
+    assert us_market_early_close_name(date(2026, 12, 24)) == "Christmas Eve"
+    assert us_market_early_close_name(date(2026, 7, 3)) is None  # 2026-07-03 is observed Independence Day full holiday
+    assert us_market_early_close_name(date(2028, 7, 3)) == "Independence Day Eve"
+    assert is_us_market_early_close(date(2026, 11, 27)) is True
+
+    ts_bf_1230 = datetime(2026, 11, 27, 12, 30, tzinfo=et).timestamp()
+    ts_bf_1315 = datetime(2026, 11, 27, 13, 15, tzinfo=et).timestamp()
+    ts_bf_1715 = datetime(2026, 11, 27, 17, 15, tzinfo=et).timestamp()
+    assert resolve_us_equity_session_state(ts_bf_1230) == "REGULAR"
+    assert is_us_rth_open(ts_bf_1230) is True
+    assert resolve_us_equity_session_state(ts_bf_1315) == "POST"
+    assert is_us_rth_open(ts_bf_1315) is False
+    assert is_us_extended_hours_open(ts_bf_1315) is True
+    assert resolve_us_equity_session_state(ts_bf_1715) == "CLOSED"
+
+    ts_bf_morning = datetime(2026, 11, 27, 10, 30, tzinfo=et).timestamp()
+    cal_bf = resolve_macro_economic_calendar(
+        now_ts=ts_bf_morning,
+        calendar_snapshot={"ts": ts_bf_morning, "events_ok": True, "events": []},
+    )
+    assert cal_bf["us_market_early_close"] == "Day After Thanksgiving"
+    assert any("US NYSE / Nasdaq Early Close (13:00 ET)" in w and "20:00 EET" in w for w in cal_bf["upcoming_windows"])
+    bf_line = _format_macro_calendar_line(cal_bf) or ""
+    assert 'us_market_early_close="Day After Thanksgiving (NYSE 13:00 ET early close)"' in bf_line
+
+    # 2. Evening before Thanksgiving emits upcoming_us_market_holiday and macro_release_confirmed=False with empty live cal
+    ts_eve_tg = datetime(2026, 11, 25, 17, 41, tzinfo=et).timestamp()  # 2026-11-26 00:41 EET
+    cal_eve = resolve_macro_economic_calendar(
+        now_ts=ts_eve_tg,
+        breaking_news=["10-year Treasury yield slides despite sticky inflation data"],
+        calendar_snapshot={"ts": ts_eve_tg, "events_ok": True, "events": []},
+    )
+    assert cal_eve["macro_release_confirmed"] is False
+    assert cal_eve["upcoming_us_market_holiday"] == "Thanksgiving Day"
+    eve_line = _format_macro_calendar_line(cal_eve) or ""
+    assert 'next_us_market_holiday="Thanksgiving Day tomorrow (US markets closed)"' in eve_line
+
+    # 3. Section 3B equities source_ages uses 90s equity cadence, [market_closed] when closed, and never emits 'whale='
+    ts_closed_eq = datetime(2026, 11, 26, 1, 30, tzinfo=et).timestamp()  # Thanksgiving overnight
+    ms_eq = {
+        "NVDA_US_EQ": {
+            "ob_imbalance": 0.65,
+            "bid_depth_usd": 500000.0,
+            "ask_depth_usd": 250000.0,
+            "bid_wall_px": 149.2,
+            "bid_wall_usd": 400000.0,
+            "ask_wall_px": 151.35,
+            "ask_wall_usd": 62500.0,
+            "spread_bps": 6.67,
+            "best_bid": 151.25,
+            "best_ask": 151.35,
+            "ob_mid_price": 151.3,
+            "_ob_raw_ts": ts_closed_eq - 19950.0,
+            "_whale_ts": ts_closed_eq - 19957.0,
+            "whale_long_pct": 0.5,
+        }
+    }
+    pt_eq = {"NVDA_US_EQ": {"price": 151.3}}
+    lines_closed = _format_microstructure_section(ms_eq, pt_eq, now_ts=ts_closed_eq, asset_scope="equities")
+    nvda_closed_line = next(ln for ln in lines_closed if "NVDA_US_EQ" in ln)
+    assert "[market_closed]" in nvda_closed_line
+    assert "[stale]" not in nvda_closed_line
+    assert "whale=" not in nvda_closed_line
+    assert "/90s[market_closed]" in nvda_closed_line
+
+    ts_open_eq = datetime(2026, 11, 25, 11, 0, tzinfo=et).timestamp()
+    ms_eq_open = {
+        "NVDA_US_EQ": {
+            **ms_eq["NVDA_US_EQ"],
+            "_ob_raw_ts": ts_open_eq - 40.0,
+            "_whale_ts": ts_open_eq - 35.0,
+            "taker_buy_sell_ratio": 1.25,
+            "taker_buy_vol_usd": 120000.0,
+            "taker_sell_vol_usd": 96000.0,
+            "cvd_15m_usd": 24000.0,
+        }
+    }
+    lines_open = _format_microstructure_section(ms_eq_open, pt_eq, now_ts=ts_open_eq, asset_scope="equities")
+    nvda_open_line = next(ln for ln in lines_open if "NVDA_US_EQ" in ln)
+    assert "ob=40.0s/90s" in nvda_open_line
+    assert "rth_flow=35.0s/60s" in nvda_open_line
+    assert "whale=" not in nvda_open_line
+    assert "[stale]" not in nvda_open_line
+
+    # 4. cachetrend._find_by_symbol_variant respects explicit exact None and blocks _US_EQ <-> xUSD leakage
+    pa_doc = {
+        "ANT_US_EQ": None,
+        "ANTxUSD": {"timestamp": 1795675101, "direction": "up", "duration_seconds": 316648.0},
+        "ADAUSDC": None,
+        "ADAUSD": {"timestamp": 1795465795, "direction": "up", "duration_seconds": 403200.0},
+    }
+    assert cachetrend._find_by_symbol_variant(pa_doc, "ANT_US_EQ", allow_none=True) == ("ANT_US_EQ", None)
+    assert cachetrend._find_by_symbol_variant({"ANTxUSD": pa_doc["ANTxUSD"]}, "ANT_US_EQ", allow_none=True) == (None, None)
+    assert cachetrend._find_by_symbol_variant(pa_doc, "ADAUSDC", allow_none=True) == ("ADAUSDC", None)
+    assert cachetrend._find_by_symbol_variant(pa_doc, "ANTxUSD", allow_none=True)[0] == "ANTxUSD"
+
+    # 5. LiveVenueEquityReconciliationEvaluator exposes free_cash_usd and locked_quote_usd on hyperliquid_readonly
+    ps_hl = {
+        "tradable_positions": [
+            {"venue": "hyperliquid", "symbol": "HYPEUSDC", "base": "HYPE", "quote": "USDC", "free_base": 0.01, "price": 60.0, "value_usd": 0.6},
+        ],
+        "venue_quote_cash": {
+            "hyperliquid:USDC": {"venue": "hyperliquid", "asset": "USDC", "free": 3602.51, "locked_quote_usd": 499.47},
+        },
+        "hyperliquid_readonly": {
+            "engine": "HL HYPE (long-hold)",
+            "qty": 0.0,
+            "value_usd": 0.0,
+            "cash_usd": 0.0,
+            "total_equity_usd": 0.0,
+        },
+    }
+    LiveVenueEquityReconciliationEvaluator().evaluate(ps_hl)
+    hl_ro = ps_hl["hyperliquid_readonly"]
+    assert hl_ro["cash_usd"] == pytest.approx(4101.98)
+    assert hl_ro["free_cash_usd"] == pytest.approx(3602.51)
+    assert hl_ro["locked_quote_usd"] == pytest.approx(499.47)
+    assert hl_ro["total_equity_usd"] == pytest.approx(4102.58)
+
+
+def test_cycle3_globex_regular_market_time_t212_ob_stale_and_share_prompt_rules(tmp_path) -> None:
+    """Cycle 3 regression:
+    1. MacroBenchmarksCollector uses fresh meta.regularMarketTime on Globex futures (ES=F, NQ=F) & DXY when
+       intraday chart bars halt on a US holiday, keeping them OPEN with real bar_age_min (~10m) while still
+       suppressing stale 15m/1h chart-bar deltas and keeping genuinely closed SPY as CLOSED.
+    2. OpenLimitOrdersTcaEvaluator does not stamp [ob_stale] on synthetic-proxy T212 equity limit orders, while
+       continuing to flag stale real L2 crypto limit orders when ob_age > 30s.
+    3. auto_sharetrade_executor full & compact prompts omit crypto-only maker-fee/BBO/[ob_stale] directives while
+       auto_cryptotrade_executor retains them.
+    """
+    from core.llm_topics import topic_spec
+    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MacroBenchmarksSnapshotCollector
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import OpenLimitOrdersTcaEvaluator
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import LogEventSummary
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+
+    now_ts = 1795675800.0  # 2026-11-26 06:50 UTC (Thanksgiving morning, Globex live)
+    stale_bar_ts = now_ts - 115.0 * 60.0
+    older_bar_ts = stale_bar_ts - 86400.0
+
+    def _mock_yahoo_fetch(url: str, **_kwargs):
+        if "ES%3DF" in url or "ES=F" in url:
+            return {
+                "chart": {
+                    "result": [{
+                        "meta": {
+                            "symbol": "ES=F",
+                            "regularMarketPrice": 7219.75,
+                            "regularMarketTime": int(now_ts - 600.0),  # 10m delayed live Globex quote
+                            "previousClose": 7195.0,
+                            "hasPrePostMarketData": False,
+                        },
+                        "timestamp": [int(older_bar_ts), int(stale_bar_ts)],
+                        "indicators": {"quote": [{"close": [7195.0, 7225.0], "open": [7195.0, 7225.0], "high": [7230.0, 7230.0], "low": [7180.0, 7220.0], "volume": [100, 100]}]},
+                    }]
+                }
+            }
+        if "SPY" in url:
+            spy_last = now_ts - 350.0 * 60.0
+            return {
+                "chart": {
+                    "result": [{
+                        "meta": {
+                            "symbol": "SPY",
+                            "regularMarketPrice": 716.70,
+                            "regularMarketTime": int(now_ts - 590.0 * 60.0),
+                            "previousClose": 715.0,
+                            "hasPrePostMarketData": True,
+                            "currentTradingPeriod": {
+                                "pre": {"start": int(now_ts - 900 * 60), "end": int(now_ts - 600 * 60)},
+                                "regular": {"start": int(now_ts - 600 * 60), "end": int(now_ts - 400 * 60)},
+                                "post": {"start": int(now_ts - 400 * 60), "end": int(spy_last)},
+                            },
+                        },
+                        "timestamp": [int(spy_last - 86400.0), int(spy_last)],
+                        "indicators": {"quote": [{"close": [715.0, 716.70], "open": [715.0, 716.70], "high": [717.0, 717.0], "low": [714.0, 716.0], "volume": [100, 100]}]},
+                    }]
+                }
+            }
+        return None
+
+    mb = MacroBenchmarksSnapshotCollector().collect(
+        str(tmp_path),
+        "*",
+        now_ts=now_ts,
+        fetch_fn=_mock_yahoo_fetch,
+        allow_network=True,
+        persist=False,
+    )
+    assert isinstance(mb, dict)
+    es_it = mb["items"]["ES=F"]
+    assert es_it["bar_age_min"] == pytest.approx(10.0, abs=0.2)
+    assert es_it.get("market_state") != "CLOSED"
+    assert "chg_15m_pct" not in es_it and "chg_1h_pct" not in es_it
+    assert mb["items"]["SPY"]["market_state"] == "CLOSED"
+    assert mb["items"]["SPY"]["bar_age_min"] >= 340.0
+
+    # 2. OpenLimitOrdersTcaEvaluator skips [ob_stale] on T212 equity orders (no real L2 book), keeps it on crypto
+    oo_eval = OpenLimitOrdersTcaEvaluator()
+    orders = [
+        {"venue": "t212", "symbol": "NVDA_US_EQ", "side": "BUY", "price": 148.0, "qty": 1.0},
+        {"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "price": 59500.0, "qty": 0.01},
+    ]
+    pt = {"NVDA_US_EQ": {"price": 150.0, "vol_1h_pct": 1.2}, "BTCUSDC": {"price": 60000.0, "vol_1h_pct": 0.8}}
+    ms = {
+        "NVDA_US_EQ": {"_ob_raw_ts": now_ts - 65.0, "ob_mid_price": 150.0, "bid_depth_usd": 500000.0, "bid_wall_px": 149.0, "bid_wall_usd": 200000.0},
+        "BTCUSDC": {"_ob_raw_ts": now_ts - 65.0, "ob_mid_price": 60000.0, "bid_depth_usd": 500000.0, "bid_wall_px": 59800.0, "bid_wall_usd": 200000.0},
+    }
+    oo_eval.evaluate(orders, pt, ms, now_ts=now_ts, ob_stale_sec=30.0)
+    assert "ob_flag" not in orders[0]
+    assert orders[1]["ob_flag"] == "[ob_stale]"
+
+    # 3. Share executor full & compact prompts avoid crypto-only maker-fee/BBO/[ob_stale] directives
+    empty_logs = LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0)
+    share_full = build_supervisor_prompt(TelemetrySensorSnapshot(), empty_logs, topic_spec("auto_sharetrade_executor"), compact_rules=False)
+    share_compact = build_supervisor_prompt(TelemetrySensorSnapshot(), empty_logs, topic_spec("auto_sharetrade_executor"), compact_rules=True)
+    crypto_full = build_supervisor_prompt(TelemetrySensorSnapshot(), empty_logs, topic_spec("auto_cryptotrade_executor"), compact_rules=False)
+    assert "restore at maker fee" not in share_full
+    assert "watch `[ob_stale]` when `ob_age > 30s`" not in share_full
+    assert "spot maker-LIMIT execution" not in share_compact
+    assert "spot LIMIT execution, active open-order management" in share_compact
+    assert "restore at maker fee" in crypto_full
+    assert "watch `[ob_stale]` when `ob_age > 30s`" in crypto_full
+
+
+
+
 
 
 

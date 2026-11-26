@@ -299,13 +299,15 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                 "ob_age_s",
             ):
                 o.pop(_stale_tca_k, None)
+            tca_caps = resolve_asset_session_policy(scoped_sym).telemetry_capabilities
             ob_raw_ts = (
                 m_entry.get("_ob_raw_ts") if m_entry.get("_ob_raw_ts") is not None else m_entry.get("_ob_ts")
             ) if isinstance(m_entry, dict) else None
             ob_ts = normalize_epoch_sec(ob_raw_ts, default=0.0) or 0.0
             ob_age_s = max(0.0, ref_now - ob_ts) if ob_ts > 0.0 else None
             ob_is_stale = bool(
-                ob_age_s is not None
+                tca_caps.has_real_l2_book
+                and ob_age_s is not None
                 and (explicit_now is not None or (0.0 <= (ref_now - ob_ts) <= 7.0 * 86400.0))
                 and ob_age_s > eff_ob_stale_sec
             )
@@ -363,7 +365,6 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
             queue_penalty = 1.0
             # Gate resting-wall queue penalties & front-run recommendations via AssetTelemetryCapabilities SSOT
             # so synthetic volume-profile proxies (RTH equities) never produce fake L2 wall penalties.
-            tca_caps = resolve_asset_session_policy(scoped_sym).telemetry_capabilities
             if isinstance(m_entry, dict) and not ob_is_stale and tca_caps.has_real_l2_book and side in ("SELL", "BUY"):
                 is_sell = side == "SELL"
                 w_pfx, w_tag = ("ask", "ASK") if is_sell else ("bid", "BID")

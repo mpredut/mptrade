@@ -455,7 +455,7 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                         else (
                             first_pos_float(meta.get("postMarketTime"), meta.get("preMarketTime"))
                             if ext_px is not None and mkt_state in ("POST", "POSTPOST")
-                            else None
+                            else (meta.get("regularMarketTime") if mkt_state != "CLOSED" else None)
                         )
                     )
                     quote_ts_meta = normalize_epoch_sec(raw_quote_ts, default=None) if raw_quote_ts is not None else None

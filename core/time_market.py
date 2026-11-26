@@ -24,7 +24,9 @@ from core.math_coercion import _first_mapped, coerce_dict_maps
 ET = ZoneInfo("America/New_York")
 US_EQUITY_PREMARKET_OPEN_ET = dt_time(4, 0)
 US_EQUITY_RTH_OPEN_ET = dt_time(9, 30)
+US_EQUITY_EARLY_RTH_CLOSE_ET = dt_time(13, 0)
 US_EQUITY_RTH_CLOSE_ET = dt_time(16, 0)
+US_EQUITY_EARLY_POSTMARKET_CLOSE_ET = dt_time(17, 0)
 US_EQUITY_POSTMARKET_CLOSE_ET = dt_time(20, 0)
 
 
@@ -107,6 +109,38 @@ def is_us_market_holiday(day: date | datetime) -> bool:
     return us_market_holiday_name(day) is not None
 
 
+@lru_cache(maxsize=32)
+def _us_market_early_closes_for_year(year: int) -> dict[date, str]:
+    """Return NYSE 13:00 ET early-close half-days for ``year`` mapped to event names."""
+    holidays = _us_market_holidays_for_year(year)
+    early: dict[date, str] = {}
+    # Day after Thanksgiving (Black Friday) is always a 13:00 ET NYSE early close.
+    nov1 = date(year, 11, 1)
+    thanksgiving = nov1 + timedelta(days=((3 - nov1.weekday()) % 7) + 21)
+    early[thanksgiving + timedelta(days=1)] = "Day After Thanksgiving"
+    # July 3 and Dec 24 are 13:00 ET NYSE early closes when they fall Mon-Thu (not already full holidays).
+    for cand, name in (
+        (date(year, 7, 3), "Independence Day Eve"),
+        (date(year, 12, 24), "Christmas Eve"),
+    ):
+        if cand.weekday() < 5 and cand not in holidays:
+            early[cand] = name
+    return early
+
+
+def us_market_early_close_name(day: date | datetime) -> str | None:
+    """Return the NYSE 13:00 ET early-close name for ``day`` (ET date), or ``None``."""
+    d = day.date() if isinstance(day, datetime) else day
+    if not isinstance(d, date):
+        return None
+    return _us_market_early_closes_for_year(d.year).get(d)
+
+
+def is_us_market_early_close(day: date | datetime) -> bool:
+    """Return True when ``day`` is a scheduled NYSE 13:00 ET early-close half-day."""
+    return us_market_early_close_name(day) is not None
+
+
 def resolve_us_equity_session_state(now_ts: float | None = None) -> str:
     """Return canonical US equity session state ('PRE', 'REGULAR', 'POST', or 'CLOSED') in America/New_York."""
     ts = resolve_now_ts(now_ts)
@@ -114,14 +148,18 @@ def resolve_us_equity_session_state(now_ts: float | None = None) -> str:
         ny_dt = datetime.fromtimestamp(ts, tz=ET)
     except (ValueError, OverflowError, OSError):
         ny_dt = datetime.fromtimestamp(_time.time(), tz=ET)
-    if ny_dt.weekday() >= 5 or is_us_market_holiday(ny_dt.date()):
+    ny_d = ny_dt.date()
+    if ny_dt.weekday() >= 5 or is_us_market_holiday(ny_d):
         return "CLOSED"
+    is_early = is_us_market_early_close(ny_d)
+    rth_close = US_EQUITY_EARLY_RTH_CLOSE_ET if is_early else US_EQUITY_RTH_CLOSE_ET
+    post_close = US_EQUITY_EARLY_POSTMARKET_CLOSE_ET if is_early else US_EQUITY_POSTMARKET_CLOSE_ET
     t_ny = ny_dt.time()
-    if US_EQUITY_RTH_OPEN_ET <= t_ny < US_EQUITY_RTH_CLOSE_ET:
+    if US_EQUITY_RTH_OPEN_ET <= t_ny < rth_close:
         return "REGULAR"
     if US_EQUITY_PREMARKET_OPEN_ET <= t_ny < US_EQUITY_RTH_OPEN_ET:
         return "PRE"
-    if US_EQUITY_RTH_CLOSE_ET <= t_ny < US_EQUITY_POSTMARKET_CLOSE_ET:
+    if rth_close <= t_ny < post_close:
         return "POST"
     return "CLOSED"
 

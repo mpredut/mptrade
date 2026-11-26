@@ -14,6 +14,7 @@ from botcore import (
     _parse_bool_flag,
     clean_scale,
     exact_int,
+    is_us_market_early_close,
     is_us_market_holiday,
     normalize_epoch_sec,
     obj_attr,
@@ -25,6 +26,7 @@ from botcore import (
     safe_nonneg_ts,
     safe_pos_float,
     split_csv,
+    us_market_early_close_name,
     us_market_holiday_name,
 )
 from cachepaths import canonical_base_asset
@@ -355,11 +357,17 @@ def _collect_routine_session_windows(
             continue
         cand_iso = cand_date.isoformat()
         cand_is_us_holiday = is_us_market_holiday(cand_date)
+        cand_is_us_early_close = (not cand_is_us_holiday) and is_us_market_early_close(cand_date)
         cand_is_fomc = cand_iso in fomc_dates or (cand_date == eff_ny_today and has_fomc_headline)
         for hh, mm, code, desc in windows:
             if cand_is_us_holiday and code.startswith("US_"):
                 continue
+            if cand_is_us_early_close and code == "US_FOMC_FED_WINDOW":
+                continue
             ev_dt = datetime(cand_date.year, cand_date.month, cand_date.day, hh, mm, tzinfo=dt_eet.tzinfo)
+            is_early_close_slot = cand_is_us_early_close and code == "US_WALL_STREET_CLOSE"
+            if is_early_close_slot:
+                ev_dt = ev_dt - timedelta(hours=3)
             ev_ts = ev_dt.timestamp()
             if callable(skip_slot_fn) and skip_slot_fn(cand_iso, code, ev_ts):
                 continue
@@ -369,9 +377,14 @@ def _collect_routine_session_windows(
                 is_confirmed_win = (cand_date == eff_ny_today) and macro_release_confirmed
             else:
                 is_confirmed_win = False
-            eff_desc = desc if is_confirmed_win else routine_labels.get(code, desc)
+            eff_desc = (
+                "US NYSE / Nasdaq Early Close (13:00 ET)"
+                if is_early_close_slot
+                else (desc if is_confirmed_win else routine_labels.get(code, desc))
+            )
             delta_min = (ev_ts - ts) / 60.0
-            time_lbl = f"{ev_dt.strftime('%a')} {hh:02d}:{mm:02d} {tz_abbr}" if day_offset > 0 else f"{hh:02d}:{mm:02d} {tz_abbr}"
+            hm_lbl = ev_dt.strftime("%H:%M")
+            time_lbl = f"{ev_dt.strftime('%a')} {hm_lbl} {tz_abbr}" if day_offset > 0 else f"{hm_lbl} {tz_abbr}"
             max_ago_min = -15.0 if code == "US_WALL_STREET_CLOSE" else -20.0
             if (max_ago_min < delta_min <= 0.0 if code == "US_WALL_STREET_CLOSE" else max_ago_min <= delta_min <= 0.0) and active_window is None:
                 win_tag = "ACTIVE VOLATILITY WINDOW" if (is_confirmed_win or code not in routine_labels) else "ACTIVE SESSION WINDOW"
@@ -862,6 +875,7 @@ def resolve_macro_economic_calendar(
         and _parse_bool_flag(calendar_snapshot.get("events_ok"), False)
     )
     routine_macro_confirmed = bool(live_macro_prints) if has_authoritative_live_calendar else headline_macro_confirmed
+    macro_release_confirmed = routine_macro_confirmed or bool(confirmed_events_today)
 
     routine_active, routine_active_high, routine_upcoming = _collect_routine_session_windows(
         ts,
@@ -901,6 +915,12 @@ def resolve_macro_economic_calendar(
     )
 
     us_holiday_today = us_market_holiday_name(dt_ny.date())
+    us_early_close_today = None if us_holiday_today else us_market_early_close_name(dt_ny.date())
+    upcoming_us_holiday = (
+        us_market_holiday_name(dt_ny.date() + timedelta(days=1))
+        if (us_holiday_today is None and dt_ny.hour >= 16)
+        else None
+    )
     return {
         "session_key": session_ctx.session_key,
         "session_label": session_ctx.session_label,
@@ -908,6 +928,8 @@ def resolve_macro_economic_calendar(
         "ny_time": session_ctx.ny_time_str,
         "is_weekend": session_ctx.is_weekend,
         "us_market_holiday": us_holiday_today,
+        "us_market_early_close": us_early_close_today,
+        "upcoming_us_market_holiday": upcoming_us_holiday,
         "macro_release_confirmed": macro_release_confirmed,
         "fomc_today": is_fomc_today,
         "next_fomc_date": next_fomc_date,

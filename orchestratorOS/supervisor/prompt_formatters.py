@@ -286,8 +286,8 @@ def build_supervisor_prompt(
         )
         limit_exec_rule = (
             "   - DUAL EXECUTION MODE \u2014 IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS: Prefer `\"order_type\": \"LIMIT\"` to control fill price and capture bid-ask spread "
-            "(check venue fees/spread; passive `limit_price` near `vol_profile`/`session_vwap` support/resistance for swings; right at spot/BBO for urgent entries/reversals). "
-            "Audit `open_limit_orders` (`dist_from_spot_pct` & `fill_prob_1h_pct` anchored to live spot; watch `[ob_stale]` when `ob_age > 30s`), "
+            "(check venue fees/spread; passive `limit_price` near `vol_profile`/`session_vwap` support/resistance for swings; right at live spot for urgent entries/reversals). "
+            "Audit `open_limit_orders` (`dist_from_spot_pct` & `fill_prob_1h_pct` anchored to live spot), "
             "`last_cycle_execution_status` (emitted for recent `<=60m` fill/rejection or `<=30m` resting order), and calibration `arr`/`slip` bps (negative bps = favorable price improvement): "
             "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) resting orders via `replace_open_orders: true`; returning `'HOLD'` leaves resting orders untouched.\n"
             if is_equities
@@ -323,11 +323,20 @@ def build_supervisor_prompt(
             "   - SUPERVISORY AUTHORITY TO AUDIT & REPAIR / REVERSE UNWANTED BOT OR FLEET TRADES (`by=BOT`/`by=MANUAL` vs `by=AI`): "
             "Audit interim `by=BOT`/`by=MANUAL` fills/orders independently. Cancel unwanted bot/manual orders BEFORE fill (`cancel_bot_open_orders: true` "
             "with mandatory `cancel_order_ids: [...]` on standalone `HOLD`, or narrowed via `cancel_order_ids` on `BUY`/`SELL`); do NOT sell minutes after a bot fill unless structure genuinely breaks down "
-            "(avoid burning round-trip fees on normal noise). When repair is warranted, submit spot `LIMIT` (`\"order_type\": \"LIMIT\"`) "
-            "right at live BBO (`best_bid` for BUY / `best_ask` for SELL):\n"
-            "     1) If a bot SOLD prematurely or when it should NOT have, submit a corrective `BUY` `LIMIT` right at live spot/`best_bid` to restore at maker fee.\n"
-            "     2) If a bot BOUGHT prematurely or when it should NOT have (confirmed structural breakdown), submit a corrective `SELL` `LIMIT` right at live spot/`best_ask`.\n"
-            "     3) Targeting specific orders with `cancel_order_ids: [...]` + `cancel_bot_open_orders: true` / `replace_open_orders: true` cancels only those orders "
+            "(avoid burning round-trip fees on normal noise). When repair is warranted, submit "
+            + (
+                "a `LIMIT` (`\"order_type\": \"LIMIT\"`) right at live spot price:\n"
+                "     1) If a bot SOLD prematurely or when it should NOT have, submit a corrective `BUY` `LIMIT` right at live spot to restore the position.\n"
+                "     2) If a bot BOUGHT prematurely or when it should NOT have (confirmed structural breakdown), submit a corrective `SELL` `LIMIT` right at live spot.\n"
+                if is_equities
+                else (
+                    "spot `LIMIT` (`\"order_type\": \"LIMIT\"`) "
+                    "right at live BBO (`best_bid` for BUY / `best_ask` for SELL):\n"
+                    "     1) If a bot SOLD prematurely or when it should NOT have, submit a corrective `BUY` `LIMIT` right at live spot/`best_bid` to restore at maker fee.\n"
+                    "     2) If a bot BOUGHT prematurely or when it should NOT have (confirmed structural breakdown), submit a corrective `SELL` `LIMIT` right at live spot/`best_ask`.\n"
+                )
+            )
+            + "     3) Targeting specific orders with `cancel_order_ids: [...]` + `cancel_bot_open_orders: true` / `replace_open_orders: true` cancels only those orders "
             "(standalone `HOLD` cancel requires explicit `cancel_order_ids`; on `BUY`/`SELL` without `cancel_order_ids`, only same-side orders cancel; if cancel fails, replacement aborts).\n"
             f"   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: Decide freely WHEN/WHAT/HOW MUCH/WHICH venue ({venue_list_desc}). "
             "Cost basis (`avg_buy_px`, `lifo_rem_avg_px`, `open_lifo_lots`) is informational, NEVER a constraint on 2-way pairs: harvest profitable LIFO tranches or up to `50%\u2013100%` of `value_usd` "
@@ -364,9 +373,14 @@ def build_supervisor_prompt(
                 f"sell rarely on >+{xs_min_profit_pct:g}% profit + `target_px` >={xs_min_drop_pct:g}% lower (1-2d+ drop){compact_crash_sfx}"
             )
         )
+        compact_exec_desc = (
+            "spot LIMIT execution, active open-order management"
+            if is_equities
+            else "spot maker-LIMIT execution, active orderbook management"
+        )
         compact_prefix = (
             "CONTINUATION TURN (ACTIVE THREAD POLICY APPLIES):\n"
-            "- Apply all quantitative trading, spot maker-LIMIT execution, active orderbook management, and "
+            f"- Apply all quantitative trading, {compact_exec_desc}, and "
             "`by=BOT` vs `by=AI` supervisory rules established earlier in this thread (unrestricted read access to "
             f"`cachedb/` & `statedb/`, zero deterministic guards, `confidence >= {min_conf:g}`, notional {min_usd:g}-{max_usd:g} USD{compact_xs_sfx}).\n"
             "- Honor any user chat instructions, price targets, overrides, or questions earlier in this thread with highest priority.\n"

@@ -893,9 +893,21 @@ class LiveVenueEquityReconciliationEvaluator(MacroTelemetryEvaluatorBase):
         venue_pos_map, venue_cash_map = coerce_dict_maps(
             nav.get("venue_pos_usd"), nav.get("venue_cash_usd")
         )
-        def _set_readonly_spot(ro_d: Dict[str, Any], qty_v: float, val_v: float, cash_sum: float) -> None:
+        def _set_readonly_spot(
+            ro_d: Dict[str, Any],
+            qty_v: float,
+            val_v: float,
+            cash_sum: float,
+            locked_cash: float = 0.0,
+        ) -> None:
             if "qty" in ro_d or "value_usd" in ro_d:
                 ro_d["qty"], ro_d["value_usd"], ro_d["cash_usd"] = round(qty_v, 6), round(val_v, 2), round(cash_sum, 2)
+                if locked_cash > 0.0:
+                    ro_d["free_cash_usd"] = round(max(0.0, cash_sum - locked_cash), 2)
+                    ro_d["locked_quote_usd"] = round(locked_cash, 2)
+                else:
+                    ro_d.pop("free_cash_usd", None)
+                    ro_d.pop("locked_quote_usd", None)
             sp_list = ro_d.get("spot_positions")
             if isinstance(sp_list, list) and sp_list and isinstance(sp_list[0], dict) and (qty_v > 0.0 or len(sp_list) == 1):
                 sp_list[0].update({
@@ -912,6 +924,11 @@ class LiveVenueEquityReconciliationEvaluator(MacroTelemetryEvaluatorBase):
             tot_v = safe_pos_float(venues_usd.get(v_target), default=0.0) or 0.0
             v_pos_sum = safe_pos_float(venue_pos_map.get(v_target), default=0.0) or 0.0
             v_cash_sum = safe_pos_float(venue_cash_map.get(v_target), default=0.0) or 0.0
+            v_locked_cash = sum(
+                safe_pos_float(cv.get("locked_quote_usd"), default=0.0) or 0.0
+                for cv in vq_cash_map.values()
+                if isinstance(cv, dict) and normalize_venue_name(cv.get("venue")) == v_target
+            )
             v_pos_list = [
                 p for p in t_pos_list
                 if isinstance(p, dict) and normalize_venue_name(p.get("venue")) == v_target
@@ -968,11 +985,11 @@ class LiveVenueEquityReconciliationEvaluator(MacroTelemetryEvaluatorBase):
                                 )
                         live_q = hp0_free_q + sum(hp0_locked_by_sym.values())
                         if live_q > 0.0:
-                            _set_readonly_spot(hl_ro_d, live_q, v_pos_sum, v_cash_sum)
+                            _set_readonly_spot(hl_ro_d, live_q, v_pos_sum, v_cash_sum, v_locked_cash)
                         else:
-                            _set_readonly_spot(hl_ro_d, 0.0, 0.0, v_cash_sum)
+                            _set_readonly_spot(hl_ro_d, 0.0, 0.0, v_cash_sum, v_locked_cash)
                     else:
-                        _set_readonly_spot(hl_ro_d, 0.0, 0.0, v_cash_sum)
+                        _set_readonly_spot(hl_ro_d, 0.0, 0.0, v_cash_sum, v_locked_cash)
         return portfolio_summary
 
 

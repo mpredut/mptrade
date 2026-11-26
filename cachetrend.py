@@ -64,6 +64,8 @@ from cachepaths import (
     cache_symbol_variants,
     cachedb_root_for_file,
     clean_scalar_str,
+    has_crypto_quote_suffix,
+    has_equity_suffix,
     is_kraken_tokenized_asset,
     migrate_legacy_filename_if_needed,
     resolve_cachedb_filepath,
@@ -134,8 +136,20 @@ def _cm_attr(name: str, default=None):
 
 
 def _short_trend_symbol_variants(symbol) -> list:
-    """Return ordered symbol candidates (exact symbol first, then cross-venue aliases)."""
-    return cache_symbol_variants(symbol, include_original=True, include_base=True, quotes=("USDC", "USDT", "USD"))
+    """Return ordered same-asset-class symbol candidates (exact symbol first, then cross-venue aliases)."""
+    cands = cache_symbol_variants(symbol, include_original=True, include_base=True, quotes=("USDC", "USDT", "USD"))
+    sym_s = str(symbol or "").strip()
+    if not sym_s:
+        return cands
+    if has_equity_suffix(sym_s):
+        return [
+            c
+            for c in cands
+            if not is_kraken_tokenized_asset(c) and not has_crypto_quote_suffix(c) and "/" not in str(c)
+        ]
+    if is_kraken_tokenized_asset(sym_s):
+        return [c for c in cands if not has_equity_suffix(c)]
+    return [c for c in cands if not has_equity_suffix(c) and not is_kraken_tokenized_asset(c)]
 
 
 _MISSING_VARIANT = object()
@@ -150,9 +164,14 @@ def _find_by_symbol_variant(mapping: dict, symbol, *, expected_type=None, allow_
     if not isinstance(mapping, dict):
         return None, None
     cands = _short_trend_symbol_variants(symbol)
+    exact_cf = str(symbol or "").strip().casefold()
     for src in (mapping, mapping.get("items") if isinstance(mapping.get("items"), dict) else None):
         if not isinstance(src, dict):
             continue
+        if allow_none and expected_type is None and exact_cf:
+            exact_k = next((k for k in src if isinstance(k, str) and k.casefold() == exact_cf), None)
+            if exact_k is not None and src[exact_k] is None:
+                return exact_k, None
         for cand in cands:
             val = casefold_get(src, cand, _MISSING_VARIANT)
             if val is not _MISSING_VARIANT and val is not None:
