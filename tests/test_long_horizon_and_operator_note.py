@@ -1180,11 +1180,11 @@ def test_option3_unified_multi_tf_intraday_collector_market_api_consumers_and_au
         "[BINANCE_BTC]\nprovider = binance\nsymbol = BTCUSDC\nbase = BTC\nquote = USDC\nenabled = yes\n"
         "isolation = own_ledger\nmarket_hours = 24x7\nrole.mt = no\nrole.tradeall_fire = no\n"
         "role.kalman_primary = no\nrole.trailing = no\nrole.assetguardian = no\nrole.archive = yes\n"
-        "role.rtrade = no\nrole.force_sell = no\nai.tradable = yes\n\n"
+        "role.rtrade = no\nai.tradable = yes\n\n"
         "[BINANCE_ETH]\nprovider = binance\nsymbol = ETHUSDC\nbase = ETH\nquote = USDC\nenabled = yes\n"
         "isolation = own_ledger\nmarket_hours = 24x7\nrole.mt = no\nrole.tradeall_fire = no\n"
         "role.kalman_primary = no\nrole.trailing = no\nrole.assetguardian = no\nrole.archive = yes\n"
-        "role.rtrade = no\nrole.force_sell = no\nai.tradable = no\n",
+        "role.rtrade = no\nai.tradable = no\n",
         encoding="utf-8",
     )
     obs_cache = str(ws_obs / "cachedb")

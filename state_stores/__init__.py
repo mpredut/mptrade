@@ -12,10 +12,12 @@ from .macro_lexicon_collect import MacroLexiconCollectStore
 from .microstructure_cycle_history import MicrostructureCycleHistoryStore
 from .mt_state import MtStateStore
 from .nav_history_state import NavHistoryStateStore
+from .notification_delivery_state import NotificationDeliveryStateStore
 from .notify_queue import NotifyQueueStore
 from .order_retry_quarantine_alerts import OrderRetryQuarantineAlertsStore
 from .order_retry_queue import OrderRetryQueueStore
 from .orders_active import OrdersActiveStore
+from .os_resources_watchdog_state import OsResourcesWatchdogStateStore
 from .portfolio_positions_state import PortfolioPositionsStateStore
 from .registry import (
     CRITICAL_STATE_SPECS,
@@ -48,10 +50,12 @@ __all__ = [
     "MicrostructureCycleHistoryStore",
     "MtStateStore",
     "NavHistoryStateStore",
+    "NotificationDeliveryStateStore",
     "NotifyQueueStore",
     "OrderRetryQuarantineAlertsStore",
     "OrderRetryQueueStore",
     "OrdersActiveStore",
+    "OsResourcesWatchdogStateStore",
     "PortfolioPositionsStateStore",
     "RtradePairsStateStore",
     "STATE_SPEC_BY_CONST",

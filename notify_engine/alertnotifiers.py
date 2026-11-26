@@ -23,7 +23,8 @@ from cachepaths import (
     split_symbol_assets,
     venue_default_quote_asset,
 )
-from state_io import encode_json_payload, generation_file_lock, read_json_dict, save_json_state
+from state_io import encode_json_payload
+from state_stores.notification_delivery_state import NotificationDeliveryStateStore
 from typing import Any, Optional
 
 # Import your modules
@@ -347,12 +348,11 @@ def _positive_int_env(name: str, default: int) -> int:
 
 
 def _delivery_state_lock(path: Path):
-    return generation_file_lock(path, lock_path=path.with_suffix(path.suffix + ".lock"))
+    return NotificationDeliveryStateStore.state_lock(path)
 
 
 def _load_delivery_state(path: Path, today: str) -> dict:
-    with _delivery_state_lock(path):
-        state = read_json_dict(path, default={}, recover_previous=True, repair_files=True)
+    state = NotificationDeliveryStateStore.read_state(path)
     if not isinstance(state, dict) or not isinstance(state.get("channels"), dict):
         return {"schema_version": 1, "date_utc": today, "channels": {}}
     if state.get("date_utc") != today:
@@ -366,11 +366,7 @@ def _load_delivery_state(path: Path, today: str) -> dict:
 
 
 def _save_delivery_state(path: Path, state: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with _delivery_state_lock(path):
-        save_json_state(
-            path, state, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        )
+    NotificationDeliveryStateStore.write_state(path, state)
 
 
 def _is_guard_alert(alerts: list[Any]) -> bool:
@@ -800,7 +796,7 @@ def _resolve_gate_context(
     now_ts = nf if (nf is not None and nf < 32503680000.0) else time.time()
     today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
     cfg_path = optional_env("NOTIFICATION_STATE_FILE")
-    return now_ts, _parse_bool_flag(flag, False), today, (Path(cfg_path).expanduser() if cfg_path else BASE_DIR / "logs/notification_delivery_state.json")
+    return now_ts, _parse_bool_flag(flag, False), today, NotificationDeliveryStateStore.resolve_state_path(cfg_path)
 
 
 def pass_common_gate(
@@ -1032,7 +1028,7 @@ def _mark_provider_daily_limit(channel: str, cooldown_seconds: float = 900.0) ->
     cd_sec = safe_pos_float(cooldown_seconds, default=900.0)
     today = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
     cfg_path = optional_env("NOTIFICATION_STATE_FILE")
-    path = Path(cfg_path).expanduser() if cfg_path else BASE_DIR / "logs/notification_delivery_state.json"
+    path = NotificationDeliveryStateStore.resolve_state_path(cfg_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with _delivery_state_lock(path):
         state = _load_delivery_state(path, today)

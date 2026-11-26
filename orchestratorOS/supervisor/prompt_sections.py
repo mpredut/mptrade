@@ -914,7 +914,7 @@ def _format_sre_and_fleet_section(
             f"vpn_outage_active={sv.get('vpn_outage_active', False)}\n"
             f"- Configuration Files Audit: {cfg_summary}"
             + (
-                f"\n- Sustained High-Resource Processes (.resource_watchdog_state.json): "
+                f"\n- Sustained High-Resource Processes (os_resources_watchdog_state.json): "
                 f"{_format_compact_kv_value(sv['resource_watchdog_offenders'])}"
                 if sv.get("resource_watchdog_offenders")
                 else ""

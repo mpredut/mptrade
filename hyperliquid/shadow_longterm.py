@@ -46,7 +46,7 @@ _common_mod = load_local_module(HERE, "common")
 load_isolated_hl_cfg = _common_mod.load_isolated_hl_cfg
 
 
-LOG_DIR = os.path.join(ROOT, "logs", "hyperliquid_shadow")
+LOG_DIR = os.path.join(ROOT, "offline", "shadow_runs", "hyperliquid")
 
 
 def _variants(interval: int):

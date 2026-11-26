@@ -5379,8 +5379,8 @@ def test_bugs_90_91_92_active_cycle_recent_buys_resource_watchdog_sustained_and_
     # 2. Bug 91: gather_system_and_vpn_telemetry filters out stale (>1h) or 1-poll transient resource_watchdog_offenders
     now_s = time.time()
     ws_stale = tmp_path / "ws_stale"
-    ws_stale.mkdir(parents=True, exist_ok=True)
-    (ws_stale / ".resource_watchdog_state.json").write_text(
+    (ws_stale / "statedb" / "system").mkdir(parents=True, exist_ok=True)
+    (ws_stale / "statedb" / "system" / "os_resources_watchdog_state.json").write_text(
         json.dumps({
             "last_run": now_s - 86400.0,
             "processes": {"101:1": {"pid": 101, "command": "python macro_analyzer.py"}},
@@ -5392,8 +5392,8 @@ def test_bugs_90_91_92_active_cycle_recent_buys_resource_watchdog_sustained_and_
     assert "resource_watchdog_offenders" not in telem_stale
 
     ws_fresh = tmp_path / "ws_fresh"
-    ws_fresh.mkdir(parents=True, exist_ok=True)
-    (ws_fresh / ".resource_watchdog_state.json").write_text(
+    (ws_fresh / "statedb" / "system").mkdir(parents=True, exist_ok=True)
+    (ws_fresh / "statedb" / "system" / "os_resources_watchdog_state.json").write_text(
         json.dumps({
             "last_run": now_s - 60.0,
             "processes": {
@@ -5570,18 +5570,19 @@ def test_bugs_93_94_95_pretrade_venue_ob_isolation_watchdog_state_cleanup_and_pa
     assert "Cross-Venue Relative Value (Arbitrage)" in pt_hype_kr
     assert "arb_vs_HYPEUSDC=" in pt_hype_kr["Cross-Venue Relative Value (Arbitrage)"]
 
-    # 2. Bug 94: harvest_heartbeats_and_state_files rounds age_hours and filters >24h retired watchdog states;
+    # 2. Bug 94: harvest_heartbeats_and_state_files locates statedb/bots/.resource_watchdog_state.json (legacy)
+    #    and canonical statedb/system/os_resources_watchdog_state.json, ignores retired .watchdog_state.json;
     #    harvest_bot_runtime_states rounds IEEE-754 float artifacts in assetguardian total_filled_qty
     ws_dir = tmp_path / "ws_state"
-    ws_dir.mkdir(parents=True, exist_ok=True)
-    rw_p = ws_dir / ".resource_watchdog_state.json"
+    (ws_dir / "statedb" / "system").mkdir(parents=True, exist_ok=True)
+    rw_p = ws_dir / "statedb" / "system" / "os_resources_watchdog_state.json"
     rw_p.write_text("{}", encoding="utf-8")
     os.utime(rw_p, (now_s - 936.6, now_s - 936.6))
     wd_p = ws_dir / ".watchdog_state.json"
     wd_p.write_text("{}", encoding="utf-8")
     os.utime(wd_p, (now_s - 400 * 3600.0, now_s - 400 * 3600.0))
     _, st_files = harvest_heartbeats_and_state_files(str(tmp_path), str(ws_dir), now_s)
-    assert st_files == {".resource_watchdog_state.json": {"age_hours": 0.2602}}
+    assert st_files == {"os_resources_watchdog_state.json": {"age_hours": 0.2602}}
 
     (tmp_path / "assetguardian_state.json").write_text(
         json.dumps({"symbols": {"ARBUSDC": {"sell": {"initial_qty": 316.552935, "total_filled_qty": 63.3 + 37.9}}}}),
@@ -17065,11 +17066,11 @@ def test_disabled_registry_symbols_xstock_longterm_cost_and_partial_24h_vp(tmp_p
         "[BINANCE_ADA]\nprovider = binance\nsymbol = ADAUSDC\nbase = ADA\nquote = USDC\n"
         "enabled = yes\nisolation = own_ledger\nmarket_hours = 24x7\n"
         "role.mt = yes\nrole.tradeall_fire = no\nrole.kalman_primary = no\n"
-        "role.trailing = no\nrole.assetguardian = no\nrole.archive = yes\nrole.rtrade = no\nrole.force_sell = no\n\n"
+        "role.trailing = no\nrole.assetguardian = no\nrole.archive = yes\nrole.rtrade = no\n\n"
         "[KRAKEN_ADA]\nprovider = kraken\nsymbol = ADAUSD\nbase = ADA\nquote = USD\n"
         "enabled = no\nisolation = own_ledger\nmarket_hours = 24x7\n"
         "role.mt = no\nrole.tradeall_fire = no\nrole.kalman_primary = no\n"
-        "role.trailing = no\nrole.assetguardian = no\nrole.archive = no\nrole.rtrade = no\nrole.force_sell = no\n",
+        "role.trailing = no\nrole.assetguardian = no\nrole.archive = no\nrole.rtrade = no\n",
         encoding="utf-8",
     )
     assert "ADAUSD" in disabled_registry_symbols(ws)
@@ -17669,15 +17670,15 @@ def test_crypto_executor_prompt_telemetry_audit_fixes(tmp_path):
         "[KRAKEN_HYPE]\nprovider = kraken\nsymbol = HYPEUSD\nbase = HYPE\nquote = USD\n"
         "enabled = yes\nisolation = own_ledger\nmarket_hours = 24x7\nai.tradable = yes\n"
         "role.mt = no\nrole.tradeall_fire = no\nrole.kalman_primary = no\nrole.trailing = no\n"
-        "role.assetguardian = no\nrole.archive = yes\nrole.rtrade = no\nrole.force_sell = no\n\n"
+        "role.assetguardian = no\nrole.archive = yes\nrole.rtrade = no\n\n"
         "[KRAKEN_TAO]\nprovider = kraken\nsymbol = TAOUSD\nbase = TAO\nquote = USD\n"
         "enabled = no\nisolation = own_ledger\nmarket_hours = 24x7\nai.tradable = no\n"
         "role.mt = no\nrole.tradeall_fire = no\nrole.kalman_primary = no\nrole.trailing = no\n"
-        "role.assetguardian = no\nrole.archive = no\nrole.rtrade = no\nrole.force_sell = no\n\n"
+        "role.assetguardian = no\nrole.archive = no\nrole.rtrade = no\n\n"
         "[KRAKEN_ANT]\nprovider = kraken\nsymbol = ANTxUSD\nbase = ANTx\nquote = USD\n"
         "enabled = yes\nisolation = own_ledger\nmarket_hours = 24x7\nai.tradable = no\n"
         "role.mt = no\nrole.tradeall_fire = no\nrole.kalman_primary = no\nrole.trailing = no\n"
-        "role.assetguardian = no\nrole.archive = yes\nrole.rtrade = no\nrole.force_sell = no\n",
+        "role.assetguardian = no\nrole.archive = yes\nrole.rtrade = no\n",
         encoding="utf-8",
     )
     atomic_write_json(

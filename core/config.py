@@ -375,6 +375,13 @@ def empty_ini_config(*, inline_comments: bool = True) -> configparser.ConfigPars
     return configparser.ConfigParser(interpolation=None, inline_comment_prefixes=prefixes)
 
 
+def read_config_text(path: str | os.PathLike) -> str:
+    """Read a UTF-8 configuration file via the canonical ``state_io`` text reader."""
+    if isinstance(path, bool) or not isinstance(path, (str, os.PathLike)) or not str(path).strip():
+        raise ValueError(f"Invalid configuration path: {path!r}")
+    return _state_io.read_text_file(os.path.abspath(os.fspath(path)))
+
+
 def load_ini_config(
     path: str | os.PathLike, *, must_exist: bool = True, inline_comments: bool = True
 ) -> configparser.ConfigParser:

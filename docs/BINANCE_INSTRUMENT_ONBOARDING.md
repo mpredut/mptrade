@@ -21,7 +21,6 @@ That is **not** permission for TradeAll, AssetGuardian, or trailing to place ord
 | `role.mt` | `monitortrades`; configure its existing `mt.*` policy in the same section |
 | `role.archive` | Default long-price archive membership |
 | `role.rtrade` | The single pair owned by rtrade; its startup requires exactly one selected pair |
-| `role.force_sell` | Membership of the existing force-sell eligibility list |
 
 Every role flag is required, including explicit `no` values. Missing settings,
 invalid booleans, unknown roles, duplicate provider/symbol identities, invalid
@@ -48,7 +47,6 @@ role.trailing = no
 role.assetguardian = no
 role.archive = no
 role.rtrade = no
-role.force_sell = no
 ```
 
 Set only the intended roles to `yes`. Add `trailing.pct` if enabling trailing,

@@ -109,7 +109,6 @@ from tests.conftest import MockHttpResponse, make_test_margins
 from verify_tools import (
     kraken_pnl_backfill as kpb,
     ownership_inventory as oi,
-    portfolio_snapshot as ps,
     translation_audit as ta_mod,
     watch_trade_decisions as wtd_mod,
 )
@@ -1041,26 +1040,6 @@ def test_batch40_market_monitor_and_notify_engine_hardening(tmp_path, monkeypatc
 
 
 def test_batch41_verify_tools_drawprices_and_tradeall_backtest_hardening(tmp_path, monkeypatch):
-    # 1. portfolio_snapshot._ntfy respects DISABLE_EXTERNAL_NOTIFICATIONS and strips CR/LF in title
-    monkeypatch.setenv("NTFY_TOPIC", "https://ntfy.sh/custom_topic")
-    monkeypatch.setenv("DISABLE_EXTERNAL_NOTIFICATIONS", "1")
-    with patch("urllib.request.urlopen") as mock_urlopen:
-        ps._ntfy("Title\r\nInjected: 1", "Body")
-        mock_urlopen.assert_not_called()
-
-    monkeypatch.setenv("DISABLE_EXTERNAL_NOTIFICATIONS", "0")
-    captured_req = {}
-
-    def _fake_urlopen(req, timeout=10):
-        captured_req["url"] = req.full_url
-        captured_req["title"] = req.headers.get("Title")
-        return MockHttpResponse(b"")
-
-    with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-        ps._ntfy("Title\r\nLine2", "Body")
-        assert captured_req["url"] == "https://ntfy.sh/custom_topic"
-        assert "\r" not in captured_req["title"] and "\n" not in captured_req["title"]
-
     # 2. kraken_pnl_backfill.fetch_all_trades falls back to len(all_trades) when count is omitted
     fake_kc = MagicMock()
     fake_kc._private.side_effect = [
@@ -1907,15 +1886,6 @@ def test_batch58_hl_shadow_longterm_tradeall_observe_and_portfolio_snapshot_guar
     )
     assert ts_list == [1700000000.0, 1700000010.0]
     assert px_list == [50000.0, 50100.0]
-
-    # 3. portfolio_snapshot.run_alerts normalises negative policy thresholds
-    monkeypatch.setenv("RISK_DD_ALERT_PCT", "-15.0")
-    monkeypatch.setenv("RISK_DD_REALERT_HOURS", "6.0")
-    monkeypatch.setenv("RISK_DD_WORSEN_PCT", "-5.0")
-    monkeypatch.setattr(ps, "ALERT_STATE", str(tmp_path / "alerts.json"))
-    monkeypatch.setattr(ps, "_ntfy", lambda title, body: None)
-    fired = ps.run_alerts([{"engine": "Kraken HYPE", "paper": False, "qty": 1.0, "dd_pct": -2.0}])
-    assert fired == []
 
 
 def test_batch59_hl_strategy_bool_validation_and_kraken_pnl_backfill_side_guard(monkeypatch, tmp_path):

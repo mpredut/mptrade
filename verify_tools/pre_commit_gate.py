@@ -68,9 +68,6 @@ REQUIRED_OPERATIONAL_CONFIG_KEYS = frozenset({
     "ANOMALY_THRESH_AUTH",
     "ANOMALY_THRESH_BLIND",
     "ANOMALY_THRESH_TRACEBACK",
-    "RISK_DD_ALERT_PCT",
-    "RISK_DD_REALERT_HOURS",
-    "RISK_DD_WORSEN_PCT",
     "MONITOR_PORT",
 })
 OPERATIONAL_THRESHOLD_RUNTIME_FILES = frozenset({
@@ -78,7 +75,6 @@ OPERATIONAL_THRESHOLD_RUNTIME_FILES = frozenset({
     "cacheManager.py",
     "orchestratorOS/lib/technical_repair_ssot.py",
     "verify_tools/check_cache_coherence.py",
-    "verify_tools/portfolio_snapshot.py",
     "verify_tools/monitor_night.py",
 })
 

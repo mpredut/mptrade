@@ -1412,8 +1412,7 @@ def test_declarative_xstock_role_gating_uppercase_resolution_and_archive_ohlc(tm
         "role.trailing = no\n"
         "role.assetguardian = no\n"
         "role.archive = yes\n"
-        "role.rtrade = no\n"
-        "role.force_sell = no\n",
+        "role.rtrade = no\n",
         encoding="utf-8",
     )
     assert is_xstock_trading_enabled("SPCXxUSD", path=str(locked_conf)) is False
@@ -1436,8 +1435,7 @@ def test_declarative_xstock_role_gating_uppercase_resolution_and_archive_ohlc(tm
         "role.trailing = no\n"
         "role.assetguardian = no\n"
         "role.archive = yes\n"
-        "role.rtrade = no\n"
-        "role.force_sell = no\n",
+        "role.rtrade = no\n",
         encoding="utf-8",
     )
     assert is_xstock_trading_enabled("SPCXxUSD", path=str(custom_conf)) is True
@@ -1829,7 +1827,6 @@ def test_subiect2_kraken_bots_retired_and_trade_cache_ssot_cost_basis(tmp_path, 
     from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
     from providers.portfolio_state_store import resolve_kraken_trade_cache_position
     from verify_tools import ownership_inventory as oi
-    from verify_tools import portfolio_snapshot as ps
 
     repo_root = os.path.dirname(_KRAKEN_DIR)
     active_procs = parse_procs_manifest(repo_root, roles=("bot", "fleet"))
@@ -1934,17 +1931,6 @@ def test_subiect2_kraken_bots_retired_and_trade_cache_ssot_cost_basis(tmp_path, 
     )
     expected_new_avg = (12.135888 * 134.84400571199208 + 10.0 * 120.0) / (12.135888 + 10.0)
     assert gw._resolve_tokenized_equity_cost_basis("kraken", "SPCXxUSD") == pytest.approx(expected_new_avg, rel=1e-6)
-
-    # 7. portfolio_snapshot.kraken_rows() works directly from cache_trade_kraken.json + venue_balances_state.json
-    monkeypatch.setattr(ps, "CACHEDB_DIR", str(cdir))
-    monkeypatch.setattr(ps, "KRAKEN_DIR", str(kdir))
-    monkeypatch.setattr(ps, "KRAKEN_PAIRS", [("HYPEUSD", "HYPE", False), ("SPCXxUSD", "SPCXx", False)])
-    monkeypatch.setattr(ps, "_kraken_price", lambda pair: 60.85 if pair == "HYPEUSD" else 126.90)
-    rows = {r["engine"]: r for r in ps.kraken_rows()}
-    assert "Kraken HYPE" in rows and rows["Kraken HYPE"]["qty"] == 0.0
-    assert rows["Kraken HYPE"]["realized_net"] == pytest.approx(23.75, abs=0.02)
-    assert "Kraken SPCXx" in rows and rows["Kraken SPCXx"]["qty"] == pytest.approx(12.135889, abs=1e-6)
-    assert rows["Kraken SPCXx"]["cost"] == pytest.approx(12.135889 * expected_new_avg, abs=0.1)
 
 
 def test_kraken_trailing_begin_tick_refreshes_balance_ex_across_ticks(tmp_path):

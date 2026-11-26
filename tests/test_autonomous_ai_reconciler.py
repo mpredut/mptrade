@@ -195,7 +195,6 @@ from verify_tools import (
     monitor_night,
     parse_shadow,
     pnl_report,
-    portfolio_snapshot,
     watch_trade_decisions,
 )
 from visuals import drawprices
@@ -1350,22 +1349,6 @@ def test_verify_tools_monitor_night_snapshot_and_watch_decisions():
     assert procs[0].log == "logs/price_watcher.log"
     assert procs[1].log == "logs/HL-bot.log"
 
-    # 2. portfolio_snapshot._ntfy encodes non-ASCII emojis safely for HTTP headers
-    with patch("urllib.request.urlopen") as mock_open, \
-         patch.dict(
-             os.environ,
-             {
-                 "NTFY_TOPIC": "test-topic",
-                 "DISABLE_EXTERNAL_NOTIFICATIONS": "0",
-                 "BACKTEST_MODE": "0",
-                 "REPLAY_MODE": "0",
-             },
-         ):
-        portfolio_snapshot._ntfy("⚠️ Drawdown 5.5% (-$100)", "body")
-        mock_open.assert_called_once()
-        req = mock_open.call_args[0][0]
-        assert req.headers["Title"].encode("latin-1").decode("utf-8") == "⚠️ Drawdown 5.5% (-$100)"
-
     # 3. watch_trade_decisions.position picks latest BUY by timestamp
     now_ms = int(time.time() * 1000)
     fake_buys = [
@@ -1616,23 +1599,7 @@ def test_reconciler_monitor_and_verify_tools_nan_bool_and_quote_hardening(temp_e
     assert dev_prog["current_step"] == "[2026-10-26 23:10:00] [STAGE 5A] Running Core Strategy Unit Tests"
     assert dev_prog["last_log_line"] == "1876 passed in 14.2s"
 
-    # 5. verify_tools: portfolio_snapshot.run_alerts, pnl_report.binance_symbol, and watch_trade_decisions.position
-    alert_state_file = tmp_path / "alert_state.json"
-    alert_state_file.write_text(
-        json.dumps({"Kraken:HYPEUSD": {"dd": -12.0, "ts": "2099-01-01T00:00:00+00:00"}}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(portfolio_snapshot, "ALERT_STATE", str(alert_state_file))
-    alerts_Sent = []
-    monkeypatch.setattr(portfolio_snapshot, "_ntfy", lambda title, body: alerts_Sent.append((title, body)))
-    fired = portfolio_snapshot.run_alerts([
-        "not_a_dict",
-        {"engine": "Binance:TAOUSDC", "qty": True, "dd_pct": -50.0},
-        {"engine": "Kraken:HYPEUSD", "qty": 2.0, "dd_pct": -25.0, "unrealized": -50.0, "cost": 200.0},
-    ])
-    assert len(alerts_Sent) == 1
-    assert fired == ["Kraken:HYPEUSD DD -25.0%"]
-
+    # 5. verify_tools: pnl_report.binance_symbol and watch_trade_decisions.position
     fake_bn = SimpleNamespace(
         fetch_remote_trades_with_client=lambda sym, st, strict=False: [
             "bad",
@@ -2289,11 +2256,11 @@ def test_extract_current_price_item_instrument_resolution_and_trailing_state_nor
     m24 = compute_24h_price_metrics(s24)
     assert m24["chg_1h_pct"] == 4.0
 
-    # 4. Kraken trailing_state.json with non-USD quote or bare base resolves cleanly without TAOUSDCUSD corruption
+    # 4. Kraken trailing_state_kraken.json with non-USD quote or bare base resolves cleanly without TAOUSDCUSD corruption
     (tmp_path / "instruments.conf").write_text("", encoding="utf-8")
-    krk_dir = tmp_path / "kraken"
-    krk_dir.mkdir(exist_ok=True)
-    (krk_dir / "trailing_state.json").write_text(
+    bots_dir = tmp_path / "statedb" / "bots"
+    bots_dir.mkdir(parents=True, exist_ok=True)
+    (bots_dir / "trailing_state_kraken.json").write_text(
         json.dumps({"HYPE": 64.0, "TAOUSDC": 520.0}),
         encoding="utf-8",
     )
@@ -2720,9 +2687,9 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
 
     # 2. Cross-venue isolation: Hyperliquid HYPEUSDC & TAOUSDC do not inherit Kraken's stale trailing_peak
     #    or Binance's cache_order.json cost basis, and orderbook wall dist uses ob_mid_price when cur_px diverges
-    krk_dir = tmp_path / "kraken"
-    krk_dir.mkdir(exist_ok=True)
-    (krk_dir / "trailing_state.json").write_text(
+    bots_dir = tmp_path / "statedb" / "bots"
+    bots_dir.mkdir(parents=True, exist_ok=True)
+    (bots_dir / "trailing_state_kraken.json").write_text(
         json.dumps({"HYPE": {"peak": 82.23}, "TAO": {"peak": 290.75}}),
         encoding="utf-8",
     )
@@ -7685,8 +7652,9 @@ def test_harvest_heartbeats_and_state_files_supports_mtime_rtrade_heartbeat_and_
     rtrade_hb.write_text("", encoding="utf-8")
     os.utime(rtrade_hb, (now_ts - 12.0, now_ts - 12.0))
 
-    # 2. Active .resource_watchdog_state.json in workspace root
-    rw_state = tmp_path / ".resource_watchdog_state.json"
+    # 2. Active os_resources_watchdog_state.json in canonical statedb/system/
+    rw_state = tmp_path / "statedb" / "system" / "os_resources_watchdog_state.json"
+    rw_state.parent.mkdir(parents=True, exist_ok=True)
     rw_state.write_text(json.dumps({"ts": now_ts}), encoding="utf-8")
     os.utime(rw_state, (now_ts - 60.0, now_ts - 60.0))
 
@@ -7695,8 +7663,8 @@ def test_harvest_heartbeats_and_state_files_supports_mtime_rtrade_heartbeat_and_
     assert "rtrade.heartbeat" in active_hb
     assert active_hb["rtrade.heartbeat"]["status"] == "alive"
     assert active_hb["rtrade.heartbeat"]["age_seconds"] == pytest.approx(12.0, abs=1.0)
-    assert ".resource_watchdog_state.json" in state_files
-    assert state_files[".resource_watchdog_state.json"]["age_hours"] == pytest.approx(60.0 / 3600.0, abs=1e-3)
+    assert "os_resources_watchdog_state.json" in state_files
+    assert state_files["os_resources_watchdog_state.json"]["age_hours"] == pytest.approx(60.0 / 3600.0, abs=1e-3)
 
     # 3. Stale rtrade.heartbeat (>300s) is excluded from active_heartbeats
     os.utime(rtrade_hb, (now_ts - 600.0, now_ts - 600.0))

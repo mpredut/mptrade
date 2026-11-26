@@ -61,6 +61,7 @@ from cachepaths import (
 from core.config import parse_dotenv
 from core.llm_topics import resolve_configured_llm_models
 from instrument_registry import canonical_display_symbol, is_xstock_trading_enabled
+from state_stores.os_resources_watchdog_state import OsResourcesWatchdogStateStore
 from intelligence.macro_sentiment_ssot import (
     MACRO_SENSOR_HEALTH_KEYS,
     normalize_market_bias,
@@ -944,11 +945,13 @@ def gather_system_and_vpn_telemetry(
         and not _parse_bool_flag(sys_vpn.get("vpn_outage_active", False), False)
     )
 
-    rw_path = os.path.join(workspace_dir, ".resource_watchdog_state.json")
-    rw_state = _resolve_repair_json_reader()(rw_path)
+    rw_path, rw_state, _ = OsResourcesWatchdogStateStore.inspect_workspace(
+        workspace_dir,
+        read_json_fn=_resolve_repair_json_reader(),
+    )
     if isinstance(rw_state, dict) and isinstance(rw_state.get("tracked"), dict):
         rw_last_run = normalize_epoch_sec(rw_state.get("last_run"), default=None)
-        if rw_last_run is None and os.path.exists(rw_path):
+        if rw_last_run is None and rw_path is not None and os.path.exists(rw_path):
             try:
                 rw_last_run = os.path.getmtime(rw_path)
             except OSError:
@@ -1765,16 +1768,12 @@ def harvest_heartbeats_and_state_files(
             except OSError:
                 pass
     state_files: Dict[str, Any] = {}
-    for s_file in (".resource_watchdog_state.json", ".watchdog_state.json", ".anomaly_watchdog_state.json"):
-        s_path = os.path.join(workspace_dir, s_file)
-        if os.path.exists(s_path):
-            try:
-                age_h = max(0.0, (now_ts - os.path.getmtime(s_path)) / 3600.0)
-                if s_file != ".resource_watchdog_state.json" and age_h > 24.0:
-                    continue
-                state_files[s_file] = {"age_hours": round(age_h, 4)}
-            except OSError:
-                pass
+    rw_found, _, rw_age_h = OsResourcesWatchdogStateStore.inspect_workspace(
+        workspace_dir,
+        now_ts=now_ts,
+    )
+    if rw_found is not None and rw_age_h is not None:
+        state_files[OsResourcesWatchdogStateStore.FILENAME] = {"age_hours": round(rw_age_h, 4)}
     return active_heartbeats, state_files
 
 

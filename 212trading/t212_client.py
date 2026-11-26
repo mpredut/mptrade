@@ -131,10 +131,7 @@ class T212Client:
         self._shared_cache_path = (
             str(shared_cache_path)
             if shared_cache_path is not None
-            else os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                f".t212_shared_cache_{self.env}_{key_hash}.json",
-            )
+            else cache_path(f"cache_t212_client_{self.env}_{key_hash}.json")
         )
         self._trade_cache_path: str | None = str(trade_cache_path) if trade_cache_path is not None else None
         self._enable_shared_disk_cache: bool | None = (

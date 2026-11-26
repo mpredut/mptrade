@@ -60,33 +60,6 @@ def test_cache_interface_generation_lock_order_matches_bounded_archive(tmp_path)
     assert events.index("gen_lock") < events.index("self.lock")
 
 
-def test_portfolio_snapshot_includes_kraken_locked_base_and_skips_missing_price_alerts(tmp_path, monkeypatch):
-    """_live_kraken_held_qty sums free_base + locked_base_qty; missing prices must not wipe alert cooldowns."""
-    from verify_tools import portfolio_snapshot as ps
-
-    vb = {
-        "pos:kraken:HYPEUSD": {"free_base": 2.0, "locked_base_qty": 8.0},
-        "pos:kraken:SPCXxUSD": {"free_base": 0.0, "locked_base_qty": 12.5},
-    }
-    assert ps._live_kraken_held_qty(vb, "HYPEUSD", "HYPE") == pytest.approx(10.0)
-    assert ps._live_kraken_held_qty(vb, "SPCXxUSD", "SPCXx") == pytest.approx(12.5)
-    # Fallback to venue balance cache sums free + locked
-    kr_bal = {"ANTx": {"free": 1.5, "locked": 3.5}}
-    assert ps._live_kraken_held_qty({}, "ANTxUSD", "ANTx", kraken_bal_cache=kr_bal) == pytest.approx(5.0)
-
-    # run_alerts must NOT pop existing alert cooldown when price_ok is False
-    st_file = tmp_path / ".risk_alert_state.json"
-    st_file.write_text(
-        json.dumps({"Kraken HYPE": {"dd": -15.0, "ts": "2026-11-25T20:00:00+00:00"}}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(ps, "ALERT_STATE", str(st_file))
-    fired = ps.run_alerts([{"engine": "Kraken HYPE", "paper": False, "qty": 10.0, "dd_pct": 0.0, "price_ok": False}])
-    assert fired == []
-    persisted = json.loads(st_file.read_text(encoding="utf-8"))
-    assert "Kraken HYPE" in persisted
-
-
 def test_state_stores_resolve_flat_paths_and_preserve_empty_cached_dict(tmp_path):
     """Flat cachedb/<file> paths resolve to canonical subdomain paths during RMW without wiping sibling data."""
     from cachepaths import (
@@ -895,21 +868,6 @@ def test_survival_and_microstructure_refresh_expired_t_trend_entries(monkeypatch
     assert calls == ["BTCUSDC"]
     assert pt["BTCUSDC"]["weibull_p90_d"] == 7.2
     assert pt["ETHUSDC"]["weibull_p90_d"] == 5.5
-
-
-def test_portfolio_snapshot_json_emits_single_valid_json_line(monkeypatch, capsys):
-    """verify_tools/portfolio_snapshot.py --json emits strictly valid JSON without timestamp prefix or dotenv noise."""
-    import verify_tools.portfolio_snapshot as ps_mod
-
-    monkeypatch.setattr(ps_mod, "kraken_rows", lambda: [{"engine": "Kraken HYPE", "paper": False, "qty": 0.0, "value_usd": 0.0, "realized_net": 1.0, "unrealized": 0.0}])
-    monkeypatch.setattr(ps_mod, "hl_row", lambda: {"engine": "HL HYPE (long-hold)", "qty": 0.0, "value_usd": 0.0, "cash_usd": 100.0})
-    monkeypatch.setattr(sys, "argv", ["portfolio_snapshot.py", "--json"])
-    assert ps_mod.main() == 0
-    out_lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
-    assert len(out_lines) == 1
-    parsed = json.loads(out_lines[0])
-    assert parsed["kraken_real_realized_net"] == 1.0
-    assert parsed["hl"]["cash_usd"] == 100.0
 
 
 def test_portfolio_collector_formulaic_l3_freshness_avoids_spurious_rest():

@@ -12,7 +12,6 @@ from offline.backtests.promotion import (
 from offline.runners.spot_profile_review import review
 from pathlib import Path
 from unittest.mock import patch
-from verify_tools import portfolio_snapshot as ps
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -331,14 +330,6 @@ class RiskAdjustedPromotionGateTest(TempDirTestCase):
         for bad_cash in (0, -100, float("nan"), float("inf"), True):
             with self.assertRaisesRegex(ValueError, "cash must be a finite positive number"):
                 review("HEAD:kraken/config.env", "HEAD:kraken/config.env", bad_cash)
-
-        state_file = self.tmp / ".state_HYPEUSD.json"
-        state_file.write_text("[]", encoding="utf-8")
-        alert_file = self.tmp / "alerts.json"
-        alert_file.write_text("[]", encoding="utf-8")
-        with patch.object(ps, "KRAKEN_DIR", self.tmp), patch.object(ps, "ALERT_STATE", str(alert_file)):
-            self.assertIsNone(ps._load_state("HYPEUSD"))
-            self.assertEqual(ps.run_alerts([]), [])
 
     def test_median_profit_factor_includes_zero_loss_winning_folds_and_negative_base_defensive_gate(self):
         win_fold_1 = _window("w1", 3.0, 2.0, 0.5, 117.0)

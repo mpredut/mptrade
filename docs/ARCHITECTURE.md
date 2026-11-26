@@ -15,7 +15,7 @@ The per-venue `notify.py` files are thin shims, still needed for the historical
 entrypoints; ntfy/email routing remains a single implementation. The same component
 applies deduplication and persistent daily budgets across processes (by default ntfy 100
 with 20 reserved for urgent alerts; email 40 with 10 reserved). The runtime state lives in
-`logs/notification_delivery_state.json` and resets daily at UTC midnight.
+`statedb/system/notification_delivery_state.json` and resets daily at UTC midnight.
 
 ## A shared engine, separate entrypoints
 
@@ -159,7 +159,7 @@ line-for-line across the two `trailing_stop.py` files, so it moved into
   clearly down); (3) below notional -> skip; (4) `price>peak` -> raise the peak;
   (5) `price≤peak·(1−trail%)` -> sell `free·sell_fraction`, re-arm the peak and arm the `rebuy`.
 - **Persisted state** (the schema is unchanged by the refactor): `{"<key>": {"peak", "rebuy":{qty,sell_price,low}?, "warmup_at"?}}`.
-  Binance uses `cachedb/trailing_state.json` (keyed by symbol), Kraken `kraken/trailing_state.json` (keyed by asset).
+  Binance uses `statedb/bots/trailing_state_binance.json` (keyed by symbol), Kraken `statedb/bots/trailing_state_kraken.json` (keyed by asset).
   It survives a restart (the peak is not reset).
 - **`item_isolation`** (the error model, a genuine difference): Binance `True` = a try per coin plus
   always saving; Kraken `False` = one try for the whole tick, with no save on error.
@@ -263,7 +263,7 @@ A unified, venue-agnostic execution contract eliminates duplicated formatting an
 
 1. **Fleet Registry Architecture (`instruments.conf`)**:
    - `instruments.conf` is the solitary source of truth for instrument configuration across the fleet (Binance, Kraken, Hyperliquid, Trading212).
-   - Defines symbols, asset pairs, market hours, isolation modes, operational roles (`role.mt`, `role.tradeall_fire`, `role.trailing`, `role.assetguardian`, `role.force_sell`), and per-coin parameters (trailing stop percentages, buy/max budgets).
+   - Defines symbols, asset pairs, market hours, isolation modes, operational roles (`role.mt`, `role.tradeall_fire`, `role.kalman_primary`, `role.trailing`, `role.assetguardian`, `role.archive`, `role.rtrade`), and per-coin parameters (trailing stop percentages, buy/max budgets).
    - Loaded and validated strictly via `instrument_registry.py` (`load_registry`, `select_instruments`, `symbols_for`, `single_symbol_for`).
 
 2. **Lightweight Compatibility Facade (`symbols.py`)**:

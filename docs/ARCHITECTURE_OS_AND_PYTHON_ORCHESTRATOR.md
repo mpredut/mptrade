@@ -49,7 +49,7 @@ It runs as a systemd service (`python_orchestrator.service`) but **does NOT depe
 
 ## 3. `verify_tools/` (Manual Diagnostics)
 A suite of read-only Python scripts used for manual intervention and state querying.
-* `portfolio_snapshot.py`, `check_cache_coherence.py`, `pnl_report.py`, etc.
+* `inspect_prod_fleet.py`, `check_cache_coherence.py`, `pnl_report.py`, etc.
 * Kept purely as tools; they do not interfere with the orchestrator.
 
 ## Fallback Polling Flow (The Result)

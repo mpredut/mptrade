@@ -112,10 +112,9 @@ The files are relative to the repository root, unless a path is set through conf
 |---|---|
 | the global outbox | `cachedb/order_retry_queue.jsonl` plus `.lock` |
 | rtrade | `cachedb/rtrade_pairs.json` plus `.lock` |
-| AssetGuardian | `cachedb/assetguardian_state.json` |
-| the shared Binance cooldown | `lock/trade_cooldown.json` plus `.lock` |
-| Binance trailing | `cachedb/trailing_state.json` |
-| Kraken trailing | `kraken/trailing_state.json` |
+| AssetGuardian | `statedb/bots/assetguardian_state.json` |
+| Binance trailing | `statedb/bots/trailing_state_binance.json` |
+| Kraken trailing | `statedb/bots/trailing_state_kraken.json` |
 | Kraken spot-DCA | `kraken/.state_<PAIR>.json` |
 | Hyperliquid spot-DCA live | `hyperliquid/.state_<TOKEN>.json` |
 | Hyperliquid spot-DCA paper | `hyperliquid/.paper_state/.state_<TOKEN>.json` |

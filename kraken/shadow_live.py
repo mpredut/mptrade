@@ -69,7 +69,7 @@ from kraken.kraken_common import load_isolated_kraken_cfg  # noqa: E402
 from kraken.market_data import fetch_ohlc_candles  # noqa: E402
 
 DEFAULT_ENV = os.path.join(HERE, ".env")
-LOG_DIR = os.path.join(ROOT, "logs", "shadow_live")
+LOG_DIR = os.path.join(ROOT, "offline", "shadow_runs", "kraken")
 
 
 def _resolve_runtime_paths(

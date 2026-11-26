@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""watchdog_common.py -- SHARED alerting infrastructure for the watchdogs
-(watchdogfor_cache, watchdogfor_anomaly): loads the env, sends push (ntfy) + email,
-and keeps the cooldown state. Extracted from watchdogfor_cache to avoid duplication.
+"""watchdog_common.py -- SHARED alerting infrastructure for system watchdogs
+(os_resources_watchdog): loads the env, sends push (ntfy) + email, and provides
+legacy state helpers.
 
 Environment variables (from .env / config.env in the repository root):
   PHONE_ALERT_URL / NTFY_TOPIC                    -- push channel

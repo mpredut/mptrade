@@ -195,6 +195,7 @@ from core.config import (  # noqa: E402
     load_env_file_defaults,
     load_env_stack,
     load_ini_config,
+    read_config_text,
     load_isolated_venue_cfg,
     load_key_value_conf,
     load_layered_env_config,

@@ -296,7 +296,6 @@ from verify_tools import (
     check_cache_coherence as ccc,
     kraken_pnl_backfill as kpb,
     pnl_report,
-    portfolio_snapshot,
     translation_audit,
     verify_account_facade,
     verify_hype_facade as vhf,
@@ -1418,14 +1417,6 @@ def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
     env_dir.mkdir(parents=True, exist_ok=True)
     (env_dir / ".env").write_text('export KRAKEN_API_KEY_SPARE="spare_key_123"\n', encoding="utf-8")
     assert kpb.env_value(str(env_dir), "KRAKEN_API_KEY_SPARE") == "spare_key_123"
-
-    # 4. portfolio_snapshot.hl_row restores sys.path and sys.modules["common"]
-    before_path = list(sys.path)
-    sentinel_common = object()
-    monkeypatch.setitem(sys.modules, "common", sentinel_common)
-    portfolio_snapshot.hl_row()
-    assert sys.path == before_path
-    assert sys.modules.get("common") is sentinel_common
 
     # 5. verify_hype_facade.safe_float rejects booleans and non-finite numbers
     assert vhf.safe_float(True, -1.0) == -1.0
@@ -2576,10 +2567,6 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     bt_p = k_bt._bt_params({"interval": None})
     assert bt_p.entry_amount > 0
 
-    # 6. 212trading/price_alert.py push rejects blank/whitespace topic
-    t212_pa = load_venue_modules("212trading", "price_alert")
-    assert t212_pa.push("   ", "NVDA at 100", "body") is False
-
     # 7. cachepaths and kraken backtest_trail
 
     monkeypatch.setenv("MPTRADE_CACHEDB_DIR", "   ")
@@ -2950,14 +2937,6 @@ def test_batch12_verify_tools_pnl_and_facade_hardening(monkeypatch, capsys):
     )
     assert avg == 100.0
     assert net == 1.5
-
-    # 2. portfolio_snapshot._parse_bool_flag handles boolean strings and ints consistently
-    assert portfolio_snapshot._parse_bool_flag("false", False) is False
-    assert portfolio_snapshot._parse_bool_flag("true", False) is True
-    assert portfolio_snapshot._parse_bool_flag(False, False) is False
-    assert portfolio_snapshot._parse_bool_flag(True, False) is True
-    assert portfolio_snapshot._parse_bool_flag(0, False) is False
-    assert portfolio_snapshot._parse_bool_flag(1, False) is True
 
     # 3. pnl_report.per_bot skips orders where both cummulativeQuoteQty and price are zero
     fake_bn_pb = SimpleNamespace(
@@ -3679,10 +3658,6 @@ def test_batch25_datasets_rtrade_pair_exit_manager_and_verify_tools_hardening():
     dec = pem.evaluate_take_profit(snap)
     assert dec.should_exit is True
 
-    # 5. verify_tools/portfolio_snapshot._parse_bool_flag handles NaN float safely
-    assert portfolio_snapshot._parse_bool_flag(float("nan"), False) is False
-    assert portfolio_snapshot._parse_bool_flag(1.0, False) is True
-
 
 def test_batch26_orchestrator_protobuf_monitor_reconciler_and_gateway_hardening(tmp_path, monkeypatch):
 
@@ -4401,14 +4376,6 @@ def test_batch35_spot_replay_intelligence_volatility_and_verify_tools_hardening(
     report = icli.inspect_symbol_intelligence("BTC/USDC", cache_dir=str(tmp_path))
     assert report["symbol"] == "BTC/USDC"
     assert report["pillar2_external"]["orderbook"]["symbol"] == "BTCUSDC"
-
-    # 5. verify_tools.portfolio_snapshot._load_state recovers from .previous when primary is corrupt
-    monkeypatch.setattr(portfolio_snapshot, "KRAKEN_DIR", str(tmp_path))
-    st_file = tmp_path / ".state_X.json"
-    st_prev = tmp_path / ".state_X.json.previous"
-    st_file.write_text("{corrupt", encoding="utf-8")
-    st_prev.write_text(json.dumps({"cost": 123.45}), encoding="utf-8")
-    assert portfolio_snapshot._load_state("X") == {"cost": 123.45}
     assert pnl_report is not None
 
 
@@ -4663,7 +4630,7 @@ def test_batch37_order_retry_guard_assetguardian_rtrade_mt_tradeall_hardening(tm
 
     # 5. monitortrades._resolve_mt_inst_cfg normalizes uppercase/whitespace tp_ref and invalid min_qty
     fake_inst = SimpleNamespace(
-        param=lambda ns, k, default=None, cast=None: " AVERAGE " if k == "ref" else default,
+        param=lambda ns, k, default=None, cast=None: " AVERAGE " if k == "price_reference" else default,
         min_qty=lambda: "invalid",
         provider_label="binance",
     )
@@ -5494,14 +5461,11 @@ def test_batch48_hyperliquid_and_t212_hardening(monkeypatch):
     assert hl_p.enable_takeprofit is False
     assert hl_p.signal_gate is True
 
-    # 3. 212trading modules: t212_client.place_market_order, price_alert._parse_armed_flag,
-    #    strategy._parse_bool_flag, and backtest.simulate with None-valued optional keys
-    t212_client_mod, price_alert_mod, t212_strat_mod, t212_bt_mod = load_venue_modules(
-        "212trading", "t212_client", "price_alert", "strategy", "backtest"
+    # 3. 212trading modules: t212_client.place_market_order, strategy._parse_bool_flag, and backtest.simulate
+    t212_client_mod, t212_strat_mod, t212_bt_mod = load_venue_modules(
+        "212trading", "t212_client", "strategy", "backtest"
     )
 
-    assert price_alert_mod._parse_armed_flag("1.0", default=False) is True
-    assert price_alert_mod._parse_armed_flag("0.0", default=True) is False
     assert t212_strat_mod._parse_bool_flag("1.0", default=False) is True
     assert t212_strat_mod._parse_bool_flag("0.0", default=True) is False
 

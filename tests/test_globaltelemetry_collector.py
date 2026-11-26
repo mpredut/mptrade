@@ -1337,18 +1337,18 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
     assert resolve_venue_runtime_dir("hyperliquid", workspace_dir=ws_dir) == os.path.join(ws_dir, "hyperliquid")
     assert resolve_venue_runtime_dir("t212", workspace_dir=ws_dir) == os.path.join(ws_dir, "212trading")
 
-    assert resolve_venue_trailing_state_path("binance", cache_dir="cachedb") == os.path.join(
-        "cachedb", TRAILING_STATE_FILENAME
+    assert resolve_venue_trailing_state_path("binance", cache_dir="cachedb").endswith(
+        os.path.join("statedb", "bots", "trailing_state_binance.json")
     )
     assert resolve_venue_trailing_state_path("binance", cache_dir=temp_cache_dir) == os.path.join(
-        temp_cache_dir, TRAILING_STATE_FILENAME
+        os.path.dirname(temp_cache_dir), "statedb", "bots", "trailing_state_binance.json"
     )
     assert resolve_venue_trailing_state_path("kraken", workspace_dir=ws_dir) == os.path.join(
-        ws_dir, "kraken", TRAILING_STATE_FILENAME
+        ws_dir, "statedb", "bots", "trailing_state_kraken.json"
     )
     assert resolve_venue_trailing_state_path(
         "t212", workspace_dir=ws_dir, filename="trailing_peaks.json"
-    ) == os.path.join(ws_dir, "212trading", "trailing_peaks.json")
+    ) == os.path.join(ws_dir, "statedb", "bots", "trailing_peaks.json")
 
 
     tm_str_flag = CacheTradeManager(

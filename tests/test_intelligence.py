@@ -1778,7 +1778,7 @@ def test_iter51_hl_client_strict_empty_str_portfolio_ssot_forwarding_and_daemon_
     monkeypatch.setattr(
         ssot_mod,
         "read_json_cached",
-        lambda p: {"BTCUSDC": {"peak": 71234.5}} if str(p).endswith("trailing_state.json") and "kraken" not in str(p) else None,
+        lambda p: {"BTCUSDC": {"peak": 71234.5}} if str(p).endswith("trailing_state_binance.json") else None,
     )
     t_map, _ = pc.VenueTrailingMapsCollector().collect(
         str(tmp_path), "*", workspace_dir=str(tmp_path)
@@ -5085,9 +5085,8 @@ def test_iter86_symbols_facade_config_reload_inspect_fleet_and_kalman_warmstart(
     tmp_path, monkeypatch
 ):
 
-    # 1. symbols facade attributes (`forcesellsymbol`, `<base>symbol`), monkeypatch undo dynamic resolution,
+    # 1. symbols facade attributes (`<base>symbol`), monkeypatch undo dynamic resolution,
     #    empty `symbols = []` override, and `_normalize_ordertype` extended tokens
-    assert isinstance(symbols.forcesellsymbol, list) and "BTCUSDC" in symbols.forcesellsymbol
     assert symbols.btcsymbol == "BTCUSDC"
     assert symbols.taosymbol == "TAOUSDC"
     assert symbols._normalize_ordertype("A") == "SELL"
@@ -5106,13 +5105,12 @@ def test_iter86_symbols_facade_config_reload_inspect_fleet_and_kalman_warmstart(
         "[eth]\nprovider = binance\nsymbol = ETHUSDC\nbase = ETH\nquote = USDC\nenabled = true\n"
         "isolation = dedicated\nmarket_hours = 24x7\nrole.mt = false\nrole.tradeall_fire = false\n"
         "role.kalman_primary = false\nrole.trailing = false\nrole.assetguardian = false\n"
-        "role.archive = false\nrole.rtrade = false\nrole.force_sell = true\n",
+        "role.archive = false\nrole.rtrade = false\n",
         encoding="utf-8",
     )
     with monkeypatch.context() as mp:
         mp.setattr(instrument_registry, "DEFAULT_PATH", custom_conf)
         assert symbols.symbols == ["ETHUSDC"]
-        assert symbols.forcesellsymbol == ["ETHUSDC"]
         assert symbols.ethsymbol == "ETHUSDC"
 
     # 2. botcore.ROOT_DIR compatibility, botcore watcher preservation on reload, and importlib.reload(credentials)
@@ -6292,8 +6290,8 @@ def test_iter92_neutral_hold_cited_flow_stale_advisor_retry_delta_whale_freshest
 
     # 6. gather_system_and_vpn_telemetry excludes processes that already recovered to high == 0 even if alerted is still True
     ws_rec = tmp_path / "ws_rec"
-    ws_rec.mkdir(parents=True, exist_ok=True)
-    (ws_rec / ".resource_watchdog_state.json").write_text(
+    (ws_rec / "statedb" / "system").mkdir(parents=True, exist_ok=True)
+    (ws_rec / "statedb" / "system" / "os_resources_watchdog_state.json").write_text(
         json.dumps(
             {
                 "last_run": time.time() - 30.0,

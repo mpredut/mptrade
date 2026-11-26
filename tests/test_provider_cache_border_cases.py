@@ -348,7 +348,7 @@ from tests.conftest import (
 )
 import tradeall
 from trailing_core import TrailingAdapterBase, TrailingCore, extract_trailing_intent_action_asset
-from verify_tools import check_cache_coherence, monitor_night, ownership_inventory, portfolio_snapshot
+from verify_tools import check_cache_coherence, monitor_night, ownership_inventory
 import visuals.tradeall_observe as tobs
 
 
@@ -2132,11 +2132,6 @@ def test_temporary_environ_daemon_fetch_equity_oi_remote_trades_and_guard_prefli
             raise RuntimeError("boom")
     assert os.environ["_TEST_TEMP_ENV_KEEP"] == "orig"
     assert "_TEST_TEMP_ENV_NEW" not in os.environ
-
-    # 2. portfolio_snapshot._policy_float falls back to _ROOT_CONFIG when env var is empty/whitespace
-    monkeypatch.setitem(portfolio_snapshot._ROOT_CONFIG, "_TEST_POLICY_KEY", "12.5")
-    monkeypatch.setenv("_TEST_POLICY_KEY", "   ")
-    assert portfolio_snapshot._policy_float("_TEST_POLICY_KEY") == pytest.approx(12.5)
 
     # 3. ExternalTelemetryMixin._call_collector_fetch never double-invokes on internal TypeError & sanitizes flags
     calls: list[tuple] = []

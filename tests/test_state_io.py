@@ -1366,7 +1366,7 @@ def test_price_analysis_cpu_throttling_and_low_priority_background_jobs(monkeypa
     pa_rows = [ln for ln in procs_txt.splitlines() if ln.startswith("priceAnalysis.py|")]
     assert len(pa_rows) == 1 and "nice -n 10 ionice -c3 python priceAnalysis.py" in pa_rows[0]
     cron_txt = (repo_root / "systemd/crontab.prod.txt").read_text(encoding="utf-8")
-    for bg_tok in ("manage_logs.sh", "manage_backups.sh", "sync_cache_to.sh dev", "check_cache_coherence.py", "portfolio_snapshot.py"):
+    for bg_tok in ("manage_logs.sh", "manage_backups.sh", "sync_cache_to.sh dev", "check_cache_coherence.py"):
         line = next(ln for ln in cron_txt.splitlines() if bg_tok in ln and not ln.strip().startswith("#"))
         assert "nice -n 15" in line
     for exec_tok in ("--topic-key auto_cryptotrade_executor", "--topic-key auto_sharetrade_executor"):

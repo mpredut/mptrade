@@ -41,7 +41,7 @@ def main() -> None:
     parser.add_argument(
         "--file",
         type=Path,
-        default=ROOT / "logs" / "shadow_live" / "HYPEUSD_240m.jsonl",
+        default=ROOT / "offline" / "shadow_runs" / "kraken" / "HYPEUSD_240m.jsonl",
         help="Path to shadow .jsonl log",
     )
     args = parser.parse_args()
@@ -64,7 +64,7 @@ def main() -> None:
     print("\n" + "=" * 65 + "\n")
     _print_section("FULL WINDOW (Kraken OHLC)", last.get("window"), 4.0)
 
-    path_60m = ROOT / "logs" / "shadow_live" / "HYPEUSD_60m.jsonl"
+    path_60m = ROOT / "offline" / "shadow_runs" / "kraken" / "HYPEUSD_60m.jsonl"
     if path_60m.exists():
         try:
             lines60 = read_text_lines(path_60m, strip=True, skip_empty=True)

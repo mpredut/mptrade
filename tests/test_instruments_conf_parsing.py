@@ -197,7 +197,6 @@ class TestInstrumentsSingleSource(unittest.TestCase):
             registry.symbols,
             ["BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC", "ETHUSDC", "SOLUSDC"],
         )
-        self.assertEqual(registry.symbols_for("binance", "force_sell"), ["BTCUSDC", "TAOUSDC"])
         with self.assertRaises(AttributeError):
             getattr(registry, "nonexistentsymbol")
 
@@ -215,7 +214,6 @@ def test_current_execution_policy_is_preserved(tmp_path):
         "tradeall_fire": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "kalman_primary": {"BTCUSDC"},
         "mt": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "assetguardian": {"BTCUSDC", "TAOUSDC", "ARBUSDC"},
         "archive": {"BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC", "ETHUSDC", "SOLUSDC"}, "rtrade": {"TAOUSDC"},
-        "force_sell": {"BTCUSDC", "TAOUSDC"},
         "trailing": {"BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"},
     }
     for role, symbols in expected.items():
@@ -402,6 +400,8 @@ def test_invalid_policy_fails_before_selection(tmp_path):
         {"role.tradeall_fire": "yes", "tradeall.kalman_mode": "typo"},
         {"role.kalman_primary": "yes"}, {"symbol": "testusdc"}, {"quote": "USD"},
         {"trail.enabled": "yes"}, {"trail.pct": "13"}, {"tradeall.trade": "yes"},
+        {"mt.ref": "last"}, {"mt.typo_key": "5"}, {"ai.tradable": "maybe"},
+        {"mt.price_reference": "median"}, {"trend.step_wols_power": "-1"},
     ]
     for override in overrides:
         path = tmp_path / "instruments.conf"
@@ -454,7 +454,7 @@ def test_one_new_section_reaches_real_consumers_without_source_edits(tmp_path):
         "role.tradeall_fire": "yes", "tradeall.kalman_mode": "off",
         "role.kalman_primary": "yes", "role.trailing": "yes", "trailing.pct": "18",
         "trailing.rebuy": "yes",
-        "role.assetguardian": "yes", "role.archive": "yes", "role.force_sell": "yes",
+        "role.assetguardian": "yes", "role.archive": "yes",
         "role.mt": "yes", "mt.gain": "9", "mt.lost": "5", "mt.maxage_days": "10",
     }), encoding="utf-8")
     code = textwrap.dedent('''
@@ -467,7 +467,6 @@ def test_one_new_section_reaches_real_consumers_without_source_edits(tmp_path):
         from binance_api import trailing_stop, bapi_client
         from instrument import load_for
         assert "TESTUSDC" in registry.symbols
-        assert "TESTUSDC" in registry.symbols_for("binance", "force_sell")
         assert "TESTUSDC" in tradeall.TRADEALL_FIRE_SYMBOLS
         assert "TESTUSDC" in tradeall.KALMAN_PRIMARY_SYMBOLS
         assert tradeall._kalman_gate_blocks("TESTUSDC", "BUY") == (False, "off", None)
@@ -869,3 +868,95 @@ def test_symbols_validate_ordertype_validate_symbols_and_validate_params_with_ca
         registry.validate_params("BUY", valid_sym, price=True, qty=1.0)
     with pytest.raises(ValueError):
         registry.validate_params("BUY", valid_sym, price="nan", qty=1.0)
+
+
+def test_live_instruments_conf_matches_strict_copy_paste_template():
+    """Live instruments.conf must obey the zero-default base schema, canonical key order, and column alignment."""
+    issues = registry.validate_instruments_conf_strict(ROOT / "instruments.conf")
+    assert issues == [], "Strict instruments.conf template violations:\n" + "\n".join(issues)
+
+
+def test_strict_template_validator_catches_missing_reordered_unknown_and_unaligned_keys(tmp_path):
+    """Adding a new instrument with missing mandatory fields, wrong order, typos, or bad alignment must fail."""
+    def _canonical_section(**overrides):
+        base = {
+            "provider": "binance",
+            "symbol": "TESTUSDC",
+            "base": "TEST",
+            "quote": "USDC",
+            "enabled": "yes",
+            "isolation": "own_ledger",
+            "market_hours": "24x7",
+            "role.mt": "yes",
+            "role.tradeall_fire": "yes",
+            "role.kalman_primary": "no",
+            "role.trailing": "yes",
+            "role.assetguardian": "no",
+            "role.archive": "yes",
+            "role.rtrade": "no",
+            "ai.tradable": "yes",
+            "tradeall.kalman_mode": "strict",
+            "trend.step_wols_power": "2.0",
+            "trailing.pct": "25.0",
+            "trailing.rebuy": "auto",
+            "mt.gain": "8.0",
+            "mt.lost": "4.0",
+            "mt.maxage_days": "14",
+            "mt.price_reference": "last",
+            "mt.buy_budget": "250",
+            "mt.max_budget": "3500",
+        }
+        base.update(overrides)
+        w = registry.CANONICAL_KEY_WIDTH
+        lines = ["[BINANCE_TEST]"]
+        for k in registry.CANONICAL_KEY_ORDER:
+            if k in base and base[k] is not None:
+                lines.append(f"{k:<{w}} = {base[k]}")
+        return "\n".join(lines) + "\n"
+
+    # Valid canonical copy-paste section passes with zero issues
+    good = tmp_path / "good.conf"
+    good.write_text(_canonical_section(), encoding="utf-8")
+    assert registry.validate_instruments_conf_strict(good) == []
+
+    # 1. Missing ai.tradable (no implicit default allowed)
+    p = tmp_path / "no_ai.conf"
+    p.write_text(_canonical_section(**{"ai.tradable": None}), encoding="utf-8")
+    assert any("ai.tradable" in msg for msg in registry.validate_instruments_conf_strict(p))
+
+    # 2. Missing mt.buy_budget / mt.max_budget when role.mt=yes (prevents uncapped qty=1 buys)
+    p = tmp_path / "no_budget.conf"
+    p.write_text(_canonical_section(**{"mt.buy_budget": None, "mt.max_budget": None}), encoding="utf-8")
+    errs = registry.validate_instruments_conf_strict(p)
+    assert any("mt.buy_budget" in msg and "mt.max_budget" in msg for msg in errs)
+
+    # 3. Wrong attribute order (swapping symbol before provider)
+    p = tmp_path / "reordered.conf"
+    raw = _canonical_section().splitlines()
+    raw[1], raw[2] = raw[2], raw[1]
+    p.write_text("\n".join(raw) + "\n", encoding="utf-8")
+    assert any("canonical copy-paste order" in msg for msg in registry.validate_instruments_conf_strict(p))
+
+    # 4. Misaligned '=' column
+    p = tmp_path / "unaligned.conf"
+    p.write_text(_canonical_section().replace("provider              = binance", "provider = binance"), encoding="utf-8")
+    assert any("alignment mismatch" in msg for msg in registry.validate_instruments_conf_strict(p))
+
+    # 5. Obsolete mt.ref or unknown typo key rejected at load time
+    p = tmp_path / "obsolete_ref.conf"
+    p.write_text(_canonical_section().replace("mt.price_reference", "mt.ref            "), encoding="utf-8")
+    assert any("mt.ref" in msg for msg in registry.validate_instruments_conf_strict(p))
+
+    # 6. Orphan tradeall.kalman_mode when role.tradeall_fire=no
+    p = tmp_path / "orphan_kalman.conf"
+    p.write_text(_canonical_section(**{"role.tradeall_fire": "no"}), encoding="utf-8")
+    assert any("tradeall.kalman_mode is forbidden" in msg for msg in registry.validate_instruments_conf_strict(p))
+
+    # 7. Dangling # BACKTEST: comment not immediately above a numeric key
+    p = tmp_path / "dangling_bt.conf"
+    p.write_text(
+        _canonical_section().replace("mt.price_reference", "# BACKTEST: 1, 2\nmt.price_reference"),
+        encoding="utf-8",
+    )
+    assert any("BACKTEST" in msg for msg in registry.validate_instruments_conf_strict(p))
+

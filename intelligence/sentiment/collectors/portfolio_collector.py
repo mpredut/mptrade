@@ -1273,7 +1273,7 @@ class VenueTrailingMapsCollector(PortfolioCacheCollectorBase):
         trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]] = {"binance": {}, "kraken": {}}
         for trail_venue, raw_trail, default_quote in (
             ("binance", TrailingStateStore.read_venue_state("binance", cache_dir=cachedb_dir, read_json_fn=_rj), ""),
-            ("kraken", TrailingStateStore.read_venue_state("kraken", workspace_dir=workspace_dir, read_json_fn=_rj), "USD"),
+            ("kraken", TrailingStateStore.read_venue_state("kraken", cache_dir=cachedb_dir, workspace_dir=workspace_dir, read_json_fn=_rj), "USD"),
         ):
             if not isinstance(raw_trail, dict):
                 continue

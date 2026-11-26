@@ -121,7 +121,7 @@ from tests.conftest import (
 )
 import tradeall as ta
 import trailing_core as tc
-from verify_tools import portfolio_snapshot as ps, watch_trade_decisions as wtd
+from verify_tools import watch_trade_decisions as wtd
 from verify_tools.gen_alert_thresholds import thresholds_from_prices
 from visuals import tradeall_observe as tobs
 
@@ -1142,10 +1142,6 @@ def test_log_configure_and_verify_tools_hardening():
     res_t = thresholds_from_prices([None, True, float("nan"), -5.0, 100.0, 110.0, 95.0], window=1, pct=85)
     assert res_t is not None and len(res_t) == 4 and all(v >= 3.0 for v in res_t[:2])
 
-    assert ps.safe_float(True, 0.0) == 0.0
-    assert ps.safe_float(float("nan"), 0.0) == 0.0
-    assert ps.safe_float(float("inf"), 1.5) == 1.5
-    assert ps.safe_float("42.5", 0.0) == 42.5
 
 
 def test_tradeall_observe_topics_and_watch_hardening(tmp_path):

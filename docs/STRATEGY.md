@@ -42,7 +42,7 @@ used to be 14 — an old sell blocked re-entry after a crash (the TAO incident, 
   with `force=True`; it does NOT touch positions locked in TP orders. Recommended UNCONDITIONALLY on
   trend (so protection is never blocked by a misread trend).
 - **Re-buy after a crash** (`TRAILING_REBUY_ENABLED`): after a crash stop it arms a re-buy in
-  `cachedb/trailing_state.json`; it buys back once the price recovers `TRAILING_REBUY_BOUNCE_PCT`%
+  `statedb/bots/trailing_state_<venue>.json`; it buys back once the price recovers `TRAILING_REBUY_BOUNCE_PCT`%
   (~1.2) from the low, with `bypass_profit_guard`. It skips when the trend is CLEARLY down. There is a
   `min_profit_pct` before activation (so it does not sell at a loss on a normal dip).
 

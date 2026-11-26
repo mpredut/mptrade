@@ -7848,8 +7848,10 @@ def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
         LlmTopicThreadsStore,
         MtStateStore,
         NavHistoryStateStore,
+        NotificationDeliveryStateStore,
         NotifyQueueStore,
         OrderRetryQueueStore,
+        OsResourcesWatchdogStateStore,
         PortfolioPositionsStateStore,
         RtradePairsStateStore,
         SmartStopLossStateStore,
@@ -7863,8 +7865,8 @@ def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
         audit_state_file_owners_ast,
     )
 
-    # 1. Exact 1:1 registry symmetry across all 20 critical state files
-    assert len(CRITICAL_STATE_SPECS) == 20
+    # 1. Exact 1:1 registry symmetry across all 22 critical state files
+    assert len(CRITICAL_STATE_SPECS) == 22
     for spec in CRITICAL_STATE_SPECS:
         assert spec.owner_module == f"state_stores/{Path(spec.filename).stem}.py"
         assert spec.store_class == expected_store_class_name(spec.filename)
@@ -7907,6 +7909,16 @@ def test_state_stores_1to1_symmetry_and_exclusive_owners(tmp_path):
     nq_p = NotifyQueueStore.resolve_path(str(cdb))
     NotifyQueueStore.write_lines_nolock(nq_p, ['{"__orchestrator_intent__":"email","subject":"s1"}'])
     assert len(NotifyQueueStore.read_lines_nolock(nq_p)) == 1
+
+    # NotificationDeliveryStateStore & OsResourcesWatchdogStateStore
+    nd_p = NotificationDeliveryStateStore.default_state_path(str(tmp_path))
+    NotificationDeliveryStateStore.write_state(nd_p, {"schema_version": 1, "date_utc": "2026-11-26", "channels": {}})
+    assert NotificationDeliveryStateStore.read_state(nd_p)["date_utc"] == "2026-11-26"
+
+    rw_p = OsResourcesWatchdogStateStore.default_state_path(str(tmp_path))
+    assert OsResourcesWatchdogStateStore.save_state(rw_p, {"last_run": 1234.0, "tracked": {}}) is True
+    found_rw, loaded_rw, _ = OsResourcesWatchdogStateStore.inspect_workspace(str(tmp_path), now_ts=1294.0)
+    assert found_rw == rw_p and loaded_rw["last_run"] == pytest.approx(1234.0)
 
     # OrderRetryQueueStore
     q_path = OrderRetryQueueStore.resolve_path(str(cdb))
@@ -9577,7 +9589,7 @@ def test_storage_root_separation_20_1to1_stores_and_pure_indirect_evaluator_guar
         audit_state_file_owners_ast,
     )
 
-    assert len(CRITICAL_STATE_SPECS) == 20
+    assert len(CRITICAL_STATE_SPECS) == 22
 
     # 1. Cachedb-rooted 1:1 stores never generate phantom statedb/<subdomain> candidate paths
     ws = tmp_path / "ws"

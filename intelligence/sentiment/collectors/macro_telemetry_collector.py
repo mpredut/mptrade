@@ -1621,16 +1621,45 @@ class PortfolioAndVenueCyclesCollector(MacroTelemetryCollectorBase):
         if cross_market_ctx := build_cross_market_context(eff_pt, eff_ms, all_t212_cycles):
             eff_ps["cross_market_context"] = cross_market_ctx
 
-        for l_dir in list(logs_dirs or ()):
-            if isinstance(last_ps := read_last_jsonl_dict(os.path.join(l_dir, "portfolio_snapshot.jsonl"), tail_bytes=4096), dict):
-                if isinstance(last_ps.get("hl"), dict):
-                    hl_ro = dict(last_ps["hl"])
-                    ps_ts_s = first_epoch_sec(extract_timestamp_s(last_ps), last_ps.get("t"), allow_iso=True)
-                    eff_now_s = resolve_now_ts(now_ts)
-                    if ps_ts_s is not None and eff_now_s is not None:
-                        hl_ro["snapshot_age_min"] = round(max(0.0, eff_now_s - ps_ts_s) / 60.0, 1)
-                    eff_ps["hyperliquid_readonly"] = hl_ro
-                break
+        # Build Hyperliquid read-only summary directly from SSOT caches (cache_balance_hyperliquid.json + prices)
+        hl_bal_path = resolve_venue_balance_cache_path(cachedb_dir, "hyperliquid")
+        hl_bal_doc = _rj(hl_bal_path) if hl_bal_path else None
+        hl_items = (
+            hl_bal_doc.get("items")
+            if isinstance(hl_bal_doc, dict) and isinstance(hl_bal_doc.get("items"), dict)
+            else {}
+        )
+        if hl_items:
+            hl_hype_row = hl_items.get("HYPE") if isinstance(hl_items.get("HYPE"), dict) else {}
+            hl_usdc_row = hl_items.get("USDC") if isinstance(hl_items.get("USDC"), dict) else {}
+            hl_qty = (safe_nonneg_float(hl_hype_row.get("free"), 0.0) or 0.0) + (
+                safe_nonneg_float(hl_hype_row.get("locked"), 0.0) or 0.0
+            )
+            hl_cash_free = safe_nonneg_float(hl_usdc_row.get("free"), 0.0) or 0.0
+            hl_cash_locked = safe_nonneg_float(hl_usdc_row.get("locked"), 0.0) or 0.0
+            hl_cash_total = hl_cash_free + hl_cash_locked
+            hl_px_entry = eff_pt.get("HYPEUSDC") or eff_pt.get("HYPEUSD") or {}
+            hl_px = safe_pos_float(
+                hl_px_entry.get("price") if isinstance(hl_px_entry, dict) else hl_px_entry,
+                default=0.0,
+            ) or 0.0
+            hl_val = hl_qty * hl_px
+            hl_ro: Dict[str, Any] = {
+                "engine": "HL HYPE (long-hold)",
+                "paper": False,
+                "qty": round(hl_qty, 4),
+                "value_usd": round(hl_val, 2),
+                "cash_usd": round(hl_cash_total, 2),
+                "total_equity_usd": round(hl_val + hl_cash_total, 2),
+            }
+            if hl_cash_locked > 0.0:
+                hl_ro["free_cash_usd"] = round(hl_cash_free, 2)
+                hl_ro["locked_quote_usd"] = round(hl_cash_locked, 2)
+            hl_ts_s = first_epoch_sec(extract_timestamp_s(hl_bal_doc), allow_iso=True)
+            eff_now_s = resolve_now_ts(now_ts)
+            if hl_ts_s is not None and eff_now_s is not None:
+                hl_ro["snapshot_age_min"] = round(max(0.0, eff_now_s - hl_ts_s) / 60.0, 1)
+            eff_ps["hyperliquid_readonly"] = hl_ro
 
         return kraken_cycles, hyperliquid_cycles, t212_cycles
 

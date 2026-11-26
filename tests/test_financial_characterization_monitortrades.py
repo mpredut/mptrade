@@ -360,7 +360,7 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
                     _fill("BUY", 120, 1, age_s=4 * 3600),  # latest buy
                     _fill("BUY", 100, 3, age_s=5 * 3600),
                 ],
-                params={"mt.ref": "average"},
+                params={"mt.price_reference": "average"},
             )
             # Average is 105: +10.47% triggers. Last buy is 120 and would not trigger TP.
             self.run_tick(inst, trend_up=False, gain=0.10, loss=0.20)
@@ -1259,7 +1259,7 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
 
     def test_active_cycle_cost_basis_and_reentry_guards(self):
         """Regression tests for:
-        1. mt.ref='average' uses active_average_buy_price (ignoring closed higher cycles and <=2% fee dust).
+        1. mt.price_reference='average' uses active_average_buy_price (ignoring closed higher cycles and <=2% fee dust).
         2. Profitable TP sell on a lower cycle after a closed higher cycle is NOT falsely inferred as STOP.
         3. Step 4 does not re-buy against an older SELL after a newer BUY has already re-entered (buy_time > sell_time).
         4. Step 4 checks max_budget (including owned_qty when coins are locked in an open order) before invoking AI guard.
@@ -1277,12 +1277,12 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
             self.assertAlmostEqual(stats["average_buy_price"], 105.0, places=4)
             self.assertAlmostEqual(stats["active_average_buy_price"], 90.0, places=4)
 
-            # With mt.ref='average', current price 100.0 is +11.1% above active avg 90.0 (not -4.76% below gross 105.0)
+            # With mt.price_reference='average', current price 100.0 is +11.1% above active avg 90.0 (not -4.76% below gross 105.0)
             inst = FakeInstrument(
                 price=100.0,
                 free=10.0,
                 fills=fills,
-                params={"mt.ref": "average"},
+                params={"mt.price_reference": "average"},
             )
             self.run_tick(inst, trend_up=False, gain=0.10, loss=0.04)
             self.assertEqual(len(inst.placed), 1)

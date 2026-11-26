@@ -22,10 +22,11 @@ from botcore import (
     safe_pos_int,
 )
 from state_io import parse_proc_stat_fields, read_bytes_file, read_text_file
+from state_stores.os_resources_watchdog_state import OsResourcesWatchdogStateStore
 from technical_repair_ssot import fleet_script_basenames
 
 ROOT = wc.ROOT
-STATE_FILE = ROOT / ".resource_watchdog_state.json"
+STATE_FILE = OsResourcesWatchdogStateStore.default_state_path(str(ROOT))
 load_env_stack()
 
 CPU_THRESHOLD = required_float_env("RESOURCE_CPU_THRESHOLD_PCT")
@@ -161,7 +162,7 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
             except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError, OSError, ValueError):
                 continue
     cpu_count = (os.cpu_count() or 1) if cpu_count is None else safe_pos_int(cpu_count, default=1)
-    state = wc.load_state(STATE_FILE)
+    state = OsResourcesWatchdogStateStore.load_state(STATE_FILE)
     if not isinstance(state, dict):
         state = {}
     previous_total = state.get("total_ticks")
@@ -217,7 +218,7 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
     tracked = {key: value for key, value in tracked.items() if key in processes}
     state.update({"total_ticks": total_ticks, "processes": processes,
                   "tracked": tracked, "last_run": now})
-    wc.save_state(STATE_FILE, state)
+    OsResourcesWatchdogStateStore.save_state(STATE_FILE, state)
 
     if offenders:
         lines = []
@@ -231,7 +232,7 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
                       "alert only (unmanaged process or restart safety limit)")
             lines.append(f"PID {proc.get('pid', '?')} \u2014 {', '.join(reasons)} for at least "
                          f"{checks * CHECK_INTERVAL_MIN:.0f} min \u2014 {action} \u2014 {proc.get('command', '?')}")
-        wc.save_state(STATE_FILE, state)
+        OsResourcesWatchdogStateStore.save_state(STATE_FILE, state)
         if needs_error_email:
             wc.send_ntfy("High sustained process resource usage", "\n".join(lines))
         else:

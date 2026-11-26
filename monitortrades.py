@@ -1310,7 +1310,7 @@ def _resolve_mt_inst_cfg(inst):
         inst.param("mt", "hardtp", HARD_TP_PCT * 100, float) / 100.0,
         inst.param("mt", "hardtp_fraction", HARD_TP_FRACTION, float),
         inst.param("mt", "hardtp_cooldown_h", HARD_TP_COOLDOWN_S / 3600.0, float) * 3600,
-        str(inst.param("mt", "ref", TP_REFERENCE) or TP_REFERENCE).strip().lower(),
+        str(inst.param("mt", "price_reference", TP_REFERENCE) or TP_REFERENCE).strip().lower(),
         inst.param("mt", "buy_budget", None, float),
         inst.param("mt", "buy_qty", None, float),
         inst.param("mt", "max_budget", None, float),

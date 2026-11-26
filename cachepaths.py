@@ -66,6 +66,8 @@ LLM_QUOTA_STATUS_FILENAME = "llm_quota_status.json"
 LLM_MODEL_CATALOG_FILENAME = "llm_model_catalog.json"
 LLM_TOPIC_THREADS_FILENAME = "llm_topic_threads.json"
 NOTIFY_QUEUE_FILENAME = "notify_queue.json"
+NOTIFICATION_DELIVERY_STATE_FILENAME = "notification_delivery_state.json"
+OS_RESOURCES_WATCHDOG_STATE_FILENAME = "os_resources_watchdog_state.json"
 
 CACHE_ORDERBOOK_DEPTH_PREFIX = "orderbook_depth_"
 CACHE_DERIVATIVES_TELEMETRY_PREFIX = "derivatives_telemetry_"
@@ -306,7 +308,8 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         ),
         "prefixes": (
             "cache_order", "cache_balance", "cache_trade", "cache_asset_value",
-            "cache_fee_schedule", "cache_account_health.", "account_cache_health.", "binance_account_cache_health.",
+            "cache_fee_schedule", "cache_t212_client_",
+            "cache_account_health.", "account_cache_health.", "binance_account_cache_health.",
         ),
         "suffixes": (),
     },
@@ -384,6 +387,7 @@ STATEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             "rtrade_pairs",
             "mt_state.",
             "trailing_state.",
+            "trailing_state_",
             "smart_stop_loss_state.",
             "venue_fee_maintenance_state",
         ),
@@ -395,8 +399,16 @@ STATEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         "suffixes": (),
     },
     "system": {
-        "exact": (NOTIFY_QUEUE_FILENAME,),
-        "prefixes": ("notify_queue.",),
+        "exact": (
+            NOTIFY_QUEUE_FILENAME,
+            NOTIFICATION_DELIVERY_STATE_FILENAME,
+            OS_RESOURCES_WATCHDOG_STATE_FILENAME,
+        ),
+        "prefixes": (
+            "notify_queue.",
+            "notification_delivery_state.",
+            "os_resources_watchdog_state.",
+        ),
         "suffixes": (),
     },
 }
@@ -2008,17 +2020,20 @@ def resolve_venue_trailing_state_path(
     *,
     workspace_dir: object = None,
     cache_dir: object = None,
-    filename: str = TRAILING_STATE_FILENAME,
-    resolve_subdir: bool = False,
+    filename: str | None = None,
+    resolve_subdir: bool = True,
 ) -> str:
-    """Resolve the trailing state / peaks JSON path for ``venue``."""
+    """Resolve the canonical per-venue trailing state path (``statedb/bots/trailing_state_<venue>.json``)."""
     v_norm = normalize_venue_name(venue, default="binance") or "binance"
-    fname = _clean_path_str(filename) or TRAILING_STATE_FILENAME
-    rt_dir = resolve_venue_runtime_dir(v_norm, workspace_dir=workspace_dir, cache_dir=cache_dir)
-    raw_path = os.path.join(rt_dir, fname)
-    if is_primary_stream_venue(v_norm) and resolve_subdir:
-        return str(resolve_cachedb_filepath(raw_path))
-    return raw_path
+    fname = _clean_path_str(filename) if filename is not None else f"trailing_state_{v_norm}.json"
+    if not fname:
+        fname = f"trailing_state_{v_norm}.json"
+    if cache_dir is not None and (c_dir := _clean_path_str(cache_dir)):
+        statedb_dir = resolve_statedb_dir_from_cachedb(c_dir)
+        return os.path.join(statedb_dir, "bots", fname)
+    if workspace_dir is not None and (w_dir := _clean_path_str(workspace_dir)):
+        return os.path.join(w_dir, "statedb", "bots", fname)
+    return state_path(fname)
 
 
 _SHADOW_CYCLE_STATE_TOKENS: frozenset[str] = frozenset({"PAPER", "REPLAY", "SHADOW", "BACKTEST", "MOCK"})

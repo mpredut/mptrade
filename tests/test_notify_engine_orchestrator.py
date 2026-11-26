@@ -67,7 +67,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from verify_tools import (
     gen_alert_thresholds,
-    portfolio_snapshot as ps,
     verify_account_facade as vaf,
     watch_trade_decisions as wtd,
 )
@@ -1795,16 +1794,6 @@ def test_pricechecker__should_send_alert_recovers_from_nan_bool_last_time_and_it
     checker._last_alert_time["BTC_up"] = True
     assert checker._should_send_alert("BTC", "up") is True
 
-def test_portfolio_snapshot_kraken_rows_handles_nan__kraken_price_and_none_orders_iter56_s1(monkeypatch):
-    """[ITER56 #1] portfolio_snapshot.kraken_rows handles NaN _kraken_price and None orders without ValueError/TypeError."""
-    # 1. portfolio_snapshot.kraken_rows handles NaN _kraken_price and None orders without ValueError/TypeError
-    monkeypatch.setattr(ps, "_load_state", lambda pair: {"qty": 2.0, "cost": 100.0, "orders": None})
-    monkeypatch.setattr(ps, "_kraken_price", lambda pair: float("nan"))
-    rows = ps.kraken_rows()
-    assert len(rows) == len(ps.KRAKEN_PAIRS)
-    assert rows[0]["value_usd"] == 0.0
-    assert rows[0]["open_orders"] == 0
-
 def test_dexscreenersource_refresh_rejects_bool_nan_listedat_and_newcoinsmonitor_iter56_s2(monkeypatch):
     """[ITER56 #2] DexScreenerSource.refresh rejects bool/NaN listedAt and NewCoinsMonitor handles non-numeric max_monitored_symbols."""
     # 2. DexScreenerSource.refresh rejects bool/NaN listedAt and NewCoinsMonitor handles non-numeric max_monitored_symbols
@@ -2064,16 +2053,6 @@ def test_newcoinsfactory_splits_comma_separated_string_enabled_sources_and_coinm
     monkeypatch.setattr(ncd.BinanceNewListingsSource, "refresh", lambda self: None)
     fac = ncd.NewCoinsFactory(enabled_sources=" coinmarketcap , binance ", cmc_api_key="valid_key")
     assert set(fac.get_available_sources()) == {"coinmarketcap", "binance"}
-
-def test_portfolio_snapshot_run_alerts_treats_string_false_paper_flag_as_iter136_s4(tmp_path, monkeypatch):
-    """[ITER136 #4] portfolio_snapshot.run_alerts treats string 'false' paper flag as a live position."""
-    # 4. portfolio_snapshot.run_alerts treats string "false" paper flag as a live position
-    alert_file = tmp_path / "alert_state.json"
-    monkeypatch.setattr(ps, "ALERT_STATE", str(alert_file))
-    monkeypatch.setattr(ps, "_ntfy", lambda *_a, **_k: None)
-    monkeypatch.setattr(ps, "_policy_float", lambda k: 10.0 if k == "RISK_DD_ALERT_PCT" else 2.0)
-    fired = ps.run_alerts([{"engine": "Kraken HYPE", "paper": "false", "qty": 10.0, "dd_pct": -15.0, "unrealized": -150.0, "cost": 1000.0}])
-    assert len(fired) == 1
 
 def test_gen_alert_thresholds_resolve_id_strips_whitespace_for_exact_match_and_iter137_s1(monkeypatch):
     """[ITER137 #1] gen_alert_thresholds.resolve_id strips whitespace for exact match and rejects empty/bool symbols."""

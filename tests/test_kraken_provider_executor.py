@@ -1249,7 +1249,7 @@ def test_derive_client_order_id_normalize_kraken_fill_and_krakenprovider_order_s
     assert st.filled_qty == pytest.approx(2.0)
 
 def test_hyperliquid_strategy_py__sanitize_state_and__clean_oid_kraken_xstock_watch__load_state_iter146_s2(tmp_path, monkeypatch):
-    """[ITER146 #2] hyperliquid/strategy.py _sanitize_state and _clean_oid & kraken_xstock_watch._load_state & _bot_alive & 212trading/price_alert.py _parse_armed_flag."""
+    """[ITER146 #2] hyperliquid/strategy.py _sanitize_state and _clean_oid & kraken_xstock_watch._load_state & _bot_alive."""
     # 2. hyperliquid/strategy.py _sanitize_state and _clean_oid
     hl_mod = load_venue_modules("hyperliquid", "strategy")
 
@@ -1303,15 +1303,6 @@ def test_hyperliquid_strategy_py__sanitize_state_and__clean_oid_kraken_xstock_wa
     assert kxw._bot_alive("1234.5") is False
     assert kxw._bot_alive(float("nan")) is False
     assert kxw._bot_alive(["1234"]) is False
-
-
-    # 4. 212trading/price_alert.py _parse_armed_flag
-    pa_mod = load_venue_modules("212trading", "price_alert")
-    assert pa_mod._parse_armed_flag("0.0") is False
-    assert pa_mod._parse_armed_flag("false") is False
-    assert pa_mod._parse_armed_flag("null") is False
-    assert pa_mod._parse_armed_flag(float("nan"), default=True) is True
-    assert pa_mod._parse_armed_flag("true") is True
 
 def test_kraken_cachemanager_clean_order_id__normalize_and__load_initial_cache_iter147_s1(tmp_path):
     """[ITER147 #1] clean_order_id, KrakenProvider.normalize_ws_trade, and CacheTradeManager.load_sanitized_trade_snapshot."""

@@ -23,6 +23,7 @@ from botcore import (
     lru_dict_put,
     normalize_side,
     parse_dotenv,
+    read_config_text,
     register_module_aliases,
     resolve_us_equity_session_state,
     safe_float,
@@ -60,7 +61,68 @@ DEFAULT_PATH = Path(__file__).resolve().with_name("instruments.conf")
 _ORIG_DEFAULT_PATH = DEFAULT_PATH
 _DEFAULT_RESOLVED_PATH = str(DEFAULT_PATH.resolve())
 CORE = {"provider", "symbol", "base", "quote", "enabled", "isolation", "market_hours"}
-ROLES = {"mt", "tradeall_fire", "kalman_primary", "trailing", "assetguardian", "archive", "rtrade", "force_sell"}
+ROLES = {"mt", "tradeall_fire", "kalman_primary", "trailing", "assetguardian", "archive", "rtrade"}
+CANONICAL_KEY_ORDER: tuple[str, ...] = (
+    "provider",
+    "symbol",
+    "base",
+    "quote",
+    "enabled",
+    "isolation",
+    "market_hours",
+    "role.mt",
+    "role.tradeall_fire",
+    "role.kalman_primary",
+    "role.trailing",
+    "role.assetguardian",
+    "role.archive",
+    "role.rtrade",
+    "ai.tradable",
+    "tradeall.kalman_mode",
+    "trend.step_wols_power",
+    "trend.fast_window_sec",
+    "trailing.pct",
+    "trailing.rebuy",
+    "mt.gain",
+    "mt.lost",
+    "mt.maxage_days",
+    "mt.hardtp",
+    "mt.hardtp_fraction",
+    "mt.hardtp_cooldown_h",
+    "mt.price_reference",
+    "mt.buy_budget",
+    "mt.max_budget",
+)
+CANONICAL_KEY_WIDTH: int = max(len(k) for k in CANONICAL_KEY_ORDER)
+REQUIRED_BASE_KEYS: frozenset[str] = frozenset(
+    CORE | {f"role.{role}" for role in ROLES} | {"ai.tradable", "trend.step_wols_power"}
+)
+MT_REQUIRED_KEYS: frozenset[str] = frozenset(
+    {"mt.gain", "mt.lost", "mt.maxage_days", "mt.price_reference", "mt.buy_budget", "mt.max_budget"}
+)
+KNOWN_PARAM_KEYS: frozenset[str] = frozenset(
+    (set(CANONICAL_KEY_ORDER) - CORE) | {"mt.buy_qty", "mt.buy_price_offset"}
+)
+LEGACY_OBSOLETE_KEYS: frozenset[str] = frozenset(
+    {"trail.enabled", "trail.pct", "tradeall.trade", "mt.ref"}
+)
+_NUMERIC_STRICT_KEYS: frozenset[str] = frozenset(
+    {
+        "trend.step_wols_power",
+        "trend.fast_window_sec",
+        "trailing.pct",
+        "mt.gain",
+        "mt.lost",
+        "mt.maxage_days",
+        "mt.hardtp",
+        "mt.hardtp_fraction",
+        "mt.hardtp_cooldown_h",
+        "mt.buy_budget",
+        "mt.max_budget",
+        "mt.buy_qty",
+        "mt.buy_price_offset",
+    }
+)
 _DEFAULT_USD_QUOTES = DEFAULT_USD_QUOTES
 _REGISTRY_CACHE: dict = {}
 _SYMBOL_IDENTITY_CACHE: dict = {}
@@ -229,17 +291,56 @@ def _load_registry_cached(path=None) -> tuple[tuple[str, int, int], dict]:
             raise ValueError(f"instruments.conf [{name}]: duplicate provider/symbol {identity}")
         seen.add(identity)
         params = {key: value for key, value in values.items() if key not in CORE}
-        legacy = {"trail.enabled", "trail.pct", "tradeall.trade"} & params.keys()
+        legacy = LEGACY_OBSOLETE_KEYS & params.keys()
         if legacy:
-            raise ValueError(f"instruments.conf [{name}]: migrate obsolete keys {sorted(legacy)} to role.* / trailing.pct")
-        unknown = {key[5:] for key in params if key.startswith("role.")} - ROLES
-        if unknown:
-            raise ValueError(f"instruments.conf [{name}]: unknown roles {sorted(unknown)}")
+            raise ValueError(
+                f"instruments.conf [{name}]: migrate obsolete keys {sorted(legacy)} "
+                f"to role.* / trailing.pct / mt.price_reference"
+            )
+        unknown_roles = {key[5:] for key in params if key.startswith("role.")} - ROLES
+        if unknown_roles:
+            raise ValueError(f"instruments.conf [{name}]: unknown roles {sorted(unknown_roles)}")
+        unknown_params = set(params) - KNOWN_PARAM_KEYS
+        if unknown_params:
+            raise ValueError(f"instruments.conf [{name}]: unknown keys {sorted(unknown_params)}")
         spec = InstrumentSpec(name=name, params=params, **core)
         if is_primary_stream_venue(spec.provider) and (
             not _PRIMARY_STREAM_SYMBOL_RE.fullmatch(spec.symbol) or spec.symbol != spec.base + spec.quote
         ):
             raise ValueError(f"instruments.conf [{name}]: Binance symbol must equal uppercase base + quote")
+        if "ai.tradable" in params:
+            _boolean(params["ai.tradable"], "ai.tradable", name)
+        if "trend.step_wols_power" in params:
+            if spec.number("trend.step_wols_power") < 0:
+                raise ValueError(f"instruments.conf [{name}]: trend.step_wols_power must be >= 0")
+        if "trend.fast_window_sec" in params:
+            if spec.number("trend.fast_window_sec") <= 0:
+                raise ValueError(f"instruments.conf [{name}]: trend.fast_window_sec must be > 0")
+        if "mt.price_reference" in params:
+            ref_val = spec.setting("mt.price_reference").casefold()
+            if ref_val not in {"last", "average"}:
+                raise ValueError(f"instruments.conf [{name}]: invalid mt.price_reference={params['mt.price_reference']!r}")
+        for pos_key in (
+            "mt.gain",
+            "mt.lost",
+            "mt.maxage_days",
+            "mt.hardtp",
+            "mt.hardtp_fraction",
+            "mt.hardtp_cooldown_h",
+            "mt.buy_budget",
+            "mt.max_budget",
+            "mt.buy_qty",
+        ):
+            if pos_key in params:
+                val_num = spec.number(pos_key)
+                if val_num <= 0:
+                    raise ValueError(f"instruments.conf [{name}]: {pos_key} must be > 0")
+                if pos_key == "mt.hardtp_fraction" and val_num > 1.0:
+                    raise ValueError(f"instruments.conf [{name}]: mt.hardtp_fraction must be in (0, 1]")
+                if pos_key == "mt.lost" and val_num >= 100.0:
+                    raise ValueError(f"instruments.conf [{name}]: mt.lost must be in (0, 100)")
+        if "mt.buy_price_offset" in params:
+            spec.number("mt.buy_price_offset")
         roles = {role for role in ROLES if spec.has_role(role)}
         if "kalman_primary" in roles and "tradeall_fire" not in roles:
             raise ValueError(f"instruments.conf [{name}]: kalman_primary requires tradeall_fire")
@@ -1109,8 +1210,6 @@ class _DynamicSymbolStr(str):
 def _resolve_dynamic_symbol_attr(name: str):
     if name == "symbols":
         return _DynamicSymbolsList(symbols_for("binance"))
-    if name == "forcesellsymbol":
-        return _DynamicSymbolsList(symbols_for("binance", "force_sell"))
     if name.endswith("symbol") and len(name) > 6 and name.islower():
         base = name[:-6].upper()
         for spec in load_registry().values():
@@ -1189,11 +1288,129 @@ def validate_params(order_type, symbol, price=1, qty=1):
     validate_symbols(symbol)
 
 
+def validate_instruments_conf_strict(path=None) -> list[str]:
+    """Validate an ``instruments.conf`` file against the strict copy-paste template and zero-default schema.
+
+    Returns a list of human-readable violation strings (empty list means fully compliant).
+    """
+    target_path = Path(path) if path is not None else DEFAULT_PATH
+    issues: list[str] = []
+    try:
+        reg = load_registry(target_path)
+    except Exception as exc:
+        return [f"registry load failed: {exc}"]
+
+    raw_text = read_config_text(target_path)
+    if any(ord(ch) > 127 for ch in raw_text):
+        issues.append("non-ASCII character found in instruments.conf")
+    if not raw_text.endswith("\n"):
+        issues.append("file must end with a trailing newline")
+
+    sec_re = re.compile(r"^\s*\[([^\]]+)\]\s*(?:[#;].*)?$")
+    bt_re = re.compile(r"^\s*#\s*BACKTEST:\s*(.+?)\s*$")
+    kv_re = re.compile(r"^([A-Za-z0-9_.]+)(\s*=\s*)(.*?)\s*$")
+    canonical_idx = {key: idx for idx, key in enumerate(CANONICAL_KEY_ORDER)}
+
+    section_keys: dict[str, list[str]] = {}
+    cur_sec: Optional[str] = None
+    pending_bt_line: Optional[int] = None
+
+    for lineno, raw_line in enumerate(raw_text.splitlines(), start=1):
+        stripped = raw_line.strip()
+        if not stripped:
+            if pending_bt_line is not None:
+                issues.append(f"line {pending_bt_line}: dangling '# BACKTEST:' comment before blank line")
+                pending_bt_line = None
+            continue
+        sm = sec_re.match(raw_line)
+        if sm:
+            if pending_bt_line is not None:
+                issues.append(f"line {pending_bt_line}: dangling '# BACKTEST:' comment before section [{sm.group(1).strip()}]")
+                pending_bt_line = None
+            cur_sec = sm.group(1).strip()
+            if cur_sec in section_keys:
+                issues.append(f"line {lineno}: duplicate section [{cur_sec}]")
+            section_keys.setdefault(cur_sec, [])
+            continue
+        if stripped.startswith("#") or stripped.startswith(";"):
+            if bt_re.match(raw_line):
+                if pending_bt_line is not None:
+                    issues.append(f"line {pending_bt_line}: consecutive '# BACKTEST:' comment overwritten at line {lineno}")
+                pending_bt_line = lineno
+            elif pending_bt_line is not None:
+                issues.append(f"line {pending_bt_line}: '# BACKTEST:' comment broken by comment at line {lineno}")
+                pending_bt_line = None
+            continue
+        km = kv_re.match(raw_line)
+        if not km or cur_sec is None:
+            issues.append(f"line {lineno}: malformed assignment outside section or with leading spaces: {raw_line!r}")
+            pending_bt_line = None
+            continue
+        key, sep, val = km.group(1), km.group(2), km.group(3)
+        if key not in canonical_idx:
+            issues.append(f"[{cur_sec}] line {lineno}: key {key!r} is not in CANONICAL_KEY_ORDER")
+        else:
+            expected_prefix = f"{key:<{CANONICAL_KEY_WIDTH}} = "
+            if f"{key}{sep}" != expected_prefix:
+                issues.append(
+                    f"[{cur_sec}] line {lineno}: alignment mismatch for {key!r} "
+                    f"(expected {expected_prefix!r}, got {f'{key}{sep}'!r})"
+                )
+        if key in section_keys[cur_sec]:
+            issues.append(f"[{cur_sec}] line {lineno}: duplicate key {key!r}")
+        section_keys[cur_sec].append(key)
+        if pending_bt_line is not None:
+            if key not in _NUMERIC_STRICT_KEYS:
+                issues.append(
+                    f"[{cur_sec}] line {pending_bt_line}: '# BACKTEST:' precedes non-numeric key {key!r}"
+                )
+            pending_bt_line = None
+
+    if pending_bt_line is not None:
+        issues.append(f"line {pending_bt_line}: dangling '# BACKTEST:' comment at EOF")
+
+    for name, spec in reg.items():
+        keys = section_keys.get(name, [])
+        key_set = set(keys)
+        missing_base = sorted(REQUIRED_BASE_KEYS - key_set)
+        if missing_base:
+            issues.append(f"[{name}]: missing mandatory base keys {missing_base}")
+        ordered_subset = [k for k in CANONICAL_KEY_ORDER if k in key_set]
+        if [k for k in keys if k in canonical_idx] != ordered_subset:
+            issues.append(
+                f"[{name}]: attributes out of canonical copy-paste order "
+                f"(got {keys}, expected {ordered_subset})"
+            )
+        if spec.has_role("tradeall_fire"):
+            if "tradeall.kalman_mode" not in key_set:
+                issues.append(f"[{name}]: role.tradeall_fire=yes requires tradeall.kalman_mode")
+        elif "tradeall.kalman_mode" in key_set:
+            issues.append(f"[{name}]: tradeall.kalman_mode is forbidden when role.tradeall_fire=no")
+        if spec.has_role("trailing"):
+            for req_tr in ("trailing.pct", "trailing.rebuy"):
+                if req_tr not in key_set:
+                    issues.append(f"[{name}]: role.trailing=yes requires {req_tr}")
+        if spec.has_role("mt"):
+            missing_mt = sorted(MT_REQUIRED_KEYS - key_set)
+            if missing_mt:
+                issues.append(f"[{name}]: role.mt=yes missing mandatory keys {missing_mt}")
+
+    return issues
+
+
 register_module_aliases(__name__, "symbols")
 bind_symbol_case_resolver(resolve_registered_symbol_case)
 
 
 if __name__ == "__main__":
-    for item in load_registry().values():
-        roles = ",".join(role for role in sorted(ROLES) if item.has_role(role))
-        print(f"{item.name}: {item.provider}/{item.symbol} enabled={item.enabled} roles={roles}")
+    if "--strict" in sys.argv[1:]:
+        errs = validate_instruments_conf_strict()
+        if errs:
+            for err in errs:
+                print(f"ERROR: {err}", file=sys.stderr)
+            sys.exit(1)
+        print(f"OK: {DEFAULT_PATH} conforms to strict schema & canonical template ({len(load_registry())} sections)")
+    else:
+        for item in load_registry().values():
+            roles = ",".join(role for role in sorted(ROLES) if item.has_role(role))
+            print(f"{item.name}: {item.provider}/{item.symbol} enabled={item.enabled} roles={roles}")
