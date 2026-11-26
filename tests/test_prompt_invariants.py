@@ -1021,6 +1021,244 @@ def test_cycle14_section0_recent_order_new_fill_rules_parity_and_active_plan_rr_
     assert len(bad_vs) == 2
 
 
+def test_full_mathematical_audit_snapshot_and_rendered_prompt_invariants() -> None:
+    """Verify full mathematical audit suite across snapshot and rendered prompt text (clean passes, every corruption caught)."""
+    clean_snap = {
+        "prices_and_trends": {
+            "BTCUSDC": {
+                "price": 60000.0,
+                "chg_15m_pct": 0.20,
+                "chg_1h_pct": 1.00,
+                "chg_24h_pct": 4.00,
+                "low_15m": 59800.0,
+                "high_15m": 60200.0,
+                "pos_15m_pct": 50.0,
+                "low_24h": 57000.0,
+                "high_24h": 61000.0,
+                "pos_24h_pct": 75.0,
+                "dd_24h_high_pct": -1.64,
+                "bounce_24h_low_pct": 5.26,
+                "span_24h_pct": 7.02,
+                "swing_low_px": 57000.0,
+                "swing_high_px": 61000.0,
+                "dist_vs_session_vwap_pct": 0.50,
+                "session_vwap_z": 1.20,
+            },
+            "ARBUSDC": {
+                "price": 0.1132,
+                "chg_15m_pct": 0.50,
+                "chg_1h_pct": 0.40,
+                "chg_24h_pct": 6.50,
+                "vs_btc_15m_pct": 0.30,
+                "vs_btc_1h_pct": -0.60,
+                "vs_btc_24h_pct": 2.50,
+                "low_15m": 0.1125,
+                "high_15m": 0.1135,
+                "pos_15m_pct": 70.0,
+                "low_24h": 0.1050,
+                "high_24h": 0.1160,
+                "pos_24h_pct": 74.55,
+                "dd_24h_high_pct": -2.41,
+                "bounce_24h_low_pct": 7.81,
+                "span_24h_pct": 10.48,
+                "bottom_structure_6h": "HIGHER_LOW_DOUBLE_BOTTOM",
+                "prior_6h_low_px": 0.1110,
+                "recent_1h_low_px": 0.1120,
+                "dist_vs_session_vwap_pct": -0.80,
+                "session_vwap_z": -1.40,
+            },
+            "SPCXxUSD": {"price": 129.85},
+        },
+        "microstructure": {
+            "BTCUSDC": {
+                "best_bid": 59999.0,
+                "best_ask": 60001.0,
+                "ob_mid_price": 60000.0,
+                "spread_bps": 0.33,
+                "bid_wall_px": 59700.0,
+                "bid_wall_dist_pct": -0.50,
+                "ask_wall_px": 60300.0,
+                "ask_wall_dist_pct": 0.50,
+            },
+        },
+        "portfolio_summary": {
+            "tradable_positions": [
+                {
+                    "venue": "binance",
+                    "symbol": "ARBUSDC",
+                    "price": 0.1132,
+                    "free_base": 2000.0,
+                    "value_usd": 226.40,
+                    "active_avg_buy_px": 0.1125,
+                    "pnl_vs_avg_pct": 0.62,
+                    "trailing_peak": 0.1150,
+                    "dd_from_peak_pct": -1.57,
+                },
+                {
+                    "venue": "kraken",
+                    "symbol": "SPCXxUSD",
+                    "price": 129.85,
+                    "free_base": 10.0,
+                    "value_usd": 1298.50,
+                    "active_avg_buy_px": 134.84,
+                    "pnl_vs_avg_pct": -3.70,
+                },
+            ],
+            "kraken_cycles": {"SPCXxUSD": {"avg_cost_px": 134.84}},
+            "open_limit_orders": [
+                {"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "price": 59400.0, "dist_from_spot_pct": -1.00}
+            ],
+            "kraken_xstocks": {"listed_pair": "SPCXxUSD", "underlying_px": 128.95, "xstock_vs_underlying_pct": 0.70},
+        },
+    }
+    assert audit_snapshot_invariants(clean_snap) == []
+
+    # Corrupt every mathematical relation in snapshot and assert every invariant code fires.
+    bad_snap = {
+        "prices_and_trends": {
+            "BTCUSDC": {
+                "price": 60000.0,
+                "chg_1h_pct": 1.00,
+                "low_24h": 57000.0,
+                "high_24h": 61000.0,
+                "dd_24h_high_pct": -5.00,  # wrong (exp -1.64%)
+                "bounce_24h_low_pct": 1.00,  # wrong (exp +5.26%)
+                "span_24h_pct": 2.00,  # wrong (exp 7.02%)
+                "swing_low_px": 60500.0,  # price below swing_low
+                "swing_high_px": 61000.0,
+                "dist_vs_session_vwap_pct": 0.80,
+                "session_vwap_z": -1.50,  # opposite sign
+            },
+            "ARBUSDC": {
+                "price": 0.1132,
+                "chg_1h_pct": 0.40,
+                "vs_btc_1h_pct": 2.50,  # wrong (exp -0.60%)
+                "low_15m": 0.1120,
+                "low_24h": 0.1100,
+                "bottom_structure_6h": "HIGHER_LOW_DOUBLE_BOTTOM",
+                "prior_6h_low_px": 0.1130,
+                "recent_1h_low_px": 0.1125,  # > low_15m AND < prior_6h_low
+            },
+            "SPCXxUSD": {"price": 129.85},
+        },
+        "microstructure": {
+            "BTCUSDC": {
+                "best_bid": 60010.0,
+                "best_ask": 60000.0,  # crossed book
+                "ob_mid_price": 60000.0,
+                "spread_bps": 25.0,  # wrong spread
+                "bid_wall_px": 59700.0,
+                "bid_wall_dist_pct": -4.00,  # wrong wall dist (exp -0.50%)
+            },
+        },
+        "portfolio_summary": {
+            "tradable_positions": [
+                {
+                    "venue": "binance",
+                    "symbol": "ARBUSDC",
+                    "price": 0.1132,
+                    "free_base": 2000.0,
+                    "value_usd": 300.00,  # wrong (exp 226.40)
+                    "active_avg_buy_px": 0.1125,
+                    "pnl_vs_avg_pct": 9.99,  # wrong
+                    "trailing_peak": 0.1100,  # px > peak
+                    "dd_from_peak_pct": -5.00,  # wrong
+                },
+                {
+                    "venue": "kraken",
+                    "symbol": "SPCXxUSD",
+                    "price": 129.85,
+                    "free_base": 10.0,
+                    "value_usd": 1298.50,
+                    "active_avg_buy_px": 134.84,
+                },
+            ],
+            "kraken_cycles": {"SPCXxUSD": {"avg_cost_px": 140.00}},  # diverges from position avg_cost
+            "open_limit_orders": [
+                {"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "price": 59400.0, "dist_from_spot_pct": -5.00}
+            ],
+            "kraken_xstocks": {"listed_pair": "SPCXxUSD", "underlying_px": 128.95, "xstock_vs_underlying_pct": 5.50},
+        },
+    }
+    bad_snap_codes = {v.code for v in audit_snapshot_invariants(bad_snap)}
+    assert {
+        "POSITION_VALUE_AND_ANCHOR_MATH",
+        "OPEN_ORDER_DIST_MATH",
+        "XSTOCK_PREMIUM_MATH",
+        "VS_BTC_MATH",
+        "RANGE_BOUNDS_AND_EXTREMES_MATH",
+        "BOTTOM_STRUCTURE_MATH",
+        "SESSION_VWAP_SIGN_MATH",
+        "ORDERBOOK_SPREAD_AND_WALL_DIST_MATH",
+    }.issubset(bad_snap_codes)
+
+    # Rendered prompt text mathematical audit: clean prompt passes with 0 violations.
+    clean_prompt = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 1. PORTFOLIO:\n"
+        "    - [binance] ARBUSDC: free_ARB=2000.0 ($226.40 USD), px=0.1132, avg_cost=0.1125 (pnl_vs_cost=0.62%), peak_px=0.115 (dd_from_peak=-1.57%), limits(max_buy=$1000.0, max_sell=$226.4)\n"
+        "    - [kraken] SPCXxUSD: free_SPCXx=10.0 ($1298.50 USD), px=129.85, avg_cost=134.84 (pnl_vs_cost=-3.70%), limits(max_buy=$0.0, max_sell=$1298.5)\n"
+        "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Plan (Tgt/Inv) | Note |\n"
+        "    |---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+        "    | binance | BTCUSDC | BUY | 59400.0 | 0.01 | 0 | 1 | AI | 1.0h | -1.00% | 20% | 60600.0(+2.02%)/58800.0(-1.01%) RR=2.00x [ACTIVE] | - |\n"
+        "    - [kraken] SPCXxUSD: qty=10.0, cost=$1348.40, avg_cost=134.84, pnl_vs_cost=-3.70%\n"
+        "  * Kraken xStocks: SPCX=$128.95, EXT_CLOSE, xstock_vs_underlying=+0.70%\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * BTCUSDC: Price=$60,000.00\n"
+        "    - Trend: 15m=+0.20% 1h=+1.00% 24h=+4.00% 24h_range=[57000.0, 61000.0] pos_24h=75.0% (dd_high=-1.64%, bounce_low=+5.26%, span=7.02%) | session_vwap=$59,700.00 (+0.50%, z=+1.20, utc_00) | atr(15m=0.28%, 1h=0.88%, 4h=1.74%)\n"
+        "    - Book: ob_imbalance=0.500 (bid_depth=$100.0K, ask_depth=$100.0K), bid_wall=59700.0 ($50.0K, dist=-0.50%), ask_wall=60300.0 ($50.0K, dist=+0.50%), spread=0.33bps (bid=59999.0/ask=60001.0), ob_mid=60000.0\n"
+        "  * ARBUSDC: Price=$0.1132\n"
+        "    - Trend: 15m=+0.50% 1h=+0.40% 24h=+6.50% 24h_range=[0.105, 0.116] pos_24h=74.5% (dd_high=-2.41%, bounce_low=+7.81%, span=10.48%) | 15m_range=[0.1125, 0.1135] pos_15m=70.0% | vs_btc(15m=+0.30%, 1h=-0.60%, 24h=+2.50%) | bottom_6h(prior_low=0.111, 1h_low=0.112, higher_low_pct=+0.90%)\n"
+        "  * SPCXxUSD: Price=$129.85\n"
+        "    - Trend: 24h=+1.00%\n"
+    )
+    assert audit_rendered_prompt_text(clean_prompt) == []
+
+    # Corrupt every rendered prompt mathematical invariant and verify all codes fire.
+    bad_prompt = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 1. PORTFOLIO:\n"
+        "    - [binance] ARBUSDC: free_ARB=2000.0 ($350.00 USD), px=0.1132, avg_cost=0.1125 (pnl_vs_cost=9.50%), peak_px=0.110 (dd_from_peak=-5.00%), limits(max_buy=$1000.0, max_sell=$226.4)\n"
+        "    - [kraken] SPCXxUSD: free_SPCXx=10.0 ($1298.50 USD), px=129.85, avg_cost=134.84 (pnl_vs_cost=-3.70%), limits(max_buy=$0.0, max_sell=$1298.5)\n"
+        "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Plan (Tgt/Inv) | Note |\n"
+        "    |---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+        "    | binance | BTCUSDC | BUY | 59400.0 | 0.01 | 0 | 1 | AI | 1.0h | -5.50% | 20% | 60600.0(+2.02%)/58800.0(-1.01%) RR=2.00x [ACTIVE] | - |\n"
+        "    - [kraken] SPCXxUSD: qty=10.0, cost=$1348.40, avg_cost=141.00, pnl_vs_cost=-3.70%\n"
+        "  * Kraken xStocks: SPCX=$128.95, EXT_CLOSE, xstock_vs_underlying=+4.20%\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * BTCUSDC: Price=$60,000.00\n"
+        "    - Trend: 15m=+0.20% 1h=+1.00% 24h=+4.00% 24h_range=[57000.0, 61000.0] pos_24h=75.0% (dd_high=-4.00%, bounce_low=+1.00%, span=2.00%) | session_vwap=$59,700.00 (+0.50%, z=-1.20, utc_00)\n"
+        "    - Book: ob_imbalance=0.500 (bid_depth=$100.0K, ask_depth=$100.0K), bid_wall=59700.0 ($50.0K, dist=-3.50%), spread=15.0bps (bid=59999.0/ask=60001.0), ob_mid=60000.0\n"
+        "  * ARBUSDC: Price=$0.1132\n"
+        "    - Trend: 15m=+0.50% 1h=+0.40% 24h=+6.50% 24h_range=[0.105, 0.116] pos_24h=74.5% (dd_high=-2.41%, bounce_low=+7.81%, span=10.48%) | 15m_range=[0.1120, 0.1135] pos_15m=80.0% | vs_btc(1h=+3.00%) | bottom_6h(prior_low=0.111, 1h_low=0.1125, higher_low_pct=+5.00%)\n"
+        "  * SPCXxUSD: Price=$129.85\n"
+        "    - Trend: 24h=-0.00%, bad_val=None\n"
+    )
+    bad_prompt_codes = {v.code for v in audit_rendered_prompt_text(bad_prompt)}
+    assert {
+        "PROMPT_POSITION_MATH",
+        "PROMPT_CYCLE_ANCHOR_PARITY",
+        "PROMPT_OPEN_ORDER_DIST_MATH",
+        "PROMPT_XSTOCK_PREMIUM_MATH",
+        "PROMPT_RANGE_EXTREMES_MATH",
+        "PROMPT_SESSION_VWAP_DELTA",
+        "PROMPT_OB_SPREAD_AND_WALL_DIST",
+        "PROMPT_VS_BTC_MATH",
+        "PROMPT_BOTTOM_STRUCTURE_MATH",
+        "PROMPT_NUMERIC_HYGIENE",
+    }.issubset(bad_prompt_codes)
+
+    # MicrostructurePromptViewEvaluator must suppress whale_long_pct when absent so prompts never emit '=None'.
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import evaluate_microstructure_prompt_view
+
+    rows_no_whale = evaluate_microstructure_prompt_view(
+        {"BTCUSDC": {"ob_imbalance": 0.5, "bid_depth_usd": 100000.0, "ask_depth_usd": 100000.0, "ob_mid_price": 60000.0}},
+        prices_and_trends={"BTCUSDC": {"price": 60000.0}},
+    )
+    assert rows_no_whale and rows_no_whale[0]["show_whale_long"] is False
+
+
+
 
 
 

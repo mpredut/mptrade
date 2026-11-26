@@ -552,7 +552,10 @@ class MicrostructurePromptViewEvaluator(PromptViewEvaluatorBase):
                 and caps.allow_spot_cvd_display(minfo, has_perp_cvd=has_perp_cvd)
                 and safe_float(minfo.get("spot_cvd_15m_usd"), None) is not None
             )
-            show_whale_long = caps.allow_whale_long_display(minfo)
+            show_whale_long = bool(
+                caps.allow_whale_long_display(minfo)
+                and minfo.get("whale_long_pct") is not None
+            )
             show_whale_long_delta = caps.allow_whale_long_delta_display(minfo, has_flow=not no_flow)
             deriv_mode = caps.resolve_deriv_display_mode(minfo)
             tok_spot_only = bool(

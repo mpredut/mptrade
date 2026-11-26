@@ -109,6 +109,7 @@ def _make_rich_sensors(ts: float, *, anchor_ts: float | None = None) -> Telemetr
             "best_bid": 60499.0,
             "best_ask": 60501.0,
             "ob_mid_price": 60500.0,
+            "whale_long_pct": 0.61,
             "taker_buy_sell_ratio": 1.04,
             "taker_buy_vol_usd": 1200000.0,
             "taker_sell_vol_usd": 1150000.0,
@@ -710,6 +711,9 @@ def test_trigger_promotion_inline_rr_partial_fill_and_warm_source_age() -> None:
     """Verify Trigger line + Section 3 symbol promotion, inline plan R:R & front_run R:R, partial-fill rem, shared cash note, and WARM_DELTA src_age."""
     t0 = datetime(2026, 11, 26, 12, 0, 0, tzinfo=ZoneInfo("Europe/Bucharest")).timestamp()
     sensors = _make_rich_sensors(t0)
+    sensors.prices_and_trends["HYPEUSDC"] = {"price": 60.41, "chg_24h_pct": 1.8, "low_24h": 58.0, "high_24h": 62.0}
+    sensors.portfolio_summary["tradable_positions"][1]["price"] = 60.41
+    sensors.portfolio_summary["tradable_positions"][1]["value_usd"] = round(28.0 * 60.41, 2)
     sensors.source_ages_sec["fear_greed"] = 1680.0
     sensors.portfolio_summary["open_limit_orders"] = [
         {
@@ -769,6 +773,9 @@ def test_trigger_promotion_inline_rr_partial_fill_and_warm_source_age() -> None:
     # Warm turn shows [src_age=...] for unrefreshed external feeds while live-verified blocks stay untagged
     t2 = t0 + 360.0
     sensors_t2 = _make_rich_sensors(t2, anchor_ts=t0)
+    sensors_t2.prices_and_trends["HYPEUSDC"] = {"price": 60.41, "chg_24h_pct": 1.8, "low_24h": 58.0, "high_24h": 62.0}
+    sensors_t2.portfolio_summary["tradable_positions"][1]["price"] = 60.41
+    sensors_t2.portfolio_summary["tradable_positions"][1]["value_usd"] = round(28.0 * 60.41, 2)
     sensors_t2.source_ages_sec["fear_greed"] = 2040.0
     sensors_t2.portfolio_summary["cross_market_context"]["equity_bellwethers"]["NVDA_US_EQ"]["quote_age_min"] = 712.0
     p2 = evaluate_prompt_delta_plan(
