@@ -1138,3 +1138,43 @@ def test_option3_unified_multi_tf_intraday_collector_market_api_consumers_and_au
     assert "ETHUSDC" in capsys.readouterr().out
     assert chart_view_main(["ETHUSDC", "--tf", "1d", "--cache-dir", obs_cache]) == 0
     assert "=== ETHUSDC (1d," in capsys.readouterr().out
+
+
+def test_chart_view_auto_tf_wick_bucket_extremes_and_1h_archive_high_since(tmp_path: Path, capsys) -> None:
+    """Regression coverage for chart_view auto-tf (<=4m -> 1d, >4m -> 1w), bucket High-Low wicks, and 1h OHLC post-entry highs."""
+    from intelligence.macro_sentiment_ssot import scan_cached_price_archive_high_since
+
+    cache_dir = str(tmp_path)
+    base_dt = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    daily_bars = []
+    for i in range(300):
+        ts_ms = int((base_dt + timedelta(days=i)).timestamp() * 1000)
+        c = 100.0 + (i % 10)
+        # Put a sharp single-day wick spike on day 280 (inside trailing 1m) that close-only subsampling would miss
+        hi = 160.0 if i == 280 else c + 2.0
+        lo = 70.0 if i == 285 else c - 2.0
+        daily_bars.append([ts_ms, c, hi, lo, c, 1000.0])
+    upsert_ohlc_bar_archive(cache_dir, "TAOUSDC", daily_bars, timeframe="1d", source="binance:TAOUSDC")
+
+    # Auto-tf chooses 1d for <=4 months and 1w for 12 months
+    assert chart_view_main(["TAOUSDC", "--months", "1", "--cache-dir", cache_dir]) == 0
+    out_1m = capsys.readouterr().out
+    assert "=== TAOUSDC (1d," in out_1m
+    assert ":" in out_1m
+    # Top row ($160.00) and bottom row ($70.00) must NOT be blank (High-Low wicks rendered!)
+    grid_lines = [l for l in out_1m.splitlines() if l.strip().startswith(("$160.00 |", "$70.00 |"))]
+    assert len(grid_lines) == 2
+    assert all((":" in l or "*" in l) for l in grid_lines)
+
+    assert chart_view_main(["TAOUSDC", "--months", "12", "--cache-dir", cache_dir]) == 0
+    out_12m = capsys.readouterr().out
+    assert "=== TAOUSDC (1w," in out_12m
+
+    # scan_cached_price_archive_high_since captures exact post-entry 1h bar high even >24h later without leaking pre-entry bars
+    entry_ts_ms = int(datetime(2026, 11, 20, 12, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    bars_1h = [
+        [entry_ts_ms - 3600 * 1000, 210.0, 250.0, 205.0, 212.0, 50.0],  # pre-entry -> ignored
+        [entry_ts_ms + 3600 * 1000, 181.0, 194.5, 180.0, 182.0, 50.0],  # post-entry -> high 194.5 captured
+    ]
+    upsert_ohlc_bar_archive(cache_dir, "TAOUSDC", bars_1h, timeframe="1h", source="binance:TAOUSDC")
+    assert abs(scan_cached_price_archive_high_since(cache_dir, ("TAOUSDC",), entry_ts_ms) - 194.5) < 1e-6

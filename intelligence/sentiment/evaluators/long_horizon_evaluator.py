@@ -620,8 +620,21 @@ def render_ascii_chart_view(
     width: int = 60,
     height: int = 12,
 ) -> str:
-    """Render an exact ASCII price chart and OHLC summary for any chosen slice (1w, 1d, 4h, or 1h)."""
-    tf = str(timeframe or "1w").strip().lower()
+    """Render an exact ASCII price chart and OHLC summary for any chosen slice (auto, 1w, 1d, 4h, or 1h)."""
+    tf = str(timeframe or "auto").strip().lower()
+    if tf == "auto":
+        has_daily_src = bool(daily_bars) or bool(item.get("recent_daily_bars"))
+        req_end_ms = _parse_ym_bound_ms(end_ym, is_end=True)
+        req_start_ms = _parse_ym_bound_ms(start_ym, is_end=False)
+        short_range = (
+            (months is not None and safe_int(months, default=12) <= 4)
+            or (
+                req_start_ms is not None
+                and req_end_ms is not None
+                and 0 <= (req_end_ms - req_start_ms) <= 125 * _MS_PER_DAY
+            )
+        )
+        tf = "1d" if (has_daily_src and short_range) else "1w"
     is_intraday = tf in ("1h", "4h")
     if bars_override:
         bars = [
@@ -679,23 +692,34 @@ def render_ascii_chart_view(
     w = max(16, min(80, safe_int(width, default=60)))
     h = max(6, min(20, safe_int(height, default=12)))
     n = len(sliced)
-    sampled: List[float] = []
+    col_buckets: List[Tuple[float, float, float]] = []
     for col in range(w):
-        idx = min(n - 1, safe_int((col * (n - 1)) / max(1, w - 1), default=0)) if n > 1 else 0
-        sampled.append(sliced[idx][4])
+        if n > w:
+            b0 = safe_int((col * n) / w, default=0)
+            b1 = max(b0 + 1, min(n, safe_int(((col + 1) * n) / w, default=b0 + 1)))
+            bucket = sliced[b0:b1]
+        else:
+            idx = min(n - 1, safe_int((col * (n - 1)) / max(1, w - 1), default=0)) if n > 1 else 0
+            bucket = [sliced[idx]]
+        col_buckets.append((max(b[2] for b in bucket), min(b[3] for b in bucket), bucket[-1][4]))
 
     span = max(hi_p - lo_p, 1e-12)
     grid = [[" " for _ in range(w)] for _ in range(h)]
-    for col, val in enumerate(sampled):
-        row = h - 1 - min(h - 1, max(0, safe_int(((val - lo_p) / span) * (h - 1) + 0.5, default=0)))
+    prev_close_row: Optional[int] = None
+    for col, (b_hi, b_lo, b_close) in enumerate(col_buckets):
+        r_hi = h - 1 - min(h - 1, max(0, safe_int(((b_hi - lo_p) / span) * (h - 1) + 0.5, default=0)))
+        r_lo = h - 1 - min(h - 1, max(0, safe_int(((b_lo - lo_p) / span) * (h - 1) + 0.5, default=0)))
+        for rr in range(min(r_hi, r_lo), max(r_hi, r_lo) + 1):
+            if grid[rr][col] == " ":
+                grid[rr][col] = ":"
+        row = h - 1 - min(h - 1, max(0, safe_int(((b_close - lo_p) / span) * (h - 1) + 0.5, default=0)))
         grid[row][col] = "*"
-        if col > 0:
-            prev_val = sampled[col - 1]
-            prev_row = h - 1 - min(h - 1, max(0, safe_int(((prev_val - lo_p) / span) * (h - 1) + 0.5, default=0)))
-            r_lo, r_hi = min(row, prev_row), max(row, prev_row)
-            for rr in range(r_lo + 1, r_hi):
-                if grid[rr][col] == " ":
+        if prev_close_row is not None:
+            c_lo, c_hi = min(row, prev_close_row), max(row, prev_close_row)
+            for rr in range(c_lo + 1, c_hi):
+                if grid[rr][col] in (" ", ":"):
                     grid[rr][col] = "|"
+        prev_close_row = row
 
     chg_s = f"{fmt_signed(chg, 1)}%" if chg is not None else "-"
     ytd_s = f"{fmt_signed(item.get('ytd_pct'), 1)}%" if item.get("ytd_pct") is not None else "-"

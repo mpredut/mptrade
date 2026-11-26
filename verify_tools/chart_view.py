@@ -43,9 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--to", dest="end_ym", default=None, help="End date YYYY-MM or YYYY-MM-DD (UTC)")
     parser.add_argument(
         "--tf",
-        choices=("1w", "1d", "4h", "1h"),
-        default="1w",
-        help="Timeframe: 1w (weekly), 1d (full multi-year daily), 4h (intraday 4h archive), or 1h (intraday 1h archive)",
+        choices=("auto", "1w", "1d", "4h", "1h"),
+        default="auto",
+        help="Timeframe: auto (1d for <=4m window, else 1w), 1w (weekly), 1d (full multi-year daily), 4h (intraday 4h archive), or 1h (intraday 1h archive)",
     )
     parser.add_argument("--width", default="60", help="ASCII chart width in columns")
     parser.add_argument("--height", default="12", help="ASCII chart height in rows")

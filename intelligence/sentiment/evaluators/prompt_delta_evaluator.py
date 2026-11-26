@@ -518,7 +518,10 @@ class PromptDeltaKeyframeEvaluator(PromptViewEvaluatorBase):
         # Determine whether a global FULL_KEYFRAME is mandatory
         full_reason = ""
         if not is_warm_resume:
-            full_reason = "cold_turn"
+            if prev_blocks and cid_clean and prev_cid and cid_clean == prev_cid and prev_comp >= 0 and comp_step > prev_comp:
+                full_reason = "thread_compacted"
+            else:
+                full_reason = "cold_turn"
         elif not prev_blocks:
             full_reason = "no_prior_delta_state"
         elif cid_clean and prev_cid and cid_clean != prev_cid:

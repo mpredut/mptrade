@@ -1708,9 +1708,22 @@ def scan_cached_price_archive_high_since(
     if not cache_dir or oldest_ts_ms <= 0 or not symbols:
         return best_high
     from cacheprice import Cache24PriceManager, Cache365PriceManager, CacheSparsePriceManager
+    from providers.ohlc_bar_archive import load_ohlc_archive_bars
     for cand in dict.fromkeys(symbols):
         if not cand:
             continue
+        try:
+            bars_1h = load_ohlc_archive_bars(cache_dir, cand, timeframe="1h")
+            for bar in bars_1h:
+                if isinstance(bar, (list, tuple)) and len(bar) >= 3:
+                    t_f = safe_pos_float(bar[0], default=0.0) or 0.0
+                    t_ms = math.trunc(t_f * 1000.0 if 0.0 < t_f < 1e11 else t_f)
+                    if t_ms >= oldest_ts_ms:
+                        hi_1h = safe_pos_float(bar[2], default=0.0) or 0.0
+                        if hi_1h > best_high:
+                            best_high = hi_1h
+        except Exception:
+            pass
         ohlc_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, cache_ohlc_24h_filename(cand))))
         if os.path.exists(ohlc_path):
             try:

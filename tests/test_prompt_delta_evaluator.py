@@ -935,4 +935,47 @@ def test_warm_delta_ignores_macro_countdowns_and_cycle_xstock_price_ticks() -> N
     assert p2.action_for("venue_specs") == "OMIT"
 
 
+def test_post_compaction_cold_resume_reports_thread_compacted_and_hour_elapsed_header() -> None:
+    """Post-compaction turns (is_warm_resume=False on same cid with higher compacted_at_step) report thread_compacted; long Δt renders in hours/days."""
+    from botcore import topic_spec
+
+    t0 = datetime(2026, 11, 26, 12, 0, 0, tzinfo=ZoneInfo("Europe/Bucharest")).timestamp()
+    s0 = _make_rich_sensors(t0)
+    p0 = evaluate_prompt_delta_plan(
+        s0, asset_scope="crypto", now_ts=t0, is_warm_resume=False, conversation_id="cid-cmp", compacted_at_step=28
+    )
+    assert p0.reason == "cold_turn"
+
+    p_after_compact = evaluate_prompt_delta_plan(
+        s0,
+        asset_scope="crypto",
+        now_ts=t0 + 300.0,
+        is_warm_resume=False,
+        prev_state=p0.next_state,
+        conversation_id="cid-cmp",
+        compacted_at_step=54,
+    )
+    assert p_after_compact.mode == "FULL_KEYFRAME"
+    assert p_after_compact.reason == "thread_compacted"
+
+    # Clock header renders hours (>=1h) and days (>=48h) cleanly instead of raw 1185.0m
+    p_hr = build_supervisor_prompt(
+        s0,
+        LogEventSummary(),
+        topic_spec("auto_sharetrade_executor"),
+        iteration_num=10,
+        prev_eval_elapsed_sec=19.75 * 3600.0,
+    )
+    assert "| Iter #10 (+19.8h vs prev)" in p_hr
+    p_day = build_supervisor_prompt(
+        s0,
+        LogEventSummary(),
+        topic_spec("auto_sharetrade_executor"),
+        iteration_num=11,
+        prev_eval_elapsed_sec=2.5 * 86400.0,
+    )
+    assert "| Iter #11 (+2.5d vs prev)" in p_day
+
+
+
 

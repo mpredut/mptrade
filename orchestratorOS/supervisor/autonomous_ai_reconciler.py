@@ -416,6 +416,7 @@ class AutonomousAIReconciler:
                 min_usd=min_usd,
                 max_usd=max_usd,
                 is_warm_resume=False,
+                prev_state=prev_prompt_delta_state,
                 conversation_id=cur_cid,
                 compacted_at_step=cur_comp_step,
             )

@@ -413,11 +413,16 @@ def build_supervisor_prompt(
     now_ts_str = clock_dt.strftime("%Y-%m-%d %H:%M:%S %Z (%a)").strip()
     iter_n = safe_nonneg_int(iteration_num, default=0) if iteration_num is not None else 0
     elapsed_f = safe_nonneg_float(prev_eval_elapsed_sec, default=None) if prev_eval_elapsed_sec is not None else None
-    dt_sfx = (
-        f" (+{format_age_sec_compact(elapsed_f)} vs prev)"
-        if elapsed_f is not None and 0.0 <= elapsed_f < 7 * 86400.0
-        else ""
-    )
+    if elapsed_f is not None and 0.0 <= elapsed_f < 7 * 86400.0:
+        if elapsed_f >= 48 * 3600.0:
+            elapsed_lbl = f"{elapsed_f / 86400.0:.1f}d"
+        elif elapsed_f >= 3600.0:
+            elapsed_lbl = f"{elapsed_f / 3600.0:.1f}h"
+        else:
+            elapsed_lbl = format_age_sec_compact(elapsed_f)
+        dt_sfx = f" (+{elapsed_lbl} vs prev)"
+    else:
+        dt_sfx = ""
     iter_hdr_sfx = (
         f" | Iter #{iter_n}{dt_sfx}"
         if iter_n > 0
