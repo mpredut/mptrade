@@ -1431,7 +1431,7 @@ def test_cross_section_prompt_invariants_and_live_evaluator() -> None:
         "    - Trend: 24h=+1.00% | vol_profile(POC=59500.0[+0.84%], VAL=59000.0[+1.69%], VAH=60500.0[-0.83%], va_pos=66.7%)\n"
         "    - Book: ob_imbalance=0.500 (bid_depth=$100.0K, ask_depth=$100.0K), depth_1pct=(bid=$60.0K/ask=$50.0K), "
         "bid_wall=59700.0 ($50.0K, dist=-0.50%), ask_wall=60300.0 ($50.0K, dist=+0.50%), spread=0.33bps (bid=59999.0/ask=60001.0), ob_mid=60000.0\n"
-        "    - Flow: taker_ratio=1.20 (buy_v=$1.20M/sell_v=$1.00M), cvd_15m=+1.00 BTC (+$60.0K)\n"
+        "    - Flow: taker_ratio=1.20 (buy_v=$1.20M/sell_v=$1.00M), cvd_15m=+3.333 BTC (+$200.0K)\n"
         "  * HYPEUSDC: Price=$50.01\n"
         "    - Trend: 24h=+2.00%\n"
         "    - Flow: arb_vs_HYPEUSD=+2.0bps, net_buy_edge=+16.0bps[maker]\n"
@@ -2252,6 +2252,106 @@ def test_macro_prints_hl_cash_front_run_invalidation_and_new_invariants() -> Non
         "hyperliquid:HYPEUSDC",
         "binance:ARBUSDC:terminal_rr",
     }.issubset(new_subjs)
+
+
+def test_cycle19_kalman_sci_hygiene_and_wave2_micro_flow_nesting_invariants() -> None:
+    """Verify signed SCI_NOTATION detection, plain-decimal kalman_vel/_fmt_px, and Wave-2 flow/range/book/plan invariants."""
+    from orchestratorOS.supervisor.prompt_sections import _build_market_price_symbol_record, _fmt_px
+
+    # 1. Tiny kalman_vel and sub-1e-4 price avoid scientific notation (e.g. +7.00e-05 -> +0.00007)
+    rec = _build_market_price_symbol_record(
+        "SPCXxUSD",
+        {"price": 129.25, "kalman_vel": 7e-05, "chg_24h_pct": 1.0},
+        [],
+        btc_entry=None,
+        obs_syms=set(),
+        compact_observe_only=False,
+        active_symbols=None,
+    )
+    assert "kalman_vel=+0.00007" in rec["legacy_line"]
+    assert "e-05" not in rec["legacy_line"].lower()
+    assert _fmt_px(5e-05) == "$0.00005"
+
+    # 2. Signed scientific notation (+7.00e-05) is now caught by PROMPT_NUMERIC_HYGIENE
+    sci_prompt = "LIVE TELEMETRY SNAPSHOT:\n### 3. TRADABLE MARKETS:\n  * SPCXxUSD: Price=$129.25\n    - Trend: kalman_vel=+7.00e-05\n"
+    assert any(
+        v.code == "PROMPT_NUMERIC_HYGIENE" and v.subject == "SCI_NOTATION"
+        for v in audit_rendered_prompt_text(sci_prompt)
+    )
+
+    # 3. Clean Wave-2 prompt (range nesting, alt_btc_24h, ob_mid, liq order, buy-sell=cvd, flow_horizons, slippage_bps, plan geom)
+    clean_c19 = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Active AI Trade Plans (Persistent Exit/Invalidation Memory):\n"
+        "    - [binance] ADAUSDC BUY@0.1496 (FILLED, spot=0.1495, age=0.1h): target=0.1538 (+2.88% vs_spot), invalidation=0.1478 (-1.14% vs_spot), RR@spot=2.53x [ACTIVE]\n"
+        "    - [binance] TAOUSDC SELL@182.9 (FILLED, spot=182.9, age=0.3h): target=180.5 (-1.31% vs_spot), invalidation=185.1 (+1.20% vs_spot), RR@spot=1.09x [ACTIVE]\n"
+        "  * Last Cycle Execution Status: [binance] ADAUSDC BUY LIMIT FILLED (fill_px=0.1496, limit_px=0.1497, ref_px=0.1497, qty=6680.0, notional=$999.33, slippage_bps=-6.68, id=1706227251, age=8.6m)\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * BTCUSDC: Price=$60,000.00\n"
+        "    - Trend: 15m=+0.10% 24h=+2.00% 24h_range=[58000.0, 61000.0] pos_24h=66.7% (dd_high=-1.64%, bounce_low=+3.45%, span=5.17%) | "
+        "15m_range=[59500.0, 60500.0] pos_15m=50.0% | 7d_range=[55000.0, 64000.0] pos_7d=55.6% (dd_high=-6.25%, bounce_low=+9.09%, span=16.36%) | "
+        "alt_btc_24h(pos=51.3%, dd_high=-1.75%, bounce_low=+1.91%, beta=1.10, corr=0.78) | kalman_vel=+0.00007\n"
+        "    - Book: spread=0.33bps (bid=59999.0/ask=60001.0), ob_mid=60000.0, "
+        "liq_clusters(long_liq=$59000.0[$50.0M, -1.67%], short_liq=$61000.0[$30.0M, +1.67%], deep_long=$57000.0[$80.0M, -5.00%], deep_short=$63000.0[$50.0M, +5.00%], src=model_est)\n"
+        "    - Flow: taker_ratio=1.2000 (buy_v=$12.00M/sell_v=$10.00M), cvd_15m=+33.333 BTC (+$2.00M), "
+        "flow_horizons(5m=tr:1.15/cvd:+$250.0K, 1h=tr:0.85/cvd:-$400.0K, 4h=tr:1.05/cvd:+$1.20M)\n"
+    )
+    assert audit_rendered_prompt_text(clean_c19) == []
+
+    # 4. Corrupted Wave-2 prompt trips every new check
+    bad_c19 = (
+        clean_c19
+        .replace("target=0.1538 (+2.88% vs_spot), invalidation=0.1478 (-1.14% vs_spot), RR@spot=2.53x",
+                 "target=0.1450 (-3.01% vs_spot), invalidation=0.1520 (+1.67% vs_spot)")
+        .replace("slippage_bps=-6.68", "slippage_bps=+25.00")
+        .replace("15m_range=[59500.0, 60500.0]", "15m_range=[57000.0, 60500.0]")
+        .replace("7d_range=[55000.0, 64000.0]", "7d_range=[59000.0, 64000.0]")
+        .replace("alt_btc_24h(pos=51.3%, dd_high=-1.75%, bounce_low=+1.91%, beta=1.10, corr=0.78)",
+                 "alt_btc_24h(pos=120.0%, dd_high=+2.00%, bounce_low=-1.50%, beta=1.10, corr=1.50)")
+        .replace("ob_mid=60000.0", "ob_mid=60500.0")
+        .replace("deep_long=$57000.0[$80.0M, -5.00%]", "deep_long=$59800.0[$80.0M, -1.16%]")
+        .replace("buy_v=$12.00M/sell_v=$10.00M", "buy_v=$15.00M/sell_v=$10.00M")
+        .replace("5m=tr:1.15/cvd:+$250.0K", "5m=tr:1.45/cvd:-$250.0K")
+    )
+    bad_vs = audit_rendered_prompt_text(bad_c19)
+    bad_subjs = {v.subject for v in bad_vs}
+    assert {
+        "binance:ADAUSDC:plan_geometry",
+        "Exec.BUY.slippage_bps",
+        "BTCUSDC:15m_in_24h",
+        "BTCUSDC:24h_in_7d",
+        "BTCUSDC:alt_btc_24h",
+        "BTCUSDC:ob_mid",
+        "BTCUSDC:liq_order",
+        "BTCUSDC:cvd_vs_buy_sell",
+        "BTCUSDC:flow_horizon_5m",
+    }.issubset(bad_subjs)
+
+    # 5. Snapshot-level range nesting & ob_mid checks
+    bad_snap = {
+        "prices_and_trends": {
+            "BTCUSDC": {
+                "price": 60000.0,
+                "low_15m": 57000.0,
+                "high_15m": 60500.0,
+                "low_24h": 58000.0,
+                "high_24h": 61000.0,
+                "low_7d": 59000.0,
+                "high_7d": 64000.0,
+            }
+        },
+        "microstructure": {
+            "BTCUSDC": {
+                "best_bid": 59999.0,
+                "best_ask": 60001.0,
+                "ob_mid_price": 60500.0,
+            }
+        },
+    }
+    snap_subjs = {v.subject for v in audit_snapshot_invariants(bad_snap)}
+    assert {"BTCUSDC:15m_in_24h", "BTCUSDC:24h_in_7d", "BTCUSDC:ob_mid"}.issubset(snap_subjs)
+
 
 
 

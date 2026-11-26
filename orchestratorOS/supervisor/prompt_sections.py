@@ -292,7 +292,7 @@ def _fmt_px(px_f: float, raw_px: Any = None) -> str:
             return f"${px_f:,.4f}".rstrip("0").rstrip(".")
         return f"${px_f:,.2f}"
     if px_f > 0:
-        return f"${px_f:.6g}"
+        return f"${_fmt_plain_float(round(px_f, 8), 8)}" if px_f < 1e-4 else f"${px_f:.6g}"
     if raw_px is not None and not isinstance(raw_px, bool):
         return f"${raw_px}"
     return "N/A"
@@ -1242,7 +1242,8 @@ def _build_market_price_symbol_record(
     if atr_parts := format_atr_parts(pinfo):
         extras.append(f"atr({', '.join(atr_parts)})")
     if (kv := safe_float(pinfo.get("kalman_vel"), None)) is not None and abs(kv) >= 1e-9:
-        extras.append(f"kalman_vel={_fmt_slope_val(kv, 5)}")
+        kv_s = fmt_signed(kv, 5) if abs(kv) >= 5e-6 else fmt_signed(kv, 8, strip_zeros=True)
+        extras.append(f"kalman_vel={kv_s}")
     if kin_parts := format_kinematic_parts(pinfo, compact=True):
         extras.append(f"kinematics({', '.join(kin_parts)})")
     if pinfo.get("long_trend_dir"):

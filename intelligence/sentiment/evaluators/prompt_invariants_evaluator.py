@@ -255,12 +255,21 @@ _SIBLING_HDR_RE = re.compile(
 _KALMAN_PAIR_RE = re.compile(
     r"\bkalman_vel=([+-]?[0-9.]+)[^\n]*?\bkinematics\([^)]*\bkalman_z=([+-]?[0-9.]+)\)"
 )
+_FLOW_HORIZONS_BLOCK_RE = re.compile(r"flow_horizons\(([^)]+)\)")
+_FLOW_HORIZON_ITEM_RE = re.compile(r"\b(5m|1h|4h)=tr:([0-9.]+)/cvd:([+-]?)\$([0-9.,]+[KMBkmb]?)")
+_ALT_BTC_24H_RE = re.compile(
+    r"alt_btc_24h\(pos=([0-9.]+)%,\s*dd_high=([+-]?[0-9.]+)%,\s*bounce_low=([+-]?[0-9.]+)%,\s*beta=([+-]?[0-9.]+),\s*corr=([+-]?[0-9.]+)\)"
+)
+_LIQ_CLUSTER_QUAD_RE = re.compile(
+    r"liq_clusters\(long_liq=\$([0-9.,]+)\[[^\]]+\],\s*short_liq=\$([0-9.,]+)\[[^\]]+\],\s*"
+    r"deep_long=\$([0-9.,]+)\[[^\]]+\],\s*deep_short=\$([0-9.,]+)\["
+)
 _NUMERIC_HYGIENE_SPECS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("NONE_LITERAL", re.compile(r"(?:=None\b|\|\s*None\s*\||\(None\)|\[None\])")),
     ("NAN_OR_INF", re.compile(r"(?:[=:(,\[\s\$])(?:nan|NaN|[+-]?inf|Inf)\b")),
     ("DOUBLE_SIGN", re.compile(r"(?:[+-]{2}\d|\$\s*[+-]{2}|\$-[+])")),
     ("NEG_ZERO", re.compile(r"(?:-0\.0+%|-\$0\.00\b)")),
-    ("SCI_NOTATION", re.compile(r"(?:[=:(,\[\s|])\d+(?:\.\d+)?[eE][+-]\d+\b")),
+    ("SCI_NOTATION", re.compile(r"(?:[=:(,\[\s|])[+-]?\d+(?:\.\d+)?[eE][+-]\d+\b")),
     ("DOUBLE_UNIT", re.compile(r"(?:%%|\$\$)")),
     ("RAW_PYTHON_DICT", re.compile(r"\{'[A-Za-z0-9_]+':")),
 )
@@ -769,11 +778,13 @@ def _audit_snapshot_price_geometry(
                             f"reported vs_btc={fmt_signed(vb, 2)}% != sym({fmt_signed(sc, 2)}%)-btc({fmt_signed(bc, 2)}%)={fmt_signed(sc - bc, 2)}%",
                         )
                     )
+        rng_bounds: dict[str, tuple[float, float]] = {}
         for tag in ("15m", "24h", "7d"):
             lo = safe_pos_float(pinfo.get(f"low_{tag}"), default=None)
             hi = safe_pos_float(pinfo.get(f"high_{tag}"), default=None)
             if lo is None or hi is None:
                 continue
+            rng_bounds[tag] = (lo, hi)
             if lo > hi * 1.0001 or px < lo * 0.999 or px > hi * 1.001:
                 violations.append(
                     InvariantViolation(
@@ -809,6 +820,18 @@ def _audit_snapshot_price_geometry(
                         f"reported span={sp:.2f}% != expected {((hi - lo) / lo) * 100.0:.2f}%",
                     )
                 )
+        for inner_t, outer_t in (("15m", "24h"), ("24h", "7d")):
+            if inner_t in rng_bounds and outer_t in rng_bounds:
+                i_lo, i_hi = rng_bounds[inner_t]
+                o_lo, o_hi = rng_bounds[outer_t]
+                if i_lo < o_lo * 0.999 or i_hi > o_hi * 1.001:
+                    violations.append(
+                        InvariantViolation(
+                            "RANGE_BOUNDS_AND_EXTREMES_MATH",
+                            f"{sym_s}:{inner_t}_in_{outer_t}",
+                            f"{inner_t} range [{i_lo:g}, {i_hi:g}] extends outside {outer_t} range [{o_lo:g}, {o_hi:g}]",
+                        )
+                    )
         sw_l = safe_pos_float(pinfo.get("swing_low_px"), default=None)
         sw_h = safe_pos_float(pinfo.get("swing_high_px"), default=None)
         if sw_l is not None and sw_h is not None and (sw_l > sw_h * 1.0001 or px < sw_l * 0.999 or px > sw_h * 1.001):
@@ -893,6 +916,16 @@ def _audit_snapshot_micro_spread_and_walls(
                     )
         mid = safe_pos_float(minfo.get("ob_mid_price"), default=None)
         if mid is not None:
+            if bb is not None and ba is not None:
+                exp_mid = (bb + ba) / 2.0
+                if abs(exp_mid - mid) / mid > 0.001:
+                    violations.append(
+                        InvariantViolation(
+                            "ORDERBOOK_SPREAD_AND_WALL_DIST_MATH",
+                            f"{sym_s}:ob_mid",
+                            f"reported ob_mid={mid:g} != (bid+ask)/2={exp_mid:g}",
+                        )
+                    )
             for wk in ("bid_wall", "ask_wall"):
                 wpx = safe_pos_float(minfo.get(f"{wk}_px"), default=None)
                 wdist = safe_float(minfo.get(f"{wk}_dist_pct"), default=None)
@@ -1479,6 +1512,18 @@ def audit_rendered_prompt_text(
         m_inv = _ACTIVE_PLAN_INV_RE.search(body_p)
         tgt_p = safe_pos_float(m_tgt.group(1), default=None) if m_tgt else None
         inv_p = safe_pos_float(m_inv.group(1), default=None) if m_inv else None
+        if entry_p is not None and tgt_p is not None and inv_p is not None:
+            bad_geom = (side_p == "BUY" and not (inv_p < entry_p < tgt_p)) or (
+                side_p == "SELL" and not (tgt_p < entry_p < inv_p)
+            )
+            if bad_geom:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_ACTIVE_PLAN_RR_MATH",
+                        f"{ven_p}:{sym_p}:plan_geometry",
+                        f"{side_p}@{entry_p:g} violates directional geometry (target={tgt_p:g}, invalidation={inv_p:g})",
+                    )
+                )
         if anc_p is not None and anc_p > 0.0:
             for lbl_k, m_lvl, lvl_px in (("target", m_tgt, tgt_p), ("invalidation", m_inv, inv_p)):
                 if m_lvl is not None and m_lvl.group(2) is not None and lvl_px is not None:
@@ -1800,6 +1845,7 @@ def _audit_prompt_cross_section_math(
         hor_chg_by_sym[sym_u] = h_map
 
         l24_found: Optional[float] = None
+        prompt_rngs: dict[str, tuple[float, float]] = {}
         for m_re in _RANGE_EXT_RE.finditer(rest):
             lbl = m_re.group(1)
             lo = safe_pos_float(m_re.group(2), default=None)
@@ -1809,6 +1855,7 @@ def _audit_prompt_cross_section_math(
             sp = safe_float(m_re.group(7), default=None)
             if lo is None or hi is None:
                 continue
+            prompt_rngs[lbl] = (lo, hi)
             if lbl == "24h":
                 l24_found = lo
             if lo > hi * 1.0001 or px < lo * 0.999 or px > hi * 1.001:
@@ -1841,6 +1888,41 @@ def _audit_prompt_cross_section_math(
                         "PROMPT_RANGE_EXTREMES_MATH",
                         f"{sym}:{lbl}:span",
                         f"reported span={sp:.2f}% != expected {((hi - lo) / lo) * 100.0:.2f}%",
+                    )
+                )
+        if (m_r15n := _RANGE_15M_RE.search(rest)) is not None:
+            l15_n = safe_pos_float(m_r15n.group(1), default=None)
+            h15_n = safe_pos_float(m_r15n.group(2), default=None)
+            if l15_n is not None and h15_n is not None:
+                prompt_rngs["15m"] = (l15_n, h15_n)
+        for inner_t, outer_t in (("15m", "24h"), ("24h", "7d")):
+            if inner_t in prompt_rngs and outer_t in prompt_rngs:
+                i_lo, i_hi = prompt_rngs[inner_t]
+                o_lo, o_hi = prompt_rngs[outer_t]
+                if i_lo < o_lo * 0.999 or i_hi > o_hi * 1.001:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_RANGE_EXTREMES_MATH",
+                            f"{sym}:{inner_t}_in_{outer_t}",
+                            f"{inner_t}_range=[{i_lo:g}, {i_hi:g}] extends outside {outer_t}_range=[{o_lo:g}, {o_hi:g}]",
+                        )
+                    )
+        if (m_ab := _ALT_BTC_24H_RE.search(rest)) is not None:
+            ab_pos = safe_float(m_ab.group(1), default=None)
+            ab_dd = safe_float(m_ab.group(2), default=None)
+            ab_bn = safe_float(m_ab.group(3), default=None)
+            ab_corr = safe_float(m_ab.group(5), default=None)
+            if (
+                (ab_pos is not None and not (0.0 <= ab_pos <= 100.0))
+                or (ab_dd is not None and ab_dd > 0.05)
+                or (ab_bn is not None and ab_bn < -0.05)
+                or (ab_corr is not None and not (-1.01 <= ab_corr <= 1.01))
+            ):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_TAPE_SWING_AND_FLOW_BOUNDS",
+                        f"{sym}:alt_btc_24h",
+                        f"alt_btc_24h out of mathematical bounds (pos={ab_pos}, dd={ab_dd}, bounce={ab_bn}, corr={ab_corr})",
                     )
                 )
 
@@ -1979,10 +2061,13 @@ def _audit_prompt_cross_section_math(
     edge_by_sym: dict[str, float] = {}
     for sym, rest in sec3b_items:
         sym_u = sym.upper()
+        bb_found: Optional[float] = None
+        ba_found: Optional[float] = None
         if (m_sp := _OB_SPREAD_BBO_RE.search(rest)) is not None:
             rep_sp = safe_float(m_sp.group(1), default=None)
             bb = safe_pos_float(m_sp.group(2), default=None)
             ba = safe_pos_float(m_sp.group(3), default=None)
+            bb_found, ba_found = bb, ba
             if bb is not None and ba is not None:
                 if bb > ba * 1.00001:
                     violations.append(
@@ -2003,6 +2088,30 @@ def _audit_prompt_cross_section_math(
                             )
                         )
         if (m_mid := _OB_MID_RE.search(rest)) is not None and (ob_mid := safe_pos_float(m_mid.group(1), default=None)) is not None:
+            if bb_found is not None and ba_found is not None:
+                exp_mid = (bb_found + ba_found) / 2.0
+                if abs(exp_mid - ob_mid) / ob_mid > 0.001:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_OB_SPREAD_AND_WALL_DIST",
+                            f"{sym}:ob_mid",
+                            f"reported ob_mid={ob_mid:g} != (bid+ask)/2={exp_mid:g}",
+                        )
+                    )
+            if (m_lqq := _LIQ_CLUSTER_QUAD_RE.search(rest)) is not None:
+                ll_q = _parse_money(m_lqq.group(1))
+                sl_q = _parse_money(m_lqq.group(2))
+                dl_q = _parse_money(m_lqq.group(3))
+                ds_q = _parse_money(m_lqq.group(4))
+                if all(v is not None for v in (ll_q, sl_q, dl_q, ds_q)):
+                    if not (dl_q < ll_q < ob_mid < sl_q < ds_q):  # type: ignore[operator]
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_VA_POS_AND_LIQ_MATH",
+                                f"{sym}:liq_order",
+                                f"liq_clusters out of order: deep_long={dl_q:g}, long_liq={ll_q:g}, mid={ob_mid:g}, short_liq={sl_q:g}, deep_short={ds_q:g}",
+                            )
+                        )
             for m_wd in _WALL_DIST_RE.finditer(rest):
                 w_lbl = m_wd.group(1)
                 w_px = safe_pos_float(m_wd.group(2), default=None)
@@ -2031,10 +2140,13 @@ def _audit_prompt_cross_section_math(
                                 f"reported {lq_lbl} dist={fmt_signed(rep_ld, 2)}% != expected {fmt_signed(exp_ld, 2)}% (liq={lq_px:g}, mid={ob_mid:g})",
                             )
                         )
+        bv_found: Optional[float] = None
+        sv_found: Optional[float] = None
         if (m_tr := _TAKER_RATIO_VOL_RE.search(rest)) is not None:
             rep_tr = safe_float(m_tr.group(1), default=None)
             bv = _parse_money(m_tr.group(2))
             sv = _parse_money(m_tr.group(3))
+            bv_found, sv_found = bv, sv
             if rep_tr is not None:
                 tr_by_sym[sym_u] = rep_tr
             if rep_tr is not None and bv is not None and sv is not None and sv > 0.0:
@@ -2080,6 +2192,31 @@ def _audit_prompt_cross_section_math(
                             f"cvd_15m base({base_q:g})*px({px_s:g})={base_q * px_s:.1f} != reported {fmt_signed(usd_signed, 1)} USD",
                         )
                     )
+                if bv_found is not None and sv_found is not None:
+                    exp_cvd_u = bv_found - sv_found
+                    if abs(exp_cvd_u - usd_signed) > max(1000.0, (bv_found + sv_found) * 0.02):
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_FLOW_DEPTH_EDGE_MATH",
+                                f"{sym}:cvd_vs_buy_sell",
+                                f"buy_v(${bv_found:.0f})-sell_v(${sv_found:.0f})={fmt_signed(exp_cvd_u, 0)} != cvd_15m={fmt_signed(usd_signed, 0)}",
+                            )
+                        )
+        if (m_fh := _FLOW_HORIZONS_BLOCK_RE.search(rest)) is not None:
+            for m_fhi in _FLOW_HORIZON_ITEM_RE.finditer(m_fh.group(1)):
+                fh_h = m_fhi.group(1)
+                fh_tr = safe_float(m_fhi.group(2), default=None)
+                fh_mag = _parse_money(m_fhi.group(4))
+                if fh_tr is not None and fh_mag is not None:
+                    fh_cvd = (-fh_mag) if m_fhi.group(3) == "-" else fh_mag
+                    if (fh_tr > 1.03 and fh_cvd < -500.0) or (fh_tr < 0.97 and fh_cvd > 500.0):
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_FLOW_DEPTH_EDGE_MATH",
+                                f"{sym}:flow_horizon_{fh_h}",
+                                f"flow_horizons {fh_h} taker_ratio={fh_tr:.2f} contradicts cvd={fmt_signed(fh_cvd, 0)} USD",
+                            )
+                        )
         if (m_nbe := _NET_BUY_EDGE_RE.search(rest)) is not None:
             if (nbe_v := safe_float(m_nbe.group(1), default=None)) is not None:
                 edge_by_sym[sym_u] = nbe_v
@@ -2377,6 +2514,21 @@ def _audit_prompt_cross_section_math(
                             "PROMPT_EXEC_AND_CROSS_MARKET_MATH",
                             f"Exec.{ex_side}.arr_bps",
                             f"reported arr_bps={fmt_signed(ab_v, 2)} != expected {fmt_signed(exp_ab, 2)} (fill={fp_v:g}, ref={rp_v:g})",
+                        )
+                    )
+        if "fill_px" in kv and "limit_px" in kv and "slippage_bps" in kv:
+            fp_v = _parse_money(kv["fill_px"].lstrip("$"))
+            lp_v = _parse_money(kv["limit_px"].lstrip("$"))
+            sb_v = safe_float(kv["slippage_bps"].replace(",", ""), default=None)
+            if fp_v is not None and lp_v is not None and lp_v > 0.0 and sb_v is not None:
+                sgn_ex = 1.0 if ex_side == "BUY" else -1.0
+                exp_sb = sgn_ex * ((fp_v - lp_v) / lp_v) * 10000.0
+                if abs(exp_sb - sb_v) > 1.0:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_EXEC_AND_CROSS_MARKET_MATH",
+                            f"Exec.{ex_side}.slippage_bps",
+                            f"reported slippage_bps={fmt_signed(sb_v, 2)} != expected {fmt_signed(exp_sb, 2)} (fill={fp_v:g}, limit={lp_v:g})",
                         )
                     )
     for m_eqx in _EQ_CROSS_ROW_RE.finditer(prompt_text):
