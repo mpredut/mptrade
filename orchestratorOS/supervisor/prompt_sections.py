@@ -2171,8 +2171,13 @@ def _format_exec_intent_item(item: Any) -> str:
     side = item.get("side") or item.get("decision") or "-"
     otype = item.get("order_type") or ""
     raw_st = str(item.get("status") or "").strip()
+    raw_st_u = raw_st.upper()
     ven_st = str(item.get("venue_status") or "").strip()
-    st = "RESTING_IN_BOOK" if raw_st == "RESTING_IN_BOOK" else (ven_st or raw_st or "-")
+    st = (
+        "RESTING_IN_BOOK"
+        if raw_st_u == "RESTING_IN_BOOK"
+        else ((ven_st or raw_st or "-") if raw_st_u in ("", "EXECUTED") else raw_st)
+    )
     hdr = f"[{ven}] {sym} {side}" + (f" {otype}" if otype else "") + f" {st}"
     details: List[str] = []
     if item.get("fill_px") is not None:

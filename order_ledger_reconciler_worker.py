@@ -676,6 +676,11 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                             "deferred_intent_stale",
                         )
                 if close_ev_type:
+                    close_vst = {
+                        OrderEventType.RECONCILED_FILLED.value: OrderLedgerState.FILLED.value,
+                        OrderEventType.RECONCILED_CANCELED.value: OrderLedgerState.CANCELED.value,
+                        OrderEventType.RECONCILED_EXPIRED.value: OrderLedgerState.EXPIRED.value,
+                    }.get(close_ev_type)
                     _emit(
                         close_ev_type,
                         venue=venue_key,
@@ -685,6 +690,7 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                         iid=rec.get("iid"),
                         cid=rec.get("cid"),
                         vid=rec.get("vid"),
+                        vst=close_vst,
                         key=key if not (rec.get("iid") or rec.get("cid") or rec.get("vid")) else None,
                         reason=close_reason,
                     )

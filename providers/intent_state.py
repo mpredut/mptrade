@@ -452,6 +452,21 @@ def extract_intent_cancel_order_ids(data: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+def collect_canceled_order_ids(items: Sequence[Any], exclude_iid: str = "") -> set[str]:
+    """Collect deduplicated canceled order IDs across both replace-cancel and standalone-cancel intent records."""
+    canceled: set[str] = set()
+    for it in items:
+        if not isinstance(it, Mapping) or (exclude_iid and _extract_intent_id(it) == exclude_iid):
+            continue
+        for field_k in ("canceled_prior_open_orders", "canceled_order_ids"):
+            raw_ids = it.get(field_k)
+            if isinstance(raw_ids, (list, tuple, set, frozenset)):
+                for c_id in raw_ids:
+                    if clean_c := clean_order_id(c_id):
+                        canceled.add(clean_c)
+    return canceled
+
+
 def decision_has_cancel_directive(d: Any) -> bool:
     """Return True when a trading decision dict specifies an executable bot/order cancellation."""
     if not isinstance(d, dict):
@@ -978,6 +993,7 @@ __all__ = [
     "_resolve_clamped_intent_notional",
     "ai_intent_client_order_id",
     "append_intent_history",
+    "collect_canceled_order_ids",
     "collect_known_ai_order_ids",
     "decision_has_cancel_directive",
     "eval_doc_was_actionable",

@@ -10,7 +10,6 @@ from typing import Any, Optional
 
 from botcore import (
     _parse_bool_flag,
-    clean_order_id,
     clean_upper_scalar,
     normalize_side,
     safe_nonneg_float,
@@ -20,6 +19,7 @@ from botcore import (
 from .intent_state import (
     _extract_intent_id,
     _intent_executed_notional_usd,
+    collect_canceled_order_ids,
     extract_intent_cancel_order_ids,
     extract_intent_primary_order_id,
     extract_intent_side,
@@ -185,13 +185,7 @@ def evaluate_ai_intent_circuit_breaker(
     cap_daily_notional = safe_nonneg_float(max_daily_buy_notional_usd, default=DEFAULT_MAX_DAILY_BUY_NOTIONAL_USD)
 
     items = existing_intents if isinstance(existing_intents, list) else []
-    all_canceled_oids: set[str] = set()
-    for it in items:
-        if not isinstance(it, dict) or (cur_iid and _extract_intent_id(it) == cur_iid):
-            continue
-        for c_id in (it.get("canceled_prior_open_orders") or ()):
-            if clean_c := clean_order_id(c_id):
-                all_canceled_oids.add(clean_c)
+    all_canceled_oids = collect_canceled_order_ids(items, exclude_iid=cur_iid)
 
     def _is_counted_executed(it: dict[str, Any]) -> bool:
         if (clean_upper_scalar(it.get("status")) or "") != "EXECUTED":

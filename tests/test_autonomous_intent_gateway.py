@@ -5735,6 +5735,75 @@ def test_simultaneous_buys_share_cycle_venue_quote_cash_budget(tmp_path):
     assert prune_reconciled_terminal_open_orders([{"venue": "binance", "order_id": "ada_rest_1"}], persisted_after) == []
 
 
+def test_format_exec_intent_item_preserves_non_executed_status_and_canceled_order_ids_ssot():
+    """Non-EXECUTED intents keep their true status over venue_status, and standalone canceled_order_ids are recognized across SSOT consumers."""
+    from orchestratorOS.supervisor.prompt_sections import _format_exec_intent_item
+    from providers.ai_circuit_breaker import evaluate_ai_intent_circuit_breaker
+    from providers.ai_survival_guard import _collect_canceled_order_ids
+    from providers.intent_reconciliation import _partition_intents_for_audit_reconciliation
+    from providers.intent_state import collect_canceled_order_ids
+
+    assert "SUBMIT_UNKNOWN" in _format_exec_intent_item(
+        {"venue": "binance", "symbol": "TAOUSDC", "decision": "SELL", "order_type": "LIMIT", "status": "SUBMIT_UNKNOWN", "venue_status": "UNKNOWN", "notional_usd": 500.0}
+    )
+    assert "REJECTED_AI_CIRCUIT_BREAKER" in _format_exec_intent_item(
+        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "decision": "SELL", "order_type": "LIMIT", "status": "REJECTED_AI_CIRCUIT_BREAKER", "venue_status": "CANCELED_OR_EXPIRED", "notional_usd": 1225.0, "reason": "ai_ping_pong_whipsaw_cap"}
+    )
+    assert "BLOCKED_BY_GUARD" in _format_exec_intent_item(
+        {"venue": "binance", "symbol": "ADAUSDC", "decision": "BUY", "order_type": "LIMIT", "status": "BLOCKED_BY_GUARD", "venue_status": "UNKNOWN", "notional_usd": 500.0}
+    )
+    assert "FILLED" in _format_exec_intent_item(
+        {"venue": "binance", "symbol": "BTCUSDC", "decision": "BUY", "order_type": "LIMIT", "status": "EXECUTED", "venue_status": "FILLED", "fill_px": 60000.0, "filled_qty": 0.01, "notional_usd": 600.0}
+    )
+    assert "RESTING_IN_BOOK" in _format_exec_intent_item(
+        {"venue": "binance", "symbol": "ARBUSDC", "decision": "SELL", "order_type": "LIMIT", "status": "RESTING_IN_BOOK", "venue_status": "NEW", "limit_price": 0.1146, "notional_usd": 268.0}
+    )
+
+    now_s = 1_795_725_000.0
+    intents = [
+        {
+            "intent_id": "buy_unfilled_1",
+            "timestamp": now_s - 600.0,
+            "decision": "BUY",
+            "venue": "binance",
+            "symbol": "ADAUSDC",
+            "status": "EXECUTED",
+            "clamped_notional_usd": 1000.0,
+            "execution_payload": {"orderId": "oid_standalone_1", "status": "NEW", "executedQty": "0"},
+        },
+        {
+            "intent_id": "cancel_standalone_1",
+            "timestamp": now_s - 300.0,
+            "decision": "CANCEL",
+            "venue": "binance",
+            "symbol": "ADAUSDC",
+            "status": "CANCELED",
+            "canceled_order_ids": ["oid_standalone_1"],
+        },
+    ]
+    assert collect_canceled_order_ids(intents) == {"oid_standalone_1"}
+    assert _collect_canceled_order_ids(intents) == {"oid_standalone_1"}
+    _, _, _, cb_metrics = evaluate_ai_intent_circuit_breaker(
+        {"intent_id": "next_buy_2", "decision": "BUY"},
+        intents,
+        decision="BUY",
+        symbol="ADAUSDC",
+        venue="binance",
+        price=0.15,
+        effective_usd=500.0,
+        min_notional_usd=10.0,
+        now_ts=now_s,
+    )
+    assert cb_metrics["daily_sym_buys"] == 0 and cb_metrics["daily_buy_notional_usd"] == 0.0
+
+    intents_copy = [dict(it, execution_payload=dict(it["execution_payload"])) if isinstance(it.get("execution_payload"), dict) else dict(it) for it in intents]
+    _, incomplete, updated = _partition_intents_for_audit_reconciliation(intents_copy)
+    assert updated is True
+    assert "buy_unfilled_1" not in incomplete
+    assert intents_copy[0]["execution_payload"]["status"] == "CANCELED"
+
+
+
 
 
 

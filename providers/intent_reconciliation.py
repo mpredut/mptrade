@@ -115,11 +115,15 @@ def _partition_intents_for_audit_reconciliation(
     """Partition intents into failed/pending vs incomplete-executed maps, applying prior-cancel shortcuts."""
     canceled_prior_oids: dict[str, float] = {}
     for item in intents:
-        if isinstance(item, dict) and isinstance(item.get("canceled_prior_open_orders"), list):
-            c_ts = safe_pos_float(item.get("timestamp"), default=0.0) or 0.0
-            for raw_oid in item["canceled_prior_open_orders"]:
-                if oid_s := clean_order_id(raw_oid):
-                    canceled_prior_oids[oid_s] = max(canceled_prior_oids.get(oid_s, 0.0), c_ts)
+        if not isinstance(item, dict):
+            continue
+        c_ts = safe_pos_float(item.get("timestamp"), default=0.0) or 0.0
+        for field_k in ("canceled_prior_open_orders", "canceled_order_ids"):
+            raw_list = item.get(field_k)
+            if isinstance(raw_list, list):
+                for raw_oid in raw_list:
+                    if oid_s := clean_order_id(raw_oid):
+                        canceled_prior_oids[oid_s] = max(canceled_prior_oids.get(oid_s, 0.0), c_ts)
     updated = False
     failed_by_id: dict[str, dict[str, Any]] = {}
     executed_incomplete_by_id: dict[str, dict[str, Any]] = {}

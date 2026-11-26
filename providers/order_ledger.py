@@ -535,6 +535,28 @@ def resolve_late_closed_event_state(
     return None
 
 
+def _normalize_terminal_venue_status(terminal_state: str, raw_vst: Optional[str]) -> Optional[str]:
+    """Ensure a terminal closed ledger record never preserves a contradictory non-terminal venue status."""
+    st = clean_upper_scalar(terminal_state) or ""
+    vst = clean_upper_scalar(raw_vst)
+    if st == OrderLedgerState.FILLED.value:
+        return vst if vst in {"FILLED", "CLOSED"} else OrderLedgerState.FILLED.value
+    if st in {
+        OrderLedgerState.CANCELED.value,
+        OrderLedgerState.EXPIRED.value,
+        OrderLedgerState.REPLACED.value,
+        OrderLedgerState.REJECTED.value,
+    }:
+        if vst and (vst in CANCEL_OR_EXPIRE_VENUE_STATUSES or is_terminal_non_fill_venue_status(vst)):
+            return vst
+        return st
+    if st == OrderLedgerState.FAILED.value:
+        if vst and (vst == "UNKNOWN" or is_terminal_non_fill_venue_status(vst)):
+            return vst
+        return None
+    return vst
+
+
 def make_closed_summary(key: str, rec: dict[str, Any], *, closed_ts: float) -> dict[str, Any]:
     """Build one compact terminal summary row for ``orders_closed_YYYY-MM.jsonl``."""
     summary: dict[str, Any] = {
@@ -675,6 +697,11 @@ def apply_order_event(
     rec["state"] = new_state
     if new_state in TERMINAL_LEDGER_STATES:
         archived = orders.pop(key, rec)
+        norm_term_vst = _normalize_terminal_venue_status(new_state, archived.get("vst"))
+        if norm_term_vst:
+            archived["vst"] = norm_term_vst
+        else:
+            archived.pop("vst", None)
         # Only archive real orders that crossed the venue boundary; pre-submit guard blocks,
         # local outbox guard deferrals (trend_deferred/profit_guard), and unsubmitted intents
         # stay traceable in order_events_YYYY-MM-DD.jsonl only.
@@ -1042,20 +1069,21 @@ def ledger_row_to_audit_record(
     is_retry_ev = _parse_bool_flag(row.get("retry"), False)
     if is_closed:
         st = clean_upper_scalar(row.get("state")) or ""
+        norm_vst = _normalize_terminal_venue_status(st, vst_out)
         if st == OrderLedgerState.FILLED.value:
-            ev_out, status_out, vst_out = "order_terminal", "closed", vst_out or "FILLED"
+            ev_out, status_out, vst_out = "order_terminal", "closed", norm_vst or "FILLED"
         elif st == OrderLedgerState.CANCELED.value:
             ev_out = "order_terminal_retry" if is_retry_ev else "order_terminal"
-            status_out, vst_out = "canceled", vst_out or "CANCELED"
+            status_out, vst_out = "canceled", norm_vst or "CANCELED"
         elif st == OrderLedgerState.EXPIRED.value:
             ev_out = "order_terminal_retry" if is_retry_ev else "order_terminal"
-            status_out, vst_out = "expired", vst_out or "EXPIRED"
+            status_out, vst_out = "expired", norm_vst or "EXPIRED"
         elif st == OrderLedgerState.REPLACED.value:
-            ev_out, status_out, vst_out = "order_terminal", "canceled", vst_out or "REPLACED"
+            ev_out, status_out, vst_out = "order_terminal", "canceled", norm_vst or "REPLACED"
         elif st == OrderLedgerState.REJECTED.value:
-            ev_out, status_out, vst_out = "submit_refused", "refused", vst_out or "REJECTED"
+            ev_out, status_out, vst_out = "submit_refused", "refused", norm_vst or "REJECTED"
         elif st == OrderLedgerState.FAILED.value:
-            ev_out, status_out = "submit_unknown", "unknown"
+            ev_out, status_out, vst_out = "submit_unknown", "unknown", norm_vst
         else:
             return None
     else:

@@ -11,7 +11,6 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 from botcore import (
     _parse_bool_flag,
-    clean_order_id,
     clean_scalar_str,
     clean_scale,
     clean_upper_scalar,
@@ -53,6 +52,7 @@ from .intent_state import (
     _extract_intent_id,
     _intent_executed_notional_usd,
     _intent_venue_symbol_side_key,
+    collect_canceled_order_ids,
     extract_intent_horizon_hours,
     extract_intent_order_type,
     extract_intent_primary_order_id,
@@ -118,14 +118,7 @@ def _is_terminal_or_stale_unfilled_intent(
 
 
 def _collect_canceled_order_ids(items: list[dict[str, Any]], exclude_iid: str = "") -> set[str]:
-    canceled: set[str] = set()
-    for it in items:
-        if not isinstance(it, dict) or (exclude_iid and _extract_intent_id(it) == exclude_iid):
-            continue
-        for c_id in (it.get("canceled_prior_open_orders") or ()):
-            if clean_c := clean_order_id(c_id):
-                canceled.add(clean_c)
-    return canceled
+    return collect_canceled_order_ids(items, exclude_iid=exclude_iid)
 
 
 def _has_explicit_fill_marker(it: dict[str, Any], ep: dict[str, Any], ep_st: str, ep_msg: str) -> bool:

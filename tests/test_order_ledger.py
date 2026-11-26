@@ -1615,4 +1615,132 @@ def test_superseded_outbox_deferred_intent_expires_once_absent_from_retry_queue(
     assert reader.list_closed_files() == []
 
 
+def test_terminal_closed_ledger_normalizes_contradictory_non_terminal_vst(tmp_path):
+    """Absence-reconciled and historical closed ledger rows never preserve contradictory NEW/OPEN vst."""
+    from providers.order_ledger import (
+        OrderEventType,
+        OrderLedgerState,
+        apply_order_event,
+        build_order_event,
+        ledger_row_to_audit_record,
+    )
+
+    # 1. apply_order_event normalizes stale NEW/OPEN vst when archiving a terminal closed summary
+    orders: dict = {}
+    closed: list = []
+    t0 = 1_795_720_000.0
+    apply_order_event(
+        orders,
+        build_order_event(
+            OrderEventType.ACKED.value,
+            ts=t0,
+            venue="binance",
+            symbol="ARBUSDC",
+            owner="ai_executor",
+            side="SELL",
+            order_type="LIMIT",
+            qty=2353.9,
+            px=0.115,
+            iid="intent_test_cancel_vst",
+            vid="568763607",
+            vst="NEW",
+        ),
+        closed_out=closed,
+    )
+    apply_order_event(
+        orders,
+        build_order_event(
+            OrderEventType.RECONCILED_CANCELED.value,
+            ts=t0 + 120.0,
+            venue="binance",
+            symbol="ARBUSDC",
+            owner="ai_executor",
+            side="SELL",
+            iid="intent_test_cancel_vst",
+            vid="568763607",
+            reason="absent_from_verified_open_book",
+        ),
+        closed_out=closed,
+    )
+    assert len(closed) == 1
+    assert closed[0]["state"] == OrderLedgerState.CANCELED.value
+    assert closed[0]["vst"] == OrderLedgerState.CANCELED.value
+
+    # 2. Historical already-archived closed rows with stale NEW/OPEN vst normalize cleanly on audit adaptation
+    adapted_cancel = ledger_row_to_audit_record(
+        {
+            "v": "hyperliquid",
+            "sym": "HYPEUSDC",
+            "side": "SELL",
+            "state": "CANCELED",
+            "vst": "OPEN",
+            "vid": "617365492660",
+            "iid": "intent_1795710217_sell_hypeusdc",
+            "closed_ts": t0 + 180.0,
+        },
+        is_closed=True,
+    )
+    assert adapted_cancel is not None
+    assert adapted_cancel["event"] == "order_terminal"
+    assert adapted_cancel["status"] == "canceled"
+    assert adapted_cancel["venue_status"] == "CANCELED"
+
+    # Compound terminal venue statuses (e.g. EXPIRED_IN_MATCH / MINTRADENTLREJECTED) stay preserved
+    adapted_compound = ledger_row_to_audit_record(
+        {
+            "v": "hyperliquid",
+            "sym": "HYPEUSDC",
+            "side": "SELL",
+            "state": "REJECTED",
+            "vst": "MINTRADENTLREJECTED",
+            "vid": "617365492661",
+            "closed_ts": t0 + 185.0,
+        },
+        is_closed=True,
+    )
+    assert adapted_compound is not None
+    assert adapted_compound["venue_status"] == "MINTRADENTLREJECTED"
+
+    # 3. OrderLedgerReconciler absence-confirmation emits terminal vst on the ledger event and closed summary
+    from cachepaths import CACHE_BINANCE_ORDER_OPEN_FILENAME, resolve_cachedb_filepath
+
+    cdb = str(tmp_path / "cachedb")
+    writer = OrderLedgerWriter(cachedb_dir=cdb)
+    reader = OrderLedgerReader(cachedb_dir=cdb)
+    reconciler = OrderLedgerReconciler(cachedb_dir=cdb, use_singletons=False, reconcile_grace_sec=30.0)
+    assert writer.record_event(
+        OrderEventType.ACKED,
+        venue="binance",
+        symbol="ARBUSDC",
+        ts=t0,
+        owner="ai_executor",
+        side="SELL",
+        order_type="LIMIT",
+        qty=100.0,
+        px=0.12,
+        iid="intent_abs_reconcile",
+        vid="999001",
+        vst="NEW",
+    )
+    oo_path = resolve_cachedb_filepath(os.path.join(cdb, CACHE_BINANCE_ORDER_OPEN_FILENAME))
+    os.makedirs(os.path.dirname(oo_path), exist_ok=True)
+    with open(oo_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "verified_ts": t0 + 90.0,
+                "symbol_verified_ts": {"ARBUSDC": t0 + 90.0},
+                "items": {"ARBUSDC": []},
+            },
+            fh,
+        )
+    reconciler.reconcile_once(now_ts=t0 + 95.0)
+    trace = reader.trace_order("999001")
+    assert any(
+        e.get("ev") == OrderEventType.RECONCILED_CANCELED.value and e.get("vst") == "CANCELED"
+        for e in trace["events"]
+    )
+    assert trace["closed_orders"] and trace["closed_orders"][-1]["vst"] == "CANCELED"
+
+
+
 
