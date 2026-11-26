@@ -42,17 +42,22 @@ from providers.intent_state import extract_intent_side
 from state_io import read_text_file
 
 _NAV_LINE_RE = re.compile(
-    r"crypto_nav=\$([0-9,]+\.\d+),\s*invested=\$([0-9,]+\.\d+),\s*"
-    r"free_cash=\$([0-9,]+\.\d+)[^,]*,\s*locked_quote=\$([0-9,]+\.\d+)[^,]*,\s*"
+    r"(?:crypto|equities|total)_nav=\$([0-9,]+\.\d+),\s*invested=\$([0-9,]+\.\d+),\s*"
+    r"free_cash=\$([0-9,]+\.\d+)[^,]*(?:,\s*locked_quote=\$([0-9,]+\.\d+)[^,]*)?,\s*"
     r"venues\(([^)]+)\)"
 )
 _VENUE_VAL_RE = re.compile(r"([a-z0-9_]+)=\$([0-9,]+\.\d+)")
 _SEC3C_INST_RE = re.compile(r"^\s*-\s*\[([a-z0-9_]+)\]\s+([A-Za-z0-9_]+):(.*)$", re.MULTILINE)
 _FREE_QUOTE_BD_RE = re.compile(r"free_([A-Z]+)=\$([0-9,]+\.?\d*)\s*\(([^)]+)\)")
 _BD_ITEM_RE = re.compile(r"([A-Z0-9]+)=\$([0-9,]+\.?\d*)")
-_SEC3_SYM_RE = re.compile(r"^\s*-\s*([A-Za-z0-9_]+)(?:\s*\[[^\]]*\])?:\s*Price=([0-9.]+)(.*)$", re.MULTILINE)
-_SEC3B_SYM_RE = re.compile(r"^\s*-\s*([A-Za-z0-9_]+)(?:\s*\[[^\]]*\])?:(.*)$", re.MULTILINE)
-_RANGE_RE = re.compile(r"(24h|7d)_range=\[([0-9.]+)\.\.([0-9.]+)\]\s*\(pos=([0-9.]+)%\)")
+_SEC3_SYM_RE = re.compile(
+    r"^\s*[\*-]\s*([A-Za-z0-9_]+)(?:\s*(?:\[[^\]]*\]|\([^)]*\)))*:\s*Price=\$?([0-9,]+(?:\.[0-9]+)?)(.*)$",
+    re.MULTILINE,
+)
+_SEC3B_SYM_RE = re.compile(r"^\s*[\*-]\s*([A-Za-z0-9_]+)(?:\s*\[[^\]]*\])?:(.*)$", re.MULTILINE)
+_RANGE_RE = re.compile(
+    r"(24h|7d)_range=\[([0-9.]+)(?:\.\.|,\s*)([0-9.]+)\]\s*(?:\(pos=|pos_(?:24h|7d)=)([0-9.]+)%"
+)
 _ARB_VS_RE = re.compile(r"arb_vs_([A-Za-z0-9_]+)=([+-]?[0-9.]+)bps")
 
 
@@ -126,7 +131,10 @@ def audit_snapshot_invariants(
     # 1. Portfolio NAV conservation
     pr = ps.get("portfolio_risk")
     if isinstance(pr, Mapping):
-        nav = safe_nonneg_float(pr.get("crypto_nav_usd") or pr.get("total_nav_usd"), default=None)
+        nav = safe_nonneg_float(
+            pr.get("crypto_nav_usd") or pr.get("equities_nav_usd") or pr.get("total_nav_usd"),
+            default=None,
+        )
         inv = safe_nonneg_float(pr.get("invested_usd"), default=None)
         free_c = safe_nonneg_float(pr.get("free_cash_usd"), default=None)
         locked_q = safe_nonneg_float(pr.get("locked_quote_usd"), default=0.0)
@@ -400,7 +408,7 @@ def audit_rendered_prompt_text(
         nav = _parse_money(m_nav.group(1))
         inv = _parse_money(m_nav.group(2))
         free_c = _parse_money(m_nav.group(3))
-        locked_q = _parse_money(m_nav.group(4))
+        locked_q = _parse_money(m_nav.group(4)) if m_nav.group(4) is not None else 0.0
         if nav is not None and inv is not None and free_c is not None and locked_q is not None:
             comp = inv + free_c + locked_q
             if abs(nav - comp) > nav_tol_usd:
@@ -408,7 +416,7 @@ def audit_rendered_prompt_text(
                     InvariantViolation(
                         "PROMPT_NAV_CONSERVATION",
                         "Section3C.PortfolioRisk",
-                        f"crypto_nav={nav:.2f} != invested+free+locked={comp:.2f}",
+                        f"nav={nav:.2f} != invested+free+locked={comp:.2f}",
                     )
                 )
         v_sum = sum(_parse_money(v_s) or 0.0 for _, v_s in _VENUE_VAL_RE.findall(m_nav.group(5)))
@@ -417,7 +425,7 @@ def audit_rendered_prompt_text(
                 InvariantViolation(
                     "PROMPT_NAV_CONSERVATION",
                     "Section3C.Venues",
-                    f"crypto_nav={nav:.2f} != sum(venues)={v_sum:.2f}",
+                    f"nav={nav:.2f} != sum(venues)={v_sum:.2f}",
                 )
             )
 
@@ -453,9 +461,9 @@ def audit_rendered_prompt_text(
     # 4. Section 3 range pos math
     for m_s3 in _SEC3_SYM_RE.finditer(prompt_text):
         sym = m_s3.group(1)
-        px = safe_pos_float(m_s3.group(2), default=None)
+        px = _parse_money(m_s3.group(2))
         rest = m_s3.group(3)
-        if px is None:
+        if px is None or px <= 0.0:
             continue
         for m_rng in _RANGE_RE.finditer(rest):
             lbl = m_rng.group(1)

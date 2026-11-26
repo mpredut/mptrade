@@ -1194,7 +1194,11 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
             def _clean_lces_item(item: Any) -> Any:
                 if not isinstance(item, dict):
                     return item
-                cleaned = {k: v for k, v in item.items() if v is not None}
+                cleaned = {
+                    k: v
+                    for k, v in item.items()
+                    if v is not None and k != "updated_ts" and not str(k).startswith("_")
+                }
                 lces_ident = resolve_symbol_identity(cleaned.get("symbol"))
                 if lces_ident.is_tokenized_equity and lces_ident.display_symbol:
                     cleaned["symbol"] = lces_ident.display_symbol

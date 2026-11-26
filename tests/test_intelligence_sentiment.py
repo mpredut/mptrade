@@ -18398,6 +18398,167 @@ def test_cycle3_globex_regular_market_time_t212_ob_stale_and_share_prompt_rules(
     assert "watch `[ob_stale]` when `ob_age > 30s`" in crypto_full
 
 
+def test_cycle5_equity_ob_proxy_symmetry_xstock_prompt_parity_and_invariant_regexes(tmp_path):
+    """Cycle 5 audit fixes:
+    1. OrderbookDepthCollector._fetch_equity_orderbook uses a sub-$5 stub spread floor (no 111bps
+       hardcoded $0.01 spread on $0.90 RGNT), applies session_scale to 5m RTH bars during POST/PRE,
+       and anchors uncharted breakout-side depth continuously without fabricating 0.92 fake walls.
+    2. Crypto executor full/compact prompts and Kraken xStock active_swing_directive mirror
+       order_guard.conf Path (A) min confidence (>=0.90) and 24h cooldown 1:1 with the gateway.
+    3. audit_rendered_prompt_text matches real production crypto & equities prompt formatting.
+    """
+    from botcore import topic_spec
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.sentiment.collectors.macro_telemetry_collector import TelemetrySensorSnapshot
+    from intelligence.sentiment.collectors.portfolio_collector import KrakenXstocksCollector
+    from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from verify_tools.audit_prompt_invariants import audit_rendered_prompt_text
+
+    now_s = 1_795_655_000.0
+    col_ob = OrderbookDepthCollector(cache_dir=str(tmp_path / "ob_c5"), start_sync=False)
+
+    # 1a. Sub-$5 stub spread respects half_sp_pct <= 0.0025 (<=50bps) instead of forcing $0.01 (111bps)
+    rgnt_bars = [(now_s - 3600.0 + i * 300.0, 0.90, 0.908, 0.892, 0.90, 1500.0) for i in range(12)]
+    col_ob._resolve_equity_context_bars_and_price = lambda sym, ts, include_options=False: (
+        {"best_bid": 0.0, "best_ask": 0.0, "daily_vol_sh": 25000.0, "market_state": "POST"},
+        rgnt_bars,
+        0.90,
+    )
+    snap_rgnt = col_ob._fetch_equity_orderbook("RGNT_US_EQ", now_s)
+    assert snap_rgnt is not None
+    assert snap_rgnt.spread_bps <= 55.0
+
+    # 1b. POST breakout high above RTH bars scales bar depth by 0.25 and avoids 0.92 fake wall & flat $62.5K ceiling
+    nvda_rth_bars = [(now_s - 25000.0 + i * 300.0, 149.2, 149.8, 149.0, 149.4, 2_000_000.0) for i in range(40)]
+    col_ob._resolve_equity_context_bars_and_price = lambda sym, ts, include_options=False: (
+        {"best_bid": 151.25, "best_ask": 151.35, "bid_size_sh": 0.0, "ask_size_sh": 0.0, "daily_vol_sh": 45_000_000.0, "market_state": "POST"},
+        nvda_rth_bars,
+        151.30,
+    )
+    snap_nvda = col_ob._fetch_equity_orderbook("NVDA_US_EQ", now_s)
+    assert snap_nvda is not None
+    assert snap_nvda.ask_depth_usd > 62_500.0
+    assert 0.50 <= snap_nvda.imbalance_ratio <= 0.72
+
+    # 2. Kraken xStock Path (A) min confidence (0.90) & 24h cooldown surfaced in full/compact prompts and directive
+    empty_logs = LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0)
+    crypto_full = build_supervisor_prompt(TelemetrySensorSnapshot(), empty_logs, topic_spec("auto_cryptotrade_executor"), compact_rules=False)
+    crypto_comp = build_supervisor_prompt(TelemetrySensorSnapshot(), empty_logs, topic_spec("auto_cryptotrade_executor"), compact_rules=True)
+    assert "profit `conf>=0.9`" in crypto_full
+    assert "profit `conf>=0.9`" in crypto_comp
+
+    ws_xs = tmp_path / "ws_xs"
+    k_dir = ws_xs / "kraken"
+    c_dir = ws_xs / "cachedb"
+    k_dir.mkdir(parents=True)
+    (c_dir / "account").mkdir(parents=True)
+    (k_dir / "config.env").write_text("XSTOCK_BOT_OBSERVE_ONLY=true\nXSTOCK_ACTIVE_PAIRS=SPCXxUSD:134.84\n", encoding="utf-8")
+    (k_dir / ".xstock_state.json").write_text(
+        json.dumps({"known_assets": {"SPCXx.T": 12.0}, "pair": "SPCXxUSD"}),
+        encoding="utf-8",
+    )
+    (ws_xs / "order_guard.conf").write_text(
+        "autonomous_trading_xstock_sell_min_profit_pct = 6.0\n"
+        "autonomous_trading_xstock_sell_min_target_drop_pct = 4.0\n"
+        "autonomous_trading_xstock_sell_min_confidence = 0.90\n"
+        "autonomous_trading_xstock_sell_cooldown_hours = 24.0\n",
+        encoding="utf-8",
+    )
+    xs_sum = KrakenXstocksCollector(start_sync=False).collect(
+        str(c_dir), kraken_dir=str(k_dir), prices_and_trends={"SPCXxUSD": {"price": 128.0}}
+    )
+    assert xs_sum is not None
+    assert "confidence >= 0.9" in xs_sum["active_swing_directive"]
+    assert "24h sell cooldown" in xs_sum["active_swing_directive"]
+
+    # 3. audit_rendered_prompt_text validates real production crypto & equities prompt lines
+    prod_eq_good = (
+        "  * NVDA_US_EQ: Price=$151.30 | 24h_range=[141.5258, 152.693] pos_24h=87.5%\n"
+        "  * Portfolio Risk Engine (Equities Scope: t212): equities_nav=$1,154.24, invested=$545.89, free_cash=$608.35 (52.7%), venues(t212=$1,154.24)\n"
+    )
+    assert audit_rendered_prompt_text(prod_eq_good) == []
+    prod_eq_bad = (
+        "  * NVDA_US_EQ: Price=$151.30 | 24h_range=[141.5258, 152.693] pos_24h=12.0%\n"
+        "  * Portfolio Risk Engine (Equities Scope: t212): equities_nav=$1,500.00, invested=$545.89, free_cash=$608.35 (52.7%), venues(t212=$1,154.24)\n"
+    )
+    bad_eq_codes = {v.code for v in audit_rendered_prompt_text(prod_eq_bad)}
+    assert {"PROMPT_RANGE_POS_MATH", "PROMPT_NAV_CONSERVATION"}.issubset(bad_eq_codes)
+
+
+def test_cycle6_clock_anchor_lces_delta_gate_ts_and_venue_cash_breakdown_sync(tmp_path):
+    """Cycle 6 audit fixes:
+    1. Section 0 RUN TIMESTAMP & OPERATIONAL CLOCK anchors to sensors.evaluated_at_ts when set.
+    2. build_last_cycle_execution_status attaches updated_ts so delta-gate detects new fills/rejections,
+       while evaluate_portfolio_prompt_view strips updated_ts so rendered prompt text stays clean.
+    3. _reconcile_position_quote_breakdowns syncs fresh breakdowns onto venue_quote_cash as well as
+       tradable_positions and drops stale (>5% diverged) breakdowns from both.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from botcore import topic_spec
+    from intelligence.sentiment.collectors.macro_telemetry_collector import TelemetrySensorSnapshot
+    from intelligence.sentiment.collectors.portfolio_collector import _reconcile_position_quote_breakdowns
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import evaluate_portfolio_prompt_view
+    from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import _extract_delta_gate_latest_fill_ts
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+
+    # 1. Section 0 operational clock matches sensors.evaluated_at_ts (Black Friday 2026-11-27 11:30 ET = 18:30 EET)
+    bf_ts = datetime(2026, 11, 27, 11, 30, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    p_bf = build_supervisor_prompt(
+        TelemetrySensorSnapshot(evaluated_at_ts=bf_ts),
+        LogEventSummary(0, 0, 0),
+        topic_spec("auto_sharetrade_executor"),
+    )
+    assert "### 0. RUN TIMESTAMP & OPERATIONAL CLOCK: 2026-11-27 18:30:00 EET" in p_bf
+
+    # 2. last_cycle_execution_status carries updated_ts for delta gate and strips it from prompt view
+    now_s = 1_795_700_000.0
+    rej_ts = now_s - 180.0
+    lces = build_last_cycle_execution_status(
+        [
+            {
+                "timestamp": rej_ts,
+                "decision": "BUY",
+                "symbol": "NVDA_US_EQ",
+                "venue": "t212",
+                "order_type": "LIMIT",
+                "status": "REJECTED",
+                "suggested_notional_usd": 200.0,
+                "limit_price": 150.0,
+                "reason": "insufficient funds",
+            }
+        ],
+        "equities",
+        now_s,
+        lambda item, default=None: item.get("suggested_notional_usd", default),
+    )
+    assert isinstance(lces, dict)
+    assert lces.get("updated_ts") == pytest.approx(rej_ts, abs=0.01)
+    assert _extract_delta_gate_latest_fill_ts({"last_cycle_execution_status": lces}) == pytest.approx(rej_ts, abs=0.01)
+    pv = evaluate_portfolio_prompt_view({"last_cycle_execution_status": lces}, asset_scope="equities")
+    assert isinstance(pv["clean_last_cycle_execution_status"], dict)
+    assert "updated_ts" not in pv["clean_last_cycle_execution_status"]
+
+    # 3. _reconcile_position_quote_breakdowns syncs fresh breakdown onto venue_quote_cash and strips stale
+    vqc = {"kraken:USD": {"venue": "kraken", "asset": "USD", "free": 1660.02}}
+    tpos = [{"venue": "kraken", "symbol": "HYPEUSD", "base": "HYPE", "quote": "USD", "free_quote": 1660.02}]
+    fresh_bd = {("kraken", "USD"): {"USD": 1657.71, "USDC": 0.56, "USDG": 1.75}}
+    _reconcile_position_quote_breakdowns(tpos, vqc, fresh_bal_cache_bd=fresh_bd)
+    assert vqc["kraken:USD"]["breakdown"] == {"USD": 1657.71, "USDC": 0.56, "USDG": 1.75}
+    assert tpos[0]["free_quote_breakdown"] == {"USD": 1657.71, "USDC": 0.56, "USDG": 1.75}
+
+    vqc_stale = {"kraken:USD": {"venue": "kraken", "asset": "USD", "free": 500.0, "breakdown": {"USD": 1657.71}}}
+    tpos_stale = [{"venue": "kraken", "symbol": "HYPEUSD", "base": "HYPE", "quote": "USD", "free_quote": 500.0}]
+    _reconcile_position_quote_breakdowns(tpos_stale, vqc_stale)
+    assert "breakdown" not in vqc_stale["kraken:USD"]
+    assert "free_quote_breakdown" not in tpos_stale[0]
+
+
+
+
 
 
 

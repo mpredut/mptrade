@@ -114,8 +114,10 @@ from instrument_registry import (
 )
 import order_retry as _oq
 from providers.ai_circuit_breaker import (
+    DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS,
     DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
     DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
+    DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
     DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
     DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
     parse_intent_circuit_breaker_config,
@@ -689,6 +691,54 @@ def _reconcile_position_quote_breakdowns(
             cq_u = str(cash_val.get("asset") or "").strip().upper()
             if cv_n and cq_u:
                 cash_bd_by_vq[(cv_n, cq_u)] = bd_c
+    def _resolve_clean_quote_bd(
+        v_n: str, q_u: str, free_val: Optional[float], fallback_bd: Any
+    ) -> Optional[Dict[str, float]]:
+        bd_src = (
+            fresh_bd_map.get((v_n, q_u))
+            or cash_bd_by_vq.get((v_n, q_u))
+            or (
+                cb_map.get(f"breakdown:{v_n}:{q_u}")
+                if isinstance(cb_map.get(f"breakdown:{v_n}:{q_u}"), dict)
+                else None
+            )
+            or (
+                cb_cash.get("breakdown")
+                if isinstance(cb_cash := cb_map.get(f"cash:{v_n}:{q_u}"), dict)
+                and isinstance(cb_cash.get("breakdown"), dict)
+                else None
+            )
+            or (fallback_bd if isinstance(fallback_bd, dict) else None)
+        )
+        if not isinstance(bd_src, dict) or not bd_src:
+            return None
+        clean_bd = {
+            str(bk): round(bv_f, 2)
+            for bk, bv in bd_src.items()
+            if (bv_f := safe_pos_float(bv, default=None)) is not None
+        }
+        if not clean_bd:
+            return None
+        if free_val is not None:
+            bd_sum = sum(clean_bd.values())
+            if bd_sum > 0.0 and abs(bd_sum - free_val) / max(bd_sum, free_val, 1.0) > 0.05:
+                return None
+        return clean_bd
+
+    for cash_val in venue_quote_cash.values():
+        if not isinstance(cash_val, dict):
+            continue
+        cv_n = normalize_venue_name(cash_val.get("venue"))
+        cq_u = str(cash_val.get("asset") or "").strip().upper()
+        if not (cv_n and cq_u):
+            continue
+        c_free = safe_nonneg_float(cash_val.get("free"), default=None)
+        clean_c_bd = _resolve_clean_quote_bd(cv_n, cq_u, c_free, cash_val.get("breakdown"))
+        if clean_c_bd:
+            cash_val["breakdown"] = clean_c_bd
+        else:
+            cash_val.pop("breakdown", None)
+
     for pos_entry in tradable_positions:
         if not isinstance(pos_entry, dict):
             continue
@@ -697,38 +747,11 @@ def _reconcile_position_quote_breakdowns(
         _, res_q = resolve_assets(ps_raw, pos_entry.get("base"), pos_entry.get("quote"))
         pq_u = str(res_q or pos_entry.get("quote_asset") or "").strip().upper()
         fq_val = safe_nonneg_float(pos_entry.get("free_quote"), default=None)
-        bd_src = (
-            fresh_bd_map.get((pv, pq_u))
-            or cash_bd_by_vq.get((pv, pq_u))
-            or (
-                cb_map.get(f"breakdown:{pv}:{pq_u}")
-                if isinstance(cb_map.get(f"breakdown:{pv}:{pq_u}"), dict)
-                else None
-            )
-            or (
-                cb_cash.get("breakdown")
-                if isinstance(cb_cash := cb_map.get(f"cash:{pv}:{pq_u}"), dict)
-                and isinstance(cb_cash.get("breakdown"), dict)
-                else None
-            )
-            or (pos_entry.get("free_quote_breakdown") if isinstance(pos_entry.get("free_quote_breakdown"), dict) else None)
-        )
-        if not isinstance(bd_src, dict) or not bd_src:
-            continue
-        clean_bd = {
-            str(bk): round(bv_f, 2)
-            for bk, bv in bd_src.items()
-            if (bv_f := safe_pos_float(bv, default=None)) is not None
-        }
-        if not clean_bd:
+        clean_bd = _resolve_clean_quote_bd(pv, pq_u, fq_val, pos_entry.get("free_quote_breakdown"))
+        if clean_bd:
+            pos_entry["free_quote_breakdown"] = clean_bd
+        else:
             pos_entry.pop("free_quote_breakdown", None)
-            continue
-        if fq_val is not None:
-            bd_sum = sum(clean_bd.values())
-            if bd_sum > 0.0 and abs(bd_sum - fq_val) / max(bd_sum, fq_val, 1.0) > 0.05:
-                pos_entry.pop("free_quote_breakdown", None)
-                continue
-        pos_entry["free_quote_breakdown"] = clean_bd
 
 
 def derive_runtime_portfolio_view(
@@ -1470,6 +1493,14 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             xs_cb.get("xstock_sell_min_target_drop_pct"),
             default=DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
         )
+        xs_min_conf = safe_nonneg_float(
+            xs_cb.get("xstock_sell_min_confidence"),
+            default=DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
+        )
+        xs_cooldown_h = safe_nonneg_float(
+            xs_cb.get("xstock_sell_cooldown_hours"),
+            default=DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS,
+        )
         xs_crash_drop_pct = safe_nonneg_float(
             xs_cb.get("xstock_sell_crash_min_target_drop_pct"),
             default=DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
@@ -1486,6 +1517,8 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             if bot_observe_only
             else f"kraken_bot.py (by=BOT{bot_rule_sfx})"
         )
+        conf_clause = f", confidence >= {xs_min_conf:g}" if xs_min_conf > 0.0 else ""
+        cd_clause = f"; {xs_cooldown_h:g}h sell cooldown" if xs_cooldown_h > 0.0 else ""
         crash_clause = (
             f"; OR (B) Imminent-crash capital preservation (allowed below +{xs_min_profit_pct:g}% / at a loss ONLY to stop severe crashes): "
             f"requires urgency=HIGH, confidence >= {xs_crash_conf:g}, and explicit target_px >= {xs_crash_drop_pct:g}% below sell price"
@@ -1497,8 +1530,8 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             f"(Spot API BUY on tokenized xStocks returns EGeneral:Permission denied; API SELL is 0bps, BUT manual rebuy on Kraken carries a HEAVY re-entry commission/spread and the owner cannot re-enter quickly; "
             f"{bot_mode_desc}). Default posture is HOLD. Sell RARELY via 0bps LIMIT (owner gets emailed automatically to rebuy manually) ONLY when: "
             f"(A) Profit-taking: unrealized profit > +{xs_min_profit_pct:g}% above active cost basis (gateway minimum >= +{xs_min_profit_pct:g}%) AND "
-            f"HIGH-CONVICTION multi-day decline thesis (minimum 1-2+ days expected drop, explicit target_px >= {xs_min_drop_pct:g}% below sell price) "
-            f"large enough to clearly overcome the heavy manual rebuy fee/spread{crash_clause}. NEVER scalp on 90s/5m kinematics or shallow dips, "
+            f"HIGH-CONVICTION multi-day decline thesis (minimum 1-2+ days expected drop{conf_clause}, explicit target_px >= {xs_min_drop_pct:g}% below sell price) "
+            f"large enough to clearly overcome the heavy manual rebuy fee/spread{crash_clause}{cd_clause}. NEVER scalp on 90s/5m kinematics or shallow dips, "
             f"and do NOT submit Kraken xStock BUY orders (use T212 {t212_sib} for US equity buys)."
         )
         ipo_sym_lbl = ensure_xstock_pair(cfg_underlying) if (ipo_watch_active and cfg_underlying) else ""

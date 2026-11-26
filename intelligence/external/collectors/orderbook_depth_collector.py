@@ -675,7 +675,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             recent_ranges.sort()
             med_rng = recent_ranges[len(recent_ranges) // 2] if recent_ranges else 0.001
             half_sp_pct = min(max(med_rng * 0.10, 0.0001), 0.0025)
-            half_sp = max(0.005, round(mid * half_sp_pct, 4))
+            min_half_sp = 0.0005 if mid < 5.0 else 0.005
+            half_sp = max(min_half_sp, round(mid * half_sp_pct, 4))
             best_bid = round(max(0.01, mid - half_sp), 4)
             best_ask = round(mid + half_sp, 4)
         mid = round((best_bid + best_ask) / 2.0, 4)
@@ -685,6 +686,9 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         band_pct = self.depth_band_pct / 100.0
         lo_band, hi_band = mid * (1.0 - band_pct), mid * (1.0 + band_pct)
         lo_1pct, hi_1pct = mid * 0.99, mid * 1.01
+        mkt_state_u = str(ctx.get("market_state") or "").strip().upper()
+        is_ext_session = mkt_state_u in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT")
+        session_scale = 0.25 if is_ext_session else 1.0
 
         bid_buckets: Dict[float, float] = {}
         ask_buckets: Dict[float, float] = {}
@@ -707,7 +711,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             )
             recency_decay = 0.92 ** (n_wb - 1 - idx)
             # Scale in-band 5m bar dollar volume to passive lit-book depth (~0.25% per level, capped against MOO/MOC cross spikes)
-            bar_passive_usd = min(vol * c_px * 0.0025, 1_500_000.0) * overlap_frac * recency_decay
+            bar_passive_usd = min(vol * c_px * 0.0025, 1_500_000.0) * overlap_frac * recency_decay * session_scale
             if l_px < mid:
                 eff_l = l_px if l_px >= lo_band else 0.5 * (lo_band + min(c_px, b_cap))
                 b_px = round(min(max(eff_l, lo_band), b_cap) / tick_step) * tick_step
@@ -738,27 +742,27 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             250_000.0,
             max(1000.0, eff_daily_vol_sh * mid * 0.0005),
         )
-        mkt_state_u = str(ctx.get("market_state") or "").strip().upper()
-        is_ext_session = mkt_state_u in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT")
         fallback_depth_usd = (
-            max(500.0, round(rth_fallback_depth_usd * 0.25, 2)) if is_ext_session else rth_fallback_depth_usd
+            max(500.0, round(rth_fallback_depth_usd * session_scale, 2)) if is_ext_session else rth_fallback_depth_usd
         )
         fb_bid_px = best_bid if 0.0 < best_bid < mid else round(mid * 0.9985, 4)
         fb_ask_px = best_ask if best_ask > mid else round(mid * 1.0015, 4)
-        if bar_bid_depth < fallback_depth_usd * 0.25:
+        if bar_bid_depth < fallback_depth_usd:
+            bid_floor_usd = max(fallback_depth_usd, bar_ask_depth * 0.5)
             bg_bid_px = (
                 max(lo_band, round(best_bid - tick_step, 4))
                 if (bid_sz_usd > 0.0 and 0.0 < best_bid < mid)
                 else fb_bid_px
             )
-            bid_buckets[bg_bid_px] = bid_buckets.get(bg_bid_px, 0.0) + max(0.0, fallback_depth_usd - bar_bid_depth)
-        if bar_ask_depth < fallback_depth_usd * 0.25:
+            bid_buckets[bg_bid_px] = bid_buckets.get(bg_bid_px, 0.0) + (bid_floor_usd - bar_bid_depth)
+        if bar_ask_depth < fallback_depth_usd:
+            ask_floor_usd = max(fallback_depth_usd, bar_bid_depth * 0.5)
             bg_ask_px = (
                 min(hi_band, round(best_ask + tick_step, 4))
                 if (ask_sz_usd > 0.0 and best_ask > mid)
                 else fb_ask_px
             )
-            ask_buckets[bg_ask_px] = ask_buckets.get(bg_ask_px, 0.0) + max(0.0, fallback_depth_usd - bar_ask_depth)
+            ask_buckets[bg_ask_px] = ask_buckets.get(bg_ask_px, 0.0) + (ask_floor_usd - bar_ask_depth)
 
         bid_depth_usd = sum(bid_buckets.values())
         ask_depth_usd = sum(ask_buckets.values())

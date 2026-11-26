@@ -790,6 +790,9 @@ def build_last_cycle_execution_status(
                 rec[k] = det[k]
         if det.get("reason"):
             rec["reason"] = det["reason"]
+        eff_ev_ts = safe_pos_float(det.get("fill_ts_val"), default=None) or safe_pos_float(det.get("ts_val"), default=None)
+        if eff_ev_ts is not None:
+            rec["updated_ts"] = round(eff_ev_ts, 3)
         _attach_intent_age_fields(rec, det, now_ts, unit_sec=60.0, ndigits=1, suffix="min")
         return rec
 

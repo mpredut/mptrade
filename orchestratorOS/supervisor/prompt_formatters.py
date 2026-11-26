@@ -44,6 +44,7 @@ from orchestratorOS.supervisor.prompt_sections import (
 from providers.ai_circuit_breaker import (
     DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
     DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
+    DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
     DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
     DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
     parse_intent_circuit_breaker_config,
@@ -52,8 +53,10 @@ from providers.ai_circuit_breaker import (
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _resolve_xstock_sell_prompt_thresholds(workspace_dir: Optional[str] = None) -> Tuple[float, float, float, float]:
-    """Read SELL-only tokenized equity profit/drop/crash thresholds from order_guard.conf SSOT."""
+def _resolve_xstock_sell_prompt_thresholds(
+    workspace_dir: Optional[str] = None,
+) -> Tuple[float, float, float, float, float]:
+    """Read SELL-only tokenized equity profit/drop/confidence/crash thresholds from order_guard.conf SSOT."""
     ws = workspace_dir or _ROOT_DIR
     try:
         conf = load_key_value_conf(ws, _ROOT_DIR)
@@ -63,6 +66,10 @@ def _resolve_xstock_sell_prompt_thresholds(workspace_dir: Optional[str] = None) 
             safe_nonneg_float(
                 cb_cfg.get("xstock_sell_min_target_drop_pct"),
                 default=DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
+            ),
+            safe_nonneg_float(
+                cb_cfg.get("xstock_sell_min_confidence"),
+                default=DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
             ),
             safe_nonneg_float(
                 cb_cfg.get("xstock_sell_crash_min_target_drop_pct"),
@@ -77,6 +84,7 @@ def _resolve_xstock_sell_prompt_thresholds(workspace_dir: Optional[str] = None) 
         return (
             DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
             DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
+            DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
             DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
             DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
         )
@@ -155,12 +163,17 @@ def build_supervisor_prompt(
     min_conf = safe_pos_float(min_confidence if min_confidence is not None else min_conf, default=0.85)
 
     is_pure_sre = bool(spec.can_self_heal and not spec.can_trade)
-    now_ts_str = datetime.now(ZoneInfo("Europe/Bucharest")).strftime("%Y-%m-%d %H:%M:%S %Z").strip()
+    eval_now_ts = safe_pos_float(getattr(sensors, "evaluated_at_ts", None), default=None)
+    clock_dt = (
+        datetime.fromtimestamp(eval_now_ts, tz=ZoneInfo("Europe/Bucharest"))
+        if eval_now_ts is not None
+        else datetime.now(ZoneInfo("Europe/Bucharest"))
+    )
+    now_ts_str = clock_dt.strftime("%Y-%m-%d %H:%M:%S %Z").strip()
     context_items: List[str] = [
         f"### 0. RUN TIMESTAMP & OPERATIONAL CLOCK: {now_ts_str}\n"
     ]
     domain_ages = getattr(sensors, "source_ages_sec", None)
-    eval_now_ts = safe_pos_float(getattr(sensors, "evaluated_at_ts", None), default=None)
     spec_scope_norm = str(getattr(spec, "asset_scope", "all") or "all").strip().lower()
     skip_domain_keys = (
         CRYPTO_ONLY_MACRO_SENSOR_KEYS | {"derivatives_oldest", "whale_oldest"}
@@ -189,7 +202,9 @@ def build_supervisor_prompt(
         if age_tokens:
             context_items.append(f"- Snapshot Domain Ages: {', '.join(age_tokens)}")
     if not is_pure_sre:
-        context_items.extend(_format_macro_and_news_section(sensors, getattr(spec, "asset_scope", "all")))
+        context_items.extend(
+            _format_macro_and_news_section(sensors, getattr(spec, "asset_scope", "all"), now_ts=eval_now_ts)
+        )
     if spec.can_self_heal:
         context_items.extend(_format_sre_and_fleet_section(sensors, logs, lookback_hours))
     prices_and_trends = getattr(sensors, "prices_and_trends", None) or {}
@@ -251,10 +266,13 @@ def build_supervisor_prompt(
         schema.append(
             f'  "summary": "1-2 sentence executive assessment of {scope_spec.summary_scope_lbl} market posture and trading decisions"'
         )
-    xs_min_profit_pct, xs_min_drop_pct, xs_crash_drop_pct, xs_crash_conf = _resolve_xstock_sell_prompt_thresholds()
+    xs_min_profit_pct, xs_min_drop_pct, xs_min_conf, xs_crash_drop_pct, xs_crash_conf = (
+        _resolve_xstock_sell_prompt_thresholds()
+    )
     xs_target_lbl = "tokenized xStocks"
     if spec.can_trade:
         target_desc, xs_target_lbl = _build_dynamic_target_desc(is_equities)
+        xs_conf_sfx = f" `conf>={xs_min_conf:g}`" if xs_min_conf > 0 else ""
         xs_crash_sfx = (
             f", OR imminent crash `urgency=HIGH` `conf>={xs_crash_conf:g}` `target_px` >={xs_crash_drop_pct:g}% lower"
             if xs_crash_drop_pct > 0
@@ -265,7 +283,7 @@ def build_supervisor_prompt(
             if is_equities
             else (
                 f" (EXCEPTION: SELL-only Kraken {xs_target_lbl} = long-term `HOLD`, heavy manual rebuy fee; "
-                f"sell rarely on >+{xs_min_profit_pct:g}% profit + `target_px` >={xs_min_drop_pct:g}% lower{xs_crash_sfx}; emailed)"
+                f"sell rarely on >+{xs_min_profit_pct:g}% profit{xs_conf_sfx} + `target_px` >={xs_min_drop_pct:g}% lower{xs_crash_sfx}; emailed)"
             )
         )
         venue_schema = scope_spec.venue_schema
@@ -360,6 +378,7 @@ def build_supervisor_prompt(
     unit_tables = scope_spec.unit_tables
     ro_all_assets = scope_spec.ro_all_assets
     if compact_rules and not spec.can_self_heal:
+        compact_conf_sfx = f" `conf>={xs_min_conf:g}`" if xs_min_conf > 0 else ""
         compact_crash_sfx = (
             f", OR imminent crash (`urgency=HIGH`, `conf>={xs_crash_conf:g}`, `target_px` >={xs_crash_drop_pct:g}% lower)"
             if xs_crash_drop_pct > 0
@@ -370,7 +389,7 @@ def build_supervisor_prompt(
             if is_equities
             else (
                 f"; remember SELL-only Kraken {xs_target_lbl} = long-term HOLD with heavy manual rebuy fee: "
-                f"sell rarely on >+{xs_min_profit_pct:g}% profit + `target_px` >={xs_min_drop_pct:g}% lower (1-2d+ drop){compact_crash_sfx}"
+                f"sell rarely on >+{xs_min_profit_pct:g}% profit{compact_conf_sfx} + `target_px` >={xs_min_drop_pct:g}% lower (1-2d+ drop){compact_crash_sfx}"
             )
         )
         compact_exec_desc = (
