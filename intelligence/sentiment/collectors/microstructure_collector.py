@@ -1466,19 +1466,20 @@ def upgrade_tpo_vp_from_ohlc(
                         val_vp = safe_pos_float(vp_real.get("val_px"), default=0.0) or 0.0
                         vah_vp = safe_pos_float(vp_real.get("vah_px"), default=0.0) or 0.0
                         va_reg_vp = vp_real.get("va_regime")
-                        hit_va_gap = False
                         if va_reg_vp in ("ABOVE_VAH", "BELOW_VAL") and len(pts_vp) >= 2 and val_vp > 0.0 and vah_vp > val_vp:
-                            for idx_g in range(len(pts_vp) - 2, -1, -1):
-                                if (pts_vp[idx_g + 1][0] - pts_vp[idx_g][0]) > 3_600_000.0:
-                                    hit_va_gap = True
-                                    break
-                                px_g = safe_pos_float(pts_vp[idx_g][1], default=0.0) or 0.0
-                                if not ((px_g > vah_vp) if va_reg_vp == "ABOVE_VAH" else (px_g < val_vp)):
-                                    break
-                        if hit_va_gap:
+                            s24_ts_px = _extract_sorted_ts_px(series_24h) if series_24h else []
+                            hit_va_gap = False
+                            if not s24_ts_px:
+                                for idx_g in range(len(pts_vp) - 2, -1, -1):
+                                    if (pts_vp[idx_g + 1][0] - pts_vp[idx_g][0]) > 3_600_000.0:
+                                        hit_va_gap = True
+                                        break
+                                    px_g = safe_pos_float(pts_vp[idx_g][1], default=0.0) or 0.0
+                                    if not ((px_g > vah_vp) if va_reg_vp == "ABOVE_VAH" else (px_g < val_vp)):
+                                        break
                             if (
-                                not raw_ohlc_disk_pts
-                                and (partial_local_24h or not series_24h)
+                                (hit_va_gap or (partial_local_24h and s24_ts_px))
+                                and not raw_ohlc_disk_pts
                                 and cache_dir
                                 and os.path.isdir(cache_dir)
                             ):
@@ -1490,19 +1491,20 @@ def upgrade_tpo_vp_from_ohlc(
                                     if cachedb_exists(p_h, include_previous=True) and isinstance(d_h := read_json_recovering(p_h), dict) and isinstance(d_h.get("points"), list):
                                         raw_ohlc_disk_pts = d_h["points"]
                                         break
-                            if partial_local_24h and raw_ohlc_disk_pts:
-                                hold_src = list(raw_ohlc_disk_pts)
-                                if series_24h:
-                                    last_disk_pt = parse_ts_px_row(hold_src[-1]) if hold_src else None
-                                    if last_disk_pt is not None:
-                                        hold_src.extend(
-                                            r_s
-                                            for r_s in series_24h
-                                            if (pt_s := parse_ts_px_row(r_s)) is not None and pt_s[0] > last_disk_pt[0]
-                                        )
+                            if partial_local_24h and raw_ohlc_disk_pts and s24_ts_px:
+                                s24_head_ms = s24_ts_px[0][0]
+                                hold_ts_px = [
+                                    pt_d
+                                    for pt_d in _extract_sorted_ts_px(raw_ohlc_disk_pts)
+                                    if pt_d[0] < s24_head_ms
+                                ] + s24_ts_px
+                            elif s24_ts_px:
+                                hold_ts_px = s24_ts_px
+                            elif hit_va_gap and raw_ohlc_disk_pts:
+                                hold_ts_px = _extract_sorted_ts_px(raw_ohlc_disk_pts)
                             else:
-                                hold_src = series_24h if series_24h else raw_ohlc_disk_pts
-                            if hold_src and (hold_ts_px := _extract_sorted_ts_px(hold_src)):
+                                hold_ts_px = []
+                            if hold_ts_px:
                                 now_ms_h = now_ts * 1000.0
                                 gap_to_now_ms = now_ms_h - hold_ts_px[-1][0]
                                 if gap_to_now_ms <= 3_600_000.0:

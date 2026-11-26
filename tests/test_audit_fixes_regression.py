@@ -9833,6 +9833,88 @@ def test_major_swing_high_symmetry_purge_and_sibling_isolation():
     assert "pullback_from_major_high_pct" not in p_sib["BTCEUR"]
 
 
+def test_upgrade_tpo_vp_uses_live_series_24h_for_sub_60m_va_breakout_hold(tmp_path):
+    """Iter 20 live audit fix (ANTxUSD above_vah=0m bug):
+    When price holds outside REAL_VOL [VAL, VAH] on the high-frequency live tick tape (series_24h)
+    while the last positive-volume 5m OHLC bar is <60m old (e.g. 16m zero-volume tail on ANTxUSD
+    or intra-5m breakout on liquid crypto), upgrade_tpo_vp_from_ohlc must compute continuous
+    va_hold_min from live series_24h instead of collapsing to 0.0. Also verifies partial series_24h
+    takes precedence over flat zero-volume disk OHLC tail bars during stitching.
+    """
+    from intelligence.sentiment.collectors.microstructure_collector import upgrade_tpo_vp_from_ohlc
+
+    cdir = tmp_path / "cachedb_sub60_hold"
+    pdir = cdir / "prices"
+    pdir.mkdir(parents=True)
+
+    now_s = time.time()
+    now_ms = int(now_s * 1000)
+    ohlc_pts = []
+    ser_24h = []
+    # 24h of 5m OHLC bars trading mostly between $77 and $83.29; last positive-vol bar at -16m ($83.29),
+    # followed by two flat zero-volume 5m bars (-11m, -6m) at $83.29 while live quote rallies to $84.06 (-14m..now).
+    for k in range(288):
+        t_ms = now_ms - (288 - k) * 300_000
+        age_m = (now_ms - t_ms) / 60_000.0
+        if age_m > 16.0:
+            px = 78.0 if k % 3 == 0 else (80.5 if k % 3 == 1 else 83.25)
+            vol = 15.0
+        elif age_m > 14.0:
+            px = 83.29
+            vol = 40.0
+        else:
+            px = 83.29
+            vol = 0.0
+        ohlc_pts.append([t_ms, px, vol, px, px, px])
+        if age_m > 14.0:
+            ser_24h.append([t_ms, px])
+    # High-frequency live ticks continuously above VAH (~83.29) over the last 13.5 minutes
+    for sec_ago in range(810, 0, -30):
+        ser_24h.append([now_ms - sec_ago * 1000, 83.60 + (810 - sec_ago) * 0.0005])
+    ser_24h.append([now_ms - 5_000, 84.06])
+    (pdir / "cache_ohlc_24h_ANTxUSD.json").write_text(
+        json.dumps({"ts": now_s - 20.0, "symbol": "ANTxUSD", "points": ohlc_pts}),
+        encoding="utf-8",
+    )
+
+    # 1. Full 24h series_24h with 16m (<60m) zero-volume OHLC tail must report ~13.5m hold (NOT 0.0!)
+    m24_full = {"vp_source": "TPO", "low_24h": 77.5, "high_24h": 84.1, "va_regime": "ABOVE_VAH", "va_hold_min": 13.5}
+    upgrade_tpo_vp_from_ohlc(
+        "ANTxUSD",
+        m24_full,
+        84.06,
+        now_s,
+        s24_is_live_clock=True,
+        cache_dir=str(cdir),
+        allow_network=False,
+        series_24h_start_ms=ser_24h[0][0],
+        series_24h=ser_24h,
+    )
+    assert m24_full["vp_source"] == "REAL_VOL"
+    assert m24_full["va_regime"] == "ABOVE_VAH"
+    assert 12.5 <= m24_full["va_hold_min"] <= 14.5
+
+    # 2. Partial local series_24h (last 2h) stitched with unfiltered disk OHLC must prefer live ticks
+    #    over flat zero-volume disk OHLC tail bars (-11m, -6m at $83.29)
+    partial_s24 = [pt for pt in ser_24h if pt[0] >= now_ms - 2 * 3_600_000]
+    m24_partial = {"vp_source": "TPO", "low_24h": 77.5, "high_24h": 84.1, "va_regime": "ABOVE_VAH", "va_hold_min": 13.5}
+    upgrade_tpo_vp_from_ohlc(
+        "ANTxUSD",
+        m24_partial,
+        84.06,
+        now_s,
+        s24_is_live_clock=True,
+        cache_dir=str(cdir),
+        allow_network=False,
+        series_24h_start_ms=partial_s24[0][0],
+        series_24h=partial_s24,
+    )
+    assert m24_partial["vp_source"] == "REAL_VOL"
+    assert m24_partial["va_regime"] == "ABOVE_VAH"
+    assert 12.5 <= m24_partial["va_hold_min"] <= 14.5
+
+
+
 
 
 
