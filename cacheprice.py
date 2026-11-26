@@ -2724,10 +2724,53 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             0.45,
             min(safe_pos_float(self.sync_ts, default=0.8) or 0.8, 0.75),
         )
+        in_flight_map = getattr(self, "_in_flight_http_futs", None)
+        poll_deadline = min(
+            safe_pos_float(PRICE_FALLBACK_HTTP_DEADLINE_SEC, default=1.2) or 1.2,
+            1.2,
+        )
+
+        def _apply_remote_items(sym_done: str, new_items: Any, is_rth_done: bool) -> None:
+            if is_live_net:
+                self._record_empty_http_result(sym_done, ok=bool(new_items))
+            if new_items:
+                self._persist_items(sym_done, new_items)
+                self._last_http_poll_ts_per_symbol[sym_done] = _now_time()
+                if is_rth_done:
+                    self._rth_empty_backoff_ts.pop(sym_done, None)
+            elif is_rth_done:
+                self._rth_empty_backoff_ts[sym_done] = _now_time()
+
+        harvested_syms: set[str] = set()
+        if is_live_daemon_poll and isinstance(in_flight_map, dict) and in_flight_map:
+            completed_late: list[tuple[str, Any, bool, float]] = []
+            with self._fallback_pool_lock:
+                for sym_k, entry in list(in_flight_map.items()):
+                    prev_fut, prev_is_rth, prev_sub_ts = (
+                        entry if isinstance(entry, tuple) and len(entry) == 3 else (entry, False, 0.0)
+                    )
+                    if prev_fut.done():
+                        in_flight_map.pop(sym_k, None)
+                        completed_late.append((sym_k, prev_fut, prev_is_rth, prev_sub_ts))
+            max_late_age = max(15.0, poll_deadline * 4.0)
+            for sym_k, prev_fut, prev_is_rth, prev_sub_ts in completed_late:
+                if prev_fut.cancelled():
+                    continue
+                try:
+                    late_items = prev_fut.result()
+                except Exception as exc:
+                    self._log_remote_fetch_error("HTTP fetch", sym_k, exc)
+                    if is_live_net:
+                        self._record_empty_http_result(sym_k, ok=False)
+                    continue
+                if late_items and (prev_sub_ts <= 0.0 or (_now_time() - prev_sub_ts) <= max_late_age):
+                    _apply_remote_items(sym_k, late_items, prev_is_rth)
+                    harvested_syms.add(sym_k)
+
         pending_polls: list[tuple[str, Any, bool]] = []
         now_ms_scan = _now_time() * 1000.0
         for symbol in list(self.symbols):
-            if self._is_delegated_poller_symbol(symbol):
+            if symbol in harvested_syms or self._is_delegated_poller_symbol(symbol):
                 continue
             if self._symbol_ws_and_cache_fresh(
                 symbol, is_live_daemon_poll=is_live_daemon_poll, now_ms=now_ms_scan
@@ -2779,15 +2822,12 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             return True
 
         pool = self._get_or_create_fallback_pool(len(pending_polls))
-        poll_deadline = min(
-            safe_pos_float(PRICE_FALLBACK_HTTP_DEADLINE_SEC, default=1.2) or 1.2,
-            1.2,
-        )
-        in_flight_map = getattr(self, "_in_flight_http_futs", None)
         fut_map: dict[Any, tuple[str, Any, bool]] = {}
+        submit_ts = _now_time()
         with self._fallback_pool_lock:
             for sym_item, st_item, is_rth_sym in pending_polls:
-                if isinstance(in_flight_map, dict) and (prev_fut := in_flight_map.get(sym_item)) is not None:
+                if isinstance(in_flight_map, dict) and (prev_entry := in_flight_map.get(sym_item)) is not None:
+                    prev_fut = prev_entry[0] if isinstance(prev_entry, tuple) else prev_entry
                     if not prev_fut.done():
                         continue
                     in_flight_map.pop(sym_item, None)
@@ -2802,21 +2842,13 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             except Exception as exc:
                 self._log_remote_fetch_error("HTTP fetch", sym_done, exc)
                 new_items = []
-            if is_live_net:
-                self._record_empty_http_result(sym_done, ok=bool(new_items))
-            if new_items:
-                self._persist_items(sym_done, new_items)
-                self._last_http_poll_ts_per_symbol[sym_done] = _now_time()
-                if is_rth_done:
-                    self._rth_empty_backoff_ts.pop(sym_done, None)
-            elif is_rth_done:
-                self._rth_empty_backoff_ts[sym_done] = _now_time()
+            _apply_remote_items(sym_done, new_items, is_rth_done)
         for fut in not_done:
             fut.cancel()
-            sym_slow, _, _ = fut_map[fut]
+            sym_slow, _, is_rth_slow = fut_map[fut]
             if isinstance(in_flight_map, dict) and not fut.done():
                 with self._fallback_pool_lock:
-                    in_flight_map[sym_slow] = fut
+                    in_flight_map[sym_slow] = (fut, is_rth_slow, submit_ts)
             if is_live_net:
                 self._record_empty_http_result(sym_slow, ok=False)
         return True

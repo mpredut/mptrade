@@ -598,7 +598,7 @@ def start_nonbinance_trend_poller(
         empty_backoff_ts: dict[str, float] = {}
         err_backoff_until: dict[str, float] = {}
         err_streaks: dict[str, int] = {}
-        in_flight_futs: dict[str, _futures.Future] = {}
+        in_flight_futs: dict[str, tuple[_futures.Future, bool, float]] = {}
         last_equity_poll_ts: dict[str, float] = {}
         equity_min_gap_sec = max(eff_interval, 6.0)
         equity_ext_gap_sec = max(60.0, equity_min_gap_sec)
@@ -672,10 +672,25 @@ def start_nonbinance_trend_poller(
             for s in symbols:
                 if stop_event.is_set():
                     break
-                if (prev_fut := in_flight_futs.get(s)) is not None:
+                if (prev_entry := in_flight_futs.get(s)) is not None:
+                    prev_fut, prev_is_eq, prev_sub_ts = prev_entry
                     if not prev_fut.done():
                         continue
                     in_flight_futs.pop(s, None)
+                    if not prev_fut.cancelled():
+                        try:
+                            late_px = prev_fut.result()
+                        except Exception as late_exc:
+                            delay_s = _record_poll_error_backoff(s, late_exc)
+                            builtins.print(f"[NB-trend] {s}: {late_exc} (backoff {delay_s:.1f}s)")
+                            continue
+                        max_late_age = max(15.0, eff_interval * 2.0, eff_deadline * 4.0)
+                        if (
+                            (time.time() - prev_sub_ts) <= max_late_age
+                            and safe_pos_float(late_px, default=None) is not None
+                        ):
+                            _apply_fetched_price(s, late_px, is_eq=prev_is_eq)
+                            continue
                 ws_health_fn = getattr(cpm, "is_real_ws_healthy", None)
                 if callable(ws_health_fn) and _parse_bool_flag(ws_health_fn(s), False):
                     continue
@@ -711,6 +726,7 @@ def start_nonbinance_trend_poller(
 
             if pending_polls:
                 fut_map = {}
+                submit_ts = time.time()
                 for s_item, prov_item, is_eq_item, use_ext_item in pending_polls:
                     def _poll_item(_sym=s_item, _prov=prov_item, _ext=use_ext_item):
                         with live_price_fetch_context():
@@ -733,9 +749,9 @@ def start_nonbinance_trend_poller(
                         builtins.print(f"[NB-trend] {s_done}: {_e} (backoff {delay_s:.1f}s)")
                 for fut in not_done:
                     fut.cancel()
-                    s_slow, _ = fut_map[fut]
+                    s_slow, is_eq_slow = fut_map[fut]
                     if not fut.done():
-                        in_flight_futs[s_slow] = fut
+                        in_flight_futs[s_slow] = (fut, is_eq_slow, submit_ts)
                     builtins.print(
                         f"[NB-trend] {s_slow}: fetch BLOCKED >{eff_deadline}s "
                         f"(poll deadline -- probably DNS or the network) -- skipping, retrying next cycle"

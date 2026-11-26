@@ -941,6 +941,7 @@ def test_pricefetcher_carries_forward_legacy_quote_series_and_cleans_legacy_hear
                     "BTC": [[now_ms - 60000, 60400.0], [now_ms, 60500.0]],
                 },
                 "fetchtime": {"BTCUSDC": now_ms - 120000, "BTC": now_ms},
+                "rest_sync_cursor": {"BTCUSDC": 0},
                 "symbol_metadata": {"added_time": {}, "active_symbols": ["BTC"], "preferred_source": {}},
             }
         ),
@@ -959,6 +960,8 @@ def test_pricefetcher_carries_forward_legacy_quote_series_and_cleans_legacy_hear
     )
     assert "BTC" in mgr.cache and [r[1] for r in mgr.cache["BTC"]] == [59500.0, 60000.0, 60400.0, 60500.0]
     assert "BTCUSDC" not in mgr.cache
+    assert mgr._rest_sync_cursor_per_symbol.get("BTC") != 0
+    assert "BTCUSDC" not in mgr._rest_sync_cursor_per_symbol
 
     hb_dir = tmp_path / "cachedb" / "system" / "heartbeat"
     hb_dir.mkdir(parents=True)

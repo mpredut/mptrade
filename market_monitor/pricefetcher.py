@@ -167,9 +167,10 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 if leg_ft is not None and (cur_ft is None or leg_ft > cur_ft):
                     self.fetchtime_per_symbol[sym] = leg_ft
             if legacy_key in self._rest_sync_cursor_per_symbol:
-                self._rest_sync_cursor_per_symbol.setdefault(
-                    sym, self._rest_sync_cursor_per_symbol.pop(legacy_key)
-                )
+                leg_cur = safe_pos_int(self._rest_sync_cursor_per_symbol.pop(legacy_key), default=None)
+                cur_cur = safe_pos_int(self._rest_sync_cursor_per_symbol.get(sym), default=None)
+                if leg_cur is not None and (cur_cur is None or leg_cur > cur_cur):
+                    self._rest_sync_cursor_per_symbol[sym] = leg_cur
 
     def _load_symbol_metadata(self):
         data = read_json_dict(

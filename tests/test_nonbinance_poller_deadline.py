@@ -666,8 +666,70 @@ class TestFetchDeadline(TempDirTestCase):
             # Immediate second cycle while BTCUSDC is still hanging must NOT submit a second BTCUSDC call.
             self.assertTrue(cpm.query_remote_and_update_cache())
             self.assertEqual(calls_by_sym["BTCUSDC"], 1)
+
+            # Once the in-flight BTCUSDC future completes, the next cycle harvests its price and clears premature backoff without re-polling.
+            release_hang.set()
+            fut_entry = cpm._in_flight_http_futs["BTCUSDC"]
+            (fut_entry[0] if isinstance(fut_entry, tuple) else fut_entry).result(timeout=2.0)
+            self.assertTrue(cpm.query_remote_and_update_cache())
+            self.assertEqual(calls_by_sym["BTCUSDC"], 1)
+            self.assertNotIn("BTCUSDC", cpm._in_flight_http_futs)
+            self.assertNotIn("BTCUSDC", cpm._empty_http_backoff_ts)
+            self.assertAlmostEqual(cpm.cache["BTCUSDC"][0][1], 60000.0)
         finally:
             cacheprice.PRICE_FALLBACK_HTTP_DEADLINE_SEC = orig_deadline
             release_hang.set()
             cpm._shutdown_fallback_pool()
+
+    def test_poller_harvests_late_valid_price_and_late_429_backoff(self):
+        """Slow responses exceeding fetch_deadline_sec must still apply valid prices and record 429 backoff on late exceptions."""
+        pushed = []
+        slow_calls = [0]
+
+        class _SlowOkApi:
+            def get_current_price(self, symbol=None, *, provider_name=None, **_kw):
+                slow_calls[0] += 1
+                time.sleep(0.11)
+                return 88.25
+
+        cpm_ok = _StubCpm(_SlowOkApi(), pushed=pushed)
+        poller_ok = cm._start_nonbinance_trend_poller(
+            cpm_ok,
+            ["HYPEUSD"],
+            interval_sec=0.04,
+            fetch_deadline_sec=0.05,
+            provider_names={"HYPEUSD": "Kraken"},
+            start_ws=False,
+        )
+        try:
+            deadline = time.time() + 2.0
+            while time.time() < deadline and not pushed:
+                time.sleep(0.03)
+            self.assertTrue(any(s == "HYPEUSD" and p == 88.25 for s, p in pushed))
+        finally:
+            poller_ok.stop(timeout=2.0)
+
+        late_rl_calls = [0]
+
+        class _SlowRateLimitApi:
+            def get_current_price(self, symbol=None, *, provider_name=None, **_kw):
+                late_rl_calls[0] += 1
+                time.sleep(0.11)
+                raise RuntimeError("HTTP 429 too many requests")
+
+        cpm_rl = _StubCpm(_SlowRateLimitApi(), pushed=[])
+        poller_rl = cm._start_nonbinance_trend_poller(
+            cpm_rl,
+            ["HYPEUSD"],
+            interval_sec=0.04,
+            fetch_deadline_sec=0.05,
+            provider_names={"HYPEUSD": "Kraken"},
+            start_ws=False,
+        )
+        try:
+            time.sleep(0.45)
+            # Late 429 exception after deadline must trigger backoff instead of hammering every cycle.
+            self.assertEqual(late_rl_calls[0], 1)
+        finally:
+            poller_rl.stop(timeout=2.0)
 

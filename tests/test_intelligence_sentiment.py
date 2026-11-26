@@ -18916,6 +18916,27 @@ def test_price_series_loader_stitches_local_1h_ohlc_bar_archive_for_short_sparse
     assert LAST_7D_SPAN_MS_BY_SYM[new_sym] >= 6.9 * 86400.0 * 1000.0
     assert len(new_7d) >= 160
 
+    # 5. Future 1h bars closing after series_24h anchor are excluded (no future-bar leakage or false seam rejection).
+    fut_sym = "FUTUSDC"
+    (prices_dir / f"cache_24_price_{fut_sym}.json").write_text(
+        json.dumps({"items": {fut_sym: [[now_ms - 600_000, 50.0], [now_ms, 50.2]]}}),
+        encoding="utf-8",
+    )
+    fut_bars = [
+        [now_ms - h_back * hour_ms, 50.0, 51.0, 49.0, 50.0, 500.0]
+        for h_back in range(200, 0, -1)
+    ] + [
+        [now_ms + h_fwd * hour_ms, 999.0, 999.0, 999.0, 999.0, 500.0]
+        for h_fwd in range(1, 200)
+    ]
+    (prices_dir / cache_ohlc_bars_filename(fut_sym, timeframe="1h")).write_text(
+        json.dumps({"schema_version": 1, "symbol": fut_sym, "timeframe": "1h", "bars": fut_bars}),
+        encoding="utf-8",
+    )
+    _, fut_7d = load_symbol_price_series(str(cache_dir), fut_sym)
+    assert LAST_7D_SPAN_MS_BY_SYM[fut_sym] >= 6.9 * 86400.0 * 1000.0
+    assert all(px < 100.0 for px in fut_7d)
+
 
 
 

@@ -1639,6 +1639,8 @@ def _extract_local_1h_bar_7d_points(
         t_c = t_o + 3_600_000.0
         if t_c < cutoff_ms:
             break
+        if t_c > eff_end:
+            continue
         if before_ts_ms is not None and t_c >= before_ts_ms:
             continue
         out.append([t_c, c_px])
