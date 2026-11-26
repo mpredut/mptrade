@@ -83,9 +83,11 @@ PROMPT_DELTA_BLOCK_SPECS: Tuple[PromptDeltaBlockSpec, ...] = (
     PromptDeltaBlockSpec("venue_specs", "Venue_Specs", "G2", PROMPT_DELTA_GROUP_CADENCES["G2"], "execution"),
     PromptDeltaBlockSpec("fear_greed", "Fear&Greed", "G2", PROMPT_DELTA_GROUP_CADENCES["G2"], "macro"),
     PromptDeltaBlockSpec("etf_flows", "ETF_Flows", "G2", PROMPT_DELTA_GROUP_CADENCES["G2"], "macro"),
+    PromptDeltaBlockSpec("long_horizon", "Long_Horizon", "G2", PROMPT_DELTA_GROUP_CADENCES["G2"], "macro"),
     PromptDeltaBlockSpec("kraken_xstocks", "xStocks", "G2", PROMPT_DELTA_GROUP_CADENCES["G2"], "xstocks"),
     PromptDeltaBlockSpec("hyperliquid_readonly", "HL_Summary", "G2", PROMPT_DELTA_GROUP_CADENCES["G2"], "execution"),
     # G3: Event-only anti-bias blocks (never repeated unchanged on warm turns; refreshed on FULL_KEYFRAME)
+    PromptDeltaBlockSpec("operator_regime_note", "Operator_Note", "G3", PROMPT_DELTA_GROUP_CADENCES["G3"], "macro"),
     PromptDeltaBlockSpec("sentiment_advisor_summary", "Advisor_Summary", "G3", PROMPT_DELTA_GROUP_CADENCES["G3"], "macro"),
     PromptDeltaBlockSpec("geopolitical_summary", "Geo_Summary", "G3", PROMPT_DELTA_GROUP_CADENCES["G3"], "macro"),
     PromptDeltaBlockSpec("breaking_news", "News", "G3", PROMPT_DELTA_GROUP_CADENCES["G3"], "news"),
@@ -273,6 +275,23 @@ def _extract_block_fingerprints(
         })
         if (age_v := _resolve_block_age_sec(dom_ages, "geopolitical_threat", gt, now_ts)) is not None:
             block_src_ages["geopolitical_summary"] = age_v
+
+    lh = _resolve_macro_map(sensors, "long_horizon")
+    if lh and isinstance(lh.get("items"), Mapping) and lh["items"]:
+        block_hashes["long_horizon"] = _hash_payload({
+            "ts": lh.get("ts"),
+            "months": lh.get("months"),
+            "syms": sorted(str(k) for k in lh["items"].keys()),
+        })
+        if (age_v := _resolve_block_age_sec(dom_ages, "long_horizon", lh, now_ts)) is not None:
+            block_src_ages["long_horizon"] = age_v
+
+    op_note = _resolve_macro_map(sensors, "operator_regime_note")
+    if op_note and str(op_note.get("text") or "").strip():
+        block_hashes["operator_regime_note"] = _hash_payload({
+            "text": str(op_note.get("text") or "").strip(),
+            "exp": op_note.get("expires_ts"),
+        })
 
     mc = _resolve_macro_map(sensors, "macro_calendar") or resolve_macro_economic_calendar(
         now_ts=now_ts,

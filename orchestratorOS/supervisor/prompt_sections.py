@@ -38,6 +38,9 @@ from intelligence.macro_sentiment_ssot import (
     format_interval_sec_label,
     resolve_derived_telemetry_intervals,
 )
+from intelligence.sentiment.evaluators.long_horizon_evaluator import (
+    format_long_horizon_section_lines,
+)
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     compute_futures_premarket_lead,
     format_bottom_structure_6h_parts,
@@ -679,13 +682,28 @@ def _format_macro_and_news_section(
         eq_reg_line = format_equity_macro_regime_line(mb_bench) if isinstance(mb_bench, dict) and mb_bench else "NEUTRAL"
         lines = [
             "\n### 2. MACRO, REGIME & CROSS-MARKET:",
-            f"- US Equity & Macro Regime: {eq_reg_line}{_age_sfx(mb_bench, parens=True, now_ts=ref_now) if isinstance(mb_bench, dict) else ''}",
-            f"- Geopolitical Threat Shield{gt_tag}: {gt_line}",
         ]
     else:
         lines = [
             "\n### 2. MACRO, REGIME & CROSS-MARKET:",
         ]
+    op_note = _resolve_macro_sensor(sensors, macro, "operator_regime_note")
+    if isinstance(op_note, dict) and str(op_note.get("text") or "").strip() and (
+        delta_plan is None or delta_plan.should_show("operator_regime_note")
+    ):
+        op_tag = delta_plan.tag_for("operator_regime_note") if delta_plan is not None else ""
+        op_upd = op_note.get("updated_date") or "-"
+        op_exp = safe_float(op_note.get("expires_in_days"), None)
+        exp_s = f", expires_in={op_exp:.1f}d" if op_exp is not None else ""
+        lines.append(
+            f"- Operator Strategic Note (updated={op_upd}{exp_s}){op_tag}: {str(op_note['text']).strip()}"
+        )
+    if is_equities_scope:
+        lines.extend([
+            f"- US Equity & Macro Regime: {eq_reg_line}{_age_sfx(mb_bench, parens=True, now_ts=ref_now) if isinstance(mb_bench, dict) else ''}",
+            f"- Geopolitical Threat Shield{gt_tag}: {gt_line}",
+        ])
+    else:
         if delta_plan is None or delta_plan.should_show("fear_greed"):
             fg_tag = delta_plan.tag_for("fear_greed") if (delta_plan is not None and fg) else ""
             lines.append(f"- Fear & Greed{fg_tag}: {fg_line}")
@@ -736,6 +754,18 @@ def _format_macro_and_news_section(
                 lines.append(
                     f"- US Spot Crypto ETF Net Flows (Farside Daily){etf_tag}: {etf_s}{_age_sfx(etf_flows, parens=True, now_ts=ref_now)}"
                 )
+    if delta_plan is None or delta_plan.should_show("long_horizon"):
+        lh_snap = _resolve_macro_sensor(sensors, macro, "long_horizon")
+        if lh_snap:
+            lh_tag = delta_plan.tag_for("long_horizon") if delta_plan is not None else ""
+            lines.extend(
+                format_long_horizon_section_lines(
+                    lh_snap,
+                    prices_and_trends=getattr(sensors, "prices_and_trends", None),
+                    asset_scope=scope_s,
+                    tag=lh_tag,
+                )
+            )
     if breaking_news and (delta_plan is None or delta_plan.should_show("breaking_news")):
         if delta_plan is not None and delta_plan.new_news_titles is not None:
             shown_news = [

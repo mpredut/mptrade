@@ -98,6 +98,7 @@ from intelligence.external.collectors.base_collector import (
 )
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
 import intelligence.sentiment.collectors.microstructure_collector as _mc
+from intelligence.sentiment.collectors.long_horizon_collector import load_active_operator_regime_note
 from intelligence.sentiment.collectors.microstructure_collector import (
     enrich_24h_and_microstructure,
     resolve_cached_btc_24h_change_pct,
@@ -2154,6 +2155,10 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         )
         for attr, val in macro_sensors.items():
             setattr(snapshot, attr, val)
+        if lh_snap := _mss.load_cached_long_horizon_snapshot(cache_dir):
+            snapshot.long_horizon = lh_snap
+        if op_note := load_active_operator_regime_note(workspace_dir, now_ts=now_ts):
+            snapshot.operator_regime_note = op_note
         if str(scope or "").strip().lower() in ("equities", "equity"):
             for _crypto_attr in CRYPTO_ONLY_MACRO_SENSOR_KEYS:
                 setattr(snapshot, _crypto_attr, None)

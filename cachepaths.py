@@ -77,6 +77,8 @@ CACHE_MARKET_BREADTH_FILENAME = "market_breadth_collect.json"
 CACHE_MACRO_BENCHMARKS_FILENAME = "macro_benchmarks_collect.json"
 CACHE_MACRO_CALENDAR_FILENAME = "macro_calendar_collect.json"
 CACHE_ETF_FLOWS_FILENAME = "etf_flows_collect.json"
+CACHE_LONG_HORIZON_FILENAME = "long_horizon_collect.json"
+OPERATOR_REGIME_NOTE_FILENAME = "operator_regime_note.txt"
 CACHE_MACRO_LEXICON_FILENAME = "macro_lexicon_collect.json"
 CACHE_NEWS_FEED_FILENAME = "news_feed_collect.json"
 CACHE_SENTIMENT_EVAL_FILENAME = "sentiment_eval.json"
@@ -268,6 +270,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             CACHE_MACRO_BENCHMARKS_FILENAME,
             CACHE_MACRO_CALENDAR_FILENAME,
             CACHE_ETF_FLOWS_FILENAME,
+            CACHE_LONG_HORIZON_FILENAME,
             CACHE_SENTIMENT_EVAL_FILENAME,
             CACHE_GEOPOLITICAL_EVAL_FILENAME,
             CACHE_FEAR_GREED_FILENAME,
@@ -276,7 +279,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         ),
         "prefixes": (
             "fear_greed_", "market_breadth_", "macro_benchmarks_", "macro_calendar_",
-            "etf_flows_", "news_feed_", "geopolitical_", "macro_lexicon_", "sentiment_eval.",
+            "etf_flows_", "long_horizon_", "news_feed_", "geopolitical_", "macro_lexicon_", "sentiment_eval.",
         ),
         "suffixes": (),
     },
@@ -450,6 +453,7 @@ _EPHEMERAL_MACRO_PREFIXES: tuple[str, ...] = (
     "macro_benchmarks_",
     "macro_calendar_",
     "etf_flows_",
+    "long_horizon_",
     "news_feed_",
 )
 

@@ -18,10 +18,12 @@ MPTrade uses stateful multi-turn threads (`agy --conversation <id>`):
 ```text
 +======================================================================================+
 | HEADER: ROLE + EXECUTION POLICY + JSON SCHEMA                                        |
-|  - COLD: full rules (~1,016w): read access, AI survival breakers (EV>=2xRT, RR>=0.5x |
-|    6/h replace cap, daily BUY cap, scorecard), bot repair, sizing, maker LIMIT,      |
+|  - COLD: full rules (~1,024w): mptrade read access (cachedb/, statedb/, logs/,       |
+|    verify_tools/chart_view.py), AI survival breakers (EV>=2xRT, RR>=0.5x, 6/h        |
+|    replace cap, daily BUY cap, scorecard), bot repair, sizing, maker LIMIT,          |
 |    breakout/dip playbook, cross-asset guidance, Romanian report + JSON schema.       |
-|  - WARM: compact reminder (~300w) + JSON schema (Turn 1 full rules remain in thread).|
+|  - WARM: compact reminder (~300w, incl. mptrade cachedb/statedb/logs read access) +  |
+|    JSON schema (Turn 1 full rules remain pinned in the thread prefix).               |
 +======================================================================================+
 | ### 0. CLOCK & SNAPSHOT: YYYY-MM-DD HH:MM:SS EET (Day)                         [G0]  |
 |  - Trigger: <delta_gate_reason> | <partial_fill / new_fill / wall_trapped / focus>   |
@@ -57,6 +59,8 @@ MPTrade uses stateful multi-turn threads (`agy --conversation <id>`):
 |      - Recent Fills per symbol (by=AI/BOT/MANUAL + tranches)                   [G1]  |
 +======================================================================================+
 | ### 2. MACRO, REGIME & CROSS-MARKET:                                 [G0 + G1/G2/G3] |
+|  - Operator Strategic Note (optional statedb/operator_regime_note.txt, 5d TTL) [G3]  |
+|    (0 tokens when empty/commented/expired; wakes Delta-Gate immediately on edit)     |
 |  - Fear & Greed (value, 7d hist)                                               [G2]  |
 |  - Market Breadth (advance_ratio, median/mean, disp_std, ETH/BTC, vol shares)  [G0]  |
 |  - Macro Sentiment Advisor (live_btc_flow_delta [G0] + summary [G3 event-only])      |
@@ -66,6 +70,9 @@ MPTrade uses stateful multi-turn threads (`agy --conversation <id>`):
 |    BTC_Options & ETH_Options RV/VRP/PC_OI/Skew_25d)                                  |
 |  - Cross-Market Table (US Equities in crypto [G1]; Live Crypto in equities [G0])     |
 |  - US Spot Crypto ETF Net Flows (daily + 5d + streak)                          [G2]  |
+|  - Multi-Month & Annual Structure (configurable AI_LONG_HORIZON_MONTHS=36):    [G2]  |
+|    | Symbol | YTD | 30d | 90d | 52w Range | 3y Range | vs MA50 | vs MA200 | Swings | |
+|    (live-recalculated from spot; on-demand zoom via verify_tools/chart_view.py)      |
 |  - Live Breaking News Feed (new headlines only on WARM turns)                  [G3]  |
 +======================================================================================+
 | ### 3. TRADABLE MARKETS (UNIFIED PRICE, BOOK & FLOW):                          [G0]  |
@@ -106,8 +113,8 @@ MPTrade uses stateful multi-turn threads (`agy --conversation <id>`):
 |---|---|---|---|
 | **G0** | Every turn | Clock/Trigger/Ages, Risk Engine, Free Cash, Positions, Open Orders + Linked Plans + R:R, Breadth, Benchmarks, Section 3 Unified Cards, Section 4 Bellwether Table | Always rendered live |
 | **G1** | Every 3 unchanged warm turns (or immediate on change) | Calendar, Cross-Market US Equities, Scorecard, Calibration, Recent Fills | `Label(k/3)` + `[src_age=...]` if upstream feed age >= 2m |
-| **G2** | Every 5 unchanged warm turns (or immediate on change) | Venue Specs & Fees, Fear & Greed, ETF Flows, xStocks summary, HL summary | `Label(k/5)` + `[src_age=...]` if upstream feed age >= 2m |
-| **G3** | Event-only (shown on COLD / change / forced category) | Macro Sentiment Advisor narrative, Geopolitical Shield narrative, Breaking News | `Label(unchanged)[src_age=...]` or `News(N prior)` |
+| **G2** | Every 5 unchanged warm turns (or immediate on change) | Venue Specs & Fees, Fear & Greed, ETF Flows, Multi-Month & Annual Structure (`Long_Horizon`), xStocks summary, HL summary | `Label(k/5)` + `[src_age=...]` if upstream feed age >= 2m |
+| **G3** | Event-only (shown on COLD / change / forced category) | Operator Strategic Note (`Operator_Note`), Macro Sentiment Advisor narrative, Geopolitical Shield narrative, Breaking News | `Label(unchanged)[src_age=...]` or `News(N prior)` |
 
 ## 4. Automated Mathematical & Structural Invariants (`verify_tools/audit_prompt_invariants.py`)
 

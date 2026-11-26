@@ -584,8 +584,8 @@ def build_supervisor_prompt(
         )
         tasks.append(
             f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc}:\n"
-            "   - FULL READ ACCESS TO `cachedb/` & `statedb/`: Unrestricted read access to `cachedb/` (`cachedb/account/`), "
-            "`statedb/orders/` (Order Ledger SSoT), `logs/`, and `providers.market_api` beyond this dashboard.\n"
+            "   - FULL READ ACCESS TO `cachedb/` & `statedb/` (`mptrade` workspace): Unrestricted read access to `cachedb/` (`cachedb/account/`), "
+            "`statedb/orders/` (Order Ledger SSoT), `logs/`, `providers.market_api`, and on-demand multi-year chart zoom via `verify_tools/chart_view.py` beyond this dashboard.\n"
             "   - ZERO PROFIT OR STRATEGY GUARDS (AI SURVIVAL BREAKERS ONLY): Maximize risk-adjusted net NAV (after fees). Deterministic order_guard gates "
             "(G_PROF, GO1, GT_*, G_QLIMIT*, GI_*, GLLM*) are BYPASSED on BUY & SELL. Deterministic bots/configs run in parallel as optional advisory references only--ZERO obligation to follow them. "
             "Only AI survival breakers "
@@ -680,7 +680,7 @@ def build_supervisor_prompt(
         )
         compact_prefix = (
             "CONTINUATION TURN (ACTIVE THREAD POLICY APPLIES):\n"
-            f"- Apply thread rules ({compact_exec_desc}, `by=BOT` vs `by=AI` supervision, `cachedb/` & `statedb/` read access; "
+            f"- Apply thread rules ({compact_exec_desc}, `by=BOT` vs `by=AI` supervision, `mptrade` read access to `cachedb/`, `statedb/`, `logs/`; "
             f"zero deterministic order_guard gates; AI survival breakers active: {compact_surv}; `conf>={min_conf:g}`, notional {min_usd:g}-{max_usd:g} USD{compact_xs_sfx}). "
             "All AI orders submit as `LIMIT`; re-evaluate R:R from new `limit_price` on replace (use `CANCEL`+`cancel_order_ids` or `HOLD` instead of chasing into poor R:R).\n"
             + compact_entry_bullet

@@ -623,6 +623,14 @@ def evaluate_crypto_executor_delta_gate(
     }
     if geo_unassessed_note:
         snapshot_meta["geo_unassessed_note"] = geo_unassessed_note
+    op_note_obj = getattr(sensors, "operator_regime_note", None)
+    op_note_sig = (
+        f"{op_note_obj.get('mtime_ts', '')}|{str(op_note_obj.get('text') or '').strip()}"
+        if isinstance(op_note_obj, Mapping) and str(op_note_obj.get("text") or "").strip()
+        else ""
+    )
+    if op_note_sig:
+        snapshot_meta["operator_note_sig"] = op_note_sig
 
     (
         max_move_pct,
@@ -658,6 +666,8 @@ def evaluate_crypto_executor_delta_gate(
         return False, f"focus_symbols({','.join(clean_focus)})", escalate_high_effort, snapshot_meta
     if _parse_bool_flag(ui_turn_pending, False):
         return False, "ui_turn_pending", escalate_high_effort, snapshot_meta
+    if op_note_sig and op_note_sig != str(prev_meta.get("operator_note_sig") or ""):
+        return False, "operator_note_updated", escalate_high_effort, snapshot_meta
     if not prev_map or prev_ts <= 0.0 or prev_ts > eff_now + 5.0:
         return False, "no_prev_eval", escalate_high_effort, snapshot_meta
     if is_degraded_trading_model(prev_map.get("model_used")):
