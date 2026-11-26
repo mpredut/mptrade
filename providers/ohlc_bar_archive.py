@@ -34,6 +34,7 @@ _MS_PER_MINUTE = 60_000
 _MS_PER_DAY = 86_400_000
 _LOCAL_FALLBACK_SOURCE = "local_sparse"
 _EQUITY_CLOSED_MARKET_STALE_SEC = 96.0 * 3600.0
+_UNCHANGED_TOUCH_REFRESH_SEC = 1800.0
 
 
 @dataclass(frozen=True)
@@ -252,7 +253,7 @@ def filter_closed_archive_bars(
         today_utc = datetime.fromtimestamp(eff_now / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
         while out:
             b_day = datetime.fromtimestamp(out[-1][0] / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
-            if b_day >= today_utc or (out[-1][0] + interval_ms) > eff_now:
+            if b_day >= today_utc:
                 out.pop()
             else:
                 break
@@ -522,6 +523,8 @@ def load_ohlc_archive_dataset(
     min_coverage_ratio: float = 0.70,
     require_contiguous: bool = False,
     allow_market_closed_stale: bool = False,
+    expected_source_prefix: Optional[str] = None,
+    min_bars: Optional[int] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """Read-only archive-first candle dataset loader for walk-forward/backtest consumers; returns ``None`` on miss/stale/gap."""
     try:
@@ -531,6 +534,11 @@ def load_ohlc_archive_dataset(
     doc = load_ohlc_bar_archive(cache_dir, symbol, timeframe=tf_str)
     if not isinstance(doc, dict):
         return None
+    if expected_source_prefix:
+        exp_pref = str(expected_source_prefix).strip().lower()
+        doc_pref = str(doc.get("source") or "").strip().lower().split(":", 1)[0]
+        if exp_pref and doc_pref != exp_pref:
+            return None
     eff_now = resolve_now_ts(now_ts)
     eff_now_ms = safe_int(eff_now * 1000.0, default=1)
     bars = normalize_ohlc_archive_bars(doc.get("bars") or (), interval_min=interval_min)
@@ -550,7 +558,12 @@ def load_ohlc_archive_dataset(
     if lookback_days is not None and lookback_days > 0:
         cutoff_ms = max(0, eff_now_ms - lookback_days * _MS_PER_DAY)
         bars = [row for row in bars if row[0] >= cutoff_ms]
-    if len(bars) < 2:
+    eff_min_bars = (
+        max(2, safe_pos_int(min_bars, default=2) or 2)
+        if min_bars is not None
+        else (20 if lookback_days is None else 2)
+    )
+    if len(bars) < eff_min_bars:
         return None
     if require_contiguous and not _bars_are_contiguous(bars, interval_min):
         return None
@@ -651,9 +664,13 @@ def upsert_ohlc_bar_archive(
         doc = _merge_with_existing(existing if isinstance(existing, dict) else None)
         if doc is None:
             return None
-        # Skip disk write + fsync when bars/source/coverage did not change.
+        # Skip disk write + fsync when bars/source/coverage did not change AND updated_ts was recently refreshed
+        # (refresh updated_ts after >=30m so weekend/flat-market archives stay marked fresh on disk).
+        prev_upd = safe_pos_float(existing.get("updated_ts"), default=0.0) if isinstance(existing, dict) else 0.0
+        upd_still_recent = prev_upd > 0.0 and 0.0 <= (eff_now - prev_upd) < _UNCHANGED_TOUCH_REFRESH_SEC
         if (
             isinstance(existing, dict)
+            and upd_still_recent
             and existing.get("bars") == doc.get("bars")
             and existing.get("source") == doc.get("source")
             and existing.get("requested_from_ms") == doc.get("requested_from_ms")

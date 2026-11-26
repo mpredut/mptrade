@@ -296,6 +296,14 @@ class MarketApi:
             if lb_days is None and (lb_h := safe_pos_float(kwargs.get("lookback_hours"), default=None)) is not None:
                 lb_days = max(1, math.ceil(lb_h / 24.0))
             is_eq_any = is_equity_symbol(symbol)
+            exp_src_pref: Optional[str] = None
+            if provider_name is not None:
+                prov_obj = self._provider_explicit_or_routed(symbol, provider_name)
+                exp_src_pref = (
+                    "yahoo"
+                    if getattr(prov_obj, "_ASSET_SCOPE", "") == "equities"
+                    else normalize_venue_name(provider_name)
+                )
             for cand in self._archive_symbol_candidates(symbol):
                 is_eq = is_eq_any or is_equity_symbol(cand)
                 cached = load_ohlc_archive_dataset(
@@ -306,6 +314,7 @@ class MarketApi:
                     drop_incomplete=eff_drop,
                     require_contiguous=not is_eq,
                     allow_market_closed_stale=is_eq,
+                    expected_source_prefix=exp_src_pref,
                 )
                 if cached:
                     return cached

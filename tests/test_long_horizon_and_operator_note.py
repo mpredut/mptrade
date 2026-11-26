@@ -1028,3 +1028,56 @@ def test_option3_unified_multi_tf_intraday_collector_market_api_consumers_and_au
     assert chart_view_main(["NVDA_US_EQ", "--tf", "1h", "--months", "1", "--cache-dir", cache_dir]) == 0
     out_1h = capsys.readouterr().out
     assert "=== NVDA_US_EQ (1h," in out_1h
+
+    # 8. Review fixes: cross-venue isolation, weekend updated_ts refresh, Yahoo 1d closed bar, min_bars floor, intraday ZigZag
+    from providers.ohlc_bar_archive import load_ohlc_archive_dataset
+
+    # 8a. Cross-venue isolation: Kraken request must NEVER receive Hyperliquid/Binance archive bars
+    assert (
+        load_ohlc_archive_dataset(
+            cache_dir,
+            "BTCUSDC",
+            "4h",
+            lookback_days=5,
+            now_ts=t_inc,
+            expected_source_prefix="kraken",
+        )
+        is None
+    )
+    assert (
+        load_ohlc_archive_dataset(
+            cache_dir,
+            "BTCUSDC",
+            "4h",
+            lookback_days=5,
+            now_ts=t_inc,
+            expected_source_prefix="binance",
+        )
+        is not None
+    )
+
+    # 8b. Weekend/flat-market updated_ts refresh: unchanged bars after >=30m still refresh updated_ts on disk
+    fri_ts = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc).timestamp()
+    sat_ts = fri_ts + 4 * 3600.0
+    eq_1d = [[int(datetime(2026, 11, 20, 14, 30, 0, tzinfo=timezone.utc).timestamp() * 1000), 150.0, 152.0, 149.0, 151.0, 1000.0]]
+    d_fri = upsert_ohlc_bar_archive(cache_dir, "SPY", eq_1d, timeframe="1d", source="yahoo:SPY", now_ts=fri_ts)
+    d_sat = upsert_ohlc_bar_archive(cache_dir, "SPY", eq_1d, timeframe="1d", source="yahoo:SPY", now_ts=sat_ts)
+    assert d_fri is not None and d_sat is not None and d_sat["updated_ts"] == round(sat_ts, 3)
+
+    # 8c. Yesterday's closed Yahoo 1d bar (14:30 UTC) is NOT falsely dropped at 10:00 UTC next morning
+    next_morning_ms = int(datetime(2026, 11, 21, 10, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    assert len(filter_closed_archive_bars(eq_1d, interval_min=1440, now_ms=next_morning_ms)) == 1
+
+    # 8d. Partial tiny archive (<20 bars) returns None when lookback_days is omitted (walk-forward floor)
+    assert load_ohlc_archive_dataset(cache_dir, "SOLUSDC", "1h", lookback_days=None, now_ts=t_inc) is None
+
+    # 8e. Intraday ZigZag preserves sub-daily pivots (not collapsed to 1 bar/day) with MM-DD labels
+    intra_base = int(datetime(2026, 11, 25, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    intra_wave = [
+        [intra_base + 0 * 3600 * 1000, 100.0, 100.0, 100.0, 100.0, 10.0],
+        [intra_base + 4 * 3600 * 1000, 105.0, 112.0, 105.0, 112.0, 10.0],
+        [intra_base + 8 * 3600 * 1000, 106.0, 106.0, 98.0, 98.0, 10.0],
+        [intra_base + 12 * 3600 * 1000, 104.0, 110.0, 104.0, 110.0, 10.0],
+    ]
+    sw_intra = compute_zigzag_swings(intra_wave, threshold_pct=5.0, max_pivots=8, preserve_intraday=True)
+    assert len(sw_intra) >= 3 and sw_intra[0]["ym"] == "11-25"

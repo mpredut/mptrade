@@ -400,7 +400,11 @@ _CRYPTO_VENUE_OHLC_FETCHERS: Dict[str, Callable[..., Tuple[List[List[float]], st
 }
 
 
-def _resolve_default_long_horizon_symbols(workspace_dir: str = ".") -> List[str]:
+def _resolve_default_long_horizon_symbols(
+    workspace_dir: str = ".",
+    *,
+    deduplicate_hype_usd: bool = True,
+) -> List[str]:
     """Discover configured tradable symbols from instruments.conf SSOT plus major benchmarks."""
     syms: List[str] = []
     seen: set[str] = set()
@@ -409,8 +413,8 @@ def _resolve_default_long_horizon_symbols(workspace_dir: str = ".") -> List[str]
         for sp in specs.values():
             s = str(getattr(sp, "symbol", "") or "").strip()
             if s and s not in seen:
-                # Deduplicate HYPEUSD into primary HYPEUSDC
-                if s.upper() == "HYPEUSD" and "HYPEUSDC" in seen:
+                # Deduplicate HYPEUSD into primary HYPEUSDC in prompt table, while keeping it for multi-venue intraday archives
+                if deduplicate_hype_usd and s.upper() == "HYPEUSD" and "HYPEUSDC" in seen:
                     continue
                 seen.add(s)
                 syms.append(s)
@@ -699,7 +703,7 @@ class IntradayOhlcArchiveCollector(TelemetryCacheCollectorInterface):
         target_tfs = tuple(resolve_archive_policy(tf).timeframe for tf in (timeframes or _INTRADAY_ARCHIVE_TIMEFRAMES))
         target_syms = [
             str(s or "").strip()
-            for s in (symbols if symbols else _resolve_default_long_horizon_symbols(workspace_dir))
+            for s in (symbols if symbols else _resolve_default_long_horizon_symbols(workspace_dir, deduplicate_hype_usd=False))
             if str(s or "").strip()
         ]
         if not target_syms or not target_tfs:

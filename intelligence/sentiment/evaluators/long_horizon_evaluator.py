@@ -133,11 +133,31 @@ def compute_zigzag_swings(
     *,
     threshold_pct: float = 15.0,
     max_pivots: int = 8,
+    preserve_intraday: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Extract major alternating high/low ZigZag pivots from daily OHLC bars without temporal aliasing."""
-    bars = _normalize_daily_bars(daily_bars)
+    """Extract major alternating high/low ZigZag pivots from OHLC bars without temporal aliasing."""
+    if preserve_intraday:
+        bars = [
+            [
+                (t_v if t_v > 1e11 else t_v * 1000.0),
+                safe_pos_float(b[1], 0.0) or 0.0,
+                safe_pos_float(b[2], 0.0) or 0.0,
+                safe_pos_float(b[3], 0.0) or 0.0,
+                safe_pos_float(b[4], 0.0) or 0.0,
+                safe_nonneg_float(b[5], 0.0) if len(b) > 5 else 0.0,
+            ]
+            for b in (daily_bars or ())
+            if isinstance(b, (list, tuple))
+            and len(b) >= 5
+            and (t_v := safe_pos_float(b[0], default=None)) is not None
+        ]
+        bars.sort(key=lambda r: r[0])
+    else:
+        bars = _normalize_daily_bars(daily_bars)
     if len(bars) < 2:
         return []
+
+    lbl_fmt = "%m-%d" if preserve_intraday else "%y-%m"
 
     def _run_zigzag(thr_pct: float) -> List[Dict[str, Any]]:
         thr = max(1.0, thr_pct) / 100.0
@@ -149,7 +169,7 @@ def compute_zigzag_swings(
         ext_lo_ts = bars[0][0]
 
         def _ym(ts_ms: float) -> str:
-            return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).strftime("%y-%m")
+            return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).strftime(lbl_fmt)
 
         for bar in bars[1:]:
             ts_ms, _, h_v, l_v, _, _ = bar
@@ -653,7 +673,7 @@ def render_ascii_chart_view(
     chg = _pct_chg(close_p, open_p)
     pos = _range_pos(close_p, lo_p, hi_p)
     sw_thr = 5.0 if tf == "1h" else (8.0 if tf == "4h" else (12.0 if len(sliced) > 20 else 6.0))
-    swings = compute_zigzag_swings(sliced, threshold_pct=sw_thr, max_pivots=10)
+    swings = compute_zigzag_swings(sliced, threshold_pct=sw_thr, max_pivots=10, preserve_intraday=is_intraday)
     sw_str = " -> ".join(f"{s['ym']}:{_fmt_compact_px(s['px'])}" for s in swings) if swings else "-"
 
     w = max(16, min(80, safe_int(width, default=60)))
