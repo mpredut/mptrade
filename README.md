@@ -264,3 +264,13 @@ Heavy multi-hour parameter sweeps and walk-forward evaluations are offloaded to 
 | [`cachedb/`](file:///home/predut/mptrade/cachedb/) | High-speed price tick caches, orderbook snapshots, state files |
 | [`tests/`](file:///home/predut/mptrade/tests/) | Hermetic unit, integration, and regression test suites |
 | [`docs/`](file:///home/predut/mptrade/docs/) | Detailed sub-system documentation and design specifications |
+
+---
+
+## 13. License, Commercial Authorization & Disclaimer
+
+**Copyright (c) 2024-2026 Marius Predut. All rights reserved.**
+
+* **Proprietary Software (No Open-Source License):** This repository and all contained source code, strategies, risk models, configurations, and documentation are proprietary. Copying, reproducing, modifying, running, distributing, sublicensing, monetizing, or using any part of this codebase for AI/ML training without **prior explicit written authorization and a paid commercial license** from the author is strictly prohibited. See [`LICENSE`](LICENSE) for full terms.
+* **Commercial Licensing & Authorization:** To request written permission or commercial licensing terms, contact **Marius Predut** (`predut111@gmail.com` / `https://github.com/mpredut/mptrade`).
+* **Financial Risk & No-Warranty Disclaimer:** Nothing in this repository constitutes financial, investment, or legal advice. Automated trading carries substantial risk of capital loss. The software is provided `"AS IS"` without warranty of any kind, and the author assumes zero liability for any trading losses or damages.

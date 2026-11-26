@@ -9,14 +9,14 @@ description = "Multi-venue automated trading fleet, market monitor, and AI risk/
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [
-    {name = "Marius", email = "marius@example.com"}
+    {name = "Marius Predut", email = "predut111@gmail.com"}
 ]
-license = {text = "MIT"}
-keywords = ["binance", "trading", "cryptocurrency", "bot", "websocket"]
+license = {text = "Proprietary - All Rights Reserved (see LICENSE)"}
+keywords = ["binance", "kraken", "hyperliquid", "trading", "cryptocurrency", "bot", "websocket"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: Other/Proprietary License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
 ]

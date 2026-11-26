@@ -1,0 +1,66 @@
+PROPRIETARY SOFTWARE LICENSE -- ALL RIGHTS RESERVED
+
+Copyright (c) 2024-2026 Marius Predut. All rights reserved.
+
+This software, including all source code, trading strategies, risk models,
+mathematical formulations, configuration schemas, orchestration scripts,
+tests, and documentation contained in the "mptrade" repository (collectively,
+the "Software"), is the exclusive proprietary and confidential property of
+Marius Predut ("Licensor").
+
+1. NO LICENSE GRANTED / STRICT PROHIBITION
+   No license or right of any kind is granted to any person or entity by
+   default, whether express, implied, by estoppel, or otherwise. Mere access
+   to, visibility of, or possession of this repository does NOT grant any
+   right to use the Software.
+
+   Without prior explicit written authorization and a valid paid commercial
+   license agreement executed with the Licensor, you are strictly prohibited
+   from:
+   (a) copying, cloning, downloading, reproducing, or redistributing any part
+       of the Software;
+   (b) using, executing, deploying, or operating the Software for personal,
+       commercial, institutional, or third-party trading;
+   (c) modifying, adapting, translating, reverse engineering, or creating
+       derivative works based on the Software;
+   (d) selling, sublicensing, leasing, renting, or offering the Software (or
+       signals/executions derived from it) as a hosted service, SaaS, copy-
+       trading service, or paid product;
+   (e) using any part of the Software to train, fine-tune, evaluate, or
+       benchmark machine-learning or AI models.
+
+2. COMMERCIAL LICENSING & AUTHORIZATION
+   Any use, copy, integration, or commercial deployment of the Software
+   requires prior written permission and payment of the applicable licensing
+   fee agreed upon with the Licensor.
+
+   To request written authorization or inquire about commercial licensing:
+   - Author / Licensor: Marius Predut
+   - Email: predut111@gmail.com
+   - Repository: https://github.com/mpredut/mptrade
+
+3. ENFORCEMENT & OWNERSHIP
+   All title, ownership rights, and intellectual property rights in and to
+   the Software remain solely with the Licensor. Unauthorized copying, use,
+   distribution, or commercialization constitutes copyright infringement and
+   misappropriation and may result in civil and criminal liability under
+   applicable national and international intellectual property laws.
+
+4. FINANCIAL & TRADING RISK DISCLAIMER
+   Nothing in this Software or its documentation constitutes financial,
+   investment, trading, tax, or legal advice. Automated trading of
+   cryptocurrencies, equities, and financial derivatives carries substantial
+   risk of partial or total loss of capital due to market volatility,
+   liquidity gaps, slippage, exchange outages, API changes, or software
+   defects. Any authorized licensee deploys and operates the Software
+   strictly at their own sole risk.
+
+5. NO WARRANTY & LIMITATION OF LIABILITY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, PROFITABILITY, OR
+   NON-INFRINGEMENT. IN NO EVENT SHALL THE AUTHOR OR COPYRIGHT HOLDER BE
+   LIABLE FOR ANY CLAIM, DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+   CONSEQUENTIAL DAMAGES (INCLUDING TRADING LOSSES, LOST PROFITS, OR DATA
+   LOSS) ARISING IN ANY WAY OUT OF THE USE OF OR INABILITY TO USE THIS
+   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
