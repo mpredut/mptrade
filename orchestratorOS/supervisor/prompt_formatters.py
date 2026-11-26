@@ -198,7 +198,8 @@ def _build_section0_trigger_context(
                 )
                 if fr_ok:
                     rr_sfx = f",RR={rr_fr:.2f}x" if rr_fr is not None else ""
-                    parts.append(f"{sym} wall_trapped(front_run={fr_v:g}{rr_sfx})")
+                    fr_lbl = _fmt_plain_float(fr_v) if (0.0 < abs(fr_v) < 1e-4 or abs(fr_v) >= 1e6) else f"{fr_v:g}"
+                    parts.append(f"{sym} wall_trapped(front_run={fr_lbl}{rr_sfx})")
                     trigger_syms.add(sym)
             if "open_order_stale_or_far" in wake_lc:
                 dist_v = safe_float(oo.get("dist_from_spot_pct"), None)
@@ -220,7 +221,7 @@ def _build_section0_trigger_context(
                 if f_sym := str(item.get("symbol") or "").strip():
                     f_side = str(item.get("side") or item.get("decision") or "").strip().upper()
                     f_px = item.get("fill_px") or item.get("limit_px") or item.get("limit_price")
-                    px_s = f"@{f_px}" if f_px is not None else ""
+                    px_s = f"@{_fmt_plain_float(f_px)}" if f_px is not None else ""
                     parts.append(f"{f_sym} {f_side} {st_l}{px_s}".strip())
                     trigger_syms.add(f_sym)
                     seen_fills.add((f_sym.upper(), f_side))
@@ -245,7 +246,7 @@ def _build_section0_trigger_context(
                         actor_u = str(leg.get("actor") or "").strip().upper()
                         recent_hits.append((leg_ts, ro_sym_s, leg_side, leg.get("price"), actor_u))
             for _, ro_sym_s, leg_side, leg_px, actor_u in sorted(recent_hits, key=lambda x: x[0], reverse=True):
-                px_s = f"@{leg_px}" if leg_px is not None else ""
+                px_s = f"@{_fmt_plain_float(leg_px)}" if leg_px is not None else ""
                 act_s = f"({actor_u})" if actor_u in ("BOT", "MANUAL") else ""
                 parts.append(f"{ro_sym_s} {leg_side} FILLED{px_s}{act_s}")
                 trigger_syms.add(ro_sym_s)

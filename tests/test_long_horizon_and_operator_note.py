@@ -428,6 +428,38 @@ def test_cycle2_unactionable_wall_trapped_suppression_equities_live_lh_and_cycle
     assert "BTCUSDC wall_trapped" not in trig_prompt
     s3_txt = trig_prompt[trig_prompt.index("### 3. TRADABLE MARKETS"):]
     assert s3_txt.index("  * HYPEUSDC:") < s3_txt.index("  * BTCUSDC:")
+    # Sub-1e-4 Trigger prices (front_run & new_fill) format as plain decimals without scientific notation
+    from orchestratorOS.supervisor.prompt_formatters import _build_section0_trigger_context
+
+    micro_trig, _ = _build_section0_trigger_context(
+        "open_order_wall_trapped+new_fill",
+        None,
+        {
+            "open_limit_orders": [
+                {
+                    "order_id": "ord-micro",
+                    "symbol": "PEPEUSDC",
+                    "venue": "binance",
+                    "side": "BUY",
+                    "price": 0.000049,
+                    "recommended_front_run_px": 0.00005,
+                }
+            ],
+            "last_cycle_execution_status": [
+                {"symbol": "PEPEUSDC", "side": "BUY", "status": "FILLED", "fill_px": 0.000048, "age_min": 2.0}
+            ],
+            "recent_orders": {
+                "SHIBUSDC": {"last_sell": {"price": 0.000012, "ts": t0 - 60.0, "actor": "BOT"}}
+            },
+        },
+        {"PEPEUSDC", "SHIBUSDC"},
+        now_ts=t0,
+    )
+    assert micro_trig is not None
+    assert "front_run=0.00005" in micro_trig
+    assert "@0.000048" in micro_trig
+    assert "@0.000012(BOT)" in micro_trig
+    assert "e-05" not in micro_trig.lower()
 
     # 2. Equities-scope Long_Horizon live-recalculates BTCUSDC & SPY from cross_market_context & macro_benchmarks
     # 3. Active Cycle Cost & Drawdown Anchors elide cleanly on WARM turns under G1 and return [NEW] on fill change

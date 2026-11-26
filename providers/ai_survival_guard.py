@@ -1039,19 +1039,19 @@ def evaluate_ai_ping_pong_guard(
     # 1. Pre-committed AI trade plan check (only for an active, unclosed opposite AI fill not superseded by a newer same-side or BOT fill)
     opp_ai_is_latest_side = bool(latest_opp_ai is not None and latest_opp_ai[0] > latest_same_ai_ts)
     plan_status = "ACTIVE"
-    if (
-        opp_ai_is_latest_side
-        and latest_opp_ai[0] >= bot_opp_ts
-        and eff_spot > 0.0
-    ):
+    if opp_ai_is_latest_side and latest_opp_ai[0] >= bot_opp_ts:
         _, opp_px_ai, opp_intent_ai = latest_opp_ai
-        inv_px, tgt_px = extract_intent_trade_plan_levels(
-            opp_intent_ai, side=opp_side, ref_price=opp_px_ai if opp_px_ai > 0.0 else None
-        )
-        if inv_px is not None or tgt_px is not None:
-            plan_status = evaluate_trade_plan_status(opp_side, eff_spot, inv_px, tgt_px)
-            if plan_status in ("INVALIDATED", "TARGET_HIT"):
-                return True, "", {"plan_triggered": plan_status, "flip_bypassed_by_plan": True}
+        frozen_st = extract_frozen_trade_plan_status(opp_intent_ai)
+        if frozen_st in ("INVALIDATED", "TARGET_HIT"):
+            return True, "", {"plan_triggered": frozen_st, "flip_bypassed_by_plan": True}
+        if eff_spot > 0.0:
+            inv_px, tgt_px = extract_intent_trade_plan_levels(
+                opp_intent_ai, side=opp_side, ref_price=opp_px_ai if opp_px_ai > 0.0 else None
+            )
+            if inv_px is not None or tgt_px is not None:
+                plan_status = evaluate_trade_plan_status(opp_side, eff_spot, inv_px, tgt_px)
+                if plan_status in ("INVALIDATED", "TARGET_HIT"):
+                    return True, "", {"plan_triggered": plan_status, "flip_bypassed_by_plan": True}
 
     # Count 6h opposite-side reversals on this symbol (strictly by=AI fills)
     sym_fills.sort(key=lambda r: r[0])
@@ -1258,7 +1258,9 @@ def evaluate_ai_decision_scorecard(
         plan_st = evaluate_trade_plan_status(
             "BUY", spot_px, buy_row["invalidation_px"], buy_row["target_px"]
         )
-        is_invalidated = plan_st == "INVALIDATED"
+        is_invalidated = (
+            buy_row.get("resolved_plan_status") == "INVALIDATED" or plan_st == "INVALIDATED"
+        )
         if not is_invalidated and (eff_now - buy_row["ts"]) < mature_sec:
             continue
         gross_edge_pct = compute_signed_price_edge_pct("BUY", buy_row["px"], spot_px)
@@ -1819,6 +1821,7 @@ def evaluate_ai_calibration_feedback(
         prices_map,
         price_bars_by_symbol=price_bars_by_symbol,
         newly_resolved_out=newly_resolved_out,
+        now_ts=eff_now,
     )
     resolved_n = status_counts["TARGET_HIT"] + status_counts["INVALIDATED"]
     hit_rate = round((status_counts["TARGET_HIT"] / resolved_n) * 100.0, 1) if resolved_n > 0 else None

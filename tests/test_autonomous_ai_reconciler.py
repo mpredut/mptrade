@@ -10035,6 +10035,20 @@ def test_proposal3_delta_gate_and_dynamic_high_effort_escalation(tmp_path, monke
     assert auditor.call_count == 5
     assert "model" not in auditor.calls[-1][1]
 
+    # Cycle 8: Reconciler forwards configured intent_gateway.min_target_rr into evaluate_crypto_executor_delta_gate
+    seen_min_rr: list[object] = []
+    orig_dg = aar_mod.evaluate_crypto_executor_delta_gate
+
+    def _spy_dg(*a, **kw):
+        seen_min_rr.append(kw.get("min_target_rr"))
+        return orig_dg(*a, **kw)
+
+    monkeypatch.setattr(aar_mod, "evaluate_crypto_executor_delta_gate", _spy_dg)
+    reconciler.intent_gateway.min_target_rr = 1.25
+    cycle_clock[0] = t0 + 920.0
+    reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
+    assert seen_min_rr == [1.25]
+
 
 def test_proposal4a_structured_trade_plans_3c_memory_and_delta_gate_trigger():
     """Verify 4A invalidation_px/target_px extraction, Section 3C memory persistence, and Delta-Gate high-effort trigger."""

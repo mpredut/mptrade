@@ -77,6 +77,7 @@ from orchestratorOS.supervisor.crypto_executor_delta_gate import (
     is_extreme_stakes_delta_gate_wakeup,
     is_urgent_delta_gate_wakeup,
 )
+from providers.ai_circuit_breaker import DEFAULT_MIN_TARGET_RR
 from providers.intent_state import eval_doc_was_actionable
 from state_io import read_json_recovering
 from orchestratorOS.lib.technical_repair_ssot import (
@@ -788,6 +789,7 @@ class AutonomousAIReconciler:
                 max_idle_sec=max_idle_sec,
                 high_effort_price_move_pct=high_effort_move_pct,
                 ui_turn_pending=ui_turn_pending,
+                min_target_rr=getattr(self.intent_gateway, "min_target_rr", DEFAULT_MIN_TARGET_RR),
             )
             urgent_escalation = is_urgent_delta_gate_wakeup(
                 gate_reason,

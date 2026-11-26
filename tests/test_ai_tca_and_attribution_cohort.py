@@ -206,6 +206,23 @@ def test_limit_passive_offset_fill_rate_tca_and_section_3c_feedback():
     assert "UnfOff" in rendered
     assert "+130.0" in rendered
 
+    # Calibration forwards caller now_ts deterministically into evaluate_filled_trade_plans (no wall-clock leak)
+    import providers.ai_survival_guard as asg
+
+    orig_eval_plans = asg.evaluate_filled_trade_plans
+    seen_now: list[object] = []
+
+    def _spy_eval_plans(*a, **kw):
+        seen_now.append(kw.get("now_ts"))
+        return orig_eval_plans(*a, **kw)
+
+    asg.evaluate_filled_trade_plans = _spy_eval_plans  # type: ignore[assignment]
+    try:
+        evaluate_ai_calibration_feedback(intents, now_ts=now_s, scope="crypto")
+    finally:
+        asg.evaluate_filled_trade_plans = orig_eval_plans  # type: ignore[assignment]
+    assert seen_now == [now_s]
+
 
 def test_equity_bellwethers_strip_synthetic_perp_funding_and_whale_placeholders():
     """US equities in cross_market_context omit synthetic funding_annualized_pct=0.0 and whale_long_pct=0.5 without live CBOE OI."""

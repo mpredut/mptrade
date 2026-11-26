@@ -164,7 +164,7 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
                 "whale": self.whale_interval_sec,
                 "macro": self.macro_interval_sec,
                 "macro_llm": self.macro_llm_interval_sec,
-                "thread_prune": self.thread_prune_interval_sec,
+                "thread_prune": getattr(self, "thread_prune_interval_sec", None),
             },
             extra={"last_thread_prune_ts": round(safe_nonneg_ts(getattr(self, "_last_thread_prune_ts", 0.0), 0.0), 3)},
             use_save_json_state=True,

@@ -3475,6 +3475,21 @@ def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
     )
     assert ok_inv is True and m_inv.get("plan_triggered") == "INVALIDATED"
 
+    # Frozen path-invalidated / target-hit plan status bypasses flip cooldown even after spot bounces inside [inv, tgt]
+    for frozen_st in ("INVALIDATED", "TARGET_HIT"):
+        frozen_plan_buy = [{**plan_buy_fill[0], "resolved_plan_status": frozen_st}]
+        ok_frz, _, m_frz = evaluate_ai_ping_pong_guard(
+            {"intent_id": f"cur_frz_{frozen_st}", "decision": "SELL", "urgency": "NORMAL"},
+            frozen_plan_buy,
+            decision="SELL",
+            symbol="BTCUSDC",
+            venue="binance",
+            price=70100.0,
+            spot_price=70100.0,
+            now_ts=now_s,
+        )
+        assert ok_frz is True and m_frz.get("plan_triggered") == frozen_st and m_frz.get("flip_bypassed_by_plan") is True
+
     # Unfilled resting LIMIT order does NOT trigger flip cooldown (including status-less Binance/Kraken/HL ACKs)
     unfilled_buy = [
         {
@@ -4083,6 +4098,10 @@ def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
     ]
     sc_inv = evaluate_ai_decision_scorecard(inv_open, now_ts=now_s, live_prices={"BTCUSDC": 69650.0})
     assert sc_inv["count"] == 1 and sc_inv["losses"] == 1 and sc_inv["loss_streak"] == 1
+    # Frozen path-invalidated open BUY stays LOSS before 60m maturity even if spot bounces above invalidation_px
+    inv_open_frozen = [{**inv_open[0], "resolved_plan_status": "INVALIDATED"}]
+    sc_inv_frz = evaluate_ai_decision_scorecard(inv_open_frozen, now_ts=now_s, live_prices={"BTCUSDC": 69850.0})
+    assert sc_inv_frz["count"] == 1 and sc_inv_frz["losses"] == 1 and sc_inv_frz["loss_streak"] == 1
 
     # Closed realized BUY->SELL round-trip at -0.50% STILL scores LOSS (< -0.35% closed threshold)
     closed_small_loss = [
