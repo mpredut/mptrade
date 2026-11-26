@@ -5,6 +5,7 @@ at prompt-render time so Section 2 long-horizon context always agrees mathematic
 """
 from __future__ import annotations
 
+import calendar
 from datetime import datetime, timezone
 import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -13,7 +14,6 @@ from botcore import (
     fmt_signed,
     optional_env,
     resolve_now_ts,
-    safe_float,
     safe_int,
     safe_nonneg_float,
     safe_pos_float,
@@ -451,8 +451,9 @@ def format_long_horizon_section_lines(
     show_hor_col = eff_months != 12
     hor_hdr = f" {hor_lbl} Range (Pos) |" if show_hor_col else ""
     hor_sep = "---|" if show_hor_col else ""
+    hor_desc = f"{hor_lbl} / {eff_months}m" if hor_lbl != f"{eff_months}m" else f"{eff_months}m"
     out: List[str] = [
-        f"  * Multi-Month & Annual Structure ({hor_lbl} / {eff_months}m lookback; YTD, 52w, MA50/MA200 & Major Swings; zoom via verify_tools/chart_view.py){tag}:",
+        f"  * Multi-Month & Annual Structure ({hor_desc} lookback; YTD, 52w, MA50/MA200 & Major Swings; zoom via verify_tools/chart_view.py){tag}:",
         f"    | Symbol | YTD | 30d | 90d | 52w Range (Pos52w) |{hor_hdr} vs MA50 | vs MA200 | Swings ({hor_lbl}, YY-MM:px) |",
         f"    |---|---|---|---|---|{hor_sep}---|---|---|",
     ]
@@ -559,7 +560,16 @@ def _parse_ym_bound_ms(raw: Optional[str], *, is_end: bool = False) -> Optional[
     if yr < 2000 or mo < 1 or mo > 12:
         return None
     if dy > 0:
-        dt = datetime(yr, mo, min(dy, 28), 23 if is_end else 0, 59 if is_end else 0, tzinfo=timezone.utc)
+        max_dy = calendar.monthrange(yr, mo)[1]
+        dt = datetime(
+            yr,
+            mo,
+            min(dy, max_dy),
+            23 if is_end else 0,
+            59 if is_end else 0,
+            59 if is_end else 0,
+            tzinfo=timezone.utc,
+        )
         return dt.timestamp() * 1000.0
     if is_end:
         if mo == 12:
@@ -634,11 +644,13 @@ def render_ascii_chart_view(
                 if grid[rr][col] == " ":
                     grid[rr][col] = "|"
 
+    chg_s = f"{fmt_signed(chg, 1)}%" if chg is not None else "-"
+    ytd_s = f"{fmt_signed(item.get('ytd_pct'), 1)}%" if item.get("ytd_pct") is not None else "-"
     lines = [
         f"=== {item.get('symbol', '?')} ({tf}, {d0} .. {d1}, n={n} bars) ===",
-        f"Open={_fmt_range_px(open_p)} Close={_fmt_range_px(close_p)} ({fmt_signed(chg, 1)}%) | "
+        f"Open={_fmt_range_px(open_p)} Close={_fmt_range_px(close_p)} ({chg_s}) | "
         f"Range=[{_fmt_range_px(lo_p)}..{_fmt_range_px(hi_p)}] Pos={pos}% | "
-        f"YTD={fmt_signed(item.get('ytd_pct'), 1) if item.get('ytd_pct') is not None else '-'}% | "
+        f"YTD={ytd_s} | "
         f"MA50={_fmt_range_px(item.get('ma50'))} MA200={_fmt_range_px(item.get('ma200'))}",
         f"Swings: {sw_str}",
         "",

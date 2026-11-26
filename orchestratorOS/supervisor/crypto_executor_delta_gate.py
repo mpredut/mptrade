@@ -666,8 +666,9 @@ def evaluate_crypto_executor_delta_gate(
         return False, f"focus_symbols({','.join(clean_focus)})", escalate_high_effort, snapshot_meta
     if _parse_bool_flag(ui_turn_pending, False):
         return False, "ui_turn_pending", escalate_high_effort, snapshot_meta
-    if op_note_sig and op_note_sig != str(prev_meta.get("operator_note_sig") or ""):
-        return False, "operator_note_updated", escalate_high_effort, snapshot_meta
+    prev_op_note_sig = str(prev_meta.get("operator_note_sig") or "")
+    if op_note_sig != prev_op_note_sig:
+        return False, ("operator_note_updated" if op_note_sig else "operator_note_cleared"), escalate_high_effort, snapshot_meta
     if not prev_map or prev_ts <= 0.0 or prev_ts > eff_now + 5.0:
         return False, "no_prev_eval", escalate_high_effort, snapshot_meta
     if is_degraded_trading_model(prev_map.get("model_used")):

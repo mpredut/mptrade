@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, List
 from zoneinfo import ZoneInfo
 
 from botcore import topic_spec
@@ -18,7 +18,6 @@ from intelligence.sentiment.evaluators.long_horizon_evaluator import (
     compute_zigzag_swings,
     evaluate_symbol_long_horizon,
     format_horizon_label,
-    format_long_horizon_section_lines,
     parse_operator_regime_note_text,
     recalculate_long_horizon_with_live_price,
     render_ascii_chart_view,
@@ -27,7 +26,7 @@ from intelligence.sentiment.evaluators.prompt_delta_evaluator import evaluate_pr
 from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
 from orchestratorOS.supervisor.crypto_executor_delta_gate import evaluate_crypto_executor_delta_gate
 from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
-from verify_tools.audit_prompt_invariants import audit_rendered_prompt_text
+from intelligence.sentiment.evaluators.prompt_invariants_evaluator import audit_rendered_prompt_text
 from verify_tools.chart_view import main as chart_view_main
 
 
@@ -83,10 +82,12 @@ def test_long_horizon_configurable_months_zigzag_live_recalc_and_chart_zoom() ->
     assert recalc["pos_52w_pct"] == 0.0
     assert recalc["ytd_pct"] < ev_18m["ytd_pct"]
 
-    # ASCII chart zoom supports both --months and --from/--to slices cleanly
+    # ASCII chart zoom supports both --months and --from/--to slices cleanly (including day 31 without day-28 clipping)
     chart_txt = render_ascii_chart_view(ev_18m, start_ym="2026-01", end_ym="2026-10", timeframe="1w")
     assert "=== BTCUSDC (1w," in chart_txt
     assert "Swings:" in chart_txt
+    chart_oct_1d = render_ascii_chart_view(ev_18m, start_ym="2026-10-01", end_ym="2026-10-31", timeframe="1d")
+    assert "2026-10-01 .. 2026-10-31, n=31 bars" in chart_oct_1d
     chart_6m = render_ascii_chart_view(ev_18m, months=6, timeframe="1w")
     assert "=== BTCUSDC (1w," in chart_6m
 
@@ -153,6 +154,22 @@ def test_operator_regime_note_ttl_expiry_zero_tokens_and_delta_gate_wake(tmp_pat
     assert reason == "operator_note_updated"
     assert meta.get("operator_note_sig")
 
+    # 7. Clearing or expiring an active note symmetrically wakes Delta-Gate once ('operator_note_cleared'), then stays quiet
+    snap_cleared = TelemetrySensorSnapshot(
+        evaluated_at_ts=t0 + 60.0,
+        prices_and_trends={"BTCUSDC": {"price": 60800.0}},
+        operator_regime_note=None,
+    )
+    prev_with_note = {"ts": t0, "delta_gate_meta": meta}
+    skip_clr, rsn_clr, _, meta_clr = evaluate_crypto_executor_delta_gate(snap_cleared, prev_with_note, now_ts=t0 + 60.0)
+    assert skip_clr is False
+    assert rsn_clr == "operator_note_cleared"
+    assert "operator_note_sig" not in meta_clr
+    skip_next, _, _, _ = evaluate_crypto_executor_delta_gate(
+        snap_cleared, {"ts": t0 + 60.0, "delta_gate_meta": meta_clr}, now_ts=t0 + 120.0
+    )
+    assert skip_next is True
+
 
 def test_long_horizon_collector_prompt_rendering_warm_elision_and_chart_cli(tmp_path: Path, capsys: Any) -> None:
     """Verify collector persistence, prompt Section 2 G2/G3 rendering, WARM read-access rule, and chart_view CLI."""
@@ -209,7 +226,7 @@ def test_long_horizon_collector_prompt_rendering_warm_elision_and_chart_cli(tmp_
     assert "FULL READ ACCESS TO `cachedb/` & `statedb/` (`mptrade` workspace)" in cold
     assert "verify_tools/chart_view.py" in cold
     assert "- Operator Strategic Note (updated=" in cold
-    assert "Multi-Month & Annual Structure (18m / 18m lookback" in cold
+    assert "Multi-Month & Annual Structure (18m lookback" in cold
     assert "| BTCUSDC |" in cold
     assert audit_rendered_prompt_text(cold) == []
 
@@ -234,6 +251,31 @@ def test_long_horizon_collector_prompt_rendering_warm_elision_and_chart_cli(tmp_
     assert "Multi-Month & Annual Structure" not in warm
     assert "- Operator Strategic Note" not in warm
     assert audit_rendered_prompt_text(warm) == []
+
+    # When operator note expires or is cleared on Turn 3, WARM_DELTA notifies ONCE, then adds 0 tokens on Turn 4
+    t3 = t2 + 360.0
+    sensors_t3 = TelemetrySensorSnapshot(
+        evaluated_at_ts=t3,
+        macro_calendar=fixed_cal,
+        prices_and_trends={"BTCUSDC": {"price": 60860.0, "chg_24h_pct": -1.1, "low_24h": 59500.0, "high_24h": 61800.0}},
+        long_horizon=snap_lh,
+        operator_regime_note=None,
+    )
+    p3 = evaluate_prompt_delta_plan(
+        sensors_t3, asset_scope="crypto", now_ts=t3, is_warm_resume=True, prev_state=p2.next_state, conversation_id="lh-1"
+    )
+    warm_clr = build_supervisor_prompt(sensors_t3, logs, spec=topic_spec("auto_cryptotrade_executor"), compact_rules=True, delta_plan=p3)
+    assert "Operator_Note(EXPIRED_CLEARED)" in warm_clr
+    assert "- Operator Strategic Note" not in warm_clr
+    assert audit_rendered_prompt_text(warm_clr) == []
+
+    t4 = t3 + 360.0
+    p4 = evaluate_prompt_delta_plan(
+        sensors_t3, asset_scope="crypto", now_ts=t4, is_warm_resume=True, prev_state=p3.next_state, conversation_id="lh-1"
+    )
+    warm_after = build_supervisor_prompt(sensors_t3, logs, spec=topic_spec("auto_cryptotrade_executor"), compact_rules=True, delta_plan=p4)
+    assert "Operator_Note" not in warm_after
+    assert audit_rendered_prompt_text(warm_after) == []
 
     # Verify CLI chart_view works end-to-end on persisted snapshot
     rc = chart_view_main(["BTCUSDC", "--months", "12", "--cache-dir", cache_dir])

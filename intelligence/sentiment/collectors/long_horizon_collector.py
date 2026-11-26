@@ -32,9 +32,7 @@ from cachepaths import (
 )
 from instrument_registry import (
     discover_tradable_specs,
-    is_equity_or_tokenized_symbol,
     is_equity_symbol,
-    resolve_symbol_identity,
     venue_for_symbol,
 )
 from intelligence.external.collectors.base_collector import (
@@ -53,7 +51,6 @@ from intelligence.sentiment.evaluators.long_horizon_evaluator import (
     format_horizon_label,
     parse_operator_regime_note_text,
     resolve_long_horizon_months,
-    resolve_operator_note_ttl_days,
 )
 from providers.ohlc_utils import extract_yahoo_chart_ohlcv_bars
 from state_io import atomic_write_json, parse_json_payload, read_text_file

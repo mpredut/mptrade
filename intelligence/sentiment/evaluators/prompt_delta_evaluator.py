@@ -577,6 +577,8 @@ class PromptDeltaKeyframeEvaluator(PromptViewEvaluatorBase):
         for spec in PROMPT_DELTA_BLOCK_SPECS:
             b_key = spec.key
             if b_key not in block_hashes:
+                if b_key == "operator_regime_note" and b_key in prev_blocks:
+                    omitted_tokens.append(f"{spec.label}(EXPIRED_CLEARED)")
                 continue
             b_hash = block_hashes[b_key]
             k_turns = eff_cadences.get(spec.group, spec.refresh_turns)
