@@ -41,3 +41,30 @@ if [ -n "$HC_URL" ]; then
         && echo "$(date '+%H:%M') deadman: hc ping OK" \
         || echo "$(date '+%H:%M') deadman: hc ping FAILED (healthchecks.io will alarm if it persists)"
 fi
+
+BOOT_ID_SRC="${DEADMAN_BOOT_ID_PATH:-/proc/sys/kernel/random/boot_id}"
+BOOT_FILE="$ROOT/logs/.deadman_last_boot_id"
+BOOT_ID="$(cat "$BOOT_ID_SRC" 2>/dev/null || true)"
+if [ -n "$BOOT_ID" ]; then
+    PREV_BOOT_ID="$(cat "$BOOT_FILE" 2>/dev/null || true)"
+    if [ -z "$PREV_BOOT_ID" ]; then
+        echo "$BOOT_ID" > "$BOOT_FILE"
+    elif [ "$BOOT_ID" != "$PREV_BOOT_ID" ]; then
+        UP_SINCE="$(uptime -s 2>/dev/null || date '+%F %H:%M')"
+        GAP_INFO=""
+        if [[ "$LAST" =~ ^[0-9]+$ ]]; then
+            GAP_INFO=" (last heartbeat $(date -d "@$LAST" '+%F %H:%M'), gap $(( (NOW - LAST) / 60 )) min)"
+        fi
+        REBOOT_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -m 10 --retry 2 --retry-delay 5 --retry-connrefused \
+            "${AUTH_HDR[@]}" \
+            -H "Priority: urgent" -H "Title: SERVER REBOOTED ($HOST)" \
+            -d "Server booted at ${UP_SINCE}${GAP_INFO} -- check for crash / reboot / power loss." \
+            "https://ntfy.sh/$TOPIC" || echo "000")
+        if [[ "$REBOOT_HTTP" =~ ^2 ]]; then
+            echo "$BOOT_ID" > "$BOOT_FILE"
+            echo "$(date '+%H:%M') deadman: reboot detected (up since ${UP_SINCE}) -> push sent"
+        else
+            echo "$(date '+%H:%M') deadman: reboot detected (up since ${UP_SINCE}) -> ntfy HTTP $REBOOT_HTTP (will retry)"
+        fi
+    fi
+fi

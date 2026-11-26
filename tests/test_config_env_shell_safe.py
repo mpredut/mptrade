@@ -1738,6 +1738,97 @@ esac
     assert (fake_root / "statedb" / "orders" / "orders_active.json").exists()
 
 
+def test_deadman_switch_urgent_priority_and_reboot_alert(tmp_path):
+    """Verify deadman_switch.sh sends urgent scheduled heartbeats and urgent reboot push on boot_id change."""
+    fake_root = tmp_path / "repo"
+    fake_bin = tmp_path / "bin"
+    fake_root.mkdir()
+    fake_bin.mkdir()
+    (fake_root / "config.env").write_text(
+        "NTFY_TOPIC_SERVER=ntfy-server-test\nNTFY_TOPIC_ERROR=ntfy-error-test\n",
+        encoding="utf-8",
+    )
+    boot_id_file = tmp_path / "boot_id"
+    curl_log = tmp_path / "curl.log"
+    _write_bash_stub(
+        fake_bin,
+        "curl",
+        """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$CURL_LOG"
+code="200"
+if [[ "$*" == *"SERVER REBOOTED"* ]] && [ -n "${FAKE_REBOOT_HTTP:-}" ]; then
+    code="$FAKE_REBOOT_HTTP"
+fi
+printf '%s' "$code"
+exit 0
+""",
+    )
+
+    script = os.path.join(ROOT, "orchestratorOS", "livecheck", "deadman_switch.sh")
+    base_env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+        "REPO_ROOT": str(fake_root),
+        "ROOT": str(fake_root),
+        "DEADMAN_BOOT_ID_PATH": str(boot_id_file),
+        "CURL_LOG": str(curl_log),
+    }
+
+    def run_deadman(extra_env=None):
+        env = {**base_env, **(extra_env or {})}
+        return subprocess.run(
+            ["bash", script],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+
+    # 1. Initial run seeds boot_id without false reboot push; scheduled heartbeat uses urgent priority
+    boot_id_file.write_text("boot-aaa\n", encoding="utf-8")
+    r1 = run_deadman()
+    assert "pushed heartbeat (+35m)" in r1.stdout
+    assert "reboot detected" not in r1.stdout
+    assert (fake_root / "logs" / ".deadman_last_boot_id").read_text(encoding="utf-8").strip() == "boot-aaa"
+    calls = curl_log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1
+    assert "In: 35m" in calls[0]
+    assert "Priority: urgent" in calls[0]
+    assert "https://ntfy.sh/ntfy-server-test/server-alive" in calls[0]
+
+    # 2. Same boot_id produces no reboot alert
+    curl_log.write_text("", encoding="utf-8")
+    r2 = run_deadman()
+    assert "reboot detected" not in r2.stdout
+    assert len(curl_log.read_text(encoding="utf-8").splitlines()) == 1
+
+    # 3. Changed boot_id with failed ntfy push preserves old boot_id for retry
+    boot_id_file.write_text("boot-bbb\n", encoding="utf-8")
+    curl_log.write_text("", encoding="utf-8")
+    r3 = run_deadman({"FAKE_REBOOT_HTTP": "500"})
+    assert "ntfy HTTP 500 (will retry)" in r3.stdout
+    assert (fake_root / "logs" / ".deadman_last_boot_id").read_text(encoding="utf-8").strip() == "boot-aaa"
+
+    # 4. Retry succeeds: sends urgent SERVER REBOOTED push on NTFY_TOPIC_SERVER and advances boot_id
+    curl_log.write_text("", encoding="utf-8")
+    r4 = run_deadman({"FAKE_REBOOT_HTTP": "200"})
+    assert "reboot detected" in r4.stdout and "-> push sent" in r4.stdout
+    assert (fake_root / "logs" / ".deadman_last_boot_id").read_text(encoding="utf-8").strip() == "boot-bbb"
+    calls4 = curl_log.read_text(encoding="utf-8").splitlines()
+    assert len(calls4) == 2
+    assert "Priority: urgent" in calls4[1]
+    assert "Title: SERVER REBOOTED" in calls4[1]
+    assert calls4[1].endswith("https://ntfy.sh/ntfy-server-test")
+
+    # 5. Subsequent run with boot-bbb does not duplicate reboot alert
+    curl_log.write_text("", encoding="utf-8")
+    r5 = run_deadman()
+    assert "reboot detected" not in r5.stdout
+    assert len(curl_log.read_text(encoding="utf-8").splitlines()) == 1
+
+
+
 
 
 
