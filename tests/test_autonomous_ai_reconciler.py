@@ -1489,13 +1489,14 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
     reconciler.synthesize_and_diagnose(sensors, reconciler.harvest_log_anomalies(), topic_key="auto_cryptotrade_executor")
     crypto_prompt = captured_prompts[0]
     assert "Hyperliquid Active Cycle Cost & Drawdown Anchors:" in crypto_prompt
-    assert "venue_fee_per_leg=7bps" in crypto_prompt
+    assert "| hyperliquid | HYPEUSDC |" in crypto_prompt
+    assert "| 7 (4/7) |" in crypto_prompt
     assert '"venue": "binance" | "kraken" | "hyperliquid"' in crypto_prompt
 
     reconciler.synthesize_and_diagnose(sensors, reconciler.harvest_log_anomalies(), topic_key="auto_sharetrade_executor")
     share_prompt = captured_prompts[1]
     assert "Trading212 Active Cycle Cost & Drawdown Anchors:" in share_prompt
-    assert "venue_fee_per_leg=15bps" in share_prompt
+    assert "| t212 | SPCX_US_EQ | INVEST_RTH | 15 (15/15) |" in share_prompt
     assert '"venue": "t212"' in share_prompt
     assert "- US Equity & Macro Regime:" in share_prompt
     assert "- Fear & Greed:" not in share_prompt
@@ -2104,7 +2105,7 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     assert "\n  * HYPEUSD: Price=" not in u_prompt
     assert "* HYPEUSDC (HYPEUSD): ob_imbalance=0.61" in u_prompt
     assert "* ADAUSD: ob_imbalance=0.44" in u_prompt
-    assert "realized_pnl=$18.45, tp_sold=[1, 2]" in u_prompt
+    assert "realized_pnl=+$18.45, tp_sold=[1, 2]" in u_prompt
     assert "API-TRADABLE 24/7 on 'kraken' at 0bps maker/taker fee" in u_prompt
     assert "Cross-Market US Equities Telemetry (Live/Extended & T212 Quotes, Multi-Horizon Deltas)" in u_prompt
     assert "Realized 24h Cross-Asset Correlation" not in u_prompt
@@ -2714,7 +2715,7 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
     fmt_line = _format_venue_cycle_line("kraken", "ADAUSD", cyc_ada)
     assert "(None)" not in fmt_line
     assert "dd=-12.13%" in fmt_line
-    assert "realized_pnl=$-3.19" in fmt_line
+    assert "realized_pnl=-$3.19" in fmt_line
 
     # 2. Cross-venue isolation: Hyperliquid HYPEUSDC & TAOUSDC do not inherit Kraken's stale trailing_peak
     #    or Binance's cache_order.json cost basis, and orderbook wall dist uses ob_mid_price when cur_px diverges
@@ -2797,10 +2798,11 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
     # Hyperliquid HYPEUSDC must NOT have Kraken's 82.23 peak or positive dd_from_peak
     assert "dd_from_peak=13." not in crypto_prompt
     # Hyperliquid TAOUSDC must use its own cycle anchor (248.46) rather than Binance's 241.9
-    assert "[hyperliquid] TAOUSDC: free_TAO=1.0 ($228.5 USD), free_USDC=$32.5, px=228.5, avg_buy_px=248.46" in crypto_prompt
+    assert "[hyperliquid] TAOUSDC: free_TAO=1.0 ($228.5 USD), px=228.5, avg_buy_px=248.46" in crypto_prompt
+    assert "hyperliquid USDC=$32.50" in crypto_prompt
     # Orderbook wall distance uses ob_mid_price (78.865) instead of mismatched 93.35 (-16%)
-    assert "bid_wall=78.39 ($36000.0, dist=-0.60%)" in crypto_prompt
-    assert "ask_wall=79.0 ($90000.0, dist=+0.17%)" in crypto_prompt
+    assert "bid_wall=78.39 ($36.0K, dist=-0.60%)" in crypto_prompt
+    assert "ask_wall=79.0 ($90.0K, dist=+0.17%)" in crypto_prompt
     # Missing last_sell formats as Last SELL=none rather than Last SELL=None @ None (age=Noneh)
     assert "Last SELL=none" in crypto_prompt
     assert "Last SELL=None @ None" not in crypto_prompt
@@ -2989,8 +2991,7 @@ def test_volume_profile_liquidation_clusters_and_venue_fee_limits_telemetry(tmp_
     assert "liq_clusters(long_liq=$" in full_prompt
     assert "short_liq=$" in full_prompt
     assert "spread=4.97bps (bid=80480.0/ask=80520.0)" in full_prompt
-    assert "venue_fee_per_leg=10bps (tier=VIP0, maker=10bps/taker=10bps, spread=4.97bps)" in full_prompt
-    assert "limits(min_notional=$5, min_qty=" in full_prompt
+    assert "| binance | BTCUSDC | VIP0 | 10 (10/10) | $5 |" in full_prompt
     assert "max_buy=$995.0, max_sell=$2000.0" in full_prompt
 
 
@@ -3301,7 +3302,7 @@ def test_open_limit_orders_macro_benchmarks_and_last_cycle_execution_status(tmp_
     reconciler.synthesize_and_diagnose(sensors, reconciler.harvest_log_anomalies(), topic_key="auto_cryptotrade_executor")
     prompt_text = captured_prompts[-1]
     assert "open_limit_orders:" in prompt_text
-    assert "'order_id': '777888'" in prompt_text
+    assert "| 777888 |" in prompt_text
     assert "last_cycle_execution_status:" in prompt_text
     assert "'fill_px': 79214.39" in prompt_text
     assert "'slippage_bps': 1.2" in prompt_text
@@ -4704,8 +4705,8 @@ def test_iteration29_prompt_sections_3a_and_3b_quote_family_grouping():
     )
     joined_3b = "\n".join(lines_3b)
     assert "* XBTUSD (BTCEUR):" in joined_3b
-    assert "bid_wall=81500.0 ($200000.0, dist=-0.61%)" in joined_3b
-    assert "ask_wall=82500.0 ($250000.0, dist=+0.61%)" in joined_3b
+    assert "bid_wall=81500.0 ($200.0K, dist=-0.61%)" in joined_3b
+    assert "ask_wall=82500.0 ($250.0K, dist=+0.61%)" in joined_3b
 
 
 def test_iteration30_submit_decisions_scope_xstock_guard_and_instrument_quote_resolution(tmp_path):
@@ -4904,7 +4905,7 @@ def test_iteration32_resolve_assets_usdt_and_prompt_formatters_max_usd_and_eur_3
     joined_3b_eur = "\n".join(lines_3b_eur)
     assert "* XBTUSD:" in joined_3b_eur
     assert "* XBTEUR:" in joined_3b_eur
-    assert "bid_wall=73500.0 ($150000.0, dist=-0.68%)" in joined_3b_eur
+    assert "bid_wall=73500.0 ($150.0K, dist=-0.68%)" in joined_3b_eur
 
     # 3. build_supervisor_prompt forwards max_usd to lazy resolve_venue_fee_and_limits in Section 3C
     sensors = SimpleNamespace(
@@ -5205,7 +5206,7 @@ def test_iteration37_prompt_sibling_merge_max_usd_clamp_and_bare_btc_preflight()
     prompt = build_supervisor_prompt(sensors, [], max_usd=500.0)
     assert "vol_profile(POC=81500.0" in prompt
     assert "funding=0.00012" in prompt
-    assert "oi_usd=95000000.0" in prompt
+    assert "oi_usd=$95.00M" in prompt
     assert "max_buy=$500.0, max_sell=$500.0" in prompt
 
     # 2. normalize_trading_decisions uppercases/strips symbol and strips boolean symbol
@@ -5512,7 +5513,7 @@ def test_intraday_6h_bottom_structure_and_smt_divergence_formatting():
     })
     joined = "\n".join(lines)
     assert "bottom_6h(prior_low=76739.78, 1h_low=76387.17, reclaim=+0.61%)" in joined
-    assert "bottom_6h(prior_low=220.0, 1h_low=226.1, hl_diff=+2.77%)" in joined
+    assert "bottom_6h(prior_low=220.0, 1h_low=226.1, higher_low_pct=+2.77%)" in joined
 
 
 def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_path):
@@ -5552,7 +5553,7 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
 
     telem = collect_pretrade_telemetry("TAOUSDC", cachedb_dir=str(tmp_path))
     assert "6h Intraday Bottom Structure" in telem
-    assert "prior_6h_low=$220.0, 1h_low=$226.1, hl_diff=+2.77%" in telem["6h Intraday Bottom Structure"]
+    assert "prior_6h_low=$220.0, 1h_low=$226.1, higher_low_pct=+2.77%" in telem["6h Intraday Bottom Structure"]
 
     # 1. HighStakeGuard (BUY & SELL)
     hs_buy_client = DummyGeminiClient({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Verified 6h double bottom"})
@@ -5562,7 +5563,7 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
         cache_ttl_sec=0.0,
     )
     hs_guard.check("TAOUSDC", "BUY", 2.0, 231.8, telemetry=telem, notional_eur=463.6)
-    assert "prior_6h_low=$220.0, 1h_low=$226.1, hl_diff=+2.77%" in hs_buy_client.last_prompt
+    assert "prior_6h_low=$220.0, 1h_low=$226.1, higher_low_pct=+2.77%" in hs_buy_client.last_prompt
     assert "CONTRARIAN BOTTOM ACCUMULATION" in hs_buy_client.last_prompt
 
     hs_sell_client = DummyGeminiClient({"decision": "REJECTED", "suggested_scale": 0.0, "reason": "Do not sell into 6h double bottom"})
@@ -5592,7 +5593,7 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
         notional_eur=463.6,
     )
     assert "GENUINE ACCUMULATION & 6H BOTTOM STRUCTURE CONFIRMATION" in ps_client.last_prompt
-    assert "prior_6h_low=$220.0, 1h_low=$226.1, hl_diff=+2.77%" in ps_client.last_prompt
+    assert "prior_6h_low=$220.0, 1h_low=$226.1, higher_low_pct=+2.77%" in ps_client.last_prompt
 
     # 3. SentimentAdvisor
     sent_client = DummyGeminiClient(
@@ -6144,7 +6145,7 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
     )
     joined_3b = "\n".join(lines_3b)
     assert "spread=0.0013bps (bid=77746.99/ask=77747.0), ob_mid=77746.995" in joined_3b
-    assert "bid_wall=77746.99 ($120000.0, dist=+0.00%)" in joined_3b
+    assert "bid_wall=77746.99 ($120.0K, dist=+0.00%)" in joined_3b
     assert "cvd_15m=+9.75 BTC (+$758.0K)" in joined_3b
 
     # 4. Section 3C pnl_vs_avg=+6.89% when positive vs dd=-17.89% when negative + dd_from_peak on pos_peak
@@ -8691,7 +8692,7 @@ def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(
     sec_3c_lines = "\n".join(_format_portfolio_section(ps, "crypto"))
     assert "Portfolio Risk Engine (Crypto Scope: binance + kraken + hyperliquid; excl. T212 equities):" in sec_3c_lines
     assert "portfolio_btc_beta=" in sec_3c_lines
-    assert "subcycle_lifo_pnl=$+42.50" in sec_3c_lines
+    assert "subcycle_lifo_pnl=+$42.50" in sec_3c_lines
     assert "cvar_975=" not in sec_3c_lines
     assert "vol_target_tranche=" not in sec_3c_lines
     assert "post_trade_edge(" not in sec_3c_lines
@@ -8715,7 +8716,7 @@ def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(
     assert "btc_gamma_pin_strike" not in opt_surf
     assert "dealer_gamma_regime" not in opt_surf
     mb_line = format_macro_benchmarks_summary_line({"items": {"SPY": {"price": 754.2, "chg_24h_pct": 0.28}}, "btc_dvol": 39.9, **opt_surf})
-    assert "Options_Surface(RV=32.1%, VRP=+7.8%, PC_OI=0.24, Skew_25d=+3.00%)" in mb_line
+    assert "BTC_Options(RV=32.1%, VRP=+7.8%, PC_OI=0.24, Skew_25d=+3.00%)" in mb_line
 
 
 def test_prompt_deanchoring_and_cognitive_noise_optimizations(tmp_path):
@@ -8745,7 +8746,10 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations(tmp_path):
                     "macro_release_confirmed": True,
                     "fomc_today": True,
                     "next_event_is_high_impact": False,
-                    "upcoming_windows": ["US Wall Street Cash Close at 23:00 EET in 1h"],
+                    "upcoming_windows": [
+                        "US Wall Street Cash Close at 23:00 EET in 1h",
+                        "Asian Tokyo Open at 02:00 EET in 4h",
+                    ],
                 },
                 breaking_news=[],
             )
@@ -10370,7 +10374,7 @@ def test_advisory_guard_probe_and_scorecard_surfaced_in_section_3c(capsys):
         LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0),
         topic_spec("auto_cryptotrade_executor"),
     )
-    assert "AI Decision Scorecard (48h, n=4): 1W/0S/3L, avg=-1.45%, net=-$195, streak=3L [BUY_SHADOW_COOLDOWN: 3.4h left]" in prompt_txt
+    assert "AI Decision Scorecard (48h, n=4): 1W/0BE/3L, avg=-1.45%, net=-$195, streak=3L [BUY_SHADOW_COOLDOWN: 3.4h left]" in prompt_txt
     assert "ZERO PROFIT OR STRATEGY GUARDS (AI SURVIVAL BREAKERS ONLY)" in prompt_txt
     assert "Advisory Deterministic Guard Probes" not in prompt_txt
     assert "verify_tools/probe_order_guards.py" not in prompt_txt

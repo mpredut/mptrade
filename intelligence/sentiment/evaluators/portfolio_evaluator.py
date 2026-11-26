@@ -46,6 +46,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_venue_fee_and_limits,
 )
 from instrument_registry import casefold_get, resolve_symbol_identity
+from providers.ai_survival_guard import format_signed_usd
 from providers.base import MarketDataProvider
 from providers.order_id_context import (
     format_actor_tag,
@@ -493,7 +494,7 @@ def format_recent_fill_subcycle_parts(
     ):
         parts.append(f"Swing Sub-Cycle Avg BUY={sw_avg}")
     if (lifo_pnl := safe_float(fills.get("lifo_realized_pnl_usd"), None)) is not None and abs(lifo_pnl) >= 0.01:
-        parts.append(f"Sub-Cycle LIFO Realized PnL=${fmt_signed(lifo_pnl)}")
+        parts.append(f"Sub-Cycle LIFO Realized PnL={format_signed_usd(lifo_pnl, decimals=2)}")
     if include_open_lots:
         o_lots = [
             f"{round_opt_px(lt.get('qty'), 6)}@{round_opt_px(lt.get('entry_px'), 6)}"

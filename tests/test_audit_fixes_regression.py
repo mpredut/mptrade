@@ -2817,8 +2817,7 @@ def test_crypto_prompt_medium_minor_audit_fixes_2_1_to_2_4():
         max_usd=1000.0,
     )
     assert "for low maker fees" not in rules_txt
-    assert "capture bid-ask spread and lower execution cost" in rules_txt
-    assert "negative bps = favorable price improvement" in rules_txt
+    assert "capture spread and cut fees" in rules_txt
 
 
 def test_cycle1_geo_unassessed_plans_and_news_clickbait_fixes(tmp_path):

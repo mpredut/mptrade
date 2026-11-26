@@ -954,6 +954,14 @@ def format_interval_sec_label(itv_sec: float) -> str:
     return f"{round(itv_sec)}s" if abs(itv_sec - round(itv_sec)) < 1e-6 else f"{itv_sec:.1f}s"
 
 
+def format_age_sec_compact(age_sec: float) -> str:
+    """Format telemetry age in seconds (<120s -> `8.5s`) or minutes (>=120s -> `9.0m`) for prompt readability."""
+    v = max(0.0, safe_nonneg_float(age_sec, default=0.0) or 0.0)
+    if v >= 120.0:
+        return f"{v / 60.0:.1f}m"
+    return f"{v:.1f}s"
+
+
 
 KINEMATIC_HORIZON_SPECS: Tuple[Tuple[str, str, str], ...] = (
     ("90s", "vel_90s_pct_min", "accel_90s_pct_min2"),

@@ -25,6 +25,7 @@ from cachepaths import is_kraken_tokenized_asset
 from instrument_registry import discover_tradable_specs
 from intelligence.macro_sentiment_ssot import (
     CRYPTO_ONLY_MACRO_SENSOR_KEYS,
+    format_age_sec_compact,
     format_telemetry_domain_age_tag,
     resolve_telemetry_domain_stale_thresholds_sec,
 )
@@ -229,7 +230,7 @@ def build_supervisor_prompt(
                 us_rth_open=us_rth_open,
                 thresholds=stale_thrs,
             )
-            age_tokens.append(f"{k}={v}s{stale_tag}")
+            age_tokens.append(f"{k}={format_age_sec_compact(v_f or 0.0)}{stale_tag}")
         if age_tokens:
             context_items.append(f"- Snapshot Domain Ages: {', '.join(age_tokens)}")
     if not is_pure_sre and delta_plan is not None:
@@ -365,7 +366,7 @@ def build_supervisor_prompt(
             if is_equities
             else (
                 "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN), BREAKOUT MOMENTUM & KINEMATICS: Weigh `kinematics(vel_90s/5m, acc_90s/5m, kalman_z)`, `kalman_vel`, `slopes`, "
-                "`bottom_6h`, `vs_btc`, `cvd_5m/15m`, `spot_cvd_15m` (`[real_spot]` vs `[est:ob+15m]`, never double-count with `ob_imbalance`), `rvol`, `taker_ratio`, L2 walls. "
+                "`bottom_6h`, `vs_btc`, `cvd_5m/15m`, `spot_cvd_15m` (`[real_spot]` vs `[est:ob+15m]`, never double-count with `ob_imbalance` `[0..1, 0.5=neutral]`), `rvol`, `taker_ratio`, L2 walls. "
                 f"1) Deep dips (deceleration+absorption): size decisively at ${half_max_usd:g}\u2013${full_max_usd:g} when free cash is ample (avoid timid $500 tickets). "
                 "2) Confirmed breakouts (`vel_90s>0`, `vel_5m>0`, `acc_90s>=0`, `rvol>=1.2x`, supportive `cvd`/`taker_ratio`, clear runway below ask walls): "
                 "enter near-BBO maker `LIMIT` (`urgency:\"HIGH\"`, tight `invalidation_px`) even at high `pos_15m` (80\u2013100%); skip if capped by an ask wall or decelerating/distributing. "
@@ -389,12 +390,12 @@ def build_supervisor_prompt(
         structure_macro_rule = (
             "   - STRUCTURE & CROSS-ASSET MACRO, VIX & INSTITUTIONAL CRYPTO/OPTIONS SURFACE SYMMETRY: Combine `vol_profile` (`POC`/`VAL`/`VAH`/`LVN`, `REAL_VOL` vs `TPO`), "
             "`session_vwap`, per-venue fees/spread/`limits`, and Section 1 cross-asset telemetry "
-            "(`SPY/QQQ/ES=F/NQ=F/VIX/DXY/US10Y`, `Futures_Lead`, `IBIT`, `CB_Premium`, `BTC_DVOL/ETH_DVOL`, `Options_Surface` & `ETH_Options`; note `delayed=` tags on Yahoo futures/VIX during RTH, and judge coupled risk-on/off vs cross-asset decoupling directly from the numbers; positive `Skew_25d` = Put_IV - Call_IV > 0 reflects put-buying fear, negative reflects call demand).\n"
+            "(`SPY/QQQ/ES=F/NQ=F/VIX/DXY/US10Y`, `Futures_Lead`, `IBIT`, `CB_Premium`, `BTC_DVOL/ETH_DVOL`, `BTC_Options` & `ETH_Options`; note `delayed=` tags on Yahoo futures/VIX during RTH, and judge coupled risk-on/off vs cross-asset decoupling directly from the numbers; positive `Skew_25d` = Put_IV - Call_IV > 0 reflects put-buying fear, negative reflects call demand).\n"
             if is_equities
             else (
                 "   - STRUCTURE, LIQUIDATIONS & CROSS-ASSET MACRO, VIX & INSTITUTIONAL CRYPTO/OPTIONS SURFACE SYMMETRY: Combine `vol_profile` (`POC`/`VAL`/`VAH`/`LVN`, `REAL_VOL` vs `TPO`), "
                 "`liq_clusters` (`src=model_est` heuristic bands; prioritize `realized_liq_15m` when present), `book_window` cap tags, per-venue fees/spread/`limits`, and Section 1 cross-asset telemetry "
-                "(`SPY/QQQ/ES=F/NQ=F/VIX/DXY/US10Y`, `Futures_Lead`, `IBIT`, `CB_Premium`, `BTC_DVOL/ETH_DVOL`, `Options_Surface` & `ETH_Options`, judging coupled risk-on/off vs cross-asset decoupling directly from the numbers; positive `Skew_25d` = Put_IV - Call_IV > 0 reflects put-buying fear, negative reflects call demand).\n"
+                "(`SPY/QQQ/ES=F/NQ=F/VIX/DXY/US10Y`, `Futures_Lead`, `IBIT`, `CB_Premium`, `BTC_DVOL/ETH_DVOL`, `BTC_Options` & `ETH_Options`, judging coupled risk-on/off vs cross-asset decoupling directly from the numbers; positive `Skew_25d` = Put_IV - Call_IV > 0 reflects put-buying fear, negative reflects call demand).\n"
             )
         )
         tasks.append(
@@ -441,7 +442,7 @@ def build_supervisor_prompt(
             + "     3) Targeting specific orders with `cancel_order_ids: [...]` cancels only those exact IDs "
             "(standalone `CANCEL` cancels listed AI or bot orders; on `BUY`/`SELL` without `cancel_order_ids`, only same-side orders cancel; if cancel fails, replacement aborts).\n"
             f"   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: Decide freely WHEN/WHAT/HOW MUCH/WHICH venue ({venue_list_desc}). "
-            "Cost basis (`avg_buy_px`, `lifo_rem_avg_px`, `open_lifo_lots`) is informational, NEVER a constraint on 2-way pairs: harvest profitable LIFO tranches or up to `50%\u2013100%` of `value_usd` "
+            f"Cost basis (`avg_buy_px`, `lifo_rem_avg_px`, `open_lifo_lots`) is informational, NEVER a constraint on 2-way {'equities' if is_equities else 'pairs'}: harvest profitable LIFO tranches or up to `50%\u2013100%` of `value_usd` "
             f"(up to {max_usd:g} USD), OR trim/exit via near-market `LIMIT` even at breakeven or below cost basis on breakdown{xs_exception_sfx}.\n"
             + dip_flow_rule
             + limit_exec_rule
@@ -555,7 +556,7 @@ def build_supervisor_prompt(
             "     - On routine pure `HOLD` cycles (no BUY/SELL/cancel action, no Section 4 priority symbols, no user chat message), "
             f"keep the report ULTRA-COMPACT (2-3 short bullet lines max: NAV + free cash, 1-line market pulse, HOLD rationale; omit {unit_tables}).\n"
             "     - On BUY/SELL/cancel, Section 4 priority symbols, or user chat replies, include concise bullet points for: "
-            f"Pia\u021ba Live & Pante ({ro_all_assets}), Portofoliu, Solduri & Pozi\u021bii Active, \u0219i Decizia AI de Tranzac\u021bionare / R\u0103spuns la interven\u021biile din chat).\n",
+            f"Pia\u021ba Live & Pante ({ro_all_assets}), Portofoliu, Solduri & Pozi\u021bii Active, \u0219i Decizia AI de Tranzac\u021bionare / R\u0103spuns la interven\u021biile din chat.\n",
         )
     )
 

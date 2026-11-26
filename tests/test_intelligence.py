@@ -6964,8 +6964,8 @@ def test_iter97_prompt_sections_btc_merge_24h_horizons_micro_wall_sync_and_pretr
         },
     }
     lines_3b = "\n".join(_format_microstructure_section(micro_3b, pt_3b))
-    assert "bid_wall=148.5 ($18000.0" in lines_3b
-    assert "ask_wall=151.5 ($16000.0" in lines_3b
+    assert "bid_wall=148.5 ($18.0K" in lines_3b
+    assert "ask_wall=151.5 ($16.0K" in lines_3b
     sync_sibling_symbol_telemetry(pt_3b, micro_3b)
     assert micro_3b["SOLUSDC"]["bid_wall_usd"] == pytest.approx(18000.0)
     assert micro_3b["SOLUSDC"]["ask_wall_usd"] == pytest.approx(16000.0)
@@ -8450,10 +8450,10 @@ def test_iter23_cycle_realized_pnl_sync_legacy_whale_refresh_and_post_rth_zero_v
             }
         )
     )
-    assert "realized_pnl=$-179.69" not in rendered_portfolio
-    assert "'cum_realized_pnl_usd'" not in rendered_portfolio
-    assert "'realized_pnl_usd': -22.62" in rendered_portfolio
-    assert "realized_pnl=$-22.62 (cum_cycles=$-179.69)" in rendered_portfolio
+    assert "realized_pnl=-$179.69" not in rendered_portfolio
+    assert "cum=" not in rendered_portfolio
+    assert "realized=-$22.62" in rendered_portfolio
+    assert "realized_pnl=-$22.62 (cum_cycles=-$179.69)" in rendered_portfolio
 
 
 def test_iter108_portfolio_collector_and_scope_filter_equity_crypto_isolation(tmp_path):

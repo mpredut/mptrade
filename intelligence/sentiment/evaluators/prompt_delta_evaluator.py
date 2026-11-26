@@ -78,6 +78,7 @@ PROMPT_DELTA_BLOCK_SPECS: Tuple[PromptDeltaBlockSpec, ...] = (
     PromptDeltaBlockSpec("calibration", "Calibration", "G1", PROMPT_DELTA_GROUP_CADENCES["G1"], "execution"),
     PromptDeltaBlockSpec("recent_orders", "Recent_Fills", "G1", PROMPT_DELTA_GROUP_CADENCES["G1"], "execution"),
     # G2: Slow / near-static context (refresh every 5 unchanged warm turns, or immediately on change)
+    PromptDeltaBlockSpec("venue_specs", "Venue_Specs", "G2", PROMPT_DELTA_GROUP_CADENCES["G2"], "execution"),
     PromptDeltaBlockSpec("fear_greed", "Fear&Greed", "G2", PROMPT_DELTA_GROUP_CADENCES["G2"], "macro"),
     PromptDeltaBlockSpec("etf_flows", "ETF_Flows", "G2", PROMPT_DELTA_GROUP_CADENCES["G2"], "macro"),
     PromptDeltaBlockSpec("kraken_xstocks", "xStocks", "G2", PROMPT_DELTA_GROUP_CADENCES["G2"], "xstocks"),
@@ -273,6 +274,26 @@ def _extract_block_fingerprints(
     recent_order_hashes: Dict[str, str] = {}
     if isinstance(ps, Mapping) and ps:
         pview = evaluate_portfolio_prompt_view(dict(ps), asset_scope=asset_scope, max_usd=max_usd, min_usd=min_usd)
+        if t_pos := pview.get("tradable_positions"):
+            spec_rows = [
+                (
+                    pv.get("venue"),
+                    pv.get("disp_symbol"),
+                    pv.get("fee_tier"),
+                    pv.get("maker_bps"),
+                    pv.get("taker_bps"),
+                    pv.get("min_notional_usd"),
+                    tuple(
+                        (pfx, val)
+                        for pfx, val in (pv.get("limit_items") or ())
+                        if pfx in ("min_qty=", "step=", "tick=")
+                    ),
+                )
+                for pv in t_pos
+                if isinstance(pv, Mapping)
+            ]
+            if spec_rows:
+                block_hashes["venue_specs"] = _hash_payload(spec_rows)
         if sc_line := format_ai_decision_scorecard_line(pview.get("ai_decision_scorecard")):
             block_hashes["scorecard"] = _hash_payload(sc_line)
         if cal_line := format_ai_calibration_feedback_line(pview.get("ai_calibration_feedback")):

@@ -2219,7 +2219,7 @@ def test_subcycle_lifo_pnl_reset_open_order_deep_passive_and_cycle_wallet_sync(m
     # 1. Operational clock header uses Europe/Bucharest (EET / EEST)
     prompt_txt = build_supervisor_prompt(sensors=object(), logs=[])
     clock_line = next(l for l in prompt_txt.splitlines() if l.startswith("### 0. RUN TIMESTAMP & OPERATIONAL CLOCK:"))
-    assert clock_line.endswith((" EET", " EEST"))
+    assert any(tz in clock_line for tz in (" EET (", " EEST ("))
 
     # 2. extract_symbol_recent_fills resets LIFO PnL across flattened cycles & scopes to 72h swing window
     now_ms = 1_780_000_000_000
@@ -2638,7 +2638,8 @@ def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
             include_macro_benchmarks=False,
         )
     )
-    assert "RESTING_IN_BOOK" in sec_3c_fallback
+    assert "| binance | BTCUSDC | BUY | 75000.0 | 0.01 | 0 | 101 |" in sec_3c_fallback
+    assert "Recent Autonomous Intents:" not in sec_3c_fallback
 
     # 13. Sibling microstructure flow/liq reconciliation, squeeze-vs-dump guard, and T212 chart includePrePost
 
@@ -4129,7 +4130,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert "90s=+0.00125" in pt_tao_58.get("Dynamic Multi-Window Slopes", "")
     assert "Active Cycle Avg BUY=" in pt_tao_58.get("Recent Venue Fills", "")
     assert "Tactical Sub-Cycle Avg BUY=" in pt_tao_58.get("Recent Venue Fills", "")
-    assert "Sub-Cycle LIFO Realized PnL=$+1.00" in pt_tao_58.get("Recent Venue Fills", "")
+    assert "Sub-Cycle LIFO Realized PnL=+$1.00" in pt_tao_58.get("Recent Venue Fills", "")
 
     # Bug 59 & 60: build_cross_market_context includes slope_90s and t212_cycle cost_usd/dca_buys
     cmc_60 = build_cross_market_context(
@@ -4800,7 +4801,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert m_b4["oi_usd"] == 403_209_711.39
     assert m_b4["native_l1_oi_usd"] == 1_863_328_553.78
     sec3b_b4 = "\n".join(_format_microstructure_section({"HYPEUSDC": m_b4}, {"HYPEUSDC": {"price": 86.25}}))
-    assert "oi_usd=403209711.39 (l1_oi=$1.86B)" in sec3b_b4
+    assert "oi_usd=$403.21M (l1_oi=$1.86B)" in sec3b_b4
 
     # Bug 5: Fill-time age_min & 60m terminal cutoff in build_last_cycle_execution_status + filled_at backfill in reconcile_intents_from_execution_audit
     aud_dir_b5 = tmp_path / "audit_b5"
@@ -8579,7 +8580,7 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert "perp_basis=" not in sec_3b_nvda
     assert "funding=" not in sec_3b_nvda
     assert "funding_ann=" not in sec_3b_nvda
-    assert "oi_usd=285486813126.0" in sec_3b_nvda
+    assert "oi_usd=$285.49B" in sec_3b_nvda
 
     # Volume profile Winsorizes single-bar block volume spikes (8x median) and compute_24h_price_metrics resolves 30m from -25m across post-market gaps
 
@@ -9907,7 +9908,7 @@ def test_ai_data_coherence_and_quota_fingerprint_fixes(tmp_path, monkeypatch):
         {"NVDA_US_EQ": {"price": 206.95}},
     )
     sec_3b_txt = "\n".join(sec_3b_lines)
-    assert "oi_usd=285486813126.0 (cboe_options_oi)" in sec_3b_txt
+    assert "oi_usd=$285.49B (cboe_options_oi)" in sec_3b_txt
     assert "liq_clusters(" not in sec_3b_txt
 
     # Fix #2 & #5B: AVCO vs remaining LIFO VWAP on NVDA_US_EQ and older_core_qty on BTCUSDC
@@ -10212,7 +10213,7 @@ def test_kinematic_velocity_acceleration_and_impulse_wakeup(tmp_path, monkeypatc
     )
     assert "UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING" in prompt_txt
     assert "even at breakeven or below cost basis" in prompt_txt
-    assert "kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)" in prompt_txt
+    assert "kinematics(vel_90s/5m, acc_90s/5m, kalman_z)" in prompt_txt
 
     # 5. Event-driven kinematic impulse wakeup (symmetric drop/spike, equity filter, cooldown & cron guards)
     shocked_syms = evaluate_kinematic_impulse_symbols(
@@ -10752,7 +10753,7 @@ def test_prompt_audit_15_full_telemetry_and_clarity_fixes(tmp_path, monkeypatch)
     )
     assert snap_orch.source_ages_sec.get("orderbook_newest") == pytest.approx(352.4, abs=1.0)
     prompt_s0 = build_supervisor_prompt(snap_orch, SimpleNamespace(total_scanned_files=0, error_count=0, warning_count=0, critical_events=[], guard_interventions=[]))
-    assert "orderbook_newest=352.4s[stale]" in prompt_s0
+    assert "orderbook_newest=5.9m[stale]" in prompt_s0
 
     # 4 & 5 & 8 & 13. Tokenized xStocks skip Binance Futures, omit liq_clusters/None whale fields, tag spot_cvd/liq_clusters/book_window
     wc_tok = WhalePositioningCollector(cache_dir=str(cdir))
@@ -10953,19 +10954,19 @@ def test_prompt_audit_15_full_telemetry_and_clarity_fixes(tmp_path, monkeypatch)
         )
     )
     assert "Portfolio Risk Engine (Crypto Scope: binance + kraken + hyperliquid; excl. T212 equities): crypto_nav=$16,107.24" in sec3c_out
-    assert "realized_pnl=$-189.93 (subcycle=$0.00)" in sec3c_out
-    assert "realized_pnl=$5.31 (cum_cycles=$179.25)" in sec3c_out
+    assert "realized_pnl=-$189.93 (subcycle=$0.00)" in sec3c_out
+    assert "realized_pnl=+$5.31 (cum_cycles=+$179.25)" in sec3c_out
     assert "last_sell=68.900061 (SL)" in sec3c_out
-    assert "'quote_source': 'yahoo_ext'" in sec3c_out
-    assert "'t212_close_px': 155.15" in sec3c_out
-    assert "'RGNT_US_EQ'" not in sec3c_out
-    assert "'t212_cycle'" not in sec3c_out
+    assert "yahoo_ext (2m)" in sec3c_out
+    assert "$155.15" in sec3c_out
+    assert "RGNT_US_EQ" not in sec3c_out
+    assert "| Cycle |" not in sec3c_out
 
     sec3c_all = "\n".join(
         _format_portfolio_section({"cross_market_context": cmc_payload}, asset_scope="all", include_macro_benchmarks=False)
     )
-    assert "'RGNT_US_EQ'" in sec3c_all
-    assert "'t212_cycle'" in sec3c_all
+    assert "| RGNT_US_EQ |" in sec3c_all
+    assert "| Cycle |" in sec3c_all
 
 
 def test_item_1_2_ob_freshness_ssot_and_no_sub_1pct_wall_rescaling(tmp_path):
@@ -11092,10 +11093,10 @@ def test_item_1_3_and_ssot_unification_contracts(tmp_path):
         },
     )
     eq_prompt = build_supervisor_prompt(eq_snap, [], topic_key="auto_sharetrade_executor")
-    assert "prices_newest=54000.0s[market_closed]" in eq_prompt
-    assert "orderbook_newest=54000.0s[market_closed]" in eq_prompt
-    assert "venue_balances=54000.0s[market_closed]" in eq_prompt
-    assert "geopolitical_threat=40000.0s[stale]" in eq_prompt
+    assert "prices_newest=900.0m[market_closed]" in eq_prompt
+    assert "orderbook_newest=900.0m[market_closed]" in eq_prompt
+    assert "venue_balances=900.0m[market_closed]" in eq_prompt
+    assert "geopolitical_threat=666.7m[stale]" in eq_prompt
 
     # Active-fleet filtering & casefold deduplication in MarketAndPortfolioSnapshotOrchestrator
     cdir = tmp_path / "cachedb"
@@ -11163,7 +11164,7 @@ def test_item_1_3_and_ssot_unification_contracts(tmp_path):
     ps_before = copy.deepcopy(ps_in)
     rendered_3c = "\n".join(_format_portfolio_section(ps_in, asset_scope="crypto", include_macro_benchmarks=False))
     assert ps_in == ps_before
-    assert "realized_pnl=$5.31 (cum_cycles=$179.25)" in rendered_3c
+    assert "realized_pnl=+$5.31 (cum_cycles=+$179.25)" in rendered_3c
     view_d = compute_cycle_subcycle_realized_pnl_view(ps_in["hyperliquid_cycles"]["HYPEUSDC"], 5.31)
     assert view_d["realized_pnl_usd"] == pytest.approx(5.31)
     assert view_d["cum_realized_pnl_usd"] == pytest.approx(179.25)
@@ -11650,9 +11651,8 @@ def test_item_3_4_realized_pnl_flat_cleanup_and_sibling_cum_symmetry():
             "crypto",
         )
     )
-    assert "'realized_pnl_usd': 5.31" in sec_crypto
-    assert "'cum_realized_pnl_usd': -99.53" in sec_crypto
-    assert "'subcycle_realized_pnl_usd'" not in sec_crypto
+    assert "realized=+$5.31 cum=-$99.53" in sec_crypto
+    assert "subcycle_realized_pnl_usd" not in sec_crypto
 
     sec_all = "\n".join(
         _format_portfolio_section(
@@ -11678,10 +11678,10 @@ def test_item_3_4_realized_pnl_flat_cleanup_and_sibling_cum_symmetry():
             "all",
         )
     )
-    assert "realized_pnl=$10.35 (cum_cycles=$21.20)" in sec_all
-    assert "realized_pnl=$5.31 (cum_cycles=$-99.53)" in sec_all
-    assert "'cum_realized_pnl_usd'" not in sec_all
-    assert "'subcycle_realized_pnl_usd'" not in sec_all
+    assert "realized_pnl=+$10.35 (cum_cycles=+$21.20)" in sec_all
+    assert "realized_pnl=+$5.31 (cum_cycles=-$99.53)" in sec_all
+    assert "cum=" not in sec_all
+    assert "subcycle_realized_pnl_usd" not in sec_all
 
     sec_eq = "\n".join(
         _format_portfolio_section(
@@ -11914,7 +11914,7 @@ def test_item_3_6_scoped_risk_engine_xstock_beta_and_shadow_state_exclusion(tmp_
     assert "portfolio_btc_beta=" not in sec_eq
     assert "avg_corr_24h=" not in sec_eq
     assert "intraday_var_95=$14.68 (1.17%)" in sec_eq
-    assert "subcycle_lifo_pnl=$+22.99" in sec_eq
+    assert "subcycle_lifo_pnl=+$22.99" in sec_eq
 
 
 def test_item_3_7_book_window_level_cap_symmetry_and_thin_book_isolation(tmp_path):
@@ -12062,7 +12062,7 @@ def test_item_3_8_offline_real_vol_upgrade_xstock_case_and_last_cycle_exec_align
         SimpleNamespace(total_scanned_files=0, error_count=0, warning_count=0, critical_events=[], guard_interventions=[]),
         topic_key="auto_cryptotrade_executor",
     )
-    assert "recent `<=60m` fill/rejection or `<=30m` resting order" in sup_prompt
+    assert "`last_cycle_execution_status`" in sup_prompt
 
 
 def test_burnin_antxusd_empty_book_backoff_and_equities_xstock_readonly_framing(tmp_path, caplog):
@@ -13290,7 +13290,7 @@ def test_sentiment_advisor_quantitative_prompt_enrichment_geopolitical_context_a
     sc_ok = format_ai_decision_scorecard_line(
         {"count": 4, "wins": 4, "scratches": 0, "losses": 0, "avg_edge_pct": 2.81, "net_usd": 49.0, "status": "HEALTHY"}
     )
-    assert sc_ok == "AI Decision Scorecard (48h, n=4): 4W/0S/0L, avg=+2.81%, net=+$49"
+    assert sc_ok == "AI Decision Scorecard (48h, n=4): 4W/0BE/0L, avg=+2.81%, net=+$49"
     assert "[HEALTHY]" not in sc_ok
     sc_cd = format_ai_decision_scorecard_line(
         {
@@ -15021,7 +15021,7 @@ def test_prompt_telemetry_audit_fixes_low_issues(tmp_path):
         macro_calendar=None,
     )
     sec3a_txt = "\n".join(_format_macro_and_news_section(macro_snap, asset_scope="crypto"))
-    assert "cachedb/macro/news_feed_collect.json" in sec3a_txt
+    assert "- Live Breaking News Feed:" in sec3a_txt
 
     assert is_excluded_reference_news_item(
         "I’m terrified of a market crash. Should I put $400,000 of my $1 million retirement savings into an annuity?",
@@ -18253,8 +18253,7 @@ def test_cycle2_share_and_crypto_prompt_audit_fixes() -> None:
     }
     lines_open = _format_microstructure_section(ms_eq_open, pt_eq, now_ts=ts_open_eq, asset_scope="equities")
     nvda_open_line = next(ln for ln in lines_open if "NVDA_US_EQ" in ln)
-    assert "ob=40.0s/90s" in nvda_open_line
-    assert "rth_flow=35.0s/60s" in nvda_open_line
+    assert "source_ages(" not in nvda_open_line
     assert "whale=" not in nvda_open_line
     assert "[stale]" not in nvda_open_line
 
@@ -18392,11 +18391,11 @@ def test_cycle3_globex_regular_market_time_t212_ob_stale_and_share_prompt_rules(
     share_full = build_supervisor_prompt(TelemetrySensorSnapshot(), empty_logs, topic_spec("auto_sharetrade_executor"), compact_rules=False)
     share_compact = build_supervisor_prompt(TelemetrySensorSnapshot(), empty_logs, topic_spec("auto_sharetrade_executor"), compact_rules=True)
     crypto_full = build_supervisor_prompt(TelemetrySensorSnapshot(), empty_logs, topic_spec("auto_cryptotrade_executor"), compact_rules=False)
-    assert "restore at maker fee" not in share_full
+    assert "(maker fee)" not in share_full
     assert "watch `[ob_stale]` when `ob_age > 30s`" not in share_full
     assert "spot maker-LIMIT execution" not in share_compact
     assert "spot LIMIT execution, active open-order management" in share_compact
-    assert "restore at maker fee" in crypto_full
+    assert "(maker fee)" in crypto_full
     assert "watch `[ob_stale]` when `ob_age > 30s`" in crypto_full
 
 
@@ -18791,7 +18790,7 @@ def test_cycle9_10_static_precision_hl_buy_buf_gw_min_survival_rules_and_gold_mi
     assert "hourly replace churn cap (6/h if move < 0.25%)" in crypto_full
     assert "24h cooldown" in crypto_full
     assert "24h cooldown" in crypto_comp
-    assert "min_qty=0.01, step=0.01, tick=0.01" in share_full
+    assert "| 0.01 | 0.01 | 0.01 |" in share_full
     assert "max_sell=$0.0" in share_full
 
     # 4. Gold mine disaster headline is demoted off-topic while real gold macro headlines remain financial.

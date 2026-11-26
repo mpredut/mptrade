@@ -194,9 +194,11 @@ def _make_rich_sensors(ts: float, *, anchor_ts: float | None = None) -> Telemetr
                 "SPCXxUSD": {"qty": 10.0, "avg_cost_px": 15.0, "price": 16.5, "pnl_pct": 10.0},
             },
         },
-        "equity_bellwethers": {
-            "NVDA_US_EQ": {"price": 142.5, "quote_source": "yahoo", "market_state": "REGULAR"},
-            "SPCX_US_EQ": {"price": 16.5, "quote_source": "t212", "market_state": "REGULAR"},
+        "cross_market_context": {
+            "equity_bellwethers": {
+                "NVDA_US_EQ": {"price": 142.5, "quote_source": "yahoo", "market_state": "REGULAR"},
+                "SPCX_US_EQ": {"price": 16.5, "quote_source": "t212", "market_state": "REGULAR"},
+            },
         },
         "hyperliquid_readonly": {
             "engine": "hyperliquid_spot",
@@ -593,3 +595,76 @@ def test_gemini_client_warm_resume_flag_and_topic_thread_state(tmp_path) -> None
     reg_path = str(tmp_path / "missing_registry.json")
     assert get_topic_thread_state("unknown_topic_xyz", registry_path=reg_path) == ("", 0, False)
     assert get_topic_thread_state("auto_cryptotrade_executor", registry_path=reg_path) == ("", 0, False)
+
+
+def test_wave1_tables_units_and_venue_specs_g2_elision() -> None:
+    """Verify Wave 1 tables (Venue Specs G2, Open Orders, Equities), minutes>=120s, compact 3B USD, and true whale_long_pct."""
+    t0 = datetime(2026, 11, 26, 12, 0, 0, tzinfo=ZoneInfo("Europe/Bucharest")).timestamp()
+    sensors = _make_rich_sensors(t0)
+    sensors.source_ages_sec["sentiment_advisor"] = 540.0
+    sensors.source_ages_sec["geopolitical_threat"] = 4200.0
+    sensors.microstructure["BTCUSDC"]["whale_long_pct"] = 0.655
+    sensors.portfolio_summary["open_limit_orders"] = [
+        {
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "order_id": "990011",
+            "actor": "AI",
+            "price": 59680.0,
+            "qty": 0.015,
+            "filled_qty": 0.0,
+            "status": "NEW",
+            "age": "2.5h",
+            "dist_from_spot_pct": -1.35,
+            "fill_prob_1h_pct": 25,
+            "recommended_front_run_px": 60200.0,
+        }
+    ]
+    logs = LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0)
+
+    p1 = evaluate_prompt_delta_plan(
+        sensors, asset_scope="crypto", now_ts=t0, is_warm_resume=False, conversation_id="w1-cid"
+    )
+    full_txt = build_supervisor_prompt(sensors, logs, compact_rules=False, delta_plan=p1)
+    assert "sentiment_advisor=9.0m" in full_txt
+    assert "geopolitical_threat=70.0m" in full_txt
+    assert "whale_long_pct=65.5%" in full_txt
+    assert "bid_depth=$450.0K, ask_depth=$380.0K" in full_txt
+    assert "oi_usd=$1.50B" in full_txt
+    assert "2W/0BE/1L" in full_txt
+    assert "| Venue | Symbol | Tier | Fee/Leg (M/T bps) | MinNotional | MinQty | Step | Tick |" in full_txt
+    assert "| binance | BTCUSDC | VIP0 |" in full_txt
+    assert "| Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Note |" in full_txt
+    assert "| binance | BTCUSDC | BUY | 59680.0 | 0.015 | 0 | 990011 | AI | 2.5h | -1.35% | 25% | front_run=60200.0 |" in full_txt
+    assert "| Symbol | Px | 24h | 7d | Pos24h | ExtVsRTH | Close | Source (Age) |" in full_txt
+    assert audit_rendered_prompt_text(full_txt) == []
+
+    # Warm Turn 2: Venue_Specs omitted (1/5), while open_limit_orders table (G0) stays visible
+    t2 = t0 + 360.0
+    sensors_t2 = _make_rich_sensors(t2, anchor_ts=t0)
+    sensors_t2.portfolio_summary["open_limit_orders"] = sensors.portfolio_summary["open_limit_orders"]
+    p2 = evaluate_prompt_delta_plan(
+        sensors_t2,
+        asset_scope="crypto",
+        now_ts=t2,
+        is_warm_resume=True,
+        prev_state=p1.next_state,
+        conversation_id="w1-cid",
+    )
+    assert p2.action_for("venue_specs") == "OMIT"
+    warm_txt = build_supervisor_prompt(sensors_t2, logs, compact_rules=True, delta_plan=p2)
+    assert "Venue_Specs(1/5)" in warm_txt
+    assert "Venue Specs & Fees" not in warm_txt
+    assert "| 990011 |" in warm_txt
+    assert audit_rendered_prompt_text(warm_txt) == []
+
+    # Invariant verifier catches non-positive precision inside the new Venue Specs table
+    bad_tbl = full_txt.replace(
+        "| hyperliquid | HYPEUSDC | T0 | 4.5 (1.5/4.5) | $10 | 0.01 | 0.01 | 0.001 |",
+        "| hyperliquid | HYPEUSDC | T0 | 4.5 (1.5/4.5) | $10 | 0.01 | 0.01 | 0 |",
+    )
+    assert bad_tbl != full_txt
+    assert any(v.code == "PROMPT_VENUE_PRECISION" for v in audit_rendered_prompt_text(bad_tbl))
+

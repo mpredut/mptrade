@@ -71,7 +71,15 @@ _VOL_PROFILE_RE = re.compile(
     r"vol_profile\(POC=([0-9.]+)\[([+-]?[0-9.]+)%\].*?VAL=([0-9.]+)\[([+-]?[0-9.]+)%\],\s*VAH=([0-9.]+)\[([+-]?[0-9.]+)%\](?:,\s*va_pos=([0-9.-]+)%)?"
 )
 _SESSION_VWAP_RE = re.compile(r"session_vwap=\$([0-9,]+(?:\.[0-9]+)?)\s*\(([+-]?[0-9.]+)%")
-_OB_IMB_RE = re.compile(r"ob_imbalance=([0-9.]+)\s*\(bid_depth=\$([0-9.]+),\s*ask_depth=\$([0-9.]+)\)")
+_OB_IMB_RE = re.compile(
+    r"ob_imbalance=([0-9.]+)\s*\(bid_depth=\$([0-9.,]+[KMBkmb]?),\s*ask_depth=\$([0-9.,]+[KMBkmb]?)\)"
+)
+_VENUE_SPEC_ROW_RE = re.compile(
+    r"^\s*\|\s*([a-z0-9_]+)\s*\|\s*([A-Za-z0-9_]+)\s*\|[^|]*\|[^|]*\|[^|]*\|\s*([0-9.]+)\s*\|\s*([0-9.]+)\s*\|\s*([0-9.]+)\s*\|$",
+    re.MULTILINE,
+)
+_VENUE_CASH_BD_RE = re.compile(r"\b([a-z0-9_]+)\s+([A-Z]+)=\$([0-9,]+\.?\d*)\s*\(([^)]+)\)")
+_COMPACT_USD_MULT: dict[str, float] = {"K": 1_000.0, "M": 1_000_000.0, "B": 1_000_000_000.0}
 _OB_MID_RE = re.compile(r"ob_mid=([0-9.]+)")
 _BID_WALL_RE = re.compile(r"(?:bid_wall|est_bid_zone)=([0-9.]+)\s*\(")
 _ASK_WALL_RE = re.compile(r"(?:ask_wall|est_ask_zone)=([0-9.]+)\s*\(")
@@ -92,7 +100,13 @@ class InvariantViolation:
 
 
 def _parse_money(raw: str) -> Optional[float]:
-    return safe_float(str(raw or "").replace(",", ""), default=None)
+    s = str(raw or "").strip().replace(",", "")
+    if not s:
+        return None
+    mult = _COMPACT_USD_MULT.get(s[-1].upper(), 1.0)
+    num_s = s[:-1] if mult > 1.0 else s
+    val = safe_float(num_s, default=None)
+    return (val * mult) if val is not None else None
 
 
 def _check_range_pos(
@@ -501,11 +515,15 @@ def audit_rendered_prompt_text(
                 )
             )
 
-    # 2 & 3. Section 3C live tradable instruments: ghost check + free_quote_breakdown sum
+    # 2 & 3. Section 3C live tradable instruments: ghost check + free_quote_breakdown sum + precision/caps
+    px_by_vs: dict[tuple[str, str], float] = {}
     for m_inst in _SEC3C_INST_RE.finditer(prompt_text):
         ven, sym, rest = m_inst.group(1), m_inst.group(2), m_inst.group(3)
         if "free_" not in rest or "limits(" not in rest:
             continue
+        m_px_row = _PX_FIELD_RE.search(rest)
+        if m_px_row and (px_r := safe_pos_float(m_px_row.group(1), default=0.0)):
+            px_by_vs[(ven.lower(), sym.upper())] = px_r
         if sym.upper() in non_trad_u:
             violations.append(
                 InvariantViolation(
@@ -545,8 +563,7 @@ def audit_rendered_prompt_text(
                         )
                     )
             if ProviderVenueMetadataMixin.prefers_static_precision(ven):
-                m_px_c = _PX_FIELD_RE.search(rest)
-                px_c = safe_pos_float(m_px_c.group(1), default=0.0) if m_px_c else 0.0
+                px_c = px_by_vs.get((ven.lower(), sym.upper()), 0.0)
                 _, _, _, _, exp_step, exp_tick, _ = (
                     ProviderVenueMetadataMixin.resolve_venue_default_fee_and_precision(ven, px_c)
                 )
@@ -571,6 +588,57 @@ def audit_rendered_prompt_text(
                                 f"{cap_k}=${cap_v:.2f} is below gateway_min_usd=${gw_min_f:.2f}",
                             )
                         )
+
+    for m_vspec in _VENUE_SPEC_ROW_RE.finditer(prompt_text):
+        ven, sym = m_vspec.group(1), m_vspec.group(2)
+        lim_nums = {
+            "min_qty": safe_float(m_vspec.group(3), default=None),
+            "step": safe_float(m_vspec.group(4), default=None),
+            "tick": safe_float(m_vspec.group(5), default=None),
+        }
+        for k_lim, v_lim in lim_nums.items():
+            if v_lim is not None and v_lim <= 0.0:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_VENUE_PRECISION",
+                        f"{ven}:{sym}:{k_lim}",
+                        f"non-positive {k_lim}={v_lim}",
+                    )
+                )
+        if ProviderVenueMetadataMixin.prefers_static_precision(ven):
+            px_c = px_by_vs.get((ven.lower(), sym.upper()), 0.0)
+            _, _, _, _, exp_step, exp_tick, _ = (
+                ProviderVenueMetadataMixin.resolve_venue_default_fee_and_precision(ven, px_c)
+            )
+            for k_lim, exp_v in (("min_qty", exp_step), ("step", exp_step), ("tick", exp_tick)):
+                got_v = lim_nums.get(k_lim)
+                if got_v is not None and abs(got_v - exp_v) > 1e-9:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_VENUE_PRECISION",
+                            f"{ven}:{sym}:{k_lim}",
+                            f"reported {k_lim}={got_v:g} != static venue precision {exp_v:g}",
+                        )
+                    )
+
+    for ln_cash in prompt_text.splitlines():
+        if "Available Free Quote Cash per Venue:" not in ln_cash:
+            continue
+        for m_cbd in _VENUE_CASH_BD_RE.finditer(ln_cash):
+            ven_c, q_name = m_cbd.group(1), m_cbd.group(2)
+            fq = _parse_money(m_cbd.group(3))
+            bd_vals = [_parse_money(v_s) for _, v_s in _BD_ITEM_RE.findall(m_cbd.group(4))]
+            bd_nums = [v for v in bd_vals if v is not None]
+            if fq is not None and bd_nums:
+                bd_sum = sum(bd_nums)
+                if bd_sum > 0.0 and abs(bd_sum - fq) / max(bd_sum, fq, 1.0) > breakdown_tol_frac:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_FREE_QUOTE_BREAKDOWN",
+                            f"{ven_c}:{q_name}",
+                            f"{q_name}={fq:.2f} diverges from breakdown sum={bd_sum:.2f}",
+                        )
+                    )
 
     # 4. Section 3 range pos math, vol_profile order/deltas, and session_vwap delta
     for m_s3 in _SEC3_SYM_RE.finditer(prompt_text):
@@ -637,8 +705,8 @@ def audit_rendered_prompt_text(
                 arb_pairs[(sym.upper(), peer.upper())] = val
         if (m_imb := _OB_IMB_RE.search(rest)) is not None:
             rep_imb = safe_float(m_imb.group(1), default=None)
-            bd_v = safe_nonneg_float(m_imb.group(2), default=None)
-            ad_v = safe_nonneg_float(m_imb.group(3), default=None)
+            bd_v = _parse_money(m_imb.group(2))
+            ad_v = _parse_money(m_imb.group(3))
             if rep_imb is not None and bd_v is not None and ad_v is not None and (bd_v + ad_v) > 0.0:
                 exp_imb = bd_v / (bd_v + ad_v)
                 if abs(exp_imb - rep_imb) > 0.015:

@@ -295,7 +295,7 @@ def format_bottom_structure_6h_parts(
         f"1h_low={px_prefix}{m24.get('recent_1h_low_px')}",
     ]
     if m24.get("higher_low_vs_prior_pct") is not None:
-        b_parts.append(f"hl_diff={fmt_signed(m24.get('higher_low_vs_prior_pct'))}%")
+        b_parts.append(f"higher_low_pct={fmt_signed(m24.get('higher_low_vs_prior_pct'))}%")
     if m24.get("reclaim_above_prior_low_pct") is not None:
         b_parts.append(f"reclaim={fmt_signed(m24.get('reclaim_above_prior_low_pct'))}%")
     return str(b_struct), b_parts
@@ -1252,7 +1252,7 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
         if (sk_v := safe_float(data.get(f"{pfx}_skew_25d_pct", items.get(f"{pfx}_skew_25d_pct")), default=None)) is not None:
             opt_parts.append(f"Skew_25d={fmt_signed(sk_v)}%")
         if opt_parts:
-            lbl = "Options_Surface" if ccy == "BTC" else f"{ccy}_Options"
+            lbl = f"{ccy}_Options"
             parts.append(f"{lbl}({', '.join(opt_parts)})")
     return " | ".join(parts)
 

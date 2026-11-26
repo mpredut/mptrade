@@ -1746,7 +1746,7 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     assert "IBIT=$46.80 (+1.85% 24h)" in summary_line
     assert "CB_Premium=+9.4bps" in summary_line
     assert "BTC_DVOL=51.2%" in summary_line
-    assert "Options_Surface(RV=44.0%, VRP=+7.2%, PC_OI=0.48, Skew_25d=-1.25%)" in summary_line
+    assert "BTC_Options(RV=44.0%, VRP=+7.2%, PC_OI=0.48, Skew_25d=-1.25%)" in summary_line
 
     eq_macro_line = format_equity_macro_regime_line(decouple_crypto)
     assert "SPY=$576.00 (-0.75% 24h)" in eq_macro_line
@@ -1779,7 +1779,7 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
         assert "IBIT=$46.80" in sec_txt
         assert "CB_Premium=+9.4bps" in sec_txt
         assert "BTC_DVOL=51.2%" in sec_txt
-        assert "Options_Surface(" in sec_txt
+        assert "BTC_Options(" in sec_txt
 
     # SentimentAdvisor.review injects Cross-Asset Macro & Options Surface into the LLM prompt
     sa_client = DummyGeminiClient(
@@ -1898,7 +1898,7 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     for gp in (hsg_buy_prompt, hsg_sell_prompt, psg_prompt):
         assert "CROSS-ASSET MACRO, VIX & INSTITUTIONAL FLOW" in gp
         assert "CB_Premium" in gp
-        assert "Options_Surface" in gp
+        assert "BTC_Options" in gp
         assert "ETH_Options" in gp
         assert "Futures_Lead" in gp
         assert "positive Skew_25d (Put_IV - Call_IV > 0, put-buying fear)" in gp

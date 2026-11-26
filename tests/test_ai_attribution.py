@@ -1248,7 +1248,7 @@ def test_crypto_executor_prompt_data_accuracy_guards(tmp_path):
             {"HYPEUSDC": {"price": 61.63}},
         )
     )
-    assert "oi_usd=308802875.55 (l1_oi=$1.17B)" in sec3b
+    assert "oi_usd=$308.80M (l1_oi=$1.17B)" in sec3b
     assert "perp_flow_src=bn_perp" in sec3b
 
     # 6. Crypto prompt instructions omit 't212' from allowed venues and state SELL-only xStocks
@@ -1489,7 +1489,7 @@ def test_critical_path_aware_trade_plans_and_fee_adjusted_reload_scorecard():
     assert sc_full["total_outcomes"] == 6
     assert sc_full["wins"] == 2 and sc_full["scratches"] == 1 and sc_full["losses"] == 2
     sc_line = format_ai_decision_scorecard_line(sc_full)
-    assert sc_line.startswith("AI Decision Scorecard (48h, last 5/6): 2W/1S/2L,")
+    assert sc_line.startswith("AI Decision Scorecard (48h, last 5/6): 2W/1BE/2L,")
 
     # 5. Oversized reload BUY split across reloaded_buys + pending_buys and closed by 1 SELL coalesces into ONE BUY->SELL
     split_reload_exit = [
@@ -1868,7 +1868,7 @@ def test_crypto_prompt_var_24_7_xstock_at_spot_arrival_shortfall_section_clock_a
     }
     pt_3b = {"ADAUSDC": {"price": 0.1478}}
     sec3b_txt = "\n".join(_format_microstructure_section(ms_3b, pt_3b, now_ts=eval_now, asset_scope="crypto"))
-    assert "bid_wall=0.147 ($19645.0, dist=-0.71%)" in sec3b_txt
+    assert "bid_wall=0.147 ($19.6K, dist=-0.71%)" in sec3b_txt
     assert "long_liq=$0.144291[$453.7K, -2.54%]" in sec3b_txt
     assert "short_liq=$0.149702[$332.0K, +1.12%]" in sec3b_txt
 

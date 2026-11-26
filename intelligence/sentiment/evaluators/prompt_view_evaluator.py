@@ -738,11 +738,11 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                             in_open_book=bool(it_oids & shown_open_oids),
                             section="ai_trade_intents",
                         )
-                    last_norm_intent = it_copy
-                    if v_st == "FILLED" and age_h > 4.0:
-                        continue
                     if v_st in ("OPEN", "NEW", "RESTING", "PARTIALLY_FILLED") and bool(it_oids & shown_open_oids):
                         continue
+                    if v_st == "FILLED" and age_h > 4.0:
+                        continue
+                    last_norm_intent = it_copy
                     fmt_intents.append(it_copy)
                 st_val = fmt_intents if fmt_intents else ([last_norm_intent] if last_norm_intent is not None else [])
                 if not st_val:
@@ -938,18 +938,24 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
             if eff_pos.get("exchange_min_notional_usd") is not None
             else None
         )
+        max_buy_v = safe_float(eff_pos.get("effective_max_buy_usd"), None)
+        rep_buy_v = safe_float(eff_pos.get("replace_max_buy_usd"), None)
+        max_sell_v = safe_float(eff_pos.get("effective_max_sell_usd"), None)
+        rep_sell_v = safe_float(eff_pos.get("replace_max_sell_usd"), None)
+        show_rep_buy = rep_buy_v is not None and (max_buy_v is None or abs(rep_buy_v - max_buy_v) >= 0.01)
+        show_rep_sell = rep_sell_v is not None and (max_sell_v is None or abs(rep_sell_v - max_sell_v) >= 0.01)
         limit_items: List[Tuple[str, Any]] = [
             (lim_pfx, eff_pos[lim_k])
-            for lim_pfx, lim_k in (
-                ("min_qty=", "min_qty"),
-                ("step=", "step_size"),
-                ("tick=", "tick_size"),
-                ("max_buy=$", "effective_max_buy_usd"),
-                ("replace_max_buy=$", "replace_max_buy_usd"),
-                ("max_sell=$", "effective_max_sell_usd"),
-                ("replace_max_sell=$", "replace_max_sell_usd"),
+            for lim_pfx, lim_k, keep_it in (
+                ("min_qty=", "min_qty", True),
+                ("step=", "step_size", True),
+                ("tick=", "tick_size", True),
+                ("max_buy=$", "effective_max_buy_usd", True),
+                ("replace_max_buy=$", "replace_max_buy_usd", show_rep_buy),
+                ("max_sell=$", "effective_max_sell_usd", True),
+                ("replace_max_sell=$", "replace_max_sell_usd", show_rep_sell),
             )
-            if eff_pos.get(lim_k) is not None
+            if keep_it and eff_pos.get(lim_k) is not None
         ]
 
         lb_q = safe_float(eff_pos.get("locked_base_qty"), None)
@@ -1087,10 +1093,11 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
             xs_raw = ps["kraken_xstocks"]
             if isinstance(xs_raw, dict):
                 xs: Any = {k: v for k, v in xs_raw.items() if v is not None}
+                xs.pop("active_swing_directive", None)
                 if isinstance(xs.get("holdings"), dict):
                     xs["holdings"] = {hk: hv for hk, hv in xs["holdings"].items() if safe_float(hv, 0.0) >= 1e-4}
                 if scope_s in ("equities", "equity"):
-                    for eq_irr_k in ("watched_ipo_underlying", "watched_ipo_alerts", "active_swing_directive"):
+                    for eq_irr_k in ("watched_ipo_underlying", "watched_ipo_alerts"):
                         xs.pop(eq_irr_k, None)
                 t212_cycs_map = ps.get("t212_cycles") if isinstance(ps.get("t212_cycles"), dict) else {}
 

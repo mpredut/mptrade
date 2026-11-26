@@ -1367,7 +1367,7 @@ def format_ai_decision_scorecard_line(scorecard: Any) -> str:
     win_lbl = f"last {cnt}/{tot}" if tot > cnt else f"n={cnt}"
     return (
         f"AI Decision Scorecard (48h, {win_lbl}): "
-        f"{w}W/{s}S/{lo}L, avg={fmt_signed(avg_e, 2)}%, net={net_lbl}{streak_sfx}{unm_sfx}{tag_sfx}"
+        f"{w}W/{s}BE/{lo}L, avg={fmt_signed(avg_e, 2)}%, net={net_lbl}{streak_sfx}{unm_sfx}{tag_sfx}"
     )
 
 

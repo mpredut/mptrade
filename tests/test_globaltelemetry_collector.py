@@ -1851,9 +1851,9 @@ def test_stale_http_fallbacks_preserve_disk_ts_and_section3b_and_domain_ages_ren
     prompt_txt = build_supervisor_prompt(snap, [], topic_key="auto_cryptotrade_executor")
     assert "- Snapshot Domain Ages:" in prompt_txt
     assert "prices_newest=2.0s" in prompt_txt
-    assert "prices_oldest=180.0s" in prompt_txt
-    assert "venue_balances=240.0s" in prompt_txt
-    assert "source_ages(ob=7500.0s/15s[stale], deriv=420.0s/30s[stale], whale=15.0s/60s)" in prompt_txt
+    assert "prices_oldest=3.0m" in prompt_txt
+    assert "venue_balances=4.0m" in prompt_txt
+    assert "source_ages(ob=125.0m/15s[stale], deriv=7.0m/30s[stale])" in prompt_txt
 
 
 def test_reverify_scheduled_step_noop_scope_isolation_and_sibling_ob_ts(temp_cache_dir, monkeypatch):
@@ -2011,7 +2011,8 @@ def test_reverify_scheduled_step_noop_scope_isolation_and_sibling_ob_ts(temp_cac
     for ln in lines_3b.splitlines():
         if ln.strip().startswith("* BTCUSDC"):
             assert "ob=120.0s" not in ln
-            assert "deriv=12.0s" in ln
+            assert "ob=2.0m" not in ln
+            assert "source_ages(" not in ln
 
 
 def test_reverify_pass2_stale_microstructure_news_fallback_and_cross_quote_ages(temp_cache_dir, monkeypatch):
@@ -2126,7 +2127,7 @@ def test_reverify_pass2_stale_microstructure_news_fallback_and_cross_quote_ages(
         }
     }
     eq_lines_3b = "\n".join(_format_microstructure_section(eq_micro, eq_pt, now_ts=now_s))
-    assert "ob=10.0s" in eq_lines_3b
+    assert "source_ages(" not in eq_lines_3b
     assert "intraday_rth_flow=N/A[no_fresh_vol_bars]" in eq_lines_3b
     assert "deriv=" not in eq_lines_3b
     assert "whale=" not in eq_lines_3b
@@ -2141,8 +2142,7 @@ def test_reverify_pass2_stale_microstructure_news_fallback_and_cross_quote_ages(
         }
     }
     eq_flow_lines_3b = "\n".join(_format_microstructure_section(eq_micro_with_rth_flow, eq_pt, now_ts=now_s))
-    assert "ob=10.0s" in eq_flow_lines_3b
-    assert "rth_flow=20.0s" in eq_flow_lines_3b
+    assert "source_ages(" not in eq_flow_lines_3b
     assert "deriv=" not in eq_flow_lines_3b
     assert "whale=" not in eq_flow_lines_3b
 

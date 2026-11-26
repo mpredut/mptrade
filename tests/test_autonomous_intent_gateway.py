@@ -3706,7 +3706,7 @@ def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):
     assert sc_bad["status"] == "BUY_SHADOW_COOLDOWN"
     assert sc_bad["cooldown_remaining_h"] > 2.5
     sc_line = format_ai_decision_scorecard_line(sc_bad)
-    assert "0W/0S/3L" in sc_line and "BUY_SHADOW_COOLDOWN" in sc_line
+    assert "0W/0BE/3L" in sc_line and "BUY_SHADOW_COOLDOWN" in sc_line
 
     # Cooldown auto-expires once > 4h elapsed from latest loss
     sc_expired = evaluate_ai_decision_scorecard(
