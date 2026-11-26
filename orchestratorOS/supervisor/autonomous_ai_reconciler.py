@@ -754,7 +754,9 @@ class AutonomousAIReconciler:
             report.notification_sent = bool(
                 getattr(self.intent_gateway, "notify_enabled", False)
                 and any(
-                    isinstance(it, dict) and str(it.get("status") or "").upper() in notified_statuses
+                    isinstance(it, dict)
+                    and str(it.get("decision") or "").upper() not in ("CANCEL", "HOLD_CANCEL")
+                    and str(it.get("status") or "").upper() in notified_statuses
                     for it in intents_emitted
                 )
             )

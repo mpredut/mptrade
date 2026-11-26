@@ -2452,6 +2452,186 @@ def test_prompt_agg_spot_cvd_dedup_fill_prob_int_and_confidence_horizon_calibrat
     assert "horizon(n=2, in_hor=50%[1T/0I/1X])" in txt
 
 
+def test_observe_only_3_3b_compression_and_aged_advisor_live_poc_labeling():
+    """Verify:
+    1. build_supervisor_prompt compresses OBSERVE-ONLY symbols (ETHUSDC, ANTxUSD) in Sections 3 & 3B
+       into compact bellwether lines while keeping tradable symbols (BTCUSDC) and focused/held observe-only
+       symbols at full detail.
+    2. Aged SentimentAdvisor (>=5m) citing POC/VA labels its prose as historical_summary and injects
+       live BTC price & POC from Section 3 into live_btc_flow_delta.
+    """
+    from types import SimpleNamespace
+    from botcore import topic_spec
+    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
+    from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from orchestratorOS.supervisor.prompt_sections import _format_macro_and_news_section
+
+    now_s = 1_795_660_000.0
+    pt = {
+        "BTCUSDC": {
+            "price": 60_693.81,
+            "chg_15m_pct": 0.25,
+            "chg_1h_pct": 0.50,
+            "chg_6h_pct": 1.10,
+            "chg_24h_pct": 3.20,
+            "chg_7d_pct": -1.50,
+            "low_24h": 58_000.0,
+            "high_24h": 61_200.0,
+            "poc_px": 60_179.54,
+            "val_px": 59_400.0,
+            "vah_px": 60_950.0,
+            "recent_tape_15m": ["-15m:60540", "-10m:60600", "-5m:60650"],
+            "slope_90s": 0.00012,
+        },
+        "ETHUSDC": {
+            "price": 1_702.71,
+            "chg_1m_pct": -0.04,
+            "chg_15m_pct": 0.35,
+            "chg_1h_pct": 0.78,
+            "chg_6h_pct": 1.40,
+            "chg_24h_pct": 4.10,
+            "chg_7d_pct": -2.10,
+            "low_24h": 1_610.0,
+            "high_24h": 1_720.0,
+            "poc_px": 1_675.0,
+            "val_px": 1_640.0,
+            "vah_px": 1_705.0,
+            "recent_tape_15m": ["-15m:1696", "-10m:1699", "-5m:1701"],
+            "slope_90s": 0.00025,
+            "long_trend_dir": "BEAR",
+            "long_trend_hours": 18.0,
+        },
+        "ANTxUSD": {
+            "price": 83.46,
+            "chg_15m_pct": 0.09,
+            "chg_1h_pct": -0.02,
+            "chg_24h_pct": 1.25,
+            "low_24h": 81.5,
+            "high_24h": 84.0,
+            "poc_px": 82.8,
+            "val_px": 82.0,
+            "vah_px": 83.6,
+            "recent_tape_15m": ["-15m:83.3", "-5m:83.4"],
+        },
+    }
+    micro = {
+        "BTCUSDC": {
+            "venue": "binance",
+            "ob_mid_price": 60_694.0,
+            "best_bid": 60_693.5,
+            "best_ask": 60_694.5,
+            "spread_bps": 0.2,
+            "ob_imbalance": 0.57,
+            "bid_depth_usd": 2_000_000.0,
+            "ask_depth_usd": 1_500_000.0,
+            "bid_wall_px": 60_500.0,
+            "bid_wall_usd": 420_000.0,
+            "ask_wall_px": 61_100.0,
+            "ask_wall_usd": 380_000.0,
+            "taker_buy_sell_ratio": 1.05,
+            "taker_buy_vol_usd": 10_000_000.0,
+            "taker_sell_vol_usd": 9_500_000.0,
+            "cvd_15m_usd": 500_000.0,
+            "oi_usd": 5_000_000_000.0,
+            "oi_1h_chg_pct": 0.4,
+            "funding_annualized_pct": 6.5,
+            "_ob_raw_ts": now_s - 4.0,
+        },
+        "ETHUSDC": {
+            "venue": "binance",
+            "ob_mid_price": 1_702.7,
+            "best_bid": 1_702.6,
+            "best_ask": 1_702.8,
+            "spread_bps": 1.2,
+            "ob_imbalance": 0.63,
+            "bid_depth_usd": 1_000_000.0,
+            "ask_depth_usd": 580_000.0,
+            "bid_wall_px": 1_690.0,
+            "bid_wall_usd": 200_000.0,
+            "ask_wall_px": 1_725.0,
+            "ask_wall_usd": 180_000.0,
+            "taker_buy_sell_ratio": 1.12,
+            "taker_buy_vol_usd": 4_000_000.0,
+            "taker_sell_vol_usd": 3_570_000.0,
+            "cvd_15m_usd": 430_000.0,
+            "oi_usd": 2_000_000_000.0,
+            "oi_1h_chg_pct": 0.9,
+            "funding_annualized_pct": 7.2,
+            "perp_spot_basis_bps": -1.5,
+            "rvol_1h": 1.25,
+            "_ob_raw_ts": now_s - 4.0,
+        },
+        "ANTxUSD": {
+            "venue": "kraken",
+            "ob_mid_price": 83.46,
+            "best_bid": 83.40,
+            "best_ask": 83.52,
+            "spread_bps": 14.4,
+            "ob_imbalance": 0.55,
+            "bid_depth_usd": 83_000.0,
+            "ask_depth_usd": 67_000.0,
+            "bid_wall_px": 83.1,
+            "bid_wall_usd": 25_000.0,
+            "ask_wall_px": 83.9,
+            "ask_wall_usd": 22_000.0,
+            "spot_cvd_15m_usd": 4_200.0,
+            "spot_cvd_source": "real_spot",
+            "rvol_1h": 0.85,
+            "_ob_raw_ts": now_s - 4.0,
+        },
+    }
+    snap = TelemetrySensorSnapshot(
+        evaluated_at_ts=now_s,
+        prices_and_trends=pt,
+        microstructure=micro,
+        portfolio_summary={"tradable_positions": [{"venue": "binance", "symbol": "BTCUSDC", "free_base": 0.01, "price": 60_693.81}]},
+    )
+    prompt = build_supervisor_prompt(snap, LogEventSummary(0, 0, 0), topic_spec("auto_cryptotrade_executor"), compact_rules=True)
+    eth_lines = [ln for ln in prompt.splitlines() if ln.startswith("  * ETHUSDC")]
+    ant_lines = [ln for ln in prompt.splitlines() if ln.startswith("  * ANTxUSD")]
+    btc_lines = [ln for ln in prompt.splitlines() if ln.startswith("  * BTCUSDC")]
+    assert len(eth_lines) == 2 and len(ant_lines) == 2 and len(btc_lines) == 2
+    # Tradable BTC keeps full VP + tape + L2 walls
+    assert "vol_profile(POC=60179.54" in btc_lines[0]
+    assert "bid_wall=60500.0" in btc_lines[1]
+    # Observe-only ETH & ANTx render compact bellwether lines (no tape/VP/L2 walls)
+    assert "[OBSERVE-ONLY]" in eth_lines[0] and "vs_btc(" in eth_lines[0] and "vol_profile(" not in eth_lines[0] and "tape_15m=" not in eth_lines[0]
+    assert "[OBSERVE-ONLY]" in eth_lines[1] and "taker_ratio=1.12" in eth_lines[1] and "bid_wall=" not in eth_lines[1]
+    assert "[OBSERVE-ONLY]" in ant_lines[0] and "vol_profile(" not in ant_lines[0]
+    assert "[OBSERVE-ONLY]" in ant_lines[1] and "ob_imbalance=0.55" in ant_lines[1] and "bid_wall=" not in ant_lines[1]
+    # Focusing ETHUSDC explicitly restores full detail
+    prompt_focus = build_supervisor_prompt(
+        snap, LogEventSummary(0, 0, 0), topic_spec("auto_cryptotrade_executor"), focus_symbols=["ETHUSDC"], compact_rules=True
+    )
+    eth_focus_lines = [ln for ln in prompt_focus.splitlines() if ln.startswith("  * ETHUSDC")]
+    assert "vol_profile(POC=1675.0" in eth_focus_lines[0]
+    assert "bid_wall=1690.0" in eth_focus_lines[1]
+
+    # 2. Aged SentimentAdvisor citing POC surfaces live BTC/POC anchor & historical_summary tag
+    sec1_poc = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(
+                sentiment_advisor={
+                    "confidence": 0.72,
+                    "ts": now_s - 23.8 * 60.0,
+                    "summary": "Breadth 90.7%, BTC > POC ($60.85k) on intraday bounce.",
+                },
+                prices_and_trends=pt,
+                microstructure=micro,
+                geopolitical_threat=None,
+                macro_benchmarks={},
+                breaking_news=[],
+            ),
+            asset_scope="crypto",
+            now_ts=now_s,
+        )
+    )
+    assert "BTC=$60,693.81(POC=$60,179.54) vs 23.8m-old summary" in sec1_poc
+    assert "historical_summary(as_of -23.8m; use Sec 3 live px/POC)=" in sec1_poc
+
+
+
 
 
 

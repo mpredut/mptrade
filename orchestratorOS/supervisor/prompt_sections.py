@@ -24,6 +24,7 @@ from botcore import (
     is_us_rth_open,
     normalize_epoch_sec,
     normalize_timestamp_ms,
+    parse_symbol_list,
     resolve_now_ts,
     safe_float,
     safe_int,
@@ -528,6 +529,28 @@ def _format_macro_and_news_section(
                 d_parts.append(f"Fut_Lead={fmt_signed(sa_fut_lead_v, 2)}%")
             if d_parts:
                 sa_flow_delta = f"({', '.join(d_parts)} vs {sa_age_m}m-old summary)"
+    sa_poc_live_part = ""
+    if sa and (sa_age_m or 0.0) >= 5.0 and any(tok in sa_summary_raw.lower() for tok in ("poc", "vah", "val", "value area")):
+        pt_map_sa = getattr(sensors, "prices_and_trends", None) or {}
+        btc_pt = (
+            pt_map_sa.get("BTCUSDC")
+            or pt_map_sa.get("BTCUSDT")
+            or pt_map_sa.get("BTCUSD")
+            if isinstance(pt_map_sa, dict)
+            else None
+        )
+        if isinstance(btc_pt, dict):
+            btc_px_live = safe_pos_float(btc_pt.get("price"), default=None)
+            btc_poc_live = safe_pos_float(btc_pt.get("poc_px"), default=None)
+            if btc_px_live is not None and btc_poc_live is not None:
+                sa_poc_live_part = f"BTC={_fmt_px(btc_px_live)}(POC={_fmt_px(btc_poc_live)})"
+            elif btc_px_live is not None:
+                sa_poc_live_part = f"BTC={_fmt_px(btc_px_live)}"
+    if sa_poc_live_part:
+        if sa_flow_delta and "BTC=" not in sa_flow_delta and " vs " in sa_flow_delta:
+            sa_flow_delta = sa_flow_delta.replace(" vs ", f", {sa_poc_live_part} vs ", 1)
+        elif not sa_flow_delta:
+            sa_flow_delta = f"({sa_poc_live_part} vs {sa_age_m}m-old summary)"
     sa_summary = (
         _SA_SUMMARY_DIRECTIVE_RE.sub(
             lambda m: "." if m.group(0).lstrip().startswith(",") else "",
@@ -544,11 +567,20 @@ def _format_macro_and_news_section(
             sa_summary = cut_s[: dot_i + 1].strip()
         else:
             sa_summary = cut_s.rstrip(" ,;:") + "..."
+    sa_sum_key = (
+        f"historical_summary(as_of -{sa_age_m}m; use Sec 3 live px/POC)"
+        if (sa and sa_poc_live_part)
+        else (
+            f"historical_summary(as_of -{sa_age_m}m)"
+            if (sa and sa_age_m is not None and sa_age_m >= 15.0)
+            else "summary"
+        )
+    )
     sa_line = (
         f"conf={sa.get('confidence', 'N/A')}"
         f"{_age_sfx(sa, now_ts=ref_now)}"
         + (f" | live_btc_flow_delta={sa_flow_delta}" if sa_flow_delta else "")
-        + f" | summary={sa_summary}"
+        + f" | {sa_sum_key}={sa_summary}"
         if sa else "None"
     )
     gt_summary_raw = str(gt.get("summary") or "").strip() if gt else ""
@@ -779,7 +811,73 @@ def _format_sre_and_fleet_section(
     return lines
 
 
-def _format_market_prices_section(prices_and_trends: Dict[str, Any], asset_scope: Any = "all") -> List[str]:
+def _extract_active_portfolio_symbols(
+    portfolio_summary: Any,
+    *,
+    focus_symbols: Optional[List[str]] = None,
+) -> set[str]:
+    """Collect normalized symbol keys for active positions, cycles, open orders, and tactical focus symbols."""
+    active: set[str] = set()
+
+    def _add_sym(raw_sym: Any) -> None:
+        s_u = str(raw_sym or "").strip().upper()
+        s_k = clean_symbol_key(raw_sym) or ""
+        if s_u:
+            active.add(s_u)
+        if s_k:
+            active.add(s_k)
+
+    ps = portfolio_summary if isinstance(portfolio_summary, dict) else {}
+    for pos in (ps.get("tradable_positions") or ()):
+        if isinstance(pos, dict) and (
+            (safe_pos_float(pos.get("value_usd"), default=0.0) or 0.0) >= 2.0
+            or (safe_pos_float(pos.get("free_base"), default=0.0) or 0.0) > 0.0
+            or (safe_pos_float(pos.get("locked_base_qty"), default=0.0) or 0.0) > 0.0
+        ):
+            _add_sym(pos.get("disp_symbol") or pos.get("symbol"))
+    for oo in (ps.get("open_limit_orders") or ()):
+        if isinstance(oo, dict):
+            _add_sym(oo.get("symbol") or oo.get("pair") or oo.get("ticker"))
+    for cyc_key in ("binance_cycles", "kraken_cycles", "hyperliquid_cycles", "t212_cycles"):
+        cyc_map = ps.get(cyc_key)
+        if isinstance(cyc_map, dict):
+            for c_sym, c_val in cyc_map.items():
+                if isinstance(c_val, dict) and (
+                    (safe_pos_float(c_val.get("qty"), default=0.0) or 0.0) > 0.0
+                    or bool(c_val.get("resting_orders"))
+                ):
+                    _add_sym(c_sym)
+    if focus_symbols:
+        for f_sym in parse_symbol_list(focus_symbols):
+            _add_sym(f_sym)
+    return active
+
+
+def _is_compact_observe_only_symbol(
+    sym: str,
+    obs_syms: set[str],
+    *,
+    compact_observe_only: bool,
+    active_symbols: Optional[set[str]],
+) -> tuple[bool, bool]:
+    """Return ``(is_observe_only, should_render_compact_bellwether)`` for ``sym``."""
+    sym_u = str(sym or "").strip().upper()
+    sym_k = clean_symbol_key(sym) or ""
+    is_obs = bool(obs_syms and (sym_u in obs_syms or (sym_k and sym_k in obs_syms)))
+    if not (compact_observe_only and is_obs):
+        return is_obs, False
+    if active_symbols and (sym_u in active_symbols or (sym_k and sym_k in active_symbols)):
+        return is_obs, False
+    return is_obs, True
+
+
+def _format_market_prices_section(
+    prices_and_trends: Dict[str, Any],
+    asset_scope: Any = "all",
+    *,
+    compact_observe_only: bool = False,
+    active_symbols: Optional[set[str]] = None,
+) -> List[str]:
     """Format Section 3A (Live Market Prices, Multi-Horizon Trends & 24h/7d Evolution)."""
     view = evaluate_market_prices_prompt_view(prices_and_trends)
     btc_entry = view["btc_entry"]
@@ -790,9 +888,13 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any], asset_scope
         px = pinfo.get("price")
         px_f = safe_float(px, 0.0)
         px_str = _fmt_px(px_f, px)
-        sym_u = str(sym or "").strip().upper()
-        sym_k = clean_symbol_key(sym) or ""
-        obs_lbl = " [OBSERVE-ONLY]" if (obs_syms and (sym_u in obs_syms or (sym_k and sym_k in obs_syms))) else ""
+        is_obs_sym, is_compact_obs = _is_compact_observe_only_symbol(
+            sym,
+            obs_syms,
+            compact_observe_only=compact_observe_only,
+            active_symbols=active_symbols,
+        )
+        obs_lbl = " [OBSERVE-ONLY]" if is_obs_sym else ""
         sib_lbl = ""
         if sib_specs:
             sib_parts: List[str] = []
@@ -808,6 +910,40 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any], asset_scope
                     sib_parts.append(sib_sym)
             if sib_parts:
                 sib_lbl = f" (sibling venue: {', '.join(sib_parts)})"
+
+        if is_compact_obs:
+            c_extras: List[str] = []
+            c_horizons = " ".join(
+                f"{h_lbl}={fmt_signed(pinfo.get(h_k))}%"
+                for h_lbl, h_k in (("15m", "chg_15m_pct"), ("1h", "chg_1h_pct"), ("6h", "chg_6h_pct"), ("24h", "chg_24h_pct"))
+                if h_k in pinfo and pinfo.get(h_k) is not None
+            )
+            pos_24h = pinfo.get("pos_24h_pct")
+            if pos_24h is None and px_f > 0 and pinfo.get("low_24h") and pinfo.get("high_24h"):
+                pos_24h = compute_horizon_range_dict(
+                    px_f, safe_float(pinfo.get("low_24h"), 0.0), safe_float(pinfo.get("high_24h"), 0.0), "24h"
+                ).get("pos_24h_pct")
+            if c_horizons or pos_24h is not None:
+                c_extras.append(" ".join(p for p in (c_horizons, f"pos_24h={pos_24h}%" if pos_24h is not None else "") if p))
+            span_7d_c = safe_pos_float(pinfo.get("span_7d_hours"), default=None)
+            is_part_7d_c = bool(pinfo.get("is_partial_7d")) or (span_7d_c is not None and span_7d_c < 120.0)
+            if "chg_7d_pct" in pinfo and pinfo.get("chg_7d_pct") is not None and not is_part_7d_c:
+                c_extras.append(f"7d={fmt_signed(pinfo.get('chg_7d_pct'))}%")
+            if not is_equity_or_tokenized_symbol(sym) and canonical_base_asset(sym) != "BTC" and btc_entry:
+                vb_c = [
+                    f"{h_lbl}={fmt_signed(a_v - b_v)}%"
+                    for h_lbl, h_k in (("1h", "chg_1h_pct"), ("24h", "chg_24h_pct"))
+                    if (a_v := safe_float(pinfo.get(h_k), None)) is not None
+                    and (b_v := safe_float(btc_entry.get(h_k), None)) is not None
+                ]
+                if vb_c:
+                    c_extras.append(f"vs_btc({', '.join(vb_c)})")
+            if pinfo.get("long_trend_dir"):
+                c_extras.append(f"long_trend={str(pinfo.get('long_trend_dir')).upper()}({pinfo.get('long_trend_hours')}h)")
+            eq_qmeta_c = format_equity_quote_meta_suffix(pinfo) if is_equity_symbol(sym) else ""
+            c_extra_s = f" | {' | '.join(c_extras)}" if c_extras else ""
+            lines.append(f"  * {sym}{sib_lbl}: Price={px_str}{obs_lbl}{eq_qmeta_c}{c_extra_s}")
+            continue
 
         extras: List[str] = []
         _m24_h_keys = (
@@ -1049,11 +1185,14 @@ def _format_microstructure_section(
     *,
     now_ts: Optional[float] = None,
     asset_scope: Any = "all",
+    compact_observe_only: bool = False,
+    active_symbols: Optional[set[str]] = None,
 ) -> List[str]:
     """Format Section 3B (Orderbook Walls, Derivatives & Whale Flow)."""
     scope_spec = resolve_scope_presentation(asset_scope)
     lines = [scope_spec.microstructure_hdr]
     derived_3b_itvs = resolve_derived_telemetry_intervals()
+    obs_syms_3b = observe_only_registry_symbols() if compact_observe_only else set()
     rendered_agg_spot: set[tuple[str, str]] = set()
     for row in evaluate_microstructure_prompt_view(microstructure, prices_and_trends, now_ts=now_ts):
         sym = row["sym"]
@@ -1079,6 +1218,43 @@ def _format_microstructure_section(
         tok_spot_only = row["tok_spot_only"]
 
         sym_3b_lbl = f"{sym} ({', '.join(sib_3b)})" if sib_3b else sym
+        _, is_compact_obs_3b = _is_compact_observe_only_symbol(
+            sym,
+            obs_syms_3b,
+            compact_observe_only=compact_observe_only,
+            active_symbols=active_symbols,
+        )
+        if is_compact_obs_3b:
+            c3b_parts: List[str] = []
+            if ob_is_frozen:
+                c3b_parts.append(f"orderbook=STALE_FROZEN({ob_age_3b:.0f}s)")
+            elif tok_spot_only or no_flow or shared_perp_sym is not None:
+                if minfo.get("ob_imbalance") is not None:
+                    c3b_parts.append(f"{caps.book_source_prefix}ob_imbalance={minfo.get('ob_imbalance')}")
+            if shared_perp_sym is not None:
+                c3b_parts.append(f"perp_whale_flow=shared_with_{shared_perp_sym}")
+            elif not tok_spot_only and not no_flow:
+                if minfo.get("taker_buy_sell_ratio") is not None:
+                    c3b_parts.append(f"taker_ratio={minfo.get('taker_buy_sell_ratio')}")
+                if has_perp_cvd:
+                    c3b_parts.append(f"cvd_15m={_fmt_signed_usd(safe_float(minfo.get('cvd_15m_usd'), 0.0))}")
+                if deriv_mode == "cboe_options":
+                    if minfo.get("oi_1h_chg_pct") is not None:
+                        c3b_parts.append(f"oi_1h_chg={minfo.get('oi_1h_chg_pct')}%")
+                elif deriv_mode != "none":
+                    if (f_ann_c := safe_float(minfo.get("funding_annualized_pct"), None)) is not None:
+                        c3b_parts.append(f"funding_ann={fmt_signed(f_ann_c, 1)}%")
+                    if minfo.get("oi_1h_chg_pct") is not None:
+                        c3b_parts.append(f"oi_1h_chg={minfo.get('oi_1h_chg_pct')}%")
+                    if caps.has_crypto_perpetuals and (b_bps_c := safe_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
+                        c3b_parts.append(f"perp_basis={fmt_signed(b_bps_c, 1)}bps")
+            if not ob_is_frozen and (sp_c := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
+                c3b_parts.append(f"spot_cvd_15m={_fmt_signed_usd(sp_c)}[real_spot]")
+            if not ob_is_frozen and (rv1h := safe_pos_float(minfo.get("rvol_1h"), default=None)) is not None:
+                c3b_parts.append(f"rvol_1h={rv1h:.2f}x")
+            if c3b_parts:
+                lines.append(f"  * {sym_3b_lbl} [OBSERVE-ONLY]: {', '.join(c3b_parts)}")
+            continue
         bw_px = minfo.get("bid_wall_px")
         aw_px = minfo.get("ask_wall_px")
         bw_px_f = safe_float(bw_px, 0.0)

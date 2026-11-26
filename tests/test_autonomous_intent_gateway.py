@@ -2700,7 +2700,12 @@ def test_explicit_cancel_order_ids_and_abort_replacement_on_cancel_failure(temp_
             "cancel_order_ids": ["725793121", "725793123"],
             "confidence": 0.95,
         }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
-    assert rec_hold_cancel is None
+    assert rec_hold_cancel is not None
+    assert rec_hold_cancel["decision"] == "HOLD_CANCEL"
+    assert rec_hold_cancel["status"] == "CANCELED"
+    assert rec_hold_cancel["requested_order_ids"] == ["725793121", "725793123"]
+    assert rec_hold_cancel["canceled_order_ids"] == ["725793121", "725793123"]
+    assert rec_hold_cancel["failed_order_ids"] == []
     assert [c.args[0] for c in btc_inst.cancel_order.call_args_list] == ["725793121", "725793123"]
     btc_inst.place.assert_not_called()
 
@@ -2753,6 +2758,14 @@ def test_explicit_cancel_order_ids_and_abort_replacement_on_cancel_failure(temp_
             "confidence": 0.95,
         },
         # HOLD targeting an order ("725793121") already absent/canceled must not wipe untargeted RT_SELL_1 / MO_AG_SELL_1
+    ):
+        assert gw.submit(
+            non_canceling_dec,
+            source="auto_cryptotrade_executor",
+            max_mode="enforce",
+            instruments_map={"BTCUSDC": btc_inst},
+        ) is None
+    absent_hold_res = gw.submit(
         {
             "decision": "HOLD",
             "symbol": "BTCUSDC",
@@ -2761,13 +2774,14 @@ def test_explicit_cancel_order_ids_and_abort_replacement_on_cancel_failure(temp_
             "cancel_order_ids": ["725793121"],
             "confidence": 0.95,
         },
-    ):
-        assert gw.submit(
-            non_canceling_dec,
-            source="auto_cryptotrade_executor",
-            max_mode="enforce",
-            instruments_map={"BTCUSDC": btc_inst},
-        ) is None
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+    assert absent_hold_res is not None
+    assert absent_hold_res["status"] == "CANCEL_NOOP"
+    assert absent_hold_res["canceled_order_ids"] == []
+    assert absent_hold_res["failed_order_ids"] == []
     btc_inst.cancel_order.assert_not_called()
 
     # BUY with missing targeted BUY order ("stale_bot_buy_1") must NOT cancel opposite-side MO_AG_SELL_1
@@ -5173,6 +5187,8 @@ def test_min_target_rr_guard_explicit_cancel_decision_horizon_and_prompt_parity(
     assert rec_poor_rr["horizon_h"] == pytest.approx(12.0)
 
     # Explicit CANCEL cancels both AI and BOT targeted IDs without requiring replace_open_orders=True
+    # and returns structured per-ID confirmation without polluting autonomous_trade_intents.json
+    intents_before = len(gw.load_all_intents())
     btc_inst.cancel_order.reset_mock()
     btc_inst.place.reset_mock()
     res_cancel = gw.submit(
@@ -5188,9 +5204,118 @@ def test_min_target_rr_guard_explicit_cancel_decision_horizon_and_prompt_parity(
         max_mode="enforce",
         instruments_map={"BTCUSDC": btc_inst},
     )
-    assert res_cancel is None
+    assert res_cancel is not None
+    assert res_cancel["decision"] == "CANCEL"
+    assert res_cancel["status"] == "CANCELED"
+    assert res_cancel["requested_order_ids"] == ["ai_ord_1", "bot_ord_2"]
+    assert res_cancel["canceled_order_ids"] == ["ai_ord_1", "bot_ord_2"]
+    assert res_cancel["failed_order_ids"] == []
+    assert len(gw.load_all_intents()) == intents_before
     assert [c.args[0] for c in btc_inst.cancel_order.call_args_list] == ["ai_ord_1", "bot_ord_2"]
     btc_inst.place.assert_not_called()
+
+    # Partial and failed CANCEL outcomes propagate per-ID status through submit_supervisor_trading_decisions
+    from orchestratorOS.lib.technical_repair_ssot import submit_supervisor_trading_decisions
+
+    btc_inst.cancel_order.reset_mock()
+    btc_inst.cancel_order.side_effect = lambda oid: False if oid == "bot_ord_2" else True
+    btc_inst.open_orders.return_value = [
+        {"orderId": "ai_ord_1", "clientOrderId": "AI_intent_1795000001_buy_btcusdc", "side": "BUY", "price": "59680.0"},
+        {"orderId": "bot_ord_2", "clientOrderId": "RT_BUY_2", "side": "BUY", "price": "59500.0"},
+    ]
+    res_partial = gw.submit(
+        {
+            "decision": "CANCEL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "cancel_order_ids": ["ai_ord_1", "bot_ord_2"],
+            "confidence": 0.92,
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+    assert res_partial["status"] == "CANCEL_PARTIAL"
+    assert res_partial["canceled_order_ids"] == ["ai_ord_1"]
+    assert res_partial["failed_order_ids"] == ["bot_ord_2"]
+
+    btc_inst.cancel_order.reset_mock()
+    res_failed = gw.submit(
+        {
+            "decision": "CANCEL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "cancel_order_ids": ["bot_ord_2"],
+            "confidence": 0.92,
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+    assert res_failed["status"] == "CANCEL_FAILED"
+    assert res_failed["canceled_order_ids"] == []
+    assert res_failed["failed_order_ids"] == ["bot_ord_2"]
+
+    res_shadow_cancel = gw.submit(
+        {
+            "decision": "CANCEL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "cancel_order_ids": ["ai_ord_1"],
+            "confidence": 0.92,
+        },
+        source="auto_cryptotrade_executor",
+        max_mode="shadow",
+        instruments_map={"BTCUSDC": btc_inst},
+    )
+    assert res_shadow_cancel["status"] == "OBSERVED_SHADOW"
+    assert res_shadow_cancel["requested_order_ids"] == ["ai_ord_1"]
+
+    with patch.object(gw, "submit", return_value=res_partial):
+        _, _, emitted_rep, _, any_exec_rep = submit_supervisor_trading_decisions(
+            {
+                "market_trading_decisions": [
+                    {
+                        "decision": "CANCEL",
+                        "symbol": "BTCUSDC",
+                        "venue": "binance",
+                        "cancel_order_ids": ["ai_ord_1", "bot_ord_2"],
+                        "confidence": 0.92,
+                    }
+                ]
+            },
+            topic_spec("auto_cryptotrade_executor"),
+            topic_key="auto_cryptotrade_executor",
+            mode="enforce",
+            now_ts=time.time(),
+            intent_gateway=gw,
+            is_rth_open_fn=lambda _: True,
+        )
+    assert len(emitted_rep) == 1 and emitted_rep[0]["status"] == "CANCEL_PARTIAL"
+    assert any_exec_rep is True
+    with patch.object(gw, "submit", return_value=res_failed):
+        _, _, emitted_fail, _, any_exec_fail = submit_supervisor_trading_decisions(
+            {
+                "market_trading_decisions": [
+                    {
+                        "decision": "CANCEL",
+                        "symbol": "BTCUSDC",
+                        "venue": "binance",
+                        "cancel_order_ids": ["bot_ord_2"],
+                        "confidence": 0.92,
+                    }
+                ]
+            },
+            topic_spec("auto_cryptotrade_executor"),
+            topic_key="auto_cryptotrade_executor",
+            mode="enforce",
+            now_ts=time.time(),
+            intent_gateway=gw,
+            is_rth_open_fn=lambda _: True,
+        )
+    assert len(emitted_fail) == 1 and emitted_fail[0]["status"] == "CANCEL_FAILED"
+    assert any_exec_fail is False
+    btc_inst.cancel_order.side_effect = None
 
     # CANCEL without explicit cancel_order_ids or low confidence is a safe no-op
     btc_inst.cancel_order.reset_mock()

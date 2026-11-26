@@ -543,6 +543,8 @@ class AutonomousIntentGateway:
         verify_not_filled: bool = False,
         extra_intent_key: Optional[str] = None,
         intents: Optional[List[Dict[str, Any]]] = None,
+        failed_ids_out: Optional[List[str]] = None,
+        scan_errors_out: Optional[List[str]] = None,
     ) -> Tuple[bool, List[str]]:
         if intent is not None:
             cache_ok, cache_reason = ensure_submit_account_cache_ready(inst, side=decision)
@@ -587,6 +589,10 @@ class AutonomousIntentGateway:
             scan_errors=scan_errors,
             canceled_orders_out=canceled_order_snapshots,
         )
+        if failed_ids_out is not None and failed_ids:
+            failed_ids_out.extend(failed_ids)
+        if scan_errors_out is not None and scan_errors:
+            scan_errors_out.extend(scan_errors)
         if intent is None:
             return not (failed_ids or scan_errors), canceled_ids
         if canceled_ids:
@@ -1329,25 +1335,58 @@ class AutonomousIntentGateway:
         )
         if intent is None:
             mode = min(self.mode, norm_max_mode, key=lambda m: MODE_RANK.get(m, 0))
+            inst, target_oids, only_bots = resolve_hold_cancel_target(
+                decision,
+                min_confidence=self.min_confidence,
+                resolve_instrument_fn=lambda sym, ven: self.resolve_instrument(
+                    sym, venue=ven, instruments_map=instruments_map
+                ),
+            )
+            if inst is None:
+                return None
+            raw_dec = clean_upper_scalar(decision.get("decision") or decision.get("action") or decision.get("side")) or "HOLD"
+            cancel_rec: Dict[str, Any] = {
+                "decision": "CANCEL" if raw_dec == "CANCEL" else "HOLD_CANCEL",
+                "symbol": str(getattr(inst, "symbol", "") or decision.get("symbol") or ""),
+                "venue": normalize_venue_name(getattr(inst, "provider_name", None) or decision.get("venue")) or "",
+                "requested_order_ids": list(target_oids),
+                "canceled_order_ids": [],
+                "failed_order_ids": [],
+                "timestamp": now,
+                "created_by": clean_scalar_str(source) or "",
+                "max_mode": norm_max_mode,
+            }
             if mode == "enforce":
-                inst, target_oids, only_bots = resolve_hold_cancel_target(
-                    decision,
-                    min_confidence=self.min_confidence,
-                    resolve_instrument_fn=lambda sym, ven: self.resolve_instrument(
-                        sym, venue=ven, instruments_map=instruments_map
-                    ),
+                failed_ids: List[str] = []
+                scan_errors: List[str] = []
+                _, canceled_ids = self._cancel_prior_orders_or_abort(
+                    inst,
+                    include_bot_orders=True,
+                    only_bot_orders=only_bots,
+                    any_side=True,
+                    target_order_ids=target_oids,
+                    verify_not_filled=True,
+                    intents=intents,
+                    failed_ids_out=failed_ids,
+                    scan_errors_out=scan_errors,
                 )
-                if inst is not None:
-                    self._cancel_prior_orders_or_abort(
-                        inst,
-                        include_bot_orders=True,
-                        only_bot_orders=only_bots,
-                        any_side=True,
-                        target_order_ids=target_oids,
-                        verify_not_filled=True,
-                        intents=intents,
-                    )
-            return None
+                cancel_rec["canceled_order_ids"] = list(canceled_ids)
+                cancel_rec["failed_order_ids"] = list(failed_ids)
+                if scan_errors:
+                    cancel_rec["scan_errors"] = list(scan_errors)
+                if canceled_ids and not failed_ids and not scan_errors and len(canceled_ids) >= len(target_oids):
+                    cancel_rec["status"] = "CANCELED"
+                elif canceled_ids:
+                    cancel_rec["status"] = "CANCEL_PARTIAL"
+                elif failed_ids or scan_errors:
+                    cancel_rec["status"] = "CANCEL_FAILED"
+                else:
+                    cancel_rec["status"] = "CANCEL_NOOP"
+            elif mode == "shadow":
+                cancel_rec["status"] = "OBSERVED_SHADOW"
+            else:
+                cancel_rec["status"] = "REJECTED_GATEWAY_DISABLED"
+            return cancel_rec
         intent["status"] = "PENDING_EXECUTION"
         if not upsert_durable_intent(self.intents_file, intent, reconcile_fn=self.reconcile_intents, log=logger):
             return None

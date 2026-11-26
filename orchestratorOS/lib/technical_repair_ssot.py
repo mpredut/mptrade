@@ -2104,7 +2104,7 @@ def submit_supervisor_trading_decisions(
         dec_payload = {**dec, "model_used": clean_model_used} if clean_model_used else dec
         if isinstance(emitted := intent_gateway.submit(dec_payload, source=topic_key, max_mode=effective_max_mode), dict):
             intents_emitted.append(emitted)
-            if effective_max_mode == "enforce" and emitted.get("status") == "EXECUTED":
+            if effective_max_mode == "enforce" and emitted.get("status") in ("EXECUTED", "CANCELED", "CANCEL_PARTIAL"):
                 any_executed = True
     return decisions_list, market_decision, intents_emitted, (intents_emitted[0] if intents_emitted else None), any_executed
 

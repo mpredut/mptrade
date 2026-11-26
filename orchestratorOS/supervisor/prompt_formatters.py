@@ -36,6 +36,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
     DIAGNOSED_SEVERITIES,
 )
 from orchestratorOS.supervisor.prompt_sections import (
+    _extract_active_portfolio_symbols,
     _format_macro_and_news_section,
     _format_market_prices_section,
     _format_microstructure_section,
@@ -241,12 +242,29 @@ def build_supervisor_prompt(
     portfolio_summary = getattr(sensors, "portfolio_summary", None) or {}
     scope_spec = resolve_scope_presentation(spec_scope_norm)
     is_equities = scope_spec.is_equities
+    active_obs_syms = (
+        _extract_active_portfolio_symbols(portfolio_summary, focus_symbols=focus_symbols)
+        if not is_pure_sre
+        else set()
+    )
     if not is_pure_sre and prices_and_trends:
-        context_items.extend(_format_market_prices_section(prices_and_trends, asset_scope=spec_scope_norm))
+        context_items.extend(
+            _format_market_prices_section(
+                prices_and_trends,
+                asset_scope=spec_scope_norm,
+                compact_observe_only=True,
+                active_symbols=active_obs_syms,
+            )
+        )
     if not is_pure_sre and microstructure:
         context_items.extend(
             _format_microstructure_section(
-                microstructure, prices_and_trends, now_ts=eval_now_ts, asset_scope=spec_scope_norm
+                microstructure,
+                prices_and_trends,
+                now_ts=eval_now_ts,
+                asset_scope=spec_scope_norm,
+                compact_observe_only=True,
+                active_symbols=active_obs_syms,
             )
         )
     if not is_pure_sre and portfolio_summary:
