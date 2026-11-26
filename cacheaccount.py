@@ -4038,6 +4038,32 @@ class CacheBalanceManager(CacheAccountManagerBase):
         with self.lock:
             return dict(self.breakdown.get(q_u) or {})
 
+    def apply_ws_balance_updates(
+        self,
+        balances_by_asset: Mapping[str, Any],
+        *,
+        event_ts: Optional[float] = None,
+    ) -> bool:
+        """Atomically apply real-time WS balance deltas into ``cache_balance_<venue>.json`` (producer-only)."""
+        ach = _cm_override("account_cache_health", account_cache_health)
+        if self.read_only and not ach.is_writer_enabled():
+            return False
+        if not isinstance(balances_by_asset, Mapping) or not balances_by_asset:
+            return False
+        eff_ts = resolve_now_ts(event_ts)
+        self.replace_venue_balances_snapshot(
+            self.filename,
+            balances_by_asset,
+            venue=self.venue,
+            now_s=eff_ts,
+            verified_ts=None,
+            advance_verified_ts=True,
+        )
+        self._load_snapshot_state()
+        if ach.is_writer_enabled():
+            _record_venue_health_sync(self.venue, "balances", now_ms=math.trunc(eff_ts * 1000))
+        return True
+
     @classmethod
     def replace_venue_balances_snapshot(
         cls,
@@ -4049,6 +4075,7 @@ class CacheBalanceManager(CacheAccountManagerBase):
         verified_ts: Optional[float] = None,
         breakdown: Optional[Mapping[str, Mapping[str, Any]]] = None,
         indent: Optional[int] = 1,
+        advance_verified_ts: bool = False,
     ) -> dict[str, Any]:
         """Atomically persist one venue's raw account balances into ``cache_balance_<venue>.json`` under ``.generation.lock``.
 
@@ -4077,6 +4104,11 @@ class CacheBalanceManager(CacheAccountManagerBase):
                 if not (ak_c := canonical_balance_asset_key(asset_k, venue=v_norm)):
                     continue
                 if (norm := cls.normalize_balance_entry(raw_entry, default_ts=eff_now_s)) is not None:
+                    if eff_ver_ts is None and ak_c in items_out:
+                        prev_a_ts = normalize_epoch_sec(items_out[ak_c].get("ts"), default=0.0) or 0.0
+                        new_a_ts = normalize_epoch_sec(norm.get("ts"), default=eff_now_s) or eff_now_s
+                        if prev_a_ts > new_a_ts + 1e-6:
+                            continue
                     items_out[ak_c] = norm
 
             bd_out: dict[str, dict[str, float]] = {}
@@ -4093,10 +4125,18 @@ class CacheBalanceManager(CacheAccountManagerBase):
                 if clean_q:
                     bd_out[q_u] = clean_q
 
+            next_ver_ts: Optional[float]
+            if eff_ver_ts is not None:
+                next_ver_ts = round(eff_ver_ts, 3)
+            elif prev_ver > 0.0:
+                next_ver_ts = round(max(prev_ver, eff_now_s) if advance_verified_ts else prev_ver, 3)
+            else:
+                next_ver_ts = None
+
             out_obj: dict[str, Any] = {
                 "venue": v_norm,
                 "ts": round(eff_now_s, 3),
-                "verified_ts": round(eff_ver_ts, 3) if eff_ver_ts is not None else (round(prev_ver, 3) if prev_ver > 0 else None),
+                "verified_ts": next_ver_ts,
                 "items": items_out,
             }
             if bd_out:

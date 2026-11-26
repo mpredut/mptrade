@@ -864,3 +864,107 @@ def test_final_audit_partial_sell_fee_proration_previous_recovery_and_non_destru
     tr_doc2 = json.loads(hl_trade.read_text(encoding="utf-8"))
     assert tr_doc2["items"]["SOLUSDC"] == []
     assert tr_doc2["fetchtime"]["SOLUSDC"] > 0
+
+
+def test_ws_outbound_account_position_updates_balance_cache_and_stale_lock_guard(tmp_path):
+    """Regression for Step 73 phantom -$966 NAV dip after ADAUSDC fill:
+    1. Binance outboundAccountPosition WS event atomically updates CacheBalanceManager (USDC + ADA) without clobbering untouched assets or allowing stale out-of-order events.
+    2. Read-only CacheBalanceManager rejects WS writes outside the sole cacheManager producer.
+    3. _venue_balance_cache_has_stale_order_lock detects when newer open_orders shows fewer locked funds/base than cache_balance_<venue>.
+    """
+    import cacheaccount
+    from binance_api import bapi_ws_bridge
+    from intelligence.sentiment.collectors.portfolio_collector import _venue_balance_cache_has_stale_order_lock
+    from providers.portfolio_valuation import BalanceObservation
+
+    t0 = 1_795_716_850.0
+    t_fill = t0 + 48.0
+    bal_path = tmp_path / "cache_balance_binance.json"
+
+    # Seed pre-fill full baseline snapshot (BTC $899.97 + ADA $966.03 locked; ADA only partially filled 226.49)
+    cacheaccount.CacheBalanceManager.replace_venue_balances_snapshot(
+        str(bal_path),
+        {
+            "USDC": (7361.97, 1866.00),
+            "ADA": (226.4909, 0.0),
+            "ARB": (2677.64511, 0.0),
+        },
+        venue="binance",
+        now_s=t0,
+        verified_ts=t0,
+    )
+    ro_mgr = cacheaccount.CacheBalanceManager(60, None, str(bal_path), read_only=True, venue="binance")
+    prod_mgr = cacheaccount.CacheBalanceManager(60, None, str(bal_path), read_only=False, venue="binance")
+
+    ws_event = {
+        "e": "outboundAccountPosition",
+        "E": int(t_fill * 1000),
+        "u": int(t_fill * 1000),
+        "B": [
+            {"a": "USDC", "f": "7361.96724542", "l": "899.97440000"},
+            {"a": "ADA", "f": "6680.09090000", "l": "0.00000000"},
+        ],
+    }
+
+    # Read-only consumer refuses WS write
+    persisted_ro: list[str] = []
+    bapi_ws_bridge.handle_binance_ws_event(
+        ws_event,
+        cache_getter=lambda name: ro_mgr if name == "BinanceBalance" else None,
+        log_enabled=False,
+        persist_fn=persisted_ro.append,
+    )
+    assert persisted_ro == []
+    assert ro_mgr.get_balance("ADA")["free"] == pytest.approx(226.4909)
+
+    # Producer applies outboundAccountPosition atomically, advances verified_ts, and preserves untouched ARB
+    persisted_prod: list[str] = []
+    bapi_ws_bridge.handle_binance_ws_event(
+        ws_event,
+        cache_getter=lambda name: prod_mgr if name == "BinanceBalance" else None,
+        log_enabled=False,
+        persist_fn=persisted_prod.append,
+    )
+    assert persisted_prod == ["outboundAccountPosition"]
+    assert prod_mgr.get_balance("ADA")["free"] == pytest.approx(6680.0909)
+    assert prod_mgr.get_balance("USDC")["locked"] == pytest.approx(899.9744)
+    assert prod_mgr.get_balance("ARB")["free"] == pytest.approx(2677.64511)
+    assert prod_mgr.verified_ts == pytest.approx(t_fill)
+
+    # Stale out-of-order WS event older than t_fill must NOT regress ADA back to 226.49
+    stale_ws_event = {
+        "e": "outboundAccountPosition",
+        "E": int((t0 + 5.0) * 1000),
+        "u": int((t0 + 5.0) * 1000),
+        "B": [{"a": "ADA", "f": "226.49090000", "l": "0.00000000"}],
+    }
+    bapi_ws_bridge.handle_binance_ws_event(
+        stale_ws_event,
+        cache_getter=lambda name: prod_mgr if name == "BinanceBalance" else None,
+        log_enabled=False,
+    )
+    assert prod_mgr.get_balance("ADA")["free"] == pytest.approx(6680.0909)
+
+    # Cross-venue stale-lock detector catches pre-fill balance cache vs post-fill open_orders (both BUY & SELL)
+    obs_stale_buy = {
+        ("binance", "USDC"): BalanceObservation(free=7361.97, ts=t0, priority=2, reflected_locked=1866.00),
+        ("binance", "ADA"): BalanceObservation(free=226.49, ts=t0, priority=2, reflected_locked=0.0),
+    }
+    open_after_ada_fill = {
+        ("binance", "BTCUSDC"): [{"orderId": "10976647800", "side": "BUY", "price": 59680.0, "origQty": 0.01508, "executedQty": 0.0}],
+    }
+    assert _venue_balance_cache_has_stale_order_lock(
+        "binance", t0, obs_stale_buy, open_after_ada_fill, {"binance": t_fill}, {}
+    ) is True
+    # When balance cache is fresh (>= open_orders verified_ts), detector stays cache-first (False)
+    assert _venue_balance_cache_has_stale_order_lock(
+        "binance", t_fill, obs_stale_buy, open_after_ada_fill, {"binance": t_fill}, {}
+    ) is False
+    # Symmetric SELL fill case: reflected_locked base TAO=5.5387 > open_orders base locked 0.0
+    obs_stale_sell = {
+        ("binance", "TAO"): BalanceObservation(free=0.005, ts=t0, priority=2, reflected_locked=5.5387),
+    }
+    assert _venue_balance_cache_has_stale_order_lock(
+        "binance", t0, obs_stale_sell, {}, {"binance": t_fill}, {}
+    ) is True
+

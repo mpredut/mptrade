@@ -182,6 +182,12 @@ def enable_writer(*, path: Optional[str] = None, pid: Optional[int] = None, now_
         _publish_locked(bump_generation=False)
 
 
+def is_writer_enabled() -> bool:
+    """Return True when this process is the active sole cacheManager account writer."""
+    with _writer_lock:
+        return bool(_writer_enabled)
+
+
 def disable_writer(*, now_ms: Optional[int] = None) -> bool:
     """Publish a fail-closed stopping state before disabling the writer."""
     global _writer_enabled, _writer_state

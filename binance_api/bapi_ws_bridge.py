@@ -12,6 +12,7 @@ from binance_api import bapi_ws
 from binance_api.bapi_ws_normalize import (
     parse_open_order_execution_report,
     parse_order_execution_report,
+    parse_outbound_account_position,
     parse_trade_execution_report,
 )
 from botcore import _parse_bool_flag, normalize_class_name, safe_pos_float
@@ -179,6 +180,28 @@ def apply_open_order_from_execution_report(
         return False
 
 
+def apply_balances_from_outbound_account_position(
+    event: dict[str, Any],
+    *,
+    cache_getter: Callable[..., Any] | None = None,
+) -> bool:
+    """Normalize and apply an ``outboundAccountPosition`` event atomically into ``BinanceBalance``."""
+    parsed = parse_outbound_account_position(event)
+    if parsed is None:
+        return False
+    updates, ev_ts = parsed
+    getter = cache_getter or _default_cache_getter
+    try:
+        cache = getter("BinanceBalance")
+        apply_fn = getattr(cache, "apply_ws_balance_updates", None)
+        if not callable(apply_fn):
+            return False
+        return bool(apply_fn(updates, event_ts=ev_ts))
+    except Exception as exc:
+        builtins.print(f"[cacheManager][WS] balance position update failed: {exc}")
+        return False
+
+
 def append_trade_from_execution_report(
     event: dict[str, Any],
     *,
@@ -216,6 +239,7 @@ def handle_binance_ws_event(
     upsert_order_fn: Callable[[dict[str, Any]], Any] | None = None,
     append_trade_fn: Callable[[dict[str, Any]], Any] | None = None,
     apply_open_order_fn: Callable[[dict[str, Any]], Any] | None = None,
+    apply_balance_fn: Callable[[dict[str, Any]], Any] | None = None,
     persist_fn: Callable[[str], Any] | None = None,
 ) -> None:
     """Dispatch one Binance user-data WebSocket event into the account caches."""
@@ -281,7 +305,19 @@ def handle_binance_ws_event(
                         pass
         return
 
-    if event_type in ("balanceUpdate", "outboundAccountPosition"):
+    if event_type == "outboundAccountPosition":
+        if should_log:
+            print(f"[cacheManager][WS] {event_type} event received")
+        bal_res = (
+            apply_balance_fn(event)
+            if apply_balance_fn is not None
+            else apply_balances_from_outbound_account_position(event, cache_getter=getter)
+        )
+        if bal_res and persist_fn is not None:
+            persist_fn(event_type)
+        return
+
+    if event_type == "balanceUpdate":
         if should_log:
             print(f"[cacheManager][WS] {event_type} event received")
         return

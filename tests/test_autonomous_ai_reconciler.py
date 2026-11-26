@@ -11105,4 +11105,39 @@ def test_monotonic_peak_px_warmup_intraday_post_action_trigger_and_iter_header(t
     )
     assert "- Trigger: prev_eval_actionable" in prompt_pa_empty
 
+    # Fresh (<=5m) FILLED execution also surfaces alongside focus_symbols(...) and promotes filled symbol into Section 3
+    sensors_focus_fill = TelemetrySensorSnapshot(
+        evaluated_at_ts=now_ms / 1000.0,
+        prices_and_trends={
+            "BTCUSDC": {"price": 59000.0, "trend": 0},
+            "ARBUSDC": {"price": 0.11295, "trend": 0},
+            "ADAUSDC": {"price": 0.14935, "trend": 1},
+        },
+        portfolio_summary={
+            "tradable_positions": [],
+            "last_cycle_execution_status": [
+                {
+                    "venue": "binance",
+                    "symbol": "ADAUSDC",
+                    "side": "BUY",
+                    "order_type": "LIMIT",
+                    "fill_px": 0.1496,
+                    "status": "FILLED",
+                    "age_min": 0.8,
+                }
+            ],
+        },
+    )
+    prompt_ff = build_supervisor_prompt(
+        sensors_focus_fill,
+        LogEventSummary(),
+        topic_spec("auto_cryptotrade_executor"),
+        focus_symbols=["ARBUSDC"],
+        wake_reason="focus_symbols(ARBUSDC)",
+    )
+    assert "- Trigger: focus_symbols(ARBUSDC) | ADAUSDC BUY FILLED@0.1496" in prompt_ff
+    sec3_ff = prompt_ff.split("### 3.", 1)[1]
+    assert sec3_ff.index("ADAUSDC") < sec3_ff.index("BTCUSDC")
+
+
 

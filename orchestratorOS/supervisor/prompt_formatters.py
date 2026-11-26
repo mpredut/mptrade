@@ -208,7 +208,10 @@ def _build_section0_trigger_context(
                     parts.append(f"{sym} stale_or_far")
                     trigger_syms.add(sym)
 
-    if "new_fill" in wake_lc and isinstance(portfolio_summary, dict):
+    want_fill_ctx = "new_fill" in wake_lc
+    want_fresh_fill_with_focus = not want_fill_ctx and "focus_symbols(" in wake_lc
+    if (want_fill_ctx or want_fresh_fill_with_focus) and isinstance(portfolio_summary, dict):
+        fill_max_age = 20.0 if want_fill_ctx else 5.0
         seen_fills: set[Tuple[str, str]] = set()
         raw_lces = portfolio_summary.get("last_cycle_execution_status")
         lces_items = raw_lces if isinstance(raw_lces, list) else ([raw_lces] if isinstance(raw_lces, dict) else [])
@@ -217,7 +220,9 @@ def _build_section0_trigger_context(
                 continue
             st_l = str(item.get("status") or item.get("venue_status") or "").strip().upper()
             age_m = safe_float(item.get("age_min"), None)
-            if st_l in ("FILLED", "PARTIALLY_FILLED") and (age_m is None or age_m <= 20.0):
+            if st_l in ("FILLED", "PARTIALLY_FILLED") and (
+                (age_m is None and want_fill_ctx) or (age_m is not None and age_m <= fill_max_age)
+            ):
                 if f_sym := str(item.get("symbol") or "").strip():
                     f_side = str(item.get("side") or item.get("decision") or "").strip().upper()
                     f_px = item.get("fill_px") or item.get("limit_px") or item.get("limit_price")
@@ -225,7 +230,7 @@ def _build_section0_trigger_context(
                     parts.append(f"{f_sym} {f_side} {st_l}{px_s}".strip())
                     trigger_syms.add(f_sym)
                     seen_fills.add((f_sym.upper(), f_side))
-        recent_orders = portfolio_summary.get("recent_orders")
+        recent_orders = portfolio_summary.get("recent_orders") if want_fill_ctx else None
         if isinstance(recent_orders, dict):
             eff_now_nf = safe_pos_float(now_ts, default=None) or time.time()
             recent_hits: List[Tuple[float, str, str, Any, str]] = []

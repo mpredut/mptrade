@@ -306,3 +306,39 @@ def parse_trade_execution_report(
     if cid:
         trade_item["clientOrderId"] = cid
     return symbol, trade_item
+
+
+def parse_outbound_account_position(
+    event: dict[str, Any],
+    *,
+    now_ms: int | None = None,
+) -> tuple[dict[str, dict[str, Any]], float] | None:
+    """Normalize a Binance ``outboundAccountPosition`` event into ``(balances_by_asset, event_ts_sec)``."""
+    if not isinstance(event, dict):
+        return None
+    raw_b = event.get("B")
+    if not isinstance(raw_b, list) or not raw_b:
+        return None
+    ts_ms = (
+        extract_timestamp_ms({"time": event.get("u")}, default=None)
+        or extract_timestamp_ms(event, default=None)
+        or resolve_now_ms(now_ms)
+    )
+    ev_ts_s = round(ts_ms / 1000.0, 3)
+    updates: dict[str, dict[str, Any]] = {}
+    for row in raw_b:
+        if not isinstance(row, dict):
+            continue
+        asset = clean_upper_scalar(row.get("a"))
+        if not asset:
+            continue
+        free_v = safe_nonneg_float(row.get("f"), default=None)
+        if free_v is None:
+            continue
+        locked_v = safe_nonneg_float(row.get("l"), default=0.0)
+        updates[asset] = {
+            "free": round(free_v, 8),
+            "locked": round(locked_v if locked_v is not None else 0.0, 8),
+            "ts": ev_ts_s,
+        }
+    return (updates, ev_ts_s) if updates else None

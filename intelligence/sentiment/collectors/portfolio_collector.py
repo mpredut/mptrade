@@ -562,6 +562,60 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
     return by_sym
 
 
+_QUOTE_CASH_LOCK_ASSETS: frozenset[str] = frozenset({"USD", "USDC", "USDT", "USDG", "EUR"})
+
+
+def _venue_balance_cache_has_stale_order_lock(
+    venue_norm: str,
+    bal_verified_ts: float,
+    all_cache_obs: Dict[tuple[str, str], BalanceObservation],
+    cached_open_by_vs: Dict[Tuple[str, str], List[Dict[str, Any]]],
+    cached_open_verified_ts: Dict[str, float],
+    cached_open_sym_verified_ts: Dict[Tuple[str, str], float],
+) -> bool:
+    """Return True when ``open_orders`` is strictly newer than ``bal_verified_ts`` and shows fewer locked funds/coins than ``cache_balance_<venue>``."""
+    open_ver_ts = safe_pos_float(cached_open_verified_ts.get(venue_norm), default=0.0) or 0.0
+    for (ov, _), sts in cached_open_sym_verified_ts.items():
+        if ov == venue_norm and (sf := safe_pos_float(sts, default=0.0) or 0.0) > open_ver_ts:
+            open_ver_ts = sf
+    if open_ver_ts <= bal_verified_ts + 0.5:
+        return False
+    open_quote_locked: Dict[str, float] = {}
+    open_base_locked: Dict[str, float] = {}
+    for (ov, osym), rows in cached_open_by_vs.items():
+        if ov != venue_norm or not rows:
+            continue
+        b_raw, q_raw = resolve_assets(osym, None, None)
+        b_u = canonical_balance_asset_key(b_raw, venue=venue_norm)
+        q_u = str(q_raw or "").strip().upper() or MarketDataProvider.resolve_venue_default_quote(venue_norm, fallback="USD")
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            side_u = extract_order_side(row)
+            orig_q = safe_pos_float(row.get("origQty") if row.get("origQty") is not None else row.get("qty"), default=0.0) or 0.0
+            exec_q = safe_nonneg_float(row.get("executedQty") if row.get("executedQty") is not None else row.get("filled_qty"), default=0.0) or 0.0
+            rem_q = safe_pos_float(row.get("remaining_qty"), default=None)
+            if rem_q is None:
+                rem_q = max(0.0, orig_q - exec_q)
+            if rem_q <= 1e-12:
+                continue
+            if side_u == "BUY":
+                px_o = safe_pos_float(row.get("price"), default=0.0) or 0.0
+                if px_o > 0.0:
+                    open_quote_locked[q_u] = open_quote_locked.get(q_u, 0.0) + (rem_q * px_o)
+            elif side_u == "SELL" and b_u:
+                open_base_locked[b_u] = open_base_locked.get(b_u, 0.0) + rem_q
+    for (bv, asset_k), obs in all_cache_obs.items():
+        if bv != venue_norm or obs.reflected_locked is None or obs.reflected_locked <= 1e-6:
+            continue
+        if asset_k in _QUOTE_CASH_LOCK_ASSETS:
+            if obs.reflected_locked > open_quote_locked.get(asset_k, 0.0) + 1.0:
+                return True
+        elif obs.reflected_locked > open_base_locked.get(asset_k, 0.0) + 1e-6:
+            return True
+    return False
+
+
 def _resolve_effective_trailing_raw_peak(
     t_state: Any,
     prev_cached_pos: Any,
@@ -2432,6 +2486,15 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     and isinstance(_doc.get("items"), dict)
                     and _doc.get("items")
                 ):
+                    if allow_network and _venue_balance_cache_has_stale_order_lock(
+                        _v_n,
+                        _v_ts,
+                        _all_c_obs,
+                        cached_open_by_vs,
+                        cached_open_verified_ts,
+                        cached_open_sym_verified_ts,
+                    ):
+                        continue
                     fresh_bal_cache_venues.add(_v_n)
             if fresh_bal_cache_venues:
                 fresh_bal_cache_obs = {
