@@ -6,7 +6,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/../lib/os_notify.sh"
 
 TOPIC="$(env_get NTFY_TOPIC_SERVER "$(env_get NTFY_TOPIC_DEADMAN "$(ntfy_error_topic)")")"
-ntfy_load_auth_hdr
+ntfy_load_auth_hd
 HOST="$(hostname)"
 
 DOWN_AFTER_SEC=$((35 * 60))
@@ -24,8 +24,8 @@ fi
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 10 --retry 2 --retry-delay 5 --retry-connrefused \
     "${AUTH_HDR[@]}" \
-    -H "In: 35m" -H "Title: SERVER DOWN ($HOST)" \
-    -d "No heartbeat for 35 minutes — check the server (crash / reboot / power loss)." \
+    -H "In: 35m" -H "Priority: urgent" -H "Title: SERVER DOWN ($HOST)" \
+    -d "No heartbeat for 35 minutes -- check the server (crash / reboot / power loss)." \
     "https://ntfy.sh/$TOPIC/server-alive" || echo "000")
 if [[ "$HTTP_CODE" =~ ^2 ]]; then
     echo "$(date '+%H:%M') deadman: pushed heartbeat (+35m)"
