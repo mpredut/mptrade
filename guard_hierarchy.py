@@ -553,43 +553,54 @@ _MARGINS_FILE_MTIME: float = 0.0
 _MARGINS_LAST_CHECK: float = 0.0
 _DEFAULT_ORDER_GUARD_ANCHOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_guard.py")
 
-_REQUIRED_ORDER_GUARD_KEYS = frozenset({
-    "default", "binance", "kraken", "hyperliquid", "default_window_h", "kraken_window_h", "hyperliquid_window_h",
-    "default_weight_proxy", "binance_weight_proxy", "kraken_weight_proxy", "hyperliquid_weight_proxy",
-    "default_chop_weight", "binance_chop_weight", "kraken_chop_weight", "hyperliquid_chop_weight",
-    "default_max_daily_trades", "default_safeback_sec",
-    "default_buy_reference", "binance_buy_reference", "kraken_buy_reference", "hyperliquid_buy_reference",
-    "default_sell_reference", "binance_sell_reference", "kraken_sell_reference", "hyperliquid_sell_reference",
+_VENUE_DEFAULT_SUFFIXES = (
+    "",
+    "_window_h",
+    "_weight_proxy",
+    "_chop_weight",
+    "_buy_reference",
+    "_sell_reference",
+    "_bypass_guards",
+)
+
+_MODULE_REFERENCE_KEYS = frozenset({
     "assetguardian_buy_reference", "assetguardian_sell_reference",
     "monitortrades_buy_reference", "monitortrades_sell_reference",
     "tradeall_buy_reference", "tradeall_sell_reference",
     "rtrade_buy_reference", "rtrade_sell_reference",
-    "dynamic_window_favorable_h", "dynamic_window_flat_h", "dynamic_window_adverse_h",
-    "regime_context_max_age_sec",
-    # Pillar 1: Internal Quantitative Mathematical Guards
-    "internal_guard_mode", "intelligence_guards_mode", "parabolic_surge_pct",
-    "parabolic_pullback_pct", "weibull_exhaustion_policy", "weibull_exhausted_scale",
-    "weibull_p90_days",
-    # Pillar 2: External Microstructure & Derivatives Flow Guards
-    "external_guard_mode", "whale_guard_mode", "severe_cascade_oi_pct", "min_taker_ratio",
-    "taker_downscale_threshold", "taker_downscaled_scale", "orderbook_wall_guard_mode",
-    "whale_wall_usd_limit", "min_buy_imbalance", "max_sell_imbalance",
-    "high_stake_min_notional_usd", "funding_guard_mode", "funding_max_long_rate",
-    "funding_min_short_rate", "funding_crowding_policy", "funding_crowded_scale",
-    # Pillar 2 Sub-Module: Smart Stop-Loss
-    "smart_sl_mode", "smart_sl_max_threshold_pct", "smart_sl_grace_seconds",
-    "smart_sl_disaster_buffer_pct", "smart_sl_min_whale_long_pct", "smart_sl_min_taker_ratio",
-    # Pillar 3: AI Intelligence High-Stake Guard & Post-Stop Re-entry
-    "llm_guard_mode", "llm_timeout_sec", "llm_fallback", "post_stop_reentry_mode",
-    "post_stop_reentry_timeout_sec", "post_stop_reentry_fallback", "post_stop_reentry_notify",
-    "post_stop_reentry_cache_ttl_sec", "macro_advisor_interval_sec", "macro_llm_interval_sec",
-    # Pillar 4 & Global + Autonomous AI Supervisor & Trading Gateway + Bypass
-    "geopolitical_guard_mode", "shadow_notify", "supervisor_mode", "supervisor_notify",
-    "autonomous_trading_mode", "autonomous_trading_max_notional_usd",
-    "autonomous_trading_min_notional_usd", "autonomous_trading_min_confidence",
-    "autonomous_trading_notify", "default_bypass_guards", "binance_bypass_guards",
-    "kraken_bypass_guards", "hyperliquid_bypass_guards",
 })
+
+_REQUIRED_ORDER_GUARD_KEYS = frozenset(
+    {f"default{sfx}" for sfx in _VENUE_DEFAULT_SUFFIXES}
+    | _MODULE_REFERENCE_KEYS
+    | {
+        "default_max_daily_trades", "default_safeback_sec",
+        "dynamic_window_favorable_h", "dynamic_window_flat_h", "dynamic_window_adverse_h",
+        "regime_context_max_age_sec",
+        # Pillar 1: Internal Quantitative Mathematical Guards
+        "internal_guard_mode", "intelligence_guards_mode", "parabolic_surge_pct",
+        "parabolic_pullback_pct", "weibull_exhaustion_policy", "weibull_exhausted_scale",
+        "weibull_p90_days",
+        # Pillar 2: External Microstructure & Derivatives Flow Guards
+        "external_guard_mode", "whale_guard_mode", "severe_cascade_oi_pct", "min_taker_ratio",
+        "taker_downscale_threshold", "taker_downscaled_scale", "orderbook_wall_guard_mode",
+        "whale_wall_usd_limit", "min_buy_imbalance", "max_sell_imbalance",
+        "high_stake_min_notional_usd", "funding_guard_mode", "funding_max_long_rate",
+        "funding_min_short_rate", "funding_crowding_policy", "funding_crowded_scale",
+        # Pillar 2 Sub-Module: Smart Stop-Loss
+        "smart_sl_mode", "smart_sl_max_threshold_pct", "smart_sl_grace_seconds",
+        "smart_sl_disaster_buffer_pct", "smart_sl_min_whale_long_pct", "smart_sl_min_taker_ratio",
+        # Pillar 3: AI Intelligence High-Stake Guard & Post-Stop Re-entry
+        "llm_guard_mode", "llm_timeout_sec", "llm_fallback", "post_stop_reentry_mode",
+        "post_stop_reentry_timeout_sec", "post_stop_reentry_fallback", "post_stop_reentry_notify",
+        "post_stop_reentry_cache_ttl_sec", "macro_advisor_interval_sec", "macro_llm_interval_sec",
+        # Pillar 4 & Global + Autonomous AI Supervisor & Trading Gateway
+        "geopolitical_guard_mode", "shadow_notify", "supervisor_mode", "supervisor_notify",
+        "autonomous_trading_mode", "autonomous_trading_max_notional_usd",
+        "autonomous_trading_min_notional_usd", "autonomous_trading_min_confidence",
+        "autonomous_trading_notify",
+    }
+)
 
 VALID_PROFIT_GUARD_MODES = frozenset({"strict", "average", "last", "hybrid", "dynamic", "off"})
 VALID_GUARD_MODES = frozenset({"off", "shadow", "enforce"})
@@ -600,13 +611,6 @@ _GUARD_MODE_KEYS = (
     "smart_sl_mode", "llm_guard_mode", "post_stop_reentry_mode",
     "geopolitical_guard_mode", "supervisor_mode", "autonomous_trading_mode",
 )
-
-_MODULE_REFERENCE_KEYS = frozenset({
-    "assetguardian_buy_reference", "assetguardian_sell_reference",
-    "monitortrades_buy_reference", "monitortrades_sell_reference",
-    "tradeall_buy_reference", "tradeall_sell_reference",
-    "rtrade_buy_reference", "rtrade_sell_reference",
-})
 
 _DISCRETE_POLICY_SETS: Dict[str, frozenset] = {
     "weibull_exhaustion_policy": frozenset({"block", "veto", "downscale"}),
@@ -706,6 +710,12 @@ def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:
                     validate_profit_guard_mode_cfg(val)
             else:
                 validate_profit_guard_mode_cfg(val)
+        elif key.endswith("_window_h"):
+            if safe_nonneg_float(val, default=None) is None:
+                raise ValueError(f"Invalid {key} {val!r} in {path}; must be a non-negative number")
+        elif key.endswith("_chop_weight"):
+            if safe_pos_float(val, default=None) is None:
+                raise ValueError(f"Invalid {key} {val!r} in {path}; must be a positive number")
 
     for policy_key, valid_set in _DISCRETE_POLICY_SETS.items():
         _validate_discrete_cfg(m[policy_key], valid_set, f"{policy_key}")
