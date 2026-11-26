@@ -431,14 +431,19 @@ def is_last_buy_lot_harvested(
     *,
     last_buy_ts_ms: float = 0.0,
     last_sell_ts_ms: float = 0.0,
+    is_flat_dust: bool = False,
 ) -> bool:
     """Return True when ``last_buy_px`` is no longer present among remaining LIFO ``open_lots``."""
     px_f = safe_pos_float(last_buy_px, None)
+    if px_f is None:
+        return False
+    if last_buy_ts_ms > 0.0 and last_sell_ts_ms > 0.0 and last_buy_ts_ms > last_sell_ts_ms:
+        return False
+    if is_flat_dust:
+        return True
     lots_seq = open_lots if isinstance(open_lots, list) else []
     return (
-        px_f is not None
-        and len(lots_seq) > 0
-        and not (last_buy_ts_ms > 0.0 and last_sell_ts_ms > 0.0 and last_buy_ts_ms > last_sell_ts_ms)
+        len(lots_seq) > 0
         and not any(isinstance(lt, dict) and same_anchor_px(px_f, lt.get("entry_px")) for lt in lots_seq)
     )
 
@@ -1885,6 +1890,10 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
         lb_px = safe_pos_float(lb.get("price") if isinstance(lb, dict) else None, default=None)
         set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", lb_px, pos_px_f)
         set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", ls.get("price") if isinstance(ls, dict) else None, pos_px_f)
+        if isinstance(lb, dict) and (lb_ts := safe_pos_int(lb.get("ts_ms"), default=0) or 0) > 0:
+            pos["last_buy_ts_ms"] = lb_ts
+        if isinstance(ls, dict) and (ls_ts := safe_pos_int(ls.get("ts_ms"), default=0) or 0) > 0:
+            pos["last_sell_ts_ms"] = ls_ts
         r_buys = ro.get("recent_buys") if isinstance(ro.get("recent_buys"), list) else []
         open_lots = ro.get("open_lots") if isinstance(ro.get("open_lots"), list) else []
         fresh_lots, newest_lot_ts = select_fresh_open_lots(

@@ -19,7 +19,7 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
 )
-from cachepaths import has_equity_suffix, matches_asset_scope, normalize_venue_name
+from cachepaths import canonical_base_asset, has_equity_suffix, matches_asset_scope, normalize_venue_name
 from instrument_registry import casefold_get
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     stale_closed_equity_metric_keys,
@@ -70,7 +70,7 @@ _VENUE_SPEC_ROW_RE = re.compile(
 _FEE_PAIR_RE = re.compile(r"\(([0-9.]+)/([0-9.]+)\)")
 _OPEN_ORDER_ROW_RE = re.compile(
     r"^\s*\|\s*([a-z0-9_]+)\s*\|\s*([A-Za-z0-9_]+)\s*\|\s*(BUY|SELL)\s*\|\s*([0-9.]+)\s*\|\s*([0-9.]+)\s*\|\s*([^|]+?)\s*\|"
-    r"[^|]*\|[^|]*\|[^|]*\|\s*([^|]+?)\s*\|[^|]*\|(?:\s*([^|]+?)\s*\|)?\s*([^|]+?)\s*\|$",
+    r"\s*([^|]+?)\s*\|[^|]*\|[^|]*\|\s*([^|]+?)\s*\|[^|]*\|(?:\s*([^|]+?)\s*\|)?\s*([^|]+?)\s*\|$",
     re.MULTILINE,
 )
 _DIST_PCT_CELL_RE = re.compile(r"^([+-]?[0-9.]+)%$")
@@ -149,6 +149,39 @@ _CAL_OFFSET_BLOCK_RE = re.compile(r"\bfill_by_offset\(([^)]+)\)")
 _CAL_OFFSET_ITEM_RE = re.compile(r":(\d+)%\[(\d+)/(\d+)\]")
 _BREADTH_ADV_RE = re.compile(r"\badvance_ratio=([0-9.]+).*?\badvancing=(\d+)/(\d+)")
 _BREADTH_VOL_SHARE_RE = re.compile(r"\bBTC_vol_share=([0-9.]+)%,\s*Alt_vol_share=([0-9.]+)%")
+_LIQ_CLUSTER_ITEM_RE = re.compile(
+    r"\b(long_liq|short_liq|deep_long|deep_short)=\$([0-9.,]+)\[\$[^,]+,\s*([+-]?[0-9.]+)%\]"
+)
+_INTENT_STATUS_ID_RE = re.compile(
+    r"\b(FILLED|PARTIALLY_FILLED|OPEN_RESTING|CANCELED|CANCELLED|EXPIRED)\b[^\n]*\bid=([A-Za-z0-9_-]+)"
+)
+_TERMINAL_ORDER_STATUS_TOKS: frozenset[str] = frozenset({"FILLED", "CANCELED", "CANCELLED", "EXPIRED"})
+_WARM_OMITTED_LINE_RE = re.compile(
+    r"^- Unchanged in thread \(active from prior turn\):\s*(.+)$",
+    re.MULTILINE,
+)
+_WARM_OMITTED_HEADER_SPECS: tuple[tuple[str, str], ...] = (
+    ("Calendar(", "Macro Economic Calendar & Session Window:"),
+    ("US_Equities(", "Cross-Market US Equities Telemetry"),
+    ("Scorecard(", "AI Decision Scorecard ("),
+    ("Calibration(", "AI Execution & Plan Calibration ("),
+    ("Cycle_Anchors(", "Active Cycle Cost & Drawdown Anchors"),
+    ("Venue_Specs(", "Venue Specs & Fees"),
+    ("Fear&Greed(", "- Fear & Greed:"),
+    ("ETF_Flows(", "- US Spot Crypto ETF Net Flows"),
+    ("Long_Horizon(", "Multi-Month & Annual Structure"),
+    ("xStocks(", "Kraken Tokenized Equities / xStocks"),
+    ("HL_Summary(", "Hyperliquid Spot/Perp Equity Summary:"),
+    ("News(", "- Live Breaking News Feed:"),
+)
+_LH_ROW_RE = re.compile(
+    r"^\s*\|\s*([A-Za-z0-9_]+)\s*\|\s*(?:[+-]?[0-9.]+%|-)\s*\|\s*(?:[+-]?[0-9.]+%|-)\s*\|\s*(?:[+-]?[0-9.]+%|-)\s*\|\s*"
+    r"\[\$([0-9.]+[KMBkmb]?)\.\.\$([0-9.]+[KMBkmb]?)\]\s*\(([0-9.]+)%\)\s*\|"
+    r"(?:\s*\[\$([0-9.]+[KMBkmb]?)\.\.\$([0-9.]+[KMBkmb]?)\]\s*\(([0-9.]+)%\)\s*\|)?"
+    r"[^|]+\|[^|]+\|[^|]*now:([0-9.]+[KMBkmb]?)\s*\|$",
+    re.MULTILINE,
+)
+_SEC2_CRYPTO_BW_ROW_RE = re.compile(r"^\s*\|\s*([A-Z0-9]+)\s*\|\s*\$([0-9,]+\.?\d*)\s*\|", re.MULTILINE)
 _NUMERIC_HYGIENE_SPECS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("NONE_LITERAL", re.compile(r"(?:=None\b|\|\s*None\s*\||\(None\)|\[None\])")),
     ("NAN_OR_INF", re.compile(r"(?:[=:(,\[\s\$])(?:nan|NaN|[+-]?inf|Inf)\b")),
@@ -1104,15 +1137,19 @@ def audit_rendered_prompt_text(
             )
 
     open_order_rows: list[tuple[str, str, str, float, Optional[float], str]] = []
+    open_order_ids: dict[str, str] = {}
     buy_open_notional = 0.0
     for m_oo in _OPEN_ORDER_ROW_RE.finditer(prompt_text):
         ven_o, sym_o, side_o = m_oo.group(1), m_oo.group(2), m_oo.group(3)
         px_o = safe_pos_float(m_oo.group(4), default=None)
         qty_o = safe_pos_float(m_oo.group(5), default=None)
         filled_cell = (m_oo.group(6) or "").strip()
-        dist_cell = (m_oo.group(7) or "").strip()
-        plan_cell = (m_oo.group(8) or "").strip()
-        note_cell = (m_oo.group(9) or "").strip()
+        oid_cell = (m_oo.group(7) or "").strip()
+        dist_cell = (m_oo.group(8) or "").strip()
+        plan_cell = (m_oo.group(9) or "").strip()
+        note_cell = (m_oo.group(10) or "").strip()
+        if oid_cell and oid_cell != "-":
+            open_order_ids[oid_cell] = f"{ven_o}:{sym_o}"
         rem_qty_o = qty_o
         if qty_o is not None and (m_rem := _FILLED_REM_RE.match(filled_cell)) is not None:
             f_v = safe_nonneg_float(m_rem.group(1), default=None)
@@ -1369,6 +1406,17 @@ def audit_rendered_prompt_text(
                                     f"reported {fmt_signed(rep_d, 2)}% vs expected {fmt_signed(exp_d, 2)}% (px={px:g}, {vp_lbl}={lv:g})",
                                 )
                             )
+                rep_vp = safe_float(m_vp.group(7), default=None) if m_vp.group(7) is not None else None
+                if rep_vp is not None and vah > val:
+                    exp_vp = ((px - val) / (vah - val)) * 100.0
+                    if abs(exp_vp - rep_vp) > 1.0:
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_VA_POS_AND_LIQ_MATH",
+                                f"{sym}:va_pos",
+                                f"reported va_pos={rep_vp:.1f}% != expected {exp_vp:.1f}% (px={px:g}, VAL={val:g}, VAH={vah:g})",
+                            )
+                        )
         if (m_vw := _SESSION_VWAP_RE.search(rest)) is not None:
             vwap_px = _parse_money(m_vw.group(1))
             rep_vd = safe_float(m_vw.group(2), default=None)
@@ -1466,6 +1514,7 @@ def audit_rendered_prompt_text(
         arb_pairs=arb_pairs,
         maker_bps_by_sym=maker_bps_by_sym,
         arb_tol_bps=arb_tol_bps,
+        open_order_ids=open_order_ids,
     )
     _audit_prompt_calibration_and_breadth(violations, prompt_text)
     _audit_prompt_numeric_hygiene(violations, prompt_text)
@@ -1485,6 +1534,7 @@ def _audit_prompt_cross_section_math(
     arb_pairs: Mapping[tuple[str, str], float] = (),  # type: ignore[assignment]
     maker_bps_by_sym: Mapping[str, float] = (),  # type: ignore[assignment]
     arb_tol_bps: float = 0.3,
+    open_order_ids: Mapping[str, str] = (),  # type: ignore[assignment]
 ) -> None:
     """Validate rendered range extremes, bottom_6h, vs_btc, OB spread/wall/depth/flow/edge, open orders, advisor & xStock."""
     sec3_px_by_sym: dict[str, float] = {}
@@ -1638,6 +1688,20 @@ def _audit_prompt_cross_section_math(
                                 "PROMPT_OB_SPREAD_AND_WALL_DIST",
                                 f"{sym}:{w_lbl}_dist",
                                 f"reported {w_lbl} dist={fmt_signed(rep_wd, 2)}% != expected {fmt_signed(exp_wd, 2)}% (wall={w_px:g}, mid={ob_mid:g})",
+                            )
+                        )
+            for m_lq in _LIQ_CLUSTER_ITEM_RE.finditer(rest):
+                lq_lbl = m_lq.group(1)
+                lq_px = _parse_money(m_lq.group(2))
+                rep_ld = safe_float(m_lq.group(3), default=None)
+                if lq_px is not None and lq_px > 0.0 and rep_ld is not None:
+                    exp_ld = ((lq_px - ob_mid) / ob_mid) * 100.0
+                    if abs(exp_ld - rep_ld) > 0.25:
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_VA_POS_AND_LIQ_MATH",
+                                f"{sym}:{lq_lbl}",
+                                f"reported {lq_lbl} dist={fmt_signed(rep_ld, 2)}% != expected {fmt_signed(exp_ld, 2)}% (liq={lq_px:g}, mid={ob_mid:g})",
                             )
                         )
         if (m_tr := _TAKER_RATIO_VOL_RE.search(rest)) is not None:
@@ -1807,6 +1871,90 @@ def _audit_prompt_cross_section_math(
                         "PROMPT_XSTOCK_PREMIUM_MATH",
                         "SPCXxUSD",
                         f"reported xstock_vs_underlying={fmt_signed(rep_prem, 2)}% != expected {fmt_signed(exp_prem, 2)}% (x={x_px:g}, u={u_px:g})",
+                    )
+                )
+
+    # Order lifecycle consistency across Section 1 (no ghost open order also marked FILLED/CANCELED; no status contradiction per order ID)
+    sec1_body = prompt_text.split("### 2.", 1)[0]
+    seen_oid_statuses: dict[str, set[str]] = {}
+    for m_is in _INTENT_STATUS_ID_RE.finditer(sec1_body):
+        st_tok, oid_tok = m_is.group(1), m_is.group(2)
+        seen_oid_statuses.setdefault(oid_tok, set()).add(st_tok)
+        if oid_tok in open_order_ids and st_tok in _TERMINAL_ORDER_STATUS_TOKS:
+            violations.append(
+                InvariantViolation(
+                    "PROMPT_ORDER_LIFECYCLE_CONSISTENCY",
+                    f"{open_order_ids[oid_tok]}:id={oid_tok}",
+                    f"order id={oid_tok} appears BOTH in open_limit_orders AND marked {st_tok}",
+                )
+            )
+    for oid_tok, st_set in seen_oid_statuses.items():
+        if len(st_set) > 1:
+            violations.append(
+                InvariantViolation(
+                    "PROMPT_ORDER_LIFECYCLE_CONSISTENCY",
+                    f"id={oid_tok}",
+                    f"order id={oid_tok} has conflicting statuses across Section 1: {sorted(st_set)}",
+                )
+            )
+
+    # Warm-turn delta elision truthfulness: no block declared omitted in Section 0 may still be rendered in full
+    if (m_om := _WARM_OMITTED_LINE_RE.search(prompt_text)) is not None:
+        om_s = m_om.group(1)
+        body_after_om = prompt_text[m_om.end():]
+        for om_tok, hdr_str in _WARM_OMITTED_HEADER_SPECS:
+            if om_tok in om_s and hdr_str in body_after_om:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_WARM_ELISION_TRUTHFULNESS",
+                        om_tok.rstrip("("),
+                        f"Section 0 declares {om_tok}...) omitted, yet prompt body still renders {hdr_str!r}",
+                    )
+                )
+
+    # Multi-Month & Annual Structure (Long Horizon) range position math and live-price parity
+    sec2_crypto_bw_px: dict[str, float] = {}
+    if "Cross-Market Live Crypto Telemetry" in prompt_text:
+        cm_seg = prompt_text.split("Cross-Market Live Crypto Telemetry", 1)[1].split("### 3.", 1)[0]
+        for m_cbw in _SEC2_CRYPTO_BW_ROW_RE.finditer(cm_seg):
+            if (cbw_px := _parse_money(m_cbw.group(2))) is not None and cbw_px > 0.0:
+                sec2_crypto_bw_px[m_cbw.group(1).upper()] = cbw_px
+    for m_lh in _LH_ROW_RE.finditer(prompt_text):
+        lh_sym = m_lh.group(1)
+        lh_sym_u = lh_sym.upper()
+        lo52, hi52, p52 = _parse_money(m_lh.group(2)), _parse_money(m_lh.group(3)), safe_float(m_lh.group(4), default=None)
+        lo_h = _parse_money(m_lh.group(5)) if m_lh.group(5) else None
+        hi_h = _parse_money(m_lh.group(6)) if m_lh.group(6) else None
+        p_h = safe_float(m_lh.group(7), default=None) if m_lh.group(7) else None
+        now_lh = _parse_money(m_lh.group(8))
+        if now_lh is not None and now_lh > 0.0:
+            if lo52 is not None and hi52 is not None and p52 is not None and hi52 > lo52:
+                exp_52 = clamp_float(((now_lh - lo52) / (hi52 - lo52)) * 100.0, 0.0, 100.0)
+                if abs(exp_52 - p52) > 1.5:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_LONG_HORIZON_MATH",
+                            f"{lh_sym}:Pos52w",
+                            f"reported Pos52w={p52:.1f}% != expected {exp_52:.1f}% (now={now_lh:g}, [{lo52:g}..{hi52:g}])",
+                        )
+                    )
+            if lo_h is not None and hi_h is not None and p_h is not None and hi_h > lo_h:
+                exp_h = clamp_float(((now_lh - lo_h) / (hi_h - lo_h)) * 100.0, 0.0, 100.0)
+                if abs(exp_h - p_h) > 1.5:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_LONG_HORIZON_MATH",
+                            f"{lh_sym}:PosHorizon",
+                            f"reported Pos={p_h:.1f}% != expected {exp_h:.1f}% (now={now_lh:g}, [{lo_h:g}..{hi_h:g}])",
+                        )
+                    )
+            live_ref = sec3_px_by_sym.get(lh_sym_u) or sec2_crypto_bw_px.get(canonical_base_asset(lh_sym))
+            if live_ref is not None and live_ref > 0.0 and abs(now_lh - live_ref) / live_ref > 0.01:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_LONG_HORIZON_MATH",
+                        f"{lh_sym}:now_px",
+                        f"Long_Horizon now={now_lh:g} diverges from live price {live_ref:g}",
                     )
                 )
 

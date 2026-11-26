@@ -48,6 +48,7 @@ from intelligence.sentiment.evaluators.portfolio_evaluator import (
     clip_open_lots_to_held_qty,
     compute_cycle_subcycle_realized_pnl_view,
     compute_open_lots_vwap,
+    is_last_buy_lot_harvested,
     same_anchor_px,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
@@ -810,16 +811,12 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                 lot_harvested = bool(
                     px_k == "last_buy_px"
                     and pct_val is not None
-                    and (
-                        is_flat_dust_pos
-                        or (
-                            isinstance(open_lots_chk := p_map.get("open_lots"), list)
-                            and len(open_lots_chk) > 0
-                            and not any(
-                                isinstance(lt, dict) and same_anchor_px(p_map.get("last_buy_px"), lt.get("entry_px"))
-                                for lt in open_lots_chk
-                            )
-                        )
+                    and is_last_buy_lot_harvested(
+                        p_map.get("last_buy_px"),
+                        p_map.get("open_lots"),
+                        last_buy_ts_ms=safe_nonneg_float(p_map.get("last_buy_ts_ms"), default=0.0) or 0.0,
+                        last_sell_ts_ms=safe_nonneg_float(p_map.get("last_sell_ts_ms"), default=0.0) or 0.0,
+                        is_flat_dust=is_flat_dust_pos,
                     )
                 )
                 eff_pct_lbl = (

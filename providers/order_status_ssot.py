@@ -517,6 +517,8 @@ def format_prompt_intent_status(
     v_u = _norm_upper_status(venue_status)
     fq = safe_pos_float(filled_qty, default=0.0) or 0.0
     if section == "last_cycle_execution_status":
+        if it_u == "EXECUTED" and v_u in ("FILLED", "CLOSED"):
+            return "FILLED"
         if in_open_book:
             return "PARTIALLY_FILLED" if fq > 0.0 else "OPEN_RESTING"
         if it_u == "EXECUTED":

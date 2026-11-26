@@ -164,6 +164,7 @@ from providers.intent_state import (
     collect_known_ai_order_ids,
     extract_intent_notional,
     parse_intent_gateway_config,
+    prune_reconciled_terminal_open_orders,
 )
 from providers.ohlc_utils import (
     extract_yahoo_chart_ohlcv_bars,
@@ -2248,6 +2249,8 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 persist=harvest_persist,
                 now_ts=now_ts,
             )
+            if open_orders_list and isinstance(intents_data, list):
+                open_orders_list = prune_reconciled_terminal_open_orders(open_orders_list, intents_data)
 
         if tradable_positions:
             snapshot.portfolio_summary["tradable_positions"] = tradable_positions

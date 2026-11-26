@@ -46,6 +46,7 @@ from .order_id_context import (
     extract_client_order_id,
     resolve_order_actor,
 )
+from .order_status_ssot import FILL_COMPLETE_QTY_RATIO, TERMINAL_FILL_ROW_STATUSES
 
 _CURRENCY_STRIP_RE = re.compile(r"[\$,\s]|(?:USD[CT]?)\b", re.IGNORECASE)
 _HORIZON_STR_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([mhd]?)\s*$", re.IGNORECASE)
@@ -191,6 +192,81 @@ def collect_known_ai_order_ids(
         for oid_tok in _intent_order_ids(item):
             ai_oids.add_scoped(oid_tok, venue=item_v, symbol=item_s, account=item_a)
     return ai_oids
+
+
+def prune_reconciled_terminal_open_orders(
+    open_orders: Any,
+    intents: Any,
+) -> list[dict[str, Any]]:
+    """Drop stale cached open orders already confirmed terminal (FILLED/CANCELED/EXPIRED) in AI intent state."""
+    if not isinstance(open_orders, list) or not open_orders:
+        return list(open_orders) if isinstance(open_orders, list) else []
+    if isinstance(intents, dict):
+        intents = intents.get("intents")
+    if not isinstance(intents, list) or not intents:
+        return list(open_orders)
+
+    terminal_scoped: set[tuple[str, str]] = set()
+    terminal_unscoped: set[str] = set()
+    for item in intents:
+        if not isinstance(item, dict):
+            continue
+        ep = item.get("execution_payload")
+        if not isinstance(ep, dict):
+            continue
+        ep_st = clean_upper_scalar(ep.get("status")) or ""
+        if ep_st not in TERMINAL_FILL_ROW_STATUSES:
+            continue
+        is_reconciled = _parse_bool_flag(ep.get("reconciled_terminal"), False)
+        if not is_reconciled:
+            if ep_st not in ("FILLED", "CLOSED") or clean_upper_scalar(item.get("status")) != "EXECUTED":
+                continue
+            exec_q = safe_nonneg_float(
+                ep.get("executedQty")
+                if ep.get("executedQty") is not None
+                else (ep.get("filled_qty") if ep.get("filled_qty") is not None else ep.get("filled")),
+                default=0.0,
+            ) or 0.0
+            orig_q = safe_pos_float(
+                ep.get("origQty")
+                if ep.get("origQty") is not None
+                else (ep.get("qty") if ep.get("qty") is not None else ep.get("amount")),
+                default=None,
+            )
+            if exec_q <= 0.0 or (orig_q is not None and exec_q < orig_q * FILL_COMPLETE_QTY_RATIO):
+                continue
+        item_v = normalize_venue_name(item.get("venue") or item.get("provider_name") or item.get("provider")) or ""
+        for oid_tok in _intent_order_ids(item):
+            if item_v:
+                terminal_scoped.add((item_v, oid_tok))
+            else:
+                terminal_unscoped.add(oid_tok)
+
+    if not terminal_scoped and not terminal_unscoped:
+        return list(open_orders)
+
+    out: list[dict[str, Any]] = []
+    for order in open_orders:
+        if not isinstance(order, dict):
+            out.append(order)
+            continue
+        ord_v = normalize_venue_name(order.get("venue") or order.get("provider_name") or order.get("provider")) or ""
+        cand_ids: list[str] = []
+        if oid := clean_order_id(extract_order_id(order, default=None)):
+            cand_ids.append(oid)
+        if cid := clean_order_id(extract_client_order_id(order, default=None)):
+            cand_ids.append(cid)
+            if cid.upper().startswith("AI_"):
+                cand_ids.extend(all_venue_native_client_order_ids(cid))
+        is_terminal = any(
+            (ord_v and (ord_v, tok) in terminal_scoped)
+            or (not ord_v and any(t_id == tok for _, t_id in terminal_scoped))
+            or tok in terminal_unscoped
+            for tok in cand_ids
+        )
+        if not is_terminal:
+            out.append(order)
+    return out
 
 
 def extract_intent_side(data: dict[str, Any]) -> str:
@@ -910,6 +986,7 @@ __all__ = [
     "order_matches_intent_client_id",
     "parse_intent_gateway_config",
     "parse_pos_epoch_s",
+    "prune_reconciled_terminal_open_orders",
     "resolve_hold_cancel_target",
     "symbols_match_intent_scope_and_quote",
     "validate_and_build_intent_dict",

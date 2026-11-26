@@ -2194,7 +2194,8 @@ def _format_kraken_xstocks_line(xs_view: Dict[str, Any], *, scope_s: str, tag: s
     parts: List[str] = []
     if scope_s in ("equities", "equity"):
         if xs.get("live_price") is not None:
-            pnl_s = f" ({fmt_signed(xs.get('pnl_vs_alloc_pct'))}% vs alloc {xs.get('alloc_price')})" if xs.get("pnl_vs_alloc_pct") is not None else ""
+            alloc_disp = round_opt_px(xs.get("alloc_price"), 6)
+            pnl_s = f" ({fmt_signed(xs.get('pnl_vs_alloc_pct'))}% vs alloc {alloc_disp})" if xs.get("pnl_vs_alloc_pct") is not None else ""
             parts.append(f"{xs_pair_lbl}=${xs['live_price']}{pnl_s}")
         if isinstance(xs.get("holdings"), dict) and xs["holdings"]:
             h_s = ", ".join(f"{k}={_fmt_plain_float(v)}" for k, v in xs["holdings"].items())

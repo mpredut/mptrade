@@ -1517,6 +1517,176 @@ def test_reconciler_continuous_runtime_prompt_invariant_validation(tmp_path, cap
         assert len(ntfy_calls) == 2
 
 
+def test_cycle15_fill_lifecycle_pruning_lot_harvested_and_four_new_invariants() -> None:
+    """Verify Cycle 15 fixes and 4 new continuous invariants:
+    1. prune_reconciled_terminal_open_orders drops stale open-order ghosts once reconciled terminal in intents,
+       and format_prompt_intent_status preserves FILLED over a lagging in_open_book=True flag.
+    2. is_last_buy_lot_harvested & PortfolioPromptViewEvaluator never label a fresh BUY newer than the last SELL
+       as lot_harvested even while balance cache still shows dust.
+    3. Equities Cross-Venue Kraken xStock reference rounds alloc_price cleanly to <=6 decimals.
+    4. PROMPT_VA_POS_AND_LIQ_MATH, PROMPT_ORDER_LIFECYCLE_CONSISTENCY, PROMPT_WARM_ELISION_TRUTHFULNESS,
+       and PROMPT_LONG_HORIZON_MATH pass cleanly on valid prompts and catch every corruption.
+    """
+    from intelligence.sentiment.evaluators.portfolio_evaluator import is_last_buy_lot_harvested
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import evaluate_portfolio_prompt_view
+    from orchestratorOS.supervisor.prompt_sections import _format_kraken_xstocks_line
+    from providers.intent_state import prune_reconciled_terminal_open_orders
+    from providers.order_status_ssot import format_prompt_intent_status
+
+    # 1a. format_prompt_intent_status monotonic lattice: terminal FILLED is never downgraded by stale in_open_book=True
+    assert (
+        format_prompt_intent_status(
+            "EXECUTED", "FILLED", in_open_book=True, filled_qty=16.8, section="last_cycle_execution_status"
+        )
+        == "FILLED"
+    )
+    assert (
+        format_prompt_intent_status(
+            "EXECUTED", "NEW", in_open_book=True, filled_qty=5.0, section="last_cycle_execution_status"
+        )
+        == "PARTIALLY_FILLED"
+    )
+
+    # 1b. prune_reconciled_terminal_open_orders drops stale HYPEUSDC ghost while keeping live BTCUSDC order
+    open_orders = [
+        {"venue": "binance", "symbol": "BTCUSDC", "order_id": "10976647800", "status": "NEW"},
+        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "order_id": "617202101915", "status": "OPEN"},
+    ]
+    intents = [
+        {
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "status": "EXECUTED",
+            "execution_payload": {
+                "orderId": "617202101915",
+                "status": "FILLED",
+                "executedQty": "16.8",
+                "reconciled_terminal": True,
+            },
+        },
+        {
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "10976647800", "status": "NEW", "executedQty": "0"},
+        },
+    ]
+    pruned = prune_reconciled_terminal_open_orders(open_orders, intents)
+    assert [o["order_id"] for o in pruned] == ["10976647800"]
+
+    # 2. Fresh BUY fill newer than last SELL is never labeled lot_harvested even when balance cache still shows dust
+    now_ms = 1_800_000_000_000
+    assert (
+        is_last_buy_lot_harvested(
+            59.5, [], last_buy_ts_ms=now_ms, last_sell_ts_ms=now_ms - 86_400_000, is_flat_dust=True
+        )
+        is False
+    )
+    assert (
+        is_last_buy_lot_harvested(
+            59.5, [], last_buy_ts_ms=now_ms - 86_400_000, last_sell_ts_ms=now_ms, is_flat_dust=True
+        )
+        is True
+    )
+    pv = evaluate_portfolio_prompt_view(
+        {
+            "tradable_positions": [
+                {
+                    "venue": "hyperliquid",
+                    "symbol": "HYPEUSDC",
+                    "price": 59.48,
+                    "free_base": 0.0068,
+                    "value_usd": 0.41,
+                    "free_quote": 3100.0,
+                    "last_buy_px": 59.5,
+                    "last_buy_ts_ms": now_ms,
+                    "last_sell_px": 57.785,
+                    "last_sell_ts_ms": now_ms - 80_000_000,
+                }
+            ]
+        },
+        asset_scope="crypto",
+    )
+    lb_anchor = next(a for a in pv["tradable_positions"][0]["anchors"] if a["lbl"] == "last_buy_px")
+    assert lb_anchor["lot_harvested"] is False
+
+    # 3. Equities xStocks sibling reference rounds alloc_price cleanly to 6 decimals
+    pv_xs = evaluate_portfolio_prompt_view(
+        {
+            "kraken_xstocks": {
+                "listed_pair": "SPCXxUSD",
+                "live_price": 129.05,
+                "alloc_price": 134.84400571,
+                "pnl_vs_alloc_pct": -4.30,
+            }
+        },
+        asset_scope="equities",
+    )
+    xs_line = _format_kraken_xstocks_line(pv_xs["kraken_xstocks"], scope_s="equities")
+    assert "vs alloc 134.844006)" in xs_line
+    assert "134.84400571" not in xs_line
+
+    # 4. All 4 new continuous invariants pass on clean prompt and catch every corruption
+    clean_c15 = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 0. CLOCK & SNAPSHOT: 2026-11-26 17:15:00 EET (Thu)\n"
+        "- Unchanged in thread (active from prior turn): Calendar(1/3), Cycle_Anchors(1/3)\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Plan (Tgt/Inv) | Note |\n"
+        "    |---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+        "    | binance | BTCUSDC | BUY | 59680.0 | 0.015 | 0 | 10976647800 | AI | 1.0h | -0.53% | 80% | 60850.0(+1.96%)/58500.0(-1.98%) RR@limit=0.99x [ACTIVE] | - |\n"
+        "  * Last Cycle Execution Status: [hyperliquid] HYPEUSDC BUY LIMIT FILLED (fill_px=59.5, qty=16.8, id=617202101915, age=0.2m)\n"
+        "  * Recent Autonomous Intents:\n"
+        "    - [hyperliquid] HYPEUSDC BUY LIMIT FILLED (fill_px=59.5, qty=16.8, id=617202101915, age=0.0h)\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+        "  * Multi-Month & Annual Structure (3y / 36m lookback):\n"
+        "    | Symbol | YTD | 30d | 90d | 52w Range (Pos52w) | 3y Range (Pos) | vs MA50 | vs MA200 | Swings (3y, YY-MM:px) |\n"
+        "    |---|---|---|---|---|---|---|---|---|\n"
+        "    | BTCUSDC | -31.5% | -25.8% | -23.0% | [$55.0K..$95.0K] (12.5%) | [$40.0K..$120.0K] (25.0%) | -19.8% | -16.8% | 23-11:40.0K->25-10:120.0K->now:60.0K |\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * BTCUSDC: Price=$60,000.00\n"
+        "    - Trend: 24h=+1.00% | vol_profile(POC=59500.0[+0.84%], VAL=59000.0[+1.69%], VAH=61000.0[-1.64%], va_pos=50.0%, vp_source=REAL_VOL)\n"
+        "    - Book: ob_imbalance=0.500 (bid_depth=$100.0K, ask_depth=$100.0K), spread=0.33bps (bid=59999.0/ask=60001.0), ob_mid=60000.0, "
+        "liq_clusters(long_liq=$58800.0[$10.0M, -2.00%], short_liq=$61200.0[$10.0M, +2.00%], src=model_est)\n"
+    )
+    assert audit_rendered_prompt_text(clean_c15) == []
+
+    bad_c15 = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 0. CLOCK & SNAPSHOT: 2026-11-26 17:15:00 EET (Thu)\n"
+        "- Unchanged in thread (active from prior turn): Calendar(1/3), Cycle_Anchors(1/3)\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Plan (Tgt/Inv) | Note |\n"
+        "    |---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+        "    | hyperliquid | HYPEUSDC | BUY | 59.5 | 16.8 | 0 | 617202101915 | AI | 4.2h | +0.03% | 99% | 61.4(+3.19%)/58.2(-2.18%) RR@limit=1.46x [ACTIVE] | - |\n"
+        "  * Kraken Active Cycle Cost & Drawdown Anchors:\n"
+        "    - [kraken] SPCXxUSD: qty=12.0, cost=$1600.00, avg_cost=134.84\n"
+        "  * Last Cycle Execution Status: [hyperliquid] HYPEUSDC BUY LIMIT PARTIALLY_FILLED (fill_px=59.5, qty=16.8, id=617202101915, age=0.2m)\n"
+        "  * Recent Autonomous Intents:\n"
+        "    - [hyperliquid] HYPEUSDC BUY LIMIT FILLED (fill_px=59.5, qty=16.8, id=617202101915, age=0.0h)\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+        "  * Multi-Month & Annual Structure (3y / 36m lookback):\n"
+        "    | Symbol | YTD | 30d | 90d | 52w Range (Pos52w) | 3y Range (Pos) | vs MA50 | vs MA200 | Swings (3y, YY-MM:px) |\n"
+        "    |---|---|---|---|---|---|---|---|---|\n"
+        "    | BTCUSDC | -31.5% | -25.8% | -23.0% | [$55.0K..$95.0K] (45.0%) | [$40.0K..$120.0K] (70.0%) | -19.8% | -16.8% | 23-11:40.0K->25-10:120.0K->now:62.0K |\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * BTCUSDC: Price=$60,000.00\n"
+        "    - Trend: 24h=+1.00% | vol_profile(POC=59500.0[+0.84%], VAL=59000.0[+1.69%], VAH=61000.0[-1.64%], va_pos=12.0%, vp_source=REAL_VOL)\n"
+        "    - Book: ob_imbalance=0.500 (bid_depth=$100.0K, ask_depth=$100.0K), spread=0.33bps (bid=59999.0/ask=60001.0), ob_mid=60000.0, "
+        "liq_clusters(long_liq=$58800.0[$10.0M, -5.50%], short_liq=$61200.0[$10.0M, +2.00%], src=model_est)\n"
+        "  * HYPEUSDC: Price=$59.48\n"
+        "    - Trend: 24h=+1.00%\n"
+    )
+    bad_codes = {v.code for v in audit_rendered_prompt_text(bad_c15)}
+    assert {
+        "PROMPT_VA_POS_AND_LIQ_MATH",
+        "PROMPT_ORDER_LIFECYCLE_CONSISTENCY",
+        "PROMPT_WARM_ELISION_TRUTHFULNESS",
+        "PROMPT_LONG_HORIZON_MATH",
+    }.issubset(bad_codes)
+
+
+
 
 
 
