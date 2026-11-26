@@ -1909,6 +1909,24 @@ def test_crypto_prompt_pass2_real_spot_cvd_zero_vol_and_holiday_clickbait(tmp_pa
     assert ada_sell["cvd_regime"] == "aggressive_market_dumps"
     assert ada_sell["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_SELLING"
 
+    # 1a-alt. Perp-heavy altcoin (10x perp CVD vs spot volume): >=10% real-spot directional sell still overrides spot_absorbing
+    ada_perp_heavy = {
+        "ob_imbalance": 0.591,
+        "bid_depth_usd": 135989.0,
+        "ask_depth_usd": 94103.0,
+        "taker_buy_sell_ratio": 0.72,
+        "cvd_15m_usd": -424948.0,
+        "spot_cvd_15m_usd": -1436.0,
+        "spot_cvd_source": "real_spot",
+        "spot_vol_15m_usd": 7214.0,
+        "agg_spot_cvd_15m_usd": -24513.0,
+        "agg_spot_vol_15m_usd": 181058.0,
+        "funding_rate": 0.0001,
+    }
+    enrich_microstructure_cvd(ada_perp_heavy, {"price": 0.14785, "chg_15m_pct": 0.05})
+    assert ada_perp_heavy["cvd_regime"] == "aggressive_market_dumps"
+    assert ada_perp_heavy["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_SELLING"
+
     # 1b. Symmetric buy-side override: perp + real_spot both buying overrides ask_absorbing
     sym_buy = {
         "ob_imbalance": 0.45,

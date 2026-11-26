@@ -503,12 +503,14 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
         )
     )
     spot_cvd = agg_spot_cvd if use_agg_spot else local_spot_cvd
-    if is_real_spot_m:
-        sync_spot_thr = max(abs(cvd_usd) * 0.25, 5000.0)
+    eff_spot_vol = agg_spot_vol if use_agg_spot else local_spot_vol
+    sync_spot_thr = max(eff_spot_vol * 0.10, 5000.0) if eff_spot_vol > 0.0 else max(abs(cvd_usd) * 0.25, 5000.0)
+    real_spot_sync = is_real_spot_m and abs(spot_cvd) >= sync_spot_thr
+    if real_spot_sync:
         if (
             cvd_usd < 0.0
             and minfo.get("cvd_regime") == "spot_absorbing"
-            and spot_cvd <= -sync_spot_thr
+            and spot_cvd < 0.0
             and local_spot_cvd <= 0.0
             and chg_15m <= 0.15
         ):
@@ -516,7 +518,7 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
         elif (
             cvd_usd > 0.0
             and minfo.get("cvd_regime") == "ask_absorbing"
-            and spot_cvd >= sync_spot_thr
+            and spot_cvd > 0.0
             and local_spot_cvd >= 0.0
             and chg_15m >= -0.15
         ):
@@ -542,9 +544,9 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
         minfo["spot_perp_flow_regime"] = "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE"
     elif spot_cvd < 0.0 and cvd_usd > 0.0 and oi_chg >= 0.25 and strong_perp_trap:
         minfo["spot_perp_flow_regime"] = "RETAIL_PERP_LONG_TRAP"
-    elif spot_cvd > 0.0 and cvd_usd > 0.0 and (ob_imb >= 0.54 or spot_cvd >= max(abs(cvd_usd) * 0.15, 5000.0)) and not is_ask_absorbing_cvd:
+    elif spot_cvd > 0.0 and cvd_usd > 0.0 and (ob_imb >= 0.54 or spot_cvd >= max(abs(cvd_usd) * 0.15, 5000.0) or real_spot_sync) and not is_ask_absorbing_cvd:
         minfo["spot_perp_flow_regime"] = "SYNCHRONIZED_SPOT_PERP_BUYING"
-    elif spot_cvd < 0.0 and cvd_usd < 0.0 and (ob_imb <= 0.46 or abs(spot_cvd) >= max(abs(cvd_usd) * 0.15, 5000.0)) and not is_absorbing_cvd:
+    elif spot_cvd < 0.0 and cvd_usd < 0.0 and (ob_imb <= 0.46 or abs(spot_cvd) >= max(abs(cvd_usd) * 0.15, 5000.0) or real_spot_sync) and not is_absorbing_cvd:
         minfo["spot_perp_flow_regime"] = "SYNCHRONIZED_SPOT_PERP_SELLING"
     else:
         minfo["spot_perp_flow_regime"] = "BALANCED_CROSS_VENUE_FLOW"
