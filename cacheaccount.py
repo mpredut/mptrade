@@ -1190,8 +1190,11 @@ class CacheTradeManager(CacheAccountManagerBase):
         symbols=None,
         create_missing: bool = False,
         indent: Optional[int] = None,
+        missing_out: Optional[list[str]] = None,
     ) -> bool:
         """Atomically refresh ``fetchtime`` across active WS symbols under ``.generation.lock``."""
+        if isinstance(missing_out, list):
+            missing_out.clear()
         if not cache_file:
             return False
         target_path = str(cache_file)
@@ -1204,7 +1207,11 @@ class CacheTradeManager(CacheAccountManagerBase):
                 if loaded is None:
                     return False
                 touched = cls.touch_venue_ws_fetchtimes_in_dict(
-                    loaded, now_ms, symbols=symbols, create_missing=create_missing_b
+                    loaded,
+                    now_ms,
+                    symbols=symbols,
+                    create_missing=create_missing_b,
+                    missing_out=missing_out,
                 )
                 if touched or (create_missing_b and not os.path.exists(target_path)):
                     save_json_state(target_path, loaded, indent=indent, skip_if_unchanged=True)
@@ -1220,8 +1227,11 @@ class CacheTradeManager(CacheAccountManagerBase):
         *,
         symbols=None,
         create_missing: bool = False,
+        missing_out: Optional[list[str]] = None,
     ) -> bool:
         """Refresh ``fetchtime`` in ``cache_obj`` across active WS symbols."""
+        if isinstance(missing_out, list):
+            missing_out.clear()
         if (prep := cls._prepare_venue_cache_dict(cache_obj, now_ms)) is None:
             return False
         items, ft, resolved_ms = prep
@@ -1255,6 +1265,12 @@ class CacheTradeManager(CacheAccountManagerBase):
                     changed = True
             return changed
         cand_syms = list(items.keys()) if has_wildcard else valid_syms
+        if isinstance(missing_out, list):
+            missing_out.extend(
+                s_sym
+                for s_sym in cand_syms
+                if s_sym not in items or safe_pos_float(ft.get(s_sym), default=None) is None
+            )
         touch_syms = [
             s_sym for s_sym in cand_syms
             if s_sym in ft and s_sym in items and ft.get(s_sym) != resolved_ms
@@ -1264,6 +1280,37 @@ class CacheTradeManager(CacheAccountManagerBase):
         return bool(touch_syms)
 
     @classmethod
+    def _snapshot_covers_order_fill(
+        cls,
+        items: Mapping[str, Any],
+        item_keys: Sequence[str],
+        order_id: str,
+        min_filled_qty: float,
+    ) -> bool:
+        """Return True when persisted rows in ``items[item_keys]`` already reflect ``order_id`` >= ``min_filled_qty``."""
+        oid_cf = order_id.casefold()
+        seen_dks: set[Any] = set()
+        cached_qty = 0.0
+        for item_k in item_keys:
+            rows = items.get(item_k)
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                r_oid = clean_order_id(extract_order_id(row, default=None))
+                if not r_oid or r_oid.casefold() != oid_cf:
+                    continue
+                dk = cls.fill_dedup_key(row)
+                if dk is not None:
+                    if dk in seen_dks:
+                        continue
+                    seen_dks.add(dk)
+                cached_qty += safe_nonneg_float(extract_executed_qty(row, default=0.0), default=0.0) or 0.0
+        tol = max(1e-9, min_filled_qty * 1e-6)
+        return cached_qty + tol >= min_filled_qty
+
+    @classmethod
     def invalidate_venue_fills_snapshot(
         cls,
         symbol: str,
@@ -1271,11 +1318,15 @@ class CacheTradeManager(CacheAccountManagerBase):
         *,
         match_fn=None,
         candidate_keys=None,
+        skip_if_order_id=None,
+        min_filled_qty: Optional[float] = None,
     ) -> None:
         """Expire ``fetchtime`` for ``symbol`` in the shared SSOT trade cache after order execution."""
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
             return
         target_path = str(cache_file)
+        clean_skip_oid = clean_order_id(skip_if_order_id)
+        min_qty_f = safe_pos_float(min_filled_qty, default=None) if clean_skip_oid else None
         try:
             with generation_transaction(target_path) as target_path:
                 data = read_json_dict_recovering(
@@ -1291,25 +1342,35 @@ class CacheTradeManager(CacheAccountManagerBase):
                         candidate_keys=candidate_keys,
                     )
                 )
+                item_keys: list[str] = []
                 if isinstance(data.get("items"), dict):
-                    item_cf = {
-                        k.casefold()
-                        for k in cls.matching_snapshot_keys(
-                            data["items"],
-                            symbol,
-                            match_fn=match_fn,
-                            candidate_keys=candidate_keys,
-                        )
-                    }
+                    item_keys = cls.matching_snapshot_keys(
+                        data["items"],
+                        symbol,
+                        match_fn=match_fn,
+                        candidate_keys=candidate_keys,
+                    )
+                    item_cf = {k.casefold() for k in item_keys}
                     keys.update(
                         k
                         for k in data["fetchtime"]
                         if isinstance(k, str) and k.casefold() in item_cf
                     )
+                if not keys:
+                    return
+                if (
+                    clean_skip_oid
+                    and min_qty_f is not None
+                    and item_keys
+                    and isinstance(data.get("items"), dict)
+                    and cls._snapshot_covers_order_fill(
+                        data["items"], item_keys, clean_skip_oid, min_qty_f
+                    )
+                ):
+                    return
                 for k in keys:
                     data["fetchtime"].pop(k, None)
-                if keys:
-                    save_json_state(target_path, data, skip_if_unchanged=True)
+                save_json_state(target_path, data, skip_if_unchanged=True)
         except Exception:
             pass
 
@@ -2955,12 +3016,15 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
         symbols=None,
         create_missing: bool = False,
         indent: Optional[int] = 1,
+        missing_out: Optional[list[str]] = None,
     ) -> bool:
         """Atomically refresh ``fetchtime`` across active symbols in ``cache_order_filled_<venue>.json``.
 
         Delegates to ``CacheTradeManager.touch_venue_ws_fetchtimes_in_dict`` so ``create_missing=False``
         never resurrects a symbol whose ``fetchtime`` was invalidated after live order execution.
         """
+        if isinstance(missing_out, list):
+            missing_out.clear()
         if not cache_file:
             return False
         target_path = str(cache_file)
@@ -2982,6 +3046,7 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                     eff_now_ms,
                     symbols=target_syms,
                     create_missing=create_b,
+                    missing_out=missing_out,
                 )
                 if touched or (create_b and not os.path.exists(resolved_target)):
                     save_json_state(resolved_target, cache_obj, indent=indent, skip_if_unchanged=True)
@@ -3174,6 +3239,8 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
         *,
         match_fn=None,
         candidate_keys=None,
+        skip_if_order_id=None,
+        min_filled_qty: Optional[float] = None,
     ) -> None:
         """Expire ``fetchtime`` for ``symbol`` in ``cache_order_filled_<venue>.json`` after order execution."""
         CacheTradeManager.invalidate_venue_fills_snapshot(
@@ -3181,6 +3248,8 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
             cache_file,
             match_fn=match_fn,
             candidate_keys=candidate_keys,
+            skip_if_order_id=skip_if_order_id,
+            min_filled_qty=min_filled_qty,
         )
 
 
@@ -4735,8 +4804,9 @@ class _HyperliquidAccountTradeBridge:
                         touch_symbols=ok_syms,
                         touch_create_missing=True,
                     )
-                    _record_venue_health_sync("hyperliquid", "trades", now_ms=sync_ms)
-                    _record_venue_health_sync("hyperliquid", "filled_orders", now_ms=sync_ms)
+                    if len(ok_syms) == len(symbols):
+                        _record_venue_health_sync("hyperliquid", "trades", now_ms=sync_ms)
+                        _record_venue_health_sync("hyperliquid", "filled_orders", now_ms=sync_ms)
             finally:
                 with self._rest_resync_lock:
                     self._rest_resync_in_flight = False
@@ -4758,24 +4828,33 @@ class _HyperliquidAccountTradeBridge:
             with ws_stream._lock:
                 symbols = tuple(ws_stream._symbols or ())
             fills_file = self.resolve_fills_cache_file()
+            tr_missing: list[str] = []
+            fo_missing: list[str] = []
             tr_touched = CacheTradeManager.touch_venue_fills_snapshot(
                 fills_file,
                 ts_ms,
                 symbols=symbols,
                 create_missing=False,
+                missing_out=tr_missing,
             )
             fo_touched = CacheOrderFilledManager.touch_venue_filled_orders_snapshot(
                 _sibling_order_filled_path(fills_file, "hyperliquid"),
                 ts_ms,
                 symbols=symbols,
                 create_missing=False,
+                missing_out=fo_missing,
             )
-            if tr_touched:
+            if tr_touched and not tr_missing:
                 _record_venue_health_sync("hyperliquid", "trades", now_ms=ts_ms)
-            if fo_touched:
+            if fo_touched and not fo_missing:
                 _record_venue_health_sync("hyperliquid", "filled_orders", now_ms=ts_ms)
-            if (not tr_touched or not fo_touched) and symbols:
-                self._schedule_invalidated_fills_resync(symbols, fills_file, ts_ms)
+            resync_syms = (
+                symbols
+                if (not tr_touched or not fo_touched)
+                else tuple(dict.fromkeys((*tr_missing, *fo_missing)))
+            )
+            if resync_syms:
+                self._schedule_invalidated_fills_resync(resync_syms, fills_file, ts_ms)
             ws_stream._last_fills_touch_ms = ts_ms
         except Exception:
             pass
@@ -5084,12 +5163,15 @@ def run_kraken_trade_ws_loop(
                 if (now_ms - last_rest_sync_ms[0]) >= rest_sync_interval_ms and now_ms >= next_rest_sync_ms[0]:
                     launched_async = _launch_bg_rest_sync(now_ms)
                 if not launched_async and last_rest_sync_ms[0] > 0:
+                    tr_missing: list[str] = []
+                    fo_missing: list[str] = []
                     tr_touched = CacheTradeManager.touch_venue_fills_snapshot(
                         cache_file,
                         now_ms=now_ms,
                         symbols=pairs,
                         create_missing=False,
                         indent=1,
+                        missing_out=tr_missing,
                     )
                     fo_touched = CacheOrderFilledManager.touch_venue_filled_orders_snapshot(
                         _sibling_order_filled_path(cache_file, "kraken"),
@@ -5097,12 +5179,13 @@ def run_kraken_trade_ws_loop(
                         symbols=pairs,
                         create_missing=False,
                         indent=1,
+                        missing_out=fo_missing,
                     )
-                    if tr_touched:
+                    if tr_touched and not tr_missing:
                         _record_venue_health_sync("kraken", "trades", now_ms=now_ms)
-                    if fo_touched:
+                    if fo_touched and not fo_missing:
                         _record_venue_health_sync("kraken", "filled_orders", now_ms=now_ms)
-                    if (not tr_touched or not fo_touched) and now_ms >= next_rest_sync_ms[0]:
+                    if (not tr_touched or not fo_touched or tr_missing or fo_missing) and now_ms >= next_rest_sync_ms[0]:
                         _launch_bg_rest_sync(now_ms)
                 last_flush_ms[0] = now_ms
                 should_hb = True

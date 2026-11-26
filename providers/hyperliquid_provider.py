@@ -1285,8 +1285,7 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
                 fallback_non_open_status="canceled",
             )
             normalized = classified.local_status
-            if normalized == "closed" or (normalized in {"canceled", "expired"} and filled > 0):
-                self._invalidate_fills_cache(symbol)
+            self._invalidate_fills_cache_on_terminal_order(symbol, oid, normalized, filled)
             return OrderStatus(
                 normalized, filled, cost, fee, venue_status=venue_status,
                 orig_qty=original)

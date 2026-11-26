@@ -874,3 +874,141 @@ def test_hyperliquid_ws_invalidated_fetchtime_does_not_lie_in_health_and_recover
     )
     assert viols == [], [v.format_line() for v in viols]
 
+
+def test_multi_symbol_ws_invalidated_fetchtime_triggers_targeted_rest_recovery(tmp_path, monkeypatch):
+    """Invalidating one symbol in a multi-symbol venue must still report missing_out and trigger targeted REST recovery."""
+    import threading
+
+    acct_dir = tmp_path / "account"
+    acct_dir.mkdir(parents=True)
+    tr_path = acct_dir / "cache_trade_hyperliquid.json"
+    fo_path = acct_dir / "cache_order_filled_hyperliquid.json"
+    health_path = acct_dir / "cache_account_health.json"
+
+    t0 = 1_795_750_000.0
+    t0_ms = int(t0 * 1000)
+    hype_fill = {
+        "coin": "@107",
+        "px": "62.06",
+        "sz": "19.33",
+        "side": "B",
+        "time": t0_ms - 60_000,
+        "oid": 617441855947,
+        "tid": 734038162456393,
+        "fee": "0.007732",
+        "feeToken": "HYPE",
+    }
+    sol_fill = {
+        "coin": "@156",
+        "px": "71.20",
+        "sz": "5.0",
+        "side": "B",
+        "time": t0_ms - 50_000,
+        "oid": 617441900001,
+        "tid": 734038162456999,
+        "fee": "0.002",
+        "feeToken": "SOL",
+    }
+    cacheaccount.CacheTradeManager.merge_venue_fills_snapshot(
+        str(tr_path),
+        {"HYPEUSDC": [hype_fill], "SOLUSDC": [sol_fill]},
+        now_ms=t0_ms,
+        is_snapshot=True,
+        touch_symbols=("HYPEUSDC", "SOLUSDC"),
+        touch_create_missing=True,
+    )
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        str(fo_path),
+        {"HYPEUSDC": [hype_fill], "SOLUSDC": [sol_fill]},
+        venue="hyperliquid",
+        now_ms=t0_ms,
+        is_snapshot=True,
+        touch_symbols=("HYPEUSDC", "SOLUSDC"),
+        touch_create_missing=True,
+    )
+
+    # Invalidate only HYPEUSDC while SOLUSDC remains fresh.
+    cacheaccount.CacheTradeManager.invalidate_venue_fills_snapshot("HYPEUSDC", str(tr_path))
+    cacheaccount.CacheOrderFilledManager.invalidate_venue_fills_snapshot("HYPEUSDC", str(fo_path))
+
+    # Direct touch reports True (for SOLUSDC) AND populates missing_out=["HYPEUSDC"].
+    tr_missing: list[str] = []
+    fo_missing: list[str] = []
+    assert cacheaccount.CacheTradeManager.touch_venue_fills_snapshot(
+        str(tr_path), t0_ms + 10_000, symbols=("HYPEUSDC", "SOLUSDC"), create_missing=False, missing_out=tr_missing
+    ) is True
+    assert tr_missing == ["HYPEUSDC"]
+    assert cacheaccount.CacheOrderFilledManager.touch_venue_filled_orders_snapshot(
+        str(fo_path), t0_ms + 10_000, symbols=("HYPEUSDC", "SOLUSDC"), create_missing=False, missing_out=fo_missing
+    ) is True
+    assert fo_missing == ["HYPEUSDC"]
+
+    health_calls: list[tuple[str, str, int]] = []
+    monkeypatch.setattr(
+        cacheaccount,
+        "_record_venue_health_sync",
+        lambda v, s, *, now_ms=None: health_calls.append((v, s, int(now_ms or 0))) or True,
+    )
+    fetched_syms: list[str] = []
+
+    class _DummyWs:
+        _lock = threading.Lock()
+        _symbols = ["HYPEUSDC", "SOLUSDC"]
+        _fills_ws_seeded = True
+        _last_fills_touch_ms = t0_ms
+
+    class _TrackedProv:
+        def __init__(self, *, token=None):
+            self.token = token
+
+        def fetch_remote_trades(self, symbol: str, start_time_ms: int = 0):
+            fetched_syms.append(symbol)
+            return [hype_fill] if symbol == "HYPEUSDC" else [sol_fill]
+
+        @staticmethod
+        def resolve_ws_user_address(addr, resolve_env=None):
+            return addr or "0xabc"
+
+    monkeypatch.setattr(
+        MarketDataProvider,
+        "resolve_venue_provider_class",
+        classmethod(lambda cls, v: _TrackedProv if v == "hyperliquid" else None),
+    )
+    ws = _DummyWs()
+    bridge = cacheaccount._HyperliquidAccountTradeBridge(ws, user_address="0xabc", fills_cache_path=str(tr_path))
+    ws._fills_ws_seeded = True
+    ws._last_fills_touch_ms = t0_ms
+    orig_sched = bridge._schedule_invalidated_fills_resync
+    monkeypatch.setattr(
+        bridge, "_schedule_invalidated_fills_resync", lambda syms, ff, tms: orig_sched(syms, ff, tms, blocking=True)
+    )
+
+    t_rec_ms = t0_ms + 25_000
+    monkeypatch.setattr(cacheaccount, "resolve_now_ms", lambda v=None: t_rec_ms if v is None else int(v))
+    bridge.touch_fills_cache_if_needed(t_rec_ms)
+
+    # Only the missing symbol HYPEUSDC was fetched via REST (SOLUSDC was already fresh).
+    assert fetched_syms == ["HYPEUSDC"]
+    assert ("hyperliquid", "trades", t_rec_ms) in health_calls
+    assert ("hyperliquid", "filled_orders", t_rec_ms) in health_calls
+
+    _, fo_ft = cacheaccount.CacheOrderFilledManager.read_venue_filled_orders_snapshot(str(fo_path), venue="hyperliquid")
+    assert fo_ft.get("HYPEUSDC") == t_rec_ms
+    assert fo_ft.get("SOLUSDC") == t_rec_ms
+
+    _write_health_doc(
+        health_path,
+        now_ms=t_rec_ms,
+        started_ms=t0_ms - 5_000,
+        venue_streams={"hyperliquid": {"filled_orders": t_rec_ms, "trades": t_rec_ms}},
+    )
+    viols = audit_account_cache_coherence(
+        str(tmp_path),
+        now_s=t_rec_ms / 1000.0,
+        venues=("hyperliquid",),
+        health_path=str(health_path),
+        include_ledger=False,
+    )
+    assert viols == [], [v.format_line() for v in viols]
+
+

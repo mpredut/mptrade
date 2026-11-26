@@ -1716,3 +1716,81 @@ def test_hyperliquid_provider_invalidates_fills_cache_on_order_status_and_cancel
     _seed_cache()
     hl.cancel_order("HYPEUSDC", "77701")
     assert "HYPEUSDC" not in json.loads(fills_cache.read_text(encoding="utf-8")).get("fetchtime", {})
+
+
+def test_order_status_preserves_fetchtime_when_fill_already_persisted(tmp_path, monkeypatch):
+    """Late order_status polls skip fetchtime invalidation when the cache already holds the full order fill, but still invalidate on partial/missing fills."""
+    import cacheaccount
+
+    fills_cache = tmp_path / "cache_trade_hyperliquid.json"
+    filled_cache = tmp_path / "cache_order_filled_hyperliquid.json"
+    seed_ft = 1_795_721_150_000
+
+    hl_fill = {
+        "coin": "@107",
+        "px": "62.06",
+        "sz": "19.33",
+        "side": "B",
+        "time": 1_795_721_148_391,
+        "oid": 617441855947,
+        "tid": 734038162456393,
+        "fee": "0.007732",
+        "feeToken": "HYPE",
+    }
+    cacheaccount.CacheTradeManager.merge_venue_fills_snapshot(
+        str(fills_cache),
+        {"HYPEUSDC": [hl_fill]},
+        now_ms=seed_ft,
+        is_snapshot=True,
+        touch_symbols=("HYPEUSDC",),
+        touch_create_missing=True,
+    )
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        str(filled_cache),
+        {"HYPEUSDC": [hl_fill]},
+        venue="hyperliquid",
+        now_ms=seed_ft,
+        is_snapshot=True,
+        touch_symbols=("HYPEUSDC",),
+        touch_create_missing=True,
+    )
+
+    fake_cli = SimpleNamespace(
+        info=SimpleNamespace(
+            query_order_by_oid=lambda _addr, _oid: {
+                "status": "order",
+                "order": {
+                    "status": "filled",
+                    "order": {"coin": "@107", "origSz": "19.33", "sz": "0.0"},
+                },
+            },
+            user_fills=lambda _addr: [hl_fill],
+        )
+    )
+    hl = HyperliquidProvider(token="HYPE", live_enabled=True)
+    hl._ssot_fills_cache_path = str(fills_cache)
+    monkeypatch.setattr(hl, "_filled_orders_cache_file", lambda: str(filled_cache))
+    monkeypatch.setattr(hl, "_pair", lambda: "@107")
+    monkeypatch.setattr(
+        hl,
+        "_require_hl_client_and_pair",
+        lambda *_a, **_kw: (fake_cli, "@107", "0x0000000000000000000000000000000000000001"),
+    )
+
+    # 1. Both caches already contain oid 617441855947 for qty 19.33 -> fetchtime is preserved in both.
+    st = hl.order_status("HYPEUSDC", "617441855947")
+    assert st.status == "closed" and st.filled_qty == pytest.approx(19.33)
+    assert json.loads(fills_cache.read_text(encoding="utf-8"))["fetchtime"]["HYPEUSDC"] == seed_ft
+    assert json.loads(filled_cache.read_text(encoding="utf-8"))["fetchtime"]["HYPEUSDC"] == seed_ft
+
+    # 2. If only a partial fill (10.0 < 19.33) is persisted in trade cache, trade cache fetchtime is invalidated while filled cache stays intact.
+    partial_fill = dict(hl_fill, sz="10.0")
+    fills_cache.write_text(
+        json.dumps({"items": {"HYPEUSDC": [partial_fill]}, "fetchtime": {"HYPEUSDC": seed_ft}}),
+        encoding="utf-8",
+    )
+    st2 = hl.order_status("HYPEUSDC", "617441855947")
+    assert st2.status == "closed" and st2.filled_qty == pytest.approx(19.33)
+    assert "HYPEUSDC" not in json.loads(fills_cache.read_text(encoding="utf-8"))["fetchtime"]
+    assert json.loads(filled_cache.read_text(encoding="utf-8"))["fetchtime"]["HYPEUSDC"] == seed_ft
+

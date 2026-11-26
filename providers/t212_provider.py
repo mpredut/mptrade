@@ -861,8 +861,9 @@ class T212Provider(MarketDataProvider):
         raw_orig = raw.get("orderedQuantity") if raw.get("orderedQuantity") is not None else raw.get("quantity")
         orig_f = safe_float(raw_orig, default=None)
         orig_qty = abs(orig_f) if orig_f is not None else None
-        if normalized == "closed" or (normalized in {"canceled", "expired"} and filled_qty > 0):
-            self._invalidate_fills_cache(expected_symbol or ticker)
+        self._invalidate_fills_cache_on_terminal_order(
+            expected_symbol or ticker, clean_oid, normalized, filled_qty
+        )
 
         return OrderStatus(
             status=normalized,

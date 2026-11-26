@@ -11,6 +11,7 @@ from botcore import (
     PRICE_FRESHNESS_MAX_AGE_SEC,
     _is_fresh_obs_ts,
     _parse_bool_flag,
+    clean_order_id,
     clean_scalar_str,
     clean_upper_scalar,
     is_shared_disk_cache_enabled,
@@ -19,6 +20,7 @@ from botcore import (
     resolve_now_ts,
     resolve_patched_attr,
     resolve_positive_max_age,
+    safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
 )
@@ -691,14 +693,43 @@ class ProviderSsotBridgeMixin:
                 return rows
         return None
 
-    def _invalidate_fills_cache(self, symbol: str) -> None:
+    def _invalidate_fills_cache(
+        self,
+        symbol: str,
+        *,
+        skip_if_order_id: Any = None,
+        min_filled_qty: Optional[float] = None,
+    ) -> None:
         """Expire ``fetchtime`` for ``symbol`` in both canonical filled-order and Stage-1 reference trade caches."""
         match_fn = getattr(type(self), "_fills_match_fn", None)
         seen: set[str] = set()
         for cache_file in (self._filled_orders_cache_file(), self._fills_cache_file()):
             if cache_file and cache_file not in seen:
                 seen.add(cache_file)
-                self.invalidate_ssot_fills_cache(symbol, cache_file, match_fn=match_fn)
+                self.invalidate_ssot_fills_cache(
+                    symbol,
+                    cache_file,
+                    match_fn=match_fn,
+                    skip_if_order_id=skip_if_order_id,
+                    min_filled_qty=min_filled_qty,
+                )
+
+    def _invalidate_fills_cache_on_terminal_order(
+        self,
+        symbol: str,
+        order_id: Any,
+        status: str,
+        filled_qty: float,
+    ) -> None:
+        """Invalidate ``symbol`` fills caches on terminal fill states unless ``order_id`` is already persisted."""
+        filled_f = safe_nonneg_float(filled_qty, default=0.0) or 0.0
+        if not (status == "closed" or (status in {"canceled", "expired"} and filled_f > 0.0)):
+            return
+        self._invalidate_fills_cache(
+            symbol,
+            skip_if_order_id=clean_order_id(order_id),
+            min_filled_qty=filled_f if filled_f > 0.0 else None,
+        )
 
     def _resolve_ssot_trade_cache_cls(self, symbol: str, cache_file: str) -> Any:
         if clean_scalar_str(symbol) is None or _clean_fs_path(cache_file) is None:
@@ -803,7 +834,13 @@ class ProviderSsotBridgeMixin:
         return ok
 
     def invalidate_ssot_fills_cache(
-        self, symbol: str, cache_file: str, *, match_fn: Any = None
+        self,
+        symbol: str,
+        cache_file: str,
+        *,
+        match_fn: Any = None,
+        skip_if_order_id: Any = None,
+        min_filled_qty: Optional[float] = None,
     ) -> None:
         """Expire ``fetchtime`` for ``symbol`` in the shared SSOT filled-order or trade cache after order execution."""
         reader_cls = self._resolve_ssot_filled_reader_cls(symbol, cache_file)
@@ -813,4 +850,6 @@ class ProviderSsotBridgeMixin:
                 cache_file,
                 match_fn=match_fn,
                 candidate_keys=None if callable(match_fn) else self._ssot_symbol_candidates(symbol),
+                skip_if_order_id=skip_if_order_id,
+                min_filled_qty=min_filled_qty,
             )

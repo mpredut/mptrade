@@ -997,8 +997,7 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         orig_qty = parse_nonneg_order_field(info.get("vol"))
         if None in (filled_qty, cost, fee, orig_qty):
             raise ProviderError(f"order_status {order_id}: invalid fill values")
-        if norm_status == "closed" or (norm_status in {"canceled", "expired"} and filled_qty > 0):
-            self._invalidate_fills_cache(symbol)
+        self._invalidate_fills_cache_on_terminal_order(symbol, clean_id, norm_status, filled_qty)
         return OrderStatus(
             status=norm_status,
             filled_qty=filled_qty,
