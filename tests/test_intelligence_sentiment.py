@@ -7612,7 +7612,8 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
         {"NVDA_US_EQ": {"qty": 2.91, "avg_cost_px": 207.93}},
     )
     assert cm_ctx["equity_bellwethers"]["NVDA_US_EQ"]["ob_imbalance"] == 0.58
-    assert cm_ctx["equity_bellwethers"]["NVDA_US_EQ"]["whale_long_pct"] == 0.62
+    assert "whale_long_pct" not in cm_ctx["equity_bellwethers"]["NVDA_US_EQ"]
+    assert cm_ctx["equity_bellwethers"]["NVDA_US_EQ"]["cvd_15m_usd"] == 125000.0
 
     # 6. harvest_log_anomalies_from_dirs clears pre-restart SyntaxError and NameError once daemon/cycle recovery lines appear
     log_dir_rec = tmp_path / "logs_rec"
@@ -10520,6 +10521,7 @@ def test_24h_price_metrics_bisect_parity_and_series_memo_shallow_copy(tmp_path, 
         "session_vwap_z",
         "session_vwap_anchor",
         "session_extremes",
+        "session_extremes_ref_ms",
     }
 
     def _strip_faza1(d: dict) -> dict:
@@ -18667,6 +18669,138 @@ def test_cycle7_8_t212_step_size_invariant_keys_and_prompt_sections_dedup():
     assert "d_cvd=" not in hypeusd_line
     assert "d_tr=" not in hypeusd_line
     assert "d_oi=" not in hypeusd_line
+
+
+def test_cycle9_10_static_precision_hl_buy_buf_gw_min_survival_rules_and_gold_mine_filter(tmp_path) -> None:
+    """Cycles 9-10: T212 static 0.01 precision overrides stale cache, HL 0.95 buy buffer, gateway min_usd caps, survival rules, and gold-mine flood filter."""
+    from botcore import topic_spec
+    from intelligence.macro.lexicon_ssot import (
+        has_financial_or_geopolitical_context,
+        is_off_topic_general_news_title,
+    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import TelemetrySensorSnapshot
+    from intelligence.sentiment.collectors.portfolio_collector import TradablePositionsAndOrdersCollector
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import evaluate_tradable_position_prompt_view
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import resolve_venue_fee_and_limits
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+
+    # 1. T212 static precision ignores stale 0.001 fallback_limits in both evaluator and prompt view.
+    t212_fee = resolve_venue_fee_and_limits(
+        "t212",
+        "NVDA_US_EQ",
+        price=151.3,
+        free_quote=608.63,
+        free_base=1.69,
+        gateway_min_usd=10.0,
+        fallback_limits={"min_qty": 0.001, "step_size": 0.001, "tick_size": 0.001},
+    )
+    assert (t212_fee["min_qty"], t212_fee["step_size"], t212_fee["tick_size"]) == (0.01, 0.01, 0.01)
+    assert t212_fee["buy_buffer_pct"] == 99.5
+
+    # Sub-gateway-min position ($3.54 < $10.0) zeros out effective_max_sell_usd when gateway_min_usd=10.0.
+    rgnt_view = evaluate_tradable_position_prompt_view(
+        {
+            "venue": "t212",
+            "symbol": "RGNT_US_EQ",
+            "base": "RGNT_US_EQ",
+            "quote": "USD",
+            "price": 0.9,
+            "free_base": 3.93,
+            "value_usd": 3.54,
+            "free_quote": 608.63,
+            "min_qty": 0.001,
+            "step_size": 0.001,
+            "tick_size": 0.01,
+            "effective_max_sell_usd": 3.54,
+        },
+        max_usd=2000.0,
+        min_usd=10.0,
+    )
+    lim_map = dict(rgnt_view["limit_items"])
+    assert lim_map["min_qty="] == 0.01
+    assert lim_map["step="] == 0.01
+    assert lim_map["max_sell=$"] == 0.0
+
+    # Recovery from cachedb also repairs stale 0.001 precision on static-precision T212 entries.
+    cdir = tmp_path / "cachedb"
+    (cdir / "state").mkdir(parents=True, exist_ok=True)
+    now_s = 1_795_680_000.0
+    (cdir / "state" / "venue_balances_state.json").write_text(
+        json.dumps({
+            "pos:t212:NVDA_US_EQ": {
+                "venue": "t212",
+                "symbol": "NVDA_US_EQ",
+                "base": "NVDA_US_EQ",
+                "quote": "USD",
+                "price": 150.0,
+                "free_base": 1.5,
+                "value_usd": 225.0,
+                "free_quote": 500.0,
+                "min_qty": 0.001,
+                "step_size": 0.001,
+                "tick_size": 0.01,
+                "ts": now_s - 60.0,
+            }
+        }),
+        encoding="utf-8",
+    )
+    tpos_rec, _, _, _ = TradablePositionsAndOrdersCollector(start_sync=False).collect(
+        str(cdir),
+        prices_and_trends={"NVDA_US_EQ": {"price": 151.0}},
+        allow_empty_inst_recovery=True,
+        allow_network=False,
+        persist=False,
+        now_ts=now_s,
+    )
+    assert tpos_rec and tpos_rec[0]["min_qty"] == 0.01 and tpos_rec[0]["step_size"] == 0.01
+
+    # 2. Hyperliquid BUY buffer parity (0.95 matching HyperliquidProvider._BUY_SLIPPAGE_FEE_BUFFER).
+    hl_500 = resolve_venue_fee_and_limits(
+        "hyperliquid", "HYPEUSDC", price=60.0, free_quote=500.0, free_base=0.0, gateway_min_usd=10.0
+    )
+    assert hl_500["buy_buffer_pct"] == 95.0
+    assert hl_500["effective_max_buy_usd"] == 475.0
+    hl_small = resolve_venue_fee_and_limits(
+        "hyperliquid", "HYPEUSDC", price=60.0, free_quote=10.20, free_base=0.0, gateway_min_usd=10.0
+    )
+    assert hl_small["effective_max_buy_usd"] == 0.0
+
+    # 3. Prompt rules surface target-EV 2x RT-fee guard, hourly replace churn cap, and 24h xStock sell cooldown.
+    snap = TelemetrySensorSnapshot(
+        evaluated_at_ts=now_s,
+        prices_and_trends={"BTCUSDC": {"price": 60000.0}},
+        portfolio_summary={
+            "tradable_positions": [
+                {
+                    "venue": "t212",
+                    "symbol": "RGNT_US_EQ",
+                    "price": 0.9,
+                    "free_base": 3.93,
+                    "value_usd": 3.54,
+                    "free_quote": 500.0,
+                    "min_qty": 0.001,
+                    "step_size": 0.001,
+                }
+            ]
+        },
+    )
+    crypto_full = build_supervisor_prompt(snap, logs=None, spec=topic_spec("auto_cryptotrade_executor"), compact_rules=False)
+    crypto_comp = build_supervisor_prompt(snap, logs=None, spec=topic_spec("auto_cryptotrade_executor"), compact_rules=True)
+    share_full = build_supervisor_prompt(snap, logs=None, spec=topic_spec("auto_sharetrade_executor"), compact_rules=False)
+    assert "positive-EV `target_px` >= max(0.10%, 2x venue RT fee)" in crypto_full
+    assert "hourly replace churn cap (6/h if move < 0.25%)" in crypto_full
+    assert "24h cooldown" in crypto_full
+    assert "24h cooldown" in crypto_comp
+    assert "min_qty=0.01, step=0.01, tick=0.01" in share_full
+    assert "max_sell=$0.0" in share_full
+
+    # 4. Gold mine disaster headline is demoted off-topic while real gold macro headlines remain financial.
+    mine_title = "At least 13 dead in Indonesia gold mine flood as rescue efforts intensify"
+    gold_macro = "Gold prices surge past $3,000 on Fed rate cut bets"
+    assert has_financial_or_geopolitical_context(mine_title) is False
+    assert is_off_topic_general_news_title(mine_title) is True
+    assert has_financial_or_geopolitical_context(gold_macro) is True
+    assert is_off_topic_general_news_title(gold_macro) is False
 
 
 

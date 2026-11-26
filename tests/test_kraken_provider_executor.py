@@ -451,6 +451,24 @@ class KrakenExecutorContractTest(unittest.TestCase):
                 self.assertEqual(buy_call[1], "HYPEUSD")
                 self.assertEqual(buy_call[2], "buy")
 
+        with self.subTest(msg="buy_on_usd_pair_auto_converts_usdg_and_usdt_when_zusd_and_usdc_short"):
+            self.fake.calls.clear()
+            with patch.object(self.fake, "balance", return_value={
+                "ZUSD": "10.00",
+                "USDC": "20.00",
+                "USDG": "50.00",
+                "USDT": "100.00",
+            }):
+                oid = self.p.submit_order("HYPEUSD", "buy", 2.0, price=50.0)
+                self.assertEqual(oid, "OABC-123")
+                self.assertEqual(len(self.fake.calls), 4)
+                c1, c2, c3, buy_call = self.fake.calls
+                self.assertEqual((c1[1], c1[2], c1[3]), ("USDCUSD", "sell", 20.0))
+                self.assertEqual((c2[1], c2[2], c2[3]), ("USDGUSD", "sell", 50.0))
+                self.assertEqual((c3[1], c3[2]), ("USDTUSD", "sell"))
+                self.assertGreaterEqual(c3[3], 20.0)
+                self.assertEqual((buy_call[1], buy_call[2]), ("HYPEUSD", "buy"))
+
     def test_ledger_to_fills_ignores_dustsweeping_and_multi_asset_groups(self):
         ledger = {
             "L1": {

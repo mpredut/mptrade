@@ -1275,12 +1275,14 @@ def _format_microstructure_section(
     return lines
 
 
-def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0) -> str:
+def _format_tradable_position_line(
+    pos: Dict[str, Any], max_usd: float = 2000.0, *, min_usd: float = 0.0
+) -> str:
     """Format a single tradable position line for Section 3C from its evaluated view model."""
     pv = (
         pos
         if isinstance(pos, dict) and pos.get("_is_tradable_pos_view") is True
-        else evaluate_tradable_position_prompt_view(pos, max_usd=max_usd)
+        else evaluate_tradable_position_prompt_view(pos, max_usd=max_usd, min_usd=min_usd)
     )
     t_extra = ""
     lot_base_lbl = pv["lot_base_lbl"]
@@ -1411,6 +1413,7 @@ def _format_portfolio_section(
     ps: Dict[str, Any],
     asset_scope: Any = "all",
     *,
+    min_usd: float = 0.0,
     max_usd: float = 2000.0,
     include_macro_benchmarks: bool = True,
     now_ts: Optional[float] = None,
@@ -1502,11 +1505,11 @@ def _format_portfolio_section(
             cash_parts.append(part)
         if cash_parts:
             lines.append(f"  * Available Free Quote Cash per Venue: {', '.join(cash_parts)}")
-    view = evaluate_portfolio_prompt_view(ps, asset_scope=asset_scope, max_usd=max_usd)
+    view = evaluate_portfolio_prompt_view(ps, asset_scope=asset_scope, max_usd=max_usd, min_usd=min_usd)
     if view["tradable_positions"]:
         lines.append("  * Live Tradable Spot Instruments (Eligible for Autonomous BUY / SELL):")
         for pos_view in view["tradable_positions"]:
-            lines.append(_format_tradable_position_line(pos_view, max_usd=max_usd))
+            lines.append(_format_tradable_position_line(pos_view, max_usd=max_usd, min_usd=min_usd))
     if view["has_open_orders"]:
         lines.append(
             f"  * Active Open Orders on Exchange (Locking Liquidity) \u2014 open_limit_orders: {view['clean_open_limit_orders']}"

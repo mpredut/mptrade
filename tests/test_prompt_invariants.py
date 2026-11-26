@@ -405,6 +405,25 @@ def test_prompt_and_snapshot_invariant_verifier_passes_clean_and_catches_bugs() 
         "PROMPT_CROSS_VENUE_ARB_SYMMETRY",
     }.issubset(bad_codes)
 
+    # Extended rendered prompt invariants catch vol_profile order/deltas, session_vwap delta,
+    # OB imbalance/walls, T212 static precision regressions, and sub-gateway-min caps.
+    ext_bad_prompt = (
+        "  * NVDA_US_EQ: Price=$150.00 | vol_profile(POC=160.0[+5.00%], VAL=145.0[+3.45%], VAH=155.0[-3.23%], va_pos=50.0%, vp_source=REAL_VOL) "
+        "| session_vwap=$140.00 (+1.00%, z=+1.0, prev_rth)\n"
+        "  * BTCUSDC: ob_imbalance=0.900 (bid_depth=$50000.0, ask_depth=$50000.0), bid_wall=61000.0 ($10000.0, dist=+1.67%), ask_wall=59000.0 ($10000.0, dist=-1.67%), ob_mid=60000.0\n"
+        "    - [t212] RGNT_US_EQ: free_RGNT_US_EQ=3.93 ($3.54 USD), free_USD=$608.63, px=0.9, limits(min_notional=$1, min_qty=0.001, step=0.001, tick=0.01, max_buy=$605.59, max_sell=$3.54)\n"
+    )
+    ext_codes = {v.code for v in audit_rendered_prompt_text(ext_bad_prompt, gateway_min_usd=10.0)}
+    assert {
+        "PROMPT_VOL_PROFILE_ORDER",
+        "PROMPT_VOL_PROFILE_DELTA",
+        "PROMPT_SESSION_VWAP_DELTA",
+        "PROMPT_OB_IMBALANCE_MATH",
+        "PROMPT_OB_WALL_ORDERING",
+        "PROMPT_VENUE_PRECISION",
+        "PROMPT_SUB_GATEWAY_MIN_CAP",
+    }.issubset(ext_codes)
+
 
 def test_frozen_resolved_plan_status_persists_write_once_and_survives_4h_bar_rollover(tmp_path) -> None:
     """Once a filled plan hits TARGET_HIT on 5m bars and is frozen in durable state, coarse 4h bars never flip it to INVALIDATED."""

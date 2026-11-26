@@ -2918,7 +2918,7 @@ def test_volume_profile_liquidation_clusters_and_venue_fee_limits_telemetry(tmp_
     assert hl_specs["maker_fee_bps"] == 4.0
     assert hl_specs["taker_fee_bps"] == 7.0
     assert hl_specs["spread_bps"] == 3.2
-    assert hl_specs["effective_max_buy_usd"] == 497.5
+    assert hl_specs["effective_max_buy_usd"] == 475.0
     assert hl_specs["effective_max_sell_usd"] == 600.0
 
     krk_specs = resolve_venue_fee_and_limits(

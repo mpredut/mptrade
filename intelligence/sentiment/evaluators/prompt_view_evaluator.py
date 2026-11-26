@@ -74,6 +74,7 @@ from providers.order_status_ssot import (
     TERMINAL_CANCEL_VENUE_STATUSES,
     format_prompt_intent_status,
 )
+from providers.venue_metadata import ProviderVenueMetadataMixin
 
 _GEOM_ANCHOR_KEYS: frozenset[str] = frozenset({
     "poc_px", "val_px", "vah_px",
@@ -742,7 +743,9 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
             out.append((st_key, st_label, st_val))
         return out
 
-    def evaluate_tradable_position(self, pos: Any, *, max_usd: float = 2000.0) -> Dict[str, Any]:
+    def evaluate_tradable_position(
+        self, pos: Any, *, max_usd: float = 2000.0, min_usd: float = 0.0
+    ) -> Dict[str, Any]:
         """Compute pure financial, LIFO lot, fee, and limit view model for a Section 3C tradable position."""
         p_map = pos if isinstance(pos, dict) else {}
         px_f = safe_float(p_map.get("price"), 0.0)
@@ -832,10 +835,16 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
             locked_quote_usd=p_map.get("locked_quote_usd"),
             locked_base_qty=p_map.get("locked_base_qty"),
             spread_bps=p_map.get("spread_bps"),
+            gateway_min_usd=min_usd,
             gateway_max_usd=max_usd,
             fallback_limits=p_map,
         )
         eff_pos = {**fb_fees, **{k: v for k, v in p_map.items() if v is not None}}
+        if ProviderVenueMetadataMixin.prefers_static_precision(venue):
+            for prec_k in ("min_qty", "step_size", "tick_size"):
+                if fb_fees.get(prec_k) is not None:
+                    eff_pos[prec_k] = fb_fees[prec_k]
+        gw_min_f = safe_nonneg_float(min_usd, default=0.0) or 0.0
         for cap_k in ("effective_max_buy_usd", "effective_max_sell_usd", "replace_max_buy_usd", "replace_max_sell_usd"):
             cap_v = safe_float(eff_pos.get(cap_k), None)
             fb_cap_v = safe_float(fb_fees.get(cap_k), None)
@@ -843,7 +852,10 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                 cap_v = fb_cap_v
                 eff_pos[cap_k] = round(cap_v, 2)
             if cap_v is not None and max_usd > 0 and cap_v > max_usd:
-                eff_pos[cap_k] = round(max_usd * 1.0, 2)
+                cap_v = max_usd * 1.0
+                eff_pos[cap_k] = round(cap_v, 2)
+            if cap_v is not None and gw_min_f > 0.0 and cap_v < gw_min_f:
+                eff_pos[cap_k] = 0.0
         taker_bps = safe_float(eff_pos.get("taker_fee_bps"), 15.0)
         maker_bps = safe_float(eff_pos.get("maker_fee_bps"), 15.0)
 
@@ -995,12 +1007,15 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
         *,
         asset_scope: Any = "all",
         max_usd: float = 2000.0,
+        min_usd: float = 0.0,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         ps = portfolio_summary if isinstance(portfolio_summary, dict) else {}
         scope_s = str(asset_scope or "all").strip().lower() if isinstance(asset_scope, str) else "all"
         raw_t_pos = ps.get("tradable_positions") if isinstance(ps.get("tradable_positions"), list) else []
-        tradable_positions_view = [self.evaluate_tradable_position(p, max_usd=max_usd) for p in raw_t_pos]
+        tradable_positions_view = [
+            self.evaluate_tradable_position(p, max_usd=max_usd, min_usd=min_usd) for p in raw_t_pos
+        ]
         open_lim = (
             ps.get("open_limit_orders")
             if isinstance(ps.get("open_limit_orders"), list)
@@ -1282,9 +1297,11 @@ def evaluate_microstructure_prompt_view(
     )
 
 
-def evaluate_tradable_position_prompt_view(pos: Any, *, max_usd: float = 2000.0) -> Dict[str, Any]:
+def evaluate_tradable_position_prompt_view(
+    pos: Any, *, max_usd: float = 2000.0, min_usd: float = 0.0
+) -> Dict[str, Any]:
     """Build normalized Section 3C view model for a single tradable spot position."""
-    return _PORTFOLIO_PROMPT_VIEW_EVALUATOR.evaluate_tradable_position(pos, max_usd=max_usd)
+    return _PORTFOLIO_PROMPT_VIEW_EVALUATOR.evaluate_tradable_position(pos, max_usd=max_usd, min_usd=min_usd)
 
 
 def evaluate_portfolio_prompt_view(
@@ -1292,10 +1309,12 @@ def evaluate_portfolio_prompt_view(
     asset_scope: Any = "all",
     *,
     max_usd: float = 2000.0,
+    min_usd: float = 0.0,
 ) -> Dict[str, Any]:
     """Build normalized Section 3C portfolio, cycle, execution, and runtime-state view model."""
     return _PORTFOLIO_PROMPT_VIEW_EVALUATOR.evaluate(
         portfolio_summary,
         asset_scope=asset_scope,
         max_usd=max_usd,
+        min_usd=min_usd,
     )

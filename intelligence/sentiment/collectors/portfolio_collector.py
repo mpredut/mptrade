@@ -151,6 +151,7 @@ from state_stores.venue_balances_state import (
     strip_internal_balance_scratch_keys,
 )
 from providers.quantity import resolve_assets, venue_fee_cap_quantity
+from providers.venue_metadata import ProviderVenueMetadataMixin
 from state_io import (
     generation_file_lock,
     read_json_dict,
@@ -976,22 +977,31 @@ def derive_runtime_portfolio_view(
             )
             px_pos = safe_pos_float(pos_entry.get("price"), default=0.0) or 0.0
             fb_pos = safe_nonneg_float(pos_entry.get("free_base"), default=None)
+            static_prec = ProviderVenueMetadataMixin.prefers_static_precision(p_v_norm)
+            prev_limit_keys = (
+                (
+                    "fee_tier",
+                    "maker_fee_bps",
+                    "taker_fee_bps",
+                    "maker_rebate_edge_bps",
+                    "exchange_min_notional_usd",
+                    "spread_bps",
+                )
+                if static_prec
+                else (
+                    "fee_tier",
+                    "maker_fee_bps",
+                    "taker_fee_bps",
+                    "maker_rebate_edge_bps",
+                    "exchange_min_notional_usd",
+                    "min_qty",
+                    "step_size",
+                    "tick_size",
+                    "spread_bps",
+                )
+            )
             prev_inst_limits = (
-                {
-                    k: pos_entry[k]
-                    for k in (
-                        "fee_tier",
-                        "maker_fee_bps",
-                        "taker_fee_bps",
-                        "maker_rebate_edge_bps",
-                        "exchange_min_notional_usd",
-                        "min_qty",
-                        "step_size",
-                        "tick_size",
-                        "spread_bps",
-                    )
-                    if pos_entry.get(k) is not None
-                }
+                {k: pos_entry[k] for k in prev_limit_keys if pos_entry.get(k) is not None}
                 if inst_obj is None
                 else {}
             )
@@ -1830,6 +1840,13 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                         px_rec = sib_pt_px
                     if px_rec > 0:
                         rec_pos["price"] = round_opt_px(px_rec, 6)
+                        if ProviderVenueMetadataMixin.prefers_static_precision(v_rec_norm):
+                            _, _, _, _, def_step, def_tick, _ = (
+                                ProviderVenueMetadataMixin.resolve_venue_default_fee_and_precision(v_rec_norm, px_rec)
+                            )
+                            rec_pos["min_qty"] = def_step
+                            rec_pos["step_size"] = def_step
+                            rec_pos["tick_size"] = def_tick
                         if fb_val is not None:
                             rec_pos["value_usd"] = round(fb_val * px_rec, 2)
                             sell_cap_rec = venue_fee_cap_quantity(v_rec_norm, "SELL", px_rec, fb_val)

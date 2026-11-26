@@ -776,26 +776,34 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                 bal = self._query_with_bot_fallback(self._available_balances_from_client) or {}
                 if isinstance(bal, dict):
                     _, zusd = self._lookup_balance_candidates(bal, self._KRAKEN_USD_BALANCE_KEYS)
-                    _, usdc = self._lookup_balance_candidates(bal, ("USDC", "USDC.F", "USDC.S"))
                     zusd_f = zusd or 0.0
-                    usdc_f = usdc or 0.0
-                    if usdc_f >= 5.0:
-                        eff_px = (
-                            first_pos_float(submit_price, raw_price)
-                            or safe_pos_float(self.get_current_price(symbol), default=0.0)
-                            or 0.0
-                        )
-                        if eff_px > 0.0:
-                            req_usd = qty * eff_px * 1.005
-                            if req_usd > zusd_f + 0.01:
-                                shortfall = min(usdc_f, max(5.0, round((req_usd - zusd_f) * 1.002, 2)))
+                    eff_px = (
+                        first_pos_float(submit_price, raw_price)
+                        or safe_pos_float(self.get_current_price(symbol), default=0.0)
+                        or 0.0
+                    )
+                    if eff_px > 0.0:
+                        req_usd = qty * eff_px * 1.005
+                        remaining = req_usd - zusd_f
+                        if remaining > 0.01:
+                            for label, keys in self._USD_EQUIVALENT_BUCKETS:
+                                if label == "USD" or remaining <= 0.01:
+                                    continue
+                                _, stable_bal = self._lookup_balance_candidates(bal, keys)
+                                stable_f = stable_bal or 0.0
+                                if stable_f < 5.0:
+                                    continue
+                                shortfall = min(stable_f, max(5.0, round(remaining * 1.002, 2)))
+                                conv_pair = ensure_quote_suffix(label, "USD")
                                 print(
-                                    f"[Kraken][LIVE] auto-converting {shortfall:.2f} USDC -> USD via USDCUSD book "
+                                    f"[Kraken][LIVE] auto-converting {shortfall:.2f} {label} -> USD via {conv_pair} book "
                                     f"(ZUSD={zusd_f:.2f}, required~={req_usd:.2f}) for BUY {symbol}"
                                 )
-                                cli.add_order("USDCUSD", "sell", shortfall, None, ordertype="market", validate=False)
+                                cli.add_order(conv_pair, "sell", shortfall, None, ordertype="market", validate=False)
+                                zusd_f += shortfall
+                                remaining = req_usd - zusd_f
             except Exception as e:  # noqa: BLE001
-                print(f"[Kraken] USDC->USD funding conversion before {symbol} BUY failed: {e}")
+                print(f"[Kraken] stablecoin->USD funding conversion before {symbol} BUY failed: {e}")
         cli = self._client()
         post_only_flag = ordertype == "limit" and _parse_bool_flag(post_only, True)
         order_kwargs: dict[str, Any] = {"ordertype": ordertype, "validate": False}

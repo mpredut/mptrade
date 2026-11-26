@@ -59,6 +59,7 @@ class ProviderVenueMetadataMixin:
     _TCA_DECIMALS_LADDER: tuple[tuple[float, int], ...] = ((10.0, 2), (1.0, 3), (0.1, 4))
     _TCA_DECIMALS_FALLBACK: int = 6
     _PREFER_STATIC_TICK_SIZE: bool = False
+    _PREFER_STATIC_PRECISION: bool = False
     _USES_SHARED_REGISTRY_SYMBOLS: bool = False
     _HISTORICAL_OHLC_PRIORITY: Optional[int] = None
     _PUBLIC_ORDERBOOK_HOST: str = ""
@@ -224,6 +225,7 @@ class ProviderVenueMetadataMixin:
 
     has_native_l1_derivatives = _bind_venue_bool_capability("_HAS_NATIVE_L1_DERIVATIVES")
     supports_tokenized_assets = _bind_venue_bool_capability("_SUPPORTS_TOKENIZED_ASSETS")
+    prefers_static_precision = _bind_venue_bool_capability("_PREFER_STATIC_PRECISION")
 
     @classmethod
     def canonical_venues(cls) -> tuple[str, ...]:

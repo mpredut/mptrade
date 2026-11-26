@@ -1323,10 +1323,11 @@ _OFF_TOPIC_TABLOID_WORDS: frozenset[str] = (
     | frozenset({
         "apology", "blue", "cards", "celebrity", "cereal", "clothes", "clothing",
         "concert", "dylan", "estate", "exemption", "fabric", "fabrics", "farmers",
-        "fashion", "festival", "footage", "gift", "governor", "hoax", "hoaxes",
-        "irs", "jailed", "mamdani", "match", "mayor", "movie", "music", "olive",
-        "player", "players", "prison", "protest", "protests", "recipe", "recipes",
-        "red", "shopper", "shoppers", "singer", "song", "storm", "subscriber",
+        "fashion", "festival", "flood", "flooding", "floods", "footage", "gift",
+        "governor", "hoax", "hoaxes", "irs", "jailed", "landslide", "mamdani",
+        "match", "mayor", "mine", "miners", "movie", "music", "olive", "player",
+        "players", "prison", "protest", "protests", "recipe", "recipes", "red",
+        "rescue", "shopper", "shoppers", "singer", "song", "storm", "subscriber",
         "subscribers", "weather", "yacht",
     })
 )
@@ -1414,7 +1415,20 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
         return False
     if matched_fin and matched_fin <= {"price", "prices"} and (words & {"apparel", "clothes", "clothing", "console", "fabric", "fabrics", "fashion", "grocery", "menu", "nintendo", "playstation", "shoes", "shopper", "shoppers", "sneakers", "switch", "ticket", "tickets", "xbox"}):
         return False
-    if matched_fin and matched_fin <= {"gold"} and (words & {"mine", "mining", "miners", "flood", "landslide", "rescue", "trapped", "collapsed"}) and not (words & _BROAD_MARKET_INDEX_CONTEXT_WORDS) and not has_eq_entity:
+    if (
+        matched_fin
+        and matched_fin <= {"gold"}
+        and (
+            words
+            & {
+                "collapse", "collapsed", "flood", "flooding", "floods", "landslide",
+                "medal", "medals", "mine", "miner", "miners", "mining",
+                "olympic", "olympics", "rescue", "trapped",
+            }
+        )
+        and not (words & _BROAD_MARKET_INDEX_CONTEXT_WORDS)
+        and not has_eq_entity
+    ):
         return False
     if (
         matched_fin

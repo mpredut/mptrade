@@ -17,6 +17,7 @@ from botcore import (
     load_key_value_conf,
     parse_symbol_list,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
     topic_spec,
 )
@@ -42,6 +43,10 @@ from orchestratorOS.supervisor.prompt_sections import (
     _format_sre_and_fleet_section,
 )
 from providers.ai_circuit_breaker import (
+    DEFAULT_MAX_HOURLY_REPLACES_PER_SYMBOL,
+    DEFAULT_REPLACE_MIN_PRICE_DELTA_PCT,
+    DEFAULT_TARGET_EV_FEE_MULT,
+    DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS,
     DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
     DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
     DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
@@ -53,41 +58,61 @@ from providers.ai_circuit_breaker import (
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _resolve_xstock_sell_prompt_thresholds(
+def _resolve_gateway_survival_prompt_thresholds(
     workspace_dir: Optional[str] = None,
-) -> Tuple[float, float, float, float, float]:
-    """Read SELL-only tokenized equity profit/drop/confidence/crash thresholds from order_guard.conf SSOT."""
+) -> Dict[str, Any]:
+    """Read AI survival circuit-breaker and tokenized-equity sell thresholds from order_guard.conf SSOT."""
     ws = workspace_dir or _ROOT_DIR
     try:
         conf = load_key_value_conf(ws, _ROOT_DIR)
         cb_cfg = parse_intent_circuit_breaker_config(conf)
-        return (
-            safe_nonneg_float(cb_cfg.get("xstock_sell_min_profit_pct"), default=DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT),
-            safe_nonneg_float(
-                cb_cfg.get("xstock_sell_min_target_drop_pct"),
-                default=DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
-            ),
-            safe_nonneg_float(
-                cb_cfg.get("xstock_sell_min_confidence"),
-                default=DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
-            ),
-            safe_nonneg_float(
-                cb_cfg.get("xstock_sell_crash_min_target_drop_pct"),
-                default=DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
-            ),
-            safe_nonneg_float(
-                cb_cfg.get("xstock_sell_crash_min_confidence"),
-                default=DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
-            ),
-        )
     except Exception:
-        return (
-            DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT,
-            DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
-            DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE,
-            DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
-            DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE,
-        )
+        cb_cfg = {}
+    return {
+        "xstock_sell_min_profit_pct": safe_nonneg_float(
+            cb_cfg.get("xstock_sell_min_profit_pct"), default=DEFAULT_XSTOCK_SELL_MIN_PROFIT_PCT
+        ),
+        "xstock_sell_min_target_drop_pct": safe_nonneg_float(
+            cb_cfg.get("xstock_sell_min_target_drop_pct"), default=DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT
+        ),
+        "xstock_sell_min_confidence": safe_nonneg_float(
+            cb_cfg.get("xstock_sell_min_confidence"), default=DEFAULT_XSTOCK_SELL_MIN_CONFIDENCE
+        ),
+        "xstock_sell_cooldown_hours": safe_nonneg_float(
+            cb_cfg.get("xstock_sell_cooldown_hours"), default=DEFAULT_XSTOCK_SELL_COOLDOWN_HOURS
+        ),
+        "xstock_sell_crash_min_target_drop_pct": safe_nonneg_float(
+            cb_cfg.get("xstock_sell_crash_min_target_drop_pct"),
+            default=DEFAULT_XSTOCK_SELL_CRASH_MIN_TARGET_DROP_PCT,
+        ),
+        "xstock_sell_crash_min_confidence": safe_nonneg_float(
+            cb_cfg.get("xstock_sell_crash_min_confidence"), default=DEFAULT_XSTOCK_SELL_CRASH_MIN_CONFIDENCE
+        ),
+        "target_ev_fee_mult": safe_nonneg_float(
+            cb_cfg.get("target_ev_fee_mult"), default=DEFAULT_TARGET_EV_FEE_MULT
+        ),
+        "max_hourly_replaces_per_symbol": safe_nonneg_int(
+            cb_cfg.get("max_hourly_replaces_per_symbol"),
+            default=DEFAULT_MAX_HOURLY_REPLACES_PER_SYMBOL,
+        ),
+        "replace_min_price_delta_pct": safe_nonneg_float(
+            cb_cfg.get("replace_min_price_delta_pct"), default=DEFAULT_REPLACE_MIN_PRICE_DELTA_PCT
+        ),
+    }
+
+
+def _resolve_xstock_sell_prompt_thresholds(
+    workspace_dir: Optional[str] = None,
+) -> Tuple[float, float, float, float, float]:
+    """Read SELL-only tokenized equity profit/drop/confidence/crash thresholds from order_guard.conf SSOT."""
+    th = _resolve_gateway_survival_prompt_thresholds(workspace_dir)
+    return (
+        th["xstock_sell_min_profit_pct"],
+        th["xstock_sell_min_target_drop_pct"],
+        th["xstock_sell_min_confidence"],
+        th["xstock_sell_crash_min_target_drop_pct"],
+        th["xstock_sell_crash_min_confidence"],
+    )
 
 
 def _build_dynamic_target_desc(
@@ -225,6 +250,7 @@ def build_supervisor_prompt(
             _format_portfolio_section(
                 portfolio_summary,
                 getattr(spec, "asset_scope", "all"),
+                min_usd=min_usd,
                 max_usd=max_usd,
                 include_macro_benchmarks=False,
                 now_ts=eval_now_ts,
@@ -266,9 +292,16 @@ def build_supervisor_prompt(
         schema.append(
             f'  "summary": "1-2 sentence executive assessment of {scope_spec.summary_scope_lbl} market posture and trading decisions"'
         )
-    xs_min_profit_pct, xs_min_drop_pct, xs_min_conf, xs_crash_drop_pct, xs_crash_conf = (
-        _resolve_xstock_sell_prompt_thresholds()
-    )
+    gw_th = _resolve_gateway_survival_prompt_thresholds()
+    xs_min_profit_pct = gw_th["xstock_sell_min_profit_pct"]
+    xs_min_drop_pct = gw_th["xstock_sell_min_target_drop_pct"]
+    xs_min_conf = gw_th["xstock_sell_min_confidence"]
+    xs_cd_h = gw_th["xstock_sell_cooldown_hours"]
+    xs_crash_drop_pct = gw_th["xstock_sell_crash_min_target_drop_pct"]
+    xs_crash_conf = gw_th["xstock_sell_crash_min_confidence"]
+    ev_fee_mult = gw_th["target_ev_fee_mult"]
+    max_hr_rep = gw_th["max_hourly_replaces_per_symbol"]
+    rep_min_delta_pct = gw_th["replace_min_price_delta_pct"]
     xs_target_lbl = "tokenized xStocks"
     if spec.can_trade:
         target_desc, xs_target_lbl = _build_dynamic_target_desc(is_equities)
@@ -278,12 +311,13 @@ def build_supervisor_prompt(
             if xs_crash_drop_pct > 0
             else ""
         )
+        xs_cd_sfx = f"; {xs_cd_h:g}h cooldown" if xs_cd_h > 0 else ""
         xs_exception_sfx = (
             ""
             if is_equities
             else (
                 f" (EXCEPTION: SELL-only Kraken {xs_target_lbl} = long-term `HOLD`, heavy manual rebuy fee; "
-                f"sell rarely on >+{xs_min_profit_pct:g}% profit{xs_conf_sfx} + `target_px` >={xs_min_drop_pct:g}% lower{xs_crash_sfx}; emailed)"
+                f"sell rarely on >+{xs_min_profit_pct:g}% profit{xs_conf_sfx} + `target_px` >={xs_min_drop_pct:g}% lower{xs_crash_sfx}{xs_cd_sfx}; emailed)"
             )
         )
         venue_schema = scope_spec.venue_schema
@@ -337,7 +371,18 @@ def build_supervisor_prompt(
             "   - ZERO PROFIT OR STRATEGY GUARDS (AI SURVIVAL BREAKERS ONLY): Maximize risk-adjusted net NAV (after venue fees). All deterministic order_guard gates "
             "(G_PROF, GO1, GT_*, G_QLIMIT*, GI_*, GLLM*) are BYPASSED symmetrically on BUY and SELL. Deterministic bots/configs run in parallel as optional advisory references only--ZERO obligation to follow them. "
             "Only AI-specific survival circuit breakers "
-            "(anti-ping-pong flip cooldown unless `invalidation_px`/`target_px` or net edge triggers, 6h whipsaw cap, daily `by=AI` BUY notional cap, and 48h `AI Decision Scorecard` BUY shadow cooldown) apply in the gateway.\n"
+            "(anti-ping-pong flip cooldown unless `invalidation_px`/`target_px` or net edge triggers, 6h whipsaw cap, "
+            + (
+                f"positive-EV `target_px` >= max(0.10%, {ev_fee_mult:g}x venue RT fee) on `urgency=NORMAL`, "
+                if ev_fee_mult > 0
+                else ""
+            )
+            + (
+                f"hourly replace churn cap ({max_hr_rep}/h if move < {rep_min_delta_pct:g}%), "
+                if max_hr_rep > 0
+                else ""
+            )
+            + "daily `by=AI` BUY notional cap, and 48h `AI Decision Scorecard` BUY shadow cooldown) apply in the gateway.\n"
             "   - SUPERVISORY AUTHORITY TO AUDIT & REPAIR / REVERSE UNWANTED BOT OR FLEET TRADES (`by=BOT`/`by=MANUAL` vs `by=AI`): "
             "Audit interim `by=BOT`/`by=MANUAL` fills/orders independently. Cancel unwanted bot/manual orders BEFORE fill (`cancel_bot_open_orders: true` "
             "with mandatory `cancel_order_ids: [...]` on standalone `HOLD`, or narrowed via `cancel_order_ids` on `BUY`/`SELL`); do NOT sell minutes after a bot fill unless structure genuinely breaks down "
@@ -384,12 +429,13 @@ def build_supervisor_prompt(
             if xs_crash_drop_pct > 0
             else ""
         )
+        compact_cd_sfx = f"; {xs_cd_h:g}h cooldown" if xs_cd_h > 0 else ""
         compact_xs_sfx = (
             ""
             if is_equities
             else (
                 f"; remember SELL-only Kraken {xs_target_lbl} = long-term HOLD with heavy manual rebuy fee: "
-                f"sell rarely on >+{xs_min_profit_pct:g}% profit{compact_conf_sfx} + `target_px` >={xs_min_drop_pct:g}% lower (1-2d+ drop){compact_crash_sfx}"
+                f"sell rarely on >+{xs_min_profit_pct:g}% profit{compact_conf_sfx} + `target_px` >={xs_min_drop_pct:g}% lower (1-2d+ drop){compact_crash_sfx}{compact_cd_sfx}"
             )
         )
         compact_exec_desc = (

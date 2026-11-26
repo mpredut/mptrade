@@ -12,17 +12,24 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from pathlib import Path
 import re
 import sys
 from typing import Any, Callable, Collection, Mapping, Optional, Sequence
 
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 from botcore import (
     clean_scalar_str,
     clamp_float,
+    load_key_value_conf,
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    topic_spec,
 )
 from cachepaths import matches_asset_scope, normalize_venue_name
 from instrument_registry import (
@@ -38,7 +45,8 @@ from providers.ai_survival_guard import (
     build_normalized_filled_ai_intent_row,
     match_filled_intent_rows_lifo_in_window,
 )
-from providers.intent_state import extract_intent_side
+from providers.intent_state import extract_intent_side, parse_intent_gateway_config
+from providers.venue_metadata import ProviderVenueMetadataMixin
 from state_io import read_text_file
 
 _NAV_LINE_RE = re.compile(
@@ -59,6 +67,18 @@ _RANGE_RE = re.compile(
     r"(24h|7d)_range=\[([0-9.]+)(?:\.\.|,\s*)([0-9.]+)\]\s*(?:\(pos=|pos_(?:24h|7d)=)([0-9.]+)%"
 )
 _ARB_VS_RE = re.compile(r"arb_vs_([A-Za-z0-9_]+)=([+-]?[0-9.]+)bps")
+_VOL_PROFILE_RE = re.compile(
+    r"vol_profile\(POC=([0-9.]+)\[([+-]?[0-9.]+)%\].*?VAL=([0-9.]+)\[([+-]?[0-9.]+)%\],\s*VAH=([0-9.]+)\[([+-]?[0-9.]+)%\](?:,\s*va_pos=([0-9.-]+)%)?"
+)
+_SESSION_VWAP_RE = re.compile(r"session_vwap=\$([0-9,]+(?:\.[0-9]+)?)\s*\(([+-]?[0-9.]+)%")
+_OB_IMB_RE = re.compile(r"ob_imbalance=([0-9.]+)\s*\(bid_depth=\$([0-9.]+),\s*ask_depth=\$([0-9.]+)\)")
+_OB_MID_RE = re.compile(r"ob_mid=([0-9.]+)")
+_BID_WALL_RE = re.compile(r"(?:bid_wall|est_bid_zone)=([0-9.]+)\s*\(")
+_ASK_WALL_RE = re.compile(r"(?:ask_wall|est_ask_zone)=([0-9.]+)\s*\(")
+_LIMITS_RE = re.compile(r"limits\(([^)]+)\)")
+_LIMIT_NUM_RE = re.compile(r"\b(min_qty|step|tick)=([0-9.]+)")
+_LIMIT_CAP_RE = re.compile(r"\b(max_buy|max_sell)=\$([0-9,.]+)")
+_PX_FIELD_RE = re.compile(r"\bpx=([0-9.]+)")
 
 
 @dataclass(frozen=True)
@@ -417,10 +437,12 @@ def audit_rendered_prompt_text(
     arb_tol_bps: float = 0.3,
     range_tol_pct: float = 1.2,
     breakdown_tol_frac: float = 0.05,
+    gateway_min_usd: float = 0.0,
 ) -> list[InvariantViolation]:
     """Audit mathematical and structural invariants directly on a rendered LLM prompt string."""
     violations: list[InvariantViolation] = []
     non_trad_u = {str(s).strip().upper() for s in non_tradable_symbols if str(s).strip()}
+    gw_min_f = safe_nonneg_float(gateway_min_usd, default=0.0) or 0.0
 
     # 1. Section 3C NAV conservation
     if (m_nav := _NAV_LINE_RE.search(prompt_text)) is not None:
@@ -476,8 +498,50 @@ def audit_rendered_prompt_text(
                             f"free_{q_name}={fq:.2f} diverges from breakdown sum={bd_sum:.2f}",
                         )
                     )
+        if (m_lim := _LIMITS_RE.search(rest)) is not None:
+            lim_s = m_lim.group(1)
+            lim_nums = {
+                k: safe_float(v, default=None)
+                for k, v in _LIMIT_NUM_RE.findall(lim_s)
+            }
+            for k_lim, v_lim in lim_nums.items():
+                if v_lim is not None and v_lim <= 0.0:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_VENUE_PRECISION",
+                            f"{ven}:{sym}:{k_lim}",
+                            f"non-positive {k_lim}={v_lim}",
+                        )
+                    )
+            if ProviderVenueMetadataMixin.prefers_static_precision(ven):
+                m_px_c = _PX_FIELD_RE.search(rest)
+                px_c = safe_pos_float(m_px_c.group(1), default=0.0) if m_px_c else 0.0
+                _, _, _, _, exp_step, exp_tick, _ = (
+                    ProviderVenueMetadataMixin.resolve_venue_default_fee_and_precision(ven, px_c)
+                )
+                for k_lim, exp_v in (("min_qty", exp_step), ("step", exp_step), ("tick", exp_tick)):
+                    got_v = lim_nums.get(k_lim)
+                    if got_v is not None and abs(got_v - exp_v) > 1e-9:
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_VENUE_PRECISION",
+                                f"{ven}:{sym}:{k_lim}",
+                                f"reported {k_lim}={got_v:g} != static venue precision {exp_v:g}",
+                            )
+                        )
+            if gw_min_f > 0.0:
+                for cap_k, cap_s in _LIMIT_CAP_RE.findall(lim_s):
+                    cap_v = _parse_money(cap_s)
+                    if cap_v is not None and 0.0 < cap_v < gw_min_f - 1e-6:
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_SUB_GATEWAY_MIN_CAP",
+                                f"{ven}:{sym}:{cap_k}",
+                                f"{cap_k}=${cap_v:.2f} is below gateway_min_usd=${gw_min_f:.2f}",
+                            )
+                        )
 
-    # 4. Section 3 range pos math
+    # 4. Section 3 range pos math, vol_profile order/deltas, and session_vwap delta
     for m_s3 in _SEC3_SYM_RE.finditer(prompt_text):
         sym = m_s3.group(1)
         px = _parse_money(m_s3.group(2))
@@ -490,8 +554,48 @@ def audit_rendered_prompt_text(
             hi = safe_pos_float(m_rng.group(3), default=None)
             pos = safe_float(m_rng.group(4), default=None)
             _check_range_pos(violations, "PROMPT_RANGE_POS_MATH", sym, lbl, px, lo, hi, pos, range_tol_pct)
+        if (m_vp := _VOL_PROFILE_RE.search(rest)) is not None:
+            poc = safe_pos_float(m_vp.group(1), default=None)
+            poc_d = safe_float(m_vp.group(2), default=None)
+            val = safe_pos_float(m_vp.group(3), default=None)
+            val_d = safe_float(m_vp.group(4), default=None)
+            vah = safe_pos_float(m_vp.group(5), default=None)
+            vah_d = safe_float(m_vp.group(6), default=None)
+            if poc is not None and val is not None and vah is not None:
+                if not (val <= poc <= vah):
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_VOL_PROFILE_ORDER",
+                            sym,
+                            f"vol_profile out of order: VAL={val:g}, POC={poc:g}, VAH={vah:g}",
+                        )
+                    )
+                for vp_lbl, lv, rep_d in (("POC", poc, poc_d), ("VAL", val, val_d), ("VAH", vah, vah_d)):
+                    if rep_d is not None:
+                        exp_d = ((px - lv) / lv) * 100.0
+                        if abs(exp_d - rep_d) > 0.15:
+                            violations.append(
+                                InvariantViolation(
+                                    "PROMPT_VOL_PROFILE_DELTA",
+                                    f"{sym}:{vp_lbl}",
+                                    f"reported {rep_d:+.2f}% vs expected {exp_d:+.2f}% (px={px:g}, {vp_lbl}={lv:g})",
+                                )
+                            )
+        if (m_vw := _SESSION_VWAP_RE.search(rest)) is not None:
+            vwap_px = _parse_money(m_vw.group(1))
+            rep_vd = safe_float(m_vw.group(2), default=None)
+            if vwap_px is not None and vwap_px > 0.0 and rep_vd is not None:
+                exp_vd = ((px - vwap_px) / vwap_px) * 100.0
+                if abs(exp_vd - rep_vd) > 0.15:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_SESSION_VWAP_DELTA",
+                            sym,
+                            f"reported {rep_vd:+.2f}% vs expected {exp_vd:+.2f}% (px={px:g}, vwap={vwap_px:g})",
+                        )
+                    )
 
-    # 5. Section 3B cross-venue arb symmetry
+    # 5. Section 3B cross-venue arb symmetry, OB imbalance math, and wall ordering
     arb_pairs: dict[tuple[str, str], float] = {}
     for m_3b in _SEC3B_SYM_RE.finditer(prompt_text):
         sym, rest = m_3b.group(1), m_3b.group(2)
@@ -500,6 +604,43 @@ def audit_rendered_prompt_text(
             val = safe_float(m_arb.group(2), default=None)
             if val is not None:
                 arb_pairs[(sym.upper(), peer.upper())] = val
+        if (m_imb := _OB_IMB_RE.search(rest)) is not None:
+            rep_imb = safe_float(m_imb.group(1), default=None)
+            bd_v = safe_nonneg_float(m_imb.group(2), default=None)
+            ad_v = safe_nonneg_float(m_imb.group(3), default=None)
+            if rep_imb is not None and bd_v is not None and ad_v is not None and (bd_v + ad_v) > 0.0:
+                exp_imb = bd_v / (bd_v + ad_v)
+                if abs(exp_imb - rep_imb) > 0.015:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_OB_IMBALANCE_MATH",
+                            sym,
+                            f"reported ob_imbalance={rep_imb:.3f} vs expected {exp_imb:.3f} (bid=${bd_v:.1f}, ask=${ad_v:.1f})",
+                        )
+                    )
+        if (m_mid := _OB_MID_RE.search(rest)) is not None:
+            ob_mid = safe_pos_float(m_mid.group(1), default=None)
+            if ob_mid is not None:
+                if (m_bw := _BID_WALL_RE.search(rest)) is not None:
+                    bw_px = safe_pos_float(m_bw.group(1), default=None)
+                    if bw_px is not None and bw_px > ob_mid * 1.001:
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_OB_WALL_ORDERING",
+                                sym,
+                                f"bid_wall={bw_px:g} > ob_mid={ob_mid:g}",
+                            )
+                        )
+                if (m_aw := _ASK_WALL_RE.search(rest)) is not None:
+                    aw_px = safe_pos_float(m_aw.group(1), default=None)
+                    if aw_px is not None and aw_px < ob_mid * 0.999:
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_OB_WALL_ORDERING",
+                                sym,
+                                f"ask_wall={aw_px:g} < ob_mid={ob_mid:g}",
+                            )
+                        )
     for (s_a, s_b), v_a in arb_pairs.items():
         if s_a < s_b and (s_b, s_a) in arb_pairs:
             v_b = arb_pairs[(s_b, s_a)]
@@ -521,16 +662,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--cache-dir", default="cachedb", help="Cache directory")
     parser.add_argument("--prompt-file", default="", help="Path to a rendered prompt text file to audit")
     parser.add_argument("--live-snapshot", action="store_true", help="Collect an offline snapshot from cachedb and audit it")
+    parser.add_argument("--check-rendered-prompt", action="store_true", help="Also render full and compact prompts from --live-snapshot and audit them")
     parser.add_argument("--check-scorecard-stability", action="store_true", help="Verify scorecard LIFO stability on durable intents")
     parser.add_argument("--scope", default="crypto", help="Asset scope for live snapshot / scorecard audit")
     args = parser.parse_args(argv)
 
     non_trad = disabled_registry_symbols(args.workspace_dir) | observe_only_registry_symbols(args.workspace_dir)
+    try:
+        conf = load_key_value_conf(args.workspace_dir, str(_ROOT))
+        _, gw_min_usd, gw_max_usd, gw_min_conf, _ = parse_intent_gateway_config(conf)
+    except Exception:
+        gw_min_usd, gw_max_usd, gw_min_conf = 10.0, 2000.0, 0.85
     violations: list[InvariantViolation] = []
 
     if args.prompt_file:
         text = read_text_file(args.prompt_file)
-        violations.extend(audit_rendered_prompt_text(text, non_tradable_symbols=non_trad))
+        violations.extend(
+            audit_rendered_prompt_text(text, non_tradable_symbols=non_trad, gateway_min_usd=gw_min_usd)
+        )
 
     if args.live_snapshot:
         from intelligence.sentiment.collectors.macro_telemetry_collector import MarketAndPortfolioSnapshotOrchestrator
@@ -544,6 +693,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             persist=False,
         )
         violations.extend(audit_snapshot_invariants(snap, non_tradable_symbols=non_trad))
+        if args.check_rendered_prompt:
+            from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+
+            scope_l = str(args.scope or "crypto").strip().lower()
+            tkey = "auto_sharetrade_executor" if scope_l in ("equities", "equity") else "auto_cryptotrade_executor"
+            spec = topic_spec(tkey)
+            for compact_flag in (False, True):
+                rendered = build_supervisor_prompt(
+                    snap,
+                    logs=None,
+                    spec=spec,
+                    min_usd=gw_min_usd,
+                    max_usd=gw_max_usd,
+                    min_conf=gw_min_conf,
+                    compact_rules=compact_flag,
+                )
+                violations.extend(
+                    audit_rendered_prompt_text(
+                        rendered, non_tradable_symbols=non_trad, gateway_min_usd=gw_min_usd
+                    )
+                )
 
     if args.check_scorecard_stability:
         from providers.intent_state_store import load_durable_intents_from_cachedb
