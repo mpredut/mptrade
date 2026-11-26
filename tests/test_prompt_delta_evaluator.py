@@ -719,6 +719,8 @@ def test_trigger_promotion_inline_rr_partial_fill_and_warm_source_age() -> None:
     pre = sensors.portfolio_summary["portfolio_risk_engine"]
     pre["invested_exposure_usd"] = round(pre["invested_exposure_usd"] + hype_delta, 2)
     pre["unified_nav_usd"] = round(pre["unified_nav_usd"] + hype_delta, 2)
+    pre["global_free_cash_pct"] = round((pre["global_free_cash_usd"] / pre["unified_nav_usd"]) * 100.0, 1)
+    pre["intraday_var_95_pct"] = round((pre["intraday_var_95_usd"] / pre["unified_nav_usd"]) * 100.0, 2)
     pre["venue_nav_breakdown_usd"]["hyperliquid"] = round(pre["venue_nav_breakdown_usd"]["hyperliquid"] + hype_delta, 2)
     sensors.source_ages_sec["fear_greed"] = 1680.0
     sensors.portfolio_summary["open_limit_orders"] = [
@@ -785,6 +787,8 @@ def test_trigger_promotion_inline_rr_partial_fill_and_warm_source_age() -> None:
     pre2 = sensors_t2.portfolio_summary["portfolio_risk_engine"]
     pre2["invested_exposure_usd"] = round(pre2["invested_exposure_usd"] + hype_delta, 2)
     pre2["unified_nav_usd"] = round(pre2["unified_nav_usd"] + hype_delta, 2)
+    pre2["global_free_cash_pct"] = round((pre2["global_free_cash_usd"] / pre2["unified_nav_usd"]) * 100.0, 1)
+    pre2["intraday_var_95_pct"] = round((pre2["intraday_var_95_usd"] / pre2["unified_nav_usd"]) * 100.0, 2)
     pre2["venue_nav_breakdown_usd"]["hyperliquid"] = round(pre2["venue_nav_breakdown_usd"]["hyperliquid"] + hype_delta, 2)
     sensors_t2.source_ages_sec["fear_greed"] = 2040.0
     sensors_t2.portfolio_summary["cross_market_context"]["equity_bellwethers"]["NVDA_US_EQ"]["quote_age_min"] = 712.0

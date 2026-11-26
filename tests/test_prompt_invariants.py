@@ -1748,6 +1748,99 @@ def test_cycle15_fill_lifecycle_pruning_lot_harvested_and_four_new_invariants() 
     }.issubset(bad_codes)
 
 
+def test_cycle16_extended_mathematical_invariants() -> None:
+    """Verify Cycle 16 continuous mathematical invariants across Sections 1-4 (clean passes, every corruption caught)."""
+    clean_c16 = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Portfolio Risk Engine (Crypto Scope): crypto_nav=$10,000.00, invested=$3,000.00, "
+        "free_cash=$6,000.00 (60.0%), locked_quote=$1,000.00 (10.0%), venues(binance=$10,000.00), "
+        "intraday_var_95=$150.00 (1.50%), cvar_975=$220.00 (2.20%)\n"
+        "  * Available Free Quote Cash per Venue: binance USDC=$6,000.00 [locked_quote_usd=$1,000.00]\n"
+        "  * Live Tradable Spot Instruments:\n"
+        "    - [binance] BTCUSDC: free_BTC=0.05 ($3,000.00 USD), px=60000.0, avg_cost=60000.0 (pnl_vs_cost=0.0%), "
+        "last_buy_px=59000.0 (pnl_vs_last_buy=+1.69%), last_sell_px=61000.0 (chg_vs_last_sell=-1.64%), "
+        "open_lifo_lots=[0.02@58000.0(+3.45%), 0.03@61000.0(-1.64%)], lifo_avg=59800.0 (pnl_vs_lifo=+0.33%), "
+        "limits(max_buy=$2000.0, max_sell=$3000.0)\n"
+        "  * Active Cycle Cost & Drawdown Anchors:\n"
+        "    - [binance] BTCUSDC: qty=0.05, cost=$3000.00, avg_cost=60000.0, pnl_vs_cost=+0.00%\n"
+        "  * Last Cycle Execution Status: [binance] BTCUSDC BUY LIMIT FILLED "
+        "(fill_px=59400.0, limit_px=59400.0, ref_px=60000.0, qty=0.01, notional=$594.00, slippage_bps=0.0, arr_bps=-100.0, id=777, age=1.0m)\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+        "- Market Breadth: advance_ratio=0.5000, advancing=10/20, ETH/BTC=0.03000, ETH=$1800.00\n"
+        "  * Cross-Market US Equities Telemetry:\n"
+        "    | Symbol | Px | 24h | 7d | Pos24h | ExtVsRTH | Close | Source (Age) |\n"
+        "    |---|---|---|---|---|---|---|---|\n"
+        "    | NVDA_US_EQ | $151.50 | +1.00% | +2.00% | 80.0% | +1.00% | $150.00 | yahoo_ext_cached (10m) |\n"
+        "  * Multi-Month & Annual Structure (3y / 36m lookback):\n"
+        "    | Symbol | YTD | 30d | 90d | 52w Range (Pos52w) | 3y Range (Pos) | vs MA50 | vs MA200 | Swings (3y, YY-MM:px) |\n"
+        "    |---|---|---|---|---|---|---|---|---|\n"
+        "    | BTCUSDC | -20.0% | -10.0% | -5.0% | [$55.0K..$95.0K] (12.5%) | [$40.0K..$120.0K] (25.0%) | -10.0% | -5.0% | 23-11:40.0K->25-10:120.0K->now:60.0K |\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * BTCUSDC: Price=$60,000.00\n"
+        "    - Trend: 1m=+0.00% 3m=+0.50% 5m=+1.00% 15m=+2.00% 1h=+1.00% 24h=+4.00% "
+        "24h_range=[57000.0, 61000.0] pos_24h=75.0% (dd_high=-1.64%, bounce_low=+5.26%, span=7.02%) | "
+        "tape_15m=[-15m:58823.53, -10m:59000.0, -5m:59405.94, -3m:59701.49, -1m:60000.0, now:60000.0] "
+        "15m_range=[58800.0, 60100.0] pos_15m=92.3% | sessions(asia=[58000.0, 60500.0], ldn=[59000.0, 61000.0]) | "
+        "swing_wave(low=58000.0, high=61000.0, rally_low=+3.45%, pullback_high=-1.64%, major_low=57000.0(rally=+5.26%), major_high=62000.0(pb=-3.23%))\n"
+        "    - Flow: agg_spot_cvd_15m=+$200.0K[usdc+usdt, vol=$1.00M], spot_vol_15m=$300.0K, spot_vol_1h=$1.20M\n"
+        "### 4. MARKET BELLWETHERS (OBSERVE-ONLY):\n"
+        "  | Symbol | Price | 15m | 1h | 6h | 24h | Pos24h | Context | Flow & Deriv |\n"
+        "  |---|---|---|---|---|---|---|---|---|\n"
+        "  | ETHUSDC | $1,800.00 | +0.50% | +2.50% | +1.00% | +6.00% | 70.0% | vs_btc(1h=+1.50%, 24h=+2.00%) | taker_ratio=1.10 |\n"
+    )
+    assert audit_rendered_prompt_text(clean_c16) == []
+
+    bad_c16 = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Portfolio Risk Engine (Crypto Scope): crypto_nav=$10,000.00, invested=$3,000.00, "
+        "free_cash=$6,000.00 (45.0%), locked_quote=$1,000.00 (25.0%), venues(binance=$10,000.00), "
+        "intraday_var_95=$150.00 (5.00%), cvar_975=$100.00 (1.00%)\n"
+        "  * Available Free Quote Cash per Venue: binance USDC=$6,000.00 [locked_quote_usd=$1,000.00]\n"
+        "  * Live Tradable Spot Instruments:\n"
+        "    - [binance] BTCUSDC: free_BTC=0.05 ($3,000.00 USD), px=60000.0, avg_cost=60000.0 (pnl_vs_cost=0.0%), "
+        "last_buy_px=59000.0 (pnl_vs_last_buy=+9.99%), last_sell_px=61000.0 (chg_vs_last_sell=+5.00%), "
+        "open_lifo_lots=[0.02@58000.0(+9.00%), 0.03@61000.0(-1.64%)], lifo_avg=55000.0 (pnl_vs_lifo=+1.00%), "
+        "limits(max_buy=$2000.0, max_sell=$4500.0)\n"
+        "  * Active Cycle Cost & Drawdown Anchors:\n"
+        "    - [binance] BTCUSDC: qty=0.05, cost=$4500.00, avg_cost=60000.0, pnl_vs_cost=+5.00%\n"
+        "  * Last Cycle Execution Status: [binance] BTCUSDC BUY LIMIT FILLED "
+        "(fill_px=59400.0, limit_px=59400.0, ref_px=60000.0, qty=0.01, notional=$800.00, slippage_bps=0.0, arr_bps=+100.0, id=777, age=1.0m)\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+        "- Market Breadth: advance_ratio=0.5000, advancing=10/20, ETH/BTC=0.05000, ETH=$1800.00\n"
+        "  * Cross-Market US Equities Telemetry:\n"
+        "    | Symbol | Px | 24h | 7d | Pos24h | ExtVsRTH | Close | Source (Age) |\n"
+        "    |---|---|---|---|---|---|---|---|\n"
+        "    | NVDA_US_EQ | $151.50 | +1.00% | +2.00% | 80.0% | +5.50% | $150.00 | yahoo_ext_cached (10m) |\n"
+        "  * Multi-Month & Annual Structure (3y / 36m lookback):\n"
+        "    | Symbol | YTD | 30d | 90d | 52w Range (Pos52w) | 3y Range (Pos) | vs MA50 | vs MA200 | Swings (3y, YY-MM:px) |\n"
+        "    |---|---|---|---|---|---|---|---|---|\n"
+        "    | BTCUSDC | -20.0% | -10.0% | -5.0% | [$35.0K..$130.0K] (26.3%) | [$40.0K..$120.0K] (25.0%) | -10.0% | -5.0% | 25-10:120.0K->23-11:40.0K->now:60.0K |\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * BTCUSDC: Price=$60,000.00\n"
+        "    - Trend: 1m=+0.00% 3m=+0.50% 5m=+1.00% 15m=+6.00% 1h=+1.00% 24h=+4.00% "
+        "24h_range=[57000.0, 61000.0] pos_24h=75.0% (dd_high=-1.64%, bounce_low=+5.26%, span=7.02%) | "
+        "tape_15m=[-15m:58000.0, -10m:59000.0, -5m:59405.94, -3m:59701.49, -1m:60000.0, now:60000.0] "
+        "15m_range=[58800.0, 60100.0] pos_15m=92.3% | sessions(asia=[56000.0, 60500.0], ldn=[62000.0, 61000.0]) | "
+        "swing_wave(low=58000.0, high=61000.0, rally_low=+9.00%, pullback_high=-5.00%, major_low=57000.0(rally=+1.00%), major_high=62000.0(pb=-9.00%))\n"
+        "    - Flow: agg_spot_cvd_15m=+$1.50M[usdc+usdt, vol=$1.00M], spot_vol_15m=$2.00M, spot_vol_1h=$1.20M\n"
+        "### 4. MARKET BELLWETHERS (OBSERVE-ONLY):\n"
+        "  | Symbol | Price | 15m | 1h | 6h | 24h | Pos24h | Context | Flow & Deriv |\n"
+        "  |---|---|---|---|---|---|---|---|---|\n"
+        "  | ETHUSDC | $1,800.00 | +0.50% | +2.50% | +1.00% | +6.00% | 70.0% | vs_btc(1h=+5.00%, 24h=-1.00%) | taker_ratio=1.10 |\n"
+    )
+    bad_vs = audit_rendered_prompt_text(bad_c16)
+    bad_codes = {v.code for v in bad_vs}
+    assert {
+        "PROMPT_PRE_PERCENT_MATH",
+        "PROMPT_POSITION_ANCHORS_AND_CYCLE_MATH",
+        "PROMPT_TAPE_SWING_AND_FLOW_BOUNDS",
+        "PROMPT_EXEC_AND_CROSS_MARKET_MATH",
+    }.issubset(bad_codes)
+
+
+
 
 
 
